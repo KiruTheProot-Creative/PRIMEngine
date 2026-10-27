@@ -20,7 +20,7 @@ module.exports = async (p, out) => {
   console.log('anims', JSON.stringify(info.an));
   await p.evaluate(a => {
     const S = __studio.S, Sc = PRIM.Schema, pr = S.project, at = pr.player.attachments[0], k = 'player.' + at.id, ch = at.script.nodes.find(n => n.type === 'onCharge');
-    const nm = a[0], set = (key, v) => S.tags.set(Sc.snodeKey(k, ch.id, key), v); set('chargeAnim', 'charge'); set('loopAnim', 'Charge-loop'); set('fireAnim', 'CHarged Shot'); set('chargeTime', 0.4);
+    const nm = a[0], set = (key, v) => S.tags.set(Sc.snodeKey(k, ch.id, key), v); set('chargeAnim', 'charge'); set('loopAnim', 'Charge-loop'); set('fireAnim', 'CHarged Shot'); set('chargeTime', 0.4); set('startDelay', 0.5);
     const f = Sc.addSNode(pr, k, at.script, 'fireProjectile', 300, 0, null, k + '.asset'); at.script.links.push({ a: ch.id, o: 'fire', b: f.id });
     const sy = Sc.addSNode(pr, k, at.script, 'say', 300, 80, { text: 'charged!' }, k + '.asset'); at.script.links.push({ a: ch.id, o: 'charged', b: sy.id });
     const sc2 = Sc.addSNode(pr, k, at.script, 'say', 300, 160, { text: 'cancelled' }, k + '.asset'); at.script.links.push({ a: ch.id, o: 'cancel', b: sc2.id });
@@ -45,7 +45,8 @@ module.exports = async (p, out) => {
   await p.mouse.click(700, 400); await p.waitForTimeout(300);
   const snap = () => p.evaluate(() => { const q = __studio.S.play, a = q.atts[0]; return JSON.stringify([a.fire, a.loopAnim, +a.t.toFixed(2), (q.fx || []).length, +q.T.get('player.charge').toFixed(2), q.orb ? +q.orb.size.toFixed(2) : null, (q.fx || []).map(f => +f.size.toFixed(1))]); });
   await p.evaluate(() => { window.__log = []; const q = __studio.S.play; const o = q.sh.o.fire; q.sh.o.fire = k => { window.__log.push('FIRE ' + performance.now().toFixed(0)); return o(k); }; });
-  await p.mouse.move(700, 400); await p.mouse.down();
+  await p.mouse.move(700, 400); await p.mouse.down(); await p.waitForTimeout(120); await p.mouse.up(); await p.waitForTimeout(300); console.log('quick tap -> said so far:', await p.evaluate(() => window.__said.join(',') || '(nothing)'), await snap());
+  await p.mouse.down();
   for (let i = 0; i < 8; i++) { await p.waitForTimeout(250); console.log('held', i, await snap()); }
   await p.screenshot({ path: out + '_orb.png' }); await p.mouse.up();
   for (let i = 0; i < 10; i++) { await p.waitForTimeout(250); console.log('after release', i, await snap()); }

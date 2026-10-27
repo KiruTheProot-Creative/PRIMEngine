@@ -74,7 +74,10 @@
     charge(a, n, dt) {
       const T = this.T, pre = "player." + a.id + ".s." + n.id + ".", g = k => T.get(pre + k), key = String(g("key") || "").toLowerCase(), held = !!this.keys[key], own = { key: "player." + a.id, script: a.script }, ok = "player." + a.id, at = this.atts.find(x => x.id === a.id);
       const st = this.ch[pre], dur = nm => { const an = at && nm && at.model.anims[nm]; return an ? this.animLen(at.aid, nm, an.dur).len : 0; };
-      if (held && !st) { this.ch[pre] = { t: 0, charged: false }; this.playAnim(ok, g("chargeAnim"), false); this.sh.runOut(own, n.id, "start"); T.set("player.charge", 0); }
+      const delay = Math.max(0, +g("startDelay") || 0);
+      if (held && !st) { this.ch[pre] = { t: 0, charged: false, wait: 0, started: delay <= 0 }; if (delay <= 0) { this.playAnim(ok, g("chargeAnim"), false); this.sh.runOut(own, n.id, "start"); T.set("player.charge", 0); } }
+      else if (held && st && !st.started) { st.wait += dt; if (st.wait >= delay) { st.started = true; this.playAnim(ok, g("chargeAnim"), false); this.sh.runOut(own, n.id, "start"); T.set("player.charge", 0); } }
+      else if (!held && st && !st.started) delete this.ch[pre];   // let go before the delay: nothing was charged
       else if (held && st) {
         st.t += dt; const need = +g("chargeTime") > 0 ? +g("chargeTime") : (dur(g("chargeAnim")) || 1); this.chargeNeed = need;
         if (!st.charged) { T.set("player.charge", Math.min(1, st.t / need)); if (st.t >= need) { st.charged = true; this.stopAnim(ok); this.playAnim(ok, g("loopAnim"), true); T.set("player.charge", 1); this.sh.runOut(own, n.id, "charged"); } }

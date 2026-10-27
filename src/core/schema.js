@@ -144,6 +144,7 @@
     repeat: { label: "Repeat", cat: "logic", outs: ["body", "next"], ctx: ["screen", "object"], props: [{ k: "times", label: "Times", type: "number", def: 3, min: 1, max: 1000, step: 1 }] },
     ifKey: { label: "If a key is held", cat: "logic", outs: ["then", "else"], ctx: ["object"], props: [KEYP("shift", "Key or mouse button")] },
     onCharge: { label: "Charge weapon (hold to charge)", cat: "weapon", ins: false, outs: ["start", "charged", "fire", "cancel"], ctx: ["weapon"], props: [KEYP("mouse1", "Hold this key or button to charge"),
+      { k: "startDelay", label: "Delay before charging starts (seconds)", type: "number", def: 0.5, min: 0, max: 10, step: 0.05 },
       { k: "chargeAnim", label: "Charging animation (plays once)", type: "anim", def: "" }, { k: "loopAnim", label: "Charged animation (loops while held)", type: "anim", def: "" }, { k: "fireAnim", label: "Fire animation (on release)", type: "anim", def: "" },
       { k: "chargeTime", label: "Time to full charge (seconds, 0 = length of the charging animation)", type: "number", def: 0, min: 0, max: 60, step: 0.05 }] },
     chargeShow: { label: "Show charge particle", cat: "weapon", outs: ["next"], ctx: ["weapon"], props: [COLOR("color", "Color", "#33ccff"), { k: "size", label: "Start size", type: "number", def: 1, min: 0.2, max: 80, step: 0.1 }] },
@@ -182,6 +183,7 @@
       const pre = "player." + att.id + ".", old = project.tags[pre + "weapon"];
       for (const p of S.ATTACH) { const r = project.tags[pre + p.k]; if (!r) { const n = rec(p, "player", "player." + att.id); if (p.type === "anim") n.modelTag = pre + "asset"; if (p.k === "type") n.value = old && old.value ? "weapon" : "animation"; if (p.k === "name") n.value = old && old.value ? "Weapon" : "Object"; project.tags[pre + p.k] = n; } else { r.label = p.label; if (p.showIf) r.showIf = p.showIf; else delete r.showIf; if (p.options) r.options = p.options; } }
       delete project.tags[pre + "weapon"];
+      if (att.script) for (const n of att.script.nodes) { const def = S.SNODES[n.type]; if (!def) continue; for (const p of def.props) { const k = S.snodeKey("player." + att.id, n.id, p.k); if (!project.tags[k]) { const r = rec(p, "script", "player." + att.id); if (p.type === "anim") r.modelTag = pre + "asset"; project.tags[k] = r; } } }
       if (!att.script) att.script = { nodes: [], links: [] };   // the old "click animation" menu became a script: when clicked, play that animation
       const fa = project.tags[pre + "fireAnim"]; if (fa) { if (fa.value && !att.script.nodes.length) { const a = S.addSNode(project, "player." + att.id, att.script, "onClick", 20, 20), b = S.addSNode(project, "player." + att.id, att.script, "playAnim", 260, 20, { anim: fa.value }, pre + "asset"); att.script.links.push({ a: a.id, o: "next", b: b.id }); } delete project.tags[pre + "fireAnim"]; }
     }
