@@ -206,7 +206,7 @@
     E.host.className = "host"; E.host.replaceChildren();
     p.tabs.replaceChildren(...centerTabs(), h("span", { class: "sp" }), h("span", { class: "csize", text: "1280 × 720  ·  16:9" }));
     put(E.cbar, h("span", { class: "chip", text: sc.id }), !S.testing && sc.kind === "splash" ? h("button", { class: "tbtn sm", text: "▶ Preview sequence", onclick: () => { if (S.rt) S.rt.previewSplash(); } }) : null,
-      h("span", { class: "hint", text: S.testing ? "Playing: hover and click buttons, drag sliders. Edits are disabled." : sc.kind === "splash" ? "Select a splash in the Hierarchy to see it." : "Click to select, drag to move (Shift = snap to 10), drag the orange corner to resize. x0,y0 is the middle of the screen. Drop images from the Project panel here." }));
+      h("span", { class: "hint", text: S.testing ? "Playing: hover and click buttons, drag sliders. Edits are disabled." : sc.kind === "splash" ? "Select a splash in the Hierarchy to see it." : "Click to select, drag to move (Shift = snap to 10), drag an orange corner to resize. x0,y0 is the middle of the screen. Drop images from the Project panel here." }));
     S.rt = new PRIM.Runtime({ host: E.host, project: S.project, tags: S.testing ? S.tags.fork() : S.tags, mode: S.testing ? "test" : "edit", urls: S.urls, screenId: sc.id, selId: S.selId, onStartGame: startGame, say: t => log(t),
       onSelect: id => { S.selId = id; S.sel = null; renderHier(); renderInspector(); renderProject(); }, onChange: () => renderInspector(), onExit: () => setTesting(false) });
     S.rt.paused = S.paused;
@@ -249,7 +249,7 @@
     if (S.mapId) return dropOnMap(e, a);
     if (!S.rt) return;
     const sc = curScreen(), r = S.rt.stage.getBoundingClientRect(), x = Math.round((e.clientX - r.left) / S.rt.scale), y = Math.round((e.clientY - r.top) / S.rt.scale);
-    if (sc.kind === "splash") addNode("splash", { kind: "image", asset: a.id }); else addNode("image", { asset: a.id, x: Math.max(0, Math.min(1280, x)), y: Math.max(0, Math.min(720, y)) });
+    if (sc.kind === "splash") addNode("splash", { kind: "image", asset: a.id }); else addNode("image", { asset: a.id, x: Math.max(-640, Math.min(640, x - 640)), y: Math.max(-360, Math.min(360, 360 - y)) });
   }
   function selectedNode() { return S.selId && !S.sel ? curScreen().nodes.find(n => n.id === S.selId) : null; }
   function deleteSelected() { if (S.tab === "coder") return coderDelete(); if (S.playerSel || S.tab === "timeline") return; if (S.mapId && S.med && !S.sel) return S.med.deleteSelection(); if (S.sel) return deleteAssetSel(); const n = selectedNode(); if (n) deleteNode(n); }
@@ -268,6 +268,38 @@
         h("button", { class: "tbtn sm", text: "Create ▾", onclick: e => popMenu(e.currentTarget, [{ t: "Folder", fn: newFolder }]) })] : h("button", { class: "tbtn sm", text: "Clear", onclick: () => { S.log = []; renderProject(); renderStatus(); } }));
     renderProjectBody();
   }
+  // ---- multi-selection in the asset explorer (S.sel stays the "primary" item)
+  function multiList() { const m = S.multi; return m && S.sel && m.primary === S.sel && m.items.length > 1 ? m.items : null; }
+  function isPicked(kind, key) { const m = multiList(); return m ? m.some(i => i.kind === kind && i.key === key) : !!(S.sel && S.sel.kind === kind && S.sel.key === key); }
+  function pickSet(items, primary) { const list = items.filter((i, n) => items.findIndex(j => j.kind === i.kind && j.key === i.key) === n); if (!list.length) { S.sel = null; S.multi = null; return; } S.sel = primary || list[list.length - 1]; S.multi = list.length > 1 ? { primary: S.sel, items: list } : null; if (S.multi) S.multi.items = list.map(i => i === primary ? S.sel : i); }
+  function pickedItems() { return multiList() || (S.sel ? [S.sel] : []); }
+  function topLevel(items) { const folders = items.filter(i => i.kind === "folder").map(i => i.key); return items.filter(i => { const path = i.kind === "folder" ? Store.parentOf(i.key) : (assetOf(i.key) || { path: "" }).path; return !folders.some(f => f !== i.key && (path === f || path.startsWith(f + "/"))); }); }
+  function clickPick(e, kind, key) {
+    const cur = { kind, key }, order = S.porder || [], here = order.findIndex(i => i.kind === kind && i.key === key);
+    if (e.shiftKey && S.panchor && here >= 0) { const a = order.findIndex(i => i.kind === S.panchor.kind && i.key === S.panchor.key); if (a >= 0) { const lo = Math.min(a, here), hi = Math.max(a, here); pickSet(order.slice(lo, hi + 1).map(i => ({ kind: i.kind, key: i.key })), cur); return; } }
+    if (e.ctrlKey || e.metaKey) { const items = pickedItems().slice(), at = items.findIndex(i => i.kind === kind && i.key === key); if (at >= 0) items.splice(at, 1); else items.push(cur); S.panchor = cur; pickSet(items, at >= 0 ? items[items.length - 1] : cur); return; }
+    S.panchor = cur; pickSet([cur], cur);
+  }
+  function marquee(e, grid) {
+    if (e.button !== 0 || e.target !== grid) return;
+    const x0 = e.clientX, y0 = e.clientY, base = (e.ctrlKey || e.metaKey || e.shiftKey) ? pickedItems().slice() : [];
+    let box = null, moved = false;
+    const move = ev => {
+      if (!moved && Math.abs(ev.clientX - x0) + Math.abs(ev.clientY - y0) < 5) return; moved = true;
+      if (!box) { box = h("div", { class: "marq" }); document.body.append(box); }
+      const l = Math.min(x0, ev.clientX), t = Math.min(y0, ev.clientY), r = Math.max(x0, ev.clientX), b = Math.max(y0, ev.clientY);
+      box.style.cssText = "left:" + l + "px;top:" + t + "px;width:" + (r - l) + "px;height:" + (b - t) + "px";
+      const hit = [];
+      grid.querySelectorAll(".pit").forEach(el => { const q = el.getBoundingClientRect(), on = q.right > l && q.left < r && q.bottom > t && q.top < b; el.classList.toggle("sel", on || base.some(i => i.kind + ":" + i.key === el.dataset.k)); if (on) { const at = el.dataset.k.indexOf(":"); hit.push({ kind: el.dataset.k.slice(0, at), key: el.dataset.k.slice(at + 1) }); } });
+      S.mhit = hit;
+    };
+    const up = () => {
+      document.removeEventListener("mousemove", move); document.removeEventListener("mouseup", up); if (box) box.remove();
+      if (!moved) return; S.noclick = true; setTimeout(() => { S.noclick = false; }, 0);
+      pickSet(base.concat(S.mhit || []), null); S.panchor = S.sel; renderProjectBody(); renderInspector();
+    };
+    document.addEventListener("mousemove", move); document.addEventListener("mouseup", up);
+  }
   function renderProjectBody() {
     const b = E.proj.body; if (S.btab === "console") {
       b.className = "pbody console"; b.replaceChildren(...(S.log.length ? S.log.slice().reverse().map(l => h("div", { class: "crow " + l.kind }, h("span", { class: "ct", text: l.t.toLocaleTimeString() }), h("span", { text: l.msg }))) : [h("div", { class: "empty", text: "Nothing logged yet." })])); return; }
@@ -284,6 +316,7 @@
     const crumbs = [h("button", { class: "crumb", text: "Assets", onclick: () => { S.folder = ""; S.search = ""; renderProject(); } })]; let acc = "";
     for (const part of S.folder ? S.folder.split("/") : []) { acc = acc ? acc + "/" + part : part; const pth = acc; crumbs.push(h("span", { class: "sepc", text: "›" }), h("button", { class: "crumb", text: part, onclick: () => { S.folder = pth; renderProject(); } })); }
     const cw = S.icon + 18, grid = h("div", { class: "pgrid", style: "--cw:" + cw + "px;--ci:" + S.icon + "px" });
+    S.porder = [...subs.map(f => ({ kind: "folder", key: f })), ...assets.map(a => ({ kind: "asset", key: a.id }))];
     for (const f of subs) grid.append(pItem("folder", f, baseName(f), null));
     for (const a of assets) grid.append(pItem("asset", a.id, a.name, a));
     if (!subs.length && !assets.length) grid.append(h("div", { class: "empty", text: q ? "No assets match “" + S.search + "”." : "This folder is empty. Use Import, or drop files and folders from your computer here." }));
@@ -291,17 +324,18 @@
     content.addEventListener("dragover", e => { if ([...e.dataTransfer.types].includes("Files")) { e.preventDefault(); content.classList.add("dropfiles"); } });
     content.addEventListener("dragleave", e => { if (!content.contains(e.relatedTarget)) content.classList.remove("dropfiles"); });
     content.addEventListener("drop", e => { content.classList.remove("dropfiles"); if ([...e.dataTransfer.types].includes("Files")) { e.preventDefault(); Host.fromDrop(e.dataTransfer).then(items => doIngest(items, "drop")); } });
-    grid.addEventListener("click", e => { if (e.target === grid) { S.sel = null; renderProjectBody(); renderInspector(); } });
+    grid.addEventListener("mousedown", e => marquee(e, grid));
+    grid.addEventListener("click", e => { if (S.noclick) return; if (e.target === grid && !(e.ctrlKey || e.metaKey || e.shiftKey)) { S.sel = null; S.multi = null; renderProjectBody(); renderInspector(); } });
     b.replaceChildren(tree, content);
     if (S.renaming) { const i = b.querySelector(".rename"); if (i) { i.focus(); const d = i.value.lastIndexOf("."); i.setSelectionRange(0, d > 0 && S.renaming.kind === "asset" ? d : i.value.length); } }
   }
   function pItem(kind, key, name, a) {
-    const sel = S.sel && S.sel.kind === kind && S.sel.key === key, renaming = S.renaming && S.renaming.kind === kind && S.renaming.key === key;
+    const sel = isPicked(kind, key), renaming = S.renaming && S.renaming.kind === kind && S.renaming.key === key;
     let icon; if (kind === "folder") icon = ico("folder", "big"); else if (a.type === "image" && S.urls[a.id]) icon = h("img", { class: "thumbimg", src: S.urls[a.id], alt: "", draggable: false }); else if (a.type === "font") icon = h("span", { class: "ico big fontprev", style: "font-family:'prim-font-" + a.id + "',serif", text: "Aa" }); else icon = ico(a.type === "sound" ? "sound" : a.type === "image" ? "image" : a.type === "model" ? "model" : "file", "big");
     const label = renaming ? h("input", { class: "rename", value: kind === "folder" ? baseName(key) : a.name, "aria-label": "New name", onkeydown: e => { if (e.key === "Enter") e.target.blur(); else if (e.key === "Escape") { S.renaming = null; renderProjectBody(); } e.stopPropagation(); }, onblur: e => { if (!S.renaming) return; const v = e.target.value; S.renaming = null; commitRename(kind, key, v); } }) : h("div", { class: "pname", title: name, text: name });
-    const it = h("div", { class: "pit" + (sel ? " sel" : ""), draggable: !renaming, title: kind === "folder" ? key : (a.path ? a.path + "/" : "") + a.name, onclick: e => { e.stopPropagation(); S.sel = { kind, key }; renderProjectBody(); renderInspector(); },
+    const it = h("div", { class: "pit" + (sel ? " sel" : ""), "data-k": kind + ":" + key, draggable: !renaming, title: kind === "folder" ? key : (a.path ? a.path + "/" : "") + a.name, onclick: e => { e.stopPropagation(); clickPick(e, kind, key); renderProjectBody(); renderInspector(); },
       ondblclick: () => { if (kind === "folder") { S.folder = key; S.search = ""; S.sel = null; renderProject(); renderInspector(); } else if (a.type === "sound" && S.urls[a.id]) playSound(a.id); },
-      ondragstart: e => { e.dataTransfer.setData("application/x-prime", JSON.stringify({ kind, key })); e.dataTransfer.effectAllowed = "move"; } }, h("div", { class: "pico" }, icon), label);
+      ondragstart: e => { const ml = multiList(), many = ml && ml.some(i => i.kind === kind && i.key === key); e.dataTransfer.setData("application/x-prime", JSON.stringify(many ? { kind, key, items: topLevel(ml) } : { kind, key })); e.dataTransfer.effectAllowed = "move"; } }, h("div", { class: "pico" }, icon), label);
     if (kind === "folder") { it.addEventListener("dragover", e => { if ([...e.dataTransfer.types].includes("application/x-prime")) { e.preventDefault(); e.stopPropagation(); it.classList.add("drop"); } }); it.addEventListener("dragleave", () => it.classList.remove("drop")); it.addEventListener("drop", e => { it.classList.remove("drop"); e.stopPropagation(); dropOnFolder(e, key); }); }
     return it;
   }
@@ -332,9 +366,12 @@
   }
   function dropOnFolder(e, dest) {
     e.preventDefault(); let d; try { d = JSON.parse(e.dataTransfer.getData("application/x-prime")); } catch (x) { return; } if (!d) return;
+    if (d.items && d.items.length > 1) { for (const it of d.items) dropOne(it, dest); S.multi = null; markDirty(); renderProject(); renderInspector(); return; }
+    dropOne(d, dest); markDirty(); renderProject(); renderInspector();
+  }
+  function dropOne(d, dest) {
     if (d.kind === "asset") { const a = assetOf(d.key); if (!a || a.path === dest) return; a.name = Store.uniqueName(S.project.assets.filter(x => x !== a && x.path === dest).map(x => x.name), a.name); a.path = dest; if (dest) Store.ensureFolder(S.project, dest); log("Moved “" + a.name + "” to Assets" + (dest ? "/" + dest : "")); }
     else if (d.kind === "folder") { const key = d.key; if (dest === key || dest.startsWith(key + "/") || Store.parentOf(key) === dest) return; const np = dest ? dest + "/" + baseName(key) : baseName(key); if (foldersAll().includes(np)) return log("A folder named “" + baseName(key) + "” already exists there.", "warn"); retarget(key, np); S.sel = { kind: "folder", key: np }; log("Moved folder “" + baseName(key) + "”"); }
-    markDirty(); renderProject(); renderInspector();
   }
   function removeAssetCore(a) {
     for (const k in S.project.tags) { const r = S.project.tags[k]; if ((r.type === "asset" || r.type === "font") && r.value === a.id) r.value = r.type === "font" ? "builtin:display" : ""; }
@@ -342,15 +379,19 @@
   }
   let delArm = null;
   function deleteAssetSel() {
-    const s = S.sel; if (!s) return; const key = s.kind + ":" + s.key;
-    if (delArm !== key) { delArm = key; log("Press Delete again to remove “" + baseName(s.key) + "”" + (s.kind === "folder" ? " and everything in it" : "") + ".", "warn"); setTimeout(() => { if (delArm === key) delArm = null; }, 3000); return; }
+    const items = topLevel(pickedItems()); if (!items.length) return; const key = items.map(i => i.kind + ":" + i.key).join("|");
+    if (delArm !== key) { delArm = key; log("Press Delete again to remove " + (items.length > 1 ? items.length + " items" : "“" + baseName(items[0].key) + "”") + (items.some(i => i.kind === "folder") ? " (folders with everything in them)" : "") + ".", "warn"); setTimeout(() => { if (delArm === key) delArm = null; }, 3000); return; }
     delArm = null;
-    if (s.kind === "asset") { const a = assetOf(s.key); if (a) removeAssetCore(a); } else { for (const a of S.project.assets.filter(x => x.path === s.key || x.path.startsWith(s.key + "/"))) removeAssetCore(a); S.project.folders = S.project.folders.filter(f => f !== s.key && !f.startsWith(s.key + "/")); if (S.folder === s.key || S.folder.startsWith(s.key + "/")) S.folder = Store.parentOf(s.key); }
-    S.sel = null; log("Deleted."); S.tags.emit([]); markDirty(); renderProject(); renderInspector(); if (S.rt) { S.rt.urls = S.urls; S.rt.rebuild(); }
+    for (const s of items) {
+      if (s.kind === "asset") { const a = assetOf(s.key); if (a) removeAssetCore(a); }
+      else { for (const a of S.project.assets.filter(x => x.path === s.key || x.path.startsWith(s.key + "/"))) removeAssetCore(a); S.project.folders = S.project.folders.filter(f => f !== s.key && !f.startsWith(s.key + "/")); if (S.folder === s.key || S.folder.startsWith(s.key + "/")) S.folder = Store.parentOf(s.key); }
+    }
+    S.sel = null; S.multi = null; log("Deleted " + (items.length > 1 ? items.length + " items." : "."));
+    S.tags.emit([]); markDirty(); renderProject(); renderInspector(); if (S.rt) { S.rt.urls = S.urls; S.rt.rebuild(); }
   }
 
   // ================================================================ INSPECTOR
-  const GROUP = { x: "Transform", y: "Transform", w: "Transform", h: "Transform", hoverSound: "Audio", clickSound: "Audio", action: "Behaviour", target: "Behaviour", bind: "Behaviour", duration: "Timing", fadeIn: "Timing", fadeInType: "Timing", fadeOut: "Timing", fadeOutType: "Timing" };
+  const GROUP = { x: "Transform", y: "Transform", w: "Transform", h: "Transform", lock: "Transform", hoverSound: "Audio", clickSound: "Audio", action: "Behaviour", target: "Behaviour", bind: "Behaviour", duration: "Timing", fadeIn: "Timing", fadeInType: "Timing", fadeOut: "Timing", fadeOutType: "Timing" };
   const ORDER = ["Transform", "Appearance", "Timing", "Audio", "Behaviour"];
   function foldout(key, title, ...kids) { const open = S.fold[key] !== false; return h("div", { class: "fold" }, h("button", { class: "fh", "aria-expanded": open, onclick: () => { S.fold[key] = !open; renderInspector(); } }, h("span", { class: "tri", text: open ? "▾" : "▸" }), h("span", { text: title })), open ? h("div", { class: "fb" }, ...kids) : null); }
   function renderInspector() {
@@ -380,7 +421,8 @@
     return box;
   }
   function assetInspector() {
-    const s = S.sel, box = h("div", { class: "insp" });
+    const s = S.sel, box = h("div", { class: "insp" }), ml = multiList();
+    if (ml) { const nf = ml.filter(i => i.kind === "folder").length, na = ml.length - nf; box.append(h("div", { class: "ihead" }, ico("folder", "bigico"), h("div", { class: "ititle" }, h("div", { class: "idin ro", text: ml.length + " items selected" }), h("div", { class: "isub", text: na + " file(s), " + nf + " folder(s)" }))), h("div", { class: "note", text: "Drag any of them onto a folder to move them all, or press Delete twice to remove them. Click one item to go back to a single selection." })); return box; }
     if (s.kind === "folder") { const n = S.project.assets.filter(a => a.path === s.key || a.path.startsWith(s.key + "/")).length; box.append(h("div", { class: "ihead" }, ico("folder", "bigico"), h("div", { class: "ititle" }, h("div", { class: "idin ro", text: baseName(s.key) }), h("div", { class: "isub", text: "Folder · Assets/" + s.key }))), h("div", { class: "note", text: n + " file(s) inside. Double-click to open. Drag files onto it to move them. F2 renames, Delete removes." })); return box; }
     const a = assetOf(s.key); if (!a) return box;
     const used = []; for (const k in S.project.tags) { const r = S.project.tags[k]; if ((r.type === "asset" || r.type === "font") && r.value === a.id) used.push(k); }
@@ -405,7 +447,10 @@
       case "number": {
         const step = t.step || 1, dec = step >= 1 ? 0 : Math.min(3, Math.ceil(-Math.log10(step))), ranged = isFinite(t.min) && isFinite(t.max), slider = ranged && !compact && (t.max - t.min) <= 10;
         const inp = h("input", { class: "num", type: "number", step, value: (+S.tags.get(name)).toFixed(dec), "aria-label": label }), sl = slider ? h("input", { type: "range", min: t.min, max: t.max, step, value: S.tags.get(name), "aria-label": label + " slider" }) : null;
-        const commit = v => { if (!isFinite(v)) return; if (ranged) v = Math.max(t.min, Math.min(t.max, v)); v = Math.round(v / step) * step; set(v); inp.value = v.toFixed(dec); if (sl) sl.value = v; };
+        const commit = v => { if (!isFinite(v)) return; if (ranged) v = Math.max(t.min, Math.min(t.max, v)); v = Math.round(v / step) * step;
+          const m = /^(.+)\.(w|h)$/.exec(name), lk = m && S.tags.get(m[1] + ".lock") && S.tags.spec(m[1] + ".w") && S.tags.spec(m[1] + ".h"); let extra = null;   // "keep proportions": the other side follows
+          if (lk) { let rw = +S.tags.get(m[1] + ".w"), rh = +S.tags.get(m[1] + ".h"); if (!rw || !rh) { const el = S.rt && S.rt.els[m[1].split(".")[1]]; if (el) { rw = el.offsetWidth; rh = el.offsetHeight; } } if (rw > 0 && rh > 0) extra = m[2] === "w" ? [m[1] + ".h", Math.round(v * rh / rw)] : [m[1] + ".w", Math.round(v * rw / rh)]; }
+          set(v); inp.value = v.toFixed(dec); if (sl) sl.value = v; if (extra) { const sp = S.tags.spec(extra[0]); S.tags.set(extra[0], Math.max(sp.min, Math.min(sp.max, extra[1]))); if (!compact) setTimeout(renderInspector, 0); } };
         inp.onchange = () => commit(parseFloat(inp.value)); if (sl) sl.oninput = () => commit(+sl.value);
         lab.classList.add("scrub");
         lab.addEventListener("pointerdown", e => { if (e.button !== 0) return; lab.setPointerCapture(e.pointerId); lab._s = { x: e.clientX, v: +S.tags.get(name), per: ranged ? (t.max - t.min) / 400 : step }; });
