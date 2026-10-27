@@ -4,7 +4,7 @@ module.exports = async (p, out) => {
   await p.click('.tile.plus'); await p.waitForSelector('#app'); await p.waitForTimeout(300);
   await p.click('.hrow:has-text("main") >> nth=0'); await p.click('.hrow:has-text("play")'); await p.waitForTimeout(300);
   await p.click('.tab:has-text("Node Coder")'); await p.waitForTimeout(500);
-  const add = async name => { await p.click('button:has-text("Add node")'); await p.click('.pitem:has-text("' + name + '")'); await p.waitForTimeout(250); };
+  const add = async name => { await p.click('button:has-text("Add node")'); const cat = /clicked|starts|key/.test(name) ? 'Events' : /Wait|If|Repeat/.test(name) ? 'Logic' : 'Actions'; await p.click('.pop .pitem:has-text("' + cat + '")'); await p.click('.pop .pitem:has-text("' + name + '") >> nth=-1'); await p.waitForTimeout(250); };
   await add('When clicked'); await add('Change a number by'); await add('Write a message'); await p.waitForTimeout(300);
   await p.screenshot({ path: out + '_c1.png' });
   const dots = await p.evaluate(() => [...document.querySelectorAll('.ncn')].map(c => { const r = c.getBoundingClientRect(); const d = c.querySelector('.ncdot'), i = c.querySelector('.ncin'); const dr = d && d.getBoundingClientRect(), ir = i && i.getBoundingClientRect(); return { t: c.querySelector('.nch').textContent, d: dr && [dr.x + 7, dr.y + 7], i: ir && [ir.x + 7, ir.y + 7] }; }));

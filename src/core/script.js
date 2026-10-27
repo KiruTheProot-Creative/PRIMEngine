@@ -18,9 +18,13 @@
       if (this.dead || !owner.script) return;
       for (const n of owner.script.nodes) {
         if (n.type !== type) continue; if (only && n.id !== only) continue; if ((type === "onKey" || type === "onKeyUp" || type === "onHold") && String(this.T.get(owner.key + ".s." + n.id + ".key") || "").toLowerCase() !== String(arg || "").toLowerCase()) continue;
-        const tok = { key: owner.key, dead: false }; this.runs.push(tok);
-        this.chain(owner, this.link(owner, n.id, "next"), tok).catch(e => this.o.say && this.o.say("Script problem: " + e.message)).then(() => { this.runs = this.runs.filter(r => r !== tok); });
+        this.runOut(owner, n.id, "next");
       }
+    }
+    // start the chain that hangs off one output of a node (used by events with several outputs, like the charge beam)
+    runOut(owner, id, out) {
+      if (this.dead || !owner.script) return; const tok = { key: owner.key, dead: false }; this.runs.push(tok);
+      this.chain(owner, this.link(owner, id, out), tok).catch(e => this.o.say && this.o.say("Script problem: " + e.message)).then(() => { this.runs = this.runs.filter(r => r !== tok); });
     }
     link(owner, id, out) { const l = owner.script.links.find(x => x.a === id && x.o === out); return l ? l.b : null; }
     setTag(name, raw) {
@@ -47,6 +51,7 @@
           case "say": if (this.o.say) this.o.say(this.T.interpolate(String(g("text")))); break;
           case "wait": await sleep((+g("seconds") || 0) * 1000, tok); break;
           case "if": out = this.test(g("tag"), g("op"), g("value")) ? "then" : "else"; break;
+          case "fireProjectile": if (this.o.fire) this.o.fire(owner.key); break;
           case "ifKey": out = this.o.held && this.o.held(String(g("key") || "").toLowerCase()) ? "then" : "else"; break;
           case "repeat": { const body = this.link(owner, n.id, "body"), cnt = Math.min(1000, +g("times") || 0); for (let i = 0; i < cnt && !tok.dead; i++) { await this.chain(owner, body, tok); await sleep(0, tok); } break; }
           case "forever": { const body = this.link(owner, n.id, "body"); while (!tok.dead && !this.dead) { await this.chain(owner, body, tok); await sleep(16, tok); } return; }

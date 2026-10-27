@@ -37,13 +37,25 @@
   function toast(msg, kind) { let t = document.getElementById("toast"); if (!t) { t = h("div", { id: "toast", role: "status" }); document.body.append(t); } t.textContent = msg; t.className = "show " + (kind || ""); clearTimeout(toast.t); toast.t = setTimeout(() => { t.className = ""; }, 4500); }
 
   // ---------------------------------------------------------------- popup menus
-  function closePop() { if (E.pop) { E.pop.remove(); E.pop = null; E.popAnchor = null; } document.querySelectorAll(".mb.open").forEach(b => b.classList.remove("open")); }
-  function popMenu(anchor, items) {
-    closePop(); const r = anchor.getBoundingClientRect();
-    const pop = h("div", { class: "pop", role: "menu" }, items.map(it => it === "-" ? h("div", { class: "sep" }) : h("button", { class: "pitem", role: "menuitem", disabled: !!it.disabled, onclick: () => { closePop(); if (it.fn) it.fn(); } }, h("span", { text: (it.check ? "✓  " : "") + it.t }), it.k ? h("span", { class: "k", text: it.k }) : null)));
-    document.body.append(pop); pop.style.left = Math.max(4, Math.min(r.left, innerWidth - pop.offsetWidth - 4)) + "px"; pop.style.top = r.bottom + "px"; E.pop = pop; E.popAnchor = anchor; anchor.classList.add("open");
+  function closePop() { document.querySelectorAll(".pop").forEach(p => p.remove()); E.pop = null; E.popAnchor = null; document.querySelectorAll(".mb.open").forEach(b => b.classList.remove("open")); }
+  // a menu item with `sub: [...]` opens a second menu beside it (used for the Node Coder categories)
+  function menuEl(items) {
+    const pop = h("div", { class: "pop", role: "menu" });
+    const openSub = (btn, sub) => { if (pop.__sub) { pop.__sub.remove(); pop.__sub = null; } const el = menuEl(sub), r = btn.getBoundingClientRect(); document.body.append(el); el.style.left = Math.min(r.right - 2, innerWidth - el.offsetWidth - 4) + "px"; el.style.top = Math.max(4, Math.min(r.top, innerHeight - el.offsetHeight - 4)) + "px"; pop.__sub = el; };
+    for (const it of items) {
+      if (it === "-") { pop.append(h("div", { class: "sep" })); continue; }
+      const b = h("button", { class: "pitem", role: "menuitem", disabled: !!it.disabled, onclick: e => { if (it.sub) { openSub(e.currentTarget, it.sub); return; } closePop(); if (it.fn) it.fn(); } }, h("span", { text: (it.check ? "✓  " : "") + it.t }), it.sub ? h("span", { class: "k", text: "▸" }) : it.k ? h("span", { class: "k", text: it.k }) : null);
+      b.addEventListener("mouseenter", () => { if (it.sub) openSub(b, it.sub); else if (pop.__sub) { pop.__sub.remove(); pop.__sub = null; } });
+      pop.append(b);
+    }
+    return pop;
   }
-  document.addEventListener("pointerdown", e => { if (E.pop && !E.pop.contains(e.target) && !(E.popAnchor && E.popAnchor.contains(e.target))) closePop(); });
+  function popMenu(anchor, items, at) {
+    closePop(); const r = at ? { left: at.x, bottom: at.y } : anchor.getBoundingClientRect(), pop = menuEl(items);
+    document.body.append(pop); pop.style.left = Math.max(4, Math.min(r.left, innerWidth - pop.offsetWidth - 4)) + "px"; pop.style.top = Math.max(4, Math.min(r.bottom, innerHeight - pop.offsetHeight - 4)) + "px"; E.pop = pop; E.popAnchor = anchor || null; if (anchor) anchor.classList.add("open");
+  }
+  document.addEventListener("pointerdown", e => { if (E.pop && !e.target.closest(".pop") && !(E.popAnchor && E.popAnchor.contains(e.target))) closePop(); });
+  document.addEventListener("pointermove", e => { S.mouse = { x: e.clientX, y: e.clientY }; });
 
   // ================================================================ PROJECT WIZARD
   function renderManager() {
@@ -583,12 +595,12 @@
   // ---- Object editor: the selected object on its own, to turn around and to place the muzzle point and the aim arrow by clicking
   function objectCenter() {
     const p = E.center, att = S.project.player.attachments.find(a => a.id === S.objSel), pre = "player." + att.id + ".", T = S.tags, F = PRIM.FBX, M4 = PRIM.M4, OE = S.oe = S.oe || { yaw: -30, pitch: 15, zoom: 1, tool: "orbit" };
-    const type = T.get(pre + "type"), isW = type === "weapon", aid = T.get(pre + (type === "image" ? "image" : "asset")), mo = F.cache[aid]; if (!isW && ["muzzle", "arrow"].includes(OE.tool)) OE.tool = "orbit";
+    const type = T.get(pre + "type"), isW = type === "weapon", aid = T.get(pre + (type === "image" ? "image" : "asset")), mo = F.cache[aid]; if (!isW && ["muzzle", "arrow", "emitter", "earrow"].includes(OE.tool)) OE.tool = "orbit";
     p.tabs.replaceChildren(...centerTabs(), h("span", { class: "sp" }), h("span", { class: "csize", text: "object editor" }));
     const tb = (t, l, on, fn) => h("button", { class: "tbtn sm" + (on ? " on" : ""), text: l, onclick: fn }), tool = (k, l) => tb(k, l, OE.tool === k, () => { OE.tool = k; renderCenter(); }), view = (l, y, pt) => tb(l, l, false, () => { OE.yaw = y; OE.pitch = pt; });
-    const hints = { orbit: "Drag to turn the object around, scroll to zoom.", pivot: "Click or drag: the colored cross is the pivot (origin) of this object. It turns, scales and sits where you put it.", muzzle: "Click or drag on the object: the yellow cross (where shots leave the weapon) follows your mouse.", arrow: "Drag: the red arrow points to your mouse, as seen in this view. Switch between Front / Side / Top to aim it in every direction." };
-    put(E.cbar, h("span", { class: "chip", text: T.get(pre + "name") || att.id }), tb("pv", "◀ Player view", false, () => { S.objView = false; renderCenter(); }), tool("orbit", "Look around"), tool("pivot", "Set pivot"), isW ? [tool("muzzle", "Set muzzle point"), tool("arrow", "Aim arrow")] : null, tb("pc", "Pivot to middle", false, () => { const b = mo && mo.bounds; if (b) T.setMany({ [pre + "pivotX"]: +((b.lo[0] + b.hi[0]) / 2).toFixed(1), [pre + "pivotY"]: +((b.lo[1] + b.hi[1]) / 2).toFixed(1), [pre + "pivotZ"]: +((b.lo[2] + b.hi[2]) / 2).toFixed(1) }); renderInspector(); }), tb("po", "Pivot to origin", false, () => { T.setMany({ [pre + "pivotX"]: 0, [pre + "pivotY"]: 0, [pre + "pivotZ"]: 0 }); renderInspector(); }), view("Front", 0, 0), view("Side", 90, 0), view("Top", 0, 89),
-      isW ? tb("fw", "Arrow forward", false, () => { T.setMany({ [pre + "arrowYaw"]: 0, [pre + "arrowPitch"]: 0 }); }) : null, h("span", { class: "hint", text: hints[OE.tool] }));
+    const hints = { orbit: "Drag to turn the object around, scroll to zoom.", pivot: "Click or drag: the colored cross is the pivot (origin) of this object. It turns, scales and sits where you put it.", muzzle: "Click or drag on the object: the yellow cross (where shots leave the weapon) follows your mouse.", arrow: "Drag: the red arrow points to your mouse, as seen in this view. Switch between Front / Side / Top to aim it in every direction.", emitter: "Click or drag on the object: the cyan cross is where projectiles start (the projectile emitter).", earrow: "Drag: the cyan arrow is the direction projectiles fly, as seen in this view. Switch between Front / Side / Top to aim it in every direction." };
+    put(E.cbar, h("span", { class: "chip", text: T.get(pre + "name") || att.id }), tb("pv", "◀ Player view", false, () => { S.objView = false; renderCenter(); }), tool("orbit", "Look around"), tool("pivot", "Set pivot"), isW ? [tool("muzzle", "Set muzzle point"), tool("arrow", "Aim arrow"), tool("emitter", "Set projectile emitter"), tool("earrow", "Aim emitter arrow")] : null, tb("pc", "Pivot to middle", false, () => { const b = mo && mo.bounds; if (b) T.setMany({ [pre + "pivotX"]: +((b.lo[0] + b.hi[0]) / 2).toFixed(1), [pre + "pivotY"]: +((b.lo[1] + b.hi[1]) / 2).toFixed(1), [pre + "pivotZ"]: +((b.lo[2] + b.hi[2]) / 2).toFixed(1) }); renderInspector(); }), tb("po", "Pivot to origin", false, () => { T.setMany({ [pre + "pivotX"]: 0, [pre + "pivotY"]: 0, [pre + "pivotZ"]: 0 }); renderInspector(); }), view("Front", 0, 0), view("Side", 90, 0), view("Top", 0, 89),
+      isW ? tb("fw", "Arrow forward", false, () => { T.setMany({ [pre + "arrowYaw"]: 0, [pre + "arrowPitch"]: 0 }); }) : null, isW ? tb("em", "Emitter = muzzle", false, () => { T.setMany({ [pre + "emitX"]: g("muzzleX"), [pre + "emitY"]: g("muzzleY"), [pre + "emitZ"]: g("muzzleZ"), [pre + "emitYaw"]: g("arrowYaw"), [pre + "emitPitch"]: g("arrowPitch") }); }) : null, h("span", { class: "hint", text: hints[OE.tool] }));
     const cv = h("canvas", { class: "v3cv", style: "cursor:" + (OE.tool === "orbit" ? "grab" : "crosshair") }); E.host.className = "host maphost"; E.host.replaceChildren(cv);
     if (!mo) { E.host.append(h("div", { class: "v3err", style: "color:var(--muted)", text: aid ? "Loading…" : "Choose a model or image for this object on the right." })); if (aid) (type === "image" ? F.loadImage : F.load)(aid, S.urls[aid]).then(m => { if (m && S.objView && S.tab === "player") renderCenter(); }); return; }
     const v = new PRIM.R3D.View(cv); if (!v.ok) return; v.sky = [0.12, 0.14, 0.19]; v.fov = 0.8; const gm = v.loadModel(mo), D = 34, g = k => +T.get(pre + k) || 0;
@@ -598,7 +610,11 @@
       for (const [d, c] of ax) o.push({ a: O, b: M4.add(O, M4.dir(M4.mul(M4.rotX(OE.pitch), M4.rotY(OE.yaw)), ...d.map(q => q * 3))), c });
       if (isW) { const mp = M4.point(fr.M, g("muzzleX"), g("muzzleY"), g("muzzleZ")), ay = g("arrowYaw") * Math.PI / 180, ap = g("arrowPitch") * Math.PI / 180, ad = M4.norm(M4.dir(fr.M, -Math.cos(ap) * Math.sin(ay), Math.sin(ap), -Math.cos(ap) * Math.cos(ay))), tip = M4.add(mp, ad.map(q => q * 9)), side = M4.norm(M4.cross(ad, [0.3, 0.9, 0.2])), red = [1, 0.25, 0.2], yel = [1, 0.9, 0.2];
         o.push({ a: mp, b: tip, c: red }, { a: tip, b: M4.add(tip, M4.add(ad.map(q => -q * 1.8), side.map(q => q * 1))), c: red }, { a: tip, b: M4.add(tip, M4.sub(ad.map(q => -q * 1.8), side.map(q => q * 1))), c: red });
-        for (const d of [[1, 0, 0], [0, 1, 0], [0, 0, 1]]) o.push({ a: M4.sub(mp, d.map(q => q * 1.1)), b: M4.add(mp, d.map(q => q * 1.1)), c: yel }); }
+        for (const d of [[1, 0, 0], [0, 1, 0], [0, 0, 1]]) o.push({ a: M4.sub(mp, d.map(q => q * 1.1)), b: M4.add(mp, d.map(q => q * 1.1)), c: yel });
+        if (T.get(pre + "projType") !== "none") {   // the projectile emitter: a cyan point with its own arrow
+          const ep = M4.point(fr.M, g("emitX"), g("emitY"), g("emitZ")), ey = g("emitYaw") * Math.PI / 180, epi = g("emitPitch") * Math.PI / 180, ed = M4.norm(M4.dir(fr.M, -Math.cos(epi) * Math.sin(ey), Math.sin(epi), -Math.cos(epi) * Math.cos(ey))), et = M4.add(ep, ed.map(q => q * 9)), es = M4.norm(M4.cross(ed, [0.3, 0.9, 0.2])), cy = [0.2, 0.9, 1];
+          o.push({ a: ep, b: et, c: cy }, { a: et, b: M4.add(et, M4.add(ed.map(q => -q * 1.8), es.map(q => q * 1))), c: cy }, { a: et, b: M4.add(et, M4.sub(ed.map(q => -q * 1.8), es.map(q => q * 1))), c: cy });
+          for (const d of [[1, 0, 0], [0, 1, 0], [0, 0, 1]]) o.push({ a: M4.sub(ep, d.map(q => q * 1.1)), b: M4.add(ep, d.map(q => q * 1.1)), c: cy }); } }
       return o; };
     let raf = 0; const loop = () => { raf = requestAnimationFrame(loop); const fr = frame(); v.draw(); v.drawViewmodel([{ gm, pose: fr.pose, M: fr.M }], segs(fr)); }; raf = requestAnimationFrame(loop);
     // mouse -> ray in camera space -> point on the object (or on the plane through its middle when it misses)
@@ -610,13 +626,14 @@
       if (best < Infinity) return d.map(q => q * best); return d.map(q => q * (D / -d[2])); };
     const apply = e => {
       const fr = frame(), d = ray(e);
-      if (OE.tool === "muzzle") { const m = toModel(fr, surface(fr, d)).map(x => Math.round(x * 10) / 10); T.setMany({ [pre + "muzzleX"]: m[0], [pre + "muzzleY"]: m[1], [pre + "muzzleZ"]: m[2] }); }
+      if (OE.tool === "muzzle" || OE.tool === "emitter") { const nm = OE.tool === "muzzle" ? "muzzle" : "emit", m = toModel(fr, surface(fr, d)).map(x => Math.round(x * 10) / 10); T.setMany({ [pre + nm + "X"]: m[0], [pre + nm + "Y"]: m[1], [pre + nm + "Z"]: m[2] }); }
       else if (OE.tool === "pivot") { const m = toModel(fr, surface(fr, d)).map(x => Math.round(x * 10) / 10); T.setMany({ [pre + "pivotX"]: m[0], [pre + "pivotY"]: m[1], [pre + "pivotZ"]: m[2] }); }
-      else if (OE.tool === "arrow") {
-        const mp = M4.point(fr.M, g("muzzleX"), g("muzzleY"), g("muzzleZ")), pc = d.map(q => q * (mp[2] / d[2])), vx = pc[0] - mp[0], vy = pc[1] - mp[1], l = Math.hypot(vx, vy); if (l < 1e-4) return;
-        const ay = g("arrowYaw") * Math.PI / 180, ap = g("arrowPitch") * Math.PI / 180, cur = M4.norm(M4.dir(fr.M, -Math.cos(ap) * Math.sin(ay), Math.sin(ap), -Math.cos(ap) * Math.cos(ay)));
+      else if (OE.tool === "arrow" || OE.tool === "earrow") {
+        const E_ = OE.tool === "arrow", pn = E_ ? "muzzle" : "emit", yk = E_ ? "arrowYaw" : "emitYaw", pk = E_ ? "arrowPitch" : "emitPitch";
+        const mp = M4.point(fr.M, g(pn + "X"), g(pn + "Y"), g(pn + "Z")), pc = d.map(q => q * (mp[2] / d[2])), vx = pc[0] - mp[0], vy = pc[1] - mp[1], l = Math.hypot(vx, vy); if (l < 1e-4) return;
+        const ay = g(yk) * Math.PI / 180, ap = g(pk) * Math.PI / 180, cur = M4.norm(M4.dir(fr.M, -Math.cos(ap) * Math.sin(ay), Math.sin(ap), -Math.cos(ap) * Math.cos(ay)));
         let cz = cur[2], s = Math.sqrt(Math.max(0, 1 - cz * cz)); if (s < 0.2) { cz = 0; s = 1; }
-        const dm = M4.norm(M4.dir(fr.Rinv, vx / l * s, vy / l * s, cz)); T.setMany({ [pre + "arrowYaw"]: Math.round(Math.atan2(-dm[0], -dm[2]) * 1800 / Math.PI) / 10, [pre + "arrowPitch"]: Math.round(Math.asin(Math.max(-1, Math.min(1, dm[1]))) * 1800 / Math.PI) / 10 });
+        const dm = M4.norm(M4.dir(fr.Rinv, vx / l * s, vy / l * s, cz)); T.setMany({ [pre + yk]: Math.round(Math.atan2(-dm[0], -dm[2]) * 1800 / Math.PI) / 10, [pre + pk]: Math.round(Math.asin(Math.max(-1, Math.min(1, dm[1]))) * 1800 / Math.PI) / 10 });
       }
     };
     let drag = null; cv.addEventListener("pointerdown", e => { cv.setPointerCapture(e.pointerId); drag = { x: e.clientX, y: e.clientY }; if (OE.tool !== "orbit") apply(e); });
@@ -653,7 +670,7 @@
   function selectedObjectEditor() {
     const att = S.project.player.attachments.find(a => a.id === S.objSel); if (!att) return null; const pre = "player." + att.id + ".", T = S.tags, ty = T.get(pre + "type");
     return foldout("pl:obj", "Selected: " + (T.get(pre + "name") || att.id), ...Schema.ATTACH.filter(pr => Schema.shown(T, pre, pr)).map(pr => field(pre + pr.k)),
-      h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: "Open Node Coder", onclick: () => { S.coderT = { kind: "att", id: att.id }; setTab("coder"); } }), ty === "weapon" ? h("button", { class: "btn sm", text: "Edit muzzle & arrow", onclick: () => { S.objView = true; renderCenter(); } }) : null),
+      h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: "Open Node Coder", onclick: () => { S.coderT = { kind: "att", id: att.id }; setTab("coder"); } }), ty === "weapon" ? h("button", { class: "btn sm", text: "Edit muzzle, arrow & emitter", onclick: () => { S.objView = true; renderCenter(); } }) : null),
       h("div", { class: "note", text: ty === "weapon" ? "A weapon turns its arrow toward whatever the crosshair is aiming at. Place the muzzle point and the arrow in the object editor." : "This object stays fixed to the camera." }));
   }
   // ================================================================ NODE CODER (scripts made of connected nodes, one script per object)
@@ -669,7 +686,7 @@
   function ncSummary(tg, n) {
     const T = S.tags, g = k => T.get(Schema.snodeKey(tg.key, n.id, k)), asset = id => { const a = S.project.assets.find(x => x.id === id); return a ? a.name : "(none)"; };
     const kl = v => { const o = Schema.KEYS.find(x => x[0] === String(v).toLowerCase()); return o ? o[1] : v; };
-    switch (n.type) { case "onKey": case "onKeyUp": case "ifKey": return kl(g("key")); case "onHold": return kl(g("key")) + " · every " + g("interval") + " s"; case "setTag": return (g("tag") || "(pick a tag)") + " = " + g("value"); case "changeTag": return (g("tag") || "(pick a tag)") + " " + (+g("amount") >= 0 ? "+ " : "− ") + Math.abs(+g("amount"));
+    switch (n.type) { case "onCharge": return "hold " + kl(g("key")) + " to charge"; case "fireProjectile": return "uses the weapon’s Projectile settings"; case "onKey": case "onKeyUp": case "ifKey": return kl(g("key")); case "onHold": return kl(g("key")) + " · every " + g("interval") + " s"; case "setTag": return (g("tag") || "(pick a tag)") + " = " + g("value"); case "changeTag": return (g("tag") || "(pick a tag)") + " " + (+g("amount") >= 0 ? "+ " : "− ") + Math.abs(+g("amount"));
       case "playSound": return asset(g("sound")); case "playAnim": return (g("anim") || "(pick one)") + (g("loop") ? " · loops" : ""); case "gotoScreen": return g("screen") || "(pick a screen)"; case "say": return "“" + g("text") + "”";
       case "wait": return g("seconds") + " s"; case "if": return (g("tag") || "(pick a tag)") + " " + g("op") + " " + g("value"); case "repeat": return g("times") + " times"; default: return ""; }
   }
@@ -686,8 +703,9 @@
       if (base && !ev) { const o = Schema.SNODES[base.type].outs[0]; if (!sc.links.some(l => l.a === base.id && l.o === o)) sc.links.push({ a: base.id, o, b: node.id }); }
       S.cnode = node.id; S.clink = null; markDirty(); S.tags.emit([]); renderInspector(); draw();
     };
-    const menu = []; for (const [cat, label] of Object.entries(Schema.SCAT)) { menu.push({ t: label, disabled: true }); for (const k of allowed) if (Schema.SNODES[k].cat === cat) menu.push({ t: "   " + Schema.SNODES[k].label, fn: () => add(k) }); menu.push("-"); } menu.pop();
-    put(E.cbar, h("span", { class: "chip", text: tg.what + " · " + tg.name }), h("button", { class: "tbtn sm", text: "+ Add node ▾", onclick: e => popMenu(e.currentTarget, menu) }), h("button", { class: "tbtn sm", text: "Delete selected", onclick: () => coderDelete() }),
+    const menu = []; for (const [cat, label] of Object.entries(Schema.SCAT)) { const subs = allowed.filter(k => Schema.SNODES[k].cat === cat).map(k => ({ t: Schema.SNODES[k].label, fn: () => add(k) })); if (subs.length) menu.push({ t: label, sub: subs }); }
+    S.coderMenu = menu;
+    put(E.cbar, h("span", { class: "chip", text: tg.what + " · " + tg.name }), h("button", { class: "tbtn sm", text: "+ Add node ▾ (Shift+A)", onclick: e => popMenu(e.currentTarget, menu) }), h("button", { class: "tbtn sm", text: "Delete selected", onclick: () => coderDelete() }),
       h("span", { class: "hint", text: "Drag a node by its title · drag from a node's round dot to another node's left dot to connect · drag the background to move around · Delete removes the selected node or line" }));
     const world = h("div", { class: "ncworld" }), svg = document.createElementNS(ns, "svg"); svg.setAttribute("class", "nclinks"); const view = h("div", { class: "nc", tabindex: "0" }, world);
     E.host.replaceChildren(view);
@@ -872,6 +890,7 @@
     else if (typing) return;
     else if (document.querySelector(".p3layer,.play-layer")) return;
     else if (e.key === "F2") { e.preventDefault(); startRename(); }
+    else if (e.shiftKey && !mod && e.key.toLowerCase() === "a" && S.tab === "coder" && S.coderMenu && S.coderMenu.length) { e.preventDefault(); const m = S.mouse || { x: 300, y: 200 }; popMenu(null, S.coderMenu, { x: m.x, y: m.y }); }
     else if (e.key === "Delete" || e.key === "Backspace") { if (document.querySelector(".play-layer")) return; e.preventDefault(); deleteSelected(); }
     else if (mod && e.key.toLowerCase() === "d") { e.preventDefault(); duplicateSelected(); }
   });
