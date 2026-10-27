@@ -130,6 +130,7 @@ body.in-editor { overflow:hidden; }
 /* ---------- player / play ---------- */
 .p3layer { position:absolute; inset:0; z-index:60; } .play-layer.p3layer { position:fixed; z-index:100; } .p3root { position:absolute; inset:0; background:#000; overflow:hidden; } .p3cv { cursor:none; }
 .p3x { position:absolute; left:50%; top:50%; width:0; height:0; pointer-events:none; } .p3hud { position:absolute; inset:0; pointer-events:none; }
+.wehint { position:absolute; left:10px; bottom:8px; font:13px "Share Tech Mono",monospace; color:#7df3ff; text-shadow:0 1px 2px #000; pointer-events:none; }
 .objtabs { display:flex; gap:4px; margin-bottom:6px; }
 .p3leave { position:absolute; top:14px; right:14px; z-index:5; padding:8px 14px; background:#1b232d; color:#e6f0fa; border:1px solid #5a6b7d; border-radius:4px; font-size:14px; cursor:pointer; } .p3leave:hover { background:#2a3644; }
 .p3msg { position:absolute; inset:0; display:grid; place-items:center; text-align:center; padding:20px; background:rgba(0,0,0,.45); color:#e6f0fa; font-size:15px; cursor:pointer; letter-spacing:.04em; }
@@ -179,6 +180,7 @@ body.in-editor { overflow:hidden; }
 <script src="src/core/runtime.js"></script>
 <script src="src/core/play3d.js"></script>
 <script src="src/studio/mapeditor.js"></script>
+<script src="src/studio/walleditor.js"></script>
 <script src="src/studio/studio.js"></script>
 </body>
 </html>

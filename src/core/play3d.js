@@ -23,13 +23,13 @@
       this.hudRt = new PRIM.Runtime({ host: this.hudHost, project: this.project, tags: T, mode: "hud", urls: this.urls, screenId: T.get("player.hud") });
       this.unsub = T.on(() => { this.drawCross(); if (this.view && !this.pendingRb) { this.pendingRb = true; setTimeout(() => { this.pendingRb = false; if (!this.dead && this.view) { if (this.map) { this.view.rebuild(); this.walls = R3D.walls(this.map, T); } this.syncAtts(); } }, 80); } });
       this.drawCross(); this.gpu = {}; this.atts = [];
-      this.sh = this.mode === "play" ? new PRIM.Script.Host({ tags: T, held: k => !!this.keys[k], isState: s => this.isState(s), orb: (k, c, a) => this.orbCmd(k, c, a), fire: key => this.fireProj(this.atts.find(a => "player." + a.id === key)), sfx: (id, v) => this.sfx(id, v), playAnim: (k, n, l) => this.playAnim(k, n, l), say: t => { if (this.o.say) this.o.say(t); else console.log(t); } }) : null;
+      this.sh = this.mode === "play" ? new PRIM.Script.Host({ tags: T, held: k => !!this.keys[k], isState: s => this.isState(s), orb: (k, c, a) => this.orbCmd(k, c, a), fire: key => this.fireProj(this.atts.find(a => "player." + a.id === key)), sfx: (id, v) => this.sfx(id, v), loop: (id, v) => this.loopSfx(id, v), stopLoop: id => this.stopLoops(id), playAnim: (k, n, l) => this.playAnim(k, n, l), say: t => { if (this.o.say) this.o.say(t); else console.log(t); } }) : null;
       this.syncAtts(); this.trigger("onStart");
       if (this.mode === "play") this.bind(); else { this.msg.style.display = "none"; this.cv.style.cursor = "default"; }
       this.last = performance.now(); this.raf = requestAnimationFrame(t => this.frame(t));
     }
     destroy() {
-      this.dead = true; if (this.sh) this.sh.stopAll(); cancelAnimationFrame(this.raf); this.unsub(); if (this.hudRt) this.hudRt.destroy(); if (this.unbind) this.unbind(); if (document.pointerLockElement === this.cv) document.exitPointerLock();
+      this.dead = true; this.stopLoops(""); if (this.sh) this.sh.stopAll(); cancelAnimationFrame(this.raf); this.unsub(); if (this.hudRt) this.hudRt.destroy(); if (this.unbind) this.unbind(); if (document.pointerLockElement === this.cv) document.exitPointerLock();
       if (this.view) { const e = this.view.gl.getExtension("WEBGL_lose_context"); if (e) e.loseContext(); } this.root.remove();
     }
     // ---- input
@@ -178,6 +178,8 @@
       if (!this.sh) return; const cur = this.curWeaponId();
       for (const a of this.project.player.attachments) { if (!a.script) continue; if (this.T.get("player." + a.id + ".type") === "weapon" && a.id !== cur) continue; this.sh.trigger({ key: "player." + a.id, script: a.script }, type, arg); }
     }
+    loopSfx(id, vol) { const u = this.urls[id]; if (!u) return; this.loops = this.loops || {}; const T = this.T, v = Math.max(0, Math.min(1, (+T.get("audio.master") || 0) * (+T.get("audio.sfx") || 0) * (isNaN(vol) ? 1 : vol))); if (this.loops[id]) { this.loops[id].volume = v; return; } const a = new Audio(u); a.loop = true; a.volume = v; this.loops[id] = a; a.play().catch(() => {}); }
+    stopLoops(id) { const L = this.loops || {}; for (const k of Object.keys(L)) if (!id || k === id) { L[k].pause(); delete L[k]; } }
     sfx(id, vol) { const u = this.urls[id]; if (!u) return; const a = new Audio(u), T = this.T; a.volume = Math.max(0, Math.min(1, (+T.get("audio.master") || 0) * (+T.get("audio.sfx") || 0) * (isNaN(vol) ? 1 : vol))); a.play().catch(() => {}); }
     playAnim(key, name, loop) { const at = this.atts.find(a => "player." + a.id === key); if (!at) return; if (!name) { if (loop) at.loopAnim = null; return; } if (!at.model.anims[name]) return; if (loop) at.loopAnim = name; else at.fire = name; at.t = 0; }
     fire() { this.trigger("onClick"); }

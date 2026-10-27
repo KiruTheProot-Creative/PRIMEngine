@@ -156,7 +156,7 @@
   function setTesting(v) { setTab(v ? "game" : "edit"); }
   function leaveSpecial() { S.playerSel = false; if (["player", "timeline", "fly", "coder"].includes(S.tab)) { S.tab = "edit"; S.testing = false; return true; } return false; }
   function centerTabs() {
-    const items = S.mapId && curMap() ? [["edit", "Map"], ["fly", "Fly Editor"]] : [["edit", "Scene"]]; items.push(["game", "Game"], ["player", "Player Editor"], ["timeline", "Timeline"], ["coder", "Node Coder"]);
+    const items = S.mapId && curMap() ? [["edit", "Map"], ["fly", "Fly Editor"]] : [["edit", "Scene"]]; items.push(["game", "Game"], ["player", "Player Editor"], ["walls", "Wall Editor"], ["timeline", "Timeline"], ["coder", "Node Coder"]);
     return items.map(([k, l]) => h("button", { class: "tab" + (S.tab === k ? " sel" : ""), text: l, onclick: () => setTab(k) }));
   }
 
@@ -213,7 +213,7 @@
   function renderCenter() {
     const p = E.center; killMapViews(); if (S.rt) { S.rt.destroy(); S.rt = null; }
     if (S.tab === "fly" && !S.mapId) S.tab = "edit"; S.testing = S.tab === "game";
-    if (S.tab === "player") return S.objView && S.objSel && S.project.player.attachments.some(a => a.id === S.objSel) ? objectCenter() : playerCenter(); if (S.tab === "timeline") return timelineCenter(); if (S.tab === "coder") return coderCenter(); if (S.mapId && curMap() && S.tab !== "game") return mapCenter();
+    if (S.tab === "player") return S.objView && S.objSel && S.project.player.attachments.some(a => a.id === S.objSel) ? objectCenter() : playerCenter(); if (S.tab === "walls") return wallCenter(); if (S.tab === "timeline") return timelineCenter(); if (S.tab === "coder") return coderCenter(); if (S.mapId && curMap() && S.tab !== "game") return mapCenter();
     const sc = S.testing && S.mapId ? (screens().find(x => x.id === S.tags.get("project.startScreen")) || screens()[0]) : curScreen();
     E.host.className = "host"; E.host.replaceChildren();
     p.tabs.replaceChildren(...centerTabs(), h("span", { class: "sp" }), h("span", { class: "csize", text: "1280 × 720  ·  16:9" }));
@@ -412,6 +412,7 @@
   }
   function propsBody() {
     if (S.fsel) return folderInspector();
+    if (S.tab === "walls") return wallInspector();
     if (S.playerSel) return playerInspector(); if (S.tab === "timeline") return timelineInspector(); if (S.tab === "coder") return coderInspector();
     if (S.mapId && curMap()) return mapInspector();
     const sc = curScreen(), node = selectedNode(), box = h("div", { class: "insp" });
@@ -521,7 +522,7 @@
 
   // ================================================================ MAPS (DOOM-style editor + 3D fly view)
   const curMap = () => S.project.maps.find(m => m.id === S.mapId);
-  function killMapViews() { if (S.med) { S.med.destroy(); S.med = null; } if (S.v3) { S.v3.dispose(); S.v3 = null; } if (S.p3) { S.p3.destroy(); S.p3 = null; } if (S.tlv) { S.tlv.destroy(); S.tlv = null; } if (S.coderStop) { S.coderStop(); S.coderStop = null; } if (S.oev) { S.oev.destroy(); S.oev = null; } }
+  function killMapViews() { if (S.med) { S.med.destroy(); S.med = null; } if (S.v3) { S.v3.dispose(); S.v3 = null; } if (S.p3) { S.p3.destroy(); S.p3 = null; } if (S.tlv) { S.tlv.destroy(); S.tlv = null; } if (S.coderStop) { S.coderStop(); S.coderStop = null; } if (S.oev) { S.oev.destroy(); S.oev = null; } if (S.wed) { S.wed.destroy(); S.wed = null; } }
   function selectMap(id, sel) { S.fsel = null; const was = S.mapId, tc = (S.playerSel || S.tab === "timeline") ? (S.tab = "edit", S.testing = false, true) : false; S.playerSel = false; S.mapId = id; S.selId = null; S.sel = null; S.msel = sel || null; renderHier(); renderInspector(); renderProject(); if (was !== id || !S.med || tc) renderCenter(); else S.med.select(S.msel, true); }
   function openNewMap() {
     const ov = h("div", { class: "modal" }), close = () => ov.remove();
@@ -701,7 +702,7 @@
     const T = S.tags, g = k => T.get(Schema.snodeKey(tg.key, n.id, k)), asset = id => { const a = S.project.assets.find(x => x.id === id); return a ? a.name : "(none)"; };
     const kl = v => { const o = Schema.KEYS.find(x => x[0] === String(v).toLowerCase()); return o ? o[1] : v; };
     switch (n.type) { case "chargeShow": return "size " + g("size") + " · " + g("color"); case "chargeGrow": return "to size " + g("size") + (+g("seconds") > 0 ? " over " + g("seconds") + " s" : " as it charges"); case "onState": case "ifState": return (Schema.STATES.find(x => x[0] === g("state")) || ["", g("state")])[1]; case "onCharge": return "hold " + kl(g("key")) + " to charge"; case "fireProjectile": return "uses the weapon’s Projectile settings"; case "onKey": case "onKeyUp": case "ifKey": return kl(g("key")); case "onHold": return kl(g("key")) + " · every " + g("interval") + " s"; case "setTag": return (g("tag") || "(pick a tag)") + " = " + g("value"); case "changeTag": return (g("tag") || "(pick a tag)") + " " + (+g("amount") >= 0 ? "+ " : "− ") + Math.abs(+g("amount"));
-      case "playSound": return asset(g("sound")); case "playAnim": return (g("anim") || "(pick one)") + (g("loop") ? " · loops" : ""); case "gotoScreen": return g("screen") || "(pick a screen)"; case "say": return "“" + g("text") + "”";
+      case "playSound": case "loopSound": return asset(g("sound")); case "stopLoop": return g("sound") ? asset(g("sound")) : "all looping sounds"; case "playAnim": return (g("anim") || "(pick one)") + (g("loop") ? " · loops" : ""); case "gotoScreen": return g("screen") || "(pick a screen)"; case "say": return "“" + g("text") + "”";
       case "wait": return g("seconds") + " s"; case "if": return (g("tag") || "(pick a tag)") + " " + g("op") + " " + g("value"); case "repeat": return g("times") + " times"; default: return ""; }
   }
   function coderCenter() {
@@ -897,6 +898,54 @@
     else { S.tags.set(m.id + "." + hit.id + "." + (e.shiftKey ? "ceilTex" : "floorTex"), a.id); S.med.select({ kind: "sector", id: hit.id }); log((e.shiftKey ? "Ceiling" : "Floor") + " texture set to " + a.name); }
     renderInspector();
   }
+  // ================================================================ WALL EDITOR (wall types: small meshes that fill a 1.5 m panel)
+  function wallLayersBox(m, v) {
+    const T = S.tags, key = m.id + "." + v.id + ".rows", walls = S.project.walls || [], raw = String(T.get(key) || ""), rows = raw ? raw.split(",").map(x => x.trim()) : [];
+    const set = arr => { T.set(key, arr.join(",")); renderInspector(); markDirty(); };
+    const sec = m.sectors.find(s => s.v.includes(v.id));
+    return foldout("mwl", "Wall layers (custom wall types)",
+      h("div", { class: "note", text: "Each layer is one row of 1.5 m panels, from the floor up. Make wall types in the Wall Editor tab. A layer left on “plain” shows the normal textured wall." }),
+      ...rows.map((id, i) => h("div", { class: "fld" }, h("label", { class: "flab" }, h("span", { text: "Layer " + (i + 1) + (i === 0 ? " (bottom)" : "") })), h("div", { class: "fctl" }, h("select", { onchange: e => { const a = rows.slice(); a[i] = e.target.value; set(a); } }, h("option", { value: "", text: "plain wall" }), ...walls.map(w => h("option", { value: w.id, text: w.name, selected: w.id === id })))))),
+      h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: "+ Add layer", onclick: () => set(rows.concat([walls[0] ? walls[0].id : ""])) }), rows.length ? h("button", { class: "btn sm", text: "− Remove top layer", onclick: () => set(rows.slice(0, -1)) }) : null,
+        sec && rows.length ? h("button", { class: "btn sm", text: "Copy to the whole room", onclick: () => { for (const id of sec.v) T.set(m.id + "." + id + ".rows", raw); renderInspector(); markDirty(); } }) : null),
+      field(m.id + "." + v.id + ".rowsRepeat"));
+  }
+  function wallCenter() {
+    const p = E.center, P = S.project, walls = P.walls = P.walls || [], WM = PRIM.WallMesh;
+    p.tabs.replaceChildren(...centerTabs(), h("span", { class: "sp" }), h("span", { class: "csize", text: "wall editor · one panel = 1.5 m (3 × 3 tiles)" })); E.host.className = "host maphost";
+    const w = walls.find(x => x.id === S.wallSel) || walls[0]; S.wallSel = w ? w.id : null;
+    const tb = (l, on, fn, title) => h("button", { class: "tbtn sm" + (on ? " on" : ""), text: l, title: title || "", onclick: fn });
+    const newWall = () => { const nw = WM.create(P, "Wall " + (walls.length + 1)); S.wallSel = nw.id; markDirty(); renderCenter(); renderInspector(); log("Created wall type “" + nw.name + "”"); };
+    if (!w) { put(E.cbar, tb("+ New wall", false, newWall), h("span", { class: "hint", text: "Wall types are small 3D meshes that fill a 1.5 m panel. Use them on a wall in the Map view (Wall layers)." })); E.host.replaceChildren(h("div", { class: "v3err", style: "color:var(--muted);text-align:center;padding:20px", text: "No wall types yet. Click “+ New wall”." })); return; }
+    const hintEl = h("div", { class: "wehint" }); let ed = null;
+    const hints = { select: "Click a face (or drag a box) to select. Shift = add. Right mouse = orbit, wheel = zoom, Shift + right = pan.", move: "Drag the selection. Press X / Y / Z to lock an axis. Shift = no snapping (snaps to 4 units).", extrude: "Drag: pulls the selected faces out of (or into) the wall.", inset: "Drag sideways: shrinks the selected faces and adds a frame around them." };
+    const bar = () => { if (!ed) return; put(E.cbar,
+      h("select", { class: "sel", title: "Wall type", onchange: e => { S.wallSel = e.target.value; renderCenter(); renderInspector(); } }, ...walls.map(x => h("option", { value: x.id, text: x.name, selected: x.id === w.id }))), tb("+ New wall", false, newWall),
+      tb("Face", ed.mode === "face", () => { ed.setMode("face"); bar(); }, "Select faces (1)"), tb("Vertex", ed.mode === "vert", () => { ed.setMode("vert"); bar(); }, "Select corner points (2)"),
+      tb("Select", ed.tool === "select", () => { ed.setTool("select"); }, "Q"), tb("Move", ed.tool === "move", () => ed.setTool("move"), "G"), tb("Extrude", ed.tool === "extrude", () => ed.setTool("extrude"), "E (face mode)"), tb("Inset", ed.tool === "inset", () => ed.setTool("inset"), "I (face mode)"),
+      tb("Cut ⬍", false, () => { if (!ed.cut(1)) log("Select a four-sided face first (Face mode)."); }, "Cut selected faces with a horizontal line"), tb("Cut ⬌", false, () => { if (!ed.cut(0)) log("Select a four-sided face first (Face mode)."); }, "Cut selected faces with a vertical line"), tb("Cut depth", false, () => { if (!ed.cut(2)) log("Select a four-sided face first (Face mode)."); }, "Cut with a line across the depth (side faces)"),
+      h("label", { class: "hint", text: "cut at " }), h("input", { class: "num", type: "number", min: 0.1, max: 0.9, step: 0.1, value: ed.cutT, style: "width:54px", onchange: e => { ed.cutT = Math.max(0.05, Math.min(0.95, parseFloat(e.target.value) || 0.5)); } }),
+      tb("Delete", false, () => ed.deleteSel(), "X / Delete"), tb("Undo", false, () => ed.undo(), "Ctrl+Z"),
+      tb("Front", false, () => ed.view("front")), tb("Side", false, () => ed.view("side")), tb("Top", false, () => ed.view("top")), tb("3D", false, () => ed.view("iso")), h("span", { class: "hint", text: hints[ed.tool] })); };
+    ed = S.wed = new PRIM.WallEditor({ host: E.host, project: P, tags: S.tags, urls: S.urls, wall: w, active: () => S.tab === "walls", onChange: () => markDirty(), onSelect: () => renderInspector(), onTool: bar, hintEl });
+    if (!ed.v || !ed.v.ok) { E.host.replaceChildren(h("div", { class: "v3err", text: "3D view not available in this browser." })); return; }
+    E.host.append(hintEl); bar();
+  }
+  function wallInspector() {
+    const P = S.project, w = (P.walls || []).find(x => x.id === S.wallSel), box = h("div", { class: "insp" }), ed = S.wed;
+    if (!w) { box.append(h("div", { class: "note", text: "No wall type yet. Use “+ New wall” above the view." })); return box; }
+    const faces = ed ? [...ed.sel.faces] : [], T = S.tags, imgs = P.assets.filter(a => a.type === "image"), same = k => { const vals = new Set(faces.map(f => T.get(w.id + "." + f + "." + k))); return vals.size === 1 ? [...vals][0] : null; };
+    box.append(h("div", { class: "ihead" }, h("span", { class: "bigic", text: "▦" }), h("div", { class: "ititle" }, h("input", { class: "idin", value: w.name, "aria-label": "Wall name", onchange: e => { w.name = e.target.value.trim() || w.id; markDirty(); renderCenter(); } }), h("div", { class: "isub", text: w.id + " · " + w.faces.length + " faces · " + w.verts.length + " points" }))),
+      h("div", { class: "btnrow" }, h("button", { class: "btn sm danger", text: "Delete wall", onclick: () => { PRIM.WallMesh.remove(P, w); S.wallSel = null; markDirty(); renderCenter(); renderInspector(); } })),
+      foldout("wsel", "Selected faces (" + faces.length + ")", faces.length ? [
+        h("div", { class: "fld" }, h("label", { class: "flab" }, h("span", { text: "Texture" })), h("div", { class: "fctl" }, h("select", { onchange: e => { ed.setTexture(e.target.value); renderInspector(); } }, h("option", { value: "", text: same("tex") === null && faces.length > 1 ? "(mixed)" : "none (plain color)", selected: !same("tex") }), ...imgs.map(a => h("option", { value: a.id, text: a.name, selected: same("tex") === a.id }))))),
+        h("div", { class: "fld" }, h("label", { class: "flab" }, h("span", { text: "Color tint" })), h("div", { class: "fctl" }, h("input", { type: "color", value: same("color") || "#ffffff", oninput: e => ed.setColor(e.target.value) })))
+      ] : h("div", { class: "note", text: "Select one or more faces in the view to give them a texture." })),
+      foldout("whelp", "How it works",
+        h("div", { class: "note", text: "A wall is one panel: 1.5 m wide × 1.5 m tall (3 × 3 tiles). In the Map view, give a wall layers (bottom to top): each layer repeats this panel along the wall. Faces pulled out stick into the room; pushed in they dig into the wall." }),
+        h("div", { class: "note", text: "Keys: Q select · G move · E extrude · I inset · X delete · 1 face / 2 vertex · A all · Ctrl+Z undo · F reset view." })));
+    return box;
+  }
   function mapInspector() {
     const m = curMap(), box = h("div", { class: "insp" }), sel = S.msel, pre = m.id + ".", vert = id => m.verts.find(v => v.id === id);
     const head = (ic, title, sub) => h("div", { class: "ihead" }, h("span", { class: "bigic", text: ic }), h("div", { class: "ititle" }, title, h("div", { class: "isub", text: sub })));
@@ -905,7 +954,7 @@
       const v = vert(sel.id), sec = m.sectors.find(s => s.v.includes(v.id)), nxt = sec ? vert(sec.v[(sec.v.indexOf(v.id) + 1) % sec.v.length]) : null;
       box.append(head("◆", h("div", { class: "idin ro", text: "Node " + v.id }), "Its wall runs to node " + (nxt ? nxt.id : "?") + (sec ? " · room “" + sec.id + "”" : "")),
         h("div", { class: "btnrow" }, h("button", { class: "btn sm danger", text: "Delete node", onclick: () => S.med && S.med.deleteSelection() })),
-        foldout("mv", "Wall (this node to the next)", ...Schema.VERT.map(p => field(pre + v.id + "." + p.k))), foldout("mpos", "Position", coord(v, "x"), coord(v, "y")),
+        foldout("mv", "Wall (this node to the next)", ...Schema.VERT.filter(p => p.k !== "rows" && p.k !== "rowsRepeat").map(p => field(pre + v.id + "." + p.k))), wallLayersBox(m, v), foldout("mpos", "Position", coord(v, "x"), coord(v, "y")),
         h("div", { class: "note", text: "Tip: drag an image from the Project panel onto the wall in the Map view to texture it." }));
     } else if (sel && sel.kind === "sector" && m.sectors.some(s => s.id === sel.id)) {
       box.append(head("▱", h("div", { class: "idin ro", text: "Room " + sel.id }), m.sectors.find(s => s.id === sel.id).v.length + " nodes"),

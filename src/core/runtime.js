@@ -48,11 +48,11 @@
       this.h = { down: e => this.down(e), move: e => this.move(e), up: e => this.up(e), key: e => this.key(e), fs: () => this.fsChange() };
       this.stage.addEventListener("pointerdown", this.h.down); this.stage.addEventListener("pointermove", this.h.move); this.stage.addEventListener("pointerup", this.h.up); this.stage.addEventListener("pointercancel", this.h.up);
       window.addEventListener("keydown", this.h.key); document.addEventListener("fullscreenchange", this.h.fs);
-      this.sh = this.mode !== "edit" ? new PRIM.Script.Host({ tags: this.tags, sfx: (id, v) => this.sfx(id, v), goto: id => { if (this.project.screens.some(s => s.id === id)) this.show(id); }, say: t => { if (this.o.say) this.o.say(t); } }) : null;
+      this.sh = this.mode !== "edit" ? new PRIM.Script.Host({ tags: this.tags, sfx: (id, v) => this.sfx(id, v), loop: (id, v) => this.loopSfx(id, v), stopLoop: id => this.stopLoops(id), goto: id => { if (this.project.screens.some(s => s.id === id)) this.show(id); }, say: t => { if (this.o.say) this.o.say(t); } }) : null;
       this.fit(); this.show(this.screenId || this.project.screens[0].id);
       this.raf = requestAnimationFrame(t => this.frame(t));
     }
-    destroy() { this.dead = true; if (this.sh) this.sh.stopAll(); cancelAnimationFrame(this.raf); this.ro.disconnect(); this.unsub(); window.removeEventListener("keydown", this.h.key); document.removeEventListener("fullscreenchange", this.h.fs); this.stopMusic(); this.host.classList.remove("rt-host"); this.host.replaceChildren(); }
+    destroy() { this.stopLoops(""); this.dead = true; if (this.sh) this.sh.stopAll(); cancelAnimationFrame(this.raf); this.ro.disconnect(); this.unsub(); window.removeEventListener("keydown", this.h.key); document.removeEventListener("fullscreenchange", this.h.fs); this.stopMusic(); this.host.classList.remove("rt-host"); this.host.replaceChildren(); }
     // positions are stored from the screen middle (x0,y0 = middle, y goes up); the stage itself is drawn from the top-left corner
     px(sc, n) { return W / 2 + (+this.P(sc, n, "x") || 0); }
     py(sc, n) { return H / 2 - (+this.P(sc, n, "y") || 0); }
@@ -168,6 +168,9 @@
 
     // ---------------- audio
     vol(kind) { const T = this.tags; return clamp((T.get("audio.master") || 0) * (T.get("audio." + kind) || 0), 0, 1); }
+    // looping sounds started by the "Loop a sound" node (one loop per sound)
+    loopSfx(id, mult) { if (this.mode === "edit" || !id || !this.urls[id]) return; this.loops = this.loops || {}; const vol = clamp(this.vol("sfx") * (mult === undefined || isNaN(mult) ? 1 : mult), 0, 1); if (this.loops[id]) { this.loops[id].volume = vol; return; } const a = new Audio(this.urls[id]); a.loop = true; a.volume = vol; this.loops[id] = a; a.play().catch(() => {}); }
+    stopLoops(id) { const L = this.loops || {}; for (const k of Object.keys(L)) if (!id || k === id) { L[k].pause(); delete L[k]; } }
     sfx(id, mult) { if (this.mode === "edit" || !id || !this.urls[id]) return; const a = new Audio(this.urls[id]); a.volume = clamp(this.vol("sfx") * (mult === undefined || isNaN(mult) ? 1 : mult), 0, 1); a.play().catch(() => {}); }
     setMusic(id) {
       if (this.mode === "edit") return; if (id === this.musicId) return; this.stopMusic(); this.musicId = id; if (!id || !this.urls[id]) return;

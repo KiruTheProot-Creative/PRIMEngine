@@ -156,6 +156,8 @@
     setTag: { label: "Set a tag", cat: "action", outs: ["next"], ctx: ["screen", "object"], props: [ANYTAG, { k: "value", label: "To value", type: "string", def: "0" }] },
     changeTag: { label: "Change a number by", cat: "action", outs: ["next"], ctx: ["screen", "object"], props: [NUMTAG, { k: "amount", label: "Add (negative = subtract)", type: "number", def: 1, min: -100000, max: 100000, step: 1 }] },
     playSound: { label: "Play a sound", cat: "action", outs: ["next"], ctx: ["screen", "object"], props: [{ k: "sound", label: "Sound", type: "asset", assetType: "sound", def: "" }, { k: "volume", label: "Volume", type: "number", def: 1, min: 0, max: 1, step: 0.05 }] },
+    loopSound: { label: "Loop a sound", cat: "action", outs: ["next"], ctx: ["screen", "object"], props: [{ k: "sound", label: "Sound", type: "asset", assetType: "sound", def: "" }, { k: "volume", label: "Volume", type: "number", def: 1, min: 0, max: 1, step: 0.05 }] },
+    stopLoop: { label: "Stop looping a sound", cat: "action", outs: ["next"], ctx: ["screen", "object"], props: [{ k: "sound", label: "Sound (empty = every looping sound)", type: "asset", assetType: "sound", def: "" }] },
     playAnim: { label: "Play an animation", cat: "action", outs: ["next"], ctx: ["object"], props: [{ k: "anim", label: "Animation", type: "anim", def: "" }, { k: "loop", label: "Keep repeating it", type: "bool", def: false }] },
     gotoScreen: { label: "Go to a screen", cat: "action", outs: ["next"], ctx: ["screen"], props: [{ k: "screen", label: "Screen", type: "screenRef", def: "" }] },
     say: { label: "Write a message", cat: "action", outs: ["next"], ctx: ["screen", "object"], props: [{ k: "text", label: "Message (shows in the Console)", type: "string", def: "Hello" }] },

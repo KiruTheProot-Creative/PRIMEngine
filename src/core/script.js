@@ -45,6 +45,8 @@
         switch (n.type) {
           case "setTag": this.setTag(g("tag"), g("value")); break;
           case "changeTag": { const t = g("tag"), sp = this.T.spec(t); if (sp && sp.type === "number") this.setTag(t, (+this.T.get(t) || 0) + (+g("amount") || 0)); break; }
+          case "loopSound": if (g("sound") && this.o.loop) this.o.loop(g("sound"), +g("volume")); break;
+          case "stopLoop": if (this.o.stopLoop) this.o.stopLoop(g("sound") || ""); break;
           case "playSound": if (g("sound") && this.o.sfx) this.o.sfx(g("sound"), +g("volume")); break;
           case "playAnim": if (this.o.playAnim) this.o.playAnim(owner.key, g("anim"), !!g("loop")); break;
           case "gotoScreen": if (this.o.goto) this.o.goto(g("screen")); break;

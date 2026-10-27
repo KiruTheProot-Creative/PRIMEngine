@@ -134,7 +134,7 @@
     c.fillStyle = css("--mapbg") || "#10161d"; c.fillRect(0, 0, W, H);
     // grid
     const g = this.grid(), gp = g * this.v.z, x0 = this.wx(0), x1 = this.wx(W), y0 = this.wy(0), y1 = this.wy(H);
-    for (const [step, col] of [[g, css("--mapgrid") || "#1c2733"], [g * 4, css("--mapgrid2") || "#2a3a4c"]]) { if (step * this.v.z < 7) continue; c.strokeStyle = col; c.lineWidth = 1; c.beginPath();
+    for (const [step, col] of [[g, css("--mapgrid") || "#1c2733"], [g * 2, css("--mapgrid2") || "#2a3a4c"]]) { if (step * this.v.z < 7) continue; c.strokeStyle = col; c.lineWidth = 1; c.beginPath();
       for (let x = Math.floor(x0 / step) * step; x <= x1; x += step) { const s = Math.round(this.sx(x)) + 0.5; c.moveTo(s, 0); c.lineTo(s, H); } for (let y = Math.floor(y0 / step) * step; y <= y1; y += step) { const s = Math.round(this.sy(y)) + 0.5; c.moveTo(0, s); c.lineTo(W, s); } c.stroke(); }
     c.strokeStyle = "#3d6a8c"; c.lineWidth = 1.5; c.beginPath(); c.moveTo(this.sx(0), 0); c.lineTo(this.sx(0), H); c.moveTo(0, this.sy(0)); c.lineTo(W, this.sy(0)); c.stroke();
     const selSec = this.sel && this.sel.kind === "sector" ? this.sel.id : null;
@@ -173,6 +173,6 @@
     } else if (this.tool === "draw" && this.mouse) { const m = this.snapPt(this.mouse.sx, this.mouse.sy); c.strokeStyle = "#7fd0ff"; c.strokeRect(this.sx(m.x) - 4, this.sy(m.y) - 4, 8, 8); }
     // readout
     c.textAlign = "left"; c.fillStyle = "#8fa6bd"; const m2 = this.mouse ? this.snapPt(this.mouse.sx, this.mouse.sy, true) : null;
-    c.fillText("grid " + g + (m2 ? "   x " + m2.x + "  y " + m2.y : "") + "   zoom " + Math.round(this.v.z * 100) + "%   " + this.m.sectors.length + " room(s)", 8, H - 8);
+    const mt = n => (n / 64).toFixed(2).replace(/\.?0+$/, "") + " m"; c.fillText("tile " + mt(g) + " (" + g + " units)" + (m2 ? "   x " + mt(m2.x) + "  y " + mt(m2.y) : "") + "   zoom " + Math.round(this.v.z * 100) + "%   " + this.m.sectors.length + " room(s)", 8, H - 8);
   };
 })();
