@@ -85,7 +85,7 @@
       if (this.game) { const g = div("rt-game"); g.textContent = "Your game starts here.\nThe 3D game view comes in a later step.\n\nClick or press Esc to go back."; g.style.whiteSpace = "pre-line"; this.layer.append(g); return; }
       if (sc.kind === "splash") { const n = sc.nodes.find(x => x.id === this.selId) || sc.nodes[0]; if (n) { const el = this.splashEl(sc, n); el.style.left = "50%"; el.style.top = "50%"; this.layer.append(el); this.els[n.id] = el; if (n.id === this.selId) el.classList.add("rt-sel"); }
         else { const e = div("rt-ph rt-n"); e.textContent = "No splash screens yet. Add one on the left."; e.style.left = "50%"; e.style.top = "50%"; this.layer.append(e); } return; }
-      for (const n of sc.nodes) { const el = this.makeNode(sc, n); el.style.left = this.px(sc, n) + "px"; el.style.top = this.py(sc, n) + "px"; if (this.mode === "edit" && n.id === this.selId) el.classList.add("rt-sel"); this.layer.append(el); this.els[n.id] = el; }
+      for (const n of sc.nodes) { const el = this.makeNode(sc, n); const st = n.type === "image" && this.P(sc, n, "stretch"); el.style.left = (st ? W / 2 : this.px(sc, n)) + "px"; el.style.top = (st ? H / 2 : this.py(sc, n)) + "px"; if (this.mode === "edit" && n.id === this.selId) el.classList.add("rt-sel"); this.layer.append(el); this.els[n.id] = el; }
       if (this.mode === "edit" && this.selId) { const n = sc.nodes.find(x => x.id === this.selId); if (n && this.sizeProps(n).length) this.addHandle(sc, n); }
     }
     sized(el, w, h) { if (w > 0) el.style.width = w + "px"; if (h > 0) el.style.height = h + "px"; }
@@ -94,7 +94,7 @@
     makeNode(sc, n) {
       const T = this.tags, p = k => this.P(sc, n, k); let el;
       if (n.type === "title") { el = div("rt-n"); el.textContent = this.S(sc, n, "text"); this.textStyle(el, sc, n); el.style.opacity = p("opacity"); }
-      else if (n.type === "image") { const u = this.urls[p("asset")]; if (u) { el = new Image(); el.src = u; el.className = "rt-n"; el.draggable = false; this.sized(el, p("w"), p("h")); el.style.opacity = p("opacity"); } else el = this.ph("No image chosen", p("w"), p("h")); }
+      else if (n.type === "image") { const u = this.urls[p("asset")]; if (u) { el = new Image(); el.src = u; el.className = "rt-n"; el.draggable = false; this.sized(el, p("w"), p("h")); el.style.opacity = p("opacity"); if (p("stretch")) { el.style.width = W + "px"; el.style.height = H + "px"; } } else el = this.ph("No image chosen", p("w"), p("h")); }
       else if (n.type === "button") {
         const hov = this.hover === n.id, prs = this.press === n.id;
         if (p("mode") === "texture") {
@@ -179,7 +179,7 @@
     // which tags a corner handle changes: width / height (images, bars, textures, sliders, toggles) or text size (titles, text buttons)
     sizeProps(n) {
       const sc = this.screen(); if (!sc || sc.kind === "splash") return [];
-      if (n.type === "image" || n.type === "bar") return ["w", "h"]; if (n.type === "slider" || n.type === "toggle") return ["w"];
+      if (n.type === "image" && this.P(this.screen(), n, "stretch")) return []; if (n.type === "image" || n.type === "bar") return ["w", "h"]; if (n.type === "slider" || n.type === "toggle") return ["w"];
       if (n.type === "button") return this.P(sc, n, "mode") === "texture" ? ["w", "h"] : ["size"]; if (n.type === "title") return ["size"]; return [];
     }
     // four corner handles: dragging one scales the element while the opposite corner stays where it is

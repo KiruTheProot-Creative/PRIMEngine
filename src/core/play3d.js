@@ -32,7 +32,10 @@
     }
     // ---- input
     bind() {
-      const cv = this.cv, k = this.keys, lock = () => { this.msg.style.display = document.pointerLockElement === cv ? "none" : "grid"; };
+      const cv = this.cv, k = this.keys;
+      // a visible Leave button, shown whenever the mouse is free (Esc first frees the mouse, so the menu is always reachable)
+      const lv = document.createElement("button"); lv.className = "p3leave"; lv.textContent = "✕ Leave game  (Esc)"; lv.addEventListener("pointerdown", e => e.stopPropagation()); lv.addEventListener("click", e => { e.stopPropagation(); this.leave(); }); this.root.append(lv);
+      const lock = () => { const on = document.pointerLockElement === cv; this.msg.style.display = on ? "none" : "grid"; lv.style.display = on ? "none" : "block"; };
       this.msg.textContent = "Click to play  ·  W A S D move  ·  Space jump  ·  Shift sprint  ·  Esc to leave" + (this.o.debug ? "  ·  H / J test damage" : ""); this.msg.style.display = "grid";
       const kd = e => {
         if (e.key === "Escape") { e.stopImmediatePropagation(); e.preventDefault(); this.leave(); return; }

@@ -24,3 +24,4 @@
 - Objects have a free pivot (`pivotX/Y/Z`, model space): position, rotation and scale act around it; set it with the "Set pivot" tool of the object editor.
 - Tests also: `s_code.js` (node coder).
 - Asset explorer multi-select (`studio.js`): `S.sel` is the primary item, `S.multi={primary,items}` the set (ctrl/shift-click via `clickPick`, rubber-band via `marquee`, `topLevel()` drops items inside a selected folder); multi drag/drop uses `dropOne`, delete uses `deleteAssetSel`. Tests: `s_multi.js`, `s_size.js` (width/height fields, proportions, corner handles).
+- Game view (`Play3D.bind`) has a `.p3leave` button shown whenever the mouse is free. Images have a `stretch` tag ("Stretch to screen", fills the 1280x720 stage). Tests: `s_stretch.js`, `s_leave.js`.
