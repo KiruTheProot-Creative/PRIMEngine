@@ -108,11 +108,12 @@
       const D = M4.norm([B.s[0] * D0[0] + B.u[0] * D0[1] - B.f[0] * D0[2], B.s[1] * D0[0] + B.u[1] * D0[1] - B.f[1] * D0[2], B.s[2] * D0[0] + B.u[2] * D0[1] - B.f[2] * D0[2]]);
       const hex = String(T.get(pre + "projColor") || "#ffcc33"), col = [parseInt(hex.slice(1, 3), 16) / 255, parseInt(hex.slice(3, 5), 16) / 255, parseInt(hex.slice(5, 7), 16) / 255];
       const mul = T.get(pre + "projCharge") ? 1 + 1.5 * (this.fireCharge || 0) : 1, orbS = this.orbSize || 0; this.fx = this.fx || [];
-      if (kind === "hitscan") { const hit = v.raycast(O, D, 6000), end = hit ? hit.p : M4.add(O, D.map(q => q * 3000)); this.fx.push({ kind: "line", a: O, b: end, c: col, w: +T.get(pre + "projWidth") || 0.6, life: +T.get(pre + "projLineTime") || 0.12, t: 0 }); }
-      else if (kind === "particle") this.fx.push({ kind: T.get(pre + "projShape") === "laser" ? "laser" : "sphere", p: O, d: D, c: col, size: orbS > 0 ? orbS : (+T.get(pre + "projSize") || 3) * mul, speed: +T.get(pre + "projSpeed") || 1400, life: +T.get(pre + "projLife") || 2, t: 0 });
+      const em = T.get(pre + "projEmit") === undefined ? 1 : +T.get(pre + "projEmit"), ecol = col.map(q => q * em), lt = T.get(pre + "projLight") && kind !== "hitscan" ? { c: col, k: +T.get(pre + "projLightPower") || 1.5, r: +T.get(pre + "projLightRange") || 220 } : null;
+      if (kind === "hitscan") { const hit = v.raycast(O, D, 6000), end = hit ? hit.p : M4.add(O, D.map(q => q * 3000)); this.fx.push({ kind: "line", a: O, b: end, c: ecol, w: +T.get(pre + "projWidth") || 0.6, life: +T.get(pre + "projLineTime") || 0.12, t: 0 }); }
+      else if (kind === "particle") this.fx.push({ kind: T.get(pre + "projShape") === "laser" ? "laser" : "sphere", p: O, d: D, c: ecol, light: lt, size: orbS > 0 ? orbS : (+T.get(pre + "projSize") || 3) * mul, speed: +T.get(pre + "projSpeed") || 1400, life: +T.get(pre + "projLife") || 2, t: 0 });
       else if (kind === "mesh") {
         const aid = T.get(pre + "projModel"), model = aid && PRIM.FBX.cache[aid]; if (!model) return; if (!this.gpu[aid]) this.gpu[aid] = v.loadModel(model);
-        this.fx.push({ kind: "mesh", p: O, d: D, gm: this.gpu[aid], pose: PRIM.FBX.pose(model, null, 0), scale: (+T.get(pre + "projScale") || 1) * mul, rot: M4.rotXYZ([+T.get(pre + "projRx") || 0, +T.get(pre + "projRy") || 0, +T.get(pre + "projRz") || 0]), speed: +T.get(pre + "projSpeed") || 1400, life: +T.get(pre + "projLife") || 2, t: 0, M: M4.ident() });
+        this.fx.push({ kind: "mesh", p: O, d: D, gm: this.gpu[aid], pose: PRIM.FBX.pose(model, null, 0), scale: (+T.get(pre + "projScale") || 1) * mul, rot: M4.rotXYZ([+T.get(pre + "projRx") || 0, +T.get(pre + "projRy") || 0, +T.get(pre + "projRz") || 0]), speed: +T.get(pre + "projSpeed") || 1400, life: +T.get(pre + "projLife") || 2, t: 0, M: M4.ident(), light: lt, mat: { emit: [1, 1, 1].map(q => q * Math.max(0, em - 1) * 0.4) } });
       }
     }
     stepFx(dt) {
@@ -207,7 +208,7 @@
           const a0 = M4.norm(M4.dir(Rb, ...arrow)), maxR = g("aimMax") * Math.PI / 180; let want = M4.norm(M4.sub(Hc, M4.add(off, M4.dir(Rb, ...mz))));
           Ra = M4.between(a0, want, maxR); want = M4.norm(M4.sub(Hc, M4.add(off, M4.dir(M4.mul(Ra, Rb), ...mz)))); at.cur = at.cur ? M4.norm(M4.add(at.cur.map(q => q * Math.exp(-14 * dt)), want.map(q => q * (1 - Math.exp(-14 * dt))))) : want; Ra = M4.between(a0, at.cur, maxR);
         } else at.cur = null;
-        const M = M4.mul(M4.translate(...off), M4.mul(Ra, M4.mul(Rb, M4.mul(Sm, M4.translate(-g("pivotX"), -g("pivotY"), -g("pivotZ")))))); items.push({ gm: at.gm, pose, M });
+        const M = M4.mul(M4.translate(...off), M4.mul(Ra, M4.mul(Rb, M4.mul(Sm, M4.translate(-g("pivotX"), -g("pivotY"), -g("pivotZ")))))); items.push({ gm: at.gm, pose, M, mat: this.matOf(pre) }); this.objLight(at, pre, M, g, sc, eye, B);
         if (at.type === "weapon") { const ey = g("emitYaw") * Math.PI / 180, ep = g("emitPitch") * Math.PI / 180; at.emit = { pos: M4.point(M, g("emitX"), g("emitY"), g("emitZ")), dir: M4.norm(M4.dir(M, -Math.cos(ep) * Math.sin(ey), Math.sin(ep), -Math.cos(ep) * Math.cos(ey))) }; }
         if (at.type === "weapon") { const ay2 = g("arrowYaw") * Math.PI / 180, ap2 = g("arrowPitch") * Math.PI / 180; at.muz = { pos: M4.point(M, g("muzzleX"), g("muzzleY"), g("muzzleZ")), dir: M4.norm(M4.dir(M, -Math.cos(ap2) * Math.sin(ay2), Math.sin(ap2), -Math.cos(ap2) * Math.cos(ay2))) }; }
         if (this.mode === "preview" && at.type === "weapon") {   // the arrow and the muzzle point, drawn so they can be placed
@@ -216,7 +217,25 @@
           for (const ax of [[1, 0, 0], [0, 1, 0], [0, 0, 1]]) segs.push({ a: M4.sub(mp, ax.map(q => q * 2)), b: M4.add(mp, ax.map(q => q * 2)), c: y });
         }
       }
-      v.drawViewmodel(items, segs);
+      v.setLights(this.lightNow || []); v.drawViewmodel(items, segs);
+    }
+    // material of an object (Material tab)
+    matOf(pre) { return PRIM.Schema.matOf(this.T, pre); }
+    // the light an object carries (Light tab), placed in the world for this frame (camera space -> world)
+    objLight(at, pre, M, g, sc, eye, B) {
+      const T = this.T, ty = T.get(pre + "lightType"); if (!ty || ty === "none") return; const w = q => [eye[0] + B.s[0] * q[0] + B.u[0] * q[1] - B.f[0] * q[2], eye[1] + B.s[1] * q[0] + B.u[1] * q[1] - B.f[1] * q[2], eye[2] + B.s[2] * q[0] + B.u[2] * q[1] - B.f[2] * q[2]];
+      const wd = q => M4.norm([B.s[0] * q[0] + B.u[0] * q[1] - B.f[0] * q[2], B.s[1] * q[0] + B.u[1] * q[1] - B.f[1] * q[2], B.s[2] * q[0] + B.u[2] * q[1] - B.f[2] * q[2]]);
+      const fl = +T.get(pre + "lightFlicker") || 0, tm = performance.now() / 1000, k = (+T.get(pre + "lightIntensity") || 0) * (1 - fl * (0.5 + 0.5 * Math.sin(tm * 37 + Math.sin(tm * 11) * 5)) * 0.9), col = this.hexCol(T.get(pre + "lightColor") || "#ffe2b0");
+      const L = { p: w(M4.point(M, g("lightX"), g("lightY"), g("lightZ"))), r: +T.get(pre + "lightRange") || 300, c: col.map(q => q * k), type: 0 };
+      if (ty === "area") { const yw = g("lightYaw") * Math.PI / 180, pt = g("lightPitch") * Math.PI / 180, n = M4.norm(M4.dir(M, -Math.cos(pt) * Math.sin(yw), Math.sin(pt), -Math.cos(pt) * Math.cos(yw))), ax = M4.norm(M4.cross(n, Math.abs(n[1]) > 0.95 ? [1, 0, 0] : [0, 1, 0]));
+        L.type = 1; L.n = wd(n); L.u = wd(ax); L.hw = (+T.get(pre + "lightWidth") || 40) * sc / 2; L.hh = (+T.get(pre + "lightHeight") || 20) * sc / 2; }
+      (this.lightNow = this.lightNow || []).push(L);
+    }
+    // small performance readout (shown with "Show FPS counter")
+    stats3d(v) {
+      if (!this.statEl) { this.statEl = document.createElement("div"); this.statEl.style.cssText = "position:absolute;left:14px;top:46px;font:13px monospace;color:#7df3ff;text-shadow:0 1px 2px #000;pointer-events:none;white-space:pre;z-index:5"; if (v.canvas.parentNode) v.canvas.parentNode.append(this.statEl); }
+      const on = this.mode === "play" && this.T.get("gfx.showFps") && v.stats; this.statEl.style.display = on ? "block" : "none"; if (!on) return; const s = v.stats;
+      if (!this.statN || performance.now() - this.statN > 400) { this.statN = performance.now(); this.statEl.textContent = "triangles " + Math.round(s.tris) + " / " + Math.round(s.totalTris) + "\nchunks " + s.chunks + " / " + s.totalChunks + "\nlights " + s.lights + "\nLOD level " + (v.lodLevel || 0); }
     }
     // ---- walking
     info(x, y) { return R3D.sectorInfo(this.map, this.T, x, y); }
@@ -261,7 +280,7 @@
       if (this.mode === "play") this.feel(dt);
       if (this.mode === "play") { this.hold(dt); const hp = +this.T.get("player.health"); if (this.lastHp === undefined) this.lastHp = hp; if (hp < this.lastHp) this.psound(hp <= 0 ? "deathSound" : "hurtSound"); this.lastHp = hp; }
       const v = this.view; if (!v) return; const T = this.T, c = v.cam; v.fov = (+T.get("player.fov") || 80) * Math.PI / 180;
-      c.x = this.x; c.z = this.y; c.y = this.z + (+T.get("player.eyeHeight") || 56); c.yaw = this.yaw; c.pitch = this.pitch; v.draw(); if (this.mode === "play") { this.stepFx(dt); const list = (this.fx || []).slice(), ob = this.orb, oat = ob && this.atts.find(x => x.id === ob.id); if (oat && oat.emit) { if (ob.grow) { ob.grow.t += dt; ob.size = ob.grow.from + (ob.grow.to - ob.grow.from) * Math.min(1, ob.grow.t / ob.grow.secs); } list.push({ kind: "sphere", p: this.emitWorld(oat).O, c: this.hexCol(ob.color), size: ob.size }); } if (list.length) v.drawFx(list); } this.drawHand(v, dt); this.placeCross(v);
+      c.x = this.x; c.z = this.y; c.y = this.z + (+T.get("player.eyeHeight") || 56); c.yaw = this.yaw; c.pitch = this.pitch; v.setLights(this.lightPrev || []); v.draw(); this.lightNow = []; if (this.mode === "play") { this.stepFx(dt); const list = (this.fx || []).slice(), ob = this.orb, oat = ob && this.atts.find(x => x.id === ob.id); for (const f of list) if (f.light) this.lightNow.push({ p: f.p, r: f.light.r, c: f.light.c.map(q => q * f.light.k), type: 0 }); if (oat && oat.emit) { if (ob.grow) { ob.grow.t += dt; ob.size = ob.grow.from + (ob.grow.to - ob.grow.from) * Math.min(1, ob.grow.t / ob.grow.secs); } const op = this.emitWorld(oat).O, opre = "player." + oat.id + ".", oem = T.get(opre + "projEmit") === undefined ? 1 : +T.get(opre + "projEmit"); list.push({ kind: "sphere", p: op, c: this.hexCol(ob.color).map(q => q * oem), size: ob.size }); if (T.get(opre + "projLight")) this.lightNow.push({ p: op, r: +T.get(opre + "projLightRange") || 220, c: this.hexCol(ob.color).map(q => q * (+T.get(opre + "projLightPower") || 1.5)), type: 0 }); } v.setLights(this.lightNow); if (list.length) v.drawFx(list); } this.drawHand(v, dt); this.lightPrev = this.lightNow; this.stats3d(v); this.placeCross(v);
     }
   };
 })();

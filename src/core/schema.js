@@ -112,6 +112,18 @@
     ANIM("idleAnim", "Idle animation (loops)", { showIf: NI }),
     NUM("muzzleX", "Muzzle point X", 0, -500, 500, 0.5, W_), NUM("muzzleY", "Muzzle point Y", 0, -500, 500, 0.5, W_), NUM("muzzleZ", "Muzzle point Z", 0, -500, 500, 0.5, W_),
     NUM("arrowYaw", "Arrow: turn left / right", 0, -180, 180, 1, W_), NUM("arrowPitch", "Arrow: up / down", 0, -89, 89, 1, W_), NUM("aimMax", "Max aim turn (degrees)", 30, 0, 90, 1, W_),
+    // ---- Light tab: this object can glow and light up the world
+    { k: "lightType", label: "Light source", type: "choice", options: [["none", "None"], ["point", "Point light (shines in all directions)"], ["area", "Area light (a flat panel that shines one way)"]], def: "none", tab: "light" },
+    { k: "lightColor", label: "Light color", type: "color", def: "#ffe2b0", showIf: ["lightType", ["point", "area"]], tab: "light" },
+    NUM("lightIntensity", "Brightness", 1.5, 0, 8, 0.05, { showIf: ["lightType", ["point", "area"]], tab: "light" }), NUM("lightRange", "Reach (how far it shines)", 300, 10, 3000, 5, { showIf: ["lightType", ["point", "area"]], tab: "light" }),
+    NUM("lightFlicker", "Flicker (0 = steady)", 0, 0, 1, 0.01, { showIf: ["lightType", ["point", "area"]], tab: "light" }),
+    NUM("lightX", "Light position X", 0, -500, 500, 0.5, { showIf: ["lightType", ["point", "area"]], tab: "light" }), NUM("lightY", "Light position Y", 0, -500, 500, 0.5, { showIf: ["lightType", ["point", "area"]], tab: "light" }), NUM("lightZ", "Light position Z", 0, -500, 500, 0.5, { showIf: ["lightType", ["point", "area"]], tab: "light" }),
+    NUM("lightWidth", "Panel width", 40, 1, 1000, 1, { showIf: ["lightType", "area"], tab: "light" }), NUM("lightHeight", "Panel height", 20, 1, 1000, 1, { showIf: ["lightType", "area"], tab: "light" }),
+    NUM("lightYaw", "Panel faces: turn left / right", 0, -180, 180, 1, { showIf: ["lightType", "area"], tab: "light" }), NUM("lightPitch", "Panel faces: up / down", 0, -89, 89, 1, { showIf: ["lightType", "area"], tab: "light" }),
+    // ---- Material tab: how the object (and what a weapon fires) looks
+    { k: "matTint", label: "Base color (tints the picture)", type: "color", def: "#ffffff", tab: "material" },
+    NUM("matEmit", "Glow amount (shines by itself)", 0, 0, 4, 0.05, { tab: "material" }), { k: "matEmitColor", label: "Glow color", type: "color", def: "#ffffff", tab: "material" },
+    NUM("matLit", "Reacts to lights (0 = ignores them, 1 = fully)", 1, 0, 1, 0.05, { tab: "material" }), NUM("matOpacity", "Opacity (1 = solid)", 1, 0.05, 1, 0.05, { tab: "material" }), NUM("matShine", "Shininess (light glints)", 0, 0, 1, 0.05, { tab: "material" }),
     // projectile: what a "Fire the projectile" node launches from the muzzle point
     { k: "projType", label: "Projectile", type: "choice", options: [["none", "None"], ["hitscan", "Hitscan (a straight line to where you aim)"], ["particle", "Particle (sphere or laser bolt)"], ["mesh", "Mesh (a 3D model that flies off)"]], def: "none", showIf: WP },
     NUM("emitX", "Emitter point X (where projectiles start)", 0, -500, 500, 0.5, { showIf: ["projType", ["hitscan", "particle", "mesh"]] }), NUM("emitY", "Emitter point Y", 0, -500, 500, 0.5, { showIf: ["projType", ["hitscan", "particle", "mesh"]] }), NUM("emitZ", "Emitter point Z", 0, -500, 500, 0.5, { showIf: ["projType", ["hitscan", "particle", "mesh"]] }),
@@ -122,6 +134,8 @@
     { k: "projModel", label: "Projectile model (FBX)", type: "asset", assetType: "model", def: "", showIf: ["projType", "mesh"] }, NUM("projScale", "Model scale", 1, 0.001, 100, 0.001, { showIf: ["projType", "mesh"] }),
     NUM("projRx", "Model turn X (fix its facing)", 0, -180, 180, 1, { showIf: ["projType", "mesh"] }), NUM("projRy", "Model turn Y", 0, -180, 180, 1, { showIf: ["projType", "mesh"] }), NUM("projRz", "Model turn Z", 0, -180, 180, 1, { showIf: ["projType", "mesh"] }),
     NUM("projSize", "Size", 3, 0.2, 80, 0.1, { showIf: ["projType", "particle"] }), NUM("projSpeed", "Speed", 1400, 50, 8000, 50, { showIf: ["projType", ["particle", "mesh"]] }), NUM("projLife", "Flies for (seconds)", 2, 0.1, 30, 0.1, { showIf: ["projType", ["particle", "mesh"]] }),
+    NUM("projEmit", "Emission (glow brightness)", 1, 0, 6, 0.05, { showIf: ["projType", ["hitscan", "particle", "mesh"]] }), { k: "projLight", label: "Projectile lights up the world", type: "bool", def: false, showIf: ["projType", ["particle", "mesh"]] },
+    NUM("projLightPower", "Projectile light brightness", 1.5, 0, 8, 0.05, { showIf: ["projType", ["particle", "mesh"]] }), NUM("projLightRange", "Projectile light reach", 220, 10, 2000, 5, { showIf: ["projType", ["particle", "mesh"]] }),
     { k: "projCharge", label: "Bigger when charged (charge beam)", type: "bool", def: true, showIf: ["projType", ["particle", "mesh"]] },
   ];
   // ---- node scripts (see script.js). ports: outs = output names; ins:false = event node (starts a chain)
@@ -186,6 +200,7 @@
     if (!project.animLen) project.animLen = [];
     project.player = project.player || { attachments: [] }; if (!project.player.attachments) project.player.attachments = [];
     delete project.tags["player.freeAim"];
+    for (const [n, label] of [["gfx.culling", "Culling (skip what you can not see)"], ["gfx.lod", "Auto-LOD (simpler models far away)"]]) if (!project.tags[n]) project.tags[n] = { type: "bool", value: true, label, group: "gfx", builtin: true };
     for (const att of project.player.attachments) {   // bring older objects up to date: a "weapon" tick became the object type
       const pre = "player." + att.id + ".", old = project.tags[pre + "weapon"];
       for (const p of S.ATTACH) { const r = project.tags[pre + p.k]; if (!r) { const n = rec(p, "player", "player." + att.id); if (p.type === "anim") n.modelTag = pre + "asset"; if (p.k === "type") n.value = old && old.value ? "weapon" : "animation"; if (p.k === "name") n.value = old && old.value ? "Weapon" : "Object"; project.tags[pre + p.k] = n; } else { r.label = p.label; if (p.showIf) r.showIf = p.showIf; else delete r.showIf; if (p.options) r.options = p.options; } }
@@ -206,6 +221,11 @@
     }
   };
 
+  // the look of an object, from its Material tab tags
+  S.matOf = (T, pre) => {
+    const hx = (h, d) => { h = String(h || d); return [parseInt(h.slice(1, 3), 16) / 255, parseInt(h.slice(3, 5), 16) / 255, parseInt(h.slice(5, 7), 16) / 255]; }, e = +T.get(pre + "matEmit") || 0, op = T.get(pre + "matOpacity"), lit = T.get(pre + "matLit");
+    return { tint: hx(T.get(pre + "matTint"), "#ffffff"), emit: hx(T.get(pre + "matEmitColor"), "#ffffff").map(q => q * e), lit: lit === undefined ? 1 : +lit, alpha: op === undefined ? 1 : +op, spec: +T.get(pre + "matShine") || 0 };
+  };
   S.builtins = project => {
     const B = (n, type, value, label, group, extra) => { project.tags[n] = Object.assign({ type, value, label, group, builtin: true }, extra); };
     B("audio.master", "number", 0.8, "Master volume", "audio", { min: 0, max: 1, step: 0.01 });
@@ -214,6 +234,8 @@
     B("gfx.fullscreen", "bool", false, "Fullscreen", "gfx");
     B("gfx.brightness", "number", 1, "Brightness", "gfx", { min: 0.5, max: 1.5, step: 0.05 });
     B("gfx.showFps", "bool", false, "Show FPS counter", "gfx");
+    B("gfx.culling", "bool", true, "Culling (skip what you can not see)", "gfx");
+    B("gfx.lod", "bool", true, "Auto-LOD (simpler models far away)", "gfx");
     B("project.startScreen", "screenRef", "splash", "Start screen", "project");
   };
 

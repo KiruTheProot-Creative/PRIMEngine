@@ -1,0 +1,46 @@
+const SP = '/tmp/claude-0/-home-claude/4d2f2209-a771-580d-8052-566f87920e94/scratchpad';
+module.exports = async (p, out) => {
+  const menu = async (top, item) => { await p.click('.mb:has-text("' + top + '")'); await p.click('.pitem:has-text("' + item + '")'); };
+  await p.click('.tile.plus'); await p.waitForSelector('#app'); await p.waitForTimeout(300);
+  await menu('Screen', 'Create Map'); await p.click('.mcard:has-text("DOOM")'); await p.waitForSelector('.medcv');
+  let [fc] = await Promise.all([p.waitForEvent('filechooser'), menu('Assets', 'Import Files')]); await fc.setFiles(SP + '/Arm_canon.fbx'); await p.waitForTimeout(1500);
+  await p.click('.tab:has-text("Player Editor")'); await p.waitForTimeout(600);
+  await p.click('button:has-text("New weapon")'); await p.click('.pitem:has-text("Arm_canon")'); await p.waitForTimeout(1500);
+  console.log('builtins', await p.evaluate(() => [__studio.S.tags.get('gfx.culling'), __studio.S.tags.get('gfx.lod')].join(',')));
+  // tabs in the inspector
+  console.log('tabs', await p.locator('.objtabs button').allTextContents());
+  await p.click('.objtabs button:has-text("Light")'); await p.waitForTimeout(200);
+  console.log('light tab fields (none)', (await p.locator('.fb .frow, .fb .field').count()));
+  await p.evaluate(() => { const T = __studio.S.tags; T.set('player.att.lightType', 'point'); T.set('player.att.lightColor', '#ff3030'); T.set('player.att.lightIntensity', 3); T.set('player.att.lightRange', 400); T.set('player.att.lightZ', -60); });
+  await p.click('.objtabs button:has-text("Material")'); await p.click('.objtabs button:has-text("Light")'); await p.waitForTimeout(300);
+  console.log('light tab has', await p.evaluate(() => /Light color/.test(document.body.innerText) && /Reach/.test(document.body.innerText) && !/Panel width/.test(document.body.innerText)));
+  await p.evaluate(() => __studio.S.tags.set('player.att.lightType', 'area')); await p.click('.objtabs button:has-text("Material")'); await p.click('.objtabs button:has-text("Light")'); await p.waitForTimeout(300);
+  console.log('area has', await p.evaluate(() => /Panel width/.test(document.body.innerText) && /Panel faces/.test(document.body.innerText)));
+  await p.click('.objtabs button:has-text("Material")'); await p.waitForTimeout(200);
+  console.log('material has', await p.evaluate(() => /Glow amount/.test(document.body.innerText) && /Opacity/.test(document.body.innerText) && /Base color/.test(document.body.innerText)));
+  await p.click('.objtabs button:has-text("Object")');
+  await p.click('button:has-text("Edit muzzle, arrow")').catch(() => {}); await p.waitForTimeout(500);
+  console.log('light tools', await p.locator('.tbtn').allTextContents().then(a => a.filter(x => /light/i.test(x)).join(' | ')));
+  await p.click('.tbtn:has-text("Set light point")'); const cb = await p.locator('canvas.v3cv').boundingBox(); await p.mouse.click(cb.x + cb.width * 0.45, cb.y + cb.height * 0.5); await p.waitForTimeout(300);
+  await p.click('.tbtn:has-text("Aim light")'); await p.mouse.move(cb.x + cb.width * 0.5, cb.y + cb.height * 0.3); await p.mouse.down(); await p.mouse.move(cb.x + cb.width * 0.55, cb.y + cb.height * 0.3, { steps: 3 }); await p.mouse.up(); await p.waitForTimeout(300);
+  console.log('light after', await p.evaluate(() => ['lightX', 'lightY', 'lightZ', 'lightYaw', 'lightPitch'].map(k => __studio.S.tags.get('player.att.' + k)).join(',')));
+  await p.screenshot({ path: out + '_editor.png' });
+  await p.evaluate(() => { const T = __studio.S.tags; T.set('player.att.matEmit', 0.6); T.set('player.att.matEmitColor', '#40ff90'); T.set('player.att.matShine', 0.7); }); await p.waitForTimeout(300);
+  await p.screenshot({ path: out + '_editor2.png' });
+  await p.click('.tbtn:has-text("Player view")'); await p.waitForTimeout(400);
+  await p.evaluate(() => { const T = __studio.S.tags; T.set('player.att.lightType', 'point'); T.set('player.att.lightZ', -100); T.set('player.att.lightY', 40); T.set('gfx.showFps', true); });
+  await p.click('button:has-text("Walk map1")'); await p.waitForTimeout(1500);
+  await p.evaluate(() => { const q = __studio.S.play; q.msg.style.display = 'none'; q.yaw = 0; q.x = -60; q.look = () => {}; });
+  await p.waitForTimeout(600);
+  const st = () => p.evaluate(() => { const v = __studio.S.play.view; return JSON.stringify({ stats: v.stats, lights: (v.lights || []).length }); });
+  console.log('stats lit', await st()); await p.screenshot({ path: out + '_lit.png' });
+  await p.evaluate(() => __studio.S.tags.set('player.att.lightType', 'none')); await p.waitForTimeout(500); console.log('stats unlit', await st()); await p.screenshot({ path: out + '_unlit.png' });
+  await p.evaluate(() => { __studio.S.tags.set('gfx.culling', false); }); await p.waitForTimeout(400); console.log('culling off', await st());
+  await p.evaluate(() => { __studio.S.play.yaw = Math.PI; }); await p.waitForTimeout(300); await p.evaluate(() => __studio.S.tags.set('gfx.culling', true)); await p.waitForTimeout(400); console.log('culling on, looking away', await st());
+  // projectile emission + light + LOD
+  await p.evaluate(() => { const T = __studio.S.tags; T.set('player.att.projType', 'particle'); T.set('player.att.projEmit', 2.5); T.set('player.att.projLight', true); T.set('player.att.projColor', '#33ccff'); T.set('player.att.projSpeed', 200); T.set('player.att.projSize', 8); __studio.S.play.yaw = 0; });
+  await p.evaluate(() => { const q = __studio.S.play; q.fireProj(q.atts[0]); }).catch(e => console.log('fire err', e.message));
+  await p.waitForTimeout(500); console.log('fx lights', await p.evaluate(() => (__studio.S.play.lightPrev || []).length), await st()); await p.screenshot({ path: out + '_proj.png' });
+  const lod = await p.evaluate(() => { const v = __studio.S.play.view; return [0, 1, 2].map(l => v.lodLevelAt(l === 0 ? 100 : l === 1 ? 900 : 4000, 20)).join(','); }); console.log('lod levels by distance', lod);
+  console.log('no console errors');
+};
