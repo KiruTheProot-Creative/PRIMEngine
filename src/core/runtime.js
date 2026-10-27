@@ -15,6 +15,7 @@
 .rt-host{position:relative;width:100%;height:100%;overflow:hidden;background:#000}
 .rt-stage{position:absolute;left:50%;top:50%;width:${W}px;height:${H}px;transform-origin:center;overflow:hidden;user-select:none;-webkit-user-select:none;touch-action:none}
 .rt-layer{position:absolute;inset:0}
+.rt-safe{position:absolute;inset:0;border:2px dashed rgba(125,243,255,.85);box-shadow:0 0 0 1px rgba(0,0,0,.6);pointer-events:none;z-index:99999}
 .rt-n{position:absolute;transform:translate(-50%,-50%);white-space:pre;line-height:1.1}
 .rt-sel{outline:2px dashed #ffb53a;outline-offset:5px}
 .rt-handle{position:absolute;width:16px;height:16px;margin:-8px 0 0 -8px;background:#ffb53a;border:2px solid #000;border-radius:3px;z-index:5}
@@ -78,7 +79,7 @@
     // ---------------- drawing
     rebuild() {
       const sc = this.screen(), T = this.tags; if (!sc) return;
-      this.fpsEl.style.display = this.mode !== "edit" && T.get("gfx.showFps") ? "block" : "none"; const hud = this.mode === "hud"; this.stage.style.filter = hud ? "none" : "brightness(" + (T.get("gfx.brightness") || 1) + ")"; this.stage.style.background = hud ? "transparent" : T.get(sc.id + ".bg") || "#000";
+      this.fpsEl.style.display = this.mode !== "edit" && T.get("gfx.showFps") ? "block" : "none"; const hud = this.mode === "hud", hudEdit = this.mode === "edit" && sc.kind === "hud"; this.stage.style.overflow = hud || hudEdit ? "visible" : "hidden"; if (hudEdit && !this.safeEl) { this.safeEl = div("rt-safe"); this.stage.append(this.safeEl); } if (this.safeEl) this.safeEl.style.display = hudEdit ? "block" : "none"; this.stage.style.filter = hud ? "none" : "brightness(" + (T.get("gfx.brightness") || 1) + ")"; this.stage.style.background = hud ? "transparent" : T.get(sc.id + ".bg") || "#000";
       if (this.splash) return;
       this.layer.replaceChildren(); this.els = {};
       const bgi = T.get(sc.id + ".bgImage"); if (bgi && this.urls[bgi]) { const im = new Image(); im.src = this.urls[bgi]; im.style.cssText = "position:absolute;inset:0;width:100%;height:100%;object-fit:cover"; this.layer.append(im); }
