@@ -3,7 +3,7 @@
    copied so the project is not changed); mode "preview" is a still camera used by the Player Editor. */
 (function () {
   "use strict";
-  const PRIM = (window.PRIM = window.PRIM || {}), R3D = PRIM.R3D, clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const PRIM = (window.PRIM = window.PRIM || {}), R3D = PRIM.R3D, M4 = PRIM.M4, clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   const el = (cls, css) => { const d = document.createElement("div"); d.className = cls; if (css) d.style.cssText = css; return d; };
   const segDist = (px, py, w) => { const dx = w.bx - w.ax, dy = w.by - w.ay, l2 = dx * dx + dy * dy; let t = l2 ? ((px - w.ax) * dx + (py - w.ay) * dy) / l2 : 0; t = clamp(t, 0, 1); const x = w.ax + t * dx, y = w.ay + t * dy; return { d: Math.hypot(px - x, py - y), x, y }; };
 
@@ -14,13 +14,13 @@
       this.keys = {}; this.aimYaw = 0; this.aimPitch = 0; this.dead = false; this.drag = false; this.vz = 0; this.ground = false; this.hint = null; this.shot = 0;
       const host = this.host = o.host; this.root = el("p3root"); this.cv = document.createElement("canvas"); this.cv.className = "v3cv p3cv"; this.xh = el("p3x"); this.hudHost = el("p3hud"); this.msg = el("p3msg");
       this.root.append(this.cv, this.hudHost, this.xh, this.msg); host.append(this.root);
-      this.view = this.map ? new R3D.View(this.cv) : null; if (this.view && !this.view.ok) { this.view = null; this.msg.textContent = "WebGL could not start on this computer."; }
-      if (this.view) { this.view.setMap(this.project, this.map, this.T, this.urls); this.walls = R3D.walls(this.map, this.T); } else this.cv.style.background = "radial-gradient(ellipse at 50% 120%, #1c2b3d, #080b10)";
+      this.view = new R3D.View(this.cv); if (!this.view.ok) { this.view = null; this.msg.textContent = "WebGL could not start on this computer."; }
+      if (this.view && this.map) { this.view.setMap(this.project, this.map, this.T, this.urls); this.walls = R3D.walls(this.map, this.T); } else if (!this.view) this.cv.style.background = "radial-gradient(ellipse at 50% 120%, #1c2b3d, #080b10)";
       const T = this.T, m = this.map; this.x = m ? +T.get(m.id + ".startX") : 0; this.y = m ? +T.get(m.id + ".startY") : 0; this.yaw = (m ? +T.get(m.id + ".startAngle") : 90) * Math.PI / 180; this.pitch = 0;
       const inf = m ? R3D.sectorInfo(m, T, this.x, this.y) : null; this.z = inf ? inf.floor : 0;
       this.hudRt = new PRIM.Runtime({ host: this.hudHost, project: this.project, tags: T, mode: "hud", urls: this.urls, screenId: T.get("player.hud") });
-      this.unsub = T.on(() => { this.drawCross(); if (this.view && !this.pendingRb) { this.pendingRb = true; setTimeout(() => { this.pendingRb = false; if (!this.dead && this.view) { this.view.rebuild(); this.walls = R3D.walls(this.map, T); } }, 80); } });
-      this.drawCross();
+      this.unsub = T.on(() => { this.drawCross(); if (this.view && !this.pendingRb) { this.pendingRb = true; setTimeout(() => { this.pendingRb = false; if (!this.dead && this.view) { if (this.map) { this.view.rebuild(); this.walls = R3D.walls(this.map, T); } this.syncAtts(); } }, 80); } });
+      this.drawCross(); this.gpu = {}; this.atts = []; this.syncAtts();
       if (this.mode === "play") this.bind(); else { this.msg.style.display = "none"; this.cv.style.cursor = "default"; }
       this.last = performance.now(); this.raf = requestAnimationFrame(t => this.frame(t));
     }
@@ -39,9 +39,9 @@
       };
       const ku = e => { const n = e.key.toLowerCase(); k[n === " " ? "space" : n] = false; };
       const mm = e => { if (document.pointerLockElement === cv || this.drag) this.look(e.movementX, e.movementY); };
-      const pd = () => { this.msg.style.display = "none"; this.drag = true; try { const r = cv.requestPointerLock && cv.requestPointerLock(); if (r && r.catch) r.catch(() => {}); } catch (x) {} cv.focus(); };
+      const pd = e => { if (this.engaged && e && e.button === 0) this.fire(); this.engaged = true; this.msg.style.display = "none"; this.drag = true; try { const r = cv.requestPointerLock && cv.requestPointerLock(); if (r && r.catch) r.catch(() => {}); } catch (x) {} cv.focus(); };
       const pu = () => { this.drag = false; }, pl = () => lock();
-      addEventListener("keydown", kd, true); addEventListener("keyup", ku, true); addEventListener("mousemove", mm); cv.addEventListener("pointerdown", pd); addEventListener("pointerup", pu); document.addEventListener("pointerlockchange", pl);
+      addEventListener("keydown", kd, true); addEventListener("keyup", ku, true); addEventListener("mousemove", mm); addEventListener("pointerup", pu); document.addEventListener("pointerlockchange", pl);
       this.root.addEventListener("pointerdown", pd); cv.tabIndex = 0;
       this.unbind = () => { removeEventListener("keydown", kd, true); removeEventListener("keyup", ku, true); removeEventListener("mousemove", mm); removeEventListener("pointerup", pu); document.removeEventListener("pointerlockchange", pl); };
     }
@@ -69,6 +69,44 @@
       const t = Math.tan(v.fov / 2), w = this.cv.clientWidth, h = this.cv.clientHeight, asp = w / h;
       this.xh.style.transform = `translate(${Math.tan(this.aimYaw) / (t * asp) * w / 2}px, ${-Math.tan(this.aimPitch) / t * h / 2}px)`;
     }
+    // ---- 3D objects attached to the camera (weapons, hands...)
+    syncAtts() {
+      if (!this.view) return; const F = PRIM.FBX, keep = [];
+      for (const a of this.project.player.attachments) {
+        const aid = this.T.get("player." + a.id + ".asset"), model = F.cache[aid]; if (!aid) continue;
+        if (!model) { F.load(aid, this.urls[aid]).then(m => { if (m && !this.dead) this.syncAtts(); }); continue; }
+        let at = this.atts.find(x => x.id === a.id && x.aid === aid) || { id: a.id, aid, t: 0, fire: null, cur: null }; at.model = model; if (!this.gpu[aid]) this.gpu[aid] = this.view.loadModel(model); at.gm = this.gpu[aid]; keep.push(at);
+      }
+      this.atts = keep;
+    }
+    fire() { for (const at of this.atts) { const fa = this.T.get("player." + at.id + ".fireAnim"); if (fa && at.model.anims[fa]) { at.fire = fa; at.t = 0; if (this.onFire) this.onFire(at, fa); } } }
+    // advance one attachment's animation; returns the name being played
+    advance(at, dt) {
+      const T = this.T, pre = "player." + at.id + "."; let name = at.fire || T.get(pre + "idleAnim"), a = name && at.model.anims[name]; if (!a) { at.t = 0; return ""; }
+      const t0 = at.t; at.t += dt; if (this.onAnim) this.onAnim(at, name, t0, Math.min(at.t, a.dur), !!at.fire);
+      if (at.fire) { if (at.t >= a.dur) { at.fire = null; at.t = 0; } } else if (a.dur > 0 && at.t >= a.dur) { if (this.onAnim) this.onAnim(at, name, 0, at.t - a.dur, false, true); at.t %= a.dur; }
+      return at.fire || name;
+    }
+    drawHand(v, dt) {
+      if (!this.atts.length) return; const T = this.T, c = v.cam, items = [], segs = [], F = PRIM.FBX, eye = [c.x, c.y, c.z], B = R3D.camBasis(c.yaw, c.pitch);
+      for (const at of this.atts) {
+        const pre = "player." + at.id + "."; if (!T.get(pre + "visible")) continue; const g = k => +T.get(pre + k) || 0, name = this.advance(at, dt), pose = F.pose(at.model, name || null, at.t);
+        const off = [g("x"), g("y"), g("z")], Rb = M4.rotXYZ([g("rx"), g("ry"), g("rz")]), sc = g("scale") || 1, Sm = M4.scale(sc, sc, sc); let Ra = M4.ident();
+        if (T.get(pre + "weapon")) {
+          const ay = g("arrowYaw") * Math.PI / 180, ap = g("arrowPitch") * Math.PI / 180, arrow = [-Math.cos(ap) * Math.sin(ay), Math.sin(ap), -Math.cos(ap) * Math.cos(ay)], mz = [g("muzzleX") * sc, g("muzzleY") * sc, g("muzzleZ") * sc];
+          const hit = v.raycast(eye, this.aimDir(), 6000), wp = hit ? hit.p : M4.add(eye, this.aimDir().map(q => q * 3000)), d0 = M4.sub(wp, eye), Hc = [M4.dot(d0, B.s), M4.dot(d0, B.u), -M4.dot(d0, B.f)];
+          const a0 = M4.norm(M4.dir(Rb, ...arrow)), maxR = g("aimMax") * Math.PI / 180; let want = M4.norm(M4.sub(Hc, M4.add(off, M4.dir(Rb, ...mz))));
+          Ra = M4.between(a0, want, maxR); want = M4.norm(M4.sub(Hc, M4.add(off, M4.dir(M4.mul(Ra, Rb), ...mz)))); at.cur = at.cur ? M4.norm(M4.add(at.cur.map(q => q * Math.exp(-14 * dt)), want.map(q => q * (1 - Math.exp(-14 * dt))))) : want; Ra = M4.between(a0, at.cur, maxR);
+        } else at.cur = null;
+        const M = M4.mul(M4.translate(...off), M4.mul(Ra, M4.mul(Rb, Sm))); items.push({ gm: at.gm, pose, M });
+        if (this.mode === "preview" && T.get(pre + "weapon")) {   // the arrow and the muzzle point, drawn so they can be placed
+          const mp = M4.point(M, g("muzzleX"), g("muzzleY"), g("muzzleZ")), ad = M4.norm(M4.dir(M, ...[-Math.cos(g("arrowPitch") * Math.PI / 180) * Math.sin(g("arrowYaw") * Math.PI / 180), Math.sin(g("arrowPitch") * Math.PI / 180), -Math.cos(g("arrowPitch") * Math.PI / 180) * Math.cos(g("arrowYaw") * Math.PI / 180)])), tip = M4.add(mp, ad.map(q => q * 26));
+          const side = M4.norm(M4.cross(ad, [0, 1, 0])), r = [1, 0.25, 0.2], y = [1, 0.9, 0.2]; segs.push({ a: mp, b: tip, c: r }, { a: tip, b: M4.add(tip, M4.add(ad.map(q => -q * 5), side.map(q => q * 2.5))), c: r }, { a: tip, b: M4.add(tip, M4.sub(ad.map(q => -q * 5), side.map(q => q * 2.5))), c: r });
+          for (const ax of [[1, 0, 0], [0, 1, 0], [0, 0, 1]]) segs.push({ a: M4.sub(mp, ax.map(q => q * 2)), b: M4.add(mp, ax.map(q => q * 2)), c: y });
+        }
+      }
+      v.drawViewmodel(items, segs);
+    }
     // ---- walking
     info(x, y) { return R3D.sectorInfo(this.map, this.T, x, y); }
     push(p, r) { for (let it = 0; it < 3; it++) for (const w of this.walls) { const q = segDist(p.x, p.y, w); if (q.d < r) { let nx = p.x - q.x, ny = p.y - q.y, d = q.d; if (d < 1e-4) { const dx = w.bx - w.ax, dy = w.by - w.ay, l = Math.hypot(dx, dy) || 1; nx = -dy / l; ny = dx / l; d = 0; } else { nx /= d; ny /= d; } p.x += nx * (r - d); p.y += ny * (r - d); } } }
@@ -89,7 +127,7 @@
       if (this.dead) return; this.raf = requestAnimationFrame(q => this.frame(q)); const dt = Math.min(0.05, (t - this.last) / 1000); this.last = t;
       if (this.mode === "play" && this.map) this.step(dt);
       const v = this.view; if (!v) return; const T = this.T, c = v.cam; v.fov = (+T.get("player.fov") || 80) * Math.PI / 180;
-      c.x = this.x; c.z = this.y; c.y = this.z + (+T.get("player.eyeHeight") || 56); c.yaw = this.yaw; c.pitch = this.pitch; v.draw(); this.placeCross(v);
+      c.x = this.x; c.z = this.y; c.y = this.z + (+T.get("player.eyeHeight") || 56); c.yaw = this.yaw; c.pitch = this.pitch; v.draw(); this.drawHand(v, dt); this.placeCross(v);
     }
   };
 })();

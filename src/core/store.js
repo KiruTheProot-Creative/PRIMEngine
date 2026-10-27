@@ -13,7 +13,7 @@
   const MIME = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", bmp: "image/bmp", svg: "image/svg+xml", wav: "audio/wav", mp3: "audio/mpeg", ogg: "audio/ogg", m4a: "audio/mp4", flac: "audio/flac", ttf: "font/ttf", otf: "font/otf", woff: "font/woff", woff2: "font/woff2", json: "application/json", txt: "text/plain" };
   const ext = n => (n.split(".").pop() || "").toLowerCase();
   St.mime = n => MIME[ext(n)] || "application/octet-stream";
-  St.typeOf = n => { const e = ext(n), m = MIME[e] || ""; return m.startsWith("image/") ? "image" : m.startsWith("audio/") ? "sound" : m.startsWith("font/") ? "font" : "file"; };
+  St.typeOf = n => { const e = ext(n), m = MIME[e] || ""; if (e === "fbx") return "model"; return m.startsWith("image/") ? "image" : m.startsWith("audio/") ? "sound" : m.startsWith("font/") ? "font" : "file"; };
 
   // ---------- project index / working copies
   St.list = () => { try { return (JSON.parse(ls.get(IDX) || "[]")).sort((a, b) => b.modified - a.modified); } catch (e) { return []; } };
@@ -58,7 +58,9 @@
       const path = [baseFolder, it.path].filter(Boolean).join("/"); St.ensureFolder(project, path);
       const name = St.uniqueName(project.assets.filter(a => a.path === path).map(a => a.name), it.name), id = PRIM.Schema.uid(clean(name.replace(/\.[^.]+$/, "")) || "asset", project.assets.map(a => a.id));
       const blob = new Blob([it.file], { type: St.mime(name) }); await St.putAsset(project.id, id, blob); urls[id] = URL.createObjectURL(blob);
-      const rec = { id, type: St.typeOf(name), name, path, size: blob.size }; if (rec.type === "font") await St.registerFont(id, urls[id]); project.assets.push(rec); added.push(rec);
+      const rec = { id, type: St.typeOf(name), name, path, size: blob.size }; if (rec.type === "font") await St.registerFont(id, urls[id]);
+      if (rec.type === "model") { try { const m = await PRIM.FBX.parse(await blob.arrayBuffer()); PRIM.FBX.cache[id] = m; rec.meta = PRIM.FBX.summary(m); } catch (e) { rec.meta = { error: String(e.message || e) }; } }
+      project.assets.push(rec); added.push(rec);
     }
     return added;
   };

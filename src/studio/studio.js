@@ -27,6 +27,7 @@
     file: '<svg viewBox="0 0 32 32"><path d="M7 2h13l6 6v22H7z" style="fill:var(--filebg)" stroke="rgba(0,0,0,.5)"/><path d="M20 2v6h6" fill="none" stroke="rgba(0,0,0,.4)"/></svg>',
     sound: '<svg viewBox="0 0 32 32"><path d="M7 2h13l6 6v22H7z" style="fill:var(--filebg)" stroke="rgba(0,0,0,.5)"/><path d="M11 16h3l4-3v10l-4-3h-3z" fill="#4f7fbf"/><path d="M20 14q2 2 0 4" fill="none" stroke="#4f7fbf" stroke-width="1.6"/></svg>',
     font: '<svg viewBox="0 0 32 32"><path d="M7 2h13l6 6v22H7z" style="fill:var(--filebg)" stroke="rgba(0,0,0,.5)"/><text x="16" y="23" text-anchor="middle" font-family="serif" font-weight="700" font-size="12" fill="#b0603a">Aa</text></svg>',
+    model: '<svg viewBox="0 0 32 32"><path d="M7 2h13l6 6v22H7z" style="fill:var(--filebg)" stroke="rgba(0,0,0,.5)"/><path d="M16 11l6 3v7l-6 3-6-3v-7z" fill="#6aa7d8" stroke="#1b3c5a"/><path d="M10 14l6 3 6-3M16 17v7" fill="none" stroke="#1b3c5a"/></svg>',
     image: '<svg viewBox="0 0 32 32"><path d="M3 5h26v22H3z" style="fill:var(--filebg)" stroke="rgba(0,0,0,.5)"/><path d="M5 25l7-9 5 6 3-3 7 6z" fill="#5f9a5f"/><circle cx="22" cy="11" r="2.5" fill="#d9b441"/></svg>',
   };
   const ico = (k, cls) => h("span", { class: "ico " + (cls || ""), html: ICONS[k] || ICONS.file });
@@ -67,7 +68,7 @@
 
   async function openProject(id) {
     const p = Store.load(id); if (!p) return renderManager();
-    S.project = p; S.tags = new Tags(p.tags); S.urls = await Store.loadAssets(p); S.screenId = p.screens.find(s => s.id === "main") ? "main" : p.screens[0].id;
+    S.project = p; S.tags = new Tags(p.tags); S.urls = await Store.loadAssets(p); loadModels(p); S.screenId = p.screens.find(s => s.id === "main") ? "main" : p.screens[0].id;
     Object.assign(S, { tab: "edit", playerSel: false, mapId: null, msel: null, selId: null, sel: null, folder: "", testing: false, paused: false, rtab: "inspector", btab: "project", search: "", renaming: null, collapsed: {}, treeClosed: {}, fileDirty: false, file: p.fileName ? { ref: null, name: p.fileName } : null });
     S.unsub = S.tags.on(() => markDirty(true)); S.log = []; document.body.classList.add("in-editor"); renderEditor(); log("Opened project “" + p.name + "”");
   }
@@ -139,7 +140,7 @@
       h("div", { class: "tgroup right" }, h("button", { class: "tbtn", text: "Maximize on Play", onclick: play }), h("button", { class: "tbtn", text: "Save", title: "Save as a .prime file (Ctrl+S)", onclick: () => saveProject(false) })));
   }
   function renderStatus() { const l = S.log[S.log.length - 1]; E.status.className = l && l.kind === "error" ? "err" : l && l.kind === "warn" ? "warn" : ""; E.status.textContent = l ? l.msg : "Ready"; E.status.append(h("span", { class: "fileinfo", text: (S.file ? S.file.name : "not saved to a file yet") + (S.fileDirty ? "  ·  unsaved changes" : "") })); }
-  function setTab(t) { if (t === "fly" && !S.mapId) t = "edit"; S.tab = t; S.testing = t === "game"; S.playerSel = t === "player"; if (!S.testing) S.paused = false; renderToolbar(); renderHier(); renderInspector(); renderCenter(); }
+  function setTab(t) { if (t === "fly" && !S.mapId) t = "edit"; S.tab = t; S.testing = t === "game"; S.playerSel = t === "player"; if (S.playerSel) S.sel = null; if (!S.testing) S.paused = false; renderToolbar(); renderHier(); renderInspector(); renderCenter(); }
   function setTesting(v) { setTab(v ? "game" : "edit"); }
   function leaveSpecial() { S.playerSel = false; if (["player", "timeline", "fly"].includes(S.tab)) { S.tab = "edit"; S.testing = false; return true; } return false; }
   function centerTabs() {
@@ -274,7 +275,7 @@
   }
   function pItem(kind, key, name, a) {
     const sel = S.sel && S.sel.kind === kind && S.sel.key === key, renaming = S.renaming && S.renaming.kind === kind && S.renaming.key === key;
-    let icon; if (kind === "folder") icon = ico("folder", "big"); else if (a.type === "image" && S.urls[a.id]) icon = h("img", { class: "thumbimg", src: S.urls[a.id], alt: "", draggable: false }); else if (a.type === "font") icon = h("span", { class: "ico big fontprev", style: "font-family:'prim-font-" + a.id + "',serif", text: "Aa" }); else icon = ico(a.type === "sound" ? "sound" : a.type === "image" ? "image" : "file", "big");
+    let icon; if (kind === "folder") icon = ico("folder", "big"); else if (a.type === "image" && S.urls[a.id]) icon = h("img", { class: "thumbimg", src: S.urls[a.id], alt: "", draggable: false }); else if (a.type === "font") icon = h("span", { class: "ico big fontprev", style: "font-family:'prim-font-" + a.id + "',serif", text: "Aa" }); else icon = ico(a.type === "sound" ? "sound" : a.type === "image" ? "image" : a.type === "model" ? "model" : "file", "big");
     const label = renaming ? h("input", { class: "rename", value: kind === "folder" ? baseName(key) : a.name, "aria-label": "New name", onkeydown: e => { if (e.key === "Enter") e.target.blur(); else if (e.key === "Escape") { S.renaming = null; renderProjectBody(); } e.stopPropagation(); }, onblur: e => { if (!S.renaming) return; const v = e.target.value; S.renaming = null; commitRename(kind, key, v); } }) : h("div", { class: "pname", title: name, text: name });
     const it = h("div", { class: "pit" + (sel ? " sel" : ""), draggable: !renaming, title: kind === "folder" ? key : (a.path ? a.path + "/" : "") + a.name, onclick: e => { e.stopPropagation(); S.sel = { kind, key }; renderProjectBody(); renderInspector(); },
       ondblclick: () => { if (kind === "folder") { S.folder = key; S.search = ""; S.sel = null; renderProject(); renderInspector(); } else if (a.type === "sound" && S.urls[a.id]) playSound(a.id); },
@@ -358,11 +359,12 @@
     if (s.kind === "folder") { const n = S.project.assets.filter(a => a.path === s.key || a.path.startsWith(s.key + "/")).length; box.append(h("div", { class: "ihead" }, ico("folder", "bigico"), h("div", { class: "ititle" }, h("div", { class: "idin ro", text: baseName(s.key) }), h("div", { class: "isub", text: "Folder · Assets/" + s.key }))), h("div", { class: "note", text: n + " file(s) inside. Double-click to open. Drag files onto it to move them. F2 renames, Delete removes." })); return box; }
     const a = assetOf(s.key); if (!a) return box;
     const used = []; for (const k in S.project.tags) { const r = S.project.tags[k]; if ((r.type === "asset" || r.type === "font") && r.value === a.id) used.push(k); }
-    box.append(h("div", { class: "ihead" }, ico(a.type === "sound" ? "sound" : a.type === "font" ? "font" : a.type === "image" ? "image" : "file", "bigico"), h("div", { class: "ititle" }, h("div", { class: "idin ro", text: a.name }), h("div", { class: "isub", text: a.type + " · Assets/" + (a.path ? a.path + "/" : "") + a.name + " · " + fmtSize(a.size || 0) }))));
+    box.append(h("div", { class: "ihead" }, ico(a.type === "sound" ? "sound" : a.type === "font" ? "font" : a.type === "image" ? "image" : a.type === "model" ? "model" : "file", "bigico"), h("div", { class: "ititle" }, h("div", { class: "idin ro", text: a.name }), h("div", { class: "isub", text: a.type + " · Assets/" + (a.path ? a.path + "/" : "") + a.name + " · " + fmtSize(a.size || 0) }))));
     const pv = h("div", { class: "preview" });
     if (a.type === "image" && S.urls[a.id]) { const im = h("img", { src: S.urls[a.id], alt: a.name }), dim = h("div", { class: "isub", text: "" }); im.onload = () => { dim.textContent = im.naturalWidth + " × " + im.naturalHeight + " px"; }; pv.append(im, dim); }
     else if (a.type === "sound" && S.urls[a.id]) { const dur = h("span", { class: "isub", text: "" }), au = new Audio(S.urls[a.id]); au.onloadedmetadata = () => { dur.textContent = au.duration.toFixed(2) + " s"; }; pv.append(h("button", { class: "btn", text: "▶ Play", onclick: () => playSound(a.id) }), h("button", { class: "btn", text: "■ Stop", onclick: stopSound }), dur); }
     else if (a.type === "font") pv.append(h("div", { class: "fsample", style: "font-family:'prim-font-" + a.id + "',serif;font-size:34px", text: "Aa Bb Cc 123" }), h("div", { class: "fsample", style: "font-family:'prim-font-" + a.id + "',serif;font-size:16px", text: "The quick brown fox jumps over the lazy dog." }));
+    else if (a.type === "model") { const mt = a.meta || {}; pv.append(h("div", { class: "isub", text: mt.error ? "Could not read this FBX: " + mt.error : (mt.meshes || 0) + " mesh piece(s), " + (mt.nodes || 0) + " bones/nodes" }), h("div", { class: "note", text: (mt.anims && mt.anims.length) ? "Animations found:\n" + mt.anims.map(an => "• " + an.name + "  (" + an.dur.toFixed(2) + " s)").join("\n") + "\n\nSee them in the Timeline tab." : "No animations in this file." })); }
     else pv.append(h("div", { class: "isub", text: "No preview for this file type yet." }));
     box.append(foldout("preview", "Preview", pv), foldout("used", "Used by", h("div", { class: "note", text: used.length ? used.join("\n") : "Not used by any tag yet. Drag it onto the Scene view or an asset field." })));
     return box;
@@ -388,10 +390,11 @@
       case "bool": return row(h("input", { type: "checkbox", class: "chk", checked: !!S.tags.get(name), "aria-label": label, onchange: e => { set(e.target.checked); redraw(); } }));
       case "color": return row(h("input", { type: "color", class: "col", value: S.tags.get(name), "aria-label": label, oninput: e => set(e.target.value) }));
       case "string": return row(h("input", { class: "txt", type: "text", value: S.tags.get(name), "aria-label": label, oninput: e => set(e.target.value) }));
-      case "asset": case "font": case "choice": case "screenRef": case "tagRef": {
+      case "asset": case "font": case "choice": case "screenRef": case "tagRef": case "anim": {
         let opts = [];
         if (t.type === "asset") opts = [["", "None"], ...S.project.assets.filter(a => a.type === t.assetType).map(a => [a.id, (a.path ? a.path + "/" : "") + a.name])];
         else if (t.type === "font") opts = [...PRIM.BUILTIN_FONTS, ...S.project.assets.filter(a => a.type === "font").map(a => [a.id, a.name])];
+        else if (t.type === "anim") { const mo = PRIM.FBX.cache[S.tags.get(t.modelTag)]; opts = [["", "(none)"], ...(mo ? Object.keys(mo.anims) : []).map(n => [n, n])]; }
         else if (t.type === "choice") opts = t.options; else if (t.type === "screenRef") opts = [["", "None"], ...screens().map(s => [s.id, s.id])];
         else opts = [["", "(pick a tag)"], ...S.tags.names().filter(n => S.tags.spec(n).type === t.refType).map(n => [n, (S.tags.spec(n).label || n) + "  ·  " + n])];
         const sel = h("select", { class: "dd", "aria-label": label }, opts.map(([v, l]) => h("option", { value: v, text: l }))); sel.value = S.tags.get(name); if (sel.value !== String(S.tags.get(name))) sel.value = "";
@@ -505,6 +508,22 @@
     E.host.className = "host maphost"; E.host.replaceChildren();
     S.p3 = new PRIM.Play3D({ host: E.host, project: S.project, map: m, tags: S.tags, urls: S.urls, mode: "preview" });
   }
+  // ---- 3D objects attached to the player camera
+  function loadModels(p) { PRIM.FBX.cache = {}; PRIM.FBX.pending = {}; for (const a of p.assets) if (a.type === "model") PRIM.FBX.load(a.id, S.urls[a.id]).then(m => { if (m && S.project === p) { if (!a.meta || a.meta.error) a.meta = PRIM.FBX.summary(m); renderInspector(); } }); }
+  function addAttachment(asset) {
+    const P = S.project.player, id = Schema.uid("att", P.attachments.map(a => a.id)), att = { id }, mo = PRIM.FBX.cache[asset.id], names = mo ? Object.keys(mo.anims) : [];
+    const over = { asset: asset.id, scale: mo ? Math.max(0.001, +(22 / (mo.bounds.size || 1)).toFixed(3)) : 1, idleAnim: names.find(n => /idle/i.test(n)) || "", fireAnim: names.find(n => /shot|fire|shoot/i.test(n)) || "" };
+    P.attachments.push(att); Schema.defineAttach(S.project, att, over); S.tags.emit([]); markDirty(); renderInspector(); renderCenter(); log("Attached “" + asset.name + "” to the player camera");
+  }
+  function attachSection() {
+    const P = S.project.player, models = S.project.assets.filter(a => a.type === "model"), rows = [];
+    for (const att of P.attachments) {
+      const pre = "player." + att.id + ".", asset = S.project.assets.find(a => a.id === S.tags.get(pre + "asset")), items = Schema.ATTACH.filter(pr => !pr.showIf || S.tags.get(pre + pr.showIf[0]) === pr.showIf[1]).map(pr => field(pre + pr.k));
+      rows.push(foldout("att:" + att.id, "▪ " + att.id + (asset ? " · " + asset.name : ""), ...items, h("div", { class: "btnrow" }, h("button", { class: "btn sm danger", text: "Remove", onclick: () => { Schema.removeAttach(S.project, att); S.tags.emit([]); markDirty(); renderInspector(); renderCenter(); } }))));
+    }
+    return foldout("pl:att", "Attached 3D objects", ...rows, h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: "+ Attach model ▾", onclick: e => popMenu(e.currentTarget, models.length ? models.map(a => ({ t: a.name, fn: () => addAttachment(a) })) : [{ t: "Import an .fbx file first (Assets > Import Files)", disabled: true }]) })),
+      h("div", { class: "note", text: "Objects stay fixed to the camera. For a weapon, tick “Weapon” and place the muzzle point and the arrow: the weapon turns so its arrow points at whatever the crosshair is aiming at." }));
+  }
   function timelineCenter() {
     const p = E.center; p.tabs.replaceChildren(...centerTabs(), h("span", { class: "sp" }));
     put(E.cbar, h("span", { class: "chip", text: "Timeline" }), h("span", { class: "hint", text: "Import an .fbx model and its animations appear here." }));
@@ -518,7 +537,8 @@
       if (title === "HUD") { const sc = screens().find(x => x.id === hudId); rows.push(h("div", { class: "btnrow" }, h("button", { class: "btn sm", disabled: !sc, text: "Edit HUD screen", onclick: () => sc && selectScreen(sc.id) }))); rows.push(h("div", { class: "note", text: "The HUD is a screen like any other: add Bars, Titles and Images to it. Write {player.health} in a text to show a live value." })); }
       box.append(foldout("pl:" + title, title, ...rows));
     }
-    box.append(h("div", { class: "note", text: "Test keys while walking: H hurts 10, J heals 10." }));
+    box.append(attachSection());
+    box.append(h("div", { class: "note", text: "Test keys while walking: H hurts 10, J heals 10. Click to fire the attached models' click animation." }));
     return box;
   }
   function dropOnMap(e, a) {

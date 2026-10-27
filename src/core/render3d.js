@@ -3,7 +3,7 @@
    Also holds a free-fly camera with mouse look. */
 (function () {
   "use strict";
-  const PRIM = (window.PRIM = window.PRIM || {}), R = (PRIM.R3D = {});
+  const PRIM = (window.PRIM = window.PRIM || {}), R = (PRIM.R3D = {}), M4 = PRIM.M4;
   const TILE = 64;  // one texture repeat = 64 map units
 
   // ------------------------------------------------------------ small math
@@ -46,6 +46,9 @@
     return null;
   };
 
+  // camera orientation vectors for a yaw / pitch (radians): right, up, forward
+  R.camBasis = function (yaw, pitch) { const cp = Math.cos(pitch), f = [Math.cos(yaw) * cp, Math.sin(pitch), Math.sin(yaw) * cp], sr = M4.norm(M4.cross(f, [0, 1, 0])); return { s: sr, u: M4.cross(sr, f), f }; };
+
   // solid wall segments of a map (those not marked open), for collision
   R.walls = function (m, T) {
     const vs = {}; for (const v of m.verts) vs[v.id] = v; const out = [];
@@ -56,7 +59,7 @@
   R.sectorInfo = function (m, T, x, y) { const s = R.sectorAt(m, x, y); return s ? { sec: s, floor: +T.get(m.id + "." + s.id + ".floor"), ceil: +T.get(m.id + "." + s.id + ".ceil") } : null; };
 
   // ------------------------------------------------------------ the view
-  const VS = "attribute vec3 aPos;attribute vec2 aUV;attribute vec3 aCol;uniform mat4 uVP;varying vec2 vUV;varying vec3 vCol;varying float vD;void main(){vec4 p=uVP*vec4(aPos,1.0);gl_Position=p;vUV=aUV;vCol=aCol;vD=p.w;}";
+  const VS = "attribute vec3 aPos;attribute vec2 aUV;attribute vec3 aCol;uniform mat4 uVP;uniform mat4 uM;varying vec2 vUV;varying vec3 vCol;varying float vD;void main(){vec4 p=uVP*uM*vec4(aPos,1.0);gl_Position=p;vUV=aUV;vCol=aCol;vD=p.w;}";
   const FS = "precision mediump float;varying vec2 vUV;varying vec3 vCol;varying float vD;uniform sampler2D uTex;uniform vec3 uFog;uniform float uFogD;uniform float uBright;void main(){vec3 c=texture2D(uTex,vUV).rgb*vCol*uBright;float f=clamp(vD/uFogD,0.0,1.0);gl_FragColor=vec4(mix(c,uFog,f*f),1.0);}";
 
   R.View = function (canvas, o) {
@@ -64,16 +67,16 @@
     this.canvas = canvas; this.ok = !!gl; if (!gl) return; this.gl = gl;
     const sh = (t, src) => { const s = gl.createShader(t); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; };
     const pr = this.pr = gl.createProgram(); gl.attachShader(pr, sh(gl.VERTEX_SHADER, VS)); gl.attachShader(pr, sh(gl.FRAGMENT_SHADER, FS)); gl.linkProgram(pr); gl.useProgram(pr);
-    this.loc = { pos: gl.getAttribLocation(pr, "aPos"), uv: gl.getAttribLocation(pr, "aUV"), col: gl.getAttribLocation(pr, "aCol"), vp: gl.getUniformLocation(pr, "uVP"), tex: gl.getUniformLocation(pr, "uTex"), fog: gl.getUniformLocation(pr, "uFog"), fogD: gl.getUniformLocation(pr, "uFogD"), bright: gl.getUniformLocation(pr, "uBright") };
+    this.loc = { pos: gl.getAttribLocation(pr, "aPos"), uv: gl.getAttribLocation(pr, "aUV"), col: gl.getAttribLocation(pr, "aCol"), vp: gl.getUniformLocation(pr, "uVP"), m: gl.getUniformLocation(pr, "uM"), tex: gl.getUniformLocation(pr, "uTex"), fog: gl.getUniformLocation(pr, "uFog"), fogD: gl.getUniformLocation(pr, "uFogD"), bright: gl.getUniformLocation(pr, "uBright") };
     gl.enable(gl.DEPTH_TEST); gl.disable(gl.CULL_FACE);
     this.cam = { x: 0, y: 56, z: 0, yaw: Math.PI / 2, pitch: 0 }; this.batches = []; this.texCache = {}; this.sky = [0.08, 0.14, 0.23]; this.fog = [0.02, 0.03, 0.05]; this.fogD = 1400; this.bright = 1; this.fov = 1.15; this.keys = {}; this.speed = 300; this.running = false; this.frames = 0;
-    this.defTex = this.makeTex(checker());
+    this.defTex = this.makeTex(checker()); { const w = document.createElement("canvas"); w.width = w.height = 2; const x = w.getContext("2d"); x.fillStyle = "#fff"; x.fillRect(0, 0, 2, 2); this.whiteTex = this.makeTex(w); }
   };
   const P = R.View.prototype;
 
   function checker() { const c = document.createElement("canvas"); c.width = c.height = 64; const x = c.getContext("2d"); for (let j = 0; j < 8; j++) for (let i = 0; i < 8; i++) { x.fillStyle = (i + j) % 2 ? "#b8b8b8" : "#d8d8d8"; x.fillRect(i * 8, j * 8, 8, 8); } x.strokeStyle = "#7a7a7a"; x.lineWidth = 2; x.strokeRect(1, 1, 62, 62); return c; }
   P.makeTex = function (src) {
-    const gl = this.gl; let w = src.naturalWidth || src.width, h = src.naturalHeight || src.height; const pot = n => Math.min(512, Math.max(2, 1 << Math.round(Math.log2(Math.max(1, n)))));
+    const gl = this.gl; let w = src.naturalWidth || src.width, h = src.naturalHeight || src.height; const pot = n => Math.min(1024, Math.max(2, 1 << Math.round(Math.log2(Math.max(1, n)))));
     const c = document.createElement("canvas"); c.width = pot(w); c.height = pot(h); const x = c.getContext("2d"); x.imageSmoothingEnabled = false; x.drawImage(src, 0, 0, c.width, c.height);
     const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, c);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT); return t;
@@ -90,7 +93,7 @@
     if (!this.ok || !this.map) return; const gl = this.gl, m = this.map, T = this.tags, vs = {}; for (const v of m.verts) vs[v.id] = v;
     this.sky = hex(T.get(m.id + ".skyColor")); this.fog = hex(T.get(m.id + ".fogColor")); this.fogD = Math.max(100, +T.get(m.id + ".fogDistance") || 1400);
     for (const b of this.batches) gl.deleteBuffer(b.buf); const by = {};
-    const add = (texId, tri) => { (by[texId || ""] = by[texId || ""] || []).push(...tri); };
+    this.tri = []; const add = (texId, tri) => { (by[texId || ""] = by[texId || ""] || []).push(...tri); for (let i = 0; i + 23 < tri.length; i += 24) this.tri.push(tri[i], tri[i + 1], tri[i + 2], tri[i + 8], tri[i + 9], tri[i + 10], tri[i + 16], tri[i + 17], tri[i + 18]); };
     for (const sec of m.sectors) {
       const ids = sec.v.filter(i => vs[i]); if (ids.length < 3) continue; const pre = m.id + "." + sec.id + ".", fl = +T.get(pre + "floor"), ce = +T.get(pre + "ceil"), li = +T.get(pre + "light");
       const pts = ids.map(i => [vs[i].x, vs[i].y]), tris = R.triangulate(pts);
@@ -115,11 +118,48 @@
     if (!this.ok) return; const gl = this.gl, c = this.cam; this.resize(); gl.viewport(0, 0, this.canvas.width, this.canvas.height);
     gl.clearColor(this.sky[0] * this.bright, this.sky[1] * this.bright, this.sky[2] * this.bright, 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     const vp = mul(persp(this.fov, this.canvas.width / this.canvas.height, 2, 12000), look(c.x, c.y, c.z, c.yaw, c.pitch));
-    gl.uniformMatrix4fv(this.loc.vp, false, new Float32Array(vp)); gl.uniform3fv(this.loc.fog, this.fog); gl.uniform1f(this.loc.fogD, this.fogD); gl.uniform1f(this.loc.bright, this.bright); gl.uniform1i(this.loc.tex, 0);
+    gl.uniformMatrix4fv(this.loc.vp, false, new Float32Array(vp)); gl.uniform3fv(this.loc.fog, this.fog); gl.uniform1f(this.loc.fogD, this.fogD); gl.uniform1f(this.loc.bright, this.bright); gl.uniform1i(this.loc.tex, 0); gl.uniformMatrix4fv(this.loc.m, false, new Float32Array(M4.ident()));
     const L = this.loc; gl.enableVertexAttribArray(L.pos); gl.enableVertexAttribArray(L.uv); gl.enableVertexAttribArray(L.col);
     for (const b of this.batches) { gl.bindBuffer(gl.ARRAY_BUFFER, b.buf); gl.vertexAttribPointer(L.pos, 3, gl.FLOAT, false, 32, 0); gl.vertexAttribPointer(L.uv, 2, gl.FLOAT, false, 32, 12); gl.vertexAttribPointer(L.col, 3, gl.FLOAT, false, 32, 20);
       gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.texFor(b.tex, this.urls)); gl.drawArrays(gl.TRIANGLES, 0, b.n); }
     this.frames++;
+  };
+
+  // nearest solid surface along a ray (origin o, direction d): { t, p } or null. Used for aiming.
+  P.raycast = function (o, d, maxT) {
+    const T = this.tri || [], eps = 1e-7; let best = maxT || 1e5, hit = false;
+    for (let i = 0; i < T.length; i += 9) {
+      const e1x = T[i + 3] - T[i], e1y = T[i + 4] - T[i + 1], e1z = T[i + 5] - T[i + 2], e2x = T[i + 6] - T[i], e2y = T[i + 7] - T[i + 1], e2z = T[i + 8] - T[i + 2];
+      const px = d[1] * e2z - d[2] * e2y, py = d[2] * e2x - d[0] * e2z, pz = d[0] * e2y - d[1] * e2x, det = e1x * px + e1y * py + e1z * pz; if (Math.abs(det) < eps) continue;
+      const inv = 1 / det, tx = o[0] - T[i], ty = o[1] - T[i + 1], tz = o[2] - T[i + 2], u = (tx * px + ty * py + tz * pz) * inv; if (u < 0 || u > 1) continue;
+      const qx = ty * e1z - tz * e1y, qy = tz * e1x - tx * e1z, qz = tx * e1y - ty * e1x, v = (d[0] * qx + d[1] * qy + d[2] * qz) * inv; if (v < 0 || u + v > 1) continue;
+      const t = (e2x * qx + e2y * qy + e2z * qz) * inv; if (t > 0.01 && t < best) { best = t; hit = true; }
+    }
+    return hit ? { t: best, p: [o[0] + d[0] * best, o[1] + d[1] * best, o[2] + d[2] * best] } : null;
+  };
+
+  // ------------------------------------------------------------ models (FBX) drawn in front of the camera
+  P.loadModel = function (model) {
+    const gl = this.gl, L = M4.norm([0.3, 0.8, 0.5]), gm = { model, meshes: [], tex: this.whiteTex };
+    model.nodes.forEach((n, i) => { if (!n.mesh || !n.mesh.p.length) return; const m = n.mesh, cnt = m.p.length / 3, a = new Float32Array(cnt * 8);
+      for (let k = 0; k < cnt; k++) { const lit = 0.55 + 0.45 * Math.max(0, M4.dot([m.n[k * 3], m.n[k * 3 + 1], m.n[k * 3 + 2]], L)); a.set([m.p[k * 3], m.p[k * 3 + 1], m.p[k * 3 + 2], m.u[k * 2], m.u[k * 2 + 1], lit, lit, lit], k * 8); }
+      const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf); gl.bufferData(gl.ARRAY_BUFFER, a, gl.STATIC_DRAW); gm.meshes.push({ node: i, buf, n: cnt }); });
+    if (model.texBytes) { const im = new Image(); im.onload = () => { gm.tex = this.makeTex(im); }; im.src = URL.createObjectURL(new Blob([model.texBytes], { type: "image/png" })); }
+    return gm;
+  };
+  // items: [{ gm, pose, M }] (M places the model in camera space: looking down -Z, +X right, +Y up). segs: [{a, b, c}] debug arrows/points
+  P.drawViewmodel = function (items, segs) {
+    const gl = this.gl, L = this.loc; gl.clear(gl.DEPTH_BUFFER_BIT); gl.uniformMatrix4fv(L.vp, false, new Float32Array(persp(this.fov, this.canvas.width / this.canvas.height, 0.5, 3000))); gl.uniform1f(L.fogD, 1e9);
+    gl.enableVertexAttribArray(L.pos); gl.enableVertexAttribArray(L.uv); gl.enableVertexAttribArray(L.col);
+    const bind = (buf, tex) => { gl.bindBuffer(gl.ARRAY_BUFFER, buf); gl.vertexAttribPointer(L.pos, 3, gl.FLOAT, false, 32, 0); gl.vertexAttribPointer(L.uv, 2, gl.FLOAT, false, 32, 12); gl.vertexAttribPointer(L.col, 3, gl.FLOAT, false, 32, 20); gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tex); };
+    for (const it of items) for (const ms of it.gm.meshes) { gl.uniformMatrix4fv(L.m, false, new Float32Array(M4.mul(it.M, it.pose[ms.node]))); bind(ms.buf, it.gm.tex); gl.drawArrays(gl.TRIANGLES, 0, ms.n); }
+    if (segs && segs.length) {
+      const a = [], th = 0.25; for (const sg of segs) { const d = M4.sub(sg.b, sg.a), dn = M4.norm(d), ref = Math.abs(dn[1]) > 0.9 ? [1, 0, 0] : [0, 1, 0], p1 = M4.norm(M4.cross(dn, ref)), p2 = M4.cross(dn, p1);
+        for (const p of [p1, p2]) { const o = [p[0] * th, p[1] * th, p[2] * th], q = (v, s) => [v[0] + o[0] * s, v[1] + o[1] * s, v[2] + o[2] * s], A1 = q(sg.a, 1), A2 = q(sg.a, -1), B1 = q(sg.b, 1), B2 = q(sg.b, -1);
+          for (const v of [A1, B1, B2, A1, B2, A2]) a.push(v[0], v[1], v[2], 0, 0, sg.c[0], sg.c[1], sg.c[2]); } }
+      const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(a), gl.STREAM_DRAW); gl.uniformMatrix4fv(L.m, false, new Float32Array(M4.ident())); bind(buf, this.whiteTex); gl.disable(gl.DEPTH_TEST); gl.drawArrays(gl.TRIANGLES, 0, a.length / 8); gl.enable(gl.DEPTH_TEST); gl.deleteBuffer(buf);
+    }
+    gl.uniformMatrix4fv(L.m, false, new Float32Array(M4.ident()));
   };
 
   // ------------------------------------------------------------ free-fly camera
