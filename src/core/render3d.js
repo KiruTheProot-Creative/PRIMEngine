@@ -50,18 +50,23 @@
   R.camBasis = function (yaw, pitch) { const cp = Math.cos(pitch), f = [Math.cos(yaw) * cp, Math.sin(pitch), Math.sin(yaw) * cp], sr = M4.norm(M4.cross(f, [0, 1, 0])); return { s: sr, u: M4.cross(sr, f), f }; };
 
   // doors placed in walls: { "vA|vB": [{ th, a, b, w, h }] } (edge key is the same from both rooms that share the wall)
-  const ekey = (a, b) => a < b ? a + "|" + b : b + "|" + a; R.ekey = ekey;
+  // a wall is identified by where it is, not by its node ids: two rooms that touch share a wall when their edges sit on the same two points
+  let EV = {}; const pk = v => v.x.toFixed(1) + "," + v.y.toFixed(1), setVS = m => { EV = {}; for (const v of m.verts) EV[v.id] = v; };
+  const ekey = (a, b) => { const p = EV[a], q = EV[b]; if (!p || !q) return a < b ? a + "|" + b : b + "|" + a; const x = pk(p), y = pk(q); return x < y ? x + "|" + y : y + "|" + x; }; R.ekey = ekey;
+  const sameP = (a, b) => { const p = EV[a], q = EV[b]; return !!p && !!q && p.x === q.x && p.y === q.y; };
+  // wall edges (by key) that are open on either side
+  R.openKeys = function (m, T) { setVS(m); const out = {}; for (const sec of m.sectors) { const ids = sec.v.filter(i => EV[i]); for (let i = 0; i < ids.length; i++) if (T.get(m.id + "." + ids[i] + ".open")) out[ekey(ids[i], ids[(i + 1) % ids.length])] = 1; } return out; };
   R.doors = function (m, T) {
-    const out = {}; for (const th of m.things || []) { if (!th.sec || !th.a || T.get(th.prop + ".type") !== "door") continue; const sec = m.sectors.find(s => s.id === th.sec), i = sec ? sec.v.indexOf(th.a) : -1; if (i < 0) continue;
+    setVS(m); const out = {}; for (const th of m.things || []) { if (!th.sec || !th.a || T.get(th.prop + ".type") !== "door") continue; const sec = m.sectors.find(s => s.id === th.sec), i = sec ? sec.v.indexOf(th.a) : -1; if (i < 0) continue;
       const b = sec.v[(i + 1) % sec.v.length]; (out[ekey(th.a, b)] = out[ekey(th.a, b)] || []).push({ th, a: th.a, b, w: +T.get(th.prop + ".doorWidth") || 96, h: +T.get(th.prop + ".doorHeight") || 144 }); }
     return out;
   };
   // solid wall segments of a map (those not marked open), for collision. A door splits its wall: the part beside it is always solid, the door part has `door` = the placed object's id
   R.walls = function (m, T) {
-    const vs = {}; for (const v of m.verts) vs[v.id] = v; const out = [], doors = R.doors(m, T);
-    for (const sec of m.sectors) { const ids = sec.v.filter(i => vs[i]); for (let i = 0; i < ids.length; i++) { const A = vs[ids[i]], B = vs[ids[(i + 1) % ids.length]]; if (T.get(m.id + "." + A.id + ".open")) continue;
+    const vs = {}; for (const v of m.verts) vs[v.id] = v; const out = [], doors = R.doors(m, T), okeys = R.openKeys(m, T);
+    for (const sec of m.sectors) { const ids = sec.v.filter(i => vs[i]); for (let i = 0; i < ids.length; i++) { const A = vs[ids[i]], B = vs[ids[(i + 1) % ids.length]]; if (okeys[ekey(A.id, B.id)]) continue;
       const ds = doors[ekey(A.id, B.id)]; if (!ds) { out.push({ ax: A.x, ay: A.y, bx: B.x, by: B.y }); continue; }
-      const len = Math.hypot(B.x - A.x, B.y - A.y) || 1, ux = (B.x - A.x) / len, uy = (B.y - A.y) / len, P = s => [A.x + ux * s, A.y + uy * s], hs = ds.map(d => { const c = (d.a === A.id ? d.th.t : 1 - d.th.t) * len; return { h0: Math.max(0, c - d.w / 2), h1: Math.min(len, c + d.w / 2), id: d.th.id }; }).sort((p, q) => p.h0 - q.h0);
+      const len = Math.hypot(B.x - A.x, B.y - A.y) || 1, ux = (B.x - A.x) / len, uy = (B.y - A.y) / len, P = s => [A.x + ux * s, A.y + uy * s], hs = ds.map(d => { const c = (sameP(d.a, A.id) ? d.th.t : 1 - d.th.t) * len; return { h0: Math.max(0, c - d.w / 2), h1: Math.min(len, c + d.w / 2), id: d.th.id }; }).sort((p, q) => p.h0 - q.h0);
       let cur = 0; const seg = (s0, s1, id) => { if (s1 - s0 < 0.5) return; const p = P(s0), q = P(s1); out.push({ ax: p[0], ay: p[1], bx: q[0], by: q[1], door: id }); };
       for (const h of hs) { seg(cur, h.h0); seg(h.h0, h.h1, h.id); cur = Math.max(cur, h.h1); } seg(cur, len); } }
     return out;
@@ -145,22 +150,22 @@
     if (!this.ok || !this.map) return; const gl = this.gl, m = this.map, T = this.tags, vs = {}; for (const v of m.verts) vs[v.id] = v;
     this.sky = hex(T.get(m.id + ".skyColor")); this.fog = hex(T.get(m.id + ".fogColor")); this.fogD = Math.max(100, +T.get(m.id + ".fogDistance") || 1400);
     for (const b of this.batches) gl.deleteBuffer(b.buf); const by = {};
-    const doorAt = R.doors(m, T), thick = +T.get(m.id + ".wallThickness") || 16, cnt = {}; this.doorAt = doorAt; for (const s2 of m.sectors) { const i2 = s2.v.filter(i => vs[i]); for (let k = 0; k < i2.length; k++) { const key = ekey(i2[k], i2[(k + 1) % i2.length]); cnt[key] = (cnt[key] || 0) + 1; } }
-    this.tri = []; let curSec = ""; const add = (texId, tri) => { (by[(texId || "") + "|" + curSec] = by[(texId || "") + "|" + curSec] || []).push(...tri); for (let i = 0; i + 23 < tri.length; i += 24) this.tri.push(tri[i], tri[i + 1], tri[i + 2], tri[i + 8], tri[i + 9], tri[i + 10], tri[i + 16], tri[i + 17], tri[i + 18]); };
+    const doorAt = R.doors(m, T), okeys = R.openKeys(m, T), thick = +T.get(m.id + ".wallThickness") || 16, cnt = {}; this.doorAt = doorAt; for (const s2 of m.sectors) { const i2 = s2.v.filter(i => vs[i]); for (let k = 0; k < i2.length; k++) { const key = ekey(i2[k], i2[(k + 1) % i2.length]); cnt[key] = (cnt[key] || 0) + 1; } }
+    this.tri = []; this.triInfo = []; let curSec = "", info = null; const add = (texId, tri) => { (by[(texId || "") + "|" + curSec] = by[(texId || "") + "|" + curSec] || []).push(...tri); for (let i = 0; i + 23 < tri.length; i += 24) { this.tri.push(tri[i], tri[i + 1], tri[i + 2], tri[i + 8], tri[i + 9], tri[i + 10], tri[i + 16], tri[i + 17], tri[i + 18]); this.triInfo.push(info); } };
     for (const sec of m.sectors) {
       const ids = sec.v.filter(i => vs[i]); if (ids.length < 3) continue; curSec = sec.id; const pre = m.id + "." + sec.id + ".", fl = +T.get(pre + "floor"), ce = +T.get(pre + "ceil"), li = +T.get(pre + "light");
       const pts = ids.map(i => [vs[i].x, vs[i].y]), tris = R.triangulate(pts);
       for (const [h, key, col] of [[fl, "floor", 1], [ce, "ceil", 0.8]]) {
-        const c = hex(T.get(pre + key + "Color")).map(x => x * li * col), tex = T.get(pre + key + "Tex"), out = [];
+        info = { kind: key, sec: sec.id }; const c = hex(T.get(pre + key + "Color")).map(x => x * li * col), tex = T.get(pre + key + "Tex"), out = [];
         for (const t of tris) for (const k of t) out.push(pts[k][0], h, pts[k][1], pts[k][0] / TILE, pts[k][1] / TILE, c[0], c[1], c[2]);
         add(tex, out);
       }
       for (let i = 0; i < ids.length; i++) {
-        const A = vs[ids[i]], B = vs[ids[(i + 1) % ids.length]], vp = m.id + "." + A.id + "."; if (T.get(vp + "open") || ce <= fl) continue;
+        const A = vs[ids[i]], B = vs[ids[(i + 1) % ids.length]], vp = m.id + "." + A.id + "."; if (okeys[ekey(A.id, B.id)] || ce <= fl) continue; info = { kind: "wall", sec: sec.id, vert: A.id };
         const len = Math.hypot(B.x - A.x, B.y - A.y), dir = Math.abs(B.x - A.x) > Math.abs(B.y - A.y) ? 1 : 0.82, c = hex(T.get(vp + "color")).map(x => x * li * dir), u1 = len / TILE, v0 = 0, v1 = (ce - fl) / TILE;
         const rows = String(T.get(vp + "rows") || "").split(",").map(x => x.trim()), WM = PRIM.WallMesh, custom = !!WM && !!this.project && rows.some(x => x && WM.byId(this.project, x));
         let nx = 0, nz = 0; if (custom) { let a2 = 0; for (let k = 0; k < pts.length; k++) { const p1 = pts[k], p2 = pts[(k + 1) % pts.length]; a2 += p1[0] * p2[1] - p2[0] * p1[1]; } const dx = (B.x - A.x) / (len || 1), dz = (B.y - A.y) / (len || 1); nx = a2 > 0 ? -dz : dz; nz = a2 > 0 ? dx : -dx; }   // nx,nz: the wall's normal, pointing into the room
-        const holes = (doorAt[ekey(A.id, B.id)] || []).map(d => { const cc = (d.a === A.id ? d.th.t : 1 - d.th.t) * len; return { h0: Math.max(0, cc - d.w / 2), h1: Math.min(len, cc + d.w / 2), top: fl + Math.min(d.h, ce - fl) }; }).sort((p1, p2) => p1.h0 - p2.h0);
+        const holes = (doorAt[ekey(A.id, B.id)] || []).map(d => { const cc = (sameP(d.a, A.id) ? d.th.t : 1 - d.th.t) * len; return { h0: Math.max(0, cc - d.w / 2), h1: Math.min(len, cc + d.w / 2), top: fl + Math.min(d.h, ce - fl) }; }).sort((p1, p2) => p1.h0 - p2.h0);
         if (holes.length && !(nx || nz)) { let a2 = 0; for (let k = 0; k < pts.length; k++) { const p1 = pts[k], p2 = pts[(k + 1) % pts.length]; a2 += p1[0] * p2[1] - p2[0] * p1[1]; } const dx = (B.x - A.x) / (len || 1), dz = (B.y - A.y) / (len || 1); nx = a2 > 0 ? -dz : dz; nz = a2 > 0 ? dx : -dx; }
         const o = custom ? -1 : 0, dvx = (B.x - A.x) / (len || 1), dvz = (B.y - A.y) / (len || 1), tex = T.get(vp + "tex");
         const pt = (s, y, d, u, v, k) => [A.x + dvx * s - nx * d, y, A.y + dvz * s - nz * d, u, v, c[0] * k, c[1] * k, c[2] * k];
@@ -190,7 +195,7 @@
     const owners = {}; this.adj = {};
     for (const sec of m.sectors) { const ids = sec.v.filter(i => vs[i]); for (let i = 0; i < ids.length; i++) (owners[ekey(ids[i], ids[(i + 1) % ids.length])] = owners[ekey(ids[i], ids[(i + 1) % ids.length])] || []).push(sec.id); }
     for (const sec of m.sectors) { const ids = sec.v.filter(i => vs[i]), pre = m.id + "." + sec.id + "."; for (let i = 0; i < ids.length; i++) {
-      const A = vs[ids[i]], B = vs[ids[(i + 1) % ids.length]]; if (!T.get(m.id + "." + A.id + ".open") && !doorAt[ekey(A.id, B.id)]) continue;
+      const A = vs[ids[i]], B = vs[ids[(i + 1) % ids.length]]; if (!okeys[ekey(A.id, B.id)] && !doorAt[ekey(A.id, B.id)]) continue;
       for (const o of owners[ekey(A.id, B.id)] || []) if (o !== sec.id) { const so = m.sectors.find(x => x.id === o), lo = Math.min(+T.get(pre + "floor"), +T.get(m.id + "." + o + ".floor")), hi = Math.max(+T.get(pre + "ceil"), +T.get(m.id + "." + o + ".ceil")); (this.adj[sec.id] = this.adj[sec.id] || []).push({ to: o, mn: [Math.min(A.x, B.x), lo, Math.min(A.y, B.y)], mx: [Math.max(A.x, B.x), hi, Math.max(A.y, B.y)] }); }
     } }
   };
@@ -234,7 +239,13 @@
     const vis = this.visible(), st = this.stats = { tris: 0, chunks: 0, totalTris: this.triCount || 0, totalChunks: this.batches.length, lights: this.nLights || 0 };
     for (const b of this.batches) { if (vis && !vis(b)) continue; st.chunks++; st.tris += b.n / 3; gl.bindBuffer(gl.ARRAY_BUFFER, b.buf); gl.vertexAttribPointer(L.pos, 3, gl.FLOAT, false, 32, 0); gl.vertexAttribPointer(L.uv, 2, gl.FLOAT, false, 32, 12); gl.vertexAttribPointer(L.col, 3, gl.FLOAT, false, 32, 20);
       gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.texFor(b.tex, this.urls)); gl.drawArrays(gl.TRIANGLES, 0, b.n); }
+    if (this.overlay && this.overlay.length) this.drawFx(this.overlay);
     this.frames++;
+  };
+  // the world ray through a point of the canvas (px, py in CSS pixels from its top-left corner)
+  P.rayAt = function (px, py) {
+    const c = this.cam, B = R.camBasis(c.yaw, c.pitch), r = this.canvas.getBoundingClientRect(), nx = (px / r.width) * 2 - 1, ny = 1 - (py / r.height) * 2, th = Math.tan(this.fov / 2), ar = r.width / r.height;
+    return { o: [c.x, c.y, c.z], d: M4.norm([0, 1, 2].map(k => B.f[k] + B.s[k] * nx * th * ar + B.u[k] * ny * th)) };
   };
 
   // projectiles and beams in the world. list items: { kind: "line"|"laser"|"sphere"|"mesh", ... } (see play3d.js)
@@ -263,15 +274,15 @@
 
   // nearest solid surface along a ray (origin o, direction d): { t, p } or null. Used for aiming.
   P.raycast = function (o, d, maxT) {
-    const T = this.tri || [], eps = 1e-7; let best = maxT || 1e5, hit = false;
+    const T = this.tri || [], eps = 1e-7; let best = maxT || 1e5, hit = false, bi = -1;
     for (let i = 0; i < T.length; i += 9) {
       const e1x = T[i + 3] - T[i], e1y = T[i + 4] - T[i + 1], e1z = T[i + 5] - T[i + 2], e2x = T[i + 6] - T[i], e2y = T[i + 7] - T[i + 1], e2z = T[i + 8] - T[i + 2];
       const px = d[1] * e2z - d[2] * e2y, py = d[2] * e2x - d[0] * e2z, pz = d[0] * e2y - d[1] * e2x, det = e1x * px + e1y * py + e1z * pz; if (Math.abs(det) < eps) continue;
       const inv = 1 / det, tx = o[0] - T[i], ty = o[1] - T[i + 1], tz = o[2] - T[i + 2], u = (tx * px + ty * py + tz * pz) * inv; if (u < 0 || u > 1) continue;
       const qx = ty * e1z - tz * e1y, qy = tz * e1x - tx * e1z, qz = tx * e1y - ty * e1x, v = (d[0] * qx + d[1] * qy + d[2] * qz) * inv; if (v < 0 || u + v > 1) continue;
-      const t = (e2x * qx + e2y * qy + e2z * qz) * inv; if (t > 0.01 && t < best) { best = t; hit = true; }
+      const t = (e2x * qx + e2y * qy + e2z * qz) * inv; if (t > 0.01 && t < best) { best = t; hit = true; bi = i / 9; }
     }
-    return hit ? { t: best, p: [o[0] + d[0] * best, o[1] + d[1] * best, o[2] + d[2] * best] } : null;
+    return hit ? { t: best, p: [o[0] + d[0] * best, o[1] + d[1] * best, o[2] + d[2] * best], info: (this.triInfo || [])[bi] || null } : null;
   };
 
   // ------------------------------------------------------------ models (FBX) drawn in front of the camera
@@ -319,11 +330,12 @@
   P.placeCamera = function (x, z, yawDeg, h) { Object.assign(this.cam, { x, z, y: h === undefined ? 56 : h, yaw: (yawDeg || 0) * Math.PI / 180, pitch: 0 }); };
   P.attach = function () {
     const el = this.canvas, self = this; el.tabIndex = 0;
-    const kd = e => { if (!self.focus || /INPUT|SELECT|TEXTAREA/.test((e.target && e.target.tagName) || "")) return; const k = e.key.toLowerCase(); if ("wasdqe".includes(k) && k.length === 1 || k === "shift" || k.startsWith("arrow")) { self.keys[k] = true; e.preventDefault(); } };
+    const kd = e => { if (!self.focus || (self.editMode && !self.looking) || /INPUT|SELECT|TEXTAREA/.test((e.target && e.target.tagName) || "")) return; const k = e.key.toLowerCase(); if ("wasdqe".includes(k) && k.length === 1 || k === "shift" || k.startsWith("arrow")) { self.keys[k] = true; e.preventDefault(); } };
     const ku = e => { self.keys[e.key.toLowerCase()] = false; };
-    const mm = e => { if (document.pointerLockElement === el || self.dragging) { self.cam.yaw += e.movementX * 0.003; self.cam.pitch = Math.max(-1.45, Math.min(1.45, self.cam.pitch - e.movementY * 0.003)); } };
-    el.addEventListener("pointerdown", e => { self.focus = true; el.focus(); if (e.button === 2 || e.button === 0) { try { const r = el.requestPointerLock && el.requestPointerLock(); if (r && r.catch) r.catch(() => { self.dragging = true; }); } catch (x) { self.dragging = true; } if (!el.requestPointerLock) self.dragging = true; } });
-    addEventListener("pointerup", () => { self.dragging = false; });
+    const mm = e => { if (self.editMode && !self.looking) { if (self.onHover && e.target === el) { const r = el.getBoundingClientRect(); self.onHover(e.clientX - r.left, e.clientY - r.top); } return; } if (document.pointerLockElement === el || self.dragging) { self.cam.yaw += e.movementX * 0.003; self.cam.pitch = Math.max(-1.45, Math.min(1.45, self.cam.pitch - e.movementY * 0.003)); } };
+    el.addEventListener("pointerdown", e => { self.focus = true; el.focus(); if (self.editMode) { if (e.button === 0 && self.onPick) { const r = el.getBoundingClientRect(); self.onPick({ x: e.clientX - r.left, y: e.clientY - r.top, shift: e.shiftKey || e.ctrlKey }); return; } if (e.button !== 2) return; self.looking = true; }
+      if (e.button === 2 || e.button === 0) { try { const r = el.requestPointerLock && el.requestPointerLock(); if (r && r.catch) r.catch(() => { self.dragging = true; }); } catch (x) { self.dragging = true; } if (!el.requestPointerLock) self.dragging = true; } });
+    addEventListener("pointerup", e => { self.dragging = false; if (self.editMode && self.looking && e.button === 2) { self.looking = false; self.keys = {}; try { if (document.pointerLockElement === el) document.exitPointerLock(); } catch (x) {} } });
     el.addEventListener("blur", () => { self.focus = false; self.keys = {}; }); el.addEventListener("contextmenu", e => e.preventDefault());
     addEventListener("keydown", kd); addEventListener("keyup", ku); addEventListener("mousemove", mm);
     this.detach = () => { removeEventListener("keydown", kd); removeEventListener("keyup", ku); removeEventListener("mousemove", mm); };

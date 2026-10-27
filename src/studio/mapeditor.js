@@ -129,9 +129,11 @@
     m.things.push(th); this.T.emit([]); this.select({ kind: "thing", id: th.id }); if (this.o.onChange) this.o.onChange(true, true); if (this.o.log) this.o.log("Placed “" + (this.T.get(pid + ".name") || pid) + "”");
   };
   P.closeDraft = function () {
-    const d = this.draft; this.draft = []; if (d.length < 3) return this.redraw();
-    const ids = d.map(p => Schema.addVert(this.o.project, this.m, p.x, p.y).id), sec = Schema.addSector(this.o.project, this.m, ids);
-    this.T.emit([]); this.tool = "select"; this.buildBar(); this.select({ kind: "sector", id: sec.id }); if (this.o.onChange) this.o.onChange(true, true); if (this.o.log) this.o.log("Created room “" + sec.id + "” with " + d.length + " nodes");
+    const d = this.draft; if (d.length < 3) { this.draft = []; return this.redraw(); }
+    const r = PRIM.MapGeo.addRoom(this.o.project, this.m, this.T, d); if (r.error) { if (this.o.log) this.o.log(r.error, "warn"); return this.redraw(); }
+    this.draft = []; const sec = r.sectors[0];
+    this.T.emit([]); this.tool = "select"; this.buildBar(); this.select({ kind: "sector", id: sec.id }); if (this.o.onChange) this.o.onChange(true, true);
+    if (this.o.log) this.o.log("Created room “" + sec.id + "”" + (r.sectors.length > 1 ? " (+" + (r.sectors.length - 1) + " more part(s))" : "") + (r.cut ? " – the part overlapping another room was cut away, they now share a wall" : ""));
   };
   P.deleteSelection = function () {
     if (this.draft.length) { this.draft.pop(); return this.redraw(); } const s = this.sel; if (!s) return;

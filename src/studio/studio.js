@@ -152,7 +152,7 @@
       h("div", { class: "tgroup right" }, h("button", { class: "tbtn", text: "Maximize on Play", onclick: play }), h("button", { class: "tbtn", text: "Save", title: "Save as a .prime file (Ctrl+S)", onclick: () => saveProject(false) })));
   }
   function renderStatus() { const l = S.log[S.log.length - 1]; E.status.className = l && l.kind === "error" ? "err" : l && l.kind === "warn" ? "warn" : ""; E.status.textContent = l ? l.msg : "Ready"; E.status.append(h("span", { class: "fileinfo", text: (S.file ? S.file.name : "not saved to a file yet") + (S.fileDirty ? "  ·  unsaved changes" : "") })); }
-  function setTab(t) { S.fsel = null; if (t === "fly" && !S.mapId) t = "edit"; S.tab = t; S.testing = t === "game"; S.playerSel = t === "player"; if (S.playerSel || t === "timeline" || t === "coder") S.sel = null; if (!S.testing) S.paused = false; renderToolbar(); renderHier(); renderInspector(); renderCenter(); }
+  function setTab(t) { S.fsel = null; S.fsl = []; S.fhov = null; if (t === "fly" && !S.mapId) t = "edit"; S.tab = t; S.testing = t === "game"; S.playerSel = t === "player"; if (S.playerSel || t === "timeline" || t === "coder") S.sel = null; if (!S.testing) S.paused = false; renderToolbar(); renderHier(); renderInspector(); renderCenter(); }
   function setTesting(v) { setTab(v ? "game" : "edit"); }
   function leaveSpecial() { S.playerSel = false; if (["player", "timeline", "fly", "coder"].includes(S.tab)) { S.tab = "edit"; S.testing = false; return true; } return false; }
   function centerTabs() {
@@ -258,7 +258,7 @@
   function stageDrop(e) {
     e.preventDefault(); let d; try { d = JSON.parse(e.dataTransfer.getData("application/x-prime")); } catch (x) { return; } if (S.testing || !d || d.kind !== "asset") return;
     const a = S.project.assets.find(x => x.id === d.key); if (!a || a.type !== "image") return log("Only images can be dropped on the screen.", "warn");
-    if (S.mapId) return dropOnMap(e, a);
+    if (S.mapId) return S.tab === "fly" ? flyDrop(e, a) : dropOnMap(e, a);
     if (!S.rt) return;
     const sc = curScreen(), r = S.rt.stage.getBoundingClientRect(), x = Math.round((e.clientX - r.left) / S.rt.scale), y = Math.round((e.clientY - r.top) / S.rt.scale);
     if (sc.kind === "splash") addNode("splash", { kind: "image", asset: a.id }); else addNode("image", { asset: a.id, x: Math.max(-640, Math.min(640, x - 640)), y: Math.max(-360, Math.min(360, 360 - y)) });
@@ -414,7 +414,7 @@
     if (S.fsel) return folderInspector();
     if (S.tab === "walls") return wallInspector(); if (S.tab === "props") return propInspector();
     if (S.playerSel) return playerInspector(); if (S.tab === "timeline") return timelineInspector(); if (S.tab === "coder") return coderInspector();
-    if (S.mapId && curMap()) return mapInspector();
+    if (S.mapId && curMap()) return S.tab === "fly" && (S.fsl || []).length ? flyInspector() : mapInspector();
     const sc = curScreen(), node = selectedNode(), box = h("div", { class: "insp" });
     if (node) {
       const pre = sc.id + "." + node.id + ".", def = Schema.NODE[node.type];
@@ -550,11 +550,51 @@
     const m = curMap(), p = E.center;
     const fly = S.tab === "fly";
     p.tabs.replaceChildren(...centerTabs(), h("span", { class: "sp" }), h("span", { class: "csize", text: m.style.toUpperCase() + " editor  ·  " + m.sectors.length + " room(s)" }));
-    put(E.cbar, h("span", { class: "chip", text: m.id }), h("button", { class: "tbtn sm", text: "▶ Walk this map", title: "Try the map as the player (Esc to leave)", onclick: () => walkMap(m) }), h("span", { class: "hint", text: fly ? "Editor camera: click the view, then W A S D to move, mouse to look, Q / E down and up, Shift = fast. This is for placing things; the player is set up in the Player Editor tab." : "Rooms are closed loops of nodes. Drop an image from the Project panel onto a wall to texture it (Shift = ceiling when dropped on a room)." }));
+    put(E.cbar, h("span", { class: "chip", text: m.id }), h("button", { class: "tbtn sm", text: "▶ Walk this map", title: "Try the map as the player (Esc to leave)", onclick: () => walkMap(m) }), h("span", { class: "hint", text: fly ? "Hold the RIGHT mouse button and use W A S D to fly (mouse looks, Q / E down and up, Shift = fast). Let go to stand still, then LEFT-click a wall, floor or ceiling to select it (Shift adds more) and give it a texture or colour in the Inspector, or drop an image from the Project panel onto it." : "Rooms are closed loops of nodes. Drop an image from the Project panel onto a wall to texture it (Shift = ceiling when dropped on a room)." }));
     E.host.className = "host maphost"; E.host.replaceChildren();
-    if (fly) { S.v3 = makeView(E.host, m); if (S.v3) S.v3.focus = false; }
+    if (fly) { S.v3 = makeView(E.host, m); if (S.v3) { S.v3.focus = false; S.v3.editMode = true; S.v3.onPick = flyPick; S.v3.onHover = flyHover; flyOverlay(); } }
     else { S.med = new PRIM.MapEditor({ host: E.host, project: S.project, map: m, tags: S.tags, getUrls: () => S.urls, log, getProps: () => (S.project.props || []).map(p => ({ id: p.id, name: S.tags.get(p.id + ".name") || p.id, type: S.tags.get(p.id + ".type") })), getProp: () => S.propSel || ((S.project.props || [])[0] || {}).id, setProp: id => { S.propSel = id; }, onSelect: sel => { S.msel = sel; renderInspector(); renderHier(); },
       onChange: (geo, structure) => { markDirty(); if (structure) { renderHier(); renderInspector(); } else renderInspector(); } }); S.med.select(S.msel, true); }
+  }
+  // ---- Fly Editor: pick faces (a wall, a floor or a ceiling) and texture / colour them
+  const faceKey = f => f.kind + "|" + f.sec + "|" + (f.vert || "");
+  const faceTags = (m, f) => f.kind === "wall" ? [m.id + "." + f.vert + ".tex", m.id + "." + f.vert + ".color"] : [m.id + "." + f.sec + "." + f.kind + "Tex", m.id + "." + f.sec + "." + f.kind + "Color"];
+  function faceOutline(m, f, col, w) {
+    const T = S.tags, sec = m.sectors.find(s => s.id === f.sec), vs = {}; for (const v of m.verts) vs[v.id] = v; if (!sec) return []; const ids = sec.v.filter(i => vs[i]), fl = +T.get(m.id + "." + sec.id + ".floor"), ce = +T.get(m.id + "." + sec.id + ".ceil"), out = [], ln = (a, b) => out.push({ kind: "line", a, b, c: col, w, life: 1, t: 0 });
+    if (f.kind === "wall") { const i = ids.indexOf(f.vert); if (i < 0) return []; const A = vs[ids[i]], B = vs[ids[(i + 1) % ids.length]], len = Math.hypot(B.x - A.x, B.y - A.y) || 1, ux = (B.x - A.x) / len, uy = (B.y - A.y) / len; let a2 = 0; for (let k = 0; k < ids.length; k++) { const p = vs[ids[k]], q = vs[ids[(k + 1) % ids.length]]; a2 += p.x * q.y - q.x * p.y; }
+      const nx = (a2 > 0 ? -uy : uy) * 0.7, ny = (a2 > 0 ? ux : -ux) * 0.7, P = (v, y) => [v.x + nx, y, v.y + ny]; const c1 = P(A, fl + 0.7), c2 = P(B, fl + 0.7), c3 = P(B, ce - 0.7), c4 = P(A, ce - 0.7); ln(c1, c2); ln(c2, c3); ln(c3, c4); ln(c4, c1); ln(c1, c3); ln(c2, c4); }
+    else { const y = f.kind === "floor" ? fl + 0.7 : ce - 0.7; for (let k = 0; k < ids.length; k++) { const p = vs[ids[k]], q = vs[ids[(k + 1) % ids.length]]; ln([p.x, y, p.y], [q.x, y, q.y]); } }
+    return out;
+  }
+  function flyOverlay() {
+    const v = S.v3, m = curMap(); if (!v || !m) return; let list = [];
+    for (const f of S.fsl || []) list.push(...faceOutline(m, f, [1, 0.85, 0.15], 1.1));
+    if (S.fhov && !(S.fsl || []).some(f => faceKey(f) === faceKey(S.fhov))) list.push(...faceOutline(m, S.fhov, [0.75, 0.9, 1], 0.6)); v.overlay = list;
+  }
+  function flyHit(x, y) { const v = S.v3; if (!v) return null; const r = v.rayAt(x, y), hit = v.raycast(r.o, r.d, 1e5); return hit && hit.info ? Object.assign({}, hit.info) : null; }
+  function flyPick(p) {
+    const f = flyHit(p.x, p.y), cur = S.fsl || []; if (!f) S.fsl = p.shift ? cur : []; else if (p.shift) S.fsl = cur.some(o => faceKey(o) === faceKey(f)) ? cur.filter(o => faceKey(o) !== faceKey(f)) : cur.concat([f]); else S.fsl = [f];
+    flyOverlay(); renderInspector();
+  }
+  function flyHover(x, y) { if (S.fhovT) return; S.fhovT = requestAnimationFrame(() => { S.fhovT = 0; if (S.tab !== "fly" || !S.v3) return; const f = flyHit(x, y), a = S.fhov; if ((f && faceKey(f)) !== (a && faceKey(a))) { S.fhov = f; flyOverlay(); } }); }
+  function flyApply(kind, value) {   // kind: "tex" | "color"; to every selected face
+    const m = curMap(), o = {}; for (const f of S.fsl || []) o[faceTags(m, f)[kind === "tex" ? 0 : 1]] = value; S.tags.setMany(o); markDirty();
+  }
+  function flyInspector() {
+    const m = curMap(), T = S.tags, box = h("div", { class: "insp" }), fs = S.fsl, imgs = S.project.assets.filter(a => a.type === "image"), kinds = { wall: "wall", floor: "floor", ceil: "ceiling" };
+    const names = [...new Set(fs.map(f => kinds[f.kind]))].join(" + "), same = k => { const vals = new Set(fs.map(f => T.get(faceTags(m, f)[k]))); return vals.size === 1 ? [...vals][0] : null; };
+    const tex = same(0), col = same(1);
+    box.append(h("div", { class: "ihead" }, h("span", { class: "bigic", text: "▦" }), h("div", { class: "ititle" }, h("div", { class: "idin ro", text: fs.length + " face" + (fs.length > 1 ? "s" : "") + " selected" }), h("div", { class: "isub", text: names }))),
+      h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: "Select nothing", onclick: () => { S.fsl = []; flyOverlay(); renderInspector(); } })),
+      foldout("ff", "Texture and colour",
+        h("div", { class: "fld" }, h("label", { class: "flab" }, h("span", { text: "Texture" })), h("div", { class: "fctl" }, h("select", { class: "sel", "aria-label": "Texture of the selected faces", onchange: e => { flyApply("tex", e.target.value); renderInspector(); } }, tex === null ? h("option", { value: "__mixed", text: "(different)", selected: true }) : "", h("option", { value: "", text: "None", selected: tex === "" }), ...imgs.map(a => h("option", { value: a.id, text: a.name, selected: tex === a.id }))))),
+        h("div", { class: "fld" }, h("label", { class: "flab" }, h("span", { text: "Colour" })), h("div", { class: "fctl" }, h("input", { type: "color", class: "col", value: col || "#ffffff", "aria-label": "Colour of the selected faces", oninput: e => flyApply("color", e.target.value) })))),
+      h("div", { class: "note", text: "Left-click selects, Shift-click adds or removes. A wall is textured as a whole. You can also drop an image from the Project panel onto a face." }));
+    return box;
+  }
+  function flyDrop(e, a) {
+    const v = S.v3; if (!v) return log("Switch to the Fly Editor tab to texture faces.", "warn"); const r = v.canvas.getBoundingClientRect(), f = flyHit(e.clientX - r.left, e.clientY - r.top); if (!f) return log("Drop the image onto a wall, floor or ceiling.", "warn");
+    if (!(S.fsl || []).some(o => faceKey(o) === faceKey(f))) S.fsl = [f]; flyOverlay(); flyApply("tex", a.id); renderInspector(); log("Texture set to " + a.name + " on " + S.fsl.length + " face(s)");
   }
   function makeView(host, m) {
     const cv = h("canvas", { class: "v3cv" }); host.append(cv); const v = new PRIM.R3D.View(cv), T = S.tags;
