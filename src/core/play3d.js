@@ -23,7 +23,7 @@
       this.hudRt = new PRIM.Runtime({ host: this.hudHost, project: this.project, tags: T, mode: "hud", urls: this.urls, screenId: T.get("player.hud") });
       this.unsub = T.on(() => { this.drawCross(); if (this.view && !this.pendingRb) { this.pendingRb = true; setTimeout(() => { this.pendingRb = false; if (!this.dead && this.view) { if (this.map) { this.view.rebuild(); this.walls = R3D.walls(this.map, T); } this.syncAtts(); } }, 80); } });
       this.drawCross(); this.gpu = {}; this.atts = [];
-      this.sh = this.mode === "play" ? new PRIM.Script.Host({ tags: T, held: k => !!this.keys[k], orb: (k, c, a) => this.orbCmd(k, c, a), fire: key => this.fireProj(this.atts.find(a => "player." + a.id === key)), sfx: (id, v) => this.sfx(id, v), playAnim: (k, n, l) => this.playAnim(k, n, l), say: t => { if (this.o.say) this.o.say(t); else console.log(t); } }) : null;
+      this.sh = this.mode === "play" ? new PRIM.Script.Host({ tags: T, held: k => !!this.keys[k], isState: s => this.isState(s), orb: (k, c, a) => this.orbCmd(k, c, a), fire: key => this.fireProj(this.atts.find(a => "player." + a.id === key)), sfx: (id, v) => this.sfx(id, v), playAnim: (k, n, l) => this.playAnim(k, n, l), say: t => { if (this.o.say) this.o.say(t); else console.log(t); } }) : null;
       this.syncAtts(); this.trigger("onStart");
       if (this.mode === "play") this.bind(); else { this.msg.style.display = "none"; this.cv.style.cursor = "default"; }
       this.last = performance.now(); this.raf = requestAnimationFrame(t => this.frame(t));
@@ -200,7 +200,7 @@
       if (!this.atts.length) return; const T = this.T, c = v.cam, items = [], segs = [], F = PRIM.FBX, eye = [c.x, c.y, c.z], B = R3D.camBasis(c.yaw, c.pitch);
       for (const at of this.atts) {
         const pre = "player." + at.id + "."; if (!T.get(pre + "visible")) continue; if (at.type === "weapon" && at !== this.curWeapon()) continue; const g = k => +T.get(pre + k) || 0, name = this.advance(at, dt), pose = F.pose(at.model, name || null, at.t * (name && at.model.anims[name] ? this.animLen(at.aid, name, at.model.anims[name].dur).speed : 1));
-        const off = [g("x"), g("y"), g("z")], Rb = M4.rotXYZ([g("rx"), g("ry"), g("rz")]), sc = g("scale") || 1, Sm = M4.scale(sc, sc, sc); let Ra = M4.ident();
+        const vo = this.mode === "play" && this.vmOff ? this.vmOff : [0, 0, 0], off = [g("x") + vo[0], g("y") + vo[1], g("z") + vo[2]], Rb = M4.rotXYZ([g("rx"), g("ry"), g("rz")]), sc = g("scale") || 1, Sm = M4.scale(sc, sc, sc); let Ra = M4.ident();
         if (at.type === "weapon") {
           const ay = g("arrowYaw") * Math.PI / 180, ap = g("arrowPitch") * Math.PI / 180, arrow = [-Math.cos(ap) * Math.sin(ay), Math.sin(ap), -Math.cos(ap) * Math.cos(ay)], mz = [(g("muzzleX") - g("pivotX")) * sc, (g("muzzleY") - g("pivotY")) * sc, (g("muzzleZ") - g("pivotZ")) * sc];
           const hit = v.raycast(eye, this.aimDir(), 6000), wp = hit ? hit.p : M4.add(eye, this.aimDir().map(q => q * 3000)), d0 = M4.sub(wp, eye), Hc = [M4.dot(d0, B.s), M4.dot(d0, B.u), -M4.dot(d0, B.f)];
@@ -227,16 +227,38 @@
       const len = Math.hypot(fw, sd) || 1; fw /= len; sd /= len; let spd = +T.get("player.speed"); if (T.get("player.sprintEnabled") && k.shift && fw > 0) spd *= 1 + (+T.get("player.sprintPercent") || 0) / 100;
       const cy = Math.cos(this.yaw), sy = Math.sin(this.yaw), nx = this.x + (cy * fw - sy * sd) * spd * dt, ny = this.y + (sy * fw + cy * sd) * spd * dt;
       const tryPos = (x, y) => { const p = { x, y }; this.push(p, r); const inf = this.info(p.x, p.y); if (!inf) return null; if (inf.floor - this.z > stepH) return null; if (inf.ceil - Math.max(inf.floor, this.z) < head) return null; return p; };
-      const p = tryPos(nx, ny) || tryPos(nx, this.y) || tryPos(this.x, ny); if (p) { if (this.ground) { this.stepAcc = (this.stepAcc || 0) + Math.hypot(p.x - this.x, p.y - this.y); const sd2 = Math.max(10, +T.get("player.stepDistance") || 90); if (this.stepAcc >= sd2) { this.stepAcc %= sd2; this.footstep(); } } this.x = p.x; this.y = p.y; }
+      const p = tryPos(nx, ny) || tryPos(nx, this.y) || tryPos(this.x, ny); this.mv = p ? Math.hypot(p.x - this.x, p.y - this.y) : 0; this.sprinting = !!(T.get("player.sprintEnabled") && k.shift && fw > 0); this.spdNow = spd; if (p) { if (this.ground) { this.stepAcc = (this.stepAcc || 0) + Math.hypot(p.x - this.x, p.y - this.y); const sd2 = Math.max(10, +T.get("player.stepDistance") || 90); if (this.stepAcc >= sd2) { this.stepAcc %= sd2; this.footstep(); } } this.x = p.x; this.y = p.y; }
       const inf = this.info(this.x, this.y) || { floor: this.z, ceil: this.z + 9999 };
       if (T.get("player.jumpEnabled") && k.space && this.ground) { this.vz = Math.sqrt(2 * g * (+T.get("player.jumpHeight") || 0)); this.ground = false; this.psound("jumpSound"); }
       this.vz -= g * dt; this.z += this.vz * dt;
       if (this.z <= inf.floor) { if (!this.ground && this.vz < -250) this.psound("landSound"); this.z = inf.floor; this.vz = 0; this.ground = true; } else this.ground = false;
       if (this.z + head > inf.ceil) { this.z = Math.max(inf.floor, inf.ceil - head); if (this.vz > 0) this.vz = 0; }
+      this.airT = this.ground ? 0 : (this.airT || 0) + dt;
+      this.setState(!this.ground && (this.vz > 0 || this.airT > 0.12) ? (this.vz > 0 ? "jumping" : "falling") : this.mv > this.spdNow * dt * 0.3 ? (this.sprinting ? "running" : "walking") : "standing");
+    }
+    // what the player is doing now (standing, walking, running, jumping, falling) -> live tag player.state + "When the player is…" events
+    isState(s) { const c = this.pstate; return s === c || (s === "moving" && (c === "walking" || c === "running")) || (s === "inair" && (c === "jumping" || c === "falling")); }
+    setState(st) {
+      const prev = this.pstate; if (st === prev) return; this.pstate = st; this.T.set("player.state", st); this.trigger("onState", st);
+      const grp = s => ({ moving: s === "walking" || s === "running", inair: s === "jumping" || s === "falling" });
+      const a = grp(prev), b = grp(st); for (const k of ["moving", "inair"]) if (b[k] && !a[k]) this.trigger("onState", k);
+    }
+    // breathing, walking bob and the swaying HUD
+    feel(dt) {
+      const T = this.T, st = this.pstate, f = this.fl = this.fl || { idle: 0, walk: 0, ph: 0, bt: 0, hx: 0, hy: 0, ly: this.yaw, lp: this.pitch };
+      const idleT = st === "standing" ? 1 : 0, walkT = st === "walking" || st === "running" ? 1 : 0, k = 1 - Math.exp(-6 * dt); f.idle += (idleT - f.idle) * k; f.walk += (walkT - f.walk) * k;
+      f.bt += dt * (+T.get("player.breatheSpeed") || 0.25) * Math.PI * 2; f.ph += dt * (+T.get("player.bobSpeed") || 1.8) * Math.PI * 2 * (st === "running" ? 1.45 : 1);
+      const ba = T.get("player.breathe") ? (+T.get("player.breatheAmount") || 0) * f.idle : 0, wa = T.get("player.bob") ? (+T.get("player.bobAmount") || 0) * f.walk * (st === "running" ? 1.4 : 1) : 0;
+      this.vmOff = [Math.sin(f.ph * 0.5) * wa * 0.8, Math.sin(f.bt) * ba * 0.7 - Math.abs(Math.sin(f.ph * 0.5)) * wa, Math.sin(f.bt) * ba * 0.4];
+      // Hud Movement: turning kicks the HUD the other way, then it eases back
+      let dy = this.yaw - f.ly; dy = Math.atan2(Math.sin(dy), Math.cos(dy)); const dp = this.pitch - f.lp; f.ly = this.yaw; f.lp = this.pitch;
+      if (T.get("player.hudMove")) { const A = +T.get("player.hudMoveAmount") || 1; f.hx = Math.max(-70 * A, Math.min(70 * A, f.hx - dy * 260 * A)); f.hy = Math.max(-50 * A, Math.min(50 * A, f.hy + dp * 260 * A)); const dk = Math.exp(-7 * dt); f.hx *= dk; f.hy *= dk; this.hudHost.style.transform = "translate(" + f.hx.toFixed(1) + "px," + f.hy.toFixed(1) + "px)"; }
+      else if (f.hx || f.hy) { f.hx = f.hy = 0; this.hudHost.style.transform = ""; }
     }
     frame(t) {
       if (this.dead) return; this.raf = requestAnimationFrame(q => this.frame(q)); const dt = Math.min(0.05, (t - this.last) / 1000); this.last = t;
       if (this.mode === "play" && this.map) this.step(dt);
+      if (this.mode === "play") this.feel(dt);
       if (this.mode === "play") { this.hold(dt); const hp = +this.T.get("player.health"); if (this.lastHp === undefined) this.lastHp = hp; if (hp < this.lastHp) this.psound(hp <= 0 ? "deathSound" : "hurtSound"); this.lastHp = hp; }
       const v = this.view; if (!v) return; const T = this.T, c = v.cam; v.fov = (+T.get("player.fov") || 80) * Math.PI / 180;
       c.x = this.x; c.z = this.y; c.y = this.z + (+T.get("player.eyeHeight") || 56); c.yaw = this.yaw; c.pitch = this.pitch; v.draw(); if (this.mode === "play") { this.stepFx(dt); const list = (this.fx || []).slice(), ob = this.orb, oat = ob && this.atts.find(x => x.id === ob.id); if (oat && oat.emit) { if (ob.grow) { ob.grow.t += dt; ob.size = ob.grow.from + (ob.grow.to - ob.grow.from) * Math.min(1, ob.grow.t / ob.grow.secs); } list.push({ kind: "sphere", p: this.emitWorld(oat).O, c: this.hexCol(ob.color), size: ob.size }); } if (list.length) v.drawFx(list); } this.drawHand(v, dt); this.placeCross(v);

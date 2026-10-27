@@ -17,7 +17,7 @@
     trigger(owner, type, arg, only) {
       if (this.dead || !owner.script) return;
       for (const n of owner.script.nodes) {
-        if (n.type !== type) continue; if (only && n.id !== only) continue; if ((type === "onKey" || type === "onKeyUp" || type === "onHold") && String(this.T.get(owner.key + ".s." + n.id + ".key") || "").toLowerCase() !== String(arg || "").toLowerCase()) continue;
+        if (n.type !== type) continue; if (only && n.id !== only) continue; if ((type === "onKey" || type === "onKeyUp" || type === "onHold") && String(this.T.get(owner.key + ".s." + n.id + ".key") || "").toLowerCase() !== String(arg || "").toLowerCase()) continue; if (type === "onState" && String(this.T.get(owner.key + ".s." + n.id + ".state") || "") !== String(arg || "")) continue;
         this.runOut(owner, n.id, "next");
       }
     }
@@ -54,6 +54,7 @@
           case "chargeShow": if (this.o.orb) this.o.orb(owner.key, "show", { color: String(g("color")), size: +g("size") || 1 }); break;
           case "chargeGrow": if (this.o.orb) this.o.orb(owner.key, "grow", { size: +g("size") || 1, seconds: +g("seconds") || 0 }); break;
           case "fireProjectile": if (this.o.fire) this.o.fire(owner.key); break;
+          case "ifState": out = this.o.isState && this.o.isState(String(g("state") || "")) ? "then" : "else"; break;
           case "ifKey": out = this.o.held && this.o.held(String(g("key") || "").toLowerCase()) ? "then" : "else"; break;
           case "repeat": { const body = this.link(owner, n.id, "body"), cnt = Math.min(1000, +g("times") || 0); for (let i = 0; i < cnt && !tok.dead; i++) { await this.chain(owner, body, tok); await sleep(0, tok); } break; }
           case "forever": { const body = this.link(owner, n.id, "body"); while (!tok.dead && !this.dead) { await this.chain(owner, body, tok); await sleep(16, tok); } return; }
