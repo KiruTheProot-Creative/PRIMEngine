@@ -3,8 +3,9 @@
 *Design your game.* A no-code / low-code retro first-person shooter engine and editor, built from scratch
 (own WebGL renderer, no third-party libraries).
 
-**Status: editor v0.** Edit the arm cannon's position on the player, edit audio per object (trim and loop regions),
-tweak gameplay settings, press Play.
+**Status: Studio v0.** A project manager, and a screens editor: splash sequences (length + fade styles), titles, images,
+buttons (text or texture with hover/click sounds), sliders and toggles, a settings screen, and a tag system where every value has a name.
+The earlier Metroid-style test editor is still in `legacy-editor.html`.
 
 ## Running it on your computer
 

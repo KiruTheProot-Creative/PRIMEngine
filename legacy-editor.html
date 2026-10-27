@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>PRIMEngine Editor</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;600;700&family=Share+Tech+Mono&display=swap">
+<style>
+:root {
+  --ink: #030a12; --panel: #07131d; --panel2: #0b1b28; --line: #1d4a63; --line2: #123347;
+  --cyan: #7df3ff; --cyan-deep: #2fb8d6; --amber: #ffb53a; --red: #ff5a4a; --green: #6dffa0;
+  --text: #d9f7ff; --muted: #7ea4b5;
+  --display: "Chakra Petch", "Segoe UI", system-ui, sans-serif;
+  --mono: "Share Tech Mono", ui-monospace, "Courier New", monospace;
+  --gut: max(16px, env(safe-area-inset-left, 0px));
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; background: var(--ink); color: var(--text); font-family: var(--display); font-size: 14px; }
+button, input, select { font: inherit; color: inherit; }
+
+/* ================= editor shell ================= */
+#app { display: grid; height: 100%; grid-template-columns: 260px minmax(0, 1fr) 320px; grid-template-rows: 48px minmax(0, 1fr); grid-template-areas: "top top top" "left stage right"; }
+#topbar { grid-area: top; display: flex; align-items: center; gap: 10px; padding: 0 var(--gut); background: var(--panel); border-bottom: 1px solid var(--line); min-width: 0; }
+#topbar .brand { font-weight: 700; letter-spacing: .06em; font-size: 17px; white-space: nowrap; } #topbar .brand span { color: var(--cyan); }
+#topbar .proj { font-family: var(--mono); color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+#topbar .sp { flex: 1; }
+#saveState { font-family: var(--mono); font-size: 12px; color: var(--muted); white-space: nowrap; }
+#saveState.dirty { color: var(--amber); }
+.tb { appearance: none; background: transparent; border: 1px solid var(--line); border-radius: 3px; padding: 7px 12px; cursor: pointer; font-weight: 600; letter-spacing: .06em; white-space: nowrap; min-height: 34px; }
+.tb:hover:not(:disabled) { border-color: var(--cyan); color: var(--cyan); }
+.tb:disabled { opacity: .45; cursor: not-allowed; }
+.tb:focus-visible, .row-item:focus-visible, .tab:focus-visible, .mini:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+.tb.go { background: var(--cyan); color: var(--ink); border-color: var(--cyan); }
+.tb.go:hover:not(:disabled) { background: #bff9ff; color: var(--ink); }
+
+#left, #right { background: var(--panel); overflow-y: auto; min-height: 0; }
+#left { grid-area: left; border-right: 1px solid var(--line); }
+#right { grid-area: right; border-left: 1px solid var(--line); }
+.sec-h { display: flex; align-items: center; justify-content: space-between; padding: 12px var(--gut) 8px; font: 600 11px var(--display); letter-spacing: .26em; color: var(--cyan-deep); text-transform: uppercase; }
+.row-item { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; background: none; border: 0; border-left: 3px solid transparent; padding: 8px var(--gut); cursor: pointer; color: var(--text); min-height: 36px; }
+.row-item:hover { background: var(--panel2); }
+.row-item.sel { background: var(--panel2); border-left-color: var(--cyan); color: var(--cyan); }
+.row-item .ic { width: 16px; text-align: center; color: var(--cyan-deep); font-family: var(--mono); flex: none; }
+.row-item .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row-item .meta { font: 11px var(--mono); color: var(--muted); flex: none; }
+.row-item.indent { padding-left: calc(var(--gut) + 18px); }
+.row-item.missing .nm { color: var(--red); }
+#addAsset { margin: 8px var(--gut) 14px; width: calc(100% - 2 * var(--gut)); }
+.hint-sm { padding: 0 var(--gut) 10px; color: var(--muted); font-size: 12px; line-height: 1.4; }
+
+/* ================= stage ================= */
+#stage { grid-area: stage; position: relative; overflow: hidden; background: var(--ink); min-width: 0; min-height: 0; }
+#view { position: absolute; inset: 0; width: 100%; height: 100%; display: block; background: var(--ink); touch-action: none; }
+#view.pixel { image-rendering: pixelated; }
+#editHint { position: absolute; left: 10px; bottom: 8px; font: 12px var(--mono); color: var(--muted); background: rgba(3,10,18,.7); padding: 3px 8px; border-radius: 3px; pointer-events: none; }
+#app.playing #editHint { display: none; }
+#app.playing { display: block; }
+#app.playing #topbar, #app.playing #left, #app.playing #right { display: none; }
+#app.playing #stage { position: fixed; inset: 0; z-index: 5; }
+
+/* ================= visor + HUD (identical to the prototype) ================= */
+#hud { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+#hud[hidden] { display: none !important; }
+#hud.paused .hud, #hud.paused #reticle, #hud.paused #lock { visibility: hidden; }
+#sway { position: absolute; inset: 0; will-change: transform; }
+#visor { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; user-select: none; -webkit-user-drag: none; }
+#vignette { position: absolute; inset: 0; opacity: 0; background: radial-gradient(ellipse at center, rgba(255,60,40,0) 45%, rgba(255,60,40,.7)); }
+.hud { position: absolute; font-family: var(--mono); color: var(--cyan); text-shadow: 0 0 6px rgba(80,220,255,.55), 0 1px 0 #000; letter-spacing: .08em; }
+.lbl { font-family: var(--display); font-weight: 600; font-size: clamp(9px, 1.15vmin, 13px); letter-spacing: .26em; color: var(--cyan-deep); }
+#energy { left: 7.5%; top: 11%; width: clamp(110px, 24vmin, 300px); }
+#energy .num { font-size: clamp(20px, 5.2vmin, 54px); line-height: 1; color: var(--cyan); }
+#energy .num small { font-size: .42em; color: var(--cyan-deep); margin-left: .5em; letter-spacing: .2em; }
+#cells { display: grid; grid-template-columns: repeat(20, 1fr); gap: 2px; margin-top: 6px; height: clamp(6px, 1.5vmin, 15px); }
+#cells i { background: rgba(125,243,255,.14); border: 1px solid rgba(125,243,255,.35); }
+#cells i.on { background: var(--cyan); box-shadow: 0 0 6px rgba(125,243,255,.8); }
+#cells.low i.on { background: var(--amber); box-shadow: 0 0 6px rgba(255,181,58,.8); }
+#cells.crit i.on { background: var(--red); box-shadow: 0 0 6px rgba(255,90,74,.8); }
+#hostiles { right: 7.5%; top: 11%; text-align: right; }
+#hostiles .num { font-size: clamp(18px, 4.2vmin, 44px); line-height: 1; }
+#toast { left: 50%; top: 22%; transform: translateX(-50%); font-size: clamp(11px, 2.2vmin, 22px); letter-spacing: .24em; color: var(--text); opacity: 0; transition: opacity .25s; white-space: nowrap; }
+#hint { left: 50%; bottom: 15%; transform: translateX(-50%); font-size: clamp(10px, 1.7vmin, 17px); letter-spacing: .2em; color: var(--muted); text-align: center; opacity: 0; transition: opacity .4s; white-space: nowrap; }
+#reticle { position: absolute; left: 50%; top: 50%; width: 0; height: 0; }
+#reticle .arcs { position: absolute; left: -34px; top: -34px; width: 68px; height: 68px; overflow: visible; }
+#reticle .ring { fill: none; stroke: rgba(125,243,255,.22); stroke-width: 2; }
+#reticle .fill { fill: none; stroke: var(--cyan); stroke-width: 3; stroke-linecap: butt; transform: rotate(-90deg); transform-origin: 34px 34px; filter: drop-shadow(0 0 4px rgba(125,243,255,.9)); }
+#reticle .fill.full { stroke: #fff; filter: drop-shadow(0 0 8px rgba(125,243,255,1)); }
+#reticle .dot { position: absolute; left: -2px; top: -2px; width: 4px; height: 4px; background: var(--cyan); box-shadow: 0 0 6px var(--cyan); }
+#reticle .tick { position: absolute; background: var(--cyan); opacity: .9; box-shadow: 0 0 4px rgba(125,243,255,.8); }
+#reticle .tick.h { width: 9px; height: 2px; top: -1px; } #reticle .tick.v { width: 2px; height: 9px; left: -1px; }
+#reticle.hit .tick, #reticle.hit .dot { background: var(--red); box-shadow: 0 0 6px var(--red); }
+#lock { position: absolute; left: 0; top: 0; width: 0; height: 0; display: none; }
+#lock .br { position: absolute; width: 14px; height: 14px; border: 0 solid var(--red); filter: drop-shadow(0 0 5px rgba(255,90,74,.9)); }
+#lock .a { left: -30px; top: -30px; border-width: 3px 0 0 3px; } #lock .b { right: -30px; top: -30px; border-width: 3px 3px 0 0; }
+#lock .c { left: -30px; bottom: -30px; border-width: 0 0 3px 3px; } #lock .d { right: -30px; bottom: -30px; border-width: 0 3px 3px 0; }
+#lock .hp { position: absolute; left: -26px; top: 36px; width: 52px; height: 4px; background: rgba(255,90,74,.25); }
+#lock .hp i { display: block; height: 100%; background: var(--red); }
+
+/* ================= pause / end screens (inside the stage) ================= */
+.screen { position: absolute; inset: 0; display: grid; place-items: center; overflow-y: auto; padding: 24px var(--gut); background: rgba(3,10,18,.78); z-index: 3; }
+.screen[hidden] { display: none !important; }
+.card { width: min(520px, 100%); display: grid; gap: 16px; }
+.eyebrow { font-family: var(--mono); font-size: 13px; letter-spacing: .3em; color: var(--cyan-deep); }
+h2 { margin: 0; font-weight: 700; font-size: clamp(26px, 5vw, 44px); line-height: 1; letter-spacing: .04em; }
+.card p { margin: 0; color: var(--muted); line-height: 1.55; }
+.btn { appearance: none; font: 700 15px var(--display); letter-spacing: .2em; text-transform: uppercase; color: var(--ink); background: var(--cyan); border: 0; clip-path: polygon(14px 0, 100% 0, calc(100% - 14px) 100%, 0 100%); padding: 14px 34px; cursor: pointer; justify-self: start; }
+.btn:hover { background: #bff9ff; } .btn.ghost { background: rgba(125,243,255,.12); color: var(--cyan); } .btn.ghost:hover { background: rgba(125,243,255,.25); }
+.btn:focus-visible { outline: 2px solid var(--amber); outline-offset: 3px; }
+.row { display: flex; flex-wrap: wrap; gap: 12px; }
+.stats { display: flex; gap: 28px; flex-wrap: wrap; } .stats div { display: grid; gap: 3px; }
+.stats b { font: 400 28px var(--mono); color: var(--text); font-variant-numeric: tabular-nums; }
+kbd { font: 12px var(--mono); border: 1px solid var(--line); border-radius: 3px; padding: 2px 7px; background: var(--panel); }
+
+/* ================= inspector ================= */
+#inspector { padding-bottom: 40px; }
+.insp-title { padding: 14px var(--gut) 2px; font-weight: 700; font-size: 18px; letter-spacing: .04em; }
+.insp-sub { padding: 0 var(--gut) 10px; font: 12px var(--mono); color: var(--muted); }
+.group { border-top: 1px solid var(--line2); padding: 6px 0 10px; }
+.field { display: grid; gap: 4px; padding: 6px var(--gut); }
+.field > .top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.field label, .field .lab { font-size: 13px; color: var(--text); }
+.field input[type=range] { width: 100%; accent-color: var(--cyan); min-height: 24px; }
+.num-in { width: 88px; background: var(--ink); border: 1px solid var(--line); border-radius: 3px; padding: 4px 6px; font: 13px var(--mono); color: var(--cyan); text-align: right; min-height: 30px; }
+.num-in:focus { outline: 2px solid var(--cyan-deep); outline-offset: 0; }
+select.sel { width: 100%; background: var(--ink); border: 1px solid var(--line); border-radius: 3px; padding: 6px; min-height: 34px; }
+.tabs { display: flex; gap: 4px; padding: 6px var(--gut); flex-wrap: wrap; }
+.tab { appearance: none; background: transparent; border: 1px solid var(--line); border-radius: 3px; padding: 6px 10px; cursor: pointer; font-size: 13px; min-height: 32px; }
+.tab.sel { background: var(--cyan); color: var(--ink); border-color: var(--cyan); font-weight: 600; }
+.mini { appearance: none; background: transparent; border: 1px solid var(--line); border-radius: 3px; padding: 5px 10px; cursor: pointer; font-size: 12px; min-height: 30px; }
+.mini:hover { border-color: var(--cyan); color: var(--cyan); }
+.btnrow { display: flex; gap: 6px; flex-wrap: wrap; padding: 6px var(--gut); }
+.wave { position: relative; margin: 4px var(--gut) 0; height: 84px; background: var(--ink); border: 1px solid var(--line); border-radius: 3px; touch-action: none; user-select: none; }
+.wave canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.wave .shade { position: absolute; top: 0; bottom: 0; background: rgba(3,10,18,.72); pointer-events: none; }
+.wave .mk { position: absolute; top: 0; bottom: 0; width: 14px; margin-left: -7px; cursor: ew-resize; }
+.wave .mk::after { content: ""; position: absolute; left: 6px; top: 0; bottom: 0; width: 2px; background: var(--amber); }
+.wave .mk:focus-visible { outline: 2px solid var(--amber); }
+.wave .ph { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--green); pointer-events: none; display: none; }
+.wave-info { display: flex; justify-content: space-between; padding: 3px var(--gut) 0; font: 11px var(--mono); color: var(--muted); }
+.chk { display: flex; align-items: center; gap: 8px; padding: 6px var(--gut); min-height: 34px; }
+.chk input { width: 18px; height: 18px; accent-color: var(--cyan); }
+.preview-box { margin: 6px var(--gut); border: 1px solid var(--line); background: var(--ink); display: grid; place-items: center; min-height: 120px; }
+.preview-box img { max-width: 100%; max-height: 220px; image-rendering: pixelated; }
+.note { padding: 6px var(--gut); font-size: 12px; color: var(--muted); line-height: 1.45; }
+.warn { color: var(--amber); }
+.clip { display: flex; justify-content: space-between; width: 100%; background: none; border: 0; border-bottom: 1px solid var(--line2); padding: 8px var(--gut); cursor: pointer; text-align: left; min-height: 34px; }
+.clip:hover { background: var(--panel2); } .clip.sel { color: var(--cyan); background: var(--panel2); }
+.clip .meta { font: 11px var(--mono); color: var(--muted); }
+
+/* ================= phone layout: viewport on top, panels stacked beneath ================= */
+@media (max-width: 900px) {
+  #app:not(.playing) { height: auto; min-height: 100%; grid-template-columns: minmax(0, 1fr); grid-template-rows: 48px 56vw auto auto; grid-template-areas: "top" "stage" "right" "left"; }
+  #app:not(.playing) { position: relative; } html, body { overflow-y: auto; }
+  #stage { min-height: 240px; }
+  #topbar .proj { display: none; }
+  #left, #right { overflow: visible; border: 0; border-top: 1px solid var(--line); }
+}
+@media (prefers-reduced-motion: reduce) { #toast, #hint { transition: none; } }
+</style>
+</head>
+<body>
+<div id="app">
+  <header id="topbar">
+    <div class="brand">PRIM<span>Engine</span></div>
+    <div class="proj" id="projName">loading…</div>
+    <div class="sp"></div>
+    <span id="saveState">saved</span>
+    <button class="tb" id="saveBtn" title="Save to a file on your computer (or download)">Save</button>
+    <button class="tb" id="copyBtn" title="Copy the project settings as text">Copy JSON</button>
+    <button class="tb go" id="playBtn" disabled>&#9654; Play</button>
+  </header>
+
+  <aside id="left">
+    <div class="sec-h">Scene</div>
+    <div id="tree"></div>
+    <div class="sec-h">Assets</div>
+    <div id="assets"></div>
+    <button class="tb" id="addAsset" disabled title="Importing assets comes in a later version">+ Add asset</button>
+    <div class="hint-sm">Importing from the editor comes later. For now, drop files into the project's assets folder.</div>
+  </aside>
+
+  <main id="stage">
+    <canvas id="view"></canvas>
+    <div id="hud">
+      <div id="sway">
+        <img id="visor" alt="">
+        <div id="vignette"></div>
+        <div class="hud" id="energy"><div class="lbl">ENERGY</div><div class="num"><span id="eNum">099</span><small>UNITS</small></div><div id="cells"></div></div>
+        <div class="hud" id="hostiles"><div class="lbl">HOSTILES</div><div class="num" id="hNum">0</div></div>
+        <div class="hud" id="toast"></div>
+        <div class="hud" id="hint"></div>
+        <div id="reticle">
+          <svg class="arcs" viewBox="0 0 68 68"><circle class="ring" cx="34" cy="34" r="30"></circle><circle class="fill" id="chg" cx="34" cy="34" r="30" stroke-dasharray="0 189"></circle></svg>
+          <div class="tick h" style="left:-22px"></div><div class="tick h" style="left:13px"></div>
+          <div class="tick v" style="top:-22px"></div><div class="tick v" style="top:13px"></div>
+          <div class="dot"></div>
+        </div>
+        <div id="lock"><div class="br a"></div><div class="br b"></div><div class="br c"></div><div class="br d"></div><div class="hp"><i id="lockHp"></i></div></div>
+      </div>
+    </div>
+    <div id="editHint">drag in the view to look around</div>
+
+    <section class="screen" id="pause" hidden>
+      <div class="card">
+        <span class="eyebrow">PAUSED</span><h2>Take a breath</h2>
+        <p>Nothing changes while you play. Go back to the editor to tweak, then press Play again.</p>
+        <div class="row"><button class="btn" id="resumeBtn">Resume</button><button class="btn ghost" id="restartBtn">Restart</button><button class="btn ghost" id="exitBtn">Back to editor</button></div>
+      </div>
+    </section>
+    <section class="screen" id="end" hidden>
+      <div class="card">
+        <span class="eyebrow" id="endEyebrow">AREA SECURED</span><h2 id="endTitle">Chamber cleared</h2>
+        <div class="stats">
+          <div><span class="lbl">TIME</span><b id="sTime">0:00</b></div>
+          <div><span class="lbl">ACCURACY</span><b id="sAcc">0%</b></div>
+          <div><span class="lbl">CHARGED SHOTS</span><b id="sChg">0</b></div>
+        </div>
+        <div class="row"><button class="btn" id="againBtn">Play again</button><button class="btn ghost" id="exitBtn2">Back to editor</button></div>
+      </div>
+    </section>
+  </main>
+
+  <aside id="right"><div id="inspector"></div></aside>
+</div>
+
+<script src="src/engine/math.js"></script>
+<script src="src/engine/gfx.js"></script>
+<script src="src/engine/skeleton.js"></script>
+<script src="src/engine/audio.js"></script>
+<script src="src/game/level.js"></script>
+<script src="src/game/game.js"></script>
+<script src="src/editor/editor.js"></script>
+</body>
+</html>
