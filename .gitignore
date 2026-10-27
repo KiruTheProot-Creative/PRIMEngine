@@ -4,3 +4,6 @@ dist/
 __pycache__/
 *.pyc
 node_modules/
+desktop/node_modules/
+desktop/dist/
+desktop/app/

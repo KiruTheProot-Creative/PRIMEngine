@@ -1,0 +1,51 @@
+name: Build desktop app
+
+# Builds PRIMEngine Studio for Windows, macOS and Linux on GitHub's servers.
+# Download the results from the "Actions" tab (open a run, scroll to "Artifacts"),
+# or from the "Releases" page when a version tag (v0.1.0, v0.2.0 ...) is pushed.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install
+        run: npm install
+        working-directory: desktop
+      - name: Build
+        run: npm run dist
+        working-directory: desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: PRIMEngine-Studio-${{ matrix.os }}
+          path: |
+            desktop/dist/*.exe
+            desktop/dist/*.dmg
+            desktop/dist/*.AppImage
+          if-no-files-found: error
+      - name: Attach to release (version tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            desktop/dist/*.exe
+            desktop/dist/*.dmg
+            desktop/dist/*.AppImage

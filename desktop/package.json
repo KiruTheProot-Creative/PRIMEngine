@@ -1,0 +1,29 @@
+{
+  "name": "primengine-studio",
+  "version": "0.1.0",
+  "description": "PRIMEngine Studio: design your game.",
+  "main": "main.js",
+  "author": "Kiru",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "prepare-app": "node prepare.js",
+    "start": "node prepare.js && electron .",
+    "dist": "node prepare.js && electron-builder --publish never"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.primengine.studio",
+    "productName": "PRIMEngine Studio",
+    "artifactName": "PRIMEngine-Studio-${version}-${os}-${arch}.${ext}",
+    "directories": { "output": "dist", "buildResources": "build" },
+    "files": ["main.js", "preload.js", "app/**/*"],
+    "fileAssociations": [{ "ext": "prime", "name": "PRIMEngine project", "role": "Editor" }],
+    "win": { "target": ["portable"] },
+    "mac": { "target": ["dmg"], "category": "public.app-category.developer-tools" },
+    "linux": { "target": ["AppImage"], "category": "Development" }
+  }
+}
