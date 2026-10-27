@@ -114,6 +114,12 @@
 
   // (re)build all geometry from the project's map + tags
   P.setMap = function (project, map, tags, urls) { this.project = project; this.map = map; this.tags = tags; this.urls = urls; this.rebuild(); };
+  // draws just these triangles (used by the Wall Editor): by = { textureId: [x,y,z,u,v,r,g,b ...] }
+  P.setBatches = function (by, urls) {
+    const gl = this.gl; for (const b of this.batches) gl.deleteBuffer(b.buf); this.urls = urls; this.map = null;
+    this.batches = Object.keys(by).map(k => { const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(by[k]), gl.STATIC_DRAW); return { buf, n: by[k].length / 8, tex: k, sec: "", mn: [-1e9, -1e9, -1e9], mx: [1e9, 1e9, 1e9] }; });
+    this.triCount = this.batches.reduce((s, b) => s + b.n / 3, 0);
+  };
   P.rebuild = function () {
     if (!this.ok || !this.map) return; const gl = this.gl, m = this.map, T = this.tags, vs = {}; for (const v of m.verts) vs[v.id] = v;
     this.sky = hex(T.get(m.id + ".skyColor")); this.fog = hex(T.get(m.id + ".fogColor")); this.fogD = Math.max(100, +T.get(m.id + ".fogDistance") || 1400);
@@ -130,8 +136,18 @@
       for (let i = 0; i < ids.length; i++) {
         const A = vs[ids[i]], B = vs[ids[(i + 1) % ids.length]], vp = m.id + "." + A.id + "."; if (T.get(vp + "open") || ce <= fl) continue;
         const len = Math.hypot(B.x - A.x, B.y - A.y), dir = Math.abs(B.x - A.x) > Math.abs(B.y - A.y) ? 1 : 0.82, c = hex(T.get(vp + "color")).map(x => x * li * dir), u1 = len / TILE, v0 = 0, v1 = (ce - fl) / TILE;
-        const q = (x, y, z, u, v) => [x, y, z, u, v, c[0], c[1], c[2]];
+        const rows = String(T.get(vp + "rows") || "").split(",").map(x => x.trim()), WM = PRIM.WallMesh, custom = !!WM && !!this.project && rows.some(x => x && WM.byId(this.project, x));
+        let nx = 0, nz = 0; if (custom) { let a2 = 0; for (let k = 0; k < pts.length; k++) { const p1 = pts[k], p2 = pts[(k + 1) % pts.length]; a2 += p1[0] * p2[1] - p2[0] * p1[1]; } const dx = (B.x - A.x) / (len || 1), dz = (B.y - A.y) / (len || 1); nx = a2 > 0 ? -dz : dz; nz = a2 > 0 ? dx : -dx; }   // nx,nz: the wall's normal, pointing into the room
+        const o = custom ? -1 : 0, q = (x, y, z, u, v) => [x + nx * o, y, z + nz * o, u, v, c[0], c[1], c[2]];
         add(T.get(vp + "tex"), [...q(A.x, ce, A.y, 0, v0), ...q(B.x, ce, B.y, u1, v0), ...q(B.x, fl, B.y, u1, v1), ...q(A.x, ce, A.y, 0, v0), ...q(B.x, fl, B.y, u1, v1), ...q(A.x, fl, A.y, 0, v1)]);
+        if (custom) {   // custom wall types: the wall is cut into panels of 96 x 96 units (1.5 m) and each layer (row, bottom to top) is filled with its wall type
+          const SZ = WM.SIZE, nR = Math.max(1, Math.round((ce - fl) / SZ)), nC = Math.max(1, Math.round(len / SZ)), sy = (ce - fl) / (SZ * nR), sx = len / (SZ * nC), rep = T.get(vp + "rowsRepeat") !== false, sX = nz, sZ = -nx, fwd = (B.x - A.x) * sX + (B.y - A.y) * sZ > 0, S0 = fwd ? A : B, ux = fwd ? (B.x - A.x) / len : (A.x - B.x) / len, uz = fwd ? (B.y - A.y) / len : (A.y - B.y) / len;
+          const lastRow = rows.length ? rows[rows.length - 1] : "";
+          for (let rr = 0; rr < nR; rr++) {
+            const id = rr < rows.length ? rows[rr] : rep ? lastRow : "", wall = id && WM.byId(this.project, id); if (!wall) continue; const tr = WM.tris(wall, T);
+            for (let cc = 0; cc < nC; cc++) for (const t of tr) { const out = []; for (let k = 0; k < 3; k++) { const P = t.p[k], X = (cc * SZ + P[0]) * sx; out.push(S0.x + ux * X + nx * P[2], fl + (rr * SZ + P[1]) * sy, S0.y + uz * X + nz * P[2], t.uv[k][0], t.uv[k][1], c[0] * t.tint[0], c[1] * t.tint[1], c[2] * t.tint[2]); } add(t.tex, out); }
+          }
+        }
       }
     }
     this.batches = Object.keys(by).map(k => { const buf = gl.createBuffer(), a = by[k], cut = k.lastIndexOf("|"), mn = [1e9, 1e9, 1e9], mx = [-1e9, -1e9, -1e9]; gl.bindBuffer(gl.ARRAY_BUFFER, buf); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(a), gl.STATIC_DRAW);

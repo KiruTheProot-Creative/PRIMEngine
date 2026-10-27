@@ -50,18 +50,18 @@
   S.clean = s => String(s || "").toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "").replace(/^(\d)/, "_$1");
 
   // ---- 3D maps. Geometry (where the nodes are, which nodes make a sector) is structure; every other value is a tag.
-  // Units: 64 units is one standard wall tile. Eye height of the player is 56.
+  // Units: 32 units = one tile = 0.5 m (so 64 units = 1 m). A wall panel is 3 x 3 tiles = 96 x 96 units = 1.5 m. Player eye height is 102 (1.6 m).
   const TEX = (k, label) => ({ k, label, type: "asset", assetType: "image", def: "" });
   S.MAP = [
     COLOR("skyColor", "Sky color", "#16243a"), COLOR("fogColor", "Fog color", "#06090e"), { k: "fogDistance", label: "Fog distance", type: "number", def: 1400, min: 200, max: 6000, step: 50 },
     { k: "startX", label: "Player start X", type: "number", def: 0, min: -4096, max: 4096, step: 1 }, { k: "startY", label: "Player start Y", type: "number", def: 0, min: -4096, max: 4096, step: 1 },
-    { k: "startAngle", label: "Player start angle", type: "number", def: 90, min: 0, max: 360, step: 1 }, { k: "gridSize", label: "Grid size", type: "number", def: 32, min: 8, max: 128, step: 8 },
+    { k: "startAngle", label: "Player start angle", type: "number", def: 90, min: 0, max: 360, step: 1 }, { k: "gridSize", label: "Tile size (32 units = 0.5 m)", type: "number", def: 32, min: 8, max: 128, step: 8 },
   ];
   S.SECTOR = [
-    { k: "floor", label: "Floor height", type: "number", def: 0, min: -512, max: 1024, step: 8 }, { k: "ceil", label: "Ceiling height", type: "number", def: 128, min: -512, max: 1024, step: 8 },
+    { k: "floor", label: "Floor height", type: "number", def: 0, min: -512, max: 1024, step: 8 }, { k: "ceil", label: "Ceiling height (96 = 1.5 m)", type: "number", def: 192, min: -512, max: 1024, step: 8 },
     { k: "light", label: "Light", type: "number", def: 1, min: 0, max: 1, step: 0.05 }, TEX("floorTex", "Floor texture"), COLOR("floorColor", "Floor color", "#6a6a74"), TEX("ceilTex", "Ceiling texture"), COLOR("ceilColor", "Ceiling color", "#42424c"),
   ];
-  S.VERT = [TEX("tex", "Wall texture"), COLOR("color", "Wall color", "#a89c8a"), { k: "open", label: "Open (no wall)", type: "bool", def: false }];
+  S.VERT = [TEX("tex", "Wall texture"), COLOR("color", "Wall color", "#a89c8a"), { k: "open", label: "Open (no wall)", type: "bool", def: false }, { k: "rows", label: "Wall layers (wall types, bottom to top)", type: "string", def: "" }, { k: "rowsRepeat", label: "Repeat the top layer upward", type: "bool", def: true }];
   const defP = (project, list, group, owner, id, over) => { for (const p of list) { const r = rec(p, group, owner); if (over && p.k in over) r.value = over[p.k]; project.tags[id + "." + p.k] = r; } };
   S.defineMap = (project, m, over) => defP(project, S.MAP, m.id, m.id, m.id, over);
   S.defineSector = (project, m, sec, over) => defP(project, S.SECTOR, m.id, m.id + "." + sec.id, m.id + "." + sec.id, over);
@@ -83,7 +83,7 @@
     { k: "speed", label: "Move speed", type: "number", def: 280, min: 40, max: 1200, step: 10 }, { k: "gravity", label: "Gravity", type: "number", def: 1100, min: 0, max: 4000, step: 50 },
     { k: "jumpEnabled", label: "Jumping", type: "bool", def: true }, { k: "jumpHeight", label: "Jump height", type: "number", def: 48, min: 8, max: 240, step: 2, showIf: ["jumpEnabled", true] },
     { k: "sprintEnabled", label: "Sprinting", type: "bool", def: true }, { k: "sprintPercent", label: "Sprint speed bonus %", type: "number", def: 60, min: 0, max: 300, step: 5, showIf: ["sprintEnabled", true] },
-    { k: "eyeHeight", label: "Eye height", type: "number", def: 56, min: 16, max: 160, step: 1 }, { k: "radius", label: "Body width (collision)", type: "number", def: 16, min: 4, max: 48, step: 1 }, { k: "stepHeight", label: "Step height", type: "number", def: 24, min: 0, max: 64, step: 1 },
+    { k: "eyeHeight", label: "Eye height (64 = 1 m)", type: "number", def: 102, min: 16, max: 200, step: 1 }, { k: "radius", label: "Body width (collision)", type: "number", def: 16, min: 4, max: 48, step: 1 }, { k: "stepHeight", label: "Step height", type: "number", def: 24, min: 0, max: 64, step: 1 },
     { k: "fov", label: "Field of view", type: "number", def: 80, min: 40, max: 120, step: 1 }, { k: "aimMode", label: "Aim mode", type: "choice", options: [["classic", "Classic (normal FPS aim)"], ["free", "Free aim (bodycam style)"]], def: "classic" },
     { k: "freeAimRadius", label: "Free aim: aim area (degrees)", type: "number", def: 14, min: 3, max: 45, step: 1, showIf: ["aimMode", "free"] }, { k: "mouseSens", label: "Mouse sensitivity", type: "number", def: 1, min: 0.1, max: 4, step: 0.05 },
     { k: "footstep", label: "Footstep sound", type: "asset", assetType: "sound", def: "" }, { k: "footstep2", label: "Footstep sound 2 (optional, picked at random)", type: "asset", assetType: "sound", def: "" }, { k: "footstep3", label: "Footstep sound 3 (optional)", type: "asset", assetType: "sound", def: "" },
@@ -195,7 +195,17 @@
     if (project.origin === "center") return; project.origin = "center";
     for (const sc of project.screens) { if (sc.kind === "splash") continue; for (const n of sc.nodes) for (const [k, f, mn, mx] of [["x", v => v - 640, -640, 640], ["y", v => 360 - v, -360, 360]]) { const r = project.tags[sc.id + "." + n.id + "." + k]; if (r) { r.value = f(+r.value || 0); r.min = mn; r.max = mx; r.label = k === "x" ? "X (0 = middle)" : "Y (0 = middle, up is +)"; } } }
   };
+  // ---- wall types (the Wall Editor): a small mesh that fills a 96 x 96 panel (1.5 m x 1.5 m). Geometry is structure; each face has tags wallN.fM.tex / .color
+  S.WFACE = [TEX("tex", "Texture"), COLOR("color", "Color tint", "#ffffff")];
+  S.defineWallFace = (project, w, f, over) => defP(project, S.WFACE, w.id, w.id + "." + f.id, w.id + "." + f.id, over);
+  S.ensureWalls = project => {
+    if (!project.walls) project.walls = [];
+    for (const m of project.maps || []) for (const v of m.verts) for (const p of S.VERT) if (!project.tags[m.id + "." + v.id + "." + p.k]) project.tags[m.id + "." + v.id + "." + p.k] = rec(p, m.id, m.id + "." + v.id);
+    for (const w of project.walls) for (const f of w.faces) for (const p of S.WFACE) if (!project.tags[w.id + "." + f.id + "." + p.k]) project.tags[w.id + "." + f.id + "." + p.k] = rec(p, w.id, w.id + "." + f.id);
+    const eh = project.tags["player.eyeHeight"]; if (eh && !project.eyeMoved) { if (eh.value === 56) eh.value = 102; project.eyeMoved = true; }
+  };
   S.ensurePlayer = project => {
+    S.ensureWalls(project);
     if (!project.events) project.events = [];
     if (!project.animLen) project.animLen = [];
     project.player = project.player || { attachments: [] }; if (!project.player.attachments) project.player.attachments = [];
