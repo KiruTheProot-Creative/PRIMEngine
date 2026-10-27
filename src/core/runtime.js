@@ -94,7 +94,7 @@
     makeNode(sc, n) {
       const T = this.tags, p = k => this.P(sc, n, k); let el;
       if (n.type === "title") { el = div("rt-n"); el.textContent = this.S(sc, n, "text"); this.textStyle(el, sc, n); el.style.opacity = p("opacity"); }
-      else if (n.type === "image") { const u = this.urls[p("asset")]; if (u) { el = new Image(); el.src = u; el.className = "rt-n"; el.draggable = false; this.sized(el, p("w"), p("h")); el.style.opacity = p("opacity"); if (p("stretch")) { el.style.width = W + "px"; el.style.height = H + "px"; } } else el = this.ph("No image chosen", p("w"), p("h")); }
+      else if (n.type === "image") { const u = this.urls[p("asset")]; if (u) { el = new Image(); el.src = u; el.className = "rt-n"; el.draggable = false; this.sized(el, p("w"), p("h")); el.style.opacity = p("opacity"); if (p("stretch")) { const A = this.mode === "hud" && this.tags.get("player.hudMove") ? (+this.tags.get("player.hudMoveAmount") || 1) : 0; el.style.width = (W + 140 * A + 4) + "px"; el.style.height = (H + 100 * A + 4) + "px"; } } else el = this.ph("No image chosen", p("w"), p("h")); }
       else if (n.type === "button") {
         const hov = this.hover === n.id, prs = this.press === n.id;
         if (p("mode") === "texture") {
