@@ -1,0 +1,31 @@
+const SP = '/tmp/claude-0/-home-claude/4d2f2209-a771-580d-8052-566f87920e94/scratchpad';
+module.exports = async (p, out) => {
+  const menu = async (top, item) => { await p.click('.mb:has-text("' + top + '")'); await p.click('.pitem:has-text("' + item + '")'); };
+  await p.click('.tile.plus'); await p.waitForSelector('#app'); await p.waitForTimeout(300);
+  await menu('Screen', 'Create Map'); await p.click('.mcard:has-text("DOOM")'); await p.waitForSelector('.medcv');
+  let [fc] = await Promise.all([p.waitForEvent('filechooser'), menu('Assets', 'Import Files')]); await fc.setFiles([SP + '/Arm_canon.fbx', SP + '/beep.wav']); await p.waitForTimeout(1800);
+  console.log('assets', await p.evaluate(() => JSON.stringify(__studio.S.project.assets.map(a => a.name + ':' + a.type))));
+  await p.click('.tab:has-text("Timeline")'); await p.waitForTimeout(1200); await p.screenshot({ path: out + '_tl1.png' });
+  await p.click('.tla:has-text("shot")'); await p.waitForTimeout(600);
+  await p.click('button:has-text("Add sound at playhead")'); await p.waitForTimeout(200); await p.screenshot({ path: out + '_tlmenu.png' });
+  await p.click('.pitem >> nth=0'); await p.waitForTimeout(500);
+  await p.evaluate(() => { __studio.S.tl.t = 0.2; }); await p.waitForTimeout(300);
+  await p.click('button:has-text("Add sound at playhead")'); await p.click('.pitem >> nth=0'); await p.waitForTimeout(500);
+  console.log('events', await p.evaluate(() => JSON.stringify({ ev: __studio.S.project.events, t: Object.keys(__studio.S.project.tags).filter(k => k.startsWith('ev')) })));
+  await p.screenshot({ path: out + '_tl2.png' });
+  await p.screenshot({ path: out + '_len0.png' });
+  const orig = await p.evaluate(() => PRIM.FBX.cache[__studio.S.tl.asset].anims[__studio.S.tl.anim].dur); console.log('orig', orig);
+  await p.locator('.insp .fld:has-text("Length (seconds)") input').fill('1'); await p.keyboard.press('Tab'); await p.waitForTimeout(400);
+  console.log('animLen', await p.evaluate(() => JSON.stringify(__studio.S.project.animLen) + ' ' + __studio.S.tags.get('al1.length')));
+  await p.screenshot({ path: out + '_len1.png' });
+  const h = await p.locator('.tlendh').boundingBox(); await p.mouse.move(h.x + 8, h.y + 8); await p.mouse.down(); await p.mouse.move(h.x - 90, h.y + 8, { steps: 6 }); await p.mouse.up(); await p.waitForTimeout(400);
+  console.log('after handle drag', await p.evaluate(() => __studio.S.tags.get('al1.length')));
+  await p.screenshot({ path: out + '_len2.png' });
+  const bar = await p.locator('.tlbar').first().boundingBox(); await p.mouse.move(bar.x + 10, bar.y + 12); await p.mouse.wheel(0, -100); await p.waitForTimeout(300);
+  console.log('volume after wheel', await p.evaluate(() => __studio.S.project.events.map(e => __studio.S.tags.get(e.id + '.volume')).join(',')));
+  console.log('bars', await p.locator('.tlbar').count(), 'wave canvas', await p.locator('.tlwave').count());
+  // game speed: effective length is used while playing
+  await p.click('.tab:has-text("Player Editor")'); await p.waitForTimeout(500); await p.click('button:has-text("New weapon")'); await p.click('.pitem:has-text("Arm_canon")'); await p.waitForTimeout(800);
+  await p.click('button:has-text("Player view")'); await p.waitForTimeout(600); await p.click('button:has-text("Walk map1")'); await p.waitForTimeout(1000);
+  console.log('play animLen', await p.evaluate(() => { const q = __studio.S.play, at = q.atts[0]; const r = q.animLen(at.aid, 'shot', at.model.anims['shot'].dur); return JSON.stringify([r.len, +r.speed.toFixed(3), at.model.anims['shot'].dur]); }));
+};

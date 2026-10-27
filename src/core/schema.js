@@ -160,6 +160,10 @@
   S.removeAttach = (project, att) => { for (const k of Object.keys(project.tags)) if (k.startsWith("player." + att.id + ".")) delete project.tags[k]; project.player.attachments.splice(project.player.attachments.indexOf(att), 1); };
   // Sound events on model animations (Timeline tab). Structure: project.events = [{id, asset, anim}]. Values are tags ev1.time / ev1.sound / ev1.volume.
   S.EVENT = [{ k: "time", label: "Time (seconds)", type: "number", def: 0, min: 0, max: 600, step: 0.01 }, { k: "sound", label: "Sound", type: "asset", assetType: "sound", def: "" }, { k: "volume", label: "Volume", type: "number", def: 1, min: 0, max: 1, step: 0.01 }];
+  // Animation length overrides (Timeline tab): project.animLen = [{id, asset, anim}] with tag <id>.length (seconds, 0 = the model's own length). Playing is stretched or squeezed to fit; sound times are in the new seconds.
+  S.ANIMLEN = [{ k: "length", label: "Animation length (seconds, 0 = original)", type: "number", def: 0, min: 0, max: 600, step: 0.01 }];
+  S.animLen = (project, tags, aid, name, dur) => { const e = (project.animLen || []).find(x => x.asset === aid && x.anim === name), l = e ? +tags.get(e.id + ".length") || 0 : 0, len = l > 0 ? l : dur; return { len, speed: len > 0 ? dur / len : 1, entry: e || null }; };
+  S.defineAnimLen = (project, e, over) => { for (const p of S.ANIMLEN) { const r = rec(p, "anims", e.id); if (over && p.k in over) r.value = over[p.k]; project.tags[e.id + "." + p.k] = r; } };
   S.defineEvent = (project, ev, over) => { for (const p of S.EVENT) { const r = rec(p, "events", ev.id); if (over && p.k in over) r.value = over[p.k]; project.tags[ev.id + "." + p.k] = r; } };
   S.removeEvent = (project, ev) => { for (const p of S.EVENT) delete project.tags[ev.id + "." + p.k]; const i = project.events.indexOf(ev); if (i >= 0) project.events.splice(i, 1); };
   // older projects measured x,y from the top-left corner of the 1280x720 stage: move them to the new middle-origin system so nothing shifts
@@ -169,6 +173,7 @@
   };
   S.ensurePlayer = project => {
     if (!project.events) project.events = [];
+    if (!project.animLen) project.animLen = [];
     project.player = project.player || { attachments: [] }; if (!project.player.attachments) project.player.attachments = [];
     delete project.tags["player.freeAim"];
     for (const att of project.player.attachments) {   // bring older objects up to date: a "weapon" tick became the object type

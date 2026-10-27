@@ -532,7 +532,7 @@
       h("div", { class: "btnrow", style: "padding:6px 14px 12px" }, h("button", { class: "btn", text: "Cancel", onclick: close }))));
     ov.addEventListener("pointerdown", e => { if (e.target === ov) close(); }); document.body.append(ov);
   }
-  const reserved = () => [...screens().map(s => s.id), ...S.project.maps.map(m => m.id), ...(S.project.events || []).map(e => e.id), "audio", "gfx", "project", "player"];
+  const reserved = () => [...screens().map(s => s.id), ...S.project.maps.map(m => m.id), ...(S.project.events || []).map(e => e.id), ...(S.project.animLen || []).map(e => e.id), "audio", "gfx", "project", "player"];
   function createMap(style) {
     let n = 1; while (reserved().includes("map" + n)) n++; const id = "map" + n, m = Schema.newMap(S.project, id, style); S.tags.emit([]); markDirty();
     S.mapId = id; S.msel = { kind: "sector", id: "s1" }; S.selId = null; S.sel = null; S.testing = false; S.paused = false; S.rtab = "inspector"; renderToolbar(); renderHier(); renderCenter(); renderInspector(); renderProject(); log("Created map “" + id + "” (" + style.toUpperCase() + " style)");
@@ -761,41 +761,75 @@
     if (asset && TL.asset !== asset.id) { TL.asset = asset.id; TL.anim = null; } if (mo && !names.includes(TL.anim)) { TL.anim = names[0] || null; TL.t = 0; }
     return { TL, models, asset, mo, anim: mo && TL.anim ? mo.anims[TL.anim] : null, name: TL.anim };
   }
+  // the length the timeline shows: the animation's own length unless it was changed (project.animLen)
+  function tlLen(q) { if (!q.anim) return { len: 1, speed: 1, orig: 1 }; const r = Schema.animLen(S.project, S.tags, q.asset.id, q.name, q.anim.dur); return { len: Math.max(0.05, r.len), speed: r.speed, orig: q.anim.dur, entry: r.entry }; }
+  function setAnimLength(q, len) {
+    let e = (S.project.animLen = S.project.animLen || []).find(x => x.asset === q.asset.id && x.anim === q.name);
+    if (!e) { const used = reserved(); let n = 1; while (used.includes("al" + n)) n++; e = { id: "al" + n, asset: q.asset.id, anim: q.name }; S.project.animLen.push(e); Schema.defineAnimLen(S.project, e, { length: 0 }); }
+    S.tags.set(e.id + ".length", len <= 0 ? 0 : +Math.max(0.05, Math.min(600, len)).toFixed(2));
+  }
+  // sound waveforms for the sound bars (decoded once per sound)
+  S.wave = S.wave || {};
+  function waveOf(id) {
+    if (S.wave[id]) return S.wave[id]; const w = S.wave[id] = { dur: 0, peaks: null, busy: true }; const u = S.urls[id]; if (!u) return w;
+    fetch(u).then(r => r.arrayBuffer()).then(b => { const C = window.AudioContext || window.webkitAudioContext; if (!C) throw 0; const ctx = new C(); return ctx.decodeAudioData(b).finally(() => ctx.close && ctx.close()); }).then(buf => {
+      const d = buf.getChannelData(0), N = 240, pk = new Float32Array(N), step = Math.max(1, Math.floor(d.length / N)); for (let i = 0; i < N; i++) { let m = 0; for (let j = i * step; j < Math.min(d.length, (i + 1) * step); j += Math.max(1, step >> 4)) m = Math.max(m, Math.abs(d[j])); pk[i] = m; }
+      w.dur = buf.duration; w.peaks = pk; w.busy = false; if (S.tlGrid) tlGrid();
+    }).catch(() => { w.busy = false; w.dur = 0.3; }); return w;
+  }
   const tlEvents = () => { const q = tlSelection(); return q.asset && q.name ? S.project.events.filter(e => e.asset === q.asset.id && e.anim === q.name) : []; };
   function addSoundEvent(snd) {
     const q = tlSelection(); if (!q.anim) return; const ev = { id: (() => { const used = reserved(); let n = 1; while (used.includes("ev" + n)) n++; return "ev" + n; })(), asset: q.asset.id, anim: q.name };
-    S.project.events.push(ev); Schema.defineEvent(S.project, ev, { time: +Math.min(q.TL.t, Math.max(0, q.anim.dur - 0.01)).toFixed(2), sound: snd.id }); q.TL.evSel = ev.id; S.tags.emit([]); markDirty(); renderInspector(); tlGrid(); log("Added sound “" + snd.name + "” to " + q.name);
+    S.project.events.push(ev); Schema.defineEvent(S.project, ev, { time: +Math.min(q.TL.t, Math.max(0, tlLen(q).len - 0.01)).toFixed(2), sound: snd.id }); q.TL.evSel = ev.id; S.tags.emit([]); markDirty(); renderInspector(); tlGrid(); log("Added sound “" + snd.name + "” to " + q.name);
   }
   function tlGrid() {
-    const g = S.tlGrid; if (!g) return; const { TL, anim, mo } = tlSelection(), LW = 130, W = Math.max(200, g.clientWidth - LW - 20), dur = anim ? Math.max(anim.dur, 0.05) : 1, pps = W / dur, X = t => LW + t * pps, evs = tlEvents();
-    const tick = dur > 8 ? 1 : dur > 3 ? 0.5 : dur > 1 ? 0.25 : 0.1, ruler = h("div", { class: "tlrow tlrul" }, h("div", { class: "tllab", text: "seconds" }));
-    for (let t = 0; t <= dur + 1e-6; t += tick) ruler.append(h("div", { class: "tltick", style: "left:" + X(t) + "px", text: +t.toFixed(2) }));
-    const sounds = h("div", { class: "tlrow tlsnd" }, h("div", { class: "tllab", text: "♪ Sounds" }));
-    for (const e of evs) {
-      const sid = S.tags.get(e.id + ".sound"), a = S.project.assets.find(x => x.id === sid), m = h("div", { class: "tlmark" + (TL.evSel === e.id ? " sel" : ""), title: (a ? a.name : "no sound") + " @ " + (+S.tags.get(e.id + ".time")).toFixed(2) + " s", style: "left:" + X(+S.tags.get(e.id + ".time") || 0) + "px", text: "♪" });
-      m.addEventListener("pointerdown", ev => {
-        ev.stopPropagation(); ev.preventDefault(); TL.evSel = e.id; m.setPointerCapture(ev.pointerId); const x0 = ev.clientX, t0 = +S.tags.get(e.id + ".time") || 0; let moved = false;
-        m.onpointermove = mv => { moved = true; const t = Math.max(0, Math.min(dur - 0.01, t0 + (mv.clientX - x0) / pps)); S.tags.set(e.id + ".time", +t.toFixed(2)); m.style.left = X(t) + "px"; };
-        m.onpointerup = () => { m.onpointermove = m.onpointerup = null; markDirty(); renderInspector(); tlGrid(); if (!moved && a && S.urls[a.id]) playSound(a.id); };
-      }); sounds.append(m);
+    const g = S.tlGrid; if (!g) return; const q = tlSelection(), { TL, anim, mo } = q, L = tlLen(q), LW = 130, W = Math.max(200, g.clientWidth - LW - 20), dur = anim ? L.len : 1, view = Math.max(dur, L.orig || 1) * 1.12, pps = W / view, X = t => LW + t * pps, evs = tlEvents();
+    const tick = view > 8 ? 1 : view > 3 ? 0.5 : view > 1 ? 0.25 : 0.1, ruler = h("div", { class: "tlrow tlrul" }, h("div", { class: "tllab", text: "seconds" }));
+    for (let t = 0; t <= view + 1e-6; t += tick) ruler.append(h("div", { class: "tltick", style: "left:" + X(t) + "px", text: +t.toFixed(2) }));
+    // the end of the animation: drag the orange handle to make it shorter or longer
+    const endShade = h("div", { class: "tlend", style: "left:" + X(dur) + "px;right:0" });
+    const endH = h("div", { class: "tlendh", title: "Drag to change the length of this animation", style: "left:" + X(dur) + "px", text: "⇹" });
+    if (anim) endH.addEventListener("pointerdown", ev => {
+      ev.stopPropagation(); ev.preventDefault(); endH.setPointerCapture(ev.pointerId); const x0 = ev.clientX, l0 = dur;
+      endH.onpointermove = mv => { const l = Math.max(0.05, Math.min(600, l0 + (mv.clientX - x0) / pps)); endH.style.left = X(l) + "px"; endShade.style.left = X(l) + "px"; endH.textContent = l.toFixed(2) + " s"; endH.__l = l; };
+      endH.onpointerup = () => { endH.onpointermove = endH.onpointerup = null; if (endH.__l) setAnimLength(q, Math.abs(endH.__l - L.orig) < 0.005 ? 0 : endH.__l); S.tags.emit([]); markDirty(); renderInspector(); renderCenter(); };
+    });
+    // sounds as bars: the bar is as long as the sound itself, with its waveform; stacked in lanes when they overlap
+    const lanes = [], bars = [], items = evs.map(e => { const sid = S.tags.get(e.id + ".sound"), a = S.project.assets.find(x => x.id === sid), w = sid ? waveOf(sid) : { dur: 0 }, t = +S.tags.get(e.id + ".time") || 0; return { e, a, w, t, d: Math.max(0.08, w.dur || 0.3) }; }).sort((x, y) => x.t - y.t);
+    for (const it of items) { let l = lanes.findIndex(end => end <= it.t + 1e-6); if (l < 0) { l = lanes.length; lanes.push(0); } lanes[l] = it.t + it.d; it.lane = l; }
+    const LH = 32, sounds = h("div", { class: "tlrow tlsnd", style: "height:" + Math.max(1, lanes.length) * LH + "px" }, h("div", { class: "tllab", style: "line-height:26px", text: "♪ Sounds" }));
+    for (const it of items) {
+      const { e, a, w } = it, vol = Math.max(0, Math.min(1, +S.tags.get(e.id + ".volume")));
+      const bar = h("div", { class: "tlbar" + (TL.evSel === e.id ? " sel" : ""), title: (a ? a.name : "no sound") + " @ " + it.t.toFixed(2) + " s · volume " + Math.round(vol * 100) + "%  (drag = move, Shift+drag or mouse wheel = volume)", style: "left:" + X(it.t) + "px;top:" + (it.lane * LH + 3) + "px;width:" + Math.max(18, it.d * pps) + "px" });
+      const cv = h("canvas", { class: "tlwave" }); cv.width = Math.max(18, Math.round(it.d * pps)); cv.height = 24; bar.append(cv, h("span", { class: "tlbn", text: "♪ " + (a ? a.name : "no sound") }), h("span", { class: "tlbv", text: Math.round(vol * 100) + "%" }));
+      const cx = cv.getContext("2d"); cx.fillStyle = "rgba(255,255,255," + (0.25 + 0.6 * vol) + ")"; if (w.peaks) { const n = w.peaks.length; for (let x = 0; x < cv.width; x++) { const p = w.peaks[Math.min(n - 1, Math.floor(x / cv.width * n))] * vol * 11; cx.fillRect(x, 12 - p, 1, Math.max(1, p * 2)); } } else cx.fillRect(0, 11, cv.width, 2);
+      bar.addEventListener("pointerdown", ev => {
+        ev.stopPropagation(); ev.preventDefault(); TL.evSel = e.id; bar.setPointerCapture(ev.pointerId); const x0 = ev.clientX, y0 = ev.clientY, t0 = it.t, v0 = vol, volMode = ev.shiftKey; let moved = false;
+        bar.onpointermove = mv => { moved = true;
+          if (volMode) { const v = Math.max(0, Math.min(1, v0 + (y0 - mv.clientY) / 80)); S.tags.set(e.id + ".volume", +v.toFixed(2)); bar.querySelector(".tlbv").textContent = Math.round(v * 100) + "%"; }
+          else { const t = Math.max(0, Math.min(dur - 0.01, t0 + (mv.clientX - x0) / pps)); S.tags.set(e.id + ".time", +t.toFixed(2)); bar.style.left = X(t) + "px"; } };
+        bar.onpointerup = () => { bar.onpointermove = bar.onpointerup = null; markDirty(); renderInspector(); tlGrid(); if (!moved && a && S.urls[a.id]) playSound(a.id); };
+      });
+      bar.addEventListener("wheel", ev => { ev.preventDefault(); const v = Math.max(0, Math.min(1, (+S.tags.get(e.id + ".volume") || 0) + (ev.deltaY < 0 ? 0.05 : -0.05))); S.tags.set(e.id + ".volume", +v.toFixed(2)); markDirty(); renderInspector(); tlGrid(); }, { passive: false });
+      sounds.append(bar);
     }
     const rows = [], order = []; if (anim && mo) for (const tr of anim.tracks) { let r = order.find(o => o.n === tr.n); if (!r) order.push(r = { n: tr.n, ts: new Set() }); for (const c of tr.c) if (c) for (const t of c.t) r.ts.add(t); }
-    for (const r of order) { const row = h("div", { class: "tlrow" }, h("div", { class: "tllab", title: mo.nodes[r.n].name, text: mo.nodes[r.n].name })); for (const t of r.ts) row.append(h("div", { class: "tlkey", style: "left:" + X(t) + "px" })); rows.push(row); }
+    for (const r of order) { const row = h("div", { class: "tlrow" }, h("div", { class: "tllab", title: mo.nodes[r.n].name, text: mo.nodes[r.n].name })); for (const t of r.ts) row.append(h("div", { class: "tlkey", style: "left:" + X(t / L.speed) + "px" })); rows.push(row); }
     const head = h("div", { class: "tlhead" }, ruler, sounds), body = h("div", { class: "tlbody" }, ...rows);
     if (!anim) body.append(h("div", { class: "hint", style: "padding:10px", text: mo ? "This model has no animations." : "Loading the model…" }));
     const ph = h("div", { class: "tlplayhead" }); S.tlPlayhead = ph; ph.style.left = X(TL.t) + "px"; S.tlX = X;
     const scrub = ev => { const r = g.getBoundingClientRect(); TL.t = Math.max(0, Math.min(dur, (ev.clientX - r.left - LW) / pps)); TL.playing = false; S.tlTick && S.tlTick(0); };
-    for (const el of [ruler, sounds, body]) el.addEventListener("pointerdown", ev => { if (ev.target.closest(".tlmark")) return; scrub(ev); el.setPointerCapture(ev.pointerId); el.onpointermove = scrub; el.onpointerup = () => { el.onpointermove = el.onpointerup = null; }; });
-    put(g, head, body, ph);
+    for (const el of [ruler, sounds, body]) el.addEventListener("pointerdown", ev => { if (ev.target.closest(".tlbar,.tlendh")) return; scrub(ev); el.setPointerCapture(ev.pointerId); el.onpointermove = scrub; el.onpointerup = () => { el.onpointermove = el.onpointerup = null; }; });
+    put(g, head, body, endShade, ph); if (anim) g.append(endH);
   }
   function timelineCenter() {
     const p = E.center; p.tabs.replaceChildren(...centerTabs(), h("span", { class: "sp" })); const q = tlSelection(), { TL, models } = q, F = PRIM.FBX;
     const list = h("div", { class: "tllist" });
     let c = 0; for (const a of models) { list.append(h("div", { class: "tlm", text: "▪ " + a.name })); const mo = F.cache[a.id]; if (!mo) list.append(h("div", { class: "hint", style: "padding:2px 14px", text: a.meta && a.meta.error ? "Could not read this file" : "Loading…" }));
-      else for (const n of Object.keys(mo.anims)) list.append(h("div", { class: "tla" + (TL.asset === a.id && TL.anim === n ? " sel" : ""), onclick: () => { TL.asset = a.id; TL.anim = n; TL.t = 0; TL.evSel = null; TL.playing = false; renderInspector(); renderCenter(); } }, h("span", { text: n }), h("span", { class: "hint", text: mo.anims[n].dur.toFixed(2) + " s" + ((c = S.project.events.filter(e => e.asset === a.id && e.anim === n).length) ? "  ♪ " + c : "") }))); }
+      else for (const n of Object.keys(mo.anims)) list.append(h("div", { class: "tla" + (TL.asset === a.id && TL.anim === n ? " sel" : ""), onclick: () => { TL.asset = a.id; TL.anim = n; TL.t = 0; TL.evSel = null; TL.playing = false; renderInspector(); renderCenter(); } }, h("span", { text: n }), h("span", { class: "hint", text: Schema.animLen(S.project, S.tags, a.id, n, mo.anims[n].dur).len.toFixed(2) + " s" + (Schema.animLen(S.project, S.tags, a.id, n, mo.anims[n].dur).entry && Schema.animLen(S.project, S.tags, a.id, n, mo.anims[n].dur).len !== mo.anims[n].dur ? " ⇹" : "") + ((c = S.project.events.filter(e => e.asset === a.id && e.anim === n).length) ? "  ♪ " + c : "") }))); }
     if (!models.length) list.append(h("div", { class: "hint", style: "padding:10px", text: "Import an .fbx model (Assets > Import Files) and its animations appear here." }));
     const cv = h("canvas", { class: "tlcv" }), time = h("span", { class: "chip", text: "0.00 s" }), snds = S.project.assets.filter(a => a.type === "sound");
-    const playBtn = h("button", { class: "tbtn sm", text: "▶ Play", onclick: () => { if (!q.anim) return; TL.playing = !TL.playing; if (TL.playing && TL.t >= q.anim.dur - 0.01) TL.t = 0; playBtn.textContent = TL.playing ? "❚❚ Pause" : "▶ Play"; } });
+    const playBtn = h("button", { class: "tbtn sm", text: "▶ Play", onclick: () => { if (!q.anim) return; TL.playing = !TL.playing; if (TL.playing && TL.t >= tlLen(q).len - 0.01) TL.t = 0; playBtn.textContent = TL.playing ? "❚❚ Pause" : "▶ Play"; } });
     put(E.cbar, h("span", { class: "chip", text: "Timeline" }), playBtn, h("button", { class: "tbtn sm", text: "⏮", title: "Back to the start", onclick: () => { TL.t = 0; TL.playing = false; playBtn.textContent = "▶ Play"; if (S.tlTick) S.tlTick(0); } }), time,
       h("button", { class: "tbtn sm", disabled: !q.anim, text: "+ Add sound at playhead ▾", onclick: e => popMenu(e.currentTarget, snds.length ? snds.map(a => ({ t: a.name, fn: () => addSoundEvent(a) })) : [{ t: "Import a sound file first (Assets > Import Files)", disabled: true }]) }),
       h("span", { class: "hint", text: "Click or drag in the timeline to scrub · drag a ♪ to move it · click a ♪ to hear it" }));
@@ -804,10 +838,10 @@
     let v = null, gm = null, raf = 0, last = performance.now(), ro = null, prevT = TL.t; const M4 = PRIM.M4;
     if (q.mo) { v = new PRIM.R3D.View(cv); if (v.ok) { gm = v.loadModel(q.mo); v.sky = [0.1, 0.12, 0.17]; v.fov = 0.8; } else v = null; }
     const tick = dt => {
-      const an = tlSelection().anim; if (an && TL.playing) { const t0 = TL.t; TL.t += dt; if (TL.t >= an.dur) { TL.t = an.dur > 0 ? TL.t % an.dur : 0; } tlSound(t0, TL.t, an.dur); }
-      time.textContent = TL.t.toFixed(2) + " / " + (an ? an.dur.toFixed(2) : "0.00") + " s"; if (S.tlPlayhead && S.tlX) S.tlPlayhead.style.left = S.tlX(TL.t) + "px";
+      const qq = tlSelection(), an = qq.anim, LL = tlLen(qq); if (an && TL.playing) { const t0 = TL.t; TL.t += dt; if (TL.t >= LL.len) { TL.t = LL.len > 0 ? TL.t % LL.len : 0; } tlSound(t0, TL.t, LL.len); }
+      time.textContent = TL.t.toFixed(2) + " / " + (an ? LL.len.toFixed(2) : "0.00") + " s"; if (S.tlPlayhead && S.tlX) S.tlPlayhead.style.left = S.tlX(TL.t) + "px";
       if (v && q.anim) { const b = q.mo.bounds, c = [0, 1, 2].map(i => (b.lo[i] + b.hi[i]) / 2), k = 22 / (b.size || 1);
-        v.draw(); v.drawViewmodel([{ gm, pose: PRIM.FBX.pose(q.mo, q.name, TL.t), M: M4.mul(M4.translate(0, 0, -34), M4.mul(M4.rotX(-12), M4.mul(M4.rotY(TL.yaw), M4.mul(M4.scale(k, k, k), M4.translate(-c[0], -c[1], -c[2]))))) }], []); }
+        v.draw(); v.drawViewmodel([{ gm, pose: PRIM.FBX.pose(q.mo, q.name, TL.t * LL.speed), M: M4.mul(M4.translate(0, 0, -34), M4.mul(M4.rotX(-12), M4.mul(M4.rotY(TL.yaw), M4.mul(M4.scale(k, k, k), M4.translate(-c[0], -c[1], -c[2]))))) }], []); }
     };
     function tlSound(t0, t1, dur) {   // events passed since last frame (also across the loop point)
       for (const e of tlEvents()) { const t = +S.tags.get(e.id + ".time") || 0, hit = t1 >= t0 ? (t >= t0 && t < t1) : (t >= t0 || t < t1); const sid = S.tags.get(e.id + ".sound"); if (hit && sid && S.urls[sid]) { const a = new Audio(S.urls[sid]); a.volume = Math.max(0, Math.min(1, (+S.tags.get("audio.master") || 0) * (+S.tags.get("audio.sfx") || 0) * (+S.tags.get(e.id + ".volume") || 0))); a.play().catch(() => {}); } }
@@ -819,7 +853,10 @@
   }
   function timelineInspector() {
     const q = tlSelection(), box = h("div", { class: "insp" }), evs = tlEvents(), TL = q.TL;
-    box.append(h("div", { class: "ihead" }, h("span", { class: "bigic", text: "♪" }), h("div", { class: "ititle" }, h("div", { class: "idin ro", text: q.name || "Timeline" }), h("div", { class: "isub", text: q.asset ? q.asset.name + (q.anim ? " · " + q.anim.dur.toFixed(2) + " s · " + q.anim.tracks.length + " tracks" : "") : "No model yet" }))));
+    box.append(h("div", { class: "ihead" }, h("span", { class: "bigic", text: "♪" }), h("div", { class: "ititle" }, h("div", { class: "idin ro", text: q.name || "Timeline" }), h("div", { class: "isub", text: q.asset ? q.asset.name + (q.anim ? " · " + tlLen(q).len.toFixed(2) + " s · " + q.anim.tracks.length + " tracks" : "") : "No model yet" }))));
+    if (q.anim) { const L = tlLen(q); box.append(foldout("tl:len", "Animation length", h("div", { class: "note", text: "Original length " + L.orig.toFixed(2) + " s. Make it shorter to play it faster, longer to play it slower. You can also drag the orange ⇹ handle at the end of the timeline." }),
+      h("div", { class: "fld" }, h("div", { class: "flab", text: "Length (seconds)" }), h("input", { class: "num", type: "number", step: "0.05", min: "0.05", value: +L.len.toFixed(2), onchange: e => { const v = parseFloat(e.target.value); if (!(v > 0)) return; setAnimLength(q, Math.abs(v - L.orig) < 0.005 ? 0 : v); S.tags.emit([]); markDirty(); renderInspector(); renderCenter(); } })),
+      h("div", { class: "note", text: "Speed: " + (L.speed * 100).toFixed(0) + "% of the original" }), h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: "Back to original length", onclick: () => { setAnimLength(q, 0); S.tags.emit([]); markDirty(); renderInspector(); renderCenter(); } })))); }
     const items = evs.length ? evs.map(e => { const a = S.project.assets.find(x => x.id === S.tags.get(e.id + ".sound")); return h("div", { class: "tla" + (TL.evSel === e.id ? " sel" : ""), onclick: () => { TL.evSel = e.id; renderInspector(); tlGrid(); } }, h("span", { text: "♪ " + (a ? a.name : "no sound") }), h("span", { class: "hint", text: (+S.tags.get(e.id + ".time")).toFixed(2) + " s" })); }) : [h("div", { class: "note", text: "No sounds on this animation yet. Press “+ Add sound at playhead” above." })];
     box.append(foldout("tl:list", "Sounds on this animation", ...items));
     const ev = evs.find(e => e.id === TL.evSel);

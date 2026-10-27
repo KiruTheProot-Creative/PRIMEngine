@@ -73,7 +73,7 @@
     // Charge beam node: hold the key -> charging animation, then the charged loop; release -> fire animation (or cancel when released too early)
     charge(a, n, dt) {
       const T = this.T, pre = "player." + a.id + ".s." + n.id + ".", g = k => T.get(pre + k), key = String(g("key") || "").toLowerCase(), held = !!this.keys[key], own = { key: "player." + a.id, script: a.script }, ok = "player." + a.id, at = this.atts.find(x => x.id === a.id);
-      const st = this.ch[pre], dur = nm => { const an = at && nm && at.model.anims[nm]; return an ? an.dur : 0; };
+      const st = this.ch[pre], dur = nm => { const an = at && nm && at.model.anims[nm]; return an ? this.animLen(at.aid, nm, an.dur).len : 0; };
       if (held && !st) { this.ch[pre] = { t: 0, charged: false }; this.playAnim(ok, g("chargeAnim"), false); this.sh.runOut(own, n.id, "start"); T.set("player.charge", 0); }
       else if (held && st) {
         st.t += dt; const need = +g("chargeTime") > 0 ? +g("chargeTime") : (dur(g("chargeAnim")) || 1);
@@ -173,17 +173,18 @@
         const a = new Audio(this.urls[sid]); a.volume = Math.max(0, Math.min(1, (+T.get("audio.master") || 0) * (+T.get("audio.sfx") || 0) * (+T.get(e.id + ".volume") || 0))); a.play().catch(() => {});
       }
     }
+    animLen(aid, name, dur) { return PRIM.Schema.animLen(this.project, this.T, aid, name, dur); }
     // advance one attachment's animation; returns the name being played
     advance(at, dt) {
       const T = this.T, pre = "player." + at.id + "."; let name = at.fire || at.loopAnim || T.get(pre + "idleAnim"), a = name && at.model.anims[name]; if (!a) { at.t = 0; return ""; }
-      const t0 = at.t; at.t += dt; this.ev(at, name, t0, Math.min(at.t, a.dur));
-      if (at.fire) { if (at.t >= a.dur) { at.fire = null; at.t = 0; } } else if (a.dur > 0 && at.t >= a.dur) { this.ev(at, name, 0, at.t - a.dur); at.t %= a.dur; }
+      const len = this.animLen(at.aid, name, a.dur).len, t0 = at.t; at.t += dt; this.ev(at, name, t0, Math.min(at.t, len));
+      if (at.fire) { if (at.t >= len) { at.fire = null; at.t = 0; } } else if (len > 0 && at.t >= len) { this.ev(at, name, 0, at.t - len); at.t %= len; }
       return at.fire || name;
     }
     drawHand(v, dt) {
       if (!this.atts.length) return; const T = this.T, c = v.cam, items = [], segs = [], F = PRIM.FBX, eye = [c.x, c.y, c.z], B = R3D.camBasis(c.yaw, c.pitch);
       for (const at of this.atts) {
-        const pre = "player." + at.id + "."; if (!T.get(pre + "visible")) continue; if (at.type === "weapon" && at !== this.curWeapon()) continue; const g = k => +T.get(pre + k) || 0, name = this.advance(at, dt), pose = F.pose(at.model, name || null, at.t);
+        const pre = "player." + at.id + "."; if (!T.get(pre + "visible")) continue; if (at.type === "weapon" && at !== this.curWeapon()) continue; const g = k => +T.get(pre + k) || 0, name = this.advance(at, dt), pose = F.pose(at.model, name || null, at.t * (name && at.model.anims[name] ? this.animLen(at.aid, name, at.model.anims[name].dur).speed : 1));
         const off = [g("x"), g("y"), g("z")], Rb = M4.rotXYZ([g("rx"), g("ry"), g("rz")]), sc = g("scale") || 1, Sm = M4.scale(sc, sc, sc); let Ra = M4.ident();
         if (at.type === "weapon") {
           const ay = g("arrowYaw") * Math.PI / 180, ap = g("arrowPitch") * Math.PI / 180, arrow = [-Math.cos(ap) * Math.sin(ay), Math.sin(ap), -Math.cos(ap) * Math.cos(ay)], mz = [(g("muzzleX") - g("pivotX")) * sc, (g("muzzleY") - g("pivotY")) * sc, (g("muzzleZ") - g("pivotZ")) * sc];
