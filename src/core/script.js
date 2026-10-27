@@ -14,10 +14,10 @@
     stopAll() { this.dead = true; for (const r of this.runs) { r.dead = true; if (r.cancel) r.cancel(); } this.runs = []; }
     has(owner, type) { return !!(owner.script && owner.script.nodes.some(n => n.type === type)); }
     // owner: { key: tag prefix, script }. arg is the key name for onKey.
-    trigger(owner, type, arg) {
+    trigger(owner, type, arg, only) {
       if (this.dead || !owner.script) return;
       for (const n of owner.script.nodes) {
-        if (n.type !== type) continue; if (type === "onKey" && String(this.T.get(owner.key + ".s." + n.id + ".key") || "").toLowerCase() !== String(arg || "").toLowerCase()) continue;
+        if (n.type !== type) continue; if (only && n.id !== only) continue; if ((type === "onKey" || type === "onKeyUp" || type === "onHold") && String(this.T.get(owner.key + ".s." + n.id + ".key") || "").toLowerCase() !== String(arg || "").toLowerCase()) continue;
         const tok = { key: owner.key, dead: false }; this.runs.push(tok);
         this.chain(owner, this.link(owner, n.id, "next"), tok).catch(e => this.o.say && this.o.say("Script problem: " + e.message)).then(() => { this.runs = this.runs.filter(r => r !== tok); });
       }
@@ -47,6 +47,7 @@
           case "say": if (this.o.say) this.o.say(this.T.interpolate(String(g("text")))); break;
           case "wait": await sleep((+g("seconds") || 0) * 1000, tok); break;
           case "if": out = this.test(g("tag"), g("op"), g("value")) ? "then" : "else"; break;
+          case "ifKey": out = this.o.held && this.o.held(String(g("key") || "").toLowerCase()) ? "then" : "else"; break;
           case "repeat": { const body = this.link(owner, n.id, "body"), cnt = Math.min(1000, +g("times") || 0); for (let i = 0; i < cnt && !tok.dead; i++) { await this.chain(owner, body, tok); await sleep(0, tok); } break; }
           case "forever": { const body = this.link(owner, n.id, "body"); while (!tok.dead && !this.dead) { await this.chain(owner, body, tok); await sleep(16, tok); } return; }
         }

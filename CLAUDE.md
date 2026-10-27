@@ -25,3 +25,4 @@
 - Tests also: `s_code.js` (node coder).
 - Asset explorer multi-select (`studio.js`): `S.sel` is the primary item, `S.multi={primary,items}` the set (ctrl/shift-click via `clickPick`, rubber-band via `marquee`, `topLevel()` drops items inside a selected folder); multi drag/drop uses `dropOne`, delete uses `deleteAssetSel`. Tests: `s_multi.js`, `s_size.js` (width/height fields, proportions, corner handles).
 - Game view (`Play3D.bind`) has a `.p3leave` button shown whenever the mouse is free. Images have a `stretch` tag ("Stretch to screen", fills the 1280x720 stage). Tests: `s_stretch.js`, `s_leave.js`.
+- Keys: `Schema.KEYS` (dropdown list incl. mouse1/2/3 = left/right/middle). Node types onKey, onKeyUp, onHold (interval), ifKey; hold/up/ifKey are player-object only. Play3D: `press/release/hold`, player sound tags (footstep*, jumpSound, landSound, hurtSound, deathSound, soundVolume). Tests: `s_input.js`, `s_input2.js`.

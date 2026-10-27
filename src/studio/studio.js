@@ -668,7 +668,8 @@
   const ncOutY = (n, j) => n.y + NCH + NCS + 11 + j * NCR, ncHeight = n => NCH + NCS + Math.max(1, Schema.SNODES[n.type].outs.length) * NCR + 4;
   function ncSummary(tg, n) {
     const T = S.tags, g = k => T.get(Schema.snodeKey(tg.key, n.id, k)), asset = id => { const a = S.project.assets.find(x => x.id === id); return a ? a.name : "(none)"; };
-    switch (n.type) { case "onKey": return "key: " + g("key"); case "setTag": return (g("tag") || "(pick a tag)") + " = " + g("value"); case "changeTag": return (g("tag") || "(pick a tag)") + " " + (+g("amount") >= 0 ? "+ " : "− ") + Math.abs(+g("amount"));
+    const kl = v => { const o = Schema.KEYS.find(x => x[0] === String(v).toLowerCase()); return o ? o[1] : v; };
+    switch (n.type) { case "onKey": case "onKeyUp": case "ifKey": return kl(g("key")); case "onHold": return kl(g("key")) + " · every " + g("interval") + " s"; case "setTag": return (g("tag") || "(pick a tag)") + " = " + g("value"); case "changeTag": return (g("tag") || "(pick a tag)") + " " + (+g("amount") >= 0 ? "+ " : "− ") + Math.abs(+g("amount"));
       case "playSound": return asset(g("sound")); case "playAnim": return (g("anim") || "(pick one)") + (g("loop") ? " · loops" : ""); case "gotoScreen": return g("screen") || "(pick a screen)"; case "say": return "“" + g("text") + "”";
       case "wait": return g("seconds") + " s"; case "if": return (g("tag") || "(pick a tag)") + " " + g("op") + " " + g("value"); case "repeat": return g("times") + " times"; default: return ""; }
   }

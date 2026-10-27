@@ -252,7 +252,7 @@
       if (this.mode === "edit" || this.mode === "hud" || this.paused) return;
       if (this.splash) { this.skipSplash(); return; }
       if (e.key === "Escape") { if (this.game) { this.game = false; this.rebuild(); } else if (this.mode === "play" && this.o.onExit) this.o.onExit(); return; }
-      if (this.sh && !/INPUT|SELECT|TEXTAREA/.test((e.target && e.target.tagName) || "")) { const sc = this.screen(); if (sc) for (const n of sc.nodes) this.script(sc, n, "onKey", e.key); }
+      if (this.sh && !/INPUT|SELECT|TEXTAREA/.test((e.target && e.target.tagName) || "")) { const sc = this.screen(); if (sc) for (const n of sc.nodes) this.script(sc, n, "onKey", e.key === " " ? "space" : e.key === "Control" ? "ctrl" : e.key); }
     }
   };
 })();
