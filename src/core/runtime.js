@@ -56,7 +56,9 @@
     // positions are stored from the screen middle (x0,y0 = middle, y goes up); the stage itself is drawn from the top-left corner
     px(sc, n) { return W / 2 + (+this.P(sc, n, "x") || 0); }
     py(sc, n) { return H / 2 - (+this.P(sc, n, "y") || 0); }
-    fit() { const s = Math.min(this.host.clientWidth / W, this.host.clientHeight / H) || 1; this.scale = s; this.stage.style.transform = `translate(-50%,-50%) scale(${s})`; }
+    fit() { const s = Math.min(this.host.clientWidth / W, this.host.clientHeight / H) || 1; this.scale = s; this.stage.style.transform = `translate(-50%,-50%) scale(${s})`; this.fillStretch(); }
+    // in the game HUD a "stretch to screen" image fills the whole window (not just the 16:9 stage), plus a margin for the sway
+    fillStretch() { if (this.mode !== "hud" || !this.layer) return; const A = this.tags.get("player.hudMove") ? (+this.tags.get("player.hudMoveAmount") || 1) : 0, w = this.host.clientWidth / this.scale + 140 * A + 4, h = this.host.clientHeight / this.scale + 100 * A + 4; for (const el of this.layer.querySelectorAll("[data-stretch]")) { el.style.width = w + "px"; el.style.height = h + "px"; } }
     screen() { return this.project.screens.find(s => s.id === this.screenId); }
     P(sc, n, k) { return this.tags.get(sc.id + "." + n.id + "." + k); }
     S(sc, n, k) { return this.tags.interpolate(this.P(sc, n, k)); }
@@ -95,7 +97,7 @@
     makeNode(sc, n) {
       const T = this.tags, p = k => this.P(sc, n, k); let el;
       if (n.type === "title") { el = div("rt-n"); el.textContent = this.S(sc, n, "text"); this.textStyle(el, sc, n); el.style.opacity = p("opacity"); }
-      else if (n.type === "image") { const u = this.urls[p("asset")]; if (u) { el = new Image(); el.src = u; el.className = "rt-n"; el.draggable = false; this.sized(el, p("w"), p("h")); el.style.opacity = p("opacity"); if (p("stretch")) { const A = this.mode === "hud" && this.tags.get("player.hudMove") ? (+this.tags.get("player.hudMoveAmount") || 1) : 0; el.style.width = (W + 140 * A + 4) + "px"; el.style.height = (H + 100 * A + 4) + "px"; } } else el = this.ph("No image chosen", p("w"), p("h")); }
+      else if (n.type === "image") { const u = this.urls[p("asset")]; if (u) { el = new Image(); el.src = u; el.className = "rt-n"; el.draggable = false; this.sized(el, p("w"), p("h")); el.style.opacity = p("opacity"); if (p("stretch")) { el.dataset.stretch = "1"; requestAnimationFrame(() => this.fillStretch()); const A = this.mode === "hud" && this.tags.get("player.hudMove") ? (+this.tags.get("player.hudMoveAmount") || 1) : 0; el.style.width = (W + 140 * A + 4) + "px"; el.style.height = (H + 100 * A + 4) + "px"; } } else el = this.ph("No image chosen", p("w"), p("h")); }
       else if (n.type === "button") {
         const hov = this.hover === n.id, prs = this.press === n.id;
         if (p("mode") === "texture") {

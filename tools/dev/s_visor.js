@@ -12,7 +12,8 @@ module.exports = async (p, out) => {
   await p.click('.tab:has-text("Player Editor")'); await p.waitForTimeout(400); await p.click('button:has-text("Walk map1")'); await p.waitForFunction(() => __studio.S.play && __studio.S.play.hudHost, null, { timeout: 8000 }).catch(async () => { console.log('play missing; tab=', await p.evaluate(() => __studio.S.tab + ' ' + document.body.innerText.slice(0,0))); }); await p.waitForTimeout(800);
   await p.evaluate(() => { const q = __studio.S.play; q.msg.style.display = 'none'; });
   const m = () => p.evaluate(() => { const q = __studio.S.play, el = q.hudHost.querySelector('img.rt-n'), r = el.getBoundingClientRect(), h = q.hudHost.getBoundingClientRect(); return JSON.stringify({ imgL: Math.round(r.left - h.left), imgR: Math.round(h.right - r.right), imgT: Math.round(r.top - h.top), imgB: Math.round(h.bottom - r.bottom), tf: q.hudHost.style.transform }); });
-  console.log('still', await m());
+  await p.setViewportSize({ width: 1000, height: 900 }); await p.waitForTimeout(500);
+  console.log('still (tall window)', await m(), await p.evaluate(() => { const q = __studio.S.play, r = q.hudHost.querySelector('img.rt-n').getBoundingClientRect(); return JSON.stringify([Math.round(r.top), Math.round(r.bottom), innerHeight]); }));
   await p.mouse.click(700, 400); for (let i = 0; i < 30; i++) { await p.mouse.move(700 + (i % 2 ? 300 : -300), 400 + (i % 2 ? 150 : -150)); await p.evaluate(() => { const f = __studio.S.play; f.hx = 70 * 1.5; f.hy = 50 * 1.5; }); }
   console.log('swaying (negative = gap)', await m()); await p.screenshot({ path: out + '_v.png' });
 };
