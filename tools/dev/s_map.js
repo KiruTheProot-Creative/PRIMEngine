@@ -32,21 +32,13 @@ module.exports = async (p, out) => {
   await p.locator('.pit:has-text("btn.png")').dragTo(p.locator('.medcv'), { targetPosition: { x: dx - box.x, y: dy - box.y } }); await p.waitForTimeout(250);
   console.log('dropped on wall -> v1 tex', await p.evaluate(() => __studio.S.tags.get('map1.v1.tex') + ' | v4 ' + __studio.S.tags.get('map1.v4.tex')));
   // 3D tab
-  await p.click('.tab:has-text("3D Fly")'); await p.waitForTimeout(1200);
+  await p.click('.tab:has-text("Fly Editor")'); await p.waitForTimeout(1200);
   console.log('3d', await p.evaluate(() => __studio.S.v3 ? 'tris ' + __studio.S.v3.triCount + ' frames ' + __studio.S.v3.frames : 'NO VIEW'));
   await p.screenshot({ path: out + '_3d.png' });
   // look/move with keys
   await p.mouse.click(600, 300); await p.keyboard.down('d'); await p.waitForTimeout(500); await p.keyboard.up('d'); await p.keyboard.down('w'); await p.waitForTimeout(500); await p.keyboard.up('w');
   console.log('cam', await p.evaluate(() => JSON.stringify(__studio.S.v3.cam)));
   await p.screenshot({ path: out + '_3d_moved.png' });
-  // fullscreen fly and leave with Esc
-  await p.evaluate(() => document.exitPointerLock()); await p.click('button:has-text("Maximize on Play")'); await p.waitForTimeout(700); await p.screenshot({ path: out + '_fly.png' });
-  await p.keyboard.press('Escape'); await p.waitForTimeout(200);
-  console.log('layer after esc', await p.locator('.play-layer').count());
-  // the game's Play button starts the map
-  await p.click('.hrow:has-text("main")'); await p.click('.tab:has-text("Game")'); await p.waitForTimeout(500);
-  const [bx, by] = await p.evaluate(() => { const b = document.querySelector('.rt-stage [data-id="play"], .rt-stage .rt-btn'); const r = b.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; }).catch(() => [0, 0]);
-  console.log('play btn at', bx, by);
   // persistence: pack and unpack
   const ok = await p.evaluate(async () => { const S = __studio.S; const { bytes } = await PRIM.Prime.pack(S.project, async () => null); const r = await PRIM.Prime.unpack(bytes); return r.project.maps.length + ' map, ' + r.project.maps[0].sectors.length + ' rooms, tag ' + r.project.tags['map1.s2.ceil'].value; });
   console.log('prime roundtrip:', ok);

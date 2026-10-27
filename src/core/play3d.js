@@ -11,7 +11,7 @@
     constructor(o) {
       this.o = o; this.mode = o.mode || "play"; this.project = o.project; this.map = o.map || null; this.urls = o.urls || {};
       this.T = this.mode === "play" ? o.tags.fork() : o.tags; if (this.mode === "play") this.T.setMany({ "player.health": +this.T.get("player.maxHealth") || 100 });
-      this.keys = {}; this.dead = false; this.drag = false; this.vz = 0; this.ground = false; this.hint = null; this.shot = 0;
+      this.keys = {}; this.aimYaw = 0; this.aimPitch = 0; this.dead = false; this.drag = false; this.vz = 0; this.ground = false; this.hint = null; this.shot = 0;
       const host = this.host = o.host; this.root = el("p3root"); this.cv = document.createElement("canvas"); this.cv.className = "v3cv p3cv"; this.xh = el("p3x"); this.hudHost = el("p3hud"); this.msg = el("p3msg");
       this.root.append(this.cv, this.hudHost, this.xh, this.msg); host.append(this.root);
       this.view = this.map ? new R3D.View(this.cv) : null; if (this.view && !this.view.ok) { this.view = null; this.msg.textContent = "WebGL could not start on this computer."; }
@@ -46,15 +46,28 @@
       this.unbind = () => { removeEventListener("keydown", kd, true); removeEventListener("keyup", ku, true); removeEventListener("mousemove", mm); removeEventListener("pointerup", pu); document.removeEventListener("pointerlockchange", pl); };
     }
     leave() { if (this.o.onExit) this.o.onExit(); else this.destroy(); }
+    // Classic: the camera looks where the mouse points and the crosshair stays in the middle.
+    // Free aim (bodycam style): the mouse moves the aim (and crosshair) inside an area of the screen; the camera only turns once the aim reaches the edge of that area.
     look(dx, dy) {
-      const T = this.T, s = 0.0022 * (+T.get("player.mouseSens") || 1); this.yaw += dx * s;
-      if (T.get("player.freeAim")) this.pitch = clamp(this.pitch - dy * s, -1.45, 1.45); else this.pitch = 0;
+      const T = this.T, s = 0.0022 * (+T.get("player.mouseSens") || 1);
+      if (T.get("player.aimMode") !== "free") { this.aimYaw = this.aimPitch = 0; this.yaw += dx * s; this.pitch = clamp(this.pitch - dy * s, -1.45, 1.45); return; }
+      const R = Math.max(0.05, (+T.get("player.freeAimRadius") || 14) * Math.PI / 180); let ay = this.aimYaw + dx * s, ap = this.aimPitch - dy * s; const d = Math.hypot(ay, ap);
+      if (d > R) { const k = R / d, ex = ay - ay * k, ey = ap - ap * k; this.yaw += ex; this.pitch = clamp(this.pitch + ey, -1.45, 1.45); ay *= k; ap *= k; }
+      this.aimYaw = ay; this.aimPitch = ap;
     }
+    // world direction the player is aiming along (camera direction plus the free-aim offset)
+    aimDir() { const yaw = this.yaw + this.aimYaw, pit = clamp(this.pitch + this.aimPitch, -1.5, 1.5), cp = Math.cos(pit); return [Math.cos(yaw) * cp, Math.sin(pit), Math.sin(yaw) * cp]; }
     // ---- crosshair (a plain cross)
     drawCross() {
       const T = this.T, on = T.get("player.crosshair"); this.xh.style.display = on ? "block" : "none"; if (!on) return;
       const s = +T.get("player.crosshairSize"), g = +T.get("player.crosshairGap"), t = +T.get("player.crosshairThickness"), c = T.get("player.crosshairColor"), bar = (x, y, w, h) => el("", `position:absolute;left:${x}px;top:${y}px;width:${w}px;height:${h}px;background:${c};box-shadow:0 0 0 1px rgba(0,0,0,.55)`);
       this.xh.replaceChildren(bar(-t / 2, -g - s, t, s), bar(-t / 2, g, t, s), bar(-g - s, -t / 2, s, t), bar(g, -t / 2, s, t));
+    }
+    // the crosshair sits where the aim points: the centre in classic mode, moving inside the aim area in free aim
+    placeCross(v) {
+      if (this.T.get("player.aimMode") !== "free" && !this.aimYaw && !this.aimPitch) { this.xh.style.transform = ""; return; }
+      const t = Math.tan(v.fov / 2), w = this.cv.clientWidth, h = this.cv.clientHeight, asp = w / h;
+      this.xh.style.transform = `translate(${Math.tan(this.aimYaw) / (t * asp) * w / 2}px, ${-Math.tan(this.aimPitch) / t * h / 2}px)`;
     }
     // ---- walking
     info(x, y) { return R3D.sectorInfo(this.map, this.T, x, y); }
@@ -76,7 +89,7 @@
       if (this.dead) return; this.raf = requestAnimationFrame(q => this.frame(q)); const dt = Math.min(0.05, (t - this.last) / 1000); this.last = t;
       if (this.mode === "play" && this.map) this.step(dt);
       const v = this.view; if (!v) return; const T = this.T, c = v.cam; v.fov = (+T.get("player.fov") || 80) * Math.PI / 180;
-      c.x = this.x; c.z = this.y; c.y = this.z + (+T.get("player.eyeHeight") || 56); c.yaw = this.yaw; c.pitch = this.pitch; v.draw();
+      c.x = this.x; c.z = this.y; c.y = this.z + (+T.get("player.eyeHeight") || 56); c.yaw = this.yaw; c.pitch = this.pitch; v.draw(); this.placeCross(v);
     }
   };
 })();
