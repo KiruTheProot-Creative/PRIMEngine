@@ -64,5 +64,5 @@ jobs:
           tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'latest' }}
           name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'Latest build' }}
           prerelease: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-          body: Unsigned builds of PRIMEngine Studio. Windows only for now: download the .exe (portable, no install). Mac and Linux builds come once the Windows app is finished.
+          body: "Unsigned builds of PRIMEngine Studio. Windows only for now: download the .exe (portable, no install). Mac and Linux builds come once the Windows app is finished."
           files: dist/*
