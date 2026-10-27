@@ -1,0 +1,6 @@
+# Game assets are private (some are fan-game material). Keep them out of the public repo.
+projects/*/assets/
+dist/
+__pycache__/
+*.pyc
+node_modules/

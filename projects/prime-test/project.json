@@ -1,0 +1,58 @@
+{
+  "format": 1,
+  "name": "PRIME Test",
+  "assets": [
+    { "id": "arm_model",   "type": "model", "label": "Arm cannon (baked FBX)", "file": "assets/arm.json" },
+    { "id": "arm_tex",     "type": "image", "label": "Arm cannon texture",     "file": "assets/canon.png" },
+    { "id": "visor",       "type": "image", "label": "Visor / HUD frame",      "file": "assets/visor.png" },
+    { "id": "charge_start","type": "sound", "label": "Charge (start)",         "file": "assets/charge_start.wav" },
+    { "id": "charge_loop", "type": "sound", "label": "Charge (loop)",          "file": "assets/charge_loop.wav" },
+    { "id": "charge_shot", "type": "sound", "label": "Charged shot",           "file": "assets/charge_shot.wav" },
+    { "id": "wall_impact", "type": "sound", "label": "Wall impact",            "file": "assets/wall_impact.wav" }
+  ],
+  "settings": {
+    "player":  { "speed": 5.2, "sensitivity": 1, "eye": 1.65, "radius": 0.35, "maxEnergy": 99 },
+    "beam":    { "chargeTime": 1.25, "damage": 1, "chargedDamage": 4, "speed": 44, "fireDelay": 0.24 },
+    "enemy":   { "hp": 4, "speed": 2.3, "damage": 8, "sight": 26 },
+    "display": { "fov": 78, "pixel": 1, "hudSway": true, "volume": 0.8 }
+  },
+  "objects": {
+    "player": {
+      "label": "Player",
+      "audio": { "hurt": { "sound": null, "volume": 1, "pitch": 1, "loop": false, "start": 0, "end": 0 } }
+    },
+    "armCannon": {
+      "label": "Arm cannon",
+      "attachedTo": "player",
+      "model": "arm_model", "texture": "arm_tex",
+      "modelInfo": { "unitScale": 0.0036, "center": [0, 62, -3], "muzzle": [0, 62, -100] },
+      "transform": { "position": [0.3, -0.265, -0.85], "rotation": [2.3, 3.4, 0], "scale": 1 },
+      "audio": {
+        "shot":        { "sound": null,          "volume": 1,   "pitch": 1, "loop": false, "start": 0, "end": 0 },
+        "chargeStart": { "sound": "charge_start","volume": 0.9, "pitch": 1, "loop": false, "start": 0, "end": 0 },
+        "chargeLoop":  { "sound": "charge_loop", "volume": 0.8, "pitch": 1, "loop": true,  "start": 0, "end": 0 },
+        "chargedShot": { "sound": "charge_shot", "volume": 1,   "pitch": 1, "loop": false, "start": 0, "end": 0 }
+      }
+    },
+    "drone": {
+      "label": "Drone",
+      "audio": {
+        "shot":  { "sound": null, "volume": 1, "pitch": 1, "loop": false, "start": 0, "end": 0 },
+        "hit":   { "sound": null, "volume": 1, "pitch": 1, "loop": false, "start": 0, "end": 0 },
+        "death": { "sound": "wall_impact", "volume": 1, "pitch": 0.62, "loop": false, "start": 0, "end": 0 }
+      }
+    },
+    "door": {
+      "label": "Door",
+      "audio": { "open": { "sound": null, "volume": 1, "pitch": 1, "loop": false, "start": 0, "end": 0 } }
+    },
+    "world": {
+      "label": "World",
+      "audio": {
+        "impact": { "sound": "wall_impact", "volume": 0.9, "pitch": 1, "loop": false, "start": 0, "end": 0 },
+        "pickup": { "sound": null, "volume": 1, "pitch": 1, "loop": false, "start": 0, "end": 0 }
+      }
+    }
+  },
+  "ui": { "visor": { "asset": "visor", "visible": true } }
+}
