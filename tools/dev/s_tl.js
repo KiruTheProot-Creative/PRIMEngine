@@ -15,11 +15,11 @@ module.exports = async (p, out) => {
   await p.screenshot({ path: out + '_tl2.png' });
   await p.evaluate(() => { __studio.S.tl.t = 0.4; }); await p.waitForTimeout(400); await p.screenshot({ path: out + '_tl3.png' });
   // in game: attach the model, set the click animation, fire, count sounds that start
-  await p.click('.tab:has-text("Player Editor")'); await p.waitForTimeout(500); await p.click('button:has-text("Attach model")'); await p.click('.pitem:has-text("Arm_canon")'); await p.waitForTimeout(800);
+  await p.click('.tab:has-text("Player Editor")'); await p.waitForTimeout(500); await p.click('button:has-text("New weapon")'); await p.click('.pitem:has-text("Arm_canon")'); await p.waitForTimeout(800);
   await p.evaluate(() => { window.__aud = 0; const A = window.Audio; window.Audio = function (u) { const a = new A(u); const pl = a.play.bind(a); a.play = () => { window.__aud++; return pl(); }; return a; }; });
-  await p.click('button:has-text("Walk map1")'); await p.waitForTimeout(1000);
+  await p.click('button:has-text("Player view")'); await p.waitForTimeout(600); await p.click('button:has-text("Walk map1")'); await p.waitForTimeout(1000);
   console.log('events after attach', await p.evaluate(() => JSON.stringify(__studio.S.project.events.map(e => e.id))));
-  await p.evaluate(() => { const T = __studio.S.tags; T.set('player.att1.fireAnim', 'shot'); });
+  await p.evaluate(() => { const T = __studio.S.tags; T.set('player.att.fireAnim', 'shot'); });
   const ok = await p.evaluate(() => { const q = __studio.S.play; if (!q) return 'no play'; q.fire(); return 'fired'; }); await p.waitForTimeout(900);
   console.log('walk', ok, 'sounds started', await p.evaluate(() => window.__aud));
   const u = await p.evaluate(async () => { const pr = __studio.S.project; return JSON.stringify(JSON.parse(JSON.stringify(pr)).events.length); }); console.log('events survive json', u);

@@ -16,3 +16,8 @@
 - Player (`project.player`, tags `player.*`; schema in `schema.js` S.PLAYER/S.ATTACH): walking/collision/jump/sprint/crosshair/aim modes (classic, free = bodycam) in `src/core/play3d.js`; HUD = a screen of kind `hud` drawn over the game. Player Editor tab attaches FBX models to the camera (`player.att1.*` tags); a weapon has a muzzle point + arrow that turns toward the crosshair raycast.
 - FBX: `src/core/fbx.js` (ASCII + binary, rigid node animation only, no skin weights), math in `math3d.js`. Timeline tab: sound events per model animation, stored as `project.events=[{id,asset,anim}]` + tags `ev1.time/sound/volume`; played by `Play3D.ev()` in game.
 - Tests: `tools/dev/s_att.js` (attach/aim), `s_tl.js` (timeline + in-game sounds), `s_player.js`, `s_map.js`, `s_unity.js`.
+- Screen positions (`x`,`y` tags of screen elements) are measured from the MIDDLE of the 1280x720 stage (x0,y0 = middle, y up). `project.origin==="center"`; `Schema.toCenter` converts older projects in `Store.migrate`. Edit mode in runtime.js has a corner resize handle (`rt-handle`) and the inspector has Center buttons.
+- Player objects (`project.player.attachments`, tags `player.<attN>.*`) have a `type` tag: weapon (numbered weapon list, 1-9 / wheel switch, muzzle + arrow), animation (FBX model) or image (flat quad via `FBX.loadImage`). Object editor = `objectCenter()` in studio.js (click to place muzzle, drag to aim arrow).
+- Hierarchy folders: `project.hfolders=[{id,name,scope?}]`, items carry `.folder`; scope = a screen id means a folder of that screen's elements.
+- Tests also: `s_obj.js` (objects, weapon switch), `s_fold.js` (folders), `s_hud.js` (origin, resize handle, migration).
+

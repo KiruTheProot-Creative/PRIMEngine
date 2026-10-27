@@ -121,5 +121,13 @@
   };
   // small summary stored in the project (the file itself stays the source of truth)
   F.summary = m => ({ anims: Object.keys(m.anims).map(n => ({ name: n, dur: m.anims[n].dur, tracks: m.anims[n].tracks.length })), nodes: m.nodes.length, meshes: m.nodes.filter(n => n.mesh).length, size: +m.bounds.size.toFixed(2) });
+  // a flat picture as a "model": one quad (width = picture aspect, height 1) so images can be attached to the camera like any other object
+  F.loadImage = function (id, url) {
+    if (F.cache[id]) return Promise.resolve(F.cache[id]); if (!url) return Promise.resolve(null);
+    return F.pending[id] || (F.pending[id] = fetch(url).then(r => r.arrayBuffer()).then(buf => new Promise((res, rej) => { const im = new Image(); im.onload = () => res([buf, im.naturalWidth / (im.naturalHeight || 1)]); im.onerror = rej; im.src = URL.createObjectURL(new Blob([buf])); })).then(([buf, asp]) => {
+      const w = asp / 2, p = [-w, -0.5, 0, w, -0.5, 0, w, 0.5, 0, -w, -0.5, 0, w, 0.5, 0, -w, 0.5, 0], n = [0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1], u = [0, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0, 0];
+      const m = { nodes: [{ name: "image", parent: -1, t: [0, 0, 0], r: [0, 0, 0], s: [1, 1, 1], pre: [0, 0, 0], mesh: { p, n, u } }], anims: {}, texBytes: new Uint8Array(buf), image: true }; m.bounds = F.bounds(m); F.cache[id] = m; delete F.pending[id]; return m;
+    }).catch(e => { delete F.pending[id]; return null; }));
+  };
   F.load = function (id, url) { if (F.cache[id]) return Promise.resolve(F.cache[id]); if (!url) return Promise.resolve(null); return F.pending[id] || (F.pending[id] = fetch(url).then(r => r.arrayBuffer()).then(F.parse).then(m => { F.cache[id] = m; delete F.pending[id]; return m; }).catch(e => { delete F.pending[id]; console.warn("FBX failed", e); return null; })); };
 })();

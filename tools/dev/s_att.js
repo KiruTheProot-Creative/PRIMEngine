@@ -7,12 +7,12 @@ module.exports = async (p, out) => {
   console.log('asset', await p.evaluate(() => JSON.stringify(__studio.S.project.assets.map(a => ({ n: a.name, t: a.type, anims: a.meta && a.meta.anims && a.meta.anims.map(x => x.name) })))));
   await p.click('.pit:has-text("Arm_canon")'); await p.waitForTimeout(300); await p.screenshot({ path: out + '_asset.png' });
   await p.click('.tab:has-text("Player Editor")'); await p.waitForTimeout(600);
-  await p.click('button:has-text("Attach model")'); await p.click('.pitem:has-text("Arm_canon")'); await p.waitForTimeout(1500);
-  console.log('att tags', await p.evaluate(() => { const T = __studio.S.tags; return JSON.stringify({ asset: T.get('player.att1.asset'), scale: T.get('player.att1.scale'), idle: T.get('player.att1.idleAnim'), fire: T.get('player.att1.fireAnim') }); }));
+  await p.click('button:has-text("New weapon")'); await p.click('.pitem:has-text("Arm_canon")'); await p.waitForTimeout(1500);
+  console.log('att tags', await p.evaluate(() => { const T = __studio.S.tags; return JSON.stringify({ asset: T.get('player.att.asset'), scale: T.get('player.att.scale'), idle: T.get('player.att.idleAnim'), fire: T.get('player.att.fireAnim') }); }));
   await p.screenshot({ path: out + '_att1.png' });
-  await p.evaluate(() => { const T = __studio.S.tags; T.set('player.att1.weapon', true); T.set('player.att1.muzzleZ', -100); T.set('player.att1.muzzleY', 62); T.set('player.att1.x', 6); T.set('player.att1.y', -14); T.set('player.att1.z', -22); });
+  await p.evaluate(() => { const T = __studio.S.tags; T.set('player.att.muzzleZ', -100); T.set('player.att.muzzleY', 62); T.set('player.att.x', 6); T.set('player.att.y', -14); T.set('player.att.z', -22); });
   await p.waitForTimeout(900); await p.screenshot({ path: out + '_att2.png' });
-  await p.click('button:has-text("Walk map1")'); await p.waitForTimeout(1200); await p.evaluate(() => { __studio.S.play.msg.style.display = 'none'; });
+  await p.click('button:has-text("Player view")'); await p.waitForTimeout(600); await p.click('button:has-text("Walk map1")'); await p.waitForTimeout(1200); await p.evaluate(() => { __studio.S.play.msg.style.display = 'none'; });
   await p.waitForTimeout(500); await p.screenshot({ path: out + '_walk1.png' });
   // face the wall close up: aim yaw 0 (towards +x) and walk to it
   await p.evaluate(() => { const q = __studio.S.play; q.yaw = 0; q.x = 90; });

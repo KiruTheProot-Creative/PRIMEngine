@@ -140,7 +140,7 @@
       h("div", { class: "tgroup right" }, h("button", { class: "tbtn", text: "Maximize on Play", onclick: play }), h("button", { class: "tbtn", text: "Save", title: "Save as a .prime file (Ctrl+S)", onclick: () => saveProject(false) })));
   }
   function renderStatus() { const l = S.log[S.log.length - 1]; E.status.className = l && l.kind === "error" ? "err" : l && l.kind === "warn" ? "warn" : ""; E.status.textContent = l ? l.msg : "Ready"; E.status.append(h("span", { class: "fileinfo", text: (S.file ? S.file.name : "not saved to a file yet") + (S.fileDirty ? "  ·  unsaved changes" : "") })); }
-  function setTab(t) { if (t === "fly" && !S.mapId) t = "edit"; S.tab = t; S.testing = t === "game"; S.playerSel = t === "player"; if (S.playerSel || t === "timeline") S.sel = null; if (!S.testing) S.paused = false; renderToolbar(); renderHier(); renderInspector(); renderCenter(); }
+  function setTab(t) { S.fsel = null; if (t === "fly" && !S.mapId) t = "edit"; S.tab = t; S.testing = t === "game"; S.playerSel = t === "player"; if (S.playerSel || t === "timeline") S.sel = null; if (!S.testing) S.paused = false; renderToolbar(); renderHier(); renderInspector(); renderCenter(); }
   function setTesting(v) { setTab(v ? "game" : "edit"); }
   function leaveSpecial() { S.playerSel = false; if (["player", "timeline", "fly"].includes(S.tab)) { S.tab = "edit"; S.testing = false; return true; } return false; }
   function centerTabs() {
@@ -149,42 +149,64 @@
   }
 
   // ---------------------------------------------------------------- hierarchy
-  function renderHier() {
-    const p = E.hier, sc = curScreen();
-    p.tabs.replaceChildren(h("div", { class: "tab sel", text: "Hierarchy" }), h("span", { class: "sp" }), h("button", { class: "tbtn sm", text: "Create ▾", onclick: e => popMenu(e.currentTarget, [{ t: "Screen", fn: addScreen }, { t: "Map…", fn: openNewMap }, "-", ...(sc.kind === "splash" ? [{ t: "Splash", fn: () => addNode("splash") }] : ["title", "button", "image", "slider", "toggle", "bar"].map(t => ({ t: Schema.NODE[t].label, fn: () => addNode(t) })))]) }));
-    const rows = [];
-    for (const s of screens()) {
-      const open = !S.collapsed[s.id], isSel = s.id === S.screenId && !S.selId && !S.sel && !S.mapId && !S.playerSel;
-      rows.push(h("div", { class: "hrow" + (isSel ? " sel" : ""), style: "padding-left:4px", onclick: () => selectScreen(s.id) },
-        h("button", { class: "tri", "aria-label": open ? "Collapse" : "Expand", text: s.nodes.length ? (open ? "▾" : "▸") : "", onclick: e => { e.stopPropagation(); S.collapsed[s.id] = open; renderHier(); } }),
-        h("span", { class: "hic", text: s.kind === "splash" ? "✦" : s.kind === "hud" ? "◫" : "▭" }), h("span", { class: "hnm", text: s.id }), S.tags.get("project.startScreen") === s.id ? h("span", { class: "hmeta", text: "start" }) : null));
-      if (open) for (const n of s.nodes) rows.push(h("div", { class: "hrow" + (s.id === S.screenId && n.id === S.selId && !S.sel && !S.mapId && !S.playerSel ? " sel" : ""), style: "padding-left:22px", onclick: () => selectNode(s.id, n.id) },
-        h("span", { class: "hic", text: Schema.NODE[n.type].icon }), h("span", { class: "hnm", text: n.id }), h("span", { class: "hmeta", text: n.type })));
-    }
-    for (const m of S.project.maps) {
-      const open = !S.collapsed["map:" + m.id], isSel = S.mapId === m.id && !S.playerSel && !(S.msel && S.msel.kind === "sector");
-      rows.push(h("div", { class: "hrow" + (isSel ? " sel" : ""), style: "padding-left:4px", onclick: () => selectMap(m.id) },
-        h("button", { class: "tri", "aria-label": open ? "Collapse" : "Expand", text: m.sectors.length ? (open ? "▾" : "▸") : "", onclick: e => { e.stopPropagation(); S.collapsed["map:" + m.id] = open; renderHier(); } }),
-        h("span", { class: "hic", text: "▦" }), h("span", { class: "hnm", text: m.id }), h("span", { class: "hmeta", text: "map · " + m.style })));
-      if (open) for (const sc2 of m.sectors) rows.push(h("div", { class: "hrow" + (S.mapId === m.id && !S.playerSel && S.msel && S.msel.kind === "sector" && S.msel.id === sc2.id ? " sel" : ""), style: "padding-left:22px", onclick: () => selectMap(m.id, { kind: "sector", id: sc2.id }) },
-        h("span", { class: "hic", text: "▱" }), h("span", { class: "hnm", text: sc2.id }), h("span", { class: "hmeta", text: "room" })));
-    }
-    rows.push(h("div", { class: "hrow" + (S.playerSel ? " sel" : ""), style: "padding-left:4px", onclick: () => setTab("player") }, h("span", { class: "tri" }), h("span", { class: "hic", text: "◉" }), h("span", { class: "hnm", text: "Player" }), h("span", { class: "hmeta", text: "entity" })));
-    p.body.replaceChildren(...rows);
+  // ---- hierarchy folders: project.hfolders = [{id, name, scope?}]. A folder with no scope holds screens and maps; a folder with scope = a screen id holds that screen's elements. Items point to their folder with `.folder`.
+  function newHFolder(scope) { const F = S.project.hfolders = S.project.hfolders || [], f = { id: Schema.uid("folder", F.map(x => x.id)) }; f.name = f.id; if (scope) f.scope = scope; F.push(f); S.fsel = f.id; S.sel = null; S.selId = null; markDirty(); renderHier(); renderInspector(); log("Created folder “" + f.name + "”"); }
+  function deleteHFolder(f) { for (const sc of screens()) { if (sc.folder === f.id) delete sc.folder; for (const n of sc.nodes) if (n.folder === f.id) delete n.folder; } for (const m of S.project.maps) if (m.folder === f.id) delete m.folder; S.project.hfolders.splice(S.project.hfolders.indexOf(f), 1); S.fsel = null; markDirty(); renderHier(); renderInspector(); }
+  function moveToFolder(d, t) {
+    const F = S.project.hfolders || [], f = t.folder ? F.find(x => x.id === t.folder) : null; let it = null;
+    if (d.kind === "screen") it = screens().find(x => x.id === d.id); else if (d.kind === "map") it = S.project.maps.find(x => x.id === d.id); else if (d.kind === "node") { const sc = screens().find(x => x.id === d.screen); it = sc && sc.nodes.find(x => x.id === d.id); if (f && f.scope !== d.screen) return; if (!f && t.screen && t.screen !== d.screen) return; }
+    if (!it) return; if (d.kind !== "node" && f && f.scope) return; if (f) it.folder = f.id; else delete it.folder; markDirty(); renderHier();
   }
-  function selectScreen(id) { const was = S.screenId, wasMap = S.mapId, tc = leaveSpecial(); S.mapId = null; S.msel = null; S.screenId = id; S.selId = null; S.sel = null; renderHier(); renderInspector(); renderProject(); if (was !== id || wasMap || tc) renderCenter(); else if (S.rt) { S.rt.selId = null; S.rt.rebuild(); } }
-  function selectNode(sid, id) { const was = S.screenId, wasMap = S.mapId, tc = leaveSpecial(); S.mapId = null; S.msel = null; S.screenId = sid; S.selId = id; S.sel = null; renderHier(); renderInspector(); renderProject(); if (was !== sid || wasMap || tc) renderCenter(); else if (S.rt) { S.rt.selId = id; S.rt.rebuild(); } }
+  function folderInspector() {
+    const f = (S.project.hfolders || []).find(x => x.id === S.fsel), box = h("div", { class: "insp" }); if (!f) return box;
+    const n = screens().filter(x => x.folder === f.id).length + S.project.maps.filter(x => x.folder === f.id).length + screens().reduce((a, sc) => a + sc.nodes.filter(q => q.folder === f.id).length, 0);
+    box.append(h("div", { class: "ihead" }, h("span", { class: "bigic", text: "▰" }), h("div", { class: "ititle" }, h("input", { class: "idin", value: f.name, "aria-label": "Folder name", onchange: e => { f.name = e.target.value.trim() || f.id; markDirty(); renderHier(); } }), h("div", { class: "isub", text: "Folder · " + (f.scope ? "inside screen “" + f.scope + "”" : "holds screens and maps") + " · " + n + " item(s)" }))),
+      h("div", { class: "btnrow" }, h("button", { class: "btn sm danger", text: "Delete folder (keeps the items)", onclick: () => deleteHFolder(f) })), h("div", { class: "note", text: "Drag items in the Hierarchy onto this folder to file them. Drag them onto a screen name, or the empty space below, to take them out again." }));
+    return box;
+  }
+  function renderHier() {
+    const p = E.hier, sc = curScreen(), F = S.project.hfolders || (S.project.hfolders = []), none = () => !S.selId && !S.sel && !S.mapId && !S.playerSel && !S.fsel, pad = l => "padding-left:" + (4 + l * 18) + "px";
+    p.tabs.replaceChildren(h("div", { class: "tab sel", text: "Hierarchy" }), h("span", { class: "sp" }), h("button", { class: "tbtn sm", text: "Create ▾", onclick: e => popMenu(e.currentTarget, [{ t: "Screen", fn: addScreen }, { t: "Map…", fn: openNewMap }, { t: "Folder", fn: () => newHFolder(null) }, ...(sc.kind !== "splash" ? [{ t: "Folder inside “" + sc.id + "”", fn: () => newHFolder(sc.id) }] : []), "-", ...(sc.kind === "splash" ? [{ t: "Splash", fn: () => addNode("splash") }] : ["title", "button", "image", "slider", "toggle", "bar"].map(t => ({ t: Schema.NODE[t].label, fn: () => addNode(t) })))]) }));
+    const rows = [], tri = (open, has, fn) => h("button", { class: "tri", "aria-label": open ? "Collapse" : "Expand", text: has ? (open ? "▾" : "▸") : "", onclick: e => { e.stopPropagation(); fn(); } });
+    const drag = (el, d) => { el.draggable = true; el.addEventListener("dragstart", e => { e.dataTransfer.setData("application/x-hier", JSON.stringify(d)); e.dataTransfer.effectAllowed = "move"; }); return el; };
+    const drop = (el, t) => { el.addEventListener("dragover", e => { if (e.dataTransfer.types.includes("application/x-hier")) { e.preventDefault(); el.classList.add("dropt"); } }); el.addEventListener("dragleave", () => el.classList.remove("dropt")); el.addEventListener("drop", e => { e.preventDefault(); e.stopPropagation(); el.classList.remove("dropt"); let d = null; try { d = JSON.parse(e.dataTransfer.getData("application/x-hier")); } catch (x) {} if (d) moveToFolder(d, t); }); return el; };
+    const folderRow = (f, lvl, count) => { const open = !S.collapsed["f:" + f.id]; rows.push(drop(h("div", { class: "hrow" + (S.fsel === f.id ? " sel" : ""), style: pad(lvl), onclick: () => { S.fsel = f.id; S.sel = null; S.selId = null; renderHier(); renderInspector(); } }, tri(open, count > 0, () => { S.collapsed["f:" + f.id] = open; renderHier(); }), h("span", { class: "hic", text: "▰" }), h("span", { class: "hnm", text: f.name }), h("span", { class: "hmeta", text: "folder" })), { folder: f.id })); return open; };
+    const nodeRow = (s, n, lvl) => rows.push(drag(h("div", { class: "hrow" + (s.id === S.screenId && n.id === S.selId && !S.sel && !S.mapId && !S.playerSel && !S.fsel ? " sel" : ""), style: pad(lvl), onclick: () => selectNode(s.id, n.id) },
+      h("span", { class: "hic", text: Schema.NODE[n.type].icon }), h("span", { class: "hnm", text: n.id }), h("span", { class: "hmeta", text: n.type })), { kind: "node", screen: s.id, id: n.id }));
+    const screenRows = (s, lvl) => {
+      const open = !S.collapsed[s.id]; rows.push(drag(drop(h("div", { class: "hrow" + (s.id === S.screenId && !S.selId && none() ? " sel" : ""), style: pad(lvl), onclick: () => selectScreen(s.id) },
+        tri(open, s.nodes.length > 0, () => { S.collapsed[s.id] = open; renderHier(); }), h("span", { class: "hic", text: s.kind === "splash" ? "✦" : s.kind === "hud" ? "◫" : "▭" }), h("span", { class: "hnm", text: s.id }), S.tags.get("project.startScreen") === s.id ? h("span", { class: "hmeta", text: "start" }) : null), { folder: null, screen: s.id }), { kind: "screen", id: s.id }));
+      if (!open) return; const sf = F.filter(f => f.scope === s.id);
+      for (const f of sf) { const kids = s.nodes.filter(n => n.folder === f.id); if (folderRow(f, lvl + 1, kids.length)) for (const n of kids) nodeRow(s, n, lvl + 2); }
+      for (const n of s.nodes) if (!sf.some(f => f.id === n.folder)) nodeRow(s, n, lvl + 1);
+    };
+    const mapRows = (m, lvl) => {
+      const open = !S.collapsed["map:" + m.id], isSel = S.mapId === m.id && !S.playerSel && !S.fsel && !(S.msel && S.msel.kind === "sector");
+      rows.push(drag(h("div", { class: "hrow" + (isSel ? " sel" : ""), style: pad(lvl), onclick: () => selectMap(m.id) }, tri(open, m.sectors.length > 0, () => { S.collapsed["map:" + m.id] = open; renderHier(); }),
+        h("span", { class: "hic", text: "▦" }), h("span", { class: "hnm", text: m.id }), h("span", { class: "hmeta", text: "map · " + m.style })), { kind: "map", id: m.id }));
+      if (open) for (const sc2 of m.sectors) rows.push(h("div", { class: "hrow" + (S.mapId === m.id && !S.playerSel && !S.fsel && S.msel && S.msel.kind === "sector" && S.msel.id === sc2.id ? " sel" : ""), style: pad(lvl + 1), onclick: () => selectMap(m.id, { kind: "sector", id: sc2.id }) },
+        h("span", { class: "hic", text: "▱" }), h("span", { class: "hnm", text: sc2.id }), h("span", { class: "hmeta", text: "room" })));
+    };
+    for (const f of F.filter(x => !x.scope)) { const ss = screens().filter(x => x.folder === f.id), mm = S.project.maps.filter(x => x.folder === f.id); if (folderRow(f, 0, ss.length + mm.length)) { for (const x of ss) screenRows(x, 1); for (const x of mm) mapRows(x, 1); } }
+    const tops = F.filter(x => !x.scope); for (const x of screens()) if (!tops.some(f => f.id === x.folder)) screenRows(x, 0); for (const m of S.project.maps) if (!tops.some(f => f.id === m.folder)) mapRows(m, 0);
+    rows.push(h("div", { class: "hrow" + (S.playerSel ? " sel" : ""), style: "padding-left:4px", onclick: () => setTab("player") }, h("span", { class: "tri" }), h("span", { class: "hic", text: "◉" }), h("span", { class: "hnm", text: "Player" }), h("span", { class: "hmeta", text: "entity" })));
+    for (const att of S.project.player.attachments) { const ty = S.tags.get("player." + att.id + ".type"); rows.push(h("div", { class: "hrow" + (S.playerSel && S.objSel === att.id ? " sel" : ""), style: "padding-left:22px", onclick: () => { S.objSel = att.id; S.objView = true; if (S.tab === "player") { renderHier(); renderInspector(); renderCenter(); } else setTab("player"); } },
+      h("span", { class: "hic", text: ty === "weapon" ? "✚" : ty === "image" ? "▨" : "▣" }), h("span", { class: "hnm", text: S.tags.get("player." + att.id + ".name") || att.id }), h("span", { class: "hmeta", text: ty }))); }
+    p.body.replaceChildren(...rows); p.body.ondragover = e => { if (e.dataTransfer.types.includes("application/x-hier")) e.preventDefault(); }; p.body.ondrop = e => { e.preventDefault(); let d = null; try { d = JSON.parse(e.dataTransfer.getData("application/x-hier")); } catch (x) {} if (d) moveToFolder(d, { folder: null }); };
+  }
+  function selectScreen(id) { S.fsel = null; const was = S.screenId, wasMap = S.mapId, tc = leaveSpecial(); S.mapId = null; S.msel = null; S.screenId = id; S.selId = null; S.sel = null; renderHier(); renderInspector(); renderProject(); if (was !== id || wasMap || tc) renderCenter(); else if (S.rt) { S.rt.selId = null; S.rt.rebuild(); } }
+  function selectNode(sid, id) { S.fsel = null; const was = S.screenId, wasMap = S.mapId, tc = leaveSpecial(); S.mapId = null; S.msel = null; S.screenId = sid; S.selId = id; S.sel = null; renderHier(); renderInspector(); renderProject(); if (was !== sid || wasMap || tc) renderCenter(); else if (S.rt) { S.rt.selId = id; S.rt.rebuild(); } }
 
   // ---------------------------------------------------------------- center: Scene / Game
   function renderCenter() {
     const p = E.center; killMapViews(); if (S.rt) { S.rt.destroy(); S.rt = null; }
     if (S.tab === "fly" && !S.mapId) S.tab = "edit"; S.testing = S.tab === "game";
-    if (S.tab === "player") return playerCenter(); if (S.tab === "timeline") return timelineCenter(); if (S.mapId && curMap() && S.tab !== "game") return mapCenter();
+    if (S.tab === "player") return S.objView && S.objSel && S.project.player.attachments.some(a => a.id === S.objSel) ? objectCenter() : playerCenter(); if (S.tab === "timeline") return timelineCenter(); if (S.mapId && curMap() && S.tab !== "game") return mapCenter();
     const sc = S.testing && S.mapId ? (screens().find(x => x.id === S.tags.get("project.startScreen")) || screens()[0]) : curScreen();
     E.host.className = "host"; E.host.replaceChildren();
     p.tabs.replaceChildren(...centerTabs(), h("span", { class: "sp" }), h("span", { class: "csize", text: "1280 × 720  ·  16:9" }));
     put(E.cbar, h("span", { class: "chip", text: sc.id }), !S.testing && sc.kind === "splash" ? h("button", { class: "tbtn sm", text: "▶ Preview sequence", onclick: () => { if (S.rt) S.rt.previewSplash(); } }) : null,
-      h("span", { class: "hint", text: S.testing ? "Playing: hover and click buttons, drag sliders. Edits are disabled." : sc.kind === "splash" ? "Select a splash in the Hierarchy to see it." : "Click to select, drag to move (Shift = snap to 10). Drop images from the Project panel here." }));
+      h("span", { class: "hint", text: S.testing ? "Playing: hover and click buttons, drag sliders. Edits are disabled." : sc.kind === "splash" ? "Select a splash in the Hierarchy to see it." : "Click to select, drag to move (Shift = snap to 10), drag the orange corner to resize. x0,y0 is the middle of the screen. Drop images from the Project panel here." }));
     S.rt = new PRIM.Runtime({ host: E.host, project: S.project, tags: S.testing ? S.tags.fork() : S.tags, mode: S.testing ? "test" : "edit", urls: S.urls, screenId: sc.id, selId: S.selId, onStartGame: startGame,
       onSelect: id => { S.selId = id; S.sel = null; renderHier(); renderInspector(); renderProject(); }, onChange: () => renderInspector(), onExit: () => setTesting(false) });
     S.rt.paused = S.paused;
@@ -194,7 +216,7 @@
   function addNode(type, over0) {
     const sc = curScreen(); if ((sc.kind === "splash") !== (type === "splash")) return log(type === "splash" ? "Splashes go on the splash screen." : "Elements go on menu screens, not the splash screen.", "warn");
     const id = Schema.uid(type, sc.nodes.map(n => n.id)), node = { id, type }; sc.nodes.push(node);
-    const over = Object.assign(type === "splash" ? {} : { y: Math.min(680, 200 + (sc.nodes.length - 1) % 8 * 60) }, over0 || {}); if (type === "title" && !over.text) over.text = "Title"; if (type === "button" && !over.text) over.text = "Button";
+    const over = Object.assign(type === "splash" ? {} : { y: type === "image" ? 0 : 160 - (sc.nodes.length - 1) % 8 * 60 }, over0 || {}); if (type === "title" && !over.text) over.text = "Title"; if (type === "button" && !over.text) over.text = "Button";
     Schema.defineNode(S.project, sc.id, node, over); S.selId = id; S.sel = null; S.rtab = "inspector"; afterStructure(); log("Created " + type + " “" + id + "”");
   }
   function afterStructure() { markDirty(); S.tags.emit([]); renderHier(); renderInspector(); renderProject(); if (S.rt && !S.testing) { S.rt.selId = S.selId; S.rt.rebuild(); } }
@@ -336,6 +358,7 @@
     p.body.replaceChildren(S.rtab === "tags" ? tagsBody() : S.sel ? assetInspector() : propsBody());
   }
   function propsBody() {
+    if (S.fsel) return folderInspector();
     if (S.playerSel) return playerInspector(); if (S.tab === "timeline") return timelineInspector();
     if (S.mapId && curMap()) return mapInspector();
     const sc = curScreen(), node = selectedNode(), box = h("div", { class: "insp" });
@@ -343,7 +366,8 @@
       const pre = sc.id + "." + node.id + ".", def = Schema.NODE[node.type];
       box.append(h("div", { class: "ihead" }, h("span", { class: "bigic", text: def.icon }), h("div", { class: "ititle" }, h("input", { class: "idin", value: node.id, "aria-label": "Element name", onchange: e => renameNode(node, e.target.value) }), h("div", { class: "isub", text: def.label + " · screen “" + sc.id + "”" }))),
         h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: sc.kind === "splash" ? "◀ Earlier" : "▼ Back", onclick: () => moveNode(node, -1) }), h("button", { class: "btn sm", text: sc.kind === "splash" ? "Later ▶" : "▲ Front", onclick: () => moveNode(node, 1) }), h("button", { class: "btn sm", text: "Duplicate", onclick: () => dupNode(node) }), h("button", { class: "btn sm danger", text: "Delete", onclick: () => deleteNode(node) })));
-      const groups = {}; for (const pr of def.props) { if (pr.showIf && S.tags.get(pre + pr.showIf[0]) !== pr.showIf[1]) continue; (groups[GROUP[pr.k] || "Appearance"] = groups[GROUP[pr.k] || "Appearance"] || []).push(field(pre + pr.k)); }
+      const groups = {}; for (const pr of def.props) { if (!Schema.shown(S.tags, pre, pr)) continue; (groups[GROUP[pr.k] || "Appearance"] = groups[GROUP[pr.k] || "Appearance"] || []).push(field(pre + pr.k)); }
+      if (groups.Transform && sc.kind !== "splash") groups.Transform.push(h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: "Center horizontally", onclick: () => { S.tags.set(pre + "x", 0); renderInspector(); } }), h("button", { class: "btn sm", text: "Center vertically", onclick: () => { S.tags.set(pre + "y", 0); renderInspector(); } }), h("button", { class: "btn sm", text: "Center both", onclick: () => { S.tags.setMany({ [pre + "x"]: 0, [pre + "y"]: 0 }); renderInspector(); } })));
       for (const g of ORDER) if (groups[g]) box.append(foldout(g, g, ...groups[g]));
       box.append(h("div", { class: "note", text: "Tip: write {audio.master} in any text to show a tag's live value. Drag a field's name left/right to scrub numbers." }));
     } else {
@@ -439,8 +463,8 @@
 
   // ================================================================ MAPS (DOOM-style editor + 3D fly view)
   const curMap = () => S.project.maps.find(m => m.id === S.mapId);
-  function killMapViews() { if (S.med) { S.med.destroy(); S.med = null; } if (S.v3) { S.v3.dispose(); S.v3 = null; } if (S.p3) { S.p3.destroy(); S.p3 = null; } if (S.tlv) { S.tlv.destroy(); S.tlv = null; } }
-  function selectMap(id, sel) { const was = S.mapId, tc = (S.playerSel || S.tab === "timeline") ? (S.tab = "edit", S.testing = false, true) : false; S.playerSel = false; S.mapId = id; S.selId = null; S.sel = null; S.msel = sel || null; renderHier(); renderInspector(); renderProject(); if (was !== id || !S.med || tc) renderCenter(); else S.med.select(S.msel, true); }
+  function killMapViews() { if (S.med) { S.med.destroy(); S.med = null; } if (S.v3) { S.v3.dispose(); S.v3 = null; } if (S.p3) { S.p3.destroy(); S.p3 = null; } if (S.tlv) { S.tlv.destroy(); S.tlv = null; } if (S.oev) { S.oev.destroy(); S.oev = null; } }
+  function selectMap(id, sel) { S.fsel = null; const was = S.mapId, tc = (S.playerSel || S.tab === "timeline") ? (S.tab = "edit", S.testing = false, true) : false; S.playerSel = false; S.mapId = id; S.selId = null; S.sel = null; S.msel = sel || null; renderHier(); renderInspector(); renderProject(); if (was !== id || !S.med || tc) renderCenter(); else S.med.select(S.msel, true); }
   function openNewMap() {
     const ov = h("div", { class: "modal" }), close = () => ov.remove();
     const card = (id, title, desc, off) => h("button", { class: "mcard" + (off ? " off" : ""), disabled: off, onclick: () => { close(); createMap(id); } }, h("div", { class: "mt", text: title }), h("div", { class: "md", text: desc }), off ? h("div", { class: "mbadge", text: "Coming later" }) : null);
@@ -503,26 +527,86 @@
   function playerCenter() {
     const p = E.center, m = curMap() || S.project.maps[0] || null;
     p.tabs.replaceChildren(...centerTabs(), h("span", { class: "sp" }), h("span", { class: "csize", text: "what the player sees" }));
-    put(E.cbar, h("span", { class: "chip", text: "Player" }), m ? h("button", { class: "tbtn sm", text: "▶ Walk " + m.id, onclick: () => walkMap(m) }) : null,
+    put(E.cbar, h("span", { class: "chip", text: "Player view" }), S.objSel ? h("button", { class: "tbtn sm", text: "Object editor", onclick: () => { S.objView = true; renderCenter(); } }) : null, m ? h("button", { class: "tbtn sm", text: "▶ Walk " + m.id, onclick: () => walkMap(m) }) : null,
       h("span", { class: "hint", text: m ? "The player's view from the start point of “" + m.id + "”, with the crosshair and HUD drawn over it. Change values on the right; this updates live." : "Make a map (Screen > Create Map…) to see the player's view here. The crosshair and HUD preview below still work." }));
     E.host.className = "host maphost"; E.host.replaceChildren();
-    S.p3 = new PRIM.Play3D({ host: E.host, project: S.project, map: m, tags: S.tags, urls: S.urls, mode: "preview" });
+    S.p3 = new PRIM.Play3D({ host: E.host, project: S.project, map: m, tags: S.tags, urls: S.urls, mode: "preview", previewWeapon: S.objSel });
   }
   // ---- 3D objects attached to the player camera
   function loadModels(p) { PRIM.FBX.cache = {}; PRIM.FBX.pending = {}; for (const a of p.assets) if (a.type === "model") PRIM.FBX.load(a.id, S.urls[a.id]).then(m => { if (m && S.project === p) { if (!a.meta || a.meta.error) a.meta = PRIM.FBX.summary(m); renderInspector(); if (S.tab === "timeline") renderCenter(); } }); }
-  function addAttachment(asset) {
-    const P = S.project.player, id = Schema.uid("att", P.attachments.map(a => a.id)), att = { id }, mo = PRIM.FBX.cache[asset.id], names = mo ? Object.keys(mo.anims) : [];
-    const over = { asset: asset.id, scale: mo ? Math.max(0.001, +(22 / (mo.bounds.size || 1)).toFixed(3)) : 1, idleAnim: names.find(n => /idle/i.test(n)) || "", fireAnim: names.find(n => /shot|fire|shoot/i.test(n)) || "" };
-    P.attachments.push(att); Schema.defineAttach(S.project, att, over); S.tags.emit([]); markDirty(); renderInspector(); renderCenter(); log("Attached “" + asset.name + "” to the player camera");
+  // ---- Object editor: the selected object on its own, to turn around and to place the muzzle point and the aim arrow by clicking
+  function objectCenter() {
+    const p = E.center, att = S.project.player.attachments.find(a => a.id === S.objSel), pre = "player." + att.id + ".", T = S.tags, F = PRIM.FBX, M4 = PRIM.M4, OE = S.oe = S.oe || { yaw: -30, pitch: 15, zoom: 1, tool: "orbit" };
+    const type = T.get(pre + "type"), isW = type === "weapon", aid = T.get(pre + (type === "image" ? "image" : "asset")), mo = F.cache[aid]; if (!isW && ["muzzle", "arrow"].includes(OE.tool)) OE.tool = "orbit";
+    p.tabs.replaceChildren(...centerTabs(), h("span", { class: "sp" }), h("span", { class: "csize", text: "object editor" }));
+    const tb = (t, l, on, fn) => h("button", { class: "tbtn sm" + (on ? " on" : ""), text: l, onclick: fn }), tool = (k, l) => tb(k, l, OE.tool === k, () => { OE.tool = k; renderCenter(); }), view = (l, y, pt) => tb(l, l, false, () => { OE.yaw = y; OE.pitch = pt; });
+    const hints = { orbit: "Drag to turn the object around, scroll to zoom.", muzzle: "Click or drag on the object: the yellow cross (where shots leave the weapon) follows your mouse.", arrow: "Drag: the red arrow points to your mouse, as seen in this view. Switch between Front / Side / Top to aim it in every direction." };
+    put(E.cbar, h("span", { class: "chip", text: T.get(pre + "name") || att.id }), tb("pv", "◀ Player view", false, () => { S.objView = false; renderCenter(); }), isW ? [tool("orbit", "Look around"), tool("muzzle", "Set muzzle point"), tool("arrow", "Aim arrow")] : null, view("Front", 0, 0), view("Side", 90, 0), view("Top", 0, 89),
+      isW ? tb("fw", "Arrow forward", false, () => { T.setMany({ [pre + "arrowYaw"]: 0, [pre + "arrowPitch"]: 0 }); }) : null, h("span", { class: "hint", text: hints[OE.tool] }));
+    const cv = h("canvas", { class: "v3cv", style: "cursor:" + (OE.tool === "orbit" ? "grab" : "crosshair") }); E.host.className = "host maphost"; E.host.replaceChildren(cv);
+    if (!mo) { E.host.append(h("div", { class: "v3err", style: "color:var(--muted)", text: aid ? "Loading…" : "Choose a model or image for this object on the right." })); if (aid) (type === "image" ? F.loadImage : F.load)(aid, S.urls[aid]).then(m => { if (m && S.objView && S.tab === "player") renderCenter(); }); return; }
+    const v = new PRIM.R3D.View(cv); if (!v.ok) return; v.sky = [0.12, 0.14, 0.19]; v.fov = 0.8; const gm = v.loadModel(mo), D = 34, g = k => +T.get(pre + k) || 0;
+    const frame = () => { const b = mo.bounds, c = [0, 1, 2].map(i => (b.lo[i] + b.hi[i]) / 2), k = 22 / (b.size || 1) * OE.zoom, R = M4.mul(M4.rotX(OE.pitch), M4.rotY(OE.yaw)), M = M4.mul(M4.translate(0, 0, -D), M4.mul(R, M4.mul(M4.scale(k, k, k), M4.translate(-c[0], -c[1], -c[2])))), Rinv = M4.mul(M4.rotY(-OE.yaw), M4.rotX(-OE.pitch));
+      return { c, k, M, Rinv, pose: F.pose(mo, T.get(pre + "idleAnim") || null, 0) }; };
+    const segs = fr => { const o = [], ax = [[[1, 0, 0], [1, 0.3, 0.3]], [[0, 1, 0], [0.4, 1, 0.4]], [[0, 0, 1], [0.4, 0.6, 1]]], O = M4.point(fr.M, 0, 0, 0);
+      for (const [d, c] of ax) o.push({ a: O, b: M4.add(O, M4.dir(M4.mul(M4.rotX(OE.pitch), M4.rotY(OE.yaw)), ...d.map(q => q * 3))), c });
+      if (isW) { const mp = M4.point(fr.M, g("muzzleX"), g("muzzleY"), g("muzzleZ")), ay = g("arrowYaw") * Math.PI / 180, ap = g("arrowPitch") * Math.PI / 180, ad = M4.norm(M4.dir(fr.M, -Math.cos(ap) * Math.sin(ay), Math.sin(ap), -Math.cos(ap) * Math.cos(ay))), tip = M4.add(mp, ad.map(q => q * 9)), side = M4.norm(M4.cross(ad, [0.3, 0.9, 0.2])), red = [1, 0.25, 0.2], yel = [1, 0.9, 0.2];
+        o.push({ a: mp, b: tip, c: red }, { a: tip, b: M4.add(tip, M4.add(ad.map(q => -q * 1.8), side.map(q => q * 1))), c: red }, { a: tip, b: M4.add(tip, M4.sub(ad.map(q => -q * 1.8), side.map(q => q * 1))), c: red });
+        for (const d of [[1, 0, 0], [0, 1, 0], [0, 0, 1]]) o.push({ a: M4.sub(mp, d.map(q => q * 1.1)), b: M4.add(mp, d.map(q => q * 1.1)), c: yel }); }
+      return o; };
+    let raf = 0; const loop = () => { raf = requestAnimationFrame(loop); const fr = frame(); v.draw(); v.drawViewmodel([{ gm, pose: fr.pose, M: fr.M }], segs(fr)); }; raf = requestAnimationFrame(loop);
+    // mouse -> ray in camera space -> point on the object (or on the plane through its middle when it misses)
+    const ray = e => { const r = cv.getBoundingClientRect(), t = Math.tan(v.fov / 2), asp = r.width / r.height; return M4.norm([((e.clientX - r.left) / r.width * 2 - 1) * t * asp, (1 - (e.clientY - r.top) / r.height * 2) * t, -1]); };
+    const toModel = (fr, pc) => { const q = M4.dir(fr.Rinv, pc[0], pc[1], pc[2] + D).map(x => x / fr.k); return [fr.c[0] + q[0], fr.c[1] + q[1], fr.c[2] + q[2]]; };
+    const surface = (fr, d) => { let best = Infinity;
+      mo.nodes.forEach((n, i) => { if (!n.mesh) return; const W = M4.mul(fr.M, fr.pose[i]), P = n.mesh.p, vt = j => M4.point(W, P[j * 3], P[j * 3 + 1], P[j * 3 + 2]);
+        for (let j = 0; j + 2 < P.length / 3; j += 3) { const a = vt(j), b = vt(j + 1), c = vt(j + 2), e1 = M4.sub(b, a), e2 = M4.sub(c, a), pv = M4.cross(d, e2), det = M4.dot(e1, pv); if (Math.abs(det) < 1e-9) continue; const tv = M4.sub([0, 0, 0], a), u = M4.dot(tv, pv) / det; if (u < 0 || u > 1) continue; const qv = M4.cross(tv, e1), w = M4.dot(d, qv) / det; if (w < 0 || u + w > 1) continue; const t = M4.dot(e2, qv) / det; if (t > 0 && t < best) best = t; } });
+      if (best < Infinity) return d.map(q => q * best); return d.map(q => q * (D / -d[2])); };
+    const apply = e => {
+      const fr = frame(), d = ray(e);
+      if (OE.tool === "muzzle") { const m = toModel(fr, surface(fr, d)).map(x => Math.round(x * 10) / 10); T.setMany({ [pre + "muzzleX"]: m[0], [pre + "muzzleY"]: m[1], [pre + "muzzleZ"]: m[2] }); }
+      else if (OE.tool === "arrow") {
+        const mp = M4.point(fr.M, g("muzzleX"), g("muzzleY"), g("muzzleZ")), pc = d.map(q => q * (mp[2] / d[2])), vx = pc[0] - mp[0], vy = pc[1] - mp[1], l = Math.hypot(vx, vy); if (l < 1e-4) return;
+        const ay = g("arrowYaw") * Math.PI / 180, ap = g("arrowPitch") * Math.PI / 180, cur = M4.norm(M4.dir(fr.M, -Math.cos(ap) * Math.sin(ay), Math.sin(ap), -Math.cos(ap) * Math.cos(ay)));
+        let cz = cur[2], s = Math.sqrt(Math.max(0, 1 - cz * cz)); if (s < 0.2) { cz = 0; s = 1; }
+        const dm = M4.norm(M4.dir(fr.Rinv, vx / l * s, vy / l * s, cz)); T.setMany({ [pre + "arrowYaw"]: Math.round(Math.atan2(-dm[0], -dm[2]) * 1800 / Math.PI) / 10, [pre + "arrowPitch"]: Math.round(Math.asin(Math.max(-1, Math.min(1, dm[1]))) * 1800 / Math.PI) / 10 });
+      }
+    };
+    let drag = null; cv.addEventListener("pointerdown", e => { cv.setPointerCapture(e.pointerId); drag = { x: e.clientX, y: e.clientY }; if (OE.tool !== "orbit") apply(e); });
+    cv.addEventListener("pointermove", e => { if (!drag) return; if (OE.tool === "orbit") { OE.yaw += (e.clientX - drag.x) * 0.6; OE.pitch = Math.max(-89, Math.min(89, OE.pitch + (e.clientY - drag.y) * 0.6)); drag = { x: e.clientX, y: e.clientY }; } else apply(e); });
+    cv.addEventListener("pointerup", () => { if (drag && OE.tool !== "orbit") { markDirty(); renderInspector(); } drag = null; });
+    cv.addEventListener("wheel", e => { e.preventDefault(); OE.zoom = Math.max(0.3, Math.min(4, OE.zoom * (e.deltaY > 0 ? 0.9 : 1.1))); }, { passive: false });
+    S.oev = { destroy() { cancelAnimationFrame(raf); v.destroy(); } };
   }
-  function attachSection() {
-    const P = S.project.player, models = S.project.assets.filter(a => a.type === "model"), rows = [];
-    for (const att of P.attachments) {
-      const pre = "player." + att.id + ".", asset = S.project.assets.find(a => a.id === S.tags.get(pre + "asset")), items = Schema.ATTACH.filter(pr => !pr.showIf || S.tags.get(pre + pr.showIf[0]) === pr.showIf[1]).map(pr => field(pre + pr.k));
-      rows.push(foldout("att:" + att.id, "▪ " + att.id + (asset ? " · " + asset.name : ""), ...items, h("div", { class: "btnrow" }, h("button", { class: "btn sm danger", text: "Remove", onclick: () => { Schema.removeAttach(S.project, att); S.tags.emit([]); markDirty(); renderInspector(); renderCenter(); } }))));
-    }
-    return foldout("pl:att", "Attached 3D objects", ...rows, h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: "+ Attach model ▾", onclick: e => popMenu(e.currentTarget, models.length ? models.map(a => ({ t: a.name, fn: () => addAttachment(a) })) : [{ t: "Import an .fbx file first (Assets > Import Files)", disabled: true }]) })),
-      h("div", { class: "note", text: "Objects stay fixed to the camera. For a weapon, tick “Weapon” and place the muzzle point and the arrow: the weapon turns so its arrow points at whatever the crosshair is aiming at." }));
+  // type: "weapon" | "animation" (3D model) | "image" (flat picture)
+  function addObject(type, asset) {
+    const P = S.project.player, F = PRIM.FBX, id = Schema.uid("att", P.attachments.map(a => a.id)), att = { id }, img = type === "image", mo = !img && F.cache[asset.id], names = mo ? Object.keys(mo.anims) : [];
+    const over = { type, name: asset.name.replace(/\.[^.]+$/, ""), scale: img ? 12 : mo ? Math.max(0.001, +(22 / (mo.bounds.size || 1)).toFixed(3)) : 1, idleAnim: names.find(n => /idle/i.test(n)) || "", fireAnim: type === "weapon" ? names.find(n => /shot|fire|shoot/i.test(n)) || "" : "" };
+    over[img ? "image" : "asset"] = asset.id; if (img) { over.x = 0; over.y = 0; }
+    P.attachments.push(att); Schema.defineAttach(S.project, att, over); S.objSel = id; S.objView = true; S.tags.emit([]); markDirty(); renderHier(); renderInspector(); renderCenter(); log("Added " + type + " “" + over.name + "” to the player");
+  }
+  function removeObject(att) { Schema.removeAttach(S.project, att); if (S.objSel === att.id) S.objSel = null; S.tags.emit([]); markDirty(); renderHier(); renderInspector(); renderCenter(); }
+  function moveObject(att, dir) {   // reorder inside its own list (weapons are numbered by this order)
+    const A = S.project.player.attachments, ty = S.tags.get("player." + att.id + ".type") === "weapon", same = A.filter(a => (S.tags.get("player." + a.id + ".type") === "weapon") === ty), i = same.indexOf(att), o = same[i + dir]; if (!o) return;
+    const x = A.indexOf(att), y = A.indexOf(o); A[x] = o; A[y] = att; markDirty(); S.tags.emit([]); renderHier(); renderInspector();
+  }
+  function objectLists() {
+    const P = S.project.player, T = S.tags, models = S.project.assets.filter(a => a.type === "model"), images = S.project.assets.filter(a => a.type === "image"), nope = t => [{ t, disabled: true }];
+    const row = (att, n) => { const ty = T.get("player." + att.id + ".type"), nm = T.get("player." + att.id + ".name") || att.id;
+      return h("div", { class: "tla" + (S.objSel === att.id ? " sel" : ""), onclick: () => { S.objSel = att.id; S.objView = true; renderHier(); renderInspector(); renderCenter(); } },
+        h("span", { text: (n ? n + "  " : "") + (ty === "weapon" ? "✚ " : ty === "image" ? "▨ " : "▣ ") + nm }),
+        h("span", { class: "orow" }, h("button", { class: "mini", title: "Move up", text: "▲", onclick: e => { e.stopPropagation(); moveObject(att, -1); } }), h("button", { class: "mini", title: "Move down", text: "▼", onclick: e => { e.stopPropagation(); moveObject(att, 1); } }), h("button", { class: "mini", title: "Remove", text: "✕", onclick: e => { e.stopPropagation(); removeObject(att); } }))); };
+    const ws = P.attachments.filter(a => T.get("player." + a.id + ".type") === "weapon"), os = P.attachments.filter(a => T.get("player." + a.id + ".type") !== "weapon");
+    return [foldout("pl:weapons", "Weapon list", ...(ws.length ? ws.map((a, i) => row(a, i + 1)) : [h("div", { class: "note", text: "No weapons yet. In game, number keys 1-9 and the mouse wheel switch between them." })]),
+        h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: "+ New weapon ▾", onclick: e => popMenu(e.currentTarget, models.length ? models.map(a => ({ t: a.name, fn: () => addObject("weapon", a) })) : nope("Import an .fbx file first (Assets > Import Files)")) }))),
+      foldout("pl:objects", "Other objects (animations, images)", ...(os.length ? os.map(a => row(a, 0)) : [h("div", { class: "note", text: "3D models with animations, or flat pictures, fixed to the camera (hands, a visor...)." })]),
+        h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: "+ Animation object ▾", onclick: e => popMenu(e.currentTarget, models.length ? models.map(a => ({ t: a.name, fn: () => addObject("animation", a) })) : nope("Import an .fbx file first")) }), h("button", { class: "btn sm", text: "+ Image object ▾", onclick: e => popMenu(e.currentTarget, images.length ? images.map(a => ({ t: a.name, fn: () => addObject("image", a) })) : nope("Import a picture first")) })))];
+  }
+  function selectedObjectEditor() {
+    const att = S.project.player.attachments.find(a => a.id === S.objSel); if (!att) return null; const pre = "player." + att.id + ".", T = S.tags, ty = T.get(pre + "type");
+    return foldout("pl:obj", "Selected: " + (T.get(pre + "name") || att.id), ...Schema.ATTACH.filter(pr => Schema.shown(T, pre, pr)).map(pr => field(pre + pr.k)),
+      ty === "weapon" ? h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: "Edit muzzle & arrow in the object editor", onclick: () => { S.objView = true; renderCenter(); } })) : null,
+      h("div", { class: "note", text: ty === "weapon" ? "A weapon turns its arrow toward whatever the crosshair is aiming at. Place the muzzle point and the arrow in the object editor." : "This object stays fixed to the camera." }));
   }
   // ---- Timeline: pick a model animation, scrub it with a live 3D preview, and put sounds on it (project.events + ev<N>.* tags)
   const tlState = () => S.tl = S.tl || { t: 0, playing: false, yaw: -35 };
@@ -601,13 +685,13 @@
   function playerInspector() {
     const T = S.tags, box = h("div", { class: "insp" }), hudId = T.get("player.hud");
     box.append(h("div", { class: "ihead" }, h("span", { class: "bigic", text: "◉" }), h("div", { class: "ititle" }, h("div", { class: "idin ro", text: "Player" }), h("div", { class: "isub", text: "The one player entity · every value is a player.* tag" }))));
+    box.append(...objectLists()); const sel = selectedObjectEditor(); if (sel) box.append(sel);
     for (const [title, keys] of Schema.PLAYER_GROUPS) {
-      const rows = keys.filter(k => { const r = T.spec("player." + k); return r && (!r.showIf || T.get("player." + r.showIf[0]) === r.showIf[1]); }).map(k => field("player." + k));
+      const rows = keys.filter(k => { const r = T.spec("player." + k); return r && Schema.shown(T, "player.", r); }).map(k => field("player." + k));
       if (title === "HUD") { const sc = screens().find(x => x.id === hudId); rows.push(h("div", { class: "btnrow" }, h("button", { class: "btn sm", disabled: !sc, text: "Edit HUD screen", onclick: () => sc && selectScreen(sc.id) }))); rows.push(h("div", { class: "note", text: "The HUD is a screen like any other: add Bars, Titles and Images to it. Write {player.health} in a text to show a live value." })); }
       box.append(foldout("pl:" + title, title, ...rows));
     }
-    box.append(attachSection());
-    box.append(h("div", { class: "note", text: "Test keys while walking: H hurts 10, J heals 10. Click to fire the attached models' click animation." }));
+    box.append(h("div", { class: "note", text: "Test keys while walking: H hurts 10, J heals 10. Click fires the current weapon; 1-9 or the wheel switch weapons." }));
     return box;
   }
   function dropOnMap(e, a) {

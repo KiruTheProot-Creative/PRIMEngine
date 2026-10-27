@@ -1,0 +1,22 @@
+const SP = '/tmp/claude-0/-home-claude/4d2f2209-a771-580d-8052-566f87920e94/scratchpad';
+module.exports = async (p, out) => {
+  const menu = async (top, item) => { await p.click('.mb:has-text("' + top + '")'); await p.click('.pitem:has-text("' + item + '")'); };
+  await p.click('.tile.plus'); await p.waitForSelector('#app'); await p.waitForTimeout(300);
+  await menu('Screen', 'Create Map'); await p.click('.mcard:has-text("DOOM")'); await p.waitForSelector('.medcv');
+  let [fc] = await Promise.all([p.waitForEvent('filechooser'), menu('Assets', 'Import Files')]); await fc.setFiles([SP + '/Arm_canon.fbx', SP + '/assets_test/Images/logo.png']); await p.waitForTimeout(1800);
+  await p.click('.tab:has-text("Player Editor")'); await p.waitForTimeout(500);
+  await p.click('button:has-text("+ New weapon")'); await p.click('.pitem:has-text("Arm_canon")'); await p.waitForTimeout(1500); await p.screenshot({ path: out + '_o1.png' });
+  console.log('att', await p.evaluate(() => JSON.stringify(__studio.S.project.player.attachments.map(a => [a.id, __studio.S.tags.get('player.' + a.id + '.type'), __studio.S.tags.get('player.' + a.id + '.name')]))));
+  await p.click('button:has-text("Set muzzle point")'); const cv = await p.locator('canvas.v3cv').boundingBox();
+  await p.mouse.click(cv.x + cv.width * 0.5, cv.y + cv.height * 0.5); await p.waitForTimeout(300);
+  console.log('muzzle', await p.evaluate(() => ['X', 'Y', 'Z'].map(a => __studio.S.tags.get('player.att.muzzle' + a))));
+  await p.click('button:has-text("Side")'); await p.click('button:has-text("Aim arrow")'); await p.mouse.move(cv.x + cv.width * 0.3, cv.y + cv.height * 0.5); await p.mouse.down(); await p.mouse.move(cv.x + cv.width * 0.2, cv.y + cv.height * 0.5, { steps: 4 }); await p.mouse.up(); await p.waitForTimeout(300);
+  console.log('arrow', await p.evaluate(() => ['Yaw', 'Pitch'].map(a => __studio.S.tags.get('player.att.arrow' + a))));
+  await p.screenshot({ path: out + '_o2.png' });
+  await p.click('button:has-text("+ Image object")'); await p.click('.pitem:has-text("logo")'); await p.waitForTimeout(800); await p.screenshot({ path: out + '_o3.png' });
+  await p.click('button:has-text("Player view")'); await p.waitForTimeout(1200); await p.screenshot({ path: out + '_o4.png' });
+  await p.click('button:has-text("+ New weapon")'); await p.click('.pitem:has-text("Arm_canon")'); await p.waitForTimeout(500);
+  await p.click('button:has-text("Player view")'); await p.waitForTimeout(600); await p.click('button:has-text("Walk map1")'); await p.waitForTimeout(1200);
+  const st = () => p.evaluate(() => { const q = __studio.S.play; return [q.weapons.length, q.wi, q.T.get('player.weapon'), q.curWeapon().id]; });
+  console.log('weapons', await st()); await p.keyboard.press('2'); await p.waitForTimeout(200); console.log('after key 2', await st()); await p.keyboard.press('1'); await p.waitForTimeout(200); console.log('after key 1', await st());
+};

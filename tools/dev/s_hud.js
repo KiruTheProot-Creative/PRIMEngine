@@ -1,0 +1,20 @@
+const SP = '/tmp/claude-0/-home-claude/4d2f2209-a771-580d-8052-566f87920e94/scratchpad';
+module.exports = async (p, out) => {
+  const menu = async (top, item) => { await p.click('.mb:has-text("' + top + '")'); await p.click('.pitem:has-text("' + item + '")'); };
+  await p.click('.tile.plus'); await p.waitForSelector('#app'); await p.waitForTimeout(300);
+  let [fc] = await Promise.all([p.waitForEvent('filechooser'), menu('Assets', 'Import Files')]); await fc.setFiles([SP + '/assets_test/Images/logo.png']); await p.waitForTimeout(800);
+  await p.click('.hrow:has-text("hud") >> nth=0'); await p.waitForTimeout(300);
+  await p.click('.hrow:has-text("healthbar")'); await p.waitForTimeout(300); await p.screenshot({ path: out + '_hud1.png' });
+  console.log('sel', await p.evaluate(() => JSON.stringify({ sc: __studio.S.screenId, sel: __studio.S.selId })));
+  const m = () => p.evaluate(() => { const r = __studio.S.rt, el = r && r.els.healthbar; return el ? [el.offsetWidth, el.offsetHeight, el.style.left, el.style.top] : 'no el'; });
+  console.log('before', await m());
+  const hb = await p.locator('.rt-handle').boundingBox(); console.log('handle', !!hb);
+  await p.mouse.move(hb.x + 7, hb.y + 7); await p.mouse.down(); await p.mouse.move(hb.x + 90, hb.y + 30, { steps: 6 }); await p.mouse.up(); await p.waitForTimeout(400);
+  console.log('after resize', await m(), await p.evaluate(() => JSON.stringify([__studio.S.tags.get('hud.healthbar.w'), __studio.S.tags.get('hud.healthbar.h'), __studio.S.tags.get('hud.healthbar.x'), __studio.S.tags.get('hud.healthbar.y')])));
+  await p.click('button:has-text("Center horizontally")'); await p.waitForTimeout(300);
+  console.log('centered x', await p.evaluate(() => __studio.S.tags.get('hud.healthbar.x')), await m());
+  await p.click('.hrow:has-text("main") >> nth=0'); await p.click('.hrow:has-text("title") >> nth=0'); await p.waitForTimeout(400);
+  console.log('main title', await p.evaluate(() => { const r = __studio.S.rt, el = r.els.title; return [el.style.left, el.style.top, __studio.S.tags.get('main.title.x'), __studio.S.tags.get('main.title.y')]; }));
+  await p.screenshot({ path: out + '_hud2.png' });
+  console.log('migrate', await p.evaluate(() => { const S = PRIM.Schema, P = S.template('t', 't'); const q = JSON.parse(JSON.stringify(P)); delete q.origin; for (const k in q.tags) { const r = q.tags[k]; if (/^(main|settings)\.[a-z]+\.x$/.test(k)) r.value += 640; if (/^(main|settings)\.[a-z]+\.y$/.test(k)) r.value = 360 - r.value; } PRIM.Store.migrate(q); return JSON.stringify([q.origin, q.tags['main.title.y'].value, q.tags['main.play.y'].value, q.tags['main.title.x'].value, q.tags['main.title.y'].min]); }));
+};

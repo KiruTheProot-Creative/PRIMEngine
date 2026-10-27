@@ -17,6 +17,7 @@
 .rt-layer{position:absolute;inset:0}
 .rt-n{position:absolute;transform:translate(-50%,-50%);white-space:pre;line-height:1.1}
 .rt-sel{outline:2px dashed #ffb53a;outline-offset:5px}
+.rt-handle{position:absolute;width:14px;height:14px;margin:-7px 0 0 -7px;background:#ffb53a;border:2px solid #000;border-radius:3px;cursor:nwse-resize;z-index:5}
 .rt-btn{padding:10px 30px;letter-spacing:.08em;transition:transform .08s}
 .rt-btn.press{transform:translate(-50%,-50%) scale(.96)}
 .rt-ph{display:grid;place-items:center;border:2px dashed rgba(125,243,255,.5);color:rgba(125,243,255,.8);font:14px "Share Tech Mono",monospace;background:rgba(125,243,255,.06);min-width:160px;min-height:80px;padding:8px}
@@ -50,6 +51,9 @@
       this.raf = requestAnimationFrame(t => this.frame(t));
     }
     destroy() { this.dead = true; cancelAnimationFrame(this.raf); this.ro.disconnect(); this.unsub(); window.removeEventListener("keydown", this.h.key); document.removeEventListener("fullscreenchange", this.h.fs); this.stopMusic(); this.host.classList.remove("rt-host"); this.host.replaceChildren(); }
+    // positions are stored from the screen middle (x0,y0 = middle, y goes up); the stage itself is drawn from the top-left corner
+    px(sc, n) { return W / 2 + (+this.P(sc, n, "x") || 0); }
+    py(sc, n) { return H / 2 - (+this.P(sc, n, "y") || 0); }
     fit() { const s = Math.min(this.host.clientWidth / W, this.host.clientHeight / H) || 1; this.scale = s; this.stage.style.transform = `translate(-50%,-50%) scale(${s})`; }
     screen() { return this.project.screens.find(s => s.id === this.screenId); }
     P(sc, n, k) { return this.tags.get(sc.id + "." + n.id + "." + k); }
@@ -79,7 +83,8 @@
       if (this.game) { const g = div("rt-game"); g.textContent = "Your game starts here.\nThe 3D game view comes in a later step.\n\nClick or press Esc to go back."; g.style.whiteSpace = "pre-line"; this.layer.append(g); return; }
       if (sc.kind === "splash") { const n = sc.nodes.find(x => x.id === this.selId) || sc.nodes[0]; if (n) { const el = this.splashEl(sc, n); el.style.left = "50%"; el.style.top = "50%"; this.layer.append(el); this.els[n.id] = el; if (n.id === this.selId) el.classList.add("rt-sel"); }
         else { const e = div("rt-ph rt-n"); e.textContent = "No splash screens yet. Add one on the left."; e.style.left = "50%"; e.style.top = "50%"; this.layer.append(e); } return; }
-      for (const n of sc.nodes) { const el = this.makeNode(sc, n); el.style.left = this.P(sc, n, "x") + "px"; el.style.top = this.P(sc, n, "y") + "px"; if (this.mode === "edit" && n.id === this.selId) el.classList.add("rt-sel"); this.layer.append(el); this.els[n.id] = el; }
+      for (const n of sc.nodes) { const el = this.makeNode(sc, n); el.style.left = this.px(sc, n) + "px"; el.style.top = this.py(sc, n) + "px"; if (this.mode === "edit" && n.id === this.selId) el.classList.add("rt-sel"); this.layer.append(el); this.els[n.id] = el; }
+      if (this.mode === "edit" && this.selId) { const n = sc.nodes.find(x => x.id === this.selId); if (n && this.sizeProps(n).length) this.addHandle(sc, n); }
     }
     sized(el, w, h) { if (w > 0) el.style.width = w + "px"; if (h > 0) el.style.height = h + "px"; }
     ph(text, w, h) { const e = div("rt-n rt-ph"); e.textContent = text; this.sized(e, w, h); return e; }
@@ -168,7 +173,23 @@
 
     // ---------------- input
     pt(e) { const r = this.stage.getBoundingClientRect(); return [(e.clientX - r.left) / this.scale, (e.clientY - r.top) / this.scale]; }
-    box(n) { const el = this.els[n.id]; if (!el) return null; const sc = this.screen(), x = this.P(sc, n, "x"), y = this.P(sc, n, "y"), w = Math.max(10, el.offsetWidth), h = Math.max(10, el.offsetHeight); return { x0: x - w / 2, y0: y - h / 2, w, h }; }
+    box(n) { const el = this.els[n.id]; if (!el) return null; const sc = this.screen(), x = this.px(sc, n), y = this.py(sc, n), w = Math.max(10, el.offsetWidth), h = Math.max(10, el.offsetHeight); return { x0: x - w / 2, y0: y - h / 2, w, h }; }
+    // which tags a corner handle changes: width / height (images, bars, textures, sliders, toggles) or text size (titles, text buttons)
+    sizeProps(n) {
+      const sc = this.screen(); if (!sc || sc.kind === "splash") return [];
+      if (n.type === "image" || n.type === "bar") return ["w", "h"]; if (n.type === "slider" || n.type === "toggle") return ["w"];
+      if (n.type === "button") return this.P(sc, n, "mode") === "texture" ? ["w", "h"] : ["size"]; if (n.type === "title") return ["size"]; return [];
+    }
+    addHandle(sc, n) { const h = div("rt-handle"); h.title = "Drag to resize (Shift = free proportions for images)"; this.handle = h; this.layer.append(h); this.placeHandle(); }
+    placeHandle() { const n = this.screen() && this.screen().nodes.find(x => x.id === this.selId), b = n && this.box(n); if (!b || !this.handle) return; this.handle.style.left = b.x0 + b.w + "px"; this.handle.style.top = b.y0 + b.h + "px"; }
+    resizeTo(sx, sy, free) {
+      const sc = this.screen(), d = this.drag, n = sc.nodes.find(x => x.id === d.id), el = this.els[d.id]; if (!n || !el) return; const cx = this.px(sc, n), cy = this.py(sc, n), hx = Math.abs(sx - cx), hy = Math.abs(sy - cy), props = this.sizeProps(n), set = {}, pre = sc.id + "." + n.id + ".";
+      if (props[0] === "size") { const v = clamp(Math.round(hy * 2 / 1.1), 8, 300); set[pre + "size"] = v; el.style.fontSize = v + "px"; }
+      else { let w = clamp(Math.round(hx * 2), 8, W), h = clamp(Math.round(hy * 2), 4, H);
+        if (props.length > 1 && (n.type === "image" || n.type === "button") && !free && d.w0 > 0) h = Math.max(4, Math.round(w * d.h0 / d.w0));
+        set[pre + "w"] = w; el.style.width = w + "px"; if (props.length > 1) { set[pre + "h"] = h; el.style.height = h + "px"; } }
+      this.tags.setMany(set); this.placeHandle();
+    }
     alphaAt(el, u, v) {
       const src = el.src; let c = this.alpha[src];
       if (!c) { if (!el.naturalWidth) return true; const cv = document.createElement("canvas"); cv.width = el.naturalWidth; cv.height = el.naturalHeight; const g = cv.getContext("2d"); g.drawImage(el, 0, 0); try { c = this.alpha[src] = { w: cv.width, h: cv.height, d: g.getImageData(0, 0, cv.width, cv.height).data }; } catch (e) { return true; } }
@@ -189,10 +210,11 @@
       if (this.paused || this.mode === "hud") return; this.stage.setPointerCapture(e.pointerId); const [sx, sy] = this.pt(e);
       if (this.game) { this.game = false; this.rebuild(); return; }
       if (this.splash) { this.skipSplash(); return; }
+      if (this.mode === "edit" && e.target && e.target.classList && e.target.classList.contains("rt-handle")) { const sc = this.screen(), n = sc.nodes.find(x => x.id === this.selId), el = n && this.els[n.id]; if (n && el) { this.drag = { id: n.id, rs: true, w0: el.offsetWidth, h0: el.offsetHeight, size0: +this.P(sc, n, "size") || 0 }; } return; }
       if (this.mode === "edit") {
         const sc = this.screen(), n = sc.kind === "splash" ? (sc.nodes.find(x => x.id === this.selId) || null) : this.hit(sx, sy, true);
         if (this.o.onSelect) this.o.onSelect(n ? n.id : null);
-        if (n && sc.kind !== "splash") { this.selId = n.id; this.drag = { id: n.id, dx: sx - this.P(sc, n, "x"), dy: sy - this.P(sc, n, "y") }; this.rebuild(); }
+        if (n && sc.kind !== "splash") { this.selId = n.id; this.drag = { id: n.id, dx: sx - this.px(sc, n), dy: sy - this.py(sc, n) }; this.rebuild(); }
         return;
       }
       if (this.music && this.music.paused) this.music.play().catch(() => {});
@@ -200,7 +222,8 @@
     }
     move(e) {
       if (this.paused) return; const [sx, sy] = this.pt(e), sc = this.screen(); if (!sc) return;
-      if (this.drag) { const d = this.drag, snap = e.shiftKey ? 10 : 1, x = clamp(Math.round((sx - d.dx) / snap) * snap, 0, W), y = clamp(Math.round((sy - d.dy) / snap) * snap, 0, H); this.tags.setMany({ [sc.id + "." + d.id + ".x"]: x, [sc.id + "." + d.id + ".y"]: y }); const el = this.els[d.id]; if (el) { el.style.left = x + "px"; el.style.top = y + "px"; } return; }
+      if (this.drag && this.drag.rs) return this.resizeTo(sx, sy, e.shiftKey);
+      if (this.drag) { const d = this.drag, snap = e.shiftKey ? 10 : 1, x = clamp(Math.round((sx - d.dx - W / 2) / snap) * snap, -W / 2, W / 2), y = clamp(Math.round((H / 2 - (sy - d.dy)) / snap) * snap, -H / 2, H / 2); this.tags.setMany({ [sc.id + "." + d.id + ".x"]: x, [sc.id + "." + d.id + ".y"]: y }); const el = this.els[d.id]; if (el) { el.style.left = W / 2 + x + "px"; el.style.top = H / 2 - y + "px"; } this.placeHandle(); return; }
       if (this.mode === "edit" || this.splash || this.game) return;
       if (this.press) { const n = sc.nodes.find(x => x.id === this.press); if (n && n.type === "slider") this.setSlider(n, sx); return; }
       const n = this.hit(sx, sy, false), id = n && n.type === "button" ? n.id : null;

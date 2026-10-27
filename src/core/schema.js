@@ -3,7 +3,8 @@
   "use strict";
   const PRIM = (window.PRIM = window.PRIM || {}), S = (PRIM.Schema = {});
   const FONT = { k: "font", label: "Font", type: "font", def: "builtin:display" };
-  const X = { k: "x", label: "X", type: "number", def: 640, min: 0, max: 1280, step: 1 }, Y = { k: "y", label: "Y", type: "number", def: 360, min: 0, max: 720, step: 1 };
+  // positions are measured from the MIDDLE of the screen: x0,y0 = middle, x grows to the right, y grows upward
+  const X = { k: "x", label: "X (0 = middle)", type: "number", def: 0, min: -640, max: 640, step: 1 }, Y = { k: "y", label: "Y (0 = middle, up is +)", type: "number", def: 0, min: -360, max: 360, step: 1 };
   const SIZE = d => ({ k: "size", label: "Text size", type: "number", def: d, min: 8, max: 300, step: 1 });
   const COLOR = (k, label, d) => ({ k, label, type: "color", def: d });
   const W = (label, d) => ({ k: "w", label: label || "Width (0 = auto)", type: "number", def: d || 0, min: 0, max: 1280, step: 1 });
@@ -90,32 +91,47 @@
   ];
   S.PLAYER_GROUPS = [["Movement", ["speed", "sprintEnabled", "sprintPercent", "jumpEnabled", "jumpHeight", "gravity"]], ["Body", ["maxHealth", "eyeHeight", "radius", "stepHeight"]], ["Camera", ["fov", "aimMode", "freeAimRadius", "mouseSens"]], ["Crosshair", ["crosshair", "crosshairSize", "crosshairGap", "crosshairThickness", "crosshairColor"]], ["HUD", ["hud"]]];
   // 3D objects attached to the player camera (weapons, hands...). Each one has tags player.<id>.*
-  const ANIM = (k, label) => ({ k, label, type: "anim", def: "" }), NUM = (k, label, def, min, max, step, extra) => Object.assign({ k, label, type: "number", def, min, max, step }, extra || {}), W_ = { showIf: ["weapon", true] };
+  const ANIM = (k, label, extra) => Object.assign({ k, label, type: "anim", def: "" }, extra || {}), NUM = (k, label, def, min, max, step, extra) => Object.assign({ k, label, type: "number", def, min, max, step }, extra || {}), WP = ["type", "weapon"], NI = ["type", ["weapon", "animation"]], W_ = { showIf: WP };
+  // a showIf is [tagKey, value] or [tagKey, [value, value...]]
+  S.shown = (T, pre, pr) => { if (!pr.showIf) return true; const v = T.get(pre + pr.showIf[0]), w = pr.showIf[1]; return Array.isArray(w) ? w.includes(v) : v === w; };
   S.ATTACH = [
-    { k: "asset", label: "Model", type: "asset", assetType: "model", def: "" }, { k: "visible", label: "Visible", type: "bool", def: true },
+    { k: "name", label: "Name", type: "string", def: "Object" },
+    { k: "type", label: "Type", type: "choice", options: [["weapon", "Weapon (in the weapon list, aims and fires)"], ["animation", "Animation object (3D model)"], ["image", "Image object (flat picture)"]], def: "animation" },
+    { k: "asset", label: "Model", type: "asset", assetType: "model", def: "", showIf: NI }, { k: "image", label: "Image", type: "asset", assetType: "image", def: "", showIf: ["type", "image"] }, { k: "visible", label: "Visible", type: "bool", def: true },
     NUM("x", "Right / left", 7, -200, 200, 0.5), NUM("y", "Up / down", -8, -200, 200, 0.5), NUM("z", "Forward (negative = in front)", -14, -400, 200, 0.5),
     NUM("rx", "Rotate X", 0, -180, 180, 1), NUM("ry", "Rotate Y", 0, -180, 180, 1), NUM("rz", "Rotate Z", 0, -180, 180, 1), NUM("scale", "Scale", 1, 0.001, 100, 0.001),
-    ANIM("idleAnim", "Idle animation (loops)"), ANIM("fireAnim", "Click animation (plays once)"),
-    { k: "weapon", label: "Weapon: aims at what the crosshair hits", type: "bool", def: false },
+    ANIM("idleAnim", "Idle animation (loops)", { showIf: NI }), ANIM("fireAnim", "Click animation (plays once)", { showIf: WP }),
     NUM("muzzleX", "Muzzle point X", 0, -500, 500, 0.5, W_), NUM("muzzleY", "Muzzle point Y", 0, -500, 500, 0.5, W_), NUM("muzzleZ", "Muzzle point Z", 0, -500, 500, 0.5, W_),
     NUM("arrowYaw", "Arrow: turn left / right", 0, -180, 180, 1, W_), NUM("arrowPitch", "Arrow: up / down", 0, -89, 89, 1, W_), NUM("aimMax", "Max aim turn (degrees)", 30, 0, 90, 1, W_),
   ];
-  S.defineAttach = (project, att, over) => { for (const p of S.ATTACH) { const r = rec(p, "player", "player." + att.id); if (p.type === "anim") r.modelTag = "player." + att.id + ".asset"; if (over && p.k in over) r.value = over[p.k]; project.tags["player." + att.id + "." + p.k] = r; } };
+  S.defineAttach = (project, att, over) => {
+    if (over && over.name === undefined) over = Object.assign({ name: "Object" }, over); for (const p of S.ATTACH) { const r = rec(p, "player", "player." + att.id); if (p.type === "anim") r.modelTag = "player." + att.id + ".asset"; if (over && p.k in over) r.value = over[p.k]; project.tags["player." + att.id + "." + p.k] = r; } };
   S.removeAttach = (project, att) => { for (const k of Object.keys(project.tags)) if (k.startsWith("player." + att.id + ".")) delete project.tags[k]; project.player.attachments.splice(project.player.attachments.indexOf(att), 1); };
   // Sound events on model animations (Timeline tab). Structure: project.events = [{id, asset, anim}]. Values are tags ev1.time / ev1.sound / ev1.volume.
   S.EVENT = [{ k: "time", label: "Time (seconds)", type: "number", def: 0, min: 0, max: 600, step: 0.01 }, { k: "sound", label: "Sound", type: "asset", assetType: "sound", def: "" }, { k: "volume", label: "Volume", type: "number", def: 1, min: 0, max: 1, step: 0.01 }];
   S.defineEvent = (project, ev, over) => { for (const p of S.EVENT) { const r = rec(p, "events", ev.id); if (over && p.k in over) r.value = over[p.k]; project.tags[ev.id + "." + p.k] = r; } };
   S.removeEvent = (project, ev) => { for (const p of S.EVENT) delete project.tags[ev.id + "." + p.k]; const i = project.events.indexOf(ev); if (i >= 0) project.events.splice(i, 1); };
+  // older projects measured x,y from the top-left corner of the 1280x720 stage: move them to the new middle-origin system so nothing shifts
+  S.toCenter = project => {
+    if (project.origin === "center") return; project.origin = "center";
+    for (const sc of project.screens) { if (sc.kind === "splash") continue; for (const n of sc.nodes) for (const [k, f, mn, mx] of [["x", v => v - 640, -640, 640], ["y", v => 360 - v, -360, 360]]) { const r = project.tags[sc.id + "." + n.id + "." + k]; if (r) { r.value = f(+r.value || 0); r.min = mn; r.max = mx; r.label = k === "x" ? "X (0 = middle)" : "Y (0 = middle, up is +)"; } } }
+  };
   S.ensurePlayer = project => {
     if (!project.events) project.events = [];
     project.player = project.player || { attachments: [] }; if (!project.player.attachments) project.player.attachments = [];
     delete project.tags["player.freeAim"];
+    for (const att of project.player.attachments) {   // bring older objects up to date: a "weapon" tick became the object type
+      const pre = "player." + att.id + ".", old = project.tags[pre + "weapon"];
+      for (const p of S.ATTACH) { const r = project.tags[pre + p.k]; if (!r) { const n = rec(p, "player", "player." + att.id); if (p.type === "anim") n.modelTag = pre + "asset"; if (p.k === "type") n.value = old && old.value ? "weapon" : "animation"; if (p.k === "name") n.value = old && old.value ? "Weapon" : "Object"; project.tags[pre + p.k] = n; } else { r.label = p.label; if (p.showIf) r.showIf = p.showIf; else delete r.showIf; if (p.options) r.options = p.options; } }
+      delete project.tags[pre + "weapon"];
+    }
     for (const p of S.PLAYER) if (!project.tags["player." + p.k]) { const r = rec(p, "player", "player"); r.builtin = true; project.tags["player." + p.k] = r; }
+    if (!project.tags["player.weapon"]) project.tags["player.weapon"] = { type: "number", value: 1, label: "Current weapon number (live)", group: "player", min: 0, max: 99, step: 1, builtin: true };
     if (!project.tags["player.health"]) project.tags["player.health"] = { type: "number", value: 100, label: "Current health (live)", group: "player", min: 0, max: 1000, step: 1, builtin: true };
     if (!project.screens.some(s => s.id === "hud") && project.tags["player.hud"].value === "hud") {
       const sc = { id: "hud", kind: "hud", nodes: [] }; project.screens.push(sc); S.defineScreen(project, sc);
       const add = (id, type, over) => { const n = { id, type }; sc.nodes.push(n); S.defineNode(project, "hud", n, over); };
-      add("healthbar", "bar", { bind: "player.health", max: "player.maxHealth", label: "HEALTH", x: 190, y: 674 }); add("healthtext", "title", { text: "{player.health}", size: 34, x: 380, y: 672, color: "#ffd9d9" });
+      add("healthbar", "bar", { bind: "player.health", max: "player.maxHealth", label: "HEALTH", x: -450, y: -314 }); add("healthtext", "title", { text: "{player.health}", size: 34, x: -260, y: -312, color: "#ffd9d9" });
     }
   };
 
@@ -134,7 +150,7 @@
   S.template = (id, name) => {
     const p = { format: 3, id, name, modified: Date.now(), tags: {}, assets: [], folders: [], maps: [], screens: [] };
     S.builtins(p);
-    const add = (sc, id, type, over) => { const n = { id, type }; sc.nodes.push(n); S.defineNode(p, sc.id, n, over); };
+    const add = (sc, id, type, over) => { if (over && over.y !== undefined) over.y = 360 - over.y; const n = { id, type }; sc.nodes.push(n); S.defineNode(p, sc.id, n, over); };
     const splash = { id: "splash", kind: "splash", nodes: [] }, main = { id: "main", kind: "menu", nodes: [] }, set = { id: "settings", kind: "menu", nodes: [] };
     p.screens.push(splash, main, set);
     S.defineScreen(p, splash); S.defineScreen(p, main); S.defineScreen(p, set);
@@ -148,7 +164,7 @@
     add(set, "fullscreen", "toggle", { label: "Fullscreen", bind: "gfx.fullscreen", y: 450 });
     add(set, "showfps", "toggle", { label: "Show FPS", bind: "gfx.showFps", y: 505 });
     add(set, "back", "button", { text: "Back", y: 620, action: "goto", target: "main" });
-    S.ensurePlayer(p);
+    p.origin = "center"; S.ensurePlayer(p);
     return p;
   };
 })();

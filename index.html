@@ -33,7 +33,7 @@ button, input, select { font:inherit; color:inherit; }
 .btn, .tbtn { appearance:none; border:1px solid var(--line); border-radius:3px; background:linear-gradient(var(--bar), var(--bar-lo)); box-shadow:inset 0 1px 0 var(--line-hi); color:var(--text-hi); padding:3px 11px; cursor:pointer; min-height:24px; white-space:nowrap; }
 .btn:hover:not([disabled]), .tbtn:hover:not([disabled]) { background:linear-gradient(var(--panel-hi), var(--bar)); }
 .btn.sm, .tbtn.sm { padding:1px 8px; min-height:20px; font-size:11px; } .btn.danger:hover { color:var(--danger); }
-.tbtn.on { background:var(--sel); color:var(--sel-text); border-color:#0e2338; box-shadow:inset 0 1px 3px rgba(0,0,0,.5); }
+.hrow.dropt { outline:1px dashed #ffb53a; outline-offset:-1px; } .tbtn.on { background:var(--sel); color:var(--sel-text); border-color:#0e2338; box-shadow:inset 0 1px 3px rgba(0,0,0,.5); }
 .txt, .num, .dd, .rename, .thead .tname { background:var(--field); border:1px solid var(--field-line); border-radius:3px; padding:2px 6px; min-height:22px; color:var(--text-hi); box-shadow:inset 0 1px 2px rgba(0,0,0,.3); min-width:0; }
 .txt, .dd { width:100%; } .num { width:100%; text-align:right; font-family:"Share Tech Mono",ui-monospace,monospace; }
 .dd.drop, .drop { outline:2px dashed var(--sel); outline-offset:-2px; }
@@ -138,6 +138,7 @@ body.in-editor { overflow:hidden; }
 .tlrow { position:relative; height:20px; border-bottom:1px solid rgba(128,128,128,.15); } .tlrul { height:22px; } .tlsnd { height:26px; background:rgba(120,160,255,.07); } .tllab { position:absolute; left:0; top:0; bottom:0; width:122px; padding:0 6px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px; line-height:20px; color:var(--muted); background:var(--panel-lo); z-index:2; }
 .tltick { position:absolute; top:0; bottom:0; border-left:1px solid var(--line); padding-left:3px; font-size:10px; color:var(--muted); line-height:22px; } .tlkey { position:absolute; top:6px; width:8px; height:8px; margin-left:-4px; background:#e8b84a; transform:rotate(45deg); }
 .tlmark { position:absolute; top:3px; width:20px; height:20px; margin-left:-10px; border-radius:50%; background:#3b7bd6; color:#fff; text-align:center; line-height:20px; font-size:12px; cursor:ew-resize; z-index:3; user-select:none; touch-action:none; } .tlmark.sel { outline:2px solid #fff; background:#e0672a; }
+.tbtn.on { background:var(--sel,#2d5d9f); color:#fff; } .orow { display:inline-flex; gap:2px; } .mini { background:transparent; border:1px solid var(--line); color:inherit; border-radius:2px; padding:0 4px; font-size:10px; cursor:pointer; } .tla.sel .mini { border-color:#fff8; }
 .tlplayhead { position:absolute; top:0; bottom:0; width:2px; margin-left:-1px; background:#ff4d4d; pointer-events:none; z-index:4; }
 .med { position:absolute; inset:0; display:flex; flex-direction:column; outline:none; } .medbar { display:flex; align-items:center; gap:6px; padding:3px 8px; background:var(--panel-lo); border-bottom:1px solid var(--line); flex:none; flex-wrap:wrap; } .medbar .hint { flex-basis:100%; }
 .medcv { flex:1; min-height:0; width:100%; display:block; cursor:crosshair; touch-action:none; background:#10161d; }

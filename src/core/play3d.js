@@ -34,7 +34,7 @@
       this.msg.textContent = "Click to play  ·  W A S D move  ·  Space jump  ·  Shift sprint  ·  Esc to leave" + (this.o.debug ? "  ·  H / J test damage" : ""); this.msg.style.display = "grid";
       const kd = e => {
         if (e.key === "Escape") { e.stopImmediatePropagation(); e.preventDefault(); this.leave(); return; }
-        const n = e.key.toLowerCase(), id = n === " " ? "space" : n; k[id] = true; if (["w", "a", "s", "d", "space", "shift", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(id)) e.preventDefault();
+        const n = e.key.toLowerCase(), id = n === " " ? "space" : n; k[id] = true; if (/^[1-9]$/.test(n)) this.setWeapon(+n - 1); if (["w", "a", "s", "d", "space", "shift", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(id)) e.preventDefault();
         if (this.o.debug && n === "h") this.T.setMany({ "player.health": Math.max(0, this.T.get("player.health") - 10) }); if (this.o.debug && n === "j") this.T.setMany({ "player.health": Math.min(this.T.get("player.maxHealth"), this.T.get("player.health") + 10) });
       };
       const ku = e => { const n = e.key.toLowerCase(); k[n === " " ? "space" : n] = false; };
@@ -42,7 +42,7 @@
       const pd = e => { if (this.engaged && e && e.button === 0) this.fire(); this.engaged = true; this.msg.style.display = "none"; this.drag = true; try { const r = cv.requestPointerLock && cv.requestPointerLock(); if (r && r.catch) r.catch(() => {}); } catch (x) {} cv.focus(); };
       const pu = () => { this.drag = false; }, pl = () => lock();
       addEventListener("keydown", kd, true); addEventListener("keyup", ku, true); addEventListener("mousemove", mm); addEventListener("pointerup", pu); document.addEventListener("pointerlockchange", pl);
-      this.root.addEventListener("pointerdown", pd); cv.tabIndex = 0;
+      this.root.addEventListener("pointerdown", pd); cv.tabIndex = 0; const wh = e => { if (this.engaged) { e.preventDefault(); this.setWeapon((this.wi || 0) + (e.deltaY > 0 ? 1 : -1)); } }; this.root.addEventListener("wheel", wh, { passive: false });
       this.unbind = () => { removeEventListener("keydown", kd, true); removeEventListener("keyup", ku, true); removeEventListener("mousemove", mm); removeEventListener("pointerup", pu); document.removeEventListener("pointerlockchange", pl); };
     }
     leave() { if (this.o.onExit) this.o.onExit(); else this.destroy(); }
@@ -73,13 +73,16 @@
     syncAtts() {
       if (!this.view) return; const F = PRIM.FBX, keep = [];
       for (const a of this.project.player.attachments) {
-        const aid = this.T.get("player." + a.id + ".asset"), model = F.cache[aid]; if (!aid) continue;
-        if (!model) { F.load(aid, this.urls[aid]).then(m => { if (m && !this.dead) this.syncAtts(); }); continue; }
-        let at = this.atts.find(x => x.id === a.id && x.aid === aid) || { id: a.id, aid, t: 0, fire: null, cur: null }; at.model = model; if (!this.gpu[aid]) this.gpu[aid] = this.view.loadModel(model); at.gm = this.gpu[aid]; keep.push(at);
+        const type = this.T.get("player." + a.id + ".type"), aid = this.T.get("player." + a.id + (type === "image" ? ".image" : ".asset")), model = F.cache[aid]; if (!aid) continue;
+        if (!model) { (type === "image" ? F.loadImage : F.load)(aid, this.urls[aid]).then(m => { if (m && !this.dead) this.syncAtts(); }); continue; }
+        let at = this.atts.find(x => x.id === a.id && x.aid === aid) || { id: a.id, aid, t: 0, fire: null, cur: null }; at.model = model; at.type = type; if (!this.gpu[aid]) this.gpu[aid] = this.view.loadModel(model); at.gm = this.gpu[aid]; keep.push(at);
       }
-      this.atts = keep;
+      this.atts = keep; this.weapons = keep.filter(a => a.type === "weapon"); this.setWeapon(this.wi || 0);
     }
-    fire() { for (const at of this.atts) { const fa = this.T.get("player." + at.id + ".fireAnim"); if (fa && at.model.anims[fa]) { at.fire = fa; at.t = 0; if (this.onFire) this.onFire(at, fa); } } }
+    // the weapon list: the player holds one weapon at a time (number keys 1-9 or the mouse wheel switch)
+    curWeapon() { const w = this.weapons || []; if (this.mode === "preview" && this.o.previewWeapon) { const p = w.find(a => a.id === this.o.previewWeapon); if (p) return p; } return w[this.wi] || null; }
+    setWeapon(i) { const w = this.weapons || []; if (!w.length) { this.wi = 0; if (this.mode === "play" && this.T.get("player.weapon") !== 0) this.T.set("player.weapon", 0); return; } i = ((i % w.length) + w.length) % w.length; if (i !== this.wi) for (const a of w) { a.cur = null; a.fire = null; a.t = 0; } this.wi = i; if (this.mode === "play" && this.T.get("player.weapon") !== i + 1) this.T.set("player.weapon", i + 1); }
+    fire() { const at = this.curWeapon(); if (!at) return; const fa = this.T.get("player." + at.id + ".fireAnim"); if (fa && at.model.anims[fa]) { at.fire = fa; at.t = 0; if (this.onFire) this.onFire(at, fa); } }
     // sound events set on the Timeline tab: play those that fall between t0 and t1 of the animation (only while really playing, not in the editor preview)
     ev(at, name, t0, t1) {
       if (this.mode !== "play") return; const T = this.T;
@@ -98,16 +101,16 @@
     drawHand(v, dt) {
       if (!this.atts.length) return; const T = this.T, c = v.cam, items = [], segs = [], F = PRIM.FBX, eye = [c.x, c.y, c.z], B = R3D.camBasis(c.yaw, c.pitch);
       for (const at of this.atts) {
-        const pre = "player." + at.id + "."; if (!T.get(pre + "visible")) continue; const g = k => +T.get(pre + k) || 0, name = this.advance(at, dt), pose = F.pose(at.model, name || null, at.t);
+        const pre = "player." + at.id + "."; if (!T.get(pre + "visible")) continue; if (at.type === "weapon" && at !== this.curWeapon()) continue; const g = k => +T.get(pre + k) || 0, name = this.advance(at, dt), pose = F.pose(at.model, name || null, at.t);
         const off = [g("x"), g("y"), g("z")], Rb = M4.rotXYZ([g("rx"), g("ry"), g("rz")]), sc = g("scale") || 1, Sm = M4.scale(sc, sc, sc); let Ra = M4.ident();
-        if (T.get(pre + "weapon")) {
+        if (at.type === "weapon") {
           const ay = g("arrowYaw") * Math.PI / 180, ap = g("arrowPitch") * Math.PI / 180, arrow = [-Math.cos(ap) * Math.sin(ay), Math.sin(ap), -Math.cos(ap) * Math.cos(ay)], mz = [g("muzzleX") * sc, g("muzzleY") * sc, g("muzzleZ") * sc];
           const hit = v.raycast(eye, this.aimDir(), 6000), wp = hit ? hit.p : M4.add(eye, this.aimDir().map(q => q * 3000)), d0 = M4.sub(wp, eye), Hc = [M4.dot(d0, B.s), M4.dot(d0, B.u), -M4.dot(d0, B.f)];
           const a0 = M4.norm(M4.dir(Rb, ...arrow)), maxR = g("aimMax") * Math.PI / 180; let want = M4.norm(M4.sub(Hc, M4.add(off, M4.dir(Rb, ...mz))));
           Ra = M4.between(a0, want, maxR); want = M4.norm(M4.sub(Hc, M4.add(off, M4.dir(M4.mul(Ra, Rb), ...mz)))); at.cur = at.cur ? M4.norm(M4.add(at.cur.map(q => q * Math.exp(-14 * dt)), want.map(q => q * (1 - Math.exp(-14 * dt))))) : want; Ra = M4.between(a0, at.cur, maxR);
         } else at.cur = null;
         const M = M4.mul(M4.translate(...off), M4.mul(Ra, M4.mul(Rb, Sm))); items.push({ gm: at.gm, pose, M });
-        if (this.mode === "preview" && T.get(pre + "weapon")) {   // the arrow and the muzzle point, drawn so they can be placed
+        if (this.mode === "preview" && at.type === "weapon") {   // the arrow and the muzzle point, drawn so they can be placed
           const mp = M4.point(M, g("muzzleX"), g("muzzleY"), g("muzzleZ")), ad = M4.norm(M4.dir(M, ...[-Math.cos(g("arrowPitch") * Math.PI / 180) * Math.sin(g("arrowYaw") * Math.PI / 180), Math.sin(g("arrowPitch") * Math.PI / 180), -Math.cos(g("arrowPitch") * Math.PI / 180) * Math.cos(g("arrowYaw") * Math.PI / 180)])), tip = M4.add(mp, ad.map(q => q * 26));
           const side = M4.norm(M4.cross(ad, [0, 1, 0])), r = [1, 0.25, 0.2], y = [1, 0.9, 0.2]; segs.push({ a: mp, b: tip, c: r }, { a: tip, b: M4.add(tip, M4.add(ad.map(q => -q * 5), side.map(q => q * 2.5))), c: r }, { a: tip, b: M4.add(tip, M4.sub(ad.map(q => -q * 5), side.map(q => q * 2.5))), c: r });
           for (const ax of [[1, 0, 0], [0, 1, 0], [0, 0, 1]]) segs.push({ a: M4.sub(mp, ax.map(q => q * 2)), b: M4.add(mp, ax.map(q => q * 2)), c: y });
