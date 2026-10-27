@@ -47,10 +47,11 @@
       this.h = { down: e => this.down(e), move: e => this.move(e), up: e => this.up(e), key: e => this.key(e), fs: () => this.fsChange() };
       this.stage.addEventListener("pointerdown", this.h.down); this.stage.addEventListener("pointermove", this.h.move); this.stage.addEventListener("pointerup", this.h.up); this.stage.addEventListener("pointercancel", this.h.up);
       window.addEventListener("keydown", this.h.key); document.addEventListener("fullscreenchange", this.h.fs);
+      this.sh = this.mode !== "edit" ? new PRIM.Script.Host({ tags: this.tags, sfx: (id, v) => this.sfx(id, v), goto: id => { if (this.project.screens.some(s => s.id === id)) this.show(id); }, say: t => { if (this.o.say) this.o.say(t); } }) : null;
       this.fit(); this.show(this.screenId || this.project.screens[0].id);
       this.raf = requestAnimationFrame(t => this.frame(t));
     }
-    destroy() { this.dead = true; cancelAnimationFrame(this.raf); this.ro.disconnect(); this.unsub(); window.removeEventListener("keydown", this.h.key); document.removeEventListener("fullscreenchange", this.h.fs); this.stopMusic(); this.host.classList.remove("rt-host"); this.host.replaceChildren(); }
+    destroy() { this.dead = true; if (this.sh) this.sh.stopAll(); cancelAnimationFrame(this.raf); this.ro.disconnect(); this.unsub(); window.removeEventListener("keydown", this.h.key); document.removeEventListener("fullscreenchange", this.h.fs); this.stopMusic(); this.host.classList.remove("rt-host"); this.host.replaceChildren(); }
     // positions are stored from the screen middle (x0,y0 = middle, y goes up); the stage itself is drawn from the top-left corner
     px(sc, n) { return W / 2 + (+this.P(sc, n, "x") || 0); }
     py(sc, n) { return H / 2 - (+this.P(sc, n, "y") || 0); }
@@ -70,6 +71,7 @@
     show(id) {
       this.screenId = id; this.splash = null; this.game = false; this.hover = null; this.press = null; const sc = this.screen(); if (!sc) return;
       this.setMusic(this.tags.get(sc.id + ".music") || ""); this.rebuild();
+      if (this.sh) { this.sh.stopRuns(); for (const n of sc.nodes) this.script(sc, n, "onStart"); }
       if (this.o.onScreen) this.o.onScreen(id);
       if (sc.kind === "splash" && this.mode !== "edit") this.startSplash(false);
     }
@@ -163,7 +165,7 @@
 
     // ---------------- audio
     vol(kind) { const T = this.tags; return clamp((T.get("audio.master") || 0) * (T.get("audio." + kind) || 0), 0, 1); }
-    sfx(id) { if (this.mode === "edit" || !id || !this.urls[id]) return; const a = new Audio(this.urls[id]); a.volume = this.vol("sfx"); a.play().catch(() => {}); }
+    sfx(id, mult) { if (this.mode === "edit" || !id || !this.urls[id]) return; const a = new Audio(this.urls[id]); a.volume = clamp(this.vol("sfx") * (mult === undefined || isNaN(mult) ? 1 : mult), 0, 1); a.play().catch(() => {}); }
     setMusic(id) {
       if (this.mode === "edit") return; if (id === this.musicId) return; this.stopMusic(); this.musicId = id; if (!id || !this.urls[id]) return;
       const a = new Audio(this.urls[id]); a.loop = true; a.volume = this.vol("music"); this.music = a; a.play().catch(() => {});
@@ -198,7 +200,7 @@
     hit(sx, sy, forEdit) {
       const sc = this.screen(); if (!sc || sc.kind === "splash" || this.game) return null;
       for (let i = sc.nodes.length - 1; i >= 0; i--) { const n = sc.nodes[i], b = this.box(n); if (!b || sx < b.x0 || sy < b.y0 || sx > b.x0 + b.w || sy > b.y0 + b.h) continue;
-        if (forEdit) return n; if (!["button", "slider", "toggle"].includes(n.type)) continue;
+        if (forEdit) return n; if (!["button", "slider", "toggle"].includes(n.type) && !(this.sh && n.script && this.sh.has({ script: n.script }, "onClick"))) continue;
         if (n.type === "button" && this.P(sc, n, "mode") === "texture" && this.els[n.id].tagName === "IMG" && !this.alphaAt(this.els[n.id], (sx - b.x0) / b.w, (sy - b.y0) / b.h)) continue; return n; }
       return null;
     }
@@ -235,8 +237,10 @@
       if (!this.press) return; const [sx, sy] = this.pt(e), sc = this.screen(), id = this.press; this.press = null;
       const n = this.hit(sx, sy, false); this.rebuild(); if (n && n.id === id) this.act(sc, n);
     }
+    // node scripts (Node Coder): run the chains of one element that start with this event
+    script(sc, n, type, arg) { if (this.sh && n.script) this.sh.trigger({ key: sc.id + "." + n.id, script: n.script }, type, arg); }
     act(sc, n) {
-      const T = this.tags, P = k => this.P(sc, n, k);
+      const T = this.tags, P = k => this.P(sc, n, k); this.script(sc, n, "onClick");
       if (n.type === "button") { this.sfx(P("clickSound")); const a = P("action");
         if (a === "goto") { const t = P("target"); if (this.project.screens.some(s => s.id === t)) this.show(t); }
         else if (a === "start") { if (this.o.onStartGame) this.o.onStartGame(this); else { this.game = true; this.rebuild(); } } else if (a === "quit") { if (this.o.onExit) this.o.onExit(); } }
@@ -245,7 +249,8 @@
     key(e) {
       if (this.mode === "edit" || this.mode === "hud" || this.paused) return;
       if (this.splash) { this.skipSplash(); return; }
-      if (e.key === "Escape") { if (this.game) { this.game = false; this.rebuild(); } else if (this.mode === "play" && this.o.onExit) this.o.onExit(); }
+      if (e.key === "Escape") { if (this.game) { this.game = false; this.rebuild(); } else if (this.mode === "play" && this.o.onExit) this.o.onExit(); return; }
+      if (this.sh && !/INPUT|SELECT|TEXTAREA/.test((e.target && e.target.tagName) || "")) { const sc = this.screen(); if (sc) for (const n of sc.nodes) this.script(sc, n, "onKey", e.key); }
     }
   };
 })();

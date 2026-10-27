@@ -10,6 +10,9 @@ module.exports = async (p, out) => {
   await p.click('button:has-text("Set muzzle point")'); const cv = await p.locator('canvas.v3cv').boundingBox();
   await p.mouse.click(cv.x + cv.width * 0.5, cv.y + cv.height * 0.5); await p.waitForTimeout(300);
   console.log('muzzle', await p.evaluate(() => ['X', 'Y', 'Z'].map(a => __studio.S.tags.get('player.att.muzzle' + a))));
+  await p.click('button:has-text("Set pivot")'); await p.mouse.click(cv.x + cv.width * 0.45, cv.y + cv.height * 0.5); await p.waitForTimeout(300);
+  console.log('pivot', await p.evaluate(() => ['X', 'Y', 'Z'].map(a => __studio.S.tags.get('player.att.pivot' + a))));
+  console.log('weapon script', await p.evaluate(() => JSON.stringify(__studio.S.project.player.attachments[0].script)));
   await p.click('button:has-text("Side")'); await p.click('button:has-text("Aim arrow")'); await p.mouse.move(cv.x + cv.width * 0.3, cv.y + cv.height * 0.5); await p.mouse.down(); await p.mouse.move(cv.x + cv.width * 0.2, cv.y + cv.height * 0.5, { steps: 4 }); await p.mouse.up(); await p.waitForTimeout(300);
   console.log('arrow', await p.evaluate(() => ['Yaw', 'Pitch'].map(a => __studio.S.tags.get('player.att.arrow' + a))));
   await p.screenshot({ path: out + '_o2.png' });
@@ -17,6 +20,7 @@ module.exports = async (p, out) => {
   await p.click('button:has-text("Player view")'); await p.waitForTimeout(1200); await p.screenshot({ path: out + '_o4.png' });
   await p.click('button:has-text("+ New weapon")'); await p.click('.pitem:has-text("Arm_canon")'); await p.waitForTimeout(500);
   await p.click('button:has-text("Player view")'); await p.waitForTimeout(600); await p.click('button:has-text("Walk map1")'); await p.waitForTimeout(1200);
-  const st = () => p.evaluate(() => { const q = __studio.S.play; return [q.weapons.length, q.wi, q.T.get('player.weapon'), q.curWeapon().id]; });
+  const st = () => p.evaluate(() => { const q = __studio.S.play; return [q.wids().length, q.wi, q.T.get('player.weapon'), q.curWeaponId()]; });
   console.log('weapons', await st()); await p.keyboard.press('2'); await p.waitForTimeout(200); console.log('after key 2', await st()); await p.keyboard.press('1'); await p.waitForTimeout(200); console.log('after key 1', await st());
+  await p.keyboard.press('Escape'); await p.click('.tab:has-text("Node Coder")'); await p.waitForTimeout(600); await p.screenshot({ path: out + '_o5.png' });
 };

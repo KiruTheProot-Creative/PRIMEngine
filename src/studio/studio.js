@@ -140,11 +140,11 @@
       h("div", { class: "tgroup right" }, h("button", { class: "tbtn", text: "Maximize on Play", onclick: play }), h("button", { class: "tbtn", text: "Save", title: "Save as a .prime file (Ctrl+S)", onclick: () => saveProject(false) })));
   }
   function renderStatus() { const l = S.log[S.log.length - 1]; E.status.className = l && l.kind === "error" ? "err" : l && l.kind === "warn" ? "warn" : ""; E.status.textContent = l ? l.msg : "Ready"; E.status.append(h("span", { class: "fileinfo", text: (S.file ? S.file.name : "not saved to a file yet") + (S.fileDirty ? "  ·  unsaved changes" : "") })); }
-  function setTab(t) { S.fsel = null; if (t === "fly" && !S.mapId) t = "edit"; S.tab = t; S.testing = t === "game"; S.playerSel = t === "player"; if (S.playerSel || t === "timeline") S.sel = null; if (!S.testing) S.paused = false; renderToolbar(); renderHier(); renderInspector(); renderCenter(); }
+  function setTab(t) { S.fsel = null; if (t === "fly" && !S.mapId) t = "edit"; S.tab = t; S.testing = t === "game"; S.playerSel = t === "player"; if (S.playerSel || t === "timeline" || t === "coder") S.sel = null; if (!S.testing) S.paused = false; renderToolbar(); renderHier(); renderInspector(); renderCenter(); }
   function setTesting(v) { setTab(v ? "game" : "edit"); }
-  function leaveSpecial() { S.playerSel = false; if (["player", "timeline", "fly"].includes(S.tab)) { S.tab = "edit"; S.testing = false; return true; } return false; }
+  function leaveSpecial() { S.playerSel = false; if (["player", "timeline", "fly", "coder"].includes(S.tab)) { S.tab = "edit"; S.testing = false; return true; } return false; }
   function centerTabs() {
-    const items = S.mapId && curMap() ? [["edit", "Map"], ["fly", "Fly Editor"]] : [["edit", "Scene"]]; items.push(["game", "Game"], ["player", "Player Editor"], ["timeline", "Timeline"]);
+    const items = S.mapId && curMap() ? [["edit", "Map"], ["fly", "Fly Editor"]] : [["edit", "Scene"]]; items.push(["game", "Game"], ["player", "Player Editor"], ["timeline", "Timeline"], ["coder", "Node Coder"]);
     return items.map(([k, l]) => h("button", { class: "tab" + (S.tab === k ? " sel" : ""), text: l, onclick: () => setTab(k) }));
   }
 
@@ -190,24 +190,24 @@
     for (const f of F.filter(x => !x.scope)) { const ss = screens().filter(x => x.folder === f.id), mm = S.project.maps.filter(x => x.folder === f.id); if (folderRow(f, 0, ss.length + mm.length)) { for (const x of ss) screenRows(x, 1); for (const x of mm) mapRows(x, 1); } }
     const tops = F.filter(x => !x.scope); for (const x of screens()) if (!tops.some(f => f.id === x.folder)) screenRows(x, 0); for (const m of S.project.maps) if (!tops.some(f => f.id === m.folder)) mapRows(m, 0);
     rows.push(h("div", { class: "hrow" + (S.playerSel ? " sel" : ""), style: "padding-left:4px", onclick: () => setTab("player") }, h("span", { class: "tri" }), h("span", { class: "hic", text: "◉" }), h("span", { class: "hnm", text: "Player" }), h("span", { class: "hmeta", text: "entity" })));
-    for (const att of S.project.player.attachments) { const ty = S.tags.get("player." + att.id + ".type"); rows.push(h("div", { class: "hrow" + (S.playerSel && S.objSel === att.id ? " sel" : ""), style: "padding-left:22px", onclick: () => { S.objSel = att.id; S.objView = true; if (S.tab === "player") { renderHier(); renderInspector(); renderCenter(); } else setTab("player"); } },
+    for (const att of S.project.player.attachments) { const ty = S.tags.get("player." + att.id + ".type"); rows.push(h("div", { class: "hrow" + (S.playerSel && S.objSel === att.id ? " sel" : ""), style: "padding-left:22px", onclick: () => { S.objSel = att.id; S.objView = true; S.coderT = { kind: "att", id: att.id }; S.cnode = null; if (S.tab === "player" || S.tab === "coder") { renderHier(); renderInspector(); renderCenter(); } else setTab("player"); } },
       h("span", { class: "hic", text: ty === "weapon" ? "✚" : ty === "image" ? "▨" : "▣" }), h("span", { class: "hnm", text: S.tags.get("player." + att.id + ".name") || att.id }), h("span", { class: "hmeta", text: ty }))); }
     p.body.replaceChildren(...rows); p.body.ondragover = e => { if (e.dataTransfer.types.includes("application/x-hier")) e.preventDefault(); }; p.body.ondrop = e => { e.preventDefault(); let d = null; try { d = JSON.parse(e.dataTransfer.getData("application/x-hier")); } catch (x) {} if (d) moveToFolder(d, { folder: null }); };
   }
   function selectScreen(id) { S.fsel = null; const was = S.screenId, wasMap = S.mapId, tc = leaveSpecial(); S.mapId = null; S.msel = null; S.screenId = id; S.selId = null; S.sel = null; renderHier(); renderInspector(); renderProject(); if (was !== id || wasMap || tc) renderCenter(); else if (S.rt) { S.rt.selId = null; S.rt.rebuild(); } }
-  function selectNode(sid, id) { S.fsel = null; const was = S.screenId, wasMap = S.mapId, tc = leaveSpecial(); S.mapId = null; S.msel = null; S.screenId = sid; S.selId = id; S.sel = null; renderHier(); renderInspector(); renderProject(); if (was !== sid || wasMap || tc) renderCenter(); else if (S.rt) { S.rt.selId = id; S.rt.rebuild(); } }
+  function selectNode(sid, id) { S.fsel = null; S.coderT = { kind: "node", screen: sid, id }; if (S.tab === "coder") S.cnode = null; const was = S.screenId, wasMap = S.mapId, tc = leaveSpecial(); S.mapId = null; S.msel = null; S.screenId = sid; S.selId = id; S.sel = null; renderHier(); renderInspector(); renderProject(); if (was !== sid || wasMap || tc || S.tab === "coder") renderCenter(); else if (S.rt) { S.rt.selId = id; S.rt.rebuild(); } }
 
   // ---------------------------------------------------------------- center: Scene / Game
   function renderCenter() {
     const p = E.center; killMapViews(); if (S.rt) { S.rt.destroy(); S.rt = null; }
     if (S.tab === "fly" && !S.mapId) S.tab = "edit"; S.testing = S.tab === "game";
-    if (S.tab === "player") return S.objView && S.objSel && S.project.player.attachments.some(a => a.id === S.objSel) ? objectCenter() : playerCenter(); if (S.tab === "timeline") return timelineCenter(); if (S.mapId && curMap() && S.tab !== "game") return mapCenter();
+    if (S.tab === "player") return S.objView && S.objSel && S.project.player.attachments.some(a => a.id === S.objSel) ? objectCenter() : playerCenter(); if (S.tab === "timeline") return timelineCenter(); if (S.tab === "coder") return coderCenter(); if (S.mapId && curMap() && S.tab !== "game") return mapCenter();
     const sc = S.testing && S.mapId ? (screens().find(x => x.id === S.tags.get("project.startScreen")) || screens()[0]) : curScreen();
     E.host.className = "host"; E.host.replaceChildren();
     p.tabs.replaceChildren(...centerTabs(), h("span", { class: "sp" }), h("span", { class: "csize", text: "1280 × 720  ·  16:9" }));
     put(E.cbar, h("span", { class: "chip", text: sc.id }), !S.testing && sc.kind === "splash" ? h("button", { class: "tbtn sm", text: "▶ Preview sequence", onclick: () => { if (S.rt) S.rt.previewSplash(); } }) : null,
       h("span", { class: "hint", text: S.testing ? "Playing: hover and click buttons, drag sliders. Edits are disabled." : sc.kind === "splash" ? "Select a splash in the Hierarchy to see it." : "Click to select, drag to move (Shift = snap to 10), drag the orange corner to resize. x0,y0 is the middle of the screen. Drop images from the Project panel here." }));
-    S.rt = new PRIM.Runtime({ host: E.host, project: S.project, tags: S.testing ? S.tags.fork() : S.tags, mode: S.testing ? "test" : "edit", urls: S.urls, screenId: sc.id, selId: S.selId, onStartGame: startGame,
+    S.rt = new PRIM.Runtime({ host: E.host, project: S.project, tags: S.testing ? S.tags.fork() : S.tags, mode: S.testing ? "test" : "edit", urls: S.urls, screenId: sc.id, selId: S.selId, onStartGame: startGame, say: t => log(t),
       onSelect: id => { S.selId = id; S.sel = null; renderHier(); renderInspector(); renderProject(); }, onChange: () => renderInspector(), onExit: () => setTesting(false) });
     S.rt.paused = S.paused;
   }
@@ -224,8 +224,8 @@
   function dupNode(n) {
     const sc = curScreen(), id = Schema.uid(n.type, sc.nodes.map(x => x.id)), pre = sc.id + "." + n.id + ".", np = sc.id + "." + id + ".";
     for (const k of Object.keys(S.project.tags)) if (k.startsWith(pre)) { const r = JSON.parse(JSON.stringify(S.project.tags[k])); r.owner = sc.id + "." + id; S.project.tags[np + k.slice(pre.length)] = r; }
-    for (const ax of ["x", "y"]) { const r = S.project.tags[np + ax]; if (r) r.value = Math.min(ax === "x" ? 1280 : 720, r.value + 30); }
-    sc.nodes.splice(sc.nodes.indexOf(n) + 1, 0, { id, type: n.type }); S.selId = id; afterStructure();
+    for (const ax of ["x", "y"]) { const r = S.project.tags[np + ax]; if (r) r.value = ax === "x" ? Math.min(640, r.value + 30) : Math.max(-360, r.value - 30); }
+    sc.nodes.splice(sc.nodes.indexOf(n) + 1, 0, Object.assign({ id, type: n.type }, n.script ? { script: JSON.parse(JSON.stringify(n.script)) } : {}, n.folder ? { folder: n.folder } : {})); S.selId = id; afterStructure();
   }
   function moveNode(n, d) { const a = curScreen().nodes, i = a.indexOf(n), j = i + d; if (j < 0 || j >= a.length) return; [a[i], a[j]] = [a[j], a[i]]; afterStructure(); }
   function renameNode(n, raw) { const sc = curScreen(), id = Schema.clean(raw); if (!id || id === n.id || sc.nodes.some(x => x.id === id)) return renderInspector(); S.tags.renamePrefix(sc.id + "." + n.id, sc.id + "." + id); n.id = id; S.selId = id; afterStructure(); }
@@ -252,7 +252,7 @@
     if (sc.kind === "splash") addNode("splash", { kind: "image", asset: a.id }); else addNode("image", { asset: a.id, x: Math.max(0, Math.min(1280, x)), y: Math.max(0, Math.min(720, y)) });
   }
   function selectedNode() { return S.selId && !S.sel ? curScreen().nodes.find(n => n.id === S.selId) : null; }
-  function deleteSelected() { if (S.playerSel || S.tab === "timeline") return; if (S.mapId && S.med && !S.sel) return S.med.deleteSelection(); if (S.sel) return deleteAssetSel(); const n = selectedNode(); if (n) deleteNode(n); }
+  function deleteSelected() { if (S.tab === "coder") return coderDelete(); if (S.playerSel || S.tab === "timeline") return; if (S.mapId && S.med && !S.sel) return S.med.deleteSelection(); if (S.sel) return deleteAssetSel(); const n = selectedNode(); if (n) deleteNode(n); }
   function duplicateSelected() { const n = selectedNode(); if (n) dupNode(n); }
   function startRename() { if (S.sel) { S.renaming = { kind: S.sel.kind, key: S.sel.key }; renderProject(); } else { const i = document.querySelector(".idin"); if (i) { i.focus(); i.select(); } } }
 
@@ -359,7 +359,7 @@
   }
   function propsBody() {
     if (S.fsel) return folderInspector();
-    if (S.playerSel) return playerInspector(); if (S.tab === "timeline") return timelineInspector();
+    if (S.playerSel) return playerInspector(); if (S.tab === "timeline") return timelineInspector(); if (S.tab === "coder") return coderInspector();
     if (S.mapId && curMap()) return mapInspector();
     const sc = curScreen(), node = selectedNode(), box = h("div", { class: "insp" });
     if (node) {
@@ -367,6 +367,7 @@
       box.append(h("div", { class: "ihead" }, h("span", { class: "bigic", text: def.icon }), h("div", { class: "ititle" }, h("input", { class: "idin", value: node.id, "aria-label": "Element name", onchange: e => renameNode(node, e.target.value) }), h("div", { class: "isub", text: def.label + " · screen “" + sc.id + "”" }))),
         h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: sc.kind === "splash" ? "◀ Earlier" : "▼ Back", onclick: () => moveNode(node, -1) }), h("button", { class: "btn sm", text: sc.kind === "splash" ? "Later ▶" : "▲ Front", onclick: () => moveNode(node, 1) }), h("button", { class: "btn sm", text: "Duplicate", onclick: () => dupNode(node) }), h("button", { class: "btn sm danger", text: "Delete", onclick: () => deleteNode(node) })));
       const groups = {}; for (const pr of def.props) { if (!Schema.shown(S.tags, pre, pr)) continue; (groups[GROUP[pr.k] || "Appearance"] = groups[GROUP[pr.k] || "Appearance"] || []).push(field(pre + pr.k)); }
+      if (sc.kind !== "splash") box.append(h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: "Open Node Coder for this element", onclick: () => { S.coderT = { kind: "node", screen: sc.id, id: node.id }; setTab("coder"); } })));
       if (groups.Transform && sc.kind !== "splash") groups.Transform.push(h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: "Center horizontally", onclick: () => { S.tags.set(pre + "x", 0); renderInspector(); } }), h("button", { class: "btn sm", text: "Center vertically", onclick: () => { S.tags.set(pre + "y", 0); renderInspector(); } }), h("button", { class: "btn sm", text: "Center both", onclick: () => { S.tags.setMany({ [pre + "x"]: 0, [pre + "y"]: 0 }); renderInspector(); } })));
       for (const g of ORDER) if (groups[g]) box.append(foldout(g, g, ...groups[g]));
       box.append(h("div", { class: "note", text: "Tip: write {audio.master} in any text to show a tag's live value. Drag a field's name left/right to scrub numbers." }));
@@ -420,7 +421,7 @@
         else if (t.type === "font") opts = [...PRIM.BUILTIN_FONTS, ...S.project.assets.filter(a => a.type === "font").map(a => [a.id, a.name])];
         else if (t.type === "anim") { const mo = PRIM.FBX.cache[S.tags.get(t.modelTag)]; opts = [["", "(none)"], ...(mo ? Object.keys(mo.anims) : []).map(n => [n, n])]; }
         else if (t.type === "choice") opts = t.options; else if (t.type === "screenRef") opts = [["", "None"], ...screens().map(s => [s.id, s.id])];
-        else opts = [["", "(pick a tag)"], ...S.tags.names().filter(n => S.tags.spec(n).type === t.refType).map(n => [n, (S.tags.spec(n).label || n) + "  ·  " + n])];
+        else opts = [["", "(pick a tag)"], ...S.tags.names().filter(n => !S.tags.spec(n).group || S.tags.spec(n).group !== "script").filter(n => t.refType === "any" ? ["number", "bool", "string", "color"].includes(S.tags.spec(n).type) : S.tags.spec(n).type === t.refType).map(n => [n, (S.tags.spec(n).label || n) + "  ·  " + n])];
         const sel = h("select", { class: "dd", "aria-label": label }, opts.map(([v, l]) => h("option", { value: v, text: l }))); sel.value = S.tags.get(name); if (sel.value !== String(S.tags.get(name))) sel.value = "";
         sel.onchange = () => { set(sel.value); redraw(); };
         const accepts = t.type === "asset" ? t.assetType : t.type === "font" ? "font" : null;
@@ -463,7 +464,7 @@
 
   // ================================================================ MAPS (DOOM-style editor + 3D fly view)
   const curMap = () => S.project.maps.find(m => m.id === S.mapId);
-  function killMapViews() { if (S.med) { S.med.destroy(); S.med = null; } if (S.v3) { S.v3.dispose(); S.v3 = null; } if (S.p3) { S.p3.destroy(); S.p3 = null; } if (S.tlv) { S.tlv.destroy(); S.tlv = null; } if (S.oev) { S.oev.destroy(); S.oev = null; } }
+  function killMapViews() { if (S.med) { S.med.destroy(); S.med = null; } if (S.v3) { S.v3.dispose(); S.v3 = null; } if (S.p3) { S.p3.destroy(); S.p3 = null; } if (S.tlv) { S.tlv.destroy(); S.tlv = null; } if (S.coderStop) { S.coderStop(); S.coderStop = null; } if (S.oev) { S.oev.destroy(); S.oev = null; } }
   function selectMap(id, sel) { S.fsel = null; const was = S.mapId, tc = (S.playerSel || S.tab === "timeline") ? (S.tab = "edit", S.testing = false, true) : false; S.playerSel = false; S.mapId = id; S.selId = null; S.sel = null; S.msel = sel || null; renderHier(); renderInspector(); renderProject(); if (was !== id || !S.med || tc) renderCenter(); else S.med.select(S.msel, true); }
   function openNewMap() {
     const ov = h("div", { class: "modal" }), close = () => ov.remove();
@@ -517,11 +518,11 @@
   function startGame(rt) {
     const m = S.project.maps[0]; if (!m) { rt.game = true; rt.rebuild(); return; }
     rt.stopMusic(); const layer = h("div", { class: "p3layer" }); rt.host.append(layer);
-    const pl = new PRIM.Play3D({ host: layer, project: S.project, map: m, tags: rt.tags, urls: S.urls, mode: "play", debug: true, onExit: () => { pl.destroy(); layer.remove(); } }); S.play = pl;
+    const pl = new PRIM.Play3D({ host: layer, project: S.project, map: m, tags: rt.tags, urls: S.urls, mode: "play", debug: true, say: t => log(t), onExit: () => { pl.destroy(); layer.remove(); } }); S.play = pl;
   }
   function walkMap(m) {
     const layer = h("div", { class: "play-layer p3layer" }); document.body.append(layer);
-    const pl = new PRIM.Play3D({ host: layer, project: S.project, map: m, tags: S.tags, urls: S.urls, mode: "play", debug: true, onExit: () => { pl.destroy(); layer.remove(); } }); S.play = pl;
+    const pl = new PRIM.Play3D({ host: layer, project: S.project, map: m, tags: S.tags, urls: S.urls, mode: "play", debug: true, say: t => log(t), onExit: () => { pl.destroy(); layer.remove(); } }); S.play = pl;
   }
   // ---------------------------------------------------------------- Player Editor
   function playerCenter() {
@@ -540,15 +541,15 @@
     const type = T.get(pre + "type"), isW = type === "weapon", aid = T.get(pre + (type === "image" ? "image" : "asset")), mo = F.cache[aid]; if (!isW && ["muzzle", "arrow"].includes(OE.tool)) OE.tool = "orbit";
     p.tabs.replaceChildren(...centerTabs(), h("span", { class: "sp" }), h("span", { class: "csize", text: "object editor" }));
     const tb = (t, l, on, fn) => h("button", { class: "tbtn sm" + (on ? " on" : ""), text: l, onclick: fn }), tool = (k, l) => tb(k, l, OE.tool === k, () => { OE.tool = k; renderCenter(); }), view = (l, y, pt) => tb(l, l, false, () => { OE.yaw = y; OE.pitch = pt; });
-    const hints = { orbit: "Drag to turn the object around, scroll to zoom.", muzzle: "Click or drag on the object: the yellow cross (where shots leave the weapon) follows your mouse.", arrow: "Drag: the red arrow points to your mouse, as seen in this view. Switch between Front / Side / Top to aim it in every direction." };
-    put(E.cbar, h("span", { class: "chip", text: T.get(pre + "name") || att.id }), tb("pv", "◀ Player view", false, () => { S.objView = false; renderCenter(); }), isW ? [tool("orbit", "Look around"), tool("muzzle", "Set muzzle point"), tool("arrow", "Aim arrow")] : null, view("Front", 0, 0), view("Side", 90, 0), view("Top", 0, 89),
+    const hints = { orbit: "Drag to turn the object around, scroll to zoom.", pivot: "Click or drag: the colored cross is the pivot (origin) of this object. It turns, scales and sits where you put it.", muzzle: "Click or drag on the object: the yellow cross (where shots leave the weapon) follows your mouse.", arrow: "Drag: the red arrow points to your mouse, as seen in this view. Switch between Front / Side / Top to aim it in every direction." };
+    put(E.cbar, h("span", { class: "chip", text: T.get(pre + "name") || att.id }), tb("pv", "◀ Player view", false, () => { S.objView = false; renderCenter(); }), tool("orbit", "Look around"), tool("pivot", "Set pivot"), isW ? [tool("muzzle", "Set muzzle point"), tool("arrow", "Aim arrow")] : null, tb("pc", "Pivot to middle", false, () => { const b = mo && mo.bounds; if (b) T.setMany({ [pre + "pivotX"]: +((b.lo[0] + b.hi[0]) / 2).toFixed(1), [pre + "pivotY"]: +((b.lo[1] + b.hi[1]) / 2).toFixed(1), [pre + "pivotZ"]: +((b.lo[2] + b.hi[2]) / 2).toFixed(1) }); renderInspector(); }), tb("po", "Pivot to origin", false, () => { T.setMany({ [pre + "pivotX"]: 0, [pre + "pivotY"]: 0, [pre + "pivotZ"]: 0 }); renderInspector(); }), view("Front", 0, 0), view("Side", 90, 0), view("Top", 0, 89),
       isW ? tb("fw", "Arrow forward", false, () => { T.setMany({ [pre + "arrowYaw"]: 0, [pre + "arrowPitch"]: 0 }); }) : null, h("span", { class: "hint", text: hints[OE.tool] }));
     const cv = h("canvas", { class: "v3cv", style: "cursor:" + (OE.tool === "orbit" ? "grab" : "crosshair") }); E.host.className = "host maphost"; E.host.replaceChildren(cv);
     if (!mo) { E.host.append(h("div", { class: "v3err", style: "color:var(--muted)", text: aid ? "Loading…" : "Choose a model or image for this object on the right." })); if (aid) (type === "image" ? F.loadImage : F.load)(aid, S.urls[aid]).then(m => { if (m && S.objView && S.tab === "player") renderCenter(); }); return; }
     const v = new PRIM.R3D.View(cv); if (!v.ok) return; v.sky = [0.12, 0.14, 0.19]; v.fov = 0.8; const gm = v.loadModel(mo), D = 34, g = k => +T.get(pre + k) || 0;
     const frame = () => { const b = mo.bounds, c = [0, 1, 2].map(i => (b.lo[i] + b.hi[i]) / 2), k = 22 / (b.size || 1) * OE.zoom, R = M4.mul(M4.rotX(OE.pitch), M4.rotY(OE.yaw)), M = M4.mul(M4.translate(0, 0, -D), M4.mul(R, M4.mul(M4.scale(k, k, k), M4.translate(-c[0], -c[1], -c[2])))), Rinv = M4.mul(M4.rotY(-OE.yaw), M4.rotX(-OE.pitch));
       return { c, k, M, Rinv, pose: F.pose(mo, T.get(pre + "idleAnim") || null, 0) }; };
-    const segs = fr => { const o = [], ax = [[[1, 0, 0], [1, 0.3, 0.3]], [[0, 1, 0], [0.4, 1, 0.4]], [[0, 0, 1], [0.4, 0.6, 1]]], O = M4.point(fr.M, 0, 0, 0);
+    const segs = fr => { const o = [], ax = [[[1, 0, 0], [1, 0.3, 0.3]], [[0, 1, 0], [0.4, 1, 0.4]], [[0, 0, 1], [0.4, 0.6, 1]]], O = M4.point(fr.M, g("pivotX"), g("pivotY"), g("pivotZ"));
       for (const [d, c] of ax) o.push({ a: O, b: M4.add(O, M4.dir(M4.mul(M4.rotX(OE.pitch), M4.rotY(OE.yaw)), ...d.map(q => q * 3))), c });
       if (isW) { const mp = M4.point(fr.M, g("muzzleX"), g("muzzleY"), g("muzzleZ")), ay = g("arrowYaw") * Math.PI / 180, ap = g("arrowPitch") * Math.PI / 180, ad = M4.norm(M4.dir(fr.M, -Math.cos(ap) * Math.sin(ay), Math.sin(ap), -Math.cos(ap) * Math.cos(ay))), tip = M4.add(mp, ad.map(q => q * 9)), side = M4.norm(M4.cross(ad, [0.3, 0.9, 0.2])), red = [1, 0.25, 0.2], yel = [1, 0.9, 0.2];
         o.push({ a: mp, b: tip, c: red }, { a: tip, b: M4.add(tip, M4.add(ad.map(q => -q * 1.8), side.map(q => q * 1))), c: red }, { a: tip, b: M4.add(tip, M4.sub(ad.map(q => -q * 1.8), side.map(q => q * 1))), c: red });
@@ -565,6 +566,7 @@
     const apply = e => {
       const fr = frame(), d = ray(e);
       if (OE.tool === "muzzle") { const m = toModel(fr, surface(fr, d)).map(x => Math.round(x * 10) / 10); T.setMany({ [pre + "muzzleX"]: m[0], [pre + "muzzleY"]: m[1], [pre + "muzzleZ"]: m[2] }); }
+      else if (OE.tool === "pivot") { const m = toModel(fr, surface(fr, d)).map(x => Math.round(x * 10) / 10); T.setMany({ [pre + "pivotX"]: m[0], [pre + "pivotY"]: m[1], [pre + "pivotZ"]: m[2] }); }
       else if (OE.tool === "arrow") {
         const mp = M4.point(fr.M, g("muzzleX"), g("muzzleY"), g("muzzleZ")), pc = d.map(q => q * (mp[2] / d[2])), vx = pc[0] - mp[0], vy = pc[1] - mp[1], l = Math.hypot(vx, vy); if (l < 1e-4) return;
         const ay = g("arrowYaw") * Math.PI / 180, ap = g("arrowPitch") * Math.PI / 180, cur = M4.norm(M4.dir(fr.M, -Math.cos(ap) * Math.sin(ay), Math.sin(ap), -Math.cos(ap) * Math.cos(ay)));
@@ -581,9 +583,10 @@
   // type: "weapon" | "animation" (3D model) | "image" (flat picture)
   function addObject(type, asset) {
     const P = S.project.player, F = PRIM.FBX, id = Schema.uid("att", P.attachments.map(a => a.id)), att = { id }, img = type === "image", mo = !img && F.cache[asset.id], names = mo ? Object.keys(mo.anims) : [];
-    const over = { type, name: asset.name.replace(/\.[^.]+$/, ""), scale: img ? 12 : mo ? Math.max(0.001, +(22 / (mo.bounds.size || 1)).toFixed(3)) : 1, idleAnim: names.find(n => /idle/i.test(n)) || "", fireAnim: type === "weapon" ? names.find(n => /shot|fire|shoot/i.test(n)) || "" : "" };
+    const over = { type, name: asset.name.replace(/\.[^.]+$/, ""), scale: img ? 12 : mo ? Math.max(0.001, +(22 / (mo.bounds.size || 1)).toFixed(3)) : 1, idleAnim: names.find(n => /idle/i.test(n)) || "" }, fireName = type === "weapon" ? names.find(n => /shot|fire|shoot/i.test(n)) || "" : "";
     over[img ? "image" : "asset"] = asset.id; if (img) { over.x = 0; over.y = 0; }
-    P.attachments.push(att); Schema.defineAttach(S.project, att, over); S.objSel = id; S.objView = true; S.tags.emit([]); markDirty(); renderHier(); renderInspector(); renderCenter(); log("Added " + type + " “" + over.name + "” to the player");
+    P.attachments.push(att); Schema.defineAttach(S.project, att, over); att.script = { nodes: [], links: [] };
+    if (fireName) { const a = Schema.addSNode(S.project, "player." + id, att.script, "onClick", 30, 30), b = Schema.addSNode(S.project, "player." + id, att.script, "playAnim", 290, 30, { anim: fireName }, "player." + id + ".asset"); att.script.links.push({ a: a.id, o: "next", b: b.id }); } S.objSel = id; S.objView = true; S.coderT = { kind: "att", id }; S.tags.emit([]); markDirty(); renderHier(); renderInspector(); renderCenter(); log("Added " + type + " “" + over.name + "” to the player");
   }
   function removeObject(att) { Schema.removeAttach(S.project, att); if (S.objSel === att.id) S.objSel = null; S.tags.emit([]); markDirty(); renderHier(); renderInspector(); renderCenter(); }
   function moveObject(att, dir) {   // reorder inside its own list (weapons are numbered by this order)
@@ -593,7 +596,7 @@
   function objectLists() {
     const P = S.project.player, T = S.tags, models = S.project.assets.filter(a => a.type === "model"), images = S.project.assets.filter(a => a.type === "image"), nope = t => [{ t, disabled: true }];
     const row = (att, n) => { const ty = T.get("player." + att.id + ".type"), nm = T.get("player." + att.id + ".name") || att.id;
-      return h("div", { class: "tla" + (S.objSel === att.id ? " sel" : ""), onclick: () => { S.objSel = att.id; S.objView = true; renderHier(); renderInspector(); renderCenter(); } },
+      return h("div", { class: "tla" + (S.objSel === att.id ? " sel" : ""), onclick: () => { S.objSel = att.id; S.objView = true; S.coderT = { kind: "att", id: att.id }; S.cnode = null; renderHier(); renderInspector(); renderCenter(); } },
         h("span", { text: (n ? n + "  " : "") + (ty === "weapon" ? "✚ " : ty === "image" ? "▨ " : "▣ ") + nm }),
         h("span", { class: "orow" }, h("button", { class: "mini", title: "Move up", text: "▲", onclick: e => { e.stopPropagation(); moveObject(att, -1); } }), h("button", { class: "mini", title: "Move down", text: "▼", onclick: e => { e.stopPropagation(); moveObject(att, 1); } }), h("button", { class: "mini", title: "Remove", text: "✕", onclick: e => { e.stopPropagation(); removeObject(att); } }))); };
     const ws = P.attachments.filter(a => T.get("player." + a.id + ".type") === "weapon"), os = P.attachments.filter(a => T.get("player." + a.id + ".type") !== "weapon");
@@ -605,8 +608,86 @@
   function selectedObjectEditor() {
     const att = S.project.player.attachments.find(a => a.id === S.objSel); if (!att) return null; const pre = "player." + att.id + ".", T = S.tags, ty = T.get(pre + "type");
     return foldout("pl:obj", "Selected: " + (T.get(pre + "name") || att.id), ...Schema.ATTACH.filter(pr => Schema.shown(T, pre, pr)).map(pr => field(pre + pr.k)),
-      ty === "weapon" ? h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: "Edit muzzle & arrow in the object editor", onclick: () => { S.objView = true; renderCenter(); } })) : null,
+      h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: "Open Node Coder", onclick: () => { S.coderT = { kind: "att", id: att.id }; setTab("coder"); } }), ty === "weapon" ? h("button", { class: "btn sm", text: "Edit muzzle & arrow", onclick: () => { S.objView = true; renderCenter(); } }) : null),
       h("div", { class: "note", text: ty === "weapon" ? "A weapon turns its arrow toward whatever the crosshair is aiming at. Place the muzzle point and the arrow in the object editor." : "This object stays fixed to the camera." }));
+  }
+  // ================================================================ NODE CODER (scripts made of connected nodes, one script per object)
+  function coderTarget() {
+    const t = S.coderT; if (!t) return null;
+    if (t.kind === "att") { const a = S.project.player.attachments.find(x => x.id === t.id); if (!a) return null; if (!a.script) a.script = { nodes: [], links: [] }; const ty = S.tags.get("player." + a.id + ".type");
+      return { script: a.script, key: "player." + a.id, ctx: ty === "weapon" ? ["object", "weapon"] : ["object"], modelTag: "player." + a.id + ".asset", name: S.tags.get("player." + a.id + ".name") || a.id, what: ty === "weapon" ? "Weapon" : "Object" }; }
+    const sc = screens().find(x => x.id === t.screen), n = sc && sc.nodes.find(x => x.id === t.id); if (!n) return null; if (sc.kind === "splash") return { splash: true, name: n.id };
+    if (!n.script) n.script = { nodes: [], links: [] }; return { script: n.script, key: sc.id + "." + n.id, ctx: ["screen"], modelTag: null, name: n.id, what: Schema.NODE[n.type].label + " in “" + sc.id + "”" };
+  }
+  const NCW = 210, NCH = 24, NCS = 18, NCR = 22;
+  const ncOutY = (n, j) => n.y + NCH + NCS + 11 + j * NCR, ncHeight = n => NCH + NCS + Math.max(1, Schema.SNODES[n.type].outs.length) * NCR + 4;
+  function ncSummary(tg, n) {
+    const T = S.tags, g = k => T.get(Schema.snodeKey(tg.key, n.id, k)), asset = id => { const a = S.project.assets.find(x => x.id === id); return a ? a.name : "(none)"; };
+    switch (n.type) { case "onKey": return "key: " + g("key"); case "setTag": return (g("tag") || "(pick a tag)") + " = " + g("value"); case "changeTag": return (g("tag") || "(pick a tag)") + " " + (+g("amount") >= 0 ? "+ " : "− ") + Math.abs(+g("amount"));
+      case "playSound": return asset(g("sound")); case "playAnim": return (g("anim") || "(pick one)") + (g("loop") ? " · loops" : ""); case "gotoScreen": return g("screen") || "(pick a screen)"; case "say": return "“" + g("text") + "”";
+      case "wait": return g("seconds") + " s"; case "if": return (g("tag") || "(pick a tag)") + " " + g("op") + " " + g("value"); case "repeat": return g("times") + " times"; default: return ""; }
+  }
+  function coderCenter() {
+    const p = E.center, tg = coderTarget(); p.tabs.replaceChildren(...centerTabs(), h("span", { class: "sp" }), h("span", { class: "csize", text: "node coder" }));
+    E.host.className = "host maphost";
+    if (!tg || tg.splash) { put(E.cbar, h("span", { class: "chip", text: "Node Coder" })); E.host.replaceChildren(h("div", { class: "v3err", style: "color:var(--muted);text-align:center;padding:20px", text: tg && tg.splash ? "Splash elements can't have scripts." : "Select an element (in the Hierarchy) or a weapon / object under Player, and its script opens here." })); return; }
+    const V = S.cview = S.cview || { px: 30, py: 30 }, sc = tg.script, T = S.tags, ns = "http://www.w3.org/2000/svg";
+    const allowed = Object.keys(Schema.SNODES).filter(k => Schema.SNODES[k].ctx.some(c => tg.ctx.includes(c)));
+    const add = type => {   // a new node goes to the right of the selected one and is connected to it when that has a free first output
+      const base = sc.nodes.find(n => n.id === S.cnode) || (sc.nodes.length && !Schema.SNODES[type].cat.startsWith("event") ? sc.nodes[sc.nodes.length - 1] : null), ev = Schema.SNODES[type].ins === false;
+      const x = base && !ev ? base.x + NCW + 50 : ev ? 40 - V.px + 20 * (sc.nodes.filter(n => Schema.SNODES[n.type].ins === false).length % 5) : 40 - V.px, y = base && !ev ? base.y : ev ? 40 - V.py + 150 * sc.nodes.filter(n => Schema.SNODES[n.type].ins === false).length : 40 - V.py;
+      const node = Schema.addSNode(S.project, tg.key, sc, type, x, y, null, tg.modelTag);
+      if (base && !ev) { const o = Schema.SNODES[base.type].outs[0]; if (!sc.links.some(l => l.a === base.id && l.o === o)) sc.links.push({ a: base.id, o, b: node.id }); }
+      S.cnode = node.id; S.clink = null; markDirty(); S.tags.emit([]); renderInspector(); draw();
+    };
+    const menu = []; for (const [cat, label] of Object.entries(Schema.SCAT)) { menu.push({ t: label, disabled: true }); for (const k of allowed) if (Schema.SNODES[k].cat === cat) menu.push({ t: "   " + Schema.SNODES[k].label, fn: () => add(k) }); menu.push("-"); } menu.pop();
+    put(E.cbar, h("span", { class: "chip", text: tg.what + " · " + tg.name }), h("button", { class: "tbtn sm", text: "+ Add node ▾", onclick: e => popMenu(e.currentTarget, menu) }), h("button", { class: "tbtn sm", text: "Delete selected", onclick: () => coderDelete() }),
+      h("span", { class: "hint", text: "Drag a node by its title · drag from a node's round dot to another node's left dot to connect · drag the background to move around · Delete removes the selected node or line" }));
+    const world = h("div", { class: "ncworld" }), svg = document.createElementNS(ns, "svg"); svg.setAttribute("class", "nclinks"); const view = h("div", { class: "nc", tabindex: "0" }, world);
+    E.host.replaceChildren(view);
+    const path = (x1, y1, x2, y2) => "M" + x1 + " " + y1 + " C" + (x1 + 70) + " " + y1 + " " + (x2 - 70) + " " + y2 + " " + x2 + " " + y2;
+    const mk = (cls, d) => { const e = document.createElementNS(ns, "path"); e.setAttribute("d", d); e.setAttribute("class", cls); return e; };
+    function draw() {
+      world.style.transform = "translate(" + V.px + "px," + V.py + "px)"; const els = [svg];
+      svg.replaceChildren(...sc.links.map((l, i) => { const a = sc.nodes.find(n => n.id === l.a), b = sc.nodes.find(n => n.id === l.b); if (!a || !b) return null; const j = Schema.SNODES[a.type].outs.indexOf(l.o), d = path(a.x + NCW, ncOutY(a, j), b.x, b.y + 12);
+        const hit = mk("ncl-hit", d), vis = mk("ncl" + (S.clink === i ? " sel" : ""), d); hit.addEventListener("pointerdown", e => { e.stopPropagation(); S.clink = i; S.cnode = null; renderInspector(); draw(); }); return [vis, hit]; }).flat().filter(Boolean));
+      for (const n of sc.nodes) { const def = Schema.SNODES[n.type], card = h("div", { class: "ncn " + def.cat + (S.cnode === n.id ? " sel" : ""), style: "left:" + n.x + "px;top:" + n.y + "px;width:" + NCW + "px;height:" + ncHeight(n) + "px" },
+          h("div", { class: "nch", text: def.label }), h("div", { class: "ncs", text: ncSummary(tg, n) }),
+          ...def.outs.map((o, j) => h("div", { class: "nco", style: "top:" + (NCH + NCS + j * NCR) + "px" }, h("span", { text: o === "next" ? "" : o }), h("i", { class: "ncdot", "data-out": o, "data-id": n.id }))));
+        if (def.ins !== false) card.append(h("i", { class: "ncin", "data-id": n.id }));
+        card.addEventListener("pointerdown", e => {
+          const dot = e.target.closest && e.target.closest(".ncdot"); e.stopPropagation(); view.focus();
+          if (dot) { const o = dot.dataset.out, wr = world.getBoundingClientRect(), x1 = n.x + NCW, y1 = ncOutY(n, def.outs.indexOf(o)); const tmp = mk("ncl tmp", ""); svg.append(tmp); card.setPointerCapture(e.pointerId);
+            card.onpointermove = m => tmp.setAttribute("d", path(x1, y1, m.clientX - wr.left, m.clientY - wr.top));
+            card.onpointerup = u => { card.onpointermove = card.onpointerup = null; const t = document.elementFromPoint(u.clientX, u.clientY), tin = t && t.closest && t.closest(".ncin");
+              sc.links = sc.links.filter(l => !(l.a === n.id && l.o === o)); if (tin && tin.dataset.id !== n.id) sc.links.push({ a: n.id, o, b: tin.dataset.id }); markDirty(); draw(); }; return; }
+          S.cnode = n.id; S.clink = null; renderInspector(); const x0 = e.clientX, y0 = e.clientY, nx = n.x, ny = n.y; card.setPointerCapture(e.pointerId); let moved = false;
+          card.onpointermove = m => { moved = true; n.x = Math.round(nx + m.clientX - x0); n.y = Math.round(ny + m.clientY - y0); card.style.left = n.x + "px"; card.style.top = n.y + "px"; svgLinks(); };
+          card.onpointerup = () => { card.onpointermove = card.onpointerup = null; if (moved) markDirty(); draw(); };
+          for (const c of world.querySelectorAll(".ncn.sel")) c.classList.remove("sel"); card.classList.add("sel");
+        }); els.push(card); }
+      world.replaceChildren(...els); const em = view.querySelector(".ncempty"); if (em) em.style.display = sc.nodes.length ? "none" : "";
+    }
+    function svgLinks() { const keep = svg.querySelector(".tmp"); svg.replaceChildren(...sc.links.map((l, i) => { const a = sc.nodes.find(n => n.id === l.a), b = sc.nodes.find(n => n.id === l.b); if (!a || !b) return null; const j = Schema.SNODES[a.type].outs.indexOf(l.o), d = path(a.x + NCW, ncOutY(a, j), b.x, b.y + 12), vis = mk("ncl" + (S.clink === i ? " sel" : ""), d); return vis; }).filter(Boolean)); if (keep) svg.append(keep); }
+    view.addEventListener("pointerdown", e => { if (e.target !== view && e.target !== world) return; S.cnode = null; S.clink = null; view.focus(); const x0 = e.clientX, y0 = e.clientY, px = V.px, py = V.py; view.setPointerCapture(e.pointerId); view.style.cursor = "grabbing";
+      view.onpointermove = m => { V.px = px + m.clientX - x0; V.py = py + m.clientY - y0; world.style.transform = "translate(" + V.px + "px," + V.py + "px)"; }; view.onpointerup = () => { view.onpointermove = view.onpointerup = null; view.style.cursor = ""; renderInspector(); draw(); }; });
+    view.addEventListener("keydown", e => { if ((e.key === "Delete" || e.key === "Backspace") && !/INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) { e.preventDefault(); coderDelete(); } });
+    if (!sc.nodes.length) view.append(h("div", { class: "ncempty", text: "Empty script. Press “+ Add node” and start with a green event (like “When clicked”), then add actions and drag a line from its dot to the next node." }));
+    const un = T.on(() => { if (S.cdraw) draw(); }); S.cdraw = true; S.coderStop = () => { un(); S.cdraw = false; }; draw();
+  }
+  function coderDelete() {
+    const tg = coderTarget(); if (!tg || tg.splash) return; const sc = tg.script;
+    if (S.clink != null && sc.links[S.clink]) { sc.links.splice(S.clink, 1); S.clink = null; markDirty(); return renderCenter(); }
+    const n = sc.nodes.find(x => x.id === S.cnode); if (!n) return; Schema.removeSNode(S.project, tg.key, sc, n); S.cnode = null; S.tags.emit([]); markDirty(); renderInspector(); renderCenter();
+  }
+  function coderInspector() {
+    const tg = coderTarget(), box = h("div", { class: "insp" }); if (!tg || tg.splash) { box.append(h("div", { class: "note", text: "Select an element or a player object to edit its script." })); return box; }
+    box.append(h("div", { class: "ihead" }, h("span", { class: "bigic", text: "⬡" }), h("div", { class: "ititle" }, h("div", { class: "idin ro", text: tg.name }), h("div", { class: "isub", text: "Script of the " + tg.what + " · " + tg.script.nodes.length + " nodes" }))));
+    const n = tg.script.nodes.find(x => x.id === S.cnode);
+    if (n) { const def = Schema.SNODES[n.type]; box.append(foldout("nc:node", def.label, ...def.props.map(pr => field(Schema.snodeKey(tg.key, n.id, pr.k))), h("div", { class: "btnrow" }, h("button", { class: "btn sm danger", text: "Delete node", onclick: () => coderDelete() })))); if (!def.props.length) box.append(h("div", { class: "note", text: def.cat === "event" ? "This starts a chain. Connect the next node to its dot." : "Nothing to set here. Connect nodes to its dots." })); }
+    else box.append(h("div", { class: "note", text: "Click a node to change its values here. Events (green) start a script, actions (blue) do something, logic (orange) decides or repeats." }));
+    box.append(foldout("nc:help", "How scripts run", h("div", { class: "note", text: "Green events start a chain. The nodes connected after it run one by one. “If” follows the then or else line. “Repeat” runs its body line several times, then continues with next. Weapons only listen while they are the weapon in your hand." })));
+    return box;
   }
   // ---- Timeline: pick a model animation, scrub it with a live 3D preview, and put sounds on it (project.events + ev<N>.* tags)
   const tlState = () => S.tl = S.tl || { t: 0, playing: false, yaw: -35 };
@@ -731,7 +812,7 @@
     const tg = S.tags.fork(), saved = Store.loadSettings(S.project.id); for (const k in saved) if (S.tags.has(k)) tg.ov[k] = saved[k];
     let start = S.tags.get("project.startScreen"); if (!screens().some(s => s.id === start)) start = screens()[0].id;
     if (S.rt) S.rt.stopMusic();
-    const rt = new PRIM.Runtime({ host: layer, project: S.project, tags: tg, mode: "play", urls: S.urls, screenId: start, onPersist: ov => Store.saveSettings(S.project.id, ov), onExit: close, onStartGame: startGame });
+    const rt = new PRIM.Runtime({ host: layer, project: S.project, tags: tg, mode: "play", urls: S.urls, screenId: start, onPersist: ov => Store.saveSettings(S.project.id, ov), onExit: close, onStartGame: startGame, say: t => log(t) });
     function close() { rt.destroy(); layer.remove(); if (document.fullscreenElement) document.exitFullscreen().catch(() => {}); }
     layer.__rt = rt;
   }

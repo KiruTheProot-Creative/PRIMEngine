@@ -19,7 +19,7 @@ module.exports = async (p, out) => {
   await p.evaluate(() => { window.__aud = 0; const A = window.Audio; window.Audio = function (u) { const a = new A(u); const pl = a.play.bind(a); a.play = () => { window.__aud++; return pl(); }; return a; }; });
   await p.click('button:has-text("Player view")'); await p.waitForTimeout(600); await p.click('button:has-text("Walk map1")'); await p.waitForTimeout(1000);
   console.log('events after attach', await p.evaluate(() => JSON.stringify(__studio.S.project.events.map(e => e.id))));
-  await p.evaluate(() => { const T = __studio.S.tags; T.set('player.att.fireAnim', 'shot'); });
+  
   const ok = await p.evaluate(() => { const q = __studio.S.play; if (!q) return 'no play'; q.fire(); return 'fired'; }); await p.waitForTimeout(900);
   console.log('walk', ok, 'sounds started', await p.evaluate(() => window.__aud));
   const u = await p.evaluate(async () => { const pr = __studio.S.project; return JSON.stringify(JSON.parse(JSON.stringify(pr)).events.length); }); console.log('events survive json', u);

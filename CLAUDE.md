@@ -20,4 +20,7 @@
 - Player objects (`project.player.attachments`, tags `player.<attN>.*`) have a `type` tag: weapon (numbered weapon list, 1-9 / wheel switch, muzzle + arrow), animation (FBX model) or image (flat quad via `FBX.loadImage`). Object editor = `objectCenter()` in studio.js (click to place muzzle, drag to aim arrow).
 - Hierarchy folders: `project.hfolders=[{id,name,scope?}]`, items carry `.folder`; scope = a screen id means a folder of that screen's elements.
 - Tests also: `s_obj.js` (objects, weapon switch), `s_fold.js` (folders), `s_hud.js` (origin, resize handle, migration).
+- Node Coder (tab "Node Coder"): one script per object, stored on it as `script={nodes:[{id,type,x,y}],links:[{a,o,b}]}` (screen element nodes and `project.player.attachments`). Node values are tags `<owner key>.s.<nodeId>.<value>` (owner key = `screen.element` or `player.attN`). Node types live in `Schema.SNODES`; runner = `src/core/script.js` (`PRIM.Script.Host`, async chains with wait/if/repeat). Hooks: `Runtime.script()` for screens (onStart/onClick/onKey), `Play3D.trigger()` for player objects (onStart/onClick/onKey/onEquip; a weapon only hears events while it is the current weapon). The old per-weapon "click animation" tag was replaced by a script (`ensurePlayer` migrates it). UI = `coderCenter()` in studio.js.
+- Objects have a free pivot (`pivotX/Y/Z`, model space): position, rotation and scale act around it; set it with the "Set pivot" tool of the object editor.
+- Tests also: `s_code.js` (node coder).
 
