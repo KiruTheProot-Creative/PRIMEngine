@@ -140,7 +140,7 @@
       h("div", { class: "tgroup right" }, h("button", { class: "tbtn", text: "Maximize on Play", onclick: play }), h("button", { class: "tbtn", text: "Save", title: "Save as a .prime file (Ctrl+S)", onclick: () => saveProject(false) })));
   }
   function renderStatus() { const l = S.log[S.log.length - 1]; E.status.className = l && l.kind === "error" ? "err" : l && l.kind === "warn" ? "warn" : ""; E.status.textContent = l ? l.msg : "Ready"; E.status.append(h("span", { class: "fileinfo", text: (S.file ? S.file.name : "not saved to a file yet") + (S.fileDirty ? "  ·  unsaved changes" : "") })); }
-  function setTab(t) { if (t === "fly" && !S.mapId) t = "edit"; S.tab = t; S.testing = t === "game"; S.playerSel = t === "player"; if (S.playerSel) S.sel = null; if (!S.testing) S.paused = false; renderToolbar(); renderHier(); renderInspector(); renderCenter(); }
+  function setTab(t) { if (t === "fly" && !S.mapId) t = "edit"; S.tab = t; S.testing = t === "game"; S.playerSel = t === "player"; if (S.playerSel || t === "timeline") S.sel = null; if (!S.testing) S.paused = false; renderToolbar(); renderHier(); renderInspector(); renderCenter(); }
   function setTesting(v) { setTab(v ? "game" : "edit"); }
   function leaveSpecial() { S.playerSel = false; if (["player", "timeline", "fly"].includes(S.tab)) { S.tab = "edit"; S.testing = false; return true; } return false; }
   function centerTabs() {
@@ -336,7 +336,7 @@
     p.body.replaceChildren(S.rtab === "tags" ? tagsBody() : S.sel ? assetInspector() : propsBody());
   }
   function propsBody() {
-    if (S.playerSel) return playerInspector();
+    if (S.playerSel) return playerInspector(); if (S.tab === "timeline") return timelineInspector();
     if (S.mapId && curMap()) return mapInspector();
     const sc = curScreen(), node = selectedNode(), box = h("div", { class: "insp" });
     if (node) {
@@ -439,7 +439,7 @@
 
   // ================================================================ MAPS (DOOM-style editor + 3D fly view)
   const curMap = () => S.project.maps.find(m => m.id === S.mapId);
-  function killMapViews() { if (S.med) { S.med.destroy(); S.med = null; } if (S.v3) { S.v3.dispose(); S.v3 = null; } if (S.p3) { S.p3.destroy(); S.p3 = null; } }
+  function killMapViews() { if (S.med) { S.med.destroy(); S.med = null; } if (S.v3) { S.v3.dispose(); S.v3 = null; } if (S.p3) { S.p3.destroy(); S.p3 = null; } if (S.tlv) { S.tlv.destroy(); S.tlv = null; } }
   function selectMap(id, sel) { const was = S.mapId, tc = (S.playerSel || S.tab === "timeline") ? (S.tab = "edit", S.testing = false, true) : false; S.playerSel = false; S.mapId = id; S.selId = null; S.sel = null; S.msel = sel || null; renderHier(); renderInspector(); renderProject(); if (was !== id || !S.med || tc) renderCenter(); else S.med.select(S.msel, true); }
   function openNewMap() {
     const ov = h("div", { class: "modal" }), close = () => ov.remove();
@@ -450,7 +450,7 @@
       h("div", { class: "btnrow", style: "padding:6px 14px 12px" }, h("button", { class: "btn", text: "Cancel", onclick: close }))));
     ov.addEventListener("pointerdown", e => { if (e.target === ov) close(); }); document.body.append(ov);
   }
-  const reserved = () => [...screens().map(s => s.id), ...S.project.maps.map(m => m.id), "audio", "gfx", "project"];
+  const reserved = () => [...screens().map(s => s.id), ...S.project.maps.map(m => m.id), ...(S.project.events || []).map(e => e.id), "audio", "gfx", "project", "player"];
   function createMap(style) {
     let n = 1; while (reserved().includes("map" + n)) n++; const id = "map" + n, m = Schema.newMap(S.project, id, style); S.tags.emit([]); markDirty();
     S.mapId = id; S.msel = { kind: "sector", id: "s1" }; S.selId = null; S.sel = null; S.testing = false; S.paused = false; S.rtab = "inspector"; renderToolbar(); renderHier(); renderCenter(); renderInspector(); renderProject(); log("Created map “" + id + "” (" + style.toUpperCase() + " style)");
@@ -509,7 +509,7 @@
     S.p3 = new PRIM.Play3D({ host: E.host, project: S.project, map: m, tags: S.tags, urls: S.urls, mode: "preview" });
   }
   // ---- 3D objects attached to the player camera
-  function loadModels(p) { PRIM.FBX.cache = {}; PRIM.FBX.pending = {}; for (const a of p.assets) if (a.type === "model") PRIM.FBX.load(a.id, S.urls[a.id]).then(m => { if (m && S.project === p) { if (!a.meta || a.meta.error) a.meta = PRIM.FBX.summary(m); renderInspector(); } }); }
+  function loadModels(p) { PRIM.FBX.cache = {}; PRIM.FBX.pending = {}; for (const a of p.assets) if (a.type === "model") PRIM.FBX.load(a.id, S.urls[a.id]).then(m => { if (m && S.project === p) { if (!a.meta || a.meta.error) a.meta = PRIM.FBX.summary(m); renderInspector(); if (S.tab === "timeline") renderCenter(); } }); }
   function addAttachment(asset) {
     const P = S.project.player, id = Schema.uid("att", P.attachments.map(a => a.id)), att = { id }, mo = PRIM.FBX.cache[asset.id], names = mo ? Object.keys(mo.anims) : [];
     const over = { asset: asset.id, scale: mo ? Math.max(0.001, +(22 / (mo.bounds.size || 1)).toFixed(3)) : 1, idleAnim: names.find(n => /idle/i.test(n)) || "", fireAnim: names.find(n => /shot|fire|shoot/i.test(n)) || "" };
@@ -524,10 +524,79 @@
     return foldout("pl:att", "Attached 3D objects", ...rows, h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: "+ Attach model ▾", onclick: e => popMenu(e.currentTarget, models.length ? models.map(a => ({ t: a.name, fn: () => addAttachment(a) })) : [{ t: "Import an .fbx file first (Assets > Import Files)", disabled: true }]) })),
       h("div", { class: "note", text: "Objects stay fixed to the camera. For a weapon, tick “Weapon” and place the muzzle point and the arrow: the weapon turns so its arrow points at whatever the crosshair is aiming at." }));
   }
+  // ---- Timeline: pick a model animation, scrub it with a live 3D preview, and put sounds on it (project.events + ev<N>.* tags)
+  const tlState = () => S.tl = S.tl || { t: 0, playing: false, yaw: -35 };
+  function tlSelection() {
+    const TL = tlState(), models = S.project.assets.filter(a => a.type === "model"); let asset = models.find(a => a.id === TL.asset) || models[0];
+    const mo = asset && PRIM.FBX.cache[asset.id], names = mo ? Object.keys(mo.anims) : [];
+    if (asset && TL.asset !== asset.id) { TL.asset = asset.id; TL.anim = null; } if (mo && !names.includes(TL.anim)) { TL.anim = names[0] || null; TL.t = 0; }
+    return { TL, models, asset, mo, anim: mo && TL.anim ? mo.anims[TL.anim] : null, name: TL.anim };
+  }
+  const tlEvents = () => { const q = tlSelection(); return q.asset && q.name ? S.project.events.filter(e => e.asset === q.asset.id && e.anim === q.name) : []; };
+  function addSoundEvent(snd) {
+    const q = tlSelection(); if (!q.anim) return; const ev = { id: (() => { const used = reserved(); let n = 1; while (used.includes("ev" + n)) n++; return "ev" + n; })(), asset: q.asset.id, anim: q.name };
+    S.project.events.push(ev); Schema.defineEvent(S.project, ev, { time: +Math.min(q.TL.t, Math.max(0, q.anim.dur - 0.01)).toFixed(2), sound: snd.id }); q.TL.evSel = ev.id; S.tags.emit([]); markDirty(); renderInspector(); tlGrid(); log("Added sound “" + snd.name + "” to " + q.name);
+  }
+  function tlGrid() {
+    const g = S.tlGrid; if (!g) return; const { TL, anim, mo } = tlSelection(), LW = 130, W = Math.max(200, g.clientWidth - LW - 20), dur = anim ? Math.max(anim.dur, 0.05) : 1, pps = W / dur, X = t => LW + t * pps, evs = tlEvents();
+    const tick = dur > 8 ? 1 : dur > 3 ? 0.5 : dur > 1 ? 0.25 : 0.1, ruler = h("div", { class: "tlrow tlrul" }, h("div", { class: "tllab", text: "seconds" }));
+    for (let t = 0; t <= dur + 1e-6; t += tick) ruler.append(h("div", { class: "tltick", style: "left:" + X(t) + "px", text: +t.toFixed(2) }));
+    const sounds = h("div", { class: "tlrow tlsnd" }, h("div", { class: "tllab", text: "♪ Sounds" }));
+    for (const e of evs) {
+      const sid = S.tags.get(e.id + ".sound"), a = S.project.assets.find(x => x.id === sid), m = h("div", { class: "tlmark" + (TL.evSel === e.id ? " sel" : ""), title: (a ? a.name : "no sound") + " @ " + (+S.tags.get(e.id + ".time")).toFixed(2) + " s", style: "left:" + X(+S.tags.get(e.id + ".time") || 0) + "px", text: "♪" });
+      m.addEventListener("pointerdown", ev => {
+        ev.stopPropagation(); ev.preventDefault(); TL.evSel = e.id; m.setPointerCapture(ev.pointerId); const x0 = ev.clientX, t0 = +S.tags.get(e.id + ".time") || 0; let moved = false;
+        m.onpointermove = mv => { moved = true; const t = Math.max(0, Math.min(dur - 0.01, t0 + (mv.clientX - x0) / pps)); S.tags.set(e.id + ".time", +t.toFixed(2)); m.style.left = X(t) + "px"; };
+        m.onpointerup = () => { m.onpointermove = m.onpointerup = null; markDirty(); renderInspector(); tlGrid(); if (!moved && a && S.urls[a.id]) playSound(a.id); };
+      }); sounds.append(m);
+    }
+    const rows = [], order = []; if (anim && mo) for (const tr of anim.tracks) { let r = order.find(o => o.n === tr.n); if (!r) order.push(r = { n: tr.n, ts: new Set() }); for (const c of tr.c) if (c) for (const t of c.t) r.ts.add(t); }
+    for (const r of order) { const row = h("div", { class: "tlrow" }, h("div", { class: "tllab", title: mo.nodes[r.n].name, text: mo.nodes[r.n].name })); for (const t of r.ts) row.append(h("div", { class: "tlkey", style: "left:" + X(t) + "px" })); rows.push(row); }
+    const head = h("div", { class: "tlhead" }, ruler, sounds), body = h("div", { class: "tlbody" }, ...rows);
+    if (!anim) body.append(h("div", { class: "hint", style: "padding:10px", text: mo ? "This model has no animations." : "Loading the model…" }));
+    const ph = h("div", { class: "tlplayhead" }); S.tlPlayhead = ph; ph.style.left = X(TL.t) + "px"; S.tlX = X;
+    const scrub = ev => { const r = g.getBoundingClientRect(); TL.t = Math.max(0, Math.min(dur, (ev.clientX - r.left - LW) / pps)); TL.playing = false; S.tlTick && S.tlTick(0); };
+    for (const el of [ruler, sounds, body]) el.addEventListener("pointerdown", ev => { if (ev.target.closest(".tlmark")) return; scrub(ev); el.setPointerCapture(ev.pointerId); el.onpointermove = scrub; el.onpointerup = () => { el.onpointermove = el.onpointerup = null; }; });
+    put(g, head, body, ph);
+  }
   function timelineCenter() {
-    const p = E.center; p.tabs.replaceChildren(...centerTabs(), h("span", { class: "sp" }));
-    put(E.cbar, h("span", { class: "chip", text: "Timeline" }), h("span", { class: "hint", text: "Import an .fbx model and its animations appear here." }));
-    E.host.className = "host maphost"; E.host.replaceChildren(h("div", { class: "v3err", style: "color:var(--muted)", text: "No animations yet." }));
+    const p = E.center; p.tabs.replaceChildren(...centerTabs(), h("span", { class: "sp" })); const q = tlSelection(), { TL, models } = q, F = PRIM.FBX;
+    const list = h("div", { class: "tllist" });
+    let c = 0; for (const a of models) { list.append(h("div", { class: "tlm", text: "▪ " + a.name })); const mo = F.cache[a.id]; if (!mo) list.append(h("div", { class: "hint", style: "padding:2px 14px", text: a.meta && a.meta.error ? "Could not read this file" : "Loading…" }));
+      else for (const n of Object.keys(mo.anims)) list.append(h("div", { class: "tla" + (TL.asset === a.id && TL.anim === n ? " sel" : ""), onclick: () => { TL.asset = a.id; TL.anim = n; TL.t = 0; TL.evSel = null; TL.playing = false; renderInspector(); renderCenter(); } }, h("span", { text: n }), h("span", { class: "hint", text: mo.anims[n].dur.toFixed(2) + " s" + ((c = S.project.events.filter(e => e.asset === a.id && e.anim === n).length) ? "  ♪ " + c : "") }))); }
+    if (!models.length) list.append(h("div", { class: "hint", style: "padding:10px", text: "Import an .fbx model (Assets > Import Files) and its animations appear here." }));
+    const cv = h("canvas", { class: "tlcv" }), time = h("span", { class: "chip", text: "0.00 s" }), snds = S.project.assets.filter(a => a.type === "sound");
+    const playBtn = h("button", { class: "tbtn sm", text: "▶ Play", onclick: () => { if (!q.anim) return; TL.playing = !TL.playing; if (TL.playing && TL.t >= q.anim.dur - 0.01) TL.t = 0; playBtn.textContent = TL.playing ? "❚❚ Pause" : "▶ Play"; } });
+    put(E.cbar, h("span", { class: "chip", text: "Timeline" }), playBtn, h("button", { class: "tbtn sm", text: "⏮", title: "Back to the start", onclick: () => { TL.t = 0; TL.playing = false; playBtn.textContent = "▶ Play"; if (S.tlTick) S.tlTick(0); } }), time,
+      h("button", { class: "tbtn sm", disabled: !q.anim, text: "+ Add sound at playhead ▾", onclick: e => popMenu(e.currentTarget, snds.length ? snds.map(a => ({ t: a.name, fn: () => addSoundEvent(a) })) : [{ t: "Import a sound file first (Assets > Import Files)", disabled: true }]) }),
+      h("span", { class: "hint", text: "Click or drag in the timeline to scrub · drag a ♪ to move it · click a ♪ to hear it" }));
+    const grid = h("div", { class: "tlgrid" }); S.tlGrid = grid;
+    E.host.className = "host maphost"; E.host.replaceChildren(h("div", { class: "tl" }, list, h("div", { class: "tlmain" }, h("div", { class: "tlprev" }, cv), grid)));
+    let v = null, gm = null, raf = 0, last = performance.now(), ro = null, prevT = TL.t; const M4 = PRIM.M4;
+    if (q.mo) { v = new PRIM.R3D.View(cv); if (v.ok) { gm = v.loadModel(q.mo); v.sky = [0.1, 0.12, 0.17]; v.fov = 0.8; } else v = null; }
+    const tick = dt => {
+      const an = tlSelection().anim; if (an && TL.playing) { const t0 = TL.t; TL.t += dt; if (TL.t >= an.dur) { TL.t = an.dur > 0 ? TL.t % an.dur : 0; } tlSound(t0, TL.t, an.dur); }
+      time.textContent = TL.t.toFixed(2) + " / " + (an ? an.dur.toFixed(2) : "0.00") + " s"; if (S.tlPlayhead && S.tlX) S.tlPlayhead.style.left = S.tlX(TL.t) + "px";
+      if (v && q.anim) { const b = q.mo.bounds, c = [0, 1, 2].map(i => (b.lo[i] + b.hi[i]) / 2), k = 22 / (b.size || 1);
+        v.draw(); v.drawViewmodel([{ gm, pose: PRIM.FBX.pose(q.mo, q.name, TL.t), M: M4.mul(M4.translate(0, 0, -34), M4.mul(M4.rotX(-12), M4.mul(M4.rotY(TL.yaw), M4.mul(M4.scale(k, k, k), M4.translate(-c[0], -c[1], -c[2]))))) }], []); }
+    };
+    function tlSound(t0, t1, dur) {   // events passed since last frame (also across the loop point)
+      for (const e of tlEvents()) { const t = +S.tags.get(e.id + ".time") || 0, hit = t1 >= t0 ? (t >= t0 && t < t1) : (t >= t0 || t < t1); const sid = S.tags.get(e.id + ".sound"); if (hit && sid && S.urls[sid]) { const a = new Audio(S.urls[sid]); a.volume = Math.max(0, Math.min(1, (+S.tags.get("audio.master") || 0) * (+S.tags.get("audio.sfx") || 0) * (+S.tags.get(e.id + ".volume") || 0))); a.play().catch(() => {}); } }
+    }
+    S.tlTick = tick; const loop = t => { raf = requestAnimationFrame(loop); const dt = Math.min(0.05, (t - last) / 1000); last = t; tick(dt); playBtn.textContent = TL.playing ? "❚❚ Pause" : "▶ Play"; }; raf = requestAnimationFrame(loop);
+    let drag = null; cv.addEventListener("pointerdown", e => { drag = e.clientX; cv.setPointerCapture(e.pointerId); }); cv.addEventListener("pointermove", e => { if (drag !== null) { TL.yaw += (e.clientX - drag) * 0.6; drag = e.clientX; } }); cv.addEventListener("pointerup", () => { drag = null; });
+    ro = new ResizeObserver(() => tlGrid()); ro.observe(grid); tlGrid();
+    S.tlv = { destroy() { cancelAnimationFrame(raf); if (ro) ro.disconnect(); if (v) v.destroy(); S.tlTick = null; S.tlGrid = null; S.tlPlayhead = null; } };
+  }
+  function timelineInspector() {
+    const q = tlSelection(), box = h("div", { class: "insp" }), evs = tlEvents(), TL = q.TL;
+    box.append(h("div", { class: "ihead" }, h("span", { class: "bigic", text: "♪" }), h("div", { class: "ititle" }, h("div", { class: "idin ro", text: q.name || "Timeline" }), h("div", { class: "isub", text: q.asset ? q.asset.name + (q.anim ? " · " + q.anim.dur.toFixed(2) + " s · " + q.anim.tracks.length + " tracks" : "") : "No model yet" }))));
+    const items = evs.length ? evs.map(e => { const a = S.project.assets.find(x => x.id === S.tags.get(e.id + ".sound")); return h("div", { class: "tla" + (TL.evSel === e.id ? " sel" : ""), onclick: () => { TL.evSel = e.id; renderInspector(); tlGrid(); } }, h("span", { text: "♪ " + (a ? a.name : "no sound") }), h("span", { class: "hint", text: (+S.tags.get(e.id + ".time")).toFixed(2) + " s" })); }) : [h("div", { class: "note", text: "No sounds on this animation yet. Press “+ Add sound at playhead” above." })];
+    box.append(foldout("tl:list", "Sounds on this animation", ...items));
+    const ev = evs.find(e => e.id === TL.evSel);
+    if (ev) box.append(foldout("tl:ev", "Selected sound · " + ev.id, ...Schema.EVENT.map(pr => field(ev.id + "." + pr.k)), h("div", { class: "btnrow" }, h("button", { class: "btn sm danger", text: "Remove", onclick: () => { Schema.removeEvent(S.project, ev); TL.evSel = null; S.tags.emit([]); markDirty(); renderInspector(); tlGrid(); } }))));
+    box.append(h("div", { class: "note", text: "While the game runs, each sound plays at its time whenever this animation plays (idle loop or click animation). Volume = master × SFX × the sound's own volume." }));
+    return box;
   }
   function playerInspector() {
     const T = S.tags, box = h("div", { class: "insp" }), hudId = T.get("player.hud");

@@ -80,11 +80,19 @@
       this.atts = keep;
     }
     fire() { for (const at of this.atts) { const fa = this.T.get("player." + at.id + ".fireAnim"); if (fa && at.model.anims[fa]) { at.fire = fa; at.t = 0; if (this.onFire) this.onFire(at, fa); } } }
+    // sound events set on the Timeline tab: play those that fall between t0 and t1 of the animation (only while really playing, not in the editor preview)
+    ev(at, name, t0, t1) {
+      if (this.mode !== "play") return; const T = this.T;
+      for (const e of this.project.events || []) {
+        if (e.asset !== at.aid || e.anim !== name) continue; const t = +T.get(e.id + ".time") || 0, sid = T.get(e.id + ".sound"); if (!(t >= t0 && t < t1) || !sid || !this.urls[sid]) continue;
+        const a = new Audio(this.urls[sid]); a.volume = Math.max(0, Math.min(1, (+T.get("audio.master") || 0) * (+T.get("audio.sfx") || 0) * (+T.get(e.id + ".volume") || 0))); a.play().catch(() => {});
+      }
+    }
     // advance one attachment's animation; returns the name being played
     advance(at, dt) {
       const T = this.T, pre = "player." + at.id + "."; let name = at.fire || T.get(pre + "idleAnim"), a = name && at.model.anims[name]; if (!a) { at.t = 0; return ""; }
-      const t0 = at.t; at.t += dt; if (this.onAnim) this.onAnim(at, name, t0, Math.min(at.t, a.dur), !!at.fire);
-      if (at.fire) { if (at.t >= a.dur) { at.fire = null; at.t = 0; } } else if (a.dur > 0 && at.t >= a.dur) { if (this.onAnim) this.onAnim(at, name, 0, at.t - a.dur, false, true); at.t %= a.dur; }
+      const t0 = at.t; at.t += dt; this.ev(at, name, t0, Math.min(at.t, a.dur));
+      if (at.fire) { if (at.t >= a.dur) { at.fire = null; at.t = 0; } } else if (a.dur > 0 && at.t >= a.dur) { this.ev(at, name, 0, at.t - a.dur); at.t %= a.dur; }
       return at.fire || name;
     }
     drawHand(v, dt) {

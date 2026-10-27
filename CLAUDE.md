@@ -13,3 +13,6 @@
 - Never write `*/` inside a block comment (it ended one early once).
 - Test studio: serve repo root on :8766, `NODE_PATH=$(npm root -g) node tools/dev/shot3.js <out> tools/dev/s_unity.js` (removes File System Access APIs to test fallbacks). Legacy editor: `tools/dev/shot.js` + `s_editor.js` (needs software GL). Map test: `tools/dev/s_map.js` through shot3.js (shot3 launches Chromium with SwiftShader so WebGL works).
 - Publishing: `python3 tools/build_single.py` (add `legacy-editor.html` for the old one), then publish `dist/index.html` as an artifact (Studio needs no supporting files).
+- Player (`project.player`, tags `player.*`; schema in `schema.js` S.PLAYER/S.ATTACH): walking/collision/jump/sprint/crosshair/aim modes (classic, free = bodycam) in `src/core/play3d.js`; HUD = a screen of kind `hud` drawn over the game. Player Editor tab attaches FBX models to the camera (`player.att1.*` tags); a weapon has a muzzle point + arrow that turns toward the crosshair raycast.
+- FBX: `src/core/fbx.js` (ASCII + binary, rigid node animation only, no skin weights), math in `math3d.js`. Timeline tab: sound events per model animation, stored as `project.events=[{id,asset,anim}]` + tags `ev1.time/sound/volume`; played by `Play3D.ev()` in game.
+- Tests: `tools/dev/s_att.js` (attach/aim), `s_tl.js` (timeline + in-game sounds), `s_player.js`, `s_map.js`, `s_unity.js`.
