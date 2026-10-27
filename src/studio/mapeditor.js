@@ -25,8 +25,9 @@
   P.buildBar = function () {
     const h = this.h, mk = (id, label, tip) => h("button", { class: "tbtn sm" + (this.tool === id ? " on" : ""), title: tip, text: label, onclick: () => this.setTool(id) });
     this.bar.replaceChildren(mk("select", "Select / Move", "V: click nodes, walls and rooms. Drag a node to move it. Double-click a wall to add a node."), mk("draw", "Draw Room", "D: click to place nodes, click the first node (or press Enter) to close the room."),
-      mk("start", "Player Start", "P: click to put the player start point."), h("span", { class: "sp" }), h("button", { class: "tbtn sm", text: "Zoom to fit", title: "F", onclick: () => this.fit() }),
-      h("span", { class: "hint", text: this.tool === "draw" ? "Click to place nodes · click the first node or press Enter to close · Backspace undoes · Esc cancels" : this.tool === "start" ? "Click where the player starts" : "Click a node or wall to select it · drag a node to move it · double-click a wall to add a node · drag empty space or hold the right mouse button to pan · scroll to zoom" }));
+      mk("start", "Player Start", "P: click to put the player start point."), mk("object", "Place Object", "O: click a wall to put a door in it, or click the floor to put a pick-up or decoration."),
+      this.tool === "object" ? h("select", { class: "sel", title: "Which object to place", onchange: e => this.o.setProp && this.o.setProp(e.target.value) }, ...((this.o.getProps && this.o.getProps()) || []).map(p => h("option", { value: p.id, text: p.name + " (" + p.type + ")", selected: p.id === (this.o.getProp && this.o.getProp()) }))) : "", h("span", { class: "sp" }), h("button", { class: "tbtn sm", text: "Zoom to fit", title: "F", onclick: () => this.fit() }),
+      h("span", { class: "hint", text: this.tool === "draw" ? "Click to place nodes · click the first node or press Enter to close · Backspace undoes · Esc cancels" : this.tool === "start" ? "Click where the player starts" : this.tool === "object" ? "Click a wall to place a door (it cuts a doorway) · click the floor for other objects · pick the object in the list" : "Click a node or wall to select it · drag a node to move it · double-click a wall to add a node · drag empty space or hold the right mouse button to pan · scroll to zoom" }));
   };
   P.setTool = function (t) { this.tool = t; this.draft = []; this.buildBar(); this.redraw(); };
   P.destroy = function () { this.ro.disconnect(); this.unsub(); };
@@ -47,6 +48,7 @@
   P.pick = function (sx, sy) {
     const vs = this.vmap(), px = this.wx(sx), py = this.wy(sy), r = 9 / this.v.z, secs = this.m.sectors;
     if (this.sel && this.sel.kind === "start") { /* start handled below */ }
+    for (const th of this.m.things || []) { const gm = this.thingGeom(th, vs); if (!gm) continue; if (gm.door) { const hw = gm.w / 2, a = { x: gm.A.x + gm.ux * Math.max(0, gm.c - hw), y: gm.A.y + gm.uy * Math.max(0, gm.c - hw) }, b = { x: gm.A.x + gm.ux * Math.min(gm.len, gm.c + hw), y: gm.A.y + gm.uy * Math.min(gm.len, gm.c + hw) }; if (segDist(px, py, a, b).d < 9 / this.v.z) return { kind: "thing", id: th.id }; } else if (Math.hypot(px - gm.x, py - gm.y) < 11 / this.v.z) return { kind: "thing", id: th.id }; }
     const sx0 = +this.T.get(this.m.id + ".startX"), sy0 = +this.T.get(this.m.id + ".startY"); if (Math.hypot(px - sx0, py - sy0) < r * 1.3) return { kind: "start" };
     let best = null;
     for (const s of secs) for (const id of s.v) { const v = vs[id]; if (!v) continue; const d = Math.hypot(v.x - px, v.y - py); if (d < r && (!best || d < best.d)) best = { d, kind: "vert", id }; }
@@ -74,9 +76,11 @@
       if (f && this.draft.length >= 3 && Math.hypot(f.x - p.x, f.y - p.y) * this.v.z < 10) return this.closeDraft();
       if (last && last.x === p.x && last.y === p.y) return; this.draft.push({ x: p.x, y: p.y }); return this.redraw();
     }
+    if (this.tool === "object") return this.placeThing(sx, sy);
     if (this.tool === "start") { this.T.setMany({ [this.m.id + ".startX"]: Math.round(this.wx(sx)), [this.m.id + ".startY"]: Math.round(this.wy(sy)) }); if (this.o.onChange) this.o.onChange(); this.select({ kind: "start" }); return; }
     const hit = this.pick(sx, sy);
     if (hit && hit.kind === "vert" && !hit.edge) { const v = this.vmap()[hit.id]; this.select({ kind: "vert", id: hit.id }); this.drag = { ids: this.m.verts.filter(o => o.x === v.x && o.y === v.y).map(o => o.id), moved: false }; }
+    else if (hit && hit.kind === "thing") { this.select(hit); this.drag = { thing: hit.id, moved: false }; }
     else if (hit && hit.kind === "start") { this.select({ kind: "start" }); this.drag = { start: true, moved: false }; }
     else if (hit) { this.select(hit.kind === "vert" ? { kind: "vert", id: hit.id } : hit); }
     else { this.select(null); this.pan = { x: e.clientX, y: e.clientY, cx: this.v.cx, cy: this.v.cy }; }
@@ -86,7 +90,10 @@
     if (this.pan) { this.v.cx = this.pan.cx - (e.clientX - this.pan.x) / this.v.z; this.v.cy = this.pan.cy - (e.clientY - this.pan.y) / this.v.z; }
     else if (this.drag) {
       const p = this.snapPt(sx, sy, true), vs = this.vmap();
-      if (this.drag.start) { this.T.setMany({ [this.m.id + ".startX"]: Math.round(this.wx(sx)), [this.m.id + ".startY"]: Math.round(this.wy(sy)) }); this.drag.moved = true; }
+      if (this.drag.thing) { const th = (this.m.things || []).find(x => x.id === this.drag.thing), gm = th && this.thingGeom(th, vs), px = this.wx(sx), py = this.wy(sy);
+        if (gm && gm.door) { const s = Math.max(gm.w / 2, Math.min(gm.len - gm.w / 2, Math.round(((px - gm.A.x) * gm.ux + (py - gm.A.y) * gm.uy) / 16) * 16)), t = +(s / gm.len).toFixed(5); if (t !== th.t) { th.t = t; this.drag.moved = true; } }
+        else if (th) { const g = this.grid(), x = Math.round(px / g) * g, y = Math.round(py / g) * g; if (x !== th.x || y !== th.y) { th.x = x; th.y = y; this.drag.moved = true; } } }
+      else if (this.drag.start) { this.T.setMany({ [this.m.id + ".startX"]: Math.round(this.wx(sx)), [this.m.id + ".startY"]: Math.round(this.wy(sy)) }); this.drag.moved = true; }
       else for (const id of this.drag.ids) { if (vs[id].x !== p.x || vs[id].y !== p.y) { vs[id].x = p.x; vs[id].y = p.y; this.drag.moved = true; } }
     }
     this.redraw();
@@ -104,6 +111,23 @@
     const over = {}; for (const p of Schema.VERT) over[p.k] = this.T.get(this.m.id + "." + a.id + "." + p.k);
     const nv = Schema.addVert(this.o.project, this.m, x, y, over); sec.v.splice(i + 1, 0, nv.id); this.T.emit([]); this.select({ kind: "vert", id: nv.id }); if (this.o.onChange) this.o.onChange(true, true);
   };
+  // objects placed in the map (doors sit in a wall: sec + a = the wall from node a to the next node, t = how far along it; others sit at x, y)
+  P.thingGeom = function (th, vs) {
+    if (th.sec) { const sec = this.m.sectors.find(s => s.id === th.sec); if (!sec) return null; const i = sec.v.indexOf(th.a); if (i < 0) return null; const A = vs[th.a], B = vs[sec.v[(i + 1) % sec.v.length]]; if (!A || !B) return null;
+      const len = Math.hypot(B.x - A.x, B.y - A.y) || 1, ux = (B.x - A.x) / len, uy = (B.y - A.y) / len, w = +this.T.get(th.prop + ".doorWidth") || 96, c = th.t * len; return { door: true, A, B, len, ux, uy, w, c, x: A.x + ux * c, y: A.y + uy * c }; }
+    return { x: th.x, y: th.y };
+  };
+  P.placeThing = function (sx, sy) {
+    const pid = this.o.getProp && this.o.getProp(), log = t => this.o.log && this.o.log(t, "warn"); if (!pid) return log("Create an object in the Object Editor tab first.");
+    const type = this.T.get(pid + ".type"), vs = this.vmap(), px = this.wx(sx), py = this.wy(sy), m = this.m; m.things = m.things || []; m.n.t = m.n.t || 0; let th;
+    if (type === "door") {
+      let best = null; for (const s of m.sectors) for (let i = 0; i < s.v.length; i++) { const a = vs[s.v[i]], b = vs[s.v[(i + 1) % s.v.length]]; if (!a || !b) continue; const r = segDist(px, py, a, b); if (r.d < 16 / this.v.z && (!best || r.d < best.d)) best = { d: r.d, s, a, b, r }; }
+      if (!best) return log("Click on a wall to place a door."); const len = Math.hypot(best.b.x - best.a.x, best.b.y - best.a.y), w = +this.T.get(pid + ".doorWidth") || 96;
+      if (len < w) return log("This wall (" + Math.round(len) + " units) is shorter than the door (" + w + " units).");
+      const s2 = Math.max(w / 2, Math.min(len - w / 2, Math.round(best.r.t * len / 16) * 16)); th = { id: "t" + (++m.n.t), prop: pid, sec: best.s.id, a: best.a.id, t: +(s2 / len).toFixed(5) };
+    } else { const g = this.grid(); th = { id: "t" + (++m.n.t), prop: pid, x: Math.round(px / g) * g, y: Math.round(py / g) * g, ang: 0 }; }
+    m.things.push(th); this.T.emit([]); this.select({ kind: "thing", id: th.id }); if (this.o.onChange) this.o.onChange(true, true); if (this.o.log) this.o.log("Placed “" + (this.T.get(pid + ".name") || pid) + "”");
+  };
   P.closeDraft = function () {
     const d = this.draft; this.draft = []; if (d.length < 3) return this.redraw();
     const ids = d.map(p => Schema.addVert(this.o.project, this.m, p.x, p.y).id), sec = Schema.addSector(this.o.project, this.m, ids);
@@ -112,6 +136,7 @@
   P.deleteSelection = function () {
     if (this.draft.length) { this.draft.pop(); return this.redraw(); } const s = this.sel; if (!s) return;
     if (s.kind === "sector") { const sec = this.m.sectors.find(x => x.id === s.id); if (sec) Schema.removeSector(this.o.project, this.m, sec); }
+    else if (s.kind === "thing") { this.m.things = (this.m.things || []).filter(t => t.id !== s.id); }
     else if (s.kind === "vert") { const sec = this.m.sectors.find(x => x.v.includes(s.id)); if (!sec) return;
       if (sec.v.length <= 3) { this.o.log && this.o.log("A room needs at least 3 nodes. Select the room itself and press Delete to remove it.", "warn"); return; }
       sec.v.splice(sec.v.indexOf(s.id), 1); this.m.verts.splice(this.m.verts.findIndex(v => v.id === s.id), 1); this.T.removePrefix(this.m.id + "." + s.id); }
@@ -120,7 +145,7 @@
   };
   P.key = function (e) {
     const k = e.key.toLowerCase(); if (/INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) return;
-    if (k === " ") { this.space = true; e.preventDefault(); } else if (k === "v") this.setTool("select"); else if (k === "d" && !e.ctrlKey && !e.metaKey) this.setTool("draw"); else if (k === "p") this.setTool("start"); else if (k === "f") this.fit();
+    if (k === " ") { this.space = true; e.preventDefault(); } else if (k === "v") this.setTool("select"); else if (k === "d" && !e.ctrlKey && !e.metaKey) this.setTool("draw"); else if (k === "p") this.setTool("start"); else if (k === "o") this.setTool("object"); else if (k === "f") this.fit();
     else if (k === "enter" && this.tool === "draw") this.closeDraft(); else if (k === "escape") { if (this.draft.length) { this.draft = []; this.redraw(); } else this.select(null); }
   };
 
@@ -157,6 +182,12 @@
         if (!open && Math.hypot(this.sx(b.x) - this.sx(a.x), this.sy(b.y) - this.sy(a.y)) > 38) { const ti = this.img(T.get(vp + "tex")); c.fillStyle = T.get(vp + "color"); c.fillRect(mx - 6, my - 6, 12, 12); if (ti) { c.imageSmoothingEnabled = false; c.drawImage(ti, mx - 6, my - 6, 12, 12); } c.strokeStyle = "#0008"; c.lineWidth = 1; c.strokeRect(mx - 6.5, my - 6.5, 13, 13); }
       }
     }
+    // placed objects
+    for (const th of this.m.things || []) { const gm = this.thingGeom(th, vs); if (!gm) continue; const on = this.sel && this.sel.kind === "thing" && this.sel.id === th.id, type = T.get(th.prop + ".type"), nm = T.get(th.prop + ".name") || th.prop;
+      if (gm.door) { const hw = gm.w / 2, p0 = [gm.A.x + gm.ux * Math.max(0, gm.c - hw), gm.A.y + gm.uy * Math.max(0, gm.c - hw)], p1 = [gm.A.x + gm.ux * Math.min(gm.len, gm.c + hw), gm.A.y + gm.uy * Math.min(gm.len, gm.c + hw)];
+        c.beginPath(); c.moveTo(this.sx(p0[0]), this.sy(p0[1])); c.lineTo(this.sx(p1[0]), this.sy(p1[1])); c.strokeStyle = on ? "#ffd25a" : "#ff9a3c"; c.lineWidth = Math.max(5, 12 * this.v.z); c.lineCap = "butt"; c.stroke(); c.lineWidth = 1; }
+      else { const X = this.sx(gm.x), Y = this.sy(gm.y); c.fillStyle = on ? "#ffd25a" : type === "pickup" ? "#5fe0a0" : "#9fb4c8"; c.strokeStyle = "#000a"; c.beginPath(); if (type === "pickup") { c.moveTo(X, Y - 8); c.lineTo(X + 8, Y); c.lineTo(X, Y + 8); c.lineTo(X - 8, Y); c.closePath(); } else c.rect(X - 7, Y - 7, 14, 14); c.fill(); c.stroke(); }
+      if (this.v.z > 0.4) { c.fillStyle = "#ffe0b0"; c.font = "11px ui-monospace,Consolas,monospace"; c.textAlign = "center"; c.fillText(nm, this.sx(gm.x), this.sy(gm.y) - 11); } }
     // nodes
     for (const s of this.m.sectors) for (const id of s.v) { const v = vs[id]; if (!v) continue; const on = this.sel && this.sel.kind === "vert" && this.sel.id === id; c.fillStyle = on ? "#ffd25a" : "#e7eef6"; c.strokeStyle = "#000a"; c.lineWidth = 1; const r = on ? 5 : 3.5; c.fillRect(this.sx(v.x) - r, this.sy(v.y) - r, 2 * r, 2 * r); c.strokeRect(this.sx(v.x) - r - 0.5, this.sy(v.y) - r - 0.5, 2 * r + 1, 2 * r + 1); }
     // labels

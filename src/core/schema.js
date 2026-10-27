@@ -55,7 +55,7 @@
   S.MAP = [
     COLOR("skyColor", "Sky color", "#16243a"), COLOR("fogColor", "Fog color", "#06090e"), { k: "fogDistance", label: "Fog distance", type: "number", def: 1400, min: 200, max: 6000, step: 50 },
     { k: "startX", label: "Player start X", type: "number", def: 0, min: -4096, max: 4096, step: 1 }, { k: "startY", label: "Player start Y", type: "number", def: 0, min: -4096, max: 4096, step: 1 },
-    { k: "startAngle", label: "Player start angle", type: "number", def: 90, min: 0, max: 360, step: 1 }, { k: "gridSize", label: "Tile size (32 units = 0.5 m)", type: "number", def: 32, min: 8, max: 128, step: 8 },
+    { k: "startAngle", label: "Player start angle", type: "number", def: 90, min: 0, max: 360, step: 1 }, { k: "gridSize", label: "Tile size (32 units = 0.5 m)", type: "number", def: 32, min: 8, max: 128, step: 8 }, { k: "wallThickness", label: "Wall thickness (16 units = 0.25 m)", type: "number", def: 16, min: 4, max: 64, step: 2 },
   ];
   S.SECTOR = [
     { k: "floor", label: "Floor height", type: "number", def: 0, min: -512, max: 1024, step: 8 }, { k: "ceil", label: "Ceiling height (96 = 1.5 m)", type: "number", def: 192, min: -512, max: 1024, step: 8 },
@@ -70,7 +70,7 @@
   S.addVert = (project, m, x, y, over) => { const v = { id: "v" + (++m.n.v), x, y }; m.verts.push(v); S.defineVert(project, m, v, over); return v; };
   S.addSector = (project, m, ids, over) => { const sec = { id: "s" + (++m.n.s), v: ids.slice() }; m.sectors.push(sec); S.defineSector(project, m, sec, over); return sec; };
   S.newMap = (project, id, style) => {
-    const m = { id, style: style || "doom", verts: [], sectors: [], n: { v: 0, s: 0 } }; project.maps.push(m); S.defineMap(project, m);
+    const m = { id, style: style || "doom", verts: [], sectors: [], things: [], n: { v: 0, s: 0, t: 0 } }; project.maps.push(m); S.defineMap(project, m);
     const ids = [[-128, -128], [128, -128], [128, 128], [-128, 128]].map(([x, y]) => S.addVert(project, m, x, y).id); S.addSector(project, m, ids); return m;
   };
   S.removeSector = (project, m, sec) => { const used = new Set(); for (const o of m.sectors) if (o !== sec) o.v.forEach(i => used.add(i)); m.sectors.splice(m.sectors.indexOf(sec), 1);
@@ -83,7 +83,7 @@
     { k: "speed", label: "Move speed", type: "number", def: 280, min: 40, max: 1200, step: 10 }, { k: "gravity", label: "Gravity", type: "number", def: 1100, min: 0, max: 4000, step: 50 },
     { k: "jumpEnabled", label: "Jumping", type: "bool", def: true }, { k: "jumpHeight", label: "Jump height", type: "number", def: 48, min: 8, max: 240, step: 2, showIf: ["jumpEnabled", true] },
     { k: "sprintEnabled", label: "Sprinting", type: "bool", def: true }, { k: "sprintPercent", label: "Sprint speed bonus %", type: "number", def: 60, min: 0, max: 300, step: 5, showIf: ["sprintEnabled", true] },
-    { k: "eyeHeight", label: "Eye height (64 = 1 m)", type: "number", def: 102, min: 16, max: 200, step: 1 }, { k: "radius", label: "Body width (collision)", type: "number", def: 16, min: 4, max: 48, step: 1 }, { k: "stepHeight", label: "Step height", type: "number", def: 24, min: 0, max: 64, step: 1 },
+    { k: "eyeHeight", label: "Eye height (64 = 1 m)", type: "number", def: 102, min: 16, max: 200, step: 1 }, { k: "radius", label: "Body width (collision)", type: "number", def: 16, min: 4, max: 48, step: 1 }, { k: "interactKey", label: "Interact key (open doors...)", type: "choice", options: null, def: "e" }, { k: "stepHeight", label: "Step height", type: "number", def: 24, min: 0, max: 64, step: 1 },
     { k: "fov", label: "Field of view", type: "number", def: 80, min: 40, max: 120, step: 1 }, { k: "aimMode", label: "Aim mode", type: "choice", options: [["classic", "Classic (normal FPS aim)"], ["free", "Free aim (bodycam style)"]], def: "classic" },
     { k: "freeAimRadius", label: "Free aim: aim area (degrees)", type: "number", def: 14, min: 3, max: 45, step: 1, showIf: ["aimMode", "free"] }, { k: "mouseSens", label: "Mouse sensitivity", type: "number", def: 1, min: 0.1, max: 4, step: 0.05 },
     { k: "footstep", label: "Footstep sound", type: "asset", assetType: "sound", def: "" }, { k: "footstep2", label: "Footstep sound 2 (optional, picked at random)", type: "asset", assetType: "sound", def: "" }, { k: "footstep3", label: "Footstep sound 3 (optional)", type: "asset", assetType: "sound", def: "" },
@@ -97,11 +97,11 @@
     { k: "crosshairThickness", label: "Crosshair thickness", type: "number", def: 2, min: 1, max: 8, step: 1, showIf: ["crosshair", true] }, Object.assign(COLOR("crosshairColor", "Crosshair color", "#ffffff"), { showIf: ["crosshair", true] }),
     { k: "hud", label: "HUD screen", type: "screenRef", def: "hud" },
   ];
-  S.PLAYER_GROUPS = [["Movement", ["speed", "sprintEnabled", "sprintPercent", "jumpEnabled", "jumpHeight", "gravity"]], ["Feel", ["breathe", "breatheAmount", "breatheSpeed", "bob", "bobAmount", "bobSpeed"]], ["Sounds", ["footstep", "footstep2", "footstep3", "stepDistance", "jumpSound", "landSound", "hurtSound", "deathSound", "soundVolume"]], ["Body", ["maxHealth", "eyeHeight", "radius", "stepHeight"]], ["Camera", ["fov", "aimMode", "freeAimRadius", "mouseSens"]], ["Crosshair", ["crosshair", "crosshairSize", "crosshairGap", "crosshairThickness", "crosshairColor"]], ["HUD", ["hud", "hudMove", "hudMoveAmount"]]];
+  S.PLAYER_GROUPS = [["Movement", ["speed", "sprintEnabled", "sprintPercent", "jumpEnabled", "jumpHeight", "gravity", "interactKey"]], ["Feel", ["breathe", "breatheAmount", "breatheSpeed", "bob", "bobAmount", "bobSpeed"]], ["Sounds", ["footstep", "footstep2", "footstep3", "stepDistance", "jumpSound", "landSound", "hurtSound", "deathSound", "soundVolume"]], ["Body", ["maxHealth", "eyeHeight", "radius", "stepHeight"]], ["Camera", ["fov", "aimMode", "freeAimRadius", "mouseSens"]], ["Crosshair", ["crosshair", "crosshairSize", "crosshairGap", "crosshairThickness", "crosshairColor"]], ["HUD", ["hud", "hudMove", "hudMoveAmount"]]];
   // 3D objects attached to the player camera (weapons, hands...). Each one has tags player.<id>.*
   const ANIM = (k, label, extra) => Object.assign({ k, label, type: "anim", def: "" }, extra || {}), NUM = (k, label, def, min, max, step, extra) => Object.assign({ k, label, type: "number", def, min, max, step }, extra || {}), WP = ["type", "weapon"], NI = ["type", ["weapon", "animation"]], W_ = { showIf: WP };
   // a showIf is [tagKey, value] or [tagKey, [value, value...]]
-  S.shown = (T, pre, pr) => { if (!pr.showIf) return true; const v = T.get(pre + pr.showIf[0]), w = pr.showIf[1]; return Array.isArray(w) ? w.includes(v) : v === w; };
+  S.shown = (T, pre, pr) => { const ok = c => { const v = T.get(pre + c[0]), w = c[1]; return Array.isArray(w) ? w.includes(v) : v === w; }; return (!pr.showIf || ok(pr.showIf)) && (!pr.showIf2 || ok(pr.showIf2)); };
   S.ATTACH = [
     { k: "name", label: "Name", type: "string", def: "Object" },
     { k: "type", label: "Type", type: "choice", options: [["weapon", "Weapon (in the weapon list, aims and fires)"], ["animation", "Animation object (3D model)"], ["image", "Image object (flat picture)"]], def: "animation" },
@@ -138,11 +138,32 @@
     NUM("projLightPower", "Projectile light brightness", 1.5, 0, 8, 0.05, { showIf: ["projType", ["particle", "mesh"]] }), NUM("projLightRange", "Projectile light reach", 220, 10, 2000, 5, { showIf: ["projType", ["particle", "mesh"]] }),
     { k: "projCharge", label: "Bigger when charged (charge beam)", type: "bool", def: true, showIf: ["projType", ["particle", "mesh"]] },
   ];
+  // ---- placeable objects (the Object Editor): doors, pick-ups, decorations. Tags prop<N>.*  They are placed in maps (map.things).
+  S.PROP = [
+    { k: "name", label: "Name", type: "string", def: "Object" },
+    { k: "type", label: "Type", type: "choice", options: [["decoration", "Decoration (just a model)"], ["door", "Door (opens in a wall)"], ["pickup", "Pick-up (collected by touching)"]], def: "decoration" },
+    { k: "asset", label: "Model (FBX)", type: "asset", assetType: "model", def: "" },
+    NUM("scale", "Scale", 1, 0.001, 100, 0.001), NUM("rx", "Rotate X", 0, -180, 180, 1), NUM("ry", "Rotate Y", 0, -180, 180, 1), NUM("rz", "Rotate Z", 0, -180, 180, 1),
+    NUM("ox", "Move X (sideways)", 0, -500, 500, 0.5), NUM("oy", "Move Y (up)", 0, -500, 500, 0.5), NUM("oz", "Move Z (toward the front)", 0, -500, 500, 0.5),
+    ANIM("idleAnim", "Idle animation (loops)"),
+    NUM("doorWidth", "Doorway width (units, 96 = 1.5 m)", 96, 16, 400, 1, { showIf: ["type", "door"] }), NUM("doorHeight", "Doorway height (units)", 144, 16, 400, 1, { showIf: ["type", "door"] }),
+    { k: "openMode", label: "Opens", type: "choice", options: [["interact", "When interacted with (Interact key)"], ["proximity", "When the player is close"], ["shot", "When shot"]], def: "interact", showIf: ["type", "door"] },
+    NUM("openRange", "Opens when closer than (units)", 110, 20, 600, 5, { showIf: ["type", "door"], showIf2: ["openMode", "proximity"] }), NUM("interactRange", "Can be used from (units)", 90, 20, 400, 5, { showIf: ["type", "door"], showIf2: ["openMode", "interact"] }),
+    ANIM("openAnim", "Opening animation", { showIf: ["type", "door"] }), ANIM("closeAnim", "Closing animation (empty = opening played backwards)", { showIf: ["type", "door"] }),
+    { k: "autoClose", label: "Closes again by itself", type: "bool", def: true, showIf: ["type", "door"] }, NUM("closeAfter", "Closes after (seconds)", 3, 0.5, 60, 0.5, { showIf: ["type", "door"], showIf2: ["autoClose", true] }),
+    { k: "openSound", label: "Opening sound", type: "asset", assetType: "sound", def: "", showIf: ["type", "door"] }, { k: "closeSound", label: "Closing sound", type: "asset", assetType: "sound", def: "", showIf: ["type", "door"] },
+    { k: "giveTag", label: "Changes this number tag", type: "tagRef", refType: "number", def: "", showIf: ["type", "pickup"] }, NUM("giveAmount", "By (negative = subtract)", 10, -100000, 100000, 1, { showIf: ["type", "pickup"] }),
+    NUM("pickRadius", "Pick-up distance (units)", 28, 8, 200, 1, { showIf: ["type", "pickup"] }), { k: "pickSound", label: "Pick-up sound", type: "asset", assetType: "sound", def: "", showIf: ["type", "pickup"] },
+  ];
+  S.defineProp = (project, p, over) => { for (const pr of S.PROP) { const r = rec(pr, "props", p.id); if (pr.type === "anim") r.modelTag = p.id + ".asset"; if (over && pr.k in over) r.value = over[pr.k]; project.tags[p.id + "." + pr.k] = r; } };
+  S.addProp = (project, over) => { const p = { id: S.uid("prop", project.props.map(x => x.id)) }; project.props.push(p); S.defineProp(project, p, Object.assign({ name: p.id }, over || {})); return p; };
+  S.removeProp = (project, p) => { project.props.splice(project.props.indexOf(p), 1); for (const k of Object.keys(project.tags)) if (k.startsWith(p.id + ".")) delete project.tags[k]; for (const m of project.maps || []) m.things = (m.things || []).filter(t => t.prop !== p.id); };
   // ---- node scripts (see script.js). ports: outs = output names; ins:false = event node (starts a chain)
   const ANYTAG = { k: "tag", label: "Tag", type: "tagRef", refType: "any", def: "" }, NUMTAG = { k: "tag", label: "Number tag", type: "tagRef", refType: "number", def: "" };
   // keys and mouse buttons for the Node Coder dropdowns
   S.KEYS = [["mouse1", "Left mouse button"], ["mouse2", "Right mouse button"], ["mouse3", "Middle mouse button"], ["space", "Space"], ["shift", "Shift"], ["ctrl", "Ctrl"], ["alt", "Alt"], ["enter", "Enter"], ["tab", "Tab"], ["arrowup", "Arrow up"], ["arrowdown", "Arrow down"], ["arrowleft", "Arrow left"], ["arrowright", "Arrow right"]]
     .concat("abcdefghijklmnopqrstuvwxyz".split("").map(c => [c, c.toUpperCase()]), "0123456789".split("").map(c => [c, c]), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(i => ["f" + i, "F" + i]));
+  S.PLAYER.find(p => p.k === "interactKey").options = S.KEYS;
   const KEYP = (def, label) => ({ k: "key", label: label || "Key or mouse button", type: "choice", options: S.KEYS, def: def || "r" });
   S.STATES = [["standing", "Standing still"], ["walking", "Walking"], ["running", "Running (sprinting)"], ["jumping", "Jumping (going up)"], ["falling", "Falling"], ["moving", "Moving (walking or running)"], ["inair", "In the air (jumping or falling)"]];
   S.SNODES = {
@@ -201,7 +222,10 @@
   S.WFACE = [TEX("tex", "Texture"), COLOR("color", "Color tint", "#ffffff")];
   S.defineWallFace = (project, w, f, over) => defP(project, S.WFACE, w.id, w.id + "." + f.id, w.id + "." + f.id, over);
   S.ensureWalls = project => {
-    if (!project.walls) project.walls = [];
+    if (!project.walls) project.walls = []; if (!project.props) project.props = [];
+    for (const m of project.maps || []) { if (!m.things) m.things = []; if (m.n && m.n.t === undefined) m.n.t = m.things.length; if (!project.tags[m.id + ".wallThickness"]) project.tags[m.id + ".wallThickness"] = rec(S.MAP.find(p => p.k === "wallThickness"), m.id, m.id); }
+    for (const p of project.props) for (const pr of S.PROP) if (!project.tags[p.id + "." + pr.k]) { const r = rec(pr, "props", p.id); if (pr.type === "anim") r.modelTag = p.id + ".asset"; project.tags[p.id + "." + pr.k] = r; }
+    { const ik = project.tags["player.interactKey"]; if (project.tags["player.speed"] && !ik) project.tags["player.interactKey"] = rec(S.PLAYER.find(p => p.k === "interactKey"), "player", "player"); }
     for (const m of project.maps || []) for (const v of m.verts) for (const p of S.VERT) if (!project.tags[m.id + "." + v.id + "." + p.k]) project.tags[m.id + "." + v.id + "." + p.k] = rec(p, m.id, m.id + "." + v.id);
     for (const w of project.walls) for (const f of w.faces) for (const p of S.WFACE) if (!project.tags[w.id + "." + f.id + "." + p.k]) project.tags[w.id + "." + f.id + "." + p.k] = rec(p, w.id, w.id + "." + f.id);
     const eh = project.tags["player.eyeHeight"]; if (eh && !project.eyeMoved) { if (eh.value === 56) eh.value = 102; project.eyeMoved = true; }

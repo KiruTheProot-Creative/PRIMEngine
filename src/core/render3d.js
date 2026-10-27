@@ -49,11 +49,32 @@
   // camera orientation vectors for a yaw / pitch (radians): right, up, forward
   R.camBasis = function (yaw, pitch) { const cp = Math.cos(pitch), f = [Math.cos(yaw) * cp, Math.sin(pitch), Math.sin(yaw) * cp], sr = M4.norm(M4.cross(f, [0, 1, 0])); return { s: sr, u: M4.cross(sr, f), f }; };
 
-  // solid wall segments of a map (those not marked open), for collision
-  R.walls = function (m, T) {
-    const vs = {}; for (const v of m.verts) vs[v.id] = v; const out = [];
-    for (const sec of m.sectors) { const ids = sec.v.filter(i => vs[i]); for (let i = 0; i < ids.length; i++) { const A = vs[ids[i]], B = vs[ids[(i + 1) % ids.length]]; if (T.get(m.id + "." + A.id + ".open")) continue; out.push({ ax: A.x, ay: A.y, bx: B.x, by: B.y }); } }
+  // doors placed in walls: { "vA|vB": [{ th, a, b, w, h }] } (edge key is the same from both rooms that share the wall)
+  const ekey = (a, b) => a < b ? a + "|" + b : b + "|" + a; R.ekey = ekey;
+  R.doors = function (m, T) {
+    const out = {}; for (const th of m.things || []) { if (!th.sec || !th.a || T.get(th.prop + ".type") !== "door") continue; const sec = m.sectors.find(s => s.id === th.sec), i = sec ? sec.v.indexOf(th.a) : -1; if (i < 0) continue;
+      const b = sec.v[(i + 1) % sec.v.length]; (out[ekey(th.a, b)] = out[ekey(th.a, b)] || []).push({ th, a: th.a, b, w: +T.get(th.prop + ".doorWidth") || 96, h: +T.get(th.prop + ".doorHeight") || 144 }); }
     return out;
+  };
+  // solid wall segments of a map (those not marked open), for collision. A door splits its wall: the part beside it is always solid, the door part has `door` = the placed object's id
+  R.walls = function (m, T) {
+    const vs = {}; for (const v of m.verts) vs[v.id] = v; const out = [], doors = R.doors(m, T);
+    for (const sec of m.sectors) { const ids = sec.v.filter(i => vs[i]); for (let i = 0; i < ids.length; i++) { const A = vs[ids[i]], B = vs[ids[(i + 1) % ids.length]]; if (T.get(m.id + "." + A.id + ".open")) continue;
+      const ds = doors[ekey(A.id, B.id)]; if (!ds) { out.push({ ax: A.x, ay: A.y, bx: B.x, by: B.y }); continue; }
+      const len = Math.hypot(B.x - A.x, B.y - A.y) || 1, ux = (B.x - A.x) / len, uy = (B.y - A.y) / len, P = s => [A.x + ux * s, A.y + uy * s], hs = ds.map(d => { const c = (d.a === A.id ? d.th.t : 1 - d.th.t) * len; return { h0: Math.max(0, c - d.w / 2), h1: Math.min(len, c + d.w / 2), id: d.th.id }; }).sort((p, q) => p.h0 - q.h0);
+      let cur = 0; const seg = (s0, s1, id) => { if (s1 - s0 < 0.5) return; const p = P(s0), q = P(s1); out.push({ ax: p[0], ay: p[1], bx: q[0], by: q[1], door: id }); };
+      for (const h of hs) { seg(cur, h.h0); seg(h.h0, h.h1, h.id); cur = Math.max(cur, h.h1); } seg(cur, len); } }
+    return out;
+  };
+  // where a placed object stands: map position c (door: centre of the doorway, inside the wall thickness), wall direction u, inward normal n
+  R.thingFrame = function (m, T, th) {
+    const vs = {}; for (const v of m.verts) vs[v.id] = v;
+    if (!th.sec) return { cx: th.x, cy: th.y, ux: Math.cos((th.ang || 0) * Math.PI / 180), uy: -Math.sin((th.ang || 0) * Math.PI / 180), nx: Math.sin((th.ang || 0) * Math.PI / 180), ny: Math.cos((th.ang || 0) * Math.PI / 180), door: false };
+    const sec = m.sectors.find(s => s.id === th.sec); if (!sec) return null; const ids = sec.v.filter(i => vs[i]), i = ids.indexOf(th.a); if (i < 0) return null;
+    const A = vs[ids[i]], B = vs[ids[(i + 1) % ids.length]], len = Math.hypot(B.x - A.x, B.y - A.y) || 1, ux = (B.x - A.x) / len, uy = (B.y - A.y) / len; let a2 = 0;
+    for (let k = 0; k < ids.length; k++) { const p1 = vs[ids[k]], p2 = vs[ids[(k + 1) % ids.length]]; a2 += p1.x * p2.y - p2.x * p1.y; }
+    const nx = a2 > 0 ? -uy : uy, ny = a2 > 0 ? ux : -ux, thick = +T.get(m.id + ".wallThickness") || 16, c = th.t * len;
+    return { cx: A.x + ux * c - nx * thick / 2, cy: A.y + uy * c - ny * thick / 2, ux, uy, nx, ny, thick, door: true };
   };
   // the room at a point with its floor and ceiling height, or null
   R.sectorInfo = function (m, T, x, y) { const s = R.sectorAt(m, x, y); return s ? { sec: s, floor: +T.get(m.id + "." + s.id + ".floor"), ceil: +T.get(m.id + "." + s.id + ".ceil") } : null; };
@@ -124,6 +145,7 @@
     if (!this.ok || !this.map) return; const gl = this.gl, m = this.map, T = this.tags, vs = {}; for (const v of m.verts) vs[v.id] = v;
     this.sky = hex(T.get(m.id + ".skyColor")); this.fog = hex(T.get(m.id + ".fogColor")); this.fogD = Math.max(100, +T.get(m.id + ".fogDistance") || 1400);
     for (const b of this.batches) gl.deleteBuffer(b.buf); const by = {};
+    const doorAt = R.doors(m, T), thick = +T.get(m.id + ".wallThickness") || 16, cnt = {}; this.doorAt = doorAt; for (const s2 of m.sectors) { const i2 = s2.v.filter(i => vs[i]); for (let k = 0; k < i2.length; k++) { const key = ekey(i2[k], i2[(k + 1) % i2.length]); cnt[key] = (cnt[key] || 0) + 1; } }
     this.tri = []; let curSec = ""; const add = (texId, tri) => { (by[(texId || "") + "|" + curSec] = by[(texId || "") + "|" + curSec] || []).push(...tri); for (let i = 0; i + 23 < tri.length; i += 24) this.tri.push(tri[i], tri[i + 1], tri[i + 2], tri[i + 8], tri[i + 9], tri[i + 10], tri[i + 16], tri[i + 17], tri[i + 18]); };
     for (const sec of m.sectors) {
       const ids = sec.v.filter(i => vs[i]); if (ids.length < 3) continue; curSec = sec.id; const pre = m.id + "." + sec.id + ".", fl = +T.get(pre + "floor"), ce = +T.get(pre + "ceil"), li = +T.get(pre + "light");
@@ -138,14 +160,24 @@
         const len = Math.hypot(B.x - A.x, B.y - A.y), dir = Math.abs(B.x - A.x) > Math.abs(B.y - A.y) ? 1 : 0.82, c = hex(T.get(vp + "color")).map(x => x * li * dir), u1 = len / TILE, v0 = 0, v1 = (ce - fl) / TILE;
         const rows = String(T.get(vp + "rows") || "").split(",").map(x => x.trim()), WM = PRIM.WallMesh, custom = !!WM && !!this.project && rows.some(x => x && WM.byId(this.project, x));
         let nx = 0, nz = 0; if (custom) { let a2 = 0; for (let k = 0; k < pts.length; k++) { const p1 = pts[k], p2 = pts[(k + 1) % pts.length]; a2 += p1[0] * p2[1] - p2[0] * p1[1]; } const dx = (B.x - A.x) / (len || 1), dz = (B.y - A.y) / (len || 1); nx = a2 > 0 ? -dz : dz; nz = a2 > 0 ? dx : -dx; }   // nx,nz: the wall's normal, pointing into the room
-        const o = custom ? -1 : 0, q = (x, y, z, u, v) => [x + nx * o, y, z + nz * o, u, v, c[0], c[1], c[2]];
-        add(T.get(vp + "tex"), [...q(A.x, ce, A.y, 0, v0), ...q(B.x, ce, B.y, u1, v0), ...q(B.x, fl, B.y, u1, v1), ...q(A.x, ce, A.y, 0, v0), ...q(B.x, fl, B.y, u1, v1), ...q(A.x, fl, A.y, 0, v1)]);
+        const holes = (doorAt[ekey(A.id, B.id)] || []).map(d => { const cc = (d.a === A.id ? d.th.t : 1 - d.th.t) * len; return { h0: Math.max(0, cc - d.w / 2), h1: Math.min(len, cc + d.w / 2), top: fl + Math.min(d.h, ce - fl) }; }).sort((p1, p2) => p1.h0 - p2.h0);
+        if (holes.length && !(nx || nz)) { let a2 = 0; for (let k = 0; k < pts.length; k++) { const p1 = pts[k], p2 = pts[(k + 1) % pts.length]; a2 += p1[0] * p2[1] - p2[0] * p1[1]; } const dx = (B.x - A.x) / (len || 1), dz = (B.y - A.y) / (len || 1); nx = a2 > 0 ? -dz : dz; nz = a2 > 0 ? dx : -dx; }
+        const o = custom ? -1 : 0, dvx = (B.x - A.x) / (len || 1), dvz = (B.y - A.y) / (len || 1), tex = T.get(vp + "tex");
+        const pt = (s, y, d, u, v, k) => [A.x + dvx * s - nx * d, y, A.y + dvz * s - nz * d, u, v, c[0] * k, c[1] * k, c[2] * k];
+        const wallQ = (s0, s1, y0, y1) => { if (s1 - s0 < 0.01 || y1 - y0 < 0.01) return; const Q = (s, y) => [A.x + dvx * s + nx * o, y, A.y + dvz * s + nz * o, s / TILE, (ce - y) / TILE, c[0], c[1], c[2]]; add(tex, [...Q(s0, y1), ...Q(s1, y1), ...Q(s1, y0), ...Q(s0, y1), ...Q(s1, y0), ...Q(s0, y0)]); };
+        const face = (p1, p2, p3, p4, k) => add(tex, [...p1, ...p2, ...p3, ...p1, ...p3, ...p4].map((x, i, arr) => x));
+        let cur = 0; for (const h of holes) { wallQ(cur, h.h0, fl, ce); wallQ(h.h0, h.h1, h.top, ce); cur = Math.max(cur, h.h1); } wallQ(cur, len, fl, ce);
+        for (const h of holes) {   // the doorway has depth: jambs, lintel and threshold run into the wall thickness
+          const D = thick, k = 0.78, jl = [pt(h.h0, h.top, 0, 0, 0, k), pt(h.h0, h.top, D, D / TILE, 0, k), pt(h.h0, fl, D, D / TILE, (h.top - fl) / TILE, k), pt(h.h0, fl, 0, 0, (h.top - fl) / TILE, k)], jr = [pt(h.h1, h.top, D, 0, 0, k), pt(h.h1, h.top, 0, D / TILE, 0, k), pt(h.h1, fl, 0, D / TILE, (h.top - fl) / TILE, k), pt(h.h1, fl, D, 0, (h.top - fl) / TILE, k)];
+          const hd = [pt(h.h0, h.top, 0, 0, 0, 0.6), pt(h.h1, h.top, 0, (h.h1 - h.h0) / TILE, 0, 0.6), pt(h.h1, h.top, D, (h.h1 - h.h0) / TILE, D / TILE, 0.6), pt(h.h0, h.top, D, 0, D / TILE, 0.6)], sl = [pt(h.h0, fl, 0, 0, 0, 0.9), pt(h.h1, fl, 0, (h.h1 - h.h0) / TILE, 0, 0.9), pt(h.h1, fl, D, (h.h1 - h.h0) / TILE, D / TILE, 0.9), pt(h.h0, fl, D, 0, D / TILE, 0.9)];
+          face(jl[0], jl[1], jl[2], jl[3]); face(jr[0], jr[1], jr[2], jr[3]); face(hd[0], hd[1], hd[2], hd[3]); face(sl[0], sl[1], sl[2], sl[3]);
+          if (cnt[ekey(A.id, B.id)] < 2) { const bk = [pt(h.h0, h.top, D, 0, 0, 0.35), pt(h.h1, h.top, D, 1, 0, 0.35), pt(h.h1, fl, D, 1, 1, 0.35), pt(h.h0, fl, D, 0, 1, 0.35)]; face(bk[0], bk[1], bk[2], bk[3]); } }
         if (custom) {   // custom wall types: the wall is cut into panels of 96 x 96 units (1.5 m) and each layer (row, bottom to top) is filled with its wall type
           const SZ = WM.SIZE, nR = Math.max(1, Math.round((ce - fl) / SZ)), nC = Math.max(1, Math.round(len / SZ)), sy = (ce - fl) / (SZ * nR), sx = len / (SZ * nC), rep = T.get(vp + "rowsRepeat") !== false, sX = nz, sZ = -nx, fwd = (B.x - A.x) * sX + (B.y - A.y) * sZ > 0, S0 = fwd ? A : B, ux = fwd ? (B.x - A.x) / len : (A.x - B.x) / len, uz = fwd ? (B.y - A.y) / len : (A.y - B.y) / len;
           const lastRow = rows.length ? rows[rows.length - 1] : "";
           for (let rr = 0; rr < nR; rr++) {
             const id = rr < rows.length ? rows[rr] : rep ? lastRow : "", wall = id && WM.byId(this.project, id); if (!wall) continue; const tr = WM.tris(wall, T);
-            for (let cc = 0; cc < nC; cc++) for (const t of tr) { const out = []; for (let k = 0; k < 3; k++) { const P = t.p[k], X = (cc * SZ + P[0]) * sx; out.push(S0.x + ux * X + nx * P[2], fl + (rr * SZ + P[1]) * sy, S0.y + uz * X + nz * P[2], t.uv[k][0], t.uv[k][1], c[0] * t.tint[0], c[1] * t.tint[1], c[2] * t.tint[2]); } add(t.tex, out); }
+            for (let cc = 0; cc < nC; cc++) { if (holes.some(h => cc * SZ * sx < h.h1 && (cc + 1) * SZ * sx > h.h0 && rr * SZ * sy < h.top - fl)) continue; for (const t of tr) { const out = []; for (let k = 0; k < 3; k++) { const P = t.p[k], X = (cc * SZ + P[0]) * sx; out.push(S0.x + ux * X + nx * P[2], fl + (rr * SZ + P[1]) * sy, S0.y + uz * X + nz * P[2], t.uv[k][0], t.uv[k][1], c[0] * t.tint[0], c[1] * t.tint[1], c[2] * t.tint[2]); } add(t.tex, out); } }
           }
         }
       }
@@ -155,10 +187,10 @@
       return { buf, n: a.length / 8, tex: k.slice(0, cut), sec: k.slice(cut + 1), mn, mx }; });
     this.triCount = this.batches.reduce((s, b) => s + b.n / 3, 0);
     // rooms that touch through an open wall (a "portal"): used to skip rooms that can not be seen
-    const ekey = (a, b) => a < b ? a + "|" + b : b + "|" + a, owners = {}; this.adj = {};
+    const owners = {}; this.adj = {};
     for (const sec of m.sectors) { const ids = sec.v.filter(i => vs[i]); for (let i = 0; i < ids.length; i++) (owners[ekey(ids[i], ids[(i + 1) % ids.length])] = owners[ekey(ids[i], ids[(i + 1) % ids.length])] || []).push(sec.id); }
     for (const sec of m.sectors) { const ids = sec.v.filter(i => vs[i]), pre = m.id + "." + sec.id + "."; for (let i = 0; i < ids.length; i++) {
-      const A = vs[ids[i]], B = vs[ids[(i + 1) % ids.length]]; if (!T.get(m.id + "." + A.id + ".open")) continue;
+      const A = vs[ids[i]], B = vs[ids[(i + 1) % ids.length]]; if (!T.get(m.id + "." + A.id + ".open") && !doorAt[ekey(A.id, B.id)]) continue;
       for (const o of owners[ekey(A.id, B.id)] || []) if (o !== sec.id) { const so = m.sectors.find(x => x.id === o), lo = Math.min(+T.get(pre + "floor"), +T.get(m.id + "." + o + ".floor")), hi = Math.max(+T.get(pre + "ceil"), +T.get(m.id + "." + o + ".ceil")); (this.adj[sec.id] = this.adj[sec.id] || []).push({ to: o, mn: [Math.min(A.x, B.x), lo, Math.min(A.y, B.y)], mx: [Math.max(A.x, B.x), hi, Math.max(A.y, B.y)] }); }
     } }
   };

@@ -156,7 +156,7 @@
   function setTesting(v) { setTab(v ? "game" : "edit"); }
   function leaveSpecial() { S.playerSel = false; if (["player", "timeline", "fly", "coder"].includes(S.tab)) { S.tab = "edit"; S.testing = false; return true; } return false; }
   function centerTabs() {
-    const items = S.mapId && curMap() ? [["edit", "Map"], ["fly", "Fly Editor"]] : [["edit", "Scene"]]; items.push(["game", "Game"], ["player", "Player Editor"], ["walls", "Wall Editor"], ["timeline", "Timeline"], ["coder", "Node Coder"]);
+    const items = S.mapId && curMap() ? [["edit", "Map"], ["fly", "Fly Editor"]] : [["edit", "Scene"]]; items.push(["game", "Game"], ["player", "Player Editor"], ["props", "Object Editor"], ["walls", "Wall Editor"], ["timeline", "Timeline"], ["coder", "Node Coder"]);
     return items.map(([k, l]) => h("button", { class: "tab" + (S.tab === k ? " sel" : ""), text: l, onclick: () => setTab(k) }));
   }
 
@@ -213,7 +213,7 @@
   function renderCenter() {
     const p = E.center; killMapViews(); if (S.rt) { S.rt.destroy(); S.rt = null; }
     if (S.tab === "fly" && !S.mapId) S.tab = "edit"; S.testing = S.tab === "game";
-    if (S.tab === "player") return S.objView && S.objSel && S.project.player.attachments.some(a => a.id === S.objSel) ? objectCenter() : playerCenter(); if (S.tab === "walls") return wallCenter(); if (S.tab === "timeline") return timelineCenter(); if (S.tab === "coder") return coderCenter(); if (S.mapId && curMap() && S.tab !== "game") return mapCenter();
+    if (S.tab === "player") return S.objView && S.objSel && S.project.player.attachments.some(a => a.id === S.objSel) ? objectCenter() : playerCenter(); if (S.tab === "walls") return wallCenter(); if (S.tab === "props") return propCenter(); if (S.tab === "timeline") return timelineCenter(); if (S.tab === "coder") return coderCenter(); if (S.mapId && curMap() && S.tab !== "game") return mapCenter();
     const sc = S.testing && S.mapId ? (screens().find(x => x.id === S.tags.get("project.startScreen")) || screens()[0]) : curScreen();
     E.host.className = "host"; E.host.replaceChildren();
     p.tabs.replaceChildren(...centerTabs(), h("span", { class: "sp" }), h("span", { class: "csize", text: "1280 × 720  ·  16:9" }));
@@ -412,7 +412,7 @@
   }
   function propsBody() {
     if (S.fsel) return folderInspector();
-    if (S.tab === "walls") return wallInspector();
+    if (S.tab === "walls") return wallInspector(); if (S.tab === "props") return propInspector();
     if (S.playerSel) return playerInspector(); if (S.tab === "timeline") return timelineInspector(); if (S.tab === "coder") return coderInspector();
     if (S.mapId && curMap()) return mapInspector();
     const sc = curScreen(), node = selectedNode(), box = h("div", { class: "insp" });
@@ -522,7 +522,7 @@
 
   // ================================================================ MAPS (DOOM-style editor + 3D fly view)
   const curMap = () => S.project.maps.find(m => m.id === S.mapId);
-  function killMapViews() { if (S.med) { S.med.destroy(); S.med = null; } if (S.v3) { S.v3.dispose(); S.v3 = null; } if (S.p3) { S.p3.destroy(); S.p3 = null; } if (S.tlv) { S.tlv.destroy(); S.tlv = null; } if (S.coderStop) { S.coderStop(); S.coderStop = null; } if (S.oev) { S.oev.destroy(); S.oev = null; } if (S.wed) { S.wed.destroy(); S.wed = null; } }
+  function killMapViews() { if (S.med) { S.med.destroy(); S.med = null; } if (S.v3) { S.v3.dispose(); S.v3 = null; } if (S.p3) { S.p3.destroy(); S.p3 = null; } if (S.tlv) { S.tlv.destroy(); S.tlv = null; } if (S.coderStop) { S.coderStop(); S.coderStop = null; } if (S.oev) { S.oev.destroy(); S.oev = null; } if (S.wed) { S.wed.destroy(); S.wed = null; } if (S.pev) { S.pev.destroy(); S.pev = null; } }
   function selectMap(id, sel) { S.fsel = null; const was = S.mapId, tc = (S.playerSel || S.tab === "timeline") ? (S.tab = "edit", S.testing = false, true) : false; S.playerSel = false; S.mapId = id; S.selId = null; S.sel = null; S.msel = sel || null; renderHier(); renderInspector(); renderProject(); if (was !== id || !S.med || tc) renderCenter(); else S.med.select(S.msel, true); }
   function openNewMap() {
     const ov = h("div", { class: "modal" }), close = () => ov.remove();
@@ -553,7 +553,7 @@
     put(E.cbar, h("span", { class: "chip", text: m.id }), h("button", { class: "tbtn sm", text: "▶ Walk this map", title: "Try the map as the player (Esc to leave)", onclick: () => walkMap(m) }), h("span", { class: "hint", text: fly ? "Editor camera: click the view, then W A S D to move, mouse to look, Q / E down and up, Shift = fast. This is for placing things; the player is set up in the Player Editor tab." : "Rooms are closed loops of nodes. Drop an image from the Project panel onto a wall to texture it (Shift = ceiling when dropped on a room)." }));
     E.host.className = "host maphost"; E.host.replaceChildren();
     if (fly) { S.v3 = makeView(E.host, m); if (S.v3) S.v3.focus = false; }
-    else { S.med = new PRIM.MapEditor({ host: E.host, project: S.project, map: m, tags: S.tags, getUrls: () => S.urls, log, onSelect: sel => { S.msel = sel; renderInspector(); renderHier(); },
+    else { S.med = new PRIM.MapEditor({ host: E.host, project: S.project, map: m, tags: S.tags, getUrls: () => S.urls, log, getProps: () => (S.project.props || []).map(p => ({ id: p.id, name: S.tags.get(p.id + ".name") || p.id, type: S.tags.get(p.id + ".type") })), getProp: () => S.propSel || ((S.project.props || [])[0] || {}).id, setProp: id => { S.propSel = id; }, onSelect: sel => { S.msel = sel; renderInspector(); renderHier(); },
       onChange: (geo, structure) => { markDirty(); if (structure) { renderHier(); renderInspector(); } else renderInspector(); } }); S.med.select(S.msel, true); }
   }
   function makeView(host, m) {
@@ -899,6 +899,59 @@
     renderInspector();
   }
   // ================================================================ WALL EDITOR (wall types: small meshes that fill a 1.5 m panel)
+  // ================================================================ OBJECT EDITOR (placeable objects: doors, pick-ups, decorations)
+  function propBounds(pre) {   // size of the model after rotation and scale: { lo, hi } or null
+    const T = S.tags, F = PRIM.FBX, M4 = PRIM.M4, mo = F.cache[T.get(pre + "asset")]; if (!mo || !mo.bounds) return null; const b = mo.bounds, R = M4.mul(M4.rotXYZ([+T.get(pre + "rx") || 0, +T.get(pre + "ry") || 0, +T.get(pre + "rz") || 0]), M4.scale(+T.get(pre + "scale") || 1, +T.get(pre + "scale") || 1, +T.get(pre + "scale") || 1)), lo = [1e9, 1e9, 1e9], hi = [-1e9, -1e9, -1e9];
+    for (const x of [b.lo[0], b.hi[0]]) for (const y of [b.lo[1], b.hi[1]]) for (const z of [b.lo[2], b.hi[2]]) { const p = M4.point(R, x, y, z); for (let i = 0; i < 3; i++) { lo[i] = Math.min(lo[i], p[i]); hi[i] = Math.max(hi[i], p[i]); } }
+    return { lo, hi };
+  }
+  function propCenterOnGrid(pre) { const b = propBounds(pre); if (!b) return; S.tags.setMany({ [pre + "ox"]: +(-(b.lo[0] + b.hi[0]) / 2 + (+S.tags.get(pre + "ox") || 0)).toFixed(1), [pre + "oy"]: +(-b.lo[1] + (+S.tags.get(pre + "oy") || 0)).toFixed(1), [pre + "oz"]: +(-(b.lo[2] + b.hi[2]) / 2 + (+S.tags.get(pre + "oz") || 0)).toFixed(1) }); }
+  function propFitScale(pre) { const T = S.tags, mo = PRIM.FBX.cache[T.get(pre + "asset")]; if (!mo) return; T.set(pre + "scale", 1); const b = propBounds(pre); if (!b) return; const w = Math.max(b.hi[0] - b.lo[0], b.hi[2] - b.lo[2], 0.001); T.set(pre + "scale", +(96 / w).toFixed(4)); }
+  function propFitDoorway(pre) { const T = S.tags, b = propBounds(pre); if (!b) return; T.setMany({ [pre + "doorWidth"]: Math.round(Math.max(b.hi[0] - b.lo[0], b.hi[2] - b.lo[2])), [pre + "doorHeight"]: Math.round(b.hi[1] - b.lo[1]) }); }
+  function addProp(asset) {
+    const P = S.project, mo = PRIM.FBX.cache[asset.id], names = mo ? Object.keys(mo.anims) : [], p = Schema.addProp(P, { name: asset.name.replace(/\.[^.]+$/, ""), asset: asset.id, idleAnim: names.find(n => /idle/i.test(n)) || "" }), pre = p.id + ".";
+    propFitScale(pre); propCenterOnGrid(pre); S.propSel = p.id; S.tags.emit([]); markDirty(); renderCenter(); renderInspector(); log("Created object “" + S.tags.get(pre + "name") + "”");
+  }
+  function propCenter() {
+    const p = E.center, P = S.project, props = P.props = P.props || [], F = PRIM.FBX, M4 = PRIM.M4, T = S.tags;
+    p.tabs.replaceChildren(...centerTabs(), h("span", { class: "sp" }), h("span", { class: "csize", text: "object editor · grid = 3 × 3 tiles (1.5 m)" })); E.host.className = "host maphost";
+    const pr = props.find(x => x.id === S.propSel) || props[0]; S.propSel = pr ? pr.id : null; const models = P.assets.filter(a => a.type === "model");
+    const newBtn = h("button", { class: "btn sm", text: "+ New object ▾", onclick: e => popMenu(e.currentTarget, models.length ? models.map(a => ({ t: a.name, fn: () => addProp(a) })) : [{ t: "Import an .fbx file first (Assets > Import Files)", disabled: true }]) });
+    if (!pr) { put(E.cbar, newBtn, h("span", { class: "hint", text: "Objects are doors, pick-ups and decorations you place in maps." })); E.host.replaceChildren(h("div", { class: "v3err", style: "color:var(--muted);text-align:center;padding:20px", text: "No objects yet. Click “+ New object” and pick an FBX model." })); return; }
+    const pre = pr.id + ".", aid = T.get(pre + "asset"), mo = F.cache[aid], OE = S.pe = S.pe || { yaw: -30, pitch: 22, zoom: 1 };
+    const tb = (l, fn, tip) => h("button", { class: "tbtn sm", text: l, title: tip || "", onclick: fn });
+    put(E.cbar, h("select", { class: "sel", onchange: e => { S.propSel = e.target.value; renderCenter(); renderInspector(); } }, ...props.map(x => h("option", { value: x.id, text: T.get(x.id + ".name") || x.id, selected: x.id === pr.id }))), newBtn,
+      tb("Scale to grid", () => { propFitScale(pre); propCenterOnGrid(pre); markDirty(); renderInspector(); }, "Scales the model so it fills the 3 x 3 tile grid"), tb("Center on grid", () => { propCenterOnGrid(pre); markDirty(); renderInspector(); }, "Puts the middle of the model on the grid, standing on the ground"),
+      tb("Front", () => { OE.yaw = 0; OE.pitch = 0; }), tb("Side", () => { OE.yaw = 90; OE.pitch = 0; }), tb("Top", () => { OE.yaw = 0; OE.pitch = 89; }), tb("3D", () => { OE.yaw = -30; OE.pitch = 22; }),
+      h("span", { class: "hint", text: "Grid squares are tiles (0.5 m). Drag to orbit, scroll to zoom." + (T.get(pre + "type") === "door" ? " Yellow = the doorway cut into the wall, blue = the wall's thickness." : "") }));
+    const cv = h("canvas", { class: "v3cv", style: "cursor:grab" }); E.host.replaceChildren(cv);
+    if (!mo) { E.host.append(h("div", { class: "v3err", style: "color:var(--muted)", text: aid ? "Loading the model…" : "Choose a model for this object on the right." })); if (aid) F.load(aid, S.urls[aid]).then(m => { if (m && S.tab === "props") renderCenter(); }); return; }
+    const v = new PRIM.R3D.View(cv); if (!v.ok) return; v.sky = [0.1, 0.12, 0.17]; v.fov = 0.8; const gm = v.loadModel(mo), D = 34, g = k => +T.get(pre + k) || 0;
+    const segs = V => { const o = [], L = (a, b, c) => o.push({ a: M4.point(V, ...a), b: M4.point(V, ...b), c });
+      for (let i = -3; i <= 3; i++) { const edge = Math.abs(i) === 3 ? [0.2, 0.75, 0.85] : [0.28, 0.34, 0.42]; L([i * 16, 0, -48], [i * 16, 0, 48], edge); L([-48, 0, i * 16], [48, 0, i * 16], edge); }
+      if (T.get(pre + "type") === "door") { const w = (+T.get(pre + "doorWidth") || 96) / 2, hh = +T.get(pre + "doorHeight") || 144, y = [1, 0.85, 0.25], bl = [0.35, 0.55, 1], th = (+T.get(S.mapId ? S.mapId + ".wallThickness" : "") || 16) / 2;
+        L([-w, 0, 0], [w, 0, 0], y); L([w, 0, 0], [w, hh, 0], y); L([w, hh, 0], [-w, hh, 0], y); L([-w, hh, 0], [-w, 0, 0], y);
+        for (const z of [-th, th]) { L([-72, 0, z], [72, 0, z], bl); L([-72, 0, z], [-72, hh + 20, z], bl); L([72, 0, z], [72, hh + 20, z], bl); L([-72, hh + 20, z], [72, hh + 20, z], bl); } }
+      return o; };
+    let raf = 0; const loop = () => { raf = requestAnimationFrame(loop); const k = 0.15 * OE.zoom, V = M4.mul(M4.translate(0, 0, -D), M4.mul(M4.rotX(OE.pitch), M4.mul(M4.rotY(OE.yaw), M4.mul(M4.scale(k, k, k), M4.translate(0, -50, 0))))), Mp = M4.mul(V, M4.mul(M4.translate(g("ox"), g("oy"), g("oz")), M4.mul(M4.rotXYZ([g("rx"), g("ry"), g("rz")]), M4.scale(g("scale") || 1, g("scale") || 1, g("scale") || 1))));
+      v.draw(); v.drawViewmodel([{ gm, pose: F.pose(mo, T.get(pre + "idleAnim") || null, 0), M: Mp }], segs(V)); }; raf = requestAnimationFrame(loop);
+    let drag = null; cv.addEventListener("pointerdown", e => { cv.setPointerCapture(e.pointerId); drag = { x: e.clientX, y: e.clientY }; }); cv.addEventListener("pointermove", e => { if (!drag) return; OE.yaw += (e.clientX - drag.x) * 0.6; OE.pitch = Math.max(-89, Math.min(89, OE.pitch + (e.clientY - drag.y) * 0.6)); drag = { x: e.clientX, y: e.clientY }; });
+    cv.addEventListener("pointerup", () => { drag = null; }); cv.addEventListener("wheel", e => { e.preventDefault(); OE.zoom = Math.max(0.3, Math.min(4, OE.zoom * (e.deltaY > 0 ? 0.9 : 1.1))); }, { passive: false });
+    S.pev = { destroy() { cancelAnimationFrame(raf); v.destroy(); } };
+  }
+  function propInspector() {
+    const P = S.project, pr = (P.props || []).find(x => x.id === S.propSel), box = h("div", { class: "insp" }), T = S.tags;
+    if (!pr) { box.append(h("div", { class: "note", text: "No object yet. Use “+ New object” above the view." })); return box; }
+    const pre = pr.id + ".", ty = T.get(pre + "type"), shown = Schema.PROP.filter(q => Schema.shown(T, pre, q)), grp = keys => shown.filter(q => keys.includes(q.k)).map(q => field(pre + q.k));
+    box.append(h("div", { class: "ihead" }, h("span", { class: "bigic", text: ty === "door" ? "▯" : ty === "pickup" ? "◆" : "▣" }), h("div", { class: "ititle" }, h("input", { class: "idin", value: T.get(pre + "name") || pr.id, "aria-label": "Object name", onchange: e => { T.set(pre + "name", e.target.value.trim() || pr.id); renderCenter(); } }), h("div", { class: "isub", text: pr.id + " · " + ty }))),
+      h("div", { class: "btnrow" }, h("button", { class: "btn sm danger", text: "Delete object", onclick: () => { Schema.removeProp(P, pr); S.propSel = null; S.tags.emit([]); markDirty(); renderCenter(); renderInspector(); } })),
+      foldout("pr:type", "Type", ...grp(["type", "asset"])), foldout("pr:xf", "Model placement", ...grp(["scale", "rx", "ry", "rz", "ox", "oy", "oz", "idleAnim"]),
+        h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: "Scale to grid", onclick: () => { propFitScale(pre); propCenterOnGrid(pre); markDirty(); renderInspector(); } }), h("button", { class: "btn sm", text: "Center on grid", onclick: () => { propCenterOnGrid(pre); markDirty(); renderInspector(); } }))),
+      ty === "door" ? foldout("pr:door", "Door", ...grp(["doorWidth", "doorHeight"]), h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: "Fit doorway to model", onclick: () => { propFitDoorway(pre); markDirty(); renderInspector(); } })), ...grp(["openMode", "openRange", "interactRange", "openAnim", "closeAnim", "autoClose", "closeAfter", "openSound", "closeSound"]),
+        h("div", { class: "note", text: "Place doors in the Map view with the Object tool, on a wall: the wall gets a doorway cut out where the door goes. The model's width runs along the wall, its front faces +Z. Opening conditions beyond these come later." })) : null,
+      ty === "pickup" ? foldout("pr:pick", "Pick-up", ...grp(["giveTag", "giveAmount", "pickRadius", "pickSound"])) : "");
+    return box;
+  }
   function wallLayersBox(m, v) {
     const T = S.tags, key = m.id + "." + v.id + ".rows", walls = S.project.walls || [], raw = String(T.get(key) || ""), rows = raw ? raw.split(",").map(x => x.trim()) : [];
     const set = arr => { T.set(key, arr.join(",")); renderInspector(); markDirty(); };
@@ -956,6 +1009,13 @@
         h("div", { class: "btnrow" }, h("button", { class: "btn sm danger", text: "Delete node", onclick: () => S.med && S.med.deleteSelection() })),
         foldout("mv", "Wall (this node to the next)", ...Schema.VERT.filter(p => p.k !== "rows" && p.k !== "rowsRepeat").map(p => field(pre + v.id + "." + p.k))), wallLayersBox(m, v), foldout("mpos", "Position", coord(v, "x"), coord(v, "y")),
         h("div", { class: "note", text: "Tip: drag an image from the Project panel onto the wall in the Map view to texture it." }));
+    } else if (sel && sel.kind === "thing" && (m.things || []).some(t => t.id === sel.id)) {
+      const th = m.things.find(t => t.id === sel.id), pn = Schema.removeProp ? (S.project.props || []).filter(x => S.tags.get(x.id + ".type") === S.tags.get(th.prop + ".type")) : [], num = (label, k, step) => h("div", { class: "frow" }, h("label", { text: label }), h("input", { class: "num", type: "number", step, value: th[k] === undefined ? 0 : th[k], onchange: e => { const n = parseFloat(e.target.value); if (isFinite(n)) { th[k] = n; S.tags.emit([]); markDirty(); S.med && S.med.redraw(); } } }));
+      box.append(head("▣", h("div", { class: "idin ro", text: (S.tags.get(th.prop + ".name") || th.prop) }), (S.tags.get(th.prop + ".type") || "") + (th.sec ? " · in the wall of room “" + th.sec + "”" : " · standing in the room")),
+        h("div", { class: "btnrow" }, h("button", { class: "btn sm danger", text: "Delete", onclick: () => S.med && S.med.deleteSelection() })),
+        foldout("mth", "Object", h("div", { class: "frow" }, h("label", { text: "Which object" }), h("select", { class: "sel", onchange: e => { th.prop = e.target.value; S.tags.emit([]); markDirty(); renderInspector(); S.med && S.med.redraw(); } }, ...pn.map(x => h("option", { value: x.id, text: S.tags.get(x.id + ".name") || x.id, selected: x.id === th.prop })))),
+          th.sec ? num("Along the wall (0 - 1)", "t", 0.01) : num("X", "x", 1), th.sec ? "" : num("Y", "y", 1), th.sec ? "" : num("Turn (degrees)", "ang", 5)),
+        h("div", { class: "note", text: "Drag it in the Map view to move it. A door slides along its wall. Its behaviour (opening mode, sounds, pick-up values) is set in the Object Editor tab." }));
     } else if (sel && sel.kind === "sector" && m.sectors.some(s => s.id === sel.id)) {
       box.append(head("▱", h("div", { class: "idin ro", text: "Room " + sel.id }), m.sectors.find(s => s.id === sel.id).v.length + " nodes"),
         h("div", { class: "btnrow" }, h("button", { class: "btn sm danger", text: "Delete room", onclick: () => S.med && S.med.deleteSelection() })),
