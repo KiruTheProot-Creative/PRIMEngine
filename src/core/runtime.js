@@ -38,8 +38,8 @@
       this.o = o; this.host = o.host; this.project = o.project; this.tags = o.tags; this.mode = o.mode || "edit"; this.urls = o.urls || {};
       this.screenId = o.screenId; this.selId = o.selId || null; this.hover = null; this.press = null; this.drag = null; this.game = false; this.splash = null;
       this.paused = false; this.music = null; this.musicId = null; this.alpha = {}; this.els = {}; this.fps = { n: 0, t: 0, v: 0 }; this.dead = false; this.inv = false;
-      const host = this.host; host.replaceChildren(); host.classList.add("rt-host");
-      this.stage = div("rt-stage"); this.layer = div("rt-layer"); this.fpsEl = div("rt-fps"); this.stage.append(this.layer, this.fpsEl); host.append(this.stage);
+      const host = this.host; host.replaceChildren(); host.classList.add("rt-host"); if (this.mode === "hud") host.style.background = "transparent";
+      this.stage = div("rt-stage"); if (this.mode === "hud") this.stage.style.pointerEvents = "none"; this.layer = div("rt-layer"); this.fpsEl = div("rt-fps"); this.stage.append(this.layer, this.fpsEl); host.append(this.stage);
       if (this.mode === "play") { this.hintEl = div("rt-hint"); this.hintEl.textContent = "Esc to exit"; host.append(this.hintEl); setTimeout(() => { if (this.hintEl) this.hintEl.style.opacity = 0; }, 3000); }
       this.ro = new ResizeObserver(() => this.fit()); this.ro.observe(host);
       this.unsub = this.tags.on(n => this.onTag(n));
@@ -72,7 +72,7 @@
     // ---------------- drawing
     rebuild() {
       const sc = this.screen(), T = this.tags; if (!sc) return;
-      this.fpsEl.style.display = this.mode !== "edit" && T.get("gfx.showFps") ? "block" : "none"; this.stage.style.filter = "brightness(" + (T.get("gfx.brightness") || 1) + ")"; this.stage.style.background = T.get(sc.id + ".bg") || "#000";
+      this.fpsEl.style.display = this.mode !== "edit" && T.get("gfx.showFps") ? "block" : "none"; const hud = this.mode === "hud"; this.stage.style.filter = hud ? "none" : "brightness(" + (T.get("gfx.brightness") || 1) + ")"; this.stage.style.background = hud ? "transparent" : T.get(sc.id + ".bg") || "#000";
       if (this.splash) return;
       this.layer.replaceChildren(); this.els = {};
       const bgi = T.get(sc.id + ".bgImage"); if (bgi && this.urls[bgi]) { const im = new Image(); im.src = this.urls[bgi]; im.style.cssText = "position:absolute;inset:0;width:100%;height:100%;object-fit:cover"; this.layer.append(im); }
@@ -104,6 +104,11 @@
         const b = p("bind"), sp = T.spec(b), on = !!(sp && T.get(b));
         el = div("rt-n"); el.style.width = (p("w") || 420) + "px"; el.style.display = "flex"; el.style.justifyContent = "space-between"; el.style.alignItems = "center"; this.textStyle(el, sc, n);
         const a = document.createElement("span"); a.textContent = this.S(sc, n, "label"); const sw = div("rt-sw" + (on ? " on" : "")); sw.style.background = on ? p("accent") : ""; sw.append(document.createElement("i")); el.append(a, sw);
+      } else if (n.type === "bar") {
+        const b = p("bind"), sp = T.spec(b), mt = p("max"), ms = mt && T.spec(mt), v = sp ? +T.get(b) : 0, mx = ms ? +T.get(mt) : sp ? sp.max : 1, mn = ms ? 0 : sp ? sp.min : 0, f = clamp((v - mn) / ((mx - mn) || 1), 0, 1);
+        el = div("rt-n"); el.style.width = (p("w") || 260) + "px"; el.style.height = (p("h") || 22) + "px"; el.style.background = p("bg"); el.style.borderRadius = "3px"; el.style.overflow = "hidden"; el.style.opacity = p("opacity");
+        const fl = div(""); fl.style.cssText = "position:absolute;left:0;top:0;bottom:0;width:" + f * 100 + "%;background:" + p("color"); const lb = div(""); lb.textContent = this.S(sc, n, "label"); lb.style.cssText = "position:absolute;inset:0;display:grid;place-items:center;letter-spacing:.1em;text-shadow:0 1px 2px #000a";
+        lb.style.fontFamily = fontFamily(p("font")); lb.style.fontSize = p("size") + "px"; lb.style.color = p("textColor"); el.append(fl, lb);
       } else el = this.ph("?");
       return el;
     }
@@ -181,7 +186,7 @@
       let v = sp.min + (sp.max - sp.min) * clamp((sx - b.x0) / b.w, 0, 1); if (sp.step) v = Math.round(v / sp.step) * sp.step; this.tags.set(bind, Math.round(v * 1000) / 1000);
     }
     down(e) {
-      if (this.paused) return; this.stage.setPointerCapture(e.pointerId); const [sx, sy] = this.pt(e);
+      if (this.paused || this.mode === "hud") return; this.stage.setPointerCapture(e.pointerId); const [sx, sy] = this.pt(e);
       if (this.game) { this.game = false; this.rebuild(); return; }
       if (this.splash) { this.skipSplash(); return; }
       if (this.mode === "edit") {
@@ -215,7 +220,7 @@
       else if (n.type === "toggle") { const b = P("bind"), sp = T.spec(b); if (sp && sp.type === "bool") T.set(b, !T.get(b)); }
     }
     key(e) {
-      if (this.mode === "edit" || this.paused) return;
+      if (this.mode === "edit" || this.mode === "hud" || this.paused) return;
       if (this.splash) { this.skipSplash(); return; }
       if (e.key === "Escape") { if (this.game) { this.game = false; this.rebuild(); } else if (this.mode === "play" && this.o.onExit) this.o.onExit(); }
     }

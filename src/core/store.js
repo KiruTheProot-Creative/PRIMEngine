@@ -18,7 +18,7 @@
   // ---------- project index / working copies
   St.list = () => { try { return (JSON.parse(ls.get(IDX) || "[]")).sort((a, b) => b.modified - a.modified); } catch (e) { return []; } };
   const writeIdx = p => { const l = St.list().filter(x => x.id !== p.id); l.push({ id: p.id, name: p.name, modified: p.modified, file: p.fileName || "" }); ls.set(IDX, JSON.stringify(l)); };
-  St.migrate = p => { if (p.format === 2) { p.format = 3; p.folders = []; for (const a of p.assets) a.path = a.path || ""; } if (!p.folders) p.folders = []; if (!p.maps) p.maps = []; for (const a of p.assets) if (a.path === undefined) a.path = ""; return p; };
+  St.migrate = p => { if (p.format === 2) { p.format = 3; p.folders = []; for (const a of p.assets) a.path = a.path || ""; } if (!p.folders) p.folders = []; if (!p.maps) p.maps = []; PRIM.Schema.ensurePlayer(p); for (const a of p.assets) if (a.path === undefined) a.path = ""; return p; };
   St.save = p => { p.modified = Date.now(); const ok = ls.set(PKEY(p.id), JSON.stringify(p)); writeIdx(p); return ok; };
   St.load = id => { try { const p = JSON.parse(ls.get(PKEY(id))); return p && (p.format === 2 || p.format === 3) ? St.migrate(p) : null; } catch (e) { return null; } };
   St.create = () => {

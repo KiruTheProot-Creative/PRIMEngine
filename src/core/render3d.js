@@ -46,6 +46,15 @@
     return null;
   };
 
+  // solid wall segments of a map (those not marked open), for collision
+  R.walls = function (m, T) {
+    const vs = {}; for (const v of m.verts) vs[v.id] = v; const out = [];
+    for (const sec of m.sectors) { const ids = sec.v.filter(i => vs[i]); for (let i = 0; i < ids.length; i++) { const A = vs[ids[i]], B = vs[ids[(i + 1) % ids.length]]; if (T.get(m.id + "." + A.id + ".open")) continue; out.push({ ax: A.x, ay: A.y, bx: B.x, by: B.y }); } }
+    return out;
+  };
+  // the room at a point with its floor and ceiling height, or null
+  R.sectorInfo = function (m, T, x, y) { const s = R.sectorAt(m, x, y); return s ? { sec: s, floor: +T.get(m.id + "." + s.id + ".floor"), ceil: +T.get(m.id + "." + s.id + ".ceil") } : null; };
+
   // ------------------------------------------------------------ the view
   const VS = "attribute vec3 aPos;attribute vec2 aUV;attribute vec3 aCol;uniform mat4 uVP;varying vec2 vUV;varying vec3 vCol;varying float vD;void main(){vec4 p=uVP*vec4(aPos,1.0);gl_Position=p;vUV=aUV;vCol=aCol;vD=p.w;}";
   const FS = "precision mediump float;varying vec2 vUV;varying vec3 vCol;varying float vD;uniform sampler2D uTex;uniform vec3 uFog;uniform float uFogD;uniform float uBright;void main(){vec3 c=texture2D(uTex,vUV).rgb*vCol*uBright;float f=clamp(vD/uFogD,0.0,1.0);gl_FragColor=vec4(mix(c,uFog,f*f),1.0);}";
@@ -57,7 +66,7 @@
     const pr = this.pr = gl.createProgram(); gl.attachShader(pr, sh(gl.VERTEX_SHADER, VS)); gl.attachShader(pr, sh(gl.FRAGMENT_SHADER, FS)); gl.linkProgram(pr); gl.useProgram(pr);
     this.loc = { pos: gl.getAttribLocation(pr, "aPos"), uv: gl.getAttribLocation(pr, "aUV"), col: gl.getAttribLocation(pr, "aCol"), vp: gl.getUniformLocation(pr, "uVP"), tex: gl.getUniformLocation(pr, "uTex"), fog: gl.getUniformLocation(pr, "uFog"), fogD: gl.getUniformLocation(pr, "uFogD"), bright: gl.getUniformLocation(pr, "uBright") };
     gl.enable(gl.DEPTH_TEST); gl.disable(gl.CULL_FACE);
-    this.cam = { x: 0, y: 56, z: 0, yaw: Math.PI / 2, pitch: 0 }; this.batches = []; this.texCache = {}; this.sky = [0.08, 0.14, 0.23]; this.fog = [0.02, 0.03, 0.05]; this.fogD = 1400; this.bright = 1; this.keys = {}; this.speed = 300; this.running = false; this.frames = 0;
+    this.cam = { x: 0, y: 56, z: 0, yaw: Math.PI / 2, pitch: 0 }; this.batches = []; this.texCache = {}; this.sky = [0.08, 0.14, 0.23]; this.fog = [0.02, 0.03, 0.05]; this.fogD = 1400; this.bright = 1; this.fov = 1.15; this.keys = {}; this.speed = 300; this.running = false; this.frames = 0;
     this.defTex = this.makeTex(checker());
   };
   const P = R.View.prototype;
@@ -105,7 +114,7 @@
   P.draw = function () {
     if (!this.ok) return; const gl = this.gl, c = this.cam; this.resize(); gl.viewport(0, 0, this.canvas.width, this.canvas.height);
     gl.clearColor(this.sky[0] * this.bright, this.sky[1] * this.bright, this.sky[2] * this.bright, 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-    const vp = mul(persp(1.15, this.canvas.width / this.canvas.height, 2, 12000), look(c.x, c.y, c.z, c.yaw, c.pitch));
+    const vp = mul(persp(this.fov, this.canvas.width / this.canvas.height, 2, 12000), look(c.x, c.y, c.z, c.yaw, c.pitch));
     gl.uniformMatrix4fv(this.loc.vp, false, new Float32Array(vp)); gl.uniform3fv(this.loc.fog, this.fog); gl.uniform1f(this.loc.fogD, this.fogD); gl.uniform1f(this.loc.bright, this.bright); gl.uniform1i(this.loc.tex, 0);
     const L = this.loc; gl.enableVertexAttribArray(L.pos); gl.enableVertexAttribArray(L.uv); gl.enableVertexAttribArray(L.col);
     for (const b of this.batches) { gl.bindBuffer(gl.ARRAY_BUFFER, b.buf); gl.vertexAttribPointer(L.pos, 3, gl.FLOAT, false, 32, 0); gl.vertexAttribPointer(L.uv, 2, gl.FLOAT, false, 32, 12); gl.vertexAttribPointer(L.col, 3, gl.FLOAT, false, 32, 20);
