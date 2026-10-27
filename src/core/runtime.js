@@ -211,7 +211,7 @@
       const T = this.tags, P = k => this.P(sc, n, k);
       if (n.type === "button") { this.sfx(P("clickSound")); const a = P("action");
         if (a === "goto") { const t = P("target"); if (this.project.screens.some(s => s.id === t)) this.show(t); }
-        else if (a === "start") { this.game = true; this.rebuild(); } else if (a === "quit") { if (this.o.onExit) this.o.onExit(); } }
+        else if (a === "start") { if (this.o.onStartGame) this.o.onStartGame(this); else { this.game = true; this.rebuild(); } } else if (a === "quit") { if (this.o.onExit) this.o.onExit(); } }
       else if (n.type === "toggle") { const b = P("bind"), sp = T.spec(b); if (sp && sp.type === "bool") T.set(b, !T.get(b)); }
     }
     key(e) {

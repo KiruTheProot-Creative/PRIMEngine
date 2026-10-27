@@ -44,6 +44,34 @@
   S.uid = (base, taken) => { let i = 1, id = base; while (taken.includes(id)) id = base + ++i; return id; };
   S.clean = s => String(s || "").toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "").replace(/^(\d)/, "_$1");
 
+  // ---- 3D maps. Geometry (where the nodes are, which nodes make a sector) is structure; every other value is a tag.
+  // Units: 64 units is one standard wall tile. Eye height of the player is 56.
+  const TEX = (k, label) => ({ k, label, type: "asset", assetType: "image", def: "" });
+  S.MAP = [
+    COLOR("skyColor", "Sky color", "#16243a"), COLOR("fogColor", "Fog color", "#06090e"), { k: "fogDistance", label: "Fog distance", type: "number", def: 1400, min: 200, max: 6000, step: 50 },
+    { k: "startX", label: "Player start X", type: "number", def: 0, min: -4096, max: 4096, step: 1 }, { k: "startY", label: "Player start Y", type: "number", def: 0, min: -4096, max: 4096, step: 1 },
+    { k: "startAngle", label: "Player start angle", type: "number", def: 90, min: 0, max: 360, step: 1 }, { k: "gridSize", label: "Grid size", type: "number", def: 32, min: 8, max: 128, step: 8 },
+  ];
+  S.SECTOR = [
+    { k: "floor", label: "Floor height", type: "number", def: 0, min: -512, max: 1024, step: 8 }, { k: "ceil", label: "Ceiling height", type: "number", def: 128, min: -512, max: 1024, step: 8 },
+    { k: "light", label: "Light", type: "number", def: 1, min: 0, max: 1, step: 0.05 }, TEX("floorTex", "Floor texture"), COLOR("floorColor", "Floor color", "#6a6a74"), TEX("ceilTex", "Ceiling texture"), COLOR("ceilColor", "Ceiling color", "#42424c"),
+  ];
+  S.VERT = [TEX("tex", "Wall texture"), COLOR("color", "Wall color", "#a89c8a"), { k: "open", label: "Open (no wall)", type: "bool", def: false }];
+  const defP = (project, list, group, owner, id, over) => { for (const p of list) { const r = rec(p, group, owner); if (over && p.k in over) r.value = over[p.k]; project.tags[id + "." + p.k] = r; } };
+  S.defineMap = (project, m, over) => defP(project, S.MAP, m.id, m.id, m.id, over);
+  S.defineSector = (project, m, sec, over) => defP(project, S.SECTOR, m.id, m.id + "." + sec.id, m.id + "." + sec.id, over);
+  S.defineVert = (project, m, v, over) => defP(project, S.VERT, m.id, m.id + "." + v.id, m.id + "." + v.id, over);
+  // adds a vertex / sector made of points [[x,y],...]; returns the sector
+  S.addVert = (project, m, x, y, over) => { const v = { id: "v" + (++m.n.v), x, y }; m.verts.push(v); S.defineVert(project, m, v, over); return v; };
+  S.addSector = (project, m, ids, over) => { const sec = { id: "s" + (++m.n.s), v: ids.slice() }; m.sectors.push(sec); S.defineSector(project, m, sec, over); return sec; };
+  S.newMap = (project, id, style) => {
+    const m = { id, style: style || "doom", verts: [], sectors: [], n: { v: 0, s: 0 } }; project.maps.push(m); S.defineMap(project, m);
+    const ids = [[-128, -128], [128, -128], [128, 128], [-128, 128]].map(([x, y]) => S.addVert(project, m, x, y).id); S.addSector(project, m, ids); return m;
+  };
+  S.removeSector = (project, m, sec) => { const used = new Set(); for (const o of m.sectors) if (o !== sec) o.v.forEach(i => used.add(i)); m.sectors.splice(m.sectors.indexOf(sec), 1);
+    for (const i of sec.v) if (!used.has(i)) { m.verts.splice(m.verts.findIndex(v => v.id === i), 1); for (const k of Object.keys(project.tags)) if (k.startsWith(m.id + "." + i + ".")) delete project.tags[k]; }
+    for (const k of Object.keys(project.tags)) if (k.startsWith(m.id + "." + sec.id + ".")) delete project.tags[k]; };
+
   S.builtins = project => {
     const B = (n, type, value, label, group, extra) => { project.tags[n] = Object.assign({ type, value, label, group, builtin: true }, extra); };
     B("audio.master", "number", 0.8, "Master volume", "audio", { min: 0, max: 1, step: 0.01 });
@@ -57,7 +85,7 @@
 
   // a brand-new project: splash -> main menu ("My Game") -> settings
   S.template = (id, name) => {
-    const p = { format: 3, id, name, modified: Date.now(), tags: {}, assets: [], folders: [], screens: [] };
+    const p = { format: 3, id, name, modified: Date.now(), tags: {}, assets: [], folders: [], maps: [], screens: [] };
     S.builtins(p);
     const add = (sc, id, type, over) => { const n = { id, type }; sc.nodes.push(n); S.defineNode(p, sc.id, n, over); };
     const splash = { id: "splash", kind: "splash", nodes: [] }, main = { id: "main", kind: "menu", nodes: [] }, set = { id: "settings", kind: "menu", nodes: [] };

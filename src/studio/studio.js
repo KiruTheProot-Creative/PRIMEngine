@@ -68,10 +68,10 @@
   async function openProject(id) {
     const p = Store.load(id); if (!p) return renderManager();
     S.project = p; S.tags = new Tags(p.tags); S.urls = await Store.loadAssets(p); S.screenId = p.screens.find(s => s.id === "main") ? "main" : p.screens[0].id;
-    Object.assign(S, { selId: null, sel: null, folder: "", testing: false, paused: false, rtab: "inspector", btab: "project", search: "", renaming: null, collapsed: {}, treeClosed: {}, fileDirty: false, file: p.fileName ? { ref: null, name: p.fileName } : null });
+    Object.assign(S, { mapId: null, msel: null, selId: null, sel: null, folder: "", testing: false, paused: false, rtab: "inspector", btab: "project", search: "", renaming: null, collapsed: {}, treeClosed: {}, fileDirty: false, file: p.fileName ? { ref: null, name: p.fileName } : null });
     S.unsub = S.tags.on(() => markDirty(true)); S.log = []; document.body.classList.add("in-editor"); renderEditor(); log("Opened project “" + p.name + "”");
   }
-  function closeEditorState() { if (S.rt) { S.rt.destroy(); S.rt = null; } if (S.unsub) { S.unsub(); S.unsub = null; } closePop(); S.project = null; E = {}; }
+  function closeEditorState() { killMapViews(); if (S.rt) { S.rt.destroy(); S.rt = null; } if (S.unsub) { S.unsub(); S.unsub = null; } closePop(); S.project = null; E = {}; }
   async function backToManager() { clearTimeout(S.dirtyT); if (S.project) Store.save(S.project); closeEditorState(); renderManager(); }
 
   // ================================================================ .prime FILES + browser autosave
@@ -121,7 +121,7 @@
       { label: "File", items: [{ t: "New Project", fn: async () => { await backToManager(); const p = Store.create(); await openProject(p.id); } }, { t: "Open Project…", k: "Ctrl+O", fn: openFileDialog }, "-", { t: "Save", k: "Ctrl+S", fn: () => saveProject(false) }, { t: "Save As…", fn: () => saveProject(true) }, "-", { t: "Close Project", fn: backToManager }] },
       { label: "Edit", items: [{ t: "Rename", k: "F2", fn: startRename }, { t: "Duplicate", k: "Ctrl+D", fn: duplicateSelected }, { t: "Delete", k: "Del", fn: deleteSelected }] },
       { label: "Assets", items: [{ t: "Create Folder", fn: newFolder }, "-", { t: "Import Files…", fn: importFilesDlg }, { t: "Import Folder…", fn: importFolderDlg }] },
-      { label: "Screen", items: [{ t: "Create Screen", fn: addScreen }, "-", ...(sc.kind === "splash" ? [mk("splash")] : ["title", "button", "image", "slider", "toggle"].map(mk))] },
+      { label: "Screen", items: [{ t: "Create Screen", fn: addScreen }, { t: "Create Map…", fn: openNewMap }, "-", ...(sc.kind === "splash" ? [mk("splash")] : ["title", "button", "image", "slider", "toggle"].map(mk))] },
       { label: "Window", items: [{ t: "Skin: Dark", check: document.documentElement.dataset.skin === "dark", fn: () => setSkin("dark") }, { t: "Skin: Classic light", check: document.documentElement.dataset.skin === "light", fn: () => setSkin("light") }, "-", { t: "Reset layout", fn: () => { const a = document.getElementById("app"); for (const p of ["--hw", "--iw", "--ph"]) a.style.removeProperty(p); } }, { t: "Maximize on Play", fn: play }] },
       { label: "Help", items: [{ t: Host.desktop ? "PRIMEngine Studio (desktop)" : "PRIMEngine Studio (web)", disabled: true }, { t: "Design your game.", disabled: true }] },
     ];
@@ -144,29 +144,38 @@
   // ---------------------------------------------------------------- hierarchy
   function renderHier() {
     const p = E.hier, sc = curScreen();
-    p.tabs.replaceChildren(h("div", { class: "tab sel", text: "Hierarchy" }), h("span", { class: "sp" }), h("button", { class: "tbtn sm", text: "Create ▾", onclick: e => popMenu(e.currentTarget, [{ t: "Screen", fn: addScreen }, "-", ...(sc.kind === "splash" ? [{ t: "Splash", fn: () => addNode("splash") }] : ["title", "button", "image", "slider", "toggle"].map(t => ({ t: Schema.NODE[t].label, fn: () => addNode(t) })))]) }));
+    p.tabs.replaceChildren(h("div", { class: "tab sel", text: "Hierarchy" }), h("span", { class: "sp" }), h("button", { class: "tbtn sm", text: "Create ▾", onclick: e => popMenu(e.currentTarget, [{ t: "Screen", fn: addScreen }, { t: "Map…", fn: openNewMap }, "-", ...(sc.kind === "splash" ? [{ t: "Splash", fn: () => addNode("splash") }] : ["title", "button", "image", "slider", "toggle"].map(t => ({ t: Schema.NODE[t].label, fn: () => addNode(t) })))]) }));
     const rows = [];
     for (const s of screens()) {
-      const open = !S.collapsed[s.id], isSel = s.id === S.screenId && !S.selId && !S.sel;
+      const open = !S.collapsed[s.id], isSel = s.id === S.screenId && !S.selId && !S.sel && !S.mapId;
       rows.push(h("div", { class: "hrow" + (isSel ? " sel" : ""), style: "padding-left:4px", onclick: () => selectScreen(s.id) },
         h("button", { class: "tri", "aria-label": open ? "Collapse" : "Expand", text: s.nodes.length ? (open ? "▾" : "▸") : "", onclick: e => { e.stopPropagation(); S.collapsed[s.id] = open; renderHier(); } }),
         h("span", { class: "hic", text: s.kind === "splash" ? "✦" : "▭" }), h("span", { class: "hnm", text: s.id }), S.tags.get("project.startScreen") === s.id ? h("span", { class: "hmeta", text: "start" }) : null));
-      if (open) for (const n of s.nodes) rows.push(h("div", { class: "hrow" + (s.id === S.screenId && n.id === S.selId && !S.sel ? " sel" : ""), style: "padding-left:22px", onclick: () => selectNode(s.id, n.id) },
+      if (open) for (const n of s.nodes) rows.push(h("div", { class: "hrow" + (s.id === S.screenId && n.id === S.selId && !S.sel && !S.mapId ? " sel" : ""), style: "padding-left:22px", onclick: () => selectNode(s.id, n.id) },
         h("span", { class: "hic", text: Schema.NODE[n.type].icon }), h("span", { class: "hnm", text: n.id }), h("span", { class: "hmeta", text: n.type })));
+    }
+    for (const m of S.project.maps) {
+      const open = !S.collapsed["map:" + m.id], isSel = S.mapId === m.id && !(S.msel && S.msel.kind === "sector");
+      rows.push(h("div", { class: "hrow" + (isSel ? " sel" : ""), style: "padding-left:4px", onclick: () => selectMap(m.id) },
+        h("button", { class: "tri", "aria-label": open ? "Collapse" : "Expand", text: m.sectors.length ? (open ? "▾" : "▸") : "", onclick: e => { e.stopPropagation(); S.collapsed["map:" + m.id] = open; renderHier(); } }),
+        h("span", { class: "hic", text: "▦" }), h("span", { class: "hnm", text: m.id }), h("span", { class: "hmeta", text: "map · " + m.style })));
+      if (open) for (const sc2 of m.sectors) rows.push(h("div", { class: "hrow" + (S.mapId === m.id && S.msel && S.msel.kind === "sector" && S.msel.id === sc2.id ? " sel" : ""), style: "padding-left:22px", onclick: () => selectMap(m.id, { kind: "sector", id: sc2.id }) },
+        h("span", { class: "hic", text: "▱" }), h("span", { class: "hnm", text: sc2.id }), h("span", { class: "hmeta", text: "room" })));
     }
     p.body.replaceChildren(...rows);
   }
-  function selectScreen(id) { const was = S.screenId; S.screenId = id; S.selId = null; S.sel = null; renderHier(); renderInspector(); renderProject(); if (was !== id) renderCenter(); else if (S.rt) { S.rt.selId = null; S.rt.rebuild(); } }
-  function selectNode(sid, id) { const was = S.screenId; S.screenId = sid; S.selId = id; S.sel = null; renderHier(); renderInspector(); renderProject(); if (was !== sid) renderCenter(); else if (S.rt) { S.rt.selId = id; S.rt.rebuild(); } }
+  function selectScreen(id) { const was = S.screenId, wasMap = S.mapId; S.mapId = null; S.msel = null; S.screenId = id; S.selId = null; S.sel = null; renderHier(); renderInspector(); renderProject(); if (was !== id || wasMap) renderCenter(); else if (S.rt) { S.rt.selId = null; S.rt.rebuild(); } }
+  function selectNode(sid, id) { const was = S.screenId, wasMap = S.mapId; S.mapId = null; S.msel = null; S.screenId = sid; S.selId = id; S.sel = null; renderHier(); renderInspector(); renderProject(); if (was !== sid || wasMap) renderCenter(); else if (S.rt) { S.rt.selId = id; S.rt.rebuild(); } }
 
   // ---------------------------------------------------------------- center: Scene / Game
   function renderCenter() {
-    const sc = curScreen(), p = E.center;
+    const sc = curScreen(), p = E.center; killMapViews(); if (S.rt) { S.rt.destroy(); S.rt = null; }
+    if (S.mapId && curMap()) return mapCenter();
+    E.host.className = "host"; E.host.replaceChildren();
     p.tabs.replaceChildren(h("button", { class: "tab" + (!S.testing ? " sel" : ""), text: "Scene", onclick: () => setTesting(false) }), h("button", { class: "tab" + (S.testing ? " sel" : ""), text: "Game", onclick: () => setTesting(true) }), h("span", { class: "sp" }), h("span", { class: "csize", text: "1280 × 720  ·  16:9" }));
     put(E.cbar, h("span", { class: "chip", text: sc.id }), !S.testing && sc.kind === "splash" ? h("button", { class: "tbtn sm", text: "▶ Preview sequence", onclick: () => { if (S.rt) S.rt.previewSplash(); } }) : null,
       h("span", { class: "hint", text: S.testing ? "Playing: hover and click buttons, drag sliders. Edits are disabled." : sc.kind === "splash" ? "Select a splash in the Hierarchy to see it." : "Click to select, drag to move (Shift = snap to 10). Drop images from the Project panel here." }));
-    if (S.rt) S.rt.destroy();
-    S.rt = new PRIM.Runtime({ host: E.host, project: S.project, tags: S.testing ? S.tags.fork() : S.tags, mode: S.testing ? "test" : "edit", urls: S.urls, screenId: S.screenId, selId: S.selId,
+    S.rt = new PRIM.Runtime({ host: E.host, project: S.project, tags: S.testing ? S.tags.fork() : S.tags, mode: S.testing ? "test" : "edit", urls: S.urls, screenId: S.screenId, selId: S.selId, onStartGame: startGame,
       onSelect: id => { S.selId = id; S.sel = null; renderHier(); renderInspector(); renderProject(); }, onChange: () => renderInspector(), onExit: () => setTesting(false) });
     S.rt.paused = S.paused;
   }
@@ -205,11 +214,13 @@
   function stageDrop(e) {
     e.preventDefault(); let d; try { d = JSON.parse(e.dataTransfer.getData("application/x-prime")); } catch (x) { return; } if (S.testing || !d || d.kind !== "asset") return;
     const a = S.project.assets.find(x => x.id === d.key); if (!a || a.type !== "image") return log("Only images can be dropped on the screen.", "warn");
+    if (S.mapId) return dropOnMap(e, a);
+    if (!S.rt) return;
     const sc = curScreen(), r = S.rt.stage.getBoundingClientRect(), x = Math.round((e.clientX - r.left) / S.rt.scale), y = Math.round((e.clientY - r.top) / S.rt.scale);
     if (sc.kind === "splash") addNode("splash", { kind: "image", asset: a.id }); else addNode("image", { asset: a.id, x: Math.max(0, Math.min(1280, x)), y: Math.max(0, Math.min(720, y)) });
   }
   function selectedNode() { return S.selId && !S.sel ? curScreen().nodes.find(n => n.id === S.selId) : null; }
-  function deleteSelected() { if (S.sel) return deleteAssetSel(); const n = selectedNode(); if (n) deleteNode(n); }
+  function deleteSelected() { if (S.mapId && S.med && !S.sel) return S.med.deleteSelection(); if (S.sel) return deleteAssetSel(); const n = selectedNode(); if (n) deleteNode(n); }
   function duplicateSelected() { const n = selectedNode(); if (n) dupNode(n); }
   function startRename() { if (S.sel) { S.renaming = { kind: S.sel.kind, key: S.sel.key }; renderProject(); } else { const i = document.querySelector(".idin"); if (i) { i.focus(); i.select(); } } }
 
@@ -315,6 +326,7 @@
     p.body.replaceChildren(S.rtab === "tags" ? tagsBody() : S.sel ? assetInspector() : propsBody());
   }
   function propsBody() {
+    if (S.mapId && curMap()) return mapInspector();
     const sc = curScreen(), node = selectedNode(), box = h("div", { class: "insp" });
     if (node) {
       const pre = sc.id + "." + node.id + ".", def = Schema.NODE[node.type];
@@ -412,13 +424,101 @@
       h("button", { class: "btn sm", "aria-label": "Delete tag", text: "✕", onclick: () => { delete S.project.tags[n]; S.tags.emit([]); renderInspector(); } })), field(n, { compact: true }));
   }
 
+  // ================================================================ MAPS (DOOM-style editor + 3D fly view)
+  const curMap = () => S.project.maps.find(m => m.id === S.mapId);
+  function killMapViews() { if (S.med) { S.med.destroy(); S.med = null; } if (S.v3) { S.v3.dispose(); S.v3 = null; } }
+  function selectMap(id, sel) { const was = S.mapId; S.mapId = id; S.selId = null; S.sel = null; S.msel = sel || null; renderHier(); renderInspector(); renderProject(); if (was !== id || !S.med) renderCenter(); else S.med.select(S.msel, true); }
+  function openNewMap() {
+    const ov = h("div", { class: "modal" }), close = () => ov.remove();
+    const card = (id, title, desc, off) => h("button", { class: "mcard" + (off ? " off" : ""), disabled: off, onclick: () => { close(); createMap(id); } }, h("div", { class: "mt", text: title }), h("div", { class: "md", text: desc }), off ? h("div", { class: "mbadge", text: "Coming later" }) : null);
+    ov.append(h("div", { class: "mwin", role: "dialog", "aria-label": "New map" }, h("div", { class: "wtitle", text: "New Map: choose an editor style" }),
+      h("div", { class: "mbody" }, card("modern", "Modern", "A low-poly brush editor for terrain, placing buildings, and features that make map-making a lot easier.", true),
+        card("doom", "DOOM", "The simplest map editor. Walls are made from connected nodes. Select a node or wall and give it a texture. A free-fly 3D view is built in.")),
+      h("div", { class: "btnrow", style: "padding:6px 14px 12px" }, h("button", { class: "btn", text: "Cancel", onclick: close }))));
+    ov.addEventListener("pointerdown", e => { if (e.target === ov) close(); }); document.body.append(ov);
+  }
+  const reserved = () => [...screens().map(s => s.id), ...S.project.maps.map(m => m.id), "audio", "gfx", "project"];
+  function createMap(style) {
+    let n = 1; while (reserved().includes("map" + n)) n++; const id = "map" + n, m = Schema.newMap(S.project, id, style); S.tags.emit([]); markDirty();
+    S.mapId = id; S.msel = { kind: "sector", id: "s1" }; S.selId = null; S.sel = null; S.testing = false; S.paused = false; S.rtab = "inspector"; renderToolbar(); renderHier(); renderCenter(); renderInspector(); renderProject(); log("Created map “" + id + "” (" + style.toUpperCase() + " style)");
+  }
+  function deleteMap(m) {
+    S.tags.removePrefix(m.id); S.project.maps.splice(S.project.maps.indexOf(m), 1); S.mapId = null; S.msel = null; S.testing = false; renderToolbar(); renderHier(); renderCenter(); renderInspector(); markDirty(); log("Deleted map “" + m.id + "”");
+  }
+  function renameMap(m, raw) {
+    const id = Schema.clean(raw); if (!id || id === m.id || reserved().includes(id)) return renderInspector(); const old = m.id; S.tags.renamePrefix(old, id);
+    for (const k in S.project.tags) { const r = S.project.tags[k]; if (r.group === old) r.group = id; if (r.owner === old || (r.owner && r.owner.startsWith(old + "."))) r.owner = id + r.owner.slice(old.length); }
+    m.id = id; S.mapId = id; markDirty(); renderHier(); renderInspector(); renderCenter();
+  }
+  function mapCenter() {
+    const m = curMap(), p = E.center;
+    p.tabs.replaceChildren(h("button", { class: "tab" + (!S.testing ? " sel" : ""), text: "Map", onclick: () => setTesting(false) }), h("button", { class: "tab" + (S.testing ? " sel" : ""), text: "3D Fly", onclick: () => setTesting(true) }), h("span", { class: "sp" }), h("span", { class: "csize", text: m.style.toUpperCase() + " editor  ·  " + m.sectors.length + " room(s)" }));
+    put(E.cbar, h("span", { class: "chip", text: m.id }), h("span", { class: "hint", text: S.testing ? "Click the view, then W A S D to move, mouse to look, Q / E down and up, Shift = fast. Edit on the Map tab; changes show here live." : "Rooms are closed loops of nodes. Drop an image from the Project panel onto a wall to texture it (Shift = ceiling when dropped on a room)." }));
+    E.host.className = "host maphost"; E.host.replaceChildren();
+    if (S.testing) { S.v3 = makeView(E.host, m); if (S.v3) S.v3.focus = false; }
+    else { S.med = new PRIM.MapEditor({ host: E.host, project: S.project, map: m, tags: S.tags, getUrls: () => S.urls, log, onSelect: sel => { S.msel = sel; renderInspector(); renderHier(); },
+      onChange: (geo, structure) => { markDirty(); if (structure) { renderHier(); renderInspector(); } else renderInspector(); } }); S.med.select(S.msel, true); }
+  }
+  function makeView(host, m) {
+    const cv = h("canvas", { class: "v3cv" }); host.append(cv); const v = new PRIM.R3D.View(cv), T = S.tags;
+    if (!v.ok) { cv.remove(); host.append(h("div", { class: "v3err", text: "WebGL could not start on this computer, so the 3D view is unavailable." })); return null; }
+    v.setMap(S.project, m, T, S.urls);
+    const sx = +T.get(m.id + ".startX"), sy = +T.get(m.id + ".startY"), sec = PRIM.R3D.sectorAt(m, sx, sy);
+    v.placeCamera(sx, sy, +T.get(m.id + ".startAngle"), (sec ? +T.get(m.id + "." + sec.id + ".floor") : 0) + 56); v.attach(); v.start();
+    let t; const un = T.on(() => { clearTimeout(t); t = setTimeout(() => v.rebuild(), 60); });
+    const hud = h("div", { class: "v3pos" }); host.append(hud); let n = 0; v.onFrame = () => { if (n++ % 10 === 0) hud.textContent = "x " + Math.round(v.cam.x) + "   y " + Math.round(v.cam.z) + "   height " + Math.round(v.cam.y) + "   " + v.triCount + " triangles"; };
+    v.dispose = () => { clearTimeout(t); un(); v.destroy(); }; return v;
+  }
+  // fullscreen fly-through (Maximize on Play for a map, and the Play button of a game)
+  function fly3d(m, z) {
+    const layer = h("div", { class: "play-layer fly", style: "z-index:" + (z || 100) }); document.body.append(layer); const v = makeView(layer, m); if (v) v.focus = true;
+    const hud = h("div", { class: "flyhud", text: "W A S D move  ·  mouse look  ·  Q / E down, up  ·  Shift fast  ·  Esc leave" }); layer.append(hud); layer.append(h("button", { class: "tbtn flyx", text: "✕ Leave", onclick: () => close() })); setTimeout(() => hud.classList.add("fade"), 4000);
+    const onKey = e => { if (e.key === "Escape") { e.stopImmediatePropagation(); e.preventDefault(); close(); } };
+    function close() { removeEventListener("keydown", onKey, true); if (v) v.dispose(); layer.remove(); } addEventListener("keydown", onKey, true); layer.__close = close;
+  }
+  function startGame(rt) {
+    const m = S.project.maps[0]; if (!m) { rt.game = true; rt.rebuild(); return; }
+    fly3d(m, 150);
+  }
+  function dropOnMap(e, a) {
+    if (!S.med) return log("Switch to the Map tab to texture walls.", "warn"); const r = S.med.cv.getBoundingClientRect(), hit = S.med.pick(e.clientX - r.left, e.clientY - r.top), m = curMap();
+    if (!hit || hit.kind === "start") return log("Drop the image onto a wall (to texture it) or onto a room (to texture its floor, or Shift for the ceiling).", "warn");
+    if (hit.kind === "vert") { S.tags.set(m.id + "." + hit.id + ".tex", a.id); S.med.select({ kind: "vert", id: hit.id }); log("Wall texture set to " + a.name); }
+    else { S.tags.set(m.id + "." + hit.id + "." + (e.shiftKey ? "ceilTex" : "floorTex"), a.id); S.med.select({ kind: "sector", id: hit.id }); log((e.shiftKey ? "Ceiling" : "Floor") + " texture set to " + a.name); }
+    renderInspector();
+  }
+  function mapInspector() {
+    const m = curMap(), box = h("div", { class: "insp" }), sel = S.msel, pre = m.id + ".", vert = id => m.verts.find(v => v.id === id);
+    const head = (ic, title, sub) => h("div", { class: "ihead" }, h("span", { class: "bigic", text: ic }), h("div", { class: "ititle" }, title, h("div", { class: "isub", text: sub })));
+    const coord = (v, k) => { const inp = h("input", { class: "num", type: "number", step: 1, value: v[k], "aria-label": "Node " + k.toUpperCase(), onchange: e => { const n = Math.round(parseFloat(e.target.value)); if (isFinite(n)) { v[k] = n; markDirty(); if (S.med) S.med.redraw(); } } }); return h("div", { class: "fld" }, h("label", { class: "flab", text: k.toUpperCase() }), h("div", { class: "fctl" }, inp)); };
+    if (sel && sel.kind === "vert" && vert(sel.id)) {
+      const v = vert(sel.id), sec = m.sectors.find(s => s.v.includes(v.id)), nxt = sec ? vert(sec.v[(sec.v.indexOf(v.id) + 1) % sec.v.length]) : null;
+      box.append(head("◆", h("div", { class: "idin ro", text: "Node " + v.id }), "Its wall runs to node " + (nxt ? nxt.id : "?") + (sec ? " · room “" + sec.id + "”" : "")),
+        h("div", { class: "btnrow" }, h("button", { class: "btn sm danger", text: "Delete node", onclick: () => S.med && S.med.deleteSelection() })),
+        foldout("mv", "Wall (this node to the next)", ...Schema.VERT.map(p => field(pre + v.id + "." + p.k))), foldout("mpos", "Position", coord(v, "x"), coord(v, "y")),
+        h("div", { class: "note", text: "Tip: drag an image from the Project panel onto the wall in the Map view to texture it." }));
+    } else if (sel && sel.kind === "sector" && m.sectors.some(s => s.id === sel.id)) {
+      box.append(head("▱", h("div", { class: "idin ro", text: "Room " + sel.id }), m.sectors.find(s => s.id === sel.id).v.length + " nodes"),
+        h("div", { class: "btnrow" }, h("button", { class: "btn sm danger", text: "Delete room", onclick: () => S.med && S.med.deleteSelection() })),
+        foldout("ms", "Room", ...Schema.SECTOR.map(p => field(pre + sel.id + "." + p.k))), h("div", { class: "note", text: "Click one of the room's walls or nodes to texture that wall. Tip: drop an image on the room to set its floor (Shift = ceiling)." }));
+    } else if (sel && sel.kind === "start") {
+      box.append(head("➤", h("div", { class: "idin ro", text: "Player start" }), "Where the player begins"), foldout("mst", "Start", ...["startX", "startY", "startAngle"].map(k => field(pre + k))));
+    } else {
+      box.append(head("▦", h("input", { class: "idin", value: m.id, "aria-label": "Map name", onchange: e => renameMap(m, e.target.value) }), m.style.toUpperCase() + " style · " + m.sectors.length + " room(s) · " + m.verts.length + " nodes"),
+        h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: "Open 3D Fly", onclick: () => setTesting(true) }), h("button", { class: "btn sm", text: "Fullscreen fly", onclick: () => fly3d(m) }), h("button", { class: "btn sm danger", text: "Delete map", onclick: () => deleteMap(m) })),
+        foldout("mm", "Map", ...Schema.MAP.map(p => field(pre + p.k))), h("div", { class: "note", text: "Click a room, wall or node in the Map view to edit it. Every value is a named tag (see the Tags tab)." }));
+    }
+    return box;
+  }
+
   // ================================================================ PLAY (fullscreen, remembers audio/graphics settings)
   function play() {
+    if (S.mapId && curMap()) return fly3d(curMap());
     autosave(); const layer = h("div", { class: "play-layer" }); document.body.append(layer);
     const tg = S.tags.fork(), saved = Store.loadSettings(S.project.id); for (const k in saved) if (S.tags.has(k)) tg.ov[k] = saved[k];
     let start = S.tags.get("project.startScreen"); if (!screens().some(s => s.id === start)) start = screens()[0].id;
     if (S.rt) S.rt.stopMusic();
-    const rt = new PRIM.Runtime({ host: layer, project: S.project, tags: tg, mode: "play", urls: S.urls, screenId: start, onPersist: ov => Store.saveSettings(S.project.id, ov), onExit: close });
+    const rt = new PRIM.Runtime({ host: layer, project: S.project, tags: tg, mode: "play", urls: S.urls, screenId: start, onPersist: ov => Store.saveSettings(S.project.id, ov), onExit: close, onStartGame: startGame });
     function close() { rt.destroy(); layer.remove(); if (document.fullscreenElement) document.exitFullscreen().catch(() => {}); }
     layer.__rt = rt;
   }
@@ -428,7 +528,7 @@
     if (!S.project) return; const typing = /INPUT|SELECT|TEXTAREA/.test((e.target && e.target.tagName) || ""), mod = e.ctrlKey || e.metaKey;
     if (mod && e.key.toLowerCase() === "s") { e.preventDefault(); saveProject(e.shiftKey); }
     else if (mod && e.key.toLowerCase() === "o") { e.preventDefault(); openFileDialog(); }
-    else if (e.key === "Escape") closePop();
+    else if (e.key === "Escape") { closePop(); const md = document.querySelector(".modal"); if (md) md.remove(); }
     else if (typing) return;
     else if (e.key === "F2") { e.preventDefault(); startRename(); }
     else if (e.key === "Delete" || e.key === "Backspace") { if (document.querySelector(".play-layer")) return; e.preventDefault(); deleteSelected(); }

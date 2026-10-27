@@ -22,8 +22,6 @@
     "directories": { "output": "dist", "buildResources": "build" },
     "files": ["main.js", "preload.js", "app/**/*"],
     "fileAssociations": [{ "ext": "prime", "name": "PRIMEngine project", "role": "Editor" }],
-    "win": { "target": ["portable"] },
-    "mac": { "target": ["dmg"], "category": "public.app-category.developer-tools" },
-    "linux": { "target": ["AppImage"], "category": "Development" }
+    "win": { "target": ["portable"] }
   }
 }
