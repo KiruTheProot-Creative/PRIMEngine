@@ -14,7 +14,7 @@ module.exports = async (p, out) => {
   await p.locator('.pop .pitem:has-text("Weapon")').hover(); await p.waitForTimeout(200);
   console.log('weapon submenu:', await p.locator('.pop .pitem').allTextContents());
   await p.screenshot({ path: out + '_menu.png' });
-  await p.locator('.pop .pitem:has-text("Charge beam")').click(); await p.waitForTimeout(300);
+  await p.locator('.pop .pitem:has-text("Charge weapon")').click(); await p.waitForTimeout(300);
   console.log('nodes', await p.evaluate(() => JSON.stringify(__studio.S.project.player.attachments[0].script.nodes.map(n => n.type))));
   const info = await p.evaluate(() => { const S = __studio.S, a = S.project.player.attachments[0], an = Object.keys(PRIM.FBX.cache[S.tags.get('player.att.asset')].anims); return { an, id: a.id }; });
   console.log('anims', JSON.stringify(info.an));
@@ -24,6 +24,8 @@ module.exports = async (p, out) => {
     const f = Sc.addSNode(pr, k, at.script, 'fireProjectile', 300, 0, null, k + '.asset'); at.script.links.push({ a: ch.id, o: 'fire', b: f.id });
     const sy = Sc.addSNode(pr, k, at.script, 'say', 300, 80, { text: 'charged!' }, k + '.asset'); at.script.links.push({ a: ch.id, o: 'charged', b: sy.id });
     const sc2 = Sc.addSNode(pr, k, at.script, 'say', 300, 160, { text: 'cancelled' }, k + '.asset'); at.script.links.push({ a: ch.id, o: 'cancel', b: sc2.id });
+    const os = Sc.addSNode(pr, k, at.script, 'chargeShow', 300, 240, { color: '#ff66cc', size: 1 }, k + '.asset'), og = Sc.addSNode(pr, k, at.script, 'chargeGrow', 520, 240, { size: 9, seconds: 0 }, k + '.asset');
+    at.script.links.push({ a: ch.id, o: 'start', b: os.id }, { a: os.id, o: 'next', b: og.id });
     S.tags.set('player.att.projType', 'particle'); S.tags.set('player.att.projShape', 'sphere'); S.tags.set('player.att.projSize', 6); S.tags.set('player.att.projColor', '#33ccff'); S.tags.set('player.att.projSpeed', 300);
   }, info.an);
   await p.click('.tab:has-text("Player Editor")'); await p.waitForTimeout(400);
@@ -41,11 +43,11 @@ module.exports = async (p, out) => {
   await p.click('button:has-text("Walk map1")'); await p.waitForTimeout(1200);
   await p.evaluate(() => { const q = __studio.S.play; q.msg.style.display = 'none'; window.__said = []; q.sh.o.say = t => window.__said.push(t); q.yaw = 0; q.x = -60; q.look = () => {}; });
   await p.mouse.click(700, 400); await p.waitForTimeout(300);
-  const snap = () => p.evaluate(() => { const q = __studio.S.play, a = q.atts[0]; return JSON.stringify([a.fire, a.loopAnim, +a.t.toFixed(2), (q.fx || []).length, +q.T.get('player.charge').toFixed(2)]); });
+  const snap = () => p.evaluate(() => { const q = __studio.S.play, a = q.atts[0]; return JSON.stringify([a.fire, a.loopAnim, +a.t.toFixed(2), (q.fx || []).length, +q.T.get('player.charge').toFixed(2), q.orb ? +q.orb.size.toFixed(2) : null, (q.fx || []).map(f => +f.size.toFixed(1))]); });
   await p.evaluate(() => { window.__log = []; const q = __studio.S.play; const o = q.sh.o.fire; q.sh.o.fire = k => { window.__log.push('FIRE ' + performance.now().toFixed(0)); return o(k); }; });
   await p.mouse.move(700, 400); await p.mouse.down();
   for (let i = 0; i < 8; i++) { await p.waitForTimeout(250); console.log('held', i, await snap()); }
-  await p.mouse.up();
+  await p.screenshot({ path: out + '_orb.png' }); await p.mouse.up();
   for (let i = 0; i < 10; i++) { await p.waitForTimeout(250); console.log('after release', i, await snap()); }
   console.log('fire calls', await p.evaluate(() => JSON.stringify(window.__log)), 'said', await p.evaluate(() => window.__said.join(',')));
 };

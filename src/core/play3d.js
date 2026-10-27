@@ -23,7 +23,7 @@
       this.hudRt = new PRIM.Runtime({ host: this.hudHost, project: this.project, tags: T, mode: "hud", urls: this.urls, screenId: T.get("player.hud") });
       this.unsub = T.on(() => { this.drawCross(); if (this.view && !this.pendingRb) { this.pendingRb = true; setTimeout(() => { this.pendingRb = false; if (!this.dead && this.view) { if (this.map) { this.view.rebuild(); this.walls = R3D.walls(this.map, T); } this.syncAtts(); } }, 80); } });
       this.drawCross(); this.gpu = {}; this.atts = [];
-      this.sh = this.mode === "play" ? new PRIM.Script.Host({ tags: T, held: k => !!this.keys[k], fire: key => this.fireProj(this.atts.find(a => "player." + a.id === key)), sfx: (id, v) => this.sfx(id, v), playAnim: (k, n, l) => this.playAnim(k, n, l), say: t => { if (this.o.say) this.o.say(t); else console.log(t); } }) : null;
+      this.sh = this.mode === "play" ? new PRIM.Script.Host({ tags: T, held: k => !!this.keys[k], orb: (k, c, a) => this.orbCmd(k, c, a), fire: key => this.fireProj(this.atts.find(a => "player." + a.id === key)), sfx: (id, v) => this.sfx(id, v), playAnim: (k, n, l) => this.playAnim(k, n, l), say: t => { if (this.o.say) this.o.say(t); else console.log(t); } }) : null;
       this.syncAtts(); this.trigger("onStart");
       if (this.mode === "play") this.bind(); else { this.msg.style.display = "none"; this.cv.style.cursor = "default"; }
       this.last = performance.now(); this.raf = requestAnimationFrame(t => this.frame(t));
@@ -60,7 +60,7 @@
       if (!this.sh) return; const cur = this.curWeaponId(), T = this.T, k = this.keys; this.holdT = this.holdT || {};
       this.ch = this.ch || {};
       for (const a of this.project.player.attachments) {
-        if (!a.script) continue; if (T.get("player." + a.id + ".type") === "weapon" && a.id !== cur) { for (const q of Object.keys(this.ch)) if (q.startsWith("player." + a.id + ".")) { delete this.ch[q]; this.T.set("player.charge", 0); } continue; }
+        if (!a.script) continue; if (T.get("player." + a.id + ".type") === "weapon" && a.id !== cur) { for (const q of Object.keys(this.ch)) if (q.startsWith("player." + a.id + ".")) { delete this.ch[q]; this.orb = null; this.T.set("player.charge", 0); } continue; }
         for (const n of a.script.nodes) {
           if (n.type === "onCharge") { this.charge(a, n, dt); continue; }
           if (n.type !== "onHold") continue; const pre = "player." + a.id + ".s." + n.id + ".", key = String(T.get(pre + "key") || "").toLowerCase();
@@ -76,13 +76,25 @@
       const st = this.ch[pre], dur = nm => { const an = at && nm && at.model.anims[nm]; return an ? this.animLen(at.aid, nm, an.dur).len : 0; };
       if (held && !st) { this.ch[pre] = { t: 0, charged: false }; this.playAnim(ok, g("chargeAnim"), false); this.sh.runOut(own, n.id, "start"); T.set("player.charge", 0); }
       else if (held && st) {
-        st.t += dt; const need = +g("chargeTime") > 0 ? +g("chargeTime") : (dur(g("chargeAnim")) || 1);
+        st.t += dt; const need = +g("chargeTime") > 0 ? +g("chargeTime") : (dur(g("chargeAnim")) || 1); this.chargeNeed = need;
         if (!st.charged) { T.set("player.charge", Math.min(1, st.t / need)); if (st.t >= need) { st.charged = true; this.stopAnim(ok); this.playAnim(ok, g("loopAnim"), true); T.set("player.charge", 1); this.sh.runOut(own, n.id, "charged"); } }
       } else if (!held && st) {
-        delete this.ch[pre]; this.stopAnim(ok); this.fireCharge = st.charged ? 1 : Math.min(1, T.get("player.charge")); setTimeout(() => { this.fireCharge = 0; }, 1500);
+        delete this.ch[pre]; if (this.orb) { this.orbSize = this.orb.size; setTimeout(() => { this.orbSize = 0; }, 1500); this.orb = null; } this.stopAnim(ok); this.fireCharge = st.charged ? 1 : Math.min(1, T.get("player.charge")); setTimeout(() => { this.fireCharge = 0; }, 1500);
         if (st.charged) { this.playAnim(ok, g("fireAnim"), false); this.sh.runOut(own, n.id, "fire"); } else this.sh.runOut(own, n.id, "cancel");
         T.set("player.charge", 0);
       }
+    }
+    // the charge particle: a ball at the weapon's emitter point that can grow while you charge
+    orbCmd(key, cmd, a) {
+      const at = this.atts.find(x => "player." + x.id === key); if (!at) return;
+      if (cmd === "show") this.orb = { id: at.id, color: a.color, size: a.size, size0: a.size, grow: null };
+      else if (cmd === "grow" && this.orb && this.orb.id === at.id) this.orb.grow = { from: this.orb.size, to: a.size, secs: a.seconds > 0 ? a.seconds : (this.chargeNeed || 1), t: 0 };
+    }
+    hexCol(hex) { hex = String(hex || "#ffcc33"); return [parseInt(hex.slice(1, 3), 16) / 255, parseInt(hex.slice(3, 5), 16) / 255, parseInt(hex.slice(5, 7), 16) / 255]; }
+    emitWorld(at) {
+      const v = this.view, c = v.cam, B = R3D.camBasis(c.yaw, c.pitch), P = at.emit.pos, D0 = at.emit.dir;
+      return { O: [c.x + B.s[0] * P[0] + B.u[0] * P[1] - B.f[0] * P[2], c.y + B.s[1] * P[0] + B.u[1] * P[1] - B.f[1] * P[2], c.z + B.s[2] * P[0] + B.u[2] * P[1] - B.f[2] * P[2]],
+        D: M4.norm([B.s[0] * D0[0] + B.u[0] * D0[1] - B.f[0] * D0[2], B.s[1] * D0[0] + B.u[1] * D0[1] - B.f[1] * D0[2], B.s[2] * D0[0] + B.u[2] * D0[1] - B.f[2] * D0[2]]) };
     }
     stopAnim(key) { const at = this.atts.find(a => "player." + a.id === key); if (at) { at.fire = null; at.loopAnim = null; at.t = 0; } }
     // ---- projectiles: hitscan line, particle (sphere / laser) or a flying mesh, launched from the weapon's muzzle point along its arrow
@@ -92,9 +104,9 @@
       const O = [eye[0] + B.s[0] * P[0] + B.u[0] * P[1] - B.f[0] * P[2], eye[1] + B.s[1] * P[0] + B.u[1] * P[1] - B.f[1] * P[2], eye[2] + B.s[2] * P[0] + B.u[2] * P[1] - B.f[2] * P[2]];
       const D = M4.norm([B.s[0] * D0[0] + B.u[0] * D0[1] - B.f[0] * D0[2], B.s[1] * D0[0] + B.u[1] * D0[1] - B.f[1] * D0[2], B.s[2] * D0[0] + B.u[2] * D0[1] - B.f[2] * D0[2]]);
       const hex = String(T.get(pre + "projColor") || "#ffcc33"), col = [parseInt(hex.slice(1, 3), 16) / 255, parseInt(hex.slice(3, 5), 16) / 255, parseInt(hex.slice(5, 7), 16) / 255];
-      const mul = T.get(pre + "projCharge") ? 1 + 1.5 * (this.fireCharge || 0) : 1; this.fx = this.fx || [];
+      const mul = T.get(pre + "projCharge") ? 1 + 1.5 * (this.fireCharge || 0) : 1, orbS = this.orbSize || 0; this.fx = this.fx || [];
       if (kind === "hitscan") { const hit = v.raycast(O, D, 6000), end = hit ? hit.p : M4.add(O, D.map(q => q * 3000)); this.fx.push({ kind: "line", a: O, b: end, c: col, w: +T.get(pre + "projWidth") || 0.6, life: +T.get(pre + "projLineTime") || 0.12, t: 0 }); }
-      else if (kind === "particle") this.fx.push({ kind: T.get(pre + "projShape") === "laser" ? "laser" : "sphere", p: O, d: D, c: col, size: (+T.get(pre + "projSize") || 3) * mul, speed: +T.get(pre + "projSpeed") || 1400, life: +T.get(pre + "projLife") || 2, t: 0 });
+      else if (kind === "particle") this.fx.push({ kind: T.get(pre + "projShape") === "laser" ? "laser" : "sphere", p: O, d: D, c: col, size: orbS > 0 ? orbS : (+T.get(pre + "projSize") || 3) * mul, speed: +T.get(pre + "projSpeed") || 1400, life: +T.get(pre + "projLife") || 2, t: 0 });
       else if (kind === "mesh") {
         const aid = T.get(pre + "projModel"), model = aid && PRIM.FBX.cache[aid]; if (!model) return; if (!this.gpu[aid]) this.gpu[aid] = v.loadModel(model);
         this.fx.push({ kind: "mesh", p: O, d: D, gm: this.gpu[aid], pose: PRIM.FBX.pose(model, null, 0), scale: (+T.get(pre + "projScale") || 1) * mul, rot: M4.rotXYZ([+T.get(pre + "projRx") || 0, +T.get(pre + "projRy") || 0, +T.get(pre + "projRz") || 0]), speed: +T.get(pre + "projSpeed") || 1400, life: +T.get(pre + "projLife") || 2, t: 0, M: M4.ident() });
@@ -224,7 +236,7 @@
       if (this.mode === "play" && this.map) this.step(dt);
       if (this.mode === "play") { this.hold(dt); const hp = +this.T.get("player.health"); if (this.lastHp === undefined) this.lastHp = hp; if (hp < this.lastHp) this.psound(hp <= 0 ? "deathSound" : "hurtSound"); this.lastHp = hp; }
       const v = this.view; if (!v) return; const T = this.T, c = v.cam; v.fov = (+T.get("player.fov") || 80) * Math.PI / 180;
-      c.x = this.x; c.z = this.y; c.y = this.z + (+T.get("player.eyeHeight") || 56); c.yaw = this.yaw; c.pitch = this.pitch; v.draw(); if (this.mode === "play") { this.stepFx(dt); if (this.fx && this.fx.length) v.drawFx(this.fx); } this.drawHand(v, dt); this.placeCross(v);
+      c.x = this.x; c.z = this.y; c.y = this.z + (+T.get("player.eyeHeight") || 56); c.yaw = this.yaw; c.pitch = this.pitch; v.draw(); if (this.mode === "play") { this.stepFx(dt); const list = (this.fx || []).slice(), ob = this.orb, oat = ob && this.atts.find(x => x.id === ob.id); if (oat && oat.emit) { if (ob.grow) { ob.grow.t += dt; ob.size = ob.grow.from + (ob.grow.to - ob.grow.from) * Math.min(1, ob.grow.t / ob.grow.secs); } list.push({ kind: "sphere", p: this.emitWorld(oat).O, c: this.hexCol(ob.color), size: ob.size }); } if (list.length) v.drawFx(list); } this.drawHand(v, dt); this.placeCross(v);
     }
   };
 })();

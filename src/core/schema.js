@@ -143,9 +143,11 @@
     if: { label: "If", cat: "logic", outs: ["then", "else"], ctx: ["screen", "object"], props: [ANYTAG, { k: "op", label: "Is", type: "choice", options: [["=", "equal to"], ["!=", "not equal to"], [">", "greater than"], ["<", "less than"], [">=", "at least"], ["<=", "at most"]], def: "=" }, { k: "value", label: "This value", type: "string", def: "0" }] },
     repeat: { label: "Repeat", cat: "logic", outs: ["body", "next"], ctx: ["screen", "object"], props: [{ k: "times", label: "Times", type: "number", def: 3, min: 1, max: 1000, step: 1 }] },
     ifKey: { label: "If a key is held", cat: "logic", outs: ["then", "else"], ctx: ["object"], props: [KEYP("shift", "Key or mouse button")] },
-    onCharge: { label: "Charge beam (hold to charge)", cat: "weapon", ins: false, outs: ["start", "charged", "fire", "cancel"], ctx: ["weapon"], props: [KEYP("mouse1", "Hold this key or button to charge"),
+    onCharge: { label: "Charge weapon (hold to charge)", cat: "weapon", ins: false, outs: ["start", "charged", "fire", "cancel"], ctx: ["weapon"], props: [KEYP("mouse1", "Hold this key or button to charge"),
       { k: "chargeAnim", label: "Charging animation (plays once)", type: "anim", def: "" }, { k: "loopAnim", label: "Charged animation (loops while held)", type: "anim", def: "" }, { k: "fireAnim", label: "Fire animation (on release)", type: "anim", def: "" },
       { k: "chargeTime", label: "Time to full charge (seconds, 0 = length of the charging animation)", type: "number", def: 0, min: 0, max: 60, step: 0.05 }] },
+    chargeShow: { label: "Show charge particle", cat: "weapon", outs: ["next"], ctx: ["weapon"], props: [COLOR("color", "Color", "#33ccff"), { k: "size", label: "Start size", type: "number", def: 1, min: 0.2, max: 80, step: 0.1 }] },
+    chargeGrow: { label: "Grow the charge particle", cat: "weapon", outs: ["next"], ctx: ["weapon"], props: [{ k: "size", label: "Grow to size", type: "number", def: 8, min: 0.2, max: 200, step: 0.1 }, { k: "seconds", label: "Over (seconds, 0 = until fully charged)", type: "number", def: 0, min: 0, max: 60, step: 0.05 }] },
     fireProjectile: { label: "Fire the projectile", cat: "weapon", outs: ["next"], ctx: ["weapon"], props: [] },
     forever: { label: "Repeat forever", cat: "logic", outs: ["body"], ctx: ["screen", "object"], props: [] },
   };

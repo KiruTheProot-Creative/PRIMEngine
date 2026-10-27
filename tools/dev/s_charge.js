@@ -14,7 +14,7 @@ module.exports = async (p, out) => {
   await p.locator('.pop .pitem:has-text("Weapon")').hover(); await p.waitForTimeout(200);
   console.log('weapon submenu:', await p.locator('.pop .pitem').allTextContents());
   await p.screenshot({ path: out + '_menu.png' });
-  await p.locator('.pop .pitem:has-text("Charge beam")').click(); await p.waitForTimeout(300);
+  await p.locator('.pop .pitem:has-text("Charge weapon")').click(); await p.waitForTimeout(300);
   console.log('nodes', await p.evaluate(() => JSON.stringify(__studio.S.project.player.attachments[0].script.nodes.map(n => n.type))));
   const info = await p.evaluate(() => { const S = __studio.S, a = S.project.player.attachments[0], an = Object.keys(PRIM.FBX.cache[S.tags.get('player.att.asset')].anims); return { an, id: a.id }; });
   console.log('anims', JSON.stringify(info.an));
