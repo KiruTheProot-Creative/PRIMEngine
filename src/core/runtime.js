@@ -37,7 +37,7 @@
     constructor(o) {
       this.o = o; this.host = o.host; this.project = o.project; this.tags = o.tags; this.mode = o.mode || "edit"; this.urls = o.urls || {};
       this.screenId = o.screenId; this.selId = o.selId || null; this.hover = null; this.press = null; this.drag = null; this.game = false; this.splash = null;
-      this.music = null; this.musicId = null; this.alpha = {}; this.els = {}; this.fps = { n: 0, t: 0, v: 0 }; this.dead = false; this.inv = false;
+      this.paused = false; this.music = null; this.musicId = null; this.alpha = {}; this.els = {}; this.fps = { n: 0, t: 0, v: 0 }; this.dead = false; this.inv = false;
       const host = this.host; host.replaceChildren(); host.classList.add("rt-host");
       this.stage = div("rt-stage"); this.layer = div("rt-layer"); this.fpsEl = div("rt-fps"); this.stage.append(this.layer, this.fpsEl); host.append(this.stage);
       if (this.mode === "play") { this.hintEl = div("rt-hint"); this.hintEl.textContent = "Esc to exit"; host.append(this.hintEl); setTimeout(() => { if (this.hintEl) this.hintEl.style.opacity = 0; }, 3000); }
@@ -146,7 +146,7 @@
     frame(now) {
       if (this.dead) return; this.raf = requestAnimationFrame(t => this.frame(t));
       const sp = this.splash;
-      if (sp) { const dt = Math.min(0.1, (now - sp.last) / 1000); sp.last = now; sp.t += dt; const sc = this.screen(), dur = this.P(sc, sp.n, "duration");
+      if (sp && !this.paused) { const dt = Math.min(0.1, (now - sp.last) / 1000); sp.last = now; sp.t += dt; const sc = this.screen(), dur = this.P(sc, sp.n, "duration");
         if (sp.t >= dur) { sp.i++; sp.t = 0; if (sp.i >= sc.nodes.length) return this.endSplash(); this.splashItem(); } else this.applyFade(); }
       this.fps.n++; if (now - this.fps.t > 500) { this.fps.v = Math.round(this.fps.n * 1000 / (now - this.fps.t)); this.fps.n = 0; this.fps.t = now; if (this.fpsEl.style.display !== "none") this.fpsEl.textContent = this.fps.v + " FPS"; }
     }
@@ -181,7 +181,7 @@
       let v = sp.min + (sp.max - sp.min) * clamp((sx - b.x0) / b.w, 0, 1); if (sp.step) v = Math.round(v / sp.step) * sp.step; this.tags.set(bind, Math.round(v * 1000) / 1000);
     }
     down(e) {
-      this.stage.setPointerCapture(e.pointerId); const [sx, sy] = this.pt(e);
+      if (this.paused) return; this.stage.setPointerCapture(e.pointerId); const [sx, sy] = this.pt(e);
       if (this.game) { this.game = false; this.rebuild(); return; }
       if (this.splash) { this.skipSplash(); return; }
       if (this.mode === "edit") {
@@ -194,7 +194,7 @@
       const n = this.hit(sx, sy, false); if (!n) return; this.press = n.id; if (n.type === "slider") this.setSlider(n, sx); this.rebuild();
     }
     move(e) {
-      const [sx, sy] = this.pt(e), sc = this.screen(); if (!sc) return;
+      if (this.paused) return; const [sx, sy] = this.pt(e), sc = this.screen(); if (!sc) return;
       if (this.drag) { const d = this.drag, snap = e.shiftKey ? 10 : 1, x = clamp(Math.round((sx - d.dx) / snap) * snap, 0, W), y = clamp(Math.round((sy - d.dy) / snap) * snap, 0, H); this.tags.setMany({ [sc.id + "." + d.id + ".x"]: x, [sc.id + "." + d.id + ".y"]: y }); const el = this.els[d.id]; if (el) { el.style.left = x + "px"; el.style.top = y + "px"; } return; }
       if (this.mode === "edit" || this.splash || this.game) return;
       if (this.press) { const n = sc.nodes.find(x => x.id === this.press); if (n && n.type === "slider") this.setSlider(n, sx); return; }
@@ -215,7 +215,7 @@
       else if (n.type === "toggle") { const b = P("bind"), sp = T.spec(b); if (sp && sp.type === "bool") T.set(b, !T.get(b)); }
     }
     key(e) {
-      if (this.mode === "edit") return;
+      if (this.mode === "edit" || this.paused) return;
       if (this.splash) { this.skipSplash(); return; }
       if (e.key === "Escape") { if (this.game) { this.game = false; this.rebuild(); } else if (this.mode === "play" && this.o.onExit) this.o.onExit(); }
     }

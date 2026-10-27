@@ -57,7 +57,7 @@
 
   // a brand-new project: splash -> main menu ("My Game") -> settings
   S.template = (id, name) => {
-    const p = { format: 2, id, name, modified: Date.now(), tags: {}, assets: [], screens: [] };
+    const p = { format: 3, id, name, modified: Date.now(), tags: {}, assets: [], folders: [], screens: [] };
     S.builtins(p);
     const add = (sc, id, type, over) => { const n = { id, type }; sc.nodes.push(n); S.defineNode(p, sc.id, n, over); };
     const splash = { id: "splash", kind: "splash", nodes: [] }, main = { id: "main", kind: "menu", nodes: [] }, set = { id: "settings", kind: "menu", nodes: [] };

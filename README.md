@@ -3,7 +3,9 @@
 *Design your game.* A no-code / low-code retro first-person shooter engine and editor, built from scratch
 (own WebGL renderer, no third-party libraries).
 
-**Status: Studio v0.** A project manager, and a screens editor: splash sequences (length + fade styles), titles, images,
+**Status: Studio v0.2** (retro Unity-style layout, `.prime` project files, asset explorer, desktop builds).
+
+**Studio v0.** A project manager, and a screens editor: splash sequences (length + fade styles), titles, images,
 buttons (text or texture with hover/click sounds), sliders and toggles, a settings screen, and a tag system where every value has a name.
 The earlier Metroid-style test editor is still in `legacy-editor.html`.
 
@@ -38,3 +40,12 @@ The editor autosaves into the browser. **Save** writes `project.json` to a file 
 ## Assets
 
 `projects/*/assets/` is ignored by Git on purpose, so nothing private ends up in the public repo.
+
+## Desktop app (Windows / macOS / Linux)
+
+GitHub builds it for you: open the **Actions** tab, pick the latest *Build desktop app* run and download the file for your system under *Artifacts*
+(or use the **Releases** page for tagged versions). Builds are unsigned, so Windows SmartScreen / macOS may warn on first start.
+
+## Project files
+
+`File > Save` writes a `.prime` file (a ZIP; rename to `.zip` to look inside). `File > Open Project` reads one back.
