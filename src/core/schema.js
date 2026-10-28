@@ -243,26 +243,26 @@
   const KEYP = (def, label) => ({ k: "key", label: label || "Key or mouse button", type: "choice", options: S.KEYS, def: def || "r" });
   S.STATES = [["standing", "Standing still"], ["walking", "Walking"], ["running", "Running (sprinting)"], ["jumping", "Jumping (going up)"], ["falling", "Falling"], ["moving", "Moving (walking or running)"], ["inair", "In the air (jumping or falling)"]];
   S.SNODES = {
-    onStart: { label: "When the game starts", cat: "event", ins: false, outs: ["next"], ctx: ["screen", "object"], props: [] },
+    onStart: { label: "When the game starts", cat: "event", ins: false, outs: ["next"], ctx: ["screen", "object", "player"], props: [] },
     onClick: { label: "When clicked", cat: "event", ins: false, outs: ["next"], ctx: ["screen", "object"], props: [] },
-    onKey: { label: "When a key is pressed", cat: "event", ins: false, outs: ["next"], ctx: ["screen", "object"], props: [KEYP("r")] },
-    onKeyUp: { label: "When a key is released", cat: "event", ins: false, outs: ["next"], ctx: ["object"], props: [KEYP("r")] },
-    onState: { label: "When the player is… (state starts)", cat: "event", ins: false, outs: ["next"], ctx: ["object"], props: [{ k: "state", label: "State", type: "choice", options: S.STATES, def: "walking" }] },
-    onHold: { label: "While a key is held", cat: "event", ins: false, outs: ["next"], ctx: ["object"], props: [KEYP("mouse1", "Key or mouse button held down"), { k: "interval", label: "Run again every (seconds, 0 = every frame)", type: "number", def: 0.1, min: 0, max: 60, step: 0.01 }] },
+    onKey: { label: "When a key is pressed", cat: "event", ins: false, outs: ["next"], ctx: ["screen", "object", "player"], props: [KEYP("r")] },
+    onKeyUp: { label: "When a key is released", cat: "event", ins: false, outs: ["next"], ctx: ["object", "player"], props: [KEYP("r")] },
+    onState: { label: "When the player is… (state starts)", cat: "event", ins: false, outs: ["next"], ctx: ["object", "player"], props: [{ k: "state", label: "State", type: "choice", options: S.STATES, def: "walking" }] },
+    onHold: { label: "While a key is held", cat: "event", ins: false, outs: ["next"], ctx: ["object", "player"], props: [KEYP("mouse1", "Key or mouse button held down"), { k: "interval", label: "Run again every (seconds, 0 = every frame)", type: "number", def: 0.1, min: 0, max: 60, step: 0.01 }] },
     onEquip: { label: "When this weapon is taken out", cat: "event", ins: false, outs: ["next"], ctx: ["weapon"], props: [] },
-    setTag: { label: "Set a tag", cat: "action", outs: ["next"], ctx: ["screen", "object"], props: [ANYTAG, { k: "value", label: "To value", type: "string", def: "0" }] },
-    changeTag: { label: "Change a number by", cat: "action", outs: ["next"], ctx: ["screen", "object"], props: [NUMTAG, { k: "amount", label: "Add (negative = subtract)", type: "number", def: 1, min: -100000, max: 100000, step: 1 }] },
-    playSound: { label: "Play a sound", cat: "action", outs: ["next"], ctx: ["screen", "object"], props: [{ k: "sound", label: "Sound", type: "asset", assetType: "sound", def: "" }, { k: "volume", label: "Volume", type: "number", def: 1, min: 0, max: 1, step: 0.05 }] },
-    loopSound: { label: "Loop a sound", cat: "action", outs: ["next"], ctx: ["screen", "object"], props: [{ k: "sound", label: "Sound", type: "asset", assetType: "sound", def: "" }, { k: "volume", label: "Volume", type: "number", def: 1, min: 0, max: 1, step: 0.05 }] },
-    stopLoop: { label: "Stop looping a sound", cat: "action", outs: ["next"], ctx: ["screen", "object"], props: [{ k: "sound", label: "Sound (empty = every looping sound)", type: "asset", assetType: "sound", def: "" }] },
-    playAnim: { label: "Play an animation", cat: "action", outs: ["next"], ctx: ["object"], props: [{ k: "anim", label: "Animation", type: "anim", def: "" }, { k: "loop", label: "Keep repeating it", type: "bool", def: false }] },
+    setTag: { label: "Set a tag", cat: "tags", outs: ["next"], ctx: ["screen", "object"], props: [ANYTAG, { k: "value", label: "To value", type: "string", def: "0" }] },
+    changeTag: { label: "Change a number by", cat: "tags", outs: ["next"], ctx: ["screen", "object"], props: [NUMTAG, { k: "amount", label: "Add (negative = subtract)", type: "number", def: 1, min: -100000, max: 100000, step: 1 }] },
+    playSound: { label: "Play a sound", cat: "sound", outs: ["next"], ctx: ["screen", "object"], props: [{ k: "sound", label: "Sound", type: "asset", assetType: "sound", def: "" }, { k: "volume", label: "Volume", type: "number", def: 1, min: 0, max: 1, step: 0.05 }] },
+    loopSound: { label: "Loop a sound", cat: "sound", outs: ["next"], ctx: ["screen", "object"], props: [{ k: "sound", label: "Sound", type: "asset", assetType: "sound", def: "" }, { k: "volume", label: "Volume", type: "number", def: 1, min: 0, max: 1, step: 0.05 }] },
+    stopLoop: { label: "Stop looping a sound", cat: "sound", outs: ["next"], ctx: ["screen", "object"], props: [{ k: "sound", label: "Sound (empty = every looping sound)", type: "asset", assetType: "sound", def: "" }] },
+    playAnim: { label: "Play an animation", cat: "look", outs: ["next"], ctx: ["object"], objOnly: true, props: [{ k: "anim", label: "Animation", type: "anim", def: "" }, { k: "loop", label: "Keep repeating it", type: "bool", def: false }, { k: "skipReload", label: "Not while reloading (the reload animation keeps playing)", type: "bool", def: true }] },
     gotoScreen: { label: "Go to a screen", cat: "action", outs: ["next"], ctx: ["screen"], props: [{ k: "screen", label: "Screen", type: "screenRef", def: "" }] },
     say: { label: "Write a message", cat: "action", outs: ["next"], ctx: ["screen", "object"], props: [{ k: "text", label: "Message (shows in the Console)", type: "string", def: "Hello" }] },
-    wait: { label: "Wait", cat: "logic", outs: ["next"], ctx: ["screen", "object"], props: [{ k: "seconds", label: "Seconds", type: "number", def: 0.5, min: 0, max: 600, step: 0.05 }] },
-    if: { label: "If", cat: "logic", outs: ["then", "else"], ctx: ["screen", "object"], props: [ANYTAG, { k: "op", label: "Is", type: "choice", options: [["=", "equal to"], ["!=", "not equal to"], [">", "greater than"], ["<", "less than"], [">=", "at least"], ["<=", "at most"]], def: "=" }, { k: "value", label: "This value", type: "string", def: "0" }] },
-    repeat: { label: "Repeat", cat: "logic", outs: ["body", "next"], ctx: ["screen", "object"], props: [{ k: "times", label: "Times", type: "number", def: 3, min: 1, max: 1000, step: 1 }] },
-    ifState: { label: "If the player is…", cat: "logic", outs: ["then", "else"], ctx: ["object"], props: [{ k: "state", label: "State", type: "choice", options: S.STATES, def: "standing" }] },
-    ifKey: { label: "If a key is held", cat: "logic", outs: ["then", "else"], ctx: ["object"], props: [KEYP("shift", "Key or mouse button")] },
+    wait: { label: "Wait", cat: "control", outs: ["next"], ctx: ["screen", "object"], props: [{ k: "seconds", label: "Seconds", type: "number", def: 0.5, min: 0, max: 600, step: 0.05 }] },
+    if: { label: "If", cat: "control", outs: ["then", "else"], ctx: ["screen", "object"], props: [ANYTAG, { k: "op", label: "Is", type: "choice", options: [["=", "equal to"], ["!=", "not equal to"], [">", "greater than"], ["<", "less than"], [">=", "at least"], ["<=", "at most"]], def: "=" }, { k: "value", label: "This value", type: "string", def: "0" }] },
+    repeat: { label: "Repeat", cat: "control", outs: ["body", "next"], ctx: ["screen", "object"], props: [{ k: "times", label: "Times", type: "number", def: 3, min: 1, max: 1000, step: 1 }] },
+    ifState: { label: "If the player is…", cat: "sense", outs: ["then", "else"], ctx: ["object", "player"], props: [{ k: "state", label: "State", type: "choice", options: S.STATES, def: "standing" }] },
+    ifKey: { label: "If a key is held", cat: "sense", outs: ["then", "else"], ctx: ["object", "player"], props: [KEYP("shift", "Key or mouse button")] },
     onCharge: { label: "Charge weapon (hold to charge)", cat: "weapon", ins: false, outs: ["start", "charged", "fire", "cancel"], ctx: ["weapon"], props: [KEYP("mouse1", "Hold this key or button to charge"),
       { k: "startDelay", label: "Delay before charging starts (seconds)", type: "number", def: 0.5, min: 0, max: 10, step: 0.05 },
       { k: "chargeAnim", label: "Charging animation (plays once)", type: "anim", def: "" }, { k: "loopAnim", label: "Charged animation (loops while held)", type: "anim", def: "" }, { k: "fireAnim", label: "Fire animation (on release)", type: "anim", def: "" },
@@ -272,9 +272,41 @@
     fireProjectile: { label: "Fire the projectile", cat: "weapon", outs: ["next"], ctx: ["weapon"], props: [] },
     reload: { label: "Reload the weapon", cat: "weapon", outs: ["next"], ctx: ["weapon"], props: [] },
     ifAmmo: { label: "If the weapon has ammo", cat: "weapon", outs: ["then", "else"], ctx: ["weapon"], props: [] },
-    forever: { label: "Repeat forever", cat: "logic", outs: ["body"], ctx: ["screen", "object"], props: [] },
+    forever: { label: "Repeat forever", cat: "control", outs: ["body"], ctx: ["screen", "object"], props: [] },
+    // ---- node update 2 (Scratch-style categories). "player" = the Player's own script (Hierarchy > Player)
+    onJump: { label: "When the player jumps", cat: "event", ins: false, outs: ["next"], ctx: ["object", "player"], props: [] },
+    onLand: { label: "When the player lands", cat: "event", ins: false, outs: ["next"], ctx: ["object", "player"], props: [] },
+    onHurt: { label: "When the player gets hurt", cat: "event", ins: false, outs: ["next"], ctx: ["object", "player"], props: [] },
+    onDeath: { label: "When the player dies", cat: "event", ins: false, outs: ["next"], ctx: ["object", "player"], props: [] },
+    onKill: { label: "When an enemy is killed", cat: "event", ins: false, outs: ["next"], ctx: ["object", "player"], props: [] },
+    onFire: { label: "When this weapon fires", cat: "event", ins: false, outs: ["next"], ctx: ["weapon"], props: [] },
+    onReload: { label: "When reloading starts", cat: "event", ins: false, outs: ["next"], ctx: ["weapon"], props: [] },
+    onReloadDone: { label: "When reloading is done", cat: "event", ins: false, outs: ["next"], ctx: ["weapon"], props: [] },
+    onMessage: { label: "When I receive a message", cat: "event", ins: false, outs: ["next"], ctx: ["screen", "object", "player"], props: [{ k: "name", label: "Message name", type: "string", def: "go" }] },
+    onTag: { label: "When a tag becomes…", cat: "event", ins: false, outs: ["next"], ctx: ["screen", "object", "player"], props: [ANYTAG, { k: "op", label: "Is", type: "choice", options: [["=", "equal to"], ["!=", "not equal to"], [">", "greater than"], ["<", "less than"], [">=", "at least"], ["<=", "at most"]], def: ">=" }, { k: "value", label: "This value", type: "string", def: "10" }] },
+    sendMessage: { label: "Send a message (to every script)", cat: "action", outs: ["next"], ctx: ["screen", "object", "player"], props: [{ k: "name", label: "Message name", type: "string", def: "go" }] },
+    waitUntil: { label: "Wait until…", cat: "control", outs: ["next"], ctx: ["screen", "object", "player"], props: [ANYTAG, { k: "op", label: "Is", type: "choice", options: [["=", "equal to"], ["!=", "not equal to"], [">", "greater than"], ["<", "less than"], [">=", "at least"], ["<=", "at most"]], def: "=" }, { k: "value", label: "This value", type: "string", def: "yes" }] },
+    repeatUntil: { label: "Repeat until…", cat: "control", outs: ["body", "next"], ctx: ["screen", "object", "player"], props: [ANYTAG, { k: "op", label: "Is", type: "choice", options: [["=", "equal to"], ["!=", "not equal to"], [">", "greater than"], ["<", "less than"], [">=", "at least"], ["<=", "at most"]], def: "=" }, { k: "value", label: "This value", type: "string", def: "yes" }] },
+    chance: { label: "With a chance of…", cat: "control", outs: ["then", "else"], ctx: ["screen", "object", "player"], props: [{ k: "percent", label: "Chance (%)", type: "number", def: 50, min: 0, max: 100, step: 1 }] },
+    stop: { label: "Stop this chain", cat: "control", outs: [], ctx: ["screen", "object", "player"], props: [] },
+    stopAll: { label: "Stop all of this object's scripts", cat: "control", outs: [], ctx: ["screen", "object", "player"], props: [] },
+    ifReloading: { label: "If reloading", cat: "sense", outs: ["then", "else"], ctx: ["object", "player"], props: [] },
+    ifNear: { label: "If an enemy is near", cat: "sense", outs: ["then", "else"], ctx: ["object", "player"], props: [{ k: "dist", label: "Within (units, 128 = a cell)", type: "number", def: 256, min: 8, max: 10000, step: 8 }] },
+    randomTag: { label: "Set a number to a random value", cat: "tags", outs: ["next"], ctx: ["screen", "object", "player"], props: [NUMTAG, { k: "min", label: "From", type: "number", def: 1, min: -100000, max: 100000, step: 1 }, { k: "max", label: "To", type: "number", def: 10, min: -100000, max: 100000, step: 1 }, { k: "whole", label: "Whole numbers only", type: "bool", def: true }] },
+    mathTag: { label: "Do math on a number", cat: "tags", outs: ["next"], ctx: ["screen", "object", "player"], props: [NUMTAG, { k: "op", label: "Operation", type: "choice", options: [["*", "multiply by"], ["/", "divide by"], ["min", "at most (cap at)"], ["max", "at least (raise to)"], ["mod", "remainder after dividing by"], ["round", "round (value = steps, 1 = whole numbers)"]], def: "*" }, { k: "value", label: "Value", type: "number", def: 2, min: -100000, max: 100000, step: 0.01 }] },
+    toggleTag: { label: "Flip a yes / no tag", cat: "tags", outs: ["next"], ctx: ["screen", "object", "player"], props: [{ k: "tag", label: "Yes / no tag", type: "tagRef", refType: "bool", def: "" }] },
+    stopAnim: { label: "Stop the animation (back to idle)", cat: "look", outs: ["next"], ctx: ["object"], objOnly: true, props: [] },
+    showHide: { label: "Show or hide this object", cat: "look", outs: ["next"], ctx: ["object"], objOnly: true, props: [{ k: "show", label: "Make it", type: "choice", options: [["show", "visible"], ["hide", "hidden"], ["toggle", "the opposite"]], def: "hide" }] },
+    shake: { label: "Shake the camera", cat: "look", outs: ["next"], ctx: ["object", "player"], props: [{ k: "strength", label: "Strength", type: "number", def: 1, min: 0, max: 10, step: 0.1 }, { k: "seconds", label: "For (seconds)", type: "number", def: 0.3, min: 0.02, max: 10, step: 0.02 }] },
+    flashScreen: { label: "Flash the screen", cat: "look", outs: ["next"], ctx: ["object", "player"], props: [COLOR("color", "Color", "#ffffff"), { k: "strength", label: "Strength (0 to 1)", type: "number", def: 0.5, min: 0, max: 1, step: 0.05 }] },
+    jump: { label: "Jump", cat: "player", outs: ["next"], ctx: ["object", "player"], props: [{ k: "height", label: "Height (units, 0 = the player's jump height)", type: "number", def: 0, min: 0, max: 5000, step: 1 }, { k: "air", label: "Also in the air", type: "bool", def: false }] },
+    airJump: { label: "Double jump (jump again in the air)", cat: "player", outs: ["next"], ctx: ["object", "player"], props: [{ k: "max", label: "Jumps allowed in the air (1 = double jump, 2 = triple…)", type: "number", def: 1, min: 1, max: 20, step: 1 }, { k: "height", label: "Height (units, 0 = the player's jump height)", type: "number", def: 0, min: 0, max: 5000, step: 1 }] },
+    launch: { label: "Push the player (dash, knock-back, launch)", cat: "player", outs: ["next"], ctx: ["object", "player"], props: [{ k: "forward", label: "Forward (where you look; negative = back)", type: "number", def: 600, min: -20000, max: 20000, step: 10 }, { k: "side", label: "Sideways (right; negative = left)", type: "number", def: 0, min: -20000, max: 20000, step: 10 }, { k: "up", label: "Up", type: "number", def: 0, min: -20000, max: 20000, step: 10 }] },
+    hurtPlayer: { label: "Hurt or heal the player", cat: "player", outs: ["next"], ctx: ["object", "player"], props: [{ k: "amount", label: "Damage (negative = heal)", type: "number", def: 10, min: -100000, max: 100000, step: 1 }] },
+    teleport: { label: "Move the player to the start", cat: "player", outs: ["next"], ctx: ["object", "player"], props: [] },
+    switchWeapon: { label: "Take out a weapon", cat: "weapon", outs: ["next"], ctx: ["object", "player"], props: [{ k: "which", label: "Which", type: "choice", options: [["next", "the next one"], ["prev", "the previous one"], ["num", "number…"]], def: "next" }, { k: "num", label: "Weapon number (when “number…”)", type: "number", def: 1, min: 1, max: 99, step: 1 }] },
   };
-  S.SCAT = { event: "Events", action: "Actions", logic: "Logic", weapon: "Weapon" };
+  S.SCAT = { event: "Events", control: "Control", sense: "Sensing", tags: "Tags & math", look: "Animation & looks", sound: "Sound", player: "Player", weapon: "Weapon", action: "Screens & messages" };
   const SKEY = (ownerKey, id, k) => ownerKey + ".s." + id + "." + k;
   // every node can have a condition: it only happens while a tag compares true (e.g. canChargeWeapon = yes). Empty tag = always.
   S.SCOND = [{ k: "needTag", label: "Only if this tag…", type: "tagRef", refType: "any", def: "" }, { k: "needOp", label: "is", type: "choice", options: [["=", "equal to"], ["!=", "not equal to"], [">", "greater than"], ["<", "less than"], [">=", "at least"], ["<=", "at most"]], def: "=" }, { k: "needVal", label: "this value (yes / no, a number, a text)", type: "string", def: "yes" }];
@@ -331,6 +363,8 @@
     for (const p of S.PLAYER) if (!project.tags["player." + p.k]) { const r = rec(p, "player", "player"); r.builtin = true; project.tags["player." + p.k] = r; }
     for (const sc of project.screens || []) for (const el of sc.nodes || []) if (el.script) for (const n of el.script.nodes) S.ensureSNode(project, sc.id + "." + el.id, n);
     if (!project.tags["player.state"]) project.tags["player.state"] = { type: "string", value: "standing", label: "What the player is doing: standing, walking, running, jumping, falling (live)", group: "player", builtin: true };
+    if (project.player && project.player.script) for (const n of project.player.script.nodes) S.ensureSNode(project, "player", n);
+    if (!project.tags["player.reloading"]) project.tags["player.reloading"] = { type: "bool", value: false, label: "The current weapon is reloading (live)", group: "player", builtin: true };
     if (!project.tags["player.charge"]) project.tags["player.charge"] = { type: "number", value: 0, label: "Charge beam progress, 0 to 1 (live)", group: "player", min: 0, max: 1, step: 0.01, builtin: true };
     if (!project.tags["player.weapon"]) project.tags["player.weapon"] = { type: "number", value: 1, label: "Current weapon number (live)", group: "player", min: 0, max: 99, step: 1, builtin: true };
     if (!project.tags["player.health"]) project.tags["player.health"] = { type: "number", value: 100, label: "Current health (live)", group: "player", min: 0, max: 1000, step: 1, builtin: true };

@@ -23,9 +23,17 @@
       this.hud = new PRIM.HUD({ host: this.hudHost, project: this.project, tags: T, urls: this.urls, screenId: T.get("player.hud"), edit: this.mode !== "play", say: t => { if (this.o.say) this.o.say(t); } });
       this.unsub = T.on(names => { this.drawCross(); if (this.mode === "play" && names && names.length && !names.some(n => (this.map && n.startsWith(this.map.id + ".")) || /^prop/.test(n))) return; if (this.view && !this.pendingRb) { this.pendingRb = true; setTimeout(() => { this.pendingRb = false; if (!this.dead && this.view) { if (this.map) this.view.rebuild(); this.syncAtts(); this.syncThings(); } }, 80); } });
       this.drawCross(); this.gpu = {}; this.atts = [];
-      this.sh = this.mode === "play" ? new PRIM.Script.Host({ tags: T, held: k => !!this.keys[k], isState: s => this.isState(s), orb: (k, c, a) => this.orbCmd(k, c, a), fire: key => this.fireProj(this.atts.find(a => "player." + a.id === key)), reload: key => this.reload(this.atts.find(a => "player." + a.id === key)), hasAmmo: key => { const pre = key + "."; return !this.T.get(pre + "ammoUse") || (!this.reloading && (+this.T.get(pre + "ammo") || 0) >= 1); }, sfx: (id, v) => this.sfx(id, v), loop: (id, v) => this.loopSfx(id, v), stopLoop: id => this.stopLoops(id), playAnim: (k, n, l) => this.playAnim(k, n, l), say: t => { if (this.o.say) this.o.say(t); else console.log(t); } }) : null;
+      this.sh = this.mode === "play" ? new PRIM.Script.Host({ tags: T, held: k => !!this.keys[k], isState: s => this.isState(s), orb: (k, c, a) => this.orbCmd(k, c, a), fire: key => this.fireProj(this.atts.find(a => "player." + a.id === key)), reload: key => this.reload(this.atts.find(a => "player." + a.id === key)), hasAmmo: key => { const pre = key + "."; return !this.T.get(pre + "ammoUse") || (!this.reloading && (+this.T.get(pre + "ammo") || 0) >= 1); }, sfx: (id, v) => this.sfx(id, v), loop: (id, v) => this.loopSfx(id, v), stopLoop: id => this.stopLoops(id), playAnim: (k, n, l) => this.playAnim(k, n, l),
+        isReloading: () => !!this.reloading, stopAnim: k => this.stopAnim(k), showHide: (k, m) => { const t = k + ".visible"; if (T.get(t) === undefined) return; T.set(t, m === "toggle" ? !T.get(t) : m === "show"); },
+        shake: (a, sec) => { this.shakeA = Math.max(this.shakeA || 0, a); this.shakeT = sec; this.shakeT0 = sec; }, flash: (c, a) => this.flash(a, c, true),
+        jump: (hgt, air) => { if (air || this.ground) this.jumpReq = hgt || -1; }, airJump: (max, hgt) => { if (!this.ground && (this.airJumps || 0) < max) { this.airJumps = (this.airJumps || 0) + 1; this.jumpReq = hgt || -1; } },
+        launch: (f, sd, up) => { const cy = Math.cos(this.yaw), sy = Math.sin(this.yaw); this.extV = [(this.extV ? this.extV[0] : 0) + cy * f - sy * sd, (this.extV ? this.extV[1] : 0) + sy * f + cy * sd]; if (up) this.upReq = (this.upReq || 0) + up; },
+        hurt: a => { if (a > 0) this.hurtPlayer(a); else if (a < 0 && !this.pdead) T.set("player.health", Math.min(+T.get("player.maxHealth") || 100, (+T.get("player.health") || 0) - a)); },
+        teleport: () => { this.placeStart(); this.extV = null; }, nearEnemy: d => (this.things || []).some(o => this.eAlive(o) && Math.hypot(o.x - this.x, o.y - this.y) < d && Math.abs(o.floor - this.z) < 200),
+        switchWeapon: (w, n) => { if (w === "next") this.setWeapon((this.wi || 0) + 1); else if (w === "prev") this.setWeapon((this.wi || 0) - 1); else if (n - 1 < this.wids().length) this.setWeapon(n - 1); },
+        broadcast: name => this.trigger("onMessage", name), say: t => { if (this.o.say) this.o.say(t); else console.log(t); } }) : null;
       if (PRIM.Audio) PRIM.Audio.preload(this.project.assets.filter(x => x.type === "sound" && this.urls[x.id]).map(x => this.urls[x.id]));
-      this.syncAtts(); this.syncThings(); this.trigger("onStart");
+      this.syncAtts(); this.syncThings(); this.trigger("onStart"); if (this.sh) this.sh.watch(() => this.scriptOwners());
       if (this.mode === "play") this.bind(); else { this.msg.style.display = "none"; this.cv.style.cursor = "default"; }
       this.last = performance.now(); this.raf = requestAnimationFrame(t => this.frame(t));
     }
@@ -106,7 +114,7 @@
     stopAnim(key) { const at = this.atts.find(a => "player." + a.id === key); if (at) { at.fire = null; at.loopAnim = null; at.t = 0; } }
     // ---- projectiles: hitscan line, particle (sphere / laser) or a flying mesh, launched from the weapon's muzzle point along its arrow
     fireProj(at) {
-      const v = this.view; if (!at || !at.emit || !v) return; const T = this.T, pre = "player." + at.id + ".", kind = T.get(pre + "projType"); if (!kind || kind === "none" || this.pdead) return; if (!this.useAmmo(at)) return; const dmg = (T.get(pre + "projDamage") === undefined ? 25 : +T.get(pre + "projDamage"));
+      const v = this.view; if (!at || !at.emit || !v) return; const T = this.T, pre = "player." + at.id + ".", kind = T.get(pre + "projType"); if (!kind || kind === "none" || this.pdead) return; if (!this.useAmmo(at)) return; this.triggerAtt(at.id, "onFire"); const dmg = (T.get(pre + "projDamage") === undefined ? 25 : +T.get(pre + "projDamage"));
       const c = v.cam, B = R3D.camBasis(c.yaw, c.pitch), eye = [c.x, c.y, c.z], P = at.emit.pos, D0 = at.emit.dir;
       const O = [eye[0] + B.s[0] * P[0] + B.u[0] * P[1] - B.f[0] * P[2], eye[1] + B.s[1] * P[0] + B.u[1] * P[1] - B.f[1] * P[2], eye[2] + B.s[2] * P[0] + B.u[2] * P[1] - B.f[2] * P[2]];
       const D = M4.norm([B.s[0] * D0[0] + B.u[0] * D0[1] - B.f[0] * D0[2], B.s[1] * D0[0] + B.u[1] * D0[1] - B.f[1] * D0[2], B.s[2] * D0[0] + B.u[2] * D0[1] - B.f[2] * D0[2]]);
@@ -327,7 +335,7 @@
     }
     damageEnemy(o, d) {
       if (!this.eAlive(o)) return; const T = this.T; o.hp -= d; o.awake = true; o.flash = 0.12;
-      if (o.hp <= 0) { o.st = "dying"; this.eSet(o, "deathAnim"); o.at = 0; const s = T.get(o.pre + "deathSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); const kt = T.get(o.pre + "killTag"); if (kt && T.get(kt) !== undefined) T.set(kt, (+T.get(kt) || 0) + (+T.get(o.pre + "killAmount") || 0)); return; }
+      if (o.hp <= 0) { this.trigger("onKill"); o.st = "dying"; this.eSet(o, "deathAnim"); o.at = 0; const s = T.get(o.pre + "deathSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); const kt = T.get(o.pre + "killTag"); if (kt && T.get(kt) !== undefined) T.set(kt, (+T.get(kt) || 0) + (+T.get(o.pre + "killAmount") || 0)); return; }
       const s = T.get(o.pre + "hurtSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); if (this.eAnim(o, "hurtAnim") && o.st !== "attack") { o.st = "pain"; this.eSet(o, "hurtAnim"); o.at = 0; }
     }
     // ---- ammo: "ammo" = ready to fire, "reserve" = carried. Reload moves rounds from reserve into the magazine
@@ -340,16 +348,19 @@
       if (!at || this.reloading) return false; const T = this.T, pre = "player." + at.id + ".", clip = +T.get(pre + "clipSize") || 0; if (!T.get(pre + "ammoUse") || clip <= 0) return false;
       if ((+T.get(pre + "reserve") || 0) <= 0 || (+T.get(pre + "ammo") || 0) >= clip) return false;
       const nm = T.get(pre + "reloadAnim"), an = nm && at.model && at.model.anims[nm], len = an ? this.animLen(at.aid, nm, an.dur).len : (+T.get(pre + "reloadTime") || 1.2);
-      if (an) this.playAnim("player." + at.id, nm, false); const s = T.get(pre + "reloadSound"); if (s) this.sfx(s); this.reloading = { at, t: len }; return true;
+      if (an) this.playAnim("player." + at.id, nm, false); const s = T.get(pre + "reloadSound"); if (s) this.sfx(s); this.reloading = { at, t: len }; T.set("player.reloading", true); this.triggerAtt(at.id, "onReload"); return true;
     }
-    reloadStep(dt) { const r = this.reloading; if (!r) return; r.t -= dt; if (r.t > 0) return; this.reloading = null; const T = this.T, pre = "player." + r.at.id + ".", clip = +T.get(pre + "clipSize") || 0, am = +T.get(pre + "ammo") || 0, rs = +T.get(pre + "reserve") || 0, mv = Math.max(0, Math.min(clip - am, rs)); T.setMany({ [pre + "ammo"]: am + mv, [pre + "reserve"]: rs - mv }); }
+    reloadStep(dt) { const r = this.reloading; if (!r) return; r.t -= dt; if (r.t > 0) return; this.reloading = null; this.T.set("player.reloading", false); this.triggerAtt(r.at.id, "onReloadDone"); const T = this.T, pre = "player." + r.at.id + ".", clip = +T.get(pre + "clipSize") || 0, am = +T.get(pre + "ammo") || 0, rs = +T.get(pre + "reserve") || 0, mv = Math.max(0, Math.min(clip - am, rs)); T.setMany({ [pre + "ammo"]: am + mv, [pre + "reserve"]: rs - mv }); }
     useAmmo(at) {   // true = the shot may go out
       const T = this.T, pre = "player." + at.id + "."; if (!T.get(pre + "ammoUse")) return true; if (this.reloading) return false;
       const am = +T.get(pre + "ammo") || 0; if (am >= 1) { T.set(pre + "ammo", am - 1); return true; }
       if (!this.reload(at)) { const s = T.get(pre + "emptySound"); if (s) this.sfx(s); } return false;
     }
     // ---- damage flash, death, level exits, changing maps
-    flash(a) { if (!this.T.get("player.damageFlash")) return; if (!this.flashEl) { this.flashEl = document.createElement("div"); this.flashEl.style.cssText = "position:absolute;inset:0;pointer-events:none;background:radial-gradient(ellipse at center,rgba(255,0,0,0) 35%,rgba(200,0,0,.85) 100%);opacity:0;transition:opacity .45s ease-out;z-index:4"; this.root.append(this.flashEl); } const e = this.flashEl; e.style.transition = "none"; e.style.opacity = a; requestAnimationFrame(() => { e.style.transition = "opacity .45s ease-out"; e.style.opacity = 0; }); }
+    flash(a, color, force) {   // red damage flash (setting player.damageFlash), or any colour from the "Flash the screen" node
+      if (!force && !this.T.get("player.damageFlash")) return; if (!this.flashEl) { this.flashEl = document.createElement("div"); this.flashEl.style.cssText = "position:absolute;inset:0;pointer-events:none;opacity:0;z-index:4"; this.root.append(this.flashEl); }
+      const e = this.flashEl, c = this.hexCol(color || "#c80000").map(q => Math.round(q * 255)).join(","); e.style.background = color ? "rgb(" + c + ")" : "radial-gradient(ellipse at center,rgba(255,0,0,0) 35%,rgba(200,0,0,.85) 100%)";
+      e.style.transition = "none"; e.style.opacity = a; requestAnimationFrame(() => { e.style.transition = "opacity .45s ease-out"; e.style.opacity = 0; }); }
     deathStep(dt) {
       const T = this.T; if (!this.pdead) { if ((+T.get("player.health") || 0) <= 0) { this.pdead = true; this.deadT = 0; this.reloading = null; this.say2("You died"); } return; }
       this.deadT += dt; if (this.deadT < (+T.get("player.deathDelay") || 0)) return;
@@ -361,7 +372,7 @@
       const T = this.T, m = this.map; this.x = m ? +T.get(m.id + ".startX") || 0 : 0; this.y = m ? +T.get(m.id + ".startY") || 0 : 0; this.yaw = (m ? +T.get(m.id + ".startAngle") : 90) * Math.PI / 180; this.pitch = 0;
       const L = m ? +T.get(m.id + ".startLayer") || 0 : 0; this.z = m && G ? G.groundY(m, this.x, this.y, L * G.LAYER + G.LAYER - 8) : 0; this.vz = 0; this.body = null; this.ground = true;
     }
-    resetPlayer() { this.placeStart(); this.fx = []; this.orb = null; this.reloading = null; this.pdead = false; this.deadT = 0; this.say2(""); this.doorOpen = {}; this.things = []; this.syncThings(); }
+    resetPlayer() { this.placeStart(); this.fx = []; this.orb = null; this.reloading = null; if (this.mode === "play" && this.T.get("player.reloading")) this.T.set("player.reloading", false); this.extV = null; this.jumpReq = undefined; this.airJumps = 0; this.shakeT = 0; this.pdead = false; this.deadT = 0; this.say2(""); this.doorOpen = {}; this.things = []; this.syncThings(); }
     restartMap() { const T = this.T; T.set("player.health", +T.get("player.maxHealth") || 100); this.lastHp = undefined; this.initAmmo(); this.resetPlayer(); }
     loadMap(id) { const m = this.project.maps.find(x => x.id === id); if (!m || !this.view) return false; this.map = m; this.view.setMap(this.project, m, this.T, this.urls); this.resetPlayer(); return true; }
     levelExit(o) {
@@ -425,8 +436,11 @@
       if (changed && this.sh) { const att = this.project.player.attachments.find(a => a.id === w[i]); if (att && att.script) this.sh.trigger({ key: "player." + att.id, script: att.script }, "onEquip"); }
     }
     // Node Coder events: every non-weapon object hears them, and the weapon that is currently in hand
+    scriptOwners() { const cur = this.curWeaponId(), out = this.project.player.attachments.filter(a => a.script && !(this.T.get("player." + a.id + ".type") === "weapon" && a.id !== cur)).map(a => ({ key: "player." + a.id, script: a.script })); if (this.project.player.script) out.push({ key: "player", script: this.project.player.script }); return out; }
+    triggerAtt(id, type) { const a = this.project.player.attachments.find(x => x.id === id); if (this.sh && a && a.script) this.sh.trigger({ key: "player." + a.id, script: a.script }, type); }
+    stopAnim(key) { const at = this.atts.find(a => "player." + a.id === key); if (!at) return; at.fire = null; at.loopAnim = null; at.t = 0; at.restart = true; }
     trigger(type, arg) {
-      if (!this.sh) return; const cur = this.curWeaponId();
+      if (!this.sh) return; if (this.project.player.script) this.sh.trigger({ key: "player", script: this.project.player.script }, type, arg); const cur = this.curWeaponId();
       for (const a of this.project.player.attachments) { if (!a.script) continue; if (this.T.get("player." + a.id + ".type") === "weapon" && a.id !== cur) continue; this.sh.trigger({ key: "player." + a.id, script: a.script }, type, arg); }
     }
     vol3(mult) { const T = this.T; return Math.max(0, Math.min(1, (+T.get("audio.master") || 0) * (+T.get("audio.sfx") || 0) * (isNaN(mult) ? 1 : mult))); }
@@ -544,12 +558,16 @@
       const len = Math.hypot(fw, sd) || 1; fw /= len; sd /= len; let spd = +T.get("player.speed"); if (T.get("player.sprintEnabled") && k.shift && fw > 0) spd *= 1 + (+T.get("player.sprintPercent") || 0) / 100;
       const cy = Math.cos(this.yaw), sy = Math.sin(this.yaw), b = this.body || (this.body = { pos: [this.x, this.z, this.y], vel: [0, 0, 0], ground: true });
       Object.assign(b, { r, h: head, step: stepH, maxSlope: 0.69 }); b.vel[0] = (cy * fw - sy * sd) * spd; b.vel[2] = (sy * fw + cy * sd) * spd;
-      const was = this.ground; if (T.get("player.jumpEnabled") && k.space && was) { b.vel[1] = Math.sqrt(2 * g * (+T.get("player.jumpHeight") || 0)); b.ground = false; this.psound("jumpSound"); }
+      const was = this.ground; if (T.get("player.jumpEnabled") && k.space && was && this.jumpReq === undefined) this.jumpReq = -1;
+      if (this.jumpReq !== undefined) { const hj = this.jumpReq > 0 ? this.jumpReq : +T.get("player.jumpHeight") || 0; this.jumpReq = undefined; b.vel[1] = Math.sqrt(2 * g * hj); b.ground = false; this.psound("jumpSound"); this.trigger("onJump"); }
+      if (this.upReq) { b.vel[1] = Math.max(b.vel[1], 0) + this.upReq; this.upReq = 0; b.ground = false; }
+      if (this.extV) { b.vel[0] += this.extV[0]; b.vel[2] += this.extV[1]; const f = Math.exp(-dt * (was ? 7 : 1.2)); this.extV = [this.extV[0] * f, this.extV[1] * f]; if (Math.hypot(...this.extV) < 5) this.extV = null; }
       b.vel[1] -= g * dt; const vy = b.vel[1], x0 = b.pos[0], z0 = b.pos[2], world = this.view && this.view.world, dtr = this.doorTris();
       G.move(b, dt, world, dtr); const p = { x: b.pos[0], y: b.pos[2] }; this.push(p, r); if (p.x !== b.pos[0] || p.y !== b.pos[2]) { b.pos[0] = p.x; b.pos[2] = p.y; G.push(b, world, dtr); }
       this.mv = Math.hypot(b.pos[0] - x0, b.pos[2] - z0); this.sprinting = !!(T.get("player.sprintEnabled") && k.shift && fw > 0); this.spdNow = spd;
       if (b.ground && was) { this.stepAcc = (this.stepAcc || 0) + this.mv; const sd2 = Math.max(10, +T.get("player.stepDistance") || 90); if (this.stepAcc >= sd2) { this.stepAcc %= sd2; this.footstep(); } }
       if (b.ground && !was && vy < -250) { this.psound("landSound"); this.landT = performance.now(); this.stepAcc = 0; }
+      if (b.ground && !was) { this.airJumps = 0; this.trigger("onLand"); }
       this.x = b.pos[0]; this.y = b.pos[2]; this.z = b.pos[1]; this.ground = b.ground; this.vz = b.vel[1];
       if (this.z < -4000 && !this.pdead) this.hurtPlayer(1e9);   // fell out of the world
       this.airT = this.ground ? 0 : (this.airT || 0) + dt;
@@ -582,9 +600,9 @@
       if (this.mode === "play" && this.map && !this.pdead && !this.talk) this.step(dt);
       if (this.mode === "play") this.talkHint();
       if (this.mode === "play") this.feel(dt);
-      if (this.mode === "play") { this.hold(dt); const hp = +this.T.get("player.health"); if (this.lastHp === undefined) this.lastHp = hp; if (hp < this.lastHp) { this.psound(hp <= 0 ? "deathSound" : "hurtSound"); this.flash(Math.min(0.6, 0.15 + (this.lastHp - hp) / 60)); } this.lastHp = hp; this.reloadStep(dt); this.ammoClamp(); this.deathStep(dt); }
+      if (this.mode === "play") { this.hold(dt); const hp = +this.T.get("player.health"); if (this.lastHp === undefined) this.lastHp = hp; if (hp < this.lastHp) { this.psound(hp <= 0 ? "deathSound" : "hurtSound"); this.flash(Math.min(0.6, 0.15 + (this.lastHp - hp) / 60)); this.trigger(hp <= 0 ? "onDeath" : "onHurt"); } this.lastHp = hp; this.reloadStep(dt); this.ammoClamp(); this.deathStep(dt); }
       const v = this.view; if (!v) return; const T = this.T, c = v.cam; v.fov = (+T.get("player.fov") || 80) * Math.PI / 180;
-      c.x = this.x; c.z = this.y; c.y = this.z + (+T.get("player.eyeHeight") || 56) - (this.pdead ? Math.min(1, (this.deadT || 0) * 2) * (+T.get("player.eyeHeight") || 56) * 0.7 : 0); c.yaw = this.yaw; c.pitch = this.pitch; { const B = R3D.camBasis(c.yaw, c.pitch); PRIM.Audio.listen([c.x, c.y, c.z], B.f, B.u, B.s); } if (this.mode === "play") this.speakerStep(); v.setLights(this.lightPrev || []); v.draw(); this.lightNow = []; if (this.mode === "play") { this.stepFx(dt); const list = (this.fx || []).slice(), ob = this.orb, oat = ob && this.atts.find(x => x.id === ob.id); for (const f of list) if (f.light) this.lightNow.push({ p: f.p, r: f.light.r, c: f.light.c.map(q => q * f.light.k), type: 0, shadow: f.light.shadow !== false }); if (oat && oat.emit) { if (ob.grow) { ob.grow.t += dt; ob.size = ob.grow.from + (ob.grow.to - ob.grow.from) * Math.min(1, ob.grow.t / ob.grow.secs); } const op = this.emitWorld(oat).O, opre = "player." + oat.id + ".", oem = T.get(opre + "projEmit") === undefined ? 1 : +T.get(opre + "projEmit"); list.push({ kind: "sphere", p: op, c: this.hexCol(ob.color).map(q => q * oem), size: ob.size }); if (T.get(opre + "projLight")) this.lightNow.push({ p: op, r: +T.get(opre + "projLightRange") || 220, c: this.hexCol(ob.color).map(q => q * (+T.get(opre + "projLightPower") || 1.5)), type: 0, shadow: true }); } v.setLights(this.lightNow); list.push(...this.stepMarks(dt)); if (list.length) v.drawFx(list); } this.drawThings(v, dt); this.drawHand(v, dt); v.present(); this.lightPrev = this.lightNow; this.stats3d(v); this.placeCross(v);
+      c.x = this.x; c.z = this.y; c.y = this.z + (+T.get("player.eyeHeight") || 56) - (this.pdead ? Math.min(1, (this.deadT || 0) * 2) * (+T.get("player.eyeHeight") || 56) * 0.7 : 0); c.yaw = this.yaw; c.pitch = this.pitch; if (this.shakeT > 0) { this.shakeT -= dt; const a = (this.shakeA || 0) * Math.max(0, this.shakeT / (this.shakeT0 || 1)) * 0.02; c.yaw += (Math.random() * 2 - 1) * a; c.pitch += (Math.random() * 2 - 1) * a; if (this.shakeT <= 0) this.shakeA = 0; } { const B = R3D.camBasis(c.yaw, c.pitch); PRIM.Audio.listen([c.x, c.y, c.z], B.f, B.u, B.s); } if (this.mode === "play") this.speakerStep(); v.setLights(this.lightPrev || []); v.draw(); this.lightNow = []; if (this.mode === "play") { this.stepFx(dt); const list = (this.fx || []).slice(), ob = this.orb, oat = ob && this.atts.find(x => x.id === ob.id); for (const f of list) if (f.light) this.lightNow.push({ p: f.p, r: f.light.r, c: f.light.c.map(q => q * f.light.k), type: 0, shadow: f.light.shadow !== false }); if (oat && oat.emit) { if (ob.grow) { ob.grow.t += dt; ob.size = ob.grow.from + (ob.grow.to - ob.grow.from) * Math.min(1, ob.grow.t / ob.grow.secs); } const op = this.emitWorld(oat).O, opre = "player." + oat.id + ".", oem = T.get(opre + "projEmit") === undefined ? 1 : +T.get(opre + "projEmit"); list.push({ kind: "sphere", p: op, c: this.hexCol(ob.color).map(q => q * oem), size: ob.size }); if (T.get(opre + "projLight")) this.lightNow.push({ p: op, r: +T.get(opre + "projLightRange") || 220, c: this.hexCol(ob.color).map(q => q * (+T.get(opre + "projLightPower") || 1.5)), type: 0, shadow: true }); } v.setLights(this.lightNow); list.push(...this.stepMarks(dt)); if (list.length) v.drawFx(list); } this.drawThings(v, dt); this.drawHand(v, dt); v.present(); this.lightPrev = this.lightNow; this.stats3d(v); this.placeCross(v);
     }
   };
 })();

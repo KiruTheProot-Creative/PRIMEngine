@@ -11,7 +11,7 @@
     constructor(o) { this.o = o; this.T = o.tags; this.runs = []; this.dead = false; }
     stopOwner(key) { this.runs = this.runs.filter(r => { if (r.key === key) { r.dead = true; if (r.cancel) r.cancel(); return false; } return true; }); }
     stopRuns() { for (const r of this.runs) { r.dead = true; if (r.cancel) r.cancel(); } this.runs = []; }
-    stopAll() { this.dead = true; for (const r of this.runs) { r.dead = true; if (r.cancel) r.cancel(); } this.runs = []; }
+    stopAll() { this.dead = true; if (this.watchT) clearInterval(this.watchT); for (const r of this.runs) { r.dead = true; if (r.cancel) r.cancel(); } this.runs = []; }
     // a node's "Only if" condition (tags <owner>.s.<node>.needTag / needOp / needVal): no tag = always allowed
     ok(owner, n) { const k = owner.key + ".s." + n.id + ".", t = this.T.get(k + "needTag"); if (!t) return true; return this.test(t, this.T.get(k + "needOp") || "=", this.T.get(k + "needVal")); }
     has(owner, type) { return !!(owner.script && owner.script.nodes.some(n => n.type === type)); }
@@ -19,9 +19,14 @@
     trigger(owner, type, arg, only) {
       if (this.dead || !owner.script) return;
       for (const n of owner.script.nodes) {
-        if (n.type !== type) continue; if (only && n.id !== only) continue; if ((type === "onKey" || type === "onKeyUp" || type === "onHold") && String(this.T.get(owner.key + ".s." + n.id + ".key") || "").toLowerCase() !== String(arg || "").toLowerCase()) continue; if (type === "onState" && String(this.T.get(owner.key + ".s." + n.id + ".state") || "") !== String(arg || "")) continue;
+        if (n.type !== type) continue; if (only && n.id !== only) continue; if ((type === "onKey" || type === "onKeyUp" || type === "onHold") && String(this.T.get(owner.key + ".s." + n.id + ".key") || "").toLowerCase() !== String(arg || "").toLowerCase()) continue; if (type === "onMessage" && String(this.T.get(owner.key + ".s." + n.id + ".name") || "").trim().toLowerCase() !== String(arg || "").trim().toLowerCase()) continue; if (type === "onState" && String(this.T.get(owner.key + ".s." + n.id + ".state") || "") !== String(arg || "")) continue;
         if (!this.ok(owner, n)) continue; this.runOut(owner, n.id, "next");
       }
+    }
+    // "When a tag becomes…" events: checked 20 times a second; a chain starts each time the comparison turns true
+    watch(owners) {
+      if (this.watchT) clearInterval(this.watchT); this.prevTag = {};
+      this.watchT = setInterval(() => { if (this.dead) return clearInterval(this.watchT); for (const ow of owners() || []) { if (!ow.script) continue; for (const n of ow.script.nodes) { if (n.type !== "onTag") continue; const k = ow.key + ".s." + n.id + ".", t = this.T.get(k + "tag"); if (!t) continue; const now = this.test(t, this.T.get(k + "op") || "=", this.T.get(k + "value")), id = ow.key + "/" + n.id, was = this.prevTag[id]; this.prevTag[id] = now; if (now && was === false && this.ok(ow, n)) this.runOut(ow, n.id, "next"); } } }, 50);
     }
     // start the chain that hangs off one output of a node (used by events with several outputs, like the charge beam)
     runOut(owner, id, out) {
@@ -50,7 +55,29 @@
           case "loopSound": if (g("sound") && this.o.loop) this.o.loop(g("sound"), +g("volume")); break;
           case "stopLoop": if (this.o.stopLoop) this.o.stopLoop(g("sound") || ""); break;
           case "playSound": if (g("sound") && this.o.sfx) this.o.sfx(g("sound"), +g("volume")); break;
-          case "playAnim": if (this.o.playAnim) this.o.playAnim(owner.key, g("anim"), !!g("loop")); break;
+          case "playAnim": if (this.o.playAnim && !(g("skipReload") !== false && this.o.isReloading && this.o.isReloading())) this.o.playAnim(owner.key, g("anim"), !!g("loop")); break;
+          case "stopAnim": if (this.o.stopAnim) this.o.stopAnim(owner.key); break;
+          case "showHide": if (this.o.showHide) this.o.showHide(owner.key, String(g("show") || "hide")); break;
+          case "shake": if (this.o.shake) this.o.shake(+g("strength") || 0, +g("seconds") || 0.3); break;
+          case "flashScreen": if (this.o.flash) this.o.flash(String(g("color") || "#ffffff"), +g("strength") || 0); break;
+          case "jump": if (this.o.jump) this.o.jump(+g("height") || 0, !!g("air")); break;
+          case "airJump": if (this.o.airJump) this.o.airJump(Math.max(1, +g("max") || 1), +g("height") || 0); break;
+          case "launch": if (this.o.launch) this.o.launch(+g("forward") || 0, +g("side") || 0, +g("up") || 0); break;
+          case "hurtPlayer": if (this.o.hurt) this.o.hurt(+g("amount") || 0); break;
+          case "teleport": if (this.o.teleport) this.o.teleport(); break;
+          case "switchWeapon": if (this.o.switchWeapon) this.o.switchWeapon(String(g("which") || "next"), +g("num") || 1); break;
+          case "sendMessage": if (this.o.broadcast) { const nm = String(g("name") || "").trim(); setTimeout(() => { if (!this.dead) this.o.broadcast(nm); }, 0); } break;
+          case "waitUntil": { let i = 0; while (!tok.dead && !this.dead && !this.test(g("tag"), g("op") || "=", g("value"))) { await sleep(16, tok); i++; } break; }
+          case "repeatUntil": { const body = this.link(owner, n.id, "body"); while (!tok.dead && !this.dead && !this.test(g("tag"), g("op") || "=", g("value"))) { await this.chain(owner, body, tok); await sleep(16, tok); } out = "next"; break; }
+          case "chance": out = Math.random() * 100 < (+g("percent") || 0) ? "then" : "else"; break;
+          case "stop": return;
+          case "stopAll": this.stopOwner(owner.key); return;
+          case "ifReloading": out = this.o.isReloading && this.o.isReloading() ? "then" : "else"; break;
+          case "ifNear": out = this.o.nearEnemy && this.o.nearEnemy(+g("dist") || 0) ? "then" : "else"; break;
+          case "randomTag": { const t = g("tag"), a = +g("min") || 0, b = +g("max") || 0, lo = Math.min(a, b), hi = Math.max(a, b); let v = lo + Math.random() * (hi - lo); if (g("whole") !== false) v = Math.floor(lo + Math.random() * (Math.floor(hi) - Math.ceil(lo) + 1)) + (Math.ceil(lo) - lo); this.setTag(t, v); break; }
+          case "mathTag": { const t = g("tag"), sp = this.T.spec(t); if (!sp || sp.type !== "number") break; const a = +this.T.get(t) || 0, b = +g("value") || 0; let v = a;
+            switch (String(g("op"))) { case "*": v = a * b; break; case "/": v = b ? a / b : a; break; case "min": v = Math.min(a, b); break; case "max": v = Math.max(a, b); break; case "mod": v = b ? ((a % b) + b) % b : a; break; case "round": v = b ? Math.round(a / b) * b : Math.round(a); break; } this.setTag(t, v); break; }
+          case "toggleTag": { const t = g("tag"), sp = this.T.spec(t); if (sp) this.T.set(t, sp.type === "bool" ? !this.T.get(t) : !/^(1|true|on|yes)$/i.test(String(this.T.get(t)))); break; }
           case "gotoScreen": if (this.o.goto) this.o.goto(g("screen")); break;
           case "say": if (this.o.say) this.o.say(this.T.interpolate(String(g("text")))); break;
           case "wait": await sleep((+g("seconds") || 0) * 1000, tok); break;

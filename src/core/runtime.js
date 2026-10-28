@@ -47,7 +47,8 @@
       this.h = { down: e => this.down(e), move: e => this.move(e), up: e => this.up(e), key: e => this.key(e), fs: () => this.fsChange() };
       this.stage.addEventListener("pointerdown", this.h.down); this.stage.addEventListener("pointermove", this.h.move); this.stage.addEventListener("pointerup", this.h.up); this.stage.addEventListener("pointercancel", this.h.up);
       window.addEventListener("keydown", this.h.key); document.addEventListener("fullscreenchange", this.h.fs);
-      this.sh = this.mode !== "edit" ? new PRIM.Script.Host({ tags: this.tags, sfx: (id, v) => this.sfx(id, v), loop: (id, v) => this.loopSfx(id, v), stopLoop: id => this.stopLoops(id), goto: id => { if (this.project.screens.some(s => s.id === id)) this.show(id); }, say: t => { if (this.o.say) this.o.say(t); } }) : null;
+      this.sh = this.mode !== "edit" ? new PRIM.Script.Host({ tags: this.tags, sfx: (id, v) => this.sfx(id, v), loop: (id, v) => this.loopSfx(id, v), stopLoop: id => this.stopLoops(id), goto: id => { if (this.project.screens.some(s => s.id === id)) this.show(id); }, say: t => { if (this.o.say) this.o.say(t); }, broadcast: name => { const sc = this.screen(); if (sc) for (const n of sc.nodes) this.script(sc, n, "onMessage", name); } }) : null;
+      if (this.sh) this.sh.watch(() => { const sc = this.screen(); return sc ? sc.nodes.filter(n => n.script).map(n => ({ key: sc.id + "." + n.id, script: n.script })) : []; });
       this.fit(); this.show(this.screenId || this.project.screens[0].id);
       this.raf = requestAnimationFrame(t => this.frame(t));
     }
