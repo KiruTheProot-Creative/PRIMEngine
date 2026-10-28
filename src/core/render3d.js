@@ -289,7 +289,7 @@
     // objects off screen are skipped (culling setting): a sphere around the model's bounds, moved by its matrix
     const vis = this.visible(), pl = vis ? this.frustum() : null, onScreen = f => { const b = f.gm.model && f.gm.model.bounds; if (!pl || !b) return true; const m = f.M, c = M4.point(m, (b.lo[0] + b.hi[0]) / 2, (b.lo[1] + b.hi[1]) / 2, (b.lo[2] + b.hi[2]) / 2), k = Math.max(Math.hypot(m[0], m[1], m[2]), Math.hypot(m[4], m[5], m[6]), Math.hypot(m[8], m[9], m[10])), r = Math.hypot(b.hi[0] - b.lo[0], b.hi[1] - b.lo[1], b.hi[2] - b.lo[2]) * 0.75 * k + 8; return pl.every(q => q[0] * c[0] + q[1] * c[1] + q[2] * c[2] + q[3] > -r); };
     this.culledFx = 0;
-    for (const f of list) if (f.kind === "mesh" && f.gm) { if (!onScreen(f)) { this.culledFx++; continue; } this.setMat(f.mat); const lv = this.lodLevelAt(Math.hypot(f.p[0] - this.cam.x, f.p[1] - this.cam.y, f.p[2] - this.cam.z), 20 * (f.scale || 1)); this.lodLevel = lv; for (let ms of f.gm.meshes) { ms = this.lodOf(f.gm, ms, lv); gl.uniformMatrix4fv(L.m, false, new Float32Array(M4.mul(f.M, f.pose[ms.node]))); bind(ms.buf, f.tex || f.gm.tex); gl.drawArrays(gl.TRIANGLES, 0, ms.n); } }
+    for (const f of list) if (f.kind === "mesh" && f.gm) { if (!onScreen(f)) { this.culledFx++; continue; } this.setMat(f.mat); const lv = this.lodLevelAt(Math.hypot(f.p[0] - this.cam.x, f.p[1] - this.cam.y, f.p[2] - this.cam.z), 20 * (f.scale || 1)); this.lodLevel = lv; for (let ms of f.gm.meshes) { ms = this.lodOf(f.gm, ms, lv); gl.uniformMatrix4fv(L.m, false, new Float32Array(M4.mul(f.M, f.pose[ms.node]))); bind(ms.buf, ms.tex || f.tex || f.gm.tex); gl.drawArrays(gl.TRIANGLES, 0, ms.n); } }
     // decals / sprites: a textured square at p facing n (up = the world's up, or z for floors); frame f of a horizontal strip of `frames`
     for (const f of list) if (f.kind === "decal" && f.texId) {
       const n = f.n, ref = Math.abs(n[1]) > 0.9 ? [0, 0, 1] : [0, 1, 0], ux = M4.norm(M4.cross(ref, n)), uy = M4.cross(n, ux), sw = (f.w || f.size) / 2, s = (f.h || f.size) / 2, fr = f.frames || 1, u0 = (f.frame || 0) / fr, u1 = ((f.frame || 0) + 1) / fr;
@@ -323,6 +323,9 @@
   P.raycast = function (o, d, maxT) { const h = PRIM.Grid && (this.world || this.extraTris) ? PRIM.Grid.raycast(this.world, o, d, maxT || 1e5, this.extraTris) : null; return h ? { t: h.t, p: h.p, n: h.tri && h.tri.n ? (h.tri.n[0] * d[0] + h.tri.n[1] * d[1] + h.tri.n[2] * d[2] > 0 ? h.tri.n.map(q => -q) : h.tri.n) : null, info: h.info } : null; };
 
   // ------------------------------------------------------------ models (FBX) drawn in front of the camera
+  // a one-mesh model from vertex data (8 floats each: position, uv, colour); tex = GL texture or null (white)
+  P.meshFrom = function (data, tex, bounds) { const gl = this.gl, buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf); gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW); return { buf, n: data.length / 8, node: 0, tex: tex || this.whiteTex }; };
+  P.freeMesh = function (ms) { if (ms && ms.buf) { this.gl.deleteBuffer(ms.buf); ms.buf = null; } };
   P.loadModel = function (model) {
     const gl = this.gl, L = M4.norm([0.3, 0.8, 0.5]), gm = { model, meshes: [], tex: this.whiteTex };
     model.nodes.forEach((n, i) => { if (!n.mesh || !n.mesh.p.length) return; const m = n.mesh, cnt = m.p.length / 3, a = new Float32Array(cnt * 8);
@@ -333,7 +336,8 @@
   };
   // auto-LOD: merge nearby vertices of a mesh (grid clustering). level 1 = about half the detail, 2 = a quarter
   P.lodOf = function (gm, ms, level) {
-    if (!level || ms.n < 3000) return ms;   // small models (most projectiles, pick-ups) are never simplified: they would fall apart into flat pieces ms.lod = ms.lod || {}; if (ms.lod[level]) return ms.lod[level];
+    if (!level || ms.n < 3000 || !gm.model.nodes) return ms;   // small models (most projectiles, pick-ups) are never simplified: they would fall apart into flat pieces
+    ms.lod = ms.lod || {}; if (ms.lod[level]) return ms.lod[level];
     const mesh = gm.model.nodes[ms.node].mesh, cnt = mesh.p.length / 3; let mn = [1e9, 1e9, 1e9], mx = [-1e9, -1e9, -1e9];
     for (let i = 0; i < cnt; i++) for (let q = 0; q < 3; q++) { const v = mesh.p[i * 3 + q]; if (v < mn[q]) mn[q] = v; if (v > mx[q]) mx[q] = v; }
     const cell = Math.max(1e-6, Math.hypot(mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2]) / (level === 1 ? 28 : 12)), key = i => [0, 1, 2].map(q => Math.floor((mesh.p[i * 3 + q] - mn[q]) / cell)).join(","), acc = {};

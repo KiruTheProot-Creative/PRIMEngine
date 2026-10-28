@@ -38,6 +38,8 @@
   M.norm = v => { const l = Math.hypot(v[0], v[1], v[2]) || 1; return [v[0] / l, v[1] / l, v[2] / l]; };
   M.dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
   M.cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  // rotation by ang radians around the unit axis ax
+  M.rotAxis = (ax, ang) => { const c = Math.cos(ang), s = Math.sin(ang), t = 1 - c, [x, y, z] = ax; return [t * x * x + c, t * x * y + s * z, t * x * z - s * y, 0, t * x * y - s * z, t * y * y + c, t * y * z + s * x, 0, t * x * z + s * y, t * y * z - s * x, t * z * z + c, 0, 0, 0, 0, 1]; };
   // rotation (as a matrix) that turns unit vector a onto unit vector b, never turning more than maxRad
   M.between = (a, b, maxRad) => {
     const d = Math.max(-1, Math.min(1, M.dot(a, b))); let ang = Math.acos(d); if (ang < 1e-5) return M.ident(); let ax = M.cross(a, b); if (M.len(ax) < 1e-6) return M.ident(); ax = M.norm(ax);

@@ -22,6 +22,7 @@
     ["pick", "Pick", "I", "Click a cell to take its texture (Alt + click does this with any tool)."],
     ["object", "Object", "O", "Click to place the chosen object (doors snap to the middle of a cell). Click an object to select it, drag to move. D turns it."],
     ["start", "Player start", "P", "Click to put the player start. D turns it."],
+    ["path", "Path", "N", "Click to add points to a path (a new path starts when none is open). Enter or right-click finishes it. Drag a point to move it, Delete removes the selected path. Patrol enemies walk them."],
     ["zone", "Zone", "Z", "Drag a box over cells to make a zone (Zones tab: trigger or custom). Click a zone to select it, drag it to move it. Delete removes it."],
   ];
   const KEYS = {}; for (const t of TOOLS) KEYS[t[2].toLowerCase()] = t[0];
@@ -89,6 +90,7 @@
       door: () => box(3, 11, 20, 5, "#d9a35a"), enemy: () => { x.fillStyle = "#ff5a4a"; x.beginPath(); x.arc(13, 13, 8, 0, 7); x.fill(); },
       pickup: () => { x.fillStyle = acc; x.beginPath(); x.moveTo(13, 4); x.lineTo(22, 13); x.lineTo(13, 22); x.lineTo(4, 13); x.fill(); },
       exit: () => { box(5, 4, 16, 18, "#5aff8a"); box(9, 8, 8, 14, "#1b222b"); },
+      path: () => { x.strokeStyle = "#5ad1ff"; x.lineWidth = 2; x.setLineDash([]); x.beginPath(); x.moveTo(5, 20); x.lineTo(12, 8); x.lineTo(21, 15); x.stroke(); x.fillStyle = "#5ad1ff"; for (const [a, b] of [[5, 20], [12, 8], [21, 15]]) { x.beginPath(); x.arc(a, b, 2.6, 0, 7); x.fill(); } },
       zonetrigger: () => { x.fillStyle = "rgba(255,190,60,.35)"; x.fillRect(3, 3, 20, 20); x.strokeStyle = "#ffbe3c"; x.setLineDash([3, 2]); x.lineWidth = 1.5; x.strokeRect(3.5, 3.5, 19, 19); x.fillStyle = "#ffbe3c"; x.beginPath(); x.moveTo(14, 6); x.lineTo(9, 14); x.lineTo(13, 14); x.lineTo(11, 20); x.lineTo(17, 11); x.lineTo(13, 11); x.fill(); },
       zonecustom: () => { x.fillStyle = "rgba(220,90,255,.3)"; x.fillRect(3, 3, 20, 20); x.strokeStyle = "#dc5aff"; x.setLineDash([3, 2]); x.lineWidth = 1.5; x.strokeRect(3.5, 3.5, 19, 19); x.setLineDash([]); x.fillStyle = "#dc5aff"; for (const [a, b] of [[8, 9], [17, 9], [12, 17]]) { x.beginPath(); x.arc(a, b, 2.6, 0, 7); x.fill(); } x.strokeStyle = "#dc5aff"; x.beginPath(); x.moveTo(8, 9); x.lineTo(17, 9); x.lineTo(12, 17); x.stroke(); }, npc: () => { x.fillStyle = "#b48cff"; x.beginPath(); x.arc(13, 9, 5, 0, 7); x.fill(); box(7, 15, 12, 8, "#b48cff"); },
     };
@@ -110,7 +112,8 @@
         zs.length ? "" : h("div", { class: "note", text: "No zones yet." }));
     } else if (s.panel === "objects") {
       const props = (this.o.getProps && this.o.getProps()) || [], cur = this.o.getProp && this.o.getProp();
-      out.push(h("button", { class: "mpiece wide" + (s.tool === "start" ? " on" : ""), title: "Player start (P)", onclick: () => this.setTool("start") }, this.icon("start"), h("span", { text: "Player start" })), h("div", { class: "mph", text: "Objects" }),
+      out.push(h("button", { class: "mpiece wide" + (s.tool === "start" ? " on" : ""), title: "Player start (P)", onclick: () => this.setTool("start") }, this.icon("start"), h("span", { text: "Player start" })),
+        h("button", { class: "mpiece wide" + (s.tool === "path" ? " on" : ""), title: "Path (N): patrol routes for enemies", onclick: () => this.setTool("path") }, this.icon("path"), h("span", { text: "Path (patrol route)" })), h("div", { class: "mph", text: "Objects" }),
         ...props.map(p => h("button", { class: "mpiece wide" + (s.tool === "object" && cur === p.id ? " on" : ""), title: p.name + " (" + p.type + "): click it, then click in the map to place it", onclick: () => { if (this.o.setProp) this.o.setProp(p.id); this.setTool("object"); } }, this.icon(p.type), h("span", { class: "msn", text: p.name }), h("span", { class: "mpty", text: p.type }))),
         props.length ? "" : h("div", { class: "note", text: "No objects yet. Make doors, enemies, pick-ups and more in the Object Editor tab." }));
     } else {
@@ -127,7 +130,7 @@
     this.pal.replaceChildren(...out);
   };
   P.mirror = function () { if (this.s.tool !== "diag") return; this.s.flip = !this.s.flip; this.buildBar(); this.buildPal(); this.redraw(); };
-  P.setTool = function (t) { this.s.tool = t; this.drag = null; if (t === "object" || t === "start") this.s.panel = "objects"; else if (t === "zone") this.s.panel = "zones"; else if (t !== "select" && t !== "pick") this.s.panel = "rooms"; this.buildBar(); this.buildPal(); this.redraw(); };
+  P.setTool = function (t) { this.s.tool = t; this.drag = null; if (t !== "path") this.pathOpen = null; if (t === "object" || t === "start" || t === "path") this.s.panel = "objects"; else if (t === "zone") this.s.panel = "zones"; else if (t !== "select" && t !== "pick") this.s.panel = "rooms"; this.buildBar(); this.buildPal(); this.redraw(); };
   P.setLayer = function (L) { L = Math.max(0, Math.min(63, L)); if (L > this.m.layers.length) L = this.m.layers.length; this.s.L = L; this.sel = this.sel && this.sel.kind === "cells" ? null : this.sel; this.buildBar(); this.redraw(); this.emitSel(); };
   P.destroy = function () { this.ro.disconnect(); this.unsub(); };
   P.urls = function () { return (this.o.getUrls ? this.o.getUrls() : this.o.urls) || {}; };
@@ -135,9 +138,9 @@
 
   // ---------------------------------------------------------------- undo / redo (cells, objects and the start)
   const START = ["startX", "startY", "startLayer", "startAngle"];
-  P.snap = function () { const m = this.m, o = {}; for (const k of START) o[k] = this.T.get(m.id + "." + k); return JSON.stringify({ layers: m.layers, things: m.things, n: m.n, zones: m.zones || [], start: o }); };
+  P.snap = function () { const m = this.m, o = {}; for (const k of START) o[k] = this.T.get(m.id + "." + k); return JSON.stringify({ layers: m.layers, things: m.things, n: m.n, zones: m.zones || [], paths: m.paths || [], start: o }); };
   P.save = function () { this.undoS.push(this.snap()); if (this.undoS.length > 100) this.undoS.shift(); this.redoS = []; };
-  P.restore = function (s) { const d = JSON.parse(s), m = this.m; m.layers = d.layers; m.things = d.things; m.n = d.n; m.zones = d.zones || []; if (PRIM.Schema && this.o.project) PRIM.Schema.ensureZones(this.o.project); const o = {}; for (const k of START) if (d.start[k] !== undefined) o[m.id + "." + k] = d.start[k]; this.T.setMany(o); };
+  P.restore = function (s) { const d = JSON.parse(s), m = this.m; m.layers = d.layers; m.things = d.things; m.n = d.n; m.zones = d.zones || []; m.paths = d.paths || []; if (PRIM.Schema && this.o.project) PRIM.Schema.ensureZones(this.o.project); const o = {}; for (const k of START) if (d.start[k] !== undefined) o[m.id + "." + k] = d.start[k]; this.T.setMany(o); };
   P.history = function (back) {
     const from = back ? this.undoS : this.redoS, to = back ? this.redoS : this.undoS, s = from.pop(); if (!s) { if (this.o.log) this.o.log(back ? "Nothing to undo." : "Nothing to redo."); return; }
     to.push(this.snap()); this.restore(s); this.sel = null; this.changed(true); this.emitSel();
@@ -237,6 +240,7 @@
     const s = this.sel, m = this.m; if (!s) return false;
     if (s.kind === "thing") { this.save(); m.things = (m.things || []).filter(t => t.id !== s.id); this.sel = null; this.changed(true); this.emitSel(); return true; }
     if (s.kind === "cells") { this.applyCells(c => { for (const k of Object.keys(c)) delete c[k]; }); return true; }
+    if (s.kind === "path") { this.save(); m.paths = (m.paths || []).filter(q => q.id !== s.id); for (const t of m.things || []) if (t.path === s.id) delete t.path; this.pathOpen = null; this.sel = null; this.changed(true); this.emitSel(); return true; }
     if (s.kind === "zone") { const z = (m.zones || []).find(q => q.id === s.id); if (!z) return false; this.save(); PRIM.Schema.removeZone(this.o.project, m, z); this.sel = null; this.changed(true); this.emitSel(); this.buildPal(); return true; }
     return false;
   };
@@ -262,6 +266,13 @@
       this.sel = { kind: "cells", x0: cx, y0: cy, x1: cx, y1: cy }; this.drag = { kind: "box", a: [cx, cy] }; this.redraw(); return;
     }
     if (s.tool === "start") { this.setStart(px, py); this.drag = { kind: "start" }; return; }
+    if (s.tool === "path") { const hp = this.pathPointAt(px, py);
+      if (erase) { this.pathOpen = null; if (hp && hp.i >= 0 && hp.pa.pts.length > 2) { this.save(); hp.pa.pts.splice(hp.i, 1); this.changed(false); } this.redraw(); this.emitSel(); return; }
+      if (hp) { this.save(); this.sel = { kind: "path", id: hp.pa.id }; this.drag = { kind: "pmove", pa: hp.pa, i: hp.i, moved: false }; this.redraw(); this.emitSel(); return; }
+      const P0 = [(Math.floor(this.wx(px) / C) + 0.5) * C, (Math.floor(this.wy(py) / C) + 0.5) * C], m = this.m; this.save(); m.paths = m.paths || [];
+      let pa = this.pathOpen && m.paths.find(q => q.id === this.pathOpen);
+      if (!pa) { let n = 1; while (m.paths.some(q => q.id === "path" + n)) n++; pa = { id: "path" + n, pts: [], loop: true, layer: s.L }; m.paths.push(pa); this.pathOpen = pa.id; }
+      pa.pts.push(P0); this.sel = { kind: "path", id: pa.id }; this.changed(pa.pts.length === 1); this.emitSel(); return; }
     if (s.tool === "zone") { const z = this.zoneAt(cx, cy); if (erase) { if (z) { this.sel = { kind: "zone", id: z.id }; this.deleteSelection(); } return; }
       if (z) { this.save(); this.sel = { kind: "zone", id: z.id }; this.drag = { kind: "zmove", z, a: [cx, cy], o: [z.x0, z.y0, z.x1, z.y1], moved: false }; this.redraw(); this.emitSel(); this.buildPal(); return; }
       this.drag = { kind: "zbox", a: [cx, cy], b: [cx, cy] }; this.redraw(); return; }
@@ -275,6 +286,7 @@
     if (!d) return this.redraw();
     if (d.kind === "pan") { this.v.cx = d.cx - (px - d.px) / this.v.z; this.v.cy = d.cy - (py - d.py) / this.v.z; return this.redraw(); }
     if (d.kind === "paint") { const l = d.last || [cx, cy], n = Math.max(Math.abs(cx - l[0]), Math.abs(cy - l[1])); for (let i = 1; i <= n; i++) this.paintAt(Math.round(l[0] + (cx - l[0]) * i / n), Math.round(l[1] + (cy - l[1]) * i / n)); this.paintAt(cx, cy); d.last = [cx, cy]; return; }
+    if (d.kind === "pmove") { const P0 = [(Math.floor(this.wx(px) / C) + 0.5) * C, (Math.floor(this.wy(py) / C) + 0.5) * C], q = d.pa.pts[d.i]; if (q[0] !== P0[0] || q[1] !== P0[1]) { d.pa.pts[d.i] = P0; d.moved = true; } return this.redraw(); }
     if (d.kind === "room" || d.kind === "zbox") { d.b = [cx, cy]; return this.redraw(); }
     if (d.kind === "zmove") { const dx = cx - d.a[0], dy = cy - d.a[1]; d.z.x0 = d.o[0] + dx; d.z.y0 = d.o[1] + dy; d.z.x1 = d.o[2] + dx; d.z.y1 = d.o[3] + dy; if (dx || dy) d.moved = true; return this.redraw(); }
     if (d.kind === "box") { this.sel.x1 = cx; this.sel.y1 = cy; return this.redraw(); }
@@ -286,6 +298,7 @@
     if (d.kind === "paint") { if (d.done.size) this.changed(false); else this.undoS.pop(); }
     else if (d.kind === "room") { this.save(); this.room(d.a, d.b, d.erase); this.changed(false); }
     else if (d.kind === "zbox") { this.save(); const z = PRIM.Schema.addZone(this.o.project, this.m, { type: this.s.zkind || "trigger", x0: Math.min(d.a[0], d.b[0]), y0: Math.min(d.a[1], d.b[1]), x1: Math.max(d.a[0], d.b[0]), y1: Math.max(d.a[1], d.b[1]), layer: this.s.L }); this.sel = { kind: "zone", id: z.id }; this.changed(true); this.emitSel(); this.buildPal(); }
+    else if (d.kind === "pmove") { if (!d.moved) this.undoS.pop(); this.changed(false); this.emitSel(); }
     else if (d.kind === "zmove") { if (!d.moved) this.undoS.pop(); this.changed(false); this.emitSel(); }
     else if (d.kind === "box") this.emitSel();
     else if (d.kind === "thing") { if (!d.moved) this.undoS.pop(); this.changed(false); this.emitSel(); }
@@ -299,12 +312,15 @@
     if (mod && k === "c") { e.preventDefault(); this.copy(); return; } if (mod && k === "v") { e.preventDefault(); if (this.hover) this.paste(this.hover[0], this.hover[1]); return; }
     if (mod && k === "a") { e.preventDefault(); const b = G.bounds(this.m); if (b) { this.sel = { kind: "cells", x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1 }; this.redraw(); this.emitSel(); } return; }
     if (mod) return;
+    if ((k === "enter" || k === "escape") && this.pathOpen) { this.pathOpen = null; this.redraw(); if (this.o.log) this.o.log("Path finished."); return; }
     if (k === "escape") { this.sel = null; this.redraw(); this.emitSel(); return; }
     if (k === "pageup") { e.preventDefault(); this.setLayer(this.s.L + 1); return; } if (k === "pagedown") { e.preventDefault(); this.setLayer(this.s.L - 1); return; }
     if (k === "home") { this.fit(); return; } if (k === "d") { this.turn(); return; } if (k === "m") { this.mirror(); return; }
     if (KEYS[k]) { e.preventDefault(); this.setTool(KEYS[k]); }
   };
   // a texture dropped from the Project panel: put it on the cell under the mouse (its wall, or else its floor; Shift = ceiling)
+  // a point of a path on this story near the mouse: { pa, i }
+  P.pathPointAt = function (px, py) { let best = null, bd = 10; for (const pa of this.m.paths || []) { if ((pa.layer || 0) !== this.s.L) continue; pa.pts.forEach((q, i) => { const d = Math.hypot(this.sx(q[0]) - px, this.sy(q[1]) - py); if (d < bd) { bd = d; best = { pa, i }; } }); } return best; };
   // the zone under a cell on the story being edited (zones reach up `height` stories); the smallest wins
   P.zoneAt = function (cx, cy) { const L = this.s.L; let best = null, ba = 1e9; for (const z of this.m.zones || []) { const ht = Math.max(0, +this.T.get(this.m.id + ".z." + z.id + ".height") || 0), zl = z.layer || 0; if (L < zl || L > zl + ht) continue; if (cx < z.x0 || cx > z.x1 || cy < z.y0 || cy > z.y1) continue; const a = (z.x1 - z.x0 + 1) * (z.y1 - z.y0 + 1); if (a < ba) { ba = a; best = z; } } return best; };
   P.dropTexture = function (e, assetId) {
@@ -375,6 +391,17 @@
     }
     // selection, room box, hover
     const box = (a, b, col, dash) => { const x0 = Math.min(a[0], b[0]), x1 = Math.max(a[0], b[0]) + 1, y0 = Math.min(a[1], b[1]), y1 = Math.max(a[1], b[1]) + 1; x.setLineDash(dash || []); x.strokeStyle = col; x.lineWidth = 2; x.strokeRect(this.sx(x0 * C), this.sy(y0 * C), (x1 - x0) * cs, (y1 - y0) * cs); x.setLineDash([]); };
+    // paths on this story: lines with numbered points and arrows; a dashed line from each enemy that walks one to its first point
+    for (const pa of m.paths || []) { if ((pa.layer || 0) !== L || !pa.pts.length) continue; const sel = this.sel && this.sel.kind === "path" && this.sel.id === pa.id, open = this.pathOpen === pa.id, P = pa.pts.map(q => [this.sx(q[0]), this.sy(q[1])]);
+      x.strokeStyle = sel || open ? "#9be6ff" : "rgba(90,209,255,.75)"; x.lineWidth = sel ? 3 : 2; x.setLineDash([]); x.beginPath(); P.forEach((q, i) => (i ? x.lineTo : x.moveTo).call(x, q[0], q[1])); x.stroke();
+      if (pa.loop !== false && P.length > 2) { x.setLineDash([6, 5]); x.beginPath(); x.moveTo(P[P.length - 1][0], P[P.length - 1][1]); x.lineTo(P[0][0], P[0][1]); x.stroke(); x.setLineDash([]); }
+      for (let i = 0; i + 1 < P.length; i++) { const a = P[i], b = P[i + 1], mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2, an = Math.atan2(b[1] - a[1], b[0] - a[0]); x.fillStyle = x.strokeStyle; x.beginPath(); x.moveTo(mx + Math.cos(an) * 7, my + Math.sin(an) * 7); x.lineTo(mx + Math.cos(an + 2.5) * 6, my + Math.sin(an + 2.5) * 6); x.lineTo(mx + Math.cos(an - 2.5) * 6, my + Math.sin(an - 2.5) * 6); x.fill(); }
+      P.forEach((q, i) => { x.fillStyle = i === 0 ? "#3dff9a" : "#5ad1ff"; x.beginPath(); x.arc(q[0], q[1], sel ? 6 : 5, 0, 7); x.fill(); x.strokeStyle = "#000"; x.lineWidth = 1; x.stroke(); if (cs >= 20) { x.fillStyle = "#000"; x.font = "bold 9px system-ui"; x.textAlign = "center"; x.textBaseline = "middle"; x.fillText(String(i + 1), q[0], q[1] + 0.5); } });
+      if (cs >= 14) { x.fillStyle = "#cfefff"; x.font = "11px system-ui"; x.textAlign = "left"; x.textBaseline = "bottom"; x.fillText(pa.id + (open ? "  (click to add points, Enter to finish)" : ""), P[0][0] + 8, P[0][1] - 6); } }
+    for (const th of this.things()) { if (!th.path) continue; const pa = (m.paths || []).find(q => q.id === th.path); if (!pa || !pa.pts.length) continue; x.setLineDash([3, 4]); x.strokeStyle = "rgba(90,209,255,.6)"; x.lineWidth = 1.5; x.beginPath(); x.moveTo(this.sx(th.x), this.sy(th.y)); x.lineTo(this.sx(pa.pts[0][0]), this.sy(pa.pts[0][1])); x.stroke(); x.setLineDash([]); }
+    // ceiling enemies: their detection cone, seen from above (where it reaches the floor)
+    for (const th of this.things()) { const pr = th.prop + "."; if (T.get(pr + "type") !== "enemy" || T.get(pr + "behavior") !== "stationary" || T.get(pr + "mount") !== "ceiling") continue; const R = Math.tan((+T.get(pr + "coneAngle") || 25) * Math.PI / 180) * Math.min(+T.get(pr + "coneRange") || 400, 128);
+      x.setLineDash([4, 4]); x.strokeStyle = "rgba(255,90,74,.8)"; x.fillStyle = "rgba(255,90,74,.08)"; x.lineWidth = 1.5; x.beginPath(); x.arc(this.sx(th.x), this.sy(th.y), Math.max(4, R * z), 0, 7); x.fill(); x.stroke(); x.setLineDash([]); }
     // zones on this story: translucent boxes (amber = trigger, purple = custom), always shown, brighter with the zone tool
     for (const zn of m.zones || []) { const ht = Math.max(0, +T.get(m.id + ".z." + zn.id + ".height") || 0), zl = zn.layer || 0; if (L < zl || L > zl + ht) continue;
       const cu = zn.type === "custom", sel = this.sel && this.sel.kind === "zone" && this.sel.id === zn.id, on = s.tool === "zone" || sel, X0 = this.sx(zn.x0 * C), Y0 = this.sy(zn.y0 * C), W0 = (zn.x1 - zn.x0 + 1) * cs, H0 = (zn.y1 - zn.y0 + 1) * cs;

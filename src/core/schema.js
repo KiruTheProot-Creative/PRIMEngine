@@ -110,7 +110,7 @@
   // 3D objects attached to the player camera (weapons, hands...). Each one has tags player.<id>.*
   const ANIM = (k, label, extra) => Object.assign({ k, label, type: "anim", def: "" }, extra || {}), NUM = (k, label, def, min, max, step, extra) => Object.assign({ k, label, type: "number", def, min, max, step }, extra || {}), WP = ["type", "weapon"], NI = ["type", ["weapon", "animation"]], W_ = { showIf: WP };
   // a showIf is [tagKey, value] or [tagKey, [value, value...]]
-  S.shown = (T, pre, pr) => { const ok = c => { const v = T.get(pre + c[0]), w = c[1]; return Array.isArray(w) ? w.includes(v) : v === w; }; return (!pr.showIf || ok(pr.showIf)) && (!pr.showIf2 || ok(pr.showIf2)); };
+  S.shown = (T, pre, pr) => { const ok = c => { const v = T.get(pre + c[0]), w = c[1]; return Array.isArray(w) ? w.includes(v) : v === w; }; return (!pr.showIf || ok(pr.showIf)) && (!pr.showIf2 || ok(pr.showIf2)) && (!pr.also || pr.also.every(ok)); };
   S.ATTACH = [
     { k: "name", label: "Name", type: "string", def: "Object" },
     { k: "type", label: "Type", type: "choice", options: [["weapon", "Weapon (in the weapon list, aims and fires)"], ["animation", "Animation object (3D model)"], ["image", "Image object (flat picture)"]], def: "animation" },
@@ -218,12 +218,36 @@
     NUM("health", "Health", 100, 1, 100000, 1, { showIf: ["type", "enemy"] }), NUM("speed", "Walking speed (units / second)", 150, 0, 2000, 5, { showIf: ["type", "enemy"] }),
     NUM("radius", "Body width (radius, units)", 22, 4, 200, 1, { showIf: ["type", ["enemy", "npc"]] }), NUM("height", "Body height (units, 64 = 1 m)", 110, 10, 600, 1, { showIf: ["type", "enemy"] }),
     NUM("sight", "Sees the player from (units)", 900, 50, 10000, 10, { showIf: ["type", "enemy"] }),
+    // how it moves: chase (waits, then hunts you), path (walks a path drawn on the map), stationary (stands still or hangs from the ceiling)
+    { k: "behavior", label: "Behaviour", type: "choice", options: [["chase", "Normal: waits until it sees you, then hunts you"], ["path", "Patrol: follows a path drawn on the map"], ["stationary", "Stationary: stands still, or hangs from the ceiling"]], def: "chase", showIf: ["type", "enemy"] },
+    { k: "pathChase", label: "Leaves the path to hunt you once it sees you", type: "bool", def: true, showIf: ["type", "enemy"], showIf2: ["behavior", "path"] },
+    NUM("pathWait", "Waits at each point (s)", 0, 0, 30, 0.1, { showIf: ["type", "enemy"], showIf2: ["behavior", "path"] }),
+    { k: "mount", label: "Where it sits", type: "choice", options: [["floor", "On the floor (a turret)"], ["ceiling", "On the nearest ceiling above it"]], def: "floor", showIf: ["type", "enemy"], showIf2: ["behavior", "stationary"] },
+    { k: "turn", label: "Turns to face you", type: "bool", def: true, showIf: ["type", "enemy"], showIf2: ["behavior", "stationary"] },
+    { k: "ceilFlip", label: "Hang upside down (model turned over)", type: "bool", def: true, showIf: ["type", "enemy"], showIf2: ["mount", "ceiling"], also: [["behavior", "stationary"]] },
+    NUM("coneAngle", "Detection cone: width (degrees from straight down)", 25, 2, 85, 1, { showIf: ["type", "enemy"], showIf2: ["mount", "ceiling"], also: [["behavior", "stationary"]] }),
+    NUM("coneRange", "Detection cone: reach (units down, 128 = a story)", 400, 32, 5000, 8, { showIf: ["type", "enemy"], showIf2: ["mount", "ceiling"], also: [["behavior", "stationary"]] }),
+    { k: "ceilAction", label: "When you walk under it", type: "choice", options: [["shoot", "Shoots down at you (its Attack settings, projectile if melee)"], ["drop", "Drops down (and maybe turns into another enemy)"], ["selfdestruct", "Self-destructs (explodes)"]], def: "shoot", showIf: ["type", "enemy"], showIf2: ["mount", "ceiling"], also: [["behavior", "stationary"]] },
+    { k: "dropInto", label: "After landing it becomes (empty = stays itself and hunts you)", type: "propRef", refType: "enemy", def: "", showIf: ["type", "enemy"], showIf2: ["ceilAction", "drop"], also: [["behavior", "stationary"], ["mount", "ceiling"]] },
+    { k: "sdFall", label: "Falls first, explodes when it lands", type: "bool", def: false, showIf: ["type", "enemy"], showIf2: ["ceilAction", "selfdestruct"], also: [["behavior", "stationary"], ["mount", "ceiling"]] },
+    NUM("fuse", "Fuse before exploding (s, it blinks)", 0.6, 0, 10, 0.05, { showIf: ["type", "enemy"], showIf2: ["ceilAction", "selfdestruct"], also: [["behavior", "stationary"], ["mount", "ceiling"]] }),
+    { k: "dropSound", label: "Sound when it lets go / arms itself", type: "asset", assetType: "sound", def: "", showIf: ["type", "enemy"], showIf2: ["mount", "ceiling"], also: [["behavior", "stationary"]] },
+    // blast (self-destruct, and the "pieces explode" death)
+    NUM("blastRadius", "Blast radius (units, 0 = harmless)", 160, 0, 3000, 4, { showIf: ["type", "enemy"] }), NUM("blastDamage", "Blast damage (in the middle)", 30, 0, 100000, 1, { showIf: ["type", "enemy"] }),
+    { k: "blastColor", label: "Explosion colour", type: "color", def: "#ff8a2a", showIf: ["type", "enemy"] }, NUM("blastCount", "Explosion particles", 40, 0, 200, 1, { showIf: ["type", "enemy"] }),
+    { k: "blastSphere", label: "Explosion shock sphere", type: "bool", def: true, showIf: ["type", "enemy"] }, { k: "blastSound", label: "Explosion sound", type: "asset", assetType: "sound", def: "", showIf: ["type", "enemy"] },
     { k: "attack", label: "Attack", type: "choice", options: [["melee", "Melee (hits up close)"], ["hitscan", "Gun (instant hit)"], ["projectile", "Projectile (a flying ball you can dodge)"]], def: "melee", showIf: ["type", "enemy"] },
     NUM("attackRange", "Attacks from (units)", 70, 10, 5000, 5, { showIf: ["type", "enemy"] }), NUM("damage", "Damage per hit", 10, 0, 100000, 1, { showIf: ["type", "enemy"] }),
     NUM("attackRate", "Time between attacks (s)", 1.2, 0.1, 30, 0.05, { showIf: ["type", "enemy"] }), NUM("attackDelay", "Hit lands after (s, into the attack)", 0.3, 0, 10, 0.05, { showIf: ["type", "enemy"] }),
     NUM("projSpeed", "Projectile speed (units / s)", 600, 50, 5000, 10, { showIf: ["type", "enemy"], showIf2: ["attack", "projectile"] }), NUM("projSize", "Projectile size", 6, 1, 100, 0.5, { showIf: ["type", "enemy"], showIf2: ["attack", "projectile"] }),
     { k: "projColor", label: "Projectile colour", type: "color", def: "#ff6a2a", showIf: ["type", "enemy"] },
     ANIM("walkAnim", "Walking animation", { showIf: ["type", "enemy"] }), ANIM("attackAnim", "Attack animation", { showIf: ["type", "enemy"] }), ANIM("hurtAnim", "Hurt animation", { showIf: ["type", "enemy"] }), ANIM("deathAnim", "Death animation", { showIf: ["type", "enemy"] }),
+    { k: "deathStyle", label: "How it dies", type: "choice", options: [["anim", "Death animation"], ["slice", "Sliced into pieces (3D models)"]], def: "anim", showIf: ["type", "enemy"] },
+    NUM("slicePieces", "Pieces", 4, 2, 8, 1, { showIf: ["type", "enemy"], showIf2: ["deathStyle", "slice"] }), NUM("sliceForce", "How hard the pieces fly apart", 260, 0, 3000, 10, { showIf: ["type", "enemy"], showIf2: ["deathStyle", "slice"] }),
+    { k: "sliceInside", label: "Colour of the cut faces", type: "color", def: "#7a1414", showIf: ["type", "enemy"], showIf2: ["deathStyle", "slice"] },
+    { k: "sliceBlast", label: "Then the pieces explode", type: "bool", def: true, showIf: ["type", "enemy"], showIf2: ["deathStyle", "slice"] },
+    NUM("sliceTime", "Pieces explode after (s) / stay for (s) without exploding", 0.7, 0.05, 60, 0.05, { showIf: ["type", "enemy"], showIf2: ["deathStyle", "slice"] }),
+    { k: "sliceSound", label: "Sound when it is sliced", type: "asset", assetType: "sound", def: "", showIf: ["type", "enemy"], showIf2: ["deathStyle", "slice"] },
     { k: "corpse", label: "Body stays after death", type: "bool", def: true, showIf: ["type", "enemy"] },
     { k: "sightSound", label: "Sound when it spots you", type: "asset", assetType: "sound", def: "", showIf: ["type", "enemy"] }, { k: "attackSound", label: "Attack sound", type: "asset", assetType: "sound", def: "", showIf: ["type", "enemy"] },
     { k: "hurtSound", label: "Hurt sound", type: "asset", assetType: "sound", def: "", showIf: ["type", "enemy"] }, { k: "deathSound", label: "Death sound", type: "asset", assetType: "sound", def: "", showIf: ["type", "enemy"] },
