@@ -91,13 +91,18 @@
     "varying vec2 vUV;varying vec3 vCol;varying float vD;varying vec3 vW;uniform sampler2D uTex;uniform vec3 uFog;uniform float uFogD;uniform float uBright;",
     "uniform vec4 uLP[8];uniform vec4 uLC[8];uniform vec4 uLN[8];uniform vec4 uLU[8];uniform int uNL;uniform vec3 uCam;",
     "uniform vec3 uTint;uniform vec3 uEmit;uniform float uLit;uniform float uAlpha;uniform float uSpec;",
+    // physically-inspired material (uPBR = 1): roughness, metallic, simple sky / ground reflections (uEnvT / uEnvB along the up direction uUp)
+    "uniform float uPBR;uniform float uRough;uniform float uMetal;uniform float uEnvK;uniform vec3 uEnvT;uniform vec3 uEnvB;uniform vec3 uUp;",
     "void main(){",
-    " vec3 base=texture2D(uTex,vUV).rgb*uTint; vec3 c=base*vCol*uBright;",
+    " vec3 alb=texture2D(uTex,vUV).rgb*uTint; vec3 base=alb; vec3 sc=vec3(0.04); float ex=24.0;",
+    " if(uPBR>0.5){ base=alb*(1.0-uMetal); sc=mix(vec3(0.04),alb,uMetal); float r=max(uRough,0.04); ex=clamp(2.0/(r*r*r*r)-2.0,2.0,256.0); }",
+    " vec3 c=base*vCol*uBright;",
+    " vec3 V=normalize(uCam-vW);",
+    "#ifdef DERIV", " vec3 n=normalize(cross(dFdx(vW),dFdy(vW)));", "#else", " vec3 n=vec3(0.0,1.0,0.0);", "#endif",
+    " if(dot(n,V)<0.0) n=-n;",
+    " if(uPBR>0.5){ vec3 R=reflect(-V,n); vec3 env=mix(uEnvB,uEnvT,clamp(dot(R,uUp)*0.5+0.5,0.0,1.0)); float fr=pow(1.0-max(dot(n,V),0.0),5.0); vec3 F=sc+(vec3(1.0)-sc)*fr*(1.0-uRough); c+=env*F*(1.0-uRough*0.8)*uEnvK*uBright; }",
     " if(uNL>0){",
-    "  vec3 V=normalize(uCam-vW);",
-    "#ifdef DERIV", "  vec3 n=normalize(cross(dFdx(vW),dFdy(vW)));", "#else", "  vec3 n=vec3(0.0,1.0,0.0);", "#endif",
-    "  if(dot(n,V)<0.0) n=-n;",
-    "  vec3 ls=vec3(0.0); vec3 ss=vec3(0.0);",
+    "  vec3 ls=vec3(0.0); vec3 ss=vec3(0.0); vec3 sp=vec3(0.0);",
     "  for(int i=0;i<8;i++){ if(i>=uNL) break;",
     "   vec3 Lp=uLP[i].xyz; float rng=uLP[i].w; vec3 col=uLC[i].rgb; float ty=uLC[i].w; vec3 tg=Lp; float fc=1.0;",
     "   if(ty>0.5){ vec3 an=uLN[i].xyz; vec3 ux=uLU[i].xyz; vec3 vx=cross(an,ux); vec3 rel=vW-Lp; tg=Lp+ux*clamp(dot(rel,ux),-uLN[i].w,uLN[i].w)+vx*clamp(dot(rel,vx),-uLU[i].w,uLU[i].w); }",
@@ -105,9 +110,10 @@
     "   if(ty>0.5) fc=clamp(dot(-L,uLN[i].xyz)*2.0+0.15,0.0,1.0);",
     "   float att=clamp(1.0-d/rng,0.0,1.0); att=att*att;",
     "   ls+=col*max(dot(n,L),0.0)*att*fc;",
-    "   vec3 H=normalize(L+V); ss+=col*pow(max(dot(n,H),0.0),24.0)*att*fc;",
+    "   vec3 H=normalize(L+V); float nh=max(dot(n,H),0.0); ss+=col*pow(nh,24.0)*att*fc; sp+=col*pow(nh,ex)*att*fc*max(dot(n,L),0.0);",
     "  }",
     "  c+=base*ls*uLit+ss*uSpec;",
+    "  if(uPBR>0.5) c+=sp*sc*min((ex+8.0)/24.0,14.0)*uLit;",
     " }",
     " c+=base*uEmit;",
     " float f=clamp(vD/uFogD,0.0,1.0); gl_FragColor=vec4(mix(c,uFog,f*f),uAlpha);",
@@ -118,7 +124,7 @@
     this.canvas = canvas; this.ok = !!gl; if (!gl) return; this.gl = gl;
     const sh = (t, src) => { const s = gl.createShader(t); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; };
     const pr = this.pr = gl.createProgram(); gl.attachShader(pr, sh(gl.VERTEX_SHADER, VS)); const dx = gl.getExtension("OES_standard_derivatives"); gl.attachShader(pr, sh(gl.FRAGMENT_SHADER, (dx ? "#extension GL_OES_standard_derivatives : enable\n#define DERIV\n" : "") + FS)); gl.linkProgram(pr); gl.useProgram(pr);
-    this.loc = { pos: gl.getAttribLocation(pr, "aPos"), uv: gl.getAttribLocation(pr, "aUV"), col: gl.getAttribLocation(pr, "aCol"), vp: gl.getUniformLocation(pr, "uVP"), m: gl.getUniformLocation(pr, "uM"), tex: gl.getUniformLocation(pr, "uTex"), lp: gl.getUniformLocation(pr, "uLP"), lc: gl.getUniformLocation(pr, "uLC"), ln: gl.getUniformLocation(pr, "uLN"), lu: gl.getUniformLocation(pr, "uLU"), nl: gl.getUniformLocation(pr, "uNL"), cam: gl.getUniformLocation(pr, "uCam"), tint: gl.getUniformLocation(pr, "uTint"), emit: gl.getUniformLocation(pr, "uEmit"), lit: gl.getUniformLocation(pr, "uLit"), alpha: gl.getUniformLocation(pr, "uAlpha"), spec: gl.getUniformLocation(pr, "uSpec"), fog: gl.getUniformLocation(pr, "uFog"), fogD: gl.getUniformLocation(pr, "uFogD"), bright: gl.getUniformLocation(pr, "uBright") };
+    this.loc = { pos: gl.getAttribLocation(pr, "aPos"), uv: gl.getAttribLocation(pr, "aUV"), col: gl.getAttribLocation(pr, "aCol"), vp: gl.getUniformLocation(pr, "uVP"), m: gl.getUniformLocation(pr, "uM"), tex: gl.getUniformLocation(pr, "uTex"), lp: gl.getUniformLocation(pr, "uLP"), lc: gl.getUniformLocation(pr, "uLC"), ln: gl.getUniformLocation(pr, "uLN"), lu: gl.getUniformLocation(pr, "uLU"), nl: gl.getUniformLocation(pr, "uNL"), cam: gl.getUniformLocation(pr, "uCam"), tint: gl.getUniformLocation(pr, "uTint"), emit: gl.getUniformLocation(pr, "uEmit"), lit: gl.getUniformLocation(pr, "uLit"), alpha: gl.getUniformLocation(pr, "uAlpha"), spec: gl.getUniformLocation(pr, "uSpec"), pbr: gl.getUniformLocation(pr, "uPBR"), rough: gl.getUniformLocation(pr, "uRough"), metal: gl.getUniformLocation(pr, "uMetal"), envK: gl.getUniformLocation(pr, "uEnvK"), envT: gl.getUniformLocation(pr, "uEnvT"), envB: gl.getUniformLocation(pr, "uEnvB"), up: gl.getUniformLocation(pr, "uUp"), fog: gl.getUniformLocation(pr, "uFog"), fogD: gl.getUniformLocation(pr, "uFogD"), bright: gl.getUniformLocation(pr, "uBright") };
     gl.enable(gl.DEPTH_TEST); gl.disable(gl.CULL_FACE);
     this.cam = { x: 0, y: 56, z: 0, yaw: Math.PI / 2, pitch: 0 }; this.batches = []; this.texCache = {}; this.sky = [0.08, 0.14, 0.23]; this.fog = [0.02, 0.03, 0.05]; this.fogD = 1400; this.bright = 1; this.fov = 1.15; this.keys = {}; this.speed = 300; this.running = false; this.frames = 0;
     this.defTex = this.makeTex(checker()); { const w = document.createElement("canvas"); w.width = w.height = 2; const x = w.getContext("2d"); x.fillStyle = "#fff"; x.fillRect(0, 0, 2, 2); this.whiteTex = this.makeTex(w); }
@@ -208,11 +214,13 @@
     const lp = new Float32Array(32), lc = new Float32Array(32), ln = new Float32Array(32), lu = new Float32Array(32);
     all.forEach((l, i) => { const p = camSpace ? toC(l.p) : l.p, n = l.n ? (camSpace ? dC(l.n) : l.n) : [0, 1, 0], u = l.u ? (camSpace ? dC(l.u) : l.u) : [1, 0, 0];
       lp.set([p[0], p[1], p[2], l.r], i * 4); lc.set([l.c[0], l.c[1], l.c[2], l.type ? 1 : 0], i * 4); ln.set([n[0], n[1], n[2], l.hw || 0], i * 4); lu.set([u[0], u[1], u[2], l.hh || 0], i * 4); });
-    this.nLights = all.length; gl.uniform4fv(L.lp, lp); gl.uniform4fv(L.lc, lc); gl.uniform4fv(L.ln, ln); gl.uniform4fv(L.lu, lu); gl.uniform1i(L.nl, all.length); gl.uniform3fv(L.cam, camSpace ? [0, 0, 0] : [c.x, c.y, c.z]);
+    this.nLights = all.length; gl.uniform4fv(L.lp, lp); gl.uniform4fv(L.lc, lc); gl.uniform4fv(L.ln, ln); gl.uniform4fv(L.lu, lu); gl.uniform1i(L.nl, all.length); gl.uniform3fv(L.cam, camSpace ? [0, 0, 0] : [c.x, c.y, c.z]); gl.uniform3fv(L.up, camSpace ? dC([0, 1, 0]) : [0, 1, 0]);
   };
   // material of what is drawn next: { tint, emit, lit, alpha, spec } (all optional)
   P.setMat = function (m) {
     const gl = this.gl, L = this.loc; m = m || {}; gl.uniform3fv(L.tint, m.tint || [1, 1, 1]); gl.uniform3fv(L.emit, m.emit || [0, 0, 0]); gl.uniform1f(L.lit, m.lit === undefined ? 1 : m.lit); gl.uniform1f(L.spec, m.spec || 0);
+    gl.uniform1f(L.pbr, m.pbr ? 1 : 0); gl.uniform1f(L.rough, m.rough === undefined ? 0.7 : m.rough); gl.uniform1f(L.metal, m.metal || 0); gl.uniform1f(L.envK, m.env === undefined ? 1 : m.env);
+    const sky = this.sky || [0.1, 0.12, 0.17]; gl.uniform3fv(L.envT, this.envTop || sky.map(q => Math.min(1, q * 1.5 + 0.4))); gl.uniform3fv(L.envB, this.envBot || [0.17, 0.16, 0.14]);
     const a = m.alpha === undefined ? 1 : m.alpha; gl.uniform1f(L.alpha, a); if (a < 0.999) { gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); } else gl.disable(gl.BLEND);
   };
   // ---- culling: view frustum + rooms reachable through open walls
@@ -268,7 +276,7 @@
     }
     this.setMat({ lit: 0 });
     if (a.length) { const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(a), gl.STREAM_DRAW); bind(buf, this.whiteTex); gl.drawArrays(gl.TRIANGLES, 0, a.length / 8); gl.deleteBuffer(buf); }
-    for (const f of list) if (f.kind === "mesh" && f.gm) { this.setMat(f.mat); const lv = this.lodLevelAt(Math.hypot(f.p[0] - this.cam.x, f.p[1] - this.cam.y, f.p[2] - this.cam.z), 20 * (f.scale || 1)); this.lodLevel = lv; for (let ms of f.gm.meshes) { ms = this.lodOf(f.gm, ms, lv); gl.uniformMatrix4fv(L.m, false, new Float32Array(M4.mul(f.M, f.pose[ms.node]))); bind(ms.buf, f.gm.tex); gl.drawArrays(gl.TRIANGLES, 0, ms.n); } }
+    for (const f of list) if (f.kind === "mesh" && f.gm) { this.setMat(f.mat); const lv = this.lodLevelAt(Math.hypot(f.p[0] - this.cam.x, f.p[1] - this.cam.y, f.p[2] - this.cam.z), 20 * (f.scale || 1)); this.lodLevel = lv; for (let ms of f.gm.meshes) { ms = this.lodOf(f.gm, ms, lv); gl.uniformMatrix4fv(L.m, false, new Float32Array(M4.mul(f.M, f.pose[ms.node]))); bind(ms.buf, f.tex || f.gm.tex); gl.drawArrays(gl.TRIANGLES, 0, ms.n); } }
     this.setMat(); gl.uniformMatrix4fv(L.m, false, new Float32Array(M4.ident()));
   };
 
@@ -315,7 +323,7 @@
     const gl = this.gl, L = this.loc; gl.clear(gl.DEPTH_BUFFER_BIT); gl.uniformMatrix4fv(L.vp, false, new Float32Array(persp(this.fov, this.canvas.width / this.canvas.height, 0.5, 3000))); gl.uniform1f(L.fogD, 1e9);
     gl.enableVertexAttribArray(L.pos); gl.enableVertexAttribArray(L.uv); gl.enableVertexAttribArray(L.col); this.useLights(true);
     const bind = (buf, tex) => { gl.bindBuffer(gl.ARRAY_BUFFER, buf); gl.vertexAttribPointer(L.pos, 3, gl.FLOAT, false, 32, 0); gl.vertexAttribPointer(L.uv, 2, gl.FLOAT, false, 32, 12); gl.vertexAttribPointer(L.col, 3, gl.FLOAT, false, 32, 20); gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tex); };
-    for (const it of items) { this.setMat(it.mat); for (const ms of it.gm.meshes) { gl.uniformMatrix4fv(L.m, false, new Float32Array(M4.mul(it.M, it.pose[ms.node]))); bind(ms.buf, it.gm.tex); gl.drawArrays(gl.TRIANGLES, 0, ms.n); } }
+    for (const it of items) { this.setMat(it.mat); for (const ms of it.gm.meshes) { gl.uniformMatrix4fv(L.m, false, new Float32Array(M4.mul(it.M, it.pose[ms.node]))); bind(ms.buf, it.tex || it.gm.tex); gl.drawArrays(gl.TRIANGLES, 0, ms.n); } }
     this.setMat({ lit: 0 });
     if (segs && segs.length) {
       const a = [], th = 0.25; for (const sg of segs) { const d = M4.sub(sg.b, sg.a), dn = M4.norm(d), ref = Math.abs(dn[1]) > 0.9 ? [1, 0, 0] : [0, 1, 0], p1 = M4.norm(M4.cross(dn, ref)), p2 = M4.cross(dn, p1);

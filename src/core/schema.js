@@ -129,6 +129,8 @@
     { k: "matTint", label: "Base color (tints the picture)", type: "color", def: "#ffffff", tab: "material" },
     NUM("matEmit", "Glow amount (shines by itself)", 0, 0, 4, 0.05, { tab: "material" }), { k: "matEmitColor", label: "Glow color", type: "color", def: "#ffffff", tab: "material" },
     NUM("matLit", "Reacts to lights (0 = ignores them, 1 = fully)", 1, 0, 1, 0.05, { tab: "material" }), NUM("matOpacity", "Opacity (1 = solid)", 1, 0.05, 1, 0.05, { tab: "material" }), NUM("matShine", "Shininess (light glints)", 0, 0, 1, 0.05, { tab: "material" }),
+    NUM("matRough", "Roughness (0 = mirror smooth, 1 = chalk)", 0.7, 0, 1, 0.01, { tab: "material" }), NUM("matMetal", "Metallic (0 = plastic / paint, 1 = bare metal)", 0, 0, 1, 0.01, { tab: "material" }),
+    NUM("matReflect", "Reflections of sky and ground", 1, 0, 3, 0.05, { tab: "material" }), { k: "matTexture", label: "Texture (replaces the model's own picture)", type: "asset", assetType: "image", def: "", tab: "material" },
     // projectile: what a "Fire the projectile" node launches from the muzzle point
     { k: "projType", label: "Projectile", type: "choice", options: [["none", "None"], ["hitscan", "Hitscan (a straight line to where you aim)"], ["particle", "Particle (sphere or laser bolt)"], ["mesh", "Mesh (a 3D model that flies off)"]], def: "none", showIf: WP },
     NUM("emitX", "Emitter point X (where projectiles start)", 0, -500, 500, 0.5, { showIf: ["projType", ["hitscan", "particle", "mesh"]] }), NUM("emitY", "Emitter point Y", 0, -500, 500, 0.5, { showIf: ["projType", ["hitscan", "particle", "mesh"]] }), NUM("emitZ", "Emitter point Z", 0, -500, 500, 0.5, { showIf: ["projType", ["hitscan", "particle", "mesh"]] }),
@@ -166,6 +168,10 @@
     { k: "openSound", label: "Opening sound", type: "asset", assetType: "sound", def: "", showIf: ["type", "door"] }, { k: "closeSound", label: "Closing sound", type: "asset", assetType: "sound", def: "", showIf: ["type", "door"] },
     { k: "giveTag", label: "Changes this number tag", type: "tagRef", refType: "number", def: "", showIf: ["type", "pickup"] }, NUM("giveAmount", "By (negative = subtract)", 10, -100000, 100000, 1, { showIf: ["type", "pickup"] }),
     NUM("pickRadius", "Pick-up distance (units)", 28, 8, 200, 1, { showIf: ["type", "pickup"] }), { k: "pickSound", label: "Pick-up sound", type: "asset", assetType: "sound", def: "", showIf: ["type", "pickup"] },
+    // material (Material foldout of the Object Editor)
+    { k: "matTint", label: "Base color (tints the picture)", type: "color", def: "#ffffff" }, { k: "matTexture", label: "Texture (replaces the model's own picture)", type: "asset", assetType: "image", def: "" },
+    NUM("matRough", "Roughness (0 = mirror smooth, 1 = chalk)", 0.7, 0, 1, 0.01), NUM("matMetal", "Metallic (0 = plastic / paint, 1 = bare metal)", 0, 0, 1, 0.01), NUM("matReflect", "Reflections of sky and ground", 1, 0, 3, 0.05),
+    NUM("matEmit", "Glow amount (shines by itself)", 0, 0, 4, 0.05), { k: "matEmitColor", label: "Glow color", type: "color", def: "#ffffff" }, NUM("matLit", "Reacts to lights (0 = ignores them, 1 = fully)", 1, 0, 1, 0.05), NUM("matOpacity", "Opacity (1 = solid)", 1, 0.05, 1, 0.05),
     // enemy
     NUM("health", "Health", 100, 1, 100000, 1, { showIf: ["type", "enemy"] }), NUM("speed", "Walking speed (units / second)", 150, 0, 2000, 5, { showIf: ["type", "enemy"] }),
     NUM("radius", "Body width (radius, units)", 22, 4, 200, 1, { showIf: ["type", "enemy"] }), NUM("height", "Body height (units, 64 = 1 m)", 110, 10, 600, 1, { showIf: ["type", "enemy"] }),
@@ -292,7 +298,9 @@
   // the look of an object, from its Material tab tags
   S.matOf = (T, pre) => {
     const hx = (h, d) => { h = String(h || d); return [parseInt(h.slice(1, 3), 16) / 255, parseInt(h.slice(3, 5), 16) / 255, parseInt(h.slice(5, 7), 16) / 255]; }, e = +T.get(pre + "matEmit") || 0, op = T.get(pre + "matOpacity"), lit = T.get(pre + "matLit");
-    return { tint: hx(T.get(pre + "matTint"), "#ffffff"), emit: hx(T.get(pre + "matEmitColor"), "#ffffff").map(q => q * e), lit: lit === undefined ? 1 : +lit, alpha: op === undefined ? 1 : +op, spec: +T.get(pre + "matShine") || 0 };
+    const ro = T.get(pre + "matRough"), me = T.get(pre + "matMetal"), rf = T.get(pre + "matReflect");
+    return { tint: hx(T.get(pre + "matTint"), "#ffffff"), emit: hx(T.get(pre + "matEmitColor"), "#ffffff").map(q => q * e), lit: lit === undefined ? 1 : +lit, alpha: op === undefined ? 1 : +op, spec: +T.get(pre + "matShine") || 0,
+      pbr: ro !== undefined, rough: ro === undefined ? 0.7 : +ro, metal: +me || 0, env: rf === undefined ? 1 : +rf, texId: T.get(pre + "matTexture") || "" };
   };
   S.builtins = project => {
     const B = (n, type, value, label, group, extra) => { project.tags[n] = Object.assign({ type, value, label, group, builtin: true }, extra); };

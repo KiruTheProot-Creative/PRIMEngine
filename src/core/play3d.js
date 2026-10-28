@@ -184,7 +184,7 @@
         const slide = o.type === "door" && !an("openAnim") ? o.p * (g("doorHeight") || 144) : 0;
         const Fm = [XX[0], XX[1], XX[2], 0, 0, 1, 0, 0, ZZ[0], ZZ[1], ZZ[2], 0, f.cx, o.floor + slide, f.cy, 1];
         const sc = g("scale") || 1, loc = M4.mul(M4.translate(g("ox"), g("oy"), g("oz")), M4.mul(M4.rotXYZ([g("rx"), g("ry") + ang, g("rz")]), M4.scale(sc, sc, sc)));
-        items.push({ kind: "mesh", gm: o.gm, pose, M: M4.mul(Fm, loc), p: [f.cx, o.floor + 40, f.cy], scale: 6, mat: o.flash > 0 ? { tint: [1, 0.45, 0.45], emit: [0.5, 0.05, 0.05] } : o.st === "dead" ? { tint: [0.75, 0.7, 0.7] } : null });
+        items.push({ kind: "mesh", gm: o.gm, pose, M: M4.mul(Fm, loc), p: [f.cx, o.floor + 40, f.cy], scale: 6, mat: Object.assign(this.matOf(o.pre), o.flash > 0 ? { tint: [1, 0.45, 0.45], emit: [0.5, 0.05, 0.05] } : o.st === "dead" ? { tint: [0.75, 0.7, 0.7] } : {}), tex: T.get(o.pre + "matTexture") ? v.texFor(T.get(o.pre + "matTexture"), this.urls) : null });
       }
       if (items.length) v.drawFx(items);
     }
@@ -368,7 +368,7 @@
           const a0 = M4.norm(M4.dir(Rb, ...arrow)), maxR = g("aimMax") * Math.PI / 180; let want = M4.norm(M4.sub(Hc, M4.add(off, M4.dir(Rb, ...mz))));
           Ra = M4.between(a0, want, maxR); want = M4.norm(M4.sub(Hc, M4.add(off, M4.dir(M4.mul(Ra, Rb), ...mz)))); at.cur = at.cur ? M4.norm(M4.add(at.cur.map(q => q * Math.exp(-14 * dt)), want.map(q => q * (1 - Math.exp(-14 * dt))))) : want; Ra = M4.between(a0, at.cur, maxR);
         } else at.cur = null;
-        const M = M4.mul(M4.translate(...off), M4.mul(Ra, M4.mul(Rb, M4.mul(Sm, M4.translate(-g("pivotX"), -g("pivotY"), -g("pivotZ")))))); items.push({ gm: at.gm, pose, M, mat: this.matOf(pre) }); this.objLight(at, pre, M, g, sc, eye, B);
+        const M = M4.mul(M4.translate(...off), M4.mul(Ra, M4.mul(Rb, M4.mul(Sm, M4.translate(-g("pivotX"), -g("pivotY"), -g("pivotZ")))))); const mt = this.matOf(pre); items.push({ gm: at.gm, pose, M, mat: mt, tex: mt.texId ? v.texFor(mt.texId, this.urls) : null }); this.objLight(at, pre, M, g, sc, eye, B);
         if (at.type === "weapon") { const ey = g("emitYaw") * Math.PI / 180, ep = g("emitPitch") * Math.PI / 180; at.emit = { pos: M4.point(M, g("emitX"), g("emitY"), g("emitZ")), dir: M4.norm(M4.dir(M, -Math.cos(ep) * Math.sin(ey), Math.sin(ep), -Math.cos(ep) * Math.cos(ey))) }; }
         if (at.type === "weapon") { const ay2 = g("arrowYaw") * Math.PI / 180, ap2 = g("arrowPitch") * Math.PI / 180; at.muz = { pos: M4.point(M, g("muzzleX"), g("muzzleY"), g("muzzleZ")), dir: M4.norm(M4.dir(M, -Math.cos(ap2) * Math.sin(ay2), Math.sin(ap2), -Math.cos(ap2) * Math.cos(ay2))) }; }
         if (this.mode === "preview" && at.type === "weapon") {   // the arrow and the muzzle point, drawn so they can be placed
