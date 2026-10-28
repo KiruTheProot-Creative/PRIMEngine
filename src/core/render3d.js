@@ -70,6 +70,21 @@
   const QVS = "attribute vec2 aQ;varying vec2 vU;void main(){vU=aQ*0.5+0.5;gl_Position=vec4(aQ,0.0,1.0);}";
   const BRIGHT = "precision highp float;uniform sampler2D uS;uniform vec2 uTx;uniform float uTh;varying vec2 vU;void main(){vec3 c=(texture2D(uS,vU+uTx*vec2(-0.5,-0.5)).rgb+texture2D(uS,vU+uTx*vec2(0.5,-0.5)).rgb+texture2D(uS,vU+uTx*vec2(-0.5,0.5)).rgb+texture2D(uS,vU+uTx*vec2(0.5,0.5)).rgb)*0.25;float l=max(c.r,max(c.g,c.b));gl_FragColor=vec4(c*(max(l-uTh,0.0)/max(l,0.0001)),1.0);}";
   const BLUR = "precision highp float;uniform sampler2D uS;uniform vec2 uD;varying vec2 vU;void main(){vec3 c=texture2D(uS,vU).rgb*0.227;c+=(texture2D(uS,vU+uD*1.385).rgb+texture2D(uS,vU-uD*1.385).rgb)*0.316;c+=(texture2D(uS,vU+uD*3.231).rgb+texture2D(uS,vU-uD*3.231).rgb)*0.0703;gl_FragColor=vec4(c,1.0);}";
+  // Compositor effects (one full-screen pass each, in chain order). Every effect reads uS (the picture so far), uR (size in pixels), uT (time); its settings arrive as u_<name>.
+  const FXH = "precision highp float;uniform sampler2D uS;uniform vec2 uR;uniform float uT;varying vec2 vU;float hash(vec2 p){return fract(sin(dot(p,vec2(12.9898,78.233)))*43758.5453);}float luma(vec3 c){return dot(c,vec3(0.299,0.587,0.114));}";
+  const FX = {
+    grade: "uniform float u_brightness,u_contrast,u_saturation,u_gamma,u_warmth;uniform vec3 u_tint;void main(){vec3 c=texture2D(uS,vU).rgb*u_brightness*u_tint;c+=vec3(0.08,0.02,-0.08)*u_warmth*luma(c)*2.0;c=(c-0.5)*u_contrast+0.5;c=mix(vec3(luma(c)),c,u_saturation);c=pow(max(c,0.0),vec3(1.0/max(u_gamma,0.01)));gl_FragColor=vec4(c,1.0);}",
+    vignette: "uniform float u_strength,u_size,u_soft;uniform vec3 u_color;void main(){vec3 c=texture2D(uS,vU).rgb;vec2 d=vU-0.5;d.x*=uR.x/uR.y;float r=length(d)/0.95;float v=smoothstep(u_size-u_soft,u_size,r);gl_FragColor=vec4(mix(c,u_color,v*u_strength),1.0);}",
+    grain: "uniform float u_amount,u_size,u_color;void main(){vec3 c=texture2D(uS,vU).rgb;vec2 p=floor(vU*uR/max(u_size,1.0));float t=fract(uT*7.13);vec3 n=u_color>0.5?vec3(hash(p+t*91.0),hash(p+t*37.0+5.0),hash(p+t*53.0+9.0)):vec3(hash(p+t*91.0));gl_FragColor=vec4(c+(n-0.5)*u_amount*2.0,1.0);}",
+    chroma: "uniform float u_amount,u_edges;void main(){vec2 d=vU-0.5;float k=u_edges>0.5?length(d)*2.0:1.0;vec2 o=(length(d)>0.0001?normalize(d):vec2(1.0,0.0))*u_amount*k/uR;gl_FragColor=vec4(texture2D(uS,vU+o).r,texture2D(uS,vU).g,texture2D(uS,vU-o).b,1.0);}",
+    pixelate: "uniform float u_size;void main(){vec2 s=vec2(max(u_size,1.0))/uR;gl_FragColor=vec4(texture2D(uS,(floor(vU/s)+0.5)*s).rgb,1.0);}",
+    posterize: "uniform float u_levels,u_dither,u_ditherSize;float b2(vec2 a){a=floor(a);return fract(a.x*0.5+a.y*a.y*0.75);}float b4(vec2 a){return b2(0.5*a)*0.25+b2(a);}void main(){vec3 c=clamp(texture2D(uS,vU).rgb,0.0,1.0);float L=max(u_levels,2.0)-1.0;float d=u_dither>0.5?b4(gl_FragCoord.xy/max(u_ditherSize,1.0))*0.9375+0.03125:0.5;gl_FragColor=vec4(floor(c*L+d)/L,1.0);}",
+    crt: "uniform float u_lines,u_count,u_curve,u_mask;void main(){vec2 uv=vU-0.5;uv*=1.0+u_curve*dot(uv,uv)*2.0;uv+=0.5;if(uv.x<0.0||uv.x>1.0||uv.y<0.0||uv.y>1.0){gl_FragColor=vec4(0.0,0.0,0.0,1.0);return;}vec3 c=texture2D(uS,uv).rgb;float s=0.5+0.5*cos(uv.y*u_count*6.28318);c*=1.0-u_lines*(1.0-s);float px=mod(floor(gl_FragCoord.x),3.0);vec3 m=vec3(px<0.5?1.0:0.0,px>0.5&&px<1.5?1.0:0.0,px>1.5?1.0:0.0);c*=mix(vec3(1.0),m*2.2+0.25,u_mask);c*=1.0+u_lines*0.35;gl_FragColor=vec4(c,1.0);}",
+    sharpen: "uniform float u_amount;void main(){vec2 t=1.0/uR;vec3 c=texture2D(uS,vU).rgb;vec3 n=texture2D(uS,vU+vec2(0.0,t.y)).rgb+texture2D(uS,vU-vec2(0.0,t.y)).rgb+texture2D(uS,vU+vec2(t.x,0.0)).rgb+texture2D(uS,vU-vec2(t.x,0.0)).rgb;gl_FragColor=vec4(c*(1.0+4.0*u_amount)-n*u_amount,1.0);}",
+    night: "uniform float u_strength,u_gain,u_noise;uniform vec3 u_color;void main(){vec3 c=texture2D(uS,vU).rgb;float l=luma(c)*u_gain;l+=(hash(floor(vU*uR*0.5)+fract(uT*11.0)*77.0)-0.5)*u_noise;vec2 d=vU-0.5;d.x*=uR.x/uR.y;l*=1.0-smoothstep(0.45,0.75,length(d));vec3 g=u_color*l+vec3(0.0,0.03,0.0);gl_FragColor=vec4(mix(c,g,u_strength),1.0);}",
+    lens: "uniform float u_amount;void main(){vec2 uv=vU-0.5;float r2=dot(uv,uv);uv=uv*(1.0+u_amount*r2*2.0)/(1.0+u_amount*0.5);uv+=0.5;if(uv.x<0.0||uv.x>1.0||uv.y<0.0||uv.y>1.0){gl_FragColor=vec4(0.0,0.0,0.0,1.0);return;}gl_FragColor=vec4(texture2D(uS,uv).rgb,1.0);}",
+    letterbox: "uniform float u_size;uniform vec3 u_color;void main(){vec3 c=texture2D(uS,vU).rgb;gl_FragColor=vec4(vU.y<u_size||vU.y>1.0-u_size?u_color:c,1.0);}",
+  };
   const COMP = "precision highp float;uniform sampler2D uS;uniform sampler2D uB1;uniform sampler2D uB2;uniform float uK;uniform float uExp;varying vec2 vU;vec3 roll(vec3 c){vec3 k=vec3(0.8);return mix(c,k+0.2*(1.0-exp(-(c-k)/0.2)),step(k,c));}void main(){vec3 c=texture2D(uS,vU).rgb+(texture2D(uB1,vU).rgb*0.6+texture2D(uB2,vU).rgb*0.8)*uK;gl_FragColor=vec4(roll(max(c*uExp,0.0)),1.0);}";
   // a camera at eye looking at target (column-major, like WebGL)
   function lookAt(e, t, up) { const f = M4.norm(M4.sub(t, e)), s = M4.norm(M4.cross(f, up)), u = M4.cross(s, f); return [s[0], u[0], -f[0], 0, s[1], u[1], -f[1], 0, s[2], u[2], -f[2], 0, -M4.dot(s, e), -M4.dot(u, e), M4.dot(f, e), 1]; }
@@ -86,6 +101,7 @@
     const prog = (v, f) => { const q = gl.createProgram(); gl.attachShader(q, sh(gl.VERTEX_SHADER, v)); gl.attachShader(q, sh(gl.FRAGMENT_SHADER, f)); gl.linkProgram(q); return q; };
     try { this.spr = prog(SVS, SFS); this.sloc = { pos: gl.getAttribLocation(this.spr, "aPos"), vp: gl.getUniformLocation(this.spr, "uVP"), m: gl.getUniformLocation(this.spr, "uM"), lp: gl.getUniformLocation(this.spr, "uLP"), r: gl.getUniformLocation(this.spr, "uR") }; } catch (e) { this.spr = null; }
     try { this.pp = { bright: prog(QVS, BRIGHT), blur: prog(QVS, BLUR), comp: prog(QVS, COMP) }; } catch (e) { this.pp = null; }
+    this.fxProg = type => { this.fxp = this.fxp || {}; if (this.fxp[type] === undefined) { try { const q = prog(QVS, FXH + FX[type]); this.fxp[type] = gl.getProgramParameter(q, gl.LINK_STATUS) ? q : null; } catch (e) { this.fxp[type] = null; } } return this.fxp[type]; };
     gl.useProgram(pr); this.shOn = 0; this.shSlots = []; for (let k = 0; k < 4; k++) gl.uniform1i(this.loc["sh" + k], 2 + k);
     gl.enable(gl.DEPTH_TEST); gl.disable(gl.CULL_FACE);
     this.cam = { x: 0, y: 56, z: 0, yaw: Math.PI / 2, pitch: 0 }; this.batches = []; this.texCache = {}; this.sky = [0.08, 0.14, 0.23]; this.fog = [0.02, 0.03, 0.05]; this.fogS = 1e8; this.fogE = 1e9; this.mood = { tint: [1, 1, 1], contrast: 1, sat: 1 }; this.bright = 1; this.fov = 1.15; this.keys = {}; this.speed = 300; this.running = false; this.frames = 0;
@@ -332,10 +348,10 @@
       if (this.halfType) { const probe = this.target(4, 4, true), ok = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE; gl.deleteFramebuffer(probe.fb); gl.deleteTexture(probe.t); if (!ok) this.halfType = 0; }
       this.hdr = !!this.halfType;
     }
-    if (this.pt) for (const x of [this.pt.scene, this.pt.a, this.pt.b, this.pt.c, this.pt.d]) { gl.deleteFramebuffer(x.fb); gl.deleteTexture(x.t); }
+    if (this.pt) for (const x of [this.pt.scene, this.pt.a, this.pt.b, this.pt.c, this.pt.d, this.pt.e, this.pt.f]) { gl.deleteFramebuffer(x.fb); gl.deleteTexture(x.t); }
     const scene = this.target(w, h, this.hdr), depth = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, depth); gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, w, h); gl.bindFramebuffer(gl.FRAMEBUFFER, scene.fb); gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depth);
     const hw = Math.max(1, w >> 1), hh = Math.max(1, h >> 1), qw = Math.max(1, w >> 2), qh = Math.max(1, h >> 2);
-    this.pt = { w, h, scene, depth, a: this.target(hw, hh, this.hdr), b: this.target(hw, hh, this.hdr), c: this.target(qw, qh, this.hdr), d: this.target(qw, qh, this.hdr) };
+    this.pt = { w, h, scene, depth, a: this.target(hw, hh, this.hdr), b: this.target(hw, hh, this.hdr), c: this.target(qw, qh, this.hdr), d: this.target(qw, qh, this.hdr), e: this.target(w, h, false), f: this.target(w, h, false) };
     if (!this.quad) { this.quad = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, this.quad); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW); }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   };
@@ -358,7 +374,13 @@
       run(pp.blur, pt.b, [["uS", pt.a.t]], u => gl.uniform2f(u("uD"), 1 / pt.a.w, 0)); run(pp.blur, pt.a, [["uS", pt.b.t]], u => gl.uniform2f(u("uD"), 0, 1 / pt.a.h));
       run(pp.blur, pt.c, [["uS", pt.a.t]], u => gl.uniform2f(u("uD"), 0.5 / pt.a.w, 0.5 / pt.a.h)); run(pp.blur, pt.d, [["uS", pt.c.t]], u => gl.uniform2f(u("uD"), 1 / pt.c.w, 0)); run(pp.blur, pt.c, [["uS", pt.d.t]], u => gl.uniform2f(u("uD"), 0, 1 / pt.c.h));
     }
-    run(pp.comp, null, [["uS", pt.scene.t], ["uB1", pt.a.t], ["uB2", pt.c.t]], u => { gl.uniform1f(u("uK"), bloom ? b.k : 0); gl.uniform1f(u("uExp"), b.exp); });
+    // the Compositor chain (project.compositor): the picture goes through each effect in order, the last one draws to the screen
+    const fx = this.compOff && this.compOff() ? [] : (PRIM.Schema && PRIM.Schema.compActive ? PRIM.Schema.compActive(this.project, this.tags) : []).filter(f => this.fxProg(f.type));
+    run(pp.comp, fx.length ? pt.e : null, [["uS", pt.scene.t], ["uB1", pt.a.t], ["uB2", pt.c.t]], u => { gl.uniform1f(u("uK"), bloom ? b.k : 0); gl.uniform1f(u("uExp"), b.exp); });
+    let src = pt.e, dst = pt.f; const tm = performance.now() / 1000;
+    fx.forEach((f, i) => { const last = i === fx.length - 1; run(this.fxProg(f.type), last ? null : dst, [["uS", src.t]], u => { gl.uniform2f(u("uR"), pt.w, pt.h); gl.uniform1f(u("uT"), tm % 1000);
+      for (const [k, o] of Object.entries(f.v)) { const l = u("u_" + k); if (!l) continue; if (o.type === "color") { const hx = String(o.val || "#000000"); gl.uniform3f(l, parseInt(hx.slice(1, 3), 16) / 255, parseInt(hx.slice(3, 5), 16) / 255, parseInt(hx.slice(5, 7), 16) / 255); } else if (o.type === "bool") gl.uniform1f(l, o.val ? 1 : 0); else gl.uniform1f(l, +o.val || 0); } });
+      const t = src; src = dst; dst = t; });
     gl.activeTexture(gl.TEXTURE0); gl.enable(gl.DEPTH_TEST); gl.useProgram(this.pr);
   };
 
@@ -384,7 +406,7 @@
   };
   P.start = function () {
     if (this.running || !this.ok) return; this.running = true; let last = performance.now();
-    const loop = t => { if (!this.running) return; const dt = Math.min(0.1, (t - last) / 1000); last = t; this.step(dt); if (this.onFrame) this.onFrame(dt); this.draw(); this.raf = requestAnimationFrame(loop); };
+    const loop = t => { if (!this.running) return; const dt = Math.min(0.1, (t - last) / 1000); last = t; this.step(dt); if (this.onFrame) this.onFrame(dt); this.draw(); if (this.post) this.present(); this.raf = requestAnimationFrame(loop); };
     this.raf = requestAnimationFrame(loop);
   };
   P.stop = function () { this.running = false; cancelAnimationFrame(this.raf); };

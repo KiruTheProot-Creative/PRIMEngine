@@ -306,6 +306,28 @@
     teleport: { label: "Move the player to the start", cat: "player", outs: ["next"], ctx: ["object", "player"], props: [] },
     switchWeapon: { label: "Take out a weapon", cat: "weapon", outs: ["next"], ctx: ["object", "player"], props: [{ k: "which", label: "Which", type: "choice", options: [["next", "the next one"], ["prev", "the previous one"], ["num", "number…"]], def: "next" }, { k: "num", label: "Weapon number (when “number…”)", type: "number", def: 1, min: 1, max: 99, step: 1 }] },
   };
+  // ---- Compositor: post-processing effects applied to the game picture, in chain order (project.compositor.effects = [{ id, type }], values = tags comp.<id>.<k>; comp.<id>.on can be switched by nodes)
+  const CN = (k, label, def, min, max, step) => ({ k, label, type: "number", def, min, max, step });
+  S.COMPFX = {
+    grade: { label: "Color grading", icon: "◐", desc: "Brightness, contrast, saturation, gamma, a colour tint and warm / cold.", props: [CN("brightness", "Brightness", 1, 0, 3, 0.01), CN("contrast", "Contrast", 1, 0, 3, 0.01), CN("saturation", "Saturation (0 = black and white)", 1, 0, 3, 0.01), CN("gamma", "Gamma (midtones)", 1, 0.2, 3, 0.01), CN("warmth", "Warm (+) / cold (-)", 0, -1, 1, 0.01), COLOR("tint", "Tint", "#ffffff")] },
+    vignette: { label: "Vignette", icon: "◎", desc: "Darker (or coloured) edges.", props: [CN("strength", "Strength", 0.5, 0, 1, 0.01), CN("size", "Size (where it starts)", 0.75, 0, 1.5, 0.01), CN("soft", "Softness", 0.45, 0.01, 1.5, 0.01), COLOR("color", "Color", "#000000")] },
+    grain: { label: "Film grain", icon: "░", desc: "Moving noise, like film or a cheap camera.", props: [CN("amount", "Amount", 0.08, 0, 1, 0.01), CN("size", "Grain size (pixels)", 1.5, 1, 8, 0.1), { k: "color", label: "Coloured grain", type: "bool", def: false }] },
+    chroma: { label: "Chromatic aberration", icon: "◈", desc: "Red and blue split apart toward the edges, like a lens.", props: [CN("amount", "Amount (pixels)", 2, 0, 30, 0.1), { k: "edges", label: "Only toward the edges", type: "bool", def: true }] },
+    pixelate: { label: "Pixelate", icon: "▦", desc: "Big chunky pixels (a lower resolution look).", props: [CN("size", "Pixel size", 3, 1, 32, 1)] },
+    posterize: { label: "Fewer colors (retro palette)", icon: "▤", desc: "Limits the colours per channel, optionally with ordered dithering like old PCs and consoles.", props: [CN("levels", "Colours per channel", 16, 2, 64, 1), { k: "dither", label: "Dithering (pattern instead of banding)", type: "bool", def: true }, CN("ditherSize", "Dither pattern size (pixels)", 1, 1, 8, 1)] },
+    crt: { label: "CRT screen", icon: "▭", desc: "Scanlines, a curved glass screen and a red / green / blue pixel mask.", props: [CN("lines", "Scanline strength", 0.35, 0, 1, 0.01), CN("count", "Number of scanlines", 360, 60, 1440, 10), CN("curve", "Screen curve", 0.08, 0, 0.5, 0.005), CN("mask", "Pixel mask strength", 0.2, 0, 1, 0.01)] },
+    sharpen: { label: "Sharpen", icon: "◇", desc: "Crisper edges and texture pixels.", props: [CN("amount", "Amount", 0.4, 0, 3, 0.01)] },
+    night: { label: "Night vision", icon: "◉", desc: "Bright green picture with noise. Switch it on and off with a node (tag comp.<effect>.on).", props: [CN("strength", "Strength", 1, 0, 1, 0.01), CN("gain", "Brightness boost", 2.5, 0.5, 10, 0.1), CN("noise", "Noise", 0.12, 0, 1, 0.01), COLOR("color", "Color", "#5cff7a")] },
+    lens: { label: "Lens distortion", icon: "◯", desc: "Fish-eye (positive) or pincushion (negative) bending.", props: [CN("amount", "Amount", 0.15, -0.5, 1, 0.01)] },
+    letterbox: { label: "Letterbox (cinema bars)", icon: "▬", desc: "Black bars at the top and bottom.", props: [CN("size", "Bar height (part of the screen)", 0.12, 0, 0.45, 0.005), COLOR("color", "Color", "#000000")] },
+  };
+  const compRec = (p, id) => { const r = rec(p, "compositor", "comp." + id); return r; };
+  S.compKeys = (type) => [{ k: "on", label: "Effect on", type: "bool", def: true }].concat(S.COMPFX[type].props);
+  S.addComp = (project, type) => { const C = project.compositor = project.compositor || { effects: [] }; const id = S.uid("fx", C.effects.map(e => e.id)); C.effects.push({ id, type }); for (const p of S.compKeys(type)) project.tags["comp." + id + "." + p.k] = compRec(p, id); return C.effects[C.effects.length - 1]; };
+  S.removeComp = (project, id) => { const C = project.compositor; if (!C) return; C.effects = C.effects.filter(e => e.id !== id); for (const k of Object.keys(project.tags)) if (k.startsWith("comp." + id + ".")) delete project.tags[k]; };
+  S.ensureComp = project => { const C = project.compositor = project.compositor || { effects: [] }; C.effects = C.effects.filter(e => S.COMPFX[e.type]); for (const e of C.effects) for (const p of S.compKeys(e.type)) { const k = "comp." + e.id + "." + p.k; if (!project.tags[k]) project.tags[k] = compRec(p, e.id); else project.tags[k].label = p.label; } };
+  // the active effects with their values, in order (used by the renderer)
+  S.compActive = (project, T) => ((project && project.compositor && project.compositor.effects) || []).filter(e => S.COMPFX[e.type] && T.get("comp." + e.id + ".on") !== false).map(e => { const v = {}; for (const p of S.COMPFX[e.type].props) v[p.k] = { type: p.type, val: T.get("comp." + e.id + "." + p.k) }; return { id: e.id, type: e.type, v }; });
   S.SCAT = { event: "Events", control: "Control", sense: "Sensing", tags: "Tags & math", look: "Animation & looks", sound: "Sound", player: "Player", weapon: "Weapon", action: "Screens & messages" };
   const SKEY = (ownerKey, id, k) => ownerKey + ".s." + id + "." + k;
   // every node can have a condition: it only happens while a tag compares true (e.g. canChargeWeapon = yes). Empty tag = always.
@@ -364,6 +386,7 @@
     for (const sc of project.screens || []) for (const el of sc.nodes || []) if (el.script) for (const n of el.script.nodes) S.ensureSNode(project, sc.id + "." + el.id, n);
     if (!project.tags["player.state"]) project.tags["player.state"] = { type: "string", value: "standing", label: "What the player is doing: standing, walking, running, jumping, falling (live)", group: "player", builtin: true };
     if (project.player && project.player.script) for (const n of project.player.script.nodes) S.ensureSNode(project, "player", n);
+    S.ensureComp(project);
     if (!project.tags["player.reloading"]) project.tags["player.reloading"] = { type: "bool", value: false, label: "The current weapon is reloading (live)", group: "player", builtin: true };
     if (!project.tags["player.charge"]) project.tags["player.charge"] = { type: "number", value: 0, label: "Charge beam progress, 0 to 1 (live)", group: "player", min: 0, max: 1, step: 0.01, builtin: true };
     if (!project.tags["player.weapon"]) project.tags["player.weapon"] = { type: "number", value: 1, label: "Current weapon number (live)", group: "player", min: 0, max: 99, step: 1, builtin: true };

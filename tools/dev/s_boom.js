@@ -23,9 +23,13 @@ module.exports = async (p, out) => {
   await p.click('.tab:has-text("Player Editor")'); await p.waitForTimeout(300); await p.click('button:has-text("Player view")'); await p.waitForTimeout(300); await p.click('button:has-text("Walk map1")'); await p.waitForFunction(() => __studio.S.play && __studio.S.play.hud, null, { timeout: 8000 }); await p.waitForTimeout(800);
   await p.evaluate(() => { const q = __studio.S.play; q.msg.style.display = 'none'; q.look = () => {}; q.body = null; q.x = 3072; q.y = 3072; q.yaw = 0; q.pitch = 0; });
   await p.waitForTimeout(600);
-  console.log('speaker sound', await p.evaluate(() => JSON.stringify(__snd.filter(s => s.loop).map(s => ({ at: s.at, panner: !!s.h.pan })))), 'ear', await p.evaluate(() => JSON.stringify(PRIM.Audio.ear && { p: PRIM.Audio.ear.p.map(Math.round), flip: PRIM.Audio.ear.flip })));
+  console.log('speaker sound', await p.evaluate(() => JSON.stringify(__snd.filter(s => s.loop).map(s => ({ at: s.at, mixer: !!s.h.dg })))), 'ear', await p.evaluate(() => JSON.stringify(PRIM.Audio.ear && { p: PRIM.Audio.ear.p.map(Math.round), r: PRIM.Audio.ear.r.map(v => +v.toFixed(2)) })));
   // which ear: the speaker is north of us (y - 300); facing east (yaw 0) north is on the LEFT. In Web Audio coordinates the speaker must be on the listener's left (dot with its right vector < 0).
-  console.log('speaker on the left ear', await p.evaluate(() => { const e = PRIM.Audio.ear, s = __snd.find(s => s.loop).at.p, f = e.flip ? v => [v[0], v[1], -v[2]] : v => v, P = f(s), L = f(e.p), F = f(e.f), U = [0, 1, 0], R = [F[1] * U[2] - F[2] * U[1], F[2] * U[0] - F[0] * U[2], F[0] * U[1] - F[1] * U[0]]; return ((P[0] - L[0]) * R[0] + (P[1] - L[1]) * R[1] + (P[2] - L[2]) * R[2]) < 0; }));
+  console.log('speaker on the left ear', await p.evaluate(() => JSON.stringify(__snd.find(s => s.loop).h.mix)));
+  // turn around (face west): the same speaker must now be on the right, smoothly
+  await p.evaluate(() => { __studio.S.play.yaw = Math.PI; }); await p.waitForTimeout(800);
+  console.log('after turning around (right ear)', await p.evaluate(() => JSON.stringify(__snd.find(s => s.loop).h.mix)));
+  await p.evaluate(() => { __studio.S.play.yaw = 0; });
   // splash damage next to the enemy (60 units away from its middle = 40 from its body)
   const st = () => p.evaluate(() => { const q = __studio.S.play, e = q.things.find(o => o.type === 'enemy'); return JSON.stringify({ enemyHp: e && Math.round(e.hp), me: q.T.get('player.health'), deco: (q.fx || []).filter(f => f.deco && f.kind === 'sphere').length, flash: (q.fx || []).filter(f => f.kind === 'flash').length, marks: (q.marks || []).filter(m => m.bill).length, booms: __snd.filter(s => !s.loop && s.at).length }); });
   await p.evaluate(() => { const q = __studio.S.play, e = q.things.find(o => o.type === 'enemy'); q.explode('player.att.', [e.x - 60, e.floor + 50, e.y], [-1, 0, 0]); });
