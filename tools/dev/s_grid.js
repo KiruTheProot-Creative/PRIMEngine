@@ -23,6 +23,10 @@ module.exports = async (p, out) => {
   // stairs rising east, full story, at 26,22 ; then story 2 floor at 27..28,22
   await p.keyboard.press('t'); await p.evaluate(() => { const s = __studio.S.med.s; s.dir = 1; s.rise = 16; }); await clickC(26, 22); console.log('stairs', await cell(0, 26, 22));
   await p.keyboard.press('s'); await p.evaluate(() => { const s = __studio.S.med.s; s.dir = 2; s.rise = 8; }); await clickC(21, 26); console.log('slope', await cell(0, 21, 26));
+  // two ramps in a row: the second one starts where the first ends (automatic start height), then one set to start at 12/16
+  await p.evaluate(() => { const s = __studio.S.med.s; s.dir = 1; s.rise = 8; s.base = -1; }); await clickC(21, 24); await clickC(22, 24);
+  await p.evaluate(() => { __studio.S.med.s.base = 12; }); await clickC(23, 24); await p.evaluate(() => { __studio.S.med.s.base = -1; });
+  console.log('ramps in a row', await cell(0, 21, 24), await cell(0, 22, 24), await cell(0, 23, 24));
   // remove the ceiling above the stairs and the cell after, go up a story and lay a floor
   await p.keyboard.press('c'); await dragC(26, 22, 27, 22, 'right');
   await p.keyboard.press('PageUp'); await p.keyboard.press('f'); await dragC(27, 22, 27, 24); await p.waitForTimeout(100);

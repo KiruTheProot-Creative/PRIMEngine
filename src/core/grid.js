@@ -77,7 +77,7 @@
     // one quad (p0..p3 around), uvs, colour k, info for picking / painting
     // f = the open side of the face (collision is one-sided: you can't get caught on the back of a ceiling or floor)
     const quad = (tex, L, cx, cy, p, uv, k, info, f) => {
-      const key = (tex || "") + "|" + L + ":" + Math.floor(cx / CHUNK) + ":" + Math.floor(cy / CHUNK), a = by[key] || (by[key] = []);
+      const key = (tex || "") + "|" + L + ":" + Math.floor(cx / CHUNK) + ":" + Math.floor(cy / CHUNK), a = info && info.hidden ? [] : by[key] || (by[key] = []);
       for (const i of [0, 1, 2, 0, 2, 3]) a.push(p[i][0], p[i][1], p[i][2], uv[i][0], uv[i][1], k, k, k);
       if (!noCol) { if (len(cross(sub(p[1], p[0]), sub(p[2], p[0]))) > 1e-6) { const t = tri(p[0], p[1], p[2], info); t.f = f; tris.push(t); } if (len(cross(sub(p[2], p[0]), sub(p[3], p[0]))) > 1e-6) { const t = tri(p[0], p[2], p[3], info); t.f = f; tris.push(t); } }
     };
@@ -137,6 +137,8 @@
             }
           }
         }
+        // a floor on an upper story is solid from below too (you can't jump up through it), even with no ceiling under it
+        if (c.f !== undefined && L > 0) { const dn = G.cell(m, L - 1, cx, cy); if (!G.isWall(dn) && !(dn && dn.c !== undefined)) quad("", L, cx, cy, [[X0, B, Z0], [X0, B, Z1], [X1, B, Z1], [X1, B, Z0]], [[0, 0], [0, 1], [1, 1], [1, 0]], 1, { kind: "floor", layer: L, x: cx, y: cy, hidden: true }, [0, -1, 0]); }
         if (c.c !== undefined) { const y = B + LH - 1; quad(c.c, L, cx, cy, [[X0, y, Z0], [X0, y, Z1], [X1, y, Z1], [X1, y, Z0]], [[X0 / C, Z0 / C], [X0 / C, Z1 / C], [X1 / C, Z1 / C], [X1 / C, Z0 / C]], li * 0.8, { kind: "ceil", layer: L, x: cx, y: cy }, [0, -1, 0]); }
       }
     });
@@ -217,7 +219,8 @@
     body.ground = !!ground; body.groundN = ground; body.squeeze = !!ground && down; return body;
   };
   G.move = (body, dt, ix, extra) => {
-    const sp = len(body.vel) * dt, steps = Math.max(1, Math.min(12, Math.ceil(sp / (body.r * 0.6)))), sdt = dt / steps, was = body.ground;
+    // sub-steps: sideways at most 0.6 r, up / down at most 0.25 r (the head is narrow, so it must not skip past a ceiling between two steps)
+    const sp = Math.hypot(body.vel[0], body.vel[2]) * dt, vsp = Math.abs(body.vel[1]) * dt, steps = Math.max(1, Math.min(24, Math.ceil(Math.max(sp / (body.r * 0.6), vsp / (body.r * 0.25))))), sdt = dt / steps, was = body.ground;
     for (let s = 0; s < steps; s++) {
       const from = body.pos.slice(), want = mul(body.vel, sdt); body.pos = add(body.pos, want); G.push(body, ix, extra);
       if (body.squeeze) { body.pos = from; G.push(body, ix, extra); if (body.squeeze) body.pos = from; body.ground = true; continue; }   // no room for the head here: do not go there

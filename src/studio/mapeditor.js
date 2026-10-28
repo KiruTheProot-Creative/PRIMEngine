@@ -27,7 +27,7 @@
 
   const ME = (PRIM.MapEditor = function (o) {
     this.o = o; this.m = o.map; this.T = o.tags; this.dpr = Math.min(2, window.devicePixelRatio || 1); this.imgs = {};
-    const st = ME.state = ME.state || { tool: "wall", tex: "", L: 0, hgt: 2, dir: 1, rise: 8, light: 70, below: true, ceilShow: true, shape: "d45", rot: 0, flip: false, panel: "rooms" };
+    const st = ME.state = ME.state || { tool: "wall", tex: "", L: 0, hgt: 2, dir: 1, rise: 8, light: 70, below: true, ceilShow: true, shape: "d45", rot: 0, flip: false, panel: "rooms", base: -1 };
     this.s = st; if (st.L >= this.m.layers.length + 1) st.L = 0; this.v = { cx: 0, cy: 0, z: 0.25 }; this.sel = null; this.hover = null;
     const h = (t, a, ...k) => { const e = document.createElement(t); for (const n in a || {}) { if (n === "text") e.textContent = a[n]; else if (n.startsWith("on")) e[n] = a[n]; else e.setAttribute(n, a[n]); } for (const c of k.flat()) if (c) e.append(c); return e; };
     this.h = h; this.wrap = h("div", { class: "med", tabindex: "0" }); this.bar = h("div", { class: "medbar" }); this.body = h("div", { class: "medbody" });
@@ -50,7 +50,8 @@
     const sel = (title, opts, val, fn) => h("select", { class: "sel", title, onchange: e => fn(e.target.value) }, ...opts.map(([v, l]) => h("option", { value: v, text: l, selected: String(v) === String(val) })));
     const opt = [];
     if (s.tool === "height") opt.push(h("span", { class: "mlab", text: "Height" }), h("input", { type: "range", min: 0, max: 15, step: 1, value: s.hgt, title: "Floor height in 16ths of a story (8 units each)", oninput: e => { s.hgt = +e.target.value; this.buildBar(); } }), h("span", { class: "chip", text: s.hgt + "/16" }));
-    if (s.tool === "slope" || s.tool === "stairs") opt.push(sel("Rises toward", DIRS.map((d, i) => [i, "rises " + d]), s.dir, v => { s.dir = +v; this.redraw(); }), sel("How much it rises", RISES, s.rise, v => { s.rise = +v; }));
+    if (s.tool === "slope" || s.tool === "stairs") opt.push(sel("Rises toward", DIRS.map((d, i) => [i, "rises " + d]), s.dir, v => { s.dir = +v; this.redraw(); }), sel("How much it rises", RISES, s.rise, v => { s.rise = +v; }),
+      sel("Where it starts (its low end)", [[-1, "starts: automatic (where the floor behind it ends)"]].concat(Array.from({ length: 16 }, (_, i) => [i, "starts at " + i + "/16" + (i === 0 ? " (the floor)" : i === 8 ? " (half a story up)" : "")])), s.base, v => { s.base = +v; }));
     if (s.tool === "light") opt.push(h("span", { class: "mlab", text: "Light" }), h("input", { type: "range", min: 0, max: 100, step: 5, value: s.light, oninput: e => { s.light = +e.target.value; this.buildBar(); } }), h("span", { class: "chip", text: s.light + "%" }));
     if (s.tool === "diag") opt.push(tb("⟳ Turn (D)", "Turn the diagonal by 90°", false, () => this.turn()), tb("⇋ Mirror (M)", "Mirror the diagonal", s.flip, () => this.mirror()));
     if (s.tool === "object" || s.tool === "start") opt.push(tb("⟳ Turn (D)", "Turn the selected object / the start by 90°", false, () => this.turn()));
@@ -158,11 +159,16 @@
     else if (t === "floor") { if (erase) { delete c.f; delete c.h; delete c.sh; delete c.sd; delete c.sr; } else { c.f = s.tex; delete c.w; delete c.ws; } }
     else if (t === "ceil") { if (erase) delete c.c; else { c.c = s.tex; delete c.w; delete c.ws; } }
     else if (t === "height") { if (c.f === undefined && !erase) c.f = s.tex; if (erase) delete c.h; else { c.h = s.hgt; delete c.w; } }
-    else if (t === "slope" || t === "stairs") { if (erase) { delete c.sh; delete c.sd; delete c.sr; } else { if (c.f === undefined) c.f = s.tex; delete c.w; c.sh = t; c.sd = s.dir; c.sr = s.rise; } }
+    else if (t === "slope" || t === "stairs") { if (erase) { delete c.sh; delete c.sd; delete c.sr; } else { if (c.f === undefined) c.f = s.tex; delete c.w; c.sh = t; c.sd = s.dir; c.sr = s.rise; const h0 = s.base >= 0 ? s.base : this.autoBase(x, y, s.dir); if (h0) c.h = h0; else delete c.h; } }
     else if (t === "light") { if (erase || s.light >= 100) delete c.li; else c.li = s.light; }
     else if (t === "erase") { for (const k of Object.keys(c)) delete c[k]; }
     else if (t === "diag") { if (erase) { delete c.dg; delete c.dt; } }
     G.tidy(m, L, x, y);
+  };
+  // where a ramp / stairs rising toward dir should start: the height of the floor behind it, at the shared edge (so ramps drawn one after another keep climbing)
+  P.autoBase = function (x, y, dir) {
+    const L = this.s.L, b = G.cell(this.m, L, x - G.DIRS[dir][0], y - G.DIRS[dir][1]); if (!G.hasFloor(b)) return 0;
+    const e = [[0.5, 0.001], [0.999, 0.5], [0.5, 0.999], [0.001, 0.5]][dir], hgt = G.hAt(b, e[0], e[1]); return Math.max(0, Math.min(15, Math.round(hgt / G.STEP)));
   };
   // a diagonal shape with its first cell at x, y
   P.placeDiag = function (x, y) {

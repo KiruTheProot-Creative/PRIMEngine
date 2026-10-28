@@ -296,8 +296,13 @@
       if (!id) { this.say2("Level finished"); this.exiting = true; return; } this.loadMap(id);
     }
     // footsteps, jump / landing / hurt / death sounds (player.* sound tags)
-    psound(tag) { const id = this.T.get("player." + tag); if (id) this.sfx(id, +this.T.get("player.soundVolume")); }
-    footstep() { const T = this.T, ids = ["footstep", "footstep2", "footstep3"].filter(t => T.get("player." + t)); if (!ids.length) return; let i = Math.floor(Math.random() * ids.length); if (ids.length > 1 && i === this.lastStep) i = (i + 1) % ids.length; this.lastStep = i; this.psound(ids[i]); }
+    psound(tag) { const id = this.T.get("player." + tag); return id ? this.sfx(id, +this.T.get("player.soundVolume")) : null; }
+    // one footstep at a time: never two within 0.2 s (or right after landing), and a new step cuts the tail of the last one so they never pile up
+    footstep() {
+      const T = this.T, ids = ["footstep", "footstep2", "footstep3"].filter(t => T.get("player." + t)), now = performance.now(); if (!ids.length) return; if (now - (this.lastStepT || 0) < 200 || now - (this.landT || 0) < 250) return; this.lastStepT = now;
+      let i = Math.floor(Math.random() * ids.length); if (ids.length > 1 && i === this.lastStep) i = (i + 1) % ids.length; this.lastStep = i;
+      if (this.stepSnd && this.stepSnd.playing) this.stepSnd.stop(0.06); this.stepSnd = this.psound(ids[i]);
+    }
     leave() { if (this.o.onExit) this.o.onExit(); else this.destroy(); }
     // Classic: the camera looks where the mouse points and the crosshair stays in the middle.
     // Free aim (bodycam style): the mouse moves the aim (and crosshair) inside an area of the screen; the camera only turns once the aim reaches the edge of that area.
@@ -352,7 +357,7 @@
     vol3(mult) { const T = this.T; return Math.max(0, Math.min(1, (+T.get("audio.master") || 0) * (+T.get("audio.sfx") || 0) * (isNaN(mult) ? 1 : mult))); }
     loopSfx(id, vol) { const u = this.urls[id]; if (!u) return; this.loops = this.loops || {}; const v = this.vol3(vol); if (this.loops[id] && this.loops[id].playing) { this.loops[id].setVolume(v); return; } this.loops[id] = PRIM.Audio.play(u, v, true); }
     stopLoops(id) { const L = this.loops || {}; for (const k of Object.keys(L)) if (!id || k === id) { L[k].stop(0.03); delete L[k]; } }
-    sfx(id, vol) { const u = this.urls[id]; if (u) PRIM.Audio.play(u, this.vol3(vol), false); }
+    sfx(id, vol) { const u = this.urls[id]; return u ? PRIM.Audio.play(u, this.vol3(vol), false) : null; }
     playAnim(key, name, loop) { const at = this.atts.find(a => "player." + a.id === key); if (!at) return; if (!name) { if (loop) at.loopAnim = null; return; } if (!at.model.anims[name]) return; if (loop) at.loopAnim = name; else at.fire = name; at.t = 0; }
     fire() { this.trigger("onClick"); }
     // sound events set on the Timeline tab: play those that fall between t0 and t1 of the animation (only while really playing, not in the editor preview)
@@ -425,7 +430,7 @@
       G.move(b, dt, world, dtr); const p = { x: b.pos[0], y: b.pos[2] }; this.push(p, r); if (p.x !== b.pos[0] || p.y !== b.pos[2]) { b.pos[0] = p.x; b.pos[2] = p.y; G.push(b, world, dtr); }
       this.mv = Math.hypot(b.pos[0] - x0, b.pos[2] - z0); this.sprinting = !!(T.get("player.sprintEnabled") && k.shift && fw > 0); this.spdNow = spd;
       if (b.ground && was) { this.stepAcc = (this.stepAcc || 0) + this.mv; const sd2 = Math.max(10, +T.get("player.stepDistance") || 90); if (this.stepAcc >= sd2) { this.stepAcc %= sd2; this.footstep(); } }
-      if (b.ground && !was && vy < -250) this.psound("landSound");
+      if (b.ground && !was && vy < -250) { this.psound("landSound"); this.landT = performance.now(); this.stepAcc = 0; }
       this.x = b.pos[0]; this.y = b.pos[2]; this.z = b.pos[1]; this.ground = b.ground; this.vz = b.vel[1];
       if (this.z < -4000 && !this.pdead) this.hurtPlayer(1e9);   // fell out of the world
       this.airT = this.ground ? 0 : (this.airT || 0) + dt;
