@@ -109,6 +109,7 @@
   };
   // ------------------------------------------------------------ pose at a time in an animation (null = rest pose): world matrix of every node
   function sample(c, t) { const ts = c.t, vs = c.v; if (!ts.length) return 0; if (t <= ts[0]) return vs[0]; const n = ts.length - 1; if (t >= ts[n]) return vs[n]; let i = 0; while (ts[i + 1] < t) i++; const f = (t - ts[i]) / ((ts[i + 1] - ts[i]) || 1); return vs[i] + (vs[i + 1] - vs[i]) * f; }
+  F.sampleCurve = (c, t) => sample(c, t);
   F.pose = function (model, anim, time) {
     const local = model.nodes.map(n => ({ t: n.t.slice(), r: n.r.slice(), s: n.s.slice() })), a = anim ? model.anims[anim] : null;
     if (a) for (const tr of a.tracks) { const L = local[tr.n], key = ["t", "r", "s"][tr.p]; for (let ax = 0; ax < 3; ax++) if (tr.c[ax]) L[key][ax] = sample(tr.c[ax], time); }
@@ -129,5 +130,5 @@
       const m = { nodes: [{ name: "image", parent: -1, t: [0, 0, 0], r: [0, 0, 0], s: [1, 1, 1], pre: [0, 0, 0], mesh: { p, n, u } }], anims: {}, texBytes: new Uint8Array(buf), image: true }; m.bounds = F.bounds(m); F.cache[id] = m; delete F.pending[id]; return m;
     }).catch(e => { delete F.pending[id]; return null; }));
   };
-  F.load = function (id, url) { if (F.cache[id]) return Promise.resolve(F.cache[id]); if (!url) return Promise.resolve(null); return F.pending[id] || (F.pending[id] = fetch(url).then(r => r.arrayBuffer()).then(F.parse).then(m => { F.cache[id] = m; delete F.pending[id]; return m; }).catch(e => { delete F.pending[id]; console.warn("FBX failed", e); return null; })); };
+  F.load = function (id, url) { if (F.cache[id]) return Promise.resolve(F.cache[id]); if (!url) return Promise.resolve(null); return F.pending[id] || (F.pending[id] = fetch(url).then(r => r.arrayBuffer()).then(F.parse).then(m => { F.cache[id] = m; delete F.pending[id]; if (F.decorate) try { F.decorate(id, m); } catch (e) {} return m; }).catch(e => { delete F.pending[id]; console.warn("FBX failed", e); return null; })); };
 })();

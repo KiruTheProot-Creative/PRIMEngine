@@ -254,7 +254,7 @@
   S.WFACE = [TEX("tex", "Texture"), COLOR("color", "Color tint", "#ffffff")];
   S.defineWallFace = (project, w, f, over) => defP(project, S.WFACE, w.id, w.id + "." + f.id, w.id + "." + f.id, over);
   S.ensureWalls = project => {
-    if (!project.walls) project.walls = []; if (!project.props) project.props = [];
+    if (!project.walls) project.walls = []; if (!project.props) project.props = []; if (!project.anims) project.anims = [];
     for (const m of project.maps || []) { if (!m.things) m.things = []; if (m.n && m.n.t === undefined) m.n.t = m.things.length; if (!project.tags[m.id + ".wallThickness"]) project.tags[m.id + ".wallThickness"] = rec(S.MAP.find(p => p.k === "wallThickness"), m.id, m.id); }
     for (const p of project.props) for (const pr of S.PROP) if (!project.tags[p.id + "." + pr.k]) { const r = rec(pr, "props", p.id); if (pr.type === "anim") r.modelTag = p.id + ".asset"; project.tags[p.id + "." + pr.k] = r; }
     { const ik = project.tags["player.interactKey"]; if (project.tags["player.speed"] && !ik) project.tags["player.interactKey"] = rec(S.PLAYER.find(p => p.k === "interactKey"), "player", "player"); } if (project.tags["player.speed"]) for (const pp of S.PLAYER) if (!project.tags["player." + pp.k]) project.tags["player." + pp.k] = rec(pp, "player", "player");

@@ -156,7 +156,7 @@
   function setTesting(v) { setTab(v ? "game" : "edit"); }
   function leaveSpecial() { S.playerSel = false; if (["player", "timeline", "fly", "coder"].includes(S.tab)) { S.tab = "edit"; S.testing = false; return true; } return false; }
   function centerTabs() {
-    const items = S.mapId && curMap() ? [["edit", "Map"], ["fly", "Fly Editor"]] : [["edit", "Scene"]]; items.push(["game", "Game"], ["player", "Player Editor"], ["props", "Object Editor"], ["walls", "Wall Editor"], ["timeline", "Timeline"], ["coder", "Node Coder"]);
+    const items = S.mapId && curMap() ? [["edit", "Map"], ["fly", "Fly Editor"]] : [["edit", "Scene"]]; items.push(["game", "Game"], ["player", "Player Editor"], ["props", "Object Editor"], ["walls", "Wall Editor"], ["anim", "Animation Editor"], ["timeline", "Timeline"], ["coder", "Node Coder"]);
     return items.map(([k, l]) => h("button", { class: "tab" + (S.tab === k ? " sel" : ""), text: l, onclick: () => setTab(k) }));
   }
 
@@ -213,7 +213,7 @@
   function renderCenter() {
     const p = E.center; killMapViews(); if (S.rt) { S.rt.destroy(); S.rt = null; }
     if (S.tab === "fly" && !S.mapId) S.tab = "edit"; S.testing = S.tab === "game";
-    if (S.tab === "player") return S.objView && S.objSel && S.project.player.attachments.some(a => a.id === S.objSel) ? objectCenter() : playerCenter(); if (S.tab === "walls") return wallCenter(); if (S.tab === "props") return propCenter(); if (S.tab === "timeline") return timelineCenter(); if (S.tab === "coder") return coderCenter(); if (S.mapId && curMap() && S.tab !== "game") return mapCenter();
+    if (S.tab === "player") return S.objView && S.objSel && S.project.player.attachments.some(a => a.id === S.objSel) ? objectCenter() : playerCenter(); if (S.tab === "walls") return wallCenter(); if (S.tab === "props") return propCenter(); if (S.tab === "anim") return animCenter(); if (S.tab === "timeline") return timelineCenter(); if (S.tab === "coder") return coderCenter(); if (S.mapId && curMap() && S.tab !== "game") return mapCenter();
     const sc = S.testing && S.mapId ? (screens().find(x => x.id === S.tags.get("project.startScreen")) || screens()[0]) : curScreen();
     E.host.className = "host"; E.host.replaceChildren();
     p.tabs.replaceChildren(...centerTabs(), h("span", { class: "sp" }), h("span", { class: "csize", text: "1280 × 720  ·  16:9" }));
@@ -274,7 +274,7 @@
     if (sc.kind === "splash") addNode("splash", { kind: "image", asset: a.id }); else addNode("image", { asset: a.id, x: Math.max(-640, Math.min(640, x - 640)), y: Math.max(-360, Math.min(360, 360 - y)) });
   }
   function selectedNode() { return S.selId && !S.sel ? curScreen().nodes.find(n => n.id === S.selId) : null; }
-  function deleteSelected() { if (S.tab === "coder") return coderDelete(); if (S.playerSel || S.tab === "timeline") return; if (S.mapId && S.med && !S.sel) return S.med.deleteSelection(); if (S.sel) return deleteAssetSel(); const n = selectedNode(); if (n) deleteNode(n); }
+  function deleteSelected() { if (S.tab === "coder") return coderDelete(); if (S.tab === "anim") return; if (S.playerSel || S.tab === "timeline") return; if (S.mapId && S.med && !S.sel) return S.med.deleteSelection(); if (S.sel) return deleteAssetSel(); const n = selectedNode(); if (n) deleteNode(n); }
   function duplicateSelected() { const n = selectedNode(); if (n) dupNode(n); }
   function startRename() { if (S.sel) { S.renaming = { kind: S.sel.kind, key: S.sel.key }; renderProject(); } else { const i = document.querySelector(".idin"); if (i) { i.focus(); i.select(); } } }
 
@@ -422,7 +422,7 @@
   }
   function propsBody() {
     if (S.fsel) return folderInspector();
-    if (S.tab === "walls") return wallInspector(); if (S.tab === "props") return propInspector();
+    if (S.tab === "walls") return wallInspector(); if (S.tab === "props") return propInspector(); if (S.tab === "anim") return animInspector();
     if (S.playerSel) return playerInspector(); if (S.tab === "timeline") return timelineInspector(); if (S.tab === "coder") return coderInspector();
     if (S.mapId && curMap()) return S.tab === "fly" && (S.fsl || []).length ? flyInspector() : mapInspector();
     const sc = curScreen(), node = selectedNode(), box = h("div", { class: "insp" });
@@ -532,7 +532,7 @@
 
   // ================================================================ MAPS (DOOM-style editor + 3D fly view)
   const curMap = () => S.project.maps.find(m => m.id === S.mapId);
-  function killMapViews() { if (S.med) { S.med.destroy(); S.med = null; } if (S.v3) { S.v3.dispose(); S.v3 = null; } if (S.p3) { S.p3.destroy(); S.p3 = null; } if (S.tlv) { S.tlv.destroy(); S.tlv = null; } if (S.coderStop) { S.coderStop(); S.coderStop = null; } if (S.oev) { S.oev.destroy(); S.oev = null; } if (S.wed) { S.wed.destroy(); S.wed = null; } if (S.pev) { S.pev.destroy(); S.pev = null; } }
+  function killMapViews() { if (S.aed) { S.aed.destroy(); S.aed = null; } if (S.med) { S.med.destroy(); S.med = null; } if (S.v3) { S.v3.dispose(); S.v3 = null; } if (S.p3) { S.p3.destroy(); S.p3 = null; } if (S.tlv) { S.tlv.destroy(); S.tlv = null; } if (S.coderStop) { S.coderStop(); S.coderStop = null; } if (S.oev) { S.oev.destroy(); S.oev = null; } if (S.wed) { S.wed.destroy(); S.wed = null; } if (S.pev) { S.pev.destroy(); S.pev = null; } }
   function selectMap(id, sel) { S.fsel = null; const was = S.mapId, tc = (S.playerSel || S.tab === "timeline") ? (S.tab = "edit", S.testing = false, true) : false; S.playerSel = false; S.mapId = id; S.selId = null; S.sel = null; S.msel = sel || null; renderHier(); renderInspector(); renderProject(); if (was !== id || !S.med || tc) renderCenter(); else S.med.select(S.msel, true); }
   function openNewMap() {
     const ov = h("div", { class: "modal" }), close = () => ov.remove();
@@ -644,7 +644,7 @@
     S.p3 = new PRIM.Play3D({ host: E.host, project: S.project, map: m, tags: S.tags, urls: S.urls, mode: "preview", previewWeapon: S.objSel });
   }
   // ---- 3D objects attached to the player camera
-  function loadModels(p) { PRIM.FBX.cache = {}; PRIM.FBX.pending = {}; for (const a of p.assets) if (a.type === "model") PRIM.FBX.load(a.id, S.urls[a.id]).then(m => { if (m && S.project === p) { if (!a.meta || a.meta.error) a.meta = PRIM.FBX.summary(m); renderInspector(); if (S.tab === "timeline") renderCenter(); } }); }
+  function loadModels(p) { PRIM.FBX.cache = {}; PRIM.FBX.pending = {}; PRIM.FBX.decorate = (id, m) => { if (S.project && PRIM.AnimLib) PRIM.AnimLib.apply(S.project, m, id); }; for (const a of p.assets) if (a.type === "model") PRIM.FBX.load(a.id, S.urls[a.id]).then(m => { if (m && S.project === p) { if (!a.meta || a.meta.error) a.meta = PRIM.FBX.summary(m); renderInspector(); if (S.tab === "timeline") renderCenter(); } }); }
   // ---- Object editor: the selected object on its own, to turn around and to place the muzzle point and the aim arrow by clicking
   function objectCenter() {
     const p = E.center, att = S.project.player.attachments.find(a => a.id === S.objSel), pre = "player." + att.id + ".", T = S.tags, F = PRIM.FBX, M4 = PRIM.M4, OE = S.oe = S.oe || { yaw: -30, pitch: 15, zoom: 1, tool: "orbit" };
@@ -991,6 +991,48 @@
     let drag = null; cv.addEventListener("pointerdown", e => { cv.setPointerCapture(e.pointerId); drag = { x: e.clientX, y: e.clientY }; }); cv.addEventListener("pointermove", e => { if (!drag) return; OE.yaw += (e.clientX - drag.x) * 0.6; OE.pitch = Math.max(-89, Math.min(89, OE.pitch + (e.clientY - drag.y) * 0.6)); drag = { x: e.clientX, y: e.clientY }; });
     cv.addEventListener("pointerup", () => { drag = null; }); cv.addEventListener("wheel", e => { e.preventDefault(); OE.zoom = Math.max(0.3, Math.min(4, OE.zoom * (e.deltaY > 0 ? 0.9 : 1.1))); }, { passive: false });
     S.pev = { destroy() { cancelAnimationFrame(raf); v.destroy(); } };
+  }
+  // ================================================================ ANIMATION EDITOR (keyframed animations for the parts of a model)
+  function animState() { return S.anS = S.anS || { st: {} }; }
+  function animUnique(mo, base, skip) { let n = base, k = 2; while (mo && mo.anims[n] && mo.anims[n].custom !== skip) n = base + " " + k++; return n; }
+  function newAnim(asset, mo, src) {
+    const P = S.project, a = { id: Schema.uid("anim", P.anims.map(x => x.id)), asset: asset.id, name: animUnique(mo, src ? src + " (edit)" : "New animation"), dur: 1, keys: [] };
+    if (src) PRIM.AnimLib.fromModel(a, mo, src); P.anims.push(a); PRIM.AnimLib.apply(P, mo, asset.id); animState().anim = a.id; markDirty(); renderCenter(); renderInspector(); log("Created animation “" + a.name + "”");
+  }
+  function animCenter() {
+    const p = E.center, P = S.project, F = PRIM.FBX, AS = animState(), models = P.assets.filter(a => a.type === "model"); P.anims = P.anims || [];
+    p.tabs.replaceChildren(...centerTabs(), h("span", { class: "sp" }), h("span", { class: "csize", text: "animation editor" })); E.host.className = "host maphost";
+    if (!models.length) { put(E.cbar, h("span", { class: "hint", text: "Import an .fbx model first (Assets > Import Files)." })); E.host.replaceChildren(h("div", { class: "v3err", style: "color:var(--muted)", text: "No models yet." })); return; }
+    const asset = models.find(a => a.id === AS.asset) || models[0]; AS.asset = asset.id; const mo = F.cache[asset.id];
+    if (!mo) { put(E.cbar, h("span", { class: "hint", text: "Loading the model…" })); E.host.replaceChildren(); F.load(asset.id, S.urls[asset.id]).then(m => { if (m && S.tab === "anim") { renderCenter(); renderInspector(); } }); return; }
+    const list = PRIM.AnimLib.list(P, asset.id), a = list.find(x => x.id === AS.anim) || list[0]; AS.anim = a ? a.id : null;
+    const fbxAnims = Object.keys(mo.anims).filter(n => !mo.anims[n].custom);
+    const newBtn = h("button", { class: "btn sm", text: "+ New animation ▾", onclick: e => popMenu(e.currentTarget, [{ t: "Empty animation", fn: () => newAnim(asset, mo, null) }, ...fbxAnims.map(n => ({ t: "Start from “" + n + "” (from the FBX file)", fn: () => newAnim(asset, mo, n) }))]) });
+    put(E.cbar, h("select", { class: "sel", title: "Model", onchange: e => { AS.asset = e.target.value; AS.anim = null; renderCenter(); renderInspector(); } }, ...models.map(m => h("option", { value: m.id, text: m.name, selected: m.id === asset.id }))),
+      list.length ? h("select", { class: "sel", title: "Animation", onchange: e => { AS.anim = e.target.value; renderCenter(); renderInspector(); } }, ...list.map(x => h("option", { value: x.id, text: x.name, selected: a && x.id === a.id }))) : "", newBtn,
+      h("span", { class: "hint", text: "Pick a part (click it, or its row), then Move / Rotate / Scale it: every change sets a key at the red playhead. Space plays, Ctrl+Z undoes." }));
+    if (!a) { E.host.replaceChildren(h("div", { class: "v3err", style: "color:var(--muted);text-align:center;padding:20px", text: "No animation for “" + asset.name + "” yet. Click “+ New animation” to make one (or start from one in the FBX file)." })); return; }
+    S.aed = new PRIM.AnimEditor({ host: E.host, project: P, model: mo, anim: a, state: AS.st[a.id] = AS.st[a.id] || {}, onChange: kind => { if (kind !== "time") markDirty(); if (!S.aedRi) S.aedRi = requestAnimationFrame(() => { S.aedRi = 0; if (S.tab === "anim") renderInspector(); }); }, onSelect: () => renderInspector() });
+  }
+  function animInspector() {
+    const P = S.project, AS = animState(), box = h("div", { class: "insp" }), a = (P.anims || []).find(x => x.id === AS.anim), mo = a && PRIM.FBX.cache[a.asset], ed = S.aed;
+    if (!a || !mo || !ed) { box.append(h("div", { class: "note", text: "Make or pick an animation above the view." })); return box; }
+    const st = ed.st, num = (label, val, set, step) => h("div", { class: "fld" }, h("label", { class: "flab" }, h("span", { text: label })), h("div", { class: "fctl" }, h("input", { class: "num", type: "number", step: step || 1, value: +(+val).toFixed(3), "aria-label": label, onchange: e => { const v = parseFloat(e.target.value); if (isFinite(v)) set(v); } })));
+    const rename = v => { v = v.trim(); if (!v || v === a.name) return; const nv = animUnique(mo, v, a.id), old = a.name; for (const k in P.tags) { const r = P.tags[k]; if (r.type === "anim" && r.value === old && S.tags.get(r.modelTag) === a.asset) r.value = nv; } for (const e of P.events || []) if (e.asset === a.asset && e.anim === old) e.anim = nv; a.name = nv; PRIM.AnimLib.apply(P, mo, a.asset); markDirty(); renderCenter(); renderInspector(); };
+    box.append(h("div", { class: "ihead" }, h("span", { class: "bigic", text: "◷" }), h("div", { class: "ititle" }, h("input", { class: "idin", value: a.name, "aria-label": "Animation name", onchange: e => rename(e.target.value) }), h("div", { class: "isub", text: a.keys.length + " keys · " + PRIM.AnimLib.list(P, a.asset).length + " animation(s) for this model" }))),
+      h("div", { class: "btnrow" }, h("button", { class: "btn sm danger", text: "Delete animation", onclick: () => { P.anims.splice(P.anims.indexOf(a), 1); PRIM.AnimLib.apply(P, mo, a.asset); AS.anim = null; markDirty(); renderCenter(); renderInspector(); } })),
+      foldout("an:a", "Animation", num("Length (seconds)", a.dur, v => { ed.snap(); a.dur = Math.max(0.05, Math.min(120, v)); ed.changed(); renderInspector(); }, 0.05), num("Playhead (seconds)", st.time, v => { ed.setTime(v); renderInspector(); }, 0.01),
+        h("div", { class: "note", text: "It can be picked anywhere an animation of this model is chosen (weapons, objects, enemies, doors, the Timeline tab and the Play animation node)." })));
+    const node = st.node && mo.nodes.find(n => n.name === st.node);
+    if (node) { const v = ed.value(), setv = (f, i) => x => { ed.snap(); const w = ed.value(); w[f][i] = x; ed.setValue(node.name, w); renderInspector(); }, hasKey = PRIM.AnimLib.keysOf(a, node.name).some(k => Math.abs(k.t - st.time) < 0.0005);
+      box.append(foldout("an:p", "Part “" + node.name + "”" + (hasKey ? "  ◆ key here" : ""),
+        ...["X", "Y", "Z"].map((n, i) => num("Move " + n, v.p[i], setv("p", i), 0.1)), ...["X", "Y", "Z"].map((n, i) => num("Turn " + n + " (degrees)", v.r[i], setv("r", i), 1)), ...["X", "Y", "Z"].map((n, i) => num("Scale " + n, v.s[i], setv("s", i), 0.01)),
+        h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: "◆ Key part (K)", onclick: () => { ed.keyNow(); renderInspector(); } }), h("button", { class: "btn sm", text: "Delete key", disabled: !hasKey, onclick: () => { st.key = { node: node.name, t: Math.round(st.time * 1000) / 1000 }; ed.deleteKey(); renderInspector(); } }),
+          h("button", { class: "btn sm", text: "Rest pose", title: "Key the part as it is in the file", onclick: () => { ed.snap(); ed.setValue(node.name, { p: node.t.slice(), r: node.r.slice(), s: node.s.slice() }); renderInspector(); } })),
+        h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: "Copy pose", onclick: () => { S.animClip = ed.value(); log("Copied the pose of " + node.name); } }), h("button", { class: "btn sm", text: "Paste pose", disabled: !S.animClip, onclick: () => { ed.snap(); ed.setValue(node.name, JSON.parse(JSON.stringify(S.animClip))); renderInspector(); } }))));
+    }
+    box.append(h("div", { class: "note", text: "Keys: Q orbit · G move · R rotate (X / Y / Z = axis) · S scale · K key · X or Delete removes the selected key · Space play · Ctrl+Z / Ctrl+Y undo / redo. Timeline: drag the ruler to scrub, drag a diamond to move a key (Shift = no snapping), double-click a row to add a key." }));
+    return box;
   }
   function propInspector() {
     const P = S.project, pr = (P.props || []).find(x => x.id === S.propSel), box = h("div", { class: "insp" }), T = S.tags;
