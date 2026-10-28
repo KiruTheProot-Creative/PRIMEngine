@@ -138,7 +138,11 @@
   // ---- lights and materials (see the fragment shader)
   P.setLights = function (list) { this.lights = list || []; };
   // the (up to) 8 lights that matter most for this frame: the nearest ones, measured in their own reach
-  P.pickLights = function () { const c = this.cam; return (this.lights || []).map(l => ({ l, k: Math.hypot(l.p[0] - c.x, l.p[1] - c.y, l.p[2] - c.z) / Math.max(1, l.r) })).sort((a, b) => a.k - b.k).slice(0, 8).filter(x => x.k < 1.6).map(x => x.l); };
+  // a light counts when the space it lights up can be seen (its sphere touches the view), however far from the camera it is; nearest first
+  P.pickLights = function () {
+    const c = this.cam, pl = this.vp ? this.frustum() : null, seen = l => !pl || pl.every(q => q[0] * l.p[0] + q[1] * l.p[1] + q[2] * l.p[2] + q[3] > -l.r), far = this.fogE < 1e8 ? this.fogE : 1e9;
+    return (this.lights || []).filter(l => seen(l) && Math.hypot(l.p[0] - c.x, l.p[1] - c.y, l.p[2] - c.z) - l.r < far).map(l => ({ l, k: Math.hypot(l.p[0] - c.x, l.p[1] - c.y, l.p[2] - c.z) / Math.max(1, l.r) })).sort((a, b) => a.k - b.k).slice(0, 8).map(x => x.l);
+  };
   P.useLights = function (camSpace) {
     const gl = this.gl, L = this.loc, c = this.cam, B = R.camBasis(c.yaw, c.pitch), all = this.pickLights();
     // shadows only for world-space passes, and only for the lights that got a shadow map this frame
@@ -240,7 +244,7 @@
   };
   // auto-LOD: merge nearby vertices of a mesh (grid clustering). level 1 = about half the detail, 2 = a quarter
   P.lodOf = function (gm, ms, level) {
-    if (!level) return ms; ms.lod = ms.lod || {}; if (ms.lod[level]) return ms.lod[level];
+    if (!level || ms.n < 3000) return ms;   // small models (most projectiles, pick-ups) are never simplified: they would fall apart into flat pieces ms.lod = ms.lod || {}; if (ms.lod[level]) return ms.lod[level];
     const mesh = gm.model.nodes[ms.node].mesh, cnt = mesh.p.length / 3; let mn = [1e9, 1e9, 1e9], mx = [-1e9, -1e9, -1e9];
     for (let i = 0; i < cnt; i++) for (let q = 0; q < 3; q++) { const v = mesh.p[i * 3 + q]; if (v < mn[q]) mn[q] = v; if (v > mx[q]) mx[q] = v; }
     const cell = Math.max(1e-6, Math.hypot(mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2]) / (level === 1 ? 28 : 12)), key = i => [0, 1, 2].map(q => Math.floor((mesh.p[i * 3 + q] - mn[q]) / cell)).join(","), acc = {};

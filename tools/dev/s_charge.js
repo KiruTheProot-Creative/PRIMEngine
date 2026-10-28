@@ -58,4 +58,6 @@ module.exports = async (p, out) => {
   await p.evaluate(() => { const S = __studio.S, q = S.play; q.fx = []; S.tags.set('player.att.projType', 'mesh'); S.tags.set('player.att.projModel', S.tags.get('player.att.asset')); S.tags.set('player.att.projScale', 0.3); S.tags.set('player.att.projRy', 90); S.tags.set('player.att.projSpeed', 120); q.fireCharge = 0; q.fireProj(q.atts[0]); });
   await p.waitForTimeout(400); console.log('mesh fx', await p.evaluate(() => JSON.stringify(__studio.S.play.fx.map(f => [f.kind, f.p.map(Math.round)]))));
   await p.screenshot({ path: out + '_mesh.png' });
+  // far flight: the light stays picked and the model is never simplified
+  console.log('far flight', await p.evaluate(() => { const q = __studio.S.play, v = q.view, f = q.fx.find(f => f.kind === 'mesh'); if (!f) return 'no mesh fx'; const out = []; for (const d of [300, 900, 1800]) { f.p = [v.cam.x + Math.cos(v.cam.yaw) * d, v.cam.y, v.cam.z + Math.sin(v.cam.yaw) * d]; v.lights = [{ p: f.p, r: 220, c: [1, 1, 1], type: 0 }]; const lv = v.lodLevelAt(d, 20 * (f.scale || 1)); out.push([d, v.pickLights().length, f.gm.meshes.every(ms => v.lodOf(f.gm, ms, lv) === ms)]); } return JSON.stringify(out); }));
 };
