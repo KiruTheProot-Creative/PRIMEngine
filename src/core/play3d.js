@@ -473,6 +473,7 @@
           if (d < R && clear([o.x, cy, o.y])) this.damageEnemy(o, dmg * (1 - 0.75 * d / R)); }
         if (T.get(pre + "splashSelf") && !this.pdead) { const r = +T.get("player.radius") || 16, cy = Math.max(this.z, Math.min(this.z + 102, p[1])), d = Math.hypot(Math.max(0, Math.hypot(this.x - p[0], this.y - p[2]) - r), cy - p[1]); if (d < R && clear([this.x, cy, this.y])) this.hurtPlayer(dmg * (1 - 0.75 * d / R)); }
       }
+      if (T.get(pre + "projSplash") && T.get(pre + "splashSphere")) { this.fx = this.fx || []; this.fx.push({ kind: "shock", deco: true, p: p.slice(), R: g("splashRadius") || 160, life: g("splashSphereTime") || 0.45, t: 0, c1: this.hexCol(T.get(pre + "splashColor1") || "#ffe08a"), c2: this.hexCol(T.get(pre + "splashColor2") || "#ff4a1a"), anim: T.get(pre + "splashAnim") || "none", aspd: T.get(pre + "splashAnimSpeed") === undefined ? 2 : g("splashAnimSpeed"), glow: T.get(pre + "splashGlow") === undefined ? 1.4 : g("splashGlow") }); }
       const kind = T.get(pre + "explodeType"), snd = T.get(pre + "explodeSound"); if (snd) this.sfxAt(snd, 1, p);
       if (!kind || kind === "none") return; const size = kind === "particles" ? g("explodeBit") || 4 : g("explodeSize") || 96, hex = String(T.get(pre + "explodeColor") || "#ff9933"), col = this.hexCol(hex); this.fx = this.fx || [];
       if (kind === "particles") { const cnt = Math.min(200, Math.max(1, Math.round(g("explodeCount") || 24))), sp = g("explodeSpeed") || 320, life = g("explodeTime") || 0.6;

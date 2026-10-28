@@ -251,6 +251,24 @@
       const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(v), gl.STREAM_DRAW); this.setMat({ alpha: f.sprite ? 1 : Math.min(0.995, f.alpha === undefined ? 1 : f.alpha), lit: f.lit === undefined ? 1 : f.lit, emitK: f.glow || 0, tint: f.tint, emit: f.emit });
       if (!f.sprite) { gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(-1, -4); gl.depthMask(false); } bind(buf, this.texFor(f.texId, this.urls)); gl.drawArrays(gl.TRIANGLES, 0, 6); gl.depthMask(true); gl.disable(gl.POLYGON_OFFSET_FILL); gl.deleteBuffer(buf);
     }
+    // shock spheres (splash damage): see-through glowing balls that grow to the splash radius and fade. Additive light (black = clear), a two-colour gradient
+    // from the middle (facing you) to the edge, optionally animated: rolling rings, swirl, pulse or flicker. Drawn last, without writing depth.
+    const shocks = list.filter(f => f.kind === "shock"); if (shocks.length) {
+      const b = [], tm = performance.now() / 1000, hash = (x, y, z) => { const v = Math.sin(x * 127.1 + y * 311.7 + z * 74.7) * 43758.5453; return v - Math.floor(v); };
+      for (const f of shocks) { const a = Math.min(1, f.t / f.life), r = f.R * (1 - Math.pow(1 - a, 3)), fade = Math.pow(1 - a, 1.3) * (f.glow || 1), la = 16, lo = 32, sp = f.aspd || 0;
+        const vtx = (i, j) => { const th = i / la * Math.PI, ph = j / lo * Math.PI * 2, n = [Math.sin(th) * Math.cos(ph), Math.cos(th), Math.sin(th) * Math.sin(ph)], P = [f.p[0] + n[0] * r, f.p[1] + n[1] * r, f.p[2] + n[2] * r];
+          const V = M4.norm([this.cam.x - P[0], this.cam.y - P[1], this.cam.z - P[2]]), face = Math.abs(M4.dot(n, V)), rim = 1 - face; let g = rim;
+          if (f.anim === "bands") g = Math.min(1, Math.max(0, rim * 0.6 + 0.4 * (0.5 + 0.5 * Math.sin((n[1] * 3 - tm * sp) * Math.PI * 2))));
+          else if (f.anim === "swirl") g = Math.min(1, Math.max(0, rim * 0.5 + 0.5 * (0.5 + 0.5 * Math.sin(Math.atan2(n[2], n[0]) * 3 + n[1] * 5 + tm * sp * Math.PI * 2))));
+          else if (f.anim === "pulse") { const w = 0.5 + 0.5 * Math.sin(tm * sp * Math.PI * 2); g = rim * (1 - w) + (1 - rim) * w; }
+          else if (f.anim === "noise") g = Math.min(1, Math.max(0, rim * 0.55 + 0.45 * hash(Math.round(n[0] * 6), Math.round(n[1] * 6), Math.round(n[2] * 6) + Math.floor(tm * sp * 8))));
+          const k = fade * (0.25 + 0.75 * Math.pow(rim, 1.5)); return [P, [0, 1, 2].map(q => (f.c1[q] * (1 - g) + f.c2[q] * g) * k)]; };
+        const ring = []; for (let i = 0; i <= la; i++) { const row = []; for (let j = 0; j <= lo; j++) row.push(vtx(i, j)); ring.push(row); }
+        for (let i = 0; i < la; i++) for (let j = 0; j < lo; j++) for (const [v, c] of [ring[i][j], ring[i + 1][j], ring[i + 1][j + 1], ring[i][j], ring[i + 1][j + 1], ring[i][j + 1]]) b.push(v[0], v[1], v[2], 0, 0, c[0], c[1], c[2]); }
+      this.setMat({ lit: 0 }); gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE); gl.depthMask(false);
+      const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(b), gl.STREAM_DRAW); bind(buf, this.whiteTex); gl.drawArrays(gl.TRIANGLES, 0, b.length / 8); gl.deleteBuffer(buf);
+      gl.depthMask(true); gl.disable(gl.BLEND);
+    }
     this.setMat(); gl.uniformMatrix4fv(L.m, false, new Float32Array(M4.ident()));
   };
 
