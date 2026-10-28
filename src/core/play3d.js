@@ -177,7 +177,7 @@
         if (o.type === "door") { const oa = an("openAnim"), ca = an("closeAnim"); if (oa) { const L = this.animLen(o.aid, oa, o.model.anims[oa].dur); if (o.st === "closing" && ca) { name = ca; tm = (1 - o.p) * this.animLen(o.aid, ca, o.model.anims[ca].dur).len * 1; } else { name = oa; tm = o.p * L.len; } tm *= L.speed; } else { name = an("idleAnim"); tm = 0; } }
         else if (o.type === "enemy" && o.init) { name = o.anim; if (name) { const L = this.animLen(o.aid, name, o.model.anims[name].dur), loop = o.akey === "idleAnim" || o.akey === "walkAnim"; tm = (loop ? o.at % Math.max(0.05, L.len) : Math.min(o.at, L.len - 1e-3)) * L.speed; } }
         else { name = an("idleAnim"); if (name) { const L = this.animLen(o.aid, name, o.model.anims[name].dur); tm = ((performance.now() / 1000) % Math.max(0.05, L.len)) * L.speed; } }
-        const pose = F.pose(o.model, name, tm), ang = o.type === "pickup" ? o.spin : 0;
+        const pose = this.mixPose(o, o.model, name, tm, dt), ang = o.type === "pickup" ? o.spin : 0;
         let z = [f.ux * 0 + 0, 0, 0]; const X = [f.ux, 0, f.uy], Z = [f.nx, 0, f.ny]; let cr = [X[1] * 0 - 0 * 0, 0, 0];
         const sgn = (-f.uy * f.nx + f.ux * f.ny) >= 0 ? 1 : -1, XX = f.door ? X.map(q => q * sgn) : X, ZZ = f.door ? Z.map(q => q * sgn) : Z;
         const slide = o.type === "door" && !an("openAnim") ? o.p * (f.h || 128) : 0;
@@ -358,7 +358,17 @@
     loopSfx(id, vol) { const u = this.urls[id]; if (!u) return; this.loops = this.loops || {}; const v = this.vol3(vol); if (this.loops[id] && this.loops[id].playing) { this.loops[id].setVolume(v); return; } this.loops[id] = PRIM.Audio.play(u, v, true); }
     stopLoops(id) { const L = this.loops || {}; for (const k of Object.keys(L)) if (!id || k === id) { L[k].stop(0.03); delete L[k]; } }
     sfx(id, vol) { const u = this.urls[id]; return u ? PRIM.Audio.play(u, this.vol3(vol), false) : null; }
-    playAnim(key, name, loop) { const at = this.atts.find(a => "player." + a.id === key); if (!at) return; if (!name) { if (loop) at.loopAnim = null; return; } if (!at.model.anims[name]) return; if (loop) at.loopAnim = name; else at.fire = name; at.t = 0; }
+    playAnim(key, name, loop) { const at = this.atts.find(a => "player." + a.id === key); if (!at) return; if (!name) { if (loop) at.loopAnim = null; return; } if (!at.model.anims[name]) return; if (loop) at.loopAnim = name; else at.fire = name; at.t = 0; at.restart = true; }
+    // smooth changes between animations: when the animation of a model changes (or one restarts), the pose eases from what was shown
+    // into the new animation over player.animBlend seconds (0 = instant). h = anything that keeps the state (a weapon, a placed object)
+    mixPose(h, model, name, time, dt) {
+      const F = PRIM.FBX, b = Math.max(0, +this.T.get("player.animBlend") || 0), cur = F.local(model, name, time);
+      if (h.mModel !== model) { h.mModel = model; h.mName = name; h.mSnap = null; }
+      else if ((name !== h.mName || h.restart) && b > 0 && h.mLast) { h.mSnap = h.mLast; h.mK = 0; }
+      h.mName = name; h.restart = false; let shown = cur;
+      if (h.mSnap && b > 0) { h.mK += dt / b; if (h.mK >= 1) h.mSnap = null; else { const w = h.mK * h.mK * (3 - 2 * h.mK); shown = F.mixLocal(h.mSnap, cur, w); } }
+      h.mLast = shown; return F.world(model, shown);
+    }
     fire() { this.trigger("onClick"); }
     // sound events set on the Timeline tab: play those that fall between t0 and t1 of the animation (only while really playing, not in the editor preview)
     ev(at, name, t0, t1) {
@@ -379,7 +389,7 @@
     drawHand(v, dt) {
       if (!this.atts.length) return; const T = this.T, c = v.cam, items = [], segs = [], F = PRIM.FBX, eye = [c.x, c.y, c.z], B = R3D.camBasis(c.yaw, c.pitch);
       for (const at of this.atts) {
-        const pre = "player." + at.id + "."; if (!T.get(pre + "visible")) continue; if (at.type === "weapon" && at !== this.curWeapon()) continue; const g = k => +T.get(pre + k) || 0, name = this.advance(at, dt), pose = F.pose(at.model, name || null, at.t * (name && at.model.anims[name] ? this.animLen(at.aid, name, at.model.anims[name].dur).speed : 1));
+        const pre = "player." + at.id + "."; if (!T.get(pre + "visible")) continue; if (at.type === "weapon" && at !== this.curWeapon()) continue; const g = k => +T.get(pre + k) || 0, name = this.advance(at, dt), pose = this.mixPose(at, at.model, name || null, at.t * (name && at.model.anims[name] ? this.animLen(at.aid, name, at.model.anims[name].dur).speed : 1), dt);
         const vo = this.mode === "play" && this.vmOff ? this.vmOff : [0, 0, 0], off = [g("x") + vo[0], g("y") + vo[1], g("z") + vo[2]], Rb = M4.rotXYZ([g("rx"), g("ry"), g("rz")]), sc = g("scale") || 1, Sm = M4.scale(sc, sc, sc); let Ra = M4.ident();
         if (at.type === "weapon") {
           const ay = g("arrowYaw") * Math.PI / 180, ap = g("arrowPitch") * Math.PI / 180, arrow = [-Math.cos(ap) * Math.sin(ay), Math.sin(ap), -Math.cos(ap) * Math.cos(ay)], mz = [(g("muzzleX") - g("pivotX")) * sc, (g("muzzleY") - g("pivotY")) * sc, (g("muzzleZ") - g("pivotZ")) * sc];

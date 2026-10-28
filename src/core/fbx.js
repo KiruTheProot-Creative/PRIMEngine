@@ -115,6 +115,27 @@
     if (a) for (const tr of a.tracks) { const L = local[tr.n], key = ["t", "r", "s"][tr.p]; for (let ax = 0; ax < 3; ax++) if (tr.c[ax]) L[key][ax] = sample(tr.c[ax], time); }
     const world = []; model.nodes.forEach((n, i) => { const m = M.trs(local[i].t, local[i].r, local[i].s, n.pre); world[i] = n.parent >= 0 ? M.mul(world[n.parent], m) : m; }); return world;
   };
+  // ------------------------------------------------------------ blending (smooth changes between animations)
+  // local pose of every node: { t, q (rotation as a quaternion [x,y,z,w]), s }
+  const D2 = Math.PI / 360, qmul = (a, b) => [a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1], a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0], a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3], a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2]];
+  const qEuler = r => qmul(qmul([0, 0, Math.sin(r[2] * D2), Math.cos(r[2] * D2)], [0, Math.sin(r[1] * D2), 0, Math.cos(r[1] * D2)]), [Math.sin(r[0] * D2), 0, 0, Math.cos(r[0] * D2)]);   // same order as M4.rotXYZ: X, then Y, then Z
+  const qMat = q => { const [x, y, z, w] = q; return [1 - 2 * (y * y + z * z), 2 * (x * y + z * w), 2 * (x * z - y * w), 0, 2 * (x * y - z * w), 1 - 2 * (x * x + z * z), 2 * (y * z + x * w), 0, 2 * (x * z + y * w), 2 * (y * z - x * w), 1 - 2 * (x * x + y * y), 0, 0, 0, 0, 1]; };
+  F.local = function (model, anim, time) {
+    const local = model.nodes.map(n => ({ t: n.t.slice(), r: n.r.slice(), s: n.s.slice() })), a = anim ? model.anims[anim] : null;
+    if (a) for (const tr of a.tracks) { const L = local[tr.n], key = ["t", "r", "s"][tr.p]; for (let ax = 0; ax < 3; ax++) if (tr.c[ax]) L[key][ax] = sample(tr.c[ax], time); }
+    return local.map(L => ({ t: L.t, q: qEuler(L.r), s: L.s }));
+  };
+  // a mix of two local poses: w = 0 -> a, w = 1 -> b (positions and sizes blend straight, rotations along the shortest turn)
+  F.mixLocal = function (a, b, w) {
+    const lerp = (x, y) => [x[0] + (y[0] - x[0]) * w, x[1] + (y[1] - x[1]) * w, x[2] + (y[2] - x[2]) * w];
+    return a.map((A, i) => { const B = b[i]; let q2 = B.q; if (A.q[0] * q2[0] + A.q[1] * q2[1] + A.q[2] * q2[2] + A.q[3] * q2[3] < 0) q2 = q2.map(v => -v);
+      const q = [0, 1, 2, 3].map(k => A.q[k] + (q2[k] - A.q[k]) * w), l = Math.hypot(...q) || 1; return { t: lerp(A.t, B.t), q: q.map(v => v / l), s: lerp(A.s, B.s) }; });
+  };
+  // world matrix of every node from a local pose (same as F.pose)
+  F.world = function (model, local) {
+    const world = []; model.nodes.forEach((n, i) => { const L = local[i]; let R = qMat(L.q); if (n.pre && (n.pre[0] || n.pre[1] || n.pre[2])) R = M.mul(M.rotXYZ(n.pre), R);
+      const m = M.mul(M.translate(L.t[0], L.t[1], L.t[2]), M.mul(R, M.scale(L.s[0], L.s[1], L.s[2]))); world[i] = n.parent >= 0 ? M.mul(world[n.parent], m) : m; }); return world;
+  };
   // ------------------------------------------------------------ entry points
   F.parse = async function (buf) {
     const head = new Uint8Array(buf, 0, Math.min(20, buf.byteLength)), isBin = new TextDecoder().decode(head).startsWith("Kaydara FBX Binary");
