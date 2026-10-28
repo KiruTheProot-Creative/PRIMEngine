@@ -146,7 +146,8 @@
     NUM("projRx", "Model turn X (fix its facing)", 0, -180, 180, 1, { showIf: ["projType", "mesh"] }), NUM("projRy", "Model turn Y", 0, -180, 180, 1, { showIf: ["projType", "mesh"] }), NUM("projRz", "Model turn Z", 0, -180, 180, 1, { showIf: ["projType", "mesh"] }),
     NUM("projSize", "Size", 3, 0.2, 80, 0.1, { showIf: ["projType", "particle"] }), NUM("projSpeed", "Speed", 1400, 50, 8000, 50, { showIf: ["projType", ["particle", "mesh"]] }), NUM("projLife", "Flies for (seconds)", 2, 0.1, 30, 0.1, { showIf: ["projType", ["particle", "mesh"]] }),
     NUM("projEmit", "Emission (glow brightness)", 1, 0, 6, 0.05, { showIf: ["projType", ["hitscan", "particle", "mesh"]] }), { k: "projLight", label: "Projectile lights up the world", type: "bool", def: false, showIf: ["projType", ["particle", "mesh"]] },
-    NUM("projLightPower", "Projectile light brightness", 1.5, 0, 8, 0.05, { showIf: ["projType", ["particle", "mesh"]] }), NUM("projLightRange", "Projectile light reach", 220, 10, 2000, 5, { showIf: ["projType", ["particle", "mesh"]] }), { k: "projLightShadow", label: "Projectile light casts shadows (only the nearest flying light does, to keep it fast)", type: "bool", def: true, showIf: ["projType", ["particle", "mesh"]] },
+    NUM("projLightPower", "Projectile light brightness", 1.5, 0, 8, 0.05, { showIf: ["projType", ["particle", "mesh"]] }), NUM("projLightRange", "Projectile light reach", 220, 10, 2000, 5, { showIf: ["projType", ["particle", "mesh"]] }), NUM("projSpread", "Spread (degrees: shots fly off in a random cone)", 0, 0, 45, 0.25, { showIf: ["projType", ["hitscan", "particle", "mesh"]] }), NUM("projCount", "Shots at once (pellets, like a shotgun)", 1, 1, 30, 1, { showIf: ["projType", ["hitscan", "particle", "mesh"]] }), NUM("aimSpread", "Spread while aiming (1 = the same, 0.3 = much tighter)", 0.3, 0, 1, 0.05, { showIf: ["projType", ["hitscan", "particle", "mesh"]] }),
+    { k: "projLightShadow", label: "Projectile light casts shadows (only the nearest flying light does, to keep it fast)", type: "bool", def: true, showIf: ["projType", ["particle", "mesh"]] },
     { k: "projCharge", label: "Bigger when charged (charge beam)", type: "bool", def: true, showIf: ["projType", ["particle", "mesh"]] },
     NUM("projDamage", "Damage per hit (to enemies)", 25, 0, 100000, 1, { showIf: ["projType", ["hitscan", "particle", "mesh"]] }),
     // impact on walls, floors and ceilings: a sound and a mark (one picture, or an animation = frames side by side in one image)
@@ -187,6 +188,21 @@
     NUM("clipSize", "Magazine size (0 = no reloading, Doom style)", 0, 0, 10000, 1, { showIf: WP, showIf2: ["ammoUse", true] }), NUM("reloadTime", "Reload time (s, used when there is no reload animation)", 1.2, 0.05, 30, 0.05, { showIf: WP, showIf2: ["ammoUse", true] }),
     ANIM("reloadAnim", "Reload animation", { showIf: WP, showIf2: ["ammoUse", true] }), { k: "reloadSound", label: "Reload sound", type: "asset", assetType: "sound", def: "", showIf: WP, showIf2: ["ammoUse", true] }, { k: "emptySound", label: "Empty click sound", type: "asset", assetType: "sound", def: "", showIf: WP, showIf2: ["ammoUse", true] },
     NUM("ammo", "Ammo ready to fire (live)", 0, 0, 100000, 1, { live: true }), NUM("reserve", "Ammo in reserve (live)", 0, 0, 100000, 1, { live: true }),
+    // aiming (its own tab in the weapon inspector): lock on to a target, or look down the sights with a zoom
+    { k: "aimType", label: "Aim button", type: "choice", options: [["none", "None"], ["lock", "Lock on (locks onto the enemy you look at)"], ["sights", "Look down the sights (zoom)"]], def: "none", showIf: ["type", "weapon"], tab: "aim" },
+    { k: "aimKey", label: "Aim key", type: "choice", options: [], def: "mouse2", showIf: ["type", "weapon"], showIf2: ["aimType", ["lock", "sights"]], tab: "aim" },
+    { k: "aimHold", label: "How the key works", type: "choice", options: [["hold", "Hold to aim"], ["toggle", "Press to switch on / off"]], def: "hold", showIf: ["type", "weapon"], showIf2: ["aimType", ["lock", "sights"]], tab: "aim" },
+    NUM("aimTime", "Time to aim in / out (s)", 0.15, 0, 2, 0.01, { showIf: ["type", "weapon"], showIf2: ["aimType", ["lock", "sights"]], tab: "aim" }),
+    NUM("aimZoom", "Zoom (1 = none, 2 = twice as close)", 1.6, 1, 10, 0.05, { showIf: ["type", "weapon"], showIf2: ["aimType", "sights"], tab: "aim" }),
+    NUM("adsX", "Weapon moves while aiming: X (to the middle = minus its X)", 0, -500, 500, 0.5, { showIf: ["type", "weapon"], showIf2: ["aimType", "sights"], tab: "aim" }), NUM("adsY", "…Y", 0, -500, 500, 0.5, { showIf: ["type", "weapon"], showIf2: ["aimType", "sights"], tab: "aim" }), NUM("adsZ", "…Z", 0, -500, 500, 0.5, { showIf: ["type", "weapon"], showIf2: ["aimType", "sights"], tab: "aim" }),
+    NUM("aimSens", "Mouse speed while aiming (1 = normal)", 0.6, 0.05, 2, 0.05, { showIf: ["type", "weapon"], showIf2: ["aimType", "sights"], tab: "aim" }), NUM("aimMove", "Walking speed while aiming (1 = normal)", 0.6, 0, 1, 0.05, { showIf: ["type", "weapon"], showIf2: ["aimType", ["lock", "sights"]], tab: "aim" }),
+    { k: "aimHideCross", label: "Hide the crosshair while aiming", type: "bool", def: false, showIf: ["type", "weapon"], showIf2: ["aimType", "sights"], tab: "aim" },
+    { k: "aimOverlay", label: "Scope picture while aiming (optional, fills the screen)", type: "asset", assetType: "image", def: "", showIf: ["type", "weapon"], showIf2: ["aimType", "sights"], tab: "aim" },
+    NUM("lockRange", "Lock on: reach (units)", 1500, 50, 20000, 10, { showIf: ["type", "weapon"], showIf2: ["aimType", "lock"], tab: "aim" }), NUM("lockAngle", "Lock on: how far from the crosshair a target can be (degrees)", 20, 1, 90, 1, { showIf: ["type", "weapon"], showIf2: ["aimType", "lock"], tab: "aim" }),
+    NUM("lockTurn", "Lock on: how fast the view follows the target (0 = it does not)", 8, 0, 40, 0.5, { showIf: ["type", "weapon"], showIf2: ["aimType", "lock"], tab: "aim" }),
+    { k: "lockHoming", label: "Lock on: shots curve toward the target", type: "bool", def: true, showIf: ["type", "weapon"], showIf2: ["aimType", "lock"], tab: "aim" }, NUM("lockHomingTurn", "…how hard they curve", 4, 0, 40, 0.5, { showIf: ["type", "weapon"], showIf2: ["aimType", "lock"], tab: "aim" }),
+    { k: "lockColor", label: "Lock on: marker colour", type: "color", def: "#ffb030", showIf: ["type", "weapon"], showIf2: ["aimType", "lock"], tab: "aim" }, NUM("lockSize", "Lock on: marker size (px)", 46, 10, 300, 1, { showIf: ["type", "weapon"], showIf2: ["aimType", "lock"], tab: "aim" }),
+    { k: "lockSound", label: "Lock on: sound when it locks", type: "asset", assetType: "sound", def: "", showIf: ["type", "weapon"], showIf2: ["aimType", "lock"], tab: "aim" },
   ];
   // ---- placeable objects (the Object Editor): doors, pick-ups, decorations. Tags prop<N>.*  They are placed in maps (map.things).
   S.PROP = [
@@ -331,7 +347,7 @@
   // keys and mouse buttons for the Node Coder dropdowns
   S.KEYS = [["mouse1", "Left mouse button"], ["mouse2", "Right mouse button"], ["mouse3", "Middle mouse button"], ["space", "Space"], ["shift", "Shift"], ["ctrl", "Ctrl"], ["alt", "Alt"], ["enter", "Enter"], ["tab", "Tab"], ["arrowup", "Arrow up"], ["arrowdown", "Arrow down"], ["arrowleft", "Arrow left"], ["arrowright", "Arrow right"]]
     .concat("abcdefghijklmnopqrstuvwxyz".split("").map(c => [c, c.toUpperCase()]), "0123456789".split("").map(c => [c, c]), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(i => ["f" + i, "F" + i]));
-  S.PLAYER.find(p => p.k === "interactKey").options = S.KEYS; S.PLAYER.find(p => p.k === "reloadKey").options = S.KEYS;
+  S.ATTACH.find(p => p.k === "aimKey").options = S.KEYS; S.PLAYER.find(p => p.k === "interactKey").options = S.KEYS; S.PLAYER.find(p => p.k === "reloadKey").options = S.KEYS;
   const KEYP = (def, label) => ({ k: "key", label: label || "Key or mouse button", type: "choice", options: S.KEYS, def: def || "r" });
   S.STATES = [["standing", "Standing still"], ["walking", "Walking"], ["running", "Running (sprinting)"], ["jumping", "Jumping (going up)"], ["falling", "Falling"], ["moving", "Moving (walking or running)"], ["inair", "In the air (jumping or falling)"]];
   S.SNODES = {
@@ -429,6 +445,8 @@
   S.compActive = (project, T) => ((project && project.compositor && project.compositor.effects) || []).filter(e => S.COMPFX[e.type] && T.get("comp." + e.id + ".on") !== false).map(e => { const v = {}; for (const p of S.COMPFX[e.type].props) v[p.k] = { type: p.type, val: T.get("comp." + e.id + "." + p.k) }; return { id: e.id, type: e.type, layer: T.get("comp." + e.id + ".layer") === "front" ? "front" : "behind", v }; });
   // ---- pause, zones, dialogues
   Object.assign(S.SNODES, {
+    onAim: { label: "When aiming starts (aim button)", cat: "event", ins: false, outs: ["next"], ctx: ["weapon", "player"], props: [] },
+    onAimEnd: { label: "When aiming stops", cat: "event", ins: false, outs: ["next"], ctx: ["weapon", "player"], props: [] },
     onPause: { label: "When the game is paused", cat: "event", ins: false, outs: ["next"], ctx: ["object", "player"], props: [] },
     onResume: { label: "When the game is resumed", cat: "event", ins: false, outs: ["next"], ctx: ["object", "player"], props: [] },
     pauseGame: { label: "Open the pause menu", cat: "action", outs: ["next"], ctx: ["object", "player"], props: [{ k: "screen", label: "Pause screen (empty = the normal one)", type: "screenRef", def: "" }] },
@@ -540,6 +558,7 @@
     for (const d of project.dialogues || []) for (const n of d.nodes) S.ensureSNode(project, d.id, n);
     for (const [k, l] of [["lives", "Lives left (live)"], ["tanks", "Full energy tanks (live)"], ["tanksMax", "Energy tanks owned (live)"]]) if (!project.tags["player." + k]) project.tags["player." + k] = { type: "number", value: 0, min: 0, max: 99, step: 1, label: l, group: "player", builtin: true };
     if (!project.tags["player.lastButton"]) project.tags["player.lastButton"] = { type: "string", value: "", label: "Name of the last button pressed (live)", group: "player", builtin: true };
+    for (const [k, l] of [["aiming", "The aim button is held (live)"], ["locked", "Locked onto a target (live)"]]) if (!project.tags["player." + k]) project.tags["player." + k] = { type: "bool", value: false, label: l, group: "player", builtin: true };
     if (!project.tags["player.reloading"]) project.tags["player.reloading"] = { type: "bool", value: false, label: "The current weapon is reloading (live)", group: "player", builtin: true };
     if (!project.tags["player.charge"]) project.tags["player.charge"] = { type: "number", value: 0, label: "Charge beam progress, 0 to 1 (live)", group: "player", min: 0, max: 1, step: 0.01, builtin: true };
     if (!project.tags["player.weapon"]) project.tags["player.weapon"] = { type: "number", value: 1, label: "Current weapon number (live)", group: "player", min: 0, max: 99, step: 1, builtin: true };
