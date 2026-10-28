@@ -169,7 +169,7 @@
     return [
       { label: "File", items: [{ t: "New Project", fn: async () => { await backToManager(); const p = Store.create(); await openProject(p.id); } }, { t: "Open Project…", k: "Ctrl+O", fn: openFileDialog }, "-", { t: "Save", k: "Ctrl+S", fn: () => saveProject(false) }, { t: "Save As…", fn: () => saveProject(true) }, "-", { t: "Build Game…", fn: buildGame }, "-", { t: "Close Project", fn: backToManager }] },
       { label: "Edit", items: [{ t: "Rename", k: "F2", fn: startRename }, { t: "Duplicate", k: "Ctrl+D", fn: duplicateSelected }, { t: "Delete", k: "Del", fn: deleteSelected }] },
-      { label: "Assets", items: [{ t: "Create Folder", fn: newFolder }, "-", { t: "Import Files…", fn: importFilesDlg }, { t: "Import Folder…", fn: importFolderDlg }] },
+      { label: "Assets", items: [{ t: "Create Folder", fn: newFolder }, "-", { t: "Import Files…", fn: importFilesDlg }, { t: "Import Folder…", fn: importFolderDlg }, "-", { t: "Delete Selected…", k: "Del", fn: () => { if (S.sel) deleteAssetsAsk(); else log("Select an asset or folder in the Project panel first.", "warn"); } }, { t: "Remove Unused Assets…", fn: removeUnusedAssets }] },
       { label: "Screen", items: [{ t: "Create Screen", fn: addScreen }, { t: "Create Map…", fn: openNewMap }, "-", ...(sc.kind === "splash" ? [mk("splash")] : ["title", "button", "image", "slider", "toggle", "bar", "pips"].map(mk))] },
       { label: "Window", items: [{ t: "Skin: Dark", check: document.documentElement.dataset.skin === "dark", fn: () => setSkin("dark") }, { t: "Skin: Classic light", check: document.documentElement.dataset.skin === "light", fn: () => setSkin("light") }, "-", { t: "Reset layout", fn: () => { const a = document.getElementById("app"); for (const p of ["--hw", "--iw", "--ph"]) a.style.removeProperty(p); } }, { t: "Maximize on Play", fn: play }] },
       { label: "Help", items: [{ t: Host.desktop ? "PRIMEngine Studio (desktop)" : "PRIMEngine Studio (web)", disabled: true }, { t: "Design your game.", disabled: true }] },
@@ -389,7 +389,9 @@
     const sel = isPicked(kind, key), renaming = S.renaming && S.renaming.kind === kind && S.renaming.key === key;
     let icon; if (kind === "folder") icon = ico("folder", "big"); else if (a.type === "image" && S.urls[a.id]) icon = h("img", { class: "thumbimg", src: S.urls[a.id], alt: "", draggable: false }); else if (a.type === "font") icon = h("span", { class: "ico big fontprev", style: "font-family:'prim-font-" + a.id + "',serif", text: "Aa" }); else icon = ico(a.type === "sound" ? "sound" : a.type === "image" ? "image" : a.type === "model" ? "model" : "file", "big");
     const label = renaming ? h("input", { class: "rename", value: kind === "folder" ? baseName(key) : a.name, "aria-label": "New name", onkeydown: e => { if (e.key === "Enter") e.target.blur(); else if (e.key === "Escape") { S.renaming = null; renderProjectBody(); } e.stopPropagation(); }, onblur: e => { if (!S.renaming) return; const v = e.target.value; S.renaming = null; commitRename(kind, key, v); } }) : h("div", { class: "pname", title: name, text: name });
-    const it = h("div", { class: "pit" + (sel ? " sel" : ""), "data-k": kind + ":" + key, draggable: !renaming, title: kind === "folder" ? key : (a.path ? a.path + "/" : "") + a.name, onclick: e => { e.stopPropagation(); clickPick(e, kind, key); renderProjectBody(); renderInspector(); },
+    const it = h("div", { class: "pit" + (sel ? " sel" : "") + (S.clip && S.clip.mode === "cut" && S.clip.items.some(i => i.kind === kind && i.key === key) ? " cut" : ""), "data-k": kind + ":" + key, draggable: !renaming, title: kind === "folder" ? key : (a.path ? a.path + "/" : "") + a.name, onclick: e => { e.stopPropagation(); clickPick(e, kind, key); renderProjectBody(); renderInspector(); },
+      oncontextmenu: e => { e.preventDefault(); e.stopPropagation(); const inSel = pickedItems().some(i => i.kind === kind && i.key === key); if (!inSel) { clickPick({}, kind, key); renderProjectBody(); renderInspector(); }
+        popMenu(null, [{ t: "Rename", k: "F2", fn: startRename, disabled: pickedItems().length > 1 }, ...(kind === "asset" && a.type === "sound" && S.urls[a.id] ? [{ t: "Play", fn: () => playSound(a.id) }] : []), "-", { t: "Cut", k: "Ctrl+X", fn: () => assetClip("cut") }, { t: "Copy", k: "Ctrl+C", fn: () => assetClip("copy") }, { t: "Paste here", k: "Ctrl+V", fn: () => { if (kind === "folder") S.folder = key; assetPaste(); }, disabled: !S.clip }, "-", { t: "Delete…", k: "Del", fn: deleteAssetsAsk }], { x: e.clientX, y: e.clientY }); },
       ondblclick: () => { if (kind === "folder") { S.folder = key; S.search = ""; S.sel = null; renderProject(); renderInspector(); } else if (a.type === "sound" && S.urls[a.id]) playSound(a.id); },
       ondragstart: e => { const ml = multiList(), many = ml && ml.some(i => i.kind === kind && i.key === key); e.dataTransfer.setData("application/x-prime", JSON.stringify(many ? { kind, key, items: topLevel(ml) } : { kind, key })); e.dataTransfer.effectAllowed = "move"; } }, h("div", { class: "pico" }, icon), label);
     if (kind === "folder") { it.addEventListener("dragover", e => { if ([...e.dataTransfer.types].includes("application/x-prime")) { e.preventDefault(); e.stopPropagation(); it.classList.add("drop"); } }); it.addEventListener("dragleave", () => it.classList.remove("drop")); it.addEventListener("drop", e => { it.classList.remove("drop"); e.stopPropagation(); dropOnFolder(e, key); }); }
@@ -429,9 +431,36 @@
     if (d.kind === "asset") { const a = assetOf(d.key); if (!a || a.path === dest) return; a.name = Store.uniqueName(S.project.assets.filter(x => x !== a && x.path === dest).map(x => x.name), a.name); a.path = dest; if (dest) Store.ensureFolder(S.project, dest); log("Moved “" + a.name + "” to Assets" + (dest ? "/" + dest : "")); }
     else if (d.kind === "folder") { const key = d.key; if (dest === key || dest.startsWith(key + "/") || Store.parentOf(key) === dest) return; const np = dest ? dest + "/" + baseName(key) : baseName(key); if (foldersAll().includes(np)) return log("A folder named “" + baseName(key) + "” already exists there.", "warn"); retarget(key, np); S.sel = { kind: "folder", key: np }; log("Moved folder “" + baseName(key) + "”"); }
   }
+  // every place that uses an asset: tags (images, sounds, models, fonts…), map cell textures (walls / floors / ceilings / diagonals are structure, not tags), timeline events
+  function assetUses(a) {
+    const P = S.project, out = [];
+    for (const k in P.tags) { const r = P.tags[k]; if ((r.type === "asset" || r.type === "font") && r.value === a.id) out.push(k); }
+    for (const m of P.maps || []) { let n = 0; for (const L of m.layers || []) for (const c of Object.values(L.cells || {})) { for (const q of ["w", "f", "c", "dt"]) if (c[q] === a.id) n++; if (c.ws) for (const v of Object.values(c.ws)) if (v === a.id) n++; } if (n) out.push(m.id + " (" + n + " texture" + (n > 1 ? "s" : "") + " in the map)"); }
+    for (const e of P.events || []) if (e.asset === a.id) out.push("timeline sound event " + e.id); for (const e of P.animLen || []) if (e.asset === a.id) out.push("timeline length " + e.id);
+    return out;
+  }
   function removeAssetCore(a) {
-    for (const k in S.project.tags) { const r = S.project.tags[k]; if ((r.type === "asset" || r.type === "font") && r.value === a.id) r.value = r.type === "font" ? "builtin:display" : ""; }
-    S.project.assets.splice(S.project.assets.indexOf(a), 1); delete S.urls[a.id]; Store.delAsset(S.project.id, a.id);
+    const P = S.project;
+    for (const k in P.tags) { const r = P.tags[k]; if ((r.type === "asset" || r.type === "font") && r.value === a.id) r.value = r.type === "font" ? "builtin:display" : ""; }
+    for (const m of P.maps || []) for (const L of m.layers || []) for (const c of Object.values(L.cells || {})) { for (const q of ["w", "f", "c", "dt"]) if (c[q] === a.id) c[q] = ""; if (c.ws) for (const sd of Object.keys(c.ws)) if (c.ws[sd] === a.id) delete c.ws[sd]; }   // the texture falls back to the default look
+    P.events = (P.events || []).filter(e => e.asset !== a.id); P.animLen = (P.animLen || []).filter(e => e.asset !== a.id);
+    if (PRIM.FBX && PRIM.FBX.cache) delete PRIM.FBX.cache[a.id];
+    P.assets.splice(P.assets.indexOf(a), 1); delete S.urls[a.id]; Store.delAsset(P.id, a.id);
+  }
+  function assetsOfItems(items) { const set = new Set(); for (const s of items) { if (s.kind === "asset") { const a = assetOf(s.key); if (a) set.add(a); } else for (const a of S.project.assets.filter(x => x.path === s.key || x.path.startsWith(s.key + "/"))) set.add(a); } return [...set]; }
+  // Delete button / right-click Delete: asks once (saying where things are used), then removes
+  function deleteAssetsAsk() {
+    const items = topLevel(pickedItems()); if (!items.length) return; const as = assetsOfItems(items), used = as.filter(a => assetUses(a).length);
+    const one = items.length === 1 && items[0].kind === "asset" ? assetOf(items[0].key) : null;
+    const what = items.length > 1 ? items.length + " items" : one ? "“" + one.name + "”" : "the folder “" + baseName(items[0].key) + "” (" + as.length + " file" + (as.length === 1 ? "" : "s") + ")";
+    const usedTxt = one ? (used.length ? "\n\nIt is still used by: " + assetUses(one).slice(0, 6).join(", ") + ". Those places go back to empty / the default look." : "") : used.length ? "\n\n" + used.length + " of them " + (used.length === 1 ? "is" : "are") + " still used (" + used.slice(0, 4).map(a => a.name).join(", ") + (used.length > 4 ? "…" : "") + "). Those places go back to empty / the default look." : "";
+    const msg = "Delete " + what + " from the project?" + usedTxt + "\n\nThis can't be undone (your original files on disk are not touched).";
+    if (!confirm(msg)) return; delArm = items.map(i => i.kind + ":" + i.key).join("|"); deleteAssetSel();
+  }
+  function removeUnusedAssets() {
+    const un = S.project.assets.filter(a => !assetUses(a).length); if (!un.length) { log("Every asset is used somewhere. Nothing to remove."); return; }
+    if (!confirm("Remove " + un.length + " unused asset" + (un.length > 1 ? "s" : "") + "?\n\n" + un.slice(0, 12).map(a => "• " + (a.path ? a.path + "/" : "") + a.name).join("\n") + (un.length > 12 ? "\n…and " + (un.length - 12) + " more" : "") + "\n\nNothing in the project uses them (no screen, map, object, weapon, sound setting or timeline). Your original files on disk are not touched.")) return;
+    for (const a of un) removeAssetCore(a); S.sel = null; S.multi = null; log("Removed " + un.length + " unused asset" + (un.length > 1 ? "s." : ".")); S.tags.emit([]); markDirty(); renderProject(); renderInspector(); if (S.rt) { S.rt.urls = S.urls; S.rt.rebuild(); }
   }
   let delArm = null;
   function deleteAssetSel() {
@@ -443,7 +472,7 @@
       else { for (const a of S.project.assets.filter(x => x.path === s.key || x.path.startsWith(s.key + "/"))) removeAssetCore(a); S.project.folders = S.project.folders.filter(f => f !== s.key && !f.startsWith(s.key + "/")); if (S.folder === s.key || S.folder.startsWith(s.key + "/")) S.folder = Store.parentOf(s.key); }
     }
     S.sel = null; S.multi = null; log("Deleted " + (items.length > 1 ? items.length + " items." : "."));
-    S.tags.emit([]); markDirty(); renderProject(); renderInspector(); if (S.rt) { S.rt.urls = S.urls; S.rt.rebuild(); }
+    S.tags.emit([]); markDirty(); renderProject(); renderInspector(); if (S.rt) { S.rt.urls = S.urls; S.rt.rebuild(); } if (S.mapId) renderCenter();
   }
 
   // ================================================================ INSPECTOR
@@ -480,6 +509,12 @@
     return box;
   }
   function assetInspector() {
+    const box = assetInspectorBody(); if (!S.sel) return box; const ml = multiList(), a = !ml && S.sel.kind === "asset" ? assetOf(S.sel.key) : null, uses = a ? assetUses(a) : [];
+    if (a) box.append(foldout("as:uses", "Used by (" + uses.length + ")", ...(uses.length ? uses.slice(0, 30).map(u => h("div", { class: "note mono", style: "margin:2px 8px", text: u })) : [h("div", { class: "note", text: "Nothing uses this asset yet." })])));
+    box.append(h("div", { class: "btnrow" }, h("button", { class: "btn sm danger", text: ml ? "Delete " + ml.length + " items" : S.sel.kind === "folder" ? "Delete folder" : "Delete asset", onclick: deleteAssetsAsk })), h("div", { class: "note", text: "Tip: right-click an asset for Rename / Delete. Assets > Remove Unused Assets… cleans out everything nothing uses." }));
+    return box;
+  }
+  function assetInspectorBody() {
     const s = S.sel, box = h("div", { class: "insp" }), ml = multiList();
     if (ml) { const nf = ml.filter(i => i.kind === "folder").length, na = ml.length - nf; box.append(h("div", { class: "ihead" }, ico("folder", "bigico"), h("div", { class: "ititle" }, h("div", { class: "idin ro", text: ml.length + " items selected" }), h("div", { class: "isub", text: na + " file(s), " + nf + " folder(s)" }))), h("div", { class: "note", text: "Drag any of them onto a folder to move them all, or press Delete twice to remove them. Click one item to go back to a single selection." })); return box; }
     if (s.kind === "folder") { const n = S.project.assets.filter(a => a.path === s.key || a.path.startsWith(s.key + "/")).length; box.append(h("div", { class: "ihead" }, ico("folder", "bigico"), h("div", { class: "ititle" }, h("div", { class: "idin ro", text: baseName(s.key) }), h("div", { class: "isub", text: "Folder · Assets/" + s.key }))), h("div", { class: "note", text: n + " file(s) inside. Double-click to open. Drag files onto it to move them. F2 renames, Delete removes." })); return box; }
@@ -1326,7 +1361,28 @@
     else if (e.shiftKey && !mod && e.key.toLowerCase() === "a" && S.tab === "coder" && S.coderMenu && S.coderMenu.length) { e.preventDefault(); const m = S.mouse || { x: 300, y: 200 }; popMenu(null, S.coderMenu, { x: m.x, y: m.y }); }
     else if (e.key === "Delete" || e.key === "Backspace") { if (document.querySelector(".play-layer")) return; e.preventDefault(); deleteSelected(); }
     else if (mod && e.key.toLowerCase() === "d") { e.preventDefault(); duplicateSelected(); }
+    else if (mod && S.pfocus && S.btab === "project" && ["c", "x", "v"].includes(e.key.toLowerCase())) { e.preventDefault(); const k = e.key.toLowerCase(); if (k === "v") assetPaste(); else assetClip(k === "x" ? "cut" : "copy"); }
   });
+  // Ctrl+X / Ctrl+C / Ctrl+V in the Project panel (only after a click in it, so the map editor keeps its own copy / paste)
+  addEventListener("pointerdown", e => { S.pfocus = !!(e.target && e.target.closest && e.target.closest("#proj")); }, true);
+  function assetClip(mode) {
+    const items = topLevel(pickedItems()); if (!items.length) return log("Select files or folders in the Project panel first.", "warn");
+    S.clip = { mode, items: items.map(i => ({ kind: i.kind, key: i.key })) }; renderProjectBody();
+    log((mode === "cut" ? "Cut " : "Copied ") + (items.length > 1 ? items.length + " items" : "“" + baseName(items[0].key) + "”") + ". Open a folder and press Ctrl+V to " + (mode === "cut" ? "move" : "paste") + " " + (items.length > 1 ? "them" : "it") + " there.");
+  }
+  async function assetPaste() {
+    const c = S.clip, dest = S.folder || ""; if (!c || !c.items.length) return log("Nothing to paste: Ctrl+C or Ctrl+X something in the Project panel first.", "warn");
+    if (c.mode === "cut") { let n = 0; for (const d of c.items) { if (d.kind === "folder" && (dest === d.key || dest.startsWith(d.key + "/"))) { log("A folder can't be moved into itself.", "warn"); continue; } dropOne(d, dest); n++; } S.clip = null; S.sel = null; S.multi = null; markDirty(); renderProject(); renderInspector(); if (n) log("Moved " + n + " item" + (n > 1 ? "s" : "") + " to Assets" + (dest ? "/" + dest : "") + "."); return; }
+    // copy: real duplicates of the stored files (a folder keeps its inner folders)
+    const files = [];
+    for (const d of c.items) {
+      if (d.kind === "asset") { const a = assetOf(d.key); if (a && S.urls[a.id]) files.push({ a, name: a.name, path: "" }); }
+      else { const top = baseName(d.key); Store.ensureFolder(S.project, dest ? dest + "/" + top : top); for (const a of S.project.assets.filter(x => x.path === d.key || x.path.startsWith(d.key + "/"))) if (S.urls[a.id]) files.push({ a, name: a.name, path: top + a.path.slice(d.key.length) }); }
+    }
+    try { const items = []; for (const f of files) items.push({ name: f.name, path: f.path, file: await (await fetch(S.urls[f.a.id])).blob() });
+      const added = await Store.ingest(S.project, S.urls, items, dest); markDirty(); log("Pasted " + added.length + " file" + (added.length === 1 ? "" : "s") + " into Assets" + (dest ? "/" + dest : "") + "."); if (S.rt) { S.rt.urls = S.urls; S.rt.rebuild(); } renderProject(); renderInspector(); }
+    catch (e) { log("Paste failed: " + e.message, "error"); }
+  }
   addEventListener("beforeunload", () => { if (S.project) autosave(); });
 
   window.__studio = { S, Store, Host, openProject, renderManager, openBytes, saveProject };
