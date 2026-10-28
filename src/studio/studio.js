@@ -188,11 +188,11 @@
       h("div", { class: "tgroup right" }, h("button", { class: "tbtn", text: "Maximize on Play", onclick: play }), h("button", { class: "tbtn", text: "Save", title: "Save as a .prime file (Ctrl+S)", onclick: () => saveProject(false) })));
   }
   function renderStatus() { const l = S.log[S.log.length - 1]; E.status.className = l && l.kind === "error" ? "err" : l && l.kind === "warn" ? "warn" : ""; E.status.textContent = l ? l.msg : "Ready"; E.status.append(h("span", { class: "fileinfo", text: (S.file ? S.file.name : "not saved to a file yet") + (S.fileDirty ? "  ·  unsaved changes" : "") })); }
-  function setTab(t) { S.fsel = null; S.fsl = []; S.fhov = null; if (t === "fly" && !S.mapId) t = "edit"; S.tab = t; S.testing = t === "game"; S.playerSel = t === "player"; if (S.playerSel || t === "timeline" || t === "coder" || t === "comp") S.sel = null; if (!S.testing) S.paused = false; renderToolbar(); renderHier(); renderInspector(); renderCenter(); }
+  function setTab(t) { S.fsel = null; S.fsl = []; S.fhov = null; if (t === "fly" && !S.mapId) t = "edit"; S.tab = t; S.testing = t === "game"; S.playerSel = t === "player"; if (S.playerSel || t === "timeline" || t === "coder" || t === "comp" || t === "tagmgr") S.sel = null; if (!S.testing) S.paused = false; renderToolbar(); renderHier(); renderInspector(); renderCenter(); }
   function setTesting(v) { setTab(v ? "game" : "edit"); }
-  function leaveSpecial() { S.playerSel = false; if (["player", "timeline", "fly", "coder", "comp"].includes(S.tab)) { S.tab = "edit"; S.testing = false; return true; } return false; }
+  function leaveSpecial() { S.playerSel = false; if (["player", "timeline", "fly", "coder", "comp", "tagmgr"].includes(S.tab)) { S.tab = "edit"; S.testing = false; return true; } return false; }
   function centerTabs() {
-    const items = S.mapId && curMap() ? [["edit", "Map"], ["fly", "Fly Editor"]] : [["edit", "Scene"]]; items.push(["game", "Game"], ["player", "Player Editor"], ["props", "Object Editor"], ["timeline", "Timeline"], ["coder", "Node Coder"], ["comp", "Compositor"]);
+    const items = S.mapId && curMap() ? [["edit", "Map"], ["fly", "Fly Editor"]] : [["edit", "Scene"]]; items.push(["game", "Game"], ["player", "Player Editor"], ["props", "Object Editor"], ["timeline", "Timeline"], ["coder", "Node Coder"], ["comp", "Compositor"], ["tagmgr", "Tag Manager"]);
     return items.map(([k, l]) => h("button", { class: "tab" + (S.tab === k ? " sel" : ""), text: l, onclick: () => setTab(k) }));
   }
 
@@ -247,7 +247,7 @@
   function renderCenter() {
     const p = E.center; killMapViews(); if (S.rt) { S.rt.destroy(); S.rt = null; }
     if (S.tab === "fly" && !S.mapId) S.tab = "edit"; S.testing = S.tab === "game";
-    if (S.tab === "player") return S.objView && S.objSel && S.project.player.attachments.some(a => a.id === S.objSel) ? objectCenter() : playerCenter(); if (S.tab === "props") return propCenter(); if (S.tab === "timeline") return timelineCenter(); if (S.tab === "coder") return coderCenter(); if (S.tab === "comp") return compCenter(); if (S.mapId && curMap() && S.tab !== "game") return mapCenter();
+    if (S.tab === "player") return S.objView && S.objSel && S.project.player.attachments.some(a => a.id === S.objSel) ? objectCenter() : playerCenter(); if (S.tab === "props") return propCenter(); if (S.tab === "timeline") return timelineCenter(); if (S.tab === "coder") return coderCenter(); if (S.tab === "comp") return compCenter(); if (S.tab === "tagmgr") return tagMgrCenter(); if (S.mapId && curMap() && S.tab !== "game") return mapCenter();
     const sc = S.testing && S.mapId ? (screens().find(x => x.id === S.tags.get("project.startScreen")) || screens()[0]) : curScreen();
     E.host.className = "host"; E.host.replaceChildren();
     p.tabs.replaceChildren(...centerTabs(), h("span", { class: "sp" }), h("span", { class: "csize", text: "1280 × 720  ·  16:9" }));
@@ -457,6 +457,7 @@
   function propsBody() {
     if (S.fsel) return folderInspector();
     if (S.tab === "comp") return compInspector();
+    if (S.tab === "tagmgr") return tagMgrInspector();
     if (S.tab === "props") return propInspector();
     if (S.playerSel) return playerInspector(); if (S.tab === "timeline") return timelineInspector(); if (S.tab === "coder") return coderInspector();
     if (S.mapId && curMap()) return S.tab === "fly" && (S.fsl || []).length ? flyInspector() : mapInspector();
@@ -559,6 +560,91 @@
       listBox.replaceChildren(h("div", { class: "note", text: names.length + " tags" }), ...Object.keys(groups).sort().map(g => foldout("tg:" + g, g, ...groups[g].map(tagRow))));
     };
     list(); return box;
+  }
+  // ---------------------------------------------------------------- Tag Manager tab: every tag of the project in one big table + your own tags
+  const TAGNAME = /^[a-z][a-z0-9_]*(\.[a-z0-9_]+)*$/, TTYPES = [["number", "Number"], ["bool", "Yes / no"], ["string", "Text"], ["color", "Color"]];
+  const tmLive = sp => !!(sp && (sp.live || /\(live\)/.test(sp.label || "")));
+  const tmTypeName = t => ({ number: "Number", bool: "Yes / no", string: "Text", color: "Color", tagRef: "Tag link", asset: "File", choice: "Choice", font: "Font", anim: "Animation", screenRef: "Screen", mapRef: "Map" })[t] || t;
+  function tmUses(n) {   // which tags point at n (tag links, or {n} inside a text)
+    const out = []; for (const k of S.tags.names()) { const r = S.tags.spec(k); if (!r) continue; if (r.type === "tagRef" && r.value === n) out.push(k); else if (r.type === "string" && typeof r.value === "string" && r.value.includes("{" + n + "}")) out.push(k); } return out;
+  }
+  function tmList() {
+    const f = (S.tmQ || "").trim().toLowerCase(), ty = S.tmType || "all", gsel = S.tmGroup || "all";
+    return S.tags.names().filter(n => { const sp = S.tags.spec(n); if (!sp || sp.group === "script") return false;
+      if (gsel === "mine" && !sp.custom) return false; if (gsel === "live" && !tmLive(sp)) return false; if (gsel !== "all" && gsel !== "mine" && gsel !== "live" && tagGroup(n)[0] !== gsel) return false;
+      if (ty !== "all" && (ty === "other" ? ["number", "bool", "string", "color"].includes(sp.type) : sp.type !== ty)) return false;
+      return !f || n.toLowerCase().includes(f) || String(sp.label || "").toLowerCase().includes(f); }).sort();
+  }
+  function tmCreate(o) {
+    const name = String(o.name || "").trim().toLowerCase(); if (!TAGNAME.test(name)) return "Use lowercase letters, numbers, _ and dots, starting with a letter (like quest.step or keys_found).";
+    if (S.tags.has(name)) return "A tag called “" + name + "” already exists."; const reserved = ["player", "audio", "gfx", "project", "comp"]; if (reserved.includes(name)) return "That name is used by the engine; add something after it, like player.coins.";
+    const type = o.type, rec = { type, label: String(o.label || "").trim() || name, group: name.split(".")[0], custom: true };
+    if (type === "number") { rec.min = isFinite(+o.min) ? +o.min : 0; rec.max = isFinite(+o.max) ? +o.max : 100; if (rec.max < rec.min) [rec.min, rec.max] = [rec.max, rec.min]; rec.step = Number.isInteger(+o.step) && +o.step > 0 ? +o.step : (rec.max - rec.min > 10 ? 1 : 0.01); rec.value = Math.max(rec.min, Math.min(rec.max, +o.value || 0)); }
+    else if (type === "bool") rec.value = /^(1|true|on|yes)$/i.test(String(o.value)); else if (type === "color") rec.value = /^#[0-9a-f]{6}$/i.test(o.value) ? o.value : "#ffffff"; else rec.value = String(o.value || "");
+    if (o.desc) rec.desc = String(o.desc); S.tags.define(name, rec); markDirty(); S.tags.emit([name]); S.tmSel = name; return null;
+  }
+  function tagMgrCenter() {
+    const p = E.center; p.tabs.replaceChildren(...centerTabs(), h("span", { class: "sp" }), h("span", { class: "csize", text: "tag manager" }));
+    E.host.className = "host maphost tmhost"; E.host.replaceChildren(); put(E.cbar, h("span", { class: "chip", text: "Tag Manager" }), h("button", { class: "tbtn sm", text: "+ New tag", onclick: () => { S.tmNew = true; renderCenter(); } }),
+      h("span", { class: "hint", text: "Every value in the game is a tag. Make your own (coins, keys found, quest step…) and use them in the HUD, nodes, pick-ups and dialogue." }));
+    const all = S.tags.names().filter(n => S.tags.spec(n) && S.tags.spec(n).group !== "script"), groups = new Map(); for (const n of all) { const g = tagGroup(n)[0]; groups.set(g, (groups.get(g) || 0) + 1); }
+    const side = h("div", { class: "tmside" }), main = h("div", { class: "tmmain" }); E.host.append(h("div", { class: "tmwrap" }, side, main));
+    const gbtn = (k, label, n) => h("button", { class: "tmg" + ((S.tmGroup || "all") === k ? " sel" : ""), onclick: () => { S.tmGroup = k; renderCenter(); } }, h("span", { text: label }), h("span", { class: "tpc", text: String(n) }));
+    side.append(gbtn("all", "All tags", all.length), gbtn("mine", "★ My tags", all.filter(n => S.tags.spec(n).custom).length), gbtn("live", "⟳ Live (change while playing)", all.filter(n => tmLive(S.tags.spec(n))).length), h("div", { class: "tmsep" }), ...[...groups].sort((a, b) => a[0].localeCompare(b[0])).map(([g, c]) => gbtn(g, g, c)));
+    // new tag form
+    if (S.tmNew) {
+      const v = S.tmDraft = S.tmDraft || { name: "", type: "number", label: "", value: "0", min: "0", max: "100", step: "1", desc: "" }, err = h("div", { class: "note warn" });
+      const inp = (k, ph, w) => h("input", { class: "txt", value: v[k], placeholder: ph || "", style: w ? "width:" + w : "", "aria-label": k, oninput: e => { v[k] = e.target.value; } });
+      const ty = h("select", { class: "dd", "aria-label": "Type", onchange: e => { v.type = e.target.value; v.value = v.type === "bool" ? "no" : v.type === "color" ? "#ffffff" : v.type === "number" ? "0" : ""; renderCenter(); } }, TTYPES.map(([a, b]) => h("option", { value: a, text: b, selected: v.type === a })));
+      const valIn = v.type === "bool" ? h("select", { class: "dd", "aria-label": "Start value", onchange: e => { v.value = e.target.value; } }, [["no", "No"], ["yes", "Yes"]].map(([a, b]) => h("option", { value: a, text: b, selected: v.value === a }))) : v.type === "color" ? h("input", { type: "color", value: /^#[0-9a-f]{6}$/i.test(v.value) ? v.value : "#ffffff", "aria-label": "Start value", oninput: e => { v.value = e.target.value; } }) : inp("value", v.type === "number" ? "0" : "text");
+      const go = () => { const e = tmCreate(v); if (e) { err.textContent = e; return; } S.tmNew = false; S.tmDraft = null; S.tmGroup = "mine"; renderCenter(); renderInspector(); };
+      const row = (l, ...c) => h("div", { class: "tmf" }, h("label", { text: l }), h("div", { class: "tmfc" }, ...c));
+      main.append(h("div", { class: "tmnew" }, h("div", { class: "tmnh", text: "New tag" }),
+        row("Name", inp("name", "e.g. coins, keys_found, quest.step"), h("span", { class: "hint", text: "dots make folders: quest.step goes into “quest”" })), row("Type", ty), row("Label", inp("label", "shown in lists, e.g. Coins collected")),
+        row(v.type === "number" ? "Start value" : "Value", valIn), v.type === "number" ? row("Lowest / highest", inp("min", "0", "90px"), inp("max", "100", "90px"), h("span", { class: "hint", text: "step" }), inp("step", "1", "70px")) : null,
+        row("Note (optional)", inp("desc", "what it is for")), h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: "Create tag", onclick: go }), h("button", { class: "btn sm", text: "Cancel", onclick: () => { S.tmNew = false; renderCenter(); } })), err));
+    }
+    // search + type filter
+    const q = h("input", { class: "txt tmq", type: "search", placeholder: "Search by name or label…", value: S.tmQ || "", "aria-label": "Search tags" }), tyf = h("select", { class: "dd", "aria-label": "Type filter", onchange: e => { S.tmType = e.target.value; draw(); } }, [["all", "Every type"], ...TTYPES, ["other", "Links, files, choices"]].map(([a, b]) => h("option", { value: a, text: b, selected: (S.tmType || "all") === a })));
+    const count = h("span", { class: "hint" }), table = h("div", { class: "tmtable" }); main.append(h("div", { class: "tmbar" }, q, tyf, count), table);
+    q.oninput = () => { S.tmQ = q.value; draw(); };
+    const draw = () => {
+      const L = tmList(); count.textContent = L.length + " of " + all.length + " tags"; const MAX = 400;
+      table.replaceChildren(h("div", { class: "tmr tmhd" }, h("span", { text: "Tag" }), h("span", { text: "Type" }), h("span", { text: "Value" }), h("span", { text: "" })),
+        ...L.slice(0, MAX).map(n => { const sp = S.tags.spec(n), f = field(n, { compact: true });
+          return h("div", { class: "tmr" + (S.tmSel === n ? " sel" : ""), onclick: e => { if (e.target.closest("input,select,button,textarea")) return; S.tmSel = n; table.querySelectorAll(".tmr.sel").forEach(x => x.classList.remove("sel")); e.currentTarget.classList.add("sel"); renderInspector(); } },
+            h("span", { class: "tmn" }, h("b", { text: (sp.custom ? "★ " : "") + (sp.label || n) }), h("span", { class: "tpk", text: n })), h("span", { class: "tmt", text: tmTypeName(sp.type) + (tmLive(sp) ? " · live" : "") }), h("span", { class: "tmv" }, f),
+            h("span", { class: "tmk" }, h("button", { class: "btn sm", title: "Copy {" + n + "} for texts", text: "{ }", onclick: () => { try { navigator.clipboard.writeText("{" + n + "}"); log("Copied {" + n + "}: paste it into any text to show this tag's value."); } catch (x) {} } }))); }),
+        L.length > MAX ? h("div", { class: "note", text: "Showing the first " + MAX + ". Search or pick a group to narrow it down." }) : h("span"));
+    };
+    S.tmDraw = draw; table.addEventListener("change", () => setTimeout(() => { if (S.tab === "tagmgr") renderInspector(); }, 0));
+    draw(); if (!S.tmNew) setTimeout(() => q.focus(), 0);
+  }
+  function tagMgrInspector() {
+    const box = h("div", { class: "insp" }), n = S.tmSel, sp = n && S.tags.spec(n);
+    if (!sp) { box.append(h("div", { class: "ihead" }, h("span", { class: "bigic", text: "#" }), h("div", { class: "ititle" }, h("div", { class: "idin", text: "Tag Manager" }), h("div", { class: "isub", text: S.tags.names().length + " tags" }))),
+      h("div", { class: "note", text: "Click a tag in the table to see its details. ★ = your own tags (you can rename and delete those). Live tags are changed by the game while it runs (health, ammo, the player's state…)." }),
+      h("div", { class: "note", text: "Tip: write {coins} in any text (a HUD title, a dialogue line, a message node) and it shows the tag's current value." }),
+      h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: "+ New tag", onclick: () => { S.tmNew = true; renderCenter(); } }))); return box; }
+    const uses = tmUses(n), [g1, g2] = tagGroup(n); box.addEventListener("change", () => setTimeout(() => { if (S.tab === "tagmgr" && S.tmDraw) S.tmDraw(); }, 0));
+    box.append(h("div", { class: "ihead" }, h("span", { class: "bigic", text: sp.custom ? "★" : "#" }), h("div", { class: "ititle" }, h("div", { class: "idin", text: sp.label || n }), h("div", { class: "isub", text: n + " · " + tmTypeName(sp.type) + (tmLive(sp) ? " · live" : "") + " · " + g1 + (g2 ? " › " + g2 : "") }))));
+    if (sp.custom) {
+      const nm = h("input", { class: "txt", value: n, "aria-label": "Tag name" }), lb = h("input", { class: "txt", value: sp.label || "", "aria-label": "Label" }), ds = h("input", { class: "txt", value: sp.desc || "", "aria-label": "Note" }), err = h("div", { class: "note warn" });
+      nm.onchange = () => { const nv = nm.value.trim().toLowerCase(); if (nv === n) return; if (!TAGNAME.test(nv)) { err.textContent = "Use lowercase letters, numbers, _ and dots."; return; } if (!S.tags.rename(n, nv)) { err.textContent = "A tag called “" + nv + "” already exists."; return; } S.tags.spec(nv).group = nv.split(".")[0]; S.tmSel = nv; markDirty(); renderCenter(); renderInspector(); log("Renamed " + n + " to " + nv + " (everything that used it was updated)."); };
+      lb.onchange = () => { sp.label = lb.value.trim() || n; markDirty(); S.tags.emit([n]); renderCenter(); }; ds.onchange = () => { sp.desc = ds.value.trim(); markDirty(); };
+      const fl = (l, c) => h("div", { class: "fld" }, h("label", { class: "flab", text: l }), h("div", { class: "fctl" }, c));
+      const extra = []; if (sp.type === "number") { const mn = h("input", { class: "num", type: "number", value: sp.min, "aria-label": "Lowest" }), mx = h("input", { class: "num", type: "number", value: sp.max, "aria-label": "Highest" }), st = h("input", { class: "num", type: "number", value: sp.step, "aria-label": "Step" });
+        const upd = () => { let a = +mn.value, b = +mx.value; if (!isFinite(a) || !isFinite(b)) return; if (b < a) [a, b] = [b, a]; sp.min = a; sp.max = b; if (+st.value > 0) sp.step = +st.value; S.tags.set(n, Math.max(a, Math.min(b, +S.tags.get(n) || 0))); markDirty(); renderCenter(); renderInspector(); }; mn.onchange = mx.onchange = st.onchange = upd;
+        extra.push(fl("Lowest / highest", h("div", { class: "fctl mm" }, mn, mx)), fl("Step", st)); }
+      box.append(foldout("tm:def", "Your tag", fl("Name", nm), fl("Label", lb), fl("Note", ds), ...extra, err));
+    } else if (sp.desc) box.append(h("div", { class: "note", text: sp.desc }));
+    box.append(foldout("tm:val", tmLive(sp) ? "Value (the game changes it while playing)" : "Value", field(n)));
+    box.append(foldout("tm:uses", "Used by (" + uses.length + ")", ...(uses.length ? uses.map(u => h("button", { class: "btn sm", style: "display:block;width:100%;text-align:left;margin-top:3px", title: u, text: (S.tags.spec(u).label || u) + "  ·  " + u, onclick: () => { S.tmSel = u; S.tmQ = ""; S.tmGroup = "all"; renderCenter(); renderInspector(); } }))
+      : [h("div", { class: "note", text: "Nothing points at this tag yet (tag links and {" + n + "} in texts are counted)." })])));
+    box.append(h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: "Copy {" + n + "}", onclick: () => { try { navigator.clipboard.writeText("{" + n + "}"); } catch (x) {} log("Copied {" + n + "}."); } }),
+      sp.custom ? h("button", { class: "btn sm", text: "Duplicate", onclick: () => { let i = 2; while (S.tags.has(n + "_" + i)) i++; S.tags.define(n + "_" + i, JSON.parse(JSON.stringify(sp))); S.tmSel = n + "_" + i; markDirty(); S.tags.emit([]); renderCenter(); renderInspector(); } }) : null,
+      sp.custom ? h("button", { class: "btn sm danger", text: "Delete", onclick: () => { if (uses.length && !confirm("“" + n + "” is used by " + uses.length + " other value(s). Delete it anyway?")) return; delete S.project.tags[n]; S.tmSel = null; markDirty(); S.tags.emit([]); renderCenter(); renderInspector(); } }) : null));
+    return box;
   }
   function tagRow(n) {
     const t = S.tags.spec(n);
