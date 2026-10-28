@@ -30,7 +30,7 @@
       this.last = performance.now(); this.raf = requestAnimationFrame(t => this.frame(t));
     }
     destroy() {
-      if (this.destroyed) return; this.destroyed = true; this.dead = true; this.stopLoops(""); if (this.sh) this.sh.stopAll(); cancelAnimationFrame(this.raf); this.unsub(); if (this.hud) this.hud.destroy(); if (this.unbind) this.unbind(); if (document.pointerLockElement === this.cv) document.exitPointerLock();
+      if (this.destroyed) return; this.destroyed = true; this.dead = true; this.stopLoops(""); this.stopSpeakers(); if (this.sh) this.sh.stopAll(); cancelAnimationFrame(this.raf); this.unsub(); if (this.hud) this.hud.destroy(); if (this.unbind) this.unbind(); if (document.pointerLockElement === this.cv) document.exitPointerLock();
       if (this.view) { const e = this.view.gl.getExtension("WEBGL_lose_context"); if (e) e.loseContext(); } this.root.remove();
     }
     // ---- input
@@ -113,7 +113,7 @@
       const hex = String(T.get(pre + "projColor") || "#ffcc33"), col = [parseInt(hex.slice(1, 3), 16) / 255, parseInt(hex.slice(3, 5), 16) / 255, parseInt(hex.slice(5, 7), 16) / 255];
       const mul = T.get(pre + "projCharge") ? 1 + 1.5 * (this.fireCharge || 0) : 1, orbS = this.orbSize || 0; this.fx = this.fx || [];
       const em = T.get(pre + "projEmit") === undefined ? 1 : +T.get(pre + "projEmit"), ecol = col.map(q => q * em), lt = T.get(pre + "projLight") && kind !== "hitscan" ? { c: col, k: +T.get(pre + "projLightPower") || 1.5, r: +T.get(pre + "projLightRange") || 220 } : null;
-      if (kind === "hitscan") { let hit = v.raycast(O, D, 6000); const far = hit ? hit.t || M4.len(M4.sub(hit.p, O)) : 6000, dh = this.hitDoor(O, D, far), he = this.hitEnemy(O, D, dh ? dh.t : far); if (hit && !he && !dh) this.impact(pre, hit); if (he) { this.damageEnemy(he.o, dmg * mul); hit = { p: M4.add(O, D.map(q => q * he.t)) }; } else if (dh) { this.shootDoor(dh.th); hit = { p: M4.add(O, D.map(q => q * dh.t)) }; } const end = hit ? hit.p : M4.add(O, D.map(q => q * 3000)); this.fx.push({ kind: "line", a: O, b: end, c: ecol, w: +T.get(pre + "projWidth") || 0.6, life: +T.get(pre + "projLineTime") || 0.12, t: 0 }); }
+      if (kind === "hitscan") { let hit = v.raycast(O, D, 6000); const far = hit ? hit.t || M4.len(M4.sub(hit.p, O)) : 6000, dh = this.hitDoor(O, D, far), he = this.hitEnemy(O, D, dh ? dh.t : far); if (hit && !he && !dh) this.impact(pre, hit); if (he) { this.damageEnemy(he.o, dmg * mul); hit = { p: M4.add(O, D.map(q => q * he.t)), n: D.map(q => -q) }; } else if (dh) { this.shootDoor(dh.th); hit = { p: M4.add(O, D.map(q => q * dh.t)), n: D.map(q => -q) }; } if (hit) this.explode(pre, hit.p, hit.n); const end = hit ? hit.p : M4.add(O, D.map(q => q * 3000)); this.fx.push({ kind: "line", a: O, b: end, c: ecol, w: +T.get(pre + "projWidth") || 0.6, life: +T.get(pre + "projLineTime") || 0.12, t: 0 }); }
       else if (kind === "particle") this.fx.push({ pre, kind: T.get(pre + "projShape") === "laser" ? "laser" : "sphere", dmg: dmg * mul, p: O, d: D, c: ecol, light: lt, size: orbS > 0 ? orbS : (+T.get(pre + "projSize") || 3) * mul, speed: +T.get(pre + "projSpeed") || 1400, life: +T.get(pre + "projLife") || 2, t: 0 });
       else if (kind === "mesh") {
         const aid = T.get(pre + "projModel"), model = aid && PRIM.FBX.cache[aid]; if (!model) return; if (!this.gpu[aid]) this.gpu[aid] = v.loadModel(model);
@@ -123,24 +123,27 @@
     // a shot hit the level: the weapon's wall hit sound (quieter far away) and its mark / animation stuck to the surface
     impact(pre, hit) {
       const T = this.T, snd = T.get(pre + "impactSound"), img = T.get(pre + "impactImage"), c = this.view && this.view.cam;
-      if (snd && c) { const d = Math.hypot(hit.p[0] - c.x, hit.p[1] - c.y, hit.p[2] - c.z); this.sfx(snd, Math.max(0, 1 - d / 2500)); }
+      if (snd && c) this.sfxAt(snd, 1, hit.p);
       if (!img || !hit.n) return; const g = k => +T.get(pre + k) || 0, n = hit.n, frames = Math.max(1, Math.round(g("impactFrames") || 1));
       (this.marks = this.marks || []).push({ kind: "decal", texId: img, p: [hit.p[0] + n[0] * 0.5, hit.p[1] + n[1] * 0.5, hit.p[2] + n[2] * 0.5], n, size: g("impactSize") || 16, frames, fps: g("impactFps") || 15, stay: T.get(pre + "impactStay") === undefined ? 4 : g("impactStay"), t: 0, frame: 0, lit: T.get(pre + "impactGlow") ? 0 : 1 });
       if (this.marks.length > 80) this.marks.shift();
     }
     stepMarks(dt) {
-      if (!this.marks || !this.marks.length) return []; this.marks = this.marks.filter(m => { m.t += dt; const anim = m.frames > 1 ? m.frames / m.fps : 0; m.frame = Math.min(m.frames - 1, Math.floor(m.t * m.fps)); const end = anim + m.stay; if (m.t > end) return false; m.alpha = Math.min(1, (end - m.t) / 0.5); return true; });
+      if (!this.marks || !this.marks.length) return []; const cam = this.view && this.view.cam; this.marks = this.marks.filter(m => { m.t += dt; if (m.bill && cam) { const d = [cam.x - m.p[0], cam.y - m.p[1], cam.z - m.p[2]], L = Math.hypot(...d) || 1; m.n = d.map(q => q / L); } const anim = m.frames > 1 ? m.frames / m.fps : 0; m.frame = Math.min(m.frames - 1, Math.floor(m.t * m.fps)); const end = anim + m.stay; if (m.t > end) return false; m.alpha = Math.min(1, (end - m.t) / 0.5); return true; });
       return this.marks;
     }
     stepFx(dt) {
-      const v = this.view, fx = this.fx; if (!fx || !fx.length || !v) return;
-      this.fx = fx.filter(f => {
-        f.t += dt; if (f.t > f.life) return false;
+      const v = this.view, fx = this.fx; if (!fx || !fx.length || !v) return; this.fx = [];   // explosions made while stepping land in the fresh list
+      const kept = fx.filter(f => {
+        f.t += dt; const boom = (p, n) => { if (f.pre && !f.hostile) this.explode(f.pre, p, n); };
+        if (f.deco) { if (f.t > f.life) return false; const a = f.t / f.life; if (f.light) f.light.k = f.light.k0 * (1 - a) * (1 - a); if (f.speed) { f.p = M4.add(f.p, f.d.map(q => q * f.speed * dt)); f.d[1] -= (f.grav || 0) * dt / Math.max(1, f.speed); f.speed *= Math.max(0, 1 - 2.5 * dt); f.size = f.size0 * (1 - a * 0.85); } return true; }
+        if (f.t > f.life) { if (f.kind !== "line") boom(f.p, null); return false; }
         if (f.kind !== "line") { const step = f.speed * dt; if (f.hostile) { const q = M4.add(f.p, f.d.map(z => z * step)); if (!this.pdead && Math.hypot(q[0] - this.x, q[2] - this.y) < (+this.T.get("player.radius") || 16) + (f.size || 4) && q[1] > this.z - 4 && q[1] < this.z + (+this.T.get("player.eyeHeight") || 102) + 12) { this.hurtPlayer(f.dmg); return false; } }
-        else { const he = this.hitEnemy(f.p, f.d, step + (f.size || 1)); if (he) { this.damageEnemy(he.o, f.dmg || 0); return false; } }
-        const dh = this.hitDoor(f.p, f.d, step + (f.size || 1)); if (dh) { if (!f.hostile) this.shootDoor(dh.th); return false; } const hit = v.raycast(f.p, f.d, step + (f.size || 1)); if (hit) { if (f.pre && !f.hostile) this.impact(f.pre, hit); return false; } f.p = M4.add(f.p, f.d.map(q => q * step)); if (f.kind === "mesh") f.M = M4.mul(M4.translate(...f.p), M4.mul(M4.between([0, 0, -1], f.d, Math.PI), M4.mul(f.rot, M4.scale(f.scale, f.scale, f.scale)))); }
+        else { const he = this.hitEnemy(f.p, f.d, step + (f.size || 1)); if (he) { this.damageEnemy(he.o, f.dmg || 0); boom(M4.add(f.p, f.d.map(q => q * he.t)), f.d.map(q => -q)); return false; } }
+        const dh = this.hitDoor(f.p, f.d, step + (f.size || 1)); if (dh) { if (!f.hostile) this.shootDoor(dh.th); boom(M4.add(f.p, f.d.map(q => q * dh.t)), f.d.map(q => -q)); return false; } const hit = v.raycast(f.p, f.d, step + (f.size || 1)); if (hit) { if (f.pre && !f.hostile) this.impact(f.pre, hit); boom(hit.p, hit.n); return false; } f.p = M4.add(f.p, f.d.map(q => q * step)); if (f.kind === "mesh") f.M = M4.mul(M4.translate(...f.p), M4.mul(M4.between([0, 0, -1], f.d, Math.PI), M4.mul(f.rot, M4.scale(f.scale, f.scale, f.scale)))); }
         return true;
       });
+      this.fx = kept.concat(this.fx);
     }
     // ---- placed objects (map.things): doors in walls, pick-ups, decorations
     syncThings() {
@@ -148,6 +151,7 @@
       for (const th of m.things || []) {
         const pre = th.prop + ".", aid = T.get(pre + "asset"), type = T.get(pre + "type");
         if (type !== "door" && T.get(pre + "look") === "sprite") { gone.delete(th.id); const o = old.find(x => x.th.id === th.id) || { th, st: "closed", p: 0, t: 0, timer: 0, taken: false, spin: 0 }; Object.assign(o, { th, pre, aid: null, model: null, gm: null, sprite: true, type, fr: G.thingFrame(m, T, th) }); if (!o.init) o.floor = o.fr.fy; out.push(o); continue; }
+        if (type === "speaker" && (!aid || !this.urls[aid])) { gone.delete(th.id); const o = old.find(x => x.th.id === th.id) || { th, st: "closed", p: 0, t: 0, timer: 0, taken: false, spin: 0 }; Object.assign(o, { th, pre, aid: null, model: null, gm: null, sprite: false, type, fr: G.thingFrame(m, T, th) }); o.floor = o.fr.fy; out.push(o); continue; }
         if (!aid || !this.urls[aid]) continue; const model = F.cache[aid];
         if (!model) { F.load(aid, this.urls[aid]).then(mm => { if (mm && !this.dead) this.syncThings(); }); continue; }
         if (!this.gpu[aid]) this.gpu[aid] = this.view.loadModel(model); gone.delete(th.id); { const q = old.find(x => x.th.id === th.id); if (q) q.sprite = false; }
@@ -203,8 +207,8 @@
     talkGo(go) { const t = this.talk; if (!t) return; if (!go || go === "next") t.i++; else if (go === "end") return this.talkEnd(); else t.i = t.p.dialog.lines.findIndex(l => l.id === go); this.talkLine(); }
     talkEnd() { this.talk = null; if (this.talkEl) this.talkEl.style.display = "none"; this.msg.style.display = document.pointerLockElement === this.cv ? "none" : "grid"; }
     shootDoor(th) { const o = (this.things || []).find(x => x.th === th); if (o && this.T.get(o.pre + "openMode") === "shot") this.openDoor(o); }
-    openDoor(o) { if (o.st === "open" || o.st === "opening") return; o.st = "opening"; o.t = o.p * this.doorLen(o, "openAnim"); o.timer = 0; const s = this.T.get(o.pre + "openSound"); if (s) this.sfx(s); }
-    closeDoor(o) { if (o.st === "closed" || o.st === "closing") return; o.st = "closing"; o.timer = 0; const s = this.T.get(o.pre + "closeSound"); if (s) this.sfx(s); }
+    openDoor(o) { if (o.st === "open" || o.st === "opening") return; o.st = "opening"; o.t = o.p * this.doorLen(o, "openAnim"); o.timer = 0; const s = this.T.get(o.pre + "openSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); }
+    closeDoor(o) { if (o.st === "closed" || o.st === "closing") return; o.st = "closing"; o.timer = 0; const s = this.T.get(o.pre + "closeSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); }
     doorLen(o, which) { const nm = this.T.get(o.pre + (which === "closeAnim" && this.T.get(o.pre + "closeAnim") ? "closeAnim" : "openAnim")), a = nm && o.model.anims[nm]; return a ? Math.max(0.05, this.animLen(o.aid, nm, a.dur).len) : 0.8; }
     interact() {
       const v = this.view; if (!v) return; { const n = this.npcInFront(); if (n) { this.talkStart(n); return; } } const c = v.cam, B = R3D.camBasis(c.yaw, c.pitch), O = [c.x, c.y, c.z], D = B.f;
@@ -228,7 +232,7 @@
     drawThings(v, dt) {
       if (!this.things || !this.things.length) return; if (this.mode === "play") this.thingStep(dt); const F = PRIM.FBX, T = this.T, items = [];
       for (const o of this.things) {
-        if (o.taken) continue; if (o.sprite) { const it = this.spriteItem(o, v); if (it) items.push(it); continue; } const g = k => +T.get(o.pre + k) || 0; let f = o.fr, name = null, tm = 0;
+        if (o.taken) continue; if (o.type === "speaker" && (!o.gm && !o.sprite || this.mode === "play" && !T.get(o.pre + "spkShow"))) continue; if (o.sprite) { const it = this.spriteItem(o, v); if (it) items.push(it); continue; } const g = k => +T.get(o.pre + k) || 0; let f = o.fr, name = null, tm = 0;
         if (o.type === "enemy" && o.init) { const a = o.yaw * Math.PI / 180; f = { cx: o.x, cy: o.y, ux: Math.cos(a), uy: -Math.sin(a), nx: Math.sin(a), ny: Math.cos(a), door: false }; }
         const talking = o.type === "npc" && this.talk && this.talk.o === o; if (talking && T.get(o.pre + "faceTalker") !== false) { const a = Math.atan2(this.x - o.fr.cx, this.y - o.fr.cy); f = { cx: o.fr.cx, cy: o.fr.cy, ux: Math.cos(a), uy: -Math.sin(a), nx: Math.sin(a), ny: Math.cos(a), door: false }; }
         const an = k => { const nm = T.get(o.pre + k); return nm && o.model.anims[nm] ? nm : null; };
@@ -293,7 +297,7 @@
       if (o.st === "dead") return;
       if (o.st === "dying") { if (o.at >= this.eLen(o, "deathAnim", 0.6)) { o.st = "dead"; if (!T.get(o.pre + "corpse")) o.taken = true; } return; }
       const r = g("radius") || 22, dx = this.x - o.x, dy = this.y - o.y, dist = Math.hypot(dx, dy) || 1;
-      o.losT -= dt; if (o.losT <= 0) { o.losT = 0.2; o.los = !this.pdead && dist < (g("sight") || 900) && this.canSee(o); if (o.los && !o.awake) { o.awake = true; const s = T.get(o.pre + "sightSound"); if (s) this.sfx(s); } }
+      o.losT -= dt; if (o.losT <= 0) { o.losT = 0.2; o.los = !this.pdead && dist < (g("sight") || 900) && this.canSee(o); if (o.los && !o.awake) { o.awake = true; const s = T.get(o.pre + "sightSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); } }
       if (o.st === "pain") { if (o.at >= this.eLen(o, "hurtAnim", 0.25)) { o.st = "chase"; this.eSet(o, "walkAnim"); } return; }
       if (!o.awake || this.pdead) { o.st = "idle"; this.eSet(o, "idleAnim"); return; }
       o.yaw = Math.atan2(dx, dy) * 180 / Math.PI;
@@ -302,7 +306,7 @@
         if (o.at >= Math.max(this.eLen(o, "attackAnim", 0), g("attackDelay") + 0.25)) { o.st = "chase"; o.cool = g("attackRate") || 1.2; this.eSet(o, "walkAnim"); } return;
       }
       o.cool -= dt; const range = g("attackRange") || 70;
-      if (dist <= range + (T.get(o.pre + "attack") === "melee" ? r + 16 : 0) && o.los && o.cool <= 0) { o.st = "attack"; o.hit = false; this.eSet(o, "attackAnim"); o.at = 0; const s = T.get(o.pre + "attackSound"); if (s) this.sfx(s); return; }
+      if (dist <= range + (T.get(o.pre + "attack") === "melee" ? r + 16 : 0) && o.los && o.cool <= 0) { o.st = "attack"; o.hit = false; this.eSet(o, "attackAnim"); o.at = 0; const s = T.get(o.pre + "attackSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); return; }
       const want = T.get(o.pre + "attack") === "melee" ? r + (+T.get("player.radius") || 16) + 4 : Math.min(range * 0.7, 400);
       if (dist > want || !o.los) { const sp = g("speed") || 0; this.eMove(o, dx / dist * sp, dy / dist * sp, dt); o.st = "chase"; this.eSet(o, "walkAnim"); }
       else { this.eMove(o, 0, 0, dt); o.st = "chase"; this.eSet(o, "idleAnim"); }
@@ -323,8 +327,8 @@
     }
     damageEnemy(o, d) {
       if (!this.eAlive(o)) return; const T = this.T; o.hp -= d; o.awake = true; o.flash = 0.12;
-      if (o.hp <= 0) { o.st = "dying"; this.eSet(o, "deathAnim"); o.at = 0; const s = T.get(o.pre + "deathSound"); if (s) this.sfx(s); const kt = T.get(o.pre + "killTag"); if (kt && T.get(kt) !== undefined) T.set(kt, (+T.get(kt) || 0) + (+T.get(o.pre + "killAmount") || 0)); return; }
-      const s = T.get(o.pre + "hurtSound"); if (s) this.sfx(s); if (this.eAnim(o, "hurtAnim") && o.st !== "attack") { o.st = "pain"; this.eSet(o, "hurtAnim"); o.at = 0; }
+      if (o.hp <= 0) { o.st = "dying"; this.eSet(o, "deathAnim"); o.at = 0; const s = T.get(o.pre + "deathSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); const kt = T.get(o.pre + "killTag"); if (kt && T.get(kt) !== undefined) T.set(kt, (+T.get(kt) || 0) + (+T.get(o.pre + "killAmount") || 0)); return; }
+      const s = T.get(o.pre + "hurtSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); if (this.eAnim(o, "hurtAnim") && o.st !== "attack") { o.st = "pain"; this.eSet(o, "hurtAnim"); o.at = 0; }
     }
     // ---- ammo: "ammo" = ready to fire, "reserve" = carried. Reload moves rounds from reserve into the magazine
     weapons() { return (this.project.player && this.project.player.attachments || []).filter(a => this.T.get("player." + a.id + ".type") === "weapon"); }
@@ -429,6 +433,40 @@
     loopSfx(id, vol) { const u = this.urls[id]; if (!u) return; this.loops = this.loops || {}; const v = this.vol3(vol); if (this.loops[id] && this.loops[id].playing) { this.loops[id].setVolume(v); return; } this.loops[id] = PRIM.Audio.play(u, v, true); }
     stopLoops(id) { const L = this.loops || {}; for (const k of Object.keys(L)) if (!id || k === id) { L[k].stop(0.03); delete L[k]; } }
     sfx(id, vol) { const u = this.urls[id]; return u ? PRIM.Audio.play(u, this.vol3(vol), false) : null; }
+    // a sound at a place in the world: heard from its direction, fading to silence at `max` units
+    sfxAt(id, vol, p, max, loop) { const u = this.urls[id]; return u ? PRIM.Audio.play(u, this.vol3(vol), !!loop, { p, ref: Math.min(96, (max || 2500) * 0.2), max: max || 2500 }) : null; }
+    thingPos(o, up) { const f = o.fr || {}; return [o.x !== undefined && o.type === "enemy" ? o.x : f.cx, (o.floor !== undefined ? o.floor : f.fy || 0) + (up === undefined ? 56 : up), o.y !== undefined && o.type === "enemy" ? o.y : f.cy]; }
+    // speakers: a looping sound placed in the world (or a one-shot each time you walk into its radius)
+    speakerStep() {
+      const T = this.T; this.spk = this.spk || {}; const live = new Set();
+      for (const o of this.things || []) {
+        if (o.type !== "speaker") continue; const id = o.th.id, snd = T.get(o.pre + "spkSound"), r = +T.get(o.pre + "spkRadius") || 512, vol = T.get(o.pre + "spkVolume") === undefined ? 1 : +T.get(o.pre + "spkVolume"), p = this.thingPos(o, +T.get(o.pre + "spkHeight") || 0), d = Math.hypot(p[0] - this.x, p[2] - this.y, p[1] - this.z - 56);
+        let k = this.spk[id]; if (k && k.snd !== snd) { if (k.h) k.h.stop(0.1); k = this.spk[id] = null; } if (!snd) continue; live.add(id);
+        if (T.get(o.pre + "spkLoop") !== false) { if (!k) k = this.spk[id] = { snd, h: this.sfxAt(snd, vol, p, r, true) }; else if (k.h) { k.h.setVolume(this.vol3(vol)); k.h.setPos(p); } }
+        else { if (!k) k = this.spk[id] = { snd, h: null, inside: false }; const inside = d < r; if (inside && !k.inside) k.h = this.sfxAt(snd, vol, p, r); k.inside = inside; }
+      }
+      for (const id of Object.keys(this.spk)) if (!live.has(id)) { const k = this.spk[id]; if (k && k.h) k.h.stop(0.1); delete this.spk[id]; }
+    }
+    stopSpeakers() { for (const k of Object.values(this.spk || {})) if (k && k.h) k.h.stop(0.05); this.spk = {}; }
+    // where a player shot lands: splash damage around it and the explosion (particles or an animation), its flash and sound
+    explode(pre, p, n) {
+      const T = this.T, v = this.view, g = k => +T.get(pre + k) || 0, n0 = n || [0, 1, 0];
+      if (T.get(pre + "projSplash")) {
+        const R = g("splashRadius") || 160, dmg = T.get(pre + "splashDamage") === undefined ? 50 : g("splashDamage"), from = [p[0] + n0[0] * 2, p[1] + n0[1] * 2, p[2] + n0[2] * 2];
+        const clear = q => { const d = M4.sub(q, from), L = M4.len(d); if (L < 1) return true; const hh = v && v.raycast(from, d.map(z => z / L), L - 2); return !hh; };
+        for (const o of this.things || []) { if (!this.eAlive(o)) continue; const r = +T.get(o.pre + "radius") || 22, hgt = +T.get(o.pre + "height") || 110, cy = Math.max(o.floor, Math.min(o.floor + hgt, p[1])), dist = Math.max(0, Math.hypot(o.x - p[0], o.y - p[2]) - r), d = Math.hypot(dist, cy - p[1]);
+          if (d < R && clear([o.x, cy, o.y])) this.damageEnemy(o, dmg * (1 - 0.75 * d / R)); }
+        if (T.get(pre + "splashSelf") && !this.pdead) { const r = +T.get("player.radius") || 16, cy = Math.max(this.z, Math.min(this.z + 102, p[1])), d = Math.hypot(Math.max(0, Math.hypot(this.x - p[0], this.y - p[2]) - r), cy - p[1]); if (d < R && clear([this.x, cy, this.y])) this.hurtPlayer(dmg * (1 - 0.75 * d / R)); }
+      }
+      const kind = T.get(pre + "explodeType"), snd = T.get(pre + "explodeSound"); if (snd) this.sfxAt(snd, 1, p);
+      if (!kind || kind === "none") return; const size = kind === "particles" ? g("explodeBit") || 4 : g("explodeSize") || 96, hex = String(T.get(pre + "explodeColor") || "#ff9933"), col = this.hexCol(hex); this.fx = this.fx || [];
+      if (kind === "particles") { const cnt = Math.min(200, Math.max(1, Math.round(g("explodeCount") || 24))), sp = g("explodeSpeed") || 320, life = g("explodeTime") || 0.6;
+        for (let i = 0; i < cnt; i++) { let d = [Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1]; const L = M4.len(d) || 1; d = d.map(z => z / L); if (M4.dot(d, n0) < 0) d = d.map((z, j) => z - 2 * M4.dot(d, n0) * n0[j]);
+          this.fx.push({ kind: "sphere", deco: true, p: [p[0] + n0[0] * 3, p[1] + n0[1] * 3, p[2] + n0[2] * 3], d, c: col.map(q => q * 1.6), size0: size * (0.6 + Math.random() * 0.8), size, speed: sp * (0.4 + Math.random() * 0.8), grav: 500, life: life * (0.6 + Math.random() * 0.6), t: 0 }); } }
+      else if (T.get(pre + "explodeImage")) { const fr = Math.max(1, Math.round(g("explodeFrames") || 8)), fps = g("explodeFps") || 20;
+        (this.marks = this.marks || []).push({ kind: "decal", bill: true, texId: T.get(pre + "explodeImage"), p: [p[0] + n0[0] * size * 0.3, p[1] + n0[1] * size * 0.3, p[2] + n0[2] * size * 0.3], n: [0, 0, 1], size, frames: fr, fps, stay: 0, t: 0, frame: 0, lit: 0, glow: 1 }); }
+      if (T.get(pre + "explodeLight") !== false) { const life = kind === "particles" ? Math.min(0.5, g("explodeTime") || 0.6) : Math.min(0.6, Math.max(1, Math.round(g("explodeFrames") || 8)) / (g("explodeFps") || 20)); this.fx.push({ kind: "flash", deco: true, p: [p[0] + n0[0] * 16, p[1] + n0[1] * 16, p[2] + n0[2] * 16], d: [0, 0, 0], speed: 0, life, t: 0, light: { shadow: false, c: kind === "particles" ? col : [1, 0.75, 0.45], k: 3, k0: 3, r: Math.max(200, (T.get(pre + "projSplash") ? g("splashRadius") : 0) * 2, size * 3) } }); }
+    }
     playAnim(key, name, loop) { const at = this.atts.find(a => "player." + a.id === key); if (!at) return; if (!name) { if (loop) at.loopAnim = null; return; } if (!at.model.anims[name]) return; if (loop) at.loopAnim = name; else at.fire = name; at.t = 0; at.restart = true; }
     // smooth changes between animations: when the animation of a model changes (or one restarts), the pose eases from what was shown
     // into the new animation over player.animBlend seconds (0 = instant). h = anything that keeps the state (a weapon, a placed object)
@@ -546,7 +584,7 @@
       if (this.mode === "play") this.feel(dt);
       if (this.mode === "play") { this.hold(dt); const hp = +this.T.get("player.health"); if (this.lastHp === undefined) this.lastHp = hp; if (hp < this.lastHp) { this.psound(hp <= 0 ? "deathSound" : "hurtSound"); this.flash(Math.min(0.6, 0.15 + (this.lastHp - hp) / 60)); } this.lastHp = hp; this.reloadStep(dt); this.ammoClamp(); this.deathStep(dt); }
       const v = this.view; if (!v) return; const T = this.T, c = v.cam; v.fov = (+T.get("player.fov") || 80) * Math.PI / 180;
-      c.x = this.x; c.z = this.y; c.y = this.z + (+T.get("player.eyeHeight") || 56) - (this.pdead ? Math.min(1, (this.deadT || 0) * 2) * (+T.get("player.eyeHeight") || 56) * 0.7 : 0); c.yaw = this.yaw; c.pitch = this.pitch; v.setLights(this.lightPrev || []); v.draw(); this.lightNow = []; if (this.mode === "play") { this.stepFx(dt); const list = (this.fx || []).slice(), ob = this.orb, oat = ob && this.atts.find(x => x.id === ob.id); for (const f of list) if (f.light) this.lightNow.push({ p: f.p, r: f.light.r, c: f.light.c.map(q => q * f.light.k), type: 0, shadow: true }); if (oat && oat.emit) { if (ob.grow) { ob.grow.t += dt; ob.size = ob.grow.from + (ob.grow.to - ob.grow.from) * Math.min(1, ob.grow.t / ob.grow.secs); } const op = this.emitWorld(oat).O, opre = "player." + oat.id + ".", oem = T.get(opre + "projEmit") === undefined ? 1 : +T.get(opre + "projEmit"); list.push({ kind: "sphere", p: op, c: this.hexCol(ob.color).map(q => q * oem), size: ob.size }); if (T.get(opre + "projLight")) this.lightNow.push({ p: op, r: +T.get(opre + "projLightRange") || 220, c: this.hexCol(ob.color).map(q => q * (+T.get(opre + "projLightPower") || 1.5)), type: 0, shadow: true }); } v.setLights(this.lightNow); list.push(...this.stepMarks(dt)); if (list.length) v.drawFx(list); } this.drawThings(v, dt); this.drawHand(v, dt); v.present(); this.lightPrev = this.lightNow; this.stats3d(v); this.placeCross(v);
+      c.x = this.x; c.z = this.y; c.y = this.z + (+T.get("player.eyeHeight") || 56) - (this.pdead ? Math.min(1, (this.deadT || 0) * 2) * (+T.get("player.eyeHeight") || 56) * 0.7 : 0); c.yaw = this.yaw; c.pitch = this.pitch; { const B = R3D.camBasis(c.yaw, c.pitch); PRIM.Audio.listen([c.x, c.y, c.z], B.f, B.u, B.s); } if (this.mode === "play") this.speakerStep(); v.setLights(this.lightPrev || []); v.draw(); this.lightNow = []; if (this.mode === "play") { this.stepFx(dt); const list = (this.fx || []).slice(), ob = this.orb, oat = ob && this.atts.find(x => x.id === ob.id); for (const f of list) if (f.light) this.lightNow.push({ p: f.p, r: f.light.r, c: f.light.c.map(q => q * f.light.k), type: 0, shadow: f.light.shadow !== false }); if (oat && oat.emit) { if (ob.grow) { ob.grow.t += dt; ob.size = ob.grow.from + (ob.grow.to - ob.grow.from) * Math.min(1, ob.grow.t / ob.grow.secs); } const op = this.emitWorld(oat).O, opre = "player." + oat.id + ".", oem = T.get(opre + "projEmit") === undefined ? 1 : +T.get(opre + "projEmit"); list.push({ kind: "sphere", p: op, c: this.hexCol(ob.color).map(q => q * oem), size: ob.size }); if (T.get(opre + "projLight")) this.lightNow.push({ p: op, r: +T.get(opre + "projLightRange") || 220, c: this.hexCol(ob.color).map(q => q * (+T.get(opre + "projLightPower") || 1.5)), type: 0, shadow: true }); } v.setLights(this.lightNow); list.push(...this.stepMarks(dt)); if (list.length) v.drawFx(list); } this.drawThings(v, dt); this.drawHand(v, dt); v.present(); this.lightPrev = this.lightNow; this.stats3d(v); this.placeCross(v);
     }
   };
 })();

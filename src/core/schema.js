@@ -141,6 +141,21 @@
     NUM("impactFrames", "Frames in that picture (1 = a still mark)", 1, 1, 64, 1, { showIf: ["projType", ["hitscan", "particle", "mesh"]] }), NUM("impactFps", "Animation speed (frames per second)", 15, 1, 60, 1, { showIf: ["projType", ["hitscan", "particle", "mesh"]] }),
     NUM("impactSize", "Mark size (units, 128 = a cell)", 16, 1, 256, 1, { showIf: ["projType", ["hitscan", "particle", "mesh"]] }), NUM("impactStay", "Mark stays for (seconds after the animation)", 4, 0, 60, 0.5, { showIf: ["projType", ["hitscan", "particle", "mesh"]] }),
     { k: "impactGlow", label: "Mark glows (not darkened by shadows)", type: "bool", def: false, showIf: ["projType", ["hitscan", "particle", "mesh"]] },
+    // splash damage and the explosion where a shot lands (wall, enemy, door, or the end of its flight)
+    { k: "projSplash", label: "Splash damage (hurts everything around where it lands)", type: "bool", def: false, showIf: ["projType", ["hitscan", "particle", "mesh"]] },
+    NUM("splashRadius", "Splash radius (units, 128 = a cell)", 160, 8, 2000, 4, { showIf: ["projType", ["hitscan", "particle", "mesh"]], showIf2: ["projSplash", true] }),
+    NUM("splashDamage", "Splash damage (in the middle; a quarter of it at the edge)", 50, 0, 100000, 1, { showIf: ["projType", ["hitscan", "particle", "mesh"]], showIf2: ["projSplash", true] }),
+    { k: "splashSelf", label: "Splash hurts you too (rocket jump pain)", type: "bool", def: false, showIf: ["projType", ["hitscan", "particle", "mesh"]], showIf2: ["projSplash", true] },
+    { k: "explodeType", label: "Explosion", type: "choice", options: [["none", "None"], ["particles", "Particles (a burst of glowing bits)"], ["animation", "Animation (frames side by side in one picture)"]], def: "none", showIf: ["projType", ["hitscan", "particle", "mesh"]] },
+    { k: "explodeImage", label: "Explosion picture (frames side by side)", type: "asset", assetType: "image", def: "", showIf: ["projType", ["hitscan", "particle", "mesh"]], showIf2: ["explodeType", "animation"] },
+    NUM("explodeFrames", "Frames in that picture", 8, 1, 64, 1, { showIf: ["projType", ["hitscan", "particle", "mesh"]], showIf2: ["explodeType", "animation"] }), NUM("explodeFps", "Animation speed (frames per second)", 20, 1, 60, 1, { showIf: ["projType", ["hitscan", "particle", "mesh"]], showIf2: ["explodeType", "animation"] }),
+    { k: "explodeColor", label: "Particle color", type: "color", def: "#ff9933", showIf: ["projType", ["hitscan", "particle", "mesh"]], showIf2: ["explodeType", "particles"] },
+    NUM("explodeCount", "How many particles", 24, 1, 200, 1, { showIf: ["projType", ["hitscan", "particle", "mesh"]], showIf2: ["explodeType", "particles"] }), NUM("explodeSpeed", "Particle speed", 320, 10, 4000, 10, { showIf: ["projType", ["hitscan", "particle", "mesh"]], showIf2: ["explodeType", "particles"] }),
+    NUM("explodeTime", "Particles last (seconds)", 0.6, 0.05, 10, 0.05, { showIf: ["projType", ["hitscan", "particle", "mesh"]], showIf2: ["explodeType", "particles"] }),
+    NUM("explodeBit", "Size of one particle", 4, 0.2, 200, 0.1, { showIf: ["projType", ["hitscan", "particle", "mesh"]], showIf2: ["explodeType", "particles"] }),
+    NUM("explodeSize", "Explosion picture size (units, 128 = a cell)", 96, 1, 2000, 1, { showIf: ["projType", ["hitscan", "particle", "mesh"]], showIf2: ["explodeType", "animation"] }),
+    { k: "explodeLight", label: "Explosion flash lights up the room", type: "bool", def: true, showIf: ["projType", ["hitscan", "particle", "mesh"]], showIf2: ["explodeType", ["particles", "animation"]] },
+    { k: "explodeSound", label: "Explosion sound", type: "asset", assetType: "sound", def: "", showIf: ["projType", ["hitscan", "particle", "mesh"]] },
     // ammo: "ammo" = rounds ready to fire, "reserve" = the rest carried. Both are live tags (a HUD text can show {player.att1.ammo})
     { k: "ammoUse", label: "Uses ammo", type: "bool", def: false, showIf: WP },
     NUM("ammoStart", "Ammo at the start", 50, 0, 100000, 1, { showIf: WP, showIf2: ["ammoUse", true] }), NUM("ammoMax", "Most ammo you can carry", 200, 1, 100000, 1, { showIf: WP, showIf2: ["ammoUse", true] }),
@@ -151,7 +166,7 @@
   // ---- placeable objects (the Object Editor): doors, pick-ups, decorations. Tags prop<N>.*  They are placed in maps (map.things).
   S.PROP = [
     { k: "name", label: "Name", type: "string", def: "Object" },
-    { k: "type", label: "Type", type: "choice", options: [["decoration", "Decoration (just a model)"], ["door", "Door (fills a cell between walls)"], ["pickup", "Pick-up (collected by touching)"], ["enemy", "Enemy (hunts and attacks the player)"], ["exit", "Level exit (touch it to leave the level)"], ["npc", "Character (NPC: talk to it, make choices)"]], def: "decoration" },
+    { k: "type", label: "Type", type: "choice", options: [["decoration", "Decoration (just a model)"], ["door", "Door (fills a cell between walls)"], ["pickup", "Pick-up (collected by touching)"], ["enemy", "Enemy (hunts and attacks the player)"], ["exit", "Level exit (touch it to leave the level)"], ["npc", "Character (NPC: talk to it, make choices)"], ["speaker", "Speaker (plays a sound you hear around it)"]], def: "decoration" },
     { k: "look", label: "Looks like", type: "choice", options: [["model", "3D model (FBX)"], ["sprite", "2D sprite (pictures that always face the player)"]], def: "model", showIf: ["type", ["enemy", "decoration", "pickup", "exit", "npc"]] },
     { k: "asset", label: "Model (FBX)", type: "asset", assetType: "model", def: "", showIf: ["look", "model"] },
     // 2D sprites: each picture holds the frames of one animation side by side (a strip). They always turn to face the player.
@@ -202,6 +217,10 @@
     NUM("lightRange", "Light reach (units, 128 = a cell)", 420, 32, 4000, 8, { showIf: ["lightOn", true] }), NUM("lightHeight", "Light height above the floor (units)", 80, -64, 512, 1, { showIf: ["lightOn", true] }),
     NUM("lightFlicker", "Flicker (0 = steady, 1 = like a torch)", 0, 0, 1, 0.01, { showIf: ["lightOn", true] }), { k: "lightShadows", label: "Casts shadows", type: "bool", def: true, showIf: ["lightOn", true] });
   // ---- NPC talk (characters): talk settings are prop tags; the dialogue is a list of lines (structure prop.dialog.lines = [{id}]) whose texts are tags <prop>.d.<line>.*
+  S.PROP.push({ k: "spkSound", label: "Sound", type: "asset", assetType: "sound", def: "", showIf: ["type", "speaker"] }, NUM("spkVolume", "Volume", 1, 0, 1, 0.01, { showIf: ["type", "speaker"] }),
+    NUM("spkRadius", "Heard within (units, 128 = a cell; silent outside)", 512, 16, 8000, 8, { showIf: ["type", "speaker"] }), NUM("spkHeight", "Sound height above the floor", 64, 0, 1024, 1, { showIf: ["type", "speaker"] }),
+    { k: "spkLoop", label: "Loops forever (off = plays once each time you walk into its radius)", type: "bool", def: true, showIf: ["type", "speaker"] },
+    { k: "spkShow", label: "Model visible in the game", type: "bool", def: false, showIf: ["type", "speaker"] });
   S.PROP.push({ k: "npcName", label: "Name shown when talking (empty = the object's name)", type: "string", def: "", showIf: ["type", "npc"] }, NUM("talkRange", "Can talk from (units, 128 = a cell)", 140, 30, 600, 5, { showIf: ["type", "npc"] }),
     ANIM("talkAnim", "Talking animation (3D model)", { showIf: ["type", "npc"], showIf2: ["look", "model"] }), { k: "talkSprite", label: "Talking strip (2D sprite)", type: "asset", assetType: "image", def: "", showIf: ["type", "npc"], showIf2: ["look", "sprite"] }, NUM("talkSpriteFrames", "Frames in it", 1, 1, 64, 1, { showIf: ["type", "npc"], showIf2: ["look", "sprite"] }),
     { k: "faceTalker", label: "Turns to face the player while talking", type: "bool", def: true, showIf: ["type", "npc"] });
