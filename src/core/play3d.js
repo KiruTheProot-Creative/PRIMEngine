@@ -21,7 +21,7 @@
       if (this.view && this.map) this.view.setMap(this.project, this.map, this.T, this.urls); else if (!this.view) this.cv.style.background = "radial-gradient(ellipse at 50% 120%, #1c2b3d, #080b10)";
       const T = this.T; this.placeStart();
       this.hud = new PRIM.HUD({ host: this.hudHost, project: this.project, tags: T, urls: this.urls, screenId: T.get("player.hud"), edit: this.mode !== "play", say: t => { if (this.o.say) this.o.say(t); } });
-      this.unsub = T.on(names => { this.drawCross(); if (this.mode === "play" && names && names.length && !names.some(n => (this.map && n.startsWith(this.map.id + ".")) || /^prop/.test(n))) return; if (this.view && !this.pendingRb) { this.pendingRb = true; setTimeout(() => { this.pendingRb = false; if (!this.dead && this.view) { if (this.map) this.view.rebuild(); this.syncAtts(); this.syncThings(); } }, 80); } });
+      this.unsub = T.on(names => { this.drawCross(); if (this.mode === "play" && names && names.length && !names.some(n => (this.map && n.startsWith(this.map.id + ".")) || /^prop/.test(n) || n === "gfx.ao")) return; if (this.view && !this.pendingRb) { this.pendingRb = true; setTimeout(() => { this.pendingRb = false; if (!this.dead && this.view) { if (this.map) this.view.rebuild(); this.syncAtts(); this.syncThings(); } }, 80); } });
       this.drawCross(); this.gpu = {}; this.atts = [];
       this.sh = this.mode === "play" ? new PRIM.Script.Host({ tags: T, held: k => !!this.keys[k], isState: s => this.isState(s), orb: (k, c, a) => this.orbCmd(k, c, a), fire: key => this.fireProj(this.atts.find(a => "player." + a.id === key)), reload: key => this.reload(this.atts.find(a => "player." + a.id === key)), hasAmmo: key => { const pre = key + "."; return !this.T.get(pre + "ammoUse") || (!this.reloading && (+this.T.get(pre + "ammo") || 0) >= 1); }, sfx: (id, v) => this.sfx(id, v),
         dlgLine: l => this.dlgLine(l), dlgChoice: c => this.dlgChoice(c), pause: id => this.pauseOpen(id), dialogue: id => this.talkGraph(id, null), loop: (id, v) => this.loopSfx(id, v), stopLoop: id => this.stopLoops(id), playAnim: (k, n, l) => this.playAnim(k, n, l),
@@ -166,10 +166,10 @@
     // ---- placed objects (map.things): doors in walls, pick-ups, decorations
     syncThings() {
       const m = this.map, T = this.T, F = PRIM.FBX; if (!m || !this.view) { this.things = []; return; } const old = this.things || [], out = [], gone = new Set(old.map(o => o.th.id));
-      for (const th of m.things || []) {
+      for (const th of (m.things || []).concat(this.spawnTh || [])) {
         const prev = old.find(x => x.th.id === th.id), pid = prev && prev.morph && (this.project.props || []).some(q => q.id === prev.morph) ? prev.morph : th.prop, pre = pid + ".", aid = T.get(pre + "asset"), type = T.get(pre + "type");
         if (type !== "door" && T.get(pre + "look") === "sprite") { gone.delete(th.id); const o = old.find(x => x.th.id === th.id) || { th, st: "closed", p: 0, t: 0, timer: 0, taken: false, spin: 0 }; Object.assign(o, { th, pre, aid: null, model: null, gm: null, sprite: true, type, fr: G.thingFrame(m, T, th) }); if (!o.init) o.floor = o.fr.fy; out.push(o); continue; }
-        if ((type === "speaker" || type === "interactive" || type === "checkpoint") && (!aid || !this.urls[aid])) { gone.delete(th.id); const o = old.find(x => x.th.id === th.id) || { th, st: "closed", p: 0, t: 0, timer: 0, taken: false, spin: 0 }; Object.assign(o, { th, pre, aid: null, model: null, gm: null, sprite: false, type, fr: G.thingFrame(m, T, th) }); o.floor = o.fr.fy; out.push(o); continue; }
+        if ((type === "speaker" || type === "interactive" || type === "checkpoint" || type === "spawner") && (!aid || !this.urls[aid])) { gone.delete(th.id); const o = old.find(x => x.th.id === th.id) || { th, st: "closed", p: 0, t: 0, timer: 0, taken: false, spin: 0 }; Object.assign(o, { th, pre, aid: null, model: null, gm: null, sprite: false, type, fr: G.thingFrame(m, T, th) }); o.floor = o.fr.fy; out.push(o); continue; }
         if (!aid || !this.urls[aid]) continue; const model = F.cache[aid];
         if (!model) { F.load(aid, this.urls[aid]).then(mm => { if (mm && !this.dead) this.syncThings(); }); continue; }
         if (!this.gpu[aid]) this.gpu[aid] = this.view.loadModel(model); gone.delete(th.id); { const q = old.find(x => x.th.id === th.id); if (q) q.sprite = false; }
@@ -315,7 +315,7 @@
     }
     thingStep(dt) {
       if (this.talk) return; const T = this.T; for (const o of this.things || []) {
-        if (o.taken) continue; if (o.type === "enemy") { this.enemyStep(o, dt); continue; } const g = k => +T.get(o.pre + k) || 0, f = o.fr, dist = Math.hypot(this.x - f.cx, this.y - f.cy);
+        if (o.taken) continue; if (o.type === "enemy") { this.enemyStep(o, dt); continue; } if (o.type === "spawner") { this.spawnerStep(o, dt); continue; } const g = k => +T.get(o.pre + k) || 0, f = o.fr, dist = Math.hypot(this.x - f.cx, this.y - f.cy);
         if (o.type === "exit") { if (!this.pdead && dist < (g("exitRadius") || 40) && Math.abs(this.z - o.floor) < 90) this.levelExit(o); continue; }
         if (o.type === "pickup") { if (dist < (g("pickRadius") || 28) && Math.abs(this.z - o.floor) < 70) { o.taken = true; const tg = T.get(o.pre + "giveTag"), amt = g("giveAmount");
           if (tg === "player.health" && this.livesMode() === "reserve") this.giveHealth(amt);   // overflow fills empty energy tanks
@@ -338,7 +338,7 @@
     drawThings(v, dt) {
       if (!this.things || !this.things.length) return; if (this.mode === "play") this.thingStep(dt); const F = PRIM.FBX, T = this.T, items = [];
       for (const o of this.things) {
-        if (o.taken) continue; if (!o.gm && !o.sprite) continue; if (o.type === "speaker" && this.mode === "play" && !T.get(o.pre + "spkShow")) continue; if (o.sprite) { const it = this.spriteItem(o, v); if (it) items.push(it); continue; } const g = k => +T.get(o.pre + k) || 0; let f = o.fr, name = null, tm = 0;
+        if (o.taken) continue; if (!o.gm && !o.sprite) continue; if (o.type === "speaker" && this.mode === "play" && !T.get(o.pre + "spkShow")) continue; if (o.type === "spawner" && this.mode === "play" && !T.get(o.pre + "spawnShow")) continue; if (o.sprite) { const it = this.spriteItem(o, v); if (it) items.push(it); continue; } const g = k => +T.get(o.pre + k) || 0; let f = o.fr, name = null, tm = 0;
         if (o.type === "enemy" && o.init) { const a = o.yaw * Math.PI / 180; f = { cx: o.x, cy: o.y, ux: Math.cos(a), uy: -Math.sin(a), nx: Math.sin(a), ny: Math.cos(a), door: false }; }
         const talking = o.type === "npc" && this.talk && this.talk.o === o; if (talking && T.get(o.pre + "faceTalker") !== false) { const a = Math.atan2(this.x - o.fr.cx, this.y - o.fr.cy); f = { cx: o.fr.cx, cy: o.fr.cy, ux: Math.cos(a), uy: -Math.sin(a), nx: Math.sin(a), ny: Math.cos(a), door: false }; }
         const an = k => { const nm = T.get(o.pre + k); return nm && o.model.anims[nm] ? nm : null; };
@@ -402,7 +402,7 @@
     enemyStep(o, dt) {
       const T = this.T, g = k => +T.get(o.pre + k) || 0;
       const beh = T.get(o.pre + "behavior") || "chase";
-      if (!o.init) { o.init = true; o.x = o.fr.cx; o.y = o.fr.cy; o.yaw = o.th.ang || 0; o.hp = g("health") || 100; o.st = "idle"; o.cool = 0; o.losT = Math.random() * 0.2; o.at = 0; o.flash = 0; o.pi = 0; o.pdir = 1; o.pwait = 0; o.surf = null; this.eSet(o, "idleAnim");
+      if (!o.init) { o.init = true; o.x = o.fr.cx; o.y = o.fr.cy; o.yaw = o.th.ang || 0; o.hp = g("health") || 100; o.st = "idle"; o.cool = 0; o.losT = Math.random() * 0.2; o.at = 0; o.flash = 0; o.pi = 0; o.pdir = 1; o.pwait = 0; o.surf = null; this.eSet(o, "idleAnim"); if (o.th.wake) { o.awake = true; o.st = "chase"; }
         if (o.keep) { Object.assign(o, o.keep); o.keep = null; o.awake = true; o.st = "chase"; o.body = null; }   // it dropped and turned into this enemy: same place, already hunting
         o.mount = beh === "stationary" && T.get(o.pre + "mount") === "ceiling" && !o.dropped ? "ceiling" : null; if (o.mount) this.eHang(o); }
       o.at += dt; if (o.flash > 0) o.flash -= dt;
@@ -525,6 +525,23 @@
     // the model standing on its surface: up = the surface normal, front = the way it crawls
     crawlFrame(o) { const s = o.surf, Y = s.n, f0 = s.fwd || (Math.abs(Y[1]) > 0.9 ? [0, 0, 1] : [0, 1, 0]), Z = M4.norm(M4.sub(f0, Y.map(q => q * M4.dot(f0, Y)))), X = M4.cross(Y, Z), F = s.p;
       return [X[0], X[1], X[2], 0, Y[0], Y[1], Y[2], 0, Z[0], Z[1], Z[2], 0, F[0], F[1], F[2], 1]; }
+    // a spawner: every `spawnEvery` s a new copy of `spawnWhat` appears around it (runtime only: this.spawnTh, cleared on restart), while fewer than `spawnMax` of its copies are alive
+    spawnerStep(o, dt) {
+      const T = this.T, g = k => +T.get(o.pre + k) || 0, what = T.get(o.pre + "spawnWhat"), st = o.sp = o.sp || { t: g("spawnFirst"), made: 0, kids: [] };
+      if (!what || !(this.project.props || []).some(q => q.id === what) || this.pdead) return;
+      const need = T.get(o.pre + "spawnNeedTag"); if (need && this.sh && !this.sh.test(need, T.get(o.pre + "spawnNeedOp") || "=", T.get(o.pre + "spawnNeedVal"))) return;
+      if (g("spawnNear") > 0 && Math.hypot(this.x - o.fr.cx, this.y - o.fr.cy) > g("spawnNear")) return;
+      const alive = id => { const k = (this.things || []).find(x => x.th.id === id); if (!k) return true; return !k.taken && !(k.type === "enemy" && (k.st === "dead" || k.st === "dying")); };
+      st.kids = st.kids.filter(alive); this.spawnTh = (this.spawnTh || []).filter(th => { const k = (this.things || []).find(x => x.th.id === th.id); return !(k && k.taken); });
+      if (g("spawnMax") > 0 && st.kids.length >= g("spawnMax")) return; if (g("spawnTotal") > 0 && st.made >= g("spawnTotal")) return;
+      st.t -= dt; if (st.t > 0) return; st.t = g("spawnEvery") || 4;
+      const L = o.th.layer || 0, R = g("spawnRadius"); let X = o.fr.cx, Z = o.fr.cy;
+      for (let i = 0; i < 8; i++) { const a = Math.random() * Math.PI * 2, rr = Math.sqrt(Math.random()) * R, x = o.fr.cx + Math.cos(a) * rr, z = o.fr.cy + Math.sin(a) * rr, c = G.cell(this.map, L, Math.floor(x / 128), Math.floor(z / 128)); if (c && !G.isWall(c) && !(c.dg)) { X = x; Z = z; break; } }
+      this.spawnN = (this.spawnN || 0) + 1; st.made++; const th = { id: o.th.id + "~" + this.spawnN, prop: what, x: X, y: Z, ang: Math.floor(Math.random() * 4) * 90, layer: L, spawned: true, wake: T.get(o.pre + "spawnAwake") !== false };
+      (this.spawnTh = this.spawnTh || []).push(th); st.kids.push(th.id); this.syncThings();
+      const P = [X, o.fr.fy + 40, Z], snd = T.get(o.pre + "spawnSound"); if (snd) this.sfxAt(snd, 1, P);
+      if (T.get(o.pre + "spawnFx") !== false) { const col = this.hexCol(T.get(o.pre + "spawnColor") || "#7df3ff"); this.burst(P, col, 24, 220, 0.5, 2.5); this.fx.push({ kind: "sphere", deco: true, p: P.slice(), d: [0, 1, 0], c: [0, 0, 0], size0: 0.01, size: 0.01, speed: 0, life: 0.3, t: 0, light: { c: col, k: 2.5, k0: 2.5, r: 260, shadow: false } }); }
+    }
     // stick to the nearest ceiling straight above the placed spot (its top touches the ceiling)
     eHang(o) {
       const h = +this.T.get(o.pre + "height") || 110, v = this.view, from = [o.x, o.floor + 4, o.y], hit = v && v.raycast(from, [0, 1, 0], 4000);
@@ -671,7 +688,7 @@
       const T = this.T, m = this.map; this.x = m ? +T.get(m.id + ".startX") || 0 : 0; this.y = m ? +T.get(m.id + ".startY") || 0 : 0; this.yaw = (m ? +T.get(m.id + ".startAngle") : 90) * Math.PI / 180; this.pitch = 0;
       const L = m ? +T.get(m.id + ".startLayer") || 0 : 0; this.z = m && G ? G.groundY(m, this.x, this.y, L * G.LAYER + G.LAYER - 8) : 0; this.vz = 0; this.body = null; this.ground = true;
     }
-    resetPlayer() { this.placeStart(); this.zst = null; this.fx = []; this.orb = null; this.reloading = null; if (this.mode === "play" && this.T.get("player.reloading")) this.T.set("player.reloading", false); this.extV = null; this.jumpReq = undefined; this.airJumps = 0; this.shakeT = 0; this.pdead = false; this.deadT = 0; this.say2(""); this.doorOpen = {}; this.things = []; this.syncThings(); }
+    resetPlayer() { this.placeStart(); this.zst = null; this.fx = []; this.orb = null; this.reloading = null; if (this.mode === "play" && this.T.get("player.reloading")) this.T.set("player.reloading", false); this.extV = null; this.jumpReq = undefined; this.airJumps = 0; this.shakeT = 0; this.pdead = false; this.deadT = 0; this.say2(""); this.doorOpen = {}; this.things = []; this.spawnTh = []; this.syncThings(); }
     restartMap() { const T = this.T; T.set("player.health", +T.get("player.maxHealth") || 100); this.lastHp = undefined; this.initAmmo(); this.initLives(); this.cp = null; this.resetPlayer(); }
     loadMap(id) { const m = this.project.maps.find(x => x.id === id); if (!m || !this.view) return false; this.map = m; this.cp = null; this.view.setMap(this.project, m, this.T, this.urls); this.resetPlayer(); return true; }
     levelExit(o) {

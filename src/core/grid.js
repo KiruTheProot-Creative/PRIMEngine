@@ -73,12 +73,12 @@
   G.tri = tri;
   // build(m) -> { by: { "texId|chunk": [x,y,z,u,v,r,g,b ...] }, tris: [collision triangles with .info] }
   G.build = (m, opt) => {
-    opt = opt || {}; const by = {}, tris = [], noCol = !!opt.noCollision;
+    opt = opt || {}; const by = {}, byF = {}, tris = [], noCol = !!opt.noCollision;
     // one quad (p0..p3 around), uvs, colour k, info for picking / painting
     // f = the open side of the face (collision is one-sided: you can't get caught on the back of a ceiling or floor)
     const quad = (tex, L, cx, cy, p, uv, k, info, f) => {
       const key = (tex || "") + "|" + L + ":" + Math.floor(cx / CHUNK) + ":" + Math.floor(cy / CHUNK), a = info && info.hidden ? [] : by[key] || (by[key] = []);
-      for (const i of [0, 1, 2, 0, 2, 3]) a.push(p[i][0], p[i][1], p[i][2], uv[i][0], uv[i][1], k, k, k);
+      for (const i of [0, 1, 2, 0, 2, 3]) a.push(p[i][0], p[i][1], p[i][2], uv[i][0], uv[i][1], k, k, k); if (!(info && info.hidden)) { const af = byF[key] || (byF[key] = []); af.push(f || null, f || null); }   // the open side of each drawn triangle (ambient occlusion looks that way)
       if (!noCol) { if (len(cross(sub(p[1], p[0]), sub(p[2], p[0]))) > 1e-6) { const t = tri(p[0], p[1], p[2], info); t.f = f; tris.push(t); } if (len(cross(sub(p[2], p[0]), sub(p[3], p[0]))) > 1e-6) { const t = tri(p[0], p[2], p[3], info); t.f = f; tris.push(t); } }
     };
     // the side of a cell facing direction d: its two ends A -> B as the viewer outside sees them left -> right
@@ -152,7 +152,7 @@
         [P(mn[0], mn[1], mn[2]), P(mx[0], mn[1], mn[2]), P(mx[0], mn[1], mx[2]), P(mn[0], mn[1], mx[2]), [0, -1, 0]]];
       for (const q of faces) { const w = Math.max(Math.abs(q[1][0] - q[0][0]), Math.abs(q[1][2] - q[0][2])) / C, hh = (q[0][1] - q[3][1]) / C; quad(tex, L, cx, cy, q.slice(0, 4), [[0, 0], [w, 0], [w, hh], [0, hh]], k, info, q[4]); }
     }
-    return { by, tris };
+    return { by, byF, tris };
   };
 
   // ------------------------------------------------------------ spatial lookup (cells of 256 units on X / Z)

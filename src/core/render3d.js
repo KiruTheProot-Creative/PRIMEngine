@@ -154,6 +154,8 @@
     if (m.style !== "grid" || !PRIM.Grid) return;
     const T = this.tags, doors = T ? (m.things || []).filter(th => T.get(th.prop + ".type") === "door").map(th => { const f = PRIM.Grid.thingFrame(m, T, th); f.layer = th.layer || 0; return f; }) : [];
     const r = PRIM.Grid.build(m, { doors }); this.world = PRIM.Grid.index(r.tris);
+    const aoOn = T && T.get(m.id + ".ao") !== false && (!T.has || !T.has("gfx.ao") || T.get("gfx.ao") !== false); this.aoMs = 0;
+    if (aoOn) { const t0 = performance.now(); this.bakeAO(r, +T.get(m.id + ".aoStrength") || 0, +T.get(m.id + ".aoRadius") || 96); this.aoMs = Math.round(performance.now() - t0); }
     this.batches = Object.keys(r.by).map(k => { const buf = gl.createBuffer(), a = r.by[k], cut = k.lastIndexOf("|"), mn = [1e9, 1e9, 1e9], mx = [-1e9, -1e9, -1e9]; gl.bindBuffer(gl.ARRAY_BUFFER, buf); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(a), gl.STATIC_DRAW);
       for (let i = 0; i < a.length; i += 8) for (let q = 0; q < 3; q++) { if (a[i + q] < mn[q]) mn[q] = a[i + q]; if (a[i + q] > mx[q]) mx[q] = a[i + q]; }
       return { buf, n: a.length / 8, tex: k.slice(0, cut), mn, mx }; });
@@ -323,6 +325,23 @@
   P.raycast = function (o, d, maxT) { const h = PRIM.Grid && (this.world || this.extraTris) ? PRIM.Grid.raycast(this.world, o, d, maxT || 1e5, this.extraTris) : null; return h ? { t: h.t, p: h.p, n: h.tri && h.tri.n ? (h.tri.n[0] * d[0] + h.tri.n[1] * d[1] + h.tri.n[2] * d[2] > 0 ? h.tri.n.map(q => -q) : h.tri.n) : null, info: h.info } : null; };
 
   // ------------------------------------------------------------ models (FBX) drawn in front of the camera
+  // Ambient occlusion, baked into the level's vertex colours when the map is built: every corner of every face looks around (7 short rays over
+  // its side of the surface); the more of them hit nearby walls, floors or ceilings, the darker it gets. Corners shared by faces are worked out once.
+  P.bakeAO = function (r, strength, radius) {
+    if (!(strength > 0)) return; const G = PRIM.Grid, ix = G.index(r.tris.filter(t => !(t.info && t.info.hidden))), cache = new Map(), R = Math.max(8, radius);
+    const dirsFor = n => { const t = Math.abs(n[1]) > 0.9 ? M4.norm(M4.cross(n, [1, 0, 0])) : M4.norm(M4.cross(n, [0, 1, 0])), b = M4.cross(n, t), out = [n];
+      for (let i = 0; i < 6; i++) { const a = i / 6 * Math.PI * 2, c = Math.cos(a), s = Math.sin(a), e = 0.5; out.push(M4.norm([n[0] * e + (t[0] * c + b[0] * s), n[1] * e + (t[1] * c + b[1] * s), n[2] * e + (t[2] * c + b[2] * s)])); } return out; };
+    const aoAt = (p, n, inw) => { const key = Math.round(p[0] * 2) + "," + Math.round(p[1] * 2) + "," + Math.round(p[2] * 2) + "|" + Math.round(n[0] * 10) + "," + Math.round(n[1] * 10) + "," + Math.round(n[2] * 10); let v = cache.get(key); if (v !== undefined) return v;
+      const o = [p[0] + n[0] * 1.5 + inw[0] * 2, p[1] + n[1] * 1.5 + inw[1] * 2, p[2] + n[2] * 1.5 + inw[2] * 2], ds = dirsFor(n); let occ = 0, tot = 0;   // (the start point sits a little into the face, so rays from an edge do not start inside the next wall)
+      for (let i = 0; i < ds.length; i++) { const w = i === 0 ? 0.6 : 1, h = G.raycast(ix, o, ds[i], R); tot += w; if (h) occ += w * (1 - h.t / R); }
+      v = 1 - strength * Math.min(1, occ / tot * 1.6); cache.set(key, v); return v; };
+    for (const k of Object.keys(r.by)) { const a = r.by[k], fs = (r.byF || {})[k] || [];
+      for (let i = 0; i + 23 < a.length; i += 24) { const p0 = [a[i], a[i + 1], a[i + 2]], p1 = [a[i + 8], a[i + 9], a[i + 10]], p2 = [a[i + 16], a[i + 17], a[i + 18]]; let n = M4.cross(M4.sub(p1, p0), M4.sub(p2, p0)); const L = M4.len(n); if (L < 1e-6) continue; n = n.map(q => q / L);
+        for (let j = 0; j < 3; j++) { const o = i + j * 8, p = [a[o], a[o + 1], a[o + 2]];   // the face's open side: the one the level's own normal says (faces are one-sided), else the side facing the most free space
+          const cen = [(p0[0] + p1[0] + p2[0]) / 3 - p[0], (p0[1] + p1[1] + p2[1]) / 3 - p[1], (p0[2] + p1[2] + p2[2]) / 3 - p[2]], cl = M4.len(cen) || 1, inw = cen.map(q => q / cl);
+          const fo = fs[i / 24], side = fo ? (M4.dot(fo, n) >= 0 ? n : n.map(q => -q)) : null, k2 = side ? aoAt(p, side, inw) : Math.max(aoAt(p, n, inw), aoAt(p, n.map(q => -q), inw)); a[o + 5] *= k2; a[o + 6] *= k2; a[o + 7] *= k2; } } }
+    this.aoCount = cache.size;
+  };
   // a one-mesh model from vertex data (8 floats each: position, uv, colour); tex = GL texture or null (white)
   P.meshFrom = function (data, tex, bounds) { const gl = this.gl, buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf); gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW); return { buf, n: data.length / 8, node: 0, tex: tex || this.whiteTex }; };
   P.freeMesh = function (ms) { if (ms && ms.buf) { this.gl.deleteBuffer(ms.buf); ms.buf = null; } };

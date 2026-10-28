@@ -67,6 +67,7 @@
     MNUM("moodContrast", "Mood contrast", 1, 0.5, 2, 0.05, { showIf: ["mood", "custom"] }), MNUM("moodSaturation", "Mood colourfulness (0 = black and white)", 1, 0, 2, 0.05, { showIf: ["mood", "custom"] }),
     { k: "bloom", label: "Bloom (bright and glowing things shine softly)", type: "bool", def: true }, MNUM("bloomStrength", "Bloom strength", 0.6, 0, 3, 0.05, { showIf: ["bloom", true] }), MNUM("bloomThreshold", "Bloom starts at brightness (1 = only over-bright light and glow)", 1, 0, 4, 0.05, { showIf: ["bloom", true] }),
     MNUM("exposure", "Exposure (overall brightness of the picture)", 1, 0.25, 4, 0.05),
+    { k: "ao", label: "Ambient occlusion (soft shadows in corners and under ledges)", type: "bool", def: true }, MNUM("aoStrength", "Ambient occlusion: strength", 0.6, 0, 1, 0.05, { showIf: ["ao", true] }), MNUM("aoRadius", "Ambient occlusion: reach (units, 128 = a cell)", 96, 16, 256, 4, { showIf: ["ao", true] }),
     MNUM("startX", "Player start X", 0, -100000, 100000, 1), MNUM("startY", "Player start Y", 0, -100000, 100000, 1), MNUM("startLayer", "Player start story (0 = ground floor)", 0, 0, 63, 1), MNUM("startAngle", "Player start angle", 90, 0, 360, 1),
   ];
   const defP = (project, list, group, owner, id, over) => { for (const p of list) { const r = rec(p, group, owner); if (over && p.k in over) r.value = over[p.k]; project.tags[id + "." + p.k] = r; } };
@@ -190,7 +191,7 @@
   // ---- placeable objects (the Object Editor): doors, pick-ups, decorations. Tags prop<N>.*  They are placed in maps (map.things).
   S.PROP = [
     { k: "name", label: "Name", type: "string", def: "Object" },
-    { k: "type", label: "Type", type: "choice", options: [["decoration", "Decoration (just a model)"], ["door", "Door (fills a cell between walls)"], ["pickup", "Pick-up (collected by touching)"], ["enemy", "Enemy (hunts and attacks the player)"], ["exit", "Level exit (touch it to leave the level)"], ["npc", "Character (NPC: talk to it, make choices)"], ["speaker", "Speaker (plays a sound you hear around it)"], ["interactive", "Interactive (buttons, consoles, screens)"], ["checkpoint", "Checkpoint (where you respawn with the Lives system)"]], def: "decoration" },
+    { k: "type", label: "Type", type: "choice", options: [["decoration", "Decoration (just a model)"], ["door", "Door (fills a cell between walls)"], ["pickup", "Pick-up (collected by touching)"], ["enemy", "Enemy (hunts and attacks the player)"], ["exit", "Level exit (touch it to leave the level)"], ["npc", "Character (NPC: talk to it, make choices)"], ["speaker", "Speaker (plays a sound you hear around it)"], ["interactive", "Interactive (buttons, consoles, screens)"], ["checkpoint", "Checkpoint (where you respawn with the Lives system)"], ["spawner", "Spawner (keeps making new objects: enemies, pick-ups…)"]], def: "decoration" },
     { k: "look", label: "Looks like", type: "choice", options: [["model", "3D model (FBX)"], ["sprite", "2D sprite (pictures that always face the player)"]], def: "model", showIf: ["type", ["enemy", "decoration", "pickup", "exit", "npc"]] },
     { k: "asset", label: "Model (FBX)", type: "asset", assetType: "model", def: "", showIf: ["look", "model"] },
     // 2D sprites: each picture holds the frames of one animation side by side (a strip). They always turn to face the player.
@@ -276,6 +277,16 @@
     NUM("spkRadius", "Heard within (units, 128 = a cell; silent outside)", 512, 16, 8000, 8, { showIf: ["type", "speaker"] }), NUM("spkHeight", "Sound height above the floor", 64, 0, 1024, 1, { showIf: ["type", "speaker"] }),
     { k: "spkLoop", label: "Loops forever (off = plays once each time you walk into its radius)", type: "bool", def: true, showIf: ["type", "speaker"] },
     { k: "spkShow", label: "Model visible in the game", type: "bool", def: false, showIf: ["type", "speaker"] });
+  // spawner: makes a new copy of another object every few seconds, around itself
+  S.PROP.push({ k: "spawnWhat", label: "Spawns this object", type: "propRef", def: "", showIf: ["type", "spawner"] },
+    NUM("spawnEvery", "Every (seconds)", 4, 0.1, 600, 0.1, { showIf: ["type", "spawner"] }), NUM("spawnFirst", "First one after (seconds)", 1, 0, 600, 0.1, { showIf: ["type", "spawner"] }),
+    NUM("spawnMax", "At most this many alive at once (0 = no limit)", 3, 0, 100, 1, { showIf: ["type", "spawner"] }), NUM("spawnTotal", "In total (0 = never stops)", 0, 0, 10000, 1, { showIf: ["type", "spawner"] }),
+    NUM("spawnRadius", "Spread around it (units, 0 = exactly on it)", 48, 0, 1024, 4, { showIf: ["type", "spawner"] }), NUM("spawnNear", "Only while you are within (units, 0 = always)", 0, 0, 20000, 16, { showIf: ["type", "spawner"] }),
+    { k: "spawnAwake", label: "Spawned enemies hunt you right away", type: "bool", def: true, showIf: ["type", "spawner"] },
+    { k: "spawnFx", label: "Flash + particles when something appears", type: "bool", def: true, showIf: ["type", "spawner"] }, { k: "spawnColor", label: "Flash colour", type: "color", def: "#7df3ff", showIf: ["type", "spawner"], showIf2: ["spawnFx", true] },
+    { k: "spawnSound", label: "Sound when something appears", type: "asset", assetType: "sound", def: "", showIf: ["type", "spawner"] },
+    { k: "spawnNeedTag", label: "Only while this tag…", type: "tagRef", refType: "any", def: "", showIf: ["type", "spawner"] }, { k: "spawnNeedOp", label: "is", type: "choice", options: [["=", "equal to"], ["!=", "not equal to"], [">", "greater than"], ["<", "less than"], [">=", "at least"], ["<=", "at most"]], def: "=", showIf: ["type", "spawner"] }, { k: "spawnNeedVal", label: "this value", type: "string", def: "yes", showIf: ["type", "spawner"] },
+    { k: "spawnShow", label: "Model visible in the game", type: "bool", def: false, showIf: ["type", "spawner"] });
   S.PROP.push({ k: "popupOn", label: "Show a pop-up when picked up (pauses the game)", type: "bool", def: false, showIf: ["type", "pickup"] },
     { k: "popupTitle", label: "Pop-up title (empty = the object's name)", type: "string", def: "", showIf: ["type", "pickup"], showIf2: ["popupOn", true] },
     { k: "popupText", label: "Pop-up text", type: "string", def: "", showIf: ["type", "pickup"], showIf2: ["popupOn", true] },
@@ -511,7 +522,7 @@
     if (!project.animLen) project.animLen = [];
     project.player = project.player || { attachments: [] }; if (!project.player.attachments) project.player.attachments = [];
     delete project.tags["player.freeAim"];
-    for (const [n, label] of [["gfx.culling", "Culling (skip what you can not see)"], ["gfx.lod", "Auto-LOD (simpler models far away)"], ["gfx.shadows", "Real-time shadows"], ["gfx.bloom", "Bloom (glow)"]]) if (!project.tags[n]) project.tags[n] = { type: "bool", value: true, label, group: "gfx", builtin: true };
+    for (const [n, label] of [["gfx.ao", "Ambient occlusion (corner shading)"], ["gfx.culling", "Culling (skip what you can not see)"], ["gfx.lod", "Auto-LOD (simpler models far away)"], ["gfx.shadows", "Real-time shadows"], ["gfx.bloom", "Bloom (glow)"]]) if (!project.tags[n]) project.tags[n] = { type: "bool", value: true, label, group: "gfx", builtin: true };
     for (const att of project.player.attachments) {   // bring older objects up to date: a "weapon" tick became the object type
       const pre = "player." + att.id + ".", old = project.tags[pre + "weapon"];
       for (const p of S.ATTACH) { const r = project.tags[pre + p.k]; if (!r) { const n = rec(p, "player", "player." + att.id); if (p.type === "anim") n.modelTag = pre + "asset"; if (p.k === "type") n.value = old && old.value ? "weapon" : "animation"; if (p.k === "name") n.value = old && old.value ? "Weapon" : "Object"; project.tags[pre + p.k] = n; } else { r.label = p.label; if (p.showIf) r.showIf = p.showIf; else delete r.showIf; if (p.options) r.options = p.options; } }
@@ -553,7 +564,7 @@
     B("gfx.showFps", "bool", false, "Show FPS counter", "gfx");
     B("gfx.culling", "bool", true, "Culling (skip what you can not see)", "gfx");
     B("gfx.lod", "bool", true, "Auto-LOD (simpler models far away)", "gfx");
-    B("gfx.shadows", "bool", true, "Real-time shadows", "gfx"); B("gfx.bloom", "bool", true, "Bloom (glow)", "gfx");
+    B("gfx.shadows", "bool", true, "Real-time shadows", "gfx"); B("gfx.ao", "bool", true, "Ambient occlusion (corner shading)", "gfx"); B("gfx.bloom", "bool", true, "Bloom (glow)", "gfx");
     B("project.startScreen", "screenRef", "splash", "Start screen", "project");
   };
 
