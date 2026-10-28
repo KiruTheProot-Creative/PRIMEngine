@@ -227,8 +227,9 @@
 
   // the HUD screen: edited with PRIM.HudEditor, shown in the Game tab with PRIM.HUD (the same renderer the game uses)
   function hudCenter(sc) {
+    E.host.style.position = "";   // the host is absolutely placed by the stylesheet; never override it
     put(E.cbar, h("span", { class: "chip", text: sc.id + " · HUD" }), h("span", { class: "hint", text: S.testing ? "The HUD as the game draws it (scripts run, values are live)." : "Click to select, drag to move (Shift = snap 10), orange corners resize. Wheel zooms, middle / right drag pans, F fits. The dashed frame is the standing-still view; elements may sit outside it. Drop images from the Project panel here." }));
-    if (S.testing) { const box = h("div", { style: "position:absolute;inset:0;background:radial-gradient(ellipse at 50% 115%,#26384c,#0f1822 55%,#070b10)" }); E.host.style.position = "relative"; E.host.append(box); const hud = new PRIM.HUD({ host: box, project: S.project, tags: S.tags.fork(), urls: S.urls, screenId: sc.id, say: t => log(t) }); S.rt = { paused: false, destroy: () => { hud.destroy(); box.remove(); }, rebuild: () => hud.build(), stopMusic() {}, previewSplash() {}, els: {} }; return; }
+    if (S.testing) { const box = h("div", { style: "position:absolute;inset:0;background:radial-gradient(ellipse at 50% 115%,#26384c,#0f1822 55%,#070b10)" }); E.host.append(box); const hud = new PRIM.HUD({ host: box, project: S.project, tags: S.tags.fork(), urls: S.urls, screenId: sc.id, say: t => log(t) }); S.rt = { paused: false, destroy: () => { hud.destroy(); box.remove(); }, rebuild: () => hud.build(), stopMusic() {}, previewSplash() {}, els: {} }; return; }
     S.rt = new PRIM.HudEditor({ host: E.host, project: S.project, tags: S.tags, urls: S.urls, screenId: sc.id, selId: S.selId,
       onSelect: id => { S.selId = id; S.sel = null; renderHier(); renderInspector(); renderProject(); }, onChange: () => renderInspector() });
   }
@@ -482,12 +483,12 @@
       case "bool": return row(h("input", { type: "checkbox", class: "chk", checked: !!S.tags.get(name), "aria-label": label, onchange: e => { set(e.target.checked); redraw(); } }));
       case "color": return row(h("input", { type: "color", class: "col", value: S.tags.get(name), "aria-label": label, oninput: e => set(e.target.value) }));
       case "string": return row(h("input", { class: "txt", type: "text", value: S.tags.get(name), "aria-label": label, oninput: e => set(e.target.value) }));
-      case "asset": case "font": case "choice": case "screenRef": case "tagRef": case "anim": {
+      case "asset": case "font": case "choice": case "screenRef": case "mapRef": case "tagRef": case "anim": {
         let opts = [];
         if (t.type === "asset") opts = [["", "None"], ...S.project.assets.filter(a => a.type === t.assetType).map(a => [a.id, (a.path ? a.path + "/" : "") + a.name])];
         else if (t.type === "font") opts = [...PRIM.BUILTIN_FONTS, ...S.project.assets.filter(a => a.type === "font").map(a => [a.id, a.name])];
         else if (t.type === "anim") { const mo = PRIM.FBX.cache[S.tags.get(t.modelTag)]; opts = [["", "(none)"], ...(mo ? Object.keys(mo.anims) : []).map(n => [n, n])]; }
-        else if (t.type === "choice") opts = t.options; else if (t.type === "screenRef") opts = [["", "None"], ...screens().map(s => [s.id, s.id])];
+        else if (t.type === "choice") opts = t.options; else if (t.type === "mapRef") opts = [["", "None"], ...S.project.maps.map(m => [m.id, m.id])]; else if (t.type === "screenRef") opts = [["", "None"], ...screens().map(s => [s.id, s.id])];
         else opts = [["", "(pick a tag)"], ...S.tags.names().filter(n => !S.tags.spec(n).group || S.tags.spec(n).group !== "script").filter(n => t.refType === "any" ? ["number", "bool", "string", "color"].includes(S.tags.spec(n).type) : S.tags.spec(n).type === t.refType).map(n => [n, (S.tags.spec(n).label || n) + "  ·  " + n])];
         const sel = h("select", { class: "dd", "aria-label": label }, opts.map(([v, l]) => h("option", { value: v, text: l }))); sel.value = S.tags.get(name); if (sel.value !== String(S.tags.get(name))) sel.value = "";
         sel.onchange = () => { set(sel.value); redraw(); };
@@ -731,7 +732,7 @@
   function selectedObjectEditor() {
     const att = S.project.player.attachments.find(a => a.id === S.objSel); if (!att) return null; const pre = "player." + att.id + ".", T = S.tags, ty = T.get(pre + "type");
     const tab = S.objTab = S.objTab || "object", tabs = h("div", { class: "objtabs" }, ...[["object", "Object"], ["material", "Material"], ["light", "Light"]].map(([k, l]) => h("button", { class: "tbtn sm" + (tab === k ? " on" : ""), text: l, onclick: () => { S.objTab = k; renderInspector(); } })));
-    const mine = pr => tab === (pr.tab || "object");
+    const mine = pr => !pr.live && tab === (pr.tab || "object");
     const note = tab === "material" ? "Material: how this object looks, and how a weapon's projectile glows (see Projectile > Emission)." : tab === "light" ? "Light: an object can shine. A point light shines everywhere around it; an area light is a flat panel that shines one way. Use “Set light point” and “Aim light” in the object editor." : null;
     return foldout("pl:obj", "Selected: " + (T.get(pre + "name") || att.id), tabs, note ? h("div", { class: "note", text: note }) : null, ...Schema.ATTACH.filter(pr => mine(pr) && Schema.shown(T, pre, pr)).map(pr => field(pre + pr.k)),
       h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: "Open Node Coder", onclick: () => { S.coderT = { kind: "att", id: att.id }; setTab("coder"); } }), ty === "weapon" ? h("button", { class: "btn sm", text: "Edit muzzle, arrow & emitter", onclick: () => { S.objView = true; renderCenter(); } }) : null),
@@ -972,7 +973,7 @@
     put(E.cbar, h("select", { class: "sel", onchange: e => { S.propSel = e.target.value; renderCenter(); renderInspector(); } }, ...props.map(x => h("option", { value: x.id, text: T.get(x.id + ".name") || x.id, selected: x.id === pr.id }))), newBtn,
       tb("Scale to grid", () => { propFitScale(pre); propCenterOnGrid(pre); markDirty(); renderInspector(); }, "Scales the model so it fills the 3 x 3 tile grid"), tb("Center on grid", () => { propCenterOnGrid(pre); markDirty(); renderInspector(); }, "Puts the middle of the model on the grid, standing on the ground"),
       tb("Front", () => { OE.yaw = 0; OE.pitch = 0; }), tb("Side", () => { OE.yaw = 90; OE.pitch = 0; }), tb("Top", () => { OE.yaw = 0; OE.pitch = 89; }), tb("3D", () => { OE.yaw = -30; OE.pitch = 22; }),
-      h("span", { class: "hint", text: "Grid squares are tiles (0.5 m). Drag to orbit, scroll to zoom." + (T.get(pre + "type") === "door" ? " Yellow = the doorway cut into the wall, blue = the wall's thickness." : "") }));
+      h("span", { class: "hint", text: "Grid squares are tiles (0.5 m). Drag to orbit, scroll to zoom." + (T.get(pre + "type") === "door" ? " Yellow = the doorway cut into the wall, blue = the wall's thickness." : T.get(pre + "type") === "enemy" ? " Blue cylinder = the enemy's body, red arrow = its front (+Z)." : "") }));
     const cv = h("canvas", { class: "v3cv", style: "cursor:grab" }); E.host.replaceChildren(cv);
     if (!mo) { E.host.append(h("div", { class: "v3err", style: "color:var(--muted)", text: aid ? "Loading the model…" : "Choose a model for this object on the right." })); if (aid) F.load(aid, S.urls[aid]).then(m => { if (m && S.tab === "props") renderCenter(); }); return; }
     const v = new PRIM.R3D.View(cv); if (!v.ok) return; v.sky = [0.1, 0.12, 0.17]; v.fov = 0.8; const gm = v.loadModel(mo), D = 34, g = k => +T.get(pre + k) || 0;
@@ -981,6 +982,7 @@
       if (T.get(pre + "type") === "door") { const w = (+T.get(pre + "doorWidth") || 96) / 2, hh = +T.get(pre + "doorHeight") || 144, y = [1, 0.85, 0.25], bl = [0.35, 0.55, 1], th = (+T.get(S.mapId ? S.mapId + ".wallThickness" : "") || 16) / 2;
         L([-w, 0, 0], [w, 0, 0], y); L([w, 0, 0], [w, hh, 0], y); L([w, hh, 0], [-w, hh, 0], y); L([-w, hh, 0], [-w, 0, 0], y);
         for (const z of [-th, th]) { L([-72, 0, z], [72, 0, z], bl); L([-72, 0, z], [-72, hh + 20, z], bl); L([72, 0, z], [72, hh + 20, z], bl); L([-72, hh + 20, z], [72, hh + 20, z], bl); } }
+      if (T.get(pre + "type") === "enemy") { const r = +T.get(pre + "radius") || 22, hh = +T.get(pre + "height") || 110, bl = [0.35, 0.65, 1], N = 20; for (let i = 0; i < N; i++) { const a0 = i / N * Math.PI * 2, a1 = (i + 1) / N * Math.PI * 2, p = (a, y) => [Math.cos(a) * r, y, Math.sin(a) * r]; L(p(a0, 0), p(a1, 0), bl); L(p(a0, hh), p(a1, hh), bl); if (i % 5 === 0) L(p(a0, 0), p(a0, hh), bl); } L([0, 2, 0], [0, 2, r + 30], [1, 0.4, 0.3]); L([0, 2, r + 30], [-6, 2, r + 22], [1, 0.4, 0.3]); L([0, 2, r + 30], [6, 2, r + 22], [1, 0.4, 0.3]); }
       return o; };
     let raf = 0; const loop = () => { raf = requestAnimationFrame(loop); const k = 0.15 * OE.zoom, V = M4.mul(M4.translate(0, 0, -D), M4.mul(M4.rotX(OE.pitch), M4.mul(M4.rotY(OE.yaw), M4.mul(M4.scale(k, k, k), M4.translate(0, -50, 0))))), Mp = M4.mul(V, M4.mul(M4.translate(g("ox"), g("oy"), g("oz")), M4.mul(M4.rotXYZ([g("rx"), g("ry"), g("rz")]), M4.scale(g("scale") || 1, g("scale") || 1, g("scale") || 1))));
       v.draw(); v.drawViewmodel([{ gm, pose: F.pose(mo, T.get(pre + "idleAnim") || null, 0), M: Mp }], segs(V)); }; raf = requestAnimationFrame(loop);
@@ -992,13 +994,17 @@
     const P = S.project, pr = (P.props || []).find(x => x.id === S.propSel), box = h("div", { class: "insp" }), T = S.tags;
     if (!pr) { box.append(h("div", { class: "note", text: "No object yet. Use “+ New object” above the view." })); return box; }
     const pre = pr.id + ".", ty = T.get(pre + "type"), shown = Schema.PROP.filter(q => Schema.shown(T, pre, q)), grp = keys => shown.filter(q => keys.includes(q.k)).map(q => field(pre + q.k));
-    box.append(h("div", { class: "ihead" }, h("span", { class: "bigic", text: ty === "door" ? "▯" : ty === "pickup" ? "◆" : "▣" }), h("div", { class: "ititle" }, h("input", { class: "idin", value: T.get(pre + "name") || pr.id, "aria-label": "Object name", onchange: e => { T.set(pre + "name", e.target.value.trim() || pr.id); renderCenter(); } }), h("div", { class: "isub", text: pr.id + " · " + ty }))),
+    box.append(h("div", { class: "ihead" }, h("span", { class: "bigic", text: ty === "door" ? "▯" : ty === "pickup" ? "◆" : ty === "enemy" ? "☠" : ty === "exit" ? "⇥" : "▣" }), h("div", { class: "ititle" }, h("input", { class: "idin", value: T.get(pre + "name") || pr.id, "aria-label": "Object name", onchange: e => { T.set(pre + "name", e.target.value.trim() || pr.id); renderCenter(); } }), h("div", { class: "isub", text: pr.id + " · " + ty }))),
       h("div", { class: "btnrow" }, h("button", { class: "btn sm danger", text: "Delete object", onclick: () => { Schema.removeProp(P, pr); S.propSel = null; S.tags.emit([]); markDirty(); renderCenter(); renderInspector(); } })),
       foldout("pr:type", "Type", ...grp(["type", "asset"])), foldout("pr:xf", "Model placement", ...grp(["scale", "rx", "ry", "rz", "ox", "oy", "oz", "idleAnim"]),
         h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: "Scale to grid", onclick: () => { propFitScale(pre); propCenterOnGrid(pre); markDirty(); renderInspector(); } }), h("button", { class: "btn sm", text: "Center on grid", onclick: () => { propCenterOnGrid(pre); markDirty(); renderInspector(); } }))),
       ty === "door" ? foldout("pr:door", "Door", ...grp(["doorWidth", "doorHeight"]), h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: "Fit doorway to model", onclick: () => { propFitDoorway(pre); markDirty(); renderInspector(); } })), ...grp(["openMode", "openRange", "interactRange", "openAnim", "closeAnim", "autoClose", "closeAfter", "openSound", "closeSound"]),
         h("div", { class: "note", text: "Place doors in the Map view with the Object tool, on a wall: the wall gets a doorway cut out where the door goes. The model's width runs along the wall, its front faces +Z. Opening conditions beyond these come later." })) : null,
-      ty === "pickup" ? foldout("pr:pick", "Pick-up", ...grp(["giveTag", "giveAmount", "pickRadius", "pickSound"])) : "");
+      ty === "pickup" ? foldout("pr:pick", "Pick-up", ...grp(["giveTag", "giveAmount", "pickRadius", "pickSound"]), h("div", { class: "note", text: "Tip: to make an ammo box, pick a weapon's “ammo” tag above (player.<weapon>.reserve or .ammo); for a health pack pick player.health." })) : "",
+      ty === "enemy" ? foldout("pr:enemy", "Enemy", ...grp(["health", "speed", "radius", "height", "sight", "attack", "attackRange", "damage", "attackRate", "attackDelay", "projSpeed", "projSize", "projColor"])) : "",
+      ty === "enemy" ? foldout("pr:enanim", "Enemy animations and sounds", ...grp(["walkAnim", "attackAnim", "hurtAnim", "deathAnim", "corpse", "sightSound", "attackSound", "hurtSound", "deathSound", "killTag", "killAmount"]),
+        h("div", { class: "note", text: "The model's front must face +Z (toward you in the Front view). The blue cylinder shows its body (what bullets hit and what blocks the player). Place enemies in the Map view with the Place Object tool; Turn sets which way they face." })) : "",
+      ty === "exit" ? foldout("pr:exit", "Level exit", ...grp(["exitTo", "exitMap", "exitScreen", "exitRadius", "exitSound"]), h("div", { class: "note", text: "Touching it ends the level. Leave “Map” empty to go to the next map in the list. Any model works (a teleporter, a door frame…)." })) : "");
     return box;
   }
   function wallLayersBox(m, v) {
