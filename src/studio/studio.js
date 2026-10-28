@@ -624,13 +624,15 @@
     function close() { removeEventListener("keydown", onKey, true); if (v) v.dispose(); layer.remove(); } addEventListener("keydown", onKey, true); layer.__close = close;
   }
   function startGame(rt) {
-    const m = S.project.maps[0]; if (!m) { rt.game = true; rt.rebuild(); return; }
+    const sm = rt.tags.get("player.startMap"), m = S.project.maps.find(x => x.id === sm) || S.project.maps[0]; if (!m) { rt.game = true; rt.rebuild(); return; }
     rt.stopMusic(); const layer = h("div", { class: "p3layer" }); rt.host.append(layer);
-    const pl = new PRIM.Play3D({ host: layer, project: S.project, map: m, tags: rt.tags, urls: S.urls, mode: "play", debug: true, say: t => log(t), onExit: () => { pl.destroy(); layer.remove(); } }); S.play = pl;
+    const pl = new PRIM.Play3D({ host: layer, project: S.project, map: m, tags: rt.tags, urls: S.urls, mode: "play", debug: true, say: t => log(t), onExit: () => { pl.destroy(); layer.remove(); },
+      onScreen: id => { pl.destroy(); layer.remove(); if (S.project.screens.some(x => x.id === id)) rt.show(id); } }); S.play = pl;
   }
   function walkMap(m) {
     const layer = h("div", { class: "play-layer p3layer" }); document.body.append(layer);
-    const pl = new PRIM.Play3D({ host: layer, project: S.project, map: m, tags: S.tags, urls: S.urls, mode: "play", debug: true, say: t => log(t), onExit: () => { pl.destroy(); layer.remove(); } }); S.play = pl;
+    const pl = new PRIM.Play3D({ host: layer, project: S.project, map: m, tags: S.tags, urls: S.urls, mode: "play", debug: true, say: t => log(t), onExit: () => { pl.destroy(); layer.remove(); },
+      onScreen: id => { pl.destroy(); layer.remove(); log("The game would now show the screen “" + id + "” (use ▶ Play or Maximize on Play to try the whole game)."); } }); S.play = pl;
   }
   // ---------------------------------------------------------------- Player Editor
   function playerCenter() {

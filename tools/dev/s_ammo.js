@@ -1,0 +1,22 @@
+const SP = '/tmp/claude-0/-home-claude/4d2f2209-a771-580d-8052-566f87920e94/scratchpad';
+module.exports = async (p, out) => {
+  p.on('pageerror', e => console.log('PAGEERROR', e.message, (e.stack || '').split('\n')[1]));
+  const menu = async (top, item) => { await p.click('.mb:has-text("' + top + '")'); await p.click('.pitem:has-text("' + item + '")'); };
+  await p.click('.tile.plus'); await p.waitForSelector('#app'); await p.waitForTimeout(300);
+  await menu('Screen', 'Create Map'); await p.click('.mcard:has-text("DOOM")'); await p.waitForSelector('.medcv');
+  let [fc] = await Promise.all([p.waitForEvent('filechooser'), menu('Assets', 'Import Files')]); await fc.setFiles(SP + '/Arm_canon.fbx'); await p.waitForTimeout(1500);
+  await p.click('.tab:has-text("Player Editor")'); await p.waitForTimeout(500);
+  await p.click('button:has-text("New weapon")'); await p.click('.pitem:has-text("Arm_canon")'); await p.waitForTimeout(1500);
+  const id = await p.evaluate(() => __studio.S.project.player.attachments[0].id);
+  await p.evaluate(id => { const T = __studio.S.tags, pre = 'player.' + id + '.'; T.set(pre + 'projType', 'hitscan'); T.set(pre + 'ammoUse', true); T.set(pre + 'ammoStart', 5); T.set(pre + 'clipSize', 2); T.set(pre + 'reloadTime', 0.3); }, id);
+  await p.waitForTimeout(400);
+  console.log('inspector shows ammo fields', await p.evaluate(() => [...document.querySelectorAll('.insp .fld')].map(e => e.textContent).filter(t => /ammo|Magazine|Reload/i.test(t)).length), 'live fields hidden', await p.evaluate(() => ![...document.querySelectorAll('.insp .fld')].some(e => /\(live\)/.test(e.textContent) && /Ammo/.test(e.textContent))));
+  await p.evaluate(() => { __studio.S.objView = false; }); await p.click('.tab:has-text("Map")'); await p.waitForTimeout(300); await p.click('.tab:has-text("Player Editor")'); await p.waitForTimeout(400);
+  await p.click('button:has-text("Walk map1")'); await p.waitForFunction(() => __studio.S.play && __studio.S.play.hud, null, { timeout: 8000 }); await p.waitForTimeout(800);
+  const am = () => p.evaluate(id => { const q = __studio.S.play, pre = 'player.' + id + '.'; return q.T.get(pre + 'ammo') + '/' + q.T.get(pre + 'reserve') + (q.reloading ? ' reloading' : ''); }, id);
+  const fire = () => p.evaluate(id => { const q = __studio.S.play; q.fireProj(q.atts.find(a => a.id === id)); }, id);
+  console.log('start', await am()); await fire(); console.log('1 shot', await am()); await fire(); console.log('2 shots', await am()); await fire(); console.log('3rd try (auto reload)', await am());
+  await p.waitForFunction(() => !__studio.S.play.reloading, null, { timeout: 5000 }); console.log('after reload', await am());
+  await fire(); await fire(); await fire(); await p.waitForFunction(() => !__studio.S.play.reloading, null, { timeout: 5000 }); await fire(); await fire(); console.log('emptied', await am());
+  await p.evaluate(id => __studio.S.play.T.set('player.' + id + '.reserve', 999), id); await p.waitForTimeout(200); console.log('clamped to max (200)', await am());
+};

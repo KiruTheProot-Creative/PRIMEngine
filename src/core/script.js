@@ -56,6 +56,8 @@
           case "chargeShow": if (this.o.orb) this.o.orb(owner.key, "show", { color: String(g("color")), size: +g("size") || 1 }); break;
           case "chargeGrow": if (this.o.orb) this.o.orb(owner.key, "grow", { size: +g("size") || 1, seconds: +g("seconds") || 0 }); break;
           case "fireProjectile": if (this.o.fire) this.o.fire(owner.key); break;
+          case "reload": if (this.o.reload) this.o.reload(owner.key); break;
+          case "ifAmmo": out = !this.o.hasAmmo || this.o.hasAmmo(owner.key) ? "then" : "else"; break;
           case "ifState": out = this.o.isState && this.o.isState(String(g("state") || "")) ? "then" : "else"; break;
           case "ifKey": out = this.o.held && this.o.held(String(g("key") || "").toLowerCase()) ? "then" : "else"; break;
           case "repeat": { const body = this.link(owner, n.id, "body"), cnt = Math.min(1000, +g("times") || 0); for (let i = 0; i < cnt && !tok.dead; i++) { await this.chain(owner, body, tok); await sleep(0, tok); } break; }

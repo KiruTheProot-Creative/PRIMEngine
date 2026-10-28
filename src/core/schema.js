@@ -96,8 +96,13 @@
     { k: "crosshair", label: "Show crosshair", type: "bool", def: true }, { k: "crosshairSize", label: "Crosshair size", type: "number", def: 10, min: 2, max: 60, step: 1, showIf: ["crosshair", true] }, { k: "crosshairGap", label: "Crosshair gap", type: "number", def: 4, min: 0, max: 30, step: 1, showIf: ["crosshair", true] },
     { k: "crosshairThickness", label: "Crosshair thickness", type: "number", def: 2, min: 1, max: 8, step: 1, showIf: ["crosshair", true] }, Object.assign(COLOR("crosshairColor", "Crosshair color", "#ffffff"), { showIf: ["crosshair", true] }),
     { k: "hud", label: "HUD screen", type: "screenRef", def: "hud" },
+    { k: "reloadKey", label: "Reload key", type: "choice", options: [], def: "r" },
+    { k: "startMap", label: "The game starts on map (empty = the first map)", type: "mapRef", def: "" },
+    { k: "deathAction", label: "When the player dies", type: "choice", options: [["restart", "Restart the map"], ["screen", "Go to a screen (e.g. Game Over)"]], def: "restart" },
+    { k: "deathScreen", label: "Game over screen", type: "screenRef", def: "", showIf: ["deathAction", "screen"] }, PNUM("deathDelay", "Wait after dying (s)", 2.5, 0, 30, 0.1),
+    { k: "damageFlash", label: "Red flash when hurt", type: "bool", def: true },
   ];
-  S.PLAYER_GROUPS = [["Movement", ["speed", "sprintEnabled", "sprintPercent", "jumpEnabled", "jumpHeight", "gravity", "interactKey"]], ["Feel", ["breathe", "breatheAmount", "breatheSpeed", "bob", "bobAmount", "bobSpeed"]], ["Sounds", ["footstep", "footstep2", "footstep3", "stepDistance", "jumpSound", "landSound", "hurtSound", "deathSound", "soundVolume"]], ["Body", ["maxHealth", "eyeHeight", "radius", "stepHeight"]], ["Camera", ["fov", "aimMode", "freeAimRadius", "mouseSens"]], ["Crosshair", ["crosshair", "crosshairSize", "crosshairGap", "crosshairThickness", "crosshairColor"]], ["HUD", ["hud", "hudMove", "hudMoveAmount"]]];
+  S.PLAYER_GROUPS = [["Movement", ["speed", "sprintEnabled", "sprintPercent", "jumpEnabled", "jumpHeight", "gravity", "interactKey"]], ["Feel", ["breathe", "breatheAmount", "breatheSpeed", "bob", "bobAmount", "bobSpeed"]], ["Sounds", ["footstep", "footstep2", "footstep3", "stepDistance", "jumpSound", "landSound", "hurtSound", "deathSound", "soundVolume"]], ["Body", ["maxHealth", "eyeHeight", "radius", "stepHeight"]], ["Camera", ["fov", "aimMode", "freeAimRadius", "mouseSens"]], ["Crosshair", ["crosshair", "crosshairSize", "crosshairGap", "crosshairThickness", "crosshairColor"]], ["HUD", ["hud", "hudMove", "hudMoveAmount", "damageFlash"]], ["Game rules", ["startMap", "deathAction", "deathScreen", "deathDelay", "reloadKey"]]];
   // 3D objects attached to the player camera (weapons, hands...). Each one has tags player.<id>.*
   const ANIM = (k, label, extra) => Object.assign({ k, label, type: "anim", def: "" }, extra || {}), NUM = (k, label, def, min, max, step, extra) => Object.assign({ k, label, type: "number", def, min, max, step }, extra || {}), WP = ["type", "weapon"], NI = ["type", ["weapon", "animation"]], W_ = { showIf: WP };
   // a showIf is [tagKey, value] or [tagKey, [value, value...]]
@@ -137,11 +142,18 @@
     NUM("projEmit", "Emission (glow brightness)", 1, 0, 6, 0.05, { showIf: ["projType", ["hitscan", "particle", "mesh"]] }), { k: "projLight", label: "Projectile lights up the world", type: "bool", def: false, showIf: ["projType", ["particle", "mesh"]] },
     NUM("projLightPower", "Projectile light brightness", 1.5, 0, 8, 0.05, { showIf: ["projType", ["particle", "mesh"]] }), NUM("projLightRange", "Projectile light reach", 220, 10, 2000, 5, { showIf: ["projType", ["particle", "mesh"]] }),
     { k: "projCharge", label: "Bigger when charged (charge beam)", type: "bool", def: true, showIf: ["projType", ["particle", "mesh"]] },
+    NUM("projDamage", "Damage per hit (to enemies)", 25, 0, 100000, 1, { showIf: ["projType", ["hitscan", "particle", "mesh"]] }),
+    // ammo: "ammo" = rounds ready to fire, "reserve" = the rest carried. Both are live tags (a HUD text can show {player.att1.ammo})
+    { k: "ammoUse", label: "Uses ammo", type: "bool", def: false, showIf: WP },
+    NUM("ammoStart", "Ammo at the start", 50, 0, 100000, 1, { showIf: WP, showIf2: ["ammoUse", true] }), NUM("ammoMax", "Most ammo you can carry", 200, 1, 100000, 1, { showIf: WP, showIf2: ["ammoUse", true] }),
+    NUM("clipSize", "Magazine size (0 = no reloading, Doom style)", 0, 0, 10000, 1, { showIf: WP, showIf2: ["ammoUse", true] }), NUM("reloadTime", "Reload time (s, used when there is no reload animation)", 1.2, 0.05, 30, 0.05, { showIf: WP, showIf2: ["ammoUse", true] }),
+    ANIM("reloadAnim", "Reload animation", { showIf: WP, showIf2: ["ammoUse", true] }), { k: "reloadSound", label: "Reload sound", type: "asset", assetType: "sound", def: "", showIf: WP, showIf2: ["ammoUse", true] }, { k: "emptySound", label: "Empty click sound", type: "asset", assetType: "sound", def: "", showIf: WP, showIf2: ["ammoUse", true] },
+    NUM("ammo", "Ammo ready to fire (live)", 0, 0, 100000, 1, { live: true }), NUM("reserve", "Ammo in reserve (live)", 0, 0, 100000, 1, { live: true }),
   ];
   // ---- placeable objects (the Object Editor): doors, pick-ups, decorations. Tags prop<N>.*  They are placed in maps (map.things).
   S.PROP = [
     { k: "name", label: "Name", type: "string", def: "Object" },
-    { k: "type", label: "Type", type: "choice", options: [["decoration", "Decoration (just a model)"], ["door", "Door (opens in a wall)"], ["pickup", "Pick-up (collected by touching)"]], def: "decoration" },
+    { k: "type", label: "Type", type: "choice", options: [["decoration", "Decoration (just a model)"], ["door", "Door (opens in a wall)"], ["pickup", "Pick-up (collected by touching)"], ["enemy", "Enemy (hunts and attacks the player)"], ["exit", "Level exit (touch it to leave the level)"]], def: "decoration" },
     { k: "asset", label: "Model (FBX)", type: "asset", assetType: "model", def: "" },
     NUM("scale", "Scale", 1, 0.001, 100, 0.001), NUM("rx", "Rotate X", 0, -180, 180, 1), NUM("ry", "Rotate Y", 0, -180, 180, 1), NUM("rz", "Rotate Z", 0, -180, 180, 1),
     NUM("ox", "Move X (sideways)", 0, -500, 500, 0.5), NUM("oy", "Move Y (up)", 0, -500, 500, 0.5), NUM("oz", "Move Z (toward the front)", 0, -500, 500, 0.5),
@@ -154,6 +166,24 @@
     { k: "openSound", label: "Opening sound", type: "asset", assetType: "sound", def: "", showIf: ["type", "door"] }, { k: "closeSound", label: "Closing sound", type: "asset", assetType: "sound", def: "", showIf: ["type", "door"] },
     { k: "giveTag", label: "Changes this number tag", type: "tagRef", refType: "number", def: "", showIf: ["type", "pickup"] }, NUM("giveAmount", "By (negative = subtract)", 10, -100000, 100000, 1, { showIf: ["type", "pickup"] }),
     NUM("pickRadius", "Pick-up distance (units)", 28, 8, 200, 1, { showIf: ["type", "pickup"] }), { k: "pickSound", label: "Pick-up sound", type: "asset", assetType: "sound", def: "", showIf: ["type", "pickup"] },
+    // enemy
+    NUM("health", "Health", 100, 1, 100000, 1, { showIf: ["type", "enemy"] }), NUM("speed", "Walking speed (units / second)", 150, 0, 2000, 5, { showIf: ["type", "enemy"] }),
+    NUM("radius", "Body width (radius, units)", 22, 4, 200, 1, { showIf: ["type", "enemy"] }), NUM("height", "Body height (units, 64 = 1 m)", 110, 10, 600, 1, { showIf: ["type", "enemy"] }),
+    NUM("sight", "Sees the player from (units)", 900, 50, 10000, 10, { showIf: ["type", "enemy"] }),
+    { k: "attack", label: "Attack", type: "choice", options: [["melee", "Melee (hits up close)"], ["hitscan", "Gun (instant hit)"], ["projectile", "Projectile (a flying ball you can dodge)"]], def: "melee", showIf: ["type", "enemy"] },
+    NUM("attackRange", "Attacks from (units)", 70, 10, 5000, 5, { showIf: ["type", "enemy"] }), NUM("damage", "Damage per hit", 10, 0, 100000, 1, { showIf: ["type", "enemy"] }),
+    NUM("attackRate", "Time between attacks (s)", 1.2, 0.1, 30, 0.05, { showIf: ["type", "enemy"] }), NUM("attackDelay", "Hit lands after (s, into the attack)", 0.3, 0, 10, 0.05, { showIf: ["type", "enemy"] }),
+    NUM("projSpeed", "Projectile speed (units / s)", 600, 50, 5000, 10, { showIf: ["type", "enemy"], showIf2: ["attack", "projectile"] }), NUM("projSize", "Projectile size", 6, 1, 100, 0.5, { showIf: ["type", "enemy"], showIf2: ["attack", "projectile"] }),
+    { k: "projColor", label: "Projectile colour", type: "color", def: "#ff6a2a", showIf: ["type", "enemy"] },
+    ANIM("walkAnim", "Walking animation", { showIf: ["type", "enemy"] }), ANIM("attackAnim", "Attack animation", { showIf: ["type", "enemy"] }), ANIM("hurtAnim", "Hurt animation", { showIf: ["type", "enemy"] }), ANIM("deathAnim", "Death animation", { showIf: ["type", "enemy"] }),
+    { k: "corpse", label: "Body stays after death", type: "bool", def: true, showIf: ["type", "enemy"] },
+    { k: "sightSound", label: "Sound when it spots you", type: "asset", assetType: "sound", def: "", showIf: ["type", "enemy"] }, { k: "attackSound", label: "Attack sound", type: "asset", assetType: "sound", def: "", showIf: ["type", "enemy"] },
+    { k: "hurtSound", label: "Hurt sound", type: "asset", assetType: "sound", def: "", showIf: ["type", "enemy"] }, { k: "deathSound", label: "Death sound", type: "asset", assetType: "sound", def: "", showIf: ["type", "enemy"] },
+    { k: "killTag", label: "When killed, change this number tag (e.g. a score)", type: "tagRef", refType: "number", def: "", showIf: ["type", "enemy"] }, NUM("killAmount", "By", 1, -100000, 100000, 1, { showIf: ["type", "enemy"] }),
+    // level exit
+    { k: "exitTo", label: "Leads to", type: "choice", options: [["map", "Another map"], ["screen", "A screen (e.g. a 'You win' screen)"]], def: "map", showIf: ["type", "exit"] },
+    { k: "exitMap", label: "Map", type: "mapRef", def: "", showIf: ["type", "exit"], showIf2: ["exitTo", "map"] }, { k: "exitScreen", label: "Screen", type: "screenRef", def: "", showIf: ["type", "exit"], showIf2: ["exitTo", "screen"] },
+    NUM("exitRadius", "Touch distance (units)", 40, 8, 400, 1, { showIf: ["type", "exit"] }), { k: "exitSound", label: "Sound", type: "asset", assetType: "sound", def: "", showIf: ["type", "exit"] },
   ];
   S.defineProp = (project, p, over) => { for (const pr of S.PROP) { const r = rec(pr, "props", p.id); if (pr.type === "anim") r.modelTag = p.id + ".asset"; if (over && pr.k in over) r.value = over[pr.k]; project.tags[p.id + "." + pr.k] = r; } };
   S.addProp = (project, over) => { const p = { id: S.uid("prop", project.props.map(x => x.id)) }; project.props.push(p); S.defineProp(project, p, Object.assign({ name: p.id }, over || {})); return p; };
@@ -163,7 +193,7 @@
   // keys and mouse buttons for the Node Coder dropdowns
   S.KEYS = [["mouse1", "Left mouse button"], ["mouse2", "Right mouse button"], ["mouse3", "Middle mouse button"], ["space", "Space"], ["shift", "Shift"], ["ctrl", "Ctrl"], ["alt", "Alt"], ["enter", "Enter"], ["tab", "Tab"], ["arrowup", "Arrow up"], ["arrowdown", "Arrow down"], ["arrowleft", "Arrow left"], ["arrowright", "Arrow right"]]
     .concat("abcdefghijklmnopqrstuvwxyz".split("").map(c => [c, c.toUpperCase()]), "0123456789".split("").map(c => [c, c]), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(i => ["f" + i, "F" + i]));
-  S.PLAYER.find(p => p.k === "interactKey").options = S.KEYS;
+  S.PLAYER.find(p => p.k === "interactKey").options = S.KEYS; S.PLAYER.find(p => p.k === "reloadKey").options = S.KEYS;
   const KEYP = (def, label) => ({ k: "key", label: label || "Key or mouse button", type: "choice", options: S.KEYS, def: def || "r" });
   S.STATES = [["standing", "Standing still"], ["walking", "Walking"], ["running", "Running (sprinting)"], ["jumping", "Jumping (going up)"], ["falling", "Falling"], ["moving", "Moving (walking or running)"], ["inair", "In the air (jumping or falling)"]];
   S.SNODES = {
@@ -194,6 +224,8 @@
     chargeShow: { label: "Show charge particle", cat: "weapon", outs: ["next"], ctx: ["weapon"], props: [COLOR("color", "Color", "#33ccff"), { k: "size", label: "Start size", type: "number", def: 1, min: 0.2, max: 80, step: 0.1 }] },
     chargeGrow: { label: "Grow the charge particle", cat: "weapon", outs: ["next"], ctx: ["weapon"], props: [{ k: "size", label: "Grow to size", type: "number", def: 8, min: 0.2, max: 200, step: 0.1 }, { k: "seconds", label: "Over (seconds, 0 = until fully charged)", type: "number", def: 0, min: 0, max: 60, step: 0.05 }] },
     fireProjectile: { label: "Fire the projectile", cat: "weapon", outs: ["next"], ctx: ["weapon"], props: [] },
+    reload: { label: "Reload the weapon", cat: "weapon", outs: ["next"], ctx: ["weapon"], props: [] },
+    ifAmmo: { label: "If the weapon has ammo", cat: "weapon", outs: ["then", "else"], ctx: ["weapon"], props: [] },
     forever: { label: "Repeat forever", cat: "logic", outs: ["body"], ctx: ["screen", "object"], props: [] },
   };
   S.SCAT = { event: "Events", action: "Actions", logic: "Logic", weapon: "Weapon" };
@@ -225,7 +257,7 @@
     if (!project.walls) project.walls = []; if (!project.props) project.props = [];
     for (const m of project.maps || []) { if (!m.things) m.things = []; if (m.n && m.n.t === undefined) m.n.t = m.things.length; if (!project.tags[m.id + ".wallThickness"]) project.tags[m.id + ".wallThickness"] = rec(S.MAP.find(p => p.k === "wallThickness"), m.id, m.id); }
     for (const p of project.props) for (const pr of S.PROP) if (!project.tags[p.id + "." + pr.k]) { const r = rec(pr, "props", p.id); if (pr.type === "anim") r.modelTag = p.id + ".asset"; project.tags[p.id + "." + pr.k] = r; }
-    { const ik = project.tags["player.interactKey"]; if (project.tags["player.speed"] && !ik) project.tags["player.interactKey"] = rec(S.PLAYER.find(p => p.k === "interactKey"), "player", "player"); }
+    { const ik = project.tags["player.interactKey"]; if (project.tags["player.speed"] && !ik) project.tags["player.interactKey"] = rec(S.PLAYER.find(p => p.k === "interactKey"), "player", "player"); } if (project.tags["player.speed"]) for (const pp of S.PLAYER) if (!project.tags["player." + pp.k]) project.tags["player." + pp.k] = rec(pp, "player", "player");
     for (const m of project.maps || []) for (const v of m.verts) for (const p of S.VERT) if (!project.tags[m.id + "." + v.id + "." + p.k]) project.tags[m.id + "." + v.id + "." + p.k] = rec(p, m.id, m.id + "." + v.id);
     for (const w of project.walls) for (const f of w.faces) for (const p of S.WFACE) if (!project.tags[w.id + "." + f.id + "." + p.k]) project.tags[w.id + "." + f.id + "." + p.k] = rec(p, w.id, w.id + "." + f.id);
     const eh = project.tags["player.eyeHeight"]; if (eh && !project.eyeMoved) { if (eh.value === 56) eh.value = 102; project.eyeMoved = true; }
