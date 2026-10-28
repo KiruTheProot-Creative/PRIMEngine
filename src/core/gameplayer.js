@@ -21,7 +21,7 @@ html,body{margin:0;height:100%;background:#000;overflow:hidden;font-family:"Chak
       const project = data.project, urls = data.assets || {}, T = new PRIM.Tags(project.tags), key = "prime-game-" + project.id;
       document.title = project.name || "Game";
       for (const a of project.assets) if (a.type === "font" && urls[a.id] && window.FontFace) { try { new FontFace("prim-font-" + a.id, "url(" + urls[a.id] + ")").load().then(f => document.fonts.add(f)).catch(() => {}); } catch (e) {} }
-      if (PRIM.FBX) { PRIM.FBX.decorate = (id, m) => { if (PRIM.AnimLib) PRIM.AnimLib.apply(project, m, id); }; for (const a of project.assets) if (a.type === "model" && urls[a.id]) PRIM.FBX.load(a.id, urls[a.id]); }
+      if (PRIM.FBX) { for (const a of project.assets) if (a.type === "model" && urls[a.id]) PRIM.FBX.load(a.id, urls[a.id]); }
       if (PRIM.Audio) PRIM.Audio.preload(project.assets.filter(a => a.type === "sound" && urls[a.id]).map(a => urls[a.id]));
       const run = () => {
         host.replaceChildren(); const tg = T.fork(); let saved = {}; try { saved = JSON.parse(localStorage.getItem(key) || "{}"); } catch (e) {} for (const k in saved) if (T.has(k)) tg.ov[k] = saved[k];
