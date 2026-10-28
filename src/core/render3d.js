@@ -36,7 +36,7 @@
     // mood: colour tint x brightness, contrast, saturation
     "uniform vec3 uMoodT;uniform float uMoodC;uniform float uMoodS;uniform float uClipY;",
     "void main(){",
-    " if(vW.y>uClipY) discard;", " vec4 tx=texture2D(uTex,vUV); vec3 alb=tx.rgb*uTint;",
+    " if(vW.y>uClipY) discard;", " vec4 tx=texture2D(uTex,vUV); if(tx.a<0.04) discard; vec3 alb=tx.rgb*uTint;",
     " vec3 c=alb*vCol*uBright;",
     "#ifdef DERIV", " vec3 n=normalize(cross(dFdx(vW),dFdy(vW)));", "#else", " vec3 n=vec3(0.0,1.0,0.0);", "#endif",
     " vec3 V=normalize(uCam-vW); if(dot(n,V)<0.0) n=-n;",
@@ -54,7 +54,7 @@
     " }",
     " vec3 em=uEmitMap>0.5?texture2D(uETex,vUV).rgb:alb; c+=em*uEmitK+uEmit;",
     " float g=dot(c,vec3(0.299,0.587,0.114)); c=mix(vec3(g),c,uMoodS); c=(c-0.5)*uMoodC+0.5; c=max(c*uMoodT,0.0);",
-    " float f=clamp((vD-uFogR.x)/max(1.0,uFogR.y-uFogR.x),0.0,1.0); gl_FragColor=vec4(mix(c,uFog,f),uAlpha);",
+    " float f=clamp((vD-uFogR.x)/max(1.0,uFogR.y-uFogR.x),0.0,1.0); gl_FragColor=vec4(mix(c,uFog,f),uAlpha*tx.a);",
     "}"].join("\n");
 
   R.View = function (canvas, o) {
@@ -186,11 +186,19 @@
     this.setMat({ lit: 0 });
     if (a.length) { const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(a), gl.STREAM_DRAW); bind(buf, this.whiteTex); gl.drawArrays(gl.TRIANGLES, 0, a.length / 8); gl.deleteBuffer(buf); }
     for (const f of list) if (f.kind === "mesh" && f.gm) { this.setMat(f.mat); const lv = this.lodLevelAt(Math.hypot(f.p[0] - this.cam.x, f.p[1] - this.cam.y, f.p[2] - this.cam.z), 20 * (f.scale || 1)); this.lodLevel = lv; for (let ms of f.gm.meshes) { ms = this.lodOf(f.gm, ms, lv); gl.uniformMatrix4fv(L.m, false, new Float32Array(M4.mul(f.M, f.pose[ms.node]))); bind(ms.buf, f.tex || f.gm.tex); gl.drawArrays(gl.TRIANGLES, 0, ms.n); } }
+    // decals / sprites: a textured square at p facing n (up = the world's up, or z for floors); frame f of a horizontal strip of `frames`
+    for (const f of list) if (f.kind === "decal" && f.texId) {
+      const n = f.n, ref = Math.abs(n[1]) > 0.9 ? [0, 0, 1] : [0, 1, 0], ux = M4.norm(M4.cross(ref, n)), uy = M4.cross(n, ux), sw = (f.w || f.size) / 2, s = (f.h || f.size) / 2, fr = f.frames || 1, u0 = (f.frame || 0) / fr, u1 = ((f.frame || 0) + 1) / fr;
+      const P = (a, b) => [f.p[0] + ux[0] * a + uy[0] * b, f.p[1] + ux[1] * a + uy[1] * b, f.p[2] + ux[2] * a + uy[2] * b], A = P(-sw, s), B = P(sw, s), C = P(sw, -s), D = P(-sw, -s), k = f.light === undefined ? 1 : f.light;
+      const v = [...A, u0, 0, k, k, k, ...B, u1, 0, k, k, k, ...C, u1, 1, k, k, k, ...A, u0, 0, k, k, k, ...C, u1, 1, k, k, k, ...D, u0, 1, k, k, k];
+      const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(v), gl.STREAM_DRAW); this.setMat({ alpha: f.sprite ? 1 : Math.min(0.995, f.alpha === undefined ? 1 : f.alpha), lit: f.lit === undefined ? 1 : f.lit, emitK: f.glow || 0, tint: f.tint, emit: f.emit });
+      if (!f.sprite) { gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(-1, -4); gl.depthMask(false); } bind(buf, this.texFor(f.texId, this.urls)); gl.drawArrays(gl.TRIANGLES, 0, 6); gl.depthMask(true); gl.disable(gl.POLYGON_OFFSET_FILL); gl.deleteBuffer(buf);
+    }
     this.setMat(); gl.uniformMatrix4fv(L.m, false, new Float32Array(M4.ident()));
   };
 
   // nearest solid surface along a ray (origin o, direction d): { t, p, info } or null. extraTris = moving blocks (closed doors)
-  P.raycast = function (o, d, maxT) { const h = PRIM.Grid && (this.world || this.extraTris) ? PRIM.Grid.raycast(this.world, o, d, maxT || 1e5, this.extraTris) : null; return h ? { t: h.t, p: h.p, info: h.info } : null; };
+  P.raycast = function (o, d, maxT) { const h = PRIM.Grid && (this.world || this.extraTris) ? PRIM.Grid.raycast(this.world, o, d, maxT || 1e5, this.extraTris) : null; return h ? { t: h.t, p: h.p, n: h.tri && h.tri.n ? (h.tri.n[0] * d[0] + h.tri.n[1] * d[1] + h.tri.n[2] * d[2] > 0 ? h.tri.n.map(q => -q) : h.tri.n) : null, info: h.info } : null; };
 
   // ------------------------------------------------------------ models (FBX) drawn in front of the camera
   P.loadModel = function (model) {
@@ -225,7 +233,7 @@
     for (const it of items) { this.setMat(it.mat); for (const ms of it.gm.meshes) { gl.uniformMatrix4fv(L.m, false, new Float32Array(M4.mul(it.M, it.pose[ms.node]))); bind(ms.buf, it.tex || it.gm.tex); gl.drawArrays(gl.TRIANGLES, 0, ms.n); } }
     this.setMat({ lit: 0 });
     if (segs && segs.length) {
-      const a = [], th = 0.25; for (const sg of segs) { const d = M4.sub(sg.b, sg.a), dn = M4.norm(d), ref = Math.abs(dn[1]) > 0.9 ? [1, 0, 0] : [0, 1, 0], p1 = M4.norm(M4.cross(dn, ref)), p2 = M4.cross(dn, p1);
+      const a = []; for (const sg of segs) { const th = sg.w || 0.25, d = M4.sub(sg.b, sg.a), dn = M4.norm(d), ref = Math.abs(dn[1]) > 0.9 ? [1, 0, 0] : [0, 1, 0], p1 = M4.norm(M4.cross(dn, ref)), p2 = M4.cross(dn, p1);
         for (const p of [p1, p2]) { const o = [p[0] * th, p[1] * th, p[2] * th], q = (v, s) => [v[0] + o[0] * s, v[1] + o[1] * s, v[2] + o[2] * s], A1 = q(sg.a, 1), A2 = q(sg.a, -1), B1 = q(sg.b, 1), B2 = q(sg.b, -1);
           for (const v of [A1, B1, B2, A1, B2, A2]) a.push(v[0], v[1], v[2], 0, 0, sg.c[0], sg.c[1], sg.c[2]); } }
       const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(a), gl.STREAM_DRAW); gl.uniformMatrix4fv(L.m, false, new Float32Array(M4.ident())); bind(buf, this.whiteTex); gl.disable(gl.DEPTH_TEST); gl.drawArrays(gl.TRIANGLES, 0, a.length / 8); gl.enable(gl.DEPTH_TEST); gl.deleteBuffer(buf);

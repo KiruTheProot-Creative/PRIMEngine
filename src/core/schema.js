@@ -133,6 +133,12 @@
     NUM("projLightPower", "Projectile light brightness", 1.5, 0, 8, 0.05, { showIf: ["projType", ["particle", "mesh"]] }), NUM("projLightRange", "Projectile light reach", 220, 10, 2000, 5, { showIf: ["projType", ["particle", "mesh"]] }),
     { k: "projCharge", label: "Bigger when charged (charge beam)", type: "bool", def: true, showIf: ["projType", ["particle", "mesh"]] },
     NUM("projDamage", "Damage per hit (to enemies)", 25, 0, 100000, 1, { showIf: ["projType", ["hitscan", "particle", "mesh"]] }),
+    // impact on walls, floors and ceilings: a sound and a mark (one picture, or an animation = frames side by side in one image)
+    { k: "impactSound", label: "Wall hit sound", type: "asset", assetType: "sound", def: "", showIf: ["projType", ["hitscan", "particle", "mesh"]] },
+    { k: "impactImage", label: "Wall hit mark / animation (frames side by side in one picture)", type: "asset", assetType: "image", def: "", showIf: ["projType", ["hitscan", "particle", "mesh"]] },
+    NUM("impactFrames", "Frames in that picture (1 = a still mark)", 1, 1, 64, 1, { showIf: ["projType", ["hitscan", "particle", "mesh"]] }), NUM("impactFps", "Animation speed (frames per second)", 15, 1, 60, 1, { showIf: ["projType", ["hitscan", "particle", "mesh"]] }),
+    NUM("impactSize", "Mark size (units, 128 = a cell)", 16, 1, 256, 1, { showIf: ["projType", ["hitscan", "particle", "mesh"]] }), NUM("impactStay", "Mark stays for (seconds after the animation)", 4, 0, 60, 0.5, { showIf: ["projType", ["hitscan", "particle", "mesh"]] }),
+    { k: "impactGlow", label: "Mark glows (not darkened by shadows)", type: "bool", def: false, showIf: ["projType", ["hitscan", "particle", "mesh"]] },
     // ammo: "ammo" = rounds ready to fire, "reserve" = the rest carried. Both are live tags (a HUD text can show {player.att1.ammo})
     { k: "ammoUse", label: "Uses ammo", type: "bool", def: false, showIf: WP },
     NUM("ammoStart", "Ammo at the start", 50, 0, 100000, 1, { showIf: WP, showIf2: ["ammoUse", true] }), NUM("ammoMax", "Most ammo you can carry", 200, 1, 100000, 1, { showIf: WP, showIf2: ["ammoUse", true] }),
@@ -143,8 +149,16 @@
   // ---- placeable objects (the Object Editor): doors, pick-ups, decorations. Tags prop<N>.*  They are placed in maps (map.things).
   S.PROP = [
     { k: "name", label: "Name", type: "string", def: "Object" },
-    { k: "type", label: "Type", type: "choice", options: [["decoration", "Decoration (just a model)"], ["door", "Door (fills a cell between walls)"], ["pickup", "Pick-up (collected by touching)"], ["enemy", "Enemy (hunts and attacks the player)"], ["exit", "Level exit (touch it to leave the level)"]], def: "decoration" },
-    { k: "asset", label: "Model (FBX)", type: "asset", assetType: "model", def: "" },
+    { k: "type", label: "Type", type: "choice", options: [["decoration", "Decoration (just a model)"], ["door", "Door (fills a cell between walls)"], ["pickup", "Pick-up (collected by touching)"], ["enemy", "Enemy (hunts and attacks the player)"], ["exit", "Level exit (touch it to leave the level)"], ["npc", "Character (NPC: talk to it, make choices)"]], def: "decoration" },
+    { k: "look", label: "Looks like", type: "choice", options: [["model", "3D model (FBX)"], ["sprite", "2D sprite (pictures that always face the player)"]], def: "model", showIf: ["type", ["enemy", "decoration", "pickup", "exit", "npc"]] },
+    { k: "asset", label: "Model (FBX)", type: "asset", assetType: "model", def: "", showIf: ["look", "model"] },
+    // 2D sprites: each picture holds the frames of one animation side by side (a strip). They always turn to face the player.
+    { k: "spriteIdle", label: "Standing picture / animation strip", type: "asset", assetType: "image", def: "", showIf: ["look", "sprite"] }, NUM("spriteIdleFrames", "Frames in it", 1, 1, 64, 1, { showIf: ["look", "sprite"] }),
+    { k: "spriteWalk", label: "Walking strip", type: "asset", assetType: "image", def: "", showIf: ["look", "sprite"], showIf2: ["type", ["enemy", "npc"]] }, NUM("spriteWalkFrames", "Frames in it", 1, 1, 64, 1, { showIf: ["look", "sprite"], showIf2: ["type", ["enemy", "npc"]] }),
+    { k: "spriteAttack", label: "Attack strip", type: "asset", assetType: "image", def: "", showIf: ["look", "sprite"], showIf2: ["type", "enemy"] }, NUM("spriteAttackFrames", "Frames in it", 1, 1, 64, 1, { showIf: ["look", "sprite"], showIf2: ["type", "enemy"] }),
+    { k: "spriteHurt", label: "Hurt strip", type: "asset", assetType: "image", def: "", showIf: ["look", "sprite"], showIf2: ["type", "enemy"] }, NUM("spriteHurtFrames", "Frames in it", 1, 1, 64, 1, { showIf: ["look", "sprite"], showIf2: ["type", "enemy"] }),
+    { k: "spriteDeath", label: "Death strip (its last frame stays as the body)", type: "asset", assetType: "image", def: "", showIf: ["look", "sprite"], showIf2: ["type", "enemy"] }, NUM("spriteDeathFrames", "Frames in it", 1, 1, 64, 1, { showIf: ["look", "sprite"], showIf2: ["type", "enemy"] }),
+    NUM("spriteFps", "Animation speed (frames per second)", 8, 1, 60, 1, { showIf: ["look", "sprite"] }), NUM("spriteHeight", "Sprite height (units, 128 = a story)", 110, 4, 1024, 1, { showIf: ["look", "sprite"] }),
     NUM("scale", "Scale", 1, 0.001, 100, 0.001), NUM("rx", "Rotate X", 0, -180, 180, 1), NUM("ry", "Rotate Y", 0, -180, 180, 1), NUM("rz", "Rotate Z", 0, -180, 180, 1),
     NUM("ox", "Move X (sideways)", 0, -500, 500, 0.5), NUM("oy", "Move Y (up)", 0, -500, 500, 0.5), NUM("oz", "Move Z (toward the front)", 0, -500, 500, 0.5),
     ANIM("idleAnim", "Idle animation (loops)"),
@@ -161,7 +175,7 @@
     { k: "matEmitMap", label: "Emission map (bright parts glow; empty = the whole object glows)", type: "asset", assetType: "image", def: "" }, NUM("matEmit", "Emission strength (0 = no glow)", 0, 0, 8, 0.05),
     // enemy
     NUM("health", "Health", 100, 1, 100000, 1, { showIf: ["type", "enemy"] }), NUM("speed", "Walking speed (units / second)", 150, 0, 2000, 5, { showIf: ["type", "enemy"] }),
-    NUM("radius", "Body width (radius, units)", 22, 4, 200, 1, { showIf: ["type", "enemy"] }), NUM("height", "Body height (units, 64 = 1 m)", 110, 10, 600, 1, { showIf: ["type", "enemy"] }),
+    NUM("radius", "Body width (radius, units)", 22, 4, 200, 1, { showIf: ["type", ["enemy", "npc"]] }), NUM("height", "Body height (units, 64 = 1 m)", 110, 10, 600, 1, { showIf: ["type", "enemy"] }),
     NUM("sight", "Sees the player from (units)", 900, 50, 10000, 10, { showIf: ["type", "enemy"] }),
     { k: "attack", label: "Attack", type: "choice", options: [["melee", "Melee (hits up close)"], ["hitscan", "Gun (instant hit)"], ["projectile", "Projectile (a flying ball you can dodge)"]], def: "melee", showIf: ["type", "enemy"] },
     NUM("attackRange", "Attacks from (units)", 70, 10, 5000, 5, { showIf: ["type", "enemy"] }), NUM("damage", "Damage per hit", 10, 0, 100000, 1, { showIf: ["type", "enemy"] }),
@@ -180,6 +194,19 @@
   ];
   S.defineProp = (project, p, over) => { for (const pr of S.PROP) { const r = rec(pr, "props", p.id); if (pr.type === "anim") r.modelTag = p.id + ".asset"; if (over && pr.k in over) r.value = over[pr.k]; project.tags[p.id + "." + pr.k] = r; } };
   S.addProp = (project, over) => { const p = { id: S.uid("prop", project.props.map(x => x.id)) }; project.props.push(p); S.defineProp(project, p, Object.assign({ name: p.id }, over || {})); return p; };
+  // ---- NPC talk (characters): talk settings are prop tags; the dialogue is a list of lines (structure prop.dialog.lines = [{id}]) whose texts are tags <prop>.d.<line>.*
+  S.PROP.push({ k: "npcName", label: "Name shown when talking (empty = the object's name)", type: "string", def: "", showIf: ["type", "npc"] }, NUM("talkRange", "Can talk from (units, 128 = a cell)", 140, 30, 600, 5, { showIf: ["type", "npc"] }),
+    ANIM("talkAnim", "Talking animation (3D model)", { showIf: ["type", "npc"], showIf2: ["look", "model"] }), { k: "talkSprite", label: "Talking strip (2D sprite)", type: "asset", assetType: "image", def: "", showIf: ["type", "npc"], showIf2: ["look", "sprite"] }, NUM("talkSpriteFrames", "Frames in it", 1, 1, 64, 1, { showIf: ["type", "npc"], showIf2: ["look", "sprite"] }),
+    { k: "faceTalker", label: "Turns to face the player while talking", type: "bool", def: true, showIf: ["type", "npc"] });
+  const goOpts = [["next", "the next line"], ["end", "the end (stop talking)"]];
+  S.DLINE = [{ k: "speaker", label: "Who speaks (empty = the character)", type: "string", def: "" }, { k: "text", label: "What they say", type: "string", def: "..." }, { k: "sound", label: "Voice / sound", type: "asset", assetType: "sound", def: "" },
+    { k: "next", label: "Then go to", type: "choice", options: goOpts, def: "next" }]
+    .concat(...[1, 2, 3, 4].map(i => [{ k: "c" + i + "text", label: "Choice " + i + " (empty = no choice)", type: "string", def: "" }, { k: "c" + i + "go", label: "Choice " + i + " goes to", type: "choice", options: goOpts, def: "next" },
+      { k: "c" + i + "tag", label: "Choice " + i + " changes the tag (optional)", type: "tagRef", refType: "any", def: "" }, { k: "c" + i + "val", label: "to (a number: 5, or +1 / -1 to add)", type: "string", def: "" }]));
+  S.dlineOptions = p => goOpts.concat(((p.dialog && p.dialog.lines) || []).map((l, i) => [l.id, "line " + (i + 1) + " (" + l.id + ")"]));
+  S.addDLine = (project, p, over) => { p.dialog = p.dialog || { lines: [] }; const l = { id: S.uid("line", p.dialog.lines.map(x => x.id)) }; p.dialog.lines.push(l); for (const pr of S.DLINE) { const r = rec(pr, "dialog", p.id); if (over && pr.k in over) r.value = over[pr.k]; project.tags[p.id + ".d." + l.id + "." + pr.k] = r; } S.syncDOpts(project, p); return l; };
+  S.removeDLine = (project, p, l) => { p.dialog.lines.splice(p.dialog.lines.indexOf(l), 1); for (const k of Object.keys(project.tags)) if (k.startsWith(p.id + ".d." + l.id + ".")) delete project.tags[k]; S.syncDOpts(project, p); };
+  S.syncDOpts = (project, p) => { const o = S.dlineOptions(p); for (const l of (p.dialog && p.dialog.lines) || []) for (const k of ["next", "c1go", "c2go", "c3go", "c4go"]) { const r = project.tags[p.id + ".d." + l.id + "." + k]; if (r) { r.options = o; if (!o.some(x => x[0] === r.value)) r.value = "next"; } } };
   S.removeProp = (project, p) => { project.props.splice(project.props.indexOf(p), 1); for (const k of Object.keys(project.tags)) if (k.startsWith(p.id + ".")) delete project.tags[k]; for (const m of project.maps || []) m.things = (m.things || []).filter(t => t.prop !== p.id); };
   // ---- node scripts (see script.js). ports: outs = output names; ins:false = event node (starts a chain)
   const ANYTAG = { k: "tag", label: "Tag", type: "tagRef", refType: "any", def: "" }, NUMTAG = { k: "tag", label: "Number tag", type: "tagRef", refType: "number", def: "" };
@@ -251,6 +278,7 @@
     const old = (project.maps || []).filter(m => m.style !== "grid"); if (old.length) { project.maps = project.maps.filter(m => m.style === "grid"); for (const m of old) for (const k of Object.keys(project.tags)) if (k.startsWith(m.id + ".")) delete project.tags[k]; project.droppedMaps = (project.droppedMaps || 0) + old.length; }
     for (const k of Object.keys(project.tags)) if (/^wall\d+\./.test(k)) delete project.tags[k];
     for (const m of project.maps || []) { if (!m.things) m.things = []; if (!m.layers) m.layers = [{ cells: {} }]; if (!m.n) m.n = { t: m.things.length }; for (const p of S.MAP) if (!project.tags[m.id + "." + p.k]) project.tags[m.id + "." + p.k] = rec(p, m.id, m.id); for (const k of ["fogDistance", "gridSize", "wallThickness"]) delete project.tags[m.id + "." + k]; }
+    for (const p of project.props) if (p.dialog) { for (const l of p.dialog.lines) for (const pr of S.DLINE) if (!project.tags[p.id + ".d." + l.id + "." + pr.k]) project.tags[p.id + ".d." + l.id + "." + pr.k] = rec(pr, "dialog", p.id); S.syncDOpts(project, p); }
     for (const p of project.props) { for (const k of OLDMAT) delete project.tags[p.id + "." + k]; for (const pr of S.PROP) { const r = project.tags[p.id + "." + pr.k]; if (!r) { const n = rec(pr, "props", p.id); if (pr.type === "anim") n.modelTag = p.id + ".asset"; project.tags[p.id + "." + pr.k] = n; } else { r.label = pr.label; if (pr.max !== undefined) { r.max = pr.max; if (+r.value > pr.max) r.value = pr.max; } } } }
     { const ik = project.tags["player.interactKey"]; if (project.tags["player.speed"] && !ik) project.tags["player.interactKey"] = rec(S.PLAYER.find(p => p.k === "interactKey"), "player", "player"); } if (project.tags["player.speed"]) for (const pp of S.PLAYER) if (!project.tags["player." + pp.k]) project.tags["player." + pp.k] = rec(pp, "player", "player");
     for (const att of (project.player && project.player.attachments) || []) for (const k of OLDMAT) delete project.tags["player." + att.id + "." + k];

@@ -952,55 +952,94 @@
     return { lo, hi };
   }
   function propCenterOnGrid(pre) { const b = propBounds(pre); if (!b) return; S.tags.setMany({ [pre + "ox"]: +(-(b.lo[0] + b.hi[0]) / 2 + (+S.tags.get(pre + "ox") || 0)).toFixed(1), [pre + "oy"]: +(-b.lo[1] + (+S.tags.get(pre + "oy") || 0)).toFixed(1), [pre + "oz"]: +(-(b.lo[2] + b.hi[2]) / 2 + (+S.tags.get(pre + "oz") || 0)).toFixed(1) }); }
-  function propFitScale(pre) { const T = S.tags, mo = PRIM.FBX.cache[T.get(pre + "asset")]; if (!mo) return; T.set(pre + "scale", 1); const b = propBounds(pre); if (!b) return; const w = Math.max(b.hi[0] - b.lo[0], b.hi[2] - b.lo[2], 0.001); T.set(pre + "scale", +(96 / w).toFixed(4)); }
+  function propFitScale(pre) { const T = S.tags, mo = PRIM.FBX.cache[T.get(pre + "asset")]; if (!mo) return; T.set(pre + "scale", 1); const b = propBounds(pre); if (!b) return; const w = Math.max(b.hi[0] - b.lo[0], b.hi[2] - b.lo[2], 0.001); T.set(pre + "scale", +(128 / w).toFixed(4)); }
+  // a flat stand-in model for a 2D sprite object in the editor view: its first frame, at its height, standing on the grid
+  function spriteModel(pre) {
+    const T = S.tags, id = T.get(pre + "spriteIdle"); if (!id || !S.urls[id]) return null; const d = (S.imgDims = S.imgDims || {}); if (!d[id]) { const im = new Image(); im.onload = () => { d[id] = [im.naturalWidth, im.naturalHeight]; if (S.tab === "props") renderCenter(); }; im.src = S.urls[id]; return null; }
+    const fr = Math.max(1, +T.get(pre + "spriteIdleFrames") || 1), hh = +T.get(pre + "spriteHeight") || 110, w = hh * d[id][0] / fr / d[id][1] / 2, u1 = 1 / fr;
+    return { nodes: [{ mesh: { p: [-w, 0, 0, w, 0, 0, w, hh, 0, -w, 0, 0, w, hh, 0, -w, hh, 0], n: [0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1], u: [0, 1, u1, 1, u1, 0, 0, 1, u1, 0, 0, 0] } }], anims: {} };
+  }
   // the look of an object for the 3D view: base colour map + emission (map texture loaded on that view)
   function matGL(v, pre) { const m = Schema.matOf(S.tags, pre); if (m.emitTexId) m.emitTex = v.texFor(m.emitTexId, S.urls); return m; }
   function addProp(asset) {
     const P = S.project, mo = PRIM.FBX.cache[asset.id], names = mo ? Object.keys(mo.anims) : [], p = Schema.addProp(P, { name: asset.name.replace(/\.[^.]+$/, ""), asset: asset.id, idleAnim: names.find(n => /idle/i.test(n)) || "" }), pre = p.id + ".";
     propFitScale(pre); propCenterOnGrid(pre); S.propSel = p.id; S.tags.emit([]); markDirty(); renderCenter(); renderInspector(); log("Created object “" + S.tags.get(pre + "name") + "”");
   }
+  function addSpriteProp() {
+    const P = S.project, img = P.assets.find(a => a.type === "image"), p = Schema.addProp(P, { name: "Sprite " + (P.props.length + 1), look: "sprite", type: "enemy", spriteIdle: img ? img.id : "" });
+    S.propSel = p.id; S.tags.emit([]); markDirty(); renderCenter(); renderInspector(); log("Created a 2D sprite object. Pick its pictures on the right (each picture = one animation, frames side by side).");
+  }
   function propCenter() {
     const p = E.center, P = S.project, props = P.props = P.props || [], F = PRIM.FBX, M4 = PRIM.M4, T = S.tags;
-    p.tabs.replaceChildren(...centerTabs(), h("span", { class: "sp" }), h("span", { class: "csize", text: "object editor · grid = 3 × 3 tiles (1.5 m)" })); E.host.className = "host maphost";
+    p.tabs.replaceChildren(...centerTabs(), h("span", { class: "sp" }), h("span", { class: "csize", text: "16 × 16 grid = one 2 m cell" })); E.host.className = "host maphost";
     const pr = props.find(x => x.id === S.propSel) || props[0]; S.propSel = pr ? pr.id : null; const models = P.assets.filter(a => a.type === "model");
-    const newBtn = h("button", { class: "btn sm", text: "+ New object ▾", onclick: e => popMenu(e.currentTarget, models.length ? models.map(a => ({ t: a.name, fn: () => addProp(a) })) : [{ t: "Import an .fbx file first (Assets > Import Files)", disabled: true }]) });
+    const newBtn = h("button", { class: "btn sm", text: "+ New object ▾", onclick: e => popMenu(e.currentTarget, [...(models.length ? models.map(a => ({ t: "3D: " + a.name, fn: () => addProp(a) })) : [{ t: "3D model: import an .fbx file first (Assets > Import Files)", disabled: true }]), "-", { t: "2D sprite object (pictures)", fn: () => addSpriteProp() }]) });
     if (!pr) { put(E.cbar, newBtn, h("span", { class: "hint", text: "Objects are doors, pick-ups and decorations you place in maps." })); E.host.replaceChildren(h("div", { class: "v3err", style: "color:var(--muted);text-align:center;padding:20px", text: "No objects yet. Click “+ New object” and pick an FBX model." })); return; }
-    const pre = pr.id + ".", aid = T.get(pre + "asset"), mo = F.cache[aid], OE = S.pe = S.pe || { yaw: -30, pitch: 22, zoom: 1 };
+    const pre = pr.id + ".", spr = T.get(pre + "type") !== "door" && T.get(pre + "look") === "sprite", aid = spr ? "" : T.get(pre + "asset"), mo = spr ? spriteModel(pre) : F.cache[aid], OE = S.pe = S.pe || { yaw: -30, pitch: 22, zoom: 1 };
     const tb = (l, fn, tip) => h("button", { class: "tbtn sm", text: l, title: tip || "", onclick: fn });
     put(E.cbar, h("select", { class: "sel", onchange: e => { S.propSel = e.target.value; renderCenter(); renderInspector(); } }, ...props.map(x => h("option", { value: x.id, text: T.get(x.id + ".name") || x.id, selected: x.id === pr.id }))), newBtn,
       tb("Scale to grid", () => { propFitScale(pre); propCenterOnGrid(pre); markDirty(); renderInspector(); }, "Scales the model so it fills the 3 x 3 tile grid"), tb("Center on grid", () => { propCenterOnGrid(pre); markDirty(); renderInspector(); }, "Puts the middle of the model on the grid, standing on the ground"),
       tb("Front", () => { OE.yaw = 0; OE.pitch = 0; }), tb("Side", () => { OE.yaw = 90; OE.pitch = 0; }), tb("Top", () => { OE.yaw = 0; OE.pitch = 89; }), tb("3D", () => { OE.yaw = -30; OE.pitch = 22; }),
-      h("span", { class: "hint", text: "Grid squares are tiles (0.5 m). Drag to orbit, scroll to zoom." + (T.get(pre + "type") === "door" ? " Yellow = the doorway cut into the wall, blue = the wall's thickness." : T.get(pre + "type") === "enemy" ? " Blue cylinder = the enemy's body, red arrow = its front (+Z)." : "") }));
+      h("span", { class: "hint", text: "The grid is one map cell (2 m): 16 × 16 squares of 12.5 cm, the bright edge is the cell's border, the arrow points to the front (+Z). Drag to orbit, scroll to zoom." + (T.get(pre + "type") === "door" ? " Yellow = the doorway cut into the wall, blue = the wall's thickness." : T.get(pre + "type") === "enemy" ? " Blue cylinder = the enemy's body, red arrow = its front (+Z)." : "") }));
     const cv = h("canvas", { class: "v3cv", style: "cursor:grab" }); E.host.replaceChildren(cv);
-    if (!mo) { E.host.append(h("div", { class: "v3err", style: "color:var(--muted)", text: aid ? "Loading the model…" : "Choose a model for this object on the right." })); if (aid) F.load(aid, S.urls[aid]).then(m => { if (m && S.tab === "props") renderCenter(); }); return; }
+    if (!mo) { E.host.append(h("div", { class: "v3err", style: "color:var(--muted)", text: spr ? "Choose its standing picture on the right." : aid ? "Loading the model…" : "Choose a model for this object on the right." })); if (aid) F.load(aid, S.urls[aid]).then(m => { if (m && S.tab === "props") renderCenter(); }); return; }
     const v = new PRIM.R3D.View(cv); if (!v.ok) return; v.sky = [0.1, 0.12, 0.17]; v.fov = 0.8; const gm = v.loadModel(mo), D = 34, g = k => +T.get(pre + k) || 0;
     const segs = V => { const o = [], L = (a, b, c) => o.push({ a: M4.point(V, ...a), b: M4.point(V, ...b), c });
-      for (let i = -3; i <= 3; i++) { const edge = Math.abs(i) === 3 ? [0.2, 0.75, 0.85] : [0.28, 0.34, 0.42]; L([i * 16, 0, -48], [i * 16, 0, 48], edge); L([-48, 0, i * 16], [48, 0, i * 16], edge); }
+      // Blockbench-style floor grid: one cell (128 units) in 16 x 16 squares of 8 units, a brighter edge, the middle lines, the neighbouring cells faint, an arrow to the front (+Z)
+      const LW = (a, b, c, w) => o.push({ a: M4.point(V, ...a), b: M4.point(V, ...b), c, w });
+      for (let i = -8; i <= 8; i++) { const e = Math.abs(i) === 8, c = e ? [0.2, 0.75, 0.85] : i === 0 ? [0.45, 0.53, 0.63] : i % 4 === 0 ? [0.33, 0.39, 0.48] : [0.25, 0.29, 0.35], w = e ? 0.16 : i % 4 === 0 ? 0.09 : 0.05; LW([i * 8, 0, -64], [i * 8, 0, 64], c, w); LW([-64, 0, i * 8], [64, 0, i * 8], c, w); }
+      for (const q of [-192, 192]) { const c = [0.17, 0.2, 0.25]; LW([q, 0, -192], [q, 0, 192], c, 0.06); LW([-192, 0, q], [192, 0, q], c, 0.06); } for (const q of [-64, 64]) { const c = [0.17, 0.2, 0.25]; LW([q, 0, -192], [q, 0, -64], c, 0.06); LW([q, 0, 64], [q, 0, 192], c, 0.06); LW([-192, 0, q], [-64, 0, q], c, 0.06); LW([64, 0, q], [192, 0, q], c, 0.06); }
+      L([0, 0.5, 64], [0, 0.5, 84], [1, 0.4, 0.3]); L([0, 0.5, 84], [-6, 0.5, 76], [1, 0.4, 0.3]); L([0, 0.5, 84], [6, 0.5, 76], [1, 0.4, 0.3]);
       if (T.get(pre + "type") === "door") { const w = 64 * (+T.get(pre + "doorCellsW") || 1), hh = 128 * (+T.get(pre + "doorCellsH") || 1), y = [1, 0.85, 0.25], bl = [0.35, 0.55, 1], th = 8;
         L([-w, 0, 0], [w, 0, 0], y); L([w, 0, 0], [w, hh, 0], y); L([w, hh, 0], [-w, hh, 0], y); L([-w, hh, 0], [-w, 0, 0], y);
-        for (const z of [-th, th]) { L([-72, 0, z], [72, 0, z], bl); L([-72, 0, z], [-72, hh + 20, z], bl); L([72, 0, z], [72, hh + 20, z], bl); L([-72, hh + 20, z], [72, hh + 20, z], bl); } }
+        for (const z of [-th, th]) { L([-w - 8, 0, z], [w + 8, 0, z], bl); L([-w - 8, 0, z], [-w - 8, hh, z], bl); L([w + 8, 0, z], [w + 8, hh, z], bl); } }
       if (T.get(pre + "type") === "enemy") { const r = +T.get(pre + "radius") || 22, hh = +T.get(pre + "height") || 110, bl = [0.35, 0.65, 1], N = 20; for (let i = 0; i < N; i++) { const a0 = i / N * Math.PI * 2, a1 = (i + 1) / N * Math.PI * 2, p = (a, y) => [Math.cos(a) * r, y, Math.sin(a) * r]; L(p(a0, 0), p(a1, 0), bl); L(p(a0, hh), p(a1, hh), bl); if (i % 5 === 0) L(p(a0, 0), p(a0, hh), bl); } L([0, 2, 0], [0, 2, r + 30], [1, 0.4, 0.3]); L([0, 2, r + 30], [-6, 2, r + 22], [1, 0.4, 0.3]); L([0, 2, r + 30], [6, 2, r + 22], [1, 0.4, 0.3]); }
       return o; };
-    let raf = 0; const loop = () => { raf = requestAnimationFrame(loop); const k = 0.15 * OE.zoom, V = M4.mul(M4.translate(0, 0, -D), M4.mul(M4.rotX(OE.pitch), M4.mul(M4.rotY(OE.yaw), M4.mul(M4.scale(k, k, k), M4.translate(0, -50, 0))))), Mp = M4.mul(V, M4.mul(M4.translate(g("ox"), g("oy"), g("oz")), M4.mul(M4.rotXYZ([g("rx"), g("ry"), g("rz")]), M4.scale(g("scale") || 1, g("scale") || 1, g("scale") || 1))));
+    let raf = 0; const loop = () => { raf = requestAnimationFrame(loop); const k = 0.11 * OE.zoom, V = M4.mul(M4.translate(0, 0, -D), M4.mul(M4.rotX(OE.pitch), M4.mul(M4.rotY(OE.yaw), M4.mul(M4.scale(k, k, k), M4.translate(0, -50, 0))))), Mp = M4.mul(V, M4.mul(M4.translate(g("ox"), g("oy"), g("oz")), M4.mul(M4.rotXYZ([g("rx"), g("ry"), g("rz")]), M4.scale(g("scale") || 1, g("scale") || 1, g("scale") || 1)))), Ms = M4.mul(V, M4.rotY(-OE.yaw));
+      if (spr) { if (!gm.tex || gm.tex === v.whiteTex || gm.tex === v.defTex) gm.tex = v.texFor(T.get(pre + "spriteIdle"), S.urls); v.setLights([]); v.draw(); v.drawViewmodel([{ gm, pose: [M4.ident()], M: Ms, mat: { lit: 0 } }], segs(V)); return; }
       const mt = matGL(v, pre); v.setLights([{ p: [60, 140, 120], r: 900, c: [1.1, 1.05, 1], type: 0 }]); v.draw(); v.drawViewmodel([{ gm, pose: F.pose(mo, T.get(pre + "idleAnim") || null, 0), M: Mp, mat: mt, tex: mt.texId ? v.texFor(mt.texId, S.urls) : null }], segs(V)); }; raf = requestAnimationFrame(loop);
     let drag = null; cv.addEventListener("pointerdown", e => { cv.setPointerCapture(e.pointerId); drag = { x: e.clientX, y: e.clientY }; }); cv.addEventListener("pointermove", e => { if (!drag) return; OE.yaw += (e.clientX - drag.x) * 0.6; OE.pitch = Math.max(-89, Math.min(89, OE.pitch + (e.clientY - drag.y) * 0.6)); drag = { x: e.clientX, y: e.clientY }; });
     cv.addEventListener("pointerup", () => { drag = null; }); cv.addEventListener("wheel", e => { e.preventDefault(); OE.zoom = Math.max(0.3, Math.min(4, OE.zoom * (e.deltaY > 0 ? 0.9 : 1.1))); }, { passive: false });
     S.pev = { destroy() { cancelAnimationFrame(raf); v.destroy(); } };
   }
+  // the dialogue of a character: lines in order, each with up to 4 choices (a choice can jump to any line or end the talk, and change a tag)
+  function dialogueBox(pr) {
+    const P = S.project, T = S.tags, lines = (pr.dialog = pr.dialog || { lines: [] }).lines, redo = () => { markDirty(); renderInspector(); };
+    Schema.syncDOpts(P, pr); const rows = [];
+    lines.forEach((l, i) => {
+      const pre = pr.id + ".d." + l.id + ".", f = k => field(pre + k), shownC = [1, 2, 3, 4].filter(n => String(T.get(pre + "c" + n + "text") || "").trim()), nextC = [1, 2, 3, 4].find(n => !shownC.includes(n));
+      const ta = h("textarea", { class: "dlgtext", rows: 3, "aria-label": "Line " + (i + 1) + " text", onchange: e => { T.set(pre + "text", e.target.value); markDirty(); } }); ta.value = T.get(pre + "text") || "";
+      rows.push(h("div", { class: "dlgline" }, h("div", { class: "dlghead" }, h("b", { text: "Line " + (i + 1) }), h("span", { class: "tn", text: l.id }), h("span", { class: "sp" }),
+          i > 0 ? h("button", { class: "btn sm", title: "Move up", text: "↑", onclick: () => { lines.splice(i, 1); lines.splice(i - 1, 0, l); Schema.syncDOpts(P, pr); redo(); } }) : "",
+          h("button", { class: "btn sm danger", title: "Delete this line", text: "✕", onclick: () => { Schema.removeDLine(P, pr, l); redo(); } })),
+        f("speaker"), ta, f("sound"), shownC.length ? "" : f("next"),
+        ...shownC.map(n => h("div", { class: "dlgchoice" }, f("c" + n + "text"), f("c" + n + "go"), f("c" + n + "tag"), T.get(pre + "c" + n + "tag") ? f("c" + n + "val") : "",
+          h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: "Remove choice " + n, onclick: () => { T.set(pre + "c" + n + "text", ""); T.set(pre + "c" + n + "tag", ""); redo(); } })))),
+        nextC ? h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: "+ Add a choice", onclick: () => { T.set(pre + "c" + nextC + "text", "Choice " + nextC); redo(); } })) : ""));
+    });
+    return foldout("pr:dlg", "Dialogue (" + lines.length + " line" + (lines.length === 1 ? "" : "s") + ")", ...rows,
+      h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: "+ Add a line", onclick: () => { Schema.addDLine(P, pr, { text: lines.length ? "..." : "Hello there." }); redo(); } })),
+      h("div", { class: "note", text: "The talk starts at line 1. Without choices, Continue goes to “Then go to”. With choices, each one jumps to a line (or ends the talk) and can change a tag, e.g. set quest.step to 2, or +1 to a counter. Use those tags in the HUD or the Node Coder." }));
+  }
   function propInspector() {
-    const P = S.project, pr = (P.props || []).find(x => x.id === S.propSel), box = h("div", { class: "insp" }), T = S.tags;
+    const P = S.project, pr = (P.props || []).find(x => x.id === S.propSel) || (P.props || [])[0], box = h("div", { class: "insp" }), T = S.tags;
     if (!pr) { box.append(h("div", { class: "note", text: "No object yet. Use “+ New object” above the view." })); return box; }
-    const pre = pr.id + ".", ty = T.get(pre + "type"), shown = Schema.PROP.filter(q => Schema.shown(T, pre, q)), grp = keys => shown.filter(q => keys.includes(q.k)).map(q => field(pre + q.k));
+    const pre = pr.id + ".", ty = T.get(pre + "type"), spr = ty !== "door" && T.get(pre + "look") === "sprite", shown = Schema.PROP.filter(q => Schema.shown(T, pre, q) && !(spr && q.type === "anim")), grp = keys => shown.filter(q => keys.includes(q.k)).map(q => field(pre + q.k));
     box.append(h("div", { class: "ihead" }, h("span", { class: "bigic", text: ty === "door" ? "▯" : ty === "pickup" ? "◆" : ty === "enemy" ? "☠" : ty === "exit" ? "⇥" : "▣" }), h("div", { class: "ititle" }, h("input", { class: "idin", value: T.get(pre + "name") || pr.id, "aria-label": "Object name", onchange: e => { T.set(pre + "name", e.target.value.trim() || pr.id); renderCenter(); } }), h("div", { class: "isub", text: pr.id + " · " + ty }))),
       h("div", { class: "btnrow" }, h("button", { class: "btn sm danger", text: "Delete object", onclick: () => { Schema.removeProp(P, pr); S.propSel = null; S.tags.emit([]); markDirty(); renderCenter(); renderInspector(); } })),
-      foldout("pr:type", "Type", ...grp(["type", "asset"])), foldout("pr:mat", "Material", ...grp(["matTexture", "matEmitMap", "matEmit"]), h("div", { class: "note", text: "A base color map replaces the model's own picture. The emission map says which parts glow (empty = the whole object glows); strength 0 = no glow." })), foldout("pr:xf", "Model placement", ...grp(["scale", "rx", "ry", "rz", "ox", "oy", "oz", "idleAnim"]),
+      foldout("pr:type", "Type", ...grp(["type", "look", "asset"])),
+      spr ? foldout("pr:spr", "Sprite pictures", ...grp(["spriteIdle", "spriteIdleFrames", "spriteWalk", "spriteWalkFrames", "spriteAttack", "spriteAttackFrames", "spriteHurt", "spriteHurtFrames", "spriteDeath", "spriteDeathFrames", "spriteFps", "spriteHeight"]),
+        h("div", { class: "note", text: "Each picture is one animation: its frames side by side from left to right, all the same width. A single picture with 1 frame is a still sprite. Sprites always turn to face the player." })) : "",
+      spr ? "" : foldout("pr:mat", "Material", ...grp(["matTexture", "matEmitMap", "matEmit"]), h("div", { class: "note", text: "A base color map replaces the model's own picture. The emission map says which parts glow (empty = the whole object glows); strength 0 = no glow." })), spr ? "" : foldout("pr:xf", "Model placement", ...grp(["scale", "rx", "ry", "rz", "ox", "oy", "oz", "idleAnim"]),
         h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: "Scale to grid", onclick: () => { propFitScale(pre); propCenterOnGrid(pre); markDirty(); renderInspector(); } }), h("button", { class: "btn sm", text: "Center on grid", onclick: () => { propCenterOnGrid(pre); markDirty(); renderInspector(); } }))),
       ty === "door" ? foldout("pr:door", "Door", ...grp(["doorCellsW", "doorCellsH", "doorFit"]), h("div", { class: "note", text: "A door is a block: 1 × 1 fills one cell, 2 × 1 is two cells wide, 3 × 2 is three cells wide and two stories tall. With “fit” on, the model is stretched to fill it exactly." }), ...grp(["openMode", "openRange", "interactRange", "openAnim", "closeAnim", "autoClose", "closeAfter", "openSound", "closeSound"]),
-        h("div", { class: "note", text: "Place doors in the Map view with the Object tool, in a cell between two walls: a door fills its cell (2 m wide). The model's width runs across the doorway, its front faces +Z." })) : null,
+        h("div", { class: "note", text: "Place doors in the Map view with the Object tool, in a cell between two walls: a door fills its cell (2 m wide). The model's width runs across the doorway, its front faces +Z." })) : "",
       ty === "pickup" ? foldout("pr:pick", "Pick-up", ...grp(["giveTag", "giveAmount", "pickRadius", "pickSound"]), h("div", { class: "note", text: "Tip: to make an ammo box, pick a weapon's “ammo” tag above (player.<weapon>.reserve or .ammo); for a health pack pick player.health." })) : "",
       ty === "enemy" ? foldout("pr:enemy", "Enemy", ...grp(["health", "speed", "radius", "height", "sight", "attack", "attackRange", "damage", "attackRate", "attackDelay", "projSpeed", "projSize", "projColor"])) : "",
       ty === "enemy" ? foldout("pr:enanim", "Enemy animations and sounds", ...grp(["walkAnim", "attackAnim", "hurtAnim", "deathAnim", "corpse", "sightSound", "attackSound", "hurtSound", "deathSound", "killTag", "killAmount"]),
         h("div", { class: "note", text: "The model's front must face +Z (toward you in the Front view). The blue cylinder shows its body (what bullets hit and what blocks the player). Place enemies in the Map view with the Place Object tool; Turn sets which way they face." })) : "",
+      ty === "npc" ? foldout("pr:npc", "Character", ...grp(["npcName", "talkRange", "radius", "talkAnim", "talkSprite", "talkSpriteFrames", "faceTalker"]), h("div", { class: "note", text: "Walk up to it, look at it and press the Interact key to talk. It blocks the way like a body (its width above)." })) : "",
+      ty === "npc" ? dialogueBox(pr) : "",
       ty === "exit" ? foldout("pr:exit", "Level exit", ...grp(["exitTo", "exitMap", "exitScreen", "exitRadius", "exitSound"]), h("div", { class: "note", text: "Touching it ends the level. Leave “Map” empty to go to the next map in the list. Any model works (a teleporter, a door frame…)." })) : "");
     return box;
   }
