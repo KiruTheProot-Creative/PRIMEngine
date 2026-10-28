@@ -98,6 +98,12 @@
         if (p("mode") === "texture") this.pic(el, p("texture"), +p("w"), +p("h"));
         else { el.textContent = this.S(n, "text"); text(el); el.style.padding = "10px 30px"; el.style.letterSpacing = ".08em"; }
       }
+      else if (n.type === "tanks") {   // energy tanks: one box per tank owned, filled while it is full (tags player.tanks / player.tanksFull)
+        const T = this.tags, cnt = Math.max(0, Math.min(99, +T.get("player.tanks") || 0)), full = Math.max(0, +T.get("player.tanksFull") || 0), bx = +p("box") || 14; el.style.opacity = p("opacity");
+        if (el.childElementCount !== cnt) { el.replaceChildren(); for (let i = 0; i < cnt; i++) el.append(mk("i")); }
+        el.style.gridTemplateColumns = "repeat(" + Math.min(cnt, 7) + "," + bx + "px)"; [...el.children].forEach((b, i) => { b.style.width = b.style.height = bx + "px"; b.style.background = i < full ? p("color") : p("empty"); b.style.boxShadow = "inset 0 0 0 1px " + p("color"); });
+        if (!cnt && this.edit) { el.textContent = "(energy tanks)"; el.style.font = "12px monospace"; el.style.color = p("color"); }
+      }
       else if (n.type === "slider" || n.type === "toggle") {
         const T = this.tags, b = p("bind"), sp = T.spec(b); el.style.width = (+p("w") || 420) + "px"; text(el); el.firstChild.textContent = this.S(n, "label");
         if (n.type === "slider") { const v = sp ? +T.get(b) : 0, f = sp ? clamp((v - sp.min) / ((sp.max - sp.min) || 1), 0, 1) : 0, fl = el.lastChild.firstChild; fl.style.width = f * 100 + "%"; fl.style.background = p("accent"); }
@@ -109,6 +115,7 @@
       if (n.type === "image") { const e = mk("div", "hud-el"); e.style.backgroundSize = "100% 100%"; return e; }
       if (n.type === "button") { const e = mk("div", "hud-el"); e.style.backgroundSize = "100% 100%"; return e; }
       if (n.type === "bar") { const e = mk("div", "hud-el hud-bar"); e.append(mk("i"), mk("b")); return e; }
+      if (n.type === "tanks") { const e = mk("div", "hud-el"); e.style.cssText = "display:grid;gap:3px"; return e; }
       if (n.type === "slider") { const e = mk("div", "hud-el"); e.style.whiteSpace = "normal"; const row = mk("div", "hud-row"), tr = mk("div", "hud-track"); tr.append(mk("i")); e.append(row, tr); return e; }
       if (n.type === "toggle") { const e = mk("div", "hud-el"); e.style.cssText = "display:flex;justify-content:space-between;align-items:center"; const sw = mk("div", "hud-sw"); sw.append(mk("i")); e.append(mk("span"), sw); return e; }
       return mk("div", "hud-el");

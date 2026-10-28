@@ -93,6 +93,9 @@
     "uniform vec3 uTint;uniform vec3 uEmit;uniform float uLit;uniform float uAlpha;uniform float uSpec;",
     // physically-inspired material (uPBR = 1): roughness, metallic, simple sky / ground reflections (uEnvT / uEnvB along the up direction uUp)
     "uniform float uPBR;uniform float uRough;uniform float uMetal;uniform float uEnvK;uniform vec3 uEnvT;uniform vec3 uEnvB;uniform vec3 uUp;",
+    // visor looks (Prime edition): uVisor 1 = thermal (heat colours from uHeat), 2 = x-ray (uXray bright), 3 = scan (uMark 1 = not scanned yet, 2 = scanned)
+    "uniform float uVisor;uniform float uHeat;uniform float uXray;uniform float uMark;",
+    "vec3 heatRamp(float t){ t=clamp(t,0.0,1.0); vec3 a=mix(vec3(0.02,0.0,0.12),vec3(0.35,0.0,0.55),smoothstep(0.0,0.3,t)); a=mix(a,vec3(0.95,0.25,0.05),smoothstep(0.3,0.6,t)); a=mix(a,vec3(1.0,0.85,0.2),smoothstep(0.6,0.85,t)); return mix(a,vec3(1.0),smoothstep(0.85,1.0,t)); }",
     "void main(){",
     " vec3 alb=texture2D(uTex,vUV).rgb*uTint; vec3 base=alb; vec3 sc=vec3(0.04); float ex=24.0;",
     " if(uPBR>0.5){ base=alb*(1.0-uMetal); sc=mix(vec3(0.04),alb,uMetal); float r=max(uRough,0.04); ex=clamp(2.0/(r*r*r*r)-2.0,2.0,256.0); }",
@@ -116,6 +119,11 @@
     "  if(uPBR>0.5) c+=sp*sc*min((ex+8.0)/24.0,14.0)*uLit;",
     " }",
     " c+=base*uEmit;",
+    " if(uVisor>0.5){ float lum=dot(c,vec3(0.3,0.59,0.11));",
+    "  if(uVisor<1.5) c=heatRamp(lum*0.28+uHeat*0.8);",
+    "  else if(uVisor<2.5) c=mix(vec3(0.05,0.1,0.14)+vec3(0.12,0.22,0.3)*lum, vec3(0.92,0.98,1.0)*(0.55+0.45*lum), uXray);",
+    "  else { c=vec3(lum)*vec3(0.55,0.75,0.9)+vec3(0.0,0.03,0.06); if(uMark>1.5) c=mix(c,vec3(0.25,0.6,1.0),0.55); else if(uMark>0.5) c=mix(c,vec3(1.0,0.45,0.1),0.6); }",
+    " }",
     " float f=clamp(vD/uFogD,0.0,1.0); gl_FragColor=vec4(mix(c,uFog,f*f),uAlpha);",
     "}"].join("\n");
 
@@ -124,7 +132,7 @@
     this.canvas = canvas; this.ok = !!gl; if (!gl) return; this.gl = gl;
     const sh = (t, src) => { const s = gl.createShader(t); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; };
     const pr = this.pr = gl.createProgram(); gl.attachShader(pr, sh(gl.VERTEX_SHADER, VS)); const dx = gl.getExtension("OES_standard_derivatives"); gl.attachShader(pr, sh(gl.FRAGMENT_SHADER, (dx ? "#extension GL_OES_standard_derivatives : enable\n#define DERIV\n" : "") + FS)); gl.linkProgram(pr); gl.useProgram(pr);
-    this.loc = { pos: gl.getAttribLocation(pr, "aPos"), uv: gl.getAttribLocation(pr, "aUV"), col: gl.getAttribLocation(pr, "aCol"), vp: gl.getUniformLocation(pr, "uVP"), m: gl.getUniformLocation(pr, "uM"), tex: gl.getUniformLocation(pr, "uTex"), lp: gl.getUniformLocation(pr, "uLP"), lc: gl.getUniformLocation(pr, "uLC"), ln: gl.getUniformLocation(pr, "uLN"), lu: gl.getUniformLocation(pr, "uLU"), nl: gl.getUniformLocation(pr, "uNL"), cam: gl.getUniformLocation(pr, "uCam"), tint: gl.getUniformLocation(pr, "uTint"), emit: gl.getUniformLocation(pr, "uEmit"), lit: gl.getUniformLocation(pr, "uLit"), alpha: gl.getUniformLocation(pr, "uAlpha"), spec: gl.getUniformLocation(pr, "uSpec"), pbr: gl.getUniformLocation(pr, "uPBR"), rough: gl.getUniformLocation(pr, "uRough"), metal: gl.getUniformLocation(pr, "uMetal"), envK: gl.getUniformLocation(pr, "uEnvK"), envT: gl.getUniformLocation(pr, "uEnvT"), envB: gl.getUniformLocation(pr, "uEnvB"), up: gl.getUniformLocation(pr, "uUp"), fog: gl.getUniformLocation(pr, "uFog"), fogD: gl.getUniformLocation(pr, "uFogD"), bright: gl.getUniformLocation(pr, "uBright") };
+    this.loc = { pos: gl.getAttribLocation(pr, "aPos"), uv: gl.getAttribLocation(pr, "aUV"), col: gl.getAttribLocation(pr, "aCol"), vp: gl.getUniformLocation(pr, "uVP"), m: gl.getUniformLocation(pr, "uM"), tex: gl.getUniformLocation(pr, "uTex"), lp: gl.getUniformLocation(pr, "uLP"), lc: gl.getUniformLocation(pr, "uLC"), ln: gl.getUniformLocation(pr, "uLN"), lu: gl.getUniformLocation(pr, "uLU"), nl: gl.getUniformLocation(pr, "uNL"), cam: gl.getUniformLocation(pr, "uCam"), tint: gl.getUniformLocation(pr, "uTint"), emit: gl.getUniformLocation(pr, "uEmit"), lit: gl.getUniformLocation(pr, "uLit"), alpha: gl.getUniformLocation(pr, "uAlpha"), spec: gl.getUniformLocation(pr, "uSpec"), pbr: gl.getUniformLocation(pr, "uPBR"), visor: gl.getUniformLocation(pr, "uVisor"), heat: gl.getUniformLocation(pr, "uHeat"), xray: gl.getUniformLocation(pr, "uXray"), mark: gl.getUniformLocation(pr, "uMark"), rough: gl.getUniformLocation(pr, "uRough"), metal: gl.getUniformLocation(pr, "uMetal"), envK: gl.getUniformLocation(pr, "uEnvK"), envT: gl.getUniformLocation(pr, "uEnvT"), envB: gl.getUniformLocation(pr, "uEnvB"), up: gl.getUniformLocation(pr, "uUp"), fog: gl.getUniformLocation(pr, "uFog"), fogD: gl.getUniformLocation(pr, "uFogD"), bright: gl.getUniformLocation(pr, "uBright") };
     gl.enable(gl.DEPTH_TEST); gl.disable(gl.CULL_FACE);
     this.cam = { x: 0, y: 56, z: 0, yaw: Math.PI / 2, pitch: 0 }; this.batches = []; this.texCache = {}; this.sky = [0.08, 0.14, 0.23]; this.fog = [0.02, 0.03, 0.05]; this.fogD = 1400; this.bright = 1; this.fov = 1.15; this.keys = {}; this.speed = 300; this.running = false; this.frames = 0;
     this.defTex = this.makeTex(checker()); { const w = document.createElement("canvas"); w.width = w.height = 2; const x = w.getContext("2d"); x.fillStyle = "#fff"; x.fillRect(0, 0, 2, 2); this.whiteTex = this.makeTex(w); }
@@ -147,6 +155,12 @@
   // (re)build all geometry from the project's map + tags
   P.setMap = function (project, map, tags, urls) { this.project = project; this.map = map; this.tags = tags; this.urls = urls; this.rebuild(); };
   // draws just these triangles (used by the Wall Editor): by = { textureId: [x,y,z,u,v,r,g,b ...] }
+  // world geometry from a list: [{ tex, data: [x,y,z,u,v,r,g,b,...], mat }] (each item keeps its own material: heat, x-ray, mark...)
+  P.setWorld = function (list, urls) {
+    const gl = this.gl; for (const b of this.batches) gl.deleteBuffer(b.buf); this.urls = urls; this.map = null;
+    this.batches = list.filter(it => it.data.length).map(it => { const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf); gl.bufferData(gl.ARRAY_BUFFER, it.data instanceof Float32Array ? it.data : new Float32Array(it.data), gl.STATIC_DRAW); return { buf, n: it.data.length / 8, tex: it.tex || "", sec: "", mat: it.mat || null, mn: [-1e9, -1e9, -1e9], mx: [1e9, 1e9, 1e9] }; });
+    this.triCount = this.batches.reduce((s, b) => s + b.n / 3, 0);
+  };
   P.setBatches = function (by, urls) {
     const gl = this.gl; for (const b of this.batches) gl.deleteBuffer(b.buf); this.urls = urls; this.map = null;
     this.batches = Object.keys(by).map(k => { const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(by[k]), gl.STATIC_DRAW); return { buf, n: by[k].length / 8, tex: k, sec: "", mn: [-1e9, -1e9, -1e9], mx: [1e9, 1e9, 1e9] }; });
@@ -219,6 +233,7 @@
   // material of what is drawn next: { tint, emit, lit, alpha, spec } (all optional)
   P.setMat = function (m) {
     const gl = this.gl, L = this.loc; m = m || {}; gl.uniform3fv(L.tint, m.tint || [1, 1, 1]); gl.uniform3fv(L.emit, m.emit || [0, 0, 0]); gl.uniform1f(L.lit, m.lit === undefined ? 1 : m.lit); gl.uniform1f(L.spec, m.spec || 0);
+    gl.uniform1f(L.visor, this.visor || 0); gl.uniform1f(L.heat, m.heat || 0); gl.uniform1f(L.xray, m.xray || 0); gl.uniform1f(L.mark, m.mark || 0);
     gl.uniform1f(L.pbr, m.pbr ? 1 : 0); gl.uniform1f(L.rough, m.rough === undefined ? 0.7 : m.rough); gl.uniform1f(L.metal, m.metal || 0); gl.uniform1f(L.envK, m.env === undefined ? 1 : m.env);
     const sky = this.sky || [0.1, 0.12, 0.17]; gl.uniform3fv(L.envT, this.envTop || sky.map(q => Math.min(1, q * 1.5 + 0.4))); gl.uniform3fv(L.envB, this.envBot || [0.17, 0.16, 0.14]);
     const a = m.alpha === undefined ? 1 : m.alpha; gl.uniform1f(L.alpha, a); if (a < 0.999) { gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); } else gl.disable(gl.BLEND);
@@ -245,7 +260,7 @@
     const L = this.loc; gl.enableVertexAttribArray(L.pos); gl.enableVertexAttribArray(L.uv); gl.enableVertexAttribArray(L.col);
     this.useLights(false); this.setMat();
     const vis = this.visible(), st = this.stats = { tris: 0, chunks: 0, totalTris: this.triCount || 0, totalChunks: this.batches.length, lights: this.nLights || 0 };
-    for (const b of this.batches) { if (vis && !vis(b)) continue; st.chunks++; st.tris += b.n / 3; gl.bindBuffer(gl.ARRAY_BUFFER, b.buf); gl.vertexAttribPointer(L.pos, 3, gl.FLOAT, false, 32, 0); gl.vertexAttribPointer(L.uv, 2, gl.FLOAT, false, 32, 12); gl.vertexAttribPointer(L.col, 3, gl.FLOAT, false, 32, 20);
+    for (const b of this.batches) { if (vis && !vis(b)) continue; if (b.mat || this.lastBatchMat) { this.setMat(b.mat); this.lastBatchMat = !!b.mat; } st.chunks++; st.tris += b.n / 3; gl.bindBuffer(gl.ARRAY_BUFFER, b.buf); gl.vertexAttribPointer(L.pos, 3, gl.FLOAT, false, 32, 0); gl.vertexAttribPointer(L.uv, 2, gl.FLOAT, false, 32, 12); gl.vertexAttribPointer(L.col, 3, gl.FLOAT, false, 32, 20);
       gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.texFor(b.tex, this.urls)); gl.drawArrays(gl.TRIANGLES, 0, b.n); }
     if (this.overlay && this.overlay.length) this.drawFx(this.overlay);
     this.frames++;
