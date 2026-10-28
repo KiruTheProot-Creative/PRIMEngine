@@ -1,7 +1,7 @@
 module.exports = async (p, out) => {
   const menu = async (top, item) => { await p.click('.mb:has-text("' + top + '")'); await p.click('.pitem:has-text("' + item + '")'); };
   await p.click('.tile.plus'); await p.waitForSelector('#app'); await p.waitForTimeout(400);
-  await menu('Screen', 'Create Map'); await p.click('.mcard:has-text("DOOM")'); await p.waitForSelector('.medcv'); await p.waitForTimeout(300);
+  await menu('Screen', 'Create Map'); await p.waitForSelector('.medcv'); await p.waitForTimeout(300);
   await p.click('.tab:has-text("Player Editor")'); await p.waitForTimeout(700);
   const t = await p.evaluate(() => document.querySelector('#inspector, .insp') ? document.body.innerText : '');
   console.log('has Sounds', /Footstep sound/.test(t), /Jump sound/.test(t));

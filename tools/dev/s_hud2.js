@@ -3,7 +3,7 @@ module.exports = async (p, out) => {
   p.on('pageerror', e => console.log('PAGEERROR', e.message, (e.stack || '').split('\n').slice(0, 2).join(' | ')));
   const menu = async (top, item) => { await p.click('.mb:has-text("' + top + '")'); await p.click('.pitem:has-text("' + item + '")'); };
   await p.click('.tile.plus'); await p.waitForSelector('#app'); await p.waitForTimeout(300);
-  await menu('Screen', 'Create Map'); await p.click('.mcard:has-text("DOOM")'); await p.waitForSelector('.medcv');
+  await menu('Screen', 'Create Map'); await p.waitForSelector('.medcv');
   let [fc] = await Promise.all([p.waitForEvent('filechooser'), menu('Assets', 'Import Files')]); await fc.setFiles([SP + '/assets_test/Images/logo.png']); await p.waitForTimeout(600);
   await p.click('.hrow:has-text("hud") >> nth=0'); await p.waitForTimeout(500);
   console.log('editor', await p.evaluate(() => !!document.querySelector('#center .hed') + ' z=' + __studio.S.rt.z.toFixed(3)));

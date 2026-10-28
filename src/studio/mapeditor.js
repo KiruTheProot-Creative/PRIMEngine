@@ -1,280 +1,297 @@
-/* PRIMEngine Studio: the DOOM-style map editor. A top-down grid. Rooms (sectors) are closed loops of connected nodes.
-   Click a node or a wall to select it; the Inspector assigns its texture. Geometry lives in the project's map object;
-   every other value (heights, textures, light...) is a tag. */
+/* PRIMEngine Studio: the grid map editor (EasyFPS style). The map is a grid of 2 m cells in layers (stories).
+   Pick a texture in the palette, pick a tool (Wall, Floor, Ceiling, Room...), click or drag over cells to place it.
+   Right mouse button (or Shift with the Erase tool) takes it away again. Middle mouse / Space + drag pans, the wheel zooms.
+   The cells are structure (map.layers, see grid.js); map settings (fog, mood, player start) are tags. */
 (function () {
   "use strict";
-  const PRIM = (window.PRIM = window.PRIM || {}), Schema = PRIM.Schema;
-  const css = () => "";
-  const segDist = (px, py, a, b) => { const dx = b.x - a.x, dy = b.y - a.y, l2 = dx * dx + dy * dy; let t = l2 ? ((px - a.x) * dx + (py - a.y) * dy) / l2 : 0; t = Math.max(0, Math.min(1, t)); const x = a.x + t * dx, y = a.y + t * dy; return { d: Math.hypot(px - x, py - y), t, x, y }; };
-  const inPoly = (px, py, pts) => { let c = false; for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) { if ((pts[i].y > py) !== (pts[j].y > py) && px < (pts[j].x - pts[i].x) * (py - pts[i].y) / (pts[j].y - pts[i].y) + pts[i].x) c = !c; } return c; };
+  const PRIM = (window.PRIM = window.PRIM || {}), G = PRIM.Grid, C = G.CELL;
+  const DIRS = ["North ↑", "East →", "South ↓", "West ←"], ARROW = ["↑", "→", "↓", "←"];
+  const RISES = [1, 2, 4, 6, 8, 12, 16].map(r => [r, r + "/16" + (r === 16 ? " (a whole story)" : r === 8 ? " (half a story)" : r === 4 ? " (a quarter)" : r === 1 ? " (tiny)" : "")]);
+  const TOOLS = [
+    ["select", "Select", "V", "Click or drag a box to select cells (edit them on the right). Drag an object or the start to move it."],
+    ["wall", "Wall", "W", "Click / drag to place wall blocks with the chosen texture. Right mouse removes walls."],
+    ["floor", "Floor", "F", "Click / drag to lay floor with the chosen texture. Right mouse removes floor."],
+    ["ceil", "Ceiling", "C", "Click / drag to put a ceiling (top of this story). Right mouse removes it."],
+    ["room", "Room", "R", "Drag a box: floor and ceiling inside, walls around it (only where nothing is yet). Right-drag clears the box."],
+    ["height", "Height", "H", "Click / drag to set the floor height (16 steps per story). Right mouse sets it back to 0."],
+    ["slope", "Slope", "S", "Click / drag to make ramps that rise toward the chosen direction. Right mouse makes the floor flat again."],
+    ["stairs", "Stairs", "T", "Click / drag to make stairs (8 steps) that rise toward the chosen direction. Right mouse makes it flat."],
+    ["light", "Light", "L", "Click / drag to set how bright cells are. Right mouse sets them back to 100%."],
+    ["erase", "Erase", "X", "Click / drag to empty cells completely (wall, floor, ceiling)."],
+    ["pick", "Pick", "I", "Click a cell to take its texture (Alt + click does this with any tool)."],
+    ["object", "Object", "O", "Click to place the chosen object (doors snap to the middle of a cell). Click an object to select it, drag to move. D turns it."],
+    ["start", "Player start", "P", "Click to put the player start. D turns it."],
+  ];
+  const KEYS = {}; for (const t of TOOLS) KEYS[t[2].toLowerCase()] = t[0];
 
   const ME = (PRIM.MapEditor = function (o) {
-    this.o = o; this.m = o.map; this.T = o.tags; this.tool = "select"; this.sel = null; this.draft = []; this.mouse = null; this.v = { cx: 0, cy: 0, z: 1.2 }; this.imgs = {}; this.dpr = Math.min(2, window.devicePixelRatio || 1); this.drag = null; this.pan = null; this.space = false;
+    this.o = o; this.m = o.map; this.T = o.tags; this.dpr = Math.min(2, window.devicePixelRatio || 1); this.imgs = {};
+    const st = ME.state = ME.state || { tool: "wall", tex: "", L: 0, hgt: 2, dir: 1, rise: 8, light: 70, below: true, ceilShow: true };
+    this.s = st; if (st.L >= this.m.layers.length + 1) st.L = 0; this.v = { cx: 0, cy: 0, z: 0.25 }; this.sel = null; this.hover = null;
     const h = (t, a, ...k) => { const e = document.createElement(t); for (const n in a || {}) { if (n === "text") e.textContent = a[n]; else if (n.startsWith("on")) e[n] = a[n]; else e.setAttribute(n, a[n]); } for (const c of k.flat()) if (c) e.append(c); return e; };
-    this.h = h; this.wrap = h("div", { class: "med", tabindex: "0" }); this.bar = h("div", { class: "medbar" }); this.cv = h("canvas", { class: "medcv" }); this.wrap.append(this.bar, this.cv); o.host.replaceChildren(this.wrap);
-    this.cx = this.cv.getContext("2d"); this.buildBar();
+    this.h = h; this.wrap = h("div", { class: "med", tabindex: "0" }); this.bar = h("div", { class: "medbar" }); this.body = h("div", { class: "medbody" });
+    this.pal = h("div", { class: "medpal" }); this.cv = h("canvas", { class: "medcv" }); this.body.append(this.pal, this.cv); this.wrap.append(this.bar, this.body); o.host.replaceChildren(this.wrap);
+    this.cx = this.cv.getContext("2d"); this.buildBar(); this.buildPal();
     this.ro = new ResizeObserver(() => this.redraw()); this.ro.observe(this.cv);
     this.unsub = this.T.on(() => this.redraw());
-    const cv = this.cv; cv.addEventListener("pointerdown", e => this.down(e)); cv.addEventListener("pointermove", e => this.move(e)); cv.addEventListener("pointerup", e => this.up(e)); cv.addEventListener("pointerleave", () => { this.mouse = null; this.redraw(); });
-    cv.addEventListener("wheel", e => this.wheel(e), { passive: false }); cv.addEventListener("dblclick", e => this.dbl(e)); cv.addEventListener("contextmenu", e => e.preventDefault());
+    const cv = this.cv; cv.addEventListener("pointerdown", e => this.down(e)); cv.addEventListener("pointermove", e => this.move(e)); cv.addEventListener("pointerup", e => this.up(e)); cv.addEventListener("pointercancel", e => this.up(e));
+    cv.addEventListener("pointerleave", () => { this.hover = null; this.redraw(); }); cv.addEventListener("wheel", e => this.wheel(e), { passive: false }); cv.addEventListener("contextmenu", e => e.preventDefault()); cv.addEventListener("auxclick", e => e.preventDefault());
     this.wrap.addEventListener("keydown", e => this.key(e)); this.wrap.addEventListener("keyup", e => { if (e.key === " ") this.space = false; });
-    this.undoS = []; this.redoS = []; this.cur = this.ser(); this.multi = null;
-    this.unsubH = this.T.on(names => { if (this.restoring) return; if (!names.length || names.some(n => n.startsWith(this.m.id + "."))) { clearTimeout(this.ht); this.ht = setTimeout(() => this.commit(), 250); } });
-    this.fit(); setTimeout(() => this.fit(), 0);
+    this.undoS = []; this.redoS = []; this.fit(); setTimeout(() => this.fit(), 0);
   });
   const P = ME.prototype;
 
+  // ---------------------------------------------------------------- toolbar + palette
   P.buildBar = function () {
-    const h = this.h, mk = (id, label, tip) => h("button", { class: "tbtn sm" + (this.tool === id ? " on" : ""), title: tip, text: label, onclick: () => this.setTool(id) });
-    const act = (label, tip, fn) => h("button", { class: "tbtn sm", title: tip, text: label, onclick: fn });
-    this.bar.replaceChildren(act("↶", "Undo (Ctrl+Z)", () => this.history(true)), act("↷", "Redo (Ctrl+Y)", () => this.history(false)), mk("select", "Select / Move", "V: click nodes, walls and rooms. Drag a node to move it. Double-click a wall to add a node."), mk("draw", "Draw Room", "D: click to place nodes, click the first node (or press Enter) to close the room."), mk("box", "Box Room", "B: drag a rectangle to make a room in one go."),
-      mk("start", "Player Start", "P: click to put the player start point."), mk("object", "Place Object", "O: click a wall to put a door in it, or click the floor to put a pick-up or decoration."),
-      this.tool === "object" ? h("select", { class: "sel", title: "Which object to place", onchange: e => this.o.setProp && this.o.setProp(e.target.value) }, ...((this.o.getProps && this.o.getProps()) || []).map(p => h("option", { value: p.id, text: p.name + " (" + p.type + ")", selected: p.id === (this.o.getProp && this.o.getProp()) }))) : "", h("span", { class: "sp" }), h("button", { class: "tbtn sm", text: "Zoom to fit", title: "F", onclick: () => this.fit() }),
-      h("span", { class: "hint", text: this.tool === "draw" ? "Click to place nodes · click the first node or press Enter to close · Backspace undoes · Esc cancels" : this.tool === "box" ? "Drag a rectangle to make a room (it joins the rooms it touches)" : this.tool === "select" ? "Click to select · drag a room to move it · Shift+click / Shift+drag selects several · Ctrl+C / Ctrl+V copy and paste · Ctrl+D duplicates · Ctrl+Z undo" : this.tool === "start" ? "Click where the player starts" : this.tool === "object" ? "Click a wall to place a door (it cuts a doorway) · click the floor for other objects · pick the object in the list" : "Click a node or wall to select it · drag a node to move it · double-click a wall to add a node · drag empty space or hold the right mouse button to pan · scroll to zoom" }));
+    const h = this.h, s = this.s, tip = TOOLS.find(t => t[0] === s.tool);
+    const tb = (label, title, on, fn) => h("button", { class: "tbtn sm" + (on ? " on" : ""), title, text: label, onclick: fn });
+    const sel = (title, opts, val, fn) => h("select", { class: "sel", title, onchange: e => fn(e.target.value) }, ...opts.map(([v, l]) => h("option", { value: v, text: l, selected: String(v) === String(val) })));
+    const opt = [];
+    if (s.tool === "height") opt.push(h("span", { class: "mlab", text: "Height" }), h("input", { type: "range", min: 0, max: 15, step: 1, value: s.hgt, title: "Floor height in 16ths of a story (8 units each)", oninput: e => { s.hgt = +e.target.value; this.buildBar(); } }), h("span", { class: "chip", text: s.hgt + "/16" }));
+    if (s.tool === "slope" || s.tool === "stairs") opt.push(sel("Rises toward", DIRS.map((d, i) => [i, "rises " + d]), s.dir, v => { s.dir = +v; this.redraw(); }), sel("How much it rises", RISES, s.rise, v => { s.rise = +v; }));
+    if (s.tool === "light") opt.push(h("span", { class: "mlab", text: "Light" }), h("input", { type: "range", min: 0, max: 100, step: 5, value: s.light, oninput: e => { s.light = +e.target.value; this.buildBar(); } }), h("span", { class: "chip", text: s.light + "%" }));
+    if (s.tool === "object") { const props = (this.o.getProps && this.o.getProps()) || [], cur = this.o.getProp && this.o.getProp(); opt.push(props.length ? sel("Which object to place", props.map(p => [p.id, p.name + " (" + p.type + ")"]), cur, v => this.o.setProp && this.o.setProp(v)) : h("span", { class: "mlab", text: "Make objects in the Object Editor tab first." })); }
+    if (s.tool === "object" || s.tool === "start") opt.push(tb("⟳ Turn (D)", "Turn the selected object / the start by 90°", false, () => this.turn()));
+    const L = s.L, nL = this.m.layers.length;
+    this.bar.replaceChildren(
+      tb("↶", "Undo (Ctrl+Z)", false, () => this.history(true)), tb("↷", "Redo (Ctrl+Y)", false, () => this.history(false)), h("span", { class: "msep" }),
+      ...TOOLS.map(t => tb(t[1], t[1] + " (" + t[2] + "): " + t[3], s.tool === t[0], () => this.setTool(t[0]))), h("span", { class: "msep" }),
+      h("span", { class: "mlab", text: "Story" }), tb("▼", "Go down a story (Page Down)", false, () => this.setLayer(L - 1)), h("span", { class: "chip", title: "Story (layer) you are editing. Each story is 2 m tall.", text: (L + 1) + " / " + Math.max(nL, L + 1) }), tb("▲", "Go up a story (Page Up)", false, () => this.setLayer(L + 1)),
+      h("label", { class: "mlab", title: "Show the story below, faded" }, h("input", Object.assign({ type: "checkbox", onchange: e => { s.below = e.target.checked; this.redraw(); } }, s.below ? { checked: "" } : {})), " below"),
+      h("label", { class: "mlab", title: "Mark cells that have a ceiling" }, h("input", Object.assign({ type: "checkbox", onchange: e => { s.ceilShow = e.target.checked; this.redraw(); } }, s.ceilShow ? { checked: "" } : {})), " ceilings"),
+      tb("Fit", "Show the whole map (Home)", false, () => this.fit()), ...(opt.length ? [h("span", { class: "msep" }), ...opt] : []),
+      h("span", { class: "hint", text: tip ? tip[3] : "" }));
   };
-  P.setTool = function (t) { this.tool = t; this.draft = []; this.buildBar(); this.redraw(); };
-  P.destroy = function () { this.ro.disconnect(); this.unsub(); this.unsubH(); clearTimeout(this.ht); };
-  // ---- undo / redo: the whole map (its geometry, objects and every one of its tags) before and after each change
-  P.ser = function () { const pre = this.m.id + ".", tags = {}, T = this.o.project.tags; for (const k in T) if (k.startsWith(pre)) tags[k] = T[k]; return JSON.stringify({ v: this.m.verts, s: this.m.sectors, t: this.m.things || [], n: this.m.n, tags }); };
-  P.commit = function () { clearTimeout(this.ht); const s = this.ser(); if (s === this.cur) return; this.undoS.push(this.cur); if (this.undoS.length > 80) this.undoS.shift(); this.redoS = []; this.cur = s; };
+  P.buildPal = function () {
+    const h = this.h, s = this.s, imgs = (this.o.project.assets || []).filter(a => a.type === "image"), urls = this.urls();
+    const sw = (id, name, url) => h("button", { class: "mswatch" + (s.tex === id ? " on" : ""), title: name, onclick: () => { s.tex = id; this.buildPal(); if (["select", "erase", "pick", "object", "start", "height", "light", "slope", "stairs"].includes(s.tool)) this.setTool(s.tool === "select" ? "wall" : s.tool); } },
+      url ? h("img", { src: url, alt: "", draggable: "false" }) : h("span", { class: "msdef" }), h("span", { class: "msn", text: name }));
+    this.pal.replaceChildren(h("div", { class: "mph", text: "Texture" }), sw("", "Default", ""), ...imgs.map(a => sw(a.id, a.name.replace(/\.[^.]+$/, ""), urls[a.id])),
+      imgs.length ? "" : h("div", { class: "note", text: "Import images (Assets > Import Files) to use them as textures." }));
+  };
+  P.setTool = function (t) { this.s.tool = t; this.drag = null; this.buildBar(); this.redraw(); };
+  P.setLayer = function (L) { L = Math.max(0, Math.min(63, L)); if (L > this.m.layers.length) L = this.m.layers.length; this.s.L = L; this.sel = this.sel && this.sel.kind === "cells" ? null : this.sel; this.buildBar(); this.redraw(); this.emitSel(); };
+  P.destroy = function () { this.ro.disconnect(); this.unsub(); };
+  P.urls = function () { return (this.o.getUrls ? this.o.getUrls() : this.o.urls) || {}; };
+  P.img = function (id) { const u = this.urls()[id]; if (!id || !u) return null; let e = this.imgs[id]; if (!e || e.__u !== u) { e = this.imgs[id] = new Image(); e.__u = u; e.onload = () => this.redraw(); e.src = u; } return e.complete && e.naturalWidth ? e : null; };
+
+  // ---------------------------------------------------------------- undo / redo (cells, objects and the start)
+  const START = ["startX", "startY", "startLayer", "startAngle"];
+  P.snap = function () { const m = this.m, o = {}; for (const k of START) o[k] = this.T.get(m.id + "." + k); return JSON.stringify({ layers: m.layers, things: m.things, n: m.n, start: o }); };
+  P.save = function () { this.undoS.push(this.snap()); if (this.undoS.length > 100) this.undoS.shift(); this.redoS = []; };
+  P.restore = function (s) { const d = JSON.parse(s), m = this.m; m.layers = d.layers; m.things = d.things; m.n = d.n; const o = {}; for (const k of START) if (d.start[k] !== undefined) o[m.id + "." + k] = d.start[k]; this.T.setMany(o); };
   P.history = function (back) {
-    this.commit(); const from = back ? this.undoS : this.redoS, to = back ? this.redoS : this.undoS, s = from.pop(); if (!s) { this.o.log && this.o.log(back ? "Nothing to undo." : "Nothing to redo."); return; }
-    to.push(this.cur); this.cur = s; const d = JSON.parse(s), m = this.m, pre = m.id + ".", T = this.o.project.tags; this.restoring = true;
-    m.verts = d.v; m.sectors = d.s; m.things = d.t; m.n = d.n; for (const k of Object.keys(T)) if (k.startsWith(pre)) delete T[k]; Object.assign(T, d.tags);
-    this.sel = null; this.multi = null; this.T.emit([]); this.restoring = false; if (this.o.onSelect) this.o.onSelect(null); if (this.o.onChange) this.o.onChange(true, true); this.redraw();
+    const from = back ? this.undoS : this.redoS, to = back ? this.redoS : this.undoS, s = from.pop(); if (!s) { if (this.o.log) this.o.log(back ? "Nothing to undo." : "Nothing to redo."); return; }
+    to.push(this.snap()); this.restore(s); this.sel = null; this.changed(true); this.emitSel();
   };
-  P.grid = function () { return Math.max(1, +this.T.get(this.m.id + ".gridSize") || 32); };
-  P.vmap = function () { const o = {}; for (const v of this.m.verts) o[v.id] = v; return o; };
-  P.sx = function (x) { return (x - this.v.cx) * this.v.z + this.cv.width / 2 / this.dpr; };
-  P.sy = function (y) { return (y - this.v.cy) * this.v.z + this.cv.height / 2 / this.dpr; };
-  P.wx = function (sx) { return (sx - this.cv.width / 2 / this.dpr) / this.v.z + this.v.cx; };
-  P.wy = function (sy) { return (sy - this.cv.height / 2 / this.dpr) / this.v.z + this.v.cy; };
+  P.changed = function (structure) { this.redraw(); if (this.o.onChange) this.o.onChange(true, structure); };
+
+  // ---------------------------------------------------------------- view
+  P.W = function () { return this.cv.width / this.dpr; }; P.H = function () { return this.cv.height / this.dpr; };
+  P.sx = function (X) { return (X - this.v.cx) * this.v.z + this.W() / 2; }; P.sy = function (Z) { return (Z - this.v.cy) * this.v.z + this.H() / 2; };
+  P.wx = function (sx) { return (sx - this.W() / 2) / this.v.z + this.v.cx; }; P.wy = function (sy) { return (sy - this.H() / 2) / this.v.z + this.v.cy; };
   P.fit = function () {
-    const vs = this.m.verts, w = this.cv.clientWidth || 600, hh = this.cv.clientHeight || 400; if (!vs.length) { this.v = { cx: 0, cy: 0, z: 1.2 }; return this.redraw(); }
-    const x0 = Math.min(...vs.map(v => v.x)), x1 = Math.max(...vs.map(v => v.x)), y0 = Math.min(...vs.map(v => v.y)), y1 = Math.max(...vs.map(v => v.y));
-    this.v = { cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, z: Math.max(0.05, Math.min(4, 0.8 * Math.min(w / Math.max(64, x1 - x0), hh / Math.max(64, y1 - y0)))) }; this.redraw();
+    const b = G.bounds(this.m), w = this.cv.clientWidth || 600, hh = this.cv.clientHeight || 400;
+    if (!b) { this.v = { cx: this.m.w * C / 2, cy: this.m.h * C / 2, z: 0.25 }; return this.redraw(); }
+    const x0 = b.x0 * C, x1 = (b.x1 + 1) * C, y0 = b.y0 * C, y1 = (b.y1 + 1) * C;
+    this.v = { cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, z: Math.max(0.03, Math.min(1.2, 0.85 * Math.min(w / Math.max(C * 4, x1 - x0), hh / Math.max(C * 4, y1 - y0)))) }; this.redraw();
   };
-  P.img = function (id) { const urls = this.o.getUrls ? this.o.getUrls() : this.o.urls || {}; if (!id || !urls[id]) return null; let e = this.imgs[id]; if (!e || e.__u !== urls[id]) { e = this.imgs[id] = new Image(); e.__u = urls[id]; e.onload = () => this.redraw(); e.src = urls[id]; } return e.complete && e.naturalWidth ? e : null; };
-
-  // ---- picking
-  P.pick = function (sx, sy) {
-    const vs = this.vmap(), px = this.wx(sx), py = this.wy(sy), r = 9 / this.v.z, secs = this.m.sectors;
-    if (this.sel && this.sel.kind === "start") { /* start handled below */ }
-    for (const th of this.m.things || []) { const gm = this.thingGeom(th, vs); if (!gm) continue; if (gm.door) { const hw = gm.w / 2, a = { x: gm.A.x + gm.ux * Math.max(0, gm.c - hw), y: gm.A.y + gm.uy * Math.max(0, gm.c - hw) }, b = { x: gm.A.x + gm.ux * Math.min(gm.len, gm.c + hw), y: gm.A.y + gm.uy * Math.min(gm.len, gm.c + hw) }; if (segDist(px, py, a, b).d < 9 / this.v.z) return { kind: "thing", id: th.id }; } else if (Math.hypot(px - gm.x, py - gm.y) < 11 / this.v.z) return { kind: "thing", id: th.id }; }
-    const sx0 = +this.T.get(this.m.id + ".startX"), sy0 = +this.T.get(this.m.id + ".startY"); if (Math.hypot(px - sx0, py - sy0) < r * 1.3) return { kind: "start" };
-    let best = null;
-    for (const s of secs) for (const id of s.v) { const v = vs[id]; if (!v) continue; const d = Math.hypot(v.x - px, v.y - py); if (d < r && (!best || d < best.d)) best = { d, kind: "vert", id }; }
-    if (best) return best;
-    for (const s of secs) for (let i = 0; i < s.v.length; i++) { const a = vs[s.v[i]], b = vs[s.v[(i + 1) % s.v.length]]; if (!a || !b) continue; const r2 = segDist(px, py, a, b); if (r2.d < 6 / this.v.z && (!best || r2.d < best.d)) best = { d: r2.d, kind: "vert", id: a.id, edge: true }; }
-    if (best) return best;
-    for (let i = secs.length - 1; i >= 0; i--) { const pts = secs[i].v.map(id => vs[id]).filter(Boolean); if (pts.length > 2 && inPoly(px, py, pts)) return { kind: "sector", id: secs[i].id }; }
-    return null;
+  P.wheel = function (e) {
+    e.preventDefault(); const [px, py] = this.rel(e), X = this.wx(px), Z = this.wy(py); this.v.z = Math.max(0.03, Math.min(2, this.v.z * (e.deltaY > 0 ? 0.87 : 1.15)));
+    this.v.cx = X - (px - this.W() / 2) / this.v.z; this.v.cy = Z - (py - this.H() / 2) / this.v.z; this.redraw();
   };
-  P.snapPt = function (sx, sy, noVert) {
-    const g = this.grid(), px = this.wx(sx), py = this.wy(sy);
-    if (!noVert) { let best = null; for (const v of this.m.verts) { const d = Math.hypot(v.x - px, v.y - py) * this.v.z; if (d < 10 && (!best || d < best.d)) best = { d, x: v.x, y: v.y }; } if (best) return { x: best.x, y: best.y, vert: true }; }
-    return { x: Math.round(px / g) * g, y: Math.round(py / g) * g };
-  };
-  P.select = function (sel, quiet) { this.sel = sel; if (!quiet && this.o.onSelect) this.o.onSelect(sel); this.redraw(); };
   P.rel = function (e) { const r = this.cv.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+  P.cellAt = function (px, py) { return [Math.floor(this.wx(px) / C), Math.floor(this.wy(py) / C)]; };
 
-  // ---- pointer
-  P.down = function (e) {
-    this.wrap.focus(); const [sx, sy] = this.rel(e); this.cv.setPointerCapture(e.pointerId);
-    if (e.button === 1 || e.button === 2 || this.space) { this.pan = { x: e.clientX, y: e.clientY, cx: this.v.cx, cy: this.v.cy }; return; }
-    if (e.button !== 0) return;
-    if (this.tool === "draw") {
-      const p = this.snapPt(sx, sy, e.altKey), f = this.draft[0], last = this.draft[this.draft.length - 1];
-      if (f && this.draft.length >= 3 && Math.hypot(f.x - p.x, f.y - p.y) * this.v.z < 10) return this.closeDraft();
-      if (last && last.x === p.x && last.y === p.y) return; this.draft.push({ x: p.x, y: p.y }); return this.redraw();
-    }
-    if (this.tool === "object") return this.placeThing(sx, sy);
-    if (this.tool === "box") { const p = this.snapPt(sx, sy, true); this.box = { x0: p.x, y0: p.y, x1: p.x, y1: p.y }; return; }
-    if (this.tool === "start") { this.T.setMany({ [this.m.id + ".startX"]: Math.round(this.wx(sx)), [this.m.id + ".startY"]: Math.round(this.wy(sy)) }); if (this.o.onChange) this.o.onChange(); this.select({ kind: "start" }); return; }
-    const hit = this.pick(sx, sy);
-    if (e.shiftKey && this.tool === "select") {   // several things at once
-      if (hit && (hit.kind === "sector" || hit.kind === "thing")) { this.addMulti(); const set = hit.kind === "sector" ? this.multi.secs : this.multi.things; if (set.has(hit.id)) set.delete(hit.id); else set.add(hit.id); this.sel = null; this.multiChanged(); }
-      else this.marq = { x0: this.wx(sx), y0: this.wy(sy), x1: this.wx(sx), y1: this.wy(sy) };
-      return;
-    }
-    if (this.multi && hit && ((hit.kind === "sector" && this.multi.secs.has(hit.id)) || (hit.kind === "thing" && this.multi.things.has(hit.id)))) { this.startGroup(sx, sy); return; }
-    if (this.multi) { this.multi = null; }
-    if (hit && hit.kind === "sector") { this.select(hit); this.multi = null; this.startGroup(sx, sy, { secs: new Set([hit.id]), things: new Set() }); return; }
-    if (hit && hit.kind === "vert" && !hit.edge) { const v = this.vmap()[hit.id]; this.select({ kind: "vert", id: hit.id }); this.drag = { ids: this.m.verts.filter(o => o.x === v.x && o.y === v.y).map(o => o.id), moved: false }; }
-    else if (hit && hit.kind === "thing") { this.select(hit); this.drag = { thing: hit.id, moved: false }; }
-    else if (hit && hit.kind === "start") { this.select({ kind: "start" }); this.drag = { start: true, moved: false }; }
-    else if (hit) { this.select(hit.kind === "vert" ? { kind: "vert", id: hit.id } : hit); }
-    else { this.select(null); this.pan = { x: e.clientX, y: e.clientY, cx: this.v.cx, cy: this.v.cy }; }
+  // ---------------------------------------------------------------- painting cells
+  // apply one tool to one cell of the current story; erase = the right-mouse version
+  P.paintCell = function (x, y, erase) {
+    const s = this.s, L = s.L, m = this.m, t = s.tool, c = G.edit(m, L, x, y);
+    if (t === "wall") { if (erase) { delete c.w; delete c.ws; } else { c.w = s.tex; delete c.ws; } }
+    else if (t === "floor") { if (erase) { delete c.f; delete c.h; delete c.sh; delete c.sd; delete c.sr; } else { c.f = s.tex; delete c.w; delete c.ws; } }
+    else if (t === "ceil") { if (erase) delete c.c; else { c.c = s.tex; delete c.w; delete c.ws; } }
+    else if (t === "height") { if (c.f === undefined && !erase) c.f = s.tex; if (erase) delete c.h; else { c.h = s.hgt; delete c.w; } }
+    else if (t === "slope" || t === "stairs") { if (erase) { delete c.sh; delete c.sd; delete c.sr; } else { if (c.f === undefined) c.f = s.tex; delete c.w; c.sh = t; c.sd = s.dir; c.sr = s.rise; } }
+    else if (t === "light") { if (erase || s.light >= 100) delete c.li; else c.li = s.light; }
+    else if (t === "erase") { for (const k of Object.keys(c)) delete c[k]; }
+    G.tidy(m, L, x, y);
   };
-  P.move = function (e) {
-    const [sx, sy] = this.rel(e); this.mouse = { sx, sy };
-    if (this.pan) { this.v.cx = this.pan.cx - (e.clientX - this.pan.x) / this.v.z; this.v.cy = this.pan.cy - (e.clientY - this.pan.y) / this.v.z; }
-    else if (this.box) { const p = this.snapPt(sx, sy, true); this.box.x1 = p.x; this.box.y1 = p.y; }
-    else if (this.marq) { this.marq.x1 = this.wx(sx); this.marq.y1 = this.wy(sy); }
-    else if (this.drag && this.drag.group) { const g = this.grid(), d = this.drag, dx = Math.round((this.wx(sx) - d.wx) / g) * g, dy = Math.round((this.wy(sy) - d.wy) / g) * g;
-      if (dx !== d.dx || dy !== d.dy) { d.dx = dx; d.dy = dy; d.moved = true; const vs = this.vmap(); for (const [id, x, y] of d.verts) { vs[id].x = x + dx; vs[id].y = y + dy; } for (const [th, x, y] of d.things) { th.x = x + dx; th.y = y + dy; } } }
-    else if (this.drag) {
-      const p = this.snapPt(sx, sy, true), vs = this.vmap();
-      if (this.drag.thing) { const th = (this.m.things || []).find(x => x.id === this.drag.thing), gm = th && this.thingGeom(th, vs), px = this.wx(sx), py = this.wy(sy);
-        if (gm && gm.door) { const s = Math.max(gm.w / 2, Math.min(gm.len - gm.w / 2, Math.round(((px - gm.A.x) * gm.ux + (py - gm.A.y) * gm.uy) / 16) * 16)), t = +(s / gm.len).toFixed(5); if (t !== th.t) { th.t = t; this.drag.moved = true; } }
-        else if (th) { const g = this.grid(), x = Math.round(px / g) * g, y = Math.round(py / g) * g; if (x !== th.x || y !== th.y) { th.x = x; th.y = y; this.drag.moved = true; } } }
-      else if (this.drag.start) { this.T.setMany({ [this.m.id + ".startX"]: Math.round(this.wx(sx)), [this.m.id + ".startY"]: Math.round(this.wy(sy)) }); this.drag.moved = true; }
-      else for (const id of this.drag.ids) { if (vs[id].x !== p.x || vs[id].y !== p.y) { vs[id].x = p.x; vs[id].y = p.y; this.drag.moved = true; } }
+  P.room = function (a, b, erase) {
+    const s = this.s, L = s.L, m = this.m, x0 = Math.min(a[0], b[0]), x1 = Math.max(a[0], b[0]), y0 = Math.min(a[1], b[1]), y1 = Math.max(a[1], b[1]);
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+      if (erase) { const c = G.cell(m, L, x, y); if (c) { for (const k of Object.keys(c)) delete c[k]; G.tidy(m, L, x, y); } continue; }
+      const edgeC = x === x0 || x === x1 || y === y0 || y === y1, c = G.edit(m, L, x, y);
+      if (edgeC && x1 - x0 >= 2 && y1 - y0 >= 2) { if (c.f === undefined && c.w === undefined) c.w = s.tex; }
+      else { delete c.w; delete c.ws; if (c.f === undefined) c.f = s.tex; if (c.c === undefined) c.c = s.tex; }
     }
+  };
+  P.pickTex = function (x, y) {
+    const c = G.cell(this.m, this.s.L, x, y); if (!c) return; const tex = c.w !== undefined ? c.w : c.f !== undefined ? c.f : c.c; if (tex === undefined) return;
+    this.s.tex = tex; if (this.s.tool === "pick" || this.s.tool === "select") this.s.tool = c.w !== undefined ? "wall" : "floor"; this.buildPal(); this.buildBar(); this.redraw();
+  };
+
+  // ---------------------------------------------------------------- objects and the start
+  P.things = function () { return (this.m.things || []).filter(t => (t.layer || 0) === this.s.L); };
+  P.thingAt = function (px, py) {
+    let best = null, bd = 1e9; const X = this.wx(px), Z = this.wy(py);
+    for (const t of this.things()) {
+      if (this.T.get(t.prop + ".type") === "door") { const f = G.thingFrame(this.m, this.T, t); if (f.cells.some(([cx, cy]) => Math.floor(X / C) === cx && Math.floor(Z / C) === cy)) { const d = Math.hypot(X - f.cx, Z - f.cy) * this.v.z; if (d < bd) { bd = d; best = t; } } continue; }
+      const d = Math.hypot(this.sx(t.x) - px, this.sy(t.y) - py), r = Math.max(9, 0.18 * C * this.v.z); if (d < r && d < bd) { bd = d; best = t; }
+    }
+    return best;
+  };
+  P.startAt = function (px, py) { const T = this.T, m = this.m; if ((+T.get(m.id + ".startLayer") || 0) !== this.s.L) return false; return Math.hypot(this.sx(+T.get(m.id + ".startX")) - px, this.sy(+T.get(m.id + ".startY")) - py) < Math.max(10, 0.2 * C * this.v.z); };
+  const snap16 = v => Math.round(v / 16) * 16;
+  P.place = function (px, py) {
+    const pid = this.o.getProp && this.o.getProp(); if (!pid) { if (this.o.log) this.o.log("Make an object in the Object Editor tab first, then pick it in the toolbar.", "warn"); return null; }
+    this.save(); const m = this.m; m.things = m.things || []; m.n = m.n || { t: 0 }; const isDoor = this.T.get(pid + ".type") === "door", X = this.wx(px), Z = this.wy(py);
+    const th = { id: "t" + (++m.n.t), prop: pid, x: isDoor ? (Math.floor(X / C) + 0.5) * C : snap16(X), y: isDoor ? (Math.floor(Z / C) + 0.5) * C : snap16(Z), ang: 0, layer: this.s.L };
+    if (isDoor) { const L = this.s.L, cx = Math.floor(X / C), cy = Math.floor(Z / C); if (G.isWall(G.cell(m, L, cx - 1, cy)) || G.isWall(G.cell(m, L, cx + 1, cy))) th.ang = 0; else if (G.isWall(G.cell(m, L, cx, cy - 1)) || G.isWall(G.cell(m, L, cx, cy + 1))) th.ang = 90; }
+    m.things.push(th); this.sel = { kind: "thing", id: th.id }; this.changed(true); this.emitSel(); return th;
+  };
+  P.turn = function () {
+    const sel = this.sel, m = this.m; if (sel && sel.kind === "thing") { const th = (m.things || []).find(t => t.id === sel.id); if (th) { this.save(); th.ang = ((th.ang || 0) + 90) % 360; this.changed(false); this.emitSel(); } return; }
+    if (this.s.tool === "start" || (sel && sel.kind === "start")) { this.save(); this.T.set(m.id + ".startAngle", ((+this.T.get(m.id + ".startAngle") || 0) + 90) % 360); this.changed(false); return; }
+    if (this.s.tool === "slope" || this.s.tool === "stairs") { this.s.dir = (this.s.dir + 1) % 4; this.buildBar(); this.redraw(); }
+  };
+  P.setStart = function (px, py) { this.save(); const m = this.m; this.T.setMany({ [m.id + ".startX"]: snap16(this.wx(px)), [m.id + ".startY"]: snap16(this.wy(py)), [m.id + ".startLayer"]: this.s.L }); this.sel = { kind: "start" }; this.changed(false); this.emitSel(); };
+
+  // ---------------------------------------------------------------- selection (used by the Inspector)
+  P.emitSel = function () { if (this.o.onSelect) this.o.onSelect(this.sel); };
+  P.select = function (sel, quiet) { this.sel = sel; this.redraw(); if (!quiet) this.emitSel(); };
+  P.selCells = function () { const s = this.sel; if (!s || s.kind !== "cells") return []; const out = []; for (let y = Math.min(s.y0, s.y1); y <= Math.max(s.y0, s.y1); y++) for (let x = Math.min(s.x0, s.x1); x <= Math.max(s.x0, s.x1); x++) out.push([x, y]); return out; };
+  // change every selected cell: fn(cell, x, y) edits the cell (it is created when missing, and removed again when left empty)
+  P.applyCells = function (fn) { const list = this.selCells(); if (!list.length) return; this.save(); for (const [x, y] of list) { fn(G.edit(this.m, this.s.L, x, y), x, y); G.tidy(this.m, this.s.L, x, y); } this.changed(false); };
+  P.deleteSelection = function () {
+    const s = this.sel, m = this.m; if (!s) return false;
+    if (s.kind === "thing") { this.save(); m.things = (m.things || []).filter(t => t.id !== s.id); this.sel = null; this.changed(true); this.emitSel(); return true; }
+    if (s.kind === "cells") { this.applyCells(c => { for (const k of Object.keys(c)) delete c[k]; }); return true; }
+    return false;
+  };
+  // copy / paste a box of cells (Ctrl+C / Ctrl+V at the mouse)
+  P.copy = function () { const list = this.selCells(); if (!list.length) return false; const s = this.sel, x0 = Math.min(s.x0, s.x1), y0 = Math.min(s.y0, s.y1); ME.clip = list.map(([x, y]) => [x - x0, y - y0, JSON.parse(JSON.stringify(G.cell(this.m, this.s.L, x, y) || {}))]); ME.clipW = Math.abs(s.x1 - s.x0); ME.clipH = Math.abs(s.y1 - s.y0); if (this.o.log) this.o.log("Copied " + list.length + " cell(s). Ctrl+V pastes them where the mouse is."); return true; };
+  P.paste = function (cx, cy) {
+    if (!ME.clip) return; this.save(); const L = this.s.L; for (const [dx, dy, c] of ME.clip) { const l = (G.edit(this.m, L, cx + dx, cy + dy), this.m.layers[L]); l.cells[(cx + dx) + "," + (cy + dy)] = JSON.parse(JSON.stringify(c)); G.tidy(this.m, L, cx + dx, cy + dy); }
+    this.sel = { kind: "cells", x0: cx, y0: cy, x1: cx + ME.clipW, y1: cy + ME.clipH }; this.changed(false); this.emitSel();
+  };
+  P.duplicate = function () { if (!this.copy()) return; const s = this.sel; this.paste(Math.max(s.x0, s.x1) + 1, Math.min(s.y0, s.y1)); };
+
+  // ---------------------------------------------------------------- mouse
+  P.down = function (e) {
+    this.wrap.focus({ preventScroll: true }); const [px, py] = this.rel(e), s = this.s, [cx, cy] = this.cellAt(px, py); this.cv.setPointerCapture(e.pointerId);
+    if (e.button === 1 || (e.button === 0 && this.space)) { this.drag = { kind: "pan", px, py, cx: this.v.cx, cy: this.v.cy }; return; }
+    if (e.button === 0 && e.altKey) { this.pickTex(cx, cy); return; }
+    const erase = e.button === 2;
+    if (s.tool === "pick") { this.pickTex(cx, cy); return; }
+    if (s.tool === "select" || s.tool === "object") {
+      const th = this.thingAt(px, py); if (th) { this.save(); this.sel = { kind: "thing", id: th.id }; this.drag = { kind: "thing", th, ox: th.x - this.wx(px), oy: th.y - this.wy(py), moved: false }; this.redraw(); this.emitSel(); return; }
+      if (this.startAt(px, py)) { this.save(); this.sel = { kind: "start" }; this.drag = { kind: "start" }; this.redraw(); this.emitSel(); return; }
+      if (s.tool === "object") { if (!erase) { const t = this.place(px, py); if (t) { this.drag = { kind: "thing", th: t, ox: t.x - this.wx(px), oy: t.y - this.wy(py), moved: true, fresh: true }; } } return; }
+      this.sel = { kind: "cells", x0: cx, y0: cy, x1: cx, y1: cy }; this.drag = { kind: "box", a: [cx, cy] }; this.redraw(); return;
+    }
+    if (s.tool === "start") { this.setStart(px, py); this.drag = { kind: "start" }; return; }
+    if (s.tool === "room") { this.drag = { kind: "room", a: [cx, cy], b: [cx, cy], erase }; this.redraw(); return; }
+    this.save(); this.drag = { kind: "paint", erase, done: new Set() }; this.paintAt(cx, cy);
+  };
+  P.paintAt = function (cx, cy) { const d = this.drag, k = cx + "," + cy; if (d.done.has(k)) return; d.done.add(k); this.paintCell(cx, cy, d.erase); this.redraw(); };
+  P.move = function (e) {
+    const [px, py] = this.rel(e), [cx, cy] = this.cellAt(px, py), d = this.drag; this.hover = [cx, cy]; this.mouse = [px, py];
+    if (!d) return this.redraw();
+    if (d.kind === "pan") { this.v.cx = d.cx - (px - d.px) / this.v.z; this.v.cy = d.cy - (py - d.py) / this.v.z; return this.redraw(); }
+    if (d.kind === "paint") { const l = d.last || [cx, cy], n = Math.max(Math.abs(cx - l[0]), Math.abs(cy - l[1])); for (let i = 1; i <= n; i++) this.paintAt(Math.round(l[0] + (cx - l[0]) * i / n), Math.round(l[1] + (cy - l[1]) * i / n)); this.paintAt(cx, cy); d.last = [cx, cy]; return; }
+    if (d.kind === "room") { d.b = [cx, cy]; return this.redraw(); }
+    if (d.kind === "box") { this.sel.x1 = cx; this.sel.y1 = cy; return this.redraw(); }
+    if (d.kind === "thing") { const isDoor = this.T.get(d.th.prop + ".type") === "door", X = this.wx(px) + d.ox, Z = this.wy(py) + d.oy; d.th.x = isDoor ? (Math.floor(X / C) + 0.5) * C : snap16(X); d.th.y = isDoor ? (Math.floor(Z / C) + 0.5) * C : snap16(Z); d.moved = true; return this.redraw(); }
+    if (d.kind === "start") { const m = this.m; this.T.setMany({ [m.id + ".startX"]: snap16(this.wx(px)), [m.id + ".startY"]: snap16(this.wy(py)) }); d.moved = true; }
+  };
+  P.up = function (e) {
+    const d = this.drag; this.drag = null; if (!d) return; try { this.cv.releasePointerCapture(e.pointerId); } catch (x) {}
+    if (d.kind === "paint") { if (d.done.size) this.changed(false); else this.undoS.pop(); }
+    else if (d.kind === "room") { this.save(); this.room(d.a, d.b, d.erase); this.changed(false); }
+    else if (d.kind === "box") this.emitSel();
+    else if (d.kind === "thing") { if (!d.moved) this.undoS.pop(); this.changed(false); this.emitSel(); }
+    else if (d.kind === "start") { this.changed(false); this.emitSel(); }
     this.redraw();
   };
-  P.up = function () {
-    const d = this.drag; this.pan = null; this.drag = null;
-    if (this.box) { const b = this.box; this.box = null; const x0 = Math.min(b.x0, b.x1), x1 = Math.max(b.x0, b.x1), y0 = Math.min(b.y0, b.y1), y1 = Math.max(b.y0, b.y1); if (x1 - x0 >= this.grid() && y1 - y0 >= this.grid()) { this.draft = [{ x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 }]; this.closeDraft(); this.tool = "box"; this.buildBar(); } this.redraw(); return; }
-    if (this.marq) { const q = this.marq; this.marq = null; const x0 = Math.min(q.x0, q.x1), x1 = Math.max(q.x0, q.x1), y0 = Math.min(q.y0, q.y1), y1 = Math.max(q.y0, q.y1), vs = this.vmap(), inR = p => p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1; this.addMulti();
-      for (const s of this.m.sectors) if (s.v.every(id => vs[id] && inR(vs[id]))) this.multi.secs.add(s.id); for (const th of this.m.things || []) if (!th.sec && inR(th)) this.multi.things.add(th.id); this.sel = null; this.multiChanged(); return; }
-    if (d && d.group && !d.moved && d.one) { /* a plain click on a room just selects it */ }
-    if (d && d.moved) { if (d.group) PRIM.MapGeo.stitch(this.o.project, this.m, this.T); this.T.emit([]); this.commit(); if (this.o.onChange) this.o.onChange(true, !!d.group); }
-  };
-  // ---- several rooms / objects at once
-  P.addMulti = function () { if (this.multi) return; this.multi = { secs: new Set(), things: new Set() }; if (this.sel && this.sel.kind === "sector") this.multi.secs.add(this.sel.id); if (this.sel && this.sel.kind === "thing") this.multi.things.add(this.sel.id); };
-  P.multiChanged = function () { const n = this.multi ? this.multi.secs.size + this.multi.things.size : 0; if (!n) this.multi = null; if (this.o.onSelect) this.o.onSelect(this.multi ? { kind: "multi", rooms: this.multi.secs.size, things: this.multi.things.size } : null); this.redraw(); };
-  P.startGroup = function (sx, sy, set) { const g = set || this.multi, vs = this.vmap(), ids = new Set(); for (const s of this.m.sectors) if (g.secs.has(s.id)) s.v.forEach(id => ids.add(id));
-    const things = (this.m.things || []).filter(t => !t.sec && (g.things.has(t.id) || (g.secs.size && this.m.sectors.some(s => g.secs.has(s.id) && inPoly(t.x, t.y, s.v.map(id => vs[id]).filter(Boolean))))));
-    this.drag = { group: true, one: !!set, wx: this.wx(sx), wy: this.wy(sy), dx: 0, dy: 0, moved: false, verts: [...ids].map(id => [id, vs[id].x, vs[id].y]), things: things.map(t => [t, t.x, t.y]) }; };
-  P.selection = function () { if (this.multi) return this.multi; if (this.sel && this.sel.kind === "sector") return { secs: new Set([this.sel.id]), things: new Set() }; if (this.sel && this.sel.kind === "thing") return { secs: new Set(), things: new Set([this.sel.id]) }; return null; };
-  P.copy = function () {
-    const g = this.selection(); if (!g) return false; const vs = this.vmap(), T = this.T, mid = this.m.id, rooms = [], things = [];
-    for (const s of this.m.sectors) { if (!g.secs.has(s.id)) continue; const secTags = {}; for (const pr of Schema.SECTOR) secTags[pr.k] = T.get(mid + "." + s.id + "." + pr.k);
-      rooms.push({ pts: s.v.map(id => ({ x: vs[id].x, y: vs[id].y, tags: Object.fromEntries(Schema.VERT.map(pr => [pr.k, T.get(mid + "." + id + "." + pr.k)])) })), secTags, doors: (this.m.things || []).filter(t => t.sec === s.id).map(t => ({ prop: t.prop, i: s.v.indexOf(t.a), t: t.t })) }); }
-    for (const t of this.m.things || []) if (!t.sec && g.things.has(t.id)) things.push({ prop: t.prop, x: t.x, y: t.y, ang: t.ang || 0 });
-    ME.clip = { rooms, things }; if (this.o.log) this.o.log("Copied " + rooms.length + " room(s) and " + things.length + " object(s)"); return true;
-  };
-  P.paste = function (ox, oy) {
-    const c = ME.clip; if (!c || (!c.rooms.length && !c.things.length)) return; const T = this.T, mid = this.m.id, m = this.m, made = { secs: new Set(), things: new Set() }, errs = [];
-    const all = c.rooms.flatMap(r => r.pts).concat(c.things), g = this.grid();
-    if (ox === undefined) { const cx = all.reduce((a, p) => a + p.x, 0) / all.length, cy = all.reduce((a, p) => a + p.y, 0) / all.length, mw = this.mouse ? this.wx(this.mouse.sx) : cx + 2 * g, mh = this.mouse ? this.wy(this.mouse.sy) : cy + 2 * g; ox = Math.round((mw - cx) / g) * g; oy = Math.round((mh - cy) / g) * g; }
-    for (const r of c.rooms) {
-      const res = PRIM.MapGeo.addRoom(this.o.project, m, T, r.pts.map(p => ({ x: p.x + ox, y: p.y + oy }))); if (res.error) { errs.push(res.error); continue; }
-      for (const sec of res.sectors) { made.secs.add(sec.id); const set = {}; for (const k in r.secTags) set[mid + "." + sec.id + "." + k] = r.secTags[k];
-        for (const id of sec.v) { const v = m.verts.find(x => x.id === id), src = r.pts.find(p => p.x + ox === v.x && p.y + oy === v.y); if (src) for (const k in src.tags) set[mid + "." + id + "." + k] = src.tags[k]; } T.setMany(set);
-        if (res.sectors.length === 1 && sec.v.length === r.pts.length) for (const d of r.doors) { const p = r.pts[d.i], v = p && m.verts.find(x => sec.v.includes(x.id) && x.x === p.x + ox && x.y === p.y + oy); if (v) { m.n.t = (m.n.t || 0) + 1; m.things.push({ id: "t" + m.n.t, prop: d.prop, sec: sec.id, a: v.id, t: d.t }); } } }
-    }
-    for (const t of c.things) { m.n.t = (m.n.t || 0) + 1; const th = { id: "t" + m.n.t, prop: t.prop, x: t.x + ox, y: t.y + oy, ang: t.ang }; m.things.push(th); made.things.add(th.id); }
-    if (errs.length && this.o.log) this.o.log(errs[0], "warn"); this.multi = made.secs.size + made.things.size ? made : null; this.sel = null; this.T.emit([]); this.commit(); this.multiChanged(); if (this.o.onChange) this.o.onChange(true, true);
-  };
-  // duplicate: a copy right next to the selection (to the right, one tile apart) so it never overlaps it
-  P.duplicate = function () { if (!this.copy()) return; const c = ME.clip, xs = c.rooms.flatMap(r => r.pts.map(p => p.x)).concat(c.things.map(t => t.x)); this.paste(Math.ceil((Math.max(...xs) - Math.min(...xs) + this.grid()) / this.grid()) * this.grid(), 0); };
-  P.deleteMulti = function () { const g = this.multi; if (!g) return false; for (const s of this.m.sectors.filter(s => g.secs.has(s.id))) { this.m.things = (this.m.things || []).filter(t => t.sec !== s.id); Schema.removeSector(this.o.project, this.m, s); } this.m.things = (this.m.things || []).filter(t => !g.things.has(t.id)); this.multi = null; this.T.emit([]); this.commit(); this.multiChanged(); if (this.o.onChange) this.o.onChange(true, true); return true; };
-  P.wheel = function (e) {
-    e.preventDefault(); const [sx, sy] = this.rel(e), bx = this.wx(sx), by = this.wy(sy); this.v.z = Math.max(0.04, Math.min(12, this.v.z * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
-    this.v.cx = bx - (sx - this.cv.width / 2 / this.dpr) / this.v.z; this.v.cy = by - (sy - this.cv.height / 2 / this.dpr) / this.v.z; this.redraw();
-  };
-  P.dbl = function (e) {
-    if (this.tool === "draw") return this.closeDraft(); if (this.tool !== "select") return;
-    const [sx, sy] = this.rel(e), hit = this.pick(sx, sy); if (!hit || !hit.edge) return;
-    const vs = this.vmap(), sec = this.m.sectors.find(s => s.v.includes(hit.id)); if (!sec) return; const i = sec.v.indexOf(hit.id), a = vs[hit.id], b = vs[sec.v[(i + 1) % sec.v.length]];
-    const r = segDist(this.wx(sx), this.wy(sy), a, b), g = this.grid(); let x = Math.round(r.x / g) * g, y = Math.round(r.y / g) * g; if (segDist(x, y, a, b).d > g) { x = Math.round(r.x); y = Math.round(r.y); }
-    const over = {}; for (const p of Schema.VERT) over[p.k] = this.T.get(this.m.id + "." + a.id + "." + p.k);
-    const nv = Schema.addVert(this.o.project, this.m, x, y, over); sec.v.splice(i + 1, 0, nv.id); this.T.emit([]); this.select({ kind: "vert", id: nv.id }); if (this.o.onChange) this.o.onChange(true, true);
-  };
-  // objects placed in the map (doors sit in a wall: sec + a = the wall from node a to the next node, t = how far along it; others sit at x, y)
-  P.thingGeom = function (th, vs) {
-    if (th.sec) { const sec = this.m.sectors.find(s => s.id === th.sec); if (!sec) return null; const i = sec.v.indexOf(th.a); if (i < 0) return null; const A = vs[th.a], B = vs[sec.v[(i + 1) % sec.v.length]]; if (!A || !B) return null;
-      const len = Math.hypot(B.x - A.x, B.y - A.y) || 1, ux = (B.x - A.x) / len, uy = (B.y - A.y) / len, w = +this.T.get(th.prop + ".doorWidth") || 96, c = th.t * len; return { door: true, A, B, len, ux, uy, w, c, x: A.x + ux * c, y: A.y + uy * c }; }
-    return { x: th.x, y: th.y };
-  };
-  P.placeThing = function (sx, sy) {
-    const pid = this.o.getProp && this.o.getProp(), log = t => this.o.log && this.o.log(t, "warn"); if (!pid) return log("Create an object in the Object Editor tab first.");
-    const type = this.T.get(pid + ".type"), vs = this.vmap(), px = this.wx(sx), py = this.wy(sy), m = this.m; m.things = m.things || []; m.n.t = m.n.t || 0; let th;
-    if (type === "door") {
-      let best = null; for (const s of m.sectors) for (let i = 0; i < s.v.length; i++) { const a = vs[s.v[i]], b = vs[s.v[(i + 1) % s.v.length]]; if (!a || !b) continue; const r = segDist(px, py, a, b); if (r.d < 16 / this.v.z && (!best || r.d < best.d)) best = { d: r.d, s, a, b, r }; }
-      if (!best) return log("Click on a wall to place a door."); const len = Math.hypot(best.b.x - best.a.x, best.b.y - best.a.y), w = +this.T.get(pid + ".doorWidth") || 96;
-      if (len < w) return log("This wall (" + Math.round(len) + " units) is shorter than the door (" + w + " units).");
-      const s2 = Math.max(w / 2, Math.min(len - w / 2, Math.round(best.r.t * len / 16) * 16)); th = { id: "t" + (++m.n.t), prop: pid, sec: best.s.id, a: best.a.id, t: +(s2 / len).toFixed(5) };
-    } else { const g = this.grid(); th = { id: "t" + (++m.n.t), prop: pid, x: Math.round(px / g) * g, y: Math.round(py / g) * g, ang: 0 }; }
-    m.things.push(th); this.T.emit([]); this.select({ kind: "thing", id: th.id }); if (this.o.onChange) this.o.onChange(true, true); if (this.o.log) this.o.log("Placed “" + (this.T.get(pid + ".name") || pid) + "”");
-  };
-  P.closeDraft = function () {
-    const d = this.draft; if (d.length < 3) { this.draft = []; return this.redraw(); }
-    const r = PRIM.MapGeo.addRoom(this.o.project, this.m, this.T, d); if (r.error) { if (this.o.log) this.o.log(r.error, "warn"); return this.redraw(); }
-    this.draft = []; const sec = r.sectors[0];
-    this.T.emit([]); this.tool = "select"; this.buildBar(); this.select({ kind: "sector", id: sec.id }); if (this.o.onChange) this.o.onChange(true, true);
-    if (this.o.log) this.o.log("Created room “" + sec.id + "”" + (r.sectors.length > 1 ? " (+" + (r.sectors.length - 1) + " more part(s))" : "") + (r.cut ? " – the part overlapping another room was cut away, they now share a wall" : ""));
-  };
-  P.deleteSelection = function () {
-    if (this.draft.length) { this.draft.pop(); return this.redraw(); } if (this.deleteMulti()) return; const s = this.sel; if (!s) return;
-    if (s.kind === "sector") { const sec = this.m.sectors.find(x => x.id === s.id); if (sec) { this.m.things = (this.m.things || []).filter(t => t.sec !== sec.id); Schema.removeSector(this.o.project, this.m, sec); } }
-    else if (s.kind === "thing") { this.m.things = (this.m.things || []).filter(t => t.id !== s.id); }
-    else if (s.kind === "vert") { const sec = this.m.sectors.find(x => x.v.includes(s.id)); if (!sec) return;
-      if (sec.v.length <= 3) { this.o.log && this.o.log("A room needs at least 3 nodes. Select the room itself and press Delete to remove it.", "warn"); return; }
-      sec.v.splice(sec.v.indexOf(s.id), 1); this.m.verts.splice(this.m.verts.findIndex(v => v.id === s.id), 1); this.T.removePrefix(this.m.id + "." + s.id); }
-    else return;
-    this.sel = null; this.T.emit([]); this.commit(); if (this.o.onSelect) this.o.onSelect(null); if (this.o.onChange) this.o.onChange(true, true); this.redraw();
-  };
   P.key = function (e) {
-    const k = e.key.toLowerCase(); if (/INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) return;
-    if (e.ctrlKey || e.metaKey) { if (k === "z") { e.preventDefault(); this.history(!e.shiftKey); } else if (k === "y") { e.preventDefault(); this.history(false); } else if (k === "c") { if (this.copy()) e.preventDefault(); } else if (k === "v") { e.preventDefault(); this.paste(); } else if (k === "d") { e.preventDefault(); this.duplicate(); } else if (k === "a") { e.preventDefault(); this.multi = { secs: new Set(this.m.sectors.map(s => s.id)), things: new Set((this.m.things || []).filter(t => !t.sec).map(t => t.id)) }; this.sel = null; this.multiChanged(); } return; }
-    if (k === "b") return this.setTool("box");
-    if (k === " ") { this.space = true; e.preventDefault(); } else if (k === "v") this.setTool("select"); else if (k === "d" && !e.ctrlKey && !e.metaKey) this.setTool("draw"); else if (k === "p") this.setTool("start"); else if (k === "o") this.setTool("object"); else if (k === "f") this.fit();
-    else if (k === "enter" && this.tool === "draw") this.closeDraft(); else if (k === "escape") { if (this.draft.length) { this.draft = []; this.redraw(); } else { this.multi = null; this.select(null); } }
+    if (/INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) return; const k = e.key.toLowerCase(), mod = e.ctrlKey || e.metaKey;
+    if (k === " ") { this.space = true; e.preventDefault(); return; }
+    if (mod && k === "z") { e.preventDefault(); this.history(!e.shiftKey); return; } if (mod && k === "y") { e.preventDefault(); this.history(false); return; }
+    if (mod && k === "c") { e.preventDefault(); this.copy(); return; } if (mod && k === "v") { e.preventDefault(); if (this.hover) this.paste(this.hover[0], this.hover[1]); return; }
+    if (mod && k === "a") { e.preventDefault(); const b = G.bounds(this.m); if (b) { this.sel = { kind: "cells", x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1 }; this.redraw(); this.emitSel(); } return; }
+    if (mod) return;
+    if (k === "escape") { this.sel = null; this.redraw(); this.emitSel(); return; }
+    if (k === "pageup") { e.preventDefault(); this.setLayer(this.s.L + 1); return; } if (k === "pagedown") { e.preventDefault(); this.setLayer(this.s.L - 1); return; }
+    if (k === "home") { this.fit(); return; } if (k === "d") { this.turn(); return; }
+    if (KEYS[k]) { e.preventDefault(); this.setTool(KEYS[k]); }
+  };
+  // a texture dropped from the Project panel: put it on the cell under the mouse (its wall, or else its floor; Shift = ceiling)
+  P.dropTexture = function (e, assetId) {
+    const [px, py] = this.rel(e), [x, y] = this.cellAt(px, py), c = G.cell(this.m, this.s.L, x, y); this.save(); const cc = G.edit(this.m, this.s.L, x, y);
+    let part; if (e.shiftKey) { cc.c = assetId; part = "ceiling"; } else if (c && c.w !== undefined) { cc.w = assetId; delete cc.ws; part = "wall"; } else { cc.f = assetId; part = "floor"; }
+    this.s.tex = assetId; this.buildPal(); this.changed(false); return part;
   };
 
-  // ---- drawing
-  let raf = 0;
+  // ---------------------------------------------------------------- drawing
   P.redraw = function () { if (this.pending) return; this.pending = true; requestAnimationFrame(() => { this.pending = false; this.paint(); }); };
   P.paint = function () {
-    const cv = this.cv, dpr = (this.dpr = Math.min(2, window.devicePixelRatio || 1)), W = cv.clientWidth, H = cv.clientHeight; if (W < 2 || H < 2) return;
-    if (cv.width !== Math.floor(W * dpr) || cv.height !== Math.floor(H * dpr)) { cv.width = Math.floor(W * dpr); cv.height = Math.floor(H * dpr); }
-    const c = this.cx, vs = this.vmap(), T = this.T, mid = this.m.id; c.setTransform(dpr, 0, 0, dpr, 0, 0);
-    c.fillStyle = css("--mapbg") || "#10161d"; c.fillRect(0, 0, W, H);
+    const cv = this.cv, d = this.dpr, w = Math.max(2, Math.floor(cv.clientWidth * d)), hh = Math.max(2, Math.floor(cv.clientHeight * d)); if (cv.width !== w || cv.height !== hh) { cv.width = w; cv.height = hh; }
+    const x = this.cx, m = this.m, s = this.s, T = this.T, z = this.v.z, cs = C * z, L = s.L; x.setTransform(d, 0, 0, d, 0, 0); x.imageSmoothingEnabled = false;
+    x.fillStyle = "#0d1218"; x.fillRect(0, 0, this.W(), this.H());
+    const gx0 = Math.floor(this.wx(0) / C) - 1, gx1 = Math.ceil(this.wx(this.W()) / C) + 1, gy0 = Math.floor(this.wy(0) / C) - 1, gy1 = Math.ceil(this.wy(this.H()) / C) + 1;
+    const rect = (cx, cy) => [this.sx(cx * C), this.sy(cy * C), cs, cs];
+    const each = (layer, fn) => { if (!layer) return; for (const k in layer.cells) { const [cx, cy] = k.split(",").map(Number); if (cx < gx0 || cx > gx1 || cy < gy0 || cy > gy1) continue; fn(layer.cells[k], cx, cy); } };
+    const texFill = (tex, r, base) => { const im = this.img(tex); if (im) x.drawImage(im, r[0], r[1], r[2] + 0.5, r[3] + 0.5); else { x.fillStyle = base; x.fillRect(r[0], r[1], r[2] + 0.5, r[3] + 0.5); } };
+    // the story below, faded
+    if (s.below && L > 0) { x.globalAlpha = 0.28; each(m.layers[L - 1], (c, cx, cy) => { const r = rect(cx, cy); if (G.isWall(c)) { x.fillStyle = "#6c7380"; x.fillRect(...r); } else if (c.f !== undefined) { x.fillStyle = "#38404c"; x.fillRect(...r); } }); x.globalAlpha = 1; }
+    // floors first, then walls on top
+    each(m.layers[L], (c, cx, cy) => {
+      if (G.isWall(c)) return; const r = rect(cx, cy);
+      if (c.f !== undefined) {
+        texFill(c.f, r, "#4a5260"); const hgt = c.h || 0; if (hgt) { x.fillStyle = "rgba(255,255,255," + (hgt / 15 * 0.3).toFixed(3) + ")"; x.fillRect(...r); }
+        if (c.sh) { x.fillStyle = "rgba(20,30,50,.35)"; x.fillRect(...r); x.strokeStyle = "rgba(255,230,140,.9)"; x.lineWidth = Math.max(1, cs / 40);
+          if (c.sh === "stairs") { x.beginPath(); for (let i = 1; i < 8; i++) { const t = i / 8; if (c.sd === 1 || c.sd === 3) { const X = r[0] + r[2] * t; x.moveTo(X, r[1]); x.lineTo(X, r[1] + r[3]); } else { const Y = r[1] + r[3] * t; x.moveTo(r[0], Y); x.lineTo(r[0] + r[2], Y); } } x.stroke(); }
+          if (cs >= 14) { x.fillStyle = "#ffe68c"; x.font = "bold " + Math.round(cs * 0.45) + "px system-ui"; x.textAlign = "center"; x.textBaseline = "middle"; x.fillText(ARROW[c.sd || 0], r[0] + r[2] / 2, r[1] + r[3] / 2); } }
+        if (cs >= 26 && (hgt || c.sh)) { x.fillStyle = "#fff"; x.font = Math.round(Math.min(13, cs * 0.24)) + "px system-ui"; x.textAlign = "left"; x.textBaseline = "top"; x.fillText(hgt + (c.sh ? "+" + (c.sr || 8) : ""), r[0] + 2, r[1] + 1); }
+      } else if (c.c !== undefined) { x.fillStyle = "rgba(90,120,150,.25)"; x.fillRect(...r); }
+      if (c.li !== undefined && c.li < 100) { x.fillStyle = "rgba(0,0,0," + ((1 - c.li / 100) * 0.65).toFixed(3) + ")"; x.fillRect(...r); }
+      if (s.ceilShow && c.c !== undefined && cs >= 8) { x.fillStyle = "rgba(120,220,255,.75)"; x.beginPath(); x.moveTo(r[0] + r[2], r[1]); x.lineTo(r[0] + r[2] - cs * 0.22, r[1]); x.lineTo(r[0] + r[2], r[1] + cs * 0.22); x.closePath(); x.fill(); }
+    });
     // grid
-    const g = this.grid(), gp = g * this.v.z, x0 = this.wx(0), x1 = this.wx(W), y0 = this.wy(0), y1 = this.wy(H);
-    for (const [step, col] of [[g, css("--mapgrid") || "#1c2733"], [g * 2, css("--mapgrid2") || "#2a3a4c"]]) { if (step * this.v.z < 7) continue; c.strokeStyle = col; c.lineWidth = 1; c.beginPath();
-      for (let x = Math.floor(x0 / step) * step; x <= x1; x += step) { const s = Math.round(this.sx(x)) + 0.5; c.moveTo(s, 0); c.lineTo(s, H); } for (let y = Math.floor(y0 / step) * step; y <= y1; y += step) { const s = Math.round(this.sy(y)) + 0.5; c.moveTo(0, s); c.lineTo(W, s); } c.stroke(); }
-    c.strokeStyle = "#3d6a8c"; c.lineWidth = 1.5; c.beginPath(); c.moveTo(this.sx(0), 0); c.lineTo(this.sx(0), H); c.moveTo(0, this.sy(0)); c.lineTo(W, this.sy(0)); c.stroke();
-    const selSec = this.sel && this.sel.kind === "sector" ? this.sel.id : null;
-    // rooms
-    for (const s of this.m.sectors) {
-      const pts = s.v.map(id => vs[id]).filter(Boolean); if (pts.length < 3) continue; const pre = mid + "." + s.id + ".", img = this.img(T.get(pre + "floorTex"));
-      c.beginPath(); pts.forEach((p, i) => i ? c.lineTo(this.sx(p.x), this.sy(p.y)) : c.moveTo(this.sx(p.x), this.sy(p.y))); c.closePath();
-      c.fillStyle = T.get(pre + "floorColor"); c.globalAlpha = 0.42; c.fill(); c.globalAlpha = 1;
-      if (img) { try { c.save(); c.clip(); c.globalAlpha = 0.55; c.imageSmoothingEnabled = false; const ts = 64 * this.v.z; if (ts > 3) { const ox = this.sx(0), oy = this.sy(0); for (let x = Math.floor((this.sx(Math.min(...pts.map(p => p.x))) - ox) / ts) * ts + ox; x < this.sx(Math.max(...pts.map(p => p.x))); x += ts) for (let y = Math.floor((this.sy(Math.min(...pts.map(p => p.y))) - oy) / ts) * ts + oy; y < this.sy(Math.max(...pts.map(p => p.y))); y += ts) c.drawImage(img, x, y, ts + 0.5, ts + 0.5); } c.restore(); } catch (x) { c.restore(); } }
-      if (s.id === selSec || (this.multi && this.multi.secs.has(s.id))) { c.fillStyle = "rgba(255,210,90,.2)"; c.fill(); if (this.multi && this.multi.secs.has(s.id)) { c.strokeStyle = "#ffd25a"; c.lineWidth = 2; c.setLineDash([6, 4]); c.stroke(); c.setLineDash([]); c.lineWidth = 1; } }
-    }
+    x.lineWidth = 1; for (let gx = gx0; gx <= gx1; gx++) { x.strokeStyle = gx % 8 === 0 ? "rgba(140,170,200,.32)" : "rgba(140,170,200,.12)"; const X = Math.round(this.sx(gx * C)) + 0.5; x.beginPath(); x.moveTo(X, 0); x.lineTo(X, this.H()); x.stroke(); }
+    for (let gy = gy0; gy <= gy1; gy++) { x.strokeStyle = gy % 8 === 0 ? "rgba(140,170,200,.32)" : "rgba(140,170,200,.12)"; const Y = Math.round(this.sy(gy * C)) + 0.5; x.beginPath(); x.moveTo(0, Y); x.lineTo(this.W(), Y); x.stroke(); }
     // walls
-    for (const s of this.m.sectors) {
-      const n = s.v.length, selV = this.sel && this.sel.kind === "vert" ? this.sel.id : null;
-      for (let i = 0; i < n; i++) {
-        const a = vs[s.v[i]], b = vs[s.v[(i + 1) % n]]; if (!a || !b) continue; const vp = mid + "." + a.id + ".", open = T.get(vp + "open"), isSel = selV === a.id || s.id === selSec;
-        c.beginPath(); c.moveTo(this.sx(a.x), this.sy(a.y)); c.lineTo(this.sx(b.x), this.sy(b.y)); c.setLineDash(open ? [5, 5] : []);
-        c.strokeStyle = isSel ? (selV === a.id ? "#ffd25a" : "#ffe9a8") : open ? "#6c7a8a" : T.get(vp + "color"); c.lineWidth = selV === a.id ? 4 : isSel ? 3 : 2.4; c.stroke(); c.setLineDash([]);
-        const mx = (this.sx(a.x) + this.sx(b.x)) / 2, my = (this.sy(a.y) + this.sy(b.y)) / 2;
-        if (!open && Math.hypot(this.sx(b.x) - this.sx(a.x), this.sy(b.y) - this.sy(a.y)) > 38) { const ti = this.img(T.get(vp + "tex")); c.fillStyle = T.get(vp + "color"); c.fillRect(mx - 6, my - 6, 12, 12); if (ti) { c.imageSmoothingEnabled = false; c.drawImage(ti, mx - 6, my - 6, 12, 12); } c.strokeStyle = "#0008"; c.lineWidth = 1; c.strokeRect(mx - 6.5, my - 6.5, 13, 13); }
-      }
+    each(m.layers[L], (c, cx, cy) => {
+      if (!G.isWall(c)) return; const r = rect(cx, cy); texFill(c.w, r, "#8b919c"); x.fillStyle = "rgba(0,0,0,.18)"; x.fillRect(...r);
+      x.strokeStyle = "rgba(255,255,255,.55)"; x.lineWidth = Math.max(1, cs / 26); x.strokeRect(r[0] + 1, r[1] + 1, r[2] - 2, r[3] - 2);
+      if (c.ws && cs >= 18) { x.fillStyle = "#ffcf5a"; for (const sd in c.ws) { const q = +sd, t = cs * 0.12; x.fillRect(q === 3 ? r[0] : q === 1 ? r[0] + r[2] - t : r[0] + t, q === 0 ? r[1] : q === 2 ? r[1] + r[3] - t : r[1] + t, q === 0 || q === 2 ? r[2] - 2 * t : t, q === 1 || q === 3 ? r[3] - 2 * t : t); } }
+    });
+    // objects on this story
+    for (const th of this.things()) {
+      const ty = T.get(th.prop + ".type"), selT = this.sel && this.sel.kind === "thing" && this.sel.id === th.id, nm = T.get(th.prop + ".name") || th.prop;
+      if (ty === "door") { const f = G.thingFrame(m, T, th), X = this.sx(f.cx), Y = this.sy(f.cy), ns = f.ux === 0, a = f.w * z / 2, b = Math.max(3, cs * 0.12);
+        x.fillStyle = "rgba(217,163,90,.18)"; for (const [qx, qy] of f.cells) x.fillRect(this.sx(qx * C), this.sy(qy * C), cs, cs);
+        x.fillStyle = selT ? "#ffd84a" : "#d9a35a"; x.fillRect(ns ? X - b / 2 : X - a, ns ? Y - a : Y - b / 2, ns ? b : a * 2, ns ? a * 2 : b); x.strokeStyle = "#000"; x.lineWidth = 1; x.strokeRect(ns ? X - b / 2 : X - a, ns ? Y - a : Y - b / 2, ns ? b : a * 2, ns ? a * 2 : b);
+        if (f.H > 1 && cs >= 16) { x.fillStyle = "#fff"; x.font = "bold 11px system-ui"; x.textAlign = "center"; x.textBaseline = "middle"; x.fillText(f.W + "×" + f.H, X, Y - b - 6); } }
+      else { const X = this.sx(th.x), Y = this.sy(th.y), r = Math.max(5, cs * 0.16), col = { enemy: "#ff5a4a", pickup: "#ffd84a", exit: "#5aff8a", npc: "#b48cff" }[ty] || "#b8c4d4", a = (th.ang || 0) * Math.PI / 180;
+        x.fillStyle = col; x.beginPath(); x.arc(X, Y, r, 0, Math.PI * 2); x.fill(); x.strokeStyle = selT ? "#fff" : "#000"; x.lineWidth = selT ? 2.5 : 1; x.stroke();
+        x.strokeStyle = "#000"; x.lineWidth = 2; x.beginPath(); x.moveTo(X, Y); x.lineTo(X + Math.sin(a) * r * 1.2, Y + Math.cos(a) * r * 1.2); x.stroke(); }
+      if (cs >= 30) { x.fillStyle = "#e8f0f8"; x.font = "11px system-ui"; x.textAlign = "center"; x.textBaseline = "top"; { const f = ty === "door" ? G.thingFrame(m, T, th) : null; x.fillText(nm, this.sx(f ? f.cx : th.x), this.sy(f ? f.cy : th.y) + Math.max(7, cs * 0.2)); } }
     }
-    // placed objects
-    for (const th of this.m.things || []) { const gm = this.thingGeom(th, vs); if (!gm) continue; const on = this.sel && this.sel.kind === "thing" && this.sel.id === th.id, type = T.get(th.prop + ".type"), nm = T.get(th.prop + ".name") || th.prop;
-      if (gm.door) { const hw = gm.w / 2, p0 = [gm.A.x + gm.ux * Math.max(0, gm.c - hw), gm.A.y + gm.uy * Math.max(0, gm.c - hw)], p1 = [gm.A.x + gm.ux * Math.min(gm.len, gm.c + hw), gm.A.y + gm.uy * Math.min(gm.len, gm.c + hw)];
-        c.beginPath(); c.moveTo(this.sx(p0[0]), this.sy(p0[1])); c.lineTo(this.sx(p1[0]), this.sy(p1[1])); c.strokeStyle = on ? "#ffd25a" : "#ff9a3c"; c.lineWidth = Math.max(5, 12 * this.v.z); c.lineCap = "butt"; c.stroke(); c.lineWidth = 1; }
-      else { const X = this.sx(gm.x), Y = this.sy(gm.y); c.fillStyle = on ? "#ffd25a" : type === "pickup" ? "#5fe0a0" : type === "enemy" ? "#ff5a5a" : type === "exit" ? "#c08cff" : "#9fb4c8"; c.strokeStyle = "#000a"; c.beginPath();
-        if (type === "pickup") { c.moveTo(X, Y - 8); c.lineTo(X + 8, Y); c.lineTo(X, Y + 8); c.lineTo(X - 8, Y); c.closePath(); } else if (type === "enemy") { const R = Math.max(6, (+T.get(th.prop + ".radius") || 22) * this.v.z); c.arc(X, Y, R, 0, Math.PI * 2); } else c.rect(X - 7, Y - 7, 14, 14); c.fill(); c.stroke();
-        if (type === "enemy") { const a = (th.ang || 0) * Math.PI / 180, R = Math.max(6, (+T.get(th.prop + ".radius") || 22) * this.v.z) + 8; c.beginPath(); c.moveTo(X, Y); c.lineTo(this.sx(gm.x + Math.sin(a) * R / this.v.z), this.sy(gm.y + Math.cos(a) * R / this.v.z)); c.strokeStyle = "#ffd0d0"; c.lineWidth = 2; c.stroke(); c.lineWidth = 1; } }
-      if (this.v.z > 0.4) { c.fillStyle = "#ffe0b0"; c.font = "11px ui-monospace,Consolas,monospace"; c.textAlign = "center"; c.fillText(nm, this.sx(gm.x), this.sy(gm.y) - 11); } }
-    // nodes
-    for (const s of this.m.sectors) for (const id of s.v) { const v = vs[id]; if (!v) continue; const on = this.sel && this.sel.kind === "vert" && this.sel.id === id; c.fillStyle = on ? "#ffd25a" : "#e7eef6"; c.strokeStyle = "#000a"; c.lineWidth = 1; const r = on ? 5 : 3.5; c.fillRect(this.sx(v.x) - r, this.sy(v.y) - r, 2 * r, 2 * r); c.strokeRect(this.sx(v.x) - r - 0.5, this.sy(v.y) - r - 0.5, 2 * r + 1, 2 * r + 1); }
-    // labels
-    c.font = "11px ui-monospace,Consolas,monospace"; c.textAlign = "center";
-    for (const s of this.m.sectors) { const pts = s.v.map(id => vs[id]).filter(Boolean); if (pts.length < 3 || this.v.z < 0.35) continue; const cx = pts.reduce((q, p) => q + p.x, 0) / pts.length, cy = pts.reduce((q, p) => q + p.y, 0) / pts.length, pre = mid + "." + s.id + ".";
-      c.fillStyle = "#cfe0f0"; c.fillText(s.id, this.sx(cx), this.sy(cy) - 2); c.fillStyle = "#8fa6bd"; c.fillText(T.get(pre + "floor") + " … " + T.get(pre + "ceil"), this.sx(cx), this.sy(cy) + 11); }
     // player start
-    const px = this.sx(+T.get(mid + ".startX")), py = this.sy(+T.get(mid + ".startY")), ang = (+T.get(mid + ".startAngle") || 0) * Math.PI / 180, st = this.sel && this.sel.kind === "start";
-    c.save(); c.translate(px, py); c.rotate(ang); c.fillStyle = st ? "#ffd25a" : "#5fe0a0"; c.strokeStyle = "#000b"; c.lineWidth = 1.5; c.beginPath(); c.moveTo(13, 0); c.lineTo(-8, 8); c.lineTo(-4, 0); c.lineTo(-8, -8); c.closePath(); c.fill(); c.stroke(); c.restore();
-    // box room / rubber band
-    if (this.box) { const b = this.box, x = this.sx(Math.min(b.x0, b.x1)), y = this.sy(Math.min(b.y0, b.y1)), w = Math.abs(b.x1 - b.x0) * this.v.z, hh = Math.abs(b.y1 - b.y0) * this.v.z; c.fillStyle = "rgba(127,208,255,.15)"; c.fillRect(x, y, w, hh); c.strokeStyle = "#7fd0ff"; c.lineWidth = 2; c.strokeRect(x, y, w, hh); c.lineWidth = 1; c.fillStyle = "#cfefff"; c.font = "12px ui-monospace,Consolas,monospace"; c.textAlign = "left"; c.fillText((Math.abs(b.x1 - b.x0) / 64).toFixed(2) + " m × " + (Math.abs(b.y1 - b.y0) / 64).toFixed(2) + " m", x + 4, y - 6); }
-    if (this.marq) { const q = this.marq, x = this.sx(Math.min(q.x0, q.x1)), y = this.sy(Math.min(q.y0, q.y1)); c.strokeStyle = "#ffd25a"; c.setLineDash([5, 4]); c.strokeRect(x, y, Math.abs(q.x1 - q.x0) * this.v.z, Math.abs(q.y1 - q.y0) * this.v.z); c.setLineDash([]); }
-    // draft
-    if (this.draft.length) {
-      const m = this.mouse ? this.snapPt(this.mouse.sx, this.mouse.sy) : null; c.strokeStyle = "#7fd0ff"; c.lineWidth = 2; c.beginPath(); this.draft.forEach((p, i) => i ? c.lineTo(this.sx(p.x), this.sy(p.y)) : c.moveTo(this.sx(p.x), this.sy(p.y))); if (m) c.lineTo(this.sx(m.x), this.sy(m.y)); c.stroke();
-      c.fillStyle = "#7fd0ff"; for (const p of this.draft) c.fillRect(this.sx(p.x) - 3, this.sy(p.y) - 3, 6, 6); const f = this.draft[0]; if (this.draft.length >= 3) { c.strokeStyle = "#ffd25a"; c.strokeRect(this.sx(f.x) - 7, this.sy(f.y) - 7, 14, 14); }
-    } else if (this.tool === "draw" && this.mouse) { const m = this.snapPt(this.mouse.sx, this.mouse.sy); c.strokeStyle = "#7fd0ff"; c.strokeRect(this.sx(m.x) - 4, this.sy(m.y) - 4, 8, 8); }
-    // readout
-    c.textAlign = "left"; c.fillStyle = "#8fa6bd"; const m2 = this.mouse ? this.snapPt(this.mouse.sx, this.mouse.sy, true) : null;
-    const mt = n => (n / 64).toFixed(2).replace(/\.?0+$/, "") + " m"; c.fillText("tile " + mt(g) + " (" + g + " units)" + (m2 ? "   x " + mt(m2.x) + "  y " + mt(m2.y) : "") + "   zoom " + Math.round(this.v.z * 100) + "%   " + this.m.sectors.length + " room(s)", 8, H - 8);
+    if ((+T.get(m.id + ".startLayer") || 0) === L) {
+      const X = this.sx(+T.get(m.id + ".startX")), Y = this.sy(+T.get(m.id + ".startY")), a = (+T.get(m.id + ".startAngle") || 0) * Math.PI / 180, r = Math.max(8, cs * 0.22), fx = Math.cos(a), fy = Math.sin(a), selS = this.sel && this.sel.kind === "start";
+      x.fillStyle = "#3dff7a"; x.strokeStyle = selS ? "#fff" : "#04220e"; x.lineWidth = selS ? 2.5 : 1.5; x.beginPath(); x.moveTo(X + fx * r * 1.3, Y + fy * r * 1.3); x.lineTo(X - fx * r * 0.8 - fy * r * 0.8, Y - fy * r * 0.8 + fx * r * 0.8); x.lineTo(X - fx * r * 0.8 + fy * r * 0.8, Y - fy * r * 0.8 - fx * r * 0.8); x.closePath(); x.fill(); x.stroke();
+    }
+    // selection, room box, hover
+    const box = (a, b, col, dash) => { const x0 = Math.min(a[0], b[0]), x1 = Math.max(a[0], b[0]) + 1, y0 = Math.min(a[1], b[1]), y1 = Math.max(a[1], b[1]) + 1; x.setLineDash(dash || []); x.strokeStyle = col; x.lineWidth = 2; x.strokeRect(this.sx(x0 * C), this.sy(y0 * C), (x1 - x0) * cs, (y1 - y0) * cs); x.setLineDash([]); };
+    if (this.sel && this.sel.kind === "cells") { box([this.sel.x0, this.sel.y0], [this.sel.x1, this.sel.y1], "#ffd84a", [6, 4]); }
+    if (this.drag && this.drag.kind === "room") { box(this.drag.a, this.drag.b, this.drag.erase ? "#ff6a5a" : "#7df3ff", [5, 3]); const n = (Math.abs(this.drag.b[0] - this.drag.a[0]) + 1) + " × " + (Math.abs(this.drag.b[1] - this.drag.a[1]) + 1); x.fillStyle = "#7df3ff"; x.font = "12px system-ui"; x.textAlign = "left"; x.textBaseline = "bottom"; x.fillText(n + " cells (" + 2 * (Math.abs(this.drag.b[0] - this.drag.a[0]) + 1) + " m × " + 2 * (Math.abs(this.drag.b[1] - this.drag.a[1]) + 1) + " m)", this.sx(Math.min(this.drag.a[0], this.drag.b[0]) * C), this.sy(Math.min(this.drag.a[1], this.drag.b[1]) * C) - 3); }
+    if (this.hover && !this.drag) { const [hx, hy] = this.hover; x.strokeStyle = "rgba(255,255,255,.8)"; x.lineWidth = 1.5; x.strokeRect(this.sx(hx * C) + 0.5, this.sy(hy * C) + 0.5, cs - 1, cs - 1);
+      if ((s.tool === "slope" || s.tool === "stairs") && cs >= 14) { x.fillStyle = "rgba(255,230,140,.9)"; x.font = "bold " + Math.round(cs * 0.45) + "px system-ui"; x.textAlign = "center"; x.textBaseline = "middle"; x.fillText(ARROW[s.dir], this.sx((hx + 0.5) * C), this.sy((hy + 0.5) * C)); } }
+    // status line
+    x.fillStyle = "rgba(10,14,20,.75)"; x.fillRect(0, this.H() - 20, this.W(), 20); x.fillStyle = "#b9c8d8"; x.font = "11px system-ui"; x.textAlign = "left"; x.textBaseline = "middle";
+    const hc = this.hover ? G.cell(m, L, this.hover[0], this.hover[1]) : null;
+    x.fillText("Story " + (L + 1) + "  ·  " + (this.hover ? "cell " + this.hover[0] + ", " + this.hover[1] + (hc ? "  ·  " + (G.isWall(hc) ? "wall" : [hc.f !== undefined ? "floor h " + (hc.h || 0) + "/16" + (hc.sh ? " " + hc.sh + " " + ARROW[hc.sd || 0] + " +" + (hc.sr || 8) + "/16" : "") : "", hc.c !== undefined ? "ceiling" : "", hc.li !== undefined ? "light " + hc.li + "%" : ""].filter(Boolean).join(", ")) : "  ·  empty") : "") + "  ·  1 cell = 2 m  ·  middle mouse / Space+drag pans, wheel zooms, Alt+click picks a texture", 8, this.H() - 10);
   };
 })();

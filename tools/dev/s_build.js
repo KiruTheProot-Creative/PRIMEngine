@@ -3,7 +3,7 @@ module.exports = async (p, out) => {
   p.on('pageerror', e => console.log('PAGEERROR', e.message, (e.stack || '').split('\n')[1]));
   const menu = async (top, item) => { await p.click('.mb:has-text("' + top + '")'); await p.click('.pitem:has-text("' + item + '")'); };
   await p.click('.tile.plus'); await p.waitForSelector('#app'); await p.waitForTimeout(300);
-  await menu('Screen', 'Create Map'); await p.click('.mcard:has-text("DOOM")'); await p.waitForSelector('.medcv');
+  await menu('Screen', 'Create Map'); await p.waitForSelector('.medcv');
   let [fc] = await Promise.all([p.waitForEvent('filechooser'), menu('Assets', 'Import Files')]); await fc.setFiles([SP + '/cube_bin.fbx', SP + '/beep.wav', SP + '/assets_test/Images/logo.png']); await p.waitForTimeout(1200);
   await p.evaluate(() => { const S = __studio.S, pr = S.project; pr.name = 'Test Game'; const e = PRIM.Schema.addProp(pr, { name: 'Box', type: 'decoration', asset: pr.assets.find(a => a.type === 'model').id }); pr.maps[0].things = [{ id: 't1', prop: e.id, x: 0, y: 80, ang: 0 }]; pr.maps[0].n.t = 1; S.tags.emit([]); });
   await p.click('.mb:has-text("File")'); console.log('menu has Build Game', await p.evaluate(() => [...document.querySelectorAll('.pitem')].some(e => /Build Game/.test(e.textContent)))); await p.keyboard.press('Escape');

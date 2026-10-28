@@ -3,7 +3,7 @@ module.exports = async (p, out) => {
   const menu = async (top, item) => { await p.click('.mb:has-text("' + top + '")'); await p.click('.pitem:has-text("' + item + '")'); };
   await p.click('.tile.plus'); await p.waitForSelector('#app'); await p.waitForTimeout(400);
   console.log('screens', await p.evaluate(() => __studio.S.project.screens.map(s => s.id + ':' + s.kind).join(',')));
-  await menu('Screen', 'Create Map'); await p.click('.mcard:has-text("DOOM")'); await p.waitForSelector('.medcv'); await p.waitForTimeout(300);
+  await menu('Screen', 'Create Map'); await p.waitForSelector('.medcv'); await p.waitForTimeout(300);
   // Player Editor tab
   await p.click('.tab:has-text("Player Editor")'); await p.waitForTimeout(900); await p.screenshot({ path: out + '_player.png' });
   console.log('tabs', await p.locator('#center .tab').allTextContents());

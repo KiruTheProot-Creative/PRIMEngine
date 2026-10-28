@@ -2,7 +2,7 @@ const SP = '/tmp/claude-0/-home-claude/4d2f2209-a771-580d-8052-566f87920e94/scra
 module.exports = async (p, out) => {
   const menu = async (top, item) => { await p.click('.mb:has-text("' + top + '")'); await p.click('.pitem:has-text("' + item + '")'); };
   await p.click('.tile.plus'); await p.waitForSelector('#app'); await p.waitForTimeout(300);
-  await menu('Screen', 'Create Map'); await p.click('.mcard:has-text("DOOM")'); await p.waitForSelector('.medcv');
+  await menu('Screen', 'Create Map'); await p.waitForSelector('.medcv');
   let [fc] = await Promise.all([p.waitForEvent('filechooser'), menu('Assets', 'Import Files')]); await fc.setFiles(SP + '/Arm_canon.fbx'); await p.waitForTimeout(1500);
   console.log('asset', await p.evaluate(() => JSON.stringify(__studio.S.project.assets.map(a => ({ n: a.name, t: a.type, anims: a.meta && a.meta.anims && a.meta.anims.map(x => x.name) })))));
   await p.click('.pit:has-text("Arm_canon")'); await p.waitForTimeout(300); await p.screenshot({ path: out + '_asset.png' });

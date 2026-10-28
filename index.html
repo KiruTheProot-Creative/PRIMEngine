@@ -153,7 +153,11 @@ body.in-editor { overflow:hidden; }
 .tlend { position:absolute; top:0; bottom:0; background:rgba(0,0,0,.28); pointer-events:none; z-index:2; } .tlendh { position:absolute; top:0; margin-left:-9px; min-width:18px; height:22px; background:#ff9a2f; color:#000; font-size:11px; line-height:22px; text-align:center; padding:0 3px; border-radius:3px 3px 0 0; cursor:ew-resize; z-index:5; touch-action:none; white-space:nowrap; }
 .tlplayhead { position:absolute; top:0; bottom:0; width:2px; margin-left:-1px; background:#ff4d4d; pointer-events:none; z-index:4; }
 .med { position:absolute; inset:0; display:flex; flex-direction:column; outline:none; } .medbar { display:flex; align-items:center; gap:6px; padding:3px 8px; background:var(--panel-lo); border-bottom:1px solid var(--line); flex:none; flex-wrap:wrap; } .medbar .hint { flex-basis:100%; }
-.medcv { flex:1; min-height:0; width:100%; display:block; cursor:crosshair; touch-action:none; background:#10161d; }
+.medbody { flex:1; min-height:0; display:flex; } .medcv { flex:1; min-width:0; min-height:0; height:100%; display:block; cursor:crosshair; touch-action:none; background:#10161d; outline:none; }
+.medpal { width:118px; flex:none; overflow-y:auto; background:var(--panel-lo); border-right:1px solid var(--line); padding:4px; display:flex; flex-direction:column; gap:4px; } .mph { font-weight:600; color:var(--text-hi); padding:2px 2px 0; }
+.mswatch { display:flex; align-items:center; gap:6px; padding:3px; border:1px solid var(--line); border-radius:3px; background:var(--panel); color:var(--text); cursor:pointer; text-align:left; min-width:0; } .mswatch:hover { border-color:var(--sel); } .mswatch.on { outline:2px solid var(--accent); outline-offset:-1px; }
+.mswatch img, .msdef { width:36px; height:36px; flex:none; image-rendering:pixelated; object-fit:cover; border:1px solid var(--line); } .msdef { background:repeating-conic-gradient(#b8b8b8 0 25%, #d8d8d8 0 50%) 0 0/12px 12px; } .msn { font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
+.mlab { color:var(--muted); font-size:11px; display:inline-flex; align-items:center; gap:3px; white-space:nowrap; } .msep { width:1px; align-self:stretch; background:var(--line); margin:0 2px; }
 .v3cv { position:absolute; inset:0; width:100%; height:100%; display:block; outline:none; cursor:grab; } .v3pos { position:absolute; left:8px; bottom:6px; font:11px "Share Tech Mono",ui-monospace,monospace; color:#cfe0f0; background:rgba(0,0,0,.55); padding:2px 6px; border-radius:3px; pointer-events:none; }
 .v3err { position:absolute; inset:0; display:grid; place-items:center; color:var(--danger); padding:20px; text-align:center; }
 .play-layer.fly { background:#000; } .flyhud { position:absolute; top:14px; left:50%; transform:translateX(-50%); background:rgba(0,0,0,.65); color:#e6f0fa; padding:6px 14px; border-radius:3px; font-size:12px; transition:opacity 1s; pointer-events:none; } .flyhud.fade { opacity:0; } .flyx { position:absolute; top:10px; right:12px; }
@@ -175,16 +179,14 @@ body.in-editor { overflow:hidden; }
 <script src="src/core/fbx.js"></script>
 <script src="src/core/script.js"></script>
 <script src="src/core/store.js"></script>
-<script src="src/core/wallmesh.js"></script>
+<script src="src/core/grid.js"></script>
 <script src="src/core/render3d.js"></script>
 <script src="src/core/audio.js"></script>
 <script src="src/core/runtime.js"></script>
 <script src="src/core/hud.js"></script>
 <script src="src/core/play3d.js"></script>
-<script src="src/core/mapgeo.js"></script>
 <script src="src/core/gameplayer.js"></script>
 <script src="src/studio/mapeditor.js"></script>
-<script src="src/studio/walleditor.js"></script>
 <script src="src/studio/hudeditor.js"></script>
 <script src="src/studio/studio.js"></script>
 </body>

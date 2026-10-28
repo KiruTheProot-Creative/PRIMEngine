@@ -49,33 +49,24 @@
   S.uid = (base, taken) => { let i = 1, id = base; while (taken.includes(id)) id = base + ++i; return id; };
   S.clean = s => String(s || "").toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "").replace(/^(\d)/, "_$1");
 
-  // ---- 3D maps. Geometry (where the nodes are, which nodes make a sector) is structure; every other value is a tag.
-  // Units: 32 units = one tile = 0.5 m (so 64 units = 1 m). A wall panel is 3 x 3 tiles = 96 x 96 units = 1.5 m. Player eye height is 102 (1.6 m).
-  const TEX = (k, label) => ({ k, label, type: "asset", assetType: "image", def: "" });
+  // ---- 3D maps: a grid of 2 m cells in layers (see grid.js). The cells (walls, floors, heights, slopes, stairs, textures) are structure; map settings are tags.
+  // Units: 64 units = 1 m, one cell = 128 units = 2 m, one layer (story) = 128 units tall. Player eye height is 102 (1.6 m).
+  const MNUM = (k, label, def, min, max, step, extra) => Object.assign({ k, label, type: "number", def, min, max, step }, extra || {});
+  S.MOODS = [["neutral", "Neutral"], ["dusk", "Dusk (warm)"], ["night", "Night (dark blue)"], ["hell", "Hell (red, strong)"], ["toxic", "Toxic (green)"], ["cold", "Cold (pale blue)"], ["retro", "Retro (punchy colours)"], ["noir", "Noir (black and white)"], ["custom", "Custom…"]];
   S.MAP = [
-    COLOR("skyColor", "Sky color", "#16243a"), COLOR("fogColor", "Fog color", "#06090e"), { k: "fogDistance", label: "Fog distance", type: "number", def: 1400, min: 200, max: 6000, step: 50 },
-    { k: "startX", label: "Player start X", type: "number", def: 0, min: -4096, max: 4096, step: 1 }, { k: "startY", label: "Player start Y", type: "number", def: 0, min: -4096, max: 4096, step: 1 },
-    { k: "startAngle", label: "Player start angle", type: "number", def: 90, min: 0, max: 360, step: 1 }, { k: "gridSize", label: "Tile size (32 units = 0.5 m)", type: "number", def: 32, min: 8, max: 128, step: 8 }, { k: "wallThickness", label: "Wall thickness (16 units = 0.25 m)", type: "number", def: 16, min: 4, max: 64, step: 2 },
+    COLOR("skyColor", "Sky color", "#16243a"),
+    { k: "fogOn", label: "Distance fog", type: "bool", def: true }, Object.assign(COLOR("fogColor", "Fog color", "#06090e"), { showIf: ["fogOn", true] }),
+    MNUM("fogStart", "Fog starts at (units, 128 = one cell)", 256, 0, 20000, 16, { showIf: ["fogOn", true] }), MNUM("fogEnd", "Fully fogged at (units)", 2200, 64, 40000, 16, { showIf: ["fogOn", true] }),
+    { k: "mood", label: "Mood", type: "choice", options: S.MOODS, def: "neutral" },
+    Object.assign(COLOR("moodTint", "Mood colour (tints everything)", "#ffffff"), { showIf: ["mood", "custom"] }), MNUM("moodBrightness", "Mood brightness", 1, 0.2, 2, 0.05, { showIf: ["mood", "custom"] }),
+    MNUM("moodContrast", "Mood contrast", 1, 0.5, 2, 0.05, { showIf: ["mood", "custom"] }), MNUM("moodSaturation", "Mood colourfulness (0 = black and white)", 1, 0, 2, 0.05, { showIf: ["mood", "custom"] }),
+    MNUM("startX", "Player start X", 0, -100000, 100000, 1), MNUM("startY", "Player start Y", 0, -100000, 100000, 1), MNUM("startLayer", "Player start story (0 = ground floor)", 0, 0, 63, 1), MNUM("startAngle", "Player start angle", 90, 0, 360, 1),
   ];
-  S.SECTOR = [
-    { k: "floor", label: "Floor height", type: "number", def: 0, min: -512, max: 1024, step: 8 }, { k: "ceil", label: "Ceiling height (96 = 1.5 m)", type: "number", def: 192, min: -512, max: 1024, step: 8 },
-    { k: "light", label: "Light", type: "number", def: 1, min: 0, max: 1, step: 0.05 }, TEX("floorTex", "Floor texture"), COLOR("floorColor", "Floor color", "#6a6a74"), TEX("ceilTex", "Ceiling texture"), COLOR("ceilColor", "Ceiling color", "#42424c"),
-  ];
-  S.VERT = [TEX("tex", "Wall texture"), COLOR("color", "Wall color", "#a89c8a"), { k: "open", label: "Open (no wall)", type: "bool", def: false }, { k: "rows", label: "Wall layers (wall types, bottom to top)", type: "string", def: "" }, { k: "rowsRepeat", label: "Repeat the top layer upward", type: "bool", def: true }];
   const defP = (project, list, group, owner, id, over) => { for (const p of list) { const r = rec(p, group, owner); if (over && p.k in over) r.value = over[p.k]; project.tags[id + "." + p.k] = r; } };
   S.defineMap = (project, m, over) => defP(project, S.MAP, m.id, m.id, m.id, over);
-  S.defineSector = (project, m, sec, over) => defP(project, S.SECTOR, m.id, m.id + "." + sec.id, m.id + "." + sec.id, over);
-  S.defineVert = (project, m, v, over) => defP(project, S.VERT, m.id, m.id + "." + v.id, m.id + "." + v.id, over);
-  // adds a vertex / sector made of points [[x,y],...]; returns the sector
-  S.addVert = (project, m, x, y, over) => { const v = { id: "v" + (++m.n.v), x, y }; m.verts.push(v); S.defineVert(project, m, v, over); return v; };
-  S.addSector = (project, m, ids, over) => { const sec = { id: "s" + (++m.n.s), v: ids.slice() }; m.sectors.push(sec); S.defineSector(project, m, sec, over); return sec; };
-  S.newMap = (project, id, style) => {
-    const m = { id, style: style || "doom", verts: [], sectors: [], things: [], n: { v: 0, s: 0, t: 0 } }; project.maps.push(m); S.defineMap(project, m);
-    const ids = [[-128, -128], [128, -128], [128, 128], [-128, 128]].map(([x, y]) => S.addVert(project, m, x, y).id); S.addSector(project, m, ids); return m;
+  S.newMap = (project, id) => {
+    const m = PRIM.Grid.newMap(id); project.maps.push(m); const st = PRIM.Grid.starter(m); S.defineMap(project, m, { startX: st.x, startY: st.z }); return m;
   };
-  S.removeSector = (project, m, sec) => { const used = new Set(); for (const o of m.sectors) if (o !== sec) o.v.forEach(i => used.add(i)); m.sectors.splice(m.sectors.indexOf(sec), 1);
-    for (const i of sec.v) if (!used.has(i)) { m.verts.splice(m.verts.findIndex(v => v.id === i), 1); for (const k of Object.keys(project.tags)) if (k.startsWith(m.id + "." + i + ".")) delete project.tags[k]; }
-    for (const k of Object.keys(project.tags)) if (k.startsWith(m.id + "." + sec.id + ".")) delete project.tags[k]; };
 
   // ---- the player (one entity per project). Every value is a tag named player.*
   const PNUM = (k, label, def, min, max, step, extra) => Object.assign({ k, label, type: "number", def, min, max, step }, extra || {});
@@ -125,12 +116,9 @@
     NUM("lightX", "Light position X", 0, -500, 500, 0.5, { showIf: ["lightType", ["point", "area"]], tab: "light" }), NUM("lightY", "Light position Y", 0, -500, 500, 0.5, { showIf: ["lightType", ["point", "area"]], tab: "light" }), NUM("lightZ", "Light position Z", 0, -500, 500, 0.5, { showIf: ["lightType", ["point", "area"]], tab: "light" }),
     NUM("lightWidth", "Panel width", 40, 1, 1000, 1, { showIf: ["lightType", "area"], tab: "light" }), NUM("lightHeight", "Panel height", 20, 1, 1000, 1, { showIf: ["lightType", "area"], tab: "light" }),
     NUM("lightYaw", "Panel faces: turn left / right", 0, -180, 180, 1, { showIf: ["lightType", "area"], tab: "light" }), NUM("lightPitch", "Panel faces: up / down", 0, -89, 89, 1, { showIf: ["lightType", "area"], tab: "light" }),
-    // ---- Material tab: how the object (and what a weapon fires) looks
-    { k: "matTint", label: "Base color (tints the picture)", type: "color", def: "#ffffff", tab: "material" },
-    NUM("matEmit", "Glow amount (shines by itself)", 0, 0, 4, 0.05, { tab: "material" }), { k: "matEmitColor", label: "Glow color", type: "color", def: "#ffffff", tab: "material" },
-    NUM("matLit", "Reacts to lights (0 = ignores them, 1 = fully)", 1, 0, 1, 0.05, { tab: "material" }), NUM("matOpacity", "Opacity (1 = solid)", 1, 0.05, 1, 0.05, { tab: "material" }), NUM("matShine", "Shininess (light glints)", 0, 0, 1, 0.05, { tab: "material" }),
-    NUM("matRough", "Roughness (0 = mirror smooth, 1 = chalk)", 0.7, 0, 1, 0.01, { tab: "material" }), NUM("matMetal", "Metallic (0 = plastic / paint, 1 = bare metal)", 0, 0, 1, 0.01, { tab: "material" }),
-    NUM("matReflect", "Reflections of sky and ground", 1, 0, 3, 0.05, { tab: "material" }), { k: "matTexture", label: "Texture (replaces the model's own picture)", type: "asset", assetType: "image", def: "", tab: "material" },
+    // ---- Material tab: a base colour map and an emission (glow) map
+    { k: "matTexture", label: "Base color map (replaces the model's own picture)", type: "asset", assetType: "image", def: "", tab: "material" },
+    { k: "matEmitMap", label: "Emission map (bright parts glow; empty = the whole object glows)", type: "asset", assetType: "image", def: "", tab: "material" }, NUM("matEmit", "Emission strength (0 = no glow)", 0, 0, 8, 0.05, { tab: "material" }),
     // projectile: what a "Fire the projectile" node launches from the muzzle point
     { k: "projType", label: "Projectile", type: "choice", options: [["none", "None"], ["hitscan", "Hitscan (a straight line to where you aim)"], ["particle", "Particle (sphere or laser bolt)"], ["mesh", "Mesh (a 3D model that flies off)"]], def: "none", showIf: WP },
     NUM("emitX", "Emitter point X (where projectiles start)", 0, -500, 500, 0.5, { showIf: ["projType", ["hitscan", "particle", "mesh"]] }), NUM("emitY", "Emitter point Y", 0, -500, 500, 0.5, { showIf: ["projType", ["hitscan", "particle", "mesh"]] }), NUM("emitZ", "Emitter point Z", 0, -500, 500, 0.5, { showIf: ["projType", ["hitscan", "particle", "mesh"]] }),
@@ -155,12 +143,12 @@
   // ---- placeable objects (the Object Editor): doors, pick-ups, decorations. Tags prop<N>.*  They are placed in maps (map.things).
   S.PROP = [
     { k: "name", label: "Name", type: "string", def: "Object" },
-    { k: "type", label: "Type", type: "choice", options: [["decoration", "Decoration (just a model)"], ["door", "Door (opens in a wall)"], ["pickup", "Pick-up (collected by touching)"], ["enemy", "Enemy (hunts and attacks the player)"], ["exit", "Level exit (touch it to leave the level)"]], def: "decoration" },
+    { k: "type", label: "Type", type: "choice", options: [["decoration", "Decoration (just a model)"], ["door", "Door (fills a cell between walls)"], ["pickup", "Pick-up (collected by touching)"], ["enemy", "Enemy (hunts and attacks the player)"], ["exit", "Level exit (touch it to leave the level)"]], def: "decoration" },
     { k: "asset", label: "Model (FBX)", type: "asset", assetType: "model", def: "" },
     NUM("scale", "Scale", 1, 0.001, 100, 0.001), NUM("rx", "Rotate X", 0, -180, 180, 1), NUM("ry", "Rotate Y", 0, -180, 180, 1), NUM("rz", "Rotate Z", 0, -180, 180, 1),
     NUM("ox", "Move X (sideways)", 0, -500, 500, 0.5), NUM("oy", "Move Y (up)", 0, -500, 500, 0.5), NUM("oz", "Move Z (toward the front)", 0, -500, 500, 0.5),
     ANIM("idleAnim", "Idle animation (loops)"),
-    NUM("doorWidth", "Doorway width (units, 96 = 1.5 m)", 96, 16, 400, 1, { showIf: ["type", "door"] }), NUM("doorHeight", "Doorway height (units)", 144, 16, 400, 1, { showIf: ["type", "door"] }),
+    NUM("doorCellsW", "Door width (blocks of 2 m)", 1, 1, 8, 1, { showIf: ["type", "door"] }), NUM("doorCellsH", "Door height (stories of 2 m)", 1, 1, 4, 1, { showIf: ["type", "door"] }), { k: "doorFit", label: "Fit the model to the block automatically (fills the doorway, never sticks into walls)", type: "bool", def: true, showIf: ["type", "door"] },
     { k: "openMode", label: "Opens", type: "choice", options: [["interact", "When interacted with (Interact key)"], ["proximity", "When the player is close"], ["shot", "When shot"]], def: "interact", showIf: ["type", "door"] },
     NUM("openRange", "Opens when closer than (units)", 110, 20, 600, 5, { showIf: ["type", "door"], showIf2: ["openMode", "proximity"] }), NUM("interactRange", "Can be used from (units)", 90, 20, 400, 5, { showIf: ["type", "door"], showIf2: ["openMode", "interact"] }),
     ANIM("openAnim", "Opening animation", { showIf: ["type", "door"] }), ANIM("closeAnim", "Closing animation (empty = opening played backwards)", { showIf: ["type", "door"] }),
@@ -168,10 +156,9 @@
     { k: "openSound", label: "Opening sound", type: "asset", assetType: "sound", def: "", showIf: ["type", "door"] }, { k: "closeSound", label: "Closing sound", type: "asset", assetType: "sound", def: "", showIf: ["type", "door"] },
     { k: "giveTag", label: "Changes this number tag", type: "tagRef", refType: "number", def: "", showIf: ["type", "pickup"] }, NUM("giveAmount", "By (negative = subtract)", 10, -100000, 100000, 1, { showIf: ["type", "pickup"] }),
     NUM("pickRadius", "Pick-up distance (units)", 28, 8, 200, 1, { showIf: ["type", "pickup"] }), { k: "pickSound", label: "Pick-up sound", type: "asset", assetType: "sound", def: "", showIf: ["type", "pickup"] },
-    // material (Material foldout of the Object Editor)
-    { k: "matTint", label: "Base color (tints the picture)", type: "color", def: "#ffffff" }, { k: "matTexture", label: "Texture (replaces the model's own picture)", type: "asset", assetType: "image", def: "" },
-    NUM("matRough", "Roughness (0 = mirror smooth, 1 = chalk)", 0.7, 0, 1, 0.01), NUM("matMetal", "Metallic (0 = plastic / paint, 1 = bare metal)", 0, 0, 1, 0.01), NUM("matReflect", "Reflections of sky and ground", 1, 0, 3, 0.05),
-    NUM("matEmit", "Glow amount (shines by itself)", 0, 0, 4, 0.05), { k: "matEmitColor", label: "Glow color", type: "color", def: "#ffffff" }, NUM("matLit", "Reacts to lights (0 = ignores them, 1 = fully)", 1, 0, 1, 0.05), NUM("matOpacity", "Opacity (1 = solid)", 1, 0.05, 1, 0.05),
+    // material (Material foldout of the Object Editor): base colour map + emission
+    { k: "matTexture", label: "Base color map (replaces the model's own picture)", type: "asset", assetType: "image", def: "" },
+    { k: "matEmitMap", label: "Emission map (bright parts glow; empty = the whole object glows)", type: "asset", assetType: "image", def: "" }, NUM("matEmit", "Emission strength (0 = no glow)", 0, 0, 8, 0.05),
     // enemy
     NUM("health", "Health", 100, 1, 100000, 1, { showIf: ["type", "enemy"] }), NUM("speed", "Walking speed (units / second)", 150, 0, 2000, 5, { showIf: ["type", "enemy"] }),
     NUM("radius", "Body width (radius, units)", 22, 4, 200, 1, { showIf: ["type", "enemy"] }), NUM("height", "Body height (units, 64 = 1 m)", 110, 10, 600, 1, { showIf: ["type", "enemy"] }),
@@ -256,16 +243,17 @@
     if (project.origin === "center") return; project.origin = "center";
     for (const sc of project.screens) { if (sc.kind === "splash") continue; for (const n of sc.nodes) for (const [k, f, mn, mx] of [["x", v => v - 640, -640, 640], ["y", v => 360 - v, -360, 360]]) { const r = project.tags[sc.id + "." + n.id + "." + k]; if (r) { r.value = f(+r.value || 0); r.min = mn; r.max = mx; r.label = k === "x" ? "X (0 = middle)" : "Y (0 = middle, up is +)"; } } }
   };
-  // ---- wall types (the Wall Editor): a small mesh that fills a 96 x 96 panel (1.5 m x 1.5 m). Geometry is structure; each face has tags wallN.fM.tex / .color
-  S.WFACE = [TEX("tex", "Texture"), COLOR("color", "Color tint", "#ffffff")];
-  S.defineWallFace = (project, w, f, over) => defP(project, S.WFACE, w.id, w.id + "." + f.id, w.id + "." + f.id, over);
+  // material tags that existed before (removed: only a base colour map and an emission are left)
+  const OLDMAT = ["matTint", "matEmitColor", "matLit", "matOpacity", "matShine", "matRough", "matMetal", "matReflect", "doorWidth", "doorHeight"];
   S.ensureWalls = project => {
-    if (!project.walls) project.walls = []; if (!project.props) project.props = []; if (!project.anims) project.anims = [];
-    for (const m of project.maps || []) { if (!m.things) m.things = []; if (m.n && m.n.t === undefined) m.n.t = m.things.length; if (!project.tags[m.id + ".wallThickness"]) project.tags[m.id + ".wallThickness"] = rec(S.MAP.find(p => p.k === "wallThickness"), m.id, m.id); }
-    for (const p of project.props) for (const pr of S.PROP) if (!project.tags[p.id + "." + pr.k]) { const r = rec(pr, "props", p.id); if (pr.type === "anim") r.modelTag = p.id + ".asset"; project.tags[p.id + "." + pr.k] = r; }
+    if (!project.props) project.props = []; delete project.walls; delete project.anims;
+    // maps: only grid maps exist now; older room/node maps are removed (owner decision: start fresh)
+    const old = (project.maps || []).filter(m => m.style !== "grid"); if (old.length) { project.maps = project.maps.filter(m => m.style === "grid"); for (const m of old) for (const k of Object.keys(project.tags)) if (k.startsWith(m.id + ".")) delete project.tags[k]; project.droppedMaps = (project.droppedMaps || 0) + old.length; }
+    for (const k of Object.keys(project.tags)) if (/^wall\d+\./.test(k)) delete project.tags[k];
+    for (const m of project.maps || []) { if (!m.things) m.things = []; if (!m.layers) m.layers = [{ cells: {} }]; if (!m.n) m.n = { t: m.things.length }; for (const p of S.MAP) if (!project.tags[m.id + "." + p.k]) project.tags[m.id + "." + p.k] = rec(p, m.id, m.id); for (const k of ["fogDistance", "gridSize", "wallThickness"]) delete project.tags[m.id + "." + k]; }
+    for (const p of project.props) { for (const k of OLDMAT) delete project.tags[p.id + "." + k]; for (const pr of S.PROP) { const r = project.tags[p.id + "." + pr.k]; if (!r) { const n = rec(pr, "props", p.id); if (pr.type === "anim") n.modelTag = p.id + ".asset"; project.tags[p.id + "." + pr.k] = n; } else { r.label = pr.label; if (pr.max !== undefined) { r.max = pr.max; if (+r.value > pr.max) r.value = pr.max; } } } }
     { const ik = project.tags["player.interactKey"]; if (project.tags["player.speed"] && !ik) project.tags["player.interactKey"] = rec(S.PLAYER.find(p => p.k === "interactKey"), "player", "player"); } if (project.tags["player.speed"]) for (const pp of S.PLAYER) if (!project.tags["player." + pp.k]) project.tags["player." + pp.k] = rec(pp, "player", "player");
-    for (const m of project.maps || []) for (const v of m.verts) for (const p of S.VERT) if (!project.tags[m.id + "." + v.id + "." + p.k]) project.tags[m.id + "." + v.id + "." + p.k] = rec(p, m.id, m.id + "." + v.id);
-    for (const w of project.walls) for (const f of w.faces) for (const p of S.WFACE) if (!project.tags[w.id + "." + f.id + "." + p.k]) project.tags[w.id + "." + f.id + "." + p.k] = rec(p, w.id, w.id + "." + f.id);
+    for (const att of (project.player && project.player.attachments) || []) for (const k of OLDMAT) delete project.tags["player." + att.id + "." + k];
     const eh = project.tags["player.eyeHeight"]; if (eh && !project.eyeMoved) { if (eh.value === 56) eh.value = 102; project.eyeMoved = true; }
   };
   S.ensurePlayer = project => {
@@ -295,13 +283,8 @@
     }
   };
 
-  // the look of an object, from its Material tab tags
-  S.matOf = (T, pre) => {
-    const hx = (h, d) => { h = String(h || d); return [parseInt(h.slice(1, 3), 16) / 255, parseInt(h.slice(3, 5), 16) / 255, parseInt(h.slice(5, 7), 16) / 255]; }, e = +T.get(pre + "matEmit") || 0, op = T.get(pre + "matOpacity"), lit = T.get(pre + "matLit");
-    const ro = T.get(pre + "matRough"), me = T.get(pre + "matMetal"), rf = T.get(pre + "matReflect");
-    return { tint: hx(T.get(pre + "matTint"), "#ffffff"), emit: hx(T.get(pre + "matEmitColor"), "#ffffff").map(q => q * e), lit: lit === undefined ? 1 : +lit, alpha: op === undefined ? 1 : +op, spec: +T.get(pre + "matShine") || 0,
-      pbr: ro !== undefined, rough: ro === undefined ? 0.7 : +ro, metal: +me || 0, env: rf === undefined ? 1 : +rf, texId: T.get(pre + "matTexture") || "" };
-  };
+  // the look of an object, from its Material tab tags: base colour map + emission
+  S.matOf = (T, pre) => ({ lit: 1, emitK: +T.get(pre + "matEmit") || 0, texId: T.get(pre + "matTexture") || "", emitTexId: T.get(pre + "matEmitMap") || "" });
   S.builtins = project => {
     const B = (n, type, value, label, group, extra) => { project.tags[n] = Object.assign({ type, value, label, group, builtin: true }, extra); };
     B("audio.master", "number", 0.8, "Master volume", "audio", { min: 0, max: 1, step: 0.01 });

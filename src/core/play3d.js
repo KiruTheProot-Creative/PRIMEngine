@@ -5,9 +5,8 @@
   "use strict";
   const mouseId = b => b === 2 ? "mouse2" : b === 1 ? "mouse3" : "mouse1";
   const keyId = e => { const n = e.key.toLowerCase(); return n === " " ? "space" : n === "control" ? "ctrl" : n; };
-  const PRIM = (window.PRIM = window.PRIM || {}), R3D = PRIM.R3D, M4 = PRIM.M4, clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const PRIM = (window.PRIM = window.PRIM || {}), R3D = PRIM.R3D, M4 = PRIM.M4, G = PRIM.Grid, clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   const el = (cls, css) => { const d = document.createElement("div"); d.className = cls; if (css) d.style.cssText = css; return d; };
-  const segDist = (px, py, w) => { const dx = w.bx - w.ax, dy = w.by - w.ay, l2 = dx * dx + dy * dy; let t = l2 ? ((px - w.ax) * dx + (py - w.ay) * dy) / l2 : 0; t = clamp(t, 0, 1); const x = w.ax + t * dx, y = w.ay + t * dy; return { d: Math.hypot(px - x, py - y), x, y }; };
 
   PRIM.Play3D = class Play3D {
     constructor(o) {
@@ -17,11 +16,10 @@
       const host = this.host = o.host; this.root = el("p3root"); this.cv = document.createElement("canvas"); this.cv.className = "v3cv p3cv"; this.xh = el("p3x"); this.hudHost = el("p3hud"); this.msg = el("p3msg");
       this.root.append(this.cv, this.hudHost, this.xh, this.msg); host.append(this.root);
       this.view = new R3D.View(this.cv); if (!this.view.ok) { this.view = null; this.msg.textContent = "WebGL could not start on this computer."; }
-      if (this.view && this.map) { this.view.setMap(this.project, this.map, this.T, this.urls); this.walls = R3D.walls(this.map, this.T); } else if (!this.view) this.cv.style.background = "radial-gradient(ellipse at 50% 120%, #1c2b3d, #080b10)";
-      const T = this.T, m = this.map; this.x = m ? +T.get(m.id + ".startX") : 0; this.y = m ? +T.get(m.id + ".startY") : 0; this.yaw = (m ? +T.get(m.id + ".startAngle") : 90) * Math.PI / 180; this.pitch = 0;
-      const inf = m ? R3D.sectorInfo(m, T, this.x, this.y) : null; this.z = inf ? inf.floor : 0;
+      if (this.view && this.map) this.view.setMap(this.project, this.map, this.T, this.urls); else if (!this.view) this.cv.style.background = "radial-gradient(ellipse at 50% 120%, #1c2b3d, #080b10)";
+      const T = this.T; this.placeStart();
       this.hud = new PRIM.HUD({ host: this.hudHost, project: this.project, tags: T, urls: this.urls, screenId: T.get("player.hud"), edit: this.mode !== "play", say: t => { if (this.o.say) this.o.say(t); } });
-      this.unsub = T.on(names => { this.drawCross(); if (this.mode === "play" && names && names.length && !names.some(n => (this.map && n.startsWith(this.map.id + ".")) || /^(wall|prop)/.test(n))) return; if (this.view && !this.pendingRb) { this.pendingRb = true; setTimeout(() => { this.pendingRb = false; if (!this.dead && this.view) { if (this.map) { this.view.rebuild(); this.walls = R3D.walls(this.map, T); } this.syncAtts(); this.syncThings(); } }, 80); } });
+      this.unsub = T.on(names => { this.drawCross(); if (this.mode === "play" && names && names.length && !names.some(n => (this.map && n.startsWith(this.map.id + ".")) || /^prop/.test(n))) return; if (this.view && !this.pendingRb) { this.pendingRb = true; setTimeout(() => { this.pendingRb = false; if (!this.dead && this.view) { if (this.map) this.view.rebuild(); this.syncAtts(); this.syncThings(); } }, 80); } });
       this.drawCross(); this.gpu = {}; this.atts = [];
       this.sh = this.mode === "play" ? new PRIM.Script.Host({ tags: T, held: k => !!this.keys[k], isState: s => this.isState(s), orb: (k, c, a) => this.orbCmd(k, c, a), fire: key => this.fireProj(this.atts.find(a => "player." + a.id === key)), reload: key => this.reload(this.atts.find(a => "player." + a.id === key)), hasAmmo: key => { const pre = key + "."; return !this.T.get(pre + "ammoUse") || (!this.reloading && (+this.T.get(pre + "ammo") || 0) >= 1); }, sfx: (id, v) => this.sfx(id, v), loop: (id, v) => this.loopSfx(id, v), stopLoop: id => this.stopLoops(id), playAnim: (k, n, l) => this.playAnim(k, n, l), say: t => { if (this.o.say) this.o.say(t); else console.log(t); } }) : null;
       if (PRIM.Audio) PRIM.Audio.preload(this.project.assets.filter(x => x.type === "sound" && this.urls[x.id]).map(x => this.urls[x.id]));
@@ -134,18 +132,19 @@
         const pre = th.prop + ".", aid = T.get(pre + "asset"), type = T.get(pre + "type"); if (!aid || !this.urls[aid]) continue; const model = F.cache[aid];
         if (!model) { F.load(aid, this.urls[aid]).then(mm => { if (mm && !this.dead) this.syncThings(); }); continue; }
         if (!this.gpu[aid]) this.gpu[aid] = this.view.loadModel(model); gone.delete(th.id);
-        const o = old.find(x => x.th.id === th.id) || { th, st: "closed", p: 0, t: 0, timer: 0, taken: false, spin: 0 }; o.th = th; o.pre = pre; o.aid = aid; o.model = model; o.gm = this.gpu[aid]; o.type = type; o.fr = R3D.thingFrame(m, T, th); if (!o.fr) continue;
-        if (!o.init) { const inf = R3D.sectorInfo(m, T, o.fr.cx, o.fr.cy) || R3D.sectorInfo(m, T, o.fr.cx + o.fr.nx * 10, o.fr.cy + o.fr.ny * 10); o.floor = inf ? inf.floor : 0; } out.push(o);
+        const o = old.find(x => x.th.id === th.id) || { th, st: "closed", p: 0, t: 0, timer: 0, taken: false, spin: 0 }; o.th = th; o.pre = pre; o.aid = aid; o.model = model; o.gm = this.gpu[aid]; o.type = type; o.fr = G.thingFrame(m, T, th); if (!o.init) o.floor = o.fr.fy; out.push(o);
       }
       this.things = out; this.doorOpen = this.doorOpen || {};
     }
     thingHit(o, O, D, maxd) {   // ray against a door's box in its own space; returns distance or null
-      const f = o.fr, g = k => +this.T.get(o.pre + k) || 0, w = g("doorWidth") || 96, h = g("doorHeight") || 144, th = f.thick || 16, dx = O[0] - f.cx, dz = O[2] - f.cy;
+      const f = o.fr, w = f.w || 128, h = f.h || 128, th = f.thick || 16, dx = O[0] - f.cx, dz = O[2] - f.cy;
       const lo = [dx * f.ux + dz * f.uy, O[1] - o.floor, dx * f.nx + dz * f.ny], ld = [D[0] * f.ux + D[2] * f.uy, D[1], D[0] * f.nx + D[2] * f.ny], mn = [-w / 2, 0, -th / 2], mx = [w / 2, h, th / 2]; let t0 = 0, t1 = maxd;
       for (let a = 0; a < 3; a++) { if (Math.abs(ld[a]) < 1e-6) { if (lo[a] < mn[a] || lo[a] > mx[a]) return null; } else { let q0 = (mn[a] - lo[a]) / ld[a], q1 = (mx[a] - lo[a]) / ld[a]; if (q0 > q1) [q0, q1] = [q1, q0]; t0 = Math.max(t0, q0); t1 = Math.min(t1, q1); if (t0 > t1) return null; } }
       return t0;
     }
     hitDoor(O, D, maxd) { let best = null; for (const o of this.things || []) { if (o.type !== "door" || o.st !== "closed") continue; const t = this.thingHit(o, O, D, maxd); if (t !== null && (!best || t < best.t)) best = { th: o.th, t }; } return best; }
+    // closed doors are solid blocks for walking, shots and sight (open ones step aside)
+    doorTris() { const out = []; for (const o of this.things || []) if (o.type === "door" && !(this.doorOpen && this.doorOpen[o.th.id])) out.push(...G.boxTris(...G.doorBox(o.fr), { kind: "door", id: o.th.id })); this.dtris = out; if (this.view) this.view.extraTris = out; return out; }
     shootDoor(th) { const o = (this.things || []).find(x => x.th === th); if (o && this.T.get(o.pre + "openMode") === "shot") this.openDoor(o); }
     openDoor(o) { if (o.st === "open" || o.st === "opening") return; o.st = "opening"; o.t = o.p * this.doorLen(o, "openAnim"); o.timer = 0; const s = this.T.get(o.pre + "openSound"); if (s) this.sfx(s); }
     closeDoor(o) { if (o.st === "closed" || o.st === "closing") return; o.st = "closing"; o.timer = 0; const s = this.T.get(o.pre + "closeSound"); if (s) this.sfx(s); }
@@ -181,12 +180,20 @@
         const pose = F.pose(o.model, name, tm), ang = o.type === "pickup" ? o.spin : 0;
         let z = [f.ux * 0 + 0, 0, 0]; const X = [f.ux, 0, f.uy], Z = [f.nx, 0, f.ny]; let cr = [X[1] * 0 - 0 * 0, 0, 0];
         const sgn = (-f.uy * f.nx + f.ux * f.ny) >= 0 ? 1 : -1, XX = f.door ? X.map(q => q * sgn) : X, ZZ = f.door ? Z.map(q => q * sgn) : Z;
-        const slide = o.type === "door" && !an("openAnim") ? o.p * (g("doorHeight") || 144) : 0;
+        const slide = o.type === "door" && !an("openAnim") ? o.p * (f.h || 128) : 0;
         const Fm = [XX[0], XX[1], XX[2], 0, 0, 1, 0, 0, ZZ[0], ZZ[1], ZZ[2], 0, f.cx, o.floor + slide, f.cy, 1];
-        const sc = g("scale") || 1, loc = M4.mul(M4.translate(g("ox"), g("oy"), g("oz")), M4.mul(M4.rotXYZ([g("rx"), g("ry") + ang, g("rz")]), M4.scale(sc, sc, sc)));
-        items.push({ kind: "mesh", gm: o.gm, pose, M: M4.mul(Fm, loc), p: [f.cx, o.floor + 40, f.cy], scale: 6, mat: Object.assign(this.matOf(o.pre), o.flash > 0 ? { tint: [1, 0.45, 0.45], emit: [0.5, 0.05, 0.05] } : o.st === "dead" ? { tint: [0.75, 0.7, 0.7] } : {}), tex: T.get(o.pre + "matTexture") ? v.texFor(T.get(o.pre + "matTexture"), this.urls) : null });
+        const sc = g("scale") || 1; let loc = M4.mul(M4.translate(g("ox"), g("oy"), g("oz")), M4.mul(M4.rotXYZ([g("rx"), g("ry") + ang, g("rz")]), M4.scale(sc, sc, sc)));
+        if (o.type === "door" && T.get(o.pre + "doorFit") !== false) loc = this.doorFit(o, f);
+        items.push({ kind: "mesh", gm: o.gm, pose, M: M4.mul(Fm, loc), clip: o.type === "door" ? o.floor + (f.h || 128) : undefined, p: [f.cx, o.floor + 40, f.cy], scale: 6, mat: Object.assign(this.matGL(o.pre), o.flash > 0 ? { tint: [1, 0.45, 0.45], emit: [0.5, 0.05, 0.05] } : o.st === "dead" ? { tint: [0.75, 0.7, 0.7] } : {}), tex: T.get(o.pre + "matTexture") ? v.texFor(T.get(o.pre + "matTexture"), this.urls) : null }); if (items[items.length - 1].clip !== undefined) items[items.length - 1].mat.clipY = items[items.length - 1].clip;
       }
       if (items.length) v.drawFx(items);
+    }
+    // a door model stretched to exactly fill its block: as wide as the cell, as tall as the door, at most 16 units thick (so it never sticks into the walls beside it)
+    doorFit(o, f) {
+      const T = this.T, g = k => +T.get(o.pre + k) || 0, b = o.model.bounds, R = M4.rotXYZ([g("rx"), g("ry"), g("rz")]), lo = [1e9, 1e9, 1e9], hi = [-1e9, -1e9, -1e9]; if (!b) return M4.ident();
+      for (const x of [b.lo[0], b.hi[0]]) for (const y of [b.lo[1], b.hi[1]]) for (const z of [b.lo[2], b.hi[2]]) { const p = M4.point(R, x, y, z); for (let i = 0; i < 3; i++) { lo[i] = Math.min(lo[i], p[i]); hi[i] = Math.max(hi[i], p[i]); } }
+      const W = Math.max(1e-3, hi[0] - lo[0]), H = Math.max(1e-3, hi[1] - lo[1]), D = Math.max(1e-3, hi[2] - lo[2]), sx = (f.w || 128) / W, sy = (f.h || 128) / H, sz = Math.min(16, D * Math.min(sx, sy)) / D;
+      return M4.mul(M4.scale(sx, sy, sz), M4.mul(M4.translate(-(lo[0] + hi[0]) / 2, -lo[1], -(lo[2] + hi[2]) / 2), R));
     }
     // ---- enemies: idle until they see you, then chase, attack, get hurt, die
     eAnim(o, key) { const nm = this.T.get(o.pre + key); if (!(nm && o.model.anims[nm])) return null; return nm; }
@@ -199,9 +206,14 @@
       const v = this.view; if (!v) return false; const a = this.eEye(o), b = this.pEye(), d = M4.sub(b, a), L = M4.len(d); if (L < 1) return true; const D = d.map(q => q / L);
       const hit = v.raycast(a, D, L); if (hit && hit.t < L - 8) return false; const dh = this.hitDoor(a, D, L); return !(dh && dh.t < L - 8);
     }
-    ePush(p, r, self) {   // keep a moving enemy out of walls (open doors excluded) and away from other enemies
-      for (let it = 0; it < 2; it++) { for (const w of this.walls) { if (w.door && this.doorOpen && this.doorOpen[w.door]) continue; const q = segDist(p.x, p.y, w); if (q.d < r && q.d > 1e-4) { p.x += (p.x - q.x) / q.d * (r - q.d); p.y += (p.y - q.y) / q.d * (r - q.d); } }
-        for (const e of this.things || []) { if (e === self || !this.eAlive(e)) continue; const er = +this.T.get(e.pre + "radius") || 22, dx = p.x - e.x, dy = p.y - e.y, d = Math.hypot(dx, dy); if (d < r + er && d > 1e-4) { p.x += dx / d * (r + er - d) * 0.5; p.y += dy / d * (r + er - d) * 0.5; } } }
+    ePush(p, r, self) {   // keep enemies apart from each other
+      for (const e of this.things || []) { if (e === self || !this.eAlive(e) || Math.abs(e.floor - self.floor) > 100) continue; const er = +this.T.get(e.pre + "radius") || 22, dx = p.x - e.x, dy = p.y - e.y, d = Math.hypot(dx, dy); if (d < r + er && d > 1e-4) { p.x += dx / d * (r + er - d) * 0.5; p.y += dy / d * (r + er - d) * 0.5; } }
+    }
+    // an enemy walks with the same body physics as the player: walls, steps, slopes and stairs, gravity
+    eMove(o, vx, vy, dt) {
+      const g = k => +this.T.get(o.pre + k) || 0, b = o.body || (o.body = { pos: [o.x, o.floor, o.y], vel: [0, 0, 0], r: 0, h: 0, step: 26, maxSlope: 0.69 }); b.r = g("radius") || 22; b.h = Math.min(g("height") || 110, G.LAYER - 4);
+      b.vel[0] = vx; b.vel[2] = vy; b.vel[1] -= (+this.T.get("player.gravity") || 1100) * dt; G.move(b, dt, this.view && this.view.world, this.dtris);
+      const p = { x: b.pos[0], y: b.pos[2] }; this.ePush(p, b.r, o); b.pos[0] = p.x; b.pos[2] = p.y; o.x = b.pos[0]; o.y = b.pos[2]; o.floor = b.pos[1];
     }
     enemyStep(o, dt) {
       const T = this.T, g = k => +T.get(o.pre + k) || 0;
@@ -221,11 +233,8 @@
       o.cool -= dt; const range = g("attackRange") || 70;
       if (dist <= range + (T.get(o.pre + "attack") === "melee" ? r + 16 : 0) && o.los && o.cool <= 0) { o.st = "attack"; o.hit = false; this.eSet(o, "attackAnim"); o.at = 0; const s = T.get(o.pre + "attackSound"); if (s) this.sfx(s); return; }
       const want = T.get(o.pre + "attack") === "melee" ? r + (+T.get("player.radius") || 16) + 4 : Math.min(range * 0.7, 400);
-      if (dist > want || !o.los) {
-        const sp = (g("speed") || 0) * dt, p = { x: o.x + dx / dist * sp, y: o.y + dy / dist * sp }; this.ePush(p, r, o);
-        const inf = this.info(p.x, p.y); if (inf && inf.floor - o.floor <= 26 && inf.ceil - inf.floor >= (g("height") || 110) * 0.6) { o.x = p.x; o.y = p.y; o.floor = inf.floor; }
-        o.st = "chase"; this.eSet(o, "walkAnim");
-      } else { o.st = "chase"; this.eSet(o, "idleAnim"); }
+      if (dist > want || !o.los) { const sp = g("speed") || 0; this.eMove(o, dx / dist * sp, dy / dist * sp, dt); o.st = "chase"; this.eSet(o, "walkAnim"); }
+      else { this.eMove(o, 0, 0, dt); o.st = "chase"; this.eSet(o, "idleAnim"); }
     }
     eAttack(o, dist) {
       const T = this.T, g = k => +T.get(o.pre + k) || 0, kind = T.get(o.pre + "attack"), dmg = g("damage"), col = this.hexCol(T.get(o.pre + "projColor") || "#ff6a2a");
@@ -272,9 +281,14 @@
       const scr = T.get("player.deathScreen"); if (T.get("player.deathAction") === "screen" && scr && this.o.onScreen) { this.pdead = false; this.o.onScreen(scr); return; } this.restartMap();
     }
     say2(t) { if (!this.bigMsg) { this.bigMsg = document.createElement("div"); this.bigMsg.style.cssText = "position:absolute;left:0;right:0;top:38%;text-align:center;font:600 46px 'Chakra Petch',system-ui,sans-serif;letter-spacing:.12em;color:#ffdede;text-shadow:0 2px 10px #000;pointer-events:none;z-index:6;transition:opacity .6s"; this.root.append(this.bigMsg); } this.bigMsg.textContent = t; this.bigMsg.style.opacity = t ? 1 : 0; }
-    resetPlayer() { const T = this.T, m = this.map; this.x = +T.get(m.id + ".startX"); this.y = +T.get(m.id + ".startY"); this.yaw = (+T.get(m.id + ".startAngle")) * Math.PI / 180; this.pitch = 0; const inf = R3D.sectorInfo(m, T, this.x, this.y); this.z = inf ? inf.floor : 0; this.vz = 0; this.fx = []; this.orb = null; this.reloading = null; this.pdead = false; this.deadT = 0; this.say2(""); this.doorOpen = {}; this.things = []; this.syncThings(); }
+    // the map's player start (tags startX / startY / startLayer / startAngle), standing on the floor there
+    placeStart() {
+      const T = this.T, m = this.map; this.x = m ? +T.get(m.id + ".startX") || 0 : 0; this.y = m ? +T.get(m.id + ".startY") || 0 : 0; this.yaw = (m ? +T.get(m.id + ".startAngle") : 90) * Math.PI / 180; this.pitch = 0;
+      const L = m ? +T.get(m.id + ".startLayer") || 0 : 0; this.z = m && G ? G.groundY(m, this.x, this.y, L * G.LAYER + G.LAYER - 8) : 0; this.vz = 0; this.body = null; this.ground = true;
+    }
+    resetPlayer() { this.placeStart(); this.fx = []; this.orb = null; this.reloading = null; this.pdead = false; this.deadT = 0; this.say2(""); this.doorOpen = {}; this.things = []; this.syncThings(); }
     restartMap() { const T = this.T; T.set("player.health", +T.get("player.maxHealth") || 100); this.lastHp = undefined; this.initAmmo(); this.resetPlayer(); }
-    loadMap(id) { const m = this.project.maps.find(x => x.id === id); if (!m || !this.view) return false; this.map = m; this.view.setMap(this.project, m, this.T, this.urls); this.walls = R3D.walls(m, this.T); this.resetPlayer(); return true; }
+    loadMap(id) { const m = this.project.maps.find(x => x.id === id); if (!m || !this.view) return false; this.map = m; this.view.setMap(this.project, m, this.T, this.urls); this.resetPlayer(); return true; }
     levelExit(o) {
       if (this.exiting) return; const T = this.T, s = T.get(o.pre + "exitSound"); if (s) this.sfx(s);
       if (T.get(o.pre + "exitTo") === "screen") { const sc = T.get(o.pre + "exitScreen"); if (sc && this.o.onScreen) { this.exiting = true; this.o.onScreen(sc); return; } this.say2("Level finished"); this.exiting = true; return; }
@@ -368,7 +382,7 @@
           const a0 = M4.norm(M4.dir(Rb, ...arrow)), maxR = g("aimMax") * Math.PI / 180; let want = M4.norm(M4.sub(Hc, M4.add(off, M4.dir(Rb, ...mz))));
           Ra = M4.between(a0, want, maxR); want = M4.norm(M4.sub(Hc, M4.add(off, M4.dir(M4.mul(Ra, Rb), ...mz)))); at.cur = at.cur ? M4.norm(M4.add(at.cur.map(q => q * Math.exp(-14 * dt)), want.map(q => q * (1 - Math.exp(-14 * dt))))) : want; Ra = M4.between(a0, at.cur, maxR);
         } else at.cur = null;
-        const M = M4.mul(M4.translate(...off), M4.mul(Ra, M4.mul(Rb, M4.mul(Sm, M4.translate(-g("pivotX"), -g("pivotY"), -g("pivotZ")))))); const mt = this.matOf(pre); items.push({ gm: at.gm, pose, M, mat: mt, tex: mt.texId ? v.texFor(mt.texId, this.urls) : null }); this.objLight(at, pre, M, g, sc, eye, B);
+        const M = M4.mul(M4.translate(...off), M4.mul(Ra, M4.mul(Rb, M4.mul(Sm, M4.translate(-g("pivotX"), -g("pivotY"), -g("pivotZ")))))); const mt = this.matGL(pre); items.push({ gm: at.gm, pose, M, mat: mt, tex: mt.texId ? v.texFor(mt.texId, this.urls) : null }); this.objLight(at, pre, M, g, sc, eye, B);
         if (at.type === "weapon") { const ey = g("emitYaw") * Math.PI / 180, ep = g("emitPitch") * Math.PI / 180; at.emit = { pos: M4.point(M, g("emitX"), g("emitY"), g("emitZ")), dir: M4.norm(M4.dir(M, -Math.cos(ep) * Math.sin(ey), Math.sin(ep), -Math.cos(ep) * Math.cos(ey))) }; }
         if (at.type === "weapon") { const ay2 = g("arrowYaw") * Math.PI / 180, ap2 = g("arrowPitch") * Math.PI / 180; at.muz = { pos: M4.point(M, g("muzzleX"), g("muzzleY"), g("muzzleZ")), dir: M4.norm(M4.dir(M, -Math.cos(ap2) * Math.sin(ay2), Math.sin(ap2), -Math.cos(ap2) * Math.cos(ay2))) }; }
         if (this.mode === "preview" && at.type === "weapon") {   // the arrow and the muzzle point, drawn so they can be placed
@@ -381,6 +395,7 @@
     }
     // material of an object (Material tab)
     matOf(pre) { return PRIM.Schema.matOf(this.T, pre); }
+    matGL(pre) { const m = this.matOf(pre); if (m.emitTexId && this.view) m.emitTex = this.view.texFor(m.emitTexId, this.urls); return m; }
     // the light an object carries (Light tab), placed in the world for this frame (camera space -> world)
     objLight(at, pre, M, g, sc, eye, B) {
       const T = this.T, ty = T.get(pre + "lightType"); if (!ty || ty === "none") return; const w = q => [eye[0] + B.s[0] * q[0] + B.u[0] * q[1] - B.f[0] * q[2], eye[1] + B.s[1] * q[0] + B.u[1] * q[1] - B.f[1] * q[2], eye[2] + B.s[2] * q[0] + B.u[2] * q[1] - B.f[2] * q[2]];
@@ -397,21 +412,22 @@
       const on = this.mode === "play" && this.T.get("gfx.showFps") && v.stats; this.statEl.style.display = on ? "block" : "none"; if (!on) return; const s = v.stats;
       if (!this.statN || performance.now() - this.statN > 400) { this.statN = performance.now(); this.statEl.textContent = "triangles " + Math.round(s.tris) + " / " + Math.round(s.totalTris) + "\nchunks " + s.chunks + " / " + s.totalChunks + "\nlights " + s.lights + "\nLOD level " + (v.lodLevel || 0); }
     }
-    // ---- walking
-    info(x, y) { return R3D.sectorInfo(this.map, this.T, x, y); }
-    push(p, r) { for (const e of this.things || []) { if (!this.eAlive(e)) continue; const er = +this.T.get(e.pre + "radius") || 22, dx = p.x - e.x, dy = p.y - e.y, d = Math.hypot(dx, dy); if (d < r + er && d > 1e-4) { p.x += dx / d * (r + er - d); p.y += dy / d * (r + er - d); } } for (let it = 0; it < 3; it++) for (const w of this.walls) { if (w.door && this.doorOpen && this.doorOpen[w.door]) continue; const q = segDist(p.x, p.y, w); if (q.d < r) { let nx = p.x - q.x, ny = p.y - q.y, d = q.d; if (d < 1e-4) { const dx = w.bx - w.ax, dy = w.by - w.ay, l = Math.hypot(dx, dy) || 1; nx = -dy / l; ny = dx / l; d = 0; } else { nx /= d; ny /= d; } p.x += nx * (r - d); p.y += ny * (r - d); } } }
+    // ---- walking: a capsule body (grid.js) slides along walls, climbs steps and stairs, walks slopes; enemies push it away
+    push(p, r) { for (const e of this.things || []) { if (!this.eAlive(e) || Math.abs(e.floor - this.z) > 100) continue; const er = +this.T.get(e.pre + "radius") || 22, dx = p.x - e.x, dy = p.y - e.y, d = Math.hypot(dx, dy); if (d < r + er && d > 1e-4) { p.x += dx / d * (r + er - d); p.y += dy / d * (r + er - d); } } }
     step(dt) {
-      const T = this.T, k = this.keys, g = +T.get("player.gravity"), r = +T.get("player.radius"), head = +T.get("player.eyeHeight") + 8, stepH = +T.get("player.stepHeight");
+      const T = this.T, k = this.keys, g = +T.get("player.gravity"), r = +T.get("player.radius") || 16, head = Math.min((+T.get("player.eyeHeight") || 102) + 8, G.LAYER - 6), stepH = +T.get("player.stepHeight") || 24;
       let fw = (k.w || k.arrowup ? 1 : 0) - (k.s || k.arrowdown ? 1 : 0), sd = (k.d ? 1 : 0) - (k.a ? 1 : 0); if (k.arrowleft) this.yaw -= 2 * dt; if (k.arrowright) this.yaw += 2 * dt;
       const len = Math.hypot(fw, sd) || 1; fw /= len; sd /= len; let spd = +T.get("player.speed"); if (T.get("player.sprintEnabled") && k.shift && fw > 0) spd *= 1 + (+T.get("player.sprintPercent") || 0) / 100;
-      const cy = Math.cos(this.yaw), sy = Math.sin(this.yaw), nx = this.x + (cy * fw - sy * sd) * spd * dt, ny = this.y + (sy * fw + cy * sd) * spd * dt;
-      const tryPos = (x, y) => { const p = { x, y }; this.push(p, r); const inf = this.info(p.x, p.y); if (!inf) return null; if (inf.floor - this.z > stepH) return null; if (inf.ceil - Math.max(inf.floor, this.z) < head) return null; return p; };
-      const p = tryPos(nx, ny) || tryPos(nx, this.y) || tryPos(this.x, ny); this.mv = p ? Math.hypot(p.x - this.x, p.y - this.y) : 0; this.sprinting = !!(T.get("player.sprintEnabled") && k.shift && fw > 0); this.spdNow = spd; if (p) { if (this.ground) { this.stepAcc = (this.stepAcc || 0) + Math.hypot(p.x - this.x, p.y - this.y); const sd2 = Math.max(10, +T.get("player.stepDistance") || 90); if (this.stepAcc >= sd2) { this.stepAcc %= sd2; this.footstep(); } } this.x = p.x; this.y = p.y; }
-      const inf = this.info(this.x, this.y) || { floor: this.z, ceil: this.z + 9999 };
-      if (T.get("player.jumpEnabled") && k.space && this.ground) { this.vz = Math.sqrt(2 * g * (+T.get("player.jumpHeight") || 0)); this.ground = false; this.psound("jumpSound"); }
-      this.vz -= g * dt; this.z += this.vz * dt;
-      if (this.z <= inf.floor) { if (!this.ground && this.vz < -250) this.psound("landSound"); this.z = inf.floor; this.vz = 0; this.ground = true; } else this.ground = false;
-      if (this.z + head > inf.ceil) { this.z = Math.max(inf.floor, inf.ceil - head); if (this.vz > 0) this.vz = 0; }
+      const cy = Math.cos(this.yaw), sy = Math.sin(this.yaw), b = this.body || (this.body = { pos: [this.x, this.z, this.y], vel: [0, 0, 0], ground: true });
+      Object.assign(b, { r, h: head, step: stepH, maxSlope: 0.69 }); b.vel[0] = (cy * fw - sy * sd) * spd; b.vel[2] = (sy * fw + cy * sd) * spd;
+      const was = this.ground; if (T.get("player.jumpEnabled") && k.space && was) { b.vel[1] = Math.sqrt(2 * g * (+T.get("player.jumpHeight") || 0)); b.ground = false; this.psound("jumpSound"); }
+      b.vel[1] -= g * dt; const vy = b.vel[1], x0 = b.pos[0], z0 = b.pos[2], world = this.view && this.view.world, dtr = this.doorTris();
+      G.move(b, dt, world, dtr); const p = { x: b.pos[0], y: b.pos[2] }; this.push(p, r); if (p.x !== b.pos[0] || p.y !== b.pos[2]) { b.pos[0] = p.x; b.pos[2] = p.y; G.push(b, world, dtr); }
+      this.mv = Math.hypot(b.pos[0] - x0, b.pos[2] - z0); this.sprinting = !!(T.get("player.sprintEnabled") && k.shift && fw > 0); this.spdNow = spd;
+      if (b.ground && was) { this.stepAcc = (this.stepAcc || 0) + this.mv; const sd2 = Math.max(10, +T.get("player.stepDistance") || 90); if (this.stepAcc >= sd2) { this.stepAcc %= sd2; this.footstep(); } }
+      if (b.ground && !was && vy < -250) this.psound("landSound");
+      this.x = b.pos[0]; this.y = b.pos[2]; this.z = b.pos[1]; this.ground = b.ground; this.vz = b.vel[1];
+      if (this.z < -4000 && !this.pdead) this.hurtPlayer(1e9);   // fell out of the world
       this.airT = this.ground ? 0 : (this.airT || 0) + dt;
       this.setState(!this.ground && (this.vz > 0 || this.airT > 0.12) ? (this.vz > 0 ? "jumping" : "falling") : this.mv > this.spdNow * dt * 0.3 ? (this.sprinting ? "running" : "walking") : "standing");
     }

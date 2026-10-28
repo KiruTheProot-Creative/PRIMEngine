@@ -1,7 +1,7 @@
 module.exports = async (p, out) => {
   const menu = async (top, item) => { await p.click('.mb:has-text("' + top + '")'); await p.click('.pitem:has-text("' + item + '")'); };
   await p.click('.tile.plus'); await p.waitForSelector('#app'); await p.waitForTimeout(400);
-  await menu('Screen', 'Create Map'); await p.click('.mcard:has-text("DOOM")'); await p.waitForSelector('.medcv'); await p.waitForTimeout(300);
+  await menu('Screen', 'Create Map'); await p.waitForSelector('.medcv'); await p.waitForTimeout(300);
   await p.click('.tab:has-text("Player Editor")'); await p.waitForTimeout(700);
   console.log('sound tags', await p.evaluate(() => ['footstep', 'footstep2', 'stepDistance', 'jumpSound', 'landSound', 'hurtSound', 'deathSound', 'soundVolume'].map(k => k + '=' + __studio.S.tags.get('player.' + k)).join(' ')));
   console.log('inspector groups', await p.evaluate(() => [...document.querySelectorAll('.insp .grp, .insp .gh')].map(e => e.textContent.trim()).join('|')));
