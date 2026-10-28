@@ -350,7 +350,7 @@
         let z = [f.ux * 0 + 0, 0, 0]; const X = [f.ux, 0, f.uy], Z = [f.nx, 0, f.ny]; let cr = [X[1] * 0 - 0 * 0, 0, 0];
         const sgn = (-f.uy * f.nx + f.ux * f.ny) >= 0 ? 1 : -1, XX = f.door ? X.map(q => q * sgn) : X, ZZ = f.door ? Z.map(q => q * sgn) : Z;
         const slide = o.type === "door" && !an("openAnim") ? o.p * (f.h || 128) : 0;
-        const Fm = [XX[0], XX[1], XX[2], 0, 0, 1, 0, 0, ZZ[0], ZZ[1], ZZ[2], 0, f.cx, o.floor + slide, f.cy, 1];
+        const Fm = o.type === "enemy" && o.surf ? this.crawlFrame(o) : [XX[0], XX[1], XX[2], 0, 0, 1, 0, 0, ZZ[0], ZZ[1], ZZ[2], 0, f.cx, o.floor + slide, f.cy, 1];
         const sc = g("scale") || 1; let loc = M4.mul(M4.translate(g("ox"), g("oy"), g("oz")), M4.mul(M4.rotXYZ([g("rx"), g("ry") + ang, g("rz")]), M4.scale(sc, sc, sc)));
         if (o.mount === "ceiling" && T.get(o.pre + "ceilFlip") !== false) loc = M4.mul(M4.translate(0, g("height") || 110, 0), M4.mul(M4.rotXYZ([0, 0, 180]), loc));   // hanging: turned over, its feet on the ceiling
         if (o.type === "door" && T.get(o.pre + "doorFit") !== false) loc = this.doorFit(o, f);
@@ -402,7 +402,7 @@
     enemyStep(o, dt) {
       const T = this.T, g = k => +T.get(o.pre + k) || 0;
       const beh = T.get(o.pre + "behavior") || "chase";
-      if (!o.init) { o.init = true; o.x = o.fr.cx; o.y = o.fr.cy; o.yaw = o.th.ang || 0; o.hp = g("health") || 100; o.st = "idle"; o.cool = 0; o.losT = Math.random() * 0.2; o.at = 0; o.flash = 0; o.pi = 0; o.pdir = 1; o.pwait = 0; this.eSet(o, "idleAnim");
+      if (!o.init) { o.init = true; o.x = o.fr.cx; o.y = o.fr.cy; o.yaw = o.th.ang || 0; o.hp = g("health") || 100; o.st = "idle"; o.cool = 0; o.losT = Math.random() * 0.2; o.at = 0; o.flash = 0; o.pi = 0; o.pdir = 1; o.pwait = 0; o.surf = null; this.eSet(o, "idleAnim");
         if (o.keep) { Object.assign(o, o.keep); o.keep = null; o.awake = true; o.st = "chase"; o.body = null; }   // it dropped and turned into this enemy: same place, already hunting
         o.mount = beh === "stationary" && T.get(o.pre + "mount") === "ceiling" && !o.dropped ? "ceiling" : null; if (o.mount) this.eHang(o); }
       o.at += dt; if (o.flash > 0) o.flash -= dt;
@@ -411,6 +411,7 @@
       if (o.st === "falling") { this.eMove(o, 0, 0, dt); if (o.body && o.body.ground && o.at > 0.05) this.eLand(o); return; }
       if (o.st === "fuse") { o.fuseT -= dt; o.flash = Math.floor(o.fuseT * 12) % 2 ? 0.06 : 0; if (o.fuseT <= 0) this.eBlast(o, true); return; }
       const r = g("radius") || 22, dx = this.x - o.x, dy = this.y - o.y, dist = Math.hypot(dx, dy) || 1;
+      if (T.get(o.pre + "detect") === "blind") { this.eBlind(o, dt, dist, beh); return; }
       o.losT -= dt; if (o.losT <= 0) { o.losT = 0.2; o.los = !this.pdead && (o.mount ? this.inCone(o) : dist < (g("sight") || 900) && this.canSee(o)); if (o.los && !o.awake) { o.awake = true; const s = T.get(o.pre + "sightSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); } }
       if (o.st === "pain") { if (o.at >= this.eLen(o, "hurtAnim", 0.25)) { o.st = "chase"; this.eSet(o, "walkAnim"); } return; }
       // hanging from the ceiling: waits for you to step into its cone, then shoots, drops or blows up
@@ -436,14 +437,18 @@
       if (beh === "stationary") { o.cool -= dt; const rg = g("attackRange") || 70; this.eMove(o, 0, 0, dt); o.st = "chase"; this.eSet(o, "idleAnim");   // a turret: never walks
         if (dist <= rg + (T.get(o.pre + "attack") === "melee" ? r + 16 : 0) && o.los && o.cool <= 0) { o.st = "attack"; o.hit = false; this.eSet(o, "attackAnim"); o.at = 0; const s = T.get(o.pre + "attackSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); } return; }
       o.cool -= dt; const range = g("attackRange") || 70;
-      if (dist <= range + (T.get(o.pre + "attack") === "melee" ? r + 16 : 0) && o.los && o.cool <= 0) { o.st = "attack"; o.hit = false; this.eSet(o, "attackAnim"); o.at = 0; const s = T.get(o.pre + "attackSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); return; }
+      if (dist <= range + (T.get(o.pre + "attack") === "melee" ? r + 16 : 0) && o.los && o.cool <= 0 && !(o.surf && T.get(o.pre + "attack") === "melee")) { o.st = "attack"; o.hit = false; this.eSet(o, "attackAnim"); o.at = 0; const s = T.get(o.pre + "attackSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); return; }
+      if (beh === "chase" && T.get(o.pre + "crawl") && this.eCrawl(o, dt, dist)) return;
       const want = T.get(o.pre + "attack") === "melee" ? r + (+T.get("player.radius") || 16) + 4 : Math.min(range * 0.7, 400);
       if (dist > want || !o.los) { const sp = g("speed") || 0; this.eMove(o, dx / dist * sp, dy / dist * sp, dt); o.st = "chase"; this.eSet(o, "walkAnim"); }
       else { this.eMove(o, 0, 0, dt); o.st = "chase"; this.eSet(o, "idleAnim"); }
     }
-    eAttack(o, dist, ranged) {
+    eAttack(o, dist, ranged, dir) {
       const T = this.T, g = k => +T.get(o.pre + k) || 0, kind = ranged && T.get(o.pre + "attack") === "melee" ? "projectile" : T.get(o.pre + "attack"), dmg = g("damage"), col = this.hexCol(T.get(o.pre + "projColor") || "#ff6a2a");
-      if (kind === "melee") { if (dist <= (g("attackRange") || 70) + (g("radius") || 22) + 24) this.hurtPlayer(dmg); return; }
+      if (kind === "melee") { if (dist <= (g("attackRange") || 70) + (g("radius") || 22) + 24 && Math.abs(this.z - o.floor) < 90) this.hurtPlayer(dmg); return; }
+      if (dir) { const a = this.eEye(o), hit = this.view && this.view.raycast(a, dir, 6000), far = hit ? hit.t : 6000;   // straight ahead, aimed at nothing
+        if (kind === "hitscan") { const pc = [this.x, this.z + 50, this.y], rel = M4.sub(pc, a), t = M4.dot(rel, dir), off = M4.len(M4.sub(rel, dir.map(q => q * t))); (this.fx = this.fx || []).push({ kind: "line", a, b: M4.add(a, dir.map(q => q * far)), c: col, w: 0.6, life: 0.12, t: 0 }); if (t > 0 && t < far && off < (+T.get("player.radius") || 16) + 40) this.hurtPlayer(dmg); return; }
+        (this.fx = this.fx || []).push({ kind: "sphere", hostile: true, dmg, p: a, d: dir.slice(), c: col, size: g("projSize") || 6, speed: g("projSpeed") || 600, life: 6, t: 0, light: { c: col, k: 1.2, r: 160 } }); return; }
       const a = this.eEye(o), b = this.pEye(); b[1] -= 14; const d = M4.sub(b, a), L = M4.len(d) || 1, D = d.map(q => q / L);
       if (kind === "hitscan") { const ok = this.canSee(o); (this.fx = this.fx || []).push({ kind: "line", a, b: ok ? b : M4.add(a, D.map(q => q * L * 0.9)), c: col, w: 0.6, life: 0.12, t: 0 }); if (ok) this.hurtPlayer(dmg); return; }
       (this.fx = this.fx || []).push({ kind: "sphere", hostile: true, dmg, p: a, d: D, c: col, size: g("projSize") || 6, speed: g("projSpeed") || 600, life: 6, t: 0, light: { c: col, k: 1.2, r: 160 } });
@@ -474,6 +479,52 @@
       const bx = o.x, by = o.y; this.eMove(o, dx / d * sp, dy / d * sp, dt); o.pstuck = Math.hypot(o.x - bx, o.y - by) < sp * dt * 0.2 ? (o.pstuck || 0) + dt : 0;   // blocked: give up on this point after a while
       o.yaw = Math.atan2(dx, dy) * 180 / Math.PI; o.st = "patrol"; this.eSet(o, "walkAnim");
     }
+    // an enemy that never notices you: fires on a timer in the direction it faces and / or hurts you when you touch it; still patrols its path
+    eBlind(o, dt, dist, beh) {
+      const T = this.T, g = k => +T.get(o.pre + k) || 0, mode = T.get(o.pre + "blindMode") || "shoot", r = g("radius") || 22, h = g("height") || 110, rate = g("attackRate") || 1.2; o.awake = false; o.los = false;
+      if (mode !== "shoot") { o.tcool = (o.tcool || 0) - dt; const pz = this.z, ph = +T.get("player.eyeHeight") || 102;
+        if (o.tcool <= 0 && !this.pdead && dist < r + (+T.get("player.radius") || 16) + 4 && pz < o.floor + h && pz + ph > o.floor) { this.hurtPlayer(g("damage")); o.tcool = rate; o.flash = 0.06; } }
+      if (mode !== "touch") { o.bt = (o.bt === undefined ? Math.random() * rate : o.bt) - dt;
+        if (o.bt <= 0 && !this.pdead) { o.bt = rate; this.eSet(o, "attackAnim"); o.at = 0; o.bAnim = this.eLen(o, "attackAnim", 0.3); const s = T.get(o.pre + "attackSound"); if (s) this.sfxAt(s, 1, this.thingPos(o));
+          const a = o.yaw * Math.PI / 180, dir = o.mount === "ceiling" ? [0, -1, 0] : [Math.sin(a), 0, Math.cos(a)]; this.eAttack(o, dist, true, T.get(o.pre + "attack") === "hitscan" ? dir : dir); } }
+      if (o.bAnim > 0) { o.bAnim -= dt; if (o.bAnim > 0) { if (!o.mount) this.eMove(o, 0, 0, dt); return; } }
+      if (beh === "path") { this.ePatrol(o, dt); return; }
+      if (!o.mount) this.eMove(o, 0, 0, dt); o.st = "idle"; this.eSet(o, "idleAnim");
+    }
+    // walking on walls and ceilings. o.surf = { n: surface normal, p: feet point } while on a wall / ceiling; null = on the floor (normal walking physics).
+    // On the floor it climbs a wall that blocks its way; on a wall it climbs up (and toward you); on a ceiling it crawls over you and drops. Returns true when it moved itself.
+    eCrawl(o, dt, dist) {
+      const T = this.T, g = k => +T.get(o.pre + k) || 0, v = this.view; if (!v) return false; const sp = g("speed") || 0, r = g("radius") || 22, h = g("height") || 110, P = [this.x, this.z + 40, this.y];
+      if (!o.surf) {   // floor: only take over when a wall blocks the way to you
+        if (!o.body || !o.body.ground || sp <= 0) return false; const L = Math.hypot(P[0] - o.x, P[2] - o.y) || 1, dir = [(P[0] - o.x) / L, 0, (P[2] - o.y) / L], hit = v.raycast([o.x, o.floor + Math.min(h * 0.5, 40), o.y], dir, r + 14);
+        const meleeNear = T.get(o.pre + "attack") === "melee" && dist < r + 40 && Math.abs(this.z - o.floor) < 60;
+        if (hit && hit.n && Math.abs(hit.n[1]) < 0.4 && !meleeNear && Math.abs(P[1] - o.floor) < 400) { o.cBlock = (o.cBlock || 0) + dt; if (o.cBlock > 0.2) { o.cBlock = 0; o.surf = { n: hit.n.slice(), p: M4.add(hit.p, hit.n.map(q => q * 1)) }; o.cstuck = 0; } }
+        else o.cBlock = 0;
+        if (!o.surf) return false;
+      }
+      const s = o.surf, n = s.n, F = s.p; let D;
+      if (n[1] < -0.5) { const L = Math.hypot(P[0] - F[0], P[2] - F[2]); D = [P[0] - F[0], 0, P[2] - F[2]];   // ceiling: over you, then drop
+        if (L < r + 26 || (T.get(o.pre + "attack") !== "melee" && o.los && dist < (g("attackRange") || 70))) { if (L < r + 26) return this.eCrawlOff(o, true); D = [0, 0, 0]; } }
+      else { const L = Math.hypot(P[0] - F[0], P[2] - F[2]) || 1; D = [(P[0] - F[0]) / L * 0.6, 1, (P[2] - F[2]) / L * 0.6]; }   // wall: up and toward you
+      const dn = M4.dot(D, n); D = M4.sub(D, n.map(q => q * dn)); const DL = M4.len(D);
+      if (DL < 1e-3) { this.eCrawlPlace(o, h); this.eSet(o, "idleAnim"); return true; } D = D.map(q => q / DL); s.fwd = D;
+      const step = sp * dt, C = M4.add(F, n.map(q => q * r * 0.5)), ahead = v.raycast(C, D, step + r);
+      if (ahead && ahead.n && ahead.t < step + r * 0.8 && M4.dot(ahead.n, n) < 0.7) { s.n = ahead.n.slice(); s.p = M4.add(ahead.p, ahead.n.map(q => q * 1)); }   // inside corner: onto the surface in front
+      else { const F2 = M4.add(F, D.map(q => q * step)), down = v.raycast(M4.add(F2, n.map(q => q * r * 0.5)), n.map(q => -q), r * 0.5 + 12);
+        if (down && down.n) { s.p = M4.add(down.p, down.n.map(q => q * 1)); s.n = down.n.slice(); }
+        else { const wrap = v.raycast(M4.sub(F2, n.map(q => q * 4)), D.map(q => -q), r + 12);   // outside corner: around the edge
+          if (wrap && wrap.n) { s.n = wrap.n.slice(); s.p = M4.add(wrap.p, wrap.n.map(q => q * 1)); } else return this.eCrawlOff(o, true); } }
+      const moved = M4.len(M4.sub(s.p, F)); o.cstuck = moved < step * 0.2 ? (o.cstuck || 0) + dt : 0; if (o.cstuck > 1.5) return this.eCrawlOff(o, true);
+      o.cwin = (o.cwin || 0) + dt; if (!o.cfrom) o.cfrom = s.p.slice(); if (o.cwin > 0.6) { const prog = M4.len(M4.sub(s.p, o.cfrom)); o.cwin = 0; o.cfrom = s.p.slice(); if (prog < sp * 0.08) return this.eCrawlOff(o, true); }   // flipping in a tight corner without getting anywhere: let go
+      if (s.n[1] > 0.5) return this.eCrawlOff(o, false);   // on top of something: walk normally again
+      this.eCrawlPlace(o, h); o.st = "chase"; this.eSet(o, "walkAnim"); return true;
+    }
+    eCrawlPlace(o, h) { const s = o.surf, c = M4.add(s.p, s.n.map(q => q * h * 0.5)); o.x = c[0]; o.y = c[2]; o.floor = c[1] - h * 0.5; }
+    eCrawlOff(o, fall) { const s = o.surf; o.surf = null; o.body = null; o.cfrom = null; o.cwin = 0; if (s) { o.x = s.p[0] + s.n[0] * 4; o.y = s.p[2] + s.n[2] * 4; o.floor = s.p[1] + (s.n[1] < 0 ? -(+this.T.get(o.pre + "height") || 110) : 0); }
+      if (fall) { o.st = "falling"; o.at = 0; o.crawlDrop = true; } return true; }
+    // the model standing on its surface: up = the surface normal, front = the way it crawls
+    crawlFrame(o) { const s = o.surf, Y = s.n, f0 = s.fwd || (Math.abs(Y[1]) > 0.9 ? [0, 0, 1] : [0, 1, 0]), Z = M4.norm(M4.sub(f0, Y.map(q => q * M4.dot(f0, Y)))), X = M4.cross(Y, Z), F = s.p;
+      return [X[0], X[1], X[2], 0, Y[0], Y[1], Y[2], 0, Z[0], Z[1], Z[2], 0, F[0], F[1], F[2], 1]; }
     // stick to the nearest ceiling straight above the placed spot (its top touches the ceiling)
     eHang(o) {
       const h = +this.T.get(o.pre + "height") || 110, v = this.view, from = [o.x, o.floor + 4, o.y], hit = v && v.raycast(from, [0, 1, 0], 4000);
@@ -486,6 +537,7 @@
     }
     // a dropped enemy hits the floor: it turns into its "becomes" enemy, explodes, or simply hunts you
     eLand(o) {
+      if (o.crawlDrop) { o.crawlDrop = false; o.st = "chase"; o.awake = true; this.eSet(o, "walkAnim"); return; }
       const T = this.T, into = T.get(o.pre + "dropInto"), act = T.get(o.pre + "ceilAction");
       if (act === "selfdestruct") { o.st = "fuse"; o.fuseT = +T.get(o.pre + "fuse") || 0; return; }
       if (into && into !== o.morph && (this.project.props || []).some(q => q.id === into) && T.get(into + ".type") === "enemy") { o.morph = into; o.keep = { x: o.x, y: o.y, floor: o.floor, yaw: o.yaw, dropped: true }; o.init = false; o.mount = null; this.syncThings(); return; }
@@ -504,7 +556,7 @@
       if (R > 0 && dmg > 0) { const pc = [this.x, this.z + 50, this.y], dp = M4.len(M4.sub(pc, c)); if (dp < R && !this.pdead && clear(c, pc)) this.hurtPlayer(Math.round(dmg * (1 - 0.75 * dp / R)));
         for (const e of this.things || []) { if (e === o || !this.eAlive(e)) continue; const ec = [e.x, e.floor + 50, e.y], de = M4.len(M4.sub(ec, c)); if (de < R && clear(c, ec)) this.damageEnemy(e, dmg * (1 - 0.75 * de / R)); } }
       this.burst(c, col, Math.round(g("blastCount")), 320, 0.6, 3); this.fx.push({ kind: "sphere", deco: true, p: c.slice(), d: [0, 1, 0], c: [0, 0, 0], size0: 0.01, size: 0.01, speed: 0, life: 0.35, t: 0, light: { c: col, k: 3, k0: 3, r: Math.max(200, R * 1.5), shadow: false } });
-      if (T.get(o.pre + "blastSphere") !== false && R > 0) this.fx.push({ kind: "shock", deco: true, p: c.slice(), R, life: 0.45, t: 0, c1: col.map(q => Math.min(1, q * 1.3 + 0.2)), c2: col, anim: "none", aspd: 2, glow: 1.2 });
+      if (T.get(o.pre + "blastSphere") !== false && R > 0) this.fx.push({ kind: "shock", deco: true, p: c.slice(), R, life: g("blastSphereTime") || 0.45, t: 0, c1: this.hexCol(T.get(o.pre + "blastSphereColor1") || "#ffe08a"), c2: this.hexCol(T.get(o.pre + "blastSphereColor2") || "#ff4a1a"), anim: T.get(o.pre + "blastSphereAnim") || "bands", aspd: T.get(o.pre + "blastSphereSpeed") === undefined ? 2 : g("blastSphereSpeed"), glow: T.get(o.pre + "blastSphereGlow") === undefined ? 1.2 : g("blastSphereGlow") });
       const s = T.get(o.pre + "blastSound"); if (s) this.sfxAt(s, 1, c, 3000);
       if (kill) { o.hp = 0; o.flash = 0; if (T.get(o.pre + "deathStyle") === "slice" && !o.sliced) this.eSlice(o, true); else { o.st = "dead"; o.taken = true; } }
     }

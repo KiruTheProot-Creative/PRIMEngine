@@ -220,6 +220,9 @@
     NUM("sight", "Sees the player from (units)", 900, 50, 10000, 10, { showIf: ["type", "enemy"] }),
     // how it moves: chase (waits, then hunts you), path (walks a path drawn on the map), stationary (stands still or hangs from the ceiling)
     { k: "behavior", label: "Behaviour", type: "choice", options: [["chase", "Normal: waits until it sees you, then hunts you"], ["path", "Patrol: follows a path drawn on the map"], ["stationary", "Stationary: stands still, or hangs from the ceiling"]], def: "chase", showIf: ["type", "enemy"] },
+    { k: "crawl", label: "Can walk on walls and ceilings (climbs when a wall is in its way, drops on you from above)", type: "bool", def: false, showIf: ["type", "enemy"], showIf2: ["behavior", "chase"] },
+    { k: "detect", label: "Notices the player", type: "choice", options: [["sees", "Yes: sees you and reacts"], ["blind", "No: never notices you (a trap)"]], def: "sees", showIf: ["type", "enemy"] },
+    { k: "blindMode", label: "Without noticing you it", type: "choice", options: [["shoot", "Fires on a timer, straight ahead (or down from a ceiling)"], ["touch", "Is a damage hitbox: touching it hurts"], ["both", "Both"]], def: "shoot", showIf: ["type", "enemy"], showIf2: ["detect", "blind"] },
     { k: "pathChase", label: "Leaves the path to hunt you once it sees you", type: "bool", def: true, showIf: ["type", "enemy"], showIf2: ["behavior", "path"] },
     NUM("pathWait", "Waits at each point (s)", 0, 0, 30, 0.1, { showIf: ["type", "enemy"], showIf2: ["behavior", "path"] }),
     { k: "mount", label: "Where it sits", type: "choice", options: [["floor", "On the floor (a turret)"], ["ceiling", "On the nearest ceiling above it"]], def: "floor", showIf: ["type", "enemy"], showIf2: ["behavior", "stationary"] },
@@ -235,7 +238,11 @@
     // blast (self-destruct, and the "pieces explode" death)
     NUM("blastRadius", "Blast radius (units, 0 = harmless)", 160, 0, 3000, 4, { showIf: ["type", "enemy"] }), NUM("blastDamage", "Blast damage (in the middle)", 30, 0, 100000, 1, { showIf: ["type", "enemy"] }),
     { k: "blastColor", label: "Explosion colour", type: "color", def: "#ff8a2a", showIf: ["type", "enemy"] }, NUM("blastCount", "Explosion particles", 40, 0, 200, 1, { showIf: ["type", "enemy"] }),
-    { k: "blastSphere", label: "Explosion shock sphere", type: "bool", def: true, showIf: ["type", "enemy"] }, { k: "blastSound", label: "Explosion sound", type: "asset", assetType: "sound", def: "", showIf: ["type", "enemy"] },
+    { k: "blastSphere", label: "Expanding explosion sphere (grows to the blast radius)", type: "bool", def: true, showIf: ["type", "enemy"] },
+    NUM("blastSphereTime", "Sphere: how long it grows (s)", 0.45, 0.05, 5, 0.05, { showIf: ["type", "enemy"], showIf2: ["blastSphere", true] }),
+    { k: "blastSphereColor1", label: "Sphere: middle colour", type: "color", def: "#ffe08a", showIf: ["type", "enemy"], showIf2: ["blastSphere", true] }, { k: "blastSphereColor2", label: "Sphere: edge colour", type: "color", def: "#ff4a1a", showIf: ["type", "enemy"], showIf2: ["blastSphere", true] },
+    { k: "blastSphereAnim", label: "Sphere: animated gradient", type: "choice", options: [["none", "None (middle to edge)"], ["bands", "Rings rolling over it"], ["swirl", "Swirl"], ["pulse", "Pulse (colors swap)"], ["noise", "Flicker (energy noise)"]], def: "bands", showIf: ["type", "enemy"], showIf2: ["blastSphere", true] },
+    NUM("blastSphereSpeed", "Sphere: animation speed", 2, 0, 20, 0.1, { showIf: ["type", "enemy"], showIf2: ["blastSphere", true] }), NUM("blastSphereGlow", "Sphere: glow", 1.2, 0, 6, 0.05, { showIf: ["type", "enemy"], showIf2: ["blastSphere", true] }), { k: "blastSound", label: "Explosion sound", type: "asset", assetType: "sound", def: "", showIf: ["type", "enemy"] },
     { k: "attack", label: "Attack", type: "choice", options: [["melee", "Melee (hits up close)"], ["hitscan", "Gun (instant hit)"], ["projectile", "Projectile (a flying ball you can dodge)"]], def: "melee", showIf: ["type", "enemy"] },
     NUM("attackRange", "Attacks from (units)", 70, 10, 5000, 5, { showIf: ["type", "enemy"] }), NUM("damage", "Damage per hit", 10, 0, 100000, 1, { showIf: ["type", "enemy"] }),
     NUM("attackRate", "Time between attacks (s)", 1.2, 0.1, 30, 0.05, { showIf: ["type", "enemy"] }), NUM("attackDelay", "Hit lands after (s, into the attack)", 0.3, 0, 10, 0.05, { showIf: ["type", "enemy"] }),
