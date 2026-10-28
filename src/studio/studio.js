@@ -170,7 +170,7 @@
       { label: "File", items: [{ t: "New Project", fn: async () => { await backToManager(); const p = Store.create(); await openProject(p.id); } }, { t: "Open Project…", k: "Ctrl+O", fn: openFileDialog }, "-", { t: "Save", k: "Ctrl+S", fn: () => saveProject(false) }, { t: "Save As…", fn: () => saveProject(true) }, "-", { t: "Build Game…", fn: buildGame }, "-", { t: "Close Project", fn: backToManager }] },
       { label: "Edit", items: [{ t: "Rename", k: "F2", fn: startRename }, { t: "Duplicate", k: "Ctrl+D", fn: duplicateSelected }, { t: "Delete", k: "Del", fn: deleteSelected }] },
       { label: "Assets", items: [{ t: "Create Folder", fn: newFolder }, "-", { t: "Import Files…", fn: importFilesDlg }, { t: "Import Folder…", fn: importFolderDlg }, "-", { t: "Delete Selected…", k: "Del", fn: () => { if (S.sel) deleteAssetsAsk(); else log("Select an asset or folder in the Project panel first.", "warn"); } }, { t: "Remove Unused Assets…", fn: removeUnusedAssets }] },
-      { label: "Screen", items: [{ t: "Create Screen", fn: addScreen }, { t: "Create Map…", fn: openNewMap }, "-", ...(sc.kind === "splash" ? [mk("splash")] : ["title", "button", "image", "slider", "toggle", "bar", "pips"].map(mk))] },
+      { label: "Screen", items: [{ t: "Create Screen", fn: addScreen }, { t: "Create Pause Screen", fn: () => newPause(false) }, { t: "Create Map…", fn: openNewMap }, "-", ...(sc.kind === "splash" ? [mk("splash")] : ["title", "button", "image", "slider", "toggle", "bar", "pips"].map(mk))] },
       { label: "Window", items: [{ t: "Skin: Dark", check: document.documentElement.dataset.skin === "dark", fn: () => setSkin("dark") }, { t: "Skin: Classic light", check: document.documentElement.dataset.skin === "light", fn: () => setSkin("light") }, "-", { t: "Reset layout", fn: () => { const a = document.getElementById("app"); for (const p of ["--hw", "--iw", "--ph"]) a.style.removeProperty(p); } }, { t: "Maximize on Play", fn: play }] },
       { label: "Help", items: [{ t: Host.desktop ? "PRIMEngine Studio (desktop)" : "PRIMEngine Studio (web)", disabled: true }, { t: "Design your game.", disabled: true }] },
     ];
@@ -188,11 +188,11 @@
       h("div", { class: "tgroup right" }, h("button", { class: "tbtn", text: "Maximize on Play", onclick: play }), h("button", { class: "tbtn", text: "Save", title: "Save as a .prime file (Ctrl+S)", onclick: () => saveProject(false) })));
   }
   function renderStatus() { const l = S.log[S.log.length - 1]; E.status.className = l && l.kind === "error" ? "err" : l && l.kind === "warn" ? "warn" : ""; E.status.textContent = l ? l.msg : "Ready"; E.status.append(h("span", { class: "fileinfo", text: (S.file ? S.file.name : "not saved to a file yet") + (S.fileDirty ? "  ·  unsaved changes" : "") })); }
-  function setTab(t) { S.fsel = null; S.fsl = []; S.fhov = null; if (t === "fly" && !S.mapId) t = "edit"; S.tab = t; S.testing = t === "game"; S.playerSel = t === "player"; if (S.playerSel || t === "timeline" || t === "coder" || t === "comp" || t === "tagmgr") S.sel = null; if (!S.testing) S.paused = false; renderToolbar(); renderHier(); renderInspector(); renderCenter(); }
+  function setTab(t) { S.fsel = null; S.fsl = []; S.fhov = null; if (t === "fly" && !S.mapId) t = "edit"; if (t === "pause") pausePick(); S.tab = t; S.testing = t === "game"; S.playerSel = t === "player"; if (S.playerSel || t === "timeline" || t === "coder" || t === "comp" || t === "tagmgr" || t === "dlg") S.sel = null; if (!S.testing) S.paused = false; renderToolbar(); renderHier(); renderInspector(); renderCenter(); }
   function setTesting(v) { setTab(v ? "game" : "edit"); }
-  function leaveSpecial() { S.playerSel = false; if (["player", "timeline", "fly", "coder", "comp", "tagmgr"].includes(S.tab)) { S.tab = "edit"; S.testing = false; return true; } return false; }
+  function leaveSpecial() { S.playerSel = false; if (["player", "timeline", "fly", "coder", "comp", "tagmgr", "dlg"].includes(S.tab)) { S.tab = "edit"; S.testing = false; return true; } return false; }
   function centerTabs() {
-    const items = S.mapId && curMap() ? [["edit", "Map"], ["fly", "Fly Editor"]] : [["edit", "Scene"]]; items.push(["game", "Game"], ["player", "Player Editor"], ["props", "Object Editor"], ["timeline", "Timeline"], ["coder", "Node Coder"], ["comp", "Compositor"], ["tagmgr", "Tag Manager"]);
+    const items = S.mapId && curMap() ? [["edit", "Map"], ["fly", "Fly Editor"]] : [["edit", "Scene"]]; items.push(["game", "Game"], ["player", "Player Editor"], ["props", "Object Editor"], ["timeline", "Timeline"], ["coder", "Node Coder"], ["comp", "Compositor"], ["tagmgr", "Tag Manager"], ["pause", "Pause Menu"], ["dlg", "Dialogue Editor"]);
     return items.map(([k, l]) => h("button", { class: "tab" + (S.tab === k ? " sel" : ""), text: l, onclick: () => setTab(k) }));
   }
 
@@ -214,7 +214,7 @@
   }
   function renderHier() {
     const p = E.hier, sc = curScreen(), F = S.project.hfolders || (S.project.hfolders = []), none = () => !S.selId && !S.sel && !S.mapId && !S.playerSel && !S.fsel, pad = l => "padding-left:" + (4 + l * 18) + "px";
-    p.tabs.replaceChildren(h("div", { class: "tab sel", text: "Hierarchy" }), h("span", { class: "sp" }), h("button", { class: "tbtn sm", text: "Create ▾", onclick: e => popMenu(e.currentTarget, [{ t: "Screen", fn: addScreen }, { t: "Map…", fn: openNewMap }, { t: "Folder", fn: () => newHFolder(null) }, ...(sc.kind !== "splash" ? [{ t: "Folder inside “" + sc.id + "”", fn: () => newHFolder(sc.id) }] : []), "-", ...(sc.kind === "splash" ? [{ t: "Splash", fn: () => addNode("splash") }] : ["title", "button", "image", "slider", "toggle", "bar", "pips"].map(t => ({ t: Schema.NODE[t].label, fn: () => addNode(t) })))]) }));
+    p.tabs.replaceChildren(h("div", { class: "tab sel", text: "Hierarchy" }), h("span", { class: "sp" }), h("button", { class: "tbtn sm", text: "Create ▾", onclick: e => popMenu(e.currentTarget, [{ t: "Screen", fn: addScreen }, { t: "Pause screen", fn: () => newPause(false) }, { t: "Map…", fn: openNewMap }, { t: "Folder", fn: () => newHFolder(null) }, ...(sc.kind !== "splash" ? [{ t: "Folder inside “" + sc.id + "”", fn: () => newHFolder(sc.id) }] : []), "-", ...(sc.kind === "splash" ? [{ t: "Splash", fn: () => addNode("splash") }] : ["title", "button", "image", "slider", "toggle", "bar", "pips"].map(t => ({ t: Schema.NODE[t].label, fn: () => addNode(t) })))]) }));
     const rows = [], tri = (open, has, fn) => h("button", { class: "tri", "aria-label": open ? "Collapse" : "Expand", text: has ? (open ? "▾" : "▸") : "", onclick: e => { e.stopPropagation(); fn(); } });
     const drag = (el, d) => { el.draggable = true; el.addEventListener("dragstart", e => { e.dataTransfer.setData("application/x-hier", JSON.stringify(d)); e.dataTransfer.effectAllowed = "move"; }); return el; };
     const drop = (el, t) => { el.addEventListener("dragover", e => { if (e.dataTransfer.types.includes("application/x-hier")) { e.preventDefault(); el.classList.add("dropt"); } }); el.addEventListener("dragleave", () => el.classList.remove("dropt")); el.addEventListener("drop", e => { e.preventDefault(); e.stopPropagation(); el.classList.remove("dropt"); let d = null; try { d = JSON.parse(e.dataTransfer.getData("application/x-hier")); } catch (x) {} if (d) moveToFolder(d, t); }); return el; };
@@ -223,7 +223,7 @@
       h("span", { class: "hic", text: Schema.NODE[n.type].icon }), h("span", { class: "hnm", text: n.id }), h("span", { class: "hmeta", text: n.type })), { kind: "node", screen: s.id, id: n.id }));
     const screenRows = (s, lvl) => {
       const open = !S.collapsed[s.id]; rows.push(drag(drop(h("div", { class: "hrow" + (s.id === S.screenId && !S.selId && none() ? " sel" : ""), style: pad(lvl), onclick: () => selectScreen(s.id) },
-        tri(open, s.nodes.length > 0, () => { S.collapsed[s.id] = open; renderHier(); }), h("span", { class: "hic", text: s.kind === "splash" ? "✦" : s.kind === "hud" ? "◫" : "▭" }), h("span", { class: "hnm", text: s.id }), S.tags.get("project.startScreen") === s.id ? h("span", { class: "hmeta", text: "start" }) : null), { folder: null, screen: s.id }), { kind: "screen", id: s.id }));
+        tri(open, s.nodes.length > 0, () => { S.collapsed[s.id] = open; renderHier(); }), h("span", { class: "hic", text: s.kind === "splash" ? "✦" : s.kind === "hud" ? "◫" : s.kind === "pause" ? "⏸" : "▭" }), h("span", { class: "hnm", text: s.id }), S.tags.get("project.startScreen") === s.id ? h("span", { class: "hmeta", text: "start" }) : null), { folder: null, screen: s.id }), { kind: "screen", id: s.id }));
       if (!open) return; const sf = F.filter(f => f.scope === s.id);
       for (const f of sf) { const kids = s.nodes.filter(n => n.folder === f.id); if (folderRow(f, lvl + 1, kids.length)) for (const n of kids) nodeRow(s, n, lvl + 2); }
       for (const n of s.nodes) if (!sf.some(f => f.id === n.folder)) nodeRow(s, n, lvl + 1);
@@ -247,11 +247,13 @@
   function renderCenter() {
     const p = E.center; killMapViews(); if (S.rt) { S.rt.destroy(); S.rt = null; }
     if (S.tab === "fly" && !S.mapId) S.tab = "edit"; S.testing = S.tab === "game";
-    if (S.tab === "player") return S.objView && S.objSel && S.project.player.attachments.some(a => a.id === S.objSel) ? objectCenter() : playerCenter(); if (S.tab === "props") return propCenter(); if (S.tab === "timeline") return timelineCenter(); if (S.tab === "coder") return coderCenter(); if (S.tab === "comp") return compCenter(); if (S.tab === "tagmgr") return tagMgrCenter(); if (S.mapId && curMap() && S.tab !== "game") return mapCenter();
+    if (S.tab === "player") return S.objView && S.objSel && S.project.player.attachments.some(a => a.id === S.objSel) ? objectCenter() : playerCenter(); if (S.tab === "props") return propCenter(); if (S.tab === "timeline") return timelineCenter(); if (S.tab === "coder") return coderCenter(); if (S.tab === "comp") return compCenter(); if (S.tab === "tagmgr") return tagMgrCenter(); if (S.tab === "dlg") return dlgCenter();
+    if (S.tab === "pause" && (S.mapId || curScreen().kind !== "pause")) { if (!pausePick()) return pauseEmpty(); S.tab = "pause"; }
+    if (S.mapId && curMap() && S.tab !== "game") return mapCenter();
     const sc = S.testing && S.mapId ? (screens().find(x => x.id === S.tags.get("project.startScreen")) || screens()[0]) : curScreen();
     E.host.className = "host"; E.host.replaceChildren();
     p.tabs.replaceChildren(...centerTabs(), h("span", { class: "sp" }), h("span", { class: "csize", text: "1280 × 720  ·  16:9" }));
-    put(E.cbar, h("span", { class: "chip", text: sc.id }), !S.testing && sc.kind === "splash" ? h("button", { class: "tbtn sm", text: "▶ Preview sequence", onclick: () => { if (S.rt) S.rt.previewSplash(); } }) : null,
+    if (S.tab === "pause") pauseBar(sc); else put(E.cbar, h("span", { class: "chip", text: sc.id }), !S.testing && sc.kind === "splash" ? h("button", { class: "tbtn sm", text: "▶ Preview sequence", onclick: () => { if (S.rt) S.rt.previewSplash(); } }) : null,
       h("span", { class: "hint", text: S.testing ? "Playing: hover and click buttons, drag sliders. Edits are disabled." : sc.kind === "splash" ? "Select a splash in the Hierarchy to see it." : "Click to select, drag to move (Shift = snap to 10), drag an orange corner to resize. x0,y0 is the middle of the screen. Drop images from the Project panel here." }));
     if (sc.kind === "hud") return hudCenter(sc);
     S.rt = new PRIM.Runtime({ host: E.host, project: S.project, tags: S.testing ? S.tags.fork() : S.tags, mode: S.testing ? "test" : "edit", urls: S.urls, screenId: sc.id, selId: S.selId, onStartGame: startGame, say: t => log(t),
@@ -259,6 +261,31 @@
     S.rt.paused = S.paused;
   }
 
+  // ---------------------------------------------------------------- Pause Menu tab: the pause screens (kind "pause") edited like any screen; one of them is the pause menu Esc opens (tag player.pauseScreen)
+  const pauseScreens = () => screens().filter(s => s.kind === "pause");
+  // choose the pause screen to edit: the selected one, else the one Esc opens, else the first; false when there is none
+  function pausePick() {
+    const cur = !S.mapId && curScreen(); if (cur && cur.kind === "pause") return true; const L = pauseScreens(); if (!L.length) return false;
+    const sc = L.find(x => x.id === S.tags.get("player.pauseScreen")) || L[0]; S.mapId = null; S.msel = null; S.screenId = sc.id; S.selId = null; S.sel = null; return true;
+  }
+  function newPause(full) {
+    const sc = Schema.addPauseScreen(S.project, "pause", full); if (!pauseScreens().some(x => x.id === S.tags.get("player.pauseScreen") && x !== sc)) S.tags.set("player.pauseScreen", sc.id);
+    S.mapId = null; S.screenId = sc.id; S.selId = null; S.sel = null; S.tab = "pause"; afterStructure(); renderCenter(); log("Created pause screen “" + sc.id + "”" + (full ? " (with an Options screen)" : ""));
+  }
+  function pauseEmpty() {
+    E.host.className = "host maphost"; E.host.replaceChildren(); E.center.tabs.replaceChildren(...centerTabs());
+    put(E.cbar, h("span", { class: "chip", text: "Pause menu" }), h("span", { class: "hint", text: "No pause screens yet." }));
+    E.host.append(h("div", { class: "empty-c" }, h("div", { text: "A pause menu opens when the player presses Esc in the game. It freezes the game and shows a screen you design here (buttons: Resume, Restart level, Options, Quit to main menu…)." }),
+      h("div", { class: "btnrow" }, h("button", { class: "btn", text: "+ New pause menu", onclick: () => newPause(false) }), h("button", { class: "btn", text: "+ New pause menu with an Options screen", onclick: () => newPause(true) }))));
+  }
+  function pauseBar(sc) {
+    const isOn = S.tags.get("player.pauseScreen") === sc.id, L = pauseScreens();
+    put(E.cbar, h("span", { class: "chip", text: "Pause menu" }),
+      h("select", { class: "tsel", "aria-label": "Pause screen", onchange: e => { S.screenId = e.target.value; S.selId = null; renderHier(); renderInspector(); renderCenter(); } }, ...L.map(x => h("option", { value: x.id, text: x.id + (S.tags.get("player.pauseScreen") === x.id ? "  ★ Esc" : ""), selected: x.id === sc.id }))),
+      h("button", { class: "tbtn sm", text: "+ New pause screen", onclick: e => popMenu(e.currentTarget, [{ t: "Pause menu (Resume, Restart, Quit)", fn: () => newPause(false) }, { t: "Pause menu + Options screen", fn: () => newPause(true) }]) }),
+      h("button", { class: "tbtn sm" + (isOn ? " on" : ""), disabled: isOn, text: isOn ? "★ Esc opens this screen" : "Open this one with Esc", onclick: () => { S.tags.set("player.pauseScreen", sc.id); renderCenter(); renderInspector(); } }),
+      h("span", { class: "hint", text: S.testing ? "Testing: the buttons work (Resume / Restart only do something in the game)." : "Designed over a stand-in game picture. Buttons: Resume, Restart level, Go to screen (more pause screens), Go back, Quit to main menu, Quit. Add elements with the Screen menu." }));
+  }
   // the HUD screen: edited with PRIM.HudEditor, shown in the Game tab with PRIM.HUD (the same renderer the game uses)
   function hudCenter(sc) {
     E.host.style.position = "";   // the host is absolutely placed by the stylesheet; never override it
@@ -486,7 +513,7 @@
   function propsBody() {
     if (S.fsel) return folderInspector();
     if (S.tab === "comp") return compInspector();
-    if (S.tab === "tagmgr") return tagMgrInspector();
+    if (S.tab === "tagmgr") return tagMgrInspector(); if (S.tab === "dlg") return coderInspector();
     if (S.tab === "props") return propInspector();
     if (S.playerSel) return playerInspector(); if (S.tab === "timeline") return timelineInspector(); if (S.tab === "coder") return coderInspector();
     if (S.mapId && curMap()) return S.tab === "fly" && (S.fsl || []).length ? flyInspector() : mapInspector();
@@ -502,8 +529,9 @@
       box.append(h("div", { class: "note", text: "Tip: write {audio.master} in any text to show a tag's live value. Drag a field's name left/right to scrub numbers." }));
     } else {
       const isStart = S.tags.get("project.startScreen") === sc.id;
-      box.append(h("div", { class: "ihead" }, h("span", { class: "bigic", text: sc.kind === "splash" ? "✦" : sc.kind === "hud" ? "◫" : "▭" }), h("div", { class: "ititle" }, h("input", { class: "idin", value: sc.id, "aria-label": "Screen name", onchange: e => renameScreen(sc, e.target.value) }), h("div", { class: "isub", text: sc.kind === "splash" ? "Splash screens, played in order" : sc.kind === "hud" ? "HUD: drawn over the game" : "Menu screen" }))),
-        h("div", { class: "btnrow" }, h("button", { class: "btn sm", disabled: isStart, text: isStart ? "Start screen" : "Make start screen", onclick: () => { S.tags.set("project.startScreen", sc.id); renderHier(); renderInspector(); } }), sc.kind === "menu" ? h("button", { class: "btn sm danger", text: "Delete screen", onclick: () => deleteScreen(sc) }) : null),
+      box.append(h("div", { class: "ihead" }, h("span", { class: "bigic", text: sc.kind === "splash" ? "✦" : sc.kind === "hud" ? "◫" : sc.kind === "pause" ? "⏸" : "▭" }), h("div", { class: "ititle" }, h("input", { class: "idin", value: sc.id, "aria-label": "Screen name", onchange: e => renameScreen(sc, e.target.value) }), h("div", { class: "isub", text: sc.kind === "splash" ? "Splash screens, played in order" : sc.kind === "hud" ? "HUD: drawn over the game" : sc.kind === "pause" ? "Pause screen: drawn over the frozen game" + (S.tags.get("player.pauseScreen") === sc.id ? " (Esc opens it)" : "") : "Menu screen" }))),
+        h("div", { class: "btnrow" }, h("button", { class: "btn sm", disabled: isStart, text: isStart ? "Start screen" : "Make start screen", onclick: () => { S.tags.set("project.startScreen", sc.id); renderHier(); renderInspector(); } }), sc.kind === "pause" && S.tags.get("player.pauseScreen") !== sc.id ? h("button", { class: "btn sm", text: "Open with Esc", onclick: () => { S.tags.set("player.pauseScreen", sc.id); renderInspector(); if (S.tab === "pause") renderCenter(); } }) : null,
+          sc.kind === "menu" || sc.kind === "pause" ? h("button", { class: "btn sm danger", text: "Delete screen", onclick: () => deleteScreen(sc) }) : null),
         foldout("screen", "Screen", ...Schema.SCREEN[sc.kind].map(pr => field(sc.id + "." + pr.k))), h("div", { class: "note", text: "Select an element in the Hierarchy or the Scene view to edit it. Every value is a named tag: see the Tags tab." }));
     }
     return box;
@@ -553,13 +581,14 @@
       }
       case "bool": return row(h("input", { type: "checkbox", class: "chk", checked: !!S.tags.get(name), "aria-label": label, onchange: e => { set(e.target.checked); redraw(); } }));
       case "color": return row(h("input", { type: "color", class: "col", value: S.tags.get(name), "aria-label": label, oninput: e => set(e.target.value) }));
-      case "string": return row(h("input", { class: "txt", type: "text", value: S.tags.get(name), "aria-label": label, oninput: e => set(e.target.value) }));
-      case "asset": case "font": case "choice": case "screenRef": case "mapRef": case "tagRef": case "anim": {
+      case "string": if (t.multi && !compact) { const ta = h("textarea", { class: "dlgtext", rows: 3, "aria-label": label, oninput: e => set(e.target.value) }); ta.value = S.tags.get(name) || ""; return row(ta); }
+        return row(h("input", { class: "txt", type: "text", value: S.tags.get(name), "aria-label": label, oninput: e => set(e.target.value) }));
+      case "asset": case "font": case "choice": case "screenRef": case "mapRef": case "dialogRef": case "tagRef": case "anim": {
         let opts = [];
         if (t.type === "asset") opts = [["", "None"], ...S.project.assets.filter(a => a.type === t.assetType).map(a => [a.id, (a.path ? a.path + "/" : "") + a.name])];
         else if (t.type === "font") opts = [...PRIM.BUILTIN_FONTS, ...S.project.assets.filter(a => a.type === "font").map(a => [a.id, a.name])];
         else if (t.type === "anim") { const mo = PRIM.FBX.cache[S.tags.get(t.modelTag)]; opts = [["", "(none)"], ...(mo ? Object.keys(mo.anims) : []).map(n => [n, n])]; }
-        else if (t.type === "choice") opts = t.options; else if (t.type === "mapRef") opts = [["", "None"], ...S.project.maps.map(m => [m.id, m.id])]; else if (t.type === "screenRef") opts = [["", "None"], ...screens().map(s => [s.id, s.id])];
+        else if (t.type === "choice") opts = t.options; else if (t.type === "mapRef") opts = [["", "None"], ...S.project.maps.map(m => [m.id, m.id])]; else if (t.type === "screenRef") opts = [["", "None"], ...screens().map(s => [s.id, s.id])]; else if (t.type === "dialogRef") opts = [["", "None"], ...(S.project.dialogues || []).map(d => [d.id, d.name + "  (" + d.id + ")"])];
         else opts = [["", "(pick a tag)"], ...S.tags.names().filter(n => !S.tags.spec(n).group || S.tags.spec(n).group !== "script").filter(n => t.refType === "any" ? ["number", "bool", "string", "color"].includes(S.tags.spec(n).type) : S.tags.spec(n).type === t.refType).map(n => [n, (S.tags.spec(n).label || n) + "  ·  " + n])];
         if (t.type === "tagRef") { const cur = S.tags.get(name), cs = cur && S.tags.spec(cur), btn = h("button", { class: "dd tagbtn", "aria-label": label, title: cur || "", text: cur ? (cs ? (cs.label || cur) + "  ·  " + cur : cur + " (missing)") : "(pick a tag)" });
           btn.onclick = () => tagPicker(btn, opts.slice(1).map(o => o[0]), cur, v => { set(v); redraw(); }); return row(h("div", { class: "selrow" }, btn)); }
@@ -785,6 +814,8 @@
     const sm = rt.tags.get("player.startMap"), m = S.project.maps.find(x => x.id === sm) || S.project.maps[0]; if (!m) { rt.game = true; rt.rebuild(); return; }
     rt.stopMusic(); const layer = h("div", { class: "p3layer" }); rt.host.append(layer);
     const pl = new PRIM.Play3D({ host: layer, project: S.project, map: m, tags: rt.tags, urls: S.urls, mode: "play", debug: true, say: t => log(t), onExit: () => { pl.destroy(); layer.remove(); },
+      onMenu: () => { pl.destroy(); layer.remove(); const mm = S.project.screens.find(x => x.id === "main") || S.project.screens.find(x => x.kind === "menu"); if (mm) rt.show(mm.id); },
+      onQuit: () => { pl.destroy(); layer.remove(); if (rt.o.onExit) rt.o.onExit(); },
       onScreen: id => { pl.destroy(); layer.remove(); if (S.project.screens.some(x => x.id === id)) rt.show(id); } }); S.play = pl;
   }
   function walkMap(m) {
@@ -945,7 +976,9 @@
     return box;
   }
   function coderTarget() {
+    if (S.tab === "dlg") { const d = (S.project.dialogues || []).find(x => x.id === S.dlgSel); return d ? { script: d, key: d.id, ctx: ["dialogue"], modelTag: null, name: d.name, what: "Dialogue", dlg: d } : null; }
     const t = S.coderT; if (!t) return null;
+    if (t.kind === "zone") { const m = S.project.maps.find(x => x.id === t.map), z = m && (m.zones || []).find(x => x.id === t.id); if (!z || z.type !== "custom") return null; z.script = z.script || { nodes: [], links: []}; return { script: z.script, key: m.id + ".z." + z.id, ctx: ["zone", "player"], modelTag: null, name: S.tags.get(m.id + ".z." + z.id + ".name") || z.id, what: "Custom zone in “" + m.id + "”", zone: z, map: m }; }
     if (t.kind === "player") { const pl = S.project.player; if (!pl.script) pl.script = { nodes: [], links: [] }; return { script: pl.script, key: "player", ctx: ["player"], modelTag: null, name: "Player", what: "player (jumping, landing, getting hurt…)" }; }
     if (t.kind === "att") { const a = S.project.player.attachments.find(x => x.id === t.id); if (!a) return null; if (!a.script) a.script = { nodes: [], links: [] }; const ty = S.tags.get("player." + a.id + ".type");
       return { script: a.script, key: "player." + a.id, ctx: ty === "weapon" ? ["object", "weapon"] : ["object"], modelTag: "player." + a.id + ".asset", name: S.tags.get("player." + a.id + ".name") || a.id, what: ty === "weapon" ? "Weapon" : "Object" }; }
@@ -959,6 +992,8 @@
     const kl = v => { const o = Schema.KEYS.find(x => x[0] === String(v).toLowerCase()); return o ? o[1] : v; };
     switch (n.type) { case "chargeSuck": return g("rate") + "/s from " + g("radius") + " units"; case "chargeShow": return "size " + g("size") + " · " + g("color"); case "chargeGrow": return "to size " + g("size") + (+g("seconds") > 0 ? " over " + g("seconds") + " s" : " as it charges"); case "onState": case "ifState": return (Schema.STATES.find(x => x[0] === g("state")) || ["", g("state")])[1]; case "onCharge": return "hold " + kl(g("key")) + " to charge"; case "fireProjectile": return "uses the weapon’s Projectile settings"; case "onKey": case "onKeyUp": case "ifKey": return kl(g("key")); case "onHold": return kl(g("key")) + " · every " + g("interval") + " s"; case "setTag": return (g("tag") || "(pick a tag)") + " = " + g("value"); case "changeTag": return (g("tag") || "(pick a tag)") + " " + (+g("amount") >= 0 ? "+ " : "− ") + Math.abs(+g("amount"));
       case "playSound": case "loopSound": return asset(g("sound")); case "stopLoop": return g("sound") ? asset(g("sound")) : "all looping sounds"; case "playAnim": return (g("anim") || "(pick one)") + (g("loop") ? " · loops" : ""); case "gotoScreen": return g("screen") || "(pick a screen)"; case "say": return "“" + g("text") + "”";
+      case "dLine": return (g("speaker") ? g("speaker") + ": " : "") + "“" + String(g("text") || "").replace(/\s+/g, " ").slice(0, 60) + "”"; case "dChoice": return g("text") ? "“" + String(g("text")).replace(/\s+/g, " ").slice(0, 50) + "”" : "(asks after the last line)";
+      case "startDialogue": { const d = (S.project.dialogues || []).find(x => x.id === g("dialog")); return d ? d.name : "(pick a dialogue)"; } case "pauseGame": return g("screen") || "the normal pause menu"; case "onInside": return "every " + g("interval") + " s";
       case "wait": return g("seconds") + " s"; case "if": return (g("tag") || "(pick a tag)") + " " + g("op") + " " + g("value"); case "repeat": return g("times") + " times"; default: return ""; }
   }
   function coderCenter() {
@@ -988,7 +1023,7 @@
         const hit = mk("ncl-hit", d), vis = mk("ncl" + (S.clink === i ? " sel" : ""), d); hit.addEventListener("pointerdown", e => { e.stopPropagation(); S.clink = i; S.cnode = null; renderInspector(); draw(); }); return [vis, hit]; }).flat().filter(Boolean));
       for (const n of sc.nodes) { const def = Schema.SNODES[n.type], card = h("div", { class: "ncn " + def.cat + (S.cnode === n.id ? " sel" : ""), style: "left:" + n.x + "px;top:" + n.y + "px;width:" + NCW + "px;height:" + ncHeight(n) + "px" },
           h("div", { class: "nch", text: (S.tags.get(Schema.snodeKey(tg.key, n.id, "needTag")) ? "🔒 " : "") + def.label, title: S.tags.get(Schema.snodeKey(tg.key, n.id, "needTag")) ? "Only if " + S.tags.get(Schema.snodeKey(tg.key, n.id, "needTag")) + " " + S.tags.get(Schema.snodeKey(tg.key, n.id, "needOp")) + " " + S.tags.get(Schema.snodeKey(tg.key, n.id, "needVal")) : "" }), h("div", { class: "ncs", text: ncSummary(tg, n) }),
-          ...def.outs.map((o, j) => h("div", { class: "nco", style: "top:" + (NCH + NCS + j * NCR) + "px" }, h("span", { text: o === "next" ? "" : o }), h("i", { class: "ncdot", "data-out": o, "data-id": n.id }))));
+          ...def.outs.map((o, j) => h("div", { class: "nco" + (def.outText && !String(S.tags.get(Schema.snodeKey(tg.key, n.id, o)) || "").trim() ? " off" : ""), style: "top:" + (NCH + NCS + j * NCR) + "px" }, h("span", { text: o === "next" ? "" : def.outText ? (String(S.tags.get(Schema.snodeKey(tg.key, n.id, o)) || "").trim() || "(unused)").slice(0, 26) : o }), h("i", { class: "ncdot", "data-out": o, "data-id": n.id }))));
         if (def.ins !== false) card.append(h("i", { class: "ncin", "data-id": n.id }));
         card.addEventListener("pointerdown", e => {
           const dot = e.target.closest && e.target.closest(".ncdot"); e.stopPropagation(); view.focus();
@@ -1007,9 +1042,19 @@
     view.addEventListener("pointerdown", e => { if (e.target !== view && e.target !== world) return; S.cnode = null; S.clink = null; view.focus(); const x0 = e.clientX, y0 = e.clientY, px = V.px, py = V.py; view.setPointerCapture(e.pointerId); view.style.cursor = "grabbing";
       view.onpointermove = m => { V.px = px + m.clientX - x0; V.py = py + m.clientY - y0; world.style.transform = "translate(" + V.px + "px," + V.py + "px)"; }; view.onpointerup = () => { view.onpointermove = view.onpointerup = null; view.style.cursor = ""; renderInspector(); draw(); }; });
     view.addEventListener("keydown", e => { if ((e.key === "Delete" || e.key === "Backspace") && !/INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) { e.preventDefault(); coderDelete(); } });
-    if (!sc.nodes.length) view.append(h("div", { class: "ncempty", text: "Empty script. Press “+ Add node” and start with a green event (like “When clicked”), then add actions and drag a line from its dot to the next node." }));
+    if (!sc.nodes.length) view.append(h("div", { class: "ncempty", text: tg.dlg ? "Empty dialogue. Add “Dialogue starts” (Events), then lines and questions from the Dialogue menu." : "Empty script. Press “+ Add node” and start with a green event (like “When clicked”), then add actions and drag a line from its dot to the next node." }));
     const un = T.on(() => { if (S.cdraw) draw(); }); S.cdraw = true; S.coderStop = () => { un(); S.cdraw = false; }; draw();
   }
+  // ---- Dialogue Editor: dialogues are node graphs (project.dialogues). NPCs pick one (Object Editor > NPC > Dialogue); zones and scripts can start one too.
+  function dlgCenter() {
+    const L = S.project.dialogues = S.project.dialogues || []; if (!L.some(d => d.id === S.dlgSel)) S.dlgSel = L[0] ? L[0].id : null;
+    if (!S.dlgSel) { const p = E.center; p.tabs.replaceChildren(...centerTabs()); E.host.className = "host maphost"; E.host.replaceChildren(h("div", { class: "empty-c" }, h("div", { text: "Dialogues are drawn as nodes: “Dialogue starts” → lines → questions with up to 4 answers, each answer going its own way. Tag nodes (set, change, if…) work inside them too, so a talk can remember choices or depend on them. Give a dialogue to an NPC in the Object Editor, or start one from a zone or any script." }), h("div", { class: "btnrow" }, h("button", { class: "btn", text: "+ New dialogue", onclick: () => dlgNew() }))));
+      put(E.cbar, h("span", { class: "chip", text: "Dialogue Editor" }), h("span", { class: "hint", text: "No dialogues yet." })); return; }
+    coderCenter();
+    E.cbar.prepend(h("select", { class: "tsel", "aria-label": "Dialogue", onchange: e => { S.dlgSel = e.target.value; S.cnode = null; renderCenter(); renderInspector(); } }, ...L.map(d => h("option", { value: d.id, text: d.name, selected: d.id === S.dlgSel }))), h("button", { class: "tbtn sm", text: "+ New dialogue", onclick: () => dlgNew() }));
+  }
+  function dlgNew() { const d = Schema.addDialogue(S.project); S.dlgSel = d.id; S.cnode = null; S.tab = "dlg"; markDirty(); S.tags.emit([]); renderCenter(); renderInspector(); log("Created dialogue “" + d.name + "”"); }
+  function dlgUses(d) { const out = []; for (const k of S.tags.names()) { const r = S.tags.spec(k); if (r && r.type === "dialogRef" && r.value === d.id) { const pr = (S.project.props || []).find(p => k.startsWith(p.id + ".")); out.push(pr ? "NPC “" + (S.tags.get(pr.id + ".name") || pr.id) + "”" : k); } } return out; }
   function coderDelete() {
     const tg = coderTarget(); if (!tg || tg.splash) return; const sc = tg.script;
     if (S.clink != null && sc.links[S.clink]) { sc.links.splice(S.clink, 1); S.clink = null; markDirty(); return renderCenter(); }
@@ -1017,7 +1062,13 @@
   }
   function coderInspector() {
     const tg = coderTarget(), box = h("div", { class: "insp" }); if (!tg || tg.splash) { box.append(h("div", { class: "note", text: "Select an element or a player object to edit its script." })); return box; }
-    box.append(h("div", { class: "ihead" }, h("span", { class: "bigic", text: "⬡" }), h("div", { class: "ititle" }, h("div", { class: "idin ro", text: tg.name }), h("div", { class: "isub", text: "Script of the " + tg.what + " · " + tg.script.nodes.length + " nodes" }))));
+    if (tg.dlg) { const d = tg.dlg, uses = dlgUses(d);
+      box.append(h("div", { class: "ihead" }, h("span", { class: "bigic", text: "💬" }), h("div", { class: "ititle" }, h("input", { class: "idin", value: d.name, "aria-label": "Dialogue name", onchange: e => { d.name = e.target.value.trim() || d.name; markDirty(); renderCenter(); renderInspector(); } }), h("div", { class: "isub", text: d.id + " · " + d.nodes.length + " nodes" }))),
+        h("div", { class: "note", text: uses.length ? "Used by: " + uses.join(", ") : "Not used yet: pick it in an NPC (Object Editor > NPC > Dialogue), a trigger zone, or a “Start a dialogue” node." }),
+        h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: "Duplicate", onclick: () => { const c = Schema.addDialogue(S.project, d.name + " copy"); for (const n of c.nodes.slice()) Schema.removeSNode(S.project, c.id, c, n); c.links = []; const map = {}; for (const n of d.nodes) { const nn = Schema.addSNode(S.project, c.id, c, n.type, n.x, n.y); map[n.id] = nn.id; for (const pr of Schema.SNODES[n.type].props.concat(Schema.SCOND)) S.project.tags[Schema.snodeKey(c.id, nn.id, pr.k)].value = S.tags.get(Schema.snodeKey(d.id, n.id, pr.k)); } c.links = d.links.map(l => ({ a: map[l.a], o: l.o, b: map[l.b] })); S.dlgSel = c.id; markDirty(); S.tags.emit([]); renderCenter(); renderInspector(); } }),
+          h("button", { class: "btn sm danger", text: "Delete dialogue", onclick: () => { if (uses.length && !confirm("“" + d.name + "” is used by " + uses.join(", ") + ". Delete it anyway?")) return; Schema.removeDialogue(S.project, d); S.dlgSel = null; S.cnode = null; markDirty(); S.tags.emit([]); renderCenter(); renderInspector(); } })));
+    } else box.append(h("div", { class: "ihead" }, h("span", { class: "bigic", text: "⬡" }), h("div", { class: "ititle" }, h("div", { class: "idin ro", text: tg.name }), h("div", { class: "isub", text: "Script of the " + tg.what + " · " + tg.script.nodes.length + " nodes" }))));
+    if (tg.zone) box.append(h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: "← Back to the map", onclick: () => { S.tab = "edit"; renderToolbar(); renderHier(); renderCenter(); renderInspector(); } })));
     const n = tg.script.nodes.find(x => x.id === S.cnode);
     if (n) { const def = Schema.SNODES[n.type]; Schema.ensureSNode(S.project, tg.key, n, tg.key + ".asset"); box.append(foldout("nc:node", def.label, ...def.props.map(pr => field(Schema.snodeKey(tg.key, n.id, pr.k))), h("div", { class: "btnrow" }, h("button", { class: "btn sm danger", text: "Delete node", onclick: () => coderDelete() }))));
       box.append(foldout("nc:cond", "Only if… (condition)", ...Schema.SCOND.map(pr => field(Schema.snodeKey(tg.key, n.id, pr.k))), h("div", { class: "note", text: def.ins === false ? "Leave the tag empty and this event always happens. With a tag, it only happens while the tag matches, e.g. canChargeWeapon is equal to yes. Make your own tags in the Tags tab." : "Leave the tag empty and this node always runs. With a tag, the chain stops here unless the tag matches." })));
@@ -1264,7 +1315,9 @@
         h("div", { class: "note", text: "The model's front must face +Z (toward you in the Front view). The blue cylinder shows its body (what bullets hit and what blocks the player). Place enemies in the Map view with the Place Object tool; Turn sets which way they face." })) : "",
       ty !== "door" && ty !== "speaker" ? foldout("pr:light", "Light", ...grp(["lightOn", "lightColor", "lightIntensity", "lightRange", "lightHeight", "lightFlicker", "lightShadows"]), h("div", { class: "note", text: "A lamp, a torch, a glowing crystal: the object lights up the room around it, and with shadows on, walls, objects and enemies cast real shadows from it." })) : "",
       ty === "npc" ? foldout("pr:npc", "Character", ...grp(["npcName", "talkRange", "radius", "talkAnim", "talkSprite", "talkSpriteFrames", "faceTalker"]), h("div", { class: "note", text: "Walk up to it, look at it and press the Interact key to talk. It blocks the way like a body (its width above)." })) : "",
-      ty === "npc" ? dialogueBox(pr) : "",
+      ty === "npc" ? foldout("pr:npcdlg", "Dialogue (node graph)", ...grp(["npcDialogue"]), h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: T.get(pre + "npcDialogue") ? "Edit in the Dialogue Editor" : "+ New dialogue for it", onclick: () => { let id = T.get(pre + "npcDialogue"); if (!(P.dialogues || []).some(d => d.id === id)) { const d = Schema.addDialogue(P, (T.get(pre + "name") || pr.id) + " talk"); id = d.id; T.set(pre + "npcDialogue", id); } S.dlgSel = id; S.cnode = null; markDirty(); setTab("dlg"); } })),
+        h("div", { class: "note", text: "A dialogue from the Dialogue Editor (lines, questions, answers that go different ways, tags). When one is picked, the simple line list below is not used." })) : "",
+      ty === "npc" && !T.get(pre + "npcDialogue") ? dialogueBox(pr) : "",
       ty === "checkpoint" ? foldout("pr:cp", "Checkpoint", ...grp(["cpRadius", "cpHeal", "cpMessage", "cpSound"]), h("div", { class: "note", text: "Touch it to make it your respawn point. With the Lives system “Classic”, dying costs a life and puts you back at the last checkpoint you touched (or the map start). A model is optional: without one it is invisible in the game." })) : "",
       ty === "interactive" ? foldout("pr:use", "Interaction", ...grp(["useMode", "useRange", "useHint", "showBoxes"]), h("div", { class: "note", text: T.get(pre + "useMode") === "cursor" ? "Screen mode: walk up to it and look at it; the mouse then moves a cursor over it instead of turning. Click a hitbox to press it. Move the cursor off the object to look around again." : T.get(pre + "useMode") === "aim" ? "Put the crosshair on a hitbox and left-click (the click does not fire your weapon)." : "Look at a hitbox and press the Interact key (E by default)." })) : "",
       ty === "interactive" ? hitboxBox(pr) : "",
@@ -1300,6 +1353,17 @@
         cells.some(c => PRIM.Grid.isDiag(c)) ? foldout("gc:diag", "Diagonal wall", texSel("Texture", same(c => PRIM.Grid.isDiag(c) ? c.dt : undefined), v => apply(c => { if (PRIM.Grid.isDiag(c)) c.dt = v; })), h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: "Remove diagonal walls", onclick: () => apply(c => { delete c.dg; delete c.dt; }) }))) : "",
         cells.some(c => c.c !== undefined) ? foldout("gc:ceil", "Ceiling", texSel("Texture", same(c => c.c), v => apply(c => { if (c.c !== undefined) c.c = v; }))) : "",
         foldout("gc:light", "Light", row("Brightness %", h("input", { type: "range", min: 0, max: 100, step: 5, value: same(c => c.li === undefined ? 100 : c.li) === null ? 100 : same(c => c.li === undefined ? 100 : c.li), onchange: e => apply(c => { if (+e.target.value >= 100) delete c.li; else c.li = +e.target.value; }) }))));
+    } else if (sel && sel.kind === "zone" && (m.zones || []).some(z => z.id === sel.id)) {
+      const z = m.zones.find(q => q.id === sel.id), zp = m.id + ".z." + z.id + ".", cu = z.type === "custom", f = k => field(zp + k), redo = () => { markDirty(); if (med) { med.redraw(); med.buildPal(); } renderInspector(); };
+      const num = (label, k, min) => row(label, h("input", { class: "num", type: "number", step: 1, value: k === "layer" ? (z.layer || 0) + 1 : z[k], "aria-label": label, onchange: e => { const v = Math.round(+e.target.value) - (k === "layer" ? 1 : 0); if (!isFinite(v)) return; z[k] = Math.max(min === undefined ? -1e6 : min, v); if (k !== "layer") { const a = Math.min(z.x0, z.x1), b = Math.max(z.x0, z.x1), c = Math.min(z.y0, z.y1), d = Math.max(z.y0, z.y1); z.x0 = a; z.x1 = b; z.y0 = c; z.y1 = d; } redo(); } }));
+      box.append(head(cu ? "⬡" : "⚡", h("input", { class: "idin", value: S.tags.get(zp + "name") || z.id, "aria-label": "Zone name", onchange: e => { S.tags.set(zp + "name", e.target.value.trim() || z.id); redo(); } }), (cu ? "Custom zone" : "Trigger zone") + " · " + z.id + " · " + (z.x1 - z.x0 + 1) + " × " + (z.y1 - z.y0 + 1) + " cells"),
+        h("div", { class: "btnrow" }, cu ? h("button", { class: "btn sm", text: "Open its script in the Node Coder", onclick: () => { S.coderT = { kind: "zone", map: m.id, id: z.id }; S.cnode = null; setTab("coder"); } }) : null,
+          h("button", { class: "btn sm", text: cu ? "Make it a trigger zone" : "Make it a custom zone", onclick: () => { z.type = cu ? "trigger" : "custom"; if (z.type === "custom") z.script = z.script || { nodes: [], links: [] }; redo(); } }),
+          h("button", { class: "btn sm danger", text: "Delete zone", onclick: () => { if (med) { med.select({ kind: "zone", id: z.id }, true); med.deleteSelection(); } S.msel = null; renderInspector(); } })),
+        foldout("zn:area", "Area", num("From cell X", "x0"), num("From cell Y", "y0"), num("To cell X", "x1"), num("To cell Y", "y1"), num("Story (1 = ground)", "layer", 0), f("height"), h("div", { class: "note", text: "Drag the zone in the map (Zone tool) to move it. Height 1 reaches one story up, for tall rooms and stairwells." })),
+        foldout("zn:rule", "When it works", f("once"), f("needTag"), S.tags.get(zp + "needTag") ? f("needOp") : "", S.tags.get(zp + "needTag") ? f("needVal") : "", h("div", { class: "note", text: "With a tag, the zone only notices you while the tag matches (e.g. door_power is yes)." })),
+        cu ? h("div", { class: "note", text: "A custom zone runs its own script: start it with “When the player enters the zone”, “…leaves the zone” or “While the player is inside”. It can use every player node (tags, sounds, messages, hurt, teleport, dialogues, pause…). Script nodes: " + ((z.script && z.script.nodes.length) || 0) + "." })
+          : foldout("zn:act", "What it does", ...Schema.ZONE.filter(q => q.trig).map(q => f(q.k)), h("div", { class: "note", text: "Each action is optional; leave a field empty to skip it. Values for tags: a number, yes / no, text, +n / -n (adds) or toggle." })));
     } else if (sel && sel.kind === "thing" && (m.things || []).some(t => t.id === sel.id)) {
       const th = m.things.find(t => t.id === sel.id), ty = S.tags.get(th.prop + ".type"), pn = (S.project.props || []).filter(x => S.tags.get(x.id + ".type") === ty);
       const num = (label, k, step) => h("div", { class: "frow" }, h("label", { text: label }), h("input", { class: "num", type: "number", step, value: th[k] === undefined ? 0 : th[k], onchange: e => { const n = parseFloat(e.target.value); if (isFinite(n)) { th[k] = k === "layer" ? Math.max(0, Math.round(n) - 1) : n; markDirty(); if (S.med) S.med.redraw(); renderInspector(); } } }));

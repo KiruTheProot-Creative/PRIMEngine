@@ -39,9 +39,9 @@
       this.o = o; this.host = o.host; this.project = o.project; this.tags = o.tags; this.mode = o.mode || "edit"; this.urls = o.urls || {};
       this.screenId = o.screenId; this.selId = o.selId || null; this.hover = null; this.press = null; this.drag = null; this.game = false; this.splash = null;
       this.paused = false; this.music = null; this.musicId = null; this.alpha = {}; this.els = {}; this.fps = { n: 0, t: 0, v: 0 }; this.dead = false; this.inv = false;
-      const host = this.host; host.replaceChildren(); host.classList.add("rt-host");
+      const host = this.host; host.replaceChildren(); host.classList.add("rt-host"); this.hist = []; if (o.transparent) host.style.background = "transparent";
       this.stage = div("rt-stage"); this.layer = div("rt-layer"); this.fpsEl = div("rt-fps"); this.stage.append(this.layer, this.fpsEl); host.append(this.stage);
-      if (this.mode === "play") { this.hintEl = div("rt-hint"); this.hintEl.textContent = "Esc to exit"; host.append(this.hintEl); setTimeout(() => { if (this.hintEl) this.hintEl.style.opacity = 0; }, 3000); }
+      if (this.mode === "play" && !o.noHint) { this.hintEl = div("rt-hint"); this.hintEl.textContent = "Esc to exit"; host.append(this.hintEl); setTimeout(() => { if (this.hintEl) this.hintEl.style.opacity = 0; }, 3000); }
       this.ro = new ResizeObserver(() => this.fit()); this.ro.observe(host);
       this.unsub = this.tags.on(n => this.onTag(n));
       this.h = { down: e => this.down(e), move: e => this.move(e), up: e => this.up(e), key: e => this.key(e), fs: () => this.fsChange() };
@@ -52,7 +52,7 @@
       this.fit(); this.show(this.screenId || this.project.screens[0].id);
       this.raf = requestAnimationFrame(t => this.frame(t));
     }
-    destroy() { this.stopLoops(""); this.dead = true; if (this.sh) this.sh.stopAll(); cancelAnimationFrame(this.raf); this.ro.disconnect(); this.unsub(); window.removeEventListener("keydown", this.h.key); document.removeEventListener("fullscreenchange", this.h.fs); this.stopMusic(); this.host.classList.remove("rt-host"); this.host.replaceChildren(); }
+    destroy() { this.stopLoops(""); this.dead = true; if (this.sh) this.sh.stopAll(); cancelAnimationFrame(this.raf); this.ro.disconnect(); this.unsub(); window.removeEventListener("keydown", this.h.key); document.removeEventListener("fullscreenchange", this.h.fs); this.stopMusic(); this.host.classList.remove("rt-host"); this.host.style.background = ""; this.host.style.backdropFilter = ""; this.host.replaceChildren(); }
     // positions are stored from the screen middle (x0,y0 = middle, y goes up); the stage itself is drawn from the top-left corner
     px(sc, n) { return W / 2 + (+this.P(sc, n, "x") || 0); }
     py(sc, n) { return H / 2 - (+this.P(sc, n, "y") || 0); }
@@ -69,7 +69,8 @@
     invalidate() { if (this.inv || this.dead) return; this.inv = true; queueMicrotask(() => { this.inv = false; if (!this.dead && !this.drag) this.rebuild(); }); }
 
     // ---------------- navigation
-    show(id) {
+    show(id, isBack) {
+      if (!isBack && this.screenId && this.screenId !== id && this.mode !== "edit") { this.hist.push(this.screenId); if (this.hist.length > 30) this.hist.shift(); }
       this.screenId = id; this.splash = null; this.game = false; this.hover = null; this.press = null; const sc = this.screen(); if (!sc) return;
       this.setMusic(this.tags.get(sc.id + ".music") || ""); this.rebuild();
       if (this.sh) { this.sh.stopRuns(); for (const n of sc.nodes) this.script(sc, n, "onStart"); }
@@ -80,6 +81,11 @@
     rebuild() {
       const sc = this.screen(), T = this.tags; if (!sc) return;
       this.fpsEl.style.display = this.mode !== "edit" && T.get("gfx.showFps") ? "block" : "none"; this.stage.style.filter = "brightness(" + (T.get("gfx.brightness") || 1) + ")"; this.stage.style.background = T.get(sc.id + ".bg") || "#000";
+      if (sc.kind === "pause") {   // a pause menu darkens (and blurs) the frozen game behind it; in the editor a stand-in picture plays the game
+        const c = Runtime.rgba(T.get(sc.id + ".bg") || "#000000", +T.get(sc.id + ".dim")), bl = +T.get(sc.id + ".blur") || 0;
+        if (this.o.transparent) { this.stage.style.background = "transparent"; this.host.style.background = c; this.host.style.backdropFilter = bl > 0 ? "blur(" + bl + "px)" : ""; }
+        else this.stage.style.background = "linear-gradient(" + c + "," + c + "), linear-gradient(165deg,#34506a 0%,#1a2633 45%,#2a1d12 75%,#4a3018 100%)";
+      }
       if (this.splash) return;
       this.layer.replaceChildren(); this.els = {};
       const bgi = T.get(sc.id + ".bgImage"); if (bgi && this.urls[bgi]) { const im = new Image(); im.src = this.urls[bgi]; im.style.cssText = "position:absolute;inset:0;width:100%;height:100%;object-fit:cover"; this.layer.append(im); }
@@ -137,6 +143,9 @@
       const sc = this.screen(), sp = this.splash, n = sc.nodes[sp.i]; this.stage.style.background = this.tags.get(sc.id + ".bg");
       this.layer.replaceChildren(); const el = this.splashEl(sc, n); el.style.left = "50%"; el.style.top = "50%"; this.layer.append(el); sp.el = el; sp.n = n; this.applyFade();
     }
+    static rgba(hex, a) { const h = String(hex || "#000").replace("#", ""), f = h.length === 3 ? h.split("").map(c => c + c).join("") : h.padEnd(6, "0"), n = parseInt(f.slice(0, 6), 16) || 0; return "rgba(" + (n >> 16 & 255) + "," + (n >> 8 & 255) + "," + (n & 255) + "," + clamp(isNaN(a) ? 0.55 : a, 0, 1) + ")"; }
+    // "Go back": the screen you came from (pause menus: nothing left = resume the game)
+    back() { const id = this.hist.pop(); if (id && this.project.screens.some(s => s.id === id)) this.show(id, true); else if (this.o.onResume) this.o.onResume(); }
     static fx(type, p) {
       if (type === "cut") return { o: 1, s: 1, y: 0, b: 0 };
       if (type === "zoom") return { o: p, s: 0.8 + 0.2 * p, y: 0, b: 0 };
@@ -250,13 +259,17 @@
       const T = this.tags, P = k => this.P(sc, n, k); this.script(sc, n, "onClick");
       if (n.type === "button") { this.sfx(P("clickSound")); const a = P("action");
         if (a === "goto") { const t = P("target"); if (this.project.screens.some(s => s.id === t)) this.show(t); }
-        else if (a === "start") { if (this.o.onStartGame) this.o.onStartGame(this); else { this.game = true; this.rebuild(); } } else if (a === "quit") { if (this.o.onExit) this.o.onExit(); } }
+        else if (a === "start") { if (this.o.onStartGame) this.o.onStartGame(this); else { this.game = true; this.rebuild(); } } else if (a === "quit") { if (this.o.onQuit) this.o.onQuit(); else if (this.o.onExit) this.o.onExit(); }
+        else if (a === "back") this.back();
+        else if (a === "resume") { if (this.o.onResume) this.o.onResume(); }
+        else if (a === "restart") { if (this.o.onRestart) this.o.onRestart(); }
+        else if (a === "menu") { if (this.o.onMenu) this.o.onMenu(); else { const m = this.project.screens.find(s => s.id === "main") || this.project.screens.find(s => s.kind === "menu"); if (m) this.show(m.id); } } }
       else if (n.type === "toggle") { const b = P("bind"), sp = T.spec(b); if (sp && sp.type === "bool") T.set(b, !T.get(b)); }
     }
     key(e) {
       if (this.mode === "edit" || this.paused) return;
       if (this.splash) { this.skipSplash(); return; }
-      if (e.key === "Escape") { if (this.game) { this.game = false; this.rebuild(); } else if (this.mode === "play" && this.o.onExit && !this.o.noEscExit) this.o.onExit(); return; }
+      if (e.key === "Escape") { if (this.o.onEscape) { this.o.onEscape(); return; } if (this.game) { this.game = false; this.rebuild(); } else if (this.mode === "play" && this.o.onExit && !this.o.noEscExit) this.o.onExit(); return; }
       if (this.sh && !/INPUT|SELECT|TEXTAREA/.test((e.target && e.target.tagName) || "")) { const sc = this.screen(); if (sc) for (const n of sc.nodes) this.script(sc, n, "onKey", e.key === " " ? "space" : e.key === "Control" ? "ctrl" : e.key); }
     }
   };

@@ -23,7 +23,8 @@
       this.hud = new PRIM.HUD({ host: this.hudHost, project: this.project, tags: T, urls: this.urls, screenId: T.get("player.hud"), edit: this.mode !== "play", say: t => { if (this.o.say) this.o.say(t); } });
       this.unsub = T.on(names => { this.drawCross(); if (this.mode === "play" && names && names.length && !names.some(n => (this.map && n.startsWith(this.map.id + ".")) || /^prop/.test(n))) return; if (this.view && !this.pendingRb) { this.pendingRb = true; setTimeout(() => { this.pendingRb = false; if (!this.dead && this.view) { if (this.map) this.view.rebuild(); this.syncAtts(); this.syncThings(); } }, 80); } });
       this.drawCross(); this.gpu = {}; this.atts = [];
-      this.sh = this.mode === "play" ? new PRIM.Script.Host({ tags: T, held: k => !!this.keys[k], isState: s => this.isState(s), orb: (k, c, a) => this.orbCmd(k, c, a), fire: key => this.fireProj(this.atts.find(a => "player." + a.id === key)), reload: key => this.reload(this.atts.find(a => "player." + a.id === key)), hasAmmo: key => { const pre = key + "."; return !this.T.get(pre + "ammoUse") || (!this.reloading && (+this.T.get(pre + "ammo") || 0) >= 1); }, sfx: (id, v) => this.sfx(id, v), loop: (id, v) => this.loopSfx(id, v), stopLoop: id => this.stopLoops(id), playAnim: (k, n, l) => this.playAnim(k, n, l),
+      this.sh = this.mode === "play" ? new PRIM.Script.Host({ tags: T, held: k => !!this.keys[k], isState: s => this.isState(s), orb: (k, c, a) => this.orbCmd(k, c, a), fire: key => this.fireProj(this.atts.find(a => "player." + a.id === key)), reload: key => this.reload(this.atts.find(a => "player." + a.id === key)), hasAmmo: key => { const pre = key + "."; return !this.T.get(pre + "ammoUse") || (!this.reloading && (+this.T.get(pre + "ammo") || 0) >= 1); }, sfx: (id, v) => this.sfx(id, v),
+        dlgLine: l => this.dlgLine(l), dlgChoice: c => this.dlgChoice(c), pause: id => this.pauseOpen(id), dialogue: id => this.talkGraph(id, null), loop: (id, v) => this.loopSfx(id, v), stopLoop: id => this.stopLoops(id), playAnim: (k, n, l) => this.playAnim(k, n, l),
         isReloading: () => !!this.reloading, stopAnim: k => this.stopAnim(k), showHide: (k, m) => { const t = k + ".visible"; if (T.get(t) === undefined) return; T.set(t, m === "toggle" ? !T.get(t) : m === "show"); },
         shake: (a, sec) => { this.shakeA = Math.max(this.shakeA || 0, a); this.shakeT = sec; this.shakeT0 = sec; }, flash: (c, a) => this.flash(a, c, true),
         jump: (hgt, air) => { if (air || this.ground) this.jumpReq = hgt || -1; }, airJump: (max, hgt) => { if (!this.ground && (this.airJumps || 0) < max) { this.airJumps = (this.airJumps || 0) + 1; this.jumpReq = hgt || -1; } },
@@ -38,7 +39,7 @@
       this.last = performance.now(); this.raf = requestAnimationFrame(t => this.frame(t));
     }
     destroy() {
-      if (this.destroyed) return; this.destroyed = true; this.dead = true; this.stopLoops(""); this.stopSpeakers(); if (this.sh) this.sh.stopAll(); cancelAnimationFrame(this.raf); this.unsub(); if (this.hud) this.hud.destroy(); if (this.unbind) this.unbind(); if (document.pointerLockElement === this.cv) document.exitPointerLock();
+      if (this.destroyed) return; this.destroyed = true; this.dead = true; this.stopLoops(""); this.stopSpeakers(); if (this.sh) this.sh.stopAll(); if (this.paused) this.pauseClose(true); cancelAnimationFrame(this.raf); this.unsub(); if (this.hud) this.hud.destroy(); if (this.unbind) this.unbind(); if (document.pointerLockElement === this.cv) document.exitPointerLock();
       if (this.view) { const e = this.view.gl.getExtension("WEBGL_lose_context"); if (e) e.loseContext(); } this.root.remove();
     }
     // ---- input
@@ -46,11 +47,15 @@
       const cv = this.cv, k = this.keys;
       // a visible Leave button, shown whenever the mouse is free (Esc first frees the mouse, so the menu is always reachable)
       const lv = document.createElement("button"); lv.className = "p3leave"; lv.textContent = "✕ Leave game  (Esc)"; lv.addEventListener("pointerdown", e => e.stopPropagation()); lv.addEventListener("click", e => { e.stopPropagation(); this.leave(); }); this.root.append(lv);
-      const lock = () => { const on = document.pointerLockElement === cv; this.msg.style.display = on ? "none" : "grid"; lv.style.display = on ? "none" : "block"; };
-      this.msg.textContent = "Click to play  ·  W A S D move  ·  Space jump  ·  Shift sprint  ·  Esc to leave" + (this.o.debug ? "  ·  H / J test damage" : ""); this.msg.style.display = "grid";
+      this.lv = lv;
+      const lock = () => { const on = document.pointerLockElement === cv; this.msg.style.display = on || this.paused ? "none" : "grid"; lv.style.display = on || (this.paused && !this.o.debug) ? "none" : "block";
+        // the mouse was freed while playing (Esc in most browsers frees it before the page hears the key): open the pause menu
+        if (!on && this.engaged && this.mode === "play" && !this.paused && !this.talk && !this.popup && !this.pdead && !this.dead && this.pauseId()) this.pauseOpen(); };
+      this.msg.textContent = "Click to play  ·  W A S D move  ·  Space jump  ·  Shift sprint  ·  Esc " + (this.pauseId() ? "pause" : "to leave") + (this.o.debug ? "  ·  H / J test damage" : ""); this.msg.style.display = "grid";
       const kd = e => {
         if (!this.root.isConnected) return;
-        if (e.key === "Escape") { e.stopImmediatePropagation(); e.preventDefault(); this.leave(); return; }
+        if (this.paused) { if (e.key === "Escape") { e.stopImmediatePropagation(); e.preventDefault(); if (!e.repeat && performance.now() - this.paused.t0 > 250) this.pauseRt.back(); } return; }   // other keys go to the pause menu (its scripts)
+        if (e.key === "Escape") { e.stopImmediatePropagation(); e.preventDefault(); if (this.mode === "play" && this.pauseId() && !this.pdead) this.pauseOpen(); else this.leave(); return; }
         if (/INPUT|SELECT|TEXTAREA/.test((e.target && e.target.tagName) || "")) return;   // typing in a text field is never a game key
         if (this.popup) { e.preventDefault(); if (!e.repeat) this.popupKey(keyId(e)); return; }
         if (this.talk) { e.preventDefault(); if (!e.repeat) this.talkKey(keyId(e)); return; }   // while talking, keys answer the dialogue
@@ -59,7 +64,7 @@
       };
       const ku = e => this.release(keyId(e));
       const mm = e => { if (document.pointerLockElement === cv || this.drag) this.look(e.movementX, e.movementY); };
-      const pd = e => { if (this.popup) { this.popupClose(); return; } if (this.talk) return; if (this.engaged && e && e.button === 0 && this.mode === "play" && this.useClick()) return; if (this.engaged && e && e.button === 0) this.fire(); if (this.engaged && e) this.press(mouseId(e.button)); this.engaged = true; this.msg.style.display = "none"; this.drag = true; try { const r = cv.requestPointerLock && cv.requestPointerLock(); if (r && r.catch) r.catch(() => {}); } catch (x) {} cv.focus(); };
+      const pd = e => { if (this.paused) return; if (this.popup) { this.popupClose(); return; } if (this.talk) return; if (this.engaged && e && e.button === 0 && this.mode === "play" && this.useClick()) return; if (this.engaged && e && e.button === 0) this.fire(); if (this.engaged && e) this.press(mouseId(e.button)); this.engaged = true; this.msg.style.display = "none"; this.drag = true; try { const r = cv.requestPointerLock && cv.requestPointerLock(); if (r && r.catch) r.catch(() => {}); } catch (x) {} cv.focus(); };
       const pu = e => { this.drag = false; if (e && e.button !== undefined) this.release(mouseId(e.button)); }, pl = () => lock(), bl = () => { for (const id of Object.keys(k)) this.release(id); }, noCtx = e => e.preventDefault(), noMid = e => { if (e.button !== 0) e.preventDefault(); };
       addEventListener("keydown", kd, true); addEventListener("keyup", ku, true); addEventListener("mousemove", mm); addEventListener("pointerup", pu); document.addEventListener("pointerlockchange", pl); addEventListener("blur", bl); this.root.addEventListener("contextmenu", noCtx); this.root.addEventListener("mousedown", noMid);
       this.root.addEventListener("pointerdown", pd); cv.tabIndex = 0; const wh = e => { if (this.engaged) { e.preventDefault(); this.setWeapon((this.wi || 0) + (e.deltaY > 0 ? 1 : -1)); } }; this.root.addEventListener("wheel", wh, { passive: false });
@@ -194,23 +199,48 @@
       if (hb) { const T = this.T, k = hb.o.pre + "hb." + hb.b.id + ".", mode = T.get(hb.o.pre + "useMode") || "key", nm = T.get(hb.o.pre + "useHint") || T.get(k + "name") || "Use"; this.hintEl.textContent = (mode === "key" ? ky : mode === "aim" ? "[Click] " : "") + nm + (this.hbLocked(hb.o, hb.b) ? "  (locked)" : ""); }
     }
     talkStart(o) {
-      const p = this.project.props.find(x => x.id === o.th.prop); if (!p || !p.dialog || !p.dialog.lines.length) return;
-      this.talk = { o, p, i: 0 }; for (const k of Object.keys(this.keys)) this.release(k); try { if (document.pointerLockElement === this.cv) document.exitPointerLock(); } catch (e) {}
+      const p = this.project.props.find(x => x.id === o.th.prop), dg = this.T.get(o.pre + "npcDialogue"); if (dg && (this.project.dialogues || []).some(d => d.id === dg)) { this.talkGraph(dg, o); return; }
+      if (!p || !p.dialog || !p.dialog.lines.length) return;
+      this.talk = { o, p, i: 0 }; this.talkOpen(); this.talkLine();
+    }
+    talkOpen() {
+      for (const k of Object.keys(this.keys)) this.release(k); try { if (document.pointerLockElement === this.cv) document.exitPointerLock(); } catch (e) {}
       if (!this.talkEl) { this.talkEl = el("p3talk", "position:absolute;left:50%;bottom:6%;transform:translateX(-50%);width:min(820px,90%);padding:16px 20px;background:rgba(8,12,18,.88);border:1px solid rgba(160,200,230,.45);border-radius:6px;color:#e8f2fb;font:17px/1.45 'Chakra Petch',system-ui,sans-serif;z-index:8;box-shadow:0 8px 30px rgba(0,0,0,.5)"); this.talkEl.addEventListener("pointerdown", e => e.stopPropagation()); this.root.append(this.talkEl); }
-      this.talkEl.style.display = "block"; this.msg.style.display = "none"; this.talkLine();
+      this.talkEl.style.display = "block"; this.msg.style.display = "none";
+    }
+    // the talk box: speaker, text and either choices (keys 1-4 / click) or Continue (Interact / Space / Enter)
+    talkBox(who, text, picks, cont, sound) {
+      const t = this.talk, T = this.T; if (!t) return;
+      if (sound) { if (this.voice && this.voice.playing) this.voice.stop(0.05); this.voice = this.sfx(sound, 1); }
+      const box = this.talkEl; box.replaceChildren(); if (who) { box.append(el("", "color:#7df3ff;font-weight:700;margin-bottom:4px;letter-spacing:.04em")); box.lastChild.textContent = who; }
+      const tx = el("", "white-space:pre-wrap"); tx.textContent = text || ""; box.append(tx); const opts = el("", "display:flex;flex-direction:column;gap:6px;margin-top:12px"); box.append(opts);
+      const btn = (label, fn) => { const b = document.createElement("button"); b.textContent = label; b.style.cssText = "text-align:left;font:inherit;font-size:16px;color:#e8f2fb;background:rgba(40,60,80,.55);border:1px solid rgba(160,200,230,.35);border-radius:4px;padding:6px 12px;cursor:pointer"; b.onmouseenter = () => { b.style.background = "rgba(60,100,130,.75)"; }; b.onmouseleave = () => { b.style.background = "rgba(40,60,80,.55)"; }; b.onclick = e => { e.stopPropagation(); fn(); }; opts.append(b); };
+      t.pick = picks && picks.length ? picks.map(p => p.fn) : null; t.cont = t.pick ? null : cont;
+      if (t.pick) picks.forEach((p, n) => btn((n + 1) + ".  " + p.label, p.fn)); else if (cont) btn("Continue  ▸   (" + String(T.get("player.interactKey") || "e").toUpperCase() + " / Space)", cont);
+    }
+    // a dialogue made in the Dialogue Editor (a node graph). o = the NPC talking (or null: a zone / script started it). Returns a promise that ends with the talk.
+    talkGraph(id, o) {
+      const d = (this.project.dialogues || []).find(x => x.id === id); if (!d || !this.sh || this.dead) return null; if (this.talk) this.talkEnd();
+      const t = this.talk = { o, graph: d }; this.talkOpen(); this.talkBox("", "…", null, null);
+      const pr = this.sh.play({ key: d.id, script: d }); t.done = pr; pr.then(() => { if (this.talk === t) this.talkEnd(); }); return pr;
+    }
+    talkWho(s) { const o = this.talk && this.talk.o; return s || (o ? this.T.get(o.pre + "npcName") || this.T.get(o.pre + "name") || "" : ""); }
+    dlgLine(l) {
+      const t = this.talk; if (!t || !t.graph) return Promise.resolve(); t.lastText = l.text; t.lastWho = this.talkWho(l.speaker);
+      return new Promise(res => { let timer = 0; const go = () => { if (timer) clearTimeout(timer); if (t.res === go) t.res = null; res(); }; t.res = go; this.talkBox(t.lastWho, l.text, null, go, l.sound); if (l.auto > 0) timer = setTimeout(go, l.auto * 1000); });
+    }
+    dlgChoice(c) {
+      const t = this.talk; if (!t || !t.graph) return Promise.resolve(null);
+      return new Promise(res => { const done = v => { if (t.res === stop) t.res = null; res(v); }, stop = () => done(null); t.res = stop; this.talkBox(c.speaker || c.text ? this.talkWho(c.speaker) : t.lastWho, c.text || t.lastText || "", c.opts.map(q => ({ label: q.label, fn: () => done(q.out) })), null); });
     }
     talkLine() {
       const t = this.talk, T = this.T, l = t.p.dialog.lines[t.i]; if (!l) return this.talkEnd(); const pre = t.p.id + ".d." + l.id + ".", g = k => T.get(pre + k);
       const who = g("speaker") || T.get(t.o.pre + "npcName") || T.get(t.o.pre + "name") || "", ch = [1, 2, 3, 4].filter(i => String(g("c" + i + "text") || "").trim());
-      if (g("sound")) { if (this.voice && this.voice.playing) this.voice.stop(0.05); this.voice = this.sfx(g("sound"), 1); }
-      const box = this.talkEl; box.replaceChildren(); if (who) box.append(el("", "color:#7df3ff;font-weight:700;margin-bottom:4px;letter-spacing:.04em")); if (who) box.lastChild.textContent = who;
-      const tx = el("", "white-space:pre-wrap"); tx.textContent = g("text") || ""; box.append(tx); const opts = el("", "display:flex;flex-direction:column;gap:6px;margin-top:12px"); box.append(opts);
-      const btn = (label, fn) => { const b = document.createElement("button"); b.textContent = label; b.style.cssText = "text-align:left;font:inherit;font-size:16px;color:#e8f2fb;background:rgba(40,60,80,.55);border:1px solid rgba(160,200,230,.35);border-radius:4px;padding:6px 12px;cursor:pointer"; b.onmouseenter = () => { b.style.background = "rgba(60,100,130,.75)"; }; b.onmouseleave = () => { b.style.background = "rgba(40,60,80,.55)"; }; b.onclick = e => { e.stopPropagation(); fn(); }; opts.append(b); };
-      t.choices = ch; if (ch.length) ch.forEach((i, n) => btn((n + 1) + ".  " + g("c" + i + "text"), () => this.talkChoose(i))); else btn("Continue  ▸   (" + String(T.get("player.interactKey") || "e").toUpperCase() + " / Space)", () => this.talkGo(g("next")));
+      t.choices = ch; this.talkBox(who, g("text") || "", ch.map(i => ({ label: g("c" + i + "text"), fn: () => this.talkChoose(i) })), () => this.talkGo(g("next")), g("sound"));
     }
     talkKey(id) {
-      const t = this.talk; if (!t) return; if (t.choices && t.choices.length) { const n = +id; if (n >= 1 && n <= t.choices.length) this.talkChoose(t.choices[n - 1]); return; }
-      if (id === "space" || id === "enter" || id === (this.T.get("player.interactKey") || "e")) { const l = t.p.dialog.lines[t.i]; this.talkGo(this.T.get(t.p.id + ".d." + l.id + ".next")); }
+      const t = this.talk; if (!t) return; if (t.pick) { const n = +id; if (n >= 1 && n <= t.pick.length) t.pick[n - 1](); return; }
+      if (t.cont && (id === "space" || id === "enter" || id === (this.T.get("player.interactKey") || "e"))) t.cont();
     }
     talkChoose(i) {
       const t = this.talk, T = this.T, l = t.p.dialog.lines[t.i], pre = t.p.id + ".d." + l.id + ".", tag = T.get(pre + "c" + i + "tag"), raw = String(T.get(pre + "c" + i + "val") || "").trim();
@@ -218,7 +248,7 @@
       this.talkGo(T.get(pre + "c" + i + "go"));
     }
     talkGo(go) { const t = this.talk; if (!t) return; if (!go || go === "next") t.i++; else if (go === "end") return this.talkEnd(); else t.i = t.p.dialog.lines.findIndex(l => l.id === go); this.talkLine(); }
-    talkEnd() { this.talk = null; if (this.talkEl) this.talkEl.style.display = "none"; this.msg.style.display = document.pointerLockElement === this.cv ? "none" : "grid"; }
+    talkEnd() { const t = this.talk; this.talk = null; if (t && t.graph) { if (this.sh) this.sh.stopOwner(t.graph.id); if (t.res) t.res(); } if (this.talkEl) this.talkEl.style.display = "none"; this.msg.style.display = document.pointerLockElement === this.cv ? "none" : "grid"; }
     shootDoor(th) { const o = (this.things || []).find(x => x.th === th); if (o && this.T.get(o.pre + "openMode") === "shot") this.openDoor(o); }
     openDoor(o) { if (o.st === "open" || o.st === "opening") return; o.st = "opening"; o.t = o.p * this.doorLen(o, "openAnim"); o.timer = 0; const s = this.T.get(o.pre + "openSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); }
     closeDoor(o) { if (o.st === "closed" || o.st === "closing") return; o.st = "closing"; o.timer = 0; const s = this.T.get(o.pre + "closeSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); }
@@ -472,7 +502,7 @@
       const T = this.T, m = this.map; this.x = m ? +T.get(m.id + ".startX") || 0 : 0; this.y = m ? +T.get(m.id + ".startY") || 0 : 0; this.yaw = (m ? +T.get(m.id + ".startAngle") : 90) * Math.PI / 180; this.pitch = 0;
       const L = m ? +T.get(m.id + ".startLayer") || 0 : 0; this.z = m && G ? G.groundY(m, this.x, this.y, L * G.LAYER + G.LAYER - 8) : 0; this.vz = 0; this.body = null; this.ground = true;
     }
-    resetPlayer() { this.placeStart(); this.fx = []; this.orb = null; this.reloading = null; if (this.mode === "play" && this.T.get("player.reloading")) this.T.set("player.reloading", false); this.extV = null; this.jumpReq = undefined; this.airJumps = 0; this.shakeT = 0; this.pdead = false; this.deadT = 0; this.say2(""); this.doorOpen = {}; this.things = []; this.syncThings(); }
+    resetPlayer() { this.placeStart(); this.zst = null; this.fx = []; this.orb = null; this.reloading = null; if (this.mode === "play" && this.T.get("player.reloading")) this.T.set("player.reloading", false); this.extV = null; this.jumpReq = undefined; this.airJumps = 0; this.shakeT = 0; this.pdead = false; this.deadT = 0; this.say2(""); this.doorOpen = {}; this.things = []; this.syncThings(); }
     restartMap() { const T = this.T; T.set("player.health", +T.get("player.maxHealth") || 100); this.lastHp = undefined; this.initAmmo(); this.initLives(); this.cp = null; this.resetPlayer(); }
     loadMap(id) { const m = this.project.maps.find(x => x.id === id); if (!m || !this.view) return false; this.map = m; this.cp = null; this.view.setMap(this.project, m, this.T, this.urls); this.resetPlayer(); return true; }
     levelExit(o) {
@@ -490,6 +520,26 @@
       if (this.stepSnd && this.stepSnd.playing) this.stepSnd.stop(0.06); this.stepSnd = this.psound(ids[i]);
     }
     leave() { if (this.o.onExit) this.o.onExit(); else this.destroy(); }
+    // ---- pause menu: Esc freezes the game (like a pop-up) and shows the pause screen (tag player.pauseScreen) through a Runtime on top
+    pauseId() { const id = this.T.get("player.pauseScreen"); return id && this.project.screens.some(s => s.id === id) ? id : ""; }
+    pauseOpen(screenId) {
+      const id = screenId || this.pauseId(); if (!id || this.paused || this.dead) return false;
+      for (const k of Object.keys(this.keys)) this.release(k); this.drag = false;
+      this.paused = { t0: performance.now() }; this.msg.style.display = "none"; if (this.lv) { this.lv.style.display = this.o.debug ? "block" : "none"; this.lv.style.zIndex = 30; } if (this.talkEl) this.talkEl.style.visibility = "hidden";
+      if (document.pointerLockElement === this.cv) document.exitPointerLock();
+      PRIM.Audio.setWorld(+this.T.get("player.pauseVolume") >= 0 ? +this.T.get("player.pauseVolume") : 0.25);
+      const el = this.pauseEl = document.createElement("div"); el.className = "p3pause"; el.style.cssText = "position:absolute;inset:0;z-index:20"; this.root.append(el);
+      this.pauseRt = new PRIM.Runtime({ host: el, project: this.project, tags: this.T, urls: this.urls, mode: "play", screenId: id, noEscExit: true, noHint: true, transparent: true, say: t => { if (this.o.say) this.o.say(t); },
+        onResume: () => this.pauseClose(), onRestart: () => { this.pauseClose(); this.restartMap(); }, onMenu: () => { this.pauseClose(true); if (this.o.onMenu) this.o.onMenu(); else this.leave(); },
+        onQuit: () => { this.pauseClose(true); if (this.o.onQuit) this.o.onQuit(); else this.leave(); }, onExit: () => { this.pauseClose(true); this.leave(); }, onStartGame: () => this.pauseClose() });
+      this.trigger("onPause"); return true;
+    }
+    pauseClose(leaving) {
+      if (!this.paused) return; this.paused = null; PRIM.Audio.setWorld(1); if (this.pauseRt) { this.pauseRt.destroy(); this.pauseRt = null; } if (this.pauseEl) { this.pauseEl.remove(); this.pauseEl = null; }
+      this.last = performance.now(); if (this.talkEl) this.talkEl.style.visibility = ""; if (leaving || this.dead) return; this.trigger("onResume"); if (this.talk) return;   // still talking: the mouse stays free for the talk box
+      try { const r = this.cv.requestPointerLock && this.cv.requestPointerLock(); if (r && r.catch) r.catch(() => { this.msg.style.display = "grid"; }); } catch (x) {} this.cv.focus();
+      if (document.pointerLockElement !== this.cv) { this.msg.style.display = "grid"; if (this.lv) this.lv.style.display = "block"; }
+    }
     // Classic: the camera looks where the mouse points and the crosshair stays in the middle.
     // Free aim (bodycam style): the mouse moves the aim (and crosshair) inside an area of the screen; the camera only turns once the aim reaches the edge of that area.
     look(dx, dy) {
@@ -536,12 +586,35 @@
       if (changed && this.sh) { const att = this.project.player.attachments.find(a => a.id === w[i]); if (att && att.script) this.sh.trigger({ key: "player." + att.id, script: att.script }, "onEquip"); }
     }
     // Node Coder events: every non-weapon object hears them, and the weapon that is currently in hand
-    scriptOwners() { const cur = this.curWeaponId(), out = this.project.player.attachments.filter(a => a.script && !(this.T.get("player." + a.id + ".type") === "weapon" && a.id !== cur)).map(a => ({ key: "player." + a.id, script: a.script })); if (this.project.player.script) out.push({ key: "player", script: this.project.player.script }); return out; }
+    scriptOwners() { const cur = this.curWeaponId(), out = this.project.player.attachments.filter(a => a.script && !(this.T.get("player." + a.id + ".type") === "weapon" && a.id !== cur)).map(a => ({ key: "player." + a.id, script: a.script })); if (this.project.player.script) out.push({ key: "player", script: this.project.player.script }); for (const z of (this.map && this.map.zones) || []) if (z.type === "custom" && z.script) out.push({ key: this.map.id + ".z." + z.id, script: z.script }); return out; }
     triggerAtt(id, type, arg) { const a = this.project.player.attachments.find(x => x.id === id); if (this.sh && a && a.script) this.sh.trigger({ key: "player." + a.id, script: a.script }, type, arg); }
     stopAnim(key) { const at = this.atts.find(a => "player." + a.id === key); if (!at) return; at.fire = null; at.loopAnim = null; at.t = 0; at.restart = true; }
     trigger(type, arg) {
       if (!this.sh) return; if (this.project.player.script) this.sh.trigger({ key: "player", script: this.project.player.script }, type, arg); const cur = this.curWeaponId();
       for (const a of this.project.player.attachments) { if (!a.script) continue; if (this.T.get("player." + a.id + ".type") === "weapon" && a.id !== cur) continue; this.sh.trigger({ key: "player." + a.id, script: a.script }, type, arg); }
+      for (const z of (this.map && this.map.zones) || []) if (z.type === "custom" && z.script) this.sh.trigger({ key: this.map.id + ".z." + z.id, script: z.script }, type, arg);
+    }
+    // set a tag from a text value: "toggle", "+n" / "-n" adds, anything else is set (numbers, yes / no, text)
+    applyVal(tag, raw) { const T = this.T; raw = String(raw === undefined ? "" : raw).trim(); if (!tag || !T.has(tag) || raw === "") return; const cur = T.get(tag), sp = T.spec(tag);
+      if (/^toggle$/i.test(raw)) T.set(tag, sp && sp.type === "bool" ? !cur : !/^(1|true|on|yes)$/i.test(String(cur))); else if (/^[+-]\d+(\.\d+)?$/.test(raw) && typeof cur === "number") this.sh ? this.sh.setTag(tag, cur + parseFloat(raw)) : T.set(tag, cur + parseFloat(raw)); else if (this.sh) this.sh.setTag(tag, raw); else T.set(tag, raw); }
+    // ---- zones (map editor > Zones): boxes of cells on a story. Trigger zones run their ready-made actions, custom zones run their own script (onEnter / onLeave / onInside).
+    zoneIn(z) { const C = 128, cx = Math.floor(this.x / C), cy = Math.floor(this.y / C), st = Math.floor((this.z + 2) / C), T = this.T, k = this.map.id + ".z." + z.id + ".", ht = Math.max(0, +T.get(k + "height") || 0), L = z.layer || 0;
+      return cx >= Math.min(z.x0, z.x1) && cx <= Math.max(z.x0, z.x1) && cy >= Math.min(z.y0, z.y1) && cy <= Math.max(z.y0, z.y1) && st >= L && st <= L + ht; }
+    zoneStep(dt) {
+      const m = this.map; if (!m || !m.zones || !m.zones.length || this.pdead) return; const T = this.T, st = this.zst = this.zst && this.zst.map === m ? this.zst : { map: m, z: {} };
+      for (const z of m.zones) {
+        const k = m.id + ".z." + z.id + ".", g = q => T.get(k + q), s = st.z[z.id] = st.z[z.id] || { in: false, done: false, t: 0, nt: {} }, need = g("needTag"), okc = !need || !this.sh || this.sh.test(need, g("needOp") || "=", g("needVal"));
+        const inside = this.zoneIn(z) && okc && !(s.done && !s.in), owner = z.type === "custom" && z.script ? { key: m.id + ".z." + z.id, script: z.script } : null;
+        if (inside && !s.in) { s.in = true; s.t = 0; s.nt = {}; if (g("once")) s.done = true;
+          if (owner) { if (this.sh) this.sh.trigger(owner, "onEnter"); }
+          else { this.applyVal(g("setTag"), g("setVal")); const ms = String(g("message") || "").trim(); if (ms) this.trigger("onMessage", ms); if (g("sound")) this.sfx(g("sound")); if (g("say")) this.toast(T.interpolate(String(g("say"))));
+            const tp = String(g("teleport") || "").split(",").map(q => parseFloat(q)); if (tp.length >= 2 && isFinite(tp[0]) && isFinite(tp[1])) { this.x = (tp[0] + 0.5) * 128; this.y = (tp[1] + 0.5) * 128; const L = isFinite(tp[2]) ? tp[2] : 0; this.z = G ? G.groundY(m, this.x, this.y, L * G.LAYER + G.LAYER - 8) : L * 128; this.vz = 0; this.body = null; this.extV = null; }
+            if (g("dialog")) this.talkGraph(g("dialog"), null); const sc = g("screen"); if (sc && this.o.onScreen && this.project.screens.some(x => x.id === sc)) { this.o.onScreen(sc); return; } } }
+        else if (!inside && s.in) { s.in = false; if (owner) { if (this.sh) this.sh.trigger(owner, "onLeave"); } else { this.applyVal(g("leaveTag"), g("leaveVal")); const ms = String(g("leaveMessage") || "").trim(); if (ms) this.trigger("onMessage", ms); } }
+        if (!s.in) continue; s.t += dt;
+        if (owner && this.sh) for (const n of z.script.nodes) { if (n.type !== "onInside") continue; const iv = Math.max(0.05, +T.get(k + "s." + n.id + ".interval") || 1); s.nt[n.id] = (s.nt[n.id] || 0) + dt; if (s.nt[n.id] >= iv) { s.nt[n.id] -= iv; this.sh.trigger(owner, "onInside", null, n.id); } }
+        const hu = owner ? 0 : +g("hurt") || 0; if (hu) { s.ht = (s.ht || 0) + dt; if (s.ht >= 0.5) { s.ht -= 0.5; if (hu > 0) this.hurtPlayer(hu * 0.5); else T.set("player.health", Math.min(+T.get("player.maxHealth") || 100, (+T.get("player.health") || 0) - hu * 0.5)); } }
+      }
     }
     vol3(mult) { const T = this.T; return Math.max(0, Math.min(1, (+T.get("audio.master") || 0) * (+T.get("audio.sfx") || 0) * (isNaN(mult) ? 1 : mult))); }
     loopSfx(id, vol) { const u = this.urls[id]; if (!u) return; this.loops = this.loops || {}; const v = this.vol3(vol); if (this.loops[id] && this.loops[id].playing) { this.loops[id].setVolume(v); return; } this.loops[id] = PRIM.Audio.play(u, v, true); }
@@ -743,8 +816,8 @@
       if (this.dead) return;
       // removed from the page (the playtest was stopped, another project was opened...): shut down for good, so no copy keeps listening to keys and playing sounds
       if (this.root.isConnected) this.wasOn = true; else if (this.wasOn) { this.destroy(); return; }
-      this.raf = requestAnimationFrame(q => this.frame(q)); const dt = this.popup ? 0 : Math.max(0, Math.min(0.05, (t - this.last) / 1000)); this.last = Math.max(t, this.last || 0);   // never a negative step (gravity would run backwards)   // a pick-up pop-up pauses everything
-      if (this.mode === "play" && this.map && !this.pdead && !this.talk && !this.popup) this.step(dt);
+      this.raf = requestAnimationFrame(q => this.frame(q)); const dt = this.popup || this.paused ? 0 : Math.max(0, Math.min(0.05, (t - this.last) / 1000)); this.last = Math.max(t, this.last || 0);   // never a negative step (gravity would run backwards)   // a pick-up pop-up pauses everything
+      if (this.mode === "play" && this.map && !this.pdead && !this.talk && !this.popup && !this.paused) { this.step(dt); this.zoneStep(dt); }
       if (this.mode === "play") this.talkHint();
       if (this.mode === "play") this.feel(dt);
       if (this.mode === "play") { this.hold(dt); const hp = +this.T.get("player.health"); if (this.lastHp === undefined) this.lastHp = hp; if (hp < this.lastHp) { this.psound(hp <= 0 ? "deathSound" : "hurtSound"); this.flash(Math.min(0.6, 0.15 + (this.lastHp - hp) / 60)); this.trigger(hp <= 0 ? "onDeath" : "onHurt"); } this.lastHp = hp; this.reloadStep(dt); this.ammoClamp(); this.deathStep(dt); }

@@ -23,7 +23,7 @@
       { k: "texture", label: "Texture", type: "asset", assetType: "image", def: "", showIf: ["mode", "texture"] }, { k: "hoverTexture", label: "Hover texture (optional)", type: "asset", assetType: "image", def: "", showIf: ["mode", "texture"] },
       X, Y, Object.assign({}, W("Width (0 = natural)"), { showIf: ["mode", "texture"] }), Object.assign({}, H, { label: "Height (0 = natural)", showIf: ["mode", "texture"] }), LOCK({ showIf: ["mode", "texture"] }),
       { k: "hoverSound", label: "Hover sound", type: "asset", assetType: "sound", def: "" }, { k: "clickSound", label: "Click sound", type: "asset", assetType: "sound", def: "" },
-      { k: "action", label: "On click", type: "choice", options: [["none", "Nothing"], ["goto", "Go to screen"], ["start", "Start game"], ["quit", "Quit"]], def: "none" },
+      { k: "action", label: "On click", type: "choice", options: [["none", "Nothing"], ["goto", "Go to screen"], ["back", "Go back (previous screen)"], ["start", "Start game"], ["resume", "Resume game (pause menu)"], ["restart", "Restart level (pause menu)"], ["menu", "Quit to main menu"], ["quit", "Quit (close the game)"]], def: "none" },
       { k: "target", label: "Screen", type: "screenRef", def: "", showIf: ["action", "goto"] }] },
     slider: { label: "Slider", icon: "◐", props: [{ k: "label", label: "Label", type: "string", def: "Value" }, { k: "bind", label: "Controls tag", type: "tagRef", refType: "number", def: "" }, FONT, SIZE(26), COLOR("color", "Color", "#d9f7ff"), COLOR("accent", "Accent", "#7df3ff"), X, Y, W("Width", 420)] },
     toggle: { label: "Toggle", icon: "◉", props: [{ k: "label", label: "Label", type: "string", def: "Option" }, { k: "bind", label: "Controls tag", type: "tagRef", refType: "bool", def: "" }, FONT, SIZE(26), COLOR("color", "Color", "#d9f7ff"), COLOR("accent", "Accent", "#7df3ff"), X, Y, W("Width", 420)] },
@@ -43,10 +43,12 @@
   S.SCREEN = {
     menu: [COLOR("bg", "Background color", "#030a12"), { k: "bgImage", label: "Background image", type: "asset", assetType: "image", def: "" }, { k: "music", label: "Music", type: "asset", assetType: "sound", def: "" }],
     hud: [],
+    // a pause menu: drawn over the frozen game (Esc). Its buttons can resume, restart, go to other pause screens, quit...
+    pause: [COLOR("bg", "Darkening color", "#000000"), { k: "dim", label: "Darken the game (0 = see-through, 1 = solid)", type: "number", def: 0.55, min: 0, max: 1, step: 0.05 }, { k: "blur", label: "Blur the game (px)", type: "number", def: 4, min: 0, max: 30, step: 1 }, { k: "bgImage", label: "Background image", type: "asset", assetType: "image", def: "" }, { k: "music", label: "Music while paused", type: "asset", assetType: "sound", def: "" }],
     splash: [COLOR("bg", "Background color", "#000000"), { k: "skippable", label: "Click or key skips", type: "bool", def: true }, { k: "next", label: "Then go to", type: "screenRef", def: "main" }],
   };
 
-  const rec = (p, group, owner) => { const r = { type: p.type, value: p.def, label: p.label, group, owner }; for (const k of ["min", "max", "step", "options", "assetType", "refType", "showIf", "modelTag"]) if (p[k] !== undefined) r[k] = p[k]; r.prop = p.k; return r; };
+  const rec = (p, group, owner) => { const r = { type: p.type, value: p.def, label: p.label, group, owner }; for (const k of ["min", "max", "step", "options", "assetType", "refType", "showIf", "modelTag", "multi"]) if (p[k] !== undefined) r[k] = p[k]; r.prop = p.k; return r; };
   S.defineNode = (project, sid, node, over) => { for (const p of S.NODE[node.type].props) { const r = rec(p, sid, sid + "." + node.id); if (over && p.k in over) r.value = over[p.k]; project.tags[sid + "." + node.id + "." + p.k] = r; } };
   S.defineScreen = (project, sc, over) => { for (const p of S.SCREEN[sc.kind]) { const r = rec(p, sc.id, sc.id); if (over && p.k in over) r.value = over[p.k]; project.tags[sc.id + "." + p.k] = r; } };
   S.uid = (base, taken) => { let i = 1, id = base; while (taken.includes(id)) id = base + ++i; return id; };
@@ -101,8 +103,10 @@
     { k: "deathAction", label: "When the player dies", type: "choice", options: [["restart", "Restart the map"], ["screen", "Go to a screen (e.g. Game Over)"]], def: "restart" },
     { k: "deathScreen", label: "Game over screen", type: "screenRef", def: "", showIf: ["deathAction", "screen"] }, PNUM("deathDelay", "Wait after dying (s)", 2.5, 0, 30, 0.1),
     { k: "damageFlash", label: "Red flash when hurt", type: "bool", def: true },
+    { k: "pauseScreen", label: "Pause menu (Esc). Empty = Esc leaves the game", type: "screenRef", def: "pause" },
+    { k: "pauseVolume", label: "Game sounds while paused (0 = silent, 1 = full)", type: "number", def: 0.25, min: 0, max: 1, step: 0.05 },
   ];
-  S.PLAYER_GROUPS = [["Movement", ["speed", "sprintEnabled", "sprintPercent", "jumpEnabled", "jumpHeight", "gravity", "interactKey"]], ["Feel", ["breathe", "breatheAmount", "breatheSpeed", "bob", "bobAmount", "bobSpeed", "bobSync", "animBlend"]], ["Sounds", ["footstep", "footstep2", "footstep3", "stepDistance", "jumpSound", "landSound", "hurtSound", "deathSound", "soundVolume"]], ["Body", ["maxHealth", "eyeHeight", "radius", "stepHeight"]], ["Camera", ["fov", "aimMode", "freeAimRadius", "mouseSens"]], ["Crosshair", ["crosshair", "crosshairSize", "crosshairGap", "crosshairThickness", "crosshairColor"]], ["HUD", ["hud", "hudMove", "hudMoveAmount", "damageFlash"]], ["Lives", ["livesMode", "livesStart", "tanksStart", "tanksLimit"]], ["Game rules", ["startMap", "deathAction", "deathScreen", "deathDelay", "reloadKey"]]];
+  S.PLAYER_GROUPS = [["Movement", ["speed", "sprintEnabled", "sprintPercent", "jumpEnabled", "jumpHeight", "gravity", "interactKey"]], ["Feel", ["breathe", "breatheAmount", "breatheSpeed", "bob", "bobAmount", "bobSpeed", "bobSync", "animBlend"]], ["Sounds", ["footstep", "footstep2", "footstep3", "stepDistance", "jumpSound", "landSound", "hurtSound", "deathSound", "soundVolume"]], ["Body", ["maxHealth", "eyeHeight", "radius", "stepHeight"]], ["Camera", ["fov", "aimMode", "freeAimRadius", "mouseSens"]], ["Crosshair", ["crosshair", "crosshairSize", "crosshairGap", "crosshairThickness", "crosshairColor"]], ["HUD", ["hud", "hudMove", "hudMoveAmount", "damageFlash"]], ["Lives", ["livesMode", "livesStart", "tanksStart", "tanksLimit"]], ["Game rules", ["startMap", "deathAction", "deathScreen", "deathDelay", "reloadKey", "pauseScreen", "pauseVolume"]]];
   // 3D objects attached to the player camera (weapons, hands...). Each one has tags player.<id>.*
   const ANIM = (k, label, extra) => Object.assign({ k, label, type: "anim", def: "" }, extra || {}), NUM = (k, label, def, min, max, step, extra) => Object.assign({ k, label, type: "number", def, min, max, step }, extra || {}), WP = ["type", "weapon"], NI = ["type", ["weapon", "animation"]], W_ = { showIf: WP };
   // a showIf is [tagKey, value] or [tagKey, [value, value...]]
@@ -254,7 +258,8 @@
     { k: "showBoxes", label: "Show the hitboxes while playing (for testing)", type: "bool", def: false, showIf: ["type", "interactive"] });
   S.PROP.push({ k: "npcName", label: "Name shown when talking (empty = the object's name)", type: "string", def: "", showIf: ["type", "npc"] }, NUM("talkRange", "Can talk from (units, 128 = a cell)", 140, 30, 600, 5, { showIf: ["type", "npc"] }),
     ANIM("talkAnim", "Talking animation (3D model)", { showIf: ["type", "npc"], showIf2: ["look", "model"] }), { k: "talkSprite", label: "Talking strip (2D sprite)", type: "asset", assetType: "image", def: "", showIf: ["type", "npc"], showIf2: ["look", "sprite"] }, NUM("talkSpriteFrames", "Frames in it", 1, 1, 64, 1, { showIf: ["type", "npc"], showIf2: ["look", "sprite"] }),
-    { k: "faceTalker", label: "Turns to face the player while talking", type: "bool", def: true, showIf: ["type", "npc"] });
+    { k: "faceTalker", label: "Turns to face the player while talking", type: "bool", def: true, showIf: ["type", "npc"] },
+    { k: "npcDialogue", label: "Dialogue (made in the Dialogue Editor; empty = the lines below)", type: "dialogRef", def: "", showIf: ["type", "npc"] });
   const goOpts = [["next", "the next line"], ["end", "the end (stop talking)"]];
   S.DLINE = [{ k: "speaker", label: "Who speaks (empty = the character)", type: "string", def: "" }, { k: "text", label: "What they say", type: "string", def: "..." }, { k: "sound", label: "Voice / sound", type: "asset", assetType: "sound", def: "" },
     { k: "next", label: "Then go to", type: "choice", options: goOpts, def: "next" }]
@@ -379,7 +384,56 @@
   S.ensureComp = project => { const C = project.compositor = project.compositor || { effects: [] }; C.effects = C.effects.filter(e => S.COMPFX[e.type]); for (const e of C.effects) for (const p of S.compKeys(e.type)) { const k = "comp." + e.id + "." + p.k; if (!project.tags[k]) project.tags[k] = compRec(p, e.id); else project.tags[k].label = p.label; } };
   // the active effects with their values, in order (used by the renderer)
   S.compActive = (project, T) => ((project && project.compositor && project.compositor.effects) || []).filter(e => S.COMPFX[e.type] && T.get("comp." + e.id + ".on") !== false).map(e => { const v = {}; for (const p of S.COMPFX[e.type].props) v[p.k] = { type: p.type, val: T.get("comp." + e.id + "." + p.k) }; return { id: e.id, type: e.type, layer: T.get("comp." + e.id + ".layer") === "front" ? "front" : "behind", v }; });
-  S.SCAT = { event: "Events", control: "Control", sense: "Sensing", tags: "Tags & math", look: "Animation & looks", sound: "Sound", player: "Player", weapon: "Weapon", action: "Screens & messages" };
+  // ---- pause, zones, dialogues
+  Object.assign(S.SNODES, {
+    onPause: { label: "When the game is paused", cat: "event", ins: false, outs: ["next"], ctx: ["object", "player"], props: [] },
+    onResume: { label: "When the game is resumed", cat: "event", ins: false, outs: ["next"], ctx: ["object", "player"], props: [] },
+    pauseGame: { label: "Open the pause menu", cat: "action", outs: ["next"], ctx: ["object", "player"], props: [{ k: "screen", label: "Pause screen (empty = the normal one)", type: "screenRef", def: "" }] },
+    startDialogue: { label: "Start a dialogue", cat: "action", outs: ["next"], ctx: ["object", "player"], props: [{ k: "dialog", label: "Dialogue", type: "dialogRef", def: "" }, { k: "wait", label: "Wait until the talk is over", type: "bool", def: true }] },
+    // custom zones (map editor > Zones): their script hears these
+    onEnter: { label: "When the player enters the zone", cat: "event", ins: false, outs: ["next"], ctx: ["zone"], props: [] },
+    onLeave: { label: "When the player leaves the zone", cat: "event", ins: false, outs: ["next"], ctx: ["zone"], props: [] },
+    onInside: { label: "While the player is inside (every few moments)", cat: "event", ins: false, outs: ["next"], ctx: ["zone"], props: [{ k: "interval", label: "Every (seconds)", type: "number", def: 1, min: 0.05, max: 60, step: 0.05 }] },
+    // dialogue graphs (Dialogue Editor): start -> lines and choices -> end
+    dStart: { label: "Dialogue starts", cat: "event", ins: false, outs: ["next"], ctx: ["dialogue"], props: [] },
+    dLine: { label: "Say a line", cat: "dialogue", outs: ["next"], ctx: ["dialogue"], props: [{ k: "speaker", label: "Speaker (empty = the NPC's name)", type: "string", def: "" }, { k: "text", label: "Text ({tag} shows a tag's value)", type: "string", multi: true, def: "Hello there." }, { k: "sound", label: "Voice / sound", type: "asset", assetType: "sound", def: "" }, { k: "auto", label: "Go on by itself after (s, 0 = wait for the player)", type: "number", def: 0, min: 0, max: 60, step: 0.1 }] },
+    dChoice: { label: "Ask a question (choices)", cat: "dialogue", outs: ["c1", "c2", "c3", "c4"], outText: true, ctx: ["dialogue"], props: [{ k: "speaker", label: "Speaker (empty = the NPC's name)", type: "string", def: "" }, { k: "text", label: "Question (empty = keep the last line)", type: "string", multi: true, def: "" }, { k: "c1", label: "Choice 1", type: "string", def: "Yes" }, { k: "c2", label: "Choice 2", type: "string", def: "No" }, { k: "c3", label: "Choice 3 (empty = not shown)", type: "string", def: "" }, { k: "c4", label: "Choice 4 (empty = not shown)", type: "string", def: "" }] },
+    dEnd: { label: "End the dialogue", cat: "dialogue", outs: [], ctx: ["dialogue"], props: [] },
+  });
+  for (const k of ["setTag", "changeTag", "toggleTag", "randomTag", "mathTag", "if", "chance", "playSound", "wait", "sendMessage", "say", "waitUntil"]) if (S.SNODES[k] && !S.SNODES[k].ctx.includes("dialogue")) S.SNODES[k].ctx.push("dialogue");
+  S.SCAT = { event: "Events", dialogue: "Dialogue", control: "Control", sense: "Sensing", tags: "Tags & math", look: "Animation & looks", sound: "Sound", player: "Player", weapon: "Weapon", action: "Screens & messages" };
+  // Dialogues: project.dialogues = [{ id, name, nodes, links }] (a script; owner key = the id, node values are tags <id>.s.<node>.*)
+  S.addDialogue = (project, name) => {
+    const L = project.dialogues = project.dialogues || [], taken = L.map(d => d.id).concat(project.screens.map(s => s.id), (project.maps || []).map(m => m.id), (project.props || []).map(p => p.id));
+    const d = { id: S.uid("dialog1", taken).replace(/^dialog1(\d+)$/, "dialog$1"), name: name || "Dialogue " + (L.length + 1), nodes: [], links: [] }; L.push(d);
+    const A = (type, x, y, over) => S.addSNode(project, d.id, d, type, x, y, over), lk = (a, o, b) => d.links.push({ a: a.id, o, b: b.id });
+    const st = A("dStart", 20, 40), l1 = A("dLine", 280, 40, { text: "Hello there, traveller." }), q = A("dChoice", 540, 40, { text: "", c1: "Who are you?", c2: "Goodbye." }), l2 = A("dLine", 820, 10, { text: "Just someone keeping watch." }), e = A("dEnd", 1080, 120);
+    lk(st, "next", l1); lk(l1, "next", q); lk(q, "c1", l2); lk(l2, "next", e); lk(q, "c2", e); return d;
+  };
+  S.removeDialogue = (project, d) => { project.dialogues = (project.dialogues || []).filter(x => x !== d); for (const k of Object.keys(project.tags)) { if (k.startsWith(d.id + ".s.")) delete project.tags[k]; else if (project.tags[k].type === "dialogRef" && project.tags[k].value === d.id) project.tags[k].value = ""; } };
+  // Zones: map.zones = [{ id, type: "trigger" | "custom", x0, y0, x1, y1, layer, script? }] (cells, inclusive). Values are tags <map>.z.<zone>.*
+  S.ZONE = [
+    { k: "name", label: "Name", type: "string", def: "Zone" },
+    { k: "height", label: "Height (stories, 0 = only its own story)", type: "number", def: 0, min: 0, max: 16, step: 1 },
+    { k: "once", label: "Only the first time", type: "bool", def: false },
+    { k: "needTag", label: "Only if this tag…", type: "tagRef", refType: "any", def: "" }, { k: "needOp", label: "is", type: "choice", options: [["=", "equal to"], ["!=", "not equal to"], [">", "greater than"], ["<", "less than"], [">=", "at least"], ["<=", "at most"]], def: "=" }, { k: "needVal", label: "this value", type: "string", def: "yes" },
+    // trigger zones: ready-made actions when you walk in (and out)
+    { k: "setTag", label: "On enter: set this tag", type: "tagRef", refType: "any", def: "", trig: true }, { k: "setVal", label: "to (value, +n / -n adds, toggle)", type: "string", def: "true", trig: true },
+    { k: "message", label: "On enter: send a message (to every script)", type: "string", def: "", trig: true },
+    { k: "sound", label: "On enter: play a sound", type: "asset", assetType: "sound", def: "", trig: true },
+    { k: "say", label: "On enter: show a text (top of the screen)", type: "string", def: "", trig: true },
+    { k: "hurt", label: "Damage per second inside (negative heals)", type: "number", def: 0, min: -1000, max: 1000, step: 1, trig: true },
+    { k: "dialog", label: "On enter: start a dialogue", type: "dialogRef", def: "", trig: true },
+    { k: "screen", label: "On enter: go to a screen", type: "screenRef", def: "", trig: true },
+    { k: "teleport", label: "On enter: teleport to (cell x,y,story e.g. 10,4,0; empty = no)", type: "string", def: "", trig: true },
+    { k: "leaveTag", label: "On leave: set this tag", type: "tagRef", refType: "any", def: "", trig: true }, { k: "leaveVal", label: "to", type: "string", def: "false", trig: true },
+    { k: "leaveMessage", label: "On leave: send a message", type: "string", def: "", trig: true },
+  ];
+  S.zoneKey = (mapId, zid, k) => mapId + ".z." + zid + "." + k;
+  S.addZone = (project, map, z, over) => { map.zones = map.zones || []; const id = S.uid("zone1", map.zones.map(q => q.id)).replace(/^zone1(\d+)$/, "zone$1"); const zone = Object.assign({ id, type: "trigger", layer: 0 }, z); if (zone.type === "custom") zone.script = zone.script || { nodes: [], links: [] }; map.zones.push(zone);
+    for (const p of S.ZONE) { const r = rec(p, map.id, map.id + ".z." + id); if (p.k === "name") r.value = (zone.type === "custom" ? "Custom zone " : "Trigger zone ") + id.replace("zone", ""); if (over && p.k in over) r.value = over[p.k]; project.tags[S.zoneKey(map.id, id, p.k)] = r; } return zone; };
+  S.removeZone = (project, map, zone) => { map.zones = (map.zones || []).filter(q => q !== zone); const pre = map.id + ".z." + zone.id + "."; for (const k of Object.keys(project.tags)) if (k.startsWith(pre)) delete project.tags[k]; };
+  S.ensureZones = project => { for (const m of project.maps || []) for (const z of m.zones || []) { for (const p of S.ZONE) { const k = S.zoneKey(m.id, z.id, p.k); if (!project.tags[k]) project.tags[k] = rec(p, m.id, m.id + ".z." + z.id); } if (z.type === "custom") { z.script = z.script || { nodes: [], links: [] }; for (const n of z.script.nodes) S.ensureSNode(project, m.id + ".z." + z.id, n); } } };
   const SKEY = (ownerKey, id, k) => ownerKey + ".s." + id + "." + k;
   // every node can have a condition: it only happens while a tag compares true (e.g. canChargeWeapon = yes). Empty tag = always.
   S.SCOND = [{ k: "needTag", label: "Only if this tag…", type: "tagRef", refType: "any", def: "" }, { k: "needOp", label: "is", type: "choice", options: [["=", "equal to"], ["!=", "not equal to"], [">", "greater than"], ["<", "less than"], [">=", "at least"], ["<=", "at most"]], def: "=" }, { k: "needVal", label: "this value (yes / no, a number, a text)", type: "string", def: "yes" }];
@@ -434,17 +488,20 @@
       if (!att.script) att.script = { nodes: [], links: [] };   // the old "click animation" menu became a script: when clicked, play that animation
       const fa = project.tags[pre + "fireAnim"]; if (fa) { if (fa.value && !att.script.nodes.length) { const a = S.addSNode(project, "player." + att.id, att.script, "onClick", 20, 20), b = S.addSNode(project, "player." + att.id, att.script, "playAnim", 260, 20, { anim: fa.value }, pre + "asset"); att.script.links.push({ a: a.id, o: "next", b: b.id }); } delete project.tags[pre + "fireAnim"]; }
     }
+    const newPause = !project.tags["player.pauseScreen"];
     for (const p of S.PLAYER) if (!project.tags["player." + p.k]) { const r = rec(p, "player", "player"); r.builtin = true; project.tags["player." + p.k] = r; }
     for (const sc of project.screens || []) for (const el of sc.nodes || []) if (el.script) for (const n of el.script.nodes) S.ensureSNode(project, sc.id + "." + el.id, n);
     if (!project.tags["player.state"]) project.tags["player.state"] = { type: "string", value: "standing", label: "What the player is doing: standing, walking, running, jumping, falling (live)", group: "player", builtin: true };
     if (project.player && project.player.script) for (const n of project.player.script.nodes) S.ensureSNode(project, "player", n);
-    S.ensureComp(project);
+    S.ensureComp(project); S.ensureZones(project);
+    for (const d of project.dialogues || []) for (const n of d.nodes) S.ensureSNode(project, d.id, n);
     for (const [k, l] of [["lives", "Lives left (live)"], ["tanks", "Full energy tanks (live)"], ["tanksMax", "Energy tanks owned (live)"]]) if (!project.tags["player." + k]) project.tags["player." + k] = { type: "number", value: 0, min: 0, max: 99, step: 1, label: l, group: "player", builtin: true };
     if (!project.tags["player.lastButton"]) project.tags["player.lastButton"] = { type: "string", value: "", label: "Name of the last button pressed (live)", group: "player", builtin: true };
     if (!project.tags["player.reloading"]) project.tags["player.reloading"] = { type: "bool", value: false, label: "The current weapon is reloading (live)", group: "player", builtin: true };
     if (!project.tags["player.charge"]) project.tags["player.charge"] = { type: "number", value: 0, label: "Charge beam progress, 0 to 1 (live)", group: "player", min: 0, max: 1, step: 0.01, builtin: true };
     if (!project.tags["player.weapon"]) project.tags["player.weapon"] = { type: "number", value: 1, label: "Current weapon number (live)", group: "player", min: 0, max: 99, step: 1, builtin: true };
     if (!project.tags["player.health"]) project.tags["player.health"] = { type: "number", value: 100, label: "Current health (live)", group: "player", min: 0, max: 1000, step: 1, builtin: true };
+    if (newPause && !project.screens.some(s => s.id === "pause")) S.addPauseScreen(project, "pause", true);
     if (!project.screens.some(s => s.id === "hud") && project.tags["player.hud"].value === "hud") {
       const sc = { id: "hud", kind: "hud", nodes: [] }; project.screens.push(sc); S.defineScreen(project, sc);
       const add = (id, type, over) => { const n = { id, type }; sc.nodes.push(n); S.defineNode(project, "hud", n, over); };
@@ -468,6 +525,22 @@
     B("project.startScreen", "screenRef", "splash", "Start screen", "project");
   };
 
+  // a pause menu screen (kind "pause"): PAUSED, Resume, Restart, Options, Quit to menu; withOptions adds a second pause screen with the settings and a Back button
+  S.addPauseScreen = (project, id, withOptions) => {
+    const taken = project.screens.map(s => s.id); id = S.uid(id || "pause", taken); const sc = { id, kind: "pause", nodes: [] }; project.screens.push(sc); S.defineScreen(project, sc);
+    const add = (s, nid, type, over) => { const n = { id: nid, type }; s.nodes.push(n); S.defineNode(project, s.id, n, over); };
+    add(sc, "title", "title", { text: "PAUSED", size: 88, y: 170 });
+    add(sc, "resume", "button", { text: "Resume", y: 50, action: "resume" });
+    add(sc, "restart", "button", { text: "Restart level", y: -15, action: "restart" });
+    let opt = null; if (withOptions) { opt = { id: S.uid(id + "_options", project.screens.map(s => s.id)), kind: "pause", nodes: [] }; project.screens.push(opt); S.defineScreen(project, opt); }
+    if (opt) add(sc, "options", "button", { text: "Options", y: -80, action: "goto", target: opt.id });
+    add(sc, "menu", "button", { text: "Quit to main menu", y: opt ? -145 : -80, action: "menu" });
+    if (opt) { add(opt, "title", "title", { text: "Options", size: 64, y: 230 });
+      [["master", "Master volume", "audio.master", 140], ["sfx", "SFX volume", "audio.sfx", 75], ["music", "Music volume", "audio.music", 10], ["brightness", "Brightness", "gfx.brightness", -55]].forEach(([i, l, b, y]) => add(opt, i, "slider", { label: l, bind: b, y }));
+      add(opt, "shadows", "toggle", { label: "Shadows", bind: "gfx.shadows", y: -115 }); add(opt, "bloom", "toggle", { label: "Bloom (glow)", bind: "gfx.bloom", y: -160 });
+      add(opt, "back", "button", { text: "Back", y: -250, action: "back" }); }
+    return sc;
+  };
   // a brand-new project: splash -> main menu ("My Game") -> settings
   S.template = (id, name) => {
     const p = { format: 3, id, name, modified: Date.now(), tags: {}, assets: [], folders: [], maps: [], screens: [] };

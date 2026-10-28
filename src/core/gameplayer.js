@@ -30,6 +30,8 @@ html,body{margin:0;height:100%;background:#000;overflow:hidden;font-family:"Chak
           const sm = rt.tags.get("player.startMap"), m = project.maps.find(x => x.id === sm) || project.maps[0]; if (!m) { rt.game = true; rt.rebuild(); return; }
           rt.stopMusic(); const layer = document.createElement("div"); layer.className = "p3layer"; rt.host.append(layer);
           const pl = new PRIM.Play3D({ host: layer, project, map: m, tags: rt.tags, urls, mode: "play", debug: false, onExit: () => { pl.destroy(); layer.remove(); },
+            onMenu: () => { pl.destroy(); layer.remove(); const mm = project.screens.find(x => x.id === "main") || project.screens.find(x => x.kind === "menu"); if (mm) rt.show(mm.id); },
+            onQuit: () => { pl.destroy(); layer.remove(); end(rt); },
             onScreen: id => { pl.destroy(); layer.remove(); if (project.screens.some(x => x.id === id)) rt.show(id); } });
         };
         const rt = new PRIM.Runtime({ host, project, tags: tg, mode: "play", urls, screenId: start, noEscExit: true, onPersist: ov => { try { localStorage.setItem(key, JSON.stringify(ov)); } catch (e) {} }, onExit: () => end(rt), onStartGame: startGame });

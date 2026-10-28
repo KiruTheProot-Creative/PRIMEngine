@@ -31,8 +31,10 @@
     // start the chain that hangs off one output of a node (used by events with several outputs, like the charge beam)
     runOut(owner, id, out) {
       if (this.dead || !owner.script) return; const tok = { key: owner.key, dead: false }; this.runs.push(tok);
-      this.chain(owner, this.link(owner, id, out), tok).catch(e => this.o.say && this.o.say("Script problem: " + e.message)).then(() => { this.runs = this.runs.filter(r => r !== tok); });
+      return this.chain(owner, this.link(owner, id, out), tok).catch(e => this.o.say && this.o.say("Script problem: " + e.message)).then(() => { this.runs = this.runs.filter(r => r !== tok); });
     }
+    // a dialogue graph: runs from its "Dialogue starts" node; the promise ends when the talk is over
+    play(owner) { const st = owner.script && owner.script.nodes.find(n => n.type === "dStart"); return st && !this.dead ? this.runOut(owner, st.id, "next") || Promise.resolve() : Promise.resolve(); }
     link(owner, id, out) { const l = owner.script.links.find(x => x.a === id && x.o === out); return l ? l.b : null; }
     setTag(name, raw) {
       const T = this.T, sp = T.spec(name); if (!sp) return; let v = raw;
@@ -78,6 +80,12 @@
           case "mathTag": { const t = g("tag"), sp = this.T.spec(t); if (!sp || sp.type !== "number") break; const a = +this.T.get(t) || 0, b = +g("value") || 0; let v = a;
             switch (String(g("op"))) { case "*": v = a * b; break; case "/": v = b ? a / b : a; break; case "min": v = Math.min(a, b); break; case "max": v = Math.max(a, b); break; case "mod": v = b ? ((a % b) + b) % b : a; break; case "round": v = b ? Math.round(a / b) * b : Math.round(a); break; } this.setTag(t, v); break; }
           case "toggleTag": { const t = g("tag"), sp = this.T.spec(t); if (sp) this.T.set(t, sp.type === "bool" ? !this.T.get(t) : !/^(1|true|on|yes)$/i.test(String(this.T.get(t)))); break; }
+          case "dLine": { if (!this.o.dlgLine) break; await this.o.dlgLine({ speaker: this.T.interpolate(String(g("speaker") || "")), text: this.T.interpolate(String(g("text") || "")), sound: g("sound"), auto: +g("auto") || 0 }); break; }
+          case "dChoice": { const opts = [1, 2, 3, 4].map(i => ({ out: "c" + i, label: this.T.interpolate(String(g("c" + i) || "").trim()) })).filter(c => c.label);
+            if (!this.o.dlgChoice || !opts.length) return; out = await this.o.dlgChoice({ speaker: this.T.interpolate(String(g("speaker") || "")), text: this.T.interpolate(String(g("text") || "")), opts }); if (!out) return; break; }
+          case "dEnd": return;
+          case "pauseGame": if (this.o.pause) setTimeout(() => { if (!this.dead) this.o.pause(g("screen") || ""); }, 0); break;
+          case "startDialogue": { const pr = this.o.dialogue ? this.o.dialogue(g("dialog")) : null; if (pr && g("wait") !== false) await pr; break; }
           case "gotoScreen": if (this.o.goto) this.o.goto(g("screen")); break;
           case "say": if (this.o.say) this.o.say(this.T.interpolate(String(g("text")))); break;
           case "wait": await sleep((+g("seconds") || 0) * 1000, tok); break;

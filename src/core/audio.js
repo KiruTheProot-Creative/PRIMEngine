@@ -38,14 +38,16 @@
   // Pan, distance and muffle are worked out here from the ear's right / forward vectors and glide smoothly (no clicks).
   const live = new Set(); A.ear = null; const GLIDE = 0.035;
   const mixOf = (at, ear) => {
-    if (!ear) return { g: 1, pan: 0, lp: 20000 }; const d = [at.p[0] - ear.p[0], at.p[1] - ear.p[1], at.p[2] - ear.p[2]], dist = Math.hypot(d[0], d[1], d[2]), ref = Math.max(1, at.ref || 96), max = Math.max(ref + 1, at.max || 2500);
+    if (!ear) return { g: A.world, pan: 0, lp: 20000 }; const d = [at.p[0] - ear.p[0], at.p[1] - ear.p[1], at.p[2] - ear.p[2]], dist = Math.hypot(d[0], d[1], d[2]), ref = Math.max(1, at.ref || 96), max = Math.max(ref + 1, at.max || 2500);
     const g = dist <= ref ? 1 : Math.max(0, 1 - (dist - ref) / (max - ref)), x = d[0] * ear.r[0] + d[1] * ear.r[1] + d[2] * ear.r[2], z = d[0] * ear.f[0] + d[1] * ear.f[1] + d[2] * ear.f[2], flat = Math.hypot(x, z);
     const near = clamp(flat / 64, 0, 1), pan = flat > 0.001 ? clamp(x / flat, -1, 1) * 0.8 * near : 0, back = flat > 0.001 ? clamp(-z / flat, 0, 1) * near : 0;
-    return { g: g * (1 - 0.15 * back), pan, lp: 20000 - 14500 * back };
+    return { g: g * (1 - 0.15 * back) * A.world, pan, lp: 20000 - 14500 * back };
   };
   const applyMix = (h, now) => { if (!h.dg) return; const m = mixOf(h.at, A.ear); h.mix = m; const t = ctx.currentTime;
     if (now) { h.dg.gain.value = m.g; if (h.sp) h.sp.pan.value = m.pan; h.lp.frequency.value = m.lp; return; }
     h.dg.gain.setTargetAtTime(m.g, t, GLIDE); if (h.sp) h.sp.pan.setTargetAtTime(m.pan, t, GLIDE); h.lp.frequency.setTargetAtTime(m.lp, t, GLIDE); };
+  // world sounds (placed in the level) can be turned down together, e.g. while the pause menu is open
+  A.world = 1; A.setWorld = v => { A.world = clamp(isNaN(v) ? 1 : +v, 0, 1); if (ctx) for (const h of live) { if (h.playing) applyMix(h); } };
   A.listen = (pos, fwd, up, right) => {
     const r = right || [fwd[2], 0, -fwd[0]]; A.ear = { p: pos.slice(), f: fwd.slice(), u: up.slice(), r: r.slice() };
     for (const h of live) { if (!h.playing) { live.delete(h); continue; } applyMix(h); }
