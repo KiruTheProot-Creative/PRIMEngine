@@ -60,6 +60,8 @@
     { k: "mood", label: "Mood", type: "choice", options: S.MOODS, def: "neutral" },
     Object.assign(COLOR("moodTint", "Mood colour (tints everything)", "#ffffff"), { showIf: ["mood", "custom"] }), MNUM("moodBrightness", "Mood brightness", 1, 0.2, 2, 0.05, { showIf: ["mood", "custom"] }),
     MNUM("moodContrast", "Mood contrast", 1, 0.5, 2, 0.05, { showIf: ["mood", "custom"] }), MNUM("moodSaturation", "Mood colourfulness (0 = black and white)", 1, 0, 2, 0.05, { showIf: ["mood", "custom"] }),
+    { k: "bloom", label: "Bloom (bright and glowing things shine softly)", type: "bool", def: true }, MNUM("bloomStrength", "Bloom strength", 0.6, 0, 3, 0.05, { showIf: ["bloom", true] }), MNUM("bloomThreshold", "Bloom starts at brightness (1 = only over-bright light and glow)", 1, 0, 4, 0.05, { showIf: ["bloom", true] }),
+    MNUM("exposure", "Exposure (overall brightness of the picture)", 1, 0.25, 4, 0.05),
     MNUM("startX", "Player start X", 0, -100000, 100000, 1), MNUM("startY", "Player start Y", 0, -100000, 100000, 1), MNUM("startLayer", "Player start story (0 = ground floor)", 0, 0, 63, 1), MNUM("startAngle", "Player start angle", 90, 0, 360, 1),
   ];
   const defP = (project, list, group, owner, id, over) => { for (const p of list) { const r = rec(p, group, owner); if (over && p.k in over) r.value = over[p.k]; project.tags[id + "." + p.k] = r; } };
@@ -194,6 +196,11 @@
   ];
   S.defineProp = (project, p, over) => { for (const pr of S.PROP) { const r = rec(pr, "props", p.id); if (pr.type === "anim") r.modelTag = p.id + ".asset"; if (over && pr.k in over) r.value = over[pr.k]; project.tags[p.id + "." + pr.k] = r; } };
   S.addProp = (project, over) => { const p = { id: S.uid("prop", project.props.map(x => x.id)) }; project.props.push(p); S.defineProp(project, p, Object.assign({ name: p.id }, over || {})); return p; };
+  // ---- objects that give off light (lamps, torches, glowing crystals...): a point light above the object, optionally casting real-time shadows
+  S.PROP.push({ k: "lightOn", label: "Gives off light", type: "bool", def: false, showIf: ["type", ["decoration", "pickup", "enemy", "exit", "npc"]] },
+    { k: "lightColor", label: "Light colour", type: "color", def: "#ffd9a0", showIf: ["lightOn", true] }, NUM("lightIntensity", "Light brightness", 1.6, 0, 10, 0.05, { showIf: ["lightOn", true] }),
+    NUM("lightRange", "Light reach (units, 128 = a cell)", 420, 32, 4000, 8, { showIf: ["lightOn", true] }), NUM("lightHeight", "Light height above the floor (units)", 80, -64, 512, 1, { showIf: ["lightOn", true] }),
+    NUM("lightFlicker", "Flicker (0 = steady, 1 = like a torch)", 0, 0, 1, 0.01, { showIf: ["lightOn", true] }), { k: "lightShadows", label: "Casts shadows", type: "bool", def: true, showIf: ["lightOn", true] });
   // ---- NPC talk (characters): talk settings are prop tags; the dialogue is a list of lines (structure prop.dialog.lines = [{id}]) whose texts are tags <prop>.d.<line>.*
   S.PROP.push({ k: "npcName", label: "Name shown when talking (empty = the object's name)", type: "string", def: "", showIf: ["type", "npc"] }, NUM("talkRange", "Can talk from (units, 128 = a cell)", 140, 30, 600, 5, { showIf: ["type", "npc"] }),
     ANIM("talkAnim", "Talking animation (3D model)", { showIf: ["type", "npc"], showIf2: ["look", "model"] }), { k: "talkSprite", label: "Talking strip (2D sprite)", type: "asset", assetType: "image", def: "", showIf: ["type", "npc"], showIf2: ["look", "sprite"] }, NUM("talkSpriteFrames", "Frames in it", 1, 1, 64, 1, { showIf: ["type", "npc"], showIf2: ["look", "sprite"] }),
@@ -290,7 +297,7 @@
     if (!project.animLen) project.animLen = [];
     project.player = project.player || { attachments: [] }; if (!project.player.attachments) project.player.attachments = [];
     delete project.tags["player.freeAim"];
-    for (const [n, label] of [["gfx.culling", "Culling (skip what you can not see)"], ["gfx.lod", "Auto-LOD (simpler models far away)"]]) if (!project.tags[n]) project.tags[n] = { type: "bool", value: true, label, group: "gfx", builtin: true };
+    for (const [n, label] of [["gfx.culling", "Culling (skip what you can not see)"], ["gfx.lod", "Auto-LOD (simpler models far away)"], ["gfx.shadows", "Real-time shadows"], ["gfx.bloom", "Bloom (glow)"]]) if (!project.tags[n]) project.tags[n] = { type: "bool", value: true, label, group: "gfx", builtin: true };
     for (const att of project.player.attachments) {   // bring older objects up to date: a "weapon" tick became the object type
       const pre = "player." + att.id + ".", old = project.tags[pre + "weapon"];
       for (const p of S.ATTACH) { const r = project.tags[pre + p.k]; if (!r) { const n = rec(p, "player", "player." + att.id); if (p.type === "anim") n.modelTag = pre + "asset"; if (p.k === "type") n.value = old && old.value ? "weapon" : "animation"; if (p.k === "name") n.value = old && old.value ? "Weapon" : "Object"; project.tags[pre + p.k] = n; } else { r.label = p.label; if (p.showIf) r.showIf = p.showIf; else delete r.showIf; if (p.options) r.options = p.options; } }
@@ -323,6 +330,7 @@
     B("gfx.showFps", "bool", false, "Show FPS counter", "gfx");
     B("gfx.culling", "bool", true, "Culling (skip what you can not see)", "gfx");
     B("gfx.lod", "bool", true, "Auto-LOD (simpler models far away)", "gfx");
+    B("gfx.shadows", "bool", true, "Real-time shadows", "gfx"); B("gfx.bloom", "bool", true, "Bloom (glow)", "gfx");
     B("project.startScreen", "screenRef", "splash", "Start screen", "project");
   };
 
@@ -341,9 +349,11 @@
     add(main, "quit", "button", { text: "Quit", y: 520, action: "quit" });
     add(set, "title", "title", { text: "Settings", size: 64, y: 80 });
     [["master", "Master volume", "audio.master", 170], ["sfx", "SFX volume", "audio.sfx", 235], ["music", "Music volume", "audio.music", 300], ["brightness", "Brightness", "gfx.brightness", 365]].forEach(([i, l, b, y]) => add(set, i, "slider", { label: l, bind: b, y }));
-    add(set, "fullscreen", "toggle", { label: "Fullscreen", bind: "gfx.fullscreen", y: 450 });
-    add(set, "showfps", "toggle", { label: "Show FPS", bind: "gfx.showFps", y: 505 });
-    add(set, "back", "button", { text: "Back", y: 620, action: "goto", target: "main" });
+    add(set, "fullscreen", "toggle", { label: "Fullscreen", bind: "gfx.fullscreen", y: 430 });
+    add(set, "showfps", "toggle", { label: "Show FPS", bind: "gfx.showFps", y: 475 });
+    add(set, "shadows", "toggle", { label: "Shadows", bind: "gfx.shadows", y: 520 });
+    add(set, "bloom", "toggle", { label: "Bloom (glow)", bind: "gfx.bloom", y: 565 });
+    add(set, "back", "button", { text: "Back", y: 645, action: "goto", target: "main" });
     p.origin = "center"; S.ensurePlayer(p);
     return p;
   };

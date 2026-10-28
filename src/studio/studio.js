@@ -1039,6 +1039,7 @@
       ty === "enemy" ? foldout("pr:enemy", "Enemy", ...grp(["health", "speed", "radius", "height", "sight", "attack", "attackRange", "damage", "attackRate", "attackDelay", "projSpeed", "projSize", "projColor"])) : "",
       ty === "enemy" ? foldout("pr:enanim", "Enemy animations and sounds", ...grp(["walkAnim", "attackAnim", "hurtAnim", "deathAnim", "corpse", "sightSound", "attackSound", "hurtSound", "deathSound", "killTag", "killAmount"]),
         h("div", { class: "note", text: "The model's front must face +Z (toward you in the Front view). The blue cylinder shows its body (what bullets hit and what blocks the player). Place enemies in the Map view with the Place Object tool; Turn sets which way they face." })) : "",
+      ty !== "door" ? foldout("pr:light", "Light", ...grp(["lightOn", "lightColor", "lightIntensity", "lightRange", "lightHeight", "lightFlicker", "lightShadows"]), h("div", { class: "note", text: "A lamp, a torch, a glowing crystal: the object lights up the room around it, and with shadows on, walls, objects and enemies cast real shadows from it." })) : "",
       ty === "npc" ? foldout("pr:npc", "Character", ...grp(["npcName", "talkRange", "radius", "talkAnim", "talkSprite", "talkSpriteFrames", "faceTalker"]), h("div", { class: "note", text: "Walk up to it, look at it and press the Interact key to talk. It blocks the way like a body (its width above)." })) : "",
       ty === "npc" ? dialogueBox(pr) : "",
       ty === "exit" ? foldout("pr:exit", "Level exit", ...grp(["exitTo", "exitMap", "exitScreen", "exitRadius", "exitSound"]), h("div", { class: "note", text: "Touching it ends the level. Leave “Map” empty to go to the next map in the list. Any model works (a teleporter, a door frame…)." })) : "");
@@ -1086,7 +1087,7 @@
       const nc = m.layers.reduce((t, l) => t + Object.keys(l.cells).length, 0), T = S.tags, look = Schema.MAP.filter(p => !p.k.startsWith("start") && Schema.shown(T, pre, p));
       box.append(head("▦", h("input", { class: "idin", value: m.id, "aria-label": "Map name", onchange: e => renameMap(m, e.target.value) }), "grid map · " + m.layers.length + " stor" + (m.layers.length === 1 ? "y" : "ies") + " · " + nc + " cells"),
         h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: "Open Fly Editor", onclick: () => setTab("fly") }), h("button", { class: "btn sm", text: "Fullscreen fly", onclick: () => fly3d(m) }), h("button", { class: "btn sm danger", text: "Delete map", onclick: () => deleteMap(m) })),
-        foldout("mm", "Sky, fog and mood", ...look.map(p => field(pre + p.k))), foldout("mst", "Player start", ...["startX", "startY", "startLayer", "startAngle"].map(k => field(pre + k))),
+        foldout("mm", "Look: sky, fog, mood, bloom", ...look.map(p => field(pre + p.k))), foldout("mst", "Player start", ...["startX", "startY", "startLayer", "startAngle"].map(k => field(pre + k))),
         h("div", { class: "note", text: "Use the Select tool to click or box-select cells and edit them here. Every map setting is a named tag (see the Tags tab)." }));
     }
     return box;

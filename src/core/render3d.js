@@ -35,6 +35,11 @@
     "uniform vec3 uTint;uniform vec3 uEmit;uniform float uLit;uniform float uAlpha;uniform float uEmitK;uniform float uEmitMap;",
     // mood: colour tint x brightness, contrast, saturation
     "uniform vec3 uMoodT;uniform float uMoodC;uniform float uMoodS;uniform float uClipY;",
+    // real-time shadows: up to 4 lights have a cube map of distances (packed in RGBA); uShL = which light (0..7) each map belongs to, -1 = unused
+    "uniform samplerCube uSh0;uniform samplerCube uSh1;uniform samplerCube uSh2;uniform samplerCube uSh3;uniform vec4 uShL;uniform float uShOn;",
+    "float unpk(vec4 c){return dot(c,vec4(1.0,1.0/255.0,1.0/65025.0,1.0/16581375.0));}",
+    "float shd(samplerCube s,vec3 rel,float rng,vec3 n){ float d=length(rel)/rng; float b=0.006+0.02*(1.0-abs(dot(n,normalize(-rel)))); vec3 a=normalize(cross(rel,abs(rel.y)>0.9*length(rel)?vec3(1.0,0.0,0.0):vec3(0.0,1.0,0.0))); vec3 c=cross(normalize(rel),a); float k=length(rel)*0.012; float sum=0.0;",
+    " sum+=step(d-b,unpk(textureCube(s,rel+a*k))); sum+=step(d-b,unpk(textureCube(s,rel-a*k))); sum+=step(d-b,unpk(textureCube(s,rel+c*k))); sum+=step(d-b,unpk(textureCube(s,rel-c*k))); return sum*0.25; }",
     "void main(){",
     " if(vW.y>uClipY) discard;", " vec4 tx=texture2D(uTex,vUV); if(tx.a<0.04) discard; vec3 alb=tx.rgb*uTint;",
     " vec3 c=alb*vCol*uBright;",
@@ -47,6 +52,7 @@
     "   if(ty>0.5){ vec3 an=uLN[i].xyz; vec3 ux=uLU[i].xyz; vec3 vx=cross(an,ux); vec3 rel=vW-Lp; tg=Lp+ux*clamp(dot(rel,ux),-uLN[i].w,uLN[i].w)+vx*clamp(dot(rel,vx),-uLU[i].w,uLU[i].w); }",
     "   vec3 L=tg-vW; float d=length(L); L=L/max(d,0.001);",
     "   if(ty>0.5) fc=clamp(dot(-L,uLN[i].xyz)*2.0+0.15,0.0,1.0);",
+    "   if(uShOn>0.5){ float fi=float(i); if(fi==uShL.x) fc*=shd(uSh0,vW-Lp,rng,n); else if(fi==uShL.y) fc*=shd(uSh1,vW-Lp,rng,n); else if(fi==uShL.z) fc*=shd(uSh2,vW-Lp,rng,n); else if(fi==uShL.w) fc*=shd(uSh3,vW-Lp,rng,n); }",
     "   float att=clamp(1.0-d/rng,0.0,1.0); att=att*att;",
     "   ls+=col*max(dot(n,L),0.0)*att*fc;",
     "  }",
@@ -57,12 +63,30 @@
     " float f=clamp((vD-uFogR.x)/max(1.0,uFogR.y-uFogR.x),0.0,1.0); gl_FragColor=vec4(mix(c,uFog,f),uAlpha*tx.a);",
     "}"].join("\n");
 
+  // shadow pass: distance from the light, packed into RGBA (a cube map per light)
+  const SVS = "attribute vec3 aPos;uniform mat4 uVP;uniform mat4 uM;varying vec3 vW;void main(){vec4 w=uM*vec4(aPos,1.0);vW=w.xyz;gl_Position=uVP*w;}";
+  const SFS = "precision highp float;uniform vec3 uLP;uniform float uR;varying vec3 vW;void main(){float v=clamp(length(vW-uLP)/uR,0.0,0.9999);vec4 e=fract(v*vec4(1.0,255.0,65025.0,16581375.0));e-=e.yzww*vec4(1.0/255.0,1.0/255.0,1.0/255.0,0.0);gl_FragColor=e;}";
+  // post effects (the scene is drawn into an HDR picture first): bright parts -> blurred glow (bloom) -> added back, exposure and a soft roll-off of over-bright colours
+  const QVS = "attribute vec2 aQ;varying vec2 vU;void main(){vU=aQ*0.5+0.5;gl_Position=vec4(aQ,0.0,1.0);}";
+  const BRIGHT = "precision highp float;uniform sampler2D uS;uniform vec2 uTx;uniform float uTh;varying vec2 vU;void main(){vec3 c=(texture2D(uS,vU+uTx*vec2(-0.5,-0.5)).rgb+texture2D(uS,vU+uTx*vec2(0.5,-0.5)).rgb+texture2D(uS,vU+uTx*vec2(-0.5,0.5)).rgb+texture2D(uS,vU+uTx*vec2(0.5,0.5)).rgb)*0.25;float l=max(c.r,max(c.g,c.b));gl_FragColor=vec4(c*(max(l-uTh,0.0)/max(l,0.0001)),1.0);}";
+  const BLUR = "precision highp float;uniform sampler2D uS;uniform vec2 uD;varying vec2 vU;void main(){vec3 c=texture2D(uS,vU).rgb*0.227;c+=(texture2D(uS,vU+uD*1.385).rgb+texture2D(uS,vU-uD*1.385).rgb)*0.316;c+=(texture2D(uS,vU+uD*3.231).rgb+texture2D(uS,vU-uD*3.231).rgb)*0.0703;gl_FragColor=vec4(c,1.0);}";
+  const COMP = "precision highp float;uniform sampler2D uS;uniform sampler2D uB1;uniform sampler2D uB2;uniform float uK;uniform float uExp;varying vec2 vU;vec3 roll(vec3 c){vec3 k=vec3(0.8);return mix(c,k+0.2*(1.0-exp(-(c-k)/0.2)),step(k,c));}void main(){vec3 c=texture2D(uS,vU).rgb+(texture2D(uB1,vU).rgb*0.6+texture2D(uB2,vU).rgb*0.8)*uK;gl_FragColor=vec4(roll(max(c*uExp,0.0)),1.0);}";
+  // a camera at eye looking at target (column-major, like WebGL)
+  function lookAt(e, t, up) { const f = M4.norm(M4.sub(t, e)), s = M4.norm(M4.cross(f, up)), u = M4.cross(s, f); return [s[0], u[0], -f[0], 0, s[1], u[1], -f[1], 0, s[2], u[2], -f[2], 0, -M4.dot(s, e), -M4.dot(u, e), M4.dot(f, e), 1]; }
+  const FACES = [[[1, 0, 0], [0, -1, 0]], [[-1, 0, 0], [0, -1, 0]], [[0, 1, 0], [0, 0, 1]], [[0, -1, 0], [0, 0, -1]], [[0, 0, 1], [0, -1, 0]], [[0, 0, -1], [0, -1, 0]]];
+  const boxNearSphere = (mn, mx, p, r) => { let d = 0; for (let i = 0; i < 3; i++) { const v = p[i] < mn[i] ? mn[i] - p[i] : p[i] > mx[i] ? p[i] - mx[i] : 0; d += v * v; } return d <= r * r; };
+
   R.View = function (canvas, o) {
     o = o || {}; const gl = canvas.getContext("webgl", { antialias: false, alpha: false }) || canvas.getContext("experimental-webgl");
     this.canvas = canvas; this.ok = !!gl; if (!gl) return; this.gl = gl;
     const sh = (t, src) => { const s = gl.createShader(t); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; };
     const pr = this.pr = gl.createProgram(); gl.attachShader(pr, sh(gl.VERTEX_SHADER, VS)); const dx = gl.getExtension("OES_standard_derivatives"); gl.attachShader(pr, sh(gl.FRAGMENT_SHADER, (dx ? "#extension GL_OES_standard_derivatives : enable\n#define DERIV\n" : "") + FS)); gl.linkProgram(pr); gl.useProgram(pr);
     this.loc = { pos: gl.getAttribLocation(pr, "aPos"), uv: gl.getAttribLocation(pr, "aUV"), col: gl.getAttribLocation(pr, "aCol"), vp: gl.getUniformLocation(pr, "uVP"), m: gl.getUniformLocation(pr, "uM"), tex: gl.getUniformLocation(pr, "uTex"), lp: gl.getUniformLocation(pr, "uLP"), lc: gl.getUniformLocation(pr, "uLC"), ln: gl.getUniformLocation(pr, "uLN"), lu: gl.getUniformLocation(pr, "uLU"), nl: gl.getUniformLocation(pr, "uNL"), cam: gl.getUniformLocation(pr, "uCam"), tint: gl.getUniformLocation(pr, "uTint"), emit: gl.getUniformLocation(pr, "uEmit"), lit: gl.getUniformLocation(pr, "uLit"), alpha: gl.getUniformLocation(pr, "uAlpha"), etex: gl.getUniformLocation(pr, "uETex"), emitK: gl.getUniformLocation(pr, "uEmitK"), emitMap: gl.getUniformLocation(pr, "uEmitMap"), moodT: gl.getUniformLocation(pr, "uMoodT"), moodC: gl.getUniformLocation(pr, "uMoodC"), moodS: gl.getUniformLocation(pr, "uMoodS"), clipY: gl.getUniformLocation(pr, "uClipY"), fog: gl.getUniformLocation(pr, "uFog"), fogR: gl.getUniformLocation(pr, "uFogR"), bright: gl.getUniformLocation(pr, "uBright") };
+    for (const [k, u] of [["sh0", "uSh0"], ["sh1", "uSh1"], ["sh2", "uSh2"], ["sh3", "uSh3"], ["shL", "uShL"], ["shOn", "uShOn"]]) this.loc[k] = gl.getUniformLocation(pr, u);
+    const prog = (v, f) => { const q = gl.createProgram(); gl.attachShader(q, sh(gl.VERTEX_SHADER, v)); gl.attachShader(q, sh(gl.FRAGMENT_SHADER, f)); gl.linkProgram(q); return q; };
+    try { this.spr = prog(SVS, SFS); this.sloc = { pos: gl.getAttribLocation(this.spr, "aPos"), vp: gl.getUniformLocation(this.spr, "uVP"), m: gl.getUniformLocation(this.spr, "uM"), lp: gl.getUniformLocation(this.spr, "uLP"), r: gl.getUniformLocation(this.spr, "uR") }; } catch (e) { this.spr = null; }
+    try { this.pp = { bright: prog(QVS, BRIGHT), blur: prog(QVS, BLUR), comp: prog(QVS, COMP) }; } catch (e) { this.pp = null; }
+    gl.useProgram(pr); this.shOn = 0; this.shSlots = []; for (let k = 0; k < 4; k++) gl.uniform1i(this.loc["sh" + k], 2 + k);
     gl.enable(gl.DEPTH_TEST); gl.disable(gl.CULL_FACE);
     this.cam = { x: 0, y: 56, z: 0, yaw: Math.PI / 2, pitch: 0 }; this.batches = []; this.texCache = {}; this.sky = [0.08, 0.14, 0.23]; this.fog = [0.02, 0.03, 0.05]; this.fogS = 1e8; this.fogE = 1e9; this.mood = { tint: [1, 1, 1], contrast: 1, sat: 1 }; this.bright = 1; this.fov = 1.15; this.keys = {}; this.speed = 300; this.running = false; this.frames = 0;
     this.defTex = this.makeTex(checker()); { const w = document.createElement("canvas"); w.width = w.height = 2; const x = w.getContext("2d"); x.fillStyle = "#fff"; x.fillRect(0, 0, 2, 2); this.whiteTex = this.makeTex(w); }
@@ -113,8 +137,13 @@
 
   // ---- lights and materials (see the fragment shader)
   P.setLights = function (list) { this.lights = list || []; };
+  // the (up to) 8 lights that matter most for this frame: the nearest ones, measured in their own reach
+  P.pickLights = function () { const c = this.cam; return (this.lights || []).map(l => ({ l, k: Math.hypot(l.p[0] - c.x, l.p[1] - c.y, l.p[2] - c.z) / Math.max(1, l.r) })).sort((a, b) => a.k - b.k).slice(0, 8).filter(x => x.k < 1.6).map(x => x.l); };
   P.useLights = function (camSpace) {
-    const gl = this.gl, L = this.loc, c = this.cam, B = R.camBasis(c.yaw, c.pitch), all = (this.lights || []).map(l => ({ l, k: Math.hypot(l.p[0] - c.x, l.p[1] - c.y, l.p[2] - c.z) / Math.max(1, l.r) })).sort((a, b) => a.k - b.k).slice(0, 8).filter(x => x.k < 1.6).map(x => x.l);
+    const gl = this.gl, L = this.loc, c = this.cam, B = R.camBasis(c.yaw, c.pitch), all = this.pickLights();
+    // shadows only for world-space passes, and only for the lights that got a shadow map this frame
+    const slots = !camSpace && this.shOn ? this.shSlots.map(sl => all.indexOf(sl.l)) : []; gl.uniform1f(L.shOn, slots.some(i => i >= 0) ? 1 : 0); gl.uniform4fv(L.shL, [0, 1, 2, 3].map(k => slots[k] === undefined ? -1 : slots[k]));
+    for (let k = 0; k < 4; k++) { gl.activeTexture(gl.TEXTURE2 + k); gl.bindTexture(gl.TEXTURE_CUBE_MAP, this.shSlots[k] ? this.shSlots[k].tex : this.emptyCube()); gl.uniform1i(L["sh" + k], 2 + k); } gl.activeTexture(gl.TEXTURE0);
     const toC = p => { const d = [p[0] - c.x, p[1] - c.y, p[2] - c.z]; return [M4.dot(d, B.s), M4.dot(d, B.u), -M4.dot(d, B.f)]; }, dC = v => [M4.dot(v, B.s), M4.dot(v, B.u), -M4.dot(v, B.f)];
     const lp = new Float32Array(32), lc = new Float32Array(32), ln = new Float32Array(32), lu = new Float32Array(32);
     all.forEach((l, i) => { const p = camSpace ? toC(l.p) : l.p, n = l.n ? (camSpace ? dC(l.n) : l.n) : [0, 1, 0], u = l.u ? (camSpace ? dC(l.u) : l.u) : [1, 0, 0];
@@ -147,7 +176,7 @@
 
   P.resize = function () { const c = this.canvas, d = Math.min(2, window.devicePixelRatio || 1), w = Math.max(2, Math.floor(c.clientWidth * d)), h = Math.max(2, Math.floor(c.clientHeight * d)); if (c.width !== w || c.height !== h) { c.width = w; c.height = h; } };
   P.draw = function () {
-    if (!this.ok) return; const gl = this.gl, c = this.cam; this.resize(); gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+    if (!this.ok) return; const gl = this.gl, c = this.cam; this.resize(); this.renderShadows(); gl.useProgram(this.pr); this.bindScene(); gl.viewport(0, 0, this.canvas.width, this.canvas.height);
     const sk = this.skyNow(); gl.clearColor(sk[0], sk[1], sk[2], 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     const vp = mul(persp(this.fov, this.canvas.width / this.canvas.height, 2, 12000), look(c.x, c.y, c.z, c.yaw, c.pitch));
     this.vp = vp; gl.uniformMatrix4fv(this.loc.vp, false, new Float32Array(vp)); this.lookUniforms(true); gl.uniform1f(this.loc.bright, this.bright); gl.uniformMatrix4fv(this.loc.m, false, new Float32Array(M4.ident()));
@@ -239,6 +268,94 @@
       const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(a), gl.STREAM_DRAW); gl.uniformMatrix4fv(L.m, false, new Float32Array(M4.ident())); bind(buf, this.whiteTex); gl.disable(gl.DEPTH_TEST); gl.drawArrays(gl.TRIANGLES, 0, a.length / 8); gl.enable(gl.DEPTH_TEST); gl.deleteBuffer(buf);
     }
     gl.uniformMatrix4fv(L.m, false, new Float32Array(M4.ident()));
+  };
+
+  // ------------------------------------------------------------ real-time shadows (point lights, cube maps)
+  // a 1x1 "nothing in the way" cube map for unused shadow slots
+  P.emptyCube = function () {
+    if (this._empty) return this._empty; const gl = this.gl, t = gl.createTexture(), px = new Uint8Array([255, 255, 255, 255]); gl.bindTexture(gl.TEXTURE_CUBE_MAP, t);
+    for (let f = 0; f < 6; f++) gl.texImage2D(gl.TEXTURE_CUBE_MAP_POSITIVE_X + f, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MAG_FILTER, gl.NEAREST); return (this._empty = t);
+  };
+  // a cube map (+ a frame buffer with a depth buffer of the same size) per shadow light; lamps keep theirs (key = the object), moving lights share a small pool
+  P.shadowFb = function (S) {
+    const gl = this.gl; this.shFbs = this.shFbs || {}; let f = this.shFbs[S]; if (f) return f;
+    const fb = gl.createFramebuffer(), depth = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, depth); gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, S, S); gl.bindFramebuffer(gl.FRAMEBUFFER, fb); gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depth);
+    return (this.shFbs[S] = fb);
+  };
+  P.shadowMap = function (key, S) {
+    const gl = this.gl; this.shCache = this.shCache || {}; let m = this.shCache[key]; if (m && m.size === S) return m; if (m) gl.deleteTexture(m.tex);
+    const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_CUBE_MAP, tex); for (let f = 0; f < 6; f++) gl.texImage2D(gl.TEXTURE_CUBE_MAP_POSITIVE_X + f, 0, gl.RGBA, S, S, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    for (const [a, b] of [[gl.TEXTURE_MIN_FILTER, gl.NEAREST], [gl.TEXTURE_MAG_FILTER, gl.NEAREST], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_CUBE_MAP, a, b);
+    return (this.shCache[key] = { tex, size: S, frame: -99, p: null, used: 0 });
+  };
+  // before the frame: the most important shadow lights get their cube map of distances (the level + the objects in `this.casters` = drawFx mesh items).
+  // Lamps (lights with an `owner`) come first and are redrawn at most every 3rd frame unless they move; moving lights (projectiles) use small 256 maps.
+  P.renderShadows = function () {
+    const gl = this.gl, T = this.tags, on = this.spr && this.shadows !== false && (!T || !T.has || !T.has("gfx.shadows") || T.get("gfx.shadows")); this.shSlots = []; this.shOn = 0; if (!on) return;
+    const max = Math.max(1, Math.min(4, this.shadowCount || 3)), want = this.pickLights().filter(l => l.shadow).sort((a, b) => (b.owner ? 1 : 0) - (a.owner ? 1 : 0)).slice(0, max); if (!want.length) return;
+    const L = this.sloc, I = new Float32Array(M4.ident()); let progOn = false, dyn = 0;
+    want.forEach(l => {
+      const key = l.owner || "dyn" + dyn++, S = l.owner ? (this.shadowSize || 512) : 256, map = this.shadowMap(key, S), moved = !map.p || Math.hypot(map.p[0] - l.p[0], map.p[1] - l.p[1], map.p[2] - l.p[2]) > 0.5; map.used = this.frames;
+      this.shSlots.push({ l, tex: map.tex }); if (l.owner && !moved && this.frames - map.frame < 3) return;
+      if (!progOn) { progOn = true; gl.useProgram(this.spr); for (const k of ["pos", "uv", "col"]) if (this.loc[k] >= 0) gl.disableVertexAttribArray(this.loc[k]); gl.enableVertexAttribArray(L.pos); gl.disable(gl.BLEND); }
+      const r = Math.max(8, l.r), proj = persp(Math.PI / 2, 1, 1, r), fb = this.shadowFb(S); gl.viewport(0, 0, S, S); gl.uniform3fv(L.lp, l.p); gl.uniform1f(L.r, r); map.frame = this.frames; map.p = l.p.slice();
+      const near = this.batches.filter(b => boxNearSphere(b.mn, b.mx, l.p, r)), cast = (this.casters || []).filter(it => it.gm && it.M && !(l.owner && it.owner === l.owner) && Math.hypot(it.M[12] - l.p[0], it.M[13] - l.p[1], it.M[14] - l.p[2]) < r + 400);
+      for (let f = 0; f < 6; f++) {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, fb); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_CUBE_MAP_POSITIVE_X + f, map.tex, 0);
+        gl.clearColor(1, 1, 1, 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT); const [dir, up] = FACES[f];
+        gl.uniformMatrix4fv(L.vp, false, new Float32Array(mul(proj, lookAt(l.p, [l.p[0] + dir[0], l.p[1] + dir[1], l.p[2] + dir[2]], up)))); gl.uniformMatrix4fv(L.m, false, I);
+        for (const b of near) { gl.bindBuffer(gl.ARRAY_BUFFER, b.buf); gl.vertexAttribPointer(L.pos, 3, gl.FLOAT, false, 32, 0); gl.drawArrays(gl.TRIANGLES, 0, b.n); }
+        for (const it of cast) for (const ms of it.gm.meshes) { gl.uniformMatrix4fv(L.m, false, new Float32Array(M4.mul(it.M, it.pose[ms.node]))); gl.bindBuffer(gl.ARRAY_BUFFER, ms.buf); gl.vertexAttribPointer(L.pos, 3, gl.FLOAT, false, 32, 0); gl.drawArrays(gl.TRIANGLES, 0, ms.n); }
+      }
+    });
+    // forget lamp maps that have not been used for a while (lamps far away)
+    if (this.frames % 120 === 0) for (const k of Object.keys(this.shCache)) if (this.frames - this.shCache[k].used > 600) { gl.deleteTexture(this.shCache[k].tex); delete this.shCache[k]; }
+    this.shOn = 1; gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.useProgram(this.pr);
+  };
+
+  // ------------------------------------------------------------ HDR scene picture + bloom (post effects; later the Compositor tab plugs in here)
+  // post = true: draw() renders into an off-screen HDR picture and present() puts it on screen with bloom. Views without post draw straight to the screen.
+  P.target = function (w, h, hdr) {
+    const gl = this.gl, t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, hdr ? this.halfType : gl.UNSIGNED_BYTE, null);
+    for (const [a, b] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, a, b);
+    const fb = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fb); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0); return { t, fb, w, h };
+  };
+  P.setupPost = function (w, h) {
+    const gl = this.gl; if (this.pt && this.pt.w === w && this.pt.h === h) return;
+    if (this.halfType === undefined) {   // HDR (half float) when the graphics card can draw into it, else normal 8-bit colour
+      const ext = gl.getExtension("OES_texture_half_float"); gl.getExtension("OES_texture_half_float_linear"); gl.getExtension("EXT_color_buffer_half_float"); this.halfType = ext ? ext.HALF_FLOAT_OES : 0;
+      if (this.halfType) { const probe = this.target(4, 4, true), ok = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE; gl.deleteFramebuffer(probe.fb); gl.deleteTexture(probe.t); if (!ok) this.halfType = 0; }
+      this.hdr = !!this.halfType;
+    }
+    if (this.pt) for (const x of [this.pt.scene, this.pt.a, this.pt.b, this.pt.c, this.pt.d]) { gl.deleteFramebuffer(x.fb); gl.deleteTexture(x.t); }
+    const scene = this.target(w, h, this.hdr), depth = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, depth); gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, w, h); gl.bindFramebuffer(gl.FRAMEBUFFER, scene.fb); gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depth);
+    const hw = Math.max(1, w >> 1), hh = Math.max(1, h >> 1), qw = Math.max(1, w >> 2), qh = Math.max(1, h >> 2);
+    this.pt = { w, h, scene, depth, a: this.target(hw, hh, this.hdr), b: this.target(hw, hh, this.hdr), c: this.target(qw, qh, this.hdr), d: this.target(qw, qh, this.hdr) };
+    if (!this.quad) { this.quad = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, this.quad); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW); }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  };
+  P.postOn = function () { return !!(this.post && this.pp); };
+  P.bindScene = function () { const gl = this.gl; if (!this.postOn()) { gl.bindFramebuffer(gl.FRAMEBUFFER, null); return; } this.setupPost(this.canvas.width, this.canvas.height); gl.bindFramebuffer(gl.FRAMEBUFFER, this.pt.scene.fb); };
+  // bloom settings of the map (tags mapN.bloom / bloomStrength / bloomThreshold / exposure) and the player's graphics setting gfx.bloom
+  P.bloomNow = function () {
+    const m = this.map, T = this.tags, g = k => m && T ? T.get(m.id + "." + k) : undefined, on = (!T || !T.has || !T.has("gfx.bloom") || T.get("gfx.bloom")) && g("bloom") !== false;
+    return { on, k: g("bloomStrength") === undefined ? 0.6 : +g("bloomStrength"), th: g("bloomThreshold") === undefined ? 1 : +g("bloomThreshold"), exp: g("exposure") === undefined ? 1 : +g("exposure") };
+  };
+  P.present = function () {
+    if (!this.postOn() || !this.pt) return; const gl = this.gl, pt = this.pt, b = this.bloomNow(), pp = this.pp;
+    for (const k of ["pos", "uv", "col"]) if (this.loc[k] >= 0) gl.disableVertexAttribArray(this.loc[k]); gl.disable(gl.DEPTH_TEST); gl.disable(gl.BLEND);
+    const run = (prog, out, ins, set) => { gl.useProgram(prog); gl.bindFramebuffer(gl.FRAMEBUFFER, out ? out.fb : null); gl.viewport(0, 0, out ? out.w : this.canvas.width, out ? out.h : this.canvas.height); const a = gl.getAttribLocation(prog, "aQ"); gl.bindBuffer(gl.ARRAY_BUFFER, this.quad); gl.enableVertexAttribArray(a); gl.vertexAttribPointer(a, 2, gl.FLOAT, false, 0, 0);
+      ins.forEach(([name, tex], i) => { gl.activeTexture(gl.TEXTURE0 + i); gl.bindTexture(gl.TEXTURE_2D, tex); gl.uniform1i(gl.getUniformLocation(prog, name), i); }); set(n => gl.getUniformLocation(prog, n)); gl.drawArrays(gl.TRIANGLES, 0, 3); gl.disableVertexAttribArray(a); };
+    const bloom = b.on && b.k > 0;
+    if (bloom) {
+      const th = this.hdr ? b.th : Math.min(0.95, b.th * 0.8);
+      run(pp.bright, pt.a, [["uS", pt.scene.t]], u => { gl.uniform2f(u("uTx"), 1 / pt.w, 1 / pt.h); gl.uniform1f(u("uTh"), th); });
+      run(pp.blur, pt.b, [["uS", pt.a.t]], u => gl.uniform2f(u("uD"), 1 / pt.a.w, 0)); run(pp.blur, pt.a, [["uS", pt.b.t]], u => gl.uniform2f(u("uD"), 0, 1 / pt.a.h));
+      run(pp.blur, pt.c, [["uS", pt.a.t]], u => gl.uniform2f(u("uD"), 0.5 / pt.a.w, 0.5 / pt.a.h)); run(pp.blur, pt.d, [["uS", pt.c.t]], u => gl.uniform2f(u("uD"), 1 / pt.c.w, 0)); run(pp.blur, pt.c, [["uS", pt.d.t]], u => gl.uniform2f(u("uD"), 0, 1 / pt.c.h));
+    }
+    run(pp.comp, null, [["uS", pt.scene.t], ["uB1", pt.a.t], ["uB2", pt.c.t]], u => { gl.uniform1f(u("uK"), bloom ? b.k : 0); gl.uniform1f(u("uExp"), b.exp); });
+    gl.activeTexture(gl.TEXTURE0); gl.enable(gl.DEPTH_TEST); gl.useProgram(this.pr);
   };
 
   // ------------------------------------------------------------ free-fly camera
