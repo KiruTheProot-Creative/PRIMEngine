@@ -19,7 +19,7 @@
     trigger(owner, type, arg, only) {
       if (this.dead || !owner.script) return;
       for (const n of owner.script.nodes) {
-        if (n.type !== type) continue; if (only && n.id !== only) continue; if ((type === "onKey" || type === "onKeyUp" || type === "onHold") && String(this.T.get(owner.key + ".s." + n.id + ".key") || "").toLowerCase() !== String(arg || "").toLowerCase()) continue; if (type === "onMessage" && String(this.T.get(owner.key + ".s." + n.id + ".name") || "").trim().toLowerCase() !== String(arg || "").trim().toLowerCase()) continue; if (type === "onState" && String(this.T.get(owner.key + ".s." + n.id + ".state") || "") !== String(arg || "")) continue;
+        if (n.type !== type) continue; if (only && n.id !== only) continue; if ((type === "onKey" || type === "onKeyUp" || type === "onHold") && String(this.T.get(owner.key + ".s." + n.id + ".key") || "").toLowerCase() !== String(arg || "").toLowerCase()) continue; if (type === "onButton" && String(this.T.get(owner.key + ".s." + n.id + ".name") || "").trim() && String(this.T.get(owner.key + ".s." + n.id + ".name")).trim().toLowerCase() !== String(arg || "").trim().toLowerCase()) continue; if (type === "onMessage" && String(this.T.get(owner.key + ".s." + n.id + ".name") || "").trim().toLowerCase() !== String(arg || "").trim().toLowerCase()) continue; if (type === "onState" && String(this.T.get(owner.key + ".s." + n.id + ".state") || "") !== String(arg || "")) continue;
         if (!this.ok(owner, n)) continue; this.runOut(owner, n.id, "next");
       }
     }

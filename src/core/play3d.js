@@ -58,7 +58,7 @@
       };
       const ku = e => this.release(keyId(e));
       const mm = e => { if (document.pointerLockElement === cv || this.drag) this.look(e.movementX, e.movementY); };
-      const pd = e => { if (this.talk) return; if (this.engaged && e && e.button === 0) this.fire(); if (this.engaged && e) this.press(mouseId(e.button)); this.engaged = true; this.msg.style.display = "none"; this.drag = true; try { const r = cv.requestPointerLock && cv.requestPointerLock(); if (r && r.catch) r.catch(() => {}); } catch (x) {} cv.focus(); };
+      const pd = e => { if (this.talk) return; if (this.engaged && e && e.button === 0 && this.mode === "play" && this.useClick()) return; if (this.engaged && e && e.button === 0) this.fire(); if (this.engaged && e) this.press(mouseId(e.button)); this.engaged = true; this.msg.style.display = "none"; this.drag = true; try { const r = cv.requestPointerLock && cv.requestPointerLock(); if (r && r.catch) r.catch(() => {}); } catch (x) {} cv.focus(); };
       const pu = e => { this.drag = false; if (e && e.button !== undefined) this.release(mouseId(e.button)); }, pl = () => lock(), bl = () => { for (const id of Object.keys(k)) this.release(id); }, noCtx = e => e.preventDefault(), noMid = e => { if (e.button !== 0) e.preventDefault(); };
       addEventListener("keydown", kd, true); addEventListener("keyup", ku, true); addEventListener("mousemove", mm); addEventListener("pointerup", pu); document.addEventListener("pointerlockchange", pl); addEventListener("blur", bl); this.root.addEventListener("contextmenu", noCtx); this.root.addEventListener("mousedown", noMid);
       this.root.addEventListener("pointerdown", pd); cv.tabIndex = 0; const wh = e => { if (this.engaged) { e.preventDefault(); this.setWeapon((this.wi || 0) + (e.deltaY > 0 ? 1 : -1)); } }; this.root.addEventListener("wheel", wh, { passive: false });
@@ -160,7 +160,7 @@
       for (const th of m.things || []) {
         const pre = th.prop + ".", aid = T.get(pre + "asset"), type = T.get(pre + "type");
         if (type !== "door" && T.get(pre + "look") === "sprite") { gone.delete(th.id); const o = old.find(x => x.th.id === th.id) || { th, st: "closed", p: 0, t: 0, timer: 0, taken: false, spin: 0 }; Object.assign(o, { th, pre, aid: null, model: null, gm: null, sprite: true, type, fr: G.thingFrame(m, T, th) }); if (!o.init) o.floor = o.fr.fy; out.push(o); continue; }
-        if (type === "speaker" && (!aid || !this.urls[aid])) { gone.delete(th.id); const o = old.find(x => x.th.id === th.id) || { th, st: "closed", p: 0, t: 0, timer: 0, taken: false, spin: 0 }; Object.assign(o, { th, pre, aid: null, model: null, gm: null, sprite: false, type, fr: G.thingFrame(m, T, th) }); o.floor = o.fr.fy; out.push(o); continue; }
+        if ((type === "speaker" || type === "interactive") && (!aid || !this.urls[aid])) { gone.delete(th.id); const o = old.find(x => x.th.id === th.id) || { th, st: "closed", p: 0, t: 0, timer: 0, taken: false, spin: 0 }; Object.assign(o, { th, pre, aid: null, model: null, gm: null, sprite: false, type, fr: G.thingFrame(m, T, th) }); o.floor = o.fr.fy; out.push(o); continue; }
         if (!aid || !this.urls[aid]) continue; const model = F.cache[aid];
         if (!model) { F.load(aid, this.urls[aid]).then(mm => { if (mm && !this.dead) this.syncThings(); }); continue; }
         if (!this.gpu[aid]) this.gpu[aid] = this.view.loadModel(model); gone.delete(th.id); { const q = old.find(x => x.th.id === th.id); if (q) q.sprite = false; }
@@ -186,8 +186,10 @@
     }
     talkHint() {
       if (!this.hintEl) { this.hintEl = el("", "position:absolute;left:50%;top:62%;transform:translateX(-50%);padding:6px 14px;background:rgba(10,14,20,.7);border:1px solid rgba(255,255,255,.25);border-radius:4px;color:#e8f2fb;font:600 16px 'Chakra Petch',system-ui,sans-serif;pointer-events:none;z-index:6;display:none"); this.root.append(this.hintEl); }
-      const n = !this.talk && !this.pdead ? this.npcInFront() : null; this.hintEl.style.display = n ? "block" : "none";
-      if (n) this.hintEl.textContent = "[" + String(this.T.get("player.interactKey") || "e").toUpperCase() + "] Talk to " + (this.T.get(n.pre + "npcName") || this.T.get(n.pre + "name") || "them");
+      const n = !this.talk && !this.pdead ? this.npcInFront() : null, ky = "[" + String(this.T.get("player.interactKey") || "e").toUpperCase() + "] ";
+      if (n) { this.hintEl.style.display = "block"; this.hintEl.textContent = ky + "Talk to " + (this.T.get(n.pre + "npcName") || this.T.get(n.pre + "name") || "them"); return; }
+      const hb = !this.talk && !this.pdead ? (this.ui ? this.ui.hover : this.hbAim(["key", "aim"])) : null; this.hintEl.style.display = hb ? "block" : "none";
+      if (hb) { const T = this.T, k = hb.o.pre + "hb." + hb.b.id + ".", mode = T.get(hb.o.pre + "useMode") || "key", nm = T.get(hb.o.pre + "useHint") || T.get(k + "name") || "Use"; this.hintEl.textContent = (mode === "key" ? ky : mode === "aim" ? "[Click] " : "") + nm + (this.hbLocked(hb.o, hb.b) ? "  (locked)" : ""); }
     }
     talkStart(o) {
       const p = this.project.props.find(x => x.id === o.th.prop); if (!p || !p.dialog || !p.dialog.lines.length) return;
@@ -219,8 +221,62 @@
     openDoor(o) { if (o.st === "open" || o.st === "opening") return; o.st = "opening"; o.t = o.p * this.doorLen(o, "openAnim"); o.timer = 0; const s = this.T.get(o.pre + "openSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); }
     closeDoor(o) { if (o.st === "closed" || o.st === "closing") return; o.st = "closing"; o.timer = 0; const s = this.T.get(o.pre + "closeSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); }
     doorLen(o, which) { const nm = this.T.get(o.pre + (which === "closeAnim" && this.T.get(o.pre + "closeAnim") ? "closeAnim" : "openAnim")), a = nm && o.model.anims[nm]; return a ? Math.max(0.05, this.animLen(o.aid, nm, a.dur).len) : 0.8; }
+    // ---- interactive objects (prop type "interactive"): invisible hitboxes in the object's own space (Object Editor grid: X right, Y up, Z front).
+    // Used three ways (prop tag useMode): "key" = look at it + Interact key, "aim" = crosshair + left click, "cursor" = a screen: stepping up to it
+    // turns mouse movement into an on-screen cursor (the view stops turning) until the cursor leaves the object's box on screen.
+    hbOf(o) { const p = (this.project.props || []).find(x => x.id === o.th.prop); return (p && p.hitboxes) || []; }
+    hbFrame(o) { const f = o.fr; return { O: [f.cx, o.floor, f.cy], X: [f.ux, 0, f.uy], Z: [f.nx, 0, f.ny] }; }
+    hbBox(o, b) { const g = k => +this.T.get(o.pre + "hb." + b.id + "." + k) || 0; return { c: [g("x"), g("y"), g("z")], h: [Math.max(0.5, g("w")) / 2, Math.max(0.5, g("h")) / 2, Math.max(0.5, g("d")) / 2] }; }
+    hbToWorld(o, p) { const F = this.hbFrame(o); return [0, 1, 2].map(k => F.O[k] + F.X[k] * p[0] + (k === 1 ? p[1] : 0) + F.Z[k] * p[2]); }
+    // nearest hitbox along a world ray (only objects in `modes`, within their range, not behind a wall); only = one object
+    hbRay(O, D, modes, only) {
+      const T = this.T, v = this.view; let best = null;
+      for (const o of this.things || []) { if (o.type !== "interactive" || (only && o !== only)) continue; const mode = T.get(o.pre + "useMode") || "key"; if (modes && !modes.includes(mode)) continue; const range = +T.get(o.pre + "useRange") || 120, F = this.hbFrame(o), rel = M4.sub(O, F.O);
+        const lo = [M4.dot(rel, F.X), rel[1], M4.dot(rel, F.Z)], ld = [M4.dot(D, F.X), D[1], M4.dot(D, F.Z)];
+        for (const b of this.hbOf(o)) { const bx = this.hbBox(o, b); let t0 = 0, t1 = range + 1e-3, ok = true;
+          for (let a = 0; a < 3 && ok; a++) { const mn = bx.c[a] - bx.h[a], mx = bx.c[a] + bx.h[a]; if (Math.abs(ld[a]) < 1e-9) { if (lo[a] < mn || lo[a] > mx) ok = false; continue; } let ta = (mn - lo[a]) / ld[a], tb = (mx - lo[a]) / ld[a]; if (ta > tb) [ta, tb] = [tb, ta]; t0 = Math.max(t0, ta); t1 = Math.min(t1, tb); if (t0 > t1) ok = false; }
+          if (ok && (!best || t0 < best.t)) best = { o, b, t: t0 }; } }
+      if (best && v) { const w = v.raycast(O, D, best.t); if (w && (w.t || 0) < best.t - 2) return null; } return best;
+    }
+    hbAim(modes) { const v = this.view; if (!v) return null; const c = v.cam, B = R3D.camBasis(c.yaw, c.pitch); return this.hbRay([c.x, c.y, c.z], B.f, modes); }
+    hbLocked(o, b) { const T = this.T, k = o.pre + "hb." + b.id + ".", t = T.get(k + "needTag"); return !!(t && this.sh && !this.sh.test(t, T.get(k + "needOp") || "=", T.get(k + "needVal"))); }
+    hbPress(o, b) {
+      const T = this.T, k = o.pre + "hb." + b.id + ".", st = (o.hbs = o.hbs || {})[b.id] = (o.hbs || {})[b.id] || { last: -1e9, used: false }, now = performance.now() / 1000, P = this.hbToWorld(o, this.hbBox(o, b).c);
+      if (st.used || now - st.last < (+T.get(k + "cooldown") || 0)) return false;
+      if (this.hbLocked(o, b)) { const ls = T.get(k + "lockedSound"); if (ls) this.sfxAt(ls, 1, P); return false; }
+      st.last = now; if (T.get(k + "once")) st.used = true;
+      const tag = T.get(k + "setTag"), raw = String(T.get(k + "setVal") === undefined ? "" : T.get(k + "setVal")).trim();
+      if (tag && T.has(tag) && raw !== "") { const cur = T.get(tag), sp = T.spec(tag); if (/^toggle$/i.test(raw)) T.set(tag, sp && sp.type === "bool" ? !cur : !/^(1|true|on|yes)$/i.test(String(cur))); else if (/^[+-]\d+(\.\d+)?$/.test(raw) && typeof cur === "number") T.set(tag, cur + parseFloat(raw)); else if (this.sh) this.sh.setTag(tag, raw); }
+      const snd = T.get(k + "sound"); if (snd) this.sfxAt(snd, 1, P); const an = T.get(k + "anim"); if (an && o.model && o.model.anims[an]) o.pressAnim = { name: an, t: 0 };
+      const nm = String(T.get(k + "name") || ""); if (T.has("player.lastButton")) T.set("player.lastButton", nm); this.trigger("onButton", nm); const msg = String(T.get(k + "message") || "").trim(); if (msg) this.trigger("onMessage", msg);
+      return true;
+    }
+    // left click: a cursor screen, or an "aim" hitbox under the crosshair, takes the click (the weapon does not fire)
+    useClick() { if (this.ui) { if (this.ui.hover) this.hbPress(this.ui.hover.o, this.ui.hover.b); return true; } const hb = this.hbAim(["aim"]); if (hb) { this.hbPress(hb.o, hb.b); return true; } return false; }
+    // the screen rectangle (canvas pixels) around all hitboxes of an object
+    hbRect(o) { const v = this.view; if (!v || !v.vp) return null; const r = v.canvas.getBoundingClientRect(), m = v.vp; let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+      for (const b of this.hbOf(o)) { const bx = this.hbBox(o, b); for (let i = 0; i < 8; i++) { const p = this.hbToWorld(o, [bx.c[0] + (i & 1 ? 1 : -1) * bx.h[0], bx.c[1] + (i & 2 ? 1 : -1) * bx.h[1], bx.c[2] + (i & 4 ? 1 : -1) * bx.h[2]]), w = m[3] * p[0] + m[7] * p[1] + m[11] * p[2] + m[15]; if (w <= 0.01) return null;
+        const sx = ((m[0] * p[0] + m[4] * p[1] + m[8] * p[2] + m[12]) / w * 0.5 + 0.5) * r.width, sy = (1 - ((m[1] * p[0] + m[5] * p[1] + m[9] * p[2] + m[13]) / w * 0.5 + 0.5)) * r.height; x0 = Math.min(x0, sx); y0 = Math.min(y0, sy); x1 = Math.max(x1, sx); y1 = Math.max(y1, sy); } }
+      return x0 < x1 ? { x0, y0, x1, y1 } : null; }
+    uiStep() {
+      if (this.mode !== "play" || !this.view) return; const T = this.T;
+      if (this.ui) { const u = this.ui, o = u.o, d = Math.hypot(o.fr.cx - this.x, o.fr.cy - this.y); if (this.talk || this.pdead || !this.things.includes(o) || d > (+T.get(o.pre + "useRange") || 120) + 40) return this.uiEnd(false);
+        const ray = this.view.rayAt(u.x, u.y); u.hover = this.hbRay(ray.o, ray.d, ["cursor"], o); this.curEl.style.left = u.x + "px"; this.curEl.style.top = u.y + "px"; this.curEl.classList.toggle("on", !!u.hover); return; }
+      const hb = this.pdead || this.talk ? null : this.hbAim(["cursor"]); if (!hb) { this.uiBlock = null; return; } if (this.uiBlock === hb.o) return;
+      const r = this.view.canvas.getBoundingClientRect(); this.ui = { o: hb.o, x: r.width / 2, y: r.height / 2, hover: hb };
+      if (!this.curEl) { this.curEl = document.createElement("div"); this.curEl.className = "p3cur"; this.curEl.style.cssText = "position:absolute;width:0;height:0;pointer-events:none;z-index:7"; this.curEl.innerHTML = '<svg width="22" height="26" viewBox="0 0 22 26" style="position:absolute;left:-2px;top:-2px;filter:drop-shadow(0 1px 2px #000)"><path d="M2 2 L2 21 L7 16 L11 24 L14 22.5 L10 15 L17 15 Z" fill="#eaf6ff" stroke="#10151c" stroke-width="1.5"/></svg>'; this.root.append(this.curEl); }
+      this.curEl.style.display = "block"; this.xh.style.visibility = "hidden";
+    }
+    uiEnd(block) { if (!this.ui) return; if (block) this.uiBlock = this.ui.o; this.ui = null; if (this.curEl) this.curEl.style.display = "none"; this.xh.style.visibility = ""; }
+    uiMove(dx, dy) { const u = this.ui, r = this.view.canvas.getBoundingClientRect(), k = +this.T.get("player.mouseSens") || 1; u.x = Math.max(0, Math.min(r.width, u.x + dx * k)); u.y = Math.max(0, Math.min(r.height, u.y + dy * k));
+      const R = this.hbRect(u.o), m = 40; if (!R || u.x < R.x0 - m || u.x > R.x1 + m || u.y < R.y0 - m || u.y > R.y1 + m || u.x <= 0 || u.y <= 0 || u.x >= r.width || u.y >= r.height) this.uiEnd(true); }
+    // "Show the hitboxes while playing": their edges as thin lines (yellow = the one you point at)
+    hbLines() { const out = [], T = this.T, hov = this.ui ? this.ui.hover : this.hbAim(null);
+      for (const o of this.things || []) { if (o.type !== "interactive" || !T.get(o.pre + "showBoxes")) continue; for (const b of this.hbOf(o)) { const bx = this.hbBox(o, b), P = (i) => this.hbToWorld(o, [bx.c[0] + (i & 1 ? 1 : -1) * bx.h[0], bx.c[1] + (i & 2 ? 1 : -1) * bx.h[1], bx.c[2] + (i & 4 ? 1 : -1) * bx.h[2]]), c = hov && hov.b === b && hov.o === o ? [1, 0.85, 0.2] : [1, 0.3, 0.9];
+        for (const [i, j] of [[0, 1], [2, 3], [4, 5], [6, 7], [0, 2], [1, 3], [4, 6], [5, 7], [0, 4], [1, 5], [2, 6], [3, 7]]) out.push({ kind: "line", a: P(i), b: P(j), c, w: 0.35, t: 0, life: 1e9 }); } }
+      return out; }
     interact() {
-      const v = this.view; if (!v) return; { const n = this.npcInFront(); if (n) { this.talkStart(n); return; } } const c = v.cam, B = R3D.camBasis(c.yaw, c.pitch), O = [c.x, c.y, c.z], D = B.f;
+      const v = this.view; if (!v) return; { const n = this.npcInFront(); if (n) { this.talkStart(n); return; } } { const hb = this.ui ? this.ui.hover : this.hbAim(["key"]); if (hb) { this.hbPress(hb.o, hb.b); return; } } const c = v.cam, B = R3D.camBasis(c.yaw, c.pitch), O = [c.x, c.y, c.z], D = B.f;
       for (const o of this.things || []) { if (o.type !== "door" || this.T.get(o.pre + "openMode") !== "interact") continue; const t = this.thingHit(o, O, D, +this.T.get(o.pre + "interactRange") || 90); if (t === null) continue; if (o.st === "closed" || o.st === "closing") this.openDoor(o); else this.closeDoor(o); return; }
     }
     thingStep(dt) {
@@ -241,12 +297,13 @@
     drawThings(v, dt) {
       if (!this.things || !this.things.length) return; if (this.mode === "play") this.thingStep(dt); const F = PRIM.FBX, T = this.T, items = [];
       for (const o of this.things) {
-        if (o.taken) continue; if (o.type === "speaker" && (!o.gm && !o.sprite || this.mode === "play" && !T.get(o.pre + "spkShow"))) continue; if (o.sprite) { const it = this.spriteItem(o, v); if (it) items.push(it); continue; } const g = k => +T.get(o.pre + k) || 0; let f = o.fr, name = null, tm = 0;
+        if (o.taken) continue; if (!o.gm && !o.sprite) continue; if (o.type === "speaker" && this.mode === "play" && !T.get(o.pre + "spkShow")) continue; if (o.sprite) { const it = this.spriteItem(o, v); if (it) items.push(it); continue; } const g = k => +T.get(o.pre + k) || 0; let f = o.fr, name = null, tm = 0;
         if (o.type === "enemy" && o.init) { const a = o.yaw * Math.PI / 180; f = { cx: o.x, cy: o.y, ux: Math.cos(a), uy: -Math.sin(a), nx: Math.sin(a), ny: Math.cos(a), door: false }; }
         const talking = o.type === "npc" && this.talk && this.talk.o === o; if (talking && T.get(o.pre + "faceTalker") !== false) { const a = Math.atan2(this.x - o.fr.cx, this.y - o.fr.cy); f = { cx: o.fr.cx, cy: o.fr.cy, ux: Math.cos(a), uy: -Math.sin(a), nx: Math.sin(a), ny: Math.cos(a), door: false }; }
         const an = k => { const nm = T.get(o.pre + k); return nm && o.model.anims[nm] ? nm : null; };
         if (o.type === "door") { const oa = an("openAnim"), ca = an("closeAnim"); if (oa) { const L = this.animLen(o.aid, oa, o.model.anims[oa].dur); if (o.st === "closing" && ca) { name = ca; tm = (1 - o.p) * this.animLen(o.aid, ca, o.model.anims[ca].dur).len * 1; } else { name = oa; tm = o.p * L.len; } tm *= L.speed; } else { name = an("idleAnim"); tm = 0; } }
         else if (o.type === "enemy" && o.init) { name = o.anim; if (name) { const L = this.animLen(o.aid, name, o.model.anims[name].dur), loop = o.akey === "idleAnim" || o.akey === "walkAnim"; tm = (loop ? o.at % Math.max(0.05, L.len) : Math.min(o.at, L.len - 1e-3)) * L.speed; } }
+        else if (o.pressAnim && o.model.anims[o.pressAnim.name]) { const pa = o.pressAnim, L = this.animLen(o.aid, pa.name, o.model.anims[pa.name].dur); pa.t += dt; if (pa.t >= L.len) { o.pressAnim = null; name = an("idleAnim"); tm = 0; } else { name = pa.name; tm = pa.t * L.speed; } }
         else { name = (talking && an("talkAnim")) || an("idleAnim"); if (name) { const L = this.animLen(o.aid, name, o.model.anims[name].dur); tm = ((performance.now() / 1000) % Math.max(0.05, L.len)) * L.speed; } }
         const pose = this.mixPose(o, o.model, name, tm, dt), ang = o.type === "pickup" ? o.spin : 0;
         let z = [f.ux * 0 + 0, 0, 0]; const X = [f.ux, 0, f.uy], Z = [f.nx, 0, f.ny]; let cr = [X[1] * 0 - 0 * 0, 0, 0];
@@ -394,7 +451,7 @@
     // Classic: the camera looks where the mouse points and the crosshair stays in the middle.
     // Free aim (bodycam style): the mouse moves the aim (and crosshair) inside an area of the screen; the camera only turns once the aim reaches the edge of that area.
     look(dx, dy) {
-      const T = this.T, s = 0.0022 * (+T.get("player.mouseSens") || 1);
+      if (this.ui) return this.uiMove(dx, dy); const T = this.T, s = 0.0022 * (+T.get("player.mouseSens") || 1);
       if (T.get("player.aimMode") !== "free") { this.aimYaw = this.aimPitch = 0; this.yaw += dx * s; this.pitch = clamp(this.pitch - dy * s, -1.45, 1.45); return; }
       const R = Math.max(0.05, (+T.get("player.freeAimRadius") || 14) * Math.PI / 180); let ay = this.aimYaw + dx * s, ap = this.aimPitch - dy * s; const d = Math.hypot(ay, ap);
       if (d > R) { const k = R / d, ex = ay - ay * k, ey = ap - ap * k; this.yaw += ex; this.pitch = clamp(this.pitch + ey, -1.45, 1.45); ay *= k; ap *= k; }
@@ -650,7 +707,7 @@
       c.x = this.x; c.z = this.y; c.y = this.z + (+T.get("player.eyeHeight") || 56) - (this.pdead ? Math.min(1, (this.deadT || 0) * 2) * (+T.get("player.eyeHeight") || 56) * 0.7 : 0); c.yaw = this.yaw; c.pitch = this.pitch; if (this.shakeT > 0) { this.shakeT -= dt; const a = (this.shakeA || 0) * Math.max(0, this.shakeT / (this.shakeT0 || 1)) * 0.02; c.yaw += (Math.random() * 2 - 1) * a; c.pitch += (Math.random() * 2 - 1) * a; if (this.shakeT <= 0) this.shakeA = 0; } { const B = R3D.camBasis(c.yaw, c.pitch); PRIM.Audio.listen([c.x, c.y, c.z], B.f, B.u, B.s); } if (this.mode === "play") this.speakerStep(); v.setLights(this.lightPrev || []); v.draw(); this.lightNow = []; if (this.mode === "play") { this.stepFx(dt); const list = (this.fx || []).slice(), ob = this.orb, oat = ob && this.atts.find(x => x.id === ob.id); for (const f of list) if (f.light) this.lightNow.push({ p: f.p, r: f.light.r, c: f.light.c.map(q => q * f.light.k), type: 0, shadow: f.light.shadow !== false }); if (oat && oat.emit) { if (ob.grow) { ob.grow.t += dt; ob.size = ob.grow.from + (ob.grow.to - ob.grow.from) * Math.min(1, ob.grow.t / ob.grow.secs); } const op = this.emitWorld(oat).O, opre = "player." + oat.id + ".", oem = T.get(opre + "projEmit") === undefined ? 1 : +T.get(opre + "projEmit"); const oflat = T.get(opre + "projShade") === "flat", ocol = this.hexCol(ob.color).map(q => q * oem); list.push({ kind: "sphere", p: op, c: ocol, size: ob.size, flat: oflat });
         if (ob.suck) { const S = ob.suck, pc = S.color ? this.hexCol(S.color).map(q => q * oem) : ocol; ob.sp = ob.sp || []; ob.acc = (ob.acc || 0) + dt * S.rate;   // bits spawn on a ball around the charge and speed up into it
           while (ob.acc >= 1 && ob.sp.length < 160) { ob.acc -= 1; let d = [Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1]; const L = Math.hypot(...d) || 1, R = S.radius * (0.65 + 0.35 * Math.random()) + ob.size; ob.sp.push({ off: d.map(q => q / L * R), t: 0, T: S.time * (0.7 + 0.6 * Math.random()), s: S.size * (0.6 + 0.8 * Math.random()) }); } if (ob.acc > 1) ob.acc = 1;
-          ob.sp = ob.sp.filter(q => (q.t += dt) < q.T); for (const q of ob.sp) { const a = q.t / q.T, k = 1 - a * a; list.push({ kind: "sphere", p: [op[0] + q.off[0] * k, op[1] + q.off[1] * k, op[2] + q.off[2] * k], c: pc.map(v => v * (0.55 + 0.9 * a)), size: q.s * (0.35 + 0.65 * Math.min(1, a * 3)), flat: oflat }); } } if (T.get(opre + "projLight")) this.lightNow.push({ p: op, r: +T.get(opre + "projLightRange") || 220, c: this.hexCol(ob.color).map(q => q * (+T.get(opre + "projLightPower") || 1.5)), type: 0, shadow: true }); } v.setLights(this.lightNow); list.push(...this.stepMarks(dt)); if (list.length) v.drawFx(list); } this.drawThings(v, dt); this.drawHand(v, dt); v.present(); this.lightPrev = this.lightNow; this.compDom(); this.stats3d(v); this.placeCross(v);
+          ob.sp = ob.sp.filter(q => (q.t += dt) < q.T); for (const q of ob.sp) { const a = q.t / q.T, k = 1 - a * a; list.push({ kind: "sphere", p: [op[0] + q.off[0] * k, op[1] + q.off[1] * k, op[2] + q.off[2] * k], c: pc.map(v => v * (0.55 + 0.9 * a)), size: q.s * (0.35 + 0.65 * Math.min(1, a * 3)), flat: oflat }); } } if (T.get(opre + "projLight")) this.lightNow.push({ p: op, r: +T.get(opre + "projLightRange") || 220, c: this.hexCol(ob.color).map(q => q * (+T.get(opre + "projLightPower") || 1.5)), type: 0, shadow: true }); } v.setLights(this.lightNow); list.push(...this.stepMarks(dt), ...this.hbLines()); this.uiStep(); if (list.length) v.drawFx(list); } this.drawThings(v, dt); this.drawHand(v, dt); v.present(); this.lightPrev = this.lightNow; this.compDom(); this.stats3d(v); this.placeCross(v);
     }
   };
 })();

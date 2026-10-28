@@ -174,7 +174,7 @@
   // ---- placeable objects (the Object Editor): doors, pick-ups, decorations. Tags prop<N>.*  They are placed in maps (map.things).
   S.PROP = [
     { k: "name", label: "Name", type: "string", def: "Object" },
-    { k: "type", label: "Type", type: "choice", options: [["decoration", "Decoration (just a model)"], ["door", "Door (fills a cell between walls)"], ["pickup", "Pick-up (collected by touching)"], ["enemy", "Enemy (hunts and attacks the player)"], ["exit", "Level exit (touch it to leave the level)"], ["npc", "Character (NPC: talk to it, make choices)"], ["speaker", "Speaker (plays a sound you hear around it)"]], def: "decoration" },
+    { k: "type", label: "Type", type: "choice", options: [["decoration", "Decoration (just a model)"], ["door", "Door (fills a cell between walls)"], ["pickup", "Pick-up (collected by touching)"], ["enemy", "Enemy (hunts and attacks the player)"], ["exit", "Level exit (touch it to leave the level)"], ["npc", "Character (NPC: talk to it, make choices)"], ["speaker", "Speaker (plays a sound you hear around it)"], ["interactive", "Interactive (buttons, consoles, screens)"]], def: "decoration" },
     { k: "look", label: "Looks like", type: "choice", options: [["model", "3D model (FBX)"], ["sprite", "2D sprite (pictures that always face the player)"]], def: "model", showIf: ["type", ["enemy", "decoration", "pickup", "exit", "npc"]] },
     { k: "asset", label: "Model (FBX)", type: "asset", assetType: "model", def: "", showIf: ["look", "model"] },
     // 2D sprites: each picture holds the frames of one animation side by side (a strip). They always turn to face the player.
@@ -220,7 +220,7 @@
   S.defineProp = (project, p, over) => { for (const pr of S.PROP) { const r = rec(pr, "props", p.id); if (pr.type === "anim") r.modelTag = p.id + ".asset"; if (over && pr.k in over) r.value = over[pr.k]; project.tags[p.id + "." + pr.k] = r; } };
   S.addProp = (project, over) => { const p = { id: S.uid("prop", project.props.map(x => x.id)) }; project.props.push(p); S.defineProp(project, p, Object.assign({ name: p.id }, over || {})); return p; };
   // ---- objects that give off light (lamps, torches, glowing crystals...): a point light above the object, optionally casting real-time shadows
-  S.PROP.push({ k: "lightOn", label: "Gives off light", type: "bool", def: false, showIf: ["type", ["decoration", "pickup", "enemy", "exit", "npc"]] },
+  S.PROP.push({ k: "lightOn", label: "Gives off light", type: "bool", def: false, showIf: ["type", ["decoration", "pickup", "enemy", "exit", "npc", "interactive"]] },
     { k: "lightColor", label: "Light colour", type: "color", def: "#ffd9a0", showIf: ["lightOn", true] }, NUM("lightIntensity", "Light brightness", 1.6, 0, 10, 0.05, { showIf: ["lightOn", true] }),
     NUM("lightRange", "Light reach (units, 128 = a cell)", 420, 32, 4000, 8, { showIf: ["lightOn", true] }), NUM("lightHeight", "Light height above the floor (units)", 80, -64, 512, 1, { showIf: ["lightOn", true] }),
     NUM("lightFlicker", "Flicker (0 = steady, 1 = like a torch)", 0, 0, 1, 0.01, { showIf: ["lightOn", true] }), { k: "lightShadows", label: "Casts shadows", type: "bool", def: true, showIf: ["lightOn", true] });
@@ -229,6 +229,10 @@
     NUM("spkRadius", "Heard within (units, 128 = a cell; silent outside)", 512, 16, 8000, 8, { showIf: ["type", "speaker"] }), NUM("spkHeight", "Sound height above the floor", 64, 0, 1024, 1, { showIf: ["type", "speaker"] }),
     { k: "spkLoop", label: "Loops forever (off = plays once each time you walk into its radius)", type: "bool", def: true, showIf: ["type", "speaker"] },
     { k: "spkShow", label: "Model visible in the game", type: "bool", def: false, showIf: ["type", "speaker"] });
+  S.PROP.push({ k: "useMode", label: "How it is used", type: "choice", options: [["key", "Look at a hitbox and press the Interact key (E)"], ["aim", "Aim the crosshair at a hitbox and click"], ["cursor", "Screen: step close, the mouse moves a cursor, click hitboxes"]], def: "key", showIf: ["type", "interactive"] },
+    NUM("useRange", "Can be used from (units, 128 = a cell)", 120, 16, 1000, 4, { showIf: ["type", "interactive"] }),
+    { k: "useHint", label: "Hint text (empty = the hitbox name)", type: "string", def: "", showIf: ["type", "interactive"] },
+    { k: "showBoxes", label: "Show the hitboxes while playing (for testing)", type: "bool", def: false, showIf: ["type", "interactive"] });
   S.PROP.push({ k: "npcName", label: "Name shown when talking (empty = the object's name)", type: "string", def: "", showIf: ["type", "npc"] }, NUM("talkRange", "Can talk from (units, 128 = a cell)", 140, 30, 600, 5, { showIf: ["type", "npc"] }),
     ANIM("talkAnim", "Talking animation (3D model)", { showIf: ["type", "npc"], showIf2: ["look", "model"] }), { k: "talkSprite", label: "Talking strip (2D sprite)", type: "asset", assetType: "image", def: "", showIf: ["type", "npc"], showIf2: ["look", "sprite"] }, NUM("talkSpriteFrames", "Frames in it", 1, 1, 64, 1, { showIf: ["type", "npc"], showIf2: ["look", "sprite"] }),
     { k: "faceTalker", label: "Turns to face the player while talking", type: "bool", def: true, showIf: ["type", "npc"] });
@@ -239,6 +243,19 @@
       { k: "c" + i + "tag", label: "Choice " + i + " changes the tag (optional)", type: "tagRef", refType: "any", def: "" }, { k: "c" + i + "val", label: "to (a number: 5, or +1 / -1 to add)", type: "string", def: "" }]));
   S.dlineOptions = p => goOpts.concat(((p.dialog && p.dialog.lines) || []).map((l, i) => [l.id, "line " + (i + 1) + " (" + l.id + ")"]));
   S.addDLine = (project, p, over) => { p.dialog = p.dialog || { lines: [] }; const l = { id: S.uid("line", p.dialog.lines.map(x => x.id)) }; p.dialog.lines.push(l); for (const pr of S.DLINE) { const r = rec(pr, "dialog", p.id); if (over && pr.k in over) r.value = over[pr.k]; project.tags[p.id + ".d." + l.id + "." + pr.k] = r; } S.syncDOpts(project, p); return l; };
+  // ---- interactive objects: invisible hitboxes (structure prop.hitboxes = [{id}], values = tags <prop>.hb.<box>.*), in the object's own space
+  // (the Object Editor grid: X right, Y up, Z front, origin = middle of the cell on the floor). Later in-game screens / puzzles reuse them (`kind`).
+  S.HITBOX = [{ k: "name", label: "Name (shown in the hint, sent to nodes)", type: "string", def: "Button" },
+    NUM("x", "Middle X (right)", 0, -512, 512, 0.5), NUM("y", "Middle Y (up)", 64, -512, 1024, 0.5), NUM("z", "Middle Z (front)", 8, -512, 512, 0.5),
+    NUM("w", "Width", 24, 1, 1024, 0.5), NUM("h", "Height", 24, 1, 1024, 0.5), NUM("d", "Depth", 12, 1, 1024, 0.5),
+    { k: "setTag", label: "When pressed: change this tag", type: "tagRef", refType: "any", def: "" }, { k: "setVal", label: "To (a value, +1 / -1 to add, “toggle” flips yes / no)", type: "string", def: "toggle" },
+    { k: "message", label: "When pressed: send this message to node scripts", type: "string", def: "" }, { k: "sound", label: "Press sound", type: "asset", assetType: "sound", def: "" },
+    { k: "anim", label: "Press animation (of the object's model)", type: "anim", def: "" }, NUM("cooldown", "Can be pressed again after (seconds)", 0.3, 0, 60, 0.05), { k: "once", label: "Works only once", type: "bool", def: false },
+    { k: "needTag", label: "Locked unless this tag…", type: "tagRef", refType: "any", def: "" }, { k: "needOp", label: "is", type: "choice", options: [["=", "equal to"], ["!=", "not equal to"], [">", "greater than"], ["<", "less than"], [">=", "at least"], ["<=", "at most"]], def: "=" },
+    { k: "needVal", label: "this value", type: "string", def: "yes" }, { k: "lockedSound", label: "Sound when locked", type: "asset", assetType: "sound", def: "" }];
+  const hbRec = (p, pr) => { const r = rec(pr, "hitbox", p.id); if (pr.type === "anim") r.modelTag = p.id + ".asset"; return r; };
+  S.addHitbox = (project, p, over) => { p.hitboxes = p.hitboxes || []; const b = { id: S.uid("hb", p.hitboxes.map(x => x.id)), kind: "button" }; p.hitboxes.push(b); for (const pr of S.HITBOX) { const r = hbRec(p, pr); if (over && pr.k in over) r.value = over[pr.k]; project.tags[p.id + ".hb." + b.id + "." + pr.k] = r; } return b; };
+  S.removeHitbox = (project, p, b) => { p.hitboxes.splice(p.hitboxes.indexOf(b), 1); for (const k of Object.keys(project.tags)) if (k.startsWith(p.id + ".hb." + b.id + ".")) delete project.tags[k]; };
   S.removeDLine = (project, p, l) => { p.dialog.lines.splice(p.dialog.lines.indexOf(l), 1); for (const k of Object.keys(project.tags)) if (k.startsWith(p.id + ".d." + l.id + ".")) delete project.tags[k]; S.syncDOpts(project, p); };
   S.syncDOpts = (project, p) => { const o = S.dlineOptions(p); for (const l of (p.dialog && p.dialog.lines) || []) for (const k of ["next", "c1go", "c2go", "c3go", "c4go"]) { const r = project.tags[p.id + ".d." + l.id + "." + k]; if (r) { r.options = o; if (!o.some(x => x[0] === r.value)) r.value = "next"; } } };
   S.removeProp = (project, p) => { project.props.splice(project.props.indexOf(p), 1); for (const k of Object.keys(project.tags)) if (k.startsWith(p.id + ".")) delete project.tags[k]; for (const m of project.maps || []) m.things = (m.things || []).filter(t => t.prop !== p.id); };
@@ -292,6 +309,7 @@
     onFire: { label: "When this weapon fires", cat: "event", ins: false, outs: ["next"], ctx: ["weapon"], props: [] },
     onReload: { label: "When reloading starts", cat: "event", ins: false, outs: ["next"], ctx: ["weapon"], props: [] },
     onReloadDone: { label: "When reloading is done", cat: "event", ins: false, outs: ["next"], ctx: ["weapon"], props: [] },
+    onButton: { label: "When a button is pressed", cat: "event", ins: false, outs: ["next"], ctx: ["object", "player"], props: [{ k: "name", label: "Button name (empty = any button)", type: "string", def: "" }] },
     onMessage: { label: "When I receive a message", cat: "event", ins: false, outs: ["next"], ctx: ["screen", "object", "player"], props: [{ k: "name", label: "Message name", type: "string", def: "go" }] },
     onTag: { label: "When a tag becomes…", cat: "event", ins: false, outs: ["next"], ctx: ["screen", "object", "player"], props: [ANYTAG, { k: "op", label: "Is", type: "choice", options: [["=", "equal to"], ["!=", "not equal to"], [">", "greater than"], ["<", "less than"], [">=", "at least"], ["<=", "at most"]], def: ">=" }, { k: "value", label: "This value", type: "string", def: "10" }] },
     sendMessage: { label: "Send a message (to every script)", cat: "action", outs: ["next"], ctx: ["screen", "object", "player"], props: [{ k: "name", label: "Message name", type: "string", def: "go" }] },
@@ -372,6 +390,7 @@
     const old = (project.maps || []).filter(m => m.style !== "grid"); if (old.length) { project.maps = project.maps.filter(m => m.style === "grid"); for (const m of old) for (const k of Object.keys(project.tags)) if (k.startsWith(m.id + ".")) delete project.tags[k]; project.droppedMaps = (project.droppedMaps || 0) + old.length; }
     for (const k of Object.keys(project.tags)) if (/^wall\d+\./.test(k)) delete project.tags[k];
     for (const m of project.maps || []) { if (!m.things) m.things = []; if (!m.layers) m.layers = [{ cells: {} }]; if (!m.n) m.n = { t: m.things.length }; for (const p of S.MAP) if (!project.tags[m.id + "." + p.k]) project.tags[m.id + "." + p.k] = rec(p, m.id, m.id); for (const k of ["fogDistance", "gridSize", "wallThickness"]) delete project.tags[m.id + "." + k]; }
+    for (const p of project.props) for (const b of p.hitboxes || []) for (const pr of S.HITBOX) { const k = p.id + ".hb." + b.id + "." + pr.k; if (!project.tags[k]) project.tags[k] = hbRec(p, pr); }
     for (const p of project.props) if (p.dialog) { for (const l of p.dialog.lines) for (const pr of S.DLINE) if (!project.tags[p.id + ".d." + l.id + "." + pr.k]) project.tags[p.id + ".d." + l.id + "." + pr.k] = rec(pr, "dialog", p.id); S.syncDOpts(project, p); }
     for (const p of project.props) { for (const k of OLDMAT) delete project.tags[p.id + "." + k]; for (const pr of S.PROP) { const r = project.tags[p.id + "." + pr.k]; if (!r) { const n = rec(pr, "props", p.id); if (pr.type === "anim") n.modelTag = p.id + ".asset"; project.tags[p.id + "." + pr.k] = n; } else { r.label = pr.label; if (pr.max !== undefined) { r.max = pr.max; if (+r.value > pr.max) r.value = pr.max; } } } }
     { const ik = project.tags["player.interactKey"]; if (project.tags["player.speed"] && !ik) project.tags["player.interactKey"] = rec(S.PLAYER.find(p => p.k === "interactKey"), "player", "player"); } if (project.tags["player.speed"]) for (const pp of S.PLAYER) if (!project.tags["player." + pp.k]) project.tags["player." + pp.k] = rec(pp, "player", "player");
@@ -398,6 +417,7 @@
     if (!project.tags["player.state"]) project.tags["player.state"] = { type: "string", value: "standing", label: "What the player is doing: standing, walking, running, jumping, falling (live)", group: "player", builtin: true };
     if (project.player && project.player.script) for (const n of project.player.script.nodes) S.ensureSNode(project, "player", n);
     S.ensureComp(project);
+    if (!project.tags["player.lastButton"]) project.tags["player.lastButton"] = { type: "string", value: "", label: "Name of the last button pressed (live)", group: "player", builtin: true };
     if (!project.tags["player.reloading"]) project.tags["player.reloading"] = { type: "bool", value: false, label: "The current weapon is reloading (live)", group: "player", builtin: true };
     if (!project.tags["player.charge"]) project.tags["player.charge"] = { type: "number", value: 0, label: "Charge beam progress, 0 to 1 (live)", group: "player", min: 0, max: 1, step: 0.01, builtin: true };
     if (!project.tags["player.weapon"]) project.tags["player.weapon"] = { type: "number", value: 1, label: "Current weapon number (live)", group: "player", min: 0, max: 99, step: 1, builtin: true };
