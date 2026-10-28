@@ -20,7 +20,7 @@
       if (this.view && this.map) { this.view.setMap(this.project, this.map, this.T, this.urls); this.walls = R3D.walls(this.map, this.T); } else if (!this.view) this.cv.style.background = "radial-gradient(ellipse at 50% 120%, #1c2b3d, #080b10)";
       const T = this.T, m = this.map; this.x = m ? +T.get(m.id + ".startX") : 0; this.y = m ? +T.get(m.id + ".startY") : 0; this.yaw = (m ? +T.get(m.id + ".startAngle") : 90) * Math.PI / 180; this.pitch = 0;
       const inf = m ? R3D.sectorInfo(m, T, this.x, this.y) : null; this.z = inf ? inf.floor : 0;
-      this.hudRt = new PRIM.Runtime({ host: this.hudHost, project: this.project, tags: T, mode: "hud", urls: this.urls, screenId: T.get("player.hud") });
+      this.hud = new PRIM.HUD({ host: this.hudHost, project: this.project, tags: T, urls: this.urls, screenId: T.get("player.hud"), edit: this.mode !== "play", say: t => { if (this.o.say) this.o.say(t); } });
       this.unsub = T.on(() => { this.drawCross(); if (this.view && !this.pendingRb) { this.pendingRb = true; setTimeout(() => { this.pendingRb = false; if (!this.dead && this.view) { if (this.map) { this.view.rebuild(); this.walls = R3D.walls(this.map, T); } this.syncAtts(); this.syncThings(); } }, 80); } });
       this.drawCross(); this.gpu = {}; this.atts = [];
       this.sh = this.mode === "play" ? new PRIM.Script.Host({ tags: T, held: k => !!this.keys[k], isState: s => this.isState(s), orb: (k, c, a) => this.orbCmd(k, c, a), fire: key => this.fireProj(this.atts.find(a => "player." + a.id === key)), sfx: (id, v) => this.sfx(id, v), loop: (id, v) => this.loopSfx(id, v), stopLoop: id => this.stopLoops(id), playAnim: (k, n, l) => this.playAnim(k, n, l), say: t => { if (this.o.say) this.o.say(t); else console.log(t); } }) : null;
@@ -29,7 +29,7 @@
       this.last = performance.now(); this.raf = requestAnimationFrame(t => this.frame(t));
     }
     destroy() {
-      this.dead = true; this.stopLoops(""); if (this.sh) this.sh.stopAll(); cancelAnimationFrame(this.raf); this.unsub(); if (this.hudRt) this.hudRt.destroy(); if (this.unbind) this.unbind(); if (document.pointerLockElement === this.cv) document.exitPointerLock();
+      this.dead = true; this.stopLoops(""); if (this.sh) this.sh.stopAll(); cancelAnimationFrame(this.raf); this.unsub(); if (this.hud) this.hud.destroy(); if (this.unbind) this.unbind(); if (document.pointerLockElement === this.cv) document.exitPointerLock();
       if (this.view) { const e = this.view.gl.getExtension("WEBGL_lose_context"); if (e) e.loseContext(); } this.root.remove();
     }
     // ---- input
@@ -331,8 +331,8 @@
       this.vmOff = [Math.sin(f.ph * 0.5) * wa * 0.8, Math.sin(f.bt) * ba * 0.7 - Math.abs(Math.sin(f.ph * 0.5)) * wa, Math.sin(f.bt) * ba * 0.4];
       // Hud Movement: turning kicks the HUD the other way, then it eases back
       let dy = this.yaw - f.ly; dy = Math.atan2(Math.sin(dy), Math.cos(dy)); const dp = this.pitch - f.lp; f.ly = this.yaw; f.lp = this.pitch;
-      if (T.get("player.hudMove")) { const A = +T.get("player.hudMoveAmount") || 1; f.hx = Math.max(-70 * A, Math.min(70 * A, f.hx - dy * 260 * A)); f.hy = Math.max(-50 * A, Math.min(50 * A, f.hy + dp * 260 * A)); const dk = Math.exp(-7 * dt); f.hx *= dk; f.hy *= dk; this.hudHost.style.transform = "translate(" + f.hx.toFixed(1) + "px," + f.hy.toFixed(1) + "px)"; }
-      else if (f.hx || f.hy) { f.hx = f.hy = 0; this.hudHost.style.transform = ""; }
+      if (T.get("player.hudMove")) { const A = +T.get("player.hudMoveAmount") || 1; f.hx = Math.max(-70 * A, Math.min(70 * A, f.hx - dy * 260 * A)); f.hy = Math.max(-50 * A, Math.min(50 * A, f.hy + dp * 260 * A)); const dk = Math.exp(-7 * dt); f.hx *= dk; f.hy *= dk; if (this.hud) this.hud.sway(f.hx, f.hy); }
+      else if (f.hx || f.hy) { f.hx = f.hy = 0; if (this.hud) this.hud.sway(0, 0); }
     }
     frame(t) {
       if (this.dead) return; this.raf = requestAnimationFrame(q => this.frame(q)); const dt = Math.min(0.05, (t - this.last) / 1000); this.last = t;

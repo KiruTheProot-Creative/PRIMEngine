@@ -15,7 +15,7 @@ module.exports = async (p, out) => {
   await p.click('button:has-text("Walk map1")'); await p.waitForTimeout(800);
   await p.evaluate(() => { window.__said = []; const q = __studio.S.play; q.sh.o.say = t => window.__said.push(t); q.look = () => {}; });
   await p.mouse.click(700, 400); await p.waitForTimeout(500);
-  const info = () => p.evaluate(() => { const q = __studio.S.play; return JSON.stringify({ state: q.T.get('player.state'), vm: q.vmOff && q.vmOff.map(x => +x.toFixed(2)), hud: q.hudHost.style.transform }); });
+  const info = () => p.evaluate(() => { const q = __studio.S.play; return JSON.stringify({ state: q.T.get('player.state'), vm: q.vmOff && q.vmOff.map(x => +x.toFixed(2)), hud: q.hud && q.hud.swayEl.style.transform }); });
   const said = async () => { const r = await p.evaluate(() => { const r = window.__said.join(' | '); window.__said = []; return r; }); return r; };
   console.log('standing', await info(), '|', await said());
   await p.keyboard.press('f'); await p.waitForTimeout(100); console.log('f standing:', await said());

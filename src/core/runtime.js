@@ -1,5 +1,5 @@
 /* PRIMEngine screen runtime. Draws one screen on a 1280x720 stage that scales to fit its host.
-   Modes: "edit" (click/drag elements, silent), "test" (fully interactive inside the editor), "play" (fullscreen game; settings are remembered).
+   Modes: "edit" (click/drag elements, silent), "test" (fully interactive inside the editor), "play" (fullscreen game; settings are remembered). HUD screens are NOT drawn here: see hud.js (game) and studio/hudeditor.js (editor).
    Everything it shows is read from tags, so any change to a tag shows up straight away. */
 (function () {
   "use strict";
@@ -15,7 +15,6 @@
 .rt-host{position:relative;width:100%;height:100%;overflow:hidden;background:#000}
 .rt-stage{position:absolute;left:50%;top:50%;width:${W}px;height:${H}px;transform-origin:center;overflow:hidden;user-select:none;-webkit-user-select:none;touch-action:none}
 .rt-layer{position:absolute;inset:0}
-.rt-safe{position:absolute;inset:0;border:2px dashed rgba(125,243,255,.85);box-shadow:0 0 0 1px rgba(0,0,0,.6);pointer-events:none;z-index:99999}
 .rt-n{position:absolute;transform:translate(-50%,-50%);white-space:pre;line-height:1.1}
 .rt-sel{outline:2px dashed #ffb53a;outline-offset:5px}
 .rt-handle{position:absolute;width:16px;height:16px;margin:-8px 0 0 -8px;background:#ffb53a;border:2px solid #000;border-radius:3px;z-index:5}
@@ -40,8 +39,8 @@
       this.o = o; this.host = o.host; this.project = o.project; this.tags = o.tags; this.mode = o.mode || "edit"; this.urls = o.urls || {};
       this.screenId = o.screenId; this.selId = o.selId || null; this.hover = null; this.press = null; this.drag = null; this.game = false; this.splash = null;
       this.paused = false; this.music = null; this.musicId = null; this.alpha = {}; this.els = {}; this.fps = { n: 0, t: 0, v: 0 }; this.dead = false; this.inv = false;
-      const host = this.host; host.replaceChildren(); host.classList.add("rt-host"); if (this.mode === "hud") host.style.background = "transparent";
-      this.stage = div("rt-stage"); if (this.mode === "hud") this.stage.style.pointerEvents = "none"; this.layer = div("rt-layer"); this.fpsEl = div("rt-fps"); this.stage.append(this.layer, this.fpsEl); host.append(this.stage);
+      const host = this.host; host.replaceChildren(); host.classList.add("rt-host");
+      this.stage = div("rt-stage"); this.layer = div("rt-layer"); this.fpsEl = div("rt-fps"); this.stage.append(this.layer, this.fpsEl); host.append(this.stage);
       if (this.mode === "play") { this.hintEl = div("rt-hint"); this.hintEl.textContent = "Esc to exit"; host.append(this.hintEl); setTimeout(() => { if (this.hintEl) this.hintEl.style.opacity = 0; }, 3000); }
       this.ro = new ResizeObserver(() => this.fit()); this.ro.observe(host);
       this.unsub = this.tags.on(n => this.onTag(n));
@@ -56,9 +55,7 @@
     // positions are stored from the screen middle (x0,y0 = middle, y goes up); the stage itself is drawn from the top-left corner
     px(sc, n) { return W / 2 + (+this.P(sc, n, "x") || 0); }
     py(sc, n) { return H / 2 - (+this.P(sc, n, "y") || 0); }
-    fit() { const s = Math.min(this.host.clientWidth / W, this.host.clientHeight / H) || 1; this.scale = s; this.stage.style.transform = `translate(-50%,-50%) scale(${s})`; this.fillStretch(); }
-    // in the game HUD a "stretch to screen" image fills the whole window (not just the 16:9 stage), plus a margin for the sway
-    fillStretch() { if (this.mode !== "hud" || !this.layer) return; const A = this.tags.get("player.hudMove") ? (+this.tags.get("player.hudMoveAmount") || 1) : 0, w = this.host.clientWidth / this.scale + 140 * A + 4, h = this.host.clientHeight / this.scale + 100 * A + 4; for (const el of this.layer.querySelectorAll("[data-stretch]")) { el.style.width = w + "px"; el.style.height = h + "px"; } }
+    fit() { const s = Math.min(this.host.clientWidth / W, this.host.clientHeight / H) || 1; this.scale = s; this.stage.style.transform = `translate(-50%,-50%) scale(${s})`; }
     screen() { return this.project.screens.find(s => s.id === this.screenId); }
     P(sc, n, k) { return this.tags.get(sc.id + "." + n.id + "." + k); }
     S(sc, n, k) { return this.tags.interpolate(this.P(sc, n, k)); }
@@ -81,7 +78,7 @@
     // ---------------- drawing
     rebuild() {
       const sc = this.screen(), T = this.tags; if (!sc) return;
-      this.fpsEl.style.display = this.mode !== "edit" && T.get("gfx.showFps") ? "block" : "none"; const hud = this.mode === "hud", hudEdit = this.mode === "edit" && sc.kind === "hud"; this.stage.style.overflow = hud || hudEdit ? "visible" : "hidden"; if (hudEdit && !this.safeEl) { this.safeEl = div("rt-safe"); this.stage.append(this.safeEl); } if (this.safeEl) this.safeEl.style.display = hudEdit ? "block" : "none"; this.stage.style.filter = hud ? "none" : "brightness(" + (T.get("gfx.brightness") || 1) + ")"; this.stage.style.background = hud ? "transparent" : T.get(sc.id + ".bg") || "#000";
+      this.fpsEl.style.display = this.mode !== "edit" && T.get("gfx.showFps") ? "block" : "none"; this.stage.style.filter = "brightness(" + (T.get("gfx.brightness") || 1) + ")"; this.stage.style.background = T.get(sc.id + ".bg") || "#000";
       if (this.splash) return;
       this.layer.replaceChildren(); this.els = {};
       const bgi = T.get(sc.id + ".bgImage"); if (bgi && this.urls[bgi]) { const im = new Image(); im.src = this.urls[bgi]; im.style.cssText = "position:absolute;inset:0;width:100%;height:100%;object-fit:cover"; this.layer.append(im); }
@@ -97,7 +94,7 @@
     makeNode(sc, n) {
       const T = this.tags, p = k => this.P(sc, n, k); let el;
       if (n.type === "title") { el = div("rt-n"); el.textContent = this.S(sc, n, "text"); this.textStyle(el, sc, n); el.style.opacity = p("opacity"); }
-      else if (n.type === "image") { const u = this.urls[p("asset")]; if (u) { el = new Image(); el.src = u; el.className = "rt-n"; el.draggable = false; this.sized(el, p("w"), p("h")); el.style.opacity = p("opacity"); if (p("stretch")) { el.dataset.stretch = "1"; requestAnimationFrame(() => this.fillStretch()); const A = this.mode === "hud" && this.tags.get("player.hudMove") ? (+this.tags.get("player.hudMoveAmount") || 1) : 0; el.style.width = (W + 140 * A + 4) + "px"; el.style.height = (H + 100 * A + 4) + "px"; } } else el = this.ph("No image chosen", p("w"), p("h")); }
+      else if (n.type === "image") { const u = this.urls[p("asset")]; if (u) { el = new Image(); el.src = u; el.className = "rt-n"; el.draggable = false; this.sized(el, p("w"), p("h")); el.style.opacity = p("opacity"); if (p("stretch")) { el.style.width = W + "px"; el.style.height = H + "px"; } } else el = this.ph("No image chosen", p("w"), p("h")); }
       else if (n.type === "button") {
         const hov = this.hover === n.id, prs = this.press === n.id;
         if (p("mode") === "texture") {
@@ -217,7 +214,7 @@
       let v = sp.min + (sp.max - sp.min) * clamp((sx - b.x0) / b.w, 0, 1); if (sp.step) v = Math.round(v / sp.step) * sp.step; this.tags.set(bind, Math.round(v * 1000) / 1000);
     }
     down(e) {
-      if (this.paused || this.mode === "hud") return; this.stage.setPointerCapture(e.pointerId); const [sx, sy] = this.pt(e);
+      if (this.paused) return; this.stage.setPointerCapture(e.pointerId); const [sx, sy] = this.pt(e);
       if (this.game) { this.game = false; this.rebuild(); return; }
       if (this.splash) { this.skipSplash(); return; }
       if (this.mode === "edit" && e.target && e.target.classList && e.target.classList.contains("rt-handle")) { const sc = this.screen(), n = sc.nodes.find(x => x.id === this.selId), el = n && this.els[n.id], b = n && this.box(n); if (n && el && b) { const hx = +e.target.dataset.cx, hy = +e.target.dataset.cy; this.drag = { id: n.id, rs: true, sx: hx, sy: hy, ax: hx > 0 ? b.x0 : b.x0 + b.w, ay: hy > 0 ? b.y0 : b.y0 + b.h, cy0: b.y0 + b.h / 2, w0: el.offsetWidth, h0: el.offsetHeight }; } return; }
@@ -255,7 +252,7 @@
       else if (n.type === "toggle") { const b = P("bind"), sp = T.spec(b); if (sp && sp.type === "bool") T.set(b, !T.get(b)); }
     }
     key(e) {
-      if (this.mode === "edit" || this.mode === "hud" || this.paused) return;
+      if (this.mode === "edit" || this.paused) return;
       if (this.splash) { this.skipSplash(); return; }
       if (e.key === "Escape") { if (this.game) { this.game = false; this.rebuild(); } else if (this.mode === "play" && this.o.onExit) this.o.onExit(); return; }
       if (this.sh && !/INPUT|SELECT|TEXTAREA/.test((e.target && e.target.tagName) || "")) { const sc = this.screen(); if (sc) for (const n of sc.nodes) this.script(sc, n, "onKey", e.key === " " ? "space" : e.key === "Control" ? "ctrl" : e.key); }

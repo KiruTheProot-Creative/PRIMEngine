@@ -8,7 +8,7 @@ module.exports = async (p, out) => {
   console.log('sel', await p.evaluate(() => JSON.stringify({ sc: __studio.S.screenId, sel: __studio.S.selId })));
   const m = () => p.evaluate(() => { const r = __studio.S.rt, el = r && r.els.healthbar; return el ? [el.offsetWidth, el.offsetHeight, el.style.left, el.style.top] : 'no el'; });
   console.log('before', await m());
-  const hb = await p.locator('.rt-handle').last().boundingBox(); console.log('handle', !!hb);
+  const hb = await p.locator('.hed-h').last().boundingBox(); console.log('handle', !!hb);
   await p.mouse.move(hb.x + 7, hb.y + 7); await p.mouse.down(); await p.mouse.move(hb.x + 90, hb.y + 30, { steps: 6 }); await p.mouse.up(); await p.waitForTimeout(400);
   console.log('after resize', await m(), await p.evaluate(() => JSON.stringify([__studio.S.tags.get('hud.healthbar.w'), __studio.S.tags.get('hud.healthbar.h'), __studio.S.tags.get('hud.healthbar.x'), __studio.S.tags.get('hud.healthbar.y')])));
   await p.click('button:has-text("Center horizontally")'); await p.waitForTimeout(300);

@@ -219,11 +219,19 @@
     p.tabs.replaceChildren(...centerTabs(), h("span", { class: "sp" }), h("span", { class: "csize", text: "1280 × 720  ·  16:9" }));
     put(E.cbar, h("span", { class: "chip", text: sc.id }), !S.testing && sc.kind === "splash" ? h("button", { class: "tbtn sm", text: "▶ Preview sequence", onclick: () => { if (S.rt) S.rt.previewSplash(); } }) : null,
       h("span", { class: "hint", text: S.testing ? "Playing: hover and click buttons, drag sliders. Edits are disabled." : sc.kind === "splash" ? "Select a splash in the Hierarchy to see it." : "Click to select, drag to move (Shift = snap to 10), drag an orange corner to resize. x0,y0 is the middle of the screen. Drop images from the Project panel here." }));
+    if (sc.kind === "hud") return hudCenter(sc);
     S.rt = new PRIM.Runtime({ host: E.host, project: S.project, tags: S.testing ? S.tags.fork() : S.tags, mode: S.testing ? "test" : "edit", urls: S.urls, screenId: sc.id, selId: S.selId, onStartGame: startGame, say: t => log(t),
       onSelect: id => { S.selId = id; S.sel = null; renderHier(); renderInspector(); renderProject(); }, onChange: () => renderInspector(), onExit: () => setTesting(false) });
     S.rt.paused = S.paused;
   }
 
+  // the HUD screen: edited with PRIM.HudEditor, shown in the Game tab with PRIM.HUD (the same renderer the game uses)
+  function hudCenter(sc) {
+    put(E.cbar, h("span", { class: "chip", text: sc.id + " · HUD" }), h("span", { class: "hint", text: S.testing ? "The HUD as the game draws it (scripts run, values are live)." : "Click to select, drag to move (Shift = snap 10), orange corners resize. Wheel zooms, middle / right drag pans, F fits. The dashed frame is the standing-still view; elements may sit outside it. Drop images from the Project panel here." }));
+    if (S.testing) { const box = h("div", { style: "position:absolute;inset:0;background:radial-gradient(ellipse at 50% 115%,#26384c,#0f1822 55%,#070b10)" }); E.host.style.position = "relative"; E.host.append(box); const hud = new PRIM.HUD({ host: box, project: S.project, tags: S.tags.fork(), urls: S.urls, screenId: sc.id, say: t => log(t) }); S.rt = { paused: false, destroy: () => { hud.destroy(); box.remove(); }, rebuild: () => hud.build(), stopMusic() {}, previewSplash() {}, els: {} }; return; }
+    S.rt = new PRIM.HudEditor({ host: E.host, project: S.project, tags: S.tags, urls: S.urls, screenId: sc.id, selId: S.selId,
+      onSelect: id => { S.selId = id; S.sel = null; renderHier(); renderInspector(); renderProject(); }, onChange: () => renderInspector() });
+  }
   // ---------------------------------------------------------------- structure edits (screens and elements)
   function addNode(type, over0) {
     const sc = curScreen(); if ((sc.kind === "splash") !== (type === "splash")) return log(type === "splash" ? "Splashes go on the splash screen." : "Elements go on menu screens, not the splash screen.", "warn");
@@ -260,7 +268,8 @@
     const a = S.project.assets.find(x => x.id === d.key); if (!a || a.type !== "image") return log("Only images can be dropped on the screen.", "warn");
     if (S.mapId) return S.tab === "fly" ? flyDrop(e, a) : dropOnMap(e, a);
     if (!S.rt) return;
-    const sc = curScreen(), r = S.rt.stage.getBoundingClientRect(), x = Math.round((e.clientX - r.left) / S.rt.scale), y = Math.round((e.clientY - r.top) / S.rt.scale);
+    const sc = curScreen(); if (S.rt.dropPoint) { const q = S.rt.dropPoint(e); return addNode("image", { asset: a.id, x: q.x, y: q.y }); }
+    const r = S.rt.stage.getBoundingClientRect(), x = Math.round((e.clientX - r.left) / S.rt.scale), y = Math.round((e.clientY - r.top) / S.rt.scale);
     if (sc.kind === "splash") addNode("splash", { kind: "image", asset: a.id }); else addNode("image", { asset: a.id, x: Math.max(-640, Math.min(640, x - 640)), y: Math.max(-360, Math.min(360, 360 - y)) });
   }
   function selectedNode() { return S.selId && !S.sel ? curScreen().nodes.find(n => n.id === S.selId) : null; }
