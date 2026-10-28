@@ -18,19 +18,31 @@
     const cv = this.cv; cv.addEventListener("pointerdown", e => this.down(e)); cv.addEventListener("pointermove", e => this.move(e)); cv.addEventListener("pointerup", e => this.up(e)); cv.addEventListener("pointerleave", () => { this.mouse = null; this.redraw(); });
     cv.addEventListener("wheel", e => this.wheel(e), { passive: false }); cv.addEventListener("dblclick", e => this.dbl(e)); cv.addEventListener("contextmenu", e => e.preventDefault());
     this.wrap.addEventListener("keydown", e => this.key(e)); this.wrap.addEventListener("keyup", e => { if (e.key === " ") this.space = false; });
+    this.undoS = []; this.redoS = []; this.cur = this.ser(); this.multi = null;
+    this.unsubH = this.T.on(names => { if (this.restoring) return; if (!names.length || names.some(n => n.startsWith(this.m.id + "."))) { clearTimeout(this.ht); this.ht = setTimeout(() => this.commit(), 250); } });
     this.fit(); setTimeout(() => this.fit(), 0);
   });
   const P = ME.prototype;
 
   P.buildBar = function () {
     const h = this.h, mk = (id, label, tip) => h("button", { class: "tbtn sm" + (this.tool === id ? " on" : ""), title: tip, text: label, onclick: () => this.setTool(id) });
-    this.bar.replaceChildren(mk("select", "Select / Move", "V: click nodes, walls and rooms. Drag a node to move it. Double-click a wall to add a node."), mk("draw", "Draw Room", "D: click to place nodes, click the first node (or press Enter) to close the room."),
+    const act = (label, tip, fn) => h("button", { class: "tbtn sm", title: tip, text: label, onclick: fn });
+    this.bar.replaceChildren(act("↶", "Undo (Ctrl+Z)", () => this.history(true)), act("↷", "Redo (Ctrl+Y)", () => this.history(false)), mk("select", "Select / Move", "V: click nodes, walls and rooms. Drag a node to move it. Double-click a wall to add a node."), mk("draw", "Draw Room", "D: click to place nodes, click the first node (or press Enter) to close the room."), mk("box", "Box Room", "B: drag a rectangle to make a room in one go."),
       mk("start", "Player Start", "P: click to put the player start point."), mk("object", "Place Object", "O: click a wall to put a door in it, or click the floor to put a pick-up or decoration."),
       this.tool === "object" ? h("select", { class: "sel", title: "Which object to place", onchange: e => this.o.setProp && this.o.setProp(e.target.value) }, ...((this.o.getProps && this.o.getProps()) || []).map(p => h("option", { value: p.id, text: p.name + " (" + p.type + ")", selected: p.id === (this.o.getProp && this.o.getProp()) }))) : "", h("span", { class: "sp" }), h("button", { class: "tbtn sm", text: "Zoom to fit", title: "F", onclick: () => this.fit() }),
-      h("span", { class: "hint", text: this.tool === "draw" ? "Click to place nodes · click the first node or press Enter to close · Backspace undoes · Esc cancels" : this.tool === "start" ? "Click where the player starts" : this.tool === "object" ? "Click a wall to place a door (it cuts a doorway) · click the floor for other objects · pick the object in the list" : "Click a node or wall to select it · drag a node to move it · double-click a wall to add a node · drag empty space or hold the right mouse button to pan · scroll to zoom" }));
+      h("span", { class: "hint", text: this.tool === "draw" ? "Click to place nodes · click the first node or press Enter to close · Backspace undoes · Esc cancels" : this.tool === "box" ? "Drag a rectangle to make a room (it joins the rooms it touches)" : this.tool === "select" ? "Click to select · drag a room to move it · Shift+click / Shift+drag selects several · Ctrl+C / Ctrl+V copy and paste · Ctrl+D duplicates · Ctrl+Z undo" : this.tool === "start" ? "Click where the player starts" : this.tool === "object" ? "Click a wall to place a door (it cuts a doorway) · click the floor for other objects · pick the object in the list" : "Click a node or wall to select it · drag a node to move it · double-click a wall to add a node · drag empty space or hold the right mouse button to pan · scroll to zoom" }));
   };
   P.setTool = function (t) { this.tool = t; this.draft = []; this.buildBar(); this.redraw(); };
-  P.destroy = function () { this.ro.disconnect(); this.unsub(); };
+  P.destroy = function () { this.ro.disconnect(); this.unsub(); this.unsubH(); clearTimeout(this.ht); };
+  // ---- undo / redo: the whole map (its geometry, objects and every one of its tags) before and after each change
+  P.ser = function () { const pre = this.m.id + ".", tags = {}, T = this.o.project.tags; for (const k in T) if (k.startsWith(pre)) tags[k] = T[k]; return JSON.stringify({ v: this.m.verts, s: this.m.sectors, t: this.m.things || [], n: this.m.n, tags }); };
+  P.commit = function () { clearTimeout(this.ht); const s = this.ser(); if (s === this.cur) return; this.undoS.push(this.cur); if (this.undoS.length > 80) this.undoS.shift(); this.redoS = []; this.cur = s; };
+  P.history = function (back) {
+    this.commit(); const from = back ? this.undoS : this.redoS, to = back ? this.redoS : this.undoS, s = from.pop(); if (!s) { this.o.log && this.o.log(back ? "Nothing to undo." : "Nothing to redo."); return; }
+    to.push(this.cur); this.cur = s; const d = JSON.parse(s), m = this.m, pre = m.id + ".", T = this.o.project.tags; this.restoring = true;
+    m.verts = d.v; m.sectors = d.s; m.things = d.t; m.n = d.n; for (const k of Object.keys(T)) if (k.startsWith(pre)) delete T[k]; Object.assign(T, d.tags);
+    this.sel = null; this.multi = null; this.T.emit([]); this.restoring = false; if (this.o.onSelect) this.o.onSelect(null); if (this.o.onChange) this.o.onChange(true, true); this.redraw();
+  };
   P.grid = function () { return Math.max(1, +this.T.get(this.m.id + ".gridSize") || 32); };
   P.vmap = function () { const o = {}; for (const v of this.m.verts) o[v.id] = v; return o; };
   P.sx = function (x) { return (x - this.v.cx) * this.v.z + this.cv.width / 2 / this.dpr; };
@@ -77,8 +89,17 @@
       if (last && last.x === p.x && last.y === p.y) return; this.draft.push({ x: p.x, y: p.y }); return this.redraw();
     }
     if (this.tool === "object") return this.placeThing(sx, sy);
+    if (this.tool === "box") { const p = this.snapPt(sx, sy, true); this.box = { x0: p.x, y0: p.y, x1: p.x, y1: p.y }; return; }
     if (this.tool === "start") { this.T.setMany({ [this.m.id + ".startX"]: Math.round(this.wx(sx)), [this.m.id + ".startY"]: Math.round(this.wy(sy)) }); if (this.o.onChange) this.o.onChange(); this.select({ kind: "start" }); return; }
     const hit = this.pick(sx, sy);
+    if (e.shiftKey && this.tool === "select") {   // several things at once
+      if (hit && (hit.kind === "sector" || hit.kind === "thing")) { this.addMulti(); const set = hit.kind === "sector" ? this.multi.secs : this.multi.things; if (set.has(hit.id)) set.delete(hit.id); else set.add(hit.id); this.sel = null; this.multiChanged(); }
+      else this.marq = { x0: this.wx(sx), y0: this.wy(sy), x1: this.wx(sx), y1: this.wy(sy) };
+      return;
+    }
+    if (this.multi && hit && ((hit.kind === "sector" && this.multi.secs.has(hit.id)) || (hit.kind === "thing" && this.multi.things.has(hit.id)))) { this.startGroup(sx, sy); return; }
+    if (this.multi) { this.multi = null; }
+    if (hit && hit.kind === "sector") { this.select(hit); this.multi = null; this.startGroup(sx, sy, { secs: new Set([hit.id]), things: new Set() }); return; }
     if (hit && hit.kind === "vert" && !hit.edge) { const v = this.vmap()[hit.id]; this.select({ kind: "vert", id: hit.id }); this.drag = { ids: this.m.verts.filter(o => o.x === v.x && o.y === v.y).map(o => o.id), moved: false }; }
     else if (hit && hit.kind === "thing") { this.select(hit); this.drag = { thing: hit.id, moved: false }; }
     else if (hit && hit.kind === "start") { this.select({ kind: "start" }); this.drag = { start: true, moved: false }; }
@@ -88,6 +109,10 @@
   P.move = function (e) {
     const [sx, sy] = this.rel(e); this.mouse = { sx, sy };
     if (this.pan) { this.v.cx = this.pan.cx - (e.clientX - this.pan.x) / this.v.z; this.v.cy = this.pan.cy - (e.clientY - this.pan.y) / this.v.z; }
+    else if (this.box) { const p = this.snapPt(sx, sy, true); this.box.x1 = p.x; this.box.y1 = p.y; }
+    else if (this.marq) { this.marq.x1 = this.wx(sx); this.marq.y1 = this.wy(sy); }
+    else if (this.drag && this.drag.group) { const g = this.grid(), d = this.drag, dx = Math.round((this.wx(sx) - d.wx) / g) * g, dy = Math.round((this.wy(sy) - d.wy) / g) * g;
+      if (dx !== d.dx || dy !== d.dy) { d.dx = dx; d.dy = dy; d.moved = true; const vs = this.vmap(); for (const [id, x, y] of d.verts) { vs[id].x = x + dx; vs[id].y = y + dy; } for (const [th, x, y] of d.things) { th.x = x + dx; th.y = y + dy; } } }
     else if (this.drag) {
       const p = this.snapPt(sx, sy, true), vs = this.vmap();
       if (this.drag.thing) { const th = (this.m.things || []).find(x => x.id === this.drag.thing), gm = th && this.thingGeom(th, vs), px = this.wx(sx), py = this.wy(sy);
@@ -98,7 +123,44 @@
     }
     this.redraw();
   };
-  P.up = function () { const d = this.drag; this.pan = null; this.drag = null; if (d && d.moved && this.o.onChange) this.o.onChange(true); };
+  P.up = function () {
+    const d = this.drag; this.pan = null; this.drag = null;
+    if (this.box) { const b = this.box; this.box = null; const x0 = Math.min(b.x0, b.x1), x1 = Math.max(b.x0, b.x1), y0 = Math.min(b.y0, b.y1), y1 = Math.max(b.y0, b.y1); if (x1 - x0 >= this.grid() && y1 - y0 >= this.grid()) { this.draft = [{ x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 }]; this.closeDraft(); this.tool = "box"; this.buildBar(); } this.redraw(); return; }
+    if (this.marq) { const q = this.marq; this.marq = null; const x0 = Math.min(q.x0, q.x1), x1 = Math.max(q.x0, q.x1), y0 = Math.min(q.y0, q.y1), y1 = Math.max(q.y0, q.y1), vs = this.vmap(), inR = p => p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1; this.addMulti();
+      for (const s of this.m.sectors) if (s.v.every(id => vs[id] && inR(vs[id]))) this.multi.secs.add(s.id); for (const th of this.m.things || []) if (!th.sec && inR(th)) this.multi.things.add(th.id); this.sel = null; this.multiChanged(); return; }
+    if (d && d.group && !d.moved && d.one) { /* a plain click on a room just selects it */ }
+    if (d && d.moved) { if (d.group) PRIM.MapGeo.stitch(this.o.project, this.m, this.T); this.T.emit([]); this.commit(); if (this.o.onChange) this.o.onChange(true, !!d.group); }
+  };
+  // ---- several rooms / objects at once
+  P.addMulti = function () { if (this.multi) return; this.multi = { secs: new Set(), things: new Set() }; if (this.sel && this.sel.kind === "sector") this.multi.secs.add(this.sel.id); if (this.sel && this.sel.kind === "thing") this.multi.things.add(this.sel.id); };
+  P.multiChanged = function () { const n = this.multi ? this.multi.secs.size + this.multi.things.size : 0; if (!n) this.multi = null; if (this.o.onSelect) this.o.onSelect(this.multi ? { kind: "multi", rooms: this.multi.secs.size, things: this.multi.things.size } : null); this.redraw(); };
+  P.startGroup = function (sx, sy, set) { const g = set || this.multi, vs = this.vmap(), ids = new Set(); for (const s of this.m.sectors) if (g.secs.has(s.id)) s.v.forEach(id => ids.add(id));
+    const things = (this.m.things || []).filter(t => !t.sec && (g.things.has(t.id) || (g.secs.size && this.m.sectors.some(s => g.secs.has(s.id) && inPoly(t.x, t.y, s.v.map(id => vs[id]).filter(Boolean))))));
+    this.drag = { group: true, one: !!set, wx: this.wx(sx), wy: this.wy(sy), dx: 0, dy: 0, moved: false, verts: [...ids].map(id => [id, vs[id].x, vs[id].y]), things: things.map(t => [t, t.x, t.y]) }; };
+  P.selection = function () { if (this.multi) return this.multi; if (this.sel && this.sel.kind === "sector") return { secs: new Set([this.sel.id]), things: new Set() }; if (this.sel && this.sel.kind === "thing") return { secs: new Set(), things: new Set([this.sel.id]) }; return null; };
+  P.copy = function () {
+    const g = this.selection(); if (!g) return false; const vs = this.vmap(), T = this.T, mid = this.m.id, rooms = [], things = [];
+    for (const s of this.m.sectors) { if (!g.secs.has(s.id)) continue; const secTags = {}; for (const pr of Schema.SECTOR) secTags[pr.k] = T.get(mid + "." + s.id + "." + pr.k);
+      rooms.push({ pts: s.v.map(id => ({ x: vs[id].x, y: vs[id].y, tags: Object.fromEntries(Schema.VERT.map(pr => [pr.k, T.get(mid + "." + id + "." + pr.k)])) })), secTags, doors: (this.m.things || []).filter(t => t.sec === s.id).map(t => ({ prop: t.prop, i: s.v.indexOf(t.a), t: t.t })) }); }
+    for (const t of this.m.things || []) if (!t.sec && g.things.has(t.id)) things.push({ prop: t.prop, x: t.x, y: t.y, ang: t.ang || 0 });
+    ME.clip = { rooms, things }; if (this.o.log) this.o.log("Copied " + rooms.length + " room(s) and " + things.length + " object(s)"); return true;
+  };
+  P.paste = function (ox, oy) {
+    const c = ME.clip; if (!c || (!c.rooms.length && !c.things.length)) return; const T = this.T, mid = this.m.id, m = this.m, made = { secs: new Set(), things: new Set() }, errs = [];
+    const all = c.rooms.flatMap(r => r.pts).concat(c.things), g = this.grid();
+    if (ox === undefined) { const cx = all.reduce((a, p) => a + p.x, 0) / all.length, cy = all.reduce((a, p) => a + p.y, 0) / all.length, mw = this.mouse ? this.wx(this.mouse.sx) : cx + 2 * g, mh = this.mouse ? this.wy(this.mouse.sy) : cy + 2 * g; ox = Math.round((mw - cx) / g) * g; oy = Math.round((mh - cy) / g) * g; }
+    for (const r of c.rooms) {
+      const res = PRIM.MapGeo.addRoom(this.o.project, m, T, r.pts.map(p => ({ x: p.x + ox, y: p.y + oy }))); if (res.error) { errs.push(res.error); continue; }
+      for (const sec of res.sectors) { made.secs.add(sec.id); const set = {}; for (const k in r.secTags) set[mid + "." + sec.id + "." + k] = r.secTags[k];
+        for (const id of sec.v) { const v = m.verts.find(x => x.id === id), src = r.pts.find(p => p.x + ox === v.x && p.y + oy === v.y); if (src) for (const k in src.tags) set[mid + "." + id + "." + k] = src.tags[k]; } T.setMany(set);
+        if (res.sectors.length === 1 && sec.v.length === r.pts.length) for (const d of r.doors) { const p = r.pts[d.i], v = p && m.verts.find(x => sec.v.includes(x.id) && x.x === p.x + ox && x.y === p.y + oy); if (v) { m.n.t = (m.n.t || 0) + 1; m.things.push({ id: "t" + m.n.t, prop: d.prop, sec: sec.id, a: v.id, t: d.t }); } } }
+    }
+    for (const t of c.things) { m.n.t = (m.n.t || 0) + 1; const th = { id: "t" + m.n.t, prop: t.prop, x: t.x + ox, y: t.y + oy, ang: t.ang }; m.things.push(th); made.things.add(th.id); }
+    if (errs.length && this.o.log) this.o.log(errs[0], "warn"); this.multi = made.secs.size + made.things.size ? made : null; this.sel = null; this.T.emit([]); this.commit(); this.multiChanged(); if (this.o.onChange) this.o.onChange(true, true);
+  };
+  // duplicate: a copy right next to the selection (to the right, one tile apart) so it never overlaps it
+  P.duplicate = function () { if (!this.copy()) return; const c = ME.clip, xs = c.rooms.flatMap(r => r.pts.map(p => p.x)).concat(c.things.map(t => t.x)); this.paste(Math.ceil((Math.max(...xs) - Math.min(...xs) + this.grid()) / this.grid()) * this.grid(), 0); };
+  P.deleteMulti = function () { const g = this.multi; if (!g) return false; for (const s of this.m.sectors.filter(s => g.secs.has(s.id))) { this.m.things = (this.m.things || []).filter(t => t.sec !== s.id); Schema.removeSector(this.o.project, this.m, s); } this.m.things = (this.m.things || []).filter(t => !g.things.has(t.id)); this.multi = null; this.T.emit([]); this.commit(); this.multiChanged(); if (this.o.onChange) this.o.onChange(true, true); return true; };
   P.wheel = function (e) {
     e.preventDefault(); const [sx, sy] = this.rel(e), bx = this.wx(sx), by = this.wy(sy); this.v.z = Math.max(0.04, Math.min(12, this.v.z * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
     this.v.cx = bx - (sx - this.cv.width / 2 / this.dpr) / this.v.z; this.v.cy = by - (sy - this.cv.height / 2 / this.dpr) / this.v.z; this.redraw();
@@ -136,19 +198,21 @@
     if (this.o.log) this.o.log("Created room “" + sec.id + "”" + (r.sectors.length > 1 ? " (+" + (r.sectors.length - 1) + " more part(s))" : "") + (r.cut ? " – the part overlapping another room was cut away, they now share a wall" : ""));
   };
   P.deleteSelection = function () {
-    if (this.draft.length) { this.draft.pop(); return this.redraw(); } const s = this.sel; if (!s) return;
-    if (s.kind === "sector") { const sec = this.m.sectors.find(x => x.id === s.id); if (sec) Schema.removeSector(this.o.project, this.m, sec); }
+    if (this.draft.length) { this.draft.pop(); return this.redraw(); } if (this.deleteMulti()) return; const s = this.sel; if (!s) return;
+    if (s.kind === "sector") { const sec = this.m.sectors.find(x => x.id === s.id); if (sec) { this.m.things = (this.m.things || []).filter(t => t.sec !== sec.id); Schema.removeSector(this.o.project, this.m, sec); } }
     else if (s.kind === "thing") { this.m.things = (this.m.things || []).filter(t => t.id !== s.id); }
     else if (s.kind === "vert") { const sec = this.m.sectors.find(x => x.v.includes(s.id)); if (!sec) return;
       if (sec.v.length <= 3) { this.o.log && this.o.log("A room needs at least 3 nodes. Select the room itself and press Delete to remove it.", "warn"); return; }
       sec.v.splice(sec.v.indexOf(s.id), 1); this.m.verts.splice(this.m.verts.findIndex(v => v.id === s.id), 1); this.T.removePrefix(this.m.id + "." + s.id); }
     else return;
-    this.sel = null; this.T.emit([]); if (this.o.onSelect) this.o.onSelect(null); if (this.o.onChange) this.o.onChange(true, true); this.redraw();
+    this.sel = null; this.T.emit([]); this.commit(); if (this.o.onSelect) this.o.onSelect(null); if (this.o.onChange) this.o.onChange(true, true); this.redraw();
   };
   P.key = function (e) {
     const k = e.key.toLowerCase(); if (/INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) return;
+    if (e.ctrlKey || e.metaKey) { if (k === "z") { e.preventDefault(); this.history(!e.shiftKey); } else if (k === "y") { e.preventDefault(); this.history(false); } else if (k === "c") { if (this.copy()) e.preventDefault(); } else if (k === "v") { e.preventDefault(); this.paste(); } else if (k === "d") { e.preventDefault(); this.duplicate(); } else if (k === "a") { e.preventDefault(); this.multi = { secs: new Set(this.m.sectors.map(s => s.id)), things: new Set((this.m.things || []).filter(t => !t.sec).map(t => t.id)) }; this.sel = null; this.multiChanged(); } return; }
+    if (k === "b") return this.setTool("box");
     if (k === " ") { this.space = true; e.preventDefault(); } else if (k === "v") this.setTool("select"); else if (k === "d" && !e.ctrlKey && !e.metaKey) this.setTool("draw"); else if (k === "p") this.setTool("start"); else if (k === "o") this.setTool("object"); else if (k === "f") this.fit();
-    else if (k === "enter" && this.tool === "draw") this.closeDraft(); else if (k === "escape") { if (this.draft.length) { this.draft = []; this.redraw(); } else this.select(null); }
+    else if (k === "enter" && this.tool === "draw") this.closeDraft(); else if (k === "escape") { if (this.draft.length) { this.draft = []; this.redraw(); } else { this.multi = null; this.select(null); } }
   };
 
   // ---- drawing
@@ -171,7 +235,7 @@
       c.beginPath(); pts.forEach((p, i) => i ? c.lineTo(this.sx(p.x), this.sy(p.y)) : c.moveTo(this.sx(p.x), this.sy(p.y))); c.closePath();
       c.fillStyle = T.get(pre + "floorColor"); c.globalAlpha = 0.42; c.fill(); c.globalAlpha = 1;
       if (img) { try { c.save(); c.clip(); c.globalAlpha = 0.55; c.imageSmoothingEnabled = false; const ts = 64 * this.v.z; if (ts > 3) { const ox = this.sx(0), oy = this.sy(0); for (let x = Math.floor((this.sx(Math.min(...pts.map(p => p.x))) - ox) / ts) * ts + ox; x < this.sx(Math.max(...pts.map(p => p.x))); x += ts) for (let y = Math.floor((this.sy(Math.min(...pts.map(p => p.y))) - oy) / ts) * ts + oy; y < this.sy(Math.max(...pts.map(p => p.y))); y += ts) c.drawImage(img, x, y, ts + 0.5, ts + 0.5); } c.restore(); } catch (x) { c.restore(); } }
-      if (s.id === selSec) { c.fillStyle = "rgba(255,210,90,.18)"; c.fill(); }
+      if (s.id === selSec || (this.multi && this.multi.secs.has(s.id))) { c.fillStyle = "rgba(255,210,90,.2)"; c.fill(); if (this.multi && this.multi.secs.has(s.id)) { c.strokeStyle = "#ffd25a"; c.lineWidth = 2; c.setLineDash([6, 4]); c.stroke(); c.setLineDash([]); c.lineWidth = 1; } }
     }
     // walls
     for (const s of this.m.sectors) {
@@ -201,6 +265,9 @@
     // player start
     const px = this.sx(+T.get(mid + ".startX")), py = this.sy(+T.get(mid + ".startY")), ang = (+T.get(mid + ".startAngle") || 0) * Math.PI / 180, st = this.sel && this.sel.kind === "start";
     c.save(); c.translate(px, py); c.rotate(ang); c.fillStyle = st ? "#ffd25a" : "#5fe0a0"; c.strokeStyle = "#000b"; c.lineWidth = 1.5; c.beginPath(); c.moveTo(13, 0); c.lineTo(-8, 8); c.lineTo(-4, 0); c.lineTo(-8, -8); c.closePath(); c.fill(); c.stroke(); c.restore();
+    // box room / rubber band
+    if (this.box) { const b = this.box, x = this.sx(Math.min(b.x0, b.x1)), y = this.sy(Math.min(b.y0, b.y1)), w = Math.abs(b.x1 - b.x0) * this.v.z, hh = Math.abs(b.y1 - b.y0) * this.v.z; c.fillStyle = "rgba(127,208,255,.15)"; c.fillRect(x, y, w, hh); c.strokeStyle = "#7fd0ff"; c.lineWidth = 2; c.strokeRect(x, y, w, hh); c.lineWidth = 1; c.fillStyle = "#cfefff"; c.font = "12px ui-monospace,Consolas,monospace"; c.textAlign = "left"; c.fillText((Math.abs(b.x1 - b.x0) / 64).toFixed(2) + " m × " + (Math.abs(b.y1 - b.y0) / 64).toFixed(2) + " m", x + 4, y - 6); }
+    if (this.marq) { const q = this.marq, x = this.sx(Math.min(q.x0, q.x1)), y = this.sy(Math.min(q.y0, q.y1)); c.strokeStyle = "#ffd25a"; c.setLineDash([5, 4]); c.strokeRect(x, y, Math.abs(q.x1 - q.x0) * this.v.z, Math.abs(q.y1 - q.y0) * this.v.z); c.setLineDash([]); }
     // draft
     if (this.draft.length) {
       const m = this.mouse ? this.snapPt(this.mouse.sx, this.mouse.sy) : null; c.strokeStyle = "#7fd0ff"; c.lineWidth = 2; c.beginPath(); this.draft.forEach((p, i) => i ? c.lineTo(this.sx(p.x), this.sy(p.y)) : c.moveTo(this.sx(p.x), this.sy(p.y))); if (m) c.lineTo(this.sx(m.x), this.sy(m.y)); c.stroke();
