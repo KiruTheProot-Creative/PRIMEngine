@@ -7,12 +7,12 @@
   const mkFile = (bytes, name) => new File([bytes], name);
 
   // ---- save a .prime file. `ref` = what the last save returned (file handle or path) so Ctrl+S overwrites. -> { ref, name } | null
-  H.saveFile = async (suggested, bytes, ref, forceDialog) => {
+  H.saveFile = async (suggested, bytes, ref, forceDialog, type) => {
     if (H.desktop) { const r = await window.primeDesktop.saveFile(suggested, bytes, forceDialog ? null : ref); return r ? { ref: r, name: base(r) } : null; }
     if (window.showSaveFilePicker) {
       try {
         let h = !forceDialog && ref && ref.createWritable ? ref : null;
-        if (!h) h = await window.showSaveFilePicker({ suggestedName: suggested, types: [{ description: "PRIMEngine project", accept: { "application/octet-stream": [".prime"] } }] });
+        if (!h) h = await window.showSaveFilePicker({ suggestedName: suggested, types: [type || { description: "PRIMEngine project", accept: { "application/octet-stream": [".prime"] } }] });
         const w = await h.createWritable(); await w.write(bytes); await w.close(); return { ref: h, name: h.name };
       } catch (e) { if (e && e.name === "AbortError") return null; /* blocked (e.g. inside an iframe): fall through to download */ }
     }

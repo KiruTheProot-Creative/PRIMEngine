@@ -131,7 +131,7 @@
   function menus() {
     const sc = curScreen(), mk = t => ({ t: "Create " + Schema.NODE[t].label, fn: () => addNode(t) });
     return [
-      { label: "File", items: [{ t: "New Project", fn: async () => { await backToManager(); const p = Store.create(); await openProject(p.id); } }, { t: "Open Project…", k: "Ctrl+O", fn: openFileDialog }, "-", { t: "Save", k: "Ctrl+S", fn: () => saveProject(false) }, { t: "Save As…", fn: () => saveProject(true) }, "-", { t: "Close Project", fn: backToManager }] },
+      { label: "File", items: [{ t: "New Project", fn: async () => { await backToManager(); const p = Store.create(); await openProject(p.id); } }, { t: "Open Project…", k: "Ctrl+O", fn: openFileDialog }, "-", { t: "Save", k: "Ctrl+S", fn: () => saveProject(false) }, { t: "Save As…", fn: () => saveProject(true) }, "-", { t: "Build Game…", fn: buildGame }, "-", { t: "Close Project", fn: backToManager }] },
       { label: "Edit", items: [{ t: "Rename", k: "F2", fn: startRename }, { t: "Duplicate", k: "Ctrl+D", fn: duplicateSelected }, { t: "Delete", k: "Del", fn: deleteSelected }] },
       { label: "Assets", items: [{ t: "Create Folder", fn: newFolder }, "-", { t: "Import Files…", fn: importFilesDlg }, { t: "Import Folder…", fn: importFolderDlg }] },
       { label: "Screen", items: [{ t: "Create Screen", fn: addScreen }, { t: "Create Map…", fn: openNewMap }, "-", ...(sc.kind === "splash" ? [mk("splash")] : ["title", "button", "image", "slider", "toggle", "bar"].map(mk))] },
@@ -1135,6 +1135,24 @@
   }
 
   // ================================================================ PLAY (fullscreen, remembers audio/graphics settings)
+  // ---- Build Game: one playable .html file (engine + project + every asset inside it)
+  async function gameHtml() {
+    const toData = b => new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = no; r.readAsDataURL(b); });
+    const tags = [...document.querySelectorAll("script")].map(s => ({ s, src: s.getAttribute("src") || s.dataset.src || "" })).filter(x => /^src\/core\//.test(x.src)), code = [];
+    for (const x of tags) code.push(x.s.getAttribute("src") ? await (await fetch(x.src)).text() : x.s.textContent);
+    const assets = {}; let missing = 0; for (const a of S.project.assets) { const u = S.urls[a.id]; if (!u) { missing++; continue; } try { assets[a.id] = await toData(await (await fetch(u)).blob()); } catch (e) { missing++; } }
+    const data = JSON.stringify({ project: S.project, assets }).replace(/</g, "\\u003c"), esc = t => String(t).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+    const html = '<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>' + esc(S.project.name || "Game") + '</title>\n<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;600;700&family=Share+Tech+Mono&display=swap">\n</head><body><div id="game"></div>\n<script id="game-data" type="application/json">' + data + '</script>\n'
+      + code.map(c => "<script>\n" + c.replace(/<\/script/gi, "<\\/script") + "\n</script>").join("\n") + '\n<script>PRIM.GamePlayer.boot(JSON.parse(document.getElementById("game-data").textContent), document.getElementById("game"));</script>\n</body></html>\n';
+    return { html, missing };
+  }
+  async function buildGame() {
+    if (!S.project.maps.length) log("Note: the game has no map yet, so “Start game” will only show a placeholder.", "warn");
+    log("Building the game…"); let r; try { r = await gameHtml(); } catch (e) { return log("Could not build the game: " + (e && e.message || e), "warn"); }
+    const name = (S.project.name || "game").replace(/[\\/:*?"<>|]+/g, "_") + ".html", saved = await Host.saveFile(name, new TextEncoder().encode(r.html), null, true, { description: "Game (HTML)", accept: { "text/html": [".html"] } });
+    if (saved) log("Built “" + saved.name + "” (" + Math.round(r.html.length / 1024) + " KB)" + (r.missing ? " – " + r.missing + " asset(s) could not be included" : "") + ". Open it in a browser to play.");
+  }
+  window.__gameHtml = gameHtml;
   function play() {
     autosave(); const layer = h("div", { class: "play-layer" }); document.body.append(layer);
     const tg = S.tags.fork(), saved = Store.loadSettings(S.project.id); for (const k in saved) if (S.tags.has(k)) tg.ov[k] = saved[k];

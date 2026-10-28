@@ -10,7 +10,7 @@ src = (root / name).read_text(encoding="utf-8")
 
 def inline(m):
     js = (root / m.group(1)).read_text(encoding="utf-8").replace("</script", "<\\/script")
-    return "<script>\n" + js + "\n</script>"
+    return '<script data-src="' + m.group(1) + '">\n' + js + "\n</script>"
 src = re.sub(r'<script src="([^"]+)"></script>', inline, src)
 
 head = re.search(r"<head>(.*?)</head>", src, re.S).group(1)
