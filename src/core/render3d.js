@@ -375,7 +375,10 @@
       run(pp.blur, pt.c, [["uS", pt.a.t]], u => gl.uniform2f(u("uD"), 0.5 / pt.a.w, 0.5 / pt.a.h)); run(pp.blur, pt.d, [["uS", pt.c.t]], u => gl.uniform2f(u("uD"), 1 / pt.c.w, 0)); run(pp.blur, pt.c, [["uS", pt.d.t]], u => gl.uniform2f(u("uD"), 0, 1 / pt.c.h));
     }
     // the Compositor chain (project.compositor): the picture goes through each effect in order, the last one draws to the screen
-    const fx = this.compOff && this.compOff() ? [] : (PRIM.Schema && PRIM.Schema.compActive ? PRIM.Schema.compActive(this.project, this.tags) : []).filter(f => this.fxProg(f.type));
+    // with a HUD on top (game), effects "in front of the HUD" that only paint over the picture are drawn by Play3D as page layers instead (they then cover the HUD too)
+    const DOMFX = { vignette: 1, grain: 1, letterbox: 1 };
+    const fx = (this.compOff && this.compOff() ? [] : (PRIM.Schema && PRIM.Schema.compActive ? PRIM.Schema.compActive(this.project, this.tags) : [])).filter(f => this.fxProg(f.type) && !(this.domFx && f.layer === "front" && DOMFX[f.type]))
+      .map(f => this.domFx && f.layer === "front" && f.type === "crt" ? Object.assign({}, f, { v: Object.assign({}, f.v, { lines: { type: "number", val: 0 }, mask: { type: "number", val: 0 } }) }) : f);
     run(pp.comp, fx.length ? pt.e : null, [["uS", pt.scene.t], ["uB1", pt.a.t], ["uB2", pt.c.t]], u => { gl.uniform1f(u("uK"), bloom ? b.k : 0); gl.uniform1f(u("uExp"), b.exp); });
     let src = pt.e, dst = pt.f; const tm = performance.now() / 1000;
     fx.forEach((f, i) => { const last = i === fx.length - 1; run(this.fxProg(f.type), last ? null : dst, [["uS", src.t]], u => { gl.uniform2f(u("uR"), pt.w, pt.h); gl.uniform1f(u("uT"), tm % 1000);

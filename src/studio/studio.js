@@ -50,6 +50,41 @@
     }
     return pop;
   }
+  // ---- tag picker: tags grouped by what they belong to (Player > a weapon, a screen > an element, a map, an object, Compositor…), with a search bar
+  function tagGroup(n) {
+    const P = S.project, a = n.split("."), first = a[0], att = first === "player" && a.length > 2 && P.player.attachments.find(x => x.id === a[1]);
+    const nm = id => S.tags.get(id + ".name") || id, sc = screens().find(x => x.id === first), mp = P.maps.find(x => x.id === first), pr = (P.props || []).find(x => x.id === first), fx = first === "comp" && a.length > 2 && ((P.compositor || {}).effects || []).find(e => e.id === a[1]);
+    const g1 = first === "player" ? "Player" : first === "audio" ? "Audio" : first === "gfx" ? "Graphics settings" : first === "project" ? "Project" : first === "comp" ? "Compositor" : sc ? "Screen: " + first : mp ? "Map: " + first : pr ? "Object: " + nm(first) : first;
+    const g2 = att ? (S.tags.get("player." + att.id + ".type") === "weapon" ? "Weapon: " : "Object: ") + (S.tags.get("player." + att.id + ".name") || att.id) : fx ? ((Schema.COMPFX[fx.type] || {}).label || fx.id) + " (" + fx.id + ")" : sc && a.length > 2 ? a[1] : null;
+    return [g1, g2];
+  }
+  function tagPicker(anchor, names, cur, pick) {
+    closePop(); const pop = h("div", { class: "pop tagpick", role: "dialog" }), q = h("input", { class: "tpq", placeholder: "Search tags (name or label)…", "aria-label": "Search tags" }), list = h("div", { class: "tpl" });
+    S.tpOpen = S.tpOpen || {};
+    const item = n => { const sp = S.tags.spec(n) || {}; return h("button", { class: "tpi" + (n === cur ? " sel" : ""), title: n, onclick: () => { closePop(); pick(n); } }, h("span", { class: "tpn", text: sp.label || n }), h("span", { class: "tpk", text: n })); };
+    const draw = () => {
+      const f = q.value.trim().toLowerCase(), hit = names.filter(n => !f || n.toLowerCase().includes(f) || String((S.tags.spec(n) || {}).label || "").toLowerCase().includes(f));
+      const tree = new Map(); for (const n of hit) { const [g1, g2] = tagGroup(n); if (!tree.has(g1)) tree.set(g1, new Map()); const m = tree.get(g1), k = g2 || ""; if (!m.has(k)) m.set(k, []); m.get(k).push(n); }
+      const rows = [h("button", { class: "tpi", onclick: () => { closePop(); pick(""); } }, h("span", { class: "tpn", text: "(no tag)" }))];
+      for (const [g1, subs] of tree) {
+        const k1 = g1, cnt = [...subs.values()].reduce((t, l) => t + l.length, 0), open1 = f || S.tpOpen[k1] || (cur && [...subs.values()].some(l => l.includes(cur)));
+        rows.push(h("button", { class: "tpg", onclick: () => { S.tpOpen[k1] = !open1; draw(); } }, h("span", { text: (open1 ? "▾ " : "▸ ") + g1 }), h("span", { class: "tpc", text: String(cnt) })));
+        if (!open1) continue;
+        for (const [g2, l] of [...subs].sort((a, b) => (a[0] ? 0 : 1) - (b[0] ? 0 : 1))) {
+          if (!g2) { rows.push(...l.map(item)); continue; }
+          const k2 = g1 + "/" + g2, open2 = f || S.tpOpen[k2] || (cur && l.includes(cur));
+          rows.push(h("button", { class: "tpg sub", onclick: () => { S.tpOpen[k2] = !open2; draw(); } }, h("span", { text: (open2 ? "▾ " : "▸ ") + g2 }), h("span", { class: "tpc", text: String(l.length) })));
+          if (open2) rows.push(...l.map(n => { const b = item(n); b.classList.add("sub"); return b; }));
+        }
+      }
+      if (!hit.length) rows.push(h("div", { class: "tpe", text: "No tag matches “" + q.value + "”." }));
+      list.replaceChildren(...rows);
+    };
+    q.oninput = draw; q.onkeydown = e => { if (e.key === "Escape") closePop(); if (e.key === "Enter") { const b = list.querySelector(".tpi:not(:first-child)"); if (b) b.click(); } };
+    pop.append(q, list); draw(); document.body.append(pop); const r = anchor.getBoundingClientRect();
+    pop.style.width = Math.max(300, r.width) + "px"; pop.style.left = Math.max(4, Math.min(r.left, innerWidth - pop.offsetWidth - 4)) + "px"; pop.style.top = Math.max(4, Math.min(r.bottom, innerHeight - pop.offsetHeight - 4)) + "px";
+    E.pop = pop; E.popAnchor = anchor; setTimeout(() => q.focus(), 0);
+  }
   function popMenu(anchor, items, at) {
     closePop(); const r = at ? { left: at.x, bottom: at.y } : anchor.getBoundingClientRect(), pop = menuEl(items);
     document.body.append(pop); pop.style.left = Math.max(4, Math.min(r.left, innerWidth - pop.offsetWidth - 4)) + "px"; pop.style.top = Math.max(4, Math.min(r.bottom, innerHeight - pop.offsetHeight - 4)) + "px"; E.pop = pop; E.popAnchor = anchor || null; if (anchor) anchor.classList.add("open");
@@ -153,11 +188,11 @@
       h("div", { class: "tgroup right" }, h("button", { class: "tbtn", text: "Maximize on Play", onclick: play }), h("button", { class: "tbtn", text: "Save", title: "Save as a .prime file (Ctrl+S)", onclick: () => saveProject(false) })));
   }
   function renderStatus() { const l = S.log[S.log.length - 1]; E.status.className = l && l.kind === "error" ? "err" : l && l.kind === "warn" ? "warn" : ""; E.status.textContent = l ? l.msg : "Ready"; E.status.append(h("span", { class: "fileinfo", text: (S.file ? S.file.name : "not saved to a file yet") + (S.fileDirty ? "  ·  unsaved changes" : "") })); }
-  function setTab(t) { S.fsel = null; S.fsl = []; S.fhov = null; if (t === "fly" && !S.mapId) t = "edit"; S.tab = t; S.testing = t === "game"; S.playerSel = t === "player"; if (S.playerSel || t === "timeline" || t === "coder") S.sel = null; if (!S.testing) S.paused = false; renderToolbar(); renderHier(); renderInspector(); renderCenter(); }
+  function setTab(t) { S.fsel = null; S.fsl = []; S.fhov = null; if (t === "fly" && !S.mapId) t = "edit"; S.tab = t; S.testing = t === "game"; S.playerSel = t === "player"; if (S.playerSel || t === "timeline" || t === "coder" || t === "comp") S.sel = null; if (!S.testing) S.paused = false; renderToolbar(); renderHier(); renderInspector(); renderCenter(); }
   function setTesting(v) { setTab(v ? "game" : "edit"); }
-  function leaveSpecial() { S.playerSel = false; if (["player", "timeline", "fly", "coder"].includes(S.tab)) { S.tab = "edit"; S.testing = false; return true; } return false; }
+  function leaveSpecial() { S.playerSel = false; if (["player", "timeline", "fly", "coder", "comp"].includes(S.tab)) { S.tab = "edit"; S.testing = false; return true; } return false; }
   function centerTabs() {
-    const items = S.mapId && curMap() ? [["edit", "Map"], ["fly", "Fly Editor"]] : [["edit", "Scene"]]; items.push(["game", "Game"], ["player", "Player Editor"], ["props", "Object Editor"], ["timeline", "Timeline"], ["coder", "Node Coder"]);
+    const items = S.mapId && curMap() ? [["edit", "Map"], ["fly", "Fly Editor"]] : [["edit", "Scene"]]; items.push(["game", "Game"], ["player", "Player Editor"], ["props", "Object Editor"], ["timeline", "Timeline"], ["coder", "Node Coder"], ["comp", "Compositor"]);
     return items.map(([k, l]) => h("button", { class: "tab" + (S.tab === k ? " sel" : ""), text: l, onclick: () => setTab(k) }));
   }
 
@@ -212,7 +247,7 @@
   function renderCenter() {
     const p = E.center; killMapViews(); if (S.rt) { S.rt.destroy(); S.rt = null; }
     if (S.tab === "fly" && !S.mapId) S.tab = "edit"; S.testing = S.tab === "game";
-    if (S.tab === "player") return S.objView && S.objSel && S.project.player.attachments.some(a => a.id === S.objSel) ? objectCenter() : playerCenter(); if (S.tab === "props") return propCenter(); if (S.tab === "timeline") return timelineCenter(); if (S.tab === "coder") return coderCenter(); if (S.mapId && curMap() && S.tab !== "game") return mapCenter();
+    if (S.tab === "player") return S.objView && S.objSel && S.project.player.attachments.some(a => a.id === S.objSel) ? objectCenter() : playerCenter(); if (S.tab === "props") return propCenter(); if (S.tab === "timeline") return timelineCenter(); if (S.tab === "coder") return coderCenter(); if (S.tab === "comp") return compCenter(); if (S.mapId && curMap() && S.tab !== "game") return mapCenter();
     const sc = S.testing && S.mapId ? (screens().find(x => x.id === S.tags.get("project.startScreen")) || screens()[0]) : curScreen();
     E.host.className = "host"; E.host.replaceChildren();
     p.tabs.replaceChildren(...centerTabs(), h("span", { class: "sp" }), h("span", { class: "csize", text: "1280 × 720  ·  16:9" }));
@@ -421,6 +456,7 @@
   }
   function propsBody() {
     if (S.fsel) return folderInspector();
+    if (S.tab === "comp") return compInspector();
     if (S.tab === "props") return propInspector();
     if (S.playerSel) return playerInspector(); if (S.tab === "timeline") return timelineInspector(); if (S.tab === "coder") return coderInspector();
     if (S.mapId && curMap()) return S.tab === "fly" && (S.fsl || []).length ? flyInspector() : mapInspector();
@@ -489,6 +525,8 @@
         else if (t.type === "anim") { const mo = PRIM.FBX.cache[S.tags.get(t.modelTag)]; opts = [["", "(none)"], ...(mo ? Object.keys(mo.anims) : []).map(n => [n, n])]; }
         else if (t.type === "choice") opts = t.options; else if (t.type === "mapRef") opts = [["", "None"], ...S.project.maps.map(m => [m.id, m.id])]; else if (t.type === "screenRef") opts = [["", "None"], ...screens().map(s => [s.id, s.id])];
         else opts = [["", "(pick a tag)"], ...S.tags.names().filter(n => !S.tags.spec(n).group || S.tags.spec(n).group !== "script").filter(n => t.refType === "any" ? ["number", "bool", "string", "color"].includes(S.tags.spec(n).type) : S.tags.spec(n).type === t.refType).map(n => [n, (S.tags.spec(n).label || n) + "  ·  " + n])];
+        if (t.type === "tagRef") { const cur = S.tags.get(name), cs = cur && S.tags.spec(cur), btn = h("button", { class: "dd tagbtn", "aria-label": label, title: cur || "", text: cur ? (cs ? (cs.label || cur) + "  ·  " + cur : cur + " (missing)") : "(pick a tag)" });
+          btn.onclick = () => tagPicker(btn, opts.slice(1).map(o => o[0]), cur, v => { set(v); redraw(); }); return row(h("div", { class: "selrow" }, btn)); }
         const sel = h("select", { class: "dd", "aria-label": label }, opts.map(([v, l]) => h("option", { value: v, text: l }))); sel.value = S.tags.get(name); if (sel.value !== String(S.tags.get(name))) sel.value = "";
         sel.onchange = () => { set(sel.value); redraw(); };
         const accepts = t.type === "asset" ? t.assetType : t.type === "font" ? "font" : null;
@@ -534,7 +572,7 @@
   function killMapViews() { if (S.med) { S.med.destroy(); S.med = null; } if (S.v3) { S.v3.dispose(); S.v3 = null; } if (S.p3) { S.p3.destroy(); S.p3 = null; } if (S.tlv) { S.tlv.destroy(); S.tlv = null; } if (S.coderStop) { S.coderStop(); S.coderStop = null; } if (S.oev) { S.oev.destroy(); S.oev = null; } if (S.wed) { S.wed.destroy(); S.wed = null; } if (S.pev) { S.pev.destroy(); S.pev = null; } }
   function selectMap(id, sel) { S.fsel = null; const was = S.mapId, tc = (S.playerSel || S.tab === "timeline") ? (S.tab = "edit", S.testing = false, true) : false; S.playerSel = false; S.mapId = id; S.selId = null; S.sel = null; S.msel = sel || null; renderHier(); renderInspector(); renderProject(); if (was !== id || !S.med || tc) renderCenter(); else S.med.select(S.msel, true); }
   function openNewMap() { createMap(); }
-  const reserved = () => [...screens().map(s => s.id), ...S.project.maps.map(m => m.id), ...(S.project.events || []).map(e => e.id), ...(S.project.animLen || []).map(e => e.id), "audio", "gfx", "project", "player"];
+  const reserved = () => [...screens().map(s => s.id), ...S.project.maps.map(m => m.id), ...(S.project.events || []).map(e => e.id), ...(S.project.animLen || []).map(e => e.id), "audio", "gfx", "project", "player", "comp"];
   function createMap() {
     let n = 1; while (reserved().includes("map" + n)) n++; const id = "map" + n; Schema.newMap(S.project, id); S.tags.emit([]); markDirty();
     S.mapId = id; S.msel = null; S.selId = null; S.sel = null; S.testing = false; S.paused = false; S.rtab = "inspector"; S.tab = "edit"; renderToolbar(); renderHier(); renderCenter(); renderInspector(); renderProject(); log("Created map “" + id + "”: one room to start from. Pick a texture on the left, a tool above, and click cells.");
@@ -737,13 +775,57 @@
     const mine = pr => !pr.live && tab === (pr.tab || "object");
     const note = tab === "material" ? "Material: a base color map (replaces the model's picture) and an emission map + strength (what glows). That is all a material has." : tab === "light" ? "Light: an object can shine. A point light shines everywhere around it; an area light is a flat panel that shines one way. Use “Set light point” and “Aim light” in the object editor." : null;
     return foldout("pl:obj", "Selected: " + (T.get(pre + "name") || att.id), tabs, note ? h("div", { class: "note", text: note }) : null, ...Schema.ATTACH.filter(pr => mine(pr) && Schema.shown(T, pre, pr)).map(pr => field(pre + pr.k)),
+      tab === "object" && T.get(pre + "type") === "weapon" ? h("div", { class: "note", text: "This weapon's own ammo tags: " + pre + "ammo (loaded, ready to fire" + (T.get(pre + "ammoUse") ? ", now " + T.get(pre + "ammo") : "") + ") and " + pre + "reserve (carried" + (T.get(pre + "ammoUse") ? ", now " + T.get(pre + "reserve") : "") + "). Pick them in a HUD bar or text ({" + pre + "ammo}), an ammo pick-up's “gives to” tag, or a node." + (T.get(pre + "ammoUse") ? "" : " Switch on “Uses ammo” to use them.") }) : null,
       h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: "Open Node Coder", onclick: () => { S.coderT = { kind: "att", id: att.id }; setTab("coder"); } }), ty === "weapon" ? h("button", { class: "btn sm", text: "Edit muzzle, arrow & emitter", onclick: () => { S.objView = true; renderCenter(); } }) : null),
       h("div", { class: "note", text: ty === "weapon" ? "A weapon turns its arrow toward whatever the crosshair is aiming at. Place the muzzle point and the arrow in the object editor." : "This object stays fixed to the camera." }));
   }
   // ================================================================ NODE CODER (scripts made of connected nodes, one script per object)
+  // ---------------------------------------------------------------- Compositor: post-processing chain (Blender style), live preview of a map
+  function compList() { return (S.project.compositor = S.project.compositor || { effects: [] }).effects; }
+  function compAdd(type) { const e = Schema.addComp(S.project, type); S.compSel = e.id; markDirty(); S.tags.emit([]); renderCenter(); renderInspector(); }
+  function compMove(id, d) { const L = compList(), i = L.findIndex(e => e.id === id), j = i + d; if (i < 0 || j < 0 || j >= L.length) return; [L[i], L[j]] = [L[j], L[i]]; markDirty(); S.tags.emit([]); renderCenter(); renderInspector(); }
+  function compDel(id) { Schema.removeComp(S.project, id); if (S.compSel === id) S.compSel = null; markDirty(); S.tags.emit([]); renderCenter(); renderInspector(); }
+  function compAddMenu(btn) { popMenu(btn, Object.entries(Schema.COMPFX).map(([k, d]) => ({ t: d.icon + "  " + d.label, fn: () => compAdd(k) }))); }
+  function compCenter() {
+    const p = E.center; p.tabs.replaceChildren(...centerTabs(), h("span", { class: "sp" }), h("span", { class: "csize", text: "compositor" }));
+    E.host.className = "host maphost"; E.host.replaceChildren(); const L = compList(), T = S.tags, m = curMap() || S.project.maps[0];
+    const cmp = h("button", { class: "tbtn sm", text: "Hold to compare (effects off)" }); cmp.onpointerdown = () => { S.compOff = true; cmp.classList.add("on"); }; cmp.onpointerup = cmp.onpointerleave = () => { S.compOff = false; cmp.classList.remove("on"); };
+    put(E.cbar, h("span", { class: "chip", text: "Compositor" }), h("button", { class: "tbtn sm", text: "+ Add effect ▾", onclick: e => compAddMenu(e.currentTarget) }), cmp,
+      h("span", { class: "hint", text: m ? "Preview of “" + m.id + "”: hold the right mouse button + WASD to fly. Effects run from left to right on the finished picture." : "Create a map to see a live preview." }));
+    const pv = h("div", { class: "comppv" }), strip = h("div", { class: "compstrip" }); E.host.append(pv, strip);
+    if (m) { S.v3 = makeView(pv, m); if (S.v3) { S.v3.post = true; S.v3.focus = false; S.v3.editMode = true; S.v3.compOff = () => !!S.compOff; } }
+    else pv.append(h("div", { class: "v3err", style: "color:var(--muted)", text: "No map yet: the effects still work in the game, but a preview needs a map (Screen > Create Map)." }));
+    const box = (cls, title, sub, extra) => h("div", Object.assign({ class: "cfx " + cls }, extra || {}), h("div", { class: "cfh" }, title), h("div", { class: "cfb", text: sub }));
+    const arrow = () => h("div", { class: "cfa", text: "→" });
+    const items = [box("io", h("span", { text: "Render" }), "the game picture + the map's bloom and exposure", { title: "Bloom and exposure are set per map (map Inspector > Look)" })];
+    for (const e of L) {
+      const d = Schema.COMPFX[e.type]; if (!d) continue; const on = T.get("comp." + e.id + ".on") !== false;
+      const head = [h("input", { type: "checkbox", checked: on, title: "Effect on / off", onclick: ev => ev.stopPropagation(), onchange: ev => { T.set("comp." + e.id + ".on", ev.target.checked); markDirty(); renderCenter(); renderInspector(); } }), h("span", { class: "cft", text: d.icon + " " + d.label })];
+      const tools = h("div", { class: "cfk" }, h("button", { text: "◀", title: "Earlier in the chain", onclick: ev => { ev.stopPropagation(); compMove(e.id, -1); } }), h("button", { text: "▶", title: "Later in the chain", onclick: ev => { ev.stopPropagation(); compMove(e.id, 1); } }), h("button", { text: "✕", title: "Remove", onclick: ev => { ev.stopPropagation(); compDel(e.id); } }));
+      const b = h("div", { class: "cfx fx" + (on ? "" : " off") + (S.compSel === e.id ? " sel" : ""), onclick: () => { S.compSel = e.id; renderCenter(); renderInspector(); } }, h("div", { class: "cfh" }, ...head), h("div", { class: "cfb", text: e.id + " · " + (T.get("comp." + e.id + ".layer") === "front" ? "▲ in front of the HUD" : "▼ behind the HUD") }), tools);
+      items.push(arrow(), b);
+    }
+    items.push(arrow(), h("button", { class: "cfx add", text: "+ Add effect", onclick: e => compAddMenu(e.currentTarget) }), arrow(), box("io", h("span", { text: "Screen" }), "what the player sees"));
+    strip.append(...items);
+  }
+  function compInspector() {
+    const box = h("div", { class: "insp" }), L = compList(), e = L.find(x => x.id === S.compSel);
+    if (!e) { box.append(h("div", { class: "ihead" }, h("span", { class: "bigic", text: "▤" }), h("div", { class: "ititle" }, h("div", { class: "idin", text: "Compositor" }), h("div", { class: "isub", text: L.length + " effect" + (L.length === 1 ? "" : "s") + " in the chain" }))),
+        h("div", { class: "note", text: "Effects change the finished game picture, one after another from left to right (the order matters: pixelate before a CRT screen looks different than after). Click an effect below the preview to edit it. Each effect has a Layer: behind the HUD (only the 3D picture) or in front of it (the HUD and crosshair get it too, e.g. scanlines or a vignette over everything). The preview here has no HUD; play the game to see the HUD layering. Every value is a tag (comp.<effect>.…), so a node can switch an effect on, e.g. night vision when a key is pressed." }),
+        h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: "+ Add effect ▾", onclick: ev => compAddMenu(ev.currentTarget) })),
+        ...L.map(x => h("button", { class: "btn sm", style: "display:block;width:100%;text-align:left;margin-top:4px", text: (Schema.COMPFX[x.type] || {}).icon + "  " + (Schema.COMPFX[x.type] || {}).label + "  (" + x.id + ")", onclick: () => { S.compSel = x.id; renderCenter(); renderInspector(); } })),
+        h("div", { class: "note", text: "Bloom and exposure belong to each map (select a map > Look), because a dark cave and a bright desert need different values. The Compositor is the same for the whole game." })); return box; }
+    const d = Schema.COMPFX[e.type], pre = "comp." + e.id + ".", i = L.indexOf(e);
+    box.append(h("div", { class: "ihead" }, h("span", { class: "bigic", text: d.icon }), h("div", { class: "ititle" }, h("div", { class: "idin", text: d.label }), h("div", { class: "isub", text: e.id + " · step " + (i + 1) + " of " + L.length }))),
+      h("div", { class: "note", text: d.desc }),
+      foldout("comp:fx", "Settings", ...Schema.compKeys(e.type).map(q => field(pre + q.k))),
+      h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: "◀ Earlier", onclick: () => compMove(e.id, -1) }), h("button", { class: "btn sm", text: "Later ▶", onclick: () => compMove(e.id, 1) }), h("button", { class: "btn sm danger", text: "Remove", onclick: () => compDel(e.id) })),
+      h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: "← All effects", onclick: () => { S.compSel = null; renderCenter(); renderInspector(); } })));
+    return box;
+  }
   function coderTarget() {
     const t = S.coderT; if (!t) return null;
-    if (t.kind === "player") { const pl = S.project.player; if (!pl.script) pl.script = { nodes: [], links: [] }; return { script: pl.script, key: "player", ctx: ["player"], modelTag: null, name: "Player", what: "The player (jumping, landing, getting hurt…)" }; }
+    if (t.kind === "player") { const pl = S.project.player; if (!pl.script) pl.script = { nodes: [], links: [] }; return { script: pl.script, key: "player", ctx: ["player"], modelTag: null, name: "Player", what: "player (jumping, landing, getting hurt…)" }; }
     if (t.kind === "att") { const a = S.project.player.attachments.find(x => x.id === t.id); if (!a) return null; if (!a.script) a.script = { nodes: [], links: [] }; const ty = S.tags.get("player." + a.id + ".type");
       return { script: a.script, key: "player." + a.id, ctx: ty === "weapon" ? ["object", "weapon"] : ["object"], modelTag: "player." + a.id + ".asset", name: S.tags.get("player." + a.id + ".name") || a.id, what: ty === "weapon" ? "Weapon" : "Object" }; }
     const sc = screens().find(x => x.id === t.screen), n = sc && sc.nodes.find(x => x.id === t.id); if (!n) return null; if (sc.kind === "splash") return { splash: true, name: n.id };
