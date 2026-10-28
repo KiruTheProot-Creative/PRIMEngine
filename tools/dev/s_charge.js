@@ -24,6 +24,7 @@ module.exports = async (p, out) => {
     const f = Sc.addSNode(pr, k, at.script, 'fireProjectile', 300, 0, null, k + '.asset'); at.script.links.push({ a: ch.id, o: 'fire', b: f.id });
     const sy = Sc.addSNode(pr, k, at.script, 'say', 300, 80, { text: 'charged!' }, k + '.asset'); at.script.links.push({ a: ch.id, o: 'charged', b: sy.id });
     const sc2 = Sc.addSNode(pr, k, at.script, 'say', 300, 160, { text: 'cancelled' }, k + '.asset'); at.script.links.push({ a: ch.id, o: 'cancel', b: sc2.id });
+    const cs = Sc.addSNode(pr, k, at.script, 'chargeShow', 300, 240, { color: '#33ccff', size: 3 }, k + '.asset'), su = Sc.addSNode(pr, k, at.script, 'chargeSuck', 560, 240, { rate: 60, radius: 10 }, k + '.asset'); at.script.links.push({ a: ch.id, o: 'start', b: cs.id }, { a: cs.id, o: 'next', b: su.id });
     S.tags.set('player.att.projType', 'particle'); S.tags.set('player.att.projShape', 'sphere'); S.tags.set('player.att.projSize', 6); S.tags.set('player.att.projColor', '#33ccff'); S.tags.set('player.att.projSpeed', 300);
   }, info.an);
   await p.click('.tab:has-text("Player Editor")'); await p.waitForTimeout(400);
@@ -44,6 +45,8 @@ module.exports = async (p, out) => {
   const ch = () => p.evaluate(() => +__studio.S.play.T.get('player.charge').toFixed(2));
   await p.mouse.move(700, 400); await p.mouse.down(); await p.evaluate(() => { __studio.S.play.pitch = 0; }); await p.waitForTimeout(200); console.log('charge after 0.2s', await ch());
   await p.waitForTimeout(1200); console.log('charge after 1.4s', await ch(), 'said', await p.evaluate(() => window.__said.join(',')), 'loop', await p.evaluate(() => JSON.stringify(__studio.S.play.atts.map(a => [a.loopAnim, a.fire]))));
+  console.log('suck-in particles', await p.evaluate(() => { const o = __studio.S.play.orb; return o ? JSON.stringify({ orbSize: o.size, suck: !!o.suck, bits: (o.sp || []).length }) : 'no orb'; }));
+  await p.screenshot({ path: out + '_suck.png', timeout: 60000 }).catch(() => {});
   await p.evaluate(() => { __studio.S.play.pitch = 0; }); await p.mouse.up(); await p.waitForTimeout(150);
   console.log('fx after release', await p.evaluate(() => JSON.stringify((__studio.S.play.fx || []).map(f => [f.kind, Math.round(f.size * 10) / 10]))), 'fire anim', await p.evaluate(() => __studio.S.play.atts[0].fire));
   await p.screenshot({ path: out + '_proj.png' });

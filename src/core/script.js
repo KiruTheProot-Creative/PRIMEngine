@@ -84,6 +84,7 @@
           case "if": out = this.test(g("tag"), g("op"), g("value")) ? "then" : "else"; break;
           case "chargeShow": if (this.o.orb) this.o.orb(owner.key, "show", { color: String(g("color")), size: +g("size") || 1 }); break;
           case "chargeGrow": if (this.o.orb) this.o.orb(owner.key, "grow", { size: +g("size") || 1, seconds: +g("seconds") || 0 }); break;
+          case "chargeSuck": if (this.o.orb) this.o.orb(owner.key, "suck", { rate: +g("rate") || 40, radius: +g("radius") || 10, size: +g("size") || 0.35, time: +g("time") || 0.4, color: g("same") === false ? String(g("color") || "#ffffff") : null }); break;
           case "fireProjectile": if (this.o.fire) this.o.fire(owner.key); break;
           case "reload": if (this.o.reload) this.o.reload(owner.key); break;
           case "ifAmmo": out = !this.o.hasAmmo || this.o.hasAmmo(owner.key) ? "then" : "else"; break;

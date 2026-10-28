@@ -227,14 +227,22 @@
       if (f.kind === "line") beam(f.a, f.b, f.w * Math.max(0.15, 1 - f.t / f.life), f.c);
       else if (f.kind === "laser") beam(M4.sub(f.p, f.d.map(q => q * f.size * 7)), f.p, f.size * 0.4, f.c);
       else if (f.kind === "sphere") {
-        const pt = (i, j) => { const th = i / LAT * Math.PI, ph = j / LON * Math.PI * 2, n = [Math.sin(th) * Math.cos(ph), Math.cos(th), Math.sin(th) * Math.sin(ph)], lit = 0.65 + 0.35 * Math.max(0, M4.dot(n, Ld));
-          return [[f.p[0] + n[0] * f.size, f.p[1] + n[1] * f.size, f.p[2] + n[2] * f.size], [f.c[0] * lit, f.c[1] * lit, f.c[2] * lit]]; };
-        for (let i = 0; i < LAT; i++) for (let j = 0; j < LON; j++) { const q = [pt(i, j), pt(i + 1, j), pt(i + 1, j + 1), pt(i, j), pt(i + 1, j + 1), pt(i, j + 1)]; for (const [v, c] of q) push(v, c); }
+        // smooth (default): enough segments for its size on screen, shading per vertex so it looks round; flat: the old low-poly faceted look
+        if (f.flat) { const nrm = (i, j) => { const th = i / LAT * Math.PI, ph = j / LON * Math.PI * 2; return [Math.sin(th) * Math.cos(ph), Math.cos(th), Math.sin(th) * Math.sin(ph)]; };
+          for (let i = 0; i < LAT; i++) for (let j = 0; j < LON; j++) { const ns = [nrm(i, j), nrm(i + 1, j), nrm(i + 1, j + 1), nrm(i, j), nrm(i + 1, j + 1), nrm(i, j + 1)], fn = M4.norm(ns.reduce((a, b) => M4.add(a, b), [0, 0, 0])), lit = 0.6 + 0.4 * Math.max(0, M4.dot(fn, Ld)), c = [f.c[0] * lit, f.c[1] * lit, f.c[2] * lit]; for (const n of ns) push([f.p[0] + n[0] * f.size, f.p[1] + n[1] * f.size, f.p[2] + n[2] * f.size], c); } }
+        else { const dc = Math.hypot(f.p[0] - this.cam.x, f.p[1] - this.cam.y, f.p[2] - this.cam.z), px = f.size / Math.max(1, dc) * 900, la = px > 60 ? 16 : px > 18 ? 11 : px > 5 ? 8 : 5, lo = la * 2, V = M4.norm([this.cam.x - f.p[0], this.cam.y - f.p[1], this.cam.z - f.p[2]]);
+          const pt = (i, j) => { const th = i / la * Math.PI, ph = j / lo * Math.PI * 2, n = [Math.sin(th) * Math.cos(ph), Math.cos(th), Math.sin(th) * Math.sin(ph)], d = Math.max(0, M4.dot(n, Ld)), face = Math.max(0, M4.dot(n, V)), lit = 0.62 + 0.3 * d + 0.18 * face * face;
+            return [[f.p[0] + n[0] * f.size, f.p[1] + n[1] * f.size, f.p[2] + n[2] * f.size], [f.c[0] * lit, f.c[1] * lit, f.c[2] * lit]]; };
+          const ring = []; for (let i = 0; i <= la; i++) { const r = []; for (let j = 0; j <= lo; j++) r.push(pt(i, j)); ring.push(r); }
+          for (let i = 0; i < la; i++) for (let j = 0; j < lo; j++) { const q = [ring[i][j], ring[i + 1][j], ring[i + 1][j + 1], ring[i][j], ring[i + 1][j + 1], ring[i][j + 1]]; for (const [v, c] of q) push(v, c); } }
       }
     }
     this.setMat({ lit: 0 });
     if (a.length) { const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(a), gl.STREAM_DRAW); bind(buf, this.whiteTex); gl.drawArrays(gl.TRIANGLES, 0, a.length / 8); gl.deleteBuffer(buf); }
-    for (const f of list) if (f.kind === "mesh" && f.gm) { this.setMat(f.mat); const lv = this.lodLevelAt(Math.hypot(f.p[0] - this.cam.x, f.p[1] - this.cam.y, f.p[2] - this.cam.z), 20 * (f.scale || 1)); this.lodLevel = lv; for (let ms of f.gm.meshes) { ms = this.lodOf(f.gm, ms, lv); gl.uniformMatrix4fv(L.m, false, new Float32Array(M4.mul(f.M, f.pose[ms.node]))); bind(ms.buf, f.tex || f.gm.tex); gl.drawArrays(gl.TRIANGLES, 0, ms.n); } }
+    // objects off screen are skipped (culling setting): a sphere around the model's bounds, moved by its matrix
+    const vis = this.visible(), pl = vis ? this.frustum() : null, onScreen = f => { const b = f.gm.model && f.gm.model.bounds; if (!pl || !b) return true; const m = f.M, c = M4.point(m, (b.lo[0] + b.hi[0]) / 2, (b.lo[1] + b.hi[1]) / 2, (b.lo[2] + b.hi[2]) / 2), k = Math.max(Math.hypot(m[0], m[1], m[2]), Math.hypot(m[4], m[5], m[6]), Math.hypot(m[8], m[9], m[10])), r = Math.hypot(b.hi[0] - b.lo[0], b.hi[1] - b.lo[1], b.hi[2] - b.lo[2]) * 0.75 * k + 8; return pl.every(q => q[0] * c[0] + q[1] * c[1] + q[2] * c[2] + q[3] > -r); };
+    this.culledFx = 0;
+    for (const f of list) if (f.kind === "mesh" && f.gm) { if (!onScreen(f)) { this.culledFx++; continue; } this.setMat(f.mat); const lv = this.lodLevelAt(Math.hypot(f.p[0] - this.cam.x, f.p[1] - this.cam.y, f.p[2] - this.cam.z), 20 * (f.scale || 1)); this.lodLevel = lv; for (let ms of f.gm.meshes) { ms = this.lodOf(f.gm, ms, lv); gl.uniformMatrix4fv(L.m, false, new Float32Array(M4.mul(f.M, f.pose[ms.node]))); bind(ms.buf, f.tex || f.gm.tex); gl.drawArrays(gl.TRIANGLES, 0, ms.n); } }
     // decals / sprites: a textured square at p facing n (up = the world's up, or z for floors); frame f of a horizontal strip of `frames`
     for (const f of list) if (f.kind === "decal" && f.texId) {
       const n = f.n, ref = Math.abs(n[1]) > 0.9 ? [0, 0, 1] : [0, 1, 0], ux = M4.norm(M4.cross(ref, n)), uy = M4.cross(n, ux), sw = (f.w || f.size) / 2, s = (f.h || f.size) / 2, fr = f.frames || 1, u0 = (f.frame || 0) / fr, u1 = ((f.frame || 0) + 1) / fr;
