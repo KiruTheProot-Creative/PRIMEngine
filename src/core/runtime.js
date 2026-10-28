@@ -112,6 +112,7 @@
         const b = p("bind"), sp = T.spec(b), on = !!(sp && T.get(b));
         el = div("rt-n"); el.style.width = (p("w") || 420) + "px"; el.style.display = "flex"; el.style.justifyContent = "space-between"; el.style.alignItems = "center"; this.textStyle(el, sc, n);
         const a = document.createElement("span"); a.textContent = this.S(sc, n, "label"); const sw = div("rt-sw" + (on ? " on" : "")); sw.style.background = on ? p("accent") : ""; sw.append(document.createElement("i")); el.append(a, sw);
+      } else if (n.type === "pips") { el = div("rt-n"); if (PRIM.HUD && PRIM.HUD.pips) PRIM.HUD.pips(el, T, p);
       } else if (n.type === "bar") {
         const b = p("bind"), sp = T.spec(b), mt = p("max"), ms = mt && T.spec(mt), v = sp ? +T.get(b) : 0, mx = ms ? +T.get(mt) : sp ? sp.max : 1, mn = ms ? 0 : sp ? sp.min : 0, f = clamp((v - mn) / ((mx - mn) || 1), 0, 1);
         el = div("rt-n"); el.style.width = (p("w") || 260) + "px"; el.style.height = (p("h") || 22) + "px"; el.style.background = p("bg"); el.style.borderRadius = "3px"; el.style.overflow = "hidden"; el.style.opacity = p("opacity");

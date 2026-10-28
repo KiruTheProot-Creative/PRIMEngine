@@ -27,6 +27,9 @@
       { k: "target", label: "Screen", type: "screenRef", def: "", showIf: ["action", "goto"] }] },
     slider: { label: "Slider", icon: "◐", props: [{ k: "label", label: "Label", type: "string", def: "Value" }, { k: "bind", label: "Controls tag", type: "tagRef", refType: "number", def: "" }, FONT, SIZE(26), COLOR("color", "Color", "#d9f7ff"), COLOR("accent", "Accent", "#7df3ff"), X, Y, W("Width", 420)] },
     toggle: { label: "Toggle", icon: "◉", props: [{ k: "label", label: "Label", type: "string", def: "Option" }, { k: "bind", label: "Controls tag", type: "tagRef", refType: "bool", def: "" }, FONT, SIZE(26), COLOR("color", "Color", "#d9f7ff"), COLOR("accent", "Accent", "#7df3ff"), X, Y, W("Width", 420)] },
+    pips: { label: "Counter boxes (energy tanks, lives)", icon: "▪", props: [{ k: "bind", label: "Filled boxes = tag", type: "tagRef", refType: "number", def: "player.tanks" }, { k: "max", label: "Number of boxes = tag (empty = the tag's highest value)", type: "tagRef", refType: "number", def: "player.tanksMax" },
+      { k: "box", label: "Box size", type: "number", def: 18, min: 2, max: 200, step: 1 }, { k: "gap", label: "Space between boxes", type: "number", def: 5, min: 0, max: 100, step: 1 }, { k: "perRow", label: "Boxes per row (0 = one row)", type: "number", def: 7, min: 0, max: 100, step: 1 },
+      COLOR("color", "Filled color", "#ffb030"), COLOR("empty", "Empty color", "#3a2a12"), COLOR("border", "Border color", "#000000"), Object.assign({}, X, { def: -520 }), Object.assign({}, Y, { def: -272 }), OPACITY] },
     bar: { label: "Bar", icon: "▬", props: [{ k: "bind", label: "Shows tag", type: "tagRef", refType: "number", def: "" }, { k: "max", label: "Full when tag (optional)", type: "tagRef", refType: "number", def: "" }, { k: "label", label: "Label", type: "string", def: "" }, FONT, SIZE(18),
       COLOR("textColor", "Label color", "#ffffff"), COLOR("color", "Fill color", "#ff4a4a"), COLOR("bg", "Back color", "#2a0d0d"), X, Y, W("Width", 260), { k: "h", label: "Height", type: "number", def: 22, min: 4, max: 200, step: 1 }, OPACITY] },
     splash: { label: "Splash", icon: "✦", props: [
@@ -84,6 +87,7 @@
     { k: "hurtSound", label: "Hurt sound (when health goes down)", type: "asset", assetType: "sound", def: "" }, { k: "deathSound", label: "Death sound (health reaches 0)", type: "asset", assetType: "sound", def: "" }, { k: "soundVolume", label: "Player sounds volume", type: "number", def: 1, min: 0, max: 1, step: 0.05 },
     { k: "breathe", label: "Breathing (when standing still)", type: "bool", def: true }, PNUM("breatheAmount", "Breathing amount", 0.25, 0, 3, 0.01, { showIf: ["breathe", true] }), PNUM("breatheSpeed", "Breathing speed (breaths per second)", 0.25, 0.05, 2, 0.01, { showIf: ["breathe", true] }),
     { k: "bob", label: "Walking bob", type: "bool", def: true }, PNUM("bobAmount", "Walking bob amount", 0.5, 0, 4, 0.01, { showIf: ["bob", true] }), PNUM("bobSpeed", "Walking bob speed (steps per second)", 1.8, 0.2, 6, 0.05, { showIf: ["bob", true] }),
+    { k: "bobSync", label: "Sync bobbing to step distance (each footstep lands on the low point; the speed above is then ignored)", type: "bool", def: false, showIf: ["bob", true] },
     PNUM("animBlend", "Smooth change between animations (seconds, 0 = instant; weapons, enemies, doors, objects)", 0.15, 0, 1, 0.01), { k: "hudMove", label: "Hud Movement (the HUD sways when you look around, like Metroid Prime)", type: "bool", def: false }, PNUM("hudMoveAmount", "Hud Movement strength", 1, 0.1, 4, 0.05, { showIf: ["hudMove", true] }),
     { k: "maxHealth", label: "Health", type: "number", def: 100, min: 1, max: 1000, step: 1 },
     { k: "crosshair", label: "Show crosshair", type: "bool", def: true }, { k: "crosshairSize", label: "Crosshair size", type: "number", def: 10, min: 2, max: 60, step: 1, showIf: ["crosshair", true] }, { k: "crosshairGap", label: "Crosshair gap", type: "number", def: 4, min: 0, max: 30, step: 1, showIf: ["crosshair", true] },
@@ -91,11 +95,14 @@
     { k: "hud", label: "HUD screen", type: "screenRef", def: "hud" },
     { k: "reloadKey", label: "Reload key", type: "choice", options: [], def: "r" },
     { k: "startMap", label: "The game starts on map (empty = the first map)", type: "mapRef", def: "" },
+    { k: "livesMode", label: "Lives system", type: "choice", options: [["off", "Off (dying = the death setting below)"], ["classic", "Classic: lives, respawn at the last checkpoint"], ["reserve", "Energy reserve: energy tanks refill your health (Metroid style)"]], def: "off" },
+    PNUM("livesStart", "Lives at the start", 3, 1, 99, 1, { showIf: ["livesMode", "classic"] }),
+    PNUM("tanksStart", "Energy tanks at the start", 0, 0, 99, 1, { showIf: ["livesMode", "reserve"] }), PNUM("tanksLimit", "Most energy tanks you can collect", 14, 1, 99, 1, { showIf: ["livesMode", "reserve"] }),
     { k: "deathAction", label: "When the player dies", type: "choice", options: [["restart", "Restart the map"], ["screen", "Go to a screen (e.g. Game Over)"]], def: "restart" },
     { k: "deathScreen", label: "Game over screen", type: "screenRef", def: "", showIf: ["deathAction", "screen"] }, PNUM("deathDelay", "Wait after dying (s)", 2.5, 0, 30, 0.1),
     { k: "damageFlash", label: "Red flash when hurt", type: "bool", def: true },
   ];
-  S.PLAYER_GROUPS = [["Movement", ["speed", "sprintEnabled", "sprintPercent", "jumpEnabled", "jumpHeight", "gravity", "interactKey"]], ["Feel", ["breathe", "breatheAmount", "breatheSpeed", "bob", "bobAmount", "bobSpeed", "animBlend"]], ["Sounds", ["footstep", "footstep2", "footstep3", "stepDistance", "jumpSound", "landSound", "hurtSound", "deathSound", "soundVolume"]], ["Body", ["maxHealth", "eyeHeight", "radius", "stepHeight"]], ["Camera", ["fov", "aimMode", "freeAimRadius", "mouseSens"]], ["Crosshair", ["crosshair", "crosshairSize", "crosshairGap", "crosshairThickness", "crosshairColor"]], ["HUD", ["hud", "hudMove", "hudMoveAmount", "damageFlash"]], ["Game rules", ["startMap", "deathAction", "deathScreen", "deathDelay", "reloadKey"]]];
+  S.PLAYER_GROUPS = [["Movement", ["speed", "sprintEnabled", "sprintPercent", "jumpEnabled", "jumpHeight", "gravity", "interactKey"]], ["Feel", ["breathe", "breatheAmount", "breatheSpeed", "bob", "bobAmount", "bobSpeed", "bobSync", "animBlend"]], ["Sounds", ["footstep", "footstep2", "footstep3", "stepDistance", "jumpSound", "landSound", "hurtSound", "deathSound", "soundVolume"]], ["Body", ["maxHealth", "eyeHeight", "radius", "stepHeight"]], ["Camera", ["fov", "aimMode", "freeAimRadius", "mouseSens"]], ["Crosshair", ["crosshair", "crosshairSize", "crosshairGap", "crosshairThickness", "crosshairColor"]], ["HUD", ["hud", "hudMove", "hudMoveAmount", "damageFlash"]], ["Lives", ["livesMode", "livesStart", "tanksStart", "tanksLimit"]], ["Game rules", ["startMap", "deathAction", "deathScreen", "deathDelay", "reloadKey"]]];
   // 3D objects attached to the player camera (weapons, hands...). Each one has tags player.<id>.*
   const ANIM = (k, label, extra) => Object.assign({ k, label, type: "anim", def: "" }, extra || {}), NUM = (k, label, def, min, max, step, extra) => Object.assign({ k, label, type: "number", def, min, max, step }, extra || {}), WP = ["type", "weapon"], NI = ["type", ["weapon", "animation"]], W_ = { showIf: WP };
   // a showIf is [tagKey, value] or [tagKey, [value, value...]]
@@ -178,7 +185,7 @@
   // ---- placeable objects (the Object Editor): doors, pick-ups, decorations. Tags prop<N>.*  They are placed in maps (map.things).
   S.PROP = [
     { k: "name", label: "Name", type: "string", def: "Object" },
-    { k: "type", label: "Type", type: "choice", options: [["decoration", "Decoration (just a model)"], ["door", "Door (fills a cell between walls)"], ["pickup", "Pick-up (collected by touching)"], ["enemy", "Enemy (hunts and attacks the player)"], ["exit", "Level exit (touch it to leave the level)"], ["npc", "Character (NPC: talk to it, make choices)"], ["speaker", "Speaker (plays a sound you hear around it)"], ["interactive", "Interactive (buttons, consoles, screens)"]], def: "decoration" },
+    { k: "type", label: "Type", type: "choice", options: [["decoration", "Decoration (just a model)"], ["door", "Door (fills a cell between walls)"], ["pickup", "Pick-up (collected by touching)"], ["enemy", "Enemy (hunts and attacks the player)"], ["exit", "Level exit (touch it to leave the level)"], ["npc", "Character (NPC: talk to it, make choices)"], ["speaker", "Speaker (plays a sound you hear around it)"], ["interactive", "Interactive (buttons, consoles, screens)"], ["checkpoint", "Checkpoint (where you respawn with the Lives system)"]], def: "decoration" },
     { k: "look", label: "Looks like", type: "choice", options: [["model", "3D model (FBX)"], ["sprite", "2D sprite (pictures that always face the player)"]], def: "model", showIf: ["type", ["enemy", "decoration", "pickup", "exit", "npc"]] },
     { k: "asset", label: "Model (FBX)", type: "asset", assetType: "model", def: "", showIf: ["look", "model"] },
     // 2D sprites: each picture holds the frames of one animation side by side (a strip). They always turn to face the player.
@@ -224,7 +231,7 @@
   S.defineProp = (project, p, over) => { for (const pr of S.PROP) { const r = rec(pr, "props", p.id); if (pr.type === "anim") r.modelTag = p.id + ".asset"; if (over && pr.k in over) r.value = over[pr.k]; project.tags[p.id + "." + pr.k] = r; } };
   S.addProp = (project, over) => { const p = { id: S.uid("prop", project.props.map(x => x.id)) }; project.props.push(p); S.defineProp(project, p, Object.assign({ name: p.id }, over || {})); return p; };
   // ---- objects that give off light (lamps, torches, glowing crystals...): a point light above the object, optionally casting real-time shadows
-  S.PROP.push({ k: "lightOn", label: "Gives off light", type: "bool", def: false, showIf: ["type", ["decoration", "pickup", "enemy", "exit", "npc", "interactive"]] },
+  S.PROP.push({ k: "lightOn", label: "Gives off light", type: "bool", def: false, showIf: ["type", ["decoration", "pickup", "enemy", "exit", "npc", "interactive", "checkpoint"]] },
     { k: "lightColor", label: "Light colour", type: "color", def: "#ffd9a0", showIf: ["lightOn", true] }, NUM("lightIntensity", "Light brightness", 1.6, 0, 10, 0.05, { showIf: ["lightOn", true] }),
     NUM("lightRange", "Light reach (units, 128 = a cell)", 420, 32, 4000, 8, { showIf: ["lightOn", true] }), NUM("lightHeight", "Light height above the floor (units)", 80, -64, 512, 1, { showIf: ["lightOn", true] }),
     NUM("lightFlicker", "Flicker (0 = steady, 1 = like a torch)", 0, 0, 1, 0.01, { showIf: ["lightOn", true] }), { k: "lightShadows", label: "Casts shadows", type: "bool", def: true, showIf: ["lightOn", true] });
@@ -233,6 +240,14 @@
     NUM("spkRadius", "Heard within (units, 128 = a cell; silent outside)", 512, 16, 8000, 8, { showIf: ["type", "speaker"] }), NUM("spkHeight", "Sound height above the floor", 64, 0, 1024, 1, { showIf: ["type", "speaker"] }),
     { k: "spkLoop", label: "Loops forever (off = plays once each time you walk into its radius)", type: "bool", def: true, showIf: ["type", "speaker"] },
     { k: "spkShow", label: "Model visible in the game", type: "bool", def: false, showIf: ["type", "speaker"] });
+  S.PROP.push({ k: "popupOn", label: "Show a pop-up when picked up (pauses the game)", type: "bool", def: false, showIf: ["type", "pickup"] },
+    { k: "popupTitle", label: "Pop-up title (empty = the object's name)", type: "string", def: "", showIf: ["type", "pickup"], showIf2: ["popupOn", true] },
+    { k: "popupText", label: "Pop-up text", type: "string", def: "", showIf: ["type", "pickup"], showIf2: ["popupOn", true] },
+    { k: "popupImage", label: "Pop-up picture", type: "asset", assetType: "image", def: "", showIf: ["type", "pickup"], showIf2: ["popupOn", true] },
+    { k: "popupFirst", label: "Only the first time you get this kind of item", type: "bool", def: true, showIf: ["type", "pickup"], showIf2: ["popupOn", true] },
+    { k: "popupSound", label: "Pop-up sound (fanfare)", type: "asset", assetType: "sound", def: "", showIf: ["type", "pickup"], showIf2: ["popupOn", true] },
+    NUM("cpRadius", "Touch radius (units, 128 = a cell)", 64, 8, 1000, 4, { showIf: ["type", "checkpoint"] }), { k: "cpHeal", label: "Refills health", type: "bool", def: true, showIf: ["type", "checkpoint"] },
+    { k: "cpMessage", label: "Message when reached", type: "string", def: "Checkpoint", showIf: ["type", "checkpoint"] }, { k: "cpSound", label: "Sound when reached", type: "asset", assetType: "sound", def: "", showIf: ["type", "checkpoint"] });
   S.PROP.push({ k: "useMode", label: "How it is used", type: "choice", options: [["key", "Look at a hitbox and press the Interact key (E)"], ["aim", "Aim the crosshair at a hitbox and click"], ["cursor", "Screen: step close, the mouse moves a cursor, click hitboxes"]], def: "key", showIf: ["type", "interactive"] },
     NUM("useRange", "Can be used from (units, 128 = a cell)", 120, 16, 1000, 4, { showIf: ["type", "interactive"] }),
     { k: "useHint", label: "Hint text (empty = the hitbox name)", type: "string", def: "", showIf: ["type", "interactive"] },
@@ -316,6 +331,7 @@
     onReload: { label: "When reloading starts", cat: "event", ins: false, outs: ["next"], ctx: ["weapon"], props: [] },
     onReloadDone: { label: "When reloading is done", cat: "event", ins: false, outs: ["next"], ctx: ["weapon"], props: [] },
     onButton: { label: "When a button is pressed", cat: "event", ins: false, outs: ["next"], ctx: ["object", "player"], props: [{ k: "name", label: "Button name (empty = any button)", type: "string", def: "" }] },
+    onRespawn: { label: "When the player respawns (Lives system)", cat: "event", ins: false, outs: ["next"], ctx: ["object", "player"], props: [] },
     onMessage: { label: "When I receive a message", cat: "event", ins: false, outs: ["next"], ctx: ["screen", "object", "player"], props: [{ k: "name", label: "Message name", type: "string", def: "go" }] },
     onTag: { label: "When a tag becomes…", cat: "event", ins: false, outs: ["next"], ctx: ["screen", "object", "player"], props: [ANYTAG, { k: "op", label: "Is", type: "choice", options: [["=", "equal to"], ["!=", "not equal to"], [">", "greater than"], ["<", "less than"], [">=", "at least"], ["<=", "at most"]], def: ">=" }, { k: "value", label: "This value", type: "string", def: "10" }] },
     sendMessage: { label: "Send a message (to every script)", cat: "action", outs: ["next"], ctx: ["screen", "object", "player"], props: [{ k: "name", label: "Message name", type: "string", def: "go" }] },
@@ -423,6 +439,7 @@
     if (!project.tags["player.state"]) project.tags["player.state"] = { type: "string", value: "standing", label: "What the player is doing: standing, walking, running, jumping, falling (live)", group: "player", builtin: true };
     if (project.player && project.player.script) for (const n of project.player.script.nodes) S.ensureSNode(project, "player", n);
     S.ensureComp(project);
+    for (const [k, l] of [["lives", "Lives left (live)"], ["tanks", "Full energy tanks (live)"], ["tanksMax", "Energy tanks owned (live)"]]) if (!project.tags["player." + k]) project.tags["player." + k] = { type: "number", value: 0, min: 0, max: 99, step: 1, label: l, group: "player", builtin: true };
     if (!project.tags["player.lastButton"]) project.tags["player.lastButton"] = { type: "string", value: "", label: "Name of the last button pressed (live)", group: "player", builtin: true };
     if (!project.tags["player.reloading"]) project.tags["player.reloading"] = { type: "bool", value: false, label: "The current weapon is reloading (live)", group: "player", builtin: true };
     if (!project.tags["player.charge"]) project.tags["player.charge"] = { type: "number", value: 0, label: "Charge beam progress, 0 to 1 (live)", group: "player", min: 0, max: 1, step: 0.01, builtin: true };

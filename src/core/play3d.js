@@ -12,7 +12,7 @@
   PRIM.Play3D = class Play3D {
     constructor(o) {
       this.o = o; this.mode = o.mode || "play"; this.project = o.project; this.map = o.map || null; this.urls = o.urls || {};
-      this.T = this.mode === "play" ? o.tags.fork() : o.tags; if (this.mode === "play") { this.T.setMany({ "player.health": +this.T.get("player.maxHealth") || 100 }); this.initAmmo(); }
+      this.T = this.mode === "play" ? o.tags.fork() : o.tags; if (this.mode === "play") { this.T.setMany({ "player.health": +this.T.get("player.maxHealth") || 100 }); this.initAmmo(); this.initLives(); }
       this.keys = {}; this.aimYaw = 0; this.aimPitch = 0; this.dead = false; this.drag = false; this.vz = 0; this.ground = false; this.hint = null; this.shot = 0;
       const host = this.host = o.host; this.root = el("p3root"); this.cv = document.createElement("canvas"); this.cv.className = "v3cv p3cv"; this.xh = el("p3x"); this.hudHost = el("p3hud"); this.msg = el("p3msg");
       this.root.append(this.cv, this.hudHost, this.xh, this.msg); host.append(this.root);
@@ -52,13 +52,14 @@
         if (!this.root.isConnected) return;
         if (e.key === "Escape") { e.stopImmediatePropagation(); e.preventDefault(); this.leave(); return; }
         if (/INPUT|SELECT|TEXTAREA/.test((e.target && e.target.tagName) || "")) return;   // typing in a text field is never a game key
+        if (this.popup) { e.preventDefault(); if (!e.repeat) this.popupKey(keyId(e)); return; }
         if (this.talk) { e.preventDefault(); if (!e.repeat) this.talkKey(keyId(e)); return; }   // while talking, keys answer the dialogue
         const id = keyId(e), n = id; if (!e.repeat && !k[id]) { k[id] = true; this.trigger("onKey", id); if (this.mode === "play" && id === (this.T.get("player.interactKey") || "e")) this.interact(); if (this.mode === "play" && id === (this.T.get("player.reloadKey") || "r")) this.reload(this.curWeapon()); } k[id] = true; if (/^[1-9]$/.test(n)) this.setWeapon(+n - 1); if (["w", "a", "s", "d", "space", "shift", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(id)) e.preventDefault();
         if (this.o.debug && n === "h") this.T.setMany({ "player.health": Math.max(0, this.T.get("player.health") - 10) }); if (this.o.debug && n === "j") this.T.setMany({ "player.health": Math.min(this.T.get("player.maxHealth"), this.T.get("player.health") + 10) });
       };
       const ku = e => this.release(keyId(e));
       const mm = e => { if (document.pointerLockElement === cv || this.drag) this.look(e.movementX, e.movementY); };
-      const pd = e => { if (this.talk) return; if (this.engaged && e && e.button === 0 && this.mode === "play" && this.useClick()) return; if (this.engaged && e && e.button === 0) this.fire(); if (this.engaged && e) this.press(mouseId(e.button)); this.engaged = true; this.msg.style.display = "none"; this.drag = true; try { const r = cv.requestPointerLock && cv.requestPointerLock(); if (r && r.catch) r.catch(() => {}); } catch (x) {} cv.focus(); };
+      const pd = e => { if (this.popup) { this.popupClose(); return; } if (this.talk) return; if (this.engaged && e && e.button === 0 && this.mode === "play" && this.useClick()) return; if (this.engaged && e && e.button === 0) this.fire(); if (this.engaged && e) this.press(mouseId(e.button)); this.engaged = true; this.msg.style.display = "none"; this.drag = true; try { const r = cv.requestPointerLock && cv.requestPointerLock(); if (r && r.catch) r.catch(() => {}); } catch (x) {} cv.focus(); };
       const pu = e => { this.drag = false; if (e && e.button !== undefined) this.release(mouseId(e.button)); }, pl = () => lock(), bl = () => { for (const id of Object.keys(k)) this.release(id); }, noCtx = e => e.preventDefault(), noMid = e => { if (e.button !== 0) e.preventDefault(); };
       addEventListener("keydown", kd, true); addEventListener("keyup", ku, true); addEventListener("mousemove", mm); addEventListener("pointerup", pu); document.addEventListener("pointerlockchange", pl); addEventListener("blur", bl); this.root.addEventListener("contextmenu", noCtx); this.root.addEventListener("mousedown", noMid);
       this.root.addEventListener("pointerdown", pd); cv.tabIndex = 0; const wh = e => { if (this.engaged) { e.preventDefault(); this.setWeapon((this.wi || 0) + (e.deltaY > 0 ? 1 : -1)); } }; this.root.addEventListener("wheel", wh, { passive: false });
@@ -161,7 +162,7 @@
       for (const th of m.things || []) {
         const pre = th.prop + ".", aid = T.get(pre + "asset"), type = T.get(pre + "type");
         if (type !== "door" && T.get(pre + "look") === "sprite") { gone.delete(th.id); const o = old.find(x => x.th.id === th.id) || { th, st: "closed", p: 0, t: 0, timer: 0, taken: false, spin: 0 }; Object.assign(o, { th, pre, aid: null, model: null, gm: null, sprite: true, type, fr: G.thingFrame(m, T, th) }); if (!o.init) o.floor = o.fr.fy; out.push(o); continue; }
-        if ((type === "speaker" || type === "interactive") && (!aid || !this.urls[aid])) { gone.delete(th.id); const o = old.find(x => x.th.id === th.id) || { th, st: "closed", p: 0, t: 0, timer: 0, taken: false, spin: 0 }; Object.assign(o, { th, pre, aid: null, model: null, gm: null, sprite: false, type, fr: G.thingFrame(m, T, th) }); o.floor = o.fr.fy; out.push(o); continue; }
+        if ((type === "speaker" || type === "interactive" || type === "checkpoint") && (!aid || !this.urls[aid])) { gone.delete(th.id); const o = old.find(x => x.th.id === th.id) || { th, st: "closed", p: 0, t: 0, timer: 0, taken: false, spin: 0 }; Object.assign(o, { th, pre, aid: null, model: null, gm: null, sprite: false, type, fr: G.thingFrame(m, T, th) }); o.floor = o.fr.fy; out.push(o); continue; }
         if (!aid || !this.urls[aid]) continue; const model = F.cache[aid];
         if (!model) { F.load(aid, this.urls[aid]).then(mm => { if (mm && !this.dead) this.syncThings(); }); continue; }
         if (!this.gpu[aid]) this.gpu[aid] = this.view.loadModel(model); gone.delete(th.id); { const q = old.find(x => x.th.id === th.id); if (q) q.sprite = false; }
@@ -284,7 +285,14 @@
       if (this.talk) return; const T = this.T; for (const o of this.things || []) {
         if (o.taken) continue; if (o.type === "enemy") { this.enemyStep(o, dt); continue; } const g = k => +T.get(o.pre + k) || 0, f = o.fr, dist = Math.hypot(this.x - f.cx, this.y - f.cy);
         if (o.type === "exit") { if (!this.pdead && dist < (g("exitRadius") || 40) && Math.abs(this.z - o.floor) < 90) this.levelExit(o); continue; }
-        if (o.type === "pickup") { if (dist < (g("pickRadius") || 28) && Math.abs(this.z - o.floor) < 70) { o.taken = true; const tg = T.get(o.pre + "giveTag"); if (tg && T.get(tg) !== undefined) T.set(tg, (+T.get(tg) || 0) + g("giveAmount")); const s = T.get(o.pre + "pickSound"); if (s) this.sfx(s); } else o.spin += dt * 80; continue; }
+        if (o.type === "pickup") { if (dist < (g("pickRadius") || 28) && Math.abs(this.z - o.floor) < 70) { o.taken = true; const tg = T.get(o.pre + "giveTag"), amt = g("giveAmount");
+          if (tg === "player.health" && this.livesMode() === "reserve") this.giveHealth(amt);   // overflow fills empty energy tanks
+          else if (tg === "player.tanksMax") { const own = Math.min(+T.get("player.tanksLimit") || 14, (+T.get(tg) || 0) + amt); T.setMany({ "player.tanksMax": own, "player.tanks": own, "player.health": +T.get("player.maxHealth") || 100 }); }   // a new energy tank refills everything
+          else if (tg && T.get(tg) !== undefined) T.set(tg, (+T.get(tg) || 0) + amt);
+          const s = T.get(o.pre + "pickSound"); if (s) this.sfx(s);
+          if (T.get(o.pre + "popupOn")) { this.seenPop = this.seenPop || new Set(); const kind = o.th.prop; if (!(T.get(o.pre + "popupFirst") !== false && this.seenPop.has(kind))) { this.seenPop.add(kind); this.popupShow(o); } } } else o.spin += dt * 80; continue; }
+        if (o.type === "checkpoint") { if (dist < (g("cpRadius") || 64) && Math.abs(this.z - o.floor) < 90 && !this.pdead && (!this.cp || this.cp.id !== o.th.id)) { this.cp = { id: o.th.id, map: this.map && this.map.id, x: this.x, y: this.y, z: this.z, yaw: this.yaw };
+          if (T.get(o.pre + "cpHeal") !== false) T.set("player.health", +T.get("player.maxHealth") || 100); const s = T.get(o.pre + "cpSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); if (T.get(o.pre + "cpMessage")) this.toast(T.get(o.pre + "cpMessage")); } continue; }
         if (o.type !== "door") continue; const mode = T.get(o.pre + "openMode"), near = dist < (mode === "proximity" ? g("openRange") || 110 : 50);
         if (mode === "proximity" && near && (o.st === "closed" || o.st === "closing")) this.openDoor(o);
         const on = T.get(o.pre + "autoClose") && (mode === "proximity" || g("closeAfter") > 0);
@@ -385,7 +393,9 @@
       if (kind === "hitscan") { const ok = this.canSee(o); (this.fx = this.fx || []).push({ kind: "line", a, b: ok ? b : M4.add(a, D.map(q => q * L * 0.9)), c: col, w: 0.6, life: 0.12, t: 0 }); if (ok) this.hurtPlayer(dmg); return; }
       (this.fx = this.fx || []).push({ kind: "sphere", hostile: true, dmg, p: a, d: D, c: col, size: g("projSize") || 6, speed: g("projSpeed") || 600, life: 6, t: 0, light: { c: col, k: 1.2, r: 160 } });
     }
-    hurtPlayer(d) { if (this.pdead || !(d > 0)) return; const T = this.T; T.set("player.health", Math.max(0, (+T.get("player.health") || 0) - d)); }
+    hurtPlayer(d) { if (this.pdead || !(d > 0) || this.popup) return; const T = this.T, hp = (+T.get("player.health") || 0) - d;
+      if (hp <= 0 && d < 1e8 && this.livesMode() === "reserve" && (+T.get("player.tanks") || 0) > 0) { let h = hp, tk = +T.get("player.tanks") || 0; const mx = +T.get("player.maxHealth") || 100; while (h <= 0 && tk > 0) { tk--; h += mx; } T.setMany({ "player.health": Math.min(mx, h), "player.tanks": tk }); this.flash(0.5); this.psound("hurtSound"); this.toast("Energy tank used"); return; }
+      T.set("player.health", Math.max(0, hp)); }
     hitEnemy(O, D, maxd) {   // ray against enemy bodies (upright cylinders)
       let best = null; for (const o of this.things || []) { if (!this.eAlive(o)) continue; const r = +this.T.get(o.pre + "radius") || 22, h = +this.T.get(o.pre + "height") || 110, fx = O[0] - o.x, fz = O[2] - o.y, a = D[0] * D[0] + D[2] * D[2], b = 2 * (fx * D[0] + fz * D[2]), c = fx * fx + fz * fz - r * r;
         let t; if (c <= 0) t = 0; else { if (a < 1e-9) continue; const disc = b * b - 4 * a * c; if (disc < 0) continue; t = (-b - Math.sqrt(disc)) / (2 * a); if (t < 0) continue; }
@@ -420,9 +430,40 @@
       if (!force && !this.T.get("player.damageFlash")) return; if (!this.flashEl) { this.flashEl = document.createElement("div"); this.flashEl.style.cssText = "position:absolute;inset:0;pointer-events:none;opacity:0;z-index:4"; this.root.append(this.flashEl); }
       const e = this.flashEl, c = this.hexCol(color || "#c80000").map(q => Math.round(q * 255)).join(","); e.style.background = color ? "rgb(" + c + ")" : "radial-gradient(ellipse at center,rgba(255,0,0,0) 35%,rgba(200,0,0,.85) 100%)";
       e.style.transition = "none"; e.style.opacity = a; requestAnimationFrame(() => { e.style.transition = "opacity .45s ease-out"; e.style.opacity = 0; }); }
+    // ---- Lives system (player tag livesMode): "classic" = lives + respawn at the last checkpoint, "reserve" = energy tanks (Metroid style), "off"
+    livesMode() { return this.T.get("player.livesMode") || "off"; }
+    initLives() { const T = this.T, set = { "player.lives": +T.get("player.livesStart") || 3 }, tm = Math.min(+T.get("player.tanksLimit") || 14, +T.get("player.tanksStart") || 0); set["player.tanksMax"] = tm; set["player.tanks"] = tm; for (const k of Object.keys(set)) if (!T.has(k)) delete set[k]; T.setMany(set); }
+    // energy tanks: when health would drop to 0, a full tank refills it (the leftover damage still counts)
+    useTanks() { const T = this.T; if (this.livesMode() !== "reserve" || this.pdead) return; let hp = +T.get("player.health") || 0, tk = +T.get("player.tanks") || 0; const mx = +T.get("player.maxHealth") || 100; if (hp > 0 || tk <= 0) return; while (hp <= 0 && tk > 0) { tk--; hp += mx; } T.setMany({ "player.health": Math.min(mx, hp), "player.tanks": tk }); this.lastHp = Math.min(mx, hp); this.toast("Energy tank used"); }
+    // health pick-ups in reserve mode: once health is full the rest fills empty tanks
+    giveHealth(amt) { const T = this.T, mx = +T.get("player.maxHealth") || 100, hp = (+T.get("player.health") || 0) + amt, own = +T.get("player.tanksMax") || 0; let tk = +T.get("player.tanks") || 0;
+      if (hp > mx && tk < own) { this.tankFill = (this.tankFill || 0) + hp - mx; while (this.tankFill >= mx && tk < own) { this.tankFill -= mx; tk++; } if (tk >= own) this.tankFill = 0; }   // the extra collects until a whole tank is full
+      T.setMany({ "player.health": Math.min(mx, hp), "player.tanks": tk }); }
+    respawn() {
+      const T = this.T, c = this.cp; T.set("player.lives", Math.max(0, (+T.get("player.lives") || 0) - 1)); T.set("player.health", +T.get("player.maxHealth") || 100); this.lastHp = undefined;
+      this.fx = []; this.orb = null; this.reloading = null; this.extV = null; this.jumpReq = undefined; this.shakeT = 0; this.pdead = false; this.deadT = 0; this.say2(""); this.body = null;
+      if (c && this.map && c.map === this.map.id) { this.x = c.x; this.y = c.y; this.z = c.z; this.yaw = c.yaw; this.pitch = 0; this.vz = 0; this.ground = true; } else this.placeStart();
+      this.trigger("onRespawn"); this.toast((+T.get("player.lives") || 0) + (+T.get("player.lives") === 1 ? " life left" : " lives left"));
+    }
+    toast(t) { if (!this.toastEl) { this.toastEl = document.createElement("div"); this.toastEl.style.cssText = "position:absolute;left:50%;top:14%;transform:translateX(-50%);padding:8px 18px;background:rgba(10,14,20,.75);border:1px solid rgba(255,255,255,.25);border-radius:4px;color:#e8f2fb;font:600 18px 'Chakra Petch',system-ui,sans-serif;letter-spacing:.06em;pointer-events:none;z-index:6;transition:opacity .4s;opacity:0"; this.root.append(this.toastEl); }
+      this.toastEl.textContent = t; this.toastEl.style.opacity = 1; clearTimeout(this.toastT); this.toastT = setTimeout(() => { if (this.toastEl) this.toastEl.style.opacity = 0; }, 1800); }
+    // ---- pick-up pop-ups: pause everything and say what you got (closed with the Interact key, Space, Enter or a click)
+    popupShow(o) {
+      const T = this.T, pre = o.pre, g = k => T.get(pre + k); this.popup = { t0: performance.now() }; for (const k of Object.keys(this.keys)) this.release(k);
+      if (!this.popEl) { this.popEl = document.createElement("div"); this.popEl.className = "p3pop"; this.popEl.style.cssText = "position:absolute;inset:0;display:grid;place-items:center;background:rgba(0,0,0,.45);z-index:8"; this.popEl.addEventListener("pointerdown", e => { e.stopPropagation(); this.popupClose(); }); this.root.append(this.popEl); }
+      const box = document.createElement("div"); box.style.cssText = "min-width:320px;max-width:min(560px,86%);padding:22px 28px;background:rgba(8,14,22,.93);border:2px solid rgba(125,243,255,.7);border-radius:6px;color:#e8f2fb;text-align:center;font:17px/1.45 'Chakra Petch',system-ui,sans-serif;box-shadow:0 0 30px rgba(125,243,255,.25)";
+      const img = g("popupImage") && this.urls[g("popupImage")]; if (img) { const i = document.createElement("img"); i.src = img; i.alt = ""; i.style.cssText = "display:block;margin:0 auto 12px;max-width:160px;max-height:160px;image-rendering:pixelated"; box.append(i); }
+      const h = document.createElement("div"); h.textContent = g("popupTitle") || g("name") || "Item"; h.style.cssText = "font-size:26px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#7df3ff;margin-bottom:6px"; box.append(h);
+      if (g("popupText")) { const tx = document.createElement("div"); tx.textContent = T.interpolate(String(g("popupText"))); box.append(tx); }
+      const f = document.createElement("div"); f.textContent = "[" + String(T.get("player.interactKey") || "e").toUpperCase() + "]  Continue"; f.style.cssText = "margin-top:16px;font-size:13px;opacity:.7;letter-spacing:.1em"; box.append(f);
+      this.popEl.replaceChildren(box); this.popEl.style.display = "grid"; const snd = g("popupSound"); if (snd) this.sfx(snd, 1);
+    }
+    popupKey(id) { if (!this.popup || performance.now() - this.popup.t0 < 350) return; if (id === "space" || id === "enter" || id === "escape" || id === (this.T.get("player.interactKey") || "e")) this.popupClose(); }
+    popupClose() { if (!this.popup || performance.now() - this.popup.t0 < 350) return; this.popup = null; if (this.popEl) this.popEl.style.display = "none"; }
     deathStep(dt) {
-      const T = this.T; if (!this.pdead) { if ((+T.get("player.health") || 0) <= 0) { this.pdead = true; this.deadT = 0; this.reloading = null; this.say2("You died"); } return; }
+      const T = this.T; if (!this.pdead) { this.useTanks(); if ((+T.get("player.health") || 0) <= 0) { this.pdead = true; this.deadT = 0; this.reloading = null; this.say2("You died"); } return; }
       this.deadT += dt; if (this.deadT < (+T.get("player.deathDelay") || 0)) return;
+      if (this.livesMode() === "classic" && (+T.get("player.lives") || 0) > 0) { this.respawn(); return; }   // lives left: back at the last checkpoint, the level stays as it is
       const scr = T.get("player.deathScreen"); if (T.get("player.deathAction") === "screen" && scr && this.o.onScreen) { this.pdead = false; this.o.onScreen(scr); return; } this.restartMap();
     }
     say2(t) { if (!this.bigMsg) { this.bigMsg = document.createElement("div"); this.bigMsg.style.cssText = "position:absolute;left:0;right:0;top:38%;text-align:center;font:600 46px 'Chakra Petch',system-ui,sans-serif;letter-spacing:.12em;color:#ffdede;text-shadow:0 2px 10px #000;pointer-events:none;z-index:6;transition:opacity .6s"; this.root.append(this.bigMsg); } this.bigMsg.textContent = t; this.bigMsg.style.opacity = t ? 1 : 0; }
@@ -432,8 +473,8 @@
       const L = m ? +T.get(m.id + ".startLayer") || 0 : 0; this.z = m && G ? G.groundY(m, this.x, this.y, L * G.LAYER + G.LAYER - 8) : 0; this.vz = 0; this.body = null; this.ground = true;
     }
     resetPlayer() { this.placeStart(); this.fx = []; this.orb = null; this.reloading = null; if (this.mode === "play" && this.T.get("player.reloading")) this.T.set("player.reloading", false); this.extV = null; this.jumpReq = undefined; this.airJumps = 0; this.shakeT = 0; this.pdead = false; this.deadT = 0; this.say2(""); this.doorOpen = {}; this.things = []; this.syncThings(); }
-    restartMap() { const T = this.T; T.set("player.health", +T.get("player.maxHealth") || 100); this.lastHp = undefined; this.initAmmo(); this.resetPlayer(); }
-    loadMap(id) { const m = this.project.maps.find(x => x.id === id); if (!m || !this.view) return false; this.map = m; this.view.setMap(this.project, m, this.T, this.urls); this.resetPlayer(); return true; }
+    restartMap() { const T = this.T; T.set("player.health", +T.get("player.maxHealth") || 100); this.lastHp = undefined; this.initAmmo(); this.initLives(); this.cp = null; this.resetPlayer(); }
+    loadMap(id) { const m = this.project.maps.find(x => x.id === id); if (!m || !this.view) return false; this.map = m; this.cp = null; this.view.setMap(this.project, m, this.T, this.urls); this.resetPlayer(); return true; }
     levelExit(o) {
       if (this.exiting) return; const T = this.T, s = T.get(o.pre + "exitSound"); if (s) this.sfx(s);
       if (T.get(o.pre + "exitTo") === "screen") { const sc = T.get(o.pre + "exitScreen"); if (sc && this.o.onScreen) { this.exiting = true; this.o.onScreen(sc); return; } this.say2("Level finished"); this.exiting = true; return; }
@@ -689,7 +730,8 @@
     feel(dt) {
       const T = this.T, st = this.pstate, f = this.fl = this.fl || { idle: 0, walk: 0, ph: 0, bt: 0, hx: 0, hy: 0, ly: this.yaw, lp: this.pitch };
       const idleT = st === "standing" ? 1 : 0, walkT = st === "walking" || st === "running" ? 1 : 0, k = 1 - Math.exp(-6 * dt); f.idle += (idleT - f.idle) * k; f.walk += (walkT - f.walk) * k;
-      f.bt += dt * (+T.get("player.breatheSpeed") || 0.25) * Math.PI * 2; f.ph += dt * (+T.get("player.bobSpeed") || 1.8) * Math.PI * 2 * (st === "running" ? 1.45 : 1);
+      f.bt += dt * (+T.get("player.breatheSpeed") || 0.25) * Math.PI * 2; if (T.get("player.bobSync")) f.ph = Math.PI * 2 * ((this.stepAcc || 0) / Math.max(10, +T.get("player.stepDistance") || 90)) + Math.PI;   // one bob per footstep, the step sound at the lowest point
+      else f.ph += dt * (+T.get("player.bobSpeed") || 1.8) * Math.PI * 2 * (st === "running" ? 1.45 : 1);
       const ba = T.get("player.breathe") ? (+T.get("player.breatheAmount") || 0) * f.idle : 0, wa = T.get("player.bob") ? (+T.get("player.bobAmount") || 0) * f.walk * (st === "running" ? 1.4 : 1) : 0;
       this.vmOff = [Math.sin(f.ph * 0.5) * wa * 0.8, Math.sin(f.bt) * ba * 0.7 - Math.abs(Math.sin(f.ph * 0.5)) * wa, Math.sin(f.bt) * ba * 0.4];
       // Hud Movement: turning kicks the HUD the other way, then it eases back
@@ -701,8 +743,8 @@
       if (this.dead) return;
       // removed from the page (the playtest was stopped, another project was opened...): shut down for good, so no copy keeps listening to keys and playing sounds
       if (this.root.isConnected) this.wasOn = true; else if (this.wasOn) { this.destroy(); return; }
-      this.raf = requestAnimationFrame(q => this.frame(q)); const dt = Math.min(0.05, (t - this.last) / 1000); this.last = t;
-      if (this.mode === "play" && this.map && !this.pdead && !this.talk) this.step(dt);
+      this.raf = requestAnimationFrame(q => this.frame(q)); const dt = this.popup ? 0 : Math.max(0, Math.min(0.05, (t - this.last) / 1000)); this.last = Math.max(t, this.last || 0);   // never a negative step (gravity would run backwards)   // a pick-up pop-up pauses everything
+      if (this.mode === "play" && this.map && !this.pdead && !this.talk && !this.popup) this.step(dt);
       if (this.mode === "play") this.talkHint();
       if (this.mode === "play") this.feel(dt);
       if (this.mode === "play") { this.hold(dt); const hp = +this.T.get("player.health"); if (this.lastHp === undefined) this.lastHp = hp; if (hp < this.lastHp) { this.psound(hp <= 0 ? "deathSound" : "hurtSound"); this.flash(Math.min(0.6, 0.15 + (this.lastHp - hp) / 60)); this.trigger(hp <= 0 ? "onDeath" : "onHurt"); } this.lastHp = hp; this.reloadStep(dt); this.ammoClamp(); this.deathStep(dt); }

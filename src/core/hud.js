@@ -89,6 +89,7 @@
       const text = e => { e.style.fontFamily = font(p("font")); e.style.fontSize = p("size") + "px"; e.style.color = p("color"); };
       if (n.type === "title") { el.textContent = this.S(n, "text"); text(el); el.style.opacity = p("opacity"); }
       else if (n.type === "image") { this.pic(el, p("asset"), +p("w"), +p("h")); el.style.opacity = p("opacity"); }
+      else if (n.type === "pips") PRIM.HUD.pips(el, this.tags, p);
       else if (n.type === "bar") {
         const T = this.tags, b = p("bind"), sp = T.spec(b), mt = p("max"), ms = mt && T.spec(mt), v = sp ? +T.get(b) : 0, mxv = ms ? +T.get(mt) : sp ? sp.max : 1, mn = ms ? 0 : sp ? sp.min : 0, f = clamp((v - mn) / ((mxv - mn) || 1), 0, 1);
         size(el, +p("w") || 260, +p("h") || 22); el.style.background = p("bg"); el.style.opacity = p("opacity");
@@ -108,6 +109,7 @@
       if (stretch) { const e = mk("img", "hud-fill"); e.draggable = false; e.alt = ""; return e; }
       if (n.type === "image") { const e = mk("div", "hud-el"); e.style.backgroundSize = "100% 100%"; return e; }
       if (n.type === "button") { const e = mk("div", "hud-el"); e.style.backgroundSize = "100% 100%"; return e; }
+      if (n.type === "pips") { const e = mk("div", "hud-el"); e.style.whiteSpace = "normal"; return e; }
       if (n.type === "bar") { const e = mk("div", "hud-el hud-bar"); e.append(mk("i"), mk("b")); return e; }
       if (n.type === "slider") { const e = mk("div", "hud-el"); e.style.whiteSpace = "normal"; const row = mk("div", "hud-row"), tr = mk("div", "hud-track"); tr.append(mk("i")); e.append(row, tr); return e; }
       if (n.type === "toggle") { const e = mk("div", "hud-el"); e.style.cssText = "display:flex;justify-content:space-between;align-items:center"; const sw = mk("div", "hud-sw"); sw.append(mk("i")); e.append(mk("span"), sw); return e; }
@@ -132,5 +134,13 @@
     stopLoops(id) { const L = this.loops || {}; for (const k of Object.keys(L)) if (!id || k === id) { L[k].stop(0.03); delete L[k]; } }
     // ---- where an element is on screen (for the editor): { x0, y0, w, h } in host pixels, or null
     rectOf(id) { const it = this.items[id]; if (!it || !it.el) return null; const r = it.el.getBoundingClientRect(), hr = this.host.getBoundingClientRect(); return { x0: r.left - hr.left, y0: r.top - hr.top, w: r.width, h: r.height }; }
+  };
+  // "Counter boxes": a grid of boxes, the first `bind` of them filled (energy tanks, lives). Shared with runtime.js (menu screens).
+  PRIM.HUD.pips = (el, T, p) => {
+    const b = p("bind"), sp = T.spec(b), mt = p("max"), ms = mt && T.spec(mt), v = Math.max(0, Math.round(sp ? +T.get(b) || 0 : 0)), total = Math.max(0, Math.min(200, Math.round(ms ? +T.get(mt) || 0 : sp ? +sp.max || 0 : 0))), sz = +p("box") || 18, gap = +p("gap") || 0, per = +p("perRow") || 0;
+    const key = [v, total, sz, gap, per, p("color"), p("empty"), p("border"), p("opacity")].join("|"); if (el.dataset.k === key) return; el.dataset.k = key;
+    const cols = per > 0 ? Math.min(per, Math.max(1, total)) : Math.max(1, total); el.style.display = "grid"; el.style.gridTemplateColumns = "repeat(" + cols + ", " + sz + "px)"; el.style.gap = gap + "px"; el.style.opacity = p("opacity"); el.style.direction = "ltr";
+    const kids = []; for (let i = 0; i < total; i++) { const d = document.createElement("i"); d.style.cssText = "display:block;width:" + sz + "px;height:" + sz + "px;box-sizing:border-box;border:2px solid " + p("border") + ";background:" + (i < v ? p("color") : p("empty")) + (i < v ? ";box-shadow:0 0 6px " + p("color") : ""); kids.push(d); }
+    el.replaceChildren(...kids); if (!total) { el.style.width = sz + "px"; el.style.height = sz + "px"; } else { el.style.width = ""; el.style.height = ""; }
   };
 })();
