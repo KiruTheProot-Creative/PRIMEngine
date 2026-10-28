@@ -16,7 +16,7 @@ module.exports = async (p, out) => {
   await p.evaluate(() => { __studio.S.tl.t = 0.4; }); await p.waitForTimeout(400); await p.screenshot({ path: out + '_tl3.png' });
   // in game: attach the model, set the click animation, fire, count sounds that start
   await p.click('.tab:has-text("Player Editor")'); await p.waitForTimeout(500); await p.click('button:has-text("New weapon")'); await p.click('.pitem:has-text("Arm_canon")'); await p.waitForTimeout(800);
-  await p.evaluate(() => { window.__aud = 0; const A = window.Audio; window.Audio = function (u) { const a = new A(u); const pl = a.play.bind(a); a.play = () => { window.__aud++; return pl(); }; return a; }; });
+  await p.evaluate(() => { window.__aud = 0; const P = PRIM.Audio.play; PRIM.Audio.play = (u, v, l) => { window.__aud++; return P(u, v, l); }; });
   await p.click('button:has-text("Player view")'); await p.waitForTimeout(600); await p.click('button:has-text("Walk map1")'); await p.waitForTimeout(1000);
   console.log('events after attach', await p.evaluate(() => JSON.stringify(__studio.S.project.events.map(e => e.id))));
   

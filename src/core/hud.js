@@ -126,10 +126,10 @@
     vol() { const T = this.tags; return clamp((+T.get("audio.master") || 0) * (+T.get("audio.sfx") || 0), 0, 1); }
     sound(id, mult, loop) {
       if (this.edit || !id || !this.urls[id]) return; const v = clamp(this.vol() * (mult === undefined || isNaN(mult) ? 1 : mult), 0, 1);
-      if (!loop) { const a = new Audio(this.urls[id]); a.volume = v; a.play().catch(() => {}); return; }
-      this.loops = this.loops || {}; if (this.loops[id]) { this.loops[id].volume = v; return; } const a = new Audio(this.urls[id]); a.loop = true; a.volume = v; this.loops[id] = a; a.play().catch(() => {});
+      if (!loop) { PRIM.Audio.play(this.urls[id], v, false); return; }
+      this.loops = this.loops || {}; if (this.loops[id] && this.loops[id].playing) { this.loops[id].setVolume(v); return; } this.loops[id] = PRIM.Audio.play(this.urls[id], v, true);
     }
-    stopLoops(id) { const L = this.loops || {}; for (const k of Object.keys(L)) if (!id || k === id) { L[k].pause(); delete L[k]; } }
+    stopLoops(id) { const L = this.loops || {}; for (const k of Object.keys(L)) if (!id || k === id) { L[k].stop(0.03); delete L[k]; } }
     // ---- where an element is on screen (for the editor): { x0, y0, w, h } in host pixels, or null
     rectOf(id) { const it = this.items[id]; if (!it || !it.el) return null; const r = it.el.getBoundingClientRect(), hr = this.host.getBoundingClientRect(); return { x0: r.left - hr.left, y0: r.top - hr.top, w: r.width, h: r.height }; }
   };

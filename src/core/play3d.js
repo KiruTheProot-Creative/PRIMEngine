@@ -24,6 +24,7 @@
       this.unsub = T.on(() => { this.drawCross(); if (this.view && !this.pendingRb) { this.pendingRb = true; setTimeout(() => { this.pendingRb = false; if (!this.dead && this.view) { if (this.map) { this.view.rebuild(); this.walls = R3D.walls(this.map, T); } this.syncAtts(); this.syncThings(); } }, 80); } });
       this.drawCross(); this.gpu = {}; this.atts = [];
       this.sh = this.mode === "play" ? new PRIM.Script.Host({ tags: T, held: k => !!this.keys[k], isState: s => this.isState(s), orb: (k, c, a) => this.orbCmd(k, c, a), fire: key => this.fireProj(this.atts.find(a => "player." + a.id === key)), sfx: (id, v) => this.sfx(id, v), loop: (id, v) => this.loopSfx(id, v), stopLoop: id => this.stopLoops(id), playAnim: (k, n, l) => this.playAnim(k, n, l), say: t => { if (this.o.say) this.o.say(t); else console.log(t); } }) : null;
+      if (PRIM.Audio) PRIM.Audio.preload(this.project.assets.filter(x => x.type === "sound" && this.urls[x.id]).map(x => this.urls[x.id]));
       this.syncAtts(); this.syncThings(); this.trigger("onStart");
       if (this.mode === "play") this.bind(); else { this.msg.style.display = "none"; this.cv.style.cursor = "default"; }
       this.last = performance.now(); this.raf = requestAnimationFrame(t => this.frame(t));
@@ -236,9 +237,10 @@
       if (!this.sh) return; const cur = this.curWeaponId();
       for (const a of this.project.player.attachments) { if (!a.script) continue; if (this.T.get("player." + a.id + ".type") === "weapon" && a.id !== cur) continue; this.sh.trigger({ key: "player." + a.id, script: a.script }, type, arg); }
     }
-    loopSfx(id, vol) { const u = this.urls[id]; if (!u) return; this.loops = this.loops || {}; const T = this.T, v = Math.max(0, Math.min(1, (+T.get("audio.master") || 0) * (+T.get("audio.sfx") || 0) * (isNaN(vol) ? 1 : vol))); if (this.loops[id]) { this.loops[id].volume = v; return; } const a = new Audio(u); a.loop = true; a.volume = v; this.loops[id] = a; a.play().catch(() => {}); }
-    stopLoops(id) { const L = this.loops || {}; for (const k of Object.keys(L)) if (!id || k === id) { L[k].pause(); delete L[k]; } }
-    sfx(id, vol) { const u = this.urls[id]; if (!u) return; const a = new Audio(u), T = this.T; a.volume = Math.max(0, Math.min(1, (+T.get("audio.master") || 0) * (+T.get("audio.sfx") || 0) * (isNaN(vol) ? 1 : vol))); a.play().catch(() => {}); }
+    vol3(mult) { const T = this.T; return Math.max(0, Math.min(1, (+T.get("audio.master") || 0) * (+T.get("audio.sfx") || 0) * (isNaN(mult) ? 1 : mult))); }
+    loopSfx(id, vol) { const u = this.urls[id]; if (!u) return; this.loops = this.loops || {}; const v = this.vol3(vol); if (this.loops[id] && this.loops[id].playing) { this.loops[id].setVolume(v); return; } this.loops[id] = PRIM.Audio.play(u, v, true); }
+    stopLoops(id) { const L = this.loops || {}; for (const k of Object.keys(L)) if (!id || k === id) { L[k].stop(0.03); delete L[k]; } }
+    sfx(id, vol) { const u = this.urls[id]; if (u) PRIM.Audio.play(u, this.vol3(vol), false); }
     playAnim(key, name, loop) { const at = this.atts.find(a => "player." + a.id === key); if (!at) return; if (!name) { if (loop) at.loopAnim = null; return; } if (!at.model.anims[name]) return; if (loop) at.loopAnim = name; else at.fire = name; at.t = 0; }
     fire() { this.trigger("onClick"); }
     // sound events set on the Timeline tab: play those that fall between t0 and t1 of the animation (only while really playing, not in the editor preview)
@@ -246,7 +248,7 @@
       if (this.mode !== "play") return; const T = this.T;
       for (const e of this.project.events || []) {
         if (e.asset !== at.aid || e.anim !== name) continue; const t = +T.get(e.id + ".time") || 0, sid = T.get(e.id + ".sound"); if (!(t >= t0 && t < t1) || !sid || !this.urls[sid]) continue;
-        const a = new Audio(this.urls[sid]); a.volume = Math.max(0, Math.min(1, (+T.get("audio.master") || 0) * (+T.get("audio.sfx") || 0) * (+T.get(e.id + ".volume") || 0))); a.play().catch(() => {});
+        PRIM.Audio.play(this.urls[sid], this.vol3(+T.get(e.id + ".volume") || 0), false);
       }
     }
     animLen(aid, name, dur) { return PRIM.Schema.animLen(this.project, this.T, aid, name, dur); }

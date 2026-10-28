@@ -361,7 +361,7 @@
     if (kind === "folder") { it.addEventListener("dragover", e => { if ([...e.dataTransfer.types].includes("application/x-prime")) { e.preventDefault(); e.stopPropagation(); it.classList.add("drop"); } }); it.addEventListener("dragleave", () => it.classList.remove("drop")); it.addEventListener("drop", e => { it.classList.remove("drop"); e.stopPropagation(); dropOnFolder(e, key); }); }
     return it;
   }
-  const soundPlayers = {}; function playSound(id) { stopSound(); const u = new Audio(S.urls[id]); u.volume = 0.7; soundPlayers.cur = u; u.play().catch(() => {}); } function stopSound() { if (soundPlayers.cur) { soundPlayers.cur.pause(); soundPlayers.cur = null; } }
+  const soundPlayers = {}; function playSound(id) { stopSound(); soundPlayers.cur = PRIM.Audio.play(S.urls[id], 0.7, false); } function stopSound() { if (soundPlayers.cur) { soundPlayers.cur.stop(0.02); soundPlayers.cur = null; } }
 
   // ---- asset operations
   async function doIngest(items, label) {
@@ -909,7 +909,7 @@
         v.draw(); v.drawViewmodel([{ gm, pose: PRIM.FBX.pose(q.mo, q.name, TL.t * LL.speed), M: M4.mul(M4.translate(0, 0, -34), M4.mul(M4.rotX(-12), M4.mul(M4.rotY(TL.yaw), M4.mul(M4.scale(k, k, k), M4.translate(-c[0], -c[1], -c[2]))))) }], []); }
     };
     function tlSound(t0, t1, dur) {   // events passed since last frame (also across the loop point)
-      for (const e of tlEvents()) { const t = +S.tags.get(e.id + ".time") || 0, hit = t1 >= t0 ? (t >= t0 && t < t1) : (t >= t0 || t < t1); const sid = S.tags.get(e.id + ".sound"); if (hit && sid && S.urls[sid]) { const a = new Audio(S.urls[sid]); a.volume = Math.max(0, Math.min(1, (+S.tags.get("audio.master") || 0) * (+S.tags.get("audio.sfx") || 0) * (+S.tags.get(e.id + ".volume") || 0))); a.play().catch(() => {}); } }
+      for (const e of tlEvents()) { const t = +S.tags.get(e.id + ".time") || 0, hit = t1 >= t0 ? (t >= t0 && t < t1) : (t >= t0 || t < t1); const sid = S.tags.get(e.id + ".sound"); if (hit && sid && S.urls[sid]) PRIM.Audio.play(S.urls[sid], Math.max(0, Math.min(1, (+S.tags.get("audio.master") || 0) * (+S.tags.get("audio.sfx") || 0) * (+S.tags.get(e.id + ".volume") || 0))), false); }
     }
     S.tlTick = tick; const loop = t => { raf = requestAnimationFrame(loop); const dt = Math.min(0.05, (t - last) / 1000); last = t; tick(dt); playBtn.textContent = TL.playing ? "❚❚ Pause" : "▶ Play"; }; raf = requestAnimationFrame(loop);
     let drag = null; cv.addEventListener("pointerdown", e => { drag = e.clientX; cv.setPointerCapture(e.pointerId); }); cv.addEventListener("pointermove", e => { if (drag !== null) { TL.yaw += (e.clientX - drag) * 0.6; drag = e.clientX; } }); cv.addEventListener("pointerup", () => { drag = null; });

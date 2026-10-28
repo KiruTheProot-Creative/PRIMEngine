@@ -166,15 +166,15 @@
     // ---------------- audio
     vol(kind) { const T = this.tags; return clamp((T.get("audio.master") || 0) * (T.get("audio." + kind) || 0), 0, 1); }
     // looping sounds started by the "Loop a sound" node (one loop per sound)
-    loopSfx(id, mult) { if (this.mode === "edit" || !id || !this.urls[id]) return; this.loops = this.loops || {}; const vol = clamp(this.vol("sfx") * (mult === undefined || isNaN(mult) ? 1 : mult), 0, 1); if (this.loops[id]) { this.loops[id].volume = vol; return; } const a = new Audio(this.urls[id]); a.loop = true; a.volume = vol; this.loops[id] = a; a.play().catch(() => {}); }
-    stopLoops(id) { const L = this.loops || {}; for (const k of Object.keys(L)) if (!id || k === id) { L[k].pause(); delete L[k]; } }
-    sfx(id, mult) { if (this.mode === "edit" || !id || !this.urls[id]) return; const a = new Audio(this.urls[id]); a.volume = clamp(this.vol("sfx") * (mult === undefined || isNaN(mult) ? 1 : mult), 0, 1); a.play().catch(() => {}); }
+    loopSfx(id, mult) { if (this.mode === "edit" || !id || !this.urls[id]) return; this.loops = this.loops || {}; const vol = clamp(this.vol("sfx") * (mult === undefined || isNaN(mult) ? 1 : mult), 0, 1); if (this.loops[id] && this.loops[id].playing) { this.loops[id].setVolume(vol); return; } this.loops[id] = PRIM.Audio.play(this.urls[id], vol, true); }
+    stopLoops(id) { const L = this.loops || {}; for (const k of Object.keys(L)) if (!id || k === id) { L[k].stop(0.03); delete L[k]; } }
+    sfx(id, mult) { if (this.mode === "edit" || !id || !this.urls[id]) return; PRIM.Audio.play(this.urls[id], clamp(this.vol("sfx") * (mult === undefined || isNaN(mult) ? 1 : mult), 0, 1), false); }
     setMusic(id) {
       if (this.mode === "edit") return; if (id === this.musicId) return; this.stopMusic(); this.musicId = id; if (!id || !this.urls[id]) return;
-      const a = new Audio(this.urls[id]); a.loop = true; a.volume = this.vol("music"); this.music = a; a.play().catch(() => {});
+      this.music = PRIM.Audio.play(this.urls[id], this.vol("music"), true);
     }
-    stopMusic() { if (this.music) { this.music.pause(); this.music = null; } this.musicId = null; }
-    applyAudio() { if (this.music) this.music.volume = this.vol("music"); }
+    stopMusic() { if (this.music) { this.music.stop(0.25); this.music = null; } this.musicId = null; }
+    applyAudio() { if (this.music) this.music.setVolume(this.vol("music")); }
 
     // ---------------- input
     pt(e) { const r = this.stage.getBoundingClientRect(); return [(e.clientX - r.left) / this.scale, (e.clientY - r.top) / this.scale]; }
@@ -224,7 +224,7 @@
         if (n && sc.kind !== "splash") { this.selId = n.id; this.drag = { id: n.id, dx: sx - this.px(sc, n), dy: sy - this.py(sc, n) }; this.rebuild(); }
         return;
       }
-      if (this.music && this.music.paused) this.music.play().catch(() => {});
+      PRIM.Audio.resume();
       const n = this.hit(sx, sy, false); if (!n) return; this.press = n.id; if (n.type === "slider") this.setSlider(n, sx); this.rebuild();
     }
     move(e) {
