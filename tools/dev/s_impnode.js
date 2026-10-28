@@ -23,7 +23,7 @@ module.exports = async (p, out) => {
   await p.click('button:has-text("Player view")').catch(() => {}); await p.waitForTimeout(300);
   await p.click('button:has-text("Walk map1")'); await p.waitForFunction(() => __studio.S.play && __studio.S.play.hud, null, { timeout: 8000 }); await p.waitForTimeout(800);
   await p.evaluate(() => { window.__snd = []; const o = PRIM.Audio.play; PRIM.Audio.play = (u, v, l, at) => { const a = __studio.S.project.assets.find(x => __studio.S.play.urls[x.id] === u); window.__snd.push(a ? a.name : '?'); return o(u, v, l, at); }; window.__said = []; const q = __studio.S.play; q.o.say = t => __said.push(t); q.msg.style.display = 'none'; });
-  const shot = (charge, setup) => p.evaluate(([charge, setup]) => { const q = __studio.S.play; q.body = null; q.x = 3072; q.y = 3072; q.yaw = 0; q.pitch = 0; if (setup) (new Function('q', setup))(q); window.__snd = []; q.fx = []; q.fireCharge = charge;
+  const shot = (charge, setup) => p.evaluate(([charge, setup]) => { const q = __studio.S.play; q.body = null; q.x = 3072; q.y = 3072; q.yaw = 0; q.pitch = 0; if (setup) (new Function('q', setup))(q); window.__snd = []; q.fx = []; q.pendingShot = { size: 0, ch: charge, until: performance.now() + 1500 };
     let t = q.last || performance.now(); t += 16; q.frame(t); cancelAnimationFrame(q.raf); q.fireProj(q.atts[0]); for (let i = 0; i < 20; i++) { t += 16; q.frame(t); cancelAnimationFrame(q.raf); } q.raf = requestAnimationFrame(x => q.frame(x));
     const sh = (q.fx || []).find(f => f.kind === 'shock'); return JSON.stringify({ sounds: __snd, hits: q.T.get('hits'), shockRadius: sh ? Math.round(sh.R) : null }); }, [charge, setup || '']);
   console.log('normal shot   ', await shot(0));

@@ -63,6 +63,15 @@
     " float f=clamp((vD-uFogR.x)/max(1.0,uFogR.y-uFogR.x),0.0,1.0); gl_FragColor=vec4(mix(c,uFog,f),uAlpha*tx.a);",
     "}"].join("\n");
 
+  // particles (the "graphics cache"): ONE quad stored on the graphics card, stamped once per particle (instancing). Each particle sends only
+  // aA = position + size and aB = colour + flat flag. The fragment shader draws a lit round ball on the quad (an impostor sphere), so a
+  // particle costs 6 corners instead of hundreds, and nothing is rebuilt on the CPU.
+  const PVS = "attribute vec2 aQ;attribute vec4 aA;attribute vec4 aB;uniform mat4 uVP;uniform vec3 uR;uniform vec3 uU;varying vec2 vQ;varying vec3 vC;varying float vF;varying float vD;void main(){vec3 w=aA.xyz+(aQ.x*uR+aQ.y*uU)*aA.w;vec4 p=uVP*vec4(w,1.0);gl_Position=p;vQ=aQ;vC=aB.rgb;vF=aB.a;vD=p.w;}";
+  const PFS = "precision highp float;varying vec2 vQ;varying vec3 vC;varying float vF;varying float vD;uniform vec3 uR;uniform vec3 uU;uniform vec3 uB;uniform vec3 uLd;uniform vec3 uFog;uniform vec2 uFogR;uniform float uBright;uniform vec3 uMoodT;uniform float uMoodC;uniform float uMoodS;" +
+    "void main(){float r2=dot(vQ,vQ);if(r2>1.0)discard;vec3 n=normalize(vQ.x*uR+vQ.y*uU+sqrt(1.0-r2)*uB);float lit;" +
+    "if(vF>0.5){float th=acos(clamp(n.y,-1.0,1.0));float ph=atan(n.z,n.x);th=(floor(th/3.14159*6.0)+0.5)/6.0*3.14159;ph=(floor(ph/6.28318*8.0)+0.5)/8.0*6.28318;vec3 m=vec3(sin(th)*cos(ph),cos(th),sin(th)*sin(ph));lit=0.6+0.4*max(0.0,dot(m,uLd));}" +
+    "else{float fc=max(0.0,dot(n,uB));lit=0.62+0.3*max(0.0,dot(n,uLd))+0.18*fc*fc;}" +
+    "vec3 c=vC*lit*uBright;float g=dot(c,vec3(0.299,0.587,0.114));c=mix(vec3(g),c,uMoodS);c=(c-0.5)*uMoodC+0.5;c=max(c*uMoodT,0.0);float f=clamp((vD-uFogR.x)/max(1.0,uFogR.y-uFogR.x),0.0,1.0);gl_FragColor=vec4(mix(c,uFog,f),1.0);}";
   // shadow pass: distance from the light, packed into RGBA (a cube map per light)
   const SVS = "attribute vec3 aPos;uniform mat4 uVP;uniform mat4 uM;varying vec3 vW;void main(){vec4 w=uM*vec4(aPos,1.0);vW=w.xyz;gl_Position=uVP*w;}";
   const SFS = "precision highp float;uniform vec3 uLP;uniform float uR;varying vec3 vW;void main(){float v=clamp(length(vW-uLP)/uR,0.0,0.9999);vec4 e=fract(v*vec4(1.0,255.0,65025.0,16581375.0));e-=e.yzww*vec4(1.0/255.0,1.0/255.0,1.0/255.0,0.0);gl_FragColor=e;}";
@@ -214,6 +223,41 @@
     return { o: [c.x, c.y, c.z], d: M4.norm([0, 1, 2].map(k => B.f[k] + B.s[k] * nx * th * ar + B.u[k] * ny * th)) };
   };
 
+  // one buffer reused every frame for small changing things (beams), instead of making and throwing away a new one
+  P.streamBuf = function (arr) { const gl = this.gl; if (!this.sBuf) this.sBuf = gl.createBuffer(); const n = arr.length; if (!this.sArr || this.sArr.length < n) this.sArr = new Float32Array(Math.max(n, 4096) * 1.5 | 0); this.sArr.set(arr); gl.bindBuffer(gl.ARRAY_BUFFER, this.sBuf);
+    if ((this.sCap || 0) < n) { gl.bufferData(gl.ARRAY_BUFFER, this.sArr, gl.DYNAMIC_DRAW); this.sCap = this.sArr.length; } else gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.sArr.subarray(0, n)); return this.sBuf; };
+  // the particle program + its stored quad (made once). null if it can not be built (then the old CPU spheres are used).
+  P.partProg = function () {
+    if (this.partPr !== undefined) return this.partPr; const gl = this.gl; this.partPr = null;
+    try { const mk = (t, src) => { const s = gl.createShader(t); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; };
+      const pr = gl.createProgram(); gl.attachShader(pr, mk(gl.VERTEX_SHADER, PVS)); gl.attachShader(pr, mk(gl.FRAGMENT_SHADER, PFS)); gl.linkProgram(pr); if (!gl.getProgramParameter(pr, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(pr));
+      const u = n => gl.getUniformLocation(pr, n); this.ploc = { q: gl.getAttribLocation(pr, "aQ"), a: gl.getAttribLocation(pr, "aA"), b: gl.getAttribLocation(pr, "aB"), vp: u("uVP"), r: u("uR"), u: u("uU"), bk: u("uB"), ld: u("uLd"), fog: u("uFog"), fogR: u("uFogR"), bright: u("uBright"), moodT: u("uMoodT"), moodC: u("uMoodC"), moodS: u("uMoodS") };
+      this.pquad = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, this.pquad); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, 1, 1, -1, -1, 1, 1, -1, 1]), gl.STATIC_DRAW);
+      this.pinst = gl.createBuffer(); this.pArr = new Float32Array(8 * 512); this.pCap = 0; this.inst = gl.getExtension("ANGLE_instanced_arrays"); this.partPr = pr;
+    } catch (e) { console.warn("particle shader", e.message); this.partPr = null; }
+    return this.partPr;
+  };
+  // draw every ball in one go: fill the per-particle list (8 numbers each) and stamp the stored quad that many times
+  P.drawBalls = function (balls, Ld) {
+    const gl = this.gl, L = this.ploc, c = this.cam, B = R.camBasis(c.yaw, c.pitch), md = this.mood || { tint: [1, 1, 1], contrast: 1, sat: 1 }, n = balls.length;
+    for (const k of ["pos", "uv", "col"]) if (this.loc[k] >= 0) gl.disableVertexAttribArray(this.loc[k]);
+    gl.useProgram(this.partPr); gl.disable(gl.BLEND); gl.uniformMatrix4fv(L.vp, false, new Float32Array(this.vp)); gl.uniform3fv(L.r, B.s); gl.uniform3fv(L.u, B.u); gl.uniform3fv(L.bk, [-B.f[0], -B.f[1], -B.f[2]]); gl.uniform3fv(L.ld, Ld);
+    gl.uniform3fv(L.fog, this.fog); gl.uniform2fv(L.fogR, [this.fogS, this.fogE]); gl.uniform1f(L.bright, this.bright || 1); gl.uniform3fv(L.moodT, md.tint); gl.uniform1f(L.moodC, md.contrast); gl.uniform1f(L.moodS, md.sat);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.pquad); gl.enableVertexAttribArray(L.q); gl.vertexAttribPointer(L.q, 2, gl.FLOAT, false, 8, 0);
+    if (this.inst) {
+      if (this.pArr.length < n * 8) this.pArr = new Float32Array(Math.ceil(n * 1.5) * 8); const A = this.pArr;
+      for (let i = 0; i < n; i++) { const f = balls[i], o = i * 8; A[o] = f.p[0]; A[o + 1] = f.p[1]; A[o + 2] = f.p[2]; A[o + 3] = f.size; A[o + 4] = f.c[0]; A[o + 5] = f.c[1]; A[o + 6] = f.c[2]; A[o + 7] = f.flat ? 1 : 0; }
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.pinst); if (this.pCap < A.length) { gl.bufferData(gl.ARRAY_BUFFER, A, gl.DYNAMIC_DRAW); this.pCap = A.length; } else gl.bufferSubData(gl.ARRAY_BUFFER, 0, A.subarray(0, n * 8));
+      gl.enableVertexAttribArray(L.a); gl.vertexAttribPointer(L.a, 4, gl.FLOAT, false, 32, 0); this.inst.vertexAttribDivisorANGLE(L.a, 1);
+      gl.enableVertexAttribArray(L.b); gl.vertexAttribPointer(L.b, 4, gl.FLOAT, false, 32, 16); this.inst.vertexAttribDivisorANGLE(L.b, 1);
+      this.inst.drawArraysInstancedANGLE(gl.TRIANGLES, 0, 6, n);
+      this.inst.vertexAttribDivisorANGLE(L.a, 0); this.inst.vertexAttribDivisorANGLE(L.b, 0); gl.disableVertexAttribArray(L.a); gl.disableVertexAttribArray(L.b);
+    } else {   // no instancing on this computer: still the stored quad, just one small draw per ball (nothing rebuilt)
+      gl.disableVertexAttribArray(L.a); gl.disableVertexAttribArray(L.b);
+      for (const f of balls) { gl.vertexAttrib4f(L.a, f.p[0], f.p[1], f.p[2], f.size); gl.vertexAttrib4f(L.b, f.c[0], f.c[1], f.c[2], f.flat ? 1 : 0); gl.drawArrays(gl.TRIANGLES, 0, 6); }
+    }
+    gl.disableVertexAttribArray(L.q);
+  };
   // projectiles and beams in the world. list items: { kind: "line"|"laser"|"sphere"|"mesh", ... } (see play3d.js)
   P.drawFx = function (list) {
     if (!list.length || !this.vp) return; const gl = this.gl, L = this.loc, a = [], Ld = M4.norm([0.3, 0.8, 0.5]); this.useLights(false);
@@ -222,12 +266,13 @@
     const push = (v, c) => a.push(v[0], v[1], v[2], 0, 0, c[0], c[1], c[2]);
     const beam = (p, q, th, c) => { const dn = M4.norm(M4.sub(q, p)), ref = Math.abs(dn[1]) > 0.9 ? [1, 0, 0] : [0, 1, 0], p1 = M4.norm(M4.cross(dn, ref)), p2 = M4.cross(dn, p1);
       for (const o of [p1, p2]) { const s = (v, k) => [v[0] + o[0] * th * k, v[1] + o[1] * th * k, v[2] + o[2] * th * k], A1 = s(p, 1), A2 = s(p, -1), B1 = s(q, 1), B2 = s(q, -1); for (const v of [A1, B1, B2, A1, B2, A2]) push(v, c); } };
-    const LAT = 6, LON = 8;
+    const LAT = 6, LON = 8, balls = []; let cullB = 0; const fpl = this.frustum(), seen = (p, r) => !this.tags || !this.tags.get || this.tags.get("gfx.culling") === false || fpl.every(q => q[0] * p[0] + q[1] * p[1] + q[2] * p[2] + q[3] > -r - 2);
     for (const f of list) {
       if (f.kind === "line") beam(f.a, f.b, f.w * Math.max(0.15, 1 - f.t / f.life), f.c);
       else if (f.kind === "laser") beam(M4.sub(f.p, f.d.map(q => q * f.size * 7)), f.p, f.size * 0.4, f.c);
+      else if (f.kind === "sphere" && this.partProg()) { if (seen(f.p, f.size)) balls.push(f); else cullB++; }
       else if (f.kind === "sphere") {
-        // smooth (default): enough segments for its size on screen, shading per vertex so it looks round; flat: the old low-poly faceted look
+        // (old path, only when particles can not use their own shader) smooth (default): enough segments for its size on screen, shading per vertex so it looks round; flat: the old low-poly faceted look
         if (f.flat) { const nrm = (i, j) => { const th = i / LAT * Math.PI, ph = j / LON * Math.PI * 2; return [Math.sin(th) * Math.cos(ph), Math.cos(th), Math.sin(th) * Math.sin(ph)]; };
           for (let i = 0; i < LAT; i++) for (let j = 0; j < LON; j++) { const ns = [nrm(i, j), nrm(i + 1, j), nrm(i + 1, j + 1), nrm(i, j), nrm(i + 1, j + 1), nrm(i, j + 1)], fn = M4.norm(ns.reduce((a, b) => M4.add(a, b), [0, 0, 0])), lit = 0.6 + 0.4 * Math.max(0, M4.dot(fn, Ld)), c = [f.c[0] * lit, f.c[1] * lit, f.c[2] * lit]; for (const n of ns) push([f.p[0] + n[0] * f.size, f.p[1] + n[1] * f.size, f.p[2] + n[2] * f.size], c); } }
         else { const dc = Math.hypot(f.p[0] - this.cam.x, f.p[1] - this.cam.y, f.p[2] - this.cam.z), px = f.size / Math.max(1, dc) * 900, la = px > 60 ? 16 : px > 18 ? 11 : px > 5 ? 8 : 5, lo = la * 2, V = M4.norm([this.cam.x - f.p[0], this.cam.y - f.p[1], this.cam.z - f.p[2]]);
@@ -238,7 +283,9 @@
       }
     }
     this.setMat({ lit: 0 });
-    if (a.length) { const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(a), gl.STREAM_DRAW); bind(buf, this.whiteTex); gl.drawArrays(gl.TRIANGLES, 0, a.length / 8); gl.deleteBuffer(buf); }
+    if (a.length) { bind(this.streamBuf(a), this.whiteTex); gl.drawArrays(gl.TRIANGLES, 0, a.length / 8); }   // lines and laser bolts: a few corners each, one reused buffer
+    if (balls.length) { this.drawBalls(balls, Ld); gl.useProgram(this.pr); gl.enableVertexAttribArray(L.pos); gl.enableVertexAttribArray(L.uv); gl.enableVertexAttribArray(L.col); }
+    this.fxStats = { balls: balls.length, culled: cullB };
     // objects off screen are skipped (culling setting): a sphere around the model's bounds, moved by its matrix
     const vis = this.visible(), pl = vis ? this.frustum() : null, onScreen = f => { const b = f.gm.model && f.gm.model.bounds; if (!pl || !b) return true; const m = f.M, c = M4.point(m, (b.lo[0] + b.hi[0]) / 2, (b.lo[1] + b.hi[1]) / 2, (b.lo[2] + b.hi[2]) / 2), k = Math.max(Math.hypot(m[0], m[1], m[2]), Math.hypot(m[4], m[5], m[6]), Math.hypot(m[8], m[9], m[10])), r = Math.hypot(b.hi[0] - b.lo[0], b.hi[1] - b.lo[1], b.hi[2] - b.lo[2]) * 0.75 * k + 8; return pl.every(q => q[0] * c[0] + q[1] * c[1] + q[2] * c[2] + q[3] > -r); };
     this.culledFx = 0;
@@ -339,7 +386,7 @@
   // Lamps (lights with an `owner`) come first and are redrawn at most every 3rd frame unless they move; moving lights (projectiles) use small 256 maps.
   P.renderShadows = function () {
     const gl = this.gl, T = this.tags, on = this.spr && this.shadows !== false && (!T || !T.has || !T.has("gfx.shadows") || T.get("gfx.shadows")); this.shSlots = []; this.shOn = 0; if (!on) return;
-    const max = Math.max(1, Math.min(4, this.shadowCount || 3)), want = this.pickLights().filter(l => l.shadow).sort((a, b) => (b.owner ? 1 : 0) - (a.owner ? 1 : 0)).slice(0, max); if (!want.length) return;
+    const max = Math.max(1, Math.min(4, this.shadowCount || 3)), want = this.pickLights().filter(l => l.shadow).sort((a, b) => (b.owner ? 1 : 0) - (a.owner ? 1 : 0)).filter((l, i, arr) => l.owner || arr.slice(0, i).filter(q => !q.owner).length < (this.dynShadows === undefined ? 1 : this.dynShadows)).slice(0, max); if (!want.length) return;
     const L = this.sloc, I = new Float32Array(M4.ident()); let progOn = false, dyn = 0;
     want.forEach(l => {
       const key = l.owner || "dyn" + dyn++, S = l.owner ? (this.shadowSize || 512) : 256, map = this.shadowMap(key, S), moved = !map.p || Math.hypot(map.p[0] - l.p[0], map.p[1] - l.p[1], map.p[2] - l.p[2]) > 0.5; map.used = this.frames;
