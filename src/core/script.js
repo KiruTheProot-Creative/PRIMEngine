@@ -12,13 +12,15 @@
     stopOwner(key) { this.runs = this.runs.filter(r => { if (r.key === key) { r.dead = true; if (r.cancel) r.cancel(); return false; } return true; }); }
     stopRuns() { for (const r of this.runs) { r.dead = true; if (r.cancel) r.cancel(); } this.runs = []; }
     stopAll() { this.dead = true; for (const r of this.runs) { r.dead = true; if (r.cancel) r.cancel(); } this.runs = []; }
+    // a node's "Only if" condition (tags <owner>.s.<node>.needTag / needOp / needVal): no tag = always allowed
+    ok(owner, n) { const k = owner.key + ".s." + n.id + ".", t = this.T.get(k + "needTag"); if (!t) return true; return this.test(t, this.T.get(k + "needOp") || "=", this.T.get(k + "needVal")); }
     has(owner, type) { return !!(owner.script && owner.script.nodes.some(n => n.type === type)); }
     // owner: { key: tag prefix, script }. arg is the key name for onKey.
     trigger(owner, type, arg, only) {
       if (this.dead || !owner.script) return;
       for (const n of owner.script.nodes) {
         if (n.type !== type) continue; if (only && n.id !== only) continue; if ((type === "onKey" || type === "onKeyUp" || type === "onHold") && String(this.T.get(owner.key + ".s." + n.id + ".key") || "").toLowerCase() !== String(arg || "").toLowerCase()) continue; if (type === "onState" && String(this.T.get(owner.key + ".s." + n.id + ".state") || "") !== String(arg || "")) continue;
-        this.runOut(owner, n.id, "next");
+        if (!this.ok(owner, n)) continue; this.runOut(owner, n.id, "next");
       }
     }
     // start the chain that hangs off one output of a node (used by events with several outputs, like the charge beam)
@@ -41,7 +43,7 @@
     async chain(owner, id, tok) {
       let guard = 0;
       while (id && !tok.dead && !this.dead) {
-        const n = owner.script.nodes.find(x => x.id === id); if (!n) return; const g = k => this.T.get(owner.key + ".s." + n.id + "." + k); let out = "next";
+        const n = owner.script.nodes.find(x => x.id === id); if (!n || !this.ok(owner, n)) return; const g = k => this.T.get(owner.key + ".s." + n.id + "." + k); let out = "next";
         switch (n.type) {
           case "setTag": this.setTag(g("tag"), g("value")); break;
           case "changeTag": { const t = g("tag"), sp = this.T.spec(t); if (sp && sp.type === "number") this.setTag(t, (+this.T.get(t) || 0) + (+g("amount") || 0)); break; }

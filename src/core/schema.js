@@ -257,9 +257,12 @@
   };
   S.SCAT = { event: "Events", action: "Actions", logic: "Logic", weapon: "Weapon" };
   const SKEY = (ownerKey, id, k) => ownerKey + ".s." + id + "." + k;
-  S.defineSNode = (project, ownerKey, node, over, modelTag) => { for (const p of S.SNODES[node.type].props) { const r = rec(p, "script", ownerKey); if (p.type === "anim") r.modelTag = modelTag; if (over && p.k in over) r.value = over[p.k]; project.tags[SKEY(ownerKey, node.id, p.k)] = r; } };
+  // every node can have a condition: it only happens while a tag compares true (e.g. canChargeWeapon = yes). Empty tag = always.
+  S.SCOND = [{ k: "needTag", label: "Only if this tag…", type: "tagRef", refType: "any", def: "" }, { k: "needOp", label: "is", type: "choice", options: [["=", "equal to"], ["!=", "not equal to"], [">", "greater than"], ["<", "less than"], [">=", "at least"], ["<=", "at most"]], def: "=" }, { k: "needVal", label: "this value (yes / no, a number, a text)", type: "string", def: "yes" }];
+  S.ensureSNode = (project, ownerKey, n, modelTag) => { const def = S.SNODES[n.type]; if (!def) return; for (const p of def.props.concat(S.SCOND)) { const k = SKEY(ownerKey, n.id, p.k); if (!project.tags[k]) { const r = rec(p, "script", ownerKey); if (p.type === "anim") r.modelTag = modelTag; project.tags[k] = r; } } };
+  S.defineSNode = (project, ownerKey, node, over, modelTag) => { for (const p of S.SNODES[node.type].props.concat(S.SCOND)) { const r = rec(p, "script", ownerKey); if (p.type === "anim") r.modelTag = modelTag; if (over && p.k in over) r.value = over[p.k]; project.tags[SKEY(ownerKey, node.id, p.k)] = r; } };
   S.addSNode = (project, ownerKey, script, type, x, y, over, modelTag) => { const node = { id: S.uid("n", script.nodes.map(n => n.id)), type, x: Math.round(x), y: Math.round(y) }; script.nodes.push(node); S.defineSNode(project, ownerKey, node, over, modelTag); return node; };
-  S.removeSNode = (project, ownerKey, script, node) => { for (const p of S.SNODES[node.type].props) delete project.tags[SKEY(ownerKey, node.id, p.k)]; script.nodes.splice(script.nodes.indexOf(node), 1); script.links = script.links.filter(l => l.a !== node.id && l.b !== node.id); };
+  S.removeSNode = (project, ownerKey, script, node) => { for (const p of S.SNODES[node.type].props.concat(S.SCOND)) delete project.tags[SKEY(ownerKey, node.id, p.k)]; script.nodes.splice(script.nodes.indexOf(node), 1); script.links = script.links.filter(l => l.a !== node.id && l.b !== node.id); };
   S.snodeKey = SKEY;
   S.defineAttach = (project, att, over) => {
     if (over && over.name === undefined) over = Object.assign({ name: "Object" }, over); for (const p of S.ATTACH) { const r = rec(p, "player", "player." + att.id); if (p.type === "anim") r.modelTag = "player." + att.id + ".asset"; if (over && p.k in over) r.value = over[p.k]; project.tags["player." + att.id + "." + p.k] = r; } };
@@ -302,11 +305,12 @@
       const pre = "player." + att.id + ".", old = project.tags[pre + "weapon"];
       for (const p of S.ATTACH) { const r = project.tags[pre + p.k]; if (!r) { const n = rec(p, "player", "player." + att.id); if (p.type === "anim") n.modelTag = pre + "asset"; if (p.k === "type") n.value = old && old.value ? "weapon" : "animation"; if (p.k === "name") n.value = old && old.value ? "Weapon" : "Object"; project.tags[pre + p.k] = n; } else { r.label = p.label; if (p.showIf) r.showIf = p.showIf; else delete r.showIf; if (p.options) r.options = p.options; } }
       delete project.tags[pre + "weapon"];
-      if (att.script) for (const n of att.script.nodes) { const def = S.SNODES[n.type]; if (!def) continue; for (const p of def.props) { const k = S.snodeKey("player." + att.id, n.id, p.k); if (!project.tags[k]) { const r = rec(p, "script", "player." + att.id); if (p.type === "anim") r.modelTag = pre + "asset"; project.tags[k] = r; } } }
+      if (att.script) for (const n of att.script.nodes) S.ensureSNode(project, "player." + att.id, n, pre + "asset");
       if (!att.script) att.script = { nodes: [], links: [] };   // the old "click animation" menu became a script: when clicked, play that animation
       const fa = project.tags[pre + "fireAnim"]; if (fa) { if (fa.value && !att.script.nodes.length) { const a = S.addSNode(project, "player." + att.id, att.script, "onClick", 20, 20), b = S.addSNode(project, "player." + att.id, att.script, "playAnim", 260, 20, { anim: fa.value }, pre + "asset"); att.script.links.push({ a: a.id, o: "next", b: b.id }); } delete project.tags[pre + "fireAnim"]; }
     }
     for (const p of S.PLAYER) if (!project.tags["player." + p.k]) { const r = rec(p, "player", "player"); r.builtin = true; project.tags["player." + p.k] = r; }
+    for (const sc of project.screens || []) for (const el of sc.nodes || []) if (el.script) for (const n of el.script.nodes) S.ensureSNode(project, sc.id + "." + el.id, n);
     if (!project.tags["player.state"]) project.tags["player.state"] = { type: "string", value: "standing", label: "What the player is doing: standing, walking, running, jumping, falling (live)", group: "player", builtin: true };
     if (!project.tags["player.charge"]) project.tags["player.charge"] = { type: "number", value: 0, label: "Charge beam progress, 0 to 1 (live)", group: "player", min: 0, max: 1, step: 0.01, builtin: true };
     if (!project.tags["player.weapon"]) project.tags["player.weapon"] = { type: "number", value: 1, label: "Current weapon number (live)", group: "player", min: 0, max: 99, step: 1, builtin: true };

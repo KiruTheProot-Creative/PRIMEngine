@@ -78,6 +78,7 @@
       const T = this.T, pre = "player." + a.id + ".s." + n.id + ".", g = k => T.get(pre + k), key = String(g("key") || "").toLowerCase(), held = !!this.keys[key], own = { key: "player." + a.id, script: a.script }, ok = "player." + a.id, at = this.atts.find(x => x.id === a.id);
       const st = this.ch[pre], dur = nm => { const an = at && nm && at.model.anims[nm]; return an ? this.animLen(at.aid, nm, an.dur).len : 0; };
       const delay = Math.max(0, +g("startDelay") || 0);
+      if (held && !st && !this.sh.ok(own, n)) return;   // its "Only if" condition is not met: the weapon can not charge
       if (held && !st) { this.ch[pre] = { t: 0, charged: false, wait: 0, started: delay <= 0 }; if (delay <= 0) { this.playAnim(ok, g("chargeAnim"), false); this.sh.runOut(own, n.id, "start"); T.set("player.charge", 0); } }
       else if (held && st && !st.started) { st.wait += dt; if (st.wait >= delay) { st.started = true; this.playAnim(ok, g("chargeAnim"), false); this.sh.runOut(own, n.id, "start"); T.set("player.charge", 0); } }
       else if (!held && st && !st.started) delete this.ch[pre];   // let go before the delay: nothing was charged
