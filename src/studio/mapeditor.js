@@ -10,6 +10,7 @@
   const TOOLS = [
     ["select", "Select", "V", "Click or drag a box to select cells (edit them on the right). Drag an object or the start to move it."],
     ["wall", "Wall", "W", "Click / drag to place wall blocks with the chosen texture. Right mouse removes walls."],
+    ["diag", "Diagonal", "G", "Click to place the chosen diagonal wall (some shapes span 2 or 3 cells). D turns it, M mirrors it. Right mouse removes it."],
     ["floor", "Floor", "F", "Click / drag to lay floor with the chosen texture. Right mouse removes floor."],
     ["ceil", "Ceiling", "C", "Click / drag to put a ceiling (top of this story). Right mouse removes it."],
     ["room", "Room", "R", "Drag a box: floor and ceiling inside, walls around it (only where nothing is yet). Right-drag clears the box."],
@@ -26,12 +27,13 @@
 
   const ME = (PRIM.MapEditor = function (o) {
     this.o = o; this.m = o.map; this.T = o.tags; this.dpr = Math.min(2, window.devicePixelRatio || 1); this.imgs = {};
-    const st = ME.state = ME.state || { tool: "wall", tex: "", L: 0, hgt: 2, dir: 1, rise: 8, light: 70, below: true, ceilShow: true };
+    const st = ME.state = ME.state || { tool: "wall", tex: "", L: 0, hgt: 2, dir: 1, rise: 8, light: 70, below: true, ceilShow: true, shape: "d45", rot: 0, flip: false, panel: "rooms" };
     this.s = st; if (st.L >= this.m.layers.length + 1) st.L = 0; this.v = { cx: 0, cy: 0, z: 0.25 }; this.sel = null; this.hover = null;
     const h = (t, a, ...k) => { const e = document.createElement(t); for (const n in a || {}) { if (n === "text") e.textContent = a[n]; else if (n.startsWith("on")) e[n] = a[n]; else e.setAttribute(n, a[n]); } for (const c of k.flat()) if (c) e.append(c); return e; };
     this.h = h; this.wrap = h("div", { class: "med", tabindex: "0" }); this.bar = h("div", { class: "medbar" }); this.body = h("div", { class: "medbody" });
     this.pal = h("div", { class: "medpal" }); this.cv = h("canvas", { class: "medcv" }); this.body.append(this.pal, this.cv); this.wrap.append(this.bar, this.body); o.host.replaceChildren(this.wrap);
     this.cx = this.cv.getContext("2d"); this.buildBar(); this.buildPal();
+    for (const el of [this.pal, this.bar]) el.addEventListener("click", e => { if (!/INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) this.wrap.focus({ preventScroll: true }); });   // keys keep working after clicking a button
     this.ro = new ResizeObserver(() => this.redraw()); this.ro.observe(this.cv);
     this.unsub = this.T.on(() => this.redraw());
     const cv = this.cv; cv.addEventListener("pointerdown", e => this.down(e)); cv.addEventListener("pointermove", e => this.move(e)); cv.addEventListener("pointerup", e => this.up(e)); cv.addEventListener("pointercancel", e => this.up(e));
@@ -50,26 +52,71 @@
     if (s.tool === "height") opt.push(h("span", { class: "mlab", text: "Height" }), h("input", { type: "range", min: 0, max: 15, step: 1, value: s.hgt, title: "Floor height in 16ths of a story (8 units each)", oninput: e => { s.hgt = +e.target.value; this.buildBar(); } }), h("span", { class: "chip", text: s.hgt + "/16" }));
     if (s.tool === "slope" || s.tool === "stairs") opt.push(sel("Rises toward", DIRS.map((d, i) => [i, "rises " + d]), s.dir, v => { s.dir = +v; this.redraw(); }), sel("How much it rises", RISES, s.rise, v => { s.rise = +v; }));
     if (s.tool === "light") opt.push(h("span", { class: "mlab", text: "Light" }), h("input", { type: "range", min: 0, max: 100, step: 5, value: s.light, oninput: e => { s.light = +e.target.value; this.buildBar(); } }), h("span", { class: "chip", text: s.light + "%" }));
-    if (s.tool === "object") { const props = (this.o.getProps && this.o.getProps()) || [], cur = this.o.getProp && this.o.getProp(); opt.push(props.length ? sel("Which object to place", props.map(p => [p.id, p.name + " (" + p.type + ")"]), cur, v => this.o.setProp && this.o.setProp(v)) : h("span", { class: "mlab", text: "Make objects in the Object Editor tab first." })); }
+    if (s.tool === "diag") opt.push(tb("⟳ Turn (D)", "Turn the diagonal by 90°", false, () => this.turn()), tb("⇋ Mirror (M)", "Mirror the diagonal", s.flip, () => this.mirror()));
     if (s.tool === "object" || s.tool === "start") opt.push(tb("⟳ Turn (D)", "Turn the selected object / the start by 90°", false, () => this.turn()));
     const L = s.L, nL = this.m.layers.length;
     this.bar.replaceChildren(
       tb("↶", "Undo (Ctrl+Z)", false, () => this.history(true)), tb("↷", "Redo (Ctrl+Y)", false, () => this.history(false)), h("span", { class: "msep" }),
-      ...TOOLS.map(t => tb(t[1], t[1] + " (" + t[2] + "): " + t[3], s.tool === t[0], () => this.setTool(t[0]))), h("span", { class: "msep" }),
+      tb("Select", "Select (V): click or drag a box over cells; drag objects to move them", s.tool === "select", () => this.setTool("select")), tb("Pick texture", "Pick (I): click a cell to take its texture (Alt+click works with any tool)", s.tool === "pick", () => this.setTool("pick")), h("span", { class: "msep" }),
       h("span", { class: "mlab", text: "Story" }), tb("▼", "Go down a story (Page Down)", false, () => this.setLayer(L - 1)), h("span", { class: "chip", title: "Story (layer) you are editing. Each story is 2 m tall.", text: (L + 1) + " / " + Math.max(nL, L + 1) }), tb("▲", "Go up a story (Page Up)", false, () => this.setLayer(L + 1)),
       h("label", { class: "mlab", title: "Show the story below, faded" }, h("input", Object.assign({ type: "checkbox", onchange: e => { s.below = e.target.checked; this.redraw(); } }, s.below ? { checked: "" } : {})), " below"),
       h("label", { class: "mlab", title: "Mark cells that have a ceiling" }, h("input", Object.assign({ type: "checkbox", onchange: e => { s.ceilShow = e.target.checked; this.redraw(); } }, s.ceilShow ? { checked: "" } : {})), " ceilings"),
       tb("Fit", "Show the whole map (Home)", false, () => this.fit()), ...(opt.length ? [h("span", { class: "msep" }), ...opt] : []),
-      h("span", { class: "hint", text: tip ? tip[3] : "" }));
+      h("span", { class: "hint", text: tip ? tip[1] + " (" + tip[2] + "): " + tip[3] : "" }));
   };
+  // a small picture of a building piece / object type / diagonal shape
+  P.icon = function (kind, shape) {
+    const c = document.createElement("canvas"), d = 2, S = 26; c.width = c.height = S * d; c.className = "mpico"; const x = c.getContext("2d"); x.scale(d, d);
+    x.fillStyle = "#1b222b"; x.fillRect(0, 0, S, S); const wall = "#9aa3b0", flo = "#4f6070", acc = "#ffd84a";
+    const box = (a, b, w, hh, col) => { x.fillStyle = col; x.fillRect(a, b, w, hh); };
+    if (kind === "diag") {
+      const cells = G.shapeCells(shape || this.s.shape, this.s.rot, this.s.flip), xs = cells.map(q => q.dx), ys = cells.map(q => q.dy), n = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) + 1, cs = (S - 4) / n, ox = 2 - Math.min(...xs) * cs, oy = 2 - Math.min(...ys) * cs;
+      x.strokeStyle = "rgba(255,255,255,.18)"; for (const q of cells) x.strokeRect(ox + q.dx * cs, oy + q.dy * cs, cs, cs);
+      x.fillStyle = wall; for (const q of cells) { x.beginPath(); q.poly.forEach(([u, v], i) => (i ? x.lineTo : x.moveTo).call(x, ox + (q.dx + u) * cs, oy + (q.dy + v) * cs)); x.closePath(); x.fill(); }
+      return c;
+    }
+    const draw = {
+      wall: () => box(4, 4, 18, 18, wall), floor: () => box(3, 3, 20, 20, flo),
+      ceil: () => { box(3, 3, 20, 20, "#2a3542"); x.fillStyle = "rgba(120,220,255,.8)"; x.beginPath(); x.moveTo(23, 3); x.lineTo(13, 3); x.lineTo(23, 13); x.fill(); },
+      room: () => { box(2, 2, 22, 22, wall); box(6, 6, 14, 14, flo); }, height: () => { box(3, 15, 20, 8, flo); box(9, 9, 14, 6, "#7d93a6"); },
+      slope: () => { x.fillStyle = flo; x.beginPath(); x.moveTo(3, 23); x.lineTo(23, 7); x.lineTo(23, 23); x.fill(); },
+      stairs: () => { x.fillStyle = flo; for (let i = 0; i < 4; i++) x.fillRect(3 + i * 5, 23 - (i + 1) * 4, 5, (i + 1) * 4); },
+      light: () => { x.fillStyle = acc; x.beginPath(); x.arc(13, 11, 6, 0, 7); x.fill(); box(10, 18, 6, 4, acc); },
+      erase: () => { x.strokeStyle = "#ff6a5a"; x.lineWidth = 3; x.beginPath(); x.moveTo(6, 6); x.lineTo(20, 20); x.moveTo(20, 6); x.lineTo(6, 20); x.stroke(); },
+      start: () => { x.fillStyle = "#3dff7a"; x.beginPath(); x.moveTo(13, 3); x.lineTo(22, 22); x.lineTo(4, 22); x.fill(); },
+      door: () => box(3, 11, 20, 5, "#d9a35a"), enemy: () => { x.fillStyle = "#ff5a4a"; x.beginPath(); x.arc(13, 13, 8, 0, 7); x.fill(); },
+      pickup: () => { x.fillStyle = acc; x.beginPath(); x.moveTo(13, 4); x.lineTo(22, 13); x.lineTo(13, 22); x.lineTo(4, 13); x.fill(); },
+      exit: () => { box(5, 4, 16, 18, "#5aff8a"); box(9, 8, 8, 14, "#1b222b"); }, npc: () => { x.fillStyle = "#b48cff"; x.beginPath(); x.arc(13, 9, 5, 0, 7); x.fill(); box(7, 15, 12, 8, "#b48cff"); },
+    };
+    (draw[kind] || (() => box(7, 7, 12, 12, "#b8c4d4")))();
+    return c;
+  };
+  // the side panel: "Rooms" (building pieces + textures) and "Objects" (the player start + every placeable object)
   P.buildPal = function () {
     const h = this.h, s = this.s, imgs = (this.o.project.assets || []).filter(a => a.type === "image"), urls = this.urls();
-    const sw = (id, name, url) => h("button", { class: "mswatch" + (s.tex === id ? " on" : ""), title: name, onclick: () => { s.tex = id; this.buildPal(); if (["select", "erase", "pick", "object", "start", "height", "light", "slope", "stairs"].includes(s.tool)) this.setTool(s.tool === "select" ? "wall" : s.tool); } },
-      url ? h("img", { src: url, alt: "", draggable: "false" }) : h("span", { class: "msdef" }), h("span", { class: "msn", text: name }));
-    this.pal.replaceChildren(h("div", { class: "mph", text: "Texture" }), sw("", "Default", ""), ...imgs.map(a => sw(a.id, a.name.replace(/\.[^.]+$/, ""), urls[a.id])),
-      imgs.length ? "" : h("div", { class: "note", text: "Import images (Assets > Import Files) to use them as textures." }));
+    const tabs = h("div", { class: "mptabs" }, ...[["rooms", "Rooms"], ["objects", "Objects"]].map(([k, l]) => h("button", { class: "mptab" + (s.panel === k ? " on" : ""), text: l, onclick: () => { s.panel = k; this.buildPal(); } })));
+    const piece = (tool, label, key) => h("button", { class: "mpiece" + (s.tool === tool ? " on" : ""), title: label + " (" + key + ")", onclick: () => this.setTool(tool) }, this.icon(tool), h("span", { text: label }));
+    const out = [tabs];
+    if (s.panel === "objects") {
+      const props = (this.o.getProps && this.o.getProps()) || [], cur = this.o.getProp && this.o.getProp();
+      out.push(h("button", { class: "mpiece wide" + (s.tool === "start" ? " on" : ""), title: "Player start (P)", onclick: () => this.setTool("start") }, this.icon("start"), h("span", { text: "Player start" })), h("div", { class: "mph", text: "Objects" }),
+        ...props.map(p => h("button", { class: "mpiece wide" + (s.tool === "object" && cur === p.id ? " on" : ""), title: p.name + " (" + p.type + "): click it, then click in the map to place it", onclick: () => { if (this.o.setProp) this.o.setProp(p.id); this.setTool("object"); } }, this.icon(p.type), h("span", { class: "msn", text: p.name }), h("span", { class: "mpty", text: p.type }))),
+        props.length ? "" : h("div", { class: "note", text: "No objects yet. Make doors, enemies, pick-ups and more in the Object Editor tab." }));
+    } else {
+      out.push(h("div", { class: "mpgrid" }, piece("wall", "Wall", "W"), piece("diag", "Diagonal", "G"), piece("floor", "Floor", "F"), piece("ceil", "Ceiling", "C"), piece("room", "Room", "R"), piece("height", "Height", "H"), piece("slope", "Slope", "S"), piece("stairs", "Stairs", "T"), piece("light", "Light", "L"), piece("erase", "Erase", "X")));
+      if (s.tool === "diag") out.push(h("div", { class: "mph", text: "Diagonal shape" }),
+        h("div", { class: "mpshapes" }, ...G.SHAPES.map(sh => h("button", { class: "mpshape" + (s.shape === sh.id ? " on" : ""), title: sh.name, onclick: () => { s.shape = sh.id; this.buildPal(); this.redraw(); } }, this.icon("diag", sh.id)))),
+        h("div", { class: "mpsub", text: (G.SHAPES.find(q => q.id === s.shape) || {}).name || "" }),
+        h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: "⟳ Turn", title: "D", onclick: () => this.turn() }), h("button", { class: "btn sm", text: "⇋ Mirror", title: "M", onclick: () => this.mirror() })));
+      const sw = (id, name, url) => h("button", { class: "mswatch" + (s.tex === id ? " on" : ""), title: name, onclick: () => { s.tex = id; this.buildPal(); if (["select", "erase", "pick", "object", "start", "height", "light", "slope", "stairs"].includes(s.tool)) this.setTool("wall"); } },
+        url ? h("img", { src: url, alt: "", draggable: "false" }) : h("span", { class: "msdef" }), h("span", { class: "msn", text: name }));
+      out.push(h("div", { class: "mph", text: "Texture" }), sw("", "Default", ""), ...imgs.map(a => sw(a.id, a.name.replace(/\.[^.]+$/, ""), urls[a.id])),
+        imgs.length ? "" : h("div", { class: "note", text: "Import images (Assets > Import Files) to use them as textures." }));
+    }
+    this.pal.replaceChildren(...out);
   };
-  P.setTool = function (t) { this.s.tool = t; this.drag = null; this.buildBar(); this.redraw(); };
+  P.mirror = function () { if (this.s.tool !== "diag") return; this.s.flip = !this.s.flip; this.buildBar(); this.buildPal(); this.redraw(); };
+  P.setTool = function (t) { this.s.tool = t; this.drag = null; if (t === "object" || t === "start") this.s.panel = "objects"; else if (t !== "select" && t !== "pick") this.s.panel = "rooms"; this.buildBar(); this.buildPal(); this.redraw(); };
   P.setLayer = function (L) { L = Math.max(0, Math.min(63, L)); if (L > this.m.layers.length) L = this.m.layers.length; this.s.L = L; this.sel = this.sel && this.sel.kind === "cells" ? null : this.sel; this.buildBar(); this.redraw(); this.emitSel(); };
   P.destroy = function () { this.ro.disconnect(); this.unsub(); };
   P.urls = function () { return (this.o.getUrls ? this.o.getUrls() : this.o.urls) || {}; };
@@ -107,14 +154,19 @@
   // apply one tool to one cell of the current story; erase = the right-mouse version
   P.paintCell = function (x, y, erase) {
     const s = this.s, L = s.L, m = this.m, t = s.tool, c = G.edit(m, L, x, y);
-    if (t === "wall") { if (erase) { delete c.w; delete c.ws; } else { c.w = s.tex; delete c.ws; } }
+    if (t === "wall") { if (erase) { delete c.w; delete c.ws; } else { c.w = s.tex; delete c.ws; delete c.dg; delete c.dt; } }
     else if (t === "floor") { if (erase) { delete c.f; delete c.h; delete c.sh; delete c.sd; delete c.sr; } else { c.f = s.tex; delete c.w; delete c.ws; } }
     else if (t === "ceil") { if (erase) delete c.c; else { c.c = s.tex; delete c.w; delete c.ws; } }
     else if (t === "height") { if (c.f === undefined && !erase) c.f = s.tex; if (erase) delete c.h; else { c.h = s.hgt; delete c.w; } }
     else if (t === "slope" || t === "stairs") { if (erase) { delete c.sh; delete c.sd; delete c.sr; } else { if (c.f === undefined) c.f = s.tex; delete c.w; c.sh = t; c.sd = s.dir; c.sr = s.rise; } }
     else if (t === "light") { if (erase || s.light >= 100) delete c.li; else c.li = s.light; }
     else if (t === "erase") { for (const k of Object.keys(c)) delete c[k]; }
+    else if (t === "diag") { if (erase) { delete c.dg; delete c.dt; } }
     G.tidy(m, L, x, y);
+  };
+  // a diagonal shape with its first cell at x, y
+  P.placeDiag = function (x, y) {
+    const s = this.s; for (const q of G.shapeCells(s.shape, s.rot, s.flip)) { const c = G.edit(this.m, s.L, x + q.dx, y + q.dy); delete c.w; delete c.ws; c.dg = q.poly; c.dt = s.tex; }
   };
   P.room = function (a, b, erase) {
     const s = this.s, L = s.L, m = this.m, x0 = Math.min(a[0], b[0]), x1 = Math.max(a[0], b[0]), y0 = Math.min(a[1], b[1]), y1 = Math.max(a[1], b[1]);
@@ -126,7 +178,7 @@
     }
   };
   P.pickTex = function (x, y) {
-    const c = G.cell(this.m, this.s.L, x, y); if (!c) return; const tex = c.w !== undefined ? c.w : c.f !== undefined ? c.f : c.c; if (tex === undefined) return;
+    const c = G.cell(this.m, this.s.L, x, y); if (!c) return; const tex = c.w !== undefined ? c.w : G.isDiag(c) ? c.dt : c.f !== undefined ? c.f : c.c; if (tex === undefined) return;
     this.s.tex = tex; if (this.s.tool === "pick" || this.s.tool === "select") this.s.tool = c.w !== undefined ? "wall" : "floor"; this.buildPal(); this.buildBar(); this.redraw();
   };
 
@@ -153,6 +205,7 @@
     const sel = this.sel, m = this.m; if (sel && sel.kind === "thing") { const th = (m.things || []).find(t => t.id === sel.id); if (th) { this.save(); th.ang = ((th.ang || 0) + 90) % 360; this.changed(false); this.emitSel(); } return; }
     if (this.s.tool === "start" || (sel && sel.kind === "start")) { this.save(); this.T.set(m.id + ".startAngle", ((+this.T.get(m.id + ".startAngle") || 0) + 90) % 360); this.changed(false); return; }
     if (this.s.tool === "slope" || this.s.tool === "stairs") { this.s.dir = (this.s.dir + 1) % 4; this.buildBar(); this.redraw(); }
+    if (this.s.tool === "diag") { this.s.rot = (this.s.rot + 1) % 4; this.buildPal(); this.redraw(); }
   };
   P.setStart = function (px, py) { this.save(); const m = this.m; this.T.setMany({ [m.id + ".startX"]: snap16(this.wx(px)), [m.id + ".startY"]: snap16(this.wy(py)), [m.id + ".startLayer"]: this.s.L }); this.sel = { kind: "start" }; this.changed(false); this.emitSel(); };
 
@@ -191,6 +244,7 @@
     }
     if (s.tool === "start") { this.setStart(px, py); this.drag = { kind: "start" }; return; }
     if (s.tool === "room") { this.drag = { kind: "room", a: [cx, cy], b: [cx, cy], erase }; this.redraw(); return; }
+    if (s.tool === "diag" && !erase) { this.save(); this.placeDiag(cx, cy); this.changed(false); return; }
     this.save(); this.drag = { kind: "paint", erase, done: new Set() }; this.paintAt(cx, cy);
   };
   P.paintAt = function (cx, cy) { const d = this.drag, k = cx + "," + cy; if (d.done.has(k)) return; d.done.add(k); this.paintCell(cx, cy, d.erase); this.redraw(); };
@@ -222,7 +276,7 @@
     if (mod) return;
     if (k === "escape") { this.sel = null; this.redraw(); this.emitSel(); return; }
     if (k === "pageup") { e.preventDefault(); this.setLayer(this.s.L + 1); return; } if (k === "pagedown") { e.preventDefault(); this.setLayer(this.s.L - 1); return; }
-    if (k === "home") { this.fit(); return; } if (k === "d") { this.turn(); return; }
+    if (k === "home") { this.fit(); return; } if (k === "d") { this.turn(); return; } if (k === "m") { this.mirror(); return; }
     if (KEYS[k]) { e.preventDefault(); this.setTool(KEYS[k]); }
   };
   // a texture dropped from the Project panel: put it on the cell under the mouse (its wall, or else its floor; Shift = ceiling)
@@ -266,6 +320,13 @@
       x.strokeStyle = "rgba(255,255,255,.55)"; x.lineWidth = Math.max(1, cs / 26); x.strokeRect(r[0] + 1, r[1] + 1, r[2] - 2, r[3] - 2);
       if (c.ws && cs >= 18) { x.fillStyle = "#ffcf5a"; for (const sd in c.ws) { const q = +sd, t = cs * 0.12; x.fillRect(q === 3 ? r[0] : q === 1 ? r[0] + r[2] - t : r[0] + t, q === 0 ? r[1] : q === 2 ? r[1] + r[3] - t : r[1] + t, q === 0 || q === 2 ? r[2] - 2 * t : t, q === 1 || q === 3 ? r[3] - 2 * t : t); } }
     });
+    // diagonal walls
+    const polyPath = (cx, cy, poly) => { x.beginPath(); poly.forEach(([u, v], i) => (i ? x.lineTo : x.moveTo).call(x, this.sx((cx + u) * C), this.sy((cy + v) * C))); x.closePath(); };
+    each(m.layers[L], (c, cx, cy) => {
+      if (!G.isDiag(c)) return; const r = rect(cx, cy); x.save(); polyPath(cx, cy, c.dg); x.clip(); texFill(c.dt, r, "#8b919c"); x.fillStyle = "rgba(0,0,0,.18)"; x.fillRect(...r); x.restore();
+      polyPath(cx, cy, c.dg); x.strokeStyle = "rgba(255,255,255,.6)"; x.lineWidth = Math.max(1, cs / 26); x.stroke();
+    });
+    if (s.tool === "diag" && this.hover && !this.drag) { x.fillStyle = "rgba(125,243,255,.35)"; x.strokeStyle = "#7df3ff"; x.lineWidth = 1.5; for (const q of G.shapeCells(s.shape, s.rot, s.flip)) { polyPath(this.hover[0] + q.dx, this.hover[1] + q.dy, q.poly); x.fill(); x.stroke(); } }
     // objects on this story
     for (const th of this.things()) {
       const ty = T.get(th.prop + ".type"), selT = this.sel && this.sel.kind === "thing" && this.sel.id === th.id, nm = T.get(th.prop + ".name") || th.prop;

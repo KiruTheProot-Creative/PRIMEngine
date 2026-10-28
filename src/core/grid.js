@@ -23,6 +23,26 @@
   G.key = (x, y) => x + "," + y;
   G.cell = (m, L, x, y) => { const l = m.layers[L]; return l ? l.cells[x + "," + y] || null : null; };
   G.isWall = c => !!c && c.w !== undefined;
+  // ---- diagonal walls: a cell can hold a solid PART of a block, the polygon c.dg = [[u,v]...] (0..1 across the cell, u east, v south) textured c.dt.
+  // Shapes may span several cells (shallow angles). Each shape: a list of { dx, dy, poly } in its normal orientation; rotate / mirror with G.shapeCells.
+  const T3 = 1 / 3, T23 = 2 / 3;
+  G.SHAPES = [
+    { id: "d45", name: "Diagonal 45°", cells: [{ dx: 0, dy: 0, poly: [[1, 0], [1, 1], [0, 1]] }] },
+    { id: "d26", name: "Slant 26° (2 cells)", cells: [{ dx: 0, dy: 0, poly: [[0, 1], [1, 0.5], [1, 1]] }, { dx: 1, dy: 0, poly: [[0, 0.5], [1, 0], [1, 1], [0, 1]] }] },
+    { id: "d18", name: "Slant 18° (3 cells)", cells: [{ dx: 0, dy: 0, poly: [[0, 1], [1, T23], [1, 1]] }, { dx: 1, dy: 0, poly: [[0, T23], [1, T3], [1, 1], [0, 1]] }, { dx: 2, dy: 0, poly: [[0, T3], [1, 0], [1, 1], [0, 1]] }] },
+    { id: "d63", name: "Slant 63° (2 cells)", cells: [{ dx: 0, dy: 0, poly: [[1, 0], [1, 1], [0.5, 1]] }, { dx: 0, dy: 1, poly: [[0.5, 0], [1, 0], [1, 1], [0, 1]] }] },
+    { id: "cut", name: "Corner cut (small)", cells: [{ dx: 0, dy: 0, poly: [[1, 0.5], [1, 1], [0.5, 1]] }] },
+    { id: "big", name: "Corner cut (big)", cells: [{ dx: 0, dy: 0, poly: [[0.5, 0], [1, 0], [1, 1], [0, 1], [0, 0.5]] }] },
+    { id: "half", name: "Half block (thin wall)", cells: [{ dx: 0, dy: 0, poly: [[0, 0.5], [1, 0.5], [1, 1], [0, 1]] }] },
+    { id: "edge", name: "Edge wall (1/8 thick)", cells: [{ dx: 0, dy: 0, poly: [[0, 0.875], [1, 0.875], [1, 1], [0, 1]] }] },
+  ];
+  // the cells of a shape turned rot x 90° clockwise (and mirrored east-west first when flip)
+  G.shapeCells = (id, rot, flip) => {
+    const sh = G.SHAPES.find(x => x.id === id) || G.SHAPES[0], r4 = ((rot || 0) % 4 + 4) % 4;
+    return sh.cells.map(c => { let dx = c.dx, dy = c.dy, poly = c.poly.map(p => p.slice()); if (flip) { dx = -dx; poly = poly.map(([u, v]) => [1 - u, v]).reverse(); }
+      for (let i = 0; i < r4; i++) { [dx, dy] = [-dy, dx]; poly = poly.map(([u, v]) => [1 - v, u]); } return { dx, dy, poly: poly.map(([u, v]) => [+u.toFixed(4), +v.toFixed(4)]) }; });
+  };
+  G.isDiag = c => !!c && c.w === undefined && Array.isArray(c.dg) && c.dg.length >= 3;
   G.hasFloor = c => !!c && c.w === undefined && c.f !== undefined;
   // a cell's own copy, created when missing; empty cells are removed again by G.tidy
   G.edit = (m, L, x, y) => { while (m.layers.length <= L) m.layers.push({ cells: {} }); const l = m.layers[L], k = x + "," + y; return l.cells[k] || (l.cells[k] = {}); };
@@ -79,6 +99,18 @@
           const up = G.cell(m, L + 1, cx, cy); if (!G.isWall(up) && !(G.hasFloor(up) && !up.h && !up.sh)) quad(c.w, L, cx, cy, [[X0, B + LH, Z0], [X1, B + LH, Z0], [X1, B + LH, Z1], [X0, B + LH, Z1]], [[0, 0], [1, 0], [1, 1], [0, 1]], li, { kind: "walltop", layer: L, x: cx, y: cy }, [0, 1, 0]);
           const dn = L > 0 ? G.cell(m, L - 1, cx, cy) : null; if (L > 0 && !G.isWall(dn) && !(dn && dn.c !== undefined)) quad(c.w, L, cx, cy, [[X0, B, Z0], [X0, B, Z1], [X1, B, Z1], [X1, B, Z0]], [[0, 0], [0, 1], [1, 1], [1, 0]], li * 0.7, { kind: "wall", layer: L, x: cx, y: cy, side: 4 }, [0, -1, 0]);
           continue;
+        }
+        if (G.isDiag(c)) {   // a diagonal / partial wall: a prism standing on the cell's polygon
+          const poly = c.dg, n = poly.length, W = (u, v) => [X0 + u * C, Z0 + v * C], info = { kind: "diag", layer: L, x: cx, y: cy };
+          let area = 0; for (let i = 0; i < n; i++) { const a = poly[i], b = poly[(i + 1) % n]; area += a[0] * b[1] - b[0] * a[1]; }
+          for (let i = 0; i < n; i++) {
+            const a = poly[i], b = poly[(i + 1) % n], onB = (k, val) => Math.abs(a[k] - val) < 1e-4 && Math.abs(b[k] - val) < 1e-4;
+            const d = onB(1, 0) ? 0 : onB(0, 1) ? 1 : onB(1, 1) ? 2 : onB(0, 0) ? 3 : -1; if (d >= 0 && G.isWall(G.cell(m, L, cx + G.DIRS[d][0], cy + G.DIRS[d][1]))) continue;
+            let nx = b[1] - a[1], nz = -(b[0] - a[0]); if (area < 0) { nx = -nx; nz = -nz; } const nl = Math.hypot(nx, nz) || 1; nx /= nl; nz /= nl;   // outward normal
+            const A = W(...a), Bq = W(...b), right = [nz, -nx], fwd = (Bq[0] - A[0]) * right[0] + (Bq[1] - A[1]) * right[1] >= 0, P0 = fwd ? A : Bq, P1 = fwd ? Bq : A, L2 = Math.hypot(P1[0] - P0[0], P1[1] - P0[1]) / C;
+            quad(c.dt, L, cx, cy, [[P0[0], B + LH, P0[1]], [P1[0], B + LH, P1[1]], [P1[0], B, P1[1]], [P0[0], B, P0[1]]], [[0, 0], [L2, 0], [L2, 1], [0, 1]], li * (Math.abs(nx) > Math.abs(nz) ? 0.8 : 0.92), Object.assign({ side: d }, info), [nx, 0, nz]);
+          }
+          const up = G.cell(m, L + 1, cx, cy); if (!G.isWall(up)) for (let i = 1; i + 1 < n; i++) { const p0 = W(...poly[0]), p1 = W(...poly[i]), p2 = W(...poly[i + 1]); quad(c.dt, L, cx, cy, [[p0[0], B + LH, p0[1]], [p1[0], B + LH, p1[1]], [p2[0], B + LH, p2[1]], [p2[0], B + LH, p2[1]]], [[poly[0][0], poly[0][1]], [poly[i][0], poly[i][1]], [poly[i + 1][0], poly[i + 1][1]], [poly[i + 1][0], poly[i + 1][1]]], li, Object.assign({ top: true }, info), [0, 1, 0]); }
         }
         if (c.f !== undefined) {
           const info = { kind: "floor", layer: L, x: cx, y: cy }, hw = (X, Z) => { const q = local(cx, cy, X, Z); return B + G.hAt(c, q[0], q[1]); };

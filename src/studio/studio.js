@@ -562,6 +562,7 @@
   function faceOutline(m, f, col, w) {
     const G = PRIM.Grid, C = G.CELL, B = f.layer * G.LAYER, X0 = f.x * C, Z0 = f.y * C, X1 = X0 + C, Z1 = Z0 + C, out = [], ln = (a, b) => out.push({ kind: "line", a, b, c: col, w, life: 1, t: 0 }), loop = ps => { for (let i = 0; i < ps.length; i++) ln(ps[i], ps[(i + 1) % ps.length]); ln(ps[0], ps[2]); };
     const c = G.cell(m, f.layer, f.x, f.y), e = 0.7;
+    if (f.kind === "diag" && c && c.dg) { const pts = c.dg.map(([u, v]) => [X0 + u * C, Z0 + v * C]); for (let i = 0; i < pts.length; i++) { const a = pts[i], b = pts[(i + 1) % pts.length]; ln([a[0], B + 1, a[1]], [b[0], B + 1, b[1]]); ln([a[0], B + G.LAYER - 1, a[1]], [b[0], B + G.LAYER - 1, b[1]]); ln([a[0], B + 1, a[1]], [a[0], B + G.LAYER - 1, a[1]]); } return out; }
     if (f.kind === "wall" && f.side < 4) { const sd = f.side, X = sd === 1 ? X1 + e : sd === 3 ? X0 - e : null, Z = sd === 0 ? Z0 - e : sd === 2 ? Z1 + e : null;
       if (X !== null) loop([[X, B + 1, Z0], [X, B + 1, Z1], [X, B + G.LAYER - 1, Z1], [X, B + G.LAYER - 1, Z0]]); else loop([[X0, B + 1, Z], [X1, B + 1, Z], [X1, B + G.LAYER - 1, Z], [X0, B + G.LAYER - 1, Z]]); }
     else { const y = f.kind === "ceil" ? B + G.LAYER - 1 - e : f.kind === "walltop" ? B + G.LAYER + e : f.kind === "wall" ? B - e : null;
@@ -581,15 +582,15 @@
   }
   function flyHover(x, y) { if (S.fhovT) return; S.fhovT = requestAnimationFrame(() => { S.fhovT = 0; if (S.tab !== "fly" || !S.v3) return; const f = flyHit(x, y), a = S.fhov; if ((f && faceKey(f)) !== (a && faceKey(a))) { S.fhov = f; flyOverlay(); } }); }
   // the texture of one face: a wall side may have its own (ws), else the block's
-  const faceTex = (m, f) => { const c = PRIM.Grid.cell(m, f.layer, f.x, f.y); if (!c) return ""; if (f.kind === "wall" || f.kind === "walltop") return f.kind === "wall" && f.side < 4 && c.ws && c.ws[f.side] !== undefined ? c.ws[f.side] : c.w; return f.kind === "ceil" ? c.c : c.f; };
+  const faceTex = (m, f) => { const c = PRIM.Grid.cell(m, f.layer, f.x, f.y); if (!c) return ""; if (f.kind === "diag") return c.dt; if (f.kind === "wall" || f.kind === "walltop") return f.kind === "wall" && f.side < 4 && c.ws && c.ws[f.side] !== undefined ? c.ws[f.side] : c.w; return f.kind === "ceil" ? c.c : c.f; };
   function flyApply(value, whole) {   // a texture on every selected face (whole = the whole wall block)
     const m = curMap(), G = PRIM.Grid; for (const f of S.fsl || []) { const c = G.cell(m, f.layer, f.x, f.y); if (!c) continue;
-      if (f.kind === "wall" && f.side < 4 && !whole) { c.ws = c.ws || {}; c.ws[f.side] = value; } else if (f.kind === "wall" || f.kind === "walltop") { c.w = value; delete c.ws; } else if (f.kind === "ceil") c.c = value; else c.f = value; }
+      if (f.kind === "diag") c.dt = value; else if (f.kind === "wall" && f.side < 4 && !whole) { c.ws = c.ws || {}; c.ws[f.side] = value; } else if (f.kind === "wall" || f.kind === "walltop") { c.w = value; delete c.ws; } else if (f.kind === "ceil") c.c = value; else c.f = value; }
     markDirty(); if (S.v3) S.v3.rebuild();
   }
   function flyInspector() {
     const m = curMap(), box = h("div", { class: "insp" }), fs = S.fsl, imgs = S.project.assets.filter(a => a.type === "image");
-    const kind = f => f.kind === "wall" ? (f.side < 4 ? DIRN[f.side] + " side of a wall" : "underside of a wall") : f.kind === "walltop" ? "top of a wall" : f.kind === "ceil" ? "ceiling" : "floor";
+    const kind = f => f.kind === "diag" ? "diagonal wall" : f.kind === "wall" ? (f.side < 4 ? DIRN[f.side] + " side of a wall" : "underside of a wall") : f.kind === "walltop" ? "top of a wall" : f.kind === "ceil" ? "ceiling" : "floor";
     const names = [...new Set(fs.map(kind))].join(" + "), vals = new Set(fs.map(f => faceTex(m, f))), tex = vals.size === 1 ? [...vals][0] : null, walls = fs.some(f => f.kind === "wall" && f.side < 4);
     box.append(h("div", { class: "ihead" }, h("span", { class: "bigic", text: "▦" }), h("div", { class: "ititle" }, h("div", { class: "idin ro", text: fs.length + " face" + (fs.length > 1 ? "s" : "") + " selected" }), h("div", { class: "isub", text: names }))),
       h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: "Select nothing", onclick: () => { S.fsl = []; flyOverlay(); renderInspector(); } })),
@@ -1028,6 +1029,7 @@
           same(c => c.sh || "") !== "" ? choice("Rises toward", [[0, "North ↑"], [1, "East →"], [2, "South ↓"], [3, "West ←"]], same(c => c.sd || 0), v => apply(c => { if (c.sh) c.sd = +v; })) : "",
           same(c => c.sh || "") !== "" ? choice("Rises by", [1, 2, 3, 4, 6, 8, 10, 12, 14, 16].map(r => [r, r + "/16 of a story" + (r === 8 ? " (half)" : r === 16 ? " (a whole story)" : "")]), same(c => c.sr || 8), v => apply(c => { if (c.sh) c.sr = +v; })) : "",
           h("div", { class: "note", text: "One story is 2 m, so each height step is 12.5 cm. A slope or stairs rising 16/16 reaches the next story." })) : "",
+        cells.some(c => PRIM.Grid.isDiag(c)) ? foldout("gc:diag", "Diagonal wall", texSel("Texture", same(c => PRIM.Grid.isDiag(c) ? c.dt : undefined), v => apply(c => { if (PRIM.Grid.isDiag(c)) c.dt = v; })), h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: "Remove diagonal walls", onclick: () => apply(c => { delete c.dg; delete c.dt; }) }))) : "",
         cells.some(c => c.c !== undefined) ? foldout("gc:ceil", "Ceiling", texSel("Texture", same(c => c.c), v => apply(c => { if (c.c !== undefined) c.c = v; }))) : "",
         foldout("gc:light", "Light", row("Brightness %", h("input", { type: "range", min: 0, max: 100, step: 5, value: same(c => c.li === undefined ? 100 : c.li) === null ? 100 : same(c => c.li === undefined ? 100 : c.li), onchange: e => apply(c => { if (+e.target.value >= 100) delete c.li; else c.li = +e.target.value; }) }))));
     } else if (sel && sel.kind === "thing" && (m.things || []).some(t => t.id === sel.id)) {

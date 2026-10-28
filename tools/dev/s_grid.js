@@ -33,6 +33,13 @@ module.exports = async (p, out) => {
   await p.keyboard.press('r'); await dragC(29, 19, 34, 24); console.log('room', JSON.stringify(await info()), await cell(0, 29, 20), await cell(0, 31, 21));
   // undo / redo
   await p.keyboard.press('Control+z'); const u = JSON.stringify(await info()); await p.keyboard.press('Control+y'); console.log('undo', u, 'redo', JSON.stringify(await info()));
+  // diagonal walls from the Rooms panel: a 45° one and a 2-cell 26° slant
+  await p.click('.mpiece:has-text("Diagonal")'); await p.click('.mpshape >> nth=0'); await clickC(21, 21);
+  await p.click('.mpshape >> nth=1'); await p.keyboard.press('d'); await clickC(26, 26); await p.waitForTimeout(100);
+  console.log('diag', await cell(0, 21, 21), await cell(0, 26, 26), await cell(0, 26, 27));
+  await p.screenshot({ path: out + '_diag.png' });
+  await p.click('.mptab:has-text("Objects")'); console.log('objects tab', await p.locator('.medpal').innerText());
+  await p.click('.mptab:has-text("Rooms")');
   // select tool + inspector
   await p.keyboard.press('v'); await dragC(23, 23, 24, 24); await p.waitForTimeout(200);
   console.log('inspector', await p.locator('.insp .idin').first().textContent());
@@ -59,6 +66,7 @@ module.exports = async (p, out) => {
   console.log('up the stairs (east):', await walk(25 * 128 + 64, 22 * 128 + 64, 0, 0, 2.5));
   console.log('into the south wall:', await walk(22 * 128 + 64, 25 * 128 + 64, 0, Math.PI / 2, 2), '(wall face at y', 28 * 128, ')');
   console.log('up the 8/16 step (25,25) from the west:', await walk(23 * 128 + 64, 25 * 128 + 64, 0, 0, 1));
+  console.log('into the 45° diagonal at (21,21), going north-west:', await walk(22 * 128 + 64, 22 * 128 + 64, 0, -3 * Math.PI / 4, 1.5));
   console.log('down the slope (21,26) going south:', await walk(21 * 128 + 64, 25 * 128 + 64, 0, Math.PI / 2, 1.2));
   await p.keyboard.press('Escape'); await p.waitForTimeout(300);
 };
