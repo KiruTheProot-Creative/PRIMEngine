@@ -84,7 +84,8 @@
     Object.assign(S, { tab: "edit", playerSel: false, mapId: null, msel: null, selId: null, sel: null, folder: "", testing: false, paused: false, rtab: "inspector", btab: "project", search: "", renaming: null, collapsed: {}, treeClosed: {}, fileDirty: false, file: p.fileName ? { ref: null, name: p.fileName } : null });
     S.unsub = S.tags.on(() => markDirty(true)); S.log = []; document.body.classList.add("in-editor"); renderEditor(); log("Opened project “" + p.name + "”"); if (p.droppedMaps) { log(p.droppedMaps + " old room-style map(s) were removed: maps are now grids of 2 m cells. Create a new map from the Create menu.", "warn"); delete p.droppedMaps; markDirty(); }
   }
-  function closeEditorState() { killMapViews(); if (S.rt) { S.rt.destroy(); S.rt = null; } if (S.unsub) { S.unsub(); S.unsub = null; } closePop(); S.project = null; E = {}; }
+  function stopPlay() { if (S.play) { S.play.destroy(); S.play = null; } }   // the running game (walk / playtest), so it never keeps playing in the background
+  function closeEditorState() { stopPlay(); killMapViews(); if (S.rt) { S.rt.destroy(); S.rt = null; } if (S.unsub) { S.unsub(); S.unsub = null; } closePop(); S.project = null; E = {}; }
   async function backToManager() { clearTimeout(S.dirtyT); if (S.project) Store.save(S.project); closeEditorState(); renderManager(); }
 
   // ================================================================ .prime FILES + browser autosave
@@ -1116,7 +1117,7 @@
     let start = S.tags.get("project.startScreen"); if (!screens().some(s => s.id === start)) start = screens()[0].id;
     if (S.rt) S.rt.stopMusic();
     const rt = new PRIM.Runtime({ host: layer, project: S.project, tags: tg, mode: "play", urls: S.urls, screenId: start, onPersist: ov => Store.saveSettings(S.project.id, ov), onExit: close, onStartGame: startGame, say: t => log(t) });
-    function close() { rt.destroy(); layer.remove(); if (document.fullscreenElement) document.exitFullscreen().catch(() => {}); }
+    function close() { stopPlay(); rt.destroy(); layer.remove(); if (document.fullscreenElement) document.exitFullscreen().catch(() => {}); }
     layer.__rt = rt;
   }
 

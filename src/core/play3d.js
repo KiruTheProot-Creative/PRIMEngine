@@ -29,7 +29,7 @@
       this.last = performance.now(); this.raf = requestAnimationFrame(t => this.frame(t));
     }
     destroy() {
-      this.dead = true; this.stopLoops(""); if (this.sh) this.sh.stopAll(); cancelAnimationFrame(this.raf); this.unsub(); if (this.hud) this.hud.destroy(); if (this.unbind) this.unbind(); if (document.pointerLockElement === this.cv) document.exitPointerLock();
+      if (this.destroyed) return; this.destroyed = true; this.dead = true; this.stopLoops(""); if (this.sh) this.sh.stopAll(); cancelAnimationFrame(this.raf); this.unsub(); if (this.hud) this.hud.destroy(); if (this.unbind) this.unbind(); if (document.pointerLockElement === this.cv) document.exitPointerLock();
       if (this.view) { const e = this.view.gl.getExtension("WEBGL_lose_context"); if (e) e.loseContext(); } this.root.remove();
     }
     // ---- input
@@ -40,6 +40,7 @@
       const lock = () => { const on = document.pointerLockElement === cv; this.msg.style.display = on ? "none" : "grid"; lv.style.display = on ? "none" : "block"; };
       this.msg.textContent = "Click to play  ·  W A S D move  ·  Space jump  ·  Shift sprint  ·  Esc to leave" + (this.o.debug ? "  ·  H / J test damage" : ""); this.msg.style.display = "grid";
       const kd = e => {
+        if (!this.root.isConnected) return;
         if (e.key === "Escape") { e.stopImmediatePropagation(); e.preventDefault(); this.leave(); return; }
         if (/INPUT|SELECT|TEXTAREA/.test((e.target && e.target.tagName) || "")) return;   // typing in a text field is never a game key
         if (this.talk) { e.preventDefault(); if (!e.repeat) this.talkKey(keyId(e)); return; }   // while talking, keys answer the dialogue
@@ -530,7 +531,10 @@
       else if (f.hx || f.hy) { f.hx = f.hy = 0; if (this.hud) this.hud.sway(0, 0); }
     }
     frame(t) {
-      if (this.dead) return; this.raf = requestAnimationFrame(q => this.frame(q)); const dt = Math.min(0.05, (t - this.last) / 1000); this.last = t;
+      if (this.dead) return;
+      // removed from the page (the playtest was stopped, another project was opened...): shut down for good, so no copy keeps listening to keys and playing sounds
+      if (this.root.isConnected) this.wasOn = true; else if (this.wasOn) { this.destroy(); return; }
+      this.raf = requestAnimationFrame(q => this.frame(q)); const dt = Math.min(0.05, (t - this.last) / 1000); this.last = t;
       if (this.mode === "play" && this.map && !this.pdead && !this.talk) this.step(dt);
       if (this.mode === "play") this.talkHint();
       if (this.mode === "play") this.feel(dt);
