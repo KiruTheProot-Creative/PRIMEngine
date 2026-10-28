@@ -138,6 +138,8 @@
     NUM("projDamage", "Damage per hit (to enemies)", 25, 0, 100000, 1, { showIf: ["projType", ["hitscan", "particle", "mesh"]] }),
     // impact on walls, floors and ceilings: a sound and a mark (one picture, or an animation = frames side by side in one image)
     { k: "impactSound", label: "Wall hit sound", type: "asset", assetType: "sound", def: "", showIf: ["projType", ["hitscan", "particle", "mesh"]] },
+    { k: "impactSoundCharged", label: "Wall hit sound of a charged shot (empty = the normal one)", type: "asset", assetType: "sound", def: "", showIf: ["projType", ["hitscan", "particle", "mesh"]] },
+    NUM("chargedFrom", "A shot counts as charged from (charge 0 to 1; 1 = only full charge)", 1, 0.01, 1, 0.01, { showIf: ["projType", ["hitscan", "particle", "mesh"]] }),
     { k: "impactImage", label: "Wall hit mark / animation (frames side by side in one picture)", type: "asset", assetType: "image", def: "", showIf: ["projType", ["hitscan", "particle", "mesh"]] },
     NUM("impactFrames", "Frames in that picture (1 = a still mark)", 1, 1, 64, 1, { showIf: ["projType", ["hitscan", "particle", "mesh"]] }), NUM("impactFps", "Animation speed (frames per second)", 15, 1, 60, 1, { showIf: ["projType", ["hitscan", "particle", "mesh"]] }),
     NUM("impactSize", "Mark size (units, 128 = a cell)", 16, 1, 256, 1, { showIf: ["projType", ["hitscan", "particle", "mesh"]] }), NUM("impactStay", "Mark stays for (seconds after the animation)", 4, 0, 60, 0.5, { showIf: ["projType", ["hitscan", "particle", "mesh"]] }),
@@ -146,6 +148,7 @@
     { k: "projSplash", label: "Splash damage (hurts everything around where it lands)", type: "bool", def: false, showIf: ["projType", ["hitscan", "particle", "mesh"]] },
     NUM("splashRadius", "Splash radius (units, 128 = a cell)", 160, 8, 2000, 4, { showIf: ["projType", ["hitscan", "particle", "mesh"]], showIf2: ["projSplash", true] }),
     NUM("splashDamage", "Splash damage (in the middle; a quarter of it at the edge)", 50, 0, 100000, 1, { showIf: ["projType", ["hitscan", "particle", "mesh"]], showIf2: ["projSplash", true] }),
+    NUM("splashCharge", "Splash radius at full charge (x the normal radius, 1 = same)", 1, 1, 10, 0.05, { showIf: ["projType", ["hitscan", "particle", "mesh"]], showIf2: ["projSplash", true] }),
     { k: "splashSphere", label: "Shock sphere (grows to the splash size, then fades)", type: "bool", def: false, showIf: ["projType", ["hitscan", "particle", "mesh"]], showIf2: ["projSplash", true] },
     NUM("splashSphereTime", "Shock sphere: how long it lasts (seconds)", 0.45, 0.05, 5, 0.05, { showIf: ["projSplash", true], showIf2: ["splashSphere", true] }),
     { k: "splashColor1", label: "Shock sphere: middle color", type: "color", def: "#ffe08a", showIf: ["projSplash", true], showIf2: ["splashSphere", true] },
@@ -164,6 +167,7 @@
     NUM("explodeSize", "Explosion picture size (units, 128 = a cell)", 96, 1, 2000, 1, { showIf: ["projType", ["hitscan", "particle", "mesh"]], showIf2: ["explodeType", "animation"] }),
     { k: "explodeLight", label: "Explosion flash lights up the room", type: "bool", def: true, showIf: ["projType", ["hitscan", "particle", "mesh"]], showIf2: ["explodeType", ["particles", "animation"]] },
     { k: "explodeSound", label: "Explosion sound", type: "asset", assetType: "sound", def: "", showIf: ["projType", ["hitscan", "particle", "mesh"]] },
+    { k: "explodeSoundCharged", label: "Explosion sound of a charged shot (empty = the normal one)", type: "asset", assetType: "sound", def: "", showIf: ["projType", ["hitscan", "particle", "mesh"]] },
     // ammo: "ammo" = rounds ready to fire, "reserve" = the rest carried. Both are live tags (a HUD text can show {player.att1.ammo})
     { k: "ammoUse", label: "Uses ammo", type: "bool", def: false, showIf: WP },
     NUM("ammoStart", "Ammo at the start", 50, 0, 100000, 1, { showIf: WP, showIf2: ["ammoUse", true] }), NUM("ammoMax", "Most ammo you can carry", 200, 1, 100000, 1, { showIf: WP, showIf2: ["ammoUse", true] }),
@@ -307,6 +311,8 @@
     onDeath: { label: "When the player dies", cat: "event", ins: false, outs: ["next"], ctx: ["object", "player"], props: [] },
     onKill: { label: "When an enemy is killed", cat: "event", ins: false, outs: ["next"], ctx: ["object", "player"], props: [] },
     onFire: { label: "When this weapon fires", cat: "event", ins: false, outs: ["next"], ctx: ["weapon"], props: [] },
+    onImpact: { label: "When a shot hits something", cat: "event", ins: false, outs: ["next"], ctx: ["weapon", "player"], props: [{ k: "what", label: "Hits", type: "choice", options: [["any", "anything"], ["level", "the level (walls, floors, ceilings, doors)"], ["enemy", "an enemy"], ["end", "nothing (flew out of range)"]], def: "any" },
+      { k: "charged", label: "Which shots", type: "choice", options: [["any", "charged or not"], ["charged", "only charged shots"], ["normal", "only normal shots"]], def: "any" }] },
     onReload: { label: "When reloading starts", cat: "event", ins: false, outs: ["next"], ctx: ["weapon"], props: [] },
     onReloadDone: { label: "When reloading is done", cat: "event", ins: false, outs: ["next"], ctx: ["weapon"], props: [] },
     onButton: { label: "When a button is pressed", cat: "event", ins: false, outs: ["next"], ctx: ["object", "player"], props: [{ k: "name", label: "Button name (empty = any button)", type: "string", def: "" }] },

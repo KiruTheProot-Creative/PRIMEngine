@@ -208,10 +208,12 @@
     m.things.push(th); this.sel = { kind: "thing", id: th.id }; this.changed(true); this.emitSel(); return th;
   };
   P.turn = function () {
-    const sel = this.sel, m = this.m; if (sel && sel.kind === "thing") { const th = (m.things || []).find(t => t.id === sel.id); if (th) { this.save(); th.ang = ((th.ang || 0) + 90) % 360; this.changed(false); this.emitSel(); } return; }
-    if (this.s.tool === "start" || (sel && sel.kind === "start")) { this.save(); this.T.set(m.id + ".startAngle", ((+this.T.get(m.id + ".startAngle") || 0) + 90) % 360); this.changed(false); return; }
-    if (this.s.tool === "slope" || this.s.tool === "stairs") { this.s.dir = (this.s.dir + 1) % 4; this.buildBar(); this.redraw(); }
-    if (this.s.tool === "diag") { this.s.rot = (this.s.rot + 1) % 4; this.buildPal(); this.redraw(); }
+    const sel = this.sel, m = this.m, t = this.s.tool;
+    // a building tool turns its piece, even when an object is still selected from placing it (owner bug report)
+    if (t === "slope" || t === "stairs") { this.s.dir = (this.s.dir + 1) % 4; this.buildBar(); this.redraw(); return; }
+    if (t === "diag") { this.s.rot = (this.s.rot + 1) % 4; this.buildPal(); this.redraw(); return; }
+    if (sel && sel.kind === "thing" && (t === "select" || t === "object")) { const th = (m.things || []).find(t => t.id === sel.id); if (th) { this.save(); th.ang = ((th.ang || 0) + 90) % 360; this.changed(false); this.emitSel(); } return; }
+    if (t === "start" || (sel && sel.kind === "start" && t === "select")) { this.save(); this.T.set(m.id + ".startAngle", ((+this.T.get(m.id + ".startAngle") || 0) + 90) % 360); this.changed(false); return; }
   };
   P.setStart = function (px, py) { this.save(); const m = this.m; this.T.setMany({ [m.id + ".startX"]: snap16(this.wx(px)), [m.id + ".startY"]: snap16(this.wy(py)), [m.id + ".startLayer"]: this.s.L }); this.sel = { kind: "start" }; this.changed(false); this.emitSel(); };
 
