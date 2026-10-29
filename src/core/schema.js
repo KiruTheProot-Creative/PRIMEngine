@@ -354,6 +354,12 @@
     { k: "shotWeapon", label: "That weapon", type: "weaponRef", def: "", showIf: ["type", "door"], showIf2: ["shotFirst", "weapon"] },
     { k: "shotAfter", label: "After that first shot it opens with any weapon", type: "bool", def: true, showIf: ["type", "door"], showIf2: ["openMode", "shot"] },
     { k: "shotMsg", label: "Message when the wrong shot hits it (empty = none)", type: "string", def: "", showIf: ["type", "door"], showIf2: ["openMode", "shot"] });
+  // ---- solid objects: a collision box that blocks walking (and, if set, shots). In the object's own space = the Object Editor grid (X right, Y up, Z front, origin = middle of the cell on the floor)
+  const SOL = ["decoration", "interactive", "save", "checkpoint", "speaker", "spawner"], SB = { showIf: ["type", SOL], showIf2: ["solid", "box"] };
+  S.PROP.push({ k: "solid", label: "Solid (blocks the player and enemies)", type: "choice", options: [["none", "No: you walk through it"], ["auto", "Yes: a box around the model"], ["box", "Yes: my own box (set below)"]], def: "none", showIf: ["type", SOL] },
+    { k: "solidShots", label: "Also stops shots", type: "bool", def: true, showIf: ["type", SOL], showIf2: ["solid", ["auto", "box"]] },
+    NUM("solidX", "Box middle X (right)", 0, -1024, 1024, 1, SB), NUM("solidY", "Box middle Y (up)", 32, -1024, 2048, 1, SB), NUM("solidZ", "Box middle Z (front)", 0, -1024, 1024, 1, SB),
+    NUM("solidW", "Box width (X)", 64, 1, 2048, 1, SB), NUM("solidH", "Box height (Y)", 64, 1, 2048, 1, SB), NUM("solidD", "Box depth (Z)", 64, 1, 2048, 1, SB));
   // ---- save stations: step in, press Interact, (confirm,) the game is saved to the current slot
   S.PROP.push(NUM("saveRadius", "Can be used within (units, 128 = a cell)", 96, 16, 600, 4, { showIf: ["type", "save"] }),
     { k: "saveName", label: "Name in the save list (empty = the map's name)", type: "string", def: "", showIf: ["type", "save"] },

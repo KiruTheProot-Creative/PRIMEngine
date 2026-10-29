@@ -190,6 +190,8 @@
     const den = 1 / (va + vb + vc), v = vb * den, w = vc * den; return add(a, add(mul(ab, v), mul(ac, w)));
   };
   // a box (mn, mx corners) as 12 triangles: closed doors and other solid blocks
+  // a box given in some local space; fn maps a local point to the world (rotations keep the faces' winding, so they stay one-sided the right way)
+  G.boxTrisF = (mn, mx, fn, info) => G.boxTris(mn, mx, info).map(t => tri(fn(t.a), fn(t.b), fn(t.c), info));
   G.boxTris = (mn, mx, info) => {
     const [x0, y0, z0] = mn, [x1, y1, z1] = mx, P = (x, y, z) => [x, y, z], out = [], q = (a, b, c, d) => { out.push(tri(a, b, c, info), tri(a, c, d, info)); };
     q(P(x0, y0, z0), P(x1, y0, z0), P(x1, y1, z0), P(x0, y1, z0)); q(P(x0, y0, z1), P(x0, y1, z1), P(x1, y1, z1), P(x1, y0, z1));

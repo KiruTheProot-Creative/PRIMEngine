@@ -176,7 +176,7 @@
       for (const th of (m.things || []).concat(this.spawnTh || [])) {
         const prev = old.find(x => x.th.id === th.id), pid = prev && prev.morph && (this.project.props || []).some(q => q.id === prev.morph) ? prev.morph : th.prop, pre = pid + ".", aid = T.get(pre + "asset"), type0 = T.get(pre + "type"), type = type0 === "boss" ? "enemy" : type0, boss = type0 === "boss";
         if (type !== "door" && T.get(pre + "look") === "sprite") { gone.delete(th.id); const o = old.find(x => x.th.id === th.id) || { th, st: "closed", p: 0, t: 0, timer: 0, taken: false, spin: 0 }; Object.assign(o, { th, pre, aid: null, model: null, gm: null, sprite: true, type, boss, fr: G.thingFrame(m, T, th) }); if (!o.init) o.floor = o.fr.fy; out.push(o); continue; }
-        if ((type === "speaker" || type === "interactive" || type === "checkpoint" || type === "spawner" || type === "save") && (!aid || !this.urls[aid])) { gone.delete(th.id); const o = old.find(x => x.th.id === th.id) || { th, st: "closed", p: 0, t: 0, timer: 0, taken: false, spin: 0 }; Object.assign(o, { th, pre, aid: null, model: null, gm: null, sprite: false, type, fr: G.thingFrame(m, T, th) }); o.floor = o.fr.fy; out.push(o); continue; }
+        if ((type === "speaker" || type === "interactive" || type === "checkpoint" || type === "spawner" || type === "save" || (type === "decoration" && T.get(pre + "solid") === "box")) && (!aid || !this.urls[aid])) { gone.delete(th.id); const o = old.find(x => x.th.id === th.id) || { th, st: "closed", p: 0, t: 0, timer: 0, taken: false, spin: 0 }; Object.assign(o, { th, pre, aid: null, model: null, gm: null, sprite: false, type, fr: G.thingFrame(m, T, th) }); o.floor = o.fr.fy; out.push(o); continue; }
         if (!aid || !this.urls[aid]) continue; const model = F.cache[aid];
         if (!model) { F.load(aid, this.urls[aid]).then(mm => { if (mm && !this.dead) this.syncThings(); }); continue; }
         if (!this.gpu[aid]) this.gpu[aid] = this.view.loadModel(model); gone.delete(th.id); { const q = old.find(x => x.th.id === th.id); if (q) q.sprite = false; }
@@ -192,7 +192,19 @@
     }
     hitDoor(O, D, maxd) { let best = null; for (const o of this.things || []) { if (o.type !== "door" || o.st !== "closed") continue; const t = this.thingHit(o, O, D, maxd); if (t !== null && (!best || t < best.t)) best = { th: o.th, t }; } return best; }
     // closed doors are solid blocks for walking, shots and sight (open ones step aside)
-    doorTris() { const out = []; for (const o of this.things || []) if (o.type === "door" && !(this.doorOpen && this.doorOpen[o.th.id])) out.push(...G.boxTris(...G.doorBox(o.fr), { kind: "door", id: o.th.id })); this.dtris = out; if (this.view) this.view.extraTris = out; return out; }
+    doorTris() { const out = [], shot = []; for (const o of this.things || []) { if (o.type === "door" && !(this.doorOpen && this.doorOpen[o.th.id])) { const t = G.boxTris(...G.doorBox(o.fr), { kind: "door", id: o.th.id }); out.push(...t); shot.push(...t); continue; }
+        const st = this.solidTris(o); if (st) { out.push(...st); if (this.ov(o, "solidShots") !== false) shot.push(...st); } }
+      this.dtris = out; if (this.view) this.view.extraTris = shot; return out; }
+    // a solid object's collision box (prop tag solid: auto = around the model, box = solidX/Y/Z + solidW/H/D), in world triangles; cached until it moves or its settings change
+    solidBox(o) { const mode = this.ov(o, "solid"); if (!mode || mode === "none" || o.taken) return null; const g = k => +this.ov(o, k) || 0;
+      if (mode === "box") { const c = [g("solidX"), g("solidY"), g("solidZ")], h = [Math.max(1, g("solidW")) / 2, Math.max(1, g("solidH")) / 2, Math.max(1, g("solidD")) / 2]; return { mn: [c[0] - h[0], c[1] - h[1], c[2] - h[2]], mx: [c[0] + h[0], c[1] + h[1], c[2] + h[2]] }; }
+      if (o.model && o.model.bounds) { const b = o.model.bounds, sc = g("scale") || 1, R = M4.mul(M4.rotXYZ([g("rx"), g("ry"), g("rz")]), M4.scale(sc, sc, sc)), mn = [1e9, 1e9, 1e9], mx = [-1e9, -1e9, -1e9];
+        for (const x of [b.lo[0], b.hi[0]]) for (const y of [b.lo[1], b.hi[1]]) for (const z of [b.lo[2], b.hi[2]]) { const p = M4.point(R, x, y, z); for (let i = 0; i < 3; i++) { mn[i] = Math.min(mn[i], p[i]); mx[i] = Math.max(mx[i], p[i]); } }
+        const off = [g("ox"), g("oy"), g("oz")]; return { mn: mn.map((v, i) => v + off[i]), mx: mx.map((v, i) => v + off[i]) }; }
+      if (o.sprite) { const hh = g("spriteHeight") || 110, w = Math.min(64, hh / 2); return { mn: [-w / 2, 0, -w / 2], mx: [w / 2, hh, w / 2] }; }
+      return null; }
+    solidTris(o) { const b = this.solidBox(o); if (!b) { o.solT = null; return null; } const f = o.fr, key = [f.cx, f.cy, o.floor, f.ux, f.uy, b.mn, b.mx].join(",");
+      if (o.solK !== key) { o.solK = key; o.solT = G.boxTrisF(b.mn, b.mx, p => this.hbToWorld(o, p), { kind: "solid", id: o.th.id }); } return o.solT; }
     // ---- talking to characters (NPCs): lines with up to 4 choices; a choice can change a tag and jump to another line
     npcInFront() {
       const T = this.T, fx = Math.cos(this.yaw), fy = Math.sin(this.yaw); let best = null, bd = 1e9;
