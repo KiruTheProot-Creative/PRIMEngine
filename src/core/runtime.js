@@ -77,6 +77,14 @@
 .rt-ask .b{padding:8px 30px;border:2px solid #2c5a74;border-radius:5px;cursor:pointer}
 .rt-ask .b.on{border-color:#7df3ff;background:#123247}
 .rt-focus{outline:2px solid rgba(125,243,255,.0)}
+.rt-codex{display:flex;box-sizing:border-box;border:2px solid rgba(125,243,255,.35);border-radius:6px;overflow:hidden;white-space:normal;text-align:left}
+.rt-codex .lst{overflow-y:auto;padding:10px 0;border-right:1px solid rgba(125,243,255,.25);flex:none}
+.rt-codex .grp{padding:10px 16px 4px;font-size:.7em;letter-spacing:.18em;text-transform:uppercase}
+.rt-codex .ent{padding:5px 16px 5px 24px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rt-codex .det{flex:1;padding:18px 24px;overflow-y:auto;line-height:1.4}
+.rt-codex .det h3{margin:0 0 10px;font-size:1.3em;letter-spacing:.06em}
+.rt-codex .det img{float:right;max-width:40%;max-height:220px;margin:0 0 12px 16px;image-rendering:pixelated}
+.rt-codex .det p{margin:0;white-space:pre-line}
 .rt-hint{position:absolute;right:14px;top:10px;font:14px "Share Tech Mono",monospace;color:rgba(255,255,255,.45);pointer-events:none;transition:opacity 1s}`;
     document.head.append(s);
   }
@@ -208,6 +216,7 @@
         const L = document.createElement("span"), V = document.createElement("span"), R = document.createElement("span"); L.className = "ar"; R.className = "ar"; V.className = "val"; L.textContent = "◀"; R.textContent = "▶"; V.textContent = i >= 0 ? o[i][0] : (o.length ? "?" : "(no choices)"); L.style.color = R.style.color = p("accent"); if (hov) V.style.color = p("accent"); box.append(L, V, R); el.append(lb, box);
       } else if (n.type === "keybind") { const hov = this.hover === n.id, wait = this.kbWait === n.id, b = p("bind"), v = this.tags.get(b);
         el = div("rt-n rt-kb" + (wait ? " wait" : "")); el.style.width = (+p("w") || 520) + "px"; this.textStyle(el, sc, n); const lb = document.createElement("span"); lb.textContent = this.S(sc, n, "label"); const k = div("key"); k.textContent = wait ? this.S(sc, n, "waitText") : Runtime.keyName(v); k.style.borderColor = hov || wait ? p("accent") : "rgba(255,255,255,.25)"; if (hov) k.style.color = p("accent"); el.append(lb, k);
+      } else if (n.type === "codex") { el = this.codexEl(sc, n);
       } else if (n.type === "panel") { el = this.panelEl(sc, n);
       } else if (n.type === "saveslot") { el = this.slotEl(sc, n);
       } else if (n.type === "video") { el = this.videoEl(sc, n); }
@@ -252,6 +261,18 @@
     askBox(text, yes, no, onYes) { this.ask = { text, yes, no, onYes, sel: 1 }; this.rebuild(); }
     askDraw() { const a = this.ask; if (!a) return; const w = div("rt-ask"), b = div("box"); b.textContent = a.text; const row = div("row"); [a.yes, a.no].forEach((t, i) => { const x = div("b" + (a.sel === i ? " on" : "")); x.textContent = t; x.dataset.i = i; row.append(x); }); b.append(row); w.append(b); this.layer.append(w); a.el = w; }
     askAnswer(yes) { const a = this.ask; this.ask = null; this.rebuild(); if (yes && a && a.onYes) a.onYes(); }
+    // ---- the codex: entries = scannable object types (codex.<prop> = scanned); in the editor every entry shows
+    codexList(sc, n) { const P = this.project, T = this.tags, Sc = PRIM.Schema, order = (Sc && Sc.CODEXCAT ? Sc.CODEXCAT.map(q => q[0]) : []), hide = this.P(sc, n, "locked") === "hide";
+      return (P.props || []).filter(p => T.get(p.id + ".scannable")).map(p => ({ id: p.id, cat: Sc && Sc.codexCat ? Sc.codexCat(P, p.id) : "lore", name: T.get(p.id + ".scanTitle") || T.get(p.id + ".name") || p.id, open: this.mode === "edit" || !!T.get("codex." + p.id) }))
+        .filter(e => e.open || !hide).sort((a, b) => order.indexOf(a.cat) - order.indexOf(b.cat) || a.name.localeCompare(b.name)); }
+    codexEl(sc, n) { const p = k => this.P(sc, n, k), T = this.tags, el = div("rt-n rt-codex"), L = this.codexList(sc, n); this.cxSel = this.cxSel || {}; let cur = L.find(e => e.id === this.cxSel[n.id]) || L.find(e => e.open); if (cur) this.cxSel[n.id] = cur.id;
+      el.style.width = (+p("w") || 1000) + "px"; el.style.height = (+p("h") || 520) + "px"; el.style.background = Runtime.rgba(p("bg"), +p("bgAlpha")); this.textStyle(el, sc, n); el.style.whiteSpace = "normal";
+      const lst = div("lst"); lst.style.width = (+p("listW") || 320) + "px"; let last = null; const names = { creatures: "Creatures", characters: "Characters", items: "Items", tech: "Tech and places", lore: "Lore" };
+      for (const e of L) { if (e.cat !== last) { last = e.cat; const g = div("grp"); g.textContent = names[e.cat] || e.cat; g.style.color = p("headColor"); lst.append(g); } const d = div("ent"); d.textContent = e.open ? e.name : "???"; d.dataset.cx = e.id; if (cur && e.id === cur.id) { d.style.color = p("selColor"); d.style.background = "rgba(255,255,255,.06)"; } if (!e.open) d.style.opacity = 0.45; lst.append(d); }
+      const det = div("det"); if (!L.some(e => e.open)) { const q = document.createElement("p"); q.textContent = this.S(sc, n, "emptyText"); q.style.opacity = 0.7; det.append(q); }
+      else if (cur) { const im = p("showImage") && this.urls[T.get(cur.id + ".scanImage")]; if (im) { const i = new Image(); i.src = im; det.append(i); } const h3 = document.createElement("h3"); h3.textContent = cur.name; h3.style.color = p("headColor"); const q = document.createElement("p"); q.textContent = T.interpolate(String(T.get(cur.id + ".codexText") || T.get(cur.id + ".scanText") || "")); det.append(h3, q); }
+      el.append(lst, det); this.cxScroll = this.cxScroll || {}; const sy = this.cxScroll[n.id] || 0; lst.addEventListener("scroll", () => { this.cxScroll[n.id] = lst.scrollTop; }); if (sy) queueMicrotask(() => { lst.scrollTop = sy; }); return el; }
+    codexStep(sc, n, d) { const L = this.codexList(sc, n).filter(e => e.open); if (!L.length) return; let i = L.findIndex(e => e.id === (this.cxSel || {})[n.id]); i = clamp(i + d, 0, L.length - 1); this.cxSel[n.id] = L[i].id; this.sfx(this.P(sc, n, "selectSound")); this.rebuild(); const el = this.els[n.id], it = el && el.querySelector('[data-cx="' + L[i].id + '"]'); if (it && it.scrollIntoView) it.scrollIntoView({ block: "nearest" }); }
     slotData(sc, n) { const Sv = PRIM.Save; return Sv ? Sv.read(this.project.id, clamp(Math.round(+this.P(sc, n, "slot") || 1), 1, 3)) : null; }
     // holding the delete key on a slot: frame() fills the bar; letting go or pointing away stops it
     delStep(now) { const hd = this.delHold, sc = this.screen(); if (!hd || !sc) return; const n = sc.nodes.find(x => x.id === hd.id); if (!n || this.hover !== n.id) { this.delCancel(); return; }
@@ -433,7 +454,7 @@
       PRIM.Audio.resume();
       if (this.ask) { const t = e.target && e.target.closest && e.target.closest(".b"); if (t) this.askAnswer(t.dataset.i === "0"); return; }
       if (this.kbWait) { this.kbSet(e.button === 2 ? "mouse2" : e.button === 1 ? "mouse3" : "mouse1"); return; }
-      const n = this.hit(sx, sy, false); if (!n) return; if (n.type === "choice") { const b = this.box(n); const f = (sx - b.x0) / b.w; this.choiceStep(this.screen(), n, f > 0.46 && f < 0.74 ? -1 : 1); return; } this.press = n.id; if (n.type === "slider") this.setSlider(n, sx); this.rebuild();
+      const n = this.hit(sx, sy, false); if (!n) return; if (n.type === "codex") { const t = e.target && e.target.closest && e.target.closest("[data-cx]"); if (t && this.codexList(this.screen(), n).some(q => q.id === t.dataset.cx && q.open)) { this.cxSel = this.cxSel || {}; this.cxSel[n.id] = t.dataset.cx; this.sfx(this.P(this.screen(), n, "selectSound")); this.hover = n.id; this.rebuild(); } return; } if (n.type === "choice") { const b = this.box(n); const f = (sx - b.x0) / b.w; this.choiceStep(this.screen(), n, f > 0.46 && f < 0.74 ? -1 : 1); return; } this.press = n.id; if (n.type === "slider") this.setSlider(n, sx); this.rebuild();
     }
     move(e) {
       if (this.paused) return; const [sx, sy] = this.pt(e), sc = this.screen(); if (!sc) return;
@@ -503,6 +524,7 @@
     focusables(sc) { return sc.nodes.filter(n => Runtime.FOCUS.includes(n.type) && this.els[n.id] && this.els[n.id].style.display !== "none"); }
     nav(dir) { const sc = this.screen(); if (!sc) return; const L = this.focusables(sc); if (!L.length) return; const cur = L.find(n => n.id === this.hover);
       if (!cur) { const top = L.map(n => ({ n, b: this.box(n) })).filter(q => q.b).sort((a, b) => a.b.y0 - b.b.y0 || a.b.x0 - b.b.x0)[0]; if (top) this.focus(top.n); return; }
+      if ((dir === "up" || dir === "down") && cur.type === "codex") { const L = this.codexList(sc, cur).filter(e => e.open), i = L.findIndex(e => e.id === (this.cxSel || {})[cur.id]); if ((dir === "up" && i > 0) || (dir === "down" && i < L.length - 1)) { this.codexStep(sc, cur, dir === "up" ? -1 : 1); return; } }
       if ((dir === "left" || dir === "right") && (cur.type === "slider" || cur.type === "choice")) { if (cur.type === "choice") this.choiceStep(sc, cur, dir === "left" ? -1 : 1); else { const b = this.P(sc, cur, "bind"), sp = this.tags.spec(b); if (sp) { const st = sp.step || (sp.max - sp.min) / 20, v = clamp((+this.tags.get(b) || 0) + (dir === "left" ? -1 : 1) * Math.max(st, (sp.max - sp.min) / 20), sp.min, sp.max); this.tags.set(b, Math.round(v * 1000) / 1000); } } return; }
       const b0 = this.box(cur), c0 = [b0.x0 + b0.w / 2, b0.y0 + b0.h / 2], dv = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] }[dir]; let best = null, bd = 1e9;
       for (const n of L) { if (n === cur) continue; const b = this.box(n); if (!b) continue; const dx = b.x0 + b.w / 2 - c0[0], dy = b.y0 + b.h / 2 - c0[1], along = dx * dv[0] + dy * dv[1]; if (along <= 4) continue; const side = Math.abs(dx * dv[1]) + Math.abs(dy * dv[0]), sc_ = along + side * 2.2; if (sc_ < bd) { bd = sc_; best = n; } }
@@ -525,5 +547,5 @@
       if (this.sh && !/INPUT|SELECT|TEXTAREA/.test((e.target && e.target.tagName) || "")) { const sc = this.screen(); if (sc) for (const n of sc.nodes) this.script(sc, n, "onKey", e.key === " " ? "space" : e.key === "Control" ? "ctrl" : e.key); }
     }
   };
-  PRIM.Runtime.FOCUS = ["button", "slider", "toggle", "saveslot", "choice", "keybind"];
+  PRIM.Runtime.FOCUS = ["button", "slider", "toggle", "saveslot", "choice", "keybind", "codex"];
 })();

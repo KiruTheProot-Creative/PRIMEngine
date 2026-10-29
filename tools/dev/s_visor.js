@@ -1,0 +1,35 @@
+// Visors: wheel switching, scanner lock-on + scan -> pop-up + codex, X-Ray highlights through walls, objects only seen in a visor, no firing in the scanner, codex element, compositor "only with" a visor.
+const SP = '/tmp/claude-0/-home-claude/4d2f2209-a771-580d-8052-566f87920e94/scratchpad';
+module.exports = async (p, out) => {
+  p.on('pageerror', e => console.log('PAGEERROR', e.message, (e.stack || '').split('\n')[1]));
+  const menu = async (top, item) => { await p.click('.mb:has-text("' + top + '")'); await p.click('.pitem:has-text("' + item + '")'); };
+  await p.click('.tile.plus'); await p.waitForSelector('#app'); await p.waitForTimeout(300);
+  await menu('Screen', 'Create Map'); await p.waitForSelector('.medcv');
+  let [fc] = await Promise.all([p.waitForEvent('filechooser'), menu('Assets', 'Import Files')]); await fc.setFiles([SP + '/Arm_canon.fbx']); await p.waitForTimeout(2000);
+  await p.evaluate(() => { const S = __studio.S, Sc = PRIM.Schema, pr = S.project, T = S.tags, m = pr.maps[0], arm = pr.assets.find(a => /arm/i.test(a.name)).id, C = c => (c + 0.5) * 128;
+    T.set('player.visorsOn', true); Sc.ensureVisors(pr); const xr = pr.visors.find(v => T.get(v.id + '.type') === 'xray');
+    const en = Sc.addProp(pr, { name: 'Zoomer', type: 'enemy', asset: arm, scannable: true, scanTitle: 'Zoomer', scanText: 'A spiky crawler.', codexText: 'Long entry about zoomers.', sight: 10, speed: 0 });
+    const dec = Sc.addProp(pr, { name: 'Ghost block', type: 'decoration', asset: arm, solid: 'box' }); Sc.ensureVisors(pr); Sc.ensureSolids(pr); T.set(dec.id + '.seenIn', xr.id); Sc.ensureCodex(pr);
+    const sx = Math.floor(+T.get(m.id + '.startX') / 128), sy = Math.floor(+T.get(m.id + '.startY') / 128);
+    m.things = [{ id: 'e1', prop: en.id, x: C(sx + 3), y: C(sy), ang: 180, layer: 0 }, { id: 'd1', prop: dec.id, x: C(sx), y: C(sy + 2), ang: 0, layer: 0 }]; m.n.t = 9;
+    Sc.addComp(pr, 'night'); Sc.ensureVisors(pr); const fx = pr.compositor.effects[0]; T.set('comp.' + fx.id + '.visor', pr.visors.find(v => T.get(v.id + '.type') === 'night').id); T.emit([]); window.__x = { en: en.id, dec: dec.id, xr: xr.id }; });
+  await p.click('.tab:has-text("Player Editor")'); await p.waitForTimeout(400); await p.evaluate(() => { __studio.S.objView = false; }); await p.click('.tab:has-text("Timeline")'); await p.waitForTimeout(200); await p.click('.tab:has-text("Player Editor")'); await p.waitForTimeout(400);
+  await p.screenshot({ path: out + '_player.png' });
+  await p.click('button:has-text("Walk map1")'); await p.waitForFunction(() => __studio.S.play && __studio.S.play.things && __studio.S.play.things.length >= 1, null, { timeout: 15000 }); await p.waitForTimeout(500);
+  const go = (n, fn) => p.evaluate(([n, fn]) => { const q = __studio.S.play; q.msg.style.display = 'none'; const r0 = fn ? (new Function('q', fn))(q) : null; let t = q.last || performance.now(); for (let i = 0; i < n; i++) { t += 16; q.frame(t); cancelAnimationFrame(q.raf); } q.raf = requestAnimationFrame(z => q.frame(z));
+    const T = q.T; return JSON.stringify({ r0, visor: T.get('player.visor'), type: T.get('player.visorType'), scanning: T.get('player.scanning'), popup: !!q.popup, codex: T.get('codex.' + window.__x.en), seen: q.thingSeen(q.things.find(o => o.th.id === 'd1')), solid: (q.dtris || []).filter(t => t.info && t.info.kind === 'solid').length, items: (q.visorItems() || { items: [] }).items.map(i => [i.xray, i.c.map(v => +v.toFixed(2))]), comp: PRIM.Schema.compActive(q.project, T).length }); }, [n, fn || '']);
+  console.log('start:', await go(3));
+  console.log('wheel -> scan:', await go(3, `q.press('q'); const w = !!q.vw; for (let i = 0; i < 6; i++) q.wheelMove(12, 0); const sel = q.vw && q.vw.sel; q.release('q'); return { open: w, sel };`));
+  console.log('fire blocked:', await go(1, `let n = 0; const o = q.trigger.bind(q); q.trigger = (t, a) => { if (t === 'onClick') n++; return o(t, a); }; q.fire(); q.trigger = o; return n;`));
+  console.log('scan (aim at the enemy, hold scan):', await go(110, `const e = q.things.find(o => o.th.id === 'e1'); q.yaw = Math.atan2(e.fr.cy - q.y, e.fr.cx - q.x) + 0.08; q.pitch = 0; q.press('mouse2'); return !!(q.scan && q.scan.o);`));
+  await p.evaluate(() => { const q = __studio.S.play; if (q.popup) q.popup.t0 = 0; q.popupClose(); q.release('mouse2'); });
+  const shot = async name => { await p.evaluate(() => { const q = __studio.S.play, v = q.view; cancelAnimationFrame(q.raf); v.post = true; const e = q.things.find(o => o.th.id === 'e1'); q.yaw = Math.atan2(e.fr.cy - q.y, e.fr.cx - q.x) - 0.3; let t = q.last; for (let i = 0; i < 2; i++) { t += 16; q.frame(t); cancelAnimationFrame(q.raf); } window.__img = v.gl.canvas.toDataURL('image/png'); v.post = false; q.raf = requestAnimationFrame(z => q.frame(z)); });
+    require('fs').writeFileSync(out + '_' + name + '.png', Buffer.from((await p.evaluate(() => window.__img)).split(',')[1], 'base64')); };
+  await shot('scan');
+  console.log('x-ray:', await go(3, `q.setVisor(window.__x.xr); return q.T.get('player.visorName');`)); await shot('xray');
+  console.log('night (compositor only with it):', await go(3, `const v = q.project.visors.find(x => q.vt(x.id) === 'night'); q.setVisor(v.id); return q.view.fullBright;`)); await shot('night');
+  await p.evaluate(() => __studio.S.play.leave()); await p.waitForTimeout(600);
+  await menu('Screen', 'Create Codex Screen'); await p.waitForTimeout(600); await p.screenshot({ path: out + '_codexedit.png' });
+  console.log('codex in game:', JSON.stringify(await p.evaluate(() => { const S = __studio.S, host = document.createElement('div'); host.style.cssText = 'position:fixed;left:0;top:0;width:1280px;height:720px;z-index:99'; document.body.append(host); const tg = S.tags.fork(); tg.set('codex.' + window.__x.en, true);
+    const rt = new PRIM.Runtime({ host, project: S.project, tags: tg, mode: 'test', urls: S.urls, screenId: S.screenId }); const n = rt.screen().nodes.find(x => x.type === 'codex'), txt = rt.els[n.id].innerText.replace(/\s+/g, ' '); cancelAnimationFrame(rt.raf); rt.destroy(); host.remove(); return txt; })));
+};

@@ -36,12 +36,13 @@
       if (PRIM.Audio) PRIM.Audio.preload(this.project.assets.filter(x => x.type === "sound" && this.urls[x.id]).map(x => this.urls[x.id]));
       if (this.mode === "play") { if (PRIM.Schema && PRIM.Schema.ensureKeys) PRIM.Schema.ensureKeys(this.project); this.keysReset("all"); }
       this.slot = (this.o.save && this.o.save.slot) || +T.get("save.slot") || 1;
+      if (this.mode === "play" && PRIM.Schema && PRIM.Schema.ensureVisors) { PRIM.Schema.ensureVisors(this.project); PRIM.Schema.ensureCodex(this.project); } this.visorInit();
       this.syncAtts(); this.syncThings(); if (this.mode === "play" && this.o.save && this.o.save.load) this.loadGame(this.o.save.load); this.trigger("onStart"); if (this.sh) this.sh.watch(() => this.scriptOwners());
       if (this.mode === "play") this.bind(); else { this.msg.style.display = "none"; this.cv.style.cursor = "default"; }
       this.last = performance.now(); this.raf = requestAnimationFrame(t => this.frame(t));
     }
     destroy() {
-      if (this.destroyed) return; this.destroyed = true; this.dead = true; this.stopLoops(""); this.stopSpeakers(); if (this.sh) this.sh.stopAll(); if (this.paused) this.pauseClose(true); cancelAnimationFrame(this.raf); this.unsub(); if (this.hud) this.hud.destroy(); if (this.unbind) this.unbind(); if (document.pointerLockElement === this.cv) document.exitPointerLock();
+      if (this.destroyed) return; this.destroyed = true; this.dead = true; if (this.vLoop) { this.vLoop.stop(0.05); this.vLoop = null; } if (this.scanSnd) { this.scanSnd.stop(0.05); this.scanSnd = null; } this.stopLoops(""); this.stopSpeakers(); if (this.sh) this.sh.stopAll(); if (this.paused) this.pauseClose(true); cancelAnimationFrame(this.raf); this.unsub(); if (this.hud) this.hud.destroy(); if (this.unbind) this.unbind(); if (document.pointerLockElement === this.cv) document.exitPointerLock();
       if (this.view) { const e = this.view.gl.getExtension("WEBGL_lose_context"); if (e) e.loseContext(); } this.root.remove();
     }
     // ---- input
@@ -61,7 +62,7 @@
         if (/INPUT|SELECT|TEXTAREA/.test((e.target && e.target.tagName) || "")) return;   // typing in a text field is never a game key
         if (this.popup) { e.preventDefault(); if (!e.repeat) this.popupKey(keyId(e)); return; }
         if (this.talk) { e.preventDefault(); if (!e.repeat) this.talkKey(keyId(e)); return; }   // while talking, keys answer the dialogue
-        const id = keyId(e), n = id; if (!e.repeat && !k[id]) { k[id] = true; this.trigger("onKey", id); this.aimInput(id, true); if (this.mode === "play" && id === (this.T.get("player.interactKey") || "e")) this.interact(); if (this.mode === "play" && id === (this.T.get("player.reloadKey") || "r")) this.reload(this.curWeapon()); } k[id] = true; if (/^[1-9]$/.test(n)) this.setWeapon(+n - 1); if (["w", "a", "s", "d", "space", "shift", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(id)) e.preventDefault();
+        const id = keyId(e), n = id; if (!e.repeat && this.visorKeyDown(id)) { e.preventDefault(); k[id] = true; return; } if (!e.repeat && !k[id]) { k[id] = true; this.trigger("onKey", id); this.aimInput(id, true); if (this.mode === "play" && id === (this.T.get("player.interactKey") || "e")) this.interact(); if (this.mode === "play" && id === (this.T.get("player.reloadKey") || "r")) this.reload(this.curWeapon()); } k[id] = true; if (/^[1-9]$/.test(n)) this.setWeapon(+n - 1); if (["w", "a", "s", "d", "space", "shift", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(id)) e.preventDefault();
         if (this.o.debug && n === "h") this.T.setMany({ "player.health": Math.max(0, this.T.get("player.health") - 10) }); if (this.o.debug && n === "j") this.T.setMany({ "player.health": Math.min(this.T.get("player.maxHealth"), this.T.get("player.health") + 10) });
       };
       const ku = e => this.release(keyId(e));
@@ -72,8 +73,8 @@
       this.root.addEventListener("mousedown", pd); cv.tabIndex = 0; const wh = e => { if (this.engaged) { e.preventDefault(); this.setWeapon((this.wi || 0) + (e.deltaY > 0 ? 1 : -1), e.deltaY > 0 ? 1 : -1); } }; this.root.addEventListener("wheel", wh, { passive: false });
       this.unbind = () => { removeEventListener("keydown", kd, true); removeEventListener("keyup", ku, true); removeEventListener("mousemove", mm); removeEventListener("mouseup", pu); document.removeEventListener("pointerlockchange", pl); removeEventListener("blur", bl); };
     }
-    press(id) { if (this.keys[id]) return; this.keys[id] = true; this.trigger("onKey", id); this.aimInput(id, true); if (this.mode === "play" && id === (this.T.get("player.interactKey") || "e")) this.interact(); if (this.mode === "play" && id === (this.T.get("player.reloadKey") || "r")) this.reload(this.curWeapon()); }
-    release(id) { if (!this.keys[id]) return; this.keys[id] = false; this.trigger("onKeyUp", id); this.aimInput(id, false); }
+    press(id) { if (this.keys[id]) return; if (this.visorKeyDown(id)) { this.keys[id] = true; return; } this.keys[id] = true; this.trigger("onKey", id); this.aimInput(id, true); if (this.mode === "play" && id === (this.T.get("player.interactKey") || "e")) this.interact(); if (this.mode === "play" && id === (this.T.get("player.reloadKey") || "r")) this.reload(this.curWeapon()); }
+    release(id) { if (!this.keys[id]) return; this.keys[id] = false; this.visorKeyUp(id); this.trigger("onKeyUp", id); this.aimInput(id, false); }
     // "While a key is held": run again every few moments for as long as the key stays down
     hold(dt) {
       if (!this.sh) return; const cur = this.curWeaponId(), T = this.T, k = this.keys; this.holdT = this.holdT || {};
@@ -200,7 +201,7 @@
     // a solid object's collision box (prop tag solid: auto = around the model, box = solidX/Y/Z + solidW/H/D), in world triangles; cached until it moves or its settings change
     solidBox(o) { const L = this.solidBoxes(o); return L && L[0]; }
     // all collision boxes of a solid object (object space): auto = around the model, box = its own boxes (prop.solids, tags <prop>.sb.<id>.*; old single-box tags as a fallback)
-    solidBoxes(o) { const mode = this.ov(o, "solid"); if (!mode || mode === "none" || o.taken) return null; const g = k => +this.ov(o, k) || 0, one = (c, s) => { const h = s.map(q => Math.max(1, q) / 2); return { mn: [c[0] - h[0], c[1] - h[1], c[2] - h[2]], mx: [c[0] + h[0], c[1] + h[1], c[2] + h[2]] }; };
+    solidBoxes(o) { const mode = this.ov(o, "solid"); if (!mode || mode === "none" || o.taken || (this.mode === "play" && !this.thingSeen(o) && !this.ov(o, "solidUnseen"))) return null; const g = k => +this.ov(o, k) || 0, one = (c, s) => { const h = s.map(q => Math.max(1, q) / 2); return { mn: [c[0] - h[0], c[1] - h[1], c[2] - h[2]], mx: [c[0] + h[0], c[1] + h[1], c[2] + h[2]] }; };
       if (mode === "box") { const p = (this.project.props || []).find(x => x.id + "." === o.pre), L = (p && p.solids) || []; if (L.length) return L.map(b => { const q = k => g("sb." + b.id + "." + k); return one([q("x"), q("y"), q("z")], [q("w"), q("h"), q("d")]); });
         return [one([g("solidX"), g("solidY"), g("solidZ")], [g("solidW"), g("solidH"), g("solidD")])]; }
       if (o.model && o.model.bounds) { const b = o.model.bounds, sc = g("scale") || 1, R = M4.mul(M4.rotXYZ([g("rx"), g("ry"), g("rz")]), M4.scale(sc, sc, sc)), mn = [1e9, 1e9, 1e9], mx = [-1e9, -1e9, -1e9];
@@ -390,7 +391,7 @@
     drawThings(v, dt) {
       if (!this.things || !this.things.length) return; if (this.mode === "play") this.thingStep(dt); const F = PRIM.FBX, T = this.T, items = [];
       for (const o of this.things) {
-        if (o.taken) continue; if (!o.gm && !o.sprite) continue; if (o.type === "speaker" && this.mode === "play" && !this.ov(o, "spkShow")) continue; if (o.type === "spawner" && this.mode === "play" && !this.ov(o, "spawnShow")) continue; if (o.sprite) { const it = this.spriteItem(o, v); if (it) items.push(it); continue; } const g = k => +this.ov(o, k) || 0; let f = o.fr, name = null, tm = 0;
+        if (o.taken) continue; if (this.mode === "play" && !this.thingSeen(o)) { o.visM = null; continue; } if (!o.gm && !o.sprite) continue; if (o.type === "speaker" && this.mode === "play" && !this.ov(o, "spkShow")) continue; if (o.type === "spawner" && this.mode === "play" && !this.ov(o, "spawnShow")) continue; if (o.sprite) { const it = this.spriteItem(o, v); if (it) items.push(it); continue; } const g = k => +this.ov(o, k) || 0; let f = o.fr, name = null, tm = 0;
         if (o.type === "enemy" && o.init) { const a = o.yaw * Math.PI / 180; f = { cx: o.x, cy: o.y, ux: Math.cos(a), uy: -Math.sin(a), nx: Math.sin(a), ny: Math.cos(a), door: false }; }
         const talking = o.type === "npc" && this.talk && this.talk.o === o; if (talking && this.ov(o, "faceTalker") !== false) { const a = Math.atan2(this.x - o.fr.cx, this.y - o.fr.cy); f = { cx: o.fr.cx, cy: o.fr.cy, ux: Math.cos(a), uy: -Math.sin(a), nx: Math.sin(a), ny: Math.cos(a), door: false }; }
         const an = k => { const nm = this.ov(o, k); return nm && o.model.anims[nm] ? nm : null; };
@@ -406,7 +407,7 @@
         const sc = g("scale") || 1; let loc = M4.mul(M4.translate(g("ox"), g("oy"), g("oz")), M4.mul(M4.rotXYZ([g("rx"), g("ry") + ang, g("rz")]), M4.scale(sc, sc, sc)));
         if (o.mount === "ceiling" && this.ov(o, "ceilFlip") !== false) loc = M4.mul(M4.translate(0, g("height") || 110, 0), M4.mul(M4.rotXYZ([0, 0, 180]), loc));   // hanging: turned over, its feet on the ceiling
         if (o.type === "door" && this.ov(o, "doorFit") !== false) loc = this.doorFit(o, f);
-        if (o.type === "enemy") { o.lastM = M4.mul(Fm, loc); o.lastPose = pose; }
+        if (o.type === "enemy") { o.lastM = M4.mul(Fm, loc); o.lastPose = pose; } o.visM = M4.mul(Fm, loc); o.visPose = pose;
         items.push({ kind: "mesh", owner: o.th.id, gm: o.gm, pose, M: M4.mul(Fm, loc), clip: o.type === "door" ? o.floor + (f.h || 128) : undefined, p: [f.cx, o.floor + 40, f.cy], scale: 6, mat: Object.assign(this.matGL(o.pre), o.flash > 0 ? { tint: [1, 0.45, 0.45], emit: [0.5, 0.05, 0.05] } : o.shGlow ? { emit: o.shGlow } : o.st === "dead" ? { tint: [0.75, 0.7, 0.7] } : {}), tex: this.ov(o, "matTexture") ? v.texFor(this.ov(o, "matTexture"), this.urls) : null }); if (items[items.length - 1].clip !== undefined) items[items.length - 1].mat.clipY = items[items.length - 1].clip;
       }
       // objects that give off light: a point light above them (flicker = a torch), maybe casting shadows; their own model never shadows their own light
@@ -588,6 +589,70 @@
       this.cp = { id: o.th.id, map: this.map && this.map.id, x: this.x, y: this.y, z: this.z, yaw: this.yaw };
       const ok = this.saveGame(o); const s = this.ov(o, "saveSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); this.toast(ok ? String(this.ov(o, "saveMsg") || "Game saved") : "Could not save");
       this.flash(0.35, "#7df3ff", true); }
+    // =============================================================== VISORS (Player > Visors on): combat / scanner / X-ray / night vision / custom
+    // switched with the visor wheel (hold player.visorKey, point, let go) or a visor's own key; each visor: HUD screen, sounds, full-bright / no fog, highlights (outline + fill),
+    // compositor effects that are "Only with" it (Schema.compActive reads player.visor). The scanner locks onto a scannable object while its scan button is held and scans it.
+    visorInit() { this.visorsOn = this.mode === "play" && !!this.T.get("player.visorsOn") && (this.project.visors || []).length; this.visor = null; if (!this.visorsOn) { if (this.T.has("player.visor") && this.mode === "play") this.T.setMany({ "player.visor": "", "player.visorType": "combat", "player.visorName": "" }); return; }
+      const L = this.visorList(), st = this.T.get("player.visorStart"), v = L.find(x => x.id === st) || L.find(x => this.vt(x.id) === "combat") || L[0]; if (v) this.setVisor(v.id, true); }
+    vt(id) { return id ? this.T.get(id + ".type") || "combat" : "combat"; }
+    visorType() { return this.visorsOn && this.visor ? this.vt(this.visor) : "combat"; }
+    visorList() { const T = this.T; return (this.project.visors || []).filter(v => T.get(v.id + ".on") !== false && (!T.get(v.id + ".needTag") || !this.sh || this.sh.test(T.get(v.id + ".needTag"), "=", T.get(v.id + ".needVal")))); }
+    visorNoFire() { return !!(this.visorsOn && this.visor && this.T.get(this.visor + ".noFire")); }
+    setVisor(id, quiet) { const T = this.T, v = (this.project.visors || []).find(x => x.id === id); if (!v || (this.visor === id && !quiet)) return; const was = this.visor; this.visor = id; this.scanStop();
+      T.setMany({ "player.visor": id, "player.visorType": this.vt(id), "player.visorName": T.get(id + ".name") || id, "player.scanning": 0 }); if (this.aimOn) this.aimSet(false);
+      if (this.view) { this.view.fullBright = T.get(id + ".fullBright") ? 1 : 0; this.view.noFog = !!T.get(id + ".fogOff"); }
+      if (this.hud && this.hud.setScreen) { const hs = T.get(id + ".hud") || T.get("player.hud"); if (hs && hs !== this.hud.screenId && this.project.screens.some(x => x.id === hs)) this.hud.setScreen(hs); }
+      if (this.vLoop) { this.vLoop.stop(0.15); this.vLoop = null; } const lp = T.get(id + ".loop"); if (lp && this.urls[lp]) this.vLoop = PRIM.Audio.play(this.urls[lp], this.vol3 ? this.vol3(0.6) : 0.5, true);
+      if (!quiet) { const sw = T.get(id + ".switchSound"); if (sw) this.sfx(sw); } if (was !== id) this.visorTrig(id); }
+    visorTrig(id) { if (!this.sh) return; const T = this.T, nm = String(T.get(id + ".name") || "").toLowerCase(); for (const ow of this.scriptOwners()) for (const n of ow.script.nodes) { if (n.type !== "onVisor") continue; const f = String(T.get(ow.key + ".s." + n.id + ".visor") || "").toLowerCase(); if (!f || f === id || f === nm || f === this.vt(id)) this.sh.trigger(ow, "onVisor", null, n.id); } }
+    findVisor(q) { q = String(q || "").toLowerCase(); const T = this.T, L = this.project.visors || []; return L.find(v => v.id === q) || L.find(v => String(T.get(v.id + ".name") || "").toLowerCase() === q) || L.find(v => this.vt(v.id) === q) || null; }
+    // keys: the wheel key opens the wheel (true = the key is used), a visor's own key switches straight to it, the scan button locks on
+    visorKeyDown(id) { if (!this.visorsOn || this.mode !== "play" || this.paused || this.popup || this.talk) return false; const T = this.T;
+      if (id === String(T.get("player.visorKey") || "q")) { this.wheelOpen(); return true; }
+      for (const v of this.visorList()) if (T.get(v.id + ".key") && id === String(T.get(v.id + ".key"))) { this.setVisor(v.id); return true; }
+      if (this.visorType() === "scan" && id === String(T.get(this.visor + ".scanKey") || "mouse2")) { this.scanStart(); return true; } return false; }
+    visorKeyUp(id) { if (!this.visorsOn) return; const T = this.T; if (this.vw && id === String(T.get("player.visorKey") || "q")) this.wheelClose(true); if (this.scan && id === String(T.get(this.visor + ".scanKey") || "mouse2")) this.scanStop(); }
+    // ---- the visor wheel: a ring of the visors you have; mouse movement points at one, letting go of the key switches to it
+    wheelOpen() { const L = this.visorList(); if (L.length < 2 || this.vw) return; this.scanStop(); this.vw = { L, x: 0, y: 0, sel: L.findIndex(v => v.id === this.visor) };
+      const el = document.createElement("div"); el.className = "p3wheel"; el.style.cssText = "position:absolute;left:50%;top:50%;width:340px;height:340px;margin:-170px 0 0 -170px;border-radius:50%;background:radial-gradient(circle,rgba(4,10,16,.25) 28%,rgba(4,10,16,.78) 30%,rgba(4,10,16,.78) 68%,rgba(4,10,16,0) 70%);z-index:7;pointer-events:none;font:600 15px 'Chakra Petch',system-ui,sans-serif;color:#e8f2fb;text-align:center";
+      L.forEach((v, i) => { const a = -Math.PI / 2 + i / L.length * Math.PI * 2, x = 170 + Math.cos(a) * 112, y = 170 + Math.sin(a) * 112, d = document.createElement("div"), c = this.T.get(v.id + ".color") || "#7df3ff", ic = this.T.get(v.id + ".icon");
+        d.style.cssText = "position:absolute;left:" + (x - 52) + "px;top:" + (y - 38) + "px;width:104px;height:76px;display:grid;place-items:center;border-radius:12px;border:2px solid transparent;transition:transform .1s,border-color .1s,background .1s"; d.dataset.c = c;
+        if (ic && this.urls[ic]) { const im = document.createElement("img"); im.src = this.urls[ic]; im.style.cssText = "max-width:46px;max-height:40px;image-rendering:pixelated"; d.append(im); } const t = document.createElement("div"); t.textContent = this.T.get(v.id + ".name") || v.id; t.style.color = c; d.append(t); el.append(d); });
+      const mid = document.createElement("div"); mid.style.cssText = "position:absolute;left:50%;top:50%;width:10px;height:10px;margin:-5px;border-radius:50%;background:#fff;box-shadow:0 0 10px #fff"; el.append(mid); this.vw.el = el; this.vw.dot = mid; this.root.append(el); this.wheelShow(); }
+    wheelMove(dx, dy) { const w = this.vw; w.x = clamp(w.x + dx, -90, 90); w.y = clamp(w.y + dy, -90, 90); const L = w.L; if (Math.hypot(w.x, w.y) > 28) { let a = Math.atan2(w.y, w.x) + Math.PI / 2; if (a < 0) a += Math.PI * 2; w.sel = Math.round(a / (Math.PI * 2) * L.length) % L.length; } this.wheelShow(); }
+    wheelShow() { const w = this.vw; if (!w) return; [...w.el.children].forEach((d, i) => { if (d === w.dot) return; const on = i === w.sel; d.style.borderColor = on ? d.dataset.c : "transparent"; d.style.background = on ? "rgba(255,255,255,.08)" : "transparent"; d.style.transform = on ? "scale(1.12)" : "scale(1)"; }); w.dot.style.transform = "translate(" + w.x * 0.7 + "px," + w.y * 0.7 + "px)"; }
+    wheelClose(apply) { const w = this.vw; if (!w) return; this.vw = null; w.el.remove(); if (apply && w.L[w.sel]) this.setVisor(w.L[w.sel].id); }
+    // ---- objects seen only in a visor (prop seenIn = a visor id), highlighted ones (visorShow)
+    thingSeen(o) { const s = this.ov(o, "seenIn"); return !s || s === "always" || (this.visorsOn && s === this.visor); }
+    visorColor(o, typ) { const T = this.T, V = this.visor + ".", ty = o.boss ? "boss" : o.type; if (this.ov(o, "visorColorOn")) return this.ov(o, "visorColor");
+      if (typ === "xray") return ty === "enemy" || ty === "boss" || ty === "npc" ? T.get(V + "cChar") : T.get(V + "cOther");
+      if (typ === "scan") { if (this.ov(o, "scannable") && T.get("codex." + o.th.prop)) return T.get(V + "cScanned"); return T.get(V + ({ enemy: "cEnemy", boss: "cBoss", pickup: "cPickup", key: "cPickup", door: "cDoor", npc: "cNpc" }[ty] || "cObject")); }
+      return T.get(V + "color"); }
+    visorItems() { if (!this.visorsOn || !this.visor) return null; const T = this.T, typ = this.visorType(), V = this.visor + ".", range = +T.get(V + "range") || 1600, out = [];
+      for (const o of this.things || []) { if (o.taken || !o.gm || !o.visM || (o.type === "enemy" && !this.eAlive(o))) continue; const sh = this.ov(o, "visorShow") || "auto", ty = o.boss ? "boss" : o.type;
+        const on = sh === "all" || (typ === "scan" && (sh === "scan" || sh === "both" || (sh === "auto" && this.ov(o, "scannable")))) || (typ === "xray" && (sh === "xray" || sh === "both" || (sh === "auto" && (ty === "enemy" || ty === "boss" || ty === "npc")))); if (!on) continue;
+        const p = this.thingPos(o); if (Math.hypot(p[0] - this.x, p[2] - this.y, p[1] - this.z) > range) continue; const col = this.hexCol(this.visorColor(o, typ) || "#ffffff"), lock = this.scan && this.scan.o === o;
+        out.push({ gm: o.gm, pose: o.visPose, M: o.visM, c: lock ? col.map(q => Math.min(1, q * 1.25 + 0.15)) : col, xray: typ === "xray" }); }
+      return { items: out, opt: { fill: +T.get(V + "fillA"), w: +T.get(V + "lineW"), glow: +T.get(V + "glow"), pattern: { none: 0, lines: 1, grid: 2, dots: 3 }[T.get(V + "pattern")] || 0, trace: !!T.get(V + "trace"), traceA: +T.get(V + "traceA") } }; }
+    // ---- scanning: hold the scan button = lock onto the scannable object nearest the crosshair (in range, in sight), the ring fills, then the pop-up + codex entry
+    scanTarget() { const T = this.T, V = this.visor + ".", range = +T.get(V + "range") || 1600, ang = (+T.get(V + "scanAngle") || 12) * Math.PI / 180, c = this.view.cam, B = PRIM.R3D.camBasis(c.yaw, c.pitch), E = [c.x, c.y, c.z]; let best = null, bd = 1e9;
+      for (const o of this.things || []) { if (o.taken || !this.ov(o, "scannable") || !this.thingSeen(o) || (o.type === "enemy" && !this.eAlive(o))) continue; const p = this.thingPos(o, (+this.ov(o, "height") || 80) * 0.5), d = M4.sub(p, E), L = M4.len(d); if (L > range || L < 1) continue;
+        const a = Math.acos(clamp(M4.dot(d, B.f) / L, -1, 1)); if (a > ang) continue; const hit = this.view.raycast(E, d.map(q => q / L), L); if (hit && hit.t < L - 40) continue; const sc_ = a * 3 + L / range; if (sc_ < bd) { bd = sc_; best = o; } }
+      return best; }
+    scanStart() { const o = this.scanTarget(); if (!o) { this.scan = { o: null }; return; } const T = this.T, V = this.visor + ".", need = +this.ov(o, "scanTime") || +T.get(V + "scanTime") || 1.2, done = !!T.get("codex." + o.th.prop);
+      this.scan = { o, k: 0, need: done ? Math.min(0.25, need) : need, done }; const sd = T.get(V + "scanSound"); if (sd && this.urls[sd]) this.scanSnd = PRIM.Audio.play(this.urls[sd], this.vol3 ? this.vol3(0.7) : 0.6, true); }
+    scanStop() { if (this.scanSnd) { this.scanSnd.stop(0.08); this.scanSnd = null; } this.scan = null; if (this.scanEl) this.scanEl.style.display = "none"; if (this.T.has("player.scanning") && this.mode === "play") this.T.set("player.scanning", 0); }
+    scanStep(dt) { const s = this.scan; if (!s) return; if (this.visorType() !== "scan") return this.scanStop(); if (!s.o) { const o = this.scanTarget(); if (o) { this.scanStart(); } return; }
+      const o = s.o, T = this.T, V = this.visor + ".", p = this.thingPos(o, (+this.ov(o, "height") || 80) * 0.5); if (o.taken || Math.hypot(p[0] - this.x, p[2] - this.y) > (+T.get(V + "range") || 1600) * 1.15) return this.scanStop();
+      if (T.get(V + "scanTurn") !== false) { const dx = p[0] - this.x, dz = p[2] - this.y, ty = Math.atan2(dz, dx), e = this.view.cam, tp = Math.atan2(p[1] - e.y, Math.hypot(dx, dz)); let dy = ty - this.yaw; while (dy > Math.PI) dy -= Math.PI * 2; while (dy < -Math.PI) dy += Math.PI * 2; const k = Math.min(1, dt * 6); this.yaw += dy * k; this.pitch += (clamp(tp, -1.45, 1.45) - this.pitch) * k; }
+      s.k = Math.min(1, s.k + dt / s.need); T.set("player.scanning", Math.round(s.k * 100) / 100); this.scanDraw(p, s.k, this.visorColor(o, "scan"));
+      if (s.k >= 1) { const first = !T.get("codex." + o.th.prop); if (T.has("codex." + o.th.prop)) T.set("codex." + o.th.prop, true); const dn = T.get(V + "scanDone"); if (dn) this.sfx(dn); this.scanStop();
+        if (this.sh) for (const ow of this.scriptOwners()) for (const n of ow.script.nodes) { if (n.type !== "onScan") continue; const f = T.get(ow.key + ".s." + n.id + ".what"); if (!f || f === o.th.prop) this.sh.trigger(ow, "onScan", null, n.id); }
+        this.popupShow(o, { popupTitle: this.ov(o, "scanTitle") || this.ov(o, "name") || "Scan", popupText: (this.ov(o, "scanText") || "") + (first && this.ov(o, "codexText") ? "\n\n(New codex entry)" : ""), popupImage: this.ov(o, "scanImage") || "", popupSound: "" }); } }
+    // the lock-on ring: a circle around the object on screen that fills while scanning
+    scanDraw(p, k, col) { const v = this.view; if (!v || !v.vp) return; const m = v.vp, x = m[0] * p[0] + m[4] * p[1] + m[8] * p[2] + m[12], y = m[1] * p[0] + m[5] * p[1] + m[9] * p[2] + m[13], w = m[3] * p[0] + m[7] * p[1] + m[11] * p[2] + m[15]; if (w <= 0) return; const r = this.cv.getBoundingClientRect(), rr = this.root.getBoundingClientRect(), sx = (x / w * 0.5 + 0.5) * r.width + r.left - rr.left, sy = (0.5 - y / w * 0.5) * r.height + r.top - rr.top;
+      if (!this.scanEl) { this.scanEl = document.createElement("div"); this.scanEl.style.cssText = "position:absolute;width:84px;height:84px;margin:-42px 0 0 -42px;pointer-events:none;z-index:6"; this.scanEl.innerHTML = '<svg viewBox="0 0 84 84" width="84" height="84"><circle cx="42" cy="42" r="34" fill="none" stroke-width="2" stroke-dasharray="6 6" opacity=".7"/><circle class="pr" cx="42" cy="42" r="38" fill="none" stroke-width="4" stroke-linecap="round" transform="rotate(-90 42 42)" stroke-dasharray="238.8" stroke-dashoffset="238.8"/></svg><div style="position:absolute;left:0;right:0;top:88px;text-align:center;font:600 12px Chakra Petch,system-ui;letter-spacing:.15em"></div>'; this.root.append(this.scanEl); }
+      const el = this.scanEl; el.style.display = "block"; el.style.left = sx + "px"; el.style.top = sy + "px"; for (const c of el.querySelectorAll("circle")) c.setAttribute("stroke", col || "#ffb53a"); el.querySelector(".pr").setAttribute("stroke-dashoffset", String(238.8 * (1 - k))); const t = el.lastChild; t.textContent = Math.round(k * 100) + "%"; t.style.color = col || "#ffb53a"; }
     saveGame(st) {
       if (!PRIM.Save || this.mode !== "play" || !this.map) return false; const T = this.T, m = this.map, tags = {};
       if (T.ov) { for (const k in T.ov) if (!/^save\./.test(k)) tags[k] = T.ov[k]; } else for (const k of T.names()) { const r = T.spec(k); if (r && !/^save\./.test(k) && (r.custom || /^player\./.test(k) || /\.have$/.test(k))) tags[k] = T.get(k); }
@@ -739,6 +804,8 @@
       if (ty === "giveKey" || ty === "takeKey") { const k = g("key"); if (k && T.has(k + ".have")) { T.set(k + ".have", ty === "giveKey"); if (ty === "giveKey") this.keyGot(k); } return; }
       if (ty === "saveGame") { this.saveGame(null); return; }
       if (ty === "ifHasKey") { const k = g("key"); return k && T.get(k + ".have") ? "then" : "else"; }
+      if (ty === "setVisor") { if (!this.visorsOn) return; const q = g("visor"), v = q ? this.findVisor(q) : (this.project.visors || []).find(x => this.vt(x.id) === "combat"); if (v) this.setVisor(v.id); return; }
+      if (ty === "ifVisor") { const v = this.visorsOn && this.findVisor(g("visor")), q = String(g("visor") || "").toLowerCase(); return this.visor && ((v && v.id === this.visor) || this.vt(this.visor) === q) ? "then" : "else"; }
       const o = this.bossOf(owner.key); if (!o || !o.fight) return /^if/.test(ty) ? "else" : undefined;
       switch (ty) {
         case "setPhase": { const P = this.phases(o), nm = String(g("phase") || "").trim().toLowerCase(), cur = P.findIndex(q => q.id === o.ph), ph = nm ? P.find(q => String(T.get(o.pre + "ph." + q.id + ".name") || "").trim().toLowerCase() === nm) : P[cur + 1];
@@ -1010,12 +1077,12 @@
       this.toastEl.textContent = t; this.toastEl.style.opacity = 1; clearTimeout(this.toastT); this.toastT = setTimeout(() => { if (this.toastEl) this.toastEl.style.opacity = 0; }, 1800); }
     // ---- pick-up pop-ups: pause everything and say what you got (closed with the Interact key, Space, Enter or a click)
     popupShow(o) {
-      const T = this.T, pre = o.pre, g = k => T.get(pre + k); this.popup = { t0: performance.now() }; for (const k of Object.keys(this.keys)) this.release(k);
+      const T = this.T, pre = o.pre, alt = arguments[1], g = k => alt && alt[k] !== undefined ? alt[k] : T.get(pre + k); this.popup = { t0: performance.now() }; for (const k of Object.keys(this.keys)) this.release(k);
       if (!this.popEl) { this.popEl = document.createElement("div"); this.popEl.className = "p3pop"; this.popEl.style.cssText = "position:absolute;inset:0;display:grid;place-items:center;background:rgba(0,0,0,.45);z-index:8"; this.popEl.addEventListener("pointerdown", e => { e.stopPropagation(); this.popupClose(); }); this.root.append(this.popEl); }
       const box = document.createElement("div"); box.style.cssText = "min-width:320px;max-width:min(560px,86%);padding:22px 28px;background:rgba(8,14,22,.93);border:2px solid rgba(125,243,255,.7);border-radius:6px;color:#e8f2fb;text-align:center;font:17px/1.45 'Chakra Petch',system-ui,sans-serif;box-shadow:0 0 30px rgba(125,243,255,.25)";
       const img = g("popupImage") && this.urls[g("popupImage")]; if (img) { const i = document.createElement("img"); i.src = img; i.alt = ""; i.style.cssText = "display:block;margin:0 auto 12px;max-width:160px;max-height:160px;image-rendering:pixelated"; box.append(i); }
       const h = document.createElement("div"); h.textContent = g("popupTitle") || g("name") || "Item"; h.style.cssText = "font-size:26px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#7df3ff;margin-bottom:6px"; box.append(h);
-      if (g("popupText")) { const tx = document.createElement("div"); tx.textContent = T.interpolate(String(g("popupText"))); box.append(tx); }
+      if (g("popupText")) { const tx = document.createElement("div"); tx.textContent = T.interpolate(String(g("popupText"))); tx.style.whiteSpace = "pre-line"; box.append(tx); }
       const f = document.createElement("div"); f.textContent = "[" + String(T.get("player.interactKey") || "e").toUpperCase() + "]  Continue"; f.style.cssText = "margin-top:16px;font-size:13px;opacity:.7;letter-spacing:.1em"; box.append(f);
       this.popEl.replaceChildren(box); this.popEl.style.display = "grid"; const snd = g("popupSound"); if (snd) this.sfx(snd, 1);
     }
@@ -1075,7 +1142,7 @@
     // Classic: the camera looks where the mouse points and the crosshair stays in the middle.
     // Free aim (bodycam style): the mouse moves the aim (and crosshair) inside an area of the screen; the camera only turns once the aim reaches the edge of that area.
     look(dx, dy) {
-      if (this.ui) return this.uiMove(dx, dy); const T = this.T, aw = this.aimW(), s = 0.0022 * (+T.get("player.mouseSens") || 1) * (aw && aw.type === "sights" ? 1 - (this.aimK || 0) * (1 - (+T.get(aw.pre + "aimSens") || 1)) : 1);
+      if (this.ui) return this.uiMove(dx, dy); if (this.vw) return this.wheelMove(dx, dy); const T = this.T, aw = this.aimW(), s = 0.0022 * (+T.get("player.mouseSens") || 1) * (aw && aw.type === "sights" ? 1 - (this.aimK || 0) * (1 - (+T.get(aw.pre + "aimSens") || 1)) : 1);
       if (T.get("player.aimMode") !== "free") { this.aimYaw = this.aimPitch = 0; this.yaw += dx * s; this.pitch = clamp(this.pitch - dy * s, -1.45, 1.45); return; }
       const R = Math.max(0.05, (+T.get("player.freeAimRadius") || 14) * Math.PI / 180); let ay = this.aimYaw + dx * s, ap = this.aimPitch - dy * s; const d = Math.hypot(ay, ap);
       if (d > R) { const k = R / d, ex = ay - ay * k, ey = ap - ap * k; this.yaw += ex; this.pitch = clamp(this.pitch + ey, -1.45, 1.45); ay *= k; ap *= k; }
@@ -1207,7 +1274,7 @@
       if (h.mSnap && b > 0) { h.mK += dt / b; if (h.mK >= 1) h.mSnap = null; else { const w = h.mK * h.mK * (3 - 2 * h.mK); shown = F.mixLocal(h.mSnap, cur, w); } }
       h.mLast = shown; return F.world(model, shown);
     }
-    fire() { this.trigger("onClick"); }
+    fire() { if (this.visorNoFire()) return; this.trigger("onClick"); }
     // sound events set on the Timeline tab: play those that fall between t0 and t1 of the animation (only while really playing, not in the editor preview)
     ev(at, name, t0, t1) {
       if (this.mode !== "play") return; const T = this.T;
@@ -1357,7 +1424,7 @@
       // draw order (play): level, then solid things (doors, enemies) BEFORE the effects. See-through effects (shock spheres, marks) write no depth, so anything drawn after them covered them.
       // removed from the page (the playtest was stopped, another project was opened...): shut down for good, so no copy keeps listening to keys and playing sounds
       if (this.root.isConnected) this.wasOn = true; else if (this.wasOn) { this.destroy(); return; }
-      this.raf = requestAnimationFrame(q => this.frame(q)); const dt = this.popup || this.paused ? 0 : Math.max(0, Math.min(0.05, (t - this.last) / 1000)); this.last = Math.max(t, this.last || 0); if (this.mode === "play" && !this.pdead) this.playT = (this.playT || 0) + dt;   // never a negative step (gravity would run backwards)   // a pick-up pop-up pauses everything
+      this.raf = requestAnimationFrame(q => this.frame(q)); const dt = this.popup || this.paused ? 0 : Math.max(0, Math.min(0.05, (t - this.last) / 1000)) * (this.vw ? Math.max(0, Math.min(1, this.T.get("player.visorSlow") === undefined ? 0.3 : +this.T.get("player.visorSlow"))) : 1); this.last = Math.max(t, this.last || 0); if (this.mode === "play" && !this.pdead) this.playT = (this.playT || 0) + dt;   // never a negative step (gravity would run backwards)   // a pick-up pop-up pauses everything
       if (this.mode === "play" && this.map && !this.pdead && !this.talk && !this.popup && !this.paused) { this.step(dt); this.zoneStep(dt); }
       if (this.mode === "play") this.talkHint();
       if (this.mode === "play" && this.hud && this.hud.wants && this.hud.wants()) { this.clock = (this.clock || 0) + dt; this.hud.tick(this.hudWorld(), dt); }
@@ -1367,7 +1434,7 @@
       c.x = this.x; c.z = this.y; c.y = this.z + (+T.get("player.eyeHeight") || 56) - (this.pdead ? Math.min(1, (this.deadT || 0) * 2) * (+T.get("player.eyeHeight") || 56) * 0.7 : 0); c.yaw = this.yaw; c.pitch = this.pitch; if (this.shakeT > 0) { this.shakeT -= dt; const a = (this.shakeA || 0) * Math.max(0, this.shakeT / (this.shakeT0 || 1)) * 0.02; c.yaw += (Math.random() * 2 - 1) * a; c.pitch += (Math.random() * 2 - 1) * a; if (this.shakeT <= 0) this.shakeA = 0; } { const B = R3D.camBasis(c.yaw, c.pitch); PRIM.Audio.listen([c.x, c.y, c.z], B.f, B.u, B.s); } if (this.mode === "play") { this.speakerStep(); this.weaponCheck(); } v.setLights(this.lightPrev || []); v.draw(); this.lightNow = []; if (this.mode === "play") { this.stepFx(dt); const list = (this.fx || []).slice(), ob = this.orb, oat = ob && this.atts.find(x => x.id === ob.id); for (const f of list) if (f.light) this.lightNow.push({ p: f.p, r: f.light.r, c: f.light.c.map(q => q * f.light.k), type: 0, shadow: f.light.shadow !== false && !f.hostile }); if (oat && oat.emit) { if (ob.grow) { ob.grow.t += dt; ob.size = ob.grow.from + (ob.grow.to - ob.grow.from) * Math.min(1, ob.grow.t / ob.grow.secs); } const op = this.emitWorld(oat).O, opre = "player." + oat.id + ".", oem = T.get(opre + "projEmit") === undefined ? 1 : +T.get(opre + "projEmit"); const oflat = T.get(opre + "projShade") === "flat", ocol = this.hexCol(ob.color).map(q => q * oem); list.push({ kind: "sphere", p: op, c: ocol, size: ob.size, flat: oflat });
         if (ob.suck) { const S = ob.suck, pc = S.color ? this.hexCol(S.color).map(q => q * oem) : ocol; ob.sp = ob.sp || []; ob.acc = (ob.acc || 0) + dt * S.rate;   // bits spawn on a ball around the charge and speed up into it
           while (ob.acc >= 1 && ob.sp.length < 160) { ob.acc -= 1; let d = [Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1]; const L = Math.hypot(...d) || 1, R = S.radius * (0.65 + 0.35 * Math.random()) + ob.size; ob.sp.push({ off: d.map(q => q / L * R), t: 0, T: S.time * (0.7 + 0.6 * Math.random()), s: S.size * (0.6 + 0.8 * Math.random()) }); } if (ob.acc > 1) ob.acc = 1;
-          ob.sp = ob.sp.filter(q => (q.t += dt) < q.T); for (const q of ob.sp) { const a = q.t / q.T, k = 1 - a * a; list.push({ kind: "sphere", p: [op[0] + q.off[0] * k, op[1] + q.off[1] * k, op[2] + q.off[2] * k], c: pc.map(v => v * (0.55 + 0.9 * a)), size: q.s * (0.35 + 0.65 * Math.min(1, a * 3)), flat: oflat }); } } if (T.get(opre + "projLight")) this.lightNow.push({ p: op, r: +T.get(opre + "projLightRange") || 220, c: this.hexCol(ob.color).map(q => q * (+T.get(opre + "projLightPower") || 1.5)), type: 0, shadow: true }); } v.setLights(this.lightNow); list.push(...this.stepMarks(dt), ...this.hbLines()); this.uiStep(); this.drawThings(v, dt); this.shieldItems(list, dt); if (list.length) v.drawFx(list); } else this.drawThings(v, dt); this.drawHand(v, dt); v.present(); if (this.wantShot) this.takeShot(); this.lightPrev = this.lightNow; this.compDom(); this.stats3d(v); this.placeCross(v);
+          ob.sp = ob.sp.filter(q => (q.t += dt) < q.T); for (const q of ob.sp) { const a = q.t / q.T, k = 1 - a * a; list.push({ kind: "sphere", p: [op[0] + q.off[0] * k, op[1] + q.off[1] * k, op[2] + q.off[2] * k], c: pc.map(v => v * (0.55 + 0.9 * a)), size: q.s * (0.35 + 0.65 * Math.min(1, a * 3)), flat: oflat }); } } if (T.get(opre + "projLight")) this.lightNow.push({ p: op, r: +T.get(opre + "projLightRange") || 220, c: this.hexCol(ob.color).map(q => q * (+T.get(opre + "projLightPower") || 1.5)), type: 0, shadow: true }); } v.setLights(this.lightNow); list.push(...this.stepMarks(dt), ...this.hbLines()); this.uiStep(); this.drawThings(v, dt); this.shieldItems(list, dt); if (list.length) v.drawFx(list); if (this.visorsOn) { this.scanStep(dt); const vi = this.visorItems(); if (vi && vi.items.length) v.drawVisor(vi.items, vi.opt); } } else this.drawThings(v, dt); this.drawHand(v, dt); v.present(); if (this.wantShot) this.takeShot(); this.lightPrev = this.lightNow; this.compDom(); this.stats3d(v); this.placeCross(v);
     }
   };
 })();

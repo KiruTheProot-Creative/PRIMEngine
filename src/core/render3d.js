@@ -34,7 +34,7 @@
     // material: base colour (texture x tint), emission (an emission map, or the base colour itself) x strength, extra flat glow (effects)
     "uniform vec3 uTint;uniform vec3 uEmit;uniform float uLit;uniform float uAlpha;uniform vec2 uCut;uniform float uEmitK;uniform float uEmitMap;",
     // mood: colour tint x brightness, contrast, saturation
-    "uniform vec3 uMoodT;uniform float uMoodC;uniform float uMoodS;uniform float uClipY;",
+    "uniform vec3 uMoodT;uniform float uMoodC;uniform float uMoodS;uniform float uClipY;uniform float uFull;",
     // real-time shadows: up to 4 lights have a cube map of distances (packed in RGBA); uShL = which light (0..7) each map belongs to, -1 = unused
     "uniform samplerCube uSh0;uniform samplerCube uSh1;uniform samplerCube uSh2;uniform samplerCube uSh3;uniform vec4 uShL;uniform float uShOn;",
     "float unpk(vec4 c){return dot(c,vec4(1.0,1.0/255.0,1.0/65025.0,1.0/16581375.0));}",
@@ -58,6 +58,7 @@
     "  }",
     "  c+=alb*ls*uLit;",
     " }",
+    " c=mix(c,alb*uBright,uFull*uLit);",
     " vec3 em=uEmitMap>0.5?texture2D(uETex,vUV).rgb:alb; c+=em*uEmitK+uEmit;",
     " float g=dot(c,vec3(0.299,0.587,0.114)); c=mix(vec3(g),c,uMoodS); c=(c-0.5)*uMoodC+0.5; c=max(c*uMoodT,0.0);",
     " float f=clamp((vD-uFogR.x)/max(1.0,uFogR.y-uFogR.x),0.0,1.0); gl_FragColor=vec4(mix(c,uFog,f),uAlpha*tx.a);",
@@ -86,6 +87,13 @@
   const SVS = "attribute vec3 aPos;uniform mat4 uVP;uniform mat4 uM;varying vec3 vW;void main(){vec4 w=uM*vec4(aPos,1.0);vW=w.xyz;gl_Position=uVP*w;}";
   const SFS = "precision highp float;uniform vec3 uLP;uniform float uR;varying vec3 vW;void main(){float v=clamp(length(vW-uLP)/uR,0.0,0.9999);vec4 e=fract(v*vec4(1.0,255.0,65025.0,16581375.0));e-=e.yzww*vec4(1.0/255.0,1.0/255.0,1.0/255.0,0.0);gl_FragColor=e;}";
   // post effects (the scene is drawn into an HDR picture first): bright parts -> blurred glow (bloom) -> added back, exposure and a soft roll-off of over-bright colours
+  // visor highlights: objects are drawn as flat colours into a mask picture (MVS/MFS), then VFS lays a see-through fill (with a pattern) and an outline (edges of the mask) over the scene
+  const MVS = "attribute vec3 aPos;uniform mat4 uVP;uniform mat4 uM;void main(){gl_Position=uVP*uM*vec4(aPos,1.0);}";
+  const MFS = "precision mediump float;uniform vec4 uC;void main(){gl_FragColor=uC;}";
+  const VFS = "precision highp float;varying vec2 vU;uniform sampler2D uM;uniform vec2 uTx;uniform float uW;uniform float uFill;uniform float uGlow;uniform float uPat;uniform float uT;" +
+    "void main(){vec4 m=texture2D(uM,vU);vec4 e=vec4(0.0);float k=0.0;for(int i=0;i<8;i++){float a=float(i)*0.785398;vec2 o=vec2(cos(a),sin(a))*uW*uTx;vec4 q=texture2D(uM,vU+o);if(q.a>0.5&&(m.a<0.5||distance(q.rgb,m.rgb)>0.2)){e+=q;k+=1.0;}}" +
+    "vec2 px=vU/uTx;float p=1.0;if(uPat>0.5&&uPat<1.5)p=0.55+0.45*step(0.5,fract(px.y/3.0+uT*2.0));else if(uPat>1.5&&uPat<2.5)p=(fract(px.x/12.0)<0.12||fract(px.y/12.0)<0.12)?1.6:0.6;else if(uPat>2.5)p=step(length(fract(px/5.0)-0.5),0.28)*1.4+0.2;" +
+    "if(k>0.0&&m.a<0.5){gl_FragColor=vec4(e.rgb/k*uGlow,1.0);}else if(m.a>0.5){gl_FragColor=vec4(m.rgb*uGlow*0.8,clamp(uFill*p,0.0,1.0));}else discard;}";
   const QVS = "attribute vec2 aQ;varying vec2 vU;void main(){vU=aQ*0.5+0.5;gl_Position=vec4(aQ,0.0,1.0);}";
   const BRIGHT = "precision highp float;uniform sampler2D uS;uniform vec2 uTx;uniform float uTh;varying vec2 vU;void main(){vec3 c=(texture2D(uS,vU+uTx*vec2(-0.5,-0.5)).rgb+texture2D(uS,vU+uTx*vec2(0.5,-0.5)).rgb+texture2D(uS,vU+uTx*vec2(-0.5,0.5)).rgb+texture2D(uS,vU+uTx*vec2(0.5,0.5)).rgb)*0.25;float l=max(c.r,max(c.g,c.b));gl_FragColor=vec4(c*(max(l-uTh,0.0)/max(l,0.0001)),1.0);}";
   const BLUR = "precision highp float;uniform sampler2D uS;uniform vec2 uD;varying vec2 vU;void main(){vec3 c=texture2D(uS,vU).rgb*0.227;c+=(texture2D(uS,vU+uD*1.385).rgb+texture2D(uS,vU-uD*1.385).rgb)*0.316;c+=(texture2D(uS,vU+uD*3.231).rgb+texture2D(uS,vU-uD*3.231).rgb)*0.0703;gl_FragColor=vec4(c,1.0);}";
@@ -116,10 +124,11 @@
     const sh = (t, src) => { const s = gl.createShader(t); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; };
     const pr = this.pr = gl.createProgram(); gl.attachShader(pr, sh(gl.VERTEX_SHADER, VS)); const dx = gl.getExtension("OES_standard_derivatives"); gl.attachShader(pr, sh(gl.FRAGMENT_SHADER, (dx ? "#extension GL_OES_standard_derivatives : enable\n#define DERIV\n" : "") + FS)); gl.linkProgram(pr); gl.useProgram(pr);
     this.loc = { pos: gl.getAttribLocation(pr, "aPos"), uv: gl.getAttribLocation(pr, "aUV"), col: gl.getAttribLocation(pr, "aCol"), vp: gl.getUniformLocation(pr, "uVP"), m: gl.getUniformLocation(pr, "uM"), tex: gl.getUniformLocation(pr, "uTex"), lp: gl.getUniformLocation(pr, "uLP"), lc: gl.getUniformLocation(pr, "uLC"), ln: gl.getUniformLocation(pr, "uLN"), lu: gl.getUniformLocation(pr, "uLU"), nl: gl.getUniformLocation(pr, "uNL"), cam: gl.getUniformLocation(pr, "uCam"), tint: gl.getUniformLocation(pr, "uTint"), emit: gl.getUniformLocation(pr, "uEmit"), lit: gl.getUniformLocation(pr, "uLit"), alpha: gl.getUniformLocation(pr, "uAlpha"), etex: gl.getUniformLocation(pr, "uETex"), emitK: gl.getUniformLocation(pr, "uEmitK"), emitMap: gl.getUniformLocation(pr, "uEmitMap"), moodT: gl.getUniformLocation(pr, "uMoodT"), moodC: gl.getUniformLocation(pr, "uMoodC"), moodS: gl.getUniformLocation(pr, "uMoodS"), clipY: gl.getUniformLocation(pr, "uClipY"), fog: gl.getUniformLocation(pr, "uFog"), fogR: gl.getUniformLocation(pr, "uFogR"), bright: gl.getUniformLocation(pr, "uBright"), cut: gl.getUniformLocation(pr, "uCut") };
-    for (const [k, u] of [["sh0", "uSh0"], ["sh1", "uSh1"], ["sh2", "uSh2"], ["sh3", "uSh3"], ["shL", "uShL"], ["shOn", "uShOn"]]) this.loc[k] = gl.getUniformLocation(pr, u);
+    for (const [k, u] of [["sh0", "uSh0"], ["sh1", "uSh1"], ["sh2", "uSh2"], ["sh3", "uSh3"], ["shL", "uShL"], ["shOn", "uShOn"], ["full", "uFull"]]) this.loc[k] = gl.getUniformLocation(pr, u);
     const prog = (v, f) => { const q = gl.createProgram(); gl.attachShader(q, sh(gl.VERTEX_SHADER, v)); gl.attachShader(q, sh(gl.FRAGMENT_SHADER, f)); gl.linkProgram(q); return q; };
     try { this.spr = prog(SVS, SFS); this.sloc = { pos: gl.getAttribLocation(this.spr, "aPos"), vp: gl.getUniformLocation(this.spr, "uVP"), m: gl.getUniformLocation(this.spr, "uM"), lp: gl.getUniformLocation(this.spr, "uLP"), r: gl.getUniformLocation(this.spr, "uR") }; } catch (e) { this.spr = null; }
     try { this.pp = { bright: prog(QVS, BRIGHT), blur: prog(QVS, BLUR), comp: prog(QVS, COMP) }; } catch (e) { this.pp = null; }
+    try { this.vmP = prog(MVS, MFS); this.vcP = prog(QVS, VFS); if (!gl.getProgramParameter(this.vmP, gl.LINK_STATUS) || !gl.getProgramParameter(this.vcP, gl.LINK_STATUS)) this.vmP = this.vcP = null; } catch (e) { this.vmP = this.vcP = null; }
     this.fxProg = type => { this.fxp = this.fxp || {}; if (this.fxp[type] === undefined) { try { const q = prog(QVS, FXH + FX[type]); this.fxp[type] = gl.getProgramParameter(q, gl.LINK_STATUS) ? q : null; } catch (e) { this.fxp[type] = null; } } return this.fxp[type]; };
     gl.useProgram(pr); this.shOn = 0; this.shSlots = []; for (let k = 0; k < 4; k++) gl.uniform1i(this.loc["sh" + k], 2 + k);
     gl.enable(gl.DEPTH_TEST); gl.disable(gl.CULL_FACE);
@@ -213,7 +222,7 @@
   // fog + mood uniforms (fog = false: the viewmodel pass, never fogged)
   P.lookUniforms = function (fog) {
     const gl = this.gl, L = this.loc, md = this.mood || { tint: [1, 1, 1], contrast: 1, sat: 1 }; gl.uniform3fv(L.fog, this.fog); gl.uniform2fv(L.fogR, fog ? [this.fogS, this.fogE] : [1e8, 1e9]);
-    gl.uniform3fv(L.moodT, md.tint); gl.uniform1f(L.moodC, md.contrast); gl.uniform1f(L.moodS, md.sat); gl.uniform1i(L.tex, 0); gl.uniform1i(L.etex, 1);
+    gl.uniform3fv(L.moodT, md.tint); gl.uniform1f(L.moodC, md.contrast); gl.uniform1f(L.moodS, md.sat); gl.uniform1i(L.tex, 0); gl.uniform1i(L.etex, 1); gl.uniform1f(L.full, this.fullBright || 0); if (this.noFog) gl.uniform2fv(L.fogR, [1e8, 1e9]);
   };
   // the sky colour with the mood applied (the clear colour)
   P.skyNow = function () { const md = this.mood || { tint: [1, 1, 1], contrast: 1, sat: 1 }, s = this.sky.map(q => q * this.bright), g = s[0] * 0.299 + s[1] * 0.587 + s[2] * 0.114; return s.map((q, i) => Math.max(0, Math.min(1, ((g + (q - g) * md.sat) - 0.5) * md.contrast + 0.5) * md.tint[i])); };
@@ -492,6 +501,34 @@
 
   // ------------------------------------------------------------ HDR scene picture + bloom (post effects; later the Compositor tab plugs in here)
   // post = true: draw() renders into an off-screen HDR picture and present() puts it on screen with bloom. Views without post draw straight to the screen.
+  // ---- visor highlights: list of { gm, pose, M, c: [r,g,b], xray (seen through walls) }, opt { fill, w, glow, pattern 0..3, trace, traceA }
+  // with the HDR picture (play): mask pass + outline / fill pass. Without it (editors): just a see-through flat colour over the objects.
+  P.lineBuf = function (gm, ms) { if (ms.lines !== undefined) return ms.lines; const node = gm.model && gm.model.nodes && gm.model.nodes[ms.node], m = node && node.mesh; if (!m || !m.p) return (ms.lines = null); const P_ = m.p, out = [], n = P_.length / 9 | 0;
+    for (let t = 0; t < n; t++) { const v = j => [P_[t * 9 + j * 3], P_[t * 9 + j * 3 + 1], P_[t * 9 + j * 3 + 2]], a = v(0), b = v(1), c = v(2); out.push(...a, ...b, ...b, ...c, ...c, ...a); }
+    const gl = this.gl, buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(out), gl.STATIC_DRAW); return (ms.lines = { buf, n: out.length / 3 }); };
+  P.drawVisor = function (items, opt) {
+    if (!items || !items.length || !this.vp) return; const gl = this.gl; opt = opt || {};
+    if (!this.postOn() || !this.pt || !this.vmP) { this.setMat({ lit: 0, tint: [0, 0, 0], alpha: 0.35 }); gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE); gl.depthMask(false); const L = this.loc;
+      for (const it of items) { this.setMat({ lit: 0, tint: [0, 0, 0], emit: it.c, alpha: Math.max(0.2, opt.fill || 0.3) }); if (it.xray) gl.disable(gl.DEPTH_TEST); for (const ms of it.gm.meshes) { gl.uniformMatrix4fv(L.m, false, new Float32Array(M4.mul(it.M, it.pose[ms.node]))); gl.bindBuffer(gl.ARRAY_BUFFER, ms.buf); gl.vertexAttribPointer(L.pos, 3, gl.FLOAT, false, 32, 0); gl.vertexAttribPointer(L.uv, 2, gl.FLOAT, false, 32, 12); gl.vertexAttribPointer(L.col, 3, gl.FLOAT, false, 32, 20); gl.drawArrays(gl.TRIANGLES, 0, ms.n); } gl.enable(gl.DEPTH_TEST); }
+      gl.depthMask(true); gl.disable(gl.BLEND); this.setMat(); return; }
+    const pt = this.pt, P_ = this.vmP, loc = n => gl.getUniformLocation(P_, n), aPos = gl.getAttribLocation(P_, "aPos");
+    for (const k of ["pos", "uv", "col"]) if (this.loc[k] >= 0) gl.disableVertexAttribArray(this.loc[k]);
+    gl.useProgram(P_); gl.bindFramebuffer(gl.FRAMEBUFFER, pt.v.fb); gl.viewport(0, 0, pt.w, pt.h); gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT); gl.depthMask(false); gl.disable(gl.BLEND); gl.enableVertexAttribArray(aPos);
+    gl.uniformMatrix4fv(loc("uVP"), false, new Float32Array(this.vp)); gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(-2, -2); gl.depthFunc(gl.LEQUAL);
+    const draw = (it, lines) => { if (it.xray) gl.disable(gl.DEPTH_TEST); else gl.enable(gl.DEPTH_TEST); for (const ms of it.gm.meshes) { gl.uniformMatrix4fv(loc("uM"), false, new Float32Array(M4.mul(it.M, it.pose[ms.node])));
+        if (lines) { const lb = this.lineBuf(it.gm, ms); if (!lb) continue; gl.bindBuffer(gl.ARRAY_BUFFER, lb.buf); gl.vertexAttribPointer(aPos, 3, gl.FLOAT, false, 12, 0); gl.drawArrays(gl.LINES, 0, lb.n); }
+        else { gl.bindBuffer(gl.ARRAY_BUFFER, ms.buf); gl.vertexAttribPointer(aPos, 3, gl.FLOAT, false, 32, 0); gl.drawArrays(gl.TRIANGLES, 0, ms.n); } } };
+    for (const it of items) { gl.uniform4f(loc("uC"), it.c[0], it.c[1], it.c[2], 1); draw(it, false); }
+    gl.disable(gl.POLYGON_OFFSET_FILL);
+    // outline + fill over the scene picture
+    gl.bindFramebuffer(gl.FRAMEBUFFER, pt.scene.fb); gl.disable(gl.DEPTH_TEST); gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); gl.disableVertexAttribArray(aPos);
+    const V = this.vcP, a = gl.getAttribLocation(V, "aQ"); gl.useProgram(V); gl.bindBuffer(gl.ARRAY_BUFFER, this.quad); gl.enableVertexAttribArray(a); gl.vertexAttribPointer(a, 2, gl.FLOAT, false, 0, 0);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, pt.v.t); const u = n => gl.getUniformLocation(V, n); gl.uniform1i(u("uM"), 0); gl.uniform2f(u("uTx"), 1 / pt.w, 1 / pt.h);
+    gl.uniform1f(u("uW"), Math.max(0.5, opt.w === undefined ? 2 : +opt.w) * (pt.h / 720)); gl.uniform1f(u("uFill"), opt.fill === undefined ? 0.3 : +opt.fill); gl.uniform1f(u("uGlow"), opt.glow === undefined ? 1.5 : +opt.glow); gl.uniform1f(u("uPat"), opt.pattern || 0); gl.uniform1f(u("uT"), (performance.now() / 1000) % 100);
+    if ((+opt.w || 0) > 0 || (+opt.fill || 0) > 0) gl.drawArrays(gl.TRIANGLES, 0, 3); gl.disableVertexAttribArray(a);
+    // wireframe lines straight into the scene (glowing, see-through)
+    if (opt.trace) { gl.useProgram(P_); gl.enableVertexAttribArray(aPos); gl.uniformMatrix4fv(loc("uVP"), false, new Float32Array(this.vp)); gl.blendFunc(gl.SRC_ALPHA, gl.ONE); for (const it of items) { const g = opt.glow === undefined ? 1.5 : +opt.glow; gl.uniform4f(loc("uC"), it.c[0] * g, it.c[1] * g, it.c[2] * g, opt.traceA === undefined ? 0.35 : +opt.traceA); draw(it, true); } gl.disableVertexAttribArray(aPos); }
+    gl.disable(gl.BLEND); gl.enable(gl.DEPTH_TEST); gl.depthMask(true); gl.depthFunc(gl.LESS); gl.useProgram(this.pr); gl.viewport(0, 0, pt.w, pt.h); const L = this.loc; gl.enableVertexAttribArray(L.pos); gl.enableVertexAttribArray(L.uv); gl.enableVertexAttribArray(L.col); this._luSig = null; };
   P.target = function (w, h, hdr) {
     const gl = this.gl, t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, hdr ? this.halfType : gl.UNSIGNED_BYTE, null);
     for (const [a, b] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, a, b);
@@ -504,10 +541,11 @@
       if (this.halfType) { const probe = this.target(4, 4, true), ok = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE; gl.deleteFramebuffer(probe.fb); gl.deleteTexture(probe.t); if (!ok) this.halfType = 0; }
       this.hdr = !!this.halfType;
     }
-    if (this.pt) for (const x of [this.pt.scene, this.pt.a, this.pt.b, this.pt.c, this.pt.d, this.pt.e, this.pt.f]) { gl.deleteFramebuffer(x.fb); gl.deleteTexture(x.t); }
+    if (this.pt) for (const x of [this.pt.scene, this.pt.a, this.pt.b, this.pt.c, this.pt.d, this.pt.e, this.pt.f, this.pt.v]) { if (!x) continue; gl.deleteFramebuffer(x.fb); gl.deleteTexture(x.t); }
     const scene = this.target(w, h, this.hdr), depth = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, depth); gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, w, h); gl.bindFramebuffer(gl.FRAMEBUFFER, scene.fb); gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depth);
     const hw = Math.max(1, w >> 1), hh = Math.max(1, h >> 1), qw = Math.max(1, w >> 2), qh = Math.max(1, h >> 2);
-    this.pt = { w, h, scene, depth, a: this.target(hw, hh, this.hdr), b: this.target(hw, hh, this.hdr), c: this.target(qw, qh, this.hdr), d: this.target(qw, qh, this.hdr), e: this.target(w, h, false), f: this.target(w, h, false) };
+    this.pt = { w, h, scene, depth, a: this.target(hw, hh, this.hdr), b: this.target(hw, hh, this.hdr), c: this.target(qw, qh, this.hdr), d: this.target(qw, qh, this.hdr), e: this.target(w, h, false), f: this.target(w, h, false), v: this.target(w, h, false) };
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.pt.v.fb); gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depth); gl.bindTexture(gl.TEXTURE_2D, this.pt.v.t); for (const a of [gl.TEXTURE_MIN_FILTER, gl.TEXTURE_MAG_FILTER]) gl.texParameteri(gl.TEXTURE_2D, a, gl.NEAREST);
     if (!this.quad) { this.quad = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, this.quad); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW); }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   };
@@ -533,7 +571,7 @@
     // the Compositor chain (project.compositor): the picture goes through each effect in order, the last one draws to the screen
     // with a HUD on top (game), effects "in front of the HUD" that only paint over the picture are drawn by Play3D as page layers instead (they then cover the HUD too)
     const DOMFX = { vignette: 1, grain: 1, letterbox: 1 };
-    const fx = (this.compOff && this.compOff() ? [] : (PRIM.Schema && PRIM.Schema.compActive ? PRIM.Schema.compActive(this.project, this.tags) : [])).filter(f => this.fxProg(f.type) && !(this.domFx && f.layer === "front" && DOMFX[f.type]))
+    const fx = (this.compOff && this.compOff() ? [] : (PRIM.Schema && PRIM.Schema.compActive ? PRIM.Schema.compActive(this.project, this.tags, this.visorId) : [])).filter(f => this.fxProg(f.type) && !(this.domFx && f.layer === "front" && DOMFX[f.type]))
       .map(f => this.domFx && f.layer === "front" && f.type === "crt" ? Object.assign({}, f, { v: Object.assign({}, f.v, { lines: { type: "number", val: 0 }, mask: { type: "number", val: 0 } }) }) : f);
     run(pp.comp, fx.length ? pt.e : null, [["uS", pt.scene.t], ["uB1", pt.a.t], ["uB2", pt.c.t]], u => { gl.uniform1f(u("uK"), bloom ? b.k : 0); gl.uniform1f(u("uExp"), b.exp); });
     let src = pt.e, dst = pt.f; const tm = performance.now() / 1000;
