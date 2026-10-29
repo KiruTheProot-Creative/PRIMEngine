@@ -52,6 +52,13 @@
       { k: "vertical", label: "Stacked (top to bottom)", type: "bool", def: false }, { k: "missing", label: "Shows keys you don't have yet (faded)", type: "bool", def: false }, OPACITY] },
     bar: { label: "Bar", icon: "▬", props: [{ k: "bind", label: "Shows tag", type: "tagRef", refType: "number", def: "" }, { k: "max", label: "Full when tag (optional)", type: "tagRef", refType: "number", def: "" }, { k: "label", label: "Label", type: "string", def: "" }, FONT, SIZE(18),
       COLOR("textColor", "Label color", "#ffffff"), COLOR("color", "Fill color", "#ff4a4a"), COLOR("bg", "Back color", "#2a0d0d"), X, Y, W("Width", 260), { k: "h", label: "Height", type: "number", def: 22, min: 4, max: 200, step: 1 }, OPACITY] },
+    // a video (.mp4 / .webm): a cutscene when stretched to the screen; when it ends (or is skipped) it can go to a screen or start the game
+    video: { label: "Video (cutscene)", icon: "▶", props: [{ k: "asset", label: "Video (.mp4 / .webm)", type: "asset", assetType: "video", def: "" }, X, Y, W("Width (0 = 640)"), H, { k: "stretch", label: "Fill the whole screen (a cutscene)", type: "bool", def: true }, { k: "fit", label: "Fill style", type: "choice", options: [["contain", "Whole picture (black bars if needed)"], ["cover", "Cover the screen (cuts the edges)"]], def: "contain", showIf: ["stretch", true] },
+      { k: "volume", label: "Volume (with the music volume setting)", type: "number", def: 1, min: 0, max: 2, step: 0.05 }, { k: "loop", label: "Loop", type: "bool", def: false }, { k: "skippable", label: "A key or click skips it", type: "bool", def: true },
+      { k: "then", label: "When it ends", type: "choice", options: [["none", "Nothing"], ["goto", "Go to a screen"], ["start", "Start a new game"], ["back", "Go back (previous screen)"], ["menu", "Main menu"]], def: "goto" }, { k: "next", label: "Screen", type: "screenRef", def: "main", showIf: ["then", "goto"] }, OPACITY] },
+    // a sound or music file that plays when the screen opens (invisible in the game)
+    sound: { label: "Sound / music", icon: "♪", props: [{ k: "asset", label: "Sound file", type: "asset", assetType: "sound", def: "" }, { k: "channel", label: "Volume setting", type: "choice", options: [["music", "Music"], ["sfx", "Sound effects"]], def: "sfx" },
+      { k: "volume", label: "Volume", type: "number", def: 1, min: 0, max: 2, step: 0.05 }, { k: "delay", label: "Starts after (s)", type: "number", def: 0, min: 0, max: 600, step: 0.1 }, { k: "loop", label: "Loop", type: "bool", def: false }, { k: "stopOnLeave", label: "Stops when the screen changes", type: "bool", def: true }, X, Y] },
     splash: { label: "Splash", icon: "✦", props: [
       { k: "kind", label: "Shows", type: "choice", options: [["text", "Text"], ["image", "Image"]], def: "text" },
       { k: "text", label: "Text", type: "string", def: "Made with PRIMEngine", showIf: ["kind", "text"] }, Object.assign({}, FONT, { showIf: ["kind", "text"] }), Object.assign({}, SIZE(56), { showIf: ["kind", "text"] }), Object.assign(COLOR("color", "Color", "#ffffff"), { showIf: ["kind", "text"] }),
@@ -66,7 +73,23 @@
     // a pause menu: drawn over the frozen game (Esc). Its buttons can resume, restart, go to other pause screens, quit...
     pause: [COLOR("bg", "Darkening color", "#000000"), { k: "dim", label: "Darken the game (0 = see-through, 1 = solid)", type: "number", def: 0.55, min: 0, max: 1, step: 0.05 }, { k: "blur", label: "Blur the game (px)", type: "number", def: 4, min: 0, max: 30, step: 1 }, { k: "bgImage", label: "Background image", type: "asset", assetType: "image", def: "" }, { k: "music", label: "Music while paused", type: "asset", assetType: "sound", def: "" }],
     splash: [COLOR("bg", "Background color", "#000000"), { k: "skippable", label: "Click or key skips", type: "bool", def: true }, { k: "next", label: "Then go to", type: "screenRef", def: "main" }],
+    // the prologue: a story text before the game. "scroller" = text crawling away into the distance, "typer" = typed letter by letter, page after page
+    prologue: [{ k: "style", label: "Style", type: "choice", options: [["scroller", "Scroller: the text crawls up and away into space"], ["typer", "Typer: typed letter by letter, page by page"]], def: "scroller" },
+      { k: "intro", label: "Opening line (shown alone first, empty = none)", type: "string", def: "", multi: true }, COLOR("introColor", "Opening line color", "#4fc3ff"),
+      { k: "text", label: "Story text (typer: an empty line starts a new page)", type: "string", def: "Long ago, on a world at the edge of the map…\n\nThe colony fell silent.\nOne hunter was sent to find out why.", multi: true },
+      FONT, SIZE(40), COLOR("color", "Text color", "#ffd84a"), { k: "align", label: "Text alignment", type: "choice", options: [["center", "Centered"], ["left", "Left"], ["justify", "Justified (straight edges)"]], def: "center" },
+      { k: "width", label: "Text column width (px)", type: "number", def: 820, min: 200, max: 1280, step: 10 },
+      { k: "speed", label: "Scroll speed (px per second)", type: "number", def: 45, min: 5, max: 600, step: 1, showIf: ["style", "scroller"] },
+      { k: "tilt", label: "Tilt into the distance (degrees, 0 = flat credits roll)", type: "number", def: 55, min: 0, max: 80, step: 1, showIf: ["style", "scroller"] },
+      { k: "cps", label: "Typing speed (letters per second)", type: "number", def: 16, min: 1, max: 200, step: 1, showIf: ["style", "typer"] },
+      { k: "typeSound", label: "Typing sound", type: "asset", assetType: "sound", def: "", showIf: ["style", "typer"] }, { k: "typeEvery", label: "Typing sound every (letters)", type: "number", def: 2, min: 1, max: 20, step: 1, showIf: ["style", "typer"] },
+      { k: "pageHold", label: "A full page stays for (s)", type: "number", def: 2.5, min: 0, max: 30, step: 0.1, showIf: ["style", "typer"] },
+      { k: "place", label: "Where the text sits", type: "choice", options: [["bottom", "Bottom"], ["middle", "Middle"], ["top", "Top"]], def: "bottom", showIf: ["style", "typer"] },
+      COLOR("bg", "Background color", "#000000"), { k: "bgImage", label: "Background image (stars…)", type: "asset", assetType: "image", def: "" }, { k: "music", label: "Music", type: "asset", assetType: "sound", def: "" },
+      { k: "endHold", label: "Waits at the end (s)", type: "number", def: 1.5, min: 0, max: 30, step: 0.1 }, { k: "skippable", label: "A key or click skips it", type: "bool", def: true },
+      { k: "then", label: "Then", type: "choice", options: [["none", "Nothing"], ["goto", "Go to a screen"], ["start", "Start a new game"], ["back", "Go back (previous screen)"], ["menu", "Main menu"]], def: "goto" }, { k: "next", label: "Screen", type: "screenRef", def: "main", showIf: ["then", "goto"] }],
   };
+  S.addPrologue = (project, id) => { const sc = { id: S.uid(id || "prologue", project.screens.map(s => s.id)), kind: "prologue", nodes: [] }; project.screens.push(sc); S.defineScreen(project, sc); return sc; };
 
   const rec = (p, group, owner) => { const r = { type: p.type, value: p.def, label: p.label, group, owner }; for (const k of ["min", "max", "step", "options", "assetType", "refType", "showIf", "modelTag", "multi"]) if (p[k] !== undefined) r[k] = p[k]; r.prop = p.k; return r; };
   S.defineNode = (project, sid, node, over) => { for (const p of S.NODE[node.type].props) { const r = rec(p, sid, sid + "." + node.id); if (over && p.k in over) r.value = over[p.k]; project.tags[sid + "." + node.id + "." + p.k] = r; } };
@@ -155,6 +178,10 @@
     { k: "matEmitMap", label: "Emission map (bright parts glow; empty = the whole object glows)", type: "asset", assetType: "image", def: "", tab: "material" }, NUM("matEmit", "Emission strength (0 = no glow)", 0, 0, 8, 0.05, { tab: "material" }),
     // projectile: what a "Fire the projectile" node launches from the muzzle point
     { k: "doorColor", label: "Door colour (doors that need this weapon glow in it)", type: "color", def: "#ff8a2a", showIf: WP },
+    { k: "useNeedTag", label: "Can only be taken out while this tag… (empty = always)", type: "tagRef", refType: "any", def: "", showIf: WP },
+    { k: "useNeedOp", label: "is", type: "choice", options: [["=", "equal to"], ["!=", "not equal to"], [">", "greater than"], ["<", "less than"], [">=", "at least"], ["<=", "at most"]], def: "=", showIf: WP },
+    { k: "useNeedVal", label: "this value", type: "string", def: "yes", showIf: WP },
+    { k: "useLockMsg", label: "Message when you try to take it out too early (empty = none)", type: "string", def: "", showIf: WP },
     { k: "projType", label: "Projectile", type: "choice", options: [["none", "None"], ["hitscan", "Hitscan (a straight line to where you aim)"], ["particle", "Particle (sphere or laser bolt)"], ["mesh", "Mesh (a 3D model that flies off)"]], def: "none", showIf: WP },
     NUM("fireRate", "Most shots per second (0 = no limit)", 0, 0, 60, 0.5, { showIf: ["projType", ["hitscan", "particle", "mesh"]] }),
     NUM("emitX", "Emitter point X (where projectiles start)", 0, -500, 500, 0.5, { showIf: ["projType", ["hitscan", "particle", "mesh"]] }), NUM("emitY", "Emitter point Y", 0, -500, 500, 0.5, { showIf: ["projType", ["hitscan", "particle", "mesh"]] }), NUM("emitZ", "Emitter point Z", 0, -500, 500, 0.5, { showIf: ["projType", ["hitscan", "particle", "mesh"]] }),
@@ -259,7 +286,7 @@
     NUM("radius", "Body width (radius, units)", 22, 4, 200, 1, { showIf: ["type", ["enemy", "boss", "npc"]] }), NUM("height", "Body height (units, 64 = 1 m)", 110, 10, 600, 1, { showIf: ["type", EN] }),
     NUM("sight", "Sees the player from (units)", 900, 50, 10000, 10, { showIf: ["type", EN] }),
     // how it moves: chase (waits, then hunts you), path (walks a path drawn on the map), stationary (stands still or hangs from the ceiling)
-    { k: "behavior", label: "Behaviour", type: "choice", options: [["chase", "Normal: waits until it sees you, then hunts you"], ["path", "Patrol: follows a path drawn on the map"], ["stationary", "Stationary: stands still, or hangs from the ceiling"]], def: "chase", showIf: ["type", EN] },
+    { k: "behavior", label: "Behaviour", type: "choice", options: [["chase", "Normal: waits until it sees you, then hunts you"], ["path", "Patrol: follows a path drawn on the map"], ["stationary", "Stationary: stands still, or hangs from the ceiling"], ["drone", "Drone: flies, circles around you, then stops to shoot or dash at you"]], def: "chase", showIf: ["type", EN] },
     { k: "crawl", label: "Can walk on walls and ceilings (climbs when a wall is in its way, drops on you from above)", type: "bool", def: false, showIf: ["type", EN], showIf2: ["behavior", "chase"] },
     { k: "detect", label: "Notices the player", type: "choice", options: [["sees", "Yes: sees you and reacts"], ["blind", "No: never notices you (a trap)"]], def: "sees", showIf: ["type", EN] },
     { k: "blindMode", label: "Without noticing you it", type: "choice", options: [["shoot", "Fires on a timer, straight ahead (or down from a ceiling)"], ["touch", "Is a damage hitbox: touching it hurts"], ["both", "Both"]], def: "shoot", showIf: ["type", EN], showIf2: ["detect", "blind"] },
@@ -366,11 +393,32 @@
     { k: "shieldClank", label: "Sound when a wrong shot hits the shield", type: "asset", assetType: "sound", def: "", showIf: ["type", "door"], showIf2: ["shieldOn", "auto"] },
     { k: "shieldBreak", label: "Sound when the shield breaks", type: "asset", assetType: "sound", def: "", showIf: ["type", "door"], showIf2: ["shieldOn", "auto"] });
   // ---- solid objects: a collision box that blocks walking (and, if set, shots). In the object's own space = the Object Editor grid (X right, Y up, Z front, origin = middle of the cell on the floor)
-  const SOL = ["decoration", "interactive", "save", "checkpoint", "speaker", "spawner"], SB = { showIf: ["type", SOL], showIf2: ["solid", "box"] };
-  S.PROP.push({ k: "solid", label: "Solid (blocks the player and enemies)", type: "choice", options: [["none", "No: you walk through it"], ["auto", "Yes: a box around the model"], ["box", "Yes: my own box (set below)"]], def: "none", showIf: ["type", SOL] },
+  const SOL = ["decoration", "interactive", "save", "checkpoint", "speaker", "spawner", "npc", "exit"], SB = { showIf: ["type", SOL], showIf2: ["solid", "box"] };
+  S.PROP.push({ k: "solid", label: "Solid (blocks the player and enemies)", type: "choice", options: [["none", "No: you walk through it"], ["auto", "Yes: a box around the model"], ["box", "Yes: my own boxes (drag them in the view)"]], def: "none", showIf: ["type", SOL] },
     { k: "solidShots", label: "Also stops shots", type: "bool", def: true, showIf: ["type", SOL], showIf2: ["solid", ["auto", "box"]] },
     NUM("solidX", "Box middle X (right)", 0, -1024, 1024, 1, SB), NUM("solidY", "Box middle Y (up)", 32, -1024, 2048, 1, SB), NUM("solidZ", "Box middle Z (front)", 0, -1024, 1024, 1, SB),
     NUM("solidW", "Box width (X)", 64, 1, 2048, 1, SB), NUM("solidH", "Box height (Y)", 64, 1, 2048, 1, SB), NUM("solidD", "Box depth (Z)", 64, 1, 2048, 1, SB));
+  // ---- drones (behavior "drone"): hover, circle the player, stop at random moments, then shoot or dash at the player
+  const DR = { showIf: ["type", EN], showIf2: ["behavior", "drone"] };
+  S.PROP.push(NUM("hover", "Flies this high above the floor (units, 64 = 1 m)", 80, 0, 1000, 1, DR), NUM("hoverBob", "Bobs up and down by (units)", 6, 0, 64, 1, DR),
+    NUM("orbitDist", "Circles at this distance from you (units)", 260, 32, 3000, 4, DR),
+    { k: "orbitTurn", label: "Changes its circling direction now and then", type: "bool", def: true, ...DR },
+    NUM("droneWaitMin", "Circles at least (s) before stopping", 1.5, 0, 30, 0.1, DR), NUM("droneWaitMax", "…and at most (s)", 4, 0, 30, 0.1, DR),
+    NUM("droneStop", "Stops and aims for (s) before attacking", 0.6, 0, 10, 0.05, DR),
+    { k: "droneAttack", label: "Then it", type: "choice", options: [["shoot", "Shoots at you (its Attack settings; melee = projectile)"], ["dash", "Dashes into you"], ["random", "Randomly shoots or dashes"]], def: "random", ...DR },
+    NUM("droneShots", "Shots per stop", 1, 1, 50, 1, DR), NUM("droneShotGap", "Time between those shots (s)", 0.2, 0.02, 5, 0.01, DR),
+    NUM("droneDashSpeed", "Dash speed (units/s)", 900, 50, 5000, 10, DR), NUM("droneDashTime", "Dash lasts at most (s)", 0.8, 0.05, 5, 0.05, DR),
+    NUM("droneDashDamage", "Dash damage (0 = its Damage)", 0, 0, 100000, 1, DR), { k: "droneDashSound", label: "Dash sound", type: "asset", assetType: "sound", def: "", ...DR },
+    NUM("droneRecover", "After attacking it waits (s)", 0.5, 0, 10, 0.05, DR));
+  // ---- enemy muzzle: where its shots come from (the Object Editor grid: X right, Y up, Z front) + an arrow (yaw / pitch; 0 = straight ahead)
+  const MZ = { showIf: ["type", EN], showIf2: ["muzzleOn", true] };
+  S.PROP.push({ k: "muzzleOn", label: "Shots come from a muzzle point (drag it in the view)", type: "bool", def: false, showIf: ["type", EN] },
+    NUM("muzzleX", "Muzzle X (right)", 0, -2048, 2048, 0.5, MZ), NUM("muzzleY", "Muzzle Y (up)", 60, -2048, 4096, 0.5, MZ), NUM("muzzleZ", "Muzzle Z (front)", 20, -2048, 2048, 0.5, MZ),
+    NUM("muzzleYaw", "Arrow: turn left / right (degrees)", 0, -180, 180, 1, MZ), NUM("muzzlePitch", "Arrow: up / down (degrees)", 0, -89, 89, 1, MZ),
+    { k: "muzzleAim", label: "Shots fly", type: "choice", options: [["player", "From the muzzle toward you"], ["arrow", "Along the arrow (straight out of the gun)"]], def: "player", ...MZ });
+  // ---- pick-ups and keys: a sound they make while lying there (a hum you hear when you get close)
+  S.PROP.push({ k: "humSound", label: "Sound it makes while lying there (loops, heard nearby)", type: "asset", assetType: "sound", def: "", showIf: ["type", ["pickup", "key"]] },
+    NUM("humVolume", "…its volume", 0.7, 0, 2, 0.05, { showIf: ["type", ["pickup", "key"]] }), NUM("humRadius", "…heard up to (units)", 384, 32, 4000, 8, { showIf: ["type", ["pickup", "key"]] }));
   // ---- save stations: step in, press Interact, (confirm,) the game is saved to the current slot
   S.PROP.push(NUM("saveRadius", "Can be used within (units, 128 = a cell)", 96, 16, 600, 4, { showIf: ["type", "save"] }),
     { k: "saveName", label: "Name in the save list (empty = the map's name)", type: "string", def: "", showIf: ["type", "save"] },
@@ -447,6 +495,14 @@
     { k: "needVal", label: "this value", type: "string", def: "yes" }, { k: "lockedSound", label: "Sound when locked", type: "asset", assetType: "sound", def: "" }];
   const hbRec = (p, pr) => { const r = rec(pr, "hitbox", p.id); if (pr.type === "anim") r.modelTag = p.id + ".asset"; return r; };
   S.addHitbox = (project, p, over) => { p.hitboxes = p.hitboxes || []; const b = { id: S.uid("hb", p.hitboxes.map(x => x.id)), kind: "button" }; p.hitboxes.push(b); for (const pr of S.HITBOX) { const r = hbRec(p, pr); if (over && pr.k in over) r.value = over[pr.k]; project.tags[p.id + ".hb." + b.id + "." + pr.k] = r; } return b; };
+  // solid boxes (prop tag solid = "box"): structure prop.solids = [{id}], values = tags <prop>.sb.<id>.x/y/z (middle) + w/h/d, object space like hitboxes
+  S.SBOX = [NUM("x", "Middle X (right)", 0, -2048, 2048, 1), NUM("y", "Middle Y (up)", 32, -2048, 4096, 1), NUM("z", "Middle Z (front)", 0, -2048, 2048, 1),
+    NUM("w", "Width (X)", 64, 1, 4096, 1), NUM("h", "Height (Y)", 64, 1, 4096, 1), NUM("d", "Depth (Z)", 64, 1, 4096, 1)];
+  S.addSolidBox = (project, p, over) => { p.solids = p.solids || []; const b = { id: S.uid("sb", p.solids.map(x => x.id)) }; p.solids.push(b); for (const pr of S.SBOX) { const r = rec(pr, "solid", p.id); if (over && pr.k in over) r.value = over[pr.k]; project.tags[p.id + ".sb." + b.id + "." + pr.k] = r; } return b; };
+  S.removeSolidBox = (project, p, b) => { p.solids.splice(p.solids.indexOf(b), 1); for (const k of Object.keys(project.tags)) if (k.startsWith(p.id + ".sb." + b.id + ".")) delete project.tags[k]; };
+  S.ensureSolids = project => { for (const p of project.props || []) { const v = k => project.tags[p.id + "." + k] ? project.tags[p.id + "." + k].value : undefined;
+      if (v("solid") === "box" && !(p.solids && p.solids.length)) S.addSolidBox(project, p, { x: v("solidX") || 0, y: v("solidY") === undefined ? 32 : v("solidY"), z: v("solidZ") || 0, w: v("solidW") || 64, h: v("solidH") || 64, d: v("solidD") || 64 });
+      for (const b of p.solids || []) for (const pr of S.SBOX) { const k = p.id + ".sb." + b.id + "." + pr.k; if (!project.tags[k]) project.tags[k] = rec(pr, "solid", p.id); } } };
   S.removeHitbox = (project, p, b) => { p.hitboxes.splice(p.hitboxes.indexOf(b), 1); for (const k of Object.keys(project.tags)) if (k.startsWith(p.id + ".hb." + b.id + ".")) delete project.tags[k]; };
   S.removeDLine = (project, p, l) => { p.dialog.lines.splice(p.dialog.lines.indexOf(l), 1); for (const k of Object.keys(project.tags)) if (k.startsWith(p.id + ".d." + l.id + ".")) delete project.tags[k]; S.syncDOpts(project, p); };
   S.syncDOpts = (project, p) => { const o = S.dlineOptions(p); for (const l of (p.dialog && p.dialog.lines) || []) for (const k of ["next", "c1go", "c2go", "c3go", "c4go"]) { const r = project.tags[p.id + ".d." + l.id + "." + k]; if (r) { r.options = o; if (!o.some(x => x[0] === r.value)) r.value = "next"; } } };
@@ -721,7 +777,7 @@
     if (!project.tags["save.slot"]) project.tags["save.slot"] = { type: "number", value: 1, min: 1, max: 3, step: 1, label: "Current save slot (live)", group: "save", builtin: true };
     for (const sc of project.screens || []) for (const n of sc.nodes || []) if (n.type === "button") for (const p of S.NODE.button.props) { const k = sc.id + "." + n.id + "." + p.k, r = project.tags[k]; if (!r) project.tags[k] = rec(p, sc.id, sc.id + "." + n.id); else { if (p.options) r.options = p.options; if (p.showIf) r.showIf = p.showIf; r.label = p.label; } }
     for (const p of S.PLAYER) { const r = project.tags["player." + p.k]; if (r && p.options) r.options = p.options; }
-    S.ensureKeys(project); for (const p of project.props || []) if (p.script) for (const n of p.script.nodes) S.ensureSNode(project, p.id, n, p.id + ".asset");
+    S.ensureKeys(project); S.ensureSolids(project); for (const p of project.props || []) if (p.script) for (const n of p.script.nodes) S.ensureSNode(project, p.id, n, p.id + ".asset");
     if (!project.tags["player.reloading"]) project.tags["player.reloading"] = { type: "bool", value: false, label: "The current weapon is reloading (live)", group: "player", builtin: true };
     if (!project.tags["player.charge"]) project.tags["player.charge"] = { type: "number", value: 0, label: "Charge beam progress, 0 to 1 (live)", group: "player", min: 0, max: 1, step: 0.01, builtin: true };
     if (!project.tags["player.weapon"]) project.tags["player.weapon"] = { type: "number", value: 1, label: "Current weapon number (live)", group: "player", min: 0, max: 99, step: 1, builtin: true };

@@ -10,10 +10,10 @@
   async function tx(mode, fn) { const d = await db(); return new Promise((res, rej) => { const t = d.transaction("assets", mode), r = fn(t.objectStore("assets")); t.oncomplete = () => res(r && r.result); t.onerror = () => rej(t.error); }); }
 
   // ---------- file types
-  const MIME = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", bmp: "image/bmp", svg: "image/svg+xml", wav: "audio/wav", mp3: "audio/mpeg", ogg: "audio/ogg", m4a: "audio/mp4", flac: "audio/flac", ttf: "font/ttf", otf: "font/otf", woff: "font/woff", woff2: "font/woff2", json: "application/json", txt: "text/plain" };
+  const MIME = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", bmp: "image/bmp", svg: "image/svg+xml", wav: "audio/wav", mp3: "audio/mpeg", ogg: "audio/ogg", m4a: "audio/mp4", flac: "audio/flac", ttf: "font/ttf", otf: "font/otf", woff: "font/woff", woff2: "font/woff2", mp4: "video/mp4", webm: "video/webm", m4v: "video/mp4", mov: "video/quicktime", json: "application/json", txt: "text/plain" };
   const ext = n => (n.split(".").pop() || "").toLowerCase();
   St.mime = n => MIME[ext(n)] || "application/octet-stream";
-  St.typeOf = n => { const e = ext(n), m = MIME[e] || ""; if (e === "fbx") return "model"; return m.startsWith("image/") ? "image" : m.startsWith("audio/") ? "sound" : m.startsWith("font/") ? "font" : "file"; };
+  St.typeOf = n => { const e = ext(n), m = MIME[e] || ""; if (e === "fbx") return "model"; return m.startsWith("image/") ? "image" : m.startsWith("audio/") ? "sound" : m.startsWith("font/") ? "font" : m.startsWith("video/") ? "video" : "file"; };
 
   // ---------- project index / working copies
   St.list = () => { try { return (JSON.parse(ls.get(IDX) || "[]")).sort((a, b) => b.modified - a.modified); } catch (e) { return []; } };
