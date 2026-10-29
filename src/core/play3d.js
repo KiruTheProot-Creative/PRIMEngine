@@ -1237,7 +1237,7 @@
       if (!this.wOk(w[i])) { if (!step) { const ms = this.T.get("player." + w[i] + ".useLockMsg"); if (ms) { const now = performance.now(); if (!(now - (this.wLockT || 0) < 1200)) { this.wLockT = now; this.toast(this.T.interpolate(String(ms))); } } return; }
         let k = i; for (let n = 0; n < w.length && !this.wOk(w[k]); n++) k = md(k + step); if (!this.wOk(w[k])) { if (!this.unarmed) { this.aimSet(false); for (const a of this.atts) { a.cur = null; a.fire = null; a.loopAnim = null; a.t = 0; } } this.unarmed = true; if (this.mode === "play" && this.T.get("player.weapon") !== 0) this.T.set("player.weapon", 0); return; } i = k; }
       if (this.unarmed) { this.unarmed = false; this.wi = -1; } const changed = i !== this.wi, old = w[this.wi]; if (changed) this.aimSet(false);
-      if (changed) { for (const a of this.atts) { a.cur = null; a.fire = null; a.loopAnim = null; a.t = 0; } if (this.sh && old) this.sh.stopOwner("player." + old); }
+      if (changed) { for (const a of this.atts) { a.cur = null; a.fire = null; a.loopAnim = null; a.t = 0; } if (this.sh && old) this.sh.stopOwner("player." + old, true); }
       this.wi = i; if (this.mode === "play" && this.T.get("player.weapon") !== i + 1) this.T.set("player.weapon", i + 1);
       if (changed && this.sh) { const att = this.project.player.attachments.find(a => a.id === w[i]); if (att && att.script) this.sh.trigger({ key: "player." + att.id, script: att.script }, "onEquip"); }
     }

@@ -9,7 +9,10 @@
   PRIM.Script.Host = class Host {
     // o: { tags, sfx(assetId, volume), goto(screenId), playAnim(ownerKey, animName, loop), say(text) }
     constructor(o) { this.o = o; this.T = o.tags; this.runs = []; this.dead = false; }
-    stopOwner(key) { this.runs = this.runs.filter(r => { if (r.key === key) { r.dead = true; if (r.cancel) r.cancel(); return false; } return true; }); }
+    // soft = the owner was put away (a weapon you switched from): its running chains are NOT cut off, they finish their
+    // tag changes, waits and checks (so a "cooldown" tag set before a Wait is always set back), but skip everything you would
+    // see or hear (animations, shots, sounds, charge effects) and end any loops; hard = stop at once
+    stopOwner(key, soft) { if (soft) { for (const r of this.runs) if (r.key === key) r.soft = true; return; } this.runs = this.runs.filter(r => { if (r.key === key) { r.dead = true; if (r.cancel) r.cancel(); return false; } return true; }); }
     stopRuns() { for (const r of this.runs) { r.dead = true; if (r.cancel) r.cancel(); } this.runs = []; }
     stopAll() { this.dead = true; if (this.watchT) clearInterval(this.watchT); for (const r of this.runs) { r.dead = true; if (r.cancel) r.cancel(); } this.runs = []; }
     // a node's "Only if" condition (tags <owner>.s.<node>.needTag / needOp / needVal): no tag = always allowed
@@ -51,6 +54,7 @@
       let guard = 0;
       while (id && !tok.dead && !this.dead) {
         const n = owner.script.nodes.find(x => x.id === id); if (!n || !this.ok(owner, n)) return; const g = k => this.T.get(owner.key + ".s." + n.id + "." + k); let out = "next";
+        if (tok.soft && !Host.SOFT_OK[n.type]) { if (Host.SOFT_END[n.type]) return; id = this.link(owner, n.id, "next"); if (++guard % 200 === 0) await sleep(0, tok); continue; }
         switch (n.type) {
           case "setTag": this.setTag(g("tag"), g("value")); break;
           case "changeTag": { const t = g("tag"), sp = this.T.spec(t); if (sp && sp.type === "number") this.setTag(t, (+this.T.get(t) || 0) + (+g("amount") || 0)); break; }
@@ -107,4 +111,7 @@
       }
     }
   };
+  // what a put-away owner's chains may still do (see stopOwner soft), and the nodes that end such a chain
+  PRIM.Script.Host.SOFT_OK = { setTag: 1, changeTag: 1, randomTag: 1, mathTag: 1, toggleTag: 1, wait: 1, if: 1, chance: 1, ifKey: 1, ifState: 1, ifAmmo: 1, ifReloading: 1, ifNear: 1, stopLoop: 1, stop: 1, stopAll: 1, sendMessage: 1 };
+  PRIM.Script.Host.SOFT_END = { forever: 1, repeat: 1, repeatUntil: 1, waitUntil: 1 };
 })();
