@@ -183,6 +183,7 @@
         if (!this.gpu[aid]) this.gpu[aid] = this.view.loadModel(model); gone.delete(th.id); { const q = old.find(x => x.th.id === th.id); if (q) q.sprite = false; }
         const o = old.find(x => x.th.id === th.id) || { th, st: "closed", p: 0, t: 0, timer: 0, taken: false, spin: 0 }; o.th = th; o.pre = pre; o.aid = aid; o.model = model; o.gm = this.gpu[aid]; o.type = type; o.boss = boss; o.fr = G.thingFrame(m, T, th); if (!o.init) o.floor = o.fr.fy; out.push(o);
       }
+      for (const o of out) { const tp = m.id + ".th." + o.th.id + "."; o.tp = o.type === "door" && T.has(tp + "openMode") ? tp : null; }
       this.things = out; this.doorOpen = this.doorOpen || {};
     }
     thingHit(o, O, D, maxd) {   // ray against a door's box in its own space; returns distance or null
@@ -531,7 +532,7 @@
       const s = this.ov(o, "hurtSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); if (this.eAnim(o, "hurtAnim") && o.st !== "attack" && (!o.boss || (this.ov(o, "bossFlinch") && !o.dash))) { o.st = "pain"; this.eSet(o, "hurtAnim"); o.at = 0; }
     }
     // ---- per-object values: a boss reads its current phase's value for the keys a phase can change (Schema.PHASE_KEYS); boss nodes can override some for a while (o.tov)
-    ov(o, k) { if (o.tov && o.tov[k] !== undefined) return o.tov[k]; if (o.php) { const S = this.phk || (this.phk = new Set((PRIM.Schema && PRIM.Schema.PHASE_KEYS) || [])); if (S.has(k)) { const v = this.T.get(o.php + k); if (v !== undefined) return v; } } return this.T.get(o.pre + k); }
+    ov(o, k) { if (o.tov && o.tov[k] !== undefined) return o.tov[k]; if (o.tp) { const v = this.T.get(o.tp + k); if (v !== undefined) return v; } if (o.php) { const S = this.phk || (this.phk = new Set((PRIM.Schema && PRIM.Schema.PHASE_KEYS) || [])); if (S.has(k)) { const v = this.T.get(o.php + k); if (v !== undefined) return v; } } return this.T.get(o.pre + k); }
     // ---- the world remembers (per map): pick-ups / keys taken, doors unlocked, shot doors opened, shields broken, bosses beaten. Saved with the game.
     wmem() { const id = this.map && this.map.id; if (!id) return null; this.world = this.world || {}; return (this.world[id] = this.world[id] || { taken: [], unlocked: [], shot: [], shields: [], bosses: [] }); }
     remember(kind, o) { if (!o || !o.th || o.th.spawned) return; const w = this.wmem(); if (w && !(w[kind] = w[kind] || []).includes(o.th.id)) w[kind].push(o.th.id); }

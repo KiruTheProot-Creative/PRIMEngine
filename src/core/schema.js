@@ -640,6 +640,14 @@
   S.addZone = (project, map, z, over) => { map.zones = map.zones || []; const id = S.uid("zone1", map.zones.map(q => q.id)).replace(/^zone1(\d+)$/, "zone$1"); const zone = Object.assign({ id, type: "trigger", layer: 0 }, z); if (zone.type === "custom") zone.script = zone.script || { nodes: [], links: [] }; map.zones.push(zone);
     for (const p of S.ZONE) { const r = rec(p, map.id, map.id + ".z." + id); if (p.k === "name") r.value = (zone.type === "custom" ? "Custom zone " : "Trigger zone ") + id.replace("zone", ""); if (over && p.k in over) r.value = over[p.k]; project.tags[S.zoneKey(map.id, id, p.k)] = r; } return zone; };
   S.removeZone = (project, map, zone) => { map.zones = (map.zones || []).filter(q => q !== zone); const pre = map.id + ".z." + zone.id + "."; for (const k of Object.keys(project.tags)) if (k.startsWith(pre)) delete project.tags[k]; };
+  // per placed door: its own requirements (Map editor), tags <map>.th.<thing>.<key>; they only exist while the door uses its own settings, Play3D ov() reads them first
+  S.DOOR_OWN = ["openMode", "shotFirst", "shotWeapon", "shotAfter", "shotMsg", "lockKey", "lockUse", "lockNeedTag", "lockNeedOp", "lockNeedVal", "lockMsg", "lockSound", "shieldOn", "shieldColor"];
+  S.thingPre = (mapId, thId) => mapId + ".th." + thId + ".";
+  S.doorOwnDef = k => { const p = S.PROP.find(q => q.k === k); if (!p) return null; const d = Object.assign({}, p); delete d.showIf; delete d.showIf2; if (p.showIf2) d.showIf = p.showIf2; if (k === "shotWeapon") d.also = [["openMode", "shot"]]; return d; };
+  S.doorOwnHas = (project, mapId, th) => !!project.tags[S.thingPre(mapId, th.id) + "openMode"];
+  S.doorOwnOn = (project, mapId, th) => { const pre = S.thingPre(mapId, th.id); for (const k of S.DOOR_OWN) { const d = S.doorOwnDef(k); if (!d) continue; const r = rec(d, mapId, pre.slice(0, -1)), src = project.tags[th.prop + "." + k]; if (src) r.value = src.value; project.tags[pre + k] = r; } };
+  S.doorOwnOff = (project, mapId, th) => { const pre = S.thingPre(mapId, th.id); for (const k of Object.keys(project.tags)) if (k.startsWith(pre)) delete project.tags[k]; };
+  S.ensureThingTags = project => { for (const m of project.maps || []) { const ids = new Set((m.things || []).map(t => t.id)), pre = m.id + ".th."; for (const k of Object.keys(project.tags)) { if (!k.startsWith(pre)) continue; const rest = k.slice(pre.length), id = rest.slice(0, rest.indexOf(".")), key = rest.slice(rest.indexOf(".") + 1); if (!ids.has(id)) { delete project.tags[k]; continue; } const d = S.doorOwnDef(key); if (d) { const r = project.tags[k]; r.label = d.label; if (d.options) r.options = d.options; } } } };
   S.ensureZones = project => { for (const m of project.maps || []) for (const z of m.zones || []) { for (const p of S.ZONE) { const k = S.zoneKey(m.id, z.id, p.k); if (!project.tags[k]) project.tags[k] = rec(p, m.id, m.id + ".z." + z.id); } if (z.type === "custom") { z.script = z.script || { nodes: [], links: [] }; for (const n of z.script.nodes) S.ensureSNode(project, m.id + ".z." + z.id, n); } } };
   const SKEY = (ownerKey, id, k) => ownerKey + ".s." + id + "." + k;
   // every node can have a condition: it only happens while a tag compares true (e.g. canChargeWeapon = yes). Empty tag = always.
@@ -702,7 +710,7 @@
     for (const sc of project.screens || []) for (const el of sc.nodes || []) if (el.script) for (const n of el.script.nodes) S.ensureSNode(project, sc.id + "." + el.id, n);
     if (!project.tags["player.state"]) project.tags["player.state"] = { type: "string", value: "standing", label: "What the player is doing: standing, walking, running, jumping, falling (live)", group: "player", builtin: true };
     if (project.player && project.player.script) for (const n of project.player.script.nodes) S.ensureSNode(project, "player", n);
-    S.ensureComp(project); S.ensureZones(project);
+    S.ensureComp(project); S.ensureZones(project); S.ensureThingTags(project);
     for (const d of project.dialogues || []) for (const n of d.nodes) S.ensureSNode(project, d.id, n);
     for (const [k, l] of [["lives", "Lives left (live)"], ["tanks", "Full energy tanks (live)"], ["tanksMax", "Energy tanks owned (live)"]]) if (!project.tags["player." + k]) project.tags["player." + k] = { type: "number", value: 0, min: 0, max: 99, step: 1, label: l, group: "player", builtin: true };
     if (!project.tags["player.lastButton"]) project.tags["player.lastButton"] = { type: "string", value: "", label: "Name of the last button pressed (live)", group: "player", builtin: true };

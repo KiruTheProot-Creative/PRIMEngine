@@ -1382,6 +1382,28 @@
       ty === "exit" ? foldout("pr:exit", "Level exit", ...grp(["exitTo", "exitMap", "exitScreen", "exitRadius", "exitSound"]), h("div", { class: "note", text: "Touching it ends the level. Leave “Map” empty to go to the next map in the list. Any model works (a teleporter, a door frame…)." })) : "");
     return box;
   }
+  // "What this door needs": per placed door requirements (tags <map>.th.<thing>.*, Schema.doorOwn*); a quick preset picker + the detailed fields
+  function doorOwnBox(m, th) {
+    const T = S.tags, tp = Schema.thingPre(m.id, th.id), own = Schema.doorOwnHas(S.project, m.id, th), v = k => T.get((own ? tp : th.prop + ".") + k);
+    const redo = () => { markDirty(); if (S.med) S.med.redraw(); renderInspector(); };
+    const cur = !own ? "object" : v("lockNeedTag") ? "sealed" : v("lockKey") ? "key" : v("openMode") === "shot" ? (v("shotFirst") === "weapon" ? "weapon" : v("shotFirst") === "charged" ? "charged" : "shot") : v("openMode") === "proximity" ? "near" : "use";
+    const OPTS = [["object", "Same as the object (" + (T.get(th.prop + ".name") || th.prop) + ")"], ["use", "Interact key"], ["near", "Walking up to it"], ["shot", "Any shot"], ["weapon", "A certain weapon"], ["charged", "A charged shot"], ["key", "A key"], ["sealed", "Sealed until a tag matches (boss rooms…)"]];
+    const pick = w => { if (w === "object") { Schema.doorOwnOff(S.project, m.id, th); return redo(); } if (!own) Schema.doorOwnOn(S.project, m.id, th);
+      const set = (k, x) => T.set(tp + k, x); set("lockKey", ""); set("lockNeedTag", ""); set("shotFirst", "any");
+      if (w === "use") set("openMode", "interact"); else if (w === "near") set("openMode", "proximity"); else if (w === "shot") set("openMode", "shot");
+      else if (w === "weapon" || w === "charged") { set("openMode", "shot"); set("shotFirst", w); if (w === "weapon" && !T.get(tp + "shotWeapon")) { const wp = ((S.project.player && S.project.player.attachments) || []).find(a => T.get("player." + a.id + ".type") === "weapon"); if (wp) set("shotWeapon", wp.id); } }
+      else if (w === "key") { if (T.get(tp + "openMode") === "shot") set("openMode", "interact"); const kp = (S.project.props || []).find(q => T.get(q.id + ".type") === "key"); if (kp) set("lockKey", kp.id); }
+      else if (w === "sealed") { const nt = T.get(th.prop + ".lockNeedTag"); set("lockNeedTag", nt || ""); }
+      redo(); };
+    const sel = h("select", { class: "dd", "aria-label": "Opens with", onchange: e => pick(e.target.value) }, ...OPTS.map(([k, l]) => h("option", { value: k, text: l, selected: k === cur })));
+    const kids = [h("div", { class: "fld" }, h("label", { class: "flab" }, h("span", { text: "Opens with" })), h("div", { class: "fctl" }, sel))];
+    if (own) { const f = k => { const d = Schema.doorOwnDef(k); return d && Schema.shown(T, tp, d) ? field(tp + k) : ""; };
+      kids.push(f("openMode"), f("shotFirst"), f("shotWeapon"), f("shotAfter"), f("shotMsg"), f("lockKey"), T.get(tp + "lockKey") ? f("lockUse") : "", f("lockNeedTag"), T.get(tp + "lockNeedTag") ? f("lockNeedOp") : "", T.get(tp + "lockNeedTag") ? f("lockNeedVal") : "", T.get(tp + "lockKey") || T.get(tp + "lockNeedTag") ? f("lockMsg") : "", T.get(tp + "lockKey") || T.get(tp + "lockNeedTag") ? f("lockSound") : "", f("shieldOn"), f("shieldColor"),
+        h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: "Use the object's settings again", onclick: () => pick("object") })),
+        h("div", { class: "note", text: "These settings are for this door only (marked with a white dot on the map). Everything else (model, size, animations, sounds, shield look) still comes from the object." }));
+    } else kids.push(h("div", { class: "note", text: "This door opens like its object says. Pick something else to give just this door its own lock: a key, a certain weapon, a charged shot, or a tag that seals it." }));
+    return foldout("mth:door", "What this door needs", ...kids);
+  }
   function mapInspector() {
     const m = curMap(), box = h("div", { class: "insp" }), sel = S.msel, pre = m.id + ".", G = PRIM.Grid, med = S.med, imgs = S.project.assets.filter(a => a.type === "image");
     const head = (ic, title, sub) => h("div", { class: "ihead" }, h("span", { class: "bigic", text: ic }), h("div", { class: "ititle" }, title, h("div", { class: "isub", text: sub })));
@@ -1429,7 +1451,8 @@
         foldout("mth", "Object", h("div", { class: "frow" }, h("label", { text: "Which object" }), h("select", { class: "sel", onchange: e => { th.prop = e.target.value; markDirty(); renderInspector(); S.med && S.med.redraw(); } }, ...pn.map(x => h("option", { value: x.id, text: S.tags.get(x.id + ".name") || x.id, selected: x.id === th.prop })))),
           num("X", "x", 16), num("Y", "y", 16), num("Turn (degrees)", "ang", 45),
           ty === "enemy" ? h("div", { class: "frow" }, h("label", { text: "Follows path" }), h("select", { class: "sel", onchange: e => { if (e.target.value) th.path = e.target.value; else delete th.path; markDirty(); if (S.med) S.med.redraw(); renderInspector(); } }, h("option", { value: "", text: "None" }), ...(m.paths || []).map(pa => h("option", { value: pa.id, text: pa.id + " (" + pa.pts.length + " points, story " + ((pa.layer || 0) + 1) + ")", selected: th.path === pa.id })))) : ""),
-        h("div", { class: "note", text: ty === "door" ? "A door fills its cell. Put it between two walls; Turn picks which way it runs. Its behaviour is set in the Object Editor tab." : "Drag it in the Map view to move it (D turns it). Its behaviour is set in the Object Editor tab." }));
+        ty === "door" ? doorOwnBox(m, th) : "",
+        h("div", { class: "note", text: ty === "door" ? "A door fills its cell. Put it between two walls; Turn picks which way it runs. Its look, size, animation and sounds come from the Object Editor tab; what it needs to open can be set here for this door only." : "Drag it in the Map view to move it (D turns it). Its behaviour is set in the Object Editor tab." }));
     } else if (sel && sel.kind === "path" && (m.paths || []).some(q => q.id === sel.id)) {
       const pa = m.paths.find(q => q.id === sel.id), users = (m.things || []).filter(t => t.path === pa.id);
       box.append(head("⤳", h("div", { class: "idin ro", text: pa.id }), pa.pts.length + " points · story " + ((pa.layer || 0) + 1)),
