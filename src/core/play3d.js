@@ -706,7 +706,7 @@
       if (!PRIM.Save || this.mode !== "play" || !this.map) return false; const T = this.T, m = this.map, tags = {};
       if (T.ov) { for (const k in T.ov) if (!/^save\./.test(k)) tags[k] = T.ov[k]; } else for (const k of T.names()) { const r = T.spec(k); if (r && !/^save\./.test(k) && (r.custom || /^player\./.test(k) || /\.have$/.test(k))) tags[k] = T.get(k); }
       for (const k of ["player.bossActive", "player.aiming", "player.locked", "player.reloading", "player.charge"]) delete tags[k];
-      const d = { v: 1, time: Date.now(), map: m.id, station: st ? st.th.id : null, name: (st && this.ov(st, "saveName")) || m.id, pos: { x: this.x, y: this.y, z: this.z, yaw: this.yaw }, tags, world: JSON.parse(JSON.stringify(this.world || {})),
+      const d = { v: 1, time: Date.now(), map: m.id, station: st ? st.th.id : null, name: (st && this.ov(st, "saveName")) || m.id, pos: { x: this.x, y: this.y, z: this.z, yaw: this.yaw }, tags, world: JSON.parse(JSON.stringify(this.world || {})), seenPop: [...(this.seenPop || [])],
         play: Math.round(this.playT || 0), hp: +T.get("player.health") || 0, hpMax: +T.get("player.maxHealth") || 100, tanks: +T.get("player.tanks") || 0 };
       const ok = PRIM.Save.write(this.project.id, this.slot, d); if (ok) { PRIM.Save.refreshTags(T, this.project.id); this.trigger("onSave"); this.wantShot = { slot: this.slot, d }; } return ok; }
     // a small picture of the game for the save slot, taken right after the next frame is drawn (the picture is only readable then)
@@ -714,7 +714,7 @@
     loadGame(d) {
       if (!d || !this.view) return false; const T = this.T, m = this.project.maps.find(x => x.id === d.map) || this.map, set = {};
       for (const k in d.tags || {}) if (T.has(k)) set[k] = d.tags[k]; if (Object.keys(set).length) T.setMany(set);
-      this.world = JSON.parse(JSON.stringify(d.world || {})); this.playT = +d.play || 0; this.cp = null; this.pdead = false; this.deadT = 0; this.lastHp = undefined; this.say2(""); this.exiting = false;
+      this.world = JSON.parse(JSON.stringify(d.world || {})); this.seenPop = new Set(d.seenPop || []); this.playT = +d.play || 0; this.cp = null; this.pdead = false; this.deadT = 0; this.lastHp = undefined; this.say2(""); this.exiting = false;
       if (m && m !== this.map) { this.map = m; this.view.setMap(this.project, m, T, this.urls); }
       this.resetPlayer(); const p = d.pos; if (p) { this.x = p.x; this.y = p.y; this.z = p.z; this.yaw = p.yaw || 0; this.pitch = 0; this.body = null; this.vz = 0; this.ground = true; }
       this.keySnap = new Set(Object.keys(set).filter(k => /\.have$/.test(k) && set[k])); this.trigger("onLoad"); return true; }
