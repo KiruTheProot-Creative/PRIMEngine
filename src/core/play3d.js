@@ -598,6 +598,8 @@
       const L = this.visorList(), st = this.T.get("player.visorStart"), v = L.find(x => x.id === st) || L.find(x => this.vt(x.id) === "combat") || L[0]; if (v) this.setVisor(v.id, true); }
     vt(id) { return id ? this.T.get(id + ".type") || "combat" : "combat"; }
     visorType() { return this.visorsOn && this.visor ? this.vt(this.visor) : "combat"; }
+    // what the current visor can do: a Scanner / X-Ray by kind, or a Custom visor with those switches on
+    vCan(what) { if (!this.visorsOn || !this.visor) return false; const t = this.vt(this.visor); return t === what || (t === "custom" && !!this.T.get(this.visor + "." + (what === "scan" ? "canScan" : "seeThrough"))); }
     visorList() { const T = this.T; return (this.project.visors || []).filter(v => T.get(v.id + ".on") !== false && (!T.get(v.id + ".needTag") || !this.sh || this.sh.test(T.get(v.id + ".needTag"), "=", T.get(v.id + ".needVal")))); }
     visorNoFire() { return !!(this.visorsOn && this.visor && this.T.get(this.visor + ".noFire")); }
     setVisor(id, quiet) { const T = this.T, v = (this.project.visors || []).find(x => x.id === id); if (!v || (this.visor === id && !quiet)) return; const was = this.visor; this.visor = id; this.scanStop();
@@ -612,7 +614,7 @@
     visorKeyDown(id) { if (!this.visorsOn || this.mode !== "play" || this.paused || this.popup || this.talk) return false; const T = this.T;
       if (id === String(T.get("player.visorKey") || "q")) { this.wheelOpen(); return true; }
       for (const v of this.visorList()) if (T.get(v.id + ".key") && id === String(T.get(v.id + ".key"))) { this.setVisor(v.id); return true; }
-      if (this.visorType() === "scan" && id === String(T.get(this.visor + ".scanKey") || "mouse2")) { this.scanStart(); return true; } return false; }
+      if (this.vCan("scan") && id === String(T.get(this.visor + ".scanKey") || "mouse2")) { this.scanStart(); return true; } return false; }
     visorKeyUp(id) { if (!this.visorsOn) return; const T = this.T; if (this.vw && id === String(T.get("player.visorKey") || "q")) this.wheelClose(true); if (this.scan && id === String(T.get(this.visor + ".scanKey") || "mouse2")) this.scanStop(); }
     // ---- the visor wheel: a ring of the visors you have; mouse movement points at one, letting go of the key switches to it
     wheelOpen() { const L = this.visorList(); if (L.length < 2 || this.vw) return; this.scanStop(); this.vw = { L, x: 0, y: 0, sel: L.findIndex(v => v.id === this.visor) };
@@ -630,9 +632,10 @@
       if (typ === "xray") return ty === "enemy" || ty === "boss" || ty === "npc" ? T.get(V + "cChar") : T.get(V + "cOther");
       if (typ === "scan") { if (this.ov(o, "scannable") && T.get("codex." + o.th.prop)) return T.get(V + "cScanned"); return T.get(V + ({ enemy: "cEnemy", boss: "cBoss", pickup: "cPickup", key: "cPickup", door: "cDoor", npc: "cNpc" }[ty] || "cObject")); }
       return T.get(V + "color"); }
-    visorItems() { if (!this.visorsOn || !this.visor) return null; const T = this.T, typ = this.visorType(), V = this.visor + ".", range = +T.get(V + "range") || 1600, out = [];
+    visorItems() { if (!this.visorsOn || !this.visor) return null; const T = this.T, cS = this.vCan("scan"), cX = this.vCan("xray"), V = this.visor + ".", range = +T.get(V + "range") || 1600, out = [];
       for (const o of this.things || []) { if (o.taken || !o.gm || !o.visM || (o.type === "enemy" && !this.eAlive(o))) continue; const sh = this.ov(o, "visorShow") || "auto", ty = o.boss ? "boss" : o.type;
-        const on = sh === "all" || (typ === "scan" && (sh === "scan" || sh === "both" || (sh === "auto" && this.ov(o, "scannable")))) || (typ === "xray" && (sh === "xray" || sh === "both" || (sh === "auto" && (ty === "enemy" || ty === "boss" || ty === "npc")))); if (!on) continue;
+        const onS = cS && (sh === "all" || sh === "scan" || sh === "both" || (sh === "auto" && this.ov(o, "scannable"))), onX = cX && (sh === "all" || sh === "xray" || sh === "both" || (sh === "auto" && (ty === "enemy" || ty === "boss" || ty === "npc")));
+        if (!onS && !onX && sh !== "all") continue; const typ = onX ? "xray" : onS ? "scan" : this.visorType();
         const p = this.thingPos(o); if (Math.hypot(p[0] - this.x, p[2] - this.y, p[1] - this.z) > range) continue; const col = this.hexCol(this.visorColor(o, typ) || "#ffffff"), lock = this.scan && this.scan.o === o;
         out.push({ gm: o.gm, pose: o.visPose, M: o.visM, c: lock ? col.map(q => Math.min(1, q * 1.25 + 0.15)) : col, xray: typ === "xray" }); }
       return { items: out, opt: { fill: +T.get(V + "fillA"), w: +T.get(V + "lineW"), glow: +T.get(V + "glow"), pattern: { none: 0, lines: 1, grid: 2, dots: 3 }[T.get(V + "pattern")] || 0, trace: !!T.get(V + "trace"), traceA: +T.get(V + "traceA") } }; }
@@ -644,7 +647,7 @@
     scanStart() { const o = this.scanTarget(); if (!o) { this.scan = { o: null }; return; } const T = this.T, V = this.visor + ".", need = +this.ov(o, "scanTime") || +T.get(V + "scanTime") || 1.2, done = !!T.get("codex." + o.th.prop);
       this.scan = { o, k: 0, need: done ? Math.min(0.25, need) : need, done }; const sd = T.get(V + "scanSound"); if (sd && this.urls[sd]) this.scanSnd = PRIM.Audio.play(this.urls[sd], this.vol3 ? this.vol3(0.7) : 0.6, true); }
     scanStop() { if (this.scanSnd) { this.scanSnd.stop(0.08); this.scanSnd = null; } this.scan = null; if (this.scanEl) this.scanEl.style.display = "none"; if (this.T.has("player.scanning") && this.mode === "play") this.T.set("player.scanning", 0); }
-    scanStep(dt) { const s = this.scan; if (!s) return; if (this.visorType() !== "scan") return this.scanStop(); if (!s.o) { const o = this.scanTarget(); if (o) { this.scanStart(); } return; }
+    scanStep(dt) { const s = this.scan; if (!s) return; if (!this.vCan("scan")) return this.scanStop(); if (!s.o) { const o = this.scanTarget(); if (o) { this.scanStart(); } return; }
       const o = s.o, T = this.T, V = this.visor + ".", p = this.thingPos(o, (+this.ov(o, "height") || 80) * 0.5); if (o.taken || Math.hypot(p[0] - this.x, p[2] - this.y) > (+T.get(V + "range") || 1600) * 1.15) return this.scanStop();
       if (T.get(V + "scanTurn") !== false) { const dx = p[0] - this.x, dz = p[2] - this.y, ty = Math.atan2(dz, dx), e = this.view.cam, tp = Math.atan2(p[1] - e.y, Math.hypot(dx, dz)); let dy = ty - this.yaw; while (dy > Math.PI) dy -= Math.PI * 2; while (dy < -Math.PI) dy += Math.PI * 2; const k = Math.min(1, dt * 6); this.yaw += dy * k; this.pitch += (clamp(tp, -1.45, 1.45) - this.pitch) * k; }
       s.k = Math.min(1, s.k + dt / s.need); T.set("player.scanning", Math.round(s.k * 100) / 100); this.scanDraw(p, s.k, this.visorColor(o, "scan"));
