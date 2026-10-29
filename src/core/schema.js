@@ -237,6 +237,7 @@
     { k: "spriteHurt", label: "Hurt strip", type: "asset", assetType: "image", def: "", showIf: ["look", "sprite"], showIf2: ["type", EN] }, NUM("spriteHurtFrames", "Frames in it", 1, 1, 64, 1, { showIf: ["look", "sprite"], showIf2: ["type", EN] }),
     { k: "spriteDeath", label: "Death strip (its last frame stays as the body)", type: "asset", assetType: "image", def: "", showIf: ["look", "sprite"], showIf2: ["type", EN] }, NUM("spriteDeathFrames", "Frames in it", 1, 1, 64, 1, { showIf: ["look", "sprite"], showIf2: ["type", EN] }),
     NUM("spriteFps", "Animation speed (frames per second)", 8, 1, 60, 1, { showIf: ["look", "sprite"] }), NUM("spriteHeight", "Sprite height (units, 128 = a story)", 110, 4, 1024, 1, { showIf: ["look", "sprite"] }),
+    { k: "spriteBlend", label: "How it is drawn", type: "choice", options: [["normal", "Normal (soft / blurred edges blend in)"], ["glow", "Glow (adds its light: dark parts are see-through)"]], def: "normal", showIf: ["look", "sprite"] },
     NUM("scale", "Scale", 1, 0.001, 100, 0.001), NUM("rx", "Rotate X", 0, -180, 180, 1), NUM("ry", "Rotate Y", 0, -180, 180, 1), NUM("rz", "Rotate Z", 0, -180, 180, 1),
     NUM("ox", "Move X (sideways)", 0, -500, 500, 0.5), NUM("oy", "Move Y (up)", 0, -500, 500, 0.5), NUM("oz", "Move Z (toward the front)", 0, -500, 500, 0.5),
     ANIM("idleAnim", "Idle animation (loops)"),
@@ -373,6 +374,11 @@
     NUM("volleys", "Volleys per attack", 1, 1, 50, 1, BX({ showIf2: ["attack", ["hitscan", "projectile"]] })), NUM("volleyGap", "Time between volleys (s)", 0.25, 0.02, 5, 0.01, BX({ showIf2: ["attack", ["hitscan", "projectile"]] })),
     NUM("patTurn", "Spiral: turn per volley (degrees)", 15, -180, 180, 1, BX({ showIf2: ["attack", ["hitscan", "projectile"]] })),
     NUM("armor", "Damage it takes (1 = normal, 0.5 = half, 0 = can't be hurt)", 1, 0, 10, 0.05, BS));
+  // drops: what a killed enemy leaves behind (structure prop.drops = [{id}], values = tags <prop>.dr.<id>.*); each row rolls its own chance
+  S.DROP = [{ k: "what", label: "Drops", type: "propRef", def: "" }, NUM("chance", "Chance (%)", 50, 0, 100, 1), NUM("count", "How many", 1, 1, 50, 1)];
+  S.addDrop = (project, p, over) => { p.drops = p.drops || []; const d = { id: S.uid("dr", p.drops.map(x => x.id)) }; p.drops.push(d); for (const pr of S.DROP) { const r = rec(pr, "drops", p.id); if (over && pr.k in over) r.value = over[pr.k]; project.tags[p.id + ".dr." + d.id + "." + pr.k] = r; } return d; };
+  S.removeDrop = (project, p, d) => { p.drops.splice(p.drops.indexOf(d), 1); for (const k of Object.keys(project.tags)) if (k.startsWith(p.id + ".dr." + d.id + ".")) delete project.tags[k]; };
+  S.PROP.push(NUM("dropSpread", "Drops scatter within (units)", 40, 0, 1000, 4, { showIf: ["type", EN] }));
   // the values a phase can change (everything else stays the boss's own)
   S.PHASE_KEYS = ["bossMove", "speed", "keepDist", "dashSpeed", "dashEvery", "dashTime", "attack", "attackRange", "damage", "attackRate", "attackDelay", "projSpeed", "projSize", "projColor", "pattern", "patCount", "patSpread", "volleys", "volleyGap", "patTurn", "armor", "idleAnim", "walkAnim", "attackAnim", "hurtAnim"];
   S.PHASE = [{ k: "name", label: "Phase name", type: "string", def: "Phase" }, NUM("startAt", "Starts when its health is at or below (%)", 100, 0, 100, 1),
@@ -640,6 +646,7 @@
     for (const m of project.maps || []) { if (!m.things) m.things = []; if (!m.layers) m.layers = [{ cells: {} }]; if (!m.n) m.n = { t: m.things.length }; for (const p of S.MAP) if (!project.tags[m.id + "." + p.k]) project.tags[m.id + "." + p.k] = rec(p, m.id, m.id); for (const k of ["fogDistance", "gridSize", "wallThickness"]) delete project.tags[m.id + "." + k]; }
     for (const p of project.props) for (const b of p.hitboxes || []) for (const pr of S.HITBOX) { const k = p.id + ".hb." + b.id + "." + pr.k; if (!project.tags[k]) project.tags[k] = hbRec(p, pr); }
     for (const p of project.props) if (p.dialog) { for (const l of p.dialog.lines) for (const pr of S.DLINE) if (!project.tags[p.id + ".d." + l.id + "." + pr.k]) project.tags[p.id + ".d." + l.id + "." + pr.k] = rec(pr, "dialog", p.id); S.syncDOpts(project, p); }
+    for (const p of project.props) for (const d of p.drops || []) for (const pr of S.DROP) { const k = p.id + ".dr." + d.id + "." + pr.k; if (!project.tags[k]) project.tags[k] = rec(pr, "drops", p.id); }
     for (const p of project.props) for (const b of p.phases || []) for (const pr of S.PHASE) { const k = p.id + ".ph." + b.id + "." + pr.k; if (!project.tags[k]) project.tags[k] = phRec(p, pr); }
     for (const p of project.props) { for (const k of OLDMAT) delete project.tags[p.id + "." + k]; for (const pr of S.PROP) { const r = project.tags[p.id + "." + pr.k]; if (!r) { const n = rec(pr, "props", p.id); if (pr.type === "anim") n.modelTag = p.id + ".asset"; project.tags[p.id + "." + pr.k] = n; } else { r.label = pr.label; if (pr.options) r.options = pr.options; if (pr.max !== undefined) { r.max = pr.max; if (+r.value > pr.max) r.value = pr.max; } } } }
     { const ik = project.tags["player.interactKey"]; if (project.tags["player.speed"] && !ik) project.tags["player.interactKey"] = rec(S.PLAYER.find(p => p.k === "interactKey"), "player", "player"); } if (project.tags["player.speed"]) for (const pp of S.PLAYER) if (!project.tags["player." + pp.k]) project.tags["player." + pp.k] = rec(pp, "player", "player");

@@ -395,7 +395,7 @@
       const frames = Math.max(1, Math.round(+this.ov(o, (this.ov(o, sh) ? sh : "spriteIdle") + "Frames") || 1)), fps = +this.ov(o, "spriteFps") || 8, t = o.type === "enemy" && o.init ? o.at : performance.now() / 1000;
       const loop = key === "idleAnim" || key === "walkAnim", frame = loop ? Math.floor(t * fps) % frames : Math.min(frames - 1, Math.floor(t * fps)), dim = this.imgDim(id), hh = +this.ov(o, "spriteHeight") || 110, ww = hh * (dim ? dim[0] / frames / dim[1] : 1);
       const x = o.type === "enemy" && o.init ? o.x : o.fr.cx, y = o.type === "enemy" && o.init ? o.y : o.fr.cy, c = v.cam, n = M4.norm([c.x - x, 0, c.z - y]);
-      return { kind: "decal", sprite: true, texId: id, p: [x, o.floor + hh / 2 + (o.type === "pickup" ? Math.sin(performance.now() / 400) * 4 : 0), y], n, w: ww, h: hh, frames, frame, tint: o.flash > 0 ? [1, 0.45, 0.45] : o.st === "dead" ? [0.8, 0.75, 0.75] : undefined, emit: o.flash > 0 ? [0.5, 0.05, 0.05] : o.shGlow || undefined };
+      return { kind: "decal", sprite: true, texId: id, p: [x, o.floor + hh / 2 + (o.type === "pickup" ? Math.sin(performance.now() / 400) * 4 : 0), y], n, w: ww, h: hh, frames, frame, tint: o.flash > 0 ? [1, 0.45, 0.45] : o.st === "dead" ? [0.8, 0.75, 0.75] : undefined, emit: o.flash > 0 ? [0.5, 0.05, 0.05] : o.shGlow || undefined, add: this.ov(o, "spriteBlend") === "glow" };
     }
     imgDim(id) { const c = this.dims = this.dims || {}; if (c[id] !== undefined) return c[id]; c[id] = null; const im = new Image(); im.onload = () => { c[id] = [im.naturalWidth, im.naturalHeight]; }; im.src = this.urls[id] || ""; return null; }
     eSet(o, key) { const nm = this.eAnim(o, key) || this.eAnim(o, "idleAnim"); if (o.anim !== nm || o.akey !== key) { o.anim = nm; o.akey = key; o.at = 0; } }
@@ -493,7 +493,7 @@
       if (o.boss) { if (!o.fight) { o.hitOnce = true; return; } if (o.pause > 0 || (o.shield && o.bt < o.shield)) { o.flash = 0.03; return; } d *= Math.max(0, +this.ov(o, "armor")); if (!(d > 0)) return; }
       o.hp -= d; o.awake = true; o.flash = 0.12;
       if (o.hp <= 0 && o.boss) this.bossEnd(o);
-      if (o.hp <= 0) { this.trigger("onKill"); if (this.ov(o, "deathStyle") === "slice") { const s = this.ov(o, "deathSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); const kt = this.ov(o, "killTag"); if (kt && T.get(kt) !== undefined) T.set(kt, (+T.get(kt) || 0) + (+this.ov(o, "killAmount") || 0)); this.eSlice(o); return; }
+      if (o.hp <= 0) { this.eDrop(o); this.trigger("onKill"); if (this.ov(o, "deathStyle") === "slice") { const s = this.ov(o, "deathSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); const kt = this.ov(o, "killTag"); if (kt && T.get(kt) !== undefined) T.set(kt, (+T.get(kt) || 0) + (+this.ov(o, "killAmount") || 0)); this.eSlice(o); return; }
         o.st = "dying"; this.eSet(o, "deathAnim"); o.at = 0; const s = this.ov(o, "deathSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); const kt = this.ov(o, "killTag"); if (kt && T.get(kt) !== undefined) T.set(kt, (+T.get(kt) || 0) + (+this.ov(o, "killAmount") || 0)); return; }
       if (o.boss) { this.bossTags(o); this.bossTrig(o, "onBossHurt"); this.bossHealthTrig(o); }
       const s = this.ov(o, "hurtSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); if (this.eAnim(o, "hurtAnim") && o.st !== "attack" && (!o.boss || (this.ov(o, "bossFlinch") && !o.dash))) { o.st = "pain"; this.eSet(o, "hurtAnim"); o.at = 0; }
@@ -552,6 +552,12 @@
         this.spawnN = (this.spawnN || 0) + 1; (this.spawnTh = this.spawnTh || []).push({ id: o.th.id + "~" + this.spawnN, prop, x: X, y: Z, ang: 0, layer: L, spawned: true, wake: true }); this.burst([X, o.floor + 40, Z], col, 18, 200, 0.5, 2.5); }
       this.syncThings();
     }
+    // "When killed, it drops…": each row rolls its chance; things appear around the body (runtime things, like a spawner's). Not called when an enemy blows itself up.
+    eDrop(o) { const p = this.bossProp(o); if (!p || !p.drops || !p.drops.length) return; const T = this.T, L = G.layerOf(o.floor + 4), R = +this.ov(o, "dropSpread") || 0; let made = 0;
+      for (const d of p.drops) { const k = p.id + ".dr." + d.id + ".", what = T.get(k + "what"); if (!what || !(this.project.props || []).some(q => q.id === what) || Math.random() * 100 >= (+T.get(k + "chance") || 0)) continue;
+        for (let i = 0; i < Math.max(1, Math.round(+T.get(k + "count") || 1)); i++) { let X = o.x, Z = o.y; for (let t = 0; t < 8 && R > 0; t++) { const a = Math.random() * Math.PI * 2, rr = Math.sqrt(Math.random()) * R, x = o.x + Math.cos(a) * rr, z = o.y + Math.sin(a) * rr; if (this.floorAt(L, x, z)) { X = x; Z = z; break; } }
+          this.spawnN = (this.spawnN || 0) + 1; (this.spawnTh = this.spawnTh || []).push({ id: o.th.id + "~d" + this.spawnN, prop: what, x: X, y: Z, ang: 0, layer: L, spawned: true, wake: true }); made++; } }
+      if (made) this.syncThings(); }
     floorAt(L, x, z) { const c = G.cell(this.map, L, Math.floor(x / 128), Math.floor(z / 128)); return !!c && !G.isWall(c) && !c.dg && (c.f !== undefined || !!c.sh); }
     bossTeleport(o, where, R, fx, color) {
       const L = G.layerOf(o.floor + 4), home = o.home || [o.x, o.y]; let P = null;

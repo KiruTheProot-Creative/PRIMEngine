@@ -32,7 +32,7 @@
     "varying vec2 vUV;varying vec3 vCol;varying float vD;varying vec3 vW;uniform sampler2D uTex;uniform sampler2D uETex;uniform vec3 uFog;uniform vec2 uFogR;uniform float uBright;",
     "uniform vec4 uLP[8];uniform vec4 uLC[8];uniform vec4 uLN[8];uniform vec4 uLU[8];uniform int uNL;uniform vec3 uCam;",
     // material: base colour (texture x tint), emission (an emission map, or the base colour itself) x strength, extra flat glow (effects)
-    "uniform vec3 uTint;uniform vec3 uEmit;uniform float uLit;uniform float uAlpha;uniform float uEmitK;uniform float uEmitMap;",
+    "uniform vec3 uTint;uniform vec3 uEmit;uniform float uLit;uniform float uAlpha;uniform vec2 uCut;uniform float uEmitK;uniform float uEmitMap;",
     // mood: colour tint x brightness, contrast, saturation
     "uniform vec3 uMoodT;uniform float uMoodC;uniform float uMoodS;uniform float uClipY;",
     // real-time shadows: up to 4 lights have a cube map of distances (packed in RGBA); uShL = which light (0..7) each map belongs to, -1 = unused
@@ -41,7 +41,7 @@
     "float shd(samplerCube s,vec3 rel,float rng,vec3 n){ float d=length(rel)/rng; float b=0.006+0.02*(1.0-abs(dot(n,normalize(-rel)))); vec3 a=normalize(cross(rel,abs(rel.y)>0.9*length(rel)?vec3(1.0,0.0,0.0):vec3(0.0,1.0,0.0))); vec3 c=cross(normalize(rel),a); float k=length(rel)*0.012; float sum=0.0;",
     " sum+=step(d-b,unpk(textureCube(s,rel+a*k))); sum+=step(d-b,unpk(textureCube(s,rel-a*k))); sum+=step(d-b,unpk(textureCube(s,rel+c*k))); sum+=step(d-b,unpk(textureCube(s,rel-c*k))); return sum*0.25; }",
     "void main(){",
-    " if(vW.y>uClipY) discard;", " vec4 tx=texture2D(uTex,vUV); if(tx.a<0.04) discard; vec3 alb=tx.rgb*uTint;",
+    " if(vW.y>uClipY) discard;", " vec4 tx=texture2D(uTex,vUV); if(tx.a<uCut.x||tx.a>=uCut.y) discard; vec3 alb=tx.rgb*uTint;",
     " vec3 c=alb*vCol*uBright;",
     "#ifdef DERIV", " vec3 n=normalize(cross(dFdx(vW),dFdy(vW)));", "#else", " vec3 n=vec3(0.0,1.0,0.0);", "#endif",
     " vec3 V=normalize(uCam-vW); if(dot(n,V)<0.0) n=-n;",
@@ -105,7 +105,7 @@
     this.canvas = canvas; this.ok = !!gl; if (!gl) return; this.gl = gl;
     const sh = (t, src) => { const s = gl.createShader(t); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; };
     const pr = this.pr = gl.createProgram(); gl.attachShader(pr, sh(gl.VERTEX_SHADER, VS)); const dx = gl.getExtension("OES_standard_derivatives"); gl.attachShader(pr, sh(gl.FRAGMENT_SHADER, (dx ? "#extension GL_OES_standard_derivatives : enable\n#define DERIV\n" : "") + FS)); gl.linkProgram(pr); gl.useProgram(pr);
-    this.loc = { pos: gl.getAttribLocation(pr, "aPos"), uv: gl.getAttribLocation(pr, "aUV"), col: gl.getAttribLocation(pr, "aCol"), vp: gl.getUniformLocation(pr, "uVP"), m: gl.getUniformLocation(pr, "uM"), tex: gl.getUniformLocation(pr, "uTex"), lp: gl.getUniformLocation(pr, "uLP"), lc: gl.getUniformLocation(pr, "uLC"), ln: gl.getUniformLocation(pr, "uLN"), lu: gl.getUniformLocation(pr, "uLU"), nl: gl.getUniformLocation(pr, "uNL"), cam: gl.getUniformLocation(pr, "uCam"), tint: gl.getUniformLocation(pr, "uTint"), emit: gl.getUniformLocation(pr, "uEmit"), lit: gl.getUniformLocation(pr, "uLit"), alpha: gl.getUniformLocation(pr, "uAlpha"), etex: gl.getUniformLocation(pr, "uETex"), emitK: gl.getUniformLocation(pr, "uEmitK"), emitMap: gl.getUniformLocation(pr, "uEmitMap"), moodT: gl.getUniformLocation(pr, "uMoodT"), moodC: gl.getUniformLocation(pr, "uMoodC"), moodS: gl.getUniformLocation(pr, "uMoodS"), clipY: gl.getUniformLocation(pr, "uClipY"), fog: gl.getUniformLocation(pr, "uFog"), fogR: gl.getUniformLocation(pr, "uFogR"), bright: gl.getUniformLocation(pr, "uBright") };
+    this.loc = { pos: gl.getAttribLocation(pr, "aPos"), uv: gl.getAttribLocation(pr, "aUV"), col: gl.getAttribLocation(pr, "aCol"), vp: gl.getUniformLocation(pr, "uVP"), m: gl.getUniformLocation(pr, "uM"), tex: gl.getUniformLocation(pr, "uTex"), lp: gl.getUniformLocation(pr, "uLP"), lc: gl.getUniformLocation(pr, "uLC"), ln: gl.getUniformLocation(pr, "uLN"), lu: gl.getUniformLocation(pr, "uLU"), nl: gl.getUniformLocation(pr, "uNL"), cam: gl.getUniformLocation(pr, "uCam"), tint: gl.getUniformLocation(pr, "uTint"), emit: gl.getUniformLocation(pr, "uEmit"), lit: gl.getUniformLocation(pr, "uLit"), alpha: gl.getUniformLocation(pr, "uAlpha"), etex: gl.getUniformLocation(pr, "uETex"), emitK: gl.getUniformLocation(pr, "uEmitK"), emitMap: gl.getUniformLocation(pr, "uEmitMap"), moodT: gl.getUniformLocation(pr, "uMoodT"), moodC: gl.getUniformLocation(pr, "uMoodC"), moodS: gl.getUniformLocation(pr, "uMoodS"), clipY: gl.getUniformLocation(pr, "uClipY"), fog: gl.getUniformLocation(pr, "uFog"), fogR: gl.getUniformLocation(pr, "uFogR"), bright: gl.getUniformLocation(pr, "uBright"), cut: gl.getUniformLocation(pr, "uCut") };
     for (const [k, u] of [["sh0", "uSh0"], ["sh1", "uSh1"], ["sh2", "uSh2"], ["sh3", "uSh3"], ["shL", "uShL"], ["shOn", "uShOn"]]) this.loc[k] = gl.getUniformLocation(pr, u);
     const prog = (v, f) => { const q = gl.createProgram(); gl.attachShader(q, sh(gl.VERTEX_SHADER, v)); gl.attachShader(q, sh(gl.FRAGMENT_SHADER, f)); gl.linkProgram(q); return q; };
     try { this.spr = prog(SVS, SFS); this.sloc = { pos: gl.getAttribLocation(this.spr, "aPos"), vp: gl.getUniformLocation(this.spr, "uVP"), m: gl.getUniformLocation(this.spr, "uM"), lp: gl.getUniformLocation(this.spr, "uLP"), r: gl.getUniformLocation(this.spr, "uR") }; } catch (e) { this.spr = null; }
@@ -119,16 +119,19 @@
   const P = R.View.prototype;
 
   function checker() { const c = document.createElement("canvas"); c.width = c.height = 64; const x = c.getContext("2d"); for (let j = 0; j < 8; j++) for (let i = 0; i < 8; i++) { x.fillStyle = (i + j) % 2 ? "#b8b8b8" : "#d8d8d8"; x.fillRect(i * 8, j * 8, 8, 8); } x.strokeStyle = "#7a7a7a"; x.lineWidth = 2; x.strokeRect(1, 1, 62, 62); return c; }
-  P.makeTex = function (src) {
+  // clamp = a sprite / decal picture: kept at its own size (any size works without repeating), so its pixels are never stretched unevenly
+  P.makeTex = function (src, clamp) {
     const gl = this.gl; let w = src.naturalWidth || src.width, h = src.naturalHeight || src.height; const pot = n => Math.min(1024, Math.max(2, 1 << Math.round(Math.log2(Math.max(1, n)))));
+    if (clamp) { const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src);
+      for (const [a, b] of [[gl.TEXTURE_MIN_FILTER, gl.NEAREST], [gl.TEXTURE_MAG_FILTER, gl.NEAREST], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, a, b); return t; }
     const c = document.createElement("canvas"); c.width = pot(w); c.height = pot(h); const x = c.getContext("2d"); x.imageSmoothingEnabled = false; x.drawImage(src, 0, 0, c.width, c.height);
     const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, c);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT); return t;
   };
   // returns a GL texture for an image asset id (loads it in the background; the default checker shows until then)
-  P.texFor = function (id, urls) {
-    if (!id || !urls || !urls[id]) return this.defTex; if (this.texCache[id]) return this.texCache[id].t;
-    const e = this.texCache[id] = { t: this.defTex }, im = new Image(); im.onload = () => { e.t = this.makeTex(im); this.dirtyTex = true; }; im.src = urls[id]; return e.t;
+  P.texFor = function (id, urls, clamp) {
+    if (!id || !urls || !urls[id]) return this.defTex; const key = clamp ? id + "|c" : id; if (this.texCache[key]) return this.texCache[key].t;
+    const e = this.texCache[key] = { t: this.defTex }, im = new Image(); im.onload = () => { e.t = this.makeTex(im, clamp); this.dirtyTex = true; }; im.src = urls[id]; return e.t;
   };
 
   // (re)build all geometry from the project's map + tags
@@ -183,7 +186,7 @@
   };
   // material of what is drawn next: { tint, emit (flat glow colour), emitK (emission strength), emitTex (GL texture of the emission map), lit, alpha } (all optional)
   P.setMat = function (m) {
-    const gl = this.gl, L = this.loc; m = m || {}; gl.uniform3fv(L.tint, m.tint || [1, 1, 1]); gl.uniform3fv(L.emit, m.emit || [0, 0, 0]); gl.uniform1f(L.lit, m.lit === undefined ? 1 : m.lit); gl.uniform1f(L.emitK, m.emitK || 0); gl.uniform1f(L.clipY, m.clipY === undefined ? 1e9 : m.clipY);
+    const gl = this.gl, L = this.loc; m = m || {}; gl.uniform3fv(L.tint, m.tint || [1, 1, 1]); gl.uniform3fv(L.emit, m.emit || [0, 0, 0]); gl.uniform1f(L.lit, m.lit === undefined ? 1 : m.lit); gl.uniform1f(L.emitK, m.emitK || 0); gl.uniform1f(L.clipY, m.clipY === undefined ? 1e9 : m.clipY); gl.uniform2f(L.cut, m.cut ? m.cut[0] : 0.04, m.cut ? m.cut[1] : 9);
     gl.uniform1f(L.emitMap, m.emitTex ? 1 : 0); gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, m.emitTex || this.whiteTex); gl.activeTexture(gl.TEXTURE0);
     const a = m.alpha === undefined ? 1 : m.alpha; gl.uniform1f(L.alpha, a); if (a < 0.999) { gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); } else gl.disable(gl.BLEND);
   };
@@ -293,11 +296,18 @@
     this.culledFx = 0;
     for (const f of list) if (f.kind === "mesh" && f.gm) { if (!onScreen(f)) { this.culledFx++; continue; } this.setMat(f.mat); const lv = this.lodLevelAt(Math.hypot(f.p[0] - this.cam.x, f.p[1] - this.cam.y, f.p[2] - this.cam.z), 20 * (f.scale || 1)); this.lodLevel = lv; for (let ms of f.gm.meshes) { ms = this.lodOf(f.gm, ms, lv); gl.uniformMatrix4fv(L.m, false, new Float32Array(M4.mul(f.M, f.pose[ms.node]))); bind(ms.buf, ms.tex || f.tex || f.gm.tex); gl.drawArrays(gl.TRIANGLES, 0, ms.n); } }
     // decals / sprites: a textured square at p facing n (up = the world's up, or z for floors); frame f of a horizontal strip of `frames`
-    for (const f of list) if (f.kind === "decal" && f.texId) {
+    const decs = list.filter(f => f.kind === "decal" && f.texId), cm = this.cam, dd = f => (f.p[0] - cm.x) ** 2 + (f.p[1] - cm.y) ** 2 + (f.p[2] - cm.z) ** 2;
+    decs.sort((a, b) => (a.sprite ? 1 : 0) - (b.sprite ? 1 : 0) || (a.sprite ? dd(b) - dd(a) : 0));
+    for (const f of decs) {
       const n = f.n, ref = Math.abs(n[1]) > 0.9 ? [0, 0, 1] : [0, 1, 0], ux = M4.norm(M4.cross(ref, n)), uy = M4.cross(n, ux), sw = (f.w || f.size) / 2, s = (f.h || f.size) / 2, fr = f.frames || 1, u0 = (f.frame || 0) / fr, u1 = ((f.frame || 0) + 1) / fr;
       const P = (a, b) => [f.p[0] + ux[0] * a + uy[0] * b, f.p[1] + ux[1] * a + uy[1] * b, f.p[2] + ux[2] * a + uy[2] * b], A = P(-sw, s), B = P(sw, s), C = P(sw, -s), D = P(-sw, -s), k = f.light === undefined ? 1 : f.light;
       const v = [...A, u0, 0, k, k, k, ...B, u1, 0, k, k, k, ...C, u1, 1, k, k, k, ...A, u0, 0, k, k, k, ...C, u1, 1, k, k, k, ...D, u0, 1, k, k, k];
       const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(v), gl.STREAM_DRAW); this.setMat({ alpha: f.sprite ? 1 : Math.min(0.995, f.alpha === undefined ? 1 : f.alpha), lit: f.lit === undefined ? 1 : f.lit, emitK: f.glow || 0, tint: f.tint, emit: f.emit });
+      if (f.sprite) {   // soft (blurred, glowing) edges: the solid part writes depth, the see-through part is blended on top without it; "glow" sprites add their light
+        bind(buf, this.texFor(f.texId, this.urls, true)); gl.enable(gl.BLEND);
+        if (f.add) { gl.blendFunc(gl.SRC_ALPHA, gl.ONE); gl.depthMask(false); gl.uniform2f(L.cut, 0.004, 9); gl.drawArrays(gl.TRIANGLES, 0, 6); }
+        else { gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); gl.uniform2f(L.cut, 0.5, 9); gl.drawArrays(gl.TRIANGLES, 0, 6); gl.depthMask(false); gl.uniform2f(L.cut, 0.004, 0.5); gl.drawArrays(gl.TRIANGLES, 0, 6); }
+        gl.depthMask(true); gl.disable(gl.BLEND); gl.uniform2f(L.cut, 0.04, 9); gl.deleteBuffer(buf); continue; }
       if (!f.sprite) { gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(-1, -4); gl.depthMask(false); } bind(buf, this.texFor(f.texId, this.urls)); gl.drawArrays(gl.TRIANGLES, 0, 6); gl.depthMask(true); gl.disable(gl.POLYGON_OFFSET_FILL); gl.deleteBuffer(buf);
     }
     // shock spheres (splash damage): see-through glowing balls that grow to the splash radius and fade. Additive light (black = clear), a two-colour gradient
