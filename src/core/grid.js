@@ -241,8 +241,16 @@
 
   // ------------------------------------------------------------ placed things
   // where a placed thing stands: { cx, cy (world X / Z), fy (floor), ux, uy (facing sideways), nx, ny (facing forward), door }
+  // story names: with basement stories (m.base of them, the lowest stories) the ground story is 1, the ones below are -1, -2…
+  // story numbers as people see them: 1, 2, 3 … from the ground floor up, -1, -2 … for basements (m.base = how many basement stories sit under story 1)
+  G.storyNum = (m, L) => { const b = (m && m.base) || 0; return L >= b ? L - b + 1 : L - b; };
+  G.storyIdx = (m, n) => { const b = (m && m.base) || 0; n = Math.round(+n) || 1; return n >= 1 ? n - 1 + b : b + n; };
+  G.storyName = (m, L) => { const b = (m && m.base) || 0; return L >= b ? String(L - b + 1) : String(L - b); };
+  // an elevator's footprint: W x D cells from the anchor cell (east / south)
+  G.elevCells = (T, th) => { const W = Math.max(1, Math.min(8, Math.round(+T.get(th.prop + ".elevW") || 1))), D = Math.max(1, Math.min(8, Math.round(+T.get(th.prop + ".elevD") || 1))), x0 = Math.floor(th.x / C), y0 = Math.floor(th.y / C), out = []; for (let i = 0; i < W; i++) for (let j = 0; j < D; j++) out.push([x0 + i, y0 + j]); return { W, D, x0, y0, cells: out }; };
   G.thingFrame = (m, T, th) => {
     const a = (th.ang || 0) * Math.PI / 180, L = th.layer || 0;
+    if (T && T.get(th.prop + ".type") === "elevator") { const e = G.elevCells(T, th); return { cx: (e.x0 + e.W / 2) * C, cy: (e.y0 + e.D / 2) * C, fy: L * LH, layer: L, ux: 1, uy: 0, nx: 0, ny: 1, w: e.W * C, h: 0, elev: true, cells: e.cells, W: e.W, D: e.D, x0: e.x0 * C, y0: e.y0 * C }; }
     if (T && T.get(th.prop + ".type") === "door") {   // doors are blocks: W cells wide (along ang: 0 east, 90 south, 180 west, 270 north from the clicked cell) and H stories tall, filling them to the top
       const ax = (Math.floor(th.x / C) + 0.5) * C, ay = (Math.floor(th.y / C) + 0.5) * C, q = Math.round((th.ang || 0) / 90) * Math.PI / 2, r = v => Math.round(v), ux = r(Math.cos(q)), uy = -r(Math.sin(q));
       const W = Math.max(1, Math.min(8, Math.round(+T.get(th.prop + ".doorCellsW") || 1))), H = Math.max(1, Math.min(4, Math.round(+T.get(th.prop + ".doorCellsH") || 1))), f0 = G.floorY(m, L, ax, ay), fy = f0 === null ? L * LH : f0;

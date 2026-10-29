@@ -178,7 +178,7 @@
       for (const th of (m.things || []).concat(this.spawnTh || [])) {
         const prev = old.find(x => x.th.id === th.id), pid = prev && prev.morph && (this.project.props || []).some(q => q.id === prev.morph) ? prev.morph : th.prop, pre = pid + ".", aid = T.get(pre + "asset"), type0 = T.get(pre + "type"), type = type0 === "boss" ? "enemy" : type0, boss = type0 === "boss";
         if (type !== "door" && T.get(pre + "look") === "sprite") { gone.delete(th.id); const o = old.find(x => x.th.id === th.id) || { th, st: "closed", p: 0, t: 0, timer: 0, taken: false, spin: 0 }; Object.assign(o, { th, pre, aid: null, model: null, gm: null, sprite: true, type, boss, fr: G.thingFrame(m, T, th) }); if (!o.init) o.floor = o.fr.fy; out.push(o); continue; }
-        if ((type === "speaker" || type === "interactive" || type === "checkpoint" || type === "spawner" || type === "save" || (type === "decoration" && T.get(pre + "solid") === "box")) && (!aid || !this.urls[aid])) { gone.delete(th.id); const o = old.find(x => x.th.id === th.id) || { th, st: "closed", p: 0, t: 0, timer: 0, taken: false, spin: 0 }; Object.assign(o, { th, pre, aid: null, model: null, gm: null, sprite: false, type, fr: G.thingFrame(m, T, th) }); o.floor = o.fr.fy; out.push(o); continue; }
+        if ((type === "speaker" || type === "interactive" || type === "checkpoint" || type === "spawner" || type === "save" || type === "elevator" || (type === "decoration" && T.get(pre + "solid") === "box")) && (!aid || !this.urls[aid])) { gone.delete(th.id); const o = old.find(x => x.th.id === th.id) || { th, st: "closed", p: 0, t: 0, timer: 0, taken: false, spin: 0 }; Object.assign(o, { th, pre, aid: null, model: null, gm: null, sprite: false, type, fr: G.thingFrame(m, T, th) }); o.floor = o.fr.fy; out.push(o); continue; }
         if (!aid || !this.urls[aid]) continue; const model = F.cache[aid];
         if (!model) { F.load(aid, this.urls[aid]).then(mm => { if (mm && !this.dead) this.syncThings(); }); continue; }
         if (!this.gpu[aid]) this.gpu[aid] = this.view.loadModel(model); gone.delete(th.id); { const q = old.find(x => x.th.id === th.id); if (q) q.sprite = false; }
@@ -196,6 +196,7 @@
     hitDoor(O, D, maxd) { let best = null; for (const o of this.things || []) { if (o.type !== "door" || o.st !== "closed") continue; const t = this.thingHit(o, O, D, maxd); if (t !== null && (!best || t < best.t)) best = { th: o.th, t }; } return best; }
     // closed doors are solid blocks for walking, shots and sight (open ones step aside)
     doorTris() { const out = [], shot = []; for (const o of this.things || []) { if (o.type === "door" && !(this.doorOpen && this.doorOpen[o.th.id])) { const t = G.boxTris(...G.doorBox(o.fr), { kind: "door", id: o.th.id }); out.push(...t); shot.push(...t); continue; }
+        if (o.type === "elevator") { const et = this.elevTris(o); if (et) { out.push(...et); shot.push(...et); } continue; }
         const st = this.solidTris(o); if (st) { out.push(...st); if (this.ov(o, "solidShots") !== false) shot.push(...st); } }
       this.dtris = out; if (this.view) this.view.extraTris = shot; return out; }
     // a solid object's collision box (prop tag solid: auto = around the model, box = solidX/Y/Z + solidW/H/D), in world triangles; cached until it moves or its settings change
@@ -220,6 +221,7 @@
     }
     talkHint() {
       if (!this.hintEl) { this.hintEl = el("", "position:absolute;left:50%;top:62%;transform:translateX(-50%);padding:6px 14px;background:rgba(10,14,20,.7);border:1px solid rgba(255,255,255,.25);border-radius:4px;color:#e8f2fb;font:600 16px 'Chakra Petch',system-ui,sans-serif;pointer-events:none;z-index:6;display:none"); this.root.append(this.hintEl); }
+      { const el = !this.talk && !this.pdead ? this.elevOn() : null; if (el && !el.el.go) { this.hintEl.style.display = "block"; this.hintEl.textContent = String(this.ov(el, "elevHint") || "[{key}] Elevator").split("{key}").join(String(this.T.get("player.interactKey") || "e").toUpperCase()); return; } }
       { const st = !this.talk && !this.pdead ? this.stationNear() : null; if (st) { this.hintEl.style.display = "block"; this.hintEl.textContent = "[" + String(this.T.get("player.interactKey") || "e").toUpperCase() + "] Save the game"; return; } }
       const n = !this.talk && !this.pdead ? this.npcInFront() : null, ky = "[" + String(this.T.get("player.interactKey") || "e").toUpperCase() + "] ";
       if (n) { this.hintEl.style.display = "block"; this.hintEl.textContent = ky + "Talk to " + (this.T.get(n.pre + "npcName") || this.T.get(n.pre + "name") || "them"); return; }
@@ -363,12 +365,12 @@
         for (const [i, j] of [[0, 1], [2, 3], [4, 5], [6, 7], [0, 2], [1, 3], [4, 6], [5, 7], [0, 4], [1, 5], [2, 6], [3, 7]]) out.push({ kind: "line", a: P(i), b: P(j), c, w: 0.35, t: 0, life: 1e9 }); } }
       return out; }
     interact() {
-      const v = this.view; if (!v) return; { const st = this.stationNear(); if (st) { this.saveAsk(st); return; } } { const n = this.npcInFront(); if (n) { this.talkStart(n); return; } } { const hb = this.ui ? this.ui.hover : this.hbAim(["key"]); if (hb) { this.hbPress(hb.o, hb.b); return; } } const c = v.cam, B = R3D.camBasis(c.yaw, c.pitch), O = [c.x, c.y, c.z], D = B.f;
+      const v = this.view; if (!v) return; { const el = this.elevOn(); if (el && !el.el.go) { this.elevMenu(el); return; } } { const st = this.stationNear(); if (st) { this.saveAsk(st); return; } } { const n = this.npcInFront(); if (n) { this.talkStart(n); return; } } { const hb = this.ui ? this.ui.hover : this.hbAim(["key"]); if (hb) { this.hbPress(hb.o, hb.b); return; } } const c = v.cam, B = R3D.camBasis(c.yaw, c.pitch), O = [c.x, c.y, c.z], D = B.f;
       for (const o of this.things || []) { if (o.type !== "door" || this.ov(o, "openMode") !== "interact") continue; const t = this.thingHit(o, O, D, +this.ov(o, "interactRange") || 90); if (t === null) continue; if (o.st === "closed" || o.st === "closing") this.openDoor(o); else this.closeDoor(o); return; }
     }
     thingStep(dt) {
       if (this.talk) return; const T = this.T; for (const o of this.things || []) {
-        if (o.taken) continue; if (o.type === "enemy") { this.enemyStep(o, dt); continue; } if (o.type === "spawner") { this.spawnerStep(o, dt); continue; } const g = k => +this.ov(o, k) || 0, f = o.fr, dist = Math.hypot(this.x - f.cx, this.y - f.cy);
+        if (o.taken) continue; if (o.type === "enemy") { this.enemyStep(o, dt); continue; } if (o.type === "spawner") { this.spawnerStep(o, dt); continue; } if (o.type === "elevator") { this.elevStep(o, dt); continue; } const g = k => +this.ov(o, k) || 0, f = o.fr, dist = Math.hypot(this.x - f.cx, this.y - f.cy);
         if (o.type === "exit") { if (!this.pdead && dist < (g("exitRadius") || 40) && Math.abs(this.z - o.floor) < 90) this.levelExit(o); continue; }
         if (o.type === "pickup" || o.type === "key") { if (dist < (g("pickRadius") || 28) && Math.abs(this.z - o.floor) < 70) { o.taken = true; this.remember("taken", o); const tg = o.type === "key" ? "" : this.ov(o, "giveTag"), amt = g("giveAmount"); if (o.type === "key") this.keyPick(o);
           if (tg === "player.health" && this.livesMode() === "reserve") this.giveHealth(amt);   // overflow fills empty energy tanks
@@ -384,14 +386,14 @@
         if (o.st === "open") { if (on && !(dist < 50)) { if (mode === "proximity") { if (!near) this.closeDoor(o); } else { o.timer += dt; if (o.timer >= g("closeAfter")) this.closeDoor(o); } } }
         const len = this.doorLen(o, o.st === "closing" ? "closeAnim" : "openAnim");
         if (o.st === "opening") { o.t += dt; o.p = Math.min(1, o.t / len); if (o.p >= 1) o.st = "open"; }
-        else if (o.st === "closing") { o.p = Math.max(0, o.p - dt / len); if (o.p <= 0) { o.st = "closed"; o.t = 0; } }
+        else if (o.st === "closing") { o.p = Math.max(0, o.p - dt / len); if (o.p <= 0) { o.st = "closed"; o.t = 0; if (this.ov(o, "resetRoom") !== false) this.roomReset(o); } }
         this.doorOpen[o.th.id] = o.st === "open" || o.p > 0.7;
       }
     }
     drawThings(v, dt) {
       if (!this.things || !this.things.length) return; if (this.mode === "play") this.thingStep(dt); const F = PRIM.FBX, T = this.T, items = [];
       for (const o of this.things) {
-        if (o.taken) continue; if (this.mode === "play" && !this.thingSeen(o)) { o.visM = null; continue; } if (!o.gm && !o.sprite) continue; if (o.type === "speaker" && this.mode === "play" && !this.ov(o, "spkShow")) continue; if (o.type === "spawner" && this.mode === "play" && !this.ov(o, "spawnShow")) continue; if (o.sprite) { const it = this.spriteItem(o, v); if (it) items.push(it); continue; } const g = k => +this.ov(o, k) || 0; let f = o.fr, name = null, tm = 0;
+        if (o.taken) continue; if (this.mode === "play" && !this.thingSeen(o)) { o.visM = null; continue; } if (o.type === "elevator" && !o.gm) { const it = this.elevItem(o); if (it) items.push(it); continue; } if (!o.gm && !o.sprite) continue; if (o.type === "speaker" && this.mode === "play" && !this.ov(o, "spkShow")) continue; if (o.type === "spawner" && this.mode === "play" && !this.ov(o, "spawnShow")) continue; if (o.sprite) { const it = this.spriteItem(o, v); if (it) items.push(it); continue; } const g = k => +this.ov(o, k) || 0; let f = o.fr, name = null, tm = 0;
         if (o.type === "enemy" && o.init) { const a = o.yaw * Math.PI / 180; f = { cx: o.x, cy: o.y, ux: Math.cos(a), uy: -Math.sin(a), nx: Math.sin(a), ny: Math.cos(a), door: false }; }
         const talking = o.type === "npc" && this.talk && this.talk.o === o; if (talking && this.ov(o, "faceTalker") !== false) { const a = Math.atan2(this.x - o.fr.cx, this.y - o.fr.cy); f = { cx: o.fr.cx, cy: o.fr.cy, ux: Math.cos(a), uy: -Math.sin(a), nx: Math.sin(a), ny: Math.cos(a), door: false }; }
         const an = k => { const nm = this.ov(o, k); return nm && o.model.anims[nm] ? nm : null; };
@@ -567,7 +569,7 @@
       if (o.boss) { if (!o.fight) { o.hitOnce = true; return; } if (o.pause > 0 || (o.shield && o.bt < o.shield)) { o.flash = 0.03; return; } d *= Math.max(0, +this.ov(o, "armor")); if (!(d > 0)) return; }
       o.hp -= d; o.awake = true; o.flash = 0.12;
       if (o.hp <= 0 && o.boss) this.bossEnd(o);
-      if (o.hp <= 0) { this.eDrop(o); this.trigger("onKill"); if (this.ov(o, "deathStyle") === "slice") { const s = this.ov(o, "deathSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); const kt = this.ov(o, "killTag"); if (kt && T.get(kt) !== undefined) T.set(kt, (+T.get(kt) || 0) + (+this.ov(o, "killAmount") || 0)); this.eSlice(o); return; }
+      if (o.hp <= 0) { o.deadAt = this.playT || 0; this.eDrop(o); this.trigger("onKill"); if (this.ov(o, "deathStyle") === "slice") { const s = this.ov(o, "deathSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); const kt = this.ov(o, "killTag"); if (kt && T.get(kt) !== undefined) T.set(kt, (+T.get(kt) || 0) + (+this.ov(o, "killAmount") || 0)); this.eSlice(o); return; }
         o.st = "dying"; this.eSet(o, "deathAnim"); o.at = 0; const s = this.ov(o, "deathSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); const kt = this.ov(o, "killTag"); if (kt && T.get(kt) !== undefined) T.set(kt, (+T.get(kt) || 0) + (+this.ov(o, "killAmount") || 0)); return; }
       if (o.boss) { this.bossTags(o); this.bossTrig(o, "onBossHurt"); this.bossHealthTrig(o); }
       const s = this.ov(o, "hurtSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); if (this.eAnim(o, "hurtAnim") && o.st !== "attack" && (!o.boss || (this.ov(o, "bossFlinch") && !o.dash))) { o.st = "pain"; this.eSet(o, "hurtAnim"); o.at = 0; }
@@ -653,6 +655,50 @@
     scanDraw(p, k, col) { const v = this.view; if (!v || !v.vp) return; const m = v.vp, x = m[0] * p[0] + m[4] * p[1] + m[8] * p[2] + m[12], y = m[1] * p[0] + m[5] * p[1] + m[9] * p[2] + m[13], w = m[3] * p[0] + m[7] * p[1] + m[11] * p[2] + m[15]; if (w <= 0) return; const r = this.cv.getBoundingClientRect(), rr = this.root.getBoundingClientRect(), sx = (x / w * 0.5 + 0.5) * r.width + r.left - rr.left, sy = (0.5 - y / w * 0.5) * r.height + r.top - rr.top;
       if (!this.scanEl) { this.scanEl = document.createElement("div"); this.scanEl.style.cssText = "position:absolute;width:84px;height:84px;margin:-42px 0 0 -42px;pointer-events:none;z-index:6"; this.scanEl.innerHTML = '<svg viewBox="0 0 84 84" width="84" height="84"><circle cx="42" cy="42" r="34" fill="none" stroke-width="2" stroke-dasharray="6 6" opacity=".7"/><circle class="pr" cx="42" cy="42" r="38" fill="none" stroke-width="4" stroke-linecap="round" transform="rotate(-90 42 42)" stroke-dasharray="238.8" stroke-dashoffset="238.8"/></svg><div style="position:absolute;left:0;right:0;top:88px;text-align:center;font:600 12px Chakra Petch,system-ui;letter-spacing:.15em"></div>'; this.root.append(this.scanEl); }
       const el = this.scanEl; el.style.display = "block"; el.style.left = sx + "px"; el.style.top = sy + "px"; for (const c of el.querySelectorAll("circle")) c.setAttribute("stroke", col || "#ffb53a"); el.querySelector(".pr").setAttribute("stroke-dashoffset", String(238.8 * (1 - k))); const t = el.lastChild; t.textContent = Math.round(k * 100) + "%"; t.style.color = col || "#ffb53a"; }
+    // =============================================================== ELEVATORS: a platform (W x D cells, model or a plain box) that stops at a list of heights (thing.stops = [{s: story, h: 16ths, name}])
+    elevStops(o) { const L = (o.th.stops && o.th.stops.length ? o.th.stops : [{ s: o.th.layer || 0, h: 0 }]); return L.map((q, i) => ({ y: (q.s || 0) * G.LAYER + Math.max(0, Math.min(15, +q.h || 0)) * 8, name: q.name || "", s: q.s || 0, i })); }
+    elevInit(o) { if (o.el) return; const S_ = this.elevStops(o), L = o.th.layer || 0; let i = S_.findIndex(q => q.s === L); if (i < 0) i = 0; o.el = { i, y: S_[i].y, go: null }; o.floor = o.el.y; }
+    elevBox(o) { const f = o.fr, th = Math.max(2, +this.ov(o, "elevThick") || 12), y = o.el.y; return { mn: [f.x0 + 1, y - th, f.y0 + 1], mx: [f.x0 + f.W * 128 - 1, y, f.y0 + f.D * 128 - 1] }; }
+    elevTris(o) { this.elevInit(o); const b = this.elevBox(o), key = b.mn.concat(b.mx).join(","); if (o.elK !== key) { o.elK = key; o.elT = G.boxTrisF(b.mn, b.mx, p => p, { kind: "solid", id: o.th.id }); } return o.elT; }
+    // standing on it: feet inside its footprint (a little margin) and level with its top
+    elevOn() { if (this.mode !== "play" || this.pdead) return null; for (const o of this.things || []) { if (o.type !== "elevator" || o.taken) continue; this.elevInit(o); const b = this.elevBox(o); if (this.x > b.mn[0] - 4 && this.x < b.mx[0] + 4 && this.y > b.mn[2] - 4 && this.y < b.mx[2] + 4 && Math.abs(this.z - b.mx[1]) < 14) return o; } return null; }
+    elevMenu(o) { const S_ = this.elevStops(o); if (S_.length < 2) { this.toast("This elevator has only one stop."); return; }
+      this.talk = { o, ask: true, elev: true }; this.talkOpen(); const nm = q => (q.name ? q.name + "  ·  " : "") + "Story " + G.storyName(this.map, q.s) + (q.y % G.LAYER ? " (+" + Math.round((q.y % G.LAYER) / 8) + "/16)" : "");
+      const picks = S_.slice(0, 8).map(q => ({ label: nm(q) + (q.i === o.el.i ? "   (you are here)" : ""), fn: () => { this.talkEnd(); if (q.i !== o.el.i) this.elevGo(o, q.i); } })); picks.push({ label: "Stay", fn: () => this.talkEnd() });
+      this.talkBox(this.ov(o, "elevTitle") || "Elevator", "Where to?", picks, null); }
+    elevGo(o, i) { this.elevInit(o); const S_ = this.elevStops(o); if (!S_[i]) return; o.el.go = { i, to: S_[i].y, wait: +this.ov(o, "elevWait") || 0 }; const s = this.ov(o, "elevStart"); if (s) this.sfxAt(s, 1, this.thingPos(o, 0)); }
+    elevStep(o, dt) { this.elevInit(o); const e = o.el, g = e.go; if (!g) { o.floor = e.y; return; } if (g.wait > 0) { g.wait -= dt; return; }
+      const rider = this.elevOn() === o, sp = Math.max(10, +this.ov(o, "elevSpeed") || 160), d = g.to - e.y, step = Math.sign(d) * Math.min(Math.abs(d), sp * dt);
+      if (!o.elLoop && this.ov(o, "elevLoop")) o.elLoop = this.sfxAt(this.ov(o, "elevLoop"), 1, this.thingPos(o, 0), undefined, true); if (o.elLoop && o.elLoop.setPos) o.elLoop.setPos(this.thingPos(o, 0));
+      e.y += step; o.floor = e.y; if (rider) { this.z = e.y; if (this.body) { this.body.pos[1] = e.y; this.body.vel[1] = 0; this.body.ground = true; } this.ground = true; }
+      if (Math.abs(g.to - e.y) < 0.01) { e.y = g.to; e.i = g.i; e.go = null; if (o.elLoop) { o.elLoop.stop(0.15); o.elLoop = null; } const s = this.ov(o, "elevStop"); if (s) this.sfxAt(s, 1, this.thingPos(o, 0)); } }
+    // a plain platform (no model): a box with the platform picture or colour
+    elevItem(o) { this.elevInit(o); const v = this.view; if (!v || !v.meshFrom) return null; const f = o.fr, th = Math.max(2, +this.ov(o, "elevThick") || 12), w = f.W * 128 - 2, dd = f.D * 128 - 2, tex = this.ov(o, "elevTex"), key = [w, dd, th, tex, this.ov(o, "elevColor")].join("|");
+      if (o.elMk !== key) { o.elMk = key; const c = tex && this.urls[tex] ? [1, 1, 1] : this.hexCol(this.ov(o, "elevColor") || "#5a6878"), V = [], q = (a, b, c2, d, sh, uw, vh) => { const t = [[a, 0, 0], [b, uw, 0], [c2, uw, vh], [a, 0, 0], [c2, uw, vh], [d, 0, vh]]; for (const [p, u, vv] of t) V.push(p[0], p[1], p[2], u, vv, c[0] * sh, c[1] * sh, c[2] * sh); };
+        const x0 = -w / 2, x1 = w / 2, z0 = -dd / 2, z1 = dd / 2, y0 = -th, y1 = 0, P = (x, y, z) => [x, y, z];
+        q(P(x0, y1, z0), P(x0, y1, z1), P(x1, y1, z1), P(x1, y1, z0), 1, dd / 128, w / 128); q(P(x0, y0, z0), P(x1, y0, z0), P(x1, y0, z1), P(x0, y0, z1), 0.45, w / 128, dd / 128);
+        q(P(x0, y0, z1), P(x1, y0, z1), P(x1, y1, z1), P(x0, y1, z1), 0.75, w / 128, th / 128); q(P(x1, y0, z0), P(x0, y0, z0), P(x0, y1, z0), P(x1, y1, z0), 0.75, w / 128, th / 128);
+        q(P(x1, y0, z1), P(x1, y0, z0), P(x1, y1, z0), P(x1, y1, z1), 0.65, dd / 128, th / 128); q(P(x0, y0, z0), P(x0, y0, z1), P(x0, y1, z1), P(x0, y1, z0), 0.65, dd / 128, th / 128);
+        if (o.elMs) v.freeMesh(o.elMs); o.elMs = v.meshFrom(new Float32Array(V), tex && this.urls[tex] ? v.texFor(tex, this.urls) : null); o.elGm = { meshes: [o.elMs], model: { bounds: { lo: [x0, y0, z0], hi: [x1, y1, z1] } }, tex: o.elMs.tex }; }
+      const M = M4.translate(f.cx, o.el.y, f.cy); o.visM = M; o.visPose = [M4.ident()]; return { kind: "mesh", owner: o.th.id, gm: o.elGm, pose: [M4.ident()], M, p: [f.cx, o.el.y, f.cy], scale: Math.max(f.W, f.D) * 3, mat: {} }; }
+    // =============================================================== ROOM RESET (Metroid style): a door closes with you on one side -> the room on the other side (flood fill over the cells,
+    // walls and doors stop it, open floors / stairs lead to the stories above and below) gets its enemies back at their placed spots and its spawners restart
+    roomCells(m, L, x, y, stop) { const seen = new Set(), key = (l, a, b) => l + ":" + a + "," + b, q = [[L, x, y]], max = 6000; seen.add(key(L, x, y));
+      while (q.length && seen.size < max) { const [l, a, b] = q.shift(), c = G.cell(m, l, a, b);
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { const nx = a + dx, ny = b + dy, k = key(l, nx, ny); if (seen.has(k) || stop.has(k)) continue; const n = G.cell(m, l, nx, ny); if (!n || G.isWall(n)) continue; seen.add(k); q.push([l, nx, ny]); }
+        const up = G.cell(m, l + 1, a, b); if (l + 1 < m.layers.length && up && !G.isWall(up) && !G.hasFloor(up) && !stop.has(key(l + 1, a, b)) && !seen.has(key(l + 1, a, b))) { seen.add(key(l + 1, a, b)); q.push([l + 1, a, b]); }
+        if (l > 0 && c && !G.hasFloor(c)) { const dn = G.cell(m, l - 1, a, b), k = key(l - 1, a, b); if (dn && !G.isWall(dn) && !seen.has(k) && !stop.has(k)) { seen.add(k); q.push([l - 1, a, b]); } } }
+      return seen; }
+    roomReset(door) { const m = this.map, f = door.fr; if (!m || !f || !f.cells || this.pdead) return; const side = Math.sign((this.x - f.cx) * f.nx + (this.y - f.cy) * f.ny); if (!side) return;
+      const stop = new Set(); for (const o of this.things || []) if (o.type === "door" && o.fr && o.fr.cells) for (const [a, b] of o.fr.cells) for (let l = o.fr.layer || 0; l < (o.fr.layer || 0) + (o.fr.H || 1); l++) stop.add(l + ":" + a + "," + b);
+      const [a0, b0] = f.cells[0], L = f.layer || 0, start = [a0 - side * f.nx, b0 - side * f.ny]; if (!G.cell(m, L, start[0], start[1])) return;
+      const room = this.roomCells(m, L, start[0], start[1], stop), inRoom = th => room.has((th.layer || 0) + ":" + Math.floor(th.x / 128) + "," + Math.floor(th.y / 128)), now = this.playT || 0; let n = 0;
+      for (const o of this.things || []) { if (!inRoom(o.th) || o.th.spawned) continue; const ty = this.T.get(o.th.prop + ".type");
+        if ((ty === "enemy") && this.T.get(o.th.prop + ".respawn") !== false) { if (o.st === "dead" || o.st === "dying" || o.taken) { if (now - (o.deadAt || -1e9) < (+this.T.get(o.th.prop + ".respawnAfter") || 0)) continue; }
+          for (const k of ["init", "body", "dr", "surf", "lift", "morph", "keep", "dropped", "mount", "awake", "los", "dash", "shield", "fuse", "tov", "deadAt", "cBlock", "cwin", "lostT"]) delete o[k]; o.taken = false; o.st = "idle"; o.hp = undefined; n++; }
+        if (ty === "spawner") { o.sp = null; this.spawnTh = (this.spawnTh || []).filter(th => !th.id.startsWith(o.th.id + "~")); } }
+      this.spawnTh = (this.spawnTh || []).filter(th => !(/~d\d+$/.test(th.id) && inRoom(th)));   // drops lying in that room go away
+      if (n) this.syncThings(); this.roomResets = (this.roomResets || 0) + 1; this.lastRoomReset = { cells: room.size, enemies: n }; }
     saveGame(st) {
       if (!PRIM.Save || this.mode !== "play" || !this.map) return false; const T = this.T, m = this.map, tags = {};
       if (T.ov) { for (const k in T.ov) if (!/^save\./.test(k)) tags[k] = T.ov[k]; } else for (const k of T.names()) { const r = T.spec(k); if (r && !/^save\./.test(k) && (r.custom || /^player\./.test(k) || /\.have$/.test(k))) tags[k] = T.get(k); }

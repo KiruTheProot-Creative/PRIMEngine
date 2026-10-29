@@ -317,7 +317,7 @@
   const EN = ["enemy", "boss"];
   S.PROP = [
     { k: "name", label: "Name", type: "string", def: "Object" },
-    { k: "type", label: "Type", type: "choice", options: [["decoration", "Decoration (just a model)"], ["door", "Door (fills a cell between walls)"], ["pickup", "Pick-up (collected by touching)"], ["enemy", "Enemy (hunts and attacks the player)"], ["exit", "Level exit (touch it to leave the level)"], ["npc", "Character (NPC: talk to it, make choices)"], ["speaker", "Speaker (plays a sound you hear around it)"], ["interactive", "Interactive (buttons, consoles, screens)"], ["checkpoint", "Checkpoint (where you respawn with the Lives system)"], ["spawner", "Spawner (keeps making new objects: enemies, pick-ups…)"], ["key", "Key (opens locked doors)"], ["boss", "Boss (an enemy with phases and a health bar)"], ["save", "Save station (saves the game)"]], def: "decoration" },
+    { k: "type", label: "Type", type: "choice", options: [["decoration", "Decoration (just a model)"], ["door", "Door (fills a cell between walls)"], ["pickup", "Pick-up (collected by touching)"], ["enemy", "Enemy (hunts and attacks the player)"], ["exit", "Level exit (touch it to leave the level)"], ["npc", "Character (NPC: talk to it, make choices)"], ["speaker", "Speaker (plays a sound you hear around it)"], ["interactive", "Interactive (buttons, consoles, screens)"], ["checkpoint", "Checkpoint (where you respawn with the Lives system)"], ["spawner", "Spawner (keeps making new objects: enemies, pick-ups…)"], ["key", "Key (opens locked doors)"], ["boss", "Boss (an enemy with phases and a health bar)"], ["save", "Save station (saves the game)"], ["elevator", "Elevator (a platform that takes you between stories)"]], def: "decoration" },
     { k: "look", label: "Looks like", type: "choice", options: [["model", "3D model (FBX)"], ["sprite", "2D sprite (pictures that always face the player)"]], def: "model", showIf: ["type", ["enemy", "boss", "decoration", "pickup", "key", "exit", "npc"]] },
     { k: "asset", label: "Model (FBX)", type: "asset", assetType: "model", def: "", showIf: ["look", "model"] },
     // 2D sprites: each picture holds the frames of one animation side by side (a strip). They always turn to face the player.
@@ -467,6 +467,16 @@
     { k: "visorShow", label: "Highlighted in", type: "choice", options: [["auto", "Automatic (Scanner: if it can be scanned; X-Ray: characters and enemies)"], ["scan", "The Scanner"], ["xray", "X-Ray"], ["both", "Scanner and X-Ray"], ["all", "Every visor"], ["none", "No visor"]], def: "auto" },
     { k: "visorColorOn", label: "Own highlight colour", type: "bool", def: false }, Object.assign(COLOR("visorColor", "Highlight colour", "#ffffff"), { showIf: ["visorColorOn", true] }),
     { k: "seenIn", label: "Can be seen", type: "choice", options: [["always", "Always"]], def: "always" }, { k: "solidUnseen", label: "Still solid while it can not be seen", type: "bool", def: false });
+  // ---- rooms reset (Metroid style): when a door closes behind you, the enemies of the room you left come back
+  S.PROP.push({ k: "respawn", label: "Comes back when you leave the room (through a door)", type: "bool", def: true, showIf: ["type", "enemy"] }, NUM("respawnAfter", "…but only if it died at least (s) ago", 0, 0, 3600, 1, { showIf: ["type", "enemy"], showIf2: ["respawn", true] }),
+    { k: "resetRoom", label: "Closing behind you resets the room you left (its enemies come back)", type: "bool", def: true, showIf: ["type", "door"] });
+  // ---- elevators: a platform W x D cells; each placed elevator has its own list of stops (map editor); E on it = choose a stop
+  const EL = { showIf: ["type", "elevator"] };
+  S.PROP.push(NUM("elevW", "Size: cells wide (east)", 1, 1, 8, 1, EL), NUM("elevD", "Size: cells deep (south)", 1, 1, 8, 1, EL), NUM("elevThick", "Platform thickness (units)", 12, 2, 128, 1, EL),
+    { k: "elevTex", label: "Platform picture (when there is no model)", type: "asset", assetType: "image", def: "", ...EL }, Object.assign(COLOR("elevColor", "Platform colour (no model, no picture)", "#5a6878"), EL),
+    NUM("elevSpeed", "Speed (units per second, 128 = a story)", 160, 10, 3000, 5, EL), NUM("elevWait", "Waits before moving (s)", 0.3, 0, 10, 0.05, EL),
+    { k: "elevTitle", label: "Menu title", type: "string", def: "Elevator", ...EL }, { k: "elevHint", label: "Hint when standing on it", type: "string", def: "[{key}] Elevator", ...EL },
+    { k: "elevStart", label: "Start sound", type: "asset", assetType: "sound", def: "", ...EL }, { k: "elevLoop", label: "Sound while moving (loops)", type: "asset", assetType: "sound", def: "", ...EL }, { k: "elevStop", label: "Arrive sound", type: "asset", assetType: "sound", def: "", ...EL });
   // ---- drones (behavior "drone"): hover, circle the player, stop at random moments, then shoot or dash at the player
   const DR = { showIf: ["type", EN], showIf2: ["behavior", "drone"] };
   S.PROP.push(NUM("hover", "Flies this high above the floor (units, 64 = 1 m)", 80, 0, 1000, 1, DR), NUM("hoverBob", "Bobs up and down by (units)", 6, 0, 64, 1, DR),

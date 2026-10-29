@@ -61,7 +61,7 @@
     this.bar.replaceChildren(
       tb("↶", "Undo (Ctrl+Z)", false, () => this.history(true)), tb("↷", "Redo (Ctrl+Y)", false, () => this.history(false)), h("span", { class: "msep" }),
       tb("Select", "Select (V): click or drag a box over cells; drag objects to move them", s.tool === "select", () => this.setTool("select")), tb("Pick texture", "Pick (I): click a cell to take its texture (Alt+click works with any tool)", s.tool === "pick", () => this.setTool("pick")), h("span", { class: "msep" }),
-      h("span", { class: "mlab", text: "Story" }), tb("▼", "Go down a story (Page Down)", false, () => this.setLayer(L - 1)), h("span", { class: "chip", title: "Story (layer) you are editing. Each story is 2 m tall.", text: (L + 1) + " / " + Math.max(nL, L + 1) }), tb("▲", "Go up a story (Page Up)", false, () => this.setLayer(L + 1)),
+      h("span", { class: "mlab", text: "Story" }), tb("▼", "Go down a story (Page Down)", false, () => this.setLayer(L - 1)), h("span", { class: "chip", title: "Story (layer) you are editing. Each story is 2 m tall.", text: G.storyName(this.m, L) + (this.m.base ? "  (" + (L + 1) + "/" + Math.max(nL, L + 1) + ")" : " / " + G.storyName(this.m, Math.max(nL, L + 1) - 1)) }), tb("▲", "Go up a story (Page Up)", false, () => this.setLayer(L + 1)),
       h("label", { class: "mlab", title: "Show the story below, faded" }, h("input", Object.assign({ type: "checkbox", onchange: e => { s.below = e.target.checked; this.redraw(); } }, s.below ? { checked: "" } : {})), " below"),
       h("label", { class: "mlab", title: "Mark cells that have a ceiling" }, h("input", Object.assign({ type: "checkbox", onchange: e => { s.ceilShow = e.target.checked; this.redraw(); } }, s.ceilShow ? { checked: "" } : {})), " ceilings"),
       tb("Fit", "Show the whole map (Home)", false, () => this.fit()), ...(opt.length ? [h("span", { class: "msep" }), ...opt] : []),
@@ -108,7 +108,7 @@
       const zs = (this.m.zones || []).slice().sort((a, b) => (a.layer || 0) - (b.layer || 0));
       out.push(zp("trigger", "Trigger zone", "Ready-made actions when the player walks in or out: set a tag, send a message, sound, text, damage, dialogue, teleport…"), zp("custom", "Custom zone", "Its own Node Coder script: “When the player enters / leaves / is inside” and any action."),
         h("div", { class: "note", text: "Pick a kind, then drag a box over cells in the map. Zones are invisible in the game." }), h("div", { class: "mph", text: "Zones in this map" }),
-        ...zs.map(z => h("button", { class: "mpiece wide" + (this.sel && this.sel.kind === "zone" && this.sel.id === z.id ? " on" : ""), title: "Select (story " + ((z.layer || 0) + 1) + ")", onclick: () => { if ((z.layer || 0) !== s.L) this.setLayer(z.layer || 0); this.select({ kind: "zone", id: z.id }); this.buildPal(); } }, this.icon("zone" + z.type), h("span", { class: "msn", text: this.T.get(this.m.id + ".z." + z.id + ".name") || z.id }), h("span", { class: "mpty", text: "story " + ((z.layer || 0) + 1) }))),
+        ...zs.map(z => h("button", { class: "mpiece wide" + (this.sel && this.sel.kind === "zone" && this.sel.id === z.id ? " on" : ""), title: "Select (story " + G.storyName(this.m, z.layer || 0) + ")", onclick: () => { if ((z.layer || 0) !== s.L) this.setLayer(z.layer || 0); this.select({ kind: "zone", id: z.id }); this.buildPal(); } }, this.icon("zone" + z.type), h("span", { class: "msn", text: this.T.get(this.m.id + ".z." + z.id + ".name") || z.id }), h("span", { class: "mpty", text: "story " + ((z.layer || 0) + 1) }))),
         zs.length ? "" : h("div", { class: "note", text: "No zones yet." }));
     } else if (s.panel === "objects") {
       const props = (this.o.getProps && this.o.getProps()) || [], cur = this.o.getProp && this.o.getProp();
@@ -131,16 +131,20 @@
   };
   P.mirror = function () { if (this.s.tool !== "diag") return; this.s.flip = !this.s.flip; this.buildBar(); this.buildPal(); this.redraw(); };
   P.setTool = function (t) { this.s.tool = t; this.drag = null; if (t !== "path") this.pathOpen = null; if (t === "object" || t === "start" || t === "path") this.s.panel = "objects"; else if (t === "zone") this.s.panel = "zones"; else if (t !== "select" && t !== "pick") this.s.panel = "rooms"; this.buildBar(); this.buildPal(); this.redraw(); };
-  P.setLayer = function (L) { L = Math.max(0, Math.min(63, L)); if (L > this.m.layers.length) L = this.m.layers.length; this.s.L = L; this.sel = this.sel && this.sel.kind === "cells" ? null : this.sel; this.buildBar(); this.redraw(); this.emitSel(); };
+  // going down from the lowest story adds a basement under it (everything moves up one index, m.base counts them)
+  P.addBasement = function () { const m = this.m, l0 = m.layers[0], used = l0 && (Object.keys(l0.cells).length || (m.things || []).some(t => (t.layer || 0) === 0)); if (!used || m.layers.length >= 64) return false;
+    this.save(); m.layers.unshift({ cells: {} }); for (const t of m.things || []) { t.layer = (t.layer || 0) + 1; if (t.stops) for (const q of t.stops) q.s = (q.s || 0) + 1; } for (const z of m.zones || []) z.layer = (z.layer || 0) + 1; for (const p of m.paths || []) p.layer = (p.layer || 0) + 1;
+    m.base = (m.base || 0) + 1; const k = m.id + ".startLayer"; this.T.set(k, (+this.T.get(k) || 0) + 1); if (this.o.log) this.o.log("Added basement story " + G.storyName(m, 0) + "."); this.changed(true); return true; };
+  P.setLayer = function (L) { if (L < 0 && this.s.L === 0) { if (!this.addBasement()) { if (this.o.log) this.o.log("Build something on the lowest story first, then you can go below it."); return; } L = 0; } L = Math.max(0, Math.min(63, L)); if (L > this.m.layers.length) L = this.m.layers.length; this.s.L = L; this.sel = this.sel && this.sel.kind === "cells" ? null : this.sel; this.buildBar(); this.redraw(); this.emitSel(); };
   P.destroy = function () { this.ro.disconnect(); this.unsub(); };
   P.urls = function () { return (this.o.getUrls ? this.o.getUrls() : this.o.urls) || {}; };
   P.img = function (id) { const u = this.urls()[id]; if (!id || !u) return null; let e = this.imgs[id]; if (!e || e.__u !== u) { e = this.imgs[id] = new Image(); e.__u = u; e.onload = () => this.redraw(); e.src = u; } return e.complete && e.naturalWidth ? e : null; };
 
   // ---------------------------------------------------------------- undo / redo (cells, objects and the start)
   const START = ["startX", "startY", "startLayer", "startAngle"];
-  P.snap = function () { const m = this.m, o = {}; for (const k of START) o[k] = this.T.get(m.id + "." + k); return JSON.stringify({ layers: m.layers, things: m.things, n: m.n, zones: m.zones || [], paths: m.paths || [], start: o }); };
+  P.snap = function () { const m = this.m, o = {}; for (const k of START) o[k] = this.T.get(m.id + "." + k); return JSON.stringify({ layers: m.layers, things: m.things, n: m.n, zones: m.zones || [], paths: m.paths || [], base: m.base || 0, start: o }); };
   P.save = function () { this.undoS.push(this.snap()); if (this.undoS.length > 100) this.undoS.shift(); this.redoS = []; };
-  P.restore = function (s) { const d = JSON.parse(s), m = this.m; m.layers = d.layers; m.things = d.things; m.n = d.n; m.zones = d.zones || []; m.paths = d.paths || []; if (PRIM.Schema && this.o.project) PRIM.Schema.ensureZones(this.o.project); const o = {}; for (const k of START) if (d.start[k] !== undefined) o[m.id + "." + k] = d.start[k]; this.T.setMany(o); };
+  P.restore = function (s) { const d = JSON.parse(s), m = this.m; m.layers = d.layers; m.things = d.things; m.n = d.n; m.zones = d.zones || []; m.paths = d.paths || []; m.base = d.base || 0; if (PRIM.Schema && this.o.project) PRIM.Schema.ensureZones(this.o.project); const o = {}; for (const k of START) if (d.start[k] !== undefined) o[m.id + "." + k] = d.start[k]; this.T.setMany(o); };
   P.history = function (back) {
     const from = back ? this.undoS : this.redoS, to = back ? this.redoS : this.undoS, s = from.pop(); if (!s) { if (this.o.log) this.o.log(back ? "Nothing to undo." : "Nothing to redo."); return; }
     to.push(this.snap()); this.restore(s); this.sel = null; this.changed(true); this.emitSel();
@@ -202,10 +206,12 @@
   };
 
   // ---------------------------------------------------------------- objects and the start
-  P.things = function () { return (this.m.things || []).filter(t => (t.layer || 0) === this.s.L); };
+  // objects on this story; elevators show (and can be picked) on every story, since their shaft runs through all of them
+  P.things = function () { return (this.m.things || []).filter(t => (t.layer || 0) === this.s.L || this.T.get(t.prop + ".type") === "elevator"); };
   P.thingAt = function (px, py) {
     let best = null, bd = 1e9; const X = this.wx(px), Z = this.wy(py);
     for (const t of this.things()) {
+      { const ty = this.T.get(t.prop + ".type"); if (ty === "elevator") { const f = G.thingFrame(this.m, this.T, t); if (f.cells.some(([cx, cy]) => Math.floor(X / C) === cx && Math.floor(Z / C) === cy) && !(best && (best.layer || 0) === this.s.L)) { best = t; bd = 1e8; } continue; } }
       if (this.T.get(t.prop + ".type") === "door") { const f = G.thingFrame(this.m, this.T, t); if (f.cells.some(([cx, cy]) => Math.floor(X / C) === cx && Math.floor(Z / C) === cy)) { const d = Math.hypot(X - f.cx, Z - f.cy) * this.v.z; if (d < bd) { bd = d; best = t; } } continue; }
       const d = Math.hypot(this.sx(t.x) - px, this.sy(t.y) - py), r = Math.max(9, 0.18 * C * this.v.z); if (d < r && d < bd) { bd = d; best = t; }
     }
@@ -215,9 +221,10 @@
   const snap16 = v => Math.round(v / 16) * 16;
   P.place = function (px, py) {
     const pid = this.o.getProp && this.o.getProp(); if (!pid) { if (this.o.log) this.o.log("Make an object in the Object Editor tab first, then pick it in the toolbar.", "warn"); return null; }
-    this.save(); const m = this.m; m.things = m.things || []; m.n = m.n || { t: 0 }; const isDoor = this.T.get(pid + ".type") === "door", X = this.wx(px), Z = this.wy(py);
+    this.save(); const m = this.m; m.things = m.things || []; m.n = m.n || { t: 0 }; const pty = this.T.get(pid + ".type"), isDoor = pty === "door" || pty === "elevator", X = this.wx(px), Z = this.wy(py);
     const th = { id: "t" + (++m.n.t), prop: pid, x: isDoor ? (Math.floor(X / C) + 0.5) * C : snap16(X), y: isDoor ? (Math.floor(Z / C) + 0.5) * C : snap16(Z), ang: 0, layer: this.s.L };
     if (isDoor) { const L = this.s.L, cx = Math.floor(X / C), cy = Math.floor(Z / C); if (G.isWall(G.cell(m, L, cx - 1, cy)) || G.isWall(G.cell(m, L, cx + 1, cy))) th.ang = 0; else if (G.isWall(G.cell(m, L, cx, cy - 1)) || G.isWall(G.cell(m, L, cx, cy + 1))) th.ang = 90; }
+    if (pty === "elevator") th.stops = [{ s: this.s.L, h: 0 }, { s: this.s.L + 1, h: 0 }];
     m.things.push(th); this.sel = { kind: "thing", id: th.id }; this.changed(true); this.emitSel(); return th;
   };
   P.turn = function () {
@@ -293,7 +300,7 @@
     if (d.kind === "room" || d.kind === "zbox") { d.b = [cx, cy]; return this.redraw(); }
     if (d.kind === "zmove") { const dx = cx - d.a[0], dy = cy - d.a[1]; d.z.x0 = d.o[0] + dx; d.z.y0 = d.o[1] + dy; d.z.x1 = d.o[2] + dx; d.z.y1 = d.o[3] + dy; if (dx || dy) d.moved = true; return this.redraw(); }
     if (d.kind === "box") { this.sel.x1 = cx; this.sel.y1 = cy; return this.redraw(); }
-    if (d.kind === "thing") { const isDoor = this.T.get(d.th.prop + ".type") === "door", X = this.wx(px) + d.ox, Z = this.wy(py) + d.oy; d.th.x = isDoor ? (Math.floor(X / C) + 0.5) * C : snap16(X); d.th.y = isDoor ? (Math.floor(Z / C) + 0.5) * C : snap16(Z); d.moved = true; return this.redraw(); }
+    if (d.kind === "thing") { const dty = this.T.get(d.th.prop + ".type"), isDoor = dty === "door" || dty === "elevator", X = this.wx(px) + d.ox, Z = this.wy(py) + d.oy; d.th.x = isDoor ? (Math.floor(X / C) + 0.5) * C : snap16(X); d.th.y = isDoor ? (Math.floor(Z / C) + 0.5) * C : snap16(Z); d.moved = true; return this.redraw(); }
     if (d.kind === "start") { const m = this.m; this.T.setMany({ [m.id + ".startX"]: snap16(this.wx(px)), [m.id + ".startY"]: snap16(this.wy(py)) }); d.moved = true; }
   };
   P.up = function (e) {
@@ -376,6 +383,11 @@
     // objects on this story
     for (const th of this.things()) {
       const ty = T.get(th.prop + ".type"), selT = this.sel && this.sel.kind === "thing" && this.sel.id === th.id, nm = T.get(th.prop + ".name") || th.prop;
+      if (ty === "elevator") { const f = G.thingFrame(m, T, th), stops = th.stops && th.stops.length ? th.stops : [{ s: th.layer || 0, h: 0 }], here = stops.some(q => (q.s || 0) === L), lo = Math.min(...stops.map(q => q.s || 0)), hi = Math.max(...stops.map(q => q.s || 0)), inShaft = L >= lo && L <= hi;
+        const x0 = this.sx(f.x0), y0 = this.sy(f.y0), w = f.W * cs, hh = f.D * cs; x.save(); x.fillStyle = here ? "rgba(140,200,255,.35)" : inShaft ? "rgba(140,200,255,.12)" : "rgba(140,200,255,.05)"; x.fillRect(x0, y0, w, hh);
+        x.setLineDash(here ? [] : [5, 4]); x.strokeStyle = selT ? "#ffd84a" : here ? "#8cc8ff" : "rgba(140,200,255,.6)"; x.lineWidth = selT ? 3 : 2; x.strokeRect(x0 + 1, y0 + 1, w - 2, hh - 2); x.setLineDash([]);
+        if (cs >= 12) { x.fillStyle = here ? "#dff0ff" : "rgba(223,240,255,.7)"; x.font = "bold " + Math.round(Math.max(10, Math.min(16, cs * 0.3))) + "px system-ui"; x.textAlign = "center"; x.textBaseline = "middle"; x.fillText(here ? "⇅ stop" : inShaft ? "⇅" : "⇅ " + G.storyName(m, lo) + ".." + G.storyName(m, hi), this.sx(f.cx), this.sy(f.cy)); }
+        x.restore(); if (cs >= 30 && here) { x.fillStyle = "#e8f0f8"; x.font = "11px system-ui"; x.textAlign = "center"; x.textBaseline = "top"; x.fillText(nm, this.sx(f.cx), this.sy(f.cy) + Math.max(9, cs * 0.25)); } continue; }
       if (ty === "door") { const f = G.thingFrame(m, T, th), X = this.sx(f.cx), Y = this.sy(f.cy), ns = f.ux === 0, a = f.w * z / 2, b = Math.max(3, cs * 0.12);
         x.fillStyle = "rgba(217,163,90,.18)"; for (const [qx, qy] of f.cells) x.fillRect(this.sx(qx * C), this.sy(qy * C), cs, cs);
         const tp = m.id + ".th." + th.id + ".", own = T.has(tp + "openMode"), dv = k => own ? T.get(tp + k) : T.get(th.prop + "." + k), shOn = dv("shieldOn") !== "off", sf = dv("openMode") === "shot" ? dv("shotFirst") : "any";
@@ -422,6 +434,6 @@
     // status line
     x.fillStyle = "rgba(10,14,20,.75)"; x.fillRect(0, this.H() - 20, this.W(), 20); x.fillStyle = "#b9c8d8"; x.font = "11px system-ui"; x.textAlign = "left"; x.textBaseline = "middle";
     const hc = this.hover ? G.cell(m, L, this.hover[0], this.hover[1]) : null;
-    x.fillText("Story " + (L + 1) + "  ·  " + (this.hover ? "cell " + this.hover[0] + ", " + this.hover[1] + (hc ? "  ·  " + (G.isWall(hc) ? "wall" : [hc.f !== undefined ? "floor h " + (hc.h || 0) + "/16" + (hc.sh ? " " + hc.sh + " " + ARROW[hc.sd || 0] + " +" + (hc.sr || 8) + "/16" : "") : "", hc.c !== undefined ? "ceiling" : "", hc.li !== undefined ? "light " + hc.li + "%" : ""].filter(Boolean).join(", ")) : "  ·  empty") : "") + "  ·  1 cell = 2 m  ·  middle mouse / Space+drag pans, wheel zooms, Alt+click picks a texture", 8, this.H() - 10);
+    x.fillText("Story " + G.storyName(m, L) + "  ·  " + (this.hover ? "cell " + this.hover[0] + ", " + this.hover[1] + (hc ? "  ·  " + (G.isWall(hc) ? "wall" : [hc.f !== undefined ? "floor h " + (hc.h || 0) + "/16" + (hc.sh ? " " + hc.sh + " " + ARROW[hc.sd || 0] + " +" + (hc.sr || 8) + "/16" : "") : "", hc.c !== undefined ? "ceiling" : "", hc.li !== undefined ? "light " + hc.li + "%" : ""].filter(Boolean).join(", ")) : "  ·  empty") : "") + "  ·  1 cell = 2 m  ·  middle mouse / Space+drag pans, wheel zooms, Alt+click picks a texture", 8, this.H() - 10);
   };
 })();
