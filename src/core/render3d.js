@@ -296,6 +296,8 @@
     this.culledFx = 0;
     for (const f of list) if (f.kind === "mesh" && f.gm) { if (!onScreen(f)) { this.culledFx++; continue; } this.setMat(f.mat); const lv = this.lodLevelAt(Math.hypot(f.p[0] - this.cam.x, f.p[1] - this.cam.y, f.p[2] - this.cam.z), 20 * (f.scale || 1)); this.lodLevel = lv; for (let ms of f.gm.meshes) { ms = this.lodOf(f.gm, ms, lv); gl.uniformMatrix4fv(L.m, false, new Float32Array(M4.mul(f.M, f.pose[ms.node]))); bind(ms.buf, ms.tex || f.tex || f.gm.tex); gl.drawArrays(gl.TRIANGLES, 0, ms.n); } }
     // decals / sprites: a textured square at p facing n (up = the world's up, or z for floors); frame f of a horizontal strip of `frames`
+    // decals / sprites are in world space: undo the last mesh's model matrix (it used to stay set, so sprites were moved by whatever object was drawn last)
+    gl.uniformMatrix4fv(L.m, false, new Float32Array(M4.ident()));
     const decs = list.filter(f => f.kind === "decal" && f.texId), cm = this.cam, dd = f => (f.p[0] - cm.x) ** 2 + (f.p[1] - cm.y) ** 2 + (f.p[2] - cm.z) ** 2;
     decs.sort((a, b) => (a.sprite ? 1 : 0) - (b.sprite ? 1 : 0) || (a.sprite ? dd(b) - dd(a) : 0));
     for (const f of decs) {
