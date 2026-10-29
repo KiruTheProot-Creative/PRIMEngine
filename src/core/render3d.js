@@ -73,6 +73,16 @@
     "else{float fc=max(0.0,dot(n,uB));lit=0.62+0.3*max(0.0,dot(n,uLd))+0.18*fc*fc;}" +
     "vec3 c=vC*lit*uBright;float g=dot(c,vec3(0.299,0.587,0.114));c=mix(vec3(g),c,uMoodS);c=(c-0.5)*uMoodC+0.5;c=max(c*uMoodT,0.0);float f=clamp((vD-uFogR.x)/max(1.0,uFogR.y-uFogR.x),0.0,1.0);gl_FragColor=vec4(mix(c,uFog,f),1.0);}";
   // shadow pass: distance from the light, packed into RGBA (a cube map per light)
+  // door shields: a box of moving energy (3D value noise, two octaves), additive, with a ripple where a shot hit
+  const HVS = "attribute vec3 aP;uniform mat4 uVP;varying vec3 vW;void main(){vW=aP;gl_Position=uVP*vec4(aP,1.0);}";
+  const HFS = "precision mediump float;varying vec3 vW;uniform vec3 uC;uniform float uA;uniform float uT;uniform float uS;uniform float uG;uniform vec4 uHit;" +
+    "float h3(vec3 p){return fract(sin(dot(p,vec3(127.1,311.7,74.7)))*43758.5453);}" +
+    "float vn(vec3 p){vec3 i=floor(p);vec3 f=fract(p);f=f*f*(3.0-2.0*f);" +
+    "float a=mix(mix(h3(i),h3(i+vec3(1,0,0)),f.x),mix(h3(i+vec3(0,1,0)),h3(i+vec3(1,1,0)),f.x),f.y);" +
+    "float b=mix(mix(h3(i+vec3(0,0,1)),h3(i+vec3(1,0,1)),f.x),mix(h3(i+vec3(0,1,1)),h3(i+vec3(1,1,1)),f.x),f.y);return mix(a,b,f.z);}" +
+    "void main(){vec3 q=vW*(0.03*uS);float n=vn(q+vec3(0.0,uT*0.6,uT*0.25))*0.65+vn(q*2.3-vec3(uT*0.4,0.0,uT*0.5))*0.35;" +
+    "float k=0.25+1.5*n*n;float r=0.0;if(uHit.w>=0.0&&uHit.w<0.6){float d=length(vW-uHit.xyz);r=exp(-pow((d-uHit.w*260.0)/14.0,2.0))*(1.0-uHit.w/0.6)*2.5;}" +
+    "float a=uA*(0.35+0.85*n)+r*0.6;gl_FragColor=vec4(uC*(k+r)*uG*a,1.0);}";
   const SVS = "attribute vec3 aPos;uniform mat4 uVP;uniform mat4 uM;varying vec3 vW;void main(){vec4 w=uM*vec4(aPos,1.0);vW=w.xyz;gl_Position=uVP*w;}";
   const SFS = "precision highp float;uniform vec3 uLP;uniform float uR;varying vec3 vW;void main(){float v=clamp(length(vW-uLP)/uR,0.0,0.9999);vec4 e=fract(v*vec4(1.0,255.0,65025.0,16581375.0));e-=e.yzww*vec4(1.0/255.0,1.0/255.0,1.0/255.0,0.0);gl_FragColor=e;}";
   // post effects (the scene is drawn into an HDR picture first): bright parts -> blurred glow (bloom) -> added back, exposure and a soft roll-off of over-bright colours
@@ -331,6 +341,23 @@
       gl.depthMask(true); gl.disable(gl.BLEND);
     }
     this.setMat(); gl.uniformMatrix4fv(L.m, false, new Float32Array(M4.ident()));
+    const shields = list.filter(f => f.kind === "shield"); if (shields.length) this.drawShields(shields);
+  };
+  // door shields (Play3D.shieldItems): f = { mn, mx (world box), c (colour), a (alpha), s (noise size), sp (speed), g (glow), hit: [x, y, z, age] }
+  P.drawShields = function (list) {
+    const gl = this.gl; if (this.shPr === undefined) { this.shPr = null; try { const mk = (t, src) => { const s = gl.createShader(t); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; };
+      const pr = gl.createProgram(); gl.attachShader(pr, mk(gl.VERTEX_SHADER, HVS)); gl.attachShader(pr, mk(gl.FRAGMENT_SHADER, HFS)); gl.linkProgram(pr); if (!gl.getProgramParameter(pr, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(pr));
+      const u = n => gl.getUniformLocation(pr, n); this.shL = { p: gl.getAttribLocation(pr, "aP"), vp: u("uVP"), c: u("uC"), a: u("uA"), t: u("uT"), s: u("uS"), g: u("uG"), hit: u("uHit") }; this.shPr = pr; } catch (e) { console.warn("shield shader", e.message); } }
+    if (!this.shPr) return; const L = this.shL, tm = performance.now() / 1000;
+    for (const k of ["pos", "uv", "col"]) if (this.loc[k] >= 0) gl.disableVertexAttribArray(this.loc[k]);
+    gl.useProgram(this.shPr); gl.uniformMatrix4fv(L.vp, false, new Float32Array(this.vp)); gl.enableVertexAttribArray(L.p);
+    gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE); gl.depthMask(false); if (!this.shBuf) this.shBuf = gl.createBuffer();
+    for (const f of list) { const [x0, y0, z0] = f.mn, [x1, y1, z1] = f.mx, v = [], q = (a, b, c, d) => v.push(...a, ...b, ...c, ...a, ...c, ...d), P = (x, y, z) => [x, y, z];
+      q(P(x0, y0, z0), P(x1, y0, z0), P(x1, y1, z0), P(x0, y1, z0)); q(P(x0, y0, z1), P(x1, y0, z1), P(x1, y1, z1), P(x0, y1, z1)); q(P(x0, y0, z0), P(x0, y1, z0), P(x0, y1, z1), P(x0, y0, z1));
+      q(P(x1, y0, z0), P(x1, y1, z0), P(x1, y1, z1), P(x1, y0, z1)); q(P(x0, y1, z0), P(x1, y1, z0), P(x1, y1, z1), P(x0, y1, z1)); q(P(x0, y0, z0), P(x1, y0, z0), P(x1, y0, z1), P(x0, y0, z1));
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.shBuf); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(v), gl.STREAM_DRAW); gl.vertexAttribPointer(L.p, 3, gl.FLOAT, false, 12, 0);
+      gl.uniform3fv(L.c, f.c); gl.uniform1f(L.a, f.a); gl.uniform1f(L.t, tm * (f.sp || 1)); gl.uniform1f(L.s, f.s || 1); gl.uniform1f(L.g, f.g || 1); gl.uniform4fv(L.hit, f.hit || [0, 0, 0, -1]); gl.drawArrays(gl.TRIANGLES, 0, v.length / 3); }
+    gl.disableVertexAttribArray(L.p); gl.depthMask(true); gl.disable(gl.BLEND); gl.useProgram(this.pr); for (const k of ["pos", "uv", "col"]) if (this.loc[k] >= 0) gl.enableVertexAttribArray(this.loc[k]);
   };
 
   // nearest solid surface along a ray (origin o, direction d): { t, p, info } or null. extraTris = moving blocks (closed doors)

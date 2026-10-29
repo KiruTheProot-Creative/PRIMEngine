@@ -1,0 +1,33 @@
+// Door energy shields: missile door in the missile's Door colour, wrong shots ripple + bounce off once, the right shot breaks it; a sealed (tag) door shuts, glows, and opens when the tag says so. Frames stepped by hand.
+const SP = '/tmp/claude-0/-home-claude/4d2f2209-a771-580d-8052-566f87920e94/scratchpad';
+module.exports = async (p, out) => {
+  p.on('pageerror', e => console.log('PAGEERROR', e.message, (e.stack || '').split('\n')[1]));
+  const menu = async (top, item) => { await p.click('.mb:has-text("' + top + '")'); await p.click('.pitem:has-text("' + item + '")'); };
+  await p.click('.tile.plus'); await p.waitForSelector('#app'); await p.waitForTimeout(300);
+  await menu('Screen', 'Create Map'); await p.waitForSelector('.medcv');
+  let [fc] = await Promise.all([p.waitForEvent('filechooser'), menu('Assets', 'Import Files')]); await fc.setFiles([SP + '/Arm_canon.fbx']); await p.waitForTimeout(2000);
+  await p.click('.tab:has-text("Player Editor")'); await p.waitForTimeout(500);
+  await p.click('button:has-text("New weapon")'); await p.click('.pitem:has-text("Arm_canon")'); await p.waitForTimeout(1500);
+  await p.evaluate(() => { const S = __studio.S, Sc = PRIM.Schema, pr = S.project, T = S.tags, m = pr.maps[0], arm = pr.assets.find(a => /arm/i.test(a.id + a.name)).id, C = c => (c + 0.5) * 128;
+    const a1 = pr.player.attachments[0]; T.setMany({ ['player.' + a1.id + '.projType']: 'particle', ['player.' + a1.id + '.projSpeed']: 900, ['player.' + a1.id + '.name']: 'Blaster' });
+    const att = { id: 'att9' }; pr.player.attachments.push(att); Sc.defineAttach(pr, att, { type: 'weapon', name: 'Missile', asset: arm }); att.script = { nodes: [], links: [] }; Sc.ensurePlayer(pr); T.setMany({ 'player.att9.projType': 'particle', 'player.att9.projSpeed': 900, 'player.att9.doorColor': '#20ff60' });
+    pr.tags.bossDone = { type: 'bool', value: false, label: 'Boss beaten', group: 'custom', custom: true };
+    const md = Sc.addProp(pr, { name: 'Missile door', type: 'door', asset: arm, openMode: 'shot', shotFirst: 'weapon', shotWeapon: 'att9', autoClose: false });
+    const sd = Sc.addProp(pr, { name: 'Boss door', type: 'door', asset: arm, openMode: 'interact', lockNeedTag: 'bossDone', lockNeedVal: 'yes', shieldColor: '#ff3a5a', autoClose: false });
+    m.things = [{ id: 'md', prop: md.id, x: C(24), y: C(21), ang: 0, layer: 0 }, { id: 'sd', prop: sd.id, x: C(26), y: C(21), ang: 0, layer: 0 }]; m.n.t = 9; T.emit([]); });
+  await p.evaluate(() => { __studio.S.objView = false; }); await p.click('.tab:has-text("Timeline")'); await p.waitForTimeout(200); await p.click('.tab:has-text("Player Editor")'); await p.waitForTimeout(400);
+  await p.click('button:has-text("Walk map1")'); await p.waitForFunction(() => __studio.S.play && __studio.S.play.things && __studio.S.play.things.length >= 2, null, { timeout: 15000 }); await p.waitForTimeout(500);
+  const C = c => (c + 0.5) * 128;
+  const go = (n, fn) => p.evaluate(([n, fn]) => { const q = __studio.S.play; q.msg.style.display = 'none'; let r0 = fn ? (new Function('q', fn))(q) : null; let t = q.last || performance.now(); const trail = [];
+    for (let i = 0; i < n; i++) { t += 16; q.frame(t); cancelAnimationFrame(q.raf); const f = (q.fx || []).find(x => x.pre && !x.deco); if (f && i % 4 === 0) trail.push([Math.round(f.p[2] / 128 - 0.5 * 1), f.bounced ? 'B' : '']); } q.raf = requestAnimationFrame(z => q.frame(z));
+    const D = id => { const o = q.things.find(x => x.th.id === id); return { st: o.st, shA: +(o.shA || 0).toFixed(2), col: o.shCol && o.shCol.map(v => +v.toFixed(2)), gone: !!o.shieldGone, ripple: o.shHit ? +o.shHit[3].toFixed(2) : null }; };
+    return JSON.stringify({ r0, md: D('md'), sd: D('sd'), trail }); }, [n, fn || '']);
+  const aim = (x) => `q.x = ${x}; q.y = ${C(23)}; q.z = 0; q.body = null; q.yaw = -Math.PI / 2; q.pitch = 0;`;
+  console.log('shields up:', await go(10, aim(C(24))));
+  console.log('blaster at the missile door (bounces back):', await go(40, aim(C(24)) + 'q.setWeapon(0); return null;'), await go(2, 'q.fireProj(q.curWeapon()); return null;'), await go(40));
+  await p.evaluate(s => { const q = __studio.S.play; cancelAnimationFrame(q.raf); q.x = 24.5 * 128; q.y = 23.5 * 128; q.yaw = -Math.PI / 2; q.pitch = 0.05; q.body = null; q.frame(q.last + 16); cancelAnimationFrame(q.raf); window.__img = q.view.gl.canvas.toDataURL('image/png'); q.raf = requestAnimationFrame(z => q.frame(z)); });
+  require('fs').writeFileSync(out + '_shields.png', Buffer.from((await p.evaluate(() => window.__img)).split(',')[1], 'base64'));
+  console.log('missile at it (breaks):', await go(3, 'q.setWeapon(1); return null;'), await go(2, 'q.fireProj(q.curWeapon()); return null;'), await go(40));
+  console.log('boss door: walk up + E (sealed):', await go(5, aim(C(26)) + 'q.y = ' + C(21) + ' + 70; q.interact(); return q.toastEl && q.toastEl.textContent;'));
+  console.log('boss beaten (tag yes):', await go(60, 'q.T.set("bossDone", true); return null;'), await go(30, 'q.interact(); return null;'));
+};

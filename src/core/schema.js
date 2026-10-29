@@ -154,6 +154,7 @@
     { k: "matTexture", label: "Base color map (replaces the model's own picture)", type: "asset", assetType: "image", def: "", tab: "material" },
     { k: "matEmitMap", label: "Emission map (bright parts glow; empty = the whole object glows)", type: "asset", assetType: "image", def: "", tab: "material" }, NUM("matEmit", "Emission strength (0 = no glow)", 0, 0, 8, 0.05, { tab: "material" }),
     // projectile: what a "Fire the projectile" node launches from the muzzle point
+    { k: "doorColor", label: "Door colour (doors that need this weapon glow in it)", type: "color", def: "#ff8a2a", showIf: WP },
     { k: "projType", label: "Projectile", type: "choice", options: [["none", "None"], ["hitscan", "Hitscan (a straight line to where you aim)"], ["particle", "Particle (sphere or laser bolt)"], ["mesh", "Mesh (a 3D model that flies off)"]], def: "none", showIf: WP },
     NUM("fireRate", "Most shots per second (0 = no limit)", 0, 0, 60, 0.5, { showIf: ["projType", ["hitscan", "particle", "mesh"]] }),
     NUM("emitX", "Emitter point X (where projectiles start)", 0, -500, 500, 0.5, { showIf: ["projType", ["hitscan", "particle", "mesh"]] }), NUM("emitY", "Emitter point Y", 0, -500, 500, 0.5, { showIf: ["projType", ["hitscan", "particle", "mesh"]] }), NUM("emitZ", "Emitter point Z", 0, -500, 500, 0.5, { showIf: ["projType", ["hitscan", "particle", "mesh"]] }),
@@ -353,7 +354,17 @@
     { k: "shotFirst", label: "First shot that opens it must be", type: "choice", options: [["any", "any shot"], ["weapon", "from a certain weapon (e.g. a missile)"], ["charged", "a charged shot"]], def: "any", showIf: ["type", "door"], showIf2: ["openMode", "shot"] },
     { k: "shotWeapon", label: "That weapon", type: "weaponRef", def: "", showIf: ["type", "door"], showIf2: ["shotFirst", "weapon"] },
     { k: "shotAfter", label: "After that first shot it opens with any weapon", type: "bool", def: true, showIf: ["type", "door"], showIf2: ["openMode", "shot"] },
-    { k: "shotMsg", label: "Message when the wrong shot hits it (empty = none)", type: "string", def: "", showIf: ["type", "door"], showIf2: ["openMode", "shot"] });
+    { k: "shotMsg", label: "Message when the wrong shot hits it (empty = none)", type: "string", def: "", showIf: ["type", "door"], showIf2: ["openMode", "shot"] },
+    // energy shield: shown while the door needs a certain weapon / a charged shot, or is sealed by its tag (boss rooms); the right shot breaks it
+    { k: "shieldOn", label: "Energy shield", type: "choice", options: [["auto", "Yes: while it needs a certain weapon or a charged shot, or is sealed by its tag"], ["off", "Never"]], def: "auto", showIf: ["type", "door"] },
+    { k: "shieldColor", label: "Shield colour (sealed and charged-shot doors; weapon doors use the weapon's Door colour)", type: "color", def: "#ff3a5a", showIf: ["type", "door"], showIf2: ["shieldOn", "auto"] },
+    NUM("shieldAlpha", "Shield strength (see-through 0 .. 1 solid glow)", 0.5, 0.05, 1, 0.01, { showIf: ["type", "door"], showIf2: ["shieldOn", "auto"] }),
+    NUM("shieldSpeed", "Shield movement speed", 1, 0, 10, 0.05, { showIf: ["type", "door"], showIf2: ["shieldOn", "auto"] }),
+    NUM("shieldSize", "Shield pattern size (bigger = finer)", 1, 0.1, 10, 0.05, { showIf: ["type", "door"], showIf2: ["shieldOn", "auto"] }),
+    NUM("shieldGlow", "Shield glow", 1.4, 0, 6, 0.05, { showIf: ["type", "door"], showIf2: ["shieldOn", "auto"] }),
+    { k: "ricochet", label: "Wrong shots bounce off the shield (once)", type: "bool", def: true, showIf: ["type", "door"], showIf2: ["shieldOn", "auto"] },
+    { k: "shieldClank", label: "Sound when a wrong shot hits the shield", type: "asset", assetType: "sound", def: "", showIf: ["type", "door"], showIf2: ["shieldOn", "auto"] },
+    { k: "shieldBreak", label: "Sound when the shield breaks", type: "asset", assetType: "sound", def: "", showIf: ["type", "door"], showIf2: ["shieldOn", "auto"] });
   // ---- solid objects: a collision box that blocks walking (and, if set, shots). In the object's own space = the Object Editor grid (X right, Y up, Z front, origin = middle of the cell on the floor)
   const SOL = ["decoration", "interactive", "save", "checkpoint", "speaker", "spawner"], SB = { showIf: ["type", SOL], showIf2: ["solid", "box"] };
   S.PROP.push({ k: "solid", label: "Solid (blocks the player and enemies)", type: "choice", options: [["none", "No: you walk through it"], ["auto", "Yes: a box around the model"], ["box", "Yes: my own box (set below)"]], def: "none", showIf: ["type", SOL] },
