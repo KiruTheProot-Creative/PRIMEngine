@@ -25,9 +25,17 @@
       { k: "hoverSound", label: "Hover sound", type: "asset", assetType: "sound", def: "" }, { k: "clickSound", label: "Click sound", type: "asset", assetType: "sound", def: "" },
       { k: "action", label: "On click", type: "choice", options: [["none", "Nothing"], ["goto", "Go to screen"], ["back", "Go back (previous screen)"], ["start", "Start a new game"], ["continue", "Continue (the latest save; a new game if there is none)"], ["load", "Load a save slot"], ["resume", "Resume game (pause menu)"], ["restart", "Restart level (pause menu)"], ["menu", "Quit to main menu"], ["quit", "Quit (close the game)"]], def: "none" },
       { k: "target", label: "Screen", type: "screenRef", def: "", showIf: ["action", "goto"] },
+      { k: "confirm", label: "Ask “Are you sure?” first", type: "bool", def: false }, { k: "confirmText", label: "Question", type: "string", def: "Are you sure?", showIf: ["confirm", true] }, { k: "yesText", label: "Yes button", type: "string", def: "Yes", showIf: ["confirm", true] }, { k: "noText", label: "No button", type: "string", def: "No", showIf: ["confirm", true] },
       { k: "slot", label: "Save slot (1 to 3; menus can show {save.info1}, {save.info2}, {save.info3})", type: "number", def: 1, min: 1, max: 3, step: 1, showIf: ["action", ["start", "load"]] }] },
     slider: { label: "Slider", icon: "◐", props: [{ k: "label", label: "Label", type: "string", def: "Value" }, { k: "bind", label: "Controls tag", type: "tagRef", refType: "number", def: "" }, FONT, SIZE(26), COLOR("color", "Color", "#d9f7ff"), COLOR("accent", "Accent", "#7df3ff"), X, Y, W("Width", 420)] },
     toggle: { label: "Toggle", icon: "◉", props: [{ k: "label", label: "Label", type: "string", def: "Option" }, { k: "bind", label: "Controls tag", type: "tagRef", refType: "bool", def: "" }, FONT, SIZE(26), COLOR("color", "Color", "#d9f7ff"), COLOR("accent", "Accent", "#7df3ff"), X, Y, W("Width", 420)] },
+    // a choice picker: "<  Normal  >" (left / right or click the arrows) that sets a tag; options from the tag (a list tag) or written as  Easy=0, Normal=1, Hard=2
+    choice: { label: "Choice picker", icon: "⇋", props: [{ k: "label", label: "Label", type: "string", def: "Difficulty" }, { k: "bind", label: "Controls tag", type: "tagRef", refType: "any", def: "" },
+      { k: "options", label: "Choices (Name=value, one per line; empty = the tag's own list)", type: "string", def: "Easy=0\nNormal=1\nHard=2", multi: true }, { k: "wrap", label: "Goes round (after the last comes the first)", type: "bool", def: true },
+      FONT, SIZE(26), COLOR("color", "Color", "#d9f7ff"), COLOR("accent", "Accent (arrows, pointed at)", "#7df3ff"), X, Y, W("Width", 520), { k: "changeSound", label: "Change sound", type: "asset", assetType: "sound", def: "" }] },
+    // a key binding: shows the key; click it (or Enter) and press a new key / mouse button
+    keybind: { label: "Key binding", icon: "⌨", props: [{ k: "label", label: "Label", type: "string", def: "Jump" }, { k: "bind", label: "Key tag it changes (e.g. player.keyJump)", type: "tagRef", refType: "any", def: "player.keyJump" },
+      { k: "waitText", label: "Text while waiting for a key", type: "string", def: "Press a key…" }, FONT, SIZE(26), COLOR("color", "Color", "#d9f7ff"), COLOR("accent", "Accent (key box, pointed at)", "#7df3ff"), X, Y, W("Width", 520)] },
     pips: { label: "Counter boxes (energy tanks, lives)", icon: "▪", props: [{ k: "bind", label: "Filled boxes = tag", type: "tagRef", refType: "number", def: "player.tanks" }, { k: "max", label: "Number of boxes = tag (empty = the tag's highest value)", type: "tagRef", refType: "number", def: "player.tanksMax" },
       { k: "box", label: "Box size", type: "number", def: 18, min: 2, max: 200, step: 1 }, { k: "gap", label: "Space between boxes", type: "number", def: 5, min: 0, max: 100, step: 1 }, { k: "perRow", label: "Boxes per row (0 = one row)", type: "number", def: 7, min: 0, max: 100, step: 1 },
       COLOR("color", "Filled color", "#ffb030"), COLOR("empty", "Empty color", "#3a2a12"), COLOR("border", "Border color", "#000000"), Object.assign({}, X, { def: -520 }), Object.assign({}, Y, { def: -272 }), OPACITY] },
@@ -52,6 +60,23 @@
       { k: "vertical", label: "Stacked (top to bottom)", type: "bool", def: false }, { k: "missing", label: "Shows keys you don't have yet (faded)", type: "bool", def: false }, OPACITY] },
     bar: { label: "Bar", icon: "▬", props: [{ k: "bind", label: "Shows tag", type: "tagRef", refType: "number", def: "" }, { k: "max", label: "Full when tag (optional)", type: "tagRef", refType: "number", def: "" }, { k: "label", label: "Label", type: "string", def: "" }, FONT, SIZE(18),
       COLOR("textColor", "Label color", "#ffffff"), COLOR("color", "Fill color", "#ff4a4a"), COLOR("bg", "Back color", "#2a0d0d"), X, Y, W("Width", 260), { k: "h", label: "Height", type: "number", def: 22, min: 4, max: 200, step: 1 }, OPACITY] },
+    // a panel: a coloured box (rounded corners, border, gradient, shadow) or a picture frame that stretches without warping its corners (9-slice), as a background for menus
+    panel: { label: "Panel (box / frame)", icon: "▢", props: [X, Y, W("Width", 520), Object.assign({}, H, { def: 320, label: "Height" }), COLOR("fill", "Fill color", "#0b1a26"), { k: "fillAlpha", label: "Fill see-through (0 = clear, 1 = solid)", type: "number", def: 0.85, min: 0, max: 1, step: 0.05 },
+      { k: "grad", label: "Gradient", type: "choice", options: [["none", "None (one color)"], ["down", "Top to bottom"], ["across", "Left to right"], ["glow", "From the middle"]], def: "none" }, Object.assign(COLOR("fill2", "Second gradient color", "#000000"), { showIf: ["grad", ["down", "across", "glow"]] }),
+      { k: "border", label: "Border width (px)", type: "number", def: 2, min: 0, max: 40, step: 1 }, COLOR("borderColor", "Border color", "#2c5a74"), { k: "radius", label: "Corner roundness (px)", type: "number", def: 8, min: 0, max: 300, step: 1 },
+      { k: "shadow", label: "Shadow size (px)", type: "number", def: 0, min: 0, max: 120, step: 1 }, COLOR("shadowColor", "Shadow / glow color", "#000000"),
+      { k: "image", label: "Frame picture (optional, 9-slice)", type: "asset", assetType: "image", def: "" }, { k: "slice", label: "Frame corner size in the picture (px; the corners never stretch)", type: "number", def: 16, min: 0, max: 512, step: 1 },
+      { k: "sliceScale", label: "Frame corner size on screen (x)", type: "number", def: 1, min: 0.1, max: 10, step: 0.1 }, OPACITY] },
+    // a save slot: shows what is in slot 1..3 (place, play time, date, a small picture); click = load it (empty = new game in it); hold the delete key while pointing at it = delete it
+    saveslot: { label: "Save slot", icon: "▣", props: [{ k: "slot", label: "Slot (1 to 3)", type: "number", def: 1, min: 1, max: 3, step: 1 }, X, Y, W("Width", 620), Object.assign({}, H, { def: 110, label: "Height" }),
+      FONT, SIZE(28), COLOR("color", "Text color", "#d9f7ff"), COLOR("subColor", "Small text color", "#8fb3c4"), COLOR("bg", "Background", "#0b1a26"), COLOR("hoverBg", "Background when pointed at", "#123247"), COLOR("border", "Border", "#2c5a74"), COLOR("hoverBorder", "Border when pointed at", "#7df3ff"),
+      { k: "radius", label: "Corner roundness (px)", type: "number", def: 6, min: 0, max: 60, step: 1 }, { k: "texture", label: "Background picture (optional)", type: "asset", assetType: "image", def: "" },
+      { k: "title", label: "Title ({n} = the slot number)", type: "string", def: "FILE {n}" }, { k: "emptyText", label: "Text when empty", type: "string", def: "Empty – start a new game" },
+      { k: "showShot", label: "Show a picture of where you saved", type: "bool", def: true }, { k: "showPlace", label: "Show the place", type: "bool", def: true }, { k: "showTime", label: "Show the play time", type: "bool", def: true }, { k: "showDate", label: "Show the date", type: "bool", def: true }, { k: "showEnergy", label: "Show energy (health + tanks)", type: "bool", def: false },
+      { k: "emptyClick", label: "Clicking an empty slot", type: "choice", options: [["new", "Starts a new game in it"], ["nothing", "Does nothing (a load-only screen)"]], def: "new" },
+      { k: "deleteKey", label: "Hold this key while pointing at it to delete (empty = can not delete)", type: "choice", options: [["", "(none)"], ["r", "R"], ["delete", "Delete"], ["backspace", "Backspace"], ["x", "X"], ["d", "D"]], def: "r" },
+      { k: "deleteHold", label: "Hold for (s)", type: "number", def: 1, min: 0, max: 5, step: 0.1 }, COLOR("deleteColor", "Delete bar color", "#ff4a5a"),
+      { k: "hoverSound", label: "Hover sound", type: "asset", assetType: "sound", def: "" }, { k: "clickSound", label: "Click sound", type: "asset", assetType: "sound", def: "" }, { k: "deleteSound", label: "Delete sound", type: "asset", assetType: "sound", def: "" }, OPACITY] },
     // a video (.mp4 / .webm): a cutscene when stretched to the screen; when it ends (or is skipped) it can go to a screen or start the game
     video: { label: "Video (cutscene)", icon: "▶", props: [{ k: "asset", label: "Video (.mp4 / .webm)", type: "asset", assetType: "video", def: "" }, X, Y, W("Width (0 = 640)"), H, { k: "stretch", label: "Fill the whole screen (a cutscene)", type: "bool", def: true }, { k: "fit", label: "Fill style", type: "choice", options: [["contain", "Whole picture (black bars if needed)"], ["cover", "Cover the screen (cuts the edges)"]], def: "contain", showIf: ["stretch", true] },
       { k: "volume", label: "Volume (with the music volume setting)", type: "number", def: 1, min: 0, max: 2, step: 0.05 }, { k: "loop", label: "Loop", type: "bool", def: false }, { k: "skippable", label: "A key or click skips it", type: "bool", def: true },
@@ -67,6 +92,26 @@
       { k: "fadeIn", label: "Fade in (s)", type: "number", def: 0.8, min: 0, max: 5, step: 0.05 }, { k: "fadeInType", label: "Fade in style", type: "choice", options: FADES, def: "fade" },
       { k: "fadeOut", label: "Fade out (s)", type: "number", def: 0.8, min: 0, max: 5, step: 0.05 }, { k: "fadeOutType", label: "Fade out style", type: "choice", options: FADES, def: "fade" }] },
   };
+  // things every element can have: an always-running animation, an entrance when the screen opens, text styling (text elements)
+  const EANIM = [{ k: "anim", label: "Animation", type: "choice", options: [["none", "None"], ["pulse", "Pulse (grows and shrinks)"], ["float", "Float (up and down)"], ["blink", "Blink"], ["glowpulse", "Fade in and out"], ["spin", "Spin"], ["sway", "Sway (tilts left and right)"], ["shake", "Shake"]], def: "none" },
+    { k: "animSpeed", label: "Animation speed (times per second)", type: "number", def: 0.6, min: 0.05, max: 10, step: 0.05 }, { k: "animAmount", label: "Animation strength", type: "number", def: 1, min: 0, max: 10, step: 0.05 },
+    { k: "enter", label: "When the screen opens", type: "choice", options: [["none", "Just there"], ["fade", "Fades in"], ["up", "Slides in from below"], ["down", "Slides in from above"], ["left", "Slides in from the right"], ["right", "Slides in from the left"], ["zoom", "Zooms in"], ["pop", "Pops in"]], def: "none" },
+    { k: "enterDelay", label: "…after (s)", type: "number", def: 0, min: 0, max: 30, step: 0.05 }, { k: "enterTime", label: "…taking (s)", type: "number", def: 0.4, min: 0.05, max: 10, step: 0.05 }];
+  const TXT = [{ k: "bold", label: "Bold", type: "bool", def: false }, { k: "italic", label: "Italic", type: "bool", def: false }, { k: "spacing", label: "Letter spacing (px)", type: "number", def: 0, min: -10, max: 60, step: 0.5 },
+    { k: "lineH", label: "Line height", type: "number", def: 1.15, min: 0.6, max: 4, step: 0.05 }, { k: "talign", label: "Lines line up", type: "choice", options: [["center", "Centered"], ["left", "Left"], ["right", "Right"]], def: "center" },
+    { k: "outline", label: "Outline width (px)", type: "number", def: 0, min: 0, max: 20, step: 0.5 }, COLOR("outlineColor", "Outline color", "#000000"),
+    { k: "shadowX", label: "Shadow right (px)", type: "number", def: 0, min: -50, max: 50, step: 1 }, { k: "shadowY", label: "Shadow down (px)", type: "number", def: 0, min: -50, max: 50, step: 1 }, { k: "shadowBlur", label: "Shadow blur (px)", type: "number", def: 0, min: 0, max: 60, step: 1 }, COLOR("shadowColor", "Shadow color", "#000000"),
+    { k: "glow", label: "Glow size (px, 0 = none)", type: "number", def: 0, min: 0, max: 80, step: 1 }, COLOR("glowColor", "Glow color", "#7df3ff")];
+  S.EANIM = EANIM; S.TXT = TXT;
+  for (const t of ["title", "button"]) S.NODE[t].props.push(...TXT.map(q => t === "button" ? Object.assign({}, q, { showIf: ["mode", "text"] }) : q));
+  S.NODE.title.props[0] = Object.assign({}, S.NODE.title.props[0], { multi: true });
+  // a sprite strip on an image element: frames side by side
+  S.NODE.image.props.push({ k: "frames", label: "Frames side by side (a sprite strip; 1 = still picture)", type: "number", def: 1, min: 1, max: 256, step: 1 }, { k: "fps", label: "Frames per second", type: "number", def: 10, min: 0.5, max: 60, step: 0.5 }, { k: "slice", label: "9-slice corner size (px, 0 = off; stretches without warping the corners)", type: "number", def: 0, min: 0, max: 512, step: 1 });
+  for (const [t, d] of Object.entries(S.NODE)) if (!["splash", "sound", "video"].includes(t)) d.props.push(...EANIM);
+  // how a screen comes in (in the game: the old screen goes, the new one arrives)
+  const TRANS = [{ k: "trans", label: "Transition when it opens", type: "choice", options: [["none", "Cut (instant)"], ["fade", "Cross-fade"], ["black", "Fade through black"], ["white", "Fade through white"], ["left", "Slide in from the right"], ["right", "Slide in from the left"], ["up", "Slide up"], ["down", "Slide down"], ["zoom", "Zoom in"], ["wipe", "Wipe"], ["blur", "Blur in"]], def: "fade" },
+    { k: "transTime", label: "Transition time (s)", type: "number", def: 0.35, min: 0.05, max: 5, step: 0.05 }];
+  S.TRANS = TRANS;
   S.SCREEN = {
     menu: [COLOR("bg", "Background color", "#030a12"), { k: "bgImage", label: "Background image", type: "asset", assetType: "image", def: "" }, { k: "music", label: "Music", type: "asset", assetType: "sound", def: "" }],
     hud: [],
@@ -74,12 +119,13 @@
     pause: [COLOR("bg", "Darkening color", "#000000"), { k: "dim", label: "Darken the game (0 = see-through, 1 = solid)", type: "number", def: 0.55, min: 0, max: 1, step: 0.05 }, { k: "blur", label: "Blur the game (px)", type: "number", def: 4, min: 0, max: 30, step: 1 }, { k: "bgImage", label: "Background image", type: "asset", assetType: "image", def: "" }, { k: "music", label: "Music while paused", type: "asset", assetType: "sound", def: "" }],
     splash: [COLOR("bg", "Background color", "#000000"), { k: "skippable", label: "Click or key skips", type: "bool", def: true }, { k: "next", label: "Then go to", type: "screenRef", def: "main" }],
     // the prologue: a story text before the game. "scroller" = text crawling away into the distance, "typer" = typed letter by letter, page after page
-    prologue: [{ k: "style", label: "Style", type: "choice", options: [["scroller", "Scroller: the text crawls up and away into space"], ["typer", "Typer: typed letter by letter, page by page"]], def: "scroller" },
+    prologue: [{ k: "style", label: "Style", type: "choice", options: [["scroller", "Scroller: the text crawls up and away into space"], ["typer", "Typer: typed letter by letter, page by page"], ["credits", "Credits: rolls up, lines starting with # are headings"]], def: "scroller" },
+      COLOR("headColor", "Heading color (credits: lines starting with #)", "#7df3ff"), { k: "headSize", label: "Heading size (credits)", type: "number", def: 30, min: 8, max: 200, step: 1 },
       { k: "intro", label: "Opening line (shown alone first, empty = none)", type: "string", def: "", multi: true }, COLOR("introColor", "Opening line color", "#4fc3ff"),
       { k: "text", label: "Story text (typer: an empty line starts a new page)", type: "string", def: "Long ago, on a world at the edge of the map…\n\nThe colony fell silent.\nOne hunter was sent to find out why.", multi: true },
       FONT, SIZE(40), COLOR("color", "Text color", "#ffd84a"), { k: "align", label: "Text alignment", type: "choice", options: [["center", "Centered"], ["left", "Left"], ["justify", "Justified (straight edges)"]], def: "center" },
       { k: "width", label: "Text column width (px)", type: "number", def: 820, min: 200, max: 1280, step: 10 },
-      { k: "speed", label: "Scroll speed (px per second)", type: "number", def: 45, min: 5, max: 600, step: 1, showIf: ["style", "scroller"] },
+      { k: "speed", label: "Scroll speed (px per second)", type: "number", def: 45, min: 5, max: 600, step: 1, showIf: ["style", ["scroller", "credits"]] },
       { k: "tilt", label: "Tilt into the distance (degrees, 0 = flat credits roll)", type: "number", def: 55, min: 0, max: 80, step: 1, showIf: ["style", "scroller"] },
       { k: "cps", label: "Typing speed (letters per second)", type: "number", def: 16, min: 1, max: 200, step: 1, showIf: ["style", "typer"] },
       { k: "typeSound", label: "Typing sound", type: "asset", assetType: "sound", def: "", showIf: ["style", "typer"] }, { k: "typeEvery", label: "Typing sound every (letters)", type: "number", def: 2, min: 1, max: 20, step: 1, showIf: ["style", "typer"] },
@@ -89,6 +135,13 @@
       { k: "endHold", label: "Waits at the end (s)", type: "number", def: 1.5, min: 0, max: 30, step: 0.1 }, { k: "skippable", label: "A key or click skips it", type: "bool", def: true },
       { k: "then", label: "Then", type: "choice", options: [["none", "Nothing"], ["goto", "Go to a screen"], ["start", "Start a new game"], ["back", "Go back (previous screen)"], ["menu", "Main menu"]], def: "goto" }, { k: "next", label: "Screen", type: "screenRef", def: "main", showIf: ["then", "goto"] }],
   };
+  for (const k of ["menu", "pause", "prologue"]) S.SCREEN[k].push(...TRANS);
+  const UI = [{ k: "btnHover", label: "Hover sound for all its buttons (when a button has none)", type: "asset", assetType: "sound", def: "" }, { k: "btnClick", label: "Click sound for all its buttons (when a button has none)", type: "asset", assetType: "sound", def: "" },
+    { k: "navSound", label: "Sound when moving between buttons with keys / gamepad", type: "asset", assetType: "sound", def: "" }, { k: "escBack", label: "Esc / gamepad B goes back", type: "bool", def: true }];
+  for (const k of ["menu", "pause"]) S.SCREEN[k].push(...UI);
+  // missing tags of screens and elements (settings added in a later version) get their default value
+  S.ensureScreens = project => { for (const sc of project.screens || []) { for (const p of S.SCREEN[sc.kind] || []) { const k = sc.id + "." + p.k; if (!project.tags[k]) project.tags[k] = rec(p, sc.id, sc.id); }
+      for (const n of sc.nodes || []) { const d = S.NODE[n.type]; if (!d) continue; for (const p of d.props) { const k = sc.id + "." + n.id + "." + p.k; if (!project.tags[k]) project.tags[k] = rec(p, sc.id, sc.id + "." + n.id); else if (p.multi && !project.tags[k].multi) project.tags[k].multi = true; } } } };
   S.addPrologue = (project, id) => { const sc = { id: S.uid(id || "prologue", project.screens.map(s => s.id)), kind: "prologue", nodes: [] }; project.screens.push(sc); S.defineScreen(project, sc); return sc; };
 
   const rec = (p, group, owner) => { const r = { type: p.type, value: p.def, label: p.label, group, owner }; for (const k of ["min", "max", "step", "options", "assetType", "refType", "showIf", "modelTag", "multi"]) if (p[k] !== undefined) r[k] = p[k]; r.prop = p.k; return r; };
@@ -140,6 +193,8 @@
     { k: "crosshairThickness", label: "Crosshair thickness", type: "number", def: 2, min: 1, max: 8, step: 1, showIf: ["crosshair", true] }, Object.assign(COLOR("crosshairColor", "Crosshair color", "#ffffff"), { showIf: ["crosshair", true] }),
     { k: "hud", label: "HUD screen", type: "screenRef", def: "hud" },
     { k: "reloadKey", label: "Reload key", type: "choice", options: [], def: "r" },
+    { k: "keyForward", label: "Walk forward key", type: "choice", options: [], def: "w" }, { k: "keyBack", label: "Walk back key", type: "choice", options: [], def: "s" }, { k: "keyLeft", label: "Step left key", type: "choice", options: [], def: "a" }, { k: "keyRight", label: "Step right key", type: "choice", options: [], def: "d" },
+    { k: "keyJump", label: "Jump key", type: "choice", options: [], def: "space" }, { k: "keySprint", label: "Sprint key", type: "choice", options: [], def: "shift" },
     { k: "startMap", label: "The game starts on map (empty = the first map)", type: "mapRef", def: "" },
     { k: "livesMode", label: "Lives system", type: "choice", options: [["off", "Off (dying = the death setting below)"], ["classic", "Classic: lives, respawn at the last checkpoint"], ["reserve", "Energy reserve: energy tanks refill your health (Metroid style)"]], def: "off" },
     PNUM("livesStart", "Lives at the start", 3, 1, 99, 1, { showIf: ["livesMode", "classic"] }),
@@ -150,7 +205,7 @@
     { k: "pauseScreen", label: "Pause menu (Esc). Empty = Esc leaves the game", type: "screenRef", def: "pause" },
     { k: "pauseVolume", label: "Game sounds while paused (0 = silent, 1 = full)", type: "number", def: 0.25, min: 0, max: 1, step: 0.05 },
   ];
-  S.PLAYER_GROUPS = [["Movement", ["speed", "sprintEnabled", "sprintPercent", "jumpEnabled", "jumpHeight", "gravity", "interactKey"]], ["Feel", ["breathe", "breatheAmount", "breatheSpeed", "bob", "bobAmount", "bobSpeed", "bobSync", "animBlend"]], ["Sounds", ["footstep", "footstep2", "footstep3", "stepDistance", "jumpSound", "landSound", "hurtSound", "deathSound", "soundVolume"]], ["Body", ["maxHealth", "eyeHeight", "radius", "stepHeight"]], ["Camera", ["fov", "aimMode", "freeAimRadius", "mouseSens"]], ["Crosshair", ["crosshair", "crosshairSize", "crosshairGap", "crosshairThickness", "crosshairColor"]], ["HUD", ["hud", "hudMove", "hudMoveAmount", "damageFlash"]], ["Lives", ["livesMode", "livesStart", "tanksStart", "tanksLimit"]], ["Game rules", ["startMap", "deathAction", "deathScreen", "deathDelay", "reloadKey", "pauseScreen", "pauseVolume"]]];
+  S.PLAYER_GROUPS = [["Movement", ["speed", "sprintEnabled", "sprintPercent", "jumpEnabled", "jumpHeight", "gravity"]], ["Controls", ["keyForward", "keyBack", "keyLeft", "keyRight", "keyJump", "keySprint", "interactKey", "reloadKey"]], ["Feel", ["breathe", "breatheAmount", "breatheSpeed", "bob", "bobAmount", "bobSpeed", "bobSync", "animBlend"]], ["Sounds", ["footstep", "footstep2", "footstep3", "stepDistance", "jumpSound", "landSound", "hurtSound", "deathSound", "soundVolume"]], ["Body", ["maxHealth", "eyeHeight", "radius", "stepHeight"]], ["Camera", ["fov", "aimMode", "freeAimRadius", "mouseSens"]], ["Crosshair", ["crosshair", "crosshairSize", "crosshairGap", "crosshairThickness", "crosshairColor"]], ["HUD", ["hud", "hudMove", "hudMoveAmount", "damageFlash"]], ["Lives", ["livesMode", "livesStart", "tanksStart", "tanksLimit"]], ["Game rules", ["startMap", "deathAction", "deathScreen", "deathDelay", "pauseScreen", "pauseVolume"]]];
   // 3D objects attached to the player camera (weapons, hands...). Each one has tags player.<id>.*
   const ANIM = (k, label, extra) => Object.assign({ k, label, type: "anim", def: "" }, extra || {}), NUM = (k, label, def, min, max, step, extra) => Object.assign({ k, label, type: "number", def, min, max, step }, extra || {}), WP = ["type", "weapon"], NI = ["type", ["weapon", "animation"]], W_ = { showIf: WP };
   // a showIf is [tagKey, value] or [tagKey, [value, value...]]
@@ -512,7 +567,7 @@
   // keys and mouse buttons for the Node Coder dropdowns
   S.KEYS = [["mouse1", "Left mouse button"], ["mouse2", "Right mouse button"], ["mouse3", "Middle mouse button"], ["space", "Space"], ["shift", "Shift"], ["ctrl", "Ctrl"], ["alt", "Alt"], ["enter", "Enter"], ["tab", "Tab"], ["arrowup", "Arrow up"], ["arrowdown", "Arrow down"], ["arrowleft", "Arrow left"], ["arrowright", "Arrow right"]]
     .concat("abcdefghijklmnopqrstuvwxyz".split("").map(c => [c, c.toUpperCase()]), "0123456789".split("").map(c => [c, c]), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(i => ["f" + i, "F" + i]));
-  S.ATTACH.find(p => p.k === "aimKey").options = S.KEYS; S.PLAYER.find(p => p.k === "interactKey").options = S.KEYS; S.PLAYER.find(p => p.k === "reloadKey").options = S.KEYS;
+  S.ATTACH.find(p => p.k === "aimKey").options = S.KEYS; S.PLAYER.find(p => p.k === "interactKey").options = S.KEYS; S.PLAYER.find(p => p.k === "reloadKey").options = S.KEYS; for (const k of ["keyForward", "keyBack", "keyLeft", "keyRight", "keyJump", "keySprint"]) S.PLAYER.find(p => p.k === k).options = S.KEYS;
   const KEYP = (def, label) => ({ k: "key", label: label || "Key or mouse button", type: "choice", options: S.KEYS, def: def || "r" });
   S.STATES = [["standing", "Standing still"], ["walking", "Walking"], ["running", "Running (sprinting)"], ["jumping", "Jumping (going up)"], ["falling", "Falling"], ["moving", "Moving (walking or running)"], ["inair", "In the air (jumping or falling)"]];
   S.SNODES = {
@@ -766,7 +821,7 @@
     for (const sc of project.screens || []) for (const el of sc.nodes || []) if (el.script) for (const n of el.script.nodes) S.ensureSNode(project, sc.id + "." + el.id, n);
     if (!project.tags["player.state"]) project.tags["player.state"] = { type: "string", value: "standing", label: "What the player is doing: standing, walking, running, jumping, falling (live)", group: "player", builtin: true };
     if (project.player && project.player.script) for (const n of project.player.script.nodes) S.ensureSNode(project, "player", n);
-    S.ensureComp(project); S.ensureZones(project); S.ensureThingTags(project);
+    S.ensureComp(project); S.ensureZones(project); S.ensureScreens(project); S.ensureThingTags(project);
     for (const d of project.dialogues || []) for (const n of d.nodes) S.ensureSNode(project, d.id, n);
     for (const [k, l] of [["lives", "Lives left (live)"], ["tanks", "Full energy tanks (live)"], ["tanksMax", "Energy tanks owned (live)"]]) if (!project.tags["player." + k]) project.tags["player." + k] = { type: "number", value: 0, min: 0, max: 99, step: 1, label: l, group: "player", builtin: true };
     if (!project.tags["player.lastButton"]) project.tags["player.lastButton"] = { type: "string", value: "", label: "Name of the last button pressed (live)", group: "player", builtin: true };

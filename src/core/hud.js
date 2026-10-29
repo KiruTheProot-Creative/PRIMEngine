@@ -86,10 +86,12 @@
       if (stretch) { const u = this.urls[p("asset")]; if (u && el.dataset.u !== u) { el.src = u; el.dataset.u = u; } el.style.visibility = u ? "visible" : "hidden"; el.style.width = fw + "px"; el.style.height = fh + "px"; el.style.opacity = p("opacity"); return; }
       el.style.left = (+p("x") || 0) * s + "px"; el.style.top = -(+p("y") || 0) * s + "px"; el.style.transform = "translate(-50%,-50%) scale(" + s + ")";   // each element scales around its own middle
       const size = (e, w, h) => { e.style.width = w > 0 ? w + "px" : ""; e.style.height = h > 0 ? h + "px" : ""; };
-      const text = e => { e.style.fontFamily = font(p("font")); e.style.fontSize = p("size") + "px"; e.style.color = p("color"); };
+      const text = e => { e.style.fontFamily = font(p("font")); e.style.fontSize = p("size") + "px"; e.style.color = p("color"); if (PRIM.Runtime && PRIM.Runtime.textFxG) PRIM.Runtime.textFxG(e, p); };
+      if (PRIM.Runtime && PRIM.Runtime.animG && !this.edit) { const sig = [p("anim"), p("animSpeed"), p("animAmount"), p("enter"), p("enterDelay"), p("enterTime")].join("|"); if (it.aSig !== sig) { it.aSig = sig; PRIM.Runtime.animG(el, p, (performance.now() - (this.t0 || (this.t0 = performance.now()))) / 1000); } }
       if (n.type === "title") { el.textContent = this.S(n, "text"); text(el); el.style.opacity = p("opacity"); }
       else if (n.type === "image") { this.pic(el, p("asset"), +p("w"), +p("h")); el.style.opacity = p("opacity"); }
       else if (n.type === "pips") PRIM.HUD.pips(el, this.tags, p);
+      else if (n.type === "panel") { if (PRIM.Runtime && PRIM.Runtime.panelG) PRIM.Runtime.panelG(el, p, this.urls); el.style.opacity = p("opacity"); }
       else if (n.type === "minimap") { const w = +p("w") || 220, h = +p("h") || 220, k = Math.max(1, s * (window.devicePixelRatio || 1)); el.style.width = w + "px"; el.style.height = h + "px"; el.style.opacity = p("opacity");
         if (el.width !== Math.round(w * k) || el.height !== Math.round(h * k)) { el.width = Math.round(w * k); el.height = Math.round(h * k); } it.k = k; this.mapDraw(it, this.edit || !this.world ? this.demoWorld() : this.lastWorld); }
       else if (n.type === "bossbar") this.bossDraw(it, 0);

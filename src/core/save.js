@@ -13,6 +13,9 @@
     erase(pid, slot) { try { localStorage.removeItem(key(pid, slot)); } catch (e) {} },
     // the slot saved most recently (or 0 when there is no save at all)
     latest(pid) { let best = 0, bt = -1; for (let s = 1; s <= SLOTS; s++) { const d = Save.read(pid, s); if (d && d.time > bt) { bt = d.time; best = s; } } return best; },
+    // play time as text: 2h 14m, or 12m 05s
+    playTime(sec) { sec = Math.max(0, Math.round(+sec || 0)); const h = Math.floor(sec / 3600), m = Math.floor(sec / 60) % 60, s = sec % 60, two = n => String(n).padStart(2, "0"); return h ? h + "h " + two(m) + "m" : m + "m " + two(s) + "s"; },
+    date(d) { const t = new Date(d.time), two = n => String(n).padStart(2, "0"); return t.getFullYear() + "-" + two(t.getMonth() + 1) + "-" + two(t.getDate()) + " " + two(t.getHours()) + ":" + two(t.getMinutes()); },
     info(d) { if (!d) return "Empty"; const t = new Date(d.time), two = n => String(n).padStart(2, "0"); return (d.name || d.map || "Saved") + "  ·  " + t.getFullYear() + "-" + two(t.getMonth() + 1) + "-" + two(t.getDate()) + " " + two(t.getHours()) + ":" + two(t.getMinutes()); },
     // fill the live tags the menus can show ({save.info1} …)
     refreshTags(T, pid) { if (!T || !T.has || !T.has("save.info1")) return; const o = {}; let any = false; for (let s = 1; s <= SLOTS; s++) { const d = Save.read(pid, s); if (d) any = true; o["save.info" + s] = Save.info(d); } o["save.any"] = any; T.setMany(o); },
