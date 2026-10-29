@@ -71,7 +71,7 @@
     // ---------------- navigation
     show(id, isBack) {
       if (!isBack && this.screenId && this.screenId !== id && this.mode !== "edit") { this.hist.push(this.screenId); if (this.hist.length > 30) this.hist.shift(); }
-      this.screenId = id; this.splash = null; this.game = false; this.hover = null; this.press = null; const sc = this.screen(); if (!sc) return;
+      this.screenId = id; this.splash = null; this.game = false; this.hover = null; this.press = null; const sc = this.screen(); if (!sc) return; if (this.mode !== "edit" && PRIM.Save) PRIM.Save.refreshTags(this.tags, this.project.id);
       this.setMusic(this.tags.get(sc.id + ".music") || ""); this.rebuild();
       if (this.sh) { this.sh.stopRuns(); for (const n of sc.nodes) this.script(sc, n, "onStart"); }
       if (this.o.onScreen) this.o.onScreen(id);
@@ -259,7 +259,12 @@
       const T = this.tags, P = k => this.P(sc, n, k); this.script(sc, n, "onClick");
       if (n.type === "button") { this.sfx(P("clickSound")); const a = P("action");
         if (a === "goto") { const t = P("target"); if (this.project.screens.some(s => s.id === t)) this.show(t); }
-        else if (a === "start") { if (this.o.onStartGame) this.o.onStartGame(this); else { this.game = true; this.rebuild(); } } else if (a === "quit") { if (this.o.onQuit) this.o.onQuit(); else if (this.o.onExit) this.o.onExit(); }
+        else if (a === "start" || a === "continue" || a === "load") {   // new game in a slot, the latest save, or one slot
+          const S = PRIM.Save, pid = this.project.id, slot = Math.max(1, Math.min(3, Math.round(+P("slot") || 1))), want = a === "continue" ? (S ? S.latest(pid) : 0) : a === "load" ? slot : 0, data = want && S ? S.read(pid, want) : null;
+          if (a === "load" && !data) { this.sfx(P("clickSound")); return; }
+          const opt = data ? { slot: want, load: data } : { slot: a === "start" ? slot : (S && S.latest(pid)) || 1 };
+          if (T.has("save.slot")) T.set("save.slot", opt.slot);
+          if (this.o.onStartGame) this.o.onStartGame(this, opt); else { this.game = true; this.rebuild(); } } else if (a === "quit") { if (this.o.onQuit) this.o.onQuit(); else if (this.o.onExit) this.o.onExit(); }
         else if (a === "back") this.back();
         else if (a === "resume") { if (this.o.onResume) this.o.onResume(); }
         else if (a === "restart") { if (this.o.onRestart) this.o.onRestart(); }

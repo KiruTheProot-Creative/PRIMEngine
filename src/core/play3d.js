@@ -35,7 +35,8 @@
         broadcast: name => this.trigger("onMessage", name), custom: (ow, n, g, tok) => this.custom(ow, n, g, tok), say: t => { if (this.o.say) this.o.say(t); else console.log(t); } }) : null;
       if (PRIM.Audio) PRIM.Audio.preload(this.project.assets.filter(x => x.type === "sound" && this.urls[x.id]).map(x => this.urls[x.id]));
       if (this.mode === "play") { if (PRIM.Schema && PRIM.Schema.ensureKeys) PRIM.Schema.ensureKeys(this.project); this.keysReset("all"); }
-      this.syncAtts(); this.syncThings(); this.trigger("onStart"); if (this.sh) this.sh.watch(() => this.scriptOwners());
+      this.slot = (this.o.save && this.o.save.slot) || +T.get("save.slot") || 1;
+      this.syncAtts(); this.syncThings(); if (this.mode === "play" && this.o.save && this.o.save.load) this.loadGame(this.o.save.load); this.trigger("onStart"); if (this.sh) this.sh.watch(() => this.scriptOwners());
       if (this.mode === "play") this.bind(); else { this.msg.style.display = "none"; this.cv.style.cursor = "default"; }
       this.last = performance.now(); this.raf = requestAnimationFrame(t => this.frame(t));
     }
@@ -175,7 +176,7 @@
       for (const th of (m.things || []).concat(this.spawnTh || [])) {
         const prev = old.find(x => x.th.id === th.id), pid = prev && prev.morph && (this.project.props || []).some(q => q.id === prev.morph) ? prev.morph : th.prop, pre = pid + ".", aid = T.get(pre + "asset"), type0 = T.get(pre + "type"), type = type0 === "boss" ? "enemy" : type0, boss = type0 === "boss";
         if (type !== "door" && T.get(pre + "look") === "sprite") { gone.delete(th.id); const o = old.find(x => x.th.id === th.id) || { th, st: "closed", p: 0, t: 0, timer: 0, taken: false, spin: 0 }; Object.assign(o, { th, pre, aid: null, model: null, gm: null, sprite: true, type, boss, fr: G.thingFrame(m, T, th) }); if (!o.init) o.floor = o.fr.fy; out.push(o); continue; }
-        if ((type === "speaker" || type === "interactive" || type === "checkpoint" || type === "spawner") && (!aid || !this.urls[aid])) { gone.delete(th.id); const o = old.find(x => x.th.id === th.id) || { th, st: "closed", p: 0, t: 0, timer: 0, taken: false, spin: 0 }; Object.assign(o, { th, pre, aid: null, model: null, gm: null, sprite: false, type, fr: G.thingFrame(m, T, th) }); o.floor = o.fr.fy; out.push(o); continue; }
+        if ((type === "speaker" || type === "interactive" || type === "checkpoint" || type === "spawner" || type === "save") && (!aid || !this.urls[aid])) { gone.delete(th.id); const o = old.find(x => x.th.id === th.id) || { th, st: "closed", p: 0, t: 0, timer: 0, taken: false, spin: 0 }; Object.assign(o, { th, pre, aid: null, model: null, gm: null, sprite: false, type, fr: G.thingFrame(m, T, th) }); o.floor = o.fr.fy; out.push(o); continue; }
         if (!aid || !this.urls[aid]) continue; const model = F.cache[aid];
         if (!model) { F.load(aid, this.urls[aid]).then(mm => { if (mm && !this.dead) this.syncThings(); }); continue; }
         if (!this.gpu[aid]) this.gpu[aid] = this.view.loadModel(model); gone.delete(th.id); { const q = old.find(x => x.th.id === th.id); if (q) q.sprite = false; }
@@ -201,6 +202,7 @@
     }
     talkHint() {
       if (!this.hintEl) { this.hintEl = el("", "position:absolute;left:50%;top:62%;transform:translateX(-50%);padding:6px 14px;background:rgba(10,14,20,.7);border:1px solid rgba(255,255,255,.25);border-radius:4px;color:#e8f2fb;font:600 16px 'Chakra Petch',system-ui,sans-serif;pointer-events:none;z-index:6;display:none"); this.root.append(this.hintEl); }
+      { const st = !this.talk && !this.pdead ? this.stationNear() : null; if (st) { this.hintEl.style.display = "block"; this.hintEl.textContent = "[" + String(this.T.get("player.interactKey") || "e").toUpperCase() + "] Save the game"; return; } }
       const n = !this.talk && !this.pdead ? this.npcInFront() : null, ky = "[" + String(this.T.get("player.interactKey") || "e").toUpperCase() + "] ";
       if (n) { this.hintEl.style.display = "block"; this.hintEl.textContent = ky + "Talk to " + (this.T.get(n.pre + "npcName") || this.T.get(n.pre + "name") || "them"); return; }
       const hb = !this.talk && !this.pdead ? (this.ui ? this.ui.hover : this.hbAim(["key", "aim"])) : null; this.hintEl.style.display = hb ? "block" : "none";
@@ -261,11 +263,11 @@
     shootDoor(th, pre, ch) { const o = (this.things || []).find(x => x.th === th); if (!o || this.ov(o, "openMode") !== "shot") return; const need = this.ov(o, "shotFirst") || "any";
       if (need !== "any" && !o.shotOk) { const ok = need === "weapon" ? !!pre && !!this.ov(o, "shotWeapon") && pre === "player." + this.ov(o, "shotWeapon") + "." : !!pre && this.isCharged(pre, ch || 0);
         if (!ok) { const ms = this.ov(o, "shotMsg"); if (ms) { const now = performance.now(); if (!(now - (o.lockT || 0) < 1500)) { o.lockT = now; this.toast(this.T.interpolate(String(ms))); } } return; }
-        if (this.ov(o, "shotAfter") !== false) o.shotOk = true; }
+        if (this.ov(o, "shotAfter") !== false) { o.shotOk = true; this.remember("shot", o); } }
       this.openDoor(o); }
     // locked doors: a key (lockKey; used up once when lockUse) and / or a tag condition. Returns true while locked (and says so, at most every 2 s)
     doorLocked(o, quiet) { const T = this.T, k = this.ov(o, "lockKey"), hasK = !!(k && T.has(k + ".have")), keyOk = !hasK || o.unlocked || !!T.get(k + ".have"), nt = this.ov(o, "lockNeedTag"), tagOk = !nt || !this.sh || this.sh.test(nt, this.ov(o, "lockNeedOp") || "=", this.ov(o, "lockNeedVal"));
-      if (keyOk && tagOk) { if (hasK && !o.unlocked) { o.unlocked = true; if (this.ov(o, "lockUse")) T.set(k + ".have", false); } return false; }
+      if (keyOk && tagOk) { if (hasK && !o.unlocked) { o.unlocked = true; this.remember("unlocked", o); if (this.ov(o, "lockUse")) T.set(k + ".have", false); } return false; }
       if (!quiet) { const now = performance.now(); if (!(now - (o.lockT || 0) < 2000)) { o.lockT = now; const nm = hasK && !keyOk ? String(T.get(k + ".keyName") || "key") : "", ms = String(this.ov(o, "lockMsg") || "Locked."); this.toast(T.interpolate(nm || !/\{key\}/.test(ms) ? ms.split("{key}").join(nm) : "Locked.")); const s = this.ov(o, "lockSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); } }
       return true; }
     openDoor(o, quiet) { if (o.st === "open" || o.st === "opening") return; if (this.doorLocked(o, quiet)) return; o.st = "opening"; o.t = o.p * this.doorLen(o, "openAnim"); o.timer = 0; const s = this.ov(o, "openSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); }
@@ -326,14 +328,14 @@
         for (const [i, j] of [[0, 1], [2, 3], [4, 5], [6, 7], [0, 2], [1, 3], [4, 6], [5, 7], [0, 4], [1, 5], [2, 6], [3, 7]]) out.push({ kind: "line", a: P(i), b: P(j), c, w: 0.35, t: 0, life: 1e9 }); } }
       return out; }
     interact() {
-      const v = this.view; if (!v) return; { const n = this.npcInFront(); if (n) { this.talkStart(n); return; } } { const hb = this.ui ? this.ui.hover : this.hbAim(["key"]); if (hb) { this.hbPress(hb.o, hb.b); return; } } const c = v.cam, B = R3D.camBasis(c.yaw, c.pitch), O = [c.x, c.y, c.z], D = B.f;
+      const v = this.view; if (!v) return; { const st = this.stationNear(); if (st) { this.saveAsk(st); return; } } { const n = this.npcInFront(); if (n) { this.talkStart(n); return; } } { const hb = this.ui ? this.ui.hover : this.hbAim(["key"]); if (hb) { this.hbPress(hb.o, hb.b); return; } } const c = v.cam, B = R3D.camBasis(c.yaw, c.pitch), O = [c.x, c.y, c.z], D = B.f;
       for (const o of this.things || []) { if (o.type !== "door" || this.ov(o, "openMode") !== "interact") continue; const t = this.thingHit(o, O, D, +this.ov(o, "interactRange") || 90); if (t === null) continue; if (o.st === "closed" || o.st === "closing") this.openDoor(o); else this.closeDoor(o); return; }
     }
     thingStep(dt) {
       if (this.talk) return; const T = this.T; for (const o of this.things || []) {
         if (o.taken) continue; if (o.type === "enemy") { this.enemyStep(o, dt); continue; } if (o.type === "spawner") { this.spawnerStep(o, dt); continue; } const g = k => +this.ov(o, k) || 0, f = o.fr, dist = Math.hypot(this.x - f.cx, this.y - f.cy);
         if (o.type === "exit") { if (!this.pdead && dist < (g("exitRadius") || 40) && Math.abs(this.z - o.floor) < 90) this.levelExit(o); continue; }
-        if (o.type === "pickup" || o.type === "key") { if (dist < (g("pickRadius") || 28) && Math.abs(this.z - o.floor) < 70) { o.taken = true; const tg = o.type === "key" ? "" : this.ov(o, "giveTag"), amt = g("giveAmount"); if (o.type === "key") this.keyPick(o);
+        if (o.type === "pickup" || o.type === "key") { if (dist < (g("pickRadius") || 28) && Math.abs(this.z - o.floor) < 70) { o.taken = true; this.remember("taken", o); const tg = o.type === "key" ? "" : this.ov(o, "giveTag"), amt = g("giveAmount"); if (o.type === "key") this.keyPick(o);
           if (tg === "player.health" && this.livesMode() === "reserve") this.giveHealth(amt);   // overflow fills empty energy tanks
           else if (tg === "player.tanksMax") { const own = Math.min(+T.get("player.tanksLimit") || 14, (+T.get(tg) || 0) + amt); T.setMany({ "player.tanksMax": own, "player.tanks": own, "player.health": +T.get("player.maxHealth") || 100 }); }   // a new energy tank refills everything
           else if (tg && T.get(tg) !== undefined) T.set(tg, (+T.get(tg) || 0) + amt);
@@ -500,6 +502,34 @@
     }
     // ---- per-object values: a boss reads its current phase's value for the keys a phase can change (Schema.PHASE_KEYS); boss nodes can override some for a while (o.tov)
     ov(o, k) { if (o.tov && o.tov[k] !== undefined) return o.tov[k]; if (o.php) { const S = this.phk || (this.phk = new Set((PRIM.Schema && PRIM.Schema.PHASE_KEYS) || [])); if (S.has(k)) { const v = this.T.get(o.php + k); if (v !== undefined) return v; } } return this.T.get(o.pre + k); }
+    // ---- the world remembers (per map): pick-ups / keys taken, doors unlocked, shot doors opened, shields broken, bosses beaten. Saved with the game.
+    wmem() { const id = this.map && this.map.id; if (!id) return null; this.world = this.world || {}; return (this.world[id] = this.world[id] || { taken: [], unlocked: [], shot: [], shields: [], bosses: [] }); }
+    remember(kind, o) { if (!o || !o.th || o.th.spawned) return; const w = this.wmem(); if (w && !(w[kind] = w[kind] || []).includes(o.th.id)) w[kind].push(o.th.id); }
+    applyWorld() { const w = this.world && this.map && this.world[this.map.id]; if (!w) return; const has = (k, id) => (w[k] || []).includes(id);
+      for (const o of this.things || []) { const id = o.th.id; if (has("taken", id) || has("bosses", id)) o.taken = true; if (has("unlocked", id)) o.unlocked = true; if (has("shot", id)) o.shotOk = true; if (has("shields", id)) o.shieldGone = true; } }
+    // ---- saving: save stations (prop type "save") and the "Save the game" node write to the current slot (PRIM.Save, src/core/save.js)
+    stationNear() { for (const o of this.things || []) { if (o.type !== "save" || o.taken) continue; if (Math.hypot(this.x - o.fr.cx, this.y - o.fr.cy) < (+this.ov(o, "saveRadius") || 96) && Math.abs(this.z - o.floor) < 90) return o; } return null; }
+    saveAsk(o) { if (this.ov(o, "saveAsk") === false) { this.stationSave(o); return; }
+      this.talk = { o, ask: true }; this.talkOpen(); this.talkBox("Save station", "Save the game?", [{ label: "Yes", fn: () => { this.talkEnd(); this.stationSave(o); } }, { label: "No", fn: () => this.talkEnd() }], null); }
+    stationSave(o) { const T = this.T;
+      if (this.ov(o, "saveHeal") !== false) { const set = { "player.health": +T.get("player.maxHealth") || 100 }; if (T.has("player.tanks")) set["player.tanks"] = +T.get("player.tanksMax") || 0; T.setMany(set); this.lastHp = undefined; }
+      if (this.ov(o, "saveAmmo") !== false) { const set = {}; for (const a of this.weapons()) { const pre = "player." + a.id + "."; if (!T.get(pre + "ammoUse") || !T.has(pre + "ammo")) continue; const mx = +T.get(pre + "ammoMax") || +T.get(pre + "ammoStart") || 0, clip = +T.get(pre + "clipSize") || 0, now = clip > 0 ? Math.min(clip, mx) : mx; set[pre + "ammo"] = now; set[pre + "reserve"] = Math.max(0, mx - now); } if (Object.keys(set).length) T.setMany(set); }
+      this.cp = { id: o.th.id, map: this.map && this.map.id, x: this.x, y: this.y, z: this.z, yaw: this.yaw };
+      const ok = this.saveGame(o); const s = this.ov(o, "saveSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); this.toast(ok ? String(this.ov(o, "saveMsg") || "Game saved") : "Could not save");
+      this.flash(0.35, "#7df3ff", true); }
+    saveGame(st) {
+      if (!PRIM.Save || this.mode !== "play" || !this.map) return false; const T = this.T, m = this.map, tags = {};
+      if (T.ov) { for (const k in T.ov) if (!/^save\./.test(k)) tags[k] = T.ov[k]; } else for (const k of T.names()) { const r = T.spec(k); if (r && !/^save\./.test(k) && (r.custom || /^player\./.test(k) || /\.have$/.test(k))) tags[k] = T.get(k); }
+      for (const k of ["player.bossActive", "player.aiming", "player.locked", "player.reloading", "player.charge"]) delete tags[k];
+      const d = { v: 1, time: Date.now(), map: m.id, station: st ? st.th.id : null, name: (st && this.ov(st, "saveName")) || m.id, pos: { x: this.x, y: this.y, z: this.z, yaw: this.yaw }, tags, world: JSON.parse(JSON.stringify(this.world || {})) };
+      const ok = PRIM.Save.write(this.project.id, this.slot, d); if (ok) { PRIM.Save.refreshTags(T, this.project.id); this.trigger("onSave"); } return ok; }
+    loadGame(d) {
+      if (!d || !this.view) return false; const T = this.T, m = this.project.maps.find(x => x.id === d.map) || this.map, set = {};
+      for (const k in d.tags || {}) if (T.has(k)) set[k] = d.tags[k]; if (Object.keys(set).length) T.setMany(set);
+      this.world = JSON.parse(JSON.stringify(d.world || {})); this.cp = null; this.pdead = false; this.deadT = 0; this.lastHp = undefined; this.say2(""); this.exiting = false;
+      if (m && m !== this.map) { this.map = m; this.view.setMap(this.project, m, T, this.urls); }
+      this.resetPlayer(); const p = d.pos; if (p) { this.x = p.x; this.y = p.y; this.z = p.z; this.yaw = p.yaw || 0; this.pitch = 0; this.body = null; this.vz = 0; this.ground = true; }
+      this.keySnap = new Set(Object.keys(set).filter(k => /\.have$/.test(k) && set[k])); this.trigger("onLoad"); return true; }
     // ---- keys: key objects set their live tag <key>.have; doors check it (doorLocked)
     keyPick(o) { const T = this.T, id = o.pre.slice(0, -1); if (T.has(id + ".have")) T.set(id + ".have", true); if (!this.ov(o, "popupOn")) this.toast("Picked up the " + (this.ov(o, "keyName") || "key")); this.keyGot(id); }
     keyGot(id) { if (!this.sh) return; for (const ow of this.scriptOwners()) for (const n of ow.script.nodes) { if (n.type !== "onKeyGot") continue; const f = this.T.get(ow.key + ".s." + n.id + ".key"); if (!f || f === id) this.sh.trigger(ow, "onKeyGot", null, n.id); } }
@@ -544,7 +574,7 @@
       const T = this.T, ow = this.bossOwner(o); if (this.sh && ow) this.sh.stopOwner(ow.key); for (const v of o.vols || []) if (v.done) v.done(); o.vols = []; this.bossDashEnd(o); o.shGlow = null; o.tov = {};
       if (this.bossMu) { this.stopLoops(this.bossMu); this.bossMu = null; } T.setMany({ "player.bossActive": false, "player.bossHealth": 0 });
       this.applyVal(T.get(o.pre + "bossWinTag"), T.get(o.pre + "bossWinVal")); const ms = T.get(o.pre + "bossWinMsg"); if (ms) this.toast(T.interpolate(String(ms)));
-      this.bossTrig(o, "onBossDeath"); o.fight = false;
+      this.bossTrig(o, "onBossDeath"); o.fight = false; this.remember("bosses", o);
     }
     bossSpawn(o, prop, n, R) {
       if (!(this.project.props || []).some(q => q.id === prop)) return; const L = G.layerOf(o.floor + 4), col = this.hexCol("#c07dff");
@@ -633,6 +663,7 @@
     async custom(owner, n, g, tok) {
       const T = this.T, ty = n.type, until = fn => new Promise(res => { fn(res); tok.cancel = res; });
       if (ty === "giveKey" || ty === "takeKey") { const k = g("key"); if (k && T.has(k + ".have")) { T.set(k + ".have", ty === "giveKey"); if (ty === "giveKey") this.keyGot(k); } return; }
+      if (ty === "saveGame") { this.saveGame(null); return; }
       if (ty === "ifHasKey") { const k = g("key"); return k && T.get(k + ".have") ? "then" : "else"; }
       const o = this.bossOf(owner.key); if (!o || !o.fight) return /^if/.test(ty) ? "else" : undefined;
       switch (ty) {
@@ -658,7 +689,7 @@
       for (const o of this.things || []) { if (o.taken) continue; const ty = o.boss ? "boss" : o.type;
         if (ty === "door") { const k = this.ov(o, "lockKey"); doors.push(this.hud.doorSeg(o.fr, k && !o.unlocked ? T.get(k + ".keyColor") : null, o.st === "open")); continue; }
         if (ty === "enemy" || ty === "boss") { if (this.eAlive(o)) items.push({ id: o.th.id, x: o.x, y: o.y, k: ty, L: G.layerOf(o.floor + 4) }); continue; }
-        if (ty === "key" || ty === "pickup" || ty === "exit" || ty === "npc") items.push({ id: o.th.id, x: o.fr.cx, y: o.fr.cy, k: ty === "pickup" ? "item" : ty, c: ty === "key" ? this.ov(o, "keyColor") : null, L: G.layerOf((o.floor || 0) + 4) }); }
+        if (ty === "key" || ty === "pickup" || ty === "exit" || ty === "npc" || ty === "save") items.push({ id: o.th.id, x: o.fr.cx, y: o.fr.cy, k: ty === "pickup" ? "item" : ty, c: ty === "key" ? this.ov(o, "keyColor") : null, L: G.layerOf((o.floor || 0) + 4) }); }
       return { map: this.map, L: G.layerOf(this.z + 4), x: this.x, y: this.y, yaw: this.yaw, t: this.clock || 0, items, doors }; }
     // ---- aiming (weapon tag aimType): "lock" = lock onto the enemy nearest the crosshair, "sights" = look down the sights with a zoom
     aimW() { const at = this.curWeapon && this.curWeapon(); if (!at) return null; const pre = "player." + at.id + ".", type = this.T.get(pre + "aimType"); return type === "lock" || type === "sights" ? { att: at, pre, type } : null; }
@@ -920,6 +951,7 @@
       const T = this.T; if (!this.pdead) { this.useTanks(); if ((+T.get("player.health") || 0) <= 0) { this.pdead = true; this.deadT = 0; this.reloading = null; this.say2("You died"); } return; }
       this.deadT += dt; if (this.deadT < (+T.get("player.deathDelay") || 0)) return;
       if (this.livesMode() === "classic" && (+T.get("player.lives") || 0) > 0) { this.respawn(); return; }   // lives left: back at the last checkpoint, the level stays as it is
+      if (T.get("player.deathAction") === "save" && PRIM.Save) { const d = PRIM.Save.read(this.project.id, this.slot); if (d) { this.loadGame(d); return; } }
       const scr = T.get("player.deathScreen"); if (T.get("player.deathAction") === "screen" && scr && this.o.onScreen) { this.pdead = false; this.o.onScreen(scr); return; } this.restartMap();
     }
     say2(t) { if (!this.bigMsg) { this.bigMsg = document.createElement("div"); this.bigMsg.style.cssText = "position:absolute;left:0;right:0;top:38%;text-align:center;font:600 46px 'Chakra Petch',system-ui,sans-serif;letter-spacing:.12em;color:#ffdede;text-shadow:0 2px 10px #000;pointer-events:none;z-index:6;transition:opacity .6s"; this.root.append(this.bigMsg); } this.bigMsg.textContent = t; this.bigMsg.style.opacity = t ? 1 : 0; }
@@ -928,7 +960,7 @@
       const T = this.T, m = this.map; this.x = m ? +T.get(m.id + ".startX") || 0 : 0; this.y = m ? +T.get(m.id + ".startY") || 0 : 0; this.yaw = (m ? +T.get(m.id + ".startAngle") : 90) * Math.PI / 180; this.pitch = 0;
       const L = m ? +T.get(m.id + ".startLayer") || 0 : 0; this.z = m && G ? G.groundY(m, this.x, this.y, L * G.LAYER + G.LAYER - 8) : 0; this.vz = 0; this.body = null; this.ground = true;
     }
-    resetPlayer() { this.placeStart(); this.zst = null; this.fx = []; this.orb = null; this.reloading = null; if (this.mode === "play" && this.T.get("player.reloading")) this.T.set("player.reloading", false); this.extV = null; this.jumpReq = undefined; this.airJumps = 0; this.shakeT = 0; this.pdead = false; this.deadT = 0; this.say2(""); this.doorOpen = {}; this.bossStop(); this.things = []; this.spawnTh = []; this.syncThings(); }
+    resetPlayer() { this.placeStart(); this.zst = null; this.fx = []; this.orb = null; this.reloading = null; if (this.mode === "play" && this.T.get("player.reloading")) this.T.set("player.reloading", false); this.extV = null; this.jumpReq = undefined; this.airJumps = 0; this.shakeT = 0; this.pdead = false; this.deadT = 0; this.say2(""); this.doorOpen = {}; this.bossStop(); this.things = []; this.spawnTh = []; this.syncThings(); this.applyWorld(); }
     restartMap() { const T = this.T; T.set("player.health", +T.get("player.maxHealth") || 100); this.lastHp = undefined; this.initAmmo(); this.initLives(); this.cp = null; this.keysReset("snap"); this.resetPlayer(); }
     loadMap(id) { const m = this.project.maps.find(x => x.id === id); if (!m || !this.view) return false; this.map = m; this.cp = null; this.view.setMap(this.project, m, this.T, this.urls); this.resetPlayer(); return true; }
     levelExit(o) {

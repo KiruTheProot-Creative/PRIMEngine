@@ -810,17 +810,17 @@
     const onKey = e => { if (e.key === "Escape") { e.stopImmediatePropagation(); e.preventDefault(); close(); } };
     function close() { removeEventListener("keydown", onKey, true); if (v) v.dispose(); layer.remove(); } addEventListener("keydown", onKey, true); layer.__close = close;
   }
-  function startGame(rt) {
+  function startGame(rt, sv) {
     const sm = rt.tags.get("player.startMap"), m = S.project.maps.find(x => x.id === sm) || S.project.maps[0]; if (!m) { rt.game = true; rt.rebuild(); return; }
     rt.stopMusic(); const layer = h("div", { class: "p3layer" }); rt.host.append(layer);
-    const pl = new PRIM.Play3D({ host: layer, project: S.project, map: m, tags: rt.tags, urls: S.urls, mode: "play", debug: true, say: t => log(t), onExit: () => { pl.destroy(); layer.remove(); },
+    const pl = new PRIM.Play3D({ host: layer, project: S.project, map: m, tags: rt.tags, urls: S.urls, mode: "play", debug: true, save: sv, say: t => log(t), onExit: () => { pl.destroy(); layer.remove(); },
       onMenu: () => { pl.destroy(); layer.remove(); const mm = S.project.screens.find(x => x.id === "main") || S.project.screens.find(x => x.kind === "menu"); if (mm) rt.show(mm.id); },
       onQuit: () => { pl.destroy(); layer.remove(); if (rt.o.onExit) rt.o.onExit(); },
       onScreen: id => { pl.destroy(); layer.remove(); if (S.project.screens.some(x => x.id === id)) rt.show(id); } }); S.play = pl;
   }
   function walkMap(m) {
     const layer = h("div", { class: "play-layer p3layer" }); document.body.append(layer);
-    const pl = new PRIM.Play3D({ host: layer, project: S.project, map: m, tags: S.tags, urls: S.urls, mode: "play", debug: true, say: t => log(t), onExit: () => { pl.destroy(); layer.remove(); },
+    const pl = new PRIM.Play3D({ host: layer, project: S.project, map: m, tags: S.tags, urls: S.urls, mode: "play", debug: true, say: t => log(t), onExit: () => { pl.destroy(); layer.remove(); renderInspector(); },
       onScreen: id => { pl.destroy(); layer.remove(); log("The game would now show the screen “" + id + "” (use ▶ Play or Maximize on Play to try the whole game)."); } }); S.play = pl;
   }
   // ---------------------------------------------------------------- Player Editor
@@ -1199,6 +1199,9 @@
       if (title === "HUD") { const sc = screens().find(x => x.id === hudId); rows.push(h("div", { class: "btnrow" }, h("button", { class: "btn sm", disabled: !sc, text: "Edit HUD screen", onclick: () => sc && selectScreen(sc.id) }))); rows.push(h("div", { class: "note", text: "The HUD is a screen like any other: add Bars, Titles and Images to it. Write {player.health} in a text to show a live value." })); }
       box.append(foldout("pl:" + title, title, ...rows));
     }
+    // save games stored in this browser / app for this project (playtests save here too)
+    { const Sv = PRIM.Save, rows = []; for (let i = 1; i <= 3; i++) { const d = Sv && Sv.read(S.project.id, i); rows.push(h("div", { class: "frow" }, h("label", { text: "Slot " + i + ": " + (Sv ? Sv.info(d) : "Empty") }), d ? h("button", { class: "btn sm danger", text: "Delete", onclick: () => { Sv.erase(S.project.id, i); renderInspector(); } }) : "")); }
+      box.append(foldout("pl:saves", "Save games", field("save.slot"), ...rows, h("div", { class: "note", text: "Playtests use the current slot. Put Save station objects in your maps; menu buttons can Start a new game in a slot, Continue, or Load a slot (show {save.info1} in a button text)." }))); }
     box.append(h("div", { class: "note", text: "Test keys while walking: H hurts 10, J heals 10. Click fires the current weapon; 1-9 or the wheel switch weapons." }));
     return box;
   }
@@ -1327,7 +1330,7 @@
     const P = S.project, pr = (P.props || []).find(x => x.id === S.propSel) || (P.props || [])[0], box = h("div", { class: "insp" }), T = S.tags;
     if (!pr) { box.append(h("div", { class: "note", text: "No object yet. Use “+ New object” above the view." })); return box; } Schema.ensureKeys(P);
     const pre = pr.id + ".", ty = T.get(pre + "type"), EN = ty === "enemy" || ty === "boss", spr = ty !== "door" && T.get(pre + "look") === "sprite", shown = Schema.PROP.filter(q => Schema.shown(T, pre, q) && !(spr && q.type === "anim")), grp = keys => keys.map(k => shown.find(q => q.k === k)).filter(Boolean).map(q => field(pre + q.k));
-    box.append(h("div", { class: "ihead" }, h("span", { class: "bigic", text: ty === "door" ? "▯" : ty === "pickup" ? "◆" : ty === "enemy" ? "☠" : ty === "boss" ? "♛" : ty === "key" ? "⚿" : ty === "exit" ? "⇥" : ty === "speaker" ? "♪" : ty === "interactive" ? "◳" : ty === "checkpoint" ? "⚑" : ty === "spawner" ? "✳" : "▣" }), h("div", { class: "ititle" }, h("input", { class: "idin", value: T.get(pre + "name") || pr.id, "aria-label": "Object name", onchange: e => { T.set(pre + "name", e.target.value.trim() || pr.id); renderCenter(); } }), h("div", { class: "isub", text: pr.id + " · " + ty }))),
+    box.append(h("div", { class: "ihead" }, h("span", { class: "bigic", text: ty === "door" ? "▯" : ty === "pickup" ? "◆" : ty === "enemy" ? "☠" : ty === "boss" ? "♛" : ty === "key" ? "⚿" : ty === "save" ? "💾" : ty === "exit" ? "⇥" : ty === "speaker" ? "♪" : ty === "interactive" ? "◳" : ty === "checkpoint" ? "⚑" : ty === "spawner" ? "✳" : "▣" }), h("div", { class: "ititle" }, h("input", { class: "idin", value: T.get(pre + "name") || pr.id, "aria-label": "Object name", onchange: e => { T.set(pre + "name", e.target.value.trim() || pr.id); renderCenter(); } }), h("div", { class: "isub", text: pr.id + " · " + ty }))),
       h("div", { class: "btnrow" }, h("button", { class: "btn sm danger", text: "Delete object", onclick: () => { Schema.removeProp(P, pr); S.propSel = null; S.tags.emit([]); markDirty(); renderCenter(); renderInspector(); } })),
       foldout("pr:type", "Type", ...grp(["type", "look", "asset"])),
       spr ? foldout("pr:spr", "Sprite pictures", ...grp(["spriteIdle", "spriteIdleFrames", "spriteWalk", "spriteWalkFrames", "spriteAttack", "spriteAttackFrames", "spriteHurt", "spriteHurtFrames", "spriteDeath", "spriteDeathFrames", "spriteFps", "spriteHeight", "spriteBlend"]),
@@ -1361,6 +1364,8 @@
       ty === "boss" ? foldout("pr:bmove", "Boss moves and attacks (its first phase)", ...grp(["bossMove", "keepDist", "dashSpeed", "dashEvery", "dashTime", "pattern", "patCount", "patSpread", "volleys", "volleyGap", "patTurn", "armor"]),
         h("div", { class: "note", text: "These and the Enemy settings above are how it fights until a phase changes them. Shot patterns work with the Gun and Projectile attacks." })) : "",
       ty === "boss" ? phaseBox(pr) : "",
+      ty === "save" ? foldout("pr:save", "Save station", ...grp(["saveRadius", "saveName", "saveAsk", "saveHeal", "saveAmmo", "saveMsg", "saveSound"]),
+        h("div", { class: "note", text: "Walk up to it and press the Interact key to save the game into the current save slot: where you are, health, tanks, ammo, keys, your tags, and per map which doors you opened, what you picked up and which bosses you beat. Menu buttons “Continue” / “Load a save slot” load it, and “When the player dies: Back to the last save” sends you back here. A model is optional." })) : "",
       ty === "checkpoint" ? foldout("pr:cp", "Checkpoint", ...grp(["cpRadius", "cpHeal", "cpMessage", "cpSound"]), h("div", { class: "note", text: "Touch it to make it your respawn point. With the Lives system “Classic”, dying costs a life and puts you back at the last checkpoint you touched (or the map start). A model is optional: without one it is invisible in the game." })) : "",
       ty === "interactive" ? foldout("pr:use", "Interaction", ...grp(["useMode", "useRange", "useHint", "showBoxes"]), h("div", { class: "note", text: T.get(pre + "useMode") === "cursor" ? "Screen mode: walk up to it and look at it; the mouse then moves a cursor over it instead of turning. Click a hitbox to press it. Move the cursor off the object to look around again." : T.get(pre + "useMode") === "aim" ? "Put the crosshair on a hitbox and left-click (the click does not fire your weapon)." : "Look at a hitbox and press the Interact key (E by default)." })) : "",
       ty === "interactive" ? hitboxBox(pr) : "",

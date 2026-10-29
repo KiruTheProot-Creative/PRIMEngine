@@ -166,7 +166,7 @@
       if (b) { c.imageSmoothingEnabled = false; c.drawImage(b.cv, b.ox * 128, b.oy * 128, b.cv.width / b.PX * 128, b.cv.height / b.PX * 128); }
       const px = 1 / sc;   // one screen pixel in world units
       if (p("items") !== false) { for (const d of w.doors || []) { if (d.open) continue; c.strokeStyle = d.c || p("door"); c.lineWidth = 4 * k * px; c.beginPath(); c.moveTo(d.x0, d.y0); c.lineTo(d.x1, d.y1); c.stroke(); }
-        for (const q of w.items || []) { if ((q.L || 0) !== w.L || q.k === "enemy" || q.k === "boss") continue; c.fillStyle = q.c || (q.k === "exit" ? "#4aff8a" : q.k === "npc" ? "#7aa8ff" : p("item")); const s2 = (q.k === "key" ? 5 : 3.5) * k * px; if (q.k === "key" || q.k === "exit") c.fillRect(q.x - s2, q.y - s2, s2 * 2, s2 * 2); else { c.beginPath(); c.arc(q.x, q.y, s2, 0, Math.PI * 2); c.fill(); } } }
+        for (const q of w.items || []) { if ((q.L || 0) !== w.L || q.k === "enemy" || q.k === "boss") continue; c.fillStyle = q.c || (q.k === "exit" ? "#4aff8a" : q.k === "npc" ? "#7aa8ff" : q.k === "save" ? "#7dffb0" : p("item")); const s2 = (q.k === "key" ? 5 : 3.5) * k * px; if (q.k === "key" || q.k === "exit" || q.k === "save") c.fillRect(q.x - s2, q.y - s2, s2 * 2, s2 * 2); else { c.beginPath(); c.arc(q.x, q.y, s2, 0, Math.PI * 2); c.fill(); } } }
       // enemies: always, or as radar blips that fade until the next scan
       const mode = p("enemies") || "radar", radar = !!p("radar"), rate = Math.max(0.05, +p("radarRate") || 0.5), rng = Math.max(1, +p("radarRange") || 8) * 128, t = w.t || 0, st = p("radarStyle") || "sweep";
       it.blips = it.blips || {}; const ph = (t * rate) % 1, prev = it.lastPh === undefined ? ph : it.lastPh; it.lastPh = ph; const wrapped = ph < prev;

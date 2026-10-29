@@ -23,8 +23,9 @@
       { k: "texture", label: "Texture", type: "asset", assetType: "image", def: "", showIf: ["mode", "texture"] }, { k: "hoverTexture", label: "Hover texture (optional)", type: "asset", assetType: "image", def: "", showIf: ["mode", "texture"] },
       X, Y, Object.assign({}, W("Width (0 = natural)"), { showIf: ["mode", "texture"] }), Object.assign({}, H, { label: "Height (0 = natural)", showIf: ["mode", "texture"] }), LOCK({ showIf: ["mode", "texture"] }),
       { k: "hoverSound", label: "Hover sound", type: "asset", assetType: "sound", def: "" }, { k: "clickSound", label: "Click sound", type: "asset", assetType: "sound", def: "" },
-      { k: "action", label: "On click", type: "choice", options: [["none", "Nothing"], ["goto", "Go to screen"], ["back", "Go back (previous screen)"], ["start", "Start game"], ["resume", "Resume game (pause menu)"], ["restart", "Restart level (pause menu)"], ["menu", "Quit to main menu"], ["quit", "Quit (close the game)"]], def: "none" },
-      { k: "target", label: "Screen", type: "screenRef", def: "", showIf: ["action", "goto"] }] },
+      { k: "action", label: "On click", type: "choice", options: [["none", "Nothing"], ["goto", "Go to screen"], ["back", "Go back (previous screen)"], ["start", "Start a new game"], ["continue", "Continue (the latest save; a new game if there is none)"], ["load", "Load a save slot"], ["resume", "Resume game (pause menu)"], ["restart", "Restart level (pause menu)"], ["menu", "Quit to main menu"], ["quit", "Quit (close the game)"]], def: "none" },
+      { k: "target", label: "Screen", type: "screenRef", def: "", showIf: ["action", "goto"] },
+      { k: "slot", label: "Save slot (1 to 3; menus can show {save.info1}, {save.info2}, {save.info3})", type: "number", def: 1, min: 1, max: 3, step: 1, showIf: ["action", ["start", "load"]] }] },
     slider: { label: "Slider", icon: "◐", props: [{ k: "label", label: "Label", type: "string", def: "Value" }, { k: "bind", label: "Controls tag", type: "tagRef", refType: "number", def: "" }, FONT, SIZE(26), COLOR("color", "Color", "#d9f7ff"), COLOR("accent", "Accent", "#7df3ff"), X, Y, W("Width", 420)] },
     toggle: { label: "Toggle", icon: "◉", props: [{ k: "label", label: "Label", type: "string", def: "Option" }, { k: "bind", label: "Controls tag", type: "tagRef", refType: "bool", def: "" }, FONT, SIZE(26), COLOR("color", "Color", "#d9f7ff"), COLOR("accent", "Accent", "#7df3ff"), X, Y, W("Width", 420)] },
     pips: { label: "Counter boxes (energy tanks, lives)", icon: "▪", props: [{ k: "bind", label: "Filled boxes = tag", type: "tagRef", refType: "number", def: "player.tanks" }, { k: "max", label: "Number of boxes = tag (empty = the tag's highest value)", type: "tagRef", refType: "number", def: "player.tanksMax" },
@@ -120,7 +121,7 @@
     { k: "livesMode", label: "Lives system", type: "choice", options: [["off", "Off (dying = the death setting below)"], ["classic", "Classic: lives, respawn at the last checkpoint"], ["reserve", "Energy reserve: energy tanks refill your health (Metroid style)"]], def: "off" },
     PNUM("livesStart", "Lives at the start", 3, 1, 99, 1, { showIf: ["livesMode", "classic"] }),
     PNUM("tanksStart", "Energy tanks at the start", 0, 0, 99, 1, { showIf: ["livesMode", "reserve"] }), PNUM("tanksLimit", "Most energy tanks you can collect", 14, 1, 99, 1, { showIf: ["livesMode", "reserve"] }),
-    { k: "deathAction", label: "When the player dies", type: "choice", options: [["restart", "Restart the map"], ["screen", "Go to a screen (e.g. Game Over)"]], def: "restart" },
+    { k: "deathAction", label: "When the player dies", type: "choice", options: [["restart", "Restart the map"], ["save", "Back to the last save (restarts the map if there is none)"], ["screen", "Go to a screen (e.g. Game Over)"]], def: "restart" },
     { k: "deathScreen", label: "Game over screen", type: "screenRef", def: "", showIf: ["deathAction", "screen"] }, PNUM("deathDelay", "Wait after dying (s)", 2.5, 0, 30, 0.1),
     { k: "damageFlash", label: "Red flash when hurt", type: "bool", def: true },
     { k: "pauseScreen", label: "Pause menu (Esc). Empty = Esc leaves the game", type: "screenRef", def: "pause" },
@@ -227,7 +228,7 @@
   const EN = ["enemy", "boss"];
   S.PROP = [
     { k: "name", label: "Name", type: "string", def: "Object" },
-    { k: "type", label: "Type", type: "choice", options: [["decoration", "Decoration (just a model)"], ["door", "Door (fills a cell between walls)"], ["pickup", "Pick-up (collected by touching)"], ["enemy", "Enemy (hunts and attacks the player)"], ["exit", "Level exit (touch it to leave the level)"], ["npc", "Character (NPC: talk to it, make choices)"], ["speaker", "Speaker (plays a sound you hear around it)"], ["interactive", "Interactive (buttons, consoles, screens)"], ["checkpoint", "Checkpoint (where you respawn with the Lives system)"], ["spawner", "Spawner (keeps making new objects: enemies, pick-ups…)"], ["key", "Key (opens locked doors)"], ["boss", "Boss (an enemy with phases and a health bar)"]], def: "decoration" },
+    { k: "type", label: "Type", type: "choice", options: [["decoration", "Decoration (just a model)"], ["door", "Door (fills a cell between walls)"], ["pickup", "Pick-up (collected by touching)"], ["enemy", "Enemy (hunts and attacks the player)"], ["exit", "Level exit (touch it to leave the level)"], ["npc", "Character (NPC: talk to it, make choices)"], ["speaker", "Speaker (plays a sound you hear around it)"], ["interactive", "Interactive (buttons, consoles, screens)"], ["checkpoint", "Checkpoint (where you respawn with the Lives system)"], ["spawner", "Spawner (keeps making new objects: enemies, pick-ups…)"], ["key", "Key (opens locked doors)"], ["boss", "Boss (an enemy with phases and a health bar)"], ["save", "Save station (saves the game)"]], def: "decoration" },
     { k: "look", label: "Looks like", type: "choice", options: [["model", "3D model (FBX)"], ["sprite", "2D sprite (pictures that always face the player)"]], def: "model", showIf: ["type", ["enemy", "boss", "decoration", "pickup", "key", "exit", "npc"]] },
     { k: "asset", label: "Model (FBX)", type: "asset", assetType: "model", def: "", showIf: ["look", "model"] },
     // 2D sprites: each picture holds the frames of one animation side by side (a strip). They always turn to face the player.
@@ -353,6 +354,14 @@
     { k: "shotWeapon", label: "That weapon", type: "weaponRef", def: "", showIf: ["type", "door"], showIf2: ["shotFirst", "weapon"] },
     { k: "shotAfter", label: "After that first shot it opens with any weapon", type: "bool", def: true, showIf: ["type", "door"], showIf2: ["openMode", "shot"] },
     { k: "shotMsg", label: "Message when the wrong shot hits it (empty = none)", type: "string", def: "", showIf: ["type", "door"], showIf2: ["openMode", "shot"] });
+  // ---- save stations: step in, press Interact, (confirm,) the game is saved to the current slot
+  S.PROP.push(NUM("saveRadius", "Can be used within (units, 128 = a cell)", 96, 16, 600, 4, { showIf: ["type", "save"] }),
+    { k: "saveName", label: "Name in the save list (empty = the map's name)", type: "string", def: "", showIf: ["type", "save"] },
+    { k: "saveAsk", label: "Asks “Save the game?” first", type: "bool", def: true, showIf: ["type", "save"] },
+    { k: "saveHeal", label: "Refills health and energy tanks", type: "bool", def: true, showIf: ["type", "save"] },
+    { k: "saveAmmo", label: "Refills ammo", type: "bool", def: true, showIf: ["type", "save"] },
+    { k: "saveMsg", label: "Message after saving", type: "string", def: "Game saved", showIf: ["type", "save"] },
+    { k: "saveSound", label: "Sound when saving", type: "asset", assetType: "sound", def: "", showIf: ["type", "save"] });
   // ---- bosses: an enemy (all the enemy settings) + a fight (health bar, intro, music, win) + phases (structure prop.phases = [{id}], values = tags <prop>.ph.<phase>.*)
   const BS = { showIf: ["type", "boss"] }, BX = (o) => Object.assign({ showIf: ["type", "boss"] }, o || {});
   S.PROP.push({ k: "bossName", label: "Boss name (health bar)", type: "string", def: "", showIf: ["type", "boss"] },
@@ -549,6 +558,9 @@
   const KEYREF = { k: "key", label: "Key", type: "propRef", refType: "key", def: "" }, KC = ["object", "player", "zone", "boss", "dialogue"], BC = ["boss"];
   const PHNAME = { k: "phase", label: "Phase name (empty = any phase)", type: "string", def: "" };
   Object.assign(S.SNODES, {
+    saveGame: { label: "Save the game (here, current slot)", cat: "action", outs: ["next"], ctx: ["object", "player", "zone", "boss", "dialogue"], props: [] },
+    onSave: { label: "When the game is saved", cat: "event", ins: false, outs: ["next"], ctx: ["object", "player", "zone"], props: [] },
+    onLoad: { label: "When a save is loaded", cat: "event", ins: false, outs: ["next"], ctx: ["object", "player", "zone"], props: [] },
     giveKey: { label: "Give the player a key", cat: "tags", outs: ["next"], ctx: KC, props: [KEYREF] },
     takeKey: { label: "Take a key away", cat: "tags", outs: ["next"], ctx: KC, props: [KEYREF] },
     ifHasKey: { label: "If the player has a key", cat: "sense", outs: ["then", "else"], ctx: KC, props: [KEYREF] },
@@ -679,6 +691,11 @@
     if (!project.tags["player.lastButton"]) project.tags["player.lastButton"] = { type: "string", value: "", label: "Name of the last button pressed (live)", group: "player", builtin: true };
     for (const [k, l] of [["aiming", "The aim button is held (live)"], ["locked", "Locked onto a target (live)"]]) if (!project.tags["player." + k]) project.tags["player." + k] = { type: "bool", value: false, label: l, group: "player", builtin: true };
     for (const [k, t, v, l] of [["bossActive", "bool", false, "A boss fight is on (live)"], ["bossHealth", "number", 0, "Boss health (live)"], ["bossMax", "number", 0, "Boss full health (live)"], ["bossName", "string", "", "Boss name (live)"], ["bossPhase", "string", "", "Boss phase name (live)"]]) if (!project.tags["player." + k]) project.tags["player." + k] = Object.assign({ type: t, value: v, label: l, group: "player", builtin: true }, t === "number" ? { min: 0, max: 1000000, step: 1 } : {});
+    for (let i = 1; i <= 3; i++) if (!project.tags["save.info" + i]) project.tags["save.info" + i] = { type: "string", value: "Empty", label: "Save slot " + i + ": where and when (live)", group: "save", builtin: true };
+    if (!project.tags["save.any"]) project.tags["save.any"] = { type: "bool", value: false, label: "There is at least one save (live)", group: "save", builtin: true };
+    if (!project.tags["save.slot"]) project.tags["save.slot"] = { type: "number", value: 1, min: 1, max: 3, step: 1, label: "Current save slot (live)", group: "save", builtin: true };
+    for (const sc of project.screens || []) for (const n of sc.nodes || []) if (n.type === "button") for (const p of S.NODE.button.props) { const k = sc.id + "." + n.id + "." + p.k, r = project.tags[k]; if (!r) project.tags[k] = rec(p, sc.id, sc.id + "." + n.id); else { if (p.options) r.options = p.options; if (p.showIf) r.showIf = p.showIf; r.label = p.label; } }
+    for (const p of S.PLAYER) { const r = project.tags["player." + p.k]; if (r && p.options) r.options = p.options; }
     S.ensureKeys(project); for (const p of project.props || []) if (p.script) for (const n of p.script.nodes) S.ensureSNode(project, p.id, n, p.id + ".asset");
     if (!project.tags["player.reloading"]) project.tags["player.reloading"] = { type: "bool", value: false, label: "The current weapon is reloading (live)", group: "player", builtin: true };
     if (!project.tags["player.charge"]) project.tags["player.charge"] = { type: "number", value: 0, label: "Charge beam progress, 0 to 1 (live)", group: "player", min: 0, max: 1, step: 0.01, builtin: true };
