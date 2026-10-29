@@ -247,8 +247,8 @@
       const cells = []; for (let i = 0; i < W; i++) cells.push([Math.floor(ax / C) + ux * i, Math.floor(ay / C) + uy * i]);
       return { cx: ax + ux * (W - 1) * C / 2, cy: ay + uy * (W - 1) * C / 2, fy, layer: L, ux, uy, nx: r(Math.sin(q)), ny: r(Math.cos(q)), w: W * C, h: (L + H) * LH - fy, thick: 16, door: true, cells, W, H };
     }
-    const f = G.floorY(m, L, th.x, th.y);
-    return { cx: th.x, cy: th.y, fy: f === null ? L * LH : f, ux: Math.cos(a), uy: -Math.sin(a), nx: Math.sin(a), ny: Math.cos(a), door: false };
+    const f = G.floorY(m, L, th.x, th.y);   // no floor on its story (an open two-story room): it stands on the ground below instead of floating
+    return { cx: th.x, cy: th.y, fy: f === null ? G.groundY(m, th.x, th.y, L * LH + LH - 8) : f, ux: Math.cos(a), uy: -Math.sin(a), nx: Math.sin(a), ny: Math.cos(a), door: false };
   };
   G.doorBox = f => { const hx = Math.abs(f.ux) * f.w / 2 + Math.abs(f.nx) * f.thick / 2, hz = Math.abs(f.uy) * f.w / 2 + Math.abs(f.ny) * f.thick / 2; return [[f.cx - hx, f.fy, f.cy - hz], [f.cx + hx, f.fy + f.h, f.cy + hz]]; };
 })();
