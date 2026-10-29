@@ -32,8 +32,9 @@
         hurt: a => { if (a > 0) this.hurtPlayer(a); else if (a < 0 && !this.pdead) T.set("player.health", Math.min(+T.get("player.maxHealth") || 100, (+T.get("player.health") || 0) - a)); },
         teleport: () => { this.placeStart(); this.extV = null; }, nearEnemy: d => (this.things || []).some(o => this.eAlive(o) && Math.hypot(o.x - this.x, o.y - this.y) < d && Math.abs(o.floor - this.z) < 200),
         switchWeapon: (w, n) => { if (w === "next") this.setWeapon((this.wi || 0) + 1); else if (w === "prev") this.setWeapon((this.wi || 0) - 1); else if (n - 1 < this.wids().length) this.setWeapon(n - 1); },
-        broadcast: name => this.trigger("onMessage", name), say: t => { if (this.o.say) this.o.say(t); else console.log(t); } }) : null;
+        broadcast: name => this.trigger("onMessage", name), custom: (ow, n, g, tok) => this.custom(ow, n, g, tok), say: t => { if (this.o.say) this.o.say(t); else console.log(t); } }) : null;
       if (PRIM.Audio) PRIM.Audio.preload(this.project.assets.filter(x => x.type === "sound" && this.urls[x.id]).map(x => this.urls[x.id]));
+      if (this.mode === "play") { if (PRIM.Schema && PRIM.Schema.ensureKeys) PRIM.Schema.ensureKeys(this.project); this.keysReset("all"); }
       this.syncAtts(); this.syncThings(); this.trigger("onStart"); if (this.sh) this.sh.watch(() => this.scriptOwners());
       if (this.mode === "play") this.bind(); else { this.msg.style.display = "none"; this.cv.style.cursor = "default"; }
       this.last = performance.now(); this.raf = requestAnimationFrame(t => this.frame(t));
@@ -133,7 +134,7 @@
       const em = T.get(pre + "projEmit") === undefined ? 1 : +T.get(pre + "projEmit"), ecol = col.map(q => q * em), lt = T.get(pre + "projLight") && kind !== "hitscan" ? { c: col, k: +T.get(pre + "projLightPower") || 1.5, r: +T.get(pre + "projLightRange") || 220, shadow: T.get(pre + "projLightShadow") !== false } : null;
       const spr = (+T.get(pre + "projSpread") || 0) * (this.aimK > 0 ? 1 - this.aimK * (1 - (T.get(pre + "aimSpread") === undefined ? 0.3 : +T.get(pre + "aimSpread"))) : 1) * Math.PI / 180, cnt = Math.max(1, Math.min(30, Math.round(+T.get(pre + "projCount") || 1)));
       for (let pel = 0; pel < cnt; pel++) { const D = spr > 0 ? this.coneDir(D1, spr) : D1;
-      if (kind === "hitscan") { let hit = v.raycast(O, D, 6000); const far = hit ? hit.t || M4.len(M4.sub(hit.p, O)) : 6000, dh = this.hitDoor(O, D, far), he = this.hitEnemy(O, D, dh ? dh.t : far); if (hit && !he && !dh) this.impact(pre, hit, ch); if (he) { this.damageEnemy(he.o, dmg * mul); hit = { p: M4.add(O, D.map(q => q * he.t)), n: D.map(q => -q) }; } else if (dh) { this.shootDoor(dh.th); hit = { p: M4.add(O, D.map(q => q * dh.t)), n: D.map(q => -q) }; } if (hit) this.explode(pre, hit.p, hit.n, he ? "enemy" : dh ? "door" : "wall", ch); else this.explode(pre, null, null, "end", ch); const end = hit ? hit.p : M4.add(O, D.map(q => q * 3000)); this.fx.push({ kind: "line", a: O, b: end, c: ecol, w: +T.get(pre + "projWidth") || 0.6, life: +T.get(pre + "projLineTime") || 0.12, t: 0 }); }
+      if (kind === "hitscan") { let hit = v.raycast(O, D, 6000); const far = hit ? hit.t || M4.len(M4.sub(hit.p, O)) : 6000, dh = this.hitDoor(O, D, far), he = this.hitEnemy(O, D, dh ? dh.t : far); if (hit && !he && !dh) this.impact(pre, hit, ch); if (he) { this.damageEnemy(he.o, dmg * mul); hit = { p: M4.add(O, D.map(q => q * he.t)), n: D.map(q => -q) }; } else if (dh) { this.shootDoor(dh.th, pre, ch); hit = { p: M4.add(O, D.map(q => q * dh.t)), n: D.map(q => -q) }; } if (hit) this.explode(pre, hit.p, hit.n, he ? "enemy" : dh ? "door" : "wall", ch); else this.explode(pre, null, null, "end", ch); const end = hit ? hit.p : M4.add(O, D.map(q => q * 3000)); this.fx.push({ kind: "line", a: O, b: end, c: ecol, w: +T.get(pre + "projWidth") || 0.6, life: +T.get(pre + "projLineTime") || 0.12, t: 0 }); }
       else if (kind === "particle") this.fx.push({ pre, ch, home: lockT && T.get(pre + "lockHoming") !== false ? lockT : null, homeK: +T.get(pre + "lockHomingTurn") || 4, kind: T.get(pre + "projShape") === "laser" ? "laser" : "sphere", flat: T.get(pre + "projShade") === "flat", dmg: dmg * mul, p: O, d: D, c: ecol, light: lt, size: orbS > 0 ? orbS : (+T.get(pre + "projSize") || 3) * mul, speed: +T.get(pre + "projSpeed") || 1400, life: +T.get(pre + "projLife") || 2, t: 0 });
       else if (kind === "mesh") {
         const aid = T.get(pre + "projModel"), model = aid && PRIM.FBX.cache[aid]; if (!model) return; if (!this.gpu[aid]) this.gpu[aid] = v.loadModel(model);
@@ -163,7 +164,7 @@
         if (f.home && f.d) { if (this.eAlive(f.home)) { const to = M4.norm(M4.sub(this.eCenter(f.home), f.p)), a = Math.min(1, (f.homeK || 4) * dt); f.d = M4.norm(f.d.map((q, i) => q + (to[i] - q) * a)); } else f.home = null; }   // locked-on shots curve toward the target
         if (f.kind !== "line") { const step = f.speed * dt; if (f.hostile) { const q = M4.add(f.p, f.d.map(z => z * step)); if (!this.pdead && Math.hypot(q[0] - this.x, q[2] - this.y) < (+this.T.get("player.radius") || 16) + (f.size || 4) && q[1] > this.z - 4 && q[1] < this.z + (+this.T.get("player.eyeHeight") || 102) + 12) { this.hurtPlayer(f.dmg); return false; } }
         else { const he = this.hitEnemy(f.p, f.d, step + (f.size || 1)); if (he) { this.damageEnemy(he.o, f.dmg || 0); boom(M4.add(f.p, f.d.map(q => q * he.t)), f.d.map(q => -q), "enemy"); return false; } }
-        const dh = this.hitDoor(f.p, f.d, step + (f.size || 1)); if (dh) { if (!f.hostile) this.shootDoor(dh.th); boom(M4.add(f.p, f.d.map(q => q * dh.t)), f.d.map(q => -q), "door"); return false; } const hit = v.raycast(f.p, f.d, step + (f.size || 1)); if (hit) { if (f.pre && !f.hostile) this.impact(f.pre, hit, f.ch || 0); boom(hit.p, hit.n, "wall"); return false; } f.p = M4.add(f.p, f.d.map(q => q * step)); if (f.kind === "mesh") f.M = M4.mul(M4.translate(...f.p), M4.mul(M4.between([0, 0, -1], f.d, Math.PI), M4.mul(f.rot, M4.scale(f.scale, f.scale, f.scale)))); }
+        const dh = this.hitDoor(f.p, f.d, step + (f.size || 1)); if (dh) { if (!f.hostile) this.shootDoor(dh.th, f.pre, f.ch || 0); boom(M4.add(f.p, f.d.map(q => q * dh.t)), f.d.map(q => -q), "door"); return false; } const hit = v.raycast(f.p, f.d, step + (f.size || 1)); if (hit) { if (f.pre && !f.hostile) this.impact(f.pre, hit, f.ch || 0); boom(hit.p, hit.n, "wall"); return false; } f.p = M4.add(f.p, f.d.map(q => q * step)); if (f.kind === "mesh") f.M = M4.mul(M4.translate(...f.p), M4.mul(M4.between([0, 0, -1], f.d, Math.PI), M4.mul(f.rot, M4.scale(f.scale, f.scale, f.scale)))); }
         return true;
       });
       this.fx = kept.concat(this.fx); this.decoN = deco;
@@ -172,13 +173,13 @@
     syncThings() {
       const m = this.map, T = this.T, F = PRIM.FBX; if (!m || !this.view) { this.things = []; return; } const old = this.things || [], out = [], gone = new Set(old.map(o => o.th.id));
       for (const th of (m.things || []).concat(this.spawnTh || [])) {
-        const prev = old.find(x => x.th.id === th.id), pid = prev && prev.morph && (this.project.props || []).some(q => q.id === prev.morph) ? prev.morph : th.prop, pre = pid + ".", aid = T.get(pre + "asset"), type = T.get(pre + "type");
-        if (type !== "door" && T.get(pre + "look") === "sprite") { gone.delete(th.id); const o = old.find(x => x.th.id === th.id) || { th, st: "closed", p: 0, t: 0, timer: 0, taken: false, spin: 0 }; Object.assign(o, { th, pre, aid: null, model: null, gm: null, sprite: true, type, fr: G.thingFrame(m, T, th) }); if (!o.init) o.floor = o.fr.fy; out.push(o); continue; }
+        const prev = old.find(x => x.th.id === th.id), pid = prev && prev.morph && (this.project.props || []).some(q => q.id === prev.morph) ? prev.morph : th.prop, pre = pid + ".", aid = T.get(pre + "asset"), type0 = T.get(pre + "type"), type = type0 === "boss" ? "enemy" : type0, boss = type0 === "boss";
+        if (type !== "door" && T.get(pre + "look") === "sprite") { gone.delete(th.id); const o = old.find(x => x.th.id === th.id) || { th, st: "closed", p: 0, t: 0, timer: 0, taken: false, spin: 0 }; Object.assign(o, { th, pre, aid: null, model: null, gm: null, sprite: true, type, boss, fr: G.thingFrame(m, T, th) }); if (!o.init) o.floor = o.fr.fy; out.push(o); continue; }
         if ((type === "speaker" || type === "interactive" || type === "checkpoint" || type === "spawner") && (!aid || !this.urls[aid])) { gone.delete(th.id); const o = old.find(x => x.th.id === th.id) || { th, st: "closed", p: 0, t: 0, timer: 0, taken: false, spin: 0 }; Object.assign(o, { th, pre, aid: null, model: null, gm: null, sprite: false, type, fr: G.thingFrame(m, T, th) }); o.floor = o.fr.fy; out.push(o); continue; }
         if (!aid || !this.urls[aid]) continue; const model = F.cache[aid];
         if (!model) { F.load(aid, this.urls[aid]).then(mm => { if (mm && !this.dead) this.syncThings(); }); continue; }
         if (!this.gpu[aid]) this.gpu[aid] = this.view.loadModel(model); gone.delete(th.id); { const q = old.find(x => x.th.id === th.id); if (q) q.sprite = false; }
-        const o = old.find(x => x.th.id === th.id) || { th, st: "closed", p: 0, t: 0, timer: 0, taken: false, spin: 0 }; o.th = th; o.pre = pre; o.aid = aid; o.model = model; o.gm = this.gpu[aid]; o.type = type; o.fr = G.thingFrame(m, T, th); if (!o.init) o.floor = o.fr.fy; out.push(o);
+        const o = old.find(x => x.th.id === th.id) || { th, st: "closed", p: 0, t: 0, timer: 0, taken: false, spin: 0 }; o.th = th; o.pre = pre; o.aid = aid; o.model = model; o.gm = this.gpu[aid]; o.type = type; o.boss = boss; o.fr = G.thingFrame(m, T, th); if (!o.init) o.floor = o.fr.fy; out.push(o);
       }
       this.things = out; this.doorOpen = this.doorOpen || {};
     }
@@ -195,7 +196,7 @@
     npcInFront() {
       const T = this.T, fx = Math.cos(this.yaw), fy = Math.sin(this.yaw); let best = null, bd = 1e9;
       for (const o of this.things || []) { if (o.type !== "npc" || o.taken || !((o.th.prop && this.project.props.find(p => p.id === o.th.prop) || {}).dialog || {}).lines) continue; const dx = o.fr.cx - this.x, dy = o.fr.cy - this.y, d = Math.hypot(dx, dy);
-        if (d > (+T.get(o.pre + "talkRange") || 140) || Math.abs(o.floor - this.z) > 100) continue; if (d > 20 && (dx * fx + dy * fy) / d < 0.6) continue; if (d < bd) { bd = d; best = o; } }
+        if (d > (+this.ov(o, "talkRange") || 140) || Math.abs(o.floor - this.z) > 100) continue; if (d > 20 && (dx * fx + dy * fy) / d < 0.6) continue; if (d < bd) { bd = d; best = o; } }
       return best;
     }
     talkHint() {
@@ -206,7 +207,7 @@
       if (hb) { const T = this.T, k = hb.o.pre + "hb." + hb.b.id + ".", mode = T.get(hb.o.pre + "useMode") || "key", nm = T.get(hb.o.pre + "useHint") || T.get(k + "name") || "Use"; this.hintEl.textContent = (mode === "key" ? ky : mode === "aim" ? "[Click] " : "") + nm + (this.hbLocked(hb.o, hb.b) ? "  (locked)" : ""); }
     }
     talkStart(o) {
-      const p = this.project.props.find(x => x.id === o.th.prop), dg = this.T.get(o.pre + "npcDialogue"); if (dg && (this.project.dialogues || []).some(d => d.id === dg)) { this.talkGraph(dg, o); return; }
+      const p = this.project.props.find(x => x.id === o.th.prop), dg = this.ov(o, "npcDialogue"); if (dg && (this.project.dialogues || []).some(d => d.id === dg)) { this.talkGraph(dg, o); return; }
       if (!p || !p.dialog || !p.dialog.lines.length) return;
       this.talk = { o, p, i: 0 }; this.talkOpen(); this.talkLine();
     }
@@ -231,7 +232,7 @@
       const t = this.talk = { o, graph: d }; this.talkOpen(); this.talkBox("", "…", null, null);
       const pr = this.sh.play({ key: d.id, script: d }); t.done = pr; pr.then(() => { if (this.talk === t) this.talkEnd(); }); return pr;
     }
-    talkWho(s) { const o = this.talk && this.talk.o; return s || (o ? this.T.get(o.pre + "npcName") || this.T.get(o.pre + "name") || "" : ""); }
+    talkWho(s) { const o = this.talk && this.talk.o; return s || (o ? this.ov(o, "npcName") || this.ov(o, "name") || "" : ""); }
     dlgLine(l) {
       const t = this.talk; if (!t || !t.graph) return Promise.resolve(); t.lastText = l.text; t.lastWho = this.talkWho(l.speaker);
       return new Promise(res => { let timer = 0; const go = () => { if (timer) clearTimeout(timer); if (t.res === go) t.res = null; res(); }; t.res = go; this.talkBox(t.lastWho, l.text, null, go, l.sound); if (l.auto > 0) timer = setTimeout(go, l.auto * 1000); });
@@ -256,21 +257,31 @@
     }
     talkGo(go) { const t = this.talk; if (!t) return; if (!go || go === "next") t.i++; else if (go === "end") return this.talkEnd(); else t.i = t.p.dialog.lines.findIndex(l => l.id === go); this.talkLine(); }
     talkEnd() { const t = this.talk; this.talk = null; if (t && t.graph) { if (this.sh) this.sh.stopOwner(t.graph.id); if (t.res) t.res(); } if (this.talkEl) this.talkEl.style.display = "none"; this.msg.style.display = document.pointerLockElement === this.cv ? "none" : "grid"; }
-    shootDoor(th) { const o = (this.things || []).find(x => x.th === th); if (o && this.T.get(o.pre + "openMode") === "shot") this.openDoor(o); }
-    openDoor(o) { if (o.st === "open" || o.st === "opening") return; o.st = "opening"; o.t = o.p * this.doorLen(o, "openAnim"); o.timer = 0; const s = this.T.get(o.pre + "openSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); }
-    closeDoor(o) { if (o.st === "closed" || o.st === "closing") return; o.st = "closing"; o.timer = 0; const s = this.T.get(o.pre + "closeSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); }
-    doorLen(o, which) { const nm = this.T.get(o.pre + (which === "closeAnim" && this.T.get(o.pre + "closeAnim") ? "closeAnim" : "openAnim")), a = nm && o.model.anims[nm]; return a ? Math.max(0.05, this.animLen(o.aid, nm, a.dur).len) : 0.8; }
+    // a shot-open door: the first opening shot can be required to come from a certain weapon (a missile…) or be charged; after that any shot opens it (shotAfter)
+    shootDoor(th, pre, ch) { const o = (this.things || []).find(x => x.th === th); if (!o || this.ov(o, "openMode") !== "shot") return; const need = this.ov(o, "shotFirst") || "any";
+      if (need !== "any" && !o.shotOk) { const ok = need === "weapon" ? !!pre && !!this.ov(o, "shotWeapon") && pre === "player." + this.ov(o, "shotWeapon") + "." : !!pre && this.isCharged(pre, ch || 0);
+        if (!ok) { const ms = this.ov(o, "shotMsg"); if (ms) { const now = performance.now(); if (!(now - (o.lockT || 0) < 1500)) { o.lockT = now; this.toast(this.T.interpolate(String(ms))); } } return; }
+        if (this.ov(o, "shotAfter") !== false) o.shotOk = true; }
+      this.openDoor(o); }
+    // locked doors: a key (lockKey; used up once when lockUse) and / or a tag condition. Returns true while locked (and says so, at most every 2 s)
+    doorLocked(o, quiet) { const T = this.T, k = this.ov(o, "lockKey"), hasK = !!(k && T.has(k + ".have")), keyOk = !hasK || o.unlocked || !!T.get(k + ".have"), nt = this.ov(o, "lockNeedTag"), tagOk = !nt || !this.sh || this.sh.test(nt, this.ov(o, "lockNeedOp") || "=", this.ov(o, "lockNeedVal"));
+      if (keyOk && tagOk) { if (hasK && !o.unlocked) { o.unlocked = true; if (this.ov(o, "lockUse")) T.set(k + ".have", false); } return false; }
+      if (!quiet) { const now = performance.now(); if (!(now - (o.lockT || 0) < 2000)) { o.lockT = now; const nm = hasK && !keyOk ? String(T.get(k + ".keyName") || "key") : "", ms = String(this.ov(o, "lockMsg") || "Locked."); this.toast(T.interpolate(nm || !/\{key\}/.test(ms) ? ms.split("{key}").join(nm) : "Locked.")); const s = this.ov(o, "lockSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); } }
+      return true; }
+    openDoor(o, quiet) { if (o.st === "open" || o.st === "opening") return; if (this.doorLocked(o, quiet)) return; o.st = "opening"; o.t = o.p * this.doorLen(o, "openAnim"); o.timer = 0; const s = this.ov(o, "openSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); }
+    closeDoor(o) { if (o.st === "closed" || o.st === "closing") return; o.st = "closing"; o.timer = 0; const s = this.ov(o, "closeSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); }
+    doorLen(o, which) { const nm = this.ov(o, (which === "closeAnim" && this.ov(o, "closeAnim") ? "closeAnim" : "openAnim")), a = nm && o.model.anims[nm]; return a ? Math.max(0.05, this.animLen(o.aid, nm, a.dur).len) : 0.8; }
     // ---- interactive objects (prop type "interactive"): invisible hitboxes in the object's own space (Object Editor grid: X right, Y up, Z front).
     // Used three ways (prop tag useMode): "key" = look at it + Interact key, "aim" = crosshair + left click, "cursor" = a screen: stepping up to it
     // turns mouse movement into an on-screen cursor (the view stops turning) until the cursor leaves the object's box on screen.
     hbOf(o) { const p = (this.project.props || []).find(x => x.id === o.th.prop); return (p && p.hitboxes) || []; }
     hbFrame(o) { const f = o.fr; return { O: [f.cx, o.floor, f.cy], X: [f.ux, 0, f.uy], Z: [f.nx, 0, f.ny] }; }
-    hbBox(o, b) { const g = k => +this.T.get(o.pre + "hb." + b.id + "." + k) || 0; return { c: [g("x"), g("y"), g("z")], h: [Math.max(0.5, g("w")) / 2, Math.max(0.5, g("h")) / 2, Math.max(0.5, g("d")) / 2] }; }
+    hbBox(o, b) { const g = k => +this.ov(o, "hb." + b.id + "." + k) || 0; return { c: [g("x"), g("y"), g("z")], h: [Math.max(0.5, g("w")) / 2, Math.max(0.5, g("h")) / 2, Math.max(0.5, g("d")) / 2] }; }
     hbToWorld(o, p) { const F = this.hbFrame(o); return [0, 1, 2].map(k => F.O[k] + F.X[k] * p[0] + (k === 1 ? p[1] : 0) + F.Z[k] * p[2]); }
     // nearest hitbox along a world ray (only objects in `modes`, within their range, not behind a wall); only = one object
     hbRay(O, D, modes, only) {
       const T = this.T, v = this.view; let best = null;
-      for (const o of this.things || []) { if (o.type !== "interactive" || (only && o !== only)) continue; const mode = T.get(o.pre + "useMode") || "key"; if (modes && !modes.includes(mode)) continue; const range = +T.get(o.pre + "useRange") || 120, F = this.hbFrame(o), rel = M4.sub(O, F.O);
+      for (const o of this.things || []) { if (o.type !== "interactive" || (only && o !== only)) continue; const mode = this.ov(o, "useMode") || "key"; if (modes && !modes.includes(mode)) continue; const range = +this.ov(o, "useRange") || 120, F = this.hbFrame(o), rel = M4.sub(O, F.O);
         const lo = [M4.dot(rel, F.X), rel[1], M4.dot(rel, F.Z)], ld = [M4.dot(D, F.X), D[1], M4.dot(D, F.Z)];
         for (const b of this.hbOf(o)) { const bx = this.hbBox(o, b); let t0 = 0, t1 = range + 1e-3, ok = true;
           for (let a = 0; a < 3 && ok; a++) { const mn = bx.c[a] - bx.h[a], mx = bx.c[a] + bx.h[a]; if (Math.abs(ld[a]) < 1e-9) { if (lo[a] < mn || lo[a] > mx) ok = false; continue; } let ta = (mn - lo[a]) / ld[a], tb = (mx - lo[a]) / ld[a]; if (ta > tb) [ta, tb] = [tb, ta]; t0 = Math.max(t0, ta); t1 = Math.min(t1, tb); if (t0 > t1) ok = false; }
@@ -299,7 +310,7 @@
       return x0 < x1 ? { x0, y0, x1, y1 } : null; }
     uiStep() {
       if (this.mode !== "play" || !this.view) return; const T = this.T;
-      if (this.ui) { const u = this.ui, o = u.o, d = Math.hypot(o.fr.cx - this.x, o.fr.cy - this.y); if (this.talk || this.pdead || !this.things.includes(o) || d > (+T.get(o.pre + "useRange") || 120) + 40) return this.uiEnd(false);
+      if (this.ui) { const u = this.ui, o = u.o, d = Math.hypot(o.fr.cx - this.x, o.fr.cy - this.y); if (this.talk || this.pdead || !this.things.includes(o) || d > (+this.ov(o, "useRange") || 120) + 40) return this.uiEnd(false);
         const ray = this.view.rayAt(u.x, u.y); u.hover = this.hbRay(ray.o, ray.d, ["cursor"], o); this.curEl.style.left = u.x + "px"; this.curEl.style.top = u.y + "px"; this.curEl.classList.toggle("on", !!u.hover); return; }
       const hb = this.pdead || this.talk ? null : this.hbAim(["cursor"]); if (!hb) { this.uiBlock = null; return; } if (this.uiBlock === hb.o) return;
       const r = this.view.canvas.getBoundingClientRect(); this.ui = { o: hb.o, x: r.width / 2, y: r.height / 2, hover: hb };
@@ -311,28 +322,28 @@
       const R = this.hbRect(u.o), m = 40; if (!R || u.x < R.x0 - m || u.x > R.x1 + m || u.y < R.y0 - m || u.y > R.y1 + m || u.x <= 0 || u.y <= 0 || u.x >= r.width || u.y >= r.height) this.uiEnd(true); }
     // "Show the hitboxes while playing": their edges as thin lines (yellow = the one you point at)
     hbLines() { const out = [], T = this.T, hov = this.ui ? this.ui.hover : this.hbAim(null);
-      for (const o of this.things || []) { if (o.type !== "interactive" || !T.get(o.pre + "showBoxes")) continue; for (const b of this.hbOf(o)) { const bx = this.hbBox(o, b), P = (i) => this.hbToWorld(o, [bx.c[0] + (i & 1 ? 1 : -1) * bx.h[0], bx.c[1] + (i & 2 ? 1 : -1) * bx.h[1], bx.c[2] + (i & 4 ? 1 : -1) * bx.h[2]]), c = hov && hov.b === b && hov.o === o ? [1, 0.85, 0.2] : [1, 0.3, 0.9];
+      for (const o of this.things || []) { if (o.type !== "interactive" || !this.ov(o, "showBoxes")) continue; for (const b of this.hbOf(o)) { const bx = this.hbBox(o, b), P = (i) => this.hbToWorld(o, [bx.c[0] + (i & 1 ? 1 : -1) * bx.h[0], bx.c[1] + (i & 2 ? 1 : -1) * bx.h[1], bx.c[2] + (i & 4 ? 1 : -1) * bx.h[2]]), c = hov && hov.b === b && hov.o === o ? [1, 0.85, 0.2] : [1, 0.3, 0.9];
         for (const [i, j] of [[0, 1], [2, 3], [4, 5], [6, 7], [0, 2], [1, 3], [4, 6], [5, 7], [0, 4], [1, 5], [2, 6], [3, 7]]) out.push({ kind: "line", a: P(i), b: P(j), c, w: 0.35, t: 0, life: 1e9 }); } }
       return out; }
     interact() {
       const v = this.view; if (!v) return; { const n = this.npcInFront(); if (n) { this.talkStart(n); return; } } { const hb = this.ui ? this.ui.hover : this.hbAim(["key"]); if (hb) { this.hbPress(hb.o, hb.b); return; } } const c = v.cam, B = R3D.camBasis(c.yaw, c.pitch), O = [c.x, c.y, c.z], D = B.f;
-      for (const o of this.things || []) { if (o.type !== "door" || this.T.get(o.pre + "openMode") !== "interact") continue; const t = this.thingHit(o, O, D, +this.T.get(o.pre + "interactRange") || 90); if (t === null) continue; if (o.st === "closed" || o.st === "closing") this.openDoor(o); else this.closeDoor(o); return; }
+      for (const o of this.things || []) { if (o.type !== "door" || this.ov(o, "openMode") !== "interact") continue; const t = this.thingHit(o, O, D, +this.ov(o, "interactRange") || 90); if (t === null) continue; if (o.st === "closed" || o.st === "closing") this.openDoor(o); else this.closeDoor(o); return; }
     }
     thingStep(dt) {
       if (this.talk) return; const T = this.T; for (const o of this.things || []) {
-        if (o.taken) continue; if (o.type === "enemy") { this.enemyStep(o, dt); continue; } if (o.type === "spawner") { this.spawnerStep(o, dt); continue; } const g = k => +T.get(o.pre + k) || 0, f = o.fr, dist = Math.hypot(this.x - f.cx, this.y - f.cy);
+        if (o.taken) continue; if (o.type === "enemy") { this.enemyStep(o, dt); continue; } if (o.type === "spawner") { this.spawnerStep(o, dt); continue; } const g = k => +this.ov(o, k) || 0, f = o.fr, dist = Math.hypot(this.x - f.cx, this.y - f.cy);
         if (o.type === "exit") { if (!this.pdead && dist < (g("exitRadius") || 40) && Math.abs(this.z - o.floor) < 90) this.levelExit(o); continue; }
-        if (o.type === "pickup") { if (dist < (g("pickRadius") || 28) && Math.abs(this.z - o.floor) < 70) { o.taken = true; const tg = T.get(o.pre + "giveTag"), amt = g("giveAmount");
+        if (o.type === "pickup" || o.type === "key") { if (dist < (g("pickRadius") || 28) && Math.abs(this.z - o.floor) < 70) { o.taken = true; const tg = o.type === "key" ? "" : this.ov(o, "giveTag"), amt = g("giveAmount"); if (o.type === "key") this.keyPick(o);
           if (tg === "player.health" && this.livesMode() === "reserve") this.giveHealth(amt);   // overflow fills empty energy tanks
           else if (tg === "player.tanksMax") { const own = Math.min(+T.get("player.tanksLimit") || 14, (+T.get(tg) || 0) + amt); T.setMany({ "player.tanksMax": own, "player.tanks": own, "player.health": +T.get("player.maxHealth") || 100 }); }   // a new energy tank refills everything
           else if (tg && T.get(tg) !== undefined) T.set(tg, (+T.get(tg) || 0) + amt);
-          const s = T.get(o.pre + "pickSound"); if (s) this.sfx(s);
-          if (T.get(o.pre + "popupOn")) { this.seenPop = this.seenPop || new Set(); const kind = o.th.prop; if (!(T.get(o.pre + "popupFirst") !== false && this.seenPop.has(kind))) { this.seenPop.add(kind); this.popupShow(o); } } } else o.spin += dt * 80; continue; }
+          const s = this.ov(o, "pickSound"); if (s) this.sfx(s);
+          if (this.ov(o, "popupOn")) { this.seenPop = this.seenPop || new Set(); const kind = o.th.prop; if (!(this.ov(o, "popupFirst") !== false && this.seenPop.has(kind))) { this.seenPop.add(kind); this.popupShow(o); } } } else o.spin += dt * 80; continue; }
         if (o.type === "checkpoint") { if (dist < (g("cpRadius") || 64) && Math.abs(this.z - o.floor) < 90 && !this.pdead && (!this.cp || this.cp.id !== o.th.id)) { this.cp = { id: o.th.id, map: this.map && this.map.id, x: this.x, y: this.y, z: this.z, yaw: this.yaw };
-          if (T.get(o.pre + "cpHeal") !== false) T.set("player.health", +T.get("player.maxHealth") || 100); const s = T.get(o.pre + "cpSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); if (T.get(o.pre + "cpMessage")) this.toast(T.get(o.pre + "cpMessage")); } continue; }
-        if (o.type !== "door") continue; const mode = T.get(o.pre + "openMode"), near = dist < (mode === "proximity" ? g("openRange") || 110 : 50);
+          if (this.ov(o, "cpHeal") !== false) T.set("player.health", +T.get("player.maxHealth") || 100); const s = this.ov(o, "cpSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); if (this.ov(o, "cpMessage")) this.toast(this.ov(o, "cpMessage")); } continue; }
+        if (o.type !== "door") continue; const mode = this.ov(o, "openMode"), near = dist < (mode === "proximity" ? g("openRange") || 110 : 50);
         if (mode === "proximity" && near && (o.st === "closed" || o.st === "closing")) this.openDoor(o);
-        const on = T.get(o.pre + "autoClose") && (mode === "proximity" || g("closeAfter") > 0);
+        const on = this.ov(o, "autoClose") && (mode === "proximity" || g("closeAfter") > 0);
         if (o.st === "open") { if (on && !(dist < 50)) { if (mode === "proximity") { if (!near) this.closeDoor(o); } else { o.timer += dt; if (o.timer >= g("closeAfter")) this.closeDoor(o); } } }
         const len = this.doorLen(o, o.st === "closing" ? "closeAnim" : "openAnim");
         if (o.st === "opening") { o.t += dt; o.p = Math.min(1, o.t / len); if (o.p >= 1) o.st = "open"; }
@@ -343,10 +354,10 @@
     drawThings(v, dt) {
       if (!this.things || !this.things.length) return; if (this.mode === "play") this.thingStep(dt); const F = PRIM.FBX, T = this.T, items = [];
       for (const o of this.things) {
-        if (o.taken) continue; if (!o.gm && !o.sprite) continue; if (o.type === "speaker" && this.mode === "play" && !T.get(o.pre + "spkShow")) continue; if (o.type === "spawner" && this.mode === "play" && !T.get(o.pre + "spawnShow")) continue; if (o.sprite) { const it = this.spriteItem(o, v); if (it) items.push(it); continue; } const g = k => +T.get(o.pre + k) || 0; let f = o.fr, name = null, tm = 0;
+        if (o.taken) continue; if (!o.gm && !o.sprite) continue; if (o.type === "speaker" && this.mode === "play" && !this.ov(o, "spkShow")) continue; if (o.type === "spawner" && this.mode === "play" && !this.ov(o, "spawnShow")) continue; if (o.sprite) { const it = this.spriteItem(o, v); if (it) items.push(it); continue; } const g = k => +this.ov(o, k) || 0; let f = o.fr, name = null, tm = 0;
         if (o.type === "enemy" && o.init) { const a = o.yaw * Math.PI / 180; f = { cx: o.x, cy: o.y, ux: Math.cos(a), uy: -Math.sin(a), nx: Math.sin(a), ny: Math.cos(a), door: false }; }
-        const talking = o.type === "npc" && this.talk && this.talk.o === o; if (talking && T.get(o.pre + "faceTalker") !== false) { const a = Math.atan2(this.x - o.fr.cx, this.y - o.fr.cy); f = { cx: o.fr.cx, cy: o.fr.cy, ux: Math.cos(a), uy: -Math.sin(a), nx: Math.sin(a), ny: Math.cos(a), door: false }; }
-        const an = k => { const nm = T.get(o.pre + k); return nm && o.model.anims[nm] ? nm : null; };
+        const talking = o.type === "npc" && this.talk && this.talk.o === o; if (talking && this.ov(o, "faceTalker") !== false) { const a = Math.atan2(this.x - o.fr.cx, this.y - o.fr.cy); f = { cx: o.fr.cx, cy: o.fr.cy, ux: Math.cos(a), uy: -Math.sin(a), nx: Math.sin(a), ny: Math.cos(a), door: false }; }
+        const an = k => { const nm = this.ov(o, k); return nm && o.model.anims[nm] ? nm : null; };
         if (o.type === "door") { const oa = an("openAnim"), ca = an("closeAnim"); if (oa) { const L = this.animLen(o.aid, oa, o.model.anims[oa].dur); if (o.st === "closing" && ca) { name = ca; tm = (1 - o.p) * this.animLen(o.aid, ca, o.model.anims[ca].dur).len * 1; } else { name = oa; tm = o.p * L.len; } tm *= L.speed; } else { name = an("idleAnim"); tm = 0; } }
         else if (o.type === "enemy" && o.init) { name = o.anim; if (name) { const L = this.animLen(o.aid, name, o.model.anims[name].dur), loop = o.akey === "idleAnim" || o.akey === "walkAnim"; tm = (loop ? o.at % Math.max(0.05, L.len) : Math.min(o.at, L.len - 1e-3)) * L.speed; } }
         else if (o.pressAnim && o.model.anims[o.pressAnim.name]) { const pa = o.pressAnim, L = this.animLen(o.aid, pa.name, o.model.anims[pa.name].dur); pa.t += dt; if (pa.t >= L.len) { o.pressAnim = null; name = an("idleAnim"); tm = 0; } else { name = pa.name; tm = pa.t * L.speed; } }
@@ -357,39 +368,39 @@
         const slide = o.type === "door" && !an("openAnim") ? o.p * (f.h || 128) : 0;
         const Fm = o.type === "enemy" && o.surf ? this.crawlFrame(o) : [XX[0], XX[1], XX[2], 0, 0, 1, 0, 0, ZZ[0], ZZ[1], ZZ[2], 0, f.cx, o.floor + slide, f.cy, 1];
         const sc = g("scale") || 1; let loc = M4.mul(M4.translate(g("ox"), g("oy"), g("oz")), M4.mul(M4.rotXYZ([g("rx"), g("ry") + ang, g("rz")]), M4.scale(sc, sc, sc)));
-        if (o.mount === "ceiling" && T.get(o.pre + "ceilFlip") !== false) loc = M4.mul(M4.translate(0, g("height") || 110, 0), M4.mul(M4.rotXYZ([0, 0, 180]), loc));   // hanging: turned over, its feet on the ceiling
-        if (o.type === "door" && T.get(o.pre + "doorFit") !== false) loc = this.doorFit(o, f);
+        if (o.mount === "ceiling" && this.ov(o, "ceilFlip") !== false) loc = M4.mul(M4.translate(0, g("height") || 110, 0), M4.mul(M4.rotXYZ([0, 0, 180]), loc));   // hanging: turned over, its feet on the ceiling
+        if (o.type === "door" && this.ov(o, "doorFit") !== false) loc = this.doorFit(o, f);
         if (o.type === "enemy") { o.lastM = M4.mul(Fm, loc); o.lastPose = pose; }
-        items.push({ kind: "mesh", owner: o.th.id, gm: o.gm, pose, M: M4.mul(Fm, loc), clip: o.type === "door" ? o.floor + (f.h || 128) : undefined, p: [f.cx, o.floor + 40, f.cy], scale: 6, mat: Object.assign(this.matGL(o.pre), o.flash > 0 ? { tint: [1, 0.45, 0.45], emit: [0.5, 0.05, 0.05] } : o.st === "dead" ? { tint: [0.75, 0.7, 0.7] } : {}), tex: T.get(o.pre + "matTexture") ? v.texFor(T.get(o.pre + "matTexture"), this.urls) : null }); if (items[items.length - 1].clip !== undefined) items[items.length - 1].mat.clipY = items[items.length - 1].clip;
+        items.push({ kind: "mesh", owner: o.th.id, gm: o.gm, pose, M: M4.mul(Fm, loc), clip: o.type === "door" ? o.floor + (f.h || 128) : undefined, p: [f.cx, o.floor + 40, f.cy], scale: 6, mat: Object.assign(this.matGL(o.pre), o.flash > 0 ? { tint: [1, 0.45, 0.45], emit: [0.5, 0.05, 0.05] } : o.shGlow ? { emit: o.shGlow } : o.st === "dead" ? { tint: [0.75, 0.7, 0.7] } : {}), tex: this.ov(o, "matTexture") ? v.texFor(this.ov(o, "matTexture"), this.urls) : null }); if (items[items.length - 1].clip !== undefined) items[items.length - 1].mat.clipY = items[items.length - 1].clip;
       }
       // objects that give off light: a point light above them (flicker = a torch), maybe casting shadows; their own model never shadows their own light
-      for (const o of this.things) { if (o.taken || !T.get(o.pre + "lightOn")) continue; const g = k => +T.get(o.pre + k) || 0, x = o.type === "enemy" && o.init ? o.x : o.fr.cx, y = o.type === "enemy" && o.init ? o.y : o.fr.cy, fl = g("lightFlicker"), tm = performance.now() / 1000 + (o.th.id.length * 1.7), k = g("lightIntensity") * (1 - fl * (0.5 + 0.5 * Math.sin(tm * 17 + Math.sin(tm * 7.3) * 4)) * 0.8);
-        (this.lightNow = this.lightNow || []).push({ p: [x, o.floor + g("lightHeight"), y], r: g("lightRange") || 420, c: this.hexCol(T.get(o.pre + "lightColor") || "#ffd9a0").map(q => q * k), type: 0, shadow: T.get(o.pre + "lightShadows") !== false, owner: o.th.id }); }
+      for (const o of this.things) { if (o.taken || !this.ov(o, "lightOn")) continue; const g = k => +this.ov(o, k) || 0, x = o.type === "enemy" && o.init ? o.x : o.fr.cx, y = o.type === "enemy" && o.init ? o.y : o.fr.cy, fl = g("lightFlicker"), tm = performance.now() / 1000 + (o.th.id.length * 1.7), k = g("lightIntensity") * (1 - fl * (0.5 + 0.5 * Math.sin(tm * 17 + Math.sin(tm * 7.3) * 4)) * 0.8);
+        (this.lightNow = this.lightNow || []).push({ p: [x, o.floor + g("lightHeight"), y], r: g("lightRange") || 420, c: this.hexCol(this.ov(o, "lightColor") || "#ffd9a0").map(q => q * k), type: 0, shadow: this.ov(o, "lightShadows") !== false, owner: o.th.id }); }
       for (const it of items) if (it.kind === "mesh") it.owner = it.owner || null; v.casters = items.filter(it => it.kind === "mesh");
       if (items.length) v.drawFx(items);
     }
     // a door model stretched to exactly fill its block: as wide as the cell, as tall as the door, at most 16 units thick (so it never sticks into the walls beside it)
     doorFit(o, f) {
-      const T = this.T, g = k => +T.get(o.pre + k) || 0, b = o.model.bounds, R = M4.rotXYZ([g("rx"), g("ry"), g("rz")]), lo = [1e9, 1e9, 1e9], hi = [-1e9, -1e9, -1e9]; if (!b) return M4.ident();
+      const T = this.T, g = k => +this.ov(o, k) || 0, b = o.model.bounds, R = M4.rotXYZ([g("rx"), g("ry"), g("rz")]), lo = [1e9, 1e9, 1e9], hi = [-1e9, -1e9, -1e9]; if (!b) return M4.ident();
       for (const x of [b.lo[0], b.hi[0]]) for (const y of [b.lo[1], b.hi[1]]) for (const z of [b.lo[2], b.hi[2]]) { const p = M4.point(R, x, y, z); for (let i = 0; i < 3; i++) { lo[i] = Math.min(lo[i], p[i]); hi[i] = Math.max(hi[i], p[i]); } }
       const W = Math.max(1e-3, hi[0] - lo[0]), H = Math.max(1e-3, hi[1] - lo[1]), D = Math.max(1e-3, hi[2] - lo[2]), sx = (f.w || 128) / W, sy = (f.h || 128) / H, sz = Math.min(16, D * Math.min(sx, sy)) / D;
       return M4.mul(M4.scale(sx, sy, sz), M4.mul(M4.translate(-(lo[0] + hi[0]) / 2, -lo[1], -(lo[2] + hi[2]) / 2), R));
     }
     // ---- enemies: idle until they see you, then chase, attack, get hurt, die
-    eAnim(o, key) { if (o.sprite) { const sh = SHEETS[key]; return sh && this.T.get(o.pre + sh) ? key : null; } const nm = this.T.get(o.pre + key); if (!(o.model && nm && o.model.anims[nm])) return null; return nm; }
-    eLen(o, key, fb) { const nm = this.eAnim(o, key); if (nm && o.sprite) return Math.max(0.05, (+this.T.get(o.pre + SHEETS[key] + "Frames") || 1) / (+this.T.get(o.pre + "spriteFps") || 8)); return nm ? Math.max(0.05, this.animLen(o.aid, nm, o.model.anims[nm].dur).len) : fb; }
+    eAnim(o, key) { if (o.sprite) { const sh = SHEETS[key]; return sh && this.ov(o, sh) ? key : null; } const nm = this.ov(o, key); if (!(o.model && nm && o.model.anims[nm])) return null; return nm; }
+    eLen(o, key, fb) { const nm = this.eAnim(o, key); if (nm && o.sprite) return Math.max(0.05, (+this.ov(o, SHEETS[key] + "Frames") || 1) / (+this.ov(o, "spriteFps") || 8)); return nm ? Math.max(0.05, this.animLen(o.aid, nm, o.model.anims[nm].dur).len) : fb; }
     // a 2D sprite thing: the right strip for what it is doing, the frame for the time, standing on the floor and turned to face the camera
     spriteItem(o, v) {
-      const T = this.T, key = o.type === "enemy" && o.init ? (o.anim || "idleAnim") : "idleAnim", sh = o.type === "npc" && this.talk && this.talk.o === o && T.get(o.pre + "talkSprite") ? "talkSprite" : SHEETS[key] || "spriteIdle", id = T.get(o.pre + sh) || T.get(o.pre + "spriteIdle"); if (!id) return null;
-      const frames = Math.max(1, Math.round(+T.get(o.pre + (T.get(o.pre + sh) ? sh : "spriteIdle") + "Frames") || 1)), fps = +T.get(o.pre + "spriteFps") || 8, t = o.type === "enemy" && o.init ? o.at : performance.now() / 1000;
-      const loop = key === "idleAnim" || key === "walkAnim", frame = loop ? Math.floor(t * fps) % frames : Math.min(frames - 1, Math.floor(t * fps)), dim = this.imgDim(id), hh = +T.get(o.pre + "spriteHeight") || 110, ww = hh * (dim ? dim[0] / frames / dim[1] : 1);
+      const T = this.T, key = o.type === "enemy" && o.init ? (o.anim || "idleAnim") : "idleAnim", sh = o.type === "npc" && this.talk && this.talk.o === o && this.ov(o, "talkSprite") ? "talkSprite" : SHEETS[key] || "spriteIdle", id = this.ov(o, sh) || this.ov(o, "spriteIdle"); if (!id) return null;
+      const frames = Math.max(1, Math.round(+this.ov(o, (this.ov(o, sh) ? sh : "spriteIdle") + "Frames") || 1)), fps = +this.ov(o, "spriteFps") || 8, t = o.type === "enemy" && o.init ? o.at : performance.now() / 1000;
+      const loop = key === "idleAnim" || key === "walkAnim", frame = loop ? Math.floor(t * fps) % frames : Math.min(frames - 1, Math.floor(t * fps)), dim = this.imgDim(id), hh = +this.ov(o, "spriteHeight") || 110, ww = hh * (dim ? dim[0] / frames / dim[1] : 1);
       const x = o.type === "enemy" && o.init ? o.x : o.fr.cx, y = o.type === "enemy" && o.init ? o.y : o.fr.cy, c = v.cam, n = M4.norm([c.x - x, 0, c.z - y]);
-      return { kind: "decal", sprite: true, texId: id, p: [x, o.floor + hh / 2 + (o.type === "pickup" ? Math.sin(performance.now() / 400) * 4 : 0), y], n, w: ww, h: hh, frames, frame, tint: o.flash > 0 ? [1, 0.45, 0.45] : o.st === "dead" ? [0.8, 0.75, 0.75] : undefined, emit: o.flash > 0 ? [0.5, 0.05, 0.05] : undefined };
+      return { kind: "decal", sprite: true, texId: id, p: [x, o.floor + hh / 2 + (o.type === "pickup" ? Math.sin(performance.now() / 400) * 4 : 0), y], n, w: ww, h: hh, frames, frame, tint: o.flash > 0 ? [1, 0.45, 0.45] : o.st === "dead" ? [0.8, 0.75, 0.75] : undefined, emit: o.flash > 0 ? [0.5, 0.05, 0.05] : o.shGlow || undefined };
     }
     imgDim(id) { const c = this.dims = this.dims || {}; if (c[id] !== undefined) return c[id]; c[id] = null; const im = new Image(); im.onload = () => { c[id] = [im.naturalWidth, im.naturalHeight]; }; im.src = this.urls[id] || ""; return null; }
     eSet(o, key) { const nm = this.eAnim(o, key) || this.eAnim(o, "idleAnim"); if (o.anim !== nm || o.akey !== key) { o.anim = nm; o.akey = key; o.at = 0; } }
     eAlive(o) { return o.type === "enemy" && !o.taken && o.init && o.st !== "dying" && o.st !== "dead"; }
-    eEye(o) { return [o.x, o.floor + (+this.T.get(o.pre + "height") || 110) * (o.mount === "ceiling" ? 0.15 : 0.8), o.y]; }
+    eEye(o) { return [o.x, o.floor + (+this.ov(o, "height") || 110) * (o.mount === "ceiling" ? 0.15 : 0.8), o.y]; }
     pEye() { return [this.x, this.z + (+this.T.get("player.eyeHeight") || 102), this.y]; }
     canSee(o) {
       const v = this.view; if (!v) return false; const a = this.eEye(o), b = this.pEye(), d = M4.sub(b, a), L = M4.len(d); if (L < 1) return true; const D = d.map(q => q / L);
@@ -404,61 +415,62 @@
     }
     // an enemy walks with the same body physics as the player: walls, steps, slopes and stairs, gravity
     eMove(o, vx, vy, dt) {
-      const g = k => +this.T.get(o.pre + k) || 0, b = o.body || (o.body = { pos: [o.x, o.floor, o.y], vel: [0, 0, 0], r: 0, h: 0, step: 26, maxSlope: 0.69 }); b.r = g("radius") || 22; b.h = Math.min(g("height") || 110, G.LAYER - 4);
+      const g = k => +this.ov(o, k) || 0, b = o.body || (o.body = { pos: [o.x, o.floor, o.y], vel: [0, 0, 0], r: 0, h: 0, step: 26, maxSlope: 0.69 }); b.r = g("radius") || 22; b.h = Math.min(g("height") || 110, G.LAYER - 4);
       b.vel[0] = vx; b.vel[2] = vy; b.vel[1] -= (+this.T.get("player.gravity") || 1100) * dt; G.move(b, dt, this.view && this.view.world, this.dtris);
       const p = { x: b.pos[0], y: b.pos[2] }; this.ePush(p, b.r, o); this.shove(b, p.x - b.pos[0], p.y - b.pos[2], this.view && this.view.world, this.dtris); o.x = b.pos[0]; o.y = b.pos[2]; o.floor = b.pos[1];
     }
     enemyStep(o, dt) {
-      const T = this.T, g = k => +T.get(o.pre + k) || 0;
-      const beh = T.get(o.pre + "behavior") || "chase";
+      const T = this.T, g = k => +this.ov(o, k) || 0;
+      const beh = this.ov(o, "behavior") || "chase";
       if (!o.init) { o.init = true; o.x = o.fr.cx; o.y = o.fr.cy; o.yaw = o.th.ang || 0; o.hp = g("health") || 100; o.st = "idle"; o.cool = 0; o.losT = Math.random() * 0.2; o.at = 0; o.flash = 0; o.pi = 0; o.pdir = 1; o.pwait = 0; o.surf = null; this.eSet(o, "idleAnim"); if (o.th.wake) { o.awake = true; o.st = "chase"; }
         if (o.keep) { Object.assign(o, o.keep); o.keep = null; o.awake = true; o.st = "chase"; o.body = null; }   // it dropped and turned into this enemy: same place, already hunting
-        o.mount = beh === "stationary" && T.get(o.pre + "mount") === "ceiling" && !o.dropped ? "ceiling" : null; if (o.mount) this.eHang(o); }
+        o.mount = beh === "stationary" && this.ov(o, "mount") === "ceiling" && !o.dropped ? "ceiling" : null; if (o.mount) this.eHang(o); }
       o.at += dt; if (o.flash > 0) o.flash -= dt;
       if (o.st === "dead") return;
-      if (o.st === "dying") { if (o.at >= this.eLen(o, "deathAnim", 0.6)) { o.st = "dead"; if (!T.get(o.pre + "corpse")) o.taken = true; } return; }
+      if (o.st === "dying") { if (o.at >= this.eLen(o, "deathAnim", 0.6)) { o.st = "dead"; if (!this.ov(o, "corpse")) o.taken = true; } return; }
       if (o.st === "falling") { this.eMove(o, 0, 0, dt); if (o.body && o.body.ground && o.at > 0.05) this.eLand(o); return; }
       if (o.st === "fuse") { o.fuseT -= dt; o.flash = Math.floor(o.fuseT * 12) % 2 ? 0.06 : 0; if (o.fuseT <= 0) this.eBlast(o, true); return; }
       const r = g("radius") || 22, dx = this.x - o.x, dy = this.y - o.y, dist = Math.hypot(dx, dy) || 1;
       // walks a path: Patrol behaviour, or a Normal enemy that was given a path on the map (it patrols until it notices you)
       const pathOn = (beh === "path" || beh === "chase") && !!o.th.path && (this.map.paths || []).some(q => q.id === o.th.path && q.pts.length);
-      if (T.get(o.pre + "detect") === "blind") { this.eBlind(o, dt, dist, pathOn ? "path" : beh); return; }
-      o.losT -= dt; if (o.losT <= 0) { o.losT = 0.2; o.los = !this.pdead && (o.mount ? this.inCone(o) : dist < (g("sight") || 900) && this.canSee(o)); if (o.los && !o.awake && pathOn && !this.eFront(o, dx, dy, dist)) o.los = false; if (o.los && !o.awake) { o.awake = true; o.lostT = 0; const s = T.get(o.pre + "sightSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); } }
+      if (o.boss) { this.bossStep(o, dt, dist, dx, dy); return; }
+      if (this.ov(o, "detect") === "blind") { this.eBlind(o, dt, dist, pathOn ? "path" : beh); return; }
+      o.losT -= dt; if (o.losT <= 0) { o.losT = 0.2; o.los = !this.pdead && (o.mount ? this.inCone(o) : dist < (g("sight") || 900) && this.canSee(o)); if (o.los && !o.awake && pathOn && !this.eFront(o, dx, dy, dist)) o.los = false; if (o.los && !o.awake) { o.awake = true; o.lostT = 0; const s = this.ov(o, "sightSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); } }
       if (o.st === "pain") { if (o.at >= this.eLen(o, "hurtAnim", 0.25)) { o.st = "chase"; this.eSet(o, "walkAnim"); } return; }
       // hanging from the ceiling: waits for you to step into its cone, then shoots, drops or blows up
       if (o.mount === "ceiling") { o.cool -= dt;
         if (o.st === "attack") { if (!o.hit && o.at >= g("attackDelay")) { o.hit = true; this.eAttack(o, dist, true); } if (o.at >= Math.max(this.eLen(o, "attackAnim", 0), g("attackDelay") + 0.25)) { o.st = "idle"; o.cool = g("attackRate") || 1.2; this.eSet(o, "idleAnim"); } return; }
         if (!o.los || this.pdead) { o.st = "idle"; this.eSet(o, "idleAnim"); return; }
-        if (T.get(o.pre + "turn") !== false) o.yaw = Math.atan2(dx, dy) * 180 / Math.PI;
-        const act = T.get(o.pre + "ceilAction") || "shoot", ds = T.get(o.pre + "dropSound");
-        if (act === "shoot") { if (o.cool <= 0) { o.st = "attack"; o.hit = false; this.eSet(o, "attackAnim"); o.at = 0; const s = T.get(o.pre + "attackSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); } return; }
+        if (this.ov(o, "turn") !== false) o.yaw = Math.atan2(dx, dy) * 180 / Math.PI;
+        const act = this.ov(o, "ceilAction") || "shoot", ds = this.ov(o, "dropSound");
+        if (act === "shoot") { if (o.cool <= 0) { o.st = "attack"; o.hit = false; this.eSet(o, "attackAnim"); o.at = 0; const s = this.ov(o, "attackSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); } return; }
         if (ds) this.sfxAt(ds, 1, this.thingPos(o));
-        if (act === "selfdestruct" && !T.get(o.pre + "sdFall")) { o.st = "fuse"; o.fuseT = g("fuse"); return; }   // stays up there while the fuse burns
+        if (act === "selfdestruct" && !this.ov(o, "sdFall")) { o.st = "fuse"; o.fuseT = g("fuse"); return; }   // stays up there while the fuse burns
         o.mount = null; o.dropped = true; o.st = "falling"; o.at = 0; o.body = null; this.eSet(o, "idleAnim"); return; }
       // a patroller that lost you for a while goes back to its path (the point nearest to it)
-      if (pathOn && o.awake && T.get(o.pre + "pathChase") !== false && !this.pdead && o.st !== "attack") { o.lostT = o.los ? 0 : (o.lostT || 0) + dt;
-        if (o.lostT > (+T.get(o.pre + "pathGiveUp") || 5)) { o.awake = false; o.lostT = 0; o.pwait = 0; o.pstuck = 0; const pa = this.map.paths.find(q => q.id === o.th.path); let bi = 0, bd = 1e18; pa.pts.forEach((q, i) => { const d = (q[0] - o.x) ** 2 + (q[1] - o.y) ** 2; if (d < bd) { bd = d; bi = i; } }); o.pi = bi; } }
+      if (pathOn && o.awake && this.ov(o, "pathChase") !== false && !this.pdead && o.st !== "attack") { o.lostT = o.los ? 0 : (o.lostT || 0) + dt;
+        if (o.lostT > (+this.ov(o, "pathGiveUp") || 5)) { o.awake = false; o.lostT = 0; o.pwait = 0; o.pstuck = 0; const pa = this.map.paths.find(q => q.id === o.th.path); let bi = 0, bd = 1e18; pa.pts.forEach((q, i) => { const d = (q[0] - o.x) ** 2 + (q[1] - o.y) ** 2; if (d < bd) { bd = d; bi = i; } }); o.pi = bi; } }
       if (!o.awake || this.pdead) { if (pathOn && !this.pdead) this.ePatrol(o, dt); else { o.st = "idle"; this.eSet(o, "idleAnim"); } return; }
-      if (pathOn && T.get(o.pre + "pathChase") === false && o.st !== "attack") {   // stays on its path; still attacks when it can
+      if (pathOn && this.ov(o, "pathChase") === false && o.st !== "attack") {   // stays on its path; still attacks when it can
         o.cool -= dt; const rg = g("attackRange") || 70;
-        if (dist <= rg + (T.get(o.pre + "attack") === "melee" ? r + 16 : 0) && o.los && o.cool <= 0) { o.yaw = Math.atan2(dx, dy) * 180 / Math.PI; o.st = "attack"; o.hit = false; this.eSet(o, "attackAnim"); o.at = 0; const s = T.get(o.pre + "attackSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); return; }
+        if (dist <= rg + (this.ov(o, "attack") === "melee" ? r + 16 : 0) && o.los && o.cool <= 0) { o.yaw = Math.atan2(dx, dy) * 180 / Math.PI; o.st = "attack"; o.hit = false; this.eSet(o, "attackAnim"); o.at = 0; const s = this.ov(o, "attackSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); return; }
         this.ePatrol(o, dt); return; }
-      if (beh !== "stationary" || T.get(o.pre + "turn") !== false) o.yaw = Math.atan2(dx, dy) * 180 / Math.PI;
+      if (beh !== "stationary" || this.ov(o, "turn") !== false) o.yaw = Math.atan2(dx, dy) * 180 / Math.PI;
       if (o.st === "attack") {
         if (!o.hit && o.at >= g("attackDelay")) { o.hit = true; this.eAttack(o, dist); }
         if (o.at >= Math.max(this.eLen(o, "attackAnim", 0), g("attackDelay") + 0.25)) { o.st = "chase"; o.cool = g("attackRate") || 1.2; this.eSet(o, "walkAnim"); } return;
       }
       if (beh === "stationary") { o.cool -= dt; const rg = g("attackRange") || 70; this.eMove(o, 0, 0, dt); o.st = "chase"; this.eSet(o, "idleAnim");   // a turret: never walks
-        if (dist <= rg + (T.get(o.pre + "attack") === "melee" ? r + 16 : 0) && o.los && o.cool <= 0) { o.st = "attack"; o.hit = false; this.eSet(o, "attackAnim"); o.at = 0; const s = T.get(o.pre + "attackSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); } return; }
+        if (dist <= rg + (this.ov(o, "attack") === "melee" ? r + 16 : 0) && o.los && o.cool <= 0) { o.st = "attack"; o.hit = false; this.eSet(o, "attackAnim"); o.at = 0; const s = this.ov(o, "attackSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); } return; }
       o.cool -= dt; const range = g("attackRange") || 70;
-      if (dist <= range + (T.get(o.pre + "attack") === "melee" ? r + 16 : 0) && o.los && o.cool <= 0 && !(o.surf && T.get(o.pre + "attack") === "melee")) { o.st = "attack"; o.hit = false; this.eSet(o, "attackAnim"); o.at = 0; const s = T.get(o.pre + "attackSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); return; }
-      if (beh === "chase" && T.get(o.pre + "crawl") && this.eCrawl(o, dt, dist)) return;
-      const want = T.get(o.pre + "attack") === "melee" ? r + (+T.get("player.radius") || 16) + 4 : Math.min(range * 0.7, 400);
+      if (dist <= range + (this.ov(o, "attack") === "melee" ? r + 16 : 0) && o.los && o.cool <= 0 && !(o.surf && this.ov(o, "attack") === "melee")) { o.st = "attack"; o.hit = false; this.eSet(o, "attackAnim"); o.at = 0; const s = this.ov(o, "attackSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); return; }
+      if (beh === "chase" && this.ov(o, "crawl") && this.eCrawl(o, dt, dist)) return;
+      const want = this.ov(o, "attack") === "melee" ? r + (+T.get("player.radius") || 16) + 4 : Math.min(range * 0.7, 400);
       if (dist > want || !o.los) { const sp = g("speed") || 0; this.eMove(o, dx / dist * sp, dy / dist * sp, dt); o.st = "chase"; this.eSet(o, "walkAnim"); }
       else { this.eMove(o, 0, 0, dt); o.st = "chase"; this.eSet(o, "idleAnim"); }
     }
     eAttack(o, dist, ranged, dir) {
-      const T = this.T, g = k => +T.get(o.pre + k) || 0, kind = ranged && T.get(o.pre + "attack") === "melee" ? "projectile" : T.get(o.pre + "attack"), dmg = g("damage"), col = this.hexCol(T.get(o.pre + "projColor") || "#ff6a2a");
+      const T = this.T, g = k => +this.ov(o, k) || 0, kind = ranged && this.ov(o, "attack") === "melee" ? "projectile" : this.ov(o, "attack"), dmg = g("damage"), col = this.hexCol(this.ov(o, "projColor") || "#ff6a2a");
       if (kind === "melee") { if (dist <= (g("attackRange") || 70) + (g("radius") || 22) + 24 && Math.abs(this.z - o.floor) < 90) this.hurtPlayer(dmg); return; }
       if (dir) { const a = this.eEye(o), hit = this.view && this.view.raycast(a, dir, 6000), far = hit ? hit.t : 6000;   // straight ahead, aimed at nothing
         if (kind === "hitscan") { const pc = [this.x, this.z + 50, this.y], rel = M4.sub(pc, a), t = M4.dot(rel, dir), off = M4.len(M4.sub(rel, dir.map(q => q * t))); (this.fx = this.fx || []).push({ kind: "line", a, b: M4.add(a, dir.map(q => q * far)), c: col, w: 0.6, life: 0.12, t: 0 }); if (t > 0 && t < far && off < (+T.get("player.radius") || 16) + 40) this.hurtPlayer(dmg); return; }
@@ -471,17 +483,177 @@
       if (hp <= 0 && d < 1e8 && this.livesMode() === "reserve" && (+T.get("player.tanks") || 0) > 0) { let h = hp, tk = +T.get("player.tanks") || 0; const mx = +T.get("player.maxHealth") || 100; while (h <= 0 && tk > 0) { tk--; h += mx; } T.setMany({ "player.health": Math.min(mx, h), "player.tanks": tk }); this.flash(0.5); this.psound("hurtSound"); this.toast("Energy tank used"); return; }
       T.set("player.health", Math.max(0, hp)); }
     hitEnemy(O, D, maxd) {   // ray against enemy bodies (upright cylinders)
-      let best = null; for (const o of this.things || []) { if (!this.eAlive(o)) continue; const r = +this.T.get(o.pre + "radius") || 22, h = +this.T.get(o.pre + "height") || 110, fx = O[0] - o.x, fz = O[2] - o.y, a = D[0] * D[0] + D[2] * D[2], b = 2 * (fx * D[0] + fz * D[2]), c = fx * fx + fz * fz - r * r;
+      let best = null; for (const o of this.things || []) { if (!this.eAlive(o)) continue; const r = +this.ov(o, "radius") || 22, h = +this.ov(o, "height") || 110, fx = O[0] - o.x, fz = O[2] - o.y, a = D[0] * D[0] + D[2] * D[2], b = 2 * (fx * D[0] + fz * D[2]), c = fx * fx + fz * fz - r * r;
         let t; if (c <= 0) t = 0; else { if (a < 1e-9) continue; const disc = b * b - 4 * a * c; if (disc < 0) continue; t = (-b - Math.sqrt(disc)) / (2 * a); if (t < 0) continue; }
         if (t > maxd) continue; const y = O[1] + D[1] * t; if (y < o.floor || y > o.floor + h) continue; if (!best || t < best.t) best = { o, t }; }
       return best;
     }
     damageEnemy(o, d) {
-      if (!this.eAlive(o)) return; const T = this.T; o.hp -= d; o.awake = true; o.flash = 0.12;
-      if (o.hp <= 0) { this.trigger("onKill"); if (T.get(o.pre + "deathStyle") === "slice") { const s = T.get(o.pre + "deathSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); const kt = T.get(o.pre + "killTag"); if (kt && T.get(kt) !== undefined) T.set(kt, (+T.get(kt) || 0) + (+T.get(o.pre + "killAmount") || 0)); this.eSlice(o); return; }
-        o.st = "dying"; this.eSet(o, "deathAnim"); o.at = 0; const s = T.get(o.pre + "deathSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); const kt = T.get(o.pre + "killTag"); if (kt && T.get(kt) !== undefined) T.set(kt, (+T.get(kt) || 0) + (+T.get(o.pre + "killAmount") || 0)); return; }
-      const s = T.get(o.pre + "hurtSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); if (this.eAnim(o, "hurtAnim") && o.st !== "attack") { o.st = "pain"; this.eSet(o, "hurtAnim"); o.at = 0; }
+      if (!this.eAlive(o)) return; const T = this.T;
+      if (o.boss) { if (!o.fight) { o.hitOnce = true; return; } if (o.pause > 0 || (o.shield && o.bt < o.shield)) { o.flash = 0.03; return; } d *= Math.max(0, +this.ov(o, "armor")); if (!(d > 0)) return; }
+      o.hp -= d; o.awake = true; o.flash = 0.12;
+      if (o.hp <= 0 && o.boss) this.bossEnd(o);
+      if (o.hp <= 0) { this.trigger("onKill"); if (this.ov(o, "deathStyle") === "slice") { const s = this.ov(o, "deathSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); const kt = this.ov(o, "killTag"); if (kt && T.get(kt) !== undefined) T.set(kt, (+T.get(kt) || 0) + (+this.ov(o, "killAmount") || 0)); this.eSlice(o); return; }
+        o.st = "dying"; this.eSet(o, "deathAnim"); o.at = 0; const s = this.ov(o, "deathSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); const kt = this.ov(o, "killTag"); if (kt && T.get(kt) !== undefined) T.set(kt, (+T.get(kt) || 0) + (+this.ov(o, "killAmount") || 0)); return; }
+      if (o.boss) { this.bossTags(o); this.bossTrig(o, "onBossHurt"); this.bossHealthTrig(o); }
+      const s = this.ov(o, "hurtSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); if (this.eAnim(o, "hurtAnim") && o.st !== "attack" && (!o.boss || (this.ov(o, "bossFlinch") && !o.dash))) { o.st = "pain"; this.eSet(o, "hurtAnim"); o.at = 0; }
     }
+    // ---- per-object values: a boss reads its current phase's value for the keys a phase can change (Schema.PHASE_KEYS); boss nodes can override some for a while (o.tov)
+    ov(o, k) { if (o.tov && o.tov[k] !== undefined) return o.tov[k]; if (o.php) { const S = this.phk || (this.phk = new Set((PRIM.Schema && PRIM.Schema.PHASE_KEYS) || [])); if (S.has(k)) { const v = this.T.get(o.php + k); if (v !== undefined) return v; } } return this.T.get(o.pre + k); }
+    // ---- keys: key objects set their live tag <key>.have; doors check it (doorLocked)
+    keyPick(o) { const T = this.T, id = o.pre.slice(0, -1); if (T.has(id + ".have")) T.set(id + ".have", true); if (!this.ov(o, "popupOn")) this.toast("Picked up the " + (this.ov(o, "keyName") || "key")); this.keyGot(id); }
+    keyGot(id) { if (!this.sh) return; for (const ow of this.scriptOwners()) for (const n of ow.script.nodes) { if (n.type !== "onKeyGot") continue; const f = this.T.get(ow.key + ".s." + n.id + ".key"); if (!f || f === id) this.sh.trigger(ow, "onKeyGot", null, n.id); } }
+    // "all" = no keys (game start), "level" = keep only keys marked keyKeep (next level), "snap" = back to the keys you had when the level began (restart)
+    keysReset(mode) { const T = this.T, names = (this.project.props || []).filter(q => T.get(q.id + ".type") === "key").map(q => q.id + ".have").filter(n => T.has(n)), o = {};
+      for (const n of names) o[n] = mode === "snap" ? !!(this.keySnap && this.keySnap.has(n)) : mode === "level" ? !!T.get(n) && !!T.get(n.slice(0, -5) + ".keyKeep") : false;
+      if (names.length) T.setMany(o); if (mode !== "snap") this.keySnap = new Set(names.filter(n => o[n])); }
+    // ---- bosses: an enemy with a fight (health bar, intro, music), phases (prop.phases, tags <prop>.ph.<id>.*) and its own script (prop.script, owner key = the prop id)
+    bossProp(o) { const id = o.pre.slice(0, -1); return (this.project.props || []).find(q => q.id === id) || null; }
+    bossOwner(o) { const p = this.bossProp(o); return p && p.script ? { key: p.id, script: p.script } : null; }
+    bossOwners() { const seen = new Set(), out = []; for (const o of this.things || []) if (o.boss && o.fight && this.eAlive(o) && !seen.has(o.pre)) { seen.add(o.pre); const ow = this.bossOwner(o); if (ow) out.push(ow); } return out; }
+    bossTrig(o, type, filter) { const ow = this.bossOwner(o); if (!this.sh || !ow) return; for (const n of ow.script.nodes) if (n.type === type && (!filter || filter(k => this.T.get(ow.key + ".s." + n.id + "." + k), n))) this.sh.trigger(ow, type, null, n.id); }
+    bossOf(key) { const L = (this.things || []).filter(o => o.boss && o.pre === key + "." && this.eAlive(o)); return L.find(o => o.fight) || L[0] || null; }
+    phases(o) { const p = this.bossProp(o), T = this.T, at = ph => +T.get(o.pre + "ph." + ph.id + ".startAt"); return ((p && p.phases) || []).slice().sort((a, b) => at(b) - at(a)); }
+    bossPct(o) { return Math.max(0, o.hp) / (+this.T.get(o.pre + "health") || 100) * 100; }
+    bossTags(o) { const T = this.T, mx = +T.get(o.pre + "health") || 100; this.bossMarks = this.phases(o).map(ph => +T.get(o.pre + "ph." + ph.id + ".startAt") / 100).filter(v => v > 0 && v < 1); if (this.hud) this.hud.bossMarks = this.bossMarks;
+      if (T.get(o.pre + "bossBar") === false) { if (T.get("player.bossActive")) T.set("player.bossActive", false); return; }
+      T.setMany({ "player.bossActive": !!o.fight && this.eAlive(o), "player.bossHealth": Math.max(0, Math.round(o.hp)), "player.bossMax": mx, "player.bossName": String(T.get(o.pre + "bossName") || T.get(o.pre + "name") || ""), "player.bossPhase": o.phName || "" }); }
+    bossMusic(id, v) { if (!id || this.bossMu === id) return; if (this.bossMu) this.stopLoops(this.bossMu); this.bossMu = id; this.loopSfx(id, isFinite(v) ? v : 0.8); }
+    bossStop() { if (this.bossMu) { this.stopLoops(this.bossMu); this.bossMu = null; } if (this.mode === "play" && this.T.get("player.bossActive")) this.T.set("player.bossActive", false); }
+    bossBegin(o) {
+      const T = this.T; Object.assign(o, { fight: true, awake: true, bt: 0, ph: null, php: null, phName: "", phLock: -1, tov: {}, tovT: {}, vols: [], hpFired: new Set(), shield: 0, hold: 0, dash: null, cool: 0.4 }); o.home = o.home || [o.x, o.y];
+      o.pause = +T.get(o.pre + "bossIntroTime") || 0; const s = T.get(o.pre + "bossIntroSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); const ms = T.get(o.pre + "bossIntroMsg"); if (ms) this.toast(T.interpolate(String(ms)));
+      this.bossMusic(T.get(o.pre + "bossMusic"), +T.get(o.pre + "bossMusicVol")); this.bossPhaseCheck(o, true); this.bossTags(o); this.bossTrig(o, "onBossStart");
+    }
+    // the phase follows the health: the deepest phase whose "starts at" the health has reached (never back up by itself)
+    bossPhaseCheck(o, quiet) { const P = this.phases(o); if (!P.length) return; const pct = this.bossPct(o); let j = -1; P.forEach((ph, i) => { if (pct <= +this.T.get(o.pre + "ph." + ph.id + ".startAt") + 1e-6) j = i; });
+      const cur = o.ph ? P.findIndex(q => q.id === o.ph) : -1; if (j > Math.max(cur, o.phLock === undefined ? -1 : o.phLock)) { o.phLock = j; this.bossEnter(o, P[j], quiet); } }
+    bossEnter(o, ph, quiet) {
+      const T = this.T, k = o.pre + "ph." + ph.id + ".", g = q => T.get(k + q), mx = +T.get(o.pre + "health") || 100; o.ph = ph.id; o.php = k; o.phName = String(g("name") || ""); o.vols = []; this.bossDashEnd(o);
+      if (!quiet) { o.pause = Math.max(o.pause || 0, +g("enterTime") || 0); o.st = "chase"; const an = g("enterAnim"); if (an && o.model && o.model.anims[an]) { o.anim = an; o.akey = "enterAnim"; o.at = 0; o.animLock = this.animLen(o.aid, an, o.model.anims[an].dur).len; }
+        const s = g("enterSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); if (g("enterMsg")) this.toast(T.interpolate(String(g("enterMsg")))); if (g("enterFlash") !== false) this.flash(0.6, g("enterColor") || "#ffffff", true);
+        const sh = +g("enterShake") || 0; if (sh > 0) { this.shakeA = Math.max(this.shakeA || 0, sh); this.shakeT = 0.6; this.shakeT0 = 0.6; } }
+      const heal = +g("enterHeal") || 0; if (heal) o.hp = Math.min(mx, o.hp + heal / 100 * mx);
+      const sp = g("enterSpawn"), sn = Math.round(+g("enterSpawnCount") || 0); if (sp && sn > 0) this.bossSpawn(o, sp, sn, +g("enterSpawnRadius") || 300);
+      this.applyVal(g("enterTag"), g("enterVal")); const msg = String(g("enterMessage") || "").trim(); if (msg) this.trigger("onMessage", msg);
+      if (g("music")) this.bossMusic(g("music"), +T.get(o.pre + "bossMusicVol"));
+      this.bossTags(o); this.bossTrig(o, "onPhase", q => { const f = String(q("phase") || "").trim().toLowerCase(); return !f || f === o.phName.trim().toLowerCase(); });
+    }
+    bossHealthTrig(o) { const pct = this.bossPct(o); this.bossTrig(o, "onBossHealth", (q, n) => { if (o.hpFired.has(n.id) || pct > +q("percent")) return false; o.hpFired.add(n.id); return true; }); }
+    bossEnd(o) {
+      const T = this.T, ow = this.bossOwner(o); if (this.sh && ow) this.sh.stopOwner(ow.key); for (const v of o.vols || []) if (v.done) v.done(); o.vols = []; this.bossDashEnd(o); o.shGlow = null; o.tov = {};
+      if (this.bossMu) { this.stopLoops(this.bossMu); this.bossMu = null; } T.setMany({ "player.bossActive": false, "player.bossHealth": 0 });
+      this.applyVal(T.get(o.pre + "bossWinTag"), T.get(o.pre + "bossWinVal")); const ms = T.get(o.pre + "bossWinMsg"); if (ms) this.toast(T.interpolate(String(ms)));
+      this.bossTrig(o, "onBossDeath"); o.fight = false;
+    }
+    bossSpawn(o, prop, n, R) {
+      if (!(this.project.props || []).some(q => q.id === prop)) return; const L = G.layerOf(o.floor + 4), col = this.hexCol("#c07dff");
+      for (let i = 0; i < n; i++) { let X = o.x, Z = o.y; for (let t = 0; t < 12; t++) { const a = Math.random() * Math.PI * 2, rr = (0.35 + 0.65 * Math.sqrt(Math.random())) * R, x = o.x + Math.cos(a) * rr, z = o.y + Math.sin(a) * rr; if (this.floorAt(L, x, z)) { X = x; Z = z; break; } }
+        this.spawnN = (this.spawnN || 0) + 1; (this.spawnTh = this.spawnTh || []).push({ id: o.th.id + "~" + this.spawnN, prop, x: X, y: Z, ang: 0, layer: L, spawned: true, wake: true }); this.burst([X, o.floor + 40, Z], col, 18, 200, 0.5, 2.5); }
+      this.syncThings();
+    }
+    floorAt(L, x, z) { const c = G.cell(this.map, L, Math.floor(x / 128), Math.floor(z / 128)); return !!c && !G.isWall(c) && !c.dg && (c.f !== undefined || !!c.sh); }
+    bossTeleport(o, where, R, fx, color) {
+      const L = G.layerOf(o.floor + 4), home = o.home || [o.x, o.y]; let P = null;
+      for (let i = 0; i < 16 && !P; i++) { let x, z; const j = i ? (Math.random() - 0.5) * 1.2 : 0, rr = R || 400;
+        if (where === "start") { x = home[0]; z = home[1]; } else if (where === "behind") { const a = this.yaw + Math.PI + j; x = this.x + Math.cos(a) * rr; z = this.y + Math.sin(a) * rr; }
+        else if (where === "far") { const a = Math.atan2(this.y - o.y, this.x - o.x) + j; x = this.x + Math.cos(a) * rr; z = this.y + Math.sin(a) * rr; }
+        else { const a = Math.random() * Math.PI * 2, q = Math.sqrt(Math.random()) * rr; x = home[0] + Math.cos(a) * q; z = home[1] + Math.sin(a) * q; }
+        if (this.floorAt(L, x, z) || where === "start") P = [x, z]; }
+      if (!P) return; const col = this.hexCol(color || "#c07dff"); if (fx) this.burst([o.x, o.floor + 50, o.y], col, 20, 240, 0.45, 2.5);
+      o.x = P[0]; o.y = P[1]; o.body = null; const gy = G.groundY(this.map, o.x, o.y, L * G.LAYER + G.LAYER - 8); if (gy !== null && gy !== undefined) o.floor = gy; this.bossDashEnd(o);
+      if (fx) { this.burst([o.x, o.floor + 50, o.y], col, 26, 260, 0.5, 2.5); this.fx.push({ kind: "sphere", deco: true, p: [o.x, o.floor + 50, o.y], d: [0, 1, 0], c: [0, 0, 0], size0: 0.01, size: 0.01, speed: 0, life: 0.3, t: 0, light: { c: col, k: 2.5, k0: 2.5, r: 300, shadow: false } }); }
+    }
+    bossDashStart(o, speed, time, dmg, done) { const dx = this.x - o.x, dy = this.y - o.y, d = Math.hypot(dx, dy) || 1; this.bossDashEnd(o); o.dash = { ux: dx / d, uy: dy / d, speed, t: time, dmg, hit: false, done }; o.yaw = Math.atan2(dx, dy) * 180 / Math.PI; this.eSet(o, "walkAnim"); }
+    bossDashStep(o, dt, dist) { const q = o.dash, bx = o.x, by = o.y; q.t -= dt; this.eMove(o, q.ux * q.speed, q.uy * q.speed, dt); const r = +this.ov(o, "radius") || 22;
+      if (!q.hit && dist < r + (+this.T.get("player.radius") || 16) + 14 && Math.abs(this.z - o.floor) < 100) { q.hit = true; this.hurtPlayer(q.dmg); this.extV = [q.ux * 520, q.uy * 520]; }
+      if (q.t <= 0 || (q.t < q.t0 - 0.1 && Math.hypot(o.x - bx, o.y - by) < q.speed * dt * 0.25)) this.bossDashEnd(o); if (q.t0 === undefined) q.t0 = q.t + dt; }
+    bossDashEnd(o) { const q = o.dash; o.dash = null; if (q && q.done) q.done(); }
+    // a volley: the boss's attack (pattern settings) or a "Fire a pattern" node (g = the node's values)
+    bossVolleyOf(o, n) { const g = k => this.ov(o, k), hs = g("attack") === "hitscan";
+      return { atk: !n, pattern: (n ? n("pattern") : g("pattern")) || "aimed", count: Math.max(1, Math.round(+(n ? n("count") : g("patCount")) || 1)), spread: +(n ? n("spread") : g("patSpread")) || 40, left: Math.max(1, Math.round(+(n ? n("volleys") : g("volleys")) || 1)),
+        gap: Math.max(0.02, +(n ? n("gap") : g("volleyGap")) || 0.25), turn: +(n ? n("turn") : g("patTurn")) || 0, t: 0, kind: hs ? "hitscan" : "projectile",
+        speed: (n && +n("speed")) || +g("projSpeed") || 600, size: (n && +n("size")) || +g("projSize") || 6, dmg: (n && +n("damage")) || +g("damage") || 0, col: this.hexCol((n && n("own") === false ? n("color") : g("projColor")) || "#ff6a2a") }; }
+    bossVolley(o, v) {
+      const a = this.eEye(o), b = this.pEye(); b[1] -= 14; const d0 = M4.sub(b, a), L0 = M4.len(d0) || 1, D = d0.map(q => q / L0), n = v.count, h = Math.atan2(D[2], D[0]), dirs = [];
+      const at = (yaw, py) => { const c = Math.sqrt(Math.max(0, 1 - py * py)); return [Math.cos(yaw) * c, py, Math.sin(yaw) * c]; };
+      if (v.pattern === "rain") { const R = v.spread > 5 ? v.spread : 200, L = G.layerOf(this.z + 4);
+        for (let i = 0; i < n; i++) { const an = Math.random() * Math.PI * 2, rr = Math.sqrt(Math.random()) * R, x = this.x + Math.cos(an) * rr, z = this.y + Math.sin(an) * rr; if (!this.floorAt(L, x, z)) continue; const base = [x, this.z + 40, z], up = this.view && this.view.raycast(base, [0, 1, 0], 600), top = up ? Math.max(20, up.t - 10) : 360;
+          this.bossShot([x, this.z + 40 + top, z], [0, -1, 0], Object.assign({}, v, { kind: "projectile" })); } return; }
+      if (v.pattern === "aimed") dirs.push(D);
+      else if (v.pattern === "spread") { const w = v.spread * Math.PI / 180; for (let i = 0; i < n; i++) dirs.push(at(h + (n > 1 ? (i / (n - 1) - 0.5) * w : 0), D[1])); }
+      else { if (v.ang === undefined) v.ang = h; for (let i = 0; i < n; i++) dirs.push(at(v.ang + i / n * Math.PI * 2, D[1] * 0.5)); if (v.pattern === "spiral") v.ang += v.turn * Math.PI / 180; }
+      dirs.forEach((dir, i) => this.bossShot(a, dir, v, i));
+    }
+    bossShot(p, dir, v, i) {
+      if (v.kind === "hitscan") { const hit = this.view && this.view.raycast(p, dir, 6000), far = hit ? hit.t : 6000, pc = [this.x, this.z + 50, this.y], rel = M4.sub(pc, p), t = M4.dot(rel, dir), off = M4.len(M4.sub(rel, dir.map(q => q * t)));
+        (this.fx = this.fx || []).push({ kind: "line", a: p, b: M4.add(p, dir.map(q => q * far)), c: v.col, w: 0.6, life: 0.12, t: 0 }); if (t > 0 && t < far && off < (+this.T.get("player.radius") || 16) + 30) this.hurtPlayer(v.dmg); return; }
+      (this.fx = this.fx || []).push({ kind: "sphere", hostile: true, dmg: v.dmg, p: p.slice(), d: dir.slice(), c: v.col, size: v.size, speed: v.speed, life: 6, t: 0, light: (i || 0) < 3 ? { c: v.col, k: 1.2, r: 160 } : undefined });
+    }
+    bossAttack(o, dist) { if (this.ov(o, "attack") === "melee") this.eAttack(o, dist); else o.vols.push(this.bossVolleyOf(o, null)); }
+    bossMove(o, dt, dist, dx, dy, set) {
+      const mv = this.ov(o, "bossMove") || "chase", sp = +this.ov(o, "speed") || 0, ux = dx / dist, uy = dy / dist, kd = +this.ov(o, "keepDist") || 500, r = +this.ov(o, "radius") || 22, melee = this.ov(o, "attack") === "melee",
+        want = melee ? r + (+this.T.get("player.radius") || 16) + 4 : Math.min((+this.ov(o, "attackRange") || 70) * 0.7, 400); let vx = 0, vy = 0;
+      if (mv === "chase") { if (dist > want || !o.los) { vx = ux * sp; vy = uy * sp; } }
+      else if (mv === "keep") { if (dist > kd + 60 || !o.los) { vx = ux * sp; vy = uy * sp; } else if (dist < kd - 60) { vx = -ux * sp; vy = -uy * sp; } }
+      else if (mv === "flee") { vx = -ux * sp; vy = -uy * sp; }
+      else if (mv === "circle") { o.cdir = o.cdir || 1; const rad = Math.max(-1, Math.min(1, (dist - kd) / 200)), tg = 1 - Math.abs(rad) * 0.5; vx = (ux * rad - uy * o.cdir * tg) * sp; vy = (uy * rad + ux * o.cdir * tg) * sp; }
+      else if (mv === "dash") { o.dashT = (o.dashT === undefined ? +this.ov(o, "dashEvery") || 3 : o.dashT) - dt; if (o.dashT <= 0 && o.los) { o.dashT = +this.ov(o, "dashEvery") || 3; this.bossDashStart(o, +this.ov(o, "dashSpeed") || 900, +this.ov(o, "dashTime") || 0.6, +this.ov(o, "damage") || 0); return; } if (dist > want * 1.5) { vx = ux * sp * 0.6; vy = uy * sp * 0.6; } }
+      const bx = o.x, by = o.y, moving = !!(vx || vy); this.eMove(o, vx, vy, dt);
+      if (mv === "circle" && moving && Math.hypot(o.x - bx, o.y - by) < sp * dt * 0.3) { o.cblk = (o.cblk || 0) + dt; if (o.cblk > 0.25) { o.cdir = -o.cdir; o.cblk = 0; } } else o.cblk = 0;
+      o.st = "chase"; set(moving ? "walkAnim" : "idleAnim");
+    }
+    bossStep(o, dt, dist, dx, dy) {
+      const T = this.T, g = k => +this.ov(o, k) || 0, r = g("radius") || 22;
+      o.losT -= dt; if (o.losT <= 0) { o.losT = 0.2; o.los = !this.pdead && dist < (g("sight") || 900) && this.canSee(o); }
+      if (o.animLock > 0) o.animLock -= dt; const set = key => { if (!(o.animLock > 0)) this.eSet(o, key); };
+      if (!o.fight) { this.eMove(o, 0, 0, dt); o.st = "idle"; set("idleAnim"); const st = T.get(o.pre + "bossStart"), tg = T.get(o.pre + "bossStartTag");
+        const go = st === "tag" ? !!(this.sh && tg && this.sh.test(tg, T.get(o.pre + "bossStartOp") || "=", T.get(o.pre + "bossStartVal"))) : o.los || o.hitOnce; if (go && !this.pdead) this.bossBegin(o); return; }
+      o.bt += dt; for (const k in o.tovT) if (o.bt >= o.tovT[k]) { delete o.tov[k]; delete o.tovT[k]; }
+      const shOn = o.shield && o.bt < o.shield; if (!shOn) o.shield = 0; if (shOn) { const c = o.shCol || [0.5, 0.95, 1], k = 0.55 + 0.35 * Math.sin(o.bt * 9); o.shGlow = c.map(q => q * k); } else o.shGlow = null;
+      this.bossPhaseCheck(o, false);
+      for (const v of o.vols) { v.t -= dt; if (v.t <= 0 && v.left > 0) { this.bossVolley(o, v); v.left--; v.t = v.gap; } } o.vols = o.vols.filter(v => { if (v.left > 0) return true; if (v.done) v.done(); return false; });
+      if (this.pdead) { this.eMove(o, 0, 0, dt); o.st = "idle"; set("idleAnim"); return; }
+      if (o.pause > 0) { o.pause -= dt; this.eMove(o, 0, 0, dt); o.yaw = Math.atan2(dx, dy) * 180 / Math.PI; set("idleAnim"); return; }
+      if (o.st === "pain") { if (o.at < this.eLen(o, "hurtAnim", 0.25)) { this.eMove(o, 0, 0, dt); return; } o.st = "chase"; }
+      if (o.dash) { this.bossDashStep(o, dt, dist); return; }
+      o.yaw = Math.atan2(dx, dy) * 180 / Math.PI;
+      if (o.st === "attack") { if (!o.hit && o.at >= g("attackDelay")) { o.hit = true; this.bossAttack(o, dist); } if (o.at >= Math.max(this.eLen(o, "attackAnim", 0), g("attackDelay") + 0.25)) { o.st = "chase"; o.cool = g("attackRate") || 1.2; } this.eMove(o, 0, 0, dt); return; }
+      o.cool -= dt; const melee = this.ov(o, "attack") === "melee", range = g("attackRange") || 70;
+      if (!(o.hold > o.bt) && o.cool <= 0 && o.los && dist <= range + (melee ? r + 16 : 0) && !o.vols.some(v => v.atk)) { o.st = "attack"; o.hit = false; this.eSet(o, "attackAnim"); o.at = 0; const s = this.ov(o, "attackSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); this.bossTrig(o, "onBossAttack"); return; }
+      this.bossMove(o, dt, dist, dx, dy, set);
+    }
+    // keys + boss nodes (script.js hands every node it does not know to o.custom)
+    async custom(owner, n, g, tok) {
+      const T = this.T, ty = n.type, until = fn => new Promise(res => { fn(res); tok.cancel = res; });
+      if (ty === "giveKey" || ty === "takeKey") { const k = g("key"); if (k && T.has(k + ".have")) { T.set(k + ".have", ty === "giveKey"); if (ty === "giveKey") this.keyGot(k); } return; }
+      if (ty === "ifHasKey") { const k = g("key"); return k && T.get(k + ".have") ? "then" : "else"; }
+      const o = this.bossOf(owner.key); if (!o || !o.fight) return /^if/.test(ty) ? "else" : undefined;
+      switch (ty) {
+        case "setPhase": { const P = this.phases(o), nm = String(g("phase") || "").trim().toLowerCase(), cur = P.findIndex(q => q.id === o.ph), ph = nm ? P.find(q => String(T.get(o.pre + "ph." + q.id + ".name") || "").trim().toLowerCase() === nm) : P[cur + 1];
+          if (ph) { const pct = this.bossPct(o); let j = -1; P.forEach((q, i) => { if (pct <= +T.get(o.pre + "ph." + q.id + ".startAt")) j = i; }); o.phLock = Math.max(j, P.indexOf(ph)); this.bossEnter(o, ph, false); } return; }
+        case "bossFire": { const v = this.bossVolleyOf(o, g); o.vols.push(v); if (g("wait") !== false) await until(res => { v.done = res; }); return; }
+        case "bossMove": { const sec = +g("seconds") || 0, u = sec > 0 ? o.bt + sec : Infinity; o.tov.bossMove = g("move"); o.tovT.bossMove = u; if (+g("speed") > 0) { o.tov.speed = +g("speed"); o.tovT.speed = u; } else { delete o.tov.speed; delete o.tovT.speed; } return; }
+        case "bossDash": { let fin; const pr = until(res => { fin = res; }); this.bossDashStart(o, +g("speed") || 1000, +g("seconds") || 0.6, +g("damage") || 0, fin); if (g("wait") !== false) await pr; return; }
+        case "bossTeleport": this.bossTeleport(o, g("where"), +g("radius") || 0, g("fx") !== false, g("color")); return;
+        case "bossSpawn": if (g("what")) this.bossSpawn(o, g("what"), Math.max(1, Math.round(+g("count") || 1)), +g("radius") || 0); return;
+        case "bossHeal": { const mx = +T.get(o.pre + "health") || 100; o.hp = Math.max(1, Math.min(mx, o.hp + (+g("percent") || 0) / 100 * mx)); this.bossTags(o); return; }
+        case "bossShield": o.shield = g("on") === "off" ? 0 : (+g("seconds") > 0 ? o.bt + +g("seconds") : Infinity); o.shCol = this.hexCol(g("color") || "#7df3ff"); return;
+        case "bossHold": o.hold = o.bt + (+g("seconds") || 0); return;
+        case "bossAnim": { const an = g("anim"); if (!an || !o.model || !o.model.anims[an]) return; const len = this.animLen(o.aid, an, o.model.anims[an].dur).len; o.anim = an; o.akey = "nodeAnim"; o.at = 0; o.animLock = len;
+          if (g("wait") !== false) await until(res => { setTimeout(res, len * 1000); }); return; }
+        case "ifPhase": return String(o.phName || "").trim().toLowerCase() === String(g("phase") || "").trim().toLowerCase() ? "then" : "else";
+        case "ifBossHealth": { const a = this.bossPct(o), b = +g("percent") || 0, r = { "=": Math.abs(a - b) < 0.5, "!=": Math.abs(a - b) >= 0.5, ">": a > b, "<": a < b, ">=": a >= b, "<=": a <= b }[g("op") || "<="]; return r ? "then" : "else"; }
+        case "ifPlayerDist": { const d = Math.hypot(this.x - o.x, this.y - o.y); return (g("op") === ">" ? d > +g("dist") : d < +g("dist")) ? "then" : "else"; }
+      }
+    }
+    // what the minimap needs, every frame
+    hudWorld() { const T = this.T, items = [], doors = [];
+      for (const o of this.things || []) { if (o.taken) continue; const ty = o.boss ? "boss" : o.type;
+        if (ty === "door") { const k = this.ov(o, "lockKey"); doors.push(this.hud.doorSeg(o.fr, k && !o.unlocked ? T.get(k + ".keyColor") : null, o.st === "open")); continue; }
+        if (ty === "enemy" || ty === "boss") { if (this.eAlive(o)) items.push({ id: o.th.id, x: o.x, y: o.y, k: ty, L: G.layerOf(o.floor + 4) }); continue; }
+        if (ty === "key" || ty === "pickup" || ty === "exit" || ty === "npc") items.push({ id: o.th.id, x: o.fr.cx, y: o.fr.cy, k: ty === "pickup" ? "item" : ty, c: ty === "key" ? this.ov(o, "keyColor") : null, L: G.layerOf((o.floor || 0) + 4) }); }
+      return { map: this.map, L: G.layerOf(this.z + 4), x: this.x, y: this.y, yaw: this.yaw, t: this.clock || 0, items, doors }; }
     // ---- aiming (weapon tag aimType): "lock" = lock onto the enemy nearest the crosshair, "sights" = look down the sights with a zoom
     aimW() { const at = this.curWeapon && this.curWeapon(); if (!at) return null; const pre = "player." + at.id + ".", type = this.T.get(pre + "aimType"); return type === "lock" || type === "sights" ? { att: at, pre, type } : null; }
     aimInput(id, down) {
@@ -489,7 +661,7 @@
       if (this.T.get(w.pre + "aimHold") === "toggle") { if (down) this.aimSet(!this.aimOn); } else this.aimSet(down);
     }
     aimSet(on) { if (!!this.aimOn === !!on) return; this.aimOn = !!on; if (!on) this.lockOff(); this.trigger(on ? "onAim" : "onAimEnd"); }
-    eCenter(o) { return [o.x, o.floor + (+this.T.get(o.pre + "height") || 110) * 0.5, o.y]; }
+    eCenter(o) { return [o.x, o.floor + (+this.ov(o, "height") || 110) * 0.5, o.y]; }
     lockOff() { if (this.lock) { this.lock = null; if (this.T.get("player.locked")) this.T.set("player.locked", false); } }
     // the best enemy to lock onto: in reach, near the crosshair (within lockAngle), visible; the one nearest the middle wins
     lockFind(w) {
@@ -530,25 +702,25 @@
     // ---- patrols, ceiling enemies, blasts, slicing
     // walk the path picked for this placed enemy (map.paths, thing.path): point to point, round in a loop or back and forth
     // is the player in front of this patrolling enemy (tag pathFov, degrees; 360 = sees all around)? Always true when you are right next to it.
-    eFront(o, dx, dy, dist) { const fov = +this.T.get(o.pre + "pathFov"); if (!(fov > 0) || fov >= 360 || dist < (+this.T.get(o.pre + "radius") || 22) + 70) return true;
+    eFront(o, dx, dy, dist) { const fov = +this.ov(o, "pathFov"); if (!(fov > 0) || fov >= 360 || dist < (+this.ov(o, "radius") || 22) + 70) return true;
       const a = o.yaw * Math.PI / 180, c = (Math.sin(a) * dx + Math.cos(a) * dy) / (dist || 1); return c >= Math.cos(fov * Math.PI / 360); }
     ePatrol(o, dt) {
-      const pa = o.th.path && (this.map.paths || []).find(q => q.id === o.th.path), sp = +this.T.get(o.pre + "speed") || 0;
+      const pa = o.th.path && (this.map.paths || []).find(q => q.id === o.th.path), sp = +this.ov(o, "speed") || 0;
       if (!pa || pa.pts.length < 1 || sp <= 0) { this.eMove(o, 0, 0, dt); o.st = "idle"; this.eSet(o, "idleAnim"); return; }
       if (o.pwait > 0) { o.pwait -= dt; this.eMove(o, 0, 0, dt); o.st = "idle"; this.eSet(o, "idleAnim"); return; }
       o.pi = Math.max(0, Math.min(pa.pts.length - 1, o.pi || 0)); const q = pa.pts[o.pi], dx = q[0] - o.x, dy = q[1] - o.y, d = Math.hypot(dx, dy);
-      if (d < 10 || (o.pstuck || 0) > 2.5) { o.pstuck = 0; const n = pa.pts.length; if (n > 1) { if (pa.loop !== false) o.pi = (o.pi + 1) % n; else { if (o.pi + o.pdir < 0 || o.pi + o.pdir >= n) o.pdir = -o.pdir; o.pi += o.pdir; } } o.pwait = +this.T.get(o.pre + "pathWait") || 0; this.eMove(o, 0, 0, dt); return; }
+      if (d < 10 || (o.pstuck || 0) > 2.5) { o.pstuck = 0; const n = pa.pts.length; if (n > 1) { if (pa.loop !== false) o.pi = (o.pi + 1) % n; else { if (o.pi + o.pdir < 0 || o.pi + o.pdir >= n) o.pdir = -o.pdir; o.pi += o.pdir; } } o.pwait = +this.ov(o, "pathWait") || 0; this.eMove(o, 0, 0, dt); return; }
       const bx = o.x, by = o.y; this.eMove(o, dx / d * sp, dy / d * sp, dt); o.pstuck = Math.hypot(o.x - bx, o.y - by) < sp * dt * 0.2 ? (o.pstuck || 0) + dt : 0;   // blocked: give up on this point after a while
       o.yaw = Math.atan2(dx, dy) * 180 / Math.PI; o.st = "patrol"; this.eSet(o, "walkAnim");
     }
     // an enemy that never notices you: fires on a timer in the direction it faces and / or hurts you when you touch it; still patrols its path
     eBlind(o, dt, dist, beh) {
-      const T = this.T, g = k => +T.get(o.pre + k) || 0, mode = T.get(o.pre + "blindMode") || "shoot", r = g("radius") || 22, h = g("height") || 110, rate = g("attackRate") || 1.2; o.awake = false; o.los = false;
+      const T = this.T, g = k => +this.ov(o, k) || 0, mode = this.ov(o, "blindMode") || "shoot", r = g("radius") || 22, h = g("height") || 110, rate = g("attackRate") || 1.2; o.awake = false; o.los = false;
       if (mode !== "shoot") { o.tcool = (o.tcool || 0) - dt; const pz = this.z, ph = +T.get("player.eyeHeight") || 102;
         if (o.tcool <= 0 && !this.pdead && dist < r + (+T.get("player.radius") || 16) + 4 && pz < o.floor + h && pz + ph > o.floor) { this.hurtPlayer(g("damage")); o.tcool = rate; o.flash = 0.06; } }
       if (mode !== "touch") { o.bt = (o.bt === undefined ? Math.random() * rate : o.bt) - dt;
-        if (o.bt <= 0 && !this.pdead) { o.bt = rate; this.eSet(o, "attackAnim"); o.at = 0; o.bAnim = this.eLen(o, "attackAnim", 0.3); const s = T.get(o.pre + "attackSound"); if (s) this.sfxAt(s, 1, this.thingPos(o));
-          const a = o.yaw * Math.PI / 180, dir = o.mount === "ceiling" ? [0, -1, 0] : [Math.sin(a), 0, Math.cos(a)]; this.eAttack(o, dist, true, T.get(o.pre + "attack") === "hitscan" ? dir : dir); } }
+        if (o.bt <= 0 && !this.pdead) { o.bt = rate; this.eSet(o, "attackAnim"); o.at = 0; o.bAnim = this.eLen(o, "attackAnim", 0.3); const s = this.ov(o, "attackSound"); if (s) this.sfxAt(s, 1, this.thingPos(o));
+          const a = o.yaw * Math.PI / 180, dir = o.mount === "ceiling" ? [0, -1, 0] : [Math.sin(a), 0, Math.cos(a)]; this.eAttack(o, dist, true, this.ov(o, "attack") === "hitscan" ? dir : dir); } }
       if (o.bAnim > 0) { o.bAnim -= dt; if (o.bAnim > 0) { if (!o.mount) this.eMove(o, 0, 0, dt); return; } }
       if (beh === "path") { this.ePatrol(o, dt); return; }
       if (!o.mount) this.eMove(o, 0, 0, dt); o.st = "idle"; this.eSet(o, "idleAnim");
@@ -556,17 +728,17 @@
     // walking on walls and ceilings. o.surf = { n: surface normal, p: feet point } while on a wall / ceiling; null = on the floor (normal walking physics).
     // On the floor it climbs a wall that blocks its way; on a wall it climbs up (and toward you); on a ceiling it crawls over you and drops. Returns true when it moved itself.
     eCrawl(o, dt, dist) {
-      const T = this.T, g = k => +T.get(o.pre + k) || 0, v = this.view; if (!v) return false; const sp = g("speed") || 0, r = g("radius") || 22, h = g("height") || 110, P = [this.x, this.z + 40, this.y];
+      const T = this.T, g = k => +this.ov(o, k) || 0, v = this.view; if (!v) return false; const sp = g("speed") || 0, r = g("radius") || 22, h = g("height") || 110, P = [this.x, this.z + 40, this.y];
       if (!o.surf) {   // floor: only take over when a wall blocks the way to you
         if (!o.body || !o.body.ground || sp <= 0) return false; const L = Math.hypot(P[0] - o.x, P[2] - o.y) || 1, dir = [(P[0] - o.x) / L, 0, (P[2] - o.y) / L], hit = v.raycast([o.x, o.floor + Math.min(h * 0.5, 40), o.y], dir, r + 14);
-        const meleeNear = T.get(o.pre + "attack") === "melee" && dist < r + 40 && Math.abs(this.z - o.floor) < 60;
+        const meleeNear = this.ov(o, "attack") === "melee" && dist < r + 40 && Math.abs(this.z - o.floor) < 60;
         if (hit && hit.n && Math.abs(hit.n[1]) < 0.4 && !meleeNear && Math.abs(P[1] - o.floor) < 400) { o.cBlock = (o.cBlock || 0) + dt; if (o.cBlock > 0.2) { o.cBlock = 0; o.surf = { n: hit.n.slice(), p: M4.add(hit.p, hit.n.map(q => q * 1)) }; o.cstuck = 0; } }
         else o.cBlock = 0;
         if (!o.surf) return false;
       }
       const s = o.surf, n = s.n, F = s.p; let D;
       if (n[1] < -0.5) { const L = Math.hypot(P[0] - F[0], P[2] - F[2]); D = [P[0] - F[0], 0, P[2] - F[2]];   // ceiling: over you, then drop
-        if (L < r + 26 || (T.get(o.pre + "attack") !== "melee" && o.los && dist < (g("attackRange") || 70))) { if (L < r + 26) return this.eCrawlOff(o, true); D = [0, 0, 0]; } }
+        if (L < r + 26 || (this.ov(o, "attack") !== "melee" && o.los && dist < (g("attackRange") || 70))) { if (L < r + 26) return this.eCrawlOff(o, true); D = [0, 0, 0]; } }
       else { const L = Math.hypot(P[0] - F[0], P[2] - F[2]) || 1; D = [(P[0] - F[0]) / L * 0.6, 1, (P[2] - F[2]) / L * 0.6]; }   // wall: up and toward you
       const dn = M4.dot(D, n); D = M4.sub(D, n.map(q => q * dn)); const DL = M4.len(D);
       if (DL < 1e-3) { this.eCrawlPlace(o, h); this.eSet(o, "idleAnim"); return true; } D = D.map(q => q / DL); s.fwd = D;
@@ -582,16 +754,16 @@
       this.eCrawlPlace(o, h); o.st = "chase"; this.eSet(o, "walkAnim"); return true;
     }
     eCrawlPlace(o, h) { const s = o.surf, c = M4.add(s.p, s.n.map(q => q * h * 0.5)); o.x = c[0]; o.y = c[2]; o.floor = c[1] - h * 0.5; }
-    eCrawlOff(o, fall) { const s = o.surf; o.surf = null; o.body = null; o.cfrom = null; o.cwin = 0; if (s) { o.x = s.p[0] + s.n[0] * 4; o.y = s.p[2] + s.n[2] * 4; o.floor = s.p[1] + (s.n[1] < 0 ? -(+this.T.get(o.pre + "height") || 110) : 0); }
+    eCrawlOff(o, fall) { const s = o.surf; o.surf = null; o.body = null; o.cfrom = null; o.cwin = 0; if (s) { o.x = s.p[0] + s.n[0] * 4; o.y = s.p[2] + s.n[2] * 4; o.floor = s.p[1] + (s.n[1] < 0 ? -(+this.ov(o, "height") || 110) : 0); }
       if (fall) { o.st = "falling"; o.at = 0; o.crawlDrop = true; } return true; }
     // the model standing on its surface: up = the surface normal, front = the way it crawls
     crawlFrame(o) { const s = o.surf, Y = s.n, f0 = s.fwd || (Math.abs(Y[1]) > 0.9 ? [0, 0, 1] : [0, 1, 0]), Z = M4.norm(M4.sub(f0, Y.map(q => q * M4.dot(f0, Y)))), X = M4.cross(Y, Z), F = s.p;
       return [X[0], X[1], X[2], 0, Y[0], Y[1], Y[2], 0, Z[0], Z[1], Z[2], 0, F[0], F[1], F[2], 1]; }
     // a spawner: every `spawnEvery` s a new copy of `spawnWhat` appears around it (runtime only: this.spawnTh, cleared on restart), while fewer than `spawnMax` of its copies are alive
     spawnerStep(o, dt) {
-      const T = this.T, g = k => +T.get(o.pre + k) || 0, what = T.get(o.pre + "spawnWhat"), st = o.sp = o.sp || { t: g("spawnFirst"), made: 0, kids: [] };
+      const T = this.T, g = k => +this.ov(o, k) || 0, what = this.ov(o, "spawnWhat"), st = o.sp = o.sp || { t: g("spawnFirst"), made: 0, kids: [] };
       if (!what || !(this.project.props || []).some(q => q.id === what) || this.pdead) return;
-      const need = T.get(o.pre + "spawnNeedTag"); if (need && this.sh && !this.sh.test(need, T.get(o.pre + "spawnNeedOp") || "=", T.get(o.pre + "spawnNeedVal"))) return;
+      const need = this.ov(o, "spawnNeedTag"); if (need && this.sh && !this.sh.test(need, this.ov(o, "spawnNeedOp") || "=", this.ov(o, "spawnNeedVal"))) return;
       if (g("spawnNear") > 0 && Math.hypot(this.x - o.fr.cx, this.y - o.fr.cy) > g("spawnNear")) return;
       const alive = id => { const k = (this.things || []).find(x => x.th.id === id); if (!k) return true; return !k.taken && !(k.type === "enemy" && (k.st === "dead" || k.st === "dying")); };
       st.kids = st.kids.filter(alive); this.spawnTh = (this.spawnTh || []).filter(th => { const k = (this.things || []).find(x => x.th.id === th.id); return !(k && k.taken); });
@@ -599,26 +771,26 @@
       st.t -= dt; if (st.t > 0) return; st.t = g("spawnEvery") || 4;
       const L = o.th.layer || 0, R = g("spawnRadius"); let X = o.fr.cx, Z = o.fr.cy;
       for (let i = 0; i < 8; i++) { const a = Math.random() * Math.PI * 2, rr = Math.sqrt(Math.random()) * R, x = o.fr.cx + Math.cos(a) * rr, z = o.fr.cy + Math.sin(a) * rr, c = G.cell(this.map, L, Math.floor(x / 128), Math.floor(z / 128)); if (c && !G.isWall(c) && !(c.dg)) { X = x; Z = z; break; } }
-      this.spawnN = (this.spawnN || 0) + 1; st.made++; const th = { id: o.th.id + "~" + this.spawnN, prop: what, x: X, y: Z, ang: Math.floor(Math.random() * 4) * 90, layer: L, spawned: true, wake: T.get(o.pre + "spawnAwake") !== false };
+      this.spawnN = (this.spawnN || 0) + 1; st.made++; const th = { id: o.th.id + "~" + this.spawnN, prop: what, x: X, y: Z, ang: Math.floor(Math.random() * 4) * 90, layer: L, spawned: true, wake: this.ov(o, "spawnAwake") !== false };
       (this.spawnTh = this.spawnTh || []).push(th); st.kids.push(th.id); this.syncThings();
-      const P = [X, o.fr.fy + 40, Z], snd = T.get(o.pre + "spawnSound"); if (snd) this.sfxAt(snd, 1, P);
-      if (T.get(o.pre + "spawnFx") !== false) { const col = this.hexCol(T.get(o.pre + "spawnColor") || "#7df3ff"); this.burst(P, col, 24, 220, 0.5, 2.5); this.fx.push({ kind: "sphere", deco: true, p: P.slice(), d: [0, 1, 0], c: [0, 0, 0], size0: 0.01, size: 0.01, speed: 0, life: 0.3, t: 0, light: { c: col, k: 2.5, k0: 2.5, r: 260, shadow: false } }); }
+      const P = [X, o.fr.fy + 40, Z], snd = this.ov(o, "spawnSound"); if (snd) this.sfxAt(snd, 1, P);
+      if (this.ov(o, "spawnFx") !== false) { const col = this.hexCol(this.ov(o, "spawnColor") || "#7df3ff"); this.burst(P, col, 24, 220, 0.5, 2.5); this.fx.push({ kind: "sphere", deco: true, p: P.slice(), d: [0, 1, 0], c: [0, 0, 0], size0: 0.01, size: 0.01, speed: 0, life: 0.3, t: 0, light: { c: col, k: 2.5, k0: 2.5, r: 260, shadow: false } }); }
     }
     // stick to the nearest ceiling straight above the placed spot (its top touches the ceiling)
     eHang(o) {
-      const h = +this.T.get(o.pre + "height") || 110, v = this.view, from = [o.x, o.floor + 4, o.y], hit = v && v.raycast(from, [0, 1, 0], 4000);
+      const h = +this.ov(o, "height") || 110, v = this.view, from = [o.x, o.floor + 4, o.y], hit = v && v.raycast(from, [0, 1, 0], 4000);
       const top = hit && hit.p ? hit.p[1] : o.floor + G.LAYER - 1; o.floor = top - h; o.ceilY = top;
     }
     // you are inside its detection cone (straight down, `coneAngle` wide, `coneRange` long) and it can see you
     inCone(o) {
       const T = this.T, B = [o.x, o.floor, o.y], P = [this.x, this.z + (+T.get("player.eyeHeight") || 102) * 0.5, this.y], d = M4.sub(P, B), L = M4.len(d); if (L < 1) return true;
-      if (L > (+T.get(o.pre + "coneRange") || 400) + 60 || -d[1] / L < Math.cos((+T.get(o.pre + "coneAngle") || 25) * Math.PI / 180)) return false; return this.canSee(o);
+      if (L > (+this.ov(o, "coneRange") || 400) + 60 || -d[1] / L < Math.cos((+this.ov(o, "coneAngle") || 25) * Math.PI / 180)) return false; return this.canSee(o);
     }
     // a dropped enemy hits the floor: it turns into its "becomes" enemy, explodes, or simply hunts you
     eLand(o) {
       if (o.crawlDrop) { o.crawlDrop = false; o.st = "chase"; o.awake = true; this.eSet(o, "walkAnim"); return; }
-      const T = this.T, into = T.get(o.pre + "dropInto"), act = T.get(o.pre + "ceilAction");
-      if (act === "selfdestruct") { o.st = "fuse"; o.fuseT = +T.get(o.pre + "fuse") || 0; return; }
+      const T = this.T, into = this.ov(o, "dropInto"), act = this.ov(o, "ceilAction");
+      if (act === "selfdestruct") { o.st = "fuse"; o.fuseT = +this.ov(o, "fuse") || 0; return; }
       if (into && into !== o.morph && (this.project.props || []).some(q => q.id === into) && T.get(into + ".type") === "enemy") { o.morph = into; o.keep = { x: o.x, y: o.y, floor: o.floor, yaw: o.yaw, dropped: true }; o.init = false; o.mount = null; this.syncThings(); return; }
       o.st = "chase"; o.awake = true; this.eSet(o, "walkAnim");
     }
@@ -630,18 +802,18 @@
     }
     // an enemy explosion: hurts you and other enemies (less toward the edge, walls block it), particles, light, shock sphere, sound
     eBlast(o, kill, at) {
-      const T = this.T, g = k => +T.get(o.pre + k) || 0, h = g("height") || 110, c = at || [o.x, o.floor + h * 0.5, o.y], R = g("blastRadius"), dmg = g("blastDamage"), col = this.hexCol(T.get(o.pre + "blastColor") || "#ff8a2a");
+      const T = this.T, g = k => +this.ov(o, k) || 0, h = g("height") || 110, c = at || [o.x, o.floor + h * 0.5, o.y], R = g("blastRadius"), dmg = g("blastDamage"), col = this.hexCol(this.ov(o, "blastColor") || "#ff8a2a");
       const clear = (a, b) => { const d = M4.sub(b, a), L = M4.len(d); if (L < 1) return true; const hit = this.view && this.view.raycast(a, d.map(q => q / L), L); return !(hit && hit.t < L - 8); };
       if (R > 0 && dmg > 0) { const pc = [this.x, this.z + 50, this.y], dp = M4.len(M4.sub(pc, c)); if (dp < R && !this.pdead && clear(c, pc)) this.hurtPlayer(Math.round(dmg * (1 - 0.75 * dp / R)));
         for (const e of this.things || []) { if (e === o || !this.eAlive(e)) continue; const ec = [e.x, e.floor + 50, e.y], de = M4.len(M4.sub(ec, c)); if (de < R && clear(c, ec)) this.damageEnemy(e, dmg * (1 - 0.75 * de / R)); } }
       this.burst(c, col, Math.round(g("blastCount")), 320, 0.6, 3); this.fx.push({ kind: "sphere", deco: true, p: c.slice(), d: [0, 1, 0], c: [0, 0, 0], size0: 0.01, size: 0.01, speed: 0, life: 0.35, t: 0, light: { c: col, k: 3, k0: 3, r: Math.max(200, R * 1.5), shadow: false } });
-      if (T.get(o.pre + "blastSphere") !== false && R > 0) this.fx.push({ kind: "shock", deco: true, p: c.slice(), R, life: g("blastSphereTime") || 0.45, t: 0, c1: this.hexCol(T.get(o.pre + "blastSphereColor1") || "#ffe08a"), c2: this.hexCol(T.get(o.pre + "blastSphereColor2") || "#ff4a1a"), anim: T.get(o.pre + "blastSphereAnim") || "bands", aspd: T.get(o.pre + "blastSphereSpeed") === undefined ? 2 : g("blastSphereSpeed"), glow: T.get(o.pre + "blastSphereGlow") === undefined ? 1.2 : g("blastSphereGlow") });
-      const s = T.get(o.pre + "blastSound"); if (s) this.sfxAt(s, 1, c, 3000);
-      if (kill) { o.hp = 0; o.flash = 0; if (T.get(o.pre + "deathStyle") === "slice" && !o.sliced) this.eSlice(o, true); else { o.st = "dead"; o.taken = true; } }
+      if (this.ov(o, "blastSphere") !== false && R > 0) this.fx.push({ kind: "shock", deco: true, p: c.slice(), R, life: g("blastSphereTime") || 0.45, t: 0, c1: this.hexCol(this.ov(o, "blastSphereColor1") || "#ffe08a"), c2: this.hexCol(this.ov(o, "blastSphereColor2") || "#ff4a1a"), anim: this.ov(o, "blastSphereAnim") || "bands", aspd: this.ov(o, "blastSphereSpeed") === undefined ? 2 : g("blastSphereSpeed"), glow: this.ov(o, "blastSphereGlow") === undefined ? 1.2 : g("blastSphereGlow") });
+      const s = this.ov(o, "blastSound"); if (s) this.sfxAt(s, 1, c, 3000);
+      if (kill) { o.hp = 0; o.flash = 0; if (this.ov(o, "deathStyle") === "slice" && !o.sliced) this.eSlice(o, true); else { o.st = "dead"; o.taken = true; } }
     }
     // cut the model (as it looks right now) into pieces with random planes, each cut gets a cap in the inside colour; the pieces fly apart and spin
     eSlice(o, noBlast) {
-      const T = this.T, g = k => +T.get(o.pre + k) || 0, v = this.view; o.st = "dead"; o.taken = true; o.sliced = true; const ss = T.get(o.pre + "sliceSound"); if (ss) this.sfxAt(ss, 1, this.thingPos(o));
+      const T = this.T, g = k => +this.ov(o, k) || 0, v = this.view; o.st = "dead"; o.taken = true; o.sliced = true; const ss = this.ov(o, "sliceSound"); if (ss) this.sfxAt(ss, 1, this.thingPos(o));
       if (!v || o.sprite || !o.model || !o.lastM || !o.lastPose) { this.eBlast(o, false); return; }
       // every triangle in world space: [x,y,z,u,v] x 3
       let tris = []; for (const ms of o.gm.meshes) { const mesh = o.model.nodes[ms.node] && o.model.nodes[ms.node].mesh; if (!mesh) continue; const W = M4.mul(o.lastM, o.lastPose[ms.node]), cnt = mesh.p.length / 3;
@@ -665,7 +837,7 @@
         const cA = cap ? { tris: capTris(seg, n.map(q => -q)) } : null, cB = cap ? { tris: capTris(seg, n) } : null;
         pieces.push({ tris: A, caps: keepCaps(A, 1).concat(cA ? [cA] : []) }, { tris: B, caps: keepCaps(B, 0).concat(cB ? [cB] : []) }); }
       // turn every piece into a little model that flies off from the middle
-      const all = center(tris), force = g("sliceForce") || 260, inside = this.hexCol(T.get(o.pre + "sliceInside") || "#7a1414"), Ld = M4.norm([0.3, 0.8, 0.5]), life = g("sliceTime") || 0.7, tex = o.gm.tex, mat = this.matGL(o.pre);
+      const all = center(tris), force = g("sliceForce") || 260, inside = this.hexCol(this.ov(o, "sliceInside") || "#7a1414"), Ld = M4.norm([0.3, 0.8, 0.5]), life = g("sliceTime") || 0.7, tex = o.gm.tex, mat = this.matGL(o.pre);
       for (const pc of pieces) { if (!pc.tris.length) continue; const c = center(pc.tris), lo = [1e9, 1e9, 1e9], hi = [-1e9, -1e9, -1e9];
         const pack = (list, col) => { const a = new Float32Array(list.length * 24); let k = 0; for (const t of list) { const fn = M4.norm(M4.cross(M4.sub(t[1], t[0]), M4.sub(t[2], t[0]))), lit = 0.55 + 0.45 * Math.max(0, M4.dot(fn, Ld)) || 0.55;
           for (const q of t) { const x = q[0] - c[0], y = q[1] - c[1], z = q[2] - c[2]; lo[0] = Math.min(lo[0], x); lo[1] = Math.min(lo[1], y); lo[2] = Math.min(lo[2], z); hi[0] = Math.max(hi[0], x); hi[1] = Math.max(hi[1], y); hi[2] = Math.max(hi[2], z);
@@ -673,7 +845,7 @@
         const meshes = [v.meshFrom(pack(pc.tris, null), tex)]; const capList = pc.caps.flatMap(cp => cp.tris || []); if (capList.length) meshes.push(v.meshFrom(pack(capList, inside), null));
         let dir = M4.sub(c, all); const dl = M4.len(dir); dir = dl > 1 ? dir.map(q => q / dl) : M4.norm([Math.random() - 0.5, 0.5, Math.random() - 0.5]); dir[1] += 0.6; dir = M4.norm(dir);
         const sp = force * (0.6 + Math.random() * 0.8), ax = M4.norm([Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5]);
-        this.fx = this.fx || []; this.fx.push({ kind: "mesh", piece: true, deco: true, owner: o, gm: { model: { bounds: { lo, hi } }, meshes, tex }, pose: [M4.ident()], M: M4.translate(c[0], c[1], c[2]), p: c.slice(), vel: dir.map(q => q * sp), ax, spin: (Math.random() * 2 - 1) * 9, ang: 0, t: 0, life, scale: 3, mat, blast: !noBlast && T.get(o.pre + "sliceBlast") !== false, rest: false }); }
+        this.fx = this.fx || []; this.fx.push({ kind: "mesh", piece: true, deco: true, owner: o, gm: { model: { bounds: { lo, hi } }, meshes, tex }, pose: [M4.ident()], M: M4.translate(c[0], c[1], c[2]), p: c.slice(), vel: dir.map(q => q * sp), ax, spin: (Math.random() * 2 - 1) * 9, ang: 0, t: 0, life, scale: 3, mat, blast: !noBlast && this.ov(o, "sliceBlast") !== false, rest: false }); }
     }
     // one flying piece: gravity, bounce on the floor, spin; at the end it explodes (or just disappears)
     pieceStep(f, dt) {
@@ -750,14 +922,14 @@
       const T = this.T, m = this.map; this.x = m ? +T.get(m.id + ".startX") || 0 : 0; this.y = m ? +T.get(m.id + ".startY") || 0 : 0; this.yaw = (m ? +T.get(m.id + ".startAngle") : 90) * Math.PI / 180; this.pitch = 0;
       const L = m ? +T.get(m.id + ".startLayer") || 0 : 0; this.z = m && G ? G.groundY(m, this.x, this.y, L * G.LAYER + G.LAYER - 8) : 0; this.vz = 0; this.body = null; this.ground = true;
     }
-    resetPlayer() { this.placeStart(); this.zst = null; this.fx = []; this.orb = null; this.reloading = null; if (this.mode === "play" && this.T.get("player.reloading")) this.T.set("player.reloading", false); this.extV = null; this.jumpReq = undefined; this.airJumps = 0; this.shakeT = 0; this.pdead = false; this.deadT = 0; this.say2(""); this.doorOpen = {}; this.things = []; this.spawnTh = []; this.syncThings(); }
-    restartMap() { const T = this.T; T.set("player.health", +T.get("player.maxHealth") || 100); this.lastHp = undefined; this.initAmmo(); this.initLives(); this.cp = null; this.resetPlayer(); }
+    resetPlayer() { this.placeStart(); this.zst = null; this.fx = []; this.orb = null; this.reloading = null; if (this.mode === "play" && this.T.get("player.reloading")) this.T.set("player.reloading", false); this.extV = null; this.jumpReq = undefined; this.airJumps = 0; this.shakeT = 0; this.pdead = false; this.deadT = 0; this.say2(""); this.doorOpen = {}; this.bossStop(); this.things = []; this.spawnTh = []; this.syncThings(); }
+    restartMap() { const T = this.T; T.set("player.health", +T.get("player.maxHealth") || 100); this.lastHp = undefined; this.initAmmo(); this.initLives(); this.cp = null; this.keysReset("snap"); this.resetPlayer(); }
     loadMap(id) { const m = this.project.maps.find(x => x.id === id); if (!m || !this.view) return false; this.map = m; this.cp = null; this.view.setMap(this.project, m, this.T, this.urls); this.resetPlayer(); return true; }
     levelExit(o) {
-      if (this.exiting) return; const T = this.T, s = T.get(o.pre + "exitSound"); if (s) this.sfx(s);
-      if (T.get(o.pre + "exitTo") === "screen") { const sc = T.get(o.pre + "exitScreen"); if (sc && this.o.onScreen) { this.exiting = true; this.o.onScreen(sc); return; } this.say2("Level finished"); this.exiting = true; return; }
-      const maps = this.project.maps, cur = maps.indexOf(this.map), id = T.get(o.pre + "exitMap") || (maps[cur + 1] && maps[cur + 1].id);
-      if (!id) { this.say2("Level finished"); this.exiting = true; return; } this.loadMap(id);
+      if (this.exiting) return; const T = this.T, s = this.ov(o, "exitSound"); if (s) this.sfx(s);
+      if (this.ov(o, "exitTo") === "screen") { const sc = this.ov(o, "exitScreen"); if (sc && this.o.onScreen) { this.exiting = true; this.o.onScreen(sc); return; } this.say2("Level finished"); this.exiting = true; return; }
+      const maps = this.project.maps, cur = maps.indexOf(this.map), id = this.ov(o, "exitMap") || (maps[cur + 1] && maps[cur + 1].id);
+      if (!id) { this.say2("Level finished"); this.exiting = true; return; } this.keysReset("level"); this.loadMap(id);
     }
     // footsteps, jump / landing / hurt / death sounds (player.* sound tags)
     psound(tag) { const id = this.T.get("player." + tag); return id ? this.sfx(id, +this.T.get("player.soundVolume")) : null; }
@@ -834,13 +1006,14 @@
       if (changed && this.sh) { const att = this.project.player.attachments.find(a => a.id === w[i]); if (att && att.script) this.sh.trigger({ key: "player." + att.id, script: att.script }, "onEquip"); }
     }
     // Node Coder events: every non-weapon object hears them, and the weapon that is currently in hand
-    scriptOwners() { const cur = this.curWeaponId(), out = this.project.player.attachments.filter(a => a.script && !(this.T.get("player." + a.id + ".type") === "weapon" && a.id !== cur)).map(a => ({ key: "player." + a.id, script: a.script })); if (this.project.player.script) out.push({ key: "player", script: this.project.player.script }); for (const z of (this.map && this.map.zones) || []) if (z.type === "custom" && z.script) out.push({ key: this.map.id + ".z." + z.id, script: z.script }); return out; }
+    scriptOwners() { const cur = this.curWeaponId(), out = this.project.player.attachments.filter(a => a.script && !(this.T.get("player." + a.id + ".type") === "weapon" && a.id !== cur)).map(a => ({ key: "player." + a.id, script: a.script })); if (this.project.player.script) out.push({ key: "player", script: this.project.player.script }); for (const z of (this.map && this.map.zones) || []) if (z.type === "custom" && z.script) out.push({ key: this.map.id + ".z." + z.id, script: z.script }); return out.concat(this.bossOwners()); }
     triggerAtt(id, type, arg) { const a = this.project.player.attachments.find(x => x.id === id); if (this.sh && a && a.script) this.sh.trigger({ key: "player." + a.id, script: a.script }, type, arg); }
     stopAnim(key) { const at = this.atts.find(a => "player." + a.id === key); if (!at) return; at.fire = null; at.loopAnim = null; at.t = 0; at.restart = true; }
     trigger(type, arg) {
       if (!this.sh) return; if (this.project.player.script) this.sh.trigger({ key: "player", script: this.project.player.script }, type, arg); const cur = this.curWeaponId();
       for (const a of this.project.player.attachments) { if (!a.script) continue; if (this.T.get("player." + a.id + ".type") === "weapon" && a.id !== cur) continue; this.sh.trigger({ key: "player." + a.id, script: a.script }, type, arg); }
       for (const z of (this.map && this.map.zones) || []) if (z.type === "custom" && z.script) this.sh.trigger({ key: this.map.id + ".z." + z.id, script: z.script }, type, arg);
+      for (const ow of this.bossOwners()) this.sh.trigger(ow, type, arg);
     }
     // set a tag from a text value: "toggle", "+n" / "-n" adds, anything else is set (numbers, yes / no, text)
     applyVal(tag, raw) { const T = this.T; raw = String(raw === undefined ? "" : raw).trim(); if (!tag || !T.has(tag) || raw === "") return; const cur = T.get(tag), sp = T.spec(tag);
@@ -875,9 +1048,9 @@
     speakerStep() {
       const T = this.T; this.spk = this.spk || {}; const live = new Set();
       for (const o of this.things || []) {
-        if (o.type !== "speaker") continue; const id = o.th.id, snd = T.get(o.pre + "spkSound"), r = +T.get(o.pre + "spkRadius") || 512, vol = T.get(o.pre + "spkVolume") === undefined ? 1 : +T.get(o.pre + "spkVolume"), p = this.thingPos(o, +T.get(o.pre + "spkHeight") || 0), d = Math.hypot(p[0] - this.x, p[2] - this.y, p[1] - this.z - 56);
+        if (o.type !== "speaker") continue; const id = o.th.id, snd = this.ov(o, "spkSound"), r = +this.ov(o, "spkRadius") || 512, vol = this.ov(o, "spkVolume") === undefined ? 1 : +this.ov(o, "spkVolume"), p = this.thingPos(o, +this.ov(o, "spkHeight") || 0), d = Math.hypot(p[0] - this.x, p[2] - this.y, p[1] - this.z - 56);
         let k = this.spk[id]; if (k && k.snd !== snd) { if (k.h) k.h.stop(0.1); k = this.spk[id] = null; } if (!snd) continue; live.add(id);
-        if (T.get(o.pre + "spkLoop") !== false) { if (!k) k = this.spk[id] = { snd, h: this.sfxAt(snd, vol, p, r, true) }; else if (k.h) { k.h.setVolume(this.vol3(vol)); k.h.setPos(p); } }
+        if (this.ov(o, "spkLoop") !== false) { if (!k) k = this.spk[id] = { snd, h: this.sfxAt(snd, vol, p, r, true) }; else if (k.h) { k.h.setVolume(this.vol3(vol)); k.h.setPos(p); } }
         else { if (!k) k = this.spk[id] = { snd, h: null, inside: false }; const inside = d < r; if (inside && !k.inside) k.h = this.sfxAt(snd, vol, p, r); k.inside = inside; }
       }
       for (const id of Object.keys(this.spk)) if (!live.has(id)) { const k = this.spk[id]; if (k && k.h) k.h.stop(0.1); delete this.spk[id]; }
@@ -891,7 +1064,7 @@
       if (T.get(pre + "projSplash")) {
         const R = (g("splashRadius") || 160) * growR, dmg = T.get(pre + "splashDamage") === undefined ? 50 : g("splashDamage"), from = [p[0] + n0[0] * 2, p[1] + n0[1] * 2, p[2] + n0[2] * 2];
         const clear = q => { const d = M4.sub(q, from), L = M4.len(d); if (L < 1) return true; const hh = v && v.raycast(from, d.map(z => z / L), L - 2); return !hh; };
-        for (const o of this.things || []) { if (!this.eAlive(o)) continue; const r = +T.get(o.pre + "radius") || 22, hgt = +T.get(o.pre + "height") || 110, cy = Math.max(o.floor, Math.min(o.floor + hgt, p[1])), dist = Math.max(0, Math.hypot(o.x - p[0], o.y - p[2]) - r), d = Math.hypot(dist, cy - p[1]);
+        for (const o of this.things || []) { if (!this.eAlive(o)) continue; const r = +this.ov(o, "radius") || 22, hgt = +this.ov(o, "height") || 110, cy = Math.max(o.floor, Math.min(o.floor + hgt, p[1])), dist = Math.max(0, Math.hypot(o.x - p[0], o.y - p[2]) - r), d = Math.hypot(dist, cy - p[1]);
           if (d < R && clear([o.x, cy, o.y])) this.damageEnemy(o, dmg * (1 - 0.75 * d / R)); }
         if (T.get(pre + "splashSelf") && !this.pdead) { const r = +T.get("player.radius") || 16, cy = Math.max(this.z, Math.min(this.z + 102, p[1])), d = Math.hypot(Math.max(0, Math.hypot(this.x - p[0], this.y - p[2]) - r), cy - p[1]); if (d < R && clear([this.x, cy, this.y])) this.hurtPlayer(dmg * (1 - 0.75 * d / R)); }
       }
@@ -1069,6 +1242,7 @@
       this.raf = requestAnimationFrame(q => this.frame(q)); const dt = this.popup || this.paused ? 0 : Math.max(0, Math.min(0.05, (t - this.last) / 1000)); this.last = Math.max(t, this.last || 0);   // never a negative step (gravity would run backwards)   // a pick-up pop-up pauses everything
       if (this.mode === "play" && this.map && !this.pdead && !this.talk && !this.popup && !this.paused) { this.step(dt); this.zoneStep(dt); }
       if (this.mode === "play") this.talkHint();
+      if (this.mode === "play" && this.hud && this.hud.wants && this.hud.wants()) { this.clock = (this.clock || 0) + dt; this.hud.tick(this.hudWorld(), dt); }
       if (this.mode === "play") this.feel(dt); if (this.mode === "play" && this.view) this.aimStep(this.paused ? 0 : dt);
       if (this.mode === "play") { this.hold(dt); const hp = +this.T.get("player.health"); if (this.lastHp === undefined) this.lastHp = hp; if (hp < this.lastHp) { this.psound(hp <= 0 ? "deathSound" : "hurtSound"); this.flash(Math.min(0.6, 0.15 + (this.lastHp - hp) / 60)); this.trigger(hp <= 0 ? "onDeath" : "onHurt"); } this.lastHp = hp; this.reloadStep(dt); this.ammoClamp(); this.deathStep(dt); }
       const v = this.view; if (!v) return; const T = this.T, c = v.cam; v.fov = (+T.get("player.fov") || 80) * Math.PI / 180; v.vmFov = v.fov; /* the weapon in your hand keeps the normal view angle while the world zooms */ { const aw = this.aimW(); if (aw && aw.type === "sights" && this.aimK > 0) { const z = 1 + ((+T.get(aw.pre + "aimZoom") || 1) - 1) * this.aimK; v.fov = 2 * Math.atan(Math.tan(v.fov / 2) / z); } }

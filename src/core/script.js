@@ -99,6 +99,8 @@
           case "ifState": out = this.o.isState && this.o.isState(String(g("state") || "")) ? "then" : "else"; break;
           case "ifKey": out = this.o.held && this.o.held(String(g("key") || "").toLowerCase()) ? "then" : "else"; break;
           case "repeat": { const body = this.link(owner, n.id, "body"), cnt = Math.min(1000, +g("times") || 0); for (let i = 0; i < cnt && !tok.dead; i++) { await this.chain(owner, body, tok); await sleep(0, tok); } break; }
+          // anything else (keys, boss nodes…) is handled by the game: it may return the output to follow ("then" / "else")
+          default: if (this.o.custom) { const r = await this.o.custom(owner, n, g, tok); if (r) out = r; } break;
           case "forever": { const body = this.link(owner, n.id, "body"); while (!tok.dead && !this.dead) { await this.chain(owner, body, tok); await sleep(16, tok); } return; }
         }
         id = this.link(owner, n.id, out); if (++guard % 200 === 0) await sleep(0, tok);

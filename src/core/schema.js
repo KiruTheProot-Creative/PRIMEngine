@@ -30,6 +30,25 @@
     pips: { label: "Counter boxes (energy tanks, lives)", icon: "▪", props: [{ k: "bind", label: "Filled boxes = tag", type: "tagRef", refType: "number", def: "player.tanks" }, { k: "max", label: "Number of boxes = tag (empty = the tag's highest value)", type: "tagRef", refType: "number", def: "player.tanksMax" },
       { k: "box", label: "Box size", type: "number", def: 18, min: 2, max: 200, step: 1 }, { k: "gap", label: "Space between boxes", type: "number", def: 5, min: 0, max: 100, step: 1 }, { k: "perRow", label: "Boxes per row (0 = one row)", type: "number", def: 7, min: 0, max: 100, step: 1 },
       COLOR("color", "Filled color", "#ffb030"), COLOR("empty", "Empty color", "#3a2a12"), COLOR("border", "Border color", "#000000"), Object.assign({}, X, { def: -520 }), Object.assign({}, Y, { def: -272 }), OPACITY] },
+    minimap: { label: "Minimap (+ radar)", icon: "◍", props: [Object.assign({}, X, { def: 500 }), Object.assign({}, Y, { def: 230 }), W("Width", 220), Object.assign({}, H, { def: 220, label: "Height" }),
+      { k: "shape", label: "Shape", type: "choice", options: [["circle", "Round"], ["square", "Square"]], def: "circle" },
+      { k: "zoom", label: "Zoom: cells across (fewer = closer)", type: "number", def: 14, min: 3, max: 120, step: 1 },
+      { k: "turn", label: "Turns with your view (off = north is always up)", type: "bool", def: true },
+      { k: "reveal", label: "Only shows places you have been near", type: "bool", def: false }, { k: "revealRadius", label: "…how near (cells)", type: "number", def: 4, min: 1, max: 30, step: 1, showIf: ["reveal", true] },
+      { k: "items", label: "Shows pick-ups, keys, exits and doors", type: "bool", def: true },
+      { k: "enemies", label: "Shows enemies", type: "choice", options: [["radar", "Only when the radar finds them"], ["always", "Always"], ["none", "Never"]], def: "radar" },
+      { k: "radar", label: "Radar", type: "bool", def: true },
+      { k: "radarStyle", label: "Radar look", type: "choice", options: [["sweep", "Turning sweep line"], ["pulse", "Expanding ring"]], def: "sweep", showIf: ["radar", true] },
+      { k: "radarRate", label: "Radar scans per second", type: "number", def: 0.5, min: 0.05, max: 10, step: 0.05, showIf: ["radar", true] },
+      { k: "radarRange", label: "Radar range (cells)", type: "number", def: 8, min: 1, max: 100, step: 0.5, showIf: ["radar", true] },
+      COLOR("radarColor", "Radar colour", "#3aff7a"), COLOR("bg", "Background", "#06121a"), COLOR("floor", "Floor", "#173544"), COLOR("wall", "Walls", "#7df3ff"), COLOR("door", "Doors", "#ffb030"),
+      COLOR("player", "You", "#ffffff"), COLOR("enemy", "Enemies", "#ff3a3a"), COLOR("item", "Pick-ups", "#ffe066"), COLOR("border", "Border", "#7df3ff"), OPACITY] },
+    bossbar: { label: "Boss health bar", icon: "☠", props: [Object.assign({}, X, { def: 0 }), Object.assign({}, Y, { def: 300 }), W("Width", 640), Object.assign({}, H, { def: 16, label: "Bar height" }),
+      { k: "showName", label: "Shows the boss name", type: "bool", def: true }, FONT, SIZE(22), COLOR("textColor", "Name colour", "#ffffff"),
+      COLOR("color", "Health colour", "#ff3a3a"), COLOR("lagColor", "Damage trail colour", "#ffe0a0"), COLOR("bg", "Back colour", "#1a0606"), COLOR("border", "Border colour", "#000000"),
+      { k: "marks", label: "Marks where the phases start", type: "bool", def: true }, { k: "showPhase", label: "Shows the phase name", type: "bool", def: false }, OPACITY] },
+    keys: { label: "Keys you carry", icon: "⚿", props: [Object.assign({}, X, { def: -560 }), Object.assign({}, Y, { def: 180 }), { k: "box", label: "Icon size", type: "number", def: 34, min: 8, max: 200, step: 1 }, { k: "gap", label: "Space between", type: "number", def: 6, min: 0, max: 100, step: 1 },
+      { k: "vertical", label: "Stacked (top to bottom)", type: "bool", def: false }, { k: "missing", label: "Shows keys you don't have yet (faded)", type: "bool", def: false }, OPACITY] },
     bar: { label: "Bar", icon: "▬", props: [{ k: "bind", label: "Shows tag", type: "tagRef", refType: "number", def: "" }, { k: "max", label: "Full when tag (optional)", type: "tagRef", refType: "number", def: "" }, { k: "label", label: "Label", type: "string", def: "" }, FONT, SIZE(18),
       COLOR("textColor", "Label color", "#ffffff"), COLOR("color", "Fill color", "#ff4a4a"), COLOR("bg", "Back color", "#2a0d0d"), X, Y, W("Width", 260), { k: "h", label: "Height", type: "number", def: 22, min: 4, max: 200, step: 1 }, OPACITY] },
     splash: { label: "Splash", icon: "✦", props: [
@@ -205,17 +224,18 @@
     { k: "lockSound", label: "Lock on: sound when it locks", type: "asset", assetType: "sound", def: "", showIf: ["type", "weapon"], showIf2: ["aimType", "lock"], tab: "aim" },
   ];
   // ---- placeable objects (the Object Editor): doors, pick-ups, decorations. Tags prop<N>.*  They are placed in maps (map.things).
+  const EN = ["enemy", "boss"];
   S.PROP = [
     { k: "name", label: "Name", type: "string", def: "Object" },
-    { k: "type", label: "Type", type: "choice", options: [["decoration", "Decoration (just a model)"], ["door", "Door (fills a cell between walls)"], ["pickup", "Pick-up (collected by touching)"], ["enemy", "Enemy (hunts and attacks the player)"], ["exit", "Level exit (touch it to leave the level)"], ["npc", "Character (NPC: talk to it, make choices)"], ["speaker", "Speaker (plays a sound you hear around it)"], ["interactive", "Interactive (buttons, consoles, screens)"], ["checkpoint", "Checkpoint (where you respawn with the Lives system)"], ["spawner", "Spawner (keeps making new objects: enemies, pick-ups…)"]], def: "decoration" },
-    { k: "look", label: "Looks like", type: "choice", options: [["model", "3D model (FBX)"], ["sprite", "2D sprite (pictures that always face the player)"]], def: "model", showIf: ["type", ["enemy", "decoration", "pickup", "exit", "npc"]] },
+    { k: "type", label: "Type", type: "choice", options: [["decoration", "Decoration (just a model)"], ["door", "Door (fills a cell between walls)"], ["pickup", "Pick-up (collected by touching)"], ["enemy", "Enemy (hunts and attacks the player)"], ["exit", "Level exit (touch it to leave the level)"], ["npc", "Character (NPC: talk to it, make choices)"], ["speaker", "Speaker (plays a sound you hear around it)"], ["interactive", "Interactive (buttons, consoles, screens)"], ["checkpoint", "Checkpoint (where you respawn with the Lives system)"], ["spawner", "Spawner (keeps making new objects: enemies, pick-ups…)"], ["key", "Key (opens locked doors)"], ["boss", "Boss (an enemy with phases and a health bar)"]], def: "decoration" },
+    { k: "look", label: "Looks like", type: "choice", options: [["model", "3D model (FBX)"], ["sprite", "2D sprite (pictures that always face the player)"]], def: "model", showIf: ["type", ["enemy", "boss", "decoration", "pickup", "key", "exit", "npc"]] },
     { k: "asset", label: "Model (FBX)", type: "asset", assetType: "model", def: "", showIf: ["look", "model"] },
     // 2D sprites: each picture holds the frames of one animation side by side (a strip). They always turn to face the player.
     { k: "spriteIdle", label: "Standing picture / animation strip", type: "asset", assetType: "image", def: "", showIf: ["look", "sprite"] }, NUM("spriteIdleFrames", "Frames in it", 1, 1, 64, 1, { showIf: ["look", "sprite"] }),
-    { k: "spriteWalk", label: "Walking strip", type: "asset", assetType: "image", def: "", showIf: ["look", "sprite"], showIf2: ["type", ["enemy", "npc"]] }, NUM("spriteWalkFrames", "Frames in it", 1, 1, 64, 1, { showIf: ["look", "sprite"], showIf2: ["type", ["enemy", "npc"]] }),
-    { k: "spriteAttack", label: "Attack strip", type: "asset", assetType: "image", def: "", showIf: ["look", "sprite"], showIf2: ["type", "enemy"] }, NUM("spriteAttackFrames", "Frames in it", 1, 1, 64, 1, { showIf: ["look", "sprite"], showIf2: ["type", "enemy"] }),
-    { k: "spriteHurt", label: "Hurt strip", type: "asset", assetType: "image", def: "", showIf: ["look", "sprite"], showIf2: ["type", "enemy"] }, NUM("spriteHurtFrames", "Frames in it", 1, 1, 64, 1, { showIf: ["look", "sprite"], showIf2: ["type", "enemy"] }),
-    { k: "spriteDeath", label: "Death strip (its last frame stays as the body)", type: "asset", assetType: "image", def: "", showIf: ["look", "sprite"], showIf2: ["type", "enemy"] }, NUM("spriteDeathFrames", "Frames in it", 1, 1, 64, 1, { showIf: ["look", "sprite"], showIf2: ["type", "enemy"] }),
+    { k: "spriteWalk", label: "Walking strip", type: "asset", assetType: "image", def: "", showIf: ["look", "sprite"], showIf2: ["type", ["enemy", "boss", "npc"]] }, NUM("spriteWalkFrames", "Frames in it", 1, 1, 64, 1, { showIf: ["look", "sprite"], showIf2: ["type", ["enemy", "boss", "npc"]] }),
+    { k: "spriteAttack", label: "Attack strip", type: "asset", assetType: "image", def: "", showIf: ["look", "sprite"], showIf2: ["type", EN] }, NUM("spriteAttackFrames", "Frames in it", 1, 1, 64, 1, { showIf: ["look", "sprite"], showIf2: ["type", EN] }),
+    { k: "spriteHurt", label: "Hurt strip", type: "asset", assetType: "image", def: "", showIf: ["look", "sprite"], showIf2: ["type", EN] }, NUM("spriteHurtFrames", "Frames in it", 1, 1, 64, 1, { showIf: ["look", "sprite"], showIf2: ["type", EN] }),
+    { k: "spriteDeath", label: "Death strip (its last frame stays as the body)", type: "asset", assetType: "image", def: "", showIf: ["look", "sprite"], showIf2: ["type", EN] }, NUM("spriteDeathFrames", "Frames in it", 1, 1, 64, 1, { showIf: ["look", "sprite"], showIf2: ["type", EN] }),
     NUM("spriteFps", "Animation speed (frames per second)", 8, 1, 60, 1, { showIf: ["look", "sprite"] }), NUM("spriteHeight", "Sprite height (units, 128 = a story)", 110, 4, 1024, 1, { showIf: ["look", "sprite"] }),
     NUM("scale", "Scale", 1, 0.001, 100, 0.001), NUM("rx", "Rotate X", 0, -180, 180, 1), NUM("ry", "Rotate Y", 0, -180, 180, 1), NUM("rz", "Rotate Z", 0, -180, 180, 1),
     NUM("ox", "Move X (sideways)", 0, -500, 500, 0.5), NUM("oy", "Move Y (up)", 0, -500, 500, 0.5), NUM("oz", "Move Z (toward the front)", 0, -500, 500, 0.5),
@@ -227,57 +247,57 @@
     { k: "autoClose", label: "Closes again by itself", type: "bool", def: true, showIf: ["type", "door"] }, NUM("closeAfter", "Closes after (seconds)", 3, 0.5, 60, 0.5, { showIf: ["type", "door"], showIf2: ["autoClose", true] }),
     { k: "openSound", label: "Opening sound", type: "asset", assetType: "sound", def: "", showIf: ["type", "door"] }, { k: "closeSound", label: "Closing sound", type: "asset", assetType: "sound", def: "", showIf: ["type", "door"] },
     { k: "giveTag", label: "Changes this number tag", type: "tagRef", refType: "number", def: "", showIf: ["type", "pickup"] }, NUM("giveAmount", "By (negative = subtract)", 10, -100000, 100000, 1, { showIf: ["type", "pickup"] }),
-    NUM("pickRadius", "Pick-up distance (units)", 28, 8, 200, 1, { showIf: ["type", "pickup"] }), { k: "pickSound", label: "Pick-up sound", type: "asset", assetType: "sound", def: "", showIf: ["type", "pickup"] },
+    NUM("pickRadius", "Pick-up distance (units)", 28, 8, 200, 1, { showIf: ["type", ["pickup", "key"]] }), { k: "pickSound", label: "Pick-up sound", type: "asset", assetType: "sound", def: "", showIf: ["type", ["pickup", "key"]] },
     // material (Material foldout of the Object Editor): base colour map + emission
     { k: "matTexture", label: "Base color map (replaces the model's own picture)", type: "asset", assetType: "image", def: "" },
     { k: "matEmitMap", label: "Emission map (bright parts glow; empty = the whole object glows)", type: "asset", assetType: "image", def: "" }, NUM("matEmit", "Emission strength (0 = no glow)", 0, 0, 8, 0.05),
     // enemy
-    NUM("health", "Health", 100, 1, 100000, 1, { showIf: ["type", "enemy"] }), NUM("speed", "Walking speed (units / second)", 150, 0, 2000, 5, { showIf: ["type", "enemy"] }),
-    NUM("radius", "Body width (radius, units)", 22, 4, 200, 1, { showIf: ["type", ["enemy", "npc"]] }), NUM("height", "Body height (units, 64 = 1 m)", 110, 10, 600, 1, { showIf: ["type", "enemy"] }),
-    NUM("sight", "Sees the player from (units)", 900, 50, 10000, 10, { showIf: ["type", "enemy"] }),
+    NUM("health", "Health", 100, 1, 100000, 1, { showIf: ["type", EN] }), NUM("speed", "Walking speed (units / second)", 150, 0, 2000, 5, { showIf: ["type", EN] }),
+    NUM("radius", "Body width (radius, units)", 22, 4, 200, 1, { showIf: ["type", ["enemy", "boss", "npc"]] }), NUM("height", "Body height (units, 64 = 1 m)", 110, 10, 600, 1, { showIf: ["type", EN] }),
+    NUM("sight", "Sees the player from (units)", 900, 50, 10000, 10, { showIf: ["type", EN] }),
     // how it moves: chase (waits, then hunts you), path (walks a path drawn on the map), stationary (stands still or hangs from the ceiling)
-    { k: "behavior", label: "Behaviour", type: "choice", options: [["chase", "Normal: waits until it sees you, then hunts you"], ["path", "Patrol: follows a path drawn on the map"], ["stationary", "Stationary: stands still, or hangs from the ceiling"]], def: "chase", showIf: ["type", "enemy"] },
-    { k: "crawl", label: "Can walk on walls and ceilings (climbs when a wall is in its way, drops on you from above)", type: "bool", def: false, showIf: ["type", "enemy"], showIf2: ["behavior", "chase"] },
-    { k: "detect", label: "Notices the player", type: "choice", options: [["sees", "Yes: sees you and reacts"], ["blind", "No: never notices you (a trap)"]], def: "sees", showIf: ["type", "enemy"] },
-    { k: "blindMode", label: "Without noticing you it", type: "choice", options: [["shoot", "Fires on a timer, straight ahead (or down from a ceiling)"], ["touch", "Is a damage hitbox: touching it hurts"], ["both", "Both"]], def: "shoot", showIf: ["type", "enemy"], showIf2: ["detect", "blind"] },
-    { k: "pathChase", label: "Leaves the path to hunt you once it sees you", type: "bool", def: true, showIf: ["type", "enemy"], showIf2: ["behavior", "path"] },
-    NUM("pathWait", "Waits at each point (s)", 0, 0, 30, 0.1, { showIf: ["type", "enemy"], showIf2: ["behavior", "path"] }),
-    NUM("pathFov", "While patrolling it only sees you in front (view width in degrees, 360 = all around)", 140, 10, 360, 5, { showIf: ["type", "enemy"], showIf2: ["behavior", "path"] }),
-    NUM("pathGiveUp", "Goes back to its path after losing you for (s)", 5, 0.5, 120, 0.5, { showIf: ["type", "enemy"], showIf2: ["behavior", "path"] }),
-    { k: "mount", label: "Where it sits", type: "choice", options: [["floor", "On the floor (a turret)"], ["ceiling", "On the nearest ceiling above it"]], def: "floor", showIf: ["type", "enemy"], showIf2: ["behavior", "stationary"] },
-    { k: "turn", label: "Turns to face you", type: "bool", def: true, showIf: ["type", "enemy"], showIf2: ["behavior", "stationary"] },
-    { k: "ceilFlip", label: "Hang upside down (model turned over)", type: "bool", def: true, showIf: ["type", "enemy"], showIf2: ["mount", "ceiling"], also: [["behavior", "stationary"]] },
-    NUM("coneAngle", "Detection cone: width (degrees from straight down)", 25, 2, 85, 1, { showIf: ["type", "enemy"], showIf2: ["mount", "ceiling"], also: [["behavior", "stationary"]] }),
-    NUM("coneRange", "Detection cone: reach (units down, 128 = a story)", 400, 32, 5000, 8, { showIf: ["type", "enemy"], showIf2: ["mount", "ceiling"], also: [["behavior", "stationary"]] }),
-    { k: "ceilAction", label: "When you walk under it", type: "choice", options: [["shoot", "Shoots down at you (its Attack settings, projectile if melee)"], ["drop", "Drops down (and maybe turns into another enemy)"], ["selfdestruct", "Self-destructs (explodes)"]], def: "shoot", showIf: ["type", "enemy"], showIf2: ["mount", "ceiling"], also: [["behavior", "stationary"]] },
-    { k: "dropInto", label: "After landing it becomes (empty = stays itself and hunts you)", type: "propRef", refType: "enemy", def: "", showIf: ["type", "enemy"], showIf2: ["ceilAction", "drop"], also: [["behavior", "stationary"], ["mount", "ceiling"]] },
-    { k: "sdFall", label: "Falls first, explodes when it lands", type: "bool", def: false, showIf: ["type", "enemy"], showIf2: ["ceilAction", "selfdestruct"], also: [["behavior", "stationary"], ["mount", "ceiling"]] },
-    NUM("fuse", "Fuse before exploding (s, it blinks)", 0.6, 0, 10, 0.05, { showIf: ["type", "enemy"], showIf2: ["ceilAction", "selfdestruct"], also: [["behavior", "stationary"], ["mount", "ceiling"]] }),
-    { k: "dropSound", label: "Sound when it lets go / arms itself", type: "asset", assetType: "sound", def: "", showIf: ["type", "enemy"], showIf2: ["mount", "ceiling"], also: [["behavior", "stationary"]] },
+    { k: "behavior", label: "Behaviour", type: "choice", options: [["chase", "Normal: waits until it sees you, then hunts you"], ["path", "Patrol: follows a path drawn on the map"], ["stationary", "Stationary: stands still, or hangs from the ceiling"]], def: "chase", showIf: ["type", EN] },
+    { k: "crawl", label: "Can walk on walls and ceilings (climbs when a wall is in its way, drops on you from above)", type: "bool", def: false, showIf: ["type", EN], showIf2: ["behavior", "chase"] },
+    { k: "detect", label: "Notices the player", type: "choice", options: [["sees", "Yes: sees you and reacts"], ["blind", "No: never notices you (a trap)"]], def: "sees", showIf: ["type", EN] },
+    { k: "blindMode", label: "Without noticing you it", type: "choice", options: [["shoot", "Fires on a timer, straight ahead (or down from a ceiling)"], ["touch", "Is a damage hitbox: touching it hurts"], ["both", "Both"]], def: "shoot", showIf: ["type", EN], showIf2: ["detect", "blind"] },
+    { k: "pathChase", label: "Leaves the path to hunt you once it sees you", type: "bool", def: true, showIf: ["type", EN], showIf2: ["behavior", "path"] },
+    NUM("pathWait", "Waits at each point (s)", 0, 0, 30, 0.1, { showIf: ["type", EN], showIf2: ["behavior", "path"] }),
+    NUM("pathFov", "While patrolling it only sees you in front (view width in degrees, 360 = all around)", 140, 10, 360, 5, { showIf: ["type", EN], showIf2: ["behavior", "path"] }),
+    NUM("pathGiveUp", "Goes back to its path after losing you for (s)", 5, 0.5, 120, 0.5, { showIf: ["type", EN], showIf2: ["behavior", "path"] }),
+    { k: "mount", label: "Where it sits", type: "choice", options: [["floor", "On the floor (a turret)"], ["ceiling", "On the nearest ceiling above it"]], def: "floor", showIf: ["type", EN], showIf2: ["behavior", "stationary"] },
+    { k: "turn", label: "Turns to face you", type: "bool", def: true, showIf: ["type", EN], showIf2: ["behavior", "stationary"] },
+    { k: "ceilFlip", label: "Hang upside down (model turned over)", type: "bool", def: true, showIf: ["type", EN], showIf2: ["mount", "ceiling"], also: [["behavior", "stationary"]] },
+    NUM("coneAngle", "Detection cone: width (degrees from straight down)", 25, 2, 85, 1, { showIf: ["type", EN], showIf2: ["mount", "ceiling"], also: [["behavior", "stationary"]] }),
+    NUM("coneRange", "Detection cone: reach (units down, 128 = a story)", 400, 32, 5000, 8, { showIf: ["type", EN], showIf2: ["mount", "ceiling"], also: [["behavior", "stationary"]] }),
+    { k: "ceilAction", label: "When you walk under it", type: "choice", options: [["shoot", "Shoots down at you (its Attack settings, projectile if melee)"], ["drop", "Drops down (and maybe turns into another enemy)"], ["selfdestruct", "Self-destructs (explodes)"]], def: "shoot", showIf: ["type", EN], showIf2: ["mount", "ceiling"], also: [["behavior", "stationary"]] },
+    { k: "dropInto", label: "After landing it becomes (empty = stays itself and hunts you)", type: "propRef", refType: "enemy", def: "", showIf: ["type", EN], showIf2: ["ceilAction", "drop"], also: [["behavior", "stationary"], ["mount", "ceiling"]] },
+    { k: "sdFall", label: "Falls first, explodes when it lands", type: "bool", def: false, showIf: ["type", EN], showIf2: ["ceilAction", "selfdestruct"], also: [["behavior", "stationary"], ["mount", "ceiling"]] },
+    NUM("fuse", "Fuse before exploding (s, it blinks)", 0.6, 0, 10, 0.05, { showIf: ["type", EN], showIf2: ["ceilAction", "selfdestruct"], also: [["behavior", "stationary"], ["mount", "ceiling"]] }),
+    { k: "dropSound", label: "Sound when it lets go / arms itself", type: "asset", assetType: "sound", def: "", showIf: ["type", EN], showIf2: ["mount", "ceiling"], also: [["behavior", "stationary"]] },
     // blast (self-destruct, and the "pieces explode" death)
-    NUM("blastRadius", "Blast radius (units, 0 = harmless)", 160, 0, 3000, 4, { showIf: ["type", "enemy"] }), NUM("blastDamage", "Blast damage (in the middle)", 30, 0, 100000, 1, { showIf: ["type", "enemy"] }),
-    { k: "blastColor", label: "Explosion colour", type: "color", def: "#ff8a2a", showIf: ["type", "enemy"] }, NUM("blastCount", "Explosion particles", 40, 0, 200, 1, { showIf: ["type", "enemy"] }),
-    { k: "blastSphere", label: "Expanding explosion sphere (grows to the blast radius)", type: "bool", def: true, showIf: ["type", "enemy"] },
-    NUM("blastSphereTime", "Sphere: how long it grows (s)", 0.45, 0.05, 5, 0.05, { showIf: ["type", "enemy"], showIf2: ["blastSphere", true] }),
-    { k: "blastSphereColor1", label: "Sphere: middle colour", type: "color", def: "#ffe08a", showIf: ["type", "enemy"], showIf2: ["blastSphere", true] }, { k: "blastSphereColor2", label: "Sphere: edge colour", type: "color", def: "#ff4a1a", showIf: ["type", "enemy"], showIf2: ["blastSphere", true] },
-    { k: "blastSphereAnim", label: "Sphere: animated gradient", type: "choice", options: [["none", "None (middle to edge)"], ["bands", "Rings rolling over it"], ["swirl", "Swirl"], ["pulse", "Pulse (colors swap)"], ["noise", "Flicker (energy noise)"]], def: "bands", showIf: ["type", "enemy"], showIf2: ["blastSphere", true] },
-    NUM("blastSphereSpeed", "Sphere: animation speed", 2, 0, 20, 0.1, { showIf: ["type", "enemy"], showIf2: ["blastSphere", true] }), NUM("blastSphereGlow", "Sphere: glow", 1.2, 0, 6, 0.05, { showIf: ["type", "enemy"], showIf2: ["blastSphere", true] }), { k: "blastSound", label: "Explosion sound", type: "asset", assetType: "sound", def: "", showIf: ["type", "enemy"] },
-    { k: "attack", label: "Attack", type: "choice", options: [["melee", "Melee (hits up close)"], ["hitscan", "Gun (instant hit)"], ["projectile", "Projectile (a flying ball you can dodge)"]], def: "melee", showIf: ["type", "enemy"] },
-    NUM("attackRange", "Attacks from (units)", 70, 10, 5000, 5, { showIf: ["type", "enemy"] }), NUM("damage", "Damage per hit", 10, 0, 100000, 1, { showIf: ["type", "enemy"] }),
-    NUM("attackRate", "Time between attacks (s)", 1.2, 0.1, 30, 0.05, { showIf: ["type", "enemy"] }), NUM("attackDelay", "Hit lands after (s, into the attack)", 0.3, 0, 10, 0.05, { showIf: ["type", "enemy"] }),
-    NUM("projSpeed", "Projectile speed (units / s)", 600, 50, 5000, 10, { showIf: ["type", "enemy"], showIf2: ["attack", "projectile"] }), NUM("projSize", "Projectile size", 6, 1, 100, 0.5, { showIf: ["type", "enemy"], showIf2: ["attack", "projectile"] }),
-    { k: "projColor", label: "Projectile colour", type: "color", def: "#ff6a2a", showIf: ["type", "enemy"] },
-    ANIM("walkAnim", "Walking animation", { showIf: ["type", "enemy"] }), ANIM("attackAnim", "Attack animation", { showIf: ["type", "enemy"] }), ANIM("hurtAnim", "Hurt animation", { showIf: ["type", "enemy"] }), ANIM("deathAnim", "Death animation", { showIf: ["type", "enemy"] }),
-    { k: "deathStyle", label: "How it dies", type: "choice", options: [["anim", "Death animation"], ["slice", "Sliced into pieces (3D models)"]], def: "anim", showIf: ["type", "enemy"] },
-    NUM("slicePieces", "Pieces", 4, 2, 8, 1, { showIf: ["type", "enemy"], showIf2: ["deathStyle", "slice"] }), NUM("sliceForce", "How hard the pieces fly apart", 260, 0, 3000, 10, { showIf: ["type", "enemy"], showIf2: ["deathStyle", "slice"] }),
-    { k: "sliceInside", label: "Colour of the cut faces", type: "color", def: "#7a1414", showIf: ["type", "enemy"], showIf2: ["deathStyle", "slice"] },
-    { k: "sliceBlast", label: "Then the pieces explode", type: "bool", def: true, showIf: ["type", "enemy"], showIf2: ["deathStyle", "slice"] },
-    NUM("sliceTime", "Pieces explode after (s) / stay for (s) without exploding", 0.7, 0.05, 60, 0.05, { showIf: ["type", "enemy"], showIf2: ["deathStyle", "slice"] }),
-    { k: "sliceSound", label: "Sound when it is sliced", type: "asset", assetType: "sound", def: "", showIf: ["type", "enemy"], showIf2: ["deathStyle", "slice"] },
-    { k: "corpse", label: "Body stays after death", type: "bool", def: true, showIf: ["type", "enemy"] },
-    { k: "sightSound", label: "Sound when it spots you", type: "asset", assetType: "sound", def: "", showIf: ["type", "enemy"] }, { k: "attackSound", label: "Attack sound", type: "asset", assetType: "sound", def: "", showIf: ["type", "enemy"] },
-    { k: "hurtSound", label: "Hurt sound", type: "asset", assetType: "sound", def: "", showIf: ["type", "enemy"] }, { k: "deathSound", label: "Death sound", type: "asset", assetType: "sound", def: "", showIf: ["type", "enemy"] },
-    { k: "killTag", label: "When killed, change this number tag (e.g. a score)", type: "tagRef", refType: "number", def: "", showIf: ["type", "enemy"] }, NUM("killAmount", "By", 1, -100000, 100000, 1, { showIf: ["type", "enemy"] }),
+    NUM("blastRadius", "Blast radius (units, 0 = harmless)", 160, 0, 3000, 4, { showIf: ["type", EN] }), NUM("blastDamage", "Blast damage (in the middle)", 30, 0, 100000, 1, { showIf: ["type", EN] }),
+    { k: "blastColor", label: "Explosion colour", type: "color", def: "#ff8a2a", showIf: ["type", EN] }, NUM("blastCount", "Explosion particles", 40, 0, 200, 1, { showIf: ["type", EN] }),
+    { k: "blastSphere", label: "Expanding explosion sphere (grows to the blast radius)", type: "bool", def: true, showIf: ["type", EN] },
+    NUM("blastSphereTime", "Sphere: how long it grows (s)", 0.45, 0.05, 5, 0.05, { showIf: ["type", EN], showIf2: ["blastSphere", true] }),
+    { k: "blastSphereColor1", label: "Sphere: middle colour", type: "color", def: "#ffe08a", showIf: ["type", EN], showIf2: ["blastSphere", true] }, { k: "blastSphereColor2", label: "Sphere: edge colour", type: "color", def: "#ff4a1a", showIf: ["type", EN], showIf2: ["blastSphere", true] },
+    { k: "blastSphereAnim", label: "Sphere: animated gradient", type: "choice", options: [["none", "None (middle to edge)"], ["bands", "Rings rolling over it"], ["swirl", "Swirl"], ["pulse", "Pulse (colors swap)"], ["noise", "Flicker (energy noise)"]], def: "bands", showIf: ["type", EN], showIf2: ["blastSphere", true] },
+    NUM("blastSphereSpeed", "Sphere: animation speed", 2, 0, 20, 0.1, { showIf: ["type", EN], showIf2: ["blastSphere", true] }), NUM("blastSphereGlow", "Sphere: glow", 1.2, 0, 6, 0.05, { showIf: ["type", EN], showIf2: ["blastSphere", true] }), { k: "blastSound", label: "Explosion sound", type: "asset", assetType: "sound", def: "", showIf: ["type", EN] },
+    { k: "attack", label: "Attack", type: "choice", options: [["melee", "Melee (hits up close)"], ["hitscan", "Gun (instant hit)"], ["projectile", "Projectile (a flying ball you can dodge)"]], def: "melee", showIf: ["type", EN] },
+    NUM("attackRange", "Attacks from (units)", 70, 10, 5000, 5, { showIf: ["type", EN] }), NUM("damage", "Damage per hit", 10, 0, 100000, 1, { showIf: ["type", EN] }),
+    NUM("attackRate", "Time between attacks (s)", 1.2, 0.1, 30, 0.05, { showIf: ["type", EN] }), NUM("attackDelay", "Hit lands after (s, into the attack)", 0.3, 0, 10, 0.05, { showIf: ["type", EN] }),
+    NUM("projSpeed", "Projectile speed (units / s)", 600, 50, 5000, 10, { showIf: ["type", EN], showIf2: ["attack", "projectile"] }), NUM("projSize", "Projectile size", 6, 1, 100, 0.5, { showIf: ["type", EN], showIf2: ["attack", "projectile"] }),
+    { k: "projColor", label: "Projectile colour", type: "color", def: "#ff6a2a", showIf: ["type", EN] },
+    ANIM("walkAnim", "Walking animation", { showIf: ["type", EN] }), ANIM("attackAnim", "Attack animation", { showIf: ["type", EN] }), ANIM("hurtAnim", "Hurt animation", { showIf: ["type", EN] }), ANIM("deathAnim", "Death animation", { showIf: ["type", EN] }),
+    { k: "deathStyle", label: "How it dies", type: "choice", options: [["anim", "Death animation"], ["slice", "Sliced into pieces (3D models)"]], def: "anim", showIf: ["type", EN] },
+    NUM("slicePieces", "Pieces", 4, 2, 8, 1, { showIf: ["type", EN], showIf2: ["deathStyle", "slice"] }), NUM("sliceForce", "How hard the pieces fly apart", 260, 0, 3000, 10, { showIf: ["type", EN], showIf2: ["deathStyle", "slice"] }),
+    { k: "sliceInside", label: "Colour of the cut faces", type: "color", def: "#7a1414", showIf: ["type", EN], showIf2: ["deathStyle", "slice"] },
+    { k: "sliceBlast", label: "Then the pieces explode", type: "bool", def: true, showIf: ["type", EN], showIf2: ["deathStyle", "slice"] },
+    NUM("sliceTime", "Pieces explode after (s) / stay for (s) without exploding", 0.7, 0.05, 60, 0.05, { showIf: ["type", EN], showIf2: ["deathStyle", "slice"] }),
+    { k: "sliceSound", label: "Sound when it is sliced", type: "asset", assetType: "sound", def: "", showIf: ["type", EN], showIf2: ["deathStyle", "slice"] },
+    { k: "corpse", label: "Body stays after death", type: "bool", def: true, showIf: ["type", EN] },
+    { k: "sightSound", label: "Sound when it spots you", type: "asset", assetType: "sound", def: "", showIf: ["type", EN] }, { k: "attackSound", label: "Attack sound", type: "asset", assetType: "sound", def: "", showIf: ["type", EN] },
+    { k: "hurtSound", label: "Hurt sound", type: "asset", assetType: "sound", def: "", showIf: ["type", EN] }, { k: "deathSound", label: "Death sound", type: "asset", assetType: "sound", def: "", showIf: ["type", EN] },
+    { k: "killTag", label: "When killed, change this number tag (e.g. a score)", type: "tagRef", refType: "number", def: "", showIf: ["type", EN] }, NUM("killAmount", "By", 1, -100000, 100000, 1, { showIf: ["type", EN] }),
     // level exit
     { k: "exitTo", label: "Leads to", type: "choice", options: [["map", "Another map"], ["screen", "A screen (e.g. a 'You win' screen)"]], def: "map", showIf: ["type", "exit"] },
     { k: "exitMap", label: "Map", type: "mapRef", def: "", showIf: ["type", "exit"], showIf2: ["exitTo", "map"] }, { k: "exitScreen", label: "Screen", type: "screenRef", def: "", showIf: ["type", "exit"], showIf2: ["exitTo", "screen"] },
@@ -286,7 +306,7 @@
   S.defineProp = (project, p, over) => { for (const pr of S.PROP) { const r = rec(pr, "props", p.id); if (pr.type === "anim") r.modelTag = p.id + ".asset"; if (over && pr.k in over) r.value = over[pr.k]; project.tags[p.id + "." + pr.k] = r; } };
   S.addProp = (project, over) => { const p = { id: S.uid("prop", project.props.map(x => x.id)) }; project.props.push(p); S.defineProp(project, p, Object.assign({ name: p.id }, over || {})); return p; };
   // ---- objects that give off light (lamps, torches, glowing crystals...): a point light above the object, optionally casting real-time shadows
-  S.PROP.push({ k: "lightOn", label: "Gives off light", type: "bool", def: false, showIf: ["type", ["decoration", "pickup", "enemy", "exit", "npc", "interactive", "checkpoint"]] },
+  S.PROP.push({ k: "lightOn", label: "Gives off light", type: "bool", def: false, showIf: ["type", ["decoration", "pickup", "key", "enemy", "boss", "exit", "npc", "interactive", "checkpoint"]] },
     { k: "lightColor", label: "Light colour", type: "color", def: "#ffd9a0", showIf: ["lightOn", true] }, NUM("lightIntensity", "Light brightness", 1.6, 0, 10, 0.05, { showIf: ["lightOn", true] }),
     NUM("lightRange", "Light reach (units, 128 = a cell)", 420, 32, 4000, 8, { showIf: ["lightOn", true] }), NUM("lightHeight", "Light height above the floor (units)", 80, -64, 512, 1, { showIf: ["lightOn", true] }),
     NUM("lightFlicker", "Flicker (0 = steady, 1 = like a torch)", 0, 0, 1, 0.01, { showIf: ["lightOn", true] }), { k: "lightShadows", label: "Casts shadows", type: "bool", def: true, showIf: ["lightOn", true] });
@@ -305,18 +325,73 @@
     { k: "spawnSound", label: "Sound when something appears", type: "asset", assetType: "sound", def: "", showIf: ["type", "spawner"] },
     { k: "spawnNeedTag", label: "Only while this tag…", type: "tagRef", refType: "any", def: "", showIf: ["type", "spawner"] }, { k: "spawnNeedOp", label: "is", type: "choice", options: [["=", "equal to"], ["!=", "not equal to"], [">", "greater than"], ["<", "less than"], [">=", "at least"], ["<=", "at most"]], def: "=", showIf: ["type", "spawner"] }, { k: "spawnNeedVal", label: "this value", type: "string", def: "yes", showIf: ["type", "spawner"] },
     { k: "spawnShow", label: "Model visible in the game", type: "bool", def: false, showIf: ["type", "spawner"] });
-  S.PROP.push({ k: "popupOn", label: "Show a pop-up when picked up (pauses the game)", type: "bool", def: false, showIf: ["type", "pickup"] },
-    { k: "popupTitle", label: "Pop-up title (empty = the object's name)", type: "string", def: "", showIf: ["type", "pickup"], showIf2: ["popupOn", true] },
-    { k: "popupText", label: "Pop-up text", type: "string", def: "", showIf: ["type", "pickup"], showIf2: ["popupOn", true] },
-    { k: "popupImage", label: "Pop-up picture", type: "asset", assetType: "image", def: "", showIf: ["type", "pickup"], showIf2: ["popupOn", true] },
-    { k: "popupFirst", label: "Only the first time you get this kind of item", type: "bool", def: true, showIf: ["type", "pickup"], showIf2: ["popupOn", true] },
-    { k: "popupSound", label: "Pop-up sound (fanfare)", type: "asset", assetType: "sound", def: "", showIf: ["type", "pickup"], showIf2: ["popupOn", true] },
+  S.PROP.push({ k: "popupOn", label: "Show a pop-up when picked up (pauses the game)", type: "bool", def: false, showIf: ["type", ["pickup", "key"]] },
+    { k: "popupTitle", label: "Pop-up title (empty = the object's name)", type: "string", def: "", showIf: ["type", ["pickup", "key"]], showIf2: ["popupOn", true] },
+    { k: "popupText", label: "Pop-up text", type: "string", def: "", showIf: ["type", ["pickup", "key"]], showIf2: ["popupOn", true] },
+    { k: "popupImage", label: "Pop-up picture", type: "asset", assetType: "image", def: "", showIf: ["type", ["pickup", "key"]], showIf2: ["popupOn", true] },
+    { k: "popupFirst", label: "Only the first time you get this kind of item", type: "bool", def: true, showIf: ["type", ["pickup", "key"]], showIf2: ["popupOn", true] },
+    { k: "popupSound", label: "Pop-up sound (fanfare)", type: "asset", assetType: "sound", def: "", showIf: ["type", ["pickup", "key"]], showIf2: ["popupOn", true] },
     NUM("cpRadius", "Touch radius (units, 128 = a cell)", 64, 8, 1000, 4, { showIf: ["type", "checkpoint"] }), { k: "cpHeal", label: "Refills health", type: "bool", def: true, showIf: ["type", "checkpoint"] },
     { k: "cpMessage", label: "Message when reached", type: "string", def: "Checkpoint", showIf: ["type", "checkpoint"] }, { k: "cpSound", label: "Sound when reached", type: "asset", assetType: "sound", def: "", showIf: ["type", "checkpoint"] });
   S.PROP.push({ k: "useMode", label: "How it is used", type: "choice", options: [["key", "Look at a hitbox and press the Interact key (E)"], ["aim", "Aim the crosshair at a hitbox and click"], ["cursor", "Screen: step close, the mouse moves a cursor, click hitboxes"]], def: "key", showIf: ["type", "interactive"] },
     NUM("useRange", "Can be used from (units, 128 = a cell)", 120, 16, 1000, 4, { showIf: ["type", "interactive"] }),
     { k: "useHint", label: "Hint text (empty = the hitbox name)", type: "string", def: "", showIf: ["type", "interactive"] },
     { k: "showBoxes", label: "Show the hitboxes while playing (for testing)", type: "bool", def: false, showIf: ["type", "interactive"] });
+  // ---- keys: a key object is picked up like a pick-up; while you hold it its live tag <key>.have is yes. Doors can need a key (or a tag) to open.
+  const OPS = [["=", "equal to"], ["!=", "not equal to"], [">", "greater than"], ["<", "less than"], [">=", "at least"], ["<=", "at most"]];
+  S.PROP.push({ k: "keyName", label: "Key name (shown in messages)", type: "string", def: "Red key", showIf: ["type", "key"] },
+    { k: "keyColor", label: "Key colour (map, minimap, HUD)", type: "color", def: "#ff3a3a", showIf: ["type", "key"] },
+    { k: "keyIcon", label: "HUD picture (empty = a key symbol in the key colour)", type: "asset", assetType: "image", def: "", showIf: ["type", "key"] },
+    { k: "keyKeep", label: "Kept when you go to the next level", type: "bool", def: false, showIf: ["type", "key"] },
+    { k: "lockKey", label: "Locked: needs this key", type: "propRef", refType: "key", def: "", showIf: ["type", "door"] },
+    { k: "lockUse", label: "The key is used up when the door opens", type: "bool", def: false, showIf: ["type", "door"] },
+    { k: "lockNeedTag", label: "Locked: only opens while this tag…", type: "tagRef", refType: "any", def: "", showIf: ["type", "door"] }, { k: "lockNeedOp", label: "is", type: "choice", options: OPS, def: "=", showIf: ["type", "door"] }, { k: "lockNeedVal", label: "this value", type: "string", def: "yes", showIf: ["type", "door"] },
+    { k: "lockMsg", label: "Message when locked ({key} = the key's name)", type: "string", def: "Locked. You need the {key}.", showIf: ["type", "door"] },
+    { k: "lockSound", label: "Sound when locked", type: "asset", assetType: "sound", def: "", showIf: ["type", "door"] },
+    { k: "shotFirst", label: "First shot that opens it must be", type: "choice", options: [["any", "any shot"], ["weapon", "from a certain weapon (e.g. a missile)"], ["charged", "a charged shot"]], def: "any", showIf: ["type", "door"], showIf2: ["openMode", "shot"] },
+    { k: "shotWeapon", label: "That weapon", type: "weaponRef", def: "", showIf: ["type", "door"], showIf2: ["shotFirst", "weapon"] },
+    { k: "shotAfter", label: "After that first shot it opens with any weapon", type: "bool", def: true, showIf: ["type", "door"], showIf2: ["openMode", "shot"] },
+    { k: "shotMsg", label: "Message when the wrong shot hits it (empty = none)", type: "string", def: "", showIf: ["type", "door"], showIf2: ["openMode", "shot"] });
+  // ---- bosses: an enemy (all the enemy settings) + a fight (health bar, intro, music, win) + phases (structure prop.phases = [{id}], values = tags <prop>.ph.<phase>.*)
+  const BS = { showIf: ["type", "boss"] }, BX = (o) => Object.assign({ showIf: ["type", "boss"] }, o || {});
+  S.PROP.push({ k: "bossName", label: "Boss name (health bar)", type: "string", def: "", showIf: ["type", "boss"] },
+    { k: "bossBar", label: "Show the boss health bar", type: "bool", def: true, showIf: ["type", "boss"] },
+    { k: "bossStart", label: "The fight starts", type: "choice", options: [["sees", "When it sees you"], ["tag", "When a tag…"]], def: "sees", showIf: ["type", "boss"] },
+    { k: "bossStartTag", label: "…this tag", type: "tagRef", refType: "any", def: "", showIf: ["type", "boss"], showIf2: ["bossStart", "tag"] }, { k: "bossStartOp", label: "is", type: "choice", options: OPS, def: "=", showIf: ["type", "boss"], showIf2: ["bossStart", "tag"] }, { k: "bossStartVal", label: "this value", type: "string", def: "yes", showIf: ["type", "boss"], showIf2: ["bossStart", "tag"] },
+    NUM("bossIntroTime", "Intro: waits before attacking (s, can't be hurt)", 1.5, 0, 30, 0.1, BS), { k: "bossIntroMsg", label: "Intro message (empty = none)", type: "string", def: "", showIf: ["type", "boss"] },
+    { k: "bossIntroSound", label: "Intro sound (roar)", type: "asset", assetType: "sound", def: "", showIf: ["type", "boss"] },
+    { k: "bossMusic", label: "Fight music (loops until it is defeated)", type: "asset", assetType: "sound", def: "", showIf: ["type", "boss"] }, NUM("bossMusicVol", "Music volume", 0.8, 0, 1, 0.01, BS),
+    { k: "bossFlinch", label: "Flinches when hit (hurt animation)", type: "bool", def: false, showIf: ["type", "boss"] },
+    { k: "bossWinTag", label: "When defeated, set this tag (e.g. to open a door)", type: "tagRef", refType: "any", def: "", showIf: ["type", "boss"] }, { k: "bossWinVal", label: "to (value, +n / -n adds, toggle)", type: "string", def: "yes", showIf: ["type", "boss"] },
+    { k: "bossWinMsg", label: "Message when defeated", type: "string", def: "", showIf: ["type", "boss"] },
+    // how it moves and shoots: the boss's own values = its first phase; each phase can change them
+    { k: "bossMove", label: "Moves", type: "choice", options: [["chase", "Walks toward you"], ["stationary", "Stays where it is (turns to you)"], ["keep", "Keeps its distance"], ["circle", "Circles around you"], ["dash", "Charges at you now and then"]], def: "chase", showIf: ["type", "boss"] },
+    NUM("keepDist", "Distance it keeps (units)", 500, 50, 5000, 10, BX({ showIf2: ["bossMove", ["keep", "circle"]] })),
+    NUM("dashSpeed", "Charge speed (units / s)", 900, 50, 5000, 10, BX({ showIf2: ["bossMove", "dash"] })), NUM("dashEvery", "Charges every (s)", 3, 0.3, 60, 0.1, BX({ showIf2: ["bossMove", "dash"] })), NUM("dashTime", "A charge lasts (s)", 0.6, 0.05, 10, 0.05, BX({ showIf2: ["bossMove", "dash"] })),
+    { k: "pattern", label: "Shot pattern", type: "choice", options: [["aimed", "One shot at you"], ["spread", "A fan of shots at you"], ["ring", "A ring all around"], ["spiral", "A spinning ring (turns each volley)"], ["rain", "Rain from above, around you"]], def: "aimed", showIf: ["type", "boss"], showIf2: ["attack", ["hitscan", "projectile"]] },
+    NUM("patCount", "Shots in the pattern", 5, 1, 64, 1, BX({ showIf2: ["attack", ["hitscan", "projectile"]] })), NUM("patSpread", "Fan width (degrees) / rain radius (units)", 40, 1, 2000, 1, BX({ showIf2: ["attack", ["hitscan", "projectile"]] })),
+    NUM("volleys", "Volleys per attack", 1, 1, 50, 1, BX({ showIf2: ["attack", ["hitscan", "projectile"]] })), NUM("volleyGap", "Time between volleys (s)", 0.25, 0.02, 5, 0.01, BX({ showIf2: ["attack", ["hitscan", "projectile"]] })),
+    NUM("patTurn", "Spiral: turn per volley (degrees)", 15, -180, 180, 1, BX({ showIf2: ["attack", ["hitscan", "projectile"]] })),
+    NUM("armor", "Damage it takes (1 = normal, 0.5 = half, 0 = can't be hurt)", 1, 0, 10, 0.05, BS));
+  // the values a phase can change (everything else stays the boss's own)
+  S.PHASE_KEYS = ["bossMove", "speed", "keepDist", "dashSpeed", "dashEvery", "dashTime", "attack", "attackRange", "damage", "attackRate", "attackDelay", "projSpeed", "projSize", "projColor", "pattern", "patCount", "patSpread", "volleys", "volleyGap", "patTurn", "armor", "idleAnim", "walkAnim", "attackAnim", "hurtAnim"];
+  S.PHASE = [{ k: "name", label: "Phase name", type: "string", def: "Phase" }, NUM("startAt", "Starts when its health is at or below (%)", 100, 0, 100, 1),
+    NUM("enterTime", "Change-over: pause before it fights again (s, can't be hurt)", 1, 0, 30, 0.1), ANIM("enterAnim", "Change-over animation"), { k: "enterSound", label: "Change-over sound", type: "asset", assetType: "sound", def: "" },
+    { k: "enterMsg", label: "Message on screen (empty = none)", type: "string", def: "" }, { k: "enterFlash", label: "Flash the screen", type: "bool", def: true }, { k: "enterColor", label: "Flash colour", type: "color", def: "#ffffff", showIf: ["enterFlash", true] },
+    NUM("enterShake", "Shake the camera (0 = no)", 0.6, 0, 10, 0.1), NUM("enterHeal", "Heals itself by (% of full health)", 0, 0, 100, 1),
+    { k: "enterSpawn", label: "Calls in helpers (enemy)", type: "propRef", refType: "enemy", def: "" }, NUM("enterSpawnCount", "How many helpers", 0, 0, 50, 1), NUM("enterSpawnRadius", "Helpers appear within (units)", 300, 0, 3000, 10),
+    { k: "enterTag", label: "Set this tag", type: "tagRef", refType: "any", def: "" }, { k: "enterVal", label: "to (value, +n / -n adds, toggle)", type: "string", def: "yes" },
+    { k: "enterMessage", label: "Send this message to every script (empty = none)", type: "string", def: "" },
+    { k: "music", label: "Change the fight music to (empty = keep it)", type: "asset", assetType: "sound", def: "" }]
+    .concat(S.PHASE_KEYS.map(k => { const d = S.PROP.find(q => q.k === k), c = Object.assign({}, d); for (const f of ["showIf", "showIf2", "also"]) delete c[f];
+      const cond = [d.showIf, d.showIf2].concat(d.also || []).filter(x => x && x[0] !== "type"); if (cond[0]) c.showIf = cond[0]; if (cond[1]) c.showIf2 = cond[1]; c.ph = true; return c; }));
+  const phRec = (p, pr) => { const r = rec(pr, "phase", p.id); if (pr.type === "anim") r.modelTag = p.id + ".asset"; return r; };
+  S.addPhase = (project, p, over) => { p.phases = p.phases || []; const b = { id: S.uid("ph", p.phases.map(x => x.id)) }; p.phases.push(b);
+    for (const pr of S.PHASE) { const r = phRec(p, pr); if (pr.ph && project.tags[p.id + "." + pr.k]) r.value = project.tags[p.id + "." + pr.k].value; if (over && pr.k in over) r.value = over[pr.k]; project.tags[p.id + ".ph." + b.id + "." + pr.k] = r; } return b; };
+  S.removePhase = (project, p, b) => { p.phases.splice(p.phases.indexOf(b), 1); for (const k of Object.keys(project.tags)) if (k.startsWith(p.id + ".ph." + b.id + ".")) delete project.tags[k]; };
+  // a key's live tag <key>.have exists only for key objects
+  S.ensureKeys = project => { for (const p of project.props || []) { const k = p.id + ".have", isKey = project.tags[p.id + ".type"] && project.tags[p.id + ".type"].value === "key";
+    if (isKey && !project.tags[k]) project.tags[k] = { type: "bool", value: false, label: "The player has this key (live)", group: "props", owner: p.id, builtin: true }; else if (!isKey && project.tags[k]) delete project.tags[k]; } };
   S.PROP.push({ k: "npcName", label: "Name shown when talking (empty = the object's name)", type: "string", def: "", showIf: ["type", "npc"] }, NUM("talkRange", "Can talk from (units, 128 = a cell)", 140, 30, 600, 5, { showIf: ["type", "npc"] }),
     ANIM("talkAnim", "Talking animation (3D model)", { showIf: ["type", "npc"], showIf2: ["look", "model"] }), { k: "talkSprite", label: "Talking strip (2D sprite)", type: "asset", assetType: "image", def: "", showIf: ["type", "npc"], showIf2: ["look", "sprite"] }, NUM("talkSpriteFrames", "Frames in it", 1, 1, 64, 1, { showIf: ["type", "npc"], showIf2: ["look", "sprite"] }),
     { k: "faceTalker", label: "Turns to face the player while talking", type: "bool", def: true, showIf: ["type", "npc"] },
@@ -464,7 +539,41 @@
     dEnd: { label: "End the dialogue", cat: "dialogue", outs: [], ctx: ["dialogue"], props: [] },
   });
   for (const k of ["setTag", "changeTag", "toggleTag", "randomTag", "mathTag", "if", "chance", "playSound", "wait", "sendMessage", "say", "waitUntil"]) if (S.SNODES[k] && !S.SNODES[k].ctx.includes("dialogue")) S.SNODES[k].ctx.push("dialogue");
-  S.SCAT = { event: "Events", dialogue: "Dialogue", control: "Control", sense: "Sensing", tags: "Tags & math", look: "Animation & looks", sound: "Sound", player: "Player", weapon: "Weapon", action: "Screens & messages" };
+  // ---- keys + bosses (script.js hands these to the game through o.custom)
+  const KEYREF = { k: "key", label: "Key", type: "propRef", refType: "key", def: "" }, KC = ["object", "player", "zone", "boss", "dialogue"], BC = ["boss"];
+  const PHNAME = { k: "phase", label: "Phase name (empty = any phase)", type: "string", def: "" };
+  Object.assign(S.SNODES, {
+    giveKey: { label: "Give the player a key", cat: "tags", outs: ["next"], ctx: KC, props: [KEYREF] },
+    takeKey: { label: "Take a key away", cat: "tags", outs: ["next"], ctx: KC, props: [KEYREF] },
+    ifHasKey: { label: "If the player has a key", cat: "sense", outs: ["then", "else"], ctx: KC, props: [KEYREF] },
+    onKeyGot: { label: "When a key is picked up", cat: "event", ins: false, outs: ["next"], ctx: ["object", "player", "zone", "boss"], props: [Object.assign({}, KEYREF, { label: "Key (empty = any key)" })] },
+    // boss script (Object Editor > a Boss > Open its script)
+    onBossStart: { label: "When the fight starts", cat: "event", ins: false, outs: ["next"], ctx: BC, props: [] },
+    onPhase: { label: "When a phase starts", cat: "event", ins: false, outs: ["next"], ctx: BC, props: [PHNAME] },
+    onBossHurt: { label: "When the boss is hit", cat: "event", ins: false, outs: ["next"], ctx: BC, props: [] },
+    onBossHealth: { label: "When its health drops to…", cat: "event", ins: false, outs: ["next"], ctx: BC, props: [{ k: "percent", label: "Health (%)", type: "number", def: 50, min: 0, max: 100, step: 1 }] },
+    onBossAttack: { label: "When the boss attacks", cat: "event", ins: false, outs: ["next"], ctx: BC, props: [] },
+    onBossDeath: { label: "When the boss is defeated", cat: "event", ins: false, outs: ["next"], ctx: BC, props: [] },
+    setPhase: { label: "Go to a phase", cat: "boss", outs: ["next"], ctx: BC, props: [{ k: "phase", label: "Phase name (empty = the next one)", type: "string", def: "" }] },
+    bossFire: { label: "Fire a pattern", cat: "boss", outs: ["next"], ctx: BC, props: [{ k: "pattern", label: "Pattern", type: "choice", options: [["aimed", "One shot at you"], ["spread", "A fan of shots at you"], ["ring", "A ring all around"], ["spiral", "A spinning ring"], ["rain", "Rain from above, around you"]], def: "ring" },
+      { k: "count", label: "Shots", type: "number", def: 12, min: 1, max: 128, step: 1 }, { k: "spread", label: "Fan width (degrees) / rain radius (units)", type: "number", def: 60, min: 1, max: 3000, step: 1 },
+      { k: "volleys", label: "Volleys", type: "number", def: 1, min: 1, max: 100, step: 1 }, { k: "gap", label: "Time between volleys (s)", type: "number", def: 0.2, min: 0.02, max: 10, step: 0.01 }, { k: "turn", label: "Spiral turn per volley (degrees)", type: "number", def: 12, min: -180, max: 180, step: 1 },
+      { k: "speed", label: "Shot speed (0 = the boss's own)", type: "number", def: 0, min: 0, max: 5000, step: 10 }, { k: "size", label: "Shot size (0 = the boss's own)", type: "number", def: 0, min: 0, max: 200, step: 0.5 },
+      { k: "damage", label: "Damage (0 = the boss's own)", type: "number", def: 0, min: 0, max: 100000, step: 1 }, COLOR("color", "Colour", "#ff4a8a"), { k: "own", label: "Use the boss's own colour", type: "bool", def: true }, { k: "wait", label: "Wait until all volleys are fired", type: "bool", def: true }] },
+    bossMove: { label: "Change how it moves (for a while)", cat: "boss", outs: ["next"], ctx: BC, props: [{ k: "move", label: "Moves", type: "choice", options: [["chase", "Walks toward you"], ["stationary", "Stays where it is"], ["keep", "Keeps its distance"], ["circle", "Circles around you"], ["dash", "Charges at you now and then"], ["flee", "Runs away from you"]], def: "circle" },
+      { k: "seconds", label: "For (seconds, 0 = until changed again)", type: "number", def: 4, min: 0, max: 600, step: 0.1 }, { k: "speed", label: "Speed (0 = its own)", type: "number", def: 0, min: 0, max: 5000, step: 10 }] },
+    bossDash: { label: "Charge at the player", cat: "boss", outs: ["next"], ctx: BC, props: [{ k: "speed", label: "Speed (units / s)", type: "number", def: 1000, min: 50, max: 6000, step: 10 }, { k: "seconds", label: "For (seconds)", type: "number", def: 0.6, min: 0.05, max: 10, step: 0.05 }, { k: "damage", label: "Damage if it hits you", type: "number", def: 20, min: 0, max: 100000, step: 1 }, { k: "wait", label: "Wait until the charge is over", type: "bool", def: true }] },
+    bossTeleport: { label: "Teleport the boss", cat: "boss", outs: ["next"], ctx: BC, props: [{ k: "where", label: "To", type: "choice", options: [["start", "Where it was placed"], ["random", "A random spot near where it was placed"], ["behind", "Behind the player"], ["far", "The far side of the player"]], def: "random" }, { k: "radius", label: "Distance (units)", type: "number", def: 400, min: 0, max: 5000, step: 10 }, { k: "fx", label: "Flash + particles", type: "bool", def: true }, COLOR("color", "Flash colour", "#c07dff")] },
+    bossSpawn: { label: "Call in helpers", cat: "boss", outs: ["next"], ctx: BC, props: [{ k: "what", label: "Enemy", type: "propRef", refType: "enemy", def: "" }, { k: "count", label: "How many", type: "number", def: 2, min: 1, max: 50, step: 1 }, { k: "radius", label: "Within (units of the boss)", type: "number", def: 300, min: 0, max: 3000, step: 10 }] },
+    bossHeal: { label: "Heal the boss", cat: "boss", outs: ["next"], ctx: BC, props: [{ k: "percent", label: "By (% of full health, negative = hurt it)", type: "number", def: 10, min: -100, max: 100, step: 1 }] },
+    bossShield: { label: "Shield (can't be hurt)", cat: "boss", outs: ["next"], ctx: BC, props: [{ k: "on", label: "Shield", type: "choice", options: [["on", "on"], ["off", "off"]], def: "on" }, { k: "seconds", label: "For (seconds, 0 = until switched off)", type: "number", def: 3, min: 0, max: 600, step: 0.1 }, COLOR("color", "Shield glow", "#7df3ff")] },
+    bossHold: { label: "Stop attacking for a while", cat: "boss", outs: ["next"], ctx: BC, props: [{ k: "seconds", label: "Seconds", type: "number", def: 2, min: 0, max: 600, step: 0.1 }] },
+    bossAnim: { label: "Play a boss animation", cat: "boss", outs: ["next"], ctx: BC, props: [{ k: "anim", label: "Animation", type: "anim", def: "" }, { k: "wait", label: "Wait until it is over", type: "bool", def: true }] },
+    ifPhase: { label: "If the boss is in a phase", cat: "sense", outs: ["then", "else"], ctx: BC, props: [{ k: "phase", label: "Phase name", type: "string", def: "Phase 2" }] },
+    ifBossHealth: { label: "If the boss's health is…", cat: "sense", outs: ["then", "else"], ctx: BC, props: [{ k: "op", label: "Is", type: "choice", options: OPS, def: "<=" }, { k: "percent", label: "Percent", type: "number", def: 50, min: 0, max: 100, step: 1 }] },
+    ifPlayerDist: { label: "If the player is…", cat: "sense", outs: ["then", "else"], ctx: BC, props: [{ k: "op", label: "Closer / farther", type: "choice", options: [["<", "closer than"], [">", "farther than"]], def: "<" }, { k: "dist", label: "Units (128 = a cell)", type: "number", def: 300, min: 0, max: 20000, step: 8 }] },
+  });
+  S.SCAT = { event: "Events", dialogue: "Dialogue", control: "Control", sense: "Sensing", tags: "Tags & math", look: "Animation & looks", sound: "Sound", player: "Player", weapon: "Weapon", boss: "Boss", action: "Screens & messages" };
   // Dialogues: project.dialogues = [{ id, name, nodes, links }] (a script; owner key = the id, node values are tags <id>.s.<node>.*)
   S.addDialogue = (project, name) => {
     const L = project.dialogues = project.dialogues || [], taken = L.map(d => d.id).concat(project.screens.map(s => s.id), (project.maps || []).map(m => m.id), (project.props || []).map(p => p.id));
@@ -531,7 +640,8 @@
     for (const m of project.maps || []) { if (!m.things) m.things = []; if (!m.layers) m.layers = [{ cells: {} }]; if (!m.n) m.n = { t: m.things.length }; for (const p of S.MAP) if (!project.tags[m.id + "." + p.k]) project.tags[m.id + "." + p.k] = rec(p, m.id, m.id); for (const k of ["fogDistance", "gridSize", "wallThickness"]) delete project.tags[m.id + "." + k]; }
     for (const p of project.props) for (const b of p.hitboxes || []) for (const pr of S.HITBOX) { const k = p.id + ".hb." + b.id + "." + pr.k; if (!project.tags[k]) project.tags[k] = hbRec(p, pr); }
     for (const p of project.props) if (p.dialog) { for (const l of p.dialog.lines) for (const pr of S.DLINE) if (!project.tags[p.id + ".d." + l.id + "." + pr.k]) project.tags[p.id + ".d." + l.id + "." + pr.k] = rec(pr, "dialog", p.id); S.syncDOpts(project, p); }
-    for (const p of project.props) { for (const k of OLDMAT) delete project.tags[p.id + "." + k]; for (const pr of S.PROP) { const r = project.tags[p.id + "." + pr.k]; if (!r) { const n = rec(pr, "props", p.id); if (pr.type === "anim") n.modelTag = p.id + ".asset"; project.tags[p.id + "." + pr.k] = n; } else { r.label = pr.label; if (pr.max !== undefined) { r.max = pr.max; if (+r.value > pr.max) r.value = pr.max; } } } }
+    for (const p of project.props) for (const b of p.phases || []) for (const pr of S.PHASE) { const k = p.id + ".ph." + b.id + "." + pr.k; if (!project.tags[k]) project.tags[k] = phRec(p, pr); }
+    for (const p of project.props) { for (const k of OLDMAT) delete project.tags[p.id + "." + k]; for (const pr of S.PROP) { const r = project.tags[p.id + "." + pr.k]; if (!r) { const n = rec(pr, "props", p.id); if (pr.type === "anim") n.modelTag = p.id + ".asset"; project.tags[p.id + "." + pr.k] = n; } else { r.label = pr.label; if (pr.options) r.options = pr.options; if (pr.max !== undefined) { r.max = pr.max; if (+r.value > pr.max) r.value = pr.max; } } } }
     { const ik = project.tags["player.interactKey"]; if (project.tags["player.speed"] && !ik) project.tags["player.interactKey"] = rec(S.PLAYER.find(p => p.k === "interactKey"), "player", "player"); } if (project.tags["player.speed"]) for (const pp of S.PLAYER) if (!project.tags["player." + pp.k]) project.tags["player." + pp.k] = rec(pp, "player", "player");
     for (const att of (project.player && project.player.attachments) || []) for (const k of OLDMAT) delete project.tags["player." + att.id + "." + k];
     const eh = project.tags["player.eyeHeight"]; if (eh && !project.eyeMoved) { if (eh.value === 56) eh.value = 102; project.eyeMoved = true; }
@@ -561,6 +671,8 @@
     for (const [k, l] of [["lives", "Lives left (live)"], ["tanks", "Full energy tanks (live)"], ["tanksMax", "Energy tanks owned (live)"]]) if (!project.tags["player." + k]) project.tags["player." + k] = { type: "number", value: 0, min: 0, max: 99, step: 1, label: l, group: "player", builtin: true };
     if (!project.tags["player.lastButton"]) project.tags["player.lastButton"] = { type: "string", value: "", label: "Name of the last button pressed (live)", group: "player", builtin: true };
     for (const [k, l] of [["aiming", "The aim button is held (live)"], ["locked", "Locked onto a target (live)"]]) if (!project.tags["player." + k]) project.tags["player." + k] = { type: "bool", value: false, label: l, group: "player", builtin: true };
+    for (const [k, t, v, l] of [["bossActive", "bool", false, "A boss fight is on (live)"], ["bossHealth", "number", 0, "Boss health (live)"], ["bossMax", "number", 0, "Boss full health (live)"], ["bossName", "string", "", "Boss name (live)"], ["bossPhase", "string", "", "Boss phase name (live)"]]) if (!project.tags["player." + k]) project.tags["player." + k] = Object.assign({ type: t, value: v, label: l, group: "player", builtin: true }, t === "number" ? { min: 0, max: 1000000, step: 1 } : {});
+    S.ensureKeys(project); for (const p of project.props || []) if (p.script) for (const n of p.script.nodes) S.ensureSNode(project, p.id, n, p.id + ".asset");
     if (!project.tags["player.reloading"]) project.tags["player.reloading"] = { type: "bool", value: false, label: "The current weapon is reloading (live)", group: "player", builtin: true };
     if (!project.tags["player.charge"]) project.tags["player.charge"] = { type: "number", value: 0, label: "Charge beam progress, 0 to 1 (live)", group: "player", min: 0, max: 1, step: 0.01, builtin: true };
     if (!project.tags["player.weapon"]) project.tags["player.weapon"] = { type: "number", value: 1, label: "Current weapon number (live)", group: "player", min: 0, max: 99, step: 1, builtin: true };

@@ -90,6 +90,10 @@
       if (n.type === "title") { el.textContent = this.S(n, "text"); text(el); el.style.opacity = p("opacity"); }
       else if (n.type === "image") { this.pic(el, p("asset"), +p("w"), +p("h")); el.style.opacity = p("opacity"); }
       else if (n.type === "pips") PRIM.HUD.pips(el, this.tags, p);
+      else if (n.type === "minimap") { const w = +p("w") || 220, h = +p("h") || 220, k = Math.max(1, s * (window.devicePixelRatio || 1)); el.style.width = w + "px"; el.style.height = h + "px"; el.style.opacity = p("opacity");
+        if (el.width !== Math.round(w * k) || el.height !== Math.round(h * k)) { el.width = Math.round(w * k); el.height = Math.round(h * k); } it.k = k; this.mapDraw(it, this.edit || !this.world ? this.demoWorld() : this.lastWorld); }
+      else if (n.type === "bossbar") this.bossDraw(it, 0);
+      else if (n.type === "keys") this.keysDraw(el, p);
       else if (n.type === "bar") {
         const T = this.tags, b = p("bind"), sp = T.spec(b), mt = p("max"), ms = mt && T.spec(mt), v = sp ? +T.get(b) : 0, mxv = ms ? +T.get(mt) : sp ? sp.max : 1, mn = ms ? 0 : sp ? sp.min : 0, f = clamp((v - mn) / ((mxv - mn) || 1), 0, 1);
         size(el, +p("w") || 260, +p("h") || 22); el.style.background = p("bg"); el.style.opacity = p("opacity");
@@ -110,6 +114,9 @@
       if (n.type === "image") { const e = mk("div", "hud-el"); e.style.backgroundSize = "100% 100%"; return e; }
       if (n.type === "button") { const e = mk("div", "hud-el"); e.style.backgroundSize = "100% 100%"; return e; }
       if (n.type === "pips") { const e = mk("div", "hud-el"); e.style.whiteSpace = "normal"; return e; }
+      if (n.type === "minimap") return mk("canvas", "hud-el");
+      if (n.type === "bossbar") { const e = mk("div", "hud-el"); e.style.whiteSpace = "normal"; e.style.textAlign = "center"; e.style.transition = "opacity .35s"; const nm = mk("div"), bar = mk("div"); bar.style.cssText = "position:relative;overflow:hidden;box-sizing:border-box"; const lag = mk("i"), fill = mk("i"); lag.style.cssText = fill.style.cssText = "position:absolute;left:0;top:0;bottom:0"; bar.append(lag, fill); e.append(nm, bar); return e; }
+      if (n.type === "keys") { const e = mk("div", "hud-el"); e.style.whiteSpace = "normal"; return e; }
       if (n.type === "bar") { const e = mk("div", "hud-el hud-bar"); e.append(mk("i"), mk("b")); return e; }
       if (n.type === "slider") { const e = mk("div", "hud-el"); e.style.whiteSpace = "normal"; const row = mk("div", "hud-row"), tr = mk("div", "hud-track"); tr.append(mk("i")); e.append(row, tr); return e; }
       if (n.type === "toggle") { const e = mk("div", "hud-el"); e.style.cssText = "display:flex;justify-content:space-between;align-items:center"; const sw = mk("div", "hud-sw"); sw.append(mk("i")); e.append(mk("span"), sw); return e; }
@@ -124,6 +131,78 @@
       const nw = +el.dataset.nw || 0, nh = +el.dataset.nh || 0, r = nw && nh ? nh / nw : 1;
       el.style.width = (w > 0 ? w : h > 0 ? h / r : nw || 64) + "px"; el.style.height = (h > 0 ? h : w > 0 ? w * r : nh || 64) + "px";
     }
+    wants() { return this.order.some(id => { const t = this.items[id].n.type; return t === "minimap" || t === "bossbar"; }); }
+    // ---- game feed (Play3D calls tick(world) every frame): minimap, radar, boss bar trail
+    tick(world, dt) { this.lastWorld = world; this.world = true; for (const id of this.order) { const it = this.items[id]; if (!it.el) continue; if (it.n.type === "minimap") this.mapDraw(it, world); else if (it.n.type === "bossbar") this.bossDraw(it, dt || 0); } }
+    // in the editor: the first map around its player start
+    demoWorld() { const pr = this.project, m = (pr.maps || [])[0], T = this.tags; if (!m) return null; const items = [], doors = [];
+      for (const th of m.things || []) { const ty = T.get(th.prop + ".type"); if (ty === "door") { const f = PRIM.Grid && PRIM.Grid.thingFrame ? PRIM.Grid.thingFrame(m, T, th) : null; if (f) doors.push(this.doorSeg(f, T.get(th.prop + ".lockKey") ? T.get(T.get(th.prop + ".lockKey") + ".keyColor") : null, false)); continue; }
+        const k = ty === "enemy" || ty === "boss" ? ty : ty === "key" ? "key" : ty === "pickup" ? "item" : ty === "exit" ? "exit" : ty === "npc" ? "npc" : null; if (k) items.push({ id: th.id, x: th.x, y: th.y, k, c: ty === "key" ? T.get(th.prop + ".keyColor") : null, L: th.layer || 0 }); }
+      return { map: m, L: +T.get(m.id + ".startLayer") || 0, x: +T.get(m.id + ".startX") || 0, y: +T.get(m.id + ".startY") || 0, yaw: (+T.get(m.id + ".startAngle") || 0) * Math.PI / 180, t: 0.3, items, doors, demo: true }; }
+    doorSeg(f, c, open) { const w = (f.w || 128) / 2; return { x0: f.cx - f.ux * w, y0: f.cy - f.uy * w, x1: f.cx + f.ux * w, y1: f.cy + f.uy * w, c, open }; }
+    // the story you are on, drawn once per map / story into a picture (8 px per cell), then moved and turned every frame
+    mapBase(it, w, p) { const m = w.map, L = w.L, G = PRIM.Grid, layer = m.layers[L], rv = !!p("reveal") && !w.demo, seen = rv ? this.seenOf(m.id, L) : null, key = [m.id, L, layer ? Object.keys(layer.cells).length : 0, p("floor"), p("wall"), rv ? seen.size : -1, w.demo ? JSON.stringify(layer && layer.cells).length : 0].join("|");
+      if (it.base && it.baseKey === key) return it.base; it.baseKey = key; if (!layer) return (it.base = null);
+      let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9; for (const k in layer.cells) { const [x, y] = k.split(",").map(Number); x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); } if (x0 > x1) return (it.base = null);
+      const PX = 8, cv = it.base && it.base.cv || document.createElement("canvas"); cv.width = (x1 - x0 + 3) * PX; cv.height = (y1 - y0 + 3) * PX; const c = cv.getContext("2d"), ox = x0 - 1, oy = y0 - 1; c.clearRect(0, 0, cv.width, cv.height);
+      const solid = (x, y) => { const q = G.cell(m, L, x, y); return !q || G.isWall(q) || (q.f === undefined && !q.sh); }, vis = (x, y) => !seen || seen.has(x + "," + y);
+      for (const k in layer.cells) { const q = layer.cells[k], [x, y] = k.split(",").map(Number); if (!vis(x, y)) continue; const X = (x - ox) * PX, Y = (y - oy) * PX;
+        if (G.isWall(q)) { c.fillStyle = p("wall"); c.globalAlpha = 0.22; c.fillRect(X, Y, PX, PX); c.globalAlpha = 1; continue; }
+        if (q.f === undefined && !q.sh) continue; c.fillStyle = p("floor"); c.globalAlpha = q.sh ? 0.75 : 1; c.fillRect(X, Y, PX, PX); c.globalAlpha = 1;
+        if (q.dg && q.dg.length > 2) { c.fillStyle = p("wall"); c.globalAlpha = 0.5; c.beginPath(); q.dg.forEach((pt, i) => c[i ? "lineTo" : "moveTo"](X + pt[0] * PX, Y + pt[1] * PX)); c.closePath(); c.fill(); c.globalAlpha = 1; } }
+      c.strokeStyle = p("wall"); c.lineWidth = 1.5; c.beginPath();
+      for (const k in layer.cells) { const q = layer.cells[k], [x, y] = k.split(",").map(Number); if (G.isWall(q) || (q.f === undefined && !q.sh) || !vis(x, y)) continue; const X = (x - ox) * PX, Y = (y - oy) * PX;
+        if (solid(x, y - 1)) { c.moveTo(X, Y); c.lineTo(X + PX, Y); } if (solid(x, y + 1)) { c.moveTo(X, Y + PX); c.lineTo(X + PX, Y + PX); } if (solid(x - 1, y)) { c.moveTo(X, Y); c.lineTo(X, Y + PX); } if (solid(x + 1, y)) { c.moveTo(X + PX, Y); c.lineTo(X + PX, Y + PX); } }
+      c.stroke(); return (it.base = { cv, ox, oy, PX }); }
+    seenOf(id, L) { this.seen = this.seen || {}; return this.seen[id + "/" + L] || (this.seen[id + "/" + L] = new Set()); }
+    mapDraw(it, w) {
+      const el = it.el, c = el.getContext("2d"), n = it.n, p = k => this.P(n, k), W2 = el.width, H2 = el.height, k = it.k || 1; c.setTransform(1, 0, 0, 1, 0, 0); c.clearRect(0, 0, W2, H2); if (!w) return;
+      if (p("reveal") && !w.demo) { const S = this.seenOf(w.map.id, w.L), r = Math.max(1, +p("revealRadius") || 4), cx = Math.floor(w.x / 128), cy = Math.floor(w.y / 128); for (let y = cy - r; y <= cy + r; y++) for (let x = cx - r; x <= cx + r; x++) if ((x - cx) * (x - cx) + (y - cy) * (y - cy) <= r * r) S.add(x + "," + y); }
+      const round = p("shape") !== "square", cxp = W2 / 2, cyp = H2 / 2, R = Math.min(W2, H2) / 2;
+      c.save(); c.beginPath(); if (round) c.arc(cxp, cyp, R - 1, 0, Math.PI * 2); else c.rect(1, 1, W2 - 2, H2 - 2); c.clip();
+      c.fillStyle = p("bg"); c.fillRect(0, 0, W2, H2);
+      const sc = W2 / (Math.max(3, +p("zoom") || 14) * 128), rot = p("turn") !== false ? -(w.yaw + Math.PI / 2) : 0, b = this.mapBase(it, w, p);
+      c.translate(cxp, cyp); c.rotate(rot); c.scale(sc, sc); c.translate(-w.x, -w.y);
+      if (b) { c.imageSmoothingEnabled = false; c.drawImage(b.cv, b.ox * 128, b.oy * 128, b.cv.width / b.PX * 128, b.cv.height / b.PX * 128); }
+      const px = 1 / sc;   // one screen pixel in world units
+      if (p("items") !== false) { for (const d of w.doors || []) { if (d.open) continue; c.strokeStyle = d.c || p("door"); c.lineWidth = 4 * k * px; c.beginPath(); c.moveTo(d.x0, d.y0); c.lineTo(d.x1, d.y1); c.stroke(); }
+        for (const q of w.items || []) { if ((q.L || 0) !== w.L || q.k === "enemy" || q.k === "boss") continue; c.fillStyle = q.c || (q.k === "exit" ? "#4aff8a" : q.k === "npc" ? "#7aa8ff" : p("item")); const s2 = (q.k === "key" ? 5 : 3.5) * k * px; if (q.k === "key" || q.k === "exit") c.fillRect(q.x - s2, q.y - s2, s2 * 2, s2 * 2); else { c.beginPath(); c.arc(q.x, q.y, s2, 0, Math.PI * 2); c.fill(); } } }
+      // enemies: always, or as radar blips that fade until the next scan
+      const mode = p("enemies") || "radar", radar = !!p("radar"), rate = Math.max(0.05, +p("radarRate") || 0.5), rng = Math.max(1, +p("radarRange") || 8) * 128, t = w.t || 0, st = p("radarStyle") || "sweep";
+      it.blips = it.blips || {}; const ph = (t * rate) % 1, prev = it.lastPh === undefined ? ph : it.lastPh; it.lastPh = ph; const wrapped = ph < prev;
+      for (const q of w.items || []) { if (q.k !== "enemy" && q.k !== "boss") continue; const dx = q.x - w.x, dy = q.y - w.y, d = Math.hypot(dx, dy);
+        if ((q.L || 0) !== w.L && !w.demo) continue; if (mode === "always") { this.dot(c, q.x, q.y, (q.k === "boss" ? 7 : 4) * k * px, p("enemy"), 1); continue; } if (mode !== "radar" || !radar || d > rng) continue;
+        let hit = false; if (st === "pulse") { const r0 = prev * rng, r1 = ph * rng; hit = wrapped ? d >= r0 || d <= r1 : d >= r0 && d <= r1; } else { const a = ((Math.atan2(dy, dx) / (Math.PI * 2)) % 1 + 1) % 1; hit = wrapped ? a >= prev || a <= ph : a >= prev && a <= ph; }
+        if (hit || w.demo) it.blips[q.id] = { x: q.x, y: q.y, t, big: q.k === "boss" }; }
+      for (const id in it.blips) { const bl = it.blips[id], a = 1 - (t - bl.t) * rate; if (a <= 0 && !w.demo) { delete it.blips[id]; continue; } this.dot(c, bl.x, bl.y, (bl.big ? 7 : 4) * k * px, p("enemy"), w.demo ? 1 : Math.max(0, a)); }
+      if (radar) { c.save(); c.translate(w.x, w.y); const col = p("radarColor"); c.strokeStyle = col; c.globalAlpha = 0.35; c.lineWidth = 1 * k * px; c.beginPath(); c.arc(0, 0, rng, 0, Math.PI * 2); c.stroke();
+        if (st === "pulse") { c.globalAlpha = 0.8 * (1 - ph); c.lineWidth = 2.5 * k * px; c.beginPath(); c.arc(0, 0, Math.max(1, ph * rng), 0, Math.PI * 2); c.stroke(); }
+        else { const a = ph * Math.PI * 2; for (let i = 0; i < 12; i++) { c.globalAlpha = 0.28 * (1 - i / 12); c.fillStyle = col; c.beginPath(); c.moveTo(0, 0); c.arc(0, 0, rng, a - (i + 1) * 0.05, a - i * 0.05); c.closePath(); c.fill(); }
+          c.globalAlpha = 0.9; c.lineWidth = 1.6 * k * px; c.beginPath(); c.moveTo(0, 0); c.lineTo(Math.cos(a) * rng, Math.sin(a) * rng); c.stroke(); }
+        c.restore(); }
+      c.restore();
+      // you: an arrow in the middle
+      c.save(); c.translate(cxp, cyp); c.rotate(p("turn") !== false ? 0 : w.yaw + Math.PI / 2); const s3 = 7 * k; c.fillStyle = p("player"); c.strokeStyle = "#000"; c.lineWidth = 1.2 * k; c.beginPath(); c.moveTo(0, -s3 * 1.3); c.lineTo(s3, s3); c.lineTo(0, s3 * 0.45); c.lineTo(-s3, s3); c.closePath(); c.fill(); c.stroke(); c.restore();
+      c.strokeStyle = p("border"); c.lineWidth = 2 * k; c.beginPath(); if (round) c.arc(cxp, cyp, R - k, 0, Math.PI * 2); else c.rect(k, k, W2 - 2 * k, H2 - 2 * k); c.stroke();
+    }
+    dot(c, x, y, r, col, a) { c.globalAlpha = a; c.fillStyle = col; c.beginPath(); c.arc(x, y, r, 0, Math.PI * 2); c.fill(); c.globalAlpha = 1; }
+    // boss health bar: hidden unless a fight is on (always shown in the editor)
+    bossDraw(it, dt) { const el = it.el, n = it.n, p = k => this.P(n, k), T = this.tags, demo = this.edit || !this.world, on = demo || !!T.get("player.bossActive");
+      const mx = demo ? 100 : +T.get("player.bossMax") || 1, hp = demo ? 70 : Math.max(0, +T.get("player.bossHealth") || 0), f = clamp(hp / mx, 0, 1);
+      it.lag = it.lag === undefined || f > it.lag ? f : Math.max(f, it.lag - dt * 0.35); el.style.opacity = on ? p("opacity") : 0;
+      const nm = el.firstChild, bar = el.lastChild, w = +p("w") || 640, h = +p("h") || 16; el.style.width = w + "px";
+      nm.style.display = p("showName") !== false ? "" : "none"; nm.style.fontFamily = font(p("font")); nm.style.fontSize = p("size") + "px"; nm.style.color = p("textColor"); nm.style.marginBottom = "4px"; nm.style.letterSpacing = ".12em"; nm.style.textShadow = "0 1px 3px #000";
+      const ph = demo ? "Phase 1" : T.get("player.bossPhase"); nm.textContent = (demo ? "BOSS NAME" : String(T.get("player.bossName") || "")) + (p("showPhase") && ph ? "  ·  " + ph : "");
+      bar.style.width = w + "px"; bar.style.height = h + "px"; bar.style.background = p("bg"); bar.style.border = "2px solid " + p("border"); bar.firstChild.style.width = it.lag * 100 + "%"; bar.firstChild.style.background = p("lagColor"); bar.children[1].style.width = f * 100 + "%"; bar.children[1].style.background = p("color");
+      const marks = p("marks") !== false ? (demo ? [0.66, 0.33] : this.bossMarks || []) : [], sig = marks.join(","); if (it.mk !== sig) { it.mk = sig; for (const q of [...bar.querySelectorAll("b")]) q.remove(); for (const m of marks) { const b = mk("b"); b.style.cssText = "position:absolute;top:0;bottom:0;width:2px;background:rgba(0,0,0,.75);left:" + m * 100 + "%"; bar.append(b); } } }
+    // keys you carry (key objects whose tag <key>.have is yes)
+    keysDraw(el, p) { const T = this.tags, keys = (this.project.props || []).filter(q => T.get(q.id + ".type") === "key"), demo = this.edit || !this.world, miss = !!p("missing"), sz = +p("box") || 34, gap = +p("gap") || 0;
+      const list = keys.map((q, i) => ({ id: q.id, have: demo ? i % 2 === 0 : !!T.get(q.id + ".have"), col: T.get(q.id + ".keyColor") || "#ffffff", icon: T.get(q.id + ".keyIcon") })).filter(q => q.have || miss);
+      const sig = [list.map(q => q.id + q.have + q.col + q.icon).join(","), sz, gap, p("vertical"), p("opacity")].join("|"); if (el.dataset.k === sig) return; el.dataset.k = sig;
+      el.style.display = "flex"; el.style.flexDirection = p("vertical") ? "column" : "row"; el.style.gap = gap + "px"; el.style.opacity = p("opacity");
+      el.replaceChildren(...list.map(q => { const d = mk("div"); d.style.cssText = "width:" + sz + "px;height:" + sz + "px;flex:none;opacity:" + (q.have ? 1 : 0.25) + ";filter:drop-shadow(0 1px 2px #000)";
+        if (q.icon && this.urls[q.icon]) { d.style.background = 'center/contain no-repeat url("' + this.urls[q.icon] + '")'; } else d.innerHTML = '<svg viewBox="0 0 32 32" width="100%" height="100%"><circle cx="10" cy="16" r="7" fill="none" stroke="' + q.col + '" stroke-width="4"/><path d="M16 16 H30 M25 16 V22 M29 16 V21" stroke="' + q.col + '" stroke-width="4" fill="none"/></svg>'; return d; }));
+      if (!list.length) { el.style.width = sz + "px"; el.style.height = sz + "px"; } else { el.style.width = ""; el.style.height = ""; } }
     // ---- sounds started by HUD scripts
     vol() { const T = this.tags; return clamp((+T.get("audio.master") || 0) * (+T.get("audio.sfx") || 0), 0, 1); }
     sound(id, mult, loop) {
