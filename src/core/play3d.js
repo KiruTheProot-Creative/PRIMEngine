@@ -29,7 +29,7 @@
         shake: (a, sec) => { this.shakeA = Math.max(this.shakeA || 0, a); this.shakeT = sec; this.shakeT0 = sec; }, flash: (c, a) => this.flash(a, c, true),
         jump: (hgt, air) => { if (air || this.ground) this.jumpReq = hgt || -1; }, airJump: (max, hgt) => { if (!this.ground && (this.airJumps || 0) < max) { this.airJumps = (this.airJumps || 0) + 1; this.jumpReq = hgt || -1; } },
         launch: (f, sd, up) => { const cy = Math.cos(this.yaw), sy = Math.sin(this.yaw); this.extV = [(this.extV ? this.extV[0] : 0) + cy * f - sy * sd, (this.extV ? this.extV[1] : 0) + sy * f + cy * sd]; if (up) this.upReq = (this.upReq || 0) + up; },
-        hurt: a => { if (a > 0) this.hurtPlayer(a); else if (a < 0 && !this.pdead) T.set("player.health", Math.min(+T.get("player.maxHealth") || 100, (+T.get("player.health") || 0) - a)); },
+        hurt: a => { if (a > 0) this.hurtPlayer(a); else if (a < 0 && !this.pdead) this.giveHealth(-a); },
         teleport: () => { this.placeStart(); this.extV = null; }, nearEnemy: d => (this.things || []).some(o => this.eAlive(o) && Math.hypot(o.x - this.x, o.y - this.y) < d && Math.abs(o.floor - this.z) < 200),
         switchWeapon: (w, n) => { if (w === "next") this.setWeapon((this.wi || 0) + 1, 1); else if (w === "prev") this.setWeapon((this.wi || 0) - 1, -1); else if (n - 1 < this.wids().length) this.setWeapon(n - 1); },
         broadcast: name => this.trigger("onMessage", name), custom: (ow, n, g, tok) => this.custom(ow, n, g, tok), say: t => { if (this.o.say) this.o.say(t); else console.log(t); } }) : null;
@@ -63,7 +63,7 @@
         if (this.popup) { e.preventDefault(); if (!e.repeat) this.popupKey(keyId(e)); return; }
         if (this.talk) { e.preventDefault(); if (!e.repeat) this.talkKey(keyId(e)); return; }   // while talking, keys answer the dialogue
         const id = keyId(e), n = id; if (!e.repeat && this.visorKeyDown(id)) { e.preventDefault(); k[id] = true; return; } if (!e.repeat && !k[id]) { k[id] = true; this.trigger("onKey", id); this.aimInput(id, true); if (this.mode === "play" && id === (this.T.get("player.interactKey") || "e")) this.interact(); if (this.mode === "play" && id === (this.T.get("player.reloadKey") || "r")) this.reload(this.curWeapon()); } k[id] = true; if (/^[1-9]$/.test(n)) this.setWeapon(+n - 1); if (["w", "a", "s", "d", "space", "shift", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(id)) e.preventDefault();
-        if (this.o.debug && n === "h") this.T.setMany({ "player.health": Math.max(0, this.T.get("player.health") - 10) }); if (this.o.debug && n === "j") this.T.setMany({ "player.health": Math.min(this.T.get("player.maxHealth"), this.T.get("player.health") + 10) });
+        if (this.o.debug && n === "h") this.T.setMany({ "player.health": Math.max(0, this.T.get("player.health") - 10) }); if (this.o.debug && n === "j") this.giveHealth(10);
       };
       const ku = e => this.release(keyId(e));
       const mm = e => { if (document.pointerLockElement === cv || this.drag) this.look(e.movementX, e.movementY); };
@@ -1113,9 +1113,11 @@
     // energy tanks: when health would drop to 0, a full tank refills it (the leftover damage still counts)
     useTanks() { const T = this.T; if (this.livesMode() !== "reserve" || this.pdead) return; let hp = +T.get("player.health") || 0, tk = +T.get("player.tanks") || 0; const mx = +T.get("player.maxHealth") || 100; if (hp > 0 || tk <= 0) return; while (hp <= 0 && tk > 0) { tk--; hp += mx; } T.setMany({ "player.health": Math.min(mx, hp), "player.tanks": tk }); this.lastHp = Math.min(mx, hp); this.toast("Energy tank used"); }
     // health pick-ups in reserve mode: once health is full the rest fills empty tanks
-    giveHealth(amt) { const T = this.T, mx = +T.get("player.maxHealth") || 100, hp = (+T.get("player.health") || 0) + amt, own = +T.get("player.tanksMax") || 0; let tk = +T.get("player.tanks") || 0;
-      if (hp > mx && tk < own) { this.tankFill = (this.tankFill || 0) + hp - mx; while (this.tankFill >= mx && tk < own) { this.tankFill -= mx; tk++; } if (tk >= own) this.tankFill = 0; }   // the extra collects until a whole tank is full
-      T.setMany({ "player.health": Math.min(mx, hp), "player.tanks": tk }); }
+    // health gained in reserve mode works like Metroid energy: health + tanks is one total, so whatever goes past full health fills the next empty tank right away
+    // (99 health + 20 with an empty tank = a full tank and 19 health); other modes just cap at max health
+    giveHealth(amt) { const T = this.T, mx = +T.get("player.maxHealth") || 100, own = +T.get("player.tanksMax") || 0; let hp = (+T.get("player.health") || 0) + amt, tk = +T.get("player.tanks") || 0;
+      if (this.livesMode() === "reserve") while (hp > mx && tk < own) { hp -= mx; tk++; }
+      const set = { "player.health": Math.min(mx, hp) }; if (T.has("player.tanks")) set["player.tanks"] = tk; T.setMany(set); }
     respawn() {
       const T = this.T, c = this.cp; T.set("player.lives", Math.max(0, (+T.get("player.lives") || 0) - 1)); T.set("player.health", +T.get("player.maxHealth") || 100); this.lastHp = undefined;
       this.fx = []; this.orb = null; this.reloading = null; this.extV = null; this.jumpReq = undefined; this.shakeT = 0; this.pdead = false; this.deadT = 0; this.say2(""); this.body = null;
@@ -1268,7 +1270,7 @@
         else if (!inside && s.in) { s.in = false; if (owner) { if (this.sh) this.sh.trigger(owner, "onLeave"); } else { this.applyVal(g("leaveTag"), g("leaveVal")); const ms = String(g("leaveMessage") || "").trim(); if (ms) this.trigger("onMessage", ms); } }
         if (!s.in) continue; s.t += dt;
         if (owner && this.sh) for (const n of z.script.nodes) { if (n.type !== "onInside") continue; const iv = Math.max(0.05, +T.get(k + "s." + n.id + ".interval") || 1); s.nt[n.id] = (s.nt[n.id] || 0) + dt; if (s.nt[n.id] >= iv) { s.nt[n.id] -= iv; this.sh.trigger(owner, "onInside", null, n.id); } }
-        const hu = owner ? 0 : +g("hurt") || 0; if (hu) { s.ht = (s.ht || 0) + dt; if (s.ht >= 0.5) { s.ht -= 0.5; if (hu > 0) this.hurtPlayer(hu * 0.5); else T.set("player.health", Math.min(+T.get("player.maxHealth") || 100, (+T.get("player.health") || 0) - hu * 0.5)); } }
+        const hu = owner ? 0 : +g("hurt") || 0; if (hu) { s.ht = (s.ht || 0) + dt; if (s.ht >= 0.5) { s.ht -= 0.5; if (hu > 0) this.hurtPlayer(hu * 0.5); else if (!this.pdead) this.giveHealth(-hu * 0.5); } }
       }
     }
     vol3(mult) { const T = this.T; return Math.max(0, Math.min(1, (+T.get("audio.master") || 0) * (+T.get("audio.sfx") || 0) * (isNaN(mult) ? 1 : mult))); }

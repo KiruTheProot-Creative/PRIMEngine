@@ -34,8 +34,8 @@ module.exports = async (p, out) => {
   console.log('reserve, 2 tanks     ', await run(1, 'q.T.setMany({"player.livesMode":"reserve","player.tanksStart":2}); q.initLives(); q.T.set("player.health", 100)'));
   console.log('hit for 150          ', await run(1, 'q.hurtPlayer(150)'));
   console.log('hit for 30           ', await run(1, 'q.hurtPlayer(30)'));
-  console.log('health +130          ', await run(1, 'q.giveHealth(130)'), '(health full, 50 extra waits)');
-  console.log('health +60           ', await run(1, 'q.giveHealth(60)'), '(a whole tank of extra: tank back)');
+  console.log('health +130          ', await run(1, 'q.giveHealth(130)'), '(health full, the extra fills a tank: Metroid energy)');
+  console.log('health +60           ', await run(1, 'q.giveHealth(60)'), '(more health on top)');
   console.log('energy tank pick-up  ', await run(1, 'q.hurtPlayer(70); const T = q.T; T.setMany({ "player.tanksMax": Math.min(14, T.get("player.tanksMax") + 1) }); T.setMany({ "player.tanks": T.get("player.tanksMax"), "player.health": 100 })'));
   await p.evaluate(() => __studio.S.play.hud.update());
   console.log('counter boxes in HUD :', await p.evaluate(() => { const H = __studio.S.play.hud, it = Object.values(H.items).find(i => i.n.type === 'pips'), e = it && it.el; return e ? e.children.length + ' boxes, filled ' + [...e.children].filter(c => c.style.boxShadow).length : 'none'; }));
