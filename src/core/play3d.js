@@ -415,7 +415,7 @@
     }
     // an enemy walks with the same body physics as the player: walls, steps, slopes and stairs, gravity
     eMove(o, vx, vy, dt) {
-      const g = k => +this.ov(o, k) || 0, b = o.body || (o.body = { pos: [o.x, o.floor, o.y], vel: [0, 0, 0], r: 0, h: 0, step: 26, maxSlope: 0.69 }); b.r = g("radius") || 22; b.h = Math.min(g("height") || 110, G.LAYER - 4);
+      const g = k => +this.ov(o, k) || 0, b = o.body || (o.body = { pos: [o.x, o.floor, o.y], vel: [0, 0, 0], r: 0, h: 0, step: 26, maxSlope: 0.69 }); b.r = Math.min(g("radius") || 22, 58); b.h = Math.min(Math.max(g("height") || 110, 2 * b.r + 4), G.LAYER - 4);   
       b.vel[0] = vx; b.vel[2] = vy; b.vel[1] -= (+this.T.get("player.gravity") || 1100) * dt; G.move(b, dt, this.view && this.view.world, this.dtris);
       const p = { x: b.pos[0], y: b.pos[2] }; this.ePush(p, b.r, o); this.shove(b, p.x - b.pos[0], p.y - b.pos[2], this.view && this.view.world, this.dtris); o.x = b.pos[0]; o.y = b.pos[2]; o.floor = b.pos[1];
     }
