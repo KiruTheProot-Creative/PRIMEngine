@@ -467,7 +467,9 @@
         if (o.keep) { Object.assign(o, o.keep); o.keep = null; o.awake = true; o.st = "chase"; o.body = null; }   // it dropped and turned into this enemy: same place, already hunting
         o.mount = beh === "stationary" && this.ov(o, "mount") === "ceiling" && !o.dropped ? "ceiling" : null; if (o.mount) this.eHang(o); }
       o.at += dt; if (o.flash > 0) o.flash -= dt;
-      if (beh === "drone" && !o.boss) { const hv = g("hover"), alive = o.st !== "dead" && o.st !== "dying"; o.lift = alive ? hv + Math.sin((o.at + (o.th.id.length || 0)) * 2.4) * g("hoverBob") : Math.max(0, (o.lift || 0) - 400 * dt); }
+      if (beh === "drone" && !o.boss) { const alive = o.st !== "dead" && o.st !== "dying", hh = g("height") || 110;   // hover height, kept under the ceiling (checked a few times a second)
+        o.ceilT = (o.ceilT || 0) - dt; if (o.ceilT <= 0 && this.view) { o.ceilT = 0.25; const hit = this.view.raycast([o.x, o.floor + 4, o.y], [0, 1, 0], 4000); o.ceilH = hit ? hit.t + 4 : 1e9; }
+        const room = Math.max(0, (o.ceilH || 1e9) - hh - 8 - g("hoverBob")), hv = Math.min(g("hover"), room); o.lift = alive ? Math.max(0, hv + Math.sin((o.at + (o.th.id.length || 0)) * 2.4) * Math.min(g("hoverBob"), hv)) : Math.max(0, (o.lift || 0) - 400 * dt); }
       if (o.st === "dead") return;
       if (o.st === "dying") { if (o.at >= this.eLen(o, "deathAnim", 0.6)) { o.st = "dead"; if (!this.ov(o, "corpse")) o.taken = true; } return; }
       if (o.st === "falling") { this.eMove(o, 0, 0, dt); if (o.body && o.body.ground && o.at > 0.05) this.eLand(o); return; }

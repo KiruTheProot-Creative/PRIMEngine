@@ -30,7 +30,7 @@
   const FS = [
     "#ifdef GL_FRAGMENT_PRECISION_HIGH", "precision highp float;", "#else", "precision mediump float;", "#endif",
     "varying vec2 vUV;varying vec3 vCol;varying float vD;varying vec3 vW;uniform sampler2D uTex;uniform sampler2D uETex;uniform vec3 uFog;uniform vec2 uFogR;uniform float uBright;",
-    "uniform vec4 uLP[8];uniform vec4 uLC[8];uniform vec4 uLN[8];uniform vec4 uLU[8];uniform int uNL;uniform vec3 uCam;",
+    "uniform vec4 uLP[16];uniform vec4 uLC[16];uniform vec4 uLN[16];uniform vec4 uLU[16];uniform int uNL;uniform vec3 uCam;",
     // material: base colour (texture x tint), emission (an emission map, or the base colour itself) x strength, extra flat glow (effects)
     "uniform vec3 uTint;uniform vec3 uEmit;uniform float uLit;uniform float uAlpha;uniform vec2 uCut;uniform float uEmitK;uniform float uEmitMap;",
     // mood: colour tint x brightness, contrast, saturation
@@ -47,7 +47,7 @@
     " vec3 V=normalize(uCam-vW); if(dot(n,V)<0.0) n=-n;",
     " if(uNL>0){",
     "  vec3 ls=vec3(0.0);",
-    "  for(int i=0;i<8;i++){ if(i>=uNL) break;",
+    "  for(int i=0;i<16;i++){ if(i>=uNL) break;",
     "   vec3 Lp=uLP[i].xyz; float rng=uLP[i].w; vec3 col=uLC[i].rgb; float ty=uLC[i].w; vec3 tg=Lp; float fc=1.0;",
     "   if(ty>0.5){ vec3 an=uLN[i].xyz; vec3 ux=uLU[i].xyz; vec3 vx=cross(an,ux); vec3 rel=vW-Lp; tg=Lp+ux*clamp(dot(rel,ux),-uLN[i].w,uLN[i].w)+vx*clamp(dot(rel,vx),-uLU[i].w,uLU[i].w); }",
     "   vec3 L=tg-vW; float d=length(L); L=L/max(d,0.001);",
@@ -177,22 +177,32 @@
 
   // ---- lights and materials (see the fragment shader)
   P.setLights = function (list) { this.lights = list || []; };
-  // the (up to) 8 lights that matter most for this frame: the nearest ones, measured in their own reach
-  // a light counts when the space it lights up can be seen (its sphere touches the view), however far from the camera it is; nearest first
-  P.pickLights = function () {
+  // lights: every light whose sphere touches the view and is within fog range is a candidate (no limit); each piece of the level / each object then uses
+  // the (up to) 16 candidates that actually reach it (pickLights(mn, mx)), so a level can have any number of lamps and none of them pops in and out
+  P.lightCands = function () {
+    if (this._lcL === this.lights && this._lcF === this.frames && this._lcVp === this.vp) return this._lc;
     const c = this.cam, pl = this.vp ? this.frustum() : null, seen = l => !pl || pl.every(q => q[0] * l.p[0] + q[1] * l.p[1] + q[2] * l.p[2] + q[3] > -l.r), far = this.fogE < 1e8 ? this.fogE : 1e9;
-    return (this.lights || []).filter(l => seen(l) && Math.hypot(l.p[0] - c.x, l.p[1] - c.y, l.p[2] - c.z) - l.r < far).map(l => ({ l, k: Math.hypot(l.p[0] - c.x, l.p[1] - c.y, l.p[2] - c.z) / Math.max(1, l.r) })).sort((a, b) => a.k - b.k).slice(0, 8).map(x => x.l);
+    this._lcL = this.lights; this._lcF = this.frames; this._lcVp = this.vp; let dn = 0;
+    return (this._lc = (this.lights || []).filter(l => { if (!l.owner) l.skey = "d" + dn++; else l.skey = l.owner; return seen(l) && Math.hypot(l.p[0] - c.x, l.p[1] - c.y, l.p[2] - c.z) - l.r < far; }));
   };
-  P.useLights = function (camSpace) {
-    const gl = this.gl, L = this.loc, c = this.cam, B = R.camBasis(c.yaw, c.pitch), all = this.pickLights();
-    // shadows only for world-space passes, and only for the lights that got a shadow map this frame
-    const slots = !camSpace && this.shOn ? this.shSlots.map(sl => all.indexOf(sl.l)) : []; gl.uniform1f(L.shOn, slots.some(i => i >= 0) ? 1 : 0); gl.uniform4fv(L.shL, [0, 1, 2, 3].map(k => slots[k] === undefined ? -1 : slots[k]));
-    for (let k = 0; k < 4; k++) { gl.activeTexture(gl.TEXTURE2 + k); gl.bindTexture(gl.TEXTURE_CUBE_MAP, this.shSlots[k] ? this.shSlots[k].tex : this.emptyCube()); gl.uniform1i(L["sh" + k], 2 + k); } gl.activeTexture(gl.TEXTURE0);
+  // the lights for a box (world space mn..mx) or, without one, around the camera: the ones that reach it, the closest (in their own reach) first, at most 16
+  P.pickLights = function (mn, mx) {
+    const C = this.lightCands(), c = this.cam, a = mn || [c.x, c.y, c.z], b = mx || a, out = [];
+    for (const l of C) { const dx = Math.max(a[0] - l.p[0], 0, l.p[0] - b[0]), dy = Math.max(a[1] - l.p[1], 0, l.p[1] - b[1]), dz = Math.max(a[2] - l.p[2], 0, l.p[2] - b[2]), d = Math.hypot(dx, dy, dz); if (mn && d >= l.r) continue; out.push({ l, k: d / Math.max(1, l.r) }); }
+    if (out.length > 16) out.sort((x, y) => x.k - y.k || (x.l.skey < y.l.skey ? -1 : 1)); return out.slice(0, 16).map(x => x.l);
+  };
+  P.useLights = function (camSpace, list) {
+    const gl = this.gl, L = this.loc, c = this.cam, B = R.camBasis(c.yaw, c.pitch), all = list || this.pickLights();
+    const sig = (camSpace ? "c" : "w") + this.frames + "|" + (this.shOn ? 1 : 0) + "|" + all.map(l => l.skey + ":" + l.p[0] + "," + l.p[1] + "," + l.p[2]).join(";"); if (sig === this._luSig && this._luPr === this.pr && this._luL === this.lights) return; this._luSig = sig; this._luPr = this.pr; this._luL = this.lights;
+    // shadows only for world-space passes: up to 4 of this list's lights that got a shadow map this frame (lamps by their owner, moving lights by their place in the list)
+    const sm = this.shMaps || {}, slots = [], tex = []; if (!camSpace && this.shOn) all.forEach((l, i) => { const t = sm[l.skey]; if (t && slots.length < 4) { slots.push(i); tex.push(t); } });
+    gl.uniform1f(L.shOn, slots.length ? 1 : 0); gl.uniform4fv(L.shL, [0, 1, 2, 3].map(k => slots[k] === undefined ? -1 : slots[k]));
+    for (let k = 0; k < 4; k++) { gl.activeTexture(gl.TEXTURE2 + k); gl.bindTexture(gl.TEXTURE_CUBE_MAP, tex[k] || this.emptyCube()); gl.uniform1i(L["sh" + k], 2 + k); } gl.activeTexture(gl.TEXTURE0);
     const toC = p => { const d = [p[0] - c.x, p[1] - c.y, p[2] - c.z]; return [M4.dot(d, B.s), M4.dot(d, B.u), -M4.dot(d, B.f)]; }, dC = v => [M4.dot(v, B.s), M4.dot(v, B.u), -M4.dot(v, B.f)];
-    const lp = new Float32Array(32), lc = new Float32Array(32), ln = new Float32Array(32), lu = new Float32Array(32);
+    const lp = new Float32Array(64), lc = new Float32Array(64), ln = new Float32Array(64), lu = new Float32Array(64);
     all.forEach((l, i) => { const p = camSpace ? toC(l.p) : l.p, n = l.n ? (camSpace ? dC(l.n) : l.n) : [0, 1, 0], u = l.u ? (camSpace ? dC(l.u) : l.u) : [1, 0, 0];
       lp.set([p[0], p[1], p[2], l.r], i * 4); lc.set([l.c[0], l.c[1], l.c[2], l.type ? 1 : 0], i * 4); ln.set([n[0], n[1], n[2], l.hw || 0], i * 4); lu.set([u[0], u[1], u[2], l.hh || 0], i * 4); });
-    this.nLights = all.length; gl.uniform4fv(L.lp, lp); gl.uniform4fv(L.lc, lc); gl.uniform4fv(L.ln, ln); gl.uniform4fv(L.lu, lu); gl.uniform1i(L.nl, all.length); gl.uniform3fv(L.cam, camSpace ? [0, 0, 0] : [c.x, c.y, c.z]);
+    this.nLights = Math.max(this.nLights || 0, all.length); gl.uniform4fv(L.lp, lp); gl.uniform4fv(L.lc, lc); gl.uniform4fv(L.ln, ln); gl.uniform4fv(L.lu, lu); gl.uniform1i(L.nl, all.length); gl.uniform3fv(L.cam, camSpace ? [0, 0, 0] : [c.x, c.y, c.z]);
   };
   // material of what is drawn next: { tint, emit (flat glow colour), emitK (emission strength), emitTex (GL texture of the emission map), lit, alpha } (all optional)
   P.setMat = function (m) {
@@ -225,9 +235,9 @@
     const vp = mul(persp(this.fov, this.canvas.width / this.canvas.height, 2, 12000), look(c.x, c.y, c.z, c.yaw, c.pitch));
     this.vp = vp; gl.uniformMatrix4fv(this.loc.vp, false, new Float32Array(vp)); this.lookUniforms(true); gl.uniform1f(this.loc.bright, this.bright); gl.uniformMatrix4fv(this.loc.m, false, new Float32Array(M4.ident()));
     const L = this.loc; gl.enableVertexAttribArray(L.pos); gl.enableVertexAttribArray(L.uv); gl.enableVertexAttribArray(L.col);
-    this.useLights(false); this.setMat();
-    const vis = this.visible(), st = this.stats = { tris: 0, chunks: 0, totalTris: this.triCount || 0, totalChunks: this.batches.length, lights: this.nLights || 0 };
-    for (const b of this.batches) { if (vis && !vis(b)) continue; st.chunks++; st.tris += b.n / 3; gl.bindBuffer(gl.ARRAY_BUFFER, b.buf); gl.vertexAttribPointer(L.pos, 3, gl.FLOAT, false, 32, 0); gl.vertexAttribPointer(L.uv, 2, gl.FLOAT, false, 32, 12); gl.vertexAttribPointer(L.col, 3, gl.FLOAT, false, 32, 20);
+    this._luSig = null; this.nLights = 0; this.setMat();
+    const vis = this.visible(), st = this.stats = { tris: 0, chunks: 0, totalTris: this.triCount || 0, totalChunks: this.batches.length, lights: this.lightCands().length };
+    for (const b of this.batches) { if (vis && !vis(b)) continue; st.chunks++; this.useLights(false, b.mn ? this.pickLights(b.mn, b.mx) : null); st.tris += b.n / 3; gl.bindBuffer(gl.ARRAY_BUFFER, b.buf); gl.vertexAttribPointer(L.pos, 3, gl.FLOAT, false, 32, 0); gl.vertexAttribPointer(L.uv, 2, gl.FLOAT, false, 32, 12); gl.vertexAttribPointer(L.col, 3, gl.FLOAT, false, 32, 20);
       gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.texFor(b.tex, this.urls)); gl.drawArrays(gl.TRIANGLES, 0, b.n); }
     if (this.overlay && this.overlay.length) this.drawFx(this.overlay);
     this.frames++;
@@ -304,10 +314,10 @@
     // objects off screen are skipped (culling setting): a sphere around the model's bounds, moved by its matrix
     const vis = this.visible(), pl = vis ? this.frustum() : null, onScreen = f => { const b = f.gm.model && f.gm.model.bounds; if (!pl || !b) return true; const m = f.M, c = M4.point(m, (b.lo[0] + b.hi[0]) / 2, (b.lo[1] + b.hi[1]) / 2, (b.lo[2] + b.hi[2]) / 2), k = Math.max(Math.hypot(m[0], m[1], m[2]), Math.hypot(m[4], m[5], m[6]), Math.hypot(m[8], m[9], m[10])), r = Math.hypot(b.hi[0] - b.lo[0], b.hi[1] - b.lo[1], b.hi[2] - b.lo[2]) * 0.75 * k + 8; return pl.every(q => q[0] * c[0] + q[1] * c[1] + q[2] * c[2] + q[3] > -r); };
     this.culledFx = 0;
-    for (const f of list) if (f.kind === "mesh" && f.gm) { if (!onScreen(f)) { this.culledFx++; continue; } this.setMat(f.mat); const lv = this.lodLevelAt(Math.hypot(f.p[0] - this.cam.x, f.p[1] - this.cam.y, f.p[2] - this.cam.z), 20 * (f.scale || 1)); this.lodLevel = lv; for (let ms of f.gm.meshes) { ms = this.lodOf(f.gm, ms, lv); gl.uniformMatrix4fv(L.m, false, new Float32Array(M4.mul(f.M, f.pose[ms.node]))); bind(ms.buf, ms.tex || f.tex || f.gm.tex); gl.drawArrays(gl.TRIANGLES, 0, ms.n); } }
+    for (const f of list) if (f.kind === "mesh" && f.gm) { if (!onScreen(f)) { this.culledFx++; continue; } { const b = f.gm.model && f.gm.model.bounds, m = f.M; if (b && m) { const cc = M4.point(m, (b.lo[0] + b.hi[0]) / 2, (b.lo[1] + b.hi[1]) / 2, (b.lo[2] + b.hi[2]) / 2), k = Math.max(Math.hypot(m[0], m[1], m[2]), Math.hypot(m[4], m[5], m[6]), Math.hypot(m[8], m[9], m[10])), r = Math.hypot(b.hi[0] - b.lo[0], b.hi[1] - b.lo[1], b.hi[2] - b.lo[2]) * 0.5 * k; this.useLights(false, this.pickLights(cc.map(q => q - r), cc.map(q => q + r))); } else this.useLights(false); } this.setMat(f.mat); const lv = this.lodLevelAt(Math.hypot(f.p[0] - this.cam.x, f.p[1] - this.cam.y, f.p[2] - this.cam.z), 20 * (f.scale || 1)); this.lodLevel = lv; for (let ms of f.gm.meshes) { ms = this.lodOf(f.gm, ms, lv); gl.uniformMatrix4fv(L.m, false, new Float32Array(M4.mul(f.M, f.pose[ms.node]))); bind(ms.buf, ms.tex || f.tex || f.gm.tex); gl.drawArrays(gl.TRIANGLES, 0, ms.n); } }
     // decals / sprites: a textured square at p facing n (up = the world's up, or z for floors); frame f of a horizontal strip of `frames`
     // decals / sprites are in world space: undo the last mesh's model matrix (it used to stay set, so sprites were moved by whatever object was drawn last)
-    gl.uniformMatrix4fv(L.m, false, new Float32Array(M4.ident()));
+    gl.uniformMatrix4fv(L.m, false, new Float32Array(M4.ident())); this.useLights(false);
     const decs = list.filter(f => f.kind === "decal" && f.texId), cm = this.cam, dd = f => (f.p[0] - cm.x) ** 2 + (f.p[1] - cm.y) ** 2 + (f.p[2] - cm.z) ** 2;
     decs.sort((a, b) => (a.sprite ? 1 : 0) - (b.sprite ? 1 : 0) || (a.sprite ? dd(b) - dd(a) : 0));
     for (const f of decs) {
@@ -447,26 +457,37 @@
   // before the frame: the most important shadow lights get their cube map of distances (the level + the objects in `this.casters` = drawFx mesh items).
   // Lamps (lights with an `owner`) come first and are redrawn at most every 3rd frame unless they move; moving lights (projectiles) use small 256 maps.
   P.renderShadows = function () {
-    const gl = this.gl, T = this.tags, on = this.spr && this.shadows !== false && (!T || !T.has || !T.has("gfx.shadows") || T.get("gfx.shadows")); this.shSlots = []; this.shOn = 0; if (!on) return;
-    const max = Math.max(1, Math.min(4, this.shadowCount || 3)), want = this.pickLights().filter(l => l.shadow).sort((a, b) => (b.owner ? 1 : 0) - (a.owner ? 1 : 0)).filter((l, i, arr) => l.owner || arr.slice(0, i).filter(q => !q.owner).length < (this.dynShadows === undefined ? 1 : this.dynShadows)).slice(0, max); if (!want.length) return;
-    const L = this.sloc, I = new Float32Array(M4.ident()); let progOn = false, dyn = 0;
-    want.forEach(l => {
-      const key = l.owner || "dyn" + dyn++, S = l.owner ? (this.shadowSize || 512) : 256, map = this.shadowMap(key, S), moved = !map.p || Math.hypot(map.p[0] - l.p[0], map.p[1] - l.p[1], map.p[2] - l.p[2]) > 0.5; map.used = this.frames;
-      this.shSlots.push({ l, tex: map.tex }); if (l.owner && !moved && this.frames - map.frame < 3) return;
+    const gl = this.gl, T = this.tags, on = this.spr && this.shadows !== false && (!T || !T.has || !T.has("gfx.shadows") || T.get("gfx.shadows")); this.shMaps = {}; this.shSlots = []; this.shOn = 0; if (!on) return;
+    // which lights get a cube map: lamps (lights with an owner, they stand still) up to shLamps, the nearest kept steady (a lamp that already has one keeps it unless clearly farther);
+    // moving lights (shots) up to dynShadows. Lamp maps are cached and only drawn again when something that casts a shadow moved near them (or every ~half second, staggered)
+    const C = this.lightCands().filter(l => l.shadow), c = this.cam, prev = this.shPrev || {}, dist = l => Math.hypot(l.p[0] - c.x, l.p[1] - c.y, l.p[2] - c.z) - l.r;
+    const lamps = C.filter(l => l.owner).map(l => ({ l, k: dist(l) - (prev[l.skey] ? 200 : 0) })).sort((a, b) => a.k - b.k).slice(0, this.shLamps || 12).map(x => x.l);
+    const dyn = C.filter(l => !l.owner).map(l => ({ l, k: dist(l) })).sort((a, b) => a.k - b.k).slice(0, this.dynShadows === undefined ? 1 : this.dynShadows).map(x => x.l);
+    const nLamp = (this.lights || []).filter(l => l.owner && l.shadow).length, LS = nLamp > 6 ? 256 : (this.shadowSize || 512), now = {}; let draws = 0, firsts = 0;
+    const casters = (this.casters || []).filter(it => it.gm && it.M), L = this.sloc, I = new Float32Array(M4.ident()); let progOn = false;
+    const sigOf = l => { let h = 0, n = 0; for (const it of casters) { if (it.owner && it.owner === l.owner) continue; const m = it.M; if (Math.hypot(m[12] - l.p[0], m[13] - l.p[1], m[14] - l.p[2]) > l.r + 400) continue; n++; h += m[12] * 1.3 + m[13] * 2.7 + m[14] * 3.1 + (it.pose && it.pose[0] ? it.pose[0][12] + it.pose[0][13] + it.pose[0][14] : 0); } return n + ":" + Math.round(h); };
+    const draw = (l, map, S) => {
       if (!progOn) { progOn = true; gl.useProgram(this.spr); for (const k of ["pos", "uv", "col"]) if (this.loc[k] >= 0) gl.disableVertexAttribArray(this.loc[k]); gl.enableVertexAttribArray(L.pos); gl.disable(gl.BLEND); }
       const r = Math.max(8, l.r), proj = persp(Math.PI / 2, 1, 1, r), fb = this.shadowFb(S); gl.viewport(0, 0, S, S); gl.uniform3fv(L.lp, l.p); gl.uniform1f(L.r, r); map.frame = this.frames; map.p = l.p.slice();
-      const near = this.batches.filter(b => boxNearSphere(b.mn, b.mx, l.p, r)), cast = (this.casters || []).filter(it => it.gm && it.M && !(l.owner && it.owner === l.owner) && Math.hypot(it.M[12] - l.p[0], it.M[13] - l.p[1], it.M[14] - l.p[2]) < r + 400);
+      const near = this.batches.filter(b => boxNearSphere(b.mn, b.mx, l.p, r)), cast = casters.filter(it => !(l.owner && it.owner === l.owner) && Math.hypot(it.M[12] - l.p[0], it.M[13] - l.p[1], it.M[14] - l.p[2]) < r + 400);
       for (let f = 0; f < 6; f++) {
         gl.bindFramebuffer(gl.FRAMEBUFFER, fb); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_CUBE_MAP_POSITIVE_X + f, map.tex, 0);
         gl.clearColor(1, 1, 1, 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT); const [dir, up] = FACES[f];
         gl.uniformMatrix4fv(L.vp, false, new Float32Array(mul(proj, lookAt(l.p, [l.p[0] + dir[0], l.p[1] + dir[1], l.p[2] + dir[2]], up)))); gl.uniformMatrix4fv(L.m, false, I);
         for (const b of near) { gl.bindBuffer(gl.ARRAY_BUFFER, b.buf); gl.vertexAttribPointer(L.pos, 3, gl.FLOAT, false, 32, 0); gl.drawArrays(gl.TRIANGLES, 0, b.n); }
         for (const it of cast) for (const ms of it.gm.meshes) { gl.uniformMatrix4fv(L.m, false, new Float32Array(M4.mul(it.M, it.pose[ms.node]))); gl.bindBuffer(gl.ARRAY_BUFFER, ms.buf); gl.vertexAttribPointer(L.pos, 3, gl.FLOAT, false, 32, 0); gl.drawArrays(gl.TRIANGLES, 0, ms.n); }
-      }
-    });
+      } };
+    // lamps: a new one is drawn right away (at most 3 a frame, the rest next frame), a known one again when it moved or something near it changed (at most 2 a frame, the stalest first)
+    const stale = [];
+    for (const l of lamps) { const map = this.shadowMap(l.skey, LS), moved = !map.p || Math.hypot(map.p[0] - l.p[0], map.p[1] - l.p[1], map.p[2] - l.p[2]) > 0.5; map.used = this.frames;
+      if (map.frame === undefined || moved) { if (firsts >= 3) continue; firsts++; map.sig = sigOf(l); draw(l, map, LS); draws++; now[l.skey] = 1; this.shMaps[l.skey] = map.tex; continue; }
+      now[l.skey] = 1; this.shMaps[l.skey] = map.tex; const sg = sigOf(l); if (sg !== map.sig || this.frames - map.frame > 30) stale.push({ l, map, sg }); }
+    stale.sort((a, b) => a.map.frame - b.map.frame).slice(0, 2).forEach(q => { q.map.sig = q.sg; draw(q.l, q.map, LS); draws++; });
+    dyn.forEach((l, i) => { const map = this.shadowMap("dyn" + i, 256); map.used = this.frames; draw(l, map, 256); this.shMaps[l.skey] = map.tex; });
+    this.shPrev = now; this.shadowDraws = draws;
     // forget lamp maps that have not been used for a while (lamps far away)
-    if (this.frames % 120 === 0) for (const k of Object.keys(this.shCache)) if (this.frames - this.shCache[k].used > 600) { gl.deleteTexture(this.shCache[k].tex); delete this.shCache[k]; }
-    this.shOn = 1; gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.useProgram(this.pr);
+    if (this.frames % 120 === 0) for (const k of Object.keys(this.shCache || {})) if (this.frames - this.shCache[k].used > 600) { gl.deleteTexture(this.shCache[k].tex); delete this.shCache[k]; }
+    this.shOn = Object.keys(this.shMaps).length ? 1 : 0; if (progOn) { gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.useProgram(this.pr); }
   };
 
   // ------------------------------------------------------------ HDR scene picture + bloom (post effects; later the Compositor tab plugs in here)

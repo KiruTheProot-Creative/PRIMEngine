@@ -11,9 +11,10 @@ module.exports = async (p, out) => {
     window.__ids = { crate: crate.id, low: low.id };
     m.things = [{ id: 'c', prop: crate.id, x: C(24), y: C(24), ang: 0, layer: 0 }, { id: 'l', prop: low.id, x: C(22), y: C(24), ang: 0, layer: 0 }]; m.n.t = 9; S.tags.emit([]); });
   await p.click('.tab:has-text("Object Editor")'); await p.waitForTimeout(300); await p.evaluate(() => { __studio.S.propSel = window.__ids.crate; }); await p.click('.tab:has-text("Object Editor")'); await p.waitForTimeout(600);
-  console.log('solid foldout:', await p.evaluate(() => [...document.querySelectorAll('.insp .fold')].map(f => f.innerText.replace(/\s+/g, ' ')).filter(t => /Solid \(hit-box\)/.test(t)).join('').slice(0, 220)));
-  await p.click('button:has-text("Box = fit to the model")'); await p.waitForTimeout(400); await p.screenshot({ path: out + '_editor.png' });
-  console.log('fitted box:', await p.evaluate(() => { const T = __studio.S.tags, pre = window.__ids.crate + '.'; return ['solid', 'solidX', 'solidY', 'solidZ', 'solidW', 'solidH', 'solidD'].map(k => T.get(pre + k)).join(' '); }));
+  console.log('solid foldout:', await p.evaluate(() => [...document.querySelectorAll('.insp .fold')].map(f => f.innerText.replace(/\s+/g, ' ')).filter(t => /Solid \(collision boxes\)/.test(t)).join('').slice(0, 220)));
+  await p.evaluate(() => { __studio.S.tags.set(window.__ids.crate + '.solid', 'box'); }); await p.click('.tab:has-text("Timeline")'); await p.waitForTimeout(200); await p.click('.tab:has-text("Object Editor")'); await p.waitForTimeout(600);
+  await p.click('button:has-text("Fit this box to the model")'); await p.waitForTimeout(400); await p.screenshot({ path: out + '_editor.png' });
+  console.log('fitted box:', await p.evaluate(() => { const T = __studio.S.tags, pre = window.__ids.crate + '.'; const pr = __studio.S.project.props.find(x => x.id + '.' === pre), b = pr.solids[0]; return T.get(pre + 'solid') + ' ' + ['x', 'y', 'z', 'w', 'h', 'd'].map(k => T.get(pre + 'sb.' + b.id + '.' + k)).join(' '); }));
   await p.click('.tab:has-text("Player Editor")'); await p.waitForTimeout(300); await p.evaluate(() => { __studio.S.objView = false; }); await p.click('.tab:has-text("Timeline")'); await p.waitForTimeout(200); await p.click('.tab:has-text("Player Editor")'); await p.waitForTimeout(400);
   await p.click('button:has-text("Walk map1")'); await p.waitForFunction(() => __studio.S.play && __studio.S.play.things && __studio.S.play.things.length >= 1, null, { timeout: 15000 }); await p.waitForTimeout(500);
   const C = c => (c + 0.5) * 128;

@@ -16,7 +16,7 @@ module.exports = async (p, out) => {
   await p.click('button:has-text("Walk this map")'); await p.waitForTimeout(2500);
   await p.evaluate(() => { const q = __studio.S.play; q.msg.style.display = 'none'; q.look = () => {}; q.pitch = -0.1; });
   await p.waitForTimeout(1500); await p.screenshot({ path: out + '_on.png' });
-  console.log('state', await p.evaluate(() => { const v = __studio.S.play.view; return JSON.stringify({ post: v.post, hdr: v.hdr, shadowsDrawn: v.shSlots.length, lights: (v.lights || []).length, casters: (v.casters || []).length, err: v.gl.getError() }); }));
+  console.log('state', await p.evaluate(() => { const v = __studio.S.play.view; return JSON.stringify({ post: v.post, hdr: v.hdr, shadowsDrawn: Object.keys(v.shMaps || {}).length, lights: (v.lights || []).length, casters: (v.casters || []).length, err: v.gl.getError() }); }));
   await p.evaluate(() => { const T = __studio.S.play.T; T.set('gfx.shadows', false); }); await p.waitForTimeout(1200); await p.screenshot({ path: out + '_noshadow.png' });
   console.log('shadows off ->', await p.evaluate(() => __studio.S.play.view.shSlots.length));
   await p.evaluate(() => { const T = __studio.S.play.T; T.set('gfx.shadows', true); T.set('gfx.bloom', false); }); await p.waitForTimeout(1200); await p.screenshot({ path: out + '_nobloom.png' });

@@ -102,7 +102,7 @@
       this.layer.replaceChildren(); this.els = {};
       const bgi = T.get(sc.id + ".bgImage"); if (bgi && this.urls[bgi]) { const im = new Image(); im.src = this.urls[bgi]; im.style.cssText = "position:absolute;inset:0;width:100%;height:100%;object-fit:cover"; this.layer.append(im); }
       if (this.game) { const g = div("rt-game"); g.textContent = "Your game starts here.\nThe 3D game view comes in a later step.\n\nClick or press Esc to go back."; g.style.whiteSpace = "pre-line"; this.layer.append(g); return; }
-      if (sc.kind === "prologue") { const pr = this.proDraw(sc, true); this.layer.append(pr.box); if (pr.st === "scroller") { pr.crawl.style.top = (+T.get(sc.id + ".tilt") > 0 ? H * 0.35 : H * 0.2) + "px"; } else if (pr.pages.length) this.proShow(pr.pages[0], pr.pages[0].length); if (pr.phase === "intro" && !pr.pages) pr.intro.style.opacity = 0; return; }
+      if (sc.kind === "prologue") { const pr = this.proDraw(sc, true); this.layer.append(pr.box); if (pr.st === "scroller") { pr.crawl.style.top = (+T.get(sc.id + ".tilt") > 0 ? H * 0.35 : H * 0.2) + "px"; } else if (pr.pages.length) this.proShow(pr.pages[0], pr.pages[0].length, pr.ty); if (pr.phase === "intro" && !pr.pages) pr.intro.style.opacity = 0; return; }
       if (sc.kind === "splash") { const n = sc.nodes.find(x => x.id === this.selId) || sc.nodes[0]; if (n) { const el = this.splashEl(sc, n); el.style.left = "50%"; el.style.top = "50%"; this.layer.append(el); this.els[n.id] = el; if (n.id === this.selId) el.classList.add("rt-sel"); }
         else { const e = div("rt-ph rt-n"); e.textContent = "No splash screens yet. Add one on the left."; e.style.left = "50%"; e.style.top = "50%"; this.layer.append(e); } return; }
       for (const n of sc.nodes) { const el = this.makeNode(sc, n); const st = (n.type === "image" || n.type === "video") && this.P(sc, n, "stretch"); el.style.left = (st ? W / 2 : this.px(sc, n)) + "px"; el.style.top = (st ? H / 2 : this.py(sc, n)) + "px"; if (this.mode === "edit" && n.id === this.selId) el.classList.add("rt-sel"); this.layer.append(el); this.els[n.id] = el; }
@@ -191,7 +191,7 @@
       if (pr.chars > was) { const every = Math.max(1, +g("typeEvery") || 2), s = g("typeSound"); for (let i = was; i < pr.chars; i++) if (!/\s/.test(page[i]) && (pr.typed = (pr.typed || 0) + 1) % every === 0 && s && !pr.preview) { this.sfx(s); break; } }
       if (pr.chars >= page.length) pr.hold = Math.max(0.45, +g("pageHold") || 0) + 0.4;
     }
-    proShow(page, n) { const ty = this.pro.ty, a = document.createTextNode(page.slice(0, n)), b = document.createElement("i"); b.textContent = page.slice(n); ty.replaceChildren(a, b); }
+    proShow(page, n, ty) { ty = ty || this.pro.ty; const a = document.createTextNode(page.slice(0, n)), b = document.createElement("i"); b.textContent = page.slice(n); ty.replaceChildren(a, b); }
     proEnd() { const pr = this.pro; if (!pr) return; this.pro = null; if (pr.preview) { this.rebuild(); if (this.o.onSplashEnd) this.o.onSplashEnd(); return; } this.thenDo(this.tags.get(pr.sc.id + ".then"), this.tags.get(pr.sc.id + ".next")); }
     previewPrologue() { if (this.mode === "edit" && this.screen() && this.screen().kind === "prologue") this.proStart(true); }
     splashEl(sc, n) {
