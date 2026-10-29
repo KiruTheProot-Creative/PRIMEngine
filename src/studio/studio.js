@@ -1385,7 +1385,7 @@
       box.append(head("⤳", h("div", { class: "idin ro", text: pa.id }), pa.pts.length + " points · story " + ((pa.layer || 0) + 1)),
         h("div", { class: "btnrow" }, h("button", { class: "btn sm", text: "Reverse", onclick: () => { pa.pts.reverse(); markDirty(); S.med && S.med.redraw(); } }), h("button", { class: "btn sm danger", text: "Delete path", onclick: () => { S.med && S.med.deleteSelection(); S.msel = null; renderInspector(); } })),
         foldout("mpath", "Path", check("Goes round in a loop (off: walks back and forth)", pa.loop !== false, v => { pa.loop = v; markDirty(); S.med && S.med.redraw(); }),
-          h("div", { class: "note", text: users.length ? "Walked by: " + users.map(t => (S.tags.get(t.prop + ".name") || t.prop) + " (" + t.id + ")").join(", ") : "No enemy walks it yet: select a placed enemy (behaviour Patrol) and pick this path." })),
+          h("div", { class: "note", text: users.length ? "Walked by: " + users.map(t => (S.tags.get(t.prop + ".name") || t.prop) + " (" + t.id + ")").join(", ") : "No enemy walks it yet: select a placed enemy and pick this path under \"Follows path\" (or start drawing a path on top of the enemy)." })),
         h("div", { class: "note", text: "Path tool (N): click to add points, right-click or Enter to finish. Drag a point to move it; Delete removes the path. Points sit in the middle of cells." }));
     } else if (sel && sel.kind === "start") {
       box.append(head("➤", h("div", { class: "idin ro", text: "Player start" }), "Where the player begins"), foldout("mst", "Start", ...["startX", "startY", "startLayer", "startAngle"].map(k => field(pre + k))));

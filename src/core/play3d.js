@@ -395,6 +395,10 @@
       const v = this.view; if (!v) return false; const a = this.eEye(o), b = this.pEye(), d = M4.sub(b, a), L = M4.len(d); if (L < 1) return true; const D = d.map(q => q / L);
       const hit = v.raycast(a, D, L); if (hit && hit.t < L - 8) return false; const dh = this.hitDoor(a, D, L); return !(dh && dh.t < L - 8);
     }
+    // a body pushed aside (by enemies / other enemies): moved in small steps with the walls checked after each, at most its radius per frame,
+    // so a crowd can never shove it through a wall (the player used to be pushed into walls and fall out of the level)
+    shove(b, dx, dy, world, dtr) { let L = Math.hypot(dx, dy); if (L < 1e-6) return; if (L > b.r) { dx *= b.r / L; dy *= b.r / L; L = b.r; } const n = Math.ceil(L / Math.max(1, b.r * 0.25));
+      for (let i = 0; i < n; i++) { b.pos[0] += dx / n; b.pos[2] += dy / n; G.push(b, world, dtr); } }
     ePush(p, r, self) {   // keep enemies apart from each other
       for (const e of this.things || []) { if (e === self || !this.eAlive(e) || Math.abs(e.floor - self.floor) > 100) continue; const er = +this.T.get(e.pre + "radius") || 22, dx = p.x - e.x, dy = p.y - e.y, d = Math.hypot(dx, dy); if (d < r + er && d > 1e-4) { p.x += dx / d * (r + er - d) * 0.5; p.y += dy / d * (r + er - d) * 0.5; } }
     }
@@ -402,7 +406,7 @@
     eMove(o, vx, vy, dt) {
       const g = k => +this.T.get(o.pre + k) || 0, b = o.body || (o.body = { pos: [o.x, o.floor, o.y], vel: [0, 0, 0], r: 0, h: 0, step: 26, maxSlope: 0.69 }); b.r = g("radius") || 22; b.h = Math.min(g("height") || 110, G.LAYER - 4);
       b.vel[0] = vx; b.vel[2] = vy; b.vel[1] -= (+this.T.get("player.gravity") || 1100) * dt; G.move(b, dt, this.view && this.view.world, this.dtris);
-      const p = { x: b.pos[0], y: b.pos[2] }; this.ePush(p, b.r, o); b.pos[0] = p.x; b.pos[2] = p.y; o.x = b.pos[0]; o.y = b.pos[2]; o.floor = b.pos[1];
+      const p = { x: b.pos[0], y: b.pos[2] }; this.ePush(p, b.r, o); this.shove(b, p.x - b.pos[0], p.y - b.pos[2], this.view && this.view.world, this.dtris); o.x = b.pos[0]; o.y = b.pos[2]; o.floor = b.pos[1];
     }
     enemyStep(o, dt) {
       const T = this.T, g = k => +T.get(o.pre + k) || 0;
@@ -416,8 +420,10 @@
       if (o.st === "falling") { this.eMove(o, 0, 0, dt); if (o.body && o.body.ground && o.at > 0.05) this.eLand(o); return; }
       if (o.st === "fuse") { o.fuseT -= dt; o.flash = Math.floor(o.fuseT * 12) % 2 ? 0.06 : 0; if (o.fuseT <= 0) this.eBlast(o, true); return; }
       const r = g("radius") || 22, dx = this.x - o.x, dy = this.y - o.y, dist = Math.hypot(dx, dy) || 1;
-      if (T.get(o.pre + "detect") === "blind") { this.eBlind(o, dt, dist, beh); return; }
-      o.losT -= dt; if (o.losT <= 0) { o.losT = 0.2; o.los = !this.pdead && (o.mount ? this.inCone(o) : dist < (g("sight") || 900) && this.canSee(o)); if (o.los && !o.awake) { o.awake = true; const s = T.get(o.pre + "sightSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); } }
+      // walks a path: Patrol behaviour, or a Normal enemy that was given a path on the map (it patrols until it notices you)
+      const pathOn = (beh === "path" || beh === "chase") && !!o.th.path && (this.map.paths || []).some(q => q.id === o.th.path && q.pts.length);
+      if (T.get(o.pre + "detect") === "blind") { this.eBlind(o, dt, dist, pathOn ? "path" : beh); return; }
+      o.losT -= dt; if (o.losT <= 0) { o.losT = 0.2; o.los = !this.pdead && (o.mount ? this.inCone(o) : dist < (g("sight") || 900) && this.canSee(o)); if (o.los && !o.awake && pathOn && !this.eFront(o, dx, dy, dist)) o.los = false; if (o.los && !o.awake) { o.awake = true; o.lostT = 0; const s = T.get(o.pre + "sightSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); } }
       if (o.st === "pain") { if (o.at >= this.eLen(o, "hurtAnim", 0.25)) { o.st = "chase"; this.eSet(o, "walkAnim"); } return; }
       // hanging from the ceiling: waits for you to step into its cone, then shoots, drops or blows up
       if (o.mount === "ceiling") { o.cool -= dt;
@@ -429,8 +435,11 @@
         if (ds) this.sfxAt(ds, 1, this.thingPos(o));
         if (act === "selfdestruct" && !T.get(o.pre + "sdFall")) { o.st = "fuse"; o.fuseT = g("fuse"); return; }   // stays up there while the fuse burns
         o.mount = null; o.dropped = true; o.st = "falling"; o.at = 0; o.body = null; this.eSet(o, "idleAnim"); return; }
-      if (!o.awake || this.pdead) { if (beh === "path" && !this.pdead) this.ePatrol(o, dt); else { o.st = "idle"; this.eSet(o, "idleAnim"); } return; }
-      if (beh === "path" && T.get(o.pre + "pathChase") === false && o.st !== "attack") {   // stays on its path; still attacks when it can
+      // a patroller that lost you for a while goes back to its path (the point nearest to it)
+      if (pathOn && o.awake && T.get(o.pre + "pathChase") !== false && !this.pdead && o.st !== "attack") { o.lostT = o.los ? 0 : (o.lostT || 0) + dt;
+        if (o.lostT > (+T.get(o.pre + "pathGiveUp") || 5)) { o.awake = false; o.lostT = 0; o.pwait = 0; o.pstuck = 0; const pa = this.map.paths.find(q => q.id === o.th.path); let bi = 0, bd = 1e18; pa.pts.forEach((q, i) => { const d = (q[0] - o.x) ** 2 + (q[1] - o.y) ** 2; if (d < bd) { bd = d; bi = i; } }); o.pi = bi; } }
+      if (!o.awake || this.pdead) { if (pathOn && !this.pdead) this.ePatrol(o, dt); else { o.st = "idle"; this.eSet(o, "idleAnim"); } return; }
+      if (pathOn && T.get(o.pre + "pathChase") === false && o.st !== "attack") {   // stays on its path; still attacks when it can
         o.cool -= dt; const rg = g("attackRange") || 70;
         if (dist <= rg + (T.get(o.pre + "attack") === "melee" ? r + 16 : 0) && o.los && o.cool <= 0) { o.yaw = Math.atan2(dx, dy) * 180 / Math.PI; o.st = "attack"; o.hit = false; this.eSet(o, "attackAnim"); o.at = 0; const s = T.get(o.pre + "attackSound"); if (s) this.sfxAt(s, 1, this.thingPos(o)); return; }
         this.ePatrol(o, dt); return; }
@@ -520,6 +529,9 @@
       return M4.norm([D[0] + (t[0] * Math.cos(ph) + b[0] * Math.sin(ph)) * r, D[1] + (t[1] * Math.cos(ph) + b[1] * Math.sin(ph)) * r, D[2] + (t[2] * Math.cos(ph) + b[2] * Math.sin(ph)) * r]); }
     // ---- patrols, ceiling enemies, blasts, slicing
     // walk the path picked for this placed enemy (map.paths, thing.path): point to point, round in a loop or back and forth
+    // is the player in front of this patrolling enemy (tag pathFov, degrees; 360 = sees all around)? Always true when you are right next to it.
+    eFront(o, dx, dy, dist) { const fov = +this.T.get(o.pre + "pathFov"); if (!(fov > 0) || fov >= 360 || dist < (+this.T.get(o.pre + "radius") || 22) + 70) return true;
+      const a = o.yaw * Math.PI / 180, c = (Math.sin(a) * dx + Math.cos(a) * dy) / (dist || 1); return c >= Math.cos(fov * Math.PI / 360); }
     ePatrol(o, dt) {
       const pa = o.th.path && (this.map.paths || []).find(q => q.id === o.th.path), sp = +this.T.get(o.pre + "speed") || 0;
       if (!pa || pa.pts.length < 1 || sp <= 0) { this.eMove(o, 0, 0, dt); o.st = "idle"; this.eSet(o, "idleAnim"); return; }
@@ -1019,7 +1031,7 @@
       if (this.upReq) { b.vel[1] = Math.max(b.vel[1], 0) + this.upReq; this.upReq = 0; b.ground = false; }
       if (this.extV) { b.vel[0] += this.extV[0]; b.vel[2] += this.extV[1]; const f = Math.exp(-dt * (was ? 7 : 1.2)); this.extV = [this.extV[0] * f, this.extV[1] * f]; if (Math.hypot(...this.extV) < 5) this.extV = null; }
       b.vel[1] -= g * dt; const vy = b.vel[1], x0 = b.pos[0], z0 = b.pos[2], world = this.view && this.view.world, dtr = this.doorTris();
-      G.move(b, dt, world, dtr); const p = { x: b.pos[0], y: b.pos[2] }; this.push(p, r); if (p.x !== b.pos[0] || p.y !== b.pos[2]) { b.pos[0] = p.x; b.pos[2] = p.y; G.push(b, world, dtr); }
+      G.move(b, dt, world, dtr); const p = { x: b.pos[0], y: b.pos[2] }; this.push(p, r); this.shove(b, p.x - b.pos[0], p.y - b.pos[2], world, dtr);
       this.mv = Math.hypot(b.pos[0] - x0, b.pos[2] - z0); this.sprinting = !!(T.get("player.sprintEnabled") && k.shift && fw > 0); this.spdNow = spd;
       if (b.ground && was) { this.stepAcc = (this.stepAcc || 0) + this.mv; const sd2 = Math.max(10, +T.get("player.stepDistance") || 90); if (this.stepAcc >= sd2) { this.stepAcc %= sd2; this.footstep(); } }
       if (b.ground && !was && vy < -250) { this.psound("landSound"); this.landT = performance.now(); this.stepAcc = 0; }

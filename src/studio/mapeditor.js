@@ -272,7 +272,10 @@
       const P0 = [(Math.floor(this.wx(px) / C) + 0.5) * C, (Math.floor(this.wy(py) / C) + 0.5) * C], m = this.m; this.save(); m.paths = m.paths || [];
       let pa = this.pathOpen && m.paths.find(q => q.id === this.pathOpen);
       if (!pa) { let n = 1; while (m.paths.some(q => q.id === "path" + n)) n++; pa = { id: "path" + n, pts: [], loop: true, layer: s.L }; m.paths.push(pa); this.pathOpen = pa.id; }
-      pa.pts.push(P0); this.sel = { kind: "path", id: pa.id }; this.changed(pa.pts.length === 1); this.emitSel(); return; }
+      pa.pts.push(P0);
+      // a path started on top of an enemy that walks no path yet: that enemy walks it
+      if (pa.pts.length === 1 && this.o.project) for (const th of m.things || []) { if (th.path || (th.layer || 0) !== s.L || Math.floor(th.x / C) !== Math.floor(P0[0] / C) || Math.floor(th.y / C) !== Math.floor(P0[1] / C)) continue; const pr = (this.o.project.props || []).find(q => q.id === th.prop); if (pr && this.T.get(pr.id + ".type") === "enemy") { th.path = pa.id; break; } }
+      this.sel = { kind: "path", id: pa.id }; this.changed(pa.pts.length === 1); this.emitSel(); return; }
     if (s.tool === "zone") { const z = this.zoneAt(cx, cy); if (erase) { if (z) { this.sel = { kind: "zone", id: z.id }; this.deleteSelection(); } return; }
       if (z) { this.save(); this.sel = { kind: "zone", id: z.id }; this.drag = { kind: "zmove", z, a: [cx, cy], o: [z.x0, z.y0, z.x1, z.y1], moved: false }; this.redraw(); this.emitSel(); this.buildPal(); return; }
       this.drag = { kind: "zbox", a: [cx, cy], b: [cx, cy] }; this.redraw(); return; }

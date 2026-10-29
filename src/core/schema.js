@@ -242,6 +242,8 @@
     { k: "blindMode", label: "Without noticing you it", type: "choice", options: [["shoot", "Fires on a timer, straight ahead (or down from a ceiling)"], ["touch", "Is a damage hitbox: touching it hurts"], ["both", "Both"]], def: "shoot", showIf: ["type", "enemy"], showIf2: ["detect", "blind"] },
     { k: "pathChase", label: "Leaves the path to hunt you once it sees you", type: "bool", def: true, showIf: ["type", "enemy"], showIf2: ["behavior", "path"] },
     NUM("pathWait", "Waits at each point (s)", 0, 0, 30, 0.1, { showIf: ["type", "enemy"], showIf2: ["behavior", "path"] }),
+    NUM("pathFov", "While patrolling it only sees you in front (view width in degrees, 360 = all around)", 140, 10, 360, 5, { showIf: ["type", "enemy"], showIf2: ["behavior", "path"] }),
+    NUM("pathGiveUp", "Goes back to its path after losing you for (s)", 5, 0.5, 120, 0.5, { showIf: ["type", "enemy"], showIf2: ["behavior", "path"] }),
     { k: "mount", label: "Where it sits", type: "choice", options: [["floor", "On the floor (a turret)"], ["ceiling", "On the nearest ceiling above it"]], def: "floor", showIf: ["type", "enemy"], showIf2: ["behavior", "stationary"] },
     { k: "turn", label: "Turns to face you", type: "bool", def: true, showIf: ["type", "enemy"], showIf2: ["behavior", "stationary"] },
     { k: "ceilFlip", label: "Hang upside down (model turned over)", type: "bool", def: true, showIf: ["type", "enemy"], showIf2: ["mount", "ceiling"], also: [["behavior", "stationary"]] },
