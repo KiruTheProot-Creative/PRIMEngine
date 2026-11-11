@@ -198,6 +198,8 @@ struct App {
         assetDir = FindDir("assets");
         FindAssets();
         Log("PRIMEngine started. Assets folder: " + assetDir);
+        LoadEditorSettings();
+        if (!lastRoom.empty() && GetFileAttributesA(lastRoom.c_str()) != INVALID_FILE_ATTRIBUTES) OpenRoom(lastRoom);
         if (!assetFiles.empty()) LoadModel(assetFiles[0]); else Log("No FBX files in the assets folder yet");
     }
 
@@ -305,8 +307,8 @@ struct App {
         float pulse = 0.9f + 0.12f * std::sin(T * 3.f);
         px::V3 flP = sim.bolts.empty() ? sim.flashP : sim.bolts.back().p; float flK = sim.bolts.empty() ? std::max(0.f, sim.flashT) / 0.3f * 1.6f : 1.5f;
         struct L { px::V3 p, c; float r, k; } L4[4] = {
-            { { 0, 2.0f, 10 }, { 1, 0.5f, 0.15f }, 9, pulse },
-            { { 3 * std::sin(T * 0.6f), 2.5f, 18 + 3 * std::cos(T * 0.6f) }, { 0.1f, 0.55f, 0.8f }, 9, 1.f },
+            { roomOpen ? px::V3{ 0, 7.f, 0 } : px::V3{ 0, 2.0f, 10 }, roomOpen ? px::V3{ 0.9f, 0.75f, 0.55f } : px::V3{ 1, 0.5f, 0.15f }, roomOpen ? 22.f : 9.f, roomOpen ? 0.55f : pulse },
+            { { 3 * std::sin(T * 0.6f), 2.5f, 18 + 3 * std::cos(T * 0.6f) }, { 0.1f, 0.55f, 0.8f }, 9, roomOpen ? 0.f : 1.f },
             { flP, { 1, 0.7f, 0.35f }, 8, flK },
             { eye, { 0.25f, 0.3f, 0.32f }, 5, 0.6f } };
         float lp[4][4], lc[4][4]; float on = S.dyn ? 1.f : 0.f;
@@ -326,7 +328,8 @@ struct App {
         ctx->IASetInputLayout(layout.Get()); ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         ctx->VSSetShader(vsWorld.Get(), nullptr, 0); ctx->PSSetShader(psWorld.Get(), nullptr, 0);
         SetFrame(view, vp, eye, lp, lc);
-        for (int m : { px::M_FLOOR, px::M_WALL, px::M_TRIM, px::M_STRIP, px::M_CORE, px::M_DOOR }) DrawMat(m, XMMatrixIdentity());
+        if (roomOpen) DrawRoom();
+        else for (int m : { px::M_FLOOR, px::M_WALL, px::M_TRIM, px::M_STRIP, px::M_CORE, px::M_DOOR }) DrawMat(m, XMMatrixIdentity());
 
         // viewmodel: own projection, squeezed into the nearest 5% of the depth range so it never clips into walls
         SetViewport(iw, ih, 0.f, 0.05f); SetFrame(view, vp2, eye, lp, lc);
@@ -345,10 +348,13 @@ struct App {
                 qv.push_back({ { p.x, p.y, p.z }, { 0, 0, 0 }, { k[2], k[3] }, { col.x, col.y, col.z, a } });
             }
         };
-        quad({ 0, 1.75f, 10 }, 1.7f, { 1, 0.45f, 0.1f }, 0.5f * pulse);     // core halo
-        quad({ 0, 2.2f, 27.6f }, 3.4f, { 0.1f, 0.7f, 1 }, 0.3f);            // door halo
+        if (!roomOpen) {
+            quad({ 0, 1.75f, 10 }, 1.7f, { 1, 0.45f, 0.1f }, 0.5f * pulse);     // core halo
+            quad({ 0, 2.2f, 27.6f }, 3.4f, { 0.1f, 0.7f, 1 }, 0.3f);            // door halo
+        }
         for (auto& b : sim.bolts) quad(b.p, 0.75f, { 1, 0.7f, 0.35f }, 1.f);
         for (auto& p : sim.parts) {
+            if (p.mote && roomOpen) continue;
             float k = p.mote ? (0.7f + 0.3f * std::sin(T * 2.f + p.ph)) : std::min(1.f, p.life / p.max * 1.5f);
             quad(p.p, p.size, p.c, p.a * k);
         }
@@ -433,6 +439,7 @@ struct App {
     void Tick(float dt) {
         anim.update(dt);
         if (statusTimer > 0) statusTimer -= dt;
+        if (roomOpen && roomDirty && (roomAutosave += dt) > 30.f) { roomAutosave = 0; if (room.save(roomPath)) { roomDirty = false; SetStatus("Autosaved room " + room.name); } }
         if (metaDirty) { metaTimer += dt; if (metaTimer > 0.6f) { SaveMeta(); metaDirty = false; metaTimer = 0; } }
         if (autoReload && modelLoaded && (reloadPoll += dt) > 1.f) {
             reloadPoll = 0; FILETIME t = FileTime(modelPath);
@@ -500,7 +507,11 @@ struct App {
         logLines.push_back(b + s); if (logLines.size() > 500) logLines.erase(logLines.begin());
     }
     const px::Camera& ActiveCam() const { return playing ? cam : edCam; }
-    void StartPlay() { if (playing) return; playing = true; pausedGame = false; Log("Play"); }
+    void StartPlay() {
+        if (playing) return;
+        playing = true; pausedGame = false; sim = px::Sim{}; sim.demo = !roomOpen;
+        if (roomOpen) { sim.solidAt = &App::SolidAt; sim.solidCtx = this; RoomPlayerSpawn(); Log("Play (from the editor camera)"); } else Log("Play");
+    }
     void StopPlay() { if (!playing) return; playing = false; pausedGame = false; if (captured) Capture(false); cam = px::Camera{}; sim = px::Sim{}; Log("Stop (player reset)"); }
     void EnsureViewRT(int w, int h) { w = std::max(2, w); h = std::max(2, h); if (rtView.w != w || rtView.h != h) MakeRT(rtView, w, h); }
 
@@ -526,7 +537,9 @@ struct App {
         left = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.17f, nullptr, &center);
         right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.27f, nullptr, &center);
         bottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.34f, nullptr, &center);
+        ImGuiID leftBottom = ImGui::DockBuilderSplitNode(left, ImGuiDir_Down, 0.45f, nullptr, &left);
         ImGui::DockBuilderDockWindow("Hierarchy", left);
+        ImGui::DockBuilderDockWindow("Inventory", leftBottom);
         ImGui::DockBuilderDockWindow("Inspector", right);
         ImGui::DockBuilderDockWindow("Assets", bottom); ImGui::DockBuilderDockWindow("Animation", bottom); ImGui::DockBuilderDockWindow("Console", bottom);
         ImGui::DockBuilderDockWindow("Viewport", center);
@@ -536,16 +549,34 @@ struct App {
     void MenuBar() {
         if (!ImGui::BeginMainMenuBar()) return;
         if (ImGui::BeginMenu("File")) {
-            if (ImGui::MenuItem("Save", "Ctrl+S")) SaveMeta();
+            if (ImGui::MenuItem("New room")) NewRoom();
+            if (ImGui::BeginMenu("Open room")) {
+                auto rooms = ListRooms(); if (rooms.empty()) ImGui::TextDisabled("No rooms yet");
+                for (auto& r : rooms) if (ImGui::MenuItem(FileName(r).c_str(), nullptr, roomOpen && r == roomPath)) OpenRoom(r);
+                ImGui::EndMenu();
+            }
+            if (ImGui::MenuItem("Close room", nullptr, false, roomOpen)) CloseRoom();
+            ImGui::Separator();
+            if (ImGui::MenuItem("Save", "Ctrl+S")) { SaveMeta(); SaveRoom(); }
             if (ImGui::MenuItem("Open assets folder")) ShellExecuteA(nullptr, "open", assetDir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
             if (ImGui::MenuItem("Rescan assets")) FindAssets();
             ImGui::Separator(); if (ImGui::MenuItem("Exit")) PostQuitMessage(0);
             ImGui::EndMenu();
         }
+        if (ImGui::BeginMenu("Edit")) {
+            if (ImGui::MenuItem("Undo", "Ctrl+Z", false, !undoStack.empty())) Undo();
+            if (ImGui::MenuItem("Redo", "Ctrl+Y", false, !redoStack.empty())) Redo();
+            ImGui::EndMenu();
+        }
         if (ImGui::BeginMenu("View")) {
             ImGui::MenuItem("Hierarchy", nullptr, &showHier); ImGui::MenuItem("Inspector", nullptr, &showInsp);
             ImGui::MenuItem("Assets", nullptr, &showAssets); ImGui::MenuItem("Animation", nullptr, &showAnim); ImGui::MenuItem("Console", nullptr, &showConsole);
+            ImGui::MenuItem("Inventory", nullptr, &showInv);
             ImGui::MenuItem("Show viewmodel while editing", nullptr, &showViewmodel);
+            if (ImGui::BeginMenu("UI size")) {
+                for (float sc : { 1.f, 1.25f, 1.5f, 1.75f, 2.f }) { char b[16]; snprintf(b, sizeof b, "%d%%", (int)(sc * 100 + 0.5f)); if (ImGui::MenuItem(b, nullptr, std::fabs(uiScale - sc) < 0.01f)) { uiScale = sc; SaveEditorSettings(); } }
+                ImGui::EndMenu();
+            }
             ImGui::Separator(); if (ImGui::MenuItem("Reset layout")) firstLayout = true;
             ImGui::EndMenu();
         }
@@ -557,7 +588,8 @@ struct App {
         }
         if (ImGui::BeginMenu("Help")) {
             ImGui::TextUnformatted("Viewport, editing: hold right mouse + WASD/QE to fly, Shift = fast");
-            ImGui::TextUnformatted("Viewport, playing: click to control, WASD move, LMB/Space fire, Esc release");
+            ImGui::TextUnformatted("Building a room: right-click places a block, left-click breaks it, Ctrl+Z / Ctrl+Y undo / redo");
+            ImGui::TextUnformatted("Viewport, playing: click to control, WASD move, Space jump (rooms) or fire (demo), LMB fire, Esc release");
             ImGui::TextUnformatted("F5 play/stop, F6 pause, F11 hide editor, Ctrl+S save");
             ImGui::EndMenu();
         }
@@ -574,7 +606,7 @@ struct App {
     void HierarchyPanel() {
         if (!ImGui::Begin("Hierarchy", &showHier)) { ImGui::End(); return; }
         auto leaf = ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen | ImGuiTreeNodeFlags_SpanAvailWidth;
-        ImGui::TreeNodeEx("Room (demo)", leaf | (sel == Sel::World ? ImGuiTreeNodeFlags_Selected : 0)); if (ImGui::IsItemClicked()) sel = Sel::World;
+        ImGui::TreeNodeEx("##room", leaf | (sel == Sel::World ? ImGuiTreeNodeFlags_Selected : 0), "%s", roomOpen ? ("Room: " + room.name + (roomDirty ? " *" : "")).c_str() : "Room (demo)"); if (ImGui::IsItemClicked()) sel = Sel::World;
         bool open = ImGui::TreeNodeEx("Player", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth | (sel == Sel::Player ? ImGuiTreeNodeFlags_Selected : 0));
         if (ImGui::IsItemClicked()) sel = Sel::Player;
         if (open) {
@@ -605,13 +637,22 @@ struct App {
     void InspectorPanel() {
         if (!ImGui::Begin("Inspector", &showInsp)) { ImGui::End(); return; }
         if (sel == Sel::World) {
+            ImGui::SeparatorText("Room");
+            if (roomOpen) {
+                if (ImGui::InputText("Name", &room.name)) roomDirty = true;
+                ImGui::Text("%zu blocks, %d x %d x %d space", room.count(), room.sx, room.sy, room.sz);
+                ImGui::TextDisabled("%s", FileName(roomPath).c_str());
+                if (ImGui::Button("Save room")) SaveRoom(); ImGui::SameLine(); if (ImGui::Button("Close room")) CloseRoom();
+            } else {
+                ImGui::TextWrapped("This is the built-in demo room. Make your own to build with blocks.");
+                if (ImGui::Button("New room")) NewRoom();
+            }
             ImGui::SeparatorText("Look (Wii-style rendering)");
             ImGui::Checkbox("Bloom", &S.bloomOn); ImGui::SameLine(); ImGui::SetNextItemWidth(-1); ImGui::SliderFloat("##bloom", &S.bloom, 0.f, 2.f);
             ImGui::SliderFloat("Haze", &S.fog, 0.f, 1.f);
             int ri = S.res == 240 ? 0 : S.res == 360 ? 1 : S.res == 480 ? 2 : S.res == 720 ? 3 : 4; const char* rs[] = { "240p", "360p", "480p (Wii)", "720p", "Native" };
             if (ImGui::Combo("Internal resolution", &ri, rs, 5)) { const int t[] = { 240, 360, 480, 720, 0 }; S.res = t[ri]; }
             ImGui::Checkbox("6-bit dither", &S.dither); ImGui::Checkbox("Sharp upscale", &S.nearest); ImGui::Checkbox("Dynamic lights", &S.dyn);
-            ImGui::TextDisabled("The room itself becomes editable with the room editor (Phase 2).");
         } else if (sel == Sel::Player) {
             const px::Camera& c = cam;
             ImGui::SeparatorText("Player");
@@ -755,10 +796,15 @@ struct App {
                 ImVec2 p0 = ImGui::GetCursorScreenPos();
                 ImGui::Image((ImTextureID)(intptr_t)rtView.srv.Get(), sz);
                 viewHovered = ImGui::IsItemHovered(); viewMin = p0; viewMax = ImVec2(p0.x + sz.x, p0.y + sz.y);
+                { px::V3 f, r, u; edCam.basis(f, r, u); px::V3 e = edCam.eye();
+                  edView = XMMatrixLookToLH(XMVectorSet(e.x, e.y, e.z, 1), XMVectorSet(f.x, f.y, f.z, 0), XMVectorSet(u.x, u.y, u.z, 0));
+                  edProj = XMMatrixPerspectiveFovLH(XMConvertToRadians(60.f), sz.x / sz.y, 0.1f, 80.f); }
+                RoomEditing();
                 if (playing && viewHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !captured) Capture(true);
                 // overlay
                 ImDrawList* dl = ImGui::GetWindowDrawList();
-                const char* txt = playing ? (captured ? "PLAYING  (Esc to release the mouse)" : "PLAYING  (click to control)") : "EDITING  (hold right mouse + WASD to fly)";
+                const char* txt = playing ? (captured ? "PLAYING  (Esc to release the mouse)" : "PLAYING  (click to control)")
+                                          : roomOpen ? "BUILDING  (right-click place, left-click break, hold right mouse + WASD to fly)" : "EDITING  (hold right mouse + WASD to fly)";
                 dl->AddRectFilled(ImVec2(p0.x + 8, p0.y + 8), ImVec2(p0.x + 16 + ImGui::CalcTextSize(txt).x, p0.y + 30), IM_COL32(0, 20, 24, 170), 4);
                 dl->AddText(ImVec2(p0.x + 12, p0.y + 11), playing ? IM_COL32(255, 160, 50, 255) : IM_COL32(150, 240, 230, 255), txt);
                 if (playing) { ImVec2 c((p0.x + viewMax.x) * 0.5f, (p0.y + viewMax.y) * 0.5f); dl->AddLine(ImVec2(c.x - 7, c.y), ImVec2(c.x + 7, c.y), IM_COL32(127, 255, 212, 180), 2); dl->AddLine(ImVec2(c.x, c.y - 7), ImVec2(c.x, c.y + 7), IM_COL32(127, 255, 212, 180), 2); }
@@ -768,9 +814,12 @@ struct App {
     }
 
     void BuildUI() {
+        ImGui::GetStyle().FontScaleMain = uiScale;
         ImGui_ImplDX11_NewFrame(); ImGui_ImplWin32_NewFrame(); ImGui::NewFrame();
         ImGuiIO& io = ImGui::GetIO();
-        if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S)) SaveMeta();
+        if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S)) { SaveMeta(); SaveRoom(); }
+        if (!playing && !io.WantTextInput && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z)) Undo();
+        if (!playing && !io.WantTextInput && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y)) Redo();
         if (!editor) {
             ImGui::SetNextWindowPos(ImVec2(10, 10)); ImGui::SetNextWindowBgAlpha(0.35f);
             ImGui::Begin("##hint", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs);
@@ -786,9 +835,180 @@ struct App {
         if (showAssets) AssetsPanel();
         if (showAnim) AnimationPanel();
         if (showConsole) ConsolePanel();
+        if (showInv) InventoryPanel();
         if (!playing) FlyCam(io.DeltaTime);
     }
     bool iniHadLayout = false;
+
+    // ------------------------------------------------------------------ rooms (block building)
+    px::Room room; bool roomOpen = false, roomDirty = false, roomMeshDirty = false; std::string roomPath; float roomAutosave = 0;
+    GpuMesh roomMesh;
+    struct BlockEdit { int x, y, z; uint8_t before, after; };
+    std::vector<std::vector<BlockEdit>> undoStack, redoStack;
+    bool hoverValid = false; px::RayHit hover{}; uint8_t brush = px::B_CUBE;
+    XMMATRIX edView = XMMatrixIdentity(), edProj = XMMatrixIdentity();
+    px::V3 feet{ 0, 0, 0 }, pvel{ 0, 0, 0 }, spawnFeet{ 0, 0, 0 }; bool onGround = false;
+    float uiScale = 1.f;
+
+    std::string RoomsDir() { std::string d = assetDir + "rooms\\"; CreateDirectoryA(d.c_str(), nullptr); return d; }
+    std::vector<std::string> ListRooms() {
+        std::vector<std::string> out; WIN32_FIND_DATAA fd; HANDLE h = FindFirstFileA((RoomsDir() + "*.room").c_str(), &fd);
+        if (h != INVALID_HANDLE_VALUE) { do { out.push_back(RoomsDir() + fd.cFileName); } while (FindNextFileA(h, &fd)); FindClose(h); }
+        std::sort(out.begin(), out.end()); return out;
+    }
+    void AfterRoomChange() { roomMeshDirty = true; roomDirty = true; roomAutosave = 0; }
+    void NewRoom() {
+        if (roomOpen && roomDirty) SaveRoom();
+        int n = 1; std::string path; do { path = RoomsDir() + "Room " + std::to_string(n++) + ".room"; } while (GetFileAttributesA(path.c_str()) != INVALID_FILE_ATTRIBUTES);
+        room = px::Room{}; room.newFlat(16); room.name = FileName(path).substr(0, FileName(path).size() - 5);
+        roomPath = path; roomOpen = true; undoStack.clear(); redoStack.clear(); AfterRoomChange(); SaveRoom();
+        edCam.p = { 0, 6, -12 }; edCam.yaw = 0; edCam.pitch = -0.35f; sel = Sel::World;
+        SetStatus("New room: " + room.name + ". Right-click places a block, left-click breaks one");
+    }
+    void OpenRoom(const std::string& path) {
+        if (roomOpen && roomDirty) SaveRoom();
+        px::Room r; std::string err;
+        if (!r.load(path, err)) { SetStatus("Could not open " + FileName(path) + ": " + err); return; }
+        room = std::move(r); roomPath = path; roomOpen = true; roomDirty = false; roomMeshDirty = true; undoStack.clear(); redoStack.clear();
+        SetStatus("Opened room " + room.name);
+    }
+    void SaveRoom() {
+        if (!roomOpen) return;
+        if (room.save(roomPath)) { roomDirty = false; SetStatus("Saved room " + room.name); }
+        else SetStatus("Could not save room " + FileName(roomPath));
+    }
+    void CloseRoom() { if (roomDirty) SaveRoom(); roomOpen = false; roomMesh = GpuMesh{}; SetStatus("Back to the demo room"); }
+    void RebuildRoomMesh() {
+        roomMeshDirty = false; px::MeshData md; room.buildMesh(md); roomMesh = GpuMesh{};
+        if (md.i.empty()) return;
+        D3D11_BUFFER_DESC d{}; d.Usage = D3D11_USAGE_IMMUTABLE; d.ByteWidth = (UINT)(md.v.size() * sizeof(px::Vertex)); d.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+        D3D11_SUBRESOURCE_DATA sdt{ md.v.data(), 0, 0 }; HR(dev->CreateBuffer(&d, &sdt, &roomMesh.vb));
+        d.ByteWidth = (UINT)(md.i.size() * 4); d.BindFlags = D3D11_BIND_INDEX_BUFFER; sdt.pSysMem = md.i.data(); HR(dev->CreateBuffer(&d, &sdt, &roomMesh.ib));
+        roomMesh.count = (UINT)md.i.size();
+    }
+    void DrawRoom() {
+        if (roomMeshDirty) RebuildRoomMesh();
+        if (!roomMesh.count) return;
+        ObjectCB o{}; XMStoreFloat4x4(&o.world, XMMatrixIdentity());
+        o.tint[0] = o.tint[1] = o.tint[2] = o.tint[3] = 1; o.params[0] = 0.12f; o.params[1] = 1; o.params[2] = 1; o.params[3] = 0;
+        ctx->UpdateSubresource(cbObject.Get(), 0, nullptr, &o, 0, 0);
+        ID3D11ShaderResourceView* srv[2] = { texSRV[px::T_BLOCK].Get(), texSRV[px::T_ENV].Get() }; ctx->PSSetShaderResources(0, 2, srv);
+        UINT stride = sizeof(px::Vertex), off = 0; ctx->IASetVertexBuffers(0, 1, roomMesh.vb.GetAddressOf(), &stride, &off);
+        ctx->IASetIndexBuffer(roomMesh.ib.Get(), DXGI_FORMAT_R32_UINT, 0); ctx->DrawIndexed(roomMesh.count, 0, 0);
+    }
+    void EditBlock(std::vector<BlockEdit>& group, int x, int y, int z, uint8_t b) {
+        if (!room.inBounds(x, y, z)) return;
+        uint8_t was = room.get(x, y, z); if (was == b) return;
+        room.set(x, y, z, b); group.push_back({ x, y, z, was, b });
+    }
+    void Commit(std::vector<BlockEdit>& g) {
+        if (g.empty()) return;
+        undoStack.push_back(std::move(g)); if (undoStack.size() > 500) undoStack.erase(undoStack.begin());
+        redoStack.clear(); AfterRoomChange();
+    }
+    void Undo() { if (undoStack.empty()) return; auto g = undoStack.back(); undoStack.pop_back(); for (auto it = g.rbegin(); it != g.rend(); ++it) room.set(it->x, it->y, it->z, it->before); redoStack.push_back(g); AfterRoomChange(); }
+    void Redo() { if (redoStack.empty()) return; auto g = redoStack.back(); redoStack.pop_back(); for (auto& e : g) room.set(e.x, e.y, e.z, e.after); undoStack.push_back(g); AfterRoomChange(); }
+    static bool SolidAt(void* c, px::V3 p) { App* a = (App*)c; return a->room.solid((int)std::floor(p.x), (int)std::floor(p.y), (int)std::floor(p.z)) || p.y < a->room.oy - 30; }
+
+    // player in a room: Samus is about 2 blocks tall
+    static constexpr float kHalfW = 0.35f, kHeight = 1.9f, kEye = 1.75f, kGravity = 24.f, kJump = 8.f, kSpeed = 5.f;
+    void RoomPlayerSpawn() {
+        feet = { edCam.p.x, edCam.p.y - kEye, edCam.p.z };
+        for (int i = 0; i < 64 && !room.boxFree(feet, kHalfW, kHeight); i++) feet.y += 1.f;
+        pvel = { 0, 0, 0 }; spawnFeet = feet;
+        cam = px::Camera{}; cam.yaw = edCam.yaw; cam.pitch = edCam.pitch; cam.p = { feet.x, feet.y + kEye, feet.z };
+    }
+    void RoomMove(float dt) {
+        px::V3 f, r, u; cam.basis(f, r, u); px::V3 fw = px::normalize({ f.x, 0, f.z }), mv{ 0, 0, 0 };
+        if (input.w) mv = mv + fw;
+        if (input.s) mv = mv - fw;
+        if (input.d) mv = mv + r;
+        if (input.a) mv = mv - r;
+        if (input.left) cam.yaw -= 1.8f * dt;
+        if (input.right) cam.yaw += 1.8f * dt;
+        bool moving = px::length(mv) > 0; if (moving) mv = px::normalize(mv) * kSpeed;
+        pvel.x = mv.x; pvel.z = mv.z; pvel.y -= kGravity * dt; pvel.y = std::max(pvel.y, -40.f);
+        if (input.jump && onGround) pvel.y = kJump;
+        feet = room.moveBox(feet, pvel, kHalfW, kHeight, dt, onGround);
+        if (feet.y < room.oy - 30) { feet = spawnFeet; pvel = { 0, 0, 0 }; SetStatus("Fell out of the room: back to the start"); }
+        if (moving && onGround) cam.bob += dt * 9;
+        cam.p = { feet.x, feet.y + kEye, feet.z }; cam.recoil = std::max(0.f, cam.recoil - dt * 0.5f);
+    }
+
+    // 3D -> viewport overlay drawing (edit highlights)
+    void Line3D(ImDrawList* dl, px::V3 a, px::V3 b, ImU32 col, float th) {
+        XMVECTOR va = XMVector3TransformCoord(XMVectorSet(a.x, a.y, a.z, 1), edView), vb = XMVector3TransformCoord(XMVectorSet(b.x, b.y, b.z, 1), edView);
+        float za = XMVectorGetZ(va), zb = XMVectorGetZ(vb), n = 0.12f;
+        if (za < n && zb < n) return;
+        if (za < n) va = XMVectorLerp(va, vb, (n - za) / (zb - za)); else if (zb < n) vb = XMVectorLerp(vb, va, (n - zb) / (za - zb));
+        auto scr = [&](XMVECTOR v) {
+            XMVECTOR c = XMVector4Transform(XMVectorSetW(v, 1), edProj); float w = XMVectorGetW(c);
+            float x = XMVectorGetX(c) / w, y = XMVectorGetY(c) / w;
+            return ImVec2(viewMin.x + (x * 0.5f + 0.5f) * (viewMax.x - viewMin.x), viewMin.y + (0.5f - y * 0.5f) * (viewMax.y - viewMin.y));
+        };
+        dl->AddLine(scr(va), scr(vb), col, th);
+    }
+    void BoxLines(ImDrawList* dl, px::V3 mn, px::V3 mx, ImU32 col, float th) {
+        px::V3 c[8]; for (int i = 0; i < 8; i++) c[i] = { (i & 1) ? mx.x : mn.x, (i & 2) ? mx.y : mn.y, (i & 4) ? mx.z : mn.z };
+        const int e[12][2] = { { 0, 1 }, { 2, 3 }, { 4, 5 }, { 6, 7 }, { 0, 2 }, { 1, 3 }, { 4, 6 }, { 5, 7 }, { 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 } };
+        for (auto& k : e) Line3D(dl, c[k[0]], c[k[1]], col, th);
+    }
+    void RoomEditing() {   // called from the Viewport panel while editing a room
+        hoverValid = false;
+        if (!roomOpen || playing || !viewHovered) return;
+        ImGuiIO& io = ImGui::GetIO();
+        float w = viewMax.x - viewMin.x, h = viewMax.y - viewMin.y; if (w < 4 || h < 4) return;
+        float nx = (io.MousePos.x - viewMin.x) / w * 2 - 1, ny = 1 - (io.MousePos.y - viewMin.y) / h * 2;
+        float t = std::tan(XMConvertToRadians(60.f) * 0.5f);
+        px::V3 f, r, u; edCam.basis(f, r, u); px::V3 dir = px::normalize(f + r * (nx * t * (w / h)) + u * (ny * t));
+        hoverValid = room.raycast(edCam.eye(), dir, 80.f, hover);
+        if (!hoverValid) return;
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        int px_ = hover.x + hover.nx, py_ = hover.y + hover.ny, pz_ = hover.z + hover.nz;
+        if (!hover.onGround) BoxLines(dl, { (float)hover.x - 0.002f, (float)hover.y - 0.002f, (float)hover.z - 0.002f }, { hover.x + 1.002f, hover.y + 1.002f, hover.z + 1.002f }, IM_COL32(20, 25, 30, 230), 2.f);
+        if (room.inBounds(px_, py_, pz_)) BoxLines(dl, { (float)px_, (float)py_, (float)pz_ }, { px_ + 1.f, py_ + 1.f, pz_ + 1.f }, IM_COL32(255, 160, 50, 150), 1.f);
+        // left click breaks, a short right click places (holding right mouse flies the camera)
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !hover.onGround) { std::vector<BlockEdit> g; EditBlock(g, hover.x, hover.y, hover.z, px::B_AIR); Commit(g); }
+        if (ImGui::IsMouseReleased(ImGuiMouseButton_Right) && io.MouseDragMaxDistanceSqr[1] < 36.f && io.MouseDownDurationPrev[1] < 0.35f) {
+            std::vector<BlockEdit> g; EditBlock(g, px_, py_, pz_, brush); Commit(g);
+        }
+    }
+
+    void InventoryPanel() {
+        if (!ImGui::Begin("Inventory", &showInv)) { ImGui::End(); return; }
+        if (ImGui::BeginTabBar("inv")) {
+            if (ImGui::BeginTabItem("Blocks")) {
+                auto tile = [&](const char* name, uint8_t id, bool avail) {
+                    ImGui::BeginDisabled(!avail);
+                    bool on = avail && brush == id;
+                    ImGui::PushStyleColor(ImGuiCol_Button, on ? ImVec4(0.95f, 0.5f, 0.12f, 0.85f) : ImVec4(0.08f, 0.22f, 0.25f, 1));
+                    if (ImGui::Button(name, ImVec2(70, 54)) && avail) brush = id;
+                    ImGui::PopStyleColor(); ImGui::EndDisabled();
+                    if (!avail && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Coming in the next room editor step");
+                };
+                tile("Cube", px::B_CUBE, true); ImGui::SameLine(); tile("Slab", 0, false); ImGui::SameLine(); tile("Stairs", 0, false);
+                tile("Slope", 0, false); ImGui::SameLine(); tile("Slice", 0, false); ImGui::SameLine(); tile("Beam", 0, false);
+                ImGui::Separator();
+                if (!roomOpen) { ImGui::TextWrapped("Open or make a room to build: File > New room."); if (ImGui::Button("New room")) NewRoom(); }
+                else ImGui::TextDisabled("Right-click: place   Left-click: break\nHold right mouse + WASD: fly   Ctrl+Z / Ctrl+Y: undo / redo");
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Objects")) { ImGui::TextWrapped("Your FBX models, doors, pickups and spawns go here (room editor step 6)."); ImGui::EndTabItem(); }
+            if (ImGui::BeginTabItem("Connectors")) { ImGui::TextWrapped("Switches, elevators, zones and wiring (Phase 4)."); ImGui::EndTabItem(); }
+            if (ImGui::BeginTabItem("Curves")) { ImGui::TextWrapped("Morph ball tunnels, pipes and cables drawn along a path."); ImGui::EndTabItem(); }
+            ImGui::EndTabBar();
+        }
+        ImGui::End();
+    }
+    bool showInv = true;
+
+    void LoadEditorSettings() {
+        std::ifstream f(ExeDir() + "editor_settings.txt"); std::string k;
+        while (f >> k) { if (k == "ui_scale") f >> uiScale; else if (k == "last_room") { f >> std::ws; std::getline(f, lastRoom); } }
+        uiScale = std::max(0.75f, std::min(2.5f, uiScale));
+    }
+    void SaveEditorSettings() { std::ofstream f(ExeDir() + "editor_settings.txt"); f << "ui_scale " << uiScale << "\nlast_room " << (roomOpen ? roomPath : std::string()) << "\n"; }
+    std::string lastRoom;
 
     // ------------------------------------------------------------------ input / loop
     // mouse capture for playing: cursor hidden, locked to the game view, recentred every frame
@@ -817,13 +1037,14 @@ struct App {
         auto down = [](int k) { return (GetAsyncKeyState(k) & 0x8000) != 0; };
         input.w = down('W'); input.a = down('A'); input.s = down('S'); input.d = down('D');
         input.left = down(VK_LEFT); input.right = down(VK_RIGHT); input.up = down(VK_UP); input.down = down(VK_DOWN);
+        input.jump = roomOpen && down(VK_SPACE);
     }
     void OnKey(WPARAM k) {
         if (k == VK_F5) { playing ? StopPlay() : StartPlay(); return; }
         if (k == VK_F6) { if (playing) pausedGame = !pausedGame; return; }
         if (k == VK_F11) { editor = !editor; if (captured) Capture(false); return; }
         if (k == VK_ESCAPE) { if (captured) Capture(false); return; }
-        if (k == VK_SPACE && playing && captured && !pausedGame) Fire();
+        if (k == VK_SPACE && playing && captured && !pausedGame && !roomOpen) Fire();
     }
 };
 
@@ -865,17 +1086,19 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR, int) {
         float dt = (float)std::min(0.05, t - last); last = t; app.T += dt;
 
         app.PollKeys(); app.MouseLook();
-        if (app.playing && !app.pausedGame) { app.cam.move(app.scene, app.input, dt); app.sim.update(dt); }
+        if (app.playing && !app.pausedGame) { if (app.roomOpen) app.RoomMove(dt); else app.cam.move(app.scene, app.input, dt); app.sim.update(dt); }
         app.Tick(dt);
         app.BuildUI();
         app.Render();
 
         fpsAcc += dt; fpsN++;
         if (fpsAcc > 0.5) {
-            char title[256]; snprintf(title, sizeof title, "PRIMEngine | %.0f fps | %s | Tab: editor", fpsN / fpsAcc, app.modelLoaded ? App::FileName(app.modelPath).c_str() : "no model loaded");
+            char title[256]; snprintf(title, sizeof title, "PRIMEngine | %s | %.0f fps", app.roomOpen ? app.room.name.c_str() : "demo room", fpsN / fpsAcc);
             SetWindowTextA(app.hwnd, title); fpsAcc = 0; fpsN = 0;
         }
     }
+    if (app.roomDirty) app.SaveRoom();
+    app.SaveMeta(); app.SaveEditorSettings();
     ImGui_ImplDX11_Shutdown(); ImGui_ImplWin32_Shutdown(); ImGui::DestroyContext();
     return 0;
 }

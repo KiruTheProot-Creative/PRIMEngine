@@ -25,7 +25,7 @@ inline V3 normalize(V3 a) { float l = length(a); if (l < 1e-8f) l = 1.f; return 
 
 // ------------------------------------------------------------------ procedural textures (128x128 RGBA8)
 constexpr int TN = 128;
-enum TexKind { T_FLOOR, T_WALL, T_TRIM, T_CANNON, T_CORE, T_STRIP, T_DOOR, T_ENV, T_SPRITE, T_COUNT };
+enum TexKind { T_FLOOR, T_WALL, T_TRIM, T_CANNON, T_CORE, T_STRIP, T_DOOR, T_ENV, T_SPRITE, T_BLOCK, T_COUNT };
 
 inline uint32_t hash2(int x, int y, int s) {
     uint32_t h = (uint32_t)x * 374761393u + (uint32_t)y * 668265263u + (uint32_t)s * 2246822519u;
@@ -110,6 +110,16 @@ inline std::vector<uint8_t> makeTex(TexKind kind) {
         case T_SPRITE: {
             double x = (px + 0.5) / TN * 2 - 1, y = (py + 0.5) / TN * 2 - 1, dd = std::sqrt(x * x + y * y), s = std::pow(std::max(1 - dd, 0.0), 2.2);
             r = g = b = s; a = 1; break; }
+        case T_BLOCK: { // one room-editor block = one texture: a bevelled metal panel (the bevel also reads as the grid)
+            double n = fbm(u, v, 70), gg = 0.30 + n * 0.16; r = gg * 0.86; g = gg * 0.97; b = gg * 1.02;
+            int e = std::min(std::min(px, py), std::min(127 - px, 127 - py));
+            if (e < 3) dim(0.42);
+            else if (e < 6) { if (px < py ? px < 64 : py < 64) dim(1.32); else dim(0.78); }   // bevel: lit top-left, shaded bottom-right
+            int ix = std::min(px - 22, 105 - px), iy = std::min(py - 22, 105 - py);
+            if (ix >= 0 && iy >= 0 && (ix < 2 || iy < 2)) dim(0.62);                          // inset panel seam
+            for (int c = 0; c < 4; c++) { int cx = (c & 1) ? 13 : 114, cy = (c & 2) ? 13 : 114; int dx = px - cx, dy = py - cy;
+                if (dx * dx + dy * dy < 7) dim(dx + dy < 0 ? 1.5 : 0.65); }                    // rivets
+            a = 0; break; }
         default: break;
         }
         size_t o = ((size_t)py * TN + px) * 4;
@@ -125,13 +135,13 @@ struct MeshData { std::vector<Vertex> v; std::vector<uint32_t> i; };
 enum MatId { M_FLOOR, M_WALL, M_TRIM, M_STRIP, M_CORE, M_DOOR, M_CANNON, M_CANNONGLOW, M_COUNT };
 struct Material { TexKind tex; float env, glow, dyn; float tint[3]; MeshData mesh; };
 
-struct Room { float x0 = -7, x1 = 7, y0 = 0, y1 = 6, z0 = 0, z1 = 28; };
+struct DemoBounds { float x0 = -7, x1 = 7, y0 = 0, y1 = 6, z0 = 0, z1 = 28; };
 struct StaticLight { V3 p, c; float r, k; };
 struct AABB2 { float x0, z0, x1, z1; };
 struct Pillar { float x, z, r; };
 
 struct Scene {
-    Room room;
+    DemoBounds room;
     Material mats[M_COUNT];
     std::vector<StaticLight> lights;
     std::vector<AABB2> aabbs;
@@ -268,7 +278,7 @@ struct Scene {
 };
 
 // ------------------------------------------------------------------ player + camera
-struct Input { bool w = 0, a = 0, s = 0, d = 0, left = 0, right = 0, up = 0, down = 0; };
+struct Input { bool w = 0, a = 0, s = 0, d = 0, left = 0, right = 0, up = 0, down = 0, jump = 0; };
 struct Camera {
     V3 p{ 0, 1.7f, 2.0f }; float yaw = 0, pitch = 0, bob = 0, recoil = 0;
     void basis(V3& f, V3& r, V3& u) const {
@@ -313,6 +323,8 @@ struct Bolt { V3 p, v; float life; };
 
 struct Sim {
     std::vector<Particle> parts; std::vector<Bolt> bolts; V3 flashP{ 0, 0, 0 }; float flashT = 0;
+    bool demo = true;                                   // demo room effects (core sparks, dust motes)
+    bool (*solidAt)(void* ctx, V3 p) = nullptr; void* solidCtx = nullptr;   // when set, shots explode on blocks
     uint32_t rng = 0x1234567u;
     float R(float a, float b) { rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5; return a + (rng & 0xFFFFFF) / 16777216.f * (b - a); }
 
@@ -337,10 +349,11 @@ struct Sim {
         for (int i = (int)bolts.size() - 1; i >= 0; i--) {
             Bolt& b = bolts[i]; b.life -= dt; b.p = b.p + b.v * dt;
             spark(b.p, { R(-.3f, .3f), R(-.3f, .3f), R(-.3f, .3f) }, 0.35f, 0.13f, { 1, 0.55f, 0.15f }, 0.8f, 1, 0);
-            if (b.life <= 0 || !inRoom(b.p)) { explode(b.p); bolts.erase(bolts.begin() + i); }
+            bool hit = solidAt ? solidAt(solidCtx, b.p) : !inRoom(b.p);
+            if (b.life <= 0 || hit) { explode(b.p); bolts.erase(bolts.begin() + i); }
         }
         if (flashT > 0) flashT -= dt;
-        if (R(0, 1) < dt * 16) spark({ R(-.15f, .15f), 1.95f, 10 + R(-.15f, .15f) }, { R(-.2f, .2f), R(0.5f, 1.1f), R(-.2f, .2f) }, R(2, 3.5f), R(0.1f, 0.18f), { 1, 0.5f, 0.12f }, 0.9f, 0.2f, -0.15f);
+        if (demo && R(0, 1) < dt * 16) spark({ R(-.15f, .15f), 1.95f, 10 + R(-.15f, .15f) }, { R(-.2f, .2f), R(0.5f, 1.1f), R(-.2f, .2f) }, R(2, 3.5f), R(0.1f, 0.18f), { 1, 0.5f, 0.12f }, 0.9f, 0.2f, -0.15f);
         for (int i = (int)parts.size() - 1; i >= 0; i--) {
             Particle& q = parts[i]; q.life -= dt; if (q.life <= 0) { parts.erase(parts.begin() + i); continue; }
             q.v.y -= q.grav * dt; q.v = q.v * std::max(0.f, 1.f - q.drag * dt); q.p = q.p + q.v * dt;

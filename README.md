@@ -76,6 +76,16 @@ PRIMEngine opens as an engine editor, like Unity or Godot:
 
 **Play / Stop** (F5) is in the middle of the menu bar. F6 pauses, F11 hides the editor, Ctrl+S saves. Panels can be dragged and docked anywhere; View > Reset layout puts them back.
 
+## Building rooms
+**File > New room** makes a flat floor of blocks (one block = 1 metre, Minecraft scale). In the Viewport:
+
+- **Right-click** places a block on the face under the mouse, **left-click** breaks one
+- **Hold right mouse + WASD** to fly around, **Q/E** down/up, **Shift** fast
+- **Ctrl+Z / Ctrl+Y** undo / redo, **Ctrl+S** saves (rooms also autosave every 30 seconds)
+- **Play** (F5) drops Samus where the editor camera is: walk, **Space** to jump, shots hit your blocks
+
+Rooms are saved in `assets/rooms`. The last room you had open reopens on start.
+
 ## Your models and animations
 1. In Blockbench: **File > Export > Export FBX**, save into the `assets` folder next to `prime_d3d11.exe`.
 2. Double-click it in the **Assets** panel. Every animation in the file appears in the **Animation** panel.
