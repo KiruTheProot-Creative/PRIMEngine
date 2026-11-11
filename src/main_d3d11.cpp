@@ -1028,7 +1028,7 @@ struct App {
         else { bVel.y -= kGravity * dt; bVel.y = std::max(bVel.y, -40.f); if (down(VK_SPACE) && bGround) bVel.y = kJump; }
         bFeet = room.moveBox(bFeet, bVel, kHalfW, kHeight, dt, bGround, bFly ? 0.f : 0.55f);
         if (bFly && bGround && sneak) { bFly = false; SetStatus("Flying off (landed)"); }
-        if (bFeet.y < room.oy - 30) { bFeet.y = room.oy + room.sy; bFly = true; }
+        if (bFeet.y < room.oy - 30) { bFeet.y = (float)(room.oy + room.sy); bFly = true; }
         if (moving && bGround && !bFly) edCam.bob += dt * 9;
         edCam.p = { bFeet.x, bFeet.y + kEye, bFeet.z };
 

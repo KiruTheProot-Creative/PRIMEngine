@@ -8,7 +8,9 @@ int main() {
         double s = 0; for (auto& v : sc.mats[m].mesh.v) s += v.p[0] + v.p[1] * 2 + v.p[2] * 3 + v.c[0] + v.uv[0];
         printf("mesh %s verts=%zu idx=%zu sum=%.2f\n", names[m], sc.mats[m].mesh.v.size(), sc.mats[m].mesh.i.size(), s);
     }
-    const char* tn[] = { "floor","wall","trim","cannon","core","strip","door","env","sprite","block" };
+    const char* tn[] = { "floor","wall","trim","cannon","core","strip","door","env","sprite","block",
+                         "rock","dirt","moss","moss_side","sand","snow","snow_side","ice","basalt","lava","chozo" };
+    static_assert(sizeof(tn) / sizeof(tn[0]) == px::T_COUNT, "name every texture");
     for (int k = 0; k < px::T_COUNT; k++) { auto t = px::makeTex((px::TexKind)k); unsigned long long s = 0; for (auto b : t) s += b; printf("tex %s sum=%llu\n", tn[k], s); }
     // winding sanity: every triangle's numeric cross() must agree with its stored normal (LH, CW-front)
     size_t bad = 0, tot = 0;
