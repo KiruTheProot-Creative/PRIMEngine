@@ -62,11 +62,24 @@ The D3D11 code is already shaped like a small RHI: a few constant buffers, 2 ver
 ## Getting the .exe without compiling
 Every push builds the game on GitHub. Open the repository's **Actions** tab, click the newest green "Build Windows" run, and download **PRIMEngine-windows** at the bottom. Unzip it and run `prime_d3d11.exe`.
 
-## Your models and animations (Phase 1)
+## The editor
+PRIMEngine opens as an engine editor, like Unity or Godot:
+
+| Panel | What it is for |
+| --- | --- |
+| Viewport | The game, drawn live. Editing: hold right mouse + WASD/QE to fly (Shift = fast). Playing: click to control, Esc to release |
+| Hierarchy | What is in the scene: the room, the player, the arm cannon and its parts |
+| Inspector | Settings of whatever is selected |
+| Assets | Your files in the `assets` folder. Double-click a model to use it |
+| Animation | Every clip of the model: play, rename, loop, speed, transitions |
+| Console | What the engine did, and any errors |
+
+**Play / Stop** (F5) is in the middle of the menu bar. F6 pauses, F11 hides the editor, Ctrl+S saves. Panels can be dragged and docked anywhere; View > Reset layout puts them back.
+
+## Your models and animations
 1. In Blockbench: **File > Export > Export FBX**, save into the `assets` folder next to `prime_d3d11.exe`.
-2. Start the game. The editor opens (press **Tab** to switch between editor and playing).
-3. **Assets** panel: pick your model. Every animation in the file appears in the **Animation** panel.
-4. Set which clips loop, rename them, change speed, choose the blend type and time, and try transitions by pressing **Play** on another clip.
-5. **Viewmodel** panel: drag the numbers to place the model in front of the camera.
+2. Double-click it in the **Assets** panel. Every animation in the file appears in the **Animation** panel.
+3. Set which clips loop, rename them, change speed, choose the blend type and time, and try transitions by pressing **Play** on another clip.
+4. Select the arm cannon in the **Hierarchy** and place it with the **Inspector**.
 
 Your choices are saved automatically next to the model as `<name>.fbx.meta`. Re-exporting the FBX from Blockbench re-imports it automatically and keeps your settings.
