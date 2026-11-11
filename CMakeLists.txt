@@ -1,20 +1,36 @@
 cmake_minimum_required(VERSION 3.20)
-project(PrimeStyleRenderer CXX)
+project(PRIMEngine C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Standalone Windows build (Direct3D 11). Needs the Windows 10/11 SDK, which ships with Visual Studio.
+# Engine core: platform-independent (FBX import, animation, asset settings). Also builds on Linux for tests.
+add_library(prime_core STATIC
+  src/model.cpp src/model.h src/assetmeta.cpp src/assetmeta.h src/scene.h
+  third_party/ufbx/ufbx.c)
+target_include_directories(prime_core PUBLIC src)
+if(MSVC)
+  target_compile_definitions(prime_core PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
+
+# Standalone Windows build (Direct3D 11 + Dear ImGui editor panels). Needs the Windows SDK.
 if(WIN32)
-  add_executable(prime_d3d11 WIN32 src/main_d3d11.cpp src/scene.h)
-  target_link_libraries(prime_d3d11 PRIVATE d3d11 d3dcompiler dxgi user32)
-  target_compile_definitions(prime_d3d11 PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+  set(IMGUI third_party/imgui)
+  add_executable(prime_d3d11 WIN32 src/main_d3d11.cpp
+    ${IMGUI}/imgui.cpp ${IMGUI}/imgui_draw.cpp ${IMGUI}/imgui_tables.cpp ${IMGUI}/imgui_widgets.cpp ${IMGUI}/imgui_demo.cpp
+    ${IMGUI}/imgui_stdlib.cpp ${IMGUI}/backends/imgui_impl_win32.cpp ${IMGUI}/backends/imgui_impl_dx11.cpp)
+  target_include_directories(prime_d3d11 PRIVATE ${IMGUI} ${IMGUI}/backends)
+  target_link_libraries(prime_d3d11 PRIVATE prime_core d3d11 d3dcompiler dxgi user32 shell32)
+  target_compile_definitions(prime_d3d11 PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
   if(MSVC)
     target_compile_options(prime_d3d11 PRIVATE /W3 /permissive-)
   endif()
-  # copy the .hlsl files next to the exe so the demo finds them (they are compiled at startup)
+  # shaders are compiled at startup; the assets folder is where your FBX files go
   add_custom_command(TARGET prime_d3d11 POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/shaders $<TARGET_FILE_DIR:prime_d3d11>/shaders)
+    COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/shaders $<TARGET_FILE_DIR:prime_d3d11>/shaders
+    COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/assets $<TARGET_FILE_DIR:prime_d3d11>/assets)
 endif()
 
-# Platform-independent content test (runs anywhere): builds the demo scene and checks winding/determinism.
+# Tests (run anywhere)
 add_executable(scene_test tests/scene_test.cpp)
+add_executable(model_test tests/model_test.cpp)
+target_link_libraries(model_test PRIVATE prime_core)

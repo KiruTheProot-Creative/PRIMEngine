@@ -61,3 +61,12 @@ The D3D11 code is already shaped like a small RHI: a few constant buffers, 2 ver
 
 ## Getting the .exe without compiling
 Every push builds the game on GitHub. Open the repository's **Actions** tab, click the newest green "Build Windows" run, and download **PRIMEngine-windows** at the bottom. Unzip it and run `prime_d3d11.exe`.
+
+## Your models and animations (Phase 1)
+1. In Blockbench: **File > Export > Export FBX**, save into the `assets` folder next to `prime_d3d11.exe`.
+2. Start the game. The editor opens (press **Tab** to switch between editor and playing).
+3. **Assets** panel: pick your model. Every animation in the file appears in the **Animation** panel.
+4. Set which clips loop, rename them, change speed, choose the blend type and time, and try transitions by pressing **Play** on another clip.
+5. **Viewmodel** panel: drag the numbers to place the model in front of the camera.
+
+Your choices are saved automatically next to the model as `<name>.fbx.meta`. Re-exporting the FBX from Blockbench re-imports it automatically and keeps your settings.

@@ -1,0 +1,28 @@
+<!doctype html><html><body style="margin:0;background:#111;color:#cfe;font:12px monospace">
+<canvas id=c width=1200 height=700></canvas>
+<script src="model_data.js"></script>
+<script>
+const gl=document.getElementById('c').getContext('webgl',{antialias:true});
+const dot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2],cross=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]],sub=(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]],norm=a=>{const l=Math.hypot(...a);return a.map(x=>x/l)};
+function persp(fov,asp,n,f){const t=1/Math.tan(fov/2),o=new Float32Array(16);o[0]=t/asp;o[5]=t;o[10]=(f+n)/(f-n);o[11]=1;o[14]=-2*f*n/(f-n);return o;}
+function view(p,r,u,f){const o=new Float32Array(16);o[15]=1;o[0]=r[0];o[4]=r[1];o[8]=r[2];o[1]=u[0];o[5]=u[1];o[9]=u[2];o[2]=f[0];o[6]=f[1];o[10]=f[2];o[12]=-dot(r,p);o[13]=-dot(u,p);o[14]=-dot(f,p);return o;}
+function mul(a,b){const o=new Float32Array(16);for(let c=0;c<4;c++)for(let r=0;r<4;r++){let s=0;for(let k=0;k<4;k++)s+=a[k*4+r]*b[c*4+k];o[c*4+r]=s;}return o;}
+const vs=`attribute vec3 p;attribute vec3 n;attribute vec2 uv;uniform mat4 vp;varying vec2 v;varying vec3 nn;void main(){gl_Position=vp*vec4(p,1.);v=uv;nn=n;}`;
+const fs=`precision mediump float;varying vec2 v;varying vec3 nn;uniform sampler2D t;void main(){vec4 c=texture2D(t,v);if(c.a<0.5)discard;float l=0.45+0.55*max(dot(normalize(nn),normalize(vec3(-0.4,0.8,-0.5))),0.);gl_FragColor=vec4(c.rgb*l,1.);}`;
+function sh(t,s){const x=gl.createShader(t);gl.shaderSource(x,s);gl.compileShader(x);return x;}
+const pr=gl.createProgram();gl.attachShader(pr,sh(gl.VERTEX_SHADER,vs));gl.attachShader(pr,sh(gl.FRAGMENT_SHADER,fs));gl.linkProgram(pr);gl.useProgram(pr);
+const img=MODEL.img,raw=atob(img.b64),px=new Uint8Array(img.w*img.h*4);for(let i=0;i<px.length;i++)px[i]=raw.charCodeAt(i);
+const tx=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,tx);gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,img.w,img.h,0,gl.RGBA,gl.UNSIGNED_BYTE,px);
+gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.NEAREST);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.NEAREST);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+gl.enable(gl.DEPTH_TEST);gl.enable(gl.CULL_FACE);gl.cullFace(gl.BACK);gl.frontFace(gl.CW);gl.enable(gl.SCISSOR_TEST);
+const b=gl.createBuffer();const ctr=MODEL.bmin.map((x,i)=>(x+MODEL.bmax[i])/2),R=Math.hypot(...sub(MODEL.bmax,MODEL.bmin))*0.5;
+const dirs=(location.hash||'#side').slice(1);
+MODEL.shots.forEach((s,i)=>{const col=i%3,row=Math.floor(i/3),W=400,H=350;gl.viewport(col*W,(1-row)*H,W,H);gl.scissor(col*W,(1-row)*H,W,H);gl.clearColor(0.12,0.14,0.16,1);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+ let d=dirs==='top'?[0.01,1,0.02]:dirs==='front'?[0.05,0.2,-1]:[1,0.45,0.35];d=norm(d);const eye=ctr.map((x,k)=>x+d[k]*R*2.6);
+ const f=norm(sub(ctr,eye)),r=norm(cross([0,1,0],f)),u=cross(f,r);
+ gl.uniformMatrix4fv(gl.getUniformLocation(pr,'vp'),false,mul(persp(0.75,W/H,0.05,100),view(eye,r,u,f)));
+ gl.bindBuffer(gl.ARRAY_BUFFER,b);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(s.v),gl.STATIC_DRAW);
+ [['p',3,0],['n',3,12],['uv',2,24]].forEach(([nm,k,o])=>{const l=gl.getAttribLocation(pr,nm);gl.enableVertexAttribArray(l);gl.vertexAttribPointer(l,k,gl.FLOAT,false,32,o);});
+ gl.drawArrays(gl.TRIANGLES,0,s.v.length/8);
+ const d2=document.createElement('div');d2.textContent=s.label;Object.assign(d2.style,{position:'fixed',left:(col*400+6)+'px',top:(row*350+4)+'px'});document.body.appendChild(d2);});
+</script></body></html>

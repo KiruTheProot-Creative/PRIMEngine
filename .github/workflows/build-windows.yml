@@ -21,3 +21,4 @@ jobs:
           path: |
             build/Release/prime_d3d11.exe
             build/Release/shaders/
+            build/Release/assets/

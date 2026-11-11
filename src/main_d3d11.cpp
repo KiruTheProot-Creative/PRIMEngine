@@ -4,16 +4,27 @@
 //
 // Build: see CMakeLists.txt (needs the Windows SDK; no third-party libraries).
 #include "scene.h"   // keep before windows.h
+#include "model.h"
+#include "assetmeta.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <shellapi.h>
 #include <d3d11.h>
 #include <d3dcompiler.h>
 #include <DirectXMath.h>
 #include <wrl/client.h>
+
+#include "../third_party/imgui/imgui.h"
+#include "../third_party/imgui/imgui_stdlib.h"
+#include "../third_party/imgui/backends/imgui_impl_win32.h"
+#include "../third_party/imgui/backends/imgui_impl_dx11.h"
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+
+#include <algorithm>
 
 #include <cstdio>
 #include <cstring>
@@ -26,6 +37,7 @@
 #pragma comment(lib, "d3dcompiler.lib")
 #pragma comment(lib, "dxgi.lib")
 #pragma comment(lib, "user32.lib")
+#pragma comment(lib, "shell32.lib")
 
 using namespace DirectX;
 using Microsoft::WRL::ComPtr;
@@ -79,11 +91,23 @@ struct App {
     ComPtr<ID3D11RasterizerState> rsCull, rsNoCull;
     ComPtr<ID3D11DepthStencilState> dsOn, dsNoWrite, dsOff;
     ComPtr<ID3D11BlendState> bsOff, bsAdd;
-    ComPtr<ID3D11SamplerState> sampWrap, sampClamp, sampPoint;
+    ComPtr<ID3D11SamplerState> sampWrap, sampClamp, sampPoint, sampPointWrap;
 
     px::Scene scene; GpuMesh meshes[px::M_COUNT];
     ComPtr<ID3D11ShaderResourceView> texSRV[px::T_COUNT];
     GpuMesh partMesh;
+
+    // ---- imported viewmodel (FBX) + editor state
+    struct GpuModelMesh { GpuMesh g; int node = -1, image = -1; };
+    std::string assetDir, modelPath, loadError, status;
+    std::vector<std::string> assetFiles;
+    FILETIME modelTime{};
+    px::Model model; bool modelLoaded = false;
+    px::AssetMeta meta; px::Animator anim;
+    std::vector<px::ClipSettings> clipSet; std::vector<std::string> clipNames;
+    std::vector<GpuModelMesh> modelMeshes; std::vector<ComPtr<ID3D11ShaderResourceView>> modelTex;
+    bool editor = true, autoReload = true, metaDirty = false;
+    float metaTimer = 0, reloadPoll = 0, statusTimer = 0;
 
     RT rtScene, rtB0, rtB1, rtC0, rtC1; ComPtr<ID3D11Texture2D> depthTex; ComPtr<ID3D11DepthStencilView> dsv;
 
@@ -135,6 +159,7 @@ struct App {
         HR(dev->CreateSamplerState(&sm, &sampWrap));
         sm.AddressU = sm.AddressV = sm.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP; HR(dev->CreateSamplerState(&sm, &sampClamp));
         sm.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT; HR(dev->CreateSamplerState(&sm, &sampPoint));
+        sm.AddressU = sm.AddressV = sm.AddressW = D3D11_TEXTURE_ADDRESS_WRAP; HR(dev->CreateSamplerState(&sm, &sampPointWrap));
 
         // textures + meshes (all procedural, from scene.h)
         for (int k = 0; k < px::T_COUNT; k++) {
@@ -154,14 +179,26 @@ struct App {
             D3D11_BUFFER_DESC id{}; id.Usage = D3D11_USAGE_IMMUTABLE; id.ByteWidth = (UINT)(ix.size() * 4); id.BindFlags = D3D11_BIND_INDEX_BUFFER;
             D3D11_SUBRESOURCE_DATA sdt{ ix.data(), 0, 0 }; HR(dev->CreateBuffer(&id, &sdt, &partMesh.ib));
         }
+
+        // editor UI
+        IMGUI_CHECKVERSION(); ImGui::CreateContext();
+        ImGui::GetIO().IniFilename = "editor_layout.ini";
+        StyleUI();
+        ImGui_ImplWin32_Init(hwnd); ImGui_ImplDX11_Init(dev.Get(), ctx.Get());
+
+        // assets: load the first model found
+        assetDir = FindDir("assets");
+        FindAssets();
+        if (!assetFiles.empty()) LoadModel(assetFiles[0]);
     }
 
-    ComPtr<ID3D11ShaderResourceView> MakeTexture(const std::vector<uint8_t>& pixels, bool mips) {
-        D3D11_TEXTURE2D_DESC d{}; d.Width = d.Height = px::TN; d.MipLevels = mips ? 0 : 1; d.ArraySize = 1; d.Format = DXGI_FORMAT_R8G8B8A8_UNORM; d.SampleDesc.Count = 1;
+    ComPtr<ID3D11ShaderResourceView> MakeTexture(const std::vector<uint8_t>& pixels, bool mips) { return MakeTextureRGBA(px::TN, px::TN, pixels.data(), mips); }
+    ComPtr<ID3D11ShaderResourceView> MakeTextureRGBA(int w, int h, const uint8_t* pixels, bool mips) {
+        D3D11_TEXTURE2D_DESC d{}; d.Width = (UINT)w; d.Height = (UINT)h; d.MipLevels = mips ? 0 : 1; d.ArraySize = 1; d.Format = DXGI_FORMAT_R8G8B8A8_UNORM; d.SampleDesc.Count = 1;
         d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_SHADER_RESOURCE | (mips ? D3D11_BIND_RENDER_TARGET : 0); d.MiscFlags = mips ? D3D11_RESOURCE_MISC_GENERATE_MIPS : 0;
         ComPtr<ID3D11Texture2D> t;
-        if (mips) { HR(dev->CreateTexture2D(&d, nullptr, &t)); ctx->UpdateSubresource(t.Get(), 0, nullptr, pixels.data(), px::TN * 4, 0); }
-        else { D3D11_SUBRESOURCE_DATA sd{ pixels.data(), px::TN * 4, 0 }; HR(dev->CreateTexture2D(&d, &sd, &t)); }
+        if (mips) { HR(dev->CreateTexture2D(&d, nullptr, &t)); ctx->UpdateSubresource(t.Get(), 0, nullptr, pixels, (UINT)w * 4, 0); }
+        else { D3D11_SUBRESOURCE_DATA sd{ pixels, (UINT)w * 4, 0 }; HR(dev->CreateTexture2D(&d, &sd, &t)); }
         ComPtr<ID3D11ShaderResourceView> srv; HR(dev->CreateShaderResourceView(t.Get(), nullptr, &srv));
         if (mips) ctx->GenerateMips(srv.Get());
         return srv;
@@ -199,7 +236,9 @@ struct App {
     }
     void Fire() {
         px::V3 f, r, u; cam.basis(f, r, u);
-        XMVECTOR m = XMVector3TransformCoord(XMVectorSet(0, 0, 0.92f, 1), CannonLocal() * CamWorld(cam.p, r, u, f));
+        XMVECTOR m = modelLoaded
+            ? XMVector3TransformCoord(XMVectorSet((model.bmin.x + model.bmax.x) * 0.5f, (model.bmin.y + model.bmax.y) * 0.5f, model.bmax.z, 1), ModelPlacement() * CamWorld(cam.p, r, u, f))
+            : XMVector3TransformCoord(XMVectorSet(0, 0, 0.92f, 1), CannonLocal() * CamWorld(cam.p, r, u, f));
         px::V3 mz{ XMVectorGetX(m), XMVectorGetY(m), XMVectorGetZ(m) };
         px::V3 aim = px::normalize(cam.p + f * 30.f - mz);
         sim.fire(mz, aim); cam.recoil = 0.07f;
@@ -269,8 +308,8 @@ struct App {
 
         // viewmodel: own projection, squeezed into the nearest 5% of the depth range so it never clips into walls
         SetViewport(iw, ih, 0.f, 0.05f); SetFrame(view, vp2, eye, lp, lc);
-        XMMATRIX cannonWorld = CannonLocal() * CamWorld(eye, r, u, f);
-        DrawMat(px::M_CANNON, cannonWorld); DrawMat(px::M_CANNONGLOW, cannonWorld);
+        if (modelLoaded) DrawModel(CamWorld(eye, r, u, f));
+        else { XMMATRIX cannonWorld = CannonLocal() * CamWorld(eye, r, u, f); DrawMat(px::M_CANNON, cannonWorld); DrawMat(px::M_CANNONGLOW, cannonWorld); }
         SetViewport(iw, ih); SetFrame(view, vp, eye, lp, lc);
 
         // particles: additive camera-facing quads, depth-tested, no depth write
@@ -313,7 +352,239 @@ struct App {
         PostCB c{}; c.p1[0] = S.bloomOn ? S.bloom : 0.f; c.p1[1] = S.dither ? 1.f : 0.f; c.p1[2] = 1.12f; c.p1[3] = 0.8f; c.p2[0] = (float)iw; c.p2[1] = (float)ih;
         PostPass(nullptr, psComp.Get(), rtScene.srv.Get(), rtB0.srv.Get(), rtC0.srv.Get(), c);
         ID3D11ShaderResourceView* none2[3] = {}; ctx->PSSetShaderResources(0, 3, none2);
+
+        // ---- 4) editor panels on top, at full window resolution
+        ImGui::Render();
+        ctx->OMSetRenderTargets(1, backRTV.GetAddressOf(), nullptr); SetViewport(cw, ch);
+        ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
         HR(swap->Present(1, 0));
+    }
+
+    // ------------------------------------------------------------------ assets
+    static std::string FindDir(const char* name) {
+        const char* rel[] = { "", "..\\", "..\\..\\", "..\\..\\..\\" };
+        for (auto r : rel) {
+            std::string d = ExeDir() + r + name;
+            DWORD a = GetFileAttributesA(d.c_str());
+            if (a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY)) return d + "\\";
+        }
+        std::string d = ExeDir() + name; CreateDirectoryA(d.c_str(), nullptr); return d + "\\";
+    }
+    static std::string FileName(const std::string& p) { return p.substr(p.find_last_of("\\/") + 1); }
+    static FILETIME FileTime(const std::string& p) {
+        WIN32_FILE_ATTRIBUTE_DATA a{}; if (GetFileAttributesExA(p.c_str(), GetFileExInfoStandard, &a)) return a.ftLastWriteTime; return FILETIME{};
+    }
+    void FindAssets() {
+        assetFiles.clear();
+        WIN32_FIND_DATAA fd; HANDLE h = FindFirstFileA((assetDir + "*.fbx").c_str(), &fd);
+        if (h != INVALID_HANDLE_VALUE) { do { assetFiles.push_back(assetDir + fd.cFileName); } while (FindNextFileA(h, &fd)); FindClose(h); }
+        std::sort(assetFiles.begin(), assetFiles.end());
+    }
+    void SetStatus(const std::string& s) { status = s; statusTimer = 4.f; }
+    void LoadModel(const std::string& path) {
+        if (path.empty()) return;
+        px::AssetMeta m2; if (!m2.load(path + ".meta")) m2 = px::AssetMeta{};
+        px::Model mdl; std::string err;
+        if (!mdl.loadFBX(path, err, m2.importScale)) { loadError = FileName(path) + ": " + err; SetStatus("Import failed"); return; }
+        loadError.clear(); meta = m2; model = std::move(mdl); modelPath = path; modelTime = FileTime(path);
+        meta.applyTo(model, clipSet, clipNames);
+        anim.mode = meta.blendMode; anim.curve = meta.blendCurve; anim.bind(&model, &clipSet);
+        int start = meta.defaultClip.empty() ? -1 : model.findClip(meta.defaultClip);
+        if (start < 0) for (size_t i = 0; i < clipSet.size(); i++) if (clipSet[i].loop) { start = (int)i; break; }
+        if (start >= 0) anim.play(start, 0);
+        UploadModel(); modelLoaded = true; metaDirty = true;
+        SetStatus("Imported " + FileName(path) + ": " + std::to_string(model.clips.size()) + " animations found");
+    }
+    void UploadModel() {
+        modelMeshes.clear(); modelTex.clear();
+        for (auto& img : model.images) modelTex.push_back(MakeTextureRGBA(img.w, img.h, img.rgba.data(), true));
+        for (auto& mm : model.meshes) {
+            GpuModelMesh g; g.node = mm.node; g.image = mm.image; g.g.count = (UINT)mm.i.size();
+            D3D11_BUFFER_DESC d{}; d.Usage = D3D11_USAGE_IMMUTABLE; d.ByteWidth = (UINT)(mm.v.size() * sizeof(px::Vertex)); d.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+            D3D11_SUBRESOURCE_DATA sdt{ mm.v.data(), 0, 0 }; HR(dev->CreateBuffer(&d, &sdt, &g.g.vb));
+            d.ByteWidth = (UINT)(mm.i.size() * sizeof(uint32_t)); d.BindFlags = D3D11_BIND_INDEX_BUFFER; sdt.pSysMem = mm.i.data(); HR(dev->CreateBuffer(&d, &sdt, &g.g.ib));
+            modelMeshes.push_back(std::move(g));
+        }
+    }
+    void SaveMeta() {
+        if (!modelLoaded) return;
+        meta.blendMode = anim.mode; meta.blendCurve = anim.curve;
+        meta.capture(model, clipSet, clipNames);
+        if (meta.save(modelPath + ".meta")) SetStatus("Saved"); else SetStatus("Could not save settings");
+    }
+    void Tick(float dt) {
+        anim.update(dt);
+        if (statusTimer > 0) statusTimer -= dt;
+        if (metaDirty) { metaTimer += dt; if (metaTimer > 0.6f) { SaveMeta(); metaDirty = false; metaTimer = 0; } }
+        if (autoReload && modelLoaded && (reloadPoll += dt) > 1.f) {
+            reloadPoll = 0; FILETIME t = FileTime(modelPath);
+            if (CompareFileTime(&t, &modelTime) != 0) { Sleep(150); LoadModel(modelPath); }    // file re-exported from Blockbench
+        }
+    }
+    void Dirty() { metaDirty = true; metaTimer = 0; }
+
+    // model placement in camera space: centre, auto-fit scale, rotation, offset (+ walk bob and recoil)
+    XMMATRIX ModelPlacement() const {
+        px::V3 c = (model.bmin + model.bmax) * 0.5f, e = model.bmax - model.bmin;
+        float longest = std::max(e.x, std::max(e.y, e.z));
+        float s = (meta.autoFit && longest > 1e-4f ? meta.fitLength / longest : 1.f) * meta.viewScale;
+        float bx = std::sin(cam.bob) * 0.006f, by = std::fabs(std::cos(cam.bob)) * 0.006f;
+        return XMMatrixTranslation(-c.x, -c.y, -c.z) * XMMatrixScaling(s, s, s) *
+               XMMatrixRotationRollPitchYaw(XMConvertToRadians(meta.viewRotDeg.x), XMConvertToRadians(meta.viewRotDeg.y), XMConvertToRadians(meta.viewRotDeg.z)) *
+               XMMatrixTranslation(meta.viewPos.x + bx, meta.viewPos.y - by, meta.viewPos.z - cam.recoil);
+    }
+    static XMMATRIX ToXM(const px::Mat4& m) {   // column-vector storage m[col][row] == row-vector rows
+        return XMMATRIX(m.m[0][0], m.m[0][1], m.m[0][2], m.m[0][3], m.m[1][0], m.m[1][1], m.m[1][2], m.m[1][3],
+                        m.m[2][0], m.m[2][1], m.m[2][2], m.m[2][3], m.m[3][0], m.m[3][1], m.m[3][2], m.m[3][3]);
+    }
+    void DrawModel(const XMMATRIX& camWorld) {
+        std::vector<px::Mat4> W; model.worldMatrices(anim.out, W);
+        XMMATRIX place = ModelPlacement() * camWorld;
+        ID3D11SamplerState* s0 = meta.pixelFilter ? sampPointWrap.Get() : sampWrap.Get(); ctx->PSSetSamplers(0, 1, &s0);
+        for (auto& g : modelMeshes) {
+            ObjectCB o{}; XMStoreFloat4x4(&o.world, ToXM(W[g.node]) * place);
+            o.tint[0] = o.tint[1] = o.tint[2] = o.tint[3] = 1; o.params[0] = meta.reflect; o.params[1] = 0; o.params[2] = 1; o.params[3] = 0.5f;
+            ctx->UpdateSubresource(cbObject.Get(), 0, nullptr, &o, 0, 0);
+            ID3D11ShaderResourceView* srv[2] = { g.image >= 0 ? modelTex[g.image].Get() : texSRV[px::T_STRIP].Get(), texSRV[px::T_ENV].Get() };
+            ctx->PSSetShaderResources(0, 2, srv);
+            UINT stride = sizeof(px::Vertex), off = 0; ctx->IASetVertexBuffers(0, 1, g.g.vb.GetAddressOf(), &stride, &off);
+            ctx->IASetIndexBuffer(g.g.ib.Get(), DXGI_FORMAT_R32_UINT, 0); ctx->DrawIndexed(g.g.count, 0, 0);
+        }
+        ID3D11SamplerState* back = sampWrap.Get(); ctx->PSSetSamplers(0, 1, &back);
+    }
+
+    // ------------------------------------------------------------------ editor panels
+    void StyleUI() {
+        ImGui::StyleColorsDark();
+        ImGuiStyle& st = ImGui::GetStyle();
+        st.WindowRounding = 6; st.FrameRounding = 4; st.GrabRounding = 4; st.WindowBorderSize = 1;
+        ImVec4* c = st.Colors;
+        c[ImGuiCol_WindowBg] = ImVec4(0.03f, 0.07f, 0.08f, 0.90f);
+        c[ImGuiCol_TitleBg] = ImVec4(0.04f, 0.16f, 0.18f, 1); c[ImGuiCol_TitleBgActive] = ImVec4(0.06f, 0.30f, 0.34f, 1);
+        c[ImGuiCol_Border] = ImVec4(0.15f, 0.55f, 0.55f, 0.6f);
+        c[ImGuiCol_FrameBg] = ImVec4(0.06f, 0.16f, 0.18f, 1); c[ImGuiCol_FrameBgHovered] = ImVec4(0.09f, 0.28f, 0.30f, 1); c[ImGuiCol_FrameBgActive] = ImVec4(0.12f, 0.38f, 0.40f, 1);
+        c[ImGuiCol_Button] = ImVec4(0.08f, 0.30f, 0.33f, 1); c[ImGuiCol_ButtonHovered] = ImVec4(0.12f, 0.45f, 0.48f, 1); c[ImGuiCol_ButtonActive] = ImVec4(0.95f, 0.50f, 0.12f, 1);
+        c[ImGuiCol_Header] = ImVec4(0.08f, 0.30f, 0.33f, 1); c[ImGuiCol_HeaderHovered] = ImVec4(0.12f, 0.45f, 0.48f, 1); c[ImGuiCol_HeaderActive] = ImVec4(0.95f, 0.50f, 0.12f, 1);
+        c[ImGuiCol_CheckMark] = ImVec4(0.98f, 0.60f, 0.15f, 1); c[ImGuiCol_SliderGrab] = ImVec4(0.98f, 0.60f, 0.15f, 1); c[ImGuiCol_SliderGrabActive] = ImVec4(1, 0.75f, 0.3f, 1);
+        c[ImGuiCol_Text] = ImVec4(0.78f, 0.96f, 0.94f, 1);
+    }
+    void BuildUI() {
+        ImGui_ImplDX11_NewFrame(); ImGui_ImplWin32_NewFrame(); ImGui::NewFrame();
+        if (!editor) {
+            ImGui::SetNextWindowPos(ImVec2(10, 10)); ImGui::SetNextWindowBgAlpha(0.35f);
+            ImGui::Begin("##hint", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs);
+            ImGui::TextUnformatted("Tab: editor   click: capture mouse   WASD move   LMB/Space fire   Esc release"); ImGui::End();
+            return;
+        }
+        float W = (float)cw;
+        // ---- Assets
+        ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver); ImGui::SetNextWindowSize(ImVec2(330, 300), ImGuiCond_FirstUseEver);
+        if (ImGui::Begin("Assets")) {
+            ImGui::TextDisabled("Put Blockbench FBX exports in:"); ImGui::TextWrapped("%s", assetDir.c_str());
+            if (ImGui::Button("Open folder")) ShellExecuteA(nullptr, "open", assetDir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            ImGui::SameLine(); if (ImGui::Button("Rescan")) FindAssets();
+            ImGui::SameLine(); if (ImGui::Button("Re-import") && modelLoaded) LoadModel(modelPath);
+            ImGui::Checkbox("Re-import when the file changes", &autoReload);
+            ImGui::Separator();
+            if (assetFiles.empty()) ImGui::TextWrapped("No .fbx files yet. Export from Blockbench (File > Export > FBX) into the folder above, then press Rescan.");
+            for (auto& f : assetFiles) if (ImGui::Selectable(FileName(f).c_str(), f == modelPath)) LoadModel(f);
+            if (!loadError.empty()) { ImGui::Separator(); ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1, 0.45f, 0.4f, 1)); ImGui::TextWrapped("%s", loadError.c_str()); ImGui::PopStyleColor(); }
+            if (modelLoaded) {
+                size_t tris = 0; for (auto& m : model.meshes) tris += m.i.size() / 3;
+                ImGui::Separator();
+                ImGui::Text("Made with: %s", model.source.c_str());
+                ImGui::Text("%zu parts, %zu triangles, %zu textures", model.meshes.size(), tris, model.images.size());
+                ImGui::Text("%zu animations found", model.clips.size());
+            }
+        }
+        ImGui::End();
+
+        // ---- Animation
+        ImGui::SetNextWindowPos(ImVec2(W - 530, 10), ImGuiCond_FirstUseEver); ImGui::SetNextWindowSize(ImVec2(520, 420), ImGuiCond_FirstUseEver);
+        if (ImGui::Begin("Animation")) {
+            if (!modelLoaded) ImGui::TextWrapped("Load a model in the Assets panel to see its animations.");
+            else {
+                ImGui::TextDisabled("Every animation in the FBX is listed here. Press Play on another clip to see the transition.");
+                if (ImGui::BeginTable("clips", 6, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp)) {
+                    ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 44); ImGui::TableSetupColumn("Name");
+                    ImGui::TableSetupColumn("Length", ImGuiTableColumnFlags_WidthFixed, 56); ImGui::TableSetupColumn("Loop", ImGuiTableColumnFlags_WidthFixed, 36);
+                    ImGui::TableSetupColumn("Speed", ImGuiTableColumnFlags_WidthFixed, 90); ImGui::TableSetupColumn("Start", ImGuiTableColumnFlags_WidthFixed, 40);
+                    ImGui::TableHeadersRow();
+                    for (int i = 0; i < (int)model.clips.size(); i++) {
+                        ImGui::PushID(i); ImGui::TableNextRow();
+                        ImGui::TableNextColumn(); if (ImGui::Button(anim.cur == i ? " >> " : "Play")) { anim.paused = false; anim.play(i, meta.blendTime); }
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Right-click: play on top as a layer");
+                        if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) anim.playLayer(i);
+                        ImGui::TableNextColumn(); ImGui::SetNextItemWidth(-1); if (ImGui::InputText("##name", &clipNames[i])) Dirty();
+                        if (clipNames[i] != model.clips[i].name && ImGui::IsItemHovered()) ImGui::SetTooltip("In the file: %s", model.clips[i].name.c_str());
+                        ImGui::TableNextColumn(); ImGui::Text("%.2f s", model.clips[i].duration);
+                        ImGui::TableNextColumn(); if (ImGui::Checkbox("##loop", &clipSet[i].loop)) Dirty();
+                        ImGui::TableNextColumn(); ImGui::SetNextItemWidth(-1); if (ImGui::SliderFloat("##speed", &clipSet[i].speed, 0.1f, 3.f, "%.2fx")) Dirty();
+                        ImGui::TableNextColumn(); bool def = meta.defaultClip == model.clips[i].name;
+                        if (ImGui::RadioButton("##def", def)) { meta.defaultClip = model.clips[i].name; Dirty(); }
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Play this clip when the model loads");
+                        ImGui::PopID();
+                    }
+                    ImGui::EndTable();
+                }
+                ImGui::SeparatorText("Playback");
+                if (ImGui::Button(anim.paused ? "Resume" : "Pause", ImVec2(70, 0))) anim.paused = !anim.paused;
+                ImGui::SameLine();
+                float len = anim.clipLength();
+                ImGui::SetNextItemWidth(-1);
+                if (ImGui::SliderFloat("##time", &anim.time, 0.f, std::max(len, 0.001f), anim.cur >= 0 ? (clipNames[anim.cur] + "  %.2f s").c_str() : "%.2f s")) anim.paused = true;
+
+                ImGui::SeparatorText("Transitions");
+                int mode = (int)anim.mode; const char* modes[] = { "Inertialization (smoothest)", "Crossfade", "Cut (no blend)" };
+                ImGui::SetNextItemWidth(230); if (ImGui::Combo("Blend type", &mode, modes, 3)) { anim.mode = (px::BlendMode)mode; Dirty(); }
+                ImGui::SetNextItemWidth(230); if (ImGui::SliderFloat("Blend time", &meta.blendTime, 0.f, 1.f, "%.2f s")) Dirty();
+                ImGui::BeginDisabled(anim.mode != px::BlendMode::Crossfade);
+                int curve = (int)anim.curve; const char* curves[] = { "Linear", "Ease in", "Ease out", "Smooth" };
+                ImGui::SetNextItemWidth(230); if (ImGui::Combo("Blend curve", &curve, curves, 4)) { anim.curve = (px::BlendCurve)curve; Dirty(); }
+                ImGui::EndDisabled();
+                ImGui::TextDisabled("Coming next in Phase 1: the state machine editor (which clip plays when).");
+            }
+        }
+        ImGui::End();
+
+        // ---- Viewmodel (camera attachment)
+        ImGui::SetNextWindowPos(ImVec2(W - 530, 440), ImGuiCond_FirstUseEver); ImGui::SetNextWindowSize(ImVec2(520, 250), ImGuiCond_FirstUseEver);
+        if (ImGui::Begin("Viewmodel")) {
+            if (!modelLoaded) ImGui::TextWrapped("The procedural demo cannon is shown until a model is loaded.");
+            else {
+                ImGui::TextDisabled("Where the model sits in front of the camera. Drag the numbers.");
+                bool ch = false;
+                ch |= ImGui::DragFloat3("Position (m)", &meta.viewPos.x, 0.002f, -2.f, 2.f, "%.3f");
+                ch |= ImGui::DragFloat3("Rotation (deg)", &meta.viewRotDeg.x, 0.25f, -180.f, 180.f, "%.1f");
+                ch |= ImGui::Checkbox("Auto-fit size", &meta.autoFit);
+                if (meta.autoFit) { ImGui::SameLine(); ImGui::SetNextItemWidth(120); ch |= ImGui::DragFloat("Length (m)", &meta.fitLength, 0.005f, 0.05f, 5.f, "%.2f"); }
+                ch |= ImGui::DragFloat("Extra scale", &meta.viewScale, 0.005f, 0.01f, 20.f, "%.3f");
+                ch |= ImGui::SliderFloat("Shininess", &meta.reflect, 0.f, 1.f);
+                ch |= ImGui::Checkbox("Pixel-art textures (sharp pixels)", &meta.pixelFilter);
+                if (ch) Dirty();
+                ImGui::SetNextItemWidth(120); ImGui::DragFloat("Import scale (0 = auto)", &meta.importScale, 0.001f, 0.f, 10.f, "%.4f");
+                ImGui::SameLine(); if (ImGui::Button("Apply")) { SaveMeta(); LoadModel(modelPath); }
+            }
+        }
+        ImGui::End();
+
+        // ---- Look
+        ImGui::SetNextWindowPos(ImVec2(10, 320), ImGuiCond_FirstUseEver); ImGui::SetNextWindowSize(ImVec2(330, 220), ImGuiCond_FirstUseEver);
+        if (ImGui::Begin("Look")) {
+            ImGui::Checkbox("Bloom", &S.bloomOn); ImGui::SameLine(); ImGui::SetNextItemWidth(-1); ImGui::SliderFloat("##bloom", &S.bloom, 0.f, 2.f);
+            ImGui::SetNextItemWidth(160); ImGui::SliderFloat("Haze", &S.fog, 0.f, 1.f);
+            int ri = S.res == 240 ? 0 : S.res == 360 ? 1 : S.res == 480 ? 2 : S.res == 720 ? 3 : 4; const char* rs[] = { "240p", "360p", "480p (Wii)", "720p", "Native" };
+            ImGui::SetNextItemWidth(160); if (ImGui::Combo("Internal resolution", &ri, rs, 5)) { const int t[] = { 240, 360, 480, 720, 0 }; S.res = t[ri]; }
+            ImGui::Checkbox("6-bit dither", &S.dither); ImGui::Checkbox("Sharp upscale", &S.nearest); ImGui::Checkbox("Dynamic lights", &S.dyn);
+            ImGui::TextDisabled("%.0f fps, %dx%d", ImGui::GetIO().Framerate, rtScene.w, rtScene.h);
+        }
+        ImGui::End();
+
+        if (statusTimer > 0) {
+            ImGui::SetNextWindowPos(ImVec2(W * 0.5f, (float)ch - 16), 0, ImVec2(0.5f, 1)); ImGui::SetNextWindowBgAlpha(0.6f);
+            ImGui::Begin("##status", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs);
+            ImGui::TextUnformatted(status.c_str()); ImGui::End();
+        }
     }
 
     // ------------------------------------------------------------------ input / loop
@@ -335,6 +606,8 @@ struct App {
     }
     void OnKey(WPARAM k) {
         static const int resTable[] = { 240, 360, 480, 720, 0 };
+        if (k == VK_TAB) { editor = !editor; if (editor && captured) Capture(false); return; }
+        if (ImGui::GetIO().WantCaptureKeyboard) return;
         if (k == VK_ESCAPE) { if (captured) Capture(false); }
         else if (k == VK_SPACE) Fire();
         else if (k == VK_F1) S.bloomOn = !S.bloomOn;
@@ -350,9 +623,15 @@ struct App {
 
 static App* g_app = nullptr;
 static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    if (ImGui::GetCurrentContext() && ImGui_ImplWin32_WndProcHandler(h, m, w, l)) return 1;
     switch (m) {
     case WM_SIZE: if (g_app && w != SIZE_MINIMIZED) { g_app->cw = std::max<int>(2, LOWORD(l)); g_app->ch = std::max<int>(2, HIWORD(l)); g_app->resized = true; } return 0;
-    case WM_LBUTTONDOWN: if (g_app) { if (!g_app->captured) g_app->Capture(true); else g_app->Fire(); } return 0;
+    case WM_LBUTTONDOWN:
+        if (g_app && !(ImGui::GetCurrentContext() && ImGui::GetIO().WantCaptureMouse)) {
+            if (g_app->editor) g_app->editor = false;            // clicking the game view closes the editor and starts playing
+            if (!g_app->captured) g_app->Capture(true); else g_app->Fire();
+        }
+        return 0;
     case WM_KEYDOWN: if (g_app) g_app->OnKey(w); return 0;
     case WM_KILLFOCUS: if (g_app && g_app->captured) g_app->Capture(false); return 0;
     case WM_DESTROY: PostQuitMessage(0); return 0;
@@ -366,7 +645,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR, int) {
     WNDCLASSA wc{}; wc.lpfnWndProc = WndProc; wc.hInstance = hi; wc.hCursor = LoadCursor(nullptr, IDC_ARROW); wc.lpszClassName = "PrimeStyleWnd";
     RegisterClassA(&wc);
     RECT rc{ 0, 0, 1280, 720 }; AdjustWindowRect(&rc, WS_OVERLAPPEDWINDOW, FALSE);
-    app.hwnd = CreateWindowA(wc.lpszClassName, "Prime-style renderer (D3D11)", WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT, rc.right - rc.left, rc.bottom - rc.top, nullptr, nullptr, hi, nullptr);
+    app.hwnd = CreateWindowA(wc.lpszClassName, "PRIMEngine", WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT, rc.right - rc.left, rc.bottom - rc.top, nullptr, nullptr, hi, nullptr);
     RECT cr; GetClientRect(app.hwnd, &cr); app.cw = cr.right; app.ch = cr.bottom;
     app.InitDevice();
 
@@ -378,15 +657,18 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR, int) {
         LARGE_INTEGER now; QueryPerformanceCounter(&now); double t = (double)(now.QuadPart - t0.QuadPart) / fq.QuadPart;
         float dt = (float)std::min(0.05, t - last); last = t; app.T += dt;
 
-        app.PollKeys(); app.MouseLook(); app.cam.move(app.scene, app.input, dt); app.sim.update(dt);
+        app.PollKeys();
+        if (ImGui::GetIO().WantCaptureKeyboard) app.input = px::Input{};
+        app.MouseLook(); app.cam.move(app.scene, app.input, dt); app.sim.update(dt); app.Tick(dt);
+        app.BuildUI();
         app.Render();
 
         fpsAcc += dt; fpsN++;
         if (fpsAcc > 0.5) {
-            char title[256]; snprintf(title, sizeof title, "Prime-style renderer (D3D11) | %.0f fps | %dx%d | bloom %s %.2f | dither %s | haze %s | F1-F5 toggles, 1-5 res, -/+ bloom",
-                fpsN / fpsAcc, app.rtScene.w, app.rtScene.h, app.S.bloomOn ? "on" : "off", app.S.bloom, app.S.dither ? "on" : "off", app.S.fog > 0 ? "on" : "off");
+            char title[256]; snprintf(title, sizeof title, "PRIMEngine | %.0f fps | %s | Tab: editor", fpsN / fpsAcc, app.modelLoaded ? App::FileName(app.modelPath).c_str() : "no model loaded");
             SetWindowTextA(app.hwnd, title); fpsAcc = 0; fpsN = 0;
         }
     }
+    ImGui_ImplDX11_Shutdown(); ImGui_ImplWin32_Shutdown(); ImGui::DestroyContext();
     return 0;
 }

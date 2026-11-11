@@ -279,6 +279,7 @@ uniform vec4 uTint, uParams, uFogColor, uFogRange, uCam;   // uCam: xyz pos, w t
 out vec4 oColor;
 void main(){
   vec4 t = texture(uAlbedo,vUV);
+  if(uParams.w>0.0 && t.a<uParams.w) discard;                        // cut-out pixels (model textures)
   vec3 col = t.rgb*uTint.rgb*vLight;
   vec3 N=normalize(vN), V=normalize(uCam.xyz-vWP);
   float ndv=clamp(dot(N,V),0.0,1.0);

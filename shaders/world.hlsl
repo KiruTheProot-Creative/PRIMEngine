@@ -21,7 +21,7 @@ cbuffer Object : register(b1)
 {
     row_major float4x4 gWorld;
     float4 gTint;
-    float4 gParams;       // x env amount, y glow amount, z dynamic-light flag
+    float4 gParams;       // x env amount, y glow amount, z dynamic-light flag, w alpha cut-out (0 = off)
 };
 
 Texture2D    gAlbedo : register(t0);
@@ -79,6 +79,7 @@ VSOut VS_World(VSIn i)
 float4 PS_World(VSOut i) : SV_Target
 {
     float4 t   = gAlbedo.Sample(gWrap, i.uv);
+    if (gParams.w > 0.0 && t.a < gParams.w) discard;                         // cut-out pixels (model textures)
     float3 col = t.rgb * gTint.rgb * i.light;
 
     float3 N   = normalize(i.n);
