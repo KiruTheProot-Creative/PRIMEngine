@@ -76,15 +76,22 @@ PRIMEngine opens as an engine editor, like Unity or Godot:
 
 **Play / Stop** (F5) is in the middle of the menu bar. F6 pauses, F11 hides the editor, Ctrl+S saves. Panels can be dragged and docked anywhere; View > Reset layout puts them back.
 
-## Building rooms
-**File > New room** makes a flat floor of blocks (one block = 1 metre, Minecraft scale). In the Viewport:
+## Building rooms (creative mode)
+**File > New room** makes a flat floor of blocks (one block = 1 metre, Minecraft scale). Then **click the viewport** to step into the room, Minecraft creative style:
 
-- **Right-click** places a block on the face under the mouse, **left-click** breaks one
-- **Hold right mouse + WASD** to fly around, **Q/E** down/up, **Shift** fast
-- **Ctrl+Z / Ctrl+Y** undo / redo, **Ctrl+S** saves (rooms also autosave every 30 seconds)
-- **Play** (F5) drops Samus where the editor camera is: walk, **Space** to jump, shots hit your blocks
+| Key | Does |
+| --- | --- |
+| WASD, mouse | Walk and look |
+| Space | Jump; **double-tap** to fly on/off (flying: Space up, Shift down) |
+| Ctrl / Shift | Sprint / sneak |
+| Left click | Break the block in the crosshair (hold to keep breaking) |
+| Right click | Place the selected block (hold to keep placing) |
+| Middle click | Pick the block you look at |
+| 1-9, mouse wheel | Choose a hotbar slot |
+| E or Esc | Mouse back to the editor panels (click a block in Inventory to put it in the hotbar) |
+| Ctrl+Z / Ctrl+Y | Undo / redo |
 
-Rooms are saved in `assets/rooms`. The last room you had open reopens on start.
+**Play** (F5) starts the game with Samus right where you are. Rooms autosave every 30 seconds into `assets/rooms`; Ctrl+S saves now. The last room you had open reopens on start.
 
 ## Your models and animations
 1. In Blockbench: **File > Export > Export FBX**, save into the `assets` folder next to `prime_d3d11.exe`.

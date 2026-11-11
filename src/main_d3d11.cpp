@@ -801,14 +801,15 @@ struct App {
                   edView = XMMatrixLookToLH(XMVectorSet(e.x, e.y, e.z, 1), XMVectorSet(f.x, f.y, f.z, 0), XMVectorSet(u.x, u.y, u.z, 0));
                   edProj = XMMatrixPerspectiveFovLH(XMConvertToRadians(60.f), sz.x / sz.y, 0.1f, 80.f); }
                 RoomEditing();
-                if (playing && viewHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !captured) Capture(true);
+                if (viewHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !captured) { if (playing) Capture(true); else if (roomOpen) EnterBuild(); }
                 // overlay
                 ImDrawList* dl = ImGui::GetWindowDrawList();
                 const char* txt = playing ? (captured ? "PLAYING  (Esc to release the mouse)" : "PLAYING  (click to control)")
-                                          : roomOpen ? "BUILDING  (right-click place, left-click break, hold right mouse + WASD to fly)" : "EDITING  (hold right mouse + WASD to fly)";
+                                          : roomOpen ? (captured ? "BUILDING  (E or Esc: mouse back to the editor, double-tap Space: fly on/off, Ctrl: sprint)" : "BUILDING  (click to step into the room)") : "EDITING  (hold right mouse + WASD to fly)";
                 dl->AddRectFilled(ImVec2(p0.x + 8, p0.y + 8), ImVec2(p0.x + 16 + ImGui::CalcTextSize(txt).x, p0.y + 30), IM_COL32(0, 20, 24, 170), 4);
                 dl->AddText(ImVec2(p0.x + 12, p0.y + 11), playing ? IM_COL32(255, 160, 50, 255) : IM_COL32(150, 240, 230, 255), txt);
-                if (playing) { ImVec2 c((p0.x + viewMax.x) * 0.5f, (p0.y + viewMax.y) * 0.5f); dl->AddLine(ImVec2(c.x - 7, c.y), ImVec2(c.x + 7, c.y), IM_COL32(127, 255, 212, 180), 2); dl->AddLine(ImVec2(c.x, c.y - 7), ImVec2(c.x, c.y + 7), IM_COL32(127, 255, 212, 180), 2); }
+                if (roomOpen && !playing) DrawHotbar(dl, p0, viewMax);
+                if (playing || Building()) { ImVec2 c((p0.x + viewMax.x) * 0.5f, (p0.y + viewMax.y) * 0.5f); dl->AddLine(ImVec2(c.x - 7, c.y), ImVec2(c.x + 7, c.y), IM_COL32(127, 255, 212, 180), 2); dl->AddLine(ImVec2(c.x, c.y - 7), ImVec2(c.x, c.y + 7), IM_COL32(127, 255, 212, 180), 2); }
             }
         }
         ImGui::End();
@@ -837,7 +838,7 @@ struct App {
         if (showAnim) AnimationPanel();
         if (showConsole) ConsolePanel();
         if (showInv) InventoryPanel();
-        if (!playing) FlyCam(io.DeltaTime);
+        if (!playing && !roomOpen) FlyCam(io.DeltaTime);
     }
     bool iniHadLayout = false;
 
@@ -846,7 +847,7 @@ struct App {
     GpuMesh roomMesh;
     struct BlockEdit { int x, y, z; uint8_t before, after; };
     std::vector<std::vector<BlockEdit>> undoStack, redoStack;
-    bool hoverValid = false; px::RayHit hover{}; uint8_t brush = px::B_CUBE;
+    bool hoverValid = false; px::RayHit hover{};
     XMMATRIX edView = XMMatrixIdentity(), edProj = XMMatrixIdentity();
     px::V3 feet{ 0, 0, 0 }, pvel{ 0, 0, 0 }, spawnFeet{ 0, 0, 0 }; bool onGround = false;
     float uiScale = 1.f;
@@ -954,25 +955,91 @@ struct App {
         const int e[12][2] = { { 0, 1 }, { 2, 3 }, { 4, 5 }, { 6, 7 }, { 0, 2 }, { 1, 3 }, { 4, 6 }, { 5, 7 }, { 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 } };
         for (auto& k : e) Line3D(dl, c[k[0]], c[k[1]], col, th);
     }
-    void RoomEditing() {   // called from the Viewport panel while editing a room
+    // ------------------------------------------------------------------ creative mode (Minecraft-style building)
+    uint8_t hotbar[9] = { px::B_CUBE, 0, 0, 0, 0, 0, 0, 0, 0 }; int hotSel = 0;
+    px::V3 bFeet{ 0, 0, 0 }, bVel{ 0, 0, 0 }; bool bGround = false, bFly = true;
+    float lastSpaceTap = -10.f, breakCool = 0, placeCool = 0; bool lHeld = false, rHeld = false, mHeld = false;
+    static constexpr float kReach = 8.f;
+    bool Building() const { return roomOpen && !playing && captured; }
+
+    void EnterBuild() {
+        bFeet = { edCam.p.x, edCam.p.y - kEye, edCam.p.z };
+        for (int i = 0; i < 64 && !room.boxFree(bFeet, kHalfW, kHeight); i++) bFeet.y += 1.f;
+        bVel = { 0, 0, 0 }; lHeld = rHeld = mHeld = true;   // the click that captured the mouse must not also break a block
+        Capture(true);
+    }
+    void RoomEditing() {   // aim with the crosshair, draw the outline (called from the Viewport panel)
         hoverValid = false;
-        if (!roomOpen || playing || !viewHovered) return;
-        ImGuiIO& io = ImGui::GetIO();
-        float w = viewMax.x - viewMin.x, h = viewMax.y - viewMin.y; if (w < 4 || h < 4) return;
-        float nx = (io.MousePos.x - viewMin.x) / w * 2 - 1, ny = 1 - (io.MousePos.y - viewMin.y) / h * 2;
-        float t = std::tan(XMConvertToRadians(60.f) * 0.5f);
-        px::V3 f, r, u; edCam.basis(f, r, u); px::V3 dir = px::normalize(f + r * (nx * t * (w / h)) + u * (ny * t));
-        hoverValid = room.raycast(edCam.eye(), dir, 80.f, hover);
-        if (!hoverValid) return;
+        if (!roomOpen || playing) return;
+        px::V3 f, r, u; edCam.basis(f, r, u);
+        hoverValid = room.raycast(edCam.eye(), f, kReach, hover);   // a block, or the room floor when it is empty there
+        if (!hoverValid || !captured) return;
         ImDrawList* dl = ImGui::GetWindowDrawList();
-        int px_ = hover.x + hover.nx, py_ = hover.y + hover.ny, pz_ = hover.z + hover.nz;
-        if (!hover.onGround) BoxLines(dl, { (float)hover.x - 0.002f, (float)hover.y - 0.002f, (float)hover.z - 0.002f }, { hover.x + 1.002f, hover.y + 1.002f, hover.z + 1.002f }, IM_COL32(20, 25, 30, 230), 2.f);
-        if (room.inBounds(px_, py_, pz_)) BoxLines(dl, { (float)px_, (float)py_, (float)pz_ }, { px_ + 1.f, py_ + 1.f, pz_ + 1.f }, IM_COL32(255, 160, 50, 150), 1.f);
-        // left click breaks, a short right click places (holding right mouse flies the camera)
-        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !hover.onGround) { std::vector<BlockEdit> g; EditBlock(g, hover.x, hover.y, hover.z, px::B_AIR); Commit(g); }
-        if (ImGui::IsMouseReleased(ImGuiMouseButton_Right) && io.MouseDragMaxDistanceSqr[1] < 36.f && io.MouseDownDurationPrev[1] < 0.35f) {
-            std::vector<BlockEdit> g; EditBlock(g, px_, py_, pz_, brush); Commit(g);
+        if (!hover.onGround) BoxLines(dl, { hover.x - 0.003f, hover.y - 0.003f, hover.z - 0.003f }, { hover.x + 1.003f, hover.y + 1.003f, hover.z + 1.003f }, IM_COL32(10, 12, 14, 235), 2.f);
+        else { int x = hover.x, y = hover.y + 1, z = hover.z; BoxLines(dl, { (float)x, (float)y, (float)z }, { x + 1.f, y + 0.02f, z + 1.f }, IM_COL32(255, 160, 50, 150), 1.f); }
+    }
+    bool OverlapsBuilder(int x, int y, int z) const {
+        return bFeet.x + kHalfW > x && bFeet.x - kHalfW < x + 1 && bFeet.z + kHalfW > z && bFeet.z - kHalfW < z + 1 && bFeet.y + kHeight > y && bFeet.y < y + 1;
+    }
+    void BuilderTick(float dt) {
+        if (!Building()) { lHeld = rHeld = mHeld = true; return; }
+        auto down = [](int k) { return (GetAsyncKeyState(k) & 0x8000) != 0; };
+        // ---- movement: walk with gravity, or creative flight (double-tap Space)
+        px::V3 f, r, u; edCam.basis(f, r, u); px::V3 fw = px::normalize({ f.x, 0, f.z }), mv{ 0, 0, 0 };
+        if (down('W')) mv = mv + fw;
+        if (down('S')) mv = mv - fw;
+        if (down('D')) mv = mv + r;
+        if (down('A')) mv = mv - r;
+        bool sprint = down(VK_CONTROL), sneak = down(VK_SHIFT);
+        float spd = bFly ? (sprint ? 22.f : 11.f) : (sprint ? 6.5f : sneak ? 1.6f : 4.6f);
+        bool moving = px::length(mv) > 0; if (moving) mv = px::normalize(mv) * spd;
+        bVel.x = mv.x; bVel.z = mv.z;
+        if (bFly) { bVel.y = (down(VK_SPACE) ? spd * 0.8f : 0.f) - (sneak ? spd * 0.8f : 0.f); }
+        else { bVel.y -= kGravity * dt; bVel.y = std::max(bVel.y, -40.f); if (down(VK_SPACE) && bGround) bVel.y = kJump; }
+        bFeet = room.moveBox(bFeet, bVel, kHalfW, kHeight, dt, bGround);
+        if (bFly && bGround && sneak) { bFly = false; SetStatus("Flying off (landed)"); }
+        if (bFeet.y < room.oy - 30) { bFeet.y = room.oy + room.sy; bFly = true; }
+        if (moving && bGround && !bFly) edCam.bob += dt * 9;
+        edCam.p = { bFeet.x, bFeet.y + kEye, bFeet.z };
+
+        // ---- blocks: left breaks, right places, middle picks; holding repeats like Minecraft
+        bool L = down(VK_LBUTTON), R = down(VK_RBUTTON), M = down(VK_MBUTTON);
+        breakCool -= dt; placeCool -= dt;
+        if (L && (!lHeld || breakCool <= 0) && hoverValid && !hover.onGround) {
+            std::vector<BlockEdit> g; EditBlock(g, hover.x, hover.y, hover.z, px::B_AIR); Commit(g); breakCool = 0.22f;
         }
+        if (R && (!rHeld || placeCool <= 0) && hoverValid && hotbar[hotSel] != px::B_AIR) {
+            int x = hover.x + hover.nx, y = hover.y + hover.ny, z = hover.z + hover.nz;
+            if (!OverlapsBuilder(x, y, z)) { std::vector<BlockEdit> g; EditBlock(g, x, y, z, hotbar[hotSel]); Commit(g); }
+            placeCool = 0.22f;
+        }
+        if (M && !mHeld && hoverValid && !hover.onGround) {
+            uint8_t b = room.get(hover.x, hover.y, hover.z); int found = -1;
+            for (int i = 0; i < 9; i++) if (hotbar[i] == b) { found = i; break; }
+            if (found >= 0) hotSel = found; else hotbar[hotSel] = b;
+        }
+        if (!L) breakCool = 0;
+        if (!R) placeCool = 0;
+        lHeld = L; rHeld = R; mHeld = M;
+    }
+    void OnSpace() {   // double-tap Space toggles flight
+        float now = (float)ImGui::GetTime();
+        if (now - lastSpaceTap < 0.3f) { bFly = !bFly; bVel.y = 0; SetStatus(bFly ? "Flying" : "Walking"); lastSpaceTap = -10.f; }
+        else lastSpaceTap = now;
+    }
+    static const char* BlockName(uint8_t b) { return b == px::B_CUBE ? "Cube" : ""; }
+    void DrawHotbar(ImDrawList* dl, ImVec2 p0, ImVec2 p1) {
+        float s = 44.f * uiScale, gap = 4.f, W = 9 * s + 8 * gap; ImVec2 o((p0.x + p1.x - W) * 0.5f, p1.y - s - 14.f);
+        dl->AddRectFilled(ImVec2(o.x - 6, o.y - 6), ImVec2(o.x + W + 6, o.y + s + 6), IM_COL32(0, 18, 22, 170), 6);
+        for (int i = 0; i < 9; i++) {
+            ImVec2 a(o.x + i * (s + gap), o.y), b(a.x + s, a.y + s);
+            dl->AddRectFilled(a, b, hotbar[i] ? IM_COL32(70, 82, 88, 230) : IM_COL32(20, 40, 46, 200), 4);
+            if (hotbar[i]) { dl->AddRect(ImVec2(a.x + 6, a.y + 6), ImVec2(b.x - 6, b.y - 6), IM_COL32(160, 175, 180, 255), 2, 0, 2); }
+            dl->AddRect(a, b, i == hotSel ? IM_COL32(255, 170, 60, 255) : IM_COL32(40, 120, 125, 200), 4, 0, i == hotSel ? 3.f : 1.f);
+            char n[2] = { (char)('1' + i), 0 }; dl->AddText(ImVec2(a.x + 4, a.y + 2), IM_COL32(180, 230, 225, 200), n);
+        }
+        const char* nm = BlockName(hotbar[hotSel]);
+        if (*nm) { ImVec2 ts = ImGui::CalcTextSize(nm); dl->AddText(ImVec2((p0.x + p1.x - ts.x) * 0.5f, o.y - 26), IM_COL32(230, 250, 245, 255), nm); }
     }
 
     void InventoryPanel() {
@@ -981,9 +1048,9 @@ struct App {
             if (ImGui::BeginTabItem("Blocks")) {
                 auto tile = [&](const char* name, uint8_t id, bool avail) {
                     ImGui::BeginDisabled(!avail);
-                    bool on = avail && brush == id;
+                    bool on = avail && hotbar[hotSel] == id;
                     ImGui::PushStyleColor(ImGuiCol_Button, on ? ImVec4(0.95f, 0.5f, 0.12f, 0.85f) : ImVec4(0.08f, 0.22f, 0.25f, 1));
-                    if (ImGui::Button(name, ImVec2(70, 54)) && avail) brush = id;
+                    if (ImGui::Button(name, ImVec2(70, 54)) && avail) hotbar[hotSel] = id;
                     ImGui::PopStyleColor(); ImGui::EndDisabled();
                     if (!avail && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Coming in the next room editor step");
                 };
@@ -991,7 +1058,7 @@ struct App {
                 tile("Slope", 0, false); ImGui::SameLine(); tile("Slice", 0, false); ImGui::SameLine(); tile("Beam", 0, false);
                 ImGui::Separator();
                 if (!roomOpen) { ImGui::TextWrapped("Open or make a room to build: File > New room."); if (ImGui::Button("New room")) NewRoom(); }
-                else ImGui::TextDisabled("Right-click: place   Left-click: break\nHold right mouse + WASD: fly   Ctrl+Z / Ctrl+Y: undo / redo");
+                else ImGui::TextDisabled("Click a block to put it in hotbar slot %d.\nClick the viewport to build: right-click place,\nleft-click break, double-tap Space to fly, E for the mouse.", hotSel + 1);
                 ImGui::EndTabItem();
             }
             if (ImGui::BeginTabItem("Objects")) { ImGui::TextWrapped("Your FBX models, doors, pickups and spawns go here (room editor step 6)."); ImGui::EndTabItem(); }
@@ -1030,7 +1097,8 @@ struct App {
     void MouseLook() {
         if (!captured) return;
         POINT c = ViewCenter(), m; GetCursorPos(&m);
-        cam.yaw += (m.x - c.x) * 0.0025f; cam.pitch = std::max(-1.4f, std::min(1.4f, cam.pitch - (m.y - c.y) * 0.0025f)); SetCursorPos(c.x, c.y);
+        px::Camera& C = playing ? cam : edCam;
+        C.yaw += (m.x - c.x) * 0.0025f; C.pitch = std::max(-1.5f, std::min(1.5f, C.pitch - (m.y - c.y) * 0.0025f)); SetCursorPos(c.x, c.y);
     }
     void PollKeys() {
         input = px::Input{};
@@ -1045,6 +1113,11 @@ struct App {
         if (k == VK_F6) { if (playing) pausedGame = !pausedGame; return; }
         if (k == VK_F11) { editor = !editor; if (captured) Capture(false); return; }
         if (k == VK_ESCAPE) { if (captured) Capture(false); return; }
+        if (Building()) {
+            if (k == 'E') { Capture(false); return; }
+            if (k >= '1' && k <= '9') { hotSel = (int)(k - '1'); return; }
+            if (k == VK_SPACE) { OnSpace(); return; }
+        }
         if (k == VK_SPACE && playing && captured && !pausedGame && !roomOpen) Fire();
     }
 };
@@ -1056,12 +1129,15 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_SIZE: if (g_app && w != SIZE_MINIMIZED) { g_app->cw = std::max<int>(2, LOWORD(l)); g_app->ch = std::max<int>(2, HIWORD(l)); g_app->resized = true; } return 0;
     case WM_LBUTTONDOWN:
         if (g_app) {
-            if (g_app->captured) { if (!g_app->pausedGame) g_app->Fire(); }
+            if (g_app->captured) { if (g_app->playing && !g_app->pausedGame) g_app->Fire(); }
             else if (!g_app->editor && g_app->playing) g_app->Capture(true);   // game-only view (F11)
             else if (!g_app->editor && !g_app->playing) { g_app->StartPlay(); g_app->Capture(true); }
         }
         return 0;
-    case WM_KEYDOWN: case WM_SYSKEYDOWN: if (g_app) g_app->OnKey(w); if (m == WM_SYSKEYDOWN) break; return 0;
+    case WM_MOUSEWHEEL:
+        if (g_app && g_app->Building()) { int d = GET_WHEEL_DELTA_WPARAM(w) > 0 ? -1 : 1; g_app->hotSel = (g_app->hotSel + d + 9) % 9; return 0; }
+        break;
+    case WM_KEYDOWN: case WM_SYSKEYDOWN: if (g_app && !(l & (1 << 30))) g_app->OnKey(w); if (m == WM_SYSKEYDOWN) break; return 0;
     case WM_KILLFOCUS: if (g_app && g_app->captured) g_app->Capture(false); return 0;
     case WM_DESTROY: PostQuitMessage(0); return 0;
     }
@@ -1088,7 +1164,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR, int) {
 
         app.PollKeys(); app.MouseLook();
         if (app.playing && !app.pausedGame) { if (app.roomOpen) app.RoomMove(dt); else app.cam.move(app.scene, app.input, dt); app.sim.update(dt); }
-        app.Tick(dt);
+        app.BuilderTick(dt); app.Tick(dt);
         app.BuildUI();
         app.Render();
 
