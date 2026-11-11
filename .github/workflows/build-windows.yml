@@ -14,6 +14,20 @@ jobs:
         run: cmake -B build -A x64
       - name: Build
         run: cmake --build build --config Release
+      - name: Check shaders compile
+        shell: pwsh
+        run: |
+          $fxc = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter fxc.exe | Where-Object { $_.FullName -like "*x64*" } | Select-Object -First 1
+          Write-Host "Using $($fxc.FullName)"
+          $jobs = @(
+            @("world.hlsl","VS_World","vs_5_0"), @("world.hlsl","PS_World","ps_5_0"), @("world.hlsl","VS_Particle","vs_5_0"), @("world.hlsl","PS_Particle","ps_5_0"),
+            @("post.hlsl","VS_Full","vs_5_0"), @("post.hlsl","PS_Bright","ps_5_0"), @("post.hlsl","PS_Blur","ps_5_0"), @("post.hlsl","PS_Composite","ps_5_0"), @("post.hlsl","PS_Sky","ps_5_0"))
+          $failed = 0
+          foreach ($j in $jobs) {
+            & $fxc.FullName /nologo /T $j[2] /E $j[1] /Fo NUL ("shaders\" + $j[0])
+            if ($LASTEXITCODE -ne 0) { Write-Host "FAILED: $($j[0]) $($j[1])"; $failed++ }
+          }
+          if ($failed -gt 0) { exit 1 }
       - name: Upload game build
         uses: actions/upload-artifact@v4
         with:
