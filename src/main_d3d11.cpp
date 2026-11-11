@@ -20,11 +20,13 @@
 
 #include "../third_party/imgui/imgui.h"
 #include "../third_party/imgui/imgui_stdlib.h"
+#include "../third_party/imgui/imgui_internal.h"   // DockBuilder (default layout)
 #include "../third_party/imgui/backends/imgui_impl_win32.h"
 #include "../third_party/imgui/backends/imgui_impl_dx11.h"
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 #include <algorithm>
+#include <functional>
 
 #include <cstdio>
 #include <cstring>
@@ -182,14 +184,19 @@ struct App {
 
         // editor UI
         IMGUI_CHECKVERSION(); ImGui::CreateContext();
-        ImGui::GetIO().IniFilename = "editor_layout.ini";
+        ImGuiIO& io = ImGui::GetIO();
+        io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+        static std::string ini = ExeDir() + "editor_layout.ini"; io.IniFilename = ini.c_str();
+        iniHadLayout = GetFileAttributesA(ini.c_str()) != INVALID_FILE_ATTRIBUTES;
+        edCam.p = { 0, 2.6f, 1.0f }; edCam.pitch = -0.12f;
         StyleUI();
         ImGui_ImplWin32_Init(hwnd); ImGui_ImplDX11_Init(dev.Get(), ctx.Get());
 
         // assets: load the first model found
         assetDir = FindDir("assets");
         FindAssets();
-        if (!assetFiles.empty()) LoadModel(assetFiles[0]);
+        Log("PRIMEngine started. Assets folder: " + assetDir);
+        if (!assetFiles.empty()) LoadModel(assetFiles[0]); else Log("No FBX files in the assets folder yet");
     }
 
     ComPtr<ID3D11ShaderResourceView> MakeTexture(const std::vector<uint8_t>& pixels, bool mips) { return MakeTextureRGBA(px::TN, px::TN, pixels.data(), mips); }
@@ -262,18 +269,31 @@ struct App {
 
     void PostPass(RT* dst, ID3D11PixelShader* ps, ID3D11ShaderResourceView* s0, ID3D11ShaderResourceView* s1, ID3D11ShaderResourceView* s2, const PostCB& cbv) {
         ID3D11ShaderResourceView* none[3] = {}; ctx->PSSetShaderResources(0, 3, none);          // avoid SRV/RTV hazards
-        ctx->OMSetRenderTargets(1, dst ? dst->rtv.GetAddressOf() : backRTV.GetAddressOf(), nullptr);
-        SetViewport(dst ? dst->w : cw, dst ? dst->h : ch);
+        ID3D11RenderTargetView* target = dst ? dst->rtv.Get() : outRTV; ctx->OMSetRenderTargets(1, &target, nullptr);
+        SetViewport(dst ? dst->w : ow, dst ? dst->h : oh);
         ctx->UpdateSubresource(cbPost.Get(), 0, nullptr, &cbv, 0, 0);
         ID3D11ShaderResourceView* srv[3] = { s0, s1, s2 }; ctx->PSSetShaderResources(0, 3, srv);
         ctx->PSSetShader(ps, nullptr, 0); ctx->Draw(3, 0);
     }
 
+    ID3D11RenderTargetView* outRTV = nullptr; int ow = 2, oh = 2;
     void Render() {
         if (resized) OnResize();
-        int ih = S.res ? S.res : ch, iw = std::max(2, (int)std::lround((double)ih * cw / ch)); EnsureRTs(iw, ih);
+        // the game is drawn into the Viewport panel (editor) or straight into the window (F11, game only)
+        bool toPanel = editor;
+        if (toPanel && rtView.w >= 8) { outRTV = rtView.rtv.Get(); ow = rtView.w; oh = rtView.h; } else if (!toPanel) { outRTV = backRTV.Get(); ow = cw; oh = ch; } else outRTV = nullptr;
+        if (outRTV) RenderScene();
+        ImGui::Render();
+        ctx->OMSetRenderTargets(1, backRTV.GetAddressOf(), nullptr); SetViewport(cw, ch);
+        if (editor) { const float bg[4] = { 0.02f, 0.05f, 0.06f, 1 }; ctx->ClearRenderTargetView(backRTV.Get(), bg); }
+        ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+        HR(swap->Present(1, 0));
+    }
+    void RenderScene() {
+        int ih = S.res ? S.res : oh, iw = std::max(2, (int)std::lround((double)ih * ow / oh)); EnsureRTs(iw, ih);
 
-        px::V3 f, r, u; cam.basis(f, r, u); px::V3 eye = cam.eye();
+        const px::Camera& C = ActiveCam();
+        px::V3 f, r, u; C.basis(f, r, u); px::V3 eye = C.eye();
         float asp = (float)iw / ih;
         XMMATRIX view = XMMatrixLookToLH(XMVectorSet(eye.x, eye.y, eye.z, 1), XMVectorSet(f.x, f.y, f.z, 0), XMVectorSet(u.x, u.y, u.z, 0));
         XMMATRIX vp = view * XMMatrixPerspectiveFovLH(XMConvertToRadians(60.f), asp, 0.1f, 80.f);
@@ -308,7 +328,8 @@ struct App {
 
         // viewmodel: own projection, squeezed into the nearest 5% of the depth range so it never clips into walls
         SetViewport(iw, ih, 0.f, 0.05f); SetFrame(view, vp2, eye, lp, lc);
-        if (modelLoaded) DrawModel(CamWorld(eye, r, u, f));
+        if (!playing && !showViewmodel) {}
+        else if (modelLoaded) DrawModel(CamWorld(eye, r, u, f));
         else { XMMATRIX cannonWorld = CannonLocal() * CamWorld(eye, r, u, f); DrawMat(px::M_CANNON, cannonWorld); DrawMat(px::M_CANNONGLOW, cannonWorld); }
         SetViewport(iw, ih); SetFrame(view, vp, eye, lp, lc);
 
@@ -353,11 +374,6 @@ struct App {
         PostPass(nullptr, psComp.Get(), rtScene.srv.Get(), rtB0.srv.Get(), rtC0.srv.Get(), c);
         ID3D11ShaderResourceView* none2[3] = {}; ctx->PSSetShaderResources(0, 3, none2);
 
-        // ---- 4) editor panels on top, at full window resolution
-        ImGui::Render();
-        ctx->OMSetRenderTargets(1, backRTV.GetAddressOf(), nullptr); SetViewport(cw, ch);
-        ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
-        HR(swap->Present(1, 0));
     }
 
     // ------------------------------------------------------------------ assets
@@ -380,12 +396,12 @@ struct App {
         if (h != INVALID_HANDLE_VALUE) { do { assetFiles.push_back(assetDir + fd.cFileName); } while (FindNextFileA(h, &fd)); FindClose(h); }
         std::sort(assetFiles.begin(), assetFiles.end());
     }
-    void SetStatus(const std::string& s) { status = s; statusTimer = 4.f; }
+    void SetStatus(const std::string& s) { status = s; statusTimer = 4.f; Log(s); }
     void LoadModel(const std::string& path) {
         if (path.empty()) return;
         px::AssetMeta m2; if (!m2.load(path + ".meta")) m2 = px::AssetMeta{};
         px::Model mdl; std::string err;
-        if (!mdl.loadFBX(path, err, m2.importScale)) { loadError = FileName(path) + ": " + err; SetStatus("Import failed"); return; }
+        if (!mdl.loadFBX(path, err, m2.importScale)) { loadError = FileName(path) + ": " + err; SetStatus("Import failed: " + loadError); return; }
         loadError.clear(); meta = m2; model = std::move(mdl); modelPath = path; modelTime = FileTime(path);
         meta.applyTo(model, clipSet, clipNames);
         anim.mode = meta.blendMode; anim.curve = meta.blendCurve; anim.bind(&model, &clipSet);
@@ -468,156 +484,344 @@ struct App {
         c[ImGuiCol_CheckMark] = ImVec4(0.98f, 0.60f, 0.15f, 1); c[ImGuiCol_SliderGrab] = ImVec4(0.98f, 0.60f, 0.15f, 1); c[ImGuiCol_SliderGrabActive] = ImVec4(1, 0.75f, 0.3f, 1);
         c[ImGuiCol_Text] = ImVec4(0.78f, 0.96f, 0.94f, 1);
     }
+    // ------------------------------------------------------------------ editor (docked engine UI)
+    enum class Sel { None, World, Player, Model, Node, Asset };
+    Sel sel = Sel::Model; int selNode = -1; std::string selAsset;
+    bool playing = false, pausedGame = false;
+    px::Camera edCam;                         // editor fly camera (separate from the player)
+    RT rtView; ImVec2 viewMin{ 0, 0 }, viewMax{ 0, 0 }; bool viewHovered = false;
+    bool showHier = true, showInsp = true, showAssets = true, showAnim = true, showConsole = true, showViewmodel = true, firstLayout = true;
+    std::vector<std::string> logLines; std::string assetFilter;
+
+    void Log(const std::string& s) {
+        SYSTEMTIME t; GetLocalTime(&t); char b[16]; snprintf(b, sizeof b, "[%02d:%02d:%02d] ", t.wHour, t.wMinute, t.wSecond);
+        logLines.push_back(b + s); if (logLines.size() > 500) logLines.erase(logLines.begin());
+    }
+    const px::Camera& ActiveCam() const { return playing ? cam : edCam; }
+    void StartPlay() { if (playing) return; playing = true; pausedGame = false; Log("Play"); }
+    void StopPlay() { if (!playing) return; playing = false; pausedGame = false; if (captured) Capture(false); cam = px::Camera{}; sim = px::Sim{}; Log("Stop (player reset)"); }
+    void EnsureViewRT(int w, int h) { w = std::max(2, w); h = std::max(2, h); if (rtView.w != w || rtView.h != h) MakeRT(rtView, w, h); }
+
+    void FlyCam(float dt) {   // editor camera: hold right mouse in the viewport, WASD + QE, Shift = fast (Unity / Godot style)
+        ImGuiIO& io = ImGui::GetIO();
+        static bool flying = false;
+        if (viewHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) flying = true;
+        if (!ImGui::IsMouseDown(ImGuiMouseButton_Right)) flying = false;
+        if (!flying) return;
+        edCam.yaw += io.MouseDelta.x * 0.0035f; edCam.pitch = std::max(-1.5f, std::min(1.5f, edCam.pitch - io.MouseDelta.y * 0.0035f));
+        px::V3 f, r, u; edCam.basis(f, r, u); px::V3 mv{ 0, 0, 0 };
+        if (ImGui::IsKeyDown(ImGuiKey_W)) mv = mv + f; if (ImGui::IsKeyDown(ImGuiKey_S)) mv = mv - f;
+        if (ImGui::IsKeyDown(ImGuiKey_D)) mv = mv + r; if (ImGui::IsKeyDown(ImGuiKey_A)) mv = mv - r;
+        if (ImGui::IsKeyDown(ImGuiKey_E)) mv = mv + px::V3{ 0, 1, 0 }; if (ImGui::IsKeyDown(ImGuiKey_Q)) mv = mv - px::V3{ 0, 1, 0 };
+        float spd = ImGui::IsKeyDown(ImGuiKey_LeftShift) ? 12.f : 4.f;
+        if (px::length(mv) > 0) edCam.p = edCam.p + px::normalize(mv) * (spd * dt);
+    }
+
+    void DefaultLayout(ImGuiID dock) {
+        ImGui::DockBuilderRemoveNode(dock); ImGui::DockBuilderAddNode(dock, ImGuiDockNodeFlags_DockSpace);
+        ImGui::DockBuilderSetNodeSize(dock, ImGui::GetMainViewport()->WorkSize);
+        ImGuiID left, right, bottom, center = dock;
+        left = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.17f, nullptr, &center);
+        right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.27f, nullptr, &center);
+        bottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.34f, nullptr, &center);
+        ImGui::DockBuilderDockWindow("Hierarchy", left);
+        ImGui::DockBuilderDockWindow("Inspector", right);
+        ImGui::DockBuilderDockWindow("Assets", bottom); ImGui::DockBuilderDockWindow("Animation", bottom); ImGui::DockBuilderDockWindow("Console", bottom);
+        ImGui::DockBuilderDockWindow("Viewport", center);
+        ImGui::DockBuilderFinish(dock);
+    }
+
+    void MenuBar() {
+        if (!ImGui::BeginMainMenuBar()) return;
+        if (ImGui::BeginMenu("File")) {
+            if (ImGui::MenuItem("Save", "Ctrl+S")) SaveMeta();
+            if (ImGui::MenuItem("Open assets folder")) ShellExecuteA(nullptr, "open", assetDir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            if (ImGui::MenuItem("Rescan assets")) FindAssets();
+            ImGui::Separator(); if (ImGui::MenuItem("Exit")) PostQuitMessage(0);
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("View")) {
+            ImGui::MenuItem("Hierarchy", nullptr, &showHier); ImGui::MenuItem("Inspector", nullptr, &showInsp);
+            ImGui::MenuItem("Assets", nullptr, &showAssets); ImGui::MenuItem("Animation", nullptr, &showAnim); ImGui::MenuItem("Console", nullptr, &showConsole);
+            ImGui::MenuItem("Show viewmodel while editing", nullptr, &showViewmodel);
+            ImGui::Separator(); if (ImGui::MenuItem("Reset layout")) firstLayout = true;
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("Game")) {
+            if (ImGui::MenuItem(playing ? "Stop" : "Play", "F5")) playing ? StopPlay() : StartPlay();
+            if (ImGui::MenuItem("Pause", "F6", pausedGame, playing)) pausedGame = !pausedGame;
+            if (ImGui::MenuItem("Hide editor (game only)", "F11")) { editor = false; }
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("Help")) {
+            ImGui::TextUnformatted("Viewport, editing: hold right mouse + WASD/QE to fly, Shift = fast");
+            ImGui::TextUnformatted("Viewport, playing: click to control, WASD move, LMB/Space fire, Esc release");
+            ImGui::TextUnformatted("F5 play/stop, F6 pause, F11 hide editor, Ctrl+S save");
+            ImGui::EndMenu();
+        }
+        // play controls in the middle of the bar
+        float bw = 64; ImGui::SetCursorPosX(ImGui::GetWindowWidth() * 0.5f - bw * 1.5f);
+        ImGui::PushStyleColor(ImGuiCol_Button, playing ? ImVec4(0.95f, 0.5f, 0.12f, 1) : ImGui::GetStyle().Colors[ImGuiCol_Button]);
+        if (ImGui::Button(playing ? "Stop" : "Play", ImVec2(bw, 0))) playing ? StopPlay() : StartPlay();
+        ImGui::PopStyleColor();
+        ImGui::BeginDisabled(!playing); if (ImGui::Button(pausedGame ? "Resume" : "Pause", ImVec2(bw, 0))) pausedGame = !pausedGame; ImGui::EndDisabled();
+        if (statusTimer > 0) { ImGui::SameLine(ImGui::GetWindowWidth() - ImGui::CalcTextSize(status.c_str()).x - 16); ImGui::TextDisabled("%s", status.c_str()); }
+        ImGui::EndMainMenuBar();
+    }
+
+    void HierarchyPanel() {
+        if (!ImGui::Begin("Hierarchy", &showHier)) { ImGui::End(); return; }
+        auto leaf = ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen | ImGuiTreeNodeFlags_SpanAvailWidth;
+        ImGui::TreeNodeEx("Room (demo)", leaf | (sel == Sel::World ? ImGuiTreeNodeFlags_Selected : 0)); if (ImGui::IsItemClicked()) sel = Sel::World;
+        bool open = ImGui::TreeNodeEx("Player", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth | (sel == Sel::Player ? ImGuiTreeNodeFlags_Selected : 0));
+        if (ImGui::IsItemClicked()) sel = Sel::Player;
+        if (open) {
+            std::string label = modelLoaded ? "Arm cannon (" + FileName(modelPath) + ")" : "Arm cannon (built-in demo)";
+            bool mopen = ImGui::TreeNodeEx("##cannon", ImGuiTreeNodeFlags_SpanAvailWidth | (sel == Sel::Model ? ImGuiTreeNodeFlags_Selected : 0) | (modelLoaded ? 0 : ImGuiTreeNodeFlags_Leaf), "%s", label.c_str());
+            if (ImGui::IsItemClicked()) sel = Sel::Model;
+            if (mopen) {
+                if (modelLoaded) {
+                    std::function<void(int)> tree = [&](int n) {
+                        std::vector<int> kids; for (int i = 0; i < (int)model.nodes.size(); i++) if (model.nodes[i].parent == n) kids.push_back(i);
+                        for (int k : kids) {
+                            bool hasKids = false; for (auto& q : model.nodes) if (q.parent == k) { hasKids = true; break; }
+                            ImGuiTreeNodeFlags fl = ImGuiTreeNodeFlags_SpanAvailWidth | (hasKids ? 0 : ImGuiTreeNodeFlags_Leaf) | (sel == Sel::Node && selNode == k ? ImGuiTreeNodeFlags_Selected : 0);
+                            bool o = ImGui::TreeNodeEx((void*)(intptr_t)(k + 1), fl, "%s", model.nodes[k].name.c_str());
+                            if (ImGui::IsItemClicked()) { sel = Sel::Node; selNode = k; }
+                            if (o) { tree(k); ImGui::TreePop(); }
+                        }
+                    };
+                    tree(0);   // ufbx node 0 is the scene root
+                }
+                ImGui::TreePop();
+            }
+            ImGui::TreePop();
+        }
+        ImGui::End();
+    }
+
+    void InspectorPanel() {
+        if (!ImGui::Begin("Inspector", &showInsp)) { ImGui::End(); return; }
+        if (sel == Sel::World) {
+            ImGui::SeparatorText("Look (Wii-style rendering)");
+            ImGui::Checkbox("Bloom", &S.bloomOn); ImGui::SameLine(); ImGui::SetNextItemWidth(-1); ImGui::SliderFloat("##bloom", &S.bloom, 0.f, 2.f);
+            ImGui::SliderFloat("Haze", &S.fog, 0.f, 1.f);
+            int ri = S.res == 240 ? 0 : S.res == 360 ? 1 : S.res == 480 ? 2 : S.res == 720 ? 3 : 4; const char* rs[] = { "240p", "360p", "480p (Wii)", "720p", "Native" };
+            if (ImGui::Combo("Internal resolution", &ri, rs, 5)) { const int t[] = { 240, 360, 480, 720, 0 }; S.res = t[ri]; }
+            ImGui::Checkbox("6-bit dither", &S.dither); ImGui::Checkbox("Sharp upscale", &S.nearest); ImGui::Checkbox("Dynamic lights", &S.dyn);
+            ImGui::TextDisabled("The room itself becomes editable with the room editor (Phase 2).");
+        } else if (sel == Sel::Player) {
+            const px::Camera& c = cam;
+            ImGui::SeparatorText("Player");
+            ImGui::Text("Position  %.2f  %.2f  %.2f", c.p.x, c.p.y, c.p.z);
+            ImGui::TextDisabled("Movement, morph ball and abilities arrive with the player editor (Phase 3).");
+        } else if (sel == Sel::Model) {
+            if (!modelLoaded) { ImGui::TextWrapped("Built-in demo cannon. Double-click an FBX in the Assets panel to use your own model."); ImGui::End(); return; }
+            ImGui::Text("%s", FileName(modelPath).c_str()); ImGui::TextDisabled("Made with %s", model.source.c_str());
+            bool ch = false;
+            ImGui::SeparatorText("Transform (camera attachment)");
+            ch |= ImGui::DragFloat3("Position", &meta.viewPos.x, 0.002f, -2.f, 2.f, "%.3f");
+            ch |= ImGui::DragFloat3("Rotation", &meta.viewRotDeg.x, 0.25f, -180.f, 180.f, "%.1f");
+            ch |= ImGui::DragFloat("Scale", &meta.viewScale, 0.005f, 0.01f, 20.f, "%.3f");
+            ch |= ImGui::Checkbox("Auto-fit", &meta.autoFit);
+            if (meta.autoFit) { ImGui::SameLine(); ImGui::SetNextItemWidth(-60); ch |= ImGui::DragFloat("Length", &meta.fitLength, 0.005f, 0.05f, 5.f, "%.2f m"); }
+            ImGui::SeparatorText("Material");
+            ch |= ImGui::SliderFloat("Shininess", &meta.reflect, 0.f, 1.f);
+            ch |= ImGui::Checkbox("Pixel-art textures", &meta.pixelFilter);
+            ImGui::SeparatorText("Import");
+            ImGui::SetNextItemWidth(120); ImGui::DragFloat("Import scale (0 = auto)", &meta.importScale, 0.001f, 0.f, 10.f, "%.4f");
+            if (ImGui::Button("Re-import with these settings")) { SaveMeta(); LoadModel(modelPath); }
+            size_t tris = 0; for (auto& m : model.meshes) tris += m.i.size() / 3;
+            ImGui::TextDisabled("%zu parts, %zu triangles, %zu textures, %zu animations", model.meshes.size(), tris, model.images.size(), model.clips.size());
+            if (ch) Dirty();
+        } else if (sel == Sel::Node && modelLoaded && selNode >= 0 && selNode < (int)model.nodes.size()) {
+            const px::ModelNode& n = model.nodes[selNode];
+            ImGui::Text("%s", n.name.c_str()); ImGui::TextDisabled("Part of %s", FileName(modelPath).c_str());
+            ImGui::SeparatorText("Current pose");
+            const px::TRS& t = anim.out[selNode]; px::V3 e = px::qlog(t.r);
+            ImGui::Text("Position  %.3f  %.3f  %.3f", t.t.x, t.t.y, t.t.z);
+            ImGui::Text("Rotation  %.1f  %.1f  %.1f (axis-angle, deg)", e.x * 57.2958f, e.y * 57.2958f, e.z * 57.2958f);
+            int animated = 0; for (auto& c : model.clips) for (auto& tr : c.tracks) if (tr.node == selNode) { animated++; break; }
+            ImGui::Text("Moved by %d of %zu animations", animated, model.clips.size());
+            ImGui::TextDisabled("Parts come from your Blockbench groups and cubes.");
+        } else if (sel == Sel::Asset && !selAsset.empty()) {
+            ImGui::Text("%s", FileName(selAsset).c_str()); ImGui::TextDisabled("FBX model");
+            if (ImGui::Button("Use as arm cannon")) LoadModel(selAsset);
+            ImGui::TextWrapped("Tip: double-click it in the Assets panel.");
+        } else ImGui::TextDisabled("Select something in the Hierarchy or Assets panel.");
+        ImGui::End();
+    }
+
+    void AssetsPanel() {
+        if (!ImGui::Begin("Assets", &showAssets)) { ImGui::End(); return; }
+        if (ImGui::Button("Open folder")) ShellExecuteA(nullptr, "open", assetDir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        ImGui::SameLine(); if (ImGui::Button("Rescan")) FindAssets();
+        ImGui::SameLine(); ImGui::Checkbox("Auto re-import", &autoReload);
+        ImGui::SameLine(); ImGui::SetNextItemWidth(-1); ImGui::InputTextWithHint("##filter", "Search", &assetFilter);
+        ImGui::Separator();
+        if (assetFiles.empty()) ImGui::TextWrapped("No models yet. In Blockbench: File > Export > Export FBX, save into the assets folder, then press Rescan.");
+        float tile = 96, avail = ImGui::GetContentRegionAvail().x; int cols = std::max(1, (int)(avail / (tile + 8)));
+        int col = 0;
+        for (auto& f : assetFiles) {
+            std::string name = FileName(f);
+            if (!assetFilter.empty()) { std::string a = name, b = assetFilter; for (auto& c : a) c = (char)tolower(c); for (auto& c : b) c = (char)tolower(c); if (a.find(b) == std::string::npos) continue; }
+            ImGui::PushID(f.c_str()); ImGui::BeginGroup();
+            bool isSel = (sel == Sel::Asset && selAsset == f) || (f == modelPath);
+            ImGui::PushStyleColor(ImGuiCol_Button, isSel ? ImVec4(0.95f, 0.5f, 0.12f, 0.8f) : ImVec4(0.08f, 0.22f, 0.25f, 1));
+            if (ImGui::Button("FBX", ImVec2(tile, tile * 0.7f))) { sel = Sel::Asset; selAsset = f; }
+            ImGui::PopStyleColor();
+            if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) LoadModel(f);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s\nDouble-click: use as arm cannon", name.c_str());
+            ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + tile); ImGui::TextWrapped("%s", name.c_str()); ImGui::PopTextWrapPos();
+            ImGui::EndGroup(); ImGui::PopID();
+            if (++col < cols) ImGui::SameLine(); else col = 0;
+        }
+        if (!loadError.empty()) { ImGui::NewLine(); ImGui::TextColored(ImVec4(1, 0.45f, 0.4f, 1), "%s", loadError.c_str()); }
+        ImGui::End();
+    }
+
+    void AnimationPanel() {
+        if (!ImGui::Begin("Animation", &showAnim)) { ImGui::End(); return; }
+        if (!modelLoaded) { ImGui::TextWrapped("Load a model to see its animations."); ImGui::End(); return; }
+        if (ImGui::BeginTable("anim", 2, ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV)) {
+            ImGui::TableSetupColumn("clips", ImGuiTableColumnFlags_WidthStretch, 0.62f); ImGui::TableSetupColumn("blend", ImGuiTableColumnFlags_WidthStretch, 0.38f);
+            ImGui::TableNextRow(); ImGui::TableNextColumn();
+            if (ImGui::BeginTable("clips", 6, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp)) {
+                ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 44); ImGui::TableSetupColumn("Name");
+                ImGui::TableSetupColumn("Length", ImGuiTableColumnFlags_WidthFixed, 56); ImGui::TableSetupColumn("Loop", ImGuiTableColumnFlags_WidthFixed, 36);
+                ImGui::TableSetupColumn("Speed", ImGuiTableColumnFlags_WidthFixed, 90); ImGui::TableSetupColumn("Start", ImGuiTableColumnFlags_WidthFixed, 40);
+                ImGui::TableHeadersRow();
+                for (int i = 0; i < (int)model.clips.size(); i++) {
+                    ImGui::PushID(i); ImGui::TableNextRow();
+                    ImGui::TableNextColumn(); if (ImGui::Button(anim.cur == i ? " >> " : "Play")) { anim.paused = false; anim.play(i, meta.blendTime); }
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Right-click: play on top as a layer");
+                    if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) anim.playLayer(i);
+                    ImGui::TableNextColumn(); ImGui::SetNextItemWidth(-1); if (ImGui::InputText("##name", &clipNames[i])) Dirty();
+                    if (clipNames[i] != model.clips[i].name && ImGui::IsItemHovered()) ImGui::SetTooltip("In the file: %s", model.clips[i].name.c_str());
+                    ImGui::TableNextColumn(); ImGui::Text("%.2f s", model.clips[i].duration);
+                    ImGui::TableNextColumn(); if (ImGui::Checkbox("##loop", &clipSet[i].loop)) Dirty();
+                    ImGui::TableNextColumn(); ImGui::SetNextItemWidth(-1); if (ImGui::SliderFloat("##speed", &clipSet[i].speed, 0.1f, 3.f, "%.2fx")) Dirty();
+                    ImGui::TableNextColumn(); bool def = meta.defaultClip == model.clips[i].name;
+                    if (ImGui::RadioButton("##def", def)) { meta.defaultClip = model.clips[i].name; Dirty(); }
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Play this clip when the model loads");
+                    ImGui::PopID();
+                }
+                ImGui::EndTable();
+            }
+            if (ImGui::Button(anim.paused ? "Resume" : "Pause", ImVec2(70, 0))) anim.paused = !anim.paused;
+            ImGui::SameLine(); ImGui::SetNextItemWidth(-1);
+            float len = anim.clipLength(); std::string lbl = anim.cur >= 0 ? clipNames[anim.cur] : std::string("-");
+            for (size_t p = 0; (p = lbl.find('%', p)) != std::string::npos; p += 2) lbl.insert(p, "%");
+            if (ImGui::SliderFloat("##time", &anim.time, 0.f, std::max(len, 0.001f), (lbl + "  %.2f s").c_str())) anim.paused = true;
+            ImGui::TableNextColumn();
+            ImGui::SeparatorText("Transitions");
+            int mode = (int)anim.mode; const char* modes[] = { "Inertialization", "Crossfade", "Cut" };
+            ImGui::SetNextItemWidth(-90); if (ImGui::Combo("Blend type", &mode, modes, 3)) { anim.mode = (px::BlendMode)mode; Dirty(); }
+            ImGui::SetNextItemWidth(-90); if (ImGui::SliderFloat("Blend time", &meta.blendTime, 0.f, 1.f, "%.2f s")) Dirty();
+            ImGui::BeginDisabled(anim.mode != px::BlendMode::Crossfade);
+            int curve = (int)anim.curve; const char* curves[] = { "Linear", "Ease in", "Ease out", "Smooth" };
+            ImGui::SetNextItemWidth(-90); if (ImGui::Combo("Curve", &curve, curves, 4)) { anim.curve = (px::BlendCurve)curve; Dirty(); }
+            ImGui::EndDisabled();
+            ImGui::TextWrapped("Press Play on another clip to watch the transition. Inertialization stays smooth even when you switch mid-transition.");
+            ImGui::TextDisabled("Next: the state machine editor.");
+            ImGui::EndTable();
+        }
+        ImGui::End();
+    }
+
+    void ConsolePanel() {
+        if (!ImGui::Begin("Console", &showConsole)) { ImGui::End(); return; }
+        if (ImGui::Button("Clear")) logLines.clear();
+        ImGui::Separator(); ImGui::BeginChild("log");
+        for (auto& l : logLines) {
+            bool bad = l.find("failed") != std::string::npos || l.find("Could not") != std::string::npos;
+            if (bad) ImGui::TextColored(ImVec4(1, 0.45f, 0.4f, 1), "%s", l.c_str()); else ImGui::TextUnformatted(l.c_str());
+        }
+        if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) ImGui::SetScrollHereY(1.f);
+        ImGui::EndChild(); ImGui::End();
+    }
+
+    void ViewportPanel() {
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+        bool vis = ImGui::Begin("Viewport", nullptr, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+        ImGui::PopStyleVar();
+        viewHovered = false;
+        if (vis) {
+            ImVec2 sz = ImGui::GetContentRegionAvail();
+            if (sz.x >= 8 && sz.y >= 8) {
+                EnsureViewRT((int)sz.x, (int)sz.y);
+                ImVec2 p0 = ImGui::GetCursorScreenPos();
+                ImGui::Image((ImTextureID)(intptr_t)rtView.srv.Get(), sz);
+                viewHovered = ImGui::IsItemHovered(); viewMin = p0; viewMax = ImVec2(p0.x + sz.x, p0.y + sz.y);
+                if (playing && viewHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !captured) Capture(true);
+                // overlay
+                ImDrawList* dl = ImGui::GetWindowDrawList();
+                const char* txt = playing ? (captured ? "PLAYING  (Esc to release the mouse)" : "PLAYING  (click to control)") : "EDITING  (hold right mouse + WASD to fly)";
+                dl->AddRectFilled(ImVec2(p0.x + 8, p0.y + 8), ImVec2(p0.x + 16 + ImGui::CalcTextSize(txt).x, p0.y + 30), IM_COL32(0, 20, 24, 170), 4);
+                dl->AddText(ImVec2(p0.x + 12, p0.y + 11), playing ? IM_COL32(255, 160, 50, 255) : IM_COL32(150, 240, 230, 255), txt);
+                if (playing) { ImVec2 c((p0.x + viewMax.x) * 0.5f, (p0.y + viewMax.y) * 0.5f); dl->AddLine(ImVec2(c.x - 7, c.y), ImVec2(c.x + 7, c.y), IM_COL32(127, 255, 212, 180), 2); dl->AddLine(ImVec2(c.x, c.y - 7), ImVec2(c.x, c.y + 7), IM_COL32(127, 255, 212, 180), 2); }
+            }
+        }
+        ImGui::End();
+    }
+
     void BuildUI() {
         ImGui_ImplDX11_NewFrame(); ImGui_ImplWin32_NewFrame(); ImGui::NewFrame();
+        ImGuiIO& io = ImGui::GetIO();
+        if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S)) SaveMeta();
         if (!editor) {
             ImGui::SetNextWindowPos(ImVec2(10, 10)); ImGui::SetNextWindowBgAlpha(0.35f);
             ImGui::Begin("##hint", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs);
-            ImGui::TextUnformatted("Tab: editor   click: capture mouse   WASD move   LMB/Space fire   Esc release"); ImGui::End();
+            ImGui::TextUnformatted("F11: back to the editor   click: control   WASD move   LMB/Space fire   Esc release"); ImGui::End();
             return;
         }
-        float W = (float)cw;
-        // ---- Assets
-        ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver); ImGui::SetNextWindowSize(ImVec2(330, 300), ImGuiCond_FirstUseEver);
-        if (ImGui::Begin("Assets")) {
-            ImGui::TextDisabled("Put Blockbench FBX exports in:"); ImGui::TextWrapped("%s", assetDir.c_str());
-            if (ImGui::Button("Open folder")) ShellExecuteA(nullptr, "open", assetDir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-            ImGui::SameLine(); if (ImGui::Button("Rescan")) FindAssets();
-            ImGui::SameLine(); if (ImGui::Button("Re-import") && modelLoaded) LoadModel(modelPath);
-            ImGui::Checkbox("Re-import when the file changes", &autoReload);
-            ImGui::Separator();
-            if (assetFiles.empty()) ImGui::TextWrapped("No .fbx files yet. Export from Blockbench (File > Export > FBX) into the folder above, then press Rescan.");
-            for (auto& f : assetFiles) if (ImGui::Selectable(FileName(f).c_str(), f == modelPath)) LoadModel(f);
-            if (!loadError.empty()) { ImGui::Separator(); ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1, 0.45f, 0.4f, 1)); ImGui::TextWrapped("%s", loadError.c_str()); ImGui::PopStyleColor(); }
-            if (modelLoaded) {
-                size_t tris = 0; for (auto& m : model.meshes) tris += m.i.size() / 3;
-                ImGui::Separator();
-                ImGui::Text("Made with: %s", model.source.c_str());
-                ImGui::Text("%zu parts, %zu triangles, %zu textures", model.meshes.size(), tris, model.images.size());
-                ImGui::Text("%zu animations found", model.clips.size());
-            }
-        }
-        ImGui::End();
-
-        // ---- Animation
-        ImGui::SetNextWindowPos(ImVec2(W - 530, 10), ImGuiCond_FirstUseEver); ImGui::SetNextWindowSize(ImVec2(520, 420), ImGuiCond_FirstUseEver);
-        if (ImGui::Begin("Animation")) {
-            if (!modelLoaded) ImGui::TextWrapped("Load a model in the Assets panel to see its animations.");
-            else {
-                ImGui::TextDisabled("Every animation in the FBX is listed here. Press Play on another clip to see the transition.");
-                if (ImGui::BeginTable("clips", 6, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp)) {
-                    ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 44); ImGui::TableSetupColumn("Name");
-                    ImGui::TableSetupColumn("Length", ImGuiTableColumnFlags_WidthFixed, 56); ImGui::TableSetupColumn("Loop", ImGuiTableColumnFlags_WidthFixed, 36);
-                    ImGui::TableSetupColumn("Speed", ImGuiTableColumnFlags_WidthFixed, 90); ImGui::TableSetupColumn("Start", ImGuiTableColumnFlags_WidthFixed, 40);
-                    ImGui::TableHeadersRow();
-                    for (int i = 0; i < (int)model.clips.size(); i++) {
-                        ImGui::PushID(i); ImGui::TableNextRow();
-                        ImGui::TableNextColumn(); if (ImGui::Button(anim.cur == i ? " >> " : "Play")) { anim.paused = false; anim.play(i, meta.blendTime); }
-                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Right-click: play on top as a layer");
-                        if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) anim.playLayer(i);
-                        ImGui::TableNextColumn(); ImGui::SetNextItemWidth(-1); if (ImGui::InputText("##name", &clipNames[i])) Dirty();
-                        if (clipNames[i] != model.clips[i].name && ImGui::IsItemHovered()) ImGui::SetTooltip("In the file: %s", model.clips[i].name.c_str());
-                        ImGui::TableNextColumn(); ImGui::Text("%.2f s", model.clips[i].duration);
-                        ImGui::TableNextColumn(); if (ImGui::Checkbox("##loop", &clipSet[i].loop)) Dirty();
-                        ImGui::TableNextColumn(); ImGui::SetNextItemWidth(-1); if (ImGui::SliderFloat("##speed", &clipSet[i].speed, 0.1f, 3.f, "%.2fx")) Dirty();
-                        ImGui::TableNextColumn(); bool def = meta.defaultClip == model.clips[i].name;
-                        if (ImGui::RadioButton("##def", def)) { meta.defaultClip = model.clips[i].name; Dirty(); }
-                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Play this clip when the model loads");
-                        ImGui::PopID();
-                    }
-                    ImGui::EndTable();
-                }
-                ImGui::SeparatorText("Playback");
-                if (ImGui::Button(anim.paused ? "Resume" : "Pause", ImVec2(70, 0))) anim.paused = !anim.paused;
-                ImGui::SameLine();
-                float len = anim.clipLength();
-                ImGui::SetNextItemWidth(-1);
-                if (ImGui::SliderFloat("##time", &anim.time, 0.f, std::max(len, 0.001f), anim.cur >= 0 ? (clipNames[anim.cur] + "  %.2f s").c_str() : "%.2f s")) anim.paused = true;
-
-                ImGui::SeparatorText("Transitions");
-                int mode = (int)anim.mode; const char* modes[] = { "Inertialization (smoothest)", "Crossfade", "Cut (no blend)" };
-                ImGui::SetNextItemWidth(230); if (ImGui::Combo("Blend type", &mode, modes, 3)) { anim.mode = (px::BlendMode)mode; Dirty(); }
-                ImGui::SetNextItemWidth(230); if (ImGui::SliderFloat("Blend time", &meta.blendTime, 0.f, 1.f, "%.2f s")) Dirty();
-                ImGui::BeginDisabled(anim.mode != px::BlendMode::Crossfade);
-                int curve = (int)anim.curve; const char* curves[] = { "Linear", "Ease in", "Ease out", "Smooth" };
-                ImGui::SetNextItemWidth(230); if (ImGui::Combo("Blend curve", &curve, curves, 4)) { anim.curve = (px::BlendCurve)curve; Dirty(); }
-                ImGui::EndDisabled();
-                ImGui::TextDisabled("Coming next in Phase 1: the state machine editor (which clip plays when).");
-            }
-        }
-        ImGui::End();
-
-        // ---- Viewmodel (camera attachment)
-        ImGui::SetNextWindowPos(ImVec2(W - 530, 440), ImGuiCond_FirstUseEver); ImGui::SetNextWindowSize(ImVec2(520, 250), ImGuiCond_FirstUseEver);
-        if (ImGui::Begin("Viewmodel")) {
-            if (!modelLoaded) ImGui::TextWrapped("The procedural demo cannon is shown until a model is loaded.");
-            else {
-                ImGui::TextDisabled("Where the model sits in front of the camera. Drag the numbers.");
-                bool ch = false;
-                ch |= ImGui::DragFloat3("Position (m)", &meta.viewPos.x, 0.002f, -2.f, 2.f, "%.3f");
-                ch |= ImGui::DragFloat3("Rotation (deg)", &meta.viewRotDeg.x, 0.25f, -180.f, 180.f, "%.1f");
-                ch |= ImGui::Checkbox("Auto-fit size", &meta.autoFit);
-                if (meta.autoFit) { ImGui::SameLine(); ImGui::SetNextItemWidth(120); ch |= ImGui::DragFloat("Length (m)", &meta.fitLength, 0.005f, 0.05f, 5.f, "%.2f"); }
-                ch |= ImGui::DragFloat("Extra scale", &meta.viewScale, 0.005f, 0.01f, 20.f, "%.3f");
-                ch |= ImGui::SliderFloat("Shininess", &meta.reflect, 0.f, 1.f);
-                ch |= ImGui::Checkbox("Pixel-art textures (sharp pixels)", &meta.pixelFilter);
-                if (ch) Dirty();
-                ImGui::SetNextItemWidth(120); ImGui::DragFloat("Import scale (0 = auto)", &meta.importScale, 0.001f, 0.f, 10.f, "%.4f");
-                ImGui::SameLine(); if (ImGui::Button("Apply")) { SaveMeta(); LoadModel(modelPath); }
-            }
-        }
-        ImGui::End();
-
-        // ---- Look
-        ImGui::SetNextWindowPos(ImVec2(10, 320), ImGuiCond_FirstUseEver); ImGui::SetNextWindowSize(ImVec2(330, 220), ImGuiCond_FirstUseEver);
-        if (ImGui::Begin("Look")) {
-            ImGui::Checkbox("Bloom", &S.bloomOn); ImGui::SameLine(); ImGui::SetNextItemWidth(-1); ImGui::SliderFloat("##bloom", &S.bloom, 0.f, 2.f);
-            ImGui::SetNextItemWidth(160); ImGui::SliderFloat("Haze", &S.fog, 0.f, 1.f);
-            int ri = S.res == 240 ? 0 : S.res == 360 ? 1 : S.res == 480 ? 2 : S.res == 720 ? 3 : 4; const char* rs[] = { "240p", "360p", "480p (Wii)", "720p", "Native" };
-            ImGui::SetNextItemWidth(160); if (ImGui::Combo("Internal resolution", &ri, rs, 5)) { const int t[] = { 240, 360, 480, 720, 0 }; S.res = t[ri]; }
-            ImGui::Checkbox("6-bit dither", &S.dither); ImGui::Checkbox("Sharp upscale", &S.nearest); ImGui::Checkbox("Dynamic lights", &S.dyn);
-            ImGui::TextDisabled("%.0f fps, %dx%d", ImGui::GetIO().Framerate, rtScene.w, rtScene.h);
-        }
-        ImGui::End();
-
-        if (statusTimer > 0) {
-            ImGui::SetNextWindowPos(ImVec2(W * 0.5f, (float)ch - 16), 0, ImVec2(0.5f, 1)); ImGui::SetNextWindowBgAlpha(0.6f);
-            ImGui::Begin("##status", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs);
-            ImGui::TextUnformatted(status.c_str()); ImGui::End();
-        }
+        MenuBar();
+        ImGuiID dock = ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport());
+        if (firstLayout) { firstLayout = false; ImGuiDockNode* n = ImGui::DockBuilderGetNode(dock); if (!n || n->IsLeafNode() || ImGui::GetIO().IniFilename == nullptr || !iniHadLayout) DefaultLayout(dock); iniHadLayout = false; }
+        ViewportPanel();
+        if (showHier) HierarchyPanel();
+        if (showInsp) InspectorPanel();
+        if (showAssets) AssetsPanel();
+        if (showAnim) AnimationPanel();
+        if (showConsole) ConsolePanel();
+        if (!playing) FlyCam(io.DeltaTime);
     }
+    bool iniHadLayout = false;
 
     // ------------------------------------------------------------------ input / loop
-    void Capture(bool on) {
-        captured = on; ShowCursor(on ? FALSE : TRUE);
-        if (on) { RECT r; GetClientRect(hwnd, &r); POINT a{ 0, 0 }; ClientToScreen(hwnd, &a); RECT cr{ a.x, a.y, a.x + r.right, a.y + r.bottom }; ClipCursor(&cr); Recenter(); }
-        else ClipCursor(nullptr);
+    // mouse capture for playing: cursor hidden, locked to the game view, recentred every frame
+    POINT ViewCenter() {
+        POINT c;
+        if (editor) { c.x = (LONG)((viewMin.x + viewMax.x) * 0.5f); c.y = (LONG)((viewMin.y + viewMax.y) * 0.5f); }
+        else { RECT r; GetClientRect(hwnd, &r); c.x = r.right / 2; c.y = r.bottom / 2; }
+        ClientToScreen(hwnd, &c); return c;
     }
-    void Recenter() { RECT r; GetClientRect(hwnd, &r); POINT c{ r.right / 2, r.bottom / 2 }; ClientToScreen(hwnd, &c); SetCursorPos(c.x, c.y); }
+    void Capture(bool on) {
+        if (captured == on) return;
+        captured = on; ShowCursor(on ? FALSE : TRUE);
+        ImGuiIO& io = ImGui::GetIO();
+        if (on) { io.ConfigFlags |= ImGuiConfigFlags_NoMouse; RECT r; GetClientRect(hwnd, &r); POINT a{ 0, 0 }; ClientToScreen(hwnd, &a); RECT cr{ a.x, a.y, a.x + r.right, a.y + r.bottom }; ClipCursor(&cr); Recenter(); }
+        else { io.ConfigFlags &= ~ImGuiConfigFlags_NoMouse; ClipCursor(nullptr); }
+    }
+    void Recenter() { POINT c = ViewCenter(); SetCursorPos(c.x, c.y); }
     void MouseLook() {
         if (!captured) return;
-        RECT r; GetClientRect(hwnd, &r); POINT c{ r.right / 2, r.bottom / 2 }, m; ClientToScreen(hwnd, &c); GetCursorPos(&m);
+        POINT c = ViewCenter(), m; GetCursorPos(&m);
         cam.yaw += (m.x - c.x) * 0.0025f; cam.pitch = std::max(-1.4f, std::min(1.4f, cam.pitch - (m.y - c.y) * 0.0025f)); SetCursorPos(c.x, c.y);
     }
     void PollKeys() {
+        input = px::Input{};
+        if (!playing || pausedGame || !captured) return;      // the player only moves while you control it
         auto down = [](int k) { return (GetAsyncKeyState(k) & 0x8000) != 0; };
         input.w = down('W'); input.a = down('A'); input.s = down('S'); input.d = down('D');
         input.left = down(VK_LEFT); input.right = down(VK_RIGHT); input.up = down(VK_UP); input.down = down(VK_DOWN);
     }
     void OnKey(WPARAM k) {
-        static const int resTable[] = { 240, 360, 480, 720, 0 };
-        if (k == VK_TAB) { editor = !editor; if (editor && captured) Capture(false); return; }
-        if (ImGui::GetIO().WantCaptureKeyboard) return;
-        if (k == VK_ESCAPE) { if (captured) Capture(false); }
-        else if (k == VK_SPACE) Fire();
-        else if (k == VK_F1) S.bloomOn = !S.bloomOn;
-        else if (k == VK_F2) S.dither = !S.dither;
-        else if (k == VK_F3) S.fog = S.fog > 0 ? 0.f : 0.85f;
-        else if (k == VK_F4) S.nearest = !S.nearest;
-        else if (k == VK_F5) S.dyn = !S.dyn;
-        else if (k >= '1' && k <= '5') S.res = resTable[k - '1'];
-        else if (k == VK_OEM_MINUS) S.bloom = std::max(0.f, S.bloom - 0.1f);
-        else if (k == VK_OEM_PLUS) S.bloom = std::min(2.f, S.bloom + 0.1f);
+        if (k == VK_F5) { playing ? StopPlay() : StartPlay(); return; }
+        if (k == VK_F6) { if (playing) pausedGame = !pausedGame; return; }
+        if (k == VK_F11) { editor = !editor; if (captured) Capture(false); return; }
+        if (k == VK_ESCAPE) { if (captured) Capture(false); return; }
+        if (k == VK_SPACE && playing && captured && !pausedGame) Fire();
     }
 };
 
@@ -627,12 +831,13 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     switch (m) {
     case WM_SIZE: if (g_app && w != SIZE_MINIMIZED) { g_app->cw = std::max<int>(2, LOWORD(l)); g_app->ch = std::max<int>(2, HIWORD(l)); g_app->resized = true; } return 0;
     case WM_LBUTTONDOWN:
-        if (g_app && !(ImGui::GetCurrentContext() && ImGui::GetIO().WantCaptureMouse)) {
-            if (g_app->editor) g_app->editor = false;            // clicking the game view closes the editor and starts playing
-            if (!g_app->captured) g_app->Capture(true); else g_app->Fire();
+        if (g_app) {
+            if (g_app->captured) { if (!g_app->pausedGame) g_app->Fire(); }
+            else if (!g_app->editor && g_app->playing) g_app->Capture(true);   // game-only view (F11)
+            else if (!g_app->editor && !g_app->playing) { g_app->StartPlay(); g_app->Capture(true); }
         }
         return 0;
-    case WM_KEYDOWN: if (g_app) g_app->OnKey(w); return 0;
+    case WM_KEYDOWN: case WM_SYSKEYDOWN: if (g_app) g_app->OnKey(w); if (m == WM_SYSKEYDOWN) break; return 0;
     case WM_KILLFOCUS: if (g_app && g_app->captured) g_app->Capture(false); return 0;
     case WM_DESTROY: PostQuitMessage(0); return 0;
     }
@@ -657,9 +862,9 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR, int) {
         LARGE_INTEGER now; QueryPerformanceCounter(&now); double t = (double)(now.QuadPart - t0.QuadPart) / fq.QuadPart;
         float dt = (float)std::min(0.05, t - last); last = t; app.T += dt;
 
-        app.PollKeys();
-        if (ImGui::GetIO().WantCaptureKeyboard) app.input = px::Input{};
-        app.MouseLook(); app.cam.move(app.scene, app.input, dt); app.sim.update(dt); app.Tick(dt);
+        app.PollKeys(); app.MouseLook();
+        if (app.playing && !app.pausedGame) { app.cam.move(app.scene, app.input, dt); app.sim.update(dt); }
+        app.Tick(dt);
         app.BuildUI();
         app.Render();
 
