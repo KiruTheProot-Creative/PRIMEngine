@@ -87,9 +87,13 @@ PRIMEngine opens as an engine editor, like Unity or Godot:
 | Left click | Break the block in the crosshair (hold to keep breaking) |
 | Right click | Place the selected block (hold to keep placing) |
 | Middle click | Pick the block you look at |
+| R / F | Rotate / flip the shape you are about to place (an orange outline previews it) |
+| + / - | Change the shape's size (slab thickness, number of steps, slope height, beam width ...) |
 | 1-9, mouse wheel | Choose a hotbar slot |
 | E or Esc | Mouse back to the editor panels (click a block in Inventory to put it in the hotbar) |
 | Ctrl+Z / Ctrl+Y | Undo / redo |
+
+**Shapes** (Inventory panel, or the hotbar): Cube, Slab, Stairs, Slope, Outer corner, Inner corner, Beam, Pillar, Panel, Step, Frame, Round edge, Arch. Attaching shapes (slab, beam, pillar, frame) stick to the face you click; standing shapes (stairs, slopes, panels) stand up and face away from you, and hang upside down when placed on a ceiling. Samus walks up stairs and slopes.
 
 **Play** (F5) starts the game with Samus right where you are. Rooms autosave every 30 seconds into `assets/rooms`; Ctrl+S saves now. The last room you had open reopens on start.
 

@@ -845,7 +845,7 @@ struct App {
     // ------------------------------------------------------------------ rooms (block building)
     px::Room room; bool roomOpen = false, roomDirty = false, roomMeshDirty = false; std::string roomPath; float roomAutosave = 0;
     GpuMesh roomMesh;
-    struct BlockEdit { int x, y, z; uint8_t before, after; };
+    struct BlockEdit { int x, y, z; px::Block before, after; };
     std::vector<std::vector<BlockEdit>> undoStack, redoStack;
     bool hoverValid = false; px::RayHit hover{};
     XMMATRIX edView = XMMatrixIdentity(), edProj = XMMatrixIdentity();
@@ -898,10 +898,10 @@ struct App {
         UINT stride = sizeof(px::Vertex), off = 0; ctx->IASetVertexBuffers(0, 1, roomMesh.vb.GetAddressOf(), &stride, &off);
         ctx->IASetIndexBuffer(roomMesh.ib.Get(), DXGI_FORMAT_R32_UINT, 0); ctx->DrawIndexed(roomMesh.count, 0, 0);
     }
-    void EditBlock(std::vector<BlockEdit>& group, int x, int y, int z, uint8_t b) {
+    void EditBlock(std::vector<BlockEdit>& group, int x, int y, int z, px::Block b) {
         if (!room.inBounds(x, y, z)) return;
-        uint8_t was = room.get(x, y, z); if (was == b) return;
-        room.set(x, y, z, b); group.push_back({ x, y, z, was, b });
+        px::Block was = room.block(x, y, z); if (was == b) return;
+        room.set(x, y, z, b); group.push_back({ x, y, z, was, room.block(x, y, z) });
     }
     void Commit(std::vector<BlockEdit>& g) {
         if (g.empty()) return;
@@ -910,7 +910,7 @@ struct App {
     }
     void Undo() { if (undoStack.empty()) return; auto g = undoStack.back(); undoStack.pop_back(); for (auto it = g.rbegin(); it != g.rend(); ++it) room.set(it->x, it->y, it->z, it->before); redoStack.push_back(g); AfterRoomChange(); }
     void Redo() { if (redoStack.empty()) return; auto g = redoStack.back(); redoStack.pop_back(); for (auto& e : g) room.set(e.x, e.y, e.z, e.after); undoStack.push_back(g); AfterRoomChange(); }
-    static bool SolidAt(void* c, px::V3 p) { App* a = (App*)c; return a->room.solid((int)std::floor(p.x), (int)std::floor(p.y), (int)std::floor(p.z)) || p.y < a->room.oy - 30; }
+    static bool SolidAt(void* c, px::V3 p) { App* a = (App*)c; return a->room.pointSolid(p) || p.y < a->room.oy - 30; }
 
     // player in a room: Samus is about 2 blocks tall
     static constexpr float kHalfW = 0.35f, kHeight = 1.9f, kEye = 1.75f, kGravity = 24.f, kJump = 8.f, kSpeed = 5.f;
@@ -931,7 +931,7 @@ struct App {
         bool moving = px::length(mv) > 0; if (moving) mv = px::normalize(mv) * kSpeed;
         pvel.x = mv.x; pvel.z = mv.z; pvel.y -= kGravity * dt; pvel.y = std::max(pvel.y, -40.f);
         if (input.jump && onGround) pvel.y = kJump;
-        feet = room.moveBox(feet, pvel, kHalfW, kHeight, dt, onGround);
+        feet = room.moveBox(feet, pvel, kHalfW, kHeight, dt, onGround, 0.55f);
         if (feet.y < room.oy - 30) { feet = spawnFeet; pvel = { 0, 0, 0 }; SetStatus("Fell out of the room: back to the start"); }
         if (moving && onGround) cam.bob += dt * 9;
         cam.p = { feet.x, feet.y + kEye, feet.z }; cam.recoil = std::max(0.f, cam.recoil - dt * 0.5f);
@@ -956,7 +956,16 @@ struct App {
         for (auto& k : e) Line3D(dl, c[k[0]], c[k[1]], col, th);
     }
     // ------------------------------------------------------------------ creative mode (Minecraft-style building)
-    uint8_t hotbar[9] = { px::B_CUBE, 0, 0, 0, 0, 0, 0, 0, 0 }; int hotSel = 0;
+    struct Slot { uint8_t type, size; };
+    Slot hotbar[9] = { { px::B_CUBE, 8 }, { px::B_SLAB, 4 }, { px::B_STAIRS, 2 }, { px::B_SLOPE, 8 }, { px::B_CORNER, 8 },
+                       { px::B_INNER, 8 }, { px::B_BEAM, 4 }, { px::B_PILLAR, 6 }, { px::B_PANEL, 2 } };
+    int hotSel = 0, spinOffset = 0; bool flipPlace = false;
+    px::Block PlannedBlock() const {   // what a right-click would place right now
+        px::V3 f, r, u; edCam.basis(f, r, u);
+        px::Block b; b.type = hotbar[hotSel].type; b.size = hotbar[hotSel].size;
+        b.rot = px::chooseRot(b.type, hover.nx, hover.ny, hover.nz, f, spinOffset, flipPlace);
+        return b;
+    }
     px::V3 bFeet{ 0, 0, 0 }, bVel{ 0, 0, 0 }; bool bGround = false, bFly = true;
     float lastSpaceTap = -10.f, breakCool = 0, placeCool = 0; bool lHeld = false, rHeld = false, mHeld = false;
     static constexpr float kReach = 8.f;
@@ -976,10 +985,18 @@ struct App {
         if (!hoverValid || !captured) return;
         ImDrawList* dl = ImGui::GetWindowDrawList();
         if (!hover.onGround) BoxLines(dl, { hover.x - 0.003f, hover.y - 0.003f, hover.z - 0.003f }, { hover.x + 1.003f, hover.y + 1.003f, hover.z + 1.003f }, IM_COL32(10, 12, 14, 235), 2.f);
-        else { int x = hover.x, y = hover.y + 1, z = hover.z; BoxLines(dl, { (float)x, (float)y, (float)z }, { x + 1.f, y + 0.02f, z + 1.f }, IM_COL32(255, 160, 50, 150), 1.f); }
+        if (hotbar[hotSel].type) {   // orange preview of the exact shape a right-click would place
+            int x = hover.x + hover.nx, y = hover.y + hover.ny, z = hover.z + hover.nz;
+            if (room.inBounds(x, y, z) && room.get(x, y, z) == px::B_AIR) {
+                std::vector<px::Box3> bx; px::shapeBoxes(PlannedBlock(), x, y, z, bx);
+                for (auto& q : bx) BoxLines(dl, q.mn, q.mx, IM_COL32(255, 160, 50, 170), 1.f);
+            }
+        }
     }
-    bool OverlapsBuilder(int x, int y, int z) const {
-        return bFeet.x + kHalfW > x && bFeet.x - kHalfW < x + 1 && bFeet.z + kHalfW > z && bFeet.z - kHalfW < z + 1 && bFeet.y + kHeight > y && bFeet.y < y + 1;
+    bool OverlapsBuilder(const px::Block& b, int x, int y, int z) const {
+        std::vector<px::Box3> bx; px::shapeBoxes(b, x, y, z, bx);
+        for (auto& q : bx) if (bFeet.x + kHalfW > q.mn.x && bFeet.x - kHalfW < q.mx.x && bFeet.z + kHalfW > q.mn.z && bFeet.z - kHalfW < q.mx.z && bFeet.y + kHeight > q.mn.y && bFeet.y < q.mx.y) return true;
+        return false;
     }
     void BuilderTick(float dt) {
         if (!Building()) { lHeld = rHeld = mHeld = true; return; }
@@ -996,7 +1013,7 @@ struct App {
         bVel.x = mv.x; bVel.z = mv.z;
         if (bFly) { bVel.y = (down(VK_SPACE) ? spd * 0.8f : 0.f) - (sneak ? spd * 0.8f : 0.f); }
         else { bVel.y -= kGravity * dt; bVel.y = std::max(bVel.y, -40.f); if (down(VK_SPACE) && bGround) bVel.y = kJump; }
-        bFeet = room.moveBox(bFeet, bVel, kHalfW, kHeight, dt, bGround);
+        bFeet = room.moveBox(bFeet, bVel, kHalfW, kHeight, dt, bGround, bFly ? 0.f : 0.55f);
         if (bFly && bGround && sneak) { bFly = false; SetStatus("Flying off (landed)"); }
         if (bFeet.y < room.oy - 30) { bFeet.y = room.oy + room.sy; bFly = true; }
         if (moving && bGround && !bFly) edCam.bob += dt * 9;
@@ -1006,17 +1023,18 @@ struct App {
         bool L = down(VK_LBUTTON), R = down(VK_RBUTTON), M = down(VK_MBUTTON);
         breakCool -= dt; placeCool -= dt;
         if (L && (!lHeld || breakCool <= 0) && hoverValid && !hover.onGround) {
-            std::vector<BlockEdit> g; EditBlock(g, hover.x, hover.y, hover.z, px::B_AIR); Commit(g); breakCool = 0.22f;
+            std::vector<BlockEdit> g; EditBlock(g, hover.x, hover.y, hover.z, px::Block{}); Commit(g); breakCool = 0.22f;
         }
-        if (R && (!rHeld || placeCool <= 0) && hoverValid && hotbar[hotSel] != px::B_AIR) {
+        if (R && (!rHeld || placeCool <= 0) && hoverValid && hotbar[hotSel].type != px::B_AIR) {
             int x = hover.x + hover.nx, y = hover.y + hover.ny, z = hover.z + hover.nz;
-            if (!OverlapsBuilder(x, y, z)) { std::vector<BlockEdit> g; EditBlock(g, x, y, z, hotbar[hotSel]); Commit(g); }
+            px::Block nb = PlannedBlock();
+            if (room.get(x, y, z) == px::B_AIR && !OverlapsBuilder(nb, x, y, z)) { std::vector<BlockEdit> g; EditBlock(g, x, y, z, nb); Commit(g); }
             placeCool = 0.22f;
         }
         if (M && !mHeld && hoverValid && !hover.onGround) {
-            uint8_t b = room.get(hover.x, hover.y, hover.z); int found = -1;
-            for (int i = 0; i < 9; i++) if (hotbar[i] == b) { found = i; break; }
-            if (found >= 0) hotSel = found; else hotbar[hotSel] = b;
+            px::Block b = room.block(hover.x, hover.y, hover.z); int found = -1;
+            for (int i = 0; i < 9; i++) if (hotbar[i].type == b.type && hotbar[i].size == b.size) { found = i; break; }
+            if (found >= 0) hotSel = found; else hotbar[hotSel] = { b.type, b.size };
         }
         if (!L) breakCool = 0;
         if (!R) placeCool = 0;
@@ -1027,38 +1045,64 @@ struct App {
         if (now - lastSpaceTap < 0.3f) { bFly = !bFly; bVel.y = 0; SetStatus(bFly ? "Flying" : "Walking"); lastSpaceTap = -10.f; }
         else lastSpaceTap = now;
     }
-    static const char* BlockName(uint8_t b) { return b == px::B_CUBE ? "Cube" : ""; }
+    static const char* BlockName(uint8_t b) { return b ? px::shapeInfo(b).name : ""; }
+    std::string SlotLabel(const Slot& sl) const {
+        const px::ShapeInfo& si = px::shapeInfo(sl.type); std::string s = si.name;
+        if (si.mn != si.mx) { char b[64]; if (si.sizeDiv) snprintf(b, sizeof b, "  %s %d/%d", si.sizeWhat, sl.size, si.sizeDiv); else snprintf(b, sizeof b, "  %d %s", sl.size, si.sizeWhat); s += b; }
+        return s;
+    }
+    void ChangeSize(int d) {
+        Slot& sl = hotbar[hotSel]; const px::ShapeInfo& si = px::shapeInfo(sl.type);
+        int v = std::max((int)si.mn, std::min((int)si.mx, sl.size + d)); sl.size = (uint8_t)v;
+    }
     void DrawHotbar(ImDrawList* dl, ImVec2 p0, ImVec2 p1) {
         float s = 44.f * uiScale, gap = 4.f, W = 9 * s + 8 * gap; ImVec2 o((p0.x + p1.x - W) * 0.5f, p1.y - s - 14.f);
         dl->AddRectFilled(ImVec2(o.x - 6, o.y - 6), ImVec2(o.x + W + 6, o.y + s + 6), IM_COL32(0, 18, 22, 170), 6);
         for (int i = 0; i < 9; i++) {
             ImVec2 a(o.x + i * (s + gap), o.y), b(a.x + s, a.y + s);
-            dl->AddRectFilled(a, b, hotbar[i] ? IM_COL32(70, 82, 88, 230) : IM_COL32(20, 40, 46, 200), 4);
-            if (hotbar[i]) { dl->AddRect(ImVec2(a.x + 6, a.y + 6), ImVec2(b.x - 6, b.y - 6), IM_COL32(160, 175, 180, 255), 2.f, 0, 2.f); }
+            dl->AddRectFilled(a, b, hotbar[i].type ? IM_COL32(52, 62, 68, 230) : IM_COL32(20, 40, 46, 200), 4);
+            if (hotbar[i].type) {   // tiny side-view icon of the shape
+                std::vector<px::Box3> bx; px::Block ib; ib.type = hotbar[i].type; ib.size = hotbar[i].size; ib.rot = px::makeRot(2, 1); px::shapeBoxes(ib, 0, 0, 0, bx);
+                float pad = 8, sz = s - 2 * pad;
+                for (auto& q : bx) dl->AddRectFilled(ImVec2(a.x + pad + q.mn.z * sz, b.y - pad - q.mx.y * sz), ImVec2(a.x + pad + q.mx.z * sz, b.y - pad - q.mn.y * sz), IM_COL32(165, 180, 186, 255));
+            }
             dl->AddRect(a, b, i == hotSel ? IM_COL32(255, 170, 60, 255) : IM_COL32(40, 120, 125, 200), 4.f, 0, i == hotSel ? 3.f : 1.f);
             char n[2] = { (char)('1' + i), 0 }; dl->AddText(ImVec2(a.x + 4, a.y + 2), IM_COL32(180, 230, 225, 200), n);
         }
-        const char* nm = BlockName(hotbar[hotSel]);
-        if (*nm) { ImVec2 ts = ImGui::CalcTextSize(nm); dl->AddText(ImVec2((p0.x + p1.x - ts.x) * 0.5f, o.y - 26), IM_COL32(230, 250, 245, 255), nm); }
+        if (hotbar[hotSel].type) {
+            std::string nm = SlotLabel(hotbar[hotSel]);
+            ImVec2 ts = ImGui::CalcTextSize(nm.c_str()); dl->AddText(ImVec2((p0.x + p1.x - ts.x) * 0.5f, o.y - 40), IM_COL32(230, 250, 245, 255), nm.c_str());
+            const char* keys = "R rotate   F flip   + / - size   middle-click pick";
+            ImVec2 ks = ImGui::CalcTextSize(keys); dl->AddText(ImVec2((p0.x + p1.x - ks.x) * 0.5f, o.y - 22), IM_COL32(150, 200, 195, 200), keys);
+        }
     }
 
     void InventoryPanel() {
         if (!ImGui::Begin("Inventory", &showInv)) { ImGui::End(); return; }
         if (ImGui::BeginTabBar("inv")) {
             if (ImGui::BeginTabItem("Blocks")) {
-                auto tile = [&](const char* name, uint8_t id, bool avail) {
-                    ImGui::BeginDisabled(!avail);
-                    bool on = avail && hotbar[hotSel] == id;
+                float avail = ImGui::GetContentRegionAvail().x; int cols = std::max(1, (int)(avail / 84.f)), col = 0;
+                for (int t = px::B_CUBE; t < px::B_COUNT; t++) {
+                    const px::ShapeInfo& si = px::shapeInfo((uint8_t)t);
+                    bool on = hotbar[hotSel].type == t;
+                    ImGui::PushID(t);
                     ImGui::PushStyleColor(ImGuiCol_Button, on ? ImVec4(0.95f, 0.5f, 0.12f, 0.85f) : ImVec4(0.08f, 0.22f, 0.25f, 1));
-                    if (ImGui::Button(name, ImVec2(70, 54)) && avail) hotbar[hotSel] = id;
-                    ImGui::PopStyleColor(); ImGui::EndDisabled();
-                    if (!avail && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Coming in the next room editor step");
-                };
-                tile("Cube", px::B_CUBE, true); ImGui::SameLine(); tile("Slab", 0, false); ImGui::SameLine(); tile("Stairs", 0, false);
-                tile("Slope", 0, false); ImGui::SameLine(); tile("Slice", 0, false); ImGui::SameLine(); tile("Beam", 0, false);
+                    if (ImGui::Button(si.name, ImVec2(78, 46))) hotbar[hotSel] = { (uint8_t)t, si.def };
+                    ImGui::PopStyleColor();
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip(si.mn != si.mx ? "%s\nSize changes the %s (+ / - while building)" : "%s", si.name, si.sizeWhat);
+                    ImGui::PopID();
+                    if (++col < cols) ImGui::SameLine(); else col = 0;
+                }
+                if (col) ImGui::NewLine();
+                if (hotbar[hotSel].type) {
+                    const px::ShapeInfo& si = px::shapeInfo(hotbar[hotSel].type);
+                    ImGui::Text("Slot %d: %s", hotSel + 1, SlotLabel(hotbar[hotSel]).c_str());
+                    if (si.mn != si.mx) { int v = hotbar[hotSel].size; ImGui::SetNextItemWidth(-1); if (ImGui::SliderInt("##size", &v, si.mn, si.mx, si.sizeWhat)) hotbar[hotSel].size = (uint8_t)v; }
+                    if (ImGui::Button("Clear slot")) hotbar[hotSel] = { 0, 8 };
+                }
                 ImGui::Separator();
                 if (!roomOpen) { ImGui::TextWrapped("Open or make a room to build: File > New room."); if (ImGui::Button("New room")) NewRoom(); }
-                else ImGui::TextDisabled("Click a block to put it in hotbar slot %d.\nClick the viewport to build: right-click place,\nleft-click break, double-tap Space to fly, E for the mouse.", hotSel + 1);
+                else ImGui::TextDisabled("Click a shape to put it in hotbar slot %d.\nClick the viewport to build: right-click place,\nleft-click break, R rotate, F flip, +/- size,\ndouble-tap Space to fly, E for the mouse.", hotSel + 1);
                 ImGui::EndTabItem();
             }
             if (ImGui::BeginTabItem("Objects")) { ImGui::TextWrapped("Your FBX models, doors, pickups and spawns go here (room editor step 6)."); ImGui::EndTabItem(); }
@@ -1117,6 +1161,10 @@ struct App {
             if (k == 'E') { Capture(false); return; }
             if (k >= '1' && k <= '9') { hotSel = (int)(k - '1'); return; }
             if (k == VK_SPACE) { OnSpace(); return; }
+            if (k == 'R') { spinOffset = (spinOffset + 1) & 3; return; }
+            if (k == 'F') { flipPlace = !flipPlace; SetStatus(flipPlace ? "Placing flipped" : "Placing normal"); return; }
+            if (k == VK_OEM_PLUS || k == VK_ADD) { ChangeSize(+1); return; }
+            if (k == VK_OEM_MINUS || k == VK_SUBTRACT) { ChangeSize(-1); return; }
         }
         if (k == VK_SPACE && playing && captured && !pausedGame && !roomOpen) Fire();
     }
