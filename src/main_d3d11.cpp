@@ -1034,8 +1034,8 @@ struct App {
         for (int i = 0; i < 9; i++) {
             ImVec2 a(o.x + i * (s + gap), o.y), b(a.x + s, a.y + s);
             dl->AddRectFilled(a, b, hotbar[i] ? IM_COL32(70, 82, 88, 230) : IM_COL32(20, 40, 46, 200), 4);
-            if (hotbar[i]) { dl->AddRect(ImVec2(a.x + 6, a.y + 6), ImVec2(b.x - 6, b.y - 6), IM_COL32(160, 175, 180, 255), 2, 0, 2); }
-            dl->AddRect(a, b, i == hotSel ? IM_COL32(255, 170, 60, 255) : IM_COL32(40, 120, 125, 200), 4, 0, i == hotSel ? 3.f : 1.f);
+            if (hotbar[i]) { dl->AddRect(ImVec2(a.x + 6, a.y + 6), ImVec2(b.x - 6, b.y - 6), IM_COL32(160, 175, 180, 255), 2.f, 0, 2.f); }
+            dl->AddRect(a, b, i == hotSel ? IM_COL32(255, 170, 60, 255) : IM_COL32(40, 120, 125, 200), 4.f, 0, i == hotSel ? 3.f : 1.f);
             char n[2] = { (char)('1' + i), 0 }; dl->AddText(ImVec2(a.x + 4, a.y + 2), IM_COL32(180, 230, 225, 200), n);
         }
         const char* nm = BlockName(hotbar[hotSel]);
