@@ -113,6 +113,22 @@ int main() {
         q3.name = "shapes"; q3.save("/tmp/s.room"); Room q4; std::string e2; q4.load("/tmp/s.room", e2);
         CHECK(q4.cells == q3.cells && q4.rots == q3.rots && q4.sizes == q3.sizes, "shapes, rotations and sizes survive save/load");
     }
+    // ---- big rooms: create, resize keeps blocks, chunked meshes equal the whole mesh
+    {
+        Room big; big.create(256, 64, 256, true, MAT_ROCK);
+        CHECK(big.count() == 256u * 256u && big.ox == -128 && big.block(100, -1, -100).mat == MAT_ROCK, "256x64x256 room with a full rock floor");
+        big.set(10, 5, 10, Block{ B_SLOPE, makeRot(2, 1), 8, MAT_SAND });
+        big.resizeKeep(320, 80, 300);
+        CHECK(big.sx == 320 && big.sy == 80 && big.sz == 300 && big.block(10, 5, 10) == (Block{ B_SLOPE, makeRot(2, 1), 8, MAT_SAND }) && big.count() == 256u * 256u + 1,
+              "resizing keeps every block in place (%zu blocks)", big.count());
+        big.resizeKeep(16, 16, 16);
+        CHECK(big.sx == 16 && big.solid(0, -1, 0) && !big.inBounds(10, 5, 10), "shrinking crops to the new size");
+        Room t; t.newFlat(16); for (int i = 0; i < 300; i++) t.set((i * 7) % 40 - 20, (i * 3) % 10, (i * 11) % 40 - 20, Block{ (uint8_t)(1 + i % 13), (uint8_t)(i % 24), 4, (uint8_t)(i % 10) });
+        std::vector<SubMesh> whole; t.buildMeshes(whole); size_t wt = 0; for (auto& s2 : whole) wt += s2.mesh.i.size();
+        size_t ct = 0; for (int cy = t.oy; cy < t.oy + t.sy; cy += 16) for (int cz = t.oz; cz < t.oz + t.sz; cz += 16) for (int cx = t.ox; cx < t.ox + t.sx; cx += 16) {
+            std::vector<SubMesh> part; t.buildMeshesBox(cx, cy, cz, cx + 16, cy + 16, cz + 16, part); for (auto& s2 : part) ct += s2.mesh.i.size(); }
+        CHECK(ct == wt && wt > 0, "16^3 chunk meshes add up to the whole room (%zu = %zu indices)", ct, wt);
+    }
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
     return fails ? 1 : 0;
 }

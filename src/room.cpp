@@ -216,6 +216,19 @@ void Room::resize(int x, int y, int z, int oX, int oY, int oZ) {
     sx = x; sy = y; sz = z; ox = oX; oy = oY; oz = oZ;
     size_t n = (size_t)sx * sy * sz; cells.assign(n, B_AIR); rots.assign(n, 8); sizes.assign(n, 8); mats.assign(n, 0);
 }
+void Room::create(int w, int h, int d, bool floor, uint8_t floorMat) {
+    w = std::max(8, std::min(kMaxW, w)); d = std::max(8, std::min(kMaxW, d)); h = std::max(8, std::min(kMaxH, h));
+    resize(w, h, d, -w / 2, -1, -d / 2);
+    if (floor) { Block b; b.type = B_CUBE; b.mat = floorMat; for (int z = oz; z < oz + sz; z++) for (int x = ox; x < ox + sx; x++) set(x, -1, z, b); }
+}
+void Room::resizeKeep(int w, int h, int d) {
+    w = std::max(8, std::min(kMaxW, w)); d = std::max(8, std::min(kMaxW, d)); h = std::max(8, std::min(kMaxH, h));
+    Room old = *this;
+    resize(w, h, d, -w / 2, old.oy, -d / 2);
+    for (int y = std::max(oy, old.oy); y < std::min(oy + sy, old.oy + old.sy); y++)
+        for (int z = std::max(oz, old.oz); z < std::min(oz + sz, old.oz + old.sz); z++)
+            for (int x = std::max(ox, old.ox); x < std::min(ox + sx, old.ox + old.sx); x++) set(x, y, z, old.block(x, y, z));
+}
 void Room::newFlat(int half) {
     resize(64, 32, 64, -32, -1, -32);
     for (int z = -half; z < half; z++) for (int x = -half; x < half; x++) set(x, -1, z, (uint8_t)B_CUBE);
@@ -305,8 +318,12 @@ void Room::buildMesh(MeshData& out) const {
     for (auto& sm : subs) { uint32_t b = (uint32_t)out.v.size(); out.v.insert(out.v.end(), sm.mesh.v.begin(), sm.mesh.v.end()); for (auto i : sm.mesh.i) out.i.push_back(b + i); }
 }
 
-void Room::buildMeshes(std::vector<SubMesh>& subs) const {
+void Room::buildMeshes(std::vector<SubMesh>& subs) const { buildMeshesBox(ox, oy, oz, ox + sx, oy + sy, oz + sz, subs); }
+
+void Room::buildMeshesBox(int bx0, int by0, int bz0, int bx1, int by1, int bz1, std::vector<SubMesh>& subs) const {
     subs.clear();
+    bx0 = std::max(bx0, ox); by0 = std::max(by0, oy); bz0 = std::max(bz0, oz);
+    bx1 = std::min(bx1, ox + sx); by1 = std::min(by1, oy + sy); bz1 = std::min(bz1, oz + sz);
     int slot[MAT_COUNT * 3]; for (auto& s_ : slot) s_ = -1;
     uint8_t curMat = 0;
     auto target = [&](V3 n) -> MeshData& {
@@ -327,7 +344,7 @@ void Room::buildMeshes(std::vector<SubMesh>& subs) const {
         if (dot(cross(p1 - p0, p2 - p0), n) < 0) { out.v.push_back(c); out.v.push_back(b); } else { out.v.push_back(b); out.v.push_back(c); }
         out.i.insert(out.i.end(), { base, base + 1, base + 2 });
     };
-    for (int y = oy; y < oy + sy; y++) for (int z = oz; z < oz + sz; z++) for (int x = ox; x < ox + sx; x++) {
+    for (int y = by0; y < by1; y++) for (int z = bz0; z < bz1; z++) for (int x = bx0; x < bx1; x++) {
         size_t ci = idx(x, y, z); uint8_t type = cells[ci];
         if (type == B_AIR) continue;
         curMat = mats[ci];

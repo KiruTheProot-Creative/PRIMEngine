@@ -53,7 +53,10 @@ struct Room {
     std::vector<uint8_t> cells, rots, sizes, mats;   // per cell: type, orientation, size, material
 
     void resize(int x, int y, int z, int oX, int oY, int oZ);
-    void newFlat(int half = 16);
+    void newFlat(int half = 16);                 // 64 x 32 x 64 with a (2*half)^2 metal floor (tests)
+    void create(int w, int h, int d, bool floor, uint8_t floorMat);   // centred on x/z, floor under y = 0
+    void resizeKeep(int w, int h, int d);         // new size, blocks kept in place (centred on x/z, same bottom)
+    static constexpr int kMaxW = 512, kMaxH = 128;
     bool inBounds(int x, int y, int z) const { return x >= ox && y >= oy && z >= oz && x < ox + sx && y < oy + sy && z < oz + sz; }
     uint8_t get(int x, int y, int z) const { return inBounds(x, y, z) ? cells[idx(x, y, z)] : (uint8_t)B_AIR; }
     Block block(int x, int y, int z) const { if (!inBounds(x, y, z)) return {}; size_t i = idx(x, y, z); return { cells[i], rots[i], sizes[i], mats[i] }; }
@@ -72,6 +75,7 @@ struct Room {
     bool load(const std::string& path, std::string& err);
 
     void buildMeshes(std::vector<SubMesh>& out) const;   // one sub-mesh per (material, top/side/bottom) texture
+    void buildMeshesBox(int x0, int y0, int z0, int x1, int y1, int z1, std::vector<SubMesh>& out) const;   // cells in [x0,x1) etc. (chunks)
     void buildMesh(MeshData& out) const;                  // everything in one mesh (tests, tools)
     bool raycast(V3 origin, V3 dir, float maxT, RayHit& hit) const;
 

@@ -260,7 +260,7 @@ struct App {
         FrameCB f{}; XMStoreFloat4x4(&f.viewProj, vp); XMStoreFloat4x4(&f.view, view);
         f.cam[0] = eye.x; f.cam[1] = eye.y; f.cam[2] = eye.z; f.cam[3] = T;
         memcpy(f.lightPos, lp, sizeof f.lightPos); memcpy(f.lightCol, lc, sizeof f.lightCol);
-        f.fogColor[0] = 0.045f; f.fogColor[1] = 0.085f; f.fogColor[2] = 0.1f; f.fogColor[3] = S.fog; f.fogRange[0] = 6; f.fogRange[1] = 42;
+        f.fogColor[0] = 0.045f; f.fogColor[1] = 0.085f; f.fogColor[2] = 0.1f; f.fogColor[3] = S.fog; f.fogRange[0] = roomOpen ? 18.f : 6.f; f.fogRange[1] = roomOpen ? 170.f : 42.f;
         ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &f, 0, 0);
     }
     void DrawMat(int m, const XMMATRIX& world) {
@@ -302,7 +302,7 @@ struct App {
         px::V3 f, r, u; C.basis(f, r, u); px::V3 eye = C.eye();
         float asp = (float)iw / ih;
         XMMATRIX view = XMMatrixLookToLH(XMVectorSet(eye.x, eye.y, eye.z, 1), XMVectorSet(f.x, f.y, f.z, 0), XMVectorSet(u.x, u.y, u.z, 0));
-        XMMATRIX vp = view * XMMatrixPerspectiveFovLH(XMConvertToRadians(60.f), asp, 0.1f, 80.f);
+        XMMATRIX vp = view * XMMatrixPerspectiveFovLH(XMConvertToRadians(60.f), asp, 0.1f, roomOpen ? 420.f : 80.f);
         XMMATRIX vp2 = view * XMMatrixPerspectiveFovLH(XMConvertToRadians(50.f), asp, 0.03f, 3.f);
 
         // dynamic lights (4, like a GX light mask)
@@ -330,7 +330,7 @@ struct App {
         ctx->IASetInputLayout(layout.Get()); ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         ctx->VSSetShader(vsWorld.Get(), nullptr, 0); ctx->PSSetShader(psWorld.Get(), nullptr, 0);
         SetFrame(view, vp, eye, lp, lc);
-        if (roomOpen) DrawRoom();
+        if (roomOpen) DrawRoom(vp);
         else for (int m : { px::M_FLOOR, px::M_WALL, px::M_TRIM, px::M_STRIP, px::M_CORE, px::M_DOOR }) DrawMat(m, XMMatrixIdentity());
 
         // viewmodel: own projection, squeezed into the nearest 5% of the depth range so it never clips into walls
@@ -645,7 +645,15 @@ struct App {
             ImGui::SeparatorText("Room");
             if (roomOpen) {
                 if (ImGui::InputText("Name", &room.name)) roomDirty = true;
-                ImGui::Text("%zu blocks, %d x %d x %d space", room.count(), room.sx, room.sy, room.sz);
+                ImGui::Text("%zu blocks in %d x %d x %d", room.count(), room.sx, room.sy, room.sz);
+                if (rsW == 0) { rsW = room.sx; rsH = room.sy; rsD = room.sz; }
+                ImGui::SetNextItemWidth(200); ImGui::DragInt3("##resize", &rsW, 1.f, 8, px::Room::kMaxW); ImGui::SameLine();
+                rsH = std::max(8, std::min(px::Room::kMaxH, rsH));
+                ImGui::BeginDisabled(terrainPreview || (rsW == room.sx && rsH == room.sy && rsD == room.sz));
+                if (ImGui::Button("Resize")) { room.resizeKeep(rsW, rsH, rsD); undoStack.clear(); redoStack.clear(); AfterRoomChange();
+                    char b2[96]; snprintf(b2, sizeof b2, "Room is now %d x %d x %d (undo history cleared)", room.sx, room.sy, room.sz); SetStatus(b2); }
+                ImGui::EndDisabled();
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Width / height / depth in blocks. Blocks stay where they are; shrinking cuts off the edges.");
                 ImGui::TextDisabled("%s", FileName(roomPath).c_str());
                 if (ImGui::Button("Save room")) SaveRoom(); ImGui::SameLine(); if (ImGui::Button("Close room")) CloseRoom();
             } else {
@@ -843,13 +851,19 @@ struct App {
         if (showConsole) ConsolePanel();
         if (showInv) InventoryPanel();
         if (showTerrain) TerrainPanel();
+        NewRoomWindow();
         if (!playing && !roomOpen) FlyCam(io.DeltaTime);
     }
     bool iniHadLayout = false;
 
     // ------------------------------------------------------------------ rooms (block building)
     px::Room room; bool roomOpen = false, roomDirty = false, roomMeshDirty = false; std::string roomPath; float roomAutosave = 0;
-    struct GpuSub { GpuMesh g; uint8_t tex = 0; float env = 0, glow = 0; }; std::vector<GpuSub> roomSubs;
+    struct GpuSub { GpuMesh g; uint8_t tex = 0; float env = 0, glow = 0; };
+    static constexpr int CS = 16;                       // chunk size: only edited chunks are rebuilt, only visible ones drawn
+    struct Chunk { std::vector<GpuSub> subs; bool dirty = true; };
+    std::vector<Chunk> chunks; int ncx = 0, ncy = 0, ncz = 0;
+    bool newRoomPopup = false; int nrW = 128, nrH = 48, nrD = 128; bool nrFloor = true; uint8_t nrMat = px::MAT_METAL;
+    int rsW = 0, rsH = 0, rsD = 0;
     struct BlockEdit { int x, y, z; px::Block before, after; };
     std::vector<std::vector<BlockEdit>> undoStack, redoStack;
     bool hoverValid = false; px::RayHit hover{};
@@ -863,22 +877,50 @@ struct App {
         if (h != INVALID_HANDLE_VALUE) { do { out.push_back(RoomsDir() + fd.cFileName); } while (FindNextFileA(h, &fd)); FindClose(h); }
         std::sort(out.begin(), out.end()); return out;
     }
+    void MarkCell(int x, int y, int z) {   // a block change can affect neighbours' shading: mark every chunk touching its 3x3x3
+        if (roomMeshDirty || chunks.empty()) return;
+        for (int dz = -1; dz <= 1; dz++) for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
+            int cx = (x + dx - room.ox) / CS, cy = (y + dy - room.oy) / CS, cz = (z + dz - room.oz) / CS;
+            if (x + dx < room.ox || y + dy < room.oy || z + dz < room.oz || cx >= ncx || cy >= ncy || cz >= ncz) continue;
+            chunks[((size_t)cy * ncz + cz) * ncx + cx].dirty = true;
+        }
+    }
+    template <class G> void AfterRoomChange(const G& g) { for (auto& e : g) MarkCell(e.x, e.y, e.z); roomDirty = true; roomAutosave = 0; }
     void AfterRoomChange() { roomMeshDirty = true; roomDirty = true; roomAutosave = 0; }
-    void NewRoom() {
+    void NewRoom() { newRoomPopup = true; }   // opens the "New room" window (size, floor)
+    void CreateRoom(int w, int h, int d, bool floor, uint8_t mat) {
         TerrainCancel();
         if (roomOpen && roomDirty) SaveRoom();
         int n = 1; std::string path; do { path = RoomsDir() + "Room " + std::to_string(n++) + ".room"; } while (GetFileAttributesA(path.c_str()) != INVALID_FILE_ATTRIBUTES);
-        room = px::Room{}; room.newFlat(16); room.name = FileName(path).substr(0, FileName(path).size() - 5);
-        roomPath = path; roomOpen = true; undoStack.clear(); redoStack.clear(); AfterRoomChange(); SaveRoom();
-        edCam.p = { 0, 6, -12 }; edCam.yaw = 0; edCam.pitch = -0.35f; sel = Sel::World;
-        SetStatus("New room: " + room.name + ". Right-click places a block, left-click breaks one");
+        room = px::Room{}; room.create(w, h, d, floor, mat); room.name = FileName(path).substr(0, FileName(path).size() - 5);
+        roomPath = path; roomOpen = true; undoStack.clear(); redoStack.clear(); rsW = 0; AfterRoomChange(); SaveRoom();
+        edCam.p = { 0, 6, -std::min(40.f, d * 0.3f) }; edCam.yaw = 0; edCam.pitch = -0.3f; sel = Sel::World;
+        tp.x0 = -8; tp.z0 = -8; tp.x1 = 7; tp.z1 = 7;
+        char b2[160]; snprintf(b2, sizeof b2, "New room: %s (%d x %d x %d). Click the viewport to step in", room.name.c_str(), room.sx, room.sy, room.sz); SetStatus(b2);
+    }
+    void NewRoomWindow() {
+        if (newRoomPopup) { ImGui::OpenPopup("New room"); newRoomPopup = false; }
+        ImGui::SetNextWindowSize(ImVec2(420, 0), ImGuiCond_Appearing);
+        if (!ImGui::BeginPopupModal("New room", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) return;
+        struct Pre { const char* name; int w, h, d; } pre[] = { { "Small  64 x 32 x 64", 64, 32, 64 }, { "Medium  128 x 48 x 128", 128, 48, 128 },
+                                                             { "Large  256 x 64 x 256", 256, 64, 256 }, { "Huge  512 x 96 x 512", 512, 96, 512 } };
+        for (auto& p : pre) { if (ImGui::RadioButton(p.name, nrW == p.w && nrH == p.h && nrD == p.d)) { nrW = p.w; nrH = p.h; nrD = p.d; } }
+        ImGui::SeparatorText("Or your own size (blocks)");
+        ImGui::SetNextItemWidth(260); ImGui::DragInt3("Width / height / depth", &nrW, 1.f, 8, px::Room::kMaxW);
+        nrH = std::max(8, std::min(px::Room::kMaxH, nrH)); nrW = std::max(8, std::min(px::Room::kMaxW, nrW)); nrD = std::max(8, std::min(px::Room::kMaxW, nrD));
+        ImGui::TextDisabled("Height is at most %d. 1 block = 1 metre.", px::Room::kMaxH);
+        ImGui::Checkbox("Start with a floor", &nrFloor); if (nrFloor) { ImGui::SameLine(); ImGui::SetNextItemWidth(160); MatCombo("##floormat", nrMat); }
+        double mb = (double)nrW * nrH * nrD * 4 / 1e6; if (mb > 60) ImGui::TextColored(ImVec4(1, 0.7f, 0.3f, 1), "Big room: about %.0f MB of memory, terrain takes a moment", mb);
+        if (ImGui::Button("Create", ImVec2(120, 0))) { CreateRoom(nrW, nrH, nrD, nrFloor, nrMat); ImGui::CloseCurrentPopup(); }
+        ImGui::SameLine(); if (ImGui::Button("Cancel", ImVec2(120, 0))) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
     }
     void OpenRoom(const std::string& path) {
         TerrainCancel();
         if (roomOpen && roomDirty) SaveRoom();
         px::Room r; std::string err;
         if (!r.load(path, err)) { SetStatus("Could not open " + FileName(path) + ": " + err); return; }
-        room = std::move(r); roomPath = path; roomOpen = true; roomDirty = false; roomMeshDirty = true; undoStack.clear(); redoStack.clear();
+        room = std::move(r); roomPath = path; roomOpen = true; roomDirty = false; roomMeshDirty = true; undoStack.clear(); redoStack.clear(); rsW = 0;
         SetStatus("Opened room " + room.name);
     }
     void SaveRoom() {
@@ -887,28 +929,55 @@ struct App {
         if (room.save(roomPath)) { roomDirty = false; SetStatus("Saved room " + room.name); }
         else SetStatus("Could not save room " + FileName(roomPath));
     }
-    void CloseRoom() { TerrainCancel(); if (roomDirty) SaveRoom(); roomOpen = false; roomSubs.clear(); SetStatus("Back to the demo room"); }
-    void RebuildRoomMesh() {
-        roomMeshDirty = false; roomSubs.clear();
-        std::vector<px::SubMesh> subs; room.buildMeshes(subs);
-        for (auto& sm : subs) {
-            if (sm.mesh.i.empty()) continue;
-            GpuSub g; g.tex = sm.tex; g.env = sm.env; g.glow = sm.glow; g.g.count = (UINT)sm.mesh.i.size();
-            D3D11_BUFFER_DESC d{}; d.Usage = D3D11_USAGE_IMMUTABLE; d.ByteWidth = (UINT)(sm.mesh.v.size() * sizeof(px::Vertex)); d.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-            D3D11_SUBRESOURCE_DATA sdt{ sm.mesh.v.data(), 0, 0 }; HR(dev->CreateBuffer(&d, &sdt, &g.g.vb));
-            d.ByteWidth = (UINT)(sm.mesh.i.size() * 4); d.BindFlags = D3D11_BIND_INDEX_BUFFER; sdt.pSysMem = sm.mesh.i.data(); HR(dev->CreateBuffer(&d, &sdt, &g.g.ib));
-            roomSubs.push_back(std::move(g));
+    void CloseRoom() { TerrainCancel(); if (roomDirty) SaveRoom(); roomOpen = false; chunks.clear(); SetStatus("Back to the demo room"); }
+    void RebuildRoomMesh() {   // (re)build every dirty chunk
+        if (roomMeshDirty) {
+            roomMeshDirty = false;
+            ncx = (room.sx + CS - 1) / CS; ncy = (room.sy + CS - 1) / CS; ncz = (room.sz + CS - 1) / CS;
+            chunks.clear(); chunks.resize((size_t)ncx * ncy * ncz);
+        }
+        std::vector<px::SubMesh> subs;
+        for (int cy = 0; cy < ncy; cy++) for (int cz = 0; cz < ncz; cz++) for (int cx = 0; cx < ncx; cx++) {
+            Chunk& c = chunks[((size_t)cy * ncz + cz) * ncx + cx];
+            if (!c.dirty) continue;
+            c.dirty = false; c.subs.clear();
+            int x0 = room.ox + cx * CS, y0 = room.oy + cy * CS, z0 = room.oz + cz * CS;
+            room.buildMeshesBox(x0, y0, z0, x0 + CS, y0 + CS, z0 + CS, subs);
+            for (auto& sm : subs) {
+                if (sm.mesh.i.empty()) continue;
+                GpuSub g; g.tex = sm.tex; g.env = sm.env; g.glow = sm.glow; g.g.count = (UINT)sm.mesh.i.size();
+                D3D11_BUFFER_DESC d{}; d.Usage = D3D11_USAGE_IMMUTABLE; d.ByteWidth = (UINT)(sm.mesh.v.size() * sizeof(px::Vertex)); d.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+                D3D11_SUBRESOURCE_DATA sdt{ sm.mesh.v.data(), 0, 0 }; HR(dev->CreateBuffer(&d, &sdt, &g.g.vb));
+                d.ByteWidth = (UINT)(sm.mesh.i.size() * 4); d.BindFlags = D3D11_BIND_INDEX_BUFFER; sdt.pSysMem = sm.mesh.i.data(); HR(dev->CreateBuffer(&d, &sdt, &g.g.ib));
+                c.subs.push_back(std::move(g));
+            }
         }
     }
-    void DrawRoom() {
-        if (roomMeshDirty) RebuildRoomMesh();
-        for (auto& g : roomSubs) {
-            ObjectCB o{}; XMStoreFloat4x4(&o.world, XMMatrixIdentity());
-            o.tint[0] = o.tint[1] = o.tint[2] = o.tint[3] = 1; o.params[0] = g.env; o.params[1] = g.glow; o.params[2] = 1; o.params[3] = 0;
-            ctx->UpdateSubresource(cbObject.Get(), 0, nullptr, &o, 0, 0);
-            ID3D11ShaderResourceView* srv[2] = { texSRV[g.tex].Get(), texSRV[px::T_ENV].Get() }; ctx->PSSetShaderResources(0, 2, srv);
-            UINT stride = sizeof(px::Vertex), off = 0; ctx->IASetVertexBuffers(0, 1, g.g.vb.GetAddressOf(), &stride, &off);
-            ctx->IASetIndexBuffer(g.g.ib.Get(), DXGI_FORMAT_R32_UINT, 0); ctx->DrawIndexed(g.g.count, 0, 0);
+    static bool BoxVisible(const XMMATRIX& vp, px::V3 mn, px::V3 mx) {   // all 8 corners outside one clip plane = hidden
+        int out[6] = { 0, 0, 0, 0, 0, 0 };
+        for (int i = 0; i < 8; i++) {
+            XMVECTOR c = XMVector4Transform(XMVectorSet((i & 1) ? mx.x : mn.x, (i & 2) ? mx.y : mn.y, (i & 4) ? mx.z : mn.z, 1), vp);
+            float x = XMVectorGetX(c), y = XMVectorGetY(c), z = XMVectorGetZ(c), w = XMVectorGetW(c);
+            out[0] += x < -w; out[1] += x > w; out[2] += y < -w; out[3] += y > w; out[4] += z < 0; out[5] += z > w;
+        }
+        for (int k = 0; k < 6; k++) if (out[k] == 8) return false;
+        return true;
+    }
+    void DrawRoom(const XMMATRIX& vp) {
+        RebuildRoomMesh();
+        ObjectCB o{}; XMStoreFloat4x4(&o.world, XMMatrixIdentity()); o.tint[0] = o.tint[1] = o.tint[2] = o.tint[3] = 1; o.params[2] = 1;
+        float lastEnv = -1, lastGlow = -1;
+        for (int cy = 0; cy < ncy; cy++) for (int cz = 0; cz < ncz; cz++) for (int cx = 0; cx < ncx; cx++) {
+            Chunk& c = chunks[((size_t)cy * ncz + cz) * ncx + cx];
+            if (c.subs.empty()) continue;
+            px::V3 mn{ (float)(room.ox + cx * CS), (float)(room.oy + cy * CS), (float)(room.oz + cz * CS) };
+            if (!BoxVisible(vp, mn, mn + px::V3{ (float)CS, (float)CS, (float)CS })) continue;
+            for (auto& g : c.subs) {
+                if (g.env != lastEnv || g.glow != lastGlow) { o.params[0] = g.env; o.params[1] = g.glow; ctx->UpdateSubresource(cbObject.Get(), 0, nullptr, &o, 0, 0); lastEnv = g.env; lastGlow = g.glow; }
+                ID3D11ShaderResourceView* srv[2] = { texSRV[g.tex].Get(), texSRV[px::T_ENV].Get() }; ctx->PSSetShaderResources(0, 2, srv);
+                UINT stride = sizeof(px::Vertex), off = 0; ctx->IASetVertexBuffers(0, 1, g.g.vb.GetAddressOf(), &stride, &off);
+                ctx->IASetIndexBuffer(g.g.ib.Get(), DXGI_FORMAT_R32_UINT, 0); ctx->DrawIndexed(g.g.count, 0, 0);
+            }
         }
     }
     void EditBlock(std::vector<BlockEdit>& group, int x, int y, int z, px::Block b) {
@@ -918,11 +987,12 @@ struct App {
     }
     void Commit(std::vector<BlockEdit>& g) {
         if (g.empty()) return;
+        if (g.size() > 4096) AfterRoomChange(); else AfterRoomChange(g);
         undoStack.push_back(std::move(g)); if (undoStack.size() > 500) undoStack.erase(undoStack.begin());
-        redoStack.clear(); AfterRoomChange();
+        redoStack.clear();
     }
-    void Undo() { if (undoStack.empty()) return; auto g = undoStack.back(); undoStack.pop_back(); for (auto it = g.rbegin(); it != g.rend(); ++it) room.set(it->x, it->y, it->z, it->before); redoStack.push_back(g); AfterRoomChange(); }
-    void Redo() { if (redoStack.empty()) return; auto g = redoStack.back(); redoStack.pop_back(); for (auto& e : g) room.set(e.x, e.y, e.z, e.after); undoStack.push_back(g); AfterRoomChange(); }
+    void Undo() { if (undoStack.empty()) return; auto g = undoStack.back(); undoStack.pop_back(); for (auto it = g.rbegin(); it != g.rend(); ++it) room.set(it->x, it->y, it->z, it->before); if (g.size() > 4096) AfterRoomChange(); else AfterRoomChange(g); redoStack.push_back(g); }
+    void Redo() { if (redoStack.empty()) return; auto g = redoStack.back(); redoStack.pop_back(); for (auto& e : g) room.set(e.x, e.y, e.z, e.after); if (g.size() > 4096) AfterRoomChange(); else AfterRoomChange(g); undoStack.push_back(g); }
     static bool SolidAt(void* c, px::V3 p) { App* a = (App*)c; return a->room.pointSolid(p) || p.y < a->room.oy - 30; }
 
     // player in a room: Samus is about 2 blocks tall

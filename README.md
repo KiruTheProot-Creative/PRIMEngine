@@ -77,7 +77,7 @@ PRIMEngine opens as an engine editor, like Unity or Godot:
 **Play / Stop** (F5) is in the middle of the menu bar. F6 pauses, F11 hides the editor, Ctrl+S saves. Panels can be dragged and docked anywhere; View > Reset layout puts them back.
 
 ## Building rooms (creative mode)
-**File > New room** makes a flat floor of blocks (one block = 1 metre, Minecraft scale). Then **click the viewport** to step into the room, Minecraft creative style:
+**File > New room** asks for a size (Small 64x32x64 up to Huge 512x96x512, or your own up to 512x128x512) and whether to start with a floor (one block = 1 metre, Minecraft scale). The Inspector can resize a room later; blocks stay in place. Then **click the viewport** to step into the room, Minecraft creative style:
 
 | Key | Does |
 | --- | --- |
