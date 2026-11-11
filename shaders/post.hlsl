@@ -66,3 +66,52 @@ float4 PS_Composite(PSIn i) : SV_Target
     }
     return float4(col, 1.0);
 }
+
+// ---------------------------------------------------------------- sky (rooms): gradient, clouds or stars, with a sun
+cbuffer Sky : register(b3)
+{
+    float4 gSkyF, gSkyR, gSkyU;   // camera forward / right / up
+    float4 gSkyP;                 // x tan(fov/2), y aspect, z type (1 gradient, 2 clouds, 3 stars), w time
+    float4 gSkyTop, gSkyHorizon;
+    float4 gSunDir;               // xyz direction to the sun, w = 1 when there is a sun
+    float4 gSunCol;
+};
+
+float skyHash(float2 p) { return frac(sin(dot(p, float2(127.1, 311.7))) * 43758.5453); }
+float skyNoise(float2 p)
+{
+    float2 i = floor(p), f = frac(p); f = f * f * (3 - 2 * f);
+    return lerp(lerp(skyHash(i), skyHash(i + float2(1, 0)), f.x), lerp(skyHash(i + float2(0, 1)), skyHash(i + float2(1, 1)), f.x), f.y);
+}
+float skyFbm(float2 p) { float s = 0, a = 0.5; for (int k = 0; k < 5; k++) { s += skyNoise(p) * a; p *= 2.07; a *= 0.5; } return s; }
+
+float4 PS_Sky(PSIn i) : SV_Target
+{
+    float2 ndc = float2(i.uv.x * 2 - 1, 1 - i.uv.y * 2);
+    float3 dir = normalize(gSkyF.xyz + gSkyR.xyz * (ndc.x * gSkyP.x * gSkyP.y) + gSkyU.xyz * (ndc.y * gSkyP.x));
+    float h = dir.y;
+    float3 col = lerp(gSkyHorizon.rgb, gSkyTop.rgb, saturate(h * 1.6));
+    if (h < 0) col = lerp(gSkyHorizon.rgb, gSkyHorizon.rgb * 0.55, saturate(-h * 3));
+    if (gSkyP.z > 1.5 && gSkyP.z < 2.5 && h > -0.02)                    // clouds on a plane above
+    {
+        float2 p = dir.xz / max(h, 0.06) * 0.55 + gSkyP.w * float2(0.012, 0.006);
+        float n = skyFbm(p * 1.3);
+        float cloud = smoothstep(0.42, 0.72, n) * saturate(h * 5);
+        float3 cc = lerp(gSkyHorizon.rgb * 1.18 + 0.04, gSkyTop.rgb * 0.8, smoothstep(0.55, 0.8, n) * 0.5);
+        col = lerp(col, cc, cloud * 0.8);
+    }
+    if (gSkyP.z > 2.5)                                                   // stars and a faint nebula
+    {
+        float3 g = floor(dir * 260);
+        float s = skyHash(g.xy + g.z * 17.31);
+        if (s > 0.9965) col += (s - 0.9965) / 0.0035 * float3(0.9, 0.95, 1.0);
+        float neb = skyFbm(dir.xy * 2.5 + dir.z * 1.7);
+        col += float3(0.10, 0.05, 0.16) * smoothstep(0.5, 0.85, neb);
+    }
+    if (gSunDir.w > 0.5)                                                 // sun disc and its glow
+    {
+        float d = max(dot(dir, gSunDir.xyz), 0);
+        col += gSunCol.rgb * (pow(d, 900) * 3 + pow(d, 14) * 0.22);
+    }
+    return float4(col, 1);
+}

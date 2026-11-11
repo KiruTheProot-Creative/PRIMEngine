@@ -79,6 +79,7 @@ static ComPtr<ID3DBlob> Compile(const std::string& src, const char* name, const 
 struct alignas(16) FrameCB { XMFLOAT4X4 viewProj, view; float cam[4]; float lightPos[4][4]; float lightCol[4][4]; float fogColor[4]; float fogRange[4]; };
 struct alignas(16) ObjectCB { XMFLOAT4X4 world; float tint[4]; float params[4]; };
 struct alignas(16) PostCB { float p0[4], p1[4], p2[4]; };
+struct alignas(16) SkyCB { float f[4], r[4], u[4], p[4], top[4], hor[4], sunDir[4], sunCol[4]; };
 
 struct GpuMesh { ComPtr<ID3D11Buffer> vb, ib; UINT count = 0; };
 struct RT { ComPtr<ID3D11Texture2D> tex; ComPtr<ID3D11RenderTargetView> rtv; ComPtr<ID3D11ShaderResourceView> srv; int w = 0, h = 0; };
@@ -91,9 +92,9 @@ struct App {
     HWND hwnd = nullptr; int cw = 1280, ch = 720; bool resized = false, captured = false;
     ComPtr<ID3D11Device> dev; ComPtr<ID3D11DeviceContext> ctx; ComPtr<IDXGISwapChain> swap; ComPtr<ID3D11RenderTargetView> backRTV;
 
-    ComPtr<ID3D11VertexShader> vsWorld, vsPart, vsFull; ComPtr<ID3D11PixelShader> psWorld, psPart, psBright, psBlur, psComp;
+    ComPtr<ID3D11VertexShader> vsWorld, vsPart, vsFull; ComPtr<ID3D11PixelShader> psWorld, psPart, psBright, psBlur, psComp, psSky;
     ComPtr<ID3D11InputLayout> layout;
-    ComPtr<ID3D11Buffer> cbFrame, cbObject, cbPost;
+    ComPtr<ID3D11Buffer> cbFrame, cbObject, cbPost, cbSky;
     ComPtr<ID3D11RasterizerState> rsCull, rsNoCull;
     ComPtr<ID3D11DepthStencilState> dsOn, dsNoWrite, dsOff;
     ComPtr<ID3D11BlendState> bsOff, bsAdd;
@@ -139,6 +140,7 @@ struct App {
         b = Compile(p, "post.hlsl", "PS_Bright", "ps_5_0");         HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psBright));
         b = Compile(p, "post.hlsl", "PS_Blur", "ps_5_0");           HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psBlur));
         b = Compile(p, "post.hlsl", "PS_Composite", "ps_5_0");      HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psComp));
+        b = Compile(p, "post.hlsl", "PS_Sky", "ps_5_0");            HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psSky));
 
         D3D11_INPUT_ELEMENT_DESC el[] = {
             { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 0,  D3D11_INPUT_PER_VERTEX_DATA, 0 },
@@ -149,7 +151,7 @@ struct App {
 
         auto cb = [&](UINT size, ComPtr<ID3D11Buffer>& out) {
             D3D11_BUFFER_DESC d{}; d.ByteWidth = size; d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_CONSTANT_BUFFER; HR(dev->CreateBuffer(&d, nullptr, &out)); };
-        cb(sizeof(FrameCB), cbFrame); cb(sizeof(ObjectCB), cbObject); cb(sizeof(PostCB), cbPost);
+        cb(sizeof(FrameCB), cbFrame); cb(sizeof(ObjectCB), cbObject); cb(sizeof(PostCB), cbPost); cb(sizeof(SkyCB), cbSky);
 
         // fixed-function state: clockwise-front, back-face culling (matches the winding the mesh builder emits)
         D3D11_RASTERIZER_DESC rd{}; rd.FillMode = D3D11_FILL_SOLID; rd.CullMode = D3D11_CULL_BACK; rd.FrontCounterClockwise = FALSE; rd.DepthClipEnable = TRUE;
@@ -260,7 +262,11 @@ struct App {
         FrameCB f{}; XMStoreFloat4x4(&f.viewProj, vp); XMStoreFloat4x4(&f.view, view);
         f.cam[0] = eye.x; f.cam[1] = eye.y; f.cam[2] = eye.z; f.cam[3] = T;
         memcpy(f.lightPos, lp, sizeof f.lightPos); memcpy(f.lightCol, lc, sizeof f.lightCol);
-        f.fogColor[0] = 0.045f; f.fogColor[1] = 0.085f; f.fogColor[2] = 0.1f; f.fogColor[3] = S.fog; f.fogRange[0] = roomOpen ? 18.f : 6.f; f.fogRange[1] = roomOpen ? 170.f : 42.f;
+        if (roomOpen) {
+            const px::RoomMood& m = room.mood;
+            f.fogColor[0] = m.haze.x; f.fogColor[1] = m.haze.y; f.fogColor[2] = m.haze.z; f.fogColor[3] = S.fog > 0 ? m.hazeAmount : 0.f;
+            f.fogRange[0] = m.hazeStart; f.fogRange[1] = std::max(m.hazeStart + 1.f, m.hazeEnd);
+        } else { f.fogColor[0] = 0.045f; f.fogColor[1] = 0.085f; f.fogColor[2] = 0.1f; f.fogColor[3] = S.fog; f.fogRange[0] = 6; f.fogRange[1] = 42; }
         ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &f, 0, 0);
     }
     void DrawMat(int m, const XMMATRIX& world) {
@@ -309,7 +315,7 @@ struct App {
         float pulse = 0.9f + 0.12f * std::sin(T * 3.f);
         px::V3 flP = sim.bolts.empty() ? sim.flashP : sim.bolts.back().p; float flK = sim.bolts.empty() ? std::max(0.f, sim.flashT) / 0.3f * 1.6f : 1.5f;
         struct L { px::V3 p, c; float r, k; } L4[4] = {
-            { roomOpen ? px::V3{ 0, 7.f, 0 } : px::V3{ 0, 2.0f, 10 }, roomOpen ? px::V3{ 0.9f, 0.75f, 0.55f } : px::V3{ 1, 0.5f, 0.15f }, roomOpen ? 22.f : 9.f, roomOpen ? 0.55f : pulse },
+            { roomOpen ? px::V3{ 0, 7.f, 0 } : px::V3{ 0, 2.0f, 10 }, roomOpen ? px::V3{ 0.9f, 0.75f, 0.55f } : px::V3{ 1, 0.5f, 0.15f }, roomOpen ? 22.f : 9.f, roomOpen ? 0.f : pulse },
             { { 3 * std::sin(T * 0.6f), 2.5f, 18 + 3 * std::cos(T * 0.6f) }, { 0.1f, 0.55f, 0.8f }, 9, roomOpen ? 0.f : 1.f },
             { flP, { 1, 0.7f, 0.35f }, 8, flK },
             { eye, { 0.25f, 0.3f, 0.32f }, 5, 0.6f } };
@@ -325,7 +331,10 @@ struct App {
         ID3D11SamplerState* ss[3] = { sampWrap.Get(), sampClamp.Get(), sampClamp.Get() }; ctx->PSSetSamplers(0, 3, ss);
         ID3D11ShaderResourceView* none[3] = {}; ctx->PSSetShaderResources(0, 3, none);
         ctx->OMSetRenderTargets(1, rtScene.rtv.GetAddressOf(), dsv.Get()); SetViewport(iw, ih);
-        const float black[4] = { 0, 0, 0, 1 }; ctx->ClearRenderTargetView(rtScene.rtv.Get(), black); ctx->ClearDepthStencilView(dsv.Get(), D3D11_CLEAR_DEPTH, 1.f, 0);
+        float clearC[4] = { 0, 0, 0, 1 };
+        if (roomOpen) { clearC[0] = room.mood.haze.x; clearC[1] = room.mood.haze.y; clearC[2] = room.mood.haze.z; }
+        ctx->ClearRenderTargetView(rtScene.rtv.Get(), clearC); ctx->ClearDepthStencilView(dsv.Get(), D3D11_CLEAR_DEPTH, 1.f, 0);
+        if (roomOpen && room.mood.sky != px::SKY_NONE) DrawSky(f, r, u, asp);
         ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->RSSetState(rsCull.Get());
         ctx->IASetInputLayout(layout.Get()); ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         ctx->VSSetShader(vsWorld.Get(), nullptr, 0); ctx->PSSetShader(psWorld.Get(), nullptr, 0);
@@ -355,6 +364,25 @@ struct App {
             quad({ 0, 2.2f, 27.6f }, 3.4f, { 0.1f, 0.7f, 1 }, 0.3f);            // door halo
         }
         for (auto& b : sim.bolts) quad(b.p, 0.75f, { 1, 0.7f, 0.35f }, 1.f);
+        if (roomOpen) {
+            for (auto& L : room.lights) if (L.glow) { quad(L.p, 0.25f + 0.2f * L.intensity, L.color, 0.9f); quad(L.p, 0.9f + 0.5f * L.intensity, L.color, 0.18f); }
+            const px::RoomMood& m = room.mood; float tw = T;
+            auto streak = [&](px::V3 c, px::V3 dir, float len, float w, px::V3 col, float a) {
+                if (qv.size() >= (size_t)MAXQ * 4) return;
+                px::V3 ax = px::normalize(dir), side = px::normalize(px::cross(ax, eye - c)) * w, e = ax * (len * 0.5f);
+                px::V3 P[4] = { c - e - side, c - e + side, c + e + side, c + e - side }; const float uv[4][2] = { { 0.5f, 1 }, { 0.5f, 1 }, { 0.5f, 0 }, { 0.5f, 0 } };
+                for (int k = 0; k < 4; k++) qv.push_back({ { P[k].x, P[k].y, P[k].z }, { 0, 0, 0 }, { uv[k][0], uv[k][1] }, { col.x, col.y, col.z, a } });
+            };
+            for (auto& ap : amb) {
+                switch (m.particles) {
+                case px::PT_RAIN: streak(ap.p, ap.v, 0.55f, 0.012f, m.particleColor, 0.35f); break;
+                case px::PT_EMBERS: quad(ap.p, ap.size, m.particleColor, 0.6f + 0.4f * std::sin(tw * 9 + ap.phase)); break;
+                case px::PT_SPORES: quad(ap.p, ap.size, m.particleColor, 0.55f + 0.25f * std::sin(tw * 2 + ap.phase)); break;
+                case px::PT_SNOW: quad(ap.p, ap.size, m.particleColor, 0.75f); break;
+                default: quad(ap.p, ap.size, m.particleColor, 0.25f + 0.2f * std::sin(tw * 1.5f + ap.phase)); break;
+                }
+            }
+        }
         for (auto& p : sim.parts) {
             if (p.mote && roomOpen) continue;
             float k = p.mote ? (0.7f + 0.3f * std::sin(T * 2.f + p.ph)) : std::min(1.f, p.life / p.max * 1.5f);
@@ -380,7 +408,7 @@ struct App {
 
         // ---- 3) composite into the window
         ID3D11SamplerState* sc = S.nearest ? sampPoint.Get() : sampClamp.Get(); ctx->PSSetSamplers(2, 1, &sc);
-        PostCB c{}; c.p1[0] = S.bloomOn ? S.bloom : 0.f; c.p1[1] = S.dither ? 1.f : 0.f; c.p1[2] = 1.12f; c.p1[3] = 0.8f; c.p2[0] = (float)iw; c.p2[1] = (float)ih;
+        PostCB c{}; c.p1[0] = S.bloomOn ? (roomOpen ? room.mood.bloom : S.bloom) : 0.f; c.p1[1] = S.dither ? 1.f : 0.f; c.p1[2] = 1.12f; c.p1[3] = 0.8f; c.p2[0] = (float)iw; c.p2[1] = (float)ih;
         PostPass(nullptr, psComp.Get(), rtScene.srv.Get(), rtB0.srv.Get(), rtC0.srv.Get(), c);
         ID3D11ShaderResourceView* none2[3] = {}; ctx->PSSetShaderResources(0, 3, none2);
 
@@ -439,6 +467,7 @@ struct App {
         if (meta.save(modelPath + ".meta")) SetStatus("Saved"); else SetStatus("Could not save settings");
     }
     void Tick(float dt) {
+        UpdateAmbient(dt);
         anim.update(dt);
         if (statusTimer > 0) statusTimer -= dt;
         if (roomOpen && roomDirty && !terrainPreview && (roomAutosave += dt) > 30.f) { roomAutosave = 0; if (room.save(roomPath)) { roomDirty = false; SetStatus("Autosaved room " + room.name); } }
@@ -496,7 +525,7 @@ struct App {
         c[ImGuiCol_Text] = ImVec4(0.78f, 0.96f, 0.94f, 1);
     }
     // ------------------------------------------------------------------ editor (docked engine UI)
-    enum class Sel { None, World, Player, Model, Node, Asset };
+    enum class Sel { None, World, Player, Model, Node, Asset, Light };
     Sel sel = Sel::Model; int selNode = -1; std::string selAsset;
     bool playing = false, pausedGame = false;
     px::Camera edCam;                         // editor fly camera (separate from the player)
@@ -545,6 +574,7 @@ struct App {
         ImGui::DockBuilderDockWindow("Inventory", leftBottom);
         ImGui::DockBuilderDockWindow("Inspector", right);
         ImGui::DockBuilderDockWindow("Terrain", right);
+        ImGui::DockBuilderDockWindow("Room mood", right);
         ImGui::DockBuilderDockWindow("Assets", bottom); ImGui::DockBuilderDockWindow("Animation", bottom); ImGui::DockBuilderDockWindow("Console", bottom);
         ImGui::DockBuilderDockWindow("Viewport", center);
         ImGui::DockBuilderFinish(dock);
@@ -577,6 +607,7 @@ struct App {
             ImGui::MenuItem("Assets", nullptr, &showAssets); ImGui::MenuItem("Animation", nullptr, &showAnim); ImGui::MenuItem("Console", nullptr, &showConsole);
             ImGui::MenuItem("Inventory", nullptr, &showInv);
             ImGui::MenuItem("Terrain", nullptr, &showTerrain);
+            ImGui::MenuItem("Room mood", nullptr, &showMood);
             ImGui::MenuItem("Show viewmodel while editing", nullptr, &showViewmodel);
             if (ImGui::BeginMenu("UI size")) {
                 for (float sc : { 1.f, 1.25f, 1.5f, 1.75f, 2.f }) { char b[16]; snprintf(b, sizeof b, "%d%%", (int)(sc * 100 + 0.5f)); if (ImGui::MenuItem(b, nullptr, std::fabs(uiScale - sc) < 0.01f)) { uiScale = sc; SaveEditorSettings(); } }
@@ -612,6 +643,15 @@ struct App {
         if (!ImGui::Begin("Hierarchy", &showHier)) { ImGui::End(); return; }
         auto leaf = ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen | ImGuiTreeNodeFlags_SpanAvailWidth;
         ImGui::TreeNodeEx("##room", leaf | (sel == Sel::World ? ImGuiTreeNodeFlags_Selected : 0), "%s", roomOpen ? ("Room: " + room.name + (roomDirty ? " *" : "")).c_str() : "Room (demo)"); if (ImGui::IsItemClicked()) sel = Sel::World;
+        if (roomOpen && !room.lights.empty() && ImGui::TreeNodeEx("##lights", ImGuiTreeNodeFlags_SpanAvailWidth, "Lights (%zu)", room.lights.size())) {
+            for (int i = 0; i < (int)room.lights.size(); i++) {
+                const px::V3& c = room.lights[i].color;
+                ImGui::ColorButton("##c", ImVec4(c.x, c.y, c.z, 1), ImGuiColorEditFlags_NoTooltip, ImVec2(10, 10)); ImGui::SameLine();
+                ImGui::TreeNodeEx((void*)(intptr_t)(1000 + i), leaf | (sel == Sel::Light && selLight == i ? ImGuiTreeNodeFlags_Selected : 0), "Light %d", i + 1);
+                if (ImGui::IsItemClicked()) { sel = Sel::Light; selLight = i; }
+            }
+            ImGui::TreePop();
+        }
         bool open = ImGui::TreeNodeEx("Player", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth | (sel == Sel::Player ? ImGuiTreeNodeFlags_Selected : 0));
         if (ImGui::IsItemClicked()) sel = Sel::Player;
         if (open) {
@@ -666,6 +706,8 @@ struct App {
             int ri = S.res == 240 ? 0 : S.res == 360 ? 1 : S.res == 480 ? 2 : S.res == 720 ? 3 : 4; const char* rs[] = { "240p", "360p", "480p (Wii)", "720p", "Native" };
             if (ImGui::Combo("Internal resolution", &ri, rs, 5)) { const int t[] = { 240, 360, 480, 720, 0 }; S.res = t[ri]; }
             ImGui::Checkbox("6-bit dither", &S.dither); ImGui::Checkbox("Sharp upscale", &S.nearest); ImGui::Checkbox("Dynamic lights", &S.dyn);
+        } else if (sel == Sel::Light && roomOpen) {
+            LightInspector();
         } else if (sel == Sel::Player) {
             const px::Camera& c = cam;
             ImGui::SeparatorText("Player");
@@ -851,6 +893,7 @@ struct App {
         if (showConsole) ConsolePanel();
         if (showInv) InventoryPanel();
         if (showTerrain) TerrainPanel();
+        if (showMood) MoodPanel();
         NewRoomWindow();
         if (!playing && !roomOpen) FlyCam(io.DeltaTime);
     }
@@ -930,17 +973,28 @@ struct App {
         else SetStatus("Could not save room " + FileName(roomPath));
     }
     void CloseRoom() { TerrainCancel(); if (roomDirty) SaveRoom(); roomOpen = false; chunks.clear(); SetStatus("Back to the demo room"); }
-    void RebuildRoomMesh() {   // (re)build every dirty chunk
+    int chunksPending = 0;
+    void RebuildRoomMesh() {   // bake dirty chunks, nearest to the camera first, ~10 ms per frame so nothing freezes
         if (roomMeshDirty) {
             roomMeshDirty = false;
             ncx = (room.sx + CS - 1) / CS; ncy = (room.sy + CS - 1) / CS; ncz = (room.sz + CS - 1) / CS;
             chunks.clear(); chunks.resize((size_t)ncx * ncy * ncz);
         }
-        std::vector<px::SubMesh> subs;
+        px::V3 cp = ActiveCam().p;
+        std::vector<std::pair<float, int>> todo;
         for (int cy = 0; cy < ncy; cy++) for (int cz = 0; cz < ncz; cz++) for (int cx = 0; cx < ncx; cx++) {
-            Chunk& c = chunks[((size_t)cy * ncz + cz) * ncx + cx];
-            if (!c.dirty) continue;
-            c.dirty = false; c.subs.clear();
+            int i = (cy * ncz + cz) * ncx + cx; if (!chunks[i].dirty) continue;
+            px::V3 c{ room.ox + (cx + 0.5f) * CS, room.oy + (cy + 0.5f) * CS, room.oz + (cz + 0.5f) * CS };
+            todo.push_back({ px::length(c - cp), i });
+        }
+        chunksPending = (int)todo.size();
+        if (todo.empty()) return;
+        std::sort(todo.begin(), todo.end());
+        LARGE_INTEGER f0, t0, t1; QueryPerformanceFrequency(&f0); QueryPerformanceCounter(&t0);
+        std::vector<px::SubMesh> subs;
+        for (auto& td : todo) {
+            int i = td.second, cx = i % ncx, cz = (i / ncx) % ncz, cy = i / (ncx * ncz);
+            Chunk& c = chunks[i]; c.dirty = false; c.subs.clear(); chunksPending--;
             int x0 = room.ox + cx * CS, y0 = room.oy + cy * CS, z0 = room.oz + cz * CS;
             room.buildMeshesBox(x0, y0, z0, x0 + CS, y0 + CS, z0 + CS, subs);
             for (auto& sm : subs) {
@@ -951,6 +1005,73 @@ struct App {
                 d.ByteWidth = (UINT)(sm.mesh.i.size() * 4); d.BindFlags = D3D11_BIND_INDEX_BUFFER; sdt.pSysMem = sm.mesh.i.data(); HR(dev->CreateBuffer(&d, &sdt, &g.g.ib));
                 c.subs.push_back(std::move(g));
             }
+            QueryPerformanceCounter(&t1);
+            if ((double)(t1.QuadPart - t0.QuadPart) / f0.QuadPart > 0.010) break;
+        }
+    }
+    void MarkSphere(px::V3 c, float r) {   // re-bake every chunk a light can reach
+        if (roomMeshDirty || chunks.empty()) return;
+        for (int cy = 0; cy < ncy; cy++) for (int cz = 0; cz < ncz; cz++) for (int cx = 0; cx < ncx; cx++) {
+            px::V3 mn{ (float)(room.ox + cx * CS), (float)(room.oy + cy * CS), (float)(room.oz + cz * CS) };
+            float dx = std::max(mn.x - c.x, std::max(0.f, c.x - (mn.x + CS))), dy = std::max(mn.y - c.y, std::max(0.f, c.y - (mn.y + CS))), dz = std::max(mn.z - c.z, std::max(0.f, c.z - (mn.z + CS)));
+            if (dx * dx + dy * dy + dz * dz <= r * r) chunks[((size_t)cy * ncz + cz) * ncx + cx].dirty = true;
+        }
+    }
+    void Rebake() { if (!chunks.empty()) for (auto& c : chunks) c.dirty = true; }   // keeps the old meshes visible while re-baking
+    void DrawSky(px::V3 f, px::V3 r, px::V3 u, float asp) {
+        const px::RoomMood& m = room.mood; SkyCB k{};
+        k.f[0] = f.x; k.f[1] = f.y; k.f[2] = f.z; k.r[0] = r.x; k.r[1] = r.y; k.r[2] = r.z; k.u[0] = u.x; k.u[1] = u.y; k.u[2] = u.z;
+        k.p[0] = std::tan(XMConvertToRadians(30.f)); k.p[1] = asp; k.p[2] = (float)m.sky; k.p[3] = T;
+        k.top[0] = m.skyTop.x; k.top[1] = m.skyTop.y; k.top[2] = m.skyTop.z; k.hor[0] = m.skyHorizon.x; k.hor[1] = m.skyHorizon.y; k.hor[2] = m.skyHorizon.z;
+        px::V3 sd = px::sunDirection(m); k.sunDir[0] = sd.x; k.sunDir[1] = sd.y; k.sunDir[2] = sd.z; k.sunDir[3] = m.sun ? 1.f : 0.f;
+        k.sunCol[0] = m.sunColor.x * m.sunStrength; k.sunCol[1] = m.sunColor.y * m.sunStrength; k.sunCol[2] = m.sunColor.z * m.sunStrength;
+        ctx->UpdateSubresource(cbSky.Get(), 0, nullptr, &k, 0, 0);
+        ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->RSSetState(rsNoCull.Get());
+        ctx->IASetInputLayout(nullptr); ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        ctx->VSSetShader(vsFull.Get(), nullptr, 0); ctx->PSSetShader(psSky.Get(), nullptr, 0);
+        ctx->PSSetConstantBuffers(3, 1, cbSky.GetAddressOf()); ctx->Draw(3, 0);
+    }
+
+    // ambient particles: dust, spores, snow, embers or rain in a box that travels with the camera
+    struct AmbP { px::V3 p, v; float size, phase; };
+    std::vector<AmbP> amb; uint32_t ambRng = 12345;
+    float ARand(float a, float b) { ambRng ^= ambRng << 13; ambRng ^= ambRng >> 17; ambRng ^= ambRng << 5; return a + (ambRng & 0xFFFFFF) / 16777216.f * (b - a); }
+    bool OpenSky(px::V3 p) { int x = (int)std::floor(p.x), z = (int)std::floor(p.z); for (int y = (int)std::floor(p.y) + 1; y < room.oy + room.sy; y++) if (room.solid(x, y, z)) return false; return true; }
+    void SpawnAmb(AmbP& a, px::V3 c, bool top) {
+        const px::RoomMood& m = room.mood; const float R = 16.f;
+        bool ok = false;
+        for (int tries = 0; tries < 6 && !ok; tries++) {
+            a.p = { c.x + ARand(-R, R), top ? c.y + ARand(6.f, 11.f) : c.y + ARand(-8.f, 10.f), c.z + ARand(-R, R) };
+            if ((m.particles == px::PT_RAIN || m.particles == px::PT_SNOW) && !OpenSky(a.p)) continue;   // no rain or snow indoors
+            ok = !room.solid((int)std::floor(a.p.x), (int)std::floor(a.p.y), (int)std::floor(a.p.z));
+        }
+        if (!ok) a.p.y = c.y - 50.f;   // nowhere free this frame: park it, it tries again next frame
+        a.phase = ARand(0, 6.28f);
+        switch (m.particles) {
+        case px::PT_RAIN: a.v = { 1.2f, ARand(-16.f, -13.f), 0.6f }; a.size = 0.01f; break;
+        case px::PT_SNOW: a.v = { 0, ARand(-1.6f, -0.9f), 0 }; a.size = ARand(0.03f, 0.06f); break;
+        case px::PT_EMBERS: a.v = { ARand(-0.3f, 0.3f), ARand(0.6f, 1.6f), ARand(-0.3f, 0.3f) }; a.size = ARand(0.03f, 0.06f); break;
+        case px::PT_SPORES: a.v = { ARand(-0.1f, 0.1f), ARand(0.15f, 0.4f), ARand(-0.1f, 0.1f) }; a.size = ARand(0.04f, 0.08f); break;
+        default: a.v = { ARand(-0.06f, 0.06f), ARand(-0.03f, 0.05f), ARand(-0.06f, 0.06f) }; a.size = ARand(0.02f, 0.045f); break;
+        }
+    }
+    void UpdateAmbient(float dt) {
+        if (!roomOpen || room.mood.particles == px::PT_NONE) { amb.clear(); return; }
+        const px::RoomMood& m = room.mood; px::V3 c = ActiveCam().p;
+        size_t want = (size_t)(std::max(0.f, std::min(1.f, m.particleAmount)) * (m.particles == px::PT_RAIN ? 1800 : 700));
+        while (amb.size() < want) { AmbP a; SpawnAmb(a, c, false); amb.push_back(a); }
+        if (amb.size() > want) amb.resize(want);
+        const float R = 16.f;
+        for (auto& a : amb) {
+            px::V3 v = a.v;
+            if (m.particles == px::PT_SNOW) v.x += std::sin(T * 0.9f + a.phase) * 0.35f, v.z += std::cos(T * 0.7f + a.phase) * 0.3f;
+            if (m.particles == px::PT_SPORES || m.particles == px::PT_DUST) v.x += std::sin(T * 0.5f + a.phase) * 0.05f;
+            a.p = a.p + v * dt;
+            // keep the cloud around the camera: wrap sideways, respawn when falling out or hitting a block
+            if (a.p.x < c.x - R) a.p.x += 2 * R; else if (a.p.x > c.x + R) a.p.x -= 2 * R;
+            if (a.p.z < c.z - R) a.p.z += 2 * R; else if (a.p.z > c.z + R) a.p.z -= 2 * R;
+            bool out = a.p.y < c.y - 9.f || a.p.y > c.y + 12.f || room.pointSolid(a.p);
+            if (out) SpawnAmb(a, c, v.y < 0);
         }
     }
     static bool BoxVisible(const XMMATRIX& vp, px::V3 mn, px::V3 mx) {   // all 8 corners outside one clip plane = hidden
@@ -1045,7 +1166,7 @@ struct App {
     int hotSel = 0, spinOffset = 0; bool flipPlace = false;
     px::Block PlannedBlock() const {   // what a right-click would place right now
         px::V3 f, r, u; edCam.basis(f, r, u);
-        px::Block b; b.type = hotbar[hotSel].type; b.size = hotbar[hotSel].size; b.mat = hotbar[hotSel].mat;
+        px::Block b; b.type = hotbar[hotSel].type == kLightSlot ? (uint8_t)px::B_AIR : hotbar[hotSel].type; b.size = hotbar[hotSel].size; b.mat = hotbar[hotSel].mat;
         b.rot = px::chooseRot(b.type, hover.nx, hover.ny, hover.nz, f, spinOffset, flipPlace);
         return b;
     }
@@ -1065,10 +1186,15 @@ struct App {
         if (!roomOpen || playing) return;
         px::V3 f, r, u; edCam.basis(f, r, u);
         hoverValid = room.raycast(edCam.eye(), f, kReach, hover);   // a block, or the room floor when it is empty there
-        if (!hoverValid || !captured) return;
+        FindAimLight();
         ImDrawList* dl = ImGui::GetWindowDrawList();
+        DrawLightGizmos(dl);
+        if (!hoverValid || !captured || aimLight >= 0) return;
         if (!hover.onGround) BoxLines(dl, { hover.x - 0.003f, hover.y - 0.003f, hover.z - 0.003f }, { hover.x + 1.003f, hover.y + 1.003f, hover.z + 1.003f }, IM_COL32(10, 12, 14, 235), 2.f);
-        if (hotbar[hotSel].type) {   // orange preview of the exact shape a right-click would place
+        if (hotbar[hotSel].type == kLightSlot) {   // where a light would go
+            int x = hover.x + hover.nx, y = hover.y + hover.ny, z = hover.z + hover.nz; ImVec2 sp;
+            if (Project({ x + 0.5f, y + 0.5f, z + 0.5f }, sp)) dl->AddCircle(sp, 9.f, IM_COL32(255, 160, 50, 200), 0, 2.f);
+        } else if (hotbar[hotSel].type) {   // orange preview of the exact shape a right-click would place
             int x = hover.x + hover.nx, y = hover.y + hover.ny, z = hover.z + hover.nz;
             if (room.inBounds(x, y, z) && room.get(x, y, z) == px::B_AIR) {
                 std::vector<px::Box3> bx; px::shapeBoxes(PlannedBlock(), x, y, z, bx);
@@ -1105,16 +1231,23 @@ struct App {
         // ---- blocks: left breaks, right places, middle picks; holding repeats like Minecraft
         bool L = down(VK_LBUTTON), R = down(VK_RBUTTON), M = down(VK_MBUTTON);
         breakCool -= dt; placeCool -= dt;
-        if (L && (!lHeld || breakCool <= 0) && hoverValid && !hover.onGround) {
+        if (L && !lHeld && aimLight >= 0) { DeleteLight(aimLight); aimLight = -1; breakCool = 0.22f; }
+        else if (L && (!lHeld || breakCool <= 0) && hoverValid && !hover.onGround) {
             std::vector<BlockEdit> g; EditBlock(g, hover.x, hover.y, hover.z, px::Block{}); Commit(g); breakCool = 0.22f;
         }
-        if (R && (!rHeld || placeCool <= 0) && hoverValid && hotbar[hotSel].type != px::B_AIR) {
+        if (R && !rHeld && hoverValid && hotbar[hotSel].type == kLightSlot) {
+            int x = hover.x + hover.nx, y = hover.y + hover.ny, z = hover.z + hover.nz;
+            if (room.inBounds(x, y, z) && room.get(x, y, z) == px::B_AIR) PlaceLight({ x + 0.5f, y + 0.5f, z + 0.5f }, hotbar[hotSel].size);
+            placeCool = 0.22f;
+        }
+        else if (R && (!rHeld || placeCool <= 0) && hoverValid && hotbar[hotSel].type != px::B_AIR && hotbar[hotSel].type != kLightSlot) {
             int x = hover.x + hover.nx, y = hover.y + hover.ny, z = hover.z + hover.nz;
             px::Block nb = PlannedBlock();
             if (room.get(x, y, z) == px::B_AIR && !OverlapsBuilder(nb, x, y, z)) { std::vector<BlockEdit> g; EditBlock(g, x, y, z, nb); Commit(g); }
             placeCool = 0.22f;
         }
-        if (M && !mHeld && hoverValid && !hover.onGround) {
+        if (M && !mHeld && aimLight >= 0) { sel = Sel::Light; selLight = aimLight; }
+        else if (M && !mHeld && hoverValid && !hover.onGround) {
             px::Block b = room.block(hover.x, hover.y, hover.z); int found = -1;
             for (int i = 0; i < 9; i++) if (hotbar[i].type == b.type && hotbar[i].size == b.size && hotbar[i].mat == b.mat) { found = i; break; }
             if (found >= 0) hotSel = found; else hotbar[hotSel] = { b.type, b.size, b.mat };
@@ -1130,11 +1263,13 @@ struct App {
     }
     static const char* BlockName(uint8_t b) { return b ? px::shapeInfo(b).name : ""; }
     std::string SlotLabel(const Slot& sl) const {
+        if (sl.type == kLightSlot) { int n; const LightPreset* P = LightPresets(n); return std::string("Light: ") + P[std::min((int)sl.size, n - 1)].name; }
         const px::ShapeInfo& si = px::shapeInfo(sl.type); std::string s = std::string(px::materialInfo(sl.mat).name) + " " + si.name;
         if (si.mn != si.mx) { char b[64]; if (si.sizeDiv) snprintf(b, sizeof b, "  %s %d/%d", si.sizeWhat, sl.size, si.sizeDiv); else snprintf(b, sizeof b, "  %d %s", sl.size, si.sizeWhat); s += b; }
         return s;
     }
     void ChangeSize(int d) {
+        if (hotbar[hotSel].type == kLightSlot) return;
         Slot& sl = hotbar[hotSel]; const px::ShapeInfo& si = px::shapeInfo(sl.type);
         int v = std::max((int)si.mn, std::min((int)si.mx, sl.size + d)); sl.size = (uint8_t)v;
     }
@@ -1144,7 +1279,10 @@ struct App {
         for (int i = 0; i < 9; i++) {
             ImVec2 a(o.x + i * (s + gap), o.y), b(a.x + s, a.y + s);
             dl->AddRectFilled(a, b, hotbar[i].type ? IM_COL32(52, 62, 68, 230) : IM_COL32(20, 40, 46, 200), 4);
-            if (hotbar[i].type) {   // tiny side-view icon of the shape
+            if (hotbar[i].type == kLightSlot) {
+                int n; const LightPreset* P = LightPresets(n); px::V3 c = P[std::min((int)hotbar[i].size, n - 1)].color;
+                ImVec2 m((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f); dl->AddCircleFilled(m, s * 0.3f, IM_COL32((int)(c.x * 255), (int)(c.y * 255), (int)(c.z * 255), 90)); dl->AddCircleFilled(m, s * 0.15f, IM_COL32((int)(c.x * 255), (int)(c.y * 255), (int)(c.z * 255), 255));
+            } else if (hotbar[i].type) {   // tiny side-view icon of the shape
                 std::vector<px::Box3> bx; px::Block ib; ib.type = hotbar[i].type; ib.size = hotbar[i].size; ib.rot = px::makeRot(2, 1); px::shapeBoxes(ib, 0, 0, 0, bx);
                 float pad = 8, sz = s - 2 * pad;
                 const float* sw = px::materialInfo(hotbar[i].mat).swatch; ImU32 col = IM_COL32((int)(sw[0] * 255), (int)(sw[1] * 255), (int)(sw[2] * 255), 255);
@@ -1199,6 +1337,22 @@ struct App {
                 ImGui::Separator();
                 if (!roomOpen) { ImGui::TextWrapped("Open or make a room to build: File > New room."); if (ImGui::Button("New room")) NewRoom(); }
                 else ImGui::TextDisabled("Click a shape to put it in hotbar slot %d.\nClick the viewport to build: right-click place,\nleft-click break, R rotate, F flip, +/- size,\ndouble-tap Space to fly, E for the mouse.", hotSel + 1);
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Lights")) {
+                int n; const LightPreset* P = LightPresets(n);
+                float avail = ImGui::GetContentRegionAvail().x; int cols = std::max(1, (int)(avail / 104.f)), col = 0;
+                for (int i = 0; i < n; i++) {
+                    ImGui::PushID(200 + i);
+                    bool on = hotbar[hotSel].type == kLightSlot && hotbar[hotSel].size == i;
+                    ImGui::PushStyleColor(ImGuiCol_Button, on ? ImVec4(0.95f, 0.5f, 0.12f, 0.85f) : ImVec4(P[i].color.x * 0.35f, P[i].color.y * 0.35f, P[i].color.z * 0.35f, 1));
+                    if (ImGui::Button(P[i].name, ImVec2(98, 40))) hotbar[hotSel] = { kLightSlot, (uint8_t)i, 0 };
+                    ImGui::PopStyleColor(); ImGui::PopID();
+                    if (++col < cols) ImGui::SameLine(); else col = 0;
+                }
+                if (col) ImGui::NewLine();
+                ImGui::TextDisabled("Click one to put it in hotbar slot %d.\nRight-click places it, left-click on a light removes it,\nmiddle-click selects it to edit in the Inspector.", hotSel + 1);
+                if (roomOpen) ImGui::Text("%zu lights in this room", room.lights.size());
                 ImGui::EndTabItem();
             }
             if (ImGui::BeginTabItem("Objects")) { ImGui::TextWrapped("Your FBX models, doors, pickups and spawns go here (room editor step 6)."); ImGui::EndTabItem(); }
@@ -1306,6 +1460,112 @@ struct App {
             if (ImGui::Button("Cancel", ImVec2(-1, 30))) TerrainCancel();
             ImGui::TextDisabled("Previewing: change the sliders and watch the room update.");
         }
+        ImGui::End();
+    }
+
+    // ------------------------------------------------------------------ lights + room mood (editor)
+    struct LightPreset { const char* name; px::V3 color; float intensity, radius; };
+    static const LightPreset* LightPresets(int& n) {
+        static const LightPreset P[] = { { "Warm lamp", { 1, 0.78f, 0.5f }, 1.3f, 8 }, { "Cool lamp", { 0.62f, 0.82f, 1 }, 1.3f, 8 }, { "Phazon blue", { 0.25f, 0.55f, 1 }, 1.8f, 7 },
+            { "Lava orange", { 1, 0.45f, 0.12f }, 1.6f, 7 }, { "Chozo gold", { 1, 0.84f, 0.45f }, 1.4f, 9 }, { "Spore green", { 0.45f, 1, 0.55f }, 1.4f, 6 },
+            { "Bright white", { 1, 1, 1 }, 1.6f, 12 }, { "Red alarm", { 1, 0.15f, 0.1f }, 1.6f, 7 } };
+        n = (int)(sizeof(P) / sizeof(P[0])); return P;
+    }
+    static constexpr uint8_t kLightSlot = 255;
+    int aimLight = -1, selLight = -1; px::V3 lightEditOld{ 0, 0, 0 }; float lightEditOldR = 0;
+    bool Project(px::V3 p, ImVec2& out) const {
+        XMVECTOR c = XMVector4Transform(XMVectorSet(p.x, p.y, p.z, 1), edView * edProj); float w = XMVectorGetW(c);
+        if (w < 0.1f) return false;
+        out = ImVec2(viewMin.x + (XMVectorGetX(c) / w * 0.5f + 0.5f) * (viewMax.x - viewMin.x), viewMin.y + (0.5f - XMVectorGetY(c) / w * 0.5f) * (viewMax.y - viewMin.y));
+        return true;
+    }
+    void FindAimLight() {   // the light under the crosshair (closer than the block behind it)
+        aimLight = -1; if (!roomOpen || playing) return;
+        px::V3 f, r, u; edCam.basis(f, r, u); px::V3 o = edCam.eye(); float best = hoverValid ? hover.t : kReach;
+        for (int i = 0; i < (int)room.lights.size(); i++) {
+            px::V3 d = room.lights[i].p - o; float t = px::dot(d, f); if (t < 0 || t > best) continue;
+            px::V3 closest = o + f * t; if (px::length(room.lights[i].p - closest) < 0.4f) { best = t; aimLight = i; }
+        }
+    }
+    void DrawLightGizmos(ImDrawList* dl) {
+        if (!roomOpen || playing) return;
+        px::V3 e = edCam.eye();
+        for (int i = 0; i < (int)room.lights.size(); i++) {
+            const px::RoomLight& L = room.lights[i]; if (px::length(L.p - e) > 45.f) continue;
+            ImVec2 sp; if (!Project(L.p, sp)) continue;
+            ImU32 col = IM_COL32((int)(std::min(1.f, L.color.x) * 255), (int)(std::min(1.f, L.color.y) * 255), (int)(std::min(1.f, L.color.z) * 255), 255);
+            dl->AddCircleFilled(sp, 5.f, col); dl->AddCircle(sp, 7.f, IM_COL32(10, 12, 14, 220), 0, 1.5f);
+            if (i == aimLight || (sel == Sel::Light && i == selLight)) dl->AddCircle(sp, 12.f, IM_COL32(255, 170, 60, 255), 0, 2.f);
+        }
+    }
+    void PlaceLight(px::V3 p, int preset) {
+        int n; const LightPreset* P = LightPresets(n); const LightPreset& lp = P[std::max(0, std::min(n - 1, preset))];
+        px::RoomLight L; L.p = p; L.color = lp.color; L.intensity = lp.intensity; L.radius = lp.radius;
+        room.lights.push_back(L); MarkSphere(L.p, L.radius); roomDirty = true; roomAutosave = 0;
+    }
+    void DeleteLight(int i) {
+        if (i < 0 || i >= (int)room.lights.size()) return;
+        MarkSphere(room.lights[i].p, room.lights[i].radius); room.lights.erase(room.lights.begin() + i); roomDirty = true; roomAutosave = 0;
+        if (selLight == i) { selLight = -1; if (sel == Sel::Light) sel = Sel::World; } else if (selLight > i) selLight--;
+    }
+    void LightInspector() {
+        if (selLight < 0 || selLight >= (int)room.lights.size()) { ImGui::TextDisabled("No light selected."); return; }
+        px::RoomLight& L = room.lights[selLight];
+        ImGui::Text("Light %d", selLight + 1);
+        auto began = [&] { if (ImGui::IsItemActivated()) { lightEditOld = L.p; lightEditOldR = L.radius; } };
+        auto ended = [&] { if (ImGui::IsItemDeactivatedAfterEdit()) { MarkSphere(lightEditOld, lightEditOldR); MarkSphere(L.p, L.radius); roomDirty = true; } };
+        ImGui::DragFloat3("Position", &L.p.x, 0.05f); began(); ended();
+        ImGui::ColorEdit3("Colour", &L.color.x); began(); ended();
+        ImGui::SliderFloat("Brightness", &L.intensity, 0.f, 4.f); began(); ended();
+        ImGui::SliderFloat("Range", &L.radius, 1.f, 32.f, "%.0f blocks"); began(); ended();
+        if (ImGui::Checkbox("Casts shadows", &L.shadows)) { MarkSphere(L.p, L.radius); roomDirty = true; }
+        if (ImGui::Checkbox("Visible glow", &L.glow)) roomDirty = true;
+        if (ImGui::Button("Move here (to the camera)")) { MarkSphere(L.p, L.radius); L.p = edCam.eye(); MarkSphere(L.p, L.radius); roomDirty = true; }
+        ImGui::SameLine(); if (ImGui::Button("Delete")) DeleteLight(selLight);
+        ImGui::TextDisabled("Light is baked into the blocks; the area updates when you let go of a slider.");
+    }
+    bool showMood = true;
+    void MoodPanel() {
+        if (!ImGui::Begin("Room mood", &showMood)) { ImGui::End(); return; }
+        if (!roomOpen) { ImGui::TextWrapped("Make or open a room first (File > New room)."); ImGui::End(); return; }
+        px::RoomMood& m = room.mood; bool bake = false, ch = false;
+        auto rb = [&] { if (ImGui::IsItemDeactivatedAfterEdit()) bake = true; if (ImGui::IsItemEdited()) ch = true; };
+        static int preset = 0;
+        ImGui::SetNextItemWidth(-90); if (ImGui::Combo("Preset", &preset, px::kMoodNames, px::MP_COUNT)) { px::moodPreset(preset, m); bake = true; ch = true; }
+        if (ImGui::CollapsingHeader("Haze", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::ColorEdit3("Haze colour", &m.haze.x); rb();
+            ImGui::DragFloatRange2("Starts / full at", &m.hazeStart, &m.hazeEnd, 0.5f, 0.f, 600.f, "%.0f m", "%.0f m"); rb();
+            ImGui::SliderFloat("Haze strength", &m.hazeAmount, 0.f, 1.f); rb();
+        }
+        if (ImGui::CollapsingHeader("Light", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::ColorEdit3("Light from above", &m.skyAmbient.x); rb();
+            ImGui::ColorEdit3("Light from below", &m.groundAmbient.x); rb();
+            ImGui::SliderFloat("Ambient strength", &m.ambient, 0.f, 2.f); rb();
+            if (ImGui::Checkbox("Sun", &m.sun)) { bake = true; ch = true; }
+            if (m.sun) {
+                ImGui::SliderFloat("Sun height", &m.sunElev, 2.f, 90.f, "%.0f deg"); rb();
+                ImGui::SliderFloat("Sun direction", &m.sunAzim, 0.f, 360.f, "%.0f deg"); rb();
+                ImGui::ColorEdit3("Sun colour", &m.sunColor.x); rb();
+                ImGui::SliderFloat("Sun strength", &m.sunStrength, 0.f, 2.f); rb();
+            }
+            ImGui::SliderFloat("Glowing blocks light", &m.glowLight, 0.f, 3.f); rb();
+            ImGui::SliderFloat("Bloom", &m.bloom, 0.f, 2.f); rb();
+        }
+        if (ImGui::CollapsingHeader("Particles", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (ImGui::Combo("Type", &m.particles, px::kParticleNames, px::PT_COUNT)) { amb.clear(); ch = true; }
+            ImGui::SliderFloat("Amount", &m.particleAmount, 0.f, 1.f); rb();
+            ImGui::ColorEdit3("Particle colour", &m.particleColor.x); rb();
+        }
+        if (ImGui::CollapsingHeader("Sky", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (ImGui::Combo("Sky", &m.sky, px::kSkyNames, px::SKY_COUNT)) ch = true;
+            if (m.sky != px::SKY_NONE) { ImGui::ColorEdit3("Sky top", &m.skyTop.x); rb(); ImGui::ColorEdit3("Horizon", &m.skyHorizon.x); rb(); }
+            ImGui::TextDisabled("Tip: a horizon colour close to the haze colour blends the far distance into the sky.");
+        }
+        ImGui::Separator();
+        if (ImGui::Button("Re-bake lighting")) bake = true;
+        ImGui::SameLine(); if (chunksPending > 0) ImGui::TextDisabled("baking... %d chunks left", chunksPending); else ImGui::TextDisabled("lighting up to date");
+        if (bake) Rebake();
+        if (ch || bake) { roomDirty = true; roomAutosave = 0; }
         ImGui::End();
     }
 

@@ -129,6 +129,34 @@ int main() {
             std::vector<SubMesh> part; t.buildMeshesBox(cx, cy, cz, cx + 16, cy + 16, cz + 16, part); for (auto& s2 : part) ct += s2.mesh.i.size(); }
         CHECK(ct == wt && wt > 0, "16^3 chunk meshes add up to the whole room (%zu = %zu indices)", ct, wt);
     }
+    // ---- baked lighting: lights, shadows, glowing blocks, sun, saving
+    {
+        auto topLight = [](const Room& r, float x, float z) {   // brightness of the floor top near (x, z)
+            std::vector<SubMesh> subs; r.buildMeshes(subs); float best = -1, bd = 1e9f;
+            for (auto& sm : subs) for (auto& v : sm.mesh.v) if (v.n[1] > 0.5f && std::fabs(v.p[1]) < 1e-3f) { float d = std::fabs(v.p[0] - x) + std::fabs(v.p[2] - z); if (d < bd) { bd = d; best = (v.c[0] + v.c[1] + v.c[2]) / 3; } }
+            return best;
+        };
+        Room r; r.newFlat(12); r.mood.ambient = 0.05f; r.mood.glowLight = 0;
+        float dark = topLight(r, 0, 0);
+        r.lights.push_back({ { 0.5f, 2.5f, 0.5f }, { 1, 0.8f, 0.6f }, 1.5f, 8, true, true });
+        float lit = topLight(r, 0, 0), far = topLight(r, 7, 0);
+        CHECK(lit > dark + 0.5f && far < lit * 0.5f, "a light brightens the floor under it and fades with distance (%.2f -> %.2f, far %.2f)", dark, lit, far);
+        for (int y = 0; y < 4; y++) for (int z = -3; z <= 3; z++) r.set(2, y, z, (uint8_t)B_CUBE);
+        float shadowed = topLight(r, 4, 0), open_ = topLight(r, -3, 0);
+        CHECK(shadowed < open_ * 0.5f, "a wall casts a shadow (behind the wall %.2f, open side %.2f)", shadowed, open_);
+        r.lights[0].shadows = false;
+        CHECK(topLight(r, 4, 0) > shadowed + 0.1f, "lights with shadows off shine through");
+        Room g; g.newFlat(12); g.mood.ambient = 0.05f; float before = topLight(g, 2, 0);
+        Block lava; lava.type = B_CUBE; lava.mat = MAT_LAVA; g.set(0, -1, 0, lava);
+        float after = topLight(g, 1.5f, 0);
+        CHECK(after > before + 0.1f, "lava lights the floor around it (%.2f -> %.2f)", before, after);
+        Room sunny; sunny.newFlat(12); sunny.mood.ambient = 0.05f; sunny.mood.sun = true; sunny.mood.sunElev = 60;
+        float sunLit = topLight(sunny, 0, 0); for (int z = -12; z < 12; z++) for (int x = -12; x < 12; x++) sunny.set(x, 6, z, (uint8_t)B_CUBE);
+        CHECK(sunLit > 0.5f && topLight(sunny, 0, 0) < 0.2f, "sunlight lights the floor, and a roof blocks it");
+        moodPreset(MP_MAGMOOR, r.mood); r.name = "lit"; r.save("/tmp/lit.room"); Room r2; std::string e; r2.load("/tmp/lit.room", e);
+        CHECK(r2.lights.size() == 1 && std::fabs(r2.lights[0].intensity - 1.5f) < 1e-4f && !r2.lights[0].shadows && r2.mood.particles == PT_EMBERS && std::fabs(r2.mood.haze.x - 0.22f) < 1e-4f,
+              "lights and room mood survive save/load");
+    }
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
     return fails ? 1 : 0;
 }

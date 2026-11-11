@@ -46,11 +46,34 @@ struct Box3 { V3 mn, mx; };
 
 struct RayHit { int x, y, z; int nx, ny, nz; float t; bool onGround; };   // onGround: hit the floor plane, not a block
 
+// a placed light: baked into the blocks around it (with shadows), optionally drawn as a glow
+struct RoomLight { V3 p{ 0, 0, 0 }; V3 color{ 1, 0.78f, 0.5f }; float intensity = 1.3f, radius = 8; bool shadows = true, glow = true; };
+
+// the atmosphere of a room: haze, ambient light, sun, bloom, floating particles, sky
+enum Particles { PT_NONE, PT_DUST, PT_SPORES, PT_SNOW, PT_EMBERS, PT_RAIN, PT_COUNT };
+enum SkyType { SKY_NONE, SKY_GRADIENT, SKY_CLOUDS, SKY_STARS, SKY_COUNT };
+struct RoomMood {
+    V3 haze{ 0.045f, 0.085f, 0.10f }; float hazeStart = 18, hazeEnd = 170, hazeAmount = 0.85f;
+    V3 skyAmbient{ 0.74f, 0.80f, 0.82f }, groundAmbient{ 0.34f, 0.32f, 0.30f }; float ambient = 1.f;
+    bool sun = false; float sunElev = 50, sunAzim = 35; V3 sunColor{ 1, 0.94f, 0.82f }; float sunStrength = 0.9f;
+    float bloom = 0.85f, glowLight = 1.f;            // glowLight: how much lava / glowing blocks light their surroundings
+    int particles = PT_DUST; float particleAmount = 0.4f; V3 particleColor{ 0.6f, 0.85f, 0.8f };
+    int sky = SKY_NONE; V3 skyTop{ 0.03f, 0.06f, 0.09f }, skyHorizon{ 0.09f, 0.15f, 0.17f };
+};
+extern const char* const kParticleNames[PT_COUNT];
+extern const char* const kSkyNames[SKY_COUNT];
+enum MoodPreset { MP_DEFAULT, MP_TALLON_RAIN, MP_TALLON_SUN, MP_PHENDRANA, MP_MAGMOOR, MP_RUINS, MP_PHAZON, MP_STATION, MP_COUNT };
+extern const char* const kMoodNames[MP_COUNT];
+void moodPreset(int preset, RoomMood& m);
+V3 sunDirection(const RoomMood& m);   // pointing from the ground toward the sun
+
 struct Room {
     std::string name = "Untitled room";
     int sx = 64, sy = 32, sz = 64;          // size in blocks
     int ox = -32, oy = -1, oz = -32;        // world position of cell (0,0,0)'s minimum corner
     std::vector<uint8_t> cells, rots, sizes, mats;   // per cell: type, orientation, size, material
+    std::vector<RoomLight> lights;
+    RoomMood mood;
 
     void resize(int x, int y, int z, int oX, int oY, int oZ);
     void newFlat(int half = 16);                 // 64 x 32 x 64 with a (2*half)^2 metal floor (tests)
@@ -78,6 +101,8 @@ struct Room {
     void buildMeshesBox(int x0, int y0, int z0, int x1, int y1, int z1, std::vector<SubMesh>& out) const;   // cells in [x0,x1) etc. (chunks)
     void buildMesh(MeshData& out) const;                  // everything in one mesh (tests, tools)
     bool raycast(V3 origin, V3 dir, float maxT, RayHit& hit) const;
+    bool blocked(V3 from, V3 to, int skipX, int skipY, int skipZ) const;   // is anything between two points (ignoring one cell)?
+    V3 lightAt(V3 p, V3 n, float ao, int cx, int cy, int cz, const std::vector<std::pair<V3, int>>& glowers) const;   // baked light at a surface point
 
     // Moves an upright box (feet position, half width, height) by vel*dt against the blocks. stepUp lets it climb
     // small ledges (stairs, slopes) while on the ground. Zeroes the blocked parts of vel.
@@ -85,6 +110,7 @@ struct Room {
     bool boxFree(V3 feet, float halfW, float height) const;
 
 private:
+    bool rayCore(V3 o, V3 d, float maxT, RayHit& hit, int skx, int sky, int skz, bool ground) const;
     size_t idx(int x, int y, int z) const { return ((size_t)(y - oy) * sz + (z - oz)) * sx + (x - ox); }
 };
 

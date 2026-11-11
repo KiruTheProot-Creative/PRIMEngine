@@ -37,6 +37,33 @@ static const MaterialInfo kMats[MAT_COUNT] = {
 };
 const MaterialInfo& materialInfo(uint8_t m) { return kMats[m < MAT_COUNT ? m : 0]; }
 
+// ------------------------------------------------------------------ mood presets
+const char* const kParticleNames[PT_COUNT] = { "None", "Dust", "Spores", "Snow", "Embers", "Rain" };
+const char* const kSkyNames[SKY_COUNT] = { "None (haze colour)", "Gradient", "Clouds", "Stars" };
+const char* const kMoodNames[MP_COUNT] = { "Default", "Tallon rain", "Tallon sunny", "Phendrana snow", "Magmoor caverns", "Chozo ruins", "Phazon mines", "Space station" };
+void moodPreset(int preset, RoomMood& m) {
+    RoomMood d;
+    auto set = [&](V3 haze, float hs, float he, float ha, V3 sky, V3 gnd, bool sun, float el, float az, V3 sc, float ss, float bloom, int pt, float pa, V3 pc, int skyT, V3 top, V3 hor) {
+        d.haze = haze; d.hazeStart = hs; d.hazeEnd = he; d.hazeAmount = ha; d.skyAmbient = sky; d.groundAmbient = gnd; d.sun = sun; d.sunElev = el; d.sunAzim = az;
+        d.sunColor = sc; d.sunStrength = ss; d.bloom = bloom; d.particles = pt; d.particleAmount = pa; d.particleColor = pc; d.sky = skyT; d.skyTop = top; d.skyHorizon = hor;
+    };
+    switch (preset) {
+    case MP_TALLON_RAIN: set({ 0.33f, 0.38f, 0.36f }, 10, 90, 0.9f, { 0.55f, 0.62f, 0.60f }, { 0.20f, 0.24f, 0.18f }, false, 50, 35, { 1, 1, 1 }, 0, 0.7f, PT_RAIN, 0.7f, { 0.7f, 0.8f, 0.85f }, SKY_CLOUDS, { 0.25f, 0.30f, 0.32f }, { 0.38f, 0.43f, 0.42f }); break;
+    case MP_TALLON_SUN: set({ 0.55f, 0.68f, 0.75f }, 30, 220, 0.7f, { 0.45f, 0.52f, 0.60f }, { 0.22f, 0.20f, 0.14f }, true, 55, 40, { 1, 0.93f, 0.78f }, 1.0f, 0.8f, PT_SPORES, 0.25f, { 0.8f, 1, 0.6f }, SKY_CLOUDS, { 0.25f, 0.45f, 0.75f }, { 0.62f, 0.75f, 0.82f }); break;
+    case MP_PHENDRANA: set({ 0.62f, 0.70f, 0.80f }, 12, 120, 0.9f, { 0.70f, 0.78f, 0.90f }, { 0.40f, 0.45f, 0.55f }, true, 22, 210, { 0.9f, 0.85f, 1 }, 0.5f, 1.0f, PT_SNOW, 0.8f, { 1, 1, 1 }, SKY_CLOUDS, { 0.42f, 0.50f, 0.66f }, { 0.68f, 0.74f, 0.84f }); break;
+    case MP_MAGMOOR: set({ 0.22f, 0.08f, 0.04f }, 10, 110, 0.85f, { 0.22f, 0.12f, 0.09f }, { 0.30f, 0.12f, 0.06f }, false, 50, 35, { 1, 1, 1 }, 0, 1.2f, PT_EMBERS, 0.6f, { 1, 0.55f, 0.2f }, SKY_NONE, { 0, 0, 0 }, { 0, 0, 0 }); d.glowLight = 1.6f; break;
+    case MP_RUINS: set({ 0.62f, 0.55f, 0.42f }, 25, 200, 0.75f, { 0.55f, 0.52f, 0.46f }, { 0.30f, 0.25f, 0.18f }, true, 60, 120, { 1, 0.9f, 0.7f }, 1.0f, 0.8f, PT_DUST, 0.4f, { 0.9f, 0.8f, 0.6f }, SKY_GRADIENT, { 0.35f, 0.50f, 0.70f }, { 0.75f, 0.68f, 0.55f }); break;
+    case MP_PHAZON: set({ 0.02f, 0.05f, 0.12f }, 8, 80, 0.9f, { 0.10f, 0.14f, 0.25f }, { 0.05f, 0.06f, 0.10f }, false, 50, 35, { 1, 1, 1 }, 0, 1.3f, PT_SPORES, 0.5f, { 0.3f, 0.6f, 1 }, SKY_NONE, { 0, 0, 0 }, { 0, 0, 0 }); break;
+    case MP_STATION: set({ 0.03f, 0.04f, 0.06f }, 30, 260, 0.6f, { 0.40f, 0.44f, 0.50f }, { 0.18f, 0.20f, 0.24f }, true, 15, 300, { 0.95f, 0.95f, 1 }, 0.8f, 0.9f, PT_NONE, 0.f, { 1, 1, 1 }, SKY_STARS, { 0, 0, 0.02f }, { 0.03f, 0.04f, 0.08f }); break;
+    default: break;
+    }
+    m = d;
+}
+V3 sunDirection(const RoomMood& m) {
+    float el = m.sunElev * 0.0174533f, az = m.sunAzim * 0.0174533f;
+    return normalize({ std::cos(el) * std::sin(az), std::sin(el), std::cos(el) * std::cos(az) });
+}
+
 V3 dirVec(int d) {
     static const V3 D[6] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
     return D[d < 0 || d > 5 ? 2 : d];
@@ -255,7 +282,16 @@ static std::string quoted(const std::string& s) { std::string o = "\""; for (cha
 
 bool Room::save(const std::string& path) const {
     std::ofstream f(path, std::ios::trunc); if (!f) return false;
-    f << "PRIMROOM 3\n" << "name " << quoted(name) << "\n";
+    f << "PRIMROOM 4\n" << "name " << quoted(name) << "\n";
+    auto v3s = [](V3 v) { char b[64]; snprintf(b, sizeof b, "%g %g %g", v.x, v.y, v.z); return std::string(b); };
+    const RoomMood& m = mood;
+    f << "haze " << v3s(m.haze) << " " << m.hazeStart << " " << m.hazeEnd << " " << m.hazeAmount << "\n";
+    f << "ambient " << v3s(m.skyAmbient) << " " << v3s(m.groundAmbient) << " " << m.ambient << "\n";
+    f << "sun " << (m.sun ? 1 : 0) << " " << m.sunElev << " " << m.sunAzim << " " << v3s(m.sunColor) << " " << m.sunStrength << "\n";
+    f << "glow " << m.bloom << " " << m.glowLight << "\n";
+    f << "particles " << m.particles << " " << m.particleAmount << " " << v3s(m.particleColor) << "\n";
+    f << "sky " << m.sky << " " << v3s(m.skyTop) << " " << v3s(m.skyHorizon) << "\n";
+    for (auto& L : lights) f << "light " << v3s(L.p) << " " << v3s(L.color) << " " << L.intensity << " " << L.radius << " " << (L.shadows ? 1 : 0) << " " << (L.glow ? 1 : 0) << "\n";
     f << "size " << sx << " " << sy << " " << sz << "\norigin " << ox << " " << oy << " " << oz << "\ndata\n";
     size_t i = 0, runs = 0;
     while (i < cells.size()) {
@@ -270,7 +306,7 @@ bool Room::save(const std::string& path) const {
 bool Room::load(const std::string& path, std::string& err) {
     std::ifstream f(path); if (!f) { err = "cannot open file"; return false; }
     std::string magic; int ver = 0; f >> magic >> ver;
-    if (magic != "PRIMROOM" || ver < 1 || ver > 3) { err = "not a room file (or made by a newer PRIMEngine)"; return false; }
+    if (magic != "PRIMROOM" || ver < 1 || ver > 4) { err = "not a room file (or made by a newer PRIMEngine)"; return false; }
     Room r; std::string key;
     while (f >> key) {
         if (key == "name") {
@@ -281,6 +317,13 @@ bool Room::load(const std::string& path, std::string& err) {
         }
         else if (key == "size") f >> r.sx >> r.sy >> r.sz;
         else if (key == "origin") f >> r.ox >> r.oy >> r.oz;
+        else if (key == "haze") f >> r.mood.haze.x >> r.mood.haze.y >> r.mood.haze.z >> r.mood.hazeStart >> r.mood.hazeEnd >> r.mood.hazeAmount;
+        else if (key == "ambient") f >> r.mood.skyAmbient.x >> r.mood.skyAmbient.y >> r.mood.skyAmbient.z >> r.mood.groundAmbient.x >> r.mood.groundAmbient.y >> r.mood.groundAmbient.z >> r.mood.ambient;
+        else if (key == "sun") { int on = 0; f >> on >> r.mood.sunElev >> r.mood.sunAzim >> r.mood.sunColor.x >> r.mood.sunColor.y >> r.mood.sunColor.z >> r.mood.sunStrength; r.mood.sun = on != 0; }
+        else if (key == "glow") f >> r.mood.bloom >> r.mood.glowLight;
+        else if (key == "particles") f >> r.mood.particles >> r.mood.particleAmount >> r.mood.particleColor.x >> r.mood.particleColor.y >> r.mood.particleColor.z;
+        else if (key == "sky") f >> r.mood.sky >> r.mood.skyTop.x >> r.mood.skyTop.y >> r.mood.skyTop.z >> r.mood.skyHorizon.x >> r.mood.skyHorizon.y >> r.mood.skyHorizon.z;
+        else if (key == "light") { RoomLight L; int sh = 1, gl = 1; f >> L.p.x >> L.p.y >> L.p.z >> L.color.x >> L.color.y >> L.color.z >> L.intensity >> L.radius >> sh >> gl; L.shadows = sh != 0; L.glow = gl != 0; r.lights.push_back(L); }
         else if (key == "data") {
             if (r.sx <= 0 || r.sy <= 0 || r.sz <= 0 || (size_t)r.sx * r.sy * r.sz > 64u * 1024 * 1024) { err = "bad room size"; return false; }
             r.resize(r.sx, r.sy, r.sz, r.ox, r.oy, r.oz);
@@ -305,6 +348,38 @@ bool Room::load(const std::string& path, std::string& err) {
     err = "no data in room file"; return false;
 }
 
+// ------------------------------------------------------------------ baked light
+static bool glowInfo(uint8_t mat, V3& col, float& radius) {
+    if (mat == MAT_LAVA) { col = { 1.0f, 0.42f, 0.10f }; radius = 4.5f; return true; }
+    if (mat == MAT_BASALT) { col = { 0.55f, 0.18f, 0.05f }; radius = 2.5f; return true; }
+    return false;
+}
+V3 Room::lightAt(V3 p, V3 n, float ao, int cx, int cy, int cz, const std::vector<std::pair<V3, int>>& glowers) const {
+    const RoomMood& m = mood;
+    float hemi = n.y * 0.5f + 0.5f;
+    V3 c = (m.groundAmbient + (m.skyAmbient - m.groundAmbient) * hemi) * (m.ambient * ao);
+    if (m.sun && m.sunStrength > 0) {
+        V3 L = sunDirection(m); float ndl = dot(n, L);
+        if (ndl > 0 && !blocked(p, p + L * 120.f, cx, cy, cz)) c = c + m.sunColor * (m.sunStrength * ndl);
+    }
+    for (const RoomLight& L : lights) {
+        V3 d = L.p - p; float dist = length(d);
+        if (dist >= L.radius || dist < 1e-4f) continue;
+        float ndl = dot(n, d * (1.f / dist)); if (ndl <= 0) continue;
+        float att = 1.f - dist / L.radius; att *= att;
+        if (L.shadows && blocked(p, L.p, cx, cy, cz)) continue;
+        c = c + L.color * (L.intensity * att * (0.15f + 0.85f * ndl));
+    }
+    for (auto& g : glowers) {
+        V3 col; float rad; if (!glowInfo((uint8_t)g.second, col, rad)) continue;
+        V3 d = g.first - p; float dist = length(d); if (dist >= rad) continue;
+        float att = 1.f - dist / rad; att *= att;
+        float ndl = dist > 1e-4f ? std::max(0.f, dot(n, d * (1.f / dist))) * 0.7f + 0.3f : 1.f;
+        c = c + col * (m.glowLight * att * ndl * 0.9f);
+    }
+    return { std::min(c.x, 2.2f), std::min(c.y, 2.2f), std::min(c.z, 2.2f) };
+}
+
 // ------------------------------------------------------------------ mesh
 static void planarUV(V3 p, V3 n, float& u, float& v) {   // world-aligned texture: blocks and shapes line up like Copycats+
     float ax = std::fabs(n.x), ay = std::fabs(n.y), az = std::fabs(n.z);
@@ -324,6 +399,20 @@ void Room::buildMeshesBox(int bx0, int by0, int bz0, int bx1, int by1, int bz1, 
     subs.clear();
     bx0 = std::max(bx0, ox); by0 = std::max(by0, oy); bz0 = std::max(bz0, oz);
     bx1 = std::min(bx1, ox + sx); by1 = std::min(by1, oy + sy); bz1 = std::min(bz1, oz + sz);
+    // glowing blocks near this box light it (only ones touching air)
+    std::vector<std::pair<V3, int>> glowers;
+    if (mood.glowLight > 0)
+        for (int y = std::max(oy, by0 - 5); y < std::min(oy + sy, by1 + 5); y++) for (int z = std::max(oz, bz0 - 5); z < std::min(oz + sz, bz1 + 5); z++)
+            for (int x = std::max(ox, bx0 - 5); x < std::min(ox + sx, bx1 + 5); x++) {
+                size_t i = idx(x, y, z); V3 col; float rad;
+                if (cells[i] == B_AIR || !glowInfo(mats[i], col, rad)) continue;
+                // light leaves through the open faces: put the emitter just outside them
+                V3 open{ 0, 0, 0 }; int nOpen = 0;
+                for (int d = 0; d < 6; d++) { V3 v = dirVec(d); if (!solid(x + (int)v.x, y + (int)v.y, z + (int)v.z)) { open = open + v; nOpen++; } }
+                if (!nOpen) continue;
+                V3 e = length(open) > 1e-3f ? normalize(open) : V3{ 0, 1, 0 };
+                glowers.push_back({ V3{ x + 0.5f, y + 0.5f, z + 0.5f } + e * 0.75f, mats[i] });
+            }
     int slot[MAT_COUNT * 3]; for (auto& s_ : slot) s_ = -1;
     uint8_t curMat = 0;
     auto target = [&](V3 n) -> MeshData& {
@@ -368,9 +457,12 @@ void Room::buildMeshesBox(int bx0, int by0, int bz0, int bx1, int by1, int bz1, 
                     s1c[ua] += su; s2c[va] += sv; cc[ua] += su; cc[va] += sv;
                     int s1 = solid(s1c[0], s1c[1], s1c[2]), s2 = solid(s2c[0], s2c[1], s2c[2]), co = solid(cc[0], cc[1], cc[2]);
                     ao[k] = (s1 && s2) ? 0 : 3 - (s1 + s2 + co);
-                    float shade = faceShade[f] * (0.38f + 0.62f * ao[k] / 3.f) * 0.85f;
-                    float u, v; planarUV({ p[0], p[1], p[2] }, nn, u, v);
-                    q[k] = { { p[0], p[1], p[2] }, { nn.x, nn.y, nn.z }, { u, v }, { shade, shade, shade, 1.f } };
+                    float aoF = (0.38f + 0.62f * ao[k] / 3.f) * (0.6f + 0.4f * faceShade[f]);
+                    V3 pv{ p[0], p[1], p[2] };
+                    V3 fc{ (float)c[0] + 0.5f + 0.5f * nn.x, (float)c[1] + 0.5f + 0.5f * nn.y, (float)c[2] + 0.5f + 0.5f * nn.z };   // face centre
+                    V3 lt = lightAt(pv + (fc - pv) * 0.03f + nn * 0.04f, nn, aoF, x + n[0], y + n[1], z + n[2], glowers);
+                    float u, v; planarUV(pv, nn, u, v);
+                    q[k] = { { p[0], p[1], p[2] }, { nn.x, nn.y, nn.z }, { u, v }, { lt.x, lt.y, lt.z, 1.f } };
                 }
                 if (ao[0] + ao[2] > ao[1] + ao[3]) { emitTri(q[0], q[1], q[2], nn); emitTri(q[0], q[2], q[3], nn); }
                 else { emitTri(q[0], q[1], q[3], nn); emitTri(q[1], q[2], q[3], nn); }
@@ -392,6 +484,7 @@ void Room::buildMeshesBox(int bx0, int by0, int bz0, int bx1, int by1, int bz1, 
                 if (fullFace(x + (int)d.x, y + (int)d.y, z + (int)d.z, opposite(wd))) continue;
             }
             std::vector<Vertex> vs;
+            V3 pc{ 0, 0, 0 }; for (auto& q : pl.p) pc = pc + q; pc = toWorld(B, pc * (1.f / pl.p.size()) - V3{ 0.5f, 0.5f, 0.5f }) + cell;
             for (size_t k = 0; k < pl.p.size(); k++) {
                 V3 wp = toWorld(B, pl.p[k] - V3{ 0.5f, 0.5f, 0.5f }) + cell, wn = normalize(toWorld(B, pl.n[k]));
                 // shading: face direction + darkening from full blocks in front of the point (cheap corner shading)
@@ -402,9 +495,10 @@ void Room::buildMeshesBox(int bx0, int by0, int bz0, int bx1, int by1, int bz1, 
                     V3 cc{ cx + 0.5f, cy + 0.5f, cz + 0.5f };
                     if (dot(cc - wp, wn) > 0.05f && get(cx, cy, cz) == B_CUBE) occ++;
                 }
-                s *= std::max(0.45f, 1.f - 0.2f * occ); s *= 0.85f;
+                float aoF = std::max(0.45f, 1.f - 0.2f * occ) * (0.6f + 0.4f * s);
+                V3 lt = lightAt(wp + (pc - wp) * 0.03f + wn * 0.04f, wn, aoF, x, y, z, glowers);
                 float u, v; planarUV(wp, wn, u, v);
-                vs.push_back({ { wp.x, wp.y, wp.z }, { wn.x, wn.y, wn.z }, { u, v }, { s, s, s, 1.f } });
+                vs.push_back({ { wp.x, wp.y, wp.z }, { wn.x, wn.y, wn.z }, { u, v }, { lt.x, lt.y, lt.z, 1.f } });
             }
             V3 fn = normalize(toWorld(B, pl.n[0] + pl.n[pl.n.size() / 2]));
             for (size_t k = 1; k + 1 < vs.size(); k++) emitTri(vs[0], vs[k], vs[k + 1], fn);
@@ -429,7 +523,14 @@ static bool rayBox(V3 o, V3 d, const Box3& b, float& tHit, int& face) {
     tHit = t0; face = f; return true;
 }
 
-bool Room::raycast(V3 o, V3 d, float maxT, RayHit& hit) const {
+bool Room::raycast(V3 o, V3 d, float maxT, RayHit& hit) const { return rayCore(o, d, maxT, hit, INT32_MIN, 0, 0, true); }
+
+bool Room::blocked(V3 a, V3 b, int sx_, int sy_, int sz_) const {
+    V3 d = b - a; float len = length(d); if (len < 1e-4f) return false;
+    RayHit h; return rayCore(a, d, len - 0.05f, h, sx_, sy_, sz_, false);
+}
+
+bool Room::rayCore(V3 o, V3 d, float maxT, RayHit& hit, int skx, int sky, int skz, bool ground) const {
     d = normalize(d);
     int x = (int)std::floor(o.x), y = (int)std::floor(o.y), z = (int)std::floor(o.z);
     int stx = d.x > 0 ? 1 : -1, sty = d.y > 0 ? 1 : -1, stz = d.z > 0 ? 1 : -1;
@@ -441,8 +542,10 @@ bool Room::raycast(V3 o, V3 d, float maxT, RayHit& hit) const {
     float tdx = tDelta(d.x), tdy = tDelta(d.y), tdz = tDelta(d.z);
     float tmx = tFirst(o.x, d.x, x), tmy = tFirst(o.y, d.y, y), tmz = tFirst(o.z, d.z, z);
     int nx = 0, ny = 0, nz = 0; float t = 0;
-    std::vector<Box3> bx;
+    thread_local std::vector<Box3> bx;
     for (int it = 0; it < 4096 && t <= maxT; it++) {
+        if (x == skx && y == sky && z == skz) goto step;
+        {
         Block b = block(x, y, z);
         if (b.type == B_CUBE) { hit = { x, y, z, nx, ny, nz, t, false }; return true; }
         if (b.type != B_AIR) {
@@ -450,11 +553,13 @@ bool Room::raycast(V3 o, V3 d, float maxT, RayHit& hit) const {
             for (auto& q : bx) { float th; int fc; if (rayBox(o, d, q, th, fc) && th < best) { best = th; bf = fc; } }
             if (bf >= 0 && best <= maxT) { V3 n = dirVec(bf); hit = { x, y, z, (int)n.x, (int)n.y, (int)n.z, best, false }; return true; }
         }
+        }
+    step:
         if (tmx < tmy && tmx < tmz) { x += stx; t = tmx; tmx += tdx; nx = -stx; ny = 0; nz = 0; }
         else if (tmy < tmz) { y += sty; t = tmy; tmy += tdy; nx = 0; ny = -sty; nz = 0; }
         else { z += stz; t = tmz; tmz += tdz; nx = 0; ny = 0; nz = -stz; }
     }
-    if (d.y < -1e-6f) {   // nothing hit: the bottom of the room is a building surface
+    if (ground && d.y < -1e-6f) {   // nothing hit: the bottom of the room is a building surface
         float tp = ((float)oy - o.y) / d.y;
         if (tp > 0 && tp <= maxT) {
             V3 p = o + d * tp; int gx = (int)std::floor(p.x), gz = (int)std::floor(p.z);

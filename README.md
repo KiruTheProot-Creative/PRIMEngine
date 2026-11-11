@@ -99,6 +99,10 @@ PRIMEngine opens as an engine editor, like Unity or Godot:
 
 **Terrain** panel: choose a preset (Hills, Cavern, Canyon, Crater, Ice field, Lava cave, Chozo ruins), press **Preview**, drag the sliders and watch the room change, then **Apply** or **Cancel**. One Ctrl+Z removes applied terrain. Edges are smoothed with slopes and corners, caves and 1-block morph ball tunnels are carved, and you can limit it to a box.
 
+**Lights**: Inventory > Lights has presets (warm lamp, cool lamp, Phazon blue, lava orange, Chozo gold, spore green, white, red alarm). Put one in the hotbar, right-click to place, left-click a light to remove it, middle-click to select it and edit colour, brightness, range, shadows and glow in the Inspector. Light is baked into the blocks with real shadows; lava and basalt light their surroundings by themselves.
+
+**Room mood** panel: presets (Tallon rain, Tallon sunny, Phendrana snow, Magmoor caverns, Chozo ruins, Phazon mines, Space station) and settings for haze, ambient light, sun, bloom, floating particles (dust, spores, snow, embers, rain) and sky (gradient, clouds, stars). Lighting re-bakes a few chunks per frame, nearest first.
+
 **Play** (F5) starts the game with Samus right where you are. Rooms autosave every 30 seconds into `assets/rooms`; Ctrl+S saves now. The last room you had open reopens on start.
 
 ## Your models and animations
