@@ -6,6 +6,7 @@
 #include "scene.h"   // keep before windows.h
 #include "model.h"
 #include "assetmeta.h"
+#include "room.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
