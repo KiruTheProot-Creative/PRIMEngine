@@ -7,6 +7,7 @@
 #include "model.h"
 #include "assetmeta.h"
 #include "room.h"
+#include "terrain.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -440,7 +441,7 @@ struct App {
     void Tick(float dt) {
         anim.update(dt);
         if (statusTimer > 0) statusTimer -= dt;
-        if (roomOpen && roomDirty && (roomAutosave += dt) > 30.f) { roomAutosave = 0; if (room.save(roomPath)) { roomDirty = false; SetStatus("Autosaved room " + room.name); } }
+        if (roomOpen && roomDirty && !terrainPreview && (roomAutosave += dt) > 30.f) { roomAutosave = 0; if (room.save(roomPath)) { roomDirty = false; SetStatus("Autosaved room " + room.name); } }
         if (metaDirty) { metaTimer += dt; if (metaTimer > 0.6f) { SaveMeta(); metaDirty = false; metaTimer = 0; } }
         if (autoReload && modelLoaded && (reloadPoll += dt) > 1.f) {
             reloadPoll = 0; FILETIME t = FileTime(modelPath);
@@ -510,6 +511,7 @@ struct App {
     const px::Camera& ActiveCam() const { return playing ? cam : edCam; }
     void StartPlay() {
         if (playing) return;
+        if (terrainPreview) { SetStatus("Apply or cancel the terrain preview first"); return; }
         playing = true; pausedGame = false; sim = px::Sim{}; sim.demo = !roomOpen;
         if (roomOpen) { sim.solidAt = &App::SolidAt; sim.solidCtx = this; RoomPlayerSpawn(); Log("Play (from the editor camera)"); } else Log("Play");
     }
@@ -542,6 +544,7 @@ struct App {
         ImGui::DockBuilderDockWindow("Hierarchy", left);
         ImGui::DockBuilderDockWindow("Inventory", leftBottom);
         ImGui::DockBuilderDockWindow("Inspector", right);
+        ImGui::DockBuilderDockWindow("Terrain", right);
         ImGui::DockBuilderDockWindow("Assets", bottom); ImGui::DockBuilderDockWindow("Animation", bottom); ImGui::DockBuilderDockWindow("Console", bottom);
         ImGui::DockBuilderDockWindow("Viewport", center);
         ImGui::DockBuilderFinish(dock);
@@ -573,6 +576,7 @@ struct App {
             ImGui::MenuItem("Hierarchy", nullptr, &showHier); ImGui::MenuItem("Inspector", nullptr, &showInsp);
             ImGui::MenuItem("Assets", nullptr, &showAssets); ImGui::MenuItem("Animation", nullptr, &showAnim); ImGui::MenuItem("Console", nullptr, &showConsole);
             ImGui::MenuItem("Inventory", nullptr, &showInv);
+            ImGui::MenuItem("Terrain", nullptr, &showTerrain);
             ImGui::MenuItem("Show viewmodel while editing", nullptr, &showViewmodel);
             if (ImGui::BeginMenu("UI size")) {
                 for (float sc : { 1.f, 1.25f, 1.5f, 1.75f, 2.f }) { char b[16]; snprintf(b, sizeof b, "%d%%", (int)(sc * 100 + 0.5f)); if (ImGui::MenuItem(b, nullptr, std::fabs(uiScale - sc) < 0.01f)) { uiScale = sc; SaveEditorSettings(); } }
@@ -801,7 +805,7 @@ struct App {
                   edView = XMMatrixLookToLH(XMVectorSet(e.x, e.y, e.z, 1), XMVectorSet(f.x, f.y, f.z, 0), XMVectorSet(u.x, u.y, u.z, 0));
                   edProj = XMMatrixPerspectiveFovLH(XMConvertToRadians(60.f), sz.x / sz.y, 0.1f, 80.f); }
                 RoomEditing();
-                if (viewHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !captured) { if (playing) Capture(true); else if (roomOpen) EnterBuild(); }
+                if (viewHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !captured) { if (playing) Capture(true); else if (roomOpen && !terrainPreview) EnterBuild(); else if (terrainPreview) SetStatus("Apply or cancel the terrain preview to build"); }
                 // overlay
                 ImDrawList* dl = ImGui::GetWindowDrawList();
                 const char* txt = playing ? (captured ? "PLAYING  (Esc to release the mouse)" : "PLAYING  (click to control)")
@@ -838,13 +842,14 @@ struct App {
         if (showAnim) AnimationPanel();
         if (showConsole) ConsolePanel();
         if (showInv) InventoryPanel();
+        if (showTerrain) TerrainPanel();
         if (!playing && !roomOpen) FlyCam(io.DeltaTime);
     }
     bool iniHadLayout = false;
 
     // ------------------------------------------------------------------ rooms (block building)
     px::Room room; bool roomOpen = false, roomDirty = false, roomMeshDirty = false; std::string roomPath; float roomAutosave = 0;
-    GpuMesh roomMesh;
+    struct GpuSub { GpuMesh g; uint8_t tex = 0; float env = 0, glow = 0; }; std::vector<GpuSub> roomSubs;
     struct BlockEdit { int x, y, z; px::Block before, after; };
     std::vector<std::vector<BlockEdit>> undoStack, redoStack;
     bool hoverValid = false; px::RayHit hover{};
@@ -860,6 +865,7 @@ struct App {
     }
     void AfterRoomChange() { roomMeshDirty = true; roomDirty = true; roomAutosave = 0; }
     void NewRoom() {
+        TerrainCancel();
         if (roomOpen && roomDirty) SaveRoom();
         int n = 1; std::string path; do { path = RoomsDir() + "Room " + std::to_string(n++) + ".room"; } while (GetFileAttributesA(path.c_str()) != INVALID_FILE_ATTRIBUTES);
         room = px::Room{}; room.newFlat(16); room.name = FileName(path).substr(0, FileName(path).size() - 5);
@@ -868,6 +874,7 @@ struct App {
         SetStatus("New room: " + room.name + ". Right-click places a block, left-click breaks one");
     }
     void OpenRoom(const std::string& path) {
+        TerrainCancel();
         if (roomOpen && roomDirty) SaveRoom();
         px::Room r; std::string err;
         if (!r.load(path, err)) { SetStatus("Could not open " + FileName(path) + ": " + err); return; }
@@ -876,27 +883,33 @@ struct App {
     }
     void SaveRoom() {
         if (!roomOpen) return;
+        if (terrainPreview) { SetStatus("Apply or cancel the terrain preview first"); return; }
         if (room.save(roomPath)) { roomDirty = false; SetStatus("Saved room " + room.name); }
         else SetStatus("Could not save room " + FileName(roomPath));
     }
-    void CloseRoom() { if (roomDirty) SaveRoom(); roomOpen = false; roomMesh = GpuMesh{}; SetStatus("Back to the demo room"); }
+    void CloseRoom() { TerrainCancel(); if (roomDirty) SaveRoom(); roomOpen = false; roomSubs.clear(); SetStatus("Back to the demo room"); }
     void RebuildRoomMesh() {
-        roomMeshDirty = false; px::MeshData md; room.buildMesh(md); roomMesh = GpuMesh{};
-        if (md.i.empty()) return;
-        D3D11_BUFFER_DESC d{}; d.Usage = D3D11_USAGE_IMMUTABLE; d.ByteWidth = (UINT)(md.v.size() * sizeof(px::Vertex)); d.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-        D3D11_SUBRESOURCE_DATA sdt{ md.v.data(), 0, 0 }; HR(dev->CreateBuffer(&d, &sdt, &roomMesh.vb));
-        d.ByteWidth = (UINT)(md.i.size() * 4); d.BindFlags = D3D11_BIND_INDEX_BUFFER; sdt.pSysMem = md.i.data(); HR(dev->CreateBuffer(&d, &sdt, &roomMesh.ib));
-        roomMesh.count = (UINT)md.i.size();
+        roomMeshDirty = false; roomSubs.clear();
+        std::vector<px::SubMesh> subs; room.buildMeshes(subs);
+        for (auto& sm : subs) {
+            if (sm.mesh.i.empty()) continue;
+            GpuSub g; g.tex = sm.tex; g.env = sm.env; g.glow = sm.glow; g.g.count = (UINT)sm.mesh.i.size();
+            D3D11_BUFFER_DESC d{}; d.Usage = D3D11_USAGE_IMMUTABLE; d.ByteWidth = (UINT)(sm.mesh.v.size() * sizeof(px::Vertex)); d.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+            D3D11_SUBRESOURCE_DATA sdt{ sm.mesh.v.data(), 0, 0 }; HR(dev->CreateBuffer(&d, &sdt, &g.g.vb));
+            d.ByteWidth = (UINT)(sm.mesh.i.size() * 4); d.BindFlags = D3D11_BIND_INDEX_BUFFER; sdt.pSysMem = sm.mesh.i.data(); HR(dev->CreateBuffer(&d, &sdt, &g.g.ib));
+            roomSubs.push_back(std::move(g));
+        }
     }
     void DrawRoom() {
         if (roomMeshDirty) RebuildRoomMesh();
-        if (!roomMesh.count) return;
-        ObjectCB o{}; XMStoreFloat4x4(&o.world, XMMatrixIdentity());
-        o.tint[0] = o.tint[1] = o.tint[2] = o.tint[3] = 1; o.params[0] = 0.12f; o.params[1] = 1; o.params[2] = 1; o.params[3] = 0;
-        ctx->UpdateSubresource(cbObject.Get(), 0, nullptr, &o, 0, 0);
-        ID3D11ShaderResourceView* srv[2] = { texSRV[px::T_BLOCK].Get(), texSRV[px::T_ENV].Get() }; ctx->PSSetShaderResources(0, 2, srv);
-        UINT stride = sizeof(px::Vertex), off = 0; ctx->IASetVertexBuffers(0, 1, roomMesh.vb.GetAddressOf(), &stride, &off);
-        ctx->IASetIndexBuffer(roomMesh.ib.Get(), DXGI_FORMAT_R32_UINT, 0); ctx->DrawIndexed(roomMesh.count, 0, 0);
+        for (auto& g : roomSubs) {
+            ObjectCB o{}; XMStoreFloat4x4(&o.world, XMMatrixIdentity());
+            o.tint[0] = o.tint[1] = o.tint[2] = o.tint[3] = 1; o.params[0] = g.env; o.params[1] = g.glow; o.params[2] = 1; o.params[3] = 0;
+            ctx->UpdateSubresource(cbObject.Get(), 0, nullptr, &o, 0, 0);
+            ID3D11ShaderResourceView* srv[2] = { texSRV[g.tex].Get(), texSRV[px::T_ENV].Get() }; ctx->PSSetShaderResources(0, 2, srv);
+            UINT stride = sizeof(px::Vertex), off = 0; ctx->IASetVertexBuffers(0, 1, g.g.vb.GetAddressOf(), &stride, &off);
+            ctx->IASetIndexBuffer(g.g.ib.Get(), DXGI_FORMAT_R32_UINT, 0); ctx->DrawIndexed(g.g.count, 0, 0);
+        }
     }
     void EditBlock(std::vector<BlockEdit>& group, int x, int y, int z, px::Block b) {
         if (!room.inBounds(x, y, z)) return;
@@ -956,13 +969,13 @@ struct App {
         for (auto& k : e) Line3D(dl, c[k[0]], c[k[1]], col, th);
     }
     // ------------------------------------------------------------------ creative mode (Minecraft-style building)
-    struct Slot { uint8_t type, size; };
+    struct Slot { uint8_t type, size, mat = px::MAT_METAL; };
     Slot hotbar[9] = { { px::B_CUBE, 8 }, { px::B_SLAB, 4 }, { px::B_STAIRS, 2 }, { px::B_SLOPE, 8 }, { px::B_CORNER, 8 },
                        { px::B_INNER, 8 }, { px::B_BEAM, 4 }, { px::B_PILLAR, 6 }, { px::B_PANEL, 2 } };
     int hotSel = 0, spinOffset = 0; bool flipPlace = false;
     px::Block PlannedBlock() const {   // what a right-click would place right now
         px::V3 f, r, u; edCam.basis(f, r, u);
-        px::Block b; b.type = hotbar[hotSel].type; b.size = hotbar[hotSel].size;
+        px::Block b; b.type = hotbar[hotSel].type; b.size = hotbar[hotSel].size; b.mat = hotbar[hotSel].mat;
         b.rot = px::chooseRot(b.type, hover.nx, hover.ny, hover.nz, f, spinOffset, flipPlace);
         return b;
     }
@@ -1033,8 +1046,8 @@ struct App {
         }
         if (M && !mHeld && hoverValid && !hover.onGround) {
             px::Block b = room.block(hover.x, hover.y, hover.z); int found = -1;
-            for (int i = 0; i < 9; i++) if (hotbar[i].type == b.type && hotbar[i].size == b.size) { found = i; break; }
-            if (found >= 0) hotSel = found; else hotbar[hotSel] = { b.type, b.size };
+            for (int i = 0; i < 9; i++) if (hotbar[i].type == b.type && hotbar[i].size == b.size && hotbar[i].mat == b.mat) { found = i; break; }
+            if (found >= 0) hotSel = found; else hotbar[hotSel] = { b.type, b.size, b.mat };
         }
         if (!L) breakCool = 0;
         if (!R) placeCool = 0;
@@ -1047,7 +1060,7 @@ struct App {
     }
     static const char* BlockName(uint8_t b) { return b ? px::shapeInfo(b).name : ""; }
     std::string SlotLabel(const Slot& sl) const {
-        const px::ShapeInfo& si = px::shapeInfo(sl.type); std::string s = si.name;
+        const px::ShapeInfo& si = px::shapeInfo(sl.type); std::string s = std::string(px::materialInfo(sl.mat).name) + " " + si.name;
         if (si.mn != si.mx) { char b[64]; if (si.sizeDiv) snprintf(b, sizeof b, "  %s %d/%d", si.sizeWhat, sl.size, si.sizeDiv); else snprintf(b, sizeof b, "  %d %s", sl.size, si.sizeWhat); s += b; }
         return s;
     }
@@ -1064,7 +1077,8 @@ struct App {
             if (hotbar[i].type) {   // tiny side-view icon of the shape
                 std::vector<px::Box3> bx; px::Block ib; ib.type = hotbar[i].type; ib.size = hotbar[i].size; ib.rot = px::makeRot(2, 1); px::shapeBoxes(ib, 0, 0, 0, bx);
                 float pad = 8, sz = s - 2 * pad;
-                for (auto& q : bx) dl->AddRectFilled(ImVec2(a.x + pad + q.mn.z * sz, b.y - pad - q.mx.y * sz), ImVec2(a.x + pad + q.mx.z * sz, b.y - pad - q.mn.y * sz), IM_COL32(165, 180, 186, 255));
+                const float* sw = px::materialInfo(hotbar[i].mat).swatch; ImU32 col = IM_COL32((int)(sw[0] * 255), (int)(sw[1] * 255), (int)(sw[2] * 255), 255);
+                for (auto& q : bx) dl->AddRectFilled(ImVec2(a.x + pad + q.mn.z * sz, b.y - pad - q.mx.y * sz), ImVec2(a.x + pad + q.mx.z * sz, b.y - pad - q.mn.y * sz), col);
             }
             dl->AddRect(a, b, i == hotSel ? IM_COL32(255, 170, 60, 255) : IM_COL32(40, 120, 125, 200), 4.f, 0, i == hotSel ? 3.f : 1.f);
             char n[2] = { (char)('1' + i), 0 }; dl->AddText(ImVec2(a.x + 4, a.y + 2), IM_COL32(180, 230, 225, 200), n);
@@ -1087,7 +1101,7 @@ struct App {
                     bool on = hotbar[hotSel].type == t;
                     ImGui::PushID(t);
                     ImGui::PushStyleColor(ImGuiCol_Button, on ? ImVec4(0.95f, 0.5f, 0.12f, 0.85f) : ImVec4(0.08f, 0.22f, 0.25f, 1));
-                    if (ImGui::Button(si.name, ImVec2(78, 46))) hotbar[hotSel] = { (uint8_t)t, si.def };
+                    if (ImGui::Button(si.name, ImVec2(78, 46))) hotbar[hotSel] = { (uint8_t)t, si.def, hotbar[hotSel].type ? hotbar[hotSel].mat : (uint8_t)px::MAT_METAL };
                     ImGui::PopStyleColor();
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip(si.mn != si.mx ? "%s\nSize changes the %s (+ / - while building)" : "%s", si.name, si.sizeWhat);
                     ImGui::PopID();
@@ -1098,7 +1112,19 @@ struct App {
                     const px::ShapeInfo& si = px::shapeInfo(hotbar[hotSel].type);
                     ImGui::Text("Slot %d: %s", hotSel + 1, SlotLabel(hotbar[hotSel]).c_str());
                     if (si.mn != si.mx) { int v = hotbar[hotSel].size; ImGui::SetNextItemWidth(-1); if (ImGui::SliderInt("##size", &v, si.mn, si.mx, si.sizeWhat)) hotbar[hotSel].size = (uint8_t)v; }
-                    if (ImGui::Button("Clear slot")) hotbar[hotSel] = { 0, 8 };
+                    if (ImGui::Button("Clear slot")) hotbar[hotSel] = { 0, 8, 0 };
+                    ImGui::SeparatorText("Material");
+                    int mc = 0;
+                    for (int m = 0; m < px::MAT_COUNT; m++) {
+                        const px::MaterialInfo& mi = px::materialInfo((uint8_t)m); ImGui::PushID(100 + m);
+                        bool on = hotbar[hotSel].mat == m;
+                        if (on) ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1, 0.65f, 0.2f, 1));
+                        if (ImGui::ColorButton(mi.name, ImVec4(mi.swatch[0], mi.swatch[1], mi.swatch[2], 1), on ? 0 : ImGuiColorEditFlags_NoBorder, ImVec2(34, 34))) hotbar[hotSel].mat = (uint8_t)m;
+                        if (on) ImGui::PopStyleColor();
+                        ImGui::PopID(); if (++mc % 6) ImGui::SameLine();
+                    }
+                    if (mc % 6) ImGui::NewLine();
+                    ImGui::Text("%s", px::materialInfo(hotbar[hotSel].mat).name);
                 }
                 ImGui::Separator();
                 if (!roomOpen) { ImGui::TextWrapped("Open or make a room to build: File > New room."); if (ImGui::Button("New room")) NewRoom(); }
@@ -1121,6 +1147,97 @@ struct App {
     }
     void SaveEditorSettings() { std::ofstream f(ExeDir() + "editor_settings.txt"); f << "ui_scale " << uiScale << "\nlast_room " << (roomOpen ? roomPath : std::string()) << "\n"; }
     std::string lastRoom;
+
+    // ------------------------------------------------------------------ terrain generator panel
+    px::TerrainParams tp; bool terrainPreview = false, showTerrain = true; px::Room terrainBackup;
+    void TerrainRegenerate() {
+        room = terrainBackup; px::generateTerrain(room, tp); roomMeshDirty = true;
+    }
+    void TerrainStartPreview() { if (!terrainPreview) { terrainBackup = room; terrainPreview = true; } TerrainRegenerate(); }
+    void TerrainApply() {
+        if (!terrainPreview) return;
+        std::vector<BlockEdit> g;
+        for (int y = room.oy; y < room.oy + room.sy; y++) for (int z = room.oz; z < room.oz + room.sz; z++) for (int x = room.ox; x < room.ox + room.sx; x++) {
+            px::Block a = terrainBackup.block(x, y, z), b = room.block(x, y, z);
+            if (!(a == b)) g.push_back({ x, y, z, a, b });
+        }
+        terrainPreview = false; terrainBackup = px::Room{};
+        size_t n = g.size(); Commit(g); SetStatus("Terrain applied: " + std::to_string(n) + " blocks changed (Ctrl+Z undoes it)");
+    }
+    void TerrainCancel() { if (!terrainPreview) return; room = terrainBackup; terrainBackup = px::Room{}; terrainPreview = false; roomMeshDirty = true; SetStatus("Terrain preview cancelled"); }
+    bool MatCombo(const char* label, uint8_t& m) {
+        bool ch = false;
+        if (ImGui::BeginCombo(label, px::materialInfo(m).name)) {
+            for (int i = 0; i < px::MAT_COUNT; i++) {
+                const float* c = px::materialInfo((uint8_t)i).swatch;
+                ImGui::ColorButton("##sw", ImVec4(c[0], c[1], c[2], 1), ImGuiColorEditFlags_NoTooltip, ImVec2(14, 14)); ImGui::SameLine();
+                if (ImGui::Selectable(px::materialInfo((uint8_t)i).name, m == i)) { m = (uint8_t)i; ch = true; }
+            }
+            ImGui::EndCombo();
+        }
+        return ch;
+    }
+    void TerrainPanel() {
+        if (!ImGui::Begin("Terrain", &showTerrain)) { ImGui::End(); return; }
+        if (!roomOpen) { ImGui::TextWrapped("Make or open a room first (File > New room)."); if (ImGui::Button("New room")) NewRoom(); ImGui::End(); return; }
+        bool ch = false;
+        int kind = tp.kind;
+        if (ImGui::Combo("Preset", &kind, px::kTerrainNames, px::TK_COUNT)) { px::terrainPreset(kind, tp); ch = true; }
+        int seed = (int)tp.seed; ImGui::SetNextItemWidth(120); if (ImGui::InputInt("Seed", &seed)) { tp.seed = (uint32_t)std::max(0, seed); ch = true; }
+        ImGui::SameLine(); if (ImGui::Button("Shuffle")) { tp.seed = (uint32_t)(GetTickCount() * 2654435761u) % 100000; ch = true; }
+        if (ImGui::CollapsingHeader("Shape", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ch |= ImGui::SliderFloat("Ground height", &tp.base, 0.f, (float)room.sy - 4, "%.0f blocks");
+            ch |= ImGui::SliderFloat("Hills height", &tp.height, 0.f, 24.f, "%.0f blocks");
+            ch |= ImGui::SliderFloat("Feature size", &tp.scale, 4.f, 64.f, "%.0f blocks");
+            ch |= ImGui::SliderFloat("Roughness", &tp.rough, 0.2f, 0.8f);
+            ch |= ImGui::SliderFloat("Cliffs", &tp.cliffs, 0.f, 1.f);
+            ch |= ImGui::SliderFloat("Overhangs", &tp.overhang, 0.f, 1.f);
+            if (tp.kind == px::TK_CANYON || tp.kind == px::TK_CRATER) {
+                ch |= ImGui::SliderFloat(tp.kind == px::TK_CANYON ? "Canyon depth" : "Crater depth", &tp.featDepth, 2.f, 20.f, "%.0f blocks");
+                ch |= ImGui::SliderFloat(tp.kind == px::TK_CANYON ? "Canyon width" : "Crater radius", &tp.featSize, 3.f, 30.f, "%.0f blocks");
+            }
+            ch |= ImGui::Checkbox("Smooth edges with slopes", &tp.smooth);
+        }
+        if (ImGui::CollapsingHeader("Caves", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ch |= ImGui::SliderInt("Caves", &tp.caves, 0, 20);
+            ch |= ImGui::SliderFloat("Cave size", &tp.caveSize, 1.f, 5.f, "%.1f");
+            ch |= ImGui::SliderInt("Morph ball tunnels", &tp.tunnels, 0, 12);
+            ch |= ImGui::Checkbox("Ceiling (closed cavern)", &tp.ceiling);
+            if (tp.ceiling) ch |= ImGui::SliderFloat("Ceiling height", &tp.ceilHeight, 6.f, (float)room.sy - 2, "%.0f blocks");
+            bool lava = tp.fluidLevel >= 0; if (ImGui::Checkbox("Lava pools", &lava)) { tp.fluidLevel = lava ? 3.f : -1.f; ch = true; }
+            if (lava) ch |= ImGui::SliderFloat("Lava level", &tp.fluidLevel, 1.f, 16.f, "%.0f blocks");
+        }
+        if (ImGui::CollapsingHeader("Layers", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ch |= MatCombo("Top", tp.top); ch |= MatCombo("Below the top", tp.mid);
+            ch |= ImGui::SliderInt("Layer depth", &tp.midDepth, 0, 8, "%d blocks"); ch |= MatCombo("Deep rock", tp.deep);
+        }
+        if (ImGui::CollapsingHeader("Extras")) {
+            ch |= ImGui::SliderInt("Ice spikes", &tp.spikes, 0, 40);
+            ch |= ImGui::SliderInt("Chozo ruins", &tp.ruins, 0, 30);
+        }
+        if (ImGui::CollapsingHeader("Area")) {
+            ch |= ImGui::Checkbox("Whole room", &tp.wholeRoom);
+            if (!tp.wholeRoom) {
+                ch |= ImGui::DragInt2("From (x, z)", &tp.x0, 0.2f, room.ox, room.ox + room.sx - 1);
+                ch |= ImGui::DragInt2("To (x, z)", &tp.x1, 0.2f, room.ox, room.ox + room.sx - 1);
+                if (ImGui::Button("Around me (16 blocks)")) { int cx = (int)std::floor(edCam.p.x), cz = (int)std::floor(edCam.p.z); tp.x0 = cx - 8; tp.z0 = cz - 8; tp.x1 = cx + 7; tp.z1 = cz + 7; ch = true; }
+                ImGui::TextDisabled("Everything inside the box is replaced, top to bottom.");
+            }
+        }
+        ImGui::Separator();
+        if (!terrainPreview) {
+            if (ImGui::Button("Preview", ImVec2(-1, 30))) TerrainStartPreview();
+            ImGui::TextDisabled("Shows the result in the viewport. Nothing is kept until you press Apply.");
+        } else {
+            if (ch) TerrainRegenerate();
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.95f, 0.5f, 0.12f, 1));
+            if (ImGui::Button("Apply", ImVec2(ImGui::GetContentRegionAvail().x * 0.5f - 4, 30))) TerrainApply();
+            ImGui::PopStyleColor(); ImGui::SameLine();
+            if (ImGui::Button("Cancel", ImVec2(-1, 30))) TerrainCancel();
+            ImGui::TextDisabled("Previewing: change the sliders and watch the room update.");
+        }
+        ImGui::End();
+    }
 
     // ------------------------------------------------------------------ input / loop
     // mouse capture for playing: cursor hidden, locked to the game view, recentred every frame

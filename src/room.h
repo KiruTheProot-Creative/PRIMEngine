@@ -32,7 +32,16 @@ V3 dirVec(int d);
 // Picks an orientation the way Minecraft does: attach to the clicked face, or stand upright facing away from the player.
 uint8_t chooseRot(uint8_t type, int clickNx, int clickNy, int clickNz, V3 playerForward, int spinOffset, bool flip);
 
-struct Block { uint8_t type = B_AIR, rot = 8, size = 8; bool operator==(const Block& o) const { return type == o.type && rot == o.rot && size == o.size; } };
+// materials: which texture a block shows on its top, sides and bottom (like Minecraft grass), plus shine and glow
+enum MaterialId : uint8_t { MAT_METAL = 0, MAT_ROCK, MAT_DIRT, MAT_MOSS, MAT_SAND, MAT_SNOW, MAT_ICE, MAT_BASALT, MAT_LAVA, MAT_CHOZO, MAT_COUNT };
+struct MaterialInfo { const char* name; uint8_t top, side, bottom; float env, glow; float swatch[3]; };
+const MaterialInfo& materialInfo(uint8_t m);
+
+struct Block {
+    uint8_t type = B_AIR, rot = 8, size = 8, mat = MAT_METAL;
+    bool operator==(const Block& o) const { return type == o.type && rot == o.rot && size == o.size && mat == o.mat; }
+};
+struct SubMesh { uint8_t tex = 0, mat = 0; float env = 0, glow = 0; MeshData mesh; };
 struct Box3 { V3 mn, mx; };
 
 struct RayHit { int x, y, z; int nx, ny, nz; float t; bool onGround; };   // onGround: hit the floor plane, not a block
@@ -41,18 +50,18 @@ struct Room {
     std::string name = "Untitled room";
     int sx = 64, sy = 32, sz = 64;          // size in blocks
     int ox = -32, oy = -1, oz = -32;        // world position of cell (0,0,0)'s minimum corner
-    std::vector<uint8_t> cells, rots, sizes;   // per cell: type, orientation, size
+    std::vector<uint8_t> cells, rots, sizes, mats;   // per cell: type, orientation, size, material
 
     void resize(int x, int y, int z, int oX, int oY, int oZ);
     void newFlat(int half = 16);
     bool inBounds(int x, int y, int z) const { return x >= ox && y >= oy && z >= oz && x < ox + sx && y < oy + sy && z < oz + sz; }
     uint8_t get(int x, int y, int z) const { return inBounds(x, y, z) ? cells[idx(x, y, z)] : (uint8_t)B_AIR; }
-    Block block(int x, int y, int z) const { if (!inBounds(x, y, z)) return {}; size_t i = idx(x, y, z); return { cells[i], rots[i], sizes[i] }; }
+    Block block(int x, int y, int z) const { if (!inBounds(x, y, z)) return {}; size_t i = idx(x, y, z); return { cells[i], rots[i], sizes[i], mats[i] }; }
     bool set(int x, int y, int z, uint8_t type) { Block b; b.type = type; b.size = shapeInfo(type).def; return set(x, y, z, b); }
     bool set(int x, int y, int z, const Block& b) {
         if (!inBounds(x, y, z)) return false;
         size_t i = idx(x, y, z);
-        cells[i] = b.type; rots[i] = b.type ? b.rot : 8; sizes[i] = b.type ? b.size : 8; return true;
+        cells[i] = b.type; rots[i] = b.type ? b.rot : 8; sizes[i] = b.type ? b.size : 8; mats[i] = b.type ? b.mat : 0; return true;
     }
     bool solid(int x, int y, int z) const { return get(x, y, z) != B_AIR; }
     bool fullFace(int x, int y, int z, int worldDir) const;   // does this cell's block fully cover its face in that direction?
@@ -62,7 +71,8 @@ struct Room {
     bool save(const std::string& path) const;
     bool load(const std::string& path, std::string& err);
 
-    void buildMesh(MeshData& out) const;
+    void buildMeshes(std::vector<SubMesh>& out) const;   // one sub-mesh per (material, top/side/bottom) texture
+    void buildMesh(MeshData& out) const;                  // everything in one mesh (tests, tools)
     bool raycast(V3 origin, V3 dir, float maxT, RayHit& hit) const;
 
     // Moves an upright box (feet position, half width, height) by vel*dt against the blocks. stepUp lets it climb

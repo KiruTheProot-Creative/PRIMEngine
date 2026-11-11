@@ -25,7 +25,8 @@ inline V3 normalize(V3 a) { float l = length(a); if (l < 1e-8f) l = 1.f; return 
 
 // ------------------------------------------------------------------ procedural textures (128x128 RGBA8)
 constexpr int TN = 128;
-enum TexKind { T_FLOOR, T_WALL, T_TRIM, T_CANNON, T_CORE, T_STRIP, T_DOOR, T_ENV, T_SPRITE, T_BLOCK, T_COUNT };
+enum TexKind { T_FLOOR, T_WALL, T_TRIM, T_CANNON, T_CORE, T_STRIP, T_DOOR, T_ENV, T_SPRITE, T_BLOCK,
+               T_ROCK, T_DIRT, T_MOSS, T_MOSS_SIDE, T_SAND, T_SNOW, T_SNOW_SIDE, T_ICE, T_BASALT, T_LAVA, T_CHOZO, T_COUNT };
 
 inline uint32_t hash2(int x, int y, int s) {
     uint32_t h = (uint32_t)x * 374761393u + (uint32_t)y * 668265263u + (uint32_t)s * 2246822519u;
@@ -44,12 +45,25 @@ inline double vnoise(double u, double v, int cells, int seed) {
     return top + (bot - top) * sy;
 }
 inline double fbm(double u, double v, int s) { return vnoise(u, v, 4, s) * 0.5 + vnoise(u, v, 8, s + 1) * 0.3 + vnoise(u, v, 16, s + 2) * 0.2; }
+// tileable cellular noise: distance to nearest and second-nearest jittered point (cells x cells grid)
+inline void worley(double u, double v, int cells, int seed, double& d1, double& d2, int& id) {
+    double x = u * cells, y = v * cells; int xi = (int)std::floor(x), yi = (int)std::floor(y);
+    d1 = d2 = 9; id = 0;
+    for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
+        int cx = xi + i, cy = yi + j, wx = ((cx % cells) + cells) % cells, wy = ((cy % cells) + cells) % cells;
+        double px_ = cx + rnd(wx, wy, seed), py_ = cy + rnd(wx, wy, seed + 7);
+        double d = std::sqrt((px_ - x) * (px_ - x) + (py_ - y) * (py_ - y));
+        if (d < d1) { d2 = d1; d1 = d; id = wy * cells + wx; } else if (d < d2) d2 = d;
+    }
+}
+inline double smooth01(double e0, double e1, double x) { double t = std::max(0.0, std::min(1.0, (x - e0) / (e1 - e0))); return t * t * (3 - 2 * t); }
 inline uint8_t clamp8(double x) { double r = std::floor(x * 255.0 + 0.5); return (uint8_t)std::max(0.0, std::min(255.0, r)); }
 
 inline std::vector<uint8_t> makeTex(TexKind kind) {
     std::vector<uint8_t> d((size_t)TN * TN * 4);
     for (int py = 0; py < TN; py++) for (int px = 0; px < TN; px++) {
         double u = (double)px / TN, v = (double)py / TN, r = 0, g = 0, b = 0, a = 0;
+        double& g_ = g;   // green channel (terrain cases use a local "g" for brightness)
         auto dim = [&](double k) { r *= k; g *= k; b *= k; };
         switch (kind) {
         case T_FLOOR: {
@@ -120,6 +134,79 @@ inline std::vector<uint8_t> makeTex(TexKind kind) {
             for (int c = 0; c < 4; c++) { int cx = (c & 1) ? 13 : 114, cy = (c & 2) ? 13 : 114; int dx = px - cx, dy = py - cy;
                 if (dx * dx + dy * dy < 7) dim(dx + dy < 0 ? 1.5 : 0.65); }                    // rivets
             a = 0; break; }
+        case T_ROCK: {   // grey-brown stone with cracks and speckles
+            double n = fbm(u, v, 80), n2 = vnoise(u, v, 32, 83), d1, d2; int id; worley(u, v, 5, 84, d1, d2, id);
+            double g = 0.30 + n * 0.22 + (n2 - 0.5) * 0.06 + (rnd(id, 1, 85) - 0.5) * 0.08;
+            r = g * 1.02; g_ = g * 0.97; b = g * 0.86;
+            double edge = d2 - d1; if (edge < 0.05) dim(0.45 + edge * 6);
+            if (rnd(px, py, 86) > 0.985) dim(1.35);
+            break; }
+        case T_DIRT: {   // brown soil with pebbles
+            double n = fbm(u, v, 90), g = 0.24 + n * 0.16; r = g * 1.18; g_ = g * 0.86; b = g * 0.58;
+            double d1, d2; int id; worley(u, v, 9, 91, d1, d2, id);
+            if (d1 < 0.16 && rnd(id, 2, 92) > 0.55) { double k = 1.25 + rnd(id, 3, 93) * 0.3; r = g * k; g_ = g * k * 0.95; b = g * k * 0.85; if (d1 > 0.12) dim(0.7); }
+            break; }
+        case T_MOSS: {   // mossy ground, Tallon Overworld green
+            double n = fbm(u, v, 100), n2 = vnoise(u, v, 32, 101), g = 0.28 + n * 0.2;
+            r = g * 0.62; g_ = g * 1.12; b = g * 0.38;
+            if (n2 > 0.62) { r *= 1.25; g_ *= 1.18; }
+            if (rnd(px, py, 102) > 0.97) { r *= 0.7; g_ *= 0.75; b *= 0.7; }
+            if (rnd(px / 3, py / 3, 103) > 0.992) { r = 0.75; g_ = 0.72; b = 0.25; }
+            break; }
+        case T_MOSS_SIDE: {   // dirt with a ragged moss fringe at the top
+            double n = fbm(u, v, 90), g = 0.24 + n * 0.16; r = g * 1.18; g_ = g * 0.86; b = g * 0.58;
+            double fringe = 18 + 10 * vnoise(u, 0.5, 16, 104) + 6 * vnoise(u, 0.5, 64, 105);
+            if (py < fringe) { double m = 0.28 + fbm(u, v, 100) * 0.2; r = m * 0.62; g_ = m * 1.12; b = m * 0.38; if (py > fringe - 3) dim(0.7); }
+            break; }
+        case T_SAND: {   // warm sand with wind ripples
+            double n = fbm(u, v, 110), rip = 0.5 + 0.5 * std::sin((v * 12 + vnoise(u, v, 4, 111) * 3.0) * 6.2831853);
+            double g = 0.56 + n * 0.16 + rip * 0.05; r = g * 1.12; g_ = g * 0.96; b = g * 0.68;
+            if (rnd(px, py, 112) > 0.97) dim(0.85);
+            break; }
+        case T_SNOW: {   // Phendrana snow: soft blue-white with sparkles
+            double n = fbm(u, v, 120), g = 0.78 + n * 0.14; r = g * 0.92; g_ = g * 0.97; b = g * 1.04;
+            if (rnd(px, py, 121) > 0.993) { r = g_ = b = 1.0; }
+            break; }
+        case T_SNOW_SIDE: {   // rock face with a snow cap
+            double n = fbm(u, v, 80), g = 0.30 + n * 0.2; r = g * 0.95; g_ = g * 0.97; b = g * 1.02;
+            double cap = 14 + 9 * vnoise(u, 0.5, 16, 122);
+            if (py < cap) { double s2 = 0.8 + fbm(u, v, 120) * 0.12; r = s2 * 0.92; g_ = s2 * 0.97; b = s2 * 1.04; if (py > cap - 2) dim(0.8); }
+            break; }
+        case T_ICE: {   // translucent-looking blue ice with white fractures
+            double n = fbm(u, v, 130), g = 0.5 + n * 0.25; r = g * 0.62; g_ = g * 0.86; b = g * 1.05;
+            double d1, d2; int id; worley(u, v, 4, 131, d1, d2, id);
+            if (d2 - d1 < 0.04) { r = 0.85; g_ = 0.95; b = 1.0; }
+            double streak = std::fabs(std::sin((u * 3 + v * 7 + vnoise(u, v, 8, 132)) * 6.2831853));
+            if (streak > 0.97) { r += 0.1; g_ += 0.1; b += 0.1; }
+            break; }
+        case T_BASALT: {   // Magmoor basalt: dark columns, glowing cracks (glow mask in alpha)
+            double n = fbm(u, v, 140), d1, d2; int id; worley(u, v, 4, 141, d1, d2, id);
+            double g = 0.11 + n * 0.08 + rnd(id, 4, 142) * 0.04; r = g * 1.05; g_ = g * 0.95; b = g * 0.92;
+            double edge = d2 - d1;
+            if (edge < 0.035) { double k = 1 - edge / 0.035; r = 1.0; g_ = 0.35 + 0.3 * k; b = 0.05; a = 0.55 + 0.45 * k; }
+            else if (edge < 0.06) dim(0.6);
+            break; }
+        case T_LAVA: {   // molten lava: drifting dark crust plates, bright molten seams (glow mask in alpha)
+            double n = fbm(u, v, 150), d1, d2; int id; worley(u, v, 4, 151, d1, d2, id);
+            double edge = d2 - d1 + (n - 0.5) * 0.12;
+            double molten = 1.0 - smooth01(0.03, 0.22, edge);          // 1 at the seams
+            double crust = 0.16 + 0.10 * rnd(id, 5, 152) + n * 0.08;    // plate brightness
+            double hot = 0.35 + 0.65 * molten;
+            r = crust * 1.3 * (1 - molten) + 1.0 * molten;
+            g_ = crust * 0.5 * (1 - molten) + (0.35 + 0.5 * molten * molten) * molten;
+            b = crust * 0.2 * (1 - molten) + 0.06 * molten;
+            a = hot;   // plates glow a little (red heat), seams glow fully
+            break; }
+        case T_CHOZO: {   // carved Chozo sandstone bricks
+            int row = py / 32, sy = py % 32, off = (row & 1) ? 32 : 0, sx = (px + off) % 64, brick = (px + off) / 64 + row * 7;
+            double n = fbm(u, v, 160), g = 0.50 + n * 0.14 + (rnd(brick, row, 161) - 0.5) * 0.06; r = g * 1.12; g_ = g * 0.98; b = g * 0.72;
+            if (sy < 2 || sx < 2) dim(0.45); else if (sy < 3 || sx < 3) dim(1.18);
+            if (rnd(brick, row, 162) < 0.35) {   // engraved glyph: nested squares or a circle
+                int cx = sx - 32, cy = sy - 16, ax = std::abs(cx), ay = std::abs(cy);
+                if (rnd(brick, row, 163) < 0.5) { int m = std::max(ax * 2, ay * 4) / 4; if (ax < 22 && ay < 11 && (m == 5 || m == 9 || (m < 3 && ((ax + ay) & 2)))) dim(0.62); }
+                else { double dd = std::sqrt((double)cx * cx + (double)cy * cy * 4); if (std::fabs(dd - 18) < 1.6 || std::fabs(dd - 9) < 1.4 || (ax < 2 && ay < 9)) dim(0.62); }
+            }
+            break; }
         default: break;
         }
         size_t o = ((size_t)py * TN + px) * 4;

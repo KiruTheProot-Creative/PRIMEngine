@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Engine core: platform-independent (FBX import, animation, asset settings). Also builds on Linux for tests.
 add_library(prime_core STATIC
-  src/model.cpp src/model.h src/assetmeta.cpp src/assetmeta.h src/room.cpp src/room.h src/scene.h
+  src/model.cpp src/model.h src/assetmeta.cpp src/assetmeta.h src/room.cpp src/room.h src/terrain.cpp src/terrain.h src/scene.h
   third_party/ufbx/ufbx.c)
 target_include_directories(prime_core PUBLIC src)
 if(MSVC)
@@ -36,3 +36,5 @@ add_executable(model_test tests/model_test.cpp)
 target_link_libraries(model_test PRIVATE prime_core)
 add_executable(room_test tests/room_test.cpp)
 target_link_libraries(room_test PRIVATE prime_core)
+add_executable(terrain_test tests/terrain_test.cpp)
+target_link_libraries(terrain_test PRIVATE prime_core)

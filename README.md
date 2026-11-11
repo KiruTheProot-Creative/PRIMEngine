@@ -95,6 +95,10 @@ PRIMEngine opens as an engine editor, like Unity or Godot:
 
 **Shapes** (Inventory panel, or the hotbar): Cube, Slab, Stairs, Slope, Outer corner, Inner corner, Beam, Pillar, Panel, Step, Frame, Round edge, Arch. Attaching shapes (slab, beam, pillar, frame) stick to the face you click; standing shapes (stairs, slopes, panels) stand up and face away from you, and hang upside down when placed on a ceiling. Samus walks up stairs and slopes.
 
+**Materials**: pick one for the selected hotbar slot in the Inventory panel: Metal, Rock, Dirt, Moss, Sand, Snow, Ice, Basalt (glowing cracks), Lava (glowing) and Chozo stone. Moss and Snow have their own top and side textures.
+
+**Terrain** panel: choose a preset (Hills, Cavern, Canyon, Crater, Ice field, Lava cave, Chozo ruins), press **Preview**, drag the sliders and watch the room change, then **Apply** or **Cancel**. One Ctrl+Z removes applied terrain. Edges are smoothed with slopes and corners, caves and 1-block morph ball tunnels are carved, and you can limit it to a box.
+
 **Play** (F5) starts the game with Samus right where you are. Rooms autosave every 30 seconds into `assets/rooms`; Ctrl+S saves now. The last room you had open reopens on start.
 
 ## Your models and animations

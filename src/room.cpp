@@ -23,6 +23,20 @@ static const ShapeInfo kShapes[B_COUNT] = {
 };
 const ShapeInfo& shapeInfo(uint8_t t) { return kShapes[t < B_COUNT ? t : 0]; }
 
+static const MaterialInfo kMats[MAT_COUNT] = {
+    { "Metal", T_BLOCK, T_BLOCK, T_BLOCK, 0.12f, 1.f, { 0.42f, 0.47f, 0.50f } },
+    { "Rock", T_ROCK, T_ROCK, T_ROCK, 0.03f, 0.f, { 0.42f, 0.40f, 0.36f } },
+    { "Dirt", T_DIRT, T_DIRT, T_DIRT, 0.f, 0.f, { 0.40f, 0.28f, 0.17f } },
+    { "Moss", T_MOSS, T_MOSS_SIDE, T_DIRT, 0.f, 0.f, { 0.24f, 0.44f, 0.15f } },
+    { "Sand", T_SAND, T_SAND, T_SAND, 0.f, 0.f, { 0.72f, 0.62f, 0.42f } },
+    { "Snow", T_SNOW, T_SNOW_SIDE, T_ROCK, 0.06f, 0.f, { 0.86f, 0.90f, 0.96f } },
+    { "Ice", T_ICE, T_ICE, T_ICE, 0.55f, 0.f, { 0.45f, 0.68f, 0.84f } },
+    { "Basalt", T_BASALT, T_BASALT, T_BASALT, 0.05f, 1.f, { 0.20f, 0.12f, 0.10f } },
+    { "Lava", T_LAVA, T_LAVA, T_LAVA, 0.f, 1.f, { 0.95f, 0.45f, 0.08f } },
+    { "Chozo stone", T_CHOZO, T_CHOZO, T_CHOZO, 0.04f, 0.f, { 0.66f, 0.56f, 0.38f } },
+};
+const MaterialInfo& materialInfo(uint8_t m) { return kMats[m < MAT_COUNT ? m : 0]; }
+
 V3 dirVec(int d) {
     static const V3 D[6] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
     return D[d < 0 || d > 5 ? 2 : d];
@@ -200,7 +214,7 @@ void shapeBoxes(const Block& b, int x, int y, int z, std::vector<Box3>& out) {
 // ------------------------------------------------------------------ room basics
 void Room::resize(int x, int y, int z, int oX, int oY, int oZ) {
     sx = x; sy = y; sz = z; ox = oX; oy = oY; oz = oZ;
-    size_t n = (size_t)sx * sy * sz; cells.assign(n, B_AIR); rots.assign(n, 8); sizes.assign(n, 8);
+    size_t n = (size_t)sx * sy * sz; cells.assign(n, B_AIR); rots.assign(n, 8); sizes.assign(n, 8); mats.assign(n, 0);
 }
 void Room::newFlat(int half) {
     resize(64, 32, 64, -32, -1, -32);
@@ -228,12 +242,12 @@ static std::string quoted(const std::string& s) { std::string o = "\""; for (cha
 
 bool Room::save(const std::string& path) const {
     std::ofstream f(path, std::ios::trunc); if (!f) return false;
-    f << "PRIMROOM 2\n" << "name " << quoted(name) << "\n";
+    f << "PRIMROOM 3\n" << "name " << quoted(name) << "\n";
     f << "size " << sx << " " << sy << " " << sz << "\norigin " << ox << " " << oy << " " << oz << "\ndata\n";
     size_t i = 0, runs = 0;
     while (i < cells.size()) {
-        size_t j = i; while (j < cells.size() && cells[j] == cells[i] && rots[j] == rots[i] && sizes[j] == sizes[i]) j++;
-        f << (int)cells[i] << " " << (int)rots[i] << " " << (int)sizes[i] << " " << (j - i) << ((++runs % 16) ? " " : "\n");
+        size_t j = i; while (j < cells.size() && cells[j] == cells[i] && rots[j] == rots[i] && sizes[j] == sizes[i] && mats[j] == mats[i]) j++;
+        f << (int)cells[i] << " " << (int)rots[i] << " " << (int)sizes[i] << " " << (int)mats[i] << " " << (j - i) << ((++runs % 16) ? " " : "\n");
         i = j;
     }
     f << "\nend\n";
@@ -243,7 +257,7 @@ bool Room::save(const std::string& path) const {
 bool Room::load(const std::string& path, std::string& err) {
     std::ifstream f(path); if (!f) { err = "cannot open file"; return false; }
     std::string magic; int ver = 0; f >> magic >> ver;
-    if (magic != "PRIMROOM" || ver < 1 || ver > 2) { err = "not a room file (or made by a newer PRIMEngine)"; return false; }
+    if (magic != "PRIMROOM" || ver < 1 || ver > 3) { err = "not a room file (or made by a newer PRIMEngine)"; return false; }
     Room r; std::string key;
     while (f >> key) {
         if (key == "name") {
@@ -259,14 +273,16 @@ bool Room::load(const std::string& path, std::string& err) {
             r.resize(r.sx, r.sy, r.sz, r.ox, r.oy, r.oz);
             size_t pos = 0; std::string a;
             while (f >> a && a != "end") {
-                int t = std::atoi(a.c_str()), ro = 8, sz_ = shapeInfo((uint8_t)t).def; size_t n = 0;
+                int t = std::atoi(a.c_str()), ro = 8, sz_ = shapeInfo((uint8_t)t).def, ma = 0; size_t n = 0;
                 if (ver >= 2) f >> ro >> sz_;
+                if (ver >= 3) f >> ma;
                 f >> n;
                 if (t < 0 || t >= B_COUNT) t = B_CUBE;
                 if (pos + n > r.cells.size()) { err = "room data is too long"; return false; }
                 std::fill(r.cells.begin() + pos, r.cells.begin() + pos + n, (uint8_t)t);
                 std::fill(r.rots.begin() + pos, r.rots.begin() + pos + n, (uint8_t)(ro % 24));
                 std::fill(r.sizes.begin() + pos, r.sizes.begin() + pos + n, (uint8_t)sz_);
+                std::fill(r.mats.begin() + pos, r.mats.begin() + pos + n, (uint8_t)(ma < MAT_COUNT ? ma : 0));
                 pos += n;
             }
             if (pos != r.cells.size()) { err = "room data is incomplete"; return false; }
@@ -285,11 +301,27 @@ static void planarUV(V3 p, V3 n, float& u, float& v) {   // world-aligned textur
 }
 
 void Room::buildMesh(MeshData& out) const {
-    out.v.clear(); out.i.clear();
+    std::vector<SubMesh> subs; buildMeshes(subs); out.v.clear(); out.i.clear();
+    for (auto& sm : subs) { uint32_t b = (uint32_t)out.v.size(); out.v.insert(out.v.end(), sm.mesh.v.begin(), sm.mesh.v.end()); for (auto i : sm.mesh.i) out.i.push_back(b + i); }
+}
+
+void Room::buildMeshes(std::vector<SubMesh>& subs) const {
+    subs.clear();
+    int slot[MAT_COUNT * 3]; for (auto& s_ : slot) s_ = -1;
+    uint8_t curMat = 0;
+    auto target = [&](V3 n) -> MeshData& {
+        int fk = n.y > 0.5f ? 0 : n.y < -0.5f ? 2 : 1, key = curMat * 3 + fk;
+        if (slot[key] < 0) {
+            const MaterialInfo& mi = materialInfo(curMat); SubMesh sm; sm.mat = curMat; sm.env = mi.env; sm.glow = mi.glow;
+            sm.tex = fk == 0 ? mi.top : fk == 1 ? mi.side : mi.bottom; slot[key] = (int)subs.size(); subs.push_back(std::move(sm));
+        }
+        return subs[slot[key]].mesh;
+    };
     static const float faceShade[6] = { 0.80f, 0.80f, 1.00f, 0.55f, 0.70f, 0.70f };   // +X -X +Y -Y +Z -Z
     std::vector<Poly> polys;
     auto emitTri = [&](const Vertex& a, const Vertex& b, const Vertex& c, V3 n) {
         V3 p0{ a.p[0], a.p[1], a.p[2] }, p1{ b.p[0], b.p[1], b.p[2] }, p2{ c.p[0], c.p[1], c.p[2] };
+        MeshData& out = target(n);
         uint32_t base = (uint32_t)out.v.size();
         out.v.push_back(a);
         if (dot(cross(p1 - p0, p2 - p0), n) < 0) { out.v.push_back(c); out.v.push_back(b); } else { out.v.push_back(b); out.v.push_back(c); }
@@ -298,6 +330,7 @@ void Room::buildMesh(MeshData& out) const {
     for (int y = oy; y < oy + sy; y++) for (int z = oz; z < oz + sz; z++) for (int x = ox; x < ox + sx; x++) {
         size_t ci = idx(x, y, z); uint8_t type = cells[ci];
         if (type == B_AIR) continue;
+        curMat = mats[ci];
         if (type == B_CUBE) {
             // ---- full block: exact Minecraft-style corner shading per face
             int c[3] = { x, y, z };
