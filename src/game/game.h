@@ -15,6 +15,9 @@ struct Settings {
     float timeOfDay = 10.f;    // hours, 0 .. 24
     bool dayCycle = false;     // the sun moves (one day = 20 minutes)
     int shadowQuality = 2;     // 0 off, 1 normal (2048), 2 high (4096)
+    float cloudCover = 0.5f;   // 0 = no clouds, 1 = overcast
+    float groundFog = 1.0f;    // 0 = none, 1 = normal (thick in the morning), 2 = a lot
+    bool cloudShadows = true;
     bool load(const std::string& path);
     bool save(const std::string& path) const;
 };

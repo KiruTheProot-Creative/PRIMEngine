@@ -7,6 +7,7 @@
 #include "../world/shapes.h"
 #include "../game/demo.h"
 #include "../core/png.h"
+#include "../core/noise.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -69,6 +70,7 @@ static ComPtr<ID3DBlob> Compile(const std::string& src, const char* entry, const
 struct alignas(16) FrameCB {
     XMFLOAT4X4 viewProj, shadowVP;
     float sunDir[4], sunColor[4], ambient[4], fogRange[4], skyTop[4], skyHorizon[4], sunGlow[4], camF[4], camR[4], camU[4], proj[4], shadowInfo[4];
+    float camPos[4], volume[4], depth[4];
 };
 struct alignas(16) ChunkCB { float offset[4]; };
 
@@ -82,8 +84,10 @@ struct App {
     HWND hwnd = nullptr; int cw = 1280, ch = 720; bool resized = false;
     ComPtr<ID3D11Device> dev; ComPtr<ID3D11DeviceContext> ctx; ComPtr<IDXGISwapChain> swap; ComPtr<ID3D11RenderTargetView> backRTV;
     ComPtr<ID3D11Texture2D> depthTex; ComPtr<ID3D11DepthStencilView> dsv;
-    ComPtr<ID3D11VertexShader> vsBlock, vsSky, vsShadow; ComPtr<ID3D11PixelShader> psOpaque, psCutout, psSky, psGhost, psShadowCut, psPost; ComPtr<ID3D11InputLayout> layout;
+    ComPtr<ID3D11VertexShader> vsBlock, vsSky, vsShadow; ComPtr<ID3D11PixelShader> psOpaque, psCutout, psSky, psGhost, psShadowCut, psPost, psVolume; ComPtr<ID3D11InputLayout> layout;
     ComPtr<ID3D11Texture2D> hdrTex; ComPtr<ID3D11RenderTargetView> hdrRTV; ComPtr<ID3D11ShaderResourceView> hdrSRV;      // the picture before tonemapping
+    ComPtr<ID3D11Texture2D> volTex; ComPtr<ID3D11RenderTargetView> volRTV; ComPtr<ID3D11ShaderResourceView> volSRV;      // ... with clouds and fog
+    ComPtr<ID3D11ShaderResourceView> depthSRV, noiseSRV; ComPtr<ID3D11SamplerState> sampLinear; double cloudTime = 0;
     ComPtr<ID3D11Texture2D> shadowTex; ComPtr<ID3D11DepthStencilView> shadowDSV; ComPtr<ID3D11ShaderResourceView> shadowSRV; int shadowSize = 0;
     ComPtr<ID3D11RasterizerState> rsShadow, rsNoCull; ComPtr<ID3D11SamplerState> sampShadow; std::string driverName = "graphics card";
     ComPtr<ID3D11Buffer> cbFrame, cbChunk;
@@ -141,6 +145,7 @@ struct App {
         b = Compile(src, "PS_Ghost", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psGhost));
         b = Compile(src, "VS_Shadow", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsShadow));
         b = Compile(src, "PS_ShadowCutout", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psShadowCut));
+        b = Compile(src, "PS_Volume", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psVolume));
         b = Compile(src, "PS_Post", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psPost));
         b = Compile(src, "VS_Sky", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsSky));
         b = Compile(src, "PS_Sky", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psSky));
@@ -163,6 +168,12 @@ struct App {
         rt.SrcBlendAlpha = D3D11_BLEND_ONE; rt.DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA; rt.BlendOpAlpha = D3D11_BLEND_OP_ADD; HR(dev->CreateBlendState(&bd, &bsAlpha));
         D3D11_SAMPLER_DESC sm{}; sm.Filter = D3D11_FILTER_MIN_MAG_POINT_MIP_LINEAR; sm.AddressU = sm.AddressV = sm.AddressW = D3D11_TEXTURE_ADDRESS_WRAP; sm.MaxLOD = D3D11_FLOAT32_MAX; HR(dev->CreateSamplerState(&sm, &sampBlocks));
         sm.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT; sm.AddressU = sm.AddressV = sm.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP; HR(dev->CreateSamplerState(&sm, &sampPoint));
+        sm.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR; sm.AddressU = sm.AddressV = sm.AddressW = D3D11_TEXTURE_ADDRESS_WRAP; HR(dev->CreateSamplerState(&sm, &sampLinear));
+        {   // the cloud noise volume
+            const int N = 64; std::vector<uint8_t> nz = makeCloudNoise(N);
+            D3D11_TEXTURE3D_DESC td{}; td.Width = td.Height = td.Depth = N; td.MipLevels = 1; td.Format = DXGI_FORMAT_R8G8_UNORM; td.Usage = D3D11_USAGE_IMMUTABLE; td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            D3D11_SUBRESOURCE_DATA sd3{ nz.data(), N * 2, N * N * 2 }; ComPtr<ID3D11Texture3D> t3; HR(dev->CreateTexture3D(&td, &sd3, &t3)); HR(dev->CreateShaderResourceView(t3.Get(), nullptr, &noiseSRV));
+        }
         D3D11_SAMPLER_DESC ss{}; ss.Filter = D3D11_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT; ss.AddressU = ss.AddressV = ss.AddressW = D3D11_TEXTURE_ADDRESS_BORDER;
         ss.BorderColor[0] = ss.BorderColor[1] = ss.BorderColor[2] = ss.BorderColor[3] = 1; ss.ComparisonFunc = D3D11_COMPARISON_LESS_EQUAL; ss.MaxLOD = D3D11_FLOAT32_MAX; HR(dev->CreateSamplerState(&ss, &sampShadow));
 
@@ -182,11 +193,15 @@ struct App {
     }
     void MakeTargets() {
         ComPtr<ID3D11Texture2D> bb; HR(swap->GetBuffer(0, IID_PPV_ARGS(&bb))); HR(dev->CreateRenderTargetView(bb.Get(), nullptr, &backRTV));
-        D3D11_TEXTURE2D_DESC d{}; d.Width = (UINT)cw; d.Height = (UINT)ch; d.MipLevels = 1; d.ArraySize = 1; d.Format = DXGI_FORMAT_D32_FLOAT; d.SampleDesc.Count = 1; d.BindFlags = D3D11_BIND_DEPTH_STENCIL;
-        depthTex.Reset(); dsv.Reset(); HR(dev->CreateTexture2D(&d, nullptr, &depthTex)); HR(dev->CreateDepthStencilView(depthTex.Get(), nullptr, &dsv));
+        D3D11_TEXTURE2D_DESC d{}; d.Width = (UINT)cw; d.Height = (UINT)ch; d.MipLevels = 1; d.ArraySize = 1; d.Format = DXGI_FORMAT_R32_TYPELESS; d.SampleDesc.Count = 1; d.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
+        depthTex.Reset(); dsv.Reset(); depthSRV.Reset(); HR(dev->CreateTexture2D(&d, nullptr, &depthTex));
+        { D3D11_DEPTH_STENCIL_VIEW_DESC dv{}; dv.Format = DXGI_FORMAT_D32_FLOAT; dv.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D; HR(dev->CreateDepthStencilView(depthTex.Get(), &dv, &dsv));
+          D3D11_SHADER_RESOURCE_VIEW_DESC sv{}; sv.Format = DXGI_FORMAT_R32_FLOAT; sv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D; sv.Texture2D.MipLevels = 1; HR(dev->CreateShaderResourceView(depthTex.Get(), &sv, &depthSRV)); }
         d.Format = DXGI_FORMAT_R16G16B16A16_FLOAT; d.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
         hdrTex.Reset(); hdrRTV.Reset(); hdrSRV.Reset();
         HR(dev->CreateTexture2D(&d, nullptr, &hdrTex)); HR(dev->CreateRenderTargetView(hdrTex.Get(), nullptr, &hdrRTV)); HR(dev->CreateShaderResourceView(hdrTex.Get(), nullptr, &hdrSRV));
+        volTex.Reset(); volRTV.Reset(); volSRV.Reset();
+        HR(dev->CreateTexture2D(&d, nullptr, &volTex)); HR(dev->CreateRenderTargetView(volTex.Get(), nullptr, &volRTV)); HR(dev->CreateShaderResourceView(volTex.Get(), nullptr, &volSRV));
     }
     void MakeShadowMap(int size) {
         shadowTex.Reset(); shadowDSV.Reset(); shadowSRV.Reset(); shadowSize = size; if (!size) return;
@@ -391,6 +406,7 @@ struct App {
             Interact(dt);
         } else { lPrev = rPrev = mPrev = true; }
         mouseDX = mouseDY = 0;
+        cloudTime += dt;
         if (settings.dayCycle) { settings.timeOfDay += (float)(dt * 24.0 / 1200.0); if (settings.timeOfDay >= 24) settings.timeOfDay -= 24; }
         // load chunks around the player and keep their meshes fresh
         I3 pc = chunkOf(ifloor(player.feet.x), ifloor(player.feet.y), ifloor(player.feet.z));
@@ -500,8 +516,8 @@ struct App {
         for (int i = 0; i < 3; i++) fc.sunColor[i] = (moon ? moonC[i] : sc[i]) * k;
         const float ambNight[3] = { 0.035f, 0.05f, 0.10f }, ambDay[3] = { 0.38f, 0.48f, 0.70f }, ambLow[3] = { 0.45f, 0.36f, 0.38f };
         float amb[3]; mix(ambNight, ambDay, day, amb); mix(amb, ambLow, low * 0.6f, fc.ambient);
-        const float topNight[3] = { 0.004f, 0.008f, 0.025f }, topDay[3] = { 0.16f, 0.34f, 0.85f };
-        const float horNight[3] = { 0.02f, 0.03f, 0.07f }, horDay[3] = { 0.60f, 0.74f, 0.95f }, horLow[3] = { 1.05f, 0.55f, 0.28f };
+        const float topNight[3] = { 0.004f, 0.008f, 0.025f }, topDay[3] = { 0.10f, 0.27f, 0.80f };
+        const float horNight[3] = { 0.02f, 0.03f, 0.07f }, horDay[3] = { 0.50f, 0.67f, 0.95f }, horLow[3] = { 1.05f, 0.55f, 0.28f };
         mix(topNight, topDay, day, fc.skyTop); float hz[3]; mix(horNight, horDay, day, hz); mix(hz, horLow, low, fc.skyHorizon);
         const float glowDay[3] = { 0.9f, 0.75f, 0.5f }, glowLow[3] = { 2.2f, 0.9f, 0.3f }, glowMoon[3] = { 0.06f, 0.08f, 0.12f };
         float gl[3]; mix(glowDay, glowLow, low, gl); for (int i = 0; i < 3; i++) fc.sunGlow[i] = moon ? glowMoon[i] : gl[i] * k;
@@ -538,6 +554,14 @@ struct App {
             fc.shadowInfo[0] = 1.f / shadowSize; fc.shadowInfo[1] = R; fc.shadowInfo[2] = (float)texel * 1.5f; fc.shadowInfo[3] = 1.6f;
         } else fc.sunDir[3] = 0;
         XMStoreFloat4x4(&fc.shadowVP, svp);
+        // volumetrics: where the camera is (wrapped, the cloud noise repeats every 14400 blocks), cloud cover, fog for this hour
+        const double wrapP = 14400.0;
+        fc.camPos[0] = (float)(camPos.x - std::floor(camPos.x / wrapP) * wrapP); fc.camPos[1] = (float)camPos.y; fc.camPos[2] = (float)(camPos.z - std::floor(camPos.z / wrapP) * wrapP);
+        float hr = settings.timeOfDay, morning = std::exp(-std::pow((hr - 6.8f) / 1.5f, 2.f)), evening = std::exp(-std::pow((hr - 20.f) / 2.f, 2.f));
+        fc.volume[0] = std::min(1.f, std::max(0.f, settings.cloudCover));
+        fc.volume[1] = settings.groundFog * (0.0035f + 0.022f * morning + 0.006f * evening);
+        fc.volume[2] = (float)std::fmod(cloudTime, 4800.0); fc.volume[3] = settings.cloudShadows ? 1.f : 0.f;
+        fc.depth[0] = 0.05f; fc.depth[1] = farZ;
         ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &fc, 0, 0);
         ID3D11Buffer* cbs[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->VSSetConstantBuffers(0, 2, cbs); ctx->PSSetConstantBuffers(0, 2, cbs);
         ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
@@ -554,8 +578,8 @@ struct App {
                 ctx->DrawIndexed(n, 0, 0); if (counting) drawnChunks += pass == 0;
             }
         };
-        ID3D11ShaderResourceView* none[2] = {};
-        ctx->PSSetShaderResources(0, 2, none);
+        ID3D11ShaderResourceView* none[4] = {};
+        ctx->PSSetShaderResources(0, 4, none);
         if (shadows) {
             ctx->OMSetRenderTargets(0, nullptr, shadowDSV.Get()); ctx->ClearDepthStencilView(shadowDSV.Get(), D3D11_CLEAR_DEPTH, 1.f, 0);
             D3D11_VIEWPORT sv{ 0, 0, (float)shadowSize, (float)shadowSize, 0, 1 }; ctx->RSSetViewports(1, &sv);
@@ -574,8 +598,8 @@ struct App {
         ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psSky.Get(), nullptr, 0); ctx->Draw(3, 0);
         ctx->RSSetState(rsCull.Get());
         ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0);
-        ID3D11ShaderResourceView* srvs[2] = { texArray.Get(), shadows ? shadowSRV.Get() : nullptr }; ctx->PSSetShaderResources(0, 2, srvs);
-        ID3D11SamplerState* samps[2] = { sampBlocks.Get(), sampShadow.Get() }; ctx->PSSetSamplers(0, 2, samps);
+        ID3D11ShaderResourceView* srvs[4] = { texArray.Get(), shadows ? shadowSRV.Get() : nullptr, nullptr, noiseSRV.Get() }; ctx->PSSetShaderResources(0, 4, srvs);
+        ID3D11SamplerState* samps[3] = { sampBlocks.Get(), sampShadow.Get(), sampLinear.Get() }; ctx->PSSetSamplers(0, 3, samps);
         drawnChunks = 0;
         ctx->PSSetShader(psOpaque.Get(), nullptr, 0); drawChunks(vp, 0, true);
         ctx->PSSetShader(psCutout.Get(), nullptr, 0); drawChunks(vp, 1, false);
@@ -597,13 +621,20 @@ struct App {
             }
         }
 
-        // ---- final picture: exposure + filmic curve into the window
-        ctx->PSSetShaderResources(0, 2, none);
-        ctx->OMSetRenderTargets(1, backRTV.GetAddressOf(), nullptr);
+        // ---- clouds and ground fog over the picture (needs the depth: unbind it as a target first)
+        ctx->PSSetShaderResources(0, 4, none);
+        ctx->OMSetRenderTargets(1, volRTV.GetAddressOf(), nullptr);
         ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->IASetInputLayout(nullptr); ctx->RSSetState(rsNoCull.Get());
+        ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psVolume.Get(), nullptr, 0);
+        { ID3D11ShaderResourceView* v4[4] = { hdrSRV.Get(), shadows ? shadowSRV.Get() : nullptr, depthSRV.Get(), noiseSRV.Get() }; ctx->PSSetShaderResources(0, 4, v4); }
+        ctx->Draw(3, 0);
+
+        // ---- final picture: exposure + filmic curve into the window
+        ctx->PSSetShaderResources(0, 4, none);
+        ctx->OMSetRenderTargets(1, backRTV.GetAddressOf(), nullptr);
         ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psPost.Get(), nullptr, 0);
-        ctx->PSSetShaderResources(0, 1, hdrSRV.GetAddressOf()); ctx->Draw(3, 0);
-        ctx->PSSetShaderResources(0, 2, none);
+        ctx->PSSetShaderResources(0, 1, volSRV.GetAddressOf()); ctx->Draw(3, 0);
+        ctx->PSSetShaderResources(0, 4, none);
     }
     int drawnChunks = 0;
     bool Project(V3 p, ImVec2& out) const {   // world point -> screen (for the block outline)
@@ -720,6 +751,9 @@ struct App {
         ch_ |= ImGui::SliderFloat("Time of day", &settings.timeOfDay, 0, 24, "%.1f h");
         ch_ |= ImGui::Checkbox("The sun moves (a day is 20 minutes)", &settings.dayCycle);
         const char* sq[] = { "Off", "Normal", "High" }; ch_ |= ImGui::Combo("Shadows", &settings.shadowQuality, sq, 3);
+        ch_ |= ImGui::SliderFloat("Clouds", &settings.cloudCover, 0, 1, settings.cloudCover <= 0 ? "none" : "%.2f");
+        ch_ |= ImGui::Checkbox("Cloud shadows on the ground", &settings.cloudShadows);
+        ch_ |= ImGui::SliderFloat("Ground fog", &settings.groundFog, 0, 2, settings.groundFog <= 0 ? "none" : "%.2f");
         if (ch_) settings.save(settingsPath);
         if (ImGui::Button("Done", ImVec2(-1, 0))) showSettings = false;
         ImGui::End();

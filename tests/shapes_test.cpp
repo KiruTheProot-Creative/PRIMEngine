@@ -4,6 +4,7 @@
 #include "../src/world/shapes.h"
 #include "../src/game/game.h"
 #include "../src/game/demo.h"
+#include "../src/core/noise.h"
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -116,6 +117,17 @@ int main() {
         Chunk c3; for (int i = 0; i < CS3; i++) c3.b[i] = makeBlock(5, i % 97, i % 24);
         Chunk c4; CHECK(RegionStore::decode(RegionStore::encode(c3), c4) && c3.b == c4.b, "new format keeps shape and rotation");
     }
+
+    // cloud noise: uses the whole range and wraps around without a seam
+    { auto t1 = std::chrono::steady_clock::now(); const int n = 64; auto v = makeCloudNoise(n);
+      double ms2 = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t1).count();
+      int lo[2] = { 255, 255 }, hi[2] = { 0, 0 }; double seam = 0, inner = 0;
+      for (int c = 0; c < 2; c++) for (size_t i = c; i < v.size(); i += 2) { lo[c] = std::min<int>(lo[c], v[i]); hi[c] = std::max<int>(hi[c], v[i]); }
+      for (int z = 0; z < n; z++) for (int y = 0; y < n; y++) {
+          auto at = [&](int x) { return (int)v[(((size_t)z * n + y) * n + x) * 2]; };
+          seam += std::abs(at(n - 1) - at(0)); inner += std::abs(at(n / 2) - at(n / 2 - 1)); }
+      CHECK(lo[0] < 40 && hi[0] > 215 && lo[1] < 60 && hi[1] > 200, "cloud noise uses the full range (%d-%d, %d-%d), made in %.0f ms", lo[0], hi[0], lo[1], hi[1], ms2);
+      CHECK(seam < inner * 1.5, "cloud noise wraps without a seam (edge step %.1f vs inside %.1f)", seam / (n * n), inner / (n * n)); }
 
     // the screenshot scene builds
     { BlockRegistry reg; registerBuiltinBlocks(reg); World* w = new World(reg); w->gen.layers = { { reg.find("stone"), 3 }, { reg.find("dirt"), 2 }, { reg.find("grass"), 1 } };

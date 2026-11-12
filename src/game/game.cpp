@@ -17,6 +17,9 @@ bool Settings::load(const std::string& path) {
         else if (k == "time_of_day") f >> timeOfDay;
         else if (k == "day_cycle") { int v; f >> v; dayCycle = v != 0; }
         else if (k == "shadows") f >> shadowQuality;
+        else if (k == "cloud_cover") f >> cloudCover;
+        else if (k == "ground_fog") f >> groundFog;
+        else if (k == "cloud_shadows") { int v; f >> v; cloudShadows = v != 0; }
         else { std::string rest; std::getline(f, rest); }
     }
     renderDistance = std::max(2, std::min(48, renderDistance)); verticalDistance = std::max(1, std::min(16, verticalDistance));
@@ -26,7 +29,8 @@ bool Settings::save(const std::string& path) const {
     std::ofstream f(path); if (!f) return false;
     f << "render_distance " << renderDistance << "\nvertical_distance " << verticalDistance << "\nfov " << fov << "\nmouse_sensitivity " << mouseSensitivity
       << "\nui_scale " << uiScale << "\nvsync " << (vsync ? 1 : 0) << "\nblock_preview " << (blockPreview ? 1 : 0)
-      << "\ntime_of_day " << timeOfDay << "\nday_cycle " << (dayCycle ? 1 : 0) << "\nshadows " << shadowQuality << "\n";
+      << "\ntime_of_day " << timeOfDay << "\nday_cycle " << (dayCycle ? 1 : 0) << "\nshadows " << shadowQuality
+      << "\ncloud_cover " << cloudCover << "\nground_fog " << groundFog << "\ncloud_shadows " << (cloudShadows ? 1 : 0) << "\n";
     return (bool)f;
 }
 
