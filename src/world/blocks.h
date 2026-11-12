@@ -2,6 +2,7 @@
 // Textures are named images (any size). The renderer puts them all into one texture array at a common
 // resolution, referenced by layer number. Block ids never change once given (worlds store them).
 #pragma once
+#include <algorithm>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -38,6 +39,12 @@ struct BlockDef {
     bool solid = true;                   // you bump into it
     bool cullSame = false;               // hide faces between two blocks of this kind (glass)
     int light = 0;                       // glows: 0 = no, 1..15 = how far its light reaches (lamp = 15)
+    uint32_t lightColor = 0xFFB873;      // colour of that light, 0xRRGGBB (warm lamp orange)
+    // light levels (0..15) per colour channel a glowing block starts with: its brightest channel = light
+    void lightLevels(int out[3]) const {
+        int c[3] = { (int)(lightColor >> 16) & 255, (int)(lightColor >> 8) & 255, (int)lightColor & 255 }, m = std::max(1, std::max(c[0], std::max(c[1], c[2])));
+        for (int i = 0; i < 3; i++) out[i] = (light * c[i] + m / 2) / m;
+    }
     bool waves = false;                  // sways in the wind (leaves, plants)
     bool exists = true;                  // false = a deleted id (kept so old worlds stay readable)
 };

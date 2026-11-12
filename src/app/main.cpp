@@ -155,7 +155,7 @@ struct App {
         b = Compile(src, "PS_Sky", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psSky));
         D3D11_INPUT_ELEMENT_DESC el[] = {
             { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 }, { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-            { "TEXCOORD", 1, DXGI_FORMAT_R32_FLOAT, 0, 20, D3D11_INPUT_PER_VERTEX_DATA, 0 }, { "TEXCOORD", 2, DXGI_FORMAT_R32_FLOAT, 0, 24, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            { "TEXCOORD", 1, DXGI_FORMAT_R32_FLOAT, 0, 20, D3D11_INPUT_PER_VERTEX_DATA, 0 }, { "TEXCOORD", 2, DXGI_FORMAT_R32_UINT, 0, 24, D3D11_INPUT_PER_VERTEX_DATA, 0 },
             { "TEXCOORD", 3, DXGI_FORMAT_R32_UINT, 0, 28, D3D11_INPUT_PER_VERTEX_DATA, 0 } };
         HR(dev->CreateInputLayout(el, 5, vb->GetBufferPointer(), vb->GetBufferSize(), &layout));
         auto cb = [&](UINT size, ComPtr<ID3D11Buffer>& out) { D3D11_BUFFER_DESC d{}; d.ByteWidth = size; d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_CONSTANT_BUFFER; HR(dev->CreateBuffer(&d, nullptr, &out)); };
@@ -1011,6 +1011,11 @@ struct App {
             ImGui::Checkbox("You bump into it", &draft.solid);
         }
         ImGui::SetNextItemWidth(160 * ui); ImGui::SliderInt("Glows (light level)", &draft.light, 0, 15, draft.light ? "%d" : "no");
+        if (draft.light) {
+            float col[3] = { ((draft.lightColor >> 16) & 255) / 255.f, ((draft.lightColor >> 8) & 255) / 255.f, (draft.lightColor & 255) / 255.f };
+            if (ImGui::ColorEdit3("Light colour", col, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_PickerHueWheel))
+                draft.lightColor = ((uint32_t)std::lround(col[0] * 255) << 16) | ((uint32_t)std::lround(col[1] * 255) << 8) | (uint32_t)std::lround(col[2] * 255);
+        }
         ImGui::Checkbox("Sways in the wind", &draft.waves);
         if (draft.shape != Shape::Cube) ImGui::TextDisabled(draft.shape == Shape::Cross ? "Stands in the middle of its block. You walk through it." : "Sticks to the side of the block you click on. You walk through it.");
         ImGui::EndGroup();
@@ -1136,6 +1141,12 @@ struct App {
         Log("PRIMEngine screenshots, drawing with: " + driverName + ", " + std::to_string(cw) + "x" + std::to_string(ch));
         settings = Settings{}; settings.renderDistance = 7; settings.verticalDistance = 3; settings.blockPreview = false;
         std::error_code ec; fs::remove_all(WorldsDir() + "/Screenshot demo", ec);
+        {   // a few coloured lamps for the pictures (only in memory, not saved to your blocks)
+            BlockId lamp = reg.find("lamp");
+            if (lamp) for (auto c : { std::make_pair("blue lamp", 0x3070FFu), std::make_pair("red lamp", 0xFF2A20u), std::make_pair("green lamp", 0x40FF60u) }) {
+                BlockDef d = reg.get(lamp); d.name = c.first; d.lightColor = c.second; if (!reg.find(c.first)) reg.add(d);
+            }
+        }
         CreateWorld("Screenshot demo", 0); Capture(false);
         buildDemo(*world, reg);
         int n = 0;

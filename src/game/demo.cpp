@@ -41,6 +41,10 @@ void buildDemo(World& w, const BlockRegistry& r) {
     box(-5, 0, -4, 5, 3, -4, B("bricks"));
     for (int x : { -3, 0, 3 }) { box(x, 0, -4, x, 1, -4, AIR); w.set(x, 2, -4, shape("bricks", "arch", facing("arch", F_PZ))); }
     for (int x = -5; x <= 5; x++) w.set(x, 4, -4, shape("stone", "half"));
+    if (B("blue lamp") && B("red lamp")) {   // coloured lamps under the arches: red and blue mix to purple in the middle
+        w.set(-3, 0, -5, shape("blue lamp", "half")); w.set(3, 0, -5, shape("red lamp", "half"));
+        if (B("green lamp")) w.set(-6, 2, 3, B("green lamp"));
+    }
 
     // ---- a cobblestone path with half-block edges
     for (int z = -3; z <= 3; z++) for (int x = 4; x <= 7; x++) w.set(x, -1, z, B("cobblestone"));
@@ -74,6 +78,7 @@ std::vector<DemoShot> demoShots() {
         { "night", { -10, 8, -14 }, { 6, 2, 6 }, 23.0f },
         { "night_lamps", { 5.5, 2.2, -2.5 }, { 6, 2.4, 4 }, 22.5f },
         { "stars", { 0, 2, -10 }, { 10, 30, 30 }, 23.5f },
+        { "colored_lamps", { 0, 2.4, -12 }, { 0, 1.2, -4 }, 22.5f },
         { "foggy_morning_light_shafts", { -24, 2.5, 3 }, { -6, 5, 6 }, 7.0f },
         { "clouds", { -4, 3, -10 }, { 30, 45, 40 }, 11.0f },
         { "clouds_sunset", { -4, 3, -10 }, { -40, 25, 10 }, 17.6f },

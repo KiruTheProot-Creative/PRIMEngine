@@ -62,8 +62,8 @@ float cloudShadow(float3 rel)
     return exp(-cloudDensity(p + gSunDir.xyz * t, false) * 90);
 }
 
-struct VSIn { float3 pos : POSITION; float2 uv : TEXCOORD0; float layer : TEXCOORD1; float shade : TEXCOORD2; uint normal : TEXCOORD3; };
-struct VSOut { float4 pos : SV_Position; float3 uvl : TEXCOORD0; float ao : TEXCOORD1; float3 rel : TEXCOORD2; float3 n : TEXCOORD3; float2 lamp : TEXCOORD4; };
+struct VSIn { float3 pos : POSITION; float2 uv : TEXCOORD0; float layer : TEXCOORD1; uint lit : TEXCOORD2; uint normal : TEXCOORD3; };
+struct VSOut { float4 pos : SV_Position; float3 uvl : TEXCOORD0; float ao : TEXCOORD1; float3 rel : TEXCOORD2; float3 n : TEXCOORD3; float4 lamp : TEXCOORD4; };
 
 float3 unpackNormal(uint n) { return normalize(float3(n & 255, (n >> 8) & 255, (n >> 16) & 255) / 255.0 * 2 - 1); }
 
@@ -89,10 +89,10 @@ VSOut VS_Block(VSIn i)
     float3 p = sway(i.pos + gOffset.xyz, i.layer, i.uv.y, layer);
     o.pos = mul(float4(p, 1), gViewProj);
     o.uvl = float3(i.uv, layer);
-    o.ao = i.shade;
+    o.ao = (i.lit & 255) / 255.0;
     o.rel = p;
     o.n = unpackNormal(i.normal);
-    o.lamp = float2((i.normal >> 28) / 15.0, (i.normal >> 27) & 1);
+    o.lamp = float4(float3((i.lit >> 8) & 15, (i.lit >> 12) & 15, (i.lit >> 16) & 15) / 15.0, (i.lit >> 20) & 1);
     return o;
 }
 
@@ -139,10 +139,11 @@ float3 lightBlock(VSOut i, float3 albedo, bool front)
     float sh = ndl > 0 ? shadowAt(i.rel, n, ndl, i.pos.xy) * cloudShadow(i.rel) : 0;
     float sky = 0.55 + 0.45 * n.y;                                     // more sky light on top than on the sides
     float3 light = gSunColor.rgb * ndl * sh + gAmbient.rgb * sky * i.ao;
-    float lamp = i.lamp.x;
-    light += float3(1.0, 0.62, 0.32) * (pow(lamp, 3.2) * 0.9) * gExtra.w * lerp(0.5, 1, i.ao);  // warm light from lamps nearby
+    float lamp = max(i.lamp.r, max(i.lamp.g, i.lamp.b));
+    float3 hue = lamp > 0 ? i.lamp.rgb / lamp : 0;                                                   // the colour of the lamps nearby
+    light += hue * (pow(lamp, 3.2) * 0.9) * gExtra.w * lerp(0.5, 1, i.ao);
     float3 c = albedo * light;
-    if (i.lamp.y > 0.5) c = albedo * float3(1.0, 0.85, 0.65) * 3.0 * gExtra.w;                       // the lamp itself glows
+    if (i.lamp.a > 0.5) c = albedo * lerp(1, hue, 0.7) * 3.0 * gExtra.w;                            // the lamp itself glows in its colour
     float d = length(i.rel);
     float f = saturate((d - gFogRange.x) / max(gFogRange.y - gFogRange.x, 1));
     return lerp(c, skyColor(normalize(i.rel)), f * f);

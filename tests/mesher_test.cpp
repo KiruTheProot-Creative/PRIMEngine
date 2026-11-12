@@ -41,7 +41,7 @@ int main() {
     s.set(5, 0, 5, stone);
     ChunkMesh sm = meshOf(s, reg, { 0, -1, 0 });
     float nearWall = 1, open = 0;
-    for (auto& v : sm.opaque.v) if (faceOf(v) == 2) { if (v.x == 5 && v.z == 5) nearWall = std::min(nearWall, v.shade); if (v.x == 1 && v.z == 1) open = std::max(open, v.shade); }
+    for (auto& v : sm.opaque.v) if (faceOf(v) == 2) { if (v.x == 5 && v.z == 5) nearWall = std::min(nearWall, aoOf(v)); if (v.x == 1 && v.z == 1) open = std::max(open, aoOf(v)); }
     CHECK(nearWall < open * 0.9f, "floor at the foot of a block is shaded (%.2f vs %.2f)", nearWall, open);
     // winding: every triangle is clockwise seen from outside (cross product along the face normal)
     size_t bad = 0;

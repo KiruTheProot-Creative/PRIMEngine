@@ -73,10 +73,11 @@ int main() {
     CHECK(r.get(rock).tex[0] == 0 && !fs::exists(lib.texturesDir() + "/Red_Rock.png"), "deleted texture: block shows the missing texture");
     r.remove(rock);
     CHECK(!r.has(rock) && r.get(rock).name == "missing block" && r.get(rock).solid, "deleted block reads as 'missing block'");
-    BlockDef nd; nd.name = "new"; BlockId again = r.add(nd);
+    BlockDef nd; nd.name = "new"; nd.light = 9; nd.lightColor = 0x33CCFF; BlockId again = r.add(nd);
     CHECK(again != rock && again > fl, "a deleted block's id is never given to a new block (%d)", again);
     lib.saveBlocks(r); { BlockRegistry r3; Library l3; l3.dir = lib.dir; l3.load(r3); BlockDef z; z.name = "z";
-      CHECK(r3.add(z) == again + 1 && !r3.has(rock), "after reloading, new ids still continue after the deleted ones"); }
+      CHECK(r3.add(z) == again + 1 && !r3.has(rock), "after reloading, new ids still continue after the deleted ones");
+      CHECK(r3.get(again).light == 9 && r3.get(again).lightColor == 0x33CCFF, "light level and colour are saved"); }
     CHECK(r.uniqueName("new") == "new 2" && r.uniqueName("new", again) == "new", "unique names");
 
     // states: a plane keeps its facing in the upper bits
@@ -115,9 +116,23 @@ int main() {
             if (v.x >= 14 && v.z == 8) behind = std::max(behind, lightOf(v));
         }
         CHECK(near >= 13 && far >= 6 && far <= 9 && behind <= 4, "floor light: next to the lamp %d, 7 blocks away %d, behind the wall %d", near, far, behind);
-        bool glowFace = false; for (auto& v : cm.opaque.v) if (v.x >= 8 && v.x <= 9 && v.y >= 1 && v.y <= 2 && v.z >= 8 && v.z <= 9 && (v.normal >> 27 & 1)) glowFace = true;
+        bool glowFace = false; for (auto& v : cm.opaque.v) if (v.x >= 8 && v.x <= 9 && v.y >= 1 && v.y <= 2 && v.z >= 8 && v.z <= 9 && glowsOf(v)) glowFace = true;
         CHECK(glowFace, "the lamp's own faces are marked as glowing");
         MeshInput in2; gatherInput(w, { 3, 0, 3 }, in2); CHECK(in2.lightSrc.empty(), "far from lamps no light is worked out");
+        // coloured light: a red and a blue lamp mix to purple between them
+        BlockDef red = m.get(lamp); red.name = "red lamp"; red.lightColor = 0xFF0000; BlockId rl = m.add(red);
+        BlockDef blue = red; blue.name = "blue lamp"; blue.lightColor = 0x0000FF; BlockId bll = m.add(blue);
+        World w2(m); w2.gen.kind = Generator::Void; for (int x = -1; x <= 1; x++) for (int y = -1; y <= 1; y++) for (int z = -1; z <= 1; z++) w2.loadChunk({ x, y, z });
+        for (int x = 0; x < 16; x++) for (int z = 0; z < 16; z++) w2.set(x, 0, z, stone);
+        w2.set(2, 1, 8, rl); w2.set(13, 1, 8, bll);
+        MeshInput in3; gatherInput(w2, { 0, 0, 0 }, in3); ChunkMesh cm3; buildMesh(m, in3, cm3);
+        int nearRed[3] = {}, mid[3] = {};
+        for (auto& v : cm3.opaque.v) if (faceOf(v) == F_PY && v.y == 1 && v.z == 8) {
+            if (v.x == 3) for (int c = 0; c < 3; c++) nearRed[c] = std::max(nearRed[c], lightOf(v, c));
+            if (v.x == 8) for (int c = 0; c < 3; c++) mid[c] = std::max(mid[c], lightOf(v, c));
+        }
+        CHECK(nearRed[0] >= 13 && nearRed[1] == 0 && nearRed[2] <= 5, "next to the red lamp: red %d green %d blue %d", nearRed[0], nearRed[1], nearRed[2]);
+        CHECK(mid[0] >= 8 && mid[2] >= 8 && mid[1] == 0, "between red and blue: purple (red %d, blue %d)", mid[0], mid[2]);
     }
 
     fs::remove_all(base);

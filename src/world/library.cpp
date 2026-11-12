@@ -13,6 +13,7 @@ static std::string trim(std::string s) {
     return a == std::string::npos ? "" : s.substr(a, b - a + 1);
 }
 static std::string lower(std::string s) { for (auto& c : s) c = (char)std::tolower((unsigned char)c); return s; }
+static std::string hex6(uint32_t c) { char b[16]; snprintf(b, sizeof b, "#%06X", (unsigned)(c & 0xFFFFFF)); return b; }
 static bool yes(const std::string& v) { std::string l = lower(v); return l == "yes" || l == "true" || l == "1"; }
 
 std::string Library::textureNameFor(const std::string& file) {
@@ -52,7 +53,7 @@ bool Library::saveBlocks(const BlockRegistry& r) const {
               << "\nshape = " << (d.shape == Shape::Cube ? "cube" : d.shape == Shape::Cross ? "cross" : "plane")
               << "\nlook = " << (d.render == Render::Cutout ? "see-through" : "solid")
               << "\nsolid = " << (d.solid ? "yes" : "no") << "\njoin_same = " << (d.cullSame ? "yes" : "no")
-              << "\nlight = " << d.light << "\nwaves = " << (d.waves ? "yes" : "no") << "\nfaces =";
+              << "\nlight = " << d.light << "\nlight_color = " << hex6(d.lightColor) << "\nwaves = " << (d.waves ? "yes" : "no") << "\nfaces =";
             for (auto& t : d.faces) f << ' ' << (t.empty() ? "-" : t);
             f << "\n";
         }
@@ -102,6 +103,7 @@ bool Library::load(BlockRegistry& r, std::string* report) {
         else if (k == "join_same") d.cullSame = yes(v);
         else if (k == "light") { d.light = std::max(0, std::min(15, std::atoi(v.c_str()))); seenLight = true; }
         else if (k == "waves") { d.waves = yes(v); seenWaves = true; }
+        else if (k == "light_color") { std::string h = v; if (!h.empty() && h[0] == '#') h.erase(0, 1); d.lightColor = (uint32_t)std::strtoul(h.c_str(), nullptr, 16) & 0xFFFFFF; }
         else if (k == "faces") {
             std::istringstream ss(v); std::vector<std::string> n; std::string t; while (ss >> t) n.push_back(t == "-" ? "" : t);
             for (int i = 0; i < 6; i++) d.faces[i] = n.empty() ? "" : n[std::min(i, (int)n.size() - 1)];
