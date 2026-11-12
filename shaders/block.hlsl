@@ -472,7 +472,7 @@ float4 PS_AOApply(SkyOut i) : SV_Target
         sum += a * w; wsum += w;
     }
     float ao = saturate(sum / wsum);
-    ao = pow(ao, gAOSet.z);
+    ao = pow(ao, 2.2 * gAOSet.z);
     float3 ind = gIndirect.Load(int3(px, 0)).rgb;
     return float4(-ind * (1 - ao), 0);   // added on top of the picture: takes the hidden sky light away
 }
