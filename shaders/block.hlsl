@@ -348,7 +348,7 @@ float4 PS_Volume(SkyOut i) : SV_Target
         float dt = tMax / N, T = 1;
         float3 S = 0;
         float phase = lerp(phaseHG(mu, 0.55), phaseHG(mu, 0), 0.4) * 12.566;
-        float3 amb = gAmbient.rgb * 0.55;
+        float3 amb = gAmbient.rgb * 0.55 * (1 - gWeather.z * 0.4);
         [loop] for (int k = 0; k < N; k++)
         {
             float t = (k + jitter) * dt;

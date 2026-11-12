@@ -563,14 +563,15 @@ struct App {
         for (int i = 0; i < 3; i++) fc.sunColor[i] *= (1 - dim);
         float ga = lum(fc.ambient), gt = lum(fc.skyTop), gh = lum(fc.skyHorizon);
         for (int i = 0; i < 3; i++) {
-            fc.ambient[i] = (fc.ambient[i] + (ga * 0.95f - fc.ambient[i]) * dim * 0.85f) * (1 - dim * 0.3f);
-            fc.skyTop[i] += (gh * 0.7f - fc.skyTop[i]) * dim; fc.skyHorizon[i] += (gh * 0.85f - fc.skyHorizon[i]) * dim;
+            fc.ambient[i] = (fc.ambient[i] + (ga * 0.95f - fc.ambient[i]) * dim * 0.85f) * (1 - dim * 0.55f - W.dark * 0.2f);
+            fc.skyTop[i] += (gh * 0.6f - fc.skyTop[i]) * dim; fc.skyHorizon[i] += (gh * 0.75f - fc.skyHorizon[i]) * dim;
+            fc.skyTop[i] *= 1 - W.dark * 0.55f; fc.skyHorizon[i] *= 1 - W.dark * 0.5f;   // storms: a dark sky
             fc.sunGlow[i] *= (1 - dim * 0.9f);
         }
         (void)gt;
         const float fl[3] = { 0.55f, 0.6f, 0.85f };
-        for (int i = 0; i < 3; i++) { fc.ambient[i] += weather.flash * fl[i] * 3.f; fc.skyTop[i] += weather.flash * fl[i] * 0.5f; fc.skyHorizon[i] += weather.flash * fl[i] * 0.6f; }
-        exposure *= 1 + dim * 0.35f;
+        for (int i = 0; i < 3; i++) { fc.ambient[i] += weather.flash * fl[i] * 1.2f; fc.skyTop[i] += weather.flash * fl[i] * 0.25f; fc.skyHorizon[i] += weather.flash * fl[i] * 0.3f; }
+        exposure *= 1 + dim * 0.15f;
         nightAmount = 1 - sstep(-0.25f, 0.0f, h);
     }
     // a lightning bolt: a jagged line from the clouds to the ground with a few branches, drawn as glowing ribbons
