@@ -27,6 +27,8 @@ cbuffer Frame : register(b0)
     float4 gEnvPart;                // things floating in the air: x kind (2 dust, 3 embers/spores, 4 ice sparkles), y amount
     float4 gEnvPartColor;           // rgb
     float4 gRefl;                   // reflections: x on (1) / off (0), y ray steps, z how far rays go (blocks)
+    float4 gClipPlane;              // geometry with dot(rel, xyz) + w < 0 is cut away (only while drawing a mirror's view)
+    float4 gMirror;                 // the mirror drawn this frame: plane (xyz normal, w); gRefl.w = 1 when there is one
 };
 cbuffer ChunkCB : register(b1)
 {
@@ -81,7 +83,7 @@ float cloudShadow(float3 rel)
 }
 
 struct VSIn { float3 pos : POSITION; float2 uv : TEXCOORD0; float layer : TEXCOORD1; uint lit : TEXCOORD2; uint normal : TEXCOORD3; };
-struct VSOut { float4 pos : SV_Position; float3 uvl : TEXCOORD0; float ao : TEXCOORD1; float3 rel : TEXCOORD2; float3 n : TEXCOORD3; float4 lamp : TEXCOORD4; float2 mat : TEXCOORD5; };
+struct VSOut { float4 pos : SV_Position; float3 uvl : TEXCOORD0; float ao : TEXCOORD1; float3 rel : TEXCOORD2; float3 n : TEXCOORD3; float4 lamp : TEXCOORD4; float2 mat : TEXCOORD5; float clip : SV_ClipDistance0; };
 // what the reflection pass needs per pixel: direction of the surface (rgb) and how shiny it is (a)
 struct PSOut { float4 color : SV_Target0; float4 surface : SV_Target1; };
 
@@ -114,6 +116,7 @@ VSOut VS_Block(VSIn i)
     o.n = unpackNormal(i.normal);
     o.lamp = float4(float3((i.lit >> 8) & 15, (i.lit >> 12) & 15, (i.lit >> 16) & 15) / 15.0, (i.lit >> 20) & 1);
     o.mat = float2(((i.lit >> 21) & 15) / 15.0, (i.lit >> 25) & 1);
+    o.clip = dot(p, gClipPlane.xyz) + gClipPlane.w;
     return o;
 }
 
@@ -173,7 +176,7 @@ float3 lightBlock(VSOut i, float3 albedo, bool front, out float3 n, out float sh
     if (i.lamp.a > 0.5)                                                                               // the lamp itself glows in its colour
         c = (dot(albedo, float3(0.2126, 0.7152, 0.0722)) * hue * 0.85 + albedo * hue * 0.3) * 3.2 * gExtra.w;
     float3 v = -normalize(i.rel);
-    shine = max(i.mat.x, wet * lerp(0.35, 0.8, saturate(n.y)));     // wet ground shines like a puddle
+    shine = max(i.mat.x, wet * lerp(0.25, 0.55, saturate(n.y)));    // wet ground shines like a puddle
     if (i.mat.y > 0.5) { shine = 1; c *= 0.15; }                      // a mirror is (almost) only its reflection
     if (gRefl.x < 0.5 && shine > 0.01)   // reflections off: just a little of the sky mirrored
     {
@@ -190,7 +193,7 @@ PSOut PS_Opaque(VSOut i, bool front : SV_IsFrontFace)
     float4 t = gTex.Sample(gSamp, i.uvl);
     PSOut o; float3 n; float sh;
     o.color = float4(lightBlock(i, t.rgb, front, n, sh), 1);
-    o.surface = float4(n * 0.5 + 0.5, sh);
+    o.surface = float4(n * 0.5 + 0.5, i.mat.y > 0.5 ? 1 : min(sh, 0.98));   // 1 = mirror
     return o;
 }
 
@@ -200,7 +203,7 @@ PSOut PS_Cutout(VSOut i, bool front : SV_IsFrontFace)
     clip(t.a - 0.5);
     PSOut o; float3 n; float sh;
     o.color = float4(lightBlock(i, t.rgb, front, n, sh), 1);
-    o.surface = float4(n * 0.5 + 0.5, sh);
+    o.surface = float4(n * 0.5 + 0.5, i.mat.y > 0.5 ? 1 : min(sh, 0.98));
     return o;
 }
 
@@ -341,6 +344,7 @@ float4 PS_Sky(SkyOut i) : SV_Target
 // in the finished picture by walking a ray through the depth buffer; where it finds nothing, they mirror the sky.
 Texture2D gHdr : register(t0);
 Texture2D gSurface : register(t5);
+Texture2D gMirrorView : register(t6);   // the world drawn from the mirrored camera (same screen positions as the picture)
 SamplerState gClamp : register(s3);
 float ignR(float2 px) { return frac(52.9829189 * frac(dot(px, float2(0.06711056, 0.00583715)))); }
 float linDepth(float zb) { return gDepth.x * gDepth.y / (gDepth.y - zb * (gDepth.y - gDepth.x)); }
@@ -398,16 +402,22 @@ float4 PS_Reflect(SkyOut i) : SV_Target
     float open = skyExposed(P + n * 0.3);
     float3 fallback = skyColor(r) * lerp(0.15, 1, open * saturate(r.y * 4 + 0.6)) + gAmbient.rgb * 0.15 * (1 - open);
     float3 refl = fallback;
-    if (hit)
+    float2 suv = (float2(px) + 0.5) / gDepth.zw;
+    if (mirror && gRefl.w > 0.5 && abs(dot(P, gMirror.xyz) + gMirror.w) < 0.08 && dot(n, gMirror.xyz) > 0.9)
+    {
+        refl = gMirrorView.SampleLevel(gClamp, suv, 0).rgb;     // a true mirror: everything, even what is behind you
+        hit = false;
+    }
+    else if (hit)
     {
         float2 e = min(huv, 1 - huv);
         float edge = saturate(min(e.x, e.y) * 12) * saturate(1 - travelled / gRefl.z);   // fade near the picture's edges
         refl = lerp(fallback, gHdr.SampleLevel(gClamp, huv, 0).rgb, edge);
     }
     float NdotV = saturate(dot(n, -dir));
-    float f0 = mirror ? 0.9 : 0.02 + 0.35 * shine;
+    float f0 = mirror ? 0.9 : 0.02 + 0.6 * shine;
     float F = f0 + (1 - f0) * pow(1 - NdotV, 5);
-    float amount = mirror ? 1 : saturate(shine * 1.4);
+    float amount = mirror ? 1 : saturate(shine * 1.2);
     return float4(scene * (1 - F * amount * 0.5) + refl * F * amount, 1);
 }
 

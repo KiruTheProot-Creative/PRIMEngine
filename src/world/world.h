@@ -18,6 +18,9 @@ struct Generator {
     void fill(Chunk& c) const;
 };
 
+// the flat surface of a mirror: points p with p[axis] == coord; sign = which way it faces (+1 / -1)
+struct MirrorPlane { bool valid = false; int axis = 0, sign = 1; double coord = 0; V3 center{ 0, 0, 0 }; double dist = 0; };
+
 struct Hit { int x, y, z; int nx, ny, nz; double t; double px, py, pz; };   // block, side hit (outward), distance, exact point
 
 class World {
@@ -53,13 +56,16 @@ public:
     V3 moveBox(V3 feet, V3& vel, double halfW, double height, double dt, bool& onGround, double stepUp = 0) const;
 
     std::unordered_map<I3, std::unique_ptr<Chunk>, I3Hash> chunks;
-    void recountEmitters();                           // after blocks were edited (a block may glow now)
+    void recountEmitters();                           // after blocks were edited (a block may glow or mirror now)
+    // the nearest mirror surface that faces the camera and is in front of it (within maxDist blocks)
+    MirrorPlane nearestMirror(V3 cam, V3 forward, double maxDist) const;
     bool emittersNear(I3 c) const;                    // any glowing block in this chunk or the 26 around it
 
 private:
     void markAround(I3 c);
     void markAll27(I3 c);
     int countEmitters(const Chunk& c) const;
+    int countMirrors(const Chunk& c) const;
     std::vector<I3> offsets; int offH = -1, offV = -1;   // cached load order (nearest first)
 };
 

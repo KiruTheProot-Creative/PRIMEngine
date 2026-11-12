@@ -18,6 +18,7 @@ struct Chunk {
     bool modified = false;             // differs from what the generator makes: must be saved
     uint32_t version = 0;              // bumped on every change (stale meshes are thrown away)
     int emitters = 0;                  // glowing blocks in it (kept by World): light is only worked out near these
+    int mirrors = 0;                   // mirror blocks in it (kept by World)
 
     static int idx(int lx, int ly, int lz) { return (ly * CS + lz) * CS + lx; }
     BlockId get(int lx, int ly, int lz) const { return b[idx(lx, ly, lz)]; }

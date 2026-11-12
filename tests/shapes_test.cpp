@@ -129,6 +129,23 @@ int main() {
       CHECK(lo[0] < 40 && hi[0] > 215 && lo[1] < 60 && hi[1] > 200, "cloud noise uses the full range (%d-%d, %d-%d), made in %.0f ms", lo[0], hi[0], lo[1], hi[1], ms2);
       CHECK(seam < inner * 1.5, "cloud noise wraps without a seam (edge step %.1f vs inside %.1f)", seam / (n * n), inner / (n * n)); }
 
+    // mirrors: the world finds the nearest mirror surface facing the camera
+    {
+        BlockRegistry reg; registerBuiltinBlocks(reg); BlockDef m = reg.get(reg.find("metal")); m.name = "mirror"; m.mirror = true; BlockId mir = reg.add(m);
+        World w(reg); w.gen.kind = Generator::Void; w.stream({ 0, 0, 0 }, 3, 2, 100000);
+        for (int x = 0; x < 3; x++) for (int y = 0; y < 3; y++) w.set(x, y, 10, mir);
+        CHECK(w.chunk({ 0, 0, 0 })->mirrors == 9, "the chunk counts its mirror blocks");
+        MirrorPlane p = w.nearestMirror({ 1.5, 1.5, 4 }, { 0, 0, 1 }, 48);
+        CHECK(p.valid && p.axis == 2 && p.sign == -1 && std::fabs(p.coord - 10) < 1e-9, "a mirror wall in front: its front side at z = 10 (axis %d, sign %d, %.2f)", p.axis, p.sign, p.coord);
+        MirrorPlane q = w.nearestMirror({ 1.5, 1.5, 4 }, { 0, 0, -1 }, 48);
+        CHECK(!q.valid, "looking away: no mirror to draw");
+        MirrorPlane r = w.nearestMirror({ 1.5, 1.5, 15 }, { 0, 0, -1 }, 48);
+        CHECK(r.valid && r.sign == 1 && std::fabs(r.coord - 11) < 1e-9, "from behind: its back side at z = 11");
+        w.set(1, 1, 9, reg.find("stone")); w.set(0, 1, 9, reg.find("stone")); w.set(2, 1, 9, reg.find("stone"));
+        for (int x = 0; x < 3; x++) for (int y : { 0, 2 }) w.set(x, y, 9, reg.find("stone"));
+        CHECK(!w.nearestMirror({ 1.5, 1.5, 4 }, { 0, 0, 1 }, 48).valid, "a mirror hidden behind a wall is skipped");
+    }
+
     // the screenshot scene builds
     { BlockRegistry reg; registerBuiltinBlocks(reg); World* w = new World(reg); w->gen.layers = { { reg.find("stone"), 3 }, { reg.find("dirt"), 2 }, { reg.find("grass"), 1 } };
       buildDemo(*w, reg); int shaped = 0, n = 0;

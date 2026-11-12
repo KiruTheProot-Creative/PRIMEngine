@@ -30,7 +30,7 @@ Chunk& World::loadChunk(I3 c) {
     auto ch = std::make_unique<Chunk>(); ch->pos = c;
     if (!(store && store->load(c, *ch))) gen.fill(*ch);
     else ch->modified = false;   // matches what is on disk
-    Chunk& ref = *ch; ref.emitters = countEmitters(ref); chunks.emplace(c, std::move(ch));
+    Chunk& ref = *ch; ref.emitters = countEmitters(ref); ref.mirrors = countMirrors(ref); chunks.emplace(c, std::move(ch));
     markAround(c);               // its neighbours can now hide the faces they share with it
     if (ref.emitters) markAll27(c);   // and its lamps light them up
     return ref;
@@ -51,6 +51,8 @@ void World::set(int x, int y, int z, BlockId id) {
     int lo = reg.get(old).light, ln = reg.get(id).light;
     if (old != AIR && lo) c.emitters--;
     if (id != AIR && ln) c.emitters++;
+    if (old != AIR && reg.get(old).mirror) c.mirrors--;
+    if (id != AIR && reg.get(id).mirror) c.mirrors++;
     // light reaches up to 15 blocks: near a lamp, every chunk around has to be redrawn
     if ((old != AIR && lo) || (id != AIR && ln) || emittersNear(cp)) markAll27(cp);
     // this chunk, plus every neighbour whose border (and corner shading) touches the block
@@ -65,7 +67,38 @@ int World::countEmitters(const Chunk& c) const {
     int n = 0; for (BlockId v : c.b) if (v != AIR && reg.get(v).light) n++;
     return n;
 }
-void World::recountEmitters() { for (auto& kv : chunks) kv.second->emitters = countEmitters(*kv.second); }
+void World::recountEmitters() { for (auto& kv : chunks) { kv.second->emitters = countEmitters(*kv.second); kv.second->mirrors = countMirrors(*kv.second); } }
+int World::countMirrors(const Chunk& c) const {
+    if (!c.nonAir) return 0;
+    int n = 0; for (BlockId v : c.b) if (v != AIR && reg.get(v).mirror) n++;
+    return n;
+}
+MirrorPlane World::nearestMirror(V3 cam, V3 fwd, double maxDist) const {
+    MirrorPlane best; best.dist = maxDist;
+    I3 cc = chunkOf(ifloor(cam.x), ifloor(cam.y), ifloor(cam.z)); int R = (int)(maxDist / CS) + 1;
+    for (int dy = -R; dy <= R; dy++) for (int dz = -R; dz <= R; dz++) for (int dx = -R; dx <= R; dx++) {
+        const Chunk* ch = chunk({ cc.x + dx, cc.y + dy, cc.z + dz }); if (!ch || !ch->mirrors) continue;
+        for (int ly = 0; ly < CS; ly++) for (int lz = 0; lz < CS; lz++) for (int lx = 0; lx < CS; lx++) {
+            BlockId v = ch->get(lx, ly, lz); if (v == AIR || !reg.get(v).mirror) continue;
+            int bx = ch->pos.x * CS + lx, by = ch->pos.y * CS + ly, bz = ch->pos.z * CS + lz;
+            const SBox& b = Shapes::get().variant(resolveShape(v, reg.get(v)), rotOf(v)).bounds;
+            for (int f = 0; f < 6; f++) {
+                int a = f / 2, sg = (f % 2 == 0) ? 1 : -1;
+                double cell[3] = { (double)bx, (double)by, (double)bz }, camv[3] = { cam.x, cam.y, cam.z }, fw[3] = { fwd.x, fwd.y, fwd.z };
+                double coord = cell[a] + (sg > 0 ? b.hi[a] : b.lo[a]);
+                if ((camv[a] - coord) * sg <= 0.01) continue;                         // the camera must be in front of this side
+                int n[3] = { bx, by, bz }; n[a] += sg;                                // covered by a solid neighbour: not visible
+                if ((sg > 0 ? b.hi[a] : 1 - b.lo[a]) > 0.999) { BlockId nb = get(n[0], n[1], n[2]); if (nb != AIR && reg.get(nb).render == Render::Opaque && resolveShape(nb, reg.get(nb)) == Shapes::FULL) continue; }
+                double c[3] = { cell[0] + (b.lo[0] + b.hi[0]) * 0.5, cell[1] + (b.lo[1] + b.hi[1]) * 0.5, cell[2] + (b.lo[2] + b.hi[2]) * 0.5 }; c[a] = coord;
+                double d[3] = { c[0] - camv[0], c[1] - camv[1], c[2] - camv[2] }, dist = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+                if (dist >= best.dist) continue;
+                if (dist > 2 && (d[0] * fw[0] + d[1] * fw[1] + d[2] * fw[2]) / dist < 0.2) continue;   // behind or far to the side
+                best.valid = true; best.axis = a; best.sign = sg; best.coord = coord; best.center = { c[0], c[1], c[2] }; best.dist = dist;
+            }
+        }
+    }
+    return best;
+}
 bool World::emittersNear(I3 c) const {
     for (int dy = -1; dy <= 1; dy++) for (int dz = -1; dz <= 1; dz++) for (int dx = -1; dx <= 1; dx++) { const Chunk* n = chunk({ c.x + dx, c.y + dy, c.z + dz }); if (n && n->emitters) return true; }
     return false;

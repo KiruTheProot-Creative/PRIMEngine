@@ -74,7 +74,7 @@ struct alignas(16) FrameCB {
     float sunDir[4], sunColor[4], ambient[4], fogRange[4], skyTop[4], skyHorizon[4], sunGlow[4], camF[4], camR[4], camU[4], proj[4], shadowInfo[4];
     float camPos[4], volume[4], depth[4], extra[4];
     XMFLOAT4X4 skyVP; float weather[4], weather2[4];
-    float env[4], envPart[4], envPartColor[4], refl[4];
+    float env[4], envPart[4], envPartColor[4], refl[4], clipPlane[4], mirror[4];
 };
 struct alignas(16) ChunkCB { float offset[4]; };
 
@@ -91,6 +91,8 @@ struct App {
     ComPtr<ID3D11VertexShader> vsBlock, vsSky, vsShadow; ComPtr<ID3D11PixelShader> psOpaque, psCutout, psSky, psGhost, psShadowCut, psPost, psVolume, psBloomDown, psBloomUp, psRain, psBolt;
     ComPtr<ID3D11VertexShader> vsSkyMap, vsRain, vsDust;
     ComPtr<ID3D11PixelShader> psReflect;
+    ComPtr<ID3D11Texture2D> mirTex, mirDepth; ComPtr<ID3D11RenderTargetView> mirRTV; ComPtr<ID3D11ShaderResourceView> mirSRV; ComPtr<ID3D11DepthStencilView> mirDSV;   // a mirror's view (half size)
+    ComPtr<ID3D11RasterizerState> rsCullFront; MirrorPlane lastMirror;
     ComPtr<ID3D11Texture2D> surfTex, reflTex; ComPtr<ID3D11RenderTargetView> surfRTV, reflRTV; ComPtr<ID3D11ShaderResourceView> surfSRV, reflSRV;   // for reflections
     ComPtr<ID3D11Texture2D> skyMapTex; ComPtr<ID3D11DepthStencilView> skyMapDSV; ComPtr<ID3D11ShaderResourceView> skyMapSRV;   // what is above each spot
     Weather weather; bool weatherWin = false;
@@ -193,6 +195,7 @@ struct App {
         cb(sizeof(FrameCB), cbFrame); cb(sizeof(ChunkCB), cbChunk);
 
         D3D11_RASTERIZER_DESC rd{}; rd.FillMode = D3D11_FILL_SOLID; rd.CullMode = D3D11_CULL_BACK; rd.FrontCounterClockwise = FALSE; rd.DepthClipEnable = TRUE; HR(dev->CreateRasterizerState(&rd, &rsCull));
+        rd.CullMode = D3D11_CULL_FRONT; HR(dev->CreateRasterizerState(&rd, &rsCullFront));   // mirrored views turn every triangle around
         rd.CullMode = D3D11_CULL_NONE; HR(dev->CreateRasterizerState(&rd, &rsNoCull));   // full-screen passes (sky, final picture)
         rd.SlopeScaledDepthBias = 1.5f; rd.DepthClipEnable = FALSE; HR(dev->CreateRasterizerState(&rd, &rsShadow));
         D3D11_DEPTH_STENCIL_DESC dd{}; dd.DepthEnable = TRUE; dd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL; dd.DepthFunc = D3D11_COMPARISON_LESS_EQUAL; HR(dev->CreateDepthStencilState(&dd, &dsOn));
@@ -241,6 +244,12 @@ struct App {
         HR(dev->CreateTexture2D(&d, nullptr, &reflTex)); HR(dev->CreateRenderTargetView(reflTex.Get(), nullptr, &reflRTV)); HR(dev->CreateShaderResourceView(reflTex.Get(), nullptr, &reflSRV));
         { D3D11_TEXTURE2D_DESC sd2 = d; sd2.Format = DXGI_FORMAT_R8G8B8A8_UNORM; surfTex.Reset(); surfRTV.Reset(); surfSRV.Reset();
           HR(dev->CreateTexture2D(&sd2, nullptr, &surfTex)); HR(dev->CreateRenderTargetView(surfTex.Get(), nullptr, &surfRTV)); HR(dev->CreateShaderResourceView(surfTex.Get(), nullptr, &surfSRV)); }
+        {   // the mirror view: half size, own depth
+            D3D11_TEXTURE2D_DESC md = d; md.Width = std::max<UINT>(1, d.Width / 2); md.Height = std::max<UINT>(1, d.Height / 2);
+            mirTex.Reset(); mirRTV.Reset(); mirSRV.Reset(); mirDepth.Reset(); mirDSV.Reset();
+            HR(dev->CreateTexture2D(&md, nullptr, &mirTex)); HR(dev->CreateRenderTargetView(mirTex.Get(), nullptr, &mirRTV)); HR(dev->CreateShaderResourceView(mirTex.Get(), nullptr, &mirSRV));
+            md.Format = DXGI_FORMAT_D32_FLOAT; md.BindFlags = D3D11_BIND_DEPTH_STENCIL; HR(dev->CreateTexture2D(&md, nullptr, &mirDepth)); HR(dev->CreateDepthStencilView(mirDepth.Get(), nullptr, &mirDSV));
+        }
         volTex.Reset(); volRTV.Reset(); volSRV.Reset();
         HR(dev->CreateTexture2D(&d, nullptr, &volTex)); HR(dev->CreateRenderTargetView(volTex.Get(), nullptr, &volRTV)); HR(dev->CreateShaderResourceView(volTex.Get(), nullptr, &volSRV));
         bloomLv.clear();   // half size, quarter size, ... six levels
@@ -674,6 +683,15 @@ struct App {
         fc.envPart[0] = E.particleKind; fc.envPart[1] = E.particleAmount; for (int i = 0; i < 3; i++) fc.envPartColor[i] = E.particleColor[i];
         fc.volume[2] = (float)std::fmod(cloudTime, 4800.0); fc.volume[3] = settings.cloudShadows ? 1.f : 0.f;
         fc.depth[0] = 0.05f; fc.depth[1] = farZ; fc.depth[2] = (float)cw; fc.depth[3] = (float)ch;
+        fc.clipPlane[3] = 1;   // nothing cut away (except while drawing a mirror's view)
+        lastMirror = settings.reflections > 0 ? world->nearestMirror(camPos, player.forward(), 48) : MirrorPlane{};
+        if (lastMirror.valid) {
+            float n[3] = { 0, 0, 0 }; n[lastMirror.axis] = (float)lastMirror.sign;
+            double camA = lastMirror.axis == 0 ? camPos.x : lastMirror.axis == 1 ? camPos.y : camPos.z;
+            for (int i = 0; i < 3; i++) fc.mirror[i] = n[i];
+            fc.mirror[3] = (float)(-(lastMirror.coord - camA) * lastMirror.sign);   // plane in camera-relative space: dot(n, p) + w = 0
+        }
+        fc.refl[3] = lastMirror.valid ? 1.f : 0.f;
         fc.refl[0] = settings.reflections > 0 ? 1.f : 0.f; fc.refl[1] = settings.reflections >= 2 ? 48.f : 28.f; fc.refl[2] = settings.reflections >= 2 ? 120.f : 64.f;
         fc.extra[0] = nightAmount * (1 - W.cover * 0.8f); fc.extra[1] = 0.15f * std::max(0.f, settings.bloom); fc.extra[2] = settings.swaying ? 0.5f + W.wind : 0.f; fc.extra[3] = 1;
         // "what is above" map: only needed while it rains/snows or surfaces are wet/snowy
@@ -724,6 +742,35 @@ struct App {
             ctx->PSSetShaderResources(0, 1, none);
         }
 
+        // ---- a mirror in view: draw the world once more, reflected in its plane (half size, only what is in front of the mirror)
+        if (lastMirror.valid) {
+            FrameCB mc = fc;
+            float* n = fc.mirror; float w = fc.mirror[3];
+            XMMATRIX R(1 - 2 * n[0] * n[0], -2 * n[0] * n[1], -2 * n[0] * n[2], 0,
+                       -2 * n[1] * n[0], 1 - 2 * n[1] * n[1], -2 * n[1] * n[2], 0,
+                       -2 * n[2] * n[0], -2 * n[2] * n[1], 1 - 2 * n[2] * n[2], 0,
+                       -2 * w * n[0], -2 * w * n[1], -2 * w * n[2], 1);   // points mirrored in the plane
+            XMMATRIX mvp = R * vp; XMStoreFloat4x4(&mc.viewProj, mvp);
+            auto refl3 = [&](float v[4]) { float d = v[0] * n[0] + v[1] * n[1] + v[2] * n[2]; for (int i = 0; i < 3; i++) v[i] -= 2 * d * n[i]; };
+            refl3(mc.camF); refl3(mc.camR); refl3(mc.camU);                // the sky seen in the mirror
+            for (int i = 0; i < 4; i++) mc.clipPlane[i] = fc.mirror[i];    // nothing behind the mirror
+            mc.refl[3] = 0;
+            ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &mc, 0, 0);
+            const float black[4] = { 0, 0, 0, 1 };
+            ctx->OMSetRenderTargets(1, mirRTV.GetAddressOf(), mirDSV.Get()); ctx->ClearRenderTargetView(mirRTV.Get(), black); ctx->ClearDepthStencilView(mirDSV.Get(), D3D11_CLEAR_DEPTH, 1.f, 0);
+            D3D11_VIEWPORT mv{ 0, 0, (float)std::max(1, cw / 2), (float)std::max(1, ch / 2), 0, 1 }; ctx->RSSetViewports(1, &mv);
+            ctx->RSSetState(rsNoCull.Get()); ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->IASetInputLayout(nullptr);
+            ctx->PSSetShaderResources(3, 1, noiseSRV.GetAddressOf()); ctx->PSSetSamplers(2, 1, sampLinear.GetAddressOf());
+            ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psSky.Get(), nullptr, 0); ctx->Draw(3, 0);
+            ctx->RSSetState(rsCullFront.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0);
+            ID3D11ShaderResourceView* ms[5] = { texArray.Get(), shadows ? shadowSRV.Get() : nullptr, nullptr, noiseSRV.Get(), skyMap ? skyMapSRV.Get() : nullptr }; ctx->PSSetShaderResources(0, 5, ms);
+            ID3D11SamplerState* mss[3] = { sampBlocks.Get(), sampShadow.Get(), sampLinear.Get() }; ctx->PSSetSamplers(0, 3, mss);
+            ctx->PSSetShader(psOpaque.Get(), nullptr, 0); drawChunks(mvp, 0, false);
+            ctx->PSSetShader(psCutout.Get(), nullptr, 0); drawChunks(mvp, 1, false);
+            ctx->PSSetShaderResources(0, 5, none);
+            ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &fc, 0, 0);
+        }
+
         // ---- the world, into the HDR picture
         const float black[4] = { 0, 0, 0, 1 };
         ctx->OMSetRenderTargets(1, hdrRTV.GetAddressOf(), dsv.Get()); ctx->ClearRenderTargetView(hdrRTV.Get(), black); ctx->ClearDepthStencilView(dsv.Get(), D3D11_CLEAR_DEPTH, 1.f, 0);
@@ -747,10 +794,10 @@ struct App {
         ctx->OMSetRenderTargets(1, reflRTV.GetAddressOf(), nullptr);
         ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->IASetInputLayout(nullptr); ctx->RSSetState(rsNoCull.Get());
         ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psReflect.Get(), nullptr, 0);
-        { ID3D11ShaderResourceView* r6[6] = { hdrSRV.Get(), nullptr, depthSRV.Get(), nullptr, skyMap ? skyMapSRV.Get() : nullptr, surfSRV.Get() }; ctx->PSSetShaderResources(0, 6, r6); }
+        { ID3D11ShaderResourceView* r7[7] = { hdrSRV.Get(), nullptr, depthSRV.Get(), nullptr, skyMap ? skyMapSRV.Get() : nullptr, surfSRV.Get(), lastMirror.valid ? mirSRV.Get() : nullptr }; ctx->PSSetShaderResources(0, 7, r7); }
         ctx->PSSetSamplers(3, 1, sampClamp.GetAddressOf());
         ctx->Draw(3, 0);
-        { ID3D11ShaderResourceView* n6[6] = {}; ctx->PSSetShaderResources(0, 6, n6); }
+        { ID3D11ShaderResourceView* n7[7] = {}; ctx->PSSetShaderResources(0, 7, n7); }
         // everything after this draws over the reflected picture, still depth-tested against the world
         ctx->OMSetRenderTargets(1, reflRTV.GetAddressOf(), dsv.Get()); ctx->RSSetState(rsCull.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0);
         ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0);
