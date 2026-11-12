@@ -2,6 +2,7 @@
 #include "../src/game/game.h"
 #include "../src/game/project.h"
 #include "../src/game/brush.h"
+#include "../src/game/objects.h"
 #include <filesystem>
 #include <fstream>
 #include "../src/game/weather.h"
@@ -194,6 +195,44 @@ int main() {
         auto rough = brushEdits(w, b, { 20, g, 0 }, AIR, 0, 7);
         CHECK(!rough.empty(), "roughen changes the surface (%zu blocks)", rough.size());
         CHECK(opposite(BrushOp::Raise) == BrushOp::Lower && opposite(BrushOp::Add) == BrushOp::Remove, "right click does the opposite");
+    }
+
+    // objects (G2)
+    {
+        BlockRegistry r; registerBuiltinBlocks(r); World w(r); w.gen.layers = { { r.find("stone"), 3 } };
+        w.stream({ 0, 0, 0 }, 2, 2, 100000);
+        BlockId stone = r.find("stone"), planks = r.find("planks");
+        // a 3 x 3 x 3 cube of stone with a plank on top
+        auto fe = fillEdits(w, { 10, 0, 10 }, { 12, 2, 12 }, stone); for (auto& e : fe) w.set(e.x, e.y, e.z, e.after);
+        w.set(11, 3, 11, planks);
+        CHECK(fe.size() == 27, "fill sets the whole box (%zu)", fe.size());
+        BlockModel m = modelFromWorld(w, { 8, 0, 8 }, { 14, 6, 14 }, "Crate");
+        CHECK(m.sx == 3 && m.sy == 4 && m.sz == 3 && m.blockCount() == 28 && m.at(1, 3, 1) == planks, "make into object keeps just the blocks (%d x %d x %d)", m.sx, m.sy, m.sz);
+        CHECK(m.pivot.x == 1.5 && m.pivot.y == 0 && m.pivot.z == 1.5, "the model stands on its bottom middle");
+        auto mb = modelBoxes(m, r);
+        CHECK(mb.size() == 2, "collision from the blocks is merged into few boxes (%zu)", mb.size());
+        std::string mp = "/tmp/prim_model.txt"; m.save(mp); BlockModel m2; m2.load(mp);
+        CHECK(m2.name == "Crate" && m2.sx == 3 && m2.cells == m.cells, "models save and load");
+        ModelLibrary lib; std::error_code ec; std::filesystem::remove_all("/tmp/prim_models", ec); lib.loadAll("/tmp/prim_models"); lib.store(m);
+        ModelLibrary lib2; lib2.loadAll("/tmp/prim_models");
+        CHECK(lib2.find("Crate") && lib2.uniqueName("Crate") == "Crate 2", "the model library");
+
+        WorldObject o; o.id = 1; o.name = "Crate 1"; o.model = "Crate"; o.pos = { 0.5, 3, -5.5 }; o.yaw = 90; o.scale = 2;
+        Box3 bb = objectBounds(o, m);
+        CHECK(std::fabs(bb.hi.y - bb.lo.y - 8) < 1e-6 && std::fabs(bb.hi.x - bb.lo.x - 6) < 1e-6 && std::fabs((bb.lo.x + bb.hi.x) * 0.5 - 0.5) < 1e-6, "objects turn and grow around their bottom middle");
+        w.objectSolids = objectBoxes(o, m, mb);
+        CHECK(!w.boxFree({ 0.5, 4, -5.5 }, 0.3, 1.8) && w.boxFree({ 0.5, 12, -5.5 }, 0.3, 1.8), "objects are solid");
+        Player pl; pl.feet = { 0.5, 20, -5.5 }; pl.flying = false;
+        for (int k = 0; k < 240; k++) pl.update(w, Controls{}, 1.0 / 60);
+        CHECK(std::fabs(pl.feet.y - 11) < 0.05, "you can stand on an object (feet at %.2f)", pl.feet.y);
+        o.collide = Collide::None; w.objectSolids = objectBoxes(o, m, mb);
+        CHECK(w.boxFree({ 0.5, 4, -5.5 }, 0.3, 1.8), "collision none: walk through it");
+        double t; CHECK(rayBox({ 0.5, 6, -20 }, { 0, 0, 1 }, bb, t) && std::fabs(t - (bb.lo.z + 20)) < 1e-6, "clicking hits an object");
+        std::vector<WorldObject> os{ o }, os2; o.name = "Big crate"; o.id = 2; os.push_back(o);
+        saveObjects("/tmp/prim_objs.txt", os); loadObjects("/tmp/prim_objs.txt", os2);
+        CHECK(os2.size() == 2 && os2[1].name == "Big crate" && os2[0].yaw == 90 && os2[0].collide == Collide::None, "objects save and load");
+        auto pe = pasteEdits(w, m, { 20, 0, 20 });
+        CHECK(pe.size() == 28, "paste puts every block of the copy (%zu)", pe.size());
     }
 
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);

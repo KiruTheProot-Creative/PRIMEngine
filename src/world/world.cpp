@@ -265,6 +265,8 @@ bool World::raycast(V3 o, V3 d, double maxT, Hit& hit) const {
 bool World::boxFree(V3 f, double h, double H) const {
     const double e = 1e-5;
     double lo[3] = { f.x - h + e, f.y + e, f.z - h + e }, hi[3] = { f.x + h - e, f.y + H - e, f.z + h - e };
+    for (const Box3& b : objectSolids)
+        if (lo[0] < b.hi.x && hi[0] > b.lo.x && lo[1] < b.hi.y && hi[1] > b.lo.y && lo[2] < b.hi.z && hi[2] > b.lo.z) return false;
     for (int y = ifloor(lo[1]); y <= ifloor(hi[1]); y++)
         for (int z = ifloor(lo[2]); z <= ifloor(hi[2]); z++)
             for (int x = ifloor(lo[0]); x <= ifloor(hi[0]); x++) {

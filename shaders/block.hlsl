@@ -33,8 +33,10 @@ cbuffer Frame : register(b0)
 };
 cbuffer ChunkCB : register(b1)
 {
-    float4 gOffset;                 // chunk origin minus camera position
+    float4 gOffset;                 // where the mesh's (0,0,0) is, relative to the camera (a chunk's origin)
+    float4 gAxisX, gAxisY, gAxisZ;  // the mesh's axes: objects are turned and sized; 1,0,0 / 0,1,0 / 0,0,1 for the world's chunks
 };
+float3 meshToRel(float3 p) { return gOffset.xyz + gAxisX.xyz * p.x + gAxisY.xyz * p.y + gAxisZ.xyz * p.z; }
 
 Texture2DArray gTex : register(t0);
 Texture2D<float> gShadow : register(t1);
@@ -111,12 +113,13 @@ VSOut VS_Block(VSIn i)
 {
     VSOut o;
     float layer;
-    float3 p = sway(i.pos + gOffset.xyz, i.layer, i.uv.y, layer);
+    float3 p = sway(meshToRel(i.pos), i.layer, i.uv.y, layer);
     o.pos = mul(float4(p, 1), gViewProj);
     o.uvl = float3(i.uv, layer);
     o.ao = (i.lit & 255) / 255.0;
     o.rel = p;
-    o.n = unpackNormal(i.normal);
+    float3 nl = unpackNormal(i.normal);
+    o.n = normalize(gAxisX.xyz * nl.x + gAxisY.xyz * nl.y + gAxisZ.xyz * nl.z);
     o.lamp = float4(float3((i.lit >> 8) & 15, (i.lit >> 12) & 15, (i.lit >> 16) & 15) / 15.0, (i.lit >> 20) & 1);
     o.mat = float2(((i.lit >> 21) & 15) / 15.0, (i.lit >> 25) & 1);
     o.clip = dot(p, gClipPlane.xyz) + gClipPlane.w;
@@ -244,13 +247,13 @@ float4 PS_Ghost(VSOut i) : SV_Target
 struct ShOut { float4 pos : SV_Position; float3 uvl : TEXCOORD0; };
 ShOut VS_Shadow(VSIn i)
 {
-    float layer; float3 p = sway(i.pos + gOffset.xyz, i.layer, i.uv.y, layer);
+    float layer; float3 p = sway(meshToRel(i.pos), i.layer, i.uv.y, layer);
     ShOut o; o.pos = mul(float4(p, 1), gShadowVP); o.uvl = float3(i.uv, layer); return o;
 }
 void PS_ShadowCutout(ShOut i) { clip(gTex.Sample(gSamp, i.uvl).a - 0.5); }
 ShOut VS_SkyMap(VSIn i)
 {
-    float layer; float3 p = sway(i.pos + gOffset.xyz, i.layer, i.uv.y, layer);
+    float layer; float3 p = sway(meshToRel(i.pos), i.layer, i.uv.y, layer);
     ShOut o; o.pos = mul(float4(p, 1), gSkyVP); o.uvl = float3(i.uv, layer); return o;
 }
 

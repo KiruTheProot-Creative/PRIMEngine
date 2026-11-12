@@ -21,6 +21,8 @@ struct Generator {
 // the flat surface of a mirror: points p with p[axis] == coord; sign = which way it faces (+1 / -1)
 struct MirrorPlane { bool valid = false; int axis = 0, sign = 1; double coord = 0; V3 center{ 0, 0, 0 }; double dist = 0; };
 
+struct Box3 { V3 lo, hi; };   // an axis-aligned box in world coordinates (blocks)
+
 struct Hit { int x, y, z; int nx, ny, nz; double t; double px, py, pz; };   // block, side hit (outward), distance, exact point
 
 class World {
@@ -52,7 +54,8 @@ public:
     // queries
     bool raycast(V3 origin, V3 dir, double maxT, Hit& hit) const;
     bool solidAt(int x, int y, int z) const;          // unloaded chunks count as solid so you never fall through
-    bool boxFree(V3 feet, double halfW, double height) const;
+    bool boxFree(V3 feet, double halfW, double height) const;   // also checks objectSolids
+    std::vector<Box3> objectSolids;                   // collision boxes of the objects in the world (doors, props ...)
     // moves a box (feet position) with collision; stepUp > 0 lets a walker climb steps that low while on the ground
     V3 moveBox(V3 feet, V3& vel, double halfW, double height, double dt, bool& onGround, double stepUp = 0) const;
 

@@ -8,6 +8,7 @@
 #include "../game/demo.h"
 #include "../game/project.h"
 #include "../game/brush.h"
+#include "../game/objects.h"
 #include "../game/weather.h"
 #include "../core/png.h"
 #include "../core/noise.h"
@@ -83,9 +84,10 @@ struct alignas(16) FrameCB {
     XMFLOAT4X4 skyVP; float weather[4], weather2[4];
     float env[4], envPart[4], envPartColor[4], refl[4], clipPlane[4], mirror[4], ao[4];
 };
-struct alignas(16) ChunkCB { float offset[4]; };
+struct alignas(16) ChunkCB { float offset[4]; float ax[4] = { 1, 0, 0, 0 }, ay[4] = { 0, 1, 0, 0 }, az[4] = { 0, 0, 1, 0 }; };   // axes: objects are turned and sized
 
 struct GpuChunk { ComPtr<ID3D11Buffer> vbO, ibO, vbC, ibC, vbW, ibW; UINT nO = 0, nC = 0, nW = 0; };
+struct ModelGpu { std::vector<std::pair<I3, GpuChunk>> parts; std::vector<Box3> boxes; };   // a block model's meshes (16^3 pieces) and collision
 
 struct App;
 static App* g_app = nullptr;
@@ -160,7 +162,12 @@ struct App {
     double fps = 0; int fpsN = 0; double fpsAcc = 0;
 
     // ---- the editor (G1): docked panels around the viewport, and Play mode
-    enum class Sel { None, World, Weather, Environment, Zone, Spawn, Player, Game, Block, Texture, Shape, Tool };
+    enum class Sel { None, World, Weather, Environment, Zone, Spawn, Player, Game, Block, Texture, Shape, Tool, Object, Selection, Model };
+    // ---- objects (G2)
+    ModelLibrary models; std::map<std::string, ModelGpu> modelGpu;
+    std::vector<WorldObject> objects; uint32_t nextObjId = 1;
+    std::string placing, selModel, newModelName; double placeYaw = 0, placeScale = 1; int movingObj = -1, dupFrom = -1; bool replaceWithObject = true;
+    I3 selA{ 0, 0, 0 }, selB{ 0, 0, 0 }; int selStage = 0; BlockModel clipboard; bool hasClip = false;   // selection box (tool 2)
     // ---- tools (T): a second hotbar with editing tools; slot 1 is the terrain brush
     bool toolMode = false, brushMenu = false; int toolSel = 0;
     BrushSettings brush; BlockId brushMat = 0;    // 0: the block in the block hotbar
@@ -431,6 +438,7 @@ struct App {
         world->store = std::make_unique<RegionStore>(worldDir + "/region");
         workers = std::make_unique<MeshWorkers>(reg); workers->start(Threads());
         player = info.player; history.clear(); gpu.clear(); latestSeq.clear();
+        LoadWorldObjects(); selStage = 0;
         for (int i = 0; i < 9; i++) {   // "stone" or "stone@stairs"
             std::string e = info.hotbar[i], shape; size_t at = e.rfind('@'); if (at != std::string::npos) { shape = e.substr(at + 1); e = e.substr(0, at); }
             BlockId t = reg.find(e); hotbar[i] = t ? makeBlock(t, Shapes::get().find(shape)) : AIR;
@@ -446,6 +454,7 @@ struct App {
         if (!world) return;
         info.player = playMode ? editCam : player; info.hotSel = hotSel; info.weather = weather.type().key; info.autoWeather = weather.autoChange; for (int i = 0; i < 9; i++) info.hotbar[i] = !reg.has(hotbar[i]) ? "" : reg.get(hotbar[i]).name + (shapeOf(hotbar[i]) ? "@" + Shapes::get().info(shapeOf(hotbar[i])).key : "");
         info.save(worldDir); world->saveAll();
+        saveObjects(worldDir + "/objects.txt", objects);
     }
     void CloseWorld() {   // the project stays open
         if (playMode) StopPlay();
@@ -510,6 +519,9 @@ struct App {
         if (Down(VK_CONTROL) && k == 'Z') { if (history.undo(*world)) Toast("Undo"); return; }
         if (Down(VK_CONTROL) && k == 'Y') { if (history.redo(*world)) Toast("Redo"); return; }
         if (Down(VK_CONTROL) && k == 'S') { SaveWorld(); Toast("Saved"); return; }
+        if (Down(VK_CONTROL) && k == 'C' && toolMode && toolSel == 1) { SelCopy(); return; }
+        if (Down(VK_CONTROL) && k == 'V' && toolMode && toolSel == 1) { SelPaste(); return; }
+        if (Down(VK_CONTROL) && k == 'D' && sel == Sel::Object) { DuplicateObject(selIndex); return; }
         if (k == 'E' && !paused) { if (EditorView()) { Capture(false); focusAssets = true; } else { inventory = !inventory; editorOpen = false; shapeMenu = false; Capture(!inventory); } return; }
         if (k == 'T' && !repeat && !paused && !inventory) {   // block hotbar <-> tool hotbar
             toolMode = !toolMode; shapeMenu = brushMenu = false; EndStroke();
@@ -525,6 +537,18 @@ struct App {
         if (toolMode && (k == VK_OEM_MINUS || k == VK_SUBTRACT)) { brush.radius = std::max(0, brush.radius - 1); return; }
         if (!Playing() || repeat) return;
         if (k >= '1' && k <= '9') { if (toolMode) toolSel = (int)(k - '1'); else hotSel = (int)(k - '1'); }
+        if (toolMode && toolSel == 1) {   // selection box
+            if (k == VK_DELETE) SelFill(AIR);
+            if (k == 'F') SelFill(reg.has(typeOf(hotbar[hotSel])) ? hotbar[hotSel] : reg.find("stone"));
+        }
+        if (toolMode && toolSel == 2) {   // objects
+            if (k == 'R' && !placing.empty()) placeYaw = std::fmod(placeYaw + (Down(VK_SHIFT) ? 15 : 90) + 540, 360) - 180;
+            if (sel == Sel::Object && placing.empty()) {
+                if (k == 'G') PickUpObject(selIndex);
+                if (k == VK_DELETE) DeleteObject(selIndex);
+                if (k == 'R') { objects[selIndex].yaw = std::fmod(objects[selIndex].yaw + (Down(VK_SHIFT) ? 15 : 90) + 540, 360) - 180; RebuildSolids(); }
+            }
+        }
         if (k == VK_SPACE) {
             double now = ImGui::GetTime();
             if (now - lastSpace < 0.3) { player.toggleFly(); Toast(player.flying ? "Flying" : "Walking"); lastSpace = -10; } else lastSpace = now;
@@ -601,6 +625,249 @@ struct App {
     bool FlowButton(const char* label, bool compact = false) { Flow(ButtonW(label, compact)); return compact ? ImGui::SmallButton(label) : ImGui::Button(label); }
     float Cols(int n) { float sp = ImGui::GetStyle().ItemSpacing.x; return std::floor((ImGui::GetContentRegionAvail().x - sp * (n - 1)) / n); }   // width of n buttons side by side
 
+    // ================================================================== objects (G2)
+    const BlockModel* ModelOf(const WorldObject& o) const { return models.find(o.model); }
+    ModelGpu& GpuModel(const std::string& name) {   // the model's meshes, made the first time they are needed
+        auto it = modelGpu.find(name); if (it != modelGpu.end()) return it->second;
+        ModelGpu& g = modelGpu[name];
+        const BlockModel* m = models.find(name); if (!m) return g;
+        g.boxes = modelBoxes(*m, reg);
+        for (int cy = 0; cy * CS < m->sy; cy++) for (int cz = 0; cz * CS < m->sz; cz++) for (int cx = 0; cx * CS < m->sx; cx++) {
+            MeshInput in; in.pos = { cx, cy, cz }; in.blocks.assign(PAD * PAD * PAD, AIR);
+            for (int y = -1; y <= CS; y++) for (int z = -1; z <= CS; z++) for (int x = -1; x <= CS; x++) {
+                BlockId v = m->at(cx * CS + x, cy * CS + y, cz * CS + z); if (v != AIR && !reg.has(v)) v = AIR;
+                in.blocks[padIdx(x, y, z)] = v;
+            }
+            ChunkMesh cm; buildMesh(reg, in, cm);
+            GpuChunk gc; Upload(cm.opaque, gc.vbO, gc.ibO, gc.nO); Upload(cm.cutout, gc.vbC, gc.ibC, gc.nC); Upload(cm.water, gc.vbW, gc.ibW, gc.nW);
+            if (gc.nO || gc.nC || gc.nW) g.parts.push_back({ { cx, cy, cz }, std::move(gc) });
+        }
+        return g;
+    }
+    void ModelChanged(const std::string& name) { modelGpu.erase(name); RebuildSolids(); }
+    void RebuildSolids() {   // the collision boxes the player bumps into
+        if (!world) return;
+        world->objectSolids.clear();
+        for (size_t i = 0; i < objects.size(); i++) {
+            if ((int)i == movingObj) continue;
+            const BlockModel* m = ModelOf(objects[i]); if (!m) continue;
+            auto b = objectBoxes(objects[i], *m, GpuModel(objects[i].model).boxes);
+            world->objectSolids.insert(world->objectSolids.end(), b.begin(), b.end());
+        }
+    }
+    // draws one object (pass 0 solid, 1 cut-out, 2 water) with the current shaders
+    void DrawObject(const WorldObject& o, int pass) {
+        const BlockModel* m = ModelOf(o); if (!m) return;
+        ModelGpu& g = GpuModel(o.model);
+        double a = o.yaw * 3.14159265358979 / 180, c = std::cos(a), s = std::sin(a), k = o.scale;
+        V3 ax{ c * k, 0, -s * k }, ay{ 0, k, 0 }, az{ s * k, 0, c * k };
+        for (auto& part : g.parts) {
+            const GpuChunk& gc = part.second; UINT n = pass == 0 ? gc.nO : pass == 1 ? gc.nC : gc.nW; if (!n) continue;
+            V3 l{ part.first.x * (double)CS - m->pivot.x, part.first.y * (double)CS - m->pivot.y, part.first.z * (double)CS - m->pivot.z };
+            V3 org = o.pos - camPos + ax * l.x + ay * l.y + az * l.z;
+            ChunkCB cc{ { (float)org.x, (float)org.y, (float)org.z, 0 }, { (float)ax.x, (float)ax.y, (float)ax.z, 0 }, { (float)ay.x, (float)ay.y, (float)ay.z, 0 }, { (float)az.x, (float)az.y, (float)az.z, 0 } };
+            ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);
+            UINT stride = sizeof(Vtx), off = 0;
+            ctx->IASetVertexBuffers(0, 1, pass == 0 ? gc.vbO.GetAddressOf() : pass == 1 ? gc.vbC.GetAddressOf() : gc.vbW.GetAddressOf(), &stride, &off);
+            ctx->IASetIndexBuffer(pass == 0 ? gc.ibO.Get() : pass == 1 ? gc.ibC.Get() : gc.ibW.Get(), DXGI_FORMAT_R32_UINT, 0);
+            ctx->DrawIndexed(n, 0, 0);
+        }
+    }
+    void LoadWorldObjects() {
+        objects.clear(); loadObjects(worldDir + "/objects.txt", objects);
+        nextObjId = 1; for (auto& o : objects) nextObjId = std::max(nextObjId, o.id + 1);
+        movingObj = -1; placing.clear(); RebuildSolids();
+    }
+    std::string UniqueObjectName(const std::string& base) const {
+        for (int k = 1;; k++) { std::string n = base + " " + std::to_string(k); bool used = false; for (auto& o : objects) used |= o.name == n; if (!used) return n; }
+    }
+    // where a model would be placed: on the face you look at, lined up with the blocks (Alt: exactly where you look)
+    bool PlacePose(WorldObject& o) {
+        const BlockModel* m = models.find(placing); if (!m || !toolValid) return false;
+        o.model = placing; o.yaw = placeYaw;
+        if (Down(VK_MENU)) { o.pos = { toolHit.px, toolHit.py, toolHit.pz }; return true; }
+        I3 a{ toolHit.x + toolHit.nx, toolHit.y + toolHit.ny, toolHit.z + toolHit.nz };
+        bool side = std::fmod(std::fabs(placeYaw) + 0.001, 180.0) > 45 && std::fmod(std::fabs(placeYaw) + 0.001, 180.0) < 135;
+        auto half = [&](double w) { double ws = w * o.scale; long r = std::lround(ws); return std::fabs(ws - r) < 1e-6 && (r % 2) == 0 ? 0.0 : 0.5; };
+        o.pos = { a.x + half(side ? m->sz : m->sx), (double)a.y, a.z + half(side ? m->sx : m->sz) };
+        return true;
+    }
+    void StartPlacing(const std::string& model) {
+        placing = model; placeYaw = 0; placeScale = 1; movingObj = -1; dupFrom = -1; toolMode = true; toolSel = 2; sel = Sel::Tool;
+        Toast("Placing " + model + ": click to put it down, R turns it, right click stops");
+    }
+    void PickUpObject(int i) {   // move: the object follows the crosshair until you click again
+        if (i < 0 || i >= (int)objects.size()) return;
+        placing = objects[i].model; placeYaw = objects[i].yaw; placeScale = objects[i].scale; movingObj = i; toolMode = true; toolSel = 2;
+        RebuildSolids(); Toast("Moving " + objects[i].name + ": click to put it down, right click puts it back");
+    }
+    void DeleteObject(int i) {
+        if (i < 0 || i >= (int)objects.size()) return;
+        Toast("Deleted " + objects[i].name); objects.erase(objects.begin() + i);
+        if (sel == Sel::Object) sel = Sel::None; movingObj = -1; RebuildSolids();
+    }
+    void DuplicateObject(int i) {
+        if (i < 0 || i >= (int)objects.size()) return;
+        placing = objects[i].model; placeYaw = objects[i].yaw; placeScale = objects[i].scale; movingObj = -1; dupFrom = i; toolMode = true; toolSel = 2;
+        Toast("Placing a copy: click to put it down");
+    }
+    int ObjectUnderCrosshair(double maxT) const {   // the nearest object the view ray hits (if nearer than the blocks)
+        int best = -1; double bt = maxT;
+        for (size_t i = 0; i < objects.size(); i++) {
+            const BlockModel* m = ModelOf(objects[i]); if (!m || (int)i == movingObj) continue;
+            double t; if (rayBox(player.eye(), player.forward(), objectBounds(objects[i], *m), t) && t < bt) { bt = t; best = (int)i; }
+        }
+        return best;
+    }
+    // ---- selection box
+    I3 SelLo() const { return { std::min(selA.x, selB.x), std::min(selA.y, selB.y), std::min(selA.z, selB.z) }; }
+    I3 SelHi() const { return { std::max(selA.x, selB.x), std::max(selA.y, selB.y), std::max(selA.z, selB.z) }; }
+    void ApplyEdits(std::vector<Edit>&& e, const std::string& what) {
+        if (e.empty()) { Toast("Nothing to change"); return; }
+        for (auto& x : e) world->set(x.x, x.y, x.z, x.after);
+        size_t n = e.size(); history.push(std::move(e)); Toast(what + ": " + std::to_string(n) + " blocks (Ctrl+Z undoes it)");
+    }
+    void SelFill(BlockId v) { if (selStage == 2) ApplyEdits(fillEdits(*world, SelLo(), SelHi(), v), v ? "Filled" : "Deleted"); }
+    void SelCopy() { if (selStage != 2) return; clipboard = modelFromWorld(*world, SelLo(), SelHi(), "copy", false); hasClip = true; Toast("Copied " + std::to_string(clipboard.sx) + " x " + std::to_string(clipboard.sy) + " x " + std::to_string(clipboard.sz)); }
+    void SelPaste() {
+        if (!hasClip || !toolValid) return;
+        I3 at{ toolHit.x + toolHit.nx, toolHit.y + toolHit.ny, toolHit.z + toolHit.nz };
+        ApplyEdits(pasteEdits(*world, clipboard, at), "Pasted");
+        selA = at; selB = { at.x + clipboard.sx - 1, at.y + clipboard.sy - 1, at.z + clipboard.sz - 1 }; selStage = 2;
+    }
+    void MakeIntoObject(const std::string& wanted, bool replace) {
+        if (selStage != 2) return;
+        I3 corner; BlockModel m = modelFromWorld(*world, SelLo(), SelHi(), models.uniqueName(wanted.empty() ? "Model" : wanted), true, &corner);
+        if (!m.blockCount()) { Toast("There are no blocks in the box"); return; }
+        models.store(m); ModelChanged(m.name);
+        WorldObject o; o.id = nextObjId++; o.name = UniqueObjectName(m.name); o.model = m.name;
+        o.pos = { corner.x + m.pivot.x, (double)corner.y, corner.z + m.pivot.z };
+        if (replace) { ApplyEdits(fillEdits(*world, corner, { corner.x + m.sx - 1, corner.y + m.sy - 1, corner.z + m.sz - 1 }, AIR), "Turned into an object"); objects.push_back(o); }
+        else { o.pos.x += m.sx + 1; objects.push_back(o); Toast("Made the model " + m.name); }
+        RebuildSolids(); sel = Sel::Object; selIndex = (int)objects.size() - 1; selStage = 0;
+    }
+    void ObjectToolClick(bool left, bool right) {
+        if (!placing.empty()) {
+            if (right) {   // stop placing (a moved object goes back where it was)
+                if (movingObj >= 0) { int i = movingObj; movingObj = -1; sel = Sel::Object; selIndex = i; }
+                placing.clear(); dupFrom = -1; RebuildSolids(); return;
+            }
+            WorldObject o; if (!left || !PlacePose(o)) return;
+            o.scale = placeScale;
+            PlacePose(o);
+            if (movingObj >= 0) { WorldObject& t = objects[movingObj]; t.pos = o.pos; t.yaw = o.yaw; sel = Sel::Object; selIndex = movingObj; movingObj = -1; placing.clear(); }
+            else {
+                WorldObject n = dupFrom >= 0 && dupFrom < (int)objects.size() ? objects[dupFrom] : WorldObject{};
+                n.id = nextObjId++; n.model = o.model; n.pos = o.pos; n.yaw = o.yaw; n.scale = o.scale;
+                n.name = UniqueObjectName(o.model);
+                objects.push_back(n); sel = Sel::Object; selIndex = (int)objects.size() - 1;
+                if (dupFrom >= 0) { placing.clear(); dupFrom = -1; }
+            }
+            RebuildSolids(); return;
+        }
+        if (left) { int i = ObjectUnderCrosshair(toolValid ? toolHit.t + 0.01 : 160); if (i >= 0) { sel = Sel::Object; selIndex = i; } else if (sel == Sel::Object) sel = Sel::Tool; }
+    }
+    void ObjectIcon(ImDrawList* dl, const BlockModel& m, ImVec2 c, float s) {   // its most used block, as a stand-in picture
+        std::map<BlockId, int> n; for (BlockId v : m.cells) if (v != AIR) n[typeOf(v)]++;
+        BlockId best = AIR; int bc = 0; for (auto& k : n) if (k.second > bc) { bc = k.second; best = k.first; }
+        if (best) { BlockIcon(dl, best, ImVec2(c.x - s * 0.12f, c.y + s * 0.08f), s * 0.62f); BlockIcon(dl, best, ImVec2(c.x + s * 0.16f, c.y - s * 0.14f), s * 0.42f); }
+    }
+    void DrawBox3(ImDrawList* dl, V3 lo, V3 hi, ImU32 col) {
+        V3 q[8]; for (int i = 0; i < 8; i++) q[i] = { (i & 1) ? hi.x : lo.x, (i & 2) ? hi.y : lo.y, (i & 4) ? hi.z : lo.z };
+        const int e[12][2] = { { 0, 1 }, { 2, 3 }, { 4, 5 }, { 6, 7 }, { 0, 2 }, { 1, 3 }, { 4, 6 }, { 5, 7 }, { 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 } };
+        for (auto& k : e) Line3D(dl, q[k[0]], q[k[1]], col);
+    }
+    void DrawObjectGuides(ImDrawList* dl) {   // selection box, object outlines (editor only)
+        if (playMode) return;
+        if (toolMode && toolSel == 1 && (selStage == 1 || selStage == 2)) {
+            I3 b = selStage == 1 && toolValid ? I3{ toolHit.x, toolHit.y, toolHit.z } : selB;
+            I3 lo{ std::min(selA.x, b.x), std::min(selA.y, b.y), std::min(selA.z, b.z) }, hi{ std::max(selA.x, b.x), std::max(selA.y, b.y), std::max(selA.z, b.z) };
+            DrawBox3(dl, { (double)lo.x, (double)lo.y, (double)lo.z }, { hi.x + 1.0, hi.y + 1.0, hi.z + 1.0 }, IM_COL32(90, 220, 255, 255));
+            ImVec2 sp; if (Project({ hi.x + 1.0, hi.y + 1.2, hi.z + 1.0 }, sp)) {
+                std::string t = std::to_string(hi.x - lo.x + 1) + " x " + std::to_string(hi.y - lo.y + 1) + " x " + std::to_string(hi.z - lo.z + 1);
+                dl->AddText(sp, IM_COL32(150, 235, 255, 255), t.c_str());
+            }
+        }
+        if (toolMode && toolSel == 1 && selStage == 0 && toolValid)
+            DrawBox3(dl, { (double)toolHit.x, (double)toolHit.y, (double)toolHit.z }, { toolHit.x + 1.0, toolHit.y + 1.0, toolHit.z + 1.0 }, IM_COL32(90, 220, 255, 160));
+        if (sel == Sel::Object && selIndex >= 0 && selIndex < (int)objects.size() && selIndex != movingObj)
+            if (const BlockModel* m = ModelOf(objects[selIndex])) { Box3 b = objectBounds(objects[selIndex], *m); DrawBox3(dl, b.lo, b.hi, IM_COL32(255, 220, 90, 255)); }
+        if (toolMode && toolSel == 2 && placing.empty()) {
+            int h = ObjectUnderCrosshair(toolValid ? toolHit.t + 0.01 : 160);
+            if (h >= 0 && !(sel == Sel::Object && selIndex == h)) if (const BlockModel* m = ModelOf(objects[h])) { Box3 b = objectBounds(objects[h], *m); DrawBox3(dl, b.lo, b.hi, IM_COL32(255, 255, 255, 140)); }
+        }
+        if (toolMode && toolSel == 2 && !placing.empty()) {
+            WorldObject o; o.scale = placeScale;
+            if (PlacePose(o)) if (const BlockModel* m = models.find(placing)) { Box3 b = objectBounds(o, *m); DrawBox3(dl, b.lo, b.hi, IM_COL32(120, 255, 150, 220)); }
+        }
+    }
+    void ObjectInspector() {
+        if (selIndex < 0 || selIndex >= (int)objects.size()) { Hint("Pick an object in the Outliner, or click one with the Objects tool."); return; }
+        WorldObject& o = objects[selIndex]; const BlockModel* m = ModelOf(o); bool ch_ = false;
+        ImGui::SeparatorText("Object");
+        Prop("Name"); ImGui::InputText("##name", &o.name);
+        Prop("Folder"); ImGui::InputText("##folder", &o.folder);
+        Prop("Model");
+        if (ImGui::BeginCombo("##model", o.model.c_str())) { for (auto& kv : models.models) if (ImGui::Selectable(kv.first.c_str(), kv.first == o.model)) { o.model = kv.first; ch_ = true; } ImGui::EndCombo(); }
+        Prop("Position"); ch_ |= ImGui::InputScalarN("##pos", ImGuiDataType_Double, &o.pos.x, 3, nullptr, nullptr, "%.2f");
+        { float y = (float)o.yaw; Prop("Turn"); if (ImGui::SliderFloat("##yaw", &y, -180, 180, "%.0f deg")) { o.yaw = y; ch_ = true; }
+          if (ImGui::SmallButton("-90")) { o.yaw = std::fmod(o.yaw - 90 + 540, 360) - 180; ch_ = true; } if (FlowButton("+90", true)) { o.yaw = std::fmod(o.yaw + 90 + 540, 360) - 180; ch_ = true; } }
+        { float sc = (float)o.scale; Prop("Size"); if (ImGui::SliderFloat("##scale", &sc, 0.1f, 8, "x %.2f", ImGuiSliderFlags_Logarithmic)) { o.scale = sc; ch_ = true; } }
+        if (m) {
+            double h = m->sy * o.scale; Prop("Height (blocks)");
+            if (ImGui::InputDouble("##height", &h, 0.5, 1, "%.2f") && h > 0.05) { o.scale = h / m->sy; ch_ = true; }
+            Hint("%.2f wide, %.2f tall, %.2f deep (blocks). The player is 1.8 tall, the morph ball 1.", m->sx * o.scale, m->sy * o.scale, m->sz * o.scale);
+        }
+        int cm = (int)o.collide; const char* cn[] = { collideName(Collide::Exact), collideName(Collide::OneBox), collideName(Collide::None) };
+        Prop("Collision"); if (ImGui::Combo("##coll", &cm, cn, 3)) { o.collide = (Collide)cm; ch_ = true; }
+        if (m) Hint("Made from its blocks by itself: %d boxes.", (int)objectBoxes(o, *m, GpuModel(o.model).boxes).size());
+        if (ch_) RebuildSolids();
+        ImGui::Spacing();
+        if (ImGui::Button("Move (G)")) PickUpObject(selIndex);
+        if (FlowButton("Copy (Ctrl+D)")) DuplicateObject(selIndex);
+        if (FlowButton("Go there")) { player.feet = { o.pos.x, o.pos.y + (m ? m->sy * o.scale : 1) + 1, o.pos.z - 4 }; player.flying = true; player.yaw = 0; player.pitch = -0.4; }
+        if (FlowButton("Delete (Del)")) { DeleteObject(selIndex); return; }
+    }
+    void SelectionInspector() {
+        ImGui::SeparatorText("Selection box");
+        if (selStage != 2) { Hint(selStage == 1 ? "Now click the other corner." : "Click one corner of a box of blocks, then the other corner. Right click clears it."); }
+        else {
+            I3 lo = SelLo(), hi = SelHi();
+            Hint("%d x %d x %d blocks, from %d %d %d to %d %d %d", hi.x - lo.x + 1, hi.y - lo.y + 1, hi.z - lo.z + 1, lo.x, lo.y, lo.z, hi.x, hi.y, hi.z);
+            float bw = Cols(2);
+            if (ImGui::Button("Copy (Ctrl+C)", ImVec2(bw, 0))) SelCopy();
+            ImGui::SameLine(); ImGui::BeginDisabled(!hasClip); if (ImGui::Button("Paste (Ctrl+V)", ImVec2(bw, 0))) SelPaste(); ImGui::EndDisabled();
+            BlockId held = typeOf(hotbar[hotSel]);
+            if (ImGui::Button("Fill (F)", ImVec2(bw, 0))) SelFill(reg.has(held) ? hotbar[hotSel] : reg.find("stone"));
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("With the block in your hand: %s", reg.has(held) ? reg.get(held).name.c_str() : "stone");
+            ImGui::SameLine(); if (ImGui::Button("Delete (Del)", ImVec2(bw, 0))) SelFill(AIR);
+            ImGui::SeparatorText("Make into object");
+            Prop("Name"); ImGui::InputTextWithHint("##mname", "Model name", &newModelName);
+            Prop("Replace the blocks"); ImGui::Checkbox("##repl", &replaceWithObject);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("The blocks become the object, right where they are.\nOff: the blocks stay, the object is put next to them.");
+            if (ImGui::Button("Make into object", ImVec2(-FLT_MIN, 0))) MakeIntoObject(newModelName, replaceWithObject);
+            Hint("The new model shows up in Assets > Models, ready to place again and again.");
+        }
+        if (hasClip) Hint("Copied: %d x %d x %d. Ctrl+V pastes it where you look.", clipboard.sx, clipboard.sy, clipboard.sz);
+    }
+    void ModelInspector() {
+        const BlockModel* m = models.find(selModel); if (!m) { Hint("Pick a model in Assets > Models."); return; }
+        ImGui::SeparatorText("Model");
+        float s = std::min(ImGui::GetContentRegionAvail().x, 140 * settings.uiScale); ImVec2 p = ImGui::GetCursorScreenPos();
+        ImGui::GetWindowDrawList()->AddRectFilled(p, ImVec2(p.x + s, p.y + s), IM_COL32(30, 32, 38, 255), 4.f);
+        ObjectIcon(ImGui::GetWindowDrawList(), *m, ImVec2(p.x + s * 0.5f, p.y + s * 0.5f), s * 0.8f); ImGui::Dummy(ImVec2(s, s));
+        ImGui::Text("%s", m->name.c_str());
+        int used = 0; for (auto& o : objects) used += o.model == m->name;
+        Hint("%d x %d x %d blocks, %d blocks in it. Used %d times in this world.", m->sx, m->sy, m->sz, m->blockCount(), used);
+        if (ImGui::Button("Place it")) StartPlacing(m->name);
+        if (FlowButton("Unpack as blocks")) { if (toolValid) { BlockModel c = *m; I3 at{ toolHit.x + toolHit.nx, toolHit.y + toolHit.ny, toolHit.z + toolHit.nz }; ApplyEdits(pasteEdits(*world, c, at), "Unpacked"); } else Toast("Look at where the blocks should go"); }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Puts its blocks where you look, so you can change them\nand make a new object from them.");
+        ImGui::BeginDisabled(used > 0);
+        if (FlowButton("Delete model")) { std::string n = m->name; models.remove(n); modelGpu.erase(n); selModel.clear(); sel = Sel::None; }
+        ImGui::EndDisabled();
+        if (used > 0 && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Delete the objects that use it first.");
+    }
+
     // ---- tools
     BlockId BrushMaterial() const { BlockId m = brushMat ? brushMat : typeOf(hotbar[hotSel]); return reg.has(m) ? typeOf(m) : reg.find("stone"); }
     void EndStroke() {
@@ -612,6 +879,15 @@ struct App {
         hoverValid = false;
         bool L = Down(VK_LBUTTON), R = Down(VK_RBUTTON);
         if (!L && !R) { EndStroke(); lPrev = rPrev = false; return; }
+        if (toolSel == 1) {   // selection box: first click one corner, then the other; right click clears
+            if (L && !lPrev && toolValid) {
+                I3 h{ toolHit.x, toolHit.y, toolHit.z };
+                if (selStage == 1) { selB = h; selStage = 2; sel = Sel::Selection; } else { selA = selB = h; selStage = 1; sel = Sel::Selection; }
+            }
+            if (R && !rPrev) { selStage = 0; }
+            lPrev = L; rPrev = R; return;
+        }
+        if (toolSel == 2) { ObjectToolClick(L && !lPrev, R && !rPrev); lPrev = L; rPrev = R; return; }
         if (toolSel != 0) { lPrev = L; rPrev = R; return; }   // more tools come later
         if (!stroking && ((L && !lPrev) || (R && !rPrev)) && toolValid) {
             stroking = true; strokeOp = L ? brush.op : opposite(brush.op); strokeY = toolHit.y; dabCool = 0; strokeSeed = (uint32_t)GetTickCount();
@@ -626,10 +902,36 @@ struct App {
         if (strokeOp == BrushOp::Add) c = { toolHit.x + toolHit.nx, toolHit.y + toolHit.ny, toolHit.z + toolHit.nz };   // grows out of the surface
         stroke.apply(*world, brushEdits(*world, b, c, BrushMaterial(), strokeY, strokeSeed));
     }
+    std::string ToolName() const { return toolSel == 0 ? BrushLabel() : toolSel == 1 ? "Selection box" : toolSel == 2 ? (placing.empty() ? "Objects" : "Objects: placing " + placing) : "(empty tool slot)"; }
+    std::string ToolLabel() const {
+        switch (toolSel) {
+        case 0: return BrushLabel() + "   (Q: brush options, T: back to blocks)";
+        case 1: return selStage == 0 ? "Selection box: click a corner   (T: back to blocks)" : selStage == 1 ? "Selection box: click the other corner (right click: start over)"
+                     : "Selection box   Ctrl+C copy, Ctrl+V paste, F fill, Del delete, make into object in the Inspector";
+        case 2: return !placing.empty() ? "Click to put down " + placing + "   R turn (Shift+R a little), Alt: off the grid, right click: stop"
+                     : "Objects: click one to pick it   G move, R turn, Ctrl+D copy, Del delete.   Assets > Models to place one";
+        default: return "(more tools are coming here)   T: back to blocks";
+        }
+    }
     std::string BrushLabel() const {
         return std::string("Terrain brush: ") + shapeInfo(brush.shape).name + ", " + opInfo(brush.op).name + ", size " + std::to_string(brush.radius);
     }
     void ToolIcon(ImDrawList* dl, int tool, ImVec2 c, float s) {
+        if (tool == 1) {   // selection box: a dashed square
+            float h = s * 0.42f; ImU32 col = IM_COL32(120, 220, 255, 255);
+            for (int i = 0; i < 4; i++) { float t0 = -h + i * h * 0.5f + h * 0.06f, t1 = t0 + h * 0.3f;
+                dl->AddLine(ImVec2(c.x + t0, c.y - h), ImVec2(c.x + t1, c.y - h), col, 2); dl->AddLine(ImVec2(c.x + t0, c.y + h), ImVec2(c.x + t1, c.y + h), col, 2);
+                dl->AddLine(ImVec2(c.x - h, c.y + t0), ImVec2(c.x - h, c.y + t1), col, 2); dl->AddLine(ImVec2(c.x + h, c.y + t0), ImVec2(c.x + h, c.y + t1), col, 2); }
+            return;
+        }
+        if (tool == 2) {   // objects: a little crate
+            float h = s * 0.36f; ImVec2 a(c.x - h, c.y - h * 0.6f), b(c.x + h * 0.6f, c.y + h);
+            dl->AddRectFilled(a, b, IM_COL32(170, 120, 70, 255), 2); dl->AddRect(a, b, IM_COL32(90, 60, 30, 255), 2, 0, 2);
+            dl->AddLine(a, b, IM_COL32(90, 60, 30, 255), 2); dl->AddLine(ImVec2(a.x, b.y), ImVec2(b.x, a.y), IM_COL32(90, 60, 30, 255), 2);
+            dl->AddQuadFilled(a, ImVec2(a.x + h * 0.4f, a.y - h * 0.4f), ImVec2(b.x + h * 0.4f, a.y - h * 0.4f), ImVec2(b.x, a.y), IM_COL32(200, 150, 95, 255));
+            dl->AddQuadFilled(ImVec2(b.x, a.y), ImVec2(b.x + h * 0.4f, a.y - h * 0.4f), ImVec2(b.x + h * 0.4f, b.y - h * 0.4f), b, IM_COL32(130, 90, 50, 255));
+            return;
+        }
         if (tool != 0) return;
         float h = s * 0.5f;   // terrain brush: a little mountain with a snowy top
         dl->AddTriangleFilled(ImVec2(c.x - h, c.y + h * 0.7f), ImVec2(c.x - h * 0.15f, c.y - h * 0.75f), ImVec2(c.x + h * 0.55f, c.y + h * 0.7f), IM_COL32(110, 120, 95, 255));
@@ -966,6 +1268,7 @@ struct App {
                 ctx->IASetIndexBuffer(pass == 0 ? g.ibO.Get() : pass == 1 ? g.ibC.Get() : g.ibW.Get(), DXGI_FORMAT_R32_UINT, 0);
                 ctx->DrawIndexed(n, 0, 0); if (counting) drawnChunks += pass == 0;
             }
+            for (size_t oi = 0; oi < objects.size(); oi++) if ((int)oi != movingObj) DrawObject(objects[oi], pass);   // objects: same shaders, turned and sized
         };
         ID3D11ShaderResourceView* none[5] = {};
         ctx->PSSetShaderResources(0, 5, none);
@@ -1078,6 +1381,14 @@ struct App {
                 ctx->OMSetBlendState(bsAlpha.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsTestOnly.Get(), 0); ctx->PSSetShader(psGhost.Get(), nullptr, 0);
                 UINT stride = sizeof(Vtx), off = 0; ctx->IASetVertexBuffers(0, 1, vbGhost.GetAddressOf(), &stride, &off); ctx->IASetIndexBuffer(ibGhost.Get(), DXGI_FORMAT_R32_UINT, 0);
                 ctx->DrawIndexed(nGhost, 0, 0);
+                ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0);
+            }
+        }
+        if (toolMode && toolSel == 2 && !placing.empty() && !playMode) {   // the object you are placing, see-through
+            WorldObject o; o.scale = placeScale;
+            if (PlacePose(o)) {
+                ctx->OMSetBlendState(bsAlpha.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsTestOnly.Get(), 0); ctx->PSSetShader(psGhost.Get(), nullptr, 0);
+                DrawObject(o, 0); DrawObject(o, 1);
                 ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0);
             }
         }
@@ -1235,6 +1546,7 @@ struct App {
             const int e[12][2] = { { 0, 1 }, { 2, 3 }, { 4, 5 }, { 6, 7 }, { 0, 2 }, { 1, 3 }, { 4, 6 }, { 5, 7 }, { 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 } };
             for (auto& k : e) Line3D(dl, q[k[0]], q[k[1]], IM_COL32(255, 255, 255, 160));
         }
+        DrawObjectGuides(dl);
         if (!playMode && info.hasSpawn) {   // the spawn point: a green player-sized box with an arrow where it looks
             V3 f = info.spawn; double hw = Player::HALF_W, H = Player::HEIGHT;
             V3 c[8]; for (int i = 0; i < 8; i++) c[i] = { f.x + ((i & 1) ? hw : -hw), f.y + ((i & 2) ? H : 0), f.z + ((i & 4) ? hw : -hw) };
@@ -1266,7 +1578,7 @@ struct App {
         int hs = toolMode ? toolSel : hotSel;
         dl->AddRect(ImVec2(o.x + hs * s - 2, o.y - 2), ImVec2(o.x + hs * s + s + 2, o.y + s + 2), IM_COL32(255, 255, 255, 255), 0.f, 0, 3.f);
         if (toolMode) {
-            std::string label = toolSel == 0 ? BrushLabel() + "   (Q: brush options, T: back to blocks)" : "(more tools are coming here)   T: back to blocks";
+            std::string label = ToolLabel();
             ImVec2 ts = ImGui::CalcTextSize(label.c_str()); dl->AddText(ImVec2(vx + (cw - ts.x) * 0.5f, o.y - ts.y - 8), IM_COL32(255, 255, 255, 230), label.c_str());
         } else if (reg.has(hotbar[hotSel])) {
             BlockId hv = hotbar[hotSel]; std::string label = reg.get(hv).name;
@@ -1331,6 +1643,7 @@ struct App {
         if (world) CloseWorld();
         projectDir = dir;
         library = Library{}; library.dir = dir; library.load(reg); UploadTextures(); ghostKey = 0xFFFFFFFFu;   // this game's blocks and textures
+        models.loadAll(dir + "/models"); modelGpu.clear();
         game = GameSettings{}; gamePath = dir + "/game.txt"; game.load(gamePath);
         RefreshWorlds();
         auto has = [&](const std::string& n) { return !n.empty() && std::find(worldList.begin(), worldList.end(), n) != worldList.end(); };
@@ -1419,7 +1732,7 @@ struct App {
     // ---- Play mode
     void StartPlay(bool grabMouse = true) {
         if (screen != Screen::Game || playMode) return;
-        EndStroke(); brushMenu = false;
+        EndStroke(); brushMenu = false; placing.clear(); dupFrom = -1; if (movingObj >= 0) { movingObj = -1; RebuildSolids(); }
         editCam = player; playMode = true; paused = false; inventory = false; shapeMenu = false; editorOpen = false;
         playSpawn = info.hasSpawn ? info.spawn : player.feet; playYaw = info.hasSpawn ? info.spawnYaw : player.yaw;
         play = PlayState{}; play.start(player, game.player, playSpawn, playYaw);
@@ -1857,7 +2170,7 @@ struct App {
             I3 b = Here();
             std::string held = reg.has(hotbar[hotSel]) ? reg.get(hotbar[hotSel]).name : "(empty hand)";
             if (reg.has(hotbar[hotSel]) && shapeOf(hotbar[hotSel]) && shapeOf(hotbar[hotSel]) != Shapes::FULL) held += " - " + Shapes::get().info(shapeOf(hotbar[hotSel])).name;
-            if (toolMode) held = toolSel == 0 ? BrushLabel() : "(empty tool slot)";
+            if (toolMode) held = ToolName();
             ImGui::Text("%s   |   %s   |   %s   |   Block %d %d %d   |   %zu chunks   |   %.0f fps",
                 info.name.c_str(), captured ? "In the viewport (Esc frees the mouse)" : "Editing", (toolMode ? held : "Building with: " + held).c_str(), b.x, b.y, b.z, gpu.size(), fps);
             if (toastT > 0) { ImGui::SameLine(); ImGui::TextColored(ImVec4(1, 0.85f, 0.4f, 1), "   %s", toast.c_str()); }
@@ -1922,8 +2235,28 @@ struct App {
             }
             ImGui::TreePop();
         }
-        if (ImGui::TreeNodeEx("Objects", ImGuiTreeNodeFlags_SpanAvailWidth)) {
-            ImGui::TextDisabled("Doors, items, enemies and models\ncome next (G2).");
+        if (ImGui::TreeNodeEx("Objects", open, "Objects (%d)", (int)objects.size())) {   // by folder
+            std::vector<std::string> folders; for (auto& o : objects) if (std::find(folders.begin(), folders.end(), o.folder) == folders.end()) folders.push_back(o.folder);
+            std::sort(folders.begin(), folders.end());
+            int act = -1, what = 0;
+            for (const std::string& f : folders) {
+                if (!ImGui::TreeNodeEx(f.c_str(), open)) continue;
+                for (int i = 0; i < (int)objects.size(); i++) {
+                    if (objects[i].folder != f) continue;
+                    ImGui::PushID(i); Leaf(objects[i].name.c_str(), Sel::Object, i);
+                    if (ImGui::BeginPopupContextItem("octx")) {
+                        if (ImGui::MenuItem("Go there")) { sel = Sel::Object; selIndex = i; const WorldObject& o = objects[i]; player.feet = { o.pos.x, o.pos.y + 3, o.pos.z - 5 }; player.flying = true; player.yaw = 0; player.pitch = -0.4; }
+                        if (ImGui::MenuItem("Move")) { act = i; what = 1; }
+                        if (ImGui::MenuItem("Copy")) { act = i; what = 2; }
+                        ImGui::Separator(); if (ImGui::MenuItem("Delete")) { act = i; what = 3; }
+                        ImGui::EndPopup();
+                    }
+                    ImGui::PopID();
+                }
+                ImGui::TreePop();
+            }
+            if (act >= 0) { if (what == 1) PickUpObject(act); else if (what == 2) DuplicateObject(act); else DeleteObject(act); }
+            if (objects.empty()) Hint("Press T, take the Selection box (slot 2), box some blocks and press \"Make into object\".");
             ImGui::TreePop();
         }
         if (ImGui::TreeNodeEx("Game", open, "Game: %s", game.name.c_str())) {
@@ -2037,9 +2370,15 @@ struct App {
             break;
         case Sel::Tool:
             if (!toolMode) { Hint("Press T in the viewport for the tools."); break; }
-            ImGui::SeparatorText(toolSel == 0 ? "Terrain brush" : "Tools");
-            if (toolSel == 0) BrushBody(); else Hint("More tools are coming to this slot.");
+            ImGui::SeparatorText(toolSel == 0 ? "Terrain brush" : toolSel == 1 ? "Tools" : toolSel == 2 ? "Objects" : "Tools");
+            if (toolSel == 0) BrushBody();
+            else if (toolSel == 1) SelectionInspector();
+            else if (toolSel == 2) { Hint("Click an object in the viewport to pick it. Pick a model in Assets > Models to place it."); if (!placing.empty()) Hint("Placing: %s. R turns it, Alt puts it off the grid, right click stops.", placing.c_str()); }
+            else Hint("More tools are coming to this slot.");
             break;
+        case Sel::Object: ObjectInspector(); break;
+        case Sel::Selection: SelectionInspector(); break;
+        case Sel::Model: ModelInspector(); break;
         default: Hint("Pick something in the Outliner or the Assets."); break;
         }
         ImGui::End();
@@ -2063,6 +2402,7 @@ struct App {
             ImGui::TreePop();
         }
         if (ImGui::TreeNodeEx("Textures", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth)) { folder("All textures", 1, "", (int)reg.textureCount() - 1); ImGui::TreePop(); }
+        if (ImGui::TreeNodeEx("Models", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth)) { folder("All models", 3, "", (int)models.models.size()); ImGui::TreePop(); }
         if (ImGui::TreeNodeEx("Shapes", ImGuiTreeNodeFlags_SpanAvailWidth)) {
             const Shapes& S = Shapes::get(); folder("All shapes", 2, "", S.count() - 1);
             for (const std::string& c : S.categories()) { int n = 0; for (int i = 1; i < S.count(); i++) n += S.info(i).category == c; folder(c.c_str(), 2, c, n); }
@@ -2076,7 +2416,7 @@ struct App {
         ImGui::SameLine(); ImGui::SetNextItemWidth(120 * ui); ImGui::SliderFloat("##size", &assetSize, 36, 128, "size %.0f");
         ImGui::SameLine(); if (ImGui::Button("Import images...")) { auto f = PickImages(); if (!f.empty()) { importFiles = f; wantPopup = "Import images"; } }
         ImGui::SameLine(); if (ImGui::Button("New block")) { NewBlock(); if (!assetCat.empty() && assetKind == 0) draft.category = assetCat; sel = Sel::Block; selIndex = 0; }
-        ImGui::SameLine(); ImGui::TextDisabled(assetKind == 0 ? "Click: build with it.  Right click: more." : assetKind == 1 ? "Click: look at it.  Right click: more." : "Click: give the held block this shape.");
+        ImGui::SameLine(); ImGui::TextDisabled(assetKind == 0 ? "Click: build with it.  Right click: more." : assetKind == 1 ? "Click: look at it.  Right click: more." : assetKind == 3 ? "Click: place it in the world." : "Click: give the held block this shape.");
         ImGui::BeginChild("grid", ImVec2(0, 0), ImGuiChildFlags_Borders);
         float s = assetSize * ui, labelH = ImGui::GetTextLineHeight() + 2, sp = ImGui::GetStyle().ItemSpacing.x;
         int cols = std::max(1, (int)((ImGui::GetContentRegionAvail().x + sp) / (s + sp))), n = 0;
@@ -2129,6 +2469,22 @@ struct App {
                     if (ImGui::MenuItem("Make a flat plane (like ladders)")) MakeBlockFrom(name, ImportAs::FlatPlanes);
                     ImGui::Separator();
                     if (ImGui::MenuItem("Delete texture...")) { deleteTexAsk = name; wantPopup = "Delete texture?"; }
+                    ImGui::EndPopup();
+                }
+                ImGui::PopID();
+            }
+        } else if (assetKind == 3) {
+            int mi = 0;
+            for (auto& kv : models.models) {
+                const BlockModel& m = kv.second; mi++;
+                if (!q.empty() && Lower(m.name).find(q) == std::string::npos) continue;
+                ImGui::PushID(mi); ImVec2 p;
+                if (cell("m", m.name, sel == Sel::Model && selModel == m.name, p) && !ImGui::IsMouseReleased(ImGuiMouseButton_Right)) { sel = Sel::Model; selModel = m.name; StartPlacing(m.name); sel = Sel::Model; }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s\n%d x %d x %d blocks\nClick to place it", m.name.c_str(), m.sx, m.sy, m.sz);
+                ObjectIcon(ImGui::GetWindowDrawList(), m, ImVec2(p.x + s * 0.5f, p.y + s * 0.5f), s * 0.8f);
+                if (ImGui::BeginPopupContextItem("ctx")) {
+                    if (ImGui::MenuItem("Place it")) StartPlacing(m.name);
+                    if (ImGui::MenuItem("Show in the Inspector")) { sel = Sel::Model; selModel = m.name; }
                     ImGui::EndPopup();
                 }
                 ImGui::PopID();
@@ -2367,6 +2723,26 @@ struct App {
             frames(10, "editor");
             Select(Sel::Game); assetKind = 2; assetCat = "Slopes";
             frames(3, "editor_game_settings");
+            {   // objects: build a little console from blocks, make it into an object, place copies (turned, bigger)
+                auto ground = [&](int x, int z) { for (int y = 40; y > -40; y--) { BlockId v = world->get(x, y, z); if (v != AIR && !reg.get(v).liquid) return y; } return 0; };
+                int gy = ground(36, 24) + 1;
+                BlockId cob = reg.find("cobblestone"), met = reg.find("metal"), lmp = reg.find("lamp"), gls = reg.find("glass"), brk = reg.find("bricks");
+                for (int x = 35; x <= 37; x++) for (int z = 24; z <= 25; z++) world->set(x, gy, z, cob);
+                for (int x = 35; x <= 37; x++) { world->set(x, gy + 1, 25, met); world->set(x, gy + 2, 25, met); }
+                world->set(36, gy + 1, 24, lmp); world->set(35, gy + 3, 25, gls); world->set(37, gy + 3, 25, gls);
+                selA = { 34, gy, 23 }; selB = { 38, gy + 4, 26 }; selStage = 2; newModelName = "Console";
+                MakeIntoObject("Console", true);
+                WorldObject a = objects.back(); a.id = nextObjId++; a.name = UniqueObjectName("Console"); a.pos = { a.pos.x - 6, a.pos.y, a.pos.z + 1 }; a.yaw = 90; objects.push_back(a);
+                WorldObject b = objects.back(); b.id = nextObjId++; b.name = "Big console"; b.folder = "Big things"; b.pos = { 45.5, (double)gy, 28 }; b.yaw = -30; b.scale = 2; objects.push_back(b);
+                RebuildSolids();
+                for (int y = gy; y < gy + 3; y++) for (int x = 30; x <= 31; x++) world->set(x, y, 30, brk);
+                toolMode = true; toolSel = 2; sel = Sel::Object; selIndex = (int)objects.size() - 1; placing.clear(); assetKind = 3; assetCat.clear();
+                poseAt(DemoShot{ "o", { 36.5, gy + 6.0, 13 }, { 39, gy + 1.5, 27 }, 14.0f });
+                frames(6, "objects");
+                toolSel = 1; selA = { 30, gy, 30 }; selB = { 31, gy + 2, 30 }; selStage = 2; sel = Sel::Selection; newModelName = "Brick pillar";
+                frames(3, "selection_box");
+                selStage = 0; toolMode = false; sel = Sel::World;
+            }
             {   // tools: sculpt a little landscape with the terrain brush, then show it with the brush options open
                 auto ground = [&](int x, int z) { for (int y = 40; y > -40; y--) { BlockId v = world->get(x, y, z); if (v != AIR && !reg.get(v).liquid) return y; } return 0; };
                 int gy = ground(-34, 26); BrushStroke st;

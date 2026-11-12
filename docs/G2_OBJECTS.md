@@ -10,7 +10,7 @@
 ## Kinds
 - Props: decoration (machines, pipes, consoles, rocks, furniture)
 - Interactive: doors, switches / buttons / levers / pressure plates, moving platforms and elevators (follow a drawn path), breakable walls (bomb, shot, touch)
-- Pickups: health, ammo, keys, upgrades; the game remembers what was collected
+- Pickups: health, ammo, keys; the game remembers what was collected. Upgrades (morph ball, bombs ...) come with the Samus controls, not in G2.
 - Helpers (invisible while playing): extra spawn points, checkpoints / save stations, trigger zones (for G3 logic), teleporters / world exits (link worlds), point and spot lights, particle emitters
 - Later (G5): enemies and NPCs on the same system
 
@@ -39,5 +39,5 @@
 1. Object system: objects in the world (save / load), place / move / rotate / scale, Outliner + Inspector, Selection box tool, block models, collision from geometry, drawn with shadows and AO
 2. 3D viewer, model import (Blockbench, .obj / .glb), height reference, scaling
 3. Interactive: forcefield doors (+ test beam), switches, moving platforms / elevators, breakable walls
-4. Pickups, checkpoints, teleporters / world exits, trigger zones (+ upgrades)
+4. Pickups, checkpoints, teleporters / world exits, trigger zones
 5. Lights and particle emitters

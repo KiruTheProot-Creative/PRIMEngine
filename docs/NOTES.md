@@ -7,3 +7,6 @@
 - **Blockbench shapes:** import custom block shapes.
 - **Samus:** first person, morph ball (one block tall, so tunnels are one block), weapons.
 - Several true mirrors at once.
+
+## Custom block types and shapes from FBX files
+- Import FBX models as new block shapes (and whole block types), next to the built-in shape library and the planned Blockbench shapes.
