@@ -95,7 +95,7 @@ std::vector<DemoShot> demoShots() {
         { "env_space_station", { -12, 10, -16 }, { 6, 2, 6 }, 15.0f, "partly_cloudy", false, "space" },
         { "env_volcanic", { -12, 4, -16 }, { 6, 2, 6 }, 16.0f, "partly_cloudy", false, "volcanic" },
         { "env_alien", { -12, 6, -16 }, { 6, 2, 6 }, 11.0f, "partly_cloudy", false, "alien" },
-        { "env_martian_blue_sunset", { -14, 4, 0 }, { -40, 6, 10 }, 17.75f, "clear", false, "martian" },
+        { "env_martian_blue_sunset", { 26, 5, 4 }, { -10, 5, 6 }, 17.6f, "clear", false, "martian" },
     };
 }
 
