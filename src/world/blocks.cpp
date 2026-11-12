@@ -7,12 +7,79 @@ namespace mc {
 BlockRegistry::BlockRegistry() {
     BlockDef air; air.name = "air"; air.render = Render::Air; air.solid = false;
     defs.push_back(air);
+    // texture 0: magenta/black checkerboard for anything missing
+    TexImage m; m.name = ""; m.w = m.h = TEX; m.rgba.resize(TEX * TEX * 4);
+    for (int y = 0; y < TEX; y++) for (int x = 0; x < TEX; x++) {
+        bool on = ((x / 8) + (y / 8)) & 1; uint8_t* p = &m.rgba[(y * TEX + x) * 4];
+        p[0] = on ? 250 : 20; p[1] = 0; p[2] = on ? 250 : 20; p[3] = 255;
+    }
+    textures.push_back(m);
+    missing.name = "missing block";
 }
-int BlockRegistry::addTexture(const std::vector<uint8_t>& rgba) { textures.push_back(rgba); return (int)textures.size() - 1; }
-BlockId BlockRegistry::add(const BlockDef& d) { defs.push_back(d); return (BlockId)(defs.size() - 1); }
+
+static bool hasSeeThrough(const std::vector<uint8_t>& px) { for (size_t i = 3; i < px.size(); i += 4) if (px[i] < 128) return true; return false; }
+int BlockRegistry::setTexture(const std::string& name, int w, int h, std::vector<uint8_t> rgba) {
+    TexImage t; t.name = name; t.w = w; t.h = h; t.rgba = std::move(rgba); t.transparent = hasSeeThrough(t.rgba);
+    int i = textureIndex(name);
+    if (i > 0) { textures[i] = std::move(t); return i; }
+    textures.push_back(std::move(t)); return (int)textures.size() - 1;
+}
+int BlockRegistry::addTexture(const std::vector<uint8_t>& rgba16) { return setTexture("tex" + std::to_string(textures.size()), TEX, TEX, rgba16); }
+bool BlockRegistry::removeTexture(const std::string& name) {
+    int i = textureIndex(name); if (i <= 0) return false;
+    textures.erase(textures.begin() + i); resolve(); return true;
+}
+int BlockRegistry::textureIndex(const std::string& name) const {
+    if (name.empty()) return -1;
+    for (size_t i = 1; i < textures.size(); i++) if (textures[i].name == name) return (int)i;
+    return -1;
+}
+int BlockRegistry::layerSize() const {
+    int m = TEX;
+    for (size_t i = 1; i < textures.size(); i++) m = std::max(m, textures[i].w);
+    int s = TEX; while (s < m && s < 512) s *= 2;   // power of two, 16 .. 512
+    return s;
+}
+std::vector<uint8_t> BlockRegistry::layer(int li, int S) const {
+    const TexImage& t = textures[li];
+    // a tall strip of square frames (Minecraft animation style): use the first frame
+    int sw = t.w, sh = (t.h > t.w && t.h % t.w == 0) ? t.w : t.h;
+    std::vector<uint8_t> out((size_t)S * S * 4);
+    for (int y = 0; y < S; y++) for (int x = 0; x < S; x++) {
+        // source area covered by this pixel; nearest when enlarging, average when shrinking
+        int x0 = x * sw / S, x1 = std::max(x0 + 1, (x + 1) * sw / S), y0 = y * sh / S, y1 = std::max(y0 + 1, (y + 1) * sh / S);
+        uint32_t acc[4] = {}, n = 0;
+        for (int yy = y0; yy < y1; yy++) for (int xx = x0; xx < x1; xx++) { const uint8_t* p = &t.rgba[((size_t)yy * t.w + xx) * 4]; for (int k = 0; k < 4; k++) acc[k] += p[k]; n++; }
+        for (int k = 0; k < 4; k++) out[((size_t)y * S + x) * 4 + k] = (uint8_t)(acc[k] / n);
+    }
+    return out;
+}
+
+BlockId BlockRegistry::add(const BlockDef& d) {
+    nextId = std::max<int>(nextId, (int)defs.size());
+    if (nextId > MAX_BLOCK_TYPES) return AIR;
+    BlockId id = (BlockId)nextId; put(id, d); return id;
+}
+void BlockRegistry::put(BlockId id, const BlockDef& d) {
+    id = typeOf(id); if (id == AIR) return;
+    if (defs.size() <= id) { BlockDef gap; gap.exists = false; defs.resize(id + 1, gap); }
+    defs[id] = d; defs[id].exists = true; nextId = std::max<int>(nextId, id + 1);
+    for (int f = 0; f < 6; f++) { int t = textureIndex(d.faces[f]); defs[id].tex[f] = t < 0 ? 0 : t; }
+}
+void BlockRegistry::remove(BlockId id) {
+    id = typeOf(id); if (id == AIR || id >= defs.size()) return;
+    defs[id] = BlockDef{}; defs[id].exists = false;   // the id stays used: worlds may still contain it
+}
 BlockId BlockRegistry::find(const std::string& name) const {
-    for (size_t i = 0; i < defs.size(); i++) if (defs[i].name == name) return (BlockId)i;
+    for (size_t i = 1; i < defs.size(); i++) if (defs[i].exists && defs[i].name == name) return (BlockId)i;
     return AIR;
+}
+void BlockRegistry::resolve() {
+    for (auto& d : defs) for (int f = 0; f < 6; f++) { int t = textureIndex(d.faces[f]); d.tex[f] = t < 0 ? 0 : t; }
+}
+std::string BlockRegistry::uniqueName(const std::string& want, BlockId except) const {
+    std::string base = want.empty() ? "block" : want, n = base; int k = 2;
+    for (;;) { BlockId f = find(n); if (f == AIR || f == typeOf(except)) return n; n = base + " " + std::to_string(k++); }
 }
 
 // ------------------------------------------------------------------ procedural placeholder textures (16 x 16 pixel art)
@@ -142,25 +209,31 @@ Img lamp() {
 } // namespace
 
 void registerBuiltinBlocks(BlockRegistry& r) {
-    auto cube = [&](const char* name, Img tex, Render rr = Render::Opaque, bool cullSame = false) {
-        BlockDef d; d.name = name; d.render = rr; d.cullSame = cullSame; int t = r.addTexture(tex.px);
-        for (int& f : d.tex) f = t;
+    // ids 1..12 in this order (the first worlds were saved with these numbers)
+    r.setTexture("stone", N, N, stone().px); r.setTexture("grass_top", N, N, grassTop().px); r.setTexture("grass_side", N, N, grassSide().px);
+    r.setTexture("dirt", N, N, dirt().px); r.setTexture("cobblestone", N, N, cobble().px); r.setTexture("planks", N, N, planks().px);
+    r.setTexture("log_side", N, N, logSide().px); r.setTexture("log_top", N, N, logTop().px); r.setTexture("sand", N, N, sand().px);
+    r.setTexture("bricks", N, N, bricks().px); r.setTexture("metal", N, N, metal().px); r.setTexture("lamp", N, N, lamp().px);
+    r.setTexture("glass", N, N, glass().px); r.setTexture("leaves", N, N, leaves().px);
+    auto block = [&](const char* name, const char* side, const char* top = nullptr, const char* bottom = nullptr, Render rr = Render::Opaque, bool cullSame = false) {
+        BlockDef d; d.name = name; d.render = rr; d.cullSame = cullSame;
+        for (auto& f : d.faces) f = side;
+        if (top) d.faces[F_PY] = top;
+        if (bottom) d.faces[F_NY] = bottom; else if (top) d.faces[F_NY] = top;
         return r.add(d);
     };
-    cube("stone", stone());
-    { BlockDef d; d.name = "grass"; int top = r.addTexture(grassTop().px), side = r.addTexture(grassSide().px), bot = r.addTexture(dirt().px);
-      d.tex[F_PX] = d.tex[F_NX] = d.tex[F_PZ] = d.tex[F_NZ] = side; d.tex[F_PY] = top; d.tex[F_NY] = bot; r.add(d); }
-    cube("dirt", dirt());
-    cube("cobblestone", cobble());
-    cube("planks", planks());
-    { BlockDef d; d.name = "log"; int side = r.addTexture(logSide().px), top = r.addTexture(logTop().px);
-      d.tex[F_PX] = d.tex[F_NX] = d.tex[F_PZ] = d.tex[F_NZ] = side; d.tex[F_PY] = d.tex[F_NY] = top; r.add(d); }
-    cube("sand", sand());
-    cube("bricks", bricks());
-    cube("metal", metal());
-    cube("lamp", lamp());
-    cube("glass", glass(), Render::Cutout, true);
-    cube("leaves", leaves(), Render::Cutout, false);
+    block("stone", "stone");
+    block("grass", "grass_side", "grass_top", "dirt");
+    block("dirt", "dirt");
+    block("cobblestone", "cobblestone");
+    block("planks", "planks");
+    block("log", "log_side", "log_top");
+    block("sand", "sand");
+    block("bricks", "bricks");
+    block("metal", "metal");
+    block("lamp", "lamp");
+    block("glass", "glass", nullptr, nullptr, Render::Cutout, true);
+    block("leaves", "leaves", nullptr, nullptr, Render::Cutout, false);
 }
 
 } // namespace mc

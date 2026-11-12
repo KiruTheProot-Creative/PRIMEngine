@@ -1,5 +1,6 @@
-// blocks.h : the block registry. Every block has a name, how it is drawn, and one texture per face.
-// Textures live in one texture array (all the same size), referenced by layer number.
+// blocks.h : the block registry. Every block has a name, a shape, how it is drawn, and a texture per face.
+// Textures are named images (any size). The renderer puts them all into one texture array at a common
+// resolution, referenced by layer number. Block ids never change once given (worlds store them).
 #pragma once
 #include <cstdint>
 #include <string>
@@ -7,42 +8,74 @@
 
 namespace mc {
 
+// A stored block value: low 12 bits = block type, high 4 bits = state (which way a plane faces, ...).
 using BlockId = uint16_t;
 constexpr BlockId AIR = 0;
+constexpr int MAX_BLOCK_TYPES = 4095;
+inline BlockId typeOf(BlockId v) { return (BlockId)(v & 0x0FFF); }
+inline int stateOf(BlockId v) { return v >> 12; }
+inline BlockId withState(BlockId type, int state) { return (BlockId)((type & 0x0FFF) | ((state & 15) << 12)); }
 
 enum class Render : uint8_t {
     Air,      // nothing
-    Opaque,   // full solid cube (hides the faces of its neighbours)
-    Cutout,   // full cube with see-through pixels (glass, leaves)
+    Opaque,   // solid pixels only (a full cube hides the faces of its neighbours)
+    Cutout,   // has see-through pixels (glass, leaves, plants)
+};
+enum class Shape : uint8_t {
+    Cube,     // a full block
+    Cross,    // two crossed planes through the middle (flowers, tall grass)
+    Plane,    // one flat plane stuck to the face it was placed against (ladders, vines, posters); state = facing
 };
 enum Face { F_PX = 0, F_NX, F_PY, F_NY, F_PZ, F_NZ };   // +X -X +Y(top) -Y(bottom) +Z -Z
 
 struct BlockDef {
     std::string name;
     Render render = Render::Opaque;
-    int tex[6] = { 0, 0, 0, 0, 0, 0 };   // texture layer per face
-    bool solid = true;                   // you collide with it
+    Shape shape = Shape::Cube;
+    std::string faces[6];                // texture name per face (planes use faces[0])
+    int tex[6] = { 0, 0, 0, 0, 0, 0 };   // texture layer per face (filled by resolve())
+    bool solid = true;                   // you bump into it
     bool cullSame = false;               // hide faces between two blocks of this kind (glass)
+    bool exists = true;                  // false = a deleted id (kept so old worlds stay readable)
 };
+
+struct TexImage { std::string name; int w = 0, h = 0; std::vector<uint8_t> rgba; bool transparent = false; };
 
 class BlockRegistry {
 public:
-    static constexpr int TEX = 16;       // texture size in pixels (Minecraft-style pixel art)
-    BlockRegistry();                     // block 0 is air
-    int addTexture(const std::vector<uint8_t>& rgba);   // TEX*TEX*4 bytes; returns the layer
-    BlockId add(const BlockDef& d);
-    const BlockDef& get(BlockId id) const { return defs[id < defs.size() ? id : 0]; }
-    size_t count() const { return defs.size(); }
+    static constexpr int TEX = 16;       // size of the built-in pixel-art textures
+    BlockRegistry();                     // block 0 is air, texture 0 is the "missing" checkerboard
+
+    // textures
+    int setTexture(const std::string& name, int w, int h, std::vector<uint8_t> rgba);   // adds or replaces; returns the layer
+    int addTexture(const std::vector<uint8_t>& rgba16);    // unnamed TEX x TEX texture (tests)
+    bool removeTexture(const std::string& name);
+    int textureIndex(const std::string& name) const;       // -1 if there is none
     size_t textureCount() const { return textures.size(); }
-    const std::vector<uint8_t>& texture(int layer) const { return textures[layer]; }
+    const TexImage& image(int layer) const { return textures[layer]; }
+    int layerSize() const;                                 // common resolution of the texture array
+    std::vector<uint8_t> layer(int layer, int size) const; // the texture scaled to size x size (RGBA)
+
+    // blocks
+    BlockId add(const BlockDef& d);                         // a new id, never one used before (0 if full)
+    void put(BlockId id, const BlockDef& d);                // at a fixed id (loading, editing)
+    void remove(BlockId id);
+    const BlockDef& get(BlockId v) const { BlockId id = typeOf(v); return id < defs.size() && defs[id].exists ? defs[id] : missing; }
+    bool has(BlockId v) const { BlockId id = typeOf(v); return id < defs.size() && defs[id].exists; }
+    size_t count() const { return defs.size(); }            // ids are 0 .. count()-1 (check has())
     BlockId find(const std::string& name) const;
-    bool opaque(BlockId id) const { return get(id).render == Render::Opaque; }
+    bool opaque(BlockId v) const { const BlockDef& d = get(v); return d.render == Render::Opaque && d.shape == Shape::Cube; }
+    void resolve();                                         // texture names -> layers (after any change)
+    std::string uniqueName(const std::string& want, BlockId except = AIR) const;
+    int nextId = 1;                                         // ids below this were given out once (saved in blocks.txt)
+
 private:
     std::vector<BlockDef> defs;
-    std::vector<std::vector<uint8_t>> textures;
+    std::vector<TexImage> textures;
+    BlockDef missing;
 };
 
-// The built-in placeholder blocks (procedural textures) until texture import arrives.
+// The built-in starter blocks with procedural textures (written out as PNGs the first time the engine runs).
 void registerBuiltinBlocks(BlockRegistry& r);
 
 } // namespace mc
