@@ -9,7 +9,14 @@
 
 namespace mc {
 
-struct Vtx { float x, y, z, u, v, layer, shade, normal; };   // 32 bytes; position is relative to the chunk origin
+// 32 bytes. Position relative to the chunk origin; shade = ambient occlusion (1 = open);
+// normal = direction packed in 3 bytes (x, y, z; 0..255 = -1..1) + the texture face in the top byte
+struct Vtx { float x, y, z, u, v, layer, shade; uint32_t normal; };
+inline uint32_t packNormal(float nx, float ny, float nz, int face) {
+    auto b = [](float v) { int q = (int)((v * 0.5f + 0.5f) * 255.f + 0.5f); return (uint32_t)(q < 0 ? 0 : q > 255 ? 255 : q); };
+    return b(nx) | (b(ny) << 8) | (b(nz) << 16) | ((uint32_t)face << 24);
+}
+inline int faceOf(const Vtx& v) { return (int)(v.normal >> 24); }
 struct MeshData { std::vector<Vtx> v; std::vector<uint32_t> i; bool empty() const { return i.empty(); } };
 struct ChunkMesh { I3 pos; uint32_t seq = 0; MeshData opaque, cutout; };
 

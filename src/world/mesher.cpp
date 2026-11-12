@@ -41,7 +41,6 @@ void buildMesh(const BlockRegistry& reg, const MeshInput& in, ChunkMesh& out) {
         if (!coverType || nd.render == Render::Air) return false;
         return (need & ~coverOf(reg, nb, f ^ 1)).none();   // f^1 = the opposite side
     };
-    static const float faceShade[6] = { 0.6f, 0.6f, 1.0f, 0.5f, 0.8f, 0.8f };   // +X -X top bottom +Z -Z (Minecraft-style)
     for (int y = 0; y < CS; y++) for (int z = 0; z < CS; z++) for (int x = 0; x < CS; x++) {
         BlockId id = at(x, y, z); if (id == AIR) continue;
         const BlockDef& d = reg.get(id); if (d.render == Render::Air) continue;
@@ -59,7 +58,7 @@ void buildMesh(const BlockRegistry& reg, const MeshInput& in, ChunkMesh& out) {
                     uint32_t base = (uint32_t)md.v.size();
                     for (int k = 0; k < 3; k++) {
                         float u, v; faceUV(t.p[k][0], t.p[k][1], t.p[k][2], f, u, v);
-                        md.v.push_back({ x + t.p[k][0], y + t.p[k][1], z + t.p[k][2], u, v, layer, normalShade(t.n[k]), (float)f });
+                        md.v.push_back({ x + t.p[k][0], y + t.p[k][1], z + t.p[k][2], u, v, layer, 1.0f, packNormal(t.n[k][0], t.n[k][1], t.n[k][2], f) });
                     }
                     md.i.insert(md.i.end(), { base, base + 1, base + 2 });
                     if (two) md.i.insert(md.i.end(), { base, base + 2, base + 1 });
@@ -85,8 +84,8 @@ void buildMesh(const BlockRegistry& reg, const MeshInput& in, ChunkMesh& out) {
                 // texture coordinates inside the block: side faces keep "up" pointing up
                 float lx = p[0] - c[0], ly = p[1] - c[1], lz = p[2] - c[2], u, v;
                 if (a == 1) { u = lx; v = lz; } else if (a == 0) { u = sgn > 0 ? 1 - lz : lz; v = 1 - ly; } else { u = sgn > 0 ? lx : 1 - lx; v = 1 - ly; }
-                float shade = faceShade[f] * (0.45f + 0.55f * ao[k] / 3.f);
-                q[k] = { p[0], p[1], p[2], u, v, (float)d.tex[f], shade, (float)f };
+                float shade = 0.4f + 0.6f * ao[k] / 3.f;   // corner darkening; the light itself comes from the sun in the shader
+                q[k] = { p[0], p[1], p[2], u, v, (float)d.tex[f], shade, packNormal((float)n[0], (float)n[1], (float)n[2], f) };
             }
             // split along the brighter diagonal, and wind each triangle clockwise when seen from outside
             uint32_t base = (uint32_t)md.v.size();

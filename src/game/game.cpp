@@ -14,6 +14,9 @@ bool Settings::load(const std::string& path) {
         else if (k == "fov") f >> fov; else if (k == "mouse_sensitivity") f >> mouseSensitivity; else if (k == "ui_scale") f >> uiScale;
         else if (k == "vsync") { int v; f >> v; vsync = v != 0; }
         else if (k == "block_preview") { int v; f >> v; blockPreview = v != 0; }
+        else if (k == "time_of_day") f >> timeOfDay;
+        else if (k == "day_cycle") { int v; f >> v; dayCycle = v != 0; }
+        else if (k == "shadows") f >> shadowQuality;
         else { std::string rest; std::getline(f, rest); }
     }
     renderDistance = std::max(2, std::min(48, renderDistance)); verticalDistance = std::max(1, std::min(16, verticalDistance));
@@ -22,7 +25,8 @@ bool Settings::load(const std::string& path) {
 bool Settings::save(const std::string& path) const {
     std::ofstream f(path); if (!f) return false;
     f << "render_distance " << renderDistance << "\nvertical_distance " << verticalDistance << "\nfov " << fov << "\nmouse_sensitivity " << mouseSensitivity
-      << "\nui_scale " << uiScale << "\nvsync " << (vsync ? 1 : 0) << "\nblock_preview " << (blockPreview ? 1 : 0) << "\n";
+      << "\nui_scale " << uiScale << "\nvsync " << (vsync ? 1 : 0) << "\nblock_preview " << (blockPreview ? 1 : 0)
+      << "\ntime_of_day " << timeOfDay << "\nday_cycle " << (dayCycle ? 1 : 0) << "\nshadows " << shadowQuality << "\n";
     return (bool)f;
 }
 

@@ -5,6 +5,8 @@
 #include "../game/game.h"
 #include "../world/library.h"
 #include "../world/shapes.h"
+#include "../game/demo.h"
+#include "../core/png.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -40,8 +42,11 @@ using Microsoft::WRL::ComPtr;
 namespace fs = std::filesystem;
 using namespace mc;
 
+static std::string g_shotLog;   // screenshot mode: errors go to this file instead of a message box
+static void Log(const std::string& line) { if (g_shotLog.empty()) return; std::ofstream f(g_shotLog, std::ios::app); f << line << "\n"; }
 [[noreturn]] static void Fatal(const std::string& what, HRESULT hr = S_OK) {
     char b[160]; snprintf(b, sizeof b, "\n(HRESULT 0x%08X)", (unsigned)hr);
+    if (!g_shotLog.empty()) { Log("FATAL: " + what + (hr ? b : "")); ExitProcess(3); }
     MessageBoxA(nullptr, (what + (hr ? b : "")).c_str(), "PRIMEngine", MB_ICONERROR | MB_OK); ExitProcess(1);
 }
 #define HR(x) do { HRESULT _hr = (x); if (FAILED(_hr)) Fatal("Direct3D call failed: " #x, _hr); } while (0)
@@ -60,7 +65,11 @@ static ComPtr<ID3DBlob> Compile(const std::string& src, const char* entry, const
     return code;
 }
 
-struct alignas(16) FrameCB { XMFLOAT4X4 viewProj; float fog[4], fogRange[4], skyTop[4], skyHorizon[4], camF[4], camR[4], camU[4], proj[4]; };
+// must match cbuffer Frame in block.hlsl
+struct alignas(16) FrameCB {
+    XMFLOAT4X4 viewProj, shadowVP;
+    float sunDir[4], sunColor[4], ambient[4], fogRange[4], skyTop[4], skyHorizon[4], sunGlow[4], camF[4], camR[4], camU[4], proj[4], shadowInfo[4];
+};
 struct alignas(16) ChunkCB { float offset[4]; };
 
 struct GpuChunk { ComPtr<ID3D11Buffer> vbO, ibO, vbC, ibC; UINT nO = 0, nC = 0; };
@@ -73,7 +82,10 @@ struct App {
     HWND hwnd = nullptr; int cw = 1280, ch = 720; bool resized = false;
     ComPtr<ID3D11Device> dev; ComPtr<ID3D11DeviceContext> ctx; ComPtr<IDXGISwapChain> swap; ComPtr<ID3D11RenderTargetView> backRTV;
     ComPtr<ID3D11Texture2D> depthTex; ComPtr<ID3D11DepthStencilView> dsv;
-    ComPtr<ID3D11VertexShader> vsBlock, vsSky; ComPtr<ID3D11PixelShader> psOpaque, psCutout, psSky, psGhost; ComPtr<ID3D11InputLayout> layout;
+    ComPtr<ID3D11VertexShader> vsBlock, vsSky, vsShadow; ComPtr<ID3D11PixelShader> psOpaque, psCutout, psSky, psGhost, psShadowCut, psPost; ComPtr<ID3D11InputLayout> layout;
+    ComPtr<ID3D11Texture2D> hdrTex; ComPtr<ID3D11RenderTargetView> hdrRTV; ComPtr<ID3D11ShaderResourceView> hdrSRV;      // the picture before tonemapping
+    ComPtr<ID3D11Texture2D> shadowTex; ComPtr<ID3D11DepthStencilView> shadowDSV; ComPtr<ID3D11ShaderResourceView> shadowSRV; int shadowSize = 0;
+    ComPtr<ID3D11RasterizerState> rsShadow; ComPtr<ID3D11SamplerState> sampShadow; std::string driverName = "graphics card";
     ComPtr<ID3D11Buffer> cbFrame, cbChunk;
     ComPtr<ID3D11RasterizerState> rsCull; ComPtr<ID3D11DepthStencilState> dsOn, dsOff, dsTestOnly; ComPtr<ID3D11BlendState> bsOff, bsAlpha;
     ComPtr<ID3D11Buffer> vbGhost, ibGhost; UINT nGhost = 0; BlockId ghostKey = 0xFFFFFFFFu;   // the see-through preview block
@@ -116,7 +128,10 @@ struct App {
         DXGI_SWAP_CHAIN_DESC sd{}; sd.BufferCount = 2; sd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM; sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
         sd.OutputWindow = hwnd; sd.SampleDesc.Count = 1; sd.Windowed = TRUE; sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
         D3D_FEATURE_LEVEL fl = D3D_FEATURE_LEVEL_11_0, got;
-        HR(D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, &fl, 1, D3D11_SDK_VERSION, &sd, &swap, &dev, &got, &ctx));
+        if (FAILED(D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, &fl, 1, D3D11_SDK_VERSION, &sd, &swap, &dev, &got, &ctx))) {
+            driverName = "software (WARP)";   // no usable graphics card (e.g. the build machine): Windows draws it on the processor
+            HR(D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, &fl, 1, D3D11_SDK_VERSION, &sd, &swap, &dev, &got, &ctx));
+        }
         MakeTargets();
 
         std::string src = ReadShader("block.hlsl");
@@ -124,17 +139,21 @@ struct App {
         auto b = Compile(src, "PS_Opaque", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psOpaque));
         b = Compile(src, "PS_Cutout", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psCutout));
         b = Compile(src, "PS_Ghost", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psGhost));
+        b = Compile(src, "VS_Shadow", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsShadow));
+        b = Compile(src, "PS_ShadowCutout", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psShadowCut));
+        b = Compile(src, "PS_Post", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psPost));
         b = Compile(src, "VS_Sky", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsSky));
         b = Compile(src, "PS_Sky", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psSky));
         D3D11_INPUT_ELEMENT_DESC el[] = {
             { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 }, { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0 },
             { "TEXCOORD", 1, DXGI_FORMAT_R32_FLOAT, 0, 20, D3D11_INPUT_PER_VERTEX_DATA, 0 }, { "TEXCOORD", 2, DXGI_FORMAT_R32_FLOAT, 0, 24, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-            { "TEXCOORD", 3, DXGI_FORMAT_R32_FLOAT, 0, 28, D3D11_INPUT_PER_VERTEX_DATA, 0 } };
+            { "TEXCOORD", 3, DXGI_FORMAT_R32_UINT, 0, 28, D3D11_INPUT_PER_VERTEX_DATA, 0 } };
         HR(dev->CreateInputLayout(el, 5, vb->GetBufferPointer(), vb->GetBufferSize(), &layout));
         auto cb = [&](UINT size, ComPtr<ID3D11Buffer>& out) { D3D11_BUFFER_DESC d{}; d.ByteWidth = size; d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_CONSTANT_BUFFER; HR(dev->CreateBuffer(&d, nullptr, &out)); };
         cb(sizeof(FrameCB), cbFrame); cb(sizeof(ChunkCB), cbChunk);
 
         D3D11_RASTERIZER_DESC rd{}; rd.FillMode = D3D11_FILL_SOLID; rd.CullMode = D3D11_CULL_BACK; rd.FrontCounterClockwise = FALSE; rd.DepthClipEnable = TRUE; HR(dev->CreateRasterizerState(&rd, &rsCull));
+        rd.CullMode = D3D11_CULL_NONE; rd.SlopeScaledDepthBias = 1.5f; rd.DepthClipEnable = FALSE; HR(dev->CreateRasterizerState(&rd, &rsShadow));
         D3D11_DEPTH_STENCIL_DESC dd{}; dd.DepthEnable = TRUE; dd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL; dd.DepthFunc = D3D11_COMPARISON_LESS_EQUAL; HR(dev->CreateDepthStencilState(&dd, &dsOn));
         dd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO; HR(dev->CreateDepthStencilState(&dd, &dsTestOnly));
         dd.DepthEnable = FALSE; HR(dev->CreateDepthStencilState(&dd, &dsOff));
@@ -143,6 +162,8 @@ struct App {
         rt.SrcBlendAlpha = D3D11_BLEND_ONE; rt.DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA; rt.BlendOpAlpha = D3D11_BLEND_OP_ADD; HR(dev->CreateBlendState(&bd, &bsAlpha));
         D3D11_SAMPLER_DESC sm{}; sm.Filter = D3D11_FILTER_MIN_MAG_POINT_MIP_LINEAR; sm.AddressU = sm.AddressV = sm.AddressW = D3D11_TEXTURE_ADDRESS_WRAP; sm.MaxLOD = D3D11_FLOAT32_MAX; HR(dev->CreateSamplerState(&sm, &sampBlocks));
         sm.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT; sm.AddressU = sm.AddressV = sm.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP; HR(dev->CreateSamplerState(&sm, &sampPoint));
+        D3D11_SAMPLER_DESC ss{}; ss.Filter = D3D11_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT; ss.AddressU = ss.AddressV = ss.AddressW = D3D11_TEXTURE_ADDRESS_BORDER;
+        ss.BorderColor[0] = ss.BorderColor[1] = ss.BorderColor[2] = ss.BorderColor[3] = 1; ss.ComparisonFunc = D3D11_COMPARISON_LESS_EQUAL; ss.MaxLOD = D3D11_FLOAT32_MAX; HR(dev->CreateSamplerState(&ss, &sampShadow));
 
         Shapes::get();   // prepares every shape in every rotation (a few milliseconds)
         library.dir = ExeDir() + "game"; library.load(reg);   // game\blocks.txt + game\textures\*.png (made the first time)
@@ -162,6 +183,16 @@ struct App {
         ComPtr<ID3D11Texture2D> bb; HR(swap->GetBuffer(0, IID_PPV_ARGS(&bb))); HR(dev->CreateRenderTargetView(bb.Get(), nullptr, &backRTV));
         D3D11_TEXTURE2D_DESC d{}; d.Width = (UINT)cw; d.Height = (UINT)ch; d.MipLevels = 1; d.ArraySize = 1; d.Format = DXGI_FORMAT_D32_FLOAT; d.SampleDesc.Count = 1; d.BindFlags = D3D11_BIND_DEPTH_STENCIL;
         depthTex.Reset(); dsv.Reset(); HR(dev->CreateTexture2D(&d, nullptr, &depthTex)); HR(dev->CreateDepthStencilView(depthTex.Get(), nullptr, &dsv));
+        d.Format = DXGI_FORMAT_R16G16B16A16_FLOAT; d.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+        hdrTex.Reset(); hdrRTV.Reset(); hdrSRV.Reset();
+        HR(dev->CreateTexture2D(&d, nullptr, &hdrTex)); HR(dev->CreateRenderTargetView(hdrTex.Get(), nullptr, &hdrRTV)); HR(dev->CreateShaderResourceView(hdrTex.Get(), nullptr, &hdrSRV));
+    }
+    void MakeShadowMap(int size) {
+        shadowTex.Reset(); shadowDSV.Reset(); shadowSRV.Reset(); shadowSize = size; if (!size) return;
+        D3D11_TEXTURE2D_DESC d{}; d.Width = d.Height = (UINT)size; d.MipLevels = 1; d.ArraySize = 1; d.Format = DXGI_FORMAT_R32_TYPELESS; d.SampleDesc.Count = 1; d.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
+        HR(dev->CreateTexture2D(&d, nullptr, &shadowTex));
+        D3D11_DEPTH_STENCIL_VIEW_DESC dv{}; dv.Format = DXGI_FORMAT_D32_FLOAT; dv.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D; HR(dev->CreateDepthStencilView(shadowTex.Get(), &dv, &shadowDSV));
+        D3D11_SHADER_RESOURCE_VIEW_DESC sv{}; sv.Format = DXGI_FORMAT_R32_FLOAT; sv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D; sv.Texture2D.MipLevels = 1; HR(dev->CreateShaderResourceView(shadowTex.Get(), &sv, &shadowSRV));
     }
     void OnResize() {
         resized = false; ctx->OMSetRenderTargets(0, nullptr, nullptr); backRTV.Reset();
@@ -172,13 +203,27 @@ struct App {
     void UploadTextures() {
         const int S = reg.layerSize(), n = (int)reg.textureCount(); int mips = 1; while ((S >> mips) > 0) mips++;
         std::vector<std::vector<uint8_t>> px(n); for (int i = 0; i < n; i++) px[i] = reg.layer(i, S);
-        D3D11_TEXTURE2D_DESC d{}; d.Width = d.Height = (UINT)S; d.MipLevels = (UINT)mips; d.ArraySize = (UINT)n; d.Format = DXGI_FORMAT_R8G8B8A8_UNORM; d.SampleDesc.Count = 1;
-        d.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET; d.MiscFlags = D3D11_RESOURCE_MISC_GENERATE_MIPS;
+        // sRGB textures: the shader gets real light values. Smaller copies (mips) are averaged in linear light.
+        D3D11_TEXTURE2D_DESC d{}; d.Width = d.Height = (UINT)S; d.MipLevels = (UINT)mips; d.ArraySize = (UINT)n; d.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB; d.SampleDesc.Count = 1;
+        d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
         ComPtr<ID3D11Texture2D> t; HR(dev->CreateTexture2D(&d, nullptr, &t));
-        for (int i = 0; i < n; i++) ctx->UpdateSubresource(t.Get(), D3D11CalcSubresource(0, i, mips), nullptr, px[i].data(), S * 4, 0);
+        static float toLin[256]; if (toLin[255] == 0) for (int k = 0; k < 256; k++) toLin[k] = std::pow(k / 255.f, 2.2f);
+        for (int i = 0; i < n; i++) {
+            std::vector<uint8_t> cur = px[i]; int sz = S;
+            for (int m = 0; m < mips; m++) {
+                ctx->UpdateSubresource(t.Get(), D3D11CalcSubresource(m, i, mips), nullptr, cur.data(), sz * 4, 0);
+                if (sz == 1) break;
+                int h = sz / 2; std::vector<uint8_t> nx((size_t)h * h * 4);
+                for (int y = 0; y < h; y++) for (int x = 0; x < h; x++) for (int c = 0; c < 4; c++) {
+                    float acc = 0; for (int k = 0; k < 4; k++) { uint8_t v = cur[((size_t)(y * 2 + (k >> 1)) * sz + x * 2 + (k & 1)) * 4 + c]; acc += c < 3 ? toLin[v] : v / 255.f; }
+                    acc /= 4; nx[((size_t)y * h + x) * 4 + c] = (uint8_t)std::lround((c < 3 ? std::pow(acc, 1 / 2.2f) : acc) * 255);
+                }
+                cur.swap(nx); sz = h;
+            }
+        }
         if (texArray) retired.push_back(texArray);
         for (auto& i : icons) retired.push_back(i);
-        texArray.Reset(); HR(dev->CreateShaderResourceView(t.Get(), nullptr, &texArray)); ctx->GenerateMips(texArray.Get());
+        texArray.Reset(); HR(dev->CreateShaderResourceView(t.Get(), nullptr, &texArray));
         icons.clear();
         for (int i = 0; i < n; i++) {
             D3D11_TEXTURE2D_DESC id{}; id.Width = id.Height = (UINT)S; id.MipLevels = 1; id.ArraySize = 1; id.Format = DXGI_FORMAT_R8G8B8A8_UNORM; id.SampleDesc.Count = 1; id.BindFlags = D3D11_BIND_SHADER_RESOURCE;
@@ -345,6 +390,7 @@ struct App {
             Interact(dt);
         } else { lPrev = rPrev = mPrev = true; }
         mouseDX = mouseDY = 0;
+        if (settings.dayCycle) { settings.timeOfDay += (float)(dt * 24.0 / 1200.0); if (settings.timeOfDay >= 24) settings.timeOfDay -= 24; }
         // load chunks around the player and keep their meshes fresh
         I3 pc = chunkOf(ifloor(player.feet.x), ifloor(player.feet.y), ifloor(player.feet.z));
         world->stream(pc, settings.renderDistance, settings.verticalDistance, 24);
@@ -437,6 +483,30 @@ struct App {
         for (int k = 0; k < 6; k++) if (out[k] == 8) return false;
         return true;
     }
+    // sun, sky and light colours for an hour of the day
+    float exposure = 1;
+    void SkyParams(FrameCB& fc, float hour) {
+        auto mix = [](const float a[3], const float b[3], float t, float o[3]) { for (int i = 0; i < 3; i++) o[i] = a[i] + (b[i] - a[i]) * t; };
+        auto sstep = [](float a, float b, float x) { float t = std::min(1.f, std::max(0.f, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+        float ang = (hour - 6) / 12 * XM_PI;                       // 0 = sunrise in the east (+X), noon high up, sunset in the west
+        V3 sun = normalize(V3{ std::cos(ang), std::sin(ang), 0.35 });
+        float h = (float)sun.y, day = sstep(-0.12f, 0.25f, h), low = sstep(-0.2f, 0.0f, h) * (1 - sstep(0.02f, 0.35f, h));
+        bool moon = h < -0.04f; V3 L = moon ? sun * -1.0 : sun;
+        fc.sunDir[0] = (float)L.x; fc.sunDir[1] = (float)L.y; fc.sunDir[2] = (float)L.z; fc.sunDir[3] = settings.shadowQuality > 0 ? 1.f : 0.f;
+        const float sunLow[3] = { 2.2f, 1.0f, 0.45f }, sunHigh[3] = { 3.1f, 2.9f, 2.55f }, moonC[3] = { 0.10f, 0.13f, 0.22f };
+        float sc[3]; mix(sunLow, sunHigh, sstep(0.05f, 0.45f, h), sc);
+        float k = moon ? sstep(0.04f, 0.2f, -h) : sstep(-0.04f, 0.08f, h);
+        for (int i = 0; i < 3; i++) fc.sunColor[i] = (moon ? moonC[i] : sc[i]) * k;
+        const float ambNight[3] = { 0.035f, 0.05f, 0.10f }, ambDay[3] = { 0.38f, 0.48f, 0.70f }, ambLow[3] = { 0.45f, 0.36f, 0.38f };
+        float amb[3]; mix(ambNight, ambDay, day, amb); mix(amb, ambLow, low * 0.6f, fc.ambient);
+        const float topNight[3] = { 0.004f, 0.008f, 0.025f }, topDay[3] = { 0.16f, 0.34f, 0.85f };
+        const float horNight[3] = { 0.02f, 0.03f, 0.07f }, horDay[3] = { 0.60f, 0.74f, 0.95f }, horLow[3] = { 1.05f, 0.55f, 0.28f };
+        mix(topNight, topDay, day, fc.skyTop); float hz[3]; mix(horNight, horDay, day, hz); mix(hz, horLow, low, fc.skyHorizon);
+        const float glowDay[3] = { 0.9f, 0.75f, 0.5f }, glowLow[3] = { 2.2f, 0.9f, 0.3f }, glowMoon[3] = { 0.06f, 0.08f, 0.12f };
+        float gl[3]; mix(glowDay, glowLow, low, gl); for (int i = 0; i < 3; i++) fc.sunGlow[i] = moon ? glowMoon[i] : gl[i] * k;
+        fc.sunGlow[3] = moon ? 2.f : 40.f;
+        exposure = 1.0f + 2.5f * (1 - day);                         // the eye adjusts a little at night
+    }
     void RenderWorld() {
         aspect = (float)cw / ch; camPos = player.eye();
         V3 f = player.forward(), r = normalize(cross({ 0, 1, 0 }, f)), u = cross(f, r);
@@ -445,37 +515,68 @@ struct App {
         proj = XMMatrixPerspectiveFovLH(XMConvertToRadians(settings.fov), aspect, 0.05f, farZ);
         XMMATRIX vp = view * proj;
         FrameCB fc{}; XMStoreFloat4x4(&fc.viewProj, vp);
-        const float top[3] = { 0.42f, 0.62f, 0.98f }, hor[3] = { 0.74f, 0.84f, 0.98f };
+        SkyParams(fc, settings.timeOfDay);
         float fogEnd = settings.renderDistance * CS * 0.95f;
-        for (int i = 0; i < 3; i++) { fc.fog[i] = hor[i]; fc.skyTop[i] = top[i]; fc.skyHorizon[i] = hor[i]; }
-        fc.fogRange[0] = fogEnd * 0.55f; fc.fogRange[1] = fogEnd;
+        fc.fogRange[0] = fogEnd * 0.45f; fc.fogRange[1] = fogEnd; fc.fogRange[2] = exposure;
         fc.camF[0] = (float)f.x; fc.camF[1] = (float)f.y; fc.camF[2] = (float)f.z; fc.camR[0] = (float)r.x; fc.camR[1] = (float)r.y; fc.camR[2] = (float)r.z;
         fc.camU[0] = (float)u.x; fc.camU[1] = (float)u.y; fc.camU[2] = (float)u.z; fc.proj[0] = std::tan(XMConvertToRadians(settings.fov) * 0.5f); fc.proj[1] = aspect;
-        ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &fc, 0, 0);
 
+        // ---- shadow map: the world seen from the sun, around the camera
+        int wantShadow = settings.shadowQuality <= 0 ? 0 : settings.shadowQuality == 1 ? 2048 : 4096;
+        if (wantShadow != shadowSize) MakeShadowMap(wantShadow);
+        bool shadows = shadowSize > 0 && fc.sunDir[3] > 0;
+        XMMATRIX svp = XMMatrixIdentity();
+        if (shadows) {
+            float R = std::min(112.f, settings.renderDistance * (float)CS);
+            V3 L{ fc.sunDir[0], fc.sunDir[1], fc.sunDir[2] }, up = std::fabs(L.y) > 0.99 ? V3{ 0, 0, 1 } : V3{ 0, 1, 0 };
+            V3 zx = L * -1.0, xx = normalize(cross(up, zx)), yx = cross(zx, xx);
+            XMMATRIX lv = XMMatrixLookToLH(XMVectorSet((float)L.x * 300, (float)L.y * 300, (float)L.z * 300, 1), XMVectorSet((float)zx.x, (float)zx.y, (float)zx.z, 0), XMVectorSet((float)up.x, (float)up.y, (float)up.z, 0));
+            double texel = 2.0 * R / shadowSize, px = dot(camPos, xx), py = dot(camPos, yx);   // keep shadow pixels fixed to the world: no shimmering
+            float mx = (float)(px - std::floor(px / texel) * texel), my = (float)(py - std::floor(py / texel) * texel);
+            svp = lv * XMMatrixTranslation(mx, my, 0) * XMMatrixOrthographicLH(2 * R, 2 * R, 1, 600);
+            fc.shadowInfo[0] = 1.f / shadowSize; fc.shadowInfo[1] = R; fc.shadowInfo[2] = (float)texel * 1.5f; fc.shadowInfo[3] = 1.6f;
+        } else fc.sunDir[3] = 0;
+        XMStoreFloat4x4(&fc.shadowVP, svp);
+        ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &fc, 0, 0);
         ID3D11Buffer* cbs[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->VSSetConstantBuffers(0, 2, cbs); ctx->PSSetConstantBuffers(0, 2, cbs);
-        ctx->RSSetState(rsCull.Get()); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
-        // sky
-        ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->IASetInputLayout(nullptr); ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psSky.Get(), nullptr, 0); ctx->Draw(3, 0);
-        // blocks: opaque pass, then cutout pass (glass, leaves)
-        ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0);
-        ctx->PSSetShaderResources(0, 1, texArray.GetAddressOf()); ctx->PSSetSamplers(0, 1, sampBlocks.GetAddressOf());
-        drawnChunks = 0;
-        for (int pass = 0; pass < 2; pass++) {
-            ctx->PSSetShader(pass == 0 ? psOpaque.Get() : psCutout.Get(), nullptr, 0);
+        ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
+        auto drawChunks = [&](const XMMATRIX& m, int pass, bool counting) {
             for (auto& kv : gpu) {
                 const GpuChunk& g = kv.second; UINT n = pass == 0 ? g.nO : g.nC; if (!n) continue;
                 // chunk origin relative to the camera, computed in double: no jitter however far you go
                 float ox = (float)(kv.first.x * (double)CS - camPos.x), oy = (float)(kv.first.y * (double)CS - camPos.y), oz = (float)(kv.first.z * (double)CS - camPos.z);
-                if (!BoxVisible(vp, ox, oy, oz, (float)CS)) continue;
+                if (!BoxVisible(m, ox, oy, oz, (float)CS)) continue;
                 ChunkCB cc{ { ox, oy, oz, 0 } }; ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);
                 UINT stride = sizeof(Vtx), off = 0;
                 ctx->IASetVertexBuffers(0, 1, pass == 0 ? g.vbO.GetAddressOf() : g.vbC.GetAddressOf(), &stride, &off);
                 ctx->IASetIndexBuffer(pass == 0 ? g.ibO.Get() : g.ibC.Get(), DXGI_FORMAT_R32_UINT, 0);
-                ctx->DrawIndexed(n, 0, 0); drawnChunks += pass == 0;
+                ctx->DrawIndexed(n, 0, 0); if (counting) drawnChunks += pass == 0;
             }
+        };
+        ID3D11ShaderResourceView* none[2] = {};
+        ctx->PSSetShaderResources(0, 2, none);
+        if (shadows) {
+            ctx->OMSetRenderTargets(0, nullptr, shadowDSV.Get()); ctx->ClearDepthStencilView(shadowDSV.Get(), D3D11_CLEAR_DEPTH, 1.f, 0);
+            D3D11_VIEWPORT sv{ 0, 0, (float)shadowSize, (float)shadowSize, 0, 1 }; ctx->RSSetViewports(1, &sv);
+            ctx->RSSetState(rsShadow.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsShadow.Get(), nullptr, 0);
+            ctx->PSSetShaderResources(0, 1, texArray.GetAddressOf()); ctx->PSSetSamplers(0, 1, sampBlocks.GetAddressOf());
+            ctx->PSSetShader(nullptr, nullptr, 0); drawChunks(svp, 0, false);
+            ctx->PSSetShader(psShadowCut.Get(), nullptr, 0); drawChunks(svp, 1, false);
         }
+
+        // ---- the world, into the HDR picture
+        const float black[4] = { 0, 0, 0, 1 };
+        ctx->OMSetRenderTargets(1, hdrRTV.GetAddressOf(), dsv.Get()); ctx->ClearRenderTargetView(hdrRTV.Get(), black); ctx->ClearDepthStencilView(dsv.Get(), D3D11_CLEAR_DEPTH, 1.f, 0);
+        D3D11_VIEWPORT v{ 0, 0, (float)cw, (float)ch, 0, 1 }; ctx->RSSetViewports(1, &v);
+        ctx->RSSetState(rsCull.Get());
+        ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->IASetInputLayout(nullptr);
+        ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psSky.Get(), nullptr, 0); ctx->Draw(3, 0);
+        ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0);
+        ID3D11ShaderResourceView* srvs[2] = { texArray.Get(), shadows ? shadowSRV.Get() : nullptr }; ctx->PSSetShaderResources(0, 2, srvs);
+        ID3D11SamplerState* samps[2] = { sampBlocks.Get(), sampShadow.Get() }; ctx->PSSetSamplers(0, 2, samps);
+        drawnChunks = 0;
+        ctx->PSSetShader(psOpaque.Get(), nullptr, 0); drawChunks(vp, 0, true);
+        ctx->PSSetShader(psCutout.Get(), nullptr, 0); drawChunks(vp, 1, false);
         if (settings.blockPreview && Playing() && targetValid) {   // see-through preview of the next block
             if (ghostKey != targetValue) {
                 ghostKey = targetValue;
@@ -493,6 +594,14 @@ struct App {
                 ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0);
             }
         }
+
+        // ---- final picture: exposure + filmic curve into the window
+        ctx->PSSetShaderResources(0, 2, none);
+        ctx->OMSetRenderTargets(1, backRTV.GetAddressOf(), nullptr);
+        ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->IASetInputLayout(nullptr);
+        ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psPost.Get(), nullptr, 0);
+        ctx->PSSetShaderResources(0, 1, hdrSRV.GetAddressOf()); ctx->Draw(3, 0);
+        ctx->PSSetShaderResources(0, 2, none);
     }
     int drawnChunks = 0;
     bool Project(V3 p, ImVec2& out) const {   // world point -> screen (for the block outline)
@@ -605,6 +714,10 @@ struct App {
         ch_ |= ImGui::SliderFloat("UI size", &settings.uiScale, 0.75f, 2.f, "%.2f");
         ch_ |= ImGui::Checkbox("VSync", &settings.vsync);
         ch_ |= ImGui::Checkbox("Show where the next block goes (see-through preview)", &settings.blockPreview);
+        ImGui::SeparatorText("Look");
+        ch_ |= ImGui::SliderFloat("Time of day", &settings.timeOfDay, 0, 24, "%.1f h");
+        ch_ |= ImGui::Checkbox("The sun moves (a day is 20 minutes)", &settings.dayCycle);
+        const char* sq[] = { "Off", "Normal", "High" }; ch_ |= ImGui::Combo("Shadows", &settings.shadowQuality, sq, 3);
         if (ch_) settings.save(settingsPath);
         if (ImGui::Button("Done", ImVec2(-1, 0))) showSettings = false;
         ImGui::End();
@@ -922,6 +1035,50 @@ struct App {
         }
     }
 
+    // ================================================================== screenshot mode (--screenshots <folder>)
+    std::string shotDir;
+    void SaveShot(const std::string& path) {
+        ComPtr<ID3D11Texture2D> bb; HR(swap->GetBuffer(0, IID_PPV_ARGS(&bb)));
+        D3D11_TEXTURE2D_DESC d; bb->GetDesc(&d); d.Usage = D3D11_USAGE_STAGING; d.BindFlags = 0; d.CPUAccessFlags = D3D11_CPU_ACCESS_READ; d.MiscFlags = 0;
+        ComPtr<ID3D11Texture2D> st; HR(dev->CreateTexture2D(&d, nullptr, &st)); ctx->CopyResource(st.Get(), bb.Get());
+        D3D11_MAPPED_SUBRESOURCE m; HR(ctx->Map(st.Get(), 0, D3D11_MAP_READ, 0, &m));
+        std::vector<uint8_t> px((size_t)d.Width * d.Height * 4);
+        for (UINT y = 0; y < d.Height; y++) { memcpy(&px[(size_t)y * d.Width * 4], (const uint8_t*)m.pData + (size_t)y * m.RowPitch, d.Width * 4); for (UINT x = 0; x < d.Width; x++) px[((size_t)y * d.Width + x) * 4 + 3] = 255; }
+        ctx->Unmap(st.Get(), 0);
+        if (!writePng(path, (int)d.Width, (int)d.Height, px)) Log("could not write " + path);
+    }
+    void RunScreenshots() {
+        auto t0 = std::chrono::steady_clock::now();
+        Log("PRIMEngine screenshots, drawing with: " + driverName + ", " + std::to_string(cw) + "x" + std::to_string(ch));
+        settings = Settings{}; settings.renderDistance = 7; settings.verticalDistance = 3; settings.blockPreview = false;
+        std::error_code ec; fs::remove_all(WorldsDir() + "/Screenshot demo", ec);
+        CreateWorld("Screenshot demo", 0); Capture(false);
+        buildDemo(*world, reg);
+        int n = 0;
+        for (const DemoShot& sh : demoShots()) {
+            V3 dlt = sh.target - sh.eye; double hz = std::sqrt(dlt.x * dlt.x + dlt.z * dlt.z);
+            player.feet = { sh.eye.x, sh.eye.y - Player::EYE, sh.eye.z }; player.yaw = std::atan2(dlt.x, dlt.z); player.pitch = std::atan2(dlt.y, hz); player.vel = { 0, 0, 0 };
+            settings.timeOfDay = sh.hour;
+            I3 pc = chunkOf(ifloor(player.feet.x), ifloor(player.feet.y), ifloor(player.feet.z));
+            int frames = 0;
+            for (; frames < 3000; frames++) {   // wait until everything around is loaded and meshed
+                size_t before = world->loadedCount(); world->stream(pc, settings.renderDistance, settings.verticalDistance, 64);
+                ScheduleMeshing(pc); CollectMeshes();
+                if (frames > 4 && world->loadedCount() == before && world->dirty.empty() && workers->pending() == 0) break;
+                Sleep(2);
+            }
+            auto s0 = std::chrono::steady_clock::now();
+            RenderWorld();
+            char name[256]; snprintf(name, sizeof name, "%s/%02d_%s.png", shotDir.c_str(), ++n, sh.name.c_str());
+            SaveShot(std::string(name));
+            swap->Present(0, 0);
+            double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - s0).count();
+            char line[256]; snprintf(line, sizeof line, "%s: %zu chunks with meshes, %d drawn, %d waiting frames, frame %.0f ms", name, gpu.size(), drawnChunks, frames, ms); Log(line);
+        }
+        workers.reset(); world.reset(); fs::remove_all(WorldsDir() + "/Screenshot demo", ec);
+        Log("done in " + std::to_string((int)std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count()) + " s");
+    }
+
     // ================================================================== frame
     void Frame(double dt) {
         if (resized) OnResize();
@@ -946,10 +1103,10 @@ struct App {
         ImGui::Render();
 
         const float bg[4] = { 0.10f, 0.11f, 0.13f, 1 };
-        ctx->OMSetRenderTargets(1, backRTV.GetAddressOf(), dsv.Get());
-        D3D11_VIEWPORT v{ 0, 0, (float)cw, (float)ch, 0, 1 }; ctx->RSSetViewports(1, &v);
-        ctx->ClearRenderTargetView(backRTV.Get(), bg); ctx->ClearDepthStencilView(dsv.Get(), D3D11_CLEAR_DEPTH, 1.f, 0);
+        D3D11_VIEWPORT v{ 0, 0, (float)cw, (float)ch, 0, 1 };
         if (screen == Screen::Game) RenderWorld();
+        else { ctx->OMSetRenderTargets(1, backRTV.GetAddressOf(), nullptr); ctx->ClearRenderTargetView(backRTV.Get(), bg); }
+        ctx->RSSetViewports(1, &v);
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
         swap->Present(settings.vsync ? 1 : 0, 0);
         retired.clear();
@@ -982,14 +1139,21 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     return DefWindowProcA(h, m, w, l);
 }
 
-int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR, int) {
+int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmd, int) {
     SetProcessDPIAware();
     App app; g_app = &app;
+    std::string args = cmd ? cmd : ""; size_t sp = args.find("--screenshots");
+    if (sp != std::string::npos) {   // draw the demo scene from a few places, save PNGs, quit
+        std::string dir = args.substr(sp + 13); while (!dir.empty() && dir[0] == ' ') dir.erase(0, 1); if (dir.empty()) dir = "screenshots";
+        std::error_code ec; fs::create_directories(dir, ec); app.shotDir = fs::absolute(dir).string(); g_shotLog = app.shotDir + "/log.txt";
+        std::ofstream(g_shotLog, std::ios::trunc).close();
+    }
     WNDCLASSA wc{}; wc.lpfnWndProc = WndProc; wc.hInstance = hi; wc.hCursor = LoadCursor(nullptr, IDC_ARROW); wc.lpszClassName = "PRIMEngineWnd"; RegisterClassA(&wc);
-    RECT rc{ 0, 0, 1600, 900 }; AdjustWindowRect(&rc, WS_OVERLAPPEDWINDOW, FALSE);
+    RECT rc{ 0, 0, app.shotDir.empty() ? 1600 : 1280, app.shotDir.empty() ? 900 : 720 }; AdjustWindowRect(&rc, WS_OVERLAPPEDWINDOW, FALSE);
     app.hwnd = CreateWindowA(wc.lpszClassName, "PRIMEngine", WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT, rc.right - rc.left, rc.bottom - rc.top, nullptr, nullptr, hi, nullptr);
     RECT cr; GetClientRect(app.hwnd, &cr); app.cw = std::max<int>(2, cr.right); app.ch = std::max<int>(2, cr.bottom);
     app.Init();
+    if (!app.shotDir.empty()) { app.RunScreenshots(); ImGui_ImplDX11_Shutdown(); ImGui_ImplWin32_Shutdown(); ImGui::DestroyContext(); return 0; }
     auto last = std::chrono::steady_clock::now();
     for (bool run = true; run;) {
         MSG msg; while (PeekMessageA(&msg, nullptr, 0, 0, PM_REMOVE)) { if (msg.message == WM_QUIT) run = false; TranslateMessage(&msg); DispatchMessageA(&msg); }

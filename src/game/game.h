@@ -12,6 +12,9 @@ struct Settings {
     float fov = 70, mouseSensitivity = 1.f, uiScale = 1.f;
     bool vsync = true;
     bool blockPreview = true;  // see-through preview where the next block goes
+    float timeOfDay = 10.f;    // hours, 0 .. 24
+    bool dayCycle = false;     // the sun moves (one day = 20 minutes)
+    int shadowQuality = 2;     // 0 off, 1 normal (2048), 2 high (4096)
     bool load(const std::string& path);
     bool save(const std::string& path) const;
 };

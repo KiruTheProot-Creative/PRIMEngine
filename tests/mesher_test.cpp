@@ -41,7 +41,7 @@ int main() {
     s.set(5, 0, 5, stone);
     ChunkMesh sm = meshOf(s, reg, { 0, -1, 0 });
     float nearWall = 1, open = 0;
-    for (auto& v : sm.opaque.v) if (v.normal == 2) { if (v.x == 5 && v.z == 5) nearWall = std::min(nearWall, v.shade); if (v.x == 1 && v.z == 1) open = std::max(open, v.shade); }
+    for (auto& v : sm.opaque.v) if (faceOf(v) == 2) { if (v.x == 5 && v.z == 5) nearWall = std::min(nearWall, v.shade); if (v.x == 1 && v.z == 1) open = std::max(open, v.shade); }
     CHECK(nearWall < open * 0.9f, "floor at the foot of a block is shaded (%.2f vs %.2f)", nearWall, open);
     // winding: every triangle is clockwise seen from outside (cross product along the face normal)
     size_t bad = 0;
@@ -50,7 +50,7 @@ int main() {
         float e1[3] = { B.x - A.x, B.y - A.y, B.z - A.z }, e2[3] = { C.x - A.x, C.y - A.y, C.z - A.z };
         float cr[3] = { e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0] };
         static const float N[6][3] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
-        int nf = (int)A.normal; if (cr[0] * N[nf][0] + cr[1] * N[nf][1] + cr[2] * N[nf][2] <= 0) bad++;
+        int nf = faceOf(A); if (cr[0] * N[nf][0] + cr[1] * N[nf][1] + cr[2] * N[nf][2] <= 0) bad++;
     }
     CHECK(bad == 0, "every triangle faces outward (%zu wrong)", bad);
     // worker threads give the same meshes as building directly

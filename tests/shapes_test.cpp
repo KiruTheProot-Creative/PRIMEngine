@@ -3,6 +3,7 @@
 #include "../src/world/mesher.h"
 #include "../src/world/shapes.h"
 #include "../src/game/game.h"
+#include "../src/game/demo.h"
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -115,6 +116,12 @@ int main() {
         Chunk c3; for (int i = 0; i < CS3; i++) c3.b[i] = makeBlock(5, i % 97, i % 24);
         Chunk c4; CHECK(RegionStore::decode(RegionStore::encode(c3), c4) && c3.b == c4.b, "new format keeps shape and rotation");
     }
+
+    // the screenshot scene builds
+    { BlockRegistry reg; registerBuiltinBlocks(reg); World* w = new World(reg); w->gen.layers = { { reg.find("stone"), 3 }, { reg.find("dirt"), 2 }, { reg.find("grass"), 1 } };
+      buildDemo(*w, reg); int shaped = 0, n = 0;
+      for (auto& kv : w->chunks) for (BlockId v : kv.second->b) { if (v != AIR && kv.second->modified) n++; if (shapeOf(v)) shaped++; }
+      CHECK(shaped > 100 && demoShots().size() >= 5, "demo scene: %d shaped blocks, %zu camera shots", shaped, demoShots().size()); delete w; }
 
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
     return fails ? 1 : 0;
