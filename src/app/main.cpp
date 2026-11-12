@@ -801,7 +801,7 @@ struct App {
         ctx->OMSetRenderTargets(1, viewerRTV.GetAddressOf(), viewerDSV.Get()); ctx->ClearRenderTargetView(viewerRTV.Get(), bg); ctx->ClearDepthStencilView(viewerDSV.Get(), D3D11_CLEAR_DEPTH, 1, 0);
         D3D11_VIEWPORT v{ 0, 0, (float)w, (float)h, 0, 1 }; ctx->RSSetViewports(1, &v);
         ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());
-        PreviewCB pc{}; XMStoreFloat4x4((XMFLOAT4X4*)pc.vp, XMMatrixTranspose(viewerVP)); pc.light[0] = -0.45f; pc.light[1] = 0.8f; pc.light[2] = -0.4f;
+        PreviewCB pc{}; XMStoreFloat4x4((XMFLOAT4X4*)pc.vp, viewerVP);   // row_major in the shader, like the world pc.light[0] = -0.45f; pc.light[1] = 0.8f; pc.light[2] = -0.4f;
         ctx->UpdateSubresource(cbPreview.Get(), 0, nullptr, &pc, 0, 0);
         ctx->VSSetConstantBuffers(2, 1, cbPreview.GetAddressOf()); ctx->PSSetConstantBuffers(2, 1, cbPreview.GetAddressOf());
         ctx->VSSetConstantBuffers(1, 1, cbChunk.GetAddressOf());
