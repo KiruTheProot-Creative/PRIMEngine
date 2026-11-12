@@ -44,6 +44,8 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM,
 #include <unordered_map>
 #include <functional>
 #include <cctype>
+#include <cstdarg>
+#include <cfloat>
 
 using namespace DirectX;
 using Microsoft::WRL::ComPtr;
@@ -572,6 +574,33 @@ struct App {
         CollectMeshes();
         if ((autosave += dt) > 60) { autosave = 0; SaveWorld(); }
     }
+    // ---- panel layout helpers: everything fits the width of whatever panel it is in
+    // a property row: the label on the left (cut short with "..." when narrow, full text on hover), the field fills the rest
+    void Prop(const char* label) {
+        float ui = settings.uiScale, avail = ImGui::GetContentRegionAvail().x, sp = ImGui::GetStyle().ItemSpacing.x;
+        float lw = std::clamp(avail * 0.38f, 56 * ui, 150 * ui);
+        ImVec2 p = ImGui::GetCursorScreenPos(); float fh = ImGui::GetFrameHeight();
+        ImGui::Dummy(ImVec2(lw - sp, fh));
+        float tw = ImGui::CalcTextSize(label).x; bool cut = tw > lw - sp;
+        ImVec2 tp(p.x, p.y + ImGui::GetStyle().FramePadding.y);
+        ImGui::RenderTextEllipsis(ImGui::GetWindowDrawList(), tp, ImVec2(p.x + lw - sp, p.y + fh), p.x + lw - sp, label, nullptr, nullptr);
+        if (cut && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", label);
+        ImGui::SameLine(); ImGui::SetNextItemWidth(-FLT_MIN);
+    }
+    // grey text that wraps at the panel's edge
+    void Hint(const char* fmt, ...) {
+        char buf[1024]; va_list ap; va_start(ap, fmt); vsnprintf(buf, sizeof buf, fmt, ap); va_end(ap);
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled)); ImGui::TextWrapped("%s", buf); ImGui::PopStyleColor();
+    }
+    // put the next item on this line only if it still fits (buttons wrap to the next line in narrow panels)
+    void Flow(float nextWidth) {
+        float right = ImGui::GetCurrentWindow()->WorkRect.Max.x;
+        if (ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x + nextWidth <= right) ImGui::SameLine();
+    }
+    float ButtonW(const char* label, bool small = false) { return ImGui::CalcTextSize(label, nullptr, true).x + (small ? 0 : 2) * ImGui::GetStyle().FramePadding.x + (small ? 2 * ImGui::GetStyle().FramePadding.x : 0); }
+    bool FlowButton(const char* label, bool small = false) { Flow(ButtonW(label, small)); return small ? ImGui::SmallButton(label) : ImGui::Button(label); }
+    float Cols(int n) { float sp = ImGui::GetStyle().ItemSpacing.x; return std::floor((ImGui::GetContentRegionAvail().x - sp * (n - 1)) / n); }   // width of n buttons side by side
+
     // ---- tools
     BlockId BrushMaterial() const { BlockId m = brushMat ? brushMat : typeOf(hotbar[hotSel]); return reg.has(m) ? typeOf(m) : reg.find("stone"); }
     void EndStroke() {
@@ -626,7 +655,8 @@ struct App {
         ImGui::PushID(id); ImVec2 p;
         if (Tile("pick", p, s)) ImGui::OpenPopup("grid");
         if (v) BlockIcon(ImGui::GetWindowDrawList(), v, ImVec2(p.x + s * 0.5f, p.y + s * 0.5f), s * 0.7f);
-        ImGui::SameLine(); ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted(v && reg.has(v) ? reg.get(v).name.c_str() : none);
+        ImGui::SameLine(); { const char* nm = v && reg.has(v) ? reg.get(v).name.c_str() : none; ImVec2 q = ImGui::GetCursorScreenPos(); float r = ImGui::GetCurrentWindow()->WorkRect.Max.x;
+          ImGui::Dummy(ImVec2(std::max(1.f, r - q.x), s)); ImGui::RenderTextEllipsis(ImGui::GetWindowDrawList(), ImVec2(q.x, q.y + (s - ImGui::GetTextLineHeight()) * 0.5f), ImVec2(r, q.y + s), r, nm, nullptr, nullptr); }
         if (ImGui::BeginPopup("grid")) {
             if (ImGui::Selectable(none, v == 0)) v = 0;
             float t = 44 * ui; int n = 0;
@@ -643,7 +673,7 @@ struct App {
         ImGui::PopID();
     }
     void BrushBody() {   // the terrain brush's options (Q menu and Inspector)
-        float ui = settings.uiScale, s = 58 * ui;
+        float ui = settings.uiScale, s = std::min(58 * ui, Cols(3));
         ImGui::SeparatorText("Shape");
         for (int i = 0; i < (int)BrushShape::COUNT; i++) {
             ImGui::PushID(i); ImGui::BeginGroup(); ImVec2 p;
@@ -655,7 +685,7 @@ struct App {
             if (i % 3 != 2 && i + 1 < (int)BrushShape::COUNT) ImGui::SameLine();
         }
         ImGui::SeparatorText("What it does");
-        float bw = 92 * ui;
+        float bw = Cols(3);
         for (int i = 0; i < (int)BrushOp::COUNT; i++) {
             bool on = (int)brush.op == i;
             if (on) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
@@ -664,32 +694,30 @@ struct App {
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", opInfo((BrushOp)i).help);
             if (i % 3 != 2 && i + 1 < (int)BrushOp::COUNT) ImGui::SameLine();
         }
-        ImGui::TextWrapped("%s", opInfo(brush.op).help);
+        Hint("%s", opInfo(brush.op).help);
         ImGui::SeparatorText("Settings");
-        BrushOp o = brush.op; float w = -110 * ui;
-        ImGui::SetNextItemWidth(w); ImGui::SliderInt("Size", &brush.radius, 0, 32, brush.radius ? "%d blocks" : "1 block");
-        if (brush.shape == BrushShape::Cylinder || brush.shape == BrushShape::Cube) { ImGui::SetNextItemWidth(w); ImGui::SliderInt("Height", &brush.height, 0, 32, "%d up and down"); }
-        if (o == BrushOp::Smooth || o == BrushOp::Raise || o == BrushOp::Lower || o == BrushOp::Roughen) { ImGui::SetNextItemWidth(w); ImGui::SliderFloat("Strength", &brush.strength, 0, 1, "%.2f"); }
-        if (o == BrushOp::Paint) { ImGui::SetNextItemWidth(w); ImGui::SliderInt("Paint depth", &brush.paintDepth, 1, 8, "%d blocks"); }
-        if (o == BrushOp::Roughen) { ImGui::SetNextItemWidth(w); ImGui::SliderFloat("Lump size", &brush.noiseScale, 0.05f, 1, "%.2f"); }
-        if (o == BrushOp::Remove || o == BrushOp::Smooth) ImGui::Checkbox("Water and lava too", &brush.liquidsToo);
+        BrushOp o = brush.op;
+        Prop("Size"); ImGui::SliderInt("##Size", &brush.radius, 0, 32, brush.radius ? "%d blocks" : "1 block");
+        if (brush.shape == BrushShape::Cylinder || brush.shape == BrushShape::Cube) { Prop("Height"); ImGui::SliderInt("##Height", &brush.height, 0, 32, "%d up and down"); }
+        if (o == BrushOp::Smooth || o == BrushOp::Raise || o == BrushOp::Lower || o == BrushOp::Roughen) { Prop("Strength"); ImGui::SliderFloat("##Strength", &brush.strength, 0, 1, "%.2f"); }
+        if (o == BrushOp::Paint) { Prop("Paint depth"); ImGui::SliderInt("##Paint depth", &brush.paintDepth, 1, 8, "%d blocks"); }
+        if (o == BrushOp::Roughen) { Prop("Lump size"); ImGui::SliderFloat("##Lump size", &brush.noiseScale, 0.05f, 1, "%.2f"); }
+        if (o == BrushOp::Remove || o == BrushOp::Smooth) { Prop("Water and lava too"); ImGui::Checkbox("##liq", &brush.liquidsToo); }
         if (o == BrushOp::Add || o == BrushOp::Paint || o == BrushOp::Replace || o == BrushOp::Flatten || o == BrushOp::Fill || o == BrushOp::Roughen) {
-            ImGui::TextDisabled("Material"); BlockPicker("mat", brushMat, "The block in my hand");
+            Prop("Material"); BlockPicker("mat", brushMat, "The block in my hand");
         }
         if (o == BrushOp::Replace) {
-            ImGui::TextDisabled("Only replace"); BlockPicker("from", brush.replaceFrom, "Anything");
-            if (toolValid && ImGui::SmallButton("The block I am looking at")) brush.replaceFrom = typeOf(world->get(toolHit.x, toolHit.y, toolHit.z));
+            Prop("Only replace"); BlockPicker("from", brush.replaceFrom, "Anything");
+            if (toolValid && FlowButton("The block I am looking at", true)) brush.replaceFrom = typeOf(world->get(toolHit.x, toolHit.y, toolHit.z));
         }
         ImGui::Spacing();
-        ImGui::TextDisabled("Left click: %s.   Right click: %s.\nHold the button to keep going. Shift + wheel or + / - : size.\nCtrl+Z undoes a whole stroke.",
+        Hint("Left click: %s. Right click: %s. Hold the button to keep going. Shift + wheel or + / - : size. Ctrl+Z undoes a whole stroke.",
             opInfo(brush.op).name, opInfo(opposite(brush.op)).name);
     }
     void BrushMenu() {
-        Center(ImVec2(0, 0));
+        float W = 440 * settings.uiScale; Center(ImVec2(W, 0)); ImGui::SetNextWindowSizeConstraints(ImVec2(W, 0), ImVec2(W, FLT_MAX));
         ImGui::Begin("Terrain brush###brushmenu", nullptr, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize);
-        ImGui::PushItemWidth(260 * settings.uiScale);
         BrushBody();
-        ImGui::PopItemWidth();
         if (ImGui::Button("Done (Q)", ImVec2(-1, 0))) { brushMenu = false; Capture(true); }
         ImGui::End();
     }
@@ -1548,14 +1576,15 @@ struct App {
     I3 Here() const { return { ifloor(player.feet.x), ifloor(player.feet.y), ifloor(player.feet.z) }; }
     bool ZoneFields(EnvZone& z) {   // returns true when "Delete" was clicked
         float ui = settings.uiScale; I3 here = Here(); bool del = false;
-        ImGui::SetNextItemWidth(-90 * ui); ImGui::InputText("Name", &z.name);
-        ImGui::SetNextItemWidth(-90 * ui); EnvCombo("Air", z.env);
-        ImGui::SetNextItemWidth(-90 * ui); ImGui::InputInt3("From", &z.lo.x);
-        ImGui::SetNextItemWidth(-90 * ui); ImGui::InputInt3("To", &z.hi.x);
+        (void)ui;
+        Prop("Name"); ImGui::InputText("##name", &z.name);
+        Prop("Air"); EnvCombo("##air", z.env);
+        Prop("From"); ImGui::InputInt3("##from", &z.lo.x);
+        Prop("To"); ImGui::InputInt3("##to", &z.hi.x);
         if (ImGui::SmallButton("From = here")) z.lo = here;
-        ImGui::SameLine(); if (ImGui::SmallButton("To = here")) z.hi = here;
-        ImGui::SameLine(); if (ImGui::SmallButton("Go there")) { player.feet = { (z.lo.x + z.hi.x) * 0.5 + 0.5, (double)std::min(z.lo.y, z.hi.y), (z.lo.z + z.hi.z) * 0.5 + 0.5 }; player.flying = true; }
-        ImGui::SameLine(); if (ImGui::SmallButton("Delete")) del = true;
+        if (FlowButton("To = here", true)) z.hi = here;
+        if (FlowButton("Go there", true)) { player.feet = { (z.lo.x + z.hi.x) * 0.5 + 0.5, (double)std::min(z.lo.y, z.hi.y), (z.lo.z + z.hi.z) * 0.5 + 0.5 }; player.flying = true; }
+        if (FlowButton("Delete", true)) del = true;
         if (z.lo.x > z.hi.x) std::swap(z.lo.x, z.hi.x);
         if (z.lo.y > z.hi.y) std::swap(z.lo.y, z.hi.y);
         if (z.lo.z > z.hi.z) std::swap(z.lo.z, z.hi.z);
@@ -1567,18 +1596,18 @@ struct App {
         sel = Sel::Zone; selIndex = (int)info.zones.size() - 1;
     }
     void EnvBody() {
-        ImGui::SetNextItemWidth(-1); EnvCombo("##air", info.environment);
-        ImGui::TextDisabled("The air of this whole world. Zones (in the Outliner) can have their own.");
-        ImGui::TextDisabled("You are in: %s", envState.inZone ? ("the zone \"" + envState.zoneName + "\"").c_str() : "the world's own air");
+        Prop("Air"); EnvCombo("##air", info.environment);
+        Hint("The air of this whole world. Zones (in the Outliner) can have their own.");
+        Hint("You are in: %s", envState.inZone ? ("the zone \"" + envState.zoneName + "\"").c_str() : "the world's own air");
         if (ImGui::Button("Add a zone around me")) AddZoneHere();
     }
     void WeatherBody() {
-        ImGui::TextDisabled("This world's weather (it fades over in about 20 seconds):");
+        Hint("This world's weather (it fades over in about 20 seconds):");
         const auto& types = weatherTypes();
         for (int i = 0; i < (int)types.size(); i++) if (ImGui::RadioButton(types[i].name.c_str(), weather.target == i)) weather.set(i, false);
         ImGui::Separator();
         ImGui::Checkbox("Weather changes by itself", &weather.autoChange);
-        if (weather.autoChange) ImGui::TextDisabled("Next change in about %d minutes.", (int)(weather.secondsToChange() / 60) + 1);
+        if (weather.autoChange) Hint("Next change in about %d minutes.", (int)(weather.secondsToChange() / 60) + 1);
     }
 
     // ---- shape menu (Q): any block in any shape
@@ -1619,7 +1648,7 @@ struct App {
 
     // ---- block editor
     void BlockEditor() {
-        Center(ImVec2(520 * settings.uiScale, 0));
+        float W = 460 * settings.uiScale; Center(ImVec2(W, 0)); ImGui::SetNextWindowSizeConstraints(ImVec2(W, 0), ImVec2(W, FLT_MAX));
         ImGui::Begin(draftId ? "Edit block###editor" : "New block###editor", &editorOpen, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize);
         BlockEditorBody();
         ImGui::End();
@@ -1627,42 +1656,45 @@ struct App {
     void BlockEditorBody() {
         float ui = settings.uiScale;
         for (int f = 0; f < 6; f++) { int t = reg.textureIndex(draft.faces[f]); draft.tex[f] = t < 0 ? 0 : t; }
-        // preview on the left, settings on the right
-        float pv = 120 * ui; ImVec2 p = ImGui::GetCursorScreenPos();
+        // the preview on top (in the middle), then one row per setting: label left, field right
+        float pv = std::min(120 * ui, ImGui::GetContentRegionAvail().x);
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.f, (ImGui::GetContentRegionAvail().x - pv) * 0.5f));
+        ImVec2 p = ImGui::GetCursorScreenPos();
         ImGui::GetWindowDrawList()->AddRectFilled(p, ImVec2(p.x + pv, p.y + pv), IM_COL32(30, 32, 38, 255), 4.f);
         ShapeIcon(ImGui::GetWindowDrawList(), draft, AIR, ImVec2(p.x + pv * 0.5f, p.y + pv * 0.5f), pv * 0.75f);
-        ImGui::Dummy(ImVec2(pv, pv)); ImGui::SameLine();
-        ImGui::BeginGroup();
-        ImGui::SetNextItemWidth(260 * ui); ImGui::InputText("Name", &draft.name);
-        ImGui::SetNextItemWidth(230 * ui); ImGui::InputText("##cat", &draft.category); ImGui::SameLine(0, 2);
-        if (ImGui::BeginCombo("Folder", nullptr, ImGuiComboFlags_NoPreview | ImGuiComboFlags_PopupAlignLeft)) {   // the block's folder in the asset browser
-            for (const std::string& c : BlockCategories()) if (ImGui::Selectable(c.c_str(), c == draft.category)) draft.category = c;
-            ImGui::EndCombo();
-        }
+        ImGui::Dummy(ImVec2(pv, pv));
+        Prop("Name"); ImGui::InputText("##name", &draft.name);
+        Prop("Folder");
+        { float bw = ImGui::GetFrameHeight(); ImGui::SetNextItemWidth(std::max(20.f, ImGui::GetContentRegionAvail().x - bw - 2)); ImGui::InputText("##cat", &draft.category); ImGui::SameLine(0, 2);
+          if (ImGui::BeginCombo("##folders", nullptr, ImGuiComboFlags_NoPreview | ImGuiComboFlags_PopupAlignLeft)) {   // the block's folder in the asset browser
+              for (const std::string& c : BlockCategories()) if (ImGui::Selectable(c.c_str(), c == draft.category)) draft.category = c;
+              ImGui::EndCombo();
+          } }
         int shape = (int)draft.shape; const char* shapes[] = { "Full block", "Cross plane (flowers, tall grass)", "Flat plane (ladders, vines, posters)" };
-        ImGui::SetNextItemWidth(260 * ui);
-        if (ImGui::Combo("Shape", &shape, shapes, 3)) {
+        Prop("Shape");
+        if (ImGui::Combo("##shape", &shape, shapes, 3)) {
             draft.shape = (Shape)shape;
             if (draft.shape != Shape::Cube) { draft.render = Render::Cutout; draft.solid = false; faceMode = 0; for (auto& f : draft.faces) f = draft.faces[0]; }
             else { draft.solid = true; draft.render = reg.image(draft.tex[0]).transparent ? Render::Cutout : Render::Opaque; }
         }
         if (draft.shape == Shape::Cube) {
             bool see = draft.render == Render::Cutout;
-            if (ImGui::Checkbox("See-through (the picture's transparent pixels)", &see)) draft.render = see ? Render::Cutout : Render::Opaque;
-            if (see) ImGui::Checkbox("Hide the sides between two of these (like glass)", &draft.cullSame);
-            ImGui::Checkbox("You bump into it", &draft.solid);
+            Prop("See-through"); if (ImGui::Checkbox("##see", &see)) draft.render = see ? Render::Cutout : Render::Opaque;
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("The picture's transparent pixels are see-through.");
+            if (see) { Prop("Hide inner sides"); ImGui::Checkbox("##cull", &draft.cullSame); if (ImGui::IsItemHovered()) ImGui::SetTooltip("Hide the sides between two of these, like glass."); }
+            Prop("Solid"); ImGui::Checkbox("##solid", &draft.solid); if (ImGui::IsItemHovered()) ImGui::SetTooltip("You bump into it.");
         }
-        ImGui::SetNextItemWidth(160 * ui); ImGui::SliderInt("Glows (light level)", &draft.light, 0, 15, draft.light ? "%d" : "no");
+        Prop("Glows"); ImGui::SliderInt("##light", &draft.light, 0, 15, draft.light ? "light level %d" : "no");
         if (draft.light) {
             float col[3] = { ((draft.lightColor >> 16) & 255) / 255.f, ((draft.lightColor >> 8) & 255) / 255.f, (draft.lightColor & 255) / 255.f };
-            if (ImGui::ColorEdit3("Light colour", col, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_PickerHueWheel))
+            Prop("Light colour");
+            if (ImGui::ColorEdit3("##lcol", col, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_PickerHueWheel))
                 draft.lightColor = ((uint32_t)std::lround(col[0] * 255) << 16) | ((uint32_t)std::lround(col[1] * 255) << 8) | (uint32_t)std::lround(col[2] * 255);
         }
-        ImGui::Checkbox("Sways in the wind", &draft.waves);
-        ImGui::SetNextItemWidth(160 * ui); ImGui::SliderFloat("Shininess", &draft.shine, 0, 1, draft.shine <= 0 ? "matt" : "%.2f");
-        ImGui::SameLine(); ImGui::Checkbox("Mirror", &draft.mirror);
-        if (draft.shape != Shape::Cube) ImGui::TextDisabled(draft.shape == Shape::Cross ? "Stands in the middle of its block. You walk through it." : "Sticks to the side of the block you click on. You walk through it.");
-        ImGui::EndGroup();
+        Prop("Sways in the wind"); ImGui::Checkbox("##waves", &draft.waves);
+        Prop("Shininess"); ImGui::SliderFloat("##shine", &draft.shine, 0, 1, draft.shine <= 0 ? "matt" : "%.2f");
+        Prop("Mirror"); ImGui::Checkbox("##mirror", &draft.mirror);
+        if (draft.shape != Shape::Cube) Hint(draft.shape == Shape::Cross ? "Stands in the middle of its block. You walk through it." : "Sticks to the side of the block you click on. You walk through it.");
 
         ImGui::Separator();
         // texture slots
@@ -1671,13 +1703,14 @@ struct App {
         if (draft.shape != Shape::Cube) slots = { { "Picture", { 0, 1, 2, 3, 4, 5 } } };
         else {
             const char* modes[] = { "Same picture on every side", "Top, bottom and sides", "Every side different" };
-            ImGui::SetNextItemWidth(260 * ui); ImGui::Combo("Textures", &faceMode, modes, 3);
+            Prop("Textures"); ImGui::Combo("##faces", &faceMode, modes, 3);
             if (faceMode == 0) slots = { { "All sides", { 0, 1, 2, 3, 4, 5 } } };
             else if (faceMode == 1) slots = { { "Top", { F_PY } }, { "Sides", { F_PX, F_NX, F_PZ, F_NZ } }, { "Bottom", { F_NY } } };
             else slots = { { "Top", { F_PY } }, { "Bottom", { F_NY } }, { "North (-Z)", { F_NZ } }, { "South (+Z)", { F_PZ } }, { "East (+X)", { F_PX } }, { "West (-X)", { F_NX } } };
         }
         float ts = 64 * ui;
         for (int i = 0; i < (int)slots.size(); i++) {
+            if (i) Flow(ts);   // texture slots wrap to the next line when the panel is narrow
             ImGui::PushID(i); ImGui::BeginGroup();
             ImVec2 tp; if (Tile("slot", tp, ts)) { pickSlot = i; ImGui::OpenPopup("pick"); }
             TextureImage(draft.tex[slots[i].faces[0]], tp, ts, 4);
@@ -1700,13 +1733,12 @@ struct App {
                 ImGui::EndPopup();
             }
             ImGui::PopID();
-            if (i + 1 < (int)slots.size()) ImGui::SameLine();
         }
 
         ImGui::Separator();
-        bool ok = !draft.name.empty();
+        bool ok = !draft.name.empty(); float bw = Cols(draftId ? 3 : 2);
         ImGui::BeginDisabled(!ok);
-        if (ImGui::Button(draftId ? "Save" : "Create", ImVec2(140 * ui, 0))) {
+        if (ImGui::Button(draftId ? "Save" : "Create", ImVec2(bw, 0))) {
             draft.name = reg.uniqueName(draft.name, draftId); bool isNew = draftId == AIR;
             ChangeBlocks([&] { if (draftId) reg.put(draftId, draft); else draftId = reg.add(draft); });
             library.saveBlocks(reg);
@@ -1715,8 +1747,8 @@ struct App {
             editorOpen = false; if (sel == Sel::Block) selIndex = (int)draftId;
         }
         ImGui::EndDisabled();
-        ImGui::SameLine(); if (ImGui::Button("Cancel", ImVec2(140 * ui, 0))) editorOpen = false;
-        if (draftId) { ImGui::SameLine(); if (ImGui::Button("Delete block...", ImVec2(140 * ui, 0))) { deleteBlockAsk = draftId; wantPopup = "Delete block?"; } }
+        ImGui::SameLine(); if (ImGui::Button("Cancel", ImVec2(bw, 0))) editorOpen = false;
+        if (draftId) { ImGui::SameLine(); if (ImGui::Button("Delete...", ImVec2(bw, 0))) { deleteBlockAsk = draftId; wantPopup = "Delete block?"; } }
     }
 
     // ================================================================== the editor (G1)
@@ -1908,11 +1940,12 @@ struct App {
         switch (sel) {
         case Sel::World: {
             title("World");
-            ImGui::SetNextItemWidth(-90 * ui); ImGui::InputText("Name", &info.name);
-            ImGui::SetNextItemWidth(-90 * ui); ImGui::SliderFloat("Time of day", &settings.timeOfDay, 0, 24, "%.1f h");
-            ImGui::Checkbox("The sun moves (a day lasts 20 minutes)", &settings.dayCycle);
-            ImGui::TextDisabled("Folder: %s", fs::path(worldDir).filename().string().c_str());
-            ImGui::TextDisabled("%s", info.genKind == Generator::Void ? "Empty world (void)" : "Flat world");
+            Prop("Name"); ImGui::InputText("##Name", &info.name);
+            Prop("Time of day"); ImGui::SliderFloat("##Time of day", &settings.timeOfDay, 0, 24, "%.1f h");
+            Prop("The sun moves"); ImGui::Checkbox("##daycycle", &settings.dayCycle);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("A whole day lasts 20 minutes.");
+            Hint("Folder: %s", fs::path(worldDir).filename().string().c_str());
+            Hint("%s", info.genKind == Generator::Void ? "Empty world (void)" : "Flat world");
             if (ImGui::Button("Save the world now")) { SaveWorld(); Toast("Saved"); }
             break; }
         case Sel::Weather: title("Weather"); WeatherBody(); break;
@@ -1922,43 +1955,43 @@ struct App {
                 title("Zone"); ImGui::PushID(selIndex);
                 if (ZoneFields(info.zones[selIndex])) { info.zones.erase(info.zones.begin() + selIndex); sel = Sel::Environment; }
                 ImGui::PopID();
-                ImGui::TextDisabled("A zone has its own air: a space station, a cave of ice, a volcano ...\nIf zones overlap, the smallest one wins.");
+                Hint("A zone has its own air: a space station, a cave of ice, a volcano ...\nIf zones overlap, the smallest one wins.");
             } else sel = Sel::Environment;
             break;
         case Sel::Spawn:
             title("Spawn point");
-            if (!info.hasSpawn) ImGui::TextWrapped("No spawn point yet. Playing starts wherever the editor camera is.");
+            if (!info.hasSpawn) Hint("No spawn point yet. Playing starts wherever the editor camera is.");
             else {
-                ImGui::SetNextItemWidth(-90 * ui); ImGui::InputScalarN("Position", ImGuiDataType_Double, &info.spawn.x, 3, nullptr, nullptr, "%.1f");
-                float deg = (float)(info.spawnYaw * 57.29578); ImGui::SetNextItemWidth(-90 * ui);
-                if (ImGui::SliderFloat("Looks", &deg, -180, 180, "%.0f deg")) info.spawnYaw = deg / 57.29578;
+                Prop("Position"); ImGui::InputScalarN("##Position", ImGuiDataType_Double, &info.spawn.x, 3, nullptr, nullptr, "%.1f");
+                float deg = (float)(info.spawnYaw * 57.29578); Prop("Looks towards");
+                if (ImGui::SliderFloat("##looks", &deg, -180, 180, "%.0f deg")) info.spawnYaw = deg / 57.29578;
             }
             if (ImGui::Button("Put it where I am")) { info.hasSpawn = true; info.spawn = player.feet; info.spawnYaw = player.yaw; }
             if (info.hasSpawn) {
-                ImGui::SameLine(); if (ImGui::Button("Go there")) { player.feet = info.spawn; player.yaw = info.spawnYaw; player.pitch = 0; }
-                ImGui::SameLine(); if (ImGui::Button("Remove")) info.hasSpawn = false;
+                if (FlowButton("Go there")) { player.feet = info.spawn; player.yaw = info.spawnYaw; player.pitch = 0; }
+                if (FlowButton("Remove")) info.hasSpawn = false;
             }
-            ImGui::TextDisabled("The green box in the viewport. The player starts here,\nand comes back here after dying.");
+            Hint("The green box in the viewport. The player starts here,\nand comes back here after dying.");
             break;
         case Sel::Player:
             title("Editor camera");
-            ImGui::SetNextItemWidth(-90 * ui); ImGui::InputScalarN("Position", ImGuiDataType_Double, &player.feet.x, 3, nullptr, nullptr, "%.1f");
-            { bool fly = player.flying; if (ImGui::Checkbox("Flying", &fly)) player.toggleFly(); }
-            ImGui::TextDisabled("This is you while building. Double-tap Space to fly or walk.");
+            Prop("Position"); ImGui::InputScalarN("##Position", ImGuiDataType_Double, &player.feet.x, 3, nullptr, nullptr, "%.1f");
+            { bool fly = player.flying; Prop("Flying"); if (ImGui::Checkbox("##fly", &fly)) player.toggleFly(); }
+            Hint("This is you while building. Double-tap Space to fly or walk.");
             break;
         case Sel::Game: {
             title("Game"); bool ch_ = false;
-            ImGui::SetNextItemWidth(-110 * ui); ch_ |= ImGui::InputText("Name", &game.name);
-            ImGui::SetNextItemWidth(-110 * ui);
-            if (ImGui::BeginCombo("Starts in world", game.startWorld.empty() ? "(the open world)" : game.startWorld.c_str())) {
+            Prop("Name"); ch_ |= ImGui::InputText("##Name", &game.name);
+            Prop("Starts in world");
+            if (ImGui::BeginCombo("##startworld", game.startWorld.empty() ? "(the open world)" : game.startWorld.c_str())) {
                 if (ImGui::Selectable("(the open world)", game.startWorld.empty())) { game.startWorld.clear(); ch_ = true; }
                 for (auto& w : worldList) if (ImGui::Selectable(w.c_str(), w == game.startWorld)) { game.startWorld = w; ch_ = true; }
                 ImGui::EndCombo();
             }
             title("Player rules"); PlayerRules& r = game.player;
-            auto sl = [&](const char* l, float* v, float a, float b, const char* f) { ImGui::SetNextItemWidth(-110 * ui); ch_ |= ImGui::SliderFloat(l, v, a, b, f); };
+            auto sl = [&](const char* l, float* v, float a, float b, const char* f) { Prop(l); ImGui::PushID(l); ch_ |= ImGui::SliderFloat("##v", v, a, b, f); ImGui::PopID(); };
             sl("Walk speed", &r.walkSpeed, 1, 15, "%.1f blocks/s");
-            ch_ |= ImGui::Checkbox("Can sprint (Ctrl)", &r.canSprint);
+            Prop("Can sprint (Ctrl)"); ch_ |= ImGui::Checkbox("##sprint", &r.canSprint);
             if (r.canSprint) sl("Sprint speed", &r.sprintSpeed, 1, 25, "%.1f blocks/s");
             sl("Jump height", &r.jumpHeight, 0.3f, 8, "%.2f blocks");
             sl("Gravity", &r.gravity, 4, 80, "%.0f");
@@ -1969,12 +2002,12 @@ struct App {
             sl("Respawn after", &r.respawnDelay, 0, 10, "%.1f s");
             if (ImGui::Button("Reset the rules")) { r = PlayerRules{}; ch_ = true; }
             if (ch_) game.save(gamePath);
-            ImGui::TextDisabled("Saved by itself. Press F5 to try it.");
+            Hint("Saved by itself. Press F5 to try it.");
             break; }
         case Sel::Block:
             if (!editorOpen && reg.has((BlockId)selIndex)) EditBlock((BlockId)selIndex);
             if (editorOpen) { title(draftId ? "Block" : "New block"); BlockEditorBody(); }
-            else ImGui::TextDisabled("Pick something in the Outliner or the Assets.");
+            else Hint("Pick something in the Outliner or the Assets.");
             break;
         case Sel::Texture:
             if (selIndex > 0 && selIndex < (int)reg.textureCount()) {
@@ -1983,12 +2016,12 @@ struct App {
                 float s = std::min(ImGui::GetContentRegionAvail().x, 200 * ui); ImVec2 p = ImGui::GetCursorScreenPos();
                 ImGui::GetWindowDrawList()->AddRectFilled(p, ImVec2(p.x + s, p.y + s), IM_COL32(30, 32, 38, 255), 4.f);
                 TextureImage(selIndex, p, s, 6); ImGui::Dummy(ImVec2(s, s));
-                ImGui::Text("%s", name.c_str()); ImGui::TextDisabled("%d x %d pixels%s", im.w, im.h, im.transparent ? ", see-through parts" : "");
+                ImGui::Text("%s", name.c_str()); Hint("%d x %d pixels%s", im.w, im.h, im.transparent ? ", see-through parts" : "");
                 if (ImGui::Button("Make a block")) MakeBlockFrom(name, ImportAs::Blocks);
-                ImGui::SameLine(); if (ImGui::Button("Cross plane")) MakeBlockFrom(name, ImportAs::CrossPlanes);
-                ImGui::SameLine(); if (ImGui::Button("Flat plane")) MakeBlockFrom(name, ImportAs::FlatPlanes);
+                if (FlowButton("Cross plane")) MakeBlockFrom(name, ImportAs::CrossPlanes);
+                if (FlowButton("Flat plane")) MakeBlockFrom(name, ImportAs::FlatPlanes);
                 if (ImGui::Button("Delete texture...")) { deleteTexAsk = name; wantPopup = "Delete texture?"; }
-            } else ImGui::TextDisabled("Pick something in the Outliner or the Assets.");
+            } else Hint("Pick something in the Outliner or the Assets.");
             break;
         case Sel::Shape:
             if (selIndex > 0 && selIndex < Shapes::get().count()) {
@@ -1998,16 +2031,16 @@ struct App {
                 ImGui::GetWindowDrawList()->AddRectFilled(p, ImVec2(p.x + s, p.y + s), IM_COL32(30, 32, 38, 255), 4.f);
                 if (held) ShapeIcon(ImGui::GetWindowDrawList(), reg.get(held), makeBlock(typeOf(held), selIndex), ImVec2(p.x + s * 0.5f, p.y + s * 0.5f), s * 0.75f);
                 ImGui::Dummy(ImVec2(s, s));
-                ImGui::Text("%s", si.name.c_str()); ImGui::TextDisabled("Folder: %s.  Every shape turns 24 ways (R, T in the viewport).", si.category.c_str());
+                ImGui::Text("%s", si.name.c_str()); Hint("Folder: %s.  Every shape turns 24 ways (R, T in the viewport).", si.category.c_str());
                 if (reg.has(hotbar[hotSel]) && ImGui::Button("Build with this shape")) { hotbar[hotSel] = makeBlock(typeOf(hotbar[hotSel]), selIndex); manualRot = false; }
             }
             break;
         case Sel::Tool:
-            if (!toolMode) { ImGui::TextDisabled("Press T in the viewport for the tools."); break; }
+            if (!toolMode) { Hint("Press T in the viewport for the tools."); break; }
             ImGui::SeparatorText(toolSel == 0 ? "Terrain brush" : "Tools");
-            if (toolSel == 0) BrushBody(); else ImGui::TextDisabled("More tools are coming to this slot.");
+            if (toolSel == 0) BrushBody(); else Hint("More tools are coming to this slot.");
             break;
-        default: ImGui::TextDisabled("Pick something in the Outliner or the Assets."); break;
+        default: Hint("Pick something in the Outliner or the Assets."); break;
         }
         ImGui::End();
     }
