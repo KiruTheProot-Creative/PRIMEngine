@@ -91,3 +91,10 @@ In the editor, **T** swaps the hotbar between blocks and tools. Slot 1 is the **
 - Width x Height in blocks: the model is stretched to fill it (1 x 1 for the morph ball, 2 x 3, 4 x 2 ...).
 - Forcefield: a glowing field in the door's opening, in a colour you pick. In Play mode, click to shoot the test beam: the field dissolves from where it was hit, the door plays its "open" animation, stays open (longer while you stand in it), plays "close" and the field comes back. Without a forcefield the door opens when you walk up to it.
 - Collision follows: the door halves and the field block you while it is shut; the frame always does.
+
+## Platforms and elevators (G2)
+
+- Any object can be a platform (Inspector > Kind): build one from blocks and shapes ("Make into object") or use an imported model; collision comes from it as always.
+- Platform path tool (T, slot 4): click an object to pick it, then click the blocks where it should go; right click removes the last point.
+- Back and forth, round and round, or once; always moving, when you stand on it (elevators: step off and on again to send it back, or let it come back by itself), or when shot. Speed, waiting at stops, stopping at every point, copies spread along the path, or a spawner that sends a new one every few seconds.
+- You ride along on top. "Try it here" moves them in the editor.

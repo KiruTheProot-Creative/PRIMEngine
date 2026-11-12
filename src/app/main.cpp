@@ -10,6 +10,7 @@
 #include "../game/brush.h"
 #include "../game/objects.h"
 #include "../game/meshmodel.h"
+#include "../game/platform.h"
 #include "../game/weather.h"
 #include "../core/png.h"
 #include "../core/noise.h"
@@ -591,6 +592,7 @@ struct App {
             if (playMode) hoverValid = false; else if (toolMode) ToolInteract(dt); else Interact(dt);
         } else { lPrev = rPrev = mPrev = true; if (stroking) EndStroke(); }
         toolValid = toolMode && !playMode && world->raycast(player.eye(), player.forward(), 160.0, toolHit);   // where the brush is (shown even with the mouse free)
+        if (!paused) UpdatePlatforms(std::min(dt, 0.05));
         if (playMode && !paused) UpdateDoors(std::min(dt, 0.05)); else if (!playMode && !doorRt.empty()) { doorRt.clear(); doorGpu.clear(); shots.clear(); RebuildSolids(); }
         if (playMode && !paused) {   // health, lava, falling out of the world, respawning
             PlayState::Event e = play.tick(*world, player, game.player, playSpawn, playYaw, std::min(dt, 0.05));
@@ -847,6 +849,136 @@ struct App {
         ID3D11ShaderResourceView* none[10] = {}; ctx->PSSetShaderResources(0, 10, none);
     }
 
+    // ================================================================== platforms and elevators (G2 attempt 3b)
+    std::map<uint32_t, PlatformRun> platRun;          // by object id: where each platform (and its copies) is on its path
+    bool previewPlatforms = false;                    // editor: let them move to try the path
+    bool PlatformsMoving() const { return playMode || previewPlatforms; }
+    void MakePlatform(WorldObject& o) {
+        o.kind = ObjKind::Platform; if (o.folder == "Props" || o.folder == "Doors") o.folder = "Platforms";
+        if (o.platform.points.empty()) o.platform.points = { { 0, 0, 0 } };
+    }
+    // where the platform (and each copy) is right now: offsets from its own place
+    std::vector<V3> PlatformOffsets(const WorldObject& o) {
+        if (o.kind != ObjKind::Platform) return { { 0, 0, 0 } };
+        if (!PlatformsMoving()) return { { 0, 0, 0 } };
+        auto it = platRun.find(o.id); if (it == platRun.end()) { platRun[o.id].reset(o.platform); it = platRun.find(o.id); }
+        return it->second.offsets(o.platform);
+    }
+    void UpdatePlatforms(double dt) {
+        if (!PlatformsMoving()) { if (!platRun.empty()) { platRun.clear(); RebuildSolids(); } return; }
+        bool any = false; double hw = Player::HALF_W;
+        V3 carry{ 0, 0, 0 }; bool carried = false;
+        for (WorldObject& o : objects) {
+            if (o.kind != ObjKind::Platform) continue;
+            FrameRef f = ModelOf(o); if (!f) continue; any = true;
+            auto it = platRun.find(o.id); if (it == platRun.end()) { platRun[o.id].reset(o.platform); it = platRun.find(o.id); }
+            PlatformRun& run = it->second;
+            std::vector<V3> before = run.offsets(o.platform);
+            std::vector<bool> on(before.size(), false), hit(before.size(), false);
+            const std::vector<Box3>& mb = GpuModel(o.model).boxes;
+            for (size_t k = 0; k < before.size(); k++) {   // who stands on which copy (and which copies were shot)
+                WorldObject at = o; at.pos = o.pos + before[k];
+                for (const Box3& b : objectBoxes(at, *f, mb)) { if (standsOn(b, player.feet, hw) && player.vel.y <= 0.01) on[k] = true; for (const Shot& s : shots) { double t; if (rayBox(s.pos, s.dir, b, t) && t < 1.0) hit[k] = true; } }
+            }
+            run.tick(o.platform, dt, on, hit);
+            std::vector<V3> after = run.offsets(o.platform);
+            for (size_t k = 0; k < on.size() && k < after.size() && k < before.size(); k++) if (on[k] && !carried) { carry = after[k] - before[k]; carried = true; }
+        }
+        if (!any) return;
+        RebuildSolids();
+        if (carried && !player.flying) {   // ride along (up, down, sideways)
+            V3 to = player.feet + carry;
+            if (world->boxFree(to, Player::HALF_W, Player::HEIGHT)) player.feet = to;
+            else { V3 up = to; up.y += 0.02; if (world->boxFree(up, Player::HALF_W, Player::HEIGHT)) player.feet = up; }
+        }
+        if (!player.flying && !world->boxFree(player.feet, Player::HALF_W, Player::HEIGHT)) {   // a platform moved into you: you end up on top of it
+            for (const Box3& b : world->objectSolids) {
+                if (player.feet.x + hw > b.lo.x && player.feet.x - hw < b.hi.x && player.feet.z + hw > b.lo.z && player.feet.z - hw < b.hi.z && player.feet.y < b.hi.y && player.feet.y + Player::HEIGHT > b.lo.y && b.hi.y - player.feet.y < 0.9) {
+                    V3 up = player.feet; up.y = b.hi.y + 0.001; if (world->boxFree(up, Player::HALF_W, Player::HEIGHT)) { player.feet = up; player.vel.y = std::max(0.0, player.vel.y); }
+                }
+            }
+        }
+    }
+    // the path tool (tool slot 4): click an object to pick it (it becomes a platform), then click where it should go
+    void PathToolClick(bool left, bool right) {
+        if (left) {
+            int i = ObjectUnderCrosshair(toolValid ? toolHit.t + 0.01 : 160);
+            bool selPlat = sel == Sel::Object && selIndex >= 0 && selIndex < (int)objects.size() && objects[selIndex].kind == ObjKind::Platform;
+            if (i >= 0 && (!selPlat || i != selIndex) ) { sel = Sel::Object; selIndex = i; if (objects[i].kind != ObjKind::Platform) { MakePlatform(objects[i]); Toast(objects[i].name + " is a platform now: click where it should go"); } return; }
+            if (selPlat && toolValid) {
+                WorldObject& o = objects[selIndex];
+                V3 at{ toolHit.x + toolHit.nx + 0.5, (double)(toolHit.y + toolHit.ny), toolHit.z + toolHit.nz + 0.5 }, d = at - o.pos;
+                V3 off{ std::round(d.x), std::round(d.y), std::round(d.z) };
+                if (o.platform.points.empty()) o.platform.points.push_back({ 0, 0, 0 });
+                o.platform.points.push_back(off); platRun.erase(o.id);
+                Toast("Point " + std::to_string(o.platform.points.size()) + " added");
+            }
+        }
+        if (right && sel == Sel::Object && selIndex >= 0 && selIndex < (int)objects.size() && objects[selIndex].kind == ObjKind::Platform) {
+            auto& pts = objects[selIndex].platform.points; if (pts.size() > 1) { pts.pop_back(); platRun.erase(objects[selIndex].id); Toast("Removed the last point"); }
+        }
+    }
+    void DrawPaths(ImDrawList* dl) {   // editor: the paths, their points, and where the platform will be at each point
+        if (playMode) return;
+        bool tool = toolMode && toolSel == 3;
+        for (int i = 0; i < (int)objects.size(); i++) {
+            const WorldObject& o = objects[i]; if (o.kind != ObjKind::Platform) continue;
+            bool selected = sel == Sel::Object && selIndex == i;
+            if (!selected && !tool) continue;
+            FrameRef f = ModelOf(o); if (!f) continue;
+            ImU32 col = selected ? IM_COL32(120, 255, 220, 255) : IM_COL32(120, 255, 220, 110);
+            const auto& P = o.platform.points; V3 lift{ 0, 0.05, 0 };
+            std::vector<V3> pts; for (const V3& p : P) pts.push_back(o.pos + p + lift); if (pts.empty()) pts.push_back(o.pos + lift);
+            for (size_t k = 1; k < pts.size(); k++) Line3D(dl, pts[k - 1], pts[k], col);
+            if (o.platform.mode == PathMode::Loop && pts.size() > 2) Line3D(dl, pts.back(), pts.front(), col);
+            for (size_t k = 0; k < pts.size(); k++) {
+                WorldObject at = o; at.pos = o.pos + (k < P.size() ? P[k] : V3{ 0, 0, 0 });
+                if (k > 0 && selected) { Box3 b = objectBounds(at, *f); DrawBox3(dl, b.lo, b.hi, IM_COL32(120, 255, 220, 70)); }
+                ImVec2 sp; if (Project(pts[k], sp)) { dl->AddCircleFilled(sp, 5, col); char n[8]; snprintf(n, sizeof n, "%d", (int)k + 1); dl->AddText(ImVec2(sp.x + 7, sp.y - 7), col, n); }
+            }
+            if (selected && tool && toolValid && !pts.empty()) {   // where the next point would go
+                V3 nx{ toolHit.x + toolHit.nx + 0.5, (double)(toolHit.y + toolHit.ny) + 0.05, toolHit.z + toolHit.nz + 0.5 };
+                Line3D(dl, pts.back(), nx, IM_COL32(255, 255, 255, 120));
+            }
+        }
+    }
+    void PlatformInspector(WorldObject& o, bool& ch_) {
+        PlatformSettings& p = o.platform; bool reset = false;
+        ImGui::SeparatorText("Platform");
+        int m = (int)p.mode; const char* mn[] = { pathModeName(PathMode::PingPong), pathModeName(PathMode::Loop), pathModeName(PathMode::Once) };
+        Prop("Path"); if (ImGui::Combo("##pmode", &m, mn, 3)) { p.mode = (PathMode)m; reset = true; }
+        int t = (int)p.trigger; const char* tn[] = { pathTriggerName(PathTrigger::Always), pathTriggerName(PathTrigger::StandOn), pathTriggerName(PathTrigger::Shot) };
+        Prop("Starts"); if (ImGui::Combo("##ptrig", &t, tn, 3)) { p.trigger = (PathTrigger)t; reset = true; }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Switches, buttons and other events come with the game logic (G3).");
+        Prop("Speed"); ImGui::SliderFloat("##pspeed", &p.speed, 0.2f, 20, "%.1f blocks/s");
+        Prop("Waits at stops"); ImGui::SliderFloat("##pwait", &p.wait, 0, 10, "%.1f s");
+        Prop("Stops at every point"); reset |= ImGui::Checkbox("##pstop", &p.stopEvery);
+        if (p.trigger != PathTrigger::Always) { Prop("Comes back after"); ImGui::SliderFloat("##pback", &p.comeBack, 0, 30, p.comeBack <= 0 ? "never" : "%.0f s empty"); }
+        if (p.trigger == PathTrigger::Always) {
+            Prop("Spawner"); reset |= ImGui::Checkbox("##pspawn", &p.spawner);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("A new one starts at the beginning every few seconds\nand is gone at the end (conveyor belts, falling blocks ...).");
+            if (p.spawner) { Prop("A new one every"); reset |= ImGui::SliderFloat("##pevery", &p.every, 0.3f, 20, "%.1f s"); }
+            else { Prop("Copies on the path"); reset |= ImGui::SliderInt("##pcopies", &p.copies, 1, 16); }
+        }
+        ImGui::SeparatorText("Points");
+        if (p.points.empty()) p.points.push_back({ 0, 0, 0 });
+        int del = -1;
+        for (int k = 1; k < (int)p.points.size(); k++) {
+            ImGui::PushID(k); char lab[24]; snprintf(lab, sizeof lab, "Point %d", k + 1);
+            Prop(lab); ImGui::SetNextItemWidth(std::max(40.f, ImGui::GetContentRegionAvail().x - ImGui::GetFrameHeight() - 4));
+            if (ImGui::InputScalarN("##pt", ImGuiDataType_Double, &p.points[k].x, 3, nullptr, nullptr, "%.1f")) reset = true;
+            ImGui::SameLine(0, 4); if (ImGui::Button("x", ImVec2(ImGui::GetFrameHeight(), 0))) del = k;
+            ImGui::PopID();
+        }
+        if (del > 0) { p.points.erase(p.points.begin() + del); reset = true; }
+        Hint(p.points.size() < 2 ? "No path yet. Take the Platform path tool (T, then slot 4) and click where it should go." : "Point 1 is where it stands. Numbers are blocks from there.");
+        if (ImGui::Button("Draw its path")) { toolMode = true; toolSel = 3; }
+        if (p.points.size() > 1 && FlowButton("Clear the path")) { p.points.resize(1); reset = true; }
+        ImGui::Checkbox("Try it here (move in the editor)", &previewPlatforms);
+        if (reset) platRun.erase(o.id);
+        (void)ch_;
+    }
+
     // ================================================================== doors (G2 attempt 3a)
     struct Shot { V3 pos, dir; float age = 0; };
     std::map<uint32_t, DoorRuntime> doorRt;           // Play mode: each door's state, by object id
@@ -1002,8 +1134,11 @@ struct App {
                 if (r.blocks() && o.door.field) world->objectSolids.push_back(fieldBox(o, *m, OpeningOf(o.model)));
                 continue;
             }
-            auto b = objectBoxes(objects[i], *m, GpuModel(objects[i].model).boxes);
-            world->objectSolids.insert(world->objectSolids.end(), b.begin(), b.end());
+            for (const V3& off : PlatformOffsets(o)) {   // a platform: wherever it (and each copy) is now
+                WorldObject at = o; at.pos = o.pos + off;
+                auto b = objectBoxes(at, *m, GpuModel(o.model).boxes);
+                world->objectSolids.insert(world->objectSolids.end(), b.begin(), b.end());
+            }
         }
     }
     // draws one object (pass 0 solid, 1 cut-out, 2 water) with the current shaders
@@ -1170,11 +1305,12 @@ struct App {
         Prop("Folder"); ImGui::InputText("##folder", &o.folder);
         Prop("Model");
         if (ImGui::BeginCombo("##model", o.model.c_str())) { for (auto& n : AllModelNames()) if (ImGui::Selectable(n.c_str(), n == o.model)) { o.model = n; ch_ = true; } ImGui::EndCombo(); }
-        { int k = (int)o.kind; const char* kn[] = { "Prop (it just stands there)", "Door (forcefield, opens)" }; Prop("Kind");
-          if (ImGui::Combo("##kind", &k, kn, 2)) { if (k == 1) MakeDoor(o); else { o.kind = ObjKind::Prop; if (o.folder == "Doors") o.folder = "Props"; } ch_ = true; } }
+        { int k = (int)o.kind; const char* kn[] = { "Prop (it just stands there)", "Door (forcefield, opens)", "Platform (moves along a path)" }; Prop("Kind");
+          if (ImGui::Combo("##kind", &k, kn, 3)) { if (k == 1) MakeDoor(o); else if (k == 2) MakePlatform(o); else { o.kind = ObjKind::Prop; if (o.folder == "Doors" || o.folder == "Platforms") o.folder = "Props"; } platRun.erase(o.id); ch_ = true; } }
         Prop("Position"); ch_ |= ImGui::InputScalarN("##pos", ImGuiDataType_Double, &o.pos.x, 3, nullptr, nullptr, "%.2f");
         { float y = (float)o.yaw; Prop("Turn"); if (ImGui::SliderFloat("##yaw", &y, -180, 180, "%.0f deg")) { o.yaw = y; ch_ = true; }
           if (ImGui::SmallButton("-90")) { o.yaw = std::fmod(o.yaw - 90 + 540, 360) - 180; ch_ = true; } if (FlowButton("+90", true)) { o.yaw = std::fmod(o.yaw + 90 + 540, 360) - 180; ch_ = true; } }
+        if (o.kind == ObjKind::Platform) PlatformInspector(o, ch_);
         if (o.kind == ObjKind::Door) DoorInspector(o, ch_);
         else { float sc = (float)o.scale; Prop("Size"); if (ImGui::SliderFloat("##scale", &sc, 0.1f, 8, "x %.2f", ImGuiSliderFlags_Logarithmic)) { o.scale = sc; ch_ = true; } }
         if (m && o.kind != ObjKind::Door) {
@@ -1273,6 +1409,7 @@ struct App {
             lPrev = L; rPrev = R; return;
         }
         if (toolSel == 2) { ObjectToolClick(L && !lPrev, R && !rPrev); lPrev = L; rPrev = R; return; }
+        if (toolSel == 3) { PathToolClick(L && !lPrev, R && !rPrev); lPrev = L; rPrev = R; return; }
         if (toolSel != 0) { lPrev = L; rPrev = R; return; }   // more tools come later
         if (!stroking && ((L && !lPrev) || (R && !rPrev)) && toolValid) {
             stroking = true; strokeOp = L ? brush.op : opposite(brush.op); strokeY = toolHit.y; dabCool = 0; strokeSeed = (uint32_t)GetTickCount();
@@ -1287,7 +1424,7 @@ struct App {
         if (strokeOp == BrushOp::Add) c = { toolHit.x + toolHit.nx, toolHit.y + toolHit.ny, toolHit.z + toolHit.nz };   // grows out of the surface
         stroke.apply(*world, brushEdits(*world, b, c, BrushMaterial(), strokeY, strokeSeed));
     }
-    std::string ToolName() const { return toolSel == 0 ? BrushLabel() : toolSel == 1 ? "Selection box" : toolSel == 2 ? (placing.empty() ? "Objects" : "Objects: placing " + placing) : "(empty tool slot)"; }
+    std::string ToolName() const { return toolSel == 0 ? BrushLabel() : toolSel == 1 ? "Selection box" : toolSel == 2 ? (placing.empty() ? "Objects" : "Objects: placing " + placing) : toolSel == 3 ? "Platform path" : "(empty tool slot)"; }
     std::string ToolLabel() const {
         switch (toolSel) {
         case 0: return BrushLabel() + "   (Q: brush options, T: back to blocks)";
@@ -1295,6 +1432,7 @@ struct App {
                      : "Ctrl+C copy, Ctrl+V paste, F fill, Del delete";
         case 2: return !placing.empty() ? "Click: put down   R: turn   Alt: off the grid   Right click: stop"
                      : "Click an object   G move, R turn, Del delete";
+        case 3: return "Platform path: click an object to pick it, then click where it should go.   Right click: remove the last point";
         default: return "(more tools are coming here)   T: back to blocks";
         }
     }
@@ -1315,6 +1453,15 @@ struct App {
             dl->AddLine(a, b, IM_COL32(90, 60, 30, 255), 2); dl->AddLine(ImVec2(a.x, b.y), ImVec2(b.x, a.y), IM_COL32(90, 60, 30, 255), 2);
             dl->AddQuadFilled(a, ImVec2(a.x + h * 0.4f, a.y - h * 0.4f), ImVec2(b.x + h * 0.4f, a.y - h * 0.4f), ImVec2(b.x, a.y), IM_COL32(200, 150, 95, 255));
             dl->AddQuadFilled(ImVec2(b.x, a.y), ImVec2(b.x + h * 0.4f, a.y - h * 0.4f), ImVec2(b.x + h * 0.4f, b.y - h * 0.4f), b, IM_COL32(130, 90, 50, 255));
+            return;
+        }
+        if (tool == 3) {   // platform path: a dotted line with a little platform on it
+            float h = s * 0.42f; ImU32 col = IM_COL32(120, 255, 220, 255);
+            ImVec2 a(c.x - h, c.y + h * 0.6f), b(c.x - h * 0.1f, c.y - h * 0.2f), d(c.x + h, c.y - h * 0.5f);
+            for (int k = 0; k < 6; k++) { float t0 = k / 6.f, t1 = (k + 0.5f) / 6.f; ImVec2 p0 = k < 3 ? ImVec2(a.x + (b.x - a.x) * t0 * 2, a.y + (b.y - a.y) * t0 * 2) : ImVec2(b.x + (d.x - b.x) * (t0 * 2 - 1), b.y + (d.y - b.y) * (t0 * 2 - 1));
+                ImVec2 p1 = k < 3 ? ImVec2(a.x + (b.x - a.x) * t1 * 2, a.y + (b.y - a.y) * t1 * 2) : ImVec2(b.x + (d.x - b.x) * (t1 * 2 - 1), b.y + (d.y - b.y) * (t1 * 2 - 1)); dl->AddLine(p0, p1, col, 2); }
+            dl->AddCircleFilled(a, 3, col); dl->AddCircleFilled(d, 3, col);
+            dl->AddRectFilled(ImVec2(b.x - h * 0.45f, b.y - h * 0.2f), ImVec2(b.x + h * 0.45f, b.y + h * 0.05f), IM_COL32(180, 190, 200, 255), 2.f);
             return;
         }
         if (tool != 0) return;
@@ -1653,7 +1800,12 @@ struct App {
                 ctx->IASetIndexBuffer(pass == 0 ? g.ibO.Get() : pass == 1 ? g.ibC.Get() : g.ibW.Get(), DXGI_FORMAT_R32_UINT, 0);
                 ctx->DrawIndexed(n, 0, 0); if (counting) drawnChunks += pass == 0;
             }
-            for (size_t oi = 0; oi < objects.size(); oi++) if ((int)oi != movingObj) DrawObject(objects[oi], pass);   // objects: same shaders, turned and sized
+            for (size_t oi = 0; oi < objects.size(); oi++) {   // objects: same shaders, turned and sized; platforms where they are on their path
+                if ((int)oi == movingObj) continue;
+                const WorldObject& o = objects[oi];
+                if (o.kind != ObjKind::Platform) { DrawObject(o, pass); continue; }
+                for (const V3& off : PlatformOffsets(o)) { WorldObject at = o; at.pos = o.pos + off; DrawObject(at, pass); }
+            }
         };
         ID3D11ShaderResourceView* none[5] = {};
         ctx->PSSetShaderResources(0, 5, none);
@@ -1933,6 +2085,7 @@ struct App {
             for (auto& k : e) Line3D(dl, q[k[0]], q[k[1]], IM_COL32(255, 255, 255, 160));
         }
         DrawObjectGuides(dl);
+        DrawPaths(dl);
         if (!playMode && info.hasSpawn) {   // the spawn point: a green player-sized box with an arrow where it looks
             V3 f = info.spawn; double hw = Player::HALF_W, H = Player::HEIGHT;
             V3 c[8]; for (int i = 0; i < 8; i++) c[i] = { f.x + ((i & 1) ? hw : -hw), f.y + ((i & 2) ? H : 0), f.z + ((i & 4) ? hw : -hw) };
@@ -2118,7 +2271,7 @@ struct App {
     // ---- Play mode
     void StartPlay(bool grabMouse = true) {
         if (screen != Screen::Game || playMode) return;
-        EndStroke(); brushMenu = false; placing.clear(); dupFrom = -1; if (movingObj >= 0) { movingObj = -1; RebuildSolids(); }
+        EndStroke(); brushMenu = false; placing.clear(); dupFrom = -1; platRun.clear(); previewPlatforms = false; if (movingObj >= 0) { movingObj = -1; RebuildSolids(); }
         editCam = player; playMode = true; paused = false; inventory = false; shapeMenu = false; editorOpen = false;
         playSpawn = info.hasSpawn ? info.spawn : player.feet; playYaw = info.hasSpawn ? info.spawnYaw : player.yaw;
         play = PlayState{}; play.start(player, game.player, playSpawn, playYaw);
@@ -2127,7 +2280,7 @@ struct App {
     }
     void StopPlay() {
         if (!playMode) return;
-        playMode = false; paused = false; player = editCam; Capture(false); captureNext = false;
+        playMode = false; paused = false; player = editCam; Capture(false); captureNext = false; platRun.clear(); RebuildSolids();
         Toast("Back in the editor");
     }
     void PlayHud(ImDrawList* dl) {
@@ -2757,9 +2910,13 @@ struct App {
             break;
         case Sel::Tool:
             if (!toolMode) { Hint("Press T in the viewport for the tools."); break; }
-            ImGui::SeparatorText(toolSel == 0 ? "Terrain brush" : toolSel == 1 ? "Tools" : toolSel == 2 ? "Objects" : "Tools");
+            ImGui::SeparatorText(toolSel == 0 ? "Terrain brush" : toolSel == 1 ? "Tools" : toolSel == 2 ? "Objects" : toolSel == 3 ? "Platform path" : "Tools");
             if (toolSel == 0) BrushBody();
             else if (toolSel == 1) SelectionInspector();
+            else if (toolSel == 3) {
+                if (sel == Sel::Object && selIndex >= 0 && selIndex < (int)objects.size() && objects[selIndex].kind == ObjKind::Platform) { bool c = false; PlatformInspector(objects[selIndex], c); }
+                else Hint("Click any object in the viewport: it becomes a platform. Then click the blocks where it should go, one point after the other.");
+            }
             else if (toolSel == 2) { Hint("Click an object in the viewport to pick it. Pick a model in Assets > Models to place it."); if (!placing.empty()) Hint("Placing: %s. R turns it, Alt puts it off the grid, right click stops.", placing.c_str()); }
             else Hint("More tools are coming to this slot.");
             break;
@@ -3176,6 +3333,30 @@ struct App {
                     this->shots.push_back({ player.eye() + V3{ 0.4, -0.2, 2.0 }, { 0.07, -0.03, 1 }, 0 });
                     play.health = game.player.maxHealth; toastT = 0;
                     frames(3, "doors_play");
+                    StopPlay();
+                }
+                {   // platforms: an elevator built from blocks, and three floating platforms going round a loop
+                    auto groundAt = [&](int x, int z) { for (int y = 40; y > -40; y--) { BlockId v = world->get(x, y, z); if (v != AIR && !reg.get(v).liquid) return y; } return 0; };
+                    int g2 = groundAt(3, -26) + 1;
+                    BlockId met = reg.find("metal"), cob = reg.find("cobblestone");
+                    for (int x = 2; x <= 4; x++) for (int z = -27; z <= -25; z++) world->set(x, g2, z, (x == 3 && z == -26) ? met : cob);
+                    selA = { 2, g2, -27 }; selB = { 4, g2, -25 }; selStage = 2; MakeIntoObject("Lift", true);
+                    WorldObject& lift = objects.back(); MakePlatform(lift); lift.platform.points = { { 0, 0, 0 }, { 0, 6, 0 } }; lift.platform.trigger = PathTrigger::StandOn; lift.platform.wait = 0.4f; lift.platform.comeBack = 6; lift.platform.speed = 3;
+                    uint32_t liftId = lift.id;
+                    for (int x = 10; x <= 11; x++) for (int z = -27; z <= -26; z++) world->set(x, g2 + 3, z, met);
+                    selA = { 10, g2 + 3, -27 }; selB = { 11, g2 + 3, -26 }; selStage = 2; MakeIntoObject("Floater", true);
+                    WorldObject& fl = objects.back(); MakePlatform(fl); fl.platform.points = { { 0, 0, 0 }, { 7, 0, 0 }, { 7, 2, 7 }, { 0, 2, 7 } }; fl.platform.mode = PathMode::Loop; fl.platform.copies = 3; fl.platform.speed = 2; fl.platform.wait = 0;
+                    RebuildSolids(); selStage = 0;
+                    toolMode = true; toolSel = 3; sel = Sel::Object; selIndex = (int)objects.size() - 1;
+                    poseAt(DemoShot{ "p", { 7, g2 + 7.5, -40 }, { 9, g2 + 2.5, -24 }, 15.5f });
+                    frames(4, "platforms_editor");
+                    toolMode = false; sel = Sel::World;
+                    StartPlay(false);
+                    for (auto& o : objects) if (o.id == liftId) { player.feet = { o.pos.x, g2 + 1.0, o.pos.z }; }
+                    { V3 e = player.feet; e.y += Player::EYE; poseAt(DemoShot{ "p", e, { e.x + 8, e.y + 1.0, e.z + 2 }, 15.5f }); player.feet.y = g2 + 1.0; }
+                    play.health = game.player.maxHealth; toastT = 0;
+                    frames(45, "platforms_play_riding_the_lift");
+                    Log("lift ride: feet at " + std::to_string(player.feet.y - g2) + " blocks above the ground");
                     StopPlay();
                 }
                 sel = Sel::World;

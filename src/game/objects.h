@@ -3,6 +3,7 @@
 // A block model is a small box of blocks built in the editor ("Make into object"); an object places a model
 // anywhere, turned and sized freely. Collision comes from the model's own blocks.
 #include "game.h"
+#include "platform.h"
 #include <map>
 #include <string>
 #include <vector>
@@ -34,7 +35,7 @@ std::vector<Box3> modelBoxes(const BlockModel& m, const BlockRegistry& reg);
 enum class Collide { Exact, OneBox, None };
 const char* collideName(Collide c);
 
-enum class ObjKind { Prop, Door };
+enum class ObjKind { Prop, Door, Platform };
 const char* kindName(ObjKind k);
 
 // a door: its model is stretched to fill Width x Height blocks; a forcefield sits in its opening
@@ -54,6 +55,7 @@ struct WorldObject {
     Collide collide = Collide::Exact;
     ObjKind kind = ObjKind::Prop;
     DoorSettings door;
+    PlatformSettings platform;                        // platforms and elevators: the path it follows
 };
 V3 objectStretch(const WorldObject& o, const ModelFrame& m);   // how much it is sized along its own x, y, z
 

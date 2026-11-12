@@ -85,7 +85,7 @@ std::vector<Box3> modelBoxes(const BlockModel& m, const BlockRegistry& reg) {
 const char* collideName(Collide c) { return c == Collide::Exact ? "Exact (from its blocks)" : c == Collide::OneBox ? "One box" : "None (walk through)"; }
 
 // ------------------------------------------------------------------ placed objects
-const char* kindName(ObjKind k) { return k == ObjKind::Door ? "Door" : "Prop"; }
+const char* kindName(ObjKind k) { return k == ObjKind::Door ? "Door" : k == ObjKind::Platform ? "Platform" : "Prop"; }
 V3 objectStretch(const WorldObject& o, const ModelFrame& m) {
     if (o.kind != ObjKind::Door || m.sx <= 0 || m.sy <= 0) return { o.scale, o.scale, o.scale };
     double x = o.door.w / m.sx, y = o.door.h / m.sy;
@@ -163,10 +163,16 @@ static std::string unesc(const std::string& s) { if (s == "-") return ""; std::s
 bool saveObjects(const std::string& path, const std::vector<WorldObject>& objs) {
     std::ofstream f(path); if (!f) return false;
     f << "objects 1\n";
-    for (const WorldObject& o : objs)
+    for (const WorldObject& o : objs) {
         f << "object " << o.id << " " << esc(o.name) << " " << esc(o.folder) << " " << esc(o.model) << " " << o.pos.x << " " << o.pos.y << " " << o.pos.z
           << " " << o.yaw << " " << o.scale << " " << (int)o.collide
-          << " " << (int)o.kind << " " << o.door.w << " " << o.door.h << " " << o.door.color << " " << o.door.stayOpen << " " << (o.door.field ? 1 : 0) << "\n";
+          << " " << (int)o.kind << " " << o.door.w << " " << o.door.h << " " << o.door.color << " " << o.door.stayOpen << " " << (o.door.field ? 1 : 0);
+        const PlatformSettings& p = o.platform;
+        f << " " << (int)p.mode << " " << (int)p.trigger << " " << p.speed << " " << p.wait << " " << (p.stopEvery ? 1 : 0) << " " << p.comeBack << " " << p.copies
+          << " " << (p.spawner ? 1 : 0) << " " << p.every << " " << p.points.size();
+        for (const V3& v : p.points) f << " " << v.x << " " << v.y << " " << v.z;
+        f << "\n";
+    }
     return (bool)f;
 }
 bool loadObjects(const std::string& path, std::vector<WorldObject>& objs) {
@@ -179,7 +185,12 @@ bool loadObjects(const std::string& path, std::vector<WorldObject>& objs) {
         if (!l) continue;
         o.name = unesc(n); o.folder = unesc(fo); o.model = unesc(mo); o.collide = (Collide)std::clamp(c, 0, 2);
         int kind = 0, fieldOn = 1;   // doors (older files end before this)
-        if (l >> kind >> o.door.w >> o.door.h >> o.door.color >> o.door.stayOpen >> fieldOn) { o.kind = (ObjKind)std::clamp(kind, 0, 1); o.door.field = fieldOn != 0; }
+        if (l >> kind >> o.door.w >> o.door.h >> o.door.color >> o.door.stayOpen >> fieldOn) { o.kind = (ObjKind)std::clamp(kind, 0, 2); o.door.field = fieldOn != 0; }
+        PlatformSettings& p = o.platform; int mode, trig, se, sp; size_t np;
+        if (l >> mode >> trig >> p.speed >> p.wait >> se >> p.comeBack >> p.copies >> sp >> p.every >> np) {
+            p.mode = (PathMode)std::clamp(mode, 0, 2); p.trigger = (PathTrigger)std::clamp(trig, 0, 2); p.stopEvery = se != 0; p.spawner = sp != 0;
+            for (size_t k = 0; k < np && k < 256; k++) { V3 v; if (l >> v.x >> v.y >> v.z) p.points.push_back(v); }
+        }
         objs.push_back(o);
     }
     return true;

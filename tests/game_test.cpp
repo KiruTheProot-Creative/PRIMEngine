@@ -356,6 +356,38 @@ int main() {
         CHECK(ok && tri.triangles() == 1 && std::fabs(tri.sx - 0.02) < 1e-6 && std::fabs(tri.sy - 0.03) < 1e-6, "binary FBX with a packed list (%s, %.3f x %.3f)", err.c_str(), tri.sx, tri.sy);
     }
 
+    // moving platforms and elevators
+    {
+        PathLine L({ { 0, 0, 0 }, { 4, 0, 0 }, { 4, 3, 0 } }, false);
+        CHECK(std::fabs(L.length - 7) < 1e-9 && std::fabs(L.pos(5).y - 1) < 1e-9 && L.pointAt(4) == 1, "a path through points");
+        PathLine Lp({ { 0, 0, 0 }, { 4, 0, 0 }, { 4, 0, 4 } }, true);
+        CHECK(std::fabs(Lp.length - (8 + std::sqrt(32.0))) < 1e-9 && std::fabs(Lp.pos(Lp.length).x) < 1e-9, "a loop closes itself");
+        PlatformSettings p; p.points = { { 0, 0, 0 }, { 6, 0, 0 } }; p.speed = 3; p.wait = 0.5f;
+        PlatformRun run; run.reset(p);
+        double maxX = 0; bool back = false;
+        for (int k = 0; k < 400; k++) { run.tick(p, 1.0 / 60, {}, {}); double x = run.offsets(p)[0].x; maxX = std::max(maxX, x); if (maxX > 5.99 && x < 3) back = true; }
+        CHECK(maxX > 5.99 && maxX < 6.01 && back, "back and forth between the ends (furthest %.2f)", maxX);
+        p.trigger = PathTrigger::StandOn; p.points = { { 0, 0, 0 }, { 0, 8, 0 } }; run.reset(p);
+        for (int k = 0; k < 60; k++) run.tick(p, 1.0 / 60, { false }, {});
+        CHECK(run.offsets(p)[0].y == 0, "an elevator waits until you stand on it");
+        run.tick(p, 1.0 / 60, { true }, {});
+        for (int k = 0; k < 240; k++) run.tick(p, 1.0 / 60, { true }, {});
+        CHECK(std::fabs(run.offsets(p)[0].y - 8) < 1e-6, "then it goes up and stops at the top");
+        for (int k = 0; k < 120; k++) run.tick(p, 1.0 / 60, { false }, {});
+        CHECK(std::fabs(run.offsets(p)[0].y - 8) < 1e-6, "and stays there (no come-back time)");
+        p.comeBack = 1; for (int k = 0; k < 400; k++) run.tick(p, 1.0 / 60, { false }, {});
+        CHECK(std::fabs(run.offsets(p)[0].y) < 1e-6, "with a come-back time it goes home by itself");
+        p.trigger = PathTrigger::Always; p.mode = PathMode::Loop; p.points = { { 0, 0, 0 }, { 10, 0, 0 }, { 10, 0, 10 }, { 0, 0, 10 } }; p.copies = 4; run.reset(p);
+        auto o = run.offsets(p);
+        CHECK(o.size() == 4 && std::fabs(o[1].x - 10) < 1e-9 && std::fabs(o[2].z - 10) < 1e-9, "4 copies spread round a loop");
+        p.spawner = true; p.every = 1; p.mode = PathMode::Once; p.points = { { 0, 0, 0 }, { 0, 0, 12 } }; run.reset(p);
+        size_t most = 0; for (int k = 0; k < 600; k++) { run.tick(p, 1.0 / 60, {}, {}); most = std::max(most, run.movers.size()); }
+        CHECK(most >= 4 && most <= 5 && run.movers.size() <= 5, "a spawner keeps sending new ones; old ones go at the end (%zu at most)", most);
+        CHECK(standsOn({ { 0, 0, 0 }, { 2, 1, 2 } }, { 1, 1.02, 1 }, 0.3) && !standsOn({ { 0, 0, 0 }, { 2, 1, 2 } }, { 1, 1.5, 1 }, 0.3), "standing on a platform");
+        WorldObject w; w.kind = ObjKind::Platform; w.platform = p; std::vector<WorldObject> v{ w }, v2; saveObjects("/tmp/prim_plat.txt", v); loadObjects("/tmp/prim_plat.txt", v2);
+        CHECK(v2.size() == 1 && v2[0].kind == ObjKind::Platform && v2[0].platform.spawner && v2[0].platform.points.size() == 2 && v2[0].platform.points[1].z == 12, "platforms save and load");
+    }
+
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
     return fails ? 1 : 0;
 }
