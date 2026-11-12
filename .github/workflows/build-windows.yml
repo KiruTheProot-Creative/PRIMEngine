@@ -7,6 +7,8 @@ on:
 jobs:
   build:
     runs-on: windows-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -42,6 +44,25 @@ jobs:
         with:
           name: screenshots
           path: shots
+
+      - name: Publish screenshots to the "screenshots" branch
+        if: always()
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.Drawing
+          New-Item -ItemType Directory -Force pub | Out-Null
+          $codec = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq 'image/jpeg' }
+          $ep = New-Object System.Drawing.Imaging.EncoderParameters 1
+          $ep.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, [long]92)
+          Get-ChildItem shots -Filter *.png | ForEach-Object {
+            $img = [System.Drawing.Image]::FromFile($_.FullName); $img.Save((Join-Path $PWD "pub/$($_.BaseName).jpg"), $codec, $ep); $img.Dispose() }
+          if (Test-Path shots/log.txt) { Copy-Item shots/log.txt pub/ }
+          "${{ github.sha }}" | Out-File pub/commit.txt
+          cd pub
+          git init -q; git checkout -q -b screenshots
+          git config user.name "github-actions"; git config user.email "github-actions@users.noreply.github.com"
+          git add -A; git commit -qm "Screenshots for ${{ github.sha }}"
+          git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" screenshots
 
       - name: Package
         shell: pwsh
