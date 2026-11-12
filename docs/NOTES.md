@@ -9,7 +9,7 @@
 - Several true mirrors at once.
 
 ## Custom block types and shapes from FBX files
-- Import FBX models as new block shapes (and whole block types), next to the built-in shape library and the planned Blockbench shapes.
+- FBX models can be imported as objects now (G2). Still to do: use them as new block shapes (and whole block types), next to the built-in shape library.
 
 ## Objects
 - Lamps inside block models do not glow or light things yet (the model mesh has no light sources).

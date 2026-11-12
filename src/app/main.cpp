@@ -169,6 +169,7 @@ struct App {
     ModelLibrary models; std::map<std::string, ModelGpu> modelGpu; std::map<std::string, MeshModel> meshModels;
     // the 3D viewer
     bool viewerOpen = false, viewerFit = true, viewerPeople = true, viewerBoxes = false, viewerBounds = true; std::string viewerModel;
+    int viewerClip = -1; float viewerTime = 0; bool viewerLoop = false; ModelGpu viewerAnim;   // an animation playing in the viewer
     float viewerYaw = 0.6f, viewerPitch = 0.35f, viewerDist = 8; ImVec2 viewerWant{ 0, 0 }; int viewerW = 0, viewerH = 0; V3 viewerEye{ 0, 0, 0 }; XMMATRIX viewerVP = XMMatrixIdentity();
     ComPtr<ID3D11RenderTargetView> viewerRTV; ComPtr<ID3D11ShaderResourceView> viewerSRV; ComPtr<ID3D11DepthStencilView> viewerDSV;
     ComPtr<ID3D11VertexShader> vsPreview; ComPtr<ID3D11PixelShader> psPreview; ComPtr<ID3D11Buffer> cbPreview;
@@ -666,12 +667,12 @@ struct App {
         if (!importModel(path, m, err)) { Toast("Could not import " + fs::u8path(path).filename().u8string() + ": " + err); return false; }
         m.name = UniqueModelName(m.name); meshModels[m.name] = m; SaveMesh(m); ModelChanged(m.name);
         Toast("Imported " + m.name + ": " + std::to_string(m.triangles()) + " triangles");
-        viewerModel = m.name; viewerOpen = true; viewerFit = true; sel = Sel::Model; selModel = m.name; assetKind = 3; assetCat.clear();
+        viewerModel = m.name; viewerOpen = true; viewerFit = true; viewerClip = -1; sel = Sel::Model; selModel = m.name; assetKind = 3; assetCat.clear();
         return true;
     }
     std::vector<std::string> PickModels() {
         std::vector<char> buf(1 << 16, 0);
-        OPENFILENAMEA o{}; o.lStructSize = sizeof o; o.hwndOwner = hwnd; o.lpstrFilter = "3D models (*.bbmodel, *.obj, *.gltf, *.glb)\0*.bbmodel;*.obj;*.gltf;*.glb\0"; o.lpstrFile = buf.data(); o.nMaxFile = (DWORD)buf.size();
+        OPENFILENAMEA o{}; o.lStructSize = sizeof o; o.hwndOwner = hwnd; o.lpstrFilter = "3D models (*.bbmodel, *.obj, *.gltf, *.glb, *.fbx)\0*.bbmodel;*.obj;*.gltf;*.glb;*.fbx\0"; o.lpstrFile = buf.data(); o.nMaxFile = (DWORD)buf.size();
         o.lpstrTitle = "Import 3D models"; o.Flags = OFN_ALLOWMULTISELECT | OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
         std::vector<std::string> out; if (!GetOpenFileNameA(&o)) return out;
         std::string first = buf.data(); const char* p = buf.data() + first.size() + 1;
@@ -682,18 +683,22 @@ struct App {
     void ImportModelsDialog() { for (auto& f : PickModels()) ImportModelFile(f); }
     void BuildMeshGpu(ModelGpu& g, const MeshModel& m) {
         g.mesh = true; g.boxes = meshBoxes(m);
-        MeshData md; md.v.reserve(m.raw.size());
+        UploadMeshVerts(g, m, m.raw);
+        D3D11_TEXTURE2D_DESC d{}; d.Width = (UINT)m.tw; d.Height = (UINT)m.th; d.MipLevels = 1; d.ArraySize = 1; d.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB; d.SampleDesc.Count = 1; d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        D3D11_SUBRESOURCE_DATA sd{ m.tex.data(), (UINT)m.tw * 4, 0 };
+        ComPtr<ID3D11Texture2D> t; if (SUCCEEDED(dev->CreateTexture2D(&d, &sd, &t))) dev->CreateShaderResourceView(t.Get(), nullptr, &g.tex);
+    }
+    void UploadMeshVerts(ModelGpu& g, const MeshModel& m, const std::vector<MeshVert>& verts) {
+        g.parts.clear();
+        MeshData md; md.v.reserve(verts.size());
         int none[3] = { 0, 0, 0 };
-        for (const MeshVert& v : m.raw) {
+        for (const MeshVert& v : verts) {
             V3 p = m.blockPos(v);
             md.v.push_back({ (float)p.x, (float)p.y, (float)p.z, v.uv[0], v.uv[1], 16383.f, packLit(1, none, false), packNormal(v.n[0], v.n[1], v.n[2], 0) });
         }
         md.i = m.idx;
         GpuChunk gc; if (m.transparent) Upload(md, gc.vbC, gc.ibC, gc.nC); else Upload(md, gc.vbO, gc.ibO, gc.nO);
         g.parts.push_back({ { 0, 0, 0 }, std::move(gc) });
-        D3D11_TEXTURE2D_DESC d{}; d.Width = (UINT)m.tw; d.Height = (UINT)m.th; d.MipLevels = 1; d.ArraySize = 1; d.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB; d.SampleDesc.Count = 1; d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-        D3D11_SUBRESOURCE_DATA sd{ m.tex.data(), (UINT)m.tw * 4, 0 };
-        ComPtr<ID3D11Texture2D> t; if (SUCCEEDED(dev->CreateTexture2D(&d, &sd, &t))) dev->CreateShaderResourceView(t.Get(), nullptr, &g.tex);
     }
     // ---- the 3D viewer: the model on a floor grid next to the player and the morph ball, to see how big it is
     void ViewerProject(const XMMATRIX& vp, V3 eye, ImVec2 o, ImVec2 sz, V3 p, ImVec2& out, bool& ok) {
@@ -771,6 +776,7 @@ struct App {
         // settings
         ImGui::Spacing();
         auto it = meshModels.find(viewerModel);
+        if (it == meshModels.end()) viewerClip = -1;
         if (it != meshModels.end()) {
             MeshModel& m = it->second; bool ch_ = false;
             Hint("From %s. %d triangles, picture %d x %d.", m.source.c_str(), (int)m.triangles(), m.tw, m.th);
@@ -780,6 +786,25 @@ struct App {
             if (ImGui::InputDouble("##us", &us, 0, 0, "%.4f") && us > 1e-5) { m.unitScale = us; ch_ = true; }
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Blockbench: 1/16 (16 pixels = 1 block). glTF: 1 (1 metre = 1 block).");
             if (ch_) { m.update(); SaveMesh(m); ModelChanged(m.name); }
+            if (!m.clips.empty()) {   // animations from the file (FBX): play them here; doors use them in Play mode
+                ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted("Animations:");
+                for (int c = 0; c < (int)m.clips.size(); c++) {
+                    ImGui::SameLine(); ImGui::PushID(c);
+                    bool on = viewerClip == c;
+                    if (on) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+                    if (ImGui::Button((m.clips[c].name + " (" + std::to_string((int)std::lround(m.clips[c].length * 1000)) + " ms)").c_str())) { viewerClip = c; viewerTime = 0; }
+                    if (on) ImGui::PopStyleColor();
+                    ImGui::PopID();
+                }
+                ImGui::SameLine(); ImGui::Checkbox("Loop", &viewerLoop);
+                ImGui::SameLine(); if (ImGui::SmallButton("As imported")) viewerClip = -1;
+                if (viewerClip >= (int)m.clips.size()) viewerClip = -1;
+                if (viewerClip >= 0) {
+                    viewerTime += std::min(io.DeltaTime, 1.f / 30); float L = std::max(0.001f, m.clips[viewerClip].length);
+                    if (viewerTime > L) viewerTime = viewerLoop ? std::fmod(viewerTime, L) : L;
+                }
+                Hint("%d moving parts. They play when the door opens and closes (next step).", (int)m.parts.size());
+            }
         } else if (const BlockModel* bm = models.find(viewerModel)) Hint("Made of %d blocks. Block models are always 1 block per block; size objects in the Inspector.", bm->blockCount());
         ImGui::Checkbox("Player and morph ball", &viewerPeople); ImGui::SameLine(); ImGui::Checkbox("Collision boxes", &viewerBoxes); ImGui::SameLine(); ImGui::Checkbox("Size box", &viewerBounds);
         if (ImGui::Button("Place it")) StartPlacing(viewerModel);
@@ -809,7 +834,13 @@ struct App {
         ctx->VSSetShader(vsPreview.Get(), nullptr, 0); ctx->PSSetShader(psPreview.Get(), nullptr, 0);
         ctx->PSSetShaderResources(0, 1, texArray.GetAddressOf()); ctx->PSSetSamplers(0, 1, sampBlocks.GetAddressOf());
         WorldObject vo; vo.model = viewerModel;
-        DrawObject(vo, 0, viewerEye); DrawObject(vo, 1, viewerEye);
+        const ModelGpu* use = nullptr;
+        auto it = meshModels.find(viewerModel);
+        if (viewerClip >= 0 && it != meshModels.end()) {   // the animation, this frame
+            const ModelGpu& base = GpuModel(viewerModel);
+            UploadMeshVerts(viewerAnim, it->second, it->second.posed(viewerClip, viewerTime)); viewerAnim.mesh = true; viewerAnim.tex = base.tex; use = &viewerAnim;
+        }
+        DrawObject(vo, 0, viewerEye, use); DrawObject(vo, 1, viewerEye, use);
         ID3D11ShaderResourceView* none[10] = {}; ctx->PSSetShaderResources(0, 10, none);
     }
 
@@ -845,9 +876,9 @@ struct App {
     }
     // draws one object (pass 0 solid, 1 cut-out, 2 water) with the current shaders
     void DrawObject(const WorldObject& o, int pass) { DrawObject(o, pass, camPos); }
-    void DrawObject(const WorldObject& o, int pass, V3 cam) {
+    void DrawObject(const WorldObject& o, int pass, V3 cam, const ModelGpu* use = nullptr) {
         FrameRef m = ModelOf(o); if (!m) return;
-        ModelGpu& g = GpuModel(o.model);
+        const ModelGpu& g = use ? *use : GpuModel(o.model);
         if (g.mesh) ctx->PSSetShaderResources(9, 1, g.tex.GetAddressOf());   // the imported model's own picture
         double a = o.yaw * 3.14159265358979 / 180, c = std::cos(a), s = std::sin(a), k = o.scale;
         V3 ax{ c * k, 0, -s * k }, ay{ 0, k, 0 }, az{ s * k, 0, c * k };
@@ -1018,7 +1049,7 @@ struct App {
         ImGui::Spacing();
         if (ImGui::Button("Move (G)")) PickUpObject(selIndex);
         if (FlowButton("Copy (Ctrl+D)")) DuplicateObject(selIndex);
-        if (FlowButton("3D viewer")) { viewerModel = o.model; viewerOpen = true; viewerFit = true; }
+        if (FlowButton("3D viewer")) { viewerModel = o.model; viewerOpen = true; viewerFit = true; viewerClip = -1; }
         if (FlowButton("Go there")) { player.feet = { o.pos.x, o.pos.y + (m ? m->sy * o.scale : 1) + 1, o.pos.z - 4 }; player.flying = true; player.yaw = 0; player.pitch = -0.4; }
         if (FlowButton("Delete (Del)")) { DeleteObject(selIndex); return; }
     }
@@ -1056,7 +1087,7 @@ struct App {
         if (m) Hint("Block model: %d x %d x %d blocks, %d blocks in it. Used %d times in this world.", m->sx, m->sy, m->sz, m->blockCount(), used);
         else Hint("Imported from %s: %d triangles, %.2f x %.2f x %.2f blocks. Used %d times in this world.", mm->second.source.c_str(), (int)mm->second.triangles(), f->sx, f->sy, f->sz, used);
         if (ImGui::Button("Place it")) StartPlacing(selModel);
-        if (FlowButton("3D viewer")) { viewerModel = selModel; viewerOpen = true; viewerFit = true; }
+        if (FlowButton("3D viewer")) { viewerModel = selModel; viewerOpen = true; viewerFit = true; viewerClip = -1; }
         if (m && FlowButton("Unpack as blocks")) { if (toolValid) { BlockModel c = *m; I3 at{ toolHit.x + toolHit.nx, toolHit.y + toolHit.ny, toolHit.z + toolHit.nz }; ApplyEdits(pasteEdits(*world, c, at), "Unpacked"); } else Toast("Look at where the blocks should go"); }
         if (m && ImGui::IsItemHovered()) ImGui::SetTooltip("Puts its blocks where you look, so you can change them\nand make a new object from them.");
         ImGui::BeginDisabled(used > 0);
@@ -2634,7 +2665,7 @@ struct App {
         ImGui::SetNextItemWidth(220 * ui); ImGui::InputTextWithHint("##search", "Search...", &assetSearch);
         ImGui::SameLine(); ImGui::SetNextItemWidth(120 * ui); ImGui::SliderFloat("##size", &assetSize, 36, 128, "size %.0f");
         ImGui::SameLine();
-        if (assetKind == 3) { if (ImGui::Button("Import models...")) ImportModelsDialog(); if (ImGui::IsItemHovered()) ImGui::SetTooltip("Blockbench (.bbmodel), .obj, glTF (.gltf / .glb)"); }
+        if (assetKind == 3) { if (ImGui::Button("Import models...")) ImportModelsDialog(); if (ImGui::IsItemHovered()) ImGui::SetTooltip("Blockbench (.bbmodel), .obj, glTF (.gltf / .glb), FBX (.fbx)"); }
         else if (ImGui::Button("Import images...")) { auto f = PickImages(); if (!f.empty()) { importFiles = f; wantPopup = "Import images"; } }
         ImGui::SameLine(); if (ImGui::Button("New block")) { NewBlock(); if (!assetCat.empty() && assetKind == 0) draft.category = assetCat; sel = Sel::Block; selIndex = 0; }
         ImGui::SameLine(); ImGui::TextDisabled(assetKind == 0 ? "Click: build with it.  Right click: more." : assetKind == 1 ? "Click: look at it.  Right click: more." : assetKind == 3 ? "Click: place it in the world." : "Click: give the held block this shape.");
@@ -2704,11 +2735,11 @@ struct App {
                 ImGui::PushID(mi); ImVec2 p;
                 if (cell("m", name, sel == Sel::Model && selModel == name, p) && !ImGui::IsMouseReleased(ImGuiMouseButton_Right)) { StartPlacing(name); sel = Sel::Model; selModel = name; }
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s\n%.2f x %.2f x %.2f blocks%s\nClick to place it, double-click for the 3D viewer", name.c_str(), f->sx, f->sy, f->sz, mesh ? " (imported)" : "");
-                if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) { viewerModel = name; viewerOpen = true; viewerFit = true; placing.clear(); }
+                if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) { viewerModel = name; viewerOpen = true; viewerFit = true; viewerClip = -1; placing.clear(); }
                 ModelIcon(ImGui::GetWindowDrawList(), name, ImVec2(p.x + s * 0.5f, p.y + s * 0.5f), s * 0.8f);
                 if (ImGui::BeginPopupContextItem("ctx")) {
                     if (ImGui::MenuItem("Place it")) StartPlacing(name);
-                    if (ImGui::MenuItem("3D viewer")) { viewerModel = name; viewerOpen = true; viewerFit = true; }
+                    if (ImGui::MenuItem("3D viewer")) { viewerModel = name; viewerOpen = true; viewerFit = true; viewerClip = -1; }
                     if (ImGui::MenuItem("Show in the Inspector")) { sel = Sel::Model; selModel = name; }
                     ImGui::EndPopup();
                 }
@@ -2972,9 +3003,17 @@ struct App {
                 auto place = [&](const std::string& name, V3 pos, double yaw, double scale) { WorldObject o; o.id = nextObjId++; o.name = UniqueObjectName(name); o.model = name; o.pos = pos; o.yaw = yaw; o.scale = scale; objects.push_back(o); };
                 place("Lamp post", { 33.5, (double)gy, 21.5 }, 0, 1.6); place("rock", { 41.5, (double)gy, 21.5 }, 20, 1); place("crystal", { 38.5, (double)gy, 20.5 }, 0, 1); place("crystal", { 39.6, (double)gy, 21.4 }, 30, 0.6);
                 RebuildSolids();
-                viewerModel = "Lamp post"; viewerOpen = true; viewerFit = true; viewerYaw = 0.6f; viewerPitch = 0.3f; sel = Sel::Model; selModel = "Lamp post"; assetKind = 3; assetCat.clear(); placing.clear(); toastT = 0;
+                viewerModel = "Lamp post"; viewerOpen = true; viewerFit = true; viewerClip = -1; viewerYaw = 0.6f; viewerPitch = 0.3f; sel = Sel::Model; selModel = "Lamp post"; assetKind = 3; assetCat.clear(); placing.clear(); toastT = 0;
                 frames(6, "model_viewer");
                 viewerOpen = false; sel = Sel::Object; selIndex = (int)objects.size() - 3;
+                // the door from Blockbench (FBX): in the viewer half open, and two of them in the world
+                if (ImportModelFile(ExeDir() + "assets/examples/DOOR_01.fbx")) {
+                    viewerFit = true; viewerYaw = -0.5f; viewerPitch = 0.25f; viewerClip = meshModels["DOOR_01"].findClip("open"); viewerLoop = false; viewerTime = 0.12f;
+                    frames(1, "fbx_door_viewer_half_open");
+                    viewerOpen = false; viewerClip = -1;
+                    place("DOOR_01", { 35.5, (double)gy, 19.5 }, 0, 2.5); place("DOOR_01", { 31.5, (double)gy, 24.5 }, 90, 2);
+                    RebuildSolids();
+                }
                 poseAt(DemoShot{ "i", { 37.5, gy + 3.5, 14 }, { 37.5, gy + 1.2, 22 }, 15.0f });
                 frames(4, "imported_models");
                 sel = Sel::World;

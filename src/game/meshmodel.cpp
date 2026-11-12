@@ -11,6 +11,10 @@
 #include <map>
 #include <sstream>
 
+// from stb_image (built in png.cpp): unpacks the zlib-packed lists in binary FBX files
+extern "C" char* stbi_zlib_decode_malloc_guesssize(const char* buffer, int len, int initial_size, int* outlen);
+extern "C" void stbi_image_free(void* retval_from_stbi_load);
+
 namespace fs = std::filesystem;
 namespace mc {
 
@@ -35,16 +39,23 @@ static bool getStr(std::ifstream& f, std::string& s) { uint32_t n; if (!get(f, n
 
 bool MeshModel::save(const std::string& path) const {
     std::ofstream f(fs::u8path(path), std::ios::binary); if (!f) return false;
-    f.write("PMSH", 4); put(f, (uint32_t)1); putStr(f, name); putStr(f, source); put(f, unitScale);
+    f.write("PMSH", 4); put(f, (uint32_t)2); putStr(f, name); putStr(f, source); put(f, unitScale);
     put(f, (uint32_t)raw.size()); f.write((const char*)raw.data(), raw.size() * sizeof(MeshVert));
     put(f, (uint32_t)idx.size()); f.write((const char*)idx.data(), idx.size() * 4);
     put(f, (int32_t)tw); put(f, (int32_t)th); f.write((const char*)tex.data(), tex.size());
+    put(f, (uint32_t)parts.size()); for (const MeshPart& p : parts) { putStr(f, p.name); f.write((const char*)p.parent, sizeof p.parent); for (const double* a : { p.t, p.r, p.s, p.pre, p.pivot }) f.write((const char*)a, 24); }
+    put(f, (uint32_t)vpart.size()); f.write((const char*)vpart.data(), vpart.size() * 2);
+    put(f, (uint32_t)clips.size());
+    for (const AnimClip& c : clips) {
+        putStr(f, c.name); put(f, c.length); put(f, (uint32_t)c.tracks.size());
+        for (const AnimTrack& t : c.tracks) { put(f, (int32_t)t.part); put(f, (int32_t)t.prop); put(f, (int32_t)t.axis); put(f, (uint32_t)t.time.size()); f.write((const char*)t.time.data(), t.time.size() * 4); f.write((const char*)t.value.data(), t.value.size() * 4); }
+    }
     return (bool)f;
 }
 bool MeshModel::load(const std::string& path) {
     std::ifstream f(fs::u8path(path), std::ios::binary); if (!f) return false;
     char m[4]; uint32_t ver = 0, nv = 0, ni = 0; int32_t w = 0, h = 0;
-    if (!f.read(m, 4) || std::memcmp(m, "PMSH", 4) || !get(f, ver) || ver != 1) return false;
+    if (!f.read(m, 4) || std::memcmp(m, "PMSH", 4) || !get(f, ver) || ver < 1 || ver > 2) return false;
     if (!getStr(f, name) || !getStr(f, source) || !get(f, unitScale) || !get(f, nv) || nv > (1u << 24)) return false;
     raw.resize(nv); if (!f.read((char*)raw.data(), nv * sizeof(MeshVert))) return false;
     if (!get(f, ni) || ni > (1u << 26)) return false;
@@ -52,12 +63,28 @@ bool MeshModel::load(const std::string& path) {
     if (!get(f, w) || !get(f, h) || w <= 0 || h <= 0 || w > 8192 || h > 8192) return false;
     tw = w; th = h; tex.resize((size_t)w * h * 4); if (!f.read((char*)tex.data(), tex.size())) return false;
     for (uint32_t i : idx) if (i >= nv) return false;
+    parts.clear(); vpart.clear(); clips.clear();
+    if (ver >= 2) {
+        uint32_t np = 0; if (!get(f, np) || np > 65535) return false;
+        parts.resize(np);
+        for (MeshPart& p : parts) { if (!getStr(f, p.name) || !f.read((char*)p.parent, sizeof p.parent)) return false; for (double* a : { p.t, p.r, p.s, p.pre, p.pivot }) if (!f.read((char*)a, 24)) return false; }
+        uint32_t nvp = 0; if (!get(f, nvp) || (nvp && nvp != nv)) return false; vpart.resize(nvp); if (nvp && !f.read((char*)vpart.data(), nvp * 2)) return false;
+        uint32_t nc = 0; if (!get(f, nc) || nc > 4096) return false; clips.resize(nc);
+        for (AnimClip& c : clips) {
+            uint32_t nt = 0; if (!getStr(f, c.name) || !get(f, c.length) || !get(f, nt) || nt > 65535) return false; c.tracks.resize(nt);
+            for (AnimTrack& t : c.tracks) {
+                int32_t a, b, d; uint32_t n; if (!get(f, a) || !get(f, b) || !get(f, d) || !get(f, n) || n > (1u << 20)) return false;
+                t.part = a; t.prop = b; t.axis = d; t.time.resize(n); t.value.resize(n);
+                if (!f.read((char*)t.time.data(), n * 4) || !f.read((char*)t.value.data(), n * 4)) return false;
+            }
+        }
+    }
     update(); return true;
 }
 
 bool isModelFile(const std::string& path) {
     std::string e = fs::u8path(path).extension().string(); for (auto& c : e) c = (char)std::tolower((unsigned char)c);
-    return e == ".bbmodel" || e == ".obj" || e == ".gltf" || e == ".glb";
+    return e == ".bbmodel" || e == ".obj" || e == ".gltf" || e == ".glb" || e == ".fbx";
 }
 
 // ------------------------------------------------------------------ building: triangles + their pictures, then one texture
@@ -365,12 +392,63 @@ static bool importGltf(const fs::path& path, MeshModel& m, std::string& err) {
     return true;
 }
 
+#include "fbx_import.inl"
+
+// ------------------------------------------------------------------ animations: move the parts
+int MeshModel::findClip(const std::string& n) const {
+    auto low = [](std::string t) { for (auto& c : t) c = (char)std::tolower((unsigned char)c); return t; };
+    for (size_t i = 0; i < clips.size(); i++) if (low(clips[i].name) == low(n)) return (int)i;
+    return -1;
+}
+static fbx::M4 inverseAffine(const fbx::M4& m) {
+    // 3 x 3 inverse (cofactors), then the move
+    double a = m[0], b = m[4], c = m[8], d = m[1], e = m[5], f = m[9], g = m[2], h = m[6], i = m[10];
+    double A = e * i - f * h, B = -(d * i - f * g), C = d * h - e * g, det = a * A + b * B + c * C;
+    fbx::M4 r = fbx::ident(); if (std::fabs(det) < 1e-12) return r;
+    double inv[9] = { A / det, -(b * i - c * h) / det, (b * f - c * e) / det, B / det, (a * i - c * g) / det, -(a * f - c * d) / det, C / det, -(a * h - b * g) / det, (a * e - b * d) / det };
+    for (int row = 0; row < 3; row++) for (int col = 0; col < 3; col++) r[col * 4 + row] = inv[row * 3 + col];
+    for (int row = 0; row < 3; row++) r[12 + row] = -(r[row] * m[12] + r[4 + row] * m[13] + r[8 + row] * m[14]);
+    return r;
+}
+static float sampleTrack(const AnimTrack& t, float time) {
+    if (t.time.empty()) return 0;
+    if (time <= t.time.front()) return t.value.front();
+    if (time >= t.time.back()) return t.value.back();
+    size_t k = std::upper_bound(t.time.begin(), t.time.end(), time) - t.time.begin();
+    float a = t.time[k - 1], b = t.time[k], f = b > a ? (time - a) / (b - a) : 0;
+    return t.value[k - 1] + (t.value[k] - t.value[k - 1]) * f;
+}
+std::vector<MeshVert> MeshModel::posed(int clip, float time) const {
+    std::vector<MeshVert> out = raw;
+    if (clip < 0 || clip >= (int)clips.size() || parts.empty() || vpart.size() != raw.size()) return out;
+    std::vector<fbx::M4> moveBy(parts.size());
+    for (size_t p = 0; p < parts.size(); p++) {
+        const MeshPart& mp = parts[p];
+        double now[3][3] = { { mp.t[0], mp.t[1], mp.t[2] }, { mp.r[0], mp.r[1], mp.r[2] }, { mp.s[0], mp.s[1], mp.s[2] } };
+        for (const AnimTrack& t : clips[clip].tracks) if (t.part == (int)p && t.prop >= 0 && t.prop < 3 && t.axis >= 0 && t.axis < 3) now[t.prop][t.axis] = sampleTrack(t, time);
+        auto local = [&](const double T[3], const double R[3], const double S[3]) {
+            V3 piv{ mp.pivot[0], mp.pivot[1], mp.pivot[2] };
+            return fbx::mul(fbx::trans({ T[0], T[1], T[2] }), fbx::mul(fbx::trans(piv), fbx::mul(fbx::euler({ mp.pre[0], mp.pre[1], mp.pre[2] }, 0),
+                   fbx::mul(fbx::euler({ R[0], R[1], R[2] }, 0), fbx::mul(fbx::trans(piv * -1), fbx::scal({ S[0], S[1], S[2] }))))));
+        };
+        fbx::M4 parent; std::copy(mp.parent, mp.parent + 16, parent.begin());
+        fbx::M4 rest = fbx::mul(parent, local(mp.t, mp.r, mp.s)), at = fbx::mul(parent, local(now[0], now[1], now[2]));
+        moveBy[p] = fbx::mul(at, inverseAffine(rest));
+    }
+    for (size_t v = 0; v < out.size(); v++) {
+        uint16_t p = vpart[v]; if (p >= parts.size()) continue;
+        V3 q = fbx::point(moveBy[p], { out[v].p[0], out[v].p[1], out[v].p[2] }); V3 n = fbx::dir(moveBy[p], { out[v].n[0], out[v].n[1], out[v].n[2] });
+        out[v].p[0] = (float)q.x; out[v].p[1] = (float)q.y; out[v].p[2] = (float)q.z; out[v].n[0] = (float)n.x; out[v].n[1] = (float)n.y; out[v].n[2] = (float)n.z;
+    }
+    return out;
+}
+
 bool importModel(const std::string& path, MeshModel& out, std::string& error) {
     fs::path p = fs::u8path(path);
     std::string e = p.extension().string(); for (auto& c : e) c = (char)std::tolower((unsigned char)c);
     out = MeshModel{}; out.name = p.stem().string(); out.source = p.filename().string();
     bool ok = e == ".bbmodel" ? importBbmodel(p, out, error) : e == ".obj" ? importObj(p, out, error) : (e == ".gltf" || e == ".glb") ? importGltf(p, out, error)
-            : (error = "Models can be .bbmodel (Blockbench), .obj, .gltf or .glb files.", false);
+            : e == ".fbx" ? importFbx(p, out, error) : (error = "Models can be .bbmodel (Blockbench), .obj, .gltf, .glb or .fbx files.", false);
     if (ok && out.triangles() == 0) { error = "The model has no triangles."; return false; }
     return ok;
 }

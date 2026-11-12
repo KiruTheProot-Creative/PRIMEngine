@@ -18,6 +18,7 @@ enable_testing()
 foreach(t world_test mesher_test game_test library_test shapes_test)
     add_executable(${t} tests/${t}.cpp)
     target_link_libraries(${t} primcore)
+    target_compile_definitions(${t} PRIVATE SOURCE_DIR="${CMAKE_SOURCE_DIR}")
     add_test(NAME ${t} COMMAND ${t})
 endforeach()
 
@@ -30,5 +31,6 @@ if(WIN32)
     target_include_directories(PRIMEngine PRIVATE ${IMGUI})
     target_link_libraries(PRIMEngine primcore d3d11 dxgi d3dcompiler comdlg32 shell32)
     add_custom_command(TARGET PRIMEngine POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/shaders $<TARGET_FILE_DIR:PRIMEngine>/shaders)
+        COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/shaders $<TARGET_FILE_DIR:PRIMEngine>/shaders
+        COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/assets $<TARGET_FILE_DIR:PRIMEngine>/assets)
 endif()

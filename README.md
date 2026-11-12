@@ -81,6 +81,6 @@ In the editor, **T** swaps the hotbar between blocks and tools. Slot 1 is the **
 ## Objects (G2)
 
 - **Block models:** box blocks with the Selection box (T, slot 2) and press "Make into object". Place them from Assets > Models, as often as you like, turned and sized freely.
-- **Imported models:** Blockbench (.bbmodel, cube models), .obj (+ .mtl and its picture) and glTF (.gltf / .glb). Use Assets > Models > "Import models...", File > "Import 3D models..." or drop the file on the window.
+- **Imported models:** Blockbench (.bbmodel, cube models), .obj (+ .mtl and its picture), glTF (.gltf / .glb) and FBX (text and binary, with their animations, e.g. a door's "open" and "close"). Use Assets > Models > "Import models...", File > "Import 3D models..." or drop the file on the window.
 - **3D viewer:** double-click a model. Shows the model on a grid next to the player (1.8 tall) and the morph ball (1 block), with its size; set the height of imported models there.
 - Collision is made from the model itself: block models from their blocks, imported models from their shape (filled with small cubes, merged into boxes).

@@ -6,6 +6,8 @@
 #include "../src/game/meshmodel.h"
 #include "../src/core/json.h"
 #include <filesystem>
+#include <cstring>
+#include <functional>
 #include <fstream>
 #include "../src/game/weather.h"
 #include <cstdio>
@@ -268,6 +270,60 @@ int main() {
         rock.unitScale = 2; rock.update(); CHECK(rock.sx > 3.2, "import scale makes it bigger");
         rock.save("/tmp/prim_rock.pmesh"); MeshModel r2; CHECK(r2.load("/tmp/prim_rock.pmesh") && r2.idx == rock.idx && r2.unitScale == 2 && r2.tex == rock.tex, "imported models save and load");
         MeshModel bad; CHECK(!importModel("/tmp/nothing.obj", bad, err) && !err.empty(), "a missing file gives a message");
+    }
+
+    // FBX: the door from Blockbench (text FBX with two sliding parts), and a tiny binary FBX
+    {
+        std::string err; MeshModel door;
+        bool ok = importModel(std::string(SOURCE_DIR) + "/assets/examples/DOOR_01.fbx", door, err);
+        CHECK(ok, "the Blockbench door FBX imports (%s)", err.c_str());
+        if (ok) {
+            CHECK(door.tw == 64 && door.th == 64, "its picture comes from inside the file (%d x %d)", door.tw, door.th);
+            CHECK(std::fabs(door.sy - 1.0) < 0.02 && std::fabs(door.sx - 1.0) < 0.02, "100 cm = 1 block (%.2f x %.2f x %.2f)", door.sx, door.sy, door.sz);
+            CHECK(door.parts.size() == 2 && door.clips.size() == 2, "two moving parts and two animations (%zu parts, %zu clips)", door.parts.size(), door.clips.size());
+            bool names = door.clips.size() == 2 && door.clips[0].name == "open" && door.clips[1].name == "Close";
+            CHECK(names && std::fabs(door.clips[0].length - 0.25f) < 0.01f, "the animations are called open and Close, %.2f s long", door.clips.empty() ? 0.f : door.clips[0].length);
+            int moving = 0, still = 0; for (uint16_t p : door.vpart) (p == 0xFFFF ? still : moving)++;
+            CHECK(moving > 0 && still > 0 && door.vpart.size() == door.raw.size(), "the frame stays, the door halves move (%d / %d corners)", moving, still);
+            int op = door.findClip("OPEN"), cl = door.findClip("close");
+            auto shut = door.posed(cl, 1.0f), open = door.posed(op, door.clips[op].length);
+            double maxMove = 0, xL = 1e9, xR = -1e9;
+            for (size_t v = 0; v < shut.size(); v++) {
+                double dx = open[v].p[0] - shut[v].p[0]; maxMove = std::max(maxMove, std::fabs(dx));
+                if (door.vpart[v] != 0xFFFF) { xL = std::min(xL, (double)shut[v].p[0]); xR = std::max(xR, (double)shut[v].p[0]); }
+            }
+            CHECK(op == 0 && cl == 1 && std::fabs(maxMove - 31.25) < 0.01, "open slides the halves 31.25 cm apart (%.2f)", maxMove);
+            CHECK(std::fabs(xL + 37.5) < 0.01 && std::fabs(xR - 37.5) < 0.01, "closed, the halves fill the doorway (%.2f .. %.2f)", xL, xR);
+            door.save("/tmp/prim_door.pmesh"); MeshModel d2;
+            CHECK(d2.load("/tmp/prim_door.pmesh") && d2.clips.size() == 2 && d2.clips[1].tracks.size() == door.clips[1].tracks.size() && d2.vpart == door.vpart && d2.parts[0].name == door.parts[0].name, "parts and animations save and load");
+        }
+        // a binary FBX by hand: one triangle; its corner list packed with zlib (stored blocks)
+        std::vector<uint8_t> f; auto u32 = [&](uint32_t v) { for (int k = 0; k < 4; k++) f.push_back((uint8_t)(v >> (8 * k))); };
+        const char head[] = "Kaydara FBX Binary  "; f.insert(f.end(), head, head + 20); f.push_back(0); f.push_back(0x1a); f.push_back(0); u32(7400);
+        auto zlibStored = [](const std::vector<uint8_t>& raw) { std::vector<uint8_t> z = { 0x78, 0x01, 1, (uint8_t)(raw.size() & 255), (uint8_t)(raw.size() >> 8), (uint8_t)(~raw.size() & 255), (uint8_t)((~raw.size() >> 8) & 255) };
+            z.insert(z.end(), raw.begin(), raw.end()); uint32_t a = 1, b = 0; for (uint8_t c : raw) { a = (a + c) % 65521; b = (b + a) % 65521; } uint32_t ad = (b << 16) | a;
+            for (int k = 3; k >= 0; k--) z.push_back((uint8_t)(ad >> (8 * k))); return z; };
+        struct BN { std::string name; std::vector<std::vector<uint8_t>> props; std::vector<BN> kids; };
+        auto pL = [](int64_t v) { std::vector<uint8_t> p{ 'L' }; for (int k = 0; k < 8; k++) p.push_back((uint8_t)(v >> (8 * k))); return p; };
+        auto pS = [](const std::string& s) { std::vector<uint8_t> p{ 'S' }; uint32_t n = (uint32_t)s.size(); for (int k = 0; k < 4; k++) p.push_back((uint8_t)(n >> (8 * k))); p.insert(p.end(), s.begin(), s.end()); return p; };
+        auto pD = [](const std::vector<double>& a) { std::vector<uint8_t> p{ 'd' }; uint32_t n = (uint32_t)a.size(), len = n * 8; for (uint32_t v : { n, 0u, len }) for (int k = 0; k < 4; k++) p.push_back((uint8_t)(v >> (8 * k)));
+            const uint8_t* q = (const uint8_t*)a.data(); p.insert(p.end(), q, q + len); return p; };
+        auto pIz = [&](const std::vector<int32_t>& a) { std::vector<uint8_t> raw((const uint8_t*)a.data(), (const uint8_t*)a.data() + a.size() * 4), z = zlibStored(raw); std::vector<uint8_t> p{ 'i' };
+            for (uint32_t v : { (uint32_t)a.size(), 1u, (uint32_t)z.size() }) for (int k = 0; k < 4; k++) p.push_back((uint8_t)(v >> (8 * k))); p.insert(p.end(), z.begin(), z.end()); return p; };
+        std::function<void(const BN&)> write = [&](const BN& n) {
+            size_t start = f.size(); u32(0); u32((uint32_t)n.props.size()); u32(0); f.push_back((uint8_t)n.name.size()); f.insert(f.end(), n.name.begin(), n.name.end());
+            size_t ps = f.size(); for (auto& p : n.props) f.insert(f.end(), p.begin(), p.end()); uint32_t plen = (uint32_t)(f.size() - ps);
+            for (auto& k : n.kids) write(k); if (!n.kids.empty()) for (int k = 0; k < 13; k++) f.push_back(0);
+            uint32_t end = (uint32_t)f.size(); std::memcpy(&f[start], &end, 4); std::memcpy(&f[start + 8], &plen, 4);
+        };
+        BN geo{ "Geometry", { pL(10), pS(std::string("tri\x00\x01Geometry", 14)), pS("Mesh") }, { { "Vertices", { pD({ 0, 0, 0, 2, 0, 0, 0, 3, 0 }) }, {} }, { "PolygonVertexIndex", { pIz({ 0, 1, -3 }) }, {} } } };
+        BN model{ "Model", { pL(20), pS(std::string("tri\x00\x01Model", 11)), pS("Mesh") }, {} };
+        BN objs{ "Objects", {}, { geo, model } };
+        BN conn{ "Connections", {}, { { "C", { pS("OO"), pL(20), pL(0) }, {} }, { "C", { pS("OO"), pL(10), pL(20) }, {} } } };
+        write(objs); write(conn); for (int k = 0; k < 13; k++) f.push_back(0);
+        std::ofstream("/tmp/prim_tri.fbx", std::ios::binary).write((const char*)f.data(), (std::streamsize)f.size());
+        MeshModel tri; ok = importModel("/tmp/prim_tri.fbx", tri, err);
+        CHECK(ok && tri.triangles() == 1 && std::fabs(tri.sx - 0.02) < 1e-6 && std::fabs(tri.sy - 0.03) < 1e-6, "binary FBX with a packed list (%s, %.3f x %.3f)", err.c_str(), tri.sx, tri.sy);
     }
 
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
