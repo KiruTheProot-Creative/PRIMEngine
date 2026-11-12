@@ -47,9 +47,9 @@ float cloudDensity(float3 p, bool detail)   // p: world position
     if (detail && d > 0)
     {
         float e = gNoise.SampleLevel(gLinear, (p + wind() * 1.6) / 180.0, 0).y;
-        d = saturate(d - (1 - e) * 0.35 * (1 - d));                                // eroded, wispy edges
+        d = saturate(d - (1 - e) * 0.5 * (1 - d));                                 // eroded, wispy edges
     }
-    return d * 0.045;                                                              // extinction per block
+    return d * 0.06;                                                              // extinction per block
 }
 float phaseHG(float c, float g) { float g2 = g * g; return (1 - g2) / (12.566 * pow(max(1 + g2 - 2 * g * c, 1e-4), 1.5)); }
 // how much sunlight gets through the clouds to a point below them (cloud shadows on the ground)
@@ -202,7 +202,7 @@ float4 PS_Volume(SkyOut i) : SV_Target
             float dt = (t1 - t0) / N, T = 1;
             float3 S = 0;
             float phase = lerp(phaseHG(mu, -0.25), phaseHG(mu, 0.65), 0.6) * 12.566;
-            float3 amb = lerp(gSkyHorizon.rgb, gSkyTop.rgb, 0.6) * 0.9;
+            float3 amb = lerp(gSkyHorizon.rgb, gSkyTop.rgb, 0.7) * 0.8;
             [loop] for (int k = 0; k < N && T > 0.02; k++)
             {
                 float3 p = cam + dir * (t0 + (k + jitter) * dt);
@@ -210,8 +210,10 @@ float4 PS_Volume(SkyOut i) : SV_Target
                 if (d <= 0) continue;
                 float od = 0;   // how much cloud is between this point and the sun
                 [unroll] for (int l = 1; l <= 4; l++) od += cloudDensity(p + gSunDir.xyz * (l * l * 6.0), false) * (2 * l - 1) * 6.0;
+                od *= 1.6;
                 float hf = saturate((p.y - kCloudBottom) / (kCloudTop - kCloudBottom));
-                float3 light = gSunColor.rgb * (exp(-od) + 0.4 * exp(-od * 0.25)) * phase * 0.5 + amb * (0.45 + 0.55 * hf);
+                float powder = 1 - exp(-d * 60);                                       // dark-ish edges facing the sun: puffier look
+                float3 light = gSunColor.rgb * (exp(-od) + 0.25 * exp(-od * 0.25)) * phase * 0.5 * lerp(0.6, 1, powder) + amb * (0.3 + 0.5 * hf);
                 float a = exp(-d * dt);
                 S += T * light * (1 - a); T *= a;
             }
@@ -230,7 +232,7 @@ float4 PS_Volume(SkyOut i) : SV_Target
         float dt = tMax / N, T = 1;
         float3 S = 0;
         float phase = lerp(phaseHG(mu, 0.55), phaseHG(mu, 0), 0.4) * 12.566;
-        float3 amb = gAmbient.rgb * 0.9;
+        float3 amb = gAmbient.rgb * 0.55;
         [loop] for (int k = 0; k < N; k++)
         {
             float t = (k + jitter) * dt;
@@ -245,7 +247,7 @@ float4 PS_Volume(SkyOut i) : SV_Target
                 if (all(uv > 0) && all(uv < 1) && s.z < 1) sun = gShadow.SampleCmpLevelZero(gShadowSamp, uv, s.z - 0.001);
             }
             float a = exp(-d * dt);
-            S += T * (gSunColor.rgb * sun * phase * 0.35 + amb) * (1 - a); T *= a;
+            S += T * (gSunColor.rgb * sun * phase * 0.18 + amb) * (1 - a); T *= a;
         }
         scene = scene * T + S;
     }

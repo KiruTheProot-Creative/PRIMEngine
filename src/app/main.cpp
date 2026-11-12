@@ -519,7 +519,7 @@ struct App {
         const float topNight[3] = { 0.004f, 0.008f, 0.025f }, topDay[3] = { 0.10f, 0.27f, 0.80f };
         const float horNight[3] = { 0.02f, 0.03f, 0.07f }, horDay[3] = { 0.50f, 0.67f, 0.95f }, horLow[3] = { 1.05f, 0.55f, 0.28f };
         mix(topNight, topDay, day, fc.skyTop); float hz[3]; mix(horNight, horDay, day, hz); mix(hz, horLow, low, fc.skyHorizon);
-        const float glowDay[3] = { 0.9f, 0.75f, 0.5f }, glowLow[3] = { 2.2f, 0.9f, 0.3f }, glowMoon[3] = { 0.06f, 0.08f, 0.12f };
+        const float glowDay[3] = { 0.9f, 0.75f, 0.5f }, glowLow[3] = { 1.5f, 0.6f, 0.2f }, glowMoon[3] = { 0.06f, 0.08f, 0.12f };
         float gl[3]; mix(glowDay, glowLow, low, gl); for (int i = 0; i < 3; i++) fc.sunGlow[i] = moon ? glowMoon[i] : gl[i] * k;
         fc.sunGlow[3] = moon ? 2.f : 40.f;
         exposure = 1.0f + 2.5f * (1 - day);                         // the eye adjusts a little at night
@@ -559,7 +559,7 @@ struct App {
         fc.camPos[0] = (float)(camPos.x - std::floor(camPos.x / wrapP) * wrapP); fc.camPos[1] = (float)camPos.y; fc.camPos[2] = (float)(camPos.z - std::floor(camPos.z / wrapP) * wrapP);
         float hr = settings.timeOfDay, morning = std::exp(-std::pow((hr - 6.8f) / 1.5f, 2.f)), evening = std::exp(-std::pow((hr - 20.f) / 2.f, 2.f));
         fc.volume[0] = std::min(1.f, std::max(0.f, settings.cloudCover));
-        fc.volume[1] = settings.groundFog * (0.0035f + 0.022f * morning + 0.006f * evening);
+        fc.volume[1] = settings.groundFog * (0.002f + 0.009f * morning + 0.003f * evening);
         fc.volume[2] = (float)std::fmod(cloudTime, 4800.0); fc.volume[3] = settings.cloudShadows ? 1.f : 0.f;
         fc.depth[0] = 0.05f; fc.depth[1] = farZ;
         ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &fc, 0, 0);
