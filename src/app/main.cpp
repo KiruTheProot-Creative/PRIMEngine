@@ -1150,7 +1150,7 @@ struct App {
                 if (!entered || (o.trigger.once && firedOnce.count(o.id))) break;
                 firedOnce.insert(o.id);
                 switch (o.trigger.action) {
-                case TriggerAction::Message: Message(o.trigger.text); break;
+                case TriggerAction::Message: if (!o.trigger.text.empty()) Message(o.trigger.text); break;   // empty: the event cards do the talking
                 case TriggerAction::Kill: if (!play.dead()) { play.health = 0; play.cause = "walked into a trap"; if (!o.trigger.text.empty()) Message(o.trigger.text); } break;
                 case TriggerAction::Heal: play.health = std::min(game.player.maxHealth, play.health + o.trigger.amount); Toast("+" + std::to_string((int)o.trigger.amount) + " health"); break;
                 case TriggerAction::Checkpoint: playSpawn = player.feet; playYaw = player.yaw; Toast("Checkpoint"); break;
@@ -1278,7 +1278,8 @@ struct App {
             if (o.trigger.action == TriggerAction::Message || o.trigger.action == TriggerAction::Kill) { Prop("Message"); ImGui::InputText("##ztext", &o.trigger.text); }
             if (o.trigger.action == TriggerAction::Heal) { Prop("Health"); ImGui::SliderFloat("##zamt", &o.trigger.amount, 1, 500, "+%.0f"); }
             Prop("Only once"); ImGui::Checkbox("##zonce", &o.trigger.once);
-            Hint("Invisible in the game. G3 will let zones start any event you like.");
+            Hint("Invisible in the game. For more than one thing, leave the message empty and use event cards (Events panel): \"when the player walks into %s\".", o.name.c_str());
+            if (FlowButton("Make an event card for it")) { EventCard c; c.name = o.name + ": walked in"; c.when = { When::EnterZone, o.name }; c.dos = { { Do::Message, "", "Hello!", 3 } }; events.push_back(c); focusEvents = true; }
             break; }
         default: break;
         }
@@ -3513,9 +3514,15 @@ struct App {
         }
         return c;
     }
+    void ShowTab(const char* name) {   // bring a docked panel to the front (its tab selected)
+        ImGuiWindow* w = ImGui::FindWindowByName(name);
+        if (!w) { ImGui::SetNextWindowFocus(); return; }
+        ImGui::FocusWindow(w);
+        if (w->DockNode && w->DockNode->TabBar) w->DockNode->TabBar->NextSelectedTabId = w->TabId;
+    }
     void EventsPanel() {
         if (ImGuiWindow* a = ImGui::FindWindowByName("Assets")) if (a->DockId) ImGui::SetNextWindowDockID(a->DockId, ImGuiCond_FirstUseEver);
-        if (focusEvents) { ImGui::SetNextWindowFocus(); focusEvents = false; }
+        if (focusEvents) { ShowTab("Events"); focusEvents = false; }
         if (!ImGui::Begin("Events")) { ImGui::End(); return; }
         float ui = settings.uiScale; bool ch = false;
         if (ImGui::Button("+ New card")) { EventCard c; c.when.target = FirstName("zone"); c.name = "Event " + std::to_string(events.size() + 1); events.push_back(c); ch = true; }
@@ -3596,7 +3603,7 @@ struct App {
     }
     // ---- Assets: blocks by folder, textures, shapes; thumbnails, search, size
     void Assets() {
-        if (focusAssets) { ImGui::SetNextWindowFocus(); focusAssets = false; }
+        if (focusAssets) { ShowTab("Assets"); focusAssets = false; }
         ImGui::Begin("Assets");
         float ui = settings.uiScale;
         // folder tree on the left
@@ -4076,7 +4083,7 @@ struct App {
                     StopPlay(); sel = Sel::World;
                     // G3 event cards: the hall lights are off at the start and come on (with a burst of magic) when you walk into the zone
                     objects[sp].name = "Hall light"; objects[pl].name = "Hall light"; objects[fire].name = "Campfire";
-                    int hz = fxObj("@zone", { -10.5, (double)g4, -37.5 }); objects[hz].name = "Hall"; objects[hz].size = { 6, 3, 3 };
+                    int hz = fxObj("@zone", { -10.5, (double)g4, -37.5 }); objects[hz].name = "Hall"; objects[hz].trigger.text.clear(); objects[hz].size = { 6, 3, 3 };
                     events.clear();
                     { EventCard c; c.name = "Dark at the start"; c.when = { When::GameStarts }; c.dos = { { Do::LightOff, "Hall light" }, { Do::LightOff, "Campfire" } }; events.push_back(c); }
                     { EventCard c; c.name = "The hall wakes up"; c.when = { When::EnterZone, "Hall" }; c.once = true;
