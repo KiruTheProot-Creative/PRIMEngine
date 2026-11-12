@@ -85,7 +85,7 @@ struct App {
     ComPtr<ID3D11VertexShader> vsBlock, vsSky, vsShadow; ComPtr<ID3D11PixelShader> psOpaque, psCutout, psSky, psGhost, psShadowCut, psPost; ComPtr<ID3D11InputLayout> layout;
     ComPtr<ID3D11Texture2D> hdrTex; ComPtr<ID3D11RenderTargetView> hdrRTV; ComPtr<ID3D11ShaderResourceView> hdrSRV;      // the picture before tonemapping
     ComPtr<ID3D11Texture2D> shadowTex; ComPtr<ID3D11DepthStencilView> shadowDSV; ComPtr<ID3D11ShaderResourceView> shadowSRV; int shadowSize = 0;
-    ComPtr<ID3D11RasterizerState> rsShadow; ComPtr<ID3D11SamplerState> sampShadow; std::string driverName = "graphics card";
+    ComPtr<ID3D11RasterizerState> rsShadow, rsNoCull; ComPtr<ID3D11SamplerState> sampShadow; std::string driverName = "graphics card";
     ComPtr<ID3D11Buffer> cbFrame, cbChunk;
     ComPtr<ID3D11RasterizerState> rsCull; ComPtr<ID3D11DepthStencilState> dsOn, dsOff, dsTestOnly; ComPtr<ID3D11BlendState> bsOff, bsAlpha;
     ComPtr<ID3D11Buffer> vbGhost, ibGhost; UINT nGhost = 0; BlockId ghostKey = 0xFFFFFFFFu;   // the see-through preview block
@@ -153,7 +153,8 @@ struct App {
         cb(sizeof(FrameCB), cbFrame); cb(sizeof(ChunkCB), cbChunk);
 
         D3D11_RASTERIZER_DESC rd{}; rd.FillMode = D3D11_FILL_SOLID; rd.CullMode = D3D11_CULL_BACK; rd.FrontCounterClockwise = FALSE; rd.DepthClipEnable = TRUE; HR(dev->CreateRasterizerState(&rd, &rsCull));
-        rd.CullMode = D3D11_CULL_NONE; rd.SlopeScaledDepthBias = 1.5f; rd.DepthClipEnable = FALSE; HR(dev->CreateRasterizerState(&rd, &rsShadow));
+        rd.CullMode = D3D11_CULL_NONE; HR(dev->CreateRasterizerState(&rd, &rsNoCull));   // full-screen passes (sky, final picture)
+        rd.SlopeScaledDepthBias = 1.5f; rd.DepthClipEnable = FALSE; HR(dev->CreateRasterizerState(&rd, &rsShadow));
         D3D11_DEPTH_STENCIL_DESC dd{}; dd.DepthEnable = TRUE; dd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL; dd.DepthFunc = D3D11_COMPARISON_LESS_EQUAL; HR(dev->CreateDepthStencilState(&dd, &dsOn));
         dd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO; HR(dev->CreateDepthStencilState(&dd, &dsTestOnly));
         dd.DepthEnable = FALSE; HR(dev->CreateDepthStencilState(&dd, &dsOff));
@@ -568,9 +569,10 @@ struct App {
         const float black[4] = { 0, 0, 0, 1 };
         ctx->OMSetRenderTargets(1, hdrRTV.GetAddressOf(), dsv.Get()); ctx->ClearRenderTargetView(hdrRTV.Get(), black); ctx->ClearDepthStencilView(dsv.Get(), D3D11_CLEAR_DEPTH, 1.f, 0);
         D3D11_VIEWPORT v{ 0, 0, (float)cw, (float)ch, 0, 1 }; ctx->RSSetViewports(1, &v);
-        ctx->RSSetState(rsCull.Get());
+        ctx->RSSetState(rsNoCull.Get());
         ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->IASetInputLayout(nullptr);
         ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psSky.Get(), nullptr, 0); ctx->Draw(3, 0);
+        ctx->RSSetState(rsCull.Get());
         ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0);
         ID3D11ShaderResourceView* srvs[2] = { texArray.Get(), shadows ? shadowSRV.Get() : nullptr }; ctx->PSSetShaderResources(0, 2, srvs);
         ID3D11SamplerState* samps[2] = { sampBlocks.Get(), sampShadow.Get() }; ctx->PSSetSamplers(0, 2, samps);
@@ -598,7 +600,7 @@ struct App {
         // ---- final picture: exposure + filmic curve into the window
         ctx->PSSetShaderResources(0, 2, none);
         ctx->OMSetRenderTargets(1, backRTV.GetAddressOf(), nullptr);
-        ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->IASetInputLayout(nullptr);
+        ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->IASetInputLayout(nullptr); ctx->RSSetState(rsNoCull.Get());
         ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psPost.Get(), nullptr, 0);
         ctx->PSSetShaderResources(0, 1, hdrSRV.GetAddressOf()); ctx->Draw(3, 0);
         ctx->PSSetShaderResources(0, 2, none);
@@ -1045,6 +1047,8 @@ struct App {
         std::vector<uint8_t> px((size_t)d.Width * d.Height * 4);
         for (UINT y = 0; y < d.Height; y++) { memcpy(&px[(size_t)y * d.Width * 4], (const uint8_t*)m.pData + (size_t)y * m.RowPitch, d.Width * 4); for (UINT x = 0; x < d.Width; x++) px[((size_t)y * d.Width + x) * 4 + 3] = 255; }
         ctx->Unmap(st.Get(), 0);
+        double sum = 0; for (size_t i = 0; i < px.size(); i += 4) sum += px[i] + px[i + 1] + px[i + 2];
+        char b[96]; snprintf(b, sizeof b, "  average brightness %.1f of 255", sum / (px.size() / 4 * 3.0)); Log(b);
         if (!writePng(path, (int)d.Width, (int)d.Height, px)) Log("could not write " + path);
     }
     void RunScreenshots() {
