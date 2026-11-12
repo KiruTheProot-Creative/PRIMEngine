@@ -55,7 +55,8 @@ bool Library::saveBlocks(const BlockRegistry& r) const {
               << "\nsolid = " << (d.solid ? "yes" : "no") << "\njoin_same = " << (d.cullSame ? "yes" : "no")
               << "\nlight = " << d.light << "\nlight_color = " << hex6(d.lightColor) << "\nwaves = " << (d.waves ? "yes" : "no")
               << "\nshine = " << d.shine << "\nmirror = " << (d.mirror ? "yes" : "no")
-              << "\nliquid = " << (d.liquid == 1 ? "water" : d.liquid == 2 ? "lava" : "none") << "\nspring = " << (d.spring ? "yes" : "no") << "\nfaces =";
+              << "\nliquid = " << (d.liquid == 1 ? "water" : d.liquid == 2 ? "lava" : "none") << "\nspring = " << (d.spring ? "yes" : "no")
+              << "\ncategory = " << d.category << "\nfaces =";
             for (auto& t : d.faces) f << ' ' << (t.empty() ? "-" : t);
             f << "\n";
         }
@@ -80,7 +81,7 @@ bool Library::load(BlockRegistry& r, std::string* report) {
     stamps = scan(); int bad = 0;
     for (auto& s : stamps) if (!loadTexture(r, s.first)) bad++;
     std::ifstream f(P(blocksFile())); std::string line; BlockId cur = AIR; BlockDef d; int blocks = 0;
-    bool seenLight = false, seenWaves = false, seenShine = false;
+    bool seenLight = false, seenWaves = false, seenShine = false, seenCategory = false;
     BlockRegistry builtin; registerBuiltinBlocks(builtin);   // files from before "light"/"waves" existed: starter blocks keep their glow and sway
     auto flush = [&] {
         if (cur != AIR) {
@@ -88,9 +89,10 @@ bool Library::load(BlockRegistry& r, std::string* report) {
             if (!seenLight && b) d.light = builtin.get(b).light;
             if (!seenWaves && b) d.waves = builtin.get(b).waves;
             if (!seenShine && b) d.shine = builtin.get(b).shine;
+            if (!seenCategory) d.category = b ? builtin.get(b).category : "Imported";
             r.put(cur, d); blocks++;
         }
-        cur = AIR; d = BlockDef{}; seenLight = seenWaves = seenShine = false;
+        cur = AIR; d = BlockDef{}; seenLight = seenWaves = seenShine = seenCategory = false;
     };
     while (std::getline(f, line)) {
         line = trim(line); if (line.empty() || line[0] == '#') continue;
@@ -104,6 +106,7 @@ bool Library::load(BlockRegistry& r, std::string* report) {
         else if (k == "look") { std::string l = lower(v); d.render = l == "solid" ? Render::Opaque : l == "liquid" ? Render::Liquid : Render::Cutout; }
         else if (k == "liquid") { std::string l = lower(v); d.liquid = l == "water" ? 1 : l == "lava" ? 2 : 0; }
         else if (k == "spring") d.spring = yes(v);
+        else if (k == "category") { d.category = v.empty() ? "Building" : v; seenCategory = true; }
         else if (k == "solid") d.solid = yes(v);
         else if (k == "join_same") d.cullSame = yes(v);
         else if (k == "light") { d.light = std::max(0, std::min(15, std::atoi(v.c_str()))); seenLight = true; }
@@ -157,6 +160,7 @@ BlockDef Library::blockFromTexture(const BlockRegistry& r, const std::string& te
     d.render = (see || d.shape != Shape::Cube) ? Render::Cutout : Render::Opaque;
     d.solid = d.shape == Shape::Cube;
     d.waves = d.shape == Shape::Cross;   // imported plants sway
+    d.category = "Imported";
     return d;
 }
 

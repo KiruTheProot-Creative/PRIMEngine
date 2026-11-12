@@ -43,13 +43,13 @@ void Player::look(double dx, double dy) {
     yaw += dx; pitch = std::max(-1.55, std::min(1.55, pitch - dy));
 }
 
-void Player::update(const World& w, const Controls& c, double dt) {
+void Player::update(const World& w, const Controls& c, double dt, const PlayerRules& r) {
     V3 fw{ std::sin(yaw), 0, std::cos(yaw) }, rt{ std::cos(yaw), 0, -std::sin(yaw) }, mv{ 0, 0, 0 };
     if (c.forward) mv += fw;
     if (c.back) mv = mv - fw;
     if (c.right) mv += rt;
     if (c.left) mv = mv - rt;
-    double speed = flying ? (c.sprint ? 21.6 : 10.9) : (c.sneak ? 1.31 : c.sprint ? 5.61 : 4.32);   // blocks per second, like Minecraft
+    double speed = flying ? (c.sprint ? 21.6 : 10.9) : (c.sneak ? r.walkSpeed * 0.3 : (c.sprint && r.canSprint) ? r.sprintSpeed : r.walkSpeed);   // blocks per second
     if (length(mv) > 0) mv = normalize(mv) * speed;
     if (flying) {
         // flying: quick to start and stop, Space up, Shift down
@@ -67,8 +67,8 @@ void Player::update(const World& w, const Controls& c, double dt) {
         if (c.jump && onGround && !w.liquidAt(eye())) vel.y = 6.5;   // climb out at the shore
     } else {
         vel.x = mv.x; vel.z = mv.z;
-        vel.y = std::max(vel.y - 32.0 * dt, -78.0);
-        if (c.jump && onGround) vel.y = 8.4;    // about 1.25 blocks high
+        vel.y = std::max(vel.y - (double)r.gravity * dt, -78.0);
+        if (c.jump && onGround) vel.y = r.jumpSpeed();   // default about 1.25 blocks high
     }
     feet = w.moveBox(feet, vel, HALF_W, HEIGHT, dt, onGround, flying ? 0.0 : 0.6);   // walking climbs half blocks and stairs by itself
     if (flying && onGround && c.sneak) flying = false;   // land by flying down onto the ground
@@ -93,6 +93,57 @@ bool EditHistory::redo(World& w) {
     undos.push_back(std::move(g)); return true;
 }
 
+// ------------------------------------------------------------------ game settings (game/game.txt)
+bool GameSettings::save(const std::string& path) const {
+    std::ofstream f(path); if (!f) return false;
+    const PlayerRules& p = player;
+    f << "name " << name << "\nstart_world " << (startWorld.empty() ? "-" : startWorld)
+      << "\nwalk_speed " << p.walkSpeed << "\nsprint_speed " << p.sprintSpeed << "\njump_height " << p.jumpHeight << "\ngravity " << p.gravity
+      << "\nmax_health " << p.maxHealth << "\nlava_damage " << p.lavaDamage << "\nvoid_depth " << p.voidDepth << "\nrespawn_delay " << p.respawnDelay
+      << "\nfall_damage " << p.fallDamage << "\ncan_sprint " << (p.canSprint ? 1 : 0) << "\n";
+    return (bool)f;
+}
+bool GameSettings::load(const std::string& path) {
+    std::ifstream f(path); if (!f) return false;
+    std::string k; PlayerRules& p = player;
+    while (f >> k) {
+        if (k == "name") { f >> std::ws; std::getline(f, name); }
+        else if (k == "start_world") { f >> std::ws; std::getline(f, startWorld); if (startWorld == "-") startWorld.clear(); }
+        else if (k == "walk_speed") f >> p.walkSpeed; else if (k == "sprint_speed") f >> p.sprintSpeed; else if (k == "jump_height") f >> p.jumpHeight;
+        else if (k == "gravity") f >> p.gravity; else if (k == "max_health") f >> p.maxHealth; else if (k == "lava_damage") f >> p.lavaDamage;
+        else if (k == "void_depth") f >> p.voidDepth; else if (k == "respawn_delay") f >> p.respawnDelay; else if (k == "fall_damage") f >> p.fallDamage;
+        else if (k == "can_sprint") { int v; f >> v; p.canSprint = v != 0; }
+        else { std::string rest; std::getline(f, rest); }
+    }
+    return true;
+}
+
+// ------------------------------------------------------------------ play mode
+void PlayState::start(Player& p, const PlayerRules& r, V3 spawn, double spawnYaw) {
+    health = r.maxHealth; deadFor = -1; hurtFlash = 0; falling = false; cause = "";
+    p.feet = spawn; p.vel = { 0, 0, 0 }; p.yaw = spawnYaw; p.pitch = 0; p.flying = false; p.onGround = false;
+}
+PlayState::Event PlayState::tick(const World& w, Player& p, const PlayerRules& r, V3 spawn, double spawnYaw, double dt) {
+    hurtFlash = std::max(0.0, hurtFlash - dt);
+    if (dead()) {
+        deadFor += dt;
+        if (deadFor >= r.respawnDelay) { start(p, r, spawn, spawnYaw); return Respawned; }
+        return Nothing;
+    }
+    float before = health;
+    if (w.liquidAt({ p.feet.x, p.feet.y + 0.3, p.feet.z }) == 2) { health -= r.lavaDamage * (float)dt; cause = "burned in lava"; }
+    // falling: remember where it started, hurt on landing
+    if (!p.onGround && p.vel.y < 0 && !w.liquidAt({ p.feet.x, p.feet.y + 0.3, p.feet.z })) { if (!falling) { falling = true; fallStart = p.feet.y; } }
+    else if (falling) {
+        falling = false; double h = fallStart - p.feet.y;
+        if (p.onGround && r.fallDamage > 0 && h > 4) { health -= r.fallDamage * (float)(h - 4); cause = "fell too far"; }
+    }
+    if (p.feet.y < r.voidDepth) { health = 0; cause = "fell out of the world"; }
+    if (health < before) hurtFlash = 0.4;
+    if (health <= 0) { health = 0; deadFor = 0; deaths++; p.vel = { 0, 0, 0 }; return Died; }
+    return health < before ? Hurt : Nothing;
+}
+
 // ------------------------------------------------------------------ world info (world.txt)
 bool WorldInfo::save(const std::string& dir) const {
     std::error_code ec; std::filesystem::create_directories(dir, ec);
@@ -103,6 +154,7 @@ bool WorldInfo::save(const std::string& dir) const {
     f << "\nplayer " << player.feet.x << " " << player.feet.y << " " << player.feet.z << " " << player.yaw << " " << player.pitch << " " << (player.flying ? 1 : 0) << "\nhotbar " << hotSel;
     for (auto& h : hotbar) { std::string e = h; for (size_t p; (p = e.find(' ')) != std::string::npos;) e.replace(p, 1, "%20"); f << " " << (e.empty() ? "-" : e); }   // names may have spaces
     f << "\nweather " << weather << " " << (autoWeather ? 1 : 0) << "\nenvironment " << environment << "\n";
+    if (hasSpawn) f << "spawn " << spawn.x << " " << spawn.y << " " << spawn.z << " " << spawnYaw << "\n";
     for (auto& z : zones) f << "zone " << z.env << " " << z.lo.x << " " << z.lo.y << " " << z.lo.z << " " << z.hi.x << " " << z.hi.y << " " << z.hi.z << " " << z.name << "\n";
     return (bool)f;
 }
@@ -118,6 +170,7 @@ bool WorldInfo::load(const std::string& dir) {
         else if (k == "hotbar") { f >> hotSel; for (auto& h : hotbar) { f >> h; if (h == "-") h.clear(); for (size_t p; (p = h.find("%20")) != std::string::npos;) h.replace(p, 3, " "); } hotSel = std::max(0, std::min(8, hotSel)); }
         else if (k == "weather") { int a = 0; f >> weather >> a; autoWeather = a != 0; }
         else if (k == "environment") f >> environment;
+        else if (k == "spawn") { f >> spawn.x >> spawn.y >> spawn.z >> spawnYaw; hasSpawn = true; }
         else if (k == "zone") { EnvZone z; f >> z.env >> z.lo.x >> z.lo.y >> z.lo.z >> z.hi.x >> z.hi.y >> z.hi.z >> std::ws; std::getline(f, z.name); zones.push_back(z); }
         else { std::string rest; std::getline(f, rest); }
     }

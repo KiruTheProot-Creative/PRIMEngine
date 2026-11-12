@@ -230,7 +230,7 @@ void addBuiltinLiquids(BlockRegistry& r) {
     if (r.textureIndex("lava") < 0) r.setTexture("lava", N, N, lava().px);
     auto liq = [&](const char* name, const char* tex, int kind, bool spring) {
         if (r.find(name)) return;
-        BlockDef d; d.name = name; d.render = Render::Liquid; d.solid = false; d.liquid = kind; d.spring = spring;
+        BlockDef d; d.name = name; d.render = Render::Liquid; d.solid = false; d.liquid = kind; d.spring = spring; d.category = "Liquids";
         for (auto& f : d.faces) f = tex;
         if (kind == 2) { d.light = 15; d.lightColor = 0xFF7020; } else d.shine = 0.9f;
         r.add(d);
@@ -264,6 +264,9 @@ void registerBuiltinBlocks(BlockRegistry& r) {
     { BlockId l = block("lamp", "lamp"); BlockDef d = r.get(l); d.light = 15; r.put(l, d); }
     { BlockId g = block("glass", "glass", nullptr, nullptr, Render::Cutout, true); BlockDef d = r.get(g); d.shine = 0.5f; r.put(g, d); }
     { BlockId l = block("leaves", "leaves", nullptr, nullptr, Render::Cutout, false); BlockDef d = r.get(l); d.waves = true; r.put(l, d); }
+    for (const char* n : { "grass", "dirt", "sand", "leaves", "log" }) { BlockId b = r.find(n); BlockDef d = r.get(b); d.category = "Nature"; r.put(b, d); }
+    { BlockId b = r.find("lamp"); BlockDef d = r.get(b); d.category = "Lights"; r.put(b, d); }
+    { BlockId b = r.find("glass"); BlockDef d = r.get(b); d.category = "Glass & metal"; r.put(b, d); b = r.find("metal"); d = r.get(b); d.category = "Glass & metal"; r.put(b, d); }
     addBuiltinLiquids(r);
 }
 

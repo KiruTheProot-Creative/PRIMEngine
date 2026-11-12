@@ -53,6 +53,7 @@ struct BlockDef {
     bool mirror = false;                 // reflects like a mirror
     int liquid = 0;                      // 0 not a liquid, 1 water, 2 lava
     bool spring = false;                 // a liquid that never runs dry (keeps pouring out)
+    std::string category = "Building";   // folder in the asset browser
     bool exists = true;                  // false = a deleted id (kept so old worlds stay readable)
 };
 

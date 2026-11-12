@@ -25,6 +25,7 @@
 #include <wrl/client.h>
 
 #include "../../third_party/imgui/imgui.h"
+#include "../../third_party/imgui/imgui_internal.h"   // dock layout builder, side bars
 #include "../../third_party/imgui/imgui_stdlib.h"
 #include "../../third_party/imgui/backends/imgui_impl_win32.h"
 #include "../../third_party/imgui/backends/imgui_impl_dx11.h"
@@ -86,6 +87,9 @@ static App* g_app = nullptr;
 struct App {
     // ---- window + device
     HWND hwnd = nullptr; int cw = 1280, ch = 720; bool resized = false;
+    int rw = 0, rh = 0; float vx = 0, vy = 0;            // size of the 3D picture, and where it sits in the window (the editor's viewport)
+    ComPtr<ID3D11Texture2D> sceneTex; ComPtr<ID3D11RenderTargetView> sceneRTV; ComPtr<ID3D11ShaderResourceView> sceneSRV;   // the viewport picture
+    ImVec2 viewSize{ 0, 0 };
     ComPtr<ID3D11Device> dev; ComPtr<ID3D11DeviceContext> ctx; ComPtr<IDXGISwapChain> swap; ComPtr<ID3D11RenderTargetView> backRTV;
     ComPtr<ID3D11Texture2D> depthTex; ComPtr<ID3D11DepthStencilView> dsv;
     ComPtr<ID3D11VertexShader> vsBlock, vsSky, vsShadow; ComPtr<ID3D11PixelShader> psOpaque, psCutout, psSky, psGhost, psShadowCut, psPost, psVolume, psBloomDown, psBloomUp, psRain, psBolt;
@@ -147,6 +151,16 @@ struct App {
     bool hoverValid = false; Hit hover{};
     std::string toast; double toastT = 0;
     double fps = 0; int fpsN = 0; double fpsAcc = 0;
+
+    // ---- the editor (G1): docked panels around the viewport, and Play mode
+    enum class Sel { None, World, Weather, Environment, Zone, Spawn, Player, Game, Block, Texture, Shape };
+    Sel sel = Sel::World; int selIndex = 0;
+    int assetKind = 0; std::string assetCat, assetSearch; float assetSize = 64;   // asset browser: 0 blocks, 1 textures, 2 shapes
+    bool resetLayout = false, showZones = true, captureNext = false, focusView = false, focusAssets = false;
+    bool plainView = false;                       // screenshots: just the 3D picture, no editor around it
+    GameSettings game; std::string gamePath;
+    bool playMode = false; PlayState play; Player editCam; V3 playSpawn{}; double playYaw = 0;
+    bool EditorView() const { return screen == Screen::Game && !playMode && !plainView; }
     bool createOpen = false; std::string newName = "New World"; int newType = 0; std::string deleteAsk;
     std::vector<std::string> worldList;
 
@@ -159,7 +173,7 @@ struct App {
             driverName = "software (WARP)";   // no usable graphics card (e.g. the build machine): Windows draws it on the processor
             HR(D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, &fl, 1, D3D11_SDK_VERSION, &sd, &swap, &dev, &got, &ctx));
         }
-        MakeTargets();
+        MakeBackbuffer(); rw = cw; rh = ch; MakeTargets();
 
         std::string src = ReadShader("block.hlsl");
         auto vb = Compile(src, "VS_Block", "vs_5_0"); HR(dev->CreateVertexShader(vb->GetBufferPointer(), vb->GetBufferSize(), nullptr, &vsBlock));
@@ -225,16 +239,22 @@ struct App {
 
         IMGUI_CHECKVERSION(); ImGui::CreateContext();
         static std::string ini = ExeDir() + "imgui.ini"; ImGui::GetIO().IniFilename = ini.c_str();
+        ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_DockingEnable;
         Style();
         ImGui_ImplWin32_Init(hwnd); ImGui_ImplDX11_Init(dev.Get(), ctx.Get());
 
         settingsPath = ExeDir() + "settings.txt"; settings.load(settingsPath);
+        { std::error_code ec; fs::create_directories(ExeDir() + "game", ec); gamePath = ExeDir() + "game/game.txt"; if (!game.load(gamePath)) game.save(gamePath); }
         RAWINPUTDEVICE rid{ 0x01, 0x02, 0, hwnd }; RegisterRawInputDevices(&rid, 1, sizeof rid);   // raw mouse movement for looking around
         RefreshWorlds();
     }
+    void MakeBackbuffer() { ComPtr<ID3D11Texture2D> bb; HR(swap->GetBuffer(0, IID_PPV_ARGS(&bb))); backRTV.Reset(); HR(dev->CreateRenderTargetView(bb.Get(), nullptr, &backRTV)); }
+    // everything the 3D picture needs, at its size (rw x rh): the whole window when playing, the viewport panel in the editor
     void MakeTargets() {
-        ComPtr<ID3D11Texture2D> bb; HR(swap->GetBuffer(0, IID_PPV_ARGS(&bb))); HR(dev->CreateRenderTargetView(bb.Get(), nullptr, &backRTV));
-        D3D11_TEXTURE2D_DESC d{}; d.Width = (UINT)cw; d.Height = (UINT)ch; d.MipLevels = 1; d.ArraySize = 1; d.Format = DXGI_FORMAT_R32_TYPELESS; d.SampleDesc.Count = 1; d.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
+        rw = std::max(16, rw); rh = std::max(16, rh);
+        ctx->OMSetRenderTargets(0, nullptr, nullptr);
+        if (sceneSRV) retired.push_back(sceneSRV);
+        D3D11_TEXTURE2D_DESC d{}; d.Width = (UINT)rw; d.Height = (UINT)rh; d.MipLevels = 1; d.ArraySize = 1; d.Format = DXGI_FORMAT_R32_TYPELESS; d.SampleDesc.Count = 1; d.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
         depthTex.Reset(); dsv.Reset(); depthSRV.Reset(); HR(dev->CreateTexture2D(&d, nullptr, &depthTex));
         { D3D11_DEPTH_STENCIL_VIEW_DESC dv{}; dv.Format = DXGI_FORMAT_D32_FLOAT; dv.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D; HR(dev->CreateDepthStencilView(depthTex.Get(), &dv, &dsv));
           D3D11_SHADER_RESOURCE_VIEW_DESC sv{}; sv.Format = DXGI_FORMAT_R32_FLOAT; sv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D; sv.Texture2D.MipLevels = 1; HR(dev->CreateShaderResourceView(depthTex.Get(), &sv, &depthSRV));
@@ -255,8 +275,10 @@ struct App {
         }
         volTex.Reset(); volRTV.Reset(); volSRV.Reset();
         HR(dev->CreateTexture2D(&d, nullptr, &volTex)); HR(dev->CreateRenderTargetView(volTex.Get(), nullptr, &volRTV)); HR(dev->CreateShaderResourceView(volTex.Get(), nullptr, &volSRV));
+        { D3D11_TEXTURE2D_DESC sd3 = d; sd3.Format = DXGI_FORMAT_R8G8B8A8_UNORM; sceneTex.Reset(); sceneRTV.Reset(); sceneSRV.Reset();
+          HR(dev->CreateTexture2D(&sd3, nullptr, &sceneTex)); HR(dev->CreateRenderTargetView(sceneTex.Get(), nullptr, &sceneRTV)); HR(dev->CreateShaderResourceView(sceneTex.Get(), nullptr, &sceneSRV)); }
         bloomLv.clear();   // half size, quarter size, ... six levels
-        for (int i = 0, w = cw / 2, h = ch / 2; i < 6; i++, w = std::max(1, w / 2), h = std::max(1, h / 2)) {
+        for (int i = 0, w = rw / 2, h = rh / 2; i < 6; i++, w = std::max(1, w / 2), h = std::max(1, h / 2)) {
             BloomLevel L; L.w = std::max(1, w); L.h = std::max(1, h);
             D3D11_TEXTURE2D_DESC bd2{}; bd2.Width = (UINT)L.w; bd2.Height = (UINT)L.h; bd2.MipLevels = 1; bd2.ArraySize = 1; bd2.Format = DXGI_FORMAT_R11G11B10_FLOAT; bd2.SampleDesc.Count = 1; bd2.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
             HR(dev->CreateTexture2D(&bd2, nullptr, &L.tex)); HR(dev->CreateRenderTargetView(L.tex.Get(), nullptr, &L.rtv)); HR(dev->CreateShaderResourceView(L.tex.Get(), nullptr, &L.srv));
@@ -274,7 +296,7 @@ struct App {
         resized = false; ctx->OMSetRenderTargets(0, nullptr, nullptr); backRTV.Reset();
         HR(swap->ResizeBuffers(0, 0, 0, DXGI_FORMAT_UNKNOWN, 0));
         RECT r; GetClientRect(hwnd, &r); cw = std::max<int>(2, r.right); ch = std::max<int>(2, r.bottom);
-        MakeTargets();
+        MakeBackbuffer();
     }
     void UploadTextures() {
         const int S = reg.layerSize(), n = (int)reg.textureCount(); int mips = 1; while ((S >> mips) > 0) mips++;
@@ -396,16 +418,16 @@ struct App {
         envState.update(0, player.eye(), info.environment, info.zones, true);
         { int wi = findWeather(info.weather); weather = Weather{}; weather.set(wi < 0 ? 1 : wi, true); weather.autoChange = info.autoWeather;
           weather.wetness = weather.now.rain > 0.1f ? 1.f : 0.f; weather.snowCover = weather.now.snow > 0.1f ? 1.f : 0.f; weather.seed((uint32_t)std::time(nullptr)); }
-        screen = Screen::Game; paused = false; inventory = false; autosave = 0;
-        Capture(true);
-        Toast("Welcome to " + info.name + ". Double-tap Space to fly, E for blocks, Esc for the menu");
+        screen = Screen::Game; paused = false; inventory = false; autosave = 0; playMode = false; sel = Sel::World;
+        Toast("Opened " + info.name + ". Click the viewport to fly and build, Esc frees the mouse, F5 plays");
     }
     void SaveWorld() {
         if (!world) return;
-        info.player = player; info.hotSel = hotSel; info.weather = weather.type().key; info.autoWeather = weather.autoChange; for (int i = 0; i < 9; i++) info.hotbar[i] = !reg.has(hotbar[i]) ? "" : reg.get(hotbar[i]).name + (shapeOf(hotbar[i]) ? "@" + Shapes::get().info(shapeOf(hotbar[i])).key : "");
+        info.player = playMode ? editCam : player; info.hotSel = hotSel; info.weather = weather.type().key; info.autoWeather = weather.autoChange; for (int i = 0; i < 9; i++) info.hotbar[i] = !reg.has(hotbar[i]) ? "" : reg.get(hotbar[i]).name + (shapeOf(hotbar[i]) ? "@" + Shapes::get().info(shapeOf(hotbar[i])).key : "");
         info.save(worldDir); world->saveAll();
     }
     void CloseWorld() {
+        if (playMode) StopPlay();
         SaveWorld(); workers.reset(); world.reset(); gpu.clear(); latestSeq.clear();
         screen = Screen::Title; Capture(false); RefreshWorlds();
     }
@@ -417,8 +439,10 @@ struct App {
         ImGuiIO& io = ImGui::GetIO();
         if (on) {
             io.ConfigFlags |= ImGuiConfigFlags_NoMouse;
-            RECT r; GetClientRect(hwnd, &r); POINT a{ 0, 0 }; ClientToScreen(hwnd, &a); RECT cr{ a.x, a.y, a.x + r.right, a.y + r.bottom }; ClipCursor(&cr);
-            POINT c{ r.right / 2, r.bottom / 2 }; ClientToScreen(hwnd, &c); SetCursorPos(c.x, c.y);
+            RECT r{ (LONG)vx, (LONG)vy, (LONG)(vx + rw), (LONG)(vy + rh) };   // the mouse stays inside the 3D picture
+            POINT a{ 0, 0 }; ClientToScreen(hwnd, &a); RECT cr{ a.x + r.left, a.y + r.top, a.x + r.right, a.y + r.bottom }; ClipCursor(&cr);
+            POINT c{ (r.left + r.right) / 2, (r.top + r.bottom) / 2 }; ClientToScreen(hwnd, &c); SetCursorPos(c.x, c.y);
+            focusView = true;
             lPrev = rPrev = mPrev = true;   // the click that captured the mouse must not also break a block
         } else { io.ConfigFlags &= ~ImGuiConfigFlags_NoMouse; ClipCursor(nullptr); }
         mouseDX = mouseDY = 0;
@@ -430,27 +454,31 @@ struct App {
             if (k == VK_ESCAPE) { if (editorOpen) editorOpen = false; else if (showSettings) showSettings = false; else libraryOpen = false; }
             return;
         }
+        bool typing = ImGui::GetIO().WantTextInput;
+        if (k == VK_F5 && !repeat) { if (playMode) StopPlay(); else StartPlay(); return; }
         if (k == VK_ESCAPE) {
             if (shapeMenu) { shapeMenu = false; Capture(true); }
-            else if (editorOpen) editorOpen = false;
             else if (inventory) { inventory = false; Capture(true); }
             else if (showSettings) showSettings = false;
-            else { paused = !paused; Capture(!paused); }
+            else if (playMode) { paused = !paused; Capture(!paused); }
+            else if (captured) Capture(false);            // editor: the mouse goes back to the panels
+            else if (editorOpen && !EditorView()) editorOpen = false;
             return;
         }
-        if (k == 'E' && !paused && !ImGui::GetIO().WantTextInput) { inventory = !inventory; editorOpen = false; shapeMenu = false; Capture(!inventory); return; }
-        if (k == 'Q' && !paused && !inventory && !ImGui::GetIO().WantTextInput) { shapeMenu = !shapeMenu; shapeSearch.clear(); Capture(!shapeMenu); return; }
         if (k == VK_F3) { showF3 = !showF3; return; }
         if (k == VK_F1) { hideHud = !hideHud; return; }
+        if (typing || playMode) return;                   // playing: no building tools
+        if (Down(VK_CONTROL) && k == 'Z') { if (history.undo(*world)) Toast("Undo"); return; }
+        if (Down(VK_CONTROL) && k == 'Y') { if (history.redo(*world)) Toast("Redo"); return; }
+        if (Down(VK_CONTROL) && k == 'S') { SaveWorld(); Toast("Saved"); return; }
+        if (k == 'E' && !paused) { if (EditorView()) { Capture(false); focusAssets = true; } else { inventory = !inventory; editorOpen = false; shapeMenu = false; Capture(!inventory); } return; }
+        if (k == 'Q' && !paused && !inventory) { shapeMenu = !shapeMenu; shapeSearch.clear(); Capture(!shapeMenu); return; }
         if (!Playing() || repeat) return;
         if (k >= '1' && k <= '9') hotSel = (int)(k - '1');
         if (k == VK_SPACE) {
             double now = ImGui::GetTime();
             if (now - lastSpace < 0.3) { player.toggleFly(); Toast(player.flying ? "Flying" : "Walking"); lastSpace = -10; } else lastSpace = now;
         }
-        if (Down(VK_CONTROL) && k == 'Z') { if (history.undo(*world)) Toast("Undo"); }
-        if (Down(VK_CONTROL) && k == 'Y') { if (history.redo(*world)) Toast("Redo"); }
-        if (Down(VK_CONTROL) && k == 'S') { SaveWorld(); Toast("Saved"); }
         if (k == 'R' || k == 'T') {   // turn the next block by hand (starts from the automatic rotation)
             if (!manualRot) { manualRot = true; manRot = targetValid ? rotOf(targetValue) : 0; }
             int look = LookFace();
@@ -458,7 +486,7 @@ struct App {
         }
         if (k == 'G' && manualRot) { manualRot = false; Toast("Rotation: automatic"); }
     }
-    void OnWheel(int delta) { if (Playing()) hotSel = (hotSel + (delta > 0 ? 8 : 1)) % 9; }
+    void OnWheel(int delta) { if (Playing() && !playMode) hotSel = (hotSel + (delta > 0 ? 8 : 1)) % 9; }
 
     // ================================================================== game update
     void UpdateGame(double dt) {
@@ -466,9 +494,14 @@ struct App {
             double s = 0.0022 * settings.mouseSensitivity; player.look(mouseDX * s, mouseDY * s);
             Controls c; bool fg = GetForegroundWindow() == hwnd;
             if (fg) { c.forward = Down('W'); c.back = Down('S'); c.left = Down('A'); c.right = Down('D'); c.jump = Down(VK_SPACE); c.sneak = Down(VK_SHIFT); c.sprint = Down(VK_CONTROL) && !Down('Z') && !Down('Y'); }
-            player.update(*world, c, std::min(dt, 0.05));
-            Interact(dt);
+            if (playMode) { c.sprint = c.sprint && game.player.canSprint; if (play.dead()) c = Controls{}; }
+            player.update(*world, c, std::min(dt, 0.05), playMode ? game.player : PlayerRules{});
+            if (!playMode) Interact(dt); else hoverValid = false;
         } else { lPrev = rPrev = mPrev = true; }
+        if (playMode && !paused) {   // health, lava, falling out of the world, respawning
+            PlayState::Event e = play.tick(*world, player, game.player, playSpawn, playYaw, std::min(dt, 0.05));
+            if (e == PlayState::Died) Toast(std::string("You ") + play.cause);
+        }
         mouseDX = mouseDY = 0;
         weather.update(dt, player.feet);
         world->liquidTimer += dt;   // water and lava flow 10 steps a second
@@ -649,8 +682,8 @@ struct App {
         ctx->DrawIndexed(nBolt, 0, 0);
         ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());
     }
-    void RenderWorld() {
-        aspect = (float)cw / ch; camPos = player.eye();
+    void RenderWorld(ID3D11RenderTargetView* out) {
+        aspect = (float)rw / rh; camPos = player.eye();
         V3 f = player.forward(), r = normalize(cross({ 0, 1, 0 }, f)), u = cross(f, r);
         float farZ = (settings.renderDistance + 2) * CS * 1.5f;
         view = XMMatrixLookToLH(XMVectorZero(), XMVectorSet((float)f.x, (float)f.y, (float)f.z, 0), XMVectorSet(0, 1, 0, 0));   // camera at the origin
@@ -689,7 +722,7 @@ struct App {
         fc.env[0] = E.atmosphere; fc.env[1] = E.shimmer; fc.env[2] = E.planet; fc.env[3] = E.haze * std::max(0.f, settings.groundFog);
         fc.envPart[0] = E.particleKind; fc.envPart[1] = E.particleAmount; fc.envPart[2] = (float)world->liquidAt(camPos);   // under water / in lava for (int i = 0; i < 3; i++) fc.envPartColor[i] = E.particleColor[i];
         fc.volume[2] = (float)std::fmod(cloudTime, 4800.0); fc.volume[3] = settings.cloudShadows ? 1.f : 0.f;
-        fc.depth[0] = 0.05f; fc.depth[1] = farZ; fc.depth[2] = (float)cw; fc.depth[3] = (float)ch;
+        fc.depth[0] = 0.05f; fc.depth[1] = farZ; fc.depth[2] = (float)rw; fc.depth[3] = (float)rh;
         fc.clipPlane[3] = 1;   // nothing cut away (except while drawing a mirror's view)
         lastMirror = settings.reflections > 0 ? world->nearestMirror(camPos, player.forward(), 48) : MirrorPlane{};
         if (lastMirror.valid) {
@@ -765,7 +798,7 @@ struct App {
             ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &mc, 0, 0);
             const float black[4] = { 0, 0, 0, 1 };
             ctx->OMSetRenderTargets(1, mirRTV.GetAddressOf(), mirDSV.Get()); ctx->ClearRenderTargetView(mirRTV.Get(), black); ctx->ClearDepthStencilView(mirDSV.Get(), D3D11_CLEAR_DEPTH, 1.f, 0);
-            D3D11_VIEWPORT mv{ 0, 0, (float)std::max(1, cw / 2), (float)std::max(1, ch / 2), 0, 1 }; ctx->RSSetViewports(1, &mv);
+            D3D11_VIEWPORT mv{ 0, 0, (float)std::max(1, rw / 2), (float)std::max(1, rh / 2), 0, 1 }; ctx->RSSetViewports(1, &mv);
             ctx->RSSetState(rsNoCull.Get()); ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->IASetInputLayout(nullptr);
             ctx->PSSetShaderResources(3, 1, noiseSRV.GetAddressOf()); ctx->PSSetSamplers(2, 1, sampLinear.GetAddressOf());
             ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psSky.Get(), nullptr, 0); ctx->Draw(3, 0);
@@ -781,7 +814,7 @@ struct App {
         // ---- the world, into the HDR picture
         const float black[4] = { 0, 0, 0, 1 };
         ctx->OMSetRenderTargets(1, hdrRTV.GetAddressOf(), dsv.Get()); ctx->ClearRenderTargetView(hdrRTV.Get(), black); ctx->ClearDepthStencilView(dsv.Get(), D3D11_CLEAR_DEPTH, 1.f, 0);
-        D3D11_VIEWPORT v{ 0, 0, (float)cw, (float)ch, 0, 1 }; ctx->RSSetViewports(1, &v);
+        D3D11_VIEWPORT v{ 0, 0, (float)rw, (float)rh, 0, 1 }; ctx->RSSetViewports(1, &v);
         ctx->RSSetState(rsNoCull.Get());
         ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->IASetInputLayout(nullptr);
         ctx->PSSetShaderResources(3, 1, noiseSRV.GetAddressOf()); ctx->PSSetSamplers(2, 1, sampLinear.GetAddressOf());   // the planet uses the cloud noise
@@ -875,7 +908,7 @@ struct App {
             ctx->PSSetShader(psBloomDown.Get(), nullptr, 0);
             for (size_t i = 0; i < bloomLv.size(); i++) {
                 ID3D11ShaderResourceView* src = i == 0 ? volSRV.Get() : bloomLv[i - 1].srv.Get();
-                float sw = i == 0 ? (float)cw : (float)bloomLv[i - 1].w, sh2 = i == 0 ? (float)ch : (float)bloomLv[i - 1].h;
+                float sw = i == 0 ? (float)rw : (float)bloomLv[i - 1].w, sh2 = i == 0 ? (float)rh : (float)bloomLv[i - 1].h;
                 ChunkCB cc{ { 1 / sw, 1 / sh2, 1, 0 } }; ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);
                 ctx->OMSetRenderTargets(1, bloomLv[i].rtv.GetAddressOf(), nullptr);
                 D3D11_VIEWPORT bv{ 0, 0, (float)bloomLv[i].w, (float)bloomLv[i].h, 0, 1 }; ctx->RSSetViewports(1, &bv);
@@ -889,11 +922,11 @@ struct App {
                 ID3D11ShaderResourceView* src = bloomLv[i].srv.Get(); ctx->PSSetShaderResources(0, 1, &src); ctx->Draw(3, 0); ctx->PSSetShaderResources(0, 1, none);
             }
             ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
-            D3D11_VIEWPORT fv{ 0, 0, (float)cw, (float)ch, 0, 1 }; ctx->RSSetViewports(1, &fv);
+            D3D11_VIEWPORT fv{ 0, 0, (float)rw, (float)rh, 0, 1 }; ctx->RSSetViewports(1, &fv);
         }
 
-        // ---- final picture: exposure + filmic curve into the window
-        ctx->OMSetRenderTargets(1, backRTV.GetAddressOf(), nullptr);
+        // ---- final picture: exposure + filmic curve into the window (or the editor's viewport picture)
+        ctx->OMSetRenderTargets(1, &out, nullptr);
         ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psPost.Get(), nullptr, 0);
         { ID3D11ShaderResourceView* pv[2] = { volSRV.Get(), bloom ? bloomLv[0].srv.Get() : nullptr }; ctx->PSSetShaderResources(0, 2, pv); }
         ctx->Draw(3, 0);
@@ -904,7 +937,7 @@ struct App {
         V3 rel = p - camPos;
         XMVECTOR c = XMVector4Transform(XMVectorSet((float)rel.x, (float)rel.y, (float)rel.z, 1), view * proj); float w = XMVectorGetW(c);
         if (w < 0.05f) return false;
-        out = ImVec2((XMVectorGetX(c) / w * 0.5f + 0.5f) * cw, (0.5f - XMVectorGetY(c) / w * 0.5f) * ch); return true;
+        out = ImVec2(vx + (XMVectorGetX(c) / w * 0.5f + 0.5f) * rw, vy + (0.5f - XMVectorGetY(c) / w * 0.5f) * rh); return true;
     }
     void Line3D(ImDrawList* dl, V3 a, V3 b, ImU32 col) {
         // clip against the near plane in camera space, then project
@@ -912,7 +945,7 @@ struct App {
         XMVECTOR va = XMVector3TransformCoord(XMVectorSet((float)ra.x, (float)ra.y, (float)ra.z, 1), view), vb = XMVector3TransformCoord(XMVectorSet((float)rb.x, (float)rb.y, (float)rb.z, 1), view);
         float za = XMVectorGetZ(va), zb = XMVectorGetZ(vb), n = 0.06f; if (za < n && zb < n) return;
         if (za < n) va = XMVectorLerp(va, vb, (n - za) / (zb - za)); else if (zb < n) vb = XMVectorLerp(vb, va, (n - zb) / (za - zb));
-        auto scr = [&](XMVECTOR v) { XMVECTOR c = XMVector4Transform(XMVectorSetW(v, 1), proj); float w = XMVectorGetW(c); return ImVec2((XMVectorGetX(c) / w * 0.5f + 0.5f) * cw, (0.5f - XMVectorGetY(c) / w * 0.5f) * ch); };
+        auto scr = [&](XMVECTOR v) { XMVECTOR c = XMVector4Transform(XMVectorSetW(v, 1), proj); float w = XMVectorGetW(c); return ImVec2(vx + (XMVectorGetX(c) / w * 0.5f + 0.5f) * rw, vy + (0.5f - XMVectorGetY(c) / w * 0.5f) * rh); };
         dl->AddLine(scr(va), scr(vb), col, 2.f);
     }
 
@@ -950,9 +983,9 @@ struct App {
         if (cur >= 0) dl->PopTexture();
         dl->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
     }
-    void DrawHud() {
-        ImDrawList* dl = ImGui::GetForegroundDrawList();
-        if (envWin) {   // zone boxes, coloured by environment
+    void DrawHud(ImDrawList* dl) {
+        const float cw = (float)rw, ch = (float)rh;   // the 3D picture's size (it sits at vx, vy in the window)
+        if (envWin || (!playMode && showZones)) {   // zone boxes, coloured by environment
             static const ImU32 cols[] = { IM_COL32(120, 220, 120, 255), IM_COL32(255, 200, 90, 255), IM_COL32(150, 220, 255, 255), IM_COL32(200, 160, 255, 255), IM_COL32(255, 90, 50, 255), IM_COL32(120, 255, 170, 255), IM_COL32(230, 140, 90, 255) };
             for (const EnvZone& z : info.zones) {
                 ImU32 col = cols[std::max(0, findEnv(z.env)) % 7];
@@ -970,11 +1003,27 @@ struct App {
             const int e[12][2] = { { 0, 1 }, { 2, 3 }, { 4, 5 }, { 6, 7 }, { 0, 2 }, { 1, 3 }, { 4, 6 }, { 5, 7 }, { 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 } };
             for (auto& k : e) Line3D(dl, c[k[0]], c[k[1]], IM_COL32(10, 10, 10, 200));
         }
+        if (!playMode && info.hasSpawn) {   // the spawn point: a green player-sized box with an arrow where it looks
+            V3 f = info.spawn; double hw = Player::HALF_W, H = Player::HEIGHT;
+            V3 c[8]; for (int i = 0; i < 8; i++) c[i] = { f.x + ((i & 1) ? hw : -hw), f.y + ((i & 2) ? H : 0), f.z + ((i & 4) ? hw : -hw) };
+            const int e[12][2] = { { 0, 1 }, { 2, 3 }, { 4, 5 }, { 6, 7 }, { 0, 2 }, { 1, 3 }, { 4, 6 }, { 5, 7 }, { 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 } };
+            ImU32 col = sel == Sel::Spawn ? IM_COL32(255, 255, 120, 255) : IM_COL32(90, 255, 120, 255);
+            for (auto& k : e) Line3D(dl, c[k[0]], c[k[1]], col);
+            V3 eye{ f.x, f.y + Player::EYE, f.z }, look{ f.x + std::sin(info.spawnYaw) * 1.2, f.y + Player::EYE, f.z + std::cos(info.spawnYaw) * 1.2 };
+            Line3D(dl, eye, look, col);
+            ImVec2 sp; if (Project({ f.x, f.y + H + 0.3, f.z }, sp)) dl->AddText(ImVec2(sp.x - 18, sp.y - 14), col, "Spawn");
+        }
         if (hideHud) return;
-        ImVec2 m(cw * 0.5f, ch * 0.5f);   // crosshair
+        ImVec2 m(vx + cw * 0.5f, vy + ch * 0.5f);   // crosshair
+        if (EditorView() && !captured) {   // the mouse is free: say how to get into the picture
+            const char* t = "Click here to fly and build.   Esc frees the mouse.   F5 plays the game.";
+            ImVec2 ts = ImGui::CalcTextSize(t); dl->AddRectFilled(ImVec2(m.x - ts.x * 0.5f - 10, vy + 10), ImVec2(m.x + ts.x * 0.5f + 10, vy + 16 + ts.y), IM_COL32(0, 0, 0, 140), 4);
+            dl->AddText(ImVec2(m.x - ts.x * 0.5f, vy + 13), IM_COL32(255, 255, 255, 230), t);
+        }
         dl->AddRectFilled(ImVec2(m.x - 9, m.y - 1), ImVec2(m.x + 9, m.y + 1), IM_COL32(240, 240, 240, 220));
         dl->AddRectFilled(ImVec2(m.x - 1, m.y - 9), ImVec2(m.x + 1, m.y + 9), IM_COL32(240, 240, 240, 220));
-        float s = 44 * settings.uiScale, W = 9 * s; ImVec2 o((cw - W) * 0.5f, ch - s - 10);   // hotbar
+        if (playMode) { PlayHud(dl); return; }
+        float s = 44 * settings.uiScale, W = 9 * s; ImVec2 o(vx + (cw - W) * 0.5f, vy + ch - s - 10);   // hotbar
         dl->AddRectFilled(ImVec2(o.x - 3, o.y - 3), ImVec2(o.x + W + 3, o.y + s + 3), IM_COL32(0, 0, 0, 140), 3);
         for (int i = 0; i < 9; i++) {
             ImVec2 a(o.x + i * s, o.y), b(a.x + s, a.y + s);
@@ -986,9 +1035,9 @@ struct App {
             BlockId hv = hotbar[hotSel]; std::string label = reg.get(hv).name;
             if (shapeOf(hv) && shapeOf(hv) != Shapes::FULL) label += " - " + Shapes::get().info(shapeOf(hv)).name;
             if (manualRot) label += "   [turned by hand: R turn, T tip, G automatic]";
-            ImVec2 ts = ImGui::CalcTextSize(label.c_str()); dl->AddText(ImVec2((cw - ts.x) * 0.5f, o.y - ts.y - 8), IM_COL32(255, 255, 255, 230), label.c_str());
+            ImVec2 ts = ImGui::CalcTextSize(label.c_str()); dl->AddText(ImVec2(vx + (cw - ts.x) * 0.5f, o.y - ts.y - 8), IM_COL32(255, 255, 255, 230), label.c_str());
         }
-        if (toastT > 0) { ImVec2 ts = ImGui::CalcTextSize(toast.c_str()); dl->AddRectFilled(ImVec2((cw - ts.x) * 0.5f - 10, 60), ImVec2((cw + ts.x) * 0.5f + 10, 66 + ts.y + 6), IM_COL32(0, 0, 0, 150), 4); dl->AddText(ImVec2((cw - ts.x) * 0.5f, 66), IM_COL32(255, 255, 255, 240), toast.c_str()); }
+        if (toastT > 0) { ImVec2 ts = ImGui::CalcTextSize(toast.c_str()); dl->AddRectFilled(ImVec2(vx + (cw - ts.x) * 0.5f - 10, vy + 60), ImVec2(vx + (cw + ts.x) * 0.5f + 10, vy + 66 + ts.y + 6), IM_COL32(0, 0, 0, 150), 4); dl->AddText(ImVec2(vx + (cw - ts.x) * 0.5f, vy + 66), IM_COL32(255, 255, 255, 240), toast.c_str()); }
     }
     void DrawF3() {
         ImGui::SetNextWindowPos(ImVec2(8, 8)); ImGui::SetNextWindowBgAlpha(0.45f);
@@ -1074,15 +1123,53 @@ struct App {
         }
         ImGui::End();
     }
-    void PauseMenu() {
-        Center(ImVec2(360 * settings.uiScale, 0));
-        ImGui::Begin("Game menu", nullptr, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize);
-        if (ImGui::Button("Back to building", ImVec2(-1, 0))) { paused = false; Capture(true); }
+    // ---- Play mode
+    void StartPlay(bool grabMouse = true) {
+        if (screen != Screen::Game || playMode) return;
+        editCam = player; playMode = true; paused = false; inventory = false; shapeMenu = false; editorOpen = false;
+        playSpawn = info.hasSpawn ? info.spawn : player.feet; playYaw = info.hasSpawn ? info.spawnYaw : player.yaw;
+        play = PlayState{}; play.start(player, game.player, playSpawn, playYaw);
+        if (grabMouse) { Capture(false); captureNext = true; }   // grabbed next frame, once the picture fills the window
+        Toast(info.hasSpawn ? "Playing. Esc: menu, F5: back to the editor" : "Playing from where the camera was (set a spawn point in the Outliner). F5: back to the editor");
+    }
+    void StopPlay() {
+        if (!playMode) return;
+        playMode = false; paused = false; player = editCam; Capture(false); captureNext = false;
+        Toast("Back in the editor");
+    }
+    void PlayHud(ImDrawList* dl) {
+        const float W = (float)rw, H = (float)rh, ui = settings.uiScale;
+        if (play.hurtFlash > 0) {   // red edges when hurt
+            ImU32 r = IM_COL32(200, 0, 0, (int)(play.hurtFlash / 0.4 * 120)), z = IM_COL32(200, 0, 0, 0); float e = 90 * ui;
+            dl->AddRectFilledMultiColor(ImVec2(vx, vy), ImVec2(vx + W, vy + e), r, r, z, z);
+            dl->AddRectFilledMultiColor(ImVec2(vx, vy + H - e), ImVec2(vx + W, vy + H), z, z, r, r);
+            dl->AddRectFilledMultiColor(ImVec2(vx, vy), ImVec2(vx + e, vy + H), r, z, z, r);
+            dl->AddRectFilledMultiColor(ImVec2(vx + W - e, vy), ImVec2(vx + W, vy + H), z, r, r, z);
+        }
+        float bw = 300 * ui, bh = 18 * ui; ImVec2 o(vx + (W - bw) * 0.5f, vy + H - bh - 24 * ui);   // health bar
+        float f = game.player.maxHealth > 0 ? std::clamp(play.health / game.player.maxHealth, 0.f, 1.f) : 0.f;
+        dl->AddRectFilled(ImVec2(o.x - 3, o.y - 3), ImVec2(o.x + bw + 3, o.y + bh + 3), IM_COL32(0, 0, 0, 160), 4.f);
+        ImU32 col = f > 0.5f ? IM_COL32(70, 210, 90, 255) : f > 0.25f ? IM_COL32(240, 190, 50, 255) : IM_COL32(230, 60, 50, 255);
+        dl->AddRectFilled(o, ImVec2(o.x + bw * f, o.y + bh), col, 3.f);
+        char hb[64]; snprintf(hb, sizeof hb, "%.0f / %.0f", play.health, game.player.maxHealth);
+        ImVec2 ts = ImGui::CalcTextSize(hb); dl->AddText(ImVec2(o.x + (bw - ts.x) * 0.5f, o.y + (bh - ts.y) * 0.5f), IM_COL32(255, 255, 255, 255), hb);
+        dl->AddText(ImVec2(vx + 12, vy + 10), IM_COL32(255, 255, 255, 200), game.name.c_str());
+        if (play.dead()) {
+            dl->AddRectFilled(ImVec2(vx, vy), ImVec2(vx + W, vy + H), IM_COL32(60, 0, 0, 140));
+            std::string a = "You died", b = std::string("You ") + play.cause + ". Back in " + std::to_string((int)std::ceil(std::max(0.0, game.player.respawnDelay - play.deadFor))) + " s";
+            ImGui::PushFont(nullptr, ImGui::GetFontSize() * 2.5f); ImVec2 t1 = ImGui::CalcTextSize(a.c_str());
+            dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(vx + (W - t1.x) * 0.5f, vy + H * 0.38f), IM_COL32(255, 230, 230, 255), a.c_str()); ImGui::PopFont();
+            ImVec2 t2 = ImGui::CalcTextSize(b.c_str()); dl->AddText(ImVec2(vx + (W - t2.x) * 0.5f, vy + H * 0.38f + t1.y + 10), IM_COL32(255, 255, 255, 230), b.c_str());
+        }
+    }
+    void PauseMenu() {   // Esc while playing
+        Center(ImVec2(320 * settings.uiScale, 0));
+        ImGui::Begin("Paused###play", nullptr, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize);
+        ImGui::TextDisabled("%s", game.name.c_str());
+        if (ImGui::Button("Keep playing", ImVec2(-1, 0))) { paused = false; Capture(true); }
+        if (ImGui::Button("Start over", ImVec2(-1, 0))) { play.start(player, game.player, playSpawn, playYaw); paused = false; Capture(true); }
         if (ImGui::Button("Settings", ImVec2(-1, 0))) showSettings = true;
-        if (ImGui::Button("Weather", ImVec2(-1, 0))) weatherWin = true;
-        if (ImGui::Button("Environment and zones", ImVec2(-1, 0))) envWin = true;
-        if (ImGui::Button("Save", ImVec2(-1, 0))) { SaveWorld(); Toast("Saved"); }
-        if (ImGui::Button("Save and quit to title", ImVec2(-1, 0))) CloseWorld();
+        if (ImGui::Button("Stop playing (F5)", ImVec2(-1, 0))) StopPlay();
         ImGui::End();
     }
     // ---- blocks & textures window (E in game, "Blocks & textures" on the title screen)
@@ -1184,56 +1271,48 @@ struct App {
         ImGui::End();
     }
 
-    // ---- environment window (from the game menu): the world's air and zones with their own
-    void EnvWindow() {
-        float ui = settings.uiScale; const auto& types = envTypes();
-        ImGui::SetNextWindowPos(ImVec2(cw * 0.5f, ch * 0.5f), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-        ImGui::SetNextWindowSizeConstraints(ImVec2(480 * ui, 200), ImVec2(640 * ui, ch * 0.9f));
-        ImGui::Begin("Environment", &envWin, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize);
-        auto envCombo = [&](const char* label, std::string& key) {
-            int cur = std::max(0, findEnv(key));
-            if (ImGui::BeginCombo(label, types[cur].name.c_str())) {
-                for (int i = 0; i < (int)types.size(); i++) if (ImGui::Selectable(types[i].name.c_str(), i == cur)) key = types[i].key;
-                ImGui::EndCombo();
-            }
-        };
-        ImGui::SetNextItemWidth(220 * ui); envCombo("The air of this world", info.environment);
-        ImGui::SeparatorText("Zones: places with their own air (a space station, a volcano ...)");
-        ImGui::TextDisabled("You are in: %s", envState.inZone ? ("the zone \"" + envState.zoneName + "\"").c_str() : "the world's own air");
-        I3 here{ ifloor(player.feet.x), ifloor(player.feet.y), ifloor(player.feet.z) };
-        int remove = -1;
-        for (int i = 0; i < (int)info.zones.size(); i++) {
-            EnvZone& z = info.zones[i]; ImGui::PushID(i);
-            ImGui::SetNextItemWidth(150 * ui); ImGui::InputText("##name", &z.name); ImGui::SameLine(); ImGui::SetNextItemWidth(170 * ui); envCombo("##env", z.env);
-            ImGui::SameLine(); if (ImGui::SmallButton("Delete")) remove = i;
-            ImGui::SetNextItemWidth(220 * ui); ImGui::InputInt3("From", &z.lo.x); ImGui::SameLine(); if (ImGui::SmallButton("here##lo")) z.lo = here;
-            ImGui::SetNextItemWidth(220 * ui); ImGui::InputInt3("To", &z.hi.x); ImGui::SameLine(); if (ImGui::SmallButton("here##hi")) z.hi = here;
-            ImGui::SameLine(); if (ImGui::SmallButton("Go there")) { player.feet = { (z.lo.x + z.hi.x) * 0.5 + 0.5, (double)std::min(z.lo.y, z.hi.y), (z.lo.z + z.hi.z) * 0.5 + 0.5 }; player.flying = true; }
-            if (z.lo.x > z.hi.x) std::swap(z.lo.x, z.hi.x);
-            if (z.lo.y > z.hi.y) std::swap(z.lo.y, z.hi.y);
-            if (z.lo.z > z.hi.z) std::swap(z.lo.z, z.hi.z);
-            ImGui::Separator(); ImGui::PopID();
+    // ---- environment: the world's air and zones with their own (Inspector)
+    void EnvCombo(const char* label, std::string& key) {
+        const auto& types = envTypes(); int cur = std::max(0, findEnv(key));
+        if (ImGui::BeginCombo(label, types[cur].name.c_str())) {
+            for (int i = 0; i < (int)types.size(); i++) if (ImGui::Selectable(types[i].name.c_str(), i == cur)) key = types[i].key;
+            ImGui::EndCombo();
         }
-        if (remove >= 0) info.zones.erase(info.zones.begin() + remove);
-        if (ImGui::Button("Add a zone around me")) info.zones.push_back({ "Zone " + std::to_string(info.zones.size() + 1), "space", { here.x - 8, here.y - 4, here.z - 8 }, { here.x + 8, here.y + 12, here.z + 8 } });
-        ImGui::TextDisabled("Zones show as coloured boxes while this window is open.\nIf zones overlap, the smallest one you stand in wins. Walking in or out fades over.");
-        if (ImGui::Button("Done", ImVec2(-1, 0))) envWin = false;
-        ImGui::End();
     }
-
-    // ---- weather window (from the game menu)
-    void WeatherWindow() {
-        float ui = settings.uiScale;
-        Center(ImVec2(360 * ui, 0));
-        ImGui::Begin("Weather", &weatherWin, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize);
+    I3 Here() const { return { ifloor(player.feet.x), ifloor(player.feet.y), ifloor(player.feet.z) }; }
+    bool ZoneFields(EnvZone& z) {   // returns true when "Delete" was clicked
+        float ui = settings.uiScale; I3 here = Here(); bool del = false;
+        ImGui::SetNextItemWidth(-90 * ui); ImGui::InputText("Name", &z.name);
+        ImGui::SetNextItemWidth(-90 * ui); EnvCombo("Air", z.env);
+        ImGui::SetNextItemWidth(-90 * ui); ImGui::InputInt3("From", &z.lo.x);
+        ImGui::SetNextItemWidth(-90 * ui); ImGui::InputInt3("To", &z.hi.x);
+        if (ImGui::SmallButton("From = here")) z.lo = here;
+        ImGui::SameLine(); if (ImGui::SmallButton("To = here")) z.hi = here;
+        ImGui::SameLine(); if (ImGui::SmallButton("Go there")) { player.feet = { (z.lo.x + z.hi.x) * 0.5 + 0.5, (double)std::min(z.lo.y, z.hi.y), (z.lo.z + z.hi.z) * 0.5 + 0.5 }; player.flying = true; }
+        ImGui::SameLine(); if (ImGui::SmallButton("Delete")) del = true;
+        if (z.lo.x > z.hi.x) std::swap(z.lo.x, z.hi.x);
+        if (z.lo.y > z.hi.y) std::swap(z.lo.y, z.hi.y);
+        if (z.lo.z > z.hi.z) std::swap(z.lo.z, z.hi.z);
+        return del;
+    }
+    void AddZoneHere() {
+        I3 here = Here();
+        info.zones.push_back({ "Zone " + std::to_string(info.zones.size() + 1), "space", { here.x - 8, here.y - 4, here.z - 8 }, { here.x + 8, here.y + 12, here.z + 8 } });
+        sel = Sel::Zone; selIndex = (int)info.zones.size() - 1;
+    }
+    void EnvBody() {
+        ImGui::SetNextItemWidth(-1); EnvCombo("##air", info.environment);
+        ImGui::TextDisabled("The air of this whole world. Zones (in the Outliner) can have their own.");
+        ImGui::TextDisabled("You are in: %s", envState.inZone ? ("the zone \"" + envState.zoneName + "\"").c_str() : "the world's own air");
+        if (ImGui::Button("Add a zone around me")) AddZoneHere();
+    }
+    void WeatherBody() {
         ImGui::TextDisabled("This world's weather (it fades over in about 20 seconds):");
         const auto& types = weatherTypes();
         for (int i = 0; i < (int)types.size(); i++) if (ImGui::RadioButton(types[i].name.c_str(), weather.target == i)) weather.set(i, false);
         ImGui::Separator();
         ImGui::Checkbox("Weather changes by itself", &weather.autoChange);
         if (weather.autoChange) ImGui::TextDisabled("Next change in about %d minutes.", (int)(weather.secondsToChange() / 60) + 1);
-        if (ImGui::Button("Done", ImVec2(-1, 0))) weatherWin = false;
-        ImGui::End();
     }
 
     // ---- shape menu (Q): any block in any shape
@@ -1274,10 +1353,14 @@ struct App {
 
     // ---- block editor
     void BlockEditor() {
+        Center(ImVec2(520 * settings.uiScale, 0));
+        ImGui::Begin(draftId ? "Edit block###editor" : "New block###editor", &editorOpen, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize);
+        BlockEditorBody();
+        ImGui::End();
+    }
+    void BlockEditorBody() {
         float ui = settings.uiScale;
         for (int f = 0; f < 6; f++) { int t = reg.textureIndex(draft.faces[f]); draft.tex[f] = t < 0 ? 0 : t; }
-        Center(ImVec2(520 * ui, 0));
-        ImGui::Begin(draftId ? "Edit block###editor" : "New block###editor", &editorOpen, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize);
         // preview on the left, settings on the right
         float pv = 120 * ui; ImVec2 p = ImGui::GetCursorScreenPos();
         ImGui::GetWindowDrawList()->AddRectFilled(p, ImVec2(p.x + pv, p.y + pv), IM_COL32(30, 32, 38, 255), 4.f);
@@ -1285,6 +1368,11 @@ struct App {
         ImGui::Dummy(ImVec2(pv, pv)); ImGui::SameLine();
         ImGui::BeginGroup();
         ImGui::SetNextItemWidth(260 * ui); ImGui::InputText("Name", &draft.name);
+        ImGui::SetNextItemWidth(230 * ui); ImGui::InputText("##cat", &draft.category); ImGui::SameLine(0, 2);
+        if (ImGui::BeginCombo("Folder", nullptr, ImGuiComboFlags_NoPreview | ImGuiComboFlags_PopupAlignLeft)) {   // the block's folder in the asset browser
+            for (const std::string& c : BlockCategories()) if (ImGui::Selectable(c.c_str(), c == draft.category)) draft.category = c;
+            ImGui::EndCombo();
+        }
         int shape = (int)draft.shape; const char* shapes[] = { "Full block", "Cross plane (flowers, tall grass)", "Flat plane (ladders, vines, posters)" };
         ImGui::SetNextItemWidth(260 * ui);
         if (ImGui::Combo("Shape", &shape, shapes, 3)) {
@@ -1358,12 +1446,407 @@ struct App {
             library.saveBlocks(reg);
             if (isNew && draftId && screen == Screen::Game) hotbar[hotSel] = draftId;
             Toast(isNew ? "Made the block \"" + draft.name + "\"" : "Saved \"" + draft.name + "\"");
-            editorOpen = false;
+            editorOpen = false; if (sel == Sel::Block) selIndex = (int)draftId;
         }
         ImGui::EndDisabled();
         ImGui::SameLine(); if (ImGui::Button("Cancel", ImVec2(140 * ui, 0))) editorOpen = false;
         if (draftId) { ImGui::SameLine(); if (ImGui::Button("Delete block...", ImVec2(140 * ui, 0))) { deleteBlockAsk = draftId; wantPopup = "Delete block?"; } }
+    }
+
+    // ================================================================== the editor (G1)
+    std::vector<std::string> BlockCategories() const {
+        std::vector<std::string> c;
+        for (BlockId id = 1; id < reg.count(); id++) if (reg.has(id)) { const std::string& k = reg.get(id).category; if (std::find(c.begin(), c.end(), k) == c.end()) c.push_back(k); }
+        std::sort(c.begin(), c.end()); return c;
+    }
+    static std::string Lower(std::string t) { for (auto& ch : t) ch = (char)std::tolower((unsigned char)ch); return t; }
+    void Select(Sel s, int i = 0) {
+        sel = s; selIndex = i;
+        if (s == Sel::Block && reg.has((BlockId)i)) EditBlock((BlockId)i); else if (s != Sel::Block) editorOpen = false;
+    }
+    void BuildLayout(ImGuiID dock) {   // the default arrangement: Outliner left, Inspector right, Assets below, the viewport in the middle
+        const ImGuiViewport* vp = ImGui::GetMainViewport();
+        ImGui::DockBuilderRemoveNode(dock);
+        ImGui::DockBuilderAddNode(dock, ImGuiDockNodeFlags_DockSpace);
+        ImGui::DockBuilderSetNodeSize(dock, vp->WorkSize);
+        ImGuiID mid = dock, left, right, bottom;
+        left = ImGui::DockBuilderSplitNode(mid, ImGuiDir_Left, 0.17f, nullptr, &mid);
+        right = ImGui::DockBuilderSplitNode(mid, ImGuiDir_Right, 0.27f, nullptr, &mid);
+        bottom = ImGui::DockBuilderSplitNode(mid, ImGuiDir_Down, 0.30f, nullptr, &mid);
+        ImGui::DockBuilderDockWindow("Outliner", left);
+        ImGui::DockBuilderDockWindow("Inspector", right);
+        ImGui::DockBuilderDockWindow("Assets", bottom);
+        ImGui::DockBuilderDockWindow("Viewport", mid);
+        if (ImGuiDockNode* n = ImGui::DockBuilderGetNode(mid)) n->LocalFlags |= ImGuiDockNodeFlags_NoTabBar;
+        ImGui::DockBuilderFinish(dock);
+    }
+    bool PlayButton(bool stop) {   // a button with a drawn triangle (or square)
+        float h = ImGui::GetFrameHeight();
+        ImGui::PushStyleColor(ImGuiCol_Button, stop ? ImVec4(0.55f, 0.18f, 0.16f, 1) : ImVec4(0.16f, 0.42f, 0.22f, 1));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, stop ? ImVec4(0.7f, 0.25f, 0.2f, 1) : ImVec4(0.2f, 0.55f, 0.28f, 1));
+        ImVec2 p = ImGui::GetCursorScreenPos();
+        bool c = ImGui::Button(stop ? "      Stop  (F5)" : "      Play  (F5)");
+        ImGui::PopStyleColor(2);
+        ImDrawList* dl = ImGui::GetWindowDrawList(); float s = h * 0.32f; ImVec2 m(p.x + h * 0.6f, p.y + h * 0.5f);
+        if (stop) dl->AddRectFilled(ImVec2(m.x - s, m.y - s), ImVec2(m.x + s, m.y + s), IM_COL32(255, 255, 255, 255));
+        else dl->AddTriangleFilled(ImVec2(m.x - s * 0.8f, m.y - s), ImVec2(m.x - s * 0.8f, m.y + s), ImVec2(m.x + s, m.y), IM_COL32(255, 255, 255, 255));
+        return c;
+    }
+    void MenuBar() {
+        if (!ImGui::BeginMainMenuBar()) return;
+        if (ImGui::BeginMenu("File")) {
+            if (ImGui::MenuItem("Save", "Ctrl+S")) { SaveWorld(); Toast("Saved"); }
+            if (ImGui::MenuItem("Import images...")) { auto f = PickImages(); if (!f.empty()) { importFiles = f; wantPopup = "Import images"; } }
+            if (ImGui::MenuItem("Open textures folder")) ShellExecuteA(nullptr, "open", library.texturesDir().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            ImGui::Separator();
+            if (ImGui::MenuItem("Close world (back to the title screen)")) CloseWorld();
+            if (ImGui::MenuItem("Quit")) PostMessageA(hwnd, WM_CLOSE, 0, 0);
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("Edit")) {
+            if (ImGui::MenuItem("Undo", "Ctrl+Z")) { if (history.undo(*world)) Toast("Undo"); }
+            if (ImGui::MenuItem("Redo", "Ctrl+Y")) { if (history.redo(*world)) Toast("Redo"); }
+            ImGui::Separator();
+            if (ImGui::MenuItem("New block")) { NewBlock(); sel = Sel::Block; selIndex = 0; }
+            if (ImGui::MenuItem("Settings...")) showSettings = true;
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("Game")) {
+            if (ImGui::MenuItem("Play", "F5")) StartPlay();
+            if (ImGui::MenuItem("Game settings")) Select(Sel::Game);
+            if (ImGui::MenuItem("Set the spawn point here")) { info.hasSpawn = true; info.spawn = player.feet; info.spawnYaw = player.yaw; Select(Sel::Spawn); }
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("View")) {
+            ImGui::MenuItem("Show zones", nullptr, &showZones);
+            ImGui::MenuItem("Show position info", "F3", &showF3);
+            ImGui::MenuItem("Hide the hotbar and crosshair", "F1", &hideHud);
+            ImGui::Separator();
+            if (ImGui::MenuItem("Reset the panel layout")) resetLayout = true;
+            ImGui::EndMenu();
+        }
+        ImGui::EndMainMenuBar();
+    }
+    void Toolbar() {
+        ImGuiViewport* vp = ImGui::GetMainViewport(); float ui = settings.uiScale;
+        ImGuiWindowFlags fl = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings;
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8, 5));
+        if (ImGui::BeginViewportSideBar("##toolbar", vp, ImGuiDir_Up, ImGui::GetFrameHeight() + 10, fl)) {
+            if (PlayButton(false)) StartPlay();
+            ImGui::SameLine(); if (ImGui::Button("Save")) { SaveWorld(); Toast("Saved"); }
+            ImGui::SameLine(); if (ImGui::Button("Undo")) { if (history.undo(*world)) Toast("Undo"); }
+            ImGui::SameLine(); if (ImGui::Button("Redo")) { if (history.redo(*world)) Toast("Redo"); }
+            ImGui::SameLine(); ImGui::TextDisabled("|");
+            ImGui::SameLine(); ImGui::AlignTextToFramePadding(); ImGui::Text("Time");
+            ImGui::SameLine(); ImGui::SetNextItemWidth(120 * ui); ImGui::SliderFloat("##time", &settings.timeOfDay, 0, 24, "%.1f h");
+            ImGui::SameLine(); ImGui::Checkbox("Sun moves", &settings.dayCycle);
+            ImGui::SameLine(); ImGui::TextDisabled("|");
+            ImGui::SameLine(); ImGui::Text("Weather");
+            ImGui::SameLine(); ImGui::SetNextItemWidth(150 * ui);
+            { const auto& types = weatherTypes();
+              if (ImGui::BeginCombo("##weather", types[weather.target].name.c_str())) {
+                  for (int i = 0; i < (int)types.size(); i++) if (ImGui::Selectable(types[i].name.c_str(), weather.target == i)) weather.set(i, false);
+                  ImGui::EndCombo();
+              } }
+            ImGui::SameLine(); ImGui::TextDisabled("|");
+            ImGui::SameLine(); bool fly = player.flying; if (ImGui::Checkbox("Fly", &fly)) player.toggleFly();
+        }
         ImGui::End();
+        if (ImGui::BeginViewportSideBar("##status", vp, ImGuiDir_Down, ImGui::GetFrameHeight(), fl)) {
+            I3 b = Here();
+            std::string held = reg.has(hotbar[hotSel]) ? reg.get(hotbar[hotSel]).name : "(empty hand)";
+            if (reg.has(hotbar[hotSel]) && shapeOf(hotbar[hotSel]) && shapeOf(hotbar[hotSel]) != Shapes::FULL) held += " - " + Shapes::get().info(shapeOf(hotbar[hotSel])).name;
+            ImGui::Text("%s   |   %s   |   Building with: %s   |   Block %d %d %d   |   %zu chunks   |   %.0f fps",
+                info.name.c_str(), captured ? "In the viewport (Esc frees the mouse)" : "Editing", held.c_str(), b.x, b.y, b.z, gpu.size(), fps);
+            if (toastT > 0) { ImGui::SameLine(); ImGui::TextColored(ImVec4(1, 0.85f, 0.4f, 1), "   %s", toast.c_str()); }
+        }
+        ImGui::End();
+        ImGui::PopStyleVar();
+    }
+    // ---- Outliner: everything in the world and the game, in folders
+    bool Leaf(const char* label, Sel s, int i = 0) {
+        ImGuiTreeNodeFlags f = ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen | ImGuiTreeNodeFlags_SpanAvailWidth | (sel == s && selIndex == i ? ImGuiTreeNodeFlags_Selected : 0);
+        ImGui::TreeNodeEx((void*)(intptr_t)((int)s * 100000 + i), f, "%s", label);
+        bool c = ImGui::IsItemClicked(); if (c) Select(s, i); return c;
+    }
+    void Outliner() {
+        ImGui::Begin("Outliner");
+        ImGuiTreeNodeFlags open = ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth;
+        if (ImGui::TreeNodeEx("World", open, "World: %s", info.name.c_str())) {
+            Leaf("World settings", Sel::World);
+            Leaf("Weather", Sel::Weather);
+            Leaf("Air (environment)", Sel::Environment);
+            Leaf(info.hasSpawn ? "Spawn point" : "Spawn point (not set)", Sel::Spawn);
+            Leaf("Editor camera", Sel::Player);
+            bool zo = ImGui::TreeNodeEx("zones", open, "Zones (%d)", (int)info.zones.size());
+            if (ImGui::BeginPopupContextItem("zonesctx")) { if (ImGui::MenuItem("Add a zone around me")) AddZoneHere(); ImGui::EndPopup(); }
+            if (zo) {
+                int del = -1;
+                for (int i = 0; i < (int)info.zones.size(); i++) {
+                    ImGui::PushID(i); Leaf((info.zones[i].name + "  (" + envTypes()[std::max(0, findEnv(info.zones[i].env))].name + ")").c_str(), Sel::Zone, i);
+                    if (ImGui::BeginPopupContextItem("zctx")) {
+                        if (ImGui::MenuItem("Go there")) { const EnvZone& z = info.zones[i]; player.feet = { (z.lo.x + z.hi.x) * 0.5 + 0.5, (double)z.lo.y, (z.lo.z + z.hi.z) * 0.5 + 0.5 }; player.flying = true; }
+                        if (ImGui::MenuItem("Delete")) del = i;
+                        ImGui::EndPopup();
+                    }
+                    ImGui::PopID();
+                }
+                if (del >= 0) { info.zones.erase(info.zones.begin() + del); if (sel == Sel::Zone) sel = Sel::Environment; }
+                if (ImGui::SmallButton("+ Zone around me")) AddZoneHere();
+                ImGui::TreePop();
+            }
+            ImGui::TreePop();
+        }
+        if (ImGui::TreeNodeEx("Objects", ImGuiTreeNodeFlags_SpanAvailWidth)) {
+            ImGui::TextDisabled("Doors, items, enemies and models\ncome next (G2).");
+            ImGui::TreePop();
+        }
+        if (ImGui::TreeNodeEx("Game", open, "Game: %s", game.name.c_str())) {
+            Leaf("Game settings and player rules", Sel::Game);
+            ImGui::TreePop();
+        }
+        ImGui::End();
+    }
+    // ---- Inspector: the settings of whatever is selected
+    void Inspector() {
+        ImGui::Begin("Inspector");
+        float ui = settings.uiScale;
+        auto title = [](const char* t) { ImGui::SeparatorText(t); };
+        switch (sel) {
+        case Sel::World: {
+            title("World");
+            ImGui::SetNextItemWidth(-90 * ui); ImGui::InputText("Name", &info.name);
+            ImGui::SetNextItemWidth(-90 * ui); ImGui::SliderFloat("Time of day", &settings.timeOfDay, 0, 24, "%.1f h");
+            ImGui::Checkbox("The sun moves (a day lasts 20 minutes)", &settings.dayCycle);
+            ImGui::TextDisabled("Folder: %s", fs::path(worldDir).filename().string().c_str());
+            ImGui::TextDisabled("%s", info.genKind == Generator::Void ? "Empty world (void)" : "Flat world");
+            if (ImGui::Button("Save the world now")) { SaveWorld(); Toast("Saved"); }
+            break; }
+        case Sel::Weather: title("Weather"); WeatherBody(); break;
+        case Sel::Environment: title("Air (environment)"); EnvBody(); break;
+        case Sel::Zone:
+            if (selIndex < (int)info.zones.size()) {
+                title("Zone"); ImGui::PushID(selIndex);
+                if (ZoneFields(info.zones[selIndex])) { info.zones.erase(info.zones.begin() + selIndex); sel = Sel::Environment; }
+                ImGui::PopID();
+                ImGui::TextDisabled("A zone has its own air: a space station, a cave of ice, a volcano ...\nIf zones overlap, the smallest one wins.");
+            } else sel = Sel::Environment;
+            break;
+        case Sel::Spawn:
+            title("Spawn point");
+            if (!info.hasSpawn) ImGui::TextWrapped("No spawn point yet. Playing starts wherever the editor camera is.");
+            else {
+                ImGui::SetNextItemWidth(-90 * ui); ImGui::InputScalarN("Position", ImGuiDataType_Double, &info.spawn.x, 3, nullptr, nullptr, "%.1f");
+                float deg = (float)(info.spawnYaw * 57.29578); ImGui::SetNextItemWidth(-90 * ui);
+                if (ImGui::SliderFloat("Looks", &deg, -180, 180, "%.0f deg")) info.spawnYaw = deg / 57.29578;
+            }
+            if (ImGui::Button("Put it where I am")) { info.hasSpawn = true; info.spawn = player.feet; info.spawnYaw = player.yaw; }
+            if (info.hasSpawn) {
+                ImGui::SameLine(); if (ImGui::Button("Go there")) { player.feet = info.spawn; player.yaw = info.spawnYaw; player.pitch = 0; }
+                ImGui::SameLine(); if (ImGui::Button("Remove")) info.hasSpawn = false;
+            }
+            ImGui::TextDisabled("The green box in the viewport. The player starts here,\nand comes back here after dying.");
+            break;
+        case Sel::Player:
+            title("Editor camera");
+            ImGui::SetNextItemWidth(-90 * ui); ImGui::InputScalarN("Position", ImGuiDataType_Double, &player.feet.x, 3, nullptr, nullptr, "%.1f");
+            { bool fly = player.flying; if (ImGui::Checkbox("Flying", &fly)) player.toggleFly(); }
+            ImGui::TextDisabled("This is you while building. Double-tap Space to fly or walk.");
+            break;
+        case Sel::Game: {
+            title("Game"); bool ch_ = false;
+            ImGui::SetNextItemWidth(-110 * ui); ch_ |= ImGui::InputText("Name", &game.name);
+            ImGui::SetNextItemWidth(-110 * ui);
+            if (ImGui::BeginCombo("Starts in world", game.startWorld.empty() ? "(the open world)" : game.startWorld.c_str())) {
+                if (ImGui::Selectable("(the open world)", game.startWorld.empty())) { game.startWorld.clear(); ch_ = true; }
+                for (auto& w : worldList) if (ImGui::Selectable(w.c_str(), w == game.startWorld)) { game.startWorld = w; ch_ = true; }
+                ImGui::EndCombo();
+            }
+            title("Player rules"); PlayerRules& r = game.player;
+            auto sl = [&](const char* l, float* v, float a, float b, const char* f) { ImGui::SetNextItemWidth(-110 * ui); ch_ |= ImGui::SliderFloat(l, v, a, b, f); };
+            sl("Walk speed", &r.walkSpeed, 1, 15, "%.1f blocks/s");
+            ch_ |= ImGui::Checkbox("Can sprint (Ctrl)", &r.canSprint);
+            if (r.canSprint) sl("Sprint speed", &r.sprintSpeed, 1, 25, "%.1f blocks/s");
+            sl("Jump height", &r.jumpHeight, 0.3f, 8, "%.2f blocks");
+            sl("Gravity", &r.gravity, 4, 80, "%.0f");
+            sl("Health", &r.maxHealth, 1, 500, "%.0f");
+            sl("Lava damage", &r.lavaDamage, 0, 200, "%.0f per second");
+            sl("Fall damage", &r.fallDamage, 0, 50, r.fallDamage <= 0 ? "off" : "%.0f per block (after 4)");
+            sl("Death below height", &r.voidDepth, -512, 0, "y = %.0f");
+            sl("Respawn after", &r.respawnDelay, 0, 10, "%.1f s");
+            if (ImGui::Button("Reset the rules")) { r = PlayerRules{}; ch_ = true; }
+            if (ch_) game.save(gamePath);
+            ImGui::TextDisabled("Saved by itself. Press F5 to try it.");
+            break; }
+        case Sel::Block:
+            if (!editorOpen && reg.has((BlockId)selIndex)) EditBlock((BlockId)selIndex);
+            if (editorOpen) { title(draftId ? "Block" : "New block"); BlockEditorBody(); }
+            else ImGui::TextDisabled("Pick something in the Outliner or the Assets.");
+            break;
+        case Sel::Texture:
+            if (selIndex > 0 && selIndex < (int)reg.textureCount()) {
+                const TexImage& im = reg.image(selIndex); std::string name = im.name;
+                title("Texture");
+                float s = std::min(ImGui::GetContentRegionAvail().x, 200 * ui); ImVec2 p = ImGui::GetCursorScreenPos();
+                ImGui::GetWindowDrawList()->AddRectFilled(p, ImVec2(p.x + s, p.y + s), IM_COL32(30, 32, 38, 255), 4.f);
+                TextureImage(selIndex, p, s, 6); ImGui::Dummy(ImVec2(s, s));
+                ImGui::Text("%s", name.c_str()); ImGui::TextDisabled("%d x %d pixels%s", im.w, im.h, im.transparent ? ", see-through parts" : "");
+                if (ImGui::Button("Make a block")) MakeBlockFrom(name, ImportAs::Blocks);
+                ImGui::SameLine(); if (ImGui::Button("Cross plane")) MakeBlockFrom(name, ImportAs::CrossPlanes);
+                ImGui::SameLine(); if (ImGui::Button("Flat plane")) MakeBlockFrom(name, ImportAs::FlatPlanes);
+                if (ImGui::Button("Delete texture...")) { deleteTexAsk = name; wantPopup = "Delete texture?"; }
+            } else ImGui::TextDisabled("Pick something in the Outliner or the Assets.");
+            break;
+        case Sel::Shape:
+            if (selIndex > 0 && selIndex < Shapes::get().count()) {
+                const ShapeInfo& si = Shapes::get().info(selIndex); title("Shape");
+                BlockId held = reg.has(hotbar[hotSel]) ? hotbar[hotSel] : reg.find("stone");
+                float s = std::min(ImGui::GetContentRegionAvail().x, 160 * ui); ImVec2 p = ImGui::GetCursorScreenPos();
+                ImGui::GetWindowDrawList()->AddRectFilled(p, ImVec2(p.x + s, p.y + s), IM_COL32(30, 32, 38, 255), 4.f);
+                if (held) ShapeIcon(ImGui::GetWindowDrawList(), reg.get(held), makeBlock(typeOf(held), selIndex), ImVec2(p.x + s * 0.5f, p.y + s * 0.5f), s * 0.75f);
+                ImGui::Dummy(ImVec2(s, s));
+                ImGui::Text("%s", si.name.c_str()); ImGui::TextDisabled("Folder: %s.  Every shape turns 24 ways (R, T in the viewport).", si.category.c_str());
+                if (reg.has(hotbar[hotSel]) && ImGui::Button("Build with this shape")) { hotbar[hotSel] = makeBlock(typeOf(hotbar[hotSel]), selIndex); manualRot = false; }
+            }
+            break;
+        default: ImGui::TextDisabled("Pick something in the Outliner or the Assets."); break;
+        }
+        ImGui::End();
+    }
+    // ---- Assets: blocks by folder, textures, shapes; thumbnails, search, size
+    void Assets() {
+        if (focusAssets) { ImGui::SetNextWindowFocus(); focusAssets = false; }
+        ImGui::Begin("Assets");
+        float ui = settings.uiScale;
+        // folder tree on the left
+        ImGui::BeginChild("folders", ImVec2(190 * ui, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_ResizeX);
+        auto folder = [&](const char* label, int kind, const std::string& cat, int count) {
+            ImGuiTreeNodeFlags f = ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen | ImGuiTreeNodeFlags_SpanAvailWidth | (assetKind == kind && assetCat == cat ? ImGuiTreeNodeFlags_Selected : 0);
+            ImGui::TreeNodeEx((std::to_string(kind) + label).c_str(), f, "%s  (%d)", label, count);
+            if (ImGui::IsItemClicked()) { assetKind = kind; assetCat = cat; }
+        };
+        int nb = 0; for (BlockId id = 1; id < reg.count(); id++) nb += reg.has(id);
+        if (ImGui::TreeNodeEx("Blocks", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth)) {
+            folder("All blocks", 0, "", nb);
+            for (const std::string& c : BlockCategories()) { int n = 0; for (BlockId id = 1; id < reg.count(); id++) n += reg.has(id) && reg.get(id).category == c; folder(c.c_str(), 0, c, n); }
+            ImGui::TreePop();
+        }
+        if (ImGui::TreeNodeEx("Textures", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth)) { folder("All textures", 1, "", (int)reg.textureCount() - 1); ImGui::TreePop(); }
+        if (ImGui::TreeNodeEx("Shapes", ImGuiTreeNodeFlags_SpanAvailWidth)) {
+            const Shapes& S = Shapes::get(); folder("All shapes", 2, "", S.count() - 1);
+            for (const std::string& c : S.categories()) { int n = 0; for (int i = 1; i < S.count(); i++) n += S.info(i).category == c; folder(c.c_str(), 2, c, n); }
+            ImGui::TreePop();
+        }
+        ImGui::EndChild();
+        ImGui::SameLine();
+        // grid on the right
+        ImGui::BeginGroup();
+        ImGui::SetNextItemWidth(220 * ui); ImGui::InputTextWithHint("##search", "Search...", &assetSearch);
+        ImGui::SameLine(); ImGui::SetNextItemWidth(120 * ui); ImGui::SliderFloat("##size", &assetSize, 36, 128, "size %.0f");
+        ImGui::SameLine(); if (ImGui::Button("Import images...")) { auto f = PickImages(); if (!f.empty()) { importFiles = f; wantPopup = "Import images"; } }
+        ImGui::SameLine(); if (ImGui::Button("New block")) { NewBlock(); if (!assetCat.empty() && assetKind == 0) draft.category = assetCat; sel = Sel::Block; selIndex = 0; }
+        ImGui::SameLine(); ImGui::TextDisabled(assetKind == 0 ? "Click: build with it.  Right click: more." : assetKind == 1 ? "Click: look at it.  Right click: more." : "Click: give the held block this shape.");
+        ImGui::BeginChild("grid", ImVec2(0, 0), ImGuiChildFlags_Borders);
+        float s = assetSize * ui, labelH = ImGui::GetTextLineHeight() + 2, sp = ImGui::GetStyle().ItemSpacing.x;
+        int cols = std::max(1, (int)((ImGui::GetContentRegionAvail().x + sp) / (s + sp))), n = 0;
+        std::string q = Lower(assetSearch);
+        auto cell = [&](const char* id, const std::string& name, bool selected, ImVec2& p) {   // a tile with its name under it
+            if (n % cols) ImGui::SameLine(); n++;
+            ImGui::BeginGroup(); bool c = Tile(id, p, s, selected);
+            std::string lab = name; while (lab.size() > 1 && ImGui::CalcTextSize(lab.c_str()).x > s) lab.pop_back();
+            if (lab.size() < name.size() && lab.size() > 2) lab = lab.substr(0, lab.size() - 2) + "..";
+            ImGui::TextUnformatted(lab.c_str()); ImGui::EndGroup(); (void)labelH;
+            return c;
+        };
+        if (assetKind == 0) {
+            for (BlockId id = 1; id < reg.count(); id++) {
+                if (!reg.has(id)) continue; const BlockDef& d = reg.get(id);
+                if (!assetCat.empty() && d.category != assetCat) continue;
+                if (!q.empty() && Lower(d.name).find(q) == std::string::npos) continue;
+                ImGui::PushID((int)id); ImVec2 p; bool hot = typeOf(hotbar[hotSel]) == id;
+                if (cell("b", d.name, sel == Sel::Block && selIndex == (int)id, p) && !ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
+                    hotbar[hotSel] = shapeOf(hotbar[hotSel]) && hot ? hotbar[hotSel] : id; Select(Sel::Block, (int)id);
+                }
+                if (hot) ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(p.x + s - 7, p.y + 7), 4, IM_COL32(120, 220, 255, 255));
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s\nFolder: %s", d.name.c_str(), d.category.c_str());
+                BlockIcon(ImGui::GetWindowDrawList(), id, ImVec2(p.x + s * 0.5f, p.y + s * 0.5f), s * 0.7f);
+                if (ImGui::BeginPopupContextItem("ctx")) {
+                    if (ImGui::MenuItem("Build with it")) hotbar[hotSel] = id;
+                    if (ImGui::MenuItem("Edit")) Select(Sel::Block, (int)id);
+                    if (ImGui::MenuItem("Duplicate")) { BlockDef c = d; c.name = reg.uniqueName(d.name + " copy"); BlockId nid = AIR; ChangeBlocks([&] { nid = reg.add(c); }); library.saveBlocks(reg); if (nid) Select(Sel::Block, (int)nid); }
+                    if (ImGui::BeginMenu("Move to folder")) {
+                        for (const std::string& c : BlockCategories()) if (ImGui::MenuItem(c.c_str(), nullptr, c == d.category)) { BlockDef nd = d; nd.category = c; ChangeBlocks([&] { reg.put(id, nd); }); library.saveBlocks(reg); editorOpen = false; }
+                        ImGui::EndMenu();
+                    }
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("Delete...")) { deleteBlockAsk = id; wantPopup = "Delete block?"; }
+                    ImGui::EndPopup();
+                }
+                ImGui::PopID();
+            }
+        } else if (assetKind == 1) {
+            for (int t = 1; t < (int)reg.textureCount(); t++) {
+                const TexImage& im = reg.image(t);
+                if (!q.empty() && Lower(im.name).find(q) == std::string::npos) continue;
+                ImGui::PushID(t); ImVec2 p; std::string name = im.name;
+                if (cell("t", name, sel == Sel::Texture && selIndex == t, p)) Select(Sel::Texture, t);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s  (%d x %d%s)", name.c_str(), im.w, im.h, im.transparent ? ", see-through" : "");
+                TextureImage(t, p, s, 4);
+                if (ImGui::BeginPopupContextItem("ctx")) {
+                    if (ImGui::MenuItem("Make a block")) MakeBlockFrom(name, ImportAs::Blocks);
+                    if (ImGui::MenuItem("Make a cross plane (like flowers)")) MakeBlockFrom(name, ImportAs::CrossPlanes);
+                    if (ImGui::MenuItem("Make a flat plane (like ladders)")) MakeBlockFrom(name, ImportAs::FlatPlanes);
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("Delete texture...")) { deleteTexAsk = name; wantPopup = "Delete texture?"; }
+                    ImGui::EndPopup();
+                }
+                ImGui::PopID();
+            }
+        } else {
+            const Shapes& S = Shapes::get(); BlockId held = reg.has(hotbar[hotSel]) ? hotbar[hotSel] : reg.find("stone");
+            int cur = held ? resolveShape(held, reg.get(held)) : 0;
+            for (int id = 1; id < S.count() && held; id++) {
+                const ShapeInfo& si = S.info(id);
+                if (!assetCat.empty() && si.category != assetCat && q.empty()) continue;
+                if (!q.empty() && Lower(si.name).find(q) == std::string::npos) continue;
+                ImGui::PushID(id); ImVec2 p;
+                if (cell("s", si.name, id == cur, p)) { if (reg.has(hotbar[hotSel])) hotbar[hotSel] = makeBlock(typeOf(hotbar[hotSel]), id); manualRot = false; Select(Sel::Shape, id); }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", si.name.c_str());
+                ShapeIcon(ImGui::GetWindowDrawList(), reg.get(held), makeBlock(typeOf(held), id), ImVec2(p.x + s * 0.5f, p.y + s * 0.5f), s * 0.72f);
+                ImGui::PopID();
+            }
+        }
+        if (!n) ImGui::TextDisabled(q.empty() ? "Nothing here yet." : "Nothing is called that.");
+        ImGui::EndChild();
+        ImGui::EndGroup();
+        ImGui::End();
+    }
+    // ---- the viewport: the 3D picture inside a panel
+    void Viewport() {
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+        if (focusView) { ImGui::SetNextWindowFocus(); focusView = false; }
+        ImGui::Begin("Viewport", nullptr, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+        ImVec2 avail = ImGui::GetContentRegionAvail(), p = ImGui::GetCursorScreenPos();
+        viewSize = avail; vx = p.x; vy = p.y;
+        ImGui::Image((ImTextureID)(intptr_t)sceneSRV.Get(), ImVec2(std::max(1.f, avail.x), std::max(1.f, avail.y)));
+        if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !captured) captureNext = true;
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        dl->PushClipRect(p, ImVec2(p.x + avail.x, p.y + avail.y), true);
+        DrawHud(dl);
+        dl->PopClipRect();
+        ImGui::End();
+        ImGui::PopStyleVar();
+    }
+    void EditorUI() {
+        MenuBar();
+        Toolbar();
+        ImGuiID dock = ImGui::GetID("MainDock");
+        if (resetLayout || !ImGui::DockBuilderGetNode(dock)) { BuildLayout(dock); resetLayout = false; }
+        ImGui::DockSpaceOverViewport(dock, ImGui::GetMainViewport());
+        Outliner();
+        Inspector();
+        Assets();
+        Viewport();
     }
 
     // ---- questions (import, delete)
@@ -1430,6 +1913,7 @@ struct App {
         auto t0 = std::chrono::steady_clock::now();
         Log("PRIMEngine screenshots, drawing with: " + driverName + ", " + std::to_string(cw) + "x" + std::to_string(ch));
         settings = Settings{}; settings.renderDistance = 7; settings.verticalDistance = 3; settings.blockPreview = false; cloudTime = 37;
+        plainView = true; ImGui::GetIO().IniFilename = nullptr;   // just the 3D picture; the editor gets its own picture at the end, in the default layout
         std::error_code ec; fs::remove_all(WorldsDir() + "/Screenshot demo", ec);
         {   // a few coloured lamps for the pictures (only in memory, not saved to your blocks)
             BlockId lamp = reg.find("lamp");
@@ -1442,6 +1926,16 @@ struct App {
         CreateWorld("Screenshot demo", 0); Capture(false);
         buildDemo(*world, reg);
         int n = 0;
+        auto waitLoaded = [&]() {
+            I3 pc = chunkOf(ifloor(player.feet.x), ifloor(player.feet.y), ifloor(player.feet.z)); int frames = 0;
+            for (; frames < 3000; frames++) {   // wait until everything around is loaded and meshed
+                size_t before = world->loadedCount(); world->stream(pc, settings.renderDistance, settings.verticalDistance, 64);
+                ScheduleMeshing(pc); CollectMeshes();
+                if (frames > 4 && world->loadedCount() == before && world->dirty.empty() && workers->pending() == 0) break;
+                Sleep(2);
+            }
+            return frames;
+        };
         for (const DemoShot& sh : demoShots()) {
             V3 dlt = sh.target - sh.eye; double hz = std::sqrt(dlt.x * dlt.x + dlt.z * dlt.z);
             player.feet = { sh.eye.x, sh.eye.y - Player::EYE, sh.eye.z }; player.yaw = std::atan2(dlt.x, dlt.z); player.pitch = std::atan2(dlt.y, hz); player.vel = { 0, 0, 0 };
@@ -1454,29 +1948,53 @@ struct App {
                   V3 dl = sh.target - sh.eye; double l = std::sqrt(dl.x * dl.x + dl.z * dl.z);
                   weather.boltPos = { sh.eye.x + dl.x / l * 120 + 25, 0, sh.eye.z + dl.z / l * 120 }; weather.boltAge = 0.03; weather.boltSeed = 12345; weather.flash = 0.7f;
               } }
-            I3 pc = chunkOf(ifloor(player.feet.x), ifloor(player.feet.y), ifloor(player.feet.z));
-            int frames = 0;
-            for (; frames < 3000; frames++) {   // wait until everything around is loaded and meshed
-                size_t before = world->loadedCount(); world->stream(pc, settings.renderDistance, settings.verticalDistance, 64);
-                ScheduleMeshing(pc); CollectMeshes();
-                if (frames > 4 && world->loadedCount() == before && world->dirty.empty() && workers->pending() == 0) break;
-                Sleep(2);
-            }
+            int frames = waitLoaded();
             auto s0 = std::chrono::steady_clock::now();
-            RenderWorld();
+            RenderWorld(backRTV.Get());
             char name[256]; snprintf(name, sizeof name, "%s/%02d_%s.png", shotDir.c_str(), ++n, sh.name.c_str());
             SaveShot(std::string(name));
             swap->Present(0, 0);
             double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - s0).count();
             char line[256]; snprintf(line, sizeof line, "%s: %zu chunks with meshes, %d drawn, %d waiting frames, frame %.0f ms", name, gpu.size(), drawnChunks, frames, ms); Log(line);
         }
+        {   // the editor around the world, then Play mode's HUD
+            auto poseAt = [&](const DemoShot& sh) {
+                V3 dlt = sh.target - sh.eye; double hz = std::sqrt(dlt.x * dlt.x + dlt.z * dlt.z);
+                player.feet = { sh.eye.x, sh.eye.y - Player::EYE, sh.eye.z }; player.yaw = std::atan2(dlt.x, dlt.z); player.pitch = std::atan2(dlt.y, hz); player.vel = { 0, 0, 0 };
+                settings.timeOfDay = sh.hour; info.environment = "temperate"; envState.update(0, player.eye(), info.environment, info.zones, true);
+                weather.set(findWeather("partly_cloudy"), true); weather.autoChange = false; weather.wetness = 0; weather.snowCover = 0; weather.flash = 0; weather.boltAge = 99;
+            };
+            auto frames = [&](int k, const char* name) {
+                for (int f = 0; f < k; f++) { FrameBody(1.0 / 60); if (f + 1 < k) { swap->Present(0, 0); retired.clear(); } waitLoaded(); }
+                char path[256]; snprintf(path, sizeof path, "%s/%02d_%s.png", shotDir.c_str(), ++n, name);
+                SaveShot(std::string(path)); swap->Present(0, 0); retired.clear(); Log(std::string(path));
+            };
+            info.zones = { { "Space station", "space", { 9, 0, 9 }, { 14, 5, 14 } } };
+            info.hasSpawn = true; info.spawn = { -3.5, 0, -5.5 }; info.spawnYaw = 0.6;
+            game.name = "Screenshot Game";
+            plainView = false; poseAt(demoShots()[0]);
+            Select(Sel::Block, (int)reg.find("lamp")); assetKind = 0; assetCat.clear(); toastT = 0;
+            frames(10, "editor");
+            Select(Sel::Game); assetKind = 2; assetCat = "Slopes";
+            frames(3, "editor_game_settings");
+            poseAt(demoShots()[1]);
+            StartPlay(false); play.health = game.player.maxHealth * 0.65f; play.hurtFlash = 0.25; toastT = 0;
+            frames(4, "play_hud");
+            StopPlay();
+        }
         workers.reset(); world.reset(); fs::remove_all(WorldsDir() + "/Screenshot demo", ec);
         Log("done in " + std::to_string((int)std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count()) + " s");
     }
 
     // ================================================================== frame
-    void Frame(double dt) {
+    void FrameBody(double dt) {   // everything but showing the picture (screenshots grab it before)
         if (resized) OnResize();
+        bool ev = EditorView();
+        int wantW = ev ? (int)viewSize.x : cw, wantH = ev ? (int)viewSize.y : ch;   // the editor draws the world at the viewport panel's size
+        wantW = std::max(16, wantW); wantH = std::max(16, wantH);
+        if (wantW != rw || wantH != rh) { rw = wantW; rh = wantH; MakeTargets(); }
+        if (!ev) vx = vy = 0;
+        if (captureNext && screen == Screen::Game) { captureNext = false; Capture(true); }
         if (toastT > 0) toastT -= dt;
         fpsAcc += dt; fpsN++; if (fpsAcc > 0.5) { fps = fpsN / fpsAcc; fpsAcc = 0; fpsN = 0; }
         PollTextures(dt);
@@ -1484,27 +2002,31 @@ struct App {
 
         ImGui::GetStyle().FontScaleMain = settings.uiScale;
         ImGui_ImplDX11_NewFrame(); ImGui_ImplWin32_NewFrame(); ImGui::NewFrame();
-        if (screen == Screen::Title) { TitleScreen(); if (libraryOpen && !editorOpen) InventoryScreen(); }
-        else {
-            DrawHud();
+        ev = EditorView();
+        if (screen == Screen::Title) { TitleScreen(); if (libraryOpen && !editorOpen) InventoryScreen(); if (editorOpen) BlockEditor(); }
+        else if (ev) {
+            EditorUI();
             if (showF3) DrawF3();
-            if (inventory && !editorOpen) InventoryScreen();
+            if (inventory) InventoryScreen();
             if (shapeMenu) ShapeMenu();
-            if (paused && !showSettings && !weatherWin && !envWin) PauseMenu();
-            if (paused && envWin) EnvWindow();
-            if (paused && weatherWin) WeatherWindow();
+        } else {
+            DrawHud(ImGui::GetForegroundDrawList());
+            if (showF3) DrawF3();
+            if (paused && !showSettings) PauseMenu();
         }
-        if (editorOpen) BlockEditor();
         if (showSettings) SettingsWindow();
         Popups();
         ImGui::Render();
 
         const float bg[4] = { 0.10f, 0.11f, 0.13f, 1 };
-        D3D11_VIEWPORT v{ 0, 0, (float)cw, (float)ch, 0, 1 };
-        if (screen == Screen::Game) RenderWorld();
-        else { ctx->OMSetRenderTargets(1, backRTV.GetAddressOf(), nullptr); ctx->ClearRenderTargetView(backRTV.Get(), bg); }
-        ctx->RSSetViewports(1, &v);
+        if (screen == Screen::Game && rw > 0) RenderWorld(ev ? sceneRTV.Get() : backRTV.Get());
+        ctx->OMSetRenderTargets(1, backRTV.GetAddressOf(), nullptr);
+        if (screen != Screen::Game || ev) ctx->ClearRenderTargetView(backRTV.Get(), bg);
+        D3D11_VIEWPORT v{ 0, 0, (float)cw, (float)ch, 0, 1 }; ctx->RSSetViewports(1, &v);
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+    }
+    void Frame(double dt) {
+        FrameBody(dt);
         swap->Present(settings.vsync ? 1 : 0, 0);
         retired.clear();
     }
@@ -1523,13 +2045,13 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             }
         }
         break;
-    case WM_LBUTTONDOWN:
-        if (a && a->screen == App::Screen::Game && !a->captured && !a->paused && !a->inventory && !a->shapeMenu && !(ImGui::GetIO().WantCaptureMouse)) a->Capture(true);
+    case WM_LBUTTONDOWN:   // playing: a click grabs the mouse again (the editor's viewport does this itself)
+        if (a && a->playMode && !a->captured && !a->paused && !(ImGui::GetIO().WantCaptureMouse)) a->Capture(true);
         return 0;
     case WM_DROPFILES: if (a) a->OnDrop((HDROP)w); return 0;
     case WM_MOUSEWHEEL: if (a) a->OnWheel(GET_WHEEL_DELTA_WPARAM(w)); return 0;
     case WM_KEYDOWN: case WM_SYSKEYDOWN: if (a) a->OnKey(w, (l & (1 << 30)) != 0); if (m == WM_SYSKEYDOWN) break; return 0;
-    case WM_KILLFOCUS: if (a && a->captured) { a->Capture(false); if (a->screen == App::Screen::Game && !a->inventory) a->paused = true; } return 0;
+    case WM_KILLFOCUS: if (a && a->captured) { a->Capture(false); if (a->playMode) a->paused = true; } return 0;
     case WM_CLOSE: if (a && a->world) a->SaveWorld(); DestroyWindow(h); return 0;
     case WM_DESTROY: PostQuitMessage(0); return 0;
     }
