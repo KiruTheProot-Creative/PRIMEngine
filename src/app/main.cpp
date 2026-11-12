@@ -797,7 +797,7 @@ struct App {
             HR(dev->CreateRenderTargetView(t.Get(), nullptr, &viewerRTV)); HR(dev->CreateShaderResourceView(t.Get(), nullptr, &viewerSRV));
             d.Format = DXGI_FORMAT_D32_FLOAT; d.BindFlags = D3D11_BIND_DEPTH_STENCIL; ComPtr<ID3D11Texture2D> dt; HR(dev->CreateTexture2D(&d, nullptr, &dt)); viewerDSV.Reset(); HR(dev->CreateDepthStencilView(dt.Get(), nullptr, &viewerDSV));
         }
-        const float bg[4] = { 0.16f, 0.17f, 0.2f, 1 };
+        const float bg[4] = { 0.36f, 0.40f, 0.46f, 1 };   // a light studio grey-blue, so dark models still stand out
         ctx->OMSetRenderTargets(1, viewerRTV.GetAddressOf(), viewerDSV.Get()); ctx->ClearRenderTargetView(viewerRTV.Get(), bg); ctx->ClearDepthStencilView(viewerDSV.Get(), D3D11_CLEAR_DEPTH, 1, 0);
         D3D11_VIEWPORT v{ 0, 0, (float)w, (float)h, 0, 1 }; ctx->RSSetViewports(1, &v);
         ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());

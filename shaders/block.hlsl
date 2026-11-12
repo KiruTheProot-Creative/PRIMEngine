@@ -736,7 +736,7 @@ float4 PS_Preview(PrevOut i, bool front : SV_IsFrontFace) : SV_Target
     clip(t.a - 0.5);
     float3 n = normalize(front ? i.n : -i.n);
     float d = saturate(dot(n, normalize(gPrevLight.xyz)));
-    float3 c = t.rgb * (0.32 + 0.22 * (0.5 + 0.5 * n.y) + 0.8 * d) * lerp(0.55, 1, i.ao);
+    float3 c = t.rgb * (0.45 + 0.3 * (0.5 + 0.5 * n.y) + 0.9 * d) * lerp(0.6, 1, i.ao);
     if (i.glow > 0.5) c = t.rgb * 1.3;
     return float4(pow(saturate(c), 1 / 2.2), 1);
 }
