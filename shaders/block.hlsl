@@ -53,6 +53,14 @@ float4 PS_Cutout(VSOut i) : SV_Target
     return float4(shadeBlock(i, t.rgb), 1);
 }
 
+// the see-through preview of the block you are about to place
+float4 PS_Ghost(VSOut i) : SV_Target
+{
+    float4 t = gTex.Sample(gSamp, i.uvl);
+    clip(t.a - 0.5);
+    return float4(t.rgb * (0.35 + 0.75 * i.shade), 0.5);
+}
+
 // ---------------------------------------------------------------- sky: a full-screen triangle behind everything
 struct SkyOut { float4 pos : SV_Position; float2 ndc : TEXCOORD0; };
 SkyOut VS_Sky(uint id : SV_VertexID)

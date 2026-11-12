@@ -1,4 +1,5 @@
 #include "mesher.h"
+#include "shapes.h"
 
 namespace mc {
 
@@ -15,59 +16,61 @@ bool gatherInput(const World& w, I3 pos, MeshInput& out) {
     return true;
 }
 
-// Flat shapes: always drawn from both sides, no ambient occlusion.
-static void quad2(MeshData& md, const float p[4][3], const float uv[4][2], float layer, float shade, float normal) {
-    uint32_t base = (uint32_t)md.v.size();
-    for (int k = 0; k < 4; k++) md.v.push_back({ p[k][0], p[k][1], p[k][2], uv[k][0], uv[k][1], layer, shade, normal });
-    md.i.insert(md.i.end(), { base, base + 1, base + 2, base, base + 2, base + 3, base, base + 2, base + 1, base, base + 3, base + 2 });
+// what a neighbour covers on the side facing us (0 = nothing)
+static const SideMask ALL = SideMask().set();
+static const SideMask& coverOf(const BlockRegistry& reg, BlockId nb, int side) {
+    static const SideMask NONE;
+    const BlockDef& d = reg.get(nb); int s = resolveShape(nb, d);
+    if (s == Shapes::FULL) return ALL;
+    return Shapes::get().variant(s, rotOf(nb)).mask[side];
 }
-static void planes(MeshData& md, const BlockDef& d, int state, int x, int y, int z) {
-    const float uv[4][2] = { { 0, 1 }, { 1, 1 }, { 1, 0 }, { 0, 0 } };   // corners: bottom-left, bottom-right, top-right, top-left
-    float X = (float)x, Y = (float)y, Z = (float)z, layer = (float)d.tex[0];
-    if (d.shape == Shape::Cross) {
-        const float e = 0.0f;
-        float a[4][3] = { { X + e, Y, Z + e }, { X + 1 - e, Y, Z + 1 - e }, { X + 1 - e, Y + 1, Z + 1 - e }, { X + e, Y + 1, Z + e } };
-        float b[4][3] = { { X + e, Y, Z + 1 - e }, { X + 1 - e, Y, Z + e }, { X + 1 - e, Y + 1, Z + e }, { X + e, Y + 1, Z + 1 - e } };
-        quad2(md, a, uv, layer, 0.9f, 6); quad2(md, b, uv, layer, 0.9f, 6);
-        return;
-    }
-    // Plane: lies against the wall it was placed on. state = the direction it faces (away from that wall).
-    const float o = 1.f / 32.f;   // half a pixel away from the wall so it does not flicker
-    static const float shade[6] = { 0.75f, 0.75f, 1.0f, 0.6f, 0.85f, 0.85f };
-    float q[4][3];
-    switch (state < 6 ? state : F_PY) {
-    case F_PX: { float px = X + o;     float t[4][3] = { { px, Y, Z + 1 }, { px, Y, Z }, { px, Y + 1, Z }, { px, Y + 1, Z + 1 } }; std::copy(&t[0][0], &t[0][0] + 12, &q[0][0]); break; }
-    case F_NX: { float px = X + 1 - o; float t[4][3] = { { px, Y, Z }, { px, Y, Z + 1 }, { px, Y + 1, Z + 1 }, { px, Y + 1, Z } }; std::copy(&t[0][0], &t[0][0] + 12, &q[0][0]); break; }
-    case F_PZ: { float pz = Z + o;     float t[4][3] = { { X, Y, pz }, { X + 1, Y, pz }, { X + 1, Y + 1, pz }, { X, Y + 1, pz } }; std::copy(&t[0][0], &t[0][0] + 12, &q[0][0]); break; }
-    case F_NZ: { float pz = Z + 1 - o; float t[4][3] = { { X + 1, Y, pz }, { X, Y, pz }, { X, Y + 1, pz }, { X + 1, Y + 1, pz } }; std::copy(&t[0][0], &t[0][0] + 12, &q[0][0]); break; }
-    case F_NY: { float py = Y + 1 - o; float t[4][3] = { { X, py, Z + 1 }, { X + 1, py, Z + 1 }, { X + 1, py, Z }, { X, py, Z } }; std::copy(&t[0][0], &t[0][0] + 12, &q[0][0]); break; }
-    default:   { float py = Y + o;     float t[4][3] = { { X, py, Z + 1 }, { X + 1, py, Z + 1 }, { X + 1, py, Z }, { X, py, Z } }; std::copy(&t[0][0], &t[0][0] + 12, &q[0][0]); break; }
-    }
-    quad2(md, q, uv, layer, shade[state < 6 ? state : F_PY], (float)(state < 6 ? state : F_PY));
-}
+static bool isPlainCube(const BlockRegistry& reg, BlockId v) { return v != UNKNOWN && v != AIR && resolveShape(v, reg.get(v)) == Shapes::FULL; }
 
 void buildMesh(const BlockRegistry& reg, const MeshInput& in, ChunkMesh& out) {
     out.pos = in.pos; out.seq = in.seq; out.opaque = {}; out.cutout = {};
     const auto& B = in.blocks;
+    const Shapes& shapes = Shapes::get();
     auto at = [&](int x, int y, int z) { return B[padIdx(x, y, z)]; };
-    auto occludes = [&](BlockId id) { return id != UNKNOWN && reg.opaque(id); };
+    auto occludes = [&](BlockId id) { return isPlainCube(reg, id) && reg.get(id).render == Render::Opaque; };   // corner shading
+    // is the part `need` of our side `f` hidden by the neighbour there?
+    auto hidden = [&](BlockId self, const BlockDef& d, BlockId nb, int f, const SideMask& need) {
+        if (nb == UNKNOWN) return true;
+        if (nb == AIR) return false;
+        const BlockDef& nd = reg.get(nb);
+        bool coverType = nd.render == Render::Opaque || (typeOf(nb) == typeOf(self) && d.cullSame);
+        if (!coverType || nd.render == Render::Air) return false;
+        return (need & ~coverOf(reg, nb, f ^ 1)).none();   // f^1 = the opposite side
+    };
     static const float faceShade[6] = { 0.6f, 0.6f, 1.0f, 0.5f, 0.8f, 0.8f };   // +X -X top bottom +Z -Z (Minecraft-style)
     for (int y = 0; y < CS; y++) for (int z = 0; z < CS; z++) for (int x = 0; x < CS; x++) {
         BlockId id = at(x, y, z); if (id == AIR) continue;
         const BlockDef& d = reg.get(id); if (d.render == Render::Air) continue;
         bool cut = d.render == Render::Cutout;
         MeshData& md = cut ? out.cutout : out.opaque;
-        if (d.shape != Shape::Cube) { planes(md, d, stateOf(id), x, y, z); continue; }
+        int shape = resolveShape(id, d);
+        if (shape != Shapes::FULL) {
+            // any other shape: prepared triangles, sides lying on the block border hidden like cube faces
+            const ShapeVariant& sv = shapes.variant(shape, rotOf(id)); bool two = shapes.info(shape).twoSided;
+            for (int g = 0; g < 7; g++) {
+                if (sv.tris[g].empty()) continue;
+                if (g < 6) { int n[3] = { 0, 0, 0 }; n[g / 2] = (g % 2 == 0) ? 1 : -1; if (hidden(id, d, at(x + n[0], y + n[1], z + n[2]), g, sv.mask[g])) continue; }
+                for (const STri& t : sv.tris[g]) {
+                    int f = faceOfNormal(t.fn); float layer = (float)d.tex[f];
+                    uint32_t base = (uint32_t)md.v.size();
+                    for (int k = 0; k < 3; k++) {
+                        float u, v; faceUV(t.p[k][0], t.p[k][1], t.p[k][2], f, u, v);
+                        md.v.push_back({ x + t.p[k][0], y + t.p[k][1], z + t.p[k][2], u, v, layer, normalShade(t.n[k]), (float)f });
+                    }
+                    md.i.insert(md.i.end(), { base, base + 1, base + 2 });
+                    if (two) md.i.insert(md.i.end(), { base, base + 2, base + 1 });
+                }
+            }
+            continue;
+        }
         int c[3] = { x, y, z };
         for (int f = 0; f < 6; f++) {
             int a = f / 2, sgn = (f % 2 == 0) ? 1 : -1, n[3] = { 0, 0, 0 }; n[a] = sgn;
-            BlockId nb = at(x + n[0], y + n[1], z + n[2]);
-            if (nb == UNKNOWN) continue;
-            if (nb != AIR) {
-                const BlockDef& nd = reg.get(nb);
-                if (reg.opaque(nb)) continue;
-                if (nd.shape == Shape::Cube && typeOf(nb) == typeOf(id) && d.cullSame) continue;
-            }
+            if (hidden(id, d, at(x + n[0], y + n[1], z + n[2]), f, ALL)) continue;
             int ua = (a + 1) % 3, va = (a + 2) % 3, L[3] = { x + n[0], y + n[1], z + n[2] };
             const int du[4] = { 0, 1, 1, 0 }, dv[4] = { 0, 0, 1, 1 };
             Vtx q[4]; int ao[4];

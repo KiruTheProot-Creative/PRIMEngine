@@ -8,13 +8,14 @@
 
 namespace mc {
 
-// A stored block value: low 12 bits = block type, high 4 bits = state (which way a plane faces, ...).
-using BlockId = uint16_t;
+// A stored block value: bits 0-15 = block type, 16-25 = shape (0 = the block's own), 26-30 = rotation (0-23).
+using BlockId = uint32_t;
 constexpr BlockId AIR = 0;
-constexpr int MAX_BLOCK_TYPES = 4095;
-inline BlockId typeOf(BlockId v) { return (BlockId)(v & 0x0FFF); }
-inline int stateOf(BlockId v) { return v >> 12; }
-inline BlockId withState(BlockId type, int state) { return (BlockId)((type & 0x0FFF) | ((state & 15) << 12)); }
+constexpr int MAX_BLOCK_TYPES = 65535;
+inline BlockId typeOf(BlockId v) { return v & 0xFFFFu; }
+inline int shapeOf(BlockId v) { return (int)((v >> 16) & 0x3FFu); }
+inline int rotOf(BlockId v) { return (int)((v >> 26) & 31u); }
+inline BlockId makeBlock(BlockId type, int shape = 0, int rot = 0) { return (type & 0xFFFFu) | ((uint32_t)(shape & 0x3FF) << 16) | ((uint32_t)(rot & 31) << 26); }
 
 enum class Render : uint8_t {
     Air,      // nothing
@@ -24,7 +25,7 @@ enum class Render : uint8_t {
 enum class Shape : uint8_t {
     Cube,     // a full block
     Cross,    // two crossed planes through the middle (flowers, tall grass)
-    Plane,    // one flat plane stuck to the face it was placed against (ladders, vines, posters); state = facing
+    Plane,    // one flat plane stuck to the face it was placed against (ladders, vines, posters)
 };
 enum Face { F_PX = 0, F_NX, F_PY, F_NY, F_PZ, F_NZ };   // +X -X +Y(top) -Y(bottom) +Z -Z
 
@@ -64,7 +65,6 @@ public:
     bool has(BlockId v) const { BlockId id = typeOf(v); return id < defs.size() && defs[id].exists; }
     size_t count() const { return defs.size(); }            // ids are 0 .. count()-1 (check has())
     BlockId find(const std::string& name) const;
-    bool opaque(BlockId v) const { const BlockDef& d = get(v); return d.render == Render::Opaque && d.shape == Shape::Cube; }
     void resolve();                                         // texture names -> layers (after any change)
     std::string uniqueName(const std::string& want, BlockId except = AIR) const;
     int nextId = 1;                                         // ids below this were given out once (saved in blocks.txt)

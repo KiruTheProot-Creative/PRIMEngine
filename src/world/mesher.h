@@ -14,7 +14,7 @@ struct MeshData { std::vector<Vtx> v; std::vector<uint32_t> i; bool empty() cons
 struct ChunkMesh { I3 pos; uint32_t seq = 0; MeshData opaque, cutout; };
 
 constexpr int PAD = CS + 2;                  // the chunk plus a one-block border from its neighbours
-constexpr BlockId UNKNOWN = 0xFFFF;          // neighbour not loaded: treated as solid so no wall of faces shows at the edge
+constexpr BlockId UNKNOWN = 0xFFFFFFFFu;         // neighbour not loaded: treated as solid so no wall of faces shows at the edge
 
 struct MeshInput { I3 pos; uint32_t seq = 0; std::vector<BlockId> blocks; };   // PAD^3 ids
 static inline int padIdx(int x, int y, int z) { return ((y + 1) * PAD + (z + 1)) * PAD + (x + 1); }   // x,y,z in -1..16

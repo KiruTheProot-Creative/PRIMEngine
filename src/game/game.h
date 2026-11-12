@@ -11,6 +11,7 @@ struct Settings {
     int verticalDistance = 5;  // chunks above and below you
     float fov = 70, mouseSensitivity = 1.f, uiScale = 1.f;
     bool vsync = true;
+    bool blockPreview = true;  // see-through preview where the next block goes
     bool load(const std::string& path);
     bool save(const std::string& path) const;
 };

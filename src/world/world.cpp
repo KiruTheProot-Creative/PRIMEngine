@@ -1,4 +1,5 @@
 #include "world.h"
+#include "shapes.h"
 #include <algorithm>
 
 namespace mc {
@@ -86,7 +87,26 @@ void World::saveAll() {
 bool World::solidAt(int x, int y, int z) const {
     const Chunk* c = chunk(chunkOf(x, y, z));
     if (!c) return true;
-    return reg.get(c->get(floorMod(x, CS), floorMod(y, CS), floorMod(z, CS))).solid;
+    BlockId v = c->get(floorMod(x, CS), floorMod(y, CS), floorMod(z, CS));
+    return v != AIR && reg.get(v).solid;
+}
+
+// the ray against one shape's boxes (block-local); t along the ray, n = side entered
+static bool rayBoxes(const ShapeVariant& sv, const double o[3], const double d[3], double& bestT, int n[3]) {
+    bool any = false;
+    for (const SBox& b : sv.boxes) {
+        double t0 = -1e30, t1 = 1e30; int ax = -1;
+        bool miss = false;
+        for (int a = 0; a < 3 && !miss; a++) {
+            if (std::fabs(d[a]) < 1e-12) { if (o[a] < b.lo[a] || o[a] > b.hi[a]) miss = true; continue; }
+            double ta = (b.lo[a] - o[a]) / d[a], tb = (b.hi[a] - o[a]) / d[a]; if (ta > tb) std::swap(ta, tb);
+            if (ta > t0) { t0 = ta; ax = a; }
+            t1 = std::min(t1, tb);
+        }
+        if (miss || t0 > t1 || t0 < 0 || ax < 0 || t0 >= bestT) continue;
+        bestT = t0; n[0] = n[1] = n[2] = 0; n[ax] = d[ax] > 0 ? -1 : 1; any = true;
+    }
+    return any;
 }
 
 bool World::raycast(V3 o, V3 d, double maxT, Hit& hit) const {
@@ -99,7 +119,14 @@ bool World::raycast(V3 o, V3 d, double maxT, Hit& hit) const {
     int nx = 0, ny = 0, nz = 0;
     for (int i = 0; i < 1024 && t <= maxT; i++) {
         if (!loaded(x, y, z)) return false;
-        if (get(x, y, z) != AIR) { hit = { x, y, z, nx, ny, nz, t }; return true; }
+        BlockId v = get(x, y, z);
+        if (v != AIR) {
+            int s = resolveShape(v, reg.get(v));
+            if (s == Shapes::FULL) { hit = { x, y, z, nx, ny, nz, t, o.x + d.x * t, o.y + d.y * t, o.z + d.z * t }; return true; }
+            // other shapes: only their solid parts count, so you can aim past a pole or through a window frame
+            double lo[3] = { o.x - x, o.y - y, o.z - z }, dd[3] = { d.x, d.y, d.z }, bt = maxT; int n[3];
+            if (rayBoxes(Shapes::get().variant(s, rotOf(v)), lo, dd, bt, n)) { hit = { x, y, z, n[0], n[1], n[2], bt, o.x + d.x * bt, o.y + d.y * bt, o.z + d.z * bt }; return true; }
+        }
         if (tmx < tmy && tmx < tmz) { x += sx; t = tmx; tmx += tdx; nx = -sx; ny = 0; nz = 0; }
         else if (tmy < tmz) { y += sy; t = tmy; tmy += tdy; nx = 0; ny = -sy; nz = 0; }
         else { z += sz; t = tmz; tmz += tdz; nx = 0; ny = 0; nz = -sz; }
@@ -109,15 +136,25 @@ bool World::raycast(V3 o, V3 d, double maxT, Hit& hit) const {
 
 bool World::boxFree(V3 f, double h, double H) const {
     const double e = 1e-5;
-    for (int y = ifloor(f.y + e); y <= ifloor(f.y + H - e); y++)
-        for (int z = ifloor(f.z - h + e); z <= ifloor(f.z + h - e); z++)
-            for (int x = ifloor(f.x - h + e); x <= ifloor(f.x + h - e); x++)
-                if (solidAt(x, y, z)) return false;
+    double lo[3] = { f.x - h + e, f.y + e, f.z - h + e }, hi[3] = { f.x + h - e, f.y + H - e, f.z + h - e };
+    for (int y = ifloor(lo[1]); y <= ifloor(hi[1]); y++)
+        for (int z = ifloor(lo[2]); z <= ifloor(hi[2]); z++)
+            for (int x = ifloor(lo[0]); x <= ifloor(hi[0]); x++) {
+                const Chunk* c = chunk(chunkOf(x, y, z));
+                if (!c) return false;   // not loaded yet: solid, so you never fall through
+                BlockId v = c->get(floorMod(x, CS), floorMod(y, CS), floorMod(z, CS));
+                if (v == AIR) continue;
+                const BlockDef& d = reg.get(v); if (!d.solid) continue;
+                int s = resolveShape(v, d);
+                if (s == Shapes::FULL) return false;
+                for (const SBox& b : Shapes::get().variant(s, rotOf(v)).boxes)
+                    if (lo[0] < x + b.hi[0] && hi[0] > x + b.lo[0] && lo[1] < y + b.hi[1] && hi[1] > y + b.lo[1] && lo[2] < z + b.hi[2] && hi[2] > z + b.lo[2]) return false;
+            }
     return true;
 }
 
-V3 World::moveBox(V3 feet, V3& vel, double h, double H, double dt, bool& onGround) const {
-    onGround = false;
+V3 World::moveBox(V3 feet, V3& vel, double h, double H, double dt, bool& onGround, double stepUp) const {
+    bool wasOnGround = onGround; onGround = false;
     V3 total = vel * dt;
     int steps = std::max(1, (int)std::ceil(std::max(std::fabs(total.x), std::max(std::fabs(total.y), std::fabs(total.z))) / 0.25));
     V3 step = total * (1.0 / steps);
@@ -127,6 +164,15 @@ V3 World::moveBox(V3 feet, V3& vel, double h, double H, double dt, bool& onGroun
             if (d == 0) continue;
             V3 np = feet; (axis == 0 ? np.x : axis == 1 ? np.y : np.z) += d;
             if (boxFree(np, h, H)) { feet = np; continue; }
+            if (axis != 1 && stepUp > 0 && (wasOnGround || onGround)) {
+                // walking into something low (a half block, a stair step, a ramp): climb onto it, as low as it fits
+                V3 up = np; up.y += stepUp; V3 raised = feet; raised.y += stepUp;
+                if (boxFree(raised, h, H) && boxFree(up, h, H)) {
+                    double lo = 0, hi = stepUp;
+                    for (int k = 0; k < 12; k++) { double m = (lo + hi) * 0.5; V3 t = np; t.y += m; if (boxFree(t, h, H)) hi = m; else lo = m; }
+                    feet = np; feet.y += hi; onGround = true; continue;
+                }
+            }
             // blocked: move as far as possible (binary search), then stop on that axis
             double lo = 0, hi = std::fabs(d); V3 best = feet;
             for (int k = 0; k < 12; k++) { double m = (lo + hi) * 0.5; V3 t = feet; (axis == 0 ? t.x : axis == 1 ? t.y : t.z) += d > 0 ? m : -m; if (boxFree(t, h, H)) { lo = m; best = t; } else hi = m; }

@@ -1,4 +1,5 @@
 #include "storage.h"
+#include "shapes.h"
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -17,19 +18,26 @@ static void put16(std::vector<uint8_t>& v, uint32_t x) { v.push_back((uint8_t)(x
 static void put32(std::vector<uint8_t>& v, uint32_t x) { put16(v, x & 0xFFFF); put16(v, x >> 16); }
 static uint32_t get32(const uint8_t* p) { return p[0] | (p[1] << 8) | (p[2] << 16) | ((uint32_t)p[3] << 24); }
 
+// runs of (block value: 4 bytes, count: 2 bytes)
 std::vector<uint8_t> RegionStore::encode(const Chunk& c) {
     std::vector<uint8_t> out; out.reserve(64);
     int i = 0;
     while (i < CS3) {
         int j = i; while (j < CS3 && c.b[j] == c.b[i] && j - i < 65535) j++;
-        put16(out, c.b[i]); put16(out, (uint32_t)(j - i)); i = j;
+        put32(out, c.b[i]); put16(out, (uint32_t)(j - i)); i = j;
     }
     return out;
 }
-bool RegionStore::decode(const std::vector<uint8_t>& d, Chunk& out) {
-    size_t p = 0; int i = 0;
-    while (p + 4 <= d.size()) {
-        BlockId id = (BlockId)(d[p] | (d[p + 1] << 8)); int n = d[p + 2] | (d[p + 3] << 8); p += 4;
+bool RegionStore::decode(const std::vector<uint8_t>& d, Chunk& out, int version) {
+    size_t p = 0; int i = 0; const size_t run = version >= 2 ? 6 : 4;
+    while (p + run <= d.size()) {
+        BlockId id; int n;
+        if (version >= 2) { id = get32(&d[p]); n = d[p + 4] | (d[p + 5] << 8); }
+        else {   // version 1 (milestones 1-2): 16-bit ids, top 4 bits = which way a plane faced
+            uint32_t v = d[p] | (d[p + 1] << 8); n = d[p + 2] | (d[p + 3] << 8);
+            id = (v & 0x0FFF) ? makeBlock(v & 0x0FFF, 0, Shapes::legacyPlaneRot((int)(v >> 12))) : AIR;
+        }
+        p += run;
         if (i + n > CS3) return false;
         for (int k = 0; k < n; k++) out.b[i++] = id;
     }
@@ -52,11 +60,15 @@ RegionStore::Region& RegionStore::region(I3 rp) {
         if (f) {
             std::vector<uint8_t> all((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
             if (all.size() >= 8 + RS * RS * RS * 4 && all[0] == 'M' && all[1] == 'C' && all[2] == 'R' && all[3] == 'G') {
+                uint32_t version = get32(&all[4]);
                 size_t off = 8 + RS * RS * RS * 4;
                 for (int k = 0; k < RS * RS * RS; k++) {
                     uint32_t len = get32(&all[8 + k * 4]);
                     if (off + len > all.size()) break;
                     r.blobs[k].assign(all.begin() + off, all.begin() + off + len); off += len;
+                    if (version < 2 && !r.blobs[k].empty()) {   // old save: convert now, it is written back in the new format
+                        Chunk c; if (decode(r.blobs[k], c, (int)version)) { r.blobs[k] = encode(c); r.dirty = true; } else r.blobs[k].clear();
+                    }
                 }
             }
         }
@@ -67,7 +79,7 @@ RegionStore::Region& RegionStore::region(I3 rp) {
 }
 
 void RegionStore::writeRegion(I3 rp, const Region& r) {
-    std::vector<uint8_t> out = { 'M', 'C', 'R', 'G' }; put32(out, 1);
+    std::vector<uint8_t> out = { 'M', 'C', 'R', 'G' }; put32(out, FORMAT);
     for (auto& b : r.blobs) put32(out, (uint32_t)b.size());
     for (auto& b : r.blobs) out.insert(out.end(), b.begin(), b.end());
     std::string p = path(rp), tmp = p + ".tmp";

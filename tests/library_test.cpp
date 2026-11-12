@@ -2,6 +2,7 @@
 #include "../src/world/library.h"
 #include "../src/world/mesher.h"
 #include "../src/core/png.h"
+#include "../src/world/shapes.h"
 #include <cstdio>
 #include <filesystem>
 #include <thread>
@@ -79,7 +80,7 @@ int main() {
     CHECK(r.uniqueName("new") == "new 2" && r.uniqueName("new", again) == "new", "unique names");
 
     // states: a plane keeps its facing in the upper bits
-    BlockId v = withState(fl, F_NZ); CHECK(typeOf(v) == fl && stateOf(v) == F_NZ && r.get(v).shape == Shape::Cross, "block state bits");
+    BlockId v = makeBlock(fl, 7, 23); CHECK(typeOf(v) == fl && shapeOf(v) == 7 && rotOf(v) == 23 && r.get(v).shape == Shape::Cross, "block value keeps type, shape and rotation");
 
     // meshes: cross = 2 two-sided quads in the cutout pass; plane = 1 two-sided quad; neither hides the stone face next to it
     {
@@ -89,11 +90,11 @@ int main() {
         BlockDef p = c; p.name = "plane"; p.shape = Shape::Plane; BlockId pid = m.add(p);
         World w(m); w.gen.kind = Generator::Void; w.loadChunk({ 0, 0, 0 });
         for (int x = -1; x <= 1; x++) for (int y = -1; y <= 1; y++) for (int z = -1; z <= 1; z++) w.loadChunk({ x, y, z });
-        w.set(4, 4, 4, cid); w.set(8, 4, 4, withState(pid, F_PZ)); w.set(8, 4, 3, m.find("stone"));
+        w.set(4, 4, 4, cid); w.set(8, 4, 4, makeBlock(pid, 0, Shapes::legacyPlaneRot(F_PZ))); w.set(8, 4, 3, m.find("stone"));
         MeshInput in; gatherInput(w, { 0, 0, 0 }, in); ChunkMesh cm; buildMesh(m, in, cm);
-        CHECK(cm.cutout.i.size() == 3 * 12 && cm.cutout.v.size() == 12, "cross + plane: 3 two-sided quads (%zu indices)", cm.cutout.i.size());
+        CHECK(cm.cutout.i.size() == 3 * 12 && cm.cutout.v.size() == 18, "cross + plane: 3 two-sided quads (%zu indices)", cm.cutout.i.size());
         CHECK(cm.opaque.i.size() == 6 * 6, "stone next to the plane keeps all 6 faces");
-        float minZ = 99; for (size_t k = 8; k < 12; k++) minZ = std::min(minZ, cm.cutout.v[k].z);
+        float minZ = 99; for (auto& vv : cm.cutout.v) if (vv.x >= 8) minZ = std::min(minZ, vv.z);
         CHECK(minZ > 4.0f && minZ < 4.05f, "plane hugs the wall it was placed on (z = %.4f)", minZ);
         CHECK(w.boxFree({ 4.5, 4, 4.5 }, 0.3, 1.8), "you can walk through the cross plane");
     }

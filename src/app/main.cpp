@@ -4,6 +4,7 @@
 #include "../world/mesher.h"
 #include "../game/game.h"
 #include "../world/library.h"
+#include "../world/shapes.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -72,9 +73,10 @@ struct App {
     HWND hwnd = nullptr; int cw = 1280, ch = 720; bool resized = false;
     ComPtr<ID3D11Device> dev; ComPtr<ID3D11DeviceContext> ctx; ComPtr<IDXGISwapChain> swap; ComPtr<ID3D11RenderTargetView> backRTV;
     ComPtr<ID3D11Texture2D> depthTex; ComPtr<ID3D11DepthStencilView> dsv;
-    ComPtr<ID3D11VertexShader> vsBlock, vsSky; ComPtr<ID3D11PixelShader> psOpaque, psCutout, psSky; ComPtr<ID3D11InputLayout> layout;
+    ComPtr<ID3D11VertexShader> vsBlock, vsSky; ComPtr<ID3D11PixelShader> psOpaque, psCutout, psSky, psGhost; ComPtr<ID3D11InputLayout> layout;
     ComPtr<ID3D11Buffer> cbFrame, cbChunk;
-    ComPtr<ID3D11RasterizerState> rsCull; ComPtr<ID3D11DepthStencilState> dsOn, dsOff; ComPtr<ID3D11BlendState> bsOff;
+    ComPtr<ID3D11RasterizerState> rsCull; ComPtr<ID3D11DepthStencilState> dsOn, dsOff, dsTestOnly; ComPtr<ID3D11BlendState> bsOff, bsAlpha;
+    ComPtr<ID3D11Buffer> vbGhost, ibGhost; UINT nGhost = 0; BlockId ghostKey = 0xFFFFFFFFu;   // the see-through preview block
     ComPtr<ID3D11SamplerState> sampBlocks, sampPoint;
     ComPtr<ID3D11ShaderResourceView> texArray; std::vector<ComPtr<ID3D11ShaderResourceView>> icons;
     std::vector<ComPtr<ID3D11ShaderResourceView>> retired;   // replaced textures the UI of this frame may still draw   // icons: one small texture per block texture (menus)
@@ -93,6 +95,11 @@ struct App {
     bool libraryOpen = false;                     // the blocks & textures window, opened from the title screen
     bool editorOpen = false; BlockDef draft; BlockId draftId = AIR; int faceMode = 0, pickSlot = -1;
     std::string deleteTexAsk; BlockId deleteBlockAsk = AIR; const char* wantPopup = nullptr;
+
+    // ---- shapes
+    bool shapeMenu = false; std::string shapeSearch; int shapeCat = 0;
+    bool manualRot = false; int manRot = 0;          // R / T turn the next block by hand; G goes back to automatic
+    bool targetValid = false; int tx = 0, ty = 0, tz = 0; BlockId targetValue = AIR;   // where the next block goes
 
     // ---- input + UI state
     bool captured = false, paused = false, inventory = false, showF3 = false, hideHud = false, showSettings = false;
@@ -116,6 +123,7 @@ struct App {
         auto vb = Compile(src, "VS_Block", "vs_5_0"); HR(dev->CreateVertexShader(vb->GetBufferPointer(), vb->GetBufferSize(), nullptr, &vsBlock));
         auto b = Compile(src, "PS_Opaque", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psOpaque));
         b = Compile(src, "PS_Cutout", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psCutout));
+        b = Compile(src, "PS_Ghost", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psGhost));
         b = Compile(src, "VS_Sky", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsSky));
         b = Compile(src, "PS_Sky", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psSky));
         D3D11_INPUT_ELEMENT_DESC el[] = {
@@ -128,11 +136,15 @@ struct App {
 
         D3D11_RASTERIZER_DESC rd{}; rd.FillMode = D3D11_FILL_SOLID; rd.CullMode = D3D11_CULL_BACK; rd.FrontCounterClockwise = FALSE; rd.DepthClipEnable = TRUE; HR(dev->CreateRasterizerState(&rd, &rsCull));
         D3D11_DEPTH_STENCIL_DESC dd{}; dd.DepthEnable = TRUE; dd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL; dd.DepthFunc = D3D11_COMPARISON_LESS_EQUAL; HR(dev->CreateDepthStencilState(&dd, &dsOn));
-        dd.DepthEnable = FALSE; dd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO; HR(dev->CreateDepthStencilState(&dd, &dsOff));
+        dd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO; HR(dev->CreateDepthStencilState(&dd, &dsTestOnly));
+        dd.DepthEnable = FALSE; HR(dev->CreateDepthStencilState(&dd, &dsOff));
         D3D11_BLEND_DESC bd{}; bd.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL; HR(dev->CreateBlendState(&bd, &bsOff));
+        auto& rt = bd.RenderTarget[0]; rt.BlendEnable = TRUE; rt.SrcBlend = D3D11_BLEND_SRC_ALPHA; rt.DestBlend = D3D11_BLEND_INV_SRC_ALPHA; rt.BlendOp = D3D11_BLEND_OP_ADD;
+        rt.SrcBlendAlpha = D3D11_BLEND_ONE; rt.DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA; rt.BlendOpAlpha = D3D11_BLEND_OP_ADD; HR(dev->CreateBlendState(&bd, &bsAlpha));
         D3D11_SAMPLER_DESC sm{}; sm.Filter = D3D11_FILTER_MIN_MAG_POINT_MIP_LINEAR; sm.AddressU = sm.AddressV = sm.AddressW = D3D11_TEXTURE_ADDRESS_WRAP; sm.MaxLOD = D3D11_FLOAT32_MAX; HR(dev->CreateSamplerState(&sm, &sampBlocks));
         sm.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT; sm.AddressU = sm.AddressV = sm.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP; HR(dev->CreateSamplerState(&sm, &sampPoint));
 
+        Shapes::get();   // prepares every shape in every rotation (a few milliseconds)
         library.dir = ExeDir() + "game"; library.load(reg);   // game\blocks.txt + game\textures\*.png (made the first time)
         UploadTextures();
         DragAcceptFiles(hwnd, TRUE);
@@ -179,7 +191,7 @@ struct App {
     // then the textures are re-uploaded and every loaded chunk is rebuilt with the new look.
     template <class F> void ChangeBlocks(F fn) {
         if (workers) workers->stop();
-        fn(); reg.resolve(); UploadTextures();
+        fn(); reg.resolve(); UploadTextures(); ghostKey = 0xFFFFFFFFu;
         if (workers) workers->start(Threads());
         if (world) { latestSeq.clear(); for (auto& kv : world->chunks) world->dirty.insert(kv.first); }
         for (auto& h : hotbar) if (h != AIR && !reg.has(h)) h = AIR;
@@ -254,7 +266,10 @@ struct App {
         world->store = std::make_unique<RegionStore>(worldDir + "/region");
         workers = std::make_unique<MeshWorkers>(reg); workers->start(Threads());
         player = info.player; history.clear(); gpu.clear(); latestSeq.clear();
-        for (int i = 0; i < 9; i++) hotbar[i] = reg.find(info.hotbar[i]);
+        for (int i = 0; i < 9; i++) {   // "stone" or "stone@stairs"
+            std::string e = info.hotbar[i], shape; size_t at = e.rfind('@'); if (at != std::string::npos) { shape = e.substr(at + 1); e = e.substr(0, at); }
+            BlockId t = reg.find(e); hotbar[i] = t ? makeBlock(t, Shapes::get().find(shape)) : AIR;
+        }
         hotSel = info.hotSel;
         screen = Screen::Game; paused = false; inventory = false; autosave = 0;
         Capture(true);
@@ -262,7 +277,7 @@ struct App {
     }
     void SaveWorld() {
         if (!world) return;
-        info.player = player; info.hotSel = hotSel; for (int i = 0; i < 9; i++) info.hotbar[i] = reg.has(hotbar[i]) ? reg.get(hotbar[i]).name : "";
+        info.player = player; info.hotSel = hotSel; for (int i = 0; i < 9; i++) info.hotbar[i] = !reg.has(hotbar[i]) ? "" : reg.get(hotbar[i]).name + (shapeOf(hotbar[i]) ? "@" + Shapes::get().info(shapeOf(hotbar[i])).key : "");
         info.save(worldDir); world->saveAll();
     }
     void CloseWorld() {
@@ -283,7 +298,7 @@ struct App {
         } else { io.ConfigFlags &= ~ImGuiConfigFlags_NoMouse; ClipCursor(nullptr); }
         mouseDX = mouseDY = 0;
     }
-    bool Playing() const { return screen == Screen::Game && captured && !paused && !inventory; }
+    bool Playing() const { return screen == Screen::Game && captured && !paused && !inventory && !shapeMenu; }
     static bool Down(int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; }
     void OnKey(WPARAM k, bool repeat) {
         if (screen != Screen::Game) {
@@ -291,13 +306,15 @@ struct App {
             return;
         }
         if (k == VK_ESCAPE) {
-            if (editorOpen) editorOpen = false;
+            if (shapeMenu) { shapeMenu = false; Capture(true); }
+            else if (editorOpen) editorOpen = false;
             else if (inventory) { inventory = false; Capture(true); }
             else if (showSettings) showSettings = false;
             else { paused = !paused; Capture(!paused); }
             return;
         }
-        if (k == 'E' && !paused && !ImGui::GetIO().WantTextInput) { inventory = !inventory; editorOpen = false; Capture(!inventory); return; }
+        if (k == 'E' && !paused && !ImGui::GetIO().WantTextInput) { inventory = !inventory; editorOpen = false; shapeMenu = false; Capture(!inventory); return; }
+        if (k == 'Q' && !paused && !inventory && !ImGui::GetIO().WantTextInput) { shapeMenu = !shapeMenu; shapeSearch.clear(); Capture(!shapeMenu); return; }
         if (k == VK_F3) { showF3 = !showF3; return; }
         if (k == VK_F1) { hideHud = !hideHud; return; }
         if (!Playing() || repeat) return;
@@ -309,6 +326,12 @@ struct App {
         if (Down(VK_CONTROL) && k == 'Z') { if (history.undo(*world)) Toast("Undo"); }
         if (Down(VK_CONTROL) && k == 'Y') { if (history.redo(*world)) Toast("Redo"); }
         if (Down(VK_CONTROL) && k == 'S') { SaveWorld(); Toast("Saved"); }
+        if (k == 'R' || k == 'T') {   // turn the next block by hand (starts from the automatic rotation)
+            if (!manualRot) { manualRot = true; manRot = targetValid ? rotOf(targetValue) : 0; }
+            int look = LookFace();
+            manRot = Shapes::turn(manRot, k == 'R' ? 1 : (look == F_PZ || look == F_NZ) ? 0 : 2);
+        }
+        if (k == 'G' && manualRot) { manualRot = false; Toast("Rotation: automatic"); }
     }
     void OnWheel(int delta) { if (Playing()) hotSel = (hotSel + (delta > 0 ? 8 : 1)) % 9; }
 
@@ -337,25 +360,40 @@ struct App {
             BlockId was = world->get(hover.x, hover.y, hover.z);
             world->set(hover.x, hover.y, hover.z, AIR); history.push({ { hover.x, hover.y, hover.z, was, AIR } }); breakCool = 0.25;
         }
-        if (R && (!rPrev || placeCool <= 0) && hoverValid && reg.has(hotbar[hotSel])) {
-            int x = hover.x + hover.nx, y = hover.y + hover.ny, z = hover.z + hover.nz;
-            const BlockDef& bd = reg.get(hotbar[hotSel]);
-            const Player& p = player;   // never place a block inside yourself
-            bool inside = bd.solid && x + 1 > p.feet.x - Player::HALF_W && x < p.feet.x + Player::HALF_W && z + 1 > p.feet.z - Player::HALF_W && z < p.feet.z + Player::HALF_W && y + 1 > p.feet.y && y < p.feet.y + Player::HEIGHT;
-            // a flat plane faces away from the side you clicked on
-            int state = bd.shape != Shape::Plane ? 0 : hover.nx > 0 ? F_PX : hover.nx < 0 ? F_NX : hover.ny > 0 ? F_PY : hover.ny < 0 ? F_NY : hover.nz > 0 ? F_PZ : F_NZ;
-            BlockId v = withState(hotbar[hotSel], state);
-            if (!inside && world->get(x, y, z) == AIR && world->loaded(x, y, z)) { world->set(x, y, z, v); history.push({ { x, y, z, AIR, v } }); }
+        UpdateTarget();
+        if (R && (!rPrev || placeCool <= 0) && targetValid) {
+            world->set(tx, ty, tz, targetValue); history.push({ { tx, ty, tz, AIR, targetValue } });
             placeCool = 0.25;
         }
         if (M && !mPrev && hoverValid && reg.has(world->get(hover.x, hover.y, hover.z))) {
-            BlockId id = typeOf(world->get(hover.x, hover.y, hover.z)); int found = -1;
-            for (int i = 0; i < 9; i++) if (hotbar[i] == id) found = i;
-            if (found >= 0) hotSel = found; else hotbar[hotSel] = id;
+            // pick the block and its shape; with Ctrl also its rotation (like "copy shape and rotation")
+            BlockId v = world->get(hover.x, hover.y, hover.z), want = makeBlock(typeOf(v), shapeOf(v)); int found = -1;
+            for (int i = 0; i < 9; i++) if (hotbar[i] == want) found = i;
+            if (found >= 0) hotSel = found; else hotbar[hotSel] = want;
+            if (Down(VK_CONTROL)) { manualRot = true; manRot = rotOf(v); Toast("Copied shape and rotation (G: automatic again)"); }
         }
         if (!L) breakCool = 0;
         if (!R) placeCool = 0;
         lPrev = L; rPrev = R; mPrev = M;
+    }
+    int LookFace() const { V3 f = player.forward(); return std::fabs(f.x) > std::fabs(f.z) ? (f.x > 0 ? F_PX : F_NX) : (f.z > 0 ? F_PZ : F_NZ); }
+    // where the held block would go, in which shape and rotation
+    void UpdateTarget() {
+        targetValid = false;
+        BlockId held = hotbar[hotSel];
+        if (!hoverValid || !reg.has(held)) return;
+        int x = hover.x + hover.nx, y = hover.y + hover.ny, z = hover.z + hover.nz;
+        if (!world->loaded(x, y, z) || world->get(x, y, z) != AIR) return;
+        const BlockDef& bd = reg.get(held); int shape = resolveShape(held, bd);
+        int n = hover.nx > 0 ? F_PX : hover.nx < 0 ? F_NX : hover.ny > 0 ? F_PY : hover.ny < 0 ? F_NY : hover.nz > 0 ? F_PZ : F_NZ;
+        int r = manualRot ? manRot : Shapes::placeRot(Shapes::get().info(shape).place, n, LookFace(), hover.py - hover.y > 0.5);
+        BlockId v = makeBlock(typeOf(held), shapeOf(held), r);
+        if (bd.solid) {   // never place a block inside yourself
+            const Player& p = player;
+            for (const SBox& b : Shapes::get().variant(shape, r).boxes)
+                if (x + b.hi[0] > p.feet.x - Player::HALF_W && x + b.lo[0] < p.feet.x + Player::HALF_W && z + b.hi[2] > p.feet.z - Player::HALF_W && z + b.lo[2] < p.feet.z + Player::HALF_W && y + b.hi[1] > p.feet.y && y + b.lo[1] < p.feet.y + Player::HEIGHT) return;
+        }
+        targetValid = true; tx = x; ty = y; tz = z; targetValue = v;
     }
     void ScheduleMeshing(I3 pc) {
         if (world->dirty.empty()) return;
@@ -438,6 +476,23 @@ struct App {
                 ctx->DrawIndexed(n, 0, 0); drawnChunks += pass == 0;
             }
         }
+        if (settings.blockPreview && Playing() && targetValid) {   // see-through preview of the next block
+            if (ghostKey != targetValue) {
+                ghostKey = targetValue;
+                MeshInput in; in.pos = { 0, 0, 0 }; in.blocks.assign(PAD * PAD * PAD, AIR); in.blocks[padIdx(0, 0, 0)] = targetValue;
+                ChunkMesh cm; buildMesh(reg, in, cm);
+                MeshData all = cm.opaque; uint32_t base = (uint32_t)all.v.size();
+                all.v.insert(all.v.end(), cm.cutout.v.begin(), cm.cutout.v.end()); for (uint32_t i : cm.cutout.i) all.i.push_back(base + i);
+                Upload(all, vbGhost, ibGhost, nGhost);
+            }
+            if (nGhost) {
+                ChunkCB cc{ { (float)(tx - camPos.x), (float)(ty - camPos.y), (float)(tz - camPos.z), 0 } }; ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);
+                ctx->OMSetBlendState(bsAlpha.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsTestOnly.Get(), 0); ctx->PSSetShader(psGhost.Get(), nullptr, 0);
+                UINT stride = sizeof(Vtx), off = 0; ctx->IASetVertexBuffers(0, 1, vbGhost.GetAddressOf(), &stride, &off); ctx->IASetIndexBuffer(ibGhost.Get(), DXGI_FORMAT_R32_UINT, 0);
+                ctx->DrawIndexed(nGhost, 0, 0);
+                ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0);
+            }
+        }
     }
     int drawnChunks = 0;
     bool Project(V3 p, ImVec2& out) const {   // world point -> screen (for the block outline)
@@ -459,27 +514,43 @@ struct App {
     // ================================================================== UI
     ImTextureID Icon(int layer) const { return (ImTextureID)(intptr_t)icons[std::max(0, std::min((int)icons.size() - 1, layer))].Get(); }
     static void PointSampling(const ImDrawList*, const ImDrawCmd*) { g_app->ctx->PSSetSamplers(0, 1, g_app->sampPoint.GetAddressOf()); }
-    void BlockIcon(ImDrawList* dl, BlockId id, ImVec2 c, float s) { if (id != AIR) DefIcon(dl, reg.get(id), c, s); }
-    void DefIcon(ImDrawList* dl, const BlockDef& d, ImVec2 c, float s) {   // a small isometric cube made of the block's textures
-        dl->AddCallback(PointSampling, nullptr);
-        if (d.shape != Shape::Cube) {   // planes: just the picture
-            float h = s * 0.42f; dl->AddImage(Icon(d.tex[0]), ImVec2(c.x - h, c.y - h), ImVec2(c.x + h, c.y + h));
-            dl->AddCallback(ImDrawCallback_ResetRenderState, nullptr); return;
-        }
+    void BlockIcon(ImDrawList* dl, BlockId v, ImVec2 c, float s) { if (v != AIR) ShapeIcon(dl, reg.get(v), v, c, s); }
+    // a little 3D picture of a block in its shape: its triangles seen from above-front, painted back to front
+    void ShapeIcon(ImDrawList* dl, const BlockDef& d, BlockId v, ImVec2 c, float s) {
+        const Shapes& S = Shapes::get(); int shape = resolveShape(v, d); bool two = S.info(shape).twoSided;
+        const ShapeVariant& sv = S.variant(shape, rotOf(v));
         float h = s * 0.5f, q = s * 0.25f;
-        ImVec2 T(c.x, c.y - h), L(c.x - h, c.y - q), R(c.x + h, c.y - q), C(c.x, c.y), BL(c.x - h, c.y + q), BR(c.x + h, c.y + q), B(c.x, c.y + h);
-        dl->AddImageQuad(Icon(d.tex[F_PY]), T, R, C, L, ImVec2(0, 0), ImVec2(1, 0), ImVec2(1, 1), ImVec2(0, 1), IM_COL32(255, 255, 255, 255));
-        dl->AddImageQuad(Icon(d.tex[F_NZ]), L, C, B, BL, ImVec2(0, 0), ImVec2(1, 0), ImVec2(1, 1), ImVec2(0, 1), IM_COL32(200, 200, 200, 255));
-        dl->AddImageQuad(Icon(d.tex[F_PX]), C, R, BR, B, ImVec2(0, 0), ImVec2(1, 0), ImVec2(1, 1), ImVec2(0, 1), IM_COL32(155, 155, 155, 255));
+        auto proj = [&](const float p[3]) { return ImVec2(c.x + (p[0] + p[2] - 1) * h, c.y - h * p[1] + q * p[0] - q * p[2] + q); };
+        struct T { const STri* t; float depth; bool flip; };
+        std::vector<T> list;
+        for (int g = 0; g < 7; g++) for (const STri& t : sv.tris[g]) {
+            float facing = t.fn[0] + t.fn[1] - t.fn[2];   // towards the viewer at (+1, +1, -1)
+            if (facing <= 0.001f && !two) continue;
+            list.push_back({ &t, (t.p[0][0] + t.p[1][0] + t.p[2][0]) + (t.p[0][1] + t.p[1][1] + t.p[2][1]) - (t.p[0][2] + t.p[1][2] + t.p[2][2]), facing <= 0 });
+        }
+        std::sort(list.begin(), list.end(), [](const T& a, const T& b) { return a.depth < b.depth; });
+        dl->AddCallback(PointSampling, nullptr);
+        int cur = -1;
+        for (const T& e : list) {
+            int f = faceOfNormal(e.t->fn), layer = d.tex[f];
+            if (layer != cur) { if (cur >= 0) dl->PopTexture(); dl->PushTexture(Icon(layer)); cur = layer; }
+            dl->PrimReserve(3, 3);
+            for (int k = 0; k < 3; k++) {
+                float u, vv; faceUV(e.t->p[k][0], e.t->p[k][1], e.t->p[k][2], f, u, vv);
+                float n[3] = { e.t->n[k][0], e.t->n[k][1], e.t->n[k][2] }; float l = normalShade(n);
+                ImU32 col = IM_COL32((int)(255 * l), (int)(255 * l), (int)(255 * l), 255);
+                dl->PrimVtx(proj(e.t->p[k]), ImVec2(u, vv), col);
+            }
+        }
+        if (cur >= 0) dl->PopTexture();
         dl->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
     }
     void DrawHud() {
         ImDrawList* dl = ImGui::GetForegroundDrawList();
         if (hoverValid && Playing()) {   // outline of the targeted block
-            BlockId hv = world->get(hover.x, hover.y, hover.z); const BlockDef& hd = reg.get(hv);
-            double b0[3] = { 0, 0, 0 }, b1[3] = { 1, 1, 1 }, t = 1.0 / 16;
-            if (hd.shape == Shape::Cross) { b0[0] = b0[2] = 0.15; b1[0] = b1[2] = 0.85; }
-            if (hd.shape == Shape::Plane) { int f = stateOf(hv) < 6 ? stateOf(hv) : F_PY, ax = f / 2; if (f % 2 == 0) b1[ax] = t; else b0[ax] = 1 - t; }
+            BlockId hv = world->get(hover.x, hover.y, hover.z);
+            const SBox& bb = Shapes::get().variant(resolveShape(hv, reg.get(hv)), rotOf(hv)).bounds;
+            double b0[3] = { bb.lo[0], bb.lo[1], bb.lo[2] }, b1[3] = { bb.hi[0], bb.hi[1], bb.hi[2] };
             V3 mn{ hover.x + b0[0] - 0.002, hover.y + b0[1] - 0.002, hover.z + b0[2] - 0.002 }, mx{ hover.x + b1[0] + 0.002, hover.y + b1[1] + 0.002, hover.z + b1[2] + 0.002 };
             V3 c[8]; for (int i = 0; i < 8; i++) c[i] = { (i & 1) ? mx.x : mn.x, (i & 2) ? mx.y : mn.y, (i & 4) ? mx.z : mn.z };
             const int e[12][2] = { { 0, 1 }, { 2, 3 }, { 4, 5 }, { 6, 7 }, { 0, 2 }, { 1, 3 }, { 4, 6 }, { 5, 7 }, { 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 } };
@@ -497,7 +568,12 @@ struct App {
             BlockIcon(dl, hotbar[i], ImVec2(a.x + s * 0.5f, a.y + s * 0.5f), s * 0.62f);
         }
         dl->AddRect(ImVec2(o.x + hotSel * s - 2, o.y - 2), ImVec2(o.x + hotSel * s + s + 2, o.y + s + 2), IM_COL32(255, 255, 255, 255), 0.f, 0, 3.f);
-        if (reg.has(hotbar[hotSel])) { const char* nm = reg.get(hotbar[hotSel]).name.c_str(); ImVec2 ts = ImGui::CalcTextSize(nm); dl->AddText(ImVec2((cw - ts.x) * 0.5f, o.y - ts.y - 8), IM_COL32(255, 255, 255, 230), nm); }
+        if (reg.has(hotbar[hotSel])) {
+            BlockId hv = hotbar[hotSel]; std::string label = reg.get(hv).name;
+            if (shapeOf(hv) && shapeOf(hv) != Shapes::FULL) label += " - " + Shapes::get().info(shapeOf(hv)).name;
+            if (manualRot) label += "   [turned by hand: R turn, T tip, G automatic]";
+            ImVec2 ts = ImGui::CalcTextSize(label.c_str()); dl->AddText(ImVec2((cw - ts.x) * 0.5f, o.y - ts.y - 8), IM_COL32(255, 255, 255, 230), label.c_str());
+        }
         if (toastT > 0) { ImVec2 ts = ImGui::CalcTextSize(toast.c_str()); dl->AddRectFilled(ImVec2((cw - ts.x) * 0.5f - 10, 60), ImVec2((cw + ts.x) * 0.5f + 10, 66 + ts.y + 6), IM_COL32(0, 0, 0, 150), 4); dl->AddText(ImVec2((cw - ts.x) * 0.5f, 66), IM_COL32(255, 255, 255, 240), toast.c_str()); }
     }
     void DrawF3() {
@@ -512,7 +588,8 @@ struct App {
         ImGui::Text("Facing: %s   %s", dirs[((int)(yd / 90)) % 4], player.flying ? "flying" : "walking");
         ImGui::Text("Chunks: %zu loaded, %zu with meshes, %d drawn", world->loadedCount(), gpu.size(), drawnChunks);
         ImGui::Text("Meshing: %zu waiting, %zu queued", world->dirty.size(), workers->pending());
-        if (hoverValid) ImGui::Text("Looking at: %s at %d %d %d", reg.get(world->get(hover.x, hover.y, hover.z)).name.c_str(), hover.x, hover.y, hover.z);
+        if (hoverValid) { BlockId hv = world->get(hover.x, hover.y, hover.z);
+            ImGui::Text("Looking at: %s (%s, rotation %d) at %d %d %d", reg.get(hv).name.c_str(), Shapes::get().info(resolveShape(hv, reg.get(hv))).name.c_str(), rotOf(hv), hover.x, hover.y, hover.z); }
         ImGui::Text("Render distance: %d chunks   Undo steps: %zu", settings.renderDistance, history.undoCount());
         ImGui::End();
     }
@@ -527,6 +604,7 @@ struct App {
         ch_ |= ImGui::SliderFloat("Mouse sensitivity", &settings.mouseSensitivity, 0.1f, 3.f, "%.2f");
         ch_ |= ImGui::SliderFloat("UI size", &settings.uiScale, 0.75f, 2.f, "%.2f");
         ch_ |= ImGui::Checkbox("VSync", &settings.vsync);
+        ch_ |= ImGui::Checkbox("Show where the next block goes (see-through preview)", &settings.blockPreview);
         if (ch_) settings.save(settingsPath);
         if (ImGui::Button("Done", ImVec2(-1, 0))) showSettings = false;
         ImGui::End();
@@ -678,6 +756,42 @@ struct App {
         ImGui::End();
     }
 
+    // ---- shape menu (Q): any block in any shape
+    void ShapeMenu() {
+        float ui = settings.uiScale, s = 64 * ui; const int cols = 9; const Shapes& S = Shapes::get();
+        Center(ImVec2(0, 0));
+        ImGui::Begin("Shapes###shapes", nullptr, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize);
+        BlockId held = hotbar[hotSel];
+        if (!reg.has(held)) { ImGui::Text("Put a block into this hotbar slot first (press E)."); ImGui::End(); return; }
+        const BlockDef& d = reg.get(held); int cur = resolveShape(held, d);
+        ImGui::Text("Shapes for %s", d.name.c_str()); ImGui::SameLine(); ImGui::TextDisabled("(%d shapes, each in 24 rotations)", Shapes::get().count() - 1);
+        ImGui::SetNextItemWidth(260 * ui); ImGui::InputTextWithHint("##search", "Search shapes...", &shapeSearch);
+        std::vector<std::string> cats = S.categories(); cats.insert(cats.begin(), "All");
+        if (ImGui::BeginTabBar("cats")) {
+            for (int i = 0; i < (int)cats.size(); i++) if (ImGui::BeginTabItem(cats[i].c_str())) { shapeCat = i; ImGui::EndTabItem(); }
+            ImGui::EndTabBar();
+        }
+        auto lower = [](std::string t) { for (auto& ch : t) ch = (char)std::tolower((unsigned char)ch); return t; };
+        std::string q = lower(shapeSearch);
+        ImGui::BeginChild("grid", ImVec2(GridChildWidth(s, cols), (s + ImGui::GetStyle().ItemSpacing.y) * 5 + 12), ImGuiChildFlags_Borders);
+        int n = 0;
+        for (int id = 1; id < S.count(); id++) {
+            const ShapeInfo& si = S.info(id);
+            if (shapeCat > 0 && shapeCat < (int)cats.size() && si.category != cats[shapeCat] && q.empty()) continue;
+            if (!q.empty() && lower(si.name).find(q) == std::string::npos) continue;
+            ImGui::PushID(id); ImVec2 p;
+            if (Tile("s", p, s, id == cur)) { hotbar[hotSel] = makeBlock(typeOf(held), id); manualRot = false; shapeMenu = false; Capture(true); }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", si.name.c_str());
+            ShapeIcon(ImGui::GetWindowDrawList(), d, makeBlock(typeOf(held), id), ImVec2(p.x + s * 0.5f, p.y + s * 0.5f), s * 0.72f);
+            ImGui::PopID();
+            if (++n % cols) ImGui::SameLine();
+        }
+        if (!n) ImGui::TextDisabled("No shape is called that.");
+        ImGui::EndChild();
+        ImGui::TextDisabled("Click a shape to build with it.   In the world: R turns it, T tips it over, G back to automatic,\nCtrl + middle click copies a placed block's shape and rotation.   Q or Esc closes this.");
+        ImGui::End();
+    }
+
     // ---- block editor
     void BlockEditor() {
         float ui = settings.uiScale;
@@ -687,7 +801,7 @@ struct App {
         // preview on the left, settings on the right
         float pv = 120 * ui; ImVec2 p = ImGui::GetCursorScreenPos();
         ImGui::GetWindowDrawList()->AddRectFilled(p, ImVec2(p.x + pv, p.y + pv), IM_COL32(30, 32, 38, 255), 4.f);
-        DefIcon(ImGui::GetWindowDrawList(), draft, ImVec2(p.x + pv * 0.5f, p.y + pv * 0.5f), pv * 0.75f);
+        ShapeIcon(ImGui::GetWindowDrawList(), draft, AIR, ImVec2(p.x + pv * 0.5f, p.y + pv * 0.5f), pv * 0.75f);
         ImGui::Dummy(ImVec2(pv, pv)); ImGui::SameLine();
         ImGui::BeginGroup();
         ImGui::SetNextItemWidth(260 * ui); ImGui::InputText("Name", &draft.name);
@@ -823,6 +937,7 @@ struct App {
             DrawHud();
             if (showF3) DrawF3();
             if (inventory && !editorOpen) InventoryScreen();
+            if (shapeMenu) ShapeMenu();
             if (paused && !showSettings) PauseMenu();
         }
         if (editorOpen) BlockEditor();
@@ -855,7 +970,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         }
         break;
     case WM_LBUTTONDOWN:
-        if (a && a->screen == App::Screen::Game && !a->captured && !a->paused && !a->inventory && !(ImGui::GetIO().WantCaptureMouse)) a->Capture(true);
+        if (a && a->screen == App::Screen::Game && !a->captured && !a->paused && !a->inventory && !a->shapeMenu && !(ImGui::GetIO().WantCaptureMouse)) a->Capture(true);
         return 0;
     case WM_DROPFILES: if (a) a->OnDrop((HDROP)w); return 0;
     case WM_MOUSEWHEEL: if (a) a->OnWheel(GET_WHEEL_DELTA_WPARAM(w)); return 0;

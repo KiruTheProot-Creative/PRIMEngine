@@ -18,7 +18,7 @@ struct Generator {
     void fill(Chunk& c) const;
 };
 
-struct Hit { int x, y, z; int nx, ny, nz; double t; };
+struct Hit { int x, y, z; int nx, ny, nz; double t; double px, py, pz; };   // block, side hit (outward), distance, exact point
 
 class World {
 public:
@@ -49,7 +49,8 @@ public:
     bool raycast(V3 origin, V3 dir, double maxT, Hit& hit) const;
     bool solidAt(int x, int y, int z) const;          // unloaded chunks count as solid so you never fall through
     bool boxFree(V3 feet, double halfW, double height) const;
-    V3 moveBox(V3 feet, V3& vel, double halfW, double height, double dt, bool& onGround) const;
+    // moves a box (feet position) with collision; stepUp > 0 lets a walker climb steps that low while on the ground
+    V3 moveBox(V3 feet, V3& vel, double halfW, double height, double dt, bool& onGround, double stepUp = 0) const;
 
     std::unordered_map<I3, std::unique_ptr<Chunk>, I3Hash> chunks;
 

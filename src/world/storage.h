@@ -18,8 +18,9 @@ public:
     void flush();                                // write changed regions to disk
     size_t cachedRegions() const { return regions.size(); }
 
-    static std::vector<uint8_t> encode(const Chunk& c);   // run-length encoding of the block ids
-    static bool decode(const std::vector<uint8_t>& data, Chunk& out);
+    static constexpr uint32_t FORMAT = 2;        // 1: 16-bit blocks (milestones 1-2), 2: 32-bit blocks with shape + rotation
+    static std::vector<uint8_t> encode(const Chunk& c);   // run-length encoding of the block values
+    static bool decode(const std::vector<uint8_t>& data, Chunk& out, int version = FORMAT);
 
 private:
     struct Region { std::vector<std::vector<uint8_t>> blobs; bool dirty = false; uint64_t lastUse = 0; };

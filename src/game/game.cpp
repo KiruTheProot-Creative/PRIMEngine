@@ -13,6 +13,7 @@ bool Settings::load(const std::string& path) {
         if (k == "render_distance") f >> renderDistance; else if (k == "vertical_distance") f >> verticalDistance;
         else if (k == "fov") f >> fov; else if (k == "mouse_sensitivity") f >> mouseSensitivity; else if (k == "ui_scale") f >> uiScale;
         else if (k == "vsync") { int v; f >> v; vsync = v != 0; }
+        else if (k == "block_preview") { int v; f >> v; blockPreview = v != 0; }
         else { std::string rest; std::getline(f, rest); }
     }
     renderDistance = std::max(2, std::min(48, renderDistance)); verticalDistance = std::max(1, std::min(16, verticalDistance));
@@ -21,7 +22,7 @@ bool Settings::load(const std::string& path) {
 bool Settings::save(const std::string& path) const {
     std::ofstream f(path); if (!f) return false;
     f << "render_distance " << renderDistance << "\nvertical_distance " << verticalDistance << "\nfov " << fov << "\nmouse_sensitivity " << mouseSensitivity
-      << "\nui_scale " << uiScale << "\nvsync " << (vsync ? 1 : 0) << "\n";
+      << "\nui_scale " << uiScale << "\nvsync " << (vsync ? 1 : 0) << "\nblock_preview " << (blockPreview ? 1 : 0) << "\n";
     return (bool)f;
 }
 
@@ -49,7 +50,7 @@ void Player::update(const World& w, const Controls& c, double dt) {
         vel.y = std::max(vel.y - 32.0 * dt, -78.0);
         if (c.jump && onGround) vel.y = 8.4;    // about 1.25 blocks high
     }
-    feet = w.moveBox(feet, vel, HALF_W, HEIGHT, dt, onGround);
+    feet = w.moveBox(feet, vel, HALF_W, HEIGHT, dt, onGround, flying ? 0.0 : 0.6);   // walking climbs half blocks and stairs by itself
     if (flying && onGround && c.sneak) flying = false;   // land by flying down onto the ground
 }
 

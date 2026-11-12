@@ -36,9 +36,25 @@ A block world engine in C++ (Windows, Direct3D 11). Think of Minecraft built as 
 - In the **Blocks** tab, right-click a block to edit it: name, shape, see-through, collision, and a texture per side.
 - Everything lives in the `game` folder next to the exe and is shared by all worlds: `game/textures/*.png` and `game/blocks.txt`. Even the starter blocks are PNGs there. Repaint one in any paint program, save it, and the engine updates within a second.
 
+## Milestone 3: block shapes
+
+- Every block comes in about 100 shapes, each in all 24 rotations: half and quarter blocks, plates, ramps at four slopes with corners, stairs, square and round pillars, arches, coves, balls, domes, beams, bars, railings, ladders, frames, roof pieces, pyramids and more.
+- **Q** opens the shape menu for the block in your hand (with search and categories). Pick a shape and build.
+- Blocks turn by themselves to face away from you. Placed against a ceiling (or the top half of a wall), stairs and ramps go upside down. Pillars stand out of the side you click, and planes lie flat on it.
+- **R** turns the next block, **T** tips it over, **G** goes back to automatic. **Ctrl + middle click** copies a placed block's shape and rotation.
+- A see-through preview shows where the next block goes (it can be turned off in Settings).
+- You walk up half blocks, stairs and ramps by yourself, and you can aim past poles and through window frames.
+- Worlds from milestones 1 and 2 are converted the first time they load.
+
+| Key | What it does |
+|---|---|
+| Q | shape menu |
+| R / T | turn / tip over the next block |
+| G | automatic rotation again |
+| Ctrl + middle click | copy shape and rotation |
+
 ## Next
 
-- **Milestone 3:** more block types.
 - **Milestone 4:** nicer rendering in the style of Complementary shaders.
 
 ## Building
