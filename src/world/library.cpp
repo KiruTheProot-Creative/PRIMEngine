@@ -53,7 +53,8 @@ bool Library::saveBlocks(const BlockRegistry& r) const {
               << "\nshape = " << (d.shape == Shape::Cube ? "cube" : d.shape == Shape::Cross ? "cross" : "plane")
               << "\nlook = " << (d.render == Render::Cutout ? "see-through" : "solid")
               << "\nsolid = " << (d.solid ? "yes" : "no") << "\njoin_same = " << (d.cullSame ? "yes" : "no")
-              << "\nlight = " << d.light << "\nlight_color = " << hex6(d.lightColor) << "\nwaves = " << (d.waves ? "yes" : "no") << "\nfaces =";
+              << "\nlight = " << d.light << "\nlight_color = " << hex6(d.lightColor) << "\nwaves = " << (d.waves ? "yes" : "no")
+              << "\nshine = " << d.shine << "\nmirror = " << (d.mirror ? "yes" : "no") << "\nfaces =";
             for (auto& t : d.faces) f << ' ' << (t.empty() ? "-" : t);
             f << "\n";
         }
@@ -78,16 +79,17 @@ bool Library::load(BlockRegistry& r, std::string* report) {
     stamps = scan(); int bad = 0;
     for (auto& s : stamps) if (!loadTexture(r, s.first)) bad++;
     std::ifstream f(P(blocksFile())); std::string line; BlockId cur = AIR; BlockDef d; int blocks = 0;
-    bool seenLight = false, seenWaves = false;
+    bool seenLight = false, seenWaves = false, seenShine = false;
     BlockRegistry builtin; registerBuiltinBlocks(builtin);   // files from before "light"/"waves" existed: starter blocks keep their glow and sway
     auto flush = [&] {
         if (cur != AIR) {
             BlockId b = builtin.find(d.name);
             if (!seenLight && b) d.light = builtin.get(b).light;
             if (!seenWaves && b) d.waves = builtin.get(b).waves;
+            if (!seenShine && b) d.shine = builtin.get(b).shine;
             r.put(cur, d); blocks++;
         }
-        cur = AIR; d = BlockDef{}; seenLight = seenWaves = false;
+        cur = AIR; d = BlockDef{}; seenLight = seenWaves = seenShine = false;
     };
     while (std::getline(f, line)) {
         line = trim(line); if (line.empty() || line[0] == '#') continue;
@@ -103,6 +105,8 @@ bool Library::load(BlockRegistry& r, std::string* report) {
         else if (k == "join_same") d.cullSame = yes(v);
         else if (k == "light") { d.light = std::max(0, std::min(15, std::atoi(v.c_str()))); seenLight = true; }
         else if (k == "waves") { d.waves = yes(v); seenWaves = true; }
+        else if (k == "shine") { d.shine = std::max(0.f, std::min(1.f, (float)std::atof(v.c_str()))); seenShine = true; }
+        else if (k == "mirror") d.mirror = yes(v);
         else if (k == "light_color") { std::string h = v; if (!h.empty() && h[0] == '#') h.erase(0, 1); d.lightColor = (uint32_t)std::strtoul(h.c_str(), nullptr, 16) & 0xFFFFFF; }
         else if (k == "faces") {
             std::istringstream ss(v); std::vector<std::string> n; std::string t; while (ss >> t) n.push_back(t == "-" ? "" : t);

@@ -26,6 +26,7 @@ cbuffer Frame : register(b0)
     float4 gEnv;                    // x air (1) / vacuum (0), y heat shimmer, z planet in the sky, w haze (dust everywhere)
     float4 gEnvPart;                // things floating in the air: x kind (2 dust, 3 embers/spores, 4 ice sparkles), y amount
     float4 gEnvPartColor;           // rgb
+    float4 gRefl;                   // reflections: x on (1) / off (0), y ray steps, z how far rays go (blocks)
 };
 cbuffer ChunkCB : register(b1)
 {
@@ -80,7 +81,9 @@ float cloudShadow(float3 rel)
 }
 
 struct VSIn { float3 pos : POSITION; float2 uv : TEXCOORD0; float layer : TEXCOORD1; uint lit : TEXCOORD2; uint normal : TEXCOORD3; };
-struct VSOut { float4 pos : SV_Position; float3 uvl : TEXCOORD0; float ao : TEXCOORD1; float3 rel : TEXCOORD2; float3 n : TEXCOORD3; float4 lamp : TEXCOORD4; };
+struct VSOut { float4 pos : SV_Position; float3 uvl : TEXCOORD0; float ao : TEXCOORD1; float3 rel : TEXCOORD2; float3 n : TEXCOORD3; float4 lamp : TEXCOORD4; float2 mat : TEXCOORD5; };
+// what the reflection pass needs per pixel: direction of the surface (rgb) and how shiny it is (a)
+struct PSOut { float4 color : SV_Target0; float4 surface : SV_Target1; };
 
 float3 unpackNormal(uint n) { return normalize(float3(n & 255, (n >> 8) & 255, (n >> 16) & 255) / 255.0 * 2 - 1); }
 
@@ -110,6 +113,7 @@ VSOut VS_Block(VSIn i)
     o.rel = p;
     o.n = unpackNormal(i.normal);
     o.lamp = float4(float3((i.lit >> 8) & 15, (i.lit >> 12) & 15, (i.lit >> 16) & 15) / 15.0, (i.lit >> 20) & 1);
+    o.mat = float2(((i.lit >> 21) & 15) / 15.0, (i.lit >> 25) & 1);
     return o;
 }
 
@@ -149,9 +153,9 @@ float shadowAt(float3 rel, float3 n, float ndl, float2 screen)
     return lerp(sh, 1, edge * edge);
 }
 
-float3 lightBlock(VSOut i, float3 albedo, bool front)
+float3 lightBlock(VSOut i, float3 albedo, bool front, out float3 n, out float shine)
 {
-    float3 n = front ? i.n : -i.n;
+    n = front ? i.n : -i.n;
     // weather on surfaces: snow settles on tops open to the sky, rain makes things darker and shiny
     float open = (gWeather.w > 0.01 || gWeather2.x > 0.01) ? skyExposed(i.rel + n * 0.3) : 0;
     float snowy = gWeather2.x * open * smoothstep(0.35, 0.85, n.y);
@@ -169,27 +173,35 @@ float3 lightBlock(VSOut i, float3 albedo, bool front)
     if (i.lamp.a > 0.5)                                                                               // the lamp itself glows in its colour
         c = (dot(albedo, float3(0.2126, 0.7152, 0.0722)) * hue * 0.85 + albedo * hue * 0.3) * 3.2 * gExtra.w;
     float3 v = -normalize(i.rel);
-    if (wet > 0.01)   // wet sheen: a little of the sky mirrored, more on flat ground (puddles)
+    shine = max(i.mat.x, wet * lerp(0.35, 0.8, saturate(n.y)));     // wet ground shines like a puddle
+    if (i.mat.y > 0.5) { shine = 1; c *= 0.15; }                      // a mirror is (almost) only its reflection
+    if (gRefl.x < 0.5 && shine > 0.01)   // reflections off: just a little of the sky mirrored
     {
         float fr = 0.04 + 0.96 * pow(1 - saturate(dot(n, v)), 5);
-        c += skyColor(reflect(-v, n)) * fr * wet * lerp(0.3, 1, saturate(n.y)) * 0.9;
+        c += skyColor(reflect(-v, n)) * fr * shine * 0.9;
     }
     float d = length(i.rel);
     float f = saturate((d - gFogRange.x) / max(gFogRange.y - gFogRange.x, 1));
     return lerp(c, skyColor(normalize(i.rel)), f * f);
 }
 
-float4 PS_Opaque(VSOut i, bool front : SV_IsFrontFace) : SV_Target
+PSOut PS_Opaque(VSOut i, bool front : SV_IsFrontFace)
 {
     float4 t = gTex.Sample(gSamp, i.uvl);
-    return float4(lightBlock(i, t.rgb, front), 1);
+    PSOut o; float3 n; float sh;
+    o.color = float4(lightBlock(i, t.rgb, front, n, sh), 1);
+    o.surface = float4(n * 0.5 + 0.5, sh);
+    return o;
 }
 
-float4 PS_Cutout(VSOut i, bool front : SV_IsFrontFace) : SV_Target
+PSOut PS_Cutout(VSOut i, bool front : SV_IsFrontFace)
 {
     float4 t = gTex.Sample(gSamp, i.uvl);
     clip(t.a - 0.5);
-    return float4(lightBlock(i, t.rgb, front), 1);
+    PSOut o; float3 n; float sh;
+    o.color = float4(lightBlock(i, t.rgb, front, n, sh), 1);
+    o.surface = float4(n * 0.5 + 0.5, sh);
+    return o;
 }
 
 // the see-through preview of the block you are about to place
@@ -325,8 +337,81 @@ float4 PS_Sky(SkyOut i) : SV_Target
     return float4(c, 1);
 }
 
-// ---------------------------------------------------------------- volumetrics: clouds and ground fog over the picture
+// ---------------------------------------------------------------- reflections (screen space): shiny pixels look for what they mirror
+// in the finished picture by walking a ray through the depth buffer; where it finds nothing, they mirror the sky.
 Texture2D gHdr : register(t0);
+Texture2D gSurface : register(t5);
+SamplerState gClamp : register(s3);
+float ignR(float2 px) { return frac(52.9829189 * frac(dot(px, float2(0.06711056, 0.00583715)))); }
+float linDepth(float zb) { return gDepth.x * gDepth.y / (gDepth.y - zb * (gDepth.y - gDepth.x)); }
+
+float4 PS_Reflect(SkyOut i) : SV_Target
+{
+    int2 px = int2(i.pos.xy);
+    float3 scene = gHdr.Load(int3(px, 0)).rgb;
+    float4 g = gSurface.Load(int3(px, 0));
+    float shine = g.a;
+    if (shine < 0.02 || gRefl.x < 0.5) return float4(scene, 1);
+    float3 n = normalize(g.xyz * 2 - 1);
+    float3 dir = normalize(gCamF.xyz + gCamR.xyz * (i.ndc.x * gProj.x * gProj.y) + gCamU.xyz * (i.ndc.y * gProj.x));
+    float zb = gSceneDepth.Load(int3(px, 0));
+    float dist = linDepth(zb) / max(dot(dir, gCamF.xyz), 1e-3);
+    float3 P = dir * dist;                                   // the surface, relative to the camera
+    float3 r = reflect(dir, n);
+    bool mirror = shine > 0.999;
+
+    // walk the ray: small steps first, longer further away
+    float3 pos = P + n * (0.03 + dist * 0.002);
+    float stepLen = 0.12 + dist * 0.01, travelled = 0;
+    float jitter = ignR(i.pos.xy);
+    pos += r * stepLen * jitter;
+    bool hit = false; float2 huv = 0;
+    int steps = (int)gRefl.y;
+    [loop] for (int k = 0; k < steps && travelled < gRefl.z; k++)
+    {
+        float3 prev = pos;
+        pos += r * stepLen; travelled += stepLen;
+        float4 c = mul(float4(pos, 1), gViewProj);
+        if (c.w <= 0.05) break;
+        float2 ndc = c.xy / c.w;
+        if (any(abs(ndc) > 1)) break;
+        float2 uv = ndc * float2(0.5, -0.5) + 0.5;
+        float sceneZ = linDepth(gSceneDepth.Load(int3(uv * gDepth.zw, 0)));
+        float behind = c.w - sceneZ;
+        if (behind > 0 && behind < max(0.5, stepLen * 2.5))
+        {
+            // found it: home in between the last two steps
+            float3 a = prev, b = pos;
+            [unroll] for (int s = 0; s < 5; s++)
+            {
+                float3 m = (a + b) * 0.5; float4 cm = mul(float4(m, 1), gViewProj);
+                float2 um = cm.xy / cm.w * float2(0.5, -0.5) + 0.5;
+                if (cm.w - linDepth(gSceneDepth.Load(int3(um * gDepth.zw, 0))) > 0) b = m; else a = m;
+            }
+            float4 cb = mul(float4(b, 1), gViewProj);
+            huv = cb.xy / cb.w * float2(0.5, -0.5) + 0.5; hit = true; break;
+        }
+        stepLen *= 1.12;
+    }
+
+    // where the ray finds nothing on screen: the sky (only if this spot is under the open sky, else a dim guess)
+    float open = skyExposed(P + n * 0.3);
+    float3 fallback = skyColor(r) * lerp(0.15, 1, open * saturate(r.y * 4 + 0.6)) + gAmbient.rgb * 0.15 * (1 - open);
+    float3 refl = fallback;
+    if (hit)
+    {
+        float2 e = min(huv, 1 - huv);
+        float edge = saturate(min(e.x, e.y) * 12) * saturate(1 - travelled / gRefl.z);   // fade near the picture's edges
+        refl = lerp(fallback, gHdr.SampleLevel(gClamp, huv, 0).rgb, edge);
+    }
+    float NdotV = saturate(dot(n, -dir));
+    float f0 = mirror ? 0.9 : 0.02 + 0.35 * shine;
+    float F = f0 + (1 - f0) * pow(1 - NdotV, 5);
+    float k = mirror ? 1 : saturate(shine * 1.4);
+    return float4(scene * (1 - F * k * 0.5) + refl * F * k, 1);
+}
+
+// ---------------------------------------------------------------- volumetrics: clouds and ground fog over the picture
 float ign(float2 px) { return frac(52.9829189 * frac(dot(px, float2(0.06711056, 0.00583715)))); }   // even per-pixel noise: no banding
 
 float4 PS_Volume(SkyOut i) : SV_Target
@@ -425,7 +510,6 @@ float3 tonemap(float3 x)
 // ---------------------------------------------------------------- bloom: a chain of ever smaller, blurrier copies
 // gOffset (b1) here: xy = one pixel of the source, z = how much of this level to add
 Texture2D gBloomSrc : register(t0);
-SamplerState gClamp : register(s3);
 float4 PS_BloomDown(SkyOut i) : SV_Target
 {
     float2 uv = i.ndc * float2(0.5, -0.5) + 0.5, t = gOffset.xy;

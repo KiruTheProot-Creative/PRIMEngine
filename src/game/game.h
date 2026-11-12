@@ -21,6 +21,7 @@ struct Settings {
     bool cloudShadows = true;
     float bloom = 0.5f;        // glow around bright things, 0 = off
     bool swaying = true;       // leaves and plants move in the wind
+    int reflections = 1;       // 0 off, 1 normal, 2 high
     bool load(const std::string& path);
     bool save(const std::string& path) const;
 };

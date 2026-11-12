@@ -11,17 +11,21 @@
 namespace mc {
 
 // 32 bytes. Position relative to the chunk origin; layer = texture layer + 16384 x sway (0 none, 1 all, 2 top only);
-// lit: corner darkening (bits 0-7, 255 = open), lamp light red / green / blue 0..15 (bits 8-11, 12-15, 16-19), glows itself (bit 20);
+// lit: corner darkening (bits 0-7, 255 = open), lamp light red / green / blue 0..15 (bits 8-11, 12-15, 16-19), glows itself (bit 20),
+//      shininess 0..15 (bits 21-24), mirror (bit 25);
 // normal: direction in 3 bytes (x, y, z; 0..255 = -1..1) + texture face (bits 24-26)
 struct Vtx { float x, y, z, u, v, layer; uint32_t lit, normal; };
 inline uint32_t packNormal(float nx, float ny, float nz, int face) {
     auto b = [](float v) { int q = (int)((v * 0.5f + 0.5f) * 255.f + 0.5f); return (uint32_t)(q < 0 ? 0 : q > 255 ? 255 : q); };
     return b(nx) | (b(ny) << 8) | (b(nz) << 16) | ((uint32_t)(face & 7) << 24);
 }
-inline uint32_t packLit(float ao, const int rgb[3], bool emissive) {
+inline uint32_t packLit(float ao, const int rgb[3], bool emissive, float shine = 0, bool mirror = false) {
     int a = (int)(ao * 255 + 0.5f); a = a < 0 ? 0 : a > 255 ? 255 : a;
-    return (uint32_t)a | ((uint32_t)(rgb[0] & 15) << 8) | ((uint32_t)(rgb[1] & 15) << 12) | ((uint32_t)(rgb[2] & 15) << 16) | ((emissive ? 1u : 0u) << 20);
+    int s = (int)(shine * 15 + 0.5f); s = s < 0 ? 0 : s > 15 ? 15 : s;
+    return (uint32_t)a | ((uint32_t)(rgb[0] & 15) << 8) | ((uint32_t)(rgb[1] & 15) << 12) | ((uint32_t)(rgb[2] & 15) << 16) | ((emissive ? 1u : 0u) << 20)
+         | ((uint32_t)s << 21) | ((mirror ? 1u : 0u) << 25);
 }
+inline float shineOf(const Vtx& v) { return ((v.lit >> 21) & 15) / 15.f; }
 inline int faceOf(const Vtx& v) { return (int)((v.normal >> 24) & 7); }
 inline float aoOf(const Vtx& v) { return (v.lit & 255) / 255.f; }
 inline int lightOf(const Vtx& v, int ch) { return (int)(v.lit >> (8 + 4 * ch)) & 15; }

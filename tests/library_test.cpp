@@ -4,6 +4,7 @@
 #include "../src/core/png.h"
 #include "../src/world/shapes.h"
 #include <cstdio>
+#include <cmath>
 #include <filesystem>
 #include <thread>
 using namespace mc;
@@ -73,11 +74,12 @@ int main() {
     CHECK(r.get(rock).tex[0] == 0 && !fs::exists(lib.texturesDir() + "/Red_Rock.png"), "deleted texture: block shows the missing texture");
     r.remove(rock);
     CHECK(!r.has(rock) && r.get(rock).name == "missing block" && r.get(rock).solid, "deleted block reads as 'missing block'");
-    BlockDef nd; nd.name = "new"; nd.light = 9; nd.lightColor = 0x33CCFF; BlockId again = r.add(nd);
+    BlockDef nd; nd.name = "new"; nd.light = 9; nd.lightColor = 0x33CCFF; nd.shine = 0.75f; nd.mirror = true; BlockId again = r.add(nd);
     CHECK(again != rock && again > fl, "a deleted block's id is never given to a new block (%d)", again);
     lib.saveBlocks(r); { BlockRegistry r3; Library l3; l3.dir = lib.dir; l3.load(r3); BlockDef z; z.name = "z";
       CHECK(r3.add(z) == again + 1 && !r3.has(rock), "after reloading, new ids still continue after the deleted ones");
-      CHECK(r3.get(again).light == 9 && r3.get(again).lightColor == 0x33CCFF, "light level and colour are saved"); }
+      CHECK(r3.get(again).light == 9 && r3.get(again).lightColor == 0x33CCFF, "light level and colour are saved");
+      CHECK(std::fabs(r3.get(again).shine - 0.75f) < 1e-4f && r3.get(again).mirror, "shininess and mirror are saved"); }
     CHECK(r.uniqueName("new") == "new 2" && r.uniqueName("new", again) == "new", "unique names");
 
     // states: a plane keeps its facing in the upper bits
@@ -104,6 +106,7 @@ int main() {
     {
         BlockRegistry m; registerBuiltinBlocks(m); BlockId lamp = m.find("lamp"), stone = m.find("stone");
         CHECK(m.get(lamp).light == 15 && m.get(m.find("leaves")).waves, "the lamp glows (15) and leaves sway");
+        CHECK(m.get(m.find("metal")).shine > 0.5f && m.get(stone).shine == 0, "metal is shiny, stone is not");
         World w(m); w.gen.kind = Generator::Void; for (int x = -2; x <= 2; x++) for (int y = -2; y <= 2; y++) for (int z = -2; z <= 2; z++) w.loadChunk({ x, y, z });
         for (int x = 0; x < 16; x++) for (int z = 0; z < 16; z++) w.set(x, 0, z, stone);   // a floor
         w.set(8, 1, 8, lamp); for (int z = 0; z < 16; z++) for (int y = 1; y < 6; y++) w.set(12, y, z, stone);   // a wall at x = 12

@@ -230,9 +230,9 @@ void registerBuiltinBlocks(BlockRegistry& r) {
     block("log", "log_side", "log_top");
     block("sand", "sand");
     block("bricks", "bricks");
-    block("metal", "metal");
+    { BlockId m = block("metal", "metal"); BlockDef d = r.get(m); d.shine = 0.6f; r.put(m, d); }
     { BlockId l = block("lamp", "lamp"); BlockDef d = r.get(l); d.light = 15; r.put(l, d); }
-    block("glass", "glass", nullptr, nullptr, Render::Cutout, true);
+    { BlockId g = block("glass", "glass", nullptr, nullptr, Render::Cutout, true); BlockDef d = r.get(g); d.shine = 0.5f; r.put(g, d); }
     { BlockId l = block("leaves", "leaves", nullptr, nullptr, Render::Cutout, false); BlockDef d = r.get(l); d.waves = true; r.put(l, d); }
 }
 

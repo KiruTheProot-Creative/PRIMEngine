@@ -74,7 +74,7 @@ struct alignas(16) FrameCB {
     float sunDir[4], sunColor[4], ambient[4], fogRange[4], skyTop[4], skyHorizon[4], sunGlow[4], camF[4], camR[4], camU[4], proj[4], shadowInfo[4];
     float camPos[4], volume[4], depth[4], extra[4];
     XMFLOAT4X4 skyVP; float weather[4], weather2[4];
-    float env[4], envPart[4], envPartColor[4];
+    float env[4], envPart[4], envPartColor[4], refl[4];
 };
 struct alignas(16) ChunkCB { float offset[4]; };
 
@@ -90,6 +90,8 @@ struct App {
     ComPtr<ID3D11Texture2D> depthTex; ComPtr<ID3D11DepthStencilView> dsv;
     ComPtr<ID3D11VertexShader> vsBlock, vsSky, vsShadow; ComPtr<ID3D11PixelShader> psOpaque, psCutout, psSky, psGhost, psShadowCut, psPost, psVolume, psBloomDown, psBloomUp, psRain, psBolt;
     ComPtr<ID3D11VertexShader> vsSkyMap, vsRain, vsDust;
+    ComPtr<ID3D11PixelShader> psReflect;
+    ComPtr<ID3D11Texture2D> surfTex, reflTex; ComPtr<ID3D11RenderTargetView> surfRTV, reflRTV; ComPtr<ID3D11ShaderResourceView> surfSRV, reflSRV;   // for reflections
     ComPtr<ID3D11Texture2D> skyMapTex; ComPtr<ID3D11DepthStencilView> skyMapDSV; ComPtr<ID3D11ShaderResourceView> skyMapSRV;   // what is above each spot
     Weather weather; bool weatherWin = false;
     EnvState envState; bool envWin = false;
@@ -178,6 +180,7 @@ struct App {
             D3D11_DEPTH_STENCIL_VIEW_DESC dv{}; dv.Format = DXGI_FORMAT_D32_FLOAT; dv.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D; HR(dev->CreateDepthStencilView(skyMapTex.Get(), &dv, &skyMapDSV));
             D3D11_SHADER_RESOURCE_VIEW_DESC sv{}; sv.Format = DXGI_FORMAT_R32_FLOAT; sv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D; sv.Texture2D.MipLevels = 1; HR(dev->CreateShaderResourceView(skyMapTex.Get(), &sv, &skyMapSRV));
         }
+        b = Compile(src, "PS_Reflect", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psReflect));
         b = Compile(src, "PS_Post", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psPost));
         b = Compile(src, "VS_Sky", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsSky));
         b = Compile(src, "PS_Sky", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psSky));
@@ -234,6 +237,10 @@ struct App {
         d.Format = DXGI_FORMAT_R16G16B16A16_FLOAT; d.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
         hdrTex.Reset(); hdrRTV.Reset(); hdrSRV.Reset();
         HR(dev->CreateTexture2D(&d, nullptr, &hdrTex)); HR(dev->CreateRenderTargetView(hdrTex.Get(), nullptr, &hdrRTV)); HR(dev->CreateShaderResourceView(hdrTex.Get(), nullptr, &hdrSRV));
+        reflTex.Reset(); reflRTV.Reset(); reflSRV.Reset();
+        HR(dev->CreateTexture2D(&d, nullptr, &reflTex)); HR(dev->CreateRenderTargetView(reflTex.Get(), nullptr, &reflRTV)); HR(dev->CreateShaderResourceView(reflTex.Get(), nullptr, &reflSRV));
+        { D3D11_TEXTURE2D_DESC sd2 = d; sd2.Format = DXGI_FORMAT_R8G8B8A8_UNORM; surfTex.Reset(); surfRTV.Reset(); surfSRV.Reset();
+          HR(dev->CreateTexture2D(&sd2, nullptr, &surfTex)); HR(dev->CreateRenderTargetView(surfTex.Get(), nullptr, &surfRTV)); HR(dev->CreateShaderResourceView(surfTex.Get(), nullptr, &surfSRV)); }
         volTex.Reset(); volRTV.Reset(); volSRV.Reset();
         HR(dev->CreateTexture2D(&d, nullptr, &volTex)); HR(dev->CreateRenderTargetView(volTex.Get(), nullptr, &volRTV)); HR(dev->CreateShaderResourceView(volTex.Get(), nullptr, &volSRV));
         bloomLv.clear();   // half size, quarter size, ... six levels
@@ -667,6 +674,7 @@ struct App {
         fc.envPart[0] = E.particleKind; fc.envPart[1] = E.particleAmount; for (int i = 0; i < 3; i++) fc.envPartColor[i] = E.particleColor[i];
         fc.volume[2] = (float)std::fmod(cloudTime, 4800.0); fc.volume[3] = settings.cloudShadows ? 1.f : 0.f;
         fc.depth[0] = 0.05f; fc.depth[1] = farZ; fc.depth[2] = (float)cw; fc.depth[3] = (float)ch;
+        fc.refl[0] = settings.reflections > 0 ? 1.f : 0.f; fc.refl[1] = settings.reflections >= 2 ? 48.f : 28.f; fc.refl[2] = settings.reflections >= 2 ? 120.f : 64.f;
         fc.extra[0] = nightAmount * (1 - W.cover * 0.8f); fc.extra[1] = 0.15f * std::max(0.f, settings.bloom); fc.extra[2] = settings.swaying ? 0.5f + W.wind : 0.f; fc.extra[3] = 1;
         // "what is above" map: only needed while it rains/snows or surfaces are wet/snowy
         bool skyMap = W.rain > 0.01f || W.snow > 0.01f || weather.wetness > 0.01f || weather.snowCover > 0.01f;
@@ -725,12 +733,28 @@ struct App {
         ctx->PSSetShaderResources(3, 1, noiseSRV.GetAddressOf()); ctx->PSSetSamplers(2, 1, sampLinear.GetAddressOf());   // the planet uses the cloud noise
         ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psSky.Get(), nullptr, 0); ctx->Draw(3, 0);
         ctx->RSSetState(rsCull.Get());
+        { const float zero[4] = { 0, 0, 0, 0 }; ctx->ClearRenderTargetView(surfRTV.Get(), zero);
+          ID3D11RenderTargetView* two[2] = { hdrRTV.Get(), surfRTV.Get() }; ctx->OMSetRenderTargets(2, two, dsv.Get()); }   // blocks also note direction + shininess
         ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0);
         ID3D11ShaderResourceView* srvs[5] = { texArray.Get(), shadows ? shadowSRV.Get() : nullptr, nullptr, noiseSRV.Get(), skyMap ? skyMapSRV.Get() : nullptr }; ctx->PSSetShaderResources(0, 5, srvs);
         ID3D11SamplerState* samps[3] = { sampBlocks.Get(), sampShadow.Get(), sampLinear.Get() }; ctx->PSSetSamplers(0, 3, samps);
         drawnChunks = 0;
         ctx->PSSetShader(psOpaque.Get(), nullptr, 0); drawChunks(vp, 0, true);
         ctx->PSSetShader(psCutout.Get(), nullptr, 0); drawChunks(vp, 1, false);
+
+        // ---- reflections: shiny pixels look for what they mirror in the picture (depth must not be a target while read)
+        ctx->PSSetShaderResources(0, 5, none);
+        ctx->OMSetRenderTargets(1, reflRTV.GetAddressOf(), nullptr);
+        ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->IASetInputLayout(nullptr); ctx->RSSetState(rsNoCull.Get());
+        ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psReflect.Get(), nullptr, 0);
+        { ID3D11ShaderResourceView* r6[6] = { hdrSRV.Get(), nullptr, depthSRV.Get(), nullptr, skyMap ? skyMapSRV.Get() : nullptr, surfSRV.Get() }; ctx->PSSetShaderResources(0, 6, r6); }
+        ctx->PSSetSamplers(3, 1, sampClamp.GetAddressOf());
+        ctx->Draw(3, 0);
+        { ID3D11ShaderResourceView* n6[6] = {}; ctx->PSSetShaderResources(0, 6, n6); }
+        // everything after this draws over the reflected picture, still depth-tested against the world
+        ctx->OMSetRenderTargets(1, reflRTV.GetAddressOf(), dsv.Get()); ctx->RSSetState(rsCull.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0);
+        ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0);
+        ctx->PSSetShaderResources(0, 5, srvs);
         if (settings.blockPreview && Playing() && targetValid) {   // see-through preview of the next block
             if (ghostKey != targetValue) {
                 ghostKey = targetValue;
@@ -769,7 +793,7 @@ struct App {
         ctx->OMSetRenderTargets(1, volRTV.GetAddressOf(), nullptr);
         ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->IASetInputLayout(nullptr); ctx->RSSetState(rsNoCull.Get());
         ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psVolume.Get(), nullptr, 0);
-        { ID3D11ShaderResourceView* v4[4] = { hdrSRV.Get(), shadows ? shadowSRV.Get() : nullptr, depthSRV.Get(), noiseSRV.Get() }; ctx->PSSetShaderResources(0, 4, v4); }
+        { ID3D11ShaderResourceView* v4[4] = { reflSRV.Get(), shadows ? shadowSRV.Get() : nullptr, depthSRV.Get(), noiseSRV.Get() }; ctx->PSSetShaderResources(0, 4, v4); }
         ctx->Draw(3, 0);
 
         // ---- bloom: shrink the picture step by step, then add the blurry copies back up
@@ -935,6 +959,7 @@ struct App {
         ch_ |= ImGui::SliderFloat("Ground fog", &settings.groundFog, 0, 2, settings.groundFog <= 0 ? "none" : "%.2f");
         ch_ |= ImGui::SliderFloat("Glow (bloom)", &settings.bloom, 0, 1, settings.bloom <= 0 ? "off" : "%.2f");
         ch_ |= ImGui::Checkbox("Leaves and plants sway in the wind", &settings.swaying);
+        const char* rq[] = { "Off (only the sky)", "Normal", "High" }; ch_ |= ImGui::Combo("Reflections", &settings.reflections, rq, 3);
         if (ch_) settings.save(settingsPath);
         if (ImGui::Button("Done", ImVec2(-1, 0))) showSettings = false;
         ImGui::End();
@@ -1209,6 +1234,8 @@ struct App {
                 draft.lightColor = ((uint32_t)std::lround(col[0] * 255) << 16) | ((uint32_t)std::lround(col[1] * 255) << 8) | (uint32_t)std::lround(col[2] * 255);
         }
         ImGui::Checkbox("Sways in the wind", &draft.waves);
+        ImGui::SetNextItemWidth(160 * ui); ImGui::SliderFloat("Shininess", &draft.shine, 0, 1, draft.shine <= 0 ? "matt" : "%.2f");
+        ImGui::SameLine(); ImGui::Checkbox("Mirror", &draft.mirror);
         if (draft.shape != Shape::Cube) ImGui::TextDisabled(draft.shape == Shape::Cross ? "Stands in the middle of its block. You walk through it." : "Sticks to the side of the block you click on. You walk through it.");
         ImGui::EndGroup();
 
@@ -1338,6 +1365,8 @@ struct App {
             if (lamp) for (auto c : { std::make_pair("blue lamp", 0x3070FFu), std::make_pair("red lamp", 0xFF2A20u), std::make_pair("green lamp", 0x40FF60u) }) {
                 BlockDef d = reg.get(lamp); d.name = c.first; d.lightColor = c.second; if (!reg.find(c.first)) reg.add(d);
             }
+            BlockId metal = reg.find("metal");
+            if (metal && !reg.find("mirror")) { BlockDef d = reg.get(metal); d.name = "mirror"; d.mirror = true; d.shine = 1; reg.add(d); }
         }
         CreateWorld("Screenshot demo", 0); Capture(false);
         buildDemo(*world, reg);

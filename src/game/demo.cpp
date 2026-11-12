@@ -66,6 +66,10 @@ void buildDemo(World& w, const BlockRegistry& r) {
     for (int k = 0; k < 3; k++) { w.set(22, k, 4 + k, shape("cobblestone", "stairs", facing("stairs", F_PZ))); box(22, 0, 4 + k, 22, k - 1, 4 + k, B("cobblestone")); }
     box(22, 0, 7, 24, 2, 9, B("cobblestone"));
     w.set(23, 3, 8, shape("glass", "ball"));
+
+    // ---- a polished metal floor in front of the garden, and a mirror (if there is a mirror block)
+    box(12, -1, -7, 21, -1, -1, B("metal"));
+    if (B("mirror")) box(11, 0, 9, 13, 2, 9, B("mirror"));
 }
 
 std::vector<DemoShot> demoShots() {
@@ -89,6 +93,9 @@ std::vector<DemoShot> demoShots() {
         { "snow", { -12, 10, -16 }, { 6, 2, 6 }, 11.0f, "snow" },
         { "blizzard", { -6, 3, -8 }, { 6, 2, 6 }, 14.0f, "blizzard" },
         { "foggy", { -12, 4, -16 }, { 6, 2, 6 }, 10.0f, "foggy" },
+        { "reflections_metal_floor", { 16.5, 1.7, -11 }, { 16.5, 0.5, 3 }, 12.5f },
+        { "mirror", { 12.5, 1.6, 4.5 }, { 12.5, 1.4, 9 }, 14.0f },
+        { "rain_night_puddles", { 5.5, 1.9, -3.5 }, { 6, 0.6, 3 }, 22.5f, "rain" },
         { "env_desert", { -12, 3, -16 }, { 6, 2, 6 }, 13.0f, "clear", false, "desert" },
         { "env_arctic", { -12, 6, -16 }, { 6, 2, 6 }, 9.5f, "partly_cloudy", false, "arctic" },
         { "env_space", { -4, 3, -12 }, { 31, 33, 77 }, 10.0f, "partly_cloudy", false, "space" },

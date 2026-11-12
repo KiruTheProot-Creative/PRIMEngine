@@ -46,6 +46,8 @@ struct BlockDef {
         for (int i = 0; i < 3; i++) out[i] = (light * c[i] + m / 2) / m;
     }
     bool waves = false;                  // sways in the wind (leaves, plants)
+    float shine = 0;                     // how much it reflects: 0 matt (dirt) .. 1 polished (metal, ice)
+    bool mirror = false;                 // reflects like a mirror
     bool exists = true;                  // false = a deleted id (kept so old worlds stay readable)
 };
 
