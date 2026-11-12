@@ -1,5 +1,8 @@
 // Game logic tests: creative player, undo/redo, world info and settings files.
 #include "../src/game/game.h"
+#include "../src/game/project.h"
+#include <filesystem>
+#include <fstream>
 #include "../src/game/weather.h"
 #include <cstdio>
 #include <filesystem>
@@ -121,6 +124,28 @@ int main() {
         PlayerRules fr; fr.fallDamage = 5; PlayState fs; Player f; fs.start(f, fr, { 0.5, 20, 0.5 }, 0);
         for (int k = 0; k < 300; k++) { f.update(w, Controls{}, 1.0 / 60, fr); fs.tick(w, f, fr, { 0.5, 20, 0.5 }, 0, 1.0 / 60); }
         CHECK(fs.health < fr.maxHealth && fs.health > 0 && !fs.dead(), "a long fall hurts when fall damage is on (%.0f health)", fs.health);
+    }
+
+    // game projects
+    {
+        namespace fs = std::filesystem; std::error_code ec;
+        std::string ex = "/tmp/prim_proj_exe", root = ex + "/projects"; fs::remove_all(ex, ec);
+        fs::create_directories(ex + "/game/textures"); fs::create_directories(ex + "/worlds/Old World");
+        { std::ofstream(ex + "/game/blocks.txt") << "next_id = 1\n"; std::ofstream(ex + "/game/textures/rock.png") << "x"; }
+        WorldInfo ow; ow.name = "Old World"; ow.save(ex + "/worlds/Old World");
+        std::string first = Projects::migrateOld(ex, root);
+        CHECK(!first.empty() && fs::exists(first + "/blocks.txt") && fs::exists(first + "/textures/rock.png") && fs::exists(first + "/worlds/Old World/world.txt") && !fs::exists(ex + "/worlds"),
+              "old blocks, textures and worlds move into a first project");
+        CHECK(Projects::migrateOld(ex, root).empty(), "moving happens only once");
+        std::string sp = Projects::create(root, "Space: Pirates!"), sp2 = Projects::create(root, "Space: Pirates!");
+        auto L = Projects::list(root);
+        CHECK(L.size() == 3 && fs::path(sp).filename() == "Space_ Pirates_" && fs::path(sp2).filename() == "Space_ Pirates_ (2)", "projects get safe, unique folders (%d projects)", (int)L.size());
+        bool named = false; for (auto& p : L) named |= p.name == "Space: Pirates!" && p.worlds == 0;
+        CHECK(named && Projects::countWorlds(first) == 1, "projects list their names and worlds");
+        GameSettings g; g.lastWorld = "Level 2"; g.save(sp + "/game.txt"); GameSettings h; h.load(sp + "/game.txt");
+        CHECK(h.lastWorld == "Level 2", "the last open world is remembered");
+        CHECK(Projects::remove(sp2) && !fs::exists(sp2) && !Projects::remove(ex + "/nothing"), "deleting a project");
+        CHECK(Projects::ago(1000, 1000 + 3 * 86400 + 5) == "3 days ago" && Projects::ago(1000, 1500) == "today", "how long ago");
     }
 
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);

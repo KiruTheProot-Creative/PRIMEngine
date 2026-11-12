@@ -47,6 +47,7 @@ struct PlayerRules {
 struct GameSettings {
     std::string name = "My Game";
     std::string startWorld;                           // world folder the game starts in
+    std::string lastWorld;                            // the world the editor had open last
     PlayerRules player;
     bool load(const std::string& path);
     bool save(const std::string& path) const;

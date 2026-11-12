@@ -6,6 +6,7 @@
 #include "../world/library.h"
 #include "../world/shapes.h"
 #include "../game/demo.h"
+#include "../game/project.h"
 #include "../game/weather.h"
 #include "../core/png.h"
 #include "../core/noise.h"
@@ -40,6 +41,8 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM,
 #include <fstream>
 #include <sstream>
 #include <unordered_map>
+#include <functional>
+#include <cctype>
 
 using namespace DirectX;
 using Microsoft::WRL::ComPtr;
@@ -161,7 +164,9 @@ struct App {
     GameSettings game; std::string gamePath;
     bool playMode = false; PlayState play; Player editCam; V3 playSpawn{}; double playYaw = 0;
     bool EditorView() const { return screen == Screen::Game && !playMode && !plainView; }
-    bool createOpen = false; std::string newName = "New World"; int newType = 0; std::string deleteAsk;
+    std::string newName = "New World"; int newType = 0; std::string deleteAsk, renameFrom;
+    std::string projectDir; std::vector<ProjectEntry> projects; int projSel = 0; std::string newProjName; int newWorldType = 0;
+    std::function<void()> pending;                // a big change (open a project or world) done at the start of the next frame, not in the middle of drawing
     std::vector<std::string> worldList;
 
     // ================================================================== setup
@@ -233,8 +238,7 @@ struct App {
         ss.BorderColor[0] = ss.BorderColor[1] = ss.BorderColor[2] = ss.BorderColor[3] = 1; ss.ComparisonFunc = D3D11_COMPARISON_LESS_EQUAL; ss.MaxLOD = D3D11_FLOAT32_MAX; HR(dev->CreateSamplerState(&ss, &sampShadow));
 
         Shapes::get();   // prepares every shape in every rotation (a few milliseconds)
-        library.dir = ExeDir() + "game"; library.load(reg);   // game\blocks.txt + game\textures\*.png (made the first time)
-        UploadTextures();
+        UploadTextures();   // only the "missing" texture until a project is opened
         DragAcceptFiles(hwnd, TRUE);
 
         IMGUI_CHECKVERSION(); ImGui::CreateContext();
@@ -244,9 +248,9 @@ struct App {
         ImGui_ImplWin32_Init(hwnd); ImGui_ImplDX11_Init(dev.Get(), ctx.Get());
 
         settingsPath = ExeDir() + "settings.txt"; settings.load(settingsPath);
-        { std::error_code ec; fs::create_directories(ExeDir() + "game", ec); gamePath = ExeDir() + "game/game.txt"; if (!game.load(gamePath)) game.save(gamePath); }
+        Projects::migrateOld(ExeDir(), ProjectsRoot());   // the game\ and worlds\ folders from before projects become "My First Game"
         RAWINPUTDEVICE rid{ 0x01, 0x02, 0, hwnd }; RegisterRawInputDevices(&rid, 1, sizeof rid);   // raw mouse movement for looking around
-        RefreshWorlds();
+        RefreshProjects();
     }
     void MakeBackbuffer() { ComPtr<ID3D11Texture2D> bb; HR(swap->GetBuffer(0, IID_PPV_ARGS(&bb))); backRTV.Reset(); HR(dev->CreateRenderTargetView(bb.Get(), nullptr, &backRTV)); }
     // everything the 3D picture needs, at its size (rw x rh): the whole window when playing, the viewport panel in the editor
@@ -378,7 +382,7 @@ struct App {
     }
 
     // ================================================================== worlds
-    std::string WorldsDir() { std::string d = ExeDir() + "worlds"; std::error_code ec; fs::create_directories(d, ec); return d; }
+    std::string WorldsDir() { std::string d = projectDir + "/worlds"; std::error_code ec; fs::create_directories(d, ec); return d; }
     void RefreshWorlds() {
         worldList.clear(); std::error_code ec;
         for (auto& e : fs::directory_iterator(WorldsDir(), ec)) if (e.is_directory() && fs::exists(e.path() / "world.txt")) worldList.push_back(e.path().filename().string());
@@ -404,7 +408,9 @@ struct App {
         if (type == 3) { world->set(0, -1, 0, reg.find("stone")); }   // something to stand on in an empty world
     }
     void OpenWorld(const std::string& folder) {
+        if (world) CloseWorld();
         worldDir = WorldsDir() + "/" + folder;
+        game.lastWorld = folder; game.save(gamePath); RefreshWorlds();
         info = WorldInfo{}; info.load(worldDir);
         world = std::make_unique<World>(reg); info.applyGenerator(world->gen, reg);
         world->store = std::make_unique<RegionStore>(worldDir + "/region");
@@ -426,10 +432,27 @@ struct App {
         info.player = playMode ? editCam : player; info.hotSel = hotSel; info.weather = weather.type().key; info.autoWeather = weather.autoChange; for (int i = 0; i < 9; i++) info.hotbar[i] = !reg.has(hotbar[i]) ? "" : reg.get(hotbar[i]).name + (shapeOf(hotbar[i]) ? "@" + Shapes::get().info(shapeOf(hotbar[i])).key : "");
         info.save(worldDir); world->saveAll();
     }
-    void CloseWorld() {
+    void CloseWorld() {   // the project stays open
         if (playMode) StopPlay();
-        SaveWorld(); workers.reset(); world.reset(); gpu.clear(); latestSeq.clear();
-        screen = Screen::Title; Capture(false); RefreshWorlds();
+        SaveWorld(); workers.reset(); world.reset(); gpu.clear(); latestSeq.clear(); Capture(false);
+    }
+    std::string CurrentWorld() const { return world ? fs::path(worldDir).filename().string() : ""; }
+    void RenameWorld(const std::string& from, const std::string& to) {
+        bool wasOpen = from == CurrentWorld(); if (wasOpen) CloseWorld();
+        std::string folder = Projects::uniqueFolder(WorldsDir(), to); std::error_code ec;
+        fs::rename(WorldsDir() + "/" + from, WorldsDir() + "/" + folder, ec);
+        if (ec) folder = from;
+        else { WorldInfo wi; wi.load(WorldsDir() + "/" + folder); wi.name = to; wi.save(WorldsDir() + "/" + folder);
+               if (game.startWorld == from) game.startWorld = folder; if (game.lastWorld == from) game.lastWorld = folder; game.save(gamePath); }
+        RefreshWorlds();
+        if (wasOpen) OpenWorld(folder);
+        Toast(ec ? "Could not rename the world (is a file in it open?)" : "Renamed to " + to);
+    }
+    void DeleteWorld(const std::string& folder) {
+        if (folder == CurrentWorld()) return;   // never the open one
+        std::error_code ec; fs::remove_all(WorldsDir() + "/" + folder, ec);
+        if (game.startWorld == folder) { game.startWorld.clear(); game.save(gamePath); }
+        RefreshWorlds(); Toast("Deleted the world " + folder);
     }
 
     // ================================================================== input
@@ -1084,43 +1107,96 @@ struct App {
         if (ImGui::Button("Done", ImVec2(-1, 0))) showSettings = false;
         ImGui::End();
     }
-    void TitleScreen() {
-        Center(ImVec2(520 * settings.uiScale, 460 * settings.uiScale));
-        ImGui::Begin("PRIMEngine", nullptr, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize);
-        ImGui::TextDisabled("Worlds");
-        ImGui::BeginChild("worlds", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() * 3 - 8), ImGuiChildFlags_Borders);
-        if (worldList.empty()) ImGui::TextDisabled("No worlds yet. Create one below.");
-        static int selected = -1;
-        for (int i = 0; i < (int)worldList.size(); i++) {
-            if (ImGui::Selectable(worldList[i].c_str(), selected == i, ImGuiSelectableFlags_AllowDoubleClick)) { selected = i; if (ImGui::IsMouseDoubleClicked(0)) OpenWorld(worldList[i]); }
+    // ================================================================== project manager (the start screen)
+    std::string ProjectsRoot() { std::string d = ExeDir() + "projects"; std::error_code ec; fs::create_directories(d, ec); return d; }
+    void RefreshProjects() { projects = Projects::list(ProjectsRoot()); if (projSel >= (int)projects.size()) projSel = projects.empty() ? -1 : 0; }
+    void OpenProject(const std::string& dir, int firstWorldType = 0) {
+        if (world) CloseWorld();
+        projectDir = dir;
+        library = Library{}; library.dir = dir; library.load(reg); UploadTextures(); ghostKey = 0xFFFFFFFFu;   // this game's blocks and textures
+        game = GameSettings{}; gamePath = dir + "/game.txt"; game.load(gamePath);
+        RefreshWorlds();
+        auto has = [&](const std::string& n) { return !n.empty() && std::find(worldList.begin(), worldList.end(), n) != worldList.end(); };
+        std::string w = has(game.lastWorld) ? game.lastWorld : has(game.startWorld) ? game.startWorld : worldList.empty() ? "" : worldList[0];
+        if (w.empty()) CreateWorld("Level 1", firstWorldType); else OpenWorld(w);
+        SetWindowTextA(hwnd, ("PRIMEngine - " + game.name).c_str());
+    }
+    void CloseProject() {
+        if (world) CloseWorld();
+        if (!gamePath.empty()) game.save(gamePath);
+        screen = Screen::Title; Capture(false); editorOpen = false; sel = Sel::World; RefreshProjects();
+        SetWindowTextA(hwnd, "PRIMEngine");
+    }
+    static ImU32 NameColor(const std::string& s) {   // a steady colour per project name
+        uint32_t h = 2166136261u; for (char c : s) h = (h ^ (uint8_t)c) * 16777619u;
+        static const ImU32 cols[] = { IM_COL32(86, 156, 214, 255), IM_COL32(220, 120, 80, 255), IM_COL32(120, 190, 100, 255), IM_COL32(190, 110, 210, 255), IM_COL32(230, 180, 60, 255), IM_COL32(80, 190, 180, 255), IM_COL32(220, 90, 130, 255) };
+        return cols[h % 7];
+    }
+    void ProjectManager() {
+        float ui = settings.uiScale; const ImGuiViewport* vp = ImGui::GetMainViewport();
+        ImGui::SetNextWindowPos(vp->WorkPos); ImGui::SetNextWindowSize(vp->WorkSize);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(28 * ui, 22 * ui));
+        ImGui::Begin("##projects", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus);
+        ImGui::PopStyleVar();
+        ImGui::PushFont(nullptr, ImGui::GetFontSize() * 2.2f); ImGui::TextUnformatted("PRIMEngine"); ImGui::PopFont();
+        ImGui::TextDisabled("Your game projects. Each one is a whole game: its blocks, textures, worlds and rules.");
+        ImGui::Spacing();
+        float side = 240 * ui, sp = ImGui::GetStyle().ItemSpacing.x;
+        ImGui::BeginChild("list", ImVec2(-side - sp, 0), ImGuiChildFlags_Borders);
+        std::time_t now = std::time(nullptr);
+        if (projects.empty()) {
+            ImGui::Dummy(ImVec2(0, 60 * ui)); ImGui::TextDisabled("No projects yet.");
+            if (ImGui::Button("Make your first game", ImVec2(240 * ui, 40 * ui))) { newProjName = "My Game"; wantPopup = "New project"; }
+        }
+        for (int i = 0; i < (int)projects.size(); i++) {
+            const ProjectEntry& p = projects[i]; ImGui::PushID(i);
+            float h = 64 * ui;
+            if (ImGui::Selectable("##card", projSel == i, ImGuiSelectableFlags_AllowDoubleClick, ImVec2(0, h))) {
+                projSel = i; if (ImGui::IsMouseDoubleClicked(0)) pending = [this, f = p.folder] { OpenProject(f); };
+            }
+            if (ImGui::BeginPopupContextItem("ctx")) {
+                projSel = i;
+                if (ImGui::MenuItem("Open")) pending = [this, f = p.folder] { OpenProject(f); };
+                if (ImGui::MenuItem("Rename...")) { newProjName = p.name; wantPopup = "Rename project"; }
+                if (ImGui::MenuItem("Show the folder")) ShellExecuteA(nullptr, "open", p.folder.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                ImGui::Separator();
+                if (ImGui::MenuItem("Delete...")) wantPopup = "Delete project?";
+                ImGui::EndPopup();
+            }
+            ImVec2 a = ImGui::GetItemRectMin(); ImDrawList* dl = ImGui::GetWindowDrawList();
+            float ic = h - 12 * ui; ImVec2 i0(a.x + 6 * ui, a.y + 6 * ui);
+            dl->AddRectFilled(i0, ImVec2(i0.x + ic, i0.y + ic), NameColor(p.name), 8.f * ui);
+            std::string ini; for (size_t k = 0; k < p.name.size() && ini.size() < 2; k++) if (std::isalnum((unsigned char)p.name[k]) && (k == 0 || p.name[k - 1] == ' ')) ini += (char)std::toupper((unsigned char)p.name[k]);
+            ImGui::PushFont(nullptr, ImGui::GetFontSize() * 1.6f);
+            ImVec2 ts = ImGui::CalcTextSize(ini.c_str()); dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(i0.x + (ic - ts.x) * 0.5f, i0.y + (ic - ts.y) * 0.5f), IM_COL32(255, 255, 255, 240), ini.c_str());
+            ImGui::PopFont();
+            float tx = i0.x + ic + 14 * ui;
+            ImGui::PushFont(nullptr, ImGui::GetFontSize() * 1.25f);
+            dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(tx, a.y + 8 * ui), IM_COL32(240, 240, 245, 255), p.name.c_str());
+            ImGui::PopFont();
+            std::string line = std::to_string(p.worlds) + (p.worlds == 1 ? " world" : " worlds") + "   -   opened " + Projects::ago(p.opened, now);
+            dl->AddText(ImVec2(tx, a.y + 34 * ui), IM_COL32(160, 165, 175, 255), line.c_str());
+            dl->AddText(ImVec2(tx + ImGui::CalcTextSize(line.c_str()).x + 24 * ui, a.y + 34 * ui), IM_COL32(110, 115, 125, 255), fs::path(p.folder).filename().string().c_str());
+            ImGui::PopID();
         }
         ImGui::EndChild();
-        float w3 = (ImGui::GetContentRegionAvail().x - 16) / 3;
-        ImGui::BeginDisabled(selected < 0 || selected >= (int)worldList.size());
-        if (ImGui::Button("Play", ImVec2(w3, 0))) OpenWorld(worldList[selected]);
-        ImGui::SameLine(); if (ImGui::Button("Delete", ImVec2(w3, 0))) { deleteAsk = worldList[selected]; ImGui::OpenPopup("Delete world?"); }
+        ImGui::SameLine();
+        ImGui::BeginChild("side", ImVec2(side, 0));
+        ImVec2 bw(-1, 34 * ui);
+        if (ImGui::Button("New project", bw)) { newProjName = "My Game"; newWorldType = 0; wantPopup = "New project"; }
+        bool ok = projSel >= 0 && projSel < (int)projects.size();
+        ImGui::BeginDisabled(!ok);
+        if (ImGui::Button("Open", bw)) pending = [this, f = projects[projSel].folder] { OpenProject(f); };
+        if (ImGui::Button("Rename...", ImVec2(-1, 0))) { newProjName = projects[projSel].name; wantPopup = "Rename project"; }
+        if (ImGui::Button("Show the folder", ImVec2(-1, 0))) ShellExecuteA(nullptr, "open", projects[projSel].folder.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        if (ImGui::Button("Delete...", ImVec2(-1, 0))) wantPopup = "Delete project?";
         ImGui::EndDisabled();
-        ImGui::SameLine(); if (ImGui::Button("Create new world", ImVec2(w3, 0))) { createOpen = true; ImGui::OpenPopup("Create world"); }
-        if (ImGui::Button("Blocks & textures", ImVec2(w3, 0))) libraryOpen = true;
-        ImGui::SameLine(); if (ImGui::Button("Settings", ImVec2(w3, 0))) showSettings = true;
-        ImGui::SameLine(); if (ImGui::Button("Quit", ImVec2(w3, 0))) PostQuitMessage(0);
-        if (ImGui::Button("Open worlds folder", ImVec2(w3, 0))) ShellExecuteA(nullptr, "open", WorldsDir().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-
-        if (ImGui::BeginPopupModal("Create world", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-            ImGui::SetNextItemWidth(300); ImGui::InputText("Name", &newName);
-            const char* types[] = { "Flat: grass, dirt, stone", "Flat: stone", "Flat: sand", "Void: empty (one block to start)" };
-            ImGui::SetNextItemWidth(300); ImGui::Combo("World type", &newType, types, 4);
-            ImGui::TextDisabled("The world has no size limit. It loads around you as you move.");
-            if (ImGui::Button("Create", ImVec2(140, 0))) { ImGui::CloseCurrentPopup(); CreateWorld(newName.empty() ? "World" : newName, newType); }
-            ImGui::SameLine(); if (ImGui::Button("Cancel", ImVec2(140, 0))) ImGui::CloseCurrentPopup();
-            ImGui::EndPopup();
-        }
-        if (ImGui::BeginPopupModal("Delete world?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-            ImGui::Text("Delete \"%s\" for good?", deleteAsk.c_str());
-            if (ImGui::Button("Delete", ImVec2(140, 0))) { std::error_code ec; fs::remove_all(WorldsDir() + "/" + deleteAsk, ec); RefreshWorlds(); selected = -1; ImGui::CloseCurrentPopup(); }
-            ImGui::SameLine(); if (ImGui::Button("Cancel", ImVec2(140, 0))) ImGui::CloseCurrentPopup();
-            ImGui::EndPopup();
-        }
+        ImGui::Separator();
+        if (ImGui::Button("Open the projects folder", ImVec2(-1, 0))) ShellExecuteA(nullptr, "open", ProjectsRoot().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        if (ImGui::Button("Settings", ImVec2(-1, 0))) showSettings = true;
+        if (ImGui::Button("Quit", ImVec2(-1, 0))) PostQuitMessage(0);
+        ImGui::Spacing(); ImGui::TextDisabled("Double-click a project to open it.\nRight-click for more.");
+        ImGui::EndChild();
         ImGui::End();
     }
     // ---- Play mode
@@ -1499,7 +1575,10 @@ struct App {
             if (ImGui::MenuItem("Import images...")) { auto f = PickImages(); if (!f.empty()) { importFiles = f; wantPopup = "Import images"; } }
             if (ImGui::MenuItem("Open textures folder")) ShellExecuteA(nullptr, "open", library.texturesDir().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
             ImGui::Separator();
-            if (ImGui::MenuItem("Close world (back to the title screen)")) CloseWorld();
+            if (ImGui::MenuItem("New world...")) { newName = "New World"; newType = 0; wantPopup = "New world"; }
+            if (ImGui::MenuItem("Show the project folder")) ShellExecuteA(nullptr, "open", projectDir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            ImGui::Separator();
+            if (ImGui::MenuItem("Close project (back to the projects)")) pending = [this] { CloseProject(); };
             if (ImGui::MenuItem("Quit")) PostMessageA(hwnd, WM_CLOSE, 0, 0);
             ImGui::EndMenu();
         }
@@ -1572,7 +1651,30 @@ struct App {
     void Outliner() {
         ImGui::Begin("Outliner");
         ImGuiTreeNodeFlags open = ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth;
-        if (ImGui::TreeNodeEx("World", open, "World: %s", info.name.c_str())) {
+        if (ImGui::TreeNodeEx("Worlds", open, "Worlds (%d)", (int)worldList.size())) {   // every world (level) of this game
+            std::string cur = CurrentWorld();
+            for (const std::string& w : worldList) {
+                ImGui::PushID(w.c_str());
+                bool isCur = w == cur;
+                ImGuiTreeNodeFlags f = ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen | ImGuiTreeNodeFlags_SpanAvailWidth | (isCur ? ImGuiTreeNodeFlags_Selected : 0);
+                std::string label = w + (w == game.startWorld ? "   (start)" : "") + (isCur ? "   - open" : "");
+                ImGui::TreeNodeEx("w", f, "%s", label.c_str());
+                if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0) && !isCur) pending = [this, w] { OpenWorld(w); };
+                if (ImGui::IsItemHovered() && !isCur) ImGui::SetTooltip("Double-click to open it");
+                if (ImGui::BeginPopupContextItem("wctx")) {
+                    if (ImGui::MenuItem("Open", nullptr, false, !isCur)) pending = [this, w] { OpenWorld(w); };
+                    if (ImGui::MenuItem("The game starts here", nullptr, w == game.startWorld)) { game.startWorld = w == game.startWorld ? "" : w; game.save(gamePath); }
+                    if (ImGui::MenuItem("Rename...")) { renameFrom = w; newName = w; wantPopup = "Rename world"; }
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("Delete...", nullptr, false, !isCur)) { deleteAsk = w; wantPopup = "Delete world?"; }
+                    ImGui::EndPopup();
+                }
+                ImGui::PopID();
+            }
+            if (ImGui::SmallButton("+ New world")) { newName = "New World"; newType = 0; wantPopup = "New world"; }
+            ImGui::TreePop();
+        }
+        if (ImGui::TreeNodeEx("World", open, "This world: %s", info.name.c_str())) {
             Leaf("World settings", Sel::World);
             Leaf("Weather", Sel::Weather);
             Leaf("Air (environment)", Sel::Environment);
@@ -1853,6 +1955,59 @@ struct App {
     void Popups() {
         if (wantPopup) { ImGui::OpenPopup(wantPopup); wantPopup = nullptr; }
         float ui = settings.uiScale;
+        auto buttons = [&](const char* yes, bool enabled) {   // [yes] [Cancel]; true when yes was clicked
+            ImGui::BeginDisabled(!enabled); bool y = ImGui::Button(yes, ImVec2(140 * ui, 0)) || (enabled && ImGui::IsKeyPressed(ImGuiKey_Enter)); ImGui::EndDisabled();
+            ImGui::SameLine(); if (ImGui::Button("Cancel", ImVec2(140 * ui, 0))) ImGui::CloseCurrentPopup();
+            if (y) ImGui::CloseCurrentPopup(); return y;
+        };
+        const char* worldTypes[] = { "Flat: grass, dirt, stone", "Flat: stone", "Flat: sand", "Void: empty (one block to start)" };
+        if (ImGui::BeginPopupModal("New project", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+            ImGui::SetNextItemWidth(300 * ui); ImGui::InputText("Name", &newProjName);
+            ImGui::SetNextItemWidth(300 * ui); ImGui::Combo("First world", &newWorldType, worldTypes, 4);
+            ImGui::TextDisabled("It starts with the starter blocks and textures. You can change them all.");
+            if (buttons("Create", !newProjName.empty())) {
+                std::string dir = Projects::create(ProjectsRoot(), newProjName); int t = newWorldType;
+                pending = [this, dir, t] { OpenProject(dir, t); };
+            }
+            ImGui::EndPopup();
+        }
+        bool projOk = projSel >= 0 && projSel < (int)projects.size();
+        if (ImGui::BeginPopupModal("Rename project", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+            ImGui::SetNextItemWidth(300 * ui); ImGui::InputText("Name", &newProjName);
+            if (buttons("Rename", !newProjName.empty() && projOk)) {
+                GameSettings g; std::string f = projects[projSel].folder + "/game.txt"; g.load(f); g.name = newProjName; g.save(f); RefreshProjects();
+            }
+            ImGui::EndPopup();
+        }
+        if (ImGui::BeginPopupModal("Delete project?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            if (projOk) {
+                ImGui::Text("Delete the game \"%s\" for good?", projects[projSel].name.c_str());
+                ImGui::TextDisabled("Its folder is deleted: all its worlds, blocks and textures.");
+                if (buttons("Delete", true)) { Projects::remove(projects[projSel].folder); RefreshProjects(); }
+            } else ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+        }
+        if (ImGui::BeginPopupModal("New world", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+            ImGui::SetNextItemWidth(300 * ui); ImGui::InputText("Name", &newName);
+            ImGui::SetNextItemWidth(300 * ui); ImGui::Combo("World type", &newType, worldTypes, 4);
+            ImGui::TextDisabled("The world has no size limit. It loads around you as you move.\nThe world you have open now is saved first.");
+            if (buttons("Create", !newName.empty())) { std::string n = newName; int t = newType; pending = [this, n, t] { CreateWorld(n, t); }; }
+            ImGui::EndPopup();
+        }
+        if (ImGui::BeginPopupModal("Rename world", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+            ImGui::SetNextItemWidth(300 * ui); ImGui::InputText("Name", &newName);
+            if (buttons("Rename", !newName.empty() && newName != renameFrom)) { std::string a = renameFrom, b = newName; pending = [this, a, b] { RenameWorld(a, b); }; }
+            ImGui::EndPopup();
+        }
+        if (ImGui::BeginPopupModal("Delete world?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::Text("Delete the world \"%s\" for good?", deleteAsk.c_str());
+            if (buttons("Delete", true)) DeleteWorld(deleteAsk);
+            ImGui::EndPopup();
+        }
         if (ImGui::BeginPopupModal("Import images", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
             ImGui::Text("%d image%s:", (int)importFiles.size(), importFiles.size() == 1 ? "" : "s");
             for (size_t i = 0; i < importFiles.size() && i < 8; i++) ImGui::BulletText("%s", fs::path(importFiles[i]).filename().string().c_str());
@@ -1914,7 +2069,9 @@ struct App {
         Log("PRIMEngine screenshots, drawing with: " + driverName + ", " + std::to_string(cw) + "x" + std::to_string(ch));
         settings = Settings{}; settings.renderDistance = 7; settings.verticalDistance = 3; settings.blockPreview = false; cloudTime = 37;
         plainView = true; ImGui::GetIO().IniFilename = nullptr;   // just the 3D picture; the editor gets its own picture at the end, in the default layout
-        std::error_code ec; fs::remove_all(WorldsDir() + "/Screenshot demo", ec);
+        std::error_code ec;
+        std::string shotProject = Projects::create(ProjectsRoot(), "Screenshot Game");
+        OpenProject(shotProject);   // makes "Level 1"
         {   // a few coloured lamps for the pictures (only in memory, not saved to your blocks)
             BlockId lamp = reg.find("lamp");
             if (lamp) for (auto c : { std::make_pair("blue lamp", 0x3070FFu), std::make_pair("red lamp", 0xFF2A20u), std::make_pair("green lamp", 0x40FF60u) }) {
@@ -1927,6 +2084,7 @@ struct App {
         buildDemo(*world, reg);
         int n = 0;
         auto waitLoaded = [&]() {
+            if (!world) return 0;
             I3 pc = chunkOf(ifloor(player.feet.x), ifloor(player.feet.y), ifloor(player.feet.z)); int frames = 0;
             for (; frames < 3000; frames++) {   // wait until everything around is loaded and meshed
                 size_t before = world->loadedCount(); world->stream(pc, settings.renderDistance, settings.verticalDistance, 64);
@@ -1982,13 +2140,23 @@ struct App {
             frames(4, "play_hud");
             StopPlay();
         }
-        workers.reset(); world.reset(); fs::remove_all(WorldsDir() + "/Screenshot demo", ec);
+        {   // the start screen: the project manager
+            std::string a = Projects::create(ProjectsRoot(), "Space Pirates"), b = Projects::create(ProjectsRoot(), "Cozy Village");
+            for (const char* w : { "Ship", "Asteroid base", "Moon" }) { WorldInfo wi; wi.name = w; wi.save(a + "/worlds/" + w); }
+            CloseProject(); projSel = 0;
+            for (int f = 0; f < 4; f++) { FrameBody(1.0 / 60); if (f < 3) { swap->Present(0, 0); retired.clear(); } }
+            char path[256]; snprintf(path, sizeof path, "%s/%02d_project_manager.png", shotDir.c_str(), ++n);
+            SaveShot(std::string(path)); swap->Present(0, 0); retired.clear(); Log(std::string(path));
+            Projects::remove(a); Projects::remove(b);
+        }
+        Projects::remove(shotProject);
         Log("done in " + std::to_string((int)std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count()) + " s");
     }
 
     // ================================================================== frame
     void FrameBody(double dt) {   // everything but showing the picture (screenshots grab it before)
         if (resized) OnResize();
+        if (pending) { auto f = std::move(pending); pending = nullptr; f(); }
         bool ev = EditorView();
         int wantW = ev ? (int)viewSize.x : cw, wantH = ev ? (int)viewSize.y : ch;   // the editor draws the world at the viewport panel's size
         wantW = std::max(16, wantW); wantH = std::max(16, wantH);
@@ -2003,7 +2171,7 @@ struct App {
         ImGui::GetStyle().FontScaleMain = settings.uiScale;
         ImGui_ImplDX11_NewFrame(); ImGui_ImplWin32_NewFrame(); ImGui::NewFrame();
         ev = EditorView();
-        if (screen == Screen::Title) { TitleScreen(); if (libraryOpen && !editorOpen) InventoryScreen(); if (editorOpen) BlockEditor(); }
+        if (screen == Screen::Title) ProjectManager();
         else if (ev) {
             EditorUI();
             if (showF3) DrawF3();

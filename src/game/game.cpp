@@ -97,7 +97,7 @@ bool EditHistory::redo(World& w) {
 bool GameSettings::save(const std::string& path) const {
     std::ofstream f(path); if (!f) return false;
     const PlayerRules& p = player;
-    f << "name " << name << "\nstart_world " << (startWorld.empty() ? "-" : startWorld)
+    f << "name " << name << "\nstart_world " << (startWorld.empty() ? "-" : startWorld) << "\nlast_world " << (lastWorld.empty() ? "-" : lastWorld)
       << "\nwalk_speed " << p.walkSpeed << "\nsprint_speed " << p.sprintSpeed << "\njump_height " << p.jumpHeight << "\ngravity " << p.gravity
       << "\nmax_health " << p.maxHealth << "\nlava_damage " << p.lavaDamage << "\nvoid_depth " << p.voidDepth << "\nrespawn_delay " << p.respawnDelay
       << "\nfall_damage " << p.fallDamage << "\ncan_sprint " << (p.canSprint ? 1 : 0) << "\n";
@@ -109,6 +109,7 @@ bool GameSettings::load(const std::string& path) {
     while (f >> k) {
         if (k == "name") { f >> std::ws; std::getline(f, name); }
         else if (k == "start_world") { f >> std::ws; std::getline(f, startWorld); if (startWorld == "-") startWorld.clear(); }
+        else if (k == "last_world") { f >> std::ws; std::getline(f, lastWorld); if (lastWorld == "-") lastWorld.clear(); }
         else if (k == "walk_speed") f >> p.walkSpeed; else if (k == "sprint_speed") f >> p.sprintSpeed; else if (k == "jump_height") f >> p.jumpHeight;
         else if (k == "gravity") f >> p.gravity; else if (k == "max_health") f >> p.maxHealth; else if (k == "lava_damage") f >> p.lavaDamage;
         else if (k == "void_depth") f >> p.voidDepth; else if (k == "respawn_delay") f >> p.respawnDelay; else if (k == "fall_damage") f >> p.fallDamage;

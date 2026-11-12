@@ -34,7 +34,8 @@ A block world engine in C++ (Windows, Direct3D 11). Think of Minecraft built as 
 - Drop PNG files onto the window (or press E, then **Import images...**). Choose whether they become blocks, cross planes (like flowers) or flat planes (they stick to the side you click: ladders, vines, posters).
 - Pictures with transparent pixels become see-through by themselves. Any size works; big ones are scaled to fit.
 - In the **Blocks** tab, right-click a block to edit it: name, shape, see-through, collision, and a texture per side.
-- Everything lives in the `game` folder next to the exe and is shared by all worlds: `game/textures/*.png` and `game/blocks.txt`. Even the starter blocks are PNGs there. Repaint one in any paint program, save it, and the engine updates within a second.
+- Each game is a project: a folder in `projects` next to the exe with `game.txt` (name, start world, player rules), `blocks.txt`, `textures/*.png` and `worlds/`. Its worlds share its blocks and textures. Even the starter blocks are PNGs there. Repaint one in any paint program, save it, and the engine updates within a second.
+- The start screen is the project manager. Worlds are made, opened, renamed and deleted inside the editor (Outliner > Worlds). The old `game` and `worlds` folders from before projects move into a project called "My First Game" by themselves.
 
 ## Milestone 3: block shapes
 
