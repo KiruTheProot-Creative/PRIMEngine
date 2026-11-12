@@ -1,5 +1,6 @@
 // Game logic tests: creative player, undo/redo, world info and settings files.
 #include "../src/game/game.h"
+#include "../src/game/weather.h"
 #include <cstdio>
 #include <filesystem>
 using namespace mc;
@@ -35,6 +36,35 @@ int main() {
           "world info (name, generator, exact player position, hotbar) survives saving");
     Settings s; s.renderDistance = 24; s.fov = 90; s.save(dir + "/s.txt"); Settings s2; s2.load(dir + "/s.txt");
     CHECK(s2.renderDistance == 24 && s2.fov == 90, "settings survive saving");
+    // weather
+    {
+        CHECK(weatherTypes().size() >= 10 && findWeather("intense_storm") >= 0 && findWeather("blizzard") >= 0, "%zu kinds of weather", weatherTypes().size());
+        Weather w; w.set(findWeather("clear"), true);
+        CHECK(w.now.rain == 0 && w.now.cover < 0.3f, "clear weather: no rain, few clouds");
+        w.set(findWeather("rain"), false);
+        w.update(1, { 0, 0, 0 }); bool fading = w.now.rain > 0.05f && w.now.rain < 0.3f;
+        for (int i = 0; i < 60 * 30; i++) w.update(1.0 / 60, { 0, 0, 0 });
+        CHECK(fading && w.now.rain > 0.65f, "rain fades in over about 20 seconds (%.2f after 1 s)", 0.0);
+        for (int i = 0; i < 60 * 30; i++) w.update(1.0 / 60, { 0, 0, 0 });
+        CHECK(w.wetness > 0.95f, "surfaces get wet in the rain (%.2f)", w.wetness);
+        w.set(findWeather("intense_storm"), true); w.seed(7); int s0 = w.strikes;
+        for (int i = 0; i < 60 * 120; i++) w.update(1.0 / 60, { 100, 5, -40 });
+        int n = w.strikes - s0;
+        CHECK(n > 15 && n < 45, "intense storm: %d lightning strikes in 2 minutes", n);
+        V3 d = w.boltPos - V3{ 100, 5, -40 }; double dist = std::sqrt(d.x * d.x + d.z * d.z);
+        CHECK(dist >= 39 && dist <= 261, "lightning strikes 40-260 blocks away (%.0f)", dist);
+        w.set(findWeather("snow"), true); w.wetness = 1;
+        for (int i = 0; i < 60 * 120; i++) w.update(1.0 / 60, { 0, 0, 0 });
+        CHECK(w.snowCover > 0.85f && w.wetness < 0.1f, "snow builds up (%.2f), wetness dries (%.2f)", w.snowCover, w.wetness);
+        Weather a; a.autoChange = true; a.seed(3); int start = a.target, changes = 0, last = a.target;
+        for (int i = 0; i < 60 * 60; i++) { a.update(1, { 0, 0, 0 }); if (a.target != last) { changes++; last = a.target; } }
+        CHECK(changes >= 3, "changing by itself: %d changes in an hour (started as %d)", changes, start);
+        Weather b; for (int i = 0; i < 60 * 30; i++) b.update(1, { 0, 0, 0 });
+        CHECK(b.target == 1, "without 'changes by itself' it stays");
+        WorldInfo wi; wi.weather = "blizzard"; wi.autoWeather = true; wi.hotbar[0] = "Red Rock"; std::string dir = "/tmp/prim_weather_world"; wi.save(dir);
+        WorldInfo wj; wj.load(dir); CHECK(wj.weather == "blizzard" && wj.autoWeather && wj.hotbar[0] == "Red Rock", "weather and hotbar names with spaces are saved with the world");
+    }
+
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
     return fails ? 1 : 0;
 }

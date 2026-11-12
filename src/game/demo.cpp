@@ -82,6 +82,13 @@ std::vector<DemoShot> demoShots() {
         { "foggy_morning_light_shafts", { -24, 2.5, 3 }, { -6, 5, 6 }, 7.0f },
         { "clouds", { -4, 3, -10 }, { 30, 45, 40 }, 11.0f },
         { "clouds_sunset", { -4, 3, -10 }, { -40, 25, 10 }, 17.6f },
+        { "overcast", { -12, 10, -16 }, { 6, 2, 6 }, 12.0f, "overcast" },
+        { "rain", { -6, 3, -8 }, { 6, 2, 6 }, 13.0f, "rain" },
+        { "thunderstorm", { -12, 6, -16 }, { 6, 4, 6 }, 15.0f, "thunderstorm", true },
+        { "intense_storm", { 1, 2.4, -2 }, { 6, 2.5, 8 }, 16.0f, "intense_storm", true },
+        { "snow", { -12, 10, -16 }, { 6, 2, 6 }, 11.0f, "snow" },
+        { "blizzard", { -6, 3, -8 }, { 6, 2, 6 }, 14.0f, "blizzard" },
+        { "foggy", { -12, 4, -16 }, { 6, 2, 6 }, 10.0f, "foggy" },
     };
 }
 

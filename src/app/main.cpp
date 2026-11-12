@@ -6,6 +6,7 @@
 #include "../world/library.h"
 #include "../world/shapes.h"
 #include "../game/demo.h"
+#include "../game/weather.h"
 #include "../core/png.h"
 #include "../core/noise.h"
 
@@ -31,6 +32,7 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM,
 
 #include <algorithm>
 #include <chrono>
+#include <ctime>
 #include <cstring>
 #include <cstdio>
 #include <filesystem>
@@ -71,6 +73,7 @@ struct alignas(16) FrameCB {
     XMFLOAT4X4 viewProj, shadowVP;
     float sunDir[4], sunColor[4], ambient[4], fogRange[4], skyTop[4], skyHorizon[4], sunGlow[4], camF[4], camR[4], camU[4], proj[4], shadowInfo[4];
     float camPos[4], volume[4], depth[4], extra[4];
+    XMFLOAT4X4 skyVP; float weather[4], weather2[4];
 };
 struct alignas(16) ChunkCB { float offset[4]; };
 
@@ -84,7 +87,11 @@ struct App {
     HWND hwnd = nullptr; int cw = 1280, ch = 720; bool resized = false;
     ComPtr<ID3D11Device> dev; ComPtr<ID3D11DeviceContext> ctx; ComPtr<IDXGISwapChain> swap; ComPtr<ID3D11RenderTargetView> backRTV;
     ComPtr<ID3D11Texture2D> depthTex; ComPtr<ID3D11DepthStencilView> dsv;
-    ComPtr<ID3D11VertexShader> vsBlock, vsSky, vsShadow; ComPtr<ID3D11PixelShader> psOpaque, psCutout, psSky, psGhost, psShadowCut, psPost, psVolume, psBloomDown, psBloomUp; ComPtr<ID3D11InputLayout> layout;
+    ComPtr<ID3D11VertexShader> vsBlock, vsSky, vsShadow; ComPtr<ID3D11PixelShader> psOpaque, psCutout, psSky, psGhost, psShadowCut, psPost, psVolume, psBloomDown, psBloomUp, psRain, psBolt;
+    ComPtr<ID3D11VertexShader> vsSkyMap, vsRain;
+    ComPtr<ID3D11Texture2D> skyMapTex; ComPtr<ID3D11DepthStencilView> skyMapDSV; ComPtr<ID3D11ShaderResourceView> skyMapSRV;   // what is above each spot
+    Weather weather; bool weatherWin = false;
+    ComPtr<ID3D11Buffer> vbBolt, ibBolt; UINT nBolt = 0; ComPtr<ID3D11InputLayout> layout;
     ComPtr<ID3D11Texture2D> hdrTex; ComPtr<ID3D11RenderTargetView> hdrRTV; ComPtr<ID3D11ShaderResourceView> hdrSRV;      // the picture before tonemapping
     ComPtr<ID3D11Texture2D> volTex; ComPtr<ID3D11RenderTargetView> volRTV; ComPtr<ID3D11ShaderResourceView> volSRV;      // ... with clouds and fog
     ComPtr<ID3D11ShaderResourceView> depthSRV, noiseSRV; ComPtr<ID3D11SamplerState> sampLinear, sampClamp; double cloudTime = 0;
@@ -150,6 +157,16 @@ struct App {
         b = Compile(src, "PS_Volume", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psVolume));
         b = Compile(src, "PS_BloomDown", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psBloomDown));
         b = Compile(src, "PS_BloomUp", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psBloomUp));
+        b = Compile(src, "VS_SkyMap", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsSkyMap));
+        b = Compile(src, "VS_Rain", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsRain));
+        b = Compile(src, "PS_Rain", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psRain));
+        b = Compile(src, "PS_Bolt", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psBolt));
+        {   // "what is above": a depth picture of the world seen from straight above (512 x 512 over 128 x 128 blocks)
+            D3D11_TEXTURE2D_DESC d{}; d.Width = d.Height = 512; d.MipLevels = 1; d.ArraySize = 1; d.Format = DXGI_FORMAT_R32_TYPELESS; d.SampleDesc.Count = 1; d.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
+            HR(dev->CreateTexture2D(&d, nullptr, &skyMapTex));
+            D3D11_DEPTH_STENCIL_VIEW_DESC dv{}; dv.Format = DXGI_FORMAT_D32_FLOAT; dv.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D; HR(dev->CreateDepthStencilView(skyMapTex.Get(), &dv, &skyMapDSV));
+            D3D11_SHADER_RESOURCE_VIEW_DESC sv{}; sv.Format = DXGI_FORMAT_R32_FLOAT; sv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D; sv.Texture2D.MipLevels = 1; HR(dev->CreateShaderResourceView(skyMapTex.Get(), &sv, &skyMapSRV));
+        }
         b = Compile(src, "PS_Post", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psPost));
         b = Compile(src, "VS_Sky", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsSky));
         b = Compile(src, "PS_Sky", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psSky));
@@ -346,13 +363,15 @@ struct App {
             BlockId t = reg.find(e); hotbar[i] = t ? makeBlock(t, Shapes::get().find(shape)) : AIR;
         }
         hotSel = info.hotSel;
+        { int wi = findWeather(info.weather); weather = Weather{}; weather.set(wi < 0 ? 1 : wi, true); weather.autoChange = info.autoWeather;
+          weather.wetness = weather.now.rain > 0.1f ? 1.f : 0.f; weather.snowCover = weather.now.snow > 0.1f ? 1.f : 0.f; weather.seed((uint32_t)std::time(nullptr)); }
         screen = Screen::Game; paused = false; inventory = false; autosave = 0;
         Capture(true);
         Toast("Welcome to " + info.name + ". Double-tap Space to fly, E for blocks, Esc for the menu");
     }
     void SaveWorld() {
         if (!world) return;
-        info.player = player; info.hotSel = hotSel; for (int i = 0; i < 9; i++) info.hotbar[i] = !reg.has(hotbar[i]) ? "" : reg.get(hotbar[i]).name + (shapeOf(hotbar[i]) ? "@" + Shapes::get().info(shapeOf(hotbar[i])).key : "");
+        info.player = player; info.hotSel = hotSel; info.weather = weather.type().key; info.autoWeather = weather.autoChange; for (int i = 0; i < 9; i++) info.hotbar[i] = !reg.has(hotbar[i]) ? "" : reg.get(hotbar[i]).name + (shapeOf(hotbar[i]) ? "@" + Shapes::get().info(shapeOf(hotbar[i])).key : "");
         info.save(worldDir); world->saveAll();
     }
     void CloseWorld() {
@@ -420,7 +439,8 @@ struct App {
             Interact(dt);
         } else { lPrev = rPrev = mPrev = true; }
         mouseDX = mouseDY = 0;
-        cloudTime += dt;
+        weather.update(dt, player.feet);
+        cloudTime += dt * (0.5 + weather.now.wind);
         if (settings.dayCycle) { settings.timeOfDay += (float)(dt * 24.0 / 1200.0); if (settings.timeOfDay >= 24) settings.timeOfDay -= 24; }
         // load chunks around the player and keep their meshes fresh
         I3 pc = chunkOf(ifloor(player.feet.x), ifloor(player.feet.y), ifloor(player.feet.z));
@@ -537,7 +557,56 @@ struct App {
         float gl[3]; mix(glowDay, glowLow, low, gl); for (int i = 0; i < 3; i++) fc.sunGlow[i] = moon ? glowMoon[i] : gl[i] * k;
         fc.sunGlow[3] = moon ? 2.f : 40.f;
         exposure = 1.0f + 2.5f * (1 - day);                         // the eye adjusts a little at night
+        // weather: clouds swallow sunlight, the sky turns grey; lightning flashes light everything up
+        const WeatherLook& W = weather.now; float dim = W.dim;
+        auto lum = [](const float c[3]) { return c[0] * 0.2126f + c[1] * 0.7152f + c[2] * 0.0722f; };
+        for (int i = 0; i < 3; i++) fc.sunColor[i] *= (1 - dim);
+        float ga = lum(fc.ambient), gt = lum(fc.skyTop), gh = lum(fc.skyHorizon);
+        for (int i = 0; i < 3; i++) {
+            fc.ambient[i] = (fc.ambient[i] + (ga * 0.95f - fc.ambient[i]) * dim * 0.85f) * (1 - dim * 0.3f);
+            fc.skyTop[i] += (gh * 0.7f - fc.skyTop[i]) * dim; fc.skyHorizon[i] += (gh * 0.85f - fc.skyHorizon[i]) * dim;
+            fc.sunGlow[i] *= (1 - dim * 0.9f);
+        }
+        (void)gt;
+        const float fl[3] = { 0.55f, 0.6f, 0.85f };
+        for (int i = 0; i < 3; i++) { fc.ambient[i] += weather.flash * fl[i] * 3.f; fc.skyTop[i] += weather.flash * fl[i] * 0.5f; fc.skyHorizon[i] += weather.flash * fl[i] * 0.6f; }
+        exposure *= 1 + dim * 0.35f;
         nightAmount = 1 - sstep(-0.25f, 0.0f, h);
+    }
+    // a lightning bolt: a jagged line from the clouds to the ground with a few branches, drawn as glowing ribbons
+    void DrawBolt() {
+        uint32_t s = weather.boltSeed; auto rnd = [&]() { s ^= s << 13; s ^= s >> 17; s ^= s << 5; return (s & 0xFFFFFF) / 16777216.f; };
+        V3 origin = weather.boltPos, cam = camPos;
+        std::vector<std::pair<V3, V3>> segs; std::vector<float> widths;
+        auto bolt = [&](V3 from, V3 to, int n, float jag, float w) {
+            V3 prev = from;
+            for (int i = 1; i <= n; i++) {
+                double t = (double)i / n; V3 p = from + (to - from) * t;
+                if (i < n) { p.x += (rnd() - 0.5) * jag; p.z += (rnd() - 0.5) * jag; p.y += (rnd() - 0.5) * jag * 0.3; }
+                segs.push_back({ prev, p }); widths.push_back(w); prev = p;
+            }
+        };
+        double top = 185 - origin.y;
+        bolt({ (rnd() - 0.5) * 30, top, (rnd() - 0.5) * 30 }, { 0, 0, 0 }, 26, 9, 0.9f);
+        size_t mainCount = segs.size();
+        for (int b = 0; b < 4; b++) { V3 from = segs[(size_t)(rnd() * (mainCount - 4))].second; V3 to = from + V3{ (rnd() - 0.5) * 70, -(20 + rnd() * 50), (rnd() - 0.5) * 70 }; bolt(from, to, 10, 6, 0.45f); }
+        MeshData m;
+        for (size_t i = 0; i < segs.size(); i++) {
+            V3 a = segs[i].first, c = segs[i].second, dir = normalize(c - a), toCam = normalize((cam - origin) - a), side = normalize(cross(dir, toCam)) * widths[i];
+            uint32_t base = (uint32_t)m.v.size();
+            V3 q[4] = { a - side, a + side, c + side, c - side };
+            for (auto& p : q) m.v.push_back({ (float)p.x, (float)p.y, (float)p.z, 0, 0, 0, 255u, 0u });
+            m.i.insert(m.i.end(), { base, base + 1, base + 2, base, base + 2, base + 3 });
+        }
+        Upload(m, vbBolt, ibBolt, nBolt);
+        double a = weather.boltAge; float bright = (a < 0.07 || (a > 0.14 && a < 0.24)) ? 60.f : 18.f;
+        bright *= (float)std::max(0.0, 1 - a / 0.45);
+        ChunkCB cc{ { (float)(origin.x - cam.x), (float)(origin.y - cam.y), (float)(origin.z - cam.z), bright } }; ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);
+        ctx->OMSetBlendState(bsAdd.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsTestOnly.Get(), 0); ctx->RSSetState(rsNoCull.Get());
+        ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0); ctx->PSSetShader(psBolt.Get(), nullptr, 0);
+        UINT stride = sizeof(Vtx), off = 0; ctx->IASetVertexBuffers(0, 1, vbBolt.GetAddressOf(), &stride, &off); ctx->IASetIndexBuffer(ibBolt.Get(), DXGI_FORMAT_R32_UINT, 0);
+        ctx->DrawIndexed(nBolt, 0, 0);
+        ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());
     }
     void RenderWorld() {
         aspect = (float)cw / ch; camPos = player.eye();
@@ -573,11 +642,23 @@ struct App {
         const double wrapP = 14400.0;
         fc.camPos[0] = (float)(camPos.x - std::floor(camPos.x / wrapP) * wrapP); fc.camPos[1] = (float)camPos.y; fc.camPos[2] = (float)(camPos.z - std::floor(camPos.z / wrapP) * wrapP);
         float hr = settings.timeOfDay, morning = std::exp(-std::pow((hr - 6.8f) / 1.5f, 2.f)), evening = std::exp(-std::pow((hr - 20.f) / 2.f, 2.f));
-        fc.volume[0] = std::min(1.f, std::max(0.f, settings.cloudCover));
-        fc.volume[1] = settings.groundFog * (0.002f + 0.009f * morning + 0.003f * evening);
+        const WeatherLook& W = weather.now;
+        fc.volume[0] = settings.cloudCover <= 0 ? 0.f : std::min(1.f, W.cover * settings.cloudCover / 0.5f);
+        fc.volume[1] = settings.groundFog * ((0.002f + 0.009f * morning + 0.003f * evening) * W.fog + 0.004f * (W.rain + W.snow));
         fc.volume[2] = (float)std::fmod(cloudTime, 4800.0); fc.volume[3] = settings.cloudShadows ? 1.f : 0.f;
         fc.depth[0] = 0.05f; fc.depth[1] = farZ;
-        fc.extra[0] = nightAmount; fc.extra[1] = 0.15f * std::max(0.f, settings.bloom); fc.extra[2] = settings.swaying ? 1.f : 0.f; fc.extra[3] = 1;
+        fc.extra[0] = nightAmount * (1 - W.cover * 0.8f); fc.extra[1] = 0.15f * std::max(0.f, settings.bloom); fc.extra[2] = settings.swaying ? 0.5f + W.wind : 0.f; fc.extra[3] = 1;
+        // "what is above" map: only needed while it rains/snows or surfaces are wet/snowy
+        bool skyMap = W.rain > 0.01f || W.snow > 0.01f || weather.wetness > 0.01f || weather.snowCover > 0.01f;
+        XMMATRIX skyvp = XMMatrixIdentity();
+        if (skyMap) {
+            const float R = 64; double texel = 2.0 * R / 512, px = camPos.x, pz = camPos.z;
+            float mx = (float)(px - std::floor(px / texel) * texel), mz = (float)(pz - std::floor(pz / texel) * texel);
+            skyvp = XMMatrixLookToLH(XMVectorSet(0, 300, 0, 1), XMVectorSet(0, -1, 0, 0), XMVectorSet(0, 0, 1, 0)) * XMMatrixTranslation(mx, mz, 0) * XMMatrixOrthographicLH(2 * R, 2 * R, 1, 700);
+        }
+        XMStoreFloat4x4(&fc.skyVP, skyvp);
+        fc.weather[0] = W.rain; fc.weather[1] = W.snow; fc.weather[2] = W.dark; fc.weather[3] = weather.wetness;
+        fc.weather2[0] = weather.snowCover; fc.weather2[1] = weather.flash; fc.weather2[2] = W.wind; fc.weather2[3] = skyMap ? 1.f : 0.f;
         ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &fc, 0, 0);
         ID3D11Buffer* cbs[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->VSSetConstantBuffers(0, 2, cbs); ctx->PSSetConstantBuffers(0, 2, cbs);
         ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
@@ -594,8 +675,8 @@ struct App {
                 ctx->DrawIndexed(n, 0, 0); if (counting) drawnChunks += pass == 0;
             }
         };
-        ID3D11ShaderResourceView* none[4] = {};
-        ctx->PSSetShaderResources(0, 4, none);
+        ID3D11ShaderResourceView* none[5] = {};
+        ctx->PSSetShaderResources(0, 5, none);
         if (shadows) {
             ctx->OMSetRenderTargets(0, nullptr, shadowDSV.Get()); ctx->ClearDepthStencilView(shadowDSV.Get(), D3D11_CLEAR_DEPTH, 1.f, 0);
             D3D11_VIEWPORT sv{ 0, 0, (float)shadowSize, (float)shadowSize, 0, 1 }; ctx->RSSetViewports(1, &sv);
@@ -603,6 +684,16 @@ struct App {
             ctx->PSSetShaderResources(0, 1, texArray.GetAddressOf()); ctx->PSSetSamplers(0, 1, sampBlocks.GetAddressOf());
             ctx->PSSetShader(nullptr, nullptr, 0); drawChunks(svp, 0, false);
             ctx->PSSetShader(psShadowCut.Get(), nullptr, 0); drawChunks(svp, 1, false);
+        }
+
+        if (skyMap) {
+            ctx->OMSetRenderTargets(0, nullptr, skyMapDSV.Get()); ctx->ClearDepthStencilView(skyMapDSV.Get(), D3D11_CLEAR_DEPTH, 1.f, 0);
+            D3D11_VIEWPORT sv{ 0, 0, 512, 512, 0, 1 }; ctx->RSSetViewports(1, &sv);
+            ctx->RSSetState(rsShadow.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsSkyMap.Get(), nullptr, 0);
+            ctx->PSSetShaderResources(0, 1, texArray.GetAddressOf()); ctx->PSSetSamplers(0, 1, sampBlocks.GetAddressOf());
+            ctx->PSSetShader(nullptr, nullptr, 0); drawChunks(skyvp, 0, false);
+            ctx->PSSetShader(psShadowCut.Get(), nullptr, 0); drawChunks(skyvp, 1, false);
+            ctx->PSSetShaderResources(0, 1, none);
         }
 
         // ---- the world, into the HDR picture
@@ -614,7 +705,7 @@ struct App {
         ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psSky.Get(), nullptr, 0); ctx->Draw(3, 0);
         ctx->RSSetState(rsCull.Get());
         ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0);
-        ID3D11ShaderResourceView* srvs[4] = { texArray.Get(), shadows ? shadowSRV.Get() : nullptr, nullptr, noiseSRV.Get() }; ctx->PSSetShaderResources(0, 4, srvs);
+        ID3D11ShaderResourceView* srvs[5] = { texArray.Get(), shadows ? shadowSRV.Get() : nullptr, nullptr, noiseSRV.Get(), skyMap ? skyMapSRV.Get() : nullptr }; ctx->PSSetShaderResources(0, 5, srvs);
         ID3D11SamplerState* samps[3] = { sampBlocks.Get(), sampShadow.Get(), sampLinear.Get() }; ctx->PSSetSamplers(0, 3, samps);
         drawnChunks = 0;
         ctx->PSSetShader(psOpaque.Get(), nullptr, 0); drawChunks(vp, 0, true);
@@ -636,6 +727,15 @@ struct App {
                 ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0);
             }
         }
+
+        // ---- rain or snow, then lightning
+        if (W.rain > 0.02f || W.snow > 0.02f) {
+            ctx->OMSetBlendState(bsAlpha.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsTestOnly.Get(), 0); ctx->RSSetState(rsNoCull.Get());
+            ctx->IASetInputLayout(nullptr); ctx->VSSetShader(vsRain.Get(), nullptr, 0); ctx->PSSetShader(psRain.Get(), nullptr, 0);
+            ctx->Draw(6 * 14000, 0);
+            ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());
+        }
+        if (weather.boltAge < 0.45) DrawBolt();
 
         // ---- clouds and ground fog over the picture (needs the depth: unbind it as a target first)
         ctx->PSSetShaderResources(0, 4, none);
@@ -774,6 +874,7 @@ struct App {
         if (hoverValid) { BlockId hv = world->get(hover.x, hover.y, hover.z);
             ImGui::Text("Looking at: %s (%s, rotation %d) at %d %d %d", reg.get(hv).name.c_str(), Shapes::get().info(resolveShape(hv, reg.get(hv))).name.c_str(), rotOf(hv), hover.x, hover.y, hover.z); }
         ImGui::Text("Render distance: %d chunks   Undo steps: %zu", settings.renderDistance, history.undoCount());
+        ImGui::Text("Weather: %s%s   rain %.2f snow %.2f wind %.2f   wet %.2f snow cover %.2f", weather.type().name.c_str(), weather.autoChange ? " (changes by itself)" : "", weather.now.rain, weather.now.snow, weather.now.wind, weather.wetness, weather.snowCover);
         ImGui::End();
     }
     void Center(ImVec2 size) { ImGui::SetNextWindowPos(ImVec2(cw * 0.5f, ch * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f)); ImGui::SetNextWindowSize(size, ImGuiCond_Always); }
@@ -845,6 +946,7 @@ struct App {
         ImGui::Begin("Game menu", nullptr, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize);
         if (ImGui::Button("Back to building", ImVec2(-1, 0))) { paused = false; Capture(true); }
         if (ImGui::Button("Settings", ImVec2(-1, 0))) showSettings = true;
+        if (ImGui::Button("Weather", ImVec2(-1, 0))) weatherWin = true;
         if (ImGui::Button("Save", ImVec2(-1, 0))) { SaveWorld(); Toast("Saved"); }
         if (ImGui::Button("Save and quit to title", ImVec2(-1, 0))) CloseWorld();
         ImGui::End();
@@ -945,6 +1047,21 @@ struct App {
                 ImGui::PopID(); if (i < 8) ImGui::SameLine();
             }
         }
+        ImGui::End();
+    }
+
+    // ---- weather window (from the game menu)
+    void WeatherWindow() {
+        float ui = settings.uiScale;
+        Center(ImVec2(360 * ui, 0));
+        ImGui::Begin("Weather", &weatherWin, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize);
+        ImGui::TextDisabled("This world's weather (it fades over in about 20 seconds):");
+        const auto& types = weatherTypes();
+        for (int i = 0; i < (int)types.size(); i++) if (ImGui::RadioButton(types[i].name.c_str(), weather.target == i)) weather.set(i, false);
+        ImGui::Separator();
+        ImGui::Checkbox("Weather changes by itself", &weather.autoChange);
+        if (weather.autoChange) ImGui::TextDisabled("Next change in about %d minutes.", (int)(weather.secondsToChange() / 60) + 1);
+        if (ImGui::Button("Done", ImVec2(-1, 0))) weatherWin = false;
         ImGui::End();
     }
 
@@ -1139,7 +1256,7 @@ struct App {
     void RunScreenshots() {
         auto t0 = std::chrono::steady_clock::now();
         Log("PRIMEngine screenshots, drawing with: " + driverName + ", " + std::to_string(cw) + "x" + std::to_string(ch));
-        settings = Settings{}; settings.renderDistance = 7; settings.verticalDistance = 3; settings.blockPreview = false;
+        settings = Settings{}; settings.renderDistance = 7; settings.verticalDistance = 3; settings.blockPreview = false; cloudTime = 37;
         std::error_code ec; fs::remove_all(WorldsDir() + "/Screenshot demo", ec);
         {   // a few coloured lamps for the pictures (only in memory, not saved to your blocks)
             BlockId lamp = reg.find("lamp");
@@ -1154,6 +1271,12 @@ struct App {
             V3 dlt = sh.target - sh.eye; double hz = std::sqrt(dlt.x * dlt.x + dlt.z * dlt.z);
             player.feet = { sh.eye.x, sh.eye.y - Player::EYE, sh.eye.z }; player.yaw = std::atan2(dlt.x, dlt.z); player.pitch = std::atan2(dlt.y, hz); player.vel = { 0, 0, 0 };
             settings.timeOfDay = sh.hour;
+            { int wi = findWeather(sh.weather); weather.set(wi < 0 ? 1 : wi, true); weather.autoChange = false;
+              weather.wetness = weather.now.rain > 0.1f ? 1.f : 0.f; weather.snowCover = weather.now.snow > 0.1f ? 1.f : 0.f; weather.flash = 0; weather.boltAge = 99;
+              if (sh.lightning) {   // a bolt right in view
+                  V3 dl = sh.target - sh.eye; double l = std::sqrt(dl.x * dl.x + dl.z * dl.z);
+                  weather.boltPos = { sh.eye.x + dl.x / l * 120 + 25, 0, sh.eye.z + dl.z / l * 120 }; weather.boltAge = 0.03; weather.boltSeed = 12345; weather.flash = 0.7f;
+              } }
             I3 pc = chunkOf(ifloor(player.feet.x), ifloor(player.feet.y), ifloor(player.feet.z));
             int frames = 0;
             for (; frames < 3000; frames++) {   // wait until everything around is loaded and meshed
@@ -1190,7 +1313,8 @@ struct App {
             if (showF3) DrawF3();
             if (inventory && !editorOpen) InventoryScreen();
             if (shapeMenu) ShapeMenu();
-            if (paused && !showSettings) PauseMenu();
+            if (paused && !showSettings && !weatherWin) PauseMenu();
+            if (paused && weatherWin) WeatherWindow();
         }
         if (editorOpen) BlockEditor();
         if (showSettings) SettingsWindow();

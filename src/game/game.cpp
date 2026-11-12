@@ -92,8 +92,8 @@ bool WorldInfo::save(const std::string& dir) const {
     f << "name " << name << "\ngenerator " << genKind << "\nlayers " << layers.size();
     for (auto& l : layers) f << " " << l.first << " " << l.second;
     f << "\nplayer " << player.feet.x << " " << player.feet.y << " " << player.feet.z << " " << player.yaw << " " << player.pitch << " " << (player.flying ? 1 : 0) << "\nhotbar " << hotSel;
-    for (auto& h : hotbar) f << " " << (h.empty() ? "-" : h);
-    f << "\n";
+    for (auto& h : hotbar) { std::string e = h; for (size_t p; (p = e.find(' ')) != std::string::npos;) e.replace(p, 1, "%20"); f << " " << (e.empty() ? "-" : e); }   // names may have spaces
+    f << "\nweather " << weather << " " << (autoWeather ? 1 : 0) << "\n";
     return (bool)f;
 }
 bool WorldInfo::load(const std::string& dir) {
@@ -104,7 +104,8 @@ bool WorldInfo::load(const std::string& dir) {
         else if (k == "generator") f >> genKind;
         else if (k == "layers") { size_t n = 0; f >> n; layers.clear(); for (size_t i = 0; i < n && i < 64; i++) { std::string b; int t; f >> b >> t; layers.push_back({ b, t }); } }
         else if (k == "player") { int fl = 1; f >> player.feet.x >> player.feet.y >> player.feet.z >> player.yaw >> player.pitch >> fl; player.flying = fl != 0; }
-        else if (k == "hotbar") { f >> hotSel; for (auto& h : hotbar) { f >> h; if (h == "-") h.clear(); } hotSel = std::max(0, std::min(8, hotSel)); }
+        else if (k == "hotbar") { f >> hotSel; for (auto& h : hotbar) { f >> h; if (h == "-") h.clear(); for (size_t p; (p = h.find("%20")) != std::string::npos;) h.replace(p, 3, " "); } hotSel = std::max(0, std::min(8, hotSel)); }
+        else if (k == "weather") { int a = 0; f >> weather >> a; autoWeather = a != 0; }
         else { std::string rest; std::getline(f, rest); }
     }
     return true;

@@ -20,6 +20,9 @@ cbuffer Frame : register(b0)
     float4 gVolume;                 // x cloud cover (0 = no clouds), y ground fog density, z time (s), w cloud shadows on
     float4 gDepth;                  // x near, y far plane
     float4 gExtra;                  // x night (0..1, stars), y bloom amount, z wind (sway), w lamp brightness
+    row_major float4x4 gSkyVP;      // camera-relative position -> "what is above" map (seen from straight above)
+    float4 gWeather;                // x rain, y snow, z storm clouds (dark), w wet surfaces
+    float4 gWeather2;               // x snow cover, y lightning flash, z wind, w "what is above" map ready (1)
 };
 cbuffer ChunkCB : register(b1)
 {
@@ -33,6 +36,17 @@ Texture3D<float2> gNoise : register(t3);       // tiling cloud noise: x soft bil
 SamplerState gSamp : register(s0);
 SamplerComparisonState gShadowSamp : register(s1);
 SamplerState gLinear : register(s2);
+Texture2D<float> gSkyMap : register(t4);
+
+// is this point under the open sky? (rain falls on it, snow settles on it)
+float skyExposed(float3 rel)
+{
+    if (gWeather2.w < 0.5) return 1;
+    float4 s = mul(float4(rel, 1), gSkyVP);
+    float2 uv = float2(s.x, -s.y) * 0.5 + 0.5;
+    if (any(uv < 0) || any(uv > 1)) return 1;
+    return gSkyMap.SampleCmpLevelZero(gShadowSamp, uv, s.z - 0.003);
+}
 
 // ---------------------------------------------------------------- clouds (a layer high above the world)
 static const float kCloudBottom = 190, kCloudTop = 290;
@@ -50,7 +64,7 @@ float cloudDensity(float3 p, bool detail)   // p: world position
         float e = gNoise.SampleLevel(gLinear, (p + wind() * 1.6) / 180.0, 0).y;
         d = saturate(d - (1 - e) * 0.5 * (1 - d));                                 // eroded, wispy edges
     }
-    return d * 0.06;                                                              // extinction per block
+    return d * 0.06 * (1 + gWeather.z * 1.5);                                     // extinction per block (storm clouds are thicker)
 }
 float phaseHG(float c, float g) { float g2 = g * g; return (1 - g2) / (12.566 * pow(max(1 + g2 - 2 * g * c, 1e-4), 1.5)); }
 // how much sunlight gets through the clouds to a point below them (cloud shadows on the ground)
@@ -135,6 +149,12 @@ float shadowAt(float3 rel, float3 n, float ndl, float2 screen)
 float3 lightBlock(VSOut i, float3 albedo, bool front)
 {
     float3 n = front ? i.n : -i.n;
+    // weather on surfaces: snow settles on tops open to the sky, rain makes things darker and shiny
+    float open = (gWeather.w > 0.01 || gWeather2.x > 0.01) ? skyExposed(i.rel + n * 0.3) : 0;
+    float snowy = gWeather2.x * open * smoothstep(0.35, 0.85, n.y);
+    albedo = lerp(albedo, float3(0.92, 0.95, 1.0), snowy * 0.95);
+    float wet = gWeather.w * open * (1 - snowy);
+    albedo *= lerp(1, 0.55, wet);
     float ndl = saturate(dot(n, gSunDir.xyz));
     float sh = ndl > 0 ? shadowAt(i.rel, n, ndl, i.pos.xy) * cloudShadow(i.rel) : 0;
     float sky = 0.55 + 0.45 * n.y;                                     // more sky light on top than on the sides
@@ -145,6 +165,12 @@ float3 lightBlock(VSOut i, float3 albedo, bool front)
     float3 c = albedo * light;
     if (i.lamp.a > 0.5)                                                                               // the lamp itself glows in its colour
         c = (dot(albedo, float3(0.2126, 0.7152, 0.0722)) * hue * 0.85 + albedo * hue * 0.3) * 3.2 * gExtra.w;
+    float3 v = -normalize(i.rel);
+    if (wet > 0.01)   // wet sheen: a little of the sky mirrored, more on flat ground (puddles)
+    {
+        float fr = 0.04 + 0.96 * pow(1 - saturate(dot(n, v)), 5);
+        c += skyColor(reflect(-v, n)) * fr * wet * lerp(0.3, 1, saturate(n.y)) * 0.9;
+    }
     float d = length(i.rel);
     float f = saturate((d - gFogRange.x) / max(gFogRange.y - gFogRange.x, 1));
     return lerp(c, skyColor(normalize(i.rel)), f * f);
@@ -179,6 +205,57 @@ ShOut VS_Shadow(VSIn i)
     ShOut o; o.pos = mul(float4(p, 1), gShadowVP); o.uvl = float3(i.uv, layer); return o;
 }
 void PS_ShadowCutout(ShOut i) { clip(gTex.Sample(gSamp, i.uvl).a - 0.5); }
+ShOut VS_SkyMap(VSIn i)
+{
+    float layer; float3 p = sway(i.pos + gOffset.xyz, i.layer, i.uv.y, layer);
+    ShOut o; o.pos = mul(float4(p, 1), gSkyVP); o.uvl = float3(i.uv, layer); return o;
+}
+
+// ---------------------------------------------------------------- rain and snow: thousands of drops in a box that moves with you
+float3 hash3u(uint n)
+{
+    n = (n << 13U) ^ n; n = n * (n * n * 15731U + 789221U) + 1376312589U;
+    uint3 k = uint3(n, n * 16807U, n * 48271U);
+    return float3(k & 0x7fffffffU) / 2147483647.0;
+}
+static const uint kMaxDrops = 14000;
+struct RainOut { float4 pos : SV_Position; float2 uv : TEXCOORD0; float3 rel : TEXCOORD1; float fade : TEXCOORD2; float kind : TEXCOORD3; };
+RainOut VS_Rain(uint id : SV_VertexID)
+{
+    RainOut o = (RainOut)0;
+    uint drop = id / 6, c = id % 6;
+    bool snow = gWeather.y > gWeather.x;
+    float amount = max(gWeather.x, gWeather.y);
+    if (drop >= (uint)(amount * kMaxDrops)) { o.pos = float4(0, 0, -1, 1); return o; }
+    float3 h = hash3u(drop * 3 + 1);
+    float3 box = float3(36, 30, 36);
+    float t = gVolume.z;
+    float speed = snow ? 1.6 + h.x * 0.8 : 15 + h.x * 5;
+    float2 wind = float2(1, 0.45) * gWeather2.z * (snow ? 2.5 : 4.0);
+    float3 vel = float3(wind.x, -speed, wind.y);
+    float3 p = h * box * 7 + vel * t;
+    if (snow) p.xz += float2(sin(t * 1.3 + h.y * 40), cos(t * 1.1 + h.z * 40)) * 0.6;   // flakes drift
+    float3 rel = (frac((p - gCamPos.xyz) / box) - 0.5) * box;
+    static const float2 q[6] = { float2(0, 0), float2(1, 0), float2(1, 1), float2(0, 0), float2(1, 1), float2(0, 1) };
+    float2 k = q[c];
+    float dist = length(rel);
+    float3 offs;
+    if (!snow) { float3 ax = normalize(vel), side = normalize(cross(ax, rel)); offs = side * (k.x - 0.5) * 2 * (0.01 + dist * 0.0012) + ax * (k.y - 0.5) * 0.6; }
+    else offs = (gCamR.xyz * (k.x - 0.5) + gCamU.xyz * (k.y - 0.5)) * (0.07 + dist * 0.002);
+    o.pos = mul(float4(rel + offs, 1), gViewProj);
+    o.uv = k; o.rel = rel; o.kind = snow ? 1 : 0;
+    o.fade = saturate(dist - 0.6) * saturate((box.x * 0.5 - max(abs(rel.x), abs(rel.z))) / 5) * saturate((box.y * 0.5 - abs(rel.y)) / 4);
+    return o;
+}
+float4 PS_Rain(RainOut i) : SV_Target
+{
+    if (i.fade <= 0.001 || skyExposed(i.rel) < 0.5) discard;                         // nothing falls under a roof
+    float3 lc = gAmbient.rgb * 1.4 + gSunColor.rgb * 0.25 + gWeather2.y * float3(1.6, 1.7, 2.2);
+    if (i.kind > 0.5) { float2 d = i.uv * 2 - 1; float a = saturate(1 - dot(d, d)); return float4(lc * 1.2, a * a * 0.9 * i.fade); }
+    return float4(lc, (1 - abs(i.uv.x * 2 - 1)) * 0.28 * i.fade);
+}
+// a lightning bolt (bright, so it blooms); gOffset.w = brightness
+float4 PS_Bolt(VSOut i) : SV_Target { return float4(float3(0.75, 0.8, 1.0) * gOffset.w, 1); }
 
 // ---------------------------------------------------------------- sky: a full-screen triangle behind everything
 struct SkyOut { float4 pos : SV_Position; float2 ndc : TEXCOORD0; };
@@ -251,7 +328,8 @@ float4 PS_Volume(SkyOut i) : SV_Target
                 od *= 1.6;
                 float hf = saturate((p.y - kCloudBottom) / (kCloudTop - kCloudBottom));
                 float powder = 1 - exp(-d * 60);                                       // dark-ish edges facing the sun: puffier look
-                float3 light = gSunColor.rgb * (exp(-od) + 0.25 * exp(-od * 0.25)) * phase * 0.5 * lerp(0.6, 1, powder) + amb * (0.3 + 0.5 * hf);
+                float3 light = (gSunColor.rgb * (exp(-od) + 0.25 * exp(-od * 0.25)) * phase * 0.5 * lerp(0.6, 1, powder) + amb * (0.3 + 0.5 * hf)) * (1 - gWeather.z * 0.7)
+                             + gWeather2.y * float3(1.2, 1.3, 1.8) * (0.3 + hf);                // storm clouds are dark; lightning lights them up
                 float a = exp(-d * dt);
                 S += T * light * (1 - a); T *= a;
             }

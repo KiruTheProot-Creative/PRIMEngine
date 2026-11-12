@@ -56,6 +56,7 @@ struct WorldInfo {
     std::vector<std::pair<std::string, int>> layers = { { "stone", 3 }, { "dirt", 2 }, { "grass", 1 } };
     Player player;
     std::string hotbar[9]; int hotSel = 0;
+    std::string weather = "partly_cloudy"; bool autoWeather = false;
     bool load(const std::string& dir);
     bool save(const std::string& dir) const;
     void applyGenerator(Generator& g, const BlockRegistry& r) const;
