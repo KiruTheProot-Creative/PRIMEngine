@@ -43,6 +43,8 @@ Texture2D<float> gShadow : register(t1);
 Texture2D<float> gSceneDepth : register(t2);
 Texture3D<float2> gNoise : register(t3);       // tiling cloud noise: x soft billows, y puffy cells
 SamplerState gSamp : register(s0);
+Texture2D gMeshTex : register(t9);              // an imported model's own picture (its vertices use layer 16383)
+float4 albedoAt(float3 uvl) { return uvl.z > 16000 ? gMeshTex.Sample(gSamp, uvl.xy) : gTex.Sample(gSamp, uvl); }
 SamplerComparisonState gShadowSamp : register(s1);
 SamplerState gLinear : register(s2);
 Texture2D<float> gSkyMap : register(t4);
@@ -213,7 +215,7 @@ float3 lavaColor(float3 rel)
 
 PSOut PS_Opaque(VSOut i, bool front : SV_IsFrontFace)
 {
-    float4 t = gTex.Sample(gSamp, i.uvl);
+    float4 t = albedoAt(i.uvl);
     PSOut o; float3 n; float sh;
     o.indirect = 0;
     if (i.kind > 3.5) { o.color = float4(lavaColor(i.rel), 1); o.surface = float4(i.n * 0.5 + 0.5, 0); return o; }
@@ -226,7 +228,7 @@ PSOut PS_Opaque(VSOut i, bool front : SV_IsFrontFace)
 
 PSOut PS_Cutout(VSOut i, bool front : SV_IsFrontFace)
 {
-    float4 t = gTex.Sample(gSamp, i.uvl);
+    float4 t = albedoAt(i.uvl);
     clip(t.a - 0.5);
     PSOut o; float3 n; float sh; float3 ind;
     o.color = float4(lightBlock(i, t.rgb, front, n, sh, ind), 1);
@@ -238,7 +240,7 @@ PSOut PS_Cutout(VSOut i, bool front : SV_IsFrontFace)
 // the see-through preview of the block you are about to place
 float4 PS_Ghost(VSOut i) : SV_Target
 {
-    float4 t = gTex.Sample(gSamp, i.uvl);
+    float4 t = albedoAt(i.uvl);
     clip(t.a - 0.5);
     return float4(t.rgb * (gAmbient.rgb + gSunColor.rgb * 0.3) * 1.2, 0.5);
 }
@@ -250,7 +252,7 @@ ShOut VS_Shadow(VSIn i)
     float layer; float3 p = sway(meshToRel(i.pos), i.layer, i.uv.y, layer);
     ShOut o; o.pos = mul(float4(p, 1), gShadowVP); o.uvl = float3(i.uv, layer); return o;
 }
-void PS_ShadowCutout(ShOut i) { clip(gTex.Sample(gSamp, i.uvl).a - 0.5); }
+void PS_ShadowCutout(ShOut i) { clip(albedoAt(i.uvl).a - 0.5); }
 ShOut VS_SkyMap(VSIn i)
 {
     float layer; float3 p = sway(meshToRel(i.pos), i.layer, i.uv.y, layer);
@@ -707,4 +709,34 @@ float4 PS_Post(SkyOut i) : SV_Target
     c = max(lerp(l.xxx, c, 1.02), 0);
     float2 v = i.ndc; c *= 1 - 0.18 * dot(v, v) * 0.5;                 // gentle vignette
     return float4(pow(c, 1 / 2.2), 1);
+}
+
+// ---------------------------------------------------------------- the 3D viewer: a model alone, with simple light
+cbuffer Preview : register(b2)
+{
+    row_major float4x4 gPrevVP;     // camera at the origin
+    float4 gPrevLight;              // xyz: towards the light
+};
+struct PrevOut { float4 pos : SV_Position; float3 uvl : TEXCOORD0; float3 n : NORMAL; float ao : TEXCOORD1; float glow : TEXCOORD2; };
+PrevOut VS_Preview(VSIn i)
+{
+    PrevOut o;
+    float kind = floor(i.layer / 16384);
+    o.uvl = float3(i.uv, i.layer - kind * 16384);
+    o.pos = mul(float4(meshToRel(i.pos), 1), gPrevVP);
+    float3 nl = unpackNormal(i.normal);
+    o.n = normalize(gAxisX.xyz * nl.x + gAxisY.xyz * nl.y + gAxisZ.xyz * nl.z);
+    o.ao = (i.lit & 255) / 255.0;
+    o.glow = (i.lit >> 20) & 1;
+    return o;
+}
+float4 PS_Preview(PrevOut i, bool front : SV_IsFrontFace) : SV_Target
+{
+    float4 t = albedoAt(i.uvl);
+    clip(t.a - 0.5);
+    float3 n = normalize(front ? i.n : -i.n);
+    float d = saturate(dot(n, normalize(gPrevLight.xyz)));
+    float3 c = t.rgb * (0.32 + 0.22 * (0.5 + 0.5 * n.y) + 0.8 * d) * lerp(0.55, 1, i.ao);
+    if (i.glow > 0.5) c = t.rgb * 1.3;
+    return float4(pow(saturate(c), 1 / 2.2), 1);
 }

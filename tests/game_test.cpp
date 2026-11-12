@@ -3,6 +3,8 @@
 #include "../src/game/project.h"
 #include "../src/game/brush.h"
 #include "../src/game/objects.h"
+#include "../src/game/meshmodel.h"
+#include "../src/core/json.h"
 #include <filesystem>
 #include <fstream>
 #include "../src/game/weather.h"
@@ -233,6 +235,39 @@ int main() {
         CHECK(os2.size() == 2 && os2[1].name == "Big crate" && os2[0].yaw == 90 && os2[0].collide == Collide::None, "objects save and load");
         auto pe = pasteEdits(w, m, { 20, 0, 20 });
         CHECK(pe.size() == 28, "paste puts every block of the copy (%zu)", pe.size());
+    }
+
+    // imported models (G2 attempt 2)
+    {
+        Json j; CHECK(parseJson("{\"a\":[1,2.5,{\"b\":\"x\\u00e9\"}],\"t\":true,\"n\":null}", j) && j["a"][1].num() == 2.5 && j["a"][2]["b"].str() == "x\xc3\xa9" && j["t"].b && j["n"].isNull(), "json reading");
+        CHECK(base64Decode(base64Encode({ 1, 2, 3, 250, 0 })) == std::vector<uint8_t>({ 1, 2, 3, 250, 0 }), "base64 there and back");
+        std::error_code ec; std::filesystem::remove_all("/tmp/prim_demo_models", ec);
+        auto files = writeDemoModels("/tmp/prim_demo_models");
+        CHECK(files.size() == 3, "example models written");
+        auto outwards = [](const MeshModel& m) {   // every triangle faces away from the middle (true for these convex shapes)
+            int bad = 0; V3 c{ m.sx * 0.5, m.sy * 0.5, m.sz * 0.5 };
+            for (size_t t = 0; t + 2 < m.idx.size(); t += 3) {
+                V3 a = m.blockPos(m.raw[m.idx[t]]), b = m.blockPos(m.raw[m.idx[t + 1]]), d = m.blockPos(m.raw[m.idx[t + 2]]), e1 = b - a, e2 = d - a;
+                V3 n{ e1.y * e2.z - e1.z * e2.y, e1.z * e2.x - e1.x * e2.z, e1.x * e2.y - e1.y * e2.x }; V3 mid = (a + b + d) * (1.0 / 3) - c;
+                if (n.x * mid.x + n.y * mid.y + n.z * mid.z < 0) bad++;
+            }
+            return bad;
+        };
+        std::string err; MeshModel lamp, rock, crys;
+        bool ok = importModel(files[0], lamp, err);
+        CHECK(ok && lamp.triangles() == 48 && std::fabs(lamp.sy - 30.0 / 16) < 0.05 && lamp.tw == 16, "Blockbench lamp post: 4 cubes, %.2f blocks tall (%s)", lamp.sy, err.c_str());
+        ok = importModel(files[1], rock, err);
+        CHECK(ok && rock.triangles() == 80 && rock.sx > 1.6 && rock.sx < 2.4 && rock.tw == 32 && outwards(rock) == 0, "obj rock: 80 triangles, all facing out, %.2f wide (%s)", rock.sx, err.c_str());
+        ok = importModel(files[2], crys, err);
+        CHECK(ok && crys.triangles() == 8 && std::fabs(crys.sy - 2.5) < 0.01 && std::fabs(crys.sx - 0.7071) < 0.02 && outwards(crys) == 0, "glTF crystal: turned and stretched by its node (%.2f x %.2f, %s)", crys.sx, crys.sy, err.c_str());
+        CHECK(crys.tex.size() == 4 && crys.tex[2] > 200 && crys.tex[1] < 100, "glTF colour without a picture");
+        auto rb = meshBoxes(rock);
+        bool middle = false; for (auto& b : rb) middle |= b.lo.x <= rock.sx / 2 && b.hi.x >= rock.sx / 2 && b.lo.y <= rock.sy / 2 && b.hi.y >= rock.sy / 2 && b.lo.z <= rock.sz / 2 && b.hi.z >= rock.sz / 2;
+        bool corner = false; for (auto& b : rb) corner |= b.lo.x < 0.05 && b.lo.y < 0.05 && b.lo.z < 0.05;
+        CHECK(!rb.empty() && rb.size() < 400 && middle && !corner, "rock collision: solid inside, not in the empty corners (%zu boxes)", rb.size());
+        rock.unitScale = 2; rock.update(); CHECK(rock.sx > 3.2, "import scale makes it bigger");
+        rock.save("/tmp/prim_rock.pmesh"); MeshModel r2; CHECK(r2.load("/tmp/prim_rock.pmesh") && r2.idx == rock.idx && r2.unitScale == 2 && r2.tex == rock.tex, "imported models save and load");
+        MeshModel bad; CHECK(!importModel("/tmp/nothing.obj", bad, err) && !err.empty(), "a missing file gives a message");
     }
 
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);

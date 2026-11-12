@@ -85,12 +85,12 @@ std::vector<Box3> modelBoxes(const BlockModel& m, const BlockRegistry& reg) {
 const char* collideName(Collide c) { return c == Collide::Exact ? "Exact (from its blocks)" : c == Collide::OneBox ? "One box" : "None (walk through)"; }
 
 // ------------------------------------------------------------------ placed objects
-V3 objectPoint(const WorldObject& o, const BlockModel& m, V3 l) {
+V3 objectPoint(const WorldObject& o, const ModelFrame& m, V3 l) {
     double a = o.yaw * 3.14159265358979 / 180, c = std::cos(a), s = std::sin(a);
     V3 p = (l - m.pivot) * o.scale;
     return { o.pos.x + p.x * c + p.z * s, o.pos.y + p.y, o.pos.z - p.x * s + p.z * c };
 }
-static Box3 turnedBox(const WorldObject& o, const BlockModel& m, const Box3& b) {   // the box around a turned box
+static Box3 turnedBox(const WorldObject& o, const ModelFrame& m, const Box3& b) {   // the box around a turned box
     Box3 r{ { 1e30, 1e30, 1e30 }, { -1e30, -1e30, -1e30 } };
     for (int i = 0; i < 8; i++) {
         V3 p = objectPoint(o, m, { (i & 1) ? b.hi.x : b.lo.x, (i & 2) ? b.hi.y : b.lo.y, (i & 4) ? b.hi.z : b.lo.z });
@@ -98,8 +98,8 @@ static Box3 turnedBox(const WorldObject& o, const BlockModel& m, const Box3& b) 
     }
     return r;
 }
-Box3 objectBounds(const WorldObject& o, const BlockModel& m) { return turnedBox(o, m, { { 0, 0, 0 }, { (double)m.sx, (double)m.sy, (double)m.sz } }); }
-std::vector<Box3> objectBoxes(const WorldObject& o, const BlockModel& m, const std::vector<Box3>& mb) {
+Box3 objectBounds(const WorldObject& o, const ModelFrame& m) { return turnedBox(o, m, { { 0, 0, 0 }, { m.sx, m.sy, m.sz } }); }
+std::vector<Box3> objectBoxes(const WorldObject& o, const ModelFrame& m, const std::vector<Box3>& mb) {
     std::vector<Box3> out;
     if (o.collide == Collide::None || mb.empty()) return out;
     if (o.collide == Collide::OneBox) {

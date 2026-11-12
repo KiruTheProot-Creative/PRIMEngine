@@ -9,6 +9,9 @@
 
 namespace mc {
 
+// a model's box: size in blocks and the point that sits at the object's position
+struct ModelFrame { double sx = 0, sy = 0, sz = 0; V3 pivot{ 0, 0, 0 }; };
+
 struct BlockModel {
     std::string name;
     int sx = 0, sy = 0, sz = 0;
@@ -18,6 +21,7 @@ struct BlockModel {
     void resize(int x, int y, int z) { sx = x; sy = y; sz = z; cells.assign((size_t)x * y * z, AIR); pivot = { x * 0.5, 0, z * 0.5 }; }
     void put(int x, int y, int z, BlockId v) { cells[((size_t)y * sz + z) * sx + x] = v; }
     int blockCount() const { int n = 0; for (BlockId v : cells) n += v != AIR; return n; }
+    operator ModelFrame() const { return { (double)sx, (double)sy, (double)sz, pivot }; }
     bool save(const std::string& path) const;
     bool load(const std::string& path);
 };
@@ -38,9 +42,9 @@ struct WorldObject {
     double scale = 1;
     Collide collide = Collide::Exact;
 };
-V3 objectPoint(const WorldObject& o, const BlockModel& m, V3 local);              // model space -> world
-std::vector<Box3> objectBoxes(const WorldObject& o, const BlockModel& m, const std::vector<Box3>& mboxes);   // world space
-Box3 objectBounds(const WorldObject& o, const BlockModel& m);
+V3 objectPoint(const WorldObject& o, const ModelFrame& m, V3 local);              // model space -> world
+std::vector<Box3> objectBoxes(const WorldObject& o, const ModelFrame& m, const std::vector<Box3>& mboxes);   // world space
+Box3 objectBounds(const WorldObject& o, const ModelFrame& m);
 bool rayBox(V3 o, V3 d, const Box3& b, double& t);                                  // t = where the ray enters
 
 bool saveObjects(const std::string& path, const std::vector<WorldObject>& objs);

@@ -17,8 +17,11 @@ static fs::path P(const std::string& u8) { return fs::path(u8); }
 bool readImage(const std::string& path, int& w, int& h, std::vector<uint8_t>& rgba) {
     std::ifstream f(P(path), std::ios::binary); if (!f) return false;
     std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-    if (bytes.empty()) return false;
-    int n = 0; stbi_uc* px = stbi_load_from_memory(bytes.data(), (int)bytes.size(), &w, &h, &n, 4);
+    return !bytes.empty() && readImageMemory(bytes.data(), bytes.size(), w, h, rgba);
+}
+bool readImageMemory(const uint8_t* data, size_t size, int& w, int& h, std::vector<uint8_t>& rgba) {
+    if (!data || !size) return false;
+    int n = 0; stbi_uc* px = stbi_load_from_memory(data, (int)size, &w, &h, &n, 4);
     if (!px) return false;
     rgba.assign(px, px + (size_t)w * h * 4); stbi_image_free(px);
     return w > 0 && h > 0;
@@ -38,7 +41,12 @@ static void chunk(std::vector<uint8_t>& out, const char* type, const std::vector
 }
 
 bool writePng(const std::string& path, int w, int h, const std::vector<uint8_t>& rgba) {
-    if (w <= 0 || h <= 0 || rgba.size() < (size_t)w * h * 4) return false;
+    std::vector<uint8_t> out = pngBytes(w, h, rgba); if (out.empty()) return false;
+    std::ofstream f(P(path), std::ios::binary); if (!f) return false;
+    f.write((const char*)out.data(), (std::streamsize)out.size()); return (bool)f;
+}
+std::vector<uint8_t> pngBytes(int w, int h, const std::vector<uint8_t>& rgba) {
+    if (w <= 0 || h <= 0 || rgba.size() < (size_t)w * h * 4) return {};
     std::vector<uint8_t> raw; raw.reserve((size_t)(w * 4 + 1) * h);
     for (int y = 0; y < h; y++) { raw.push_back(0); raw.insert(raw.end(), rgba.begin() + (size_t)y * w * 4, rgba.begin() + (size_t)(y + 1) * w * 4); }
     std::vector<uint8_t> z = { 0x78, 0x01 };   // zlib header, then "stored" deflate blocks
@@ -53,8 +61,7 @@ bool writePng(const std::string& path, int w, int h, const std::vector<uint8_t>&
     std::vector<uint8_t> out = { 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A };
     std::vector<uint8_t> ihdr; be32(ihdr, (uint32_t)w); be32(ihdr, (uint32_t)h); ihdr.insert(ihdr.end(), { 8, 6, 0, 0, 0 });
     chunk(out, "IHDR", ihdr); chunk(out, "IDAT", z); chunk(out, "IEND", {});
-    std::ofstream f(P(path), std::ios::binary); if (!f) return false;
-    f.write((const char*)out.data(), (std::streamsize)out.size()); return (bool)f;
+    return out;
 }
 
 } // namespace mc

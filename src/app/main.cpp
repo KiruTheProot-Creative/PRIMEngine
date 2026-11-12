@@ -9,6 +9,7 @@
 #include "../game/project.h"
 #include "../game/brush.h"
 #include "../game/objects.h"
+#include "../game/meshmodel.h"
 #include "../game/weather.h"
 #include "../core/png.h"
 #include "../core/noise.h"
@@ -87,7 +88,8 @@ struct alignas(16) FrameCB {
 struct alignas(16) ChunkCB { float offset[4]; float ax[4] = { 1, 0, 0, 0 }, ay[4] = { 0, 1, 0, 0 }, az[4] = { 0, 0, 1, 0 }; };   // axes: objects are turned and sized
 
 struct GpuChunk { ComPtr<ID3D11Buffer> vbO, ibO, vbC, ibC, vbW, ibW; UINT nO = 0, nC = 0, nW = 0; };
-struct ModelGpu { std::vector<std::pair<I3, GpuChunk>> parts; std::vector<Box3> boxes; };   // a block model's meshes (16^3 pieces) and collision
+struct ModelGpu { std::vector<std::pair<I3, GpuChunk>> parts; std::vector<Box3> boxes; bool mesh = false; ComPtr<ID3D11ShaderResourceView> tex; };
+struct alignas(16) PreviewCB { float vp[16]; float light[4]; };   // a block model's meshes (16^3 pieces) and collision
 
 struct App;
 static App* g_app = nullptr;
@@ -164,7 +166,12 @@ struct App {
     // ---- the editor (G1): docked panels around the viewport, and Play mode
     enum class Sel { None, World, Weather, Environment, Zone, Spawn, Player, Game, Block, Texture, Shape, Tool, Object, Selection, Model };
     // ---- objects (G2)
-    ModelLibrary models; std::map<std::string, ModelGpu> modelGpu;
+    ModelLibrary models; std::map<std::string, ModelGpu> modelGpu; std::map<std::string, MeshModel> meshModels;
+    // the 3D viewer
+    bool viewerOpen = false, viewerFit = true, viewerPeople = true, viewerBoxes = false, viewerBounds = true; std::string viewerModel;
+    float viewerYaw = 0.6f, viewerPitch = 0.35f, viewerDist = 8; ImVec2 viewerWant{ 0, 0 }; int viewerW = 0, viewerH = 0; V3 viewerEye{ 0, 0, 0 }; XMMATRIX viewerVP = XMMatrixIdentity();
+    ComPtr<ID3D11RenderTargetView> viewerRTV; ComPtr<ID3D11ShaderResourceView> viewerSRV; ComPtr<ID3D11DepthStencilView> viewerDSV;
+    ComPtr<ID3D11VertexShader> vsPreview; ComPtr<ID3D11PixelShader> psPreview; ComPtr<ID3D11Buffer> cbPreview;
     std::vector<WorldObject> objects; uint32_t nextObjId = 1;
     std::string placing, selModel, newModelName; double placeYaw = 0, placeScale = 1; int movingObj = -1, dupFrom = -1; bool replaceWithObject = true;
     I3 selA{ 0, 0, 0 }, selB{ 0, 0, 0 }; int selStage = 0; BlockModel clipboard; bool hasClip = false;   // selection box (tool 2)
@@ -218,6 +225,8 @@ struct App {
             D3D11_SHADER_RESOURCE_VIEW_DESC sv{}; sv.Format = DXGI_FORMAT_R32_FLOAT; sv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D; sv.Texture2D.MipLevels = 1; HR(dev->CreateShaderResourceView(skyMapTex.Get(), &sv, &skyMapSRV));
         }
         b = Compile(src, "PS_Reflect", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psReflect));
+        b = Compile(src, "VS_Preview", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsPreview));
+        b = Compile(src, "PS_Preview", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psPreview));
         b = Compile(src, "PS_AO", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psAO));
         b = Compile(src, "PS_AOApply", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psAOApply));
         b = Compile(src, "PS_Water", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psWater));
@@ -230,7 +239,7 @@ struct App {
             { "TEXCOORD", 3, DXGI_FORMAT_R32_UINT, 0, 28, D3D11_INPUT_PER_VERTEX_DATA, 0 } };
         HR(dev->CreateInputLayout(el, 5, vb->GetBufferPointer(), vb->GetBufferSize(), &layout));
         auto cb = [&](UINT size, ComPtr<ID3D11Buffer>& out) { D3D11_BUFFER_DESC d{}; d.ByteWidth = size; d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_CONSTANT_BUFFER; HR(dev->CreateBuffer(&d, nullptr, &out)); };
-        cb(sizeof(FrameCB), cbFrame); cb(sizeof(ChunkCB), cbChunk);
+        cb(sizeof(FrameCB), cbFrame); cb(sizeof(ChunkCB), cbChunk); cb(sizeof(PreviewCB), cbPreview);
 
         D3D11_RASTERIZER_DESC rd{}; rd.FillMode = D3D11_FILL_SOLID; rd.CullMode = D3D11_CULL_BACK; rd.FrontCounterClockwise = FALSE; rd.DepthClipEnable = TRUE; HR(dev->CreateRasterizerState(&rd, &rsCull));
         rd.CullMode = D3D11_CULL_FRONT; HR(dev->CreateRasterizerState(&rd, &rsCullFront));   // mirrored views turn every triangle around
@@ -385,8 +394,8 @@ struct App {
     }
     void OnDrop(HDROP d) {
         UINT n = DragQueryFileA(d, 0xFFFFFFFF, nullptr, 0);
-        for (UINT i = 0; i < n; i++) { char path[MAX_PATH]; if (DragQueryFileA(d, i, path, MAX_PATH)) importFiles.push_back(path); }
-        DragFinish(d);
+        for (UINT i = 0; i < n; i++) { char path[MAX_PATH]; if (DragQueryFileA(d, i, path, MAX_PATH)) { if (isModelFile(path) && screen == Screen::Game) ImportModelFile(path); else importFiles.push_back(path); } }
+        DragFinish(d); SetForegroundWindow(hwnd);
         if (importFiles.empty()) return;
         wantPopup = "Import images"; editorOpen = false;
         if (screen == Screen::Game) { paused = false; inventory = true; Capture(false); } else libraryOpen = true;
@@ -625,11 +634,190 @@ struct App {
     bool FlowButton(const char* label, bool compact = false) { Flow(ButtonW(label, compact)); return compact ? ImGui::SmallButton(label) : ImGui::Button(label); }
     float Cols(int n) { float sp = ImGui::GetStyle().ItemSpacing.x; return std::floor((ImGui::GetContentRegionAvail().x - sp * (n - 1)) / n); }   // width of n buttons side by side
 
+    // ---- imported models (G2 attempt 2)
+    struct FrameRef { bool ok = false; ModelFrame f; explicit operator bool() const { return ok; } const ModelFrame* operator->() const { return &f; } const ModelFrame& operator*() const { return f; } };
+    FrameRef ModelNamed(const std::string& n) const {
+        if (const BlockModel* b = models.find(n)) return { true, *b };
+        auto it = meshModels.find(n); if (it != meshModels.end()) return { true, it->second.frame() };
+        return {};
+    }
+    FrameRef ModelOf(const WorldObject& o) const { return ModelNamed(o.model); }
+    bool IsMesh(const std::string& n) const { return meshModels.count(n) > 0; }
+    std::vector<std::string> AllModelNames() const {
+        std::vector<std::string> v; for (auto& kv : models.models) v.push_back(kv.first); for (auto& kv : meshModels) v.push_back(kv.first);
+        std::sort(v.begin(), v.end()); return v;
+    }
+    std::string UniqueModelName(const std::string& base) const {
+        std::string b = base.empty() ? "Model" : base, n = b; int k = 2;
+        while (models.find(n) || meshModels.count(n)) n = b + " " + std::to_string(k++);
+        return n;
+    }
+    std::string MeshPath(const std::string& n) const { std::string f; for (char c : n) f += (std::isalnum((unsigned char)c) || c == ' ' || c == '-' || c == '_') ? c : '_'; return models.dir + "/" + f + ".pmesh"; }
+    void LoadMeshModels() {
+        meshModels.clear(); std::error_code ec;
+        for (auto& e : fs::directory_iterator(fs::u8path(models.dir), ec)) {
+            if (e.path().extension() != ".pmesh") continue;
+            MeshModel m; if (m.load(e.path().u8string())) { if (m.name.empty()) m.name = e.path().stem().u8string(); meshModels[m.name] = m; }
+        }
+    }
+    void SaveMesh(const MeshModel& m) { m.save(MeshPath(m.name)); }
+    bool ImportModelFile(const std::string& path) {
+        MeshModel m; std::string err;
+        if (!importModel(path, m, err)) { Toast("Could not import " + fs::u8path(path).filename().u8string() + ": " + err); return false; }
+        m.name = UniqueModelName(m.name); meshModels[m.name] = m; SaveMesh(m); ModelChanged(m.name);
+        Toast("Imported " + m.name + ": " + std::to_string(m.triangles()) + " triangles");
+        viewerModel = m.name; viewerOpen = true; viewerFit = true; sel = Sel::Model; selModel = m.name; assetKind = 3; assetCat.clear();
+        return true;
+    }
+    std::vector<std::string> PickModels() {
+        std::vector<char> buf(1 << 16, 0);
+        OPENFILENAMEA o{}; o.lStructSize = sizeof o; o.hwndOwner = hwnd; o.lpstrFilter = "3D models (*.bbmodel, *.obj, *.gltf, *.glb)\0*.bbmodel;*.obj;*.gltf;*.glb\0"; o.lpstrFile = buf.data(); o.nMaxFile = (DWORD)buf.size();
+        o.lpstrTitle = "Import 3D models"; o.Flags = OFN_ALLOWMULTISELECT | OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
+        std::vector<std::string> out; if (!GetOpenFileNameA(&o)) return out;
+        std::string first = buf.data(); const char* p = buf.data() + first.size() + 1;
+        if (!*p) { out.push_back(first); return out; }
+        for (; *p; p += strlen(p) + 1) out.push_back(first + "\\" + p);
+        return out;
+    }
+    void ImportModelsDialog() { for (auto& f : PickModels()) ImportModelFile(f); }
+    void BuildMeshGpu(ModelGpu& g, const MeshModel& m) {
+        g.mesh = true; g.boxes = meshBoxes(m);
+        MeshData md; md.v.reserve(m.raw.size());
+        int none[3] = { 0, 0, 0 };
+        for (const MeshVert& v : m.raw) {
+            V3 p = m.blockPos(v);
+            md.v.push_back({ (float)p.x, (float)p.y, (float)p.z, v.uv[0], v.uv[1], 16383.f, packLit(1, none, false), packNormal(v.n[0], v.n[1], v.n[2], 0) });
+        }
+        md.i = m.idx;
+        GpuChunk gc; if (m.transparent) Upload(md, gc.vbC, gc.ibC, gc.nC); else Upload(md, gc.vbO, gc.ibO, gc.nO);
+        g.parts.push_back({ { 0, 0, 0 }, std::move(gc) });
+        D3D11_TEXTURE2D_DESC d{}; d.Width = (UINT)m.tw; d.Height = (UINT)m.th; d.MipLevels = 1; d.ArraySize = 1; d.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB; d.SampleDesc.Count = 1; d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        D3D11_SUBRESOURCE_DATA sd{ m.tex.data(), (UINT)m.tw * 4, 0 };
+        ComPtr<ID3D11Texture2D> t; if (SUCCEEDED(dev->CreateTexture2D(&d, &sd, &t))) dev->CreateShaderResourceView(t.Get(), nullptr, &g.tex);
+    }
+    // ---- the 3D viewer: the model on a floor grid next to the player and the morph ball, to see how big it is
+    void ViewerProject(const XMMATRIX& vp, V3 eye, ImVec2 o, ImVec2 sz, V3 p, ImVec2& out, bool& ok) {
+        XMVECTOR c = XMVector4Transform(XMVectorSet((float)(p.x - eye.x), (float)(p.y - eye.y), (float)(p.z - eye.z), 1), vp);
+        float w = XMVectorGetW(c); ok = w > 0.05f;
+        out = ImVec2(o.x + (XMVectorGetX(c) / w * 0.5f + 0.5f) * sz.x, o.y + (0.5f - XMVectorGetY(c) / w * 0.5f) * sz.y);
+    }
+    void ModelViewer() {
+        if (!viewerOpen) return;
+        FrameRef f = ModelNamed(viewerModel); if (!f) { viewerOpen = false; return; }
+        float ui = settings.uiScale;
+        ImGui::SetNextWindowSize(ImVec2(std::min(720 * ui, (float)cw * 0.8f), std::min(640 * ui, (float)ch * 0.85f)), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowPos(ImVec2(cw * 0.5f, ch * 0.5f), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
+        if (!ImGui::Begin(("3D viewer: " + viewerModel + "###viewer").c_str(), &viewerOpen)) { ImGui::End(); return; }
+        ImVec2 avail = ImGui::GetContentRegionAvail(); float ctrlH = 150 * ui;
+        ImVec2 isz(std::max(64.f, avail.x), std::max(64.f, avail.y - ctrlH));
+        viewerWant = isz;
+        ImVec2 o = ImGui::GetCursorScreenPos();
+        if (viewerSRV) ImGui::Image((ImTextureID)(intptr_t)viewerSRV.Get(), isz); else ImGui::Dummy(isz);
+        ImGui::SetCursorScreenPos(o); ImGui::InvisibleButton("orbit", isz, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
+        ImGuiIO& io = ImGui::GetIO();
+        if (ImGui::IsItemActive()) { viewerYaw += io.MouseDelta.x * 0.01f; viewerPitch = std::clamp(viewerPitch + io.MouseDelta.y * 0.01f, -1.4f, 1.4f); }
+        if (ImGui::IsItemHovered() && io.MouseWheel != 0) viewerDist = std::clamp(viewerDist * (io.MouseWheel > 0 ? 0.88f : 1.14f), 1.5f, 200.f);
+        if (viewerFit) { viewerDist = (float)std::max({ f->sx, f->sy, f->sz, 2.0 }) * 1.6f + 3; viewerFit = false; }
+        // camera
+        V3 target{ -0.6, std::max(0.9, f->sy * 0.5), 0 };
+        V3 eye{ target.x + std::sin(viewerYaw) * std::cos(viewerPitch) * viewerDist, target.y + std::sin(viewerPitch) * viewerDist, target.z - std::cos(viewerYaw) * std::cos(viewerPitch) * viewerDist };
+        viewerEye = eye;
+        XMVECTOR fwd = XMVector3Normalize(XMVectorSet((float)(target.x - eye.x), (float)(target.y - eye.y), (float)(target.z - eye.z), 0));
+        viewerVP = XMMatrixLookToLH(XMVectorZero(), fwd, XMVectorSet(0, 1, 0, 0)) * XMMatrixPerspectiveFovLH(XMConvertToRadians(45), isz.x / isz.y, 0.05f, 600);
+        // overlay: floor grid, size, player and morph ball for scale, collision boxes
+        ImDrawList* dl = ImGui::GetWindowDrawList(); dl->PushClipRect(o, ImVec2(o.x + isz.x, o.y + isz.y), true);
+        auto L = [&](V3 a, V3 b, ImU32 col, float th = 1.f) { ImVec2 p, q; bool ka, kb; ViewerProject(viewerVP, eye, o, isz, a, p, ka); ViewerProject(viewerVP, eye, o, isz, b, q, kb); if (ka && kb) dl->AddLine(p, q, col, th); };
+        auto T = [&](V3 a, ImU32 col, const char* t) { ImVec2 p; bool k; ViewerProject(viewerVP, eye, o, isz, a, p, k); if (k) dl->AddText(p, col, t); };
+        int R = (int)std::ceil(std::max({ f->sx, f->sz }) * 0.5) + 4;
+        for (int k = -R; k <= R; k++) { ImU32 c = k == 0 ? IM_COL32(255, 255, 255, 70) : IM_COL32(255, 255, 255, 28); L({ (double)k, 0, (double)-R }, { (double)k, 0, (double)R }, c); L({ (double)-R, 0, (double)k }, { (double)R, 0, (double)k }, c); }
+        double hx = f->sx * 0.5, hz = f->sz * 0.5;
+        V3 lo{ -hx, 0, -hz }, hi{ hx, f->sy, hz };
+        if (viewerBounds) { V3 q[8]; for (int i = 0; i < 8; i++) q[i] = { (i & 1) ? hi.x : lo.x, (i & 2) ? hi.y : lo.y, (i & 4) ? hi.z : lo.z };
+            const int e[12][2] = { { 0, 1 }, { 2, 3 }, { 4, 5 }, { 6, 7 }, { 0, 2 }, { 1, 3 }, { 4, 6 }, { 5, 7 }, { 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 } };
+            for (auto& k : e) L(q[k[0]], q[k[1]], IM_COL32(120, 200, 255, 120)); }
+        char b[64];
+        snprintf(b, sizeof b, "%.2f", f->sx); T({ 0, 0, lo.z - 0.4 }, IM_COL32(150, 210, 255, 255), b);
+        snprintf(b, sizeof b, "%.2f", f->sz); T({ hi.x + 0.3, 0, 0 }, IM_COL32(150, 210, 255, 255), b);
+        L({ hi.x + 0.6, 0, lo.z }, { hi.x + 0.6, f->sy, lo.z }, IM_COL32(150, 210, 255, 200), 2);   // height ruler, a tick every block
+        for (int k = 0; k <= (int)f->sy; k++) L({ hi.x + 0.45, (double)k, lo.z }, { hi.x + 0.75, (double)k, lo.z }, IM_COL32(150, 210, 255, 200));
+        snprintf(b, sizeof b, "%.2f tall", f->sy); T({ hi.x + 0.8, f->sy, lo.z }, IM_COL32(150, 210, 255, 255), b);
+        if (viewerPeople) {
+            double px = lo.x - 1.0;   // the player: legs, body, arms, head (1.8 tall)
+            ImU32 pc = IM_COL32(255, 210, 120, 230);
+            auto box = [&](V3 a, V3 c) { V3 q[8]; for (int i = 0; i < 8; i++) q[i] = { (i & 1) ? c.x : a.x, (i & 2) ? c.y : a.y, (i & 4) ? c.z : a.z };
+                const int e[12][2] = { { 0, 1 }, { 2, 3 }, { 4, 5 }, { 6, 7 }, { 0, 2 }, { 1, 3 }, { 4, 6 }, { 5, 7 }, { 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 } };
+                for (auto& k : e) L(q[k[0]], q[k[1]], pc, 1.5f); };
+            box({ px - 0.25, 0, -0.12 }, { px - 0.02, 0.8, 0.12 }); box({ px + 0.02, 0, -0.12 }, { px + 0.25, 0.8, 0.12 });
+            box({ px - 0.27, 0.8, -0.15 }, { px + 0.27, 1.4, 0.15 }); box({ px - 0.42, 0.75, -0.1 }, { px - 0.28, 1.4, 0.1 }); box({ px + 0.28, 0.75, -0.1 }, { px + 0.42, 1.4, 0.1 });
+            box({ px - 0.2, 1.4, -0.2 }, { px + 0.2, 1.8, 0.2 });
+            T({ px - 0.4, 2.05, 0 }, pc, "Player 1.8");
+            double bx = px - 1.3; ImU32 bc = IM_COL32(255, 140, 200, 230);   // the morph ball: 1 block
+            for (int k = 0; k < 32; k++) { double a0 = k * 6.2832 / 32, a1 = (k + 1) * 6.2832 / 32;
+                L({ bx + std::cos(a0) * 0.5, 0.5 + std::sin(a0) * 0.5, 0 }, { bx + std::cos(a1) * 0.5, 0.5 + std::sin(a1) * 0.5, 0 }, bc, 1.5f);
+                L({ bx, 0.5 + std::sin(a0) * 0.5, std::cos(a0) * 0.5 }, { bx, 0.5 + std::sin(a1) * 0.5, std::cos(a1) * 0.5 }, bc, 1.5f);
+                L({ bx + std::cos(a0) * 0.5, 0.5, std::sin(a0) * 0.5 }, { bx + std::cos(a1) * 0.5, 0.5, std::sin(a1) * 0.5 }, bc, 1.5f); }
+            T({ bx - 0.5, 1.25, 0 }, bc, "Morph ball 1");
+        }
+        if (viewerBoxes) {
+            WorldObject vo; vo.model = viewerModel;
+            for (const Box3& bx : objectBoxes(vo, *f, GpuModel(viewerModel).boxes)) {
+                V3 q[8]; for (int i = 0; i < 8; i++) q[i] = { (i & 1) ? bx.hi.x : bx.lo.x, (i & 2) ? bx.hi.y : bx.lo.y, (i & 4) ? bx.hi.z : bx.lo.z };
+                const int e[12][2] = { { 0, 1 }, { 2, 3 }, { 4, 5 }, { 6, 7 }, { 0, 2 }, { 1, 3 }, { 4, 6 }, { 5, 7 }, { 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 } };
+                for (auto& k : e) L(q[k[0]], q[k[1]], IM_COL32(255, 150, 60, 150));
+            }
+        }
+        dl->AddText(ImVec2(o.x + 8, o.y + 6), IM_COL32(200, 200, 210, 200), "Drag to turn, wheel to zoom");
+        dl->PopClipRect();
+        // settings
+        ImGui::Spacing();
+        auto it = meshModels.find(viewerModel);
+        if (it != meshModels.end()) {
+            MeshModel& m = it->second; bool ch_ = false;
+            Hint("From %s. %d triangles, picture %d x %d.", m.source.c_str(), (int)m.triangles(), m.tw, m.th);
+            double hgt = m.sy; Prop("Height (blocks)");
+            if (ImGui::InputDouble("##h", &hgt, 0.25, 1, "%.2f") && hgt > 0.01 && m.hi.y > m.lo.y) { m.unitScale = hgt / (m.hi.y - m.lo.y); ch_ = true; }
+            double us = m.unitScale; Prop("Blocks per file unit");
+            if (ImGui::InputDouble("##us", &us, 0, 0, "%.4f") && us > 1e-5) { m.unitScale = us; ch_ = true; }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Blockbench: 1/16 (16 pixels = 1 block). glTF: 1 (1 metre = 1 block).");
+            if (ch_) { m.update(); SaveMesh(m); ModelChanged(m.name); }
+        } else if (const BlockModel* bm = models.find(viewerModel)) Hint("Made of %d blocks. Block models are always 1 block per block; size objects in the Inspector.", bm->blockCount());
+        ImGui::Checkbox("Player and morph ball", &viewerPeople); ImGui::SameLine(); ImGui::Checkbox("Collision boxes", &viewerBoxes); ImGui::SameLine(); ImGui::Checkbox("Size box", &viewerBounds);
+        if (ImGui::Button("Place it")) StartPlacing(viewerModel);
+        ImGui::SameLine(); if (ImGui::Button("Close")) viewerOpen = false;
+        ImGui::End();
+    }
+    void RenderViewer() {   // into its own picture, with simple light (no world around it)
+        if (!viewerOpen || viewerWant.x < 16 || !ModelNamed(viewerModel)) return;
+        int w = (int)viewerWant.x, h = (int)viewerWant.y;
+        if (w != viewerW || h != viewerH) {
+            if (viewerSRV) retired.push_back(viewerSRV);
+            viewerW = w; viewerH = h;
+            D3D11_TEXTURE2D_DESC d{}; d.Width = (UINT)w; d.Height = (UINT)h; d.MipLevels = 1; d.ArraySize = 1; d.Format = DXGI_FORMAT_R8G8B8A8_UNORM; d.SampleDesc.Count = 1; d.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+            ComPtr<ID3D11Texture2D> t; HR(dev->CreateTexture2D(&d, nullptr, &t)); viewerRTV.Reset(); viewerSRV.Reset();
+            HR(dev->CreateRenderTargetView(t.Get(), nullptr, &viewerRTV)); HR(dev->CreateShaderResourceView(t.Get(), nullptr, &viewerSRV));
+            d.Format = DXGI_FORMAT_D32_FLOAT; d.BindFlags = D3D11_BIND_DEPTH_STENCIL; ComPtr<ID3D11Texture2D> dt; HR(dev->CreateTexture2D(&d, nullptr, &dt)); viewerDSV.Reset(); HR(dev->CreateDepthStencilView(dt.Get(), nullptr, &viewerDSV));
+        }
+        const float bg[4] = { 0.16f, 0.17f, 0.2f, 1 };
+        ctx->OMSetRenderTargets(1, viewerRTV.GetAddressOf(), viewerDSV.Get()); ctx->ClearRenderTargetView(viewerRTV.Get(), bg); ctx->ClearDepthStencilView(viewerDSV.Get(), D3D11_CLEAR_DEPTH, 1, 0);
+        D3D11_VIEWPORT v{ 0, 0, (float)w, (float)h, 0, 1 }; ctx->RSSetViewports(1, &v);
+        ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());
+        PreviewCB pc{}; XMStoreFloat4x4((XMFLOAT4X4*)pc.vp, XMMatrixTranspose(viewerVP)); pc.light[0] = -0.45f; pc.light[1] = 0.8f; pc.light[2] = -0.4f;
+        ctx->UpdateSubresource(cbPreview.Get(), 0, nullptr, &pc, 0, 0);
+        ctx->VSSetConstantBuffers(2, 1, cbPreview.GetAddressOf()); ctx->PSSetConstantBuffers(2, 1, cbPreview.GetAddressOf());
+        ctx->VSSetConstantBuffers(1, 1, cbChunk.GetAddressOf());
+        ctx->IASetInputLayout(layout.Get()); ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        ctx->VSSetShader(vsPreview.Get(), nullptr, 0); ctx->PSSetShader(psPreview.Get(), nullptr, 0);
+        ctx->PSSetShaderResources(0, 1, texArray.GetAddressOf()); ctx->PSSetSamplers(0, 1, sampBlocks.GetAddressOf());
+        WorldObject vo; vo.model = viewerModel;
+        DrawObject(vo, 0, viewerEye); DrawObject(vo, 1, viewerEye);
+        ID3D11ShaderResourceView* none[10] = {}; ctx->PSSetShaderResources(0, 10, none);
+    }
+
     // ================================================================== objects (G2)
-    const BlockModel* ModelOf(const WorldObject& o) const { return models.find(o.model); }
     ModelGpu& GpuModel(const std::string& name) {   // the model's meshes, made the first time they are needed
         auto it = modelGpu.find(name); if (it != modelGpu.end()) return it->second;
         ModelGpu& g = modelGpu[name];
+        { auto mi = meshModels.find(name); if (mi != meshModels.end()) { BuildMeshGpu(g, mi->second); return g; } }
         const BlockModel* m = models.find(name); if (!m) return g;
         g.boxes = modelBoxes(*m, reg);
         for (int cy = 0; cy * CS < m->sy; cy++) for (int cz = 0; cz * CS < m->sz; cz++) for (int cx = 0; cx * CS < m->sx; cx++) {
@@ -650,21 +838,23 @@ struct App {
         world->objectSolids.clear();
         for (size_t i = 0; i < objects.size(); i++) {
             if ((int)i == movingObj) continue;
-            const BlockModel* m = ModelOf(objects[i]); if (!m) continue;
+            FrameRef m = ModelOf(objects[i]); if (!m) continue;
             auto b = objectBoxes(objects[i], *m, GpuModel(objects[i].model).boxes);
             world->objectSolids.insert(world->objectSolids.end(), b.begin(), b.end());
         }
     }
     // draws one object (pass 0 solid, 1 cut-out, 2 water) with the current shaders
-    void DrawObject(const WorldObject& o, int pass) {
-        const BlockModel* m = ModelOf(o); if (!m) return;
+    void DrawObject(const WorldObject& o, int pass) { DrawObject(o, pass, camPos); }
+    void DrawObject(const WorldObject& o, int pass, V3 cam) {
+        FrameRef m = ModelOf(o); if (!m) return;
         ModelGpu& g = GpuModel(o.model);
+        if (g.mesh) ctx->PSSetShaderResources(9, 1, g.tex.GetAddressOf());   // the imported model's own picture
         double a = o.yaw * 3.14159265358979 / 180, c = std::cos(a), s = std::sin(a), k = o.scale;
         V3 ax{ c * k, 0, -s * k }, ay{ 0, k, 0 }, az{ s * k, 0, c * k };
         for (auto& part : g.parts) {
             const GpuChunk& gc = part.second; UINT n = pass == 0 ? gc.nO : pass == 1 ? gc.nC : gc.nW; if (!n) continue;
             V3 l{ part.first.x * (double)CS - m->pivot.x, part.first.y * (double)CS - m->pivot.y, part.first.z * (double)CS - m->pivot.z };
-            V3 org = o.pos - camPos + ax * l.x + ay * l.y + az * l.z;
+            V3 org = o.pos - cam + ax * l.x + ay * l.y + az * l.z;
             ChunkCB cc{ { (float)org.x, (float)org.y, (float)org.z, 0 }, { (float)ax.x, (float)ax.y, (float)ax.z, 0 }, { (float)ay.x, (float)ay.y, (float)ay.z, 0 }, { (float)az.x, (float)az.y, (float)az.z, 0 } };
             ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);
             UINT stride = sizeof(Vtx), off = 0;
@@ -683,12 +873,12 @@ struct App {
     }
     // where a model would be placed: on the face you look at, lined up with the blocks (Alt: exactly where you look)
     bool PlacePose(WorldObject& o) {
-        const BlockModel* m = models.find(placing); if (!m || !toolValid) return false;
+        FrameRef m = ModelNamed(placing); if (!m || !toolValid) return false;
         o.model = placing; o.yaw = placeYaw;
         if (Down(VK_MENU)) { o.pos = { toolHit.px, toolHit.py, toolHit.pz }; return true; }
         I3 a{ toolHit.x + toolHit.nx, toolHit.y + toolHit.ny, toolHit.z + toolHit.nz };
         bool side = std::fmod(std::fabs(placeYaw) + 0.001, 180.0) > 45 && std::fmod(std::fabs(placeYaw) + 0.001, 180.0) < 135;
-        auto half = [&](double w) { double ws = w * o.scale; long r = std::lround(ws); return std::fabs(ws - r) < 1e-6 && (r % 2) == 0 ? 0.0 : 0.5; };
+        auto half = [&](double w) { double ws = w * o.scale; long r = std::lround(ws); return std::fabs(ws - r) < 1e-6 && (r % 2) == 0 ? 0.0 : std::fabs(ws - r) < 1e-6 ? 0.5 : 0.5; };
         o.pos = { a.x + half(side ? m->sz : m->sx), (double)a.y, a.z + half(side ? m->sx : m->sz) };
         return true;
     }
@@ -714,7 +904,7 @@ struct App {
     int ObjectUnderCrosshair(double maxT) const {   // the nearest object the view ray hits (if nearer than the blocks)
         int best = -1; double bt = maxT;
         for (size_t i = 0; i < objects.size(); i++) {
-            const BlockModel* m = ModelOf(objects[i]); if (!m || (int)i == movingObj) continue;
+            FrameRef m = ModelOf(objects[i]); if (!m || (int)i == movingObj) continue;
             double t; if (rayBox(player.eye(), player.forward(), objectBounds(objects[i], *m), t) && t < bt) { bt = t; best = (int)i; }
         }
         return best;
@@ -737,7 +927,7 @@ struct App {
     }
     void MakeIntoObject(const std::string& wanted, bool replace) {
         if (selStage != 2) return;
-        I3 corner; BlockModel m = modelFromWorld(*world, SelLo(), SelHi(), models.uniqueName(wanted.empty() ? "Model" : wanted), true, &corner);
+        I3 corner; BlockModel m = modelFromWorld(*world, SelLo(), SelHi(), UniqueModelName(wanted.empty() ? "Model" : wanted), true, &corner);
         if (!m.blockCount()) { Toast("There are no blocks in the box"); return; }
         models.store(m); ModelChanged(m.name);
         WorldObject o; o.id = nextObjId++; o.name = UniqueObjectName(m.name); o.model = m.name;
@@ -794,24 +984,24 @@ struct App {
         if (toolMode && toolSel == 1 && selStage == 0 && toolValid)
             DrawBox3(dl, { (double)toolHit.x, (double)toolHit.y, (double)toolHit.z }, { toolHit.x + 1.0, toolHit.y + 1.0, toolHit.z + 1.0 }, IM_COL32(90, 220, 255, 160));
         if (sel == Sel::Object && selIndex >= 0 && selIndex < (int)objects.size() && selIndex != movingObj)
-            if (const BlockModel* m = ModelOf(objects[selIndex])) { Box3 b = objectBounds(objects[selIndex], *m); DrawBox3(dl, b.lo, b.hi, IM_COL32(255, 220, 90, 255)); }
+            if (FrameRef m = ModelOf(objects[selIndex])) { Box3 b = objectBounds(objects[selIndex], *m); DrawBox3(dl, b.lo, b.hi, IM_COL32(255, 220, 90, 255)); }
         if (toolMode && toolSel == 2 && placing.empty()) {
             int h = ObjectUnderCrosshair(toolValid ? toolHit.t + 0.01 : 160);
-            if (h >= 0 && !(sel == Sel::Object && selIndex == h)) if (const BlockModel* m = ModelOf(objects[h])) { Box3 b = objectBounds(objects[h], *m); DrawBox3(dl, b.lo, b.hi, IM_COL32(255, 255, 255, 140)); }
+            if (h >= 0 && !(sel == Sel::Object && selIndex == h)) if (FrameRef m = ModelOf(objects[h])) { Box3 b = objectBounds(objects[h], *m); DrawBox3(dl, b.lo, b.hi, IM_COL32(255, 255, 255, 140)); }
         }
         if (toolMode && toolSel == 2 && !placing.empty()) {
             WorldObject o; o.scale = placeScale;
-            if (PlacePose(o)) if (const BlockModel* m = models.find(placing)) { Box3 b = objectBounds(o, *m); DrawBox3(dl, b.lo, b.hi, IM_COL32(120, 255, 150, 220)); }
+            if (PlacePose(o)) if (FrameRef m = ModelNamed(placing)) { Box3 b = objectBounds(o, *m); DrawBox3(dl, b.lo, b.hi, IM_COL32(120, 255, 150, 220)); }
         }
     }
     void ObjectInspector() {
         if (selIndex < 0 || selIndex >= (int)objects.size()) { Hint("Pick an object in the Outliner, or click one with the Objects tool."); return; }
-        WorldObject& o = objects[selIndex]; const BlockModel* m = ModelOf(o); bool ch_ = false;
+        WorldObject& o = objects[selIndex]; FrameRef m = ModelOf(o); bool ch_ = false;
         ImGui::SeparatorText("Object");
         Prop("Name"); ImGui::InputText("##name", &o.name);
         Prop("Folder"); ImGui::InputText("##folder", &o.folder);
         Prop("Model");
-        if (ImGui::BeginCombo("##model", o.model.c_str())) { for (auto& kv : models.models) if (ImGui::Selectable(kv.first.c_str(), kv.first == o.model)) { o.model = kv.first; ch_ = true; } ImGui::EndCombo(); }
+        if (ImGui::BeginCombo("##model", o.model.c_str())) { for (auto& n : AllModelNames()) if (ImGui::Selectable(n.c_str(), n == o.model)) { o.model = n; ch_ = true; } ImGui::EndCombo(); }
         Prop("Position"); ch_ |= ImGui::InputScalarN("##pos", ImGuiDataType_Double, &o.pos.x, 3, nullptr, nullptr, "%.2f");
         { float y = (float)o.yaw; Prop("Turn"); if (ImGui::SliderFloat("##yaw", &y, -180, 180, "%.0f deg")) { o.yaw = y; ch_ = true; }
           if (ImGui::SmallButton("-90")) { o.yaw = std::fmod(o.yaw - 90 + 540, 360) - 180; ch_ = true; } if (FlowButton("+90", true)) { o.yaw = std::fmod(o.yaw + 90 + 540, 360) - 180; ch_ = true; } }
@@ -828,6 +1018,7 @@ struct App {
         ImGui::Spacing();
         if (ImGui::Button("Move (G)")) PickUpObject(selIndex);
         if (FlowButton("Copy (Ctrl+D)")) DuplicateObject(selIndex);
+        if (FlowButton("3D viewer")) { viewerModel = o.model; viewerOpen = true; viewerFit = true; }
         if (FlowButton("Go there")) { player.feet = { o.pos.x, o.pos.y + (m ? m->sy * o.scale : 1) + 1, o.pos.z - 4 }; player.flying = true; player.yaw = 0; player.pitch = -0.4; }
         if (FlowButton("Delete (Del)")) { DeleteObject(selIndex); return; }
     }
@@ -854,21 +1045,41 @@ struct App {
         if (hasClip) Hint("Copied: %d x %d x %d. Ctrl+V pastes it where you look.", clipboard.sx, clipboard.sy, clipboard.sz);
     }
     void ModelInspector() {
-        const BlockModel* m = models.find(selModel); if (!m) { Hint("Pick a model in Assets > Models."); return; }
+        FrameRef f = ModelNamed(selModel); if (!f) { Hint("Pick a model in Assets > Models."); return; }
+        const BlockModel* m = models.find(selModel); auto mm = meshModels.find(selModel);
         ImGui::SeparatorText("Model");
         float s = std::min(ImGui::GetContentRegionAvail().x, 140 * settings.uiScale); ImVec2 p = ImGui::GetCursorScreenPos();
         ImGui::GetWindowDrawList()->AddRectFilled(p, ImVec2(p.x + s, p.y + s), IM_COL32(30, 32, 38, 255), 4.f);
-        ObjectIcon(ImGui::GetWindowDrawList(), *m, ImVec2(p.x + s * 0.5f, p.y + s * 0.5f), s * 0.8f); ImGui::Dummy(ImVec2(s, s));
-        ImGui::Text("%s", m->name.c_str());
-        int used = 0; for (auto& o : objects) used += o.model == m->name;
-        Hint("%d x %d x %d blocks, %d blocks in it. Used %d times in this world.", m->sx, m->sy, m->sz, m->blockCount(), used);
-        if (ImGui::Button("Place it")) StartPlacing(m->name);
-        if (FlowButton("Unpack as blocks")) { if (toolValid) { BlockModel c = *m; I3 at{ toolHit.x + toolHit.nx, toolHit.y + toolHit.ny, toolHit.z + toolHit.nz }; ApplyEdits(pasteEdits(*world, c, at), "Unpacked"); } else Toast("Look at where the blocks should go"); }
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Puts its blocks where you look, so you can change them\nand make a new object from them.");
+        ModelIcon(ImGui::GetWindowDrawList(), selModel, ImVec2(p.x + s * 0.5f, p.y + s * 0.5f), s * 0.8f); ImGui::Dummy(ImVec2(s, s));
+        ImGui::Text("%s", selModel.c_str());
+        int used = 0; for (auto& o : objects) used += o.model == selModel;
+        if (m) Hint("Block model: %d x %d x %d blocks, %d blocks in it. Used %d times in this world.", m->sx, m->sy, m->sz, m->blockCount(), used);
+        else Hint("Imported from %s: %d triangles, %.2f x %.2f x %.2f blocks. Used %d times in this world.", mm->second.source.c_str(), (int)mm->second.triangles(), f->sx, f->sy, f->sz, used);
+        if (ImGui::Button("Place it")) StartPlacing(selModel);
+        if (FlowButton("3D viewer")) { viewerModel = selModel; viewerOpen = true; viewerFit = true; }
+        if (m && FlowButton("Unpack as blocks")) { if (toolValid) { BlockModel c = *m; I3 at{ toolHit.x + toolHit.nx, toolHit.y + toolHit.ny, toolHit.z + toolHit.nz }; ApplyEdits(pasteEdits(*world, c, at), "Unpacked"); } else Toast("Look at where the blocks should go"); }
+        if (m && ImGui::IsItemHovered()) ImGui::SetTooltip("Puts its blocks where you look, so you can change them\nand make a new object from them.");
         ImGui::BeginDisabled(used > 0);
-        if (FlowButton("Delete model")) { std::string n = m->name; models.remove(n); modelGpu.erase(n); selModel.clear(); sel = Sel::None; }
+        if (FlowButton("Delete model")) {
+            std::string n = selModel;
+            if (m) models.remove(n); else { std::error_code ec; fs::remove(fs::u8path(MeshPath(n)), ec); meshModels.erase(n); }
+            modelGpu.erase(n); selModel.clear(); sel = Sel::None; if (viewerModel == n) viewerOpen = false;
+        }
         ImGui::EndDisabled();
         if (used > 0 && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Delete the objects that use it first.");
+    }
+    void ModelIcon(ImDrawList* dl, const std::string& name, ImVec2 c, float s) {
+        if (const BlockModel* m = models.find(name)) { ObjectIcon(dl, *m, c, s); return; }
+        auto it = meshModels.find(name); if (it == meshModels.end()) return;
+        const MeshModel& m = it->second;   // an imported model: a little cube in its average colour, marked 3D
+        double r = 0, g = 0, b = 0, n = 0; for (size_t i = 0; i + 3 < m.tex.size(); i += 4) if (m.tex[i + 3] > 128) { r += m.tex[i]; g += m.tex[i + 1]; b += m.tex[i + 2]; n++; }
+        if (n) { r /= n; g /= n; b /= n; } else r = g = b = 200;
+        float h = s * 0.3f; ImVec2 t(c.x, c.y - h * 0.9f);
+        auto col = [&](double k) { return IM_COL32((int)std::min(255.0, r * k), (int)std::min(255.0, g * k), (int)std::min(255.0, b * k), 255); };
+        dl->AddQuadFilled(ImVec2(c.x, c.y - h * 1.3f), ImVec2(c.x + h, c.y - h * 0.7f), ImVec2(c.x, c.y - h * 0.1f), ImVec2(c.x - h, c.y - h * 0.7f), col(1.15));
+        dl->AddQuadFilled(ImVec2(c.x - h, c.y - h * 0.7f), ImVec2(c.x, c.y - h * 0.1f), ImVec2(c.x, c.y + h), ImVec2(c.x - h, c.y + h * 0.4f), col(0.8));
+        dl->AddQuadFilled(ImVec2(c.x, c.y - h * 0.1f), ImVec2(c.x + h, c.y - h * 0.7f), ImVec2(c.x + h, c.y + h * 0.4f), ImVec2(c.x, c.y + h), col(0.6));
+        dl->AddText(ImVec2(c.x + h * 0.55f, c.y + h * 0.5f), IM_COL32(255, 255, 255, 230), "3D"); (void)t;
     }
 
     // ---- tools
@@ -1646,7 +1857,7 @@ struct App {
         if (world) CloseWorld();
         projectDir = dir;
         library = Library{}; library.dir = dir; library.load(reg); UploadTextures(); ghostKey = 0xFFFFFFFFu;   // this game's blocks and textures
-        models.loadAll(dir + "/models"); modelGpu.clear();
+        models.loadAll(dir + "/models"); modelGpu.clear(); LoadMeshModels(); viewerOpen = false;
         game = GameSettings{}; gamePath = dir + "/game.txt"; game.load(gamePath);
         RefreshWorlds();
         auto has = [&](const std::string& n) { return !n.empty() && std::find(worldList.begin(), worldList.end(), n) != worldList.end(); };
@@ -2111,6 +2322,7 @@ struct App {
         if (ImGui::BeginMenu("File")) {
             if (ImGui::MenuItem("Save", "Ctrl+S")) { SaveWorld(); Toast("Saved"); }
             if (ImGui::MenuItem("Import images...")) { auto f = PickImages(); if (!f.empty()) { importFiles = f; wantPopup = "Import images"; } }
+            if (ImGui::MenuItem("Import 3D models...")) ImportModelsDialog();
             if (ImGui::MenuItem("Open textures folder")) ShellExecuteA(nullptr, "open", library.texturesDir().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
             ImGui::Separator();
             if (ImGui::MenuItem("New world...")) { newName = "New World"; newType = 0; wantPopup = "New world"; }
@@ -2405,7 +2617,11 @@ struct App {
             ImGui::TreePop();
         }
         if (ImGui::TreeNodeEx("Textures", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth)) { folder("All textures", 1, "", (int)reg.textureCount() - 1); ImGui::TreePop(); }
-        if (ImGui::TreeNodeEx("Models", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth)) { folder("All models", 3, "", (int)models.models.size()); ImGui::TreePop(); }
+        if (ImGui::TreeNodeEx("Models", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth)) {
+            folder("All models", 3, "", (int)(models.models.size() + meshModels.size()));
+            folder("Built from blocks", 3, "blocks", (int)models.models.size()); folder("Imported", 3, "imported", (int)meshModels.size());
+            ImGui::TreePop();
+        }
         if (ImGui::TreeNodeEx("Shapes", ImGuiTreeNodeFlags_SpanAvailWidth)) {
             const Shapes& S = Shapes::get(); folder("All shapes", 2, "", S.count() - 1);
             for (const std::string& c : S.categories()) { int n = 0; for (int i = 1; i < S.count(); i++) n += S.info(i).category == c; folder(c.c_str(), 2, c, n); }
@@ -2417,7 +2633,9 @@ struct App {
         ImGui::BeginGroup();
         ImGui::SetNextItemWidth(220 * ui); ImGui::InputTextWithHint("##search", "Search...", &assetSearch);
         ImGui::SameLine(); ImGui::SetNextItemWidth(120 * ui); ImGui::SliderFloat("##size", &assetSize, 36, 128, "size %.0f");
-        ImGui::SameLine(); if (ImGui::Button("Import images...")) { auto f = PickImages(); if (!f.empty()) { importFiles = f; wantPopup = "Import images"; } }
+        ImGui::SameLine();
+        if (assetKind == 3) { if (ImGui::Button("Import models...")) ImportModelsDialog(); if (ImGui::IsItemHovered()) ImGui::SetTooltip("Blockbench (.bbmodel), .obj, glTF (.gltf / .glb)"); }
+        else if (ImGui::Button("Import images...")) { auto f = PickImages(); if (!f.empty()) { importFiles = f; wantPopup = "Import images"; } }
         ImGui::SameLine(); if (ImGui::Button("New block")) { NewBlock(); if (!assetCat.empty() && assetKind == 0) draft.category = assetCat; sel = Sel::Block; selIndex = 0; }
         ImGui::SameLine(); ImGui::TextDisabled(assetKind == 0 ? "Click: build with it.  Right click: more." : assetKind == 1 ? "Click: look at it.  Right click: more." : assetKind == 3 ? "Click: place it in the world." : "Click: give the held block this shape.");
         ImGui::BeginChild("grid", ImVec2(0, 0), ImGuiChildFlags_Borders);
@@ -2478,16 +2696,20 @@ struct App {
             }
         } else if (assetKind == 3) {
             int mi = 0;
-            for (auto& kv : models.models) {
-                const BlockModel& m = kv.second; mi++;
-                if (!q.empty() && Lower(m.name).find(q) == std::string::npos) continue;
+            for (const std::string& name : AllModelNames()) {
+                mi++; bool mesh = IsMesh(name);
+                if (assetCat == "blocks" && mesh) continue; if (assetCat == "imported" && !mesh) continue;
+                if (!q.empty() && Lower(name).find(q) == std::string::npos) continue;
+                FrameRef f = ModelNamed(name);
                 ImGui::PushID(mi); ImVec2 p;
-                if (cell("m", m.name, sel == Sel::Model && selModel == m.name, p) && !ImGui::IsMouseReleased(ImGuiMouseButton_Right)) { sel = Sel::Model; selModel = m.name; StartPlacing(m.name); sel = Sel::Model; }
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s\n%d x %d x %d blocks\nClick to place it", m.name.c_str(), m.sx, m.sy, m.sz);
-                ObjectIcon(ImGui::GetWindowDrawList(), m, ImVec2(p.x + s * 0.5f, p.y + s * 0.5f), s * 0.8f);
+                if (cell("m", name, sel == Sel::Model && selModel == name, p) && !ImGui::IsMouseReleased(ImGuiMouseButton_Right)) { StartPlacing(name); sel = Sel::Model; selModel = name; }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s\n%.2f x %.2f x %.2f blocks%s\nClick to place it, double-click for the 3D viewer", name.c_str(), f->sx, f->sy, f->sz, mesh ? " (imported)" : "");
+                if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) { viewerModel = name; viewerOpen = true; viewerFit = true; placing.clear(); }
+                ModelIcon(ImGui::GetWindowDrawList(), name, ImVec2(p.x + s * 0.5f, p.y + s * 0.5f), s * 0.8f);
                 if (ImGui::BeginPopupContextItem("ctx")) {
-                    if (ImGui::MenuItem("Place it")) StartPlacing(m.name);
-                    if (ImGui::MenuItem("Show in the Inspector")) { sel = Sel::Model; selModel = m.name; }
+                    if (ImGui::MenuItem("Place it")) StartPlacing(name);
+                    if (ImGui::MenuItem("3D viewer")) { viewerModel = name; viewerOpen = true; viewerFit = true; }
+                    if (ImGui::MenuItem("Show in the Inspector")) { sel = Sel::Model; selModel = name; }
                     ImGui::EndPopup();
                 }
                 ImGui::PopID();
@@ -2745,6 +2967,17 @@ struct App {
                 toolSel = 1; selA = { 30, gy, 30 }; selB = { 31, gy + 2, 30 }; selStage = 2; sel = Sel::Selection; newModelName = "Brick pillar";
                 frames(3, "selection_box");
                 selStage = 0; toolMode = false; sel = Sel::World;
+                // imported models: a Blockbench lamp post, an .obj rock, a glTF crystal
+                for (auto& f : writeDemoModels(ExeDir() + "demo_models")) ImportModelFile(f);
+                auto place = [&](const std::string& name, V3 pos, double yaw, double scale) { WorldObject o; o.id = nextObjId++; o.name = UniqueObjectName(name); o.model = name; o.pos = pos; o.yaw = yaw; o.scale = scale; objects.push_back(o); };
+                place("Lamp post", { 33.5, (double)gy, 21.5 }, 0, 1.6); place("rock", { 41.5, (double)gy, 21.5 }, 20, 1); place("crystal", { 38.5, (double)gy, 20.5 }, 0, 1); place("crystal", { 39.6, (double)gy, 21.4 }, 30, 0.6);
+                RebuildSolids();
+                viewerModel = "Lamp post"; viewerOpen = true; viewerFit = true; viewerYaw = 0.6f; viewerPitch = 0.3f; sel = Sel::Model; selModel = "Lamp post"; assetKind = 3; assetCat.clear(); placing.clear(); toastT = 0;
+                frames(6, "model_viewer");
+                viewerOpen = false; sel = Sel::Object; selIndex = (int)objects.size() - 3;
+                poseAt(DemoShot{ "i", { 37.5, gy + 3.5, 14 }, { 37.5, gy + 1.2, 22 }, 15.0f });
+                frames(4, "imported_models");
+                sel = Sel::World;
             }
             {   // tools: sculpt a little landscape with the terrain brush, then show it with the brush options open
                 auto ground = [&](int x, int z) { for (int y = 40; y > -40; y--) { BlockId v = world->get(x, y, z); if (v != AIR && !reg.get(v).liquid) return y; } return 0; };
@@ -2810,6 +3043,7 @@ struct App {
             if (inventory) InventoryScreen();
             if (shapeMenu) ShapeMenu();
             if (brushMenu) BrushMenu();
+            ModelViewer();
         } else {
             DrawHud(ImGui::GetForegroundDrawList());
             if (showF3) DrawF3();
@@ -2821,6 +3055,7 @@ struct App {
 
         const float bg[4] = { 0.10f, 0.11f, 0.13f, 1 };
         if (screen == Screen::Game && rw > 0) RenderWorld(ev ? sceneRTV.Get() : backRTV.Get());
+        if (ev) RenderViewer();
         ctx->OMSetRenderTargets(1, backRTV.GetAddressOf(), nullptr);
         if (screen != Screen::Game || ev) ctx->ClearRenderTargetView(backRTV.Get(), bg);
         D3D11_VIEWPORT v{ 0, 0, (float)cw, (float)ch, 0, 1 }; ctx->RSSetViewports(1, &v);
