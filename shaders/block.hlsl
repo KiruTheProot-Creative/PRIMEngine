@@ -573,7 +573,11 @@ float4 PS_Volume(SkyOut i) : SV_Target
     if (gEnvPart.z > 0.5)
     {
         float d = min(dist, 400);
-        if (gEnvPart.z < 1.5) scene = lerp(scene, (gAmbient.rgb * 0.6 + gSunColor.rgb * 0.08) * float3(0.05, 0.28, 0.34), 1 - exp(-d * 0.085));
+        if (gEnvPart.z < 1.5)
+        {
+            scene *= exp(-min(d, 60) * float3(0.30, 0.06, 0.04));                                  // under water: red fades first
+            scene = lerp(scene, (gAmbient.rgb * 0.7 + gSunColor.rgb * 0.12) * float3(0.05, 0.30, 0.36), 1 - exp(-d * 0.16));
+        }
         else scene = lerp(scene, float3(1.6, 0.45, 0.08), 1 - exp(-d * 1.4));
     }
     return float4(scene, 1);
