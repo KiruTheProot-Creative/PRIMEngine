@@ -70,3 +70,10 @@ cmake --build build --config Release
 ```
 
 Third-party code: Dear ImGui (MIT) and stb_image (public domain / MIT).
+
+## Tools (T)
+
+In the editor, **T** swaps the hotbar between blocks and tools. Slot 1 is the **terrain brush**:
+- **Q** opens its options: 6 shapes (sphere, cube, cylinder, dome, diamond, pyramid) and 10 things it does (add, remove, paint, replace, smooth, raise, lower, flatten, fill, roughen), with size, height, strength, paint depth, lump size and the material.
+- Left click uses it, right click does the opposite (add/remove, raise/lower). Hold to keep going. Shift + wheel or + / - changes the size. One stroke is one undo step.
+- Turning blocks by hand moved: R turns, **Shift+R** tips over (T is now the tools).

@@ -1,6 +1,7 @@
 // Game logic tests: creative player, undo/redo, world info and settings files.
 #include "../src/game/game.h"
 #include "../src/game/project.h"
+#include "../src/game/brush.h"
 #include <filesystem>
 #include <fstream>
 #include "../src/game/weather.h"
@@ -146,6 +147,53 @@ int main() {
         CHECK(h.lastWorld == "Level 2", "the last open world is remembered");
         CHECK(Projects::remove(sp2) && !fs::exists(sp2) && !Projects::remove(ex + "/nothing"), "deleting a project");
         CHECK(Projects::ago(1000, 1000 + 3 * 86400 + 5) == "3 days ago" && Projects::ago(1000, 1500) == "today", "how long ago");
+    }
+
+    // terrain brushes
+    {
+        BlockRegistry r; registerBuiltinBlocks(r); World w(r); w.gen.layers = { { r.find("stone"), 3 }, { r.find("dirt"), 2 }, { r.find("grass"), 1 } };
+        w.stream({ 0, 0, 0 }, 3, 2, 100000);
+        BlockId stone = r.find("stone"), grass = r.find("grass"), sand = r.find("sand");
+        auto top = [&](int x, int z) { for (int y = 40; y > -40; y--) if (w.get(x, y, z) != AIR) return y; return -99; };
+        int g = top(0, 0);
+        BrushSettings b; int n = 0;
+        for (int dy = -4; dy <= 4; dy++) for (int dz = -4; dz <= 4; dz++) for (int dx = -4; dx <= 4; dx++) n += insideBrush(b, dx, dy, dz);
+        CHECK(n > 200 && n < 400 && insideBrush(b, 0, 4, 0) && !insideBrush(b, 4, 4, 0), "sphere brush of size 4 (%d blocks)", n);
+        b.shape = BrushShape::Dome; CHECK(!insideBrush(b, 0, -1, 0) && insideBrush(b, 0, 3, 0), "dome is the top half");
+        b.shape = BrushShape::Cylinder; b.height = 1; CHECK(insideBrush(b, 4, 1, 0) && !insideBrush(b, 0, 2, 0), "cylinder has its own height");
+        for (int s = 0; s < (int)BrushShape::COUNT; s++) { b.shape = (BrushShape)s; CHECK(!brushOutline(b).empty() && insideBrush(b, 0, 0, 0), "%s brush has an outline and a middle", shapeInfo(b.shape).name); }
+
+        BrushStroke st; b = BrushSettings{}; b.op = BrushOp::Add; b.radius = 3;
+        st.apply(w, brushEdits(w, b, { 0, g + 5, 0 }, stone, 0)); st.apply(w, brushEdits(w, b, { 0, g + 5, 0 }, stone, 0));
+        CHECK(w.get(0, g + 5, 0) == stone && w.get(0, g + 8, 0) == stone && w.get(0, g + 9, 0) == AIR, "add fills a ball of stone");
+        auto stroke = st.finish(); EditHistory hist; size_t ballN = stroke.size(); hist.push(std::move(stroke));
+        CHECK(ballN > 50, "one stroke is one undo step (%zu blocks)", ballN);
+        hist.undo(w); CHECK(w.get(0, g + 5, 0) == AIR, "undo removes the whole stroke");
+
+        b.op = BrushOp::Remove; b.radius = 2; st.apply(w, brushEdits(w, b, { 10, g, 10 }, AIR, 0));
+        CHECK(w.get(10, g, 10) == AIR && w.get(10, g - 2, 10) == AIR && w.get(10, g - 3, 10) != AIR, "remove digs a hole");
+        b.op = BrushOp::Fill; b.radius = 3; st.apply(w, brushEdits(w, b, { 10, g, 10 }, sand, g));
+        CHECK(w.get(10, g, 10) == sand && w.get(10, g + 1, 10) == AIR, "fill fills the hole up to the clicked height");
+
+        b = BrushSettings{}; b.op = BrushOp::Raise; b.radius = 4; b.strength = 1;
+        for (int k = 0; k < 3; k++) st.apply(w, brushEdits(w, b, { -10, g, -10 }, AIR, 0));
+        int hill = top(-10, -10), edge = top(-14, -10);
+        CHECK(hill >= g + 6 && edge < hill && w.get(-10, hill, -10) == grass, "raise makes a hill with grass on top (%d high)", hill - g);
+        b.op = BrushOp::Smooth; b.radius = 5; for (int k = 0; k < 3; k++) st.apply(w, brushEdits(w, b, { -10, hill, -10 }, AIR, 0));
+        CHECK(top(-10, -10) <= hill && top(-10, -10) > g, "smooth rounds the hill off (%d -> %d)", hill - g, top(-10, -10) - g);
+        b.op = BrushOp::Lower; b.radius = 3; st.apply(w, brushEdits(w, b, { 12, g, -12 }, AIR, 0));
+        CHECK(top(12, -12) < g && w.get(12, top(12, -12), -12) == grass, "lower digs a dip and keeps the grass on top");
+        b.op = BrushOp::Flatten; b.shape = BrushShape::Cylinder; b.radius = 6; b.height = 4;
+        st.apply(w, brushEdits(w, b, { -10, g, -10 }, grass, g));
+        CHECK(top(-10, -10) == g && top(-12, -9) == g, "flatten cuts the hill back to the ground");
+        b = BrushSettings{}; b.op = BrushOp::Paint; b.radius = 3; st.apply(w, brushEdits(w, b, { 0, g, 0 }, sand, 0));
+        CHECK(w.get(0, g, 0) == sand && w.get(0, g - 1, 0) != sand, "paint only changes the surface");
+        b.op = BrushOp::Replace; b.replaceFrom = r.find("dirt"); st.apply(w, brushEdits(w, b, { 0, g - 1, 0 }, stone, 0));
+        CHECK(w.get(0, g - 1, 0) == stone && w.get(0, g, 0) == sand, "replace swaps only the chosen block");
+        b = BrushSettings{}; b.op = BrushOp::Roughen; b.radius = 5; b.strength = 1;
+        auto rough = brushEdits(w, b, { 20, g, 0 }, AIR, 0, 7);
+        CHECK(!rough.empty(), "roughen changes the surface (%zu blocks)", rough.size());
+        CHECK(opposite(BrushOp::Raise) == BrushOp::Lower && opposite(BrushOp::Add) == BrushOp::Remove, "right click does the opposite");
     }
 
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);

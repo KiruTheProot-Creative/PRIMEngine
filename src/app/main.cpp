@@ -7,6 +7,7 @@
 #include "../world/shapes.h"
 #include "../game/demo.h"
 #include "../game/project.h"
+#include "../game/brush.h"
 #include "../game/weather.h"
 #include "../core/png.h"
 #include "../core/noise.h"
@@ -156,7 +157,12 @@ struct App {
     double fps = 0; int fpsN = 0; double fpsAcc = 0;
 
     // ---- the editor (G1): docked panels around the viewport, and Play mode
-    enum class Sel { None, World, Weather, Environment, Zone, Spawn, Player, Game, Block, Texture, Shape };
+    enum class Sel { None, World, Weather, Environment, Zone, Spawn, Player, Game, Block, Texture, Shape, Tool };
+    // ---- tools (T): a second hotbar with editing tools; slot 1 is the terrain brush
+    bool toolMode = false, brushMenu = false; int toolSel = 0;
+    BrushSettings brush; BlockId brushMat = 0;    // 0: the block in the block hotbar
+    BrushStroke stroke; bool stroking = false; BrushOp strokeOp = BrushOp::Raise; int strokeY = 0; double dabCool = 0; uint32_t strokeSeed = 1;
+    bool toolValid = false; Hit toolHit{};
     Sel sel = Sel::World; int selIndex = 0;
     int assetKind = 0; std::string assetCat, assetSearch; float assetSize = 64;   // asset browser: 0 blocks, 1 textures, 2 shapes
     bool resetLayout = false, showZones = true, captureNext = false, focusView = false, focusAssets = false;
@@ -470,7 +476,7 @@ struct App {
         } else { io.ConfigFlags &= ~ImGuiConfigFlags_NoMouse; ClipCursor(nullptr); }
         mouseDX = mouseDY = 0;
     }
-    bool Playing() const { return screen == Screen::Game && captured && !paused && !inventory && !shapeMenu; }
+    bool Playing() const { return screen == Screen::Game && captured && !paused && !inventory && !shapeMenu && !brushMenu; }
     static bool Down(int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; }
     void OnKey(WPARAM k, bool repeat) {
         if (screen != Screen::Game) {
@@ -481,6 +487,7 @@ struct App {
         if (k == VK_F5 && !repeat) { if (playMode) StopPlay(); else StartPlay(); return; }
         if (k == VK_ESCAPE) {
             if (shapeMenu) { shapeMenu = false; Capture(true); }
+            else if (brushMenu) { brushMenu = false; Capture(true); }
             else if (inventory) { inventory = false; Capture(true); }
             else if (showSettings) showSettings = false;
             else if (playMode) { paused = !paused; Capture(!paused); }
@@ -495,21 +502,38 @@ struct App {
         if (Down(VK_CONTROL) && k == 'Y') { if (history.redo(*world)) Toast("Redo"); return; }
         if (Down(VK_CONTROL) && k == 'S') { SaveWorld(); Toast("Saved"); return; }
         if (k == 'E' && !paused) { if (EditorView()) { Capture(false); focusAssets = true; } else { inventory = !inventory; editorOpen = false; shapeMenu = false; Capture(!inventory); } return; }
-        if (k == 'Q' && !paused && !inventory) { shapeMenu = !shapeMenu; shapeSearch.clear(); Capture(!shapeMenu); return; }
+        if (k == 'T' && !repeat && !paused && !inventory) {   // block hotbar <-> tool hotbar
+            toolMode = !toolMode; shapeMenu = brushMenu = false; EndStroke();
+            if (toolMode && EditorView()) sel = Sel::Tool; else if (sel == Sel::Tool) sel = Sel::World;
+            Toast(toolMode ? "Tools (T: back to blocks, Q: brush options)" : "Blocks"); return;
+        }
+        if (k == 'Q' && !paused && !inventory) {
+            if (toolMode) { brushMenu = !brushMenu; shapeMenu = false; Capture(!brushMenu); }
+            else { shapeMenu = !shapeMenu; shapeSearch.clear(); Capture(!shapeMenu); }
+            return;
+        }
+        if (toolMode && (k == VK_OEM_PLUS || k == VK_ADD)) { brush.radius = std::min(32, brush.radius + 1); return; }
+        if (toolMode && (k == VK_OEM_MINUS || k == VK_SUBTRACT)) { brush.radius = std::max(0, brush.radius - 1); return; }
         if (!Playing() || repeat) return;
-        if (k >= '1' && k <= '9') hotSel = (int)(k - '1');
+        if (k >= '1' && k <= '9') { if (toolMode) toolSel = (int)(k - '1'); else hotSel = (int)(k - '1'); }
         if (k == VK_SPACE) {
             double now = ImGui::GetTime();
             if (now - lastSpace < 0.3) { player.toggleFly(); Toast(player.flying ? "Flying" : "Walking"); lastSpace = -10; } else lastSpace = now;
         }
-        if (k == 'R' || k == 'T') {   // turn the next block by hand (starts from the automatic rotation)
+        if (k == 'R' && !toolMode) {   // turn the next block by hand (starts from the automatic rotation); Shift+R tips it over
             if (!manualRot) { manualRot = true; manRot = targetValid ? rotOf(targetValue) : 0; }
-            int look = LookFace();
-            manRot = Shapes::turn(manRot, k == 'R' ? 1 : (look == F_PZ || look == F_NZ) ? 0 : 2);
+            int look = LookFace(); bool tip = Down(VK_SHIFT);
+            manRot = Shapes::turn(manRot, !tip ? 1 : (look == F_PZ || look == F_NZ) ? 0 : 2);
         }
         if (k == 'G' && manualRot) { manualRot = false; Toast("Rotation: automatic"); }
     }
-    void OnWheel(int delta) { if (Playing() && !playMode) hotSel = (hotSel + (delta > 0 ? 8 : 1)) % 9; }
+    void OnWheel(int delta) {
+        if (Playing() && !playMode && toolMode) {
+            if (Down(VK_SHIFT)) brush.radius = std::clamp(brush.radius + (delta > 0 ? 1 : -1), 0, 32);
+            else toolSel = (toolSel + (delta > 0 ? 8 : 1)) % 9;
+            return;
+        }
+        if (Playing() && !playMode) hotSel = (hotSel + (delta > 0 ? 8 : 1)) % 9; }
 
     // ================================================================== game update
     void UpdateGame(double dt) {
@@ -519,8 +543,9 @@ struct App {
             if (fg) { c.forward = Down('W'); c.back = Down('S'); c.left = Down('A'); c.right = Down('D'); c.jump = Down(VK_SPACE); c.sneak = Down(VK_SHIFT); c.sprint = Down(VK_CONTROL) && !Down('Z') && !Down('Y'); }
             if (playMode) { c.sprint = c.sprint && game.player.canSprint; if (play.dead()) c = Controls{}; }
             player.update(*world, c, std::min(dt, 0.05), playMode ? game.player : PlayerRules{});
-            if (!playMode) Interact(dt); else hoverValid = false;
-        } else { lPrev = rPrev = mPrev = true; }
+            if (playMode) hoverValid = false; else if (toolMode) ToolInteract(dt); else Interact(dt);
+        } else { lPrev = rPrev = mPrev = true; if (stroking) EndStroke(); }
+        toolValid = toolMode && !playMode && world->raycast(player.eye(), player.forward(), 160.0, toolHit);   // where the brush is (shown even with the mouse free)
         if (playMode && !paused) {   // health, lava, falling out of the world, respawning
             PlayState::Event e = play.tick(*world, player, game.player, playSpawn, playYaw, std::min(dt, 0.05));
             if (e == PlayState::Died) Toast(std::string("You ") + play.cause);
@@ -539,6 +564,127 @@ struct App {
         ScheduleMeshing(pc);
         CollectMeshes();
         if ((autosave += dt) > 60) { autosave = 0; SaveWorld(); }
+    }
+    // ---- tools
+    BlockId BrushMaterial() const { BlockId m = brushMat ? brushMat : typeOf(hotbar[hotSel]); return reg.has(m) ? typeOf(m) : reg.find("stone"); }
+    void EndStroke() {
+        if (!stroking) return;
+        stroking = false; auto g = stroke.finish();
+        if (!g.empty()) { size_t n = g.size(); history.push(std::move(g)); Toast(std::to_string(n) + " blocks changed (Ctrl+Z undoes it)"); }
+    }
+    void ToolInteract(double dt) {
+        hoverValid = false;
+        bool L = Down(VK_LBUTTON), R = Down(VK_RBUTTON);
+        if (!L && !R) { EndStroke(); lPrev = rPrev = false; return; }
+        if (toolSel != 0) { lPrev = L; rPrev = R; return; }   // more tools come later
+        if (!stroking && ((L && !lPrev) || (R && !rPrev)) && toolValid) {
+            stroking = true; strokeOp = L ? brush.op : opposite(brush.op); strokeY = toolHit.y; dabCool = 0; strokeSeed = (uint32_t)GetTickCount();
+        }
+        lPrev = L; rPrev = R;
+        if (!stroking || !toolValid) return;
+        if ((dabCool -= dt) > 0) return;
+        bool slow = strokeOp == BrushOp::Raise || strokeOp == BrushOp::Lower || strokeOp == BrushOp::Smooth || strokeOp == BrushOp::Roughen;
+        dabCool = slow ? 0.15 : 0.1;
+        BrushSettings b = brush; b.op = strokeOp;
+        I3 c{ toolHit.x, toolHit.y, toolHit.z };
+        if (strokeOp == BrushOp::Add) c = { toolHit.x + toolHit.nx, toolHit.y + toolHit.ny, toolHit.z + toolHit.nz };   // grows out of the surface
+        stroke.apply(*world, brushEdits(*world, b, c, BrushMaterial(), strokeY, strokeSeed));
+    }
+    std::string BrushLabel() const {
+        return std::string("Terrain brush: ") + shapeInfo(brush.shape).name + ", " + opInfo(brush.op).name + ", size " + std::to_string(brush.radius);
+    }
+    void ToolIcon(ImDrawList* dl, int tool, ImVec2 c, float s) {
+        if (tool != 0) return;
+        float h = s * 0.5f;   // terrain brush: a little mountain with a snowy top
+        dl->AddTriangleFilled(ImVec2(c.x - h, c.y + h * 0.7f), ImVec2(c.x - h * 0.15f, c.y - h * 0.75f), ImVec2(c.x + h * 0.55f, c.y + h * 0.7f), IM_COL32(110, 120, 95, 255));
+        dl->AddTriangleFilled(ImVec2(c.x - h * 0.1f, c.y + h * 0.7f), ImVec2(c.x + h * 0.45f, c.y - h * 0.25f), ImVec2(c.x + h, c.y + h * 0.7f), IM_COL32(85, 140, 70, 255));
+        dl->AddTriangleFilled(ImVec2(c.x - h * 0.4f, c.y - h * 0.25f), ImVec2(c.x - h * 0.15f, c.y - h * 0.75f), ImVec2(c.x + h * 0.1f, c.y - h * 0.25f), IM_COL32(240, 245, 250, 255));
+        dl->AddRectFilled(ImVec2(c.x - h, c.y + h * 0.7f), ImVec2(c.x + h, c.y + h * 0.85f), IM_COL32(120, 85, 55, 255));
+    }
+    void BrushShapeIcon(ImDrawList* dl, BrushShape sh, ImVec2 c, float s, ImU32 col) {   // the shape's outline, seen from above at an angle
+        BrushSettings b; b.shape = sh; b.radius = 3; b.height = 2; float k = s / 9.f;
+        auto P = [&](V3 v) { return ImVec2(c.x + (float)(v.x - v.z) * 0.87f * k, c.y + (float)((v.x + v.z) * 0.45 - v.y) * k); };
+        for (auto& l : brushOutline(b)) dl->AddLine(P(l.first), P(l.second), col, 1.5f);
+    }
+    ImU32 OpColor(BrushOp o) const {
+        switch (o) {
+        case BrushOp::Add: case BrushOp::Raise: case BrushOp::Fill: return IM_COL32(110, 255, 140, 255);
+        case BrushOp::Remove: case BrushOp::Lower: return IM_COL32(255, 110, 100, 255);
+        case BrushOp::Paint: case BrushOp::Replace: return IM_COL32(120, 190, 255, 255);
+        default: return IM_COL32(255, 220, 110, 255);
+        }
+    }
+    void BlockPicker(const char* id, BlockId& v, const char* none) {   // a button showing the block; click for a grid of all blocks
+        float ui = settings.uiScale, s = 40 * ui;
+        ImGui::PushID(id); ImVec2 p;
+        if (Tile("pick", p, s)) ImGui::OpenPopup("grid");
+        if (v) BlockIcon(ImGui::GetWindowDrawList(), v, ImVec2(p.x + s * 0.5f, p.y + s * 0.5f), s * 0.7f);
+        ImGui::SameLine(); ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted(v && reg.has(v) ? reg.get(v).name.c_str() : none);
+        if (ImGui::BeginPopup("grid")) {
+            if (ImGui::Selectable(none, v == 0)) v = 0;
+            float t = 44 * ui; int n = 0;
+            ImGui::BeginChild("g", ImVec2(GridChildWidth(t, 8), (t + ImGui::GetStyle().ItemSpacing.y) * 4 + 12), ImGuiChildFlags_Borders);
+            for (BlockId b = 1; b < reg.count(); b++) {
+                if (!reg.has(b)) continue; ImGui::PushID((int)b); ImVec2 q;
+                if (Tile("t", q, t, typeOf(v) == b)) { v = b; ImGui::CloseCurrentPopup(); }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", reg.get(b).name.c_str());
+                BlockIcon(ImGui::GetWindowDrawList(), b, ImVec2(q.x + t * 0.5f, q.y + t * 0.5f), t * 0.7f);
+                ImGui::PopID(); if (++n % 8) ImGui::SameLine();
+            }
+            ImGui::EndChild(); ImGui::EndPopup();
+        }
+        ImGui::PopID();
+    }
+    void BrushBody() {   // the terrain brush's options (Q menu and Inspector)
+        float ui = settings.uiScale, s = 58 * ui;
+        ImGui::SeparatorText("Shape");
+        for (int i = 0; i < (int)BrushShape::COUNT; i++) {
+            ImGui::PushID(i); ImGui::BeginGroup(); ImVec2 p;
+            if (Tile("sh", p, s, (int)brush.shape == i)) brush.shape = (BrushShape)i;
+            BrushShapeIcon(ImGui::GetWindowDrawList(), (BrushShape)i, ImVec2(p.x + s * 0.5f, p.y + s * 0.52f), s, (int)brush.shape == i ? OpColor(brush.op) : IM_COL32(200, 200, 210, 255));
+            ImGui::TextUnformatted(shapeInfo((BrushShape)i).name); ImGui::EndGroup();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", shapeInfo((BrushShape)i).help);
+            ImGui::PopID();
+            if (i % 3 != 2 && i + 1 < (int)BrushShape::COUNT) ImGui::SameLine();
+        }
+        ImGui::SeparatorText("What it does");
+        float bw = 92 * ui;
+        for (int i = 0; i < (int)BrushOp::COUNT; i++) {
+            bool on = (int)brush.op == i;
+            if (on) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+            if (ImGui::Button(opInfo((BrushOp)i).name, ImVec2(bw, 0))) brush.op = (BrushOp)i;
+            if (on) ImGui::PopStyleColor();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", opInfo((BrushOp)i).help);
+            if (i % 3 != 2 && i + 1 < (int)BrushOp::COUNT) ImGui::SameLine();
+        }
+        ImGui::TextWrapped("%s", opInfo(brush.op).help);
+        ImGui::SeparatorText("Settings");
+        BrushOp o = brush.op; float w = -110 * ui;
+        ImGui::SetNextItemWidth(w); ImGui::SliderInt("Size", &brush.radius, 0, 32, brush.radius ? "%d blocks" : "1 block");
+        if (brush.shape == BrushShape::Cylinder || brush.shape == BrushShape::Cube) { ImGui::SetNextItemWidth(w); ImGui::SliderInt("Height", &brush.height, 0, 32, "%d up and down"); }
+        if (o == BrushOp::Smooth || o == BrushOp::Raise || o == BrushOp::Lower || o == BrushOp::Roughen) { ImGui::SetNextItemWidth(w); ImGui::SliderFloat("Strength", &brush.strength, 0, 1, "%.2f"); }
+        if (o == BrushOp::Paint) { ImGui::SetNextItemWidth(w); ImGui::SliderInt("Paint depth", &brush.paintDepth, 1, 8, "%d blocks"); }
+        if (o == BrushOp::Roughen) { ImGui::SetNextItemWidth(w); ImGui::SliderFloat("Lump size", &brush.noiseScale, 0.05f, 1, "%.2f"); }
+        if (o == BrushOp::Remove || o == BrushOp::Smooth) ImGui::Checkbox("Water and lava too", &brush.liquidsToo);
+        if (o == BrushOp::Add || o == BrushOp::Paint || o == BrushOp::Replace || o == BrushOp::Flatten || o == BrushOp::Fill || o == BrushOp::Roughen) {
+            ImGui::TextDisabled("Material"); BlockPicker("mat", brushMat, "The block in my hand");
+        }
+        if (o == BrushOp::Replace) {
+            ImGui::TextDisabled("Only replace"); BlockPicker("from", brush.replaceFrom, "Anything");
+            if (toolValid && ImGui::SmallButton("The block I am looking at")) brush.replaceFrom = typeOf(world->get(toolHit.x, toolHit.y, toolHit.z));
+        }
+        ImGui::Spacing();
+        ImGui::TextDisabled("Left click: %s.   Right click: %s.\nHold the button to keep going. Shift + wheel or + / - : size.\nCtrl+Z undoes a whole stroke.",
+            opInfo(brush.op).name, opInfo(opposite(brush.op)).name);
+    }
+    void BrushMenu() {
+        Center(ImVec2(0, 0));
+        ImGui::Begin("Terrain brush###brushmenu", nullptr, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize);
+        ImGui::PushItemWidth(260 * settings.uiScale);
+        BrushBody();
+        ImGui::PopItemWidth();
+        if (ImGui::Button("Done (Q)", ImVec2(-1, 0))) { brushMenu = false; Capture(true); }
+        ImGui::End();
     }
     void Interact(double dt) {
         hoverValid = world->raycast(player.eye(), player.forward(), 6.0, hover);
@@ -1026,6 +1172,16 @@ struct App {
             const int e[12][2] = { { 0, 1 }, { 2, 3 }, { 4, 5 }, { 6, 7 }, { 0, 2 }, { 1, 3 }, { 4, 6 }, { 5, 7 }, { 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 } };
             for (auto& k : e) Line3D(dl, c[k[0]], c[k[1]], IM_COL32(10, 10, 10, 200));
         }
+        if (toolMode && toolValid && toolSel == 0 && !playMode) {   // the brush, where it would dab
+            BrushOp op = stroking ? strokeOp : brush.op; ImU32 col = OpColor(op);
+            V3 c{ toolHit.x + 0.5, toolHit.y + 0.5, toolHit.z + 0.5 };
+            if (op == BrushOp::Add) c = { c.x + toolHit.nx, c.y + toolHit.ny, c.z + toolHit.nz };
+            for (auto& l : brushOutline(brush)) Line3D(dl, { c.x + l.first.x, c.y + l.first.y, c.z + l.first.z }, { c.x + l.second.x, c.y + l.second.y, c.z + l.second.z }, col);
+            V3 a{ (double)toolHit.x, (double)toolHit.y, (double)toolHit.z };
+            V3 q[8]; for (int i = 0; i < 8; i++) q[i] = { a.x + ((i & 1) ? 1.0 : 0.0), a.y + ((i & 2) ? 1.0 : 0.0), a.z + ((i & 4) ? 1.0 : 0.0) };
+            const int e[12][2] = { { 0, 1 }, { 2, 3 }, { 4, 5 }, { 6, 7 }, { 0, 2 }, { 1, 3 }, { 4, 6 }, { 5, 7 }, { 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 } };
+            for (auto& k : e) Line3D(dl, q[k[0]], q[k[1]], IM_COL32(255, 255, 255, 160));
+        }
         if (!playMode && info.hasSpawn) {   // the spawn point: a green player-sized box with an arrow where it looks
             V3 f = info.spawn; double hw = Player::HALF_W, H = Player::HEIGHT;
             V3 c[8]; for (int i = 0; i < 8; i++) c[i] = { f.x + ((i & 1) ? hw : -hw), f.y + ((i & 2) ? H : 0), f.z + ((i & 4) ? hw : -hw) };
@@ -1047,17 +1203,22 @@ struct App {
         dl->AddRectFilled(ImVec2(m.x - 1, m.y - 9), ImVec2(m.x + 1, m.y + 9), IM_COL32(240, 240, 240, 220));
         if (playMode) { PlayHud(dl); return; }
         float s = 44 * settings.uiScale, W = 9 * s; ImVec2 o(vx + (cw - W) * 0.5f, vy + ch - s - 10);   // hotbar
-        dl->AddRectFilled(ImVec2(o.x - 3, o.y - 3), ImVec2(o.x + W + 3, o.y + s + 3), IM_COL32(0, 0, 0, 140), 3);
+        dl->AddRectFilled(ImVec2(o.x - 3, o.y - 3), ImVec2(o.x + W + 3, o.y + s + 3), toolMode ? IM_COL32(30, 20, 50, 170) : IM_COL32(0, 0, 0, 140), 3);
         for (int i = 0; i < 9; i++) {
             ImVec2 a(o.x + i * s, o.y), b(a.x + s, a.y + s);
-            dl->AddRect(a, b, IM_COL32(120, 120, 120, 200), 0.f, 0, 2.f);
-            BlockIcon(dl, hotbar[i], ImVec2(a.x + s * 0.5f, a.y + s * 0.5f), s * 0.62f);
+            dl->AddRect(a, b, toolMode ? IM_COL32(150, 120, 200, 200) : IM_COL32(120, 120, 120, 200), 0.f, 0, 2.f);
+            if (toolMode) ToolIcon(dl, i, ImVec2(a.x + s * 0.5f, a.y + s * 0.5f), s * 0.7f);
+            else BlockIcon(dl, hotbar[i], ImVec2(a.x + s * 0.5f, a.y + s * 0.5f), s * 0.62f);
         }
-        dl->AddRect(ImVec2(o.x + hotSel * s - 2, o.y - 2), ImVec2(o.x + hotSel * s + s + 2, o.y + s + 2), IM_COL32(255, 255, 255, 255), 0.f, 0, 3.f);
-        if (reg.has(hotbar[hotSel])) {
+        int hs = toolMode ? toolSel : hotSel;
+        dl->AddRect(ImVec2(o.x + hs * s - 2, o.y - 2), ImVec2(o.x + hs * s + s + 2, o.y + s + 2), IM_COL32(255, 255, 255, 255), 0.f, 0, 3.f);
+        if (toolMode) {
+            std::string label = toolSel == 0 ? BrushLabel() + "   (Q: brush options, T: back to blocks)" : "(more tools are coming here)   T: back to blocks";
+            ImVec2 ts = ImGui::CalcTextSize(label.c_str()); dl->AddText(ImVec2(vx + (cw - ts.x) * 0.5f, o.y - ts.y - 8), IM_COL32(255, 255, 255, 230), label.c_str());
+        } else if (reg.has(hotbar[hotSel])) {
             BlockId hv = hotbar[hotSel]; std::string label = reg.get(hv).name;
             if (shapeOf(hv) && shapeOf(hv) != Shapes::FULL) label += " - " + Shapes::get().info(shapeOf(hv)).name;
-            if (manualRot) label += "   [turned by hand: R turn, T tip, G automatic]";
+            if (manualRot) label += "   [turned by hand: R turn, Shift+R tip, G automatic]";
             ImVec2 ts = ImGui::CalcTextSize(label.c_str()); dl->AddText(ImVec2(vx + (cw - ts.x) * 0.5f, o.y - ts.y - 8), IM_COL32(255, 255, 255, 230), label.c_str());
         }
         if (toastT > 0) { ImVec2 ts = ImGui::CalcTextSize(toast.c_str()); dl->AddRectFilled(ImVec2(vx + (cw - ts.x) * 0.5f - 10, vy + 60), ImVec2(vx + (cw + ts.x) * 0.5f + 10, vy + 66 + ts.y + 6), IM_COL32(0, 0, 0, 150), 4); dl->AddText(ImVec2(vx + (cw - ts.x) * 0.5f, vy + 66), IM_COL32(255, 255, 255, 240), toast.c_str()); }
@@ -1202,6 +1363,7 @@ struct App {
     // ---- Play mode
     void StartPlay(bool grabMouse = true) {
         if (screen != Screen::Game || playMode) return;
+        EndStroke(); brushMenu = false;
         editCam = player; playMode = true; paused = false; inventory = false; shapeMenu = false; editorOpen = false;
         playSpawn = info.hasSpawn ? info.spawn : player.feet; playYaw = info.hasSpawn ? info.spawnYaw : player.yaw;
         play = PlayState{}; play.start(player, game.player, playSpawn, playYaw);
@@ -1423,7 +1585,7 @@ struct App {
         }
         if (!n) ImGui::TextDisabled("No shape is called that.");
         ImGui::EndChild();
-        ImGui::TextDisabled("Click a shape to build with it.   In the world: R turns it, T tips it over, G back to automatic,\nCtrl + middle click copies a placed block's shape and rotation.   Q or Esc closes this.");
+        ImGui::TextDisabled("Click a shape to build with it.   In the world: R turns it, Shift+R tips it over, G back to automatic,\nCtrl + middle click copies a placed block's shape and rotation.   Q or Esc closes this.");
         ImGui::End();
     }
 
@@ -1635,8 +1797,9 @@ struct App {
             I3 b = Here();
             std::string held = reg.has(hotbar[hotSel]) ? reg.get(hotbar[hotSel]).name : "(empty hand)";
             if (reg.has(hotbar[hotSel]) && shapeOf(hotbar[hotSel]) && shapeOf(hotbar[hotSel]) != Shapes::FULL) held += " - " + Shapes::get().info(shapeOf(hotbar[hotSel])).name;
-            ImGui::Text("%s   |   %s   |   Building with: %s   |   Block %d %d %d   |   %zu chunks   |   %.0f fps",
-                info.name.c_str(), captured ? "In the viewport (Esc frees the mouse)" : "Editing", held.c_str(), b.x, b.y, b.z, gpu.size(), fps);
+            if (toolMode) held = toolSel == 0 ? BrushLabel() : "(empty tool slot)";
+            ImGui::Text("%s   |   %s   |   %s   |   Block %d %d %d   |   %zu chunks   |   %.0f fps",
+                info.name.c_str(), captured ? "In the viewport (Esc frees the mouse)" : "Editing", (toolMode ? held : "Building with: " + held).c_str(), b.x, b.y, b.z, gpu.size(), fps);
             if (toastT > 0) { ImGui::SameLine(); ImGui::TextColored(ImVec4(1, 0.85f, 0.4f, 1), "   %s", toast.c_str()); }
         }
         ImGui::End();
@@ -1810,6 +1973,11 @@ struct App {
                 ImGui::Text("%s", si.name.c_str()); ImGui::TextDisabled("Folder: %s.  Every shape turns 24 ways (R, T in the viewport).", si.category.c_str());
                 if (reg.has(hotbar[hotSel]) && ImGui::Button("Build with this shape")) { hotbar[hotSel] = makeBlock(typeOf(hotbar[hotSel]), selIndex); manualRot = false; }
             }
+            break;
+        case Sel::Tool:
+            if (!toolMode) { ImGui::TextDisabled("Press T in the viewport for the tools."); break; }
+            ImGui::SeparatorText(toolSel == 0 ? "Terrain brush" : "Tools");
+            if (toolSel == 0) BrushBody(); else ImGui::TextDisabled("More tools are coming to this slot.");
             break;
         default: ImGui::TextDisabled("Pick something in the Outliner or the Assets."); break;
         }
@@ -2135,6 +2303,27 @@ struct App {
             frames(10, "editor");
             Select(Sel::Game); assetKind = 2; assetCat = "Slopes";
             frames(3, "editor_game_settings");
+            {   // tools: sculpt a little landscape with the terrain brush, then show it with the brush options open
+                auto ground = [&](int x, int z) { for (int y = 40; y > -40; y--) { BlockId v = world->get(x, y, z); if (v != AIR && !reg.get(v).liquid) return y; } return 0; };
+                int gy = ground(-34, 26); BrushStroke st;
+                auto dab = [&](BrushShape sh, BrushOp op, int r, float strength, I3 c, BlockId mat, int fy, int times) {
+                    BrushSettings b; b.shape = sh; b.op = op; b.radius = r; b.height = 3; b.strength = strength;
+                    for (int k = 0; k < times; k++) st.apply(*world, brushEdits(*world, b, c, mat, fy, 3 + k));
+                };
+                dab(BrushShape::Sphere, BrushOp::Raise, 7, 1, { -36, gy, 30 }, AIR, 0, 6);
+                dab(BrushShape::Sphere, BrushOp::Smooth, 8, 0.6f, { -36, ground(-36, 30), 30 }, AIR, 0, 2);
+                dab(BrushShape::Dome, BrushOp::Paint, 3, 0, { -36, ground(-36, 30), 30 }, reg.find("cobblestone"), 0, 1);
+                dab(BrushShape::Sphere, BrushOp::Roughen, 4, 1, { -40, ground(-40, 34), 34 }, reg.find("stone"), 0, 1);
+                dab(BrushShape::Sphere, BrushOp::Paint, 6, 0, { -24, gy, 22 }, reg.find("sand"), 0, 1);
+                dab(BrushShape::Sphere, BrushOp::Remove, 4, 0, { -24, gy, 22 }, AIR, 0, 1);
+                dab(BrushShape::Cylinder, BrushOp::Fill, 4, 0, { -24, gy - 1, 22 }, reg.find("water"), gy - 1, 1);
+                history.push(st.finish());
+                toolMode = true; toolSel = 0; sel = Sel::Tool; brush = BrushSettings{}; brush.radius = 5;
+                poseAt(DemoShot{ "t", { -27.5, gy + 9.0, 9.5 }, { -32, (double)gy, 28 }, 15.5f });
+                frames(6, "terrain_tools");
+                brushMenu = true; frames(3, "terrain_brush_options");
+                brushMenu = false; toolMode = false; sel = Sel::World;
+            }
             poseAt(demoShots()[1]);
             StartPlay(false); play.health = game.player.maxHealth * 0.65f; play.hurtFlash = 0.25; toastT = 0;
             frames(4, "play_hud");
@@ -2177,6 +2366,7 @@ struct App {
             if (showF3) DrawF3();
             if (inventory) InventoryScreen();
             if (shapeMenu) ShapeMenu();
+            if (brushMenu) BrushMenu();
         } else {
             DrawHud(ImGui::GetForegroundDrawList());
             if (showF3) DrawF3();
