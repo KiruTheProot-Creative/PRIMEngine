@@ -877,9 +877,9 @@ struct App {
             FrameRef f = ModelOf(o); if (!f) continue;
             DoorRuntime& r = doorRt[o.id]; bool before = r.blocks();
             Box3 b = objectBounds(o, *f); V3 c = (b.lo + b.hi) * 0.5, d = player.feet - c;
-            bool near = std::sqrt(d.x * d.x + d.z * d.z) < std::max(o.door.w, o.door.h) * 0.5 + 1.2 && player.feet.y < b.hi.y && player.feet.y > b.lo.y - 1;
-            if (!o.door.field && near && r.state == DoorRuntime::Closed) r.open();   // a plain door opens when you walk up
-            r.tick((float)dt, near, ClipLen(o.model, 0), ClipLen(o.model, 1), o.door.stayOpen);
+            bool nearby = std::sqrt(d.x * d.x + d.z * d.z) < std::max(o.door.w, o.door.h) * 0.5 + 1.2 && player.feet.y < b.hi.y && player.feet.y > b.lo.y - 1;
+            if (!o.door.field && nearby && r.state == DoorRuntime::Closed) r.open();   // a plain door opens when you walk up
+            r.tick((float)dt, nearby, ClipLen(o.model, 0), ClipLen(o.model, 1), o.door.stayOpen);
             changed |= before != r.blocks();
             // the halves where the animation has them
             auto mi = meshModels.find(o.model);
@@ -3173,7 +3173,7 @@ struct App {
                     poseAt(DemoShot{ "d", { 25.5, gy + 1.7, 33 }, { 25.5, gy + 1.3, 40 }, 15.5f });
                     doorRt[a].shoot(0.35f, 0.55f); doorRt[a].t = 0.1f;
                     doorRt[c].state = DoorRuntime::Open; doorRt[c].t = 0;
-                    shots.push_back({ player.eye() + V3{ 0.4, -0.2, 2.0 }, { 0.07, -0.03, 1 }, 0 });
+                    this->shots.push_back({ player.eye() + V3{ 0.4, -0.2, 2.0 }, { 0.07, -0.03, 1 }, 0 });
                     play.health = game.player.maxHealth; toastT = 0;
                     frames(3, "doors_play");
                     StopPlay();
