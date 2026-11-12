@@ -23,6 +23,8 @@ struct Settings {
     float bloom = 0.5f;        // glow around bright things, 0 = off
     bool swaying = true;       // leaves and plants move in the wind
     int reflections = 1;       // 0 off, 1 normal, 2 high
+    int ambientOcclusion = 1;  // soft shadow in corners and under things, for everything on screen: 0 off, 1 normal, 2 high
+    float aoStrength = 1.0f;
     bool load(const std::string& path);
     bool save(const std::string& path) const;
 };

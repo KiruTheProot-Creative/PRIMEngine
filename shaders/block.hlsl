@@ -29,6 +29,7 @@ cbuffer Frame : register(b0)
     float4 gRefl;                   // reflections: x on (1) / off (0), y ray steps, z how far rays go (blocks)
     float4 gClipPlane;              // geometry with dot(rel, xyz) + w < 0 is cut away (only while drawing a mirror's view)
     float4 gMirror;                 // the mirror drawn this frame: plane (xyz normal, w); gRefl.w = 1 when there is one
+    float4 gAOSet;                  // ambient occlusion: x on (1) / off (0), y radius (blocks), z strength, w samples
 };
 cbuffer ChunkCB : register(b1)
 {
@@ -85,7 +86,9 @@ float cloudShadow(float3 rel)
 struct VSIn { float3 pos : POSITION; float2 uv : TEXCOORD0; float layer : TEXCOORD1; uint lit : TEXCOORD2; uint normal : TEXCOORD3; };
 struct VSOut { float4 pos : SV_Position; float3 uvl : TEXCOORD0; float ao : TEXCOORD1; float3 rel : TEXCOORD2; float3 n : TEXCOORD3; float4 lamp : TEXCOORD4; float2 mat : TEXCOORD5; float kind : TEXCOORD6; float clip : SV_ClipDistance0; };
 // what the reflection pass needs per pixel: direction of the surface (rgb) and how shiny it is (a)
-struct PSOut { float4 color : SV_Target0; float4 surface : SV_Target1; };
+// color: the lit picture; surface: direction + shininess (reflections); indirect: the part of the light that
+// comes from the sky and lamps (not the sun), which ambient occlusion takes away in corners
+struct PSOut { float4 color : SV_Target0; float4 surface : SV_Target1; float4 indirect : SV_Target2; };
 
 float3 unpackNormal(uint n) { return normalize(float3(n & 255, (n >> 8) & 255, (n >> 16) & 255) / 255.0 * 2 - 1); }
 
@@ -157,7 +160,7 @@ float shadowAt(float3 rel, float3 n, float ndl, float2 screen)
     return lerp(sh, 1, edge * edge);
 }
 
-float3 lightBlock(VSOut i, float3 albedo, bool front, out float3 n, out float shine)
+float3 lightBlock(VSOut i, float3 albedo, bool front, out float3 n, out float shine, out float3 indirect)
 {
     n = front ? i.n : -i.n;
     // weather on surfaces: snow settles on tops open to the sky, rain makes things darker and shiny
@@ -174,11 +177,15 @@ float3 lightBlock(VSOut i, float3 albedo, bool front, out float3 n, out float sh
     float3 hue = lamp > 0 ? i.lamp.rgb / lamp : 0;                                                   // the colour of the lamps nearby
     light += hue * (pow(lamp, 3.2) * 0.9) * gExtra.w * lerp(0.5, 1, i.ao);
     float3 c = albedo * light;
+    indirect = albedo * (light - gSunColor.rgb * ndl * sh);
     if (i.lamp.a > 0.5)                                                                               // the lamp itself glows in its colour
+    {
         c = (dot(albedo, float3(0.2126, 0.7152, 0.0722)) * hue * 0.85 + albedo * hue * 0.3) * 3.2 * gExtra.w;
+        indirect = 0;                                                                                 // glowing things are never shaded
+    }
     float3 v = -normalize(i.rel);
     shine = max(i.mat.x, wet * lerp(0.25, 0.55, saturate(n.y)));    // wet ground shines like a puddle
-    if (i.mat.y > 0.5) { shine = 1; c *= 0.15; }                      // a mirror is (almost) only its reflection
+    if (i.mat.y > 0.5) { shine = 1; c *= 0.15; indirect *= 0.15; }    // a mirror is (almost) only its reflection
     if (gRefl.x < 0.5 && shine > 0.01)   // reflections off: just a little of the sky mirrored
     {
         float fr = 0.04 + 0.96 * pow(1 - saturate(dot(n, v)), 5);
@@ -186,6 +193,7 @@ float3 lightBlock(VSOut i, float3 albedo, bool front, out float3 n, out float sh
     }
     float d = length(i.rel);
     float f = saturate((d - gFogRange.x) / max(gFogRange.y - gFogRange.x, 1));
+    indirect *= 1 - f * f;
     return lerp(c, skyColor(normalize(i.rel)), f * f);
 }
 
@@ -204,9 +212,12 @@ PSOut PS_Opaque(VSOut i, bool front : SV_IsFrontFace)
 {
     float4 t = gTex.Sample(gSamp, i.uvl);
     PSOut o; float3 n; float sh;
+    o.indirect = 0;
     if (i.kind > 3.5) { o.color = float4(lavaColor(i.rel), 1); o.surface = float4(i.n * 0.5 + 0.5, 0); return o; }
-    o.color = float4(lightBlock(i, t.rgb, front, n, sh), 1);
+    float3 ind;
+    o.color = float4(lightBlock(i, t.rgb, front, n, sh, ind), 1);
     o.surface = float4(n * 0.5 + 0.5, i.mat.y > 0.5 ? 1 : min(sh, 0.98));   // 1 = mirror
+    o.indirect = float4(ind, 0);
     return o;
 }
 
@@ -214,9 +225,10 @@ PSOut PS_Cutout(VSOut i, bool front : SV_IsFrontFace)
 {
     float4 t = gTex.Sample(gSamp, i.uvl);
     clip(t.a - 0.5);
-    PSOut o; float3 n; float sh;
-    o.color = float4(lightBlock(i, t.rgb, front, n, sh), 1);
+    PSOut o; float3 n; float sh; float3 ind;
+    o.color = float4(lightBlock(i, t.rgb, front, n, sh, ind), 1);
     o.surface = float4(n * 0.5 + 0.5, i.mat.y > 0.5 ? 1 : min(sh, 0.98));
+    o.indirect = float4(ind, 0);
     return o;
 }
 
@@ -397,6 +409,72 @@ bool traceScreen(float3 P, float3 n, float3 r, float dist, float2 pixel, out flo
         stepLen *= 1.12;
     }
     return false;
+}
+
+// ---------------------------------------------------------------- ambient occlusion (screen space): works for anything
+// in the picture (blocks, and later items, creatures, players). Half size: each pixel throws a few short rays into the
+// half ball above its surface and counts how many end up inside something. Then a careful blur takes away only the
+// sky and lamp light where it is hidden.
+Texture2D gIndirect : register(t7);
+Texture2D<float> gAOMap : register(t8);
+float3 viewDir(float2 ndc) { return normalize(gCamF.xyz + gCamR.xyz * (ndc.x * gProj.x * gProj.y) + gCamU.xyz * (ndc.y * gProj.x)); }
+float4 PS_AO(SkyOut i) : SV_Target
+{
+    int2 px = min(int2(i.pos.xy) * 2, int2(gDepth.zw) - 1);
+    float zb = gSceneDepth.Load(int3(px, 0));
+    if (zb >= 1) return 1;
+    float2 ndc = ((float2(px) + 0.5) / gDepth.zw) * float2(2, -2) + float2(-1, 1);
+    float3 dir = viewDir(ndc);
+    float lin = linDepth(zb);
+    float3 P = dir * (lin / max(dot(dir, gCamF.xyz), 1e-3));
+    float3 n = gSurface.Load(int3(px, 0)).xyz * 2 - 1;
+    if (dot(n, n) < 0.25) return 1;
+    n = normalize(n);
+    float R = gAOSet.y;
+    float3 t = normalize(abs(n.y) < 0.9 ? cross(n, float3(0, 1, 0)) : cross(n, float3(1, 0, 0)));
+    float3 b = cross(n, t);
+    float rnd = ignR(i.pos.xy), rnd2 = frac(rnd * 7.31 + 0.37);
+    float3 base = P + n * (0.02 + lin * 0.0015);
+    int N = (int)gAOSet.w; float occ = 0;
+    [loop] for (int k = 0; k < N; k++)
+    {
+        float a = rnd * 6.2831853 + k * 2.3999632;                 // golden angle spiral: even spread
+        float r = sqrt((k + rnd2) / N), h = sqrt(saturate(1 - r * r));
+        float len = R * lerp(0.12, 1, frac((k + 0.5) / N + rnd2 * 0.61));
+        len *= len / R;                                             // more short rays (contact shadow) than long ones
+        float3 S = base + (t * (cos(a) * r) + b * (sin(a) * r) + n * h) * len;
+        float4 c = mul(float4(S, 1), gViewProj);
+        if (c.w <= 0.05) continue;
+        float2 su = c.xy / c.w * float2(0.5, -0.5) + 0.5;
+        if (any(su <= 0) || any(su >= 1)) continue;
+        float sz = linDepth(gSceneDepth.Load(int3(su * gDepth.zw, 0)));
+        float behind = c.w - sz;
+        if (behind > 0.02 + lin * 0.001)
+            occ += smoothstep(0, 1, R / max(abs(lin - sz), 1e-3));   // something far in front does not count
+    }
+    return 1 - occ / max(N, 1);
+}
+float4 PS_AOApply(SkyOut i) : SV_Target
+{
+    int2 px = int2(i.pos.xy);
+    float zb = gSceneDepth.Load(int3(px, 0));
+    if (zb >= 1) return 0;
+    float lin = linDepth(zb);
+    int2 hsz = max(int2(gDepth.zw) / 2, 1), hp0 = px / 2;
+    float sum = 0, wsum = 0;
+    [unroll] for (int y = -2; y <= 2; y++)
+    [unroll] for (int x = -2; x <= 2; x++)
+    {
+        int2 hp = clamp(hp0 + int2(x, y), int2(0, 0), hsz - 1);
+        float a = gAOMap.Load(int3(hp, 0));
+        float z = linDepth(gSceneDepth.Load(int3(min(hp * 2, int2(gDepth.zw) - 1), 0)));
+        float w = saturate(1 - abs(z - lin) / (lin * 0.04 + 0.08)) * (1.0 / (1 + x * x + y * y)) + 1e-4;
+        sum += a * w; wsum += w;
+    }
+    float ao = saturate(sum / wsum);
+    ao = pow(ao, gAOSet.z);
+    float3 ind = gIndirect.Load(int3(px, 0)).rgb;
+    return float4(-ind * (1 - ao), 0);   // added on top of the picture: takes the hidden sky light away
 }
 
 float4 PS_Reflect(SkyOut i) : SV_Target

@@ -79,7 +79,7 @@ struct alignas(16) FrameCB {
     float sunDir[4], sunColor[4], ambient[4], fogRange[4], skyTop[4], skyHorizon[4], sunGlow[4], camF[4], camR[4], camU[4], proj[4], shadowInfo[4];
     float camPos[4], volume[4], depth[4], extra[4];
     XMFLOAT4X4 skyVP; float weather[4], weather2[4];
-    float env[4], envPart[4], envPartColor[4], refl[4], clipPlane[4], mirror[4];
+    float env[4], envPart[4], envPartColor[4], refl[4], clipPlane[4], mirror[4], ao[4];
 };
 struct alignas(16) ChunkCB { float offset[4]; };
 
@@ -98,7 +98,8 @@ struct App {
     ComPtr<ID3D11Texture2D> depthTex; ComPtr<ID3D11DepthStencilView> dsv;
     ComPtr<ID3D11VertexShader> vsBlock, vsSky, vsShadow; ComPtr<ID3D11PixelShader> psOpaque, psCutout, psSky, psGhost, psShadowCut, psPost, psVolume, psBloomDown, psBloomUp, psRain, psBolt;
     ComPtr<ID3D11VertexShader> vsSkyMap, vsRain, vsDust;
-    ComPtr<ID3D11PixelShader> psReflect;
+    ComPtr<ID3D11PixelShader> psReflect, psAO, psAOApply;
+    ComPtr<ID3D11Texture2D> indTex, aoTex; ComPtr<ID3D11RenderTargetView> indRTV, aoRTV; ComPtr<ID3D11ShaderResourceView> indSRV, aoSRV;   // ambient occlusion
     ComPtr<ID3D11Texture2D> mirTex, mirDepth; ComPtr<ID3D11RenderTargetView> mirRTV; ComPtr<ID3D11ShaderResourceView> mirSRV; ComPtr<ID3D11DepthStencilView> mirDSV;   // a mirror's view (half size)
     ComPtr<ID3D11RasterizerState> rsCullFront; MirrorPlane lastMirror;
     ComPtr<ID3D11Texture2D> surfTex, reflTex; ComPtr<ID3D11RenderTargetView> surfRTV, reflRTV; ComPtr<ID3D11ShaderResourceView> surfSRV, reflSRV;   // for reflections
@@ -208,6 +209,8 @@ struct App {
             D3D11_SHADER_RESOURCE_VIEW_DESC sv{}; sv.Format = DXGI_FORMAT_R32_FLOAT; sv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D; sv.Texture2D.MipLevels = 1; HR(dev->CreateShaderResourceView(skyMapTex.Get(), &sv, &skyMapSRV));
         }
         b = Compile(src, "PS_Reflect", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psReflect));
+        b = Compile(src, "PS_AO", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psAO));
+        b = Compile(src, "PS_AOApply", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psAOApply));
         b = Compile(src, "PS_Water", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psWater));
         b = Compile(src, "PS_Post", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psPost));
         b = Compile(src, "VS_Sky", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsSky));
@@ -273,6 +276,10 @@ struct App {
         d.Format = DXGI_FORMAT_R16G16B16A16_FLOAT; d.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
         hdrTex.Reset(); hdrRTV.Reset(); hdrSRV.Reset();
         HR(dev->CreateTexture2D(&d, nullptr, &hdrTex)); HR(dev->CreateRenderTargetView(hdrTex.Get(), nullptr, &hdrRTV)); HR(dev->CreateShaderResourceView(hdrTex.Get(), nullptr, &hdrSRV));
+        { D3D11_TEXTURE2D_DESC id = d; id.Format = DXGI_FORMAT_R11G11B10_FLOAT; indTex.Reset(); indRTV.Reset(); indSRV.Reset();
+          HR(dev->CreateTexture2D(&id, nullptr, &indTex)); HR(dev->CreateRenderTargetView(indTex.Get(), nullptr, &indRTV)); HR(dev->CreateShaderResourceView(indTex.Get(), nullptr, &indSRV));
+          id.Width = std::max(1u, (UINT)rw / 2); id.Height = std::max(1u, (UINT)rh / 2); id.Format = DXGI_FORMAT_R8_UNORM; aoTex.Reset(); aoRTV.Reset(); aoSRV.Reset();
+          HR(dev->CreateTexture2D(&id, nullptr, &aoTex)); HR(dev->CreateRenderTargetView(aoTex.Get(), nullptr, &aoRTV)); HR(dev->CreateShaderResourceView(aoTex.Get(), nullptr, &aoSRV)); }
         reflTex.Reset(); reflRTV.Reset(); reflSRV.Reset();
         HR(dev->CreateTexture2D(&d, nullptr, &reflTex)); HR(dev->CreateRenderTargetView(reflTex.Get(), nullptr, &reflRTV)); HR(dev->CreateShaderResourceView(reflTex.Get(), nullptr, &reflSRV));
         { D3D11_TEXTURE2D_DESC sd2 = d; sd2.Format = DXGI_FORMAT_R8G8B8A8_UNORM; surfTex.Reset(); surfRTV.Reset(); surfSRV.Reset();
@@ -901,6 +908,8 @@ struct App {
             fc.mirror[3] = (float)(-(lastMirror.coord - camA) * lastMirror.sign);   // plane in camera-relative space: dot(n, p) + w = 0
         }
         fc.refl[3] = lastMirror.valid ? 1.f : 0.f;
+        fc.ao[0] = settings.ambientOcclusion > 0 ? 1.f : 0.f; fc.ao[1] = settings.ambientOcclusion >= 2 ? 1.6f : 1.2f;
+        fc.ao[2] = std::clamp(settings.aoStrength, 0.f, 3.f); fc.ao[3] = settings.ambientOcclusion >= 2 ? 16.f : 10.f;
         fc.refl[0] = settings.reflections > 0 ? 1.f : 0.f; fc.refl[1] = settings.reflections >= 2 ? 48.f : 28.f; fc.refl[2] = settings.reflections >= 2 ? 120.f : 64.f;
         fc.extra[0] = nightAmount * (1 - W.cover * 0.8f); fc.extra[1] = 0.15f * std::max(0.f, settings.bloom); fc.extra[2] = settings.swaying ? 0.5f + W.wind : 0.f; fc.extra[3] = 1;
         // "what is above" map: only needed while it rains/snows or surfaces are wet/snowy
@@ -989,8 +998,8 @@ struct App {
         ctx->PSSetShaderResources(3, 1, noiseSRV.GetAddressOf()); ctx->PSSetSamplers(2, 1, sampLinear.GetAddressOf());   // the planet uses the cloud noise
         ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psSky.Get(), nullptr, 0); ctx->Draw(3, 0);
         ctx->RSSetState(rsCull.Get());
-        { const float zero[4] = { 0, 0, 0, 0 }; ctx->ClearRenderTargetView(surfRTV.Get(), zero);
-          ID3D11RenderTargetView* two[2] = { hdrRTV.Get(), surfRTV.Get() }; ctx->OMSetRenderTargets(2, two, dsv.Get()); }   // blocks also note direction + shininess
+        { const float zero[4] = { 0, 0, 0, 0 }; ctx->ClearRenderTargetView(surfRTV.Get(), zero); ctx->ClearRenderTargetView(indRTV.Get(), zero);
+          ID3D11RenderTargetView* three[3] = { hdrRTV.Get(), surfRTV.Get(), indRTV.Get() }; ctx->OMSetRenderTargets(3, three, dsv.Get()); }   // blocks also note direction + shininess, and their sky light
         ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0);
         ID3D11ShaderResourceView* srvs[5] = { texArray.Get(), shadows ? shadowSRV.Get() : nullptr, nullptr, noiseSRV.Get(), skyMap ? skyMapSRV.Get() : nullptr }; ctx->PSSetShaderResources(0, 5, srvs);
         ID3D11SamplerState* samps[3] = { sampBlocks.Get(), sampShadow.Get(), sampLinear.Get() }; ctx->PSSetSamplers(0, 3, samps);
@@ -998,8 +1007,24 @@ struct App {
         ctx->PSSetShader(psOpaque.Get(), nullptr, 0); drawChunks(vp, 0, true);
         ctx->PSSetShader(psCutout.Get(), nullptr, 0); drawChunks(vp, 1, false);
 
-        // ---- reflections: shiny pixels look for what they mirror in the picture (depth must not be a target while read)
+        // ---- ambient occlusion: soft shade where things are close together (half size, then a careful blur that takes away sky light)
         ctx->PSSetShaderResources(0, 5, none);
+        if (settings.ambientOcclusion > 0) {
+            ctx->OMSetRenderTargets(1, aoRTV.GetAddressOf(), nullptr);
+            ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->IASetInputLayout(nullptr); ctx->RSSetState(rsNoCull.Get()); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
+            D3D11_VIEWPORT hv{ 0, 0, (float)std::max(1, rw / 2), (float)std::max(1, rh / 2), 0, 1 }; ctx->RSSetViewports(1, &hv);
+            ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psAO.Get(), nullptr, 0);
+            { ID3D11ShaderResourceView* r6[6] = { nullptr, nullptr, depthSRV.Get(), nullptr, nullptr, surfSRV.Get() }; ctx->PSSetShaderResources(0, 6, r6); }
+            ctx->Draw(3, 0);
+            ctx->RSSetViewports(1, &v);
+            ctx->OMSetRenderTargets(1, hdrRTV.GetAddressOf(), nullptr); ctx->OMSetBlendState(bsAdd.Get(), nullptr, 0xFFFFFFFF);
+            ctx->PSSetShader(psAOApply.Get(), nullptr, 0);
+            { ID3D11ShaderResourceView* r9[9] = { nullptr, nullptr, depthSRV.Get(), nullptr, nullptr, nullptr, nullptr, indSRV.Get(), aoSRV.Get() }; ctx->PSSetShaderResources(0, 9, r9); }
+            ctx->Draw(3, 0);
+            { ID3D11ShaderResourceView* n9[9] = {}; ctx->PSSetShaderResources(0, 9, n9); }
+            ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
+        }
+        // ---- reflections: shiny pixels look for what they mirror in the picture (depth must not be a target while read)
         ctx->OMSetRenderTargets(1, reflRTV.GetAddressOf(), nullptr);
         ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->IASetInputLayout(nullptr); ctx->RSSetState(rsNoCull.Get());
         ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psReflect.Get(), nullptr, 0);
@@ -1264,6 +1289,9 @@ struct App {
         ch_ |= ImGui::SliderFloat("Glow (bloom)", &settings.bloom, 0, 1, settings.bloom <= 0 ? "off" : "%.2f");
         ch_ |= ImGui::Checkbox("Leaves and plants sway in the wind", &settings.swaying);
         const char* rq[] = { "Off (only the sky)", "Normal", "High" }; ch_ |= ImGui::Combo("Reflections", &settings.reflections, rq, 3);
+        const char* aq[] = { "Off (only block corners)", "Normal", "High" }; ch_ |= ImGui::Combo("Ambient occlusion", &settings.ambientOcclusion, aq, 3);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Soft shade in corners, under overhangs and where things touch.\nWorks for everything on screen.");
+        if (settings.ambientOcclusion > 0) ch_ |= ImGui::SliderFloat("Occlusion strength", &settings.aoStrength, 0.2f, 3.f, "%.1f");
         if (ch_) settings.save(settingsPath);
         if (ImGui::Button("Done", ImVec2(-1, 0))) showSettings = false;
         ImGui::End();
@@ -2262,7 +2290,10 @@ struct App {
             }
             return frames;
         };
-        for (const DemoShot& sh : demoShots()) {
+        std::vector<DemoShot> shots = demoShots();
+        for (const char* nm : { "ambient_occlusion_off", "ambient_occlusion_on" }) { DemoShot d = shots[2]; d.name = nm; shots.push_back(d); }   // the same view without and with it
+        for (const DemoShot& sh : shots) {
+            settings.ambientOcclusion = sh.name == "ambient_occlusion_off" ? 0 : 1;
             V3 dlt = sh.target - sh.eye; double hz = std::sqrt(dlt.x * dlt.x + dlt.z * dlt.z);
             player.feet = { sh.eye.x, sh.eye.y - Player::EYE, sh.eye.z }; player.yaw = std::atan2(dlt.x, dlt.z); player.pitch = std::atan2(dlt.y, hz); player.vel = { 0, 0, 0 };
             settings.timeOfDay = sh.hour;

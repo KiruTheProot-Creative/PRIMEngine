@@ -23,6 +23,8 @@ bool Settings::load(const std::string& path) {
         else if (k == "bloom") f >> bloom;
         else if (k == "swaying") { int v; f >> v; swaying = v != 0; }
         else if (k == "reflections") f >> reflections;
+        else if (k == "ambient_occlusion") f >> ambientOcclusion;
+        else if (k == "ao_strength") f >> aoStrength;
         else { std::string rest; std::getline(f, rest); }
     }
     renderDistance = std::max(2, std::min(48, renderDistance)); verticalDistance = std::max(1, std::min(16, verticalDistance));
@@ -34,7 +36,8 @@ bool Settings::save(const std::string& path) const {
       << "\nui_scale " << uiScale << "\nvsync " << (vsync ? 1 : 0) << "\nblock_preview " << (blockPreview ? 1 : 0)
       << "\ntime_of_day " << timeOfDay << "\nday_cycle " << (dayCycle ? 1 : 0) << "\nshadows " << shadowQuality
       << "\ncloud_cover " << cloudCover << "\nground_fog " << groundFog << "\ncloud_shadows " << (cloudShadows ? 1 : 0)
-      << "\nbloom " << bloom << "\nswaying " << (swaying ? 1 : 0) << "\nreflections " << reflections << "\n";
+      << "\nbloom " << bloom << "\nswaying " << (swaying ? 1 : 0) << "\nreflections " << reflections
+      << "\nambient_occlusion " << ambientOcclusion << "\nao_strength " << aoStrength << "\n";
     return (bool)f;
 }
 
