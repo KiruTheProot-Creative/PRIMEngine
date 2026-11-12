@@ -427,10 +427,10 @@ struct App {
         dl->AddRectFilled(ImVec2(o.x - 3, o.y - 3), ImVec2(o.x + W + 3, o.y + s + 3), IM_COL32(0, 0, 0, 140), 3);
         for (int i = 0; i < 9; i++) {
             ImVec2 a(o.x + i * s, o.y), b(a.x + s, a.y + s);
-            dl->AddRect(a, b, IM_COL32(120, 120, 120, 200), 0, 0, 2);
+            dl->AddRect(a, b, IM_COL32(120, 120, 120, 200), 0.f, 0, 2.f);
             BlockIcon(dl, hotbar[i], ImVec2(a.x + s * 0.5f, a.y + s * 0.5f), s * 0.62f);
         }
-        dl->AddRect(ImVec2(o.x + hotSel * s - 2, o.y - 2), ImVec2(o.x + hotSel * s + s + 2, o.y + s + 2), IM_COL32(255, 255, 255, 255), 0, 0, 3);
+        dl->AddRect(ImVec2(o.x + hotSel * s - 2, o.y - 2), ImVec2(o.x + hotSel * s + s + 2, o.y + s + 2), IM_COL32(255, 255, 255, 255), 0.f, 0, 3.f);
         if (hotbar[hotSel] != AIR) { const char* nm = reg.get(hotbar[hotSel]).name.c_str(); ImVec2 ts = ImGui::CalcTextSize(nm); dl->AddText(ImVec2((cw - ts.x) * 0.5f, o.y - ts.y - 8), IM_COL32(255, 255, 255, 230), nm); }
         if (toastT > 0) { ImVec2 ts = ImGui::CalcTextSize(toast.c_str()); dl->AddRectFilled(ImVec2((cw - ts.x) * 0.5f - 10, 60), ImVec2((cw + ts.x) * 0.5f + 10, 66 + ts.y + 6), IM_COL32(0, 0, 0, 150), 4); dl->AddText(ImVec2((cw - ts.x) * 0.5f, 66), IM_COL32(255, 255, 255, 240), toast.c_str()); }
     }
@@ -537,7 +537,7 @@ struct App {
             if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) hotbar[i] = AIR;
             ImDrawList* dl = ImGui::GetWindowDrawList();
             dl->AddRectFilled(p, ImVec2(p.x + s, p.y + s), IM_COL32(35, 35, 40, 255), 3);
-            if (i == hotSel) dl->AddRect(p, ImVec2(p.x + s, p.y + s), IM_COL32(255, 255, 255, 255), 3, 0, 2);
+            if (i == hotSel) dl->AddRect(p, ImVec2(p.x + s, p.y + s), IM_COL32(255, 255, 255, 255), 3.f, 0, 2.f);
             BlockIcon(dl, hotbar[i], ImVec2(p.x + s * 0.5f, p.y + s * 0.5f), s * 0.7f);
             ImGui::PopID(); if (i < 8) ImGui::SameLine();
         }
