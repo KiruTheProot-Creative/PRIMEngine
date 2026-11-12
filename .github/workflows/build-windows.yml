@@ -25,7 +25,7 @@ jobs:
         shell: pwsh
         run: |
           $fxc = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter fxc.exe | Where-Object { $_.FullName -match "x64" } | Select-Object -Last 1
-          $entries = @(@("VS_Block","vs_5_0"), @("PS_Opaque","ps_5_0"), @("PS_Cutout","ps_5_0"), @("PS_Ghost","ps_5_0"), @("VS_Shadow","vs_5_0"), @("PS_ShadowCutout","ps_5_0"), @("PS_Post","ps_5_0"), @("PS_Volume","ps_5_0"), @("PS_BloomDown","ps_5_0"), @("PS_BloomUp","ps_5_0"), @("VS_SkyMap","vs_5_0"), @("VS_Rain","vs_5_0"), @("PS_Rain","ps_5_0"), @("PS_Bolt","ps_5_0"), @("VS_Sky","vs_5_0"), @("PS_Sky","ps_5_0"))
+          $entries = @(@("VS_Block","vs_5_0"), @("PS_Opaque","ps_5_0"), @("PS_Cutout","ps_5_0"), @("PS_Ghost","ps_5_0"), @("VS_Shadow","vs_5_0"), @("PS_ShadowCutout","ps_5_0"), @("PS_Post","ps_5_0"), @("PS_Volume","ps_5_0"), @("PS_BloomDown","ps_5_0"), @("PS_BloomUp","ps_5_0"), @("VS_SkyMap","vs_5_0"), @("VS_Rain","vs_5_0"), @("VS_Dust","vs_5_0"), @("PS_Rain","ps_5_0"), @("PS_Bolt","ps_5_0"), @("VS_Sky","vs_5_0"), @("PS_Sky","ps_5_0"))
           foreach ($e in $entries) {
             & $fxc.FullName /nologo /T $e[1] /E $e[0] /Fo NUL shaders/block.hlsl
             if ($LASTEXITCODE -ne 0) { throw "Shader $($e[0]) failed" }

@@ -1,6 +1,7 @@
 // game.h : creative-mode player, undo history, world info file and settings. No Windows code: testable anywhere.
 #pragma once
 #include "../world/world.h"
+#include "environment.h"
 #include <string>
 #include <vector>
 
@@ -57,6 +58,8 @@ struct WorldInfo {
     Player player;
     std::string hotbar[9]; int hotSel = 0;
     std::string weather = "partly_cloudy"; bool autoWeather = false;
+    std::string environment = "temperate";
+    std::vector<EnvZone> zones;
     bool load(const std::string& dir);
     bool save(const std::string& dir) const;
     void applyGenerator(Generator& g, const BlockRegistry& r) const;

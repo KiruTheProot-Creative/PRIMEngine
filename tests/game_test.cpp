@@ -65,6 +65,30 @@ int main() {
         WorldInfo wj; wj.load(dir); CHECK(wj.weather == "blizzard" && wj.autoWeather && wj.hotbar[0] == "Red Rock", "weather and hotbar names with spaces are saved with the world");
     }
 
+    // environments
+    {
+        CHECK(envTypes().size() >= 7 && findEnv("space") >= 0 && findEnv("volcanic") >= 0, "%zu environments", envTypes().size());
+        const EnvLook& sp = envTypes()[findEnv("space")].look;
+        CHECK(sp.atmosphere == 0 && sp.planet == 1 && sp.dayTop[2] == 0, "space: no air, a planet, a black sky");
+        CHECK(envTypes()[findEnv("arctic")].look.cold == 1 && envTypes()[findEnv("volcanic")].look.particleKind == 3, "arctic is cold, volcanic has embers");
+        std::vector<EnvZone> zones = { { "big desert", "desert", { -100, -50, -100 }, { 100, 50, 100 } }, { "station", "space", { 10, 0, 10 }, { 19, 9, 19 } } };
+        EnvState st; st.update(0, { 0, 0, 500 }, "temperate", zones, true);
+        CHECK(st.active == findEnv("temperate") && !st.inZone, "outside the zones: the world's environment");
+        st.update(0, { 0, 0, 0 }, "temperate", zones, true);
+        CHECK(st.active == findEnv("desert") && st.inZone && st.zoneName == "big desert", "inside a zone: its environment");
+        st.update(0, { 15.5, 3, 19.9 }, "temperate", zones, true);
+        CHECK(st.active == findEnv("space"), "a small zone inside a big one wins (station)");
+        st.update(0, { 15.5, 3, 20.1 }, "temperate", zones, true);
+        CHECK(st.active == findEnv("desert"), "zone edges: both corner blocks are inside, the next block is not");
+        EnvState fade; fade.update(0, { 0, 0, 500 }, "temperate", {}, true);
+        fade.update(1, { 15, 3, 15 }, "temperate", zones); float mid = fade.now.atmosphere;
+        for (int k = 0; k < 600; k++) fade.update(1.0 / 60, { 15, 3, 15 }, "temperate", zones);
+        CHECK(mid > 0.2f && mid < 0.8f && fade.now.atmosphere < 0.01f, "walking into space fades over a few seconds (air %.2f after 1 s)", mid);
+        WorldInfo wi; wi.environment = "martian"; wi.zones = zones; wi.save("/tmp/prim_env_world");
+        WorldInfo wj; wj.load("/tmp/prim_env_world");
+        CHECK(wj.environment == "martian" && wj.zones.size() == 2 && wj.zones[1].name == "station" && wj.zones[0].lo.x == -100 && wj.zones[1].hi.z == 19, "environment and zones are saved with the world");
+    }
+
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
     return fails ? 1 : 0;
 }

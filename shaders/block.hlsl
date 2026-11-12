@@ -18,11 +18,14 @@ cbuffer Frame : register(b0)
     float4 gShadowInfo;             // x 1/size, y range (blocks), z normal offset, w filter radius (texels)
     float4 gCamPos;                 // camera position (x and z wrapped every 14400 blocks, so the numbers stay small)
     float4 gVolume;                 // x cloud cover (0 = no clouds), y ground fog density, z time (s), w cloud shadows on
-    float4 gDepth;                  // x near, y far plane
+    float4 gDepth;                  // x near, y far plane, z/w picture size in pixels
     float4 gExtra;                  // x night (0..1, stars), y bloom amount, z wind (sway), w lamp brightness
     row_major float4x4 gSkyVP;      // camera-relative position -> "what is above" map (seen from straight above)
     float4 gWeather;                // x rain, y snow, z storm clouds (dark), w wet surfaces
     float4 gWeather2;               // x snow cover, y lightning flash, z wind, w "what is above" map ready (1)
+    float4 gEnv;                    // x air (1) / vacuum (0), y heat shimmer, z planet in the sky, w haze (dust everywhere)
+    float4 gEnvPart;                // things floating in the air: x kind (2 dust, 3 embers/spores, 4 ice sparkles), y amount
+    float4 gEnvPartColor;           // rgb
 };
 cbuffer ChunkCB : register(b1)
 {
@@ -220,45 +223,78 @@ float3 hash3u(uint n)
 }
 static const uint kMaxDrops = 14000;
 struct RainOut { float4 pos : SV_Position; float2 uv : TEXCOORD0; float3 rel : TEXCOORD1; float fade : TEXCOORD2; float kind : TEXCOORD3; };
-RainOut VS_Rain(uint id : SV_VertexID)
+// kind: 0 rain, 1 snow, 2 dust, 3 embers / spores (rise and glow), 4 ice sparkles
+RainOut particle(uint id, float kind, float amount, uint salt)
 {
     RainOut o = (RainOut)0;
     uint drop = id / 6, c = id % 6;
-    bool snow = gWeather.y > gWeather.x;
-    float amount = max(gWeather.x, gWeather.y);
     if (drop >= (uint)(amount * kMaxDrops)) { o.pos = float4(0, 0, -1, 1); return o; }
-    float3 h = hash3u(drop * 3 + 1);
+    float3 h = hash3u(drop * 3 + salt);
     float3 box = float3(36, 30, 36);
     float t = gVolume.z;
-    float speed = snow ? 1.6 + h.x * 0.8 : 15 + h.x * 5;
-    float2 wind = float2(1, 0.45) * gWeather2.z * (snow ? 2.5 : 4.0);
-    float3 vel = float3(wind.x, -speed, wind.y);
+    float2 wind = float2(1, 0.45) * gWeather2.z;
+    float3 vel;
+    if (kind < 0.5) vel = float3(wind.x * 4.0, -(15 + h.x * 5), wind.y * 4.0);
+    else if (kind < 1.5) vel = float3(wind.x * 2.5, -(1.6 + h.x * 0.8), wind.y * 2.5);
+    else if (kind < 2.5) vel = float3(wind.x * 3.0 + 0.6, -(0.15 + h.x * 0.2), wind.y * 3.0 + 0.2);
+    else if (kind < 3.5) vel = float3(wind.x * 0.8, 0.5 + h.x * 0.7, wind.y * 0.8);
+    else vel = float3(wind.x * 0.6, -(0.1 + h.x * 0.15), wind.y * 0.6);
     float3 p = h * box * 7 + vel * t;
-    if (snow) p.xz += float2(sin(t * 1.3 + h.y * 40), cos(t * 1.1 + h.z * 40)) * 0.6;   // flakes drift
+    if (kind > 0.5) p.xz += float2(sin(t * 1.3 + h.y * 40), cos(t * 1.1 + h.z * 40)) * (kind > 2.5 ? 0.9 : 0.6);   // drifting
     float3 rel = (frac((p - gCamPos.xyz) / box) - 0.5) * box;
     static const float2 q[6] = { float2(0, 0), float2(1, 0), float2(1, 1), float2(0, 0), float2(1, 1), float2(0, 1) };
     float2 k = q[c];
     float dist = length(rel);
+    float size = kind < 1.5 ? 0.07 : kind < 2.5 ? 0.035 : kind < 3.5 ? 0.05 : 0.03;
     float3 offs;
-    if (!snow) { float3 ax = normalize(vel), side = normalize(cross(ax, rel)); offs = side * (k.x - 0.5) * 2 * (0.01 + dist * 0.0012) + ax * (k.y - 0.5) * 0.6; }
-    else offs = (gCamR.xyz * (k.x - 0.5) + gCamU.xyz * (k.y - 0.5)) * (0.07 + dist * 0.002);
+    if (kind < 0.5) { float3 ax = normalize(vel), side = normalize(cross(ax, rel)); offs = side * (k.x - 0.5) * 2 * (0.01 + dist * 0.0012) + ax * (k.y - 0.5) * 0.6; }
+    else offs = (gCamR.xyz * (k.x - 0.5) + gCamU.xyz * (k.y - 0.5)) * (size + dist * 0.002);
     o.pos = mul(float4(rel + offs, 1), gViewProj);
-    o.uv = k; o.rel = rel; o.kind = snow ? 1 : 0;
+    o.uv = k; o.rel = rel; o.kind = kind + frac(h.z * 7.13) * 0.4;   // the fraction: a random value per particle (sparkle timing)
     o.fade = saturate(dist - 0.6) * saturate((box.x * 0.5 - max(abs(rel.x), abs(rel.z))) / 5) * saturate((box.y * 0.5 - abs(rel.y)) / 4);
     return o;
 }
+RainOut VS_Rain(uint id : SV_VertexID) { return particle(id, gWeather.y > gWeather.x ? 1 : 0, max(gWeather.x, gWeather.y), 1); }
+RainOut VS_Dust(uint id : SV_VertexID) { return particle(id, gEnvPart.x, gEnvPart.y, 9); }
 float4 PS_Rain(RainOut i) : SV_Target
 {
-    if (i.fade <= 0.001 || skyExposed(i.rel) < 0.5) discard;                         // nothing falls under a roof
+    float kind = floor(i.kind), rnd = frac(i.kind) / 0.4;
+    if (i.fade <= 0.001 || (kind < 1.5 && skyExposed(i.rel) < 0.5)) discard;      // no rain or snow under a roof (dust floats everywhere)
     float3 lc = gAmbient.rgb * 1.4 + gSunColor.rgb * 0.25 + gWeather2.y * float3(1.6, 1.7, 2.2);
-    if (i.kind > 0.5) { float2 d = i.uv * 2 - 1; float a = saturate(1 - dot(d, d)); return float4(lc * 1.2, a * a * 0.9 * i.fade); }
-    return float4(lc, (1 - abs(i.uv.x * 2 - 1)) * 0.28 * i.fade);
+    float2 d = i.uv * 2 - 1; float rd = saturate(1 - dot(d, d));
+    if (kind < 0.5) return float4(lc, (1 - abs(i.uv.x * 2 - 1)) * 0.28 * i.fade);
+    if (kind < 1.5) return float4(lc * 1.2, rd * rd * 0.9 * i.fade);
+    if (kind < 2.5) return float4(gEnvPartColor.rgb * lc, rd * 0.55 * i.fade);
+    if (kind < 3.5) return float4(gEnvPartColor.rgb * (4 + 3 * sin(gVolume.z * 3 + rnd * 40)), rd * rd * i.fade);   // glowing embers / spores
+    float tw = pow(saturate(sin(gVolume.z * (4 + rnd * 9) + rnd * 60)), 12);                                      // ice sparkles glint
+    return float4(gEnvPartColor.rgb * (lc + gSunColor.rgb * 3 * tw), rd * (0.25 + 0.75 * tw) * i.fade);
 }
 // a lightning bolt (bright, so it blooms); gOffset.w = brightness
 float4 PS_Bolt(VSOut i) : SV_Target { return float4(float3(0.75, 0.8, 1.0) * gOffset.w, 1); }
 
 // ---------------------------------------------------------------- sky: a full-screen triangle behind everything
 struct SkyOut { float4 pos : SV_Position; float2 ndc : TEXCOORD0; };
+// a planet hanging in the sky (space): lit by the sun, oceans, land and clouds from the cloud noise, a thin blue rim of air
+float3 planet(float3 dir, float3 c)
+{
+    float3 pc = normalize(float3(0.35, 0.30, 0.89));
+    float R = 0.24, ca = dot(dir, pc);
+    if (ca < cos(R)) return c;
+    float3 right = normalize(cross(float3(0, 1, 0), pc)), up = cross(pc, right);
+    float2 q = float2(dot(dir, right), dot(dir, up)) / sin(R);
+    float r2 = dot(q, q); if (r2 >= 1) return c;
+    float3 n = normalize(q.x * right + q.y * up - sqrt(1 - r2) * pc);
+    float2 nz = gNoise.SampleLevel(gLinear, n * 0.7 + 0.31, 0);
+    float land = smoothstep(0.52, 0.56, nz.x);
+    float3 ground = lerp(float3(0.02, 0.06, 0.22), lerp(float3(0.10, 0.22, 0.06), float3(0.35, 0.28, 0.16), nz.y), land);
+    float cloud = smoothstep(0.62, 0.8, gNoise.SampleLevel(gLinear, n * 1.3 + float3(0.1, 0.5, 0.2), 0).y);
+    ground = lerp(ground, float3(0.8, 0.82, 0.85), cloud);
+    float lit = saturate(dot(n, gSunDir.xyz) * 1.2 + 0.05);
+    float rim = pow(1 - sqrt(1 - r2), 3);
+    float3 col = ground * lit * 2.2 + float3(0.25, 0.45, 1.0) * rim * (0.3 + lit * 2);
+    return lerp(c, col, smoothstep(1.0, 0.985, r2));
+}
+
 SkyOut VS_Sky(uint id : SV_VertexID)
 {
     SkyOut o; float2 p = float2((id << 1) & 2, id & 2);
@@ -285,6 +321,7 @@ float4 PS_Sky(SkyOut i) : SV_Target
             c += float3(0.9 + 0.1 * jit.x, 0.9, 0.85 + 0.15 * jit.z) * pow(smoothstep(0.22, 0.0, d), 1.5) * (0.6 + 4 * b * b) * tw * gExtra.x * saturate(dir.y * 6);
         }
     }
+    if (gEnv.z > 0) c = planet(dir, c);
     return float4(c, 1);
 }
 
@@ -295,8 +332,16 @@ float ign(float2 px) { return frac(52.9829189 * frac(dot(px, float2(0.06711056, 
 float4 PS_Volume(SkyOut i) : SV_Target
 {
     int2 px = int2(i.pos.xy);
-    float3 scene = gHdr.Load(int3(px, 0)).rgb;
     float3 dir = normalize(gCamF.xyz + gCamR.xyz * (i.ndc.x * gProj.x * gProj.y) + gCamU.xyz * (i.ndc.y * gProj.x));
+    if (gEnv.y > 0)   // heat shimmer: wobble far, low parts of the picture
+    {
+        float z0 = gSceneDepth.Load(int3(px, 0));
+        float d0 = z0 >= 1 ? 400 : gDepth.x * gDepth.y / (gDepth.y - z0 * (gDepth.y - gDepth.x));
+        float k = gEnv.y * saturate((d0 - 12) / 50) * saturate(1 - abs(dir.y) * 6);
+        float2 w = float2(sin(i.pos.y * 0.21 + gVolume.z * 7 + i.pos.x * 0.04), cos(i.pos.x * 0.17 + gVolume.z * 5.3 + i.pos.y * 0.09));
+        px = clamp(px + int2(round(w * k * 2.2)), int2(0, 0), int2(gDepth.zw) - 1);
+    }
+    float3 scene = gHdr.Load(int3(px, 0)).rgb;
     float zb = gSceneDepth.Load(int3(px, 0));
     float dist = zb >= 1 ? 1e9 : gDepth.x * gDepth.y / (gDepth.y - zb * (gDepth.y - gDepth.x)) / max(dot(dir, gCamF.xyz), 1e-3);
     float jitter = ign(i.pos.xy);
@@ -341,7 +386,7 @@ float4 PS_Volume(SkyOut i) : SV_Target
     }
 
     // ---- ground fog: thick near the ground, lit by the sun where the shadow map says the sun reaches (light shafts)
-    if (gVolume.y > 0)
+    if (gVolume.y > 0 || gEnv.w > 0)
     {
         float tMax = min(dist, 192);
         const int N = 20;
@@ -354,7 +399,7 @@ float4 PS_Volume(SkyOut i) : SV_Target
             float t = (k + jitter) * dt;
             float3 rel = dir * t;
             float y = cam.y + rel.y;
-            float d = gVolume.y * exp(-max(y - 1, 0) / 7) + gVolume.y * 0.06;          // a low layer plus a thin haze everywhere
+            float d = gVolume.y * exp(-max(y - 1, 0) / 7) + gVolume.y * 0.06 + gEnv.w;  // a low layer, a thin haze everywhere, dust of the place
             float sun = 1;
             if (gSunDir.w > 0.5)
             {

@@ -74,6 +74,7 @@ struct alignas(16) FrameCB {
     float sunDir[4], sunColor[4], ambient[4], fogRange[4], skyTop[4], skyHorizon[4], sunGlow[4], camF[4], camR[4], camU[4], proj[4], shadowInfo[4];
     float camPos[4], volume[4], depth[4], extra[4];
     XMFLOAT4X4 skyVP; float weather[4], weather2[4];
+    float env[4], envPart[4], envPartColor[4];
 };
 struct alignas(16) ChunkCB { float offset[4]; };
 
@@ -88,9 +89,18 @@ struct App {
     ComPtr<ID3D11Device> dev; ComPtr<ID3D11DeviceContext> ctx; ComPtr<IDXGISwapChain> swap; ComPtr<ID3D11RenderTargetView> backRTV;
     ComPtr<ID3D11Texture2D> depthTex; ComPtr<ID3D11DepthStencilView> dsv;
     ComPtr<ID3D11VertexShader> vsBlock, vsSky, vsShadow; ComPtr<ID3D11PixelShader> psOpaque, psCutout, psSky, psGhost, psShadowCut, psPost, psVolume, psBloomDown, psBloomUp, psRain, psBolt;
-    ComPtr<ID3D11VertexShader> vsSkyMap, vsRain;
+    ComPtr<ID3D11VertexShader> vsSkyMap, vsRain, vsDust;
     ComPtr<ID3D11Texture2D> skyMapTex; ComPtr<ID3D11DepthStencilView> skyMapDSV; ComPtr<ID3D11ShaderResourceView> skyMapSRV;   // what is above each spot
     Weather weather; bool weatherWin = false;
+    EnvState envState; bool envWin = false;
+    // the weather as this environment allows it (no weather in space, snow instead of rain where it is cold)
+    WeatherLook EffWeather() const {
+        WeatherLook w = weather.now; const EnvLook& E = envState.now; float a = E.atmosphere;
+        w.cover *= E.clouds * a; w.dim *= a; w.dark *= a; w.strikesPerMin *= a;
+        if (E.cold > 0.5f) { w.snow = std::max(w.snow, w.rain); w.rain = 0; }
+        w.rain *= a; w.snow *= a; w.wind *= a;
+        return w;
+    }
     ComPtr<ID3D11Buffer> vbBolt, ibBolt; UINT nBolt = 0; ComPtr<ID3D11InputLayout> layout;
     ComPtr<ID3D11Texture2D> hdrTex; ComPtr<ID3D11RenderTargetView> hdrRTV; ComPtr<ID3D11ShaderResourceView> hdrSRV;      // the picture before tonemapping
     ComPtr<ID3D11Texture2D> volTex; ComPtr<ID3D11RenderTargetView> volRTV; ComPtr<ID3D11ShaderResourceView> volSRV;      // ... with clouds and fog
@@ -159,6 +169,7 @@ struct App {
         b = Compile(src, "PS_BloomUp", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psBloomUp));
         b = Compile(src, "VS_SkyMap", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsSkyMap));
         b = Compile(src, "VS_Rain", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsRain));
+        b = Compile(src, "VS_Dust", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsDust));
         b = Compile(src, "PS_Rain", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psRain));
         b = Compile(src, "PS_Bolt", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psBolt));
         {   // "what is above": a depth picture of the world seen from straight above (512 x 512 over 128 x 128 blocks)
@@ -363,6 +374,7 @@ struct App {
             BlockId t = reg.find(e); hotbar[i] = t ? makeBlock(t, Shapes::get().find(shape)) : AIR;
         }
         hotSel = info.hotSel;
+        envState.update(0, player.eye(), info.environment, info.zones, true);
         { int wi = findWeather(info.weather); weather = Weather{}; weather.set(wi < 0 ? 1 : wi, true); weather.autoChange = info.autoWeather;
           weather.wetness = weather.now.rain > 0.1f ? 1.f : 0.f; weather.snowCover = weather.now.snow > 0.1f ? 1.f : 0.f; weather.seed((uint32_t)std::time(nullptr)); }
         screen = Screen::Game; paused = false; inventory = false; autosave = 0;
@@ -440,6 +452,7 @@ struct App {
         } else { lPrev = rPrev = mPrev = true; }
         mouseDX = mouseDY = 0;
         weather.update(dt, player.feet);
+        envState.update(dt, player.eye(), info.environment, info.zones);
         cloudTime += dt * (0.5 + weather.now.wind);
         if (settings.dayCycle) { settings.timeOfDay += (float)(dt * 24.0 / 1200.0); if (settings.timeOfDay >= 24) settings.timeOfDay -= 24; }
         // load chunks around the player and keep their meshes fresh
@@ -544,21 +557,24 @@ struct App {
         float h = (float)sun.y, day = sstep(-0.12f, 0.25f, h), low = sstep(-0.2f, 0.0f, h) * (1 - sstep(0.02f, 0.35f, h));
         bool moon = h < -0.04f; V3 L = moon ? sun * -1.0 : sun;
         fc.sunDir[0] = (float)L.x; fc.sunDir[1] = (float)L.y; fc.sunDir[2] = (float)L.z; fc.sunDir[3] = settings.shadowQuality > 0 ? 1.f : 0.f;
-        const float sunLow[3] = { 2.2f, 1.0f, 0.45f }, sunHigh[3] = { 3.1f, 2.9f, 2.55f }, moonC[3] = { 0.10f, 0.13f, 0.22f };
+        const EnvLook& E = envState.now; const float atm = E.atmosphere;   // colours come from the environment you are in
+        const float* sunLow = E.sunLow; const float* sunHigh = E.sunHigh; const float moonC[3] = { 0.10f, 0.13f, 0.22f };
         float sc[3]; mix(sunLow, sunHigh, sstep(0.05f, 0.45f, h), sc);
         float k = moon ? sstep(0.04f, 0.2f, -h) : sstep(-0.04f, 0.08f, h);
         for (int i = 0; i < 3; i++) fc.sunColor[i] = (moon ? moonC[i] : sc[i]) * k;
-        const float ambNight[3] = { 0.035f, 0.05f, 0.10f }, ambDay[3] = { 0.38f, 0.48f, 0.70f }, ambLow[3] = { 0.45f, 0.36f, 0.38f };
-        float amb[3]; mix(ambNight, ambDay, day, amb); mix(amb, ambLow, low * 0.6f, fc.ambient);
-        const float topNight[3] = { 0.004f, 0.008f, 0.025f }, topDay[3] = { 0.10f, 0.27f, 0.80f };
-        const float horNight[3] = { 0.02f, 0.03f, 0.07f }, horDay[3] = { 0.50f, 0.67f, 0.95f }, horLow[3] = { 1.05f, 0.55f, 0.28f };
-        mix(topNight, topDay, day, fc.skyTop); float hz[3]; mix(horNight, horDay, day, hz); mix(hz, horLow, low, fc.skyHorizon);
-        const float glowDay[3] = { 0.9f, 0.75f, 0.5f }, glowLow[3] = { 1.5f, 0.6f, 0.2f }, glowMoon[3] = { 0.06f, 0.08f, 0.12f };
-        float gl[3]; mix(glowDay, glowLow, low, gl); for (int i = 0; i < 3; i++) fc.sunGlow[i] = moon ? glowMoon[i] : gl[i] * k;
-        fc.sunGlow[3] = moon ? 2.f : 40.f;
+        const float ambNight[3] = { 0.035f, 0.05f, 0.10f };
+        float amb[3]; mix(ambNight, E.ambDay, day, amb); mix(amb, E.ambLow, low * 0.6f, amb);
+        for (int i = 0; i < 3; i++) fc.ambient[i] = E.ambDay[i] + (amb[i] - E.ambDay[i]) * atm;   // no air: only a faint, steady light
+        const float topNight[3] = { 0.004f, 0.008f, 0.025f }, horNight[3] = { 0.02f, 0.03f, 0.07f };
+        mix(topNight, E.dayTop, day, fc.skyTop); float hz[3]; mix(horNight, E.dayHorizon, day, hz); mix(hz, E.lowHorizon, low, fc.skyHorizon);
+        const float glowMoon[3] = { 0.06f, 0.08f, 0.12f };
+        float gl[3]; mix(E.glowDay, E.glowLow, low, gl); for (int i = 0; i < 3; i++) fc.sunGlow[i] = moon ? glowMoon[i] : gl[i] * k;
+        for (int i = 0; i < 3; i++) { fc.skyTop[i] *= atm; fc.skyHorizon[i] *= atm; fc.sunGlow[i] *= atm; }
+        if (atm < 0.5f && moon) for (int i = 0; i < 3; i++) fc.sunColor[i] = 0;   // in space there is no moon lighting the ground
+        fc.sunGlow[3] = moon ? 2.f * atm : 40.f + 60.f * (1 - atm);
         exposure = 1.0f + 2.5f * (1 - day);                         // the eye adjusts a little at night
         // weather: clouds swallow sunlight, the sky turns grey; lightning flashes light everything up
-        const WeatherLook& W = weather.now; float dim = W.dim;
+        const WeatherLook W = EffWeather(); float dim = W.dim;
         auto lum = [](const float c[3]) { return c[0] * 0.2126f + c[1] * 0.7152f + c[2] * 0.0722f; };
         for (int i = 0; i < 3; i++) fc.sunColor[i] *= (1 - dim);
         float ga = lum(fc.ambient), gt = lum(fc.skyTop), gh = lum(fc.skyHorizon);
@@ -570,9 +586,10 @@ struct App {
         }
         (void)gt;
         const float fl[3] = { 0.55f, 0.6f, 0.85f };
-        for (int i = 0; i < 3; i++) { fc.ambient[i] += weather.flash * fl[i] * 1.2f; fc.skyTop[i] += weather.flash * fl[i] * 0.25f; fc.skyHorizon[i] += weather.flash * fl[i] * 0.3f; }
+        float flash = weather.flash * atm;
+        for (int i = 0; i < 3; i++) { fc.ambient[i] += flash * fl[i] * 1.2f; fc.skyTop[i] += flash * fl[i] * 0.25f; fc.skyHorizon[i] += flash * fl[i] * 0.3f; }
         exposure *= 1 + dim * 0.15f;
-        nightAmount = 1 - sstep(-0.25f, 0.0f, h);
+        nightAmount = std::max(1 - sstep(-0.25f, 0.0f, h), 1 - atm);   // in space the stars are always out
     }
     // a lightning bolt: a jagged line from the clouds to the ground with a few branches, drawn as glowing ribbons
     void DrawBolt() {
@@ -643,11 +660,13 @@ struct App {
         const double wrapP = 14400.0;
         fc.camPos[0] = (float)(camPos.x - std::floor(camPos.x / wrapP) * wrapP); fc.camPos[1] = (float)camPos.y; fc.camPos[2] = (float)(camPos.z - std::floor(camPos.z / wrapP) * wrapP);
         float hr = settings.timeOfDay, morning = std::exp(-std::pow((hr - 6.8f) / 1.5f, 2.f)), evening = std::exp(-std::pow((hr - 20.f) / 2.f, 2.f));
-        const WeatherLook& W = weather.now;
+        const WeatherLook W = EffWeather(); const EnvLook& E = envState.now;
         fc.volume[0] = settings.cloudCover <= 0 ? 0.f : std::min(1.f, W.cover * settings.cloudCover / 0.5f);
-        fc.volume[1] = settings.groundFog * ((0.002f + 0.009f * morning + 0.003f * evening) * W.fog + 0.004f * (W.rain + W.snow));
+        fc.volume[1] = settings.groundFog * ((0.002f + 0.009f * morning + 0.003f * evening) * W.fog + 0.004f * (W.rain + W.snow)) * E.atmosphere;
+        fc.env[0] = E.atmosphere; fc.env[1] = E.shimmer; fc.env[2] = E.planet; fc.env[3] = E.haze * std::max(0.f, settings.groundFog);
+        fc.envPart[0] = E.particleKind; fc.envPart[1] = E.particleAmount; for (int i = 0; i < 3; i++) fc.envPartColor[i] = E.particleColor[i];
         fc.volume[2] = (float)std::fmod(cloudTime, 4800.0); fc.volume[3] = settings.cloudShadows ? 1.f : 0.f;
-        fc.depth[0] = 0.05f; fc.depth[1] = farZ;
+        fc.depth[0] = 0.05f; fc.depth[1] = farZ; fc.depth[2] = (float)cw; fc.depth[3] = (float)ch;
         fc.extra[0] = nightAmount * (1 - W.cover * 0.8f); fc.extra[1] = 0.15f * std::max(0.f, settings.bloom); fc.extra[2] = settings.swaying ? 0.5f + W.wind : 0.f; fc.extra[3] = 1;
         // "what is above" map: only needed while it rains/snows or surfaces are wet/snowy
         bool skyMap = W.rain > 0.01f || W.snow > 0.01f || weather.wetness > 0.01f || weather.snowCover > 0.01f;
@@ -658,8 +677,8 @@ struct App {
             skyvp = XMMatrixLookToLH(XMVectorSet(0, 300, 0, 1), XMVectorSet(0, -1, 0, 0), XMVectorSet(0, 0, 1, 0)) * XMMatrixTranslation(mx, mz, 0) * XMMatrixOrthographicLH(2 * R, 2 * R, 1, 700);
         }
         XMStoreFloat4x4(&fc.skyVP, skyvp);
-        fc.weather[0] = W.rain; fc.weather[1] = W.snow; fc.weather[2] = W.dark; fc.weather[3] = weather.wetness;
-        fc.weather2[0] = weather.snowCover; fc.weather2[1] = weather.flash; fc.weather2[2] = W.wind; fc.weather2[3] = skyMap ? 1.f : 0.f;
+        fc.weather[0] = W.rain; fc.weather[1] = W.snow; fc.weather[2] = W.dark; fc.weather[3] = weather.wetness * E.atmosphere;
+        fc.weather2[0] = weather.snowCover * E.atmosphere; fc.weather2[1] = weather.flash * E.atmosphere; fc.weather2[2] = W.wind; fc.weather2[3] = skyMap ? 1.f : 0.f;
         ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &fc, 0, 0);
         ID3D11Buffer* cbs[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->VSSetConstantBuffers(0, 2, cbs); ctx->PSSetConstantBuffers(0, 2, cbs);
         ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
@@ -703,6 +722,7 @@ struct App {
         D3D11_VIEWPORT v{ 0, 0, (float)cw, (float)ch, 0, 1 }; ctx->RSSetViewports(1, &v);
         ctx->RSSetState(rsNoCull.Get());
         ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->IASetInputLayout(nullptr);
+        ctx->PSSetShaderResources(3, 1, noiseSRV.GetAddressOf()); ctx->PSSetSamplers(2, 1, sampLinear.GetAddressOf());   // the planet uses the cloud noise
         ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psSky.Get(), nullptr, 0); ctx->Draw(3, 0);
         ctx->RSSetState(rsCull.Get());
         ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0);
@@ -736,7 +756,13 @@ struct App {
             ctx->Draw(6 * 14000, 0);
             ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());
         }
-        if (weather.boltAge < 0.45) DrawBolt();
+        if (weather.boltAge < 0.45 && E.atmosphere > 0.5f) DrawBolt();
+        if (E.particleKind > 0.5f && E.particleAmount > 0.01f) {   // dust, embers, spores or ice sparkles floating in the air
+            ctx->OMSetBlendState(bsAlpha.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsTestOnly.Get(), 0); ctx->RSSetState(rsNoCull.Get());
+            ctx->IASetInputLayout(nullptr); ctx->VSSetShader(vsDust.Get(), nullptr, 0); ctx->PSSetShader(psRain.Get(), nullptr, 0);
+            ctx->Draw(6 * 14000, 0);
+            ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());
+        }
 
         // ---- clouds and ground fog over the picture (needs the depth: unbind it as a target first)
         ctx->PSSetShaderResources(0, 4, none);
@@ -831,6 +857,15 @@ struct App {
     }
     void DrawHud() {
         ImDrawList* dl = ImGui::GetForegroundDrawList();
+        if (envWin) {   // zone boxes, coloured by environment
+            static const ImU32 cols[] = { IM_COL32(120, 220, 120, 255), IM_COL32(255, 200, 90, 255), IM_COL32(150, 220, 255, 255), IM_COL32(200, 160, 255, 255), IM_COL32(255, 90, 50, 255), IM_COL32(120, 255, 170, 255), IM_COL32(230, 140, 90, 255) };
+            for (const EnvZone& z : info.zones) {
+                ImU32 col = cols[std::max(0, findEnv(z.env)) % 7];
+                V3 c[8]; for (int i = 0; i < 8; i++) c[i] = { (double)((i & 1) ? z.hi.x + 1 : z.lo.x), (double)((i & 2) ? z.hi.y + 1 : z.lo.y), (double)((i & 4) ? z.hi.z + 1 : z.lo.z) };
+                const int e[12][2] = { { 0, 1 }, { 2, 3 }, { 4, 5 }, { 6, 7 }, { 0, 2 }, { 1, 3 }, { 4, 6 }, { 5, 7 }, { 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 } };
+                for (auto& k : e) Line3D(dl, c[k[0]], c[k[1]], col);
+            }
+        }
         if (hoverValid && Playing()) {   // outline of the targeted block
             BlockId hv = world->get(hover.x, hover.y, hover.z);
             const SBox& bb = Shapes::get().variant(resolveShape(hv, reg.get(hv)), rotOf(hv)).bounds;
@@ -875,6 +910,7 @@ struct App {
         if (hoverValid) { BlockId hv = world->get(hover.x, hover.y, hover.z);
             ImGui::Text("Looking at: %s (%s, rotation %d) at %d %d %d", reg.get(hv).name.c_str(), Shapes::get().info(resolveShape(hv, reg.get(hv))).name.c_str(), rotOf(hv), hover.x, hover.y, hover.z); }
         ImGui::Text("Render distance: %d chunks   Undo steps: %zu", settings.renderDistance, history.undoCount());
+        ImGui::Text("Environment: %s%s", envTypes()[envState.active].name.c_str(), envState.inZone ? (" (zone \"" + envState.zoneName + "\")").c_str() : "");
         ImGui::Text("Weather: %s%s   rain %.2f snow %.2f wind %.2f   wet %.2f snow cover %.2f", weather.type().name.c_str(), weather.autoChange ? " (changes by itself)" : "", weather.now.rain, weather.now.snow, weather.now.wind, weather.wetness, weather.snowCover);
         ImGui::End();
     }
@@ -948,6 +984,7 @@ struct App {
         if (ImGui::Button("Back to building", ImVec2(-1, 0))) { paused = false; Capture(true); }
         if (ImGui::Button("Settings", ImVec2(-1, 0))) showSettings = true;
         if (ImGui::Button("Weather", ImVec2(-1, 0))) weatherWin = true;
+        if (ImGui::Button("Environment and zones", ImVec2(-1, 0))) envWin = true;
         if (ImGui::Button("Save", ImVec2(-1, 0))) { SaveWorld(); Toast("Saved"); }
         if (ImGui::Button("Save and quit to title", ImVec2(-1, 0))) CloseWorld();
         ImGui::End();
@@ -1048,6 +1085,43 @@ struct App {
                 ImGui::PopID(); if (i < 8) ImGui::SameLine();
             }
         }
+        ImGui::End();
+    }
+
+    // ---- environment window (from the game menu): the world's air and zones with their own
+    void EnvWindow() {
+        float ui = settings.uiScale; const auto& types = envTypes();
+        ImGui::SetNextWindowPos(ImVec2(cw * 0.5f, ch * 0.5f), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowSizeConstraints(ImVec2(480 * ui, 200), ImVec2(640 * ui, ch * 0.9f));
+        ImGui::Begin("Environment", &envWin, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize);
+        auto envCombo = [&](const char* label, std::string& key) {
+            int cur = std::max(0, findEnv(key));
+            if (ImGui::BeginCombo(label, types[cur].name.c_str())) {
+                for (int i = 0; i < (int)types.size(); i++) if (ImGui::Selectable(types[i].name.c_str(), i == cur)) key = types[i].key;
+                ImGui::EndCombo();
+            }
+        };
+        ImGui::SetNextItemWidth(220 * ui); envCombo("The air of this world", info.environment);
+        ImGui::SeparatorText("Zones: places with their own air (a space station, a volcano ...)");
+        ImGui::TextDisabled("You are in: %s", envState.inZone ? ("the zone \"" + envState.zoneName + "\"").c_str() : "the world's own air");
+        I3 here{ ifloor(player.feet.x), ifloor(player.feet.y), ifloor(player.feet.z) };
+        int remove = -1;
+        for (int i = 0; i < (int)info.zones.size(); i++) {
+            EnvZone& z = info.zones[i]; ImGui::PushID(i);
+            ImGui::SetNextItemWidth(150 * ui); ImGui::InputText("##name", &z.name); ImGui::SameLine(); ImGui::SetNextItemWidth(170 * ui); envCombo("##env", z.env);
+            ImGui::SameLine(); if (ImGui::SmallButton("Delete")) remove = i;
+            ImGui::SetNextItemWidth(220 * ui); ImGui::InputInt3("From", &z.lo.x); ImGui::SameLine(); if (ImGui::SmallButton("here##lo")) z.lo = here;
+            ImGui::SetNextItemWidth(220 * ui); ImGui::InputInt3("To", &z.hi.x); ImGui::SameLine(); if (ImGui::SmallButton("here##hi")) z.hi = here;
+            ImGui::SameLine(); if (ImGui::SmallButton("Go there")) { player.feet = { (z.lo.x + z.hi.x) * 0.5 + 0.5, (double)std::min(z.lo.y, z.hi.y), (z.lo.z + z.hi.z) * 0.5 + 0.5 }; player.flying = true; }
+            if (z.lo.x > z.hi.x) std::swap(z.lo.x, z.hi.x);
+            if (z.lo.y > z.hi.y) std::swap(z.lo.y, z.hi.y);
+            if (z.lo.z > z.hi.z) std::swap(z.lo.z, z.hi.z);
+            ImGui::Separator(); ImGui::PopID();
+        }
+        if (remove >= 0) info.zones.erase(info.zones.begin() + remove);
+        if (ImGui::Button("Add a zone around me")) info.zones.push_back({ "Zone " + std::to_string(info.zones.size() + 1), "space", { here.x - 8, here.y - 4, here.z - 8 }, { here.x + 8, here.y + 12, here.z + 8 } });
+        ImGui::TextDisabled("Zones show as coloured boxes while this window is open.\nIf zones overlap, the smallest one you stand in wins. Walking in or out fades over.");
+        if (ImGui::Button("Done", ImVec2(-1, 0))) envWin = false;
         ImGui::End();
     }
 
@@ -1272,6 +1346,7 @@ struct App {
             V3 dlt = sh.target - sh.eye; double hz = std::sqrt(dlt.x * dlt.x + dlt.z * dlt.z);
             player.feet = { sh.eye.x, sh.eye.y - Player::EYE, sh.eye.z }; player.yaw = std::atan2(dlt.x, dlt.z); player.pitch = std::atan2(dlt.y, hz); player.vel = { 0, 0, 0 };
             settings.timeOfDay = sh.hour;
+            info.environment = sh.env; info.zones.clear(); envState.update(0, player.eye(), info.environment, info.zones, true);
             { int wi = findWeather(sh.weather); weather.set(wi < 0 ? 1 : wi, true); weather.autoChange = false;
               weather.wetness = weather.now.rain > 0.1f ? 1.f : 0.f; weather.snowCover = weather.now.snow > 0.1f ? 1.f : 0.f; weather.flash = 0; weather.boltAge = 99;
               if (sh.lightning) {   // a bolt right in view
@@ -1314,7 +1389,8 @@ struct App {
             if (showF3) DrawF3();
             if (inventory && !editorOpen) InventoryScreen();
             if (shapeMenu) ShapeMenu();
-            if (paused && !showSettings && !weatherWin) PauseMenu();
+            if (paused && !showSettings && !weatherWin && !envWin) PauseMenu();
+            if (paused && envWin) EnvWindow();
             if (paused && weatherWin) WeatherWindow();
         }
         if (editorOpen) BlockEditor();

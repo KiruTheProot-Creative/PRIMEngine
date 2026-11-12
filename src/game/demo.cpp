@@ -89,6 +89,13 @@ std::vector<DemoShot> demoShots() {
         { "snow", { -12, 10, -16 }, { 6, 2, 6 }, 11.0f, "snow" },
         { "blizzard", { -6, 3, -8 }, { 6, 2, 6 }, 14.0f, "blizzard" },
         { "foggy", { -12, 4, -16 }, { 6, 2, 6 }, 10.0f, "foggy" },
+        { "env_desert", { -12, 3, -16 }, { 6, 2, 6 }, 13.0f, "clear", false, "desert" },
+        { "env_arctic", { -12, 6, -16 }, { 6, 2, 6 }, 9.5f, "partly_cloudy", false, "arctic" },
+        { "env_space", { -4, 3, -12 }, { 31, 33, 77 }, 10.0f, "partly_cloudy", false, "space" },
+        { "env_space_station", { -12, 10, -16 }, { 6, 2, 6 }, 15.0f, "partly_cloudy", false, "space" },
+        { "env_volcanic", { -12, 4, -16 }, { 6, 2, 6 }, 16.0f, "partly_cloudy", false, "volcanic" },
+        { "env_alien", { -12, 6, -16 }, { 6, 2, 6 }, 11.0f, "partly_cloudy", false, "alien" },
+        { "env_martian_blue_sunset", { -14, 4, 0 }, { -40, 6, 10 }, 17.75f, "clear", false, "martian" },
     };
 }
 
