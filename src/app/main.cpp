@@ -3171,7 +3171,7 @@ struct App {
                     toolMode = false; sel = Sel::World;
                     StartPlay(false);
                     poseAt(DemoShot{ "d", { 25.5, gy + 1.7, 33 }, { 25.5, gy + 1.3, 40 }, 15.5f });
-                    doorRt[a].shoot(0.35f, 0.55f); doorRt[a].t = 0.1f;
+                    doorRt[a].shoot(0.3f, 0.6f); doorRt[a].t = 0.02f;
                     doorRt[c].state = DoorRuntime::Open; doorRt[c].t = 0;
                     this->shots.push_back({ player.eye() + V3{ 0.4, -0.2, 2.0 }, { 0.07, -0.03, 1 }, 0 });
                     play.health = game.player.maxHealth; toastT = 0;
