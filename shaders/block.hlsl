@@ -140,9 +140,9 @@ float3 lightBlock(VSOut i, float3 albedo, bool front)
     float sky = 0.55 + 0.45 * n.y;                                     // more sky light on top than on the sides
     float3 light = gSunColor.rgb * ndl * sh + gAmbient.rgb * sky * i.ao;
     float lamp = i.lamp.x;
-    light += float3(1.0, 0.68, 0.38) * (pow(lamp, 2.6) * 2.4) * gExtra.w * lerp(0.6, 1, i.ao);   // warm light from lamps nearby
+    light += float3(1.0, 0.62, 0.32) * (pow(lamp, 3.2) * 0.9) * gExtra.w * lerp(0.5, 1, i.ao);  // warm light from lamps nearby
     float3 c = albedo * light;
-    if (i.lamp.y > 0.5) c = albedo * (2.5 + 2.5 * gExtra.w);                                        // the lamp itself glows
+    if (i.lamp.y > 0.5) c = albedo * float3(1.0, 0.85, 0.65) * 3.0 * gExtra.w;                       // the lamp itself glows
     float d = length(i.rel);
     float f = saturate((d - gFogRange.x) / max(gFogRange.y - gFogRange.x, 1));
     return lerp(c, skyColor(normalize(i.rel)), f * f);
