@@ -62,6 +62,7 @@ private:
 
 // The stored shape, or the block's own one (cube / cross / plane) when none was chosen.
 inline int resolveShape(BlockId v, const BlockDef& d) {
+    if (d.liquid) return Shapes::FULL;   // liquids keep their amount in the shape bits
     int s = shapeOf(v);
     if (s && Shapes::get().valid(s)) return s;
     return d.shape == Shape::Cross ? Shapes::CROSS : d.shape == Shape::Plane ? Shapes::PLANE : Shapes::FULL;

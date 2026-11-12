@@ -51,10 +51,11 @@ bool Library::saveBlocks(const BlockRegistry& r) const {
             const BlockDef& d = r.get((BlockId)i);
             f << "\n[block " << i << "]\nname = " << d.name
               << "\nshape = " << (d.shape == Shape::Cube ? "cube" : d.shape == Shape::Cross ? "cross" : "plane")
-              << "\nlook = " << (d.render == Render::Cutout ? "see-through" : "solid")
+              << "\nlook = " << (d.render == Render::Liquid ? "liquid" : d.render == Render::Cutout ? "see-through" : "solid")
               << "\nsolid = " << (d.solid ? "yes" : "no") << "\njoin_same = " << (d.cullSame ? "yes" : "no")
               << "\nlight = " << d.light << "\nlight_color = " << hex6(d.lightColor) << "\nwaves = " << (d.waves ? "yes" : "no")
-              << "\nshine = " << d.shine << "\nmirror = " << (d.mirror ? "yes" : "no") << "\nfaces =";
+              << "\nshine = " << d.shine << "\nmirror = " << (d.mirror ? "yes" : "no")
+              << "\nliquid = " << (d.liquid == 1 ? "water" : d.liquid == 2 ? "lava" : "none") << "\nspring = " << (d.spring ? "yes" : "no") << "\nfaces =";
             for (auto& t : d.faces) f << ' ' << (t.empty() ? "-" : t);
             f << "\n";
         }
@@ -100,7 +101,9 @@ bool Library::load(BlockRegistry& r, std::string* report) {
         if (cur == AIR) continue;
         if (k == "name") d.name = v;
         else if (k == "shape") { std::string l = lower(v); d.shape = l == "cross" ? Shape::Cross : l == "plane" ? Shape::Plane : Shape::Cube; }
-        else if (k == "look") d.render = lower(v) == "solid" ? Render::Opaque : Render::Cutout;
+        else if (k == "look") { std::string l = lower(v); d.render = l == "solid" ? Render::Opaque : l == "liquid" ? Render::Liquid : Render::Cutout; }
+        else if (k == "liquid") { std::string l = lower(v); d.liquid = l == "water" ? 1 : l == "lava" ? 2 : 0; }
+        else if (k == "spring") d.spring = yes(v);
         else if (k == "solid") d.solid = yes(v);
         else if (k == "join_same") d.cullSame = yes(v);
         else if (k == "light") { d.light = std::max(0, std::min(15, std::atoi(v.c_str()))); seenLight = true; }
@@ -113,7 +116,17 @@ bool Library::load(BlockRegistry& r, std::string* report) {
             for (int i = 0; i < 6; i++) d.faces[i] = n.empty() ? "" : n[std::min(i, (int)n.size() - 1)];
         }
     }
-    flush(); r.resolve();
+    flush();
+    // block files from before water and lava: add them (and their pictures)
+    if (!r.liquidBlock(1) || !r.liquidBlock(2)) {
+        BlockRegistry b; registerBuiltinBlocks(b);
+        for (const char* t : { "water", "lava" }) {
+            std::string path = texturesDir() + "/" + t + ".png"; const TexImage& im = b.image(b.textureIndex(t));
+            if (!fs::exists(P(path))) { writePng(path, im.w, im.h, im.rgba); stamps[t] = fs::last_write_time(P(path), ec); loadTexture(r, t); }
+        }
+        addBuiltinLiquids(r); r.resolve(); saveBlocks(r);
+    }
+    r.resolve();
     if (report) *report = std::to_string(blocks) + " blocks, " + std::to_string(r.textureCount() - 1) + " textures" + (bad ? ", " + std::to_string(bad) + " images could not be read" : "");
     return true;
 }

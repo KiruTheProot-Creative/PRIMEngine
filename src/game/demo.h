@@ -8,7 +8,7 @@ namespace mc {
 
 void buildDemo(World& w, const BlockRegistry& r);   // on a "Classic flat" world, around the origin
 
-struct DemoShot { std::string name; V3 eye, target; float hour; std::string weather = "partly_cloudy"; bool lightning = false; std::string env = "temperate"; };
+struct DemoShot { std::string name; V3 eye, target; float hour; std::string weather = "partly_cloudy"; bool lightning = false; std::string env = "temperate"; int liquidTicks = 0; };
 std::vector<DemoShot> demoShots();
 
 } // namespace mc

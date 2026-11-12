@@ -11,7 +11,7 @@ static void flat(World& w, const BlockRegistry& r) { w.gen.kind = Generator::Fla
 
 int main() {
     BlockRegistry reg; registerBuiltinBlocks(reg);
-    CHECK(reg.count() == 13 && reg.find("glass") != AIR && reg.textureCount() >= 12, "%zu blocks, %zu textures registered", reg.count(), reg.textureCount());
+    CHECK(reg.count() == 17 && reg.find("glass") != AIR && reg.textureCount() >= 12, "%zu blocks, %zu textures registered", reg.count(), reg.textureCount());
     CHECK(floorDiv(-1, 16) == -1 && floorMod(-1, 16) == 15 && floorDiv(-16, 16) == -1 && floorDiv(-17, 16) == -2 && floorDiv(15, 16) == 0, "floor division for negative coordinates");
 
     // ---- flat world, blocks across chunk borders and far away

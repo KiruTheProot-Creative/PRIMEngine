@@ -57,6 +57,14 @@ void Player::update(const World& w, const Controls& c, double dt) {
         vel.x += (mv.x - vel.x) * k; vel.z += (mv.z - vel.z) * k;
         double vy = (c.jump ? 7.5 : 0) - (c.sneak ? 7.5 : 0);
         vel.y += (vy - vel.y) * k;
+    } else if (int liq = w.liquidAt({ feet.x, feet.y + 0.6, feet.z })) {
+        // swimming: slow, you sink a little, Space swims up; lava is much thicker
+        double k = liq == 2 ? 0.3 : 0.55;
+        vel.x = mv.x * k; vel.z = mv.z * k;
+        vel.y = std::max(vel.y - (liq == 2 ? 3.0 : 6.0) * dt, liq == 2 ? -0.8 : -2.2);
+        if (c.jump) vel.y = std::min(vel.y + (liq == 2 ? 10.0 : 22.0) * dt, liq == 2 ? 1.2 : 3.2);
+        if (c.sneak) vel.y = std::max(vel.y - 10.0 * dt, -3.0);
+        if (c.jump && onGround && !w.liquidAt(eye())) vel.y = 6.5;   // climb out at the shore
     } else {
         vel.x = mv.x; vel.z = mv.z;
         vel.y = std::max(vel.y - 32.0 * dt, -78.0);

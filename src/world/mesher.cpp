@@ -48,7 +48,7 @@ static const SideMask& coverOf(const BlockRegistry& reg, BlockId nb, int side) {
     if (s == Shapes::FULL) return ALL;
     return Shapes::get().variant(s, rotOf(nb)).mask[side];
 }
-static bool isPlainCube(const BlockRegistry& reg, BlockId v) { return v != UNKNOWN && v != AIR && resolveShape(v, reg.get(v)) == Shapes::FULL; }
+static bool isPlainCube(const BlockRegistry& reg, BlockId v) { return v != UNKNOWN && v != AIR && !reg.get(v).liquid && resolveShape(v, reg.get(v)) == Shapes::FULL; }
 
 // spreads light from glowing blocks: each step away is one level darker, solid blocks stop it (Minecraft-style).
 // Done once per colour channel, so a red and a blue lamp make purple where their light meets.
@@ -70,7 +70,7 @@ static void spreadLight(const std::vector<uint8_t>& src, const std::vector<std::
 }
 
 void buildMesh(const BlockRegistry& reg, const MeshInput& in, ChunkMesh& out) {
-    out.pos = in.pos; out.seq = in.seq; out.opaque = {}; out.cutout = {};
+    out.pos = in.pos; out.seq = in.seq; out.opaque = {}; out.cutout = {}; out.water = {};
     std::vector<uint8_t> lightMap[3]; bool lit = !in.lightSrc.empty();
     if (lit) for (int c = 0; c < 3; c++) spreadLight(in.lightSrc, in.lightColors, c, lightMap[c]);
     auto lightAt = [&](int c, int x, int y, int z) { return lit ? (int)lightMap[c][lpadIdx(x, y, z)] : 0; };
@@ -93,6 +93,65 @@ void buildMesh(const BlockRegistry& reg, const MeshInput& in, ChunkMesh& out) {
         const BlockDef& d = reg.get(id); if (d.render == Render::Air) continue;
         bool cut = d.render == Render::Cutout;
         MeshData& md = cut ? out.cutout : out.opaque;
+        if (d.liquid) {   // water / lava: a surface at the liquid's height, smooth between neighbours
+            auto same = [&](BlockId b) { return b != UNKNOWN && b != AIR && reg.get(b).liquid == d.liquid; };
+            auto solidCube = [&](BlockId b) { return b == UNKNOWN || (isPlainCube(reg, b) && reg.get(b).render == Render::Opaque); };
+            auto height = [&](int cx, int cy, int cz) -> float {   // -1 = no liquid there
+                BlockId b = at(cx, cy, cz); if (!same(b)) return -1;
+                if (same(at(cx, cy + 1, cz))) return 1;
+                return liquidLevel(b) / 16.f * 0.92f;
+            };
+            bool coveredTop = same(at(x, y + 1, z));
+            auto corner = [&](int dx, int dz) -> float {   // average of the up to 4 liquid blocks around a top corner
+                if (coveredTop) return 1;
+                float sum = 0; int n = 0;
+                for (int ox = dx - 1; ox <= dx; ox++) for (int oz = dz - 1; oz <= dz; oz++) {
+                    if (same(at(x + ox, y + 1, z + oz))) return 1;
+                    float h = height(x + ox, y, z + oz); if (h >= 0) { sum += h; n++; }
+                }
+                return n ? sum / n : height(x, y, z);
+            };
+            float h[2][2] = { { corner(0, 0), corner(0, 1) }, { corner(1, 0), corner(1, 1) } };   // [x][z]
+            bool lava = d.liquid == 2;
+            MeshData& lm = lava ? out.opaque : out.water;
+            int own[3]; if (d.light) d.lightLevels(own); else for (int c = 0; c < 3; c++) own[c] = lightAt(c, x, y, z);
+            uint32_t litv = packLit(1.f, own, lava, lava ? 0.f : d.shine, false);
+            float kind = lava ? 4.f : 3.f;
+            auto quad = [&](const float p[4][3], int f) {   // corners in order around the face; wound to face along f
+                int n[3] = { 0, 0, 0 }; n[f / 2] = (f % 2 == 0) ? 1 : -1;
+                uint32_t base = (uint32_t)lm.v.size();
+                for (int k = 0; k < 4; k++) {
+                    float u, v; faceUV(p[k][0], p[k][1], p[k][2], f, u, v);
+                    lm.v.push_back({ x + p[k][0], y + p[k][1], z + p[k][2], u, v, (float)d.tex[f] + 16384.f * kind, litv, packNormal((float)n[0], (float)n[1], (float)n[2], f) });
+                }
+                uint32_t t[6] = { 0, 1, 2, 0, 2, 3 };
+                for (int tri = 0; tri < 2; tri++) {
+                    uint32_t i0 = t[tri * 3], i1 = t[tri * 3 + 1], i2 = t[tri * 3 + 2];
+                    float e1[3], e2[3]; for (int c = 0; c < 3; c++) { e1[c] = p[i1][c] - p[i0][c]; e2[c] = p[i2][c] - p[i0][c]; }
+                    float cr[3] = { e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0] };
+                    if (cr[0] * n[0] + cr[1] * n[1] + cr[2] * n[2] < 0) std::swap(i1, i2);
+                    lm.i.insert(lm.i.end(), { base + i0, base + i1, base + i2 });
+                }
+            };
+            if (!coveredTop) { float t[4][3] = { { 0, h[0][0], 0 }, { 1, h[1][0], 0 }, { 1, h[1][1], 1 }, { 0, h[0][1], 1 } }; quad(t, F_PY); }
+            if (!same(at(x, y - 1, z)) && !solidCube(at(x, y - 1, z))) { float b[4][3] = { { 0, 0, 0 }, { 0, 0, 1 }, { 1, 0, 1 }, { 1, 0, 0 } }; quad(b, F_NY); }
+            for (int f : { F_PX, F_NX, F_PZ, F_NZ }) {
+                int a = f / 2, sg = (f % 2 == 0) ? 1 : -1, n[3] = { 0, 0, 0 }; n[a] = sg;
+                BlockId nb = at(x + n[0], y, z + n[2]);
+                if (solidCube(nb)) continue;
+                float c0, c1; float s[4][3];
+                if (a == 0) { int ex = sg > 0 ? 1 : 0; c0 = h[ex][0]; c1 = h[ex][1];
+                    float bottom0 = 0, bottom1 = 0;
+                    if (same(nb)) { float nh = height(x + n[0], y, z); if (nh >= std::min(c0, c1) - 0.01f) continue; bottom0 = bottom1 = std::max(0.f, nh); }
+                    float q[4][3] = { { (float)ex, bottom0, 0 }, { (float)ex, bottom1, 1 }, { (float)ex, c1, 1 }, { (float)ex, c0, 0 } }; std::copy(&q[0][0], &q[0][0] + 12, &s[0][0]); }
+                else { int ez = sg > 0 ? 1 : 0; c0 = h[0][ez]; c1 = h[1][ez];
+                    float bottom0 = 0, bottom1 = 0;
+                    if (same(nb)) { float nh = height(x, y, z + n[2]); if (nh >= std::min(c0, c1) - 0.01f) continue; bottom0 = bottom1 = std::max(0.f, nh); }
+                    float q[4][3] = { { 0, bottom0, (float)ez }, { 1, bottom1, (float)ez }, { 1, c1, (float)ez }, { 0, c0, (float)ez } }; std::copy(&q[0][0], &q[0][0] + 12, &s[0][0]); }
+                quad(s, f);
+            }
+            continue;
+        }
         int shape = resolveShape(id, d);
         if (shape != Shapes::FULL) {
             // any other shape: prepared triangles, sides lying on the block border hidden like cube faces

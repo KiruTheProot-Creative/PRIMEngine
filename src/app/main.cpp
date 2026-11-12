@@ -78,7 +78,7 @@ struct alignas(16) FrameCB {
 };
 struct alignas(16) ChunkCB { float offset[4]; };
 
-struct GpuChunk { ComPtr<ID3D11Buffer> vbO, ibO, vbC, ibC; UINT nO = 0, nC = 0; };
+struct GpuChunk { ComPtr<ID3D11Buffer> vbO, ibO, vbC, ibC, vbW, ibW; UINT nO = 0, nC = 0, nW = 0; };
 
 struct App;
 static App* g_app = nullptr;
@@ -108,7 +108,7 @@ struct App {
     ComPtr<ID3D11Buffer> vbBolt, ibBolt; UINT nBolt = 0; ComPtr<ID3D11InputLayout> layout;
     ComPtr<ID3D11Texture2D> hdrTex; ComPtr<ID3D11RenderTargetView> hdrRTV; ComPtr<ID3D11ShaderResourceView> hdrSRV;      // the picture before tonemapping
     ComPtr<ID3D11Texture2D> volTex; ComPtr<ID3D11RenderTargetView> volRTV; ComPtr<ID3D11ShaderResourceView> volSRV;      // ... with clouds and fog
-    ComPtr<ID3D11ShaderResourceView> depthSRV, noiseSRV; ComPtr<ID3D11SamplerState> sampLinear, sampClamp; double cloudTime = 0;
+    ComPtr<ID3D11ShaderResourceView> depthSRV, noiseSRV, depthCopySRV; ComPtr<ID3D11Texture2D> depthCopy; ComPtr<ID3D11PixelShader> psWater; ComPtr<ID3D11SamplerState> sampLinear, sampClamp; double cloudTime = 0;
     struct BloomLevel { ComPtr<ID3D11Texture2D> tex; ComPtr<ID3D11RenderTargetView> rtv; ComPtr<ID3D11ShaderResourceView> srv; int w = 0, h = 0; };
     std::vector<BloomLevel> bloomLv; ComPtr<ID3D11BlendState> bsAdd; float nightAmount = 0;
     ComPtr<ID3D11Texture2D> shadowTex; ComPtr<ID3D11DepthStencilView> shadowDSV; ComPtr<ID3D11ShaderResourceView> shadowSRV; int shadowSize = 0;
@@ -183,6 +183,7 @@ struct App {
             D3D11_SHADER_RESOURCE_VIEW_DESC sv{}; sv.Format = DXGI_FORMAT_R32_FLOAT; sv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D; sv.Texture2D.MipLevels = 1; HR(dev->CreateShaderResourceView(skyMapTex.Get(), &sv, &skyMapSRV));
         }
         b = Compile(src, "PS_Reflect", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psReflect));
+        b = Compile(src, "PS_Water", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psWater));
         b = Compile(src, "PS_Post", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psPost));
         b = Compile(src, "VS_Sky", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsSky));
         b = Compile(src, "PS_Sky", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psSky));
@@ -236,7 +237,9 @@ struct App {
         D3D11_TEXTURE2D_DESC d{}; d.Width = (UINT)cw; d.Height = (UINT)ch; d.MipLevels = 1; d.ArraySize = 1; d.Format = DXGI_FORMAT_R32_TYPELESS; d.SampleDesc.Count = 1; d.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
         depthTex.Reset(); dsv.Reset(); depthSRV.Reset(); HR(dev->CreateTexture2D(&d, nullptr, &depthTex));
         { D3D11_DEPTH_STENCIL_VIEW_DESC dv{}; dv.Format = DXGI_FORMAT_D32_FLOAT; dv.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D; HR(dev->CreateDepthStencilView(depthTex.Get(), &dv, &dsv));
-          D3D11_SHADER_RESOURCE_VIEW_DESC sv{}; sv.Format = DXGI_FORMAT_R32_FLOAT; sv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D; sv.Texture2D.MipLevels = 1; HR(dev->CreateShaderResourceView(depthTex.Get(), &sv, &depthSRV)); }
+          D3D11_SHADER_RESOURCE_VIEW_DESC sv{}; sv.Format = DXGI_FORMAT_R32_FLOAT; sv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D; sv.Texture2D.MipLevels = 1; HR(dev->CreateShaderResourceView(depthTex.Get(), &sv, &depthSRV));
+          depthCopy.Reset(); depthCopySRV.Reset(); D3D11_TEXTURE2D_DESC cd = d; cd.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+          HR(dev->CreateTexture2D(&cd, nullptr, &depthCopy)); HR(dev->CreateShaderResourceView(depthCopy.Get(), &sv, &depthCopySRV)); }
         d.Format = DXGI_FORMAT_R16G16B16A16_FLOAT; d.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
         hdrTex.Reset(); hdrRTV.Reset(); hdrSRV.Reset();
         HR(dev->CreateTexture2D(&d, nullptr, &hdrTex)); HR(dev->CreateRenderTargetView(hdrTex.Get(), nullptr, &hdrRTV)); HR(dev->CreateShaderResourceView(hdrTex.Get(), nullptr, &hdrSRV));
@@ -468,6 +471,9 @@ struct App {
         } else { lPrev = rPrev = mPrev = true; }
         mouseDX = mouseDY = 0;
         weather.update(dt, player.feet);
+        world->liquidTimer += dt;   // water and lava flow 10 steps a second
+        for (int k = 0; k < 3 && world->liquidTimer >= 0.1; k++) { world->liquidTimer -= 0.1; world->tickLiquids(); }
+        if (world->liquidTimer > 0.3) world->liquidTimer = 0;
         envState.update(dt, player.eye(), info.environment, info.zones);
         cloudTime += dt * (0.5 + weather.now.wind);
         if (settings.dayCycle) { settings.timeOfDay += (float)(dt * 24.0 / 1200.0); if (settings.timeOfDay >= 24) settings.timeOfDay -= 24; }
@@ -509,7 +515,8 @@ struct App {
         BlockId held = hotbar[hotSel];
         if (!hoverValid || !reg.has(held)) return;
         int x = hover.x + hover.nx, y = hover.y + hover.ny, z = hover.z + hover.nz;
-        if (!world->loaded(x, y, z) || world->get(x, y, z) != AIR) return;
+        if (!world->loaded(x, y, z)) return;
+        { BlockId there = world->get(x, y, z); if (there != AIR && !reg.get(there).liquid) return; }   // you can build into water and lava
         const BlockDef& bd = reg.get(held); int shape = resolveShape(held, bd);
         int n = hover.nx > 0 ? F_PX : hover.nx < 0 ? F_NX : hover.ny > 0 ? F_PY : hover.ny < 0 ? F_NY : hover.nz > 0 ? F_PZ : F_NZ;
         int r = manualRot ? manRot : Shapes::placeRot(Shapes::get().info(shape).place, n, LookFace(), hover.py - hover.y > 0.5);
@@ -545,8 +552,8 @@ struct App {
         for (auto& m : done) {
             auto it = latestSeq.find(m.pos);
             if (it == latestSeq.end() || it->second != m.seq || !world->chunk(m.pos)) continue;   // outdated or unloaded meanwhile
-            if (m.opaque.empty() && m.cutout.empty()) { gpu.erase(m.pos); continue; }
-            GpuChunk& g = gpu[m.pos]; Upload(m.opaque, g.vbO, g.ibO, g.nO); Upload(m.cutout, g.vbC, g.ibC, g.nC);
+            if (m.opaque.empty() && m.cutout.empty() && m.water.empty()) { gpu.erase(m.pos); continue; }
+            GpuChunk& g = gpu[m.pos]; Upload(m.opaque, g.vbO, g.ibO, g.nO); Upload(m.cutout, g.vbC, g.ibC, g.nC); Upload(m.water, g.vbW, g.ibW, g.nW);
         }
         for (auto it = gpu.begin(); it != gpu.end();) { if (!world->chunk(it->first)) { latestSeq.erase(it->first); it = gpu.erase(it); } else ++it; }
     }
@@ -680,7 +687,7 @@ struct App {
         fc.volume[0] = settings.cloudCover <= 0 ? 0.f : std::min(1.f, W.cover * settings.cloudCover / 0.5f);
         fc.volume[1] = settings.groundFog * ((0.002f + 0.009f * morning + 0.003f * evening) * W.fog + 0.004f * (W.rain + W.snow)) * E.atmosphere;
         fc.env[0] = E.atmosphere; fc.env[1] = E.shimmer; fc.env[2] = E.planet; fc.env[3] = E.haze * std::max(0.f, settings.groundFog);
-        fc.envPart[0] = E.particleKind; fc.envPart[1] = E.particleAmount; for (int i = 0; i < 3; i++) fc.envPartColor[i] = E.particleColor[i];
+        fc.envPart[0] = E.particleKind; fc.envPart[1] = E.particleAmount; fc.envPart[2] = (float)world->liquidAt(camPos);   // under water / in lava for (int i = 0; i < 3; i++) fc.envPartColor[i] = E.particleColor[i];
         fc.volume[2] = (float)std::fmod(cloudTime, 4800.0); fc.volume[3] = settings.cloudShadows ? 1.f : 0.f;
         fc.depth[0] = 0.05f; fc.depth[1] = farZ; fc.depth[2] = (float)cw; fc.depth[3] = (float)ch;
         fc.clipPlane[3] = 1;   // nothing cut away (except while drawing a mirror's view)
@@ -710,14 +717,14 @@ struct App {
         ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
         auto drawChunks = [&](const XMMATRIX& m, int pass, bool counting) {
             for (auto& kv : gpu) {
-                const GpuChunk& g = kv.second; UINT n = pass == 0 ? g.nO : g.nC; if (!n) continue;
+                const GpuChunk& g = kv.second; UINT n = pass == 0 ? g.nO : pass == 1 ? g.nC : g.nW; if (!n) continue;
                 // chunk origin relative to the camera, computed in double: no jitter however far you go
                 float ox = (float)(kv.first.x * (double)CS - camPos.x), oy = (float)(kv.first.y * (double)CS - camPos.y), oz = (float)(kv.first.z * (double)CS - camPos.z);
                 if (!BoxVisible(m, ox, oy, oz, (float)CS)) continue;
                 ChunkCB cc{ { ox, oy, oz, 0 } }; ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);
                 UINT stride = sizeof(Vtx), off = 0;
-                ctx->IASetVertexBuffers(0, 1, pass == 0 ? g.vbO.GetAddressOf() : g.vbC.GetAddressOf(), &stride, &off);
-                ctx->IASetIndexBuffer(pass == 0 ? g.ibO.Get() : g.ibC.Get(), DXGI_FORMAT_R32_UINT, 0);
+                ctx->IASetVertexBuffers(0, 1, pass == 0 ? g.vbO.GetAddressOf() : pass == 1 ? g.vbC.GetAddressOf() : g.vbW.GetAddressOf(), &stride, &off);
+                ctx->IASetIndexBuffer(pass == 0 ? g.ibO.Get() : pass == 1 ? g.ibC.Get() : g.ibW.Get(), DXGI_FORMAT_R32_UINT, 0);
                 ctx->DrawIndexed(n, 0, 0); if (counting) drawnChunks += pass == 0;
             }
         };
@@ -817,6 +824,23 @@ struct App {
                 UINT stride = sizeof(Vtx), off = 0; ctx->IASetVertexBuffers(0, 1, vbGhost.GetAddressOf(), &stride, &off); ctx->IASetIndexBuffer(ibGhost.Get(), DXGI_FORMAT_R32_UINT, 0);
                 ctx->DrawIndexed(nGhost, 0, 0);
                 ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0);
+            }
+        }
+
+        // ---- water: drawn over the finished world; it reads a copy of the depth (to know how deep it is) and writes its own
+        {
+            bool anyWater = false; for (auto& kv : gpu) if (kv.second.nW) { anyWater = true; break; }
+            if (anyWater) {
+                ctx->OMSetRenderTargets(0, nullptr, nullptr);
+                ctx->CopyResource(depthCopy.Get(), depthTex.Get());
+                ctx->OMSetRenderTargets(1, reflRTV.GetAddressOf(), dsv.Get());
+                ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsNoCull.Get());
+                ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0); ctx->PSSetShader(psWater.Get(), nullptr, 0);
+                ID3D11ShaderResourceView* ws[5] = { hdrSRV.Get(), shadows ? shadowSRV.Get() : nullptr, depthCopySRV.Get(), noiseSRV.Get(), skyMap ? skyMapSRV.Get() : nullptr }; ctx->PSSetShaderResources(0, 5, ws);
+                ID3D11SamplerState* wss[4] = { sampBlocks.Get(), sampShadow.Get(), sampLinear.Get(), sampClamp.Get() }; ctx->PSSetSamplers(0, 4, wss);
+                drawChunks(vp, 2, false);
+                ctx->PSSetShaderResources(0, 5, none); ctx->RSSetState(rsCull.Get());
+                ctx->PSSetShaderResources(0, 5, srvs);
             }
         }
 
@@ -1422,6 +1446,7 @@ struct App {
             V3 dlt = sh.target - sh.eye; double hz = std::sqrt(dlt.x * dlt.x + dlt.z * dlt.z);
             player.feet = { sh.eye.x, sh.eye.y - Player::EYE, sh.eye.z }; player.yaw = std::atan2(dlt.x, dlt.z); player.pitch = std::atan2(dlt.y, hz); player.vel = { 0, 0, 0 };
             settings.timeOfDay = sh.hour;
+            for (int k = 0; k < sh.liquidTicks; k++) world->tickLiquids();   // let water and lava flow a bit before this picture
             info.environment = sh.env; info.zones.clear(); envState.update(0, player.eye(), info.environment, info.zones, true);
             { int wi = findWeather(sh.weather); weather.set(wi < 0 ? 1 : wi, true); weather.autoChange = false;
               weather.wetness = weather.now.rain > 0.1f ? 1.f : 0.f; weather.snowCover = weather.now.snow > 0.1f ? 1.f : 0.f; weather.flash = 0; weather.boltAge = 99;

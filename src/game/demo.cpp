@@ -67,6 +67,19 @@ void buildDemo(World& w, const BlockRegistry& r) {
     box(22, 0, 7, 24, 2, 9, B("cobblestone"));
     w.set(23, 3, 8, shape("glass", "ball"));
 
+    // ---- a pond with a waterfall from a rock, and a lava pool at the garden's far end
+    if (B("water") && B("water spring")) {
+        box(-21, -4, -15, -13, -1, -7, B("stone"));                      // stone basin
+        box(-20, -3, -14, -14, -1, -8, makeLiquid(B("water"), 16));      // filled with water
+        box(-25, -1, -13, -22, 7, -9, B("stone"));                       // a rock next to it
+        w.set(-23, 8, -11, B("water spring"));                           // a spring on top: it runs over the edge into the pond
+        for (int x = -22; x <= -21; x++) w.set(x, 0, -11, AIR);
+    }
+    if (B("lava")) {
+        box(25, -3, -7, 31, -1, -1, B("cobblestone"));
+        box(26, -2, -6, 30, -1, -2, makeLiquid(B("lava"), 16));
+    }
+
     // ---- a polished metal floor in front of the garden, and a mirror (if there is a mirror block)
     box(12, -1, -7, 21, -1, -1, B("metal"));
     if (B("mirror")) box(11, 0, 9, 13, 2, 9, B("mirror"));
@@ -93,6 +106,9 @@ std::vector<DemoShot> demoShots() {
         { "snow", { -12, 10, -16 }, { 6, 2, 6 }, 11.0f, "snow" },
         { "blizzard", { -6, 3, -8 }, { 6, 2, 6 }, 14.0f, "blizzard" },
         { "foggy", { -12, 4, -16 }, { 6, 2, 6 }, 10.0f, "foggy" },
+        { "water_pond_waterfall", { -10, 3.5, -2 }, { -19, 0, -11 }, 11.0f, "partly_cloudy", false, "temperate", 40 },
+        { "underwater", { -16.5, -1.6, -9 }, { -21, 0.5, -12 }, 11.5f },
+        { "lava_pool_dusk", { 22, 4, 4 }, { 28, -1, -4 }, 19.2f },
         { "reflections_metal_floor", { 16.5, 1.7, -11 }, { 16.5, 0.5, 3 }, 12.5f },
         { "mirror", { 12.5, 1.6, 4.5 }, { 12.5, 1.4, 9 }, 14.0f },
         { "rain_night_puddles", { 5.5, 1.9, -3.5 }, { 6, 0.6, 3 }, 22.5f, "rain" },

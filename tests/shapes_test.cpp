@@ -146,6 +146,57 @@ int main() {
         CHECK(!w.nearestMirror({ 1.5, 1.5, 4 }, { 0, 0, 1 }, 48).valid, "a mirror hidden behind a wall is skipped");
     }
 
+    // liquids: water falls into a pit, levels out, keeps its amount; springs fill things; lava + water = stone
+    {
+        BlockRegistry reg; registerBuiltinBlocks(reg); BlockId stone = reg.find("stone"), water = reg.find("water"), lava = reg.find("lava"), spring = reg.find("water spring");
+        CHECK(water && lava && spring && reg.liquidBlock(1) == water && reg.get(lava).light == 15, "water, lava and springs exist; lava glows");
+        World w(reg); w.gen.kind = Generator::Void; w.stream({ 0, 0, 0 }, 2, 2, 100000);
+        auto box = [&](int x0, int y0, int z0, int x1, int y1, int z1, BlockId v) { for (int y = y0; y <= y1; y++) for (int z = z0; z <= z1; z++) for (int x = x0; x <= x1; x++) w.set(x, y, z, v); };
+        auto total = [&](int kind) { int t = 0; for (auto& kv : w.chunks) for (BlockId v : kv.second->b) if (v != AIR && reg.get(v).liquid == kind && !reg.get(v).spring) t += liquidLevel(v); return t; };
+        box(0, -4, 0, 12, 0, 12, stone); box(0, 1, 0, 12, 3, 0, stone); box(0, 1, 12, 12, 3, 12, stone); box(0, 1, 0, 0, 3, 12, stone); box(12, 1, 0, 12, 3, 12, stone);
+        box(3, -2, 3, 5, 0, 5, AIR);                                    // a 3 x 3 pit, 3 deep
+        w.liquidActive.clear();
+        for (int y = 4; y <= 6; y++) w.set(4, y, 4, water);             // 3 blocks of water above it
+        int before = total(1), ticks = 0;
+        while (!w.liquidActive.empty() && ticks < 2000) { w.tickLiquids(); ticks++; }
+        int lo = 99, hi = 0, outside = 0;
+        for (int z = 3; z <= 5; z++) for (int x = 3; x <= 5; x++) { BlockId v = w.get(x, -2, z); int l = v != AIR && reg.get(v).liquid ? liquidLevel(v) : 0; lo = std::min(lo, l); hi = std::max(hi, l); }
+        for (int y = 1; y <= 6; y++) for (int z = 1; z <= 11; z++) for (int x = 1; x <= 11; x++) if (w.get(x, y, z) != AIR) outside++;
+        CHECK(ticks < 2000 && total(1) == before, "water keeps its amount (%d = %d) and comes to rest (%d steps)", total(1), before, ticks);
+        CHECK(outside == 0 && hi - lo <= 1 && lo >= 3, "it fell into the pit and lies level at the bottom (%d..%d of 16)", lo, hi);
+        // a spring fills the rest of the pit and then the area around it
+        w.set(4, 2, 4, spring);
+        for (int t = 0; t < 400; t++) w.tickLiquids();
+        int full = 0; for (int y = -2; y <= 0; y++) for (int z = 3; z <= 5; z++) for (int x = 3; x <= 5; x++) { BlockId v = w.get(x, y, z); if (v != AIR && reg.get(v).liquid == 1 && liquidLevel(v) == 16) full++; }
+        CHECK(full == 27, "a spring fills the pit to the brim (%d of 27 blocks full)", full);
+        CHECK(w.liquidAt({ 4.5, -1.2, 4.5 }) == 1 && w.liquidAt({ 4.5, 6.5, 4.5 }) == 0, "you are in water inside the pit, not above it");
+        // lava next to water turns into stone
+        box(8, 1, 8, 8, 1, 8, lava); w.set(8, 1, 7, water);
+        for (int t = 0; t < 20; t++) w.tickLiquids();
+        BlockId hard = w.get(8, 1, 8);
+        CHECK(hard == stone || hard == reg.find("cobblestone"), "lava touching water turns into stone");
+        // flowing on a flat floor spreads out thin and stops (no endless flowing)
+        World f(reg); f.gen.kind = Generator::Void; f.stream({ 0, 0, 0 }, 2, 2, 100000);
+        for (int z = -20; z <= 20; z++) for (int x = -20; x <= 20; x++) f.set(x, 0, z, stone);
+        f.liquidActive.clear(); f.set(0, 1, 0, water);
+        int t2 = 0; while (!f.liquidActive.empty() && t2 < 3000) { f.tickLiquids(); t2++; }
+        int cells = 0, sum = 0; for (int z = -20; z <= 20; z++) for (int x = -20; x <= 20; x++) { BlockId v = f.get(x, 1, z); if (v != AIR) { cells++; sum += liquidLevel(v); } }
+        CHECK(t2 < 3000 && sum == 16 && cells > 4, "one block of water on flat ground spreads into a thin puddle and stops (%d blocks, %d steps)", cells, t2);
+        // the full pit as a mesh: only the water's top shows (sides touch stone, inside faces are hidden), drawn see-through
+        MeshInput in; gatherInput(w, { 0, -1, 0 }, in); ChunkMesh cm; buildMesh(reg, in, cm);
+        CHECK(cm.water.v.empty(), "deep inside the full pit no water faces are drawn (all hidden)");
+        MeshInput in0; gatherInput(w, { 0, 0, 0 }, in0); ChunkMesh cm0; buildMesh(reg, in0, cm0);
+        int tops = 0; for (auto& v : cm0.water.v) if (faceOf(v) == F_PY) tops++;
+        CHECK(tops > 0 && cm0.opaque.v.size() > 0, "the water's surface is drawn see-through, on its own (%d top corners)", tops);
+        // swimming: you sink slowly in water and swim up with Space
+        Player pl; pl.flying = false; pl.feet = { 4.5, 0.0, 4.5 }; Controls none;
+        for (int k = 0; k < 15; k++) pl.update(w, none, 1.0 / 60);
+        CHECK(pl.vel.y > -3 && pl.vel.y < 0, "in water you sink slowly (%.2f blocks/s)", pl.vel.y);
+        Controls up; up.jump = true; double y0 = pl.feet.y;
+        for (int k = 0; k < 30; k++) pl.update(w, up, 1.0 / 60);
+        CHECK(pl.feet.y > y0 + 0.3, "and swim up with Space (+%.2f)", pl.feet.y - y0);
+    }
+
     // the screenshot scene builds
     { BlockRegistry reg; registerBuiltinBlocks(reg); World* w = new World(reg); w->gen.layers = { { reg.find("stone"), 3 }, { reg.find("dirt"), 2 }, { reg.find("grass"), 1 } };
       buildDemo(*w, reg); int shaped = 0, n = 0;

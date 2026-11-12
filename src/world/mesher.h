@@ -32,7 +32,7 @@ inline int lightOf(const Vtx& v, int ch) { return (int)(v.lit >> (8 + 4 * ch)) &
 inline int lightOf(const Vtx& v) { return std::max(lightOf(v, 0), std::max(lightOf(v, 1), lightOf(v, 2))); }
 inline bool glowsOf(const Vtx& v) { return (v.lit >> 20) & 1; }
 struct MeshData { std::vector<Vtx> v; std::vector<uint32_t> i; bool empty() const { return i.empty(); } };
-struct ChunkMesh { I3 pos; uint32_t seq = 0; MeshData opaque, cutout; };
+struct ChunkMesh { I3 pos; uint32_t seq = 0; MeshData opaque, cutout, water; };   // water: see-through, drawn last
 
 constexpr int PAD = CS + 2;                  // the chunk plus a one-block border from its neighbours
 constexpr BlockId UNKNOWN = 0xFFFFFFFFu;         // neighbour not loaded: treated as solid so no wall of faces shows at the edge

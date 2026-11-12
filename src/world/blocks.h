@@ -16,12 +16,15 @@ constexpr int MAX_BLOCK_TYPES = 65535;
 inline BlockId typeOf(BlockId v) { return v & 0xFFFFu; }
 inline int shapeOf(BlockId v) { return (int)((v >> 16) & 0x3FFu); }
 inline int rotOf(BlockId v) { return (int)((v >> 26) & 31u); }
+// liquids keep their amount (1..16, 16 = a full block) where other blocks keep their shape
+inline int liquidLevel(BlockId v) { int l = (int)((v >> 16) & 31u); return l == 0 || l > 16 ? 16 : l; }
 inline BlockId makeBlock(BlockId type, int shape = 0, int rot = 0) { return (type & 0xFFFFu) | ((uint32_t)(shape & 0x3FF) << 16) | ((uint32_t)(rot & 31) << 26); }
 
 enum class Render : uint8_t {
     Air,      // nothing
     Opaque,   // solid pixels only (a full cube hides the faces of its neighbours)
     Cutout,   // has see-through pixels (glass, leaves, plants)
+    Liquid,   // water / lava: drawn and simulated as a liquid
 };
 enum class Shape : uint8_t {
     Cube,     // a full block
@@ -48,6 +51,8 @@ struct BlockDef {
     bool waves = false;                  // sways in the wind (leaves, plants)
     float shine = 0;                     // how much it reflects: 0 matt (dirt) .. 1 polished (metal, ice)
     bool mirror = false;                 // reflects like a mirror
+    int liquid = 0;                      // 0 not a liquid, 1 water, 2 lava
+    bool spring = false;                 // a liquid that never runs dry (keeps pouring out)
     bool exists = true;                  // false = a deleted id (kept so old worlds stay readable)
 };
 
@@ -76,6 +81,7 @@ public:
     bool has(BlockId v) const { BlockId id = typeOf(v); return id < defs.size() && defs[id].exists; }
     size_t count() const { return defs.size(); }            // ids are 0 .. count()-1 (check has())
     BlockId find(const std::string& name) const;
+    BlockId liquidBlock(int kind) const;                    // the (flowing, not spring) block of that liquid; 0 if none
     void resolve();                                         // texture names -> layers (after any change)
     std::string uniqueName(const std::string& want, BlockId except = AIR) const;
     int nextId = 1;                                         // ids below this were given out once (saved in blocks.txt)
@@ -86,7 +92,10 @@ private:
     BlockDef missing;
 };
 
+inline BlockId makeLiquid(BlockId type, int level) { return makeBlock(type, level >= 16 ? 0 : level, 0); }
+
 // The built-in starter blocks with procedural textures (written out as PNGs the first time the engine runs).
 void registerBuiltinBlocks(BlockRegistry& r);
+void addBuiltinLiquids(BlockRegistry& r);   // water, lava and their springs (added to older block files too)
 
 } // namespace mc

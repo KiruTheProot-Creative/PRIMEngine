@@ -70,6 +70,10 @@ void BlockRegistry::remove(BlockId id) {
     id = typeOf(id); if (id == AIR || id >= defs.size()) return;
     defs[id] = BlockDef{}; defs[id].exists = false;   // the id stays used: worlds may still contain it
 }
+BlockId BlockRegistry::liquidBlock(int kind) const {
+    for (size_t i = 1; i < defs.size(); i++) if (defs[i].exists && defs[i].liquid == kind && !defs[i].spring) return (BlockId)i;
+    return AIR;
+}
 BlockId BlockRegistry::find(const std::string& name) const {
     for (size_t i = 1; i < defs.size(); i++) if (defs[i].exists && defs[i].name == name) return (BlockId)i;
     return AIR;
@@ -198,6 +202,19 @@ Img metal() {
     }
     return im;
 }
+Img water() {
+    Img im;
+    for (int y = 0; y < N; y++) for (int x = 0; x < N; x++) { float k = 1 + (rnd(x / 2, y, 30) - 0.5f) * 0.12f + 0.06f * std::sin((x + y * 0.5f) * 0.8f); im.put(x, y, 0.16f * k, 0.38f * k, 0.62f * k, 0.8f); }
+    return im;
+}
+Img lava() {
+    Img im;
+    for (int y = 0; y < N; y++) for (int x = 0; x < N; x++) {
+        float c = rnd(x / 3, y / 3, 31), f = rnd(x, y, 32);
+        if (c > 0.55f) im.put(x, y, 1.0f, 0.55f + 0.3f * f, 0.1f); else im.put(x, y, 0.55f + 0.2f * f, 0.12f, 0.03f);
+    }
+    return im;
+}
 Img lamp() {
     Img im;
     for (int y = 0; y < N; y++) for (int x = 0; x < N; x++) {
@@ -207,6 +224,19 @@ Img lamp() {
     return im;
 }
 } // namespace
+
+void addBuiltinLiquids(BlockRegistry& r) {
+    if (r.textureIndex("water") < 0) r.setTexture("water", N, N, water().px);
+    if (r.textureIndex("lava") < 0) r.setTexture("lava", N, N, lava().px);
+    auto liq = [&](const char* name, const char* tex, int kind, bool spring) {
+        if (r.find(name)) return;
+        BlockDef d; d.name = name; d.render = Render::Liquid; d.solid = false; d.liquid = kind; d.spring = spring;
+        for (auto& f : d.faces) f = tex;
+        if (kind == 2) { d.light = 15; d.lightColor = 0xFF7020; } else d.shine = 0.9f;
+        r.add(d);
+    };
+    liq("water", "water", 1, false); liq("lava", "lava", 2, false); liq("water spring", "water", 1, true); liq("lava spring", "lava", 2, true);
+}
 
 void registerBuiltinBlocks(BlockRegistry& r) {
     // ids 1..12 in this order (the first worlds were saved with these numbers)
@@ -234,6 +264,7 @@ void registerBuiltinBlocks(BlockRegistry& r) {
     { BlockId l = block("lamp", "lamp"); BlockDef d = r.get(l); d.light = 15; r.put(l, d); }
     { BlockId g = block("glass", "glass", nullptr, nullptr, Render::Cutout, true); BlockDef d = r.get(g); d.shine = 0.5f; r.put(g, d); }
     { BlockId l = block("leaves", "leaves", nullptr, nullptr, Render::Cutout, false); BlockDef d = r.get(l); d.waves = true; r.put(l, d); }
+    addBuiltinLiquids(r);
 }
 
 } // namespace mc

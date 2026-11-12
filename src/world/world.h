@@ -26,6 +26,7 @@ struct Hit { int x, y, z; int nx, ny, nz; double t; double px, py, pz; };   // b
 class World {
 public:
     explicit World(const BlockRegistry& r) : reg(r) {}
+    BlockId find(const std::string& name) const { return reg.find(name); }
     const BlockRegistry& reg;
     Generator gen;
     std::unique_ptr<RegionStore> store;               // null = nothing is saved (tests, previews)
@@ -59,11 +60,19 @@ public:
     void recountEmitters();                           // after blocks were edited (a block may glow or mirror now)
     // the nearest mirror surface that faces the camera and is in front of it (within maxDist blocks)
     MirrorPlane nearestMirror(V3 cam, V3 forward, double maxDist) const;
+
+    // liquids: water and lava flow (fall first, then level out sideways); the amount of liquid never changes.
+    // Only liquid near something that changed is looked at, so still pools cost nothing.
+    std::unordered_set<I3, I3Hash> liquidActive;
+    int tickLiquids();                                // one step (call 10 times a second); returns how many blocks changed
+    int liquidAt(V3 p) const;                         // 0 = not in a liquid, 1 water, 2 lava (counts how full the block is)
+    double liquidTimer = 0; uint64_t liquidTick = 0;
     bool emittersNear(I3 c) const;                    // any glowing block in this chunk or the 26 around it
 
 private:
     void markAround(I3 c);
     void markAll27(I3 c);
+    void touchLiquid(int x, int y, int z);
     int countEmitters(const Chunk& c) const;
     int countMirrors(const Chunk& c) const;
     std::vector<I3> offsets; int offH = -1, offV = -1;   // cached load order (nearest first)

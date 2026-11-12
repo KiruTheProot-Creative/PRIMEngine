@@ -53,6 +53,7 @@ void World::set(int x, int y, int z, BlockId id) {
     if (id != AIR && ln) c.emitters++;
     if (old != AIR && reg.get(old).mirror) c.mirrors--;
     if (id != AIR && reg.get(id).mirror) c.mirrors++;
+    touchLiquid(x, y, z);
     // light reaches up to 15 blocks: near a lamp, every chunk around has to be redrawn
     if ((old != AIR && lo) || (id != AIR && ln) || emittersNear(cp)) markAll27(cp);
     // this chunk, plus every neighbour whose border (and corner shading) touches the block
@@ -60,6 +61,79 @@ void World::set(int x, int y, int z, BlockId id) {
     for (int i = 0; i < 2; i++) for (int j = 0; j < 2; j++) for (int k = 0; k < 2; k++) {
         I3 n{ cp.x + ax[i], cp.y + ay[j], cp.z + az[k] }; if (chunk(n)) dirty.insert(n);
     }
+}
+
+// ------------------------------------------------------------------ liquids
+void World::touchLiquid(int x, int y, int z) {
+    static const int d[7][3] = { { 0, 0, 0 }, { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
+    for (auto& o : d) {
+        int px = x + o[0], py = y + o[1], pz = z + o[2];
+        BlockId v = get(px, py, pz);
+        if (v != AIR && reg.get(v).liquid) liquidActive.insert({ px, py, pz });
+    }
+}
+
+int World::liquidAt(V3 p) const {
+    int x = ifloor(p.x), y = ifloor(p.y), z = ifloor(p.z);
+    BlockId v = get(x, y, z); if (v == AIR) return 0;
+    const BlockDef& d = reg.get(v); if (!d.liquid) return 0;
+    BlockId above = get(x, y + 1, z);
+    double h = (above != AIR && reg.get(above).liquid == d.liquid) ? 1.0 : liquidLevel(v) / 16.0;
+    return p.y - y <= h ? d.liquid : 0;
+}
+
+int World::tickLiquids() {
+    liquidTick++;
+    std::vector<I3> cells(liquidActive.begin(), liquidActive.end());
+    liquidActive.clear();
+    std::sort(cells.begin(), cells.end(), [](const I3& a, const I3& b) { return a.y < b.y; });   // lowest first: falls settle in one step
+    if (cells.size() > 6000) { for (size_t i = 6000; i < cells.size(); i++) liquidActive.insert(cells[i]); cells.resize(6000); }
+    int changed = 0;
+    BlockId stone = find("stone"), cobble = find("cobblestone");
+    for (const I3& p : cells) {
+        BlockId v = get(p.x, p.y, p.z); if (v == AIR || !loaded(p.x, p.y, p.z)) continue;
+        const BlockDef& d = reg.get(v); if (!d.liquid) continue;
+        int kind = d.liquid; bool spring = d.spring;
+        if (kind == 2 && liquidTick % 5) { liquidActive.insert(p); continue; }   // lava is thick: moves 5 times slower
+        BlockId flow = reg.liquidBlock(kind); if (!flow) continue;
+        int L = spring ? 16 : liquidLevel(v), start = L;
+
+        // lava touching water hardens: stone where it was deep, cobblestone at thin edges
+        if (kind == 2) {
+            bool water = false;
+            for (int k = 0; k < 6 && !water; k++) { int o[3] = { 0, 0, 0 }; o[k / 2] = k % 2 ? -1 : 1; BlockId n = get(p.x + o[0], p.y + o[1], p.z + o[2]); water = n != AIR && reg.get(n).liquid == 1; }
+            if (water) { set(p.x, p.y, p.z, (spring || L >= 12) ? (stone ? stone : cobble) : (cobble ? cobble : stone)); changed++; continue; }
+        }
+        // fall
+        if (loaded(p.x, p.y - 1, p.z)) {
+            BlockId b = get(p.x, p.y - 1, p.z);
+            if (b == AIR) { set(p.x, p.y - 1, p.z, makeLiquid(flow, L)); L = 0; changed++; }
+            else if (reg.get(b).liquid == kind && !reg.get(b).spring && liquidLevel(b) < 16) {
+                int m = std::min(L, 16 - liquidLevel(b)); set(p.x, p.y - 1, p.z, makeLiquid(flow, liquidLevel(b) + m)); L -= m; changed++;
+            }
+        }
+        if (spring) L = 16;
+        // level out sideways: give each lower neighbour half the difference (water needs a step of 2, thick lava a step of 4)
+        if (L > 0) {
+            int need = kind == 2 ? 4 : 2;
+            I3 nb[4] = { { p.x + 1, p.y, p.z }, { p.x, p.y, p.z + 1 }, { p.x - 1, p.y, p.z }, { p.x, p.y, p.z - 1 } };
+            int first = (int)((liquidTick + (uint64_t)(p.x * 7 + p.z * 13)) & 3);   // a different neighbour first each time: no drift to one side
+            for (int j = 0; j < 4 && L > 0; j++) {
+                const I3& n = nb[(first + j) & 3];
+                if (!loaded(n.x, n.y, n.z)) continue;
+                BlockId nv = get(n.x, n.y, n.z); int ln;
+                if (nv == AIR) ln = 0;
+                else if (reg.get(nv).liquid == kind && !reg.get(nv).spring) ln = liquidLevel(nv);
+                else continue;
+                if (L - ln < need) continue;
+                int m = (L - ln) / 2;
+                set(n.x, n.y, n.z, makeLiquid(flow, ln + m)); changed++;
+                if (!spring) L -= m;
+            }
+        }
+        if (!spring && L != start) { set(p.x, p.y, p.z, L > 0 ? makeLiquid(flow, L) : AIR); changed++; }
+    }
+    return changed;
 }
 
 int World::countEmitters(const Chunk& c) const {
@@ -174,7 +248,7 @@ bool World::raycast(V3 o, V3 d, double maxT, Hit& hit) const {
     for (int i = 0; i < 1024 && t <= maxT; i++) {
         if (!loaded(x, y, z)) return false;
         BlockId v = get(x, y, z);
-        if (v != AIR) {
+        if (v != AIR && !reg.get(v).liquid) {   // you aim through water and lava
             int s = resolveShape(v, reg.get(v));
             if (s == Shapes::FULL) { hit = { x, y, z, nx, ny, nz, t, o.x + d.x * t, o.y + d.y * t, o.z + d.z * t }; return true; }
             // other shapes: only their solid parts count, so you can aim past a pole or through a window frame

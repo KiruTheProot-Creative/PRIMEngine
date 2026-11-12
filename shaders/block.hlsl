@@ -83,7 +83,7 @@ float cloudShadow(float3 rel)
 }
 
 struct VSIn { float3 pos : POSITION; float2 uv : TEXCOORD0; float layer : TEXCOORD1; uint lit : TEXCOORD2; uint normal : TEXCOORD3; };
-struct VSOut { float4 pos : SV_Position; float3 uvl : TEXCOORD0; float ao : TEXCOORD1; float3 rel : TEXCOORD2; float3 n : TEXCOORD3; float4 lamp : TEXCOORD4; float2 mat : TEXCOORD5; float clip : SV_ClipDistance0; };
+struct VSOut { float4 pos : SV_Position; float3 uvl : TEXCOORD0; float ao : TEXCOORD1; float3 rel : TEXCOORD2; float3 n : TEXCOORD3; float4 lamp : TEXCOORD4; float2 mat : TEXCOORD5; float kind : TEXCOORD6; float clip : SV_ClipDistance0; };
 // what the reflection pass needs per pixel: direction of the surface (rgb) and how shiny it is (a)
 struct PSOut { float4 color : SV_Target0; float4 surface : SV_Target1; };
 
@@ -94,7 +94,7 @@ float3 sway(float3 rel, float layer, float v, out float realLayer)
 {
     float kind = floor(layer / 16384);
     realLayer = layer - kind * 16384;
-    if (kind < 0.5 || gExtra.z <= 0) return rel;
+    if (kind < 0.5 || kind > 2.5 || gExtra.z <= 0) return rel;   // 3 water, 4 lava: they do not sway
     float3 w = rel + gCamPos.xyz;
     float t = gVolume.z;
     float amount = kind > 1.5 ? (1 - v) : 1;                              // plants: only the top moves
@@ -117,6 +117,7 @@ VSOut VS_Block(VSIn i)
     o.lamp = float4(float3((i.lit >> 8) & 15, (i.lit >> 12) & 15, (i.lit >> 16) & 15) / 15.0, (i.lit >> 20) & 1);
     o.mat = float2(((i.lit >> 21) & 15) / 15.0, (i.lit >> 25) & 1);
     o.clip = dot(p, gClipPlane.xyz) + gClipPlane.w;
+    o.kind = floor(i.layer / 16384);
     return o;
 }
 
@@ -188,10 +189,22 @@ float3 lightBlock(VSOut i, float3 albedo, bool front, out float3 n, out float sh
     return lerp(c, skyColor(normalize(i.rel)), f * f);
 }
 
+// lava: a dark crust with glowing cracks that slowly churn
+float3 lavaColor(float3 rel)
+{
+    float3 wp = gCamPos.xyz + rel; float t = gVolume.z;
+    float a = gNoise.SampleLevel(gLinear, float3(wp.x * 0.09 + t * 0.006, wp.y * 0.05 + t * 0.003, wp.z * 0.09), 0).x;
+    float b = gNoise.SampleLevel(gLinear, float3(wp.x * 0.27 - t * 0.012, wp.z * 0.27, t * 0.008 + wp.y * 0.1), 0).y;
+    float crack = smoothstep(0.45, 0.75, a * 0.65 + b * 0.5);
+    float3 crust = float3(0.22, 0.035, 0.01), glow = float3(1.0, 0.36, 0.06);
+    return lerp(crust, glow, crack) * (1.4 + 5.0 * crack * crack);
+}
+
 PSOut PS_Opaque(VSOut i, bool front : SV_IsFrontFace)
 {
     float4 t = gTex.Sample(gSamp, i.uvl);
     PSOut o; float3 n; float sh;
+    if (i.kind > 3.5) { o.color = float4(lavaColor(i.rel), 1); o.surface = float4(i.n * 0.5 + 0.5, 0); return o; }
     o.color = float4(lightBlock(i, t.rgb, front, n, sh), 1);
     o.surface = float4(n * 0.5 + 0.5, i.mat.y > 0.5 ? 1 : min(sh, 0.98));   // 1 = mirror
     return o;
@@ -349,6 +362,43 @@ SamplerState gClamp : register(s3);
 float ignR(float2 px) { return frac(52.9829189 * frac(dot(px, float2(0.06711056, 0.00583715)))); }
 float linDepth(float zb) { return gDepth.x * gDepth.y / (gDepth.y - zb * (gDepth.y - gDepth.x)); }
 
+// walks a ray through the picture's depth: small steps first, longer further away; true + where it hit
+bool traceScreen(float3 P, float3 n, float3 r, float dist, float2 pixel, out float2 huv, out float travelled)
+{
+    huv = 0; travelled = 0;
+    float3 pos = P + n * (0.03 + dist * 0.002);
+    float stepLen = 0.12 + dist * 0.01;
+    pos += r * stepLen * ignR(pixel);
+    int steps = (int)gRefl.y;
+    [loop] for (int k = 0; k < steps && travelled < gRefl.z; k++)
+    {
+        float3 prev = pos;
+        pos += r * stepLen; travelled += stepLen;
+        float4 c = mul(float4(pos, 1), gViewProj);
+        if (c.w <= 0.05) return false;
+        float2 ndc = c.xy / c.w;
+        if (any(abs(ndc) > 1)) return false;
+        float2 uv = ndc * float2(0.5, -0.5) + 0.5;
+        float sceneZ = linDepth(gSceneDepth.Load(int3(uv * gDepth.zw, 0)));
+        float behind = c.w - sceneZ;
+        if (behind > 0 && behind < max(0.5, stepLen * 2.5))
+        {
+            float3 a = prev, b = pos;   // found it: home in between the last two steps
+            [unroll] for (int s = 0; s < 5; s++)
+            {
+                float3 m = (a + b) * 0.5; float4 cm = mul(float4(m, 1), gViewProj);
+                float2 um = cm.xy / cm.w * float2(0.5, -0.5) + 0.5;
+                if (cm.w - linDepth(gSceneDepth.Load(int3(um * gDepth.zw, 0))) > 0) b = m; else a = m;
+            }
+            float4 cb = mul(float4(b, 1), gViewProj);
+            huv = cb.xy / cb.w * float2(0.5, -0.5) + 0.5;
+            return true;
+        }
+        stepLen *= 1.12;
+    }
+    return false;
+}
+
 float4 PS_Reflect(SkyOut i) : SV_Target
 {
     int2 px = int2(i.pos.xy);
@@ -364,39 +414,8 @@ float4 PS_Reflect(SkyOut i) : SV_Target
     float3 r = reflect(dir, n);
     bool mirror = shine > 0.999;
 
-    // walk the ray: small steps first, longer further away
-    float3 pos = P + n * (0.03 + dist * 0.002);
-    float stepLen = 0.12 + dist * 0.01, travelled = 0;
-    float jitter = ignR(i.pos.xy);
-    pos += r * stepLen * jitter;
-    bool hit = false; float2 huv = 0;
-    int steps = (int)gRefl.y;
-    [loop] for (int k = 0; k < steps && travelled < gRefl.z; k++)
-    {
-        float3 prev = pos;
-        pos += r * stepLen; travelled += stepLen;
-        float4 c = mul(float4(pos, 1), gViewProj);
-        if (c.w <= 0.05) break;
-        float2 ndc = c.xy / c.w;
-        if (any(abs(ndc) > 1)) break;
-        float2 uv = ndc * float2(0.5, -0.5) + 0.5;
-        float sceneZ = linDepth(gSceneDepth.Load(int3(uv * gDepth.zw, 0)));
-        float behind = c.w - sceneZ;
-        if (behind > 0 && behind < max(0.5, stepLen * 2.5))
-        {
-            // found it: home in between the last two steps
-            float3 a = prev, b = pos;
-            [unroll] for (int s = 0; s < 5; s++)
-            {
-                float3 m = (a + b) * 0.5; float4 cm = mul(float4(m, 1), gViewProj);
-                float2 um = cm.xy / cm.w * float2(0.5, -0.5) + 0.5;
-                if (cm.w - linDepth(gSceneDepth.Load(int3(um * gDepth.zw, 0))) > 0) b = m; else a = m;
-            }
-            float4 cb = mul(float4(b, 1), gViewProj);
-            huv = cb.xy / cb.w * float2(0.5, -0.5) + 0.5; hit = true; break;
-        }
-        stepLen *= 1.12;
-    }
+    float2 huv = 0; float travelled = 0;
+    bool hit = traceScreen(P, n, r, dist, i.pos.xy, huv, travelled);
 
     // where the ray finds nothing on screen: the sky (only if this spot is under the open sky, else a dim guess)
     float open = skyExposed(P + n * 0.3);
@@ -419,6 +438,49 @@ float4 PS_Reflect(SkyOut i) : SV_Target
     float F = f0 + (1 - f0) * pow(1 - NdotV, 5);
     float amount = mirror ? 1 : saturate(shine * 1.2);
     return float4(scene * (1 - F * amount * 0.5) + refl * F * amount, 1);
+}
+
+// ---------------------------------------------------------------- water: waves, what is under it (bent, and bluer the deeper), reflections
+float4 PS_Water(VSOut i, bool front : SV_IsFrontFace) : SV_Target
+{
+    float3 wp = gCamPos.xyz + i.rel; float t = gVolume.z;
+    float3 n = front ? i.n : -i.n;
+    if (abs(i.n.y) > 0.5)   // waves on top: two layers of moving noise plus a slow swell
+    {
+        float2 q1 = gNoise.SampleLevel(gLinear, float3(wp.x * 0.06 + t * 0.025, wp.z * 0.06, t * 0.015), 0).xy - 0.5;
+        float2 q2 = gNoise.SampleLevel(gLinear, float3(wp.x * 0.21 - t * 0.04, wp.z * 0.21 + t * 0.03, 0.37 + t * 0.02), 0).xy - 0.5;
+        float2 slope = q1 * 0.30 + q2 * 0.16 + float2(sin(wp.x * 0.8 + wp.z * 0.35 + t * 1.5), cos(wp.z * 0.9 - wp.x * 0.3 + t * 1.2)) * 0.035;
+        n = normalize(float3(slope.x, n.y > 0 ? 1 : -1, slope.y));
+    }
+    float dist = length(i.rel); float3 dir = i.rel / max(dist, 1e-4), v = -dir;
+    float2 suv = i.pos.xy / gDepth.zw;
+    float waterZ = dot(i.rel, gCamF.xyz);
+    // what is under the surface, bent by the waves
+    float2 ruv = suv + n.xz * 0.035 * saturate(1 - dist / 90);
+    float sceneZ = linDepth(gSceneDepth.Load(int3(ruv * gDepth.zw, 0)));
+    if (sceneZ < waterZ) { ruv = suv; sceneZ = linDepth(gSceneDepth.Load(int3(suv * gDepth.zw, 0))); }
+    float thick = front ? max(sceneZ - waterZ, 0) / max(dot(dir, gCamF.xyz), 0.2) : 0.4;
+    float3 behind = gHdr.SampleLevel(gClamp, ruv, 0).rgb;
+    float3 absorb = exp(-thick * float3(0.40, 0.10, 0.065));                        // red goes first: deep water is blue-green
+    float3 deep = (gAmbient.rgb * 0.5 + gSunColor.rgb * 0.08) * float3(0.04, 0.22, 0.28);
+    float3 refr = behind * absorb + deep * (1 - absorb);
+    // what it mirrors
+    float3 r = reflect(dir, n);
+    if (front && r.y < 0.02) r.y = 0.02;
+    float open = skyExposed(i.rel + float3(0, 0.3, 0));
+    float3 refl = skyColor(r) * lerp(0.25, 1, open);
+    float2 huv; float travelled;
+    if (front && gRefl.x > 0.5 && traceScreen(i.rel, n, r, dist, i.pos.xy, huv, travelled))
+    {
+        float2 e = min(huv, 1 - huv);
+        refl = lerp(refl, gHdr.SampleLevel(gClamp, huv, 0).rgb, saturate(min(e.x, e.y) * 12) * saturate(1 - travelled / gRefl.z));
+    }
+    float NdotV = saturate(abs(dot(n, v)));
+    float F = front ? 0.02 + 0.98 * pow(1 - NdotV, 5) : 0.08;
+    float3 c = lerp(refr, refl, F);
+    if (front) c += gSunColor.rgb * pow(saturate(dot(r, gSunDir.xyz)), 600) * 12 * shadowAt(i.rel, float3(0, 1, 0), 1, i.pos.xy);   // sun glint
+    float f = saturate((dist - gFogRange.x) / max(gFogRange.y - gFogRange.x, 1));
+    return float4(lerp(c, skyColor(dir), f * f), 1);
 }
 
 // ---------------------------------------------------------------- volumetrics: clouds and ground fog over the picture
@@ -506,6 +568,13 @@ float4 PS_Volume(SkyOut i) : SV_Target
             S += T * (gSunColor.rgb * sun * phase * 0.18 + amb) * (1 - a); T *= a;
         }
         scene = scene * T + S;
+    }
+    // under water / in lava: the view gets murky
+    if (gEnvPart.z > 0.5)
+    {
+        float d = min(dist, 400);
+        if (gEnvPart.z < 1.5) scene = lerp(scene, (gAmbient.rgb * 0.6 + gSunColor.rgb * 0.08) * float3(0.05, 0.28, 0.34), 1 - exp(-d * 0.085));
+        else scene = lerp(scene, float3(1.6, 0.45, 0.08), 1 - exp(-d * 1.4));
     }
     return float4(scene, 1);
 }
