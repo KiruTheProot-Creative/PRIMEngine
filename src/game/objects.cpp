@@ -87,7 +87,7 @@ const char* collideName(Collide c) { return c == Collide::Exact ? "Exact (from i
 // ------------------------------------------------------------------ placed objects
 const char* kindName(ObjKind k) {
     switch (k) { case ObjKind::Door: return "Door"; case ObjKind::Platform: return "Platform"; case ObjKind::Pickup: return "Pickup"; case ObjKind::Checkpoint: return "Checkpoint";
-    case ObjKind::Teleporter: return "Teleporter"; case ObjKind::Trigger: return "Trigger zone"; default: return "Prop"; }
+    case ObjKind::Teleporter: return "Teleporter"; case ObjKind::Trigger: return "Trigger zone"; case ObjKind::Light: return "Light"; case ObjKind::Particles: return "Particles"; default: return "Prop"; }
 }
 const char* pickupName(PickupType t) { return t == PickupType::Key ? "Key" : t == PickupType::Collectible ? "Collectible (counted)" : "Health"; }
 const char* triggerName(TriggerAction a) { return a == TriggerAction::Kill ? "Kill (traps, acid ...)" : a == TriggerAction::Heal ? "Heal" : a == TriggerAction::Checkpoint ? "Checkpoint" : "Show a message"; }
@@ -194,6 +194,13 @@ bool saveObjects(const std::string& path, const std::vector<WorldObject>& objs) 
         f << " " << o.size.x << " " << o.size.y << " " << o.size.z << " " << (int)o.pickup.type << " " << o.pickup.amount << " " << esc(o.pickup.name) << " " << o.pickup.respawn
           << " " << esc(o.teleport.world) << " " << esc(o.teleport.target) << " " << (int)o.trigger.action << " " << esc(o.trigger.text) << " " << o.trigger.amount << " " << (o.trigger.once ? 1 : 0)
           << " " << esc(o.door.key);
+        const LightSettings& L = o.light;
+        f << " " << (int)L.type << " " << L.color << " " << L.intensity << " " << L.range << " " << L.cone << " " << L.tilt << " " << (int)L.flicker;
+        const ParticleSettings& P = o.particles;
+        f << " " << P.rate << " " << P.burst << " " << P.burstEvery << " " << P.life << " " << P.lifeVar << " " << P.dir.x << " " << P.dir.y << " " << P.dir.z << " " << P.spread
+          << " " << P.speed << " " << P.speedVar << " " << P.gravity << " " << P.drag << " " << P.size0 << " " << P.size1 << " " << P.color0 << " " << P.color1 << " " << P.alpha0 << " " << P.alpha1
+          << " " << P.glow << " " << (P.additive ? 1 : 0) << " " << (int)P.shape << " " << (int)P.area << " " << P.areaSize.x << " " << P.areaSize.y << " " << P.areaSize.z << " " << P.spin
+          << " " << (P.collide ? 1 : 0) << " " << (P.bounce ? 1 : 0) << " " << (P.light ? 1 : 0) << " " << P.lightRange << " " << P.lightIntensity << " " << P.maxParticles;
         f << "\n";
     }
     return (bool)f;
@@ -218,6 +225,14 @@ bool loadObjects(const std::string& path, std::vector<WorldObject>& objs) {
         if (l >> o.size.x >> o.size.y >> o.size.z >> pt >> o.pickup.amount >> pn >> o.pickup.respawn >> tw >> tt >> ta >> tx >> o.trigger.amount >> once >> dk) {
             o.pickup.type = (PickupType)std::clamp(pt, 0, 2); o.pickup.name = unesc(pn); o.teleport.world = unesc(tw); o.teleport.target = unesc(tt);
             o.trigger.action = (TriggerAction)std::clamp(ta, 0, 3); o.trigger.text = unesc(tx); o.trigger.once = once != 0; o.door.key = unesc(dk);
+        }
+        int lt, fl; LightSettings L;   // lights and particles (newer files)
+        if (l >> lt >> L.color >> L.intensity >> L.range >> L.cone >> L.tilt >> fl) { L.type = (LightType)std::clamp(lt, 0, 1); L.flicker = (Flicker)std::clamp(fl, 0, 3); o.light = L; }
+        ParticleSettings P; int add, sh, ar, co, bo, li;
+        if (l >> P.rate >> P.burst >> P.burstEvery >> P.life >> P.lifeVar >> P.dir.x >> P.dir.y >> P.dir.z >> P.spread >> P.speed >> P.speedVar >> P.gravity >> P.drag >> P.size0 >> P.size1
+              >> P.color0 >> P.color1 >> P.alpha0 >> P.alpha1 >> P.glow >> add >> sh >> ar >> P.areaSize.x >> P.areaSize.y >> P.areaSize.z >> P.spin >> co >> bo >> li >> P.lightRange >> P.lightIntensity >> P.maxParticles) {
+            P.additive = add != 0; P.shape = (PShape)std::clamp(sh, 0, (int)PShape::COUNT - 1); P.area = (PArea)std::clamp(ar, 0, (int)PArea::COUNT - 1); P.collide = co != 0; P.bounce = bo != 0; P.light = li != 0;
+            o.particles = P;
         }
         objs.push_back(o);
     }

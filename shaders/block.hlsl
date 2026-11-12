@@ -36,6 +36,31 @@ cbuffer ChunkCB : register(b1)
     float4 gOffset;                 // where the mesh's (0,0,0) is, relative to the camera (a chunk's origin)
     float4 gAxisX, gAxisY, gAxisZ;  // the mesh's axes: objects are turned and sized; 1,0,0 / 0,1,0 / 0,0,1 for the world's chunks
 };
+// lights placed in the world (and glowing emitters, shots): up to 32 near the camera
+cbuffer Lights : register(b3)
+{
+    float4 gLightCount;             // x: how many
+    float4 gLightPos[32];           // xyz relative to the camera, w reach (blocks)
+    float4 gLightCol[32];           // rgb colour x brightness, w 1 = spotlight
+    float4 gLightDir[32];           // spotlights: xyz where it points, w cos(cone)
+};
+float3 dynLights(float3 rel, float3 n)
+{
+    float3 sum = 0;
+    int count = (int)gLightCount.x;
+    [loop] for (int k = 0; k < count; k++)
+    {
+        float3 L = gLightPos[k].xyz - rel; float d = length(L); float range = gLightPos[k].w;
+        if (d >= range) continue;
+        L /= max(d, 1e-4);
+        float att = 1 - d / range; att *= att;
+        float ndl = saturate(dot(n, L) * 0.85 + 0.15);   // a little light wraps round edges, softer look
+        float cone = 1;
+        if (gLightCol[k].w > 0.5) { float c = dot(-L, gLightDir[k].xyz), c0 = gLightDir[k].w; cone = smoothstep(c0, c0 + (1 - c0) * 0.35, c); }
+        sum += gLightCol[k].rgb * att * ndl * cone;
+    }
+    return sum;
+}
 float3 meshToRel(float3 p) { return gOffset.xyz + gAxisX.xyz * p.x + gAxisY.xyz * p.y + gAxisZ.xyz * p.z; }
 
 Texture2DArray gTex : register(t0);
@@ -181,7 +206,8 @@ float3 lightBlock(VSOut i, float3 albedo, bool front, out float3 n, out float sh
     float lamp = max(i.lamp.r, max(i.lamp.g, i.lamp.b));
     float3 hue = lamp > 0 ? i.lamp.rgb / lamp : 0;                                                   // the colour of the lamps nearby
     light += hue * (pow(lamp, 3.2) * 0.9) * gExtra.w * lerp(0.5, 1, i.ao);
-    float3 c = albedo * light;
+    float3 dyn = dynLights(i.rel, n) * lerp(0.6, 1, i.ao);                                               // placed lights, glowing emitters, shots
+    float3 c = albedo * (light + dyn);
     indirect = albedo * (light - gSunColor.rgb * ndl * sh);
     if (i.lamp.a > 0.5)                                                                               // the lamp itself glows in its colour
     {
@@ -787,4 +813,53 @@ float4 PS_Field(FieldOut i) : SV_Target
     float glow = (0.10 + 0.55 * pow(hex, 6) + 0.12 * scan + 0.5 * rim) * pulse * keep;
     float fade = gAxisZ.w < 0.999 && gAxisZ.w > 0 && reach < 0.06 ? gAxisZ.w : 1;   // coming back: fades in
     return float4(gAxisZ.rgb * (glow * 1.6 * fade + burn * 4), 0);
+}
+
+// ---------------------------------------------------------------- particles: quads facing you (sparks: stretched along their flight)
+struct PIn { float3 pos : POSITION; float2 corner : TEXCOORD0; float4 col : COLOR; float4 info : TEXCOORD1; float3 vel : TEXCOORD2; };   // info: size, turn, shape, streak
+struct POut { float4 pos : SV_Position; float2 uv : TEXCOORD0; float4 col : COLOR; float3 rel : TEXCOORD1; float shape : TEXCOORD2; float seed : TEXCOORD3; float soft : TEXCOORD4; };
+POut VS_Particle(PIn i)
+{
+    POut o;
+    float size = i.info.x;
+    float3 view = normalize(i.pos), p;
+    bool streak = fmod(i.info.w, 2) > 0.5;   // info.w: 1 = streak, +2 = soft (smoke) instead of glowing
+    if (streak)
+    {
+        float3 v = i.vel - dot(i.vel, view) * view; float sp = length(v);
+        float3 ax = sp > 1e-4 ? v / sp : gCamU.xyz;
+        float3 side = normalize(cross(view, ax));
+        float len = size + sp * 0.045;
+        p = i.pos + ax * (i.corner.y * len * 0.5) + side * (i.corner.x * size * 0.25);
+    }
+    else
+    {
+        float c = cos(i.info.y), s = sin(i.info.y);
+        float2 k = float2(c * i.corner.x - s * i.corner.y, s * i.corner.x + c * i.corner.y);
+        p = i.pos + (gCamR.xyz * k.x + gCamU.xyz * k.y) * size * 0.5;
+    }
+    o.pos = mul(float4(p, 1), gViewProj); o.uv = i.corner; o.col = i.col; o.rel = p; o.shape = i.info.z; o.seed = i.info.y; o.soft = i.info.w >= 1.5 ? 1 : 0;
+    return o;
+}
+float4 PS_Particle(POut i) : SV_Target
+{
+    float2 q = i.uv; float r = length(q), a;
+    int shape = (int)(i.shape + 0.5);
+    if (shape == 1) a = exp(-q.x * q.x * 6) * saturate(1 - q.y * q.y);                                  // spark
+    else if (shape == 2)                                                                                // smoke puff
+    {
+        float n = gNoise.SampleLevel(gLinear, float3(q * 0.35 + i.seed * 0.11, i.seed * 0.05), 0).x;
+        a = saturate(1 - r) * saturate(1 - r) * (0.45 + 0.9 * n);
+    }
+    else if (shape == 3) a = max(abs(q.x), abs(q.y)) < 0.75 ? 1 : 0;                                   // pixel
+    else if (shape == 4) a = exp(-pow((r - 0.7) * 7, 2));                                                // ring
+    else if (shape == 5) a = exp(-r * r * 9) + exp(-abs(q.x) * 14) * saturate(1 - abs(q.y)) + exp(-abs(q.y) * 14) * saturate(1 - abs(q.x));   // flare
+    else a = exp(-r * r * 4.5) * saturate(1 - r);                                                        // soft dot
+    // soft where it meets the world
+    float zb = gSceneDepth.Load(int3(i.pos.xy, 0));
+    float scene = linDepth(zb), here = dot(i.rel, gCamF.xyz);
+    a *= saturate((scene - here) * 3);
+    if (i.soft < 0.5) return float4(i.col.rgb * a, 0);                                                  // glowing: added on top
+    float3 lit = i.col.rgb * (gAmbient.rgb * 1.3 + gSunColor.rgb * 0.35 + dynLights(i.rel, -normalize(i.rel)) * 0.5);   // soft (smoke): lit by the sky, the sun and lights
+    return float4(lit, saturate(a * i.col.a));
 }

@@ -47,7 +47,7 @@ bool isModelFile(const std::string& path);
 std::vector<Box3> meshBoxes(const MeshModel& m, int maxCells = 24, bool stillOnly = false);   // cubes of at least 1/8 block; stillOnly: without the moving parts
 Box3 doorOpening(const MeshModel& m);   // a door's opening (model space, blocks): where its moving parts are, else the middle of it
 
-// built-in looks for helper objects: "@health", "@key", "@gem" (pickups), "@checkpoint", "@teleporter" (pads), "@zone" (a 1-block cube)
+// built-in looks for helper objects: "@health", "@key", "@gem" (pickups), "@checkpoint", "@teleporter" (pads), "@zone" (a 1-block cube), "@light", "@emitter"
 bool builtinShape(const std::string& name, MeshModel& out);
 std::vector<std::string> builtinShapeNames();
 

@@ -11,6 +11,7 @@
 #include "../game/objects.h"
 #include "../game/meshmodel.h"
 #include "../game/platform.h"
+#include "../game/particles.h"
 #include "../game/weather.h"
 #include "../core/png.h"
 #include "../core/noise.h"
@@ -227,6 +228,13 @@ struct App {
             D3D11_SHADER_RESOURCE_VIEW_DESC sv{}; sv.Format = DXGI_FORMAT_R32_FLOAT; sv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D; sv.Texture2D.MipLevels = 1; HR(dev->CreateShaderResourceView(skyMapTex.Get(), &sv, &skyMapSRV));
         }
         b = Compile(src, "PS_Reflect", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psReflect));
+        b = Compile(src, "VS_Particle", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsParticle));
+        { D3D11_INPUT_ELEMENT_DESC pe[] = {
+            { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 }, { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            { "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 20, D3D11_INPUT_PER_VERTEX_DATA, 0 }, { "TEXCOORD", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 36, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            { "TEXCOORD", 2, DXGI_FORMAT_R32G32B32_FLOAT, 0, 52, D3D11_INPUT_PER_VERTEX_DATA, 0 } };
+          HR(dev->CreateInputLayout(pe, 5, b->GetBufferPointer(), b->GetBufferSize(), &layoutParticle)); }
+        b = Compile(src, "PS_Particle", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psParticle));
         b = Compile(src, "VS_Field", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsField));
         b = Compile(src, "PS_Field", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psField));
         b = Compile(src, "VS_Preview", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsPreview));
@@ -243,7 +251,7 @@ struct App {
             { "TEXCOORD", 3, DXGI_FORMAT_R32_UINT, 0, 28, D3D11_INPUT_PER_VERTEX_DATA, 0 } };
         HR(dev->CreateInputLayout(el, 5, vb->GetBufferPointer(), vb->GetBufferSize(), &layout));
         auto cb = [&](UINT size, ComPtr<ID3D11Buffer>& out) { D3D11_BUFFER_DESC d{}; d.ByteWidth = size; d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_CONSTANT_BUFFER; HR(dev->CreateBuffer(&d, nullptr, &out)); };
-        cb(sizeof(FrameCB), cbFrame); cb(sizeof(ChunkCB), cbChunk); cb(sizeof(PreviewCB), cbPreview);
+        cb(sizeof(FrameCB), cbFrame); cb(sizeof(ChunkCB), cbChunk); cb(sizeof(PreviewCB), cbPreview); cb(sizeof(LightCB), cbLights);
 
         D3D11_RASTERIZER_DESC rd{}; rd.FillMode = D3D11_FILL_SOLID; rd.CullMode = D3D11_CULL_BACK; rd.FrontCounterClockwise = FALSE; rd.DepthClipEnable = TRUE; HR(dev->CreateRasterizerState(&rd, &rsCull));
         rd.CullMode = D3D11_CULL_FRONT; HR(dev->CreateRasterizerState(&rd, &rsCullFront));   // mirrored views turn every triangle around
@@ -594,6 +602,7 @@ struct App {
         toolValid = toolMode && !playMode && world->raycast(player.eye(), player.forward(), 160.0, toolHit);   // where the brush is (shown even with the mouse free)
         if (!paused) UpdatePlatforms(std::min(dt, 0.05));
         if (!paused) UpdateHelpers(std::min(dt, 0.05));
+        if (!paused) UpdateParticles(std::min(dt, 0.05));
         if (playMode && !paused) UpdateDoors(std::min(dt, 0.05)); else if (!playMode && !doorRt.empty()) { doorRt.clear(); doorGpu.clear(); shots.clear(); RebuildSolids(); }
         if (playMode && !paused) {   // health, lava, falling out of the world, respawning
             PlayState::Event e = play.tick(*world, player, game.player, playSpawn, playYaw, std::min(dt, 0.05));
@@ -851,6 +860,178 @@ struct App {
         ID3D11ShaderResourceView* none[10] = {}; ctx->PSSetShaderResources(0, 10, none);
     }
 
+    // ================================================================== lights and particles (G2 attempt 5)
+    struct PVtx { float pos[3], corner[2], col[4], info[4], vel[3]; };   // info: size, turn, shape, streak
+    struct alignas(16) LightCB { float count[4]; float pos[32][4], col[32][4], dir[32][4]; };
+    std::map<uint32_t, ParticleEmitter> emitters;     // the particle emitters placed in the world, by object id
+    std::vector<ParticleEmitter> fx;                  // one-off effects (sparks where a shot hits, a finished trail ...)
+    ComPtr<ID3D11VertexShader> vsParticle; ComPtr<ID3D11PixelShader> psParticle; ComPtr<ID3D11InputLayout> layoutParticle;
+    ComPtr<ID3D11Buffer> vbParticles, cbLights; UINT vbParticlesCap = 0; int particleCount = 0;
+    static V3 ColorOf(uint32_t c) { return { ((c >> 16) & 255) / 255.0, ((c >> 8) & 255) / 255.0, (c & 255) / 255.0 }; }
+    void MakeLight(WorldObject& o) { o.kind = ObjKind::Light; o.collide = Collide::None; if (o.folder == "Props") o.folder = "Lights"; }
+    void MakeEmitter(WorldObject& o) { o.kind = ObjKind::Particles; o.collide = Collide::None; if (o.folder == "Props") o.folder = "Particles"; }
+    V3 EmitterOrigin(const WorldObject& o) const { return { o.pos.x, o.pos.y + 0.3, o.pos.z }; }
+    void SpawnFx(const ParticleSettings& s, V3 at, V3 dir, uint32_t tint = 0) {
+        ParticleSettings p = s; p.dir = dir; if (tint) { p.color1 = tint; }
+        if (fx.size() > 64) fx.erase(fx.begin());
+        fx.emplace_back(p, (uint32_t)(GetTickCount() + fx.size() * 7919)); fx.back().burstNow(p.burst, at, 0);
+    }
+    void UpdateParticles(double dt) {
+        // emitters placed in the world (they run in the editor too, so you see what you make)
+        std::set<uint32_t> seen;
+        for (const WorldObject& o : objects) {
+            if (o.kind != ObjKind::Particles) continue;
+            seen.insert(o.id);
+            auto it = emitters.find(o.id); if (it == emitters.end()) it = emitters.emplace(o.id, ParticleEmitter(o.particles, o.id * 2654435761u)).first;
+            it->second.s = o.particles;   // edits show at once
+            it->second.update(dt, EmitterOrigin(o), o.yaw, world.get());
+        }
+        for (auto it = emitters.begin(); it != emitters.end();) { if (!seen.count(it->first)) it = emitters.erase(it); else ++it; }
+        for (ParticleEmitter& e : fx) e.update(dt, { 0, 0, 0 }, 0, world.get(), false);
+        fx.erase(std::remove_if(fx.begin(), fx.end(), [](const ParticleEmitter& e) { return e.ps.empty(); }), fx.end());
+        for (Shot& s : shots) s.trail.update(dt, s.pos, 0, nullptr, s.age < 50);   // beam tails
+    }
+    // every light that shines this frame: light objects, glowing emitters, shots (the nearest 32)
+    void CollectLights(LightCB& lc) {
+        struct L { V3 p; double range; V3 col; int spot; V3 dir; double cosCone; double dist; };
+        std::vector<L> all;
+        auto dist = [&](V3 p) { V3 d = p - camPos; return std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z); };
+        for (const WorldObject& o : objects) {
+            if (o.kind == ObjKind::Light) {
+                const LightSettings& s = o.light; double k = s.intensity * flickerAt(s.flicker, animTime, o.id);
+                V3 c = ColorOf(s.color); c = { std::pow(c.x, 2.2) * k, std::pow(c.y, 2.2) * k, std::pow(c.z, 2.2) * k };
+                double a = o.yaw * 3.14159265358979 / 180, t = s.tilt * 3.14159265358979 / 180;
+                V3 d{ std::sin(a) * std::cos(t), -std::sin(t), std::cos(a) * std::cos(t) };
+                V3 p{ o.pos.x, o.pos.y + 0.3, o.pos.z };
+                all.push_back({ p, std::max(0.5f, s.range), c, s.type == LightType::Spot ? 1 : 0, d, std::cos(s.cone * 3.14159265358979 / 180), dist(p) });
+            } else if (o.kind == ObjKind::Particles && o.particles.light) {
+                const ParticleSettings& s = o.particles; double k = s.lightIntensity * flickerAt(Flicker::Candle, animTime * 1.3, o.id);
+                V3 c0 = ColorOf(s.color0), c1 = ColorOf(s.color1); V3 c{ std::pow((c0.x + c1.x) / 2, 2.2) * k, std::pow((c0.y + c1.y) / 2, 2.2) * k, std::pow((c0.z + c1.z) / 2, 2.2) * k };
+                V3 p = EmitterOrigin(o); p.y += 0.4;
+                all.push_back({ p, std::max(0.5f, s.lightRange), c, 0, { 0, -1, 0 }, -1, dist(p) });
+            }
+        }
+        for (const Shot& s : shots) if (s.age < 50) all.push_back({ s.pos, 4.5, { 0.25, 0.9, 1.8 }, 0, { 0, -1, 0 }, -1, dist(s.pos) });
+        std::sort(all.begin(), all.end(), [](const L& a, const L& b) { return a.dist - a.range < b.dist - b.range; });
+        int n = 0;
+        for (const L& l : all) {
+            if (n >= 32) break; if (l.dist - l.range > 96) continue;
+            V3 r = l.p - camPos;
+            float* P = lc.pos[n]; P[0] = (float)r.x; P[1] = (float)r.y; P[2] = (float)r.z; P[3] = (float)l.range;
+            float* C = lc.col[n]; C[0] = (float)l.col.x; C[1] = (float)l.col.y; C[2] = (float)l.col.z; C[3] = (float)l.spot;
+            float* D = lc.dir[n]; D[0] = (float)l.dir.x; D[1] = (float)l.dir.y; D[2] = (float)l.dir.z; D[3] = (float)l.cosCone;
+            n++;
+        }
+        lc.count[0] = (float)n;
+    }
+    void BindLights() {
+        LightCB lc{}; CollectLights(lc);
+        ctx->UpdateSubresource(cbLights.Get(), 0, nullptr, &lc, 0, 0);
+        ctx->PSSetConstantBuffers(3, 1, cbLights.GetAddressOf());
+    }
+    // all particles as quads: glowing ones added on top, soft ones (smoke) blended, back to front
+    void DrawParticles() {
+        std::vector<PVtx> add, soft; std::vector<std::pair<double, size_t>> order;
+        auto push = [&](const ParticleEmitter& e) {
+            const ParticleSettings& s = e.s;
+            for (const Particle& p : e.ps) {
+                ParticleLook l = lookOf(e, p); if (l.a <= 0.003f || l.size <= 0.001f) continue;
+                V3 r = l.pos - camPos; float k = s.additive ? s.glow * l.a : 1;
+                float col[4] = { l.r * k, l.g * k, l.b * k, s.additive ? 1.f : l.a };
+                float streak = (s.shape == PShape::Spark ? 1.f : 0.f) + (s.additive ? 0.f : 2.f);
+                std::vector<PVtx>& out = s.additive ? add : soft;
+                if (!s.additive) order.push_back({ -(r.x * r.x + r.y * r.y + r.z * r.z), out.size() });
+                static const float c[6][2] = { { -1, -1 }, { 1, -1 }, { 1, 1 }, { -1, -1 }, { 1, 1 }, { -1, 1 } };
+                for (auto& cc : c) out.push_back({ { (float)r.x, (float)r.y, (float)r.z }, { cc[0], cc[1] }, { col[0], col[1], col[2], col[3] }, { l.size, l.rot, (float)s.shape, streak }, { (float)l.vel.x, (float)l.vel.y, (float)l.vel.z } });
+            }
+        };
+        for (auto& kv : emitters) push(kv.second);
+        for (auto& e : fx) push(e);
+        for (auto& s : shots) push(s.trail);
+        particleCount = (int)((add.size() + soft.size()) / 6);
+        if (add.empty() && soft.empty()) return;
+        if (!order.empty()) {   // soft ones: far ones first
+            std::sort(order.begin(), order.end());
+            std::vector<PVtx> sorted; sorted.reserve(soft.size());
+            for (auto& o : order) sorted.insert(sorted.end(), soft.begin() + o.second, soft.begin() + o.second + 6);
+            soft.swap(sorted);
+        }
+        UINT need = (UINT)(add.size() + soft.size());
+        if (need > vbParticlesCap) {
+            vbParticlesCap = std::max<UINT>(need, vbParticlesCap * 2); vbParticlesCap = std::max<UINT>(vbParticlesCap, 6 * 1024);
+            D3D11_BUFFER_DESC d{}; d.ByteWidth = vbParticlesCap * sizeof(PVtx); d.Usage = D3D11_USAGE_DYNAMIC; d.BindFlags = D3D11_BIND_VERTEX_BUFFER; d.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+            vbParticles.Reset(); HR(dev->CreateBuffer(&d, nullptr, &vbParticles));
+        }
+        D3D11_MAPPED_SUBRESOURCE ms; if (FAILED(ctx->Map(vbParticles.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) return;
+        memcpy(ms.pData, add.data(), add.size() * sizeof(PVtx)); memcpy((PVtx*)ms.pData + add.size(), soft.data(), soft.size() * sizeof(PVtx));
+        ctx->Unmap(vbParticles.Get(), 0);
+        // soft edges where particles meet the world: they read a copy of the depth
+        ID3D11RenderTargetView* rt = nullptr; ID3D11DepthStencilView* ds = nullptr; ctx->OMGetRenderTargets(1, &rt, &ds);
+        ctx->OMSetRenderTargets(1, &rt, nullptr); ctx->CopyResource(depthCopy.Get(), depthTex.Get()); ctx->OMSetRenderTargets(1, &rt, ds);
+        ctx->PSSetShaderResources(2, 1, depthCopySRV.GetAddressOf()); ctx->PSSetShaderResources(3, 1, noiseSRV.GetAddressOf()); ctx->PSSetSamplers(2, 1, sampLinear.GetAddressOf());
+        UINT stride = sizeof(PVtx), off = 0; ctx->IASetVertexBuffers(0, 1, vbParticles.GetAddressOf(), &stride, &off); ctx->IASetInputLayout(layoutParticle.Get());
+        ctx->VSSetShader(vsParticle.Get(), nullptr, 0); ctx->PSSetShader(psParticle.Get(), nullptr, 0);
+        ctx->OMSetDepthStencilState(dsTestOnly.Get(), 0); ctx->RSSetState(rsNoCull.Get());
+        if (!add.empty()) { ctx->OMSetBlendState(bsAdd.Get(), nullptr, 0xFFFFFFFF); ctx->Draw((UINT)add.size(), 0); }
+        if (!soft.empty()) { ctx->OMSetBlendState(bsAlpha.Get(), nullptr, 0xFFFFFFFF); ctx->Draw((UINT)soft.size(), (UINT)add.size()); }
+        ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());
+        ID3D11ShaderResourceView* none2[1] = {}; ctx->PSSetShaderResources(2, 1, none2);
+        ctx->IASetInputLayout(layout.Get());
+        if (rt) rt->Release(); if (ds) ds->Release();
+    }
+    void LightInspector(WorldObject& o) {
+        LightSettings& L = o.light; ImGui::SeparatorText("Light");
+        int t = (int)L.type; const char* tn[] = { "Point (shines all around)", "Spot (a cone)" }; Prop("Kind of light"); ImGui::Combo("##lt", &t, tn, 2); L.type = (LightType)t;
+        float c[3] = { ((L.color >> 16) & 255) / 255.f, ((L.color >> 8) & 255) / 255.f, (L.color & 255) / 255.f };
+        Prop("Colour"); if (ImGui::ColorEdit3("##lc", c, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_PickerHueWheel)) L.color = ((uint32_t)std::lround(c[0] * 255) << 16) | ((uint32_t)std::lround(c[1] * 255) << 8) | (uint32_t)std::lround(c[2] * 255);
+        Prop("Brightness"); ImGui::SliderFloat("##li", &L.intensity, 0.1f, 10, "%.1f");
+        Prop("Reach"); ImGui::SliderFloat("##lr", &L.range, 1, 40, "%.0f blocks");
+        if (L.type == LightType::Spot) { Prop("Cone"); ImGui::SliderFloat("##lcone", &L.cone, 5, 80, "%.0f deg"); Prop("Looks down"); ImGui::SliderFloat("##ltilt", &L.tilt, -90, 90, "%.0f deg"); Hint("It points where the object faces (Turn), tilted down by this."); }
+        int f = (int)L.flicker; const char* fn[] = { flickerName(Flicker::None), flickerName(Flicker::Candle), flickerName(Flicker::Broken), flickerName(Flicker::Pulse) };
+        Prop("Flicker"); ImGui::Combo("##lf", &f, fn, 4); L.flicker = (Flicker)f;
+        Hint("Lights shine on blocks and objects as you move (up to 32 near you at once). The bulb is only seen in the editor.");
+    }
+    void ParticleInspector(WorldObject& o) {
+        ParticleSettings& P = o.particles; ImGui::SeparatorText("Particles");
+        Prop("Start from");
+        if (ImGui::BeginCombo("##preset", "a preset ...")) { for (auto& n : particlePresets()) if (ImGui::Selectable(n.c_str())) { P = particlePreset(n); emitters.erase(o.id); } ImGui::EndCombo(); }
+        auto colour = [&](const char* label, uint32_t& v) { float c[3] = { ((v >> 16) & 255) / 255.f, ((v >> 8) & 255) / 255.f, (v & 255) / 255.f };
+            Prop(label); ImGui::PushID(label); if (ImGui::ColorEdit3("##c", c, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_PickerHueWheel)) v = ((uint32_t)std::lround(c[0] * 255) << 16) | ((uint32_t)std::lround(c[1] * 255) << 8) | (uint32_t)std::lround(c[2] * 255); ImGui::PopID(); };
+        if (ImGui::CollapsingHeader("Making them", ImGuiTreeNodeFlags_DefaultOpen)) {
+            Prop("Per second"); ImGui::SliderFloat("##rate", &P.rate, 0, 500, "%.0f", ImGuiSliderFlags_Logarithmic);
+            Prop("Burst of"); ImGui::SliderInt("##burst", &P.burst, 0, 300);
+            if (P.burst > 0) { Prop("Burst every"); ImGui::SliderFloat("##be", &P.burstEvery, 0, 10, P.burstEvery <= 0 ? "once" : "%.1f s"); }
+            int a = (int)P.area; const char* an[] = { areaName(PArea::Point), areaName(PArea::Sphere), areaName(PArea::Box), areaName(PArea::Disc) };
+            Prop("Out of"); ImGui::Combo("##area", &a, an, 4); P.area = (PArea)a;
+            if (P.area != PArea::Point) { Prop("Its size"); ImGui::InputScalarN("##asz", ImGuiDataType_Double, &P.areaSize.x, 3, nullptr, nullptr, "%.2f"); }
+            Prop("Life"); ImGui::SliderFloat("##life", &P.life, 0.05f, 10, "%.2f s"); Prop("Life varies"); ImGui::SliderFloat("##lifev", &P.lifeVar, 0, 5, "+- %.2f s");
+            Prop("Most at once"); ImGui::SliderInt("##max", &P.maxParticles, 10, 10000);
+        }
+        if (ImGui::CollapsingHeader("Moving", ImGuiTreeNodeFlags_DefaultOpen)) {
+            Prop("Direction"); ImGui::InputScalarN("##dir", ImGuiDataType_Double, &P.dir.x, 3, nullptr, nullptr, "%.2f");
+            Prop("Spread"); ImGui::SliderFloat("##spread", &P.spread, 0, 180, "%.0f deg");
+            Prop("Speed"); ImGui::SliderFloat("##speed", &P.speed, 0, 30, "%.1f blocks/s"); Prop("Speed varies"); ImGui::SliderFloat("##speedv", &P.speedVar, 0, 15, "+- %.1f");
+            Prop("Gravity"); ImGui::SliderFloat("##grav", &P.gravity, -30, 10, "%.1f"); Prop("Air drag"); ImGui::SliderFloat("##drag", &P.drag, 0, 5, "%.2f");
+            Prop("Spin"); ImGui::SliderFloat("##spin", &P.spin, 0, 3, "%.2f turns/s");
+            Prop("Hit blocks"); ImGui::Checkbox("##col", &P.collide); if (P.collide) { ImGui::SameLine(); ImGui::Checkbox("bounce", &P.bounce); }
+        }
+        if (ImGui::CollapsingHeader("Look", ImGuiTreeNodeFlags_DefaultOpen)) {
+            int sh = (int)P.shape; const char* sn[] = { shapeName(PShape::Dot), shapeName(PShape::Spark), shapeName(PShape::Smoke), shapeName(PShape::Pixel), shapeName(PShape::Ring), shapeName(PShape::Flare) };
+            Prop("Shape"); ImGui::Combo("##shape", &sh, sn, 6); P.shape = (PShape)sh;
+            Prop("Glowing"); ImGui::Checkbox("##add", &P.additive); if (ImGui::IsItemHovered()) ImGui::SetTooltip("On: they glow and add light (sparks, fire).\nOff: soft and see-through (smoke, steam).");
+            Prop("Size at start"); ImGui::SliderFloat("##s0", &P.size0, 0, 4, "%.2f"); Prop("Size at end"); ImGui::SliderFloat("##s1", &P.size1, 0, 4, "%.2f");
+            colour("Colour at start", P.color0); colour("Colour at end", P.color1);
+            Prop("See-through start"); ImGui::SliderFloat("##a0", &P.alpha0, 0, 1, "%.2f"); Prop("See-through end"); ImGui::SliderFloat("##a1", &P.alpha1, 0, 1, "%.2f");
+            if (P.additive) { Prop("Brightness"); ImGui::SliderFloat("##glow", &P.glow, 0.1f, 10, "%.1f"); }
+        }
+        if (ImGui::CollapsingHeader("Light")) {
+            Prop("Lights things up"); ImGui::Checkbox("##pl", &P.light);
+            if (P.light) { Prop("Reach"); ImGui::SliderFloat("##plr", &P.lightRange, 1, 20, "%.0f blocks"); Prop("Brightness"); ImGui::SliderFloat("##pli", &P.lightIntensity, 0.1f, 6, "%.1f"); }
+        }
+        if (ImGui::Button("Restart it")) emitters.erase(o.id);
+        Hint("%d particles on screen in all.", particleCount);
+    }
+
     // ================================================================== pickups, checkpoints, teleporters, trigger zones (G2 attempt 4)
     PlayInventory inv; std::map<std::string, std::map<uint32_t, float>> takenByWorld;
     std::set<uint32_t> insideNow, firedOnce; uint32_t teleportLock = 0; double animTime = 0;
@@ -868,11 +1049,13 @@ struct App {
         } else if (m == "@checkpoint") { o.kind = ObjKind::Checkpoint; o.folder = "Checkpoints"; }
         else if (m == "@teleporter") { o.kind = ObjKind::Teleporter; o.folder = "Teleporters"; }
         else if (m == "@zone") { o.kind = ObjKind::Trigger; o.collide = Collide::None; o.folder = "Trigger zones"; o.size = { 3, 3, 3 }; }
+        else if (m == "@light") { MakeLight(o); o.folder = "Lights"; }
+        else if (m == "@emitter") { MakeEmitter(o); o.folder = "Particles"; o.particles = particlePreset("Fire"); }
     }
     std::string PresetName(const WorldObject& o) const {
         switch (o.kind) {
         case ObjKind::Pickup: return o.pickup.type == PickupType::Health ? "Health" : o.pickup.name;
-        case ObjKind::Checkpoint: return "Checkpoint"; case ObjKind::Teleporter: return "Teleporter"; case ObjKind::Trigger: return "Zone";
+        case ObjKind::Checkpoint: return "Checkpoint"; case ObjKind::Teleporter: return "Teleporter"; case ObjKind::Trigger: return "Zone"; case ObjKind::Light: return "Light"; case ObjKind::Particles: return "Particles";
         default: return o.model;
         }
     }
@@ -953,6 +1136,21 @@ struct App {
             case ObjKind::Checkpoint: col = IM_COL32(110, 240, 255, 230); label = "Checkpoint"; break;
             case ObjKind::Pickup: col = IM_COL32(255, 230, 120, 230); label = o.pickup.type == PickupType::Health ? "+" + std::to_string((int)o.pickup.amount) + " health" : o.pickup.name; break;
             case ObjKind::Door: if (!o.door.key.empty()) { col = IM_COL32(255, 210, 80, 230); label = "Needs: " + o.door.key; } break;
+            case ObjKind::Light: {
+                col = IM_COL32(255, 235, 150, 230); label = o.light.type == LightType::Spot ? "Spot light" : "Light";
+                if (sel == Sel::Object && selIndex == i) {
+                    V3 c{ o.pos.x, o.pos.y + 0.3, o.pos.z }; double r = o.light.range;
+                    if (o.light.type == LightType::Point) for (int k = 0; k < 48; k++) { double a0 = k * 6.2832 / 48, a1 = (k + 1) * 6.2832 / 48; Line3D(dl, { c.x + std::cos(a0) * r, c.y, c.z + std::sin(a0) * r }, { c.x + std::cos(a1) * r, c.y, c.z + std::sin(a1) * r }, IM_COL32(255, 235, 150, 110)); }
+                    else {
+                        double a = o.yaw * 3.14159265358979 / 180, t = o.light.tilt * 3.14159265358979 / 180, cn = o.light.cone * 3.14159265358979 / 180;
+                        V3 d{ std::sin(a) * std::cos(t), -std::sin(t), std::cos(a) * std::cos(t) }, up = std::fabs(d.y) < 0.9 ? V3{ 0, 1, 0 } : V3{ 1, 0, 0 };
+                        V3 u{ up.y * d.z - up.z * d.y, up.z * d.x - up.x * d.z, up.x * d.y - up.y * d.x }; double ul = std::sqrt(u.x * u.x + u.y * u.y + u.z * u.z); u = u * (1 / ul);
+                        V3 w{ d.y * u.z - d.z * u.y, d.z * u.x - d.x * u.z, d.x * u.y - d.y * u.x };
+                        for (int k = 0; k < 8; k++) { double ph = k * 6.2832 / 8; V3 e = (d * std::cos(cn) + (u * std::cos(ph) + w * std::sin(ph)) * std::sin(cn)) * r; Line3D(dl, c, c + e, IM_COL32(255, 235, 150, 110)); }
+                    }
+                }
+                break; }
+            case ObjKind::Particles: col = IM_COL32(255, 160, 100, 230); label = "Particles"; break;
             default: break;
             }
             if (label.empty()) continue;
@@ -1137,7 +1335,7 @@ struct App {
     }
 
     // ================================================================== doors (G2 attempt 3a)
-    struct Shot { V3 pos, dir; float age = 0; };
+    struct Shot { V3 pos, dir; float age = 0; ParticleEmitter trail{ particlePreset("Beam trail"), 11 }; };
     std::map<uint32_t, DoorRuntime> doorRt;           // Play mode: each door's state, by object id
     std::map<uint32_t, ModelGpu> doorGpu;             // doors in the middle of an animation: their posed meshes
     std::vector<Shot> shots; bool shootPrev = true;
@@ -1180,7 +1378,7 @@ struct App {
         if (changed) RebuildSolids();
         // the test beam: click to shoot (G5 brings real weapons)
         bool L = Down(VK_LBUTTON) && Playing() && !play.dead();
-        if (L && !shootPrev) shots.push_back({ player.eye() + player.forward() * 0.6, player.forward(), 0 });
+        if (L && !shootPrev) { Shot sh; sh.pos = player.eye() + player.forward() * 0.6; sh.dir = player.forward(); shots.push_back(sh); }
         shootPrev = Down(VK_LBUTTON);
         const double speed = 45;
         for (Shot& s : shots) {
@@ -1197,6 +1395,11 @@ struct App {
             }
             for (const Box3& b : world->objectSolids) { double t; if (rayBox(s.pos, s.dir, b, t) && t < best - 1e-6) { best = t; door = -1; } }
             if (best < step) {
+                {   // sparks where it hits; its tail stays a moment
+                    V3 at = s.pos + s.dir * best; uint32_t tint = door >= 0 ? objects[door].door.color : 0;
+                    SpawnFx(particlePreset("Impact"), at - s.dir * 0.05, s.dir * -1, tint);
+                    fx.push_back(s.trail);
+                }
                 if (door >= 0) {   // where on the field it hit: the dissolve starts there
                     WorldObject& o = objects[door]; FrameRef f = ModelOf(o); V3 org, ac, up; fieldQuad(o, *f, OpeningOf(o.model), org, ac, up);
                     V3 p = s.pos + s.dir * best, q = p - org;
@@ -1467,13 +1670,15 @@ struct App {
         Prop("Folder"); ImGui::InputText("##folder", &o.folder);
         Prop("Model");
         if (ImGui::BeginCombo("##model", o.model.c_str())) { for (auto& n : AllModelNames()) if (ImGui::Selectable(n.c_str(), n == o.model)) { o.model = n; ch_ = true; } ImGui::EndCombo(); }
-        { int k = (int)o.kind; const char* kn[] = { "Prop (it just stands there)", "Door (forcefield, opens)", "Platform (moves along a path)", "Pickup", "Checkpoint", "Teleporter", "Trigger zone (invisible)" }; Prop("Kind");
-          if (ImGui::Combo("##kind", &k, kn, 7)) { if (k == 1) MakeDoor(o); else if (k == 2) MakePlatform(o); else { o.kind = (ObjKind)k; if (o.kind == ObjKind::Pickup || o.kind == ObjKind::Trigger) o.collide = Collide::None; } platRun.erase(o.id); ch_ = true; } }
+        { int k = (int)o.kind; const char* kn[] = { "Prop (it just stands there)", "Door (forcefield, opens)", "Platform (moves along a path)", "Pickup", "Checkpoint", "Teleporter", "Trigger zone (invisible)", "Light", "Particles" }; Prop("Kind");
+          if (ImGui::Combo("##kind", &k, kn, 9)) { if (k == 1) MakeDoor(o); else if (k == 2) MakePlatform(o); else { o.kind = (ObjKind)k; if (o.kind == ObjKind::Pickup || o.kind == ObjKind::Trigger || o.kind == ObjKind::Light || o.kind == ObjKind::Particles) o.collide = Collide::None; } platRun.erase(o.id); ch_ = true; } }
         Prop("Position"); ch_ |= ImGui::InputScalarN("##pos", ImGuiDataType_Double, &o.pos.x, 3, nullptr, nullptr, "%.2f");
         { float y = (float)o.yaw; Prop("Turn"); if (ImGui::SliderFloat("##yaw", &y, -180, 180, "%.0f deg")) { o.yaw = y; ch_ = true; }
           if (ImGui::SmallButton("-90")) { o.yaw = std::fmod(o.yaw - 90 + 540, 360) - 180; ch_ = true; } if (FlowButton("+90", true)) { o.yaw = std::fmod(o.yaw + 90 + 540, 360) - 180; ch_ = true; } }
         if (o.kind == ObjKind::Platform) PlatformInspector(o, ch_);
         HelperInspector(o);
+        if (o.kind == ObjKind::Light) LightInspector(o);
+        if (o.kind == ObjKind::Particles) ParticleInspector(o);
         if (o.kind == ObjKind::Door) DoorInspector(o, ch_);
         else if (o.kind != ObjKind::Trigger) { float sc = (float)o.scale; Prop("Size"); if (ImGui::SliderFloat("##scale", &sc, 0.1f, 8, "x %.2f", ImGuiSliderFlags_Logarithmic)) { o.scale = sc; ch_ = true; } }
         if (m && o.kind != ObjKind::Door && o.kind != ObjKind::Trigger) {
@@ -1950,6 +2155,7 @@ struct App {
         fc.weather2[0] = weather.snowCover * E.atmosphere; fc.weather2[1] = weather.flash * E.atmosphere; fc.weather2[2] = W.wind; fc.weather2[3] = skyMap ? 1.f : 0.f;
         ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &fc, 0, 0);
         ID3D11Buffer* cbs[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->VSSetConstantBuffers(0, 2, cbs); ctx->PSSetConstantBuffers(0, 2, cbs);
+        BindLights();   // light objects, glowing emitters, shots
         ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
         auto drawChunks = [&](const XMMATRIX& m, int pass, bool counting) {
             for (auto& kv : gpu) {
@@ -1967,6 +2173,7 @@ struct App {
                 if ((int)oi == movingObj) continue;
                 const WorldObject& o = objects[oi];
                 if (o.kind == ObjKind::Trigger) continue;   // zones: invisible (the editor shows their box)
+                if ((o.kind == ObjKind::Light || o.kind == ObjKind::Particles) && (playMode || plainView) && IsBuiltin(o.model)) continue;   // the bulb / nozzle: editor only
                 if (o.kind == ObjKind::Pickup) {   // pickups turn and bob; gone once taken
                     if (playMode && inv.has(o.id)) continue;
                     WorldObject at = o; at.yaw += animTime * 90; at.pos.y += 0.12 + 0.1 * std::sin(animTime * 2.5 + o.id); DrawObject(at, pass); continue;
@@ -2124,6 +2331,7 @@ struct App {
         }
         if (weather.boltAge < 0.45 && E.atmosphere > 0.5f) DrawBolt();
         DrawFields();   // door forcefields and test-beam shots
+        DrawParticles();
         if (E.particleKind > 0.5f && E.particleAmount > 0.01f) {   // dust, embers, spores or ice sparkles floating in the air
             ctx->OMSetBlendState(bsAlpha.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsTestOnly.Get(), 0); ctx->RSSetState(rsNoCull.Get());
             ctx->IASetInputLayout(nullptr); ctx->VSSetShader(vsDust.Get(), nullptr, 0); ctx->PSSetShader(psRain.Get(), nullptr, 0);
@@ -3103,8 +3311,8 @@ struct App {
             }
             else if (toolSel == 2) {
                 ImGui::SeparatorText("Add");
-                const std::pair<const char*, const char*> add[] = { { "Health", "@health" }, { "Key", "@key" }, { "Gem", "@gem" }, { "Checkpoint", "@checkpoint" }, { "Teleporter", "@teleporter" }, { "Trigger zone", "@zone" } };
-                for (int a = 0; a < 6; a++) { if (a) Flow(ButtonW(add[a].first)); if (ImGui::Button(add[a].first)) StartPlacing(add[a].second); }
+                const std::pair<const char*, const char*> add[] = { { "Light", "@light" }, { "Particles", "@emitter" }, { "Health", "@health" }, { "Key", "@key" }, { "Gem", "@gem" }, { "Checkpoint", "@checkpoint" }, { "Teleporter", "@teleporter" }, { "Trigger zone", "@zone" } };
+                for (int a = 0; a < 8; a++) { if (a) Flow(ButtonW(add[a].first)); if (ImGui::Button(add[a].first)) StartPlacing(add[a].second); }
                 Hint("Click an object in the viewport to pick it. Pick a model in Assets > Models to place it."); if (!placing.empty()) Hint("Placing: %s. R turns it, Alt puts it off the grid, right click stops.", placing.c_str()); }
             else Hint("More tools are coming to this slot.");
             break;
@@ -3519,7 +3727,7 @@ struct App {
                     poseAt(DemoShot{ "d", { 25.5, gy + 1.7, 33 }, { 25.5, gy + 1.3, 40 }, 15.5f });
                     doorRt[a].shoot(0.3f, 0.6f); doorRt[a].t = 0.02f;
                     doorRt[c].state = DoorRuntime::Open; doorRt[c].t = 0;
-                    this->shots.push_back({ player.eye() + V3{ 0.4, -0.2, 2.0 }, { 0.07, -0.03, 1 }, 0 });
+                    { Shot sh; sh.pos = player.eye() + V3{ 0.4, -0.2, 2.0 }; sh.dir = { 0.07, -0.03, 1 }; this->shots.push_back(sh); }
                     play.health = game.player.maxHealth; toastT = 0;
                     frames(3, "doors_play");
                     StopPlay();
@@ -3566,6 +3774,34 @@ struct App {
                     inv.keys.insert("Red key"); inv.counts["Gem"] = 2; Message("Welcome to the test level!"); play.health = game.player.maxHealth * 0.7f; toastT = 0;
                     frames(3, "pickups_play");
                     StopPlay();
+                }
+                {   // lights and particles at dusk: a campfire (fire, smoke, embers, its own light), sparks off a machine, a steam vent, magic, a blue spotlight, a pulsing pink light
+                    auto groundAt = [&](int x, int z) { for (int y = 40; y > -40; y--) { BlockId v = world->get(x, y, z); if (v != AIR && !reg.get(v).liquid) return y; } return 0; };
+                    int g4 = groundAt(-11, -36) + 1;
+                    BlockId brk = reg.find("bricks"), met = reg.find("metal"), cob = reg.find("cobblestone");
+                    for (int x = -17; x <= -5; x++) for (int y = g4; y < g4 + 4; y++) world->set(x, y, -31, brk);   // a wall behind
+                    for (int x = -11; x <= -10; x++) world->set(x, g4, -34, cob);
+                    world->set(-14, g4, -33, met); world->set(-14, g4 + 1, -33, met);
+                    auto fxObj = [&](const char* model, V3 pos) { WorldObject o; o.id = nextObjId++; o.model = model; ApplyPreset(o); o.name = UniqueObjectName(PresetName(o)); o.pos = pos; objects.push_back(o); return (int)objects.size() - 1; };
+                    int fire = fxObj("@emitter", { -10.5, (double)g4 + 1, -33.5 });
+                    int smoke = fxObj("@emitter", { -10.5, (double)g4 + 2.2, -33.5 }); objects[smoke].particles = particlePreset("Smoke");
+                    int emb = fxObj("@emitter", { -10.5, (double)g4 + 1, -33.5 }); objects[emb].particles = particlePreset("Embers");
+                    int spk = fxObj("@emitter", { -14.5, (double)g4 + 2, -33.5 }); objects[spk].particles = particlePreset("Sparks"); objects[spk].particles.burstEvery = 0.5f; objects[spk].particles.dir = { 0.3, 1, 0.6 };
+                    int st = fxObj("@emitter", { -7.5, (double)g4, -33.5 }); objects[st].particles = particlePreset("Steam");
+                    int mg = fxObj("@emitter", { -16, (double)g4 + 1, -34.5 }); objects[mg].particles = particlePreset("Magic");
+                    int sp = fxObj("@light", { -6.5, (double)g4 + 3.5, -36 }); objects[sp].light.type = LightType::Spot; objects[sp].light.color = 0x60A0FF; objects[sp].light.intensity = 4; objects[sp].light.range = 12; objects[sp].light.cone = 25; objects[sp].light.tilt = 35; objects[sp].yaw = 0;
+                    int pl = fxObj("@light", { -16.5, (double)g4 + 2.5, -33 }); objects[pl].light.color = 0xFF60C0; objects[pl].light.flicker = Flicker::Pulse; objects[pl].light.range = 7;
+                    RebuildSolids();
+                    sel = Sel::Object; selIndex = fire; toolMode = false;
+                    poseAt(DemoShot{ "l", { -11, g4 + 2.6, -44 }, { -11, g4 + 1.2, -32 }, 19.8f });
+                    frames(60, "lights_and_particles");
+                    (void)smoke; (void)emb; (void)st; (void)mg; (void)sp; (void)pl;
+                    StartPlay(false);
+                    poseAt(DemoShot{ "l", { -9.5, g4 + 1.62, -40 }, { -14, g4 + 1.4, -31.2 }, 19.8f });
+                    { Shot sh; sh.pos = player.eye() + player.forward() * 0.6; sh.dir = player.forward(); this->shots.push_back(sh); }
+                    play.health = game.player.maxHealth; toastT = 0;
+                    frames(12, "beam_impact_sparks");
+                    StopPlay(); sel = Sel::World;
                 }
                 sel = Sel::World;
             }

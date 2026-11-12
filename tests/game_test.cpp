@@ -408,7 +408,40 @@ int main() {
         CHECK(v2.size() == 1 && v2[0].kind == ObjKind::Trigger && v2[0].size.x == 4 && v2[0].trigger.action == TriggerAction::Kill && v2[0].trigger.text == "Watch out!"
               && v2[0].teleport.world == "Level 2" && v2[0].teleport.target == "Arrival pad" && v2[0].door.key == "Red key" && v2[0].pickup.name == "Big gem", "helpers save and load (names with spaces too)");
         int shapes = 0; for (auto& n : builtinShapeNames()) { MeshModel m; shapes += builtinShape(n, m) && m.triangles() > 0; }
-        CHECK(shapes == 6, "all built-in looks build (%d)", shapes);
+        CHECK(shapes == 8, "all built-in looks build (%d)", shapes);
+    }
+
+    // particles and lights
+    {
+        ParticleSettings fire = particlePreset("Fire"); ParticleEmitter e(fire, 7);
+        for (int k = 0; k < 120; k++) e.update(1.0 / 60, { 0, 1, 0 }, 0, nullptr);
+        CHECK(e.ps.size() > 25 && e.ps.size() < 60, "fire: about 45 a second, each lives about a second (%zu alive after 2 s)", e.ps.size());
+        double avgY = 0; for (auto& p : e.ps) avgY += p.pos.y; avgY /= std::max<size_t>(1, e.ps.size());
+        CHECK(avgY > 1.2, "fire rises (average height %.2f)", avgY);
+        ParticleEmitter sp(particlePreset("Sparks"), 3);
+        sp.update(1.0 / 60, { 0, 5, 0 }, 0, nullptr);
+        CHECK(sp.ps.size() == 25, "sparks come in a burst of 25 (%zu)", sp.ps.size());
+        for (int k = 0; k < 20; k++) sp.update(1.0 / 60, { 0, 5, 0 }, 0, nullptr, false);
+        double vy = 0; for (auto& p : sp.ps) vy += p.vel.y; vy /= std::max<size_t>(1, sp.ps.size());
+        CHECK(vy < 0, "sparks fall (gravity)");
+        for (int k = 0; k < 120; k++) sp.update(1.0 / 60, { 0, 5, 0 }, 0, nullptr, false);
+        CHECK(sp.ps.empty(), "and are gone when their life is over");
+        BlockRegistry r; registerBuiltinBlocks(r); World w(r); w.gen.layers = { { r.find("stone"), 3 } }; w.stream({ 0, 0, 0 }, 2, 2, 100000);
+        ParticleSettings drip = particlePreset("Drips"); drip.rate = 0; drip.burst = 10; ParticleEmitter d(drip, 5);
+        for (int k = 0; k < 120; k++) d.update(1.0 / 60, { 0.5, 5, 0.5 }, 0, &w);
+        CHECK(d.ps.empty(), "drips stop when they hit the ground");
+        ParticleSettings b = particlePreset("Sparks"); b.collide = true; b.bounce = true; b.dir = { 0, -1, 0 }; b.spread = 0; b.burst = 5; b.gravity = -20; b.life = 3; b.lifeVar = 0;
+        ParticleEmitter bb(b, 9); double lowest = 99;
+        for (int k = 0; k < 120; k++) { bb.update(1.0 / 60, { 0.5, 3, 0.5 }, 0, &w, k == 0); for (auto& p : bb.ps) lowest = std::min(lowest, p.pos.y); }
+        CHECK(lowest >= -0.01 && lowest < 1, "bouncing sparks do not go into the ground (lowest %.2f)", lowest);
+        ParticleLook l0 = lookOf(e, e.ps.front());
+        CHECK(l0.r > 0 && l0.a >= 0 && l0.a <= 1, "particles have a colour and see-through amount");
+        CHECK(flickerAt(Flicker::None, 3, 1) == 1 && flickerAt(Flicker::Candle, 3, 1) < 1.01f && flickerAt(Flicker::Pulse, 0.5, 2) >= 0.09f, "light flicker");
+        WorldObject o; o.kind = ObjKind::Particles; o.particles = particlePreset("Smoke"); o.light.type = LightType::Spot; o.light.cone = 20; o.light.flicker = Flicker::Broken;
+        std::vector<WorldObject> v{ o }, v2; saveObjects("/tmp/prim_fx.txt", v); loadObjects("/tmp/prim_fx.txt", v2);
+        CHECK(v2.size() == 1 && v2[0].kind == ObjKind::Particles && !v2[0].particles.additive && v2[0].particles.shape == PShape::Smoke && v2[0].particles.size1 == o.particles.size1
+              && v2[0].light.type == LightType::Spot && v2[0].light.cone == 20 && v2[0].light.flicker == Flicker::Broken, "particles and lights save and load");
+        CHECK(particlePresets().size() == 9, "nine presets");
     }
 
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);

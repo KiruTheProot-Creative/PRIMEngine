@@ -106,3 +106,9 @@ In the editor, **T** swaps the hotbar between blocks and tools. Slot 1 is the **
 - Checkpoints: touch one and you come back there after dying.
 - Teleporters: to an object (by name) in this world or in another world of the game; the pickups you took stay taken.
 - Trigger zones: invisible boxes that show a message, kill, heal or set a checkpoint when you walk in (G3 will let them start any event).
+
+## Lights and particles (G2)
+
+- Objects tool > Add > Light: point or spot lights (colour, brightness, reach, cone, tilt, flicker: candle, broken, pulse). They light blocks and objects in real time (up to 32 near you).
+- Objects tool > Add > Particles: an emitter with presets (sparks, fire, smoke, steam, magic, drips, embers, beam trail, impact) and every setting: how many, bursts, where from, life, direction, spread, speed, gravity, drag, spin, hitting blocks (bounce or stop), shape (soft dot, streak, smoke puff, pixel, ring, flare), glowing or soft, size and colour from start to end, and lighting its surroundings.
+- The engine uses the same particles: the test beam has a glowing tail and its own light, and throws sparks where it hits (in the forcefield's colour when it hits a door).

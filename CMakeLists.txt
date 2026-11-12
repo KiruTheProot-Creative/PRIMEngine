@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # World + game logic: plain C++, no Windows code (also builds and tests on Linux).
 add_library(primcore STATIC
     src/core/png.cpp src/core/noise.cpp src/core/json.cpp src/world/library.cpp src/world/blocks.cpp src/world/shapes.cpp src/world/storage.cpp src/world/world.cpp src/world/mesher.cpp
-    src/game/game.cpp src/game/demo.cpp src/game/weather.cpp src/game/environment.cpp src/game/project.cpp src/game/brush.cpp src/game/objects.cpp src/game/meshmodel.cpp src/game/platform.cpp)
+    src/game/game.cpp src/game/demo.cpp src/game/weather.cpp src/game/environment.cpp src/game/project.cpp src/game/brush.cpp src/game/objects.cpp src/game/meshmodel.cpp src/game/platform.cpp src/game/particles.cpp)
 find_package(Threads REQUIRED)
 target_link_libraries(primcore PUBLIC Threads::Threads)
 if(MSVC)

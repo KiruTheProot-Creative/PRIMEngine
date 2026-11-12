@@ -514,7 +514,7 @@ std::vector<Box3> meshBoxes(const MeshModel& m, int maxCells, bool stillOnly) {
 }
 
 // ------------------------------------------------------------------ built-in looks for helper objects
-std::vector<std::string> builtinShapeNames() { return { "@health", "@key", "@gem", "@checkpoint", "@teleporter", "@zone" }; }
+std::vector<std::string> builtinShapeNames() { return { "@health", "@key", "@gem", "@checkpoint", "@teleporter", "@zone", "@light", "@emitter" }; }
 bool builtinShape(const std::string& name, MeshModel& m) {
     Builder B;
     auto colour = [&](uint32_t c) { Img im = solid(((c >> 16) & 255) / 255.f, ((c >> 8) & 255) / 255.f, (c & 255) / 255.f, 1); int id = (int)B.imgs.size(); B.imgs.push_back(im); return id; };
@@ -546,6 +546,8 @@ bool builtinShape(const std::string& name, MeshModel& m) {
     else if (name == "@checkpoint") { int b = colour(0x8FA8C0), g = colour(0x6CF0FF); prism(6, 0.8, 0, 0.12, b); prism(6, 0.55, 0.12, 0.16, g); }
     else if (name == "@teleporter") { int d = colour(0x4A4060), v = colour(0xC070FF), w = colour(0xF0E0FF); prism(8, 1.0, 0, 0.18, d); prism(8, 0.78, 0.18, 0.22, v); prism(8, 0.35, 0.22, 0.25, w); }
     else if (name == "@zone") { int g = colour(0xFF9A3A); prism(4, 0.7071, 0, 1, g, 0.785398); }
+    else if (name == "@light") { int y = colour(0xFFF0B0), d = colour(0x404048); prism(8, 0.08, 0, 0.15, d); diamond(0.16, 0.12, 0.3, 0.48, y); }   // a little bulb (seen in the editor only)
+    else if (name == "@emitter") { int o = colour(0xFF8040), d = colour(0x404048); prism(6, 0.22, 0, 0.08, d); prism(6, 0.08, 0.08, 0.3, o); }
     else return false;
     B.finish(m); m.name = name; m.source = "built in"; m.unitScale = 1; m.update();
     return true;
