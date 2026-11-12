@@ -5,6 +5,7 @@
 #include "game.h"
 #include "platform.h"
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -35,7 +36,7 @@ std::vector<Box3> modelBoxes(const BlockModel& m, const BlockRegistry& reg);
 enum class Collide { Exact, OneBox, None };
 const char* collideName(Collide c);
 
-enum class ObjKind { Prop, Door, Platform };
+enum class ObjKind { Prop, Door, Platform, Pickup, Checkpoint, Teleporter, Trigger, COUNT };
 const char* kindName(ObjKind k);
 
 // a door: its model is stretched to fill Width x Height blocks; a forcefield sits in its opening
@@ -44,6 +45,26 @@ struct DoorSettings {
     uint32_t color = 0x3AA0FF;                        // the forcefield's colour (later: which weapon opens it)
     float stayOpen = 3;                               // seconds before it closes again (it waits while you stand in it)
     bool field = true;                                // false: a plain door that opens when you walk up to it
+    std::string key;                                  // needs this key (a pickup) to open; empty: no key needed
+};
+
+enum class PickupType { Health, Key, Collectible };
+struct PickupSettings {
+    PickupType type = PickupType::Health;
+    float amount = 25;                                // health it gives
+    std::string name = "Gem";                         // keys and collectibles: what it is ("Red key", "Gem" ...)
+    float respawn = 0;                                // seconds until it comes back (0: never)
+};
+struct TeleportSettings {
+    std::string world;                                // empty: this world; else a world folder of this game
+    std::string target;                               // the name of an object there (empty: that world's spawn point)
+};
+enum class TriggerAction { Message, Kill, Heal, Checkpoint };
+struct TriggerSettings {
+    TriggerAction action = TriggerAction::Message;
+    std::string text = "Hello!";
+    float amount = 100;                               // heal: how much
+    bool once = true;                                 // only the first time you walk in
 };
 
 struct WorldObject {
@@ -56,8 +77,24 @@ struct WorldObject {
     ObjKind kind = ObjKind::Prop;
     DoorSettings door;
     PlatformSettings platform;                        // platforms and elevators: the path it follows
+    PickupSettings pickup; TeleportSettings teleport; TriggerSettings trigger;
+    V3 size{ 2, 2, 2 };                               // trigger zones: their box (blocks)
 };
 V3 objectStretch(const WorldObject& o, const ModelFrame& m);   // how much it is sized along its own x, y, z
+
+const char* pickupName(PickupType t);
+const char* triggerName(TriggerAction a);
+
+// what you carry in Play mode: keys, collectibles; which pickups are gone (and when they come back)
+struct PlayInventory {
+    std::set<std::string> keys;
+    std::map<std::string, int> counts;
+    std::map<uint32_t, float> taken;                  // object id -> seconds until it is back (< 0: gone for good)
+    bool has(uint32_t id) const { return taken.count(id) > 0; }
+    // picks it up (false if it is not there): health goes up to at most maxHealth
+    bool collect(const WorldObject& o, float& health, float maxHealth, std::string& said);
+    void tick(float dt);
+};
 
 // a door in Play mode: shot -> the field dissolves -> it opens -> stays open -> closes -> the field comes back
 struct DoorRuntime {

@@ -513,6 +513,44 @@ std::vector<Box3> meshBoxes(const MeshModel& m, int maxCells, bool stillOnly) {
     return out;
 }
 
+// ------------------------------------------------------------------ built-in looks for helper objects
+std::vector<std::string> builtinShapeNames() { return { "@health", "@key", "@gem", "@checkpoint", "@teleporter", "@zone" }; }
+bool builtinShape(const std::string& name, MeshModel& m) {
+    Builder B;
+    auto colour = [&](uint32_t c) { Img im = solid(((c >> 16) & 255) / 255.f, ((c >> 8) & 255) / 255.f, (c & 255) / 255.f, 1); int id = (int)B.imgs.size(); B.imgs.push_back(im); return id; };
+    auto quadTri = [&](V3 a, V3 b, V3 c, int img) { MeshVert x{ { (float)a.x, (float)a.y, (float)a.z }, { 0.5f, 0.5f }, { 0, 0, 0 } }, y = x, z = x;
+        y.p[0] = (float)b.x; y.p[1] = (float)b.y; y.p[2] = (float)b.z; z.p[0] = (float)c.x; z.p[1] = (float)c.y; z.p[2] = (float)c.z;
+        V3 mid = (a + b + c) * (1.0 / 3); float ref[3] = { (float)mid.x, (float)(mid.y - 0.5), (float)mid.z }; B.tri(x, y, z, img, ref); };
+    auto prism = [&](int sides, double r, double y0, double y1, int img, double twist = 0) {   // a flat n-sided pad
+        for (int k = 0; k < sides; k++) {
+            double a0 = twist + k * 6.2831853 / sides, a1 = twist + (k + 1) * 6.2831853 / sides;
+            V3 p0{ std::cos(a0) * r, y0, std::sin(a0) * r }, p1{ std::cos(a1) * r, y0, std::sin(a1) * r }, q0{ p0.x, y1, p0.z }, q1{ p1.x, y1, p1.z };
+            MeshVert v[4]; V3 c[4] = { p0, p1, q1, q0 }; V3 n{ std::cos((a0 + a1) / 2), 0, std::sin((a0 + a1) / 2) };
+            for (int i = 0; i < 4; i++) v[i] = { { (float)c[i].x, (float)c[i].y, (float)c[i].z }, { 0.5f, 0.5f }, { (float)n.x, 0, (float)n.z } };
+            float rf[3] = { (float)n.x, 0, (float)n.z }; B.tri(v[0], v[1], v[2], img, rf); B.tri(v[0], v[2], v[3], img, rf);
+            float up[3] = { 0, 1, 0 }, dn[3] = { 0, -1, 0 };
+            MeshVert t0{ { 0, (float)y1, 0 }, { 0.5f, 0.5f }, { 0, 1, 0 } }, t1 = v[3], t2 = v[2]; t1.n[0] = t1.n[2] = 0; t1.n[1] = 1; t2.n[0] = t2.n[2] = 0; t2.n[1] = 1; B.tri(t0, t1, t2, img, up);
+            MeshVert b0{ { 0, (float)y0, 0 }, { 0.5f, 0.5f }, { 0, -1, 0 } }, b1 = v[0], b2 = v[1]; b1.n[0] = b1.n[2] = 0; b1.n[1] = -1; b2.n[0] = b2.n[2] = 0; b2.n[1] = -1; B.tri(b0, b1, b2, img, dn);
+        }
+    };
+    auto diamond = [&](double r, double y0, double ym, double y1, int img) {
+        V3 top{ 0, y1, 0 }, bot{ 0, y0, 0 };
+        for (int k = 0; k < 4; k++) { double a0 = k * 1.5707963, a1 = (k + 1) * 1.5707963; V3 p0{ std::cos(a0) * r, ym, std::sin(a0) * r }, p1{ std::cos(a1) * r, ym, std::sin(a1) * r };
+            float o1[3] = { (float)((p0.x + p1.x) / 2), 0.4f, (float)((p0.z + p1.z) / 2) }, o2[3] = { o1[0], -0.4f, o1[2] };
+            MeshVert a{ { (float)top.x, (float)top.y, (float)top.z }, { 0.5f, 0.5f }, { 0, 0, 0 } }, b{ { (float)p0.x, (float)p0.y, (float)p0.z }, { 0.5f, 0.5f }, { 0, 0, 0 } }, c{ { (float)p1.x, (float)p1.y, (float)p1.z }, { 0.5f, 0.5f }, { 0, 0, 0 } }, d{ { (float)bot.x, (float)bot.y, (float)bot.z }, { 0.5f, 0.5f }, { 0, 0, 0 } };
+            B.tri(a, b, c, img, o1); B.tri(d, b, c, img, o2); }
+    };
+    if (name == "@health") { int r = colour(0xFF4A5A), w = colour(0xFFFFFF); diamond(0.28, 0.1, 0.4, 0.7, r); prism(8, 0.12, 0.36, 0.44, w); }
+    else if (name == "@key") { int y = colour(0xFFD23A); prism(6, 0.16, 0.1, 0.2, y); prism(4, 0.05, 0.2, 0.75, y, 0.785); prism(4, 0.09, 0.62, 0.7, y, 0.785); }
+    else if (name == "@gem") { int c = colour(0x3AE0FF); diamond(0.25, 0.1, 0.45, 0.75, c); }
+    else if (name == "@checkpoint") { int b = colour(0x8FA8C0), g = colour(0x6CF0FF); prism(6, 0.8, 0, 0.12, b); prism(6, 0.55, 0.12, 0.16, g); }
+    else if (name == "@teleporter") { int d = colour(0x4A4060), v = colour(0xC070FF), w = colour(0xF0E0FF); prism(8, 1.0, 0, 0.18, d); prism(8, 0.78, 0.18, 0.22, v); prism(8, 0.35, 0.22, 0.25, w); }
+    else if (name == "@zone") { int g = colour(0xFF9A3A); prism(4, 0.7071, 0, 1, g, 0.785398); }
+    else return false;
+    B.finish(m); m.name = name; m.source = "built in"; m.unitScale = 1; m.update();
+    return true;
+}
+
 // ------------------------------------------------------------------ example models
 static std::vector<uint8_t> picture(int w, int h, const std::function<void(int, int, uint8_t*)>& f) {
     std::vector<uint8_t> px((size_t)w * h * 4); for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) f(x, y, &px[((size_t)y * w + x) * 4]); return px;

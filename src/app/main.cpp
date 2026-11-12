@@ -460,7 +460,7 @@ struct App {
         envState.update(0, player.eye(), info.environment, info.zones, true);
         { int wi = findWeather(info.weather); weather = Weather{}; weather.set(wi < 0 ? 1 : wi, true); weather.autoChange = info.autoWeather;
           weather.wetness = weather.now.rain > 0.1f ? 1.f : 0.f; weather.snowCover = weather.now.snow > 0.1f ? 1.f : 0.f; weather.seed((uint32_t)std::time(nullptr)); }
-        screen = Screen::Game; paused = false; inventory = false; autosave = 0; playMode = false; sel = Sel::World;
+        screen = Screen::Game; paused = false; inventory = false; autosave = 0; if (!travelling) playMode = false; sel = Sel::World;
         Toast("Opened " + info.name + ". Click the viewport to fly and build, Esc frees the mouse, F5 plays");
     }
     void SaveWorld() {
@@ -470,7 +470,7 @@ struct App {
         saveObjects(worldDir + "/objects.txt", objects);
     }
     void CloseWorld() {   // the project stays open
-        if (playMode) StopPlay();
+        if (playMode && !travelling) StopPlay();
         SaveWorld(); workers.reset(); world.reset(); gpu.clear(); latestSeq.clear(); Capture(false);
     }
     std::string CurrentWorld() const { return world ? fs::path(worldDir).filename().string() : ""; }
@@ -593,6 +593,7 @@ struct App {
         } else { lPrev = rPrev = mPrev = true; if (stroking) EndStroke(); }
         toolValid = toolMode && !playMode && world->raycast(player.eye(), player.forward(), 160.0, toolHit);   // where the brush is (shown even with the mouse free)
         if (!paused) UpdatePlatforms(std::min(dt, 0.05));
+        if (!paused) UpdateHelpers(std::min(dt, 0.05));
         if (playMode && !paused) UpdateDoors(std::min(dt, 0.05)); else if (!playMode && !doorRt.empty()) { doorRt.clear(); doorGpu.clear(); shots.clear(); RebuildSolids(); }
         if (playMode && !paused) {   // health, lava, falling out of the world, respawning
             PlayState::Event e = play.tick(*world, player, game.player, playSpawn, playYaw, std::min(dt, 0.05));
@@ -665,6 +666,7 @@ struct App {
             if (e.path().extension() != ".pmesh") continue;
             MeshModel m; if (m.load(e.path().u8string())) { if (m.name.empty()) m.name = e.path().stem().u8string(); meshModels[m.name] = m; }
         }
+        AddBuiltins();
     }
     void SaveMesh(const MeshModel& m) { m.save(MeshPath(m.name)); }
     bool ImportModelFile(const std::string& path) {
@@ -849,6 +851,161 @@ struct App {
         ID3D11ShaderResourceView* none[10] = {}; ctx->PSSetShaderResources(0, 10, none);
     }
 
+    // ================================================================== pickups, checkpoints, teleporters, trigger zones (G2 attempt 4)
+    PlayInventory inv; std::map<std::string, std::map<uint32_t, float>> takenByWorld;
+    std::set<uint32_t> insideNow, firedOnce; uint32_t teleportLock = 0; double animTime = 0;
+    std::string bigMsg; float bigMsgT = 0;
+    std::string playStartWorld; Player startEditCam; bool travelling = false;
+    static bool IsBuiltin(const std::string& n) { return !n.empty() && n[0] == '@'; }
+    void AddBuiltins() { for (const std::string& n : builtinShapeNames()) { MeshModel m; if (builtinShape(n, m)) meshModels[n] = m; } }
+    // a new helper object: what it is follows from the built-in look it was placed with
+    void ApplyPreset(WorldObject& o) {
+        const std::string& m = o.model;
+        if (m == "@health" || m == "@key" || m == "@gem") {
+            o.kind = ObjKind::Pickup; o.collide = Collide::None; o.folder = "Pickups";
+            o.pickup.type = m == "@health" ? PickupType::Health : m == "@key" ? PickupType::Key : PickupType::Collectible;
+            o.pickup.name = m == "@key" ? "Red key" : "Gem";
+        } else if (m == "@checkpoint") { o.kind = ObjKind::Checkpoint; o.folder = "Checkpoints"; }
+        else if (m == "@teleporter") { o.kind = ObjKind::Teleporter; o.folder = "Teleporters"; }
+        else if (m == "@zone") { o.kind = ObjKind::Trigger; o.collide = Collide::None; o.folder = "Trigger zones"; o.size = { 3, 3, 3 }; }
+    }
+    std::string PresetName(const WorldObject& o) const {
+        switch (o.kind) {
+        case ObjKind::Pickup: return o.pickup.type == PickupType::Health ? "Health" : o.pickup.name;
+        case ObjKind::Checkpoint: return "Checkpoint"; case ObjKind::Teleporter: return "Teleporter"; case ObjKind::Trigger: return "Zone";
+        default: return o.model;
+        }
+    }
+    static bool Overlaps(const Box3& b, V3 f, double hw, double H, double grow) {
+        return f.x + hw > b.lo.x - grow && f.x - hw < b.hi.x + grow && f.z + hw > b.lo.z - grow && f.z - hw < b.hi.z + grow && f.y + H > b.lo.y - grow && f.y < b.hi.y + grow;
+    }
+    void Message(const std::string& t) { bigMsg = t; bigMsgT = 3.5f; }
+    void UpdateHelpers(double dt) {
+        animTime += dt;
+        if (!playMode) return;
+        inv.tick((float)dt); bigMsgT = std::max(0.f, bigMsgT - (float)dt);
+        std::set<uint32_t> now;
+        std::string travelWorld, travelTarget; bool travel = false; uint32_t from = 0;
+        for (WorldObject& o : objects) {
+            if (o.kind != ObjKind::Pickup && o.kind != ObjKind::Checkpoint && o.kind != ObjKind::Teleporter && o.kind != ObjKind::Trigger) continue;
+            FrameRef f = ModelOf(o); if (!f) continue;
+            Box3 b = objectBounds(o, *f);
+            if (!Overlaps(b, player.feet, Player::HALF_W, Player::HEIGHT, o.kind == ObjKind::Trigger ? 0.0 : 0.15)) continue;
+            now.insert(o.id); bool entered = !insideNow.count(o.id);
+            switch (o.kind) {
+            case ObjKind::Pickup: { std::string said; if (!play.dead() && inv.collect(o, play.health, game.player.maxHealth, said)) Toast(said); break; }
+            case ObjKind::Checkpoint:
+                if (entered) { playSpawn = { o.pos.x, b.hi.y + 0.01, o.pos.z }; playYaw = player.yaw; Toast("Checkpoint"); }
+                break;
+            case ObjKind::Teleporter:
+                if (teleportLock != o.id && !travel) { travel = true; travelWorld = o.teleport.world; travelTarget = o.teleport.target; from = o.id; }
+                break;
+            case ObjKind::Trigger:
+                if (!entered || (o.trigger.once && firedOnce.count(o.id))) break;
+                firedOnce.insert(o.id);
+                switch (o.trigger.action) {
+                case TriggerAction::Message: Message(o.trigger.text); break;
+                case TriggerAction::Kill: if (!play.dead()) { play.health = 0; play.cause = "walked into a trap"; if (!o.trigger.text.empty()) Message(o.trigger.text); } break;
+                case TriggerAction::Heal: play.health = std::min(game.player.maxHealth, play.health + o.trigger.amount); Toast("+" + std::to_string((int)o.trigger.amount) + " health"); break;
+                case TriggerAction::Checkpoint: playSpawn = player.feet; playYaw = player.yaw; Toast("Checkpoint"); break;
+                }
+                break;
+            default: break;
+            }
+        }
+        if (teleportLock && !now.count(teleportLock)) teleportLock = 0;   // stepped off the pad you arrived on
+        insideNow = now;
+        if (travel) { (void)from; pending = [this, travelWorld, travelTarget] { TravelTo(travelWorld, travelTarget); }; }
+    }
+    // to another place: an object (by name) in this world or in another world of this game
+    void TravelTo(const std::string& worldName, const std::string& target) {
+        if (!playMode || !world) return;
+        if (!worldName.empty() && worldName != CurrentWorld()) {
+            if (std::find(worldList.begin(), worldList.end(), worldName) == worldList.end()) { Toast("There is no world called " + worldName); return; }
+            takenByWorld[CurrentWorld()] = inv.taken;
+            travelling = true; SaveWorld(); OpenWorld(worldName); travelling = false;
+            editCam = player;   // this world's own editor camera stays as it was
+            inv.taken = takenByWorld[worldName]; doorRt.clear(); doorGpu.clear(); platRun.clear(); shots.clear(); insideNow.clear();
+            if (!shotDir.size()) captureNext = true;
+        }
+        V3 to = info.hasSpawn ? info.spawn : player.feet; double yaw = info.hasSpawn ? info.spawnYaw : player.yaw; teleportLock = 0;
+        if (!target.empty()) {
+            bool found = false;
+            for (const WorldObject& o : objects) if (o.name == target) {
+                FrameRef f = ModelOf(o); if (!f) continue; Box3 b = objectBounds(o, *f);
+                to = { o.pos.x, o.kind == ObjKind::Trigger ? b.lo.y : b.hi.y + 0.01, o.pos.z }; yaw = o.yaw * 3.14159265358979 / 180; teleportLock = o.id; found = true; break;
+            }
+            if (!found) Toast("Nothing called \"" + target + "\" there, so: the spawn point");
+        }
+        player.feet = to; player.vel = { 0, 0, 0 }; player.yaw = yaw; playSpawn = to; playYaw = yaw;
+        RebuildSolids();
+        Message(worldName.empty() || worldName == CurrentWorld() ? std::string() : info.name); if (bigMsg.empty()) bigMsgT = 0;
+    }
+    void HelperGuides(ImDrawList* dl) {   // editor: zones are boxes, helpers say what they do
+        if (playMode) return;
+        for (int i = 0; i < (int)objects.size(); i++) {
+            const WorldObject& o = objects[i]; FrameRef f = ModelOf(o); if (!f) continue;
+            Box3 b = objectBounds(o, *f); std::string label; ImU32 col = IM_COL32(255, 255, 255, 200);
+            switch (o.kind) {
+            case ObjKind::Trigger: col = IM_COL32(255, 160, 60, 230); DrawBox3(dl, b.lo, b.hi, col);
+                label = std::string("Zone: ") + triggerName(o.trigger.action) + (o.trigger.action == TriggerAction::Message ? " \"" + o.trigger.text + "\"" : ""); break;
+            case ObjKind::Teleporter: col = IM_COL32(200, 140, 255, 230); label = "To " + (o.teleport.world.empty() ? std::string("here") : o.teleport.world) + (o.teleport.target.empty() ? "" : ": " + o.teleport.target); break;
+            case ObjKind::Checkpoint: col = IM_COL32(110, 240, 255, 230); label = "Checkpoint"; break;
+            case ObjKind::Pickup: col = IM_COL32(255, 230, 120, 230); label = o.pickup.type == PickupType::Health ? "+" + std::to_string((int)o.pickup.amount) + " health" : o.pickup.name; break;
+            case ObjKind::Door: if (!o.door.key.empty()) { col = IM_COL32(255, 210, 80, 230); label = "Needs: " + o.door.key; } break;
+            default: break;
+            }
+            if (label.empty()) continue;
+            ImVec2 sp; if (Project({ (b.lo.x + b.hi.x) * 0.5, b.hi.y + 0.35, (b.lo.z + b.hi.z) * 0.5 }, sp)) {
+                ImVec2 ts = ImGui::CalcTextSize(label.c_str()); dl->AddRectFilled(ImVec2(sp.x - ts.x * 0.5f - 4, sp.y - 2), ImVec2(sp.x + ts.x * 0.5f + 4, sp.y + ts.y + 2), IM_COL32(0, 0, 0, 120), 3.f);
+                dl->AddText(ImVec2(sp.x - ts.x * 0.5f, sp.y), col, label.c_str());
+            }
+        }
+    }
+    void HelperInspector(WorldObject& o) {
+        switch (o.kind) {
+        case ObjKind::Pickup: {
+            ImGui::SeparatorText("Pickup");
+            int t = (int)o.pickup.type; const char* tn[] = { pickupName(PickupType::Health), pickupName(PickupType::Key), pickupName(PickupType::Collectible) };
+            Prop("Gives"); ImGui::Combo("##ptype", &t, tn, 3); o.pickup.type = (PickupType)t;
+            if (o.pickup.type == PickupType::Health) { Prop("Health"); ImGui::SliderFloat("##pamt", &o.pickup.amount, 1, 200, "+%.0f"); }
+            else { Prop(o.pickup.type == PickupType::Key ? "Key name" : "Counted as"); ImGui::InputText("##pname", &o.pickup.name); }
+            if (o.pickup.type == PickupType::Key) Hint("Doors that need \"%s\" open once you have it (Door > Needs key).", o.pickup.name.c_str());
+            Prop("Comes back after"); ImGui::SliderFloat("##presp", &o.pickup.respawn, 0, 120, o.pickup.respawn <= 0 ? "never" : "%.0f s");
+            break; }
+        case ObjKind::Checkpoint: ImGui::SeparatorText("Checkpoint"); Hint("Touch it in Play mode: after dying you come back here instead of the spawn point."); break;
+        case ObjKind::Teleporter: {
+            ImGui::SeparatorText("Teleporter");
+            Prop("Goes to world");
+            if (ImGui::BeginCombo("##tw", o.teleport.world.empty() ? "(this world)" : o.teleport.world.c_str())) {
+                if (ImGui::Selectable("(this world)", o.teleport.world.empty())) o.teleport.world.clear();
+                for (auto& w : worldList) if (w != CurrentWorld() && ImGui::Selectable(w.c_str(), w == o.teleport.world)) o.teleport.world = w;
+                ImGui::EndCombo();
+            }
+            Prop("Arrives at");
+            float bw = ImGui::GetFrameHeight(); ImGui::SetNextItemWidth(std::max(30.f, ImGui::GetContentRegionAvail().x - bw - 2)); ImGui::InputTextWithHint("##tt", "the spawn point", &o.teleport.target);
+            ImGui::SameLine(0, 2);
+            if (ImGui::BeginCombo("##tpick", nullptr, ImGuiComboFlags_NoPreview | ImGuiComboFlags_PopupAlignLeft)) {   // objects of this world (another world: type the name)
+                if (o.teleport.world.empty() || o.teleport.world == CurrentWorld()) for (auto& x : objects) if (x.id != o.id && ImGui::Selectable(x.name.c_str(), x.name == o.teleport.target)) o.teleport.target = x.name;
+                if (ImGui::Selectable("(the spawn point)", o.teleport.target.empty())) o.teleport.target.clear();
+                ImGui::EndCombo();
+            }
+            Hint("Arrives at an object of that name (another teleporter is nice: put two pads in two worlds and point them at each other).");
+            break; }
+        case ObjKind::Trigger: {
+            ImGui::SeparatorText("Trigger zone");
+            Prop("Size (blocks)"); if (ImGui::InputScalarN("##zsize", ImGuiDataType_Double, &o.size.x, 3, nullptr, nullptr, "%.1f")) { o.size.x = std::max(0.25, o.size.x); o.size.y = std::max(0.25, o.size.y); o.size.z = std::max(0.25, o.size.z); }
+            int a = (int)o.trigger.action; const char* an[] = { triggerName(TriggerAction::Message), triggerName(TriggerAction::Kill), triggerName(TriggerAction::Heal), triggerName(TriggerAction::Checkpoint) };
+            Prop("When you walk in"); ImGui::Combo("##zact", &a, an, 4); o.trigger.action = (TriggerAction)a;
+            if (o.trigger.action == TriggerAction::Message || o.trigger.action == TriggerAction::Kill) { Prop("Message"); ImGui::InputText("##ztext", &o.trigger.text); }
+            if (o.trigger.action == TriggerAction::Heal) { Prop("Health"); ImGui::SliderFloat("##zamt", &o.trigger.amount, 1, 500, "+%.0f"); }
+            Prop("Only once"); ImGui::Checkbox("##zonce", &o.trigger.once);
+            Hint("Invisible in the game. G3 will let zones start any event you like.");
+            break; }
+        default: break;
+        }
+    }
+
     // ================================================================== platforms and elevators (G2 attempt 3b)
     std::map<uint32_t, PlatformRun> platRun;          // by object id: where each platform (and its copies) is on its path
     bool previewPlatforms = false;                    // editor: let them move to try the path
@@ -1010,7 +1167,7 @@ struct App {
             DoorRuntime& r = doorRt[o.id]; bool before = r.blocks();
             Box3 b = objectBounds(o, *f); V3 c = (b.lo + b.hi) * 0.5, d = player.feet - c;
             bool nearby = std::sqrt(d.x * d.x + d.z * d.z) < std::max(o.door.w, o.door.h) * 0.5 + 1.2 && player.feet.y < b.hi.y && player.feet.y > b.lo.y - 1;
-            if (!o.door.field && nearby && r.state == DoorRuntime::Closed) r.open();   // a plain door opens when you walk up
+            if (!o.door.field && nearby && r.state == DoorRuntime::Closed && (o.door.key.empty() || inv.keys.count(o.door.key))) r.open();   // a plain door opens when you walk up
             r.tick((float)dt, nearby, ClipLen(o.model, 0), ClipLen(o.model, 1), o.door.stayOpen);
             changed |= before != r.blocks();
             // the halves where the animation has them
@@ -1045,7 +1202,8 @@ struct App {
                     V3 p = s.pos + s.dir * best, q = p - org;
                     auto dot = [](V3 a, V3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; };
                     float u = (float)std::clamp(dot(q, ac) / std::max(1e-9, dot(ac, ac)), 0.0, 1.0), v = (float)std::clamp(dot(q, up) / std::max(1e-9, dot(up, up)), 0.0, 1.0);
-                    doorRt[o.id].shoot(u, v);
+                    if (!o.door.key.empty() && !inv.keys.count(o.door.key)) Toast("This door needs the " + o.door.key);
+                    else doorRt[o.id].shoot(u, v);
                 }
                 s.age = 99;
             } else s.pos = s.pos + s.dir * step;
@@ -1095,6 +1253,8 @@ struct App {
             Hint("Later, the colour says which weapon opens it (like beam, missile ...). For now any shot does.");
         }
         Prop("Stays open (s)"); ImGui::SliderFloat("##stay", &o.door.stayOpen, 0.5f, 15, "%.1f s");
+        Prop("Needs key"); ImGui::InputTextWithHint("##dkey", "no key needed", &o.door.key);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("The name of a key pickup, like \"Red key\".");
         int op = ClipOf(o.model, 0), cl = ClipOf(o.model, 1);
         if (op >= 0 || cl >= 0) Hint("Its animations: %s%s. They play when it opens and closes.", op >= 0 ? "open" : "", cl >= 0 ? (op >= 0 ? ", close" : "close") : "");
         else Hint("This model has no \"open\" / \"close\" animations, so only the forcefield opens. Name them like that in Blockbench or Blender to have the door move.");
@@ -1175,8 +1335,9 @@ struct App {
         FrameRef m = ModelNamed(placing); if (!m || !toolValid) return false;
         o.model = placing; o.yaw = placeYaw;
         if (ClipOf(placing, 0) >= 0 && o.kind == ObjKind::Prop && movingObj < 0 && dupFrom < 0) MakeDoor(o);
-        if (movingObj >= 0 && movingObj < (int)objects.size()) { o.kind = objects[movingObj].kind; o.door = objects[movingObj].door; }
-        if (dupFrom >= 0 && dupFrom < (int)objects.size()) { o.kind = objects[dupFrom].kind; o.door = objects[dupFrom].door; }
+        if (IsBuiltin(placing) && movingObj < 0 && dupFrom < 0) ApplyPreset(o);
+        if (movingObj >= 0 && movingObj < (int)objects.size()) { o.kind = objects[movingObj].kind; o.door = objects[movingObj].door; o.size = objects[movingObj].size; }
+        if (dupFrom >= 0 && dupFrom < (int)objects.size()) { o.kind = objects[dupFrom].kind; o.door = objects[dupFrom].door; o.size = objects[dupFrom].size; }
         if (Down(VK_MENU)) { o.pos = { toolHit.px, toolHit.py, toolHit.pz }; return true; }
         I3 a{ toolHit.x + toolHit.nx, toolHit.y + toolHit.ny, toolHit.z + toolHit.nz };
         bool side = std::fmod(std::fabs(placeYaw) + 0.001, 180.0) > 45 && std::fmod(std::fabs(placeYaw) + 0.001, 180.0) < 135;
@@ -1253,9 +1414,10 @@ struct App {
             PlacePose(o);
             if (movingObj >= 0) { WorldObject& t = objects[movingObj]; t.pos = o.pos; t.yaw = o.yaw; sel = Sel::Object; selIndex = movingObj; movingObj = -1; placing.clear(); }
             else {
-                WorldObject n = dupFrom >= 0 && dupFrom < (int)objects.size() ? objects[dupFrom] : WorldObject{};
-                n.id = nextObjId++; n.model = o.model; n.pos = o.pos; n.yaw = o.yaw; n.scale = o.scale; n.kind = o.kind; n.door = o.door; if (n.kind == ObjKind::Door && dupFrom < 0) n.folder = "Doors";
-                n.name = UniqueObjectName(o.model);
+                bool dup = dupFrom >= 0 && dupFrom < (int)objects.size();
+                WorldObject n = dup ? objects[dupFrom] : o;
+                n.id = nextObjId++; n.model = o.model; n.pos = o.pos; n.yaw = o.yaw; n.scale = o.scale; n.kind = o.kind; n.door = o.door; if (n.kind == ObjKind::Door && !dup) n.folder = "Doors";
+                n.name = UniqueObjectName(dup ? PresetName(n) : IsBuiltin(o.model) ? PresetName(o) : o.model);
                 objects.push_back(n); sel = Sel::Object; selIndex = (int)objects.size() - 1;
                 if (dupFrom >= 0) { placing.clear(); dupFrom = -1; }
             }
@@ -1305,15 +1467,16 @@ struct App {
         Prop("Folder"); ImGui::InputText("##folder", &o.folder);
         Prop("Model");
         if (ImGui::BeginCombo("##model", o.model.c_str())) { for (auto& n : AllModelNames()) if (ImGui::Selectable(n.c_str(), n == o.model)) { o.model = n; ch_ = true; } ImGui::EndCombo(); }
-        { int k = (int)o.kind; const char* kn[] = { "Prop (it just stands there)", "Door (forcefield, opens)", "Platform (moves along a path)" }; Prop("Kind");
-          if (ImGui::Combo("##kind", &k, kn, 3)) { if (k == 1) MakeDoor(o); else if (k == 2) MakePlatform(o); else { o.kind = ObjKind::Prop; if (o.folder == "Doors" || o.folder == "Platforms") o.folder = "Props"; } platRun.erase(o.id); ch_ = true; } }
+        { int k = (int)o.kind; const char* kn[] = { "Prop (it just stands there)", "Door (forcefield, opens)", "Platform (moves along a path)", "Pickup", "Checkpoint", "Teleporter", "Trigger zone (invisible)" }; Prop("Kind");
+          if (ImGui::Combo("##kind", &k, kn, 7)) { if (k == 1) MakeDoor(o); else if (k == 2) MakePlatform(o); else { o.kind = (ObjKind)k; if (o.kind == ObjKind::Pickup || o.kind == ObjKind::Trigger) o.collide = Collide::None; } platRun.erase(o.id); ch_ = true; } }
         Prop("Position"); ch_ |= ImGui::InputScalarN("##pos", ImGuiDataType_Double, &o.pos.x, 3, nullptr, nullptr, "%.2f");
         { float y = (float)o.yaw; Prop("Turn"); if (ImGui::SliderFloat("##yaw", &y, -180, 180, "%.0f deg")) { o.yaw = y; ch_ = true; }
           if (ImGui::SmallButton("-90")) { o.yaw = std::fmod(o.yaw - 90 + 540, 360) - 180; ch_ = true; } if (FlowButton("+90", true)) { o.yaw = std::fmod(o.yaw + 90 + 540, 360) - 180; ch_ = true; } }
         if (o.kind == ObjKind::Platform) PlatformInspector(o, ch_);
+        HelperInspector(o);
         if (o.kind == ObjKind::Door) DoorInspector(o, ch_);
-        else { float sc = (float)o.scale; Prop("Size"); if (ImGui::SliderFloat("##scale", &sc, 0.1f, 8, "x %.2f", ImGuiSliderFlags_Logarithmic)) { o.scale = sc; ch_ = true; } }
-        if (m && o.kind != ObjKind::Door) {
+        else if (o.kind != ObjKind::Trigger) { float sc = (float)o.scale; Prop("Size"); if (ImGui::SliderFloat("##scale", &sc, 0.1f, 8, "x %.2f", ImGuiSliderFlags_Logarithmic)) { o.scale = sc; ch_ = true; } }
+        if (m && o.kind != ObjKind::Door && o.kind != ObjKind::Trigger) {
             double h = m->sy * o.scale; Prop("Height (blocks)");
             if (ImGui::InputDouble("##height", &h, 0.5, 1, "%.2f") && h > 0.05) { o.scale = h / m->sy; ch_ = true; }
             Hint("%.2f wide, %.2f tall, %.2f deep (blocks). The player is 1.8 tall, the morph ball 1.", m->sx * o.scale, m->sy * o.scale, m->sz * o.scale);
@@ -1366,7 +1529,7 @@ struct App {
         if (FlowButton("3D viewer")) { viewerModel = selModel; viewerOpen = true; viewerFit = true; viewerClip = -1; }
         if (m && FlowButton("Unpack as blocks")) { if (toolValid) { BlockModel c = *m; I3 at{ toolHit.x + toolHit.nx, toolHit.y + toolHit.ny, toolHit.z + toolHit.nz }; ApplyEdits(pasteEdits(*world, c, at), "Unpacked"); } else Toast("Look at where the blocks should go"); }
         if (m && ImGui::IsItemHovered()) ImGui::SetTooltip("Puts its blocks where you look, so you can change them\nand make a new object from them.");
-        ImGui::BeginDisabled(used > 0);
+        ImGui::BeginDisabled(used > 0 || IsBuiltin(selModel));
         if (FlowButton("Delete model")) {
             std::string n = selModel;
             if (m) models.remove(n); else { std::error_code ec; fs::remove(fs::u8path(MeshPath(n)), ec); meshModels.erase(n); }
@@ -1803,6 +1966,11 @@ struct App {
             for (size_t oi = 0; oi < objects.size(); oi++) {   // objects: same shaders, turned and sized; platforms where they are on their path
                 if ((int)oi == movingObj) continue;
                 const WorldObject& o = objects[oi];
+                if (o.kind == ObjKind::Trigger) continue;   // zones: invisible (the editor shows their box)
+                if (o.kind == ObjKind::Pickup) {   // pickups turn and bob; gone once taken
+                    if (playMode && inv.has(o.id)) continue;
+                    WorldObject at = o; at.yaw += animTime * 90; at.pos.y += 0.12 + 0.1 * std::sin(animTime * 2.5 + o.id); DrawObject(at, pass); continue;
+                }
                 if (o.kind != ObjKind::Platform) { DrawObject(o, pass); continue; }
                 for (const V3& off : PlatformOffsets(o)) { WorldObject at = o; at.pos = o.pos + off; DrawObject(at, pass); }
             }
@@ -2086,6 +2254,7 @@ struct App {
         }
         DrawObjectGuides(dl);
         DrawPaths(dl);
+        HelperGuides(dl);
         if (!playMode && info.hasSpawn) {   // the spawn point: a green player-sized box with an arrow where it looks
             V3 f = info.spawn; double hw = Player::HALF_W, H = Player::HEIGHT;
             V3 c[8]; for (int i = 0; i < 8; i++) c[i] = { f.x + ((i & 1) ? hw : -hw), f.y + ((i & 2) ? H : 0), f.z + ((i & 4) ? hw : -hw) };
@@ -2273,6 +2442,7 @@ struct App {
         if (screen != Screen::Game || playMode) return;
         EndStroke(); brushMenu = false; placing.clear(); dupFrom = -1; platRun.clear(); previewPlatforms = false; if (movingObj >= 0) { movingObj = -1; RebuildSolids(); }
         editCam = player; playMode = true; paused = false; inventory = false; shapeMenu = false; editorOpen = false;
+        inv = PlayInventory{}; takenByWorld.clear(); insideNow.clear(); firedOnce.clear(); teleportLock = 0; bigMsgT = 0; playStartWorld = CurrentWorld(); startEditCam = editCam;
         playSpawn = info.hasSpawn ? info.spawn : player.feet; playYaw = info.hasSpawn ? info.spawnYaw : player.yaw;
         play = PlayState{}; play.start(player, game.player, playSpawn, playYaw);
         if (grabMouse) { Capture(false); captureNext = true; }   // grabbed next frame, once the picture fills the window
@@ -2280,6 +2450,9 @@ struct App {
     }
     void StopPlay() {
         if (!playMode) return;
+        if (!playStartWorld.empty() && playStartWorld != CurrentWorld()) {   // went through a teleporter: back to the world you were editing
+            travelling = true; SaveWorld(); OpenWorld(playStartWorld); travelling = false; editCam = startEditCam;
+        }
         playMode = false; paused = false; player = editCam; Capture(false); captureNext = false; platRun.clear(); RebuildSolids();
         Toast("Back in the editor");
     }
@@ -2300,6 +2473,17 @@ struct App {
         char hb[64]; snprintf(hb, sizeof hb, "%.0f / %.0f", play.health, game.player.maxHealth);
         ImVec2 ts = ImGui::CalcTextSize(hb); dl->AddText(ImVec2(o.x + (bw - ts.x) * 0.5f, o.y + (bh - ts.y) * 0.5f), IM_COL32(255, 255, 255, 255), hb);
         dl->AddText(ImVec2(vx + 12, vy + 10), IM_COL32(255, 255, 255, 200), game.name.c_str());
+        {   // what you carry
+            float y = vy + 10 + ImGui::GetTextLineHeight() + 6;
+            for (const std::string& k : inv.keys) { dl->AddRectFilled(ImVec2(vx + 12, y + 3), ImVec2(vx + 22, y + 13), IM_COL32(255, 210, 60, 255), 2.f); dl->AddText(ImVec2(vx + 28, y), IM_COL32(255, 230, 150, 240), k.c_str()); y += ImGui::GetTextLineHeight() + 4; }
+            for (auto& c : inv.counts) { std::string t = c.first + "  x " + std::to_string(c.second); dl->AddCircleFilled(ImVec2(vx + 17, y + 8), 5, IM_COL32(90, 230, 255, 255)); dl->AddText(ImVec2(vx + 28, y), IM_COL32(180, 240, 255, 240), t.c_str()); y += ImGui::GetTextLineHeight() + 4; }
+        }
+        if (bigMsgT > 0 && !bigMsg.empty()) {   // a trigger zone's message, big in the middle
+            float a = std::min(1.f, bigMsgT / 0.6f);
+            ImGui::PushFont(nullptr, ImGui::GetFontSize() * 1.8f); ImVec2 ts = ImGui::CalcTextSize(bigMsg.c_str()); ImVec2 p(vx + (W - ts.x) * 0.5f, vy + H * 0.25f);
+            dl->AddRectFilled(ImVec2(p.x - 18, p.y - 10), ImVec2(p.x + ts.x + 18, p.y + ts.y + 10), IM_COL32(0, 0, 0, (int)(130 * a)), 6.f);
+            dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), p, IM_COL32(255, 255, 255, (int)(255 * a)), bigMsg.c_str()); ImGui::PopFont();
+        }
         if (play.dead()) {
             dl->AddRectFilled(ImVec2(vx, vy), ImVec2(vx + W, vy + H), IM_COL32(60, 0, 0, 140));
             std::string a = "You died", b = std::string("You ") + play.cause + ". Back in " + std::to_string((int)std::ceil(std::max(0.0, game.player.respawnDelay - play.deadFor))) + " s";
@@ -2917,7 +3101,11 @@ struct App {
                 if (sel == Sel::Object && selIndex >= 0 && selIndex < (int)objects.size() && objects[selIndex].kind == ObjKind::Platform) { bool c = false; PlatformInspector(objects[selIndex], c); }
                 else Hint("Click any object in the viewport: it becomes a platform. Then click the blocks where it should go, one point after the other.");
             }
-            else if (toolSel == 2) { Hint("Click an object in the viewport to pick it. Pick a model in Assets > Models to place it."); if (!placing.empty()) Hint("Placing: %s. R turns it, Alt puts it off the grid, right click stops.", placing.c_str()); }
+            else if (toolSel == 2) {
+                ImGui::SeparatorText("Add");
+                const std::pair<const char*, const char*> add[] = { { "Health", "@health" }, { "Key", "@key" }, { "Gem", "@gem" }, { "Checkpoint", "@checkpoint" }, { "Teleporter", "@teleporter" }, { "Trigger zone", "@zone" } };
+                for (int a = 0; a < 6; a++) { if (a) Flow(ButtonW(add[a].first)); if (ImGui::Button(add[a].first)) StartPlacing(add[a].second); }
+                Hint("Click an object in the viewport to pick it. Pick a model in Assets > Models to place it."); if (!placing.empty()) Hint("Placing: %s. R turns it, Alt puts it off the grid, right click stops.", placing.c_str()); }
             else Hint("More tools are coming to this slot.");
             break;
         case Sel::Object: ObjectInspector(); break;
@@ -2948,7 +3136,8 @@ struct App {
         if (ImGui::TreeNodeEx("Textures", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth)) { folder("All textures", 1, "", (int)reg.textureCount() - 1); ImGui::TreePop(); }
         if (ImGui::TreeNodeEx("Models", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth)) {
             folder("All models", 3, "", (int)(models.models.size() + meshModels.size()));
-            folder("Built from blocks", 3, "blocks", (int)models.models.size()); folder("Imported", 3, "imported", (int)meshModels.size());
+            int nb = 0; for (auto& kv : meshModels) nb += IsBuiltin(kv.first);
+            folder("Built from blocks", 3, "blocks", (int)models.models.size()); folder("Imported", 3, "imported", (int)meshModels.size() - nb); folder("Built in", 3, "builtin", nb);
             ImGui::TreePop();
         }
         if (ImGui::TreeNodeEx("Shapes", ImGuiTreeNodeFlags_SpanAvailWidth)) {
@@ -3027,7 +3216,7 @@ struct App {
             int mi = 0;
             for (const std::string& name : AllModelNames()) {
                 mi++; bool mesh = IsMesh(name);
-                if (assetCat == "blocks" && mesh) continue; if (assetCat == "imported" && !mesh) continue;
+                if (assetCat == "blocks" && mesh) continue; if (assetCat == "imported" && (!mesh || IsBuiltin(name))) continue; if (assetCat == "builtin" && !IsBuiltin(name)) continue;
                 if (!q.empty() && Lower(name).find(q) == std::string::npos) continue;
                 FrameRef f = ModelNamed(name);
                 ImGui::PushID(mi); ImVec2 p;
@@ -3357,6 +3546,25 @@ struct App {
                     play.health = game.player.maxHealth; toastT = 0;
                     frames(45, "platforms_play_riding_the_lift");
                     Log("lift ride: feet at " + std::to_string(player.feet.y - g2) + " blocks above the ground");
+                    StopPlay();
+                }
+                {   // pickups, a checkpoint, a teleporter and a trigger zone
+                    auto groundAt = [&](int x, int z) { for (int y = 40; y > -40; y--) { BlockId v = world->get(x, y, z); if (v != AIR && !reg.get(v).liquid) return y; } return 0; };
+                    int g3 = groundAt(-10, -16) + 1;
+                    auto add = [&](const char* model, V3 pos) { WorldObject o; o.id = nextObjId++; o.model = model; ApplyPreset(o); o.name = UniqueObjectName(PresetName(o)); o.pos = pos; objects.push_back(o); return (int)objects.size() - 1; };
+                    add("@health", { -13.5, (double)g3, -15.5 }); add("@key", { -11.5, (double)g3, -15.5 }); add("@gem", { -9.5, (double)g3, -15.5 }); add("@gem", { -8.5, (double)g3, -15.5 });
+                    add("@checkpoint", { -14.5, (double)g3, -19.5 });
+                    int tp = add("@teleporter", { -6.5, (double)g3, -19.5 }); objects[tp].teleport.world = "Level 1";
+                    int zn = add("@zone", { -10.5, (double)g3, -12.5 }); objects[zn].size = { 5, 3, 2 }; objects[zn].trigger.text = "Welcome to the test level!";
+                    RebuildSolids();
+                    toolMode = true; toolSel = 2; sel = Sel::Object; selIndex = zn;
+                    poseAt(DemoShot{ "h", { -10, g3 + 4.5, -28 }, { -10, g3 + 0.5, -14 }, 15.5f });
+                    frames(4, "pickups_editor");
+                    toolMode = false; sel = Sel::World;
+                    StartPlay(false);
+                    poseAt(DemoShot{ "h", { -10.5, g3 + 1.62, -22 }, { -10.5, g3 + 0.6, -15 }, 15.5f });
+                    inv.keys.insert("Red key"); inv.counts["Gem"] = 2; Message("Welcome to the test level!"); play.health = game.player.maxHealth * 0.7f; toastT = 0;
+                    frames(3, "pickups_play");
                     StopPlay();
                 }
                 sel = Sel::World;

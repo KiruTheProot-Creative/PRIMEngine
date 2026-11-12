@@ -85,8 +85,28 @@ std::vector<Box3> modelBoxes(const BlockModel& m, const BlockRegistry& reg) {
 const char* collideName(Collide c) { return c == Collide::Exact ? "Exact (from its blocks)" : c == Collide::OneBox ? "One box" : "None (walk through)"; }
 
 // ------------------------------------------------------------------ placed objects
-const char* kindName(ObjKind k) { return k == ObjKind::Door ? "Door" : k == ObjKind::Platform ? "Platform" : "Prop"; }
+const char* kindName(ObjKind k) {
+    switch (k) { case ObjKind::Door: return "Door"; case ObjKind::Platform: return "Platform"; case ObjKind::Pickup: return "Pickup"; case ObjKind::Checkpoint: return "Checkpoint";
+    case ObjKind::Teleporter: return "Teleporter"; case ObjKind::Trigger: return "Trigger zone"; default: return "Prop"; }
+}
+const char* pickupName(PickupType t) { return t == PickupType::Key ? "Key" : t == PickupType::Collectible ? "Collectible (counted)" : "Health"; }
+const char* triggerName(TriggerAction a) { return a == TriggerAction::Kill ? "Kill (traps, acid ...)" : a == TriggerAction::Heal ? "Heal" : a == TriggerAction::Checkpoint ? "Checkpoint" : "Show a message"; }
+bool PlayInventory::collect(const WorldObject& o, float& health, float maxHealth, std::string& said) {
+    if (o.kind != ObjKind::Pickup || has(o.id)) return false;
+    const PickupSettings& p = o.pickup;
+    switch (p.type) {
+    case PickupType::Health: if (health >= maxHealth) return false; health = std::min(maxHealth, health + p.amount); said = "+" + std::to_string((int)p.amount) + " health"; break;
+    case PickupType::Key: keys.insert(p.name); said = "Got the " + p.name; break;
+    case PickupType::Collectible: { int n = ++counts[p.name]; said = p.name + " " + std::to_string(n); break; }
+    }
+    taken[o.id] = p.respawn > 0 ? p.respawn : -1;
+    return true;
+}
+void PlayInventory::tick(float dt) {
+    for (auto it = taken.begin(); it != taken.end();) { if (it->second > 0 && (it->second -= dt) <= 0) it = taken.erase(it); else ++it; }
+}
 V3 objectStretch(const WorldObject& o, const ModelFrame& m) {
+    if (o.kind == ObjKind::Trigger && m.sx > 0 && m.sy > 0 && m.sz > 0) return { o.size.x / m.sx, o.size.y / m.sy, o.size.z / m.sz };   // a zone: exactly its box
     if (o.kind != ObjKind::Door || m.sx <= 0 || m.sy <= 0) return { o.scale, o.scale, o.scale };
     double x = o.door.w / m.sx, y = o.door.h / m.sy;
     return { x, y, std::min(x, y) };   // depth: as thick as the narrower stretch keeps it
@@ -171,6 +191,9 @@ bool saveObjects(const std::string& path, const std::vector<WorldObject>& objs) 
         f << " " << (int)p.mode << " " << (int)p.trigger << " " << p.speed << " " << p.wait << " " << (p.stopEvery ? 1 : 0) << " " << p.comeBack << " " << p.copies
           << " " << (p.spawner ? 1 : 0) << " " << p.every << " " << p.points.size();
         for (const V3& v : p.points) f << " " << v.x << " " << v.y << " " << v.z;
+        f << " " << o.size.x << " " << o.size.y << " " << o.size.z << " " << (int)o.pickup.type << " " << o.pickup.amount << " " << esc(o.pickup.name) << " " << o.pickup.respawn
+          << " " << esc(o.teleport.world) << " " << esc(o.teleport.target) << " " << (int)o.trigger.action << " " << esc(o.trigger.text) << " " << o.trigger.amount << " " << (o.trigger.once ? 1 : 0)
+          << " " << esc(o.door.key);
         f << "\n";
     }
     return (bool)f;
@@ -185,11 +208,16 @@ bool loadObjects(const std::string& path, std::vector<WorldObject>& objs) {
         if (!l) continue;
         o.name = unesc(n); o.folder = unesc(fo); o.model = unesc(mo); o.collide = (Collide)std::clamp(c, 0, 2);
         int kind = 0, fieldOn = 1;   // doors (older files end before this)
-        if (l >> kind >> o.door.w >> o.door.h >> o.door.color >> o.door.stayOpen >> fieldOn) { o.kind = (ObjKind)std::clamp(kind, 0, 2); o.door.field = fieldOn != 0; }
+        if (l >> kind >> o.door.w >> o.door.h >> o.door.color >> o.door.stayOpen >> fieldOn) { o.kind = (ObjKind)std::clamp(kind, 0, (int)ObjKind::COUNT - 1); o.door.field = fieldOn != 0; }
         PlatformSettings& p = o.platform; int mode, trig, se, sp; size_t np;
         if (l >> mode >> trig >> p.speed >> p.wait >> se >> p.comeBack >> p.copies >> sp >> p.every >> np) {
             p.mode = (PathMode)std::clamp(mode, 0, 2); p.trigger = (PathTrigger)std::clamp(trig, 0, 2); p.stopEvery = se != 0; p.spawner = sp != 0;
             for (size_t k = 0; k < np && k < 256; k++) { V3 v; if (l >> v.x >> v.y >> v.z) p.points.push_back(v); }
+        }
+        int pt, ta, once; std::string pn, tw, tt, tx, dk;   // pickups, teleporters, trigger zones (newer files)
+        if (l >> o.size.x >> o.size.y >> o.size.z >> pt >> o.pickup.amount >> pn >> o.pickup.respawn >> tw >> tt >> ta >> tx >> o.trigger.amount >> once >> dk) {
+            o.pickup.type = (PickupType)std::clamp(pt, 0, 2); o.pickup.name = unesc(pn); o.teleport.world = unesc(tw); o.teleport.target = unesc(tt);
+            o.trigger.action = (TriggerAction)std::clamp(ta, 0, 3); o.trigger.text = unesc(tx); o.trigger.once = once != 0; o.door.key = unesc(dk);
         }
         objs.push_back(o);
     }

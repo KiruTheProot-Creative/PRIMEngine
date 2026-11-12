@@ -98,3 +98,11 @@ In the editor, **T** swaps the hotbar between blocks and tools. Slot 1 is the **
 - Platform path tool (T, slot 4): click an object to pick it, then click the blocks where it should go; right click removes the last point.
 - Back and forth, round and round, or once; always moving, when you stand on it (elevators: step off and on again to send it back, or let it come back by itself), or when shot. Speed, waiting at stops, stopping at every point, copies spread along the path, or a spawner that sends a new one every few seconds.
 - You ride along on top. "Try it here" moves them in the editor.
+
+## Pickups, checkpoints, teleporters, trigger zones (G2)
+
+- Objects tool (T, slot 3) > Add: Health, Key, Gem, Checkpoint, Teleporter, Trigger zone. Each has a built-in look; any model can be used instead.
+- Pickups: health, keys (doors can need a key: Door > Needs key) and collectibles that are counted. They turn and bob, and can come back after a while.
+- Checkpoints: touch one and you come back there after dying.
+- Teleporters: to an object (by name) in this world or in another world of the game; the pickups you took stay taken.
+- Trigger zones: invisible boxes that show a message, kill, heal or set a checkpoint when you walk in (G3 will let them start any event).

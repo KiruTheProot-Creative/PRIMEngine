@@ -388,6 +388,29 @@ int main() {
         CHECK(v2.size() == 1 && v2[0].kind == ObjKind::Platform && v2[0].platform.spawner && v2[0].platform.points.size() == 2 && v2[0].platform.points[1].z == 12, "platforms save and load");
     }
 
+    // pickups, keys, teleporters, trigger zones
+    {
+        PlayInventory inv; float hp = 50; std::string said;
+        WorldObject h; h.id = 1; h.kind = ObjKind::Pickup; h.pickup.type = PickupType::Health; h.pickup.amount = 25;
+        CHECK(inv.collect(h, hp, 100, said) && hp == 75 && inv.has(1) && !inv.collect(h, hp, 100, said), "health pickups heal once (%s)", said.c_str());
+        WorldObject h2 = h; h2.id = 2; float full = 100; CHECK(!inv.collect(h2, full, 100, said), "full health leaves it lying there");
+        WorldObject k; k.id = 3; k.kind = ObjKind::Pickup; k.pickup.type = PickupType::Key; k.pickup.name = "Red key";
+        CHECK(inv.collect(k, hp, 100, said) && inv.keys.count("Red key"), "keys go into your pocket");
+        WorldObject g; g.kind = ObjKind::Pickup; g.pickup.type = PickupType::Collectible; g.pickup.name = "Gem"; g.pickup.respawn = 2;
+        for (uint32_t id = 10; id < 13; id++) { g.id = id; inv.collect(g, hp, 100, said); }
+        CHECK(inv.counts["Gem"] == 3 && said == "Gem 3", "collectibles are counted (%s)", said.c_str());
+        inv.tick(2.5f); CHECK(!inv.has(10) && inv.has(1), "with a respawn time they come back, the others do not");
+        WorldObject z; z.kind = ObjKind::Trigger; z.model = "@zone"; z.size = { 4, 3, 2 }; z.pos = { 0, 0, 0 }; z.trigger.action = TriggerAction::Kill; z.trigger.text = "Watch out!"; z.teleport.world = "Level 2"; z.teleport.target = "Arrival pad"; z.door.key = "Red key"; z.pickup.name = "Big gem";
+        MeshModel zone; CHECK(builtinShape("@zone", zone) && std::fabs(zone.sx - 1) < 1e-3 && std::fabs(zone.sy - 1) < 1e-3, "the built-in zone shape is a 1-block cube");
+        Box3 zb = objectBounds(z, zone.frame());
+        CHECK(std::fabs(zb.hi.x - zb.lo.x - 4) < 1e-6 && std::fabs(zb.hi.y - 3) < 1e-6 && std::fabs(zb.hi.z - zb.lo.z - 2) < 1e-6, "a trigger zone is exactly its box (4 x 3 x 2)");
+        std::vector<WorldObject> v{ z }, v2; saveObjects("/tmp/prim_helpers.txt", v); loadObjects("/tmp/prim_helpers.txt", v2);
+        CHECK(v2.size() == 1 && v2[0].kind == ObjKind::Trigger && v2[0].size.x == 4 && v2[0].trigger.action == TriggerAction::Kill && v2[0].trigger.text == "Watch out!"
+              && v2[0].teleport.world == "Level 2" && v2[0].teleport.target == "Arrival pad" && v2[0].door.key == "Red key" && v2[0].pickup.name == "Big gem", "helpers save and load (names with spaces too)");
+        int shapes = 0; for (auto& n : builtinShapeNames()) { MeshModel m; shapes += builtinShape(n, m) && m.triangles() > 0; }
+        CHECK(shapes == 6, "all built-in looks build (%d)", shapes);
+    }
+
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
     return fails ? 1 : 0;
 }
