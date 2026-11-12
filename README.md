@@ -29,10 +29,17 @@ A block world engine in C++ (Windows, Direct3D 11). Think of Minecraft built as 
 | F1 | hide the HUD |
 | Esc | menu (settings, save and quit) |
 
+## Milestone 2: your own textures
+
+- Drop PNG files onto the window (or press E, then **Import images...**). Choose whether they become blocks, cross planes (like flowers) or flat planes (they stick to the side you click: ladders, vines, posters).
+- Pictures with transparent pixels become see-through by themselves. Any size works; big ones are scaled to fit.
+- In the **Blocks** tab, right-click a block to edit it: name, shape, see-through, collision, and a texture per side.
+- Everything lives in the `game` folder next to the exe and is shared by all worlds: `game/textures/*.png` and `game/blocks.txt`. Even the starter blocks are PNGs there. Repaint one in any paint program, save it, and the engine updates within a second.
+
 ## Next
 
-- **Milestone 2:** import your own PNG textures and use them as blocks or as flat planes.
-- **Milestone 3:** nicer rendering in the style of Complementary shaders.
+- **Milestone 3:** more block types.
+- **Milestone 4:** nicer rendering in the style of Complementary shaders.
 
 ## Building
 
