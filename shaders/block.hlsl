@@ -194,7 +194,7 @@ float4 PS_Sky(SkyOut i) : SV_Target
     c += gSunGlow.w * smoothstep(0.9993, 0.9997, mu) * float3(1.0, 0.95, 0.85);   // the sun (or moon) itself
     if (gExtra.x > 0 && dir.y > 0)                                                // stars: one maybe in each little patch of sky
     {
-        float3 g = dir * 160;
+        float3 g = dir * 90;
         float3 cell = floor(g);
         float h = frac(sin(dot(cell, float3(127.1, 311.7, 74.7))) * 43758.5453);
         if (h > 0.985)
@@ -203,7 +203,7 @@ float4 PS_Sky(SkyOut i) : SV_Target
             float d = length(g - (cell + 0.2 + jit * 0.6));
             float tw = 0.7 + 0.3 * sin(gVolume.z * (2 + h * 30) + h * 100);
             float b = (h - 0.985) / 0.015;
-            c += float3(0.9 + 0.1 * jit.x, 0.9, 0.85 + 0.15 * jit.z) * smoothstep(0.09, 0.0, d) * (0.4 + 2.6 * b * b) * tw * gExtra.x * saturate(dir.y * 6);
+            c += float3(0.9 + 0.1 * jit.x, 0.9, 0.85 + 0.15 * jit.z) * pow(smoothstep(0.22, 0.0, d), 1.5) * (0.6 + 4 * b * b) * tw * gExtra.x * saturate(dir.y * 6);
         }
     }
     return float4(c, 1);
