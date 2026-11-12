@@ -112,3 +112,13 @@ In the editor, **T** swaps the hotbar between blocks and tools. Slot 1 is the **
 - Objects tool > Add > Light: point or spot lights (colour, brightness, reach, cone, tilt, flicker: candle, broken, pulse). They light blocks and objects in real time (up to 32 near you).
 - Objects tool > Add > Particles: an emitter with presets (sparks, fire, smoke, steam, magic, drips, embers, beam trail, impact) and every setting: how many, bursts, where from, life, direction, spread, speed, gravity, drag, spin, hitting blocks (bounce or stop), shape (soft dot, streak, smoke puff, pixel, ring, flare), glowing or soft, size and colour from start to end, and lighting its surroundings.
 - The engine uses the same particles: the test beam has a glowing tail and its own light, and throws sparks where it hits (in the forcefield's colour when it hits a door).
+
+## Event cards (G3)
+
+The game's logic, without code. The **Events** panel (a tab next to Assets) holds cards. Each card reads:
+
+- **When** something happens: the game starts, the player walks into / out of a zone, touches or shoots an object, picks something up, a door opens or closes, the player dies, every few seconds, after some seconds, a counter reaches a number.
+- **Only if** (optional): the player has / has not got a key, a counter is at least, a flag is on / off, health is below.
+- **Do**, in order: show a message, open / close / lock / unlock a door, move a platform (set its "Starts" to "By an event card"), show / hide an object, switch a light (or emitter) on / off, a burst of particles, teleport, heal / hurt / kill, set a checkpoint, give / take a key, add to a counter, turn a flag on / off, **wait** (the actions after it come later), win.
+
+Objects are found **by name**: every object called "Hall light" switches together. "Only once" cards run a single time per play. In Play mode a card lights up when it runs. Cards are saved per world in `events.txt`. Start from **+ From an example...** to see how they work.

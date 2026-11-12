@@ -5,7 +5,7 @@
 namespace mc {
 
 const char* pathModeName(PathMode m) { return m == PathMode::Loop ? "Round and round (loop)" : m == PathMode::Once ? "Once to the end" : "Back and forth"; }
-const char* pathTriggerName(PathTrigger t) { return t == PathTrigger::StandOn ? "When you stand on it (elevator)" : t == PathTrigger::Shot ? "When it is shot" : "Always moving"; }
+const char* pathTriggerName(PathTrigger t) { return t == PathTrigger::StandOn ? "When you stand on it (elevator)" : t == PathTrigger::Shot ? "When it is shot" : t == PathTrigger::Event ? "By an event card" : "Always moving"; }
 
 static double len(V3 d) { return std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z); }
 
@@ -78,7 +78,7 @@ void PlatformRun::tick(const PlatformSettings& p, double dt, const std::vector<b
         if (p.trigger != PathTrigger::Always && !m.moving) {   // on demand: waiting at a stop
             m.idle = on ? 0 : m.idle + (float)dt;
             if (!on) m.needOff = false;
-            bool go = (p.trigger == PathTrigger::StandOn && on && !m.needOff) || (p.trigger == PathTrigger::Shot && hit);
+            bool go = (p.trigger == PathTrigger::StandOn && on && !m.needOff) || ((p.trigger == PathTrigger::Shot || p.trigger == PathTrigger::Event) && hit);
             bool home = p.comeBack > 0 && m.idle >= p.comeBack && m.s > 1e-6;
             if (go || home) {
                 int dir = m.dir;

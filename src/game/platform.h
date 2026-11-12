@@ -7,7 +7,7 @@
 namespace mc {
 
 enum class PathMode { PingPong, Loop, Once };          // back and forth / round and round / once to the end
-enum class PathTrigger { Always, StandOn, Shot };       // what starts it (switches and events come with G3)
+enum class PathTrigger { Always, StandOn, Shot, Event };   // what starts it (Event: an event card says "move the platform")
 const char* pathModeName(PathMode m);
 const char* pathTriggerName(PathTrigger t);
 

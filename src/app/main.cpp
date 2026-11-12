@@ -12,6 +12,7 @@
 #include "../game/meshmodel.h"
 #include "../game/platform.h"
 #include "../game/particles.h"
+#include "../game/events.h"
 #include "../game/weather.h"
 #include "../core/png.h"
 #include "../core/noise.h"
@@ -38,6 +39,7 @@
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
 
 #include <algorithm>
+#include <cmath>
 #include <chrono>
 #include <ctime>
 #include <cstring>
@@ -158,7 +160,7 @@ struct App {
     bool targetValid = false; int tx = 0, ty = 0, tz = 0; BlockId targetValue = AIR;   // where the next block goes
 
     // ---- input + UI state
-    bool captured = false, paused = false, inventory = false, showF3 = false, hideHud = false, showSettings = false;
+    bool focusEvents = false; bool captured = false, paused = false, inventory = false, showF3 = false, hideHud = false, showSettings = false;
     double mouseDX = 0, mouseDY = 0, lastSpace = -10, breakCool = 0, placeCool = 0, autosave = 0;
     bool lPrev = true, rPrev = true, mPrev = true;
     bool hoverValid = false; Hit hover{};
@@ -476,6 +478,7 @@ struct App {
         info.player = playMode ? editCam : player; info.hotSel = hotSel; info.weather = weather.type().key; info.autoWeather = weather.autoChange; for (int i = 0; i < 9; i++) info.hotbar[i] = !reg.has(hotbar[i]) ? "" : reg.get(hotbar[i]).name + (shapeOf(hotbar[i]) ? "@" + Shapes::get().info(shapeOf(hotbar[i])).key : "");
         info.save(worldDir); world->saveAll();
         saveObjects(worldDir + "/objects.txt", objects);
+        std::error_code ec; if (!events.empty()) saveEvents(worldDir + "/events.txt", events); else fs::remove(worldDir + "/events.txt", ec);
     }
     void CloseWorld() {   // the project stays open
         if (playMode && !travelling) StopPlay();
@@ -606,7 +609,7 @@ struct App {
         if (playMode && !paused) UpdateDoors(std::min(dt, 0.05)); else if (!playMode && !doorRt.empty()) { doorRt.clear(); doorGpu.clear(); shots.clear(); RebuildSolids(); }
         if (playMode && !paused) {   // health, lava, falling out of the world, respawning
             PlayState::Event e = play.tick(*world, player, game.player, playSpawn, playYaw, std::min(dt, 0.05));
-            if (e == PlayState::Died) Toast(std::string("You ") + play.cause);
+            if (e == PlayState::Died) { Toast(std::string("You ") + play.cause); Signal(When::Dies, ""); }
         }
         mouseDX = mouseDY = 0;
         weather.update(dt, player.feet);
@@ -884,7 +887,7 @@ struct App {
             seen.insert(o.id);
             auto it = emitters.find(o.id); if (it == emitters.end()) it = emitters.emplace(o.id, ParticleEmitter(o.particles, o.id * 2654435761u)).first;
             it->second.s = o.particles;   // edits show at once
-            it->second.update(dt, EmitterOrigin(o), o.yaw, world.get());
+            it->second.update(dt, EmitterOrigin(o), o.yaw, world.get(), !SwitchedOff(o));
         }
         for (auto it = emitters.begin(); it != emitters.end();) { if (!seen.count(it->first)) it = emitters.erase(it); else ++it; }
         for (ParticleEmitter& e : fx) e.update(dt, { 0, 0, 0 }, 0, world.get(), false);
@@ -897,6 +900,7 @@ struct App {
         std::vector<L> all;
         auto dist = [&](V3 p) { V3 d = p - camPos; return std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z); };
         for (const WorldObject& o : objects) {
+            if (SwitchedOff(o)) continue;
             if (o.kind == ObjKind::Light) {
                 const LightSettings& s = o.light; double k = s.intensity * flickerAt(s.flicker, animTime, o.id);
                 V3 c = ColorOf(s.color); c = { std::pow(c.x, 2.2) * k, std::pow(c.y, 2.2) * k, std::pow(c.z, 2.2) * k };
@@ -1063,6 +1067,63 @@ struct App {
         return f.x + hw > b.lo.x - grow && f.x - hw < b.hi.x + grow && f.z + hw > b.lo.z - grow && f.z - hw < b.hi.z + grow && f.y + H > b.lo.y - grow && f.y < b.hi.y + grow;
     }
     void Message(const std::string& t) { bigMsg = t; bigMsgT = 3.5f; }
+    // ================================================================== event cards (G3): "when ... only if ... do ..."
+    std::vector<EventCard> events; EventRunner evRun;
+    std::set<uint32_t> evHidden, evOff, evLocked, evHeld, evKick, touchNow; bool evSolids = false;
+    std::map<int, double> evFlash;   // Play mode: when each card last ran (the panel lights it up)
+    bool Gone(const WorldObject& o) const { return playMode && evHidden.count(o.id) > 0; }
+    bool SwitchedOff(const WorldObject& o) const { return playMode && (evHidden.count(o.id) || evOff.count(o.id)); }
+    struct EvHost : EventHost {
+        App& a; explicit EvHost(App& app) : a(app) {}
+        bool hasKey(const std::string& n) override { return a.inv.keys.count(n) > 0; }
+        int count(const std::string& n) override { auto it = a.inv.counts.find(n); return it == a.inv.counts.end() ? 0 : it->second; }
+        float health() override { return a.play.health; }
+        void run(const EventDo& d) override { a.RunAction(d); }
+    };
+    void NoteFired() { for (int i = 0; i < (int)events.size(); i++) { int n = evRun.firedCount(i); if (n != evSeen[i]) { evSeen[i] = n; evFlash[i] = animTime; } } }
+    std::map<int, int> evSeen;
+    void Signal(When k, const std::string& subject, const std::string& also = "") {
+        if (!playMode || events.empty()) return;
+        EvHost h(*this); evRun.signal(events, { k, subject, also }, h); NoteFired();
+    }
+    void EvStart(bool keepFlags = false) {
+        std::set<std::string> fl = evRun.flags;
+        evHidden.clear(); evOff.clear(); evLocked.clear(); evHeld.clear(); evKick.clear(); touchNow.clear(); evSeen.clear(); evFlash.clear();
+        EvHost h(*this); evRun.start(events, h);
+        if (keepFlags) evRun.flags.insert(fl.begin(), fl.end());
+        NoteFired(); evSolids = true;
+    }
+    void RunAction(const EventDo& d) {
+        auto each = [&](auto fn) { for (WorldObject& o : objects) if (!d.target.empty() && o.name == d.target) fn(o); };
+        const std::string nm = d.text.empty() ? d.target : d.text;
+        switch (d.kind) {
+        case Do::Message: Message(d.text); bigMsgT = d.number > 0 ? d.number : 3.5f; break;
+        case Do::OpenDoor: each([&](WorldObject& o) { if (o.kind != ObjKind::Door) return; evHeld.insert(o.id); doorRt[o.id].open(); }); break;
+        case Do::CloseDoor: each([&](WorldObject& o) {
+            if (o.kind != ObjKind::Door) return; evHeld.erase(o.id); DoorRuntime& r = doorRt[o.id];
+            if (r.state == DoorRuntime::Open || r.state == DoorRuntime::Opening || r.state == DoorRuntime::Dissolving) { r.state = DoorRuntime::Closing; r.t = 0; } }); break;
+        case Do::LockDoor: each([&](WorldObject& o) { evLocked.insert(o.id); }); break;
+        case Do::UnlockDoor: each([&](WorldObject& o) { evLocked.erase(o.id); }); break;
+        case Do::MovePlatform: each([&](WorldObject& o) { evKick.insert(o.id); }); break;
+        case Do::Show: each([&](WorldObject& o) { evHidden.erase(o.id); }); evSolids = true; break;
+        case Do::Hide: each([&](WorldObject& o) { evHidden.insert(o.id); }); evSolids = true; break;
+        case Do::LightOn: each([&](WorldObject& o) { evOff.erase(o.id); }); break;
+        case Do::LightOff: each([&](WorldObject& o) { evOff.insert(o.id); }); break;
+        case Do::Particles: each([&](WorldObject& o) {
+            FrameRef f = ModelOf(o); V3 at = o.pos; if (f) { Box3 b = objectBounds(o, *f); at = (b.lo + b.hi) * 0.5; }
+            ParticleSettings p = particlePreset(d.text.empty() ? "Sparks" : d.text); p.burst = std::max(p.burst, 30); SpawnFx(p, at, { 0, 1, 0 }); }); break;
+        case Do::Teleport: { std::string t = d.target; pending = [this, t] { TravelTo("", t); }; break; }
+        case Do::Heal: play.health = std::min(game.player.maxHealth, play.health + d.number); Toast("+" + std::to_string((int)d.number) + " health"); break;
+        case Do::Hurt: if (!play.dead()) { play.health -= d.number; play.hurtFlash = 0.4; if (play.health <= 0) { play.health = 0; play.cause = "got hurt too much"; } } break;
+        case Do::Kill: if (!play.dead()) { play.health = 0; play.cause = "were killed"; } break;
+        case Do::Checkpoint: playSpawn = player.feet; playYaw = player.yaw; Toast("Checkpoint"); break;
+        case Do::GiveKey: if (!nm.empty()) { inv.keys.insert(nm); Toast("You got the " + nm); } break;
+        case Do::TakeKey: inv.keys.erase(nm); break;
+        case Do::AddCount: if (!nm.empty()) inv.counts[nm] += (int)std::lround(d.number); break;
+        case Do::Win: Message(d.text.empty() ? "You win!" : d.text); bigMsgT = 10; Toast("You won! F5: back to the editor"); break;
+        default: break;
+        }
+    }
     void UpdateHelpers(double dt) {
         animTime += dt;
         if (!playMode) return;
@@ -1071,12 +1132,13 @@ struct App {
         std::string travelWorld, travelTarget; bool travel = false; uint32_t from = 0;
         for (WorldObject& o : objects) {
             if (o.kind != ObjKind::Pickup && o.kind != ObjKind::Checkpoint && o.kind != ObjKind::Teleporter && o.kind != ObjKind::Trigger) continue;
+            if (Gone(o)) continue;
             FrameRef f = ModelOf(o); if (!f) continue;
             Box3 b = objectBounds(o, *f);
             if (!Overlaps(b, player.feet, Player::HALF_W, Player::HEIGHT, o.kind == ObjKind::Trigger ? 0.0 : 0.15)) continue;
             now.insert(o.id); bool entered = !insideNow.count(o.id);
             switch (o.kind) {
-            case ObjKind::Pickup: { std::string said; if (!play.dead() && inv.collect(o, play.health, game.player.maxHealth, said)) Toast(said); break; }
+            case ObjKind::Pickup: { std::string said; if (!play.dead() && inv.collect(o, play.health, game.player.maxHealth, said)) { Toast(said); Signal(When::Pickup, o.name, o.pickup.type == PickupType::Health ? "Health" : o.pickup.name); } break; }
             case ObjKind::Checkpoint:
                 if (entered) { playSpawn = { o.pos.x, b.hi.y + 0.01, o.pos.z }; playYaw = player.yaw; Toast("Checkpoint"); }
                 break;
@@ -1084,6 +1146,7 @@ struct App {
                 if (teleportLock != o.id && !travel) { travel = true; travelWorld = o.teleport.world; travelTarget = o.teleport.target; from = o.id; }
                 break;
             case ObjKind::Trigger:
+                if (entered) Signal(When::EnterZone, o.name);
                 if (!entered || (o.trigger.once && firedOnce.count(o.id))) break;
                 firedOnce.insert(o.id);
                 switch (o.trigger.action) {
@@ -1097,7 +1160,21 @@ struct App {
             }
         }
         if (teleportLock && !now.count(teleportLock)) teleportLock = 0;   // stepped off the pad you arrived on
+        for (uint32_t id : insideNow) if (!now.count(id)) for (const WorldObject& o : objects) if (o.id == id && o.kind == ObjKind::Trigger) Signal(When::LeaveZone, o.name);
         insideNow = now;
+        {   // touching named objects (standing on one counts)
+            std::set<uint32_t> touching;
+            for (const WorldObject& o : objects) {
+                if (o.name.empty() || Gone(o) || o.kind == ObjKind::Trigger || o.kind == ObjKind::Pickup || o.kind == ObjKind::Light || o.kind == ObjKind::Particles) continue;
+                FrameRef f = ModelOf(o); if (!f) continue;
+                WorldObject at = o; at.pos = o.pos + PlatformOffsets(o)[0];
+                if (!Overlaps(objectBounds(at, *f), player.feet, Player::HALF_W, Player::HEIGHT, 0.08)) continue;
+                touching.insert(o.id); if (!touchNow.count(o.id)) Signal(When::Touch, o.name);
+            }
+            touchNow = touching;
+        }
+        { EvHost h(*this); evRun.tick(events, dt, h); NoteFired(); }
+        if (evSolids) { evSolids = false; RebuildSolids(); }
         if (travel) { (void)from; pending = [this, travelWorld, travelTarget] { TravelTo(travelWorld, travelTarget); }; }
     }
     // to another place: an object (by name) in this world or in another world of this game
@@ -1110,6 +1187,7 @@ struct App {
             editCam = player;   // this world's own editor camera stays as it was
             inv.taken = takenByWorld[worldName]; doorRt.clear(); doorGpu.clear(); platRun.clear(); shots.clear(); insideNow.clear();
             if (!shotDir.size()) captureNext = true;
+            EvStart(true);
         }
         V3 to = info.hasSpawn ? info.spawn : player.feet; double yaw = info.hasSpawn ? info.spawnYaw : player.yaw; teleportLock = 0;
         if (!target.empty()) {
@@ -1237,6 +1315,9 @@ struct App {
                 WorldObject at = o; at.pos = o.pos + before[k];
                 for (const Box3& b : objectBoxes(at, *f, mb)) { if (standsOn(b, player.feet, hw) && player.vel.y <= 0.01) on[k] = true; for (const Shot& s : shots) { double t; if (rayBox(s.pos, s.dir, b, t) && t < 1.0) hit[k] = true; } }
             }
+            if (o.platform.trigger == PathTrigger::Event) for (size_t k = 0; k < hit.size(); k++) hit[k] = evKick.count(o.id) > 0;
+            evKick.erase(o.id);
+            if (Gone(o)) std::fill(on.begin(), on.end(), false);
             run.tick(o.platform, dt, on, hit);
             std::vector<V3> after = run.offsets(o.platform);
             for (size_t k = 0; k < on.size() && k < after.size() && k < before.size(); k++) if (on[k] && !carried) { carry = after[k] - before[k]; carried = true; }
@@ -1304,8 +1385,8 @@ struct App {
         ImGui::SeparatorText("Platform");
         int m = (int)p.mode; const char* mn[] = { pathModeName(PathMode::PingPong), pathModeName(PathMode::Loop), pathModeName(PathMode::Once) };
         Prop("Path"); if (ImGui::Combo("##pmode", &m, mn, 3)) { p.mode = (PathMode)m; reset = true; }
-        int t = (int)p.trigger; const char* tn[] = { pathTriggerName(PathTrigger::Always), pathTriggerName(PathTrigger::StandOn), pathTriggerName(PathTrigger::Shot) };
-        Prop("Starts"); if (ImGui::Combo("##ptrig", &t, tn, 3)) { p.trigger = (PathTrigger)t; reset = true; }
+        int t = (int)p.trigger; const char* tn[] = { pathTriggerName(PathTrigger::Always), pathTriggerName(PathTrigger::StandOn), pathTriggerName(PathTrigger::Shot), pathTriggerName(PathTrigger::Event) };
+        Prop("Starts"); if (ImGui::Combo("##ptrig", &t, tn, 4)) { p.trigger = (PathTrigger)t; reset = true; }
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Switches, buttons and other events come with the game logic (G3).");
         Prop("Speed"); ImGui::SliderFloat("##pspeed", &p.speed, 0.2f, 20, "%.1f blocks/s");
         Prop("Waits at stops"); ImGui::SliderFloat("##pwait", &p.wait, 0, 10, "%.1f s");
@@ -1367,9 +1448,10 @@ struct App {
             DoorRuntime& r = doorRt[o.id]; bool before = r.blocks();
             Box3 b = objectBounds(o, *f); V3 c = (b.lo + b.hi) * 0.5, d = player.feet - c;
             bool nearby = std::sqrt(d.x * d.x + d.z * d.z) < std::max(o.door.w, o.door.h) * 0.5 + 1.2 && player.feet.y < b.hi.y && player.feet.y > b.lo.y - 1;
-            if (!o.door.field && nearby && r.state == DoorRuntime::Closed && (o.door.key.empty() || inv.keys.count(o.door.key))) r.open();   // a plain door opens when you walk up
-            r.tick((float)dt, nearby, ClipLen(o.model, 0), ClipLen(o.model, 1), o.door.stayOpen);
+            if (!o.door.field && nearby && r.state == DoorRuntime::Closed && !evLocked.count(o.id) && (o.door.key.empty() || inv.keys.count(o.door.key))) r.open();   // a plain door opens when you walk up
+            r.tick((float)dt, nearby || evHeld.count(o.id), ClipLen(o.model, 0), ClipLen(o.model, 1), o.door.stayOpen);
             changed |= before != r.blocks();
+            if (before && !r.blocks()) Signal(When::DoorOpens, o.name); else if (!before && r.blocks()) Signal(When::DoorCloses, o.name);
             // the halves where the animation has them
             auto mi = meshModels.find(o.model);
             if (mi != meshModels.end() && r.clip >= 0) {
@@ -1390,7 +1472,7 @@ struct App {
             for (size_t i = 0; i < objects.size(); i++) {   // forcefields and doors, then any object in the way
                 const WorldObject& o = objects[i]; FrameRef f = ModelOf(o); if (!f) continue;
                 double t;
-                if (o.kind == ObjKind::Door && DoorNow(o).blocks()) {
+                if (o.kind == ObjKind::Door && DoorNow(o).blocks() && !Gone(o)) {
                     Box3 fb = fieldBox(o, *f, OpeningOf(o.model));
                     if (rayBox(s.pos, s.dir, fb, t) && t < best) { best = t; door = (int)i; }
                 }
@@ -1401,13 +1483,20 @@ struct App {
                     V3 at = s.pos + s.dir * best; uint32_t tint = door >= 0 ? objects[door].door.color : 0;
                     SpawnFx(particlePreset("Impact"), at - s.dir * 0.05, s.dir * -1, tint);
                     fx.push_back(s.trail);
+                    for (const WorldObject& o : objects) {   // which named objects were hit (for "when something is shot")
+                        if (o.name.empty() || Gone(o) || o.kind == ObjKind::Trigger) continue;
+                        FrameRef f = ModelOf(o); if (!f) continue;
+                        WorldObject wo = o; wo.pos = o.pos + PlatformOffsets(o)[0]; Box3 b = objectBounds(wo, *f); const double g = 0.06;
+                        if (at.x > b.lo.x - g && at.x < b.hi.x + g && at.y > b.lo.y - g && at.y < b.hi.y + g && at.z > b.lo.z - g && at.z < b.hi.z + g) Signal(When::Shot, o.name);
+                    }
                 }
                 if (door >= 0) {   // where on the field it hit: the dissolve starts there
                     WorldObject& o = objects[door]; FrameRef f = ModelOf(o); V3 org, ac, up; fieldQuad(o, *f, OpeningOf(o.model), org, ac, up);
                     V3 p = s.pos + s.dir * best, q = p - org;
                     auto dot = [](V3 a, V3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; };
                     float u = (float)std::clamp(dot(q, ac) / std::max(1e-9, dot(ac, ac)), 0.0, 1.0), v = (float)std::clamp(dot(q, up) / std::max(1e-9, dot(up, up)), 0.0, 1.0);
-                    if (!o.door.key.empty() && !inv.keys.count(o.door.key)) Toast("This door needs the " + o.door.key);
+                    if (evLocked.count(o.id)) Toast("This door is locked");
+                    else if (!o.door.key.empty() && !inv.keys.count(o.door.key)) Toast("This door needs the " + o.door.key);
                     else doorRt[o.id].shoot(u, v);
                 }
                 s.age = 99;
@@ -1423,7 +1512,7 @@ struct App {
         ctx->IASetInputLayout(nullptr); ctx->VSSetShader(vsField.Get(), nullptr, 0); ctx->PSSetShader(psField.Get(), nullptr, 0);
         ctx->PSSetShaderResources(3, 1, noiseSRV.GetAddressOf()); ctx->PSSetSamplers(2, 1, sampLinear.GetAddressOf());
         for (const WorldObject& o : objects) {
-            if (o.kind != ObjKind::Door || !o.door.field) continue;
+            if (o.kind != ObjKind::Door || !o.door.field || Gone(o)) continue;
             FrameRef f = ModelOf(o); if (!f) continue;
             DoorRuntime r = DoorNow(o); if (r.field <= 0.001f) continue;
             V3 org, ac, up; fieldQuad(o, *f, OpeningOf(o.model), org, ac, up); V3 rel = org - camPos, col = Linear(o.door.color);
@@ -1489,7 +1578,7 @@ struct App {
         if (!world) return;
         world->objectSolids.clear();
         for (size_t i = 0; i < objects.size(); i++) {
-            if ((int)i == movingObj) continue;
+            if ((int)i == movingObj || Gone(objects[i])) continue;
             FrameRef m = ModelOf(objects[i]); if (!m) continue;
             const WorldObject& o = objects[i];
             if (o.kind == ObjKind::Door) {   // a door: its frame always; its halves and its forcefield only while it is shut
@@ -1528,7 +1617,7 @@ struct App {
         }
     }
     void LoadWorldObjects() {
-        objects.clear(); loadObjects(worldDir + "/objects.txt", objects);
+        objects.clear(); loadObjects(worldDir + "/objects.txt", objects); loadEvents(worldDir + "/events.txt", events);
         nextObjId = 1; for (auto& o : objects) nextObjId = std::max(nextObjId, o.id + 1);
         movingObj = -1; placing.clear(); RebuildSolids();
     }
@@ -2174,7 +2263,7 @@ struct App {
             for (size_t oi = 0; oi < objects.size(); oi++) {   // objects: same shaders, turned and sized; platforms where they are on their path
                 if ((int)oi == movingObj) continue;
                 const WorldObject& o = objects[oi];
-                if (o.kind == ObjKind::Trigger) continue;   // zones: invisible (the editor shows their box)
+                if (o.kind == ObjKind::Trigger || Gone(o)) continue;   // zones: invisible (the editor shows their box)
                 if ((o.kind == ObjKind::Light || o.kind == ObjKind::Particles) && (playMode || plainView) && IsBuiltin(o.model)) continue;   // the bulb / nozzle: editor only
                 if (o.kind == ObjKind::Pickup) {   // pickups turn and bob; gone once taken
                     if (playMode && inv.has(o.id)) continue;
@@ -2655,6 +2744,7 @@ struct App {
         inv = PlayInventory{}; takenByWorld.clear(); insideNow.clear(); firedOnce.clear(); teleportLock = 0; bigMsgT = 0; playStartWorld = CurrentWorld(); startEditCam = editCam;
         playSpawn = info.hasSpawn ? info.spawn : player.feet; playYaw = info.hasSpawn ? info.spawnYaw : player.yaw;
         play = PlayState{}; play.start(player, game.player, playSpawn, playYaw);
+        EvStart();
         if (grabMouse) { Capture(false); captureNext = true; }   // grabbed next frame, once the picture fills the window
         Toast(info.hasSpawn ? "Playing. Esc: menu, F5: back to the editor" : "Playing from where the camera was (set a spawn point in the Outliner). F5: back to the editor");
     }
@@ -2663,7 +2753,8 @@ struct App {
         if (!playStartWorld.empty() && playStartWorld != CurrentWorld()) {   // went through a teleporter: back to the world you were editing
             travelling = true; SaveWorld(); OpenWorld(playStartWorld); travelling = false; editCam = startEditCam;
         }
-        playMode = false; paused = false; player = editCam; Capture(false); captureNext = false; platRun.clear(); RebuildSolids();
+        playMode = false; paused = false; player = editCam; Capture(false); captureNext = false; platRun.clear();
+        evHidden.clear(); evOff.clear(); evLocked.clear(); evHeld.clear(); evKick.clear(); evFlash.clear(); RebuildSolids();
         Toast("Back in the editor");
     }
     void PlayHud(ImDrawList* dl) {
@@ -3020,6 +3111,7 @@ struct App {
         ImGui::DockBuilderDockWindow("Outliner", left);
         ImGui::DockBuilderDockWindow("Inspector", right);
         ImGui::DockBuilderDockWindow("Assets", bottom);
+        ImGui::DockBuilderDockWindow("Events", bottom);
         ImGui::DockBuilderDockWindow("Viewport", mid);
         if (ImGuiDockNode* n = ImGui::DockBuilderGetNode(mid)) n->LocalFlags |= ImGuiDockNodeFlags_NoTabBar;
         ImGui::DockBuilderFinish(dock);
@@ -3325,6 +3417,183 @@ struct App {
         }
         ImGui::End();
     }
+    // ---- Events: the game's logic as cards, one card = "when ... only if ... do ..."
+    static bool KindFits(const WorldObject& o, const std::string& k) {
+        if (k == "zone") return o.kind == ObjKind::Trigger;
+        if (k == "door") return o.kind == ObjKind::Door;
+        if (k == "platform") return o.kind == ObjKind::Platform;
+        if (k == "light") return o.kind == ObjKind::Light || o.kind == ObjKind::Particles;
+        return true;
+    }
+    std::vector<std::string> NamesOf(const std::string& kind) const {
+        std::vector<std::string> v;
+        for (const WorldObject& o : objects) if (!o.name.empty() && KindFits(o, kind) && std::find(v.begin(), v.end(), o.name) == v.end()) v.push_back(o.name);
+        std::sort(v.begin(), v.end()); return v;
+    }
+    std::string FirstName(const std::string& kind) const { auto v = NamesOf(kind); return v.empty() ? "" : v[0]; }
+    // names the player can have: keys, counters (pickups), flags (from the cards)
+    std::vector<std::string> KnownNames(char what) const {
+        std::vector<std::string> v; auto add = [&](const std::string& n) { if (!n.empty() && std::find(v.begin(), v.end(), n) == v.end()) v.push_back(n); };
+        for (const WorldObject& o : objects) {
+            if (what == 'k') { if (o.kind == ObjKind::Pickup && o.pickup.type == PickupType::Key) add(o.pickup.name); if (o.kind == ObjKind::Door) add(o.door.key); }
+            if (what == 'c' && o.kind == ObjKind::Pickup && o.pickup.type != PickupType::Health) add(o.pickup.name);
+            if (what == 'p' && o.kind == ObjKind::Pickup) add(o.pickup.type == PickupType::Health ? "Health" : o.pickup.name);
+        }
+        if (what == 'f') for (const EventCard& c : events) { for (auto& i : c.ifs) if (i.kind == If::FlagOn || i.kind == If::FlagOff) add(i.name); for (auto& d : c.dos) if (d.kind == Do::FlagOn || d.kind == Do::FlagOff) add(d.text); }
+        if (what == 'k') for (const EventCard& c : events) for (auto& d : c.dos) if (d.kind == Do::GiveKey) add(d.text);
+        if (what == 'c') for (const EventCard& c : events) for (auto& d : c.dos) if (d.kind == Do::AddCount) add(d.text);
+        std::sort(v.begin(), v.end()); return v;
+    }
+    bool ObjectPick(const char* id, std::string& v, const char* kind, bool allowAny) {
+        std::vector<std::string> names = NamesOf(kind); bool ch = false;
+        std::string shown = v.empty() ? (allowAny ? "(any)" : "(pick one)") : v;
+        bool missing = !v.empty() && std::find(names.begin(), names.end(), v) == names.end();
+        if (missing) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1, 0.55f, 0.4f, 1));
+        if (ImGui::BeginCombo(id, shown.c_str())) {
+            if (missing) ImGui::PopStyleColor();
+            if (allowAny && ImGui::Selectable("(any)", v.empty())) { v.clear(); ch = true; }
+            for (const std::string& n : names) if (ImGui::Selectable(n.c_str(), v == n)) { v = n; ch = true; }
+            if (names.empty()) ImGui::TextDisabled(std::string(kind) == "any" ? "Name an object in the Inspector first" : "No %s with a name yet", kind);
+            ImGui::EndCombo();
+        } else if (missing) ImGui::PopStyleColor();
+        if (missing && ImGui::IsItemHovered()) ImGui::SetTooltip("There is no object called \"%s\" in this world", v.c_str());
+        return ch;
+    }
+    bool NamePick(const char* id, std::string& v, char what, const char* hint) {
+        float bw = ImGui::GetFrameHeight(); bool ch = false;
+        ImGui::SetNextItemWidth(std::max(40.f, ImGui::GetContentRegionAvail().x - bw - ImGui::GetStyle().ItemSpacing.x));
+        ch |= ImGui::InputTextWithHint(id, hint, &v);
+        ImGui::SameLine(); std::string pid = std::string(id) + "pick";
+        if (ImGui::BeginCombo(pid.c_str(), "", ImGuiComboFlags_NoPreview | ImGuiComboFlags_PopupAlignLeft)) {
+            auto names = KnownNames(what);
+            for (const std::string& n : names) if (ImGui::Selectable(n.c_str(), v == n)) { v = n; ch = true; }
+            if (names.empty()) ImGui::TextDisabled("Nothing yet: type a name");
+            ImGui::EndCombo();
+        }
+        return ch;
+    }
+    static char NameKind(When w) { return w == When::Pickup ? 'p' : 'c'; }
+    static char NameKind(If c) { return c == If::HasKey || c == If::NoKey ? 'k' : c == If::CountAtLeast ? 'c' : 'f'; }
+    static char NameKind(Do d) { return d == Do::GiveKey || d == Do::TakeKey ? 'k' : d == Do::AddCount ? 'c' : 'f'; }
+    static const char* NameHint(char k) { return k == 'k' ? "Red key" : k == 'c' ? "Gem" : k == 'p' ? "Gem (empty: anything)" : "door-done"; }
+    // the fields one part needs, below its kind
+    bool PartFields(const Need& n, std::string& obj, std::string& name, std::string& text, float& num, char nk, bool anyObj, bool isWhen, bool isParticles) {
+        bool ch = false;
+        if (n.object) { Prop(std::string(n.objectKind) == "any" ? "Object" : n.objectKind); ch |= ObjectPick("##obj", obj, n.objectKind, anyObj); }
+        if (n.name) { Prop(nk == 'k' ? "Key" : nk == 'f' ? "Flag" : nk == 'p' ? "Pickup" : "Counter"); ch |= NamePick("##nm", isWhen ? obj : name, nk, NameHint(nk)); }
+        if (n.text) {
+            if (isParticles) {
+                Prop("Look");
+                if (ImGui::BeginCombo("##fx", text.empty() ? "Sparks" : text.c_str())) { for (auto& pn : particlePresets()) if (ImGui::Selectable(pn.c_str(), text == pn)) { text = pn; ch = true; } ImGui::EndCombo(); }
+            } else { Prop("Text"); ch |= ImGui::InputTextWithHint("##txt", "what it says", &text); }
+        }
+        if (n.number) { Prop(n.numberLabel); ch |= ImGui::DragFloat("##num", &num, 0.1f, 0, 10000, "%.1f"); }
+        return ch;
+    }
+    template <class E> bool KindCombo(const char* id, E& k) {
+        int v = (int)k; bool ch = false;
+        if (ImGui::BeginCombo(id, needOf(k).label)) {
+            for (int i = 0; i < (int)E::COUNT; i++) if (ImGui::Selectable(needOf((E)i).label, v == i)) { k = (E)i; ch = true; }
+            ImGui::EndCombo();
+        }
+        return ch;
+    }
+    void SectionLabel(const char* t, ImVec4 c) { ImGui::PushStyleColor(ImGuiCol_Text, c); ImGui::TextUnformatted(t); ImGui::PopStyleColor(); }
+    EventCard Template(int t) {
+        EventCard c; std::string zone = FirstName("zone"), door = FirstName("door"), light = FirstName("light"), plat = FirstName("platform");
+        switch (t) {
+        case 0: c.name = "Welcome message"; c.when = { When::EnterZone, zone }; c.once = true; c.dos = { { Do::Message, "", "Welcome!", 3 } }; break;
+        case 1: c.name = "Key opens the door"; c.when = { When::EnterZone, zone }; c.ifs = { { If::HasKey, "Red key" } }; c.dos = { { Do::UnlockDoor, door }, { Do::OpenDoor, door } }; break;
+        case 2: c.name = "Trap: doors shut"; c.when = { When::EnterZone, zone }; c.once = true;
+            c.dos = { { Do::CloseDoor, door }, { Do::LockDoor, door }, { Do::Message, "", "It's a trap!", 2 }, { Do::Wait, "", "", 5 }, { Do::UnlockDoor, door }, { Do::OpenDoor, door } }; break;
+        case 3: c.name = "Collect 3 gems"; c.when = { When::CountReaches, "Gem", 3 }; c.dos = { { Do::Message, "", "All gems found!", 3 }, { Do::OpenDoor, door } }; break;
+        case 4: c.name = "Lights on"; c.when = { When::EnterZone, zone }; c.dos = { { Do::LightOn, light }, { Do::Particles, light, "Sparks" } }; break;
+        case 5: c.name = "Call the lift"; c.when = { When::Shot, "" }; c.dos = { { Do::MovePlatform, plat } }; break;
+        case 6: c.name = "Hidden at the start"; c.when = { When::GameStarts }; c.dos = { { Do::Hide, FirstName("any") } }; break;
+        }
+        return c;
+    }
+    void EventsPanel() {
+        if (ImGuiWindow* a = ImGui::FindWindowByName("Assets")) if (a->DockId) ImGui::SetNextWindowDockID(a->DockId, ImGuiCond_FirstUseEver);
+        if (focusEvents) { ImGui::SetNextWindowFocus(); focusEvents = false; }
+        if (!ImGui::Begin("Events")) { ImGui::End(); return; }
+        float ui = settings.uiScale; bool ch = false;
+        if (ImGui::Button("+ New card")) { EventCard c; c.when.target = FirstName("zone"); c.name = "Event " + std::to_string(events.size() + 1); events.push_back(c); ch = true; }
+        ImGui::SameLine(); ImGui::SetNextItemWidth(200 * ui);
+        if (ImGui::BeginCombo("##tpl", "+ From an example...")) {
+            const char* tn[] = { "Message when you walk in", "A key opens a door", "Trap: the door shuts for 5 s", "Collect 3 gems, a door opens", "Lights on when you walk in", "Shoot it: the lift comes", "Hidden until something shows it" };
+            for (int t = 0; t < 7; t++) if (ImGui::Selectable(tn[t])) { events.push_back(Template(t)); ch = true; }
+            ImGui::EndCombo();
+        }
+        ImGui::SameLine(); ImGui::TextDisabled(playMode ? "  Cards light up when they run." : "  When something happens, only if..., do these in order. Objects are found by name.");
+        if (playMode && !evRun.flags.empty()) { std::string f; for (auto& x : evRun.flags) f += (f.empty() ? "" : ", ") + x; ImGui::SameLine(); ImGui::TextColored(ImVec4(0.6f, 0.9f, 1, 1), "  Flags on: %s", f.c_str()); }
+        ImGui::Separator();
+        if (events.empty()) { ImGui::Spacing(); Hint("No event cards yet. A card says: when something happens (the player walks into a zone, a door is shot...), only if something is true (has a key...), do these things (open a door, show a message, switch on a light...)."); }
+        ImGui::BeginChild("cards", ImVec2(0, 0));
+        float cardW = 330 * ui; int cols = std::max(1, (int)(ImGui::GetContentRegionAvail().x / cardW));
+        int dropCard = -1, dup = -1;
+        if (!events.empty() && ImGui::BeginTable("cardgrid", cols, ImGuiTableFlags_SizingStretchSame)) {
+            for (int i = 0; i < (int)events.size(); i++) {
+                EventCard& c = events[i]; ImGui::TableNextColumn(); ImGui::PushID(i);
+                double lit = playMode && evFlash.count(i) ? std::max(0.0, 1 - (animTime - evFlash[i]) / 1.2) : 0;
+                ImVec4 border = ImLerp(c.enabled ? ImVec4(0.35f, 0.38f, 0.45f, 1) : ImVec4(0.25f, 0.25f, 0.25f, 1), ImVec4(1, 0.8f, 0.3f, 1), (float)lit);
+                ImGui::PushStyleColor(ImGuiCol_Border, border); ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, lit > 0 ? 2.f : 1.f);
+                ImGui::PushStyleColor(ImGuiCol_ChildBg, c.enabled ? ImVec4(0.13f, 0.14f, 0.17f, 1) : ImVec4(0.1f, 0.1f, 0.1f, 1));
+                ImGui::BeginChild("card", ImVec2(0, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding);
+                ch |= ImGui::Checkbox("##on", &c.enabled); if (ImGui::IsItemHovered()) ImGui::SetTooltip("On / off");
+                ImGui::SameLine(); float bw = ImGui::GetFrameHeight();
+                ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - bw * 2 - ImGui::GetStyle().ItemSpacing.x * 2);
+                ch |= ImGui::InputText("##name", &c.name);
+                ImGui::SameLine(); if (ImGui::Button("+", ImVec2(bw, 0))) dup = i; if (ImGui::IsItemHovered()) ImGui::SetTooltip("Duplicate");
+                ImGui::SameLine(); if (ImGui::Button("x", ImVec2(bw, 0))) dropCard = i; if (ImGui::IsItemHovered()) ImGui::SetTooltip("Delete the card");
+                // WHEN
+                SectionLabel("WHEN", ImVec4(1, 0.75f, 0.35f, 1));
+                ImGui::PushID("when"); ImGui::SetNextItemWidth(-FLT_MIN);
+                if (KindCombo("##k", c.when.kind)) { const Need& n = needOf(c.when.kind); if (n.object) c.when.target = FirstName(n.objectKind); else if (!n.name) c.when.target.clear(); if (c.when.kind == When::Every || c.when.kind == When::After) c.when.number = 5; ch = true; }
+                std::string dummy;
+                ch |= PartFields(needOf(c.when.kind), c.when.target, dummy, dummy, c.when.number, NameKind(c.when.kind), true, true, false);
+                ImGui::PopID();
+                // ONLY IF
+                SectionLabel(c.ifs.empty() ? "ONLY IF  (always)" : "ONLY IF", ImVec4(0.55f, 0.8f, 1, 1));
+                int dropIf = -1;
+                for (int k = 0; k < (int)c.ifs.size(); k++) {
+                    EventIf& e = c.ifs[k]; ImGui::PushID(1000 + k);
+                    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - bw - ImGui::GetStyle().ItemSpacing.x);
+                    ch |= KindCombo("##k", e.kind); ImGui::SameLine(); if (ImGui::Button("x", ImVec2(bw, 0))) dropIf = k;
+                    std::string o, t; ch |= PartFields(needOf(e.kind), o, e.name, t, e.number, NameKind(e.kind), false, false, false);
+                    ImGui::PopID();
+                }
+                if (dropIf >= 0) { c.ifs.erase(c.ifs.begin() + dropIf); ch = true; }
+                if (ImGui::SmallButton("+ condition")) { c.ifs.push_back({ If::HasKey, KnownNames('k').empty() ? "Red key" : KnownNames('k')[0] }); ch = true; }
+                // DO
+                SectionLabel("DO", ImVec4(0.6f, 1, 0.6f, 1));
+                int dropDo = -1, up = -1;
+                for (int k = 0; k < (int)c.dos.size(); k++) {
+                    EventDo& d = c.dos[k]; ImGui::PushID(2000 + k);
+                    ImGui::AlignTextToFramePadding(); ImGui::TextDisabled("%d.", k + 1); ImGui::SameLine();
+                    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - bw * 2 - ImGui::GetStyle().ItemSpacing.x * 2);
+                    if (KindCombo("##k", d.kind)) { const Need& n = needOf(d.kind); if (n.object && d.target.empty()) d.target = FirstName(n.objectKind); if (d.kind == Do::Wait) d.number = 1; ch = true; }
+                    ImGui::SameLine(); ImGui::BeginDisabled(k == 0); if (ImGui::ArrowButton("##up", ImGuiDir_Up)) up = k; ImGui::EndDisabled();
+                    ImGui::SameLine(); if (ImGui::Button("x", ImVec2(bw, 0))) dropDo = k;
+                    ImGui::Indent(14 * ui); ch |= PartFields(needOf(d.kind), d.target, d.text, d.text, d.number, NameKind(d.kind), false, false, d.kind == Do::Particles); ImGui::Unindent(14 * ui);
+                    ImGui::PopID();
+                }
+                if (dropDo >= 0) { c.dos.erase(c.dos.begin() + dropDo); ch = true; }
+                if (up > 0) { std::swap(c.dos[up], c.dos[up - 1]); ch = true; }
+                if (ImGui::SmallButton("+ action")) { c.dos.push_back({ Do::Message, "", "Hello!", 3 }); ch = true; }
+                ImGui::Spacing(); ch |= ImGui::Checkbox("Only once", &c.once);
+                if (playMode) { ImGui::SameLine(); ImGui::TextDisabled("   ran %d times", evRun.firedCount(i)); }
+                ImGui::EndChild(); ImGui::PopStyleColor(2); ImGui::PopStyleVar();
+                ImGui::PopID();
+            }
+            ImGui::EndTable();
+        }
+        if (dup >= 0) { EventCard c = events[dup]; c.name += " copy"; events.insert(events.begin() + dup + 1, c); ch = true; }
+        if (dropCard >= 0) { events.erase(events.begin() + dropCard); ch = true; }
+        ImGui::EndChild();
+        ImGui::End();
+        (void)ch;
+    }
     // ---- Assets: blocks by folder, textures, shapes; thumbnails, search, size
     void Assets() {
         if (focusAssets) { ImGui::SetNextWindowFocus(); focusAssets = false; }
@@ -3486,6 +3755,7 @@ struct App {
         Outliner();
         Inspector();
         Assets();
+        EventsPanel();
         Viewport();
     }
 
@@ -3804,6 +4074,29 @@ struct App {
                     play.health = game.player.maxHealth; toastT = 0;
                     frames(12, "beam_impact_sparks");
                     StopPlay(); sel = Sel::World;
+                    // G3 event cards: the hall lights are off at the start and come on (with a burst of magic) when you walk into the zone
+                    objects[sp].name = "Hall light"; objects[pl].name = "Hall light"; objects[fire].name = "Campfire";
+                    int hz = fxObj("@zone", { -10.5, (double)g4, -37.5 }); objects[hz].name = "Hall"; objects[hz].size = { 6, 3, 3 };
+                    events.clear();
+                    { EventCard c; c.name = "Dark at the start"; c.when = { When::GameStarts }; c.dos = { { Do::LightOff, "Hall light" }, { Do::LightOff, "Campfire" } }; events.push_back(c); }
+                    { EventCard c; c.name = "The hall wakes up"; c.when = { When::EnterZone, "Hall" }; c.once = true;
+                      c.dos = { { Do::Message, "", "The hall wakes up...", 3 }, { Do::LightOn, "Hall light" }, { Do::Particles, "Hall light", "Magic" }, { Do::Wait, "", "", 0.5f }, { Do::LightOn, "Campfire" } }; events.push_back(c); }
+                    { EventCard c; c.name = "Collect 3 gems"; c.when = { When::CountReaches, "Gem", 3 }; c.ifs = { { If::HasKey, "Red key" } };
+                      c.dos = { { Do::OpenDoor, FirstName("door") }, { Do::Message, "", "A door opened somewhere", 3 }, { Do::FlagOn, "", "gems-done" } }; events.push_back(c); }
+                    events.push_back(Template(2));
+                    RebuildSolids();
+                    focusEvents = true; sel = Sel::Object; selIndex = hz;
+                    poseAt(DemoShot{ "e", { -11, g4 + 4.6, -48 }, { -11, g4 + 0.8, -33 }, 19.8f });
+                    frames(6, "events_editor");
+                    StartPlay(false);
+                    poseAt(DemoShot{ "e", { -10.5, g4 + 1.62, -44 }, { -12, g4 + 1.4, -31.2 }, 19.8f });
+                    play.health = game.player.maxHealth; toastT = 0;
+                    frames(20, "events_play_dark");
+                    player.feet = { -10.5, (double)g4, -38 };
+                    { V3 e = player.feet; e.y += Player::EYE; poseAt(DemoShot{ "e", e, { -12, g4 + 1.4, -31.2 }, 19.8f }); player.feet = { -10.5, (double)g4, -38 }; }
+                    frames(50, "events_play_lights_on");
+                    Log("event cards: 'hall wakes up' ran " + std::to_string(evRun.firedCount(1)) + " time(s), lights off: " + std::to_string(evOff.size()));
+                    StopPlay(); sel = Sel::World; focusAssets = true;
                 }
                 sel = Sel::World;
             }

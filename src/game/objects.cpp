@@ -218,7 +218,7 @@ bool loadObjects(const std::string& path, std::vector<WorldObject>& objs) {
         if (l >> kind >> o.door.w >> o.door.h >> o.door.color >> o.door.stayOpen >> fieldOn) { o.kind = (ObjKind)std::clamp(kind, 0, (int)ObjKind::COUNT - 1); o.door.field = fieldOn != 0; }
         PlatformSettings& p = o.platform; int mode, trig, se, sp; size_t np;
         if (l >> mode >> trig >> p.speed >> p.wait >> se >> p.comeBack >> p.copies >> sp >> p.every >> np) {
-            p.mode = (PathMode)std::clamp(mode, 0, 2); p.trigger = (PathTrigger)std::clamp(trig, 0, 2); p.stopEvery = se != 0; p.spawner = sp != 0;
+            p.mode = (PathMode)std::clamp(mode, 0, 2); p.trigger = (PathTrigger)std::clamp(trig, 0, 3); p.stopEvery = se != 0; p.spawner = sp != 0;
             for (size_t k = 0; k < np && k < 256; k++) { V3 v; if (l >> v.x >> v.y >> v.z) p.points.push_back(v); }
         }
         int pt, ta, once; std::string pn, tw, tt, tx, dk;   // pickups, teleporters, trigger zones (newer files)

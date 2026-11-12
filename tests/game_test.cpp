@@ -5,6 +5,9 @@
 #include "../src/game/objects.h"
 #include "../src/game/meshmodel.h"
 #include "../src/core/json.h"
+#include "../src/game/events.h"
+#include <map>
+#include <set>
 #include <filesystem>
 #include <cstring>
 #include <functional>
@@ -442,6 +445,63 @@ int main() {
         CHECK(v2.size() == 1 && v2[0].kind == ObjKind::Particles && !v2[0].particles.additive && v2[0].particles.shape == PShape::Smoke && v2[0].particles.size1 == o.particles.size1
               && v2[0].light.type == LightType::Spot && v2[0].light.cone == 20 && v2[0].light.flicker == Flicker::Broken, "particles and lights save and load");
         CHECK(particlePresets().size() == 9, "nine presets");
+    }
+
+    // event cards (G3)
+    {
+        struct Host : EventHost {
+            std::vector<std::string> log; std::set<std::string> keys; std::map<std::string, int> counts; float hp = 100;
+            bool hasKey(const std::string& n) override { return keys.count(n) > 0; }
+            int count(const std::string& n) override { return counts[n]; }
+            float health() override { return hp; }
+            void run(const EventDo& d) override { log.push_back(std::to_string((int)d.kind) + ":" + d.target + d.text); }
+        } h;
+        std::vector<EventCard> cards(1);
+        cards[0].when = { When::EnterZone, "Hall" };
+        cards[0].dos = { { Do::Message, "", "Hi" }, { Do::OpenDoor, "Gate" } };
+        EventRunner run; run.start(cards, h);
+        run.signal(cards, { When::EnterZone, "Cellar" }, h);
+        CHECK(h.log.empty(), "a card waits for its own zone");
+        run.signal(cards, { When::EnterZone, "Hall" }, h);
+        CHECK(h.log.size() == 2 && h.log[0] == "0:Hi" && h.log[1] == "1:Gate", "entering the zone runs the actions in order");
+        cards[0].ifs = { { If::HasKey, "Red" } }; h.log.clear();
+        run.signal(cards, { When::EnterZone, "Hall" }, h);
+        CHECK(h.log.empty(), "'only if' stops it without the key");
+        h.keys.insert("Red"); run.signal(cards, { When::EnterZone, "Hall" }, h);
+        CHECK(h.log.size() == 2, "and lets it run with the key");
+        cards[0].once = true; h.log.clear(); run.signal(cards, { When::EnterZone, "Hall" }, h);
+        CHECK(h.log.empty(), "'only once' cards do not run again");
+        // wait
+        std::vector<EventCard> c2(1); c2[0].when = { When::GameStarts };
+        c2[0].dos = { { Do::Message, "", "A" }, { Do::Wait, "", "", 2 }, { Do::Message, "", "B" } };
+        Host h2; EventRunner r2; r2.start(c2, h2);
+        CHECK(h2.log.size() == 1, "'wait' holds back the actions after it");
+        for (int k = 0; k < 60; k++) r2.tick(c2, 1.0 / 60, h2);
+        CHECK(h2.log.size() == 1, "still waiting after 1 second");
+        for (int k = 0; k < 70; k++) r2.tick(c2, 1.0 / 60, h2);
+        CHECK(h2.log.size() == 2 && h2.log[1] == "0:B", "and they come after 2 seconds");
+        // every, counters, flags
+        std::vector<EventCard> c3(3);
+        c3[0].when = { When::Every, "", 1 }; c3[0].dos = { { Do::Heal, "", "", 5 } };
+        c3[1].when = { When::CountReaches, "Gem", 3 }; c3[1].dos = { { Do::FlagOn, "", "rich" } };
+        c3[2].when = { When::Pickup, "" }; c3[2].ifs = { { If::FlagOn, "rich" } }; c3[2].dos = { { Do::Win, "", "Yay" } };
+        Host h3; EventRunner r3; r3.start(c3, h3);
+        for (int k = 0; k < 185; k++) r3.tick(c3, 1.0 / 60, h3);
+        CHECK(h3.log.size() == 3, "'every 1 second' ran 3 times in 3 seconds (%zu)", h3.log.size());
+        h3.log.clear(); r3.signal(c3, { When::Pickup, "Gem 1", "Gem" }, h3);
+        CHECK(h3.log.empty(), "the flag is still off");
+        h3.counts["Gem"] = 3; r3.tick(c3, 0.01, h3);
+        CHECK(r3.flags.count("rich") && r3.firedCount(1) == 1, "counter reaching 3 turns the flag on");
+        r3.tick(c3, 0.01, h3);
+        CHECK(r3.firedCount(1) == 1, "and only once while it stays there");
+        r3.signal(c3, { When::Pickup, "Gem 2", "Gem" }, h3);
+        CHECK(!h3.log.empty() && h3.log.back() == "22:Yay", "with the flag on, picking up wins");
+        // save / load
+        c3[0].name = "Heal % over time"; c3[2].once = true; c3[2].dos[0].text = "You win!\nWell done";
+        std::vector<EventCard> back; saveEvents("/tmp/prim_events.txt", c3); loadEvents("/tmp/prim_events.txt", back);
+        CHECK(back.size() == 3 && back[0].name == "Heal % over time" && back[1].when.target == "Gem" && back[1].when.number == 3 && back[2].once
+              && back[2].ifs.size() == 1 && back[2].dos[0].text == "You win!\nWell done" && back[2].dos[0].kind == Do::Win, "event cards save and load");
+        CHECK(std::string(needOf(Do::OpenDoor).objectKind) == "door" && needOf(When::Every).number, "each part says what it needs");
     }
 
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
