@@ -44,7 +44,8 @@ struct MeshModel {
 bool importModel(const std::string& path, MeshModel& out, std::string& error);
 bool isModelFile(const std::string& path);
 // collision: the inside of the shape as boxes, in model space (blocks, 0 .. size)
-std::vector<Box3> meshBoxes(const MeshModel& m, int maxCells = 24);   // cubes of at least 1/8 block
+std::vector<Box3> meshBoxes(const MeshModel& m, int maxCells = 24, bool stillOnly = false);   // cubes of at least 1/8 block; stillOnly: without the moving parts
+Box3 doorOpening(const MeshModel& m);   // a door's opening (model space, blocks): where its moving parts are, else the middle of it
 
 // three small example models (for screenshots and tests): a Blockbench lamp post, an .obj rock, a glTF crystal
 std::vector<std::string> writeDemoModels(const std::string& dir);

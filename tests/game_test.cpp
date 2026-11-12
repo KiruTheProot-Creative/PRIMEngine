@@ -297,6 +297,36 @@ int main() {
             door.save("/tmp/prim_door.pmesh"); MeshModel d2;
             CHECK(d2.load("/tmp/prim_door.pmesh") && d2.clips.size() == 2 && d2.clips[1].tracks.size() == door.clips[1].tracks.size() && d2.vpart == door.vpart && d2.parts[0].name == door.parts[0].name, "parts and animations save and load");
         }
+        // doors: stretched to Width x Height, forcefield, open / close
+        if (ok) {
+            WorldObject d; d.kind = ObjKind::Door; d.model = "DOOR_01"; d.pos = { 0.5, 0, 0.5 }; d.door.w = 4; d.door.h = 2;
+            Box3 bb = objectBounds(d, door.frame());
+            CHECK(std::fabs(bb.hi.x - bb.lo.x - 4) < 1e-6 && std::fabs(bb.hi.y - bb.lo.y - 2) < 1e-6, "a door stretches to 4 x 2 blocks (%.2f x %.2f)", bb.hi.x - bb.lo.x, bb.hi.y - bb.lo.y);
+            d.door.w = 1; d.door.h = 1; bb = objectBounds(d, door.frame()); CHECK(std::fabs(bb.hi.x - bb.lo.x - 1) < 1e-6, "or to 1 x 1 (morph ball)");
+            d.door.w = 2; d.door.h = 3;
+            Box3 op = doorOpening(door); Box3 fb = fieldBox(d, door.frame(), op);
+            CHECK(std::fabs(fb.hi.x - fb.lo.x - 1.5) < 0.01 && std::fabs(fb.hi.y - fb.lo.y - 2.625) < 0.01 && fb.hi.z - fb.lo.z < 0.2, "the forcefield fills the opening (%.2f x %.2f)", fb.hi.x - fb.lo.x, fb.hi.y - fb.lo.y);
+            auto still = meshBoxes(door, 24, true), all = meshBoxes(door);
+            auto inside = [&](const std::vector<Box3>& bs) { V3 c{ door.sx * 0.5, door.sy * 0.4, door.sz * 0.5 }; for (auto& b : bs) if (c.x >= b.lo.x && c.x <= b.hi.x && c.y >= b.lo.y && c.y <= b.hi.y && c.z >= b.lo.z && c.z <= b.hi.z) return true; return false; };
+            CHECK(!still.empty() && inside(all) && !inside(still), "collision without the moving halves leaves the doorway free (%zu / %zu boxes)", still.size(), all.size());
+            WorldObject p2 = d; p2.kind = ObjKind::Prop; std::vector<WorldObject> v{ d }, v2; saveObjects("/tmp/prim_doors.txt", v); loadObjects("/tmp/prim_doors.txt", v2);
+            CHECK(v2.size() == 1 && v2[0].kind == ObjKind::Door && v2[0].door.w == 2 && v2[0].door.h == 3 && v2[0].door.color == d.door.color, "doors save and load");
+        }
+        {
+            DoorRuntime r; float L = 0.25f;
+            CHECK(r.blocks() && r.field == 1, "a door starts closed with its field up");
+            CHECK(r.shoot(0.3f, 0.6f) && r.state == DoorRuntime::Dissolving, "a shot starts the dissolve");
+            for (int k = 0; k < 12; k++) r.tick(1.f / 30, false, L, L, 3);
+            CHECK(r.state == DoorRuntime::Opening && r.field == 0 && r.clip == 0, "then it plays open");
+            for (int k = 0; k < 10; k++) r.tick(1.f / 30, false, L, L, 3);
+            CHECK(r.state == DoorRuntime::Open && !r.blocks(), "then it is open and you can walk through");
+            for (int k = 0; k < 200; k++) r.tick(1.f / 30, true, L, L, 3);
+            CHECK(r.state == DoorRuntime::Open, "it stays open while you stand in it");
+            for (int k = 0; k < 100; k++) r.tick(1.f / 30, false, L, L, 3);
+            CHECK(r.state == DoorRuntime::Closing || r.state == DoorRuntime::Restoring || r.state == DoorRuntime::Closed, "then it closes");
+            for (int k = 0; k < 40; k++) r.tick(1.f / 30, false, L, L, 3);
+            CHECK(r.state == DoorRuntime::Closed && r.field == 1 && r.blocks(), "and the field comes back");
+        }
         // a binary FBX by hand: one triangle; its corner list packed with zlib (stored blocks)
         std::vector<uint8_t> f; auto u32 = [&](uint32_t v) { for (int k = 0; k < 4; k++) f.push_back((uint8_t)(v >> (8 * k))); };
         const char head[] = "Kaydara FBX Binary  "; f.insert(f.end(), head, head + 20); f.push_back(0); f.push_back(0x1a); f.push_back(0); u32(7400);

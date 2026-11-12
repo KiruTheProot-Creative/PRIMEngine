@@ -740,3 +740,51 @@ float4 PS_Preview(PrevOut i, bool front : SV_IsFrontFace) : SV_Target
     if (i.glow > 0.5) c = t.rgb * 1.3;
     return float4(pow(saturate(c), 1 / 2.2), 1);
 }
+
+// ---------------------------------------------------------------- door forcefields and the test beam (added on top, glowing)
+// ChunkCB here: gOffset.xyz corner (relative to the camera), w 0 field / 1 beam; gAxisX.xyz across (w: hit u), gAxisY.xyz up (w: hit v);
+// gAxisZ.rgb colour (linear), w how much of the field is there (1 full, 0 gone)
+struct FieldOut { float4 pos : SV_Position; float2 uv : TEXCOORD0; float3 rel : TEXCOORD1; };
+FieldOut VS_Field(uint id : SV_VertexID)
+{
+    static const float2 c[6] = { float2(0, 0), float2(1, 0), float2(1, 1), float2(0, 0), float2(1, 1), float2(0, 1) };
+    FieldOut o; o.uv = c[id];
+    o.rel = gOffset.xyz + gAxisX.xyz * o.uv.x + gAxisY.xyz * o.uv.y;
+    o.pos = mul(float4(o.rel, 1), gViewProj);
+    return o;
+}
+float hexEdge(float2 p)   // 0 in the middle of a hexagon, 1 on its edge
+{
+    const float2 s = float2(1, 1.7320508);
+    float2 a = fmod(p, s) - s * 0.5, b = fmod(p - s * 0.5, s) - s * 0.5;
+    a = abs(a); b = abs(b);
+    float2 g = dot(a, a) < dot(b, b) ? a : b;
+    return saturate(max(dot(g, normalize(s)), g.x) * 2);
+}
+float4 PS_Field(FieldOut i) : SV_Target
+{
+    float t = gVolume.z;
+    if (gOffset.w > 0.5)   // the beam: a bright core with a soft glow around it
+    {
+        float a = 1 - abs(i.uv.y * 2 - 1);
+        float core = pow(a, 6) * 3 + pow(a, 1.5) * 0.6;
+        return float4(gAxisZ.rgb * core * smoothstep(0, 0.25, i.uv.x), 0);
+    }
+    float w = length(gAxisX.xyz), h = length(gAxisY.xyz);
+    float2 p = float2(i.uv.x * w, i.uv.y * h);                         // blocks across the opening
+    float hex = hexEdge(p * 3.2 + float2(0, t * 0.15));
+    float scan = 0.5 + 0.5 * sin(p.y * 9 - t * 4);
+    float pulse = 0.85 + 0.15 * sin(t * 2.3);
+    float2 e = min(i.uv, 1 - i.uv) * float2(w, h);
+    float rim = 1 - smoothstep(0, 0.12, min(e.x, e.y));                // brighter at the frame
+    float n = gNoise.SampleLevel(gLinear, float3(p * 0.6, t * 0.05), 0).x;
+    // dissolving: a hole grows from where the shot hit, with a bright burning edge
+    float2 hit = float2(gAxisX.w * w, gAxisY.w * h);
+    float reach = (1 - gAxisZ.w) * (max(w, h) * 1.4 + 0.5);
+    float d = length(p - hit) + (n - 0.5) * 0.6;
+    float keep = smoothstep(reach - 0.05, reach + 0.05, d);
+    float burn = gAxisZ.w < 0.999 ? (1 - smoothstep(0, 0.18, abs(d - reach))) * keep : 0;
+    float glow = (0.10 + 0.55 * pow(hex, 6) + 0.12 * scan + 0.5 * rim) * pulse * keep;
+    float fade = gAxisZ.w < 0.999 && gAxisZ.w > 0 && reach < 0.06 ? gAxisZ.w : 1;   // coming back: fades in
+    return float4(gAxisZ.rgb * (glow * 1.6 * fade + burn * 4), 0);
+}

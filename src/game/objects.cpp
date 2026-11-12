@@ -85,9 +85,16 @@ std::vector<Box3> modelBoxes(const BlockModel& m, const BlockRegistry& reg) {
 const char* collideName(Collide c) { return c == Collide::Exact ? "Exact (from its blocks)" : c == Collide::OneBox ? "One box" : "None (walk through)"; }
 
 // ------------------------------------------------------------------ placed objects
+const char* kindName(ObjKind k) { return k == ObjKind::Door ? "Door" : "Prop"; }
+V3 objectStretch(const WorldObject& o, const ModelFrame& m) {
+    if (o.kind != ObjKind::Door || m.sx <= 0 || m.sy <= 0) return { o.scale, o.scale, o.scale };
+    double x = o.door.w / m.sx, y = o.door.h / m.sy;
+    return { x, y, std::min(x, y) };   // depth: as thick as the narrower stretch keeps it
+}
 V3 objectPoint(const WorldObject& o, const ModelFrame& m, V3 l) {
     double a = o.yaw * 3.14159265358979 / 180, c = std::cos(a), s = std::sin(a);
-    V3 p = (l - m.pivot) * o.scale;
+    V3 k = objectStretch(o, m), d = l - m.pivot;
+    V3 p{ d.x * k.x, d.y * k.y, d.z * k.z };
     return { o.pos.x + p.x * c + p.z * s, o.pos.y + p.y, o.pos.z - p.x * s + p.z * c };
 }
 static Box3 turnedBox(const WorldObject& o, const ModelFrame& m, const Box3& b) {   // the box around a turned box
@@ -119,6 +126,37 @@ bool rayBox(V3 o, V3 d, const Box3& b, double& t) {
     t = t0; return true;
 }
 
+// ------------------------------------------------------------------ doors
+bool DoorRuntime::shoot(float u, float v) {
+    switch (state) {
+    case Closed: state = Dissolving; t = 0; hitU = u; hitV = v; return true;
+    case Restoring: state = Dissolving; t = (1 - field) * dissolveTime; hitU = u; hitV = v; return true;   // carry on from how far it had come back
+    case Closing: state = Opening; t = 0; return true;
+    default: return false;
+    }
+}
+void DoorRuntime::tick(float dt, bool near, float openLen, float closeLen, float stayOpen) {
+    t += dt;
+    switch (state) {
+    case Closed: field = 1; clip = -1; break;
+    case Dissolving: field = std::max(0.f, 1 - t / dissolveTime); clip = -1; if (t >= dissolveTime) { state = Opening; t = 0; } break;
+    case Opening: field = 0; clip = 0; clipTime = std::min(t, openLen); if (t >= openLen) { state = Open; t = 0; } break;
+    case Open: field = 0; clip = openLen > 0 ? 0 : -1; clipTime = openLen; if (near) t = 0; else if (t >= stayOpen) { state = Closing; t = 0; } break;
+    case Closing: field = 0; clip = closeLen > 0 ? 1 : -1; clipTime = std::min(t, closeLen); if (t >= closeLen) { state = Restoring; t = 0; clip = -1; } break;
+    case Restoring: field = std::min(1.f, t / restoreTime); clip = -1; if (t >= restoreTime) { state = Closed; t = 0; field = 1; } break;
+    }
+}
+Box3 fieldBox(const WorldObject& o, const ModelFrame& m, const Box3& op) {
+    double zm = (op.lo.z + op.hi.z) * 0.5, k = objectStretch(o, m).z, half = 0.08 / std::max(k, 1e-6);   // 0.16 blocks thick, whatever the stretch
+    return turnedBox(o, m, { { op.lo.x, op.lo.y, zm - half }, { op.hi.x, op.hi.y, zm + half } });
+}
+void fieldQuad(const WorldObject& o, const ModelFrame& m, const Box3& op, V3& origin, V3& across, V3& up) {
+    double zm = (op.lo.z + op.hi.z) * 0.5;
+    origin = objectPoint(o, m, { op.lo.x, op.lo.y, zm });
+    across = objectPoint(o, m, { op.hi.x, op.lo.y, zm }) - origin;
+    up = objectPoint(o, m, { op.lo.x, op.hi.y, zm }) - origin;
+}
+
 static std::string esc(const std::string& s) { std::string o; for (char c : s) o += c == ' ' ? std::string("%20") : std::string(1, c); return o.empty() ? "-" : o; }
 static std::string unesc(const std::string& s) { if (s == "-") return ""; std::string o; for (size_t i = 0; i < s.size(); i++) { if (s.compare(i, 3, "%20") == 0) { o += ' '; i += 2; } else o += s[i]; } return o; }
 
@@ -127,7 +165,8 @@ bool saveObjects(const std::string& path, const std::vector<WorldObject>& objs) 
     f << "objects 1\n";
     for (const WorldObject& o : objs)
         f << "object " << o.id << " " << esc(o.name) << " " << esc(o.folder) << " " << esc(o.model) << " " << o.pos.x << " " << o.pos.y << " " << o.pos.z
-          << " " << o.yaw << " " << o.scale << " " << (int)o.collide << "\n";
+          << " " << o.yaw << " " << o.scale << " " << (int)o.collide
+          << " " << (int)o.kind << " " << o.door.w << " " << o.door.h << " " << o.door.color << " " << o.door.stayOpen << " " << (o.door.field ? 1 : 0) << "\n";
     return (bool)f;
 }
 bool loadObjects(const std::string& path, std::vector<WorldObject>& objs) {
@@ -139,6 +178,8 @@ bool loadObjects(const std::string& path, std::vector<WorldObject>& objs) {
         l >> o.id >> n >> fo >> mo >> o.pos.x >> o.pos.y >> o.pos.z >> o.yaw >> o.scale >> c;
         if (!l) continue;
         o.name = unesc(n); o.folder = unesc(fo); o.model = unesc(mo); o.collide = (Collide)std::clamp(c, 0, 2);
+        int kind = 0, fieldOn = 1;   // doors (older files end before this)
+        if (l >> kind >> o.door.w >> o.door.h >> o.door.color >> o.door.stayOpen >> fieldOn) { o.kind = (ObjKind)std::clamp(kind, 0, 1); o.door.field = fieldOn != 0; }
         objs.push_back(o);
     }
     return true;

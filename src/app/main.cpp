@@ -88,7 +88,7 @@ struct alignas(16) FrameCB {
 struct alignas(16) ChunkCB { float offset[4]; float ax[4] = { 1, 0, 0, 0 }, ay[4] = { 0, 1, 0, 0 }, az[4] = { 0, 0, 1, 0 }; };   // axes: objects are turned and sized
 
 struct GpuChunk { ComPtr<ID3D11Buffer> vbO, ibO, vbC, ibC, vbW, ibW; UINT nO = 0, nC = 0, nW = 0; };
-struct ModelGpu { std::vector<std::pair<I3, GpuChunk>> parts; std::vector<Box3> boxes; bool mesh = false; ComPtr<ID3D11ShaderResourceView> tex; };
+struct ModelGpu { std::vector<std::pair<I3, GpuChunk>> parts; std::vector<Box3> boxes, boxesStill; bool mesh = false; ComPtr<ID3D11ShaderResourceView> tex; };   // boxesStill: without the moving parts (an open door)
 struct alignas(16) PreviewCB { float vp[16]; float light[4]; };   // a block model's meshes (16^3 pieces) and collision
 
 struct App;
@@ -226,6 +226,8 @@ struct App {
             D3D11_SHADER_RESOURCE_VIEW_DESC sv{}; sv.Format = DXGI_FORMAT_R32_FLOAT; sv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D; sv.Texture2D.MipLevels = 1; HR(dev->CreateShaderResourceView(skyMapTex.Get(), &sv, &skyMapSRV));
         }
         b = Compile(src, "PS_Reflect", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psReflect));
+        b = Compile(src, "VS_Field", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsField));
+        b = Compile(src, "PS_Field", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psField));
         b = Compile(src, "VS_Preview", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsPreview));
         b = Compile(src, "PS_Preview", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psPreview));
         b = Compile(src, "PS_AO", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psAO));
@@ -589,6 +591,7 @@ struct App {
             if (playMode) hoverValid = false; else if (toolMode) ToolInteract(dt); else Interact(dt);
         } else { lPrev = rPrev = mPrev = true; if (stroking) EndStroke(); }
         toolValid = toolMode && !playMode && world->raycast(player.eye(), player.forward(), 160.0, toolHit);   // where the brush is (shown even with the mouse free)
+        if (playMode && !paused) UpdateDoors(std::min(dt, 0.05)); else if (!playMode && !doorRt.empty()) { doorRt.clear(); doorGpu.clear(); shots.clear(); RebuildSolids(); }
         if (playMode && !paused) {   // health, lava, falling out of the world, respawning
             PlayState::Event e = play.tick(*world, player, game.player, playSpawn, playYaw, std::min(dt, 0.05));
             if (e == PlayState::Died) Toast(std::string("You ") + play.cause);
@@ -682,7 +685,7 @@ struct App {
     }
     void ImportModelsDialog() { for (auto& f : PickModels()) ImportModelFile(f); }
     void BuildMeshGpu(ModelGpu& g, const MeshModel& m) {
-        g.mesh = true; g.boxes = meshBoxes(m);
+        g.mesh = true; g.boxes = meshBoxes(m); g.boxesStill = m.parts.empty() ? g.boxes : meshBoxes(m, 24, true);
         UploadMeshVerts(g, m, m.raw);
         D3D11_TEXTURE2D_DESC d{}; d.Width = (UINT)m.tw; d.Height = (UINT)m.th; d.MipLevels = 1; d.ArraySize = 1; d.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB; d.SampleDesc.Count = 1; d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
         D3D11_SUBRESOURCE_DATA sd{ m.tex.data(), (UINT)m.tw * 4, 0 };
@@ -844,13 +847,134 @@ struct App {
         ID3D11ShaderResourceView* none[10] = {}; ctx->PSSetShaderResources(0, 10, none);
     }
 
+    // ================================================================== doors (G2 attempt 3a)
+    struct Shot { V3 pos, dir; float age = 0; };
+    std::map<uint32_t, DoorRuntime> doorRt;           // Play mode: each door's state, by object id
+    std::map<uint32_t, ModelGpu> doorGpu;             // doors in the middle of an animation: their posed meshes
+    std::vector<Shot> shots; bool shootPrev = true;
+    ComPtr<ID3D11VertexShader> vsField; ComPtr<ID3D11PixelShader> psField;
+    static V3 Linear(uint32_t rgb) { auto c = [](uint32_t v) { return std::pow(((v) & 255) / 255.0, 2.2); }; return { c(rgb >> 16), c(rgb >> 8), c(rgb) }; }
+    Box3 OpeningOf(const std::string& model) {   // where the forcefield goes (model space)
+        auto it = meshModels.find(model); if (it != meshModels.end()) return doorOpening(it->second);
+        FrameRef f = ModelNamed(model); return { { f->sx * 0.15, 0, 0 }, { f->sx * 0.85, f->sy * 0.85, f->sz } };
+    }
+    int ClipOf(const std::string& model, int which) {   // 0 open, 1 close -> the model's animation (or -1)
+        auto it = meshModels.find(model); if (it == meshModels.end()) return -1;
+        return it->second.findClip(which == 0 ? "open" : "close");
+    }
+    float ClipLen(const std::string& model, int which) { int c = ClipOf(model, which); return c < 0 ? 0.f : meshModels[model].clips[c].length; }
+    DoorRuntime DoorNow(const WorldObject& o) const { auto it = doorRt.find(o.id); return playMode && it != doorRt.end() ? it->second : DoorRuntime{}; }
+    void MakeDoor(WorldObject& o) {
+        o.kind = ObjKind::Door; if (o.folder == "Props") o.folder = "Doors";
+        if (o.door.w <= 0) o.door.w = 2; if (o.door.h <= 0) o.door.h = 3;
+    }
+    // the door's place in Play mode: animations, forcefield, collision
+    void UpdateDoors(double dt) {
+        if (!playMode) { doorRt.clear(); doorGpu.clear(); shots.clear(); return; }
+        bool changed = false;
+        for (WorldObject& o : objects) {
+            if (o.kind != ObjKind::Door) continue;
+            FrameRef f = ModelOf(o); if (!f) continue;
+            DoorRuntime& r = doorRt[o.id]; bool before = r.blocks();
+            Box3 b = objectBounds(o, *f); V3 c = (b.lo + b.hi) * 0.5, d = player.feet - c;
+            bool near = std::sqrt(d.x * d.x + d.z * d.z) < std::max(o.door.w, o.door.h) * 0.5 + 1.2 && player.feet.y < b.hi.y && player.feet.y > b.lo.y - 1;
+            if (!o.door.field && near && r.state == DoorRuntime::Closed) r.open();   // a plain door opens when you walk up
+            r.tick((float)dt, near, ClipLen(o.model, 0), ClipLen(o.model, 1), o.door.stayOpen);
+            changed |= before != r.blocks();
+            // the halves where the animation has them
+            auto mi = meshModels.find(o.model);
+            if (mi != meshModels.end() && r.clip >= 0) {
+                int clip = ClipOf(o.model, r.clip);
+                ModelGpu& g = doorGpu[o.id]; UploadMeshVerts(g, mi->second, mi->second.posed(clip, r.clipTime)); g.mesh = true; g.tex = GpuModel(o.model).tex;
+            } else doorGpu.erase(o.id);
+        }
+        if (changed) RebuildSolids();
+        // the test beam: click to shoot (G5 brings real weapons)
+        bool L = Down(VK_LBUTTON) && Playing() && !play.dead();
+        if (L && !shootPrev) shots.push_back({ player.eye() + player.forward() * 0.6, player.forward(), 0 });
+        shootPrev = Down(VK_LBUTTON);
+        const double speed = 45;
+        for (Shot& s : shots) {
+            double step = speed * dt; s.age += (float)dt;
+            double best = step; int door = -1; Hit h;
+            if (world->raycast(s.pos, s.dir, step, h)) best = h.t;
+            for (size_t i = 0; i < objects.size(); i++) {   // forcefields and doors, then any object in the way
+                const WorldObject& o = objects[i]; FrameRef f = ModelOf(o); if (!f) continue;
+                double t;
+                if (o.kind == ObjKind::Door && DoorNow(o).blocks()) {
+                    Box3 fb = fieldBox(o, *f, OpeningOf(o.model));
+                    if (rayBox(s.pos, s.dir, fb, t) && t < best) { best = t; door = (int)i; }
+                }
+            }
+            for (const Box3& b : world->objectSolids) { double t; if (rayBox(s.pos, s.dir, b, t) && t < best - 1e-6) { best = t; door = -1; } }
+            if (best < step) {
+                if (door >= 0) {   // where on the field it hit: the dissolve starts there
+                    WorldObject& o = objects[door]; FrameRef f = ModelOf(o); V3 org, ac, up; fieldQuad(o, *f, OpeningOf(o.model), org, ac, up);
+                    V3 p = s.pos + s.dir * best, q = p - org;
+                    auto dot = [](V3 a, V3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; };
+                    float u = (float)std::clamp(dot(q, ac) / std::max(1e-9, dot(ac, ac)), 0.0, 1.0), v = (float)std::clamp(dot(q, up) / std::max(1e-9, dot(up, up)), 0.0, 1.0);
+                    doorRt[o.id].shoot(u, v);
+                }
+                s.age = 99;
+            } else s.pos = s.pos + s.dir * step;
+        }
+        shots.erase(std::remove_if(shots.begin(), shots.end(), [](const Shot& s) { return s.age > 2.5f; }), shots.end());
+    }
+    // forcefields (and the beam): glowing see-through quads, added on top of the picture
+    void DrawFields() {
+        bool any = false; for (auto& o : objects) any |= o.kind == ObjKind::Door && o.door.field;
+        if (!any && shots.empty()) return;
+        ctx->OMSetBlendState(bsAdd.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsTestOnly.Get(), 0); ctx->RSSetState(rsNoCull.Get());
+        ctx->IASetInputLayout(nullptr); ctx->VSSetShader(vsField.Get(), nullptr, 0); ctx->PSSetShader(psField.Get(), nullptr, 0);
+        ctx->PSSetShaderResources(3, 1, noiseSRV.GetAddressOf()); ctx->PSSetSamplers(2, 1, sampLinear.GetAddressOf());
+        for (const WorldObject& o : objects) {
+            if (o.kind != ObjKind::Door || !o.door.field) continue;
+            FrameRef f = ModelOf(o); if (!f) continue;
+            DoorRuntime r = DoorNow(o); if (r.field <= 0.001f) continue;
+            V3 org, ac, up; fieldQuad(o, *f, OpeningOf(o.model), org, ac, up); V3 rel = org - camPos, col = Linear(o.door.color);
+            ChunkCB cc{ { (float)rel.x, (float)rel.y, (float)rel.z, 0 }, { (float)ac.x, (float)ac.y, (float)ac.z, r.hitU }, { (float)up.x, (float)up.y, (float)up.z, r.hitV }, { (float)col.x, (float)col.y, (float)col.z, r.field } };
+            ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0); ctx->Draw(6, 0);
+        }
+        for (const Shot& s : shots) {   // a short bright streak, facing the camera
+            V3 tail = s.pos - s.dir * std::min(1.4, 45.0 * s.age), side{ s.dir.y * 0 - s.dir.z * 0, 0, 0 };
+            V3 view = s.pos - camPos; V3 cr{ s.dir.y * view.z - s.dir.z * view.y, s.dir.z * view.x - s.dir.x * view.z, s.dir.x * view.y - s.dir.y * view.x };
+            double l = std::sqrt(cr.x * cr.x + cr.y * cr.y + cr.z * cr.z); side = l > 1e-9 ? cr * (0.07 / l) : V3{ 0.07, 0, 0 };
+            V3 org = tail - side - camPos, ac = s.pos - tail, up = side * 2;
+            ChunkCB cc{ { (float)org.x, (float)org.y, (float)org.z, 1 }, { (float)ac.x, (float)ac.y, (float)ac.z, 0 }, { (float)up.x, (float)up.y, (float)up.z, 0 }, { 0.4f, 1.6f, 3.0f, 1 } };
+            ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0); ctx->Draw(6, 0);
+        }
+        ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());
+    }
+    void DoorInspector(WorldObject& o, bool& ch_) {
+        ImGui::SeparatorText("Door");
+        double w = o.door.w, h = o.door.h;
+        Prop("Width (blocks)"); if (ImGui::InputDouble("##dw", &w, 0.5, 1, "%.1f") && w >= 0.5 && w <= 64) { o.door.w = w; ch_ = true; }
+        Prop("Height (blocks)"); if (ImGui::InputDouble("##dh", &h, 0.5, 1, "%.1f") && h >= 0.5 && h <= 64) { o.door.h = h; ch_ = true; }
+        Hint("The model is stretched to fill this, and the forcefield fills its opening.");
+        Prop("Forcefield"); ImGui::Checkbox("##field", &o.door.field);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("On: shoot it to open the door.\nOff: the door opens when you walk up to it.");
+        if (o.door.field) {
+            float c[3] = { ((o.door.color >> 16) & 255) / 255.f, ((o.door.color >> 8) & 255) / 255.f, (o.door.color & 255) / 255.f };
+            Prop("Colour"); if (ImGui::ColorEdit3("##fc", c, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_PickerHueWheel))
+                o.door.color = ((uint32_t)std::lround(c[0] * 255) << 16) | ((uint32_t)std::lround(c[1] * 255) << 8) | (uint32_t)std::lround(c[2] * 255);
+            const std::pair<const char*, uint32_t> presets[] = { { "Blue", 0x3AA0FF }, { "Red", 0xFF3A3A }, { "Green", 0x3AFF7A }, { "Yellow", 0xFFD23A }, { "Purple", 0xB45AFF } };
+            for (auto& p : presets) { ImGui::PushID(p.first); ImVec4 col(((p.second >> 16) & 255) / 255.f, ((p.second >> 8) & 255) / 255.f, (p.second & 255) / 255.f, 1);
+                Flow(ImGui::GetFrameHeight()); if (ImGui::ColorButton(p.first, col)) o.door.color = p.second; ImGui::PopID(); }
+            Hint("Later, the colour says which weapon opens it (like beam, missile ...). For now any shot does.");
+        }
+        Prop("Stays open (s)"); ImGui::SliderFloat("##stay", &o.door.stayOpen, 0.5f, 15, "%.1f s");
+        int op = ClipOf(o.model, 0), cl = ClipOf(o.model, 1);
+        if (op >= 0 || cl >= 0) Hint("Its animations: %s%s. They play when it opens and closes.", op >= 0 ? "open" : "", cl >= 0 ? (op >= 0 ? ", close" : "close") : "");
+        else Hint("This model has no \"open\" / \"close\" animations, so only the forcefield opens. Name them like that in Blockbench or Blender to have the door move.");
+    }
+
     // ================================================================== objects (G2)
     ModelGpu& GpuModel(const std::string& name) {   // the model's meshes, made the first time they are needed
         auto it = modelGpu.find(name); if (it != modelGpu.end()) return it->second;
         ModelGpu& g = modelGpu[name];
         { auto mi = meshModels.find(name); if (mi != meshModels.end()) { BuildMeshGpu(g, mi->second); return g; } }
         const BlockModel* m = models.find(name); if (!m) return g;
-        g.boxes = modelBoxes(*m, reg);
+        g.boxes = modelBoxes(*m, reg); g.boxesStill = g.boxes;
         for (int cy = 0; cy * CS < m->sy; cy++) for (int cz = 0; cz * CS < m->sz; cz++) for (int cx = 0; cx * CS < m->sx; cx++) {
             MeshInput in; in.pos = { cx, cy, cz }; in.blocks.assign(PAD * PAD * PAD, AIR);
             for (int y = -1; y <= CS; y++) for (int z = -1; z <= CS; z++) for (int x = -1; x <= CS; x++) {
@@ -870,6 +994,14 @@ struct App {
         for (size_t i = 0; i < objects.size(); i++) {
             if ((int)i == movingObj) continue;
             FrameRef m = ModelOf(objects[i]); if (!m) continue;
+            const WorldObject& o = objects[i];
+            if (o.kind == ObjKind::Door) {   // a door: its frame always; its halves and its forcefield only while it is shut
+                DoorRuntime r = DoorNow(o); ModelGpu& g = GpuModel(o.model);
+                auto b = objectBoxes(o, *m, r.blocks() ? g.boxes : g.boxesStill);
+                world->objectSolids.insert(world->objectSolids.end(), b.begin(), b.end());
+                if (r.blocks() && o.door.field) world->objectSolids.push_back(fieldBox(o, *m, OpeningOf(o.model)));
+                continue;
+            }
             auto b = objectBoxes(objects[i], *m, GpuModel(objects[i].model).boxes);
             world->objectSolids.insert(world->objectSolids.end(), b.begin(), b.end());
         }
@@ -878,10 +1010,11 @@ struct App {
     void DrawObject(const WorldObject& o, int pass) { DrawObject(o, pass, camPos); }
     void DrawObject(const WorldObject& o, int pass, V3 cam, const ModelGpu* use = nullptr) {
         FrameRef m = ModelOf(o); if (!m) return;
-        const ModelGpu& g = use ? *use : GpuModel(o.model);
+        auto dg = use ? doorGpu.end() : doorGpu.find(o.id);
+        const ModelGpu& g = use ? *use : dg != doorGpu.end() ? dg->second : GpuModel(o.model);
         if (g.mesh) ctx->PSSetShaderResources(9, 1, g.tex.GetAddressOf());   // the imported model's own picture
-        double a = o.yaw * 3.14159265358979 / 180, c = std::cos(a), s = std::sin(a), k = o.scale;
-        V3 ax{ c * k, 0, -s * k }, ay{ 0, k, 0 }, az{ s * k, 0, c * k };
+        double a = o.yaw * 3.14159265358979 / 180, c = std::cos(a), s = std::sin(a); V3 k = objectStretch(o, *m);   // doors: stretched to Width x Height
+        V3 ax{ c * k.x, 0, -s * k.x }, ay{ 0, k.y, 0 }, az{ s * k.z, 0, c * k.z };
         for (auto& part : g.parts) {
             const GpuChunk& gc = part.second; UINT n = pass == 0 ? gc.nO : pass == 1 ? gc.nC : gc.nW; if (!n) continue;
             V3 l{ part.first.x * (double)CS - m->pivot.x, part.first.y * (double)CS - m->pivot.y, part.first.z * (double)CS - m->pivot.z };
@@ -906,10 +1039,14 @@ struct App {
     bool PlacePose(WorldObject& o) {
         FrameRef m = ModelNamed(placing); if (!m || !toolValid) return false;
         o.model = placing; o.yaw = placeYaw;
+        if (ClipOf(placing, 0) >= 0 && o.kind == ObjKind::Prop && movingObj < 0 && dupFrom < 0) MakeDoor(o);
+        if (movingObj >= 0 && movingObj < (int)objects.size()) { o.kind = objects[movingObj].kind; o.door = objects[movingObj].door; }
+        if (dupFrom >= 0 && dupFrom < (int)objects.size()) { o.kind = objects[dupFrom].kind; o.door = objects[dupFrom].door; }
         if (Down(VK_MENU)) { o.pos = { toolHit.px, toolHit.py, toolHit.pz }; return true; }
         I3 a{ toolHit.x + toolHit.nx, toolHit.y + toolHit.ny, toolHit.z + toolHit.nz };
         bool side = std::fmod(std::fabs(placeYaw) + 0.001, 180.0) > 45 && std::fmod(std::fabs(placeYaw) + 0.001, 180.0) < 135;
         auto half = [&](double w) { double ws = w * o.scale; long r = std::lround(ws); return std::fabs(ws - r) < 1e-6 && (r % 2) == 0 ? 0.0 : std::fabs(ws - r) < 1e-6 ? 0.5 : 0.5; };
+        if (o.kind == ObjKind::Door) { auto hw = [](double w) { long r = std::lround(w); return std::fabs(w - r) < 1e-6 && (r % 2) == 0 ? 0.0 : 0.5; }; o.pos = { a.x + (side ? 0.5 : hw(o.door.w)), (double)a.y, a.z + (side ? hw(o.door.w) : 0.5) }; return true; }
         o.pos = { a.x + half(side ? m->sz : m->sx), (double)a.y, a.z + half(side ? m->sx : m->sz) };
         return true;
     }
@@ -982,7 +1119,7 @@ struct App {
             if (movingObj >= 0) { WorldObject& t = objects[movingObj]; t.pos = o.pos; t.yaw = o.yaw; sel = Sel::Object; selIndex = movingObj; movingObj = -1; placing.clear(); }
             else {
                 WorldObject n = dupFrom >= 0 && dupFrom < (int)objects.size() ? objects[dupFrom] : WorldObject{};
-                n.id = nextObjId++; n.model = o.model; n.pos = o.pos; n.yaw = o.yaw; n.scale = o.scale;
+                n.id = nextObjId++; n.model = o.model; n.pos = o.pos; n.yaw = o.yaw; n.scale = o.scale; n.kind = o.kind; n.door = o.door; if (n.kind == ObjKind::Door && dupFrom < 0) n.folder = "Doors";
                 n.name = UniqueObjectName(o.model);
                 objects.push_back(n); sel = Sel::Object; selIndex = (int)objects.size() - 1;
                 if (dupFrom >= 0) { placing.clear(); dupFrom = -1; }
@@ -1033,11 +1170,14 @@ struct App {
         Prop("Folder"); ImGui::InputText("##folder", &o.folder);
         Prop("Model");
         if (ImGui::BeginCombo("##model", o.model.c_str())) { for (auto& n : AllModelNames()) if (ImGui::Selectable(n.c_str(), n == o.model)) { o.model = n; ch_ = true; } ImGui::EndCombo(); }
+        { int k = (int)o.kind; const char* kn[] = { "Prop (it just stands there)", "Door (forcefield, opens)" }; Prop("Kind");
+          if (ImGui::Combo("##kind", &k, kn, 2)) { if (k == 1) MakeDoor(o); else { o.kind = ObjKind::Prop; if (o.folder == "Doors") o.folder = "Props"; } ch_ = true; } }
         Prop("Position"); ch_ |= ImGui::InputScalarN("##pos", ImGuiDataType_Double, &o.pos.x, 3, nullptr, nullptr, "%.2f");
         { float y = (float)o.yaw; Prop("Turn"); if (ImGui::SliderFloat("##yaw", &y, -180, 180, "%.0f deg")) { o.yaw = y; ch_ = true; }
           if (ImGui::SmallButton("-90")) { o.yaw = std::fmod(o.yaw - 90 + 540, 360) - 180; ch_ = true; } if (FlowButton("+90", true)) { o.yaw = std::fmod(o.yaw + 90 + 540, 360) - 180; ch_ = true; } }
-        { float sc = (float)o.scale; Prop("Size"); if (ImGui::SliderFloat("##scale", &sc, 0.1f, 8, "x %.2f", ImGuiSliderFlags_Logarithmic)) { o.scale = sc; ch_ = true; } }
-        if (m) {
+        if (o.kind == ObjKind::Door) DoorInspector(o, ch_);
+        else { float sc = (float)o.scale; Prop("Size"); if (ImGui::SliderFloat("##scale", &sc, 0.1f, 8, "x %.2f", ImGuiSliderFlags_Logarithmic)) { o.scale = sc; ch_ = true; } }
+        if (m && o.kind != ObjKind::Door) {
             double h = m->sy * o.scale; Prop("Height (blocks)");
             if (ImGui::InputDouble("##height", &h, 0.5, 1, "%.2f") && h > 0.05) { o.scale = h / m->sy; ch_ = true; }
             Hint("%.2f wide, %.2f tall, %.2f deep (blocks). The player is 1.8 tall, the morph ball 1.", m->sx * o.scale, m->sy * o.scale, m->sz * o.scale);
@@ -1663,6 +1803,7 @@ struct App {
             ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());
         }
         if (weather.boltAge < 0.45 && E.atmosphere > 0.5f) DrawBolt();
+        DrawFields();   // door forcefields and test-beam shots
         if (E.particleKind > 0.5f && E.particleAmount > 0.01f) {   // dust, embers, spores or ice sparkles floating in the air
             ctx->OMSetBlendState(bsAlpha.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsTestOnly.Get(), 0); ctx->RSSetState(rsNoCull.Get());
             ctx->IASetInputLayout(nullptr); ctx->VSSetShader(vsDust.Get(), nullptr, 0); ctx->PSSetShader(psRain.Get(), nullptr, 0);
@@ -3016,6 +3157,27 @@ struct App {
                 }
                 poseAt(DemoShot{ "i", { 37.5, gy + 3.5, 14 }, { 37.5, gy + 1.2, 22 }, 15.0f });
                 frames(4, "imported_models");
+                // doors: your door stretched to 2 x 3 (blue), 1 x 1 (purple, morph ball) and 4 x 2 (green)
+                if (models.find("DOOR_01") || meshModels.count("DOOR_01")) {
+                    auto door = [&](double x, double w, double h, uint32_t col) { WorldObject o; o.id = nextObjId++; o.model = "DOOR_01"; o.name = UniqueObjectName("Door"); MakeDoor(o);
+                        o.pos = { x, (double)gy, 40 }; o.door.w = w; o.door.h = h; o.door.color = col; o.door.stayOpen = 5; objects.push_back(o); return o.id; };
+                    uint32_t a = door(22, 2, 3, 0x3AA0FF), b = door(26.5, 1, 1, 0xB45AFF), c = door(31, 4, 2, 0x3AFF7A);
+                    for (int x = 19; x <= 34; x++) for (int y = gy; y < gy + 4; y++) { bool hole = (x >= 21 && x <= 22 && y < gy + 3) || (x == 26 && y == gy) || (x >= 29 && x <= 32 && y < gy + 2); if (!hole) world->set(x, y, 41, reg.find("bricks")); }
+                    RebuildSolids();
+                    for (int i = 0; i < (int)objects.size(); i++) if (objects[i].id == a) { sel = Sel::Object; selIndex = i; }
+                    toolMode = true; toolSel = 2; placing.clear();
+                    poseAt(DemoShot{ "d", { 26.5, gy + 2.6, 31 }, { 26.5, gy + 1.3, 40 }, 15.5f });
+                    frames(4, "doors_editor");
+                    toolMode = false; sel = Sel::World;
+                    StartPlay(false);
+                    poseAt(DemoShot{ "d", { 25.5, gy + 1.7, 33 }, { 25.5, gy + 1.3, 40 }, 15.5f });
+                    doorRt[a].shoot(0.35f, 0.55f); doorRt[a].t = 0.1f;
+                    doorRt[c].state = DoorRuntime::Open; doorRt[c].t = 0;
+                    shots.push_back({ player.eye() + V3{ 0.4, -0.2, 2.0 }, { 0.07, -0.03, 1 }, 0 });
+                    play.health = game.player.maxHealth; toastT = 0;
+                    frames(3, "doors_play");
+                    StopPlay();
+                }
                 sel = Sel::World;
             }
             {   // tools: sculpt a little landscape with the terrain brush, then show it with the brush options open

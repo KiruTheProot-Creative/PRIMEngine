@@ -84,3 +84,10 @@ In the editor, **T** swaps the hotbar between blocks and tools. Slot 1 is the **
 - **Imported models:** Blockbench (.bbmodel, cube models), .obj (+ .mtl and its picture), glTF (.gltf / .glb) and FBX (text and binary, with their animations, e.g. a door's "open" and "close"). Use Assets > Models > "Import models...", File > "Import 3D models..." or drop the file on the window.
 - **3D viewer:** double-click a model. Shows the model on a grid next to the player (1.8 tall) and the morph ball (1 block), with its size; set the height of imported models there.
 - Collision is made from the model itself: block models from their blocks, imported models from their shape (filled with small cubes, merged into boxes).
+
+## Doors (G2)
+
+- Any object can be a door (Inspector > Kind). Models with an "open" animation become doors by themselves.
+- Width x Height in blocks: the model is stretched to fill it (1 x 1 for the morph ball, 2 x 3, 4 x 2 ...).
+- Forcefield: a glowing field in the door's opening, in a colour you pick. In Play mode, click to shoot the test beam: the field dissolves from where it was hit, the door plays its "open" animation, stays open (longer while you stand in it), plays "close" and the field comes back. Without a forcefield the door opens when you walk up to it.
+- Collision follows: the door halves and the field block you while it is shut; the frame always does.

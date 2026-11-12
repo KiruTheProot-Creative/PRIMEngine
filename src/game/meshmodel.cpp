@@ -454,7 +454,17 @@ bool importModel(const std::string& path, MeshModel& out, std::string& error) {
 }
 
 // ------------------------------------------------------------------ collision: fill the shape with small cubes, merge them into boxes
-std::vector<Box3> meshBoxes(const MeshModel& m, int maxCells) {
+Box3 doorOpening(const MeshModel& m) {
+    Box3 b{ { 1e30, 1e30, 1e30 }, { -1e30, -1e30, -1e30 } }; bool any = false;
+    if (m.vpart.size() == m.raw.size())
+        for (size_t i = 0; i < m.raw.size(); i++) if (m.vpart[i] != 0xFFFF) {
+            V3 p = m.blockPos(m.raw[i]); any = true;
+            b.lo = { std::min(b.lo.x, p.x), std::min(b.lo.y, p.y), std::min(b.lo.z, p.z) }; b.hi = { std::max(b.hi.x, p.x), std::max(b.hi.y, p.y), std::max(b.hi.z, p.z) };
+        }
+    if (!any) b = { { m.sx * 0.15, 0, 0 }, { m.sx * 0.85, m.sy * 0.85, m.sz } };
+    return b;
+}
+std::vector<Box3> meshBoxes(const MeshModel& m, int maxCells, bool stillOnly) {
     std::vector<Box3> out;
     double ext = std::max({ m.sx, m.sy, m.sz }); if (ext <= 0 || m.idx.empty()) return out;
     double cell = std::max(1.0 / 8, ext / maxCells);
@@ -467,6 +477,7 @@ std::vector<Box3> meshBoxes(const MeshModel& m, int maxCells) {
         at(x, y, z) = 1;
     };
     for (size_t t = 0; t + 2 < m.idx.size(); t += 3) {   // dense points on every triangle
+        if (stillOnly && m.vpart.size() == m.raw.size() && m.vpart[m.idx[t]] != 0xFFFF) continue;
         V3 a = m.blockPos(m.raw[m.idx[t]]), b = m.blockPos(m.raw[m.idx[t + 1]]), c = m.blockPos(m.raw[m.idx[t + 2]]);
         auto len = [](V3 d) { return std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z); };
         int steps = std::max(1, (int)std::ceil(std::max({ len(b - a), len(c - a), len(c - b) }) / (cell * 0.45)));

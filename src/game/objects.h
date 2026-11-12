@@ -34,14 +34,46 @@ std::vector<Box3> modelBoxes(const BlockModel& m, const BlockRegistry& reg);
 enum class Collide { Exact, OneBox, None };
 const char* collideName(Collide c);
 
+enum class ObjKind { Prop, Door };
+const char* kindName(ObjKind k);
+
+// a door: its model is stretched to fill Width x Height blocks; a forcefield sits in its opening
+struct DoorSettings {
+    double w = 2, h = 3;                              // blocks
+    uint32_t color = 0x3AA0FF;                        // the forcefield's colour (later: which weapon opens it)
+    float stayOpen = 3;                               // seconds before it closes again (it waits while you stand in it)
+    bool field = true;                                // false: a plain door that opens when you walk up to it
+};
+
 struct WorldObject {
     uint32_t id = 0;
     std::string name, folder = "Props", model;
     V3 pos{ 0, 0, 0 };                                // where the model's pivot sits
     double yaw = 0;                                   // degrees, around the up axis
-    double scale = 1;
+    double scale = 1;                                 // props: the same in every direction (doors use Width x Height instead)
     Collide collide = Collide::Exact;
+    ObjKind kind = ObjKind::Prop;
+    DoorSettings door;
 };
+V3 objectStretch(const WorldObject& o, const ModelFrame& m);   // how much it is sized along its own x, y, z
+
+// a door in Play mode: shot -> the field dissolves -> it opens -> stays open -> closes -> the field comes back
+struct DoorRuntime {
+    enum State { Closed, Dissolving, Opening, Open, Closing, Restoring };
+    State state = Closed; float t = 0;
+    float field = 1;                                  // 1: the forcefield is fully there
+    float hitU = 0.5f, hitV = 0.5f;                   // where it was hit (0..1 across the opening), the dissolve starts there
+    static constexpr float dissolveTime = 0.35f, restoreTime = 0.45f;
+    bool shoot(float u, float v);                     // true if the shot does something
+    void open() { shoot(0.5f, 0.5f); }               // plain doors (no forcefield) open when you come near
+    void tick(float dt, bool playerNear, float openLen, float closeLen, float stayOpen);
+    bool blocks() const { return state != Opening && state != Open; }
+    int clip = -1; float clipTime = 0;                // which animation to show: 0 open, 1 close, -1 none (as imported = closed)
+};
+
+// the forcefield's place: a thin box filling the opening (opening: in model space)
+Box3 fieldBox(const WorldObject& o, const ModelFrame& m, const Box3& opening);
+void fieldQuad(const WorldObject& o, const ModelFrame& m, const Box3& opening, V3& origin, V3& across, V3& up);
 V3 objectPoint(const WorldObject& o, const ModelFrame& m, V3 local);              // model space -> world
 std::vector<Box3> objectBoxes(const WorldObject& o, const ModelFrame& m, const std::vector<Box3>& mboxes);   // world space
 Box3 objectBounds(const WorldObject& o, const ModelFrame& m);
