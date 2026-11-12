@@ -926,7 +926,7 @@ struct App {
         }
         if (tool == 2) {   // objects: a little crate
             float h = s * 0.36f; ImVec2 a(c.x - h, c.y - h * 0.6f), b(c.x + h * 0.6f, c.y + h);
-            dl->AddRectFilled(a, b, IM_COL32(170, 120, 70, 255), 2); dl->AddRect(a, b, IM_COL32(90, 60, 30, 255), 2, 0, 2);
+            dl->AddRectFilled(a, b, IM_COL32(170, 120, 70, 255), 2.f); dl->AddRect(a, b, IM_COL32(90, 60, 30, 255), 2.f, 0, 2.f);
             dl->AddLine(a, b, IM_COL32(90, 60, 30, 255), 2); dl->AddLine(ImVec2(a.x, b.y), ImVec2(b.x, a.y), IM_COL32(90, 60, 30, 255), 2);
             dl->AddQuadFilled(a, ImVec2(a.x + h * 0.4f, a.y - h * 0.4f), ImVec2(b.x + h * 0.4f, a.y - h * 0.4f), ImVec2(b.x, a.y), IM_COL32(200, 150, 95, 255));
             dl->AddQuadFilled(ImVec2(b.x, a.y), ImVec2(b.x + h * 0.4f, a.y - h * 0.4f), ImVec2(b.x + h * 0.4f, b.y - h * 0.4f), b, IM_COL32(130, 90, 50, 255));
