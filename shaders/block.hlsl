@@ -407,8 +407,8 @@ float4 PS_Reflect(SkyOut i) : SV_Target
     float NdotV = saturate(dot(n, -dir));
     float f0 = mirror ? 0.9 : 0.02 + 0.35 * shine;
     float F = f0 + (1 - f0) * pow(1 - NdotV, 5);
-    float k = mirror ? 1 : saturate(shine * 1.4);
-    return float4(scene * (1 - F * k * 0.5) + refl * F * k, 1);
+    float amount = mirror ? 1 : saturate(shine * 1.4);
+    return float4(scene * (1 - F * amount * 0.5) + refl * F * amount, 1);
 }
 
 // ---------------------------------------------------------------- volumetrics: clouds and ground fog over the picture
