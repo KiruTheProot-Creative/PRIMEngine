@@ -597,8 +597,8 @@ struct App {
         float right = ImGui::GetCurrentWindow()->WorkRect.Max.x;
         if (ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x + nextWidth <= right) ImGui::SameLine();
     }
-    float ButtonW(const char* label, bool small = false) { return ImGui::CalcTextSize(label, nullptr, true).x + (small ? 0 : 2) * ImGui::GetStyle().FramePadding.x + (small ? 2 * ImGui::GetStyle().FramePadding.x : 0); }
-    bool FlowButton(const char* label, bool small = false) { Flow(ButtonW(label, small)); return small ? ImGui::SmallButton(label) : ImGui::Button(label); }
+    float ButtonW(const char* label, bool compact = false) { return ImGui::CalcTextSize(label, nullptr, true).x + (compact ? 0 : 2) * ImGui::GetStyle().FramePadding.x + (compact ? 2 * ImGui::GetStyle().FramePadding.x : 0); }
+    bool FlowButton(const char* label, bool compact = false) { Flow(ButtonW(label, compact)); return compact ? ImGui::SmallButton(label) : ImGui::Button(label); }
     float Cols(int n) { float sp = ImGui::GetStyle().ItemSpacing.x; return std::floor((ImGui::GetContentRegionAvail().x - sp * (n - 1)) / n); }   // width of n buttons side by side
 
     // ---- tools
