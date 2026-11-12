@@ -501,6 +501,9 @@ int main() {
         std::vector<EventCard> back; saveEvents("/tmp/prim_events.txt", c3); loadEvents("/tmp/prim_events.txt", back);
         CHECK(back.size() == 3 && back[0].name == "Heal % over time" && back[1].when.target == "Gem" && back[1].when.number == 3 && back[2].once
               && back[2].ifs.size() == 1 && back[2].dos[0].text == "You win!\nWell done" && back[2].dos[0].kind == Do::Win, "event cards save and load");
+        { EventCard t; t.when = { When::EnterZone, "Hall" }; t.ifs = { { If::HasKey, "Red key" } }; t.dos = { { Do::OpenDoor, "Gate" }, { Do::Wait, "", "", 2 }, { Do::Message, "", "Hi" } }; t.once = true;
+          std::string d = describe(t);
+          CHECK(d == "When the player walks into Hall, only if the player has the Red key: open Gate, wait 2 s, show \"Hi\" (once).", "a card reads as one sentence: %s", d.c_str()); }
         CHECK(std::string(needOf(Do::OpenDoor).objectKind) == "door" && needOf(When::Every).number, "each part says what it needs");
     }
 

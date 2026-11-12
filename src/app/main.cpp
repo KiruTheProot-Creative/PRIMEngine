@@ -3477,20 +3477,6 @@ struct App {
     static char NameKind(If c) { return c == If::HasKey || c == If::NoKey ? 'k' : c == If::CountAtLeast ? 'c' : 'f'; }
     static char NameKind(Do d) { return d == Do::GiveKey || d == Do::TakeKey ? 'k' : d == Do::AddCount ? 'c' : 'f'; }
     static const char* NameHint(char k) { return k == 'k' ? "Red key" : k == 'c' ? "Gem" : k == 'p' ? "Gem (empty: anything)" : "door-done"; }
-    // the fields one part needs, below its kind
-    bool PartFields(const Need& n, std::string& obj, std::string& name, std::string& text, float& num, char nk, bool anyObj, bool isWhen, bool isParticles) {
-        bool ch = false;
-        if (n.object) { Prop(std::string(n.objectKind) == "any" ? "Object" : n.objectKind); ch |= ObjectPick("##obj", obj, n.objectKind, anyObj); }
-        if (n.name) { Prop(nk == 'k' ? "Key" : nk == 'f' ? "Flag" : nk == 'p' ? "Pickup" : "Counter"); ch |= NamePick("##nm", isWhen ? obj : name, nk, NameHint(nk)); }
-        if (n.text) {
-            if (isParticles) {
-                Prop("Look");
-                if (ImGui::BeginCombo("##fx", text.empty() ? "Sparks" : text.c_str())) { for (auto& pn : particlePresets()) if (ImGui::Selectable(pn.c_str(), text == pn)) { text = pn; ch = true; } ImGui::EndCombo(); }
-            } else { Prop("Text"); ch |= ImGui::InputTextWithHint("##txt", "what it says", &text); }
-        }
-        if (n.number) { Prop(n.numberLabel); ch |= ImGui::DragFloat("##num", &num, 0.1f, 0, 10000, "%.1f"); }
-        return ch;
-    }
     template <class E> bool KindCombo(const char* id, E& k) {
         int v = (int)k; bool ch = false;
         if (ImGui::BeginCombo(id, needOf(k).label)) {
@@ -3520,83 +3506,152 @@ struct App {
         ImGui::FocusWindow(w);
         if (w->DockNode && w->DockNode->TabBar) w->DockNode->TabBar->NextSelectedTabId = w->TabId;
     }
+    // the fields one part needs, on the same line as its kind (each field gets an equal share of the rest of the row)
+    bool InlineFields(const Need& n, std::string& obj, std::string& name, std::string& text, float& num, char nk, bool anyObj, bool isWhen, bool isParticles, float width) {
+        int count = (int)n.object + (int)n.name + (int)n.text + (int)n.number; if (!count) return false;
+        float sp = ImGui::GetStyle().ItemSpacing.x, w = std::floor((width - sp * (count - 1)) / count); bool ch = false; bool first = true;
+        auto next = [&] { if (!first) ImGui::SameLine(); first = false; ImGui::SetNextItemWidth(w); };
+        if (n.object) { next(); ch |= ObjectPick("##obj", obj, n.objectKind, anyObj); if (ImGui::IsItemHovered() && !obj.empty()) ImGui::SetTooltip("%s", obj.c_str()); }
+        if (n.name) { if (!first) ImGui::SameLine(); first = false; ImGui::BeginGroup(); ImGui::PushItemWidth(w); ch |= NamePickW("##nm", isWhen ? obj : name, nk, NameHint(nk), w); ImGui::PopItemWidth(); ImGui::EndGroup(); }
+        if (n.text) {
+            next();
+            if (isParticles) { if (ImGui::BeginCombo("##fx", text.empty() ? "Sparks" : text.c_str())) { for (auto& pn : particlePresets()) if (ImGui::Selectable(pn.c_str(), text == pn)) { text = pn; ch = true; } ImGui::EndCombo(); } }
+            else ch |= ImGui::InputTextWithHint("##txt", "what it says", &text);
+        }
+        if (n.number) { next(); std::string f = std::string("%.1f ") + (std::string(n.numberLabel) == "seconds" ? "s" : n.numberLabel); ch |= ImGui::DragFloat("##num", &num, 0.1f, 0, 10000, f.c_str()); }
+        return ch;
+    }
+    bool NamePickW(const char* id, std::string& v, char what, const char* hint, float w) {
+        float bw = ImGui::GetFrameHeight(); bool ch = false;
+        ImGui::SetNextItemWidth(std::max(30.f, w - bw - ImGui::GetStyle().ItemSpacing.x));
+        ch |= ImGui::InputTextWithHint(id, hint, &v);
+        ImGui::SameLine(); std::string pid = std::string(id) + "pick";
+        if (ImGui::BeginCombo(pid.c_str(), "", ImGuiComboFlags_NoPreview | ImGuiComboFlags_PopupAlignLeft)) {
+            auto names = KnownNames(what);
+            for (const std::string& n : names) if (ImGui::Selectable(n.c_str(), v == n)) { v = n; ch = true; }
+            if (names.empty()) ImGui::TextDisabled("Nothing yet: type a name");
+            ImGui::EndCombo();
+        }
+        return ch;
+    }
+    // one row: [kind | fields ... | buttons]; the kind gets 45% (all of it when there are no fields)
+    template <class E> bool KindRow(E& k, float buttons, bool& kindChanged) {
+        float avail = ImGui::GetContentRegionAvail().x - buttons; const Need& n = needOf(k);
+        bool fields = n.object || n.name || n.text || n.number;
+        ImGui::SetNextItemWidth(fields ? std::floor(avail * 0.45f) : avail);
+        kindChanged = KindCombo("##k", k);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", needOf(k).label);
+        if (fields) ImGui::SameLine();
+        return kindChanged;
+    }
+    int evSel = 0;
+    void CardEditor(EventCard& c, bool& ch) {
+        float ui = settings.uiScale, bw = ImGui::GetFrameHeight(), sp = ImGui::GetStyle().ItemSpacing.x;
+        ch |= ImGui::Checkbox("##on", &c.enabled); if (ImGui::IsItemHovered()) ImGui::SetTooltip("On / off");
+        ImGui::SameLine(); ImGui::SetNextItemWidth(std::min(260 * ui, ImGui::GetContentRegionAvail().x * 0.5f)); ch |= ImGui::InputTextWithHint("##name", "card name", &c.name);
+        ImGui::SameLine(); ch |= ImGui::Checkbox("Only once", &c.once);
+        if (playMode) { ImGui::SameLine(); ImGui::TextDisabled("  ran %d times", evRun.firedCount(evSel)); }
+        bool wide = ImGui::GetContentRegionAvail().x > 760 * ui;
+        auto whenCol = [&] {
+            SectionLabel("WHEN", ImVec4(1, 0.75f, 0.35f, 1));
+            ImGui::PushID("when"); bool kc; std::string dummy;
+            KindRow(c.when.kind, 0, kc);
+            if (kc) { const Need& n = needOf(c.when.kind); if (n.object) c.when.target = FirstName(n.objectKind); else if (!n.name) c.when.target.clear(); if (c.when.kind == When::Every || c.when.kind == When::After) c.when.number = 5; ch = true; }
+            ch |= InlineFields(needOf(c.when.kind), c.when.target, dummy, dummy, c.when.number, NameKind(c.when.kind), true, true, false, ImGui::GetContentRegionAvail().x);
+            ImGui::PopID();
+        };
+        auto ifCol = [&] {
+            SectionLabel(c.ifs.empty() ? "ONLY IF  (always)" : "ONLY IF  (all of these)", ImVec4(0.55f, 0.8f, 1, 1));
+            int drop = -1;
+            for (int k = 0; k < (int)c.ifs.size(); k++) {
+                EventIf& e = c.ifs[k]; ImGui::PushID(1000 + k); bool kc; std::string o, t;
+                KindRow(e.kind, bw + sp, kc); ch |= kc;
+                ch |= InlineFields(needOf(e.kind), o, e.name, t, e.number, NameKind(e.kind), false, false, false, ImGui::GetContentRegionAvail().x - bw - sp);
+                ImGui::SameLine(); if (ImGui::Button("x", ImVec2(bw, 0))) drop = k;
+                ImGui::PopID();
+            }
+            if (drop >= 0) { c.ifs.erase(c.ifs.begin() + drop); ch = true; }
+            if (ImGui::SmallButton("+ condition")) { auto keys = KnownNames('k'); c.ifs.push_back({ If::HasKey, keys.empty() ? "Red key" : keys[0] }); ch = true; }
+        };
+        auto doCol = [&] {
+            SectionLabel("DO  (in order)", ImVec4(0.6f, 1, 0.6f, 1));
+            int drop = -1, up = -1;
+            for (int k = 0; k < (int)c.dos.size(); k++) {
+                EventDo& d = c.dos[k]; ImGui::PushID(2000 + k); bool kc;
+                ImGui::AlignTextToFramePadding(); ImGui::TextDisabled("%d", k + 1); ImGui::SameLine();
+                float btn = bw * 2 + sp * 2;
+                KindRow(d.kind, btn, kc);
+                if (kc) { const Need& n = needOf(d.kind); if (n.object && d.target.empty()) d.target = FirstName(n.objectKind); if (d.kind == Do::Wait) d.number = 1; ch = true; }
+                ch |= InlineFields(needOf(d.kind), d.target, d.text, d.text, d.number, NameKind(d.kind), false, false, d.kind == Do::Particles, ImGui::GetContentRegionAvail().x - btn);
+                ImGui::SameLine(); ImGui::BeginDisabled(k == 0); if (ImGui::ArrowButton("##up", ImGuiDir_Up)) up = k; ImGui::EndDisabled();
+                ImGui::SameLine(); if (ImGui::Button("x", ImVec2(bw, 0))) drop = k;
+                ImGui::PopID();
+            }
+            if (drop >= 0) { c.dos.erase(c.dos.begin() + drop); ch = true; }
+            if (up > 0) { std::swap(c.dos[up], c.dos[up - 1]); ch = true; }
+            if (ImGui::SmallButton("+ action")) { c.dos.push_back({ Do::Message, "", "Hello!", 3 }); ch = true; }
+        };
+        if (wide && ImGui::BeginTable("parts", 3, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_PadOuterX)) {
+            ImGui::TableSetupColumn("w", ImGuiTableColumnFlags_WidthStretch, 1.0f); ImGui::TableSetupColumn("i", ImGuiTableColumnFlags_WidthStretch, 1.0f); ImGui::TableSetupColumn("d", ImGuiTableColumnFlags_WidthStretch, 1.6f);
+            ImGui::TableNextColumn(); whenCol(); ImGui::TableNextColumn(); ifCol(); ImGui::TableNextColumn(); doCol();
+            ImGui::EndTable();
+        } else { whenCol(); ImGui::Spacing(); ifCol(); ImGui::Spacing(); doCol(); }
+    }
     void EventsPanel() {
         if (ImGuiWindow* a = ImGui::FindWindowByName("Assets")) if (a->DockId) ImGui::SetNextWindowDockID(a->DockId, ImGuiCond_FirstUseEver);
         if (focusEvents) { ShowTab("Events"); focusEvents = false; }
         if (!ImGui::Begin("Events")) { ImGui::End(); return; }
         float ui = settings.uiScale; bool ch = false;
-        if (ImGui::Button("+ New card")) { EventCard c; c.when.target = FirstName("zone"); c.name = "Event " + std::to_string(events.size() + 1); events.push_back(c); ch = true; }
+        if (ImGui::Button("+ New card")) { EventCard c; c.when.target = FirstName("zone"); c.name = "Event " + std::to_string(events.size() + 1); events.push_back(c); evSel = (int)events.size() - 1; ch = true; }
         ImGui::SameLine(); ImGui::SetNextItemWidth(200 * ui);
         if (ImGui::BeginCombo("##tpl", "+ From an example...")) {
             const char* tn[] = { "Message when you walk in", "A key opens a door", "Trap: the door shuts for 5 s", "Collect 3 gems, a door opens", "Lights on when you walk in", "Shoot it: the lift comes", "Hidden until something shows it" };
-            for (int t = 0; t < 7; t++) if (ImGui::Selectable(tn[t])) { events.push_back(Template(t)); ch = true; }
+            for (int t = 0; t < 7; t++) if (ImGui::Selectable(tn[t])) { events.push_back(Template(t)); evSel = (int)events.size() - 1; ch = true; }
             ImGui::EndCombo();
         }
-        ImGui::SameLine(); ImGui::TextDisabled(playMode ? "  Cards light up when they run." : "  When something happens, only if..., do these in order. Objects are found by name.");
         if (playMode && !evRun.flags.empty()) { std::string f; for (auto& x : evRun.flags) f += (f.empty() ? "" : ", ") + x; ImGui::SameLine(); ImGui::TextColored(ImVec4(0.6f, 0.9f, 1, 1), "  Flags on: %s", f.c_str()); }
-        ImGui::Separator();
-        if (events.empty()) { ImGui::Spacing(); Hint("No event cards yet. A card says: when something happens (the player walks into a zone, a door is shot...), only if something is true (has a key...), do these things (open a door, show a message, switch on a light...)."); }
-        ImGui::BeginChild("cards", ImVec2(0, 0));
-        float cardW = 330 * ui; int cols = std::max(1, (int)(ImGui::GetContentRegionAvail().x / cardW));
-        int dropCard = -1, dup = -1;
-        if (!events.empty() && ImGui::BeginTable("cardgrid", cols, ImGuiTableFlags_SizingStretchSame)) {
-            for (int i = 0; i < (int)events.size(); i++) {
-                EventCard& c = events[i]; ImGui::TableNextColumn(); ImGui::PushID(i);
-                double lit = playMode && evFlash.count(i) ? std::max(0.0, 1 - (animTime - evFlash[i]) / 1.2) : 0;
-                ImVec4 border = ImLerp(c.enabled ? ImVec4(0.35f, 0.38f, 0.45f, 1) : ImVec4(0.25f, 0.25f, 0.25f, 1), ImVec4(1, 0.8f, 0.3f, 1), (float)lit);
-                ImGui::PushStyleColor(ImGuiCol_Border, border); ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, lit > 0 ? 2.f : 1.f);
-                ImGui::PushStyleColor(ImGuiCol_ChildBg, c.enabled ? ImVec4(0.13f, 0.14f, 0.17f, 1) : ImVec4(0.1f, 0.1f, 0.1f, 1));
-                ImGui::BeginChild("card", ImVec2(0, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding);
-                ch |= ImGui::Checkbox("##on", &c.enabled); if (ImGui::IsItemHovered()) ImGui::SetTooltip("On / off");
-                ImGui::SameLine(); float bw = ImGui::GetFrameHeight();
-                ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - bw * 2 - ImGui::GetStyle().ItemSpacing.x * 2);
-                ch |= ImGui::InputText("##name", &c.name);
-                ImGui::SameLine(); if (ImGui::Button("+", ImVec2(bw, 0))) dup = i; if (ImGui::IsItemHovered()) ImGui::SetTooltip("Duplicate");
-                ImGui::SameLine(); if (ImGui::Button("x", ImVec2(bw, 0))) dropCard = i; if (ImGui::IsItemHovered()) ImGui::SetTooltip("Delete the card");
-                // WHEN
-                SectionLabel("WHEN", ImVec4(1, 0.75f, 0.35f, 1));
-                ImGui::PushID("when"); ImGui::SetNextItemWidth(-FLT_MIN);
-                if (KindCombo("##k", c.when.kind)) { const Need& n = needOf(c.when.kind); if (n.object) c.when.target = FirstName(n.objectKind); else if (!n.name) c.when.target.clear(); if (c.when.kind == When::Every || c.when.kind == When::After) c.when.number = 5; ch = true; }
-                std::string dummy;
-                ch |= PartFields(needOf(c.when.kind), c.when.target, dummy, dummy, c.when.number, NameKind(c.when.kind), true, true, false);
-                ImGui::PopID();
-                // ONLY IF
-                SectionLabel(c.ifs.empty() ? "ONLY IF  (always)" : "ONLY IF", ImVec4(0.55f, 0.8f, 1, 1));
-                int dropIf = -1;
-                for (int k = 0; k < (int)c.ifs.size(); k++) {
-                    EventIf& e = c.ifs[k]; ImGui::PushID(1000 + k);
-                    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - bw - ImGui::GetStyle().ItemSpacing.x);
-                    ch |= KindCombo("##k", e.kind); ImGui::SameLine(); if (ImGui::Button("x", ImVec2(bw, 0))) dropIf = k;
-                    std::string o, t; ch |= PartFields(needOf(e.kind), o, e.name, t, e.number, NameKind(e.kind), false, false, false);
-                    ImGui::PopID();
-                }
-                if (dropIf >= 0) { c.ifs.erase(c.ifs.begin() + dropIf); ch = true; }
-                if (ImGui::SmallButton("+ condition")) { c.ifs.push_back({ If::HasKey, KnownNames('k').empty() ? "Red key" : KnownNames('k')[0] }); ch = true; }
-                // DO
-                SectionLabel("DO", ImVec4(0.6f, 1, 0.6f, 1));
-                int dropDo = -1, up = -1;
-                for (int k = 0; k < (int)c.dos.size(); k++) {
-                    EventDo& d = c.dos[k]; ImGui::PushID(2000 + k);
-                    ImGui::AlignTextToFramePadding(); ImGui::TextDisabled("%d.", k + 1); ImGui::SameLine();
-                    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - bw * 2 - ImGui::GetStyle().ItemSpacing.x * 2);
-                    if (KindCombo("##k", d.kind)) { const Need& n = needOf(d.kind); if (n.object && d.target.empty()) d.target = FirstName(n.objectKind); if (d.kind == Do::Wait) d.number = 1; ch = true; }
-                    ImGui::SameLine(); ImGui::BeginDisabled(k == 0); if (ImGui::ArrowButton("##up", ImGuiDir_Up)) up = k; ImGui::EndDisabled();
-                    ImGui::SameLine(); if (ImGui::Button("x", ImVec2(bw, 0))) dropDo = k;
-                    ImGui::Indent(14 * ui); ch |= PartFields(needOf(d.kind), d.target, d.text, d.text, d.number, NameKind(d.kind), false, false, d.kind == Do::Particles); ImGui::Unindent(14 * ui);
-                    ImGui::PopID();
-                }
-                if (dropDo >= 0) { c.dos.erase(c.dos.begin() + dropDo); ch = true; }
-                if (up > 0) { std::swap(c.dos[up], c.dos[up - 1]); ch = true; }
-                if (ImGui::SmallButton("+ action")) { c.dos.push_back({ Do::Message, "", "Hello!", 3 }); ch = true; }
-                ImGui::Spacing(); ch |= ImGui::Checkbox("Only once", &c.once);
-                if (playMode) { ImGui::SameLine(); ImGui::TextDisabled("   ran %d times", evRun.firedCount(i)); }
-                ImGui::EndChild(); ImGui::PopStyleColor(2); ImGui::PopStyleVar();
-                ImGui::PopID();
+        else { ImGui::SameLine(); ImGui::TextDisabled(playMode ? "  Cards light up when they run." : "  Objects are found by name."); }
+        if (events.empty()) { ImGui::Separator(); Hint("No event cards yet. A card says: when something happens (the player walks into a zone, a door is shot...), only if something is true (has a key...), do these things in order (open a door, show a message, switch on a light...). Try \"+ From an example...\"."); ImGui::End(); return; }
+        evSel = std::clamp(evSel, 0, (int)events.size() - 1);
+        // left: every card as one sentence; right: the picked card
+        ImGui::BeginChild("list", ImVec2(std::max(220 * ui, ImGui::GetContentRegionAvail().x * 0.3f), 0), ImGuiChildFlags_Borders | ImGuiChildFlags_ResizeX);
+        int drop = -1, dup = -1, moveBy = 0, moveFrom = -1;
+        for (int i = 0; i < (int)events.size(); i++) {
+            EventCard& c = events[i]; ImGui::PushID(i);
+            double lit = playMode && evFlash.count(i) ? std::max(0.0, 1 - (animTime - evFlash[i]) / 1.2) : 0;
+            ImVec2 p0 = ImGui::GetCursorScreenPos(); float rightX = p0.x + ImGui::GetContentRegionAvail().x;
+            ImGui::BeginGroup();
+            ImGui::PushStyleColor(ImGuiCol_Text, c.enabled ? ImVec4(1, 1, 1, 1) : ImVec4(0.5f, 0.5f, 0.5f, 1));
+            if (ImGui::Selectable(c.name.empty() ? "(no name)" : c.name.c_str(), evSel == i)) evSel = i;
+            ImGui::PopStyleColor();
+            if (ImGui::BeginPopupContextItem("cardmenu")) {
+                if (ImGui::MenuItem("Duplicate")) dup = i;
+                if (ImGui::MenuItem("Move up", nullptr, false, i > 0)) { moveBy = -1; moveFrom = i; }
+                if (ImGui::MenuItem("Move down", nullptr, false, i + 1 < (int)events.size())) { moveBy = 1; moveFrom = i; }
+                if (ImGui::MenuItem(c.enabled ? "Switch off" : "Switch on")) { c.enabled = !c.enabled; ch = true; }
+                ImGui::Separator(); if (ImGui::MenuItem("Delete")) drop = i;
+                ImGui::EndPopup();
             }
-            ImGui::EndTable();
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.62f, 0.64f, 0.7f, c.enabled ? 1.f : 0.5f));
+            ImGui::Indent(8 * ui); ImGui::PushTextWrapPos(0); ImGui::TextUnformatted(describe(c).c_str()); ImGui::PopTextWrapPos(); ImGui::Unindent(8 * ui);
+            ImGui::PopStyleColor();
+            ImGui::EndGroup();
+            if (ImGui::IsItemClicked()) evSel = i;
+            if (lit > 0) { ImVec2 p1(rightX, ImGui::GetItemRectMax().y);
+                ImGui::GetWindowDrawList()->AddRect(ImVec2(p0.x - 3, p0.y - 2), ImVec2(p1.x, p1.y + 2), IM_COL32(255, 200, 80, (int)(255 * lit)), 4.0f, 0, 2.0f); }
+            ImGui::Spacing();
+            ImGui::PopID();
         }
-        if (dup >= 0) { EventCard c = events[dup]; c.name += " copy"; events.insert(events.begin() + dup + 1, c); ch = true; }
-        if (dropCard >= 0) { events.erase(events.begin() + dropCard); ch = true; }
+        ImGui::EndChild();
+        if (dup >= 0) { EventCard c = events[dup]; c.name += " copy"; events.insert(events.begin() + dup + 1, c); evSel = dup + 1; ch = true; }
+        if (drop >= 0) { events.erase(events.begin() + drop); ch = true; }
+        if (moveFrom >= 0) { std::swap(events[moveFrom], events[moveFrom + moveBy]); evSel = moveFrom + moveBy; ch = true; }
+        if (events.empty()) { ImGui::End(); return; }
+        evSel = std::clamp(evSel, 0, (int)events.size() - 1);
+        ImGui::SameLine();
+        ImGui::BeginChild("edit", ImVec2(0, 0), ImGuiChildFlags_Borders);
+        ImGui::PushID(evSel); CardEditor(events[evSel], ch); ImGui::PopID();
+        ImGui::Spacing(); ImGui::TextDisabled("Right-click a card on the left to duplicate, move or delete it.");
         ImGui::EndChild();
         ImGui::End();
         (void)ch;
@@ -4092,7 +4147,7 @@ struct App {
                       c.dos = { { Do::OpenDoor, FirstName("door") }, { Do::Message, "", "A door opened somewhere", 3 }, { Do::FlagOn, "", "gems-done" } }; events.push_back(c); }
                     events.push_back(Template(2));
                     RebuildSolids();
-                    focusEvents = true; sel = Sel::Object; selIndex = hz;
+                    focusEvents = true; evSel = 1; sel = Sel::Object; selIndex = hz;
                     poseAt(DemoShot{ "e", { -11, g4 + 4.6, -48 }, { -11, g4 + 0.8, -33 }, 19.8f });
                     frames(6, "events_editor");
                     StartPlay(false);

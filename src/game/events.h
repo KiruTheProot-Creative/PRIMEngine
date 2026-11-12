@@ -28,6 +28,9 @@ struct EventCard {
     EventWhen when; std::vector<EventIf> ifs; std::vector<EventDo> dos;
 };
 
+// the card as one sentence: "When the player walks into Hall, only if ...: open Gate, wait 2 s, show \"Hi\"."
+std::string describe(const EventCard& c);
+
 bool saveEvents(const std::string& path, const std::vector<EventCard>& cards);
 bool loadEvents(const std::string& path, std::vector<EventCard>& cards);
 

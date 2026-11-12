@@ -1,5 +1,6 @@
 #include "events.h"
 #include <algorithm>
+#include <cstdio>
 #include <fstream>
 #include <sstream>
 
@@ -50,6 +51,73 @@ const Need& needOf(Do d) {
         { "win: show", false, false, true },
     };
     return n[std::clamp((int)d, 0, (int)Do::COUNT - 1)];
+}
+
+// ------------------------------------------------------------------ one sentence
+static std::string num(float v) { char b[32]; snprintf(b, sizeof b, "%g", v); return b; }
+static std::string orAny(const std::string& s, const char* any) { return s.empty() ? any : s; }
+std::string describe(const EventCard& c) {
+    const EventWhen& w = c.when; std::string s;
+    switch (w.kind) {
+    case When::GameStarts: s = "When the game starts"; break;
+    case When::EnterZone: s = "When the player walks into " + orAny(w.target, "any zone"); break;
+    case When::LeaveZone: s = "When the player walks out of " + orAny(w.target, "any zone"); break;
+    case When::Touch: s = "When the player touches " + orAny(w.target, "anything"); break;
+    case When::Shot: s = "When " + orAny(w.target, "anything") + " is shot"; break;
+    case When::Pickup: s = "When the player picks up " + orAny(w.target, "anything"); break;
+    case When::DoorOpens: s = "When " + orAny(w.target, "a door") + " opens"; break;
+    case When::DoorCloses: s = "When " + orAny(w.target, "a door") + " closes"; break;
+    case When::Dies: s = "When the player dies"; break;
+    case When::Every: s = "Every " + num(w.number) + " s"; break;
+    case When::After: s = "After " + num(w.number) + " s"; break;
+    case When::CountReaches: s = "When " + orAny(w.target, "a counter") + " reaches " + num(w.number); break;
+    default: break;
+    }
+    for (size_t k = 0; k < c.ifs.size(); k++) {
+        const EventIf& i = c.ifs[k]; s += k == 0 ? ", only if " : " and ";
+        switch (i.kind) {
+        case If::HasKey: s += "the player has the " + i.name; break;
+        case If::NoKey: s += "the player has not got the " + i.name; break;
+        case If::CountAtLeast: s += i.name + " is at least " + num(i.number); break;
+        case If::FlagOn: s += i.name + " is on"; break;
+        case If::FlagOff: s += i.name + " is off"; break;
+        case If::HealthBelow: s += "health is below " + num(i.number); break;
+        default: break;
+        }
+    }
+    s += ":";
+    if (c.dos.empty()) return s + " nothing yet.";
+    for (size_t k = 0; k < c.dos.size(); k++) {
+        const EventDo& d = c.dos[k]; const std::string& t = d.target; std::string n = d.text.empty() ? d.target : d.text, a;
+        switch (d.kind) {
+        case Do::Message: a = "show \"" + d.text + "\""; break;
+        case Do::OpenDoor: a = "open " + orAny(t, "?"); break;
+        case Do::CloseDoor: a = "close " + orAny(t, "?"); break;
+        case Do::LockDoor: a = "lock " + orAny(t, "?"); break;
+        case Do::UnlockDoor: a = "unlock " + orAny(t, "?"); break;
+        case Do::MovePlatform: a = "move " + orAny(t, "?"); break;
+        case Do::Show: a = "show " + orAny(t, "?"); break;
+        case Do::Hide: a = "hide " + orAny(t, "?"); break;
+        case Do::LightOn: a = "switch on " + orAny(t, "?"); break;
+        case Do::LightOff: a = "switch off " + orAny(t, "?"); break;
+        case Do::Particles: a = orAny(d.text, "Sparks") + " at " + orAny(t, "?"); break;
+        case Do::Teleport: a = "teleport to " + orAny(t, "?"); break;
+        case Do::Heal: a = "heal " + num(d.number); break;
+        case Do::Hurt: a = "hurt " + num(d.number); break;
+        case Do::Kill: a = "kill the player"; break;
+        case Do::Checkpoint: a = "set a checkpoint"; break;
+        case Do::GiveKey: a = "give the " + n; break;
+        case Do::TakeKey: a = "take the " + n; break;
+        case Do::AddCount: a = "add " + num(d.number) + " to " + n; break;
+        case Do::FlagOn: a = "turn " + n + " on"; break;
+        case Do::FlagOff: a = "turn " + n + " off"; break;
+        case Do::Wait: a = "wait " + num(d.number) + " s"; break;
+        case Do::Win: a = "win"; break;
+        default: break;
+        }
+        s += (k == 0 ? " " : ", ") + a;
+    }
+    return s + (c.once ? " (once)." : ".");
 }
 
 // ------------------------------------------------------------------ saving (one line per part, names escaped)
