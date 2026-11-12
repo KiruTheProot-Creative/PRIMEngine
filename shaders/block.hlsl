@@ -143,7 +143,8 @@ float3 lightBlock(VSOut i, float3 albedo, bool front)
     float3 hue = lamp > 0 ? i.lamp.rgb / lamp : 0;                                                   // the colour of the lamps nearby
     light += hue * (pow(lamp, 3.2) * 0.9) * gExtra.w * lerp(0.5, 1, i.ao);
     float3 c = albedo * light;
-    if (i.lamp.a > 0.5) c = albedo * lerp(1, hue, 0.7) * 3.0 * gExtra.w;                            // the lamp itself glows in its colour
+    if (i.lamp.a > 0.5)                                                                               // the lamp itself glows in its colour
+        c = (dot(albedo, float3(0.2126, 0.7152, 0.0722)) * hue * 0.85 + albedo * hue * 0.3) * 3.2 * gExtra.w;
     float d = length(i.rel);
     float f = saturate((d - gFogRange.x) / max(gFogRange.y - gFogRange.x, 1));
     return lerp(c, skyColor(normalize(i.rel)), f * f);
