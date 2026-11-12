@@ -99,6 +99,27 @@ int main() {
         CHECK(w.boxFree({ 4.5, 4, 4.5 }, 0.3, 1.8), "you can walk through the cross plane");
     }
 
+    // lamp light: spreads 15 blocks, darker each step, stopped by walls; lamps and leaves keep glow/sway from old files
+    {
+        BlockRegistry m; registerBuiltinBlocks(m); BlockId lamp = m.find("lamp"), stone = m.find("stone");
+        CHECK(m.get(lamp).light == 15 && m.get(m.find("leaves")).waves, "the lamp glows (15) and leaves sway");
+        World w(m); w.gen.kind = Generator::Void; for (int x = -2; x <= 2; x++) for (int y = -2; y <= 2; y++) for (int z = -2; z <= 2; z++) w.loadChunk({ x, y, z });
+        for (int x = 0; x < 16; x++) for (int z = 0; z < 16; z++) w.set(x, 0, z, stone);   // a floor
+        w.set(8, 1, 8, lamp); for (int z = 0; z < 16; z++) for (int y = 1; y < 6; y++) w.set(12, y, z, stone);   // a wall at x = 12
+        CHECK(w.chunk({ 0, 0, 0 })->emitters == 1 && w.emittersNear({ 1, 0, 1 }), "the chunk knows it has a lamp");
+        MeshInput in; gatherInput(w, { 0, 0, 0 }, in); ChunkMesh cm; buildMesh(m, in, cm);
+        int near = 0, far = 99, behind = 0;
+        for (auto& v : cm.opaque.v) if (faceOf(v) == F_PY && v.y == 1) {
+            if (v.x == 8 && v.z == 7) near = std::max(near, lightOf(v));
+            if (v.x == 1 && v.z == 8) far = std::min(far, lightOf(v));
+            if (v.x >= 14 && v.z == 8) behind = std::max(behind, lightOf(v));
+        }
+        CHECK(near >= 13 && far >= 6 && far <= 9 && behind <= 4, "floor light: next to the lamp %d, 7 blocks away %d, behind the wall %d", near, far, behind);
+        bool glowFace = false; for (auto& v : cm.opaque.v) if (v.x >= 8 && v.x <= 9 && v.y >= 1 && v.y <= 2 && v.z >= 8 && v.z <= 9 && (v.normal >> 27 & 1)) glowFace = true;
+        CHECK(glowFace, "the lamp's own faces are marked as glowing");
+        MeshInput in2; gatherInput(w, { 3, 0, 3 }, in2); CHECK(in2.lightSrc.empty(), "far from lamps no light is worked out");
+    }
+
     fs::remove_all(base);
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
     return fails ? 1 : 0;

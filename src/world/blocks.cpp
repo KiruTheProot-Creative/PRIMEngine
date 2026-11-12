@@ -231,9 +231,9 @@ void registerBuiltinBlocks(BlockRegistry& r) {
     block("sand", "sand");
     block("bricks", "bricks");
     block("metal", "metal");
-    block("lamp", "lamp");
+    { BlockId l = block("lamp", "lamp"); BlockDef d = r.get(l); d.light = 15; r.put(l, d); }
     block("glass", "glass", nullptr, nullptr, Render::Cutout, true);
-    block("leaves", "leaves", nullptr, nullptr, Render::Cutout, false);
+    { BlockId l = block("leaves", "leaves", nullptr, nullptr, Render::Cutout, false); BlockDef d = r.get(l); d.waves = true; r.put(l, d); }
 }
 
 } // namespace mc

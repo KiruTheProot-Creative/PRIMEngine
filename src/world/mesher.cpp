@@ -13,6 +13,22 @@ bool gatherInput(const World& w, I3 pos, MeshInput& out) {
         for (int ly = y0; ly <= y1; ly++) for (int lz = z0; lz <= z1; lz++) for (int lx = x0; lx <= x1; lx++)
             out.blocks[padIdx(lx + cx * CS, ly + cy * CS, lz + cz * CS)] = c->get(lx, ly, lz);
     }
+    out.lightSrc.clear();
+    if (w.emittersNear(pos)) {   // a lamp nearby: hand the mesh thread what it needs to spread the light
+        out.lightSrc.assign((size_t)LPAD * LPAD * LPAD, 0);
+        for (int cy = -1; cy <= 1; cy++) for (int cz = -1; cz <= 1; cz++) for (int cx = -1; cx <= 1; cx++) {
+            const Chunk* c = w.chunk({ pos.x + cx, pos.y + cy, pos.z + cz });
+            for (int ly = 0; ly < CS; ly++) for (int lz = 0; lz < CS; lz++) for (int lx = 0; lx < CS; lx++) {
+                uint8_t v = 255;   // not loaded: blocks light
+                if (c) {
+                    BlockId b = c->get(lx, ly, lz);
+                    if (b != AIR) { const BlockDef& d = w.reg.get(b); v = d.light ? (uint8_t)d.light : (d.render == Render::Opaque && resolveShape(b, d) == Shapes::FULL) ? 255 : 0; }
+                    else v = 0;
+                }
+                out.lightSrc[lpadIdx(lx + cx * CS, ly + cy * CS, lz + cz * CS)] = v;
+            }
+        }
+    }
     return true;
 }
 
@@ -26,8 +42,29 @@ static const SideMask& coverOf(const BlockRegistry& reg, BlockId nb, int side) {
 }
 static bool isPlainCube(const BlockRegistry& reg, BlockId v) { return v != UNKNOWN && v != AIR && resolveShape(v, reg.get(v)) == Shapes::FULL; }
 
+// spreads light from glowing blocks: each step away is one level darker, solid blocks stop it (Minecraft-style)
+static void spreadLight(const std::vector<uint8_t>& src, std::vector<uint8_t>& L) {
+    L.assign(src.size(), 0);
+    std::vector<int> q; q.reserve(4096);
+    for (size_t i = 0; i < src.size(); i++) if (src[i] > 0 && src[i] < 255) { L[i] = src[i]; q.push_back((int)i); }
+    const int step[6] = { 1, -1, LPAD * LPAD, -LPAD * LPAD, LPAD, -LPAD };
+    for (size_t h = 0; h < q.size(); h++) {
+        int i = q[h], lv = L[i]; if (lv <= 1) continue;
+        int x = i % LPAD, z = (i / LPAD) % LPAD, y = i / (LPAD * LPAD);
+        for (int k = 0; k < 6; k++) {
+            if ((k == 0 && x == LPAD - 1) || (k == 1 && x == 0) || (k == 2 && y == LPAD - 1) || (k == 3 && y == 0) || (k == 4 && z == LPAD - 1) || (k == 5 && z == 0)) continue;
+            int j = i + step[k];
+            if (src[j] == 255 || L[j] >= lv - 1) continue;
+            L[j] = (uint8_t)(lv - 1); q.push_back(j);
+        }
+    }
+}
+
 void buildMesh(const BlockRegistry& reg, const MeshInput& in, ChunkMesh& out) {
     out.pos = in.pos; out.seq = in.seq; out.opaque = {}; out.cutout = {};
+    std::vector<uint8_t> lightMap; bool lit = !in.lightSrc.empty(); if (lit) spreadLight(in.lightSrc, lightMap);
+    auto lightAt = [&](int x, int y, int z) { return lit ? (int)lightMap[lpadIdx(x, y, z)] : 0; };
+    auto blocksLight = [&](int x, int y, int z) { return lit && in.lightSrc[lpadIdx(x, y, z)] == 255; };
     const auto& B = in.blocks;
     const Shapes& shapes = Shapes::get();
     auto at = [&](int x, int y, int z) { return B[padIdx(x, y, z)]; };
@@ -50,15 +87,17 @@ void buildMesh(const BlockRegistry& reg, const MeshInput& in, ChunkMesh& out) {
         if (shape != Shapes::FULL) {
             // any other shape: prepared triangles, sides lying on the block border hidden like cube faces
             const ShapeVariant& sv = shapes.variant(shape, rotOf(id)); bool two = shapes.info(shape).twoSided;
+            int own = d.light ? d.light : lightAt(x, y, z);
+            float wave = d.waves ? (shape == Shapes::CROSS || shape == Shapes::PLANE ? 2.f : 1.f) : 0.f;
             for (int g = 0; g < 7; g++) {
                 if (sv.tris[g].empty()) continue;
                 if (g < 6) { int n[3] = { 0, 0, 0 }; n[g / 2] = (g % 2 == 0) ? 1 : -1; if (hidden(id, d, at(x + n[0], y + n[1], z + n[2]), g, sv.mask[g])) continue; }
                 for (const STri& t : sv.tris[g]) {
-                    int f = faceOfNormal(t.fn); float layer = (float)d.tex[f];
+                    int f = faceOfNormal(t.fn); float layer = (float)d.tex[f] + 16384.f * wave;
                     uint32_t base = (uint32_t)md.v.size();
                     for (int k = 0; k < 3; k++) {
                         float u, v; faceUV(t.p[k][0], t.p[k][1], t.p[k][2], f, u, v);
-                        md.v.push_back({ x + t.p[k][0], y + t.p[k][1], z + t.p[k][2], u, v, layer, 1.0f, packNormal(t.n[k][0], t.n[k][1], t.n[k][2], f) });
+                        md.v.push_back({ x + t.p[k][0], y + t.p[k][1], z + t.p[k][2], u, v, layer, 1.0f, packNormal(t.n[k][0], t.n[k][1], t.n[k][2], f, own, d.light > 0) });
                     }
                     md.i.insert(md.i.end(), { base, base + 1, base + 2 });
                     if (two) md.i.insert(md.i.end(), { base, base + 2, base + 1 });
@@ -85,7 +124,16 @@ void buildMesh(const BlockRegistry& reg, const MeshInput& in, ChunkMesh& out) {
                 float lx = p[0] - c[0], ly = p[1] - c[1], lz = p[2] - c[2], u, v;
                 if (a == 1) { u = lx; v = lz; } else if (a == 0) { u = sgn > 0 ? 1 - lz : lz; v = 1 - ly; } else { u = sgn > 0 ? lx : 1 - lx; v = 1 - ly; }
                 float shade = 0.4f + 0.6f * ao[k] / 3.f;   // corner darkening; the light itself comes from the sun in the shader
-                q[k] = { p[0], p[1], p[2], u, v, (float)d.tex[f], shade, packNormal((float)n[0], (float)n[1], (float)n[2], f) };
+                // smooth lamp light: average of the open cells touching this corner in front of the face
+                int bl = 0;
+                if (lit) {
+                    int sum = 0, cnt = 0;
+                    auto take = [&](const int c3[3]) { if (!blocksLight(c3[0], c3[1], c3[2])) { sum += lightAt(c3[0], c3[1], c3[2]); cnt++; } };
+                    take(L); take(s1); take(s2); if (!(occludes(at(s1[0], s1[1], s1[2])) && occludes(at(s2[0], s2[1], s2[2])))) take(cc);
+                    bl = cnt ? (sum + cnt / 2) / cnt : 0;
+                }
+                if (d.light) bl = d.light;
+                q[k] = { p[0], p[1], p[2], u, v, (float)d.tex[f] + (d.waves ? 16384.f : 0.f), shade, packNormal((float)n[0], (float)n[1], (float)n[2], f, bl, d.light > 0) };
             }
             // split along the brighter diagonal, and wind each triangle clockwise when seen from outside
             uint32_t base = (uint32_t)md.v.size();

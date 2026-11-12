@@ -72,6 +72,7 @@ std::vector<DemoShot> demoShots() {
         { "garden", { 17, 4, -6 }, { 18, 0, 5 }, 14.0f },
         { "tree_and_house_sunset", { -14, 4, 0 }, { 4, 3, 8 }, 17.75f },
         { "night", { -10, 8, -14 }, { 6, 2, 6 }, 23.0f },
+        { "night_lamps", { 5.5, 2.6, -5 }, { 6, 2, 4 }, 22.5f },
         { "foggy_morning_light_shafts", { -24, 2.5, 3 }, { -6, 5, 6 }, 7.0f },
         { "clouds", { -4, 3, -10 }, { 30, 45, 40 }, 11.0f },
         { "clouds_sunset", { -4, 3, -10 }, { -40, 25, 10 }, 17.6f },

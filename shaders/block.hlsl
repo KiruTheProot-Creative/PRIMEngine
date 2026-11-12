@@ -19,6 +19,7 @@ cbuffer Frame : register(b0)
     float4 gCamPos;                 // camera position (x and z wrapped every 14400 blocks, so the numbers stay small)
     float4 gVolume;                 // x cloud cover (0 = no clouds), y ground fog density, z time (s), w cloud shadows on
     float4 gDepth;                  // x near, y far plane
+    float4 gExtra;                  // x night (0..1, stars), y bloom amount, z wind (sway), w lamp brightness
 };
 cbuffer ChunkCB : register(b1)
 {
@@ -62,19 +63,36 @@ float cloudShadow(float3 rel)
 }
 
 struct VSIn { float3 pos : POSITION; float2 uv : TEXCOORD0; float layer : TEXCOORD1; float shade : TEXCOORD2; uint normal : TEXCOORD3; };
-struct VSOut { float4 pos : SV_Position; float3 uvl : TEXCOORD0; float ao : TEXCOORD1; float3 rel : TEXCOORD2; float3 n : TEXCOORD3; };
+struct VSOut { float4 pos : SV_Position; float3 uvl : TEXCOORD0; float ao : TEXCOORD1; float3 rel : TEXCOORD2; float3 n : TEXCOORD3; float2 lamp : TEXCOORD4; };
 
 float3 unpackNormal(uint n) { return normalize(float3(n & 255, (n >> 8) & 255, (n >> 16) & 255) / 255.0 * 2 - 1); }
+
+// leaves and plants sway: position relative to the camera in, moved position out (layer carries the sway kind)
+float3 sway(float3 rel, float layer, float v, out float realLayer)
+{
+    float kind = floor(layer / 16384);
+    realLayer = layer - kind * 16384;
+    if (kind < 0.5 || gExtra.z <= 0) return rel;
+    float3 w = rel + gCamPos.xyz;
+    float t = gVolume.z;
+    float amount = kind > 1.5 ? (1 - v) : 1;                              // plants: only the top moves
+    float3 d = float3(sin(t * 1.9 + w.x * 0.6 + w.z * 0.3) + 0.4 * sin(t * 3.7 + w.z * 1.3),
+                      0.35 * sin(t * 2.3 + w.x * 0.9 + w.y),
+                      sin(t * 1.6 + w.z * 0.6 - w.x * 0.2) + 0.4 * sin(t * 4.1 + w.x * 1.1));
+    return rel + d * (kind > 1.5 ? 0.09 : 0.035) * gExtra.z * amount;
+}
 
 VSOut VS_Block(VSIn i)
 {
     VSOut o;
-    float3 p = i.pos + gOffset.xyz;
+    float layer;
+    float3 p = sway(i.pos + gOffset.xyz, i.layer, i.uv.y, layer);
     o.pos = mul(float4(p, 1), gViewProj);
-    o.uvl = float3(i.uv, i.layer);
+    o.uvl = float3(i.uv, layer);
     o.ao = i.shade;
     o.rel = p;
     o.n = unpackNormal(i.normal);
+    o.lamp = float2((i.normal >> 28) / 15.0, (i.normal >> 27) & 1);
     return o;
 }
 
@@ -121,7 +139,10 @@ float3 lightBlock(VSOut i, float3 albedo, bool front)
     float sh = ndl > 0 ? shadowAt(i.rel, n, ndl, i.pos.xy) * cloudShadow(i.rel) : 0;
     float sky = 0.55 + 0.45 * n.y;                                     // more sky light on top than on the sides
     float3 light = gSunColor.rgb * ndl * sh + gAmbient.rgb * sky * i.ao;
+    float lamp = i.lamp.x;
+    light += float3(1.0, 0.68, 0.38) * (pow(lamp, 2.6) * 2.4) * gExtra.w * lerp(0.6, 1, i.ao);   // warm light from lamps nearby
     float3 c = albedo * light;
+    if (i.lamp.y > 0.5) c = albedo * (2.5 + 2.5 * gExtra.w);                                        // the lamp itself glows
     float d = length(i.rel);
     float f = saturate((d - gFogRange.x) / max(gFogRange.y - gFogRange.x, 1));
     return lerp(c, skyColor(normalize(i.rel)), f * f);
@@ -152,7 +173,8 @@ float4 PS_Ghost(VSOut i) : SV_Target
 struct ShOut { float4 pos : SV_Position; float3 uvl : TEXCOORD0; };
 ShOut VS_Shadow(VSIn i)
 {
-    ShOut o; o.pos = mul(float4(i.pos + gOffset.xyz, 1), gShadowVP); o.uvl = float3(i.uv, i.layer); return o;
+    float layer; float3 p = sway(i.pos + gOffset.xyz, i.layer, i.uv.y, layer);
+    ShOut o; o.pos = mul(float4(p, 1), gShadowVP); o.uvl = float3(i.uv, layer); return o;
 }
 void PS_ShadowCutout(ShOut i) { clip(gTex.Sample(gSamp, i.uvl).a - 0.5); }
 
@@ -170,6 +192,20 @@ float4 PS_Sky(SkyOut i) : SV_Target
     float3 c = skyColor(dir);
     float mu = dot(dir, gSunDir.xyz);
     c += gSunGlow.w * smoothstep(0.9993, 0.9997, mu) * float3(1.0, 0.95, 0.85);   // the sun (or moon) itself
+    if (gExtra.x > 0 && dir.y > 0)                                                // stars: one maybe in each little patch of sky
+    {
+        float3 g = dir * 160;
+        float3 cell = floor(g);
+        float h = frac(sin(dot(cell, float3(127.1, 311.7, 74.7))) * 43758.5453);
+        if (h > 0.985)
+        {
+            float3 jit = frac(sin(float3(dot(cell, float3(12.9, 78.2, 37.7)), dot(cell, float3(39.3, 11.1, 83.2)), dot(cell, float3(73.1, 52.3, 9.7)))) * 4375.85);
+            float d = length(g - (cell + 0.2 + jit * 0.6));
+            float tw = 0.7 + 0.3 * sin(gVolume.z * (2 + h * 30) + h * 100);
+            float b = (h - 0.985) / 0.015;
+            c += float3(0.9 + 0.1 * jit.x, 0.9, 0.85 + 0.15 * jit.z) * smoothstep(0.09, 0.0, d) * (0.4 + 2.6 * b * b) * tw * gExtra.x * saturate(dir.y * 6);
+        }
+    }
     return float4(c, 1);
 }
 
@@ -261,10 +297,38 @@ float3 tonemap(float3 x)
     x *= 0.6;
     return saturate((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14));
 }
+// ---------------------------------------------------------------- bloom: a chain of ever smaller, blurrier copies
+// gOffset (b1) here: xy = one pixel of the source, z = how much of this level to add
+Texture2D gBloomSrc : register(t0);
+SamplerState gClamp : register(s3);
+float4 PS_BloomDown(SkyOut i) : SV_Target
+{
+    float2 uv = i.ndc * float2(0.5, -0.5) + 0.5, t = gOffset.xy;
+    float3 a = gBloomSrc.SampleLevel(gClamp, uv + t * float2(-2, -2), 0).rgb, b = gBloomSrc.SampleLevel(gClamp, uv + t * float2(0, -2), 0).rgb, c = gBloomSrc.SampleLevel(gClamp, uv + t * float2(2, -2), 0).rgb;
+    float3 d = gBloomSrc.SampleLevel(gClamp, uv + t * float2(-2, 0), 0).rgb, e = gBloomSrc.SampleLevel(gClamp, uv, 0).rgb, f = gBloomSrc.SampleLevel(gClamp, uv + t * float2(2, 0), 0).rgb;
+    float3 g = gBloomSrc.SampleLevel(gClamp, uv + t * float2(-2, 2), 0).rgb, h = gBloomSrc.SampleLevel(gClamp, uv + t * float2(0, 2), 0).rgb, k = gBloomSrc.SampleLevel(gClamp, uv + t * float2(2, 2), 0).rgb;
+    float3 j = gBloomSrc.SampleLevel(gClamp, uv + t * float2(-1, -1), 0).rgb, l = gBloomSrc.SampleLevel(gClamp, uv + t * float2(1, -1), 0).rgb;
+    float3 m = gBloomSrc.SampleLevel(gClamp, uv + t * float2(-1, 1), 0).rgb, n = gBloomSrc.SampleLevel(gClamp, uv + t * float2(1, 1), 0).rgb;
+    float3 r = e * 0.125 + (a + c + g + k) * 0.03125 + (b + d + f + h) * 0.0625 + (j + l + m + n) * 0.125;
+    return float4(min(r, 64), 1);   // no single fireflies
+}
+float4 PS_BloomUp(SkyOut i) : SV_Target
+{
+    float2 uv = i.ndc * float2(0.5, -0.5) + 0.5, t = gOffset.xy;
+    float3 r = gBloomSrc.SampleLevel(gClamp, uv, 0).rgb * 4;
+    r += (gBloomSrc.SampleLevel(gClamp, uv + float2(t.x, 0), 0).rgb + gBloomSrc.SampleLevel(gClamp, uv - float2(t.x, 0), 0).rgb + gBloomSrc.SampleLevel(gClamp, uv + float2(0, t.y), 0).rgb + gBloomSrc.SampleLevel(gClamp, uv - float2(0, t.y), 0).rgb) * 2;
+    r += gBloomSrc.SampleLevel(gClamp, uv + t, 0).rgb + gBloomSrc.SampleLevel(gClamp, uv - t, 0).rgb + gBloomSrc.SampleLevel(gClamp, uv + float2(t.x, -t.y), 0).rgb + gBloomSrc.SampleLevel(gClamp, uv + float2(-t.x, t.y), 0).rgb;
+    return float4(r / 16 * gOffset.z, 1);
+}
+
+Texture2D gBloom : register(t1);
 float4 PS_Post(SkyOut i) : SV_Target
 {
     int2 px = int2(i.pos.xy);
-    float3 c = gHdr.Load(int3(px, 0)).rgb * gFogRange.z;
+    float3 c = gHdr.Load(int3(px, 0)).rgb;
+    float2 uv = i.ndc * float2(0.5, -0.5) + 0.5;
+    c = lerp(c, gBloom.SampleLevel(gClamp, uv, 0).rgb / 6, gExtra.y);              // soft glow around bright things (6 levels added up)
+    c *= gFogRange.z;
     c = tonemap(c);
     float l = dot(c, float3(0.2126, 0.7152, 0.0722));
     c = max(lerp(l.xxx, c, 1.02), 0);

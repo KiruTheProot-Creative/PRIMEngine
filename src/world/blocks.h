@@ -37,6 +37,8 @@ struct BlockDef {
     int tex[6] = { 0, 0, 0, 0, 0, 0 };   // texture layer per face (filled by resolve())
     bool solid = true;                   // you bump into it
     bool cullSame = false;               // hide faces between two blocks of this kind (glass)
+    int light = 0;                       // glows: 0 = no, 1..15 = how far its light reaches (lamp = 15)
+    bool waves = false;                  // sways in the wind (leaves, plants)
     bool exists = true;                  // false = a deleted id (kept so old worlds stay readable)
 };
 

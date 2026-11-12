@@ -18,6 +18,8 @@ struct Settings {
     float cloudCover = 0.5f;   // 0 = no clouds, 1 = overcast
     float groundFog = 1.0f;    // 0 = none, 1 = normal (thick in the morning), 2 = a lot
     bool cloudShadows = true;
+    float bloom = 0.5f;        // glow around bright things, 0 = off
+    bool swaying = true;       // leaves and plants move in the wind
     bool load(const std::string& path);
     bool save(const std::string& path) const;
 };

@@ -70,7 +70,7 @@ static ComPtr<ID3DBlob> Compile(const std::string& src, const char* entry, const
 struct alignas(16) FrameCB {
     XMFLOAT4X4 viewProj, shadowVP;
     float sunDir[4], sunColor[4], ambient[4], fogRange[4], skyTop[4], skyHorizon[4], sunGlow[4], camF[4], camR[4], camU[4], proj[4], shadowInfo[4];
-    float camPos[4], volume[4], depth[4];
+    float camPos[4], volume[4], depth[4], extra[4];
 };
 struct alignas(16) ChunkCB { float offset[4]; };
 
@@ -84,10 +84,12 @@ struct App {
     HWND hwnd = nullptr; int cw = 1280, ch = 720; bool resized = false;
     ComPtr<ID3D11Device> dev; ComPtr<ID3D11DeviceContext> ctx; ComPtr<IDXGISwapChain> swap; ComPtr<ID3D11RenderTargetView> backRTV;
     ComPtr<ID3D11Texture2D> depthTex; ComPtr<ID3D11DepthStencilView> dsv;
-    ComPtr<ID3D11VertexShader> vsBlock, vsSky, vsShadow; ComPtr<ID3D11PixelShader> psOpaque, psCutout, psSky, psGhost, psShadowCut, psPost, psVolume; ComPtr<ID3D11InputLayout> layout;
+    ComPtr<ID3D11VertexShader> vsBlock, vsSky, vsShadow; ComPtr<ID3D11PixelShader> psOpaque, psCutout, psSky, psGhost, psShadowCut, psPost, psVolume, psBloomDown, psBloomUp; ComPtr<ID3D11InputLayout> layout;
     ComPtr<ID3D11Texture2D> hdrTex; ComPtr<ID3D11RenderTargetView> hdrRTV; ComPtr<ID3D11ShaderResourceView> hdrSRV;      // the picture before tonemapping
     ComPtr<ID3D11Texture2D> volTex; ComPtr<ID3D11RenderTargetView> volRTV; ComPtr<ID3D11ShaderResourceView> volSRV;      // ... with clouds and fog
-    ComPtr<ID3D11ShaderResourceView> depthSRV, noiseSRV; ComPtr<ID3D11SamplerState> sampLinear; double cloudTime = 0;
+    ComPtr<ID3D11ShaderResourceView> depthSRV, noiseSRV; ComPtr<ID3D11SamplerState> sampLinear, sampClamp; double cloudTime = 0;
+    struct BloomLevel { ComPtr<ID3D11Texture2D> tex; ComPtr<ID3D11RenderTargetView> rtv; ComPtr<ID3D11ShaderResourceView> srv; int w = 0, h = 0; };
+    std::vector<BloomLevel> bloomLv; ComPtr<ID3D11BlendState> bsAdd; float nightAmount = 0;
     ComPtr<ID3D11Texture2D> shadowTex; ComPtr<ID3D11DepthStencilView> shadowDSV; ComPtr<ID3D11ShaderResourceView> shadowSRV; int shadowSize = 0;
     ComPtr<ID3D11RasterizerState> rsShadow, rsNoCull; ComPtr<ID3D11SamplerState> sampShadow; std::string driverName = "graphics card";
     ComPtr<ID3D11Buffer> cbFrame, cbChunk;
@@ -146,6 +148,8 @@ struct App {
         b = Compile(src, "VS_Shadow", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsShadow));
         b = Compile(src, "PS_ShadowCutout", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psShadowCut));
         b = Compile(src, "PS_Volume", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psVolume));
+        b = Compile(src, "PS_BloomDown", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psBloomDown));
+        b = Compile(src, "PS_BloomUp", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psBloomUp));
         b = Compile(src, "PS_Post", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psPost));
         b = Compile(src, "VS_Sky", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsSky));
         b = Compile(src, "PS_Sky", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psSky));
@@ -166,9 +170,11 @@ struct App {
         D3D11_BLEND_DESC bd{}; bd.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL; HR(dev->CreateBlendState(&bd, &bsOff));
         auto& rt = bd.RenderTarget[0]; rt.BlendEnable = TRUE; rt.SrcBlend = D3D11_BLEND_SRC_ALPHA; rt.DestBlend = D3D11_BLEND_INV_SRC_ALPHA; rt.BlendOp = D3D11_BLEND_OP_ADD;
         rt.SrcBlendAlpha = D3D11_BLEND_ONE; rt.DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA; rt.BlendOpAlpha = D3D11_BLEND_OP_ADD; HR(dev->CreateBlendState(&bd, &bsAlpha));
+        rt.SrcBlend = rt.DestBlend = rt.SrcBlendAlpha = rt.DestBlendAlpha = D3D11_BLEND_ONE; HR(dev->CreateBlendState(&bd, &bsAdd));
         D3D11_SAMPLER_DESC sm{}; sm.Filter = D3D11_FILTER_MIN_MAG_POINT_MIP_LINEAR; sm.AddressU = sm.AddressV = sm.AddressW = D3D11_TEXTURE_ADDRESS_WRAP; sm.MaxLOD = D3D11_FLOAT32_MAX; HR(dev->CreateSamplerState(&sm, &sampBlocks));
         sm.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT; sm.AddressU = sm.AddressV = sm.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP; HR(dev->CreateSamplerState(&sm, &sampPoint));
         sm.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR; sm.AddressU = sm.AddressV = sm.AddressW = D3D11_TEXTURE_ADDRESS_WRAP; HR(dev->CreateSamplerState(&sm, &sampLinear));
+        sm.AddressU = sm.AddressV = sm.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP; HR(dev->CreateSamplerState(&sm, &sampClamp));
         {   // the cloud noise volume
             const int N = 64; std::vector<uint8_t> nz = makeCloudNoise(N);
             D3D11_TEXTURE3D_DESC td{}; td.Width = td.Height = td.Depth = N; td.MipLevels = 1; td.Format = DXGI_FORMAT_R8G8_UNORM; td.Usage = D3D11_USAGE_IMMUTABLE; td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
@@ -202,6 +208,13 @@ struct App {
         HR(dev->CreateTexture2D(&d, nullptr, &hdrTex)); HR(dev->CreateRenderTargetView(hdrTex.Get(), nullptr, &hdrRTV)); HR(dev->CreateShaderResourceView(hdrTex.Get(), nullptr, &hdrSRV));
         volTex.Reset(); volRTV.Reset(); volSRV.Reset();
         HR(dev->CreateTexture2D(&d, nullptr, &volTex)); HR(dev->CreateRenderTargetView(volTex.Get(), nullptr, &volRTV)); HR(dev->CreateShaderResourceView(volTex.Get(), nullptr, &volSRV));
+        bloomLv.clear();   // half size, quarter size, ... six levels
+        for (int i = 0, w = cw / 2, h = ch / 2; i < 6; i++, w = std::max(1, w / 2), h = std::max(1, h / 2)) {
+            BloomLevel L; L.w = std::max(1, w); L.h = std::max(1, h);
+            D3D11_TEXTURE2D_DESC bd2{}; bd2.Width = (UINT)L.w; bd2.Height = (UINT)L.h; bd2.MipLevels = 1; bd2.ArraySize = 1; bd2.Format = DXGI_FORMAT_R11G11B10_FLOAT; bd2.SampleDesc.Count = 1; bd2.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+            HR(dev->CreateTexture2D(&bd2, nullptr, &L.tex)); HR(dev->CreateRenderTargetView(L.tex.Get(), nullptr, &L.rtv)); HR(dev->CreateShaderResourceView(L.tex.Get(), nullptr, &L.srv));
+            bloomLv.push_back(L);
+        }
     }
     void MakeShadowMap(int size) {
         shadowTex.Reset(); shadowDSV.Reset(); shadowSRV.Reset(); shadowSize = size; if (!size) return;
@@ -253,6 +266,7 @@ struct App {
     template <class F> void ChangeBlocks(F fn) {
         if (workers) workers->stop();
         fn(); reg.resolve(); UploadTextures(); ghostKey = 0xFFFFFFFFu;
+        if (world) world->recountEmitters();   // a block may glow (or stop glowing) now
         if (workers) workers->start(Threads());
         if (world) { latestSeq.clear(); for (auto& kv : world->chunks) world->dirty.insert(kv.first); }
         for (auto& h : hotbar) if (h != AIR && !reg.has(h)) h = AIR;
@@ -523,6 +537,7 @@ struct App {
         float gl[3]; mix(glowDay, glowLow, low, gl); for (int i = 0; i < 3; i++) fc.sunGlow[i] = moon ? glowMoon[i] : gl[i] * k;
         fc.sunGlow[3] = moon ? 2.f : 40.f;
         exposure = 1.0f + 2.5f * (1 - day);                         // the eye adjusts a little at night
+        nightAmount = 1 - sstep(-0.25f, 0.0f, h);
     }
     void RenderWorld() {
         aspect = (float)cw / ch; camPos = player.eye();
@@ -562,6 +577,7 @@ struct App {
         fc.volume[1] = settings.groundFog * (0.002f + 0.009f * morning + 0.003f * evening);
         fc.volume[2] = (float)std::fmod(cloudTime, 4800.0); fc.volume[3] = settings.cloudShadows ? 1.f : 0.f;
         fc.depth[0] = 0.05f; fc.depth[1] = farZ;
+        fc.extra[0] = nightAmount; fc.extra[1] = 0.15f * std::max(0.f, settings.bloom); fc.extra[2] = settings.swaying ? 1.f : 0.f; fc.extra[3] = 1;
         ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &fc, 0, 0);
         ID3D11Buffer* cbs[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->VSSetConstantBuffers(0, 2, cbs); ctx->PSSetConstantBuffers(0, 2, cbs);
         ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
@@ -629,11 +645,36 @@ struct App {
         { ID3D11ShaderResourceView* v4[4] = { hdrSRV.Get(), shadows ? shadowSRV.Get() : nullptr, depthSRV.Get(), noiseSRV.Get() }; ctx->PSSetShaderResources(0, 4, v4); }
         ctx->Draw(3, 0);
 
-        // ---- final picture: exposure + filmic curve into the window
+        // ---- bloom: shrink the picture step by step, then add the blurry copies back up
         ctx->PSSetShaderResources(0, 4, none);
+        bool bloom = settings.bloom > 0 && !bloomLv.empty();
+        ctx->PSSetSamplers(3, 1, sampClamp.GetAddressOf());
+        if (bloom) {
+            ctx->PSSetShader(psBloomDown.Get(), nullptr, 0);
+            for (size_t i = 0; i < bloomLv.size(); i++) {
+                ID3D11ShaderResourceView* src = i == 0 ? volSRV.Get() : bloomLv[i - 1].srv.Get();
+                float sw = i == 0 ? (float)cw : (float)bloomLv[i - 1].w, sh2 = i == 0 ? (float)ch : (float)bloomLv[i - 1].h;
+                ChunkCB cc{ { 1 / sw, 1 / sh2, 1, 0 } }; ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);
+                ctx->OMSetRenderTargets(1, bloomLv[i].rtv.GetAddressOf(), nullptr);
+                D3D11_VIEWPORT bv{ 0, 0, (float)bloomLv[i].w, (float)bloomLv[i].h, 0, 1 }; ctx->RSSetViewports(1, &bv);
+                ctx->PSSetShaderResources(0, 1, &src); ctx->Draw(3, 0); ctx->PSSetShaderResources(0, 1, none);
+            }
+            ctx->PSSetShader(psBloomUp.Get(), nullptr, 0); ctx->OMSetBlendState(bsAdd.Get(), nullptr, 0xFFFFFFFF);
+            for (size_t i = bloomLv.size() - 1; i > 0; i--) {
+                ChunkCB cc{ { 1.f / bloomLv[i].w, 1.f / bloomLv[i].h, 1, 0 } }; ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);
+                ctx->OMSetRenderTargets(1, bloomLv[i - 1].rtv.GetAddressOf(), nullptr);
+                D3D11_VIEWPORT bv{ 0, 0, (float)bloomLv[i - 1].w, (float)bloomLv[i - 1].h, 0, 1 }; ctx->RSSetViewports(1, &bv);
+                ID3D11ShaderResourceView* src = bloomLv[i].srv.Get(); ctx->PSSetShaderResources(0, 1, &src); ctx->Draw(3, 0); ctx->PSSetShaderResources(0, 1, none);
+            }
+            ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
+            D3D11_VIEWPORT fv{ 0, 0, (float)cw, (float)ch, 0, 1 }; ctx->RSSetViewports(1, &fv);
+        }
+
+        // ---- final picture: exposure + filmic curve into the window
         ctx->OMSetRenderTargets(1, backRTV.GetAddressOf(), nullptr);
         ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psPost.Get(), nullptr, 0);
-        ctx->PSSetShaderResources(0, 1, volSRV.GetAddressOf()); ctx->Draw(3, 0);
+        { ID3D11ShaderResourceView* pv[2] = { volSRV.Get(), bloom ? bloomLv[0].srv.Get() : nullptr }; ctx->PSSetShaderResources(0, 2, pv); }
+        ctx->Draw(3, 0);
         ctx->PSSetShaderResources(0, 4, none);
     }
     int drawnChunks = 0;
@@ -754,6 +795,8 @@ struct App {
         ch_ |= ImGui::SliderFloat("Clouds", &settings.cloudCover, 0, 1, settings.cloudCover <= 0 ? "none" : "%.2f");
         ch_ |= ImGui::Checkbox("Cloud shadows on the ground", &settings.cloudShadows);
         ch_ |= ImGui::SliderFloat("Ground fog", &settings.groundFog, 0, 2, settings.groundFog <= 0 ? "none" : "%.2f");
+        ch_ |= ImGui::SliderFloat("Glow (bloom)", &settings.bloom, 0, 1, settings.bloom <= 0 ? "off" : "%.2f");
+        ch_ |= ImGui::Checkbox("Leaves and plants sway in the wind", &settings.swaying);
         if (ch_) settings.save(settingsPath);
         if (ImGui::Button("Done", ImVec2(-1, 0))) showSettings = false;
         ImGui::End();
@@ -966,7 +1009,10 @@ struct App {
             if (ImGui::Checkbox("See-through (the picture's transparent pixels)", &see)) draft.render = see ? Render::Cutout : Render::Opaque;
             if (see) ImGui::Checkbox("Hide the sides between two of these (like glass)", &draft.cullSame);
             ImGui::Checkbox("You bump into it", &draft.solid);
-        } else ImGui::TextDisabled(draft.shape == Shape::Cross ? "Stands in the middle of its block. You walk through it." : "Sticks to the side of the block you click on. You walk through it.");
+        }
+        ImGui::SetNextItemWidth(160 * ui); ImGui::SliderInt("Glows (light level)", &draft.light, 0, 15, draft.light ? "%d" : "no");
+        ImGui::Checkbox("Sways in the wind", &draft.waves);
+        if (draft.shape != Shape::Cube) ImGui::TextDisabled(draft.shape == Shape::Cross ? "Stands in the middle of its block. You walk through it." : "Sticks to the side of the block you click on. You walk through it.");
         ImGui::EndGroup();
 
         ImGui::Separator();

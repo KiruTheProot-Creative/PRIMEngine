@@ -30,8 +30,9 @@ Chunk& World::loadChunk(I3 c) {
     auto ch = std::make_unique<Chunk>(); ch->pos = c;
     if (!(store && store->load(c, *ch))) gen.fill(*ch);
     else ch->modified = false;   // matches what is on disk
-    Chunk& ref = *ch; chunks.emplace(c, std::move(ch));
+    Chunk& ref = *ch; ref.emitters = countEmitters(ref); chunks.emplace(c, std::move(ch));
     markAround(c);               // its neighbours can now hide the faces they share with it
+    if (ref.emitters) markAll27(c);   // and its lamps light them up
     return ref;
 }
 
@@ -45,12 +46,32 @@ void World::set(int x, int y, int z, BlockId id) {
     I3 cp = chunkOf(x, y, z); Chunk& c = loadChunk(cp);
     int lx = floorMod(x, CS), ly = floorMod(y, CS), lz = floorMod(z, CS);
     if (c.get(lx, ly, lz) == id) return;
+    BlockId old = c.get(lx, ly, lz);
     c.set(lx, ly, lz, id); c.modified = true;
+    int lo = reg.get(old).light, ln = reg.get(id).light;
+    if (old != AIR && lo) c.emitters--;
+    if (id != AIR && ln) c.emitters++;
+    // light reaches up to 15 blocks: near a lamp, every chunk around has to be redrawn
+    if ((old != AIR && lo) || (id != AIR && ln) || emittersNear(cp)) markAll27(cp);
     // this chunk, plus every neighbour whose border (and corner shading) touches the block
     int ax[2] = { 0, lx == 0 ? -1 : lx == CS - 1 ? 1 : 0 }, ay[2] = { 0, ly == 0 ? -1 : ly == CS - 1 ? 1 : 0 }, az[2] = { 0, lz == 0 ? -1 : lz == CS - 1 ? 1 : 0 };
     for (int i = 0; i < 2; i++) for (int j = 0; j < 2; j++) for (int k = 0; k < 2; k++) {
         I3 n{ cp.x + ax[i], cp.y + ay[j], cp.z + az[k] }; if (chunk(n)) dirty.insert(n);
     }
+}
+
+int World::countEmitters(const Chunk& c) const {
+    if (!c.nonAir) return 0;
+    int n = 0; for (BlockId v : c.b) if (v != AIR && reg.get(v).light) n++;
+    return n;
+}
+void World::recountEmitters() { for (auto& kv : chunks) kv.second->emitters = countEmitters(*kv.second); }
+bool World::emittersNear(I3 c) const {
+    for (int dy = -1; dy <= 1; dy++) for (int dz = -1; dz <= 1; dz++) for (int dx = -1; dx <= 1; dx++) { const Chunk* n = chunk({ c.x + dx, c.y + dy, c.z + dz }); if (n && n->emitters) return true; }
+    return false;
+}
+void World::markAll27(I3 c) {
+    for (int dy = -1; dy <= 1; dy++) for (int dz = -1; dz <= 1; dz++) for (int dx = -1; dx <= 1; dx++) { I3 n{ c.x + dx, c.y + dy, c.z + dz }; if (chunk(n)) dirty.insert(n); }
 }
 
 void World::stream(I3 center, int rh, int rv, int maxLoads) {

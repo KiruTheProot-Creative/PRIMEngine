@@ -53,9 +53,13 @@ public:
     V3 moveBox(V3 feet, V3& vel, double halfW, double height, double dt, bool& onGround, double stepUp = 0) const;
 
     std::unordered_map<I3, std::unique_ptr<Chunk>, I3Hash> chunks;
+    void recountEmitters();                           // after blocks were edited (a block may glow now)
+    bool emittersNear(I3 c) const;                    // any glowing block in this chunk or the 26 around it
 
 private:
     void markAround(I3 c);
+    void markAll27(I3 c);
+    int countEmitters(const Chunk& c) const;
     std::vector<I3> offsets; int offH = -1, offV = -1;   // cached load order (nearest first)
 };
 

@@ -51,7 +51,8 @@ bool Library::saveBlocks(const BlockRegistry& r) const {
             f << "\n[block " << i << "]\nname = " << d.name
               << "\nshape = " << (d.shape == Shape::Cube ? "cube" : d.shape == Shape::Cross ? "cross" : "plane")
               << "\nlook = " << (d.render == Render::Cutout ? "see-through" : "solid")
-              << "\nsolid = " << (d.solid ? "yes" : "no") << "\njoin_same = " << (d.cullSame ? "yes" : "no") << "\nfaces =";
+              << "\nsolid = " << (d.solid ? "yes" : "no") << "\njoin_same = " << (d.cullSame ? "yes" : "no")
+              << "\nlight = " << d.light << "\nwaves = " << (d.waves ? "yes" : "no") << "\nfaces =";
             for (auto& t : d.faces) f << ' ' << (t.empty() ? "-" : t);
             f << "\n";
         }
@@ -76,7 +77,17 @@ bool Library::load(BlockRegistry& r, std::string* report) {
     stamps = scan(); int bad = 0;
     for (auto& s : stamps) if (!loadTexture(r, s.first)) bad++;
     std::ifstream f(P(blocksFile())); std::string line; BlockId cur = AIR; BlockDef d; int blocks = 0;
-    auto flush = [&] { if (cur != AIR) { r.put(cur, d); blocks++; } cur = AIR; d = BlockDef{}; };
+    bool seenLight = false, seenWaves = false;
+    BlockRegistry builtin; registerBuiltinBlocks(builtin);   // files from before "light"/"waves" existed: starter blocks keep their glow and sway
+    auto flush = [&] {
+        if (cur != AIR) {
+            BlockId b = builtin.find(d.name);
+            if (!seenLight && b) d.light = builtin.get(b).light;
+            if (!seenWaves && b) d.waves = builtin.get(b).waves;
+            r.put(cur, d); blocks++;
+        }
+        cur = AIR; d = BlockDef{}; seenLight = seenWaves = false;
+    };
     while (std::getline(f, line)) {
         line = trim(line); if (line.empty() || line[0] == '#') continue;
         if (line.rfind("[block", 0) == 0) { flush(); int id = std::atoi(line.c_str() + 6); if (id > 0 && id <= MAX_BLOCK_TYPES) cur = (BlockId)id; continue; }
@@ -89,6 +100,8 @@ bool Library::load(BlockRegistry& r, std::string* report) {
         else if (k == "look") d.render = lower(v) == "solid" ? Render::Opaque : Render::Cutout;
         else if (k == "solid") d.solid = yes(v);
         else if (k == "join_same") d.cullSame = yes(v);
+        else if (k == "light") { d.light = std::max(0, std::min(15, std::atoi(v.c_str()))); seenLight = true; }
+        else if (k == "waves") { d.waves = yes(v); seenWaves = true; }
         else if (k == "faces") {
             std::istringstream ss(v); std::vector<std::string> n; std::string t; while (ss >> t) n.push_back(t == "-" ? "" : t);
             for (int i = 0; i < 6; i++) d.faces[i] = n.empty() ? "" : n[std::min(i, (int)n.size() - 1)];
@@ -124,6 +137,7 @@ BlockDef Library::blockFromTexture(const BlockRegistry& r, const std::string& te
     d.shape = as == ImportAs::CrossPlanes ? Shape::Cross : as == ImportAs::FlatPlanes ? Shape::Plane : Shape::Cube;
     d.render = (see || d.shape != Shape::Cube) ? Render::Cutout : Render::Opaque;
     d.solid = d.shape == Shape::Cube;
+    d.waves = d.shape == Shape::Cross;   // imported plants sway
     return d;
 }
 
