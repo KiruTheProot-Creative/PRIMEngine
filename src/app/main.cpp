@@ -1154,6 +1154,8 @@ struct App {
             default: break;
             }
             if (label.empty()) continue;
+            { V3 d = (b.lo + b.hi) * 0.5 - camPos; bool picked = sel == Sel::Object && selIndex == i;   // labels only nearby (or when picked), so the view stays clear
+              if (!picked && d.x * d.x + d.y * d.y + d.z * d.z > 14 * 14) continue; }
             ImVec2 sp; if (Project({ (b.lo.x + b.hi.x) * 0.5, b.hi.y + 0.35, (b.lo.z + b.hi.z) * 0.5 }, sp)) {
                 ImVec2 ts = ImGui::CalcTextSize(label.c_str()); dl->AddRectFilled(ImVec2(sp.x - ts.x * 0.5f - 4, sp.y - 2), ImVec2(sp.x + ts.x * 0.5f + 4, sp.y + ts.y + 2), IM_COL32(0, 0, 0, 120), 3.f);
                 dl->AddText(ImVec2(sp.x - ts.x * 0.5f, sp.y), col, label.c_str());
