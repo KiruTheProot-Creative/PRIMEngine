@@ -742,7 +742,10 @@ struct App {
         models.store(m); ModelChanged(m.name);
         WorldObject o; o.id = nextObjId++; o.name = UniqueObjectName(m.name); o.model = m.name;
         o.pos = { corner.x + m.pivot.x, (double)corner.y, corner.z + m.pivot.z };
-        if (replace) { ApplyEdits(fillEdits(*world, corner, { corner.x + m.sx - 1, corner.y + m.sy - 1, corner.z + m.sz - 1 }, AIR), "Turned into an object"); objects.push_back(o); }
+        if (replace) {   // the blocks become the object (not an undo step: undoing would leave both)
+            for (auto& e : fillEdits(*world, corner, { corner.x + m.sx - 1, corner.y + m.sy - 1, corner.z + m.sz - 1 }, AIR)) world->set(e.x, e.y, e.z, AIR);
+            objects.push_back(o); Toast("Turned " + std::to_string(m.blockCount()) + " blocks into the object " + o.name);
+        }
         else { o.pos.x += m.sx + 1; objects.push_back(o); Toast("Made the model " + m.name); }
         RebuildSolids(); sel = Sel::Object; selIndex = (int)objects.size() - 1; selStage = 0;
     }
@@ -906,10 +909,10 @@ struct App {
     std::string ToolLabel() const {
         switch (toolSel) {
         case 0: return BrushLabel() + "   (Q: brush options, T: back to blocks)";
-        case 1: return selStage == 0 ? "Selection box: click a corner   (T: back to blocks)" : selStage == 1 ? "Selection box: click the other corner (right click: start over)"
-                     : "Selection box   Ctrl+C copy, Ctrl+V paste, F fill, Del delete, make into object in the Inspector";
-        case 2: return !placing.empty() ? "Click to put down " + placing + "   R turn (Shift+R a little), Alt: off the grid, right click: stop"
-                     : "Objects: click one to pick it   G move, R turn, Ctrl+D copy, Del delete.   Assets > Models to place one";
+        case 1: return selStage == 0 ? "Selection box: click a corner" : selStage == 1 ? "Click the other corner (right click: start over)"
+                     : "Ctrl+C copy, Ctrl+V paste, F fill, Del delete";
+        case 2: return !placing.empty() ? "Click: put down   R: turn   Alt: off the grid   Right click: stop"
+                     : "Click an object   G move, R turn, Del delete";
         default: return "(more tools are coming here)   T: back to blocks";
         }
     }

@@ -10,3 +10,7 @@
 
 ## Custom block types and shapes from FBX files
 - Import FBX models as new block shapes (and whole block types), next to the built-in shape library and the planned Blockbench shapes.
+
+## Objects
+- Lamps inside block models do not glow or light things yet (the model mesh has no light sources).
+- Undo / redo for object changes (place, move, delete, make into object).
