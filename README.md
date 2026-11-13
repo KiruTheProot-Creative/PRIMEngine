@@ -138,3 +138,16 @@ Open it with the **Player** button in the toolbar (or Game > Player editor). It'
 - The forcefield floats a little **in front of the door** (and/or behind it): "Field on" both sides / front / back, and how far in front. Or tick **"On the door's parts"** and choose which moving parts shimmer, for a field shaped like the door itself.
 - FBX doors: parts inside moving parts now move along with them (groups in groups), and a door with only an **Open** animation plays it backwards to close. If you imported a door before this update, import it again.
 - HUD: it has its own **view angle** (Sway and view), so it stays where you put it whatever field of view the player picks. **Landing shake**: the faster you fall, the bigger the dip and shake.
+
+## Weapons (Samus controls, part 1)
+
+Player editor > **Weapons**. Every beam is its own **arm cannon model** with three points you drag in its 3D view:
+**pivot** (where it sits and turns), **muzzle** (the flash, with an arrow showing where it aims) and **emitter** (where shots start, with an arrow).
+In Play mode shots fly from the emitter to wherever the crosshair points. Left mouse fires the beam (hold, if "Hold to keep firing" is on),
+right mouse fires a missile (ammo is a counter, "Missile" by default, so the HUD can show it). Keys 1-9 or the mouse wheel switch beams.
+
+- Each beam: colour, trail / hit / muzzle-flash looks (particles), speed, shots per second, damage, range, thickness, its firing animation and whether the next shot waits for it.
+- Missiles: their own animation per beam, "wait until it is done" (on by default), speed, rate, colour.
+- Idle breathing, walk bob, landing dip and recoil are made by the engine (strength sliders); the firing animations come from the cannon model.
+- A beam found later: switch off "Have it from the start"; a key pickup with the beam's name gives it.
+- Doors: **Opened by** any shot, one beam, or missiles.
