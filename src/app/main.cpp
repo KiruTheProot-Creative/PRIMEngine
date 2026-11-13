@@ -3544,7 +3544,7 @@ struct App {
         if (fields) ImGui::SameLine();
         return kindChanged;
     }
-    int evSel = 0;
+    int evSel = 0, evShotPose = 0;
     void CardEditor(EventCard& c, bool& ch) {
         float ui = settings.uiScale, bw = ImGui::GetFrameHeight(), sp = ImGui::GetStyle().ItemSpacing.x;
         ch |= ImGui::Checkbox("##on", &c.enabled); if (ImGui::IsItemHovered()) ImGui::SetTooltip("On / off");
@@ -3598,7 +3598,13 @@ struct App {
         } else { whenCol(); ImGui::Spacing(); ifCol(); ImGui::Spacing(); doCol(); }
     }
     void EventsPanel() {
-        if (ImGuiWindow* a = ImGui::FindWindowByName("Assets")) if (a->DockId) ImGui::SetNextWindowDockID(a->DockId, ImGuiCond_FirstUseEver);
+        if (ImGuiWindow* a = ImGui::FindWindowByName("Assets")) if (a->DockId) ImGui::SetNextWindowDockID(a->DockId, evShotPose == 2 ? ImGuiCond_Always : ImGuiCond_FirstUseEver);
+        if (evShotPose == 1) {   // screenshots: the panel floating big, to show the wide layout
+            const ImGuiViewport* vp = ImGui::GetMainViewport();
+            ImGui::SetNextWindowDockID(0, ImGuiCond_Always); ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + 30, vp->WorkPos.y + 120), ImGuiCond_Always);
+            ImGui::SetNextWindowSize(ImVec2(vp->WorkSize.x - 60, vp->WorkSize.y * 0.55f), ImGuiCond_Always); ImGui::SetNextWindowFocus();
+        }
+        if (evShotPose == 2) evShotPose = 0;
         if (focusEvents) { ShowTab("Events"); focusEvents = false; }
         if (!ImGui::Begin("Events")) { ImGui::End(); return; }
         float ui = settings.uiScale; bool ch = false;
@@ -4150,6 +4156,8 @@ struct App {
                     focusEvents = true; evSel = 1; sel = Sel::Object; selIndex = hz;
                     poseAt(DemoShot{ "e", { -11, g4 + 4.6, -48 }, { -11, g4 + 0.8, -33 }, 19.8f });
                     frames(6, "events_editor");
+                    evShotPose = 1; frames(4, "events_panel_wide");
+                    evShotPose = 2; frames(2, "events_panel_docked_again");
                     StartPlay(false);
                     poseAt(DemoShot{ "e", { -10.5, g4 + 1.62, -44 }, { -12, g4 + 1.4, -31.2 }, 19.8f });
                     play.health = game.player.maxHealth; toastT = 0;
