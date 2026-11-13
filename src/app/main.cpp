@@ -6154,6 +6154,26 @@ struct App {
                 frames(1, "weapons_free_aim");
                 Log("free aim: cannon turned " + std::to_string(aimYaw) + " / " + std::to_string(aimPitch) + " degrees; sounds " + (audioOk ? "on" : "off (no device)"));
                 weapons.aimMode = 0;
+                {   // close-ups in the open air: shots held still in front of the camera (movement is off here, so nothing falls)
+                    V3 keepF = player.feet; double ky = player.yaw, kp = player.pitch;
+                    shots.clear(); spheres.clear(); player.feet.y += 7; player.yaw += 1.1; player.pitch = -0.12; hudSway.reset(); run(2);
+                    V3 e = player.eye(), f = player.forward(), r = Norm(cross({ 0, 1, 0 }, f)), u = cross(f, r);
+                    auto still = [&](int bi, int mi, bool charged, V3 at, V3 dir) {
+                        Shot sh; sh.pos = at; sh.dir = Norm(dir); sh.speed = 0; sh.beam = bi; sh.charged = charged;
+                        if (mi >= 0) { const MissileType& m = weapons.missileTypes[mi]; sh.mtype = mi; sh.missile = true; sh.size = m.size; sh.tint = m.color; }
+                        else { const Beam& b = weapons.beams[bi]; sh.orb = true; sh.size = b.size * (charged ? b.chargeSize : 1.f); sh.tint = b.color; }
+                        sh.color = Linear(sh.tint) * (charged ? 6.0 : 3.0); sh.trail.s.rate = 0; sh.trail.s.burst = 0; shots.push_back(sh);
+                    };
+                    still(0, -1, false, e + f * 1.3 - r * 0.32 - u * 0.05, f); still(1, -1, false, e + f * 1.9 + r * 0.05 + u * 0.1, f); still(0, -1, true, e + f * 2.6 + r * 0.75 + u * 0.05, f);
+                    run(1); frames(2, "beam_orbs_closeup");
+                    shots.clear();
+                    still(0, 0, false, e + f * 1.25 - r * 0.35 + u * 0.08, r * 1.0 + f * 0.35); still(0, 1, false, e + f * 1.9 + r * 0.25 - u * 0.05, r * 1.0 - f * 0.25);
+                    run(1); frames(2, "missile_models_closeup");
+                    shots.clear();
+                    AddSphere(e + f * 7 - r * 1.5, 4.5f, 0xFF8A3A, 1.4f); AddSphere(e + f * 9 + r * 3, 3.5f, 0x60FF70, 1.4f); run(14);
+                    frames(1, "impact_sphere_plasma");
+                    spheres.clear(); player.feet = keepF; player.yaw = ky; player.pitch = kp; hudSway.reset(); run(2);
+                }
                 weapons.switchMode = 2; paused = true; Capture(false); frames(2, "pause_menu_pick_beam"); paused = false; weapons.switchMode = 0;
                 weapons.switchMode = 1; inv.keys.insert("Wave Beam"); run(2); Log(std::string("no switching: using the ") + weapons.beams[weapState.current].name + " (the best one owned)"); weapons.switchMode = 0;
                 Log("weapons: " + std::to_string(shots.size()) + " shots flying, missiles left " + std::to_string(inv.counts["Missile"]));
