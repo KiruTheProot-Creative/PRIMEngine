@@ -3854,7 +3854,11 @@ struct App {
         ImVec2 o = ImGui::GetCursorScreenPos(); o.x += (size.x - cs.x) * 0.5f;
         ImDrawList* dl = ImGui::GetWindowDrawList();
         dl->AddRectFilled(o, ImVec2(o.x + cs.x, o.y + cs.y), IM_COL32(18, 24, 32, 255));
-        if (hudPlane < (int)hudTargets.size() && hudTargets[hudPlane].srv) dl->AddImage((ImTextureID)(intptr_t)hudTargets[hudPlane].srv.Get(), o, ImVec2(o.x + cs.x, o.y + cs.y));
+        if (hudPlane < (int)hudTargets.size() && hudTargets[hudPlane].srv) {   // the picture is premultiplied: draw it with the matching blend
+            dl->AddCallback([](const ImDrawList*, const ImDrawCmd* c) { App* a = (App*)c->UserCallbackData; a->ctx->OMSetBlendState(a->bsPremul.Get(), nullptr, 0xFFFFFFFF); }, this);
+            dl->AddImage((ImTextureID)(intptr_t)hudTargets[hudPlane].srv.Get(), o, ImVec2(o.x + cs.x, o.y + cs.y));
+            dl->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
+        }
         dl->AddRect(o, ImVec2(o.x + cs.x, o.y + cs.y), IM_COL32(120, 130, 150, 160));
         ImGui::SetCursorScreenPos(o); ImGui::InvisibleButton("layout", cs);
         ImGuiIO& io = ImGui::GetIO(); ImVec2 m((io.MousePos.x - o.x) / cs.x, (io.MousePos.y - o.y) / cs.y);
@@ -3945,7 +3949,7 @@ struct App {
                     {   // through the camera, and the plane laid out flat
                         float rowH = ImGui::GetContentRegionAvail().y - ImGui::GetTextLineHeightWithSpacing(), half = (midW - sp) * 0.5f;
                         float asp = (float)rw / std::max(1, rh); ImVec2 psz(half, half / asp); if (psz.y > rowH) psz = ImVec2(rowH * asp, rowH);
-                        ImGui::TextDisabled("Camera preview (the world as the editor camera sees it)"); ImGui::SameLine(half + sp); ImGui::TextDisabled("Layout (Shift: snap)");
+                        ImGui::TextDisabled("Camera preview"); if (ImGui::IsItemHovered()) ImGui::SetTooltip("The world as the editor camera sees it, with the HUD. Fly and look around to see the sway."); ImGui::SameLine(half + sp); ImGui::TextDisabled("Layout (Shift: snap)");
                         ImVec2 o = ImGui::GetCursorScreenPos(); hudPrevWant = ImVec2(std::floor(psz.x), std::floor(psz.y));
                         if (hudPrev.srv) ImGui::Image((ImTextureID)(intptr_t)hudPrev.srv.Get(), psz); else ImGui::Dummy(psz);
                         ImGui::SetCursorScreenPos(ImVec2(o.x + half + sp, o.y));

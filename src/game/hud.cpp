@@ -79,7 +79,7 @@ V3 HudSway::apply(V3 p, float amount) const { return rotateDeg(p, yaw * amount, 
 // ------------------------------------------------------------------ the starter visor
 HudLayout defaultHud() {
     HudLayout h;
-    HudPlane v; v.name = "Visor"; v.pos = { 0, 0, 1 }; v.width = 2.3f; v.height = 1.3f; v.bendX = 0.35f; v.bendY = 0.12f;
+    HudPlane v; v.name = "Visor"; v.pos = { 0, 0, 1 }; v.width = 1.75f; v.height = 1.15f; v.bendX = 0.35f; v.bendY = 0.12f;
     auto el = [&](const char* name, HudKind k, float x, float y, float w, float hh) { HudElement e; e.name = name; e.kind = k; e.x = x; e.y = y; e.w = w; e.h = hh; e.color = 0x8FE6FF; return e; };
     HudElement frame = el("Frame", HudKind::Panel, 0.03f, 0.04f, 0.94f, 0.92f); frame.filled = false; frame.alpha = 0.22f; frame.thickness = 2; v.elements.push_back(frame);
     HudElement et = el("Energy", HudKind::Text, 0.07f, 0.07f, 0.3f, 0.05f); et.text = "ENERGY {value}"; et.value = HudValue::Health; et.textSize = 1; v.elements.push_back(et);
