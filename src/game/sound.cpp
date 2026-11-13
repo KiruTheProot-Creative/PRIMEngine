@@ -52,6 +52,15 @@ float randomPitch(const SoundUse& s, uint32_t& seed) {
     return std::clamp(s.pitch * (1 + r * s.pitchVar), 0.05f, 4.f);
 }
 
+const SoundUse* SoundSet::pick(uint32_t& seed) {
+    std::vector<int> ok; for (int i = 0; i < (int)sounds.size(); i++) if (!sounds[i].empty()) ok.push_back(i);
+    if (ok.empty()) return nullptr;
+    if (ok.size() == 1) { last = ok[0]; return &sounds[ok[0]]; }
+    int i;
+    do { seed = seed * 1664525u + 1013904223u; i = ok[(seed >> 8) % ok.size()]; } while (i == last);
+    last = i; return &sounds[i];
+}
+
 // ------------------------------------------------------------------ timelines
 float Timeline::length(float animLength, const std::vector<float>& soundLengths) const {
     float L = std::max(animLength / std::max(0.05f, animSpeed), shotAt);
@@ -90,9 +99,10 @@ bool soundUseFrom(const std::string& text, SoundUse& s) {
 }
 bool savePlayerSounds(const std::string& path, const PlayerSounds& p) {
     std::ofstream f(path); if (!f) return false;
-    f << "sounds 1\nstep " << soundUseText(p.step) << "\njump " << soundUseText(p.jump) << "\nland " << soundUseText(p.land)
-      << "\nmorph " << soundUseText(p.morph) << "\nbomb " << soundUseText(p.bomb) << "\nboom " << soundUseText(p.boom) << "\ncrumble " << soundUseText(p.crumble)
-      << "\nevery " << p.stepEvery << "\nlanding " << p.landQuiet << " " << p.landLoud << "\n";
+    f << "sounds 1";
+    auto put = [&](const char* k, const SoundSet& s) { for (const SoundUse& u : s.sounds) if (!u.empty()) f << "\n" << k << " " << soundUseText(u); };   // one line per sound
+    put("step", p.step); put("jump", p.jump); put("land", p.land); put("morph", p.morph); put("bomb", p.bomb); put("boom", p.boom); put("crumble", p.crumble);
+    f << "\nevery " << p.stepEvery << "\nlanding " << p.landQuiet << " " << p.landLoud << "\n";
     return (bool)f;
 }
 bool loadPlayerSounds(const std::string& path, PlayerSounds& p) {
@@ -100,8 +110,8 @@ bool loadPlayerSounds(const std::string& path, PlayerSounds& p) {
     p = PlayerSounds{}; std::string line;
     while (std::getline(f, line)) {
         std::istringstream l(line); std::string k; l >> k; std::string rest; std::getline(l, rest);
-        if (k == "step") soundUseFrom(rest, p.step); else if (k == "jump") soundUseFrom(rest, p.jump); else if (k == "land") soundUseFrom(rest, p.land);
-        else if (k == "morph") soundUseFrom(rest, p.morph); else if (k == "bomb") soundUseFrom(rest, p.bomb); else if (k == "boom") soundUseFrom(rest, p.boom); else if (k == "crumble") soundUseFrom(rest, p.crumble);
+        SoundSet* set = k == "step" ? &p.step : k == "jump" ? &p.jump : k == "land" ? &p.land : k == "morph" ? &p.morph : k == "bomb" ? &p.bomb : k == "boom" ? &p.boom : k == "crumble" ? &p.crumble : nullptr;
+        if (set) { SoundUse u; if (soundUseFrom(rest, u) && !u.empty()) set->sounds.push_back(u); }
         else if (k == "every") { std::istringstream r(rest); r >> p.stepEvery; }
         else if (k == "landing") { std::istringstream r(rest); r >> p.landQuiet >> p.landLoud; }
     }

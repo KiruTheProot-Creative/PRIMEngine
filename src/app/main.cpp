@@ -4670,6 +4670,38 @@ struct App {
         v->Start(); voices.push_back({ v, w, tag });
         return v;
     }
+    // a set of sounds: one of them, at random (never the same twice in a row)
+    IXAudio2SourceVoice* PlaySound(SoundSet& set, float vol = 1, const V3* at = nullptr, int tag = 0) { const SoundUse* u = set.pick(soundSeed); return u ? PlaySound(*u, vol, at, tag) : nullptr; }
+    // the editor for a set: each sound with its own settings; add one, or import several at once
+    bool SoundSetEdit(const char* id, SoundSet& set) {
+        bool ch = false; ImGui::PushID(id); int drop = -1;
+        for (int i = 0; i < (int)set.sounds.size(); i++) {
+            ImGui::PushID(i);
+            if (set.sounds.size() > 1) { ImGui::AlignTextToFramePadding(); ImGui::TextDisabled("%d", i + 1); ImGui::SameLine(); }
+            ImGui::BeginGroup(); ch |= SoundEdit("s", set.sounds[i], true); ImGui::EndGroup();
+            ImGui::SameLine(); if (ImGui::SmallButton("x")) drop = i;
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Remove this sound");
+            ImGui::PopID();
+        }
+        if (drop >= 0) { set.sounds.erase(set.sounds.begin() + drop); set.last = -1; ch = true; }
+        if (ImGui::SmallButton(set.sounds.empty() ? "+ Sound" : "+ Another sound")) {
+            SoundUse u; if (!set.sounds.empty()) { u = set.sounds.back(); u.file.clear(); } set.sounds.push_back(u); ch = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("+ Import several...")) {   // pick many WAVs: each one becomes a variation
+            std::error_code ec; fs::create_directories(fs::u8path(SoundsDir()), ec); int n = 0;
+            for (const std::string& f : PickFiles("WAV sounds (*.wav)\0*.wav\0", "Import sounds (pick as many as you like)")) {
+                fs::path src = fs::u8path(f); std::string name = src.filename().u8string();
+                fs::copy_file(src, fs::u8path(SoundsDir() + "/" + name), fs::copy_options::overwrite_existing, ec);
+                if (ec) continue; soundCache.erase(name);
+                SoundUse u; if (!set.sounds.empty()) u = set.sounds.back(); u.file = name; set.sounds.push_back(u); n++;
+            }
+            set.sounds.erase(std::remove_if(set.sounds.begin(), set.sounds.end(), [](const SoundUse& u) { return u.empty(); }), set.sounds.end());
+            if (n) { Toast(std::to_string(n) + " sound(s) added"); ch = true; }
+        }
+        if (set.sounds.size() > 1) { ImGui::SameLine(); ImGui::TextDisabled("%d sounds: a random one each time", (int)set.sounds.size()); }
+        ImGui::PopID(); return ch;
+    }
     void StopSounds(int tag) { for (Voice& v : voices) if (v.tag == tag && v.v) { v.v->Stop(); v.v->DestroyVoice(); v.v = nullptr; } voices.erase(std::remove_if(voices.begin(), voices.end(), [](const Voice& v) { return !v.v; }), voices.end()); }
     void UpdateAudio() {   // finished sounds let go
         for (Voice& v : voices) { XAUDIO2_VOICE_STATE st; v.v->GetState(&st, XAUDIO2_VOICE_NOSAMPLESPLAYED); if (st.BuffersQueued == 0) { v.v->DestroyVoice(); v.v = nullptr; } }
@@ -4729,16 +4761,16 @@ struct App {
         if (ImGui::BeginTable("ps", 2, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_BordersInnerV)) {
             ImGui::TableSetupColumn("a", ImGuiTableColumnFlags_WidthStretch, 1.2f); ImGui::TableSetupColumn("b", ImGuiTableColumnFlags_WidthStretch, 1.0f);
             ImGui::TableNextColumn();
-            ImGui::SeparatorText("Steps"); ch |= SoundEdit("step", playerSounds.step, true);
+            ImGui::SeparatorText("Steps"); ch |= SoundSetEdit("step", playerSounds.step);
             Prop("A step every"); ch |= ImGui::SliderFloat("##se", &playerSounds.stepEvery, 0.4f, 5, "%.1f blocks walked");
-            ImGui::SeparatorText("Jump"); ch |= SoundEdit("jump", playerSounds.jump, true);
-            ImGui::SeparatorText("Landing"); ch |= SoundEdit("land", playerSounds.land, true);
-            ImGui::SeparatorText("Morph ball in / out"); ch |= SoundEdit("morph", playerSounds.morph, true);
-            ImGui::SeparatorText("Bomb laid"); ch |= SoundEdit("bomb", playerSounds.bomb, true);
-            ImGui::SeparatorText("Bomb goes off"); ch |= SoundEdit("boom", playerSounds.boom, true);
-            ImGui::SeparatorText("A block breaks"); ch |= SoundEdit("crumble", playerSounds.crumble, true);
+            ImGui::SeparatorText("Jump"); ch |= SoundSetEdit("jump", playerSounds.jump);
+            ImGui::SeparatorText("Landing"); ch |= SoundSetEdit("land", playerSounds.land);
+            ImGui::SeparatorText("Morph ball in / out"); ch |= SoundSetEdit("morph", playerSounds.morph);
+            ImGui::SeparatorText("Bomb laid"); ch |= SoundSetEdit("bomb", playerSounds.bomb);
+            ImGui::SeparatorText("Bomb goes off"); ch |= SoundSetEdit("boom", playerSounds.boom);
+            ImGui::SeparatorText("A block breaks"); ch |= SoundSetEdit("crumble", playerSounds.crumble);
             { float r[2] = { playerSounds.landQuiet, playerSounds.landLoud }; Prop("Quiet .. loud at"); if (ImGui::DragFloat2("##ll", r, 0.1f, 0, 80, "%.1f blocks/s")) { playerSounds.landQuiet = r[0]; playerSounds.landLoud = std::max(r[0] + 0.5f, r[1]); ch = true; } }
-            Hint("Landing gets louder the faster you fall: silent below the first speed, full volume at the second. The numbers under each sound: volume, pitch, random pitch; then the cut (start into the sound, how long).");
+            Hint("Each can have as many sounds as you like: a random one plays each time, never the same twice in a row (great for steps). Landing gets louder the faster you fall: silent below the first speed, full volume at the second. The numbers under each sound: volume, pitch, random pitch; then the cut (start into the sound, how long).");
             ImGui::TableNextColumn();
             ImGui::SeparatorText("All sounds in the project");
             for (const std::string& f : SoundFiles()) {
@@ -5890,7 +5922,7 @@ struct App {
                     { SoundClip c; c.sound.file = "charge hum.wav"; c.sound.pitchVar = 0; pb.timelines[Beam::Charging].sounds = { c }; }
                     { SoundClip c; c.sound.file = "charged blast.wav"; pb.timelines[Beam::Charged].sounds = { c }; }
                     { Timeline& t = pb.timelines[Beam::MissileShot]; t.shotAt = 0.18f; SoundClip a; a.sound.file = "missile click.wav"; a.at = 0; SoundClip b2; b2.sound.file = "missile launch.wav"; b2.at = 0.18f; b2.sound.trimStart = 0.05f; b2.sound.length = 0.6f; t.sounds = { a, b2 }; }
-                    playerSounds.step.file = "step.wav"; playerSounds.step.pitchVar = 0.12f; playerSounds.jump.file = "jump.wav"; playerSounds.land.file = "land.wav";
+                    { SoundUse a; a.file = "step.wav"; a.pitchVar = 0.12f; SoundUse b3 = a; b3.pitch = 0.9f; playerSounds.step.sounds = { a, b3 }; SoundUse j; j.file = "jump.wav"; playerSounds.jump.sounds = { j }; SoundUse l; l.file = "land.wav"; playerSounds.land.sounds = { l }; }
                     weapTimelineView = true; tlKind = Beam::MissileShot; tlSel = 1; weapPoint = 1; weapYaw = 2.3f;
                     frames(3, "weapons_timeline");
                     weapTimelineView = false; selectSoundsTab = true;

@@ -39,10 +39,17 @@ struct TimelinePlay {
     void step(double dt, std::vector<int>& soundsNow, bool& shotNow, double until);
 };
 
+// several sounds for one thing: each time one of them, picked at random (never the same one twice in a row)
+struct SoundSet {
+    std::vector<SoundUse> sounds; int last = -1;
+    bool empty() const { for (const SoundUse& s : sounds) if (!s.empty()) return false; return true; }
+    const SoundUse* pick(uint32_t& seed);
+};
+
 // the player's own sounds
 struct PlayerSounds {
-    SoundUse step, jump, land;
-    SoundUse morph, bomb, boom, crumble;                // morph ball in / out, a bomb laid, a bomb going off, a breakable block breaking
+    SoundSet step, jump, land;
+    SoundSet morph, bomb, boom, crumble;                // morph ball in / out, a bomb laid, a bomb going off, a breakable block breaking
     float stepEvery = 1.7f;                             // blocks walked per step sound
     float landQuiet = 4, landLoud = 20;                 // falling speeds: quiet landing .. full volume
     float landVolume(float fallSpeed) const;            // 0 below landQuiet, rises to 1 at landLoud

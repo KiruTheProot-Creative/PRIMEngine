@@ -580,10 +580,19 @@ int main() {
             CHECK(sounds == 2 && shots == 1 && std::fabs(shotT - 0.1) < 0.02 && std::fabs(clankT - 0.3) < 0.02 && !tp.running(), "playing it: each sound starts once at its time, the shot at 0.1 s, then it ends");
             uint32_t seed = 7; SoundUse su; su.pitch = 1; su.pitchVar = 0.1f; float lo = 9, hi = 0; for (int k = 0; k < 200; k++) { float p = randomPitch(su, seed); lo = std::min(lo, p); hi = std::max(hi, p); }
             CHECK(lo >= 0.9f && hi <= 1.1f && hi - lo > 0.15f, "random pitch stays within its spread (%.3f .. %.3f)", lo, hi);
-            PlayerSounds ps; ps.step.file = "step metal.wav"; ps.step.pitchVar = 0.12f; ps.land.file = "land.wav"; ps.land.trimStart = 0.05f; ps.stepEvery = 1.4f;
+            PlayerSounds ps; SoundUse s1; s1.file = "step metal.wav"; s1.pitchVar = 0.12f; SoundUse s2; s2.file = "step metal 2.wav"; SoundUse s3; s3.file = "step metal 3.wav";
+            ps.step.sounds = { s1, s2, s3 }; SoundUse l1; l1.file = "land.wav"; l1.trimStart = 0.05f; ps.land.sounds = { l1 }; ps.stepEvery = 1.4f;
             CHECK(ps.landVolume(3) == 0 && ps.landVolume(20) == 1 && ps.landVolume(12) > 0.4f && ps.landVolume(12) < 0.6f, "landing louder the faster you fall");
+            { uint32_t sd = 5; int seen[3] = {}; std::string prev; bool repeat = false;
+              for (int k = 0; k < 300; k++) { const SoundUse* u = ps.step.pick(sd); if (u->file == prev) repeat = true; prev = u->file; for (int q = 0; q < 3; q++) if (u->file == ps.step.sounds[q].file) seen[q]++; }
+              CHECK(!repeat && seen[0] > 60 && seen[1] > 60 && seen[2] > 60, "several step sounds: each gets used, never the same twice in a row (%d %d %d)", seen[0], seen[1], seen[2]); }
+            { uint32_t sd = 1; CHECK(ps.land.pick(sd) && ps.land.pick(sd)->file == "land.wav" && !ps.jump.pick(sd) && ps.jump.empty(), "one sound: always that one; none: nothing"); }
             savePlayerSounds("/tmp/prim_psounds.txt", ps); PlayerSounds pb; loadPlayerSounds("/tmp/prim_psounds.txt", pb);
-            CHECK(pb.step.file == "step metal.wav" && std::fabs(pb.step.pitchVar - 0.12f) < 1e-6 && pb.land.trimStart == 0.05f && pb.stepEvery == 1.4f && pb.jump.empty(), "the player's sounds save and load");
+            CHECK(pb.step.sounds.size() == 3 && pb.step.sounds[0].file == "step metal.wav" && pb.step.sounds[2].file == "step metal 3.wav" && std::fabs(pb.step.sounds[0].pitchVar - 0.12f) < 1e-6
+                  && pb.land.sounds.size() == 1 && pb.land.sounds[0].trimStart == 0.05f && pb.stepEvery == 1.4f && pb.jump.empty(), "the player's sounds save and load (several per thing)");
+            { std::ofstream old("/tmp/prim_psounds_old.txt"); old << "sounds 1\nstep step.wav 1 1 0.05 0 0\njump - 1 1 0.05 0 0\nevery 1.7\n"; }
+            PlayerSounds po; loadPlayerSounds("/tmp/prim_psounds_old.txt", po);
+            CHECK(po.step.sounds.size() == 1 && po.step.sounds[0].file == "step.wav" && po.jump.empty(), "older files (one sound each) still load");
             WeaponSet ws = defaultWeapons(); ws.beams[0].timelines[Beam::MissileShot] = tl; ws.aimMode = 1; ws.deadZone = 0.3f;
             saveWeapons("/tmp/prim_wtl.txt", ws); WeaponSet wb; loadWeapons("/tmp/prim_wtl.txt", wb);
             const Timeline& bt = wb.beams[0].timelines[Beam::MissileShot];
