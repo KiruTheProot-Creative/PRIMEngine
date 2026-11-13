@@ -153,3 +153,11 @@ right mouse fires a missile (ammo is a counter, "Missile" by default, so the HUD
 - Doors: **Opened by** any shot, one beam, or missiles.
 - **Charge shot:** a tap fires a normal shot; hold and it charges at the muzzle (particles and light); let go when it is full for a bigger, stronger shot (time, damage, size, speed and look per beam). The HUD can show it (Shows > Beam charge).
 - **The cannon's layer:** it has its own depth, so it never cuts into the HUD: behind the HUD (default, like a visor) or "Cannon in front of the HUD".
+
+## Sounds, timelines and free aim
+
+- **Sounds:** WAV files (PCM 8/16/24/32-bit or float, any rate). Import them in Player editor > **Sounds** (or from any sound picker); they go into the project's `sounds` folder. Every sound use has volume, pitch, random pitch (so steps don't sound the same) and a cut (start into the sound, how long). Settings > Sound volume for everything.
+- **The player's sounds:** steps (one every so many blocks walked), jump, landing (silent below a falling speed, full volume at another). Sounds in the world get quieter with distance and come from their side.
+- **Timelines** (Weapons > Timeline): for each beam's Fire, Charging, Charged shot and Missile: drag the end of the animation to change its speed, drag the yellow mark to set when the shot leaves, add sounds and drag them (their edges cut them). Play tries it in the preview. Charging sounds stop when you let go.
+- **Free aim** (Weapons > Aiming, Wii style): the mouse moves a cursor; the cannon and the shots follow it; past the dead zone the camera turns, faster toward the edge (dead zone, turning speed, cursor speed, how much the cannon follows).
+- Later, for exporting whole games: WAV to OGG.
