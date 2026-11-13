@@ -161,3 +161,11 @@ right mouse fires a missile (ammo is a counter, "Missile" by default, so the HUD
 - **Timelines** (Weapons > Timeline): for each beam's Fire, Charging, Charged shot and Missile: drag the end of the animation to change its speed, drag the yellow mark to set when the shot leaves, add sounds and drag them (their edges cut them). Play tries it in the preview. Charging sounds stop when you let go.
 - **Free aim** (Weapons > Aiming, Wii style): the mouse moves a cursor; the cannon and the shots follow it; past the dead zone the camera turns, faster toward the edge (dead zone, turning speed, cursor speed, how much the cannon follows).
 - Later, for exporting whole games: WAV to OGG.
+
+## Morph ball, bombs, breakable blocks
+
+- **Morph ball** (C in Play mode): you roll up into a ball of the ball size (Game settings > Player rules), seen from behind; it rolls up to speed and keeps rolling when you let go. C again stands up (if there is room). From the start, or found later (a key pickup called "Morph Ball"). Its model: built in, or any model.
+- **Bombs** (the fire button while rolled up): up to 3 at once, they go off after a short fuse, break blocks marked for bombs, open bomb doors (door "Opened by": Bomb), and throw the ball up (bomb jump height). Found later: a "Bombs" pickup.
+- **Breakable blocks:** the new tool (T, slot 5) marks blocks (left click, hold and sweep to mark many; right click unmarks), or mark a whole selection box. Each mark says what breaks it: any shot (or bomb / missile), bombs only, missiles only, charged shots only, or one beam. The editor shows them with a coloured outline; in the game they look like any other block. Broken blocks come back when Play ends.
+- **Editing:** doors cannot be opened while you edit, so you go straight through them.
+- Sounds for the morph ball, bombs and breaking blocks: Player editor > Sounds.
