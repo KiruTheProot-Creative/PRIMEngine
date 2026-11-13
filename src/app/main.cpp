@@ -6007,9 +6007,11 @@ struct App {
                 OnKey('C', false); run(30);   // the real key, the way a player presses it
                 Log(std::string("C key in play mode: ") + (player.ball ? "rolled up" : "NOT rolled up"));
                 { V3 keep = player.feet; int before = rollTests; std::string why;   // a little roll backwards (away from the walls), to check the rolling loop wants to play
-                  for (int k = 0; k < 4; k++) { player.vel.x = -fw.x * 5.0; player.vel.z = -fw.z * 5.0; run(1);
+                  bool cap = captured; captured = true; run(10); before = rollTests;   // movement only runs with the mouse captured (as when really playing); settle on the ground first
+                  player.vel.x = -fw.x * 5.0; player.vel.z = -fw.z * 5.0;
+                  for (int k = 0; k < 4; k++) { run(1);
                       char b[96]; snprintf(b, sizeof b, " [speed %.2f ground %d ball %d paused %d]", std::sqrt(player.vel.x * player.vel.x + player.vel.z * player.vel.z), (int)player.onGround, (int)player.ball, (int)paused); why += b; }
-                  Log("roll loop wanted on " + std::to_string(rollTests - before) + " of 4 rolling frame(s)" + why); player.feet = keep; player.vel = { 0, 0, 0 }; run(10); }
+                  Log("roll loop wanted on " + std::to_string(rollTests - before) + " of 4 rolling frame(s)" + why); captured = cap; player.feet = keep; player.vel = { 0, 0, 0 }; run(10); }
                 frames(1, "morph_ball");
                 holdBeam = true; run(2); holdBeam = false; run(25);
                 frames(1, "bomb_laid");
