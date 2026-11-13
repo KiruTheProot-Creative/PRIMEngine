@@ -1543,7 +1543,7 @@ struct App {
         }
         if (changed) RebuildSolids();
         // the test beam: click to shoot (G5 brings real weapons)
-        if (!weapons.empty()) FireWeapons(dt);   // the player's beams and missiles
+        if (!weapons.empty() || player.ball) FireWeapons(dt);   // the player's beams and missiles (and the morph ball's bombs)
         else {
             bool L = Down(VK_LBUTTON) && Playing() && !play.dead();
             if (L && !shootPrev) { Shot sh; sh.pos = player.eye() + player.forward() * 0.6; sh.dir = player.forward(); shots.push_back(sh); }
@@ -2715,8 +2715,10 @@ struct App {
             dl->AddText(ImVec2(m.x - ts.x * 0.5f, vy + 13), IM_COL32(255, 255, 255, 230), t);
         }
         if (FreeAiming()) m = ImVec2(vx + cw * (0.5f + 0.5f * freeAim.x), vy + ch * (0.5f - 0.5f * freeAim.y));   // free aim: the cursor
-        dl->AddRectFilled(ImVec2(m.x - 9, m.y - 1), ImVec2(m.x + 9, m.y + 1), IM_COL32(240, 240, 240, 220));
-        dl->AddRectFilled(ImVec2(m.x - 1, m.y - 9), ImVec2(m.x + 1, m.y + 9), IM_COL32(240, 240, 240, 220));
+        if (!(playMode && player.ball)) {   // (no crosshair in the morph ball)
+            dl->AddRectFilled(ImVec2(m.x - 9, m.y - 1), ImVec2(m.x + 9, m.y + 1), IM_COL32(240, 240, 240, 220));
+            dl->AddRectFilled(ImVec2(m.x - 1, m.y - 9), ImVec2(m.x + 1, m.y + 9), IM_COL32(240, 240, 240, 220));
+        }
         if (playMode) { PlayHud(dl); return; }
         float s = 44 * settings.uiScale, W = 9 * s; ImVec2 o(vx + (cw - W) * 0.5f, vy + ch - s - 10);   // hotbar
         dl->AddRectFilled(ImVec2(o.x - 3, o.y - 3), ImVec2(o.x + W + 3, o.y + s + 3), toolMode ? IM_COL32(30, 20, 50, 170) : IM_COL32(0, 0, 0, 140), 3);
