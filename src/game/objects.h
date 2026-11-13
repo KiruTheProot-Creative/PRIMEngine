@@ -51,7 +51,9 @@ struct DoorSettings {
     float fieldGap = 0.06f;                           // how far in front of the door the field floats (blocks)
     bool fieldOnParts = false;                        // the field shimmers on the door's moving parts instead of a flat sheet
     std::string fieldParts;                           // which moving parts (names, comma separated); empty: all of them
+    std::string openedBy;                             // which weapon opens it: empty any shot, a beam's name, or "Missile"
 };
+bool doorOpensFor(const DoorSettings& d, const std::string& weapon, bool missile);
 
 enum class PickupType { Health, Key, Collectible };
 struct PickupSettings {

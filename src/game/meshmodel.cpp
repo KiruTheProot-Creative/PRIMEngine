@@ -563,6 +563,14 @@ bool builtinShape(const std::string& name, MeshModel& m) {
         slab({ -0.04, 0.55, -0.04 }, { 0.04, 0.8, 0.04 }, m);
         slab({ 0.06, 0.1, -0.02 }, { 0.075, 0.5, 0.02 }, c);
     }
+    else if (name == "@arm-cannon") {   // a simple arm cannon (weapons; not in the object list): its barrel points to +Z
+        int b = colour(0xC0602A), g = colour(0x8A8F9A), d = colour(0x4A5262), c = colour(0x6CF0FF);
+        slab({ -0.15, -0.15, 0 }, { 0.15, 0.15, 0.5 }, b);
+        slab({ -0.08, -0.08, 0.5 }, { 0.08, 0.08, 0.9 }, g);
+        slab({ -0.1, -0.1, 0.6 }, { 0.1, 0.1, 0.65 }, d);
+        slab({ -0.1, -0.1, 0.78 }, { 0.1, 0.1, 0.82 }, d);
+        slab({ -0.03, 0.15, 0.1 }, { 0.03, 0.17, 0.42 }, c);
+    }
     else if (name == "@health") { int r = colour(0xFF4A5A), w = colour(0xFFFFFF); diamond(0.28, 0.1, 0.4, 0.7, r); prism(8, 0.12, 0.36, 0.44, w); }
     else if (name == "@key") { int y = colour(0xFFD23A); prism(6, 0.16, 0.1, 0.2, y); prism(4, 0.05, 0.2, 0.75, y, 0.785); prism(4, 0.09, 0.62, 0.7, y, 0.785); }
     else if (name == "@gem") { int c = colour(0x3AE0FF); diamond(0.25, 0.1, 0.45, 0.75, c); }

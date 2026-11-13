@@ -14,6 +14,7 @@
 #include "../game/particles.h"
 #include "../game/events.h"
 #include "../game/hud.h"
+#include "../game/weapons.h"
 #include "../game/weather.h"
 #include "../core/png.h"
 #include "../core/noise.h"
@@ -567,6 +568,7 @@ struct App {
         if (toolMode && (k == VK_OEM_PLUS || k == VK_ADD)) { brush.radius = std::min(32, brush.radius + 1); return; }
         if (toolMode && (k == VK_OEM_MINUS || k == VK_SUBTRACT)) { brush.radius = std::max(0, brush.radius - 1); return; }
         if (!Playing() || repeat) return;
+        if (playMode && !weapons.empty() && k >= '1' && k <= '9') { SwitchBeam((int)(k - '1')); return; }   // Play mode: the beams
         if (k >= '1' && k <= '9') { if (toolMode) toolSel = (int)(k - '1'); else hotSel = (int)(k - '1'); }
         if (toolMode && toolSel == 1) {   // selection box
             if (k == VK_DELETE) SelFill(AIR);
@@ -592,6 +594,11 @@ struct App {
         if (k == 'G' && manualRot) { manualRot = false; Toast("Rotation: automatic"); }
     }
     void OnWheel(int delta) {
+        if (Playing() && playMode && weapons.beams.size() > 1) {   // Play mode: the next / previous beam you have
+            int n = (int)weapons.beams.size();
+            for (int k = 1; k < n; k++) { int i = ((weapState.current + (delta > 0 ? -k : k)) % n + n) % n; if (OwnsBeam(weapons.beams[i])) { SwitchBeam(i); break; } }
+            return;
+        }
         if (Playing() && !playMode && toolMode) {
             if (Down(VK_SHIFT)) brush.radius = std::clamp(brush.radius + (delta > 0 ? 1 : -1), 0, 32);
             else toolSel = (toolSel + (delta > 0 ? 8 : 1)) % 9;
@@ -926,7 +933,7 @@ struct App {
                 all.push_back({ p, std::max(0.5f, s.lightRange), c, 0, { 0, -1, 0 }, -1, dist(p) });
             }
         }
-        for (const Shot& s : shots) if (s.age < 50) all.push_back({ s.pos, 4.5, { 0.25, 0.9, 1.8 }, 0, { 0, -1, 0 }, -1, dist(s.pos) });
+        for (const Shot& s : shots) if (s.age < 50) all.push_back({ s.pos, s.missile ? 6.0 : 4.5, s.color * 0.6, 0, { 0, -1, 0 }, -1, dist(s.pos) });
         std::sort(all.begin(), all.end(), [](const L& a, const L& b) { return a.dist - a.range < b.dist - b.range; });
         int n = 0;
         for (const L& l : all) {
@@ -1053,7 +1060,7 @@ struct App {
     std::string bigMsg; float bigMsgT = 0;
     std::string playStartWorld; Player startEditCam; bool travelling = false;
     static bool IsBuiltin(const std::string& n) { return !n.empty() && n[0] == '@'; }
-    void AddBuiltins() { for (const std::string& n : builtinShapeNames()) { MeshModel m; if (builtinShape(n, m)) meshModels[n] = m; } MeshModel st; if (builtinShape("@visor-strut", st)) meshModels["@visor-strut"] = st; }
+    void AddBuiltins() { for (const std::string& n : builtinShapeNames()) { MeshModel m; if (builtinShape(n, m)) meshModels[n] = m; } MeshModel st; if (builtinShape("@visor-strut", st)) meshModels["@visor-strut"] = st; MeshModel ac; if (builtinShape("@arm-cannon", ac)) meshModels["@arm-cannon"] = ac; }
     // a new helper object: what it is follows from the built-in look it was placed with
     void ApplyPreset(WorldObject& o) {
         const std::string& m = o.model;
@@ -1433,7 +1440,8 @@ struct App {
     }
 
     // ================================================================== doors (G2 attempt 3a)
-    struct Shot { V3 pos, dir; float age = 0; ParticleEmitter trail{ particlePreset("Beam trail"), 11 }; };
+    struct Shot { V3 pos, dir; float age = 0; ParticleEmitter trail{ particlePreset("Beam trail"), 11 };
+                  float speed = 45, size = 0.07f, range = 80, travelled = 0; V3 color{ 0.4, 1.6, 3.0 }; uint32_t tint = 0; std::string weapon, hitLook = "Impact"; bool missile = false; };
     std::map<uint32_t, DoorRuntime> doorRt;           // Play mode: each door's state, by object id
     std::map<uint32_t, ModelGpu> doorGpu;             // doors in the middle of an animation: their posed meshes
     std::vector<Shot> shots; bool shootPrev = true;
@@ -1517,12 +1525,14 @@ struct App {
         }
         if (changed) RebuildSolids();
         // the test beam: click to shoot (G5 brings real weapons)
-        bool L = Down(VK_LBUTTON) && Playing() && !play.dead();
-        if (L && !shootPrev) { Shot sh; sh.pos = player.eye() + player.forward() * 0.6; sh.dir = player.forward(); shots.push_back(sh); }
-        shootPrev = Down(VK_LBUTTON);
-        const double speed = 45;
+        if (!weapons.empty()) FireWeapons(dt);   // the player's beams and missiles
+        else {
+            bool L = Down(VK_LBUTTON) && Playing() && !play.dead();
+            if (L && !shootPrev) { Shot sh; sh.pos = player.eye() + player.forward() * 0.6; sh.dir = player.forward(); shots.push_back(sh); }
+            shootPrev = Down(VK_LBUTTON);
+        }
         for (Shot& s : shots) {
-            double step = speed * dt; s.age += (float)dt;
+            double step = s.speed * dt; s.age += (float)dt;
             double best = step; int door = -1; Hit h;
             if (world->raycast(s.pos, s.dir, step, h)) best = h.t;
             for (size_t i = 0; i < objects.size(); i++) {   // forcefields and doors, then any object in the way
@@ -1536,8 +1546,9 @@ struct App {
             for (const Box3& b : world->objectSolids) { double t; if (rayBox(s.pos, s.dir, b, t) && t < best - 1e-6) { best = t; door = -1; } }
             if (best < step) {
                 {   // sparks where it hits; its tail stays a moment
-                    V3 at = s.pos + s.dir * best; uint32_t tint = door >= 0 ? objects[door].door.color : 0;
-                    SpawnFx(particlePreset("Impact"), at - s.dir * 0.05, s.dir * -1, tint);
+                    V3 at = s.pos + s.dir * best; uint32_t tint = door >= 0 ? objects[door].door.color : s.tint;
+                    SpawnFx(particlePreset(s.hitLook.empty() ? "Impact" : s.hitLook), at - s.dir * 0.05, s.dir * -1, tint);
+                    if (s.missile) { ParticleSettings bo = particlePreset("Fire"); bo.burst = 40; bo.life = 0.5f; SpawnFx(bo, at - s.dir * 0.1, s.dir * -1, s.tint); }
                     fx.push_back(s.trail);
                     for (const WorldObject& o : objects) {   // which named objects were hit (for "when something is shot")
                         if (o.name.empty() || Gone(o) || o.kind == ObjKind::Trigger) continue;
@@ -1552,11 +1563,12 @@ struct App {
                     auto dot = [](V3 a, V3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; };
                     float u = (float)std::clamp(dot(q, ac) / std::max(1e-9, dot(ac, ac)), 0.0, 1.0), v = (float)std::clamp(dot(q, up) / std::max(1e-9, dot(up, up)), 0.0, 1.0);
                     if (evLocked.count(o.id)) Toast("This door is locked");
+                    else if (!doorOpensFor(o.door, s.weapon, s.missile)) Toast("This door opens with " + (o.door.openedBy == "Missile" ? std::string("a missile") : "the " + o.door.openedBy));
                     else if (!o.door.key.empty() && !inv.keys.count(o.door.key)) Toast("This door needs the " + o.door.key);
                     else doorRt[o.id].shoot(u, v);
                 }
                 s.age = 99;
-            } else s.pos = s.pos + s.dir * step;
+            } else { s.pos = s.pos + s.dir * step; s.travelled += (float)step; if (s.travelled > s.range) { fx.push_back(s.trail); s.age = 99; } }
         }
         shots.erase(std::remove_if(shots.begin(), shots.end(), [](const Shot& s) { return s.age > 2.5f; }), shots.end());
     }
@@ -1580,11 +1592,11 @@ struct App {
             }
         }
         for (const Shot& s : shots) {   // a short bright streak, facing the camera
-            V3 tail = s.pos - s.dir * std::min(1.4, 45.0 * s.age), side{ s.dir.y * 0 - s.dir.z * 0, 0, 0 };
+            V3 tail = s.pos - s.dir * std::min(s.missile ? 0.6 : 1.4, (double)s.speed * s.age), side{ 0, 0, 0 };
             V3 view = s.pos - camPos; V3 cr{ s.dir.y * view.z - s.dir.z * view.y, s.dir.z * view.x - s.dir.x * view.z, s.dir.x * view.y - s.dir.y * view.x };
-            double l = std::sqrt(cr.x * cr.x + cr.y * cr.y + cr.z * cr.z); side = l > 1e-9 ? cr * (0.07 / l) : V3{ 0.07, 0, 0 };
+            double l = std::sqrt(cr.x * cr.x + cr.y * cr.y + cr.z * cr.z); side = l > 1e-9 ? cr * (s.size / l) : V3{ s.size, 0, 0 };
             V3 org = tail - side - camPos, ac = s.pos - tail, up = side * 2;
-            ChunkCB cc{ { (float)org.x, (float)org.y, (float)org.z, 1 }, { (float)ac.x, (float)ac.y, (float)ac.z, 0 }, { (float)up.x, (float)up.y, (float)up.z, 0 }, { 0.4f, 1.6f, 3.0f, 1 } };
+            ChunkCB cc{ { (float)org.x, (float)org.y, (float)org.z, 1 }, { (float)ac.x, (float)ac.y, (float)ac.z, 0 }, { (float)up.x, (float)up.y, (float)up.z, 0 }, { (float)s.color.x, (float)s.color.y, (float)s.color.z, 1 } };
             ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0); ctx->Draw(6, 0);
         }
         ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());
@@ -1605,6 +1617,14 @@ struct App {
             for (auto& p : presets) { ImGui::PushID(p.first); ImVec4 col(((p.second >> 16) & 255) / 255.f, ((p.second >> 8) & 255) / 255.f, (p.second & 255) / 255.f, 1);
                 Flow(ImGui::GetFrameHeight()); if (ImGui::ColorButton(p.first, col)) o.door.color = p.second; ImGui::PopID(); }
             Hint("Later, the colour says which weapon opens it (like beam, missile ...). For now any shot does.");
+            Prop("Opened by");
+            if (ImGui::BeginCombo("##openby", o.door.openedBy.empty() ? "Any shot" : o.door.openedBy.c_str())) {
+                if (ImGui::Selectable("Any shot", o.door.openedBy.empty())) { o.door.openedBy.clear(); ch_ = true; }
+                for (const Beam& b : weapons.beams) if (ImGui::Selectable(b.name.c_str(), o.door.openedBy == b.name)) { o.door.openedBy = b.name; o.door.color = b.color; ch_ = true; }
+                if (ImGui::Selectable("Missile", o.door.openedBy == "Missile")) { o.door.openedBy = "Missile"; o.door.color = 0xFF3A3A; ch_ = true; }
+                ImGui::EndCombo();
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Picking a beam also takes its colour.");
             { int s = o.door.fieldSide; const char* sn[] = { "Both sides", "Front only", "Back only" }; Prop("Field on"); if (ImGui::Combo("##fside", &s, sn, 3)) { o.door.fieldSide = s; ch_ = true; } }
             Prop("In front of the door"); if (ImGui::SliderFloat("##fgap", &o.door.fieldGap, 0.01f, 0.5f, "%.2f blocks")) ch_ = true;
             auto mi = meshModels.find(o.model);
@@ -2512,7 +2532,7 @@ struct App {
         }
 
         // ---- Play mode: the HUD's 3D parts, lit like the world (sun, its shadows, sky light, light objects), in front of everything
-        if (playMode && !hud.parts.empty()) DrawHudPartsLit(fc, f, r, u, srvs, samps);
+        if (playMode && (!hud.parts.empty() || !weapons.empty())) DrawHudPartsLit(fc, f, r, u, srvs, samps);
 
         // ---- clouds and ground fog over the picture (needs the depth: unbind it as a target first)
         ctx->PSSetShaderResources(0, 4, none);
@@ -2831,9 +2851,13 @@ struct App {
         if (screen != Screen::Game || playMode) return;
         EndStroke(); brushMenu = false; placing.clear(); dupFrom = -1; platRun.clear(); previewPlatforms = false; if (movingObj >= 0) { movingObj = -1; RebuildSolids(); }
         editCam = player; playMode = true; paused = false; inventory = false; shapeMenu = false; editorOpen = false;
-        inv = PlayInventory{}; takenByWorld.clear(); insideNow.clear(); firedOnce.clear(); teleportLock = 0; bigMsgT = 0; playStartWorld = CurrentWorld(); startEditCam = editCam;
+        inv = PlayInventory{};
+        { bool anyMissiles = false; for (auto& b : weapons.beams) anyMissiles |= b.missiles; if (anyMissiles && !weapons.missileCounter.empty()) inv.counts[weapons.missileCounter] = weapons.missileStart; }
+        takenByWorld.clear(); insideNow.clear(); firedOnce.clear(); teleportLock = 0; bigMsgT = 0; playStartWorld = CurrentWorld(); startEditCam = editCam;
         playSpawn = info.hasSpawn ? info.spawn : player.feet; playYaw = info.hasSpawn ? info.spawnYaw : player.yaw;
         play = PlayState{}; play.start(player, game.player, playSpawn, playYaw);
+        weapState = WeaponState{}; weapPose = WeaponPose{}; cannonClip = -1; firedPending = 0; missilePrev = true;
+        for (int i = 0; i < (int)weapons.beams.size(); i++) if (weapons.beams[i].startsOwned) { weapState.current = i; break; }
         hudSway.reset(); hudShown.clear(); hudFlashAt.clear(); prevPlayYaw = player.yaw; prevPlayPitch = player.pitch; prevOnGround = true; prevVelY = 0;
         EvStart();
         if (grabMouse) { Capture(false); captureNext = true; }   // grabbed next frame, once the picture fills the window
@@ -3539,8 +3563,12 @@ struct App {
     double prevPlayYaw = 0, prevPlayPitch = 0, prevVelY = 0; bool prevOnGround = true;
 
     std::string HudPath() const { return projectDir + "/hud.txt"; }
-    void LoadHud() { hud = HudLayout{}; loadHud(HudPath(), hud); hudImages.clear(); hudSel = 0; hudPlane = 0; hudEl = -1; hudPart = 0; }
-    void SaveHud() { if (projectDir.empty()) return; std::error_code ec; if (hud.empty()) fs::remove(fs::u8path(HudPath()), ec); else saveHud(HudPath(), hud); }
+    void LoadHud() { hud = HudLayout{}; loadHud(HudPath(), hud); weapons = WeaponSet{}; loadWeapons(projectDir + "/weapons.txt", weapons); weapSel = 0; weapState = WeaponState{}; hudImages.clear(); hudSel = 0; hudPlane = 0; hudEl = -1; hudPart = 0; }
+    void SaveHud() {
+        if (projectDir.empty()) return; std::error_code ec;
+        if (hud.empty()) fs::remove(fs::u8path(HudPath()), ec); else saveHud(HudPath(), hud);
+        if (weapons.empty()) fs::remove(fs::u8path(projectDir + "/weapons.txt"), ec); else saveWeapons(projectDir + "/weapons.txt", weapons);
+    }
     void InitHud(const std::string& src) {
         auto b = Compile(src, "VS_Hud", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsHud));
         D3D11_INPUT_ELEMENT_DESC he[] = { { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 }, { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0 } };
@@ -3610,7 +3638,7 @@ struct App {
     // every plane's picture as an ImGui draw list (inside the ImGui frame: text sizes get baked)
     void BuildHudLists() {
         hudListsReady = false;
-        bool need = (playMode && !hud.empty()) || (playerEdOpen && screen == Screen::Game && EditorView());
+        bool need = (playMode && (!hud.empty() || !weapons.empty())) || (playerEdOpen && screen == Screen::Game && EditorView());
         if (!need) return;
         if (playMode) { hudVals.health = play.health; hudVals.maxHealth = game.player.maxHealth; hudVals.counts = inv.counts; hudVals.keys = inv.keys; }
         else { hudVals = HudValues{}; hudVals.maxHealth = game.player.maxHealth; hudVals.health = game.player.maxHealth * 0.76f; hudVals.counts["Missile"] = 25; hudVals.keys.insert("Red key"); }
@@ -3659,19 +3687,15 @@ struct App {
         ctx->VSSetShader(vsPreview.Get(), nullptr, 0); ctx->PSSetShader(editor ? psPreview.Get() : nullptr, nullptr, 0);   // Play mode: already drawn lit, here only their depth
         ctx->PSSetShaderResources(0, 1, texArray.GetAddressOf()); ctx->PSSetSamplers(0, 1, sampBlocks.GetAddressOf());
         ctx->RSSetState(rsNoCull.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
-        for (const HudPart& p : hud.parts) {
-            if (!p.visible) continue;
-            FrameRef f = ModelNamed(p.model); if (!f) continue;
-            const ModelGpu& g = GpuModel(p.model);
+        for (const CamPart& c : CameraParts(sw, editor ? previewPose : weapPose)) {   // the HUD's 3D parts and the arm cannon
+            FrameRef f = ModelNamed(c.model); if (!f) continue;
+            const ModelGpu& g = c.gpu ? *c.gpu : GpuModel(c.model);
             if (g.mesh) ctx->PSSetShaderResources(9, 1, g.tex.GetAddressOf());
-            V3 ax, ay, az; partAxes(p, ax, ay, az); float k = sw.yaw == 0 && sw.pitch == 0 && sw.roll == 0 ? 0.f : p.sway;
-            ax = rotateDeg(ax, sw.yaw * k, sw.pitch * k, sw.roll * k); ay = rotateDeg(ay, sw.yaw * k, sw.pitch * k, sw.roll * k); az = rotateDeg(az, sw.yaw * k, sw.pitch * k, sw.roll * k);
-            V3 base = sw.apply(p.pos, p.sway);
             for (int pass = 0; pass < 2; pass++) for (auto& part : g.parts) {
                 const GpuChunk& gc = part.second; UINT n = pass == 0 ? gc.nO : gc.nC; if (!n) continue;
                 V3 l{ part.first.x * (double)CS - f->pivot.x, part.first.y * (double)CS - f->pivot.y, part.first.z * (double)CS - f->pivot.z };
-                V3 org = base + ax * l.x + ay * l.y + az * l.z;
-                ChunkCB cc{ { (float)org.x, (float)org.y, (float)org.z, 0 }, { (float)ax.x, (float)ax.y, (float)ax.z, 0 }, { (float)ay.x, (float)ay.y, (float)ay.z, 0 }, { (float)az.x, (float)az.y, (float)az.z, 0 } };
+                V3 org = c.base + c.ax * l.x + c.ay * l.y + c.az * l.z;
+                ChunkCB cc{ { (float)org.x, (float)org.y, (float)org.z, 0 }, { (float)c.ax.x, (float)c.ax.y, (float)c.ax.z, 0 }, { (float)c.ay.x, (float)c.ay.y, (float)c.ay.z, 0 }, { (float)c.az.x, (float)c.az.y, (float)c.az.z, 0 } };
                 ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);
                 UINT stride = sizeof(Vtx), off = 0;
                 ctx->IASetVertexBuffers(0, 1, pass == 0 ? gc.vbO.GetAddressOf() : gc.vbC.GetAddressOf(), &stride, &off);
@@ -3714,15 +3738,11 @@ struct App {
         ctx->PSSetShaderResources(0, 5, srvs); ctx->PSSetSamplers(0, 3, samps);
         ID3D11Buffer* cbs[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->VSSetConstantBuffers(0, 2, cbs); ctx->PSSetConstantBuffers(0, 2, cbs);
         auto W = [&](V3 c) { return r * c.x + u * c.y + f * c.z; };   // camera space -> the world's directions
-        const HudSway& sw = hudSway;
-        for (const HudPart& p : hud.parts) {
-            if (!p.visible) continue;
-            FrameRef fr = ModelNamed(p.model); if (!fr) continue;
-            const ModelGpu& g = GpuModel(p.model);
+        for (const CamPart& c : CameraParts(hudSway, weapPose)) {
+            FrameRef fr = ModelNamed(c.model); if (!fr) continue;
+            const ModelGpu& g = c.gpu ? *c.gpu : GpuModel(c.model);
             if (g.mesh) ctx->PSSetShaderResources(9, 1, g.tex.GetAddressOf());
-            V3 ax, ay, az; partAxes(p, ax, ay, az); float k = p.sway;
-            ax = W(rotateDeg(ax, sw.yaw * k, sw.pitch * k, sw.roll * k)); ay = W(rotateDeg(ay, sw.yaw * k, sw.pitch * k, sw.roll * k)); az = W(rotateDeg(az, sw.yaw * k, sw.pitch * k, sw.roll * k));
-            V3 base = W(sw.apply(p.pos, p.sway));
+            V3 ax = W(c.ax), ay = W(c.ay), az = W(c.az), base = W(c.base);
             for (int pass = 0; pass < 2; pass++) {
                 ctx->PSSetShader(pass == 0 ? psOpaque.Get() : psCutout.Get(), nullptr, 0);
                 for (auto& part : g.parts) {
@@ -3745,7 +3765,7 @@ struct App {
     XMMATRIX HudProj(float aspect) const { return XMMatrixPerspectiveFovLH(XMConvertToRadians(hud.fov), aspect, 0.01f, 60.f); }   // its own view angle: the HUD keeps its place whatever the player's field of view
     // Play mode: the HUD over the finished picture
     void DrawHudInGame(ID3D11RenderTargetView* out) {
-        if (hud.empty() || !hudListsReady) return;
+        if ((hud.empty() && weapons.empty()) || !hudListsReady) return;
         ctx->OMSetRenderTargets(1, &out, dsv.Get()); ctx->ClearDepthStencilView(dsv.Get(), D3D11_CLEAR_DEPTH, 1.f, 0);
         D3D11_VIEWPORT v{ 0, 0, (float)rw, (float)rh, 0, 1 }; ctx->RSSetViewports(1, &v);
         DrawHudScene(HudProj((float)rw / rh), hudSway, false);
@@ -3781,6 +3801,7 @@ struct App {
             bool landed = player.onGround && !prevOnGround; float fall = (float)std::max(0.0, -prevVelY);
             float speed = (float)std::sqrt(player.vel.x * player.vel.x + player.vel.z * player.vel.z) * (player.onGround ? 1.f : 0.f);
             hudSway.update(hud.sway, dt, ty, tp, speed, landed, fall);
+            weapPose.update(weapons.motion, dt, speed, landed, fall, firedPending); firedPending = 0;
         }
         prevPlayYaw = player.yaw; prevPlayPitch = player.pitch; prevVelY = player.vel.y; prevOnGround = player.onGround;
         if (playerEdOpen && !playMode) {
@@ -3792,7 +3813,9 @@ struct App {
                 if (hudWiggle > 3) hudWiggle = -1;
             }
             previewSway.update(hud.sway, dt, ty, tp, speed, false, 0);
+            previewPose.update(weapons.motion, dt, speed, false, 0, previewFired); previewFired = 0;
         }
+        UpdateCannon(dt);
         prevEdYaw = player.yaw; prevEdPitch = player.pitch;
     }
 
@@ -3802,7 +3825,7 @@ struct App {
         return { o.x + (XMVectorGetX(c) / w * 0.5f + 0.5f) * sz.x, o.y + (0.5f - XMVectorGetY(c) / w * 0.5f) * sz.y, w };
     }
     std::vector<std::string> PartModels() {
-        std::vector<std::string> v; for (auto& kv : meshModels) if (!IsBuiltin(kv.first) || kv.first == "@visor-strut") v.push_back(kv.first);
+        std::vector<std::string> v; for (auto& kv : meshModels) if (!IsBuiltin(kv.first) || kv.first == "@visor-strut" || kv.first == "@arm-cannon") v.push_back(kv.first);
         for (auto& kv : models.models) v.push_back(kv.first);
         std::sort(v.begin(), v.end()); return v;
     }
@@ -4027,7 +4050,7 @@ struct App {
         ImGui::SetNextWindowSize(ImVec2(mv->WorkSize.x * 0.92f, mv->WorkSize.y * 0.9f), ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowPos(ImVec2(mv->WorkPos.x + mv->WorkSize.x * 0.5f, mv->WorkPos.y + mv->WorkSize.y * 0.5f), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
         if (focusPlayerEd) { ImGui::SetNextWindowFocus(); focusPlayerEd = false; }
-        hudViewWant = hudPrevWant = ImVec2(0, 0);
+        hudViewWant = hudPrevWant = weapWant = ImVec2(0, 0);
         if (!ImGui::Begin("Player editor", &playerEdOpen)) { ImGui::End(); return; }
         if (ImGui::BeginTabBar("player")) {
             if (ImGui::BeginTabItem("HUD")) {
@@ -4098,10 +4121,303 @@ struct App {
                 }
                 ImGui::EndTabItem();
             }
+            playerTabWeapons = false;
+            if (ImGui::BeginTabItem("Weapons", nullptr, selectWeaponsTab ? ImGuiTabItemFlags_SetSelected : 0)) { playerTabWeapons = true; WeaponsTab(); ImGui::EndTabItem(); }
+            selectWeaponsTab = false;
             if (ImGui::BeginTabItem("Body and controls")) { ImGui::Spacing(); Hint("Coming later: the player's model, size, moves and controls (Samus: morph ball, bombs, beams...)."); ImGui::EndTabItem(); }
             ImGui::EndTabBar();
         }
         ImGui::End();
+    }
+    // ================================================================== weapons (Samus controls, part 1): beams on arm cannons, missiles
+    WeaponSet weapons; WeaponState weapState; WeaponPose weapPose, previewPose;
+    ModelGpu cannonGpu; int cannonClip = -1; float cannonT = 0; bool missilePrev = true; float firedPending = 0, previewFired = 0;
+    bool selectWeaponsTab = false;
+    int weapSel = 0, weapPoint = 1;   // the beam picked in the editor; the point being edited (0 pivot, 1 muzzle, 2 emitter)
+    float weapYaw = 2.3f, weapPitch = 0.35f, weapDist = 2.2f; XMMATRIX weapVP = XMMatrixIdentity(); V3 weapEye{ 0, 0, 0 }; ImVec2 weapWant{ 0, 0 };
+    HudTarget weapView; ComPtr<ID3D11DepthStencilView> weapDSV; int weapDW = 0, weapDH = 0; int weapDrag = -1; bool playerTabWeapons = false;
+    std::string WeaponsPath() const { return projectDir + "/weapons.txt"; }
+    bool OwnsBeam(const Beam& b) const { return b.startsOwned || inv.keys.count(b.name) > 0; }
+    const Beam* CurrentBeam() {
+        if (weapons.empty()) return nullptr;
+        weapState.current = std::clamp(weapState.current, 0, (int)weapons.beams.size() - 1);
+        return &weapons.beams[weapState.current];
+    }
+    float ClipLenOf(const std::string& model, const std::string& clip) {
+        auto it = meshModels.find(model); if (it == meshModels.end() || clip.empty()) return 0;
+        int c = it->second.findClip(clip); return c < 0 ? 0.f : it->second.clips[c].length;
+    }
+    float PlayCannon(bool missile) {   // the cannon's own firing animation (if the model has one)
+        const Beam* b = CurrentBeam(); if (!b) return 0;
+        auto it = meshModels.find(b->model); if (it == meshModels.end()) return 0;
+        int c = it->second.findClip(missile ? b->missileClip : b->fireClip); if (c < 0) return 0;
+        cannonClip = c; cannonT = 0; return it->second.clips[c].length;
+    }
+    void UpdateCannon(double dt) {
+        const Beam* b = CurrentBeam(); if (!b || cannonClip < 0) return;
+        auto mi = meshModels.find(b->model); if (mi == meshModels.end() || cannonClip >= (int)mi->second.clips.size()) { cannonClip = -1; return; }
+        cannonT += (float)dt; if (cannonT >= mi->second.clips[cannonClip].length) { cannonClip = -1; return; }
+        UploadMeshVerts(cannonGpu, mi->second, mi->second.posed(cannonClip, cannonT)); cannonGpu.mesh = true; cannonGpu.tex = GpuModel(b->model).tex;
+    }
+    // where the cannon is in camera space: a point on the model (blocks from its corner) -> camera space = base + ax * l.x + ay * l.y + az * l.z
+    struct CannonXf { V3 base, ax, ay, az; };
+    bool CannonPlacement(const Beam& b, const HudSway& sw, const WeaponPose& wp, CannonXf& x) {
+        FrameRef f = ModelNamed(b.model); if (!f) return false;
+        WorldObject vo; vo.model = b.model;
+        float y = b.viewYaw + wp.yaw, p = b.viewPitch + wp.pitch, r = b.viewRoll + wp.roll, k = b.sway;
+        x.ax = rotateDeg({ 1, 0, 0 }, y, p, r) * b.scale; x.ay = rotateDeg({ 0, 1, 0 }, y, p, r) * b.scale; x.az = rotateDeg({ 0, 0, 1 }, y, p, r) * b.scale;
+        V3 pr = objectPoint(vo, *f, b.pivot.pos);
+        x.base = b.viewPos + wp.offset - (x.ax * pr.x + x.ay * pr.y + x.az * pr.z);
+        x.ax = rotateDeg(x.ax, sw.yaw * k, sw.pitch * k, sw.roll * k); x.ay = rotateDeg(x.ay, sw.yaw * k, sw.pitch * k, sw.roll * k); x.az = rotateDeg(x.az, sw.yaw * k, sw.pitch * k, sw.roll * k);
+        x.base = sw.apply(x.base, k);
+        return true;
+    }
+    V3 CannonPoint(const CannonXf& x, const Beam& b, V3 local) {
+        FrameRef f = ModelNamed(b.model); if (!f) return x.base;
+        WorldObject vo; vo.model = b.model; V3 l = objectPoint(vo, *f, local);
+        return x.base + x.ax * l.x + x.ay * l.y + x.az * l.z;
+    }
+    static V3 Norm(V3 v) { double l = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z); return l > 1e-12 ? v * (1 / l) : V3{ 0, 0, 1 }; }
+    V3 CannonDir(const CannonXf& x, V3 d) { return Norm(x.ax * d.x + x.ay * d.y + x.az * d.z); }
+    // everything fixed to the camera: the HUD's 3D parts and the arm cannon
+    struct CamPart { std::string model; V3 base, ax, ay, az; const ModelGpu* gpu = nullptr; };
+    std::vector<CamPart> CameraParts(const HudSway& sw, const WeaponPose& wp) {
+        std::vector<CamPart> out;
+        for (const HudPart& p : hud.parts) {
+            if (!p.visible || !ModelNamed(p.model)) continue;
+            CamPart c; c.model = p.model; partAxes(p, c.ax, c.ay, c.az); float k = p.sway;
+            c.ax = rotateDeg(c.ax, sw.yaw * k, sw.pitch * k, sw.roll * k); c.ay = rotateDeg(c.ay, sw.yaw * k, sw.pitch * k, sw.roll * k); c.az = rotateDeg(c.az, sw.yaw * k, sw.pitch * k, sw.roll * k);
+            c.base = sw.apply(p.pos, p.sway); out.push_back(c);
+        }
+        if (const Beam* b = CurrentBeam()) {
+            CannonXf x; if (CannonPlacement(*b, sw, wp, x)) { CamPart c; c.model = b->model; c.base = x.base; c.ax = x.ax; c.ay = x.ay; c.az = x.az; c.gpu = cannonClip >= 0 ? &cannonGpu : nullptr; out.push_back(c); }
+        }
+        return out;
+    }
+    // Play mode: a shot from the cannon's emitter toward what the crosshair points at; a flash at the muzzle
+    void LaunchShot(const Beam& b, bool missile) {
+        V3 eye = player.eye(), fw = player.forward(), rr = Norm(cross({ 0, 1, 0 }, fw)), uu = cross(fw, rr);
+        auto W = [&](V3 c) { return rr * c.x + uu * c.y + fw * c.z; };
+        V3 from = eye + fw * 0.6, mpos = from, mdir = fw;
+        CannonXf x;
+        if (CannonPlacement(b, hudSway, weapPose, x)) { from = eye + W(CannonPoint(x, b, b.emitter.pos)); mpos = eye + W(CannonPoint(x, b, b.muzzle.pos)); mdir = W(CannonDir(x, pointDir(b.muzzle))); }
+        double range = std::max(2.f, b.range), hitT = range; Hit h;
+        if (world->raycast(eye, fw, range, h)) hitT = h.t;
+        for (const Box3& bx : world->objectSolids) { double t; if (rayBox(eye, fw, bx, t) && t > 0.05 && t < hitT) hitT = t; }
+        V3 target = eye + fw * hitT, d = target - from; double L = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+        Shot sh; sh.pos = from; sh.dir = L > 0.8 ? d * (1 / L) : fw;
+        sh.speed = missile ? b.missileSpeed : b.speed; sh.size = missile ? b.size * 2.2f : b.size; sh.range = (float)range; sh.weapon = b.name; sh.missile = missile; sh.hitLook = b.hitLook;
+        uint32_t col = missile ? b.missileColor : b.color; sh.tint = col; V3 lc = Linear(col); sh.color = lc * 3.0;
+        ParticleSettings tp = particlePreset(missile ? "Smoke" : b.shotLook); tp.color0 = col; tp.color1 = col;
+        sh.trail = ParticleEmitter(tp, (uint32_t)(shots.size() * 7919 + GetTickCount()));
+        shots.push_back(sh);
+        ParticleSettings fp = particlePreset(b.flashLook); fp.burst = std::max(fp.burst, 12); SpawnFx(fp, mpos, mdir, col);
+    }
+    void FireWeapons(double dt) {
+        weapState.tick((float)dt);
+        const Beam* b = CurrentBeam(); if (!b) return;
+        bool can = Playing() && !play.dead() && OwnsBeam(*b);
+        bool L = can && Down(VK_LBUTTON), R = can && Down(VK_RBUTTON);
+        const std::string& counter = weapons.missileCounter;
+        if (R && !missilePrev && b->missiles) {
+            int left = inv.counts.count(counter) ? inv.counts[counter] : 0;
+            if (weapState.fire(*b, true, ClipLenOf(b->model, b->missileClip), left)) { inv.counts[counter] = left; LaunchShot(*b, true); PlayCannon(true); firedPending += 2.5f; }
+            else if (left <= 0) Toast("No missiles left");
+        }
+        if (L && (b->auto_ || !shootPrev)) {
+            int none = 1;
+            if (weapState.fire(*b, false, ClipLenOf(b->model, b->fireClip), none)) { LaunchShot(*b, false); PlayCannon(false); firedPending += 1; }
+        }
+        shootPrev = Down(VK_LBUTTON); missilePrev = Down(VK_RBUTTON);
+    }
+    void SwitchBeam(int to) {
+        if (weapons.empty() || to < 0 || to >= (int)weapons.beams.size() || to == weapState.current) return;
+        if (!OwnsBeam(weapons.beams[to])) { Toast("You have not found the " + weapons.beams[to].name + " yet"); return; }
+        weapState.current = to; cannonClip = -1; firedPending += 0.4f; Toast(weapons.beams[to].name);
+    }
+
+    // ---- the Weapons tab: the cannon in its own 3D view, its three points (drag them), what it shoots
+    void RenderWeaponView() {
+        if (!playerEdOpen || !playerTabWeapons || weapWant.x < 16 || weapWant.y < 16 || weapons.empty()) return;
+        const Beam& b = weapons.beams[std::clamp(weapSel, 0, (int)weapons.beams.size() - 1)];
+        if (!ModelNamed(b.model)) return;
+        int w = (int)weapWant.x, h = (int)weapWant.y; if (w != weapDW || h != weapDH) { MakeTarget(weapView, w, h, &weapDSV); weapDW = w; weapDH = h; }
+        const float bg[4] = { 0.30f, 0.33f, 0.38f, 1 };
+        ctx->OMSetRenderTargets(1, weapView.rtv.GetAddressOf(), weapDSV.Get()); ctx->ClearRenderTargetView(weapView.rtv.Get(), bg); ctx->ClearDepthStencilView(weapDSV.Get(), D3D11_CLEAR_DEPTH, 1, 0);
+        D3D11_VIEWPORT v{ 0, 0, (float)w, (float)h, 0, 1 }; ctx->RSSetViewports(1, &v);
+        ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsNoCull.Get());
+        PreviewCB pc{}; XMStoreFloat4x4((XMFLOAT4X4*)pc.vp, weapVP); pc.light[0] = -0.45f; pc.light[1] = 0.8f; pc.light[2] = -0.4f;
+        ctx->UpdateSubresource(cbPreview.Get(), 0, nullptr, &pc, 0, 0);
+        ctx->VSSetConstantBuffers(2, 1, cbPreview.GetAddressOf()); ctx->PSSetConstantBuffers(2, 1, cbPreview.GetAddressOf()); ctx->VSSetConstantBuffers(1, 1, cbChunk.GetAddressOf());
+        ctx->IASetInputLayout(layout.Get()); ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        ctx->VSSetShader(vsPreview.Get(), nullptr, 0); ctx->PSSetShader(psPreview.Get(), nullptr, 0);
+        ctx->PSSetShaderResources(0, 1, texArray.GetAddressOf()); ctx->PSSetSamplers(0, 1, sampBlocks.GetAddressOf());
+        WorldObject vo; vo.model = b.model; const ModelGpu* use = weapSel == weapState.current && cannonClip >= 0 ? &cannonGpu : nullptr;
+        DrawObject(vo, 0, weapEye, use); DrawObject(vo, 1, weapEye, use);
+        ID3D11ShaderResourceView* none[10] = {}; ctx->PSSetShaderResources(0, 10, none); ctx->RSSetState(rsCull.Get());
+        ctx->OMSetRenderTargets(0, nullptr, nullptr);
+    }
+    bool WeapPointEdit(const char* label, WeaponPoint& p, bool dir) {
+        bool ch = DragV3(label, p.pos, 0.005f, "%.3f");
+        if (dir) { float a[2] = { p.yaw, p.pitch }; Prop("  aims (turn, tilt)"); ImGui::PushID(label); if (ImGui::DragFloat2("##aim", a, 0.5f, -180, 180, "%.0f deg")) { p.yaw = a[0]; p.pitch = std::clamp(a[1], -89.f, 89.f); ch = true; } ImGui::PopID(); }
+        return ch;
+    }
+    bool LookCombo(const char* id, std::string& v) {
+        bool ch = false;
+        if (ImGui::BeginCombo(id, v.c_str())) { for (auto& n : particlePresets()) if (ImGui::Selectable(n.c_str(), v == n)) { v = n; ch = true; } ImGui::EndCombo(); }
+        return ch;
+    }
+    bool ClipCombo(const char* id, const std::string& model, std::string& v) {
+        bool ch = false; auto it = meshModels.find(model);
+        std::string shown = v.empty() ? "(none)" : v; if (!v.empty() && (it == meshModels.end() || it->second.findClip(v) < 0)) shown += "  (not in the model)";
+        if (ImGui::BeginCombo(id, shown.c_str())) {
+            if (ImGui::Selectable("(none)", v.empty())) { v.clear(); ch = true; }
+            if (it != meshModels.end()) for (auto& c : it->second.clips) if (ImGui::Selectable(c.name.c_str(), v == c.name)) { v = c.name; ch = true; }
+            ImGui::EndCombo();
+        }
+        return ch;
+    }
+    void WeaponsTab() {
+        float ui = settings.uiScale; bool ch = false;
+        if (weapons.empty()) {
+            ImGui::Spacing(); Hint("Beams: each is an arm cannon model with three points (where it turns, where the flash comes from, where shots come out), and what it shoots. Missiles come from the cannon too. Idle, walking and landing movement is made by the engine; the firing animations come from the model.");
+            if (ImGui::Button("Start with a Power Beam and a Wave Beam")) { weapons = defaultWeapons(); weapSel = 0; SaveHud(); }
+            ImGui::SameLine(); if (ImGui::Button("Start empty (one beam)")) { Beam b; b.model = "@arm-cannon"; weapons.beams.push_back(b); weapSel = 0; SaveHud(); }
+            return;
+        }
+        weapSel = std::clamp(weapSel, 0, (int)weapons.beams.size() - 1); weapState.current = weapSel;
+        float listW = 210 * ui, propW = 340 * ui, sp = ImGui::GetStyle().ItemSpacing.x;
+        ImGui::BeginChild("weaplist", ImVec2(listW, 0), ImGuiChildFlags_Borders);
+        ImGui::TextDisabled("BEAMS (keys 1-9 in the game)");
+        for (int i = 0; i < (int)weapons.beams.size(); i++) { ImGui::PushID(i); std::string l = std::to_string(i + 1) + "  " + weapons.beams[i].name; if (ImGui::Selectable(l.c_str(), weapSel == i)) { weapSel = i; cannonClip = -1; } ImGui::PopID(); }
+        if (FlowButton("+ Beam")) { Beam b = weapons.beams[weapSel]; b.name = "Beam " + std::to_string(weapons.beams.size() + 1); weapons.beams.push_back(b); weapSel = (int)weapons.beams.size() - 1; ch = true; }
+        if (FlowButton("Duplicate")) { Beam b = weapons.beams[weapSel]; b.name += " copy"; weapons.beams.insert(weapons.beams.begin() + weapSel + 1, b); weapSel++; ch = true; }
+        ImGui::BeginDisabled(weapons.beams.size() < 2); if (FlowButton("Delete")) { weapons.beams.erase(weapons.beams.begin() + weapSel); weapSel = std::max(0, weapSel - 1); ch = true; } ImGui::EndDisabled();
+        ImGui::BeginDisabled(weapSel == 0); if (FlowButton("Up")) { std::swap(weapons.beams[weapSel], weapons.beams[weapSel - 1]); weapSel--; ch = true; } ImGui::EndDisabled();
+        ImGui::Separator(); ImGui::TextDisabled("ALL WEAPONS");
+        WeaponMotion& mo = weapons.motion;
+        Prop("Idle breathing"); ch |= ImGui::SliderFloat("##mi", &mo.idle, 0, 3, "%.2f");
+        Prop("Walk bob"); ch |= ImGui::SliderFloat("##mw", &mo.walk, 0, 3, "%.2f");
+        Prop("Landing dip"); ch |= ImGui::SliderFloat("##ml", &mo.land, 0, 3, "%.2f");
+        Prop("Recoil"); ch |= ImGui::SliderFloat("##mr", &mo.recoil, 0, 3, "%.2f");
+        Prop("Missile counter"); ch |= ImGui::InputText("##mc", &weapons.missileCounter);
+        Prop("Missiles at the start"); ch |= ImGui::SliderInt("##ms", &weapons.missileStart, 0, 255);
+        Prop("Most missiles"); ch |= ImGui::SliderInt("##mm", &weapons.missileMax, 0, 255);
+        ImGui::EndChild();
+        ImGui::SameLine();
+        Beam& b = weapons.beams[weapSel];
+        float midW = std::max(200.f, ImGui::GetContentRegionAvail().x - propW - sp), midH = ImGui::GetContentRegionAvail().y;
+        ImGui::BeginChild("weapmid", ImVec2(midW, midH), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar);
+        {   // the cannon alone: drag the points
+            ImVec2 isz(midW, std::floor(midH * 0.55f)); weapWant = isz;
+            ImVec2 o = ImGui::GetCursorScreenPos();
+            if (weapView.srv) ImGui::Image((ImTextureID)(intptr_t)weapView.srv.Get(), isz); else ImGui::Dummy(isz);
+            ImGui::SetCursorScreenPos(o); ImGui::InvisibleButton("worbit", isz, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
+            ImGuiIO& io = ImGui::GetIO();
+            FrameRef f = ModelNamed(b.model); WorldObject vo; vo.model = b.model;
+            V3 centre{ 0, 0.3, 0 }; if (f) { centre = { 0, f->sy * 0.5, 0 }; }
+            weapEye = { centre.x + std::sin(weapYaw) * std::cos(weapPitch) * weapDist, centre.y + std::sin(weapPitch) * weapDist, centre.z - std::cos(weapYaw) * std::cos(weapPitch) * weapDist };
+            XMVECTOR fwd = XMVector3Normalize(XMVectorSet((float)(centre.x - weapEye.x), (float)(centre.y - weapEye.y), (float)(centre.z - weapEye.z), 0));
+            weapVP = XMMatrixLookToLH(XMVectorZero(), fwd, XMVectorSet(0, 1, 0, 0)) * XMMatrixPerspectiveFovLH(XMConvertToRadians(45), isz.x / isz.y, 0.02f, 200);
+            ImDrawList* dl = ImGui::GetWindowDrawList(); dl->PushClipRect(o, ImVec2(o.x + isz.x, o.y + isz.y), true);
+            auto P = [&](V3 a, ImVec2& s) { bool k; ViewerProject(weapVP, weapEye, o, isz, a, s, k); return k; };
+            auto L = [&](V3 a, V3 c, ImU32 col, float t) { ImVec2 p, q; if (P(a, p) && P(c, q)) dl->AddLine(p, q, col, t); };
+            WeaponPoint* pts[3] = { &b.pivot, &b.muzzle, &b.emitter }; const char* names[3] = { "Pivot", "Muzzle", "Emitter" };
+            ImU32 cols[3] = { IM_COL32(255, 255, 255, 255), IM_COL32(255, 160, 60, 255), IM_COL32(90, 220, 255, 255) };
+            ImVec2 sc[3]; bool vis[3] = {};
+            if (f) for (int k = 0; k < 3; k++) {
+                V3 wpos = objectPoint(vo, *f, pts[k]->pos); vis[k] = P(wpos, sc[k]);
+                float s = weapPoint == k ? 2.5f : 1.5f; double len = std::max(0.25, std::max({ f->sx, f->sy, f->sz }) * 0.45);
+                if (k == 0) { L(wpos - V3{ 0.06, 0, 0 }, wpos + V3{ 0.06, 0, 0 }, cols[k], s); L(wpos - V3{ 0, 0.06, 0 }, wpos + V3{ 0, 0.06, 0 }, cols[k], s); L(wpos - V3{ 0, 0, 0.06 }, wpos + V3{ 0, 0, 0.06 }, cols[k], s); }
+                else {   // an arrow: where it aims
+                    V3 d = pointDir(*pts[k]), tip = wpos + d * len, side = Norm(cross(d, std::fabs(d.y) > 0.9 ? V3{ 1, 0, 0 } : V3{ 0, 1, 0 }));
+                    L(wpos, tip, cols[k], s); L(tip, tip - d * (len * 0.25) + side * (len * 0.12), cols[k], s); L(tip, tip - d * (len * 0.25) - side * (len * 0.12), cols[k], s);
+                }
+                if (vis[k]) { dl->AddCircleFilled(sc[k], weapPoint == k ? 6.f : 4.f, cols[k]); dl->AddText(ImVec2(sc[k].x + 8, sc[k].y - 8), cols[k], names[k]); }
+            }
+            // drag a point: it moves across the screen; plain drag elsewhere turns the view
+            if (ImGui::IsItemActivated()) {
+                weapDrag = -1; float best = 14 * 14 * ui * ui;
+                for (int k = 0; k < 3; k++) if (vis[k]) { float dx = io.MousePos.x - sc[k].x, dy = io.MousePos.y - sc[k].y; if (dx * dx + dy * dy < best) { best = dx * dx + dy * dy; weapDrag = k; } }
+                if (weapDrag >= 0) weapPoint = weapDrag;
+            }
+            if (ImGui::IsItemActive() && (io.MouseDelta.x != 0 || io.MouseDelta.y != 0)) {
+                if (weapDrag >= 0 && f) {
+                    V3 fw = Norm(centre - weapEye), right = Norm(cross({ 0, 1, 0 }, fw)), up = cross(fw, right);
+                    double px = 2 * weapDist * std::tan(XMConvertToRadians(45) * 0.5) / std::max(1.f, isz.y);
+                    V3 mv = right * (io.MouseDelta.x * px) - up * (io.MouseDelta.y * px);
+                    pts[weapDrag]->pos = pts[weapDrag]->pos + mv; ch = true;
+                } else { weapYaw += io.MouseDelta.x * 0.01f; weapPitch = std::clamp(weapPitch + io.MouseDelta.y * 0.01f, -1.4f, 1.4f); }
+            }
+            if (ImGui::IsItemDeactivated()) weapDrag = -1;
+            if (ImGui::IsItemHovered() && io.MouseWheel != 0) weapDist = std::clamp(weapDist * (io.MouseWheel > 0 ? 0.88f : 1.14f), 0.3f, 30.f);
+            if (!f) dl->AddText(ImVec2(o.x + 10, o.y + 30), IM_COL32(255, 160, 120, 255), "Pick a model for this beam (on the right).");
+            dl->AddText(ImVec2(o.x + 8, o.y + 6), IM_COL32(230, 230, 240, 210), "Drag a point to move it, drag elsewhere to turn, wheel to zoom");
+            dl->PopClipRect();
+        }
+        {   // through the camera: the cannon where it sits, with the HUD
+            float rowH = ImGui::GetContentRegionAvail().y - ImGui::GetFrameHeightWithSpacing() - ImGui::GetTextLineHeightWithSpacing();
+            float asp = (float)rw / std::max(1, rh); ImVec2 psz(midW, midW / asp); if (psz.y > rowH) psz = ImVec2(rowH * asp, rowH);
+            ImGui::TextDisabled("Camera preview: the cannon as the player sees it");
+            hudPrevWant = ImVec2(std::floor(psz.x), std::floor(psz.y));
+            if (hudPrev.srv) ImGui::Image((ImTextureID)(intptr_t)hudPrev.srv.Get(), psz); else ImGui::Dummy(psz);
+            if (ImGui::Button("Fire")) { PlayCannon(false); previewFired += 1; }
+            ImGui::SameLine(); if (ImGui::Button("Missile")) { PlayCannon(true); previewFired += 2.5f; }
+            ImGui::SameLine(); if (ImGui::Button("Walk")) hudWiggle = 0;
+            ImGui::SameLine(); if (ImGui::Button("Land")) { previewPose.update(weapons.motion, 0, 0, true, 24, 0); previewSway.update(hud.sway, 0, 0, 0, 0, true, 24); }
+            ImGui::SameLine(); ImGui::TextDisabled("(the preview; shoot for real with F5)");
+        }
+        ImGui::EndChild();
+        ImGui::SameLine();
+        ImGui::BeginChild("weapprops", ImVec2(0, 0), ImGuiChildFlags_Borders);
+        ImGui::SeparatorText("Beam");
+        Prop("Name"); ch |= ImGui::InputText("##bn", &b.name);
+        Prop("Arm cannon model");
+        if (ImGui::BeginCombo("##bm", b.model.empty() ? "(none)" : b.model.c_str())) {
+            for (const std::string& n : PartModels()) if (ImGui::Selectable(n.c_str(), b.model == n)) { b.model = n; cannonClip = -1; ch = true; }
+            if (ImGui::Selectable("@arm-cannon (built in)", b.model == "@arm-cannon")) { b.model = "@arm-cannon"; ch = true; }
+            ImGui::EndCombo();
+        }
+        Prop("Have it from the start"); ch |= ImGui::Checkbox("##bo", &b.startsOwned);
+        if (!b.startsOwned) Hint("Found later: a key pickup called \"%s\" gives it.", b.name.c_str());
+        ImGui::SeparatorText("Points (drag them in the view)");
+        const char* pn[3] = { "Pivot", "Muzzle", "Emitter" };
+        for (int k = 0; k < 3; k++) { if (k) ImGui::SameLine(); if (ImGui::RadioButton(pn[k], weapPoint == k)) weapPoint = k; }
+        if (weapPoint == 0) { ch |= WeapPointEdit("Pivot", b.pivot, false); Hint("The cannon sits and turns around this point."); }
+        if (weapPoint == 1) { ch |= WeapPointEdit("Muzzle", b.muzzle, true); Hint("The flash comes from here, along its arrow."); }
+        if (weapPoint == 2) { ch |= WeapPointEdit("Emitter", b.emitter, true); Hint("Shots start here and fly to where the crosshair points."); }
+        ImGui::SeparatorText("In front of the camera");
+        ch |= DragV3("Position", b.viewPos, 0.005f, "%.3f");
+        { float r[3] = { b.viewYaw, b.viewPitch, b.viewRoll }; Prop("Turn"); if (ImGui::DragFloat3("##br", r, 0.5f, -180, 180, "%.0f deg")) { b.viewYaw = r[0]; b.viewPitch = r[1]; b.viewRoll = r[2]; ch = true; } }
+        { float s = (float)b.scale; Prop("Size"); if (ImGui::DragFloat("##bs", &s, 0.005f, 0.01f, 20, "x %.3f")) { b.scale = std::max(0.01f, s); ch = true; } }
+        Prop("Sway amount"); ch |= ImGui::SliderFloat("##bsw", &b.sway, 0, 2, "%.2f");
+        if (ImGui::SmallButton("Same place for every beam")) { for (Beam& o : weapons.beams) { o.viewPos = b.viewPos; o.viewYaw = b.viewYaw; o.viewPitch = b.viewPitch; o.viewRoll = b.viewRoll; o.scale = b.scale; o.sway = b.sway; } ch = true; }
+        ImGui::SeparatorText("Shots");
+        { float c[3] = { ((b.color >> 16) & 255) / 255.f, ((b.color >> 8) & 255) / 255.f, (b.color & 255) / 255.f }; Prop("Colour"); if (ImGui::ColorEdit3("##bc", c)) { b.color = ((uint32_t)(c[0] * 255 + 0.5f) << 16) | ((uint32_t)(c[1] * 255 + 0.5f) << 8) | (uint32_t)(c[2] * 255 + 0.5f); ch = true; } }
+        Prop("Trail"); ch |= LookCombo("##bt", b.shotLook);
+        Prop("Hit"); ch |= LookCombo("##bh", b.hitLook);
+        Prop("Muzzle flash"); ch |= LookCombo("##bf", b.flashLook);
+        Prop("Speed"); ch |= ImGui::SliderFloat("##bsp", &b.speed, 2, 200, "%.0f blocks/s");
+        Prop("Shots per second"); ch |= ImGui::SliderFloat("##bfr", &b.fireRate, 0.2f, 30, "%.1f");
+        Prop("Hold to keep firing"); ch |= ImGui::Checkbox("##ba", &b.auto_);
+        Prop("Damage"); ch |= ImGui::SliderFloat("##bd", &b.damage, 0, 500, "%.0f");
+        Prop("Range"); ch |= ImGui::SliderFloat("##brg", &b.range, 5, 300, "%.0f blocks");
+        Prop("Thickness"); ch |= ImGui::SliderFloat("##bz", &b.size, 0.01f, 0.6f, "%.2f blocks");
+        Prop("Firing animation"); ch |= ClipCombo("##bfc", b.model, b.fireClip);
+        Prop("Wait until it is done"); ch |= ImGui::Checkbox("##bw", &b.waitForAnim);
+        ImGui::SeparatorText("Missiles (right mouse button)");
+        Prop("Has missiles"); ch |= ImGui::Checkbox("##mo", &b.missiles);
+        if (b.missiles) {
+            Prop("Missile animation"); ch |= ClipCombo("##mcl", b.model, b.missileClip);
+            Prop("Wait until it is done"); ch |= ImGui::Checkbox("##mwt", &b.missileWait);
+            { float c[3] = { ((b.missileColor >> 16) & 255) / 255.f, ((b.missileColor >> 8) & 255) / 255.f, (b.missileColor & 255) / 255.f }; Prop("Colour"); if (ImGui::ColorEdit3("##mcc", c)) { b.missileColor = ((uint32_t)(c[0] * 255 + 0.5f) << 16) | ((uint32_t)(c[1] * 255 + 0.5f) << 8) | (uint32_t)(c[2] * 255 + 0.5f); ch = true; } }
+            Prop("Speed"); ch |= ImGui::SliderFloat("##msp", &b.missileSpeed, 2, 200, "%.0f blocks/s");
+            Prop("Per second (at most)"); ch |= ImGui::SliderFloat("##mrt", &b.missileRate, 0.2f, 10, "%.1f");
+            Prop("Damage"); ch |= ImGui::SliderFloat("##mdm", &b.missileDamage, 0, 1000, "%.0f");
+        }
+        Hint("Damage counts once there are enemies (G5). Doors can ask for a beam or missiles (door Inspector: Opened by).");
+        ImGui::EndChild();
+        if (ch) SaveHud();
     }
     // ---- Events: the game's logic as cards, one card = "when ... only if ... do ..."
     static bool KindFits(const WorldObject& o, const std::string& k) {
@@ -4901,6 +5217,24 @@ struct App {
                 frames(1, "hud_play_turning_sway");
                 StopPlay(); hud = HudLayout{}; SaveHud(); hudSway.reset();
             }
+            {   // weapons: the Weapons tab (the cannon and its three points), then in Play mode: the Power Beam, a missile, the Wave Beam
+                hud = defaultHud(); weapons = defaultWeapons(); playerEdOpen = true; focusPlayerEd = true; selectWeaponsTab = true; weapSel = 0; weapPoint = 1;
+                poseAt(demoShots()[1]);
+                frames(8, "weapons_tab");
+                weapPoint = 2; weapYaw = 1.2f; frames(2, "weapons_tab_emitter");
+                playerEdOpen = false;
+                StartPlay(false); poseAt(demoShots()[1]); hudSway.reset(); prevPlayYaw = player.yaw; prevPlayPitch = player.pitch; play.health = game.player.maxHealth; toastT = 0;
+                frames(3, "weapons_play_cannon");
+                auto run = [&](int n) { for (int k = 0; k < n; k++) { FrameBody(1.0 / 60); swap->Present(0, 0); retired.clear(); } };
+                LaunchShot(weapons.beams[0], false); PlayCannon(false); firedPending += 1; run(3); LaunchShot(weapons.beams[0], false); firedPending += 1; run(4);
+                frames(1, "weapons_power_beam");
+                run(40); inv.counts["Missile"]--; LaunchShot(weapons.beams[0], true); PlayCannon(true); firedPending += 2.5f; run(5);
+                frames(1, "weapons_missile");
+                run(40); weapState.current = 1; LaunchShot(weapons.beams[1], false); firedPending += 1; run(6); LaunchShot(weapons.beams[1], false); firedPending += 1; run(3);
+                frames(1, "weapons_wave_beam");
+                Log("weapons: " + std::to_string(shots.size()) + " shots flying, missiles left " + std::to_string(inv.counts["Missile"]));
+                StopPlay(); hud = HudLayout{}; weapons = WeaponSet{}; SaveHud();
+            }
             {   // tools: sculpt a little landscape with the terrain brush, then show it with the brush options open
                 auto ground = [&](int x, int z) { for (int y = 40; y > -40; y--) { BlockId v = world->get(x, y, z); if (v != AIR && !reg.get(v).liquid) return y; } return 0; };
                 int gy = ground(-34, 26); BrushStroke st;
@@ -4980,7 +5314,7 @@ struct App {
 
         const float bg[4] = { 0.10f, 0.11f, 0.13f, 1 };
         if (screen == Screen::Game && rw > 0) RenderWorld(ev ? sceneRTV.Get() : backRTV.Get());
-        if (ev) { RenderViewer(); RenderHudViews(); }
+        if (ev) { RenderViewer(); RenderHudViews(); RenderWeaponView(); }
         ctx->OMSetRenderTargets(1, backRTV.GetAddressOf(), nullptr);
         if (screen != Screen::Game || ev) ctx->ClearRenderTargetView(backRTV.Get(), bg);
         D3D11_VIEWPORT v{ 0, 0, (float)cw, (float)ch, 0, 1 }; ctx->RSSetViewports(1, &v);

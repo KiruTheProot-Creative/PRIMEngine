@@ -7,6 +7,7 @@
 #include "../src/core/json.h"
 #include "../src/game/events.h"
 #include "../src/game/hud.h"
+#include "../src/game/weapons.h"
 #include <map>
 #include <set>
 #include <filesystem>
@@ -467,6 +468,46 @@ int main() {
         d.save("/tmp/prim_door2.pmesh"); MeshModel back; back.load("/tmp/prim_door2.pmesh");
         V3 b = centre(back.posed(0, 0.75f));
         CHECK(back.parts.size() == 4 && back.parts[g4].parentPart == g2 && std::fabs(b.x - a.x) < 1e-4, "and it saves and loads the same");
+    }
+
+    // weapons (Samus controls part 1)
+    {
+        WeaponPoint up; up.pitch = 90; V3 d = pointDir(up), f = pointDir(WeaponPoint{});
+        CHECK(std::fabs(d.y - 1) < 1e-9 && std::fabs(f.z - 1) < 1e-9, "points aim: 0 0 is forward (+Z), pitch 90 is up");
+        WeaponSet w = defaultWeapons(); Beam& b = w.beams[0];
+        WeaponState st; int missiles = 2;
+        CHECK(st.fire(b, false, 0.3f, missiles) && !st.fire(b, false, 0.3f, missiles), "a beam shot, then the fire rate makes it wait");
+        st.tick(1.f / b.fireRate + 0.01f);
+        CHECK(st.fire(b, false, 0.3f, missiles), "a beam may fire again during its animation (default)");
+        st = WeaponState{}; st.tick(1);
+        CHECK(st.fire(b, true, 1.2f, missiles) && missiles == 1, "a missile uses one up");
+        st.tick(1.f / b.missileRate + 0.01f);
+        CHECK(!st.fire(b, true, 1.2f, missiles) && missiles == 1, "the next missile waits until the missile animation is done (default)");
+        st.tick(0.6f); CHECK(st.fire(b, true, 1.2f, missiles) && missiles == 0, "then it fires");
+        st.tick(5); CHECK(!st.fire(b, true, 1.2f, missiles), "no missiles left: none");
+        Beam nw = b; nw.missileWait = false; WeaponState s2; int m2 = 5; s2.fire(nw, true, 3, m2); s2.tick(1.f / nw.missileRate + 0.01f);
+        CHECK(s2.fire(nw, true, 3, m2), "with waiting off, it fires before the animation is done");
+        WeaponPose still, walking; WeaponMotion mo;
+        for (int k = 0; k < 120; k++) { still.update(mo, 1.0 / 60, 0, false, 0, 0); walking.update(mo, 1.0 / 60, 4.3f, false, 0, 0); }
+        double sx = 0, wx = 0; WeaponPose a = still, bw = walking;
+        for (int k = 0; k < 60; k++) { a.update(mo, 1.0 / 60, 0, false, 0, 0); bw.update(mo, 1.0 / 60, 4.3f, false, 0, 0); sx = std::max(sx, std::fabs(a.offset.x)); wx = std::max(wx, std::fabs(bw.offset.x)); }
+        CHECK(wx > 0.008 && sx < 1e-6, "walking sways the cannon side to side, standing only breathes (%.4f vs %.4f)", wx, sx);
+        WeaponPose k1; k1.update(mo, 1.0 / 60, 0, false, 0, 1); for (int k = 0; k < 3; k++) k1.update(mo, 1.0 / 60, 0, false, 0, 0);
+        CHECK(k1.offset.z < -0.005 && k1.pitch < -0.5f, "firing kicks it back and up (%.3f, %.2f deg)", k1.offset.z, k1.pitch);
+        for (int k = 0; k < 120; k++) k1.update(mo, 1.0 / 60, 0, false, 0, 0);
+        CHECK(std::fabs(k1.offset.z) < 1e-3, "and it settles again");
+        WeaponPose l1; l1.update(mo, 1.0 / 60, 0, true, 20, 0); for (int k = 0; k < 4; k++) l1.update(mo, 1.0 / 60, 0, false, 0, 0);
+        CHECK(l1.offset.y < -0.003, "landing dips it (%.4f)", l1.offset.y);
+        w.beams[1].muzzle.yaw = 12.5f; w.beams[1].missileWait = false; w.beams[0].name = "Power % Beam"; w.motion.recoil = 0.3f; w.missileMax = 99;
+        saveWeapons("/tmp/prim_weapons.txt", w); WeaponSet back; loadWeapons("/tmp/prim_weapons.txt", back);
+        CHECK(back.beams.size() == 2 && back.beams[0].name == "Power % Beam" && back.beams[1].muzzle.yaw == 12.5f && !back.beams[1].missileWait && back.beams[0].missileWait
+              && back.beams[1].shotLook == "Magic" && back.motion.recoil == 0.3f && back.missileMax == 99 && back.beams[0].model == "@arm-cannon", "weapons save and load");
+        DoorSettings ds; CHECK(doorOpensFor(ds, "Wave Beam", false) && doorOpensFor(ds, "", true), "a plain door opens for any shot");
+        ds.openedBy = "Wave Beam"; CHECK(doorOpensFor(ds, "Wave Beam", false) && !doorOpensFor(ds, "Power Beam", false) && !doorOpensFor(ds, "Wave Beam", true), "a Wave Beam door only for the Wave Beam");
+        ds.openedBy = "Missile"; CHECK(doorOpensFor(ds, "Power Beam", true) && !doorOpensFor(ds, "Power Beam", false), "a missile door only for missiles");
+        { WorldObject d; d.kind = ObjKind::Door; d.door.openedBy = "Wave Beam"; std::vector<WorldObject> v{ d }, v2; saveObjects("/tmp/prim_dw.txt", v); loadObjects("/tmp/prim_dw.txt", v2);
+          CHECK(v2.size() == 1 && v2[0].door.openedBy == "Wave Beam", "what opens a door saves and loads"); }
+        MeshModel can; CHECK(builtinShape("@arm-cannon", can) && can.triangles() == 60 && can.sz > 0.85, "the built-in arm cannon builds (%.2f long)", can.sz);
     }
 
     // the HUD (Player editor part 1)
