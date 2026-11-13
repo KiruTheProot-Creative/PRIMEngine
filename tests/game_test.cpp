@@ -6,6 +6,7 @@
 #include "../src/game/meshmodel.h"
 #include "../src/core/json.h"
 #include "../src/game/events.h"
+#include "../src/game/hud.h"
 #include <map>
 #include <set>
 #include <filesystem>
@@ -445,6 +446,48 @@ int main() {
         CHECK(v2.size() == 1 && v2[0].kind == ObjKind::Particles && !v2[0].particles.additive && v2[0].particles.shape == PShape::Smoke && v2[0].particles.size1 == o.particles.size1
               && v2[0].light.type == LightType::Spot && v2[0].light.cone == 20 && v2[0].light.flicker == Flicker::Broken, "particles and lights save and load");
         CHECK(particlePresets().size() == 9, "nine presets");
+    }
+
+    // the HUD (Player editor part 1)
+    {
+        HudPlane p; p.pos = { 0, 0, 1 }; p.width = 2; p.height = 1; p.bendX = 0; p.bendY = 0;
+        V3 c = planePoint(p, 0.5f, 0.5f), tl = planePoint(p, 0, 0);
+        CHECK(std::fabs(c.z - 1) < 1e-9 && std::fabs(tl.x + 1) < 1e-9 && std::fabs(tl.y - 0.5) < 1e-9 && std::fabs(tl.z - 1) < 1e-9, "a flat plane: middle and corner where they should be");
+        p.bendX = 0.5f; V3 e = planePoint(p, 1, 0.5f), m = planePoint(p, 0.5f, 0.5f);
+        CHECK(e.z < 0.9 && std::fabs(m.z - 1) < 1e-9 && e.x < 1 && e.x > 0.8, "bent: the edges come toward the camera (edge z %.3f, x %.3f)", e.z, e.x);
+        p.yaw = 90; V3 t = planePoint(p, 0.5f, 0.5f);
+        CHECK(std::fabs(t.z - 1) < 1e-9, "turning the plane keeps its middle in place");
+        CHECK(rotateDeg({ 0, 0, 1 }, 90, 0, 0).x > 0.99, "yaw 90 turns forward to the right");
+        HudPart a; a.pos = { -0.5, -0.2, 0.6 }; a.roll = 15; a.yaw = -10; HudPart b = a; mirrorPart(b);
+        V3 ax, ay, az, bx, by, bz; partAxes(a, ax, ay, az); partAxes(b, bx, by, bz);
+        CHECK(b.pos.x == 0.5 && b.mirror && std::fabs(bx.x + ax.x) < 1e-9 && std::fabs(by.x + ay.x) < 1e-9 && std::fabs(by.y - ay.y) < 1e-9, "a mirrored part is the other side, flipped");
+        HudElement el; el.x = 0.1f; el.w = 0.2f; el.align = 0; mirrorElement(el);
+        CHECK(std::fabs(el.x - 0.7f) < 1e-6 && el.align == 2, "a mirrored element goes to the other side, its text to the other edge");
+        HudValues vals; vals.health = 73.4f; vals.counts["Missile"] = 12;
+        HudElement tx; tx.text = "ENERGY {value}"; tx.value = HudValue::Health;
+        HudElement mi; mi.text = "{value}/{max}"; mi.value = HudValue::Counter; mi.valueName = "Missile"; mi.max = 25;
+        CHECK(hudText(tx, vals) == "ENERGY 73" && hudText(mi, vals) == "12/25", "texts show their values (%s, %s)", hudText(tx, vals).c_str(), hudText(mi, vals).c_str());
+        // sway: turning leaves it behind, then it springs back
+        HudSwaySettings s; HudSway sw;
+        sw.update(s, 1.0 / 60, 20, 0, 0, false, 0);
+        CHECK(sw.yaw < -5, "turning right: the HUD stays behind to the left (%.1f deg)", sw.yaw);
+        for (int k = 0; k < 120; k++) sw.update(s, 1.0 / 60, 0, 0, 0, false, 0);
+        CHECK(std::fabs(sw.yaw) < 0.3f, "and comes back within 2 seconds (%.2f deg)", sw.yaw);
+        HudSwaySettings slow = s; slow.smoothness = 1; HudSway a1, a2;
+        a1.update(s, 1.0 / 60, 20, 0, 0, false, 0); a2.update(slow, 1.0 / 60, 20, 0, 0, false, 0);
+        for (int k = 0; k < 15; k++) { a1.update(s, 1.0 / 60, 0, 0, 0, false, 0); a2.update(slow, 1.0 / 60, 0, 0, 0, false, 0); }
+        CHECK(std::fabs(a2.yaw) > std::fabs(a1.yaw), "smoother: it takes longer to come back");
+        HudSwaySettings none = s; none.strength = 0; HudSway z; z.update(none, 1.0 / 60, 30, 10, 4, true, 10);
+        CHECK(std::fabs(z.yaw) < 1e-6 && std::fabs(z.pitch) < 1e-6, "strength 0: no sway");
+        HudSway land; land.update(s, 1.0 / 60, 0, 0, 0, true, 12); for (int k = 0; k < 4; k++) land.update(s, 1.0 / 60, 0, 0, 0, false, 0);
+        CHECK(land.offset.y < -0.001, "landing: the HUD dips (%.4f)", land.offset.y);
+        // save / load
+        HudLayout h = defaultHud(); h.sway.strength = 1.7f; h.planes[0].elements[1].text = "E N E R G Y {value}"; h.parts[0].name = "Strut % left";
+        saveHud("/tmp/prim_hud.txt", h); HudLayout back; loadHud("/tmp/prim_hud.txt", back);
+        CHECK(back.planes.size() == 1 && back.planes[0].elements.size() == h.planes[0].elements.size() && back.parts.size() == 2 && back.parts[1].mirror
+              && back.sway.strength == 1.7f && back.planes[0].elements[1].text == "E N E R G Y {value}" && back.parts[0].name == "Strut % left"
+              && back.planes[0].elements[3].valueName == "Missile" && back.planes[0].bendX == h.planes[0].bendX, "the HUD saves and loads");
+        MeshModel strut; CHECK(builtinShape("@visor-strut", strut) && strut.triangles() == 48, "the visor strut model builds");
     }
 
     // event cards (G3)

@@ -540,7 +540,23 @@ bool builtinShape(const std::string& name, MeshModel& m) {
             MeshVert a{ { (float)top.x, (float)top.y, (float)top.z }, { 0.5f, 0.5f }, { 0, 0, 0 } }, b{ { (float)p0.x, (float)p0.y, (float)p0.z }, { 0.5f, 0.5f }, { 0, 0, 0 } }, c{ { (float)p1.x, (float)p1.y, (float)p1.z }, { 0.5f, 0.5f }, { 0, 0, 0 } }, d{ { (float)bot.x, (float)bot.y, (float)bot.z }, { 0.5f, 0.5f }, { 0, 0, 0 } };
             B.tri(a, b, c, img, o1); B.tri(d, b, c, img, o2); }
     };
-    if (name == "@health") { int r = colour(0xFF4A5A), w = colour(0xFFFFFF); diamond(0.28, 0.1, 0.4, 0.7, r); prism(8, 0.12, 0.36, 0.44, w); }
+    auto slab = [&](V3 lo, V3 hi, int img) {   // a box, each face its own normal
+        const int f[6][4] = { { 0, 2, 6, 4 }, { 1, 5, 7, 3 }, { 0, 4, 5, 1 }, { 2, 3, 7, 6 }, { 0, 1, 3, 2 }, { 4, 6, 7, 5 } };
+        const float nn[6][3] = { { -1, 0, 0 }, { 1, 0, 0 }, { 0, -1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 } };
+        for (int k = 0; k < 6; k++) {
+            MeshVert v[4];
+            for (int i = 0; i < 4; i++) { int c = f[k][i]; v[i] = { { (float)((c & 1) ? hi.x : lo.x), (float)((c & 2) ? hi.y : lo.y), (float)((c & 4) ? hi.z : lo.z) }, { 0.5f, 0.5f }, { nn[k][0], nn[k][1], nn[k][2] } }; }
+            float rf[3] = { nn[k][0], nn[k][1], nn[k][2] }; B.tri(v[0], v[1], v[2], img, rf); B.tri(v[0], v[2], v[3], img, rf);
+        }
+    };
+    if (name == "@visor-strut") {   // a helmet strut for the HUD (not in the object list)
+        int d = colour(0x3A4352), m = colour(0x5A6578), c = colour(0x6CF0FF);
+        slab({ -0.12, 0, -0.08 }, { 0.12, 0.08, 0.08 }, m);
+        slab({ -0.06, 0.08, -0.05 }, { 0.06, 0.55, 0.05 }, d);
+        slab({ -0.04, 0.55, -0.04 }, { 0.04, 0.8, 0.04 }, m);
+        slab({ 0.06, 0.1, -0.02 }, { 0.075, 0.5, 0.02 }, c);
+    }
+    else if (name == "@health") { int r = colour(0xFF4A5A), w = colour(0xFFFFFF); diamond(0.28, 0.1, 0.4, 0.7, r); prism(8, 0.12, 0.36, 0.44, w); }
     else if (name == "@key") { int y = colour(0xFFD23A); prism(6, 0.16, 0.1, 0.2, y); prism(4, 0.05, 0.2, 0.75, y, 0.785); prism(4, 0.09, 0.62, 0.7, y, 0.785); }
     else if (name == "@gem") { int c = colour(0x3AE0FF); diamond(0.25, 0.1, 0.45, 0.75, c); }
     else if (name == "@checkpoint") { int b = colour(0x8FA8C0), g = colour(0x6CF0FF); prism(6, 0.8, 0, 0.12, b); prism(6, 0.55, 0.12, 0.16, g); }

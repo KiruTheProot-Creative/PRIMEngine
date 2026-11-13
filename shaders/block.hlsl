@@ -863,3 +863,23 @@ float4 PS_Particle(POut i) : SV_Target
     float3 lit = i.col.rgb * (gAmbient.rgb * 1.3 + gSunColor.rgb * 0.35 + dynLights(i.rel, -normalize(i.rel)) * 0.5);   // soft (smoke): lit by the sky, the sun and lights
     return float4(lit, saturate(a * i.col.a));
 }
+
+// ---------------------------------------------------------------- the HUD (Player editor): bent planes in camera space, their picture premultiplied
+// gPrevVP: camera space -> screen; gPrevLight.x: how much of it shows (opacity)
+Texture2D gHudTex : register(t0);
+struct HudOut { float4 pos : SV_Position; float2 uv : TEXCOORD0; };
+HudOut VS_Hud(float3 p : POSITION, float2 uv : TEXCOORD0)
+{
+    HudOut o; o.pos = mul(float4(p, 1), gPrevVP); o.uv = uv; return o;
+}
+float4 PS_Hud(HudOut i) : SV_Target
+{
+    return gHudTex.Sample(gClamp, i.uv) * gPrevLight.x;
+}
+// a picture copied over the whole target (the camera preview's background)
+struct BlitOut { float4 pos : SV_Position; float2 uv : TEXCOORD0; };
+BlitOut VS_Blit(uint id : SV_VertexID)
+{
+    BlitOut o; float2 t = float2((id << 1) & 2, id & 2); o.uv = t; o.pos = float4(t * float2(2, -2) + float2(-1, 1), 0, 1); return o;
+}
+float4 PS_Blit(BlitOut i) : SV_Target { return float4(gHudTex.Sample(gClamp, i.uv).rgb, 1); }

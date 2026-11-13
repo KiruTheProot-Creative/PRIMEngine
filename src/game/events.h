@@ -11,7 +11,8 @@ namespace mc {
 enum class When { GameStarts, EnterZone, LeaveZone, Touch, Shot, Pickup, DoorOpens, DoorCloses, Dies, Every, After, CountReaches, COUNT };
 enum class If { HasKey, NoKey, CountAtLeast, FlagOn, FlagOff, HealthBelow, COUNT };
 enum class Do { Message, OpenDoor, CloseDoor, LockDoor, UnlockDoor, MovePlatform, Show, Hide, LightOn, LightOff, Particles, Teleport,
-                Heal, Hurt, Kill, Checkpoint, GiveKey, TakeKey, AddCount, FlagOn, FlagOff, Wait, Win, COUNT };
+                Heal, Hurt, Kill, Checkpoint, GiveKey, TakeKey, AddCount, FlagOn, FlagOff, Wait, Win,
+                HudShow, HudHide, HudFlash, COUNT };   // HUD: an element on the player's HUD, by name
 
 // what each kind needs: an object (and which kind of object), a name, a text, a number
 struct Need { const char* label; bool object = false, name = false, text = false, number = false; const char* objectKind = ""; const char* numberLabel = ""; };

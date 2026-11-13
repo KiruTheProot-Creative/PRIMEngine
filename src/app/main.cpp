@@ -13,6 +13,7 @@
 #include "../game/platform.h"
 #include "../game/particles.h"
 #include "../game/events.h"
+#include "../game/hud.h"
 #include "../game/weather.h"
 #include "../core/png.h"
 #include "../core/noise.h"
@@ -241,6 +242,7 @@ struct App {
         b = Compile(src, "PS_Field", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psField));
         b = Compile(src, "VS_Preview", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsPreview));
         b = Compile(src, "PS_Preview", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psPreview));
+        InitHud(src);
         b = Compile(src, "PS_AO", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psAO));
         b = Compile(src, "PS_AOApply", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psAOApply));
         b = Compile(src, "PS_Water", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psWater));
@@ -477,7 +479,7 @@ struct App {
         if (!world) return;
         info.player = playMode ? editCam : player; info.hotSel = hotSel; info.weather = weather.type().key; info.autoWeather = weather.autoChange; for (int i = 0; i < 9; i++) info.hotbar[i] = !reg.has(hotbar[i]) ? "" : reg.get(hotbar[i]).name + (shapeOf(hotbar[i]) ? "@" + Shapes::get().info(shapeOf(hotbar[i])).key : "");
         info.save(worldDir); world->saveAll();
-        saveObjects(worldDir + "/objects.txt", objects);
+        saveObjects(worldDir + "/objects.txt", objects); SaveHud();
         std::error_code ec; if (!events.empty()) saveEvents(worldDir + "/events.txt", events); else fs::remove(worldDir + "/events.txt", ec);
     }
     void CloseWorld() {   // the project stays open
@@ -606,6 +608,7 @@ struct App {
         if (!paused) UpdatePlatforms(std::min(dt, 0.05));
         if (!paused) UpdateHelpers(std::min(dt, 0.05));
         if (!paused) UpdateParticles(std::min(dt, 0.05));
+        UpdateHudSway(std::min(dt, 0.05));
         if (playMode && !paused) UpdateDoors(std::min(dt, 0.05)); else if (!playMode && !doorRt.empty()) { doorRt.clear(); doorGpu.clear(); shots.clear(); RebuildSolids(); }
         if (playMode && !paused) {   // health, lava, falling out of the world, respawning
             PlayState::Event e = play.tick(*world, player, game.player, playSpawn, playYaw, std::min(dt, 0.05));
@@ -1042,7 +1045,7 @@ struct App {
     std::string bigMsg; float bigMsgT = 0;
     std::string playStartWorld; Player startEditCam; bool travelling = false;
     static bool IsBuiltin(const std::string& n) { return !n.empty() && n[0] == '@'; }
-    void AddBuiltins() { for (const std::string& n : builtinShapeNames()) { MeshModel m; if (builtinShape(n, m)) meshModels[n] = m; } }
+    void AddBuiltins() { for (const std::string& n : builtinShapeNames()) { MeshModel m; if (builtinShape(n, m)) meshModels[n] = m; } MeshModel st; if (builtinShape("@visor-strut", st)) meshModels["@visor-strut"] = st; }
     // a new helper object: what it is follows from the built-in look it was placed with
     void ApplyPreset(WorldObject& o) {
         const std::string& m = o.model;
@@ -1121,6 +1124,9 @@ struct App {
         case Do::TakeKey: inv.keys.erase(nm); break;
         case Do::AddCount: if (!nm.empty()) inv.counts[nm] += (int)std::lround(d.number); break;
         case Do::Win: Message(d.text.empty() ? "You win!" : d.text); bigMsgT = 10; Toast("You won! F5: back to the editor"); break;
+        case Do::HudShow: hudShown[nm] = true; break;
+        case Do::HudHide: hudShown[nm] = false; break;
+        case Do::HudFlash: hudFlashAt[nm] = animTime; hudShown[nm] = true; break;
         default: break;
         }
     }
@@ -2470,6 +2476,7 @@ struct App {
         { ID3D11ShaderResourceView* pv[2] = { volSRV.Get(), bloom ? bloomLv[0].srv.Get() : nullptr }; ctx->PSSetShaderResources(0, 2, pv); }
         ctx->Draw(3, 0);
         ctx->PSSetShaderResources(0, 4, none);
+        if (playMode) DrawHudInGame(out);   // the player's HUD over everything
     }
     int drawnChunks = 0;
     bool Project(V3 p, ImVec2& out) const {   // world point -> screen (for the block outline)
@@ -2652,7 +2659,7 @@ struct App {
         projectDir = dir;
         library = Library{}; library.dir = dir; library.load(reg); UploadTextures(); ghostKey = 0xFFFFFFFFu;   // this game's blocks and textures
         models.loadAll(dir + "/models"); modelGpu.clear(); LoadMeshModels(); viewerOpen = false;
-        game = GameSettings{}; gamePath = dir + "/game.txt"; game.load(gamePath);
+        game = GameSettings{}; gamePath = dir + "/game.txt"; game.load(gamePath); LoadHud();
         RefreshWorlds();
         auto has = [&](const std::string& n) { return !n.empty() && std::find(worldList.begin(), worldList.end(), n) != worldList.end(); };
         std::string w = has(game.lastWorld) ? game.lastWorld : has(game.startWorld) ? game.startWorld : worldList.empty() ? "" : worldList[0];
@@ -2661,7 +2668,7 @@ struct App {
     }
     void CloseProject() {
         if (world) CloseWorld();
-        if (!gamePath.empty()) game.save(gamePath);
+        if (!gamePath.empty()) { game.save(gamePath); SaveHud(); }
         screen = Screen::Title; Capture(false); editorOpen = false; sel = Sel::World; RefreshProjects();
         SetWindowTextA(hwnd, "PRIMEngine");
     }
@@ -2745,6 +2752,7 @@ struct App {
         inv = PlayInventory{}; takenByWorld.clear(); insideNow.clear(); firedOnce.clear(); teleportLock = 0; bigMsgT = 0; playStartWorld = CurrentWorld(); startEditCam = editCam;
         playSpawn = info.hasSpawn ? info.spawn : player.feet; playYaw = info.hasSpawn ? info.spawnYaw : player.yaw;
         play = PlayState{}; play.start(player, game.player, playSpawn, playYaw);
+        hudSway.reset(); hudShown.clear(); hudFlashAt.clear(); prevPlayYaw = player.yaw; prevPlayPitch = player.pitch; prevOnGround = true; prevVelY = 0;
         EvStart();
         if (grabMouse) { Capture(false); captureNext = true; }   // grabbed next frame, once the picture fills the window
         Toast(info.hasSpawn ? "Playing. Esc: menu, F5: back to the editor" : "Playing from where the camera was (set a spawn point in the Outliner). F5: back to the editor");
@@ -2767,15 +2775,17 @@ struct App {
             dl->AddRectFilledMultiColor(ImVec2(vx, vy), ImVec2(vx + e, vy + H), r, z, z, r);
             dl->AddRectFilledMultiColor(ImVec2(vx + W - e, vy), ImVec2(vx + W, vy + H), z, r, r, z);
         }
-        float bw = 300 * ui, bh = 18 * ui; ImVec2 o(vx + (W - bw) * 0.5f, vy + H - bh - 24 * ui);   // health bar
+        if (hud.empty()) {
+        float bw = 300 * ui, bh = 18 * ui; ImVec2 o(vx + (W - bw) * 0.5f, vy + H - bh - 24 * ui);   // health bar (until the game has its own HUD)
         float f = game.player.maxHealth > 0 ? std::clamp(play.health / game.player.maxHealth, 0.f, 1.f) : 0.f;
         dl->AddRectFilled(ImVec2(o.x - 3, o.y - 3), ImVec2(o.x + bw + 3, o.y + bh + 3), IM_COL32(0, 0, 0, 160), 4.f);
         ImU32 col = f > 0.5f ? IM_COL32(70, 210, 90, 255) : f > 0.25f ? IM_COL32(240, 190, 50, 255) : IM_COL32(230, 60, 50, 255);
         dl->AddRectFilled(o, ImVec2(o.x + bw * f, o.y + bh), col, 3.f);
         char hb[64]; snprintf(hb, sizeof hb, "%.0f / %.0f", play.health, game.player.maxHealth);
         ImVec2 ts = ImGui::CalcTextSize(hb); dl->AddText(ImVec2(o.x + (bw - ts.x) * 0.5f, o.y + (bh - ts.y) * 0.5f), IM_COL32(255, 255, 255, 255), hb);
+        }
         dl->AddText(ImVec2(vx + 12, vy + 10), IM_COL32(255, 255, 255, 200), game.name.c_str());
-        {   // what you carry
+        if (hud.empty()) {   // what you carry
             float y = vy + 10 + ImGui::GetTextLineHeight() + 6;
             for (const std::string& k : inv.keys) { dl->AddRectFilled(ImVec2(vx + 12, y + 3), ImVec2(vx + 22, y + 13), IM_COL32(255, 210, 60, 255), 2.f); dl->AddText(ImVec2(vx + 28, y), IM_COL32(255, 230, 150, 240), k.c_str()); y += ImGui::GetTextLineHeight() + 4; }
             for (auto& c : inv.counts) { std::string t = c.first + "  x " + std::to_string(c.second); dl->AddCircleFilled(ImVec2(vx + 17, y + 8), 5, IM_COL32(90, 230, 255, 255)); dl->AddText(ImVec2(vx + 28, y), IM_COL32(180, 240, 255, 240), t.c_str()); y += ImGui::GetTextLineHeight() + 4; }
@@ -3155,6 +3165,7 @@ struct App {
         if (ImGui::BeginMenu("Game")) {
             if (ImGui::MenuItem("Play", "F5")) StartPlay();
             if (ImGui::MenuItem("Game settings")) Select(Sel::Game);
+            if (ImGui::MenuItem("Player editor (HUD)")) { playerEdOpen = true; focusPlayerEd = true; }
             if (ImGui::MenuItem("Set the spawn point here")) { info.hasSpawn = true; info.spawn = player.feet; info.spawnYaw = player.yaw; Select(Sel::Spawn); }
             ImGui::EndMenu();
         }
@@ -3174,6 +3185,8 @@ struct App {
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8, 5));
         if (ImGui::BeginViewportSideBar("##toolbar", vp, ImGuiDir_Up, ImGui::GetFrameHeight() + 10, fl)) {
             if (PlayButton(false)) StartPlay();
+            ImGui::SameLine(); if (ImGui::Button("Player")) { playerEdOpen = !playerEdOpen; focusPlayerEd = playerEdOpen; }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("The Player editor: HUD (more later)");
             ImGui::SameLine(); if (ImGui::Button("Save")) { SaveWorld(); Toast("Saved"); }
             ImGui::SameLine(); if (ImGui::Button("Undo")) { if (history.undo(*world)) Toast("Undo"); }
             ImGui::SameLine(); if (ImGui::Button("Redo")) { if (history.redo(*world)) Toast("Redo"); }
@@ -3418,6 +3431,537 @@ struct App {
         }
         ImGui::End();
     }
+    // ================================================================== Player editor, part 1: the HUD (planes with 2D elements, 3D helmet parts, Prime sway)
+    HudLayout hud; HudSway hudSway, previewSway; HudValues hudVals;
+    std::map<std::string, bool> hudShown; std::map<std::string, double> hudFlashAt;   // Play mode: event cards showing / hiding / flashing elements by name
+    struct HudTarget { ComPtr<ID3D11Texture2D> tex; ComPtr<ID3D11RenderTargetView> rtv; ComPtr<ID3D11ShaderResourceView> srv; int w = 0, h = 0; };
+    std::vector<HudTarget> hudTargets; std::vector<std::unique_ptr<ImDrawList>> hudLists; bool hudListsReady = false;
+    ComPtr<ID3D11VertexShader> vsHud, vsBlit; ComPtr<ID3D11PixelShader> psHud, psBlit; ComPtr<ID3D11InputLayout> layoutHud; ComPtr<ID3D11Buffer> vbHud; ComPtr<ID3D11BlendState> bsPremul;
+    std::map<std::string, ComPtr<ID3D11ShaderResourceView>> hudImages;
+    struct HVtx { float p[3], uv[2]; };
+    static constexpr int HUD_GX = 40, HUD_GY = 20, HUD_VERTS = HUD_GX * HUD_GY * 6;
+    bool playerEdOpen = false, focusPlayerEd = false; int hudSel = 0, hudPlane = 0, hudEl = -1, hudPart = 0;   // hudSel: 0 sway, 1 plane, 2 element, 3 part
+    float hudOrbYaw = 2.45f, hudOrbPitch = 0.38f, hudOrbDist = 3.4f; XMMATRIX hudOrbVP = XMMatrixIdentity(); V3 hudOrbEye{ 0, 0, 0 };
+    ImVec2 hudViewWant{ 0, 0 }, hudPrevWant{ 0, 0 };
+    HudTarget hudView, hudPrev; ComPtr<ID3D11DepthStencilView> hudViewDSV, hudPrevDSV; int hudViewDW = 0, hudViewDH = 0, hudPrevDW = 0, hudPrevDH = 0;
+    int hudDrag = 0; ImVec2 hudDragMouse; HudElement hudDragFrom; double hudWiggle = -1; double prevEdYaw = 0, prevEdPitch = 0;
+    double prevPlayYaw = 0, prevPlayPitch = 0, prevVelY = 0; bool prevOnGround = true;
+
+    std::string HudPath() const { return projectDir + "/hud.txt"; }
+    void LoadHud() { hud = HudLayout{}; loadHud(HudPath(), hud); hudImages.clear(); hudSel = 0; hudPlane = 0; hudEl = -1; hudPart = 0; }
+    void SaveHud() { if (projectDir.empty()) return; std::error_code ec; if (hud.empty()) fs::remove(fs::u8path(HudPath()), ec); else saveHud(HudPath(), hud); }
+    void InitHud(const std::string& src) {
+        auto b = Compile(src, "VS_Hud", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsHud));
+        D3D11_INPUT_ELEMENT_DESC he[] = { { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 }, { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0 } };
+        HR(dev->CreateInputLayout(he, 2, b->GetBufferPointer(), b->GetBufferSize(), &layoutHud));
+        b = Compile(src, "PS_Hud", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psHud));
+        b = Compile(src, "VS_Blit", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsBlit));
+        b = Compile(src, "PS_Blit", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psBlit));
+        D3D11_BUFFER_DESC d{}; d.ByteWidth = sizeof(HVtx) * HUD_VERTS; d.Usage = D3D11_USAGE_DYNAMIC; d.BindFlags = D3D11_BIND_VERTEX_BUFFER; d.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE; HR(dev->CreateBuffer(&d, nullptr, &vbHud));
+        D3D11_BLEND_DESC bd{}; auto& rt = bd.RenderTarget[0]; rt.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL; rt.BlendEnable = TRUE;
+        rt.SrcBlend = D3D11_BLEND_ONE; rt.DestBlend = D3D11_BLEND_INV_SRC_ALPHA; rt.BlendOp = D3D11_BLEND_OP_ADD;
+        rt.SrcBlendAlpha = D3D11_BLEND_ONE; rt.DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA; rt.BlendOpAlpha = D3D11_BLEND_OP_ADD; HR(dev->CreateBlendState(&bd, &bsPremul));
+    }
+    static void PlaneRes(const HudPlane& p, int& w, int& h) { w = 1024; h = std::clamp((int)std::lround(1024.0 * p.height / std::max(0.01f, p.width)), 32, 1024); }
+    ID3D11ShaderResourceView* HudImage(const std::string& name) {
+        if (name.empty()) return nullptr;
+        auto it = hudImages.find(name); if (it != hudImages.end()) return it->second.Get();
+        ComPtr<ID3D11ShaderResourceView>& s = hudImages[name]; int w, h; std::vector<uint8_t> px;
+        if (!readImage(projectDir + "/hud/" + name, w, h, px)) return nullptr;
+        D3D11_TEXTURE2D_DESC d{}; d.Width = (UINT)w; d.Height = (UINT)h; d.MipLevels = 1; d.ArraySize = 1; d.Format = DXGI_FORMAT_R8G8B8A8_UNORM; d.SampleDesc.Count = 1; d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        D3D11_SUBRESOURCE_DATA sd{ px.data(), (UINT)w * 4, 0 }; ComPtr<ID3D11Texture2D> t; HR(dev->CreateTexture2D(&d, &sd, &t)); HR(dev->CreateShaderResourceView(t.Get(), nullptr, &s));
+        return s.Get();
+    }
+    std::vector<std::string> HudImageFiles() const {
+        std::vector<std::string> v; std::error_code ec;
+        for (auto& e : fs::directory_iterator(fs::u8path(projectDir + "/hud"), ec)) { std::string ext = Lower(e.path().extension().string()); if (ext == ".png" || ext == ".jpg" || ext == ".jpeg") v.push_back(e.path().filename().u8string()); }
+        std::sort(v.begin(), v.end()); return v;
+    }
+    bool ElementShown(const HudElement& e) const {
+        if (!playMode) return e.visible;
+        auto it = hudShown.find(e.name); return it == hudShown.end() ? e.visible : it->second;
+    }
+    // one element drawn into its plane's picture (W x H pixels)
+    void DrawHudElement(ImDrawList* dl, const HudElement& e, float W, float H, const HudValues& v) {
+        if (!ElementShown(e)) return;
+        float a = e.alpha;
+        if (playMode) { auto f = hudFlashAt.find(e.name); if (f != hudFlashAt.end() && animTime - f->second < 1.5) a *= 0.25f + 0.75f * (0.5f + 0.5f * (float)std::cos((animTime - f->second) * 18)); }
+        auto col = [&](float k) { return IM_COL32((e.color >> 16) & 255, (e.color >> 8) & 255, e.color & 255, (int)std::clamp(a * k * 255, 0.f, 255.f)); };
+        ImVec2 p0(e.x * W, e.y * H), p1((e.x + e.w) * W, (e.y + e.h) * H);
+        switch (e.kind) {
+        case HudKind::Panel: if (e.filled) dl->AddRectFilled(p0, p1, col(1)); else dl->AddRect(p0, p1, col(1), 0.0f, 0, e.thickness); break;
+        case HudKind::Bar: {
+            float f = std::clamp(hudValue(e, v) / std::max(1e-3f, hudMax(e, v)), 0.f, 1.f); int n = std::max(1, e.segments); float gap = n > 1 ? 3.f : 0.f;
+            float sw = ((p1.x - p0.x) - gap * (n - 1)) / n;
+            for (int k = 0; k < n; k++) {
+                float x0 = p0.x + k * (sw + gap), x1 = x0 + sw, fill = std::clamp(f * n - k, 0.f, 1.f);
+                dl->AddRectFilled(ImVec2(x0, p0.y), ImVec2(x1, p1.y), col(0.22f));
+                if (fill > 0) dl->AddRectFilled(ImVec2(x0, p0.y), ImVec2(x0 + (x1 - x0) * fill, p1.y), col(1));
+            }
+            break;
+        }
+        case HudKind::Text: {
+            std::string t = hudText(e, v); ImFont* font = ImGui::GetFont(); float size = std::max(4.f, (p1.y - p0.y) * e.textSize);
+            ImVec2 ts = font->CalcTextSizeA(size, FLT_MAX, 0, t.c_str());
+            float x = e.align == 0 ? p0.x : e.align == 1 ? (p0.x + p1.x - ts.x) * 0.5f : p1.x - ts.x;
+            dl->AddText(font, size, ImVec2(x, (p0.y + p1.y - ts.y) * 0.5f), col(1), t.c_str());
+            break;
+        }
+        case HudKind::Image: if (ID3D11ShaderResourceView* s = HudImage(e.image)) dl->AddImage((ImTextureID)(intptr_t)s, p0, p1, ImVec2(0, 0), ImVec2(1, 1), col(1)); else dl->AddRect(p0, p1, col(0.5f)); break;
+        case HudKind::Circle: {
+            ImVec2 c((p0.x + p1.x) * 0.5f, (p0.y + p1.y) * 0.5f); float r = std::min(p1.x - p0.x, p1.y - p0.y) * 0.5f;
+            if (e.filled) dl->AddCircleFilled(c, r, col(1), 48); else dl->AddCircle(c, r - e.thickness * 0.5f, col(1), 48, e.thickness);
+            break;
+        }
+        default: break;
+        }
+    }
+    // every plane's picture as an ImGui draw list (inside the ImGui frame: text sizes get baked)
+    void BuildHudLists() {
+        hudListsReady = false;
+        bool need = (playMode && !hud.empty()) || (playerEdOpen && screen == Screen::Game && EditorView());
+        if (!need) return;
+        if (playMode) { hudVals.health = play.health; hudVals.maxHealth = game.player.maxHealth; hudVals.counts = inv.counts; hudVals.keys = inv.keys; }
+        else { hudVals = HudValues{}; hudVals.maxHealth = game.player.maxHealth; hudVals.health = game.player.maxHealth * 0.76f; hudVals.counts["Missile"] = 25; hudVals.keys.insert("Red key"); }
+        hudLists.resize(hud.planes.size());
+        for (size_t i = 0; i < hud.planes.size(); i++) {
+            const HudPlane& p = hud.planes[i]; int W, H; PlaneRes(p, W, H);
+            if (!hudLists[i]) hudLists[i] = std::make_unique<ImDrawList>(ImGui::GetDrawListSharedData());
+            ImDrawList* dl = hudLists[i].get(); dl->_ResetForNewFrame();
+            dl->PushClipRect(ImVec2(0, 0), ImVec2((float)W, (float)H)); dl->PushTexture(ImGui::GetIO().Fonts->TexRef);
+            for (const HudElement& e : p.elements) DrawHudElement(dl, e, (float)W, (float)H, hudVals);
+            dl->PopTexture(); dl->PopClipRect();
+        }
+        hudListsReady = true;
+    }
+    void MakeTarget(HudTarget& t, int w, int h, ComPtr<ID3D11DepthStencilView>* dsvOut = nullptr) {
+        if (t.w == w && t.h == h && t.rtv) return;
+        if (t.srv) retired.push_back(t.srv);
+        D3D11_TEXTURE2D_DESC d{}; d.Width = (UINT)w; d.Height = (UINT)h; d.MipLevels = 1; d.ArraySize = 1; d.Format = DXGI_FORMAT_R8G8B8A8_UNORM; d.SampleDesc.Count = 1; d.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+        t.tex.Reset(); t.rtv.Reset(); t.srv.Reset(); HR(dev->CreateTexture2D(&d, nullptr, &t.tex)); HR(dev->CreateRenderTargetView(t.tex.Get(), nullptr, &t.rtv)); HR(dev->CreateShaderResourceView(t.tex.Get(), nullptr, &t.srv));
+        t.w = w; t.h = h;
+        if (dsvOut) { d.Format = DXGI_FORMAT_D32_FLOAT; d.BindFlags = D3D11_BIND_DEPTH_STENCIL; ComPtr<ID3D11Texture2D> dt; HR(dev->CreateTexture2D(&d, nullptr, &dt)); dsvOut->Reset(); HR(dev->CreateDepthStencilView(dt.Get(), nullptr, dsvOut->GetAddressOf())); }
+    }
+    // the draw lists -> each plane's picture (premultiplied: see-through where nothing is drawn)
+    void RenderHudPlanes() {
+        if (!hudListsReady) return;
+        for (ImTextureData* t : ImGui::GetPlatformIO().Textures) if (t->Status == ImTextureStatus_WantCreate || t->Status == ImTextureStatus_WantUpdates) ImGui_ImplDX11_UpdateTexture(t);   // new letter sizes, before they are used
+        hudTargets.resize(hud.planes.size());
+        for (size_t i = 0; i < hud.planes.size() && i < hudLists.size(); i++) {
+            int W, H; PlaneRes(hud.planes[i], W, H); MakeTarget(hudTargets[i], W, H);
+            const float clear[4] = { 0, 0, 0, 0 };
+            ctx->OMSetRenderTargets(1, hudTargets[i].rtv.GetAddressOf(), nullptr); ctx->ClearRenderTargetView(hudTargets[i].rtv.Get(), clear);
+            ImDrawList* dl = hudLists[i].get();
+            if (dl->CmdBuffer.Size == 0 || dl->VtxBuffer.Size == 0) continue;
+            ImDrawData dd; dd.Valid = true; dd.CmdLists.push_back(dl); dd.TotalVtxCount = dl->VtxBuffer.Size; dd.TotalIdxCount = dl->IdxBuffer.Size;
+            dd.DisplayPos = ImVec2(0, 0); dd.DisplaySize = ImVec2((float)W, (float)H); dd.FramebufferScale = ImVec2(1, 1); dd.Textures = nullptr;
+            ImGui_ImplDX11_RenderDrawData(&dd);
+        }
+        ctx->OMSetRenderTargets(0, nullptr, nullptr);
+    }
+    // the parts and planes, seen through vp (camera space in); sway on top
+    void DrawHudScene(const XMMATRIX& vp, const HudSway& sw, bool editor) {
+        ID3D11Buffer* cbs[3] = { cbFrame.Get(), cbChunk.Get(), cbPreview.Get() }; ctx->VSSetConstantBuffers(0, 3, cbs); ctx->PSSetConstantBuffers(0, 3, cbs);
+        PreviewCB pc{}; XMStoreFloat4x4((XMFLOAT4X4*)pc.vp, vp); pc.light[0] = -0.35f; pc.light[1] = 0.75f; pc.light[2] = -0.55f;
+        ctx->UpdateSubresource(cbPreview.Get(), 0, nullptr, &pc, 0, 0);
+        ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); ctx->IASetInputLayout(layout.Get());
+        ctx->VSSetShader(vsPreview.Get(), nullptr, 0); ctx->PSSetShader(psPreview.Get(), nullptr, 0);
+        ctx->PSSetShaderResources(0, 1, texArray.GetAddressOf()); ctx->PSSetSamplers(0, 1, sampBlocks.GetAddressOf());
+        ctx->RSSetState(rsNoCull.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
+        for (const HudPart& p : hud.parts) {
+            if (!p.visible) continue;
+            FrameRef f = ModelNamed(p.model); if (!f) continue;
+            const ModelGpu& g = GpuModel(p.model);
+            if (g.mesh) ctx->PSSetShaderResources(9, 1, g.tex.GetAddressOf());
+            V3 ax, ay, az; partAxes(p, ax, ay, az); float k = sw.yaw == 0 && sw.pitch == 0 && sw.roll == 0 ? 0.f : p.sway;
+            ax = rotateDeg(ax, sw.yaw * k, sw.pitch * k, sw.roll * k); ay = rotateDeg(ay, sw.yaw * k, sw.pitch * k, sw.roll * k); az = rotateDeg(az, sw.yaw * k, sw.pitch * k, sw.roll * k);
+            V3 base = sw.apply(p.pos, p.sway);
+            for (int pass = 0; pass < 2; pass++) for (auto& part : g.parts) {
+                const GpuChunk& gc = part.second; UINT n = pass == 0 ? gc.nO : gc.nC; if (!n) continue;
+                V3 l{ part.first.x * (double)CS - f->pivot.x, part.first.y * (double)CS - f->pivot.y, part.first.z * (double)CS - f->pivot.z };
+                V3 org = base + ax * l.x + ay * l.y + az * l.z;
+                ChunkCB cc{ { (float)org.x, (float)org.y, (float)org.z, 0 }, { (float)ax.x, (float)ax.y, (float)ax.z, 0 }, { (float)ay.x, (float)ay.y, (float)ay.z, 0 }, { (float)az.x, (float)az.y, (float)az.z, 0 } };
+                ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);
+                UINT stride = sizeof(Vtx), off = 0;
+                ctx->IASetVertexBuffers(0, 1, pass == 0 ? gc.vbO.GetAddressOf() : gc.vbC.GetAddressOf(), &stride, &off);
+                ctx->IASetIndexBuffer(pass == 0 ? gc.ibO.Get() : gc.ibC.Get(), DXGI_FORMAT_R32_UINT, 0);
+                ctx->DrawIndexed(n, 0, 0);
+            }
+        }
+        // planes, the farthest first; they do not hide each other, but parts in front of them do
+        std::vector<int> order; for (int i = 0; i < (int)hud.planes.size() && i < (int)hudTargets.size(); i++) if (hud.planes[i].visible && hudTargets[i].srv) order.push_back(i);
+        std::sort(order.begin(), order.end(), [&](int a, int b) { return hud.planes[a].pos.z > hud.planes[b].pos.z; });
+        ctx->IASetInputLayout(layoutHud.Get()); ctx->VSSetShader(vsHud.Get(), nullptr, 0); ctx->PSSetShader(psHud.Get(), nullptr, 0);
+        ctx->PSSetSamplers(3, 1, sampClamp.GetAddressOf()); ctx->OMSetDepthStencilState(dsTestOnly.Get(), 0);
+        for (int i : order) {
+            const HudPlane& p = hud.planes[i];
+            D3D11_MAPPED_SUBRESOURCE m; if (FAILED(ctx->Map(vbHud.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) continue;
+            HVtx* v = (HVtx*)m.pData; int n = 0;
+            auto put = [&](int gx, int gy) { float u = (float)gx / HUD_GX, w = (float)gy / HUD_GY; V3 q = sw.apply(planePoint(p, u, w), p.sway); v[n++] = { { (float)q.x, (float)q.y, (float)q.z }, { u, w } }; };
+            for (int gy = 0; gy < HUD_GY; gy++) for (int gx = 0; gx < HUD_GX; gx++) { put(gx, gy); put(gx + 1, gy); put(gx + 1, gy + 1); put(gx, gy); put(gx + 1, gy + 1); put(gx, gy + 1); }
+            ctx->Unmap(vbHud.Get(), 0);
+            pc.light[0] = std::clamp(p.opacity, 0.f, 1.f) * (editor && !playMode && hudSel == 1 && hudPlane == i ? 1.f : 1.f);
+            ctx->UpdateSubresource(cbPreview.Get(), 0, nullptr, &pc, 0, 0);
+            ctx->OMSetBlendState(p.glow ? bsAdd.Get() : bsPremul.Get(), nullptr, 0xFFFFFFFF);
+            UINT stride = sizeof(HVtx), off = 0; ctx->IASetVertexBuffers(0, 1, vbHud.GetAddressOf(), &stride, &off);
+            ctx->PSSetShaderResources(0, 1, hudTargets[i].srv.GetAddressOf());
+            ctx->Draw(n, 0);
+        }
+        ID3D11ShaderResourceView* none[10] = {}; ctx->PSSetShaderResources(0, 10, none);
+        ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());
+    }
+    XMMATRIX HudProj(float aspect) const { return XMMatrixPerspectiveFovLH(XMConvertToRadians(settings.fov), aspect, 0.01f, 60.f); }
+    // Play mode: the HUD over the finished picture
+    void DrawHudInGame(ID3D11RenderTargetView* out) {
+        if (hud.empty() || !hudListsReady) return;
+        ctx->OMSetRenderTargets(1, &out, dsv.Get()); ctx->ClearDepthStencilView(dsv.Get(), D3D11_CLEAR_DEPTH, 1.f, 0);
+        D3D11_VIEWPORT v{ 0, 0, (float)rw, (float)rh, 0, 1 }; ctx->RSSetViewports(1, &v);
+        DrawHudScene(HudProj((float)rw / rh), hudSway, false);
+    }
+    // the editor's two pictures: around the camera (orbit), and through it (the preview, over the world as the editor camera sees it)
+    void RenderHudViews() {
+        if (!playerEdOpen || !hudListsReady) return;
+        const float bg[4] = { 0.16f, 0.17f, 0.20f, 1 };
+        if (hudViewWant.x >= 16 && hudViewWant.y >= 16) {
+            int w = (int)hudViewWant.x, h = (int)hudViewWant.y; if (w != hudViewDW || h != hudViewDH) { MakeTarget(hudView, w, h, &hudViewDSV); hudViewDW = w; hudViewDH = h; }
+            ctx->OMSetRenderTargets(1, hudView.rtv.GetAddressOf(), hudViewDSV.Get()); ctx->ClearRenderTargetView(hudView.rtv.Get(), bg); ctx->ClearDepthStencilView(hudViewDSV.Get(), D3D11_CLEAR_DEPTH, 1, 0);
+            D3D11_VIEWPORT v{ 0, 0, (float)w, (float)h, 0, 1 }; ctx->RSSetViewports(1, &v);
+            DrawHudScene(hudOrbVP, HudSway{}, true);
+        }
+        if (hudPrevWant.x >= 16 && hudPrevWant.y >= 16) {
+            int w = (int)hudPrevWant.x, h = (int)hudPrevWant.y; if (w != hudPrevDW || h != hudPrevDH) { MakeTarget(hudPrev, w, h, &hudPrevDSV); hudPrevDW = w; hudPrevDH = h; }
+            ctx->OMSetRenderTargets(1, hudPrev.rtv.GetAddressOf(), hudPrevDSV.Get()); ctx->ClearRenderTargetView(hudPrev.rtv.Get(), bg); ctx->ClearDepthStencilView(hudPrevDSV.Get(), D3D11_CLEAR_DEPTH, 1, 0);
+            D3D11_VIEWPORT v{ 0, 0, (float)w, (float)h, 0, 1 }; ctx->RSSetViewports(1, &v);
+            if (sceneSRV) {   // the world behind it
+                ctx->IASetInputLayout(nullptr); ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); ctx->RSSetState(rsNoCull.Get()); ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
+                ctx->VSSetShader(vsBlit.Get(), nullptr, 0); ctx->PSSetShader(psBlit.Get(), nullptr, 0); ctx->PSSetShaderResources(0, 1, sceneSRV.GetAddressOf()); ctx->PSSetSamplers(3, 1, sampClamp.GetAddressOf());
+                ctx->Draw(3, 0); ID3D11ShaderResourceView* none = nullptr; ctx->PSSetShaderResources(0, 1, &none);
+            }
+            DrawHudScene(HudProj((float)w / h), previewSway, true);
+        }
+        ctx->OMSetRenderTargets(0, nullptr, nullptr);
+    }
+    // the sway: Play mode follows the player, the editor's preview follows the editor camera (and the "Wiggle" button)
+    void UpdateHudSway(double dt) {
+        auto wrapDeg = [](double r) { double d = r * 180 / 3.14159265358979; while (d > 180) d -= 360; while (d < -180) d += 360; return (float)d; };
+        if (playMode) {
+            float ty = wrapDeg(player.yaw - prevPlayYaw), tp = wrapDeg(player.pitch - prevPlayPitch);
+            bool landed = player.onGround && !prevOnGround; float fall = (float)std::max(0.0, -prevVelY);
+            float speed = (float)std::sqrt(player.vel.x * player.vel.x + player.vel.z * player.vel.z) * (player.onGround ? 1.f : 0.f);
+            hudSway.update(hud.sway, dt, ty, tp, speed, landed, fall);
+        }
+        prevPlayYaw = player.yaw; prevPlayPitch = player.pitch; prevVelY = player.vel.y; prevOnGround = player.onGround;
+        if (playerEdOpen && !playMode) {
+            float ty = wrapDeg(player.yaw - prevEdYaw), tp = wrapDeg(player.pitch - prevEdPitch), speed = 0;
+            if (hudWiggle >= 0) {   // a quick look left and right, then still
+                double t0 = hudWiggle; hudWiggle += dt;
+                auto look = [](double t) { return t < 1.2 ? 35.0 * std::sin(t * 3.14159265358979 / 0.6) * (t < 0.6 ? 1 : 0.6) : 0.0; };
+                ty += (float)(look(hudWiggle) - look(t0)); speed = hudWiggle < 1.6 ? 4.3f : 0.f;
+                if (hudWiggle > 3) hudWiggle = -1;
+            }
+            previewSway.update(hud.sway, dt, ty, tp, speed, false, 0);
+        }
+        prevEdYaw = player.yaw; prevEdPitch = player.pitch;
+    }
+
+    // ---- the Player editor window (HUD tab)
+    V3 HudOrbProject(V3 p, ImVec2 o, ImVec2 sz, bool& ok) const {
+        XMVECTOR c = XMVector4Transform(XMVectorSet((float)p.x, (float)p.y, (float)p.z, 1), hudOrbVP); float w = XMVectorGetW(c); ok = w > 0.02f;
+        return { o.x + (XMVectorGetX(c) / w * 0.5f + 0.5f) * sz.x, o.y + (0.5f - XMVectorGetY(c) / w * 0.5f) * sz.y, w };
+    }
+    std::vector<std::string> PartModels() {
+        std::vector<std::string> v; for (auto& kv : meshModels) if (!IsBuiltin(kv.first) || kv.first == "@visor-strut") v.push_back(kv.first);
+        for (auto& kv : models.models) v.push_back(kv.first);
+        std::sort(v.begin(), v.end()); return v;
+    }
+    bool HudSelValid() {
+        hudPlane = std::clamp(hudPlane, 0, std::max(0, (int)hud.planes.size() - 1)); hudPart = std::clamp(hudPart, 0, std::max(0, (int)hud.parts.size() - 1));
+        if (hudSel == 1 && hud.planes.empty()) hudSel = 0;
+        if (hudSel == 2 && (hud.planes.empty() || hudEl < 0 || hudEl >= (int)hud.planes[hudPlane].elements.size())) hudSel = hud.planes.empty() ? 0 : 1;
+        if (hudSel == 3 && hud.parts.empty()) hudSel = 0;
+        return true;
+    }
+    void HudDuplicate(bool mirror) {
+        if (hudSel == 1) { HudPlane p = hud.planes[hudPlane]; p.name += mirror ? " (mirrored)" : " copy"; if (mirror) mirrorPlane(p); else p.pos.y -= 0.1; hud.planes.insert(hud.planes.begin() + hudPlane + 1, p); hudPlane++; }
+        else if (hudSel == 2) { auto& els = hud.planes[hudPlane].elements; HudElement e = els[hudEl]; e.name += mirror ? " (mirrored)" : " copy"; if (mirror) mirrorElement(e); else { e.x += 0.02f; e.y += 0.02f; } els.insert(els.begin() + hudEl + 1, e); hudEl++; }
+        else if (hudSel == 3) { HudPart p = hud.parts[hudPart]; p.name += mirror ? " (mirrored)" : " copy"; if (mirror) mirrorPart(p); else p.pos.x += 0.1; hud.parts.insert(hud.parts.begin() + hudPart + 1, p); hudPart++; }
+        SaveHud();
+    }
+    void HudMirrorInPlace() {
+        if (hudSel == 1) mirrorPlane(hud.planes[hudPlane]); else if (hudSel == 2) mirrorElement(hud.planes[hudPlane].elements[hudEl]); else if (hudSel == 3) mirrorPart(hud.parts[hudPart]);
+        SaveHud();
+    }
+    void HudDelete() {
+        if (hudSel == 1) { hud.planes.erase(hud.planes.begin() + hudPlane); hudSel = 0; }
+        else if (hudSel == 2) { auto& els = hud.planes[hudPlane].elements; els.erase(els.begin() + hudEl); hudSel = 1; hudEl = -1; }
+        else if (hudSel == 3) { hud.parts.erase(hud.parts.begin() + hudPart); hudSel = 0; }
+        SaveHud();
+    }
+    void HudAddElement(HudKind k) {
+        if (hud.planes.empty()) { HudPlane p; p.name = "Visor"; hud.planes.push_back(p); hudPlane = 0; }
+        HudElement e; e.kind = k; e.name = std::string(hudKindName(k)) + " " + std::to_string(hud.planes[hudPlane].elements.size() + 1);
+        if (k == HudKind::Text) { e.text = "TEXT"; e.textSize = 1; e.h = 0.06f; e.w = 0.25f; }
+        if (k == HudKind::Bar) { e.value = HudValue::Health; e.h = 0.025f; e.w = 0.3f; e.segments = 10; }
+        if (k == HudKind::Image) { e.color = 0xFFFFFF; e.alpha = 1; e.w = 0.12f; e.h = 0.2f; auto f = HudImageFiles(); if (!f.empty()) e.image = f[0]; }
+        if (k == HudKind::Circle) { e.w = 0.1f; e.h = 0.18f; e.filled = false; e.thickness = 3; }
+        hud.planes[hudPlane].elements.push_back(e); hudSel = 2; hudEl = (int)hud.planes[hudPlane].elements.size() - 1; SaveHud();
+    }
+    void HudList() {
+        float ui = settings.uiScale;
+        if (ImGui::Selectable("Sway", hudSel == 0)) hudSel = 0;
+        ImGui::Spacing(); ImGui::TextDisabled("PLANES (2D)");
+        for (int i = 0; i < (int)hud.planes.size(); i++) {
+            ImGui::PushID(i); HudPlane& p = hud.planes[i];
+            if (!p.visible) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.5f, 0.5f, 1));
+            if (ImGui::Selectable(p.name.c_str(), hudSel == 1 && hudPlane == i)) { hudSel = 1; hudPlane = i; }
+            if (!p.visible) ImGui::PopStyleColor();
+            ImGui::Indent(12 * ui);
+            for (int k = 0; k < (int)p.elements.size(); k++) {
+                ImGui::PushID(k); const HudElement& e = p.elements[k];
+                std::string label = std::string(e.name) + "  (" + hudKindName(e.kind) + ")";
+                if (!e.visible) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.5f, 0.5f, 1));
+                if (ImGui::Selectable(label.c_str(), hudSel == 2 && hudPlane == i && hudEl == k)) { hudSel = 2; hudPlane = i; hudEl = k; }
+                if (!e.visible) ImGui::PopStyleColor();
+                ImGui::PopID();
+            }
+            ImGui::Unindent(12 * ui); ImGui::PopID();
+        }
+        if (ImGui::SmallButton("+ Plane")) { HudPlane p; p.name = "Plane " + std::to_string(hud.planes.size() + 1); p.elements.clear(); hud.planes.push_back(p); hudSel = 1; hudPlane = (int)hud.planes.size() - 1; SaveHud(); }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("+ Element")) ImGui::OpenPopup("addel");
+        if (ImGui::BeginPopup("addel")) { for (int k = 0; k < (int)HudKind::COUNT; k++) if (ImGui::MenuItem(hudKindName((HudKind)k))) HudAddElement((HudKind)k); ImGui::EndPopup(); }
+        ImGui::Spacing(); ImGui::TextDisabled("3D PARTS");
+        for (int i = 0; i < (int)hud.parts.size(); i++) {
+            ImGui::PushID(1000 + i); const HudPart& p = hud.parts[i];
+            std::string label = p.name + (p.mirror ? "  (mirrored)" : "");
+            if (ImGui::Selectable(label.c_str(), hudSel == 3 && hudPart == i)) { hudSel = 3; hudPart = i; }
+            ImGui::PopID();
+        }
+        if (ImGui::SmallButton("+ 3D part")) ImGui::OpenPopup("addpart");
+        if (ImGui::BeginPopup("addpart")) {
+            for (const std::string& n : PartModels()) if (ImGui::MenuItem(n.c_str())) { HudPart p; p.model = n; p.name = n == "@visor-strut" ? "Strut" : n; hud.parts.push_back(p); hudSel = 3; hudPart = (int)hud.parts.size() - 1; SaveHud(); }
+            ImGui::Separator(); ImGui::TextDisabled("Import models in the Assets panel (Import...).");
+            ImGui::EndPopup();
+        }
+        ImGui::Separator();
+        bool can = hudSel != 0;
+        ImGui::BeginDisabled(!can);
+        if (FlowButton("Duplicate")) HudDuplicate(false);
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Ctrl+D");
+        if (FlowButton("Mirror copy")) HudDuplicate(true);
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("A copy on the other side, flipped");
+        if (FlowButton("Mirror")) HudMirrorInPlace();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Flip this one to the other side");
+        if (FlowButton("Delete")) HudDelete();
+        ImGui::EndDisabled();
+        if (can && ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_D)) HudDuplicate(false);
+    }
+    bool DragV3(const char* label, V3& v, float speed, const char* fmt = "%.2f") {
+        float f[3] = { (float)v.x, (float)v.y, (float)v.z }; Prop(label);
+        if (ImGui::DragFloat3((std::string("##") + label).c_str(), f, speed, 0, 0, fmt)) { v = { f[0], f[1], f[2] }; return true; } return false;
+    }
+    void HudProps() {
+        float ui = settings.uiScale; bool ch = false;
+        if (hudSel == 0) {
+            HudSwaySettings& s = hud.sway;
+            ImGui::SeparatorText("Sway");
+            Prop("On"); ch |= ImGui::Checkbox("##swon", &s.enabled);
+            Prop("Strength"); ch |= ImGui::SliderFloat("##sws", &s.strength, 0, 3, "%.2f");
+            Prop("Smoothness"); ch |= ImGui::SliderFloat("##swm", &s.smoothness, 0, 1, "%.2f");
+            Prop("Walk bob"); ch |= ImGui::SliderFloat("##swb", &s.bob, 0, 2, "%.2f");
+            Prop("Lean when turning"); ch |= ImGui::SliderFloat("##swt", &s.tilt, 0, 2, "%.2f");
+            Hint("When you turn, the HUD stays behind a little and springs back. Strength: how far. Smoothness: 0 snaps back, 1 floats back slowly. Each plane and part has its own sway amount too (helmet parts usually less than the visor).");
+            if (ImGui::Button("Wiggle the preview")) hudWiggle = 0;
+            ImGui::SameLine(); ImGui::TextDisabled("or fly and look around");
+        } else if (hudSel == 1) {
+            HudPlane& p = hud.planes[hudPlane];
+            ImGui::SeparatorText("Plane");
+            Prop("Name"); ch |= ImGui::InputText("##pn", &p.name);
+            Prop("Shown"); ch |= ImGui::Checkbox("##pv", &p.visible);
+            ch |= DragV3("Position", p.pos, 0.01f);
+            Hint("x right, y up, z how far in front (blocks). Put it nearer or farther than the 3D parts to go in front of or behind them.");
+            { float r[3] = { p.yaw, p.pitch, p.roll }; Prop("Turn"); if (ImGui::DragFloat3("##pr", r, 0.5f, -180, 180, "%.0f deg")) { p.yaw = r[0]; p.pitch = r[1]; p.roll = r[2]; ch = true; } }
+            { float s[2] = { p.width, p.height }; Prop("Size"); if (ImGui::DragFloat2("##ps", s, 0.01f, 0.05f, 20, "%.2f")) { p.width = std::max(0.05f, s[0]); p.height = std::max(0.05f, s[1]); ch = true; } }
+            if (ImGui::SmallButton("Fill the screen")) { double hh = 2 * p.pos.z * std::tan(XMConvertToRadians(settings.fov) * 0.5); p.height = (float)(hh * 0.94); p.width = (float)(hh * rw / std::max(1, rh) * 0.94); ch = true; }
+            Prop("Bend side to side"); ch |= ImGui::SliderFloat("##pbx", &p.bendX, 0, 1, "%.2f");
+            Prop("Bend top to bottom"); ch |= ImGui::SliderFloat("##pby", &p.bendY, 0, 1, "%.2f");
+            Prop("Sway amount"); ch |= ImGui::SliderFloat("##psw", &p.sway, 0, 2, "%.2f");
+            Prop("Opacity"); ch |= ImGui::SliderFloat("##pop", &p.opacity, 0, 1, "%.2f");
+            Prop("Glow"); ch |= ImGui::Checkbox("##pgl", &p.glow); ImGui::SameLine(); ImGui::TextDisabled("(adds light, like a visor)");
+        } else if (hudSel == 2) {
+            HudElement& e = hud.planes[hudPlane].elements[hudEl];
+            ImGui::SeparatorText(hudKindName(e.kind));
+            Prop("Name"); ch |= ImGui::InputText("##en", &e.name);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Event cards show, hide and flash it by this name");
+            { int k = (int)e.kind; const char* kn[] = { "Panel", "Bar", "Text", "Image", "Circle" }; Prop("Kind"); if (ImGui::Combo("##ek", &k, kn, 5)) { e.kind = (HudKind)k; ch = true; } }
+            Prop("Shown at the start"); ch |= ImGui::Checkbox("##ev", &e.visible);
+            { float r[4] = { e.x, e.y, e.w, e.h }; Prop("Place and size"); if (ImGui::DragFloat4("##er", r, 0.002f, 0, 1, "%.3f")) { e.x = r[0]; e.y = r[1]; e.w = std::max(0.002f, r[2]); e.h = std::max(0.002f, r[3]); ch = true; } }
+            { float c[3] = { ((e.color >> 16) & 255) / 255.f, ((e.color >> 8) & 255) / 255.f, (e.color & 255) / 255.f }; Prop("Colour");
+              if (ImGui::ColorEdit3("##ec", c)) { e.color = ((uint32_t)(c[0] * 255 + 0.5f) << 16) | ((uint32_t)(c[1] * 255 + 0.5f) << 8) | (uint32_t)(c[2] * 255 + 0.5f); ch = true; } }
+            Prop("See-through"); ch |= ImGui::SliderFloat("##ea", &e.alpha, 0, 1, "%.2f");
+            if (e.kind == HudKind::Text) {
+                Prop("Text"); ch |= ImGui::InputTextWithHint("##et", "{value}", &e.text);
+                Hint("{value} shows the value below, {max} the most it can be.");
+                Prop("Letter size"); ch |= ImGui::SliderFloat("##ets", &e.textSize, 0.2f, 2, "%.2f");
+                { int a = e.align; const char* an[] = { "Left", "Middle", "Right" }; Prop("Line up"); if (ImGui::Combo("##eal", &a, an, 3)) { e.align = a; ch = true; } }
+            }
+            if (e.kind == HudKind::Bar) { Prop("Pieces"); ch |= ImGui::SliderInt("##eseg", &e.segments, 1, 20); }
+            if (e.kind == HudKind::Panel || e.kind == HudKind::Circle) {
+                Prop("Filled"); ch |= ImGui::Checkbox("##ef", &e.filled);
+                if (!e.filled) { Prop("Line"); ch |= ImGui::SliderFloat("##eth", &e.thickness, 1, 16, "%.0f px"); }
+            }
+            if (e.kind == HudKind::Image) {
+                Prop("Picture");
+                if (ImGui::BeginCombo("##eim", e.image.empty() ? "(none)" : e.image.c_str())) {
+                    for (const std::string& f : HudImageFiles()) if (ImGui::Selectable(f.c_str(), e.image == f)) { e.image = f; ch = true; }
+                    ImGui::EndCombo();
+                }
+                if (ImGui::SmallButton("Import pictures...")) {
+                    std::error_code ec; fs::create_directories(fs::u8path(projectDir + "/hud"), ec); int n = 0;
+                    for (const std::string& f : PickImages()) { fs::path s = fs::u8path(f); fs::copy_file(s, fs::u8path(projectDir + "/hud/" + s.filename().u8string()), fs::copy_options::overwrite_existing, ec); if (!ec) { n++; e.image = s.filename().u8string(); hudImages.erase(e.image); } }
+                    if (n) { Toast(std::to_string(n) + " picture(s) added to the HUD folder"); ch = true; }
+                }
+            }
+            if (e.kind == HudKind::Bar || e.kind == HudKind::Text) {
+                int v = (int)e.value; const char* vn[] = { "Nothing", "Health", "A counter", "Has a key" };
+                Prop("Shows"); if (ImGui::Combo("##evl", &v, vn, 4)) { e.value = (HudValue)v; ch = true; }
+                if (e.value == HudValue::Counter || e.value == HudValue::Key) { Prop(e.value == HudValue::Key ? "Key" : "Counter"); ch |= ImGui::InputTextWithHint("##evn", e.value == HudValue::Key ? "Red key" : "Missile", &e.valueName); }
+                if (e.value == HudValue::Counter || e.value == HudValue::None) { Prop("Full at"); ch |= ImGui::DragFloat("##emx", &e.max, 1, 1, 100000, "%.0f"); }
+                if (e.value == HudValue::Health) Hint("Full at the player's most health (Game settings).");
+            }
+            Hint("Drag it in the layout below the preview. Event cards can show, hide or flash \"%s\".", e.name.c_str());
+        } else if (hudSel == 3) {
+            HudPart& p = hud.parts[hudPart];
+            ImGui::SeparatorText("3D part");
+            Prop("Name"); ch |= ImGui::InputText("##qn", &p.name);
+            Prop("Model");
+            if (ImGui::BeginCombo("##qm", p.model.empty() ? "(none)" : p.model.c_str())) { for (const std::string& n : PartModels()) if (ImGui::Selectable(n.c_str(), p.model == n)) { p.model = n; ch = true; } ImGui::EndCombo(); }
+            Prop("Shown"); ch |= ImGui::Checkbox("##qv", &p.visible);
+            ch |= DragV3("Position", p.pos, 0.005f, "%.3f");
+            { float r[3] = { p.yaw, p.pitch, p.roll }; Prop("Turn"); if (ImGui::DragFloat3("##qr", r, 0.5f, -180, 180, "%.0f deg")) { p.yaw = r[0]; p.pitch = r[1]; p.roll = r[2]; ch = true; } }
+            { float s = (float)p.scale; Prop("Size"); if (ImGui::DragFloat("##qs", &s, 0.005f, 0.005f, 20, "x %.3f")) { p.scale = std::max(0.005f, s); ch = true; } }
+            Prop("Mirrored"); ch |= ImGui::Checkbox("##qmi", &p.mirror);
+            Prop("Sway amount"); ch |= ImGui::SliderFloat("##qsw", &p.sway, 0, 2, "%.2f");
+            Hint("Camera space: x right, y up, z forward, in blocks. The camera is at 0, 0, 0.");
+        }
+        if (ch) SaveHud();
+    }
+    // the plane seen flat: drag elements to move them, their corner to size them
+    void HudLayoutCanvas(ImVec2 size) {
+        if (hud.planes.empty() || hudSel < 1 || hudSel > 2) { ImGui::Dummy(size); ImVec2 a = ImGui::GetItemRectMin(); ImGui::GetWindowDrawList()->AddText(ImVec2(a.x + 8, a.y + 8), IM_COL32(170, 170, 180, 200), "Pick a plane or an element to lay it out here."); return; }
+        HudPlane& p = hud.planes[hudPlane]; float asp = p.width / std::max(0.01f, p.height);
+        ImVec2 cs(size.x, size.x / asp); if (cs.y > size.y) cs = ImVec2(size.y * asp, size.y);
+        ImVec2 o = ImGui::GetCursorScreenPos(); o.x += (size.x - cs.x) * 0.5f;
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        dl->AddRectFilled(o, ImVec2(o.x + cs.x, o.y + cs.y), IM_COL32(18, 24, 32, 255));
+        if (hudPlane < (int)hudTargets.size() && hudTargets[hudPlane].srv) dl->AddImage((ImTextureID)(intptr_t)hudTargets[hudPlane].srv.Get(), o, ImVec2(o.x + cs.x, o.y + cs.y));
+        dl->AddRect(o, ImVec2(o.x + cs.x, o.y + cs.y), IM_COL32(120, 130, 150, 160));
+        ImGui::SetCursorScreenPos(o); ImGui::InvisibleButton("layout", cs);
+        ImGuiIO& io = ImGui::GetIO(); ImVec2 m((io.MousePos.x - o.x) / cs.x, (io.MousePos.y - o.y) / cs.y);
+        auto rectOf = [&](const HudElement& e) { return std::make_pair(ImVec2(o.x + e.x * cs.x, o.y + e.y * cs.y), ImVec2(o.x + (e.x + e.w) * cs.x, o.y + (e.y + e.h) * cs.y)); };
+        for (int k = 0; k < (int)p.elements.size(); k++) { auto r = rectOf(p.elements[k]); bool s = hudSel == 2 && hudEl == k; dl->AddRect(r.first, r.second, s ? IM_COL32(255, 210, 80, 255) : IM_COL32(255, 255, 255, 50), 0, 0, s ? 2.f : 1.f);
+            if (s) dl->AddRectFilled(ImVec2(r.second.x - 5, r.second.y - 5), ImVec2(r.second.x + 5, r.second.y + 5), IM_COL32(255, 210, 80, 255)); }
+        if (ImGui::IsItemClicked()) {
+            hudDrag = 0;
+            if (hudSel == 2) { auto r = rectOf(p.elements[hudEl]); if (std::fabs(io.MousePos.x - r.second.x) < 8 && std::fabs(io.MousePos.y - r.second.y) < 8) hudDrag = 2; }
+            if (!hudDrag) {
+                int hit = -1; for (int k = (int)p.elements.size() - 1; k >= 0; k--) { const HudElement& e = p.elements[k]; if (m.x >= e.x && m.x <= e.x + e.w && m.y >= e.y && m.y <= e.y + e.h) { hit = k; break; } }
+                if (hit >= 0) { hudSel = 2; hudEl = hit; hudDrag = 1; } else { hudSel = 1; }
+            }
+            if (hudDrag) { hudDragMouse = io.MousePos; hudDragFrom = p.elements[hudEl]; }
+        }
+        if (hudDrag && ImGui::IsItemActive() && hudSel == 2) {
+            HudElement& e = p.elements[hudEl]; float dx = (io.MousePos.x - hudDragMouse.x) / cs.x, dy = (io.MousePos.y - hudDragMouse.y) / cs.y;
+            auto snap = [&](float v) { return io.KeyShift ? std::round(v * 100) / 100 : v; };
+            if (hudDrag == 1) { e.x = snap(hudDragFrom.x + dx); e.y = snap(hudDragFrom.y + dy); }
+            else { e.w = std::max(0.005f, snap(hudDragFrom.w + dx)); e.h = std::max(0.005f, snap(hudDragFrom.h + dy)); }
+        }
+        if (hudDrag && !ImGui::IsItemActive()) { hudDrag = 0; SaveHud(); }
+        ImGui::SetCursorScreenPos(ImVec2(ImGui::GetCursorScreenPos().x, o.y + cs.y));
+    }
+    void PlayerEditor() {
+        if (!playerEdOpen) return;
+        float ui = settings.uiScale;
+        const ImGuiViewport* mv = ImGui::GetMainViewport();
+        ImGui::SetNextWindowSize(ImVec2(mv->WorkSize.x * 0.92f, mv->WorkSize.y * 0.9f), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowPos(ImVec2(mv->WorkPos.x + mv->WorkSize.x * 0.5f, mv->WorkPos.y + mv->WorkSize.y * 0.5f), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
+        if (focusPlayerEd) { ImGui::SetNextWindowFocus(); focusPlayerEd = false; }
+        hudViewWant = hudPrevWant = ImVec2(0, 0);
+        if (!ImGui::Begin("Player editor", &playerEdOpen)) { ImGui::End(); return; }
+        if (ImGui::BeginTabBar("player")) {
+            if (ImGui::BeginTabItem("HUD")) {
+                if (hud.empty()) {
+                    ImGui::Spacing(); Hint("Your HUD: flat pictures (energy, missiles, text, images...) on planes in front of the camera, which can bend like a visor, and 3D models fixed to the camera (your helmet). Everything sways behind the camera when you turn, like in Metroid Prime.");
+                    if (ImGui::Button("Start with the example visor")) { hud = defaultHud(); hudSel = 1; hudPlane = 0; SaveHud(); }
+                    ImGui::SameLine(); if (ImGui::Button("Start empty (one plane)")) { HudPlane p; p.elements.clear(); hud.planes.push_back(p); hudSel = 1; hudPlane = 0; SaveHud(); }
+                } else {
+                    HudSelValid();
+                    float listW = 230 * ui, propW = 330 * ui, sp = ImGui::GetStyle().ItemSpacing.x;
+                    ImGui::BeginChild("hudlist", ImVec2(listW, 0), ImGuiChildFlags_Borders); HudList(); ImGui::EndChild();
+                    ImGui::SameLine();
+                    float midW = std::max(200.f, ImGui::GetContentRegionAvail().x - propW - sp), midH = ImGui::GetContentRegionAvail().y;
+                    ImGui::BeginChild("hudmid", ImVec2(midW, midH), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar);
+                    {   // around the camera
+                        ImVec2 isz(midW, std::floor(midH * 0.52f)); hudViewWant = isz;
+                        ImVec2 o = ImGui::GetCursorScreenPos();
+                        if (hudView.srv) ImGui::Image((ImTextureID)(intptr_t)hudView.srv.Get(), isz); else ImGui::Dummy(isz);
+                        ImGui::SetCursorScreenPos(o); ImGui::InvisibleButton("orbit", isz, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
+                        ImGuiIO& io = ImGui::GetIO();
+                        if (ImGui::IsItemActive() && (std::fabs(io.MouseDelta.x) + std::fabs(io.MouseDelta.y) > 0)) { hudOrbYaw += io.MouseDelta.x * 0.01f; hudOrbPitch = std::clamp(hudOrbPitch + io.MouseDelta.y * 0.01f, -1.4f, 1.4f); }
+                        if (ImGui::IsItemHovered() && io.MouseWheel != 0) hudOrbDist = std::clamp(hudOrbDist * (io.MouseWheel > 0 ? 0.88f : 1.14f), 0.4f, 30.f);
+                        V3 target{ 0, 0, 0.7 };
+                        hudOrbEye = { target.x + std::sin(hudOrbYaw) * std::cos(hudOrbPitch) * hudOrbDist, target.y + std::sin(hudOrbPitch) * hudOrbDist, target.z - std::cos(hudOrbYaw) * std::cos(hudOrbPitch) * hudOrbDist };
+                        hudOrbVP = XMMatrixLookAtLH(XMVectorSet((float)hudOrbEye.x, (float)hudOrbEye.y, (float)hudOrbEye.z, 1), XMVectorSet((float)target.x, (float)target.y, (float)target.z, 1), XMVectorSet(0, 1, 0, 0))
+                                 * XMMatrixPerspectiveFovLH(XMConvertToRadians(45), isz.x / isz.y, 0.02f, 200);
+                        ImDrawList* dl = ImGui::GetWindowDrawList(); dl->PushClipRect(o, ImVec2(o.x + isz.x, o.y + isz.y), true);
+                        auto L = [&](V3 a, V3 b, ImU32 c, float t = 1.f) { bool ka, kb; V3 p = HudOrbProject(a, o, isz, ka), q = HudOrbProject(b, o, isz, kb); if (ka && kb) dl->AddLine(ImVec2((float)p.x, (float)p.y), ImVec2((float)q.x, (float)q.y), c, t); };
+                        // the camera: a little body and what it sees (out to 1.6 blocks)
+                        double th = std::tan(XMConvertToRadians(settings.fov) * 0.5), asp = (double)rw / std::max(1, rh);
+                        for (double z : { 1.0, 1.6 }) { V3 c[4] = { { -th * asp * z, th * z, z }, { th * asp * z, th * z, z }, { th * asp * z, -th * z, z }, { -th * asp * z, -th * z, z } };
+                            for (int k = 0; k < 4; k++) { L(c[k], c[(k + 1) & 3], IM_COL32(255, 255, 255, z == 1.0 ? 90 : 50)); if (z > 1.5) L({ 0, 0, 0 }, c[k], IM_COL32(255, 255, 255, 50)); } }
+                        L({ -0.08, -0.06, -0.12 }, { 0.08, -0.06, -0.12 }, IM_COL32(255, 200, 120, 200), 2); L({ 0.08, -0.06, -0.12 }, { 0.08, 0.06, -0.12 }, IM_COL32(255, 200, 120, 200), 2);
+                        L({ 0.08, 0.06, -0.12 }, { -0.08, 0.06, -0.12 }, IM_COL32(255, 200, 120, 200), 2); L({ -0.08, 0.06, -0.12 }, { -0.08, -0.06, -0.12 }, IM_COL32(255, 200, 120, 200), 2);
+                        { bool k; V3 p = HudOrbProject({ 0, 0.1, -0.12 }, o, isz, k); if (k) dl->AddText(ImVec2((float)p.x - 20, (float)p.y - 16), IM_COL32(255, 200, 120, 230), "Camera"); }
+                        // what is picked
+                        if (hudSel == 1 || hudSel == 2) {
+                            const HudPlane& p = hud.planes[hudPlane]; float u0 = 0, v0 = 0, u1 = 1, v1 = 1; ImU32 c = IM_COL32(120, 200, 255, 220);
+                            if (hudSel == 2) { const HudElement& e = p.elements[hudEl]; u0 = e.x; v0 = e.y; u1 = e.x + e.w; v1 = e.y + e.h; c = IM_COL32(255, 210, 80, 255); }
+                            for (int k = 0; k < 24; k++) { float a = k / 24.f, b = (k + 1) / 24.f;
+                                L(planePoint(p, u0 + (u1 - u0) * a, v0), planePoint(p, u0 + (u1 - u0) * b, v0), c, 2); L(planePoint(p, u0 + (u1 - u0) * a, v1), planePoint(p, u0 + (u1 - u0) * b, v1), c, 2);
+                                L(planePoint(p, u0, v0 + (v1 - v0) * a), planePoint(p, u0, v0 + (v1 - v0) * b), c, 2); L(planePoint(p, u1, v0 + (v1 - v0) * a), planePoint(p, u1, v0 + (v1 - v0) * b), c, 2); }
+                        }
+                        if (hudSel == 3) { const HudPart& p = hud.parts[hudPart]; V3 ax, ay, az; partAxes(p, ax, ay, az); double s = 1.0 / std::max(1e-6, p.scale) * 0.15;
+                            L(p.pos, p.pos + ax * s, IM_COL32(255, 90, 90, 255), 2); L(p.pos, p.pos + ay * s, IM_COL32(90, 255, 90, 255), 2); L(p.pos, p.pos + az * s, IM_COL32(90, 150, 255, 255), 2); }
+                        // click (not drag): pick the nearest plane middle or part
+                        if (ImGui::IsItemDeactivated() && std::fabs(io.MouseDragMaxDistanceSqr[0]) < 16) {
+                            float best = 40 * 40 * ui * ui; int kind = 0, idx = -1;
+                            for (int i = 0; i < (int)hud.planes.size(); i++) { bool k; V3 s = HudOrbProject(planePoint(hud.planes[i], 0.5f, 0.5f), o, isz, k); float d = (float)((s.x - io.MousePos.x) * (s.x - io.MousePos.x) + (s.y - io.MousePos.y) * (s.y - io.MousePos.y)); if (k && d < best) { best = d; kind = 1; idx = i; } }
+                            for (int i = 0; i < (int)hud.parts.size(); i++) { bool k; V3 s = HudOrbProject(hud.parts[i].pos, o, isz, k); float d = (float)((s.x - io.MousePos.x) * (s.x - io.MousePos.x) + (s.y - io.MousePos.y) * (s.y - io.MousePos.y)); if (k && d < best) { best = d; kind = 3; idx = i; } }
+                            if (kind == 1) { hudSel = 1; hudPlane = idx; } else if (kind == 3) { hudSel = 3; hudPart = idx; }
+                        }
+                        dl->AddText(ImVec2(o.x + 8, o.y + 6), IM_COL32(200, 200, 210, 200), "Around the camera: drag to turn, wheel to zoom, click a plane or part to pick it");
+                        dl->PopClipRect();
+                    }
+                    {   // through the camera, and the plane laid out flat
+                        float rowH = ImGui::GetContentRegionAvail().y - ImGui::GetTextLineHeightWithSpacing(), half = (midW - sp) * 0.5f;
+                        float asp = (float)rw / std::max(1, rh); ImVec2 psz(half, half / asp); if (psz.y > rowH) psz = ImVec2(rowH * asp, rowH);
+                        ImGui::TextDisabled("Camera preview (the world as the editor camera sees it)"); ImGui::SameLine(half + sp); ImGui::TextDisabled("Layout (Shift: snap)");
+                        ImVec2 o = ImGui::GetCursorScreenPos(); hudPrevWant = ImVec2(std::floor(psz.x), std::floor(psz.y));
+                        if (hudPrev.srv) ImGui::Image((ImTextureID)(intptr_t)hudPrev.srv.Get(), psz); else ImGui::Dummy(psz);
+                        ImGui::SetCursorScreenPos(ImVec2(o.x + half + sp, o.y));
+                        HudLayoutCanvas(ImVec2(half, rowH));
+                    }
+                    ImGui::EndChild();
+                    ImGui::SameLine();
+                    ImGui::BeginChild("hudprops", ImVec2(0, 0), ImGuiChildFlags_Borders); HudProps(); ImGui::EndChild();
+                }
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Body and controls")) { ImGui::Spacing(); Hint("Coming later: the player's model, size, moves and controls (Samus: morph ball, bombs, beams...)."); ImGui::EndTabItem(); }
+            ImGui::EndTabBar();
+        }
+        ImGui::End();
+    }
     // ---- Events: the game's logic as cards, one card = "when ... only if ... do ..."
     static bool KindFits(const WorldObject& o, const std::string& k) {
         if (k == "zone") return o.kind == ObjKind::Trigger;
@@ -3442,6 +3986,7 @@ struct App {
         }
         if (what == 'f') for (const EventCard& c : events) { for (auto& i : c.ifs) if (i.kind == If::FlagOn || i.kind == If::FlagOff) add(i.name); for (auto& d : c.dos) if (d.kind == Do::FlagOn || d.kind == Do::FlagOff) add(d.text); }
         if (what == 'k') for (const EventCard& c : events) for (auto& d : c.dos) if (d.kind == Do::GiveKey) add(d.text);
+        if (what == 'h') for (const HudPlane& p : hud.planes) for (const HudElement& e : p.elements) add(e.name);
         if (what == 'c') for (const EventCard& c : events) for (auto& d : c.dos) if (d.kind == Do::AddCount) add(d.text);
         std::sort(v.begin(), v.end()); return v;
     }
@@ -3475,8 +4020,8 @@ struct App {
     }
     static char NameKind(When w) { return w == When::Pickup ? 'p' : 'c'; }
     static char NameKind(If c) { return c == If::HasKey || c == If::NoKey ? 'k' : c == If::CountAtLeast ? 'c' : 'f'; }
-    static char NameKind(Do d) { return d == Do::GiveKey || d == Do::TakeKey ? 'k' : d == Do::AddCount ? 'c' : 'f'; }
-    static const char* NameHint(char k) { return k == 'k' ? "Red key" : k == 'c' ? "Gem" : k == 'p' ? "Gem (empty: anything)" : "door-done"; }
+    static char NameKind(Do d) { return d == Do::GiveKey || d == Do::TakeKey ? 'k' : d == Do::AddCount ? 'c' : d == Do::HudShow || d == Do::HudHide || d == Do::HudFlash ? 'h' : 'f'; }
+    static const char* NameHint(char k) { return k == 'k' ? "Red key" : k == 'c' ? "Gem" : k == 'p' ? "Gem (empty: anything)" : k == 'h' ? "Energy" : "door-done"; }
     template <class E> bool KindCombo(const char* id, E& k) {
         int v = (int)k; bool ch = false;
         if (ImGui::BeginCombo(id, needOf(k).label)) {
@@ -3496,6 +4041,7 @@ struct App {
         case 3: c.name = "Collect 3 gems"; c.when = { When::CountReaches, "Gem", 3 }; c.dos = { { Do::Message, "", "All gems found!", 3 }, { Do::OpenDoor, door } }; break;
         case 4: c.name = "Lights on"; c.when = { When::EnterZone, zone }; c.dos = { { Do::LightOn, light }, { Do::Particles, light, "Sparks" } }; break;
         case 5: c.name = "Call the lift"; c.when = { When::Shot, "" }; c.dos = { { Do::MovePlatform, plat } }; break;
+        case 7: c.name = "Low energy warning"; c.when = { When::Every, "", 1 }; c.ifs = { { If::HealthBelow, "", 30 } }; c.dos = { { Do::HudFlash, "", "Energy" } }; break;
         case 6: c.name = "Hidden at the start"; c.when = { When::GameStarts }; c.dos = { { Do::Hide, FirstName("any") } }; break;
         }
         return c;
@@ -3611,8 +4157,8 @@ struct App {
         if (ImGui::Button("+ New card")) { EventCard c; c.when.target = FirstName("zone"); c.name = "Event " + std::to_string(events.size() + 1); events.push_back(c); evSel = (int)events.size() - 1; ch = true; }
         ImGui::SameLine(); ImGui::SetNextItemWidth(200 * ui);
         if (ImGui::BeginCombo("##tpl", "+ From an example...")) {
-            const char* tn[] = { "Message when you walk in", "A key opens a door", "Trap: the door shuts for 5 s", "Collect 3 gems, a door opens", "Lights on when you walk in", "Shoot it: the lift comes", "Hidden until something shows it" };
-            for (int t = 0; t < 7; t++) if (ImGui::Selectable(tn[t])) { events.push_back(Template(t)); evSel = (int)events.size() - 1; ch = true; }
+            const char* tn[] = { "Message when you walk in", "A key opens a door", "Trap: the door shuts for 5 s", "Collect 3 gems, a door opens", "Lights on when you walk in", "Shoot it: the lift comes", "Hidden until something shows it", "Low energy: flash the HUD" };
+            for (int t = 0; t < 8; t++) if (ImGui::Selectable(tn[t])) { events.push_back(Template(t)); evSel = (int)events.size() - 1; ch = true; }
             ImGui::EndCombo();
         }
         if (playMode && !evRun.flags.empty()) { std::string f; for (auto& x : evRun.flags) f += (f.empty() ? "" : ", ") + x; ImGui::SameLine(); ImGui::TextColored(ImVec4(0.6f, 0.9f, 1, 1), "  Flags on: %s", f.c_str()); }
@@ -4170,6 +4716,24 @@ struct App {
                 }
                 sel = Sel::World;
             }
+            {   // the Player editor (HUD): the example visor with two struts (one a mirrored copy), then in Play mode, then while turning (the sway)
+                hud = defaultHud(); playerEdOpen = true; focusPlayerEd = true; hudSel = 1; hudPlane = 0; sel = Sel::World;
+                poseAt(demoShots()[1]);
+                frames(8, "player_editor_hud");
+                hudSel = 3; hudPart = 1; hudOrbYaw = 3.6f; hudOrbPitch = 0.25f; hudOrbDist = 2.6f;
+                frames(3, "player_editor_mirrored_strut");
+                hudSel = 2; hudPlane = 0; hudEl = 2; hudWiggle = 0.25;
+                frames(3, "player_editor_element_and_wiggle");
+                playerEdOpen = false;
+                StartPlay(false); poseAt(demoShots()[1]);
+                inv.counts["Missile"] = 25; play.health = game.player.maxHealth * 0.76f; toastT = 0;
+                hudSway.reset(); prevPlayYaw = player.yaw; prevPlayPitch = player.pitch;
+                frames(4, "hud_play");
+                for (int k = 0; k < 6; k++) { player.yaw += 0.06; FrameBody(1.0 / 60); swap->Present(0, 0); retired.clear(); }
+                Log("HUD sway while turning: " + std::to_string(hudSway.yaw) + " degrees");
+                frames(1, "hud_play_turning_sway");
+                StopPlay(); hud = HudLayout{}; SaveHud(); hudSway.reset();
+            }
             {   // tools: sculpt a little landscape with the terrain brush, then show it with the brush options open
                 auto ground = [&](int x, int z) { for (int y = 40; y > -40; y--) { BlockId v = world->get(x, y, z); if (v != AIR && !reg.get(v).liquid) return y; } return 0; };
                 int gy = ground(-34, 26); BrushStroke st;
@@ -4235,6 +4799,7 @@ struct App {
             if (shapeMenu) ShapeMenu();
             if (brushMenu) BrushMenu();
             ModelViewer();
+            PlayerEditor();
         } else {
             DrawHud(ImGui::GetForegroundDrawList());
             if (showF3) DrawF3();
@@ -4242,11 +4807,13 @@ struct App {
         }
         if (showSettings) SettingsWindow();
         Popups();
+        BuildHudLists();
         ImGui::Render();
+        RenderHudPlanes();
 
         const float bg[4] = { 0.10f, 0.11f, 0.13f, 1 };
         if (screen == Screen::Game && rw > 0) RenderWorld(ev ? sceneRTV.Get() : backRTV.Get());
-        if (ev) RenderViewer();
+        if (ev) { RenderViewer(); RenderHudViews(); }
         ctx->OMSetRenderTargets(1, backRTV.GetAddressOf(), nullptr);
         if (screen != Screen::Game || ev) ctx->ClearRenderTargetView(backRTV.Get(), bg);
         D3D11_VIEWPORT v{ 0, 0, (float)cw, (float)ch, 0, 1 }; ctx->RSSetViewports(1, &v);

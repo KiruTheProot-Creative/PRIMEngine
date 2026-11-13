@@ -49,6 +49,7 @@ const Need& needOf(Do d) {
         { "turn a flag on", false, true }, { "turn a flag off", false, true },
         { "wait", false, false, false, true, "", "seconds" },
         { "win: show", false, false, true },
+        { "show HUD element", false, true }, { "hide HUD element", false, true }, { "flash HUD element", false, true },
     };
     return n[std::clamp((int)d, 0, (int)Do::COUNT - 1)];
 }
@@ -113,6 +114,9 @@ std::string describe(const EventCard& c) {
         case Do::FlagOff: a = "turn " + n + " off"; break;
         case Do::Wait: a = "wait " + num(d.number) + " s"; break;
         case Do::Win: a = "win"; break;
+        case Do::HudShow: a = "show " + n + " on the HUD"; break;
+        case Do::HudHide: a = "hide " + n + " on the HUD"; break;
+        case Do::HudFlash: a = "flash " + n + " on the HUD"; break;
         default: break;
         }
         s += (k == 0 ? " " : ", ") + a;
