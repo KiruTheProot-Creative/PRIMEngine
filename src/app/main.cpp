@@ -240,6 +240,10 @@ struct App {
         b = Compile(src, "PS_Particle", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psParticle));
         b = Compile(src, "VS_Field", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsField));
         b = Compile(src, "PS_Field", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psField));
+        b = Compile(src, "VS_FieldMesh", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsFieldMesh));
+        { D3D11_INPUT_ELEMENT_DESC fe[] = { { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 }, { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0 } };
+          HR(dev->CreateInputLayout(fe, 2, b->GetBufferPointer(), b->GetBufferSize(), &layoutFieldMesh)); }
+        b = Compile(src, "PS_FieldMesh", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psFieldMesh));
         b = Compile(src, "VS_Preview", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsPreview));
         b = Compile(src, "PS_Preview", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psPreview));
         InitHud(src);
@@ -1430,6 +1434,40 @@ struct App {
     std::map<uint32_t, ModelGpu> doorGpu;             // doors in the middle of an animation: their posed meshes
     std::vector<Shot> shots; bool shootPrev = true;
     ComPtr<ID3D11VertexShader> vsField; ComPtr<ID3D11PixelShader> psField;
+    ComPtr<ID3D11VertexShader> vsFieldMesh; ComPtr<ID3D11PixelShader> psFieldMesh; ComPtr<ID3D11InputLayout> layoutFieldMesh; ComPtr<ID3D11Buffer> vbFieldMesh; size_t vbFieldMeshCap = 0;
+    struct FMVtx { float p[3], n[3]; };
+    // the field as a shell just outside the door's chosen moving parts (closed: as imported)
+    bool DrawFieldOnParts(const WorldObject& o, const ModelFrame& f, const DoorRuntime& r) {
+        auto mi = meshModels.find(o.model); if (mi == meshModels.end()) return false;
+        const MeshModel& mm = mi->second; if (mm.parts.empty() || mm.vpart.size() != mm.raw.size()) return false;
+        std::vector<char> on(mm.parts.size()); for (size_t i = 0; i < on.size(); i++) on[i] = fieldPartOn(o.door, mm.parts[i].name);
+        std::vector<FMVtx> v; double gap = std::max(0.005f, o.door.fieldGap);
+        for (size_t k = 0; k + 2 < mm.idx.size(); k += 3) {
+            uint16_t p = mm.vpart[mm.idx[k]]; if (p >= on.size() || !on[p]) continue;
+            for (int c = 0; c < 3; c++) {
+                const MeshVert& mv = mm.raw[mm.idx[k + c]]; V3 L = mm.blockPos(mv), n{ mv.n[0], mv.n[1], mv.n[2] };
+                V3 w = objectPoint(o, f, L), wn = objectPoint(o, f, L + n * 0.01) - w; double l = std::sqrt(wn.x * wn.x + wn.y * wn.y + wn.z * wn.z); if (l > 1e-12) wn = wn * (1 / l);
+                V3 q = w + wn * gap - camPos; v.push_back({ { (float)q.x, (float)q.y, (float)q.z }, { (float)wn.x, (float)wn.y, (float)wn.z } });
+            }
+        }
+        if (v.empty()) return false;
+        if (v.size() > vbFieldMeshCap) {
+            vbFieldMeshCap = std::max<size_t>(v.size() * 2, 4096); vbFieldMesh.Reset();
+            D3D11_BUFFER_DESC d{}; d.ByteWidth = (UINT)(vbFieldMeshCap * sizeof(FMVtx)); d.Usage = D3D11_USAGE_DYNAMIC; d.BindFlags = D3D11_BIND_VERTEX_BUFFER; d.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE; HR(dev->CreateBuffer(&d, nullptr, &vbFieldMesh));
+        }
+        D3D11_MAPPED_SUBRESOURCE ms; if (FAILED(ctx->Map(vbFieldMesh.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) return false;
+        std::memcpy(ms.pData, v.data(), v.size() * sizeof(FMVtx)); ctx->Unmap(vbFieldMesh.Get(), 0);
+        V3 org, ac, up; fieldQuad(o, f, OpeningOf(o.model), org, ac, up, 0);
+        V3 hit = org + ac * r.hitU + up * r.hitV - camPos, col = Linear(o.door.color);
+        double size = std::max(std::sqrt(ac.x * ac.x + ac.y * ac.y + ac.z * ac.z), std::sqrt(up.x * up.x + up.y * up.y + up.z * up.z));
+        ChunkCB cc{ { (float)hit.x, (float)hit.y, (float)hit.z, (float)size }, { 0, 0, 0, 0 }, { 0, 0, 0, 0 }, { (float)col.x, (float)col.y, (float)col.z, r.field } };
+        ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);
+        ctx->IASetInputLayout(layoutFieldMesh.Get()); ctx->VSSetShader(vsFieldMesh.Get(), nullptr, 0); ctx->PSSetShader(psFieldMesh.Get(), nullptr, 0);
+        UINT stride = sizeof(FMVtx), off = 0; ctx->IASetVertexBuffers(0, 1, vbFieldMesh.GetAddressOf(), &stride, &off);
+        ctx->Draw((UINT)v.size(), 0);
+        ctx->IASetInputLayout(nullptr); ctx->VSSetShader(vsField.Get(), nullptr, 0); ctx->PSSetShader(psField.Get(), nullptr, 0);
+        return true;
+    }
     static V3 Linear(uint32_t rgb) { auto c = [](uint32_t v) { return std::pow(((v) & 255) / 255.0, 2.2); }; return { c(rgb >> 16), c(rgb >> 8), c(rgb) }; }
     Box3 OpeningOf(const std::string& model) {   // where the forcefield goes (model space)
         auto it = meshModels.find(model); if (it != meshModels.end()) return doorOpening(it->second);
@@ -1437,9 +1475,15 @@ struct App {
     }
     int ClipOf(const std::string& model, int which) {   // 0 open, 1 close -> the model's animation (or -1)
         auto it = meshModels.find(model); if (it == meshModels.end()) return -1;
-        return it->second.findClip(which == 0 ? "open" : "close");
+        int c = it->second.findClip(which == 0 ? "open" : "close");
+        if (c < 0 && which == 0 && !it->second.clips.empty()) c = 0;   // no "open": the first animation is the opening
+        return c;
     }
-    float ClipLen(const std::string& model, int which) { int c = ClipOf(model, which); return c < 0 ? 0.f : meshModels[model].clips[c].length; }
+    bool CloseIsReversed(const std::string& model) { return ClipOf(model, 1) < 0 && ClipOf(model, 0) >= 0; }   // no "close" animation: play "open" backwards
+    float ClipLen(const std::string& model, int which) {
+        int c = ClipOf(model, which); if (c < 0 && which == 1 && CloseIsReversed(model)) c = ClipOf(model, 0);
+        return c < 0 ? 0.f : meshModels[model].clips[c].length;
+    }
     DoorRuntime DoorNow(const WorldObject& o) const { auto it = doorRt.find(o.id); return playMode && it != doorRt.end() ? it->second : DoorRuntime{}; }
     void MakeDoor(WorldObject& o) {
         o.kind = ObjKind::Door; if (o.folder == "Props") o.folder = "Doors";
@@ -1462,8 +1506,9 @@ struct App {
             // the halves where the animation has them
             auto mi = meshModels.find(o.model);
             if (mi != meshModels.end() && r.clip >= 0) {
-                int clip = ClipOf(o.model, r.clip);
-                ModelGpu& g = doorGpu[o.id]; UploadMeshVerts(g, mi->second, mi->second.posed(clip, r.clipTime)); g.mesh = true; g.tex = GpuModel(o.model).tex;
+                int clip = ClipOf(o.model, r.clip); float t = r.clipTime;
+                if (r.clip == 1 && clip < 0 && CloseIsReversed(o.model)) { clip = ClipOf(o.model, 0); t = std::max(0.f, ClipLen(o.model, 0) - r.clipTime); }
+                ModelGpu& g = doorGpu[o.id]; UploadMeshVerts(g, mi->second, mi->second.posed(clip, t)); g.mesh = true; g.tex = GpuModel(o.model).tex;
             } else doorGpu.erase(o.id);
         }
         if (changed) RebuildSolids();
@@ -1522,9 +1567,13 @@ struct App {
             if (o.kind != ObjKind::Door || !o.door.field || Gone(o)) continue;
             FrameRef f = ModelOf(o); if (!f) continue;
             DoorRuntime r = DoorNow(o); if (r.field <= 0.001f) continue;
-            V3 org, ac, up; fieldQuad(o, *f, OpeningOf(o.model), org, ac, up); V3 rel = org - camPos, col = Linear(o.door.color);
-            ChunkCB cc{ { (float)rel.x, (float)rel.y, (float)rel.z, 0 }, { (float)ac.x, (float)ac.y, (float)ac.z, r.hitU }, { (float)up.x, (float)up.y, (float)up.z, r.hitV }, { (float)col.x, (float)col.y, (float)col.z, r.field } };
-            ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0); ctx->Draw(6, 0);
+            if (o.door.fieldOnParts && DrawFieldOnParts(o, *f, r)) continue;
+            for (int side = 0; side < 2; side++) {   // a sheet just in front of the door, and / or just behind it
+                if ((o.door.fieldSide == 1 && side == 1) || (o.door.fieldSide == 2 && side == 0)) continue;
+                V3 org, ac, up; fieldQuad(o, *f, OpeningOf(o.model), org, ac, up, side); V3 rel = org - camPos, col = Linear(o.door.color);
+                ChunkCB cc{ { (float)rel.x, (float)rel.y, (float)rel.z, 0 }, { (float)ac.x, (float)ac.y, (float)ac.z, r.hitU }, { (float)up.x, (float)up.y, (float)up.z, r.hitV }, { (float)col.x, (float)col.y, (float)col.z, r.field } };
+                ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0); ctx->Draw(6, 0);
+            }
         }
         for (const Shot& s : shots) {   // a short bright streak, facing the camera
             V3 tail = s.pos - s.dir * std::min(1.4, 45.0 * s.age), side{ s.dir.y * 0 - s.dir.z * 0, 0, 0 };
@@ -1552,6 +1601,26 @@ struct App {
             for (auto& p : presets) { ImGui::PushID(p.first); ImVec4 col(((p.second >> 16) & 255) / 255.f, ((p.second >> 8) & 255) / 255.f, (p.second & 255) / 255.f, 1);
                 Flow(ImGui::GetFrameHeight()); if (ImGui::ColorButton(p.first, col)) o.door.color = p.second; ImGui::PopID(); }
             Hint("Later, the colour says which weapon opens it (like beam, missile ...). For now any shot does.");
+            { int s = o.door.fieldSide; const char* sn[] = { "Both sides", "Front only", "Back only" }; Prop("Field on"); if (ImGui::Combo("##fside", &s, sn, 3)) { o.door.fieldSide = s; ch_ = true; } }
+            Prop("In front of the door"); if (ImGui::SliderFloat("##fgap", &o.door.fieldGap, 0, 0.5f, "%.2f blocks")) ch_ = true;
+            auto mi = meshModels.find(o.model);
+            if (mi != meshModels.end() && !mi->second.parts.empty()) {
+                Prop("On the door's parts"); if (ImGui::Checkbox("##fparts", &o.door.fieldOnParts)) ch_ = true;
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Off: a flat sheet across the opening.\nOn: the field shimmers on the door's moving parts themselves.");
+                if (o.door.fieldOnParts) {
+                    for (const MeshPart& p : mi->second.parts) {
+                        std::string s = "," + o.door.fieldParts + ","; bool in = o.door.fieldParts.empty() || s.find("," + p.name + ",") != std::string::npos;
+                        Flow(ImGui::CalcTextSize(p.name.c_str()).x + ImGui::GetFrameHeight() * 2);
+                        if (ImGui::Checkbox(p.name.c_str(), &in)) {
+                            std::vector<std::string> names; for (const MeshPart& q : mi->second.parts) { bool qi = q.name == p.name ? in : fieldPartOn(o.door, q.name); if (qi) names.push_back(q.name); }
+                            o.door.fieldParts.clear(); if (names.size() < mi->second.parts.size()) for (auto& n : names) o.door.fieldParts += (o.door.fieldParts.empty() ? "" : ",") + n;
+                            if (names.empty()) o.door.fieldParts = "-none-";
+                            ch_ = true;
+                        }
+                    }
+                    Hint("Every part ticked: the whole door glows. The moving parts come from the model's animation.");
+                }
+            }
         }
         Prop("Stays open (s)"); ImGui::SliderFloat("##stay", &o.door.stayOpen, 0.5f, 15, "%.1f s");
         Prop("Needs key"); ImGui::InputTextWithHint("##dkey", "no key needed", &o.door.key);
@@ -3610,7 +3679,7 @@ struct App {
         ID3D11ShaderResourceView* none[10] = {}; ctx->PSSetShaderResources(0, 10, none);
         ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());
     }
-    XMMATRIX HudProj(float aspect) const { return XMMatrixPerspectiveFovLH(XMConvertToRadians(settings.fov), aspect, 0.01f, 60.f); }
+    XMMATRIX HudProj(float aspect) const { return XMMatrixPerspectiveFovLH(XMConvertToRadians(hud.fov), aspect, 0.01f, 60.f); }   // its own view angle: the HUD keeps its place whatever the player's field of view
     // Play mode: the HUD over the finished picture
     void DrawHudInGame(ID3D11RenderTargetView* out) {
         if (hud.empty() || !hudListsReady) return;
@@ -3708,7 +3777,7 @@ struct App {
     }
     void HudList() {
         float ui = settings.uiScale;
-        if (ImGui::Selectable("Sway", hudSel == 0)) hudSel = 0;
+        if (ImGui::Selectable("Sway and view", hudSel == 0)) hudSel = 0;
         ImGui::Spacing(); ImGui::TextDisabled("PLANES (2D)");
         for (int i = 0; i < (int)hud.planes.size(); i++) {
             ImGui::PushID(i); HudPlane& p = hud.planes[i];
@@ -3770,9 +3839,15 @@ struct App {
             Prop("Smoothness"); ch |= ImGui::SliderFloat("##swm", &s.smoothness, 0, 1, "%.2f");
             Prop("Walk bob"); ch |= ImGui::SliderFloat("##swb", &s.bob, 0, 2, "%.2f");
             Prop("Lean when turning"); ch |= ImGui::SliderFloat("##swt", &s.tilt, 0, 2, "%.2f");
+            Prop("Landing shake"); ch |= ImGui::SliderFloat("##swl", &s.land, 0, 3, "%.2f");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("A dip and a shake when you land; the faster you fall, the bigger.");
             Hint("When you turn, the HUD stays behind a little and springs back. Strength: how far. Smoothness: 0 snaps back, 1 floats back slowly. Each plane and part has its own sway amount too (helmet parts usually less than the visor).");
             if (ImGui::Button("Wiggle the preview")) hudWiggle = 0;
+            ImGui::SameLine(); if (ImGui::Button("Land!")) previewSway.update(hud.sway, 0, 0, 0, 0, true, 24);
             ImGui::SameLine(); ImGui::TextDisabled("or fly and look around");
+            ImGui::SeparatorText("View");
+            Prop("HUD view angle"); ch |= ImGui::SliderFloat("##hfov", &hud.fov, 40, 120, "%.0f deg");
+            Hint("The HUD is laid out for this view angle and always stays where you put it on the screen, whatever field of view the player picks in the settings.");
         } else if (hudSel == 1) {
             HudPlane& p = hud.planes[hudPlane];
             ImGui::SeparatorText("Plane");
@@ -3782,7 +3857,7 @@ struct App {
             Hint("x right, y up, z how far in front (blocks). Put it nearer or farther than the 3D parts to go in front of or behind them.");
             { float r[3] = { p.yaw, p.pitch, p.roll }; Prop("Turn"); if (ImGui::DragFloat3("##pr", r, 0.5f, -180, 180, "%.0f deg")) { p.yaw = r[0]; p.pitch = r[1]; p.roll = r[2]; ch = true; } }
             { float s[2] = { p.width, p.height }; Prop("Size"); if (ImGui::DragFloat2("##ps", s, 0.01f, 0.05f, 20, "%.2f")) { p.width = std::max(0.05f, s[0]); p.height = std::max(0.05f, s[1]); ch = true; } }
-            if (ImGui::SmallButton("Fill the screen")) { double hh = 2 * p.pos.z * std::tan(XMConvertToRadians(settings.fov) * 0.5); p.height = (float)(hh * 0.94); p.width = (float)(hh * rw / std::max(1, rh) * 0.94); ch = true; }
+            if (ImGui::SmallButton("Fill the screen")) { double hh = 2 * p.pos.z * std::tan(XMConvertToRadians(hud.fov) * 0.5); p.height = (float)(hh * 0.94); p.width = (float)(hh * rw / std::max(1, rh) * 0.94); ch = true; }
             Prop("Bend side to side"); ch |= ImGui::SliderFloat("##pbx", &p.bendX, 0, 1, "%.2f");
             Prop("Bend top to bottom"); ch |= ImGui::SliderFloat("##pby", &p.bendY, 0, 1, "%.2f");
             Prop("Sway amount"); ch |= ImGui::SliderFloat("##psw", &p.sway, 0, 2, "%.2f");
@@ -3919,7 +3994,7 @@ struct App {
                         ImDrawList* dl = ImGui::GetWindowDrawList(); dl->PushClipRect(o, ImVec2(o.x + isz.x, o.y + isz.y), true);
                         auto L = [&](V3 a, V3 b, ImU32 c, float t = 1.f) { bool ka, kb; V3 p = HudOrbProject(a, o, isz, ka), q = HudOrbProject(b, o, isz, kb); if (ka && kb) dl->AddLine(ImVec2((float)p.x, (float)p.y), ImVec2((float)q.x, (float)q.y), c, t); };
                         // the camera: a little body and what it sees (out to 1.6 blocks)
-                        double th = std::tan(XMConvertToRadians(settings.fov) * 0.5), asp = (double)rw / std::max(1, rh);
+                        double th = std::tan(XMConvertToRadians(hud.fov) * 0.5), asp = (double)rw / std::max(1, rh);
                         for (double z : { 1.0, 1.6 }) { V3 c[4] = { { -th * asp * z, th * z, z }, { th * asp * z, th * z, z }, { th * asp * z, -th * z, z }, { -th * asp * z, -th * z, z } };
                             for (int k = 0; k < 4; k++) { L(c[k], c[(k + 1) & 3], IM_COL32(255, 255, 255, z == 1.0 ? 90 : 50)); if (z > 1.5) L({ 0, 0, 0 }, c[k], IM_COL32(255, 255, 255, 50)); } }
                         L({ -0.08, -0.06, -0.12 }, { 0.08, -0.06, -0.12 }, IM_COL32(255, 200, 120, 200), 2); L({ 0.08, -0.06, -0.12 }, { 0.08, 0.06, -0.12 }, IM_COL32(255, 200, 120, 200), 2);
@@ -4619,6 +4694,25 @@ struct App {
                     { Shot sh; sh.pos = player.eye() + V3{ 0.4, -0.2, 2.0 }; sh.dir = { 0.07, -0.03, 1 }; this->shots.push_back(sh); }
                     play.health = game.player.maxHealth; toastT = 0;
                     frames(3, "doors_play");
+                    StopPlay();
+                }
+                // your second door (parts inside moving parts): in the viewer mid-way, then in the world with the field on its parts and as sheets in front
+                if (ImportModelFile(ExeDir() + "assets/examples/DOOR_02.fbx")) {
+                    viewerModel = "DOOR_02"; viewerOpen = true; viewerFit = true; viewerYaw = -0.6f; viewerPitch = 0.25f; viewerClip = meshModels["DOOR_02"].findClip("open"); viewerLoop = false;
+                    viewerTime = 0.62f; frames(1, "door2_viewer_turning");
+                    viewerTime = 0.9f; frames(1, "door2_viewer_sliding_apart");
+                    viewerOpen = false; viewerClip = -1;
+                    auto door2 = [&](double x, bool parts, uint32_t col) { WorldObject o; o.id = nextObjId++; o.model = "DOOR_02"; o.name = UniqueObjectName("Door"); MakeDoor(o);
+                        o.pos = { x, (double)gy, 47 }; o.door.w = 2; o.door.h = 3; o.door.color = col; o.door.fieldOnParts = parts; o.door.stayOpen = 6; objects.push_back(o); return o.id; };
+                    uint32_t p1 = door2(23, true, 0xFF8A3A), p2 = door2(28, false, 0x3AA0FF);
+                    RebuildSolids();
+                    StartPlay(false);
+                    poseAt(DemoShot{ "d", { 25.5, gy + 2.0, 40.5 }, { 25.5, gy + 1.4, 47 }, 15.5f });
+                    play.health = game.player.maxHealth; toastT = 0;
+                    frames(3, "door2_fields_parts_and_sheets");
+                    doorRt[p1].shoot(0.5f, 0.5f); doorRt[p2].shoot(0.5f, 0.5f);
+                    for (int k = 0; k < 40; k++) { FrameBody(1.0 / 60); swap->Present(0, 0); retired.clear(); }
+                    frames(1, "door2_opening_in_play");
                     StopPlay();
                 }
                 {   // platforms: an elevator built from blocks, and three floating platforms going round a loop

@@ -59,12 +59,14 @@ struct HudSwaySettings {
     float smoothness = 0.5f;                            // 0 snappy .. 1 slow and floaty
     float bob = 0.5f;                                   // up and down while walking, a dip when landing
     float tilt = 0.5f;                                  // leans when turning
+    float land = 1;                                     // landing: dips and shakes, more the faster you fall
 };
 
 struct HudLayout {
     std::vector<HudPlane> planes;
     std::vector<HudPart> parts;
     HudSwaySettings sway;
+    float fov = 70;                                     // the view angle the HUD is laid out for: it keeps its place on screen whatever the player's field of view
     bool empty() const { return planes.empty() && parts.empty(); }
 };
 HudLayout defaultHud();                                 // a starter visor: energy, missiles, a radar ring, two struts
@@ -94,6 +96,7 @@ struct HudSway {
     float yaw = 0, pitch = 0, roll = 0;                 // degrees the HUD is turned away from the camera right now
     float vy = 0, vp = 0, vr = 0;                       // how fast those change
     V3 offset{ 0, 0, 0 }; float dropVel = 0, drop = 0;  // walk bob / landing dip (blocks)
+    float shake = 0, shakeT = 0;                        // landing shake (degrees), and its clock
     double walk = 0;
     // turnYaw / turnPitch: degrees the camera turned this step; speed: walking speed (blocks/s); landed: hit the ground this step at fallSpeed
     void update(const HudSwaySettings& s, double dt, float turnYaw, float turnPitch, float speed, bool landed, float fallSpeed);

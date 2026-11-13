@@ -166,12 +166,21 @@ void DoorRuntime::tick(float dt, bool near, float openLen, float closeLen, float
     case Restoring: field = std::min(1.f, t / restoreTime); clip = -1; if (t >= restoreTime) { state = Closed; t = 0; field = 1; } break;
     }
 }
-Box3 fieldBox(const WorldObject& o, const ModelFrame& m, const Box3& op) {
-    double zm = (op.lo.z + op.hi.z) * 0.5, k = objectStretch(o, m).z, half = 0.08 / std::max(k, 1e-6);   // 0.16 blocks thick, whatever the stretch
+static double fieldZ(const WorldObject& o, const ModelFrame& m, const Box3& op, int side) {   // just outside the door, on its front or back
+    double k = std::max(objectStretch(o, m).z, 1e-6), gap = std::max(0.f, o.door.fieldGap) / k;
+    return side == 0 ? op.lo.z - gap : op.hi.z + gap;
+}
+Box3 fieldBox(const WorldObject& o, const ModelFrame& m, const Box3& op) {   // from the front field to the back one (at least 0.16 blocks thick)
+    double k = std::max(objectStretch(o, m).z, 1e-6), z0 = fieldZ(o, m, op, 0), z1 = fieldZ(o, m, op, 1), zm = (z0 + z1) * 0.5, half = std::max((z1 - z0) * 0.5, 0.08 / k);
     return turnedBox(o, m, { { op.lo.x, op.lo.y, zm - half }, { op.hi.x, op.hi.y, zm + half } });
 }
-void fieldQuad(const WorldObject& o, const ModelFrame& m, const Box3& op, V3& origin, V3& across, V3& up) {
-    double zm = (op.lo.z + op.hi.z) * 0.5;
+Box3 turnedBoxPublic(const WorldObject& o, const ModelFrame& m, const Box3& b) { return turnedBox(o, m, b); }
+bool fieldPartOn(const DoorSettings& d, const std::string& n) {
+    if (d.fieldParts.empty()) return true;
+    std::string s = "," + d.fieldParts + ","; return s.find("," + n + ",") != std::string::npos;
+}
+void fieldQuad(const WorldObject& o, const ModelFrame& m, const Box3& op, V3& origin, V3& across, V3& up, int side) {
+    double zm = fieldZ(o, m, op, side);
     origin = objectPoint(o, m, { op.lo.x, op.lo.y, zm });
     across = objectPoint(o, m, { op.hi.x, op.lo.y, zm }) - origin;
     up = objectPoint(o, m, { op.lo.x, op.hi.y, zm }) - origin;
@@ -201,6 +210,7 @@ bool saveObjects(const std::string& path, const std::vector<WorldObject>& objs) 
           << " " << P.speed << " " << P.speedVar << " " << P.gravity << " " << P.drag << " " << P.size0 << " " << P.size1 << " " << P.color0 << " " << P.color1 << " " << P.alpha0 << " " << P.alpha1
           << " " << P.glow << " " << (P.additive ? 1 : 0) << " " << (int)P.shape << " " << (int)P.area << " " << P.areaSize.x << " " << P.areaSize.y << " " << P.areaSize.z << " " << P.spin
           << " " << (P.collide ? 1 : 0) << " " << (P.bounce ? 1 : 0) << " " << (P.light ? 1 : 0) << " " << P.lightRange << " " << P.lightIntensity << " " << P.maxParticles;
+        f << " " << o.door.fieldSide << " " << o.door.fieldGap << " " << (o.door.fieldOnParts ? 1 : 0) << " " << esc(o.door.fieldParts);
         f << "\n";
     }
     return (bool)f;
@@ -234,6 +244,8 @@ bool loadObjects(const std::string& path, std::vector<WorldObject>& objs) {
             P.additive = add != 0; P.shape = (PShape)std::clamp(sh, 0, (int)PShape::COUNT - 1); P.area = (PArea)std::clamp(ar, 0, (int)PArea::COUNT - 1); P.collide = co != 0; P.bounce = bo != 0; P.light = li != 0;
             o.particles = P;
         }
+        int fs = 0, fp = 0; float fg = 0; std::string fpn;   // forcefield placement (newer files)
+        if (l >> fs >> fg >> fp >> fpn) { o.door.fieldSide = std::clamp(fs, 0, 2); o.door.fieldGap = std::clamp(fg, 0.f, 2.f); o.door.fieldOnParts = fp != 0; o.door.fieldParts = unesc(fpn); }
         objs.push_back(o);
     }
     return true;

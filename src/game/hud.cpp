@@ -62,7 +62,12 @@ void HudSway::update(const HudSwaySettings& s, double dt, float turnYaw, float t
     pitch = std::clamp(pitch + turnPitch * 0.6f * st, -lim, lim);
     float rollTarget = dt > 0 ? std::clamp(-turnYaw / (float)dt * 0.02f * s.tilt * st, -4.f, 4.f) : 0.f;
     float sm = std::clamp(s.smoothness, 0.f, 1.f), k = 220 + (18 - 220) * sm, c = 2 * std::sqrt(k) * 0.85f;
-    if (landed) dropVel -= std::min(fallSpeed, 30.f) * 0.006f * s.bob;
+    if (landed) {   // a dip, and a shake that grows with how fast you came down
+        float v = std::max(0.f, fallSpeed), impact = std::clamp((v - 4) / 22, 0.f, 1.f);
+        dropVel -= std::min(v, 40.f) * 0.007f * s.land;
+        shake = std::max(shake, impact * 2.5f * s.land); shakeT = 0;
+    }
+    shake *= (float)std::exp(-dt * 7); shakeT += (float)dt; if (shake < 1e-3f) shake = 0;
     for (double left = dt; left > 1e-9; left -= 1.0 / 240) {   // small steps: steady for any frame rate
         float h = (float)std::min(left, 1.0 / 240);
         vy += (-k * yaw - c * vy) * h; yaw += vy * h;
@@ -74,7 +79,10 @@ void HudSway::update(const HudSwaySettings& s, double dt, float turnYaw, float t
     walk += dt * speed * 1.7;
     offset = { std::sin(walk) * 0.004 * s.bob * walking, std::sin(walk * 2) * 0.006 * s.bob * walking + drop, 0 };
 }
-V3 HudSway::apply(V3 p, float amount) const { return rotateDeg(p, yaw * amount, pitch * amount, roll * amount) + offset * amount; }
+V3 HudSway::apply(V3 p, float amount) const {
+    float sp = shake * std::sin(shakeT * 47.f), sr = shake * 0.6f * std::sin(shakeT * 31.f + 1.f);
+    return rotateDeg(p, yaw * amount, (pitch + sp) * amount, (roll + sr) * amount) + offset * amount;
+}
 
 // ------------------------------------------------------------------ the starter visor
 HudLayout defaultHud() {
@@ -104,7 +112,8 @@ static std::string unesc(const std::string& s) {
 bool saveHud(const std::string& path, const HudLayout& h) {
     std::ofstream f(path); if (!f) return false;
     f << "hud 1\n";
-    f << "sway " << h.sway.enabled << " " << h.sway.strength << " " << h.sway.smoothness << " " << h.sway.bob << " " << h.sway.tilt << "\n";
+    f << "sway " << h.sway.enabled << " " << h.sway.strength << " " << h.sway.smoothness << " " << h.sway.bob << " " << h.sway.tilt << " " << h.sway.land << "\n";
+    f << "view " << h.fov << "\n";
     for (const HudPlane& p : h.planes) {
         f << "plane " << esc(p.name) << " " << p.pos.x << " " << p.pos.y << " " << p.pos.z << " " << p.yaw << " " << p.pitch << " " << p.roll << " " << p.width << " " << p.height
           << " " << p.bendX << " " << p.bendY << " " << p.sway << " " << p.opacity << " " << p.glow << " " << p.visible << "\n";
@@ -122,7 +131,8 @@ bool loadHud(const std::string& path, HudLayout& h) {
     h = HudLayout{}; std::string line;
     while (std::getline(f, line)) {
         std::istringstream l(line); std::string k; l >> k;
-        if (k == "sway") l >> h.sway.enabled >> h.sway.strength >> h.sway.smoothness >> h.sway.bob >> h.sway.tilt;
+        if (k == "sway") { l >> h.sway.enabled >> h.sway.strength >> h.sway.smoothness >> h.sway.bob >> h.sway.tilt; float v; if (l >> v) h.sway.land = v; }
+        else if (k == "view") { float v; if (l >> v) h.fov = std::clamp(v, 20.f, 150.f); }
         else if (k == "plane") { HudPlane p; std::string n; l >> n >> p.pos.x >> p.pos.y >> p.pos.z >> p.yaw >> p.pitch >> p.roll >> p.width >> p.height >> p.bendX >> p.bendY >> p.sway >> p.opacity >> p.glow >> p.visible; p.name = unesc(n); h.planes.push_back(p); }
         else if (k == "el" && !h.planes.empty()) {
             HudElement e; std::string n, t, im, vn; int kind = 0, val = 0;

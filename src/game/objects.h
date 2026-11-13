@@ -47,6 +47,10 @@ struct DoorSettings {
     float stayOpen = 3;                               // seconds before it closes again (it waits while you stand in it)
     bool field = true;                                // false: a plain door that opens when you walk up to it
     std::string key;                                  // needs this key (a pickup) to open; empty: no key needed
+    int fieldSide = 0;                                // 0 both sides, 1 front (the model's -Z side), 2 back
+    float fieldGap = 0.06f;                           // how far in front of the door the field floats (blocks)
+    bool fieldOnParts = false;                        // the field shimmers on the door's moving parts instead of a flat sheet
+    std::string fieldParts;                           // which moving parts (names, comma separated); empty: all of them
 };
 
 enum class PickupType { Health, Key, Collectible };
@@ -115,7 +119,9 @@ struct DoorRuntime {
 
 // the forcefield's place: a thin box filling the opening (opening: in model space)
 Box3 fieldBox(const WorldObject& o, const ModelFrame& m, const Box3& opening);
-void fieldQuad(const WorldObject& o, const ModelFrame& m, const Box3& opening, V3& origin, V3& across, V3& up);
+void fieldQuad(const WorldObject& o, const ModelFrame& m, const Box3& opening, V3& origin, V3& across, V3& up, int side = 0);   // side 0 front, 1 back
+Box3 turnedBoxPublic(const WorldObject& o, const ModelFrame& m, const Box3& modelBox);   // a model-space box, placed and turned like the object
+bool fieldPartOn(const DoorSettings& d, const std::string& partName);    // is the field drawn on this moving part?
 V3 objectPoint(const WorldObject& o, const ModelFrame& m, V3 local);              // model space -> world
 std::vector<Box3> objectBoxes(const WorldObject& o, const ModelFrame& m, const std::vector<Box3>& mboxes);   // world space
 Box3 objectBounds(const WorldObject& o, const ModelFrame& m);

@@ -308,6 +308,10 @@ static bool importFbx(const fs::path& path, MeshModel& m, std::string& err) {
         for (int guard = 0; id != 0 && guard < 256; guard++) { auto p = partOf.find(id); if (p != partOf.end()) return p->second; auto pa = parentOf.find(id); if (pa == parentOf.end()) break; id = pa->second; }
         return -1;
     };
+    for (auto& kv : partOf) {   // a moving part inside another moving part: it moves along with it
+        auto pa = parentOf.find(kv.first); m.parts[kv.second].parentPart = pa == parentOf.end() ? -1 : movingPart(pa->second);
+        auto mo = byId.find(kv.first); if (mo != byId.end()) { P70 mp(mo->second); m.parts[kv.second].order = std::clamp((int)mp.num("RotationOrder", 0), 0, 5); }
+    }
     // materials -> pictures
     Builder B; std::map<const Node*, int> matImg;
     auto materialImage = [&](const Node* mat) -> int {

@@ -309,7 +309,13 @@ int main() {
             d.door.w = 1; d.door.h = 1; bb = objectBounds(d, door.frame()); CHECK(std::fabs(bb.hi.x - bb.lo.x - 1) < 1e-6, "or to 1 x 1 (morph ball)");
             d.door.w = 2; d.door.h = 3;
             Box3 op = doorOpening(door); Box3 fb = fieldBox(d, door.frame(), op);
-            CHECK(std::fabs(fb.hi.x - fb.lo.x - 1.5) < 0.01 && std::fabs(fb.hi.y - fb.lo.y - 2.625) < 0.01 && fb.hi.z - fb.lo.z < 0.2, "the forcefield fills the opening (%.2f x %.2f)", fb.hi.x - fb.lo.x, fb.hi.y - fb.lo.y);
+            CHECK(std::fabs(fb.hi.x - fb.lo.x - 1.5) < 0.01 && std::fabs(fb.hi.y - fb.lo.y - 2.625) < 0.01 && fb.hi.z - fb.lo.z < 1, "the forcefield fills the opening (%.2f x %.2f)", fb.hi.x - fb.lo.x, fb.hi.y - fb.lo.y);
+            { Box3 ob = turnedBoxPublic(d, door.frame(), op); V3 o0, a0, u0, o1, a1, u1; fieldQuad(d, door.frame(), op, o0, a0, u0, 0); fieldQuad(d, door.frame(), op, o1, a1, u1, 1);
+              CHECK(o0.z < ob.lo.z - 0.05 && o1.z > ob.hi.z + 0.05 && fb.lo.z <= o0.z + 1e-9 && fb.hi.z >= o1.z - 1e-9, "the fields float a bit in front of and behind the door (%.3f < %.3f, %.3f > %.3f)", o0.z, ob.lo.z, o1.z, ob.hi.z); }
+            d.door.fieldParts = "group,group2"; CHECK(fieldPartOn(d.door, "group2") && !fieldPartOn(d.door, "group3") && fieldPartOn(DoorSettings{}, "x"), "the field can be on chosen parts");
+            d.door.fieldSide = 2; d.door.fieldGap = 0.1f; d.door.fieldOnParts = true; { std::vector<WorldObject> v{ d }, v2; saveObjects("/tmp/prim_doorf.txt", v); loadObjects("/tmp/prim_doorf.txt", v2);
+              CHECK(v2.size() == 1 && v2[0].door.fieldSide == 2 && std::fabs(v2[0].door.fieldGap - 0.1f) < 1e-6 && v2[0].door.fieldOnParts && v2[0].door.fieldParts == "group,group2", "forcefield placement saves and loads"); }
+            d.door = DoorSettings{}; d.door.w = 2; d.door.h = 3;
             auto still = meshBoxes(door, 24, true), all = meshBoxes(door);
             auto inside = [&](const std::vector<Box3>& bs) { V3 c{ door.sx * 0.5, door.sy * 0.4, door.sz * 0.5 }; for (auto& b : bs) if (c.x >= b.lo.x && c.x <= b.hi.x && c.y >= b.lo.y && c.y <= b.hi.y && c.z >= b.lo.z && c.z <= b.hi.z) return true; return false; };
             CHECK(!still.empty() && inside(all) && !inside(still), "collision without the moving halves leaves the doorway free (%zu / %zu boxes)", still.size(), all.size());
@@ -448,6 +454,21 @@ int main() {
         CHECK(particlePresets().size() == 9, "nine presets");
     }
 
+    // a door with moving parts inside moving parts (DOOR_02: the halves turn, then smaller pieces inside them slide)
+    {
+        MeshModel d; std::string err; bool ok = importModel(std::string(SOURCE_DIR) + "/assets/examples/DOOR_02.fbx", d, err);
+        CHECK(ok && d.clips.size() == 1 && d.parts.size() == 4, "DOOR_02 imports: 1 animation, 4 moving parts (%s)", err.c_str());
+        int g4 = -1, g2 = -1; for (int i = 0; i < (int)d.parts.size(); i++) { if (d.parts[i].name == "group4") g4 = i; if (d.parts[i].name == "group2") g2 = i; }
+        CHECK(g4 >= 0 && g2 >= 0 && d.parts[g4].parentPart == g2, "group4 hangs from group2");
+        auto centre = [&](const std::vector<MeshVert>& v) { V3 c{ 0, 0, 0 }; int n = 0; for (size_t i = 0; i < v.size(); i++) if (d.vpart[i] == g4) { c = c + V3{ v[i].p[0], v[i].p[1], v[i].p[2] }; n++; } return n ? c * (1.0 / n) : c; };
+        V3 r = centre(d.raw), a = centre(d.posed(0, 0.75f));
+        CHECK(std::fabs(r.x - 21.875) < 0.01 && std::fabs(r.y - 43.75) < 0.01 && std::fabs(r.z - 15.625) < 0.01, "group4 at rest (%.3f %.3f %.3f)", r.x, r.y, r.z);
+        CHECK(std::fabs(a.x + 21.875) < 0.01 && std::fabs(a.y - 43.75) < 0.01 && std::fabs(a.z - 3.125) < 0.01, "at 0.75 s it has turned and moved with group2 (%.3f %.3f %.3f)", a.x, a.y, a.z);
+        d.save("/tmp/prim_door2.pmesh"); MeshModel back; back.load("/tmp/prim_door2.pmesh");
+        V3 b = centre(back.posed(0, 0.75f));
+        CHECK(back.parts.size() == 4 && back.parts[g4].parentPart == g2 && std::fabs(b.x - a.x) < 1e-4, "and it saves and loads the same");
+    }
+
     // the HUD (Player editor part 1)
     {
         HudPlane p; p.pos = { 0, 0, 1 }; p.width = 2; p.height = 1; p.bendX = 0; p.bendY = 0;
@@ -481,11 +502,16 @@ int main() {
         CHECK(std::fabs(z.yaw) < 1e-6 && std::fabs(z.pitch) < 1e-6, "strength 0: no sway");
         HudSway land; land.update(s, 1.0 / 60, 0, 0, 0, true, 12); for (int k = 0; k < 4; k++) land.update(s, 1.0 / 60, 0, 0, 0, false, 0);
         CHECK(land.offset.y < -0.001, "landing: the HUD dips (%.4f)", land.offset.y);
+        HudSway soft, hard; soft.update(s, 1.0 / 60, 0, 0, 0, true, 5); hard.update(s, 1.0 / 60, 0, 0, 0, true, 25);
+        for (int k = 0; k < 4; k++) { soft.update(s, 1.0 / 60, 0, 0, 0, false, 0); hard.update(s, 1.0 / 60, 0, 0, 0, false, 0); }
+        CHECK(hard.offset.y < soft.offset.y * 2 && hard.shake > 1 && soft.shake < 0.3f, "a hard landing dips more and shakes (shake %.2f vs %.2f deg)", hard.shake, soft.shake);
+        for (int k = 0; k < 90; k++) hard.update(s, 1.0 / 60, 0, 0, 0, false, 0);
+        CHECK(hard.shake < 0.01f, "and the shake dies down");
         // save / load
-        HudLayout h = defaultHud(); h.sway.strength = 1.7f; h.planes[0].elements[1].text = "E N E R G Y {value}"; h.parts[0].name = "Strut % left";
+        HudLayout h = defaultHud(); h.sway.strength = 1.7f; h.sway.land = 0.4f; h.fov = 85; h.planes[0].elements[1].text = "E N E R G Y {value}"; h.parts[0].name = "Strut % left";
         saveHud("/tmp/prim_hud.txt", h); HudLayout back; loadHud("/tmp/prim_hud.txt", back);
         CHECK(back.planes.size() == 1 && back.planes[0].elements.size() == h.planes[0].elements.size() && back.parts.size() == 2 && back.parts[1].mirror
-              && back.sway.strength == 1.7f && back.planes[0].elements[1].text == "E N E R G Y {value}" && back.parts[0].name == "Strut % left"
+              && back.sway.strength == 1.7f && back.sway.land == 0.4f && back.fov == 85 && back.planes[0].elements[1].text == "E N E R G Y {value}" && back.parts[0].name == "Strut % left"
               && back.planes[0].elements[3].valueName == "Missile" && back.planes[0].bendX == h.planes[0].bendX, "the HUD saves and loads");
         MeshModel strut; CHECK(builtinShape("@visor-strut", strut) && strut.triangles() == 48, "the visor strut model builds");
     }

@@ -883,3 +883,28 @@ BlitOut VS_Blit(uint id : SV_VertexID)
     BlitOut o; float2 t = float2((id << 1) & 2, id & 2); o.uv = t; o.pos = float4(t * float2(2, -2) + float2(-1, 1), 0, 1); return o;
 }
 float4 PS_Blit(BlitOut i) : SV_Target { return float4(gHudTex.Sample(gClamp, i.uv).rgb, 1); }
+
+// ---------------------------------------------------------------- a door's forcefield on the door's own parts (a shell just outside them)
+// ChunkCB: gOffset.xyz where it was hit (relative to the camera), w how big the door is; gAxisZ.rgb colour, w how much of the field is there
+struct FMOut { float4 pos : SV_Position; float3 rel : TEXCOORD0; float3 n : NORMAL; };
+FMOut VS_FieldMesh(float3 p : POSITION, float3 n : NORMAL)
+{
+    FMOut o; o.rel = p; o.n = n; o.pos = mul(float4(p, 1), gViewProj); return o;
+}
+float4 PS_FieldMesh(FMOut i) : SV_Target
+{
+    float t = gVolume.z; float3 n = normalize(i.n); float3 w = i.rel + gCamPos.xyz; float3 a = abs(n);
+    float2 uv = a.x > a.y && a.x > a.z ? w.zy : (a.y > a.z ? w.xz : w.xy);           // the hexagons lie on the face
+    float hex = hexEdge(uv * 3.2 + float2(0, t * 0.15));
+    float scan = 0.5 + 0.5 * sin(w.y * 9 - t * 4);
+    float pulse = 0.85 + 0.15 * sin(t * 2.3);
+    float rim = pow(1 - abs(dot(n, normalize(-i.rel))), 3);                             // brighter where you see it edge-on
+    float nz = gNoise.SampleLevel(gLinear, float3(uv * 0.6, t * 0.05), 0).x;
+    float reach = (1 - gAxisZ.w) * (gOffset.w * 1.4 + 0.5);
+    float d = length(i.rel - gOffset.xyz) + (nz - 0.5) * 0.6;
+    float keep = smoothstep(reach - 0.05, reach + 0.05, d);
+    float burn = gAxisZ.w < 0.999 ? (1 - smoothstep(0, 0.18, abs(d - reach))) * keep : 0;
+    float glow = (0.08 + 0.5 * pow(hex, 6) + 0.1 * scan + 0.6 * rim) * pulse * keep;
+    float fade = gAxisZ.w < 0.999 && gAxisZ.w > 0 && reach < 0.06 ? gAxisZ.w : 1;
+    return float4(gAxisZ.rgb * (glow * 1.6 * fade + burn * 4), 0);
+}

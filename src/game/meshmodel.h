@@ -15,6 +15,8 @@ struct MeshPart {
     std::string name;
     double parent[16];                                // the parent's place at rest (column-major, file units)
     double t[3], r[3], s[3], pre[3], pivot[3];        // its own rest move / turn (degrees, X then Y then Z) / size, pre-turn, turning point
+    int parentPart = -1;                              // the nearest moving part above it (it moves along with that one), -1: none
+    int order = 0;                                    // FBX rotation order (0 XYZ ...)
 };
 struct AnimTrack { int part = 0, prop = 0, axis = 0; std::vector<float> time, value; };   // prop: 0 move, 1 turn, 2 size
 struct AnimClip { std::string name; float length = 0; std::vector<AnimTrack> tracks; };

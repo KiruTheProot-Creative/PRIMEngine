@@ -39,7 +39,7 @@ static bool getStr(std::ifstream& f, std::string& s) { uint32_t n; if (!get(f, n
 
 bool MeshModel::save(const std::string& path) const {
     std::ofstream f(fs::u8path(path), std::ios::binary); if (!f) return false;
-    f.write("PMSH", 4); put(f, (uint32_t)2); putStr(f, name); putStr(f, source); put(f, unitScale);
+    f.write("PMSH", 4); put(f, (uint32_t)3); putStr(f, name); putStr(f, source); put(f, unitScale);
     put(f, (uint32_t)raw.size()); f.write((const char*)raw.data(), raw.size() * sizeof(MeshVert));
     put(f, (uint32_t)idx.size()); f.write((const char*)idx.data(), idx.size() * 4);
     put(f, (int32_t)tw); put(f, (int32_t)th); f.write((const char*)tex.data(), tex.size());
@@ -50,12 +50,13 @@ bool MeshModel::save(const std::string& path) const {
         putStr(f, c.name); put(f, c.length); put(f, (uint32_t)c.tracks.size());
         for (const AnimTrack& t : c.tracks) { put(f, (int32_t)t.part); put(f, (int32_t)t.prop); put(f, (int32_t)t.axis); put(f, (uint32_t)t.time.size()); f.write((const char*)t.time.data(), t.time.size() * 4); f.write((const char*)t.value.data(), t.value.size() * 4); }
     }
+    for (const MeshPart& p : parts) { put(f, (int32_t)p.parentPart); put(f, (int32_t)p.order); }   // v3: parts inside moving parts
     return (bool)f;
 }
 bool MeshModel::load(const std::string& path) {
     std::ifstream f(fs::u8path(path), std::ios::binary); if (!f) return false;
     char m[4]; uint32_t ver = 0, nv = 0, ni = 0; int32_t w = 0, h = 0;
-    if (!f.read(m, 4) || std::memcmp(m, "PMSH", 4) || !get(f, ver) || ver < 1 || ver > 2) return false;
+    if (!f.read(m, 4) || std::memcmp(m, "PMSH", 4) || !get(f, ver) || ver < 1 || ver > 3) return false;
     if (!getStr(f, name) || !getStr(f, source) || !get(f, unitScale) || !get(f, nv) || nv > (1u << 24)) return false;
     raw.resize(nv); if (!f.read((char*)raw.data(), nv * sizeof(MeshVert))) return false;
     if (!get(f, ni) || ni > (1u << 26)) return false;
@@ -78,6 +79,7 @@ bool MeshModel::load(const std::string& path) {
                 if (!f.read((char*)t.time.data(), n * 4) || !f.read((char*)t.value.data(), n * 4)) return false;
             }
         }
+        if (ver >= 3) for (MeshPart& p : parts) { int32_t a = -1, b = 0; if (!get(f, a) || !get(f, b)) return false; p.parentPart = a >= 0 && a < (int)parts.size() ? a : -1; p.order = std::clamp((int)b, 0, 5); }
     }
     update(); return true;
 }
@@ -421,20 +423,25 @@ static float sampleTrack(const AnimTrack& t, float time) {
 std::vector<MeshVert> MeshModel::posed(int clip, float time) const {
     std::vector<MeshVert> out = raw;
     if (clip < 0 || clip >= (int)clips.size() || parts.empty() || vpart.size() != raw.size()) return out;
-    std::vector<fbx::M4> moveBy(parts.size());
-    for (size_t p = 0; p < parts.size(); p++) {
+    std::vector<fbx::M4> moveBy(parts.size()); std::vector<char> done(parts.size(), 0);
+    std::function<void(size_t, int)> solve = [&](size_t p, int depth) {   // a part moves by its own animation, on top of the part it hangs from
+        if (done[p]) return;
         const MeshPart& mp = parts[p];
+        int pp = mp.parentPart >= 0 && mp.parentPart < (int)parts.size() && mp.parentPart != (int)p && depth < 64 ? mp.parentPart : -1;
+        if (pp >= 0) solve((size_t)pp, depth + 1);
         double now[3][3] = { { mp.t[0], mp.t[1], mp.t[2] }, { mp.r[0], mp.r[1], mp.r[2] }, { mp.s[0], mp.s[1], mp.s[2] } };
         for (const AnimTrack& t : clips[clip].tracks) if (t.part == (int)p && t.prop >= 0 && t.prop < 3 && t.axis >= 0 && t.axis < 3) now[t.prop][t.axis] = sampleTrack(t, time);
         auto local = [&](const double T[3], const double R[3], const double S[3]) {
             V3 piv{ mp.pivot[0], mp.pivot[1], mp.pivot[2] };
             return fbx::mul(fbx::trans({ T[0], T[1], T[2] }), fbx::mul(fbx::trans(piv), fbx::mul(fbx::euler({ mp.pre[0], mp.pre[1], mp.pre[2] }, 0),
-                   fbx::mul(fbx::euler({ R[0], R[1], R[2] }, 0), fbx::mul(fbx::trans(piv * -1), fbx::scal({ S[0], S[1], S[2] }))))));
+                   fbx::mul(fbx::euler({ R[0], R[1], R[2] }, mp.order), fbx::mul(fbx::trans(piv * -1), fbx::scal({ S[0], S[1], S[2] }))))));
         };
         fbx::M4 parent; std::copy(mp.parent, mp.parent + 16, parent.begin());
         fbx::M4 rest = fbx::mul(parent, local(mp.t, mp.r, mp.s)), at = fbx::mul(parent, local(now[0], now[1], now[2]));
-        moveBy[p] = fbx::mul(at, inverseAffine(rest));
-    }
+        if (pp >= 0) at = fbx::mul(moveBy[pp], at);   // the parent's motion carries it
+        moveBy[p] = fbx::mul(at, inverseAffine(rest)); done[p] = 1;
+    };
+    for (size_t p = 0; p < parts.size(); p++) solve(p, 0);
     for (size_t v = 0; v < out.size(); v++) {
         uint16_t p = vpart[v]; if (p >= parts.size()) continue;
         V3 q = fbx::point(moveBy[p], { out[v].p[0], out[v].p[1], out[v].p[2] }); V3 n = fbx::dir(moveBy[p], { out[v].n[0], out[v].n[1], out[v].n[2] });
