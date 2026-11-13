@@ -4677,10 +4677,12 @@ struct App {
         bool ch = false; ImGui::PushID(id); int drop = -1;
         for (int i = 0; i < (int)set.sounds.size(); i++) {
             ImGui::PushID(i);
-            if (set.sounds.size() > 1) { ImGui::AlignTextToFramePadding(); ImGui::TextDisabled("%d", i + 1); ImGui::SameLine(); }
-            ImGui::BeginGroup(); ch |= SoundEdit("s", set.sounds[i], true); ImGui::EndGroup();
-            ImGui::SameLine(); if (ImGui::SmallButton("x")) drop = i;
+            ImGui::BeginGroup();   // left: its number and the remove button
+            if (set.sounds.size() > 1) ImGui::TextDisabled("%d", i + 1);
+            if (ImGui::SmallButton("x")) drop = i;
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Remove this sound");
+            ImGui::EndGroup(); ImGui::SameLine();
+            ImGui::BeginGroup(); ch |= SoundEdit("s", set.sounds[i], true); ImGui::EndGroup();
             ImGui::PopID();
         }
         if (drop >= 0) { set.sounds.erase(set.sounds.begin() + drop); set.last = -1; ch = true; }
