@@ -940,10 +940,10 @@ float4 PS_ImpactSphere(FMOut i) : SV_Target
     float plasma = saturate(a * 1.3 - 0.25) * (0.55 + 0.9 * b);
     float veins = pow(saturate(1 - abs(a - 0.5) * 6), 3);                                // bright thin lines where the noise crosses the middle
     float rim = pow(1 - facing, 2.2);                                                     // bright where you see it edge-on: a bubble
-    float core = pow(facing, 2.5) * (1 - grown) * (1 - grown) * 2.2;                      // at first a white-hot middle
-    float glow = rim * 2.6 + 0.10 + plasma * (0.45 + rim) + veins * 1.4 + core;
-    float3 col = gAxisZ.rgb * glow + float3(1, 0.95, 0.85) * (core * 0.9 + veins * rim * 0.6);   // a little white where it is hottest
-    return float4(col * gAxisZ.w * 1.25, 0);
+    float core = pow(facing, 2.5) * (1 - grown) * (1 - grown) * 0.5;                      // at first a hot middle
+    float glow = rim * 1.3 + 0.03 + plasma * plasma * (0.35 + rim * 0.8) + veins * 0.7 + core;
+    float3 col = gAxisZ.rgb * glow + float3(1, 0.95, 0.85) * (core * 0.25 + veins * rim * 0.25);   // a little white where it is hottest
+    return float4(col * gAxisZ.w * 0.55, 0);                                              // (each side of the shell adds its light)
 }
 
 // ---------------------------------------------------------------- beam shots: a glowing ball of energy (VS_FieldMesh places it)
@@ -955,8 +955,8 @@ float4 PS_BeamOrb(FMOut i) : SV_Target
     float facing = saturate(abs(dot(n, v))), t = gVolume.z + gAxisY.x * 7.1, charged = gAxisX.w;
     float3 col = gAxisZ.rgb;
     if (gAxisY.y > 0.5) {                                                                 // the halo: soft light around the ball, strongest in the middle
-        float h = pow(facing, 3);
-        return float4(col * h * (0.45 + 0.35 * charged), 0);
+        float h = pow(facing, 4);
+        return float4(col * h * (0.12 + 0.12 * charged), 0);
     }
     float3 d = normalize(i.rel - gOffset.xyz), f = gAxisX.xyz;
     // energy streaming backwards over the ball (along the way it flies) and swirling around it
@@ -968,7 +968,7 @@ float4 PS_BeamOrb(FMOut i) : SV_Target
     float core = pow(facing, 3);                                                          // white-hot in the middle
     float rim = pow(1 - facing, 2);                                                       // the colour at the edges
     float energy = 0.6 + 0.8 * swirl * bands;
-    float3 c = col * (rim * 3.2 + energy * 1.6 + crackle * 2.5) + float3(1, 1, 1) * core * (2.2 + charged * 2.0);
+    float3 c = col * (rim * 1.1 + energy * 0.45 + crackle * 0.9) + float3(1, 1, 1) * core * (0.35 + charged * 0.35);
     float flicker = 0.92 + 0.08 * sin(t * 40 + gAxisY.x * 13);
-    return float4(c * flicker, 0);
+    return float4(c * flicker * 0.6, 0);                                                  // (each side of the ball adds its light)
 }
