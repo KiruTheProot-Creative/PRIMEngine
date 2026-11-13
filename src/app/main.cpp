@@ -4197,7 +4197,9 @@ struct App {
     // Play mode: a shot from the cannon's emitter toward what the crosshair points at; a flash at the muzzle
     void LaunchShot(const Beam& b, bool missile) {
         V3 eye = player.eye(), fw = player.forward(), rr = Norm(cross({ 0, 1, 0 }, fw)), uu = cross(fw, rr);
-        auto W = [&](V3 c) { return rr * c.x + uu * c.y + fw * c.z; };
+        // the cannon is drawn with the HUD's view angle: points move to where they show on screen with the player's own field of view
+        double fk = std::tan(XMConvertToRadians(settings.fov) * 0.5) / std::max(1e-3, std::tan(XMConvertToRadians(hud.fov) * 0.5));
+        auto W = [&](V3 c) { return rr * (c.x * fk) + uu * (c.y * fk) + fw * c.z; };
         V3 from = eye + fw * 0.6, mpos = from, mdir = fw;
         CannonXf x;
         if (CannonPlacement(b, hudSway, weapPose, x)) { from = eye + W(CannonPoint(x, b, b.emitter.pos)); mpos = eye + W(CannonPoint(x, b, b.muzzle.pos)); mdir = W(CannonDir(x, pointDir(b.muzzle))); }
@@ -4211,7 +4213,7 @@ struct App {
         ParticleSettings tp = particlePreset(missile ? "Smoke" : b.shotLook); tp.color0 = col; tp.color1 = col;
         sh.trail = ParticleEmitter(tp, (uint32_t)(shots.size() * 7919 + GetTickCount()));
         shots.push_back(sh);
-        ParticleSettings fp = particlePreset(b.flashLook); fp.burst = std::max(fp.burst, 12); SpawnFx(fp, mpos, mdir, col);
+        ParticleSettings fp = particlePreset(b.flashLook); fp.burst = std::max(fp.burst, 8); SpawnFx(fp, mpos, mdir, col);
     }
     void FireWeapons(double dt) {
         weapState.tick((float)dt);

@@ -11,7 +11,7 @@ const char* shapeName(PShape s) {
 const char* areaName(PArea a) { static const char* n[] = { "A point", "A ball", "A box", "A disc (flat)" }; return n[std::clamp((int)a, 0, (int)PArea::COUNT - 1)]; }
 const char* flickerName(Flicker f) { static const char* n[] = { "Steady", "Candle", "Broken (flickers off)", "Pulse" }; return n[std::clamp((int)f, 0, 3)]; }
 
-std::vector<std::string> particlePresets() { return { "Sparks", "Fire", "Smoke", "Steam", "Magic", "Drips", "Embers", "Beam trail", "Impact" }; }
+std::vector<std::string> particlePresets() { return { "Sparks", "Fire", "Smoke", "Steam", "Magic", "Drips", "Embers", "Beam trail", "Impact", "Muzzle flash" }; }
 ParticleSettings particlePreset(const std::string& n) {
     ParticleSettings p;
     if (n == "Sparks") { p.rate = 0; p.burst = 25; p.burstEvery = 1.2f; p.life = 0.6f; p.lifeVar = 0.3f; p.spread = 70; p.speed = 6; p.speedVar = 2.5f; p.gravity = -14; p.drag = 0.6f;
@@ -30,6 +30,8 @@ ParticleSettings particlePreset(const std::string& n) {
         p.color0 = 0xFFB040; p.color1 = 0xFF3000; p.glow = 4; p.shape = PShape::Pixel; p.area = PArea::Disc; p.areaSize = { 1, 0, 1 }; }
     else if (n == "Beam trail") { p.rate = 120; p.life = 0.25f; p.lifeVar = 0.1f; p.spread = 180; p.speed = 0.3f; p.speedVar = 0.2f; p.drag = 2; p.size0 = 0.12f; p.size1 = 0;
         p.color0 = 0xB0F0FF; p.color1 = 0x2080FF; p.glow = 3; p.shape = PShape::Dot; }
+    else if (n == "Muzzle flash") { p.rate = 0; p.burst = 10; p.burstEvery = 99; p.life = 0.07f; p.lifeVar = 0.03f; p.spread = 22; p.speed = 2.2f; p.speedVar = 0.8f; p.drag = 4;
+        p.size0 = 0.035f; p.size1 = 0.01f; p.color0 = 0xFFFFF0; p.color1 = 0xFFD060; p.glow = 5; p.shape = PShape::Spark; p.light = false; }
     else if (n == "Impact") { p.rate = 0; p.burst = 30; p.burstEvery = 0; p.life = 0.45f; p.lifeVar = 0.2f; p.spread = 80; p.speed = 5; p.speedVar = 2; p.gravity = -10; p.drag = 1;
         p.size0 = 0.06f; p.size1 = 0.02f; p.color0 = 0xE0FFFF; p.color1 = 0x2090FF; p.glow = 4; p.shape = PShape::Spark; p.collide = true; }
     return p;

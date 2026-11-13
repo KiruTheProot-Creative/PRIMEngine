@@ -452,7 +452,7 @@ int main() {
         std::vector<WorldObject> v{ o }, v2; saveObjects("/tmp/prim_fx.txt", v); loadObjects("/tmp/prim_fx.txt", v2);
         CHECK(v2.size() == 1 && v2[0].kind == ObjKind::Particles && !v2[0].particles.additive && v2[0].particles.shape == PShape::Smoke && v2[0].particles.size1 == o.particles.size1
               && v2[0].light.type == LightType::Spot && v2[0].light.cone == 20 && v2[0].light.flicker == Flicker::Broken, "particles and lights save and load");
-        CHECK(particlePresets().size() == 9, "nine presets");
+        CHECK(particlePresets().size() == 10, "ten presets"); CHECK(particlePreset("Muzzle flash").life < 0.15f, "a short muzzle flash");
     }
 
     // a door with moving parts inside moving parts (DOOR_02: the halves turn, then smaller pieces inside them slide)

@@ -20,7 +20,7 @@ struct Beam {
     float sway = 0.8f;                                  // how much of the HUD sway it gets
     // the shot
     uint32_t color = 0xFFD860;
-    std::string shotLook = "Beam trail", hitLook = "Impact", flashLook = "Impact";   // particle presets: trail, impact, muzzle flash
+    std::string shotLook = "Beam trail", hitLook = "Impact", flashLook = "Muzzle flash";   // particle presets: trail, impact, muzzle flash
     float speed = 45, damage = 10, fireRate = 5, range = 80, size = 0.07f;      // blocks/s, -, shots per second, blocks, blocks
     bool auto_ = false;                                 // keeps firing while the button is held
     bool waitForAnim = false;                           // a shot only when the firing animation is done
