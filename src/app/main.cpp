@@ -89,6 +89,7 @@ struct alignas(16) FrameCB {
     float camPos[4], volume[4], depth[4], extra[4];
     XMFLOAT4X4 skyVP; float weather[4], weather2[4];
     float env[4], envPart[4], envPartColor[4], refl[4], clipPlane[4], mirror[4], ao[4];
+    float shadow2[4];   // x edge mode (0 sharp, 1 smooth, 2 realistic), y softness
 };
 struct alignas(16) ChunkCB { float offset[4]; float ax[4] = { 1, 0, 0, 0 }, ay[4] = { 0, 1, 0, 0 }, az[4] = { 0, 0, 1, 0 }; };   // axes: objects are turned and sized
 
@@ -600,6 +601,7 @@ struct App {
 
     // ================================================================== game update
     void UpdateGame(double dt) {
+        player.applySize(game.player);   // the size from the player rules (editor camera too)
         if (Playing()) {
             double s = 0.0022 * settings.mouseSensitivity; player.look(mouseDX * s, mouseDY * s);
             Controls c; bool fg = GetForegroundWindow() == hwnd;
@@ -772,22 +774,24 @@ struct App {
         L({ hi.x + 0.6, 0, lo.z }, { hi.x + 0.6, f->sy, lo.z }, IM_COL32(150, 210, 255, 200), 2);   // height ruler, a tick every block
         for (int k = 0; k <= (int)f->sy; k++) L({ hi.x + 0.45, (double)k, lo.z }, { hi.x + 0.75, (double)k, lo.z }, IM_COL32(150, 210, 255, 200));
         snprintf(b, sizeof b, "%.2f tall", f->sy); T({ hi.x + 0.8, f->sy, lo.z }, IM_COL32(150, 210, 255, 255), b);
-        if (viewerPeople) {
-            double px = lo.x - 1.0;   // the player: legs, body, arms, head (1.8 tall)
+        if (viewerPeople) {   // the player and the morph ball, at the sizes in the player rules
+            const PlayerRules& pr = game.player; double sw = pr.width / 0.6, sh = pr.height / 1.8, rb = pr.ballSize * 0.5;
+            double px = lo.x - 0.5 - std::max(0.5, pr.width * 0.75);   // legs, body, arms, head
             ImU32 pc = IM_COL32(255, 210, 120, 230);
-            auto box = [&](V3 a, V3 c) { V3 q[8]; for (int i = 0; i < 8; i++) q[i] = { (i & 1) ? c.x : a.x, (i & 2) ? c.y : a.y, (i & 4) ? c.z : a.z };
+            auto box = [&](V3 a, V3 c) { a = { px + (a.x - px) * sw, a.y * sh, a.z * sw }; c = { px + (c.x - px) * sw, c.y * sh, c.z * sw };
+                V3 q[8]; for (int i = 0; i < 8; i++) q[i] = { (i & 1) ? c.x : a.x, (i & 2) ? c.y : a.y, (i & 4) ? c.z : a.z };
                 const int e[12][2] = { { 0, 1 }, { 2, 3 }, { 4, 5 }, { 6, 7 }, { 0, 2 }, { 1, 3 }, { 4, 6 }, { 5, 7 }, { 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 } };
                 for (auto& k : e) L(q[k[0]], q[k[1]], pc, 1.5f); };
             box({ px - 0.25, 0, -0.12 }, { px - 0.02, 0.8, 0.12 }); box({ px + 0.02, 0, -0.12 }, { px + 0.25, 0.8, 0.12 });
             box({ px - 0.27, 0.8, -0.15 }, { px + 0.27, 1.4, 0.15 }); box({ px - 0.42, 0.75, -0.1 }, { px - 0.28, 1.4, 0.1 }); box({ px + 0.28, 0.75, -0.1 }, { px + 0.42, 1.4, 0.1 });
             box({ px - 0.2, 1.4, -0.2 }, { px + 0.2, 1.8, 0.2 });
-            T({ px - 0.4, 2.05, 0 }, pc, "Player 1.8");
-            double bx = px - 1.3; ImU32 bc = IM_COL32(255, 140, 200, 230);   // the morph ball: 1 block
+            char pl[48]; snprintf(pl, sizeof pl, "Player %.2f", pr.height); T({ px - 0.4, pr.height + 0.25, 0 }, pc, pl);
+            double bx = px - std::max(0.5, pr.width * 0.75) - rb - 0.3; ImU32 bc = IM_COL32(255, 140, 200, 230);   // the morph ball
             for (int k = 0; k < 32; k++) { double a0 = k * 6.2832 / 32, a1 = (k + 1) * 6.2832 / 32;
-                L({ bx + std::cos(a0) * 0.5, 0.5 + std::sin(a0) * 0.5, 0 }, { bx + std::cos(a1) * 0.5, 0.5 + std::sin(a1) * 0.5, 0 }, bc, 1.5f);
-                L({ bx, 0.5 + std::sin(a0) * 0.5, std::cos(a0) * 0.5 }, { bx, 0.5 + std::sin(a1) * 0.5, std::cos(a1) * 0.5 }, bc, 1.5f);
-                L({ bx + std::cos(a0) * 0.5, 0.5, std::sin(a0) * 0.5 }, { bx + std::cos(a1) * 0.5, 0.5, std::sin(a1) * 0.5 }, bc, 1.5f); }
-            T({ bx - 0.5, 1.25, 0 }, bc, "Morph ball 1");
+                L({ bx + std::cos(a0) * rb, rb + std::sin(a0) * rb, 0 }, { bx + std::cos(a1) * rb, rb + std::sin(a1) * rb, 0 }, bc, 1.5f);
+                L({ bx, rb + std::sin(a0) * rb, std::cos(a0) * rb }, { bx, rb + std::sin(a1) * rb, std::cos(a1) * rb }, bc, 1.5f);
+                L({ bx + std::cos(a0) * rb, rb, std::sin(a0) * rb }, { bx + std::cos(a1) * rb, rb, std::sin(a1) * rb }, bc, 1.5f); }
+            char bl[48]; snprintf(bl, sizeof bl, "Morph ball %.2f", pr.ballSize); T({ bx - rb, rb * 2 + 0.25, 0 }, bc, bl);
         }
         if (viewerBoxes) {
             WorldObject vo; vo.model = viewerModel;
@@ -1145,7 +1149,7 @@ struct App {
             if (Gone(o)) continue;
             FrameRef f = ModelOf(o); if (!f) continue;
             Box3 b = objectBounds(o, *f);
-            if (!Overlaps(b, player.feet, Player::HALF_W, Player::HEIGHT, o.kind == ObjKind::Trigger ? 0.0 : 0.15)) continue;
+            if (!Overlaps(b, player.feet, player.halfW, player.height, o.kind == ObjKind::Trigger ? 0.0 : 0.15)) continue;
             now.insert(o.id); bool entered = !insideNow.count(o.id);
             switch (o.kind) {
             case ObjKind::Pickup: { std::string said; if (!play.dead() && inv.collect(o, play.health, game.player.maxHealth, said)) { Toast(said); Signal(When::Pickup, o.name, o.pickup.type == PickupType::Health ? "Health" : o.pickup.name); } break; }
@@ -1178,7 +1182,7 @@ struct App {
                 if (o.name.empty() || Gone(o) || o.kind == ObjKind::Trigger || o.kind == ObjKind::Pickup || o.kind == ObjKind::Light || o.kind == ObjKind::Particles) continue;
                 FrameRef f = ModelOf(o); if (!f) continue;
                 WorldObject at = o; at.pos = o.pos + PlatformOffsets(o)[0];
-                if (!Overlaps(objectBounds(at, *f), player.feet, Player::HALF_W, Player::HEIGHT, 0.08)) continue;
+                if (!Overlaps(objectBounds(at, *f), player.feet, player.halfW, player.height, 0.08)) continue;
                 touching.insert(o.id); if (!touchNow.count(o.id)) Signal(When::Touch, o.name);
             }
             touchNow = touching;
@@ -1312,7 +1316,7 @@ struct App {
     }
     void UpdatePlatforms(double dt) {
         if (!PlatformsMoving()) { if (!platRun.empty()) { platRun.clear(); RebuildSolids(); } return; }
-        bool any = false; double hw = Player::HALF_W;
+        bool any = false; double hw = player.halfW;
         V3 carry{ 0, 0, 0 }; bool carried = false;
         for (WorldObject& o : objects) {
             if (o.kind != ObjKind::Platform) continue;
@@ -1337,13 +1341,13 @@ struct App {
         RebuildSolids();
         if (carried && !player.flying) {   // ride along (up, down, sideways)
             V3 to = player.feet + carry;
-            if (world->boxFree(to, Player::HALF_W, Player::HEIGHT)) player.feet = to;
-            else { V3 up = to; up.y += 0.02; if (world->boxFree(up, Player::HALF_W, Player::HEIGHT)) player.feet = up; }
+            if (world->boxFree(to, player.halfW, player.height)) player.feet = to;
+            else { V3 up = to; up.y += 0.02; if (world->boxFree(up, player.halfW, player.height)) player.feet = up; }
         }
-        if (!player.flying && !world->boxFree(player.feet, Player::HALF_W, Player::HEIGHT)) {   // a platform moved into you: you end up on top of it
+        if (!player.flying && !world->boxFree(player.feet, player.halfW, player.height)) {   // a platform moved into you: you end up on top of it
             for (const Box3& b : world->objectSolids) {
-                if (player.feet.x + hw > b.lo.x && player.feet.x - hw < b.hi.x && player.feet.z + hw > b.lo.z && player.feet.z - hw < b.hi.z && player.feet.y < b.hi.y && player.feet.y + Player::HEIGHT > b.lo.y && b.hi.y - player.feet.y < 0.9) {
-                    V3 up = player.feet; up.y = b.hi.y + 0.001; if (world->boxFree(up, Player::HALF_W, Player::HEIGHT)) { player.feet = up; player.vel.y = std::max(0.0, player.vel.y); }
+                if (player.feet.x + hw > b.lo.x && player.feet.x - hw < b.hi.x && player.feet.z + hw > b.lo.z && player.feet.z - hw < b.hi.z && player.feet.y < b.hi.y && player.feet.y + player.height > b.lo.y && b.hi.y - player.feet.y < 0.9) {
+                    V3 up = player.feet; up.y = b.hi.y + 0.001; if (world->boxFree(up, player.halfW, player.height)) { player.feet = up; player.vel.y = std::max(0.0, player.vel.y); }
                 }
             }
         }
@@ -2130,7 +2134,7 @@ struct App {
         if (bd.solid) {   // never place a block inside yourself
             const Player& p = player;
             for (const SBox& b : Shapes::get().variant(shape, r).boxes)
-                if (x + b.hi[0] > p.feet.x - Player::HALF_W && x + b.lo[0] < p.feet.x + Player::HALF_W && z + b.hi[2] > p.feet.z - Player::HALF_W && z + b.lo[2] < p.feet.z + Player::HALF_W && y + b.hi[1] > p.feet.y && y + b.lo[1] < p.feet.y + Player::HEIGHT) return;
+                if (x + b.hi[0] > p.feet.x - p.halfW && x + b.lo[0] < p.feet.x + p.halfW && z + b.hi[2] > p.feet.z - p.halfW && z + b.lo[2] < p.feet.z + p.halfW && y + b.hi[1] > p.feet.y && y + b.lo[1] < p.feet.y + p.height) return;
         }
         targetValid = true; tx = x; ty = y; tz = z; targetValue = v;
     }
@@ -2283,6 +2287,7 @@ struct App {
             float mx = (float)(px - std::floor(px / texel) * texel), my = (float)(py - std::floor(py / texel) * texel);
             svp = lv * XMMatrixTranslation(mx, my, 0) * XMMatrixOrthographicLH(2 * R, 2 * R, 1, 600);
             fc.shadowInfo[0] = 1.f / shadowSize; fc.shadowInfo[1] = R; fc.shadowInfo[2] = (float)texel * 1.5f; fc.shadowInfo[3] = 1.6f;
+            fc.shadow2[0] = (float)std::clamp(settings.shadowSoft, 0, 2); fc.shadow2[1] = std::clamp(settings.shadowSoftness, 0.1f, 4.f);
         } else fc.sunDir[3] = 0;
         XMStoreFloat4x4(&fc.shadowVP, svp);
         // volumetrics: where the camera is (wrapped, the cloud noise repeats every 14400 blocks), cloud cover, fog for this hour
@@ -2506,6 +2511,9 @@ struct App {
             ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());
         }
 
+        // ---- Play mode: the HUD's 3D parts, lit like the world (sun, its shadows, sky light, light objects), in front of everything
+        if (playMode && !hud.parts.empty()) DrawHudPartsLit(fc, f, r, u, srvs, samps);
+
         // ---- clouds and ground fog over the picture (needs the depth: unbind it as a target first)
         ctx->PSSetShaderResources(0, 4, none);
         ctx->OMSetRenderTargets(1, volRTV.GetAddressOf(), nullptr);
@@ -2632,12 +2640,12 @@ struct App {
         DrawPaths(dl);
         HelperGuides(dl);
         if (!playMode && info.hasSpawn) {   // the spawn point: a green player-sized box with an arrow where it looks
-            V3 f = info.spawn; double hw = Player::HALF_W, H = Player::HEIGHT;
+            V3 f = info.spawn; double hw = player.halfW, H = player.height;
             V3 c[8]; for (int i = 0; i < 8; i++) c[i] = { f.x + ((i & 1) ? hw : -hw), f.y + ((i & 2) ? H : 0), f.z + ((i & 4) ? hw : -hw) };
             const int e[12][2] = { { 0, 1 }, { 2, 3 }, { 4, 5 }, { 6, 7 }, { 0, 2 }, { 1, 3 }, { 4, 6 }, { 5, 7 }, { 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 } };
             ImU32 col = sel == Sel::Spawn ? IM_COL32(255, 255, 120, 255) : IM_COL32(90, 255, 120, 255);
             for (auto& k : e) Line3D(dl, c[k[0]], c[k[1]], col);
-            V3 eye{ f.x, f.y + Player::EYE, f.z }, look{ f.x + std::sin(info.spawnYaw) * 1.2, f.y + Player::EYE, f.z + std::cos(info.spawnYaw) * 1.2 };
+            V3 eye{ f.x, f.y + player.eyeH, f.z }, look{ f.x + std::sin(info.spawnYaw) * 1.2, f.y + player.eyeH, f.z + std::cos(info.spawnYaw) * 1.2 };
             Line3D(dl, eye, look, col);
             ImVec2 sp; if (Project({ f.x, f.y + H + 0.3, f.z }, sp)) dl->AddText(ImVec2(sp.x - 18, sp.y - 14), col, "Spawn");
         }
@@ -2707,6 +2715,11 @@ struct App {
         ch_ |= ImGui::SliderFloat("Time of day", &settings.timeOfDay, 0, 24, "%.1f h");
         ch_ |= ImGui::Checkbox("The sun moves (a day is 20 minutes)", &settings.dayCycle);
         const char* sq[] = { "Off", "Normal", "High" }; ch_ |= ImGui::Combo("Shadows", &settings.shadowQuality, sq, 3);
+        if (settings.shadowQuality > 0) {
+            const char* se[] = { "Sharp", "Smooth", "Soft like sunlight" }; ch_ |= ImGui::Combo("Shadow edges", &settings.shadowSoft, se, 3);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Soft like sunlight: sharp right next to what casts the shadow, softer the farther away it falls.");
+            if (settings.shadowSoft > 0) ch_ |= ImGui::SliderFloat("Shadow softness", &settings.shadowSoftness, 0.25f, 3, "%.2f");
+        }
         ch_ |= ImGui::SliderFloat("Clouds", &settings.cloudCover, 0, 1, settings.cloudCover <= 0 ? "none" : "%.2f");
         ch_ |= ImGui::Checkbox("Cloud shadows on the ground", &settings.cloudShadows);
         ch_ |= ImGui::SliderFloat("Ground fog", &settings.groundFog, 0, 2, settings.groundFog <= 0 ? "none" : "%.2f");
@@ -3432,6 +3445,15 @@ struct App {
             }
             title("Player rules"); PlayerRules& r = game.player;
             auto sl = [&](const char* l, float* v, float a, float b, const char* f) { Prop(l); ImGui::PushID(l); ch_ |= ImGui::SliderFloat("##v", v, a, b, f); ImGui::PopID(); };
+            {   // size
+                float hb = r.height; sl("Height", &r.height, 0.3f, 6, "%.2f blocks");
+                if (r.height != hb && hb > 0) r.eyeHeight = std::min(r.height - 0.05f, r.eyeHeight * r.height / hb);   // the eyes stay at the same place on the body
+                sl("Width", &r.width, 0.2f, 4, "%.2f blocks");
+                sl("Eye height", &r.eyeHeight, 0.1f, std::max(0.15f, r.height - 0.02f), "%.2f blocks");
+                sl("Steps up by itself", &r.stepHeight, 0, 2, "%.2f blocks");
+                sl("Morph ball size", &r.ballSize, 0.2f, 3, "%.2f blocks");
+                Hint("Fits through gaps at least %.2f wide and %.2f tall. The morph ball comes with the Samus controls; its size already shows in the 3D viewer.", r.width, r.height);
+            }
             sl("Walk speed", &r.walkSpeed, 1, 15, "%.1f blocks/s");
             Prop("Can sprint (Ctrl)"); ch_ |= ImGui::Checkbox("##sprint", &r.canSprint);
             if (r.canSprint) sl("Sprint speed", &r.sprintSpeed, 1, 25, "%.1f blocks/s");
@@ -3634,7 +3656,7 @@ struct App {
         PreviewCB pc{}; XMStoreFloat4x4((XMFLOAT4X4*)pc.vp, vp); pc.light[0] = -0.35f; pc.light[1] = 0.75f; pc.light[2] = -0.55f;
         ctx->UpdateSubresource(cbPreview.Get(), 0, nullptr, &pc, 0, 0);
         ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); ctx->IASetInputLayout(layout.Get());
-        ctx->VSSetShader(vsPreview.Get(), nullptr, 0); ctx->PSSetShader(psPreview.Get(), nullptr, 0);
+        ctx->VSSetShader(vsPreview.Get(), nullptr, 0); ctx->PSSetShader(editor ? psPreview.Get() : nullptr, nullptr, 0);   // Play mode: already drawn lit, here only their depth
         ctx->PSSetShaderResources(0, 1, texArray.GetAddressOf()); ctx->PSSetSamplers(0, 1, sampBlocks.GetAddressOf());
         ctx->RSSetState(rsNoCull.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
         for (const HudPart& p : hud.parts) {
@@ -3678,6 +3700,47 @@ struct App {
         }
         ID3D11ShaderResourceView* none[10] = {}; ctx->PSSetShaderResources(0, 10, none);
         ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());
+    }
+    // the parts in the HDR picture: positions turned from camera space into the world (so the world's light falls on them),
+    // seen with the HUD's own view angle, squeezed into the front 0.2 % of the depth so the world never cuts into them
+    void DrawHudPartsLit(const FrameCB& fc, V3 f, V3 r, V3 u, ID3D11ShaderResourceView* const* srvs, ID3D11SamplerState* const* samps) {
+        FrameCB hc = fc; XMStoreFloat4x4(&hc.viewProj, view * HudProj((float)rw / std::max(1, rh)));
+        hc.clipPlane[0] = hc.clipPlane[1] = hc.clipPlane[2] = 0; hc.clipPlane[3] = 1;
+        ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &hc, 0, 0);
+        ctx->OMSetRenderTargets(1, reflRTV.GetAddressOf(), dsv.Get());
+        D3D11_VIEWPORT v{ 0, 0, (float)rw, (float)rh, 0, 0.002f }; ctx->RSSetViewports(1, &v);
+        ctx->RSSetState(rsNoCull.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
+        ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0);
+        ctx->PSSetShaderResources(0, 5, srvs); ctx->PSSetSamplers(0, 3, samps);
+        ID3D11Buffer* cbs[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->VSSetConstantBuffers(0, 2, cbs); ctx->PSSetConstantBuffers(0, 2, cbs);
+        auto W = [&](V3 c) { return r * c.x + u * c.y + f * c.z; };   // camera space -> the world's directions
+        const HudSway& sw = hudSway;
+        for (const HudPart& p : hud.parts) {
+            if (!p.visible) continue;
+            FrameRef fr = ModelNamed(p.model); if (!fr) continue;
+            const ModelGpu& g = GpuModel(p.model);
+            if (g.mesh) ctx->PSSetShaderResources(9, 1, g.tex.GetAddressOf());
+            V3 ax, ay, az; partAxes(p, ax, ay, az); float k = p.sway;
+            ax = W(rotateDeg(ax, sw.yaw * k, sw.pitch * k, sw.roll * k)); ay = W(rotateDeg(ay, sw.yaw * k, sw.pitch * k, sw.roll * k)); az = W(rotateDeg(az, sw.yaw * k, sw.pitch * k, sw.roll * k));
+            V3 base = W(sw.apply(p.pos, p.sway));
+            for (int pass = 0; pass < 2; pass++) {
+                ctx->PSSetShader(pass == 0 ? psOpaque.Get() : psCutout.Get(), nullptr, 0);
+                for (auto& part : g.parts) {
+                    const GpuChunk& gc = part.second; UINT n = pass == 0 ? gc.nO : gc.nC; if (!n) continue;
+                    V3 l{ part.first.x * (double)CS - fr->pivot.x, part.first.y * (double)CS - fr->pivot.y, part.first.z * (double)CS - fr->pivot.z };
+                    V3 org = base + ax * l.x + ay * l.y + az * l.z;
+                    ChunkCB cc{ { (float)org.x, (float)org.y, (float)org.z, 0 }, { (float)ax.x, (float)ax.y, (float)ax.z, 0 }, { (float)ay.x, (float)ay.y, (float)ay.z, 0 }, { (float)az.x, (float)az.y, (float)az.z, 0 } };
+                    ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);
+                    UINT stride = sizeof(Vtx), off = 0;
+                    ctx->IASetVertexBuffers(0, 1, pass == 0 ? gc.vbO.GetAddressOf() : gc.vbC.GetAddressOf(), &stride, &off);
+                    ctx->IASetIndexBuffer(pass == 0 ? gc.ibO.Get() : gc.ibC.Get(), DXGI_FORMAT_R32_UINT, 0);
+                    ctx->DrawIndexed(n, 0, 0);
+                }
+            }
+        }
+        ID3D11ShaderResourceView* none = nullptr; ctx->PSSetShaderResources(9, 1, &none);
+        D3D11_VIEWPORT full{ 0, 0, (float)rw, (float)rh, 0, 1 }; ctx->RSSetViewports(1, &full);
+        ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &fc, 0, 0); ctx->RSSetState(rsCull.Get());
     }
     XMMATRIX HudProj(float aspect) const { return XMMatrixPerspectiveFovLH(XMConvertToRadians(hud.fov), aspect, 0.01f, 60.f); }   // its own view angle: the HUD keeps its place whatever the player's field of view
     // Play mode: the HUD over the finished picture
@@ -4599,7 +4662,7 @@ struct App {
         for (const DemoShot& sh : shots) {
             settings.ambientOcclusion = sh.name == "ambient_occlusion_off" ? 0 : 1;
             V3 dlt = sh.target - sh.eye; double hz = std::sqrt(dlt.x * dlt.x + dlt.z * dlt.z);
-            player.feet = { sh.eye.x, sh.eye.y - Player::EYE, sh.eye.z }; player.yaw = std::atan2(dlt.x, dlt.z); player.pitch = std::atan2(dlt.y, hz); player.vel = { 0, 0, 0 };
+            player.feet = { sh.eye.x, sh.eye.y - player.eyeH, sh.eye.z }; player.yaw = std::atan2(dlt.x, dlt.z); player.pitch = std::atan2(dlt.y, hz); player.vel = { 0, 0, 0 };
             settings.timeOfDay = sh.hour;
             for (int k = 0; k < sh.liquidTicks; k++) world->tickLiquids();   // let water and lava flow a bit before this picture
             info.environment = sh.env; info.zones.clear(); envState.update(0, player.eye(), info.environment, info.zones, true);
@@ -4621,7 +4684,7 @@ struct App {
         {   // the editor around the world, then Play mode's HUD
             auto poseAt = [&](const DemoShot& sh) {
                 V3 dlt = sh.target - sh.eye; double hz = std::sqrt(dlt.x * dlt.x + dlt.z * dlt.z);
-                player.feet = { sh.eye.x, sh.eye.y - Player::EYE, sh.eye.z }; player.yaw = std::atan2(dlt.x, dlt.z); player.pitch = std::atan2(dlt.y, hz); player.vel = { 0, 0, 0 };
+                player.feet = { sh.eye.x, sh.eye.y - player.eyeH, sh.eye.z }; player.yaw = std::atan2(dlt.x, dlt.z); player.pitch = std::atan2(dlt.y, hz); player.vel = { 0, 0, 0 };
                 settings.timeOfDay = sh.hour; info.environment = "temperate"; envState.update(0, player.eye(), info.environment, info.zones, true);
                 weather.set(findWeather("partly_cloudy"), true); weather.autoChange = false; weather.wetness = 0; weather.snowCover = 0; weather.flash = 0; weather.boltAge = 99;
             };
@@ -4701,6 +4764,8 @@ struct App {
                     viewerModel = "DOOR_02"; viewerOpen = true; viewerFit = true; viewerYaw = -0.6f; viewerPitch = 0.25f; viewerClip = meshModels["DOOR_02"].findClip("open"); viewerLoop = false;
                     viewerTime = 0.62f; frames(1, "door2_viewer_turning");
                     viewerTime = 0.9f; frames(1, "door2_viewer_sliding_apart");
+                    { PlayerRules keep = game.player; game.player.height = 1.2f; game.player.width = 0.5f; game.player.eyeHeight = 1.05f; game.player.ballSize = 0.75f; viewerClip = -1;
+                      frames(1, "viewer_smaller_player_and_ball"); game.player = keep; }
                     viewerOpen = false; viewerClip = -1;
                     auto door2 = [&](double x, bool parts, uint32_t col) { WorldObject o; o.id = nextObjId++; o.model = "DOOR_02"; o.name = UniqueObjectName("Door"); MakeDoor(o);
                         o.pos = { x, (double)gy, 35.5 }; o.door.w = 2; o.door.h = 3; o.door.color = col; o.door.fieldOnParts = parts; o.door.stayOpen = 6; objects.push_back(o); return o.id; };
@@ -4733,7 +4798,7 @@ struct App {
                     toolMode = false; sel = Sel::World;
                     StartPlay(false);
                     for (auto& o : objects) if (o.id == liftId) { player.feet = { o.pos.x, g2 + 1.0, o.pos.z }; }
-                    { V3 e = player.feet; e.y += Player::EYE; poseAt(DemoShot{ "p", e, { e.x + 8, e.y + 1.0, e.z + 2 }, 15.5f }); player.feet.y = g2 + 1.0; }
+                    { V3 e = player.feet; e.y += player.eyeH; poseAt(DemoShot{ "p", e, { e.x + 8, e.y + 1.0, e.z + 2 }, 15.5f }); player.feet.y = g2 + 1.0; }
                     play.health = game.player.maxHealth; toastT = 0;
                     frames(45, "platforms_play_riding_the_lift");
                     Log("lift ride: feet at " + std::to_string(player.feet.y - g2) + " blocks above the ground");
@@ -4806,7 +4871,7 @@ struct App {
                     play.health = game.player.maxHealth; toastT = 0;
                     frames(20, "events_play_dark");
                     player.feet = { -10.5, (double)g4, -38 };
-                    { V3 e = player.feet; e.y += Player::EYE; poseAt(DemoShot{ "e", e, { -12, g4 + 1.4, -31.2 }, 19.8f }); player.feet = { -10.5, (double)g4, -38 }; }
+                    { V3 e = player.feet; e.y += player.eyeH; poseAt(DemoShot{ "e", e, { -12, g4 + 1.4, -31.2 }, 19.8f }); player.feet = { -10.5, (double)g4, -38 }; }
                     frames(50, "events_play_lights_on");
                     Log("event cards: 'hall wakes up' ran " + std::to_string(evRun.firedCount(1)) + " time(s), lights off: " + std::to_string(evOff.size()));
                     StopPlay(); sel = Sel::World; focusAssets = true;
@@ -4826,6 +4891,11 @@ struct App {
                 inv.counts["Missile"] = 25; play.health = game.player.maxHealth * 0.76f; toastT = 0;
                 hudSway.reset(); prevPlayYaw = player.yaw; prevPlayPitch = player.pitch;
                 frames(4, "hud_play");
+                for (int mode = 0; mode < 3; mode++) {   // shadow edges: sharp, smooth, soft like sunlight
+                    settings.shadowSoft = mode; const char* nm[] = { "shadows_sharp", "shadows_smooth", "shadows_soft_like_sunlight" };
+                    hud.planes[0].visible = false; frames(2, nm[mode]); hud.planes[0].visible = true;
+                }
+                settings.shadowSoft = 2;
                 for (int k = 0; k < 6; k++) { player.yaw += 0.06; FrameBody(1.0 / 60); swap->Present(0, 0); retired.clear(); }
                 Log("HUD sway while turning: " + std::to_string(hudSway.yaw) + " degrees");
                 frames(1, "hud_play_turning_sway");

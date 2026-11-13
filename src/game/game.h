@@ -17,6 +17,8 @@ struct Settings {
     float timeOfDay = 10.f;    // hours, 0 .. 24
     bool dayCycle = false;     // the sun moves (one day = 20 minutes)
     int shadowQuality = 2;     // 0 off, 1 normal (2048), 2 high (4096)
+    int shadowSoft = 2;        // shadow edges: 0 sharp, 1 smooth, 2 soft like real sunlight (sharp near what casts them, softer farther away)
+    float shadowSoftness = 1;  // how soft (smooth / realistic)
     float cloudCover = 0.5f;   // 0 = no clouds, 1 = overcast
     float groundFog = 1.0f;    // 0 = none, 1 = normal (thick in the morning), 2 = a lot
     bool cloudShadows = true;
@@ -42,6 +44,9 @@ struct PlayerRules {
     float respawnDelay = 2;                           // seconds before you come back at the spawn point
     float fallDamage = 0;                             // health per block fallen beyond 4 blocks (0 = off)
     bool canSprint = true;
+    float width = 0.6f, height = 1.8f, eyeHeight = 1.62f;   // the player's size (blocks): it fits through gaps wider and taller than this
+    float stepHeight = 0.6f;                          // walks up ledges this high by itself
+    float ballSize = 1.0f;                            // the morph ball (Samus controls, later); shown for scale in the 3D viewer
     float jumpSpeed() const { return std::sqrt(2 * gravity * std::max(0.1f, jumpHeight)); }
 };
 
@@ -56,11 +61,13 @@ struct GameSettings {
 };
 
 struct Player {
-    static constexpr double HALF_W = 0.3, HEIGHT = 1.8, EYE = 1.62;    // Minecraft player size (blocks)
+    static constexpr double HALF_W = 0.3, HEIGHT = 1.8, EYE = 1.62;    // the default size (blocks)
+    double halfW = HALF_W, height = HEIGHT, eyeH = EYE, stepH = 0.6;   // this player's size (from the game's player rules)
+    void applySize(const PlayerRules& r);
     V3 feet{ 0.5, 0, 0.5 }, vel{ 0, 0, 0 };
     double yaw = 0, pitch = 0;      // radians; yaw 0 looks toward +Z
     bool flying = true, onGround = false;
-    V3 eye() const { return { feet.x, feet.y + EYE, feet.z }; }
+    V3 eye() const { return { feet.x, feet.y + eyeH, feet.z }; }
     V3 forward() const { return { std::sin(yaw) * std::cos(pitch), std::sin(pitch), std::cos(yaw) * std::cos(pitch) }; }
     void look(double dx, double dy);                     // mouse movement in radians
     void update(const World& w, const Controls& c, double dt, const PlayerRules& rules = PlayerRules{});

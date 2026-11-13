@@ -30,6 +30,7 @@ cbuffer Frame : register(b0)
     float4 gClipPlane;              // geometry with dot(rel, xyz) + w < 0 is cut away (only while drawing a mirror's view)
     float4 gMirror;                 // the mirror drawn this frame: plane (xyz normal, w); gRefl.w = 1 when there is one
     float4 gAOSet;                  // ambient occlusion: x on (1) / off (0), y radius (blocks), z strength, w samples
+    float4 gShadow2;                // shadow edges: x 0 sharp / 1 smooth / 2 soft like sunlight, y softness
 };
 cbuffer ChunkCB : register(b1)
 {
@@ -180,12 +181,27 @@ float shadowAt(float3 rel, float3 n, float ndl, float2 screen)
     float4 s = mul(float4(p, 1), gShadowVP);
     float2 uv = float2(s.x, -s.y) * 0.5 + 0.5;
     if (any(uv < 0) || any(uv > 1) || s.z > 1) return 1;
-    float a = frac(sin(dot(screen, float2(12.9898, 78.233))) * 43758.5453) * 6.2831;   // turn the disc per pixel: smooth edges
-    float2x2 r = float2x2(cos(a), -sin(a), sin(a), cos(a));
-    float sum = 0;
-    [unroll] for (int k = 0; k < 16; k++)
-        sum += gShadow.SampleCmpLevelZero(gShadowSamp, uv + mul(kDisc[k], r) * gShadowInfo.x * gShadowInfo.w, s.z - 0.0004);
-    float sh = sum / 16;
+    float texel = gShadowInfo.x, bias = s.z - 0.0004;
+    float radius = gShadow2.x < 0.5 ? 0.5 : 1.3 * gShadow2.y;            // in shadow-map pixels
+    if (gShadow2.x > 1.5)
+    {   // like sunlight: look for what casts the shadow; the farther below it, the softer the edge
+        int2 at = int2(uv / texel); float blk = 0, cnt = 0;
+        [unroll] for (int by = 0; by < 4; by++) [unroll] for (int bx = 0; bx < 4; bx++)
+        {
+            float d = gShadow.Load(int3(clamp(at + int2(bx * 3 - 4, by * 3 - 4), 0, int(1 / texel) - 1), 0));
+            if (d < bias) { blk += d; cnt += 1; }
+        }
+        if (cnt < 0.5) return 1;                                         // nothing above: lit
+        float dz = (s.z - blk / cnt) * 599;                              // blocks from what casts it to here
+        float texelBlocks = gShadowInfo.z / 1.5;
+        radius = clamp(0.6 + dz * 0.03 * gShadow2.y / texelBlocks, 0.6, 14);
+    }
+    // a grid of filtered samples: smooth, without grain
+    float step = radius * 2 / 5, sum = 0;
+    float j = (frac(sin(dot(screen, float2(12.9898, 78.233))) * 43758.5453) - 0.5) * step * (radius > 3 ? 0.5 : 0);   // a little jitter only on very soft edges
+    [unroll] for (int gy = 0; gy < 6; gy++) [unroll] for (int gx = 0; gx < 6; gx++)
+        sum += gShadow.SampleCmpLevelZero(gShadowSamp, uv + (float2(gx, gy) - 2.5 + j) * step * texel, bias);
+    float sh = sum / 36;
     float edge = saturate(length(rel.xz) / gShadowInfo.y * 1.25 - 0.25);   // fade out where the shadow map ends
     return lerp(sh, 1, edge * edge);
 }

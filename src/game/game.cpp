@@ -17,6 +17,7 @@ bool Settings::load(const std::string& path) {
         else if (k == "time_of_day") f >> timeOfDay;
         else if (k == "day_cycle") { int v; f >> v; dayCycle = v != 0; }
         else if (k == "shadows") f >> shadowQuality;
+        else if (k == "shadow_soft") f >> shadowSoft; else if (k == "shadow_softness") f >> shadowSoftness;
         else if (k == "cloud_cover") f >> cloudCover;
         else if (k == "ground_fog") f >> groundFog;
         else if (k == "cloud_shadows") { int v; f >> v; cloudShadows = v != 0; }
@@ -34,7 +35,7 @@ bool Settings::save(const std::string& path) const {
     std::ofstream f(path); if (!f) return false;
     f << "render_distance " << renderDistance << "\nvertical_distance " << verticalDistance << "\nfov " << fov << "\nmouse_sensitivity " << mouseSensitivity
       << "\nui_scale " << uiScale << "\nvsync " << (vsync ? 1 : 0) << "\nblock_preview " << (blockPreview ? 1 : 0)
-      << "\ntime_of_day " << timeOfDay << "\nday_cycle " << (dayCycle ? 1 : 0) << "\nshadows " << shadowQuality
+      << "\ntime_of_day " << timeOfDay << "\nday_cycle " << (dayCycle ? 1 : 0) << "\nshadows " << shadowQuality << "\nshadow_soft " << shadowSoft << "\nshadow_softness " << shadowSoftness
       << "\ncloud_cover " << cloudCover << "\nground_fog " << groundFog << "\ncloud_shadows " << (cloudShadows ? 1 : 0)
       << "\nbloom " << bloom << "\nswaying " << (swaying ? 1 : 0) << "\nreflections " << reflections
       << "\nambient_occlusion " << ambientOcclusion << "\nao_strength " << aoStrength << "\n";
@@ -42,6 +43,10 @@ bool Settings::save(const std::string& path) const {
 }
 
 // ------------------------------------------------------------------ player (creative mode)
+void Player::applySize(const PlayerRules& r) {
+    height = std::clamp((double)r.height, 0.2, 8.0); halfW = std::clamp((double)r.width, 0.1, 8.0) * 0.5;
+    eyeH = std::clamp((double)r.eyeHeight, 0.05, height - 0.02); stepH = std::clamp((double)r.stepHeight, 0.0, height * 0.75);
+}
 void Player::look(double dx, double dy) {
     yaw += dx; pitch = std::max(-1.55, std::min(1.55, pitch - dy));
 }
@@ -73,7 +78,7 @@ void Player::update(const World& w, const Controls& c, double dt, const PlayerRu
         vel.y = std::max(vel.y - (double)r.gravity * dt, -78.0);
         if (c.jump && onGround) vel.y = r.jumpSpeed();   // default about 1.25 blocks high
     }
-    feet = w.moveBox(feet, vel, HALF_W, HEIGHT, dt, onGround, flying ? 0.0 : 0.6);   // walking climbs half blocks and stairs by itself
+    feet = w.moveBox(feet, vel, halfW, height, dt, onGround, flying ? 0.0 : stepH);   // walking climbs half blocks and stairs by itself
     if (flying && onGround && c.sneak) flying = false;   // land by flying down onto the ground
 }
 
@@ -101,6 +106,7 @@ bool GameSettings::save(const std::string& path) const {
     std::ofstream f(path); if (!f) return false;
     const PlayerRules& p = player;
     f << "name " << name << "\nstart_world " << (startWorld.empty() ? "-" : startWorld) << "\nlast_world " << (lastWorld.empty() ? "-" : lastWorld)
+      << "\nplayer_width " << p.width << "\nplayer_height " << p.height << "\neye_height " << p.eyeHeight << "\nstep_height " << p.stepHeight << "\nball_size " << p.ballSize
       << "\nwalk_speed " << p.walkSpeed << "\nsprint_speed " << p.sprintSpeed << "\njump_height " << p.jumpHeight << "\ngravity " << p.gravity
       << "\nmax_health " << p.maxHealth << "\nlava_damage " << p.lavaDamage << "\nvoid_depth " << p.voidDepth << "\nrespawn_delay " << p.respawnDelay
       << "\nfall_damage " << p.fallDamage << "\ncan_sprint " << (p.canSprint ? 1 : 0) << "\n";
@@ -113,6 +119,8 @@ bool GameSettings::load(const std::string& path) {
         if (k == "name") { f >> std::ws; std::getline(f, name); }
         else if (k == "start_world") { f >> std::ws; std::getline(f, startWorld); if (startWorld == "-") startWorld.clear(); }
         else if (k == "last_world") { f >> std::ws; std::getline(f, lastWorld); if (lastWorld == "-") lastWorld.clear(); }
+        else if (k == "player_width") f >> p.width; else if (k == "player_height") f >> p.height; else if (k == "eye_height") f >> p.eyeHeight;
+        else if (k == "step_height") f >> p.stepHeight; else if (k == "ball_size") f >> p.ballSize;
         else if (k == "walk_speed") f >> p.walkSpeed; else if (k == "sprint_speed") f >> p.sprintSpeed; else if (k == "jump_height") f >> p.jumpHeight;
         else if (k == "gravity") f >> p.gravity; else if (k == "max_health") f >> p.maxHealth; else if (k == "lava_damage") f >> p.lavaDamage;
         else if (k == "void_depth") f >> p.voidDepth; else if (k == "respawn_delay") f >> p.respawnDelay; else if (k == "fall_damage") f >> p.fallDamage;
