@@ -46,6 +46,7 @@ bool Settings::save(const std::string& path) const {
 void Player::applySize(const PlayerRules& r) {
     height = std::clamp((double)r.height, 0.2, 8.0); halfW = std::clamp((double)r.width, 0.1, 8.0) * 0.5;
     eyeH = std::clamp((double)r.eyeHeight, 0.05, height - 0.02); stepH = std::clamp((double)r.stepHeight, 0.0, height * 0.75);
+    if (ball) { double b = std::clamp((double)r.ballSize, 0.1, 4.0); height = b; halfW = b * 0.49; eyeH = b * 0.5; stepH = std::min(stepH, b * 0.3); }
 }
 void Player::look(double dx, double dy) {
     yaw += dx; pitch = std::max(-1.55, std::min(1.55, pitch - dy));
@@ -73,6 +74,12 @@ void Player::update(const World& w, const Controls& c, double dt, const PlayerRu
         if (c.jump) vel.y = std::min(vel.y + (liq == 2 ? 10.0 : 22.0) * dt, liq == 2 ? 1.2 : 3.2);
         if (c.sneak) vel.y = std::max(vel.y - 10.0 * dt, -3.0);
         if (c.jump && onGround && !w.liquidAt(eye())) vel.y = 6.5;   // climb out at the shore
+    } else if (ball) {
+        // the morph ball: rolls up to speed and keeps rolling a while when you let go; no jumping (bombs throw it up)
+        if (length(mv) > 0) mv = normalize(mv) * (double)r.ballSpeed;
+        double k = std::min(1.0, dt * (length(mv) > 0 ? 5.0 : 1.8));
+        vel.x += (mv.x - vel.x) * k; vel.z += (mv.z - vel.z) * k;
+        vel.y = std::max(vel.y - (double)r.gravity * dt, -78.0);
     } else {
         vel.x = mv.x; vel.z = mv.z;
         vel.y = std::max(vel.y - (double)r.gravity * dt, -78.0);
@@ -109,7 +116,9 @@ bool GameSettings::save(const std::string& path) const {
       << "\nplayer_width " << p.width << "\nplayer_height " << p.height << "\neye_height " << p.eyeHeight << "\nstep_height " << p.stepHeight << "\nball_size " << p.ballSize
       << "\nwalk_speed " << p.walkSpeed << "\nsprint_speed " << p.sprintSpeed << "\njump_height " << p.jumpHeight << "\ngravity " << p.gravity
       << "\nmax_health " << p.maxHealth << "\nlava_damage " << p.lavaDamage << "\nvoid_depth " << p.voidDepth << "\nrespawn_delay " << p.respawnDelay
-      << "\nfall_damage " << p.fallDamage << "\ncan_sprint " << (p.canSprint ? 1 : 0) << "\n";
+      << "\nfall_damage " << p.fallDamage << "\ncan_sprint " << (p.canSprint ? 1 : 0)
+      << "\nmorph_ball " << p.morphBall << "\nbombs " << p.bombs << "\nball_speed " << p.ballSpeed << "\nbomb_jump " << p.bombJump << "\nbombs_at_once " << p.bombsAtOnce
+      << "\nbomb_fuse " << p.bombFuse << "\nbomb_reach " << p.bombReach << "\nball_model " << (p.ballModel.empty() ? "-" : p.ballModel) << "\n";
     return (bool)f;
 }
 bool GameSettings::load(const std::string& path) {
@@ -125,6 +134,9 @@ bool GameSettings::load(const std::string& path) {
         else if (k == "gravity") f >> p.gravity; else if (k == "max_health") f >> p.maxHealth; else if (k == "lava_damage") f >> p.lavaDamage;
         else if (k == "void_depth") f >> p.voidDepth; else if (k == "respawn_delay") f >> p.respawnDelay; else if (k == "fall_damage") f >> p.fallDamage;
         else if (k == "can_sprint") { int v; f >> v; p.canSprint = v != 0; }
+        else if (k == "morph_ball") f >> p.morphBall; else if (k == "bombs") f >> p.bombs; else if (k == "ball_speed") f >> p.ballSpeed; else if (k == "bomb_jump") f >> p.bombJump;
+        else if (k == "bombs_at_once") f >> p.bombsAtOnce; else if (k == "bomb_fuse") f >> p.bombFuse; else if (k == "bomb_reach") f >> p.bombReach;
+        else if (k == "ball_model") { f >> std::ws; std::getline(f, p.ballModel); if (p.ballModel == "-") p.ballModel.clear(); }
         else { std::string rest; std::getline(f, rest); }
     }
     return true;

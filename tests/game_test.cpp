@@ -8,6 +8,7 @@
 #include "../src/game/events.h"
 #include "../src/game/hud.h"
 #include "../src/game/weapons.h"
+#include "../src/game/breakable.h"
 #include <map>
 #include <set>
 #include <filesystem>
@@ -468,6 +469,36 @@ int main() {
         d.save("/tmp/prim_door2.pmesh"); MeshModel back; back.load("/tmp/prim_door2.pmesh");
         V3 b = centre(back.posed(0, 0.75f));
         CHECK(back.parts.size() == 4 && back.parts[g4].parentPart == g2 && std::fabs(b.x - a.x) < 1e-4, "and it saves and loads the same");
+    }
+
+    // the morph ball, bombs, breakable blocks
+    {
+        Breakables b; b.mark(3, 64, -2, ""); b.mark(4, 64, -2, "Bomb"); b.mark(5, 64, -2, "Wave Beam"); b.mark(6, 64, -2, "Missile"); b.mark(7, 64, -2, "Charged shot");
+        CHECK(breaksWith(*b.breaker(3, 64, -2), "Power Beam", false, false) && breaksWith("", "Bomb", false, false), "a plain breakable block: any shot or bomb");
+        CHECK(breaksWith("Bomb", "Bomb", false, false) && !breaksWith("Bomb", "Power Beam", false, true), "a bomb block: only bombs");
+        CHECK(breaksWith("Wave Beam", "Wave Beam", false, true) && !breaksWith("Wave Beam", "Power Beam", false, false) && !breaksWith("Wave Beam", "Wave Beam", true, false), "a Wave Beam block: that beam, not its missiles");
+        CHECK(breaksWith("Missile", "Power Beam", true, false) && !breaksWith("Missile", "Power Beam", false, true), "a missile block: missiles");
+        CHECK(breaksWith("Charged shot", "Power Beam", false, true) && !breaksWith("Charged shot", "Power Beam", false, false), "a charged-shot block: only charged shots");
+        saveBreakables("/tmp/prim_break.txt", b); Breakables back; loadBreakables("/tmp/prim_break.txt", back);
+        CHECK(back.marks.size() == 5 && *back.breaker(5, 64, -2) == "Wave Beam" && back.breaker(3, 64, -2)->empty() && !back.has(8, 64, -2), "breakable marks save and load");
+        auto reach = blocksInReach({ 10.5, 64.5, 10.5 }, 1.3); bool self = false, far = false;
+        for (auto& p : reach) { if (p == std::array<int, 3>{ 10, 64, 10 }) self = true; if (std::abs(p[0] - 10) > 1) far = true; }
+        CHECK(self && !far && reach.size() == 7, "a bomb reaches its own block and the ones around it (%zu)", reach.size());
+        CHECK(bombLift({ 0, 0, 0 }, { 0, 0.4, 0 }, 1.3, 8) > 7 && bombLift({ 0, 0, 0 }, { 1.2, 0, 0 }, 1.3, 8) > 4 && bombLift({ 0, 0, 0 }, { 1.4, 0, 0 }, 1.3, 8) == 0, "a bomb throws the ball up, less at the edge, not at all beyond");
+        BlockRegistry br; registerBuiltinBlocks(br); World w(br); w.gen.layers = { { br.find("stone"), 3 } }; w.stream({ 0, 0, 0 }, 3, 2, 100000);
+        PlayerRules r; Player p; p.flying = false; p.ball = true; p.applySize(r); p.feet = { 0.5, 0, 0.5 }; p.yaw = 3.14159265358979 / 2; Controls go; go.forward = true;
+        CHECK(p.height == 1 && p.halfW < 0.5, "rolled up, the player is a ball of the ball size");
+        p.update(w, go, 0.05, r); double v1 = p.vel.x;
+        for (int k = 0; k < 40; k++) p.update(w, go, 0.05, r);
+        CHECK(v1 > 0.5 && v1 < r.ballSpeed * 0.5 && std::fabs(p.vel.x - r.ballSpeed) < 0.2, "the ball rolls up to its speed (%.2f, then %.2f)", v1, p.vel.x);
+        for (int k = 0; k < 6; k++) p.update(w, Controls{}, 0.05, r);
+        CHECK(p.vel.x > 2, "and keeps rolling a while after you let go (%.2f)", p.vel.x);
+        Controls jump; jump.jump = true; p.vel = { 0, 0, 0 }; for (int k = 0; k < 4; k++) p.update(w, jump, 0.05, r);
+        CHECK(p.onGround && p.feet.y < 0.01, "the ball cannot jump by itself (%.2f)", p.feet.y);
+        CHECK(std::fabs(r.bombJumpSpeed() * r.bombJumpSpeed() / (2 * r.gravity) - r.bombJump) < 1e-4, "a bomb jump reaches its height");
+        GameSettings gs; gs.player.morphBall = 2; gs.player.bombJump = 3; gs.player.ballModel = "my ball"; gs.save("/tmp/prim_game_ball.txt"); GameSettings gb; gb.load("/tmp/prim_game_ball.txt");
+        CHECK(gb.player.morphBall == 2 && gb.player.bombJump == 3 && gb.player.ballModel == "my ball", "the morph ball's rules save and load");
+        MeshModel mb; CHECK(builtinShape("@morph-ball", mb) && std::fabs(mb.sy - 1) < 0.01 && std::fabs(mb.sx - 1) < 0.02, "the built-in morph ball builds, 1 block across (%.2f)", mb.sx);
     }
 
     // weapons (Samus controls part 1)

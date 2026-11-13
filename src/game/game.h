@@ -47,8 +47,14 @@ struct PlayerRules {
     bool canSprint = true;
     float width = 0.6f, height = 1.8f, eyeHeight = 1.62f;   // the player's size (blocks): it fits through gaps wider and taller than this
     float stepHeight = 0.6f;                          // walks up ledges this high by itself
-    float ballSize = 1.0f;                            // the morph ball (Samus controls, later); shown for scale in the 3D viewer
+    float ballSize = 1.0f;                            // the morph ball's size (blocks)
+    int morphBall = 1, bombs = 1;                     // 0 none, 1 from the start, 2 found later (a key pickup called "Morph Ball" / "Bombs")
+    float ballSpeed = 7;                              // rolling speed (blocks / s)
+    float bombJump = 2.2f;                            // how high a bomb right under the ball throws it (blocks)
+    int bombsAtOnce = 3; float bombFuse = 0.9f, bombReach = 1.3f;   // bombs out at the same time; seconds until they go off; how far they reach (blocks)
+    std::string ballModel = "@morph-ball";
     float jumpSpeed() const { return std::sqrt(2 * gravity * std::max(0.1f, jumpHeight)); }
+    float bombJumpSpeed() const { return std::sqrt(2 * gravity * std::max(0.f, bombJump)); }
 };
 
 // the game being made: its name, where it starts, the player's rules (game/game.txt)
@@ -65,6 +71,7 @@ struct Player {
     static constexpr double HALF_W = 0.3, HEIGHT = 1.8, EYE = 1.62;    // the default size (blocks)
     double halfW = HALF_W, height = HEIGHT, eyeH = EYE, stepH = 0.6;   // this player's size (from the game's player rules)
     void applySize(const PlayerRules& r);
+    bool ball = false;                                // rolled up into the morph ball (a small round body that keeps rolling)
     V3 feet{ 0.5, 0, 0.5 }, vel{ 0, 0, 0 };
     double yaw = 0, pitch = 0;      // radians; yaw 0 looks toward +Z
     bool flying = true, onGround = false;

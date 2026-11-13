@@ -91,6 +91,7 @@ bool soundUseFrom(const std::string& text, SoundUse& s) {
 bool savePlayerSounds(const std::string& path, const PlayerSounds& p) {
     std::ofstream f(path); if (!f) return false;
     f << "sounds 1\nstep " << soundUseText(p.step) << "\njump " << soundUseText(p.jump) << "\nland " << soundUseText(p.land)
+      << "\nmorph " << soundUseText(p.morph) << "\nbomb " << soundUseText(p.bomb) << "\nboom " << soundUseText(p.boom) << "\ncrumble " << soundUseText(p.crumble)
       << "\nevery " << p.stepEvery << "\nlanding " << p.landQuiet << " " << p.landLoud << "\n";
     return (bool)f;
 }
@@ -100,6 +101,7 @@ bool loadPlayerSounds(const std::string& path, PlayerSounds& p) {
     while (std::getline(f, line)) {
         std::istringstream l(line); std::string k; l >> k; std::string rest; std::getline(l, rest);
         if (k == "step") soundUseFrom(rest, p.step); else if (k == "jump") soundUseFrom(rest, p.jump); else if (k == "land") soundUseFrom(rest, p.land);
+        else if (k == "morph") soundUseFrom(rest, p.morph); else if (k == "bomb") soundUseFrom(rest, p.bomb); else if (k == "boom") soundUseFrom(rest, p.boom); else if (k == "crumble") soundUseFrom(rest, p.crumble);
         else if (k == "every") { std::istringstream r(rest); r >> p.stepEvery; }
         else if (k == "landing") { std::istringstream r(rest); r >> p.landQuiet >> p.landLoud; }
     }

@@ -16,6 +16,7 @@
 #include "../game/hud.h"
 #include "../game/weapons.h"
 #include "../game/sound.h"
+#include "../game/breakable.h"
 #include "../game/weather.h"
 #include "../core/png.h"
 #include "../core/noise.h"
@@ -487,7 +488,10 @@ struct App {
     void SaveWorld() {
         if (!world) return;
         info.player = playMode ? editCam : player; info.hotSel = hotSel; info.weather = weather.type().key; info.autoWeather = weather.autoChange; for (int i = 0; i < 9; i++) info.hotbar[i] = !reg.has(hotbar[i]) ? "" : reg.get(hotbar[i]).name + (shapeOf(hotbar[i]) ? "@" + Shapes::get().info(shapeOf(hotbar[i])).key : "");
-        info.save(worldDir); world->saveAll();
+        info.save(worldDir);
+        { std::vector<Broken> keep = broken; RestoreBroken(); world->saveAll(); for (const Broken& b : keep) world->set(b.x, b.y, b.z, AIR); broken = keep; }   // Play mode: broken blocks are not saved broken
+        if (!playMode) { std::vector<std::array<int, 3>> gone; for (auto& kv : breakables.marks) if (world->get(kv.first[0], kv.first[1], kv.first[2]) == AIR && world->loaded(kv.first[0], kv.first[1], kv.first[2])) gone.push_back(kv.first); for (auto& g : gone) breakables.marks.erase(g); }
+        { std::error_code e2; if (breakables.marks.empty()) fs::remove(fs::u8path(worldDir + "/breakable.txt"), e2); else saveBreakables(worldDir + "/breakable.txt", breakables); }
         saveObjects(worldDir + "/objects.txt", objects); SaveHud();
         std::error_code ec; if (!events.empty()) saveEvents(worldDir + "/events.txt", events); else fs::remove(worldDir + "/events.txt", ec);
     }
@@ -571,6 +575,7 @@ struct App {
         if (toolMode && (k == VK_OEM_PLUS || k == VK_ADD)) { brush.radius = std::min(32, brush.radius + 1); return; }
         if (toolMode && (k == VK_OEM_MINUS || k == VK_SUBTRACT)) { brush.radius = std::max(0, brush.radius - 1); return; }
         if (!Playing() || repeat) return;
+        if (playMode && k == 'C' && !Down(VK_CONTROL)) { ToggleBall(); return; }   // Play mode: the morph ball
         if (playMode && !weapons.empty() && k >= '1' && k <= '9') { SwitchBeam((int)(k - '1')); return; }   // Play mode: the beams
         if (k >= '1' && k <= '9') { if (toolMode) toolSel = (int)(k - '1'); else hotSel = (int)(k - '1'); }
         if (toolMode && toolSel == 1) {   // selection box
@@ -627,6 +632,7 @@ struct App {
         if (!paused) UpdatePlatforms(std::min(dt, 0.05));
         if (!paused) UpdateHelpers(std::min(dt, 0.05));
         if (!paused) UpdateParticles(std::min(dt, 0.05));
+        if (playMode && !paused) UpdateBall(std::min(dt, 0.05));
         UpdateHudSway(std::min(dt, 0.05));
         if (playMode && !paused) UpdateDoors(std::min(dt, 0.05)); else if (!playMode && !doorRt.empty()) { doorRt.clear(); doorGpu.clear(); shots.clear(); RebuildSolids(); }
         if (playMode && !paused) {   // health, lava, falling out of the world, respawning
@@ -940,6 +946,8 @@ struct App {
             }
         }
         for (const Shot& s : shots) if (s.age < 50) all.push_back({ s.pos, s.missile ? 6.0 : 4.5, s.color * 0.6, 0, { 0, -1, 0 }, -1, dist(s.pos) });
+        for (const Bomb& b : bombsOut) all.push_back({ b.pos, 2.5, V3{ 1.6, 1.0, 0.3 } * (0.6 + 0.4 * std::sin(animTime * 18)), 0, { 0, -1, 0 }, -1, dist(b.pos) });
+        for (const Flash& fl : flashes) all.push_back({ fl.pos, fl.range, fl.col * (1 - fl.t / 0.35), 0, { 0, -1, 0 }, -1, dist(fl.pos) });
         if (playMode && weapState.charging && weapState.charge > 0) if (const Beam* b = CurrentBeam()) all.push_back({ chargeAt, 2.0 + 2.5 * weapState.charge, Linear(b->color) * (0.6 + 1.6 * weapState.charge), 0, { 0, -1, 0 }, -1, dist(chargeAt) });
         std::sort(all.begin(), all.end(), [](const L& a, const L& b) { return a.dist - a.range < b.dist - b.range; });
         int n = 0;
@@ -977,6 +985,7 @@ struct App {
         for (auto& kv : emitters) push(kv.second);
         for (auto& e : fx) push(e);
         if (playMode) push(chargeFx);   // the charge gathering at the muzzle
+        for (auto& b : bombsOut) push(b.fx);
         for (auto& s : shots) push(s.trail);
         particleCount = (int)((add.size() + soft.size()) / 6);
         if (add.empty() && soft.empty()) return;
@@ -1068,7 +1077,7 @@ struct App {
     std::string bigMsg; float bigMsgT = 0;
     std::string playStartWorld; Player startEditCam; bool travelling = false;
     static bool IsBuiltin(const std::string& n) { return !n.empty() && n[0] == '@'; }
-    void AddBuiltins() { for (const std::string& n : builtinShapeNames()) { MeshModel m; if (builtinShape(n, m)) meshModels[n] = m; } MeshModel st; if (builtinShape("@visor-strut", st)) meshModels["@visor-strut"] = st; MeshModel ac; if (builtinShape("@arm-cannon", ac)) meshModels["@arm-cannon"] = ac; }
+    void AddBuiltins() { for (const std::string& n : builtinShapeNames()) { MeshModel m; if (builtinShape(n, m)) meshModels[n] = m; } MeshModel st; if (builtinShape("@visor-strut", st)) meshModels["@visor-strut"] = st; MeshModel ac; if (builtinShape("@arm-cannon", ac)) meshModels["@arm-cannon"] = ac; MeshModel mb; if (builtinShape("@morph-ball", mb)) meshModels["@morph-ball"] = mb; }
     // a new helper object: what it is follows from the built-in look it was placed with
     void ApplyPreset(WorldObject& o) {
         const std::string& m = o.model;
@@ -1212,6 +1221,7 @@ struct App {
         if (!worldName.empty() && worldName != CurrentWorld()) {
             if (std::find(worldList.begin(), worldList.end(), worldName) == worldList.end()) { Toast("There is no world called " + worldName); return; }
             takenByWorld[CurrentWorld()] = inv.taken;
+            RestoreBroken(); bombsOut.clear();
             travelling = true; SaveWorld(); OpenWorld(worldName); travelling = false;
             editCam = player;   // this world's own editor camera stays as it was
             inv.taken = takenByWorld[worldName]; doorRt.clear(); doorGpu.clear(); platRun.clear(); shots.clear(); insideNow.clear();
@@ -1541,8 +1551,8 @@ struct App {
         }
         for (Shot& s : shots) {
             double step = s.speed * dt; s.age += (float)dt;
-            double best = step; int door = -1; Hit h;
-            if (world->raycast(s.pos, s.dir, step, h)) best = h.t;
+            double best = step; int door = -1; Hit h; bool blockHit = false;
+            if (world->raycast(s.pos, s.dir, step, h)) { best = h.t; blockHit = true; }
             for (size_t i = 0; i < objects.size(); i++) {   // forcefields and doors, then any object in the way
                 const WorldObject& o = objects[i]; FrameRef f = ModelOf(o); if (!f) continue;
                 double t;
@@ -1551,7 +1561,9 @@ struct App {
                     if (rayBox(s.pos, s.dir, fb, t) && t < best) { best = t; door = (int)i; }
                 }
             }
-            for (const Box3& b : world->objectSolids) { double t; if (rayBox(s.pos, s.dir, b, t) && t < best - 1e-6) { best = t; door = -1; } }
+            for (const Box3& b : world->objectSolids) { double t; if (rayBox(s.pos, s.dir, b, t) && t < best - 1e-6) { best = t; door = -1; blockHit = false; } }
+            if (door >= 0) blockHit = false;
+            if (best < step && blockHit) TryBreak(h.x, h.y, h.z, s.weapon, s.missile, s.charged);   // a marked block: it may break
             if (best < step) {
                 {   // sparks where it hits; its tail stays a moment
                     V3 at = s.pos + s.dir * best; uint32_t tint = door >= 0 ? objects[door].door.color : s.tint;
@@ -1631,6 +1643,7 @@ struct App {
                 if (ImGui::Selectable("Any shot", o.door.openedBy.empty())) { o.door.openedBy.clear(); ch_ = true; }
                 for (const Beam& b : weapons.beams) if (ImGui::Selectable(b.name.c_str(), o.door.openedBy == b.name)) { o.door.openedBy = b.name; o.door.color = b.color; ch_ = true; }
                 if (ImGui::Selectable("Missile", o.door.openedBy == "Missile")) { o.door.openedBy = "Missile"; o.door.color = 0xFF3A3A; ch_ = true; }
+                if (ImGui::Selectable("Bomb", o.door.openedBy == "Bomb")) { o.door.openedBy = "Bomb"; o.door.color = 0xFFB040; ch_ = true; }
                 ImGui::EndCombo();
             }
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Picking a beam also takes its colour.");
@@ -1688,6 +1701,7 @@ struct App {
         world->objectSolids.clear();
         for (size_t i = 0; i < objects.size(); i++) {
             if ((int)i == movingObj || Gone(objects[i])) continue;
+            if (!playMode && objects[i].kind == ObjKind::Door) continue;   // editing: doors cannot be opened, so you go through them
             FrameRef m = ModelOf(objects[i]); if (!m) continue;
             const WorldObject& o = objects[i];
             if (o.kind == ObjKind::Door) {   // a door: its frame always; its halves and its forcefield only while it is shut
@@ -1726,7 +1740,7 @@ struct App {
         }
     }
     void LoadWorldObjects() {
-        objects.clear(); loadObjects(worldDir + "/objects.txt", objects); loadEvents(worldDir + "/events.txt", events);
+        objects.clear(); loadObjects(worldDir + "/objects.txt", objects); loadEvents(worldDir + "/events.txt", events); loadBreakables(worldDir + "/breakable.txt", breakables);
         nextObjId = 1; for (auto& o : objects) nextObjId = std::max(nextObjId, o.id + 1);
         movingObj = -1; placing.clear(); RebuildSolids();
     }
@@ -1910,6 +1924,10 @@ struct App {
             if (ImGui::Button("Fill (F)", ImVec2(bw, 0))) SelFill(reg.has(held) ? hotbar[hotSel] : reg.find("stone"));
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("With the block in your hand: %s", reg.has(held) ? reg.get(held).name.c_str() : "stone");
             ImGui::SameLine(); if (ImGui::Button("Delete (Del)", ImVec2(bw, 0))) SelFill(AIR);
+            ImGui::SeparatorText("Breakable");
+            Prop("Breaks with"); BreakerCombo("##sbt", breakTool);
+            if (ImGui::Button("Mark the box", ImVec2(bw, 0))) { int n = 0; for (int x = lo.x; x <= hi.x; x++) for (int y = lo.y; y <= hi.y; y++) for (int z = lo.z; z <= hi.z; z++) if (world->get(x, y, z) != AIR) { breakables.mark(x, y, z, breakTool); n++; } Toast(std::to_string(n) + " blocks marked breakable"); }
+            ImGui::SameLine(); if (ImGui::Button("Unmark the box", ImVec2(bw, 0))) { for (int x = lo.x; x <= hi.x; x++) for (int y = lo.y; y <= hi.y; y++) for (int z = lo.z; z <= hi.z; z++) breakables.unmark(x, y, z); }
             ImGui::SeparatorText("Make into object");
             Prop("Name"); ImGui::InputTextWithHint("##mname", "Model name", &newModelName);
             Prop("Replace the blocks"); ImGui::Checkbox("##repl", &replaceWithObject);
@@ -1978,6 +1996,7 @@ struct App {
         }
         if (toolSel == 2) { ObjectToolClick(L && !lPrev, R && !rPrev); lPrev = L; rPrev = R; return; }
         if (toolSel == 3) { PathToolClick(L && !lPrev, R && !rPrev); lPrev = L; rPrev = R; return; }
+        if (toolSel == 4) { BreakToolClick(L, R); lPrev = L; rPrev = R; return; }
         if (toolSel != 0) { lPrev = L; rPrev = R; return; }   // more tools come later
         if (!stroking && ((L && !lPrev) || (R && !rPrev)) && toolValid) {
             stroking = true; strokeOp = L ? brush.op : opposite(brush.op); strokeY = toolHit.y; dabCool = 0; strokeSeed = (uint32_t)GetTickCount();
@@ -1992,7 +2011,7 @@ struct App {
         if (strokeOp == BrushOp::Add) c = { toolHit.x + toolHit.nx, toolHit.y + toolHit.ny, toolHit.z + toolHit.nz };   // grows out of the surface
         stroke.apply(*world, brushEdits(*world, b, c, BrushMaterial(), strokeY, strokeSeed));
     }
-    std::string ToolName() const { return toolSel == 0 ? BrushLabel() : toolSel == 1 ? "Selection box" : toolSel == 2 ? (placing.empty() ? "Objects" : "Objects: placing " + placing) : toolSel == 3 ? "Platform path" : "(empty tool slot)"; }
+    std::string ToolName() const { return toolSel == 0 ? BrushLabel() : toolSel == 1 ? "Selection box" : toolSel == 2 ? (placing.empty() ? "Objects" : "Objects: placing " + placing) : toolSel == 3 ? "Platform path" : toolSel == 4 ? "Breakable blocks: " + BreakerLabel(breakTool) : "(empty tool slot)"; }
     std::string ToolLabel() const {
         switch (toolSel) {
         case 0: return BrushLabel() + "   (Q: brush options, T: back to blocks)";
@@ -2008,6 +2027,13 @@ struct App {
         return std::string("Terrain brush: ") + shapeInfo(brush.shape).name + ", " + opInfo(brush.op).name + ", size " + std::to_string(brush.radius);
     }
     void ToolIcon(ImDrawList* dl, int tool, ImVec2 c, float s) {
+        if (tool == 4) {   // breakable blocks: a cracked block
+            float h = s * 0.4f; ImU32 col = IM_COL32(255, 170, 60, 255);
+            dl->AddRect(ImVec2(c.x - h, c.y - h), ImVec2(c.x + h, c.y + h), col, 2, 0, 2);
+            dl->AddLine(ImVec2(c.x - h * 0.2f, c.y - h), ImVec2(c.x + h * 0.1f, c.y - h * 0.2f), col, 2); dl->AddLine(ImVec2(c.x + h * 0.1f, c.y - h * 0.2f), ImVec2(c.x - h * 0.3f, c.y + h * 0.3f), col, 2);
+            dl->AddLine(ImVec2(c.x - h * 0.3f, c.y + h * 0.3f), ImVec2(c.x + h * 0.2f, c.y + h), col, 2); dl->AddLine(ImVec2(c.x + h * 0.1f, c.y - h * 0.2f), ImVec2(c.x + h, c.y + h * 0.1f), col, 2);
+            return;
+        }
         if (tool == 1) {   // selection box: a dashed square
             float h = s * 0.42f; ImU32 col = IM_COL32(120, 220, 255, 255);
             for (int i = 0; i < 4; i++) { float t0 = -h + i * h * 0.5f + h * 0.06f, t1 = t0 + h * 0.3f;
@@ -2290,7 +2316,9 @@ struct App {
     }
     void RenderWorld(ID3D11RenderTargetView* out) {
         aspect = (float)rw / rh; camPos = player.eye();
-        V3 f = player.forward(), r = normalize(cross({ 0, 1, 0 }, f)), u = cross(f, r);
+        V3 f = player.forward();
+        if (playMode && player.ball) BallCamera(camPos, f);   // the morph ball: seen from behind
+        V3 r = normalize(cross({ 0, 1, 0 }, f)), u = cross(f, r);
         float farZ = (settings.renderDistance + 2) * CS * 1.5f;
         view = XMMatrixLookToLH(XMVectorZero(), XMVectorSet((float)f.x, (float)f.y, (float)f.z, 0), XMVectorSet(0, 1, 0, 0));   // camera at the origin
         proj = XMMatrixPerspectiveFovLH(XMConvertToRadians(settings.fov), aspect, 0.05f, farZ);
@@ -2382,6 +2410,7 @@ struct App {
                 if (o.kind != ObjKind::Platform) { DrawObject(o, pass); continue; }
                 for (const V3& off : PlatformOffsets(o)) { WorldObject at = o; at.pos = o.pos + off; DrawObject(at, pass); }
             }
+            DrawBall(pass, camPos);
         };
         ID3D11ShaderResourceView* none[5] = {};
         ctx->PSSetShaderResources(0, 5, none);
@@ -2666,7 +2695,7 @@ struct App {
             for (auto& k : e) Line3D(dl, q[k[0]], q[k[1]], IM_COL32(255, 255, 255, 160));
         }
         DrawObjectGuides(dl);
-        DrawPaths(dl);
+        DrawPaths(dl); DrawBreakables(dl);
         HelperGuides(dl);
         if (!playMode && info.hasSpawn) {   // the spawn point: a green player-sized box with an arrow where it looks
             V3 f = info.spawn; double hw = player.halfW, H = player.height;
@@ -2869,6 +2898,7 @@ struct App {
         play = PlayState{}; play.start(player, game.player, playSpawn, playYaw);
         weapState = WeaponState{}; weapPose = WeaponPose{}; cannonClip = -1; firedPending = 0; missilePrev = true;
         activeTl.clear(); chargeTlOn = false; freeAim = FreeAim{}; aimYaw = aimPitch = 0; stepDist = 0;
+        player.ball = false; bombsOut.clear(); flashes.clear(); broken.clear(); ballCamSet = false;
         for (int i = 0; i < (int)weapons.beams.size(); i++) if (weapons.beams[i].startsOwned) { weapState.current = i; break; }
         hudSway.reset(); hudShown.clear(); hudFlashAt.clear(); prevPlayYaw = player.yaw; prevPlayPitch = player.pitch; prevOnGround = true; prevVelY = 0;
         EvStart();
@@ -2880,7 +2910,8 @@ struct App {
         if (!playStartWorld.empty() && playStartWorld != CurrentWorld()) {   // went through a teleporter: back to the world you were editing
             travelling = true; SaveWorld(); OpenWorld(playStartWorld); travelling = false; editCam = startEditCam;
         }
-        playMode = false; paused = false; player = editCam; Capture(false); captureNext = false; platRun.clear();
+        RestoreBroken(); bombsOut.clear(); flashes.clear();   // broken blocks come back
+        playMode = false; paused = false; player = editCam; player.ball = false; Capture(false); captureNext = false; platRun.clear();
         evHidden.clear(); evOff.clear(); evLocked.clear(); evHeld.clear(); evKick.clear(); evFlash.clear(); RebuildSolids();
         Toast("Back in the editor");
     }
@@ -3488,6 +3519,17 @@ struct App {
                 sl("Eye height", &r.eyeHeight, 0.1f, std::max(0.15f, r.height - 0.02f), "%.2f blocks");
                 sl("Steps up by itself", &r.stepHeight, 0, 2, "%.2f blocks");
                 sl("Morph ball size", &r.ballSize, 0.2f, 3, "%.2f blocks");
+                { const char* mo[] = { "None", "From the start", "Found later (\"Morph Ball\" pickup)" }; Prop("Morph ball (C)"); ImGui::Combo("##mb", &r.morphBall, mo, 3); }
+                if (r.morphBall) {
+                    sl("Rolling speed", &r.ballSpeed, 1, 20, "%.1f blocks/s");
+                    { const char* bo[] = { "None", "From the start", "Found later (\"Bombs\" pickup)" }; Prop("Bombs (fire button)"); ImGui::Combo("##bb", &r.bombs, bo, 3); }
+                    if (r.bombs) {
+                        sl("Bomb jump", &r.bombJump, 0, 6, "%.1f blocks");
+                        Prop("Bombs at once"); ImGui::SliderInt("##bao", &r.bombsAtOnce, 1, 6);
+                        sl("Fuse", &r.bombFuse, 0.2f, 3, "%.2f s"); sl("Reach", &r.bombReach, 0.5f, 4, "%.1f blocks");
+                    }
+                    Prop("Ball model"); if (ImGui::BeginCombo("##bm", r.ballModel.c_str())) { if (ImGui::Selectable("@morph-ball (built in)", r.ballModel == "@morph-ball")) r.ballModel = "@morph-ball"; for (const std::string& n : PartModels()) if (ImGui::Selectable(n.c_str(), r.ballModel == n)) r.ballModel = n; ImGui::EndCombo(); }
+                }
                 Hint("Fits through gaps at least %.2f wide and %.2f tall. The morph ball comes with the Samus controls; its size already shows in the 3D viewer.", r.width, r.height);
             }
             sl("Walk speed", &r.walkSpeed, 1, 15, "%.1f blocks/s");
@@ -3537,7 +3579,8 @@ struct App {
             break;
         case Sel::Tool:
             if (!toolMode) { Hint("Press T in the viewport for the tools."); break; }
-            ImGui::SeparatorText(toolSel == 0 ? "Terrain brush" : toolSel == 1 ? "Tools" : toolSel == 2 ? "Objects" : toolSel == 3 ? "Platform path" : "Tools");
+            ImGui::SeparatorText(toolSel == 0 ? "Terrain brush" : toolSel == 1 ? "Tools" : toolSel == 2 ? "Objects" : toolSel == 3 ? "Platform path" : toolSel == 4 ? "Breakable blocks" : "Tools");
+            if (toolSel == 4) BreakToolInspector();
             if (toolSel == 0) BrushBody();
             else if (toolSel == 1) SelectionInspector();
             else if (toolSel == 3) {
@@ -4224,6 +4267,7 @@ struct App {
     struct CamPart { std::string model; V3 base, ax, ay, az; const ModelGpu* gpu = nullptr; bool cannon = false; };
     std::vector<CamPart> CameraParts(const HudSway& sw, const WeaponPose& wp) {
         std::vector<CamPart> out;
+        if (playMode && player.ball) return out;   // the morph ball: no helmet, no cannon
         for (const HudPart& p : hud.parts) {
             if (!p.visible || !ModelNamed(p.model)) continue;
             CamPart c; c.model = p.model; partAxes(p, c.ax, c.ay, c.az); float k = p.sway;
@@ -4270,6 +4314,11 @@ struct App {
     }
     void FireWeapons(double dt) {
         weapState.tick((float)dt);
+        if (player.ball) {   // the morph ball: the fire button lays a bomb
+            bool L = (Playing() && !play.dead() && Down(VK_LBUTTON)) || holdBeam;
+            if (L && !shootPrev) DropBomb();
+            shootPrev = L; missilePrev = Down(VK_RBUTTON); UpdateTimelines(dt, true); return;
+        }
         const Beam* b = CurrentBeam(); if (!b) return;
         bool can = Playing() && !play.dead() && OwnsBeam(*b);
         bool L = (can && Down(VK_LBUTTON)) || (holdBeam && OwnsBeam(*b)), R = can && Down(VK_RBUTTON);
@@ -4635,6 +4684,10 @@ struct App {
             Prop("A step every"); ch |= ImGui::SliderFloat("##se", &playerSounds.stepEvery, 0.4f, 5, "%.1f blocks walked");
             ImGui::SeparatorText("Jump"); ch |= SoundEdit("jump", playerSounds.jump, true);
             ImGui::SeparatorText("Landing"); ch |= SoundEdit("land", playerSounds.land, true);
+            ImGui::SeparatorText("Morph ball in / out"); ch |= SoundEdit("morph", playerSounds.morph, true);
+            ImGui::SeparatorText("Bomb laid"); ch |= SoundEdit("bomb", playerSounds.bomb, true);
+            ImGui::SeparatorText("Bomb goes off"); ch |= SoundEdit("boom", playerSounds.boom, true);
+            ImGui::SeparatorText("A block breaks"); ch |= SoundEdit("crumble", playerSounds.crumble, true);
             { float r[2] = { playerSounds.landQuiet, playerSounds.landLoud }; Prop("Quiet .. loud at"); if (ImGui::DragFloat2("##ll", r, 0.1f, 0, 80, "%.1f blocks/s")) { playerSounds.landQuiet = r[0]; playerSounds.landLoud = std::max(r[0] + 0.5f, r[1]); ch = true; } }
             Hint("Landing gets louder the faster you fall: silent below the first speed, full volume at the second. The numbers under each sound: volume, pitch, random pitch; then the cut (start into the sound, how long).");
             ImGui::TableNextColumn();
@@ -4817,6 +4870,156 @@ struct App {
             ch |= SoundEdit("tlsnd", c.sound, true);
             if (ImGui::SmallButton("Remove this sound") || (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && ImGui::IsKeyPressed(ImGuiKey_Delete))) { t.sounds.erase(t.sounds.begin() + tlSel); tlSel = -1; ch = true; }
         } else Hint("Drag a sound to move it, its edges to cut it. Drag the end of the animation to speed it up or slow it down, and the yellow mark to set when the shot leaves. Shift snaps; Ctrl + wheel zooms.");
+    }
+    // ================================================================== the morph ball, bombs, breakable blocks
+    Breakables breakables; std::string breakTool;            // breakTool: what the "Breakable blocks" tool marks with ("" any shot)
+    struct Broken { int x, y, z; BlockId was; }; std::vector<Broken> broken;   // Play mode: blocks broken (they come back when Play ends)
+    struct Bomb { V3 pos; float fuse; ParticleEmitter fx; }; std::vector<Bomb> bombsOut;
+    struct Flash { V3 pos; float t; V3 col; double range; }; std::vector<Flash> flashes;
+    V3 ballAx{ 1, 0, 0 }, ballAy{ 0, 1, 0 }, ballAz{ 0, 0, 1 }; V3 ballCamEye{ 0, 0, 0 }; bool ballCamSet = false;
+    bool HasMorphBall() const { int m = game.player.morphBall; return m == 1 || (m == 2 && inv.keys.count("Morph Ball")); }
+    bool HasBombs() const { int m = game.player.bombs; return HasMorphBall() && (m == 1 || (m == 2 && inv.keys.count("Bombs"))); }
+    V3 BallCentre() const { return { player.feet.x, player.feet.y + player.height * 0.5, player.feet.z }; }
+    void ToggleBall() {
+        if (!playMode || play.dead()) return;
+        if (!player.ball) {
+            if (!HasMorphBall()) { Toast(game.player.morphBall == 0 ? "No morph ball in this game" : "You have not found the Morph Ball yet"); return; }
+            player.ball = true; player.applySize(game.player); ballCamSet = false; PlaySound(playerSounds.morph);
+            StopChargeTimeline(); chargeTlOn = false; weapState.charging = false; weapState.charge = 0;
+        } else {
+            PlayerRules r = game.player; Player stand = player; stand.ball = false; stand.applySize(r);
+            if (!world->boxFree(player.feet, stand.halfW, stand.height)) { Toast("No room to stand up here"); return; }
+            player.ball = false; player.applySize(game.player); PlaySound(playerSounds.morph, 0.8f);
+        }
+    }
+    void BreakBlock(int x, int y, int z) {
+        BlockId was = world->get(x, y, z); if (was == AIR) return;
+        broken.push_back({ x, y, z, was }); world->set(x, y, z, AIR);
+        V3 c{ x + 0.5, y + 0.5, z + 0.5 };
+        ParticleSettings d = particlePreset("Impact"); d.burst = 40; d.color0 = 0xB0A898; d.color1 = 0x605850; d.glow = 0.3f; d.shape = PShape::Pixel; d.size0 = 0.09f; d.size1 = 0.05f; d.areaSize = { 0.5, 0.5, 0.5 }; d.area = PArea::Box; SpawnFx(d, c, { 0, 1, 0 });
+        ParticleSettings sm = particlePreset("Smoke"); sm.rate = 0; sm.burst = 10; sm.burstEvery = 99; SpawnFx(sm, c, { 0, 1, 0 });
+        PlaySound(playerSounds.crumble, 1, &c);
+    }
+    void RestoreBroken() { for (auto it = broken.rbegin(); it != broken.rend(); ++it) world->set(it->x, it->y, it->z, it->was); broken.clear(); }
+    bool TryBreak(int x, int y, int z, const std::string& weapon, bool missile, bool charged) {
+        const std::string* br = breakables.breaker(x, y, z); if (!br || !breaksWith(*br, weapon, missile, charged)) return false;
+        BreakBlock(x, y, z); return true;
+    }
+    void DropBomb() {
+        if (!HasBombs()) { if (game.player.bombs == 2) Toast("You have not found the Bombs yet"); return; }
+        if ((int)bombsOut.size() >= std::max(1, game.player.bombsAtOnce)) return;
+        ParticleSettings p = particlePreset("Charge"); p.color0 = 0xFFFFFF; p.color1 = 0xFFC040; p.areaSize = { 0.06, 0.06, 0.06 }; p.rate = 40; p.size1 = 0.06f;
+        bombsOut.push_back({ BallCentre(), std::max(0.1f, game.player.bombFuse), ParticleEmitter(p, (uint32_t)(GetTickCount() + bombsOut.size())) });
+        PlaySound(playerSounds.bomb);
+    }
+    void Explode(V3 at) {
+        ParticleSettings b = particlePreset("Impact"); b.burst = 70; b.speed = 6; b.color0 = 0xFFFFE0; b.color1 = 0xFF9020; b.size0 = 0.08f; SpawnFx(b, at, { 0, 1, 0 });
+        ParticleSettings f = particlePreset("Fire"); f.rate = 0; f.burst = 30; f.burstEvery = 99; f.life = 0.4f; SpawnFx(f, at, { 0, 1, 0 });
+        flashes.push_back({ at, 0, { 3.0, 1.8, 0.6 }, 7 });
+        PlaySound(playerSounds.boom, 1, &at);
+        double reach = std::max(0.3f, game.player.bombReach);
+        for (auto& p : blocksInReach(at, reach)) TryBreak(p[0], p[1], p[2], "Bomb", false, false);
+        if (player.ball) { double up = bombLift(at, BallCentre(), reach + 0.35, game.player.bombJumpSpeed()); if (up > 0) { player.vel.y = std::max(player.vel.y, up); player.onGround = false; } }
+        for (WorldObject& o : objects) {   // bomb doors
+            if (o.kind != ObjKind::Door || o.door.openedBy != "Bomb" || Gone(o)) continue;
+            FrameRef f = ModelOf(o); if (!f) continue; Box3 fb = fieldBox(o, *f, OpeningOf(o.model));
+            V3 c{ std::clamp(at.x, fb.lo.x, fb.hi.x), std::clamp(at.y, fb.lo.y, fb.hi.y), std::clamp(at.z, fb.lo.z, fb.hi.z) }, d = c - at;
+            if (d.x * d.x + d.y * d.y + d.z * d.z <= (reach + 0.4) * (reach + 0.4) && DoorNow(o).blocks()) doorRt[o.id].shoot(0.5f, 0.5f);
+        }
+        for (const WorldObject& o : objects) {   // "when something is shot" counts bombs too
+            if (o.name.empty() || Gone(o) || o.kind == ObjKind::Trigger) continue;
+            FrameRef f = ModelOf(o); if (!f) continue; Box3 b = objectBounds(o, *f); double g = reach * 0.6;
+            if (at.x > b.lo.x - g && at.x < b.hi.x + g && at.y > b.lo.y - g && at.y < b.hi.y + g && at.z > b.lo.z - g && at.z < b.hi.z + g) Signal(When::Shot, o.name);
+        }
+    }
+    void UpdateBall(double dt) {   // bombs tick, flashes fade, and the ball turns as it rolls
+        for (Bomb& b : bombsOut) { b.fuse -= (float)dt; b.fx.update(dt, b.pos, 0, nullptr, b.fuse > 0); }
+        for (size_t i = 0; i < bombsOut.size();) { if (bombsOut[i].fuse <= 0) { V3 at = bombsOut[i].pos; fx.push_back(bombsOut[i].fx); bombsOut.erase(bombsOut.begin() + i); Explode(at); } else i++; }
+        for (Flash& f : flashes) f.t += (float)dt;
+        flashes.erase(std::remove_if(flashes.begin(), flashes.end(), [](const Flash& f) { return f.t > 0.35f; }), flashes.end());
+        if (!player.ball) return;
+        double sp = std::sqrt(player.vel.x * player.vel.x + player.vel.z * player.vel.z), r = std::max(0.05, game.player.ballSize * 0.5);
+        if (sp > 1e-4) {   // roll: turn around the axis across the way it goes
+            V3 axis = Norm(cross({ 0, 1, 0 }, { player.vel.x, 0, player.vel.z })); double a = sp * dt / r, c = std::cos(a), s = std::sin(a);
+            auto rot = [&](V3 v) { V3 kxv = cross(axis, v); double kd = axis.x * v.x + axis.y * v.y + axis.z * v.z; return v * c + kxv * s + axis * (kd * (1 - c)); };
+            ballAx = Norm(rot(ballAx)); ballAy = Norm(rot(ballAy)); ballAz = Norm(cross(ballAx, ballAy)); ballAy = cross(ballAz, ballAx);
+        }
+    }
+    // the third-person camera behind the ball (it does not go through walls)
+    void BallCamera(V3& eye, V3& fwd) {
+        V3 c = BallCentre(); double cp = std::clamp(player.pitch, -1.1, 0.4);
+        V3 d{ std::sin(player.yaw) * std::cos(cp), std::sin(cp), std::cos(player.yaw) * std::cos(cp) };
+        double dist = 2.6 + game.player.ballSize; V3 want = c - d * dist + V3{ 0, 0.5 + game.player.ballSize * 0.3, 0 };
+        V3 e = want - c; double L = std::sqrt(e.x * e.x + e.y * e.y + e.z * e.z); e = e * (1 / std::max(1e-6, L));
+        Hit h; if (world->raycast(c, e, L, h)) want = c + e * std::max(0.25, h.t - 0.25);
+        if (!ballCamSet) { ballCamEye = want; ballCamSet = true; }
+        ballCamEye = ballCamEye + (want - ballCamEye) * 0.35;
+        eye = ballCamEye; fwd = Norm(c + V3{ 0, 0.25, 0 } - eye);
+    }
+    void DrawBall(int pass, V3 cam) {
+        if (!playMode || !player.ball) return;
+        const std::string& model = game.player.ballModel.empty() ? std::string("@morph-ball") : game.player.ballModel;
+        FrameRef m = ModelNamed(model); if (!m) return;
+        const ModelGpu& g = GpuModel(model); if (g.mesh) ctx->PSSetShaderResources(9, 1, g.tex.GetAddressOf());
+        double s = game.player.ballSize / std::max(0.05, std::max({ m->sx, m->sy, m->sz }));   // scaled so its biggest side is the ball size
+        V3 ax = ballAx * s, ay = ballAy * s, az = ballAz * s;
+        V3 mc{ 0, m->sy * 0.5, 0 };   // the model's middle, from its pivot (bottom middle)
+        V3 base = BallCentre() - cam - (ax * mc.x + ay * mc.y + az * mc.z);
+        for (auto& part : g.parts) {
+            const GpuChunk& gc = part.second; UINT n = pass == 0 ? gc.nO : pass == 1 ? gc.nC : gc.nW; if (!n) continue;
+            V3 l{ part.first.x * (double)CS - m->pivot.x, part.first.y * (double)CS - m->pivot.y, part.first.z * (double)CS - m->pivot.z };
+            V3 org = base + ax * l.x + ay * l.y + az * l.z;
+            ChunkCB cc{ { (float)org.x, (float)org.y, (float)org.z, 0 }, { (float)ax.x, (float)ax.y, (float)ax.z, 0 }, { (float)ay.x, (float)ay.y, (float)ay.z, 0 }, { (float)az.x, (float)az.y, (float)az.z, 0 } };
+            ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);
+            UINT stride = sizeof(Vtx), off = 0;
+            ctx->IASetVertexBuffers(0, 1, pass == 0 ? gc.vbO.GetAddressOf() : pass == 1 ? gc.vbC.GetAddressOf() : gc.vbW.GetAddressOf(), &stride, &off);
+            ctx->IASetIndexBuffer(pass == 0 ? gc.ibO.Get() : pass == 1 ? gc.ibC.Get() : gc.ibW.Get(), DXGI_FORMAT_R32_UINT, 0);
+            ctx->DrawIndexed(n, 0, 0);
+        }
+    }
+    // the editor: marked blocks get a coloured outline (what breaks them: the colour)
+    ImU32 BreakerColour(const std::string& b) {
+        if (b.empty()) return IM_COL32(230, 235, 255, 220);
+        if (b == "Bomb") return IM_COL32(255, 170, 60, 230);
+        if (b == "Missile") return IM_COL32(255, 70, 70, 230);
+        if (b == "Charged shot") return IM_COL32(255, 230, 90, 230);
+        for (const Beam& w : weapons.beams) if (w.name == b) return IM_COL32((w.color >> 16) & 255, (w.color >> 8) & 255, w.color & 255, 230);
+        return IM_COL32(200, 120, 255, 230);
+    }
+    void DrawBreakables(ImDrawList* dl) {
+        if (playMode || breakables.marks.empty()) return;
+        bool tool = toolMode && toolSel == 4; double reach = tool ? 48 : 28; int drawn = 0; V3 e = player.eye();
+        for (auto& kv : breakables.marks) {
+            const auto& p = kv.first; double dx = p[0] + 0.5 - e.x, dy = p[1] + 0.5 - e.y, dz = p[2] + 0.5 - e.z;
+            if (dx * dx + dy * dy + dz * dz > reach * reach || world->get(p[0], p[1], p[2]) == AIR) continue;
+            if (++drawn > 4000) break;
+            ImU32 col = BreakerColour(kv.second); const double g = 0.02;
+            V3 a{ p[0] - g, p[1] - g, p[2] - g }, b{ p[0] + 1 + g, p[1] + 1 + g, p[2] + 1 + g };
+            V3 c[8]; for (int i = 0; i < 8; i++) c[i] = { (i & 1) ? b.x : a.x, (i & 2) ? b.y : a.y, (i & 4) ? b.z : a.z };
+            const int ed[12][2] = { { 0, 1 }, { 2, 3 }, { 4, 5 }, { 6, 7 }, { 0, 2 }, { 1, 3 }, { 4, 6 }, { 5, 7 }, { 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 } };
+            for (auto& k : ed) Line3D(dl, c[k[0]], c[k[1]], col);
+            Line3D(dl, c[0], c[7], (col & 0x00FFFFFF) | 0x60000000); Line3D(dl, c[3], c[4], (col & 0x00FFFFFF) | 0x60000000);   // a cross: "this one breaks"
+        }
+    }
+    std::vector<std::string> Breakers() { std::vector<std::string> v{ "", "Bomb", "Missile", "Charged shot" }; for (const Beam& b : weapons.beams) v.push_back(b.name); return v; }
+    static std::string BreakerLabel(const std::string& b) { return b.empty() ? "Any shot (or bomb, or missile)" : b == "Bomb" ? "Bombs only" : b == "Missile" ? "Missiles only" : b == "Charged shot" ? "Charged shots only" : b + " only"; }
+    bool BreakerCombo(const char* id, std::string& v) {
+        bool ch = false;
+        if (ImGui::BeginCombo(id, BreakerLabel(v).c_str())) { for (const std::string& b : Breakers()) if (ImGui::Selectable(BreakerLabel(b).c_str(), v == b)) { v = b; ch = true; } ImGui::EndCombo(); }
+        return ch;
+    }
+    void BreakToolClick(bool L, bool R) {   // tool slot 5: left marks (hold and sweep to paint), right unmarks
+        if (!toolValid) return;
+        int x = toolHit.x, y = toolHit.y, z = toolHit.z;
+        if (L) { const std::string* b = breakables.breaker(x, y, z); if (!b || *b != breakTool) breakables.mark(x, y, z, breakTool); }
+        if (R) breakables.unmark(x, y, z);
+    }
+    void BreakToolInspector() {
+        Prop("Breaks with"); BreakerCombo("##bt", breakTool);
+        Hint("Left click marks a block (hold and sweep to mark many), right click unmarks it. In the game, marked blocks break when hit with what you picked, and come back when Play ends. The outline colour says what breaks them.");
+        ImGui::Text("%d blocks marked in this world", (int)breakables.marks.size());
+        if (!breakables.marks.empty() && ImGui::SmallButton("Unmark all")) { breakables.marks.clear(); Toast("All marks removed"); }
+        ImGui::TextDisabled("A box of blocks: the selection box tool can mark it too.");
     }
     // ---- Events: the game's logic as cards, one card = "when ... only if ... do ..."
     static bool KindFits(const WorldObject& o, const std::string& k) {
@@ -5666,6 +5869,31 @@ struct App {
                 weapons.aimMode = 0;
                 Log("weapons: " + std::to_string(shots.size()) + " shots flying, missiles left " + std::to_string(inv.counts["Missile"]));
                 StopPlay(); hud = HudLayout{}; weapons = WeaponSet{}; SaveHud();
+            }
+            {   // breakable blocks, the morph ball and bombs: mark a little wall in the editor, then roll up to it and bomb it
+                poseAt(demoShots()[1]);
+                V3 e = player.eye(), fw = player.forward(); fw.y = 0; fw = Norm(fw); V3 side = Norm(cross({ 0, 1, 0 }, fw));
+                int sx = (int)std::lround(side.x), sz = (int)std::lround(side.z);
+                int gx = (int)std::floor(e.x + fw.x * 4.5), gz = (int)std::floor(e.z + fw.z * 4.5), gyy = (int)std::floor(e.y);
+                while (gyy > e.y - 12 && world->get(gx, gyy - 1, gz) == AIR) gyy--;
+                BlockId stone = reg.find("stone");
+                for (int i = -1; i <= 1; i++) for (int j = 0; j < 2; j++) { world->set(gx + sx * i, gyy + j, gz + sz * i, stone); breakables.mark(gx + sx * i, gyy + j, gz + sz * i, i == 0 && j == 0 ? "Bomb" : j == 1 ? "" : "Missile"); }
+                world->set(gx + sx * 2, gyy, gz + sz * 2, stone);   // one more that is not marked
+                toolMode = true; toolSel = 4; sel = Sel::Tool; breakTool = "Bomb";
+                frames(6, "breakable_tool");
+                toolMode = false; sel = Sel::World;
+                StartPlay(false); poseAt(demoShots()[1]); play.health = game.player.maxHealth; toastT = 0;
+                player.feet = { gx + 0.5 - fw.x * 1.0, (double)gyy, gz + 0.5 - fw.z * 1.0 }; player.vel = { 0, 0, 0 }; player.pitch = -0.25;
+                auto run = [&](int n) { for (int k = 0; k < n; k++) { FrameBody(1.0 / 60); swap->Present(0, 0); retired.clear(); } };
+                ToggleBall(); run(30);
+                frames(1, "morph_ball");
+                holdBeam = true; run(2); holdBeam = false; run(25);
+                frames(1, "bomb_laid");
+                run(30);
+                frames(1, "bomb_went_off");
+                Log("bomb: " + std::to_string(broken.size()) + " block(s) broken, ball " + (player.ball ? "rolled up" : "standing"));
+                ToggleBall(); StopPlay();
+                for (int i = -1; i <= 2; i++) for (int j = 0; j < 2; j++) { world->set(gx + sx * i, gyy + j, gz + sz * i, AIR); breakables.unmark(gx + sx * i, gyy + j, gz + sz * i); }
             }
             {   // tools: sculpt a little landscape with the terrain brush, then show it with the brush options open
                 auto ground = [&](int x, int z) { for (int y = 40; y > -40; y--) { BlockId v = world->get(x, y, z); if (v != AIR && !reg.get(v).liquid) return y; } return 0; };

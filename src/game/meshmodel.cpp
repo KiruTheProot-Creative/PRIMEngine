@@ -563,6 +563,19 @@ bool builtinShape(const std::string& name, MeshModel& m) {
         slab({ -0.04, 0.55, -0.04 }, { 0.04, 0.8, 0.04 }, m);
         slab({ 0.06, 0.1, -0.02 }, { 0.075, 0.5, 0.02 }, c);
     }
+    else if (name == "@morph-ball") {   // the morph ball (not in the object list): 1 block across, its middle at 0.5
+        int shell = colour(0xD8722E), dark = colour(0x5A3018), glow = colour(0xFFE070);
+        const int LON = 16, LAT = 10;
+        auto P = [&](int i, int j) { double th = 3.14159265358979 * j / LAT, ph = 6.28318530717959 * i / LON; return V3{ std::sin(th) * std::cos(ph) * 0.5, 0.5 + std::cos(th) * 0.5, std::sin(th) * std::sin(ph) * 0.5 }; };
+        for (int j = 0; j < LAT; j++) for (int i = 0; i < LON; i++) {
+            V3 a = P(i, j), b = P(i + 1, j), c = P(i + 1, j + 1), d = P(i, j + 1);
+            int img = (j == LAT / 2 - 1 || j == LAT / 2) ? (i % 4 == 0 ? glow : dark) : (i % 4 == 0 && (j == 2 || j == LAT - 3)) ? glow : shell;
+            auto mv = [&](V3 p) { V3 n{ p.x, p.y - 0.5, p.z }; return MeshVert{ { (float)p.x, (float)p.y, (float)p.z }, { 0.5f, 0.5f }, { (float)(n.x * 2), (float)(n.y * 2), (float)(n.z * 2) } }; };
+            V3 mid{ (a.x + c.x) * 0.5, (a.y + c.y) * 0.5 - 0.5, (a.z + c.z) * 0.5 }; float rf[3] = { (float)mid.x, (float)mid.y, (float)mid.z };
+            if (j > 0) B.tri(mv(a), mv(b), mv(c), img, rf);
+            if (j < LAT - 1) B.tri(mv(a), mv(c), mv(d), img, rf);
+        }
+    }
     else if (name == "@arm-cannon") {   // a simple arm cannon (weapons; not in the object list): its barrel points to +Z
         int b = colour(0xC0602A), g = colour(0x8A8F9A), d = colour(0x4A5262), c = colour(0x6CF0FF);
         slab({ -0.15, -0.15, 0 }, { 0.15, 0.15, 0.5 }, b);
