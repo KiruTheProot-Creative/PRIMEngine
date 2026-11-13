@@ -9,6 +9,7 @@
 #include "../src/game/hud.h"
 #include "../src/game/weapons.h"
 #include "../src/game/breakable.h"
+#include "../src/game/materials.h"
 #include <map>
 #include <set>
 #include <filesystem>
@@ -734,6 +735,20 @@ int main() {
           std::string d = describe(t);
           CHECK(d == "When the player walks into Hall, only if the player has the Red key: open Gate, wait 2 s, show \"Hi\" (once).", "a card reads as one sentence: %s", d.c_str()); }
         CHECK(std::string(needOf(Do::OpenDoor).objectKind) == "door" && needOf(When::Every).number, "each part says what it needs");
+    }
+
+    {   // materials per texture
+        TexMaterial iron = guessMaterial("iron_block"), lamp = guessMaterial("Red Lamp"), dirt = guessMaterial("dirt"), glass = guessMaterial("glass");
+        CHECK(iron.metal > 0.5f && iron.shine > 0.3f && lamp.glow > 0 && lamp.glowFrom > 0 && dirt == TexMaterial{} && glass.shine > 0.5f && glass.coat == 0, "a texture's name gives a first guess (iron: metal, lamp: glows, glass: shiny, dirt: plain)");
+        Materials mats; TexMaterial gold; gold.metal = 1; gold.shine = 0.9f; gold.coat = 0.25f; mats.put("dirt", gold);
+        CHECK(mats.of("dirt").metal == 1 && mats.of("iron_block").metal == iron.metal, "set up textures keep their settings, the others get the guess");
+        BlockRegistry r; std::vector<uint8_t> px(16 * 16 * 4, 200); r.setTexture("dirt", 16, 16, px); r.setTexture("glow lamp", 16, 16, px);
+        std::vector<float> tb = mats.table(r); int di = r.textureIndex("dirt"), li = r.textureIndex("glow lamp");
+        CHECK(tb.size() == r.textureCount() * 8 && tb[di * 8 + 1] == 1 && tb[di * 8 + 5] == 0.25f && tb[li * 8 + 2] > 0 && tb[0] == 0, "the shaders get 8 numbers per texture layer");
+        saveMaterials("/tmp/prim_mats.txt", mats); Materials back; loadMaterials("/tmp/prim_mats.txt", back);
+        CHECK(back.isSet("dirt") && back.of("dirt") == gold && !back.isSet("iron_block"), "materials save and load");
+        mats.reset("dirt"); CHECK(!mats.isSet("dirt") && mats.of("dirt") == TexMaterial{}, "reset: back to the guess");
+        { Materials sp; TexMaterial a; a.glow = 0.5f; sp.put("my texture 2", a); saveMaterials("/tmp/prim_mats2.txt", sp); Materials b; loadMaterials("/tmp/prim_mats2.txt", b); CHECK(b.of("my texture 2").glow == 0.5f, "names with spaces save too"); }
     }
 
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);

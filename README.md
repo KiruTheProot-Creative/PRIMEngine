@@ -158,6 +158,12 @@ right mouse fires a missile (ammo is a counter, "Missile" by default, so the HUD
 - **Charge shot:** a tap fires a normal shot; hold and it charges at the muzzle (particles and light); let go when it is full for a bigger, stronger shot (time, damage, size, speed and look per beam). The HUD can show it (Shows > Beam charge).
 - **The cannon's layer:** it has its own depth, so it never cuts into the HUD: behind the HUD (default, like a visor) or "Cannon in front of the HUD".
 
+## Textures: bumps, coat and materials (like Complementary)
+
+- **Bumpy textures** (Settings > Look, generated normals): each texture's light and dark pixels become little bumps and dents with a bevel at the pixel edges, so the sun and lights catch them. Nothing to paint.
+- **Texture coat** (Settings > Look, coated textures): a fine noise inside every pixel (4 x 4 specks), so big flat pixels look like stone, dirt or wood. Both fade out where pixels get smaller than the screen's.
+- **Materials per texture** (Blocks & textures > Textures: click a texture): shiny, metal (reflects in its own colour), glows (only its bright pixels if you like: a lamp's bulb, lava's cracks), and its own bumps and coat strength. Textures nobody set up get a guess from their name (iron / gold / metal, glass / ice, lamp / glow / lava...). Saved in the project's `materials.txt`.
+
 ## Sounds, timelines and free aim
 
 - **Sounds:** WAV files (PCM 8/16/24/32-bit or float, any rate). Import them in Player editor > **Sounds** (or from any sound picker); they go into the project's `sounds` folder. Every sound use has volume, pitch, random pitch (so steps don't sound the same) and a cut (start into the sound, how long). Settings > Sound volume for everything.

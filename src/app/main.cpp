@@ -15,6 +15,7 @@
 #include "../game/events.h"
 #include "../game/hud.h"
 #include "../game/weapons.h"
+#include "../game/materials.h"
 #include "../game/sound.h"
 #include "../game/breakable.h"
 #include "../game/weather.h"
@@ -94,6 +95,7 @@ struct alignas(16) FrameCB {
     XMFLOAT4X4 skyVP; float weather[4], weather2[4];
     float env[4], envPart[4], envPartColor[4], refl[4], clipPlane[4], mirror[4], ao[4];
     float shadow2[4];   // x edge mode (0 sharp, 1 smooth, 2 realistic), y softness
+    float surf[4];      // x generated normals (0 off), y coated textures (0 off), z texture materials on (1)
 };
 struct alignas(16) ChunkCB { float offset[4]; float ax[4] = { 1, 0, 0, 0 }, ay[4] = { 0, 1, 0, 0 }, az[4] = { 0, 0, 1, 0 }; };   // axes: objects are turned and sized
 
@@ -361,6 +363,50 @@ struct App {
         RECT r; GetClientRect(hwnd, &r); cw = std::max<int>(2, r.right); ch = std::max<int>(2, r.bottom);
         MakeBackbuffer();
     }
+    // ---- materials per texture (shiny, metal, glowing, bumps, coat): a table the block shaders read by texture layer
+    Materials materials; bool matsDirty = true; ComPtr<ID3D11Buffer> matBuf; ComPtr<ID3D11ShaderResourceView> matSRV; size_t matCount = 0;
+    bool selectTexturesTab = false;
+    std::string matTex;   // the texture picked in Blocks & textures (its material shows next to the list)
+    void SaveMaterials() { if (!projectDir.empty()) saveMaterials(projectDir + "/materials.txt", materials); matsDirty = true; }
+    void BindMaterials() {
+        if (matsDirty || !matSRV) {
+            std::vector<float> t = materials.table(reg); size_t n = t.size() / 8; matsDirty = false;
+            if (!matBuf || n != matCount) {
+                if (matSRV) retired.push_back(matSRV);
+                D3D11_BUFFER_DESC d{}; d.ByteWidth = (UINT)(n * 32); d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_SHADER_RESOURCE; d.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED; d.StructureByteStride = 32;
+                D3D11_SUBRESOURCE_DATA sd{ t.data(), 0, 0 }; matBuf.Reset(); HR(dev->CreateBuffer(&d, &sd, &matBuf));
+                D3D11_SHADER_RESOURCE_VIEW_DESC v{}; v.Format = DXGI_FORMAT_UNKNOWN; v.ViewDimension = D3D11_SRV_DIMENSION_BUFFER; v.Buffer.FirstElement = 0; v.Buffer.NumElements = (UINT)n;
+                matSRV.Reset(); HR(dev->CreateShaderResourceView(matBuf.Get(), &v, &matSRV)); matCount = n;
+            } else ctx->UpdateSubresource(matBuf.Get(), 0, nullptr, t.data(), 0, 0);
+        }
+        ctx->PSSetShaderResources(10, 1, matSRV.GetAddressOf());
+    }
+    // the material of one texture (Blocks & textures > Textures, next to the list)
+    void MaterialPanel(const std::string& name) {
+        float ui = settings.uiScale;
+        int layer = reg.textureIndex(name); if (layer <= 0) { ImGui::TextDisabled("Click a texture to set up its material."); return; }
+        { ImVec2 p = ImGui::GetCursorScreenPos(); float s = 64 * ui; ImGui::Dummy(ImVec2(s, s)); TextureImage(layer, p, s, 0); }
+        ImGui::SameLine(); ImGui::BeginGroup(); ImGui::Text("%s", name.c_str());
+        bool own = materials.isSet(name); ImGui::TextDisabled(own ? "its own material" : "guessed from its name");
+        ImGui::EndGroup();
+        TexMaterial m = materials.of(name), before = m;
+        Prop("Shiny"); ImGui::SliderFloat("##msh", &m.shine, 0, 1, m.shine <= 0 ? "matt" : "%.2f");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Reflects the world (with Reflections on) and catches the sun as a highlight.");
+        Prop("Metal"); ImGui::SliderFloat("##mme", &m.metal, 0, 1, m.metal <= 0 ? "no" : "%.2f");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Metal shows less of its plain colour and reflects in its own colour (gold looks golden).\nWorks best together with Shiny.");
+        Prop("Glows"); ImGui::SliderFloat("##mgl", &m.glow, 0, 2, m.glow <= 0 ? "no" : "%.2f");
+        if (m.glow > 0) { Prop("Only pixels brighter than"); ImGui::SliderFloat("##mgf", &m.glowFrom, 0, 0.95f, m.glowFrom <= 0 ? "all of it" : "%.2f"); }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("0: the whole texture glows. Higher: only its bright parts (a lamp's bulb, lava's cracks).");
+        Prop("Bumps"); ImGui::SliderFloat("##mbu", &m.bumps, 0, 3, m.bumps <= 0 ? "flat" : "x %.2f");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Generated normals: light and dark pixels become little bumps and dents.\nTimes the global setting (Settings > Look > Bumpy textures).");
+        Prop("Coat"); ImGui::SliderFloat("##mco", &m.coat, 0, 3, m.coat <= 0 ? "none" : "x %.2f");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Coated textures: a fine noise inside each pixel, so flat pixels look like a material.\nTimes the global setting (Settings > Look > Texture coat).");
+        if (m != before) { materials.put(name, m); SaveMaterials(); }
+        ImGui::BeginDisabled(!own); if (ImGui::Button("Back to the guess")) { materials.reset(name); SaveMaterials(); } ImGui::EndDisabled();
+        ImGui::SameLine(); ImGui::TextDisabled("(changes show in the world right away)");
+        if (!settings.materials || settings.bumps <= 0 || settings.coat <= 0) Hint("Some of it is switched off in Settings > Look (texture materials, bumpy textures, texture coat).");
+        Hint("Glowing textures light themselves up; they do not light up blocks around them (use a lamp block or a light for that).");
+    }
     void UploadTextures() {
         const int S = reg.layerSize(), n = (int)reg.textureCount(); int mips = 1; while ((S >> mips) > 0) mips++;
         std::vector<std::vector<uint8_t>> px(n); for (int i = 0; i < n; i++) px[i] = reg.layer(i, S);
@@ -384,7 +430,7 @@ struct App {
         }
         if (texArray) retired.push_back(texArray);
         for (auto& i : icons) retired.push_back(i);
-        texArray.Reset(); HR(dev->CreateShaderResourceView(t.Get(), nullptr, &texArray));
+        texArray.Reset(); HR(dev->CreateShaderResourceView(t.Get(), nullptr, &texArray)); matsDirty = true;
         icons.clear();
         for (int i = 0; i < n; i++) {
             D3D11_TEXTURE2D_DESC id{}; id.Width = id.Height = (UINT)S; id.MipLevels = 1; id.ArraySize = 1; id.Format = DXGI_FORMAT_R8G8B8A8_UNORM; id.SampleDesc.Count = 1; id.BindFlags = D3D11_BIND_SHADER_RESOURCE;
@@ -2443,6 +2489,7 @@ struct App {
             svp = lv * XMMatrixTranslation(mx, my, 0) * XMMatrixOrthographicLH(2 * R, 2 * R, 1, 600);
             fc.shadowInfo[0] = 1.f / shadowSize; fc.shadowInfo[1] = R; fc.shadowInfo[2] = (float)texel * 1.5f; fc.shadowInfo[3] = 1.6f;
             fc.shadow2[0] = (float)std::clamp(settings.shadowSoft, 0, 2); fc.shadow2[1] = std::clamp(settings.shadowSoftness, 0.1f, 4.f);
+            fc.surf[0] = std::clamp(settings.bumps, 0.f, 3.f); fc.surf[1] = std::clamp(settings.coat, 0.f, 3.f); fc.surf[2] = settings.materials ? 1.f : 0.f;
         } else fc.sunDir[3] = 0;
         XMStoreFloat4x4(&fc.shadowVP, svp);
         // volumetrics: where the camera is (wrapped, the cloud noise repeats every 14400 blocks), cloud cover, fog for this hour
@@ -2552,7 +2599,7 @@ struct App {
             ctx->PSSetShaderResources(3, 1, noiseSRV.GetAddressOf()); ctx->PSSetSamplers(2, 1, sampLinear.GetAddressOf());
             ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psSky.Get(), nullptr, 0); ctx->Draw(3, 0);
             ctx->RSSetState(rsCullFront.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0);
-            ID3D11ShaderResourceView* ms[5] = { texArray.Get(), shadows ? shadowSRV.Get() : nullptr, nullptr, noiseSRV.Get(), skyMap ? skyMapSRV.Get() : nullptr }; ctx->PSSetShaderResources(0, 5, ms);
+            ID3D11ShaderResourceView* ms[5] = { texArray.Get(), shadows ? shadowSRV.Get() : nullptr, nullptr, noiseSRV.Get(), skyMap ? skyMapSRV.Get() : nullptr }; ctx->PSSetShaderResources(0, 5, ms); BindMaterials();
             ID3D11SamplerState* mss[3] = { sampBlocks.Get(), sampShadow.Get(), sampLinear.Get() }; ctx->PSSetSamplers(0, 3, mss);
             ctx->PSSetShader(psOpaque.Get(), nullptr, 0); drawChunks(mvp, 0, false);
             ctx->PSSetShader(psCutout.Get(), nullptr, 0); drawChunks(mvp, 1, false);
@@ -2572,7 +2619,7 @@ struct App {
         { const float zero[4] = { 0, 0, 0, 0 }; ctx->ClearRenderTargetView(surfRTV.Get(), zero); ctx->ClearRenderTargetView(indRTV.Get(), zero);
           ID3D11RenderTargetView* three[3] = { hdrRTV.Get(), surfRTV.Get(), indRTV.Get() }; ctx->OMSetRenderTargets(3, three, dsv.Get()); }   // blocks also note direction + shininess, and their sky light
         ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0);
-        ID3D11ShaderResourceView* srvs[5] = { texArray.Get(), shadows ? shadowSRV.Get() : nullptr, nullptr, noiseSRV.Get(), skyMap ? skyMapSRV.Get() : nullptr }; ctx->PSSetShaderResources(0, 5, srvs);
+        ID3D11ShaderResourceView* srvs[5] = { texArray.Get(), shadows ? shadowSRV.Get() : nullptr, nullptr, noiseSRV.Get(), skyMap ? skyMapSRV.Get() : nullptr }; ctx->PSSetShaderResources(0, 5, srvs); BindMaterials();
         ID3D11SamplerState* samps[3] = { sampBlocks.Get(), sampShadow.Get(), sampLinear.Get() }; ctx->PSSetSamplers(0, 3, samps);
         drawnChunks = 0;
         ctx->PSSetShader(psOpaque.Get(), nullptr, 0); drawChunks(vp, 0, true);
@@ -2886,6 +2933,11 @@ struct App {
         ch_ |= ImGui::SliderFloat("Glow (bloom)", &settings.bloom, 0, 1, settings.bloom <= 0 ? "off" : "%.2f");
         ch_ |= ImGui::Checkbox("Leaves and plants sway in the wind", &settings.swaying);
         const char* rq[] = { "Off (only the sky)", "Normal", "High" }; ch_ |= ImGui::Combo("Reflections", &settings.reflections, rq, 3);
+        ch_ |= ImGui::SliderFloat("Bumpy textures", &settings.bumps, 0, 2, settings.bumps <= 0 ? "off" : "%.2f");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Generated normals: each texture's light and dark pixels become little bumps and dents that catch the light.\nPer texture: Blocks & textures > Textures > Bumps.");
+        ch_ |= ImGui::SliderFloat("Texture coat", &settings.coat, 0, 2, settings.coat <= 0 ? "off" : "%.2f");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Coated textures: a fine noise inside each pixel, so big flat pixels look like stone, dirt, wood...\nPer texture: Blocks & textures > Textures > Coat.");
+        ch_ |= ImGui::Checkbox("Texture materials (shiny, metal, glowing)", &settings.materials);
         const char* aq[] = { "Off (only block corners)", "Normal", "High" }; ch_ |= ImGui::Combo("Ambient occlusion", &settings.ambientOcclusion, aq, 3);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Soft shade in corners, under overhangs and where things touch.\nWorks for everything on screen.");
         if (settings.ambientOcclusion > 0) ch_ |= ImGui::SliderFloat("Occlusion strength", &settings.aoStrength, 0.2f, 3.f, "%.1f");
@@ -3139,13 +3191,13 @@ struct App {
                 ImGui::TextDisabled(inGame ? "Left click: put it in hotbar slot %d.   Right click: edit the block." : "Click a block to edit it.", hotSel + 1);
                 ImGui::EndTabItem();
             }
-            if (ImGui::BeginTabItem("Textures")) {
+            if (ImGui::BeginTabItem("Textures", nullptr, selectTexturesTab ? ImGuiTabItemFlags_SetSelected : 0)) {
                 ImGui::BeginChild("textures", ImVec2(GridChildWidth(s, cols), (s + ImGui::GetStyle().ItemSpacing.y) * 5 + 12), ImGuiChildFlags_Borders);
                 for (int t = 1, n = 0; t < (int)reg.textureCount(); t++) {
                     ImGui::PushID(t); ImVec2 p;
-                    if (Tile("t", p, s)) ImGui::OpenPopup("tex");
                     const TexImage& im = reg.image(t);
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s  (%d x %d%s)\nClick for options", im.name.c_str(), im.w, im.h, im.transparent ? ", see-through" : "");
+                    if (Tile("t", p, s, im.name == matTex)) { if (ImGui::IsMouseReleased(ImGuiMouseButton_Right)) ImGui::OpenPopup("tex"); else matTex = im.name; }
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s  (%d x %d%s)\nClick: its material   Right-click: options", im.name.c_str(), im.w, im.h, im.transparent ? ", see-through" : "");
                     TextureImage(t, p, s, 4);
                     if (ImGui::BeginPopup("tex")) {
                         ImGui::TextDisabled("%s", im.name.c_str());
@@ -3160,6 +3212,10 @@ struct App {
                     ImGui::PopID();
                     if (++n % cols) ImGui::SameLine();
                 }
+                ImGui::EndChild();
+                ImGui::SameLine();
+                ImGui::BeginChild("material", ImVec2(std::max(300.f * settings.uiScale, ImGui::GetContentRegionAvail().x), (s + ImGui::GetStyle().ItemSpacing.y) * 5 + 12), ImGuiChildFlags_Borders);
+                ImGui::SeparatorText("Material"); MaterialPanel(matTex);
                 ImGui::EndChild();
                 ImGui::TextDisabled("Textures are the PNG files in the textures folder. Repaint one and it updates here by itself.");
                 ImGui::EndTabItem();
@@ -3735,7 +3791,7 @@ struct App {
     double prevPlayYaw = 0, prevPlayPitch = 0, prevVelY = 0; bool prevOnGround = true;
 
     std::string HudPath() const { return projectDir + "/hud.txt"; }
-    void LoadHud() { soundCache.clear(); playerSounds = PlayerSounds{}; loadPlayerSounds(projectDir + "/player_sounds.txt", playerSounds); activeTl.clear();
+    void LoadHud() { materials = Materials{}; loadMaterials(projectDir + "/materials.txt", materials); matsDirty = true; soundCache.clear(); playerSounds = PlayerSounds{}; loadPlayerSounds(projectDir + "/player_sounds.txt", playerSounds); activeTl.clear();
         hud = HudLayout{}; loadHud(HudPath(), hud); weapons = WeaponSet{}; loadWeapons(projectDir + "/weapons.txt", weapons); weapSel = 0; weapState = WeaponState{}; hudImages.clear(); hudSel = 0; hudPlane = 0; hudEl = -1; hudPart = 0; }
     void SaveHud() {
         if (projectDir.empty()) return; std::error_code ec;
@@ -5856,8 +5912,10 @@ struct App {
         };
         std::vector<DemoShot> shots = demoShots();
         for (const char* nm : { "ambient_occlusion_off", "ambient_occlusion_on" }) { DemoShot d = shots[2]; d.name = nm; shots.push_back(d); }   // the same view without and with it
+        for (const char* nm : { "textures_plain", "textures_bumps_coat_materials" }) { DemoShot d = shots[1]; d.name = nm; shots.push_back(d); }   // and plain textures vs. generated normals + coat + materials
         for (const DemoShot& sh : shots) {
             settings.ambientOcclusion = sh.name == "ambient_occlusion_off" ? 0 : 1;
+            bool plain = sh.name == "textures_plain"; settings.bumps = plain ? 0.f : 1.f; settings.coat = plain ? 0.f : 1.f; settings.materials = !plain;
             V3 dlt = sh.target - sh.eye; double hz = std::sqrt(dlt.x * dlt.x + dlt.z * dlt.z);
             player.feet = { sh.eye.x, sh.eye.y - player.eyeH, sh.eye.z }; player.yaw = std::atan2(dlt.x, dlt.z); player.pitch = std::atan2(dlt.y, hz); player.vel = { 0, 0, 0 };
             settings.timeOfDay = sh.hour;
@@ -6179,6 +6237,12 @@ struct App {
                 weapons.switchMode = 1; inv.keys.insert("Wave Beam"); run(2); Log(std::string("no switching: using the ") + weapons.beams[weapState.current].name + " (the best one owned)"); weapons.switchMode = 0;
                 Log("weapons: " + std::to_string(shots.size()) + " shots flying, missiles left " + std::to_string(inv.counts["Missile"]));
                 StopPlay(); hud = HudLayout{}; weapons = WeaponSet{}; SaveHud();
+            }
+            {   // a texture's material, next to the texture list
+                BlockId mb = reg.find("metal"); matTex = mb ? reg.get(mb).faces[0] : std::string("stone");
+                inventory = true; selectTexturesTab = true; frames(2, "textures_material"); selectTexturesTab = false; frames(1, "textures_material_settled");
+                Log("material of " + matTex + ": metal " + std::to_string(materials.of(matTex).metal) + ", shiny " + std::to_string(materials.of(matTex).shine));
+                inventory = false; matTex.clear();
             }
             {   // breakable blocks, the morph ball and bombs: mark a little wall in the editor, then roll up to it and bomb it
                 poseAt(demoShots()[1]);

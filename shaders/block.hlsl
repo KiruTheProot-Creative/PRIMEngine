@@ -31,6 +31,7 @@ cbuffer Frame : register(b0)
     float4 gMirror;                 // the mirror drawn this frame: plane (xyz normal, w); gRefl.w = 1 when there is one
     float4 gAOSet;                  // ambient occlusion: x on (1) / off (0), y radius (blocks), z strength, w samples
     float4 gShadow2;                // shadow edges: x 0 sharp / 1 smooth / 2 soft like sunlight, y softness
+    float4 gSurf;                   // x generated normals (0 off), y coated textures (0 off), z texture materials on (1)
 };
 cbuffer ChunkCB : register(b1)
 {
@@ -70,6 +71,9 @@ Texture2D<float> gSceneDepth : register(t2);
 Texture3D<float2> gNoise : register(t3);       // tiling cloud noise: x soft billows, y puffy cells
 SamplerState gSamp : register(s0);
 Texture2D gMeshTex : register(t9);              // an imported model's own picture (its vertices use layer 16383)
+// materials per texture layer: a = shine, metal, glow, glow only above this brightness; b = bumps, coat
+struct TexMat { float4 a; float4 b; };
+StructuredBuffer<TexMat> gMats : register(t10);
 float4 albedoAt(float3 uvl) { return uvl.z > 16000 ? gMeshTex.Sample(gSamp, uvl.xy) : gTex.Sample(gSamp, uvl); }
 SamplerComparisonState gShadowSamp : register(s1);
 SamplerState gLinear : register(s2);
@@ -206,9 +210,56 @@ float shadowAt(float3 rel, float3 n, float ndl, float2 screen)
     return lerp(sh, 1, edge * edge);
 }
 
+float lumOf(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }
+float hash21(float2 p) { p = frac(p * float2(123.34, 456.21)); p += dot(p, p + 45.32); return frac(p.x * p.y); }
+
+// generated normals and the coat (like Complementary's): from the texture's own pixels, nothing extra to paint.
+// Each pixel is a little tile: its brightness is its height, so light pixels stand up and dark gaps sink in, with a
+// bevel at the pixel's edges; the coat is a fine noise inside each pixel (4 x 4 specks). Both fade out far away.
+void surfaceDetail(VSOut i, inout float3 n, inout float3 albedo, TexMat m)
+{
+    float3 dp1 = ddx(i.rel), dp2 = ddy(i.rel); float2 du1 = ddx(i.uvl.xy), du2 = ddy(i.uvl.xy);   // (before any branch)
+    if (i.uvl.z > 16000) return;                                                                  // an imported model's own picture: not here
+    uint W, H, L, M; gTex.GetDimensions(0, W, H, L, M);
+    float2 tc = i.uvl.xy * float2(W, H);
+    float2 fw = max(abs(du1), abs(du2)) * float2(W, H);
+    float near = saturate(1.6 - max(fw.x, fw.y) * 1.2);                                          // a pixel smaller than about a screen pixel: off (no shimmer)
+    if (near <= 0) return;
+    int layer = (int)i.uvl.z; int2 c = int2(floor(tc)); float2 f = frac(tc);
+    int2 sz = int2(W, H);
+    #define HT(o) sqrt(lumOf(gTex.Load(int4(((c + (o)) % sz + sz) % sz, layer, 0)).rgb))
+    float h0 = HT(int2(0, 0)), hr = HT(int2(1, 0)), hl = HT(int2(-1, 0)), hd = HT(int2(0, 1)), hu = HT(int2(0, -1));
+    #undef HT
+    float bump = gSurf.x * m.b.x * near;
+    if (bump > 0)
+    {
+        float e0 = smoothstep(0.6, 1.0, f.x), e1 = smoothstep(0.6, 1.0, 1 - f.x), e2 = smoothstep(0.6, 1.0, f.y), e3 = smoothstep(0.6, 1.0, 1 - f.y);
+        float sx = (hr - h0) * e0 + (h0 - hl) * e1 + (hr - hl) * 0.15;                          // the edges toward the neighbours, and a little overall slope
+        float sy = (hd - h0) * e2 + (h0 - hu) * e3 + (hd - hu) * 0.15;
+        float3 g = normalize(n);                                                                  // the surface's own tangents from the screen derivatives
+        float3 p2 = cross(dp2, g), p1 = cross(g, dp1);
+        float3 T = p2 * du1.x + p1 * du2.x, B = p2 * du1.y + p1 * du2.y;
+        float s = rsqrt(max(1e-12, max(dot(T, T), dot(B, B))));
+        T *= s; B *= s;
+        float k = bump * 2.2;                                                                     // brighter toward +u: the surface tilts away from +u
+        n = normalize(g - (T * sx + B * sy) * k);
+    }
+    float coat = gSurf.y * m.b.y * near;
+    if (coat > 0)
+    {
+        float speck = hash21(floor(tc * 4) + layer * 17.13) - 0.5;                               // 4 x 4 specks in each pixel
+        float tile = hash21(c + layer * 3.7) - 0.5;                                               // and each pixel a touch different
+        albedo *= 1 + (speck * 0.22 + tile * 0.06) * coat;
+    }
+}
+
 float3 lightBlock(VSOut i, float3 albedo, bool front, out float3 n, out float shine, out float3 indirect)
 {
     n = front ? i.n : -i.n;
+    TexMat m = (TexMat)0; m.b = float4(1, 1, 0, 0);
+    if (i.uvl.z < 16000) m = gMats[(uint)i.uvl.z];
+    if (gSurf.x > 0 || gSurf.y > 0) surfaceDetail(i, n, albedo, m);
+    if (gSurf.z < 0.5) { m.a = 0; }                                                               // materials off: plain
     // weather on surfaces: snow settles on tops open to the sky, rain makes things darker and shiny
     float open = (gWeather.w > 0.01 || gWeather2.x > 0.01) ? skyExposed(i.rel + n * 0.3) : 0;
     float snowy = gWeather2.x * open * smoothstep(0.35, 0.85, n.y);
@@ -223,20 +274,37 @@ float3 lightBlock(VSOut i, float3 albedo, bool front, out float3 n, out float sh
     float3 hue = lamp > 0 ? i.lamp.rgb / lamp : 0;                                                   // the colour of the lamps nearby
     light += hue * (pow(lamp, 3.2) * 0.9) * gExtra.w * lerp(0.5, 1, i.ao);
     float3 dyn = dynLights(i.rel, n) * lerp(0.6, 1, i.ao);                                               // placed lights, glowing emitters, shots
-    float3 c = albedo * (light + dyn);
-    indirect = albedo * (light - gSunColor.rgb * ndl * sh);
+    float metal = saturate(m.a.y);
+    float3 c = albedo * (light + dyn) * (1 - 0.75 * metal);                                       // metal: little plain colour ...
+    indirect = albedo * (light - gSunColor.rgb * ndl * sh) * (1 - 0.75 * metal);
+    float3 v0 = -normalize(i.rel);
+    float mshine = saturate(m.a.x);
+    if (mshine > 0.01 || metal > 0.01)                                                            // ... and the sun as a highlight, in its own colour for metal
+    {
+        float3 hv = normalize(gSunDir.xyz + v0);
+        float pw = lerp(12, 500, mshine * mshine);
+        float spec = pow(saturate(dot(n, hv)), pw) * (pw + 8) / 60;
+        float3 specCol = lerp(float3(0.04, 0.04, 0.04) + 0.3 * mshine, albedo * 1.4, metal);
+        c += gSunColor.rgb * sh * ndl * spec * specCol * max(mshine, 0.35);
+    }
+    if (m.a.z > 0)                                                                                // glowing pixels (the bright ones, if set)
+    {
+        float lum = sqrt(lumOf(albedo));
+        float e = m.a.z * smoothstep(m.a.w, m.a.w + 0.08, lum);
+        c += albedo * e * 3.0;
+    }
     if (i.lamp.a > 0.5)                                                                               // the lamp itself glows in its colour
     {
         c = (dot(albedo, float3(0.2126, 0.7152, 0.0722)) * hue * 0.85 + albedo * hue * 0.3) * 3.2 * gExtra.w;
         indirect = 0;                                                                                 // glowing things are never shaded
     }
     float3 v = -normalize(i.rel);
-    shine = max(i.mat.x, wet * lerp(0.25, 0.55, saturate(n.y)));    // wet ground shines like a puddle
+    shine = max(max(i.mat.x, mshine), wet * lerp(0.25, 0.55, saturate(n.y)));    // wet ground shines like a puddle
     if (i.mat.y > 0.5) { shine = 1; c *= 0.15; indirect *= 0.15; }    // a mirror is (almost) only its reflection
     if (gRefl.x < 0.5 && shine > 0.01)   // reflections off: just a little of the sky mirrored
     {
         float fr = 0.04 + 0.96 * pow(1 - saturate(dot(n, v)), 5);
-        c += skyColor(reflect(-v, n)) * fr * shine * 0.9;
+        c += skyColor(reflect(-v, n)) * fr * shine * 0.9 * lerp(float3(1, 1, 1), albedo * 1.5, metal);
     }
     float d = length(i.rel);
     float f = saturate((d - gFogRange.x) / max(gFogRange.y - gFogRange.x, 1));

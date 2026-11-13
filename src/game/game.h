@@ -28,6 +28,9 @@ struct Settings {
     int reflections = 1;       // 0 off, 1 normal, 2 high
     int ambientOcclusion = 1;  // soft shadow in corners and under things, for everything on screen: 0 off, 1 normal, 2 high
     float aoStrength = 1.0f;
+    float bumps = 1.0f;        // generated normals: a bumpy surface made from each texture's light and dark pixels (0 = off)
+    float coat = 1.0f;         // coated textures: a fine noise over each pixel (0 = off)
+    bool materials = true;     // texture materials: shiny, metal, glowing
     bool load(const std::string& path);
     bool save(const std::string& path) const;
 };
