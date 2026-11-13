@@ -555,6 +555,10 @@ struct App {
         }
         if (k == VK_F3) { showF3 = !showF3; return; }
         if (k == VK_F1) { hideHud = !hideHud; return; }
+        if (playMode && !typing && !repeat && !paused) {   // play mode keys (before the return below, which keeps the building tools out of play)
+            if (k == 'C' && !Down(VK_CONTROL)) { ToggleBall(); return; }                                    // the morph ball
+            if (!weapons.empty() && k >= '1' && k <= '9') { SwitchBeam((int)(k - '1')); return; }        // the beams
+        }
         if (typing || playMode) return;                   // playing: no building tools
         if (Down(VK_CONTROL) && k == 'Z') { if (history.undo(*world)) Toast("Undo"); return; }
         if (Down(VK_CONTROL) && k == 'Y') { if (history.redo(*world)) Toast("Redo"); return; }
@@ -576,8 +580,6 @@ struct App {
         if (toolMode && (k == VK_OEM_PLUS || k == VK_ADD)) { brush.radius = std::min(32, brush.radius + 1); return; }
         if (toolMode && (k == VK_OEM_MINUS || k == VK_SUBTRACT)) { brush.radius = std::max(0, brush.radius - 1); return; }
         if (!Playing() || repeat) return;
-        if (playMode && k == 'C' && !Down(VK_CONTROL)) { ToggleBall(); return; }   // Play mode: the morph ball
-        if (playMode && !weapons.empty() && k >= '1' && k <= '9') { SwitchBeam((int)(k - '1')); return; }   // Play mode: the beams
         if (k >= '1' && k <= '9') { if (toolMode) toolSel = (int)(k - '1'); else hotSel = (int)(k - '1'); }
         if (toolMode && toolSel == 1) {   // selection box
             if (k == VK_DELETE) SelFill(AIR);
@@ -5969,7 +5971,8 @@ struct App {
                 StartPlay(false); poseAt(demoShots()[1]); play.health = game.player.maxHealth; toastT = 0;
                 player.feet = { gx + 0.5 - fw.x * 1.0, (double)gyy, gz + 0.5 - fw.z * 1.0 }; player.vel = { 0, 0, 0 }; player.pitch = -0.25;
                 auto run = [&](int n) { for (int k = 0; k < n; k++) { FrameBody(1.0 / 60); swap->Present(0, 0); retired.clear(); } };
-                ToggleBall(); run(30);
+                OnKey('C', false); run(30);   // the real key, the way a player presses it
+                Log(std::string("C key in play mode: ") + (player.ball ? "rolled up" : "NOT rolled up"));
                 frames(1, "morph_ball");
                 holdBeam = true; run(2); holdBeam = false; run(25);
                 frames(1, "bomb_laid");
