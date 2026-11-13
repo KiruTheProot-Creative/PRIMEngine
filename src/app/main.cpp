@@ -2956,7 +2956,7 @@ struct App {
         if (!playStartWorld.empty() && playStartWorld != CurrentWorld()) {   // went through a teleporter: back to the world you were editing
             travelling = true; SaveWorld(); OpenWorld(playStartWorld); travelling = false; editCam = startEditCam;
         }
-        RestoreBroken(); bombsOut.clear(); flashes.clear();   // broken blocks come back
+        RestoreBroken(); bombsOut.clear(); flashes.clear(); StopRoll();   // broken blocks come back
         playMode = false; paused = false; player = editCam; player.ball = false; Capture(false); captureNext = false; platRun.clear();
         evHidden.clear(); evOff.clear(); evLocked.clear(); evHeld.clear(); evKick.clear(); evFlash.clear(); RebuildSolids();
         Toast("Back in the editor");
@@ -4647,16 +4647,20 @@ struct App {
         std::sort(v.begin(), v.end()); return v;
     }
     // plays a sound; at: a place in the world (quieter far away, from the side it comes from); tag: to stop it later
-    IXAudio2SourceVoice* PlaySound(const SoundUse& s, float vol = 1, const V3* at = nullptr, int tag = 0) {
+    IXAudio2SourceVoice* PlaySound(const SoundUse& s, float vol = 1, const V3* at = nullptr, int tag = 0, bool loop = false) {
         if (!audioOk || s.empty() || vol <= 0.001f) return nullptr;
         std::shared_ptr<WavData> w = LoadSound(s.file); if (!w || w->samples.empty()) return nullptr;
-        if (voices.size() >= 48) { voices.front().v->DestroyVoice(); voices.erase(voices.begin()); }
+        if (voices.size() >= 48) {   // too many: the oldest one stops (never the roll loop)
+            auto old = std::find_if(voices.begin(), voices.end(), [](const Voice& v) { return v.tag != TAG_ROLL; });
+            if (old != voices.end()) { old->v->DestroyVoice(); voices.erase(old); }
+        }
         WAVEFORMATEX fmt{}; fmt.wFormatTag = WAVE_FORMAT_IEEE_FLOAT; fmt.nChannels = (WORD)w->channels; fmt.nSamplesPerSec = (DWORD)w->rate; fmt.wBitsPerSample = 32;
         fmt.nBlockAlign = (WORD)(4 * w->channels); fmt.nAvgBytesPerSec = fmt.nSamplesPerSec * fmt.nBlockAlign;
         IXAudio2SourceVoice* v = nullptr; if (FAILED(xa->CreateSourceVoice(&v, &fmt, 0, 4.f))) return nullptr;
         UINT32 frames = (UINT32)(w->samples.size() / w->channels), begin = (UINT32)std::clamp((double)s.trimStart * w->rate, 0.0, (double)frames - 1);
         UINT32 len = s.length > 0 ? (UINT32)std::min<double>(s.length * w->rate, frames - begin) : 0;
         XAUDIO2_BUFFER b{}; b.AudioBytes = (UINT32)(w->samples.size() * 4); b.pAudioData = (const BYTE*)w->samples.data(); b.Flags = XAUDIO2_END_OF_STREAM; b.PlayBegin = begin; b.PlayLength = len;
+        if (loop) { b.LoopBegin = begin; b.LoopLength = len; b.LoopCount = XAUDIO2_LOOP_INFINITE; }
         float volume = s.volume * vol * std::clamp(settings.soundVolume, 0.f, 2.f);
         if (at) {   // in the world: quieter with distance, and from its side
             V3 d = *at - player.eye(); double dist = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
@@ -4770,11 +4774,15 @@ struct App {
             ImGui::SeparatorText("Jump"); ch |= SoundSetEdit("jump", playerSounds.jump);
             ImGui::SeparatorText("Landing"); ch |= SoundSetEdit("land", playerSounds.land);
             ImGui::SeparatorText("Morph ball in / out"); ch |= SoundSetEdit("morph", playerSounds.morph);
+            if (scrollToRoll) { ImGui::SetScrollHereY(0.1f); scrollToRoll = false; }
+            ImGui::SeparatorText("Morph ball rolling (a loop)"); ch |= SoundSetEdit("roll", playerSounds.roll);
+            Prop("Higher when fast"); ch |= ImGui::SliderFloat("##rp", &playerSounds.rollPitch, 0, 1, playerSounds.rollPitch <= 0 ? "no" : "%.2f");
+            ImGui::SeparatorText("Morph ball landing"); ch |= SoundSetEdit("ball_land", playerSounds.ballLand);
             ImGui::SeparatorText("Bomb laid"); ch |= SoundSetEdit("bomb", playerSounds.bomb);
             ImGui::SeparatorText("Bomb goes off"); ch |= SoundSetEdit("boom", playerSounds.boom);
             ImGui::SeparatorText("A block breaks"); ch |= SoundSetEdit("crumble", playerSounds.crumble);
             { float r[2] = { playerSounds.landQuiet, playerSounds.landLoud }; Prop("Quiet .. loud at"); if (ImGui::DragFloat2("##ll", r, 0.1f, 0, 80, "%.1f blocks/s")) { playerSounds.landQuiet = r[0]; playerSounds.landLoud = std::max(r[0] + 0.5f, r[1]); ch = true; } }
-            Hint("Each can have as many sounds as you like: a random one plays each time, never the same twice in a row (great for steps). Landing gets louder the faster you fall: silent below the first speed, full volume at the second. The numbers under each sound: volume, pitch, random pitch; then the cut (start into the sound, how long).");
+            Hint("Each can have as many sounds as you like: a random one plays each time, never the same twice in a row (great for steps). Rolled up, the steps and jumps go quiet: the rolling loop plays instead, louder (and higher) the faster you roll, and silent in the air. Landing gets louder the faster you fall: silent below the first speed, full volume at the second. The numbers under each sound: volume, pitch, random pitch; then the cut (start into the sound, how long).");
             ImGui::TableNextColumn();
             ImGui::SeparatorText("All sounds in the project");
             for (const std::string& f : SoundFiles()) {
@@ -4790,8 +4798,30 @@ struct App {
         if (ch) SavePlayerSounds();
     }
     // Play mode: steps, jumping, landing
+    bool scrollToRoll = false;
+    IXAudio2SourceVoice* rollVoice = nullptr; SoundUse rollUse; float rollVol = 0; int rollTests = 0;   // the morph ball's rolling loop
+    void StopRoll() { if (rollVoice) StopSounds(TAG_ROLL); rollVoice = nullptr; rollVol = 0; }
+    void UpdateRoll(double dt) {
+        float speed = (float)std::sqrt(player.vel.x * player.vel.x + player.vel.z * player.vel.z), want = 0, pitch = 1;
+        if (playMode && !paused && player.ball && player.onGround) playerSounds.rollMix(speed, game.player.ballSpeed, want, pitch);
+        if (want > 0) rollTests++;
+        rollVol += (want - rollVol) * (float)std::min(1.0, dt * 12);   // fades in and out quickly, no clicks
+        if (rollVol < 0.01f && want <= 0) { StopRoll(); return; }
+        if (!rollVoice) {
+            const SoundUse* u = playerSounds.roll.pick(soundSeed); if (!u) return;
+            rollUse = *u; rollVoice = PlaySound(rollUse, 1, nullptr, TAG_ROLL, true); if (!rollVoice) return;
+        }
+        rollVoice->SetVolume(rollUse.volume * rollVol * std::clamp(settings.soundVolume, 0.f, 2.f));
+        rollVoice->SetFrequencyRatio(std::clamp(rollUse.pitch * pitch, 0.1f, 4.f));
+    }
     void UpdatePlayerSounds(double dt, bool landed, float fallSpeed, bool jumped) {
+        UpdateRoll(dt);
         if (!playMode) return;
+        if (player.ball) {   // rolled up: no steps, no jumps; its own landing (bomb jumps land here too)
+            stepDist = 0;
+            if (landed) { float v = playerSounds.landVolume(fallSpeed); if (v > 0) PlaySound(playerSounds.ballLand, v); }
+            return;
+        }
         if (player.onGround) {
             stepDist += (float)(std::sqrt(player.vel.x * player.vel.x + player.vel.z * player.vel.z) * dt);
             if (stepDist >= std::max(0.2f, playerSounds.stepEvery)) { stepDist = 0; PlaySound(playerSounds.step); }
@@ -4821,6 +4851,7 @@ struct App {
     struct ActiveTl { TimelinePlay play; int beam = 0, kind = 0; double until = 0; };
     std::vector<ActiveTl> activeTl;
     static constexpr int TAG_CHARGE = 7;
+    static constexpr int TAG_ROLL = 8;
     float AnimLen(const Beam& b, int kind) {   // the cannon's animation for this timeline, at its speed
         const std::string& clip = kind == Beam::MissileShot ? b.missileClip : b.fireClip;
         return kind == Beam::Charging ? 0.f : ClipLenOf(b.model, clip) / std::max(0.05f, b.timelines[kind].animSpeed);
@@ -5919,18 +5950,20 @@ struct App {
                         std::vector<uint8_t> b = wavBytes(w); std::ofstream f(fs::u8path(SoundsDir() + "/" + name), std::ios::binary); f.write((const char*)b.data(), (std::streamsize)b.size());
                     };
                     tone("beam zap.wav", 0.25f, 1600, 300, 0.1f); tone("charge hum.wav", 1.4f, 150, 900, 0.05f); tone("charged blast.wav", 0.7f, 500, 60, 0.5f);
-                    tone("missile launch.wav", 0.9f, 220, 90, 0.7f); tone("missile click.wav", 0.12f, 900, 700, 0.3f); tone("step.wav", 0.09f, 120, 80, 0.8f); tone("jump.wav", 0.2f, 300, 600, 0.3f); tone("land.wav", 0.3f, 90, 40, 0.8f);
+                    tone("missile launch.wav", 0.9f, 220, 90, 0.7f); tone("missile click.wav", 0.12f, 900, 700, 0.3f); tone("step.wav", 0.09f, 120, 80, 0.8f); tone("jump.wav", 0.2f, 300, 600, 0.3f); tone("land.wav", 0.3f, 90, 40, 0.8f); tone("ball roll.wav", 1.0f, 70, 70, 0.4f); tone("ball bounce.wav", 0.15f, 400, 200, 0.5f);
                     soundCache.clear();
                     Beam& pb = weapons.beams[0];
                     { SoundClip c; c.sound.file = "beam zap.wav"; pb.timelines[Beam::Fire].sounds = { c }; }
                     { SoundClip c; c.sound.file = "charge hum.wav"; c.sound.pitchVar = 0; pb.timelines[Beam::Charging].sounds = { c }; }
                     { SoundClip c; c.sound.file = "charged blast.wav"; pb.timelines[Beam::Charged].sounds = { c }; }
                     { Timeline& t = pb.timelines[Beam::MissileShot]; t.shotAt = 0.18f; SoundClip a; a.sound.file = "missile click.wav"; a.at = 0; SoundClip b2; b2.sound.file = "missile launch.wav"; b2.at = 0.18f; b2.sound.trimStart = 0.05f; b2.sound.length = 0.6f; t.sounds = { a, b2 }; }
-                    { SoundUse a; a.file = "step.wav"; a.pitchVar = 0.12f; SoundUse b3 = a; b3.pitch = 0.9f; playerSounds.step.sounds = { a, b3 }; SoundUse j; j.file = "jump.wav"; playerSounds.jump.sounds = { j }; SoundUse l; l.file = "land.wav"; playerSounds.land.sounds = { l }; }
+                    { SoundUse a; a.file = "step.wav"; a.pitchVar = 0.12f; SoundUse b3 = a; b3.pitch = 0.9f; playerSounds.step.sounds = { a, b3 }; SoundUse j; j.file = "jump.wav"; playerSounds.jump.sounds = { j }; SoundUse l; l.file = "land.wav"; playerSounds.land.sounds = { l };
+                      SoundUse r; r.file = "ball roll.wav"; r.pitchVar = 0; playerSounds.roll.sounds = { r }; SoundUse bb; bb.file = "ball bounce.wav"; playerSounds.ballLand.sounds = { bb }; }
                     weapTimelineView = true; tlKind = Beam::MissileShot; tlSel = 1; weapPoint = 1; weapYaw = 2.3f;
                     frames(3, "weapons_timeline");
                     weapTimelineView = false; selectSoundsTab = true;
                     frames(3, "player_sounds_tab");
+                    scrollToRoll = true; frames(3, "player_sounds_morph_ball");
                     selectWeaponsTab = true; frames(1, "back_to_weapons");
                 }
                 playerEdOpen = false;
@@ -5973,6 +6006,8 @@ struct App {
                 auto run = [&](int n) { for (int k = 0; k < n; k++) { FrameBody(1.0 / 60); swap->Present(0, 0); retired.clear(); } };
                 OnKey('C', false); run(30);   // the real key, the way a player presses it
                 Log(std::string("C key in play mode: ") + (player.ball ? "rolled up" : "NOT rolled up"));
+                { V3 keep = player.feet; int before = rollTests; player.vel = side * 5.0; run(4);   // a little roll, to check the rolling loop wants to play
+                  Log("roll loop wanted on " + std::to_string(rollTests - before) + " of 4 rolling frame(s)"); player.feet = keep; player.vel = { 0, 0, 0 }; run(10); }
                 frames(1, "morph_ball");
                 holdBeam = true; run(2); holdBeam = false; run(25);
                 frames(1, "bomb_laid");

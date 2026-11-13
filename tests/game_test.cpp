@@ -590,6 +590,11 @@ int main() {
             savePlayerSounds("/tmp/prim_psounds.txt", ps); PlayerSounds pb; loadPlayerSounds("/tmp/prim_psounds.txt", pb);
             CHECK(pb.step.sounds.size() == 3 && pb.step.sounds[0].file == "step metal.wav" && pb.step.sounds[2].file == "step metal 3.wav" && std::fabs(pb.step.sounds[0].pitchVar - 0.12f) < 1e-6
                   && pb.land.sounds.size() == 1 && pb.land.sounds[0].trimStart == 0.05f && pb.stepEvery == 1.4f && pb.jump.empty(), "the player's sounds save and load (several per thing)");
+            { PlayerSounds pr; SoundUse r1; r1.file = "roll.wav"; pr.roll.sounds = { r1 }; SoundUse b1; b1.file = "bounce.wav"; pr.ballLand.sounds = { b1 }; pr.rollPitch = 0.5f;
+              float v0, p0, vs, ps_, vf, pf; pr.rollMix(0, 8, v0, p0); pr.rollMix(2, 8, vs, ps_); pr.rollMix(8, 8, vf, pf);
+              CHECK(v0 == 0 && vs > 0 && vs < vf && vf == 1 && ps_ < 1 && pf > 1 && std::fabs(pf - 1.25f) < 1e-5, "the roll loop: silent when still, louder and higher the faster it rolls");
+              savePlayerSounds("/tmp/prim_proll.txt", pr); PlayerSounds pq; loadPlayerSounds("/tmp/prim_proll.txt", pq);
+              CHECK(pq.roll.sounds.size() == 1 && pq.roll.sounds[0].file == "roll.wav" && pq.ballLand.sounds[0].file == "bounce.wav" && pq.rollPitch == 0.5f, "the morph ball's sounds save and load"); }
             { std::ofstream old("/tmp/prim_psounds_old.txt"); old << "sounds 1\nstep step.wav 1 1 0.05 0 0\njump - 1 1 0.05 0 0\nevery 1.7\n"; }
             PlayerSounds po; loadPlayerSounds("/tmp/prim_psounds_old.txt", po);
             CHECK(po.step.sounds.size() == 1 && po.step.sounds[0].file == "step.wav" && po.jump.empty(), "older files (one sound each) still load");

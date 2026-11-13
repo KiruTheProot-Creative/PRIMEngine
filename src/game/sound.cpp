@@ -82,6 +82,11 @@ void TimelinePlay::step(double dt, std::vector<int>& soundsNow, bool& shotNow, d
 }
 
 // ------------------------------------------------------------------ the player's sounds
+void PlayerSounds::rollMix(float speed, float top, float& volume, float& pitch) const {
+    float t = std::clamp(speed / std::max(0.1f, top), 0.f, 1.f);
+    volume = speed < 0.15f ? 0.f : 0.25f + 0.75f * t;   // still: silent; slow: soft; full speed: full volume
+    pitch = 1.f + rollPitch * (t - 0.5f);                // a bit lower when slow, a bit higher when fast
+}
 float PlayerSounds::landVolume(float v) const { return std::clamp((v - landQuiet) / std::max(0.1f, landLoud - landQuiet), 0.f, 1.f); }
 static std::string esc(const std::string& s) { std::string o; for (char c : s) { if (c == '%') o += "%25"; else if (c == ' ') o += "%20"; else if (c == '\n') o += "%0A"; else o += c; } return o.empty() ? "-" : o; }
 static std::string unesc(const std::string& s) {
@@ -102,6 +107,7 @@ bool savePlayerSounds(const std::string& path, const PlayerSounds& p) {
     f << "sounds 1";
     auto put = [&](const char* k, const SoundSet& s) { for (const SoundUse& u : s.sounds) if (!u.empty()) f << "\n" << k << " " << soundUseText(u); };   // one line per sound
     put("step", p.step); put("jump", p.jump); put("land", p.land); put("morph", p.morph); put("bomb", p.bomb); put("boom", p.boom); put("crumble", p.crumble);
+    put("roll", p.roll); put("ball_land", p.ballLand); f << "\nroll_pitch " << p.rollPitch;
     f << "\nevery " << p.stepEvery << "\nlanding " << p.landQuiet << " " << p.landLoud << "\n";
     return (bool)f;
 }
@@ -110,8 +116,9 @@ bool loadPlayerSounds(const std::string& path, PlayerSounds& p) {
     p = PlayerSounds{}; std::string line;
     while (std::getline(f, line)) {
         std::istringstream l(line); std::string k; l >> k; std::string rest; std::getline(l, rest);
-        SoundSet* set = k == "step" ? &p.step : k == "jump" ? &p.jump : k == "land" ? &p.land : k == "morph" ? &p.morph : k == "bomb" ? &p.bomb : k == "boom" ? &p.boom : k == "crumble" ? &p.crumble : nullptr;
+        SoundSet* set = k == "step" ? &p.step : k == "jump" ? &p.jump : k == "land" ? &p.land : k == "morph" ? &p.morph : k == "bomb" ? &p.bomb : k == "boom" ? &p.boom : k == "crumble" ? &p.crumble : k == "roll" ? &p.roll : k == "ball_land" ? &p.ballLand : nullptr;
         if (set) { SoundUse u; if (soundUseFrom(rest, u) && !u.empty()) set->sounds.push_back(u); }
+        else if (k == "roll_pitch") { std::istringstream r(rest); r >> p.rollPitch; }
         else if (k == "every") { std::istringstream r(rest); r >> p.stepEvery; }
         else if (k == "landing") { std::istringstream r(rest); r >> p.landQuiet >> p.landLoud; }
     }
