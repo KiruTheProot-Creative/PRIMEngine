@@ -4703,11 +4703,11 @@ struct App {
                     viewerTime = 0.9f; frames(1, "door2_viewer_sliding_apart");
                     viewerOpen = false; viewerClip = -1;
                     auto door2 = [&](double x, bool parts, uint32_t col) { WorldObject o; o.id = nextObjId++; o.model = "DOOR_02"; o.name = UniqueObjectName("Door"); MakeDoor(o);
-                        o.pos = { x, (double)gy, 47 }; o.door.w = 2; o.door.h = 3; o.door.color = col; o.door.fieldOnParts = parts; o.door.stayOpen = 6; objects.push_back(o); return o.id; };
+                        o.pos = { x, (double)gy, 35.5 }; o.door.w = 2; o.door.h = 3; o.door.color = col; o.door.fieldOnParts = parts; o.door.stayOpen = 6; objects.push_back(o); return o.id; };
                     uint32_t p1 = door2(23, true, 0xFF8A3A), p2 = door2(28, false, 0x3AA0FF);
                     RebuildSolids();
                     StartPlay(false);
-                    poseAt(DemoShot{ "d", { 25.5, gy + 2.0, 40.5 }, { 25.5, gy + 1.4, 47 }, 15.5f });
+                    poseAt(DemoShot{ "d", { 25.5, gy + 2.2, 29.5 }, { 25.5, gy + 1.4, 35.5 }, 15.5f });
                     play.health = game.player.maxHealth; toastT = 0;
                     frames(3, "door2_fields_parts_and_sheets");
                     doorRt[p1].shoot(0.5f, 0.5f); doorRt[p2].shoot(0.5f, 0.5f);
