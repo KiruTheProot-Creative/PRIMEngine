@@ -34,6 +34,7 @@ struct Beam {
     bool charge = true; float chargeTime = 1.0f;        // seconds to fill (after a short tap time)
     float chargeDamage = 4, chargeSize = 3.5f, chargeSpeed = 0.8f;   // times the normal shot's
     std::string chargeLook = "Charge";                  // particles gathering at the muzzle
+    float hitSphere = 0.35f, chargeSphere = 1.3f, missileSphere = 2.0f;   // impact spheres where shots hit (blocks across, 0: none)
     // timelines: the animation's speed, sounds, and when the shot leaves, for each thing the beam does
     enum TimelineKind { Fire, Charging, Charged, MissileShot, TIMELINES };
     Timeline timelines[TIMELINES];

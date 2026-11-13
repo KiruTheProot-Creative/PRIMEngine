@@ -110,7 +110,7 @@ bool saveWeapons(const std::string& path, const WeaponSet& w) {
           << " " << b.color << " " << esc(b.shotLook) << " " << esc(b.hitLook) << " " << esc(b.flashLook) << " " << b.speed << " " << b.damage << " " << b.fireRate << " " << b.range << " " << b.size
           << " " << b.auto_ << " " << b.waitForAnim << " " << esc(b.fireClip) << " " << b.missiles << " " << esc(b.missileClip) << " " << b.missileWait
           << " " << b.missileSpeed << " " << b.missileDamage << " " << b.missileRate << " " << b.missileColor << " " << b.startsOwned
-          << " " << b.charge << " " << b.chargeTime << " " << b.chargeDamage << " " << b.chargeSize << " " << b.chargeSpeed << " " << esc(b.chargeLook) << "\n";
+          << " " << b.charge << " " << b.chargeTime << " " << b.chargeDamage << " " << b.chargeSize << " " << b.chargeSpeed << " " << esc(b.chargeLook) << " " << b.hitSphere << " " << b.chargeSphere << " " << b.missileSphere << "\n";
         for (int k = 0; k < Beam::TIMELINES; k++) {   // its timelines (after the beam they belong to)
             const Timeline& t = b.timelines[k];
             f << "timeline " << k << " " << t.animSpeed << " " << t.shotAt << "\n";
@@ -137,7 +137,7 @@ bool loadWeapons(const std::string& path, WeaponSet& w) {
               >> b.color >> sl >> hl >> fl >> b.speed >> b.damage >> b.fireRate >> b.range >> b.size
               >> b.auto_ >> b.waitForAnim >> fc >> b.missiles >> mc >> b.missileWait >> b.missileSpeed >> b.missileDamage >> b.missileRate >> b.missileColor >> b.startsOwned;
             if (!l) continue;
-            { Beam cb; std::string cl; if (l >> cb.charge >> cb.chargeTime >> cb.chargeDamage >> cb.chargeSize >> cb.chargeSpeed >> cl) { b.charge = cb.charge; b.chargeTime = cb.chargeTime; b.chargeDamage = cb.chargeDamage; b.chargeSize = cb.chargeSize; b.chargeSpeed = cb.chargeSpeed; b.chargeLook = unesc(cl); } }
+            { Beam cb; std::string cl; if (l >> cb.charge >> cb.chargeTime >> cb.chargeDamage >> cb.chargeSize >> cb.chargeSpeed >> cl) { b.charge = cb.charge; b.chargeTime = cb.chargeTime; b.chargeDamage = cb.chargeDamage; b.chargeSize = cb.chargeSize; b.chargeSpeed = cb.chargeSpeed; b.chargeLook = unesc(cl); float s1, s2, s3; if (l >> s1 >> s2 >> s3) { b.hitSphere = s1; b.chargeSphere = s2; b.missileSphere = s3; } } }
             b.name = unesc(n); b.model = unesc(m); b.shotLook = unesc(sl); b.hitLook = unesc(hl); b.flashLook = unesc(fl); b.fireClip = unesc(fc); b.missileClip = unesc(mc);
             w.beams.push_back(b);
         }

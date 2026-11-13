@@ -51,7 +51,7 @@ struct PlayerRules {
     int morphBall = 1, bombs = 1;                     // 0 none, 1 from the start, 2 found later (a key pickup called "Morph Ball" / "Bombs")
     float ballSpeed = 7;                              // rolling speed (blocks / s)
     float bombJump = 2.2f;                            // how high a bomb right under the ball throws it (blocks)
-    int bombsAtOnce = 3; float bombFuse = 0.9f, bombReach = 1.3f;   // bombs out at the same time; seconds until they go off; how far they reach (blocks)
+    int bombsAtOnce = 3; float bombFuse = 0.9f, bombReach = 1.3f, bombSphere = 3.0f;   // bombSphere: the impact sphere (blocks across, 0: none)   // bombs out at the same time; seconds until they go off; how far they reach (blocks)
     std::string ballModel = "@morph-ball";
     float jumpSpeed() const { return std::sqrt(2 * gravity * std::max(0.1f, jumpHeight)); }
     float bombJumpSpeed() const { return std::sqrt(2 * gravity * std::max(0.f, bombJump)); }

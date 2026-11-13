@@ -118,7 +118,7 @@ bool GameSettings::save(const std::string& path) const {
       << "\nmax_health " << p.maxHealth << "\nlava_damage " << p.lavaDamage << "\nvoid_depth " << p.voidDepth << "\nrespawn_delay " << p.respawnDelay
       << "\nfall_damage " << p.fallDamage << "\ncan_sprint " << (p.canSprint ? 1 : 0)
       << "\nmorph_ball " << p.morphBall << "\nbombs " << p.bombs << "\nball_speed " << p.ballSpeed << "\nbomb_jump " << p.bombJump << "\nbombs_at_once " << p.bombsAtOnce
-      << "\nbomb_fuse " << p.bombFuse << "\nbomb_reach " << p.bombReach << "\nball_model " << (p.ballModel.empty() ? "-" : p.ballModel) << "\n";
+      << "\nbomb_fuse " << p.bombFuse << "\nbomb_reach " << p.bombReach << "\nbomb_sphere " << p.bombSphere << "\nball_model " << (p.ballModel.empty() ? "-" : p.ballModel) << "\n";
     return (bool)f;
 }
 bool GameSettings::load(const std::string& path) {
@@ -135,7 +135,7 @@ bool GameSettings::load(const std::string& path) {
         else if (k == "void_depth") f >> p.voidDepth; else if (k == "respawn_delay") f >> p.respawnDelay; else if (k == "fall_damage") f >> p.fallDamage;
         else if (k == "can_sprint") { int v; f >> v; p.canSprint = v != 0; }
         else if (k == "morph_ball") f >> p.morphBall; else if (k == "bombs") f >> p.bombs; else if (k == "ball_speed") f >> p.ballSpeed; else if (k == "bomb_jump") f >> p.bombJump;
-        else if (k == "bombs_at_once") f >> p.bombsAtOnce; else if (k == "bomb_fuse") f >> p.bombFuse; else if (k == "bomb_reach") f >> p.bombReach;
+        else if (k == "bombs_at_once") f >> p.bombsAtOnce; else if (k == "bomb_fuse") f >> p.bombFuse; else if (k == "bomb_reach") f >> p.bombReach; else if (k == "bomb_sphere") f >> p.bombSphere;
         else if (k == "ball_model") { f >> std::ws; std::getline(f, p.ballModel); if (p.ballModel == "-") p.ballModel.clear(); }
         else { std::string rest; std::getline(f, rest); }
     }

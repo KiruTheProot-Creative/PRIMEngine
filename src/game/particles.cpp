@@ -115,4 +115,7 @@ float flickerAt(Flicker f, double time, uint32_t seed) {
     }
 }
 
+float ImpactSphere::radiusNow() const { float x = std::clamp(t / std::max(0.01f, life), 0.f, 1.f); return radius * (1 - (1 - x) * (1 - x) * (1 - x)); }
+float ImpactSphere::alphaNow() const { float x = std::clamp(t / std::max(0.01f, life), 0.f, 1.f); return (1 - x) * (1 - x); }
+
 } // namespace mc

@@ -496,8 +496,11 @@ int main() {
         Controls jump; jump.jump = true; p.vel = { 0, 0, 0 }; for (int k = 0; k < 4; k++) p.update(w, jump, 0.05, r);
         CHECK(p.onGround && p.feet.y < 0.01, "the ball cannot jump by itself (%.2f)", p.feet.y);
         CHECK(std::fabs(r.bombJumpSpeed() * r.bombJumpSpeed() / (2 * r.gravity) - r.bombJump) < 1e-4, "a bomb jump reaches its height");
-        GameSettings gs; gs.player.morphBall = 2; gs.player.bombJump = 3; gs.player.ballModel = "my ball"; gs.save("/tmp/prim_game_ball.txt"); GameSettings gb; gb.load("/tmp/prim_game_ball.txt");
-        CHECK(gb.player.morphBall == 2 && gb.player.bombJump == 3 && gb.player.ballModel == "my ball", "the morph ball's rules save and load");
+        ImpactSphere is; is.radius = 2; is.life = 0.5f;
+        float r0 = is.radiusNow(), a0 = is.alphaNow(); is.t = 0.1f; float r1 = is.radiusNow(); is.t = 0.25f; float r2 = is.radiusNow(), a2 = is.alphaNow(); is.t = 0.5f;
+        CHECK(r0 == 0 && a0 == 1 && r1 > 0.9f && r2 > 1.7f && r2 < 2 && a2 < 0.3f && std::fabs(is.radiusNow() - 2) < 1e-6 && is.alphaNow() == 0 && is.done(), "an impact sphere grows fast, then slowly, and fades out (%.2f, %.2f)", r1, r2);
+        GameSettings gs; gs.player.morphBall = 2; gs.player.bombSphere = 4.5f; gs.player.bombJump = 3; gs.player.ballModel = "my ball"; gs.save("/tmp/prim_game_ball.txt"); GameSettings gb; gb.load("/tmp/prim_game_ball.txt");
+        CHECK(gb.player.morphBall == 2 && gb.player.bombSphere == 4.5f && gb.player.bombJump == 3 && gb.player.ballModel == "my ball", "the morph ball's rules save and load");
         MeshModel mb; CHECK(builtinShape("@morph-ball", mb) && std::fabs(mb.sy - 1) < 0.01 && std::fabs(mb.sx - 1) < 0.02, "the built-in morph ball builds, 1 block across (%.2f)", mb.sx);
     }
 
@@ -529,10 +532,10 @@ int main() {
         CHECK(std::fabs(k1.offset.z) < 1e-3, "and it settles again");
         WeaponPose l1; l1.update(mo, 1.0 / 60, 0, true, 20, 0); for (int k = 0; k < 4; k++) l1.update(mo, 1.0 / 60, 0, false, 0, 0);
         CHECK(l1.offset.y < -0.003, "landing dips it (%.4f)", l1.offset.y);
-        w.beams[1].muzzle.yaw = 12.5f; w.beams[1].missileWait = false; w.beams[0].name = "Power % Beam"; w.motion.recoil = 0.3f; w.missileMax = 99; w.cannonInFront = true; w.beams[1].chargeTime = 2.5f; w.beams[0].charge = false;
+        w.beams[1].muzzle.yaw = 12.5f; w.beams[1].missileWait = false; w.beams[0].name = "Power % Beam"; w.motion.recoil = 0.3f; w.missileMax = 99; w.cannonInFront = true; w.beams[1].chargeTime = 2.5f; w.beams[0].charge = false; w.beams[1].missileSphere = 3.5f;
         saveWeapons("/tmp/prim_weapons.txt", w); WeaponSet back; loadWeapons("/tmp/prim_weapons.txt", back);
         CHECK(back.beams.size() == 2 && back.beams[0].name == "Power % Beam" && back.beams[1].muzzle.yaw == 12.5f && !back.beams[1].missileWait && back.beams[0].missileWait
-              && back.beams[1].shotLook == "Magic" && back.motion.recoil == 0.3f && back.missileMax == 99 && back.beams[0].model == "@arm-cannon" && back.cannonInFront && back.beams[1].chargeTime == 2.5f && !back.beams[0].charge && back.beams[1].chargeLook == "Charge", "weapons save and load");
+              && back.beams[1].shotLook == "Magic" && back.motion.recoil == 0.3f && back.missileMax == 99 && back.beams[0].model == "@arm-cannon" && back.cannonInFront && back.beams[1].missileSphere == 3.5f && back.beams[1].chargeTime == 2.5f && !back.beams[0].charge && back.beams[1].chargeLook == "Charge", "weapons save and load");
         {   // the charge beam
             Beam cb = defaultWeapons().beams[0]; WeaponState cs; bool was = false; int normal = 0, charged = 0;
             auto step = [&](bool down, float dt) { auto r = cs.beamButton(cb, down, was, dt, 0.2f); was = down; cs.tick(dt); normal += r == WeaponState::Shot::Normal; charged += r == WeaponState::Shot::Charged; };

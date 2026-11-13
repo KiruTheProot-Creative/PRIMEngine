@@ -249,6 +249,7 @@ struct App {
         { D3D11_INPUT_ELEMENT_DESC fe[] = { { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 }, { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0 } };
           HR(dev->CreateInputLayout(fe, 2, b->GetBufferPointer(), b->GetBufferSize(), &layoutFieldMesh)); }
         b = Compile(src, "PS_FieldMesh", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psFieldMesh));
+        b = Compile(src, "PS_ImpactSphere", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psSphere));
         b = Compile(src, "VS_Preview", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsPreview));
         b = Compile(src, "PS_Preview", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psPreview));
         InitHud(src);
@@ -632,7 +633,8 @@ struct App {
         if (!paused) UpdatePlatforms(std::min(dt, 0.05));
         if (!paused) UpdateHelpers(std::min(dt, 0.05));
         if (!paused) UpdateParticles(std::min(dt, 0.05));
-        if (playMode && !paused) UpdateBall(std::min(dt, 0.05));
+        if (playMode && !paused) { UpdateBall(std::min(dt, 0.05)); UpdateSpheres(std::min(dt, 0.05)); }
+        if (!playMode && !spheres.empty()) spheres.clear();
         UpdateHudSway(std::min(dt, 0.05));
         if (playMode && !paused) UpdateDoors(std::min(dt, 0.05)); else if (!playMode && !doorRt.empty()) { doorRt.clear(); doorGpu.clear(); shots.clear(); RebuildSolids(); }
         if (playMode && !paused) {   // health, lava, falling out of the world, respawning
@@ -1466,6 +1468,41 @@ struct App {
     ComPtr<ID3D11VertexShader> vsField; ComPtr<ID3D11PixelShader> psField;
     ComPtr<ID3D11VertexShader> vsFieldMesh; ComPtr<ID3D11PixelShader> psFieldMesh; ComPtr<ID3D11InputLayout> layoutFieldMesh; ComPtr<ID3D11Buffer> vbFieldMesh; size_t vbFieldMeshCap = 0;
     struct FMVtx { float p[3], n[3]; };
+    // ---- impact spheres: glowing shells that grow from explosions and fade
+    ComPtr<ID3D11PixelShader> psSphere; ComPtr<ID3D11Buffer> vbSphere; std::vector<ImpactSphere> spheres; std::vector<FMVtx> unitSphere;
+    void AddSphere(V3 at, float across, uint32_t col, float life = 0.45f) {
+        if (across <= 0.01f) return;
+        ImpactSphere s; s.pos = at; s.radius = across * 0.5f; s.color = col; s.life = life; spheres.push_back(s);
+        if (spheres.size() > 24) spheres.erase(spheres.begin());
+    }
+    void UpdateSpheres(double dt) { for (auto& s : spheres) s.t += (float)dt; spheres.erase(std::remove_if(spheres.begin(), spheres.end(), [](const ImpactSphere& s) { return s.done(); }), spheres.end()); }
+    void DrawSpheres() {
+        if (spheres.empty()) return;
+        if (unitSphere.empty()) {   // a ball of triangles, 1 across ... built once
+            const int LON = 32, LAT = 18;
+            auto P = [&](int i, int j) { double th = 3.14159265358979 * j / LAT, ph = 6.28318530717959 * i / LON; return V3{ std::sin(th) * std::cos(ph), std::cos(th), std::sin(th) * std::sin(ph) }; };
+            auto put = [&](V3 p) { unitSphere.push_back({ { (float)p.x, (float)p.y, (float)p.z }, { (float)p.x, (float)p.y, (float)p.z } }); };
+            for (int j = 0; j < LAT; j++) for (int i = 0; i < LON; i++) { V3 a = P(i, j), b = P(i + 1, j), c = P(i + 1, j + 1), d = P(i, j + 1); put(a); put(b); put(c); put(a); put(c); put(d); }
+            D3D11_BUFFER_DESC d{}; d.ByteWidth = (UINT)(unitSphere.size() * sizeof(FMVtx)); d.Usage = D3D11_USAGE_DYNAMIC; d.BindFlags = D3D11_BIND_VERTEX_BUFFER; d.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE; HR(dev->CreateBuffer(&d, nullptr, &vbSphere));
+        }
+        ctx->OMSetBlendState(bsAdd.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsTestOnly.Get(), 0); ctx->RSSetState(rsNoCull.Get());
+        ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); ctx->IASetInputLayout(layoutFieldMesh.Get()); ctx->VSSetShader(vsFieldMesh.Get(), nullptr, 0); ctx->PSSetShader(psSphere.Get(), nullptr, 0);
+        ctx->PSSetShaderResources(3, 1, noiseSRV.GetAddressOf()); ctx->PSSetSamplers(2, 1, sampLinear.GetAddressOf());
+        ID3D11Buffer* cbs[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->VSSetConstantBuffers(0, 2, cbs); ctx->PSSetConstantBuffers(0, 2, cbs);
+        UINT stride = sizeof(FMVtx), off = 0; ctx->IASetVertexBuffers(0, 1, vbSphere.GetAddressOf(), &stride, &off);
+        for (const ImpactSphere& s : spheres) {
+            float r = std::max(0.01f, s.radiusNow()); V3 c = s.pos - camPos;
+            D3D11_MAPPED_SUBRESOURCE m; if (FAILED(ctx->Map(vbSphere.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) continue;
+            FMVtx* v = (FMVtx*)m.pData;
+            for (size_t k = 0; k < unitSphere.size(); k++) { v[k] = unitSphere[k]; v[k].p[0] = (float)(c.x + unitSphere[k].p[0] * r); v[k].p[1] = (float)(c.y + unitSphere[k].p[1] * r); v[k].p[2] = (float)(c.z + unitSphere[k].p[2] * r); }
+            ctx->Unmap(vbSphere.Get(), 0);
+            V3 col = Linear(s.color); float grown = s.t / std::max(0.01f, s.life);
+            ChunkCB cc{ { (float)c.x, (float)c.y, (float)c.z, grown }, { 0, 0, 0, 0 }, { 0, 0, 0, 0 }, { (float)col.x * 2.2f, (float)col.y * 2.2f, (float)col.z * 2.2f, s.alphaNow() } };
+            ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);
+            ctx->Draw((UINT)unitSphere.size(), 0);
+        }
+        ctx->IASetInputLayout(layout.Get()); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());
+    }
     // the field as a shell just outside the door's chosen moving parts (closed: as imported)
     bool DrawFieldOnParts(const WorldObject& o, const ModelFrame& f, const DoorRuntime& r) {
         auto mi = meshModels.find(o.model); if (mi == meshModels.end()) return false;
@@ -1568,6 +1605,11 @@ struct App {
                 {   // sparks where it hits; its tail stays a moment
                     V3 at = s.pos + s.dir * best; uint32_t tint = door >= 0 ? objects[door].door.color : s.tint;
                     SpawnFx(particlePreset(s.hitLook.empty() ? "Impact" : s.hitLook), at - s.dir * 0.05, s.dir * -1, tint);
+                    {   // the impact sphere: small for beam shots, bigger for charged shots and missiles
+                        const Beam* wb = nullptr; for (const Beam& q : weapons.beams) if (q.name == s.weapon) wb = &q;
+                        float across = !wb ? 0.f : s.missile ? wb->missileSphere : s.charged ? wb->chargeSphere : wb->hitSphere;
+                        AddSphere(at - s.dir * 0.05, across, s.tint, s.missile ? 0.55f : s.charged ? 0.45f : 0.22f);
+                    }
                     if (s.charged) { ParticleSettings bo = particlePreset(s.hitLook.empty() ? "Impact" : s.hitLook); bo.burst *= 3; bo.speed *= 1.6f; bo.size0 *= 2; SpawnFx(bo, at - s.dir * 0.08, s.dir * -1, s.tint); }
                     if (s.missile) { ParticleSettings bo = particlePreset("Fire"); bo.burst = 40; bo.life = 0.5f; SpawnFx(bo, at - s.dir * 0.1, s.dir * -1, s.tint); }
                     fx.push_back(s.trail);
@@ -2560,7 +2602,7 @@ struct App {
             ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());
         }
         if (weather.boltAge < 0.45 && E.atmosphere > 0.5f) DrawBolt();
-        DrawFields();   // door forcefields and test-beam shots
+        DrawFields(); DrawSpheres();   // door forcefields and test-beam shots
         DrawParticles();
         if (E.particleKind > 0.5f && E.particleAmount > 0.01f) {   // dust, embers, spores or ice sparkles floating in the air
             ctx->OMSetBlendState(bsAlpha.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsTestOnly.Get(), 0); ctx->RSSetState(rsNoCull.Get());
@@ -3529,6 +3571,7 @@ struct App {
                         sl("Bomb jump", &r.bombJump, 0, 6, "%.1f blocks");
                         Prop("Bombs at once"); ImGui::SliderInt("##bao", &r.bombsAtOnce, 1, 6);
                         sl("Fuse", &r.bombFuse, 0.2f, 3, "%.2f s"); sl("Reach", &r.bombReach, 0.5f, 4, "%.1f blocks");
+                        sl("Impact sphere", &r.bombSphere, 0, 10, "%.1f blocks across");
                     }
                     Prop("Ball model"); if (ImGui::BeginCombo("##bm", r.ballModel.c_str())) { if (ImGui::Selectable("@morph-ball (built in)", r.ballModel == "@morph-ball")) r.ballModel = "@morph-ball"; for (const std::string& n : PartModels()) if (ImGui::Selectable(n.c_str(), r.ballModel == n)) r.ballModel = n; ImGui::EndCombo(); }
                 }
@@ -4539,6 +4582,8 @@ struct App {
         Prop("Damage"); ch |= ImGui::SliderFloat("##bd", &b.damage, 0, 500, "%.0f");
         Prop("Range"); ch |= ImGui::SliderFloat("##brg", &b.range, 5, 300, "%.0f blocks");
         Prop("Thickness"); ch |= ImGui::SliderFloat("##bz", &b.size, 0.01f, 0.6f, "%.2f blocks");
+        Prop("Impact sphere"); ch |= ImGui::SliderFloat("##bsph", &b.hitSphere, 0, 4, "%.2f blocks");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("A glowing see-through bubble that grows where the shot hits, then fades. 0: none.");
         Prop("Firing animation"); ch |= ClipCombo("##bfc", b.model, b.fireClip);
         Prop("Wait until it is done"); ch |= ImGui::Checkbox("##bw", &b.waitForAnim);
         ImGui::SeparatorText("Charge shot (hold the button)");
@@ -4549,6 +4594,7 @@ struct App {
             Prop("Damage"); ch |= ImGui::SliderFloat("##cd", &b.chargeDamage, 1, 20, "x %.1f");
             Prop("Size"); ch |= ImGui::SliderFloat("##cs", &b.chargeSize, 1, 10, "x %.1f");
             Prop("Speed"); ch |= ImGui::SliderFloat("##csp", &b.chargeSpeed, 0.1f, 3, "x %.2f");
+            Prop("Impact sphere"); ch |= ImGui::SliderFloat("##csph", &b.chargeSphere, 0, 8, "%.1f blocks");
             Hint("A tap fires a normal shot. Hold: it charges at the muzzle; let go when it is full for the charged shot. (Holding to keep firing is off while a beam can charge.) The HUD can show it: Shows > Beam charge.");
         }
         ImGui::SeparatorText("Missiles (right mouse button)");
@@ -4560,6 +4606,7 @@ struct App {
             Prop("Speed"); ch |= ImGui::SliderFloat("##msp", &b.missileSpeed, 2, 200, "%.0f blocks/s");
             Prop("Per second (at most)"); ch |= ImGui::SliderFloat("##mrt", &b.missileRate, 0.2f, 10, "%.1f");
             Prop("Damage"); ch |= ImGui::SliderFloat("##mdm", &b.missileDamage, 0, 1000, "%.0f");
+            Prop("Impact sphere"); ch |= ImGui::SliderFloat("##msph", &b.missileSphere, 0, 10, "%.1f blocks");
         }
         Hint("Damage counts once there are enemies (G5). Doors can ask for a beam or missiles (door Inspector: Opened by).");
         ImGui::EndChild();
@@ -4918,6 +4965,7 @@ struct App {
         ParticleSettings b = particlePreset("Impact"); b.burst = 70; b.speed = 6; b.color0 = 0xFFFFE0; b.color1 = 0xFF9020; b.size0 = 0.08f; SpawnFx(b, at, { 0, 1, 0 });
         ParticleSettings f = particlePreset("Fire"); f.rate = 0; f.burst = 30; f.burstEvery = 99; f.life = 0.4f; SpawnFx(f, at, { 0, 1, 0 });
         flashes.push_back({ at, 0, { 3.0, 1.8, 0.6 }, 7 });
+        AddSphere(at, game.player.bombSphere, 0xFFB850, 0.5f);
         PlaySound(playerSounds.boom, 1, &at);
         double reach = std::max(0.3f, game.player.bombReach);
         for (auto& p : blocksInReach(at, reach)) TryBreak(p[0], p[1], p[2], "Bomb", false, false);
@@ -5893,6 +5941,10 @@ struct App {
                 frames(1, "bomb_laid");
                 run(30);
                 frames(1, "bomb_went_off");
+                run(6); frames(1, "bomb_impact_sphere_growing");
+                run(30); ToggleBall(); run(10); AddSphere(player.eye() + fw * 4.5 + V3{ 0, -0.3, 0 }, 3.5f, 0xFF8A3A, 0.55f); run(9);
+                frames(1, "impact_sphere_missile_size");
+                ToggleBall();
                 Log("bomb: " + std::to_string(broken.size()) + " block(s) broken, ball " + (player.ball ? "rolled up" : "standing"));
                 ToggleBall(); StopPlay();
                 for (int i = -1; i <= 2; i++) for (int j = 0; j < 2; j++) { world->set(gx + sx * i, gyy + j, gz + sz * i, AIR); breakables.unmark(gx + sx * i, gyy + j, gz + sz * i); }

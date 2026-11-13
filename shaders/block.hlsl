@@ -924,3 +924,18 @@ float4 PS_FieldMesh(FMOut i) : SV_Target
     float fade = gAxisZ.w < 0.999 && gAxisZ.w > 0 && reach < 0.06 ? gAxisZ.w : 1;
     return float4(gAxisZ.rgb * (glow * 1.6 * fade + burn * 4), 0);
 }
+
+// ---------------------------------------------------------------- impact spheres: a see-through glowing shell (VS_FieldMesh places it)
+// ChunkCB: gOffset.xyz its middle (relative to the camera), w how far it has grown (0..1); gAxisZ.rgb colour, w how much is left (fades)
+float4 PS_ImpactSphere(FMOut i) : SV_Target
+{
+    float3 n = normalize(i.n), v = normalize(-i.rel);
+    float facing = abs(dot(n, v));
+    float rim = pow(1 - facing, 2.5);                                                     // bright where you see it edge-on: a bubble
+    float3 w = i.rel + gCamPos.xyz;
+    float nz = gNoise.SampleLevel(gLinear, float3(w.xz * 0.35 + w.y * 0.2, gVolume.z * 0.6), 0).x;
+    float ripple = 0.75 + 0.5 * nz;                                                       // a little uneven, like a real blast
+    float core = (1 - gOffset.w) * pow(facing, 3) * 0.6;                                  // at first the middle glows too
+    float glow = (rim * 1.8 + 0.07 + core) * ripple * gAxisZ.w;
+    return float4(gAxisZ.rgb * glow, 0);
+}
