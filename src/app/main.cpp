@@ -2029,7 +2029,7 @@ struct App {
     void ToolIcon(ImDrawList* dl, int tool, ImVec2 c, float s) {
         if (tool == 4) {   // breakable blocks: a cracked block
             float h = s * 0.4f; ImU32 col = IM_COL32(255, 170, 60, 255);
-            dl->AddRect(ImVec2(c.x - h, c.y - h), ImVec2(c.x + h, c.y + h), col, 2, 0, 2);
+            dl->AddRect(ImVec2(c.x - h, c.y - h), ImVec2(c.x + h, c.y + h), col, 2.0f, 0, 2.0f);
             dl->AddLine(ImVec2(c.x - h * 0.2f, c.y - h), ImVec2(c.x + h * 0.1f, c.y - h * 0.2f), col, 2); dl->AddLine(ImVec2(c.x + h * 0.1f, c.y - h * 0.2f), ImVec2(c.x - h * 0.3f, c.y + h * 0.3f), col, 2);
             dl->AddLine(ImVec2(c.x - h * 0.3f, c.y + h * 0.3f), ImVec2(c.x + h * 0.2f, c.y + h), col, 2); dl->AddLine(ImVec2(c.x + h * 0.1f, c.y - h * 0.2f), ImVec2(c.x + h, c.y + h * 0.1f), col, 2);
             return;
