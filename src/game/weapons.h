@@ -2,6 +2,7 @@
 // Weapons (Samus controls, part 1): beams, each with its own arm cannon model, three points on it (pivot, muzzle, emitter),
 // what it shoots, missiles, and how the cannon moves (idle / walk / land / recoil, made by the engine). Plain C++, tested on Linux.
 #include "game.h"
+#include "sound.h"
 #include <string>
 #include <vector>
 
@@ -33,7 +34,11 @@ struct Beam {
     bool charge = true; float chargeTime = 1.0f;        // seconds to fill (after a short tap time)
     float chargeDamage = 4, chargeSize = 3.5f, chargeSpeed = 0.8f;   // times the normal shot's
     std::string chargeLook = "Charge";                  // particles gathering at the muzzle
+    // timelines: the animation's speed, sounds, and when the shot leaves, for each thing the beam does
+    enum TimelineKind { Fire, Charging, Charged, MissileShot, TIMELINES };
+    Timeline timelines[TIMELINES];
 };
+const char* timelineName(int kind);                     // "Fire", "Charging", "Charged shot", "Missile"
 
 // what the engine adds on top of the cannon's own animations
 struct WeaponMotion {
@@ -46,6 +51,13 @@ struct WeaponSet {
     std::string missileCounter = "Missile";            // the counter that holds missiles (the HUD can show it)
     int missileStart = 25, missileMax = 25;
     bool cannonInFront = false;                         // the cannon's own layer: behind the HUD (like a visor) or in front of it
+    // aiming: classic (the camera turns with the mouse, shots go to the middle) or free aim (Wii style: a cursor moves on the
+    // screen, the cannon and the shots follow it; past the dead zone the camera turns, faster toward the edge)
+    int aimMode = 0;                                    // 0 classic, 1 free aim
+    float deadZone = 0.45f;                             // free aim: the middle part of the screen where the camera stays still (0..1)
+    float turnSpeed = 140;                              // free aim: degrees per second at the very edge
+    float cursorSpeed = 1;                              // free aim: how fast the mouse moves the cursor
+    float cannonFollow = 1;                             // free aim: how much the cannon turns toward the cursor
     bool empty() const { return beams.empty(); }
 };
 WeaponSet defaultWeapons();                             // a Power Beam and a Wave Beam on the built-in arm cannon
@@ -59,6 +71,15 @@ struct WeaponPose {
     float dropVel = 0, drop = 0, kick = 0, kickVel = 0;
     // speed: walking speed (blocks/s); landed this step at fallSpeed; fired: a shot (strength 1 beam, ~2.5 missile)
     void update(const WeaponMotion& m, double dt, float speed, bool landed, float fallSpeed, float fired);
+};
+
+// free aim: a cursor on the screen (x, y: -1 .. 1 from the middle to the edges, y up)
+struct FreeAim {
+    float x = 0, y = 0;
+    // mouse moved by dx, dy pixels on a screen w x h; returns how far the camera turns (degrees, right / up) this step
+    void update(const WeaponSet& w, float dx, float dy, float screenW, float screenH, double dt, float& turnYaw, float& turnPitch);
+    // the direction through the cursor, in camera space (x right, y up, z forward), for a vertical view angle fovDeg
+    V3 dir(float fovDeg, float aspect) const;
 };
 
 // may it fire now? (fire rate, waiting for the animation, missiles left)

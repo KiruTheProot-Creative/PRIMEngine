@@ -12,6 +12,7 @@ struct Settings {
     int renderDistance = 10;   // chunks around you, sideways
     int verticalDistance = 5;  // chunks above and below you
     float fov = 70, mouseSensitivity = 1.f, uiScale = 1.f;
+    float soundVolume = 1.f;   // all sounds
     bool vsync = true;
     bool blockPreview = true;  // see-through preview where the next block goes
     float timeOfDay = 10.f;    // hours, 0 .. 24

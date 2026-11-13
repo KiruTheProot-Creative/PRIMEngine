@@ -11,6 +11,23 @@ V3 pointDir(const WeaponPoint& p) {
     return { std::sin(y) * std::cos(x), std::sin(x), std::cos(y) * std::cos(x) };
 }
 
+const char* timelineName(int k) { static const char* n[] = { "Fire", "Charging", "Charged shot", "Missile" }; return n[std::clamp(k, 0, 3)]; }
+
+void FreeAim::update(const WeaponSet& w, float dx, float dy, float W, float H, double dt, float& ty, float& tp) {
+    float s = std::max(0.05f, w.cursorSpeed);
+    x = std::clamp(x + dx / std::max(1.f, W * 0.5f) * s, -1.f, 1.f);
+    y = std::clamp(y - dy / std::max(1.f, H * 0.5f) * s, -1.f, 1.f);
+    auto turn = [&](float v) {   // nothing inside the dead zone, then faster toward the edge
+        float dz = std::clamp(w.deadZone, 0.f, 0.95f), a = std::fabs(v); if (a <= dz) return 0.f;
+        float k = (a - dz) / (1 - dz); return (v > 0 ? 1 : -1) * k * k * w.turnSpeed * (float)dt;
+    };
+    ty = turn(x); tp = turn(y);
+}
+V3 FreeAim::dir(float fovDeg, float aspect) const {
+    double ty = std::tan(fovDeg * 3.14159265358979 / 360), tx = ty * aspect;
+    V3 d{ x * tx, y * ty, 1 }; double l = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z); return d * (1 / l);
+}
+
 // ------------------------------------------------------------------ the starter set (the built-in arm cannon: its barrel points to +Z)
 WeaponSet defaultWeapons() {
     WeaponSet w;
@@ -85,6 +102,7 @@ bool saveWeapons(const std::string& path, const WeaponSet& w) {
     f << "motion " << w.motion.idle << " " << w.motion.walk << " " << w.motion.land << " " << w.motion.recoil << "\n";
     f << "missiles " << esc(w.missileCounter) << " " << w.missileStart << " " << w.missileMax << "\n";
     f << "layer " << w.cannonInFront << "\n";
+    f << "aim " << w.aimMode << " " << w.deadZone << " " << w.turnSpeed << " " << w.cursorSpeed << " " << w.cannonFollow << "\n";
     for (const Beam& b : w.beams) {
         f << "beam " << esc(b.name) << " " << esc(b.model);
         putPoint(f, b.pivot); putPoint(f, b.muzzle); putPoint(f, b.emitter);
@@ -93,6 +111,11 @@ bool saveWeapons(const std::string& path, const WeaponSet& w) {
           << " " << b.auto_ << " " << b.waitForAnim << " " << esc(b.fireClip) << " " << b.missiles << " " << esc(b.missileClip) << " " << b.missileWait
           << " " << b.missileSpeed << " " << b.missileDamage << " " << b.missileRate << " " << b.missileColor << " " << b.startsOwned
           << " " << b.charge << " " << b.chargeTime << " " << b.chargeDamage << " " << b.chargeSize << " " << b.chargeSpeed << " " << esc(b.chargeLook) << "\n";
+        for (int k = 0; k < Beam::TIMELINES; k++) {   // its timelines (after the beam they belong to)
+            const Timeline& t = b.timelines[k];
+            f << "timeline " << k << " " << t.animSpeed << " " << t.shotAt << "\n";
+            for (const SoundClip& s : t.sounds) f << "clip " << k << " " << s.at << " " << soundUseText(s.sound) << "\n";
+        }
     }
     return (bool)f;
 }
@@ -103,6 +126,9 @@ bool loadWeapons(const std::string& path, WeaponSet& w) {
         std::istringstream l(line); std::string k; l >> k;
         if (k == "motion") l >> w.motion.idle >> w.motion.walk >> w.motion.land >> w.motion.recoil;
         else if (k == "layer") l >> w.cannonInFront;
+        else if (k == "aim") l >> w.aimMode >> w.deadZone >> w.turnSpeed >> w.cursorSpeed >> w.cannonFollow;
+        else if (k == "timeline" && !w.beams.empty()) { int t; float sp, at; if (l >> t >> sp >> at && t >= 0 && t < Beam::TIMELINES) { w.beams.back().timelines[t].animSpeed = sp; w.beams.back().timelines[t].shotAt = at; } }
+        else if (k == "clip" && !w.beams.empty()) { int t; SoundClip c; std::string rest; if (l >> t >> c.at && t >= 0 && t < Beam::TIMELINES) { std::getline(l, rest); if (soundUseFrom(rest, c.sound)) w.beams.back().timelines[t].sounds.push_back(c); } }
         else if (k == "missiles") { std::string c; l >> c >> w.missileStart >> w.missileMax; w.missileCounter = unesc(c); }
         else if (k == "beam") {
             Beam b; std::string n, m, sl, hl, fl, fc, mc;

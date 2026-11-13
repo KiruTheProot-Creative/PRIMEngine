@@ -15,6 +15,7 @@
 #include "../game/events.h"
 #include "../game/hud.h"
 #include "../game/weapons.h"
+#include "../game/sound.h"
 #include "../game/weather.h"
 #include "../core/png.h"
 #include "../core/noise.h"
@@ -29,6 +30,7 @@
 #include <shellapi.h>
 #include <commdlg.h>
 #include <d3d11.h>
+#include <xaudio2.h>
 #include <d3dcompiler.h>
 #include <DirectXMath.h>
 #include <wrl/client.h>
@@ -249,6 +251,7 @@ struct App {
         b = Compile(src, "VS_Preview", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsPreview));
         b = Compile(src, "PS_Preview", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psPreview));
         InitHud(src);
+        InitAudio();
         b = Compile(src, "PS_AO", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psAO));
         b = Compile(src, "PS_AOApply", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psAOApply));
         b = Compile(src, "PS_Water", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psWater));
@@ -610,7 +613,10 @@ struct App {
     void UpdateGame(double dt) {
         player.applySize(game.player);   // the size from the player rules (editor camera too)
         if (Playing()) {
-            double s = 0.0022 * settings.mouseSensitivity; player.look(mouseDX * s, mouseDY * s);
+            if (FreeAiming()) {   // free aim: the mouse moves a cursor; near the edges the camera turns
+                float ty, tp; freeAim.update(weapons, (float)(mouseDX * settings.mouseSensitivity), (float)(mouseDY * settings.mouseSensitivity), (float)rw, (float)rh, dt, ty, tp);
+                player.look(ty * 3.14159265358979 / 180, -tp * 3.14159265358979 / 180);
+            } else { double s = 0.0022 * settings.mouseSensitivity; player.look(mouseDX * s, mouseDY * s); }
             Controls c; bool fg = GetForegroundWindow() == hwnd;
             if (fg) { c.forward = Down('W'); c.back = Down('S'); c.left = Down('A'); c.right = Down('D'); c.jump = Down(VK_SPACE); c.sneak = Down(VK_SHIFT); c.sprint = Down(VK_CONTROL) && !Down('Z') && !Down('Y'); }
             if (playMode) { c.sprint = c.sprint && game.player.canSprint; if (play.dead()) c = Controls{}; }
@@ -2679,6 +2685,7 @@ struct App {
             ImVec2 ts = ImGui::CalcTextSize(t); dl->AddRectFilled(ImVec2(m.x - ts.x * 0.5f - 10, vy + 10), ImVec2(m.x + ts.x * 0.5f + 10, vy + 16 + ts.y), IM_COL32(0, 0, 0, 140), 4);
             dl->AddText(ImVec2(m.x - ts.x * 0.5f, vy + 13), IM_COL32(255, 255, 255, 230), t);
         }
+        if (FreeAiming()) m = ImVec2(vx + cw * (0.5f + 0.5f * freeAim.x), vy + ch * (0.5f - 0.5f * freeAim.y));   // free aim: the cursor
         dl->AddRectFilled(ImVec2(m.x - 9, m.y - 1), ImVec2(m.x + 9, m.y + 1), IM_COL32(240, 240, 240, 220));
         dl->AddRectFilled(ImVec2(m.x - 1, m.y - 9), ImVec2(m.x + 1, m.y + 9), IM_COL32(240, 240, 240, 220));
         if (playMode) { PlayHud(dl); return; }
@@ -2731,6 +2738,7 @@ struct App {
         ch_ |= ImGui::SliderInt("Up/down distance", &settings.verticalDistance, 1, 12, "%d chunks");
         ch_ |= ImGui::SliderFloat("Field of view", &settings.fov, 50, 110, "%.0f");
         ch_ |= ImGui::SliderFloat("Mouse sensitivity", &settings.mouseSensitivity, 0.1f, 3.f, "%.2f");
+        ch_ |= ImGui::SliderFloat("Sound volume", &settings.soundVolume, 0, 2, "%.2f");
         ch_ |= ImGui::SliderFloat("UI size", &settings.uiScale, 0.75f, 2.f, "%.2f");
         ch_ |= ImGui::Checkbox("VSync", &settings.vsync);
         ch_ |= ImGui::Checkbox("Show where the next block goes (see-through preview)", &settings.blockPreview);
@@ -2860,6 +2868,7 @@ struct App {
         playSpawn = info.hasSpawn ? info.spawn : player.feet; playYaw = info.hasSpawn ? info.spawnYaw : player.yaw;
         play = PlayState{}; play.start(player, game.player, playSpawn, playYaw);
         weapState = WeaponState{}; weapPose = WeaponPose{}; cannonClip = -1; firedPending = 0; missilePrev = true;
+        activeTl.clear(); chargeTlOn = false; freeAim = FreeAim{}; aimYaw = aimPitch = 0; stepDist = 0;
         for (int i = 0; i < (int)weapons.beams.size(); i++) if (weapons.beams[i].startsOwned) { weapState.current = i; break; }
         hudSway.reset(); hudShown.clear(); hudFlashAt.clear(); prevPlayYaw = player.yaw; prevPlayPitch = player.pitch; prevOnGround = true; prevVelY = 0;
         EvStart();
@@ -3566,7 +3575,8 @@ struct App {
     double prevPlayYaw = 0, prevPlayPitch = 0, prevVelY = 0; bool prevOnGround = true;
 
     std::string HudPath() const { return projectDir + "/hud.txt"; }
-    void LoadHud() { hud = HudLayout{}; loadHud(HudPath(), hud); weapons = WeaponSet{}; loadWeapons(projectDir + "/weapons.txt", weapons); weapSel = 0; weapState = WeaponState{}; hudImages.clear(); hudSel = 0; hudPlane = 0; hudEl = -1; hudPart = 0; }
+    void LoadHud() { soundCache.clear(); playerSounds = PlayerSounds{}; loadPlayerSounds(projectDir + "/player_sounds.txt", playerSounds); activeTl.clear();
+        hud = HudLayout{}; loadHud(HudPath(), hud); weapons = WeaponSet{}; loadWeapons(projectDir + "/weapons.txt", weapons); weapSel = 0; weapState = WeaponState{}; hudImages.clear(); hudSel = 0; hudPlane = 0; hudEl = -1; hudPart = 0; }
     void SaveHud() {
         if (projectDir.empty()) return; std::error_code ec;
         if (hud.empty()) fs::remove(fs::u8path(HudPath()), ec); else saveHud(HudPath(), hud);
@@ -3827,6 +3837,7 @@ struct App {
             float speed = (float)std::sqrt(player.vel.x * player.vel.x + player.vel.z * player.vel.z) * (player.onGround ? 1.f : 0.f);
             hudSway.update(hud.sway, dt, ty, tp, speed, landed, fall);
             weapPose.update(weapons.motion, dt, speed, landed, fall, firedPending); firedPending = 0;
+            UpdatePlayerSounds(dt, landed, fall, prevOnGround && !player.onGround && player.vel.y > 0.5);
         }
         prevPlayYaw = player.yaw; prevPlayPitch = player.pitch; prevVelY = player.vel.y; prevOnGround = player.onGround;
         if (playerEdOpen && !playMode) {
@@ -3840,7 +3851,8 @@ struct App {
             previewSway.update(hud.sway, dt, ty, tp, speed, false, 0);
             previewPose.update(weapons.motion, dt, speed, false, 0, previewFired); previewFired = 0;
         }
-        UpdateCannon(dt);
+        UpdateCannon(dt); UpdateAimCannon(dt);
+        if (!playMode) UpdateTimelines(dt, false);   // the editor's preview plays timelines too (sounds, the kick)
         prevEdYaw = player.yaw; prevEdPitch = player.pitch;
     }
 
@@ -4149,6 +4161,8 @@ struct App {
             playerTabWeapons = false;
             if (ImGui::BeginTabItem("Weapons", nullptr, selectWeaponsTab ? ImGuiTabItemFlags_SetSelected : 0)) { playerTabWeapons = true; WeaponsTab(); ImGui::EndTabItem(); }
             selectWeaponsTab = false;
+            if (ImGui::BeginTabItem("Sounds", nullptr, selectSoundsTab ? ImGuiTabItemFlags_SetSelected : 0)) { SoundsTab(); ImGui::EndTabItem(); }
+            selectSoundsTab = false;
             if (ImGui::BeginTabItem("Body and controls")) { ImGui::Spacing(); Hint("Coming later: the player's model, size, moves and controls (Samus: morph ball, bombs, beams...)."); ImGui::EndTabItem(); }
             ImGui::EndTabBar();
         }
@@ -4156,9 +4170,10 @@ struct App {
     }
     // ================================================================== weapons (Samus controls, part 1): beams on arm cannons, missiles
     WeaponSet weapons; WeaponState weapState; WeaponPose weapPose, previewPose;
+    bool chargeTlOn = false; float cannonSpeed = 1;
     ParticleEmitter chargeFx{ particlePreset("Charge"), 77 }; V3 chargeAt{ 0, 0, 0 }; bool holdBeam = false;   // holdBeam: screenshots hold the button
     ModelGpu cannonGpu; int cannonClip = -1; float cannonT = 0; bool missilePrev = true; float firedPending = 0, previewFired = 0;
-    bool selectWeaponsTab = false;
+    bool selectWeaponsTab = false, selectSoundsTab = false; bool weapTimelineView = false;
     int weapSel = 0, weapPoint = 1;   // the beam picked in the editor; the point being edited (0 pivot, 1 muzzle, 2 emitter)
     float weapYaw = 2.3f, weapPitch = 0.35f, weapDist = 2.2f; XMMATRIX weapVP = XMMatrixIdentity(); V3 weapEye{ 0, 0, 0 }; ImVec2 weapWant{ 0, 0 };
     HudTarget weapView; ComPtr<ID3D11DepthStencilView> weapDSV; int weapDW = 0, weapDH = 0; int weapDrag = -1; bool playerTabWeapons = false;
@@ -4177,12 +4192,12 @@ struct App {
         const Beam* b = CurrentBeam(); if (!b) return 0;
         auto it = meshModels.find(b->model); if (it == meshModels.end()) return 0;
         int c = it->second.findClip(missile ? b->missileClip : b->fireClip); if (c < 0) return 0;
-        cannonClip = c; cannonT = 0; return it->second.clips[c].length;
+        cannonClip = c; cannonT = 0; cannonSpeed = 1; return it->second.clips[c].length;
     }
     void UpdateCannon(double dt) {
         const Beam* b = CurrentBeam(); if (!b || cannonClip < 0) return;
         auto mi = meshModels.find(b->model); if (mi == meshModels.end() || cannonClip >= (int)mi->second.clips.size()) { cannonClip = -1; return; }
-        cannonT += (float)dt; if (cannonT >= mi->second.clips[cannonClip].length) { cannonClip = -1; return; }
+        cannonT += (float)dt * cannonSpeed; if (cannonT >= mi->second.clips[cannonClip].length) { cannonClip = -1; return; }
         UploadMeshVerts(cannonGpu, mi->second, mi->second.posed(cannonClip, cannonT)); cannonGpu.mesh = true; cannonGpu.tex = GpuModel(b->model).tex;
     }
     // where the cannon is in camera space: a point on the model (blocks from its corner) -> camera space = base + ax * l.x + ay * l.y + az * l.z
@@ -4190,7 +4205,7 @@ struct App {
     bool CannonPlacement(const Beam& b, const HudSway& sw, const WeaponPose& wp, CannonXf& x) {
         FrameRef f = ModelNamed(b.model); if (!f) return false;
         WorldObject vo; vo.model = b.model;
-        float y = b.viewYaw + wp.yaw, p = b.viewPitch + wp.pitch, r = b.viewRoll + wp.roll, k = b.sway;
+        float y = b.viewYaw + wp.yaw + aimYaw, p = b.viewPitch + wp.pitch - aimPitch, r = b.viewRoll + wp.roll, k = b.sway;   // aim: free aim turns it toward the cursor
         x.ax = rotateDeg({ 1, 0, 0 }, y, p, r) * b.scale; x.ay = rotateDeg({ 0, 1, 0 }, y, p, r) * b.scale; x.az = rotateDeg({ 0, 0, 1 }, y, p, r) * b.scale;
         V3 pr = objectPoint(vo, *f, b.pivot.pos);
         x.base = b.viewPos + wp.offset - (x.ax * pr.x + x.ay * pr.y + x.az * pr.z);
@@ -4238,11 +4253,12 @@ struct App {
         V3 from = eye + fw * 0.6, mpos = from, mdir = fw;
         CannonXf x;
         if (CannonPlacement(b, hudSway, weapPose, x)) { from = eye + W(CannonPoint(x, b, b.emitter.pos)); mpos = eye + W(CannonPoint(x, b, b.muzzle.pos)); mdir = W(CannonDir(x, pointDir(b.muzzle))); }
+        V3 ad = AimDir();   // through the crosshair (the middle, or the free-aim cursor)
         double range = std::max(2.f, b.range), hitT = range; Hit h;
-        if (world->raycast(eye, fw, range, h)) hitT = h.t;
-        for (const Box3& bx : world->objectSolids) { double t; if (rayBox(eye, fw, bx, t) && t > 0.05 && t < hitT) hitT = t; }
-        V3 target = eye + fw * hitT, d = target - from; double L = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
-        Shot sh; sh.pos = from; sh.dir = L > 0.8 ? d * (1 / L) : fw;
+        if (world->raycast(eye, ad, range, h)) hitT = h.t;
+        for (const Box3& bx : world->objectSolids) { double t; if (rayBox(eye, ad, bx, t) && t > 0.05 && t < hitT) hitT = t; }
+        V3 target = eye + ad * hitT, d = target - from; double L = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+        Shot sh; sh.pos = from; sh.dir = L > 0.8 ? d * (1 / L) : ad;
         sh.speed = missile ? b.missileSpeed : b.speed; sh.size = missile ? b.size * 2.2f : b.size; sh.range = (float)range; sh.weapon = b.name; sh.missile = missile; sh.hitLook = b.hitLook;
         if (charged) { sh.speed *= std::max(0.05f, b.chargeSpeed); sh.size *= std::max(0.1f, b.chargeSize); sh.charged = true; }
         uint32_t col = missile ? b.missileColor : b.color; sh.tint = col; V3 lc = Linear(col); sh.color = lc * (charged ? 6.0 : 3.0);
@@ -4260,13 +4276,16 @@ struct App {
         const std::string& counter = weapons.missileCounter;
         if (R && !missilePrev && b->missiles) {
             int left = inv.counts.count(counter) ? inv.counts[counter] : 0;
-            if (weapState.fire(*b, true, ClipLenOf(b->model, b->missileClip), left)) { inv.counts[counter] = left; LaunchShot(*b, true); PlayCannon(true); firedPending += 2.5f; }
+            if (weapState.fire(*b, true, AnimLen(*b, Beam::MissileShot), left)) { inv.counts[counter] = left; StartTimeline(weapState.current, Beam::MissileShot); firedPending += 2.5f; }
             else if (left <= 0) Toast("No missiles left");
         }
         {   // the beam: a press fires, holding charges (if the beam can), letting go when full fires the charged shot
-            auto r = weapState.beamButton(*b, L, shootPrev, (float)dt, ClipLenOf(b->model, b->fireClip));
-            if (r == WeaponState::Shot::Normal) { LaunchShot(*b, false); PlayCannon(false); firedPending += 1; }
-            if (r == WeaponState::Shot::Charged) { LaunchShot(*b, false, true); PlayCannon(false); firedPending += 2.2f; }
+            auto r = weapState.beamButton(*b, L, shootPrev, (float)dt, AnimLen(*b, Beam::Fire));
+            if (r == WeaponState::Shot::Normal) { StartTimeline(weapState.current, Beam::Fire); firedPending += 1; }
+            if (r == WeaponState::Shot::Charged) { StopChargeTimeline(); chargeTlOn = false; StartTimeline(weapState.current, Beam::Charged); firedPending += 2.2f; }
+            bool chargingNow = weapState.charging && weapState.charge > 0;   // the charging sounds while it fills
+            if (chargingNow && !chargeTlOn) { StartTimeline(weapState.current, Beam::Charging); chargeTlOn = true; }
+            if (!chargingNow && chargeTlOn) { StopChargeTimeline(); chargeTlOn = false; }
         }
         // the charge gathering at the muzzle: more and bigger as it fills
         {
@@ -4280,10 +4299,12 @@ struct App {
             chargeFx.update(dt, chargeAt, 0, nullptr, showing);
         }
         shootPrev = L; missilePrev = Down(VK_RBUTTON);
+        UpdateTimelines(dt, true);
     }
     void SwitchBeam(int to) {
         if (weapons.empty() || to < 0 || to >= (int)weapons.beams.size() || to == weapState.current) return;
         if (!OwnsBeam(weapons.beams[to])) { Toast("You have not found the " + weapons.beams[to].name + " yet"); return; }
+        StopChargeTimeline(); chargeTlOn = false;
         weapState.current = to; weapState.charging = false; weapState.charge = 0; cannonClip = -1; firedPending += 0.4f; Toast(weapons.beams[to].name);
     }
 
@@ -4351,6 +4372,14 @@ struct App {
         Prop("Walk bob"); ch |= ImGui::SliderFloat("##mw", &mo.walk, 0, 3, "%.2f");
         Prop("Landing dip"); ch |= ImGui::SliderFloat("##ml", &mo.land, 0, 3, "%.2f");
         Prop("Recoil"); ch |= ImGui::SliderFloat("##mr", &mo.recoil, 0, 3, "%.2f");
+        { const char* am[] = { "Classic (mouse turns the camera)", "Free aim (Wii style)" }; Prop("Aiming"); ch |= ImGui::Combo("##aim", &weapons.aimMode, am, 2); }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Free aim: the mouse moves a cursor on the screen; the cannon and the shots follow it.\nNear the edges the camera turns, faster the closer you get.");
+        if (weapons.aimMode == 1) {
+            Prop("Dead zone"); ch |= ImGui::SliderFloat("##dz", &weapons.deadZone, 0, 0.9f, "%.2f");
+            Prop("Turning speed"); ch |= ImGui::SliderFloat("##ts", &weapons.turnSpeed, 20, 400, "%.0f deg/s");
+            Prop("Cursor speed"); ch |= ImGui::SliderFloat("##cs2", &weapons.cursorSpeed, 0.2f, 4, "%.2f");
+            Prop("Cannon follows"); ch |= ImGui::SliderFloat("##cfw", &weapons.cannonFollow, 0, 1.5f, "%.2f");
+        }
         Prop("Cannon in front of the HUD"); ch |= ImGui::Checkbox("##cf", &weapons.cannonInFront);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("The cannon has its own layer, so it never cuts into the HUD.\nOff (like a visor): the HUD is drawn over the cannon.\nOn: the cannon covers the HUD.");
         Prop("Missile counter"); ch |= ImGui::InputText("##mc", &weapons.missileCounter);
@@ -4408,14 +4437,17 @@ struct App {
             dl->AddText(ImVec2(o.x + 8, o.y + 6), IM_COL32(230, 230, 240, 210), "Drag a point to move it, drag elsewhere to turn, wheel to zoom");
             dl->PopClipRect();
         }
-        {   // through the camera: the cannon where it sits, with the HUD
-            float rowH = ImGui::GetContentRegionAvail().y - ImGui::GetFrameHeightWithSpacing() - ImGui::GetTextLineHeightWithSpacing();
+        if (ImGui::RadioButton("Camera preview", !weapTimelineView)) weapTimelineView = false; ImGui::SameLine();
+        if (ImGui::RadioButton("Timeline (animation speed, sounds, when the shot leaves)", weapTimelineView)) weapTimelineView = true;
+        if (weapTimelineView) TimelineEditor(b, ImGui::GetContentRegionAvail(), ch);
+        else {   // through the camera: the cannon where it sits, with the HUD
+            float rowH = ImGui::GetContentRegionAvail().y - ImGui::GetFrameHeightWithSpacing();
             float asp = (float)rw / std::max(1, rh); ImVec2 psz(midW, midW / asp); if (psz.y > rowH) psz = ImVec2(rowH * asp, rowH);
-            ImGui::TextDisabled("Camera preview: the cannon as the player sees it");
             hudPrevWant = ImVec2(std::floor(psz.x), std::floor(psz.y));
             if (hudPrev.srv) ImGui::Image((ImTextureID)(intptr_t)hudPrev.srv.Get(), psz); else ImGui::Dummy(psz);
-            if (ImGui::Button("Fire")) { PlayCannon(false); previewFired += 1; }
-            ImGui::SameLine(); if (ImGui::Button("Missile")) { PlayCannon(true); previewFired += 2.5f; }
+            if (ImGui::Button("Fire")) StartTimeline(weapSel, Beam::Fire);
+            ImGui::SameLine(); if (ImGui::Button("Charged")) StartTimeline(weapSel, Beam::Charged);
+            ImGui::SameLine(); if (ImGui::Button("Missile")) StartTimeline(weapSel, Beam::MissileShot);
             ImGui::SameLine(); if (ImGui::Button("Walk")) hudWiggle = 0;
             ImGui::SameLine(); if (ImGui::Button("Land")) { previewPose.update(weapons.motion, 0, 0, true, 24, 0); previewSway.update(hud.sway, 0, 0, 0, 0, true, 24); }
             ImGui::SameLine(); ImGui::TextDisabled("(the preview; shoot for real with F5)");
@@ -4481,6 +4513,310 @@ struct App {
         Hint("Damage counts once there are enemies (G5). Doors can ask for a beam or missiles (door Inspector: Opened by).");
         ImGui::EndChild();
         if (ch) SaveHud();
+    }
+    // ================================================================== sounds (WAV, played with XAudio2, built into Windows)
+    IXAudio2* xa = nullptr; IXAudio2MasteringVoice* master = nullptr; bool audioOk = false; int masterChannels = 2;
+    std::map<std::string, std::shared_ptr<WavData>> soundCache;
+    struct Voice { IXAudio2SourceVoice* v = nullptr; std::shared_ptr<WavData> keep; int tag = 0; };
+    std::vector<Voice> voices; uint32_t soundSeed = 12345;
+    PlayerSounds playerSounds; float stepDist = 0;
+    void InitAudio() {
+        if (FAILED(XAudio2Create(&xa, 0, XAUDIO2_DEFAULT_PROCESSOR))) { Log("sound: XAudio2 could not start"); return; }
+        if (FAILED(xa->CreateMasteringVoice(&master))) { Log("sound: no sound device"); xa->Release(); xa = nullptr; return; }
+        XAUDIO2_VOICE_DETAILS d; master->GetVoiceDetails(&d); masterChannels = (int)d.InputChannels; audioOk = true;
+    }
+    void ShutdownAudio() {
+        for (Voice& v : voices) if (v.v) v.v->DestroyVoice(); voices.clear();
+        if (master) master->DestroyVoice(); master = nullptr; if (xa) xa->Release(); xa = nullptr; audioOk = false;
+    }
+    std::string SoundsDir() const { return projectDir + "/sounds"; }
+    std::shared_ptr<WavData> LoadSound(const std::string& file) {
+        if (file.empty()) return nullptr;
+        auto it = soundCache.find(file); if (it != soundCache.end()) return it->second;
+        std::shared_ptr<WavData>& w = soundCache[file];
+        std::ifstream f(fs::u8path(SoundsDir() + "/" + file), std::ios::binary); if (!f) return nullptr;
+        std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        auto d = std::make_shared<WavData>(); std::string err;
+        if (!readWav(bytes, *d, err)) { Toast(file + ": " + err); return nullptr; }
+        w = d; return w;
+    }
+    float SoundSeconds(const std::string& file) { auto w = LoadSound(file); return w ? w->seconds() : 0.f; }
+    std::vector<std::string> SoundFiles() const {
+        std::vector<std::string> v; std::error_code ec;
+        for (auto& e : fs::directory_iterator(fs::u8path(SoundsDir()), ec)) if (Lower(e.path().extension().string()) == ".wav") v.push_back(e.path().filename().u8string());
+        std::sort(v.begin(), v.end()); return v;
+    }
+    // plays a sound; at: a place in the world (quieter far away, from the side it comes from); tag: to stop it later
+    IXAudio2SourceVoice* PlaySound(const SoundUse& s, float vol = 1, const V3* at = nullptr, int tag = 0) {
+        if (!audioOk || s.empty() || vol <= 0.001f) return nullptr;
+        std::shared_ptr<WavData> w = LoadSound(s.file); if (!w || w->samples.empty()) return nullptr;
+        if (voices.size() >= 48) { voices.front().v->DestroyVoice(); voices.erase(voices.begin()); }
+        WAVEFORMATEX fmt{}; fmt.wFormatTag = WAVE_FORMAT_IEEE_FLOAT; fmt.nChannels = (WORD)w->channels; fmt.nSamplesPerSec = (DWORD)w->rate; fmt.wBitsPerSample = 32;
+        fmt.nBlockAlign = (WORD)(4 * w->channels); fmt.nAvgBytesPerSec = fmt.nSamplesPerSec * fmt.nBlockAlign;
+        IXAudio2SourceVoice* v = nullptr; if (FAILED(xa->CreateSourceVoice(&v, &fmt, 0, 4.f))) return nullptr;
+        UINT32 frames = (UINT32)(w->samples.size() / w->channels), begin = (UINT32)std::clamp((double)s.trimStart * w->rate, 0.0, (double)frames - 1);
+        UINT32 len = s.length > 0 ? (UINT32)std::min<double>(s.length * w->rate, frames - begin) : 0;
+        XAUDIO2_BUFFER b{}; b.AudioBytes = (UINT32)(w->samples.size() * 4); b.pAudioData = (const BYTE*)w->samples.data(); b.Flags = XAUDIO2_END_OF_STREAM; b.PlayBegin = begin; b.PlayLength = len;
+        float volume = s.volume * vol * std::clamp(settings.soundVolume, 0.f, 2.f);
+        if (at) {   // in the world: quieter with distance, and from its side
+            V3 d = *at - player.eye(); double dist = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+            volume *= (float)std::clamp(1.0 - dist / 40.0, 0.0, 1.0); volume *= volume > 0 ? 1.f : 0.f;
+            if (w->channels == 1 && masterChannels >= 2 && dist > 0.01) {
+                V3 r = Norm(cross({ 0, 1, 0 }, player.forward())); float pan = (float)std::clamp((d.x * r.x + d.y * r.y + d.z * r.z) / dist, -1.0, 1.0);
+                std::vector<float> m(masterChannels, 0.f); m[0] = std::sqrt(0.5f * (1 - pan)); m[1] = std::sqrt(0.5f * (1 + pan));
+                v->SetOutputMatrix(master, 1, masterChannels, m.data());
+            }
+        }
+        v->SetVolume(volume); v->SetFrequencyRatio(randomPitch(s, soundSeed));
+        if (FAILED(v->SubmitSourceBuffer(&b))) { v->DestroyVoice(); return nullptr; }
+        v->Start(); voices.push_back({ v, w, tag });
+        return v;
+    }
+    void StopSounds(int tag) { for (Voice& v : voices) if (v.tag == tag && v.v) { v.v->Stop(); v.v->DestroyVoice(); v.v = nullptr; } voices.erase(std::remove_if(voices.begin(), voices.end(), [](const Voice& v) { return !v.v; }), voices.end()); }
+    void UpdateAudio() {   // finished sounds let go
+        for (Voice& v : voices) { XAUDIO2_VOICE_STATE st; v.v->GetState(&st, XAUDIO2_VOICE_NOSAMPLESPLAYED); if (st.BuffersQueued == 0) { v.v->DestroyVoice(); v.v = nullptr; } }
+        voices.erase(std::remove_if(voices.begin(), voices.end(), [](const Voice& v) { return !v.v; }), voices.end());
+    }
+    std::vector<std::string> PickFiles(const char* filter, const char* title) {
+        std::vector<char> buf(1 << 16, 0);
+        OPENFILENAMEA o{}; o.lStructSize = sizeof o; o.hwndOwner = hwnd; o.lpstrFilter = filter; o.lpstrFile = buf.data(); o.nMaxFile = (DWORD)buf.size();
+        o.lpstrTitle = title; o.Flags = OFN_ALLOWMULTISELECT | OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
+        std::vector<std::string> out; if (!GetOpenFileNameA(&o)) return out;
+        std::string first = buf.data(); const char* p = buf.data() + first.size() + 1;
+        if (!*p) { out.push_back(first); return out; }
+        for (; *p; p += strlen(p) + 1) out.push_back(first + "\\" + p);
+        return out;
+    }
+    void ImportSounds() {
+        std::error_code ec; fs::create_directories(fs::u8path(SoundsDir()), ec); int n = 0;
+        for (const std::string& f : PickFiles("WAV sounds (*.wav)\0*.wav\0", "Import sounds")) {
+            fs::path s = fs::u8path(f); std::string name = s.filename().u8string();
+            fs::copy_file(s, fs::u8path(SoundsDir() + "/" + name), fs::copy_options::overwrite_existing, ec);
+            if (!ec) { n++; soundCache.erase(name); }
+        }
+        if (n) Toast(std::to_string(n) + " sound(s) imported");
+    }
+    // picks a sound and sets how it plays: file, play button, volume, pitch, random pitch (and the cut, if asked)
+    bool SoundEdit(const char* id, SoundUse& s, bool cut) {
+        bool ch = false; ImGui::PushID(id); float bw = ImGui::GetFrameHeight();
+        ImGui::SetNextItemWidth(std::max(60.f, ImGui::GetContentRegionAvail().x - bw - ImGui::GetStyle().ItemSpacing.x));
+        if (ImGui::BeginCombo("##file", s.file.empty() ? "(no sound)" : s.file.c_str())) {
+            if (ImGui::Selectable("(no sound)", s.file.empty())) { s.file.clear(); ch = true; }
+            for (const std::string& f : SoundFiles()) if (ImGui::Selectable(f.c_str(), s.file == f)) { s.file = f; ch = true; }
+            ImGui::Separator(); if (ImGui::Selectable("Import sounds...")) ImportSounds();
+            ImGui::EndCombo();
+        }
+        ImGui::SameLine(); ImGui::BeginDisabled(s.empty()); if (ImGui::ArrowButton("##play", ImGuiDir_Right)) PlaySound(s); ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip(audioOk ? "Listen" : "No sound device found");
+        if (!s.empty()) {
+            float row[3] = { s.volume, s.pitch, s.pitchVar };
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            if (ImGui::DragFloat3("##vp", row, 0.01f, 0, 4, "%.2f")) { s.volume = std::clamp(row[0], 0.f, 4.f); s.pitch = std::clamp(row[1], 0.05f, 4.f); s.pitchVar = std::clamp(row[2], 0.f, 1.f); ch = true; }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Volume, pitch, random pitch (how much it changes each time)");
+            if (cut) {
+                float c2[2] = { s.trimStart, s.length }; ImGui::SetNextItemWidth(-FLT_MIN);
+                if (ImGui::DragFloat2("##cut", c2, 0.005f, 0, 600, "%.3f s")) { s.trimStart = std::max(0.f, c2[0]); s.length = std::max(0.f, c2[1]); ch = true; }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Start into the sound, and how long (0: to the end) - %.2f s in all", SoundSeconds(s.file));
+            }
+        }
+        ImGui::PopID(); return ch;
+    }
+    void SavePlayerSounds() { if (!projectDir.empty()) savePlayerSounds(projectDir + "/player_sounds.txt", playerSounds); }
+    void SoundsTab() {
+        float ui = settings.uiScale; bool ch = false;
+        ImGui::Spacing();
+        if (ImGui::Button("Import sounds...")) ImportSounds();
+        ImGui::SameLine(); ImGui::TextDisabled(audioOk ? "WAV files go into the project's sounds folder." : "WAV files go into the project's sounds folder. (No sound device found: they cannot play here.)");
+        ImGui::Separator();
+        if (ImGui::BeginTable("ps", 2, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_BordersInnerV)) {
+            ImGui::TableSetupColumn("a", ImGuiTableColumnFlags_WidthStretch, 1.2f); ImGui::TableSetupColumn("b", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+            ImGui::TableNextColumn();
+            ImGui::SeparatorText("Steps"); ch |= SoundEdit("step", playerSounds.step, true);
+            Prop("A step every"); ch |= ImGui::SliderFloat("##se", &playerSounds.stepEvery, 0.4f, 5, "%.1f blocks walked");
+            ImGui::SeparatorText("Jump"); ch |= SoundEdit("jump", playerSounds.jump, true);
+            ImGui::SeparatorText("Landing"); ch |= SoundEdit("land", playerSounds.land, true);
+            { float r[2] = { playerSounds.landQuiet, playerSounds.landLoud }; Prop("Quiet .. loud at"); if (ImGui::DragFloat2("##ll", r, 0.1f, 0, 80, "%.1f blocks/s")) { playerSounds.landQuiet = r[0]; playerSounds.landLoud = std::max(r[0] + 0.5f, r[1]); ch = true; } }
+            Hint("Landing gets louder the faster you fall: silent below the first speed, full volume at the second. The numbers under each sound: volume, pitch, random pitch; then the cut (start into the sound, how long).");
+            ImGui::TableNextColumn();
+            ImGui::SeparatorText("All sounds in the project");
+            for (const std::string& f : SoundFiles()) {
+                ImGui::PushID(f.c_str()); SoundUse t; t.file = f; t.pitchVar = 0;
+                if (ImGui::ArrowButton("##p", ImGuiDir_Right)) PlaySound(t);
+                ImGui::SameLine(); ImGui::Text("%s", f.c_str()); ImGui::SameLine(); ImGui::TextDisabled("%.2f s", SoundSeconds(f));
+                ImGui::PopID();
+            }
+            if (SoundFiles().empty()) ImGui::TextDisabled("None yet.");
+            Hint("Weapon sounds go on each beam's timeline (Weapons > Timeline).");
+            ImGui::EndTable();
+        }
+        if (ch) SavePlayerSounds();
+    }
+    // Play mode: steps, jumping, landing
+    void UpdatePlayerSounds(double dt, bool landed, float fallSpeed, bool jumped) {
+        if (!playMode) return;
+        if (player.onGround) {
+            stepDist += (float)(std::sqrt(player.vel.x * player.vel.x + player.vel.z * player.vel.z) * dt);
+            if (stepDist >= std::max(0.2f, playerSounds.stepEvery)) { stepDist = 0; PlaySound(playerSounds.step); }
+        }
+        if (jumped) PlaySound(playerSounds.jump);
+        if (landed) { float v = playerSounds.landVolume(fallSpeed); if (v > 0) PlaySound(playerSounds.land, v); stepDist = 0; }
+    }
+
+    // ---- free aim (Wii style)
+    FreeAim freeAim; float aimYaw = 0, aimPitch = 0;   // aimYaw / aimPitch: how far the cannon has turned toward the cursor (degrees)
+    bool FreeAiming() const { return playMode && !weapons.empty() && weapons.aimMode == 1; }
+    V3 AimDir() {   // where shots go: through the cursor (free aim) or the middle of the screen
+        V3 fw = player.forward(); if (!FreeAiming()) return fw;
+        V3 r = Norm(cross({ 0, 1, 0 }, fw)), u = cross(fw, r), d = freeAim.dir(settings.fov, (float)rw / std::max(1, rh));
+        return Norm(r * d.x + u * d.y + fw * d.z);
+    }
+    void UpdateAimCannon(double dt) {   // the cannon turns toward the cursor, smoothly
+        float ty = 0, tp = 0;
+        if (FreeAiming()) {
+            V3 d = freeAim.dir(hud.fov, (float)rw / std::max(1, rh)); float k = std::clamp(weapons.cannonFollow, 0.f, 2.f);
+            ty = (float)(std::atan2(d.x, d.z) * 180 / 3.14159265358979) * k; tp = (float)(std::atan2(d.y, d.z) * 180 / 3.14159265358979) * k;
+        }
+        float a = 1 - (float)std::exp(-dt * 14); aimYaw += (ty - aimYaw) * a; aimPitch += (tp - aimPitch) * a;
+    }
+
+    // ---- timelines: what a beam does over time (its animation's speed, its sounds, when the shot leaves)
+    struct ActiveTl { TimelinePlay play; int beam = 0, kind = 0; double until = 0; };
+    std::vector<ActiveTl> activeTl;
+    static constexpr int TAG_CHARGE = 7;
+    float AnimLen(const Beam& b, int kind) {   // the cannon's animation for this timeline, at its speed
+        const std::string& clip = kind == Beam::MissileShot ? b.missileClip : b.fireClip;
+        return kind == Beam::Charging ? 0.f : ClipLenOf(b.model, clip) / std::max(0.05f, b.timelines[kind].animSpeed);
+    }
+    float TimelineLen(const Beam& b, int kind) {
+        const Timeline& t = b.timelines[kind]; std::vector<float> lens; for (const SoundClip& c : t.sounds) lens.push_back(SoundSeconds(c.sound.file));
+        const std::string& clip = kind == Beam::MissileShot ? b.missileClip : b.fireClip;
+        return t.length(kind == Beam::Charging ? 0.f : ClipLenOf(b.model, clip), lens);
+    }
+    void StartTimeline(int beam, int kind) {   // the cannon's animation, then sounds and the shot as they come up
+        if (beam < 0 || beam >= (int)weapons.beams.size()) return;
+        const Beam& b = weapons.beams[beam];
+        if (kind != Beam::Charging) { PlayCannon(kind == Beam::MissileShot); cannonSpeed = std::max(0.05f, b.timelines[kind].animSpeed); }
+        ActiveTl a; a.beam = beam; a.kind = kind; a.until = TimelineLen(b, kind); a.play.start(b.timelines[kind]); activeTl.push_back(a);
+        if (kind == Beam::Charging) activeTl.back().play.shotDone = true;   // charging shoots nothing
+    }
+    void UpdateTimelines(double dt, bool shoot) {
+        std::vector<int> now; bool shot;
+        for (ActiveTl& a : activeTl) {
+            if (a.beam >= (int)weapons.beams.size()) { a.play.t = -1; continue; }
+            a.play.step(dt, now, shot, a.until);
+            const Beam& b = weapons.beams[a.beam];
+            for (int i : now) PlaySound(b.timelines[a.kind].sounds[i].sound, 1, nullptr, a.kind == Beam::Charging ? TAG_CHARGE : 0);
+            if (shot) {
+                if (shoot && playMode) LaunchShot(b, a.kind == Beam::MissileShot, a.kind == Beam::Charged);
+                else if (!playMode) previewFired += a.kind == Beam::MissileShot ? 2.5f : a.kind == Beam::Charged ? 2.2f : 1.f;   // the editor's preview: only the kick
+            }
+        }
+        activeTl.erase(std::remove_if(activeTl.begin(), activeTl.end(), [](const ActiveTl& a) { return !a.play.running(); }), activeTl.end());
+    }
+    void StopChargeTimeline() { activeTl.erase(std::remove_if(activeTl.begin(), activeTl.end(), [](const ActiveTl& a) { return a.kind == Beam::Charging; }), activeTl.end()); StopSounds(TAG_CHARGE); }
+
+    // ---- the timeline editor (Weapons tab): drag the animation's end (its speed), the shot marker and the sounds
+    int tlKind = 0, tlSel = -1, tlDrag = 0; float tlZoom = 220; float tlDragFrom[3] = {}; ImVec2 tlDragMouse;
+    void TimelineEditor(Beam& b, ImVec2 size, bool& ch) {
+        float ui = settings.uiScale;
+        ImGui::SetNextItemWidth(150 * ui);
+        if (ImGui::BeginCombo("##tlk", timelineName(tlKind))) { for (int k = 0; k < Beam::TIMELINES; k++) if (ImGui::Selectable(timelineName(k), tlKind == k)) { tlKind = k; tlSel = -1; } ImGui::EndCombo(); }
+        Timeline& t = b.timelines[tlKind];
+        ImGui::SameLine(); if (ImGui::Button("Play")) { StartTimeline(weapSel, tlKind); }
+        ImGui::SameLine(); if (ImGui::Button("+ Sound")) ImGui::OpenPopup("addsnd");
+        if (ImGui::BeginPopup("addsnd")) {
+            for (const std::string& f : SoundFiles()) if (ImGui::MenuItem(f.c_str())) { SoundClip c; c.sound.file = f; c.at = 0; t.sounds.push_back(c); tlSel = (int)t.sounds.size() - 1; ch = true; }
+            ImGui::Separator(); if (ImGui::MenuItem("Import sounds...")) ImportSounds();
+            ImGui::EndPopup();
+        }
+        ImGui::SameLine(); ImGui::SetNextItemWidth(120 * ui); ImGui::SliderFloat("##zoom", &tlZoom, 60, 900, "zoom %.0f");
+        // the canvas
+        const std::string& clip = tlKind == Beam::MissileShot ? b.missileClip : b.fireClip;
+        float clipLen = tlKind == Beam::Charging ? 0.f : ClipLenOf(b.model, clip);
+        float rowH = ImGui::GetFrameHeight() + 4 * ui, head = 22 * ui, labelW = 120 * ui;
+        int rows = 2 + (int)t.sounds.size();
+        float h = std::min(size.y - ImGui::GetFrameHeightWithSpacing() * 2.6f, head + rows * rowH + 6);
+        ImVec2 o = ImGui::GetCursorScreenPos(), sz(size.x, std::max(head + rowH * 2, h));
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        dl->AddRectFilled(o, ImVec2(o.x + sz.x, o.y + sz.y), IM_COL32(24, 26, 32, 255));
+        ImGui::InvisibleButton("tl", sz); bool hov = ImGui::IsItemHovered(), act = ImGui::IsItemActive(); ImGuiIO& io = ImGui::GetIO();
+        if (hov && io.MouseWheel != 0 && io.KeyCtrl) tlZoom = std::clamp(tlZoom * (io.MouseWheel > 0 ? 1.15f : 0.87f), 60.f, 900.f);
+        float x0 = o.x + labelW; auto X = [&](float sec) { return x0 + sec * tlZoom; }; auto S = [&](float px) { return (px - x0) / tlZoom; };
+        dl->PushClipRect(o, ImVec2(o.x + sz.x, o.y + sz.y), true);
+        for (float s = 0; X(s) < o.x + sz.x; s += 0.1f) {   // the ruler
+            bool big = std::fabs(s - std::round(s * 2) / 2) < 1e-3; float x = X(s);
+            dl->AddLine(ImVec2(x, o.y + head - (big ? 9 : 4)), ImVec2(x, o.y + sz.y), big ? IM_COL32(255, 255, 255, 40) : IM_COL32(255, 255, 255, 16));
+            if (big) { char lb[16]; snprintf(lb, sizeof lb, "%.1f s", s); dl->AddText(ImVec2(x + 3, o.y + 2), IM_COL32(200, 200, 210, 200), lb); }
+        }
+        auto rowY = [&](int r) { return o.y + head + r * rowH; };
+        auto label = [&](int r, const char* text) { dl->AddText(ImVec2(o.x + 6, rowY(r) + (rowH - ImGui::GetTextLineHeight()) * 0.5f), IM_COL32(220, 220, 230, 230), text); };
+        // row 0: the animation (drag its end: speed)
+        label(0, "Animation");
+        float animEnd = clipLen / std::max(0.05f, t.animSpeed);
+        if (clipLen > 0) {
+            ImU32 c = IM_COL32(110, 150, 230, 220); dl->AddRectFilled(ImVec2(X(0), rowY(0) + 3), ImVec2(X(animEnd), rowY(0) + rowH - 3), c, 3);
+            char lb[96]; snprintf(lb, sizeof lb, "%s  x%.2f", clip.c_str(), t.animSpeed); dl->AddText(ImVec2(X(0) + 5, rowY(0) + 5), IM_COL32(255, 255, 255, 240), lb);
+            dl->AddRectFilled(ImVec2(X(animEnd) - 4, rowY(0) + 3), ImVec2(X(animEnd), rowY(0) + rowH - 3), IM_COL32(255, 255, 255, 200), 2);
+        } else dl->AddText(ImVec2(X(0) + 5, rowY(0) + 5), IM_COL32(160, 160, 170, 200), tlKind == Beam::Charging ? "(charging plays no animation)" : "(the model has no such animation)");
+        // row 1: the shot leaves
+        label(1, tlKind == Beam::Charging ? "" : "Shot leaves");
+        if (tlKind != Beam::Charging) { float x = X(t.shotAt), y = rowY(1) + rowH * 0.5f; dl->AddQuadFilled(ImVec2(x, y - 7), ImVec2(x + 7, y), ImVec2(x, y + 7), ImVec2(x - 7, y), IM_COL32(255, 200, 80, 255)); }
+        // the sounds
+        for (int i = 0; i < (int)t.sounds.size(); i++) {
+            const SoundClip& c = t.sounds[i]; float full = SoundSeconds(c.sound.file), len = (c.sound.length > 0 ? c.sound.length : std::max(0.f, full - c.sound.trimStart)) / std::max(0.05f, c.sound.pitch);
+            int r = 2 + i; label(r, c.sound.file.c_str());
+            bool sel = tlSel == i; ImU32 col = sel ? IM_COL32(120, 220, 140, 240) : IM_COL32(80, 170, 110, 220);
+            dl->AddRectFilled(ImVec2(X(c.at), rowY(r) + 3), ImVec2(X(c.at + std::max(0.02f, len)), rowY(r) + rowH - 3), col, 3);
+            if (auto w = LoadSound(c.sound.file)) {   // its waveform, roughly
+                float a = X(c.at), bb = X(c.at + len); int n = std::max(2, (int)(bb - a) / 2); float mid = rowY(r) + rowH * 0.5f, amp = rowH * 0.38f;
+                for (int k = 0; k < n; k++) {
+                    double secIn = c.sound.trimStart + (double)k / n * len * c.sound.pitch; size_t idx = (size_t)(secIn * w->rate) * w->channels;
+                    float v = 0; for (size_t q = idx; q < std::min(w->samples.size(), idx + 64 * w->channels); q++) v = std::max(v, std::fabs(w->samples[q]));
+                    float x = a + (bb - a) * k / n; dl->AddLine(ImVec2(x, mid - v * amp), ImVec2(x, mid + v * amp), IM_COL32(20, 50, 30, 200));
+                }
+            }
+            dl->AddRectFilled(ImVec2(X(c.at), rowY(r) + 3), ImVec2(X(c.at) + 4, rowY(r) + rowH - 3), IM_COL32(255, 255, 255, 170), 2);
+            dl->AddRectFilled(ImVec2(X(c.at + len) - 4, rowY(r) + 3), ImVec2(X(c.at + len), rowY(r) + rowH - 3), IM_COL32(255, 255, 255, 170), 2);
+        }
+        // the playhead
+        for (const ActiveTl& a : activeTl) if (a.beam == weapSel && a.kind == tlKind && a.play.running()) { float x = X((float)a.play.t); dl->AddLine(ImVec2(x, o.y), ImVec2(x, o.y + sz.y), IM_COL32(255, 80, 80, 255), 2); }
+        // pressing: what is under the mouse
+        if (ImGui::IsItemActivated()) {
+            tlDrag = 0; tlDragMouse = io.MousePos; float mx = io.MousePos.x, my = io.MousePos.y;
+            int r = (int)std::floor((my - o.y - head) / rowH);
+            if (r == 0 && clipLen > 0 && std::fabs(mx - X(animEnd)) < 8) { tlDrag = 1; tlDragFrom[0] = animEnd; }
+            else if (r == 1 && tlKind != Beam::Charging && std::fabs(mx - X(t.shotAt)) < 9) { tlDrag = 2; tlDragFrom[0] = t.shotAt; }
+            else if (r >= 2 && r - 2 < (int)t.sounds.size()) {
+                SoundClip& c = t.sounds[r - 2]; float full = SoundSeconds(c.sound.file), len = (c.sound.length > 0 ? c.sound.length : std::max(0.f, full - c.sound.trimStart)) / std::max(0.05f, c.sound.pitch);
+                tlSel = r - 2; tlDragFrom[0] = c.at; tlDragFrom[1] = c.sound.trimStart; tlDragFrom[2] = len * c.sound.pitch;
+                if (std::fabs(mx - X(c.at)) < 6) tlDrag = 4; else if (std::fabs(mx - X(c.at + len)) < 6) tlDrag = 5; else if (mx > X(c.at) && mx < X(c.at + len)) tlDrag = 3; else tlSel = -1;
+            } else tlSel = -1;
+        }
+        if (act && tlDrag) {
+            float d = (io.MousePos.x - tlDragMouse.x) / tlZoom; auto snap = [&](float v) { return io.KeyShift ? std::round(v * 20) / 20 : v; };
+            if (tlDrag == 1 && clipLen > 0) { float e = std::max(0.05f, snap(tlDragFrom[0] + d)); t.animSpeed = std::clamp(clipLen / e, 0.05f, 20.f); }
+            if (tlDrag == 2) t.shotAt = std::max(0.f, snap(tlDragFrom[0] + d));
+            if (tlSel >= 0 && tlSel < (int)t.sounds.size()) {
+                SoundClip& c = t.sounds[tlSel]; float full = SoundSeconds(c.sound.file), p = std::max(0.05f, c.sound.pitch);
+                if (tlDrag == 3) c.at = std::max(0.f, snap(tlDragFrom[0] + d));
+                if (tlDrag == 4) { float dd = std::clamp(d, -tlDragFrom[1] / p, tlDragFrom[2] / p - 0.02f); c.at = std::max(0.f, tlDragFrom[0] + dd); c.sound.trimStart = tlDragFrom[1] + dd * p; c.sound.length = std::max(0.02f, tlDragFrom[2] - dd * p); }
+                if (tlDrag == 5) { c.sound.length = std::clamp(snap(tlDragFrom[2] + d * p), 0.02f, std::max(0.02f, full - c.sound.trimStart)); }
+            }
+        }
+        if (ImGui::IsItemDeactivated() && tlDrag) { tlDrag = 0; ch = true; }
+        if (hov) {
+            float mx = io.MousePos.x; int r = (int)std::floor((io.MousePos.y - o.y - head) / rowH);
+            if ((r == 0 && clipLen > 0 && std::fabs(mx - X(animEnd)) < 8)) ImGui::SetTooltip("Drag: the animation's speed (x%.2f)", t.animSpeed);
+            else if (r == 1 && tlKind != Beam::Charging && std::fabs(mx - X(t.shotAt)) < 9) ImGui::SetTooltip("Drag: when the shot leaves (%.2f s)", t.shotAt);
+        }
+        dl->PopClipRect();
+        // the picked sound
+        if (tlSel >= 0 && tlSel < (int)t.sounds.size()) {
+            SoundClip& c = t.sounds[tlSel];
+            Prop("Starts at"); ch |= ImGui::DragFloat("##at", &c.at, 0.005f, 0, 60, "%.3f s");
+            ch |= SoundEdit("tlsnd", c.sound, true);
+            if (ImGui::SmallButton("Remove this sound") || (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && ImGui::IsKeyPressed(ImGuiKey_Delete))) { t.sounds.erase(t.sounds.begin() + tlSel); tlSel = -1; ch = true; }
+        } else Hint("Drag a sound to move it, its edges to cut it. Drag the end of the animation to speed it up or slow it down, and the yellow mark to set when the shot leaves. Shift snaps; Ctrl + wheel zooms.");
     }
     // ---- Events: the game's logic as cards, one card = "when ... only if ... do ..."
     static bool KindFits(const WorldObject& o, const std::string& k) {
@@ -5285,6 +5621,29 @@ struct App {
                 poseAt(demoShots()[1]);
                 frames(8, "weapons_tab");
                 weapPoint = 2; weapYaw = 1.2f; frames(2, "weapons_tab_emitter");
+                {   // sounds: a few made-up WAVs in the project, on the player and on the Power Beam's timelines
+                    std::error_code ec; fs::create_directories(fs::u8path(SoundsDir()), ec);
+                    auto tone = [&](const char* name, float secs, float f0, float f1, float noise) {
+                        WavData w; w.channels = 1; w.rate = 22050; int n = (int)(secs * w.rate); uint32_t r = 99; double ph = 0;
+                        for (int i = 0; i < n; i++) { float t = (float)i / n, f = f0 + (f1 - f0) * t; ph += 6.2831853 * f / w.rate; r = r * 1664525u + 1013904223u;
+                            float env = std::min(1.f, t * 40) * (1 - t); w.samples.push_back(env * ((1 - noise) * (float)std::sin(ph) + noise * (((r >> 9) & 0xFFFF) / 32768.f - 1)) * 0.6f); }
+                        std::vector<uint8_t> b = wavBytes(w); std::ofstream f(fs::u8path(SoundsDir() + "/" + name), std::ios::binary); f.write((const char*)b.data(), (std::streamsize)b.size());
+                    };
+                    tone("beam zap.wav", 0.25f, 1600, 300, 0.1f); tone("charge hum.wav", 1.4f, 150, 900, 0.05f); tone("charged blast.wav", 0.7f, 500, 60, 0.5f);
+                    tone("missile launch.wav", 0.9f, 220, 90, 0.7f); tone("missile click.wav", 0.12f, 900, 700, 0.3f); tone("step.wav", 0.09f, 120, 80, 0.8f); tone("jump.wav", 0.2f, 300, 600, 0.3f); tone("land.wav", 0.3f, 90, 40, 0.8f);
+                    soundCache.clear();
+                    Beam& pb = weapons.beams[0];
+                    { SoundClip c; c.sound.file = "beam zap.wav"; pb.timelines[Beam::Fire].sounds = { c }; }
+                    { SoundClip c; c.sound.file = "charge hum.wav"; c.sound.pitchVar = 0; pb.timelines[Beam::Charging].sounds = { c }; }
+                    { SoundClip c; c.sound.file = "charged blast.wav"; pb.timelines[Beam::Charged].sounds = { c }; }
+                    { Timeline& t = pb.timelines[Beam::MissileShot]; t.shotAt = 0.18f; SoundClip a; a.sound.file = "missile click.wav"; a.at = 0; SoundClip b2; b2.sound.file = "missile launch.wav"; b2.at = 0.18f; b2.sound.trimStart = 0.05f; b2.sound.length = 0.6f; t.sounds = { a, b2 }; }
+                    playerSounds.step.file = "step.wav"; playerSounds.step.pitchVar = 0.12f; playerSounds.jump.file = "jump.wav"; playerSounds.land.file = "land.wav";
+                    weapTimelineView = true; tlKind = Beam::MissileShot; tlSel = 1; weapPoint = 1; weapYaw = 2.3f;
+                    frames(3, "weapons_timeline");
+                    weapTimelineView = false; selectSoundsTab = true;
+                    frames(3, "player_sounds_tab");
+                    selectWeaponsTab = true; frames(1, "back_to_weapons");
+                }
                 playerEdOpen = false;
                 StartPlay(false); poseAt(demoShots()[1]); hudSway.reset(); prevPlayYaw = player.yaw; prevPlayPitch = player.pitch; play.health = game.player.maxHealth; toastT = 0;
                 frames(3, "weapons_play_cannon");
@@ -5300,6 +5659,11 @@ struct App {
                 Log("charge: " + std::to_string(weapState.charge));
                 holdBeam = false; run(5);
                 frames(1, "weapons_charged_shot");
+                run(40); weapons.aimMode = 1; freeAim.x = 0.55f; freeAim.y = 0.3f; run(20);   // free aim: the cursor up and to the right, the cannon turns to it
+                LaunchShot(weapons.beams[0], false); firedPending += 1; run(5);
+                frames(1, "weapons_free_aim");
+                Log("free aim: cannon turned " + std::to_string(aimYaw) + " / " + std::to_string(aimPitch) + " degrees; sounds " + (audioOk ? "on" : "off (no device)"));
+                weapons.aimMode = 0;
                 Log("weapons: " + std::to_string(shots.size()) + " shots flying, missiles left " + std::to_string(inv.counts["Missile"]));
                 StopPlay(); hud = HudLayout{}; weapons = WeaponSet{}; SaveHud();
             }
@@ -5344,6 +5708,7 @@ struct App {
 
     // ================================================================== frame
     void FrameBody(double dt) {   // everything but showing the picture (screenshots grab it before)
+        if (audioOk) UpdateAudio();
         if (resized) OnResize();
         if (pending) { auto f = std::move(pending); pending = nullptr; f(); }
         bool ev = EditorView();

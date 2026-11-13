@@ -521,6 +521,41 @@ int main() {
             HudValues hv; hv.charge = 0.5f; HudElement he; he.value = HudValue::Charge; he.text = "{value}%";
             CHECK(hudText(he, hv) == "50%" && hudMax(he, hv) == 100, "the HUD can show the charge");
         }
+        {   // free aim
+            WeaponSet fw = defaultWeapons(); fw.aimMode = 1; FreeAim a; float ty, tp;
+            a.update(fw, 200, 0, 1000, 600, 1.0 / 60, ty, tp);
+            CHECK(std::fabs(a.x - 0.4f) < 1e-5 && ty == 0 && tp == 0, "free aim: the cursor moves, inside the dead zone the camera stays still");
+            a.update(fw, 250, -300, 1000, 600, 1.0 / 60, ty, tp);
+            CHECK(a.x > 0.85f && ty > 0 && a.y > 0.95f && tp > 0, "near the edge it turns (%.2f, %.2f deg)", ty, tp);
+            a.update(fw, 5000, 0, 1000, 600, 1.0 / 60, ty, tp);
+            CHECK(a.x == 1 && std::fabs(ty - fw.turnSpeed / 60.f) < 1e-3, "at the very edge: the full turning speed");
+            FreeAim c0; V3 d0 = c0.dir(70, 16.f / 9); FreeAim c1; c1.x = 1; c1.y = 0; V3 d1 = c1.dir(70, 1);
+            CHECK(std::fabs(d0.z - 1) < 1e-9 && std::fabs(std::atan2(d1.x, d1.z) * 180 / 3.14159265 - 35) < 0.01, "the aim goes through the cursor (edge of a square 70-degree view: 35 degrees)");
+        }
+        {   // sounds: WAV files, timelines, the player's sounds
+            WavData w; w.channels = 2; w.rate = 22050; for (int i = 0; i < 2205 * 2; i++) w.samples.push_back(std::sin(i * 0.05f) * 0.5f);
+            WavData r; std::string err; CHECK(readWav(wavBytes(w), r, err) && r.channels == 2 && r.rate == 22050 && r.samples.size() == w.samples.size() && std::fabs(r.samples[11] - w.samples[11]) < 1e-3 && std::fabs(r.seconds() - 0.1f) < 1e-4,
+                  "a 16-bit stereo WAV reads back (%s)", err.c_str());
+            std::vector<uint8_t> b8 = wavBytes(w); b8[34] = 8; b8[32] = 2; b8[28] = (uint8_t)((22050 * 2) & 255); b8[29] = (uint8_t)((22050 * 2) >> 8);   // pretend 8-bit: the data reads as twice as many samples
+            CHECK(readWav(b8, r, err) && r.samples.size() == w.samples.size() * 2, "8-bit WAV too");
+            std::vector<uint8_t> junk = { 'R', 'I', 'F', 'F', 0, 0, 0, 0, 'A', 'V', 'I', ' ' }; CHECK(!readWav(junk, r, err), "not a WAV: refused (%s)", err.c_str());
+            Timeline tl; tl.animSpeed = 2; tl.shotAt = 0.1f; SoundClip c1; c1.at = 0; c1.sound.file = "zap.wav"; SoundClip c2; c2.at = 0.3f; c2.sound.file = "clank.wav"; c2.sound.length = 0.5f; tl.sounds = { c1, c2 };
+            CHECK(std::fabs(tl.length(1.0f, { 0.2f, 2.0f }) - 0.8f) < 1e-5, "a timeline lasts until its last part ends (%.2f s)", tl.length(1.0f, { 0.2f, 2.0f }));
+            TimelinePlay tp; tp.start(tl); std::vector<int> now; bool shot; int sounds = 0, shots = 0; double shotT = -1, clankT = -1, t = 0;
+            for (int k = 0; k < 120 && tp.running(); k++) { tp.step(1.0 / 60, now, shot, 0.8); for (int i : now) { sounds++; if (i == 1) clankT = t; } if (shot) { shots++; shotT = t; } t += 1.0 / 60; }
+            CHECK(sounds == 2 && shots == 1 && std::fabs(shotT - 0.1) < 0.02 && std::fabs(clankT - 0.3) < 0.02 && !tp.running(), "playing it: each sound starts once at its time, the shot at 0.1 s, then it ends");
+            uint32_t seed = 7; SoundUse su; su.pitch = 1; su.pitchVar = 0.1f; float lo = 9, hi = 0; for (int k = 0; k < 200; k++) { float p = randomPitch(su, seed); lo = std::min(lo, p); hi = std::max(hi, p); }
+            CHECK(lo >= 0.9f && hi <= 1.1f && hi - lo > 0.15f, "random pitch stays within its spread (%.3f .. %.3f)", lo, hi);
+            PlayerSounds ps; ps.step.file = "step metal.wav"; ps.step.pitchVar = 0.12f; ps.land.file = "land.wav"; ps.land.trimStart = 0.05f; ps.stepEvery = 1.4f;
+            CHECK(ps.landVolume(3) == 0 && ps.landVolume(20) == 1 && ps.landVolume(12) > 0.4f && ps.landVolume(12) < 0.6f, "landing louder the faster you fall");
+            savePlayerSounds("/tmp/prim_psounds.txt", ps); PlayerSounds pb; loadPlayerSounds("/tmp/prim_psounds.txt", pb);
+            CHECK(pb.step.file == "step metal.wav" && std::fabs(pb.step.pitchVar - 0.12f) < 1e-6 && pb.land.trimStart == 0.05f && pb.stepEvery == 1.4f && pb.jump.empty(), "the player's sounds save and load");
+            WeaponSet ws = defaultWeapons(); ws.beams[0].timelines[Beam::MissileShot] = tl; ws.aimMode = 1; ws.deadZone = 0.3f;
+            saveWeapons("/tmp/prim_wtl.txt", ws); WeaponSet wb; loadWeapons("/tmp/prim_wtl.txt", wb);
+            const Timeline& bt = wb.beams[0].timelines[Beam::MissileShot];
+            CHECK(bt.animSpeed == 2 && bt.shotAt == 0.1f && bt.sounds.size() == 2 && bt.sounds[1].sound.file == "clank.wav" && bt.sounds[1].at == 0.3f && wb.beams[1].timelines[Beam::MissileShot].sounds.empty()
+                  && wb.aimMode == 1 && wb.deadZone == 0.3f, "timelines and aiming save and load with the weapons");
+        }
         DoorSettings ds; CHECK(doorOpensFor(ds, "Wave Beam", false) && doorOpensFor(ds, "", true), "a plain door opens for any shot");
         ds.openedBy = "Wave Beam"; CHECK(doorOpensFor(ds, "Wave Beam", false) && !doorOpensFor(ds, "Power Beam", false) && !doorOpensFor(ds, "Wave Beam", true), "a Wave Beam door only for the Wave Beam");
         ds.openedBy = "Missile"; CHECK(doorOpensFor(ds, "Power Beam", true) && !doorOpensFor(ds, "Power Beam", false), "a missile door only for missiles");
