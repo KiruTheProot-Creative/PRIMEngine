@@ -1602,7 +1602,7 @@ struct App {
                 Flow(ImGui::GetFrameHeight()); if (ImGui::ColorButton(p.first, col)) o.door.color = p.second; ImGui::PopID(); }
             Hint("Later, the colour says which weapon opens it (like beam, missile ...). For now any shot does.");
             { int s = o.door.fieldSide; const char* sn[] = { "Both sides", "Front only", "Back only" }; Prop("Field on"); if (ImGui::Combo("##fside", &s, sn, 3)) { o.door.fieldSide = s; ch_ = true; } }
-            Prop("In front of the door"); if (ImGui::SliderFloat("##fgap", &o.door.fieldGap, 0, 0.5f, "%.2f blocks")) ch_ = true;
+            Prop("In front of the door"); if (ImGui::SliderFloat("##fgap", &o.door.fieldGap, 0.01f, 0.5f, "%.2f blocks")) ch_ = true;
             auto mi = meshModels.find(o.model);
             if (mi != meshModels.end() && !mi->second.parts.empty()) {
                 Prop("On the door's parts"); if (ImGui::Checkbox("##fparts", &o.door.fieldOnParts)) ch_ = true;

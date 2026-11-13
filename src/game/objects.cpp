@@ -167,7 +167,7 @@ void DoorRuntime::tick(float dt, bool near, float openLen, float closeLen, float
     }
 }
 static double fieldZ(const WorldObject& o, const ModelFrame& m, const Box3& op, int side) {   // just outside the door, on its front or back
-    double k = std::max(objectStretch(o, m).z, 1e-6), gap = std::max(0.f, o.door.fieldGap) / k;
+    double k = std::max(objectStretch(o, m).z, 1e-6), gap = std::max(0.01f, o.door.fieldGap) / k;   // never right on the door: that would flicker (two surfaces at the same depth)
     return side == 0 ? op.lo.z - gap : op.hi.z + gap;
 }
 Box3 fieldBox(const WorldObject& o, const ModelFrame& m, const Box3& op) {   // from the front field to the back one (at least 0.16 blocks thick)
