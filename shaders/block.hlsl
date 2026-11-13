@@ -233,7 +233,7 @@ void surfaceDetail(VSOut i, inout float3 n, inout float3 albedo, TexMat m)
     float bump = gSurf.x * m.b.x * near;
     if (bump > 0)
     {
-        float e0 = smoothstep(0.6, 1.0, f.x), e1 = smoothstep(0.6, 1.0, 1 - f.x), e2 = smoothstep(0.6, 1.0, f.y), e3 = smoothstep(0.6, 1.0, 1 - f.y);
+        float e0 = smoothstep(0.5, 1.0, f.x), e1 = smoothstep(0.5, 1.0, 1 - f.x), e2 = smoothstep(0.5, 1.0, f.y), e3 = smoothstep(0.5, 1.0, 1 - f.y);
         float sx = (hr - h0) * e0 + (h0 - hl) * e1 + (hr - hl) * 0.15;                          // the edges toward the neighbours, and a little overall slope
         float sy = (hd - h0) * e2 + (h0 - hu) * e3 + (hd - hu) * 0.15;
         float3 g = normalize(n);                                                                  // the surface's own tangents from the screen derivatives
@@ -241,8 +241,10 @@ void surfaceDetail(VSOut i, inout float3 n, inout float3 albedo, TexMat m)
         float3 T = p2 * du1.x + p1 * du2.x, B = p2 * du1.y + p1 * du2.y;
         float s = rsqrt(max(1e-12, max(dot(T, T), dot(B, B))));
         T *= s; B *= s;
-        float k = bump * 2.2;                                                                     // brighter toward +u: the surface tilts away from +u
+        float k = bump * 3.5;                                                                     // brighter toward +u: the surface tilts away from +u
         n = normalize(g - (T * sx + B * sy) * k);
+        float avg = (hr + hl + hd + hu) * 0.25;                                                   // pixels lower than their neighbours (gaps, cracks) sit in shade
+        albedo *= 1 - saturate((avg - h0) * 2.5) * 0.35 * saturate(bump);
     }
     float coat = gSurf.y * m.b.y * near;
     if (coat > 0)

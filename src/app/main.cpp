@@ -5913,9 +5913,11 @@ struct App {
         std::vector<DemoShot> shots = demoShots();
         for (const char* nm : { "ambient_occlusion_off", "ambient_occlusion_on" }) { DemoShot d = shots[2]; d.name = nm; shots.push_back(d); }   // the same view without and with it
         for (const char* nm : { "textures_plain", "textures_bumps_coat_materials" }) { DemoShot d = shots[1]; d.name = nm; shots.push_back(d); }   // and plain textures vs. generated normals + coat + materials
+        for (const char* nm : { "textures_ground_plain", "textures_ground_bumps_coat" }) {   // the sunlit path close up, looking down
+            DemoShot d = shots[1]; d.name = nm; V3 dl = d.target - d.eye; d.target = { d.eye.x + dl.x * 0.12 + 0.6, d.eye.y - 2.4, d.eye.z + dl.z * 0.12 }; shots.push_back(d); }
         for (const DemoShot& sh : shots) {
             settings.ambientOcclusion = sh.name == "ambient_occlusion_off" ? 0 : 1;
-            bool plain = sh.name == "textures_plain"; settings.bumps = plain ? 0.f : 1.f; settings.coat = plain ? 0.f : 1.f; settings.materials = !plain;
+            bool plain = sh.name == "textures_plain" || sh.name == "textures_ground_plain"; settings.bumps = plain ? 0.f : 1.f; settings.coat = plain ? 0.f : 1.f; settings.materials = !plain;
             V3 dlt = sh.target - sh.eye; double hz = std::sqrt(dlt.x * dlt.x + dlt.z * dlt.z);
             player.feet = { sh.eye.x, sh.eye.y - player.eyeH, sh.eye.z }; player.yaw = std::atan2(dlt.x, dlt.z); player.pitch = std::atan2(dlt.y, hz); player.vel = { 0, 0, 0 };
             settings.timeOfDay = sh.hour;
