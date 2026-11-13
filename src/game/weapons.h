@@ -26,20 +26,37 @@ struct Beam {
     bool auto_ = false;                                 // keeps firing while the button is held
     bool waitForAnim = false;                           // a shot only when the firing animation is done
     std::string fireClip = "fire";
-    // its missiles
-    bool missiles = true; std::string missileClip = "missile"; bool missileWait = true;   // default: wait until the missile animation is done
-    float missileSpeed = 30, missileDamage = 30, missileRate = 1.5f; uint32_t missileColor = 0xFF8A3A;
+    int shotStyle = 1;                                  // 0: particles only; 1: a glowing 3D orb (with the trail behind it)
+    // missiles (the same missiles for every beam; this is only how this cannon fires them)
+    std::string missileClip = "missile"; bool missileWait = true;   // default: wait until the missile animation is done
     bool startsOwned = true;                            // else: picked up later (a key pickup with the beam's name gives it)
     // charge shot: hold the button, let go when it is full
     bool charge = true; float chargeTime = 1.0f;        // seconds to fill (after a short tap time)
     float chargeDamage = 4, chargeSize = 3.5f, chargeSpeed = 0.8f;   // times the normal shot's
     std::string chargeLook = "Charge";                  // particles gathering at the muzzle
-    float hitSphere = 0.35f, chargeSphere = 1.3f, missileSphere = 2.0f;   // impact spheres where shots hit (blocks across, 0: none)
+    std::string chargingClip = "charging", chargedClip = "charged", chargedShotClip = "charged shot";   // the cannon: while filling (once), while full (loops), firing it
+    SoundSet chargeDone, chargedLoop;                  // when it is full: a sound once, and a loop until you let go (the charging sounds stop)
+    SoundSet hitSound, chargedHitSound;                 // where its shots hit
+    float hitSphere = 0.35f, chargeSphere = 1.3f;       // impact spheres where shots hit (blocks across, 0: none)
     // timelines: the animation's speed, sounds, and when the shot leaves, for each thing the beam does
     enum TimelineKind { Fire, Charging, Charged, MissileShot, TIMELINES };
     Timeline timelines[TIMELINES];
 };
-const char* timelineName(int kind);                     // "Fire", "Charging", "Charged shot", "Missile"
+const char* timelineName(int kind);
+const std::string& beamClip(const Beam& b, int timelineKind);   // the cannon animation for it (the charged shot falls back to "fire")
+
+// missiles: one supply for all beams; more kinds can be found later (Ice Missile, Super Missile...)
+struct MissileType {
+    std::string name = "Missile";
+    std::string model = "@missile";                     // flies as this 3D model (its front: +Z)
+    bool startsOwned = true;                            // else: picked up later (a key pickup with its name)
+    int cost = 1;                                       // missiles used per shot
+    float speed = 30, damage = 30, rate = 1.5f, size = 0.45f;   // blocks/s, -, per second (at most), how long the model is (blocks)
+    uint32_t color = 0xFF8A3A;
+    std::string trailLook = "Smoke", hitLook = "Impact";
+    float sphere = 2.0f;                                // impact sphere (blocks across)
+    SoundSet launch, hit;
+};                     // "Fire", "Charging", "Charged shot", "Missile"
 
 // what the engine adds on top of the cannon's own animations
 struct WeaponMotion {
@@ -48,6 +65,10 @@ struct WeaponMotion {
 
 struct WeaponSet {
     std::vector<Beam> beams;
+    std::vector<MissileType> missileTypes;              // the first one is the plain missile
+    // switching: 0 freely (1-9 / mouse wheel for beams, Q for missiles); 1 not at all, always the best one you have
+    // (the last one in the list, like Prime 3); 2 in the pause menu (like Super Metroid)
+    int switchMode = 0;
     WeaponMotion motion;
     std::string missileCounter = "Missile";            // the counter that holds missiles (the HUD can show it)
     int missileStart = 25, missileMax = 25;
@@ -61,6 +82,7 @@ struct WeaponSet {
     float cannonFollow = 1;                             // free aim: how much the cannon turns toward the cursor
     bool empty() const { return beams.empty(); }
 };
+int bestOwned(const std::vector<char>& owned, int fallback);   // the last one you have (the list goes from weakest to best)
 WeaponSet defaultWeapons();                             // a Power Beam and a Wave Beam on the built-in arm cannon
 bool saveWeapons(const std::string& path, const WeaponSet& w);
 bool loadWeapons(const std::string& path, WeaponSet& w);
@@ -85,7 +107,7 @@ struct FreeAim {
 
 // may it fire now? (fire rate, waiting for the animation, missiles left)
 struct WeaponState {
-    int current = 0;
+    int current = 0, missile = 0;                       // the beam, the missile kind
     float cooldown = 0;                                 // until the next shot
     float animLeft = 0;                                 // the firing animation still playing (seconds)
     bool animIsMissile = false;
@@ -95,8 +117,9 @@ struct WeaponState {
     // the beam button this step: a press fires a normal shot; with charging, holding fills it and letting go when full fires the charged shot
     Shot beamButton(const Beam& b, bool down, bool wasDown, float dt, float animLength);
     void tick(float dt) { cooldown = std::max(0.f, cooldown - dt); animLeft = std::max(0.f, animLeft - dt); }
-    // tries to fire (missile or beam); animLength: the animation that plays (0 if none); missilesLeft is used up
-    bool fire(const Beam& b, bool missile, float animLength, int& missilesLeft);
+    bool full() const { return charging && charge >= 1; }
+    // tries to fire the beam (m null) or a missile of kind m; animLength: the animation that plays (0 if none); missilesLeft is used up
+    bool fire(const Beam& b, const MissileType* m, float animLength, int& missilesLeft);
 };
 
 } // namespace mc

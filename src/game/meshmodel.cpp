@@ -576,6 +576,29 @@ bool builtinShape(const std::string& name, MeshModel& m) {
             if (j < LAT - 1) B.tri(mv(a), mv(c), mv(d), img, rf);
         }
     }
+    else if (name == "@missile") {   // a missile (weapons; not in the object list): it flies toward +Z, 1 block long
+        int body = colour(0xC8CCD4), tip = colour(0xFF7A30), fin = colour(0x505866), band = colour(0x6CF0FF);
+        auto tube = [&](int sides, double r0, double r1, double z0, double z1, int img) {   // round along Z, r0 at z0 .. r1 at z1 (0: a point)
+            const double cy = 0.15;
+            for (int k = 0; k < sides; k++) {
+                double a0 = k * 6.2831853 / sides, a1 = (k + 1) * 6.2831853 / sides, slope = (r0 - r1) / std::max(1e-6, z1 - z0);
+                auto vert = [&](double a, double r, double z) { double nl = std::sqrt(1 + slope * slope);
+                    return MeshVert{ { (float)(std::cos(a) * r), (float)(cy + std::sin(a) * r), (float)z }, { 0.5f, 0.5f }, { (float)(std::cos(a) / nl), (float)(std::sin(a) / nl), (float)(slope / nl) } }; };
+                MeshVert p0 = vert(a0, r0, z0), p1 = vert(a1, r0, z0), q1 = vert(a1, r1, z1), q0 = vert(a0, r1, z1);
+                double am = (a0 + a1) / 2; float rf[3] = { (float)std::cos(am), (float)std::sin(am), (float)slope };
+                B.tri(p0, q1, p1, img, rf); if (r1 > 1e-6) B.tri(p0, q0, q1, img, rf);
+            }
+        };
+        tube(10, 0.09, 0.09, 0.08, 0.72, body);
+        tube(10, 0.095, 0.095, 0.5, 0.56, band);
+        tube(10, 0.09, 0.0, 0.72, 1.0, tip);
+        tube(10, 0.06, 0.09, 0.0, 0.08, fin);
+        { MeshVert c{ { 0, 0.15f, 0 }, { 0.5f, 0.5f }, { 0, 0, -1 } }; float rf[3] = { 0, 0, -1 };   // the back: closed
+          for (int k = 0; k < 10; k++) { double a0 = k * 0.62831853, a1 = (k + 1) * 0.62831853;
+            MeshVert x{ { (float)(std::cos(a0) * 0.06), (float)(0.15 + std::sin(a0) * 0.06), 0 }, { 0.5f, 0.5f }, { 0, 0, -1 } }, y = x; y.p[0] = (float)(std::cos(a1) * 0.06); y.p[1] = (float)(0.15 + std::sin(a1) * 0.06); B.tri(c, y, x, fin, rf); } }
+        slab({ -0.15, 0.14, 0.04 }, { 0.15, 0.16, 0.24 }, fin);   // fins: a cross at the back
+        slab({ -0.01, 0.0, 0.04 }, { 0.01, 0.3, 0.24 }, fin);
+    }
     else if (name == "@arm-cannon") {   // a simple arm cannon (weapons; not in the object list): its barrel points to +Z
         int b = colour(0xC0602A), g = colour(0x8A8F9A), d = colour(0x4A5262), c = colour(0x6CF0FF);
         slab({ -0.15, -0.15, 0 }, { 0.15, 0.15, 0.5 }, b);

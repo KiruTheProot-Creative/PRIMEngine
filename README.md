@@ -147,10 +147,14 @@ In Play mode shots fly from the emitter to wherever the crosshair points. Left m
 right mouse fires a missile (ammo is a counter, "Missile" by default, so the HUD can show it). Keys 1-9 or the mouse wheel switch beams.
 
 - Each beam: colour, trail / hit / muzzle-flash looks (particles), speed, shots per second, damage, range, thickness, its firing animation and whether the next shot waits for it.
-- Missiles: their own animation per beam, "wait until it is done" (on by default), speed, rate, colour.
+- **Missiles** are one supply for all beams (MISSILES in the list). More kinds can be added and found later (a key pickup with the kind's name), like an Ice Missile or a Super Missile (the starter set has one that uses 5 missiles). Each kind: its 3D model (built-in `@missile`, or any model, flying nose first along +Z), length, colour, how many missiles it uses, speed, rate, damage, trail / hit looks, impact sphere, launch and hit sounds. Each beam only sets its cannon's missile animation and "wait until it is done" (on by default).
+- **Switching** (All weapons > Switching): freely (1-9 / mouse wheel for beams, Q for the missile kind), never (always the best one you have: the last one in the list, like Prime 3), or in the pause menu (Esc, like Super Metroid).
+- **Shots look like** a glowing 3D orb (default: a smooth bright ball with energy streaming over it and a soft halo; charged ones crackle more) or particles only.
+- **Charge animations and sounds:** the cannon's "charging" animation plays while it fills, "charged" loops while it is full, "charged shot" fires it. The charging sounds (Charging timeline) stop the moment it is full; then a "full" sound plays once together with a loop that hums until you let go. Charged shot sounds: the Charged shot timeline. Hit sounds for normal and charged shots.
 - Idle breathing, walk bob, landing dip and recoil are made by the engine (strength sliders); the firing animations come from the cannon model.
 - A beam found later: switch off "Have it from the start"; a key pickup with the beam's name gives it.
-- Doors: **Opened by** any shot, one beam, or missiles.
+- Doors: **Opened by** any shot, one beam, missiles (any kind), or one missile kind (a Super Missile door).
+- **Impact spheres** glow with moving plasma and light up the world around them while they last.
 - **Charge shot:** a tap fires a normal shot; hold and it charges at the muzzle (particles and light); let go when it is full for a bigger, stronger shot (time, damage, size, speed and look per beam). The HUD can show it (Shows > Beam charge).
 - **The cannon's layer:** it has its own depth, so it never cuts into the HUD: behind the HUD (default, like a visor) or "Cannon in front of the HUD".
 

@@ -476,7 +476,7 @@ int main() {
         Breakables b; b.mark(3, 64, -2, ""); b.mark(4, 64, -2, "Bomb"); b.mark(5, 64, -2, "Wave Beam"); b.mark(6, 64, -2, "Missile"); b.mark(7, 64, -2, "Charged shot");
         CHECK(breaksWith(*b.breaker(3, 64, -2), "Power Beam", false, false) && breaksWith("", "Bomb", false, false), "a plain breakable block: any shot or bomb");
         CHECK(breaksWith("Bomb", "Bomb", false, false) && !breaksWith("Bomb", "Power Beam", false, true), "a bomb block: only bombs");
-        CHECK(breaksWith("Wave Beam", "Wave Beam", false, true) && !breaksWith("Wave Beam", "Power Beam", false, false) && !breaksWith("Wave Beam", "Wave Beam", true, false), "a Wave Beam block: that beam, not its missiles");
+        CHECK(breaksWith("Wave Beam", "Wave Beam", false, true) && !breaksWith("Wave Beam", "Power Beam", false, false) && !breaksWith("Wave Beam", "Missile", true, false) && breaksWith("Super Missile", "Super Missile", true, false) && !breaksWith("Super Missile", "Missile", true, false), "a Wave Beam block: that beam, not missiles; a Super Missile block: only those");
         CHECK(breaksWith("Missile", "Power Beam", true, false) && !breaksWith("Missile", "Power Beam", false, true), "a missile block: missiles");
         CHECK(breaksWith("Charged shot", "Power Beam", false, true) && !breaksWith("Charged shot", "Power Beam", false, false), "a charged-shot block: only charged shots");
         saveBreakables("/tmp/prim_break.txt", b); Breakables back; loadBreakables("/tmp/prim_break.txt", back);
@@ -501,6 +501,7 @@ int main() {
         CHECK(r0 == 0 && a0 == 1 && r1 > 0.9f && r2 > 1.7f && r2 < 2 && a2 < 0.3f && std::fabs(is.radiusNow() - 2) < 1e-6 && is.alphaNow() == 0 && is.done(), "an impact sphere grows fast, then slowly, and fades out (%.2f, %.2f)", r1, r2);
         GameSettings gs; gs.player.morphBall = 2; gs.player.bombSphere = 4.5f; gs.player.bombJump = 3; gs.player.ballModel = "my ball"; gs.save("/tmp/prim_game_ball.txt"); GameSettings gb; gb.load("/tmp/prim_game_ball.txt");
         CHECK(gb.player.morphBall == 2 && gb.player.bombSphere == 4.5f && gb.player.bombJump == 3 && gb.player.ballModel == "my ball", "the morph ball's rules save and load");
+        { MeshModel mm; CHECK(builtinShape("@missile", mm) && std::fabs(mm.sz - 1) < 0.02 && mm.sx < 0.4 && mm.sy < 0.4, "the built-in missile builds: 1 block long, thin (%.2f x %.2f x %.2f)", mm.sx, mm.sy, mm.sz); }
         MeshModel mb; CHECK(builtinShape("@morph-ball", mb) && std::fabs(mb.sy - 1) < 0.01 && std::fabs(mb.sx - 1) < 0.02, "the built-in morph ball builds, 1 block across (%.2f)", mb.sx);
     }
 
@@ -509,18 +510,23 @@ int main() {
         WeaponPoint up; up.pitch = 90; V3 d = pointDir(up), f = pointDir(WeaponPoint{});
         CHECK(std::fabs(d.y - 1) < 1e-9 && std::fabs(f.z - 1) < 1e-9, "points aim: 0 0 is forward (+Z), pitch 90 is up");
         WeaponSet w = defaultWeapons(); Beam& b = w.beams[0];
-        WeaponState st; int missiles = 2;
-        CHECK(st.fire(b, false, 0.3f, missiles) && !st.fire(b, false, 0.3f, missiles), "a beam shot, then the fire rate makes it wait");
+        MissileType mt; WeaponState st; int missiles = 2;
+        CHECK(st.fire(b, nullptr, 0.3f, missiles) && !st.fire(b, nullptr, 0.3f, missiles), "a beam shot, then the fire rate makes it wait");
         st.tick(1.f / b.fireRate + 0.01f);
-        CHECK(st.fire(b, false, 0.3f, missiles), "a beam may fire again during its animation (default)");
+        CHECK(st.fire(b, nullptr, 0.3f, missiles), "a beam may fire again during its animation (default)");
         st = WeaponState{}; st.tick(1);
-        CHECK(st.fire(b, true, 1.2f, missiles) && missiles == 1, "a missile uses one up");
-        st.tick(1.f / b.missileRate + 0.01f);
-        CHECK(!st.fire(b, true, 1.2f, missiles) && missiles == 1, "the next missile waits until the missile animation is done (default)");
-        st.tick(0.6f); CHECK(st.fire(b, true, 1.2f, missiles) && missiles == 0, "then it fires");
-        st.tick(5); CHECK(!st.fire(b, true, 1.2f, missiles), "no missiles left: none");
-        Beam nw = b; nw.missileWait = false; WeaponState s2; int m2 = 5; s2.fire(nw, true, 3, m2); s2.tick(1.f / nw.missileRate + 0.01f);
-        CHECK(s2.fire(nw, true, 3, m2), "with waiting off, it fires before the animation is done");
+        CHECK(st.fire(b, &mt, 1.2f, missiles) && missiles == 1, "a missile uses one up");
+        st.tick(1.f / mt.rate + 0.01f);
+        CHECK(!st.fire(b, &mt, 1.2f, missiles) && missiles == 1, "the next missile waits until the missile animation is done (default)");
+        st.tick(0.6f); CHECK(st.fire(b, &mt, 1.2f, missiles) && missiles == 0, "then it fires");
+        st.tick(5); CHECK(!st.fire(b, &mt, 1.2f, missiles), "no missiles left: none");
+        Beam nw = b; nw.missileWait = false; WeaponState s2; int m2 = 5; s2.fire(nw, &mt, 3, m2); s2.tick(1.f / mt.rate + 0.01f);
+        CHECK(s2.fire(nw, &mt, 3, m2), "with waiting off, it fires before the animation is done");
+        { MissileType sup; sup.cost = 5; WeaponState s3; int m3 = 7; CHECK(s3.fire(b, &sup, 0, m3) && m3 == 2, "a Super Missile uses five");
+          s3.tick(10); CHECK(!s3.fire(b, &sup, 0, m3) && m3 == 2, "not enough left for another: none (and none used up)"); }
+        CHECK(bestOwned({ 1, 0, 1, 0 }, 0) == 2 && bestOwned({ 0, 0 }, 0) == 0 && bestOwned({ 1, 1, 1 }, 0) == 2, "no switching: always the best beam you have (the last one owned in the list)");
+        CHECK(beamClip(b, Beam::Charged) == "charged shot" && beamClip(b, Beam::Charging) == "charging" && beamClip(b, Beam::MissileShot) == "missile", "each thing the beam does has its own cannon animation");
+        { Beam nb = b; nb.chargedShotClip.clear(); CHECK(beamClip(nb, Beam::Charged) == "fire", "no charged-shot animation: the normal firing one"); }
         WeaponPose still, walking; WeaponMotion mo;
         for (int k = 0; k < 120; k++) { still.update(mo, 1.0 / 60, 0, false, 0, 0); walking.update(mo, 1.0 / 60, 4.3f, false, 0, 0); }
         double sx = 0, wx = 0; WeaponPose a = still, bw = walking;
@@ -532,10 +538,19 @@ int main() {
         CHECK(std::fabs(k1.offset.z) < 1e-3, "and it settles again");
         WeaponPose l1; l1.update(mo, 1.0 / 60, 0, true, 20, 0); for (int k = 0; k < 4; k++) l1.update(mo, 1.0 / 60, 0, false, 0, 0);
         CHECK(l1.offset.y < -0.003, "landing dips it (%.4f)", l1.offset.y);
-        w.beams[1].muzzle.yaw = 12.5f; w.beams[1].missileWait = false; w.beams[0].name = "Power % Beam"; w.motion.recoil = 0.3f; w.missileMax = 99; w.cannonInFront = true; w.beams[1].chargeTime = 2.5f; w.beams[0].charge = false; w.beams[1].missileSphere = 3.5f;
+        w.beams[1].muzzle.yaw = 12.5f; w.beams[1].missileWait = false; w.beams[0].name = "Power % Beam"; w.motion.recoil = 0.3f; w.missileMax = 99; w.cannonInFront = true; w.beams[1].chargeTime = 2.5f; w.beams[0].charge = false; w.missileTypes[1].sphere = 3.5f; w.switchMode = 2; w.beams[1].chargedClip = "glow loop"; w.beams[0].shotStyle = 0;
+        { SoundUse u; u.file = "done.wav"; w.beams[1].chargeDone.sounds = { u }; u.file = "hum.wav"; w.beams[1].chargedLoop.sounds = { u }; u.file = "zap hit.wav"; w.beams[0].hitSound.sounds = { u }; u.file = "boom.wav"; w.missileTypes[0].hit.sounds = { u }; u.file = "whoosh.wav"; w.missileTypes[1].launch.sounds = { u }; }
         saveWeapons("/tmp/prim_weapons.txt", w); WeaponSet back; loadWeapons("/tmp/prim_weapons.txt", back);
         CHECK(back.beams.size() == 2 && back.beams[0].name == "Power % Beam" && back.beams[1].muzzle.yaw == 12.5f && !back.beams[1].missileWait && back.beams[0].missileWait
-              && back.beams[1].shotLook == "Magic" && back.motion.recoil == 0.3f && back.missileMax == 99 && back.beams[0].model == "@arm-cannon" && back.cannonInFront && back.beams[1].missileSphere == 3.5f && back.beams[1].chargeTime == 2.5f && !back.beams[0].charge && back.beams[1].chargeLook == "Charge", "weapons save and load");
+              && back.beams[1].shotLook == "Magic" && back.motion.recoil == 0.3f && back.missileMax == 99 && back.beams[0].model == "@arm-cannon" && back.cannonInFront && back.missileTypes.size() == 2 && back.missileTypes[1].sphere == 3.5f && back.missileTypes[1].name == "Super Missile" && back.missileTypes[1].cost == 5 && !back.missileTypes[1].startsOwned
+              && back.switchMode == 2 && back.beams[1].chargedClip == "glow loop" && back.beams[0].shotStyle == 0 && back.beams[1].shotStyle == 1
+              && back.beams[1].chargeDone.sounds.size() == 1 && back.beams[1].chargedLoop.sounds[0].file == "hum.wav" && back.beams[0].hitSound.sounds[0].file == "zap hit.wav"
+              && back.missileTypes[0].hit.sounds[0].file == "boom.wav" && back.missileTypes[1].launch.sounds[0].file == "whoosh.wav" && back.beams[0].chargedHitSound.empty() && back.beams[1].chargeTime == 2.5f && !back.beams[0].charge && back.beams[1].chargeLook == "Charge", "weapons save and load");
+        {   // an older file (missiles were set on each beam): the first beam's become the missile
+            std::ifstream in("/tmp/prim_weapons.txt"); std::ofstream out("/tmp/prim_weapons_old.txt"); std::string ln;
+            while (std::getline(in, ln)) if (ln.rfind("missile ", 0) != 0 && ln.rfind("msound ", 0) != 0) out << ln << "\n";
+        }
+        { WeaponSet ow; loadWeapons("/tmp/prim_weapons_old.txt", ow); CHECK(ow.missileTypes.size() == 1 && ow.missileTypes[0].name == "Missile" && ow.missileTypes[0].speed == 30, "older weapon files: one plain missile for all beams"); }
         {   // the charge beam
             Beam cb = defaultWeapons().beams[0]; WeaponState cs; bool was = false; int normal = 0, charged = 0;
             auto step = [&](bool down, float dt) { auto r = cs.beamButton(cb, down, was, dt, 0.2f); was = down; cs.tick(dt); normal += r == WeaponState::Shot::Normal; charged += r == WeaponState::Shot::Charged; };
@@ -605,7 +620,9 @@ int main() {
                   && wb.aimMode == 1 && wb.deadZone == 0.3f, "timelines and aiming save and load with the weapons");
         }
         DoorSettings ds; CHECK(doorOpensFor(ds, "Wave Beam", false) && doorOpensFor(ds, "", true), "a plain door opens for any shot");
-        ds.openedBy = "Wave Beam"; CHECK(doorOpensFor(ds, "Wave Beam", false) && !doorOpensFor(ds, "Power Beam", false) && !doorOpensFor(ds, "Wave Beam", true), "a Wave Beam door only for the Wave Beam");
+        ds.openedBy = "Wave Beam"; CHECK(doorOpensFor(ds, "Wave Beam", false) && !doorOpensFor(ds, "Power Beam", false) && !doorOpensFor(ds, "Missile", true), "a Wave Beam door only for the Wave Beam");
+        { DoorSettings sd; sd.openedBy = "Super Missile"; CHECK(doorOpensFor(sd, "Super Missile", true) && !doorOpensFor(sd, "Missile", true) && !doorOpensFor(sd, "Power Beam", false), "a Super Missile door only for Super Missiles"); }
+        { DoorSettings md; md.openedBy = "Missile"; CHECK(doorOpensFor(md, "Super Missile", true), "a missile door opens for any kind of missile"); }
         ds.openedBy = "Missile"; CHECK(doorOpensFor(ds, "Power Beam", true) && !doorOpensFor(ds, "Power Beam", false), "a missile door only for missiles");
         { WorldObject d; d.kind = ObjKind::Door; d.door.openedBy = "Wave Beam"; std::vector<WorldObject> v{ d }, v2; saveObjects("/tmp/prim_dw.txt", v); loadObjects("/tmp/prim_dw.txt", v2);
           CHECK(v2.size() == 1 && v2[0].door.openedBy == "Wave Beam", "what opens a door saves and loads"); }

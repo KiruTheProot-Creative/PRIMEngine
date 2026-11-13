@@ -18,7 +18,7 @@ struct Breakables {
 };
 bool saveBreakables(const std::string& path, const Breakables& b);
 bool loadBreakables(const std::string& path, Breakables& b);
-// does this break it? weapon: a beam's name or "Bomb"; missile / charged: what kind of shot
+// does this break it? weapon: a beam's name, a missile kind's name (for missiles) or "Bomb"; missile / charged: what kind of shot
 bool breaksWith(const std::string& breaker, const std::string& weapon, bool missile, bool charged);
 
 // a bomb going off: how fast it throws the ball up (0: too far away); radius: its reach

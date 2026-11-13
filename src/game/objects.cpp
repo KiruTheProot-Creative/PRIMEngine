@@ -178,7 +178,7 @@ Box3 turnedBoxPublic(const WorldObject& o, const ModelFrame& m, const Box3& b) {
 bool doorOpensFor(const DoorSettings& d, const std::string& weapon, bool missile) {
     if (d.openedBy.empty()) return true;                      // any shot
     if (d.openedBy == "Missile") return missile;              // missile doors
-    return !missile && d.openedBy == weapon;                  // that beam only
+    return d.openedBy == weapon;                              // that beam only, or that kind of missile (shots from missiles carry the missile's name)
 }
 bool fieldPartOn(const DoorSettings& d, const std::string& n) {
     if (d.fieldParts.empty()) return true;

@@ -30,7 +30,7 @@ bool breaksWith(const std::string& br, const std::string& weapon, bool missile, 
     if (br == "Bomb") return bomb;
     if (br == "Missile") return missile;
     if (br == "Charged shot") return charged && !missile && !bomb;
-    return !missile && !bomb && weapon == br;            // that beam (normal or charged)
+    return !bomb && weapon == br;                        // that beam (normal or charged), or that kind of missile (missiles carry their kind's name)
 }
 double bombLift(V3 b, V3 c, double radius, double lift) {
     V3 d = c - b; double dist = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);

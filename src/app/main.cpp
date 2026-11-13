@@ -250,6 +250,7 @@ struct App {
           HR(dev->CreateInputLayout(fe, 2, b->GetBufferPointer(), b->GetBufferSize(), &layoutFieldMesh)); }
         b = Compile(src, "PS_FieldMesh", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psFieldMesh));
         b = Compile(src, "PS_ImpactSphere", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psSphere));
+        b = Compile(src, "PS_BeamOrb", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psOrb));
         b = Compile(src, "VS_Preview", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsPreview));
         b = Compile(src, "PS_Preview", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psPreview));
         InitHud(src);
@@ -557,7 +558,8 @@ struct App {
         if (k == VK_F1) { hideHud = !hideHud; return; }
         if (playMode && !typing && !repeat && !paused) {   // play mode keys (before the return below, which keeps the building tools out of play)
             if (k == 'C' && !Down(VK_CONTROL)) { ToggleBall(); return; }                                    // the morph ball
-            if (!weapons.empty() && k >= '1' && k <= '9') { SwitchBeam((int)(k - '1')); return; }        // the beams
+            if (!weapons.empty() && k >= '1' && k <= '9') { if (weapons.switchMode == 0) SwitchBeam((int)(k - '1')); else if (weapons.switchMode == 2) Toast("Pick beams in the menu (Esc)"); return; }   // the beams
+            if (k == 'Q' && weapons.missileTypes.size() > 1 && !player.ball) { if (weapons.switchMode == 0) NextMissile(); else if (weapons.switchMode == 2) Toast("Pick missiles in the menu (Esc)"); return; }   // the missiles
         }
         if (typing || playMode) return;                   // playing: no building tools
         if (Down(VK_CONTROL) && k == 'Z') { if (history.undo(*world)) Toast("Undo"); return; }
@@ -605,7 +607,8 @@ struct App {
         if (k == 'G' && manualRot) { manualRot = false; Toast("Rotation: automatic"); }
     }
     void OnWheel(int delta) {
-        if (Playing() && playMode && weapons.beams.size() > 1) {   // Play mode: the next / previous beam you have
+        if (Playing() && playMode && weapons.beams.size() > 1) {   // Play mode: the next / previous beam you have (only when switching freely)
+            if (weapons.switchMode != 0) return;
             int n = (int)weapons.beams.size();
             for (int k = 1; k < n; k++) { int i = ((weapState.current + (delta > 0 ? -k : k)) % n + n) % n; if (OwnsBeam(weapons.beams[i])) { SwitchBeam(i); break; } }
             return;
@@ -926,7 +929,7 @@ struct App {
         for (auto it = emitters.begin(); it != emitters.end();) { if (!seen.count(it->first)) it = emitters.erase(it); else ++it; }
         for (ParticleEmitter& e : fx) e.update(dt, { 0, 0, 0 }, 0, world.get(), false);
         fx.erase(std::remove_if(fx.begin(), fx.end(), [](const ParticleEmitter& e) { return e.ps.empty(); }), fx.end());
-        for (Shot& s : shots) s.trail.update(dt, s.pos, 0, nullptr, s.age < 50);   // beam tails
+        for (Shot& s : shots) { V3 from = s.mtype >= 0 ? s.pos - s.dir * (double)s.size : s.pos; s.spin += (float)dt * 5; s.trail.update(dt, from, 0, nullptr, s.age < 50); }   // beam tails (missiles: from the back)
     }
     // every light that shines this frame: light objects, glowing emitters, shots (the nearest 32)
     void CollectLights(LightCB& lc) {
@@ -952,6 +955,7 @@ struct App {
         for (const Shot& s : shots) if (s.age < 50) all.push_back({ s.pos, s.missile ? 6.0 : 4.5, s.color * 0.6, 0, { 0, -1, 0 }, -1, dist(s.pos) });
         for (const Bomb& b : bombsOut) all.push_back({ b.pos, 2.5, V3{ 1.6, 1.0, 0.3 } * (0.6 + 0.4 * std::sin(animTime * 18)), 0, { 0, -1, 0 }, -1, dist(b.pos) });
         for (const Flash& fl : flashes) all.push_back({ fl.pos, fl.range, fl.col * (1 - fl.t / 0.35), 0, { 0, -1, 0 }, -1, dist(fl.pos) });
+        for (const ImpactSphere& sp : spheres) { double a = sp.alphaNow(); if (a > 0.02) all.push_back({ sp.pos, 1.5 + sp.radiusNow() * 2.5, Linear(sp.color) * (3.5 * a), 0, { 0, -1, 0 }, -1, dist(sp.pos) }); }
         if (playMode && weapState.charging && weapState.charge > 0) if (const Beam* b = CurrentBeam()) all.push_back({ chargeAt, 2.0 + 2.5 * weapState.charge, Linear(b->color) * (0.6 + 1.6 * weapState.charge), 0, { 0, -1, 0 }, -1, dist(chargeAt) });
         std::sort(all.begin(), all.end(), [](const L& a, const L& b) { return a.dist - a.range < b.dist - b.range; });
         int n = 0;
@@ -1081,7 +1085,7 @@ struct App {
     std::string bigMsg; float bigMsgT = 0;
     std::string playStartWorld; Player startEditCam; bool travelling = false;
     static bool IsBuiltin(const std::string& n) { return !n.empty() && n[0] == '@'; }
-    void AddBuiltins() { for (const std::string& n : builtinShapeNames()) { MeshModel m; if (builtinShape(n, m)) meshModels[n] = m; } MeshModel st; if (builtinShape("@visor-strut", st)) meshModels["@visor-strut"] = st; MeshModel ac; if (builtinShape("@arm-cannon", ac)) meshModels["@arm-cannon"] = ac; MeshModel mb; if (builtinShape("@morph-ball", mb)) meshModels["@morph-ball"] = mb; }
+    void AddBuiltins() { for (const std::string& n : builtinShapeNames()) { MeshModel m; if (builtinShape(n, m)) meshModels[n] = m; } MeshModel st; if (builtinShape("@visor-strut", st)) meshModels["@visor-strut"] = st; MeshModel ac; if (builtinShape("@arm-cannon", ac)) meshModels["@arm-cannon"] = ac; MeshModel mb; if (builtinShape("@morph-ball", mb)) meshModels["@morph-ball"] = mb; MeshModel ms; if (builtinShape("@missile", ms)) meshModels["@missile"] = ms; }
     // a new helper object: what it is follows from the built-in look it was placed with
     void ApplyPreset(WorldObject& o) {
         const std::string& m = o.model;
@@ -1463,7 +1467,8 @@ struct App {
 
     // ================================================================== doors (G2 attempt 3a)
     struct Shot { V3 pos, dir; float age = 0; ParticleEmitter trail{ particlePreset("Beam trail"), 11 };
-                  float speed = 45, size = 0.07f, range = 80, travelled = 0; V3 color{ 0.4, 1.6, 3.0 }; uint32_t tint = 0; std::string weapon, hitLook = "Impact"; bool missile = false, charged = false; };
+                  float speed = 45, size = 0.07f, range = 80, travelled = 0; V3 color{ 0.4, 1.6, 3.0 }; uint32_t tint = 0; std::string weapon, hitLook = "Impact"; bool missile = false, charged = false;
+                  int beam = -1, mtype = -1; bool orb = false; float spin = 0; };   // beam / mtype: what fired it (sounds, sphere); orb: drawn as a glowing ball; mtype: drawn as the missile's model
     std::map<uint32_t, DoorRuntime> doorRt;           // Play mode: each door's state, by object id
     std::map<uint32_t, ModelGpu> doorGpu;             // doors in the middle of an animation: their posed meshes
     std::vector<Shot> shots; bool shootPrev = true;
@@ -1478,32 +1483,75 @@ struct App {
         if (spheres.size() > 24) spheres.erase(spheres.begin());
     }
     void UpdateSpheres(double dt) { for (auto& s : spheres) s.t += (float)dt; spheres.erase(std::remove_if(spheres.begin(), spheres.end(), [](const ImpactSphere& s) { return s.done(); }), spheres.end()); }
-    void DrawSpheres() {
-        if (spheres.empty()) return;
-        if (unitSphere.empty()) {   // a ball of triangles, 1 across ... built once
-            const int LON = 32, LAT = 18;
-            auto P = [&](int i, int j) { double th = 3.14159265358979 * j / LAT, ph = 6.28318530717959 * i / LON; return V3{ std::sin(th) * std::cos(ph), std::cos(th), std::sin(th) * std::sin(ph) }; };
-            auto put = [&](V3 p) { unitSphere.push_back({ { (float)p.x, (float)p.y, (float)p.z }, { (float)p.x, (float)p.y, (float)p.z } }); };
-            for (int j = 0; j < LAT; j++) for (int i = 0; i < LON; i++) { V3 a = P(i, j), b = P(i + 1, j), c = P(i + 1, j + 1), d = P(i, j + 1); put(a); put(b); put(c); put(a); put(c); put(d); }
-            D3D11_BUFFER_DESC d{}; d.ByteWidth = (UINT)(unitSphere.size() * sizeof(FMVtx)); d.Usage = D3D11_USAGE_DYNAMIC; d.BindFlags = D3D11_BIND_VERTEX_BUFFER; d.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE; HR(dev->CreateBuffer(&d, nullptr, &vbSphere));
-        }
+    void EnsureUnitSphere() {   // a ball of triangles, 1 across ... built once
+        if (!unitSphere.empty()) return;
+        const int LON = 32, LAT = 18;
+        auto P = [&](int i, int j) { double th = 3.14159265358979 * j / LAT, ph = 6.28318530717959 * i / LON; return V3{ std::sin(th) * std::cos(ph), std::cos(th), std::sin(th) * std::sin(ph) }; };
+        auto put = [&](V3 p) { unitSphere.push_back({ { (float)p.x, (float)p.y, (float)p.z }, { (float)p.x, (float)p.y, (float)p.z } }); };
+        for (int j = 0; j < LAT; j++) for (int i = 0; i < LON; i++) { V3 a = P(i, j), b = P(i + 1, j), c = P(i + 1, j + 1), d = P(i, j + 1); put(a); put(b); put(c); put(a); put(c); put(d); }
+        D3D11_BUFFER_DESC d{}; d.ByteWidth = (UINT)(unitSphere.size() * sizeof(FMVtx)); d.Usage = D3D11_USAGE_DYNAMIC; d.BindFlags = D3D11_BIND_VERTEX_BUFFER; d.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE; HR(dev->CreateBuffer(&d, nullptr, &vbSphere));
+    }
+    void BeginSphereDraw(ID3D11PixelShader* ps) {   // glowing shells: added on top, tested against the world's depth
+        EnsureUnitSphere();
         ctx->OMSetBlendState(bsAdd.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsTestOnly.Get(), 0); ctx->RSSetState(rsNoCull.Get());
-        ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); ctx->IASetInputLayout(layoutFieldMesh.Get()); ctx->VSSetShader(vsFieldMesh.Get(), nullptr, 0); ctx->PSSetShader(psSphere.Get(), nullptr, 0);
+        ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); ctx->IASetInputLayout(layoutFieldMesh.Get()); ctx->VSSetShader(vsFieldMesh.Get(), nullptr, 0); ctx->PSSetShader(ps, nullptr, 0);
         ctx->PSSetShaderResources(3, 1, noiseSRV.GetAddressOf()); ctx->PSSetSamplers(2, 1, sampLinear.GetAddressOf());
         ID3D11Buffer* cbs[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->VSSetConstantBuffers(0, 2, cbs); ctx->PSSetConstantBuffers(0, 2, cbs);
         UINT stride = sizeof(FMVtx), off = 0; ctx->IASetVertexBuffers(0, 1, vbSphere.GetAddressOf(), &stride, &off);
+    }
+    // one ball: c its middle (relative to the camera), stretched along ax / ay / az (their lengths: the radii)
+    void DrawSphereMesh(V3 c, V3 ax, V3 ay, V3 az, const ChunkCB& cc) {
+        D3D11_MAPPED_SUBRESOURCE m; if (FAILED(ctx->Map(vbSphere.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) return;
+        FMVtx* v = (FMVtx*)m.pData; V3 nx = Norm(ax), ny = Norm(ay), nz = Norm(az);
+        for (size_t k = 0; k < unitSphere.size(); k++) {
+            const float* u = unitSphere[k].p; V3 p = c + ax * u[0] + ay * u[1] + az * u[2], n = nx * u[0] + ny * u[1] + nz * u[2];
+            v[k] = { { (float)p.x, (float)p.y, (float)p.z }, { (float)n.x, (float)n.y, (float)n.z } };
+        }
+        ctx->Unmap(vbSphere.Get(), 0);
+        ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);
+        ctx->Draw((UINT)unitSphere.size(), 0);
+    }
+    void EndSphereDraw() { ctx->IASetInputLayout(layout.Get()); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get()); }
+    void DrawSpheres() {
+        if (spheres.empty()) return;
+        BeginSphereDraw(psSphere.Get());
         for (const ImpactSphere& s : spheres) {
             float r = std::max(0.01f, s.radiusNow()); V3 c = s.pos - camPos;
-            D3D11_MAPPED_SUBRESOURCE m; if (FAILED(ctx->Map(vbSphere.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) continue;
-            FMVtx* v = (FMVtx*)m.pData;
-            for (size_t k = 0; k < unitSphere.size(); k++) { v[k] = unitSphere[k]; v[k].p[0] = (float)(c.x + unitSphere[k].p[0] * r); v[k].p[1] = (float)(c.y + unitSphere[k].p[1] * r); v[k].p[2] = (float)(c.z + unitSphere[k].p[2] * r); }
-            ctx->Unmap(vbSphere.Get(), 0);
             V3 col = Linear(s.color); float grown = s.t / std::max(0.01f, s.life);
-            ChunkCB cc{ { (float)c.x, (float)c.y, (float)c.z, grown }, { 0, 0, 0, 0 }, { 0, 0, 0, 0 }, { (float)col.x * 2.2f, (float)col.y * 2.2f, (float)col.z * 2.2f, s.alphaNow() } };
-            ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);
-            ctx->Draw((UINT)unitSphere.size(), 0);
+            ChunkCB cc{ { (float)c.x, (float)c.y, (float)c.z, grown }, { r, (float)(s.pos.x * 0.37 + s.pos.z * 0.11), 0, 0 }, { 0, 0, 0, 0 }, { (float)col.x * 2.2f, (float)col.y * 2.2f, (float)col.z * 2.2f, s.alphaNow() } };
+            DrawSphereMesh(c, { r, 0, 0 }, { 0, r, 0 }, { 0, 0, r }, cc);
         }
-        ctx->IASetInputLayout(layout.Get()); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());
+        EndSphereDraw();
+    }
+    // beam shots as glowing orbs: a bright ball stretched a little along the way it flies, with a soft halo around it
+    ComPtr<ID3D11PixelShader> psOrb;
+    void DrawOrbs() {
+        bool any = false; for (const Shot& s : shots) any |= s.orb && s.age < 50; if (!any) return;
+        BeginSphereDraw(psOrb.Get());
+        for (const Shot& s : shots) {
+            if (!s.orb || s.age >= 50) continue;
+            double r = std::max(0.02, s.size * 1.5); V3 c = s.pos - camPos, d = s.dir;
+            V3 side = std::fabs(d.y) > 0.95 ? V3{ 1, 0, 0 } : Norm(cross({ 0, 1, 0 }, d)), up = cross(d, side);
+            V3 col = Linear(s.tint); float seed = (float)((&s - shots.data()) * 0.618);
+            for (int halo = 1; halo >= 0; halo--) {   // the halo first, then the ball itself
+                double k = halo ? 2.4 : 1.0, stretch = halo ? 1.6 : 1.45;
+                ChunkCB cc{ { (float)c.x, (float)c.y, (float)c.z, (float)(r * k) }, { (float)d.x, (float)d.y, (float)d.z, s.charged ? 1.f : 0.f }, { seed, (float)halo, s.age, 0 }, { (float)col.x, (float)col.y, (float)col.z, 1 } };
+                DrawSphereMesh(c - d * (r * 0.25), side * (r * k), up * (r * k), d * (r * k * stretch), cc);
+            }
+        }
+        EndSphereDraw();
+    }
+    // missiles fly as their 3D model, nose first, spinning slowly
+    void DrawMissiles(int pass, V3 cam) {
+        for (const Shot& s : shots) {
+            if (s.mtype < 0 || s.age >= 50 || s.mtype >= (int)weapons.missileTypes.size()) continue;
+            const MissileType& mt = weapons.missileTypes[s.mtype]; const std::string& model = mt.model.empty() ? std::string("@missile") : mt.model;
+            FrameRef f = ModelNamed(model); if (!f) continue;
+            double k = std::max(0.05f, mt.size) / std::max(0.05, f->sz); V3 d = s.dir;
+            V3 side = std::fabs(d.y) > 0.95 ? V3{ 1, 0, 0 } : Norm(cross({ 0, 1, 0 }, d)), up = cross(d, side);
+            double a = s.spin, ca = std::cos(a), sa = std::sin(a); V3 ax = side * ca + up * sa, ay = up * ca - side * sa;
+            DrawModelAxes(pass, model, s.pos - d * (mt.size * 0.5), ax * k, ay * k, d * k, cam);
+        }
     }
     // the field as a shell just outside the door's chosen moving parts (closed: as imported)
     bool DrawFieldOnParts(const WorldObject& o, const ModelFrame& f, const DoorRuntime& r) {
@@ -1607,10 +1655,14 @@ struct App {
                 {   // sparks where it hits; its tail stays a moment
                     V3 at = s.pos + s.dir * best; uint32_t tint = door >= 0 ? objects[door].door.color : s.tint;
                     SpawnFx(particlePreset(s.hitLook.empty() ? "Impact" : s.hitLook), at - s.dir * 0.05, s.dir * -1, tint);
-                    {   // the impact sphere: small for beam shots, bigger for charged shots and missiles
-                        const Beam* wb = nullptr; for (const Beam& q : weapons.beams) if (q.name == s.weapon) wb = &q;
-                        float across = !wb ? 0.f : s.missile ? wb->missileSphere : s.charged ? wb->chargeSphere : wb->hitSphere;
+                    {   // the impact sphere (small for beam shots, bigger for charged shots and missiles) and the hit sound
+                        Beam* wb = s.beam >= 0 && s.beam < (int)weapons.beams.size() ? &weapons.beams[s.beam] : nullptr;
+                        MissileType* wm = s.mtype >= 0 && s.mtype < (int)weapons.missileTypes.size() ? &weapons.missileTypes[s.mtype] : nullptr;
+                        float across = wm ? wm->sphere : !wb ? 0.f : s.charged ? wb->chargeSphere : wb->hitSphere;
                         AddSphere(at - s.dir * 0.05, across, s.tint, s.missile ? 0.55f : s.charged ? 0.45f : 0.22f);
+                        V3 sa = at - s.dir * 0.05;
+                        if (wm) PlaySound(wm->hit, 1, &sa);
+                        else if (wb) PlaySound(s.charged && !wb->chargedHitSound.empty() ? wb->chargedHitSound : wb->hitSound, 1, &sa);
                     }
                     if (s.charged) { ParticleSettings bo = particlePreset(s.hitLook.empty() ? "Impact" : s.hitLook); bo.burst *= 3; bo.speed *= 1.6f; bo.size0 *= 2; SpawnFx(bo, at - s.dir * 0.08, s.dir * -1, s.tint); }
                     if (s.missile) { ParticleSettings bo = particlePreset("Fire"); bo.burst = 40; bo.life = 0.5f; SpawnFx(bo, at - s.dir * 0.1, s.dir * -1, s.tint); }
@@ -1686,7 +1738,8 @@ struct App {
             if (ImGui::BeginCombo("##openby", o.door.openedBy.empty() ? "Any shot" : o.door.openedBy.c_str())) {
                 if (ImGui::Selectable("Any shot", o.door.openedBy.empty())) { o.door.openedBy.clear(); ch_ = true; }
                 for (const Beam& b : weapons.beams) if (ImGui::Selectable(b.name.c_str(), o.door.openedBy == b.name)) { o.door.openedBy = b.name; o.door.color = b.color; ch_ = true; }
-                if (ImGui::Selectable("Missile", o.door.openedBy == "Missile")) { o.door.openedBy = "Missile"; o.door.color = 0xFF3A3A; ch_ = true; }
+                if (ImGui::Selectable("Missile (any kind)", o.door.openedBy == "Missile")) { o.door.openedBy = "Missile"; o.door.color = 0xFF3A3A; ch_ = true; }
+                for (const MissileType& m : weapons.missileTypes) if (m.name != "Missile" && ImGui::Selectable(m.name.c_str(), o.door.openedBy == m.name)) { o.door.openedBy = m.name; o.door.color = m.color; ch_ = true; }
                 if (ImGui::Selectable("Bomb", o.door.openedBy == "Bomb")) { o.door.openedBy = "Bomb"; o.door.color = 0xFFB040; ch_ = true; }
                 ImGui::EndCombo();
             }
@@ -2454,7 +2507,7 @@ struct App {
                 if (o.kind != ObjKind::Platform) { DrawObject(o, pass); continue; }
                 for (const V3& off : PlatformOffsets(o)) { WorldObject at = o; at.pos = o.pos + off; DrawObject(at, pass); }
             }
-            DrawBall(pass, camPos);
+            DrawBall(pass, camPos); DrawMissiles(pass, camPos);
         };
         ID3D11ShaderResourceView* none[5] = {};
         ctx->PSSetShaderResources(0, 5, none);
@@ -2604,7 +2657,7 @@ struct App {
             ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());
         }
         if (weather.boltAge < 0.45 && E.atmosphere > 0.5f) DrawBolt();
-        DrawFields(); DrawSpheres();   // door forcefields and test-beam shots
+        DrawFields(); DrawSpheres(); DrawOrbs();   // door forcefields and test-beam shots
         DrawParticles();
         if (E.particleKind > 0.5f && E.particleAmount > 0.01f) {   // dust, embers, spores or ice sparkles floating in the air
             ctx->OMSetBlendState(bsAlpha.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsTestOnly.Get(), 0); ctx->RSSetState(rsNoCull.Get());
@@ -2938,7 +2991,8 @@ struct App {
         EndStroke(); brushMenu = false; placing.clear(); dupFrom = -1; platRun.clear(); previewPlatforms = false; if (movingObj >= 0) { movingObj = -1; RebuildSolids(); }
         editCam = player; playMode = true; paused = false; inventory = false; shapeMenu = false; editorOpen = false;
         inv = PlayInventory{};
-        { bool anyMissiles = false; for (auto& b : weapons.beams) anyMissiles |= b.missiles; if (anyMissiles && !weapons.missileCounter.empty()) inv.counts[weapons.missileCounter] = weapons.missileStart; }
+        if (!weapons.missileTypes.empty() && !weapons.missileCounter.empty()) inv.counts[weapons.missileCounter] = weapons.missileStart;
+        weapState.missile = 0; chargedOn = false;
         takenByWorld.clear(); insideNow.clear(); firedOnce.clear(); teleportLock = 0; bigMsgT = 0; playStartWorld = CurrentWorld(); startEditCam = editCam;
         playSpawn = info.hasSpawn ? info.spawn : player.feet; playYaw = info.hasSpawn ? info.spawnYaw : player.yaw;
         play = PlayState{}; play.start(player, game.player, playSpawn, playYaw);
@@ -3005,6 +3059,21 @@ struct App {
         ImGui::TextDisabled("%s", game.name.c_str());
         if (ImGui::Button("Keep playing", ImVec2(-1, 0))) { paused = false; Capture(true); }
         if (ImGui::Button("Start over", ImVec2(-1, 0))) { play.start(player, game.player, playSpawn, playYaw); paused = false; Capture(true); }
+        if (weapons.switchMode == 2 && !weapons.empty()) {   // like Super Metroid: the beam and missile are picked here
+            ImGui::SeparatorText("Beam");
+            for (int i = 0; i < (int)weapons.beams.size(); i++) {
+                const Beam& b = weapons.beams[i]; bool own = OwnsBeam(b); ImGui::PushID(i);
+                ImGui::BeginDisabled(!own); if (ImGui::Selectable(own ? b.name.c_str() : "???", weapState.current == i)) SwitchBeam(i); ImGui::EndDisabled(); ImGui::PopID();
+            }
+            if (weapons.missileTypes.size() > 1) {
+                ImGui::SeparatorText("Missiles");
+                for (int i = 0; i < (int)weapons.missileTypes.size(); i++) {
+                    const MissileType& m = weapons.missileTypes[i]; bool own = OwnsMissile(m); ImGui::PushID(100 + i);
+                    ImGui::BeginDisabled(!own); if (ImGui::Selectable(own ? m.name.c_str() : "???", weapState.missile == i)) SwitchMissile(i, true); ImGui::EndDisabled(); ImGui::PopID();
+                }
+            }
+            ImGui::Separator();
+        }
         if (ImGui::Button("Settings", ImVec2(-1, 0))) showSettings = true;
         if (ImGui::Button("Stop playing (F5)", ImVec2(-1, 0))) StopPlay();
         ImGui::End();
@@ -4278,16 +4347,18 @@ struct App {
         auto it = meshModels.find(model); if (it == meshModels.end() || clip.empty()) return 0;
         int c = it->second.findClip(clip); return c < 0 ? 0.f : it->second.clips[c].length;
     }
-    float PlayCannon(bool missile) {   // the cannon's own firing animation (if the model has one)
+    bool cannonLoop = false;
+    float PlayCannonClip(const std::string& clip, bool loop = false) {   // one of the cannon's own animations (if the model has it)
         const Beam* b = CurrentBeam(); if (!b) return 0;
-        auto it = meshModels.find(b->model); if (it == meshModels.end()) return 0;
-        int c = it->second.findClip(missile ? b->missileClip : b->fireClip); if (c < 0) return 0;
-        cannonClip = c; cannonT = 0; cannonSpeed = 1; return it->second.clips[c].length;
+        auto it = meshModels.find(b->model); if (it == meshModels.end() || clip.empty()) return 0;
+        int c = it->second.findClip(clip); if (c < 0) return 0;
+        cannonClip = c; cannonT = 0; cannonSpeed = 1; cannonLoop = loop; return it->second.clips[c].length;
     }
     void UpdateCannon(double dt) {
         const Beam* b = CurrentBeam(); if (!b || cannonClip < 0) return;
         auto mi = meshModels.find(b->model); if (mi == meshModels.end() || cannonClip >= (int)mi->second.clips.size()) { cannonClip = -1; return; }
-        cannonT += (float)dt * cannonSpeed; if (cannonT >= mi->second.clips[cannonClip].length) { cannonClip = -1; return; }
+        float len = mi->second.clips[cannonClip].length; cannonT += (float)dt * cannonSpeed;
+        if (cannonT >= len) { if (cannonLoop && len > 0) cannonT = std::fmod(cannonT, len); else { cannonClip = -1; return; } }
         UploadMeshVerts(cannonGpu, mi->second, mi->second.posed(cannonClip, cannonT)); cannonGpu.mesh = true; cannonGpu.tex = GpuModel(b->model).tex;
     }
     // where the cannon is in camera space: a point on the model (blocks from its corner) -> camera space = base + ax * l.x + ay * l.y + az * l.z
@@ -4336,7 +4407,8 @@ struct App {
         out = eye + W(CannonPoint(x, b, local)); if (dirLocal && dirOut) *dirOut = W(CannonDir(x, *dirLocal));
         return true;
     }
-    void LaunchShot(const Beam& b, bool missile, bool charged = false) {
+    void LaunchShot(const Beam& b, int beamIdx, const MissileType* m, bool charged = false) {
+        bool missile = m != nullptr;
         V3 eye = player.eye(), fw = player.forward(), rr = Norm(cross({ 0, 1, 0 }, fw)), uu = cross(fw, rr);
         // the cannon is drawn with the HUD's view angle: points move to where they show on screen with the player's own field of view
         double fk = std::tan(XMConvertToRadians(settings.fov) * 0.5) / std::max(1e-3, std::tan(XMConvertToRadians(hud.fov) * 0.5));
@@ -4350,14 +4422,42 @@ struct App {
         for (const Box3& bx : world->objectSolids) { double t; if (rayBox(eye, ad, bx, t) && t > 0.05 && t < hitT) hitT = t; }
         V3 target = eye + ad * hitT, d = target - from; double L = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
         Shot sh; sh.pos = from; sh.dir = L > 0.8 ? d * (1 / L) : ad;
-        sh.speed = missile ? b.missileSpeed : b.speed; sh.size = missile ? b.size * 2.2f : b.size; sh.range = (float)range; sh.weapon = b.name; sh.missile = missile; sh.hitLook = b.hitLook;
+        sh.speed = missile ? m->speed : b.speed; sh.size = missile ? m->size : b.size; sh.range = (float)range; sh.weapon = missile ? m->name : b.name; sh.missile = missile;
+        sh.hitLook = missile ? m->hitLook : b.hitLook; sh.beam = beamIdx; sh.orb = !missile && b.shotStyle == 1;
+        if (missile) sh.mtype = (int)(m - weapons.missileTypes.data());
         if (charged) { sh.speed *= std::max(0.05f, b.chargeSpeed); sh.size *= std::max(0.1f, b.chargeSize); sh.charged = true; }
-        uint32_t col = missile ? b.missileColor : b.color; sh.tint = col; V3 lc = Linear(col); sh.color = lc * (charged ? 6.0 : 3.0);
-        ParticleSettings tp = particlePreset(missile ? "Smoke" : b.shotLook); tp.color0 = charged ? 0xFFFFFF : col; tp.color1 = col;
+        uint32_t col = missile ? m->color : b.color; sh.tint = col; V3 lc = Linear(col); sh.color = lc * (charged ? 6.0 : 3.0);
+        ParticleSettings tp = particlePreset(missile ? (m->trailLook.empty() ? "Smoke" : m->trailLook) : b.shotLook); tp.color0 = charged ? 0xFFFFFF : col; tp.color1 = col;
         if (charged) { tp.size0 *= 2.5f; tp.size1 *= 2.5f; tp.rate *= 1.5f; }
+        if (sh.orb) { tp.size0 *= 0.7f; tp.size1 *= 0.7f; }   // the orb is the bright part now: a thinner trail behind it
         sh.trail = ParticleEmitter(tp, (uint32_t)(shots.size() * 7919 + GetTickCount()));
         shots.push_back(sh);
         ParticleSettings fp = particlePreset(b.flashLook); fp.burst = std::max(fp.burst, 8) * (charged ? 3 : 1); if (charged) { fp.size0 *= 2; fp.speed *= 1.6f; } SpawnFx(fp, mpos, mdir, col);
+        if (missile) PlaySound(const_cast<MissileType*>(m)->launch);
+    }
+    // missiles: the kind picked now (one supply for all beams)
+    bool OwnsMissile(const MissileType& m) const { return m.startsOwned || inv.keys.count(m.name) > 0; }
+    const MissileType* CurrentMissile() {
+        if (weapons.missileTypes.empty()) return nullptr;
+        weapState.missile = std::clamp(weapState.missile, 0, (int)weapons.missileTypes.size() - 1);
+        return &weapons.missileTypes[weapState.missile];
+    }
+    // switching mode 1 (no switching): always the best beam and missile you have
+    void PickBestWeapons() {
+        std::vector<char> ob, om; for (const Beam& b : weapons.beams) ob.push_back(OwnsBeam(b)); for (const MissileType& m : weapons.missileTypes) om.push_back(OwnsMissile(m));
+        int bb = bestOwned(ob, weapState.current), bm = bestOwned(om, weapState.missile);
+        if (bb != weapState.current) { StopChargeTimeline(); chargeTlOn = false; weapState.current = bb; weapState.charging = false; weapState.charge = 0; cannonClip = -1; firedPending += 0.4f; }
+        weapState.missile = bm;
+    }
+    void SwitchMissile(int to, bool quiet = false) {
+        if (to < 0 || to >= (int)weapons.missileTypes.size()) return;
+        if (!OwnsMissile(weapons.missileTypes[to])) { if (!quiet) Toast("You have not found the " + weapons.missileTypes[to].name + " yet"); return; }
+        weapState.missile = to; if (!quiet) Toast(weapons.missileTypes[to].name);
+    }
+    void NextMissile() {   // Q: the next missile kind you have
+        int n = (int)weapons.missileTypes.size();
+        for (int k = 1; k < n; k++) { int i = (weapState.missile + k) % n; if (OwnsMissile(weapons.missileTypes[i])) { SwitchMissile(i); return; } }
+        if (n > 1) Toast("No other missiles yet");
     }
     void FireWeapons(double dt) {
         weapState.tick((float)dt);
@@ -4366,22 +4466,27 @@ struct App {
             if (L && !shootPrev) DropBomb();
             shootPrev = L; missilePrev = Down(VK_RBUTTON); UpdateTimelines(dt, true); return;
         }
+        if (weapons.switchMode == 1) PickBestWeapons();
         const Beam* b = CurrentBeam(); if (!b) return;
         bool can = Playing() && !play.dead() && OwnsBeam(*b);
-        bool L = (can && Down(VK_LBUTTON)) || (holdBeam && OwnsBeam(*b)), R = can && Down(VK_RBUTTON);
+        bool L = (can && Down(VK_LBUTTON)) || (holdBeam && OwnsBeam(*b)), R = (can && Down(VK_RBUTTON)) || forceMissile;
         const std::string& counter = weapons.missileCounter;
-        if (R && !missilePrev && b->missiles) {
+        const MissileType* mt = CurrentMissile();
+        if (R && !missilePrev && mt) {
             int left = inv.counts.count(counter) ? inv.counts[counter] : 0;
-            if (weapState.fire(*b, true, AnimLen(*b, Beam::MissileShot), left)) { inv.counts[counter] = left; StartTimeline(weapState.current, Beam::MissileShot); firedPending += 2.5f; }
-            else if (left <= 0) Toast("No missiles left");
+            if (!OwnsMissile(*mt)) Toast("You have not found the " + mt->name + " yet");
+            else if (weapState.fire(*b, mt, AnimLen(*b, Beam::MissileShot), left)) { inv.counts[counter] = left; StartTimeline(weapState.current, Beam::MissileShot); firedPending += mt->cost > 1 ? 3.5f : 2.5f; }
+            else if (left < std::max(1, mt->cost)) Toast(left <= 0 ? std::string("No missiles left") : "Not enough missiles (a " + mt->name + " needs " + std::to_string(mt->cost) + ")");
         }
         {   // the beam: a press fires, holding charges (if the beam can), letting go when full fires the charged shot
             auto r = weapState.beamButton(*b, L, shootPrev, (float)dt, AnimLen(*b, Beam::Fire));
             if (r == WeaponState::Shot::Normal) { StartTimeline(weapState.current, Beam::Fire); firedPending += 1; }
             if (r == WeaponState::Shot::Charged) { StopChargeTimeline(); chargeTlOn = false; StartTimeline(weapState.current, Beam::Charged); firedPending += 2.2f; }
-            bool chargingNow = weapState.charging && weapState.charge > 0;   // the charging sounds while it fills
+            bool chargingNow = weapState.charging && weapState.charge > 0;   // the charging sounds (and animation) while it fills
             if (chargingNow && !chargeTlOn) { StartTimeline(weapState.current, Beam::Charging); chargeTlOn = true; }
             if (!chargingNow && chargeTlOn) { StopChargeTimeline(); chargeTlOn = false; }
+            if (weapState.full() && !chargedOn) StartCharged(*b);       // full: the charging sound stops, "done" + the charged loop start together
+            if (!weapState.full() && chargedOn) StopCharged();
         }
         // the charge gathering at the muzzle: more and bigger as it fills
         {
@@ -4400,6 +4505,7 @@ struct App {
     void SwitchBeam(int to) {
         if (weapons.empty() || to < 0 || to >= (int)weapons.beams.size() || to == weapState.current) return;
         if (!OwnsBeam(weapons.beams[to])) { Toast("You have not found the " + weapons.beams[to].name + " yet"); return; }
+        if (playMode && weapons.switchMode == 1) return;   // no switching: always the best one
         StopChargeTimeline(); chargeTlOn = false;
         weapState.current = to; weapState.charging = false; weapState.charge = 0; cannonClip = -1; firedPending += 0.4f; Toast(weapons.beams[to].name);
     }
@@ -4457,12 +4563,18 @@ struct App {
         float listW = 210 * ui, propW = 340 * ui, sp = ImGui::GetStyle().ItemSpacing.x;
         ImGui::BeginChild("weaplist", ImVec2(listW, 0), ImGuiChildFlags_Borders);
         ImGui::TextDisabled("BEAMS (keys 1-9 in the game)");
-        for (int i = 0; i < (int)weapons.beams.size(); i++) { ImGui::PushID(i); std::string l = std::to_string(i + 1) + "  " + weapons.beams[i].name; if (ImGui::Selectable(l.c_str(), weapSel == i)) { weapSel = i; cannonClip = -1; } ImGui::PopID(); }
+        for (int i = 0; i < (int)weapons.beams.size(); i++) { ImGui::PushID(i); std::string l = std::to_string(i + 1) + "  " + weapons.beams[i].name; if (ImGui::Selectable(l.c_str(), weapSel == i && weapMis < 0)) { weapSel = i; weapMis = -1; cannonClip = -1; } ImGui::PopID(); }
         if (FlowButton("+ Beam")) { Beam b = weapons.beams[weapSel]; b.name = "Beam " + std::to_string(weapons.beams.size() + 1); weapons.beams.push_back(b); weapSel = (int)weapons.beams.size() - 1; ch = true; }
         if (FlowButton("Duplicate")) { Beam b = weapons.beams[weapSel]; b.name += " copy"; weapons.beams.insert(weapons.beams.begin() + weapSel + 1, b); weapSel++; ch = true; }
         ImGui::BeginDisabled(weapons.beams.size() < 2); if (FlowButton("Delete")) { weapons.beams.erase(weapons.beams.begin() + weapSel); weapSel = std::max(0, weapSel - 1); ch = true; } ImGui::EndDisabled();
         ImGui::BeginDisabled(weapSel == 0); if (FlowButton("Up")) { std::swap(weapons.beams[weapSel], weapons.beams[weapSel - 1]); weapSel--; ch = true; } ImGui::EndDisabled();
+        ImGui::Separator(); ImGui::TextDisabled("MISSILES (all beams; Q: next kind)");
+        for (int i = 0; i < (int)weapons.missileTypes.size(); i++) { ImGui::PushID(1000 + i); if (ImGui::Selectable(weapons.missileTypes[i].name.c_str(), weapMis == i)) weapMis = i; ImGui::PopID(); }
+        if (FlowButton("+ Missile kind")) { MissileType m = weapons.missileTypes.empty() ? MissileType{} : weapons.missileTypes.back(); m.name = weapons.missileTypes.empty() ? "Missile" : "Missile " + std::to_string(weapons.missileTypes.size() + 1); m.startsOwned = weapons.missileTypes.empty(); weapons.missileTypes.push_back(m); weapMis = (int)weapons.missileTypes.size() - 1; ch = true; }
+        if (weapMis >= 0) { ImGui::BeginDisabled(weapons.missileTypes.size() < 2); if (FlowButton("Delete##m")) { weapons.missileTypes.erase(weapons.missileTypes.begin() + weapMis); weapMis = std::min(weapMis, (int)weapons.missileTypes.size() - 1); ch = true; } ImGui::EndDisabled(); }
         ImGui::Separator(); ImGui::TextDisabled("ALL WEAPONS");
+        { const char* sm[] = { "Freely (1-9, wheel, Q)", "Never: always the best one", "In the pause menu" }; Prop("Switching"); ch |= ImGui::Combo("##swm", &weapons.switchMode, sm, 3); }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Freely: number keys and the mouse wheel pick beams, Q the missile kind.\nNever (like Prime 3): the best one you have, the last one in the list, so put the beams in upgrade order.\nPause menu (like Super Metroid): Esc, then pick the beam and missile kind there.");
         WeaponMotion& mo = weapons.motion;
         Prop("Idle breathing"); ch |= ImGui::SliderFloat("##mi", &mo.idle, 0, 3, "%.2f");
         Prop("Walk bob"); ch |= ImGui::SliderFloat("##mw", &mo.walk, 0, 3, "%.2f");
@@ -4478,9 +4590,6 @@ struct App {
         }
         Prop("Cannon in front of the HUD"); ch |= ImGui::Checkbox("##cf", &weapons.cannonInFront);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("The cannon has its own layer, so it never cuts into the HUD.\nOff (like a visor): the HUD is drawn over the cannon.\nOn: the cannon covers the HUD.");
-        Prop("Missile counter"); ch |= ImGui::InputText("##mc", &weapons.missileCounter);
-        Prop("Missiles at the start"); ch |= ImGui::SliderInt("##ms", &weapons.missileStart, 0, 255);
-        Prop("Most missiles"); ch |= ImGui::SliderInt("##mm", &weapons.missileMax, 0, 255);
         ImGui::EndChild();
         ImGui::SameLine();
         Beam& b = weapons.beams[weapSel];
@@ -4551,6 +4660,9 @@ struct App {
         ImGui::EndChild();
         ImGui::SameLine();
         ImGui::BeginChild("weapprops", ImVec2(0, 0), ImGuiChildFlags_Borders);
+        if (weapMis >= 0 && weapMis < (int)weapons.missileTypes.size()) ch |= MissilePanel(weapons.missileTypes[weapMis]);
+        else {
+        weapMis = -1;
         ImGui::SeparatorText("Beam");
         Prop("Name"); ch |= ImGui::InputText("##bn", &b.name);
         Prop("Arm cannon model");
@@ -4575,6 +4687,7 @@ struct App {
         if (ImGui::SmallButton("Same place for every beam")) { for (Beam& o : weapons.beams) { o.viewPos = b.viewPos; o.viewYaw = b.viewYaw; o.viewPitch = b.viewPitch; o.viewRoll = b.viewRoll; o.scale = b.scale; o.sway = b.sway; } ch = true; }
         ImGui::SeparatorText("Shots");
         { float c[3] = { ((b.color >> 16) & 255) / 255.f, ((b.color >> 8) & 255) / 255.f, (b.color & 255) / 255.f }; Prop("Colour"); if (ImGui::ColorEdit3("##bc", c)) { b.color = ((uint32_t)(c[0] * 255 + 0.5f) << 16) | ((uint32_t)(c[1] * 255 + 0.5f) << 8) | (uint32_t)(c[2] * 255 + 0.5f); ch = true; } }
+        { const char* st[] = { "Particles only", "Glowing 3D orb" }; Prop("Looks like"); ch |= ImGui::Combo("##bsty", &b.shotStyle, st, 2); }
         Prop("Trail"); ch |= LookCombo("##bt", b.shotLook);
         Prop("Hit"); ch |= LookCombo("##bh", b.hitLook);
         Prop("Muzzle flash"); ch |= LookCombo("##bf", b.flashLook);
@@ -4588,6 +4701,7 @@ struct App {
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("A glowing see-through bubble that grows where the shot hits, then fades. 0: none.");
         Prop("Firing animation"); ch |= ClipCombo("##bfc", b.model, b.fireClip);
         Prop("Wait until it is done"); ch |= ImGui::Checkbox("##bw", &b.waitForAnim);
+        ImGui::TextDisabled("Hit sound"); ch |= SoundSetEdit("bhit", b.hitSound);
         ImGui::SeparatorText("Charge shot (hold the button)");
         Prop("Can charge"); ch |= ImGui::Checkbox("##cc", &b.charge);
         if (b.charge) {
@@ -4597,22 +4711,55 @@ struct App {
             Prop("Size"); ch |= ImGui::SliderFloat("##cs", &b.chargeSize, 1, 10, "x %.1f");
             Prop("Speed"); ch |= ImGui::SliderFloat("##csp", &b.chargeSpeed, 0.1f, 3, "x %.2f");
             Prop("Impact sphere"); ch |= ImGui::SliderFloat("##csph", &b.chargeSphere, 0, 8, "%.1f blocks");
+            Prop("Charging animation"); ch |= ClipCombo("##cca", b.model, b.chargingClip);
+            Prop("Full (loops)"); ch |= ClipCombo("##cfa", b.model, b.chargedClip);
+            Prop("Charged shot animation"); ch |= ClipCombo("##csa", b.model, b.chargedShotClip);
+            ImGui::TextDisabled("Charging sounds: on the timeline (Charging); they stop when it is full");
+            ImGui::TextDisabled("Full: once"); ch |= SoundSetEdit("cdone", b.chargeDone);
+            ImGui::TextDisabled("Full: a loop until you let go"); ch |= SoundSetEdit("cloop", b.chargedLoop);
+            ImGui::TextDisabled("The charged shot: on the timeline (Charged shot)");
+            ImGui::TextDisabled("Charged hit (none: the normal hit sound)"); ch |= SoundSetEdit("chit", b.chargedHitSound);
             Hint("A tap fires a normal shot. Hold: it charges at the muzzle; let go when it is full for the charged shot. (Holding to keep firing is off while a beam can charge.) The HUD can show it: Shows > Beam charge.");
         }
-        ImGui::SeparatorText("Missiles (right mouse button)");
-        Prop("Has missiles"); ch |= ImGui::Checkbox("##mo", &b.missiles);
-        if (b.missiles) {
-            Prop("Missile animation"); ch |= ClipCombo("##mcl", b.model, b.missileClip);
-            Prop("Wait until it is done"); ch |= ImGui::Checkbox("##mwt", &b.missileWait);
-            { float c[3] = { ((b.missileColor >> 16) & 255) / 255.f, ((b.missileColor >> 8) & 255) / 255.f, (b.missileColor & 255) / 255.f }; Prop("Colour"); if (ImGui::ColorEdit3("##mcc", c)) { b.missileColor = ((uint32_t)(c[0] * 255 + 0.5f) << 16) | ((uint32_t)(c[1] * 255 + 0.5f) << 8) | (uint32_t)(c[2] * 255 + 0.5f); ch = true; } }
-            Prop("Speed"); ch |= ImGui::SliderFloat("##msp", &b.missileSpeed, 2, 200, "%.0f blocks/s");
-            Prop("Per second (at most)"); ch |= ImGui::SliderFloat("##mrt", &b.missileRate, 0.2f, 10, "%.1f");
-            Prop("Damage"); ch |= ImGui::SliderFloat("##mdm", &b.missileDamage, 0, 1000, "%.0f");
-            Prop("Impact sphere"); ch |= ImGui::SliderFloat("##msph", &b.missileSphere, 0, 10, "%.1f blocks");
-        }
+        ImGui::SeparatorText("Missiles from this cannon (right mouse button)");
+        Prop("Missile animation"); ch |= ClipCombo("##mcl", b.model, b.missileClip);
+        Prop("Wait until it is done"); ch |= ImGui::Checkbox("##mwt", &b.missileWait);
+        Hint("The missiles themselves are the same for every beam: pick them in the list on the left (MISSILES).");
         Hint("Damage counts once there are enemies (G5). Doors can ask for a beam or missiles (door Inspector: Opened by).");
+        }
         ImGui::EndChild();
         if (ch) SaveHud();
+    }
+    int weapMis = -1;   // the missile kind picked in the Weapons tab (-1: a beam is picked)
+    bool MissilePanel(MissileType& m) {
+        bool ch = false; int i = (int)(&m - weapons.missileTypes.data());
+        ImGui::SeparatorText(i == 0 ? "Missile (the plain one)" : "Missile kind");
+        Prop("Name"); ch |= ImGui::InputText("##mn", &m.name);
+        Prop("Model");
+        if (ImGui::BeginCombo("##mmod", m.model.empty() ? "(none)" : m.model.c_str())) {
+            if (ImGui::Selectable("@missile (built in)", m.model == "@missile")) { m.model = "@missile"; ch = true; }
+            for (const std::string& n : PartModels()) if (ImGui::Selectable(n.c_str(), m.model == n)) { m.model = n; ch = true; }
+            ImGui::EndCombo();
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("It flies nose first: the model's front is +Z (its long side).");
+        Prop("Length"); ch |= ImGui::SliderFloat("##mlen", &m.size, 0.1f, 3, "%.2f blocks");
+        Prop("You have it"); { int o = m.startsOwned ? 0 : 1; const char* ow[] = { "From the start", "Found later (a key pickup with its name)" }; if (ImGui::Combo("##mown", &o, ow, 2)) { m.startsOwned = o == 0; ch = true; } }
+        { float c[3] = { ((m.color >> 16) & 255) / 255.f, ((m.color >> 8) & 255) / 255.f, (m.color & 255) / 255.f }; Prop("Colour"); if (ImGui::ColorEdit3("##mcc", c)) { m.color = ((uint32_t)(c[0] * 255 + 0.5f) << 16) | ((uint32_t)(c[1] * 255 + 0.5f) << 8) | (uint32_t)(c[2] * 255 + 0.5f); ch = true; } }
+        Prop("Uses up"); ch |= ImGui::SliderInt("##mcost", &m.cost, 1, 20, m.cost == 1 ? "1 missile" : "%d missiles");
+        Prop("Speed"); ch |= ImGui::SliderFloat("##msp", &m.speed, 2, 200, "%.0f blocks/s");
+        Prop("Per second (at most)"); ch |= ImGui::SliderFloat("##mrt", &m.rate, 0.2f, 10, "%.1f");
+        Prop("Damage"); ch |= ImGui::SliderFloat("##mdm", &m.damage, 0, 1000, "%.0f");
+        Prop("Trail"); ch |= LookCombo("##mtl", m.trailLook);
+        Prop("Hit"); ch |= LookCombo("##mhl", m.hitLook);
+        Prop("Impact sphere"); ch |= ImGui::SliderFloat("##msph", &m.sphere, 0, 10, "%.1f blocks");
+        ImGui::TextDisabled("Launch sound"); ch |= SoundSetEdit("mlaunch", m.launch);
+        ImGui::TextDisabled("Hit sound"); ch |= SoundSetEdit("mhit", m.hit);
+        ImGui::SeparatorText("The missile supply (all kinds)");
+        Prop("Counter"); ch |= ImGui::InputText("##mc", &weapons.missileCounter);
+        Prop("At the start"); ch |= ImGui::SliderInt("##ms", &weapons.missileStart, 0, 255);
+        Prop("Most"); ch |= ImGui::SliderInt("##mm", &weapons.missileMax, 0, 255);
+        Hint("Every kind uses the same missiles. A door or breakable block set to \"Missile\" opens for any kind; one set to a kind's name (like Super Missile) only for that kind. The cannon's missile animation is set on each beam.");
+        return ch;
     }
     // ================================================================== sounds (WAV, played with XAudio2, built into Windows)
     IXAudio2* xa = nullptr; IXAudio2MasteringVoice* master = nullptr; bool audioOk = false; int masterChannels = 2;
@@ -4852,20 +4999,20 @@ struct App {
     std::vector<ActiveTl> activeTl;
     static constexpr int TAG_CHARGE = 7;
     static constexpr int TAG_ROLL = 8;
-    float AnimLen(const Beam& b, int kind) {   // the cannon's animation for this timeline, at its speed
-        const std::string& clip = kind == Beam::MissileShot ? b.missileClip : b.fireClip;
-        return kind == Beam::Charging ? 0.f : ClipLenOf(b.model, clip) / std::max(0.05f, b.timelines[kind].animSpeed);
+    static constexpr int TAG_CHARGED = 9;
+    float AnimLen(const Beam& b, int kind) {   // the cannon's animation for this timeline, at its speed (charging never holds up a shot)
+        return kind == Beam::Charging ? 0.f : ClipLenOf(b.model, beamClip(b, kind)) / std::max(0.05f, b.timelines[kind].animSpeed);
     }
     float TimelineLen(const Beam& b, int kind) {
         const Timeline& t = b.timelines[kind]; std::vector<float> lens; for (const SoundClip& c : t.sounds) lens.push_back(SoundSeconds(c.sound.file));
-        const std::string& clip = kind == Beam::MissileShot ? b.missileClip : b.fireClip;
-        return t.length(kind == Beam::Charging ? 0.f : ClipLenOf(b.model, clip), lens);
+        return t.length(ClipLenOf(b.model, beamClip(b, kind)), lens);
     }
     void StartTimeline(int beam, int kind) {   // the cannon's animation, then sounds and the shot as they come up
         if (beam < 0 || beam >= (int)weapons.beams.size()) return;
         const Beam& b = weapons.beams[beam];
-        if (kind != Beam::Charging) { PlayCannon(kind == Beam::MissileShot); cannonSpeed = std::max(0.05f, b.timelines[kind].animSpeed); }
-        ActiveTl a; a.beam = beam; a.kind = kind; a.until = TimelineLen(b, kind); a.play.start(b.timelines[kind]); activeTl.push_back(a);
+        PlayCannonClip(beamClip(b, kind)); cannonSpeed = std::max(0.05f, b.timelines[kind].animSpeed);
+        ActiveTl a; a.beam = beam; a.kind = kind; a.until = TimelineLen(b, kind); if (kind == Beam::Charging && playMode) a.until = 600;   // playing: charging runs until it is full or you let go (its sounds are cut then)
+        a.play.start(b.timelines[kind]); activeTl.push_back(a);
         if (kind == Beam::Charging) activeTl.back().play.shotDone = true;   // charging shoots nothing
     }
     void UpdateTimelines(double dt, bool shoot) {
@@ -4876,13 +5023,22 @@ struct App {
             const Beam& b = weapons.beams[a.beam];
             for (int i : now) PlaySound(b.timelines[a.kind].sounds[i].sound, 1, nullptr, a.kind == Beam::Charging ? TAG_CHARGE : 0);
             if (shot) {
-                if (shoot && playMode) LaunchShot(b, a.kind == Beam::MissileShot, a.kind == Beam::Charged);
+                if (shoot && playMode) LaunchShot(b, a.beam, a.kind == Beam::MissileShot ? CurrentMissile() : nullptr, a.kind == Beam::Charged);
                 else if (!playMode) previewFired += a.kind == Beam::MissileShot ? 2.5f : a.kind == Beam::Charged ? 2.2f : 1.f;   // the editor's preview: only the kick
             }
         }
         activeTl.erase(std::remove_if(activeTl.begin(), activeTl.end(), [](const ActiveTl& a) { return !a.play.running(); }), activeTl.end());
     }
-    void StopChargeTimeline() { activeTl.erase(std::remove_if(activeTl.begin(), activeTl.end(), [](const ActiveTl& a) { return a.kind == Beam::Charging; }), activeTl.end()); StopSounds(TAG_CHARGE); }
+    void StopChargeTimeline() { activeTl.erase(std::remove_if(activeTl.begin(), activeTl.end(), [](const ActiveTl& a) { return a.kind == Beam::Charging; }), activeTl.end()); StopSounds(TAG_CHARGE); StopCharged(); }
+    // full charge: the charging sounds stop, a "done" sound plays once and a loop hums (and the cannon's "charged" animation loops) until you let go
+    bool chargedOn = false, forceMissile = false;   // forceMissile: screenshots press the missile button
+    void StartCharged(const Beam& b) {
+        StopSounds(TAG_CHARGE); activeTl.erase(std::remove_if(activeTl.begin(), activeTl.end(), [](const ActiveTl& a) { return a.kind == Beam::Charging; }), activeTl.end());
+        PlaySound(const_cast<Beam&>(b).chargeDone);
+        if (const SoundUse* u = const_cast<Beam&>(b).chargedLoop.pick(soundSeed)) PlaySound(*u, 1, nullptr, TAG_CHARGED, true);
+        PlayCannonClip(b.chargedClip, true); chargedOn = true;
+    }
+    void StopCharged() { if (!chargedOn) return; StopSounds(TAG_CHARGED); if (cannonLoop) { cannonClip = -1; cannonLoop = false; } chargedOn = false; }
 
     // ---- the timeline editor (Weapons tab): drag the animation's end (its speed), the shot marker and the sounds
     int tlKind = 0, tlSel = -1, tlDrag = 0; float tlZoom = 220; float tlDragFrom[3] = {}; ImVec2 tlDragMouse;
@@ -4900,7 +5056,7 @@ struct App {
         }
         ImGui::SameLine(); ImGui::SetNextItemWidth(120 * ui); ImGui::SliderFloat("##zoom", &tlZoom, 60, 900, "zoom %.0f");
         // the canvas
-        const std::string& clip = tlKind == Beam::MissileShot ? b.missileClip : b.fireClip;
+        const std::string& clip = beamClip(b, tlKind);
         float clipLen = tlKind == Beam::Charging ? 0.f : ClipLenOf(b.model, clip);
         float rowH = ImGui::GetFrameHeight() + 4 * ui, head = 22 * ui, labelW = 120 * ui;
         int rows = 2 + (int)t.sounds.size();
@@ -5077,11 +5233,15 @@ struct App {
         if (!playMode || !player.ball) return;
         const std::string& model = game.player.ballModel.empty() ? std::string("@morph-ball") : game.player.ballModel;
         FrameRef m = ModelNamed(model); if (!m) return;
-        const ModelGpu& g = GpuModel(model); if (g.mesh) ctx->PSSetShaderResources(9, 1, g.tex.GetAddressOf());
         double s = game.player.ballSize / std::max(0.05, std::max({ m->sx, m->sy, m->sz }));   // scaled so its biggest side is the ball size
-        V3 ax = ballAx * s, ay = ballAy * s, az = ballAz * s;
+        DrawModelAxes(pass, model, BallCentre(), ballAx * s, ballAy * s, ballAz * s, cam);
+    }
+    // a model with its middle at centre (world), turned and sized by the axes (each one block of the model)
+    void DrawModelAxes(int pass, const std::string& model, V3 centre, V3 ax, V3 ay, V3 az, V3 cam) {
+        FrameRef m = ModelNamed(model); if (!m) return;
+        const ModelGpu& g = GpuModel(model); if (g.mesh) ctx->PSSetShaderResources(9, 1, g.tex.GetAddressOf());
         V3 mc{ 0, m->sy * 0.5, 0 };   // the model's middle, from its pivot (bottom middle)
-        V3 base = BallCentre() - cam - (ax * mc.x + ay * mc.y + az * mc.z);
+        V3 base = centre - cam - (ax * mc.x + ay * mc.y + az * mc.z);
         for (auto& part : g.parts) {
             const GpuChunk& gc = part.second; UINT n = pass == 0 ? gc.nO : pass == 1 ? gc.nC : gc.nW; if (!n) continue;
             V3 l{ part.first.x * (double)CS - m->pivot.x, part.first.y * (double)CS - m->pivot.y, part.first.z * (double)CS - m->pivot.z };
@@ -5101,6 +5261,7 @@ struct App {
         if (b == "Missile") return IM_COL32(255, 70, 70, 230);
         if (b == "Charged shot") return IM_COL32(255, 230, 90, 230);
         for (const Beam& w : weapons.beams) if (w.name == b) return IM_COL32((w.color >> 16) & 255, (w.color >> 8) & 255, w.color & 255, 230);
+        for (const MissileType& m : weapons.missileTypes) if (m.name == b) return IM_COL32((m.color >> 16) & 255, (m.color >> 8) & 255, m.color & 255, 230);
         return IM_COL32(200, 120, 255, 230);
     }
     void DrawBreakables(ImDrawList* dl) {
@@ -5118,8 +5279,8 @@ struct App {
             Line3D(dl, c[0], c[7], (col & 0x00FFFFFF) | 0x60000000); Line3D(dl, c[3], c[4], (col & 0x00FFFFFF) | 0x60000000);   // a cross: "this one breaks"
         }
     }
-    std::vector<std::string> Breakers() { std::vector<std::string> v{ "", "Bomb", "Missile", "Charged shot" }; for (const Beam& b : weapons.beams) v.push_back(b.name); return v; }
-    static std::string BreakerLabel(const std::string& b) { return b.empty() ? "Any shot (or bomb, or missile)" : b == "Bomb" ? "Bombs only" : b == "Missile" ? "Missiles only" : b == "Charged shot" ? "Charged shots only" : b + " only"; }
+    std::vector<std::string> Breakers() { std::vector<std::string> v{ "", "Bomb", "Missile", "Charged shot" }; for (const Beam& b : weapons.beams) v.push_back(b.name); for (const MissileType& m : weapons.missileTypes) if (m.name != "Missile") v.push_back(m.name); return v; }
+    static std::string BreakerLabel(const std::string& b) { return b.empty() ? "Any shot (or bomb, or missile)" : b == "Bomb" ? "Bombs only" : b == "Missile" ? "Missiles only (any kind)" : b == "Charged shot" ? "Charged shots only" : b + " only"; }
     bool BreakerCombo(const char* id, std::string& v) {
         bool ch = false;
         if (ImGui::BeginCombo(id, BreakerLabel(v).c_str())) { for (const std::string& b : Breakers()) if (ImGui::Selectable(BreakerLabel(b).c_str(), v == b)) { v = b; ch = true; } ImGui::EndCombo(); }
@@ -5965,27 +6126,36 @@ struct App {
                     frames(3, "player_sounds_tab");
                     scrollToRoll = true; frames(3, "player_sounds_morph_ball");
                     selectWeaponsTab = true; frames(1, "back_to_weapons");
+                    weapMis = 1; frames(3, "weapons_missile_kind"); weapMis = -1;
                 }
                 playerEdOpen = false;
                 StartPlay(false); poseAt(demoShots()[1]); hudSway.reset(); prevPlayYaw = player.yaw; prevPlayPitch = player.pitch; play.health = game.player.maxHealth; toastT = 0;
                 frames(3, "weapons_play_cannon");
                 auto run = [&](int n) { for (int k = 0; k < n; k++) { FrameBody(1.0 / 60); swap->Present(0, 0); retired.clear(); } };
-                LaunchShot(weapons.beams[0], false); PlayCannon(false); firedPending += 1; run(3); LaunchShot(weapons.beams[0], false); firedPending += 1; run(4);
+                LaunchShot(weapons.beams[0], 0, nullptr); PlayCannonClip(weapons.beams[0].fireClip); firedPending += 1; run(3); LaunchShot(weapons.beams[0], 0, nullptr); firedPending += 1; run(4);
                 frames(1, "weapons_power_beam");
-                run(40); inv.counts["Missile"]--; LaunchShot(weapons.beams[0], true); PlayCannon(true); firedPending += 2.5f; run(5);
+                run(40); inv.counts["Missile"]--; LaunchShot(weapons.beams[0], 0, &weapons.missileTypes[0]); PlayCannonClip(weapons.beams[0].missileClip); firedPending += 2.5f; run(5);
                 frames(1, "weapons_missile");
-                run(40); weapState.current = 1; LaunchShot(weapons.beams[1], false); firedPending += 1; run(6); LaunchShot(weapons.beams[1], false); firedPending += 1; run(3);
+                run(40); inv.keys.insert("Super Missile"); inv.counts["Missile"] = 20; weapState.missile = 1; weapState.cooldown = 0; weapState.animLeft = 0;
+                { int before = inv.counts["Missile"]; missilePrev = false; forceMissile = true; run(1); forceMissile = false; run(1);
+                  Log("super missile: " + std::to_string(before - inv.counts["Missile"]) + " missiles used, kind " + weapons.missileTypes[weapState.missile].name); }
+                run(7); frames(1, "weapons_super_missile");
+                run(30); frames(1, "weapons_super_missile_hit");
+                weapState.missile = 0;
+                run(40); weapState.current = 1; LaunchShot(weapons.beams[1], 1, nullptr); firedPending += 1; run(6); LaunchShot(weapons.beams[1], 1, nullptr); firedPending += 1; run(3);
                 frames(1, "weapons_wave_beam");
                 run(40); weapState.current = 0; holdBeam = true; run(80);
                 frames(1, "weapons_charging");
-                Log("charge: " + std::to_string(weapState.charge));
+                Log("charge: " + std::to_string(weapState.charge) + (chargedOn ? ", full: the charging sound stopped, 'done' and the charged loop started" : ", NOT full yet"));
                 holdBeam = false; run(5);
                 frames(1, "weapons_charged_shot");
                 run(40); weapons.aimMode = 1; freeAim.x = 0.55f; freeAim.y = 0.3f; run(20);   // free aim: the cursor up and to the right, the cannon turns to it
-                LaunchShot(weapons.beams[0], false); firedPending += 1; run(5);
+                LaunchShot(weapons.beams[0], 0, nullptr); firedPending += 1; run(5);
                 frames(1, "weapons_free_aim");
                 Log("free aim: cannon turned " + std::to_string(aimYaw) + " / " + std::to_string(aimPitch) + " degrees; sounds " + (audioOk ? "on" : "off (no device)"));
                 weapons.aimMode = 0;
+                weapons.switchMode = 2; paused = true; Capture(false); frames(2, "pause_menu_pick_beam"); paused = false; weapons.switchMode = 0;
+                weapons.switchMode = 1; inv.keys.insert("Wave Beam"); run(2); Log(std::string("no switching: using the ") + weapons.beams[weapState.current].name + " (the best one owned)"); weapons.switchMode = 0;
                 Log("weapons: " + std::to_string(shots.size()) + " shots flying, missiles left " + std::to_string(inv.counts["Missile"]));
                 StopPlay(); hud = HudLayout{}; weapons = WeaponSet{}; SaveHud();
             }

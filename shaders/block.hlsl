@@ -925,17 +925,50 @@ float4 PS_FieldMesh(FMOut i) : SV_Target
     return float4(gAxisZ.rgb * (glow * 1.6 * fade + burn * 4), 0);
 }
 
-// ---------------------------------------------------------------- impact spheres: a see-through glowing shell (VS_FieldMesh places it)
-// ChunkCB: gOffset.xyz its middle (relative to the camera), w how far it has grown (0..1); gAxisZ.rgb colour, w how much is left (fades)
+// ---------------------------------------------------------------- impact spheres: a glowing shell of moving plasma (VS_FieldMesh places it)
+// ChunkCB: gOffset.xyz its middle (relative to the camera), w how far it has grown (0..1); gAxisX.x radius now, y a seed;
+// gAxisZ.rgb colour, w how much is left (fades)
 float4 PS_ImpactSphere(FMOut i) : SV_Target
 {
     float3 n = normalize(i.n), v = normalize(-i.rel);
-    float facing = abs(dot(n, v));
-    float rim = pow(1 - facing, 2.5);                                                     // bright where you see it edge-on: a bubble
-    float3 w = i.rel + gCamPos.xyz;
-    float nz = gNoise.SampleLevel(gLinear, float3(w.xz * 0.35 + w.y * 0.2, gVolume.z * 0.6), 0).x;
-    float ripple = 0.75 + 0.5 * nz;                                                       // a little uneven, like a real blast
-    float core = (1 - gOffset.w) * pow(facing, 3) * 0.6;                                  // at first the middle glows too
-    float glow = (rim * 1.8 + 0.07 + core) * ripple * gAxisZ.w;
-    return float4(gAxisZ.rgb * glow, 0);
+    float facing = abs(dot(n, v)), t = gVolume.z, grown = gOffset.w;
+    float3 d = normalize(i.rel - gOffset.xyz);                                            // where on the ball (moves with it, not with the world)
+    float seed = gAxisX.y;
+    // two layers of noise flowing over the ball in different directions: a moving, boiling texture
+    float a = gNoise.SampleLevel(gLinear, d * 0.9 + float3(seed, t * 0.55, seed * 0.7), 0).x;
+    float b = gNoise.SampleLevel(gLinear, d * 2.3 + float3(-t * 0.8, seed * 0.3, t * 0.35), 0).y;
+    float plasma = saturate(a * 1.3 - 0.25) * (0.55 + 0.9 * b);
+    float veins = pow(saturate(1 - abs(a - 0.5) * 6), 3);                                // bright thin lines where the noise crosses the middle
+    float rim = pow(1 - facing, 2.2);                                                     // bright where you see it edge-on: a bubble
+    float core = pow(facing, 2.5) * (1 - grown) * (1 - grown) * 2.2;                      // at first a white-hot middle
+    float glow = rim * 2.6 + 0.10 + plasma * (0.45 + rim) + veins * 1.4 + core;
+    float3 col = gAxisZ.rgb * glow + float3(1, 0.95, 0.85) * (core * 0.9 + veins * rim * 0.6);   // a little white where it is hottest
+    return float4(col * gAxisZ.w * 1.25, 0);
+}
+
+// ---------------------------------------------------------------- beam shots: a glowing ball of energy (VS_FieldMesh places it)
+// ChunkCB: gOffset.xyz its middle (relative to the camera), w its radius; gAxisX.xyz the way it flies, w 1 = charged;
+// gAxisY.x a seed, y 1 = the soft halo around it, z its age (s); gAxisZ.rgb colour
+float4 PS_BeamOrb(FMOut i) : SV_Target
+{
+    float3 n = normalize(i.n), v = normalize(-i.rel);
+    float facing = saturate(abs(dot(n, v))), t = gVolume.z + gAxisY.x * 7.1, charged = gAxisX.w;
+    float3 col = gAxisZ.rgb;
+    if (gAxisY.y > 0.5) {                                                                 // the halo: soft light around the ball, strongest in the middle
+        float h = pow(facing, 3);
+        return float4(col * h * (0.45 + 0.35 * charged), 0);
+    }
+    float3 d = normalize(i.rel - gOffset.xyz), f = gAxisX.xyz;
+    // energy streaming backwards over the ball (along the way it flies) and swirling around it
+    float along = dot(d, f);
+    float swirl = gNoise.SampleLevel(gLinear, d * (1.6 + charged) + f * (t * 2.2) + float3(0, t * 0.7, 0), 0).x;
+    float fine = gNoise.SampleLevel(gLinear, d * 4.0 - f * (t * 3.5) + float3(t * 0.9, 0, gAxisY.x), 0).y;
+    float bands = 0.5 + 0.5 * sin((along * 9 - t * 14) + swirl * 6);                      // rings flowing back
+    float crackle = pow(saturate(1 - abs(fine - 0.5) * (5 - charged * 2)), 4) * (0.6 + charged * 1.6);   // lightning-like lines (more when charged)
+    float core = pow(facing, 3);                                                          // white-hot in the middle
+    float rim = pow(1 - facing, 2);                                                       // the colour at the edges
+    float energy = 0.6 + 0.8 * swirl * bands;
+    float3 c = col * (rim * 3.2 + energy * 1.6 + crackle * 2.5) + float3(1, 1, 1) * core * (2.2 + charged * 2.0);
+    float flicker = 0.92 + 0.08 * sin(t * 40 + gAxisY.x * 13);
+    return float4(c * flicker, 0);
 }
