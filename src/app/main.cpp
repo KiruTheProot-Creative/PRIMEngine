@@ -934,6 +934,7 @@ struct App {
             }
         }
         for (const Shot& s : shots) if (s.age < 50) all.push_back({ s.pos, s.missile ? 6.0 : 4.5, s.color * 0.6, 0, { 0, -1, 0 }, -1, dist(s.pos) });
+        if (playMode && weapState.charging && weapState.charge > 0) if (const Beam* b = CurrentBeam()) all.push_back({ chargeAt, 2.0 + 2.5 * weapState.charge, Linear(b->color) * (0.6 + 1.6 * weapState.charge), 0, { 0, -1, 0 }, -1, dist(chargeAt) });
         std::sort(all.begin(), all.end(), [](const L& a, const L& b) { return a.dist - a.range < b.dist - b.range; });
         int n = 0;
         for (const L& l : all) {
@@ -969,6 +970,7 @@ struct App {
         };
         for (auto& kv : emitters) push(kv.second);
         for (auto& e : fx) push(e);
+        if (playMode) push(chargeFx);   // the charge gathering at the muzzle
         for (auto& s : shots) push(s.trail);
         particleCount = (int)((add.size() + soft.size()) / 6);
         if (add.empty() && soft.empty()) return;
@@ -1441,7 +1443,7 @@ struct App {
 
     // ================================================================== doors (G2 attempt 3a)
     struct Shot { V3 pos, dir; float age = 0; ParticleEmitter trail{ particlePreset("Beam trail"), 11 };
-                  float speed = 45, size = 0.07f, range = 80, travelled = 0; V3 color{ 0.4, 1.6, 3.0 }; uint32_t tint = 0; std::string weapon, hitLook = "Impact"; bool missile = false; };
+                  float speed = 45, size = 0.07f, range = 80, travelled = 0; V3 color{ 0.4, 1.6, 3.0 }; uint32_t tint = 0; std::string weapon, hitLook = "Impact"; bool missile = false, charged = false; };
     std::map<uint32_t, DoorRuntime> doorRt;           // Play mode: each door's state, by object id
     std::map<uint32_t, ModelGpu> doorGpu;             // doors in the middle of an animation: their posed meshes
     std::vector<Shot> shots; bool shootPrev = true;
@@ -1548,6 +1550,7 @@ struct App {
                 {   // sparks where it hits; its tail stays a moment
                     V3 at = s.pos + s.dir * best; uint32_t tint = door >= 0 ? objects[door].door.color : s.tint;
                     SpawnFx(particlePreset(s.hitLook.empty() ? "Impact" : s.hitLook), at - s.dir * 0.05, s.dir * -1, tint);
+                    if (s.charged) { ParticleSettings bo = particlePreset(s.hitLook.empty() ? "Impact" : s.hitLook); bo.burst *= 3; bo.speed *= 1.6f; bo.size0 *= 2; SpawnFx(bo, at - s.dir * 0.08, s.dir * -1, s.tint); }
                     if (s.missile) { ParticleSettings bo = particlePreset("Fire"); bo.burst = 40; bo.life = 0.5f; SpawnFx(bo, at - s.dir * 0.1, s.dir * -1, s.tint); }
                     fx.push_back(s.trail);
                     for (const WorldObject& o : objects) {   // which named objects were hit (for "when something is shot")
@@ -3640,8 +3643,8 @@ struct App {
         hudListsReady = false;
         bool need = (playMode && (!hud.empty() || !weapons.empty())) || (playerEdOpen && screen == Screen::Game && EditorView());
         if (!need) return;
-        if (playMode) { hudVals.health = play.health; hudVals.maxHealth = game.player.maxHealth; hudVals.counts = inv.counts; hudVals.keys = inv.keys; }
-        else { hudVals = HudValues{}; hudVals.maxHealth = game.player.maxHealth; hudVals.health = game.player.maxHealth * 0.76f; hudVals.counts["Missile"] = 25; hudVals.keys.insert("Red key"); }
+        if (playMode) { hudVals.health = play.health; hudVals.maxHealth = game.player.maxHealth; hudVals.counts = inv.counts; hudVals.keys = inv.keys; hudVals.charge = weapState.charge; }
+        else { hudVals = HudValues{}; hudVals.charge = 0.6f; hudVals.maxHealth = game.player.maxHealth; hudVals.health = game.player.maxHealth * 0.76f; hudVals.counts["Missile"] = 25; hudVals.keys.insert("Red key"); }
         hudLists.resize(hud.planes.size());
         for (size_t i = 0; i < hud.planes.size(); i++) {
             const HudPlane& p = hud.planes[i]; int W, H; PlaneRes(p, W, H);
@@ -3679,48 +3682,67 @@ struct App {
         ctx->OMSetRenderTargets(0, nullptr, nullptr);
     }
     // the parts and planes, seen through vp (camera space in); sway on top
-    void DrawHudScene(const XMMATRIX& vp, const HudSway& sw, bool editor) {
+    // the HUD's parts and planes, and the arm cannon on its own layer (behind the HUD or in front of it, never cutting into it)
+    void DrawHudScene(const XMMATRIX& vp, const HudSway& sw, bool editor, ID3D11DepthStencilView* ds) {
         ID3D11Buffer* cbs[3] = { cbFrame.Get(), cbChunk.Get(), cbPreview.Get() }; ctx->VSSetConstantBuffers(0, 3, cbs); ctx->PSSetConstantBuffers(0, 3, cbs);
         PreviewCB pc{}; XMStoreFloat4x4((XMFLOAT4X4*)pc.vp, vp); pc.light[0] = -0.35f; pc.light[1] = 0.75f; pc.light[2] = -0.55f;
-        ctx->UpdateSubresource(cbPreview.Get(), 0, nullptr, &pc, 0, 0);
-        ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); ctx->IASetInputLayout(layout.Get());
-        ctx->VSSetShader(vsPreview.Get(), nullptr, 0); ctx->PSSetShader(editor ? psPreview.Get() : nullptr, nullptr, 0);   // Play mode: already drawn lit, here only their depth
-        ctx->PSSetShaderResources(0, 1, texArray.GetAddressOf()); ctx->PSSetSamplers(0, 1, sampBlocks.GetAddressOf());
-        ctx->RSSetState(rsNoCull.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
-        for (const CamPart& c : CameraParts(sw, editor ? previewPose : weapPose)) {   // the HUD's 3D parts and the arm cannon
-            FrameRef f = ModelNamed(c.model); if (!f) continue;
-            const ModelGpu& g = c.gpu ? *c.gpu : GpuModel(c.model);
-            if (g.mesh) ctx->PSSetShaderResources(9, 1, g.tex.GetAddressOf());
-            for (int pass = 0; pass < 2; pass++) for (auto& part : g.parts) {
-                const GpuChunk& gc = part.second; UINT n = pass == 0 ? gc.nO : gc.nC; if (!n) continue;
-                V3 l{ part.first.x * (double)CS - f->pivot.x, part.first.y * (double)CS - f->pivot.y, part.first.z * (double)CS - f->pivot.z };
-                V3 org = c.base + c.ax * l.x + c.ay * l.y + c.az * l.z;
-                ChunkCB cc{ { (float)org.x, (float)org.y, (float)org.z, 0 }, { (float)c.ax.x, (float)c.ax.y, (float)c.ax.z, 0 }, { (float)c.ay.x, (float)c.ay.y, (float)c.ay.z, 0 }, { (float)c.az.x, (float)c.az.y, (float)c.az.z, 0 } };
-                ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);
-                UINT stride = sizeof(Vtx), off = 0;
-                ctx->IASetVertexBuffers(0, 1, pass == 0 ? gc.vbO.GetAddressOf() : gc.vbC.GetAddressOf(), &stride, &off);
-                ctx->IASetIndexBuffer(pass == 0 ? gc.ibO.Get() : gc.ibC.Get(), DXGI_FORMAT_R32_UINT, 0);
-                ctx->DrawIndexed(n, 0, 0);
-            }
-        }
-        // planes, the farthest first; they do not hide each other, but parts in front of them do
-        std::vector<int> order; for (int i = 0; i < (int)hud.planes.size() && i < (int)hudTargets.size(); i++) if (hud.planes[i].visible && hudTargets[i].srv) order.push_back(i);
-        std::sort(order.begin(), order.end(), [&](int a, int b) { return hud.planes[a].pos.z > hud.planes[b].pos.z; });
-        ctx->IASetInputLayout(layoutHud.Get()); ctx->VSSetShader(vsHud.Get(), nullptr, 0); ctx->PSSetShader(psHud.Get(), nullptr, 0);
-        ctx->PSSetSamplers(3, 1, sampClamp.GetAddressOf()); ctx->OMSetDepthStencilState(dsTestOnly.Get(), 0);
-        for (int i : order) {
-            const HudPlane& p = hud.planes[i];
-            D3D11_MAPPED_SUBRESOURCE m; if (FAILED(ctx->Map(vbHud.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) continue;
-            HVtx* v = (HVtx*)m.pData; int n = 0;
-            auto put = [&](int gx, int gy) { float u = (float)gx / HUD_GX, w = (float)gy / HUD_GY; V3 q = sw.apply(planePoint(p, u, w), p.sway); v[n++] = { { (float)q.x, (float)q.y, (float)q.z }, { u, w } }; };
-            for (int gy = 0; gy < HUD_GY; gy++) for (int gx = 0; gx < HUD_GX; gx++) { put(gx, gy); put(gx + 1, gy); put(gx + 1, gy + 1); put(gx, gy); put(gx + 1, gy + 1); put(gx, gy + 1); }
-            ctx->Unmap(vbHud.Get(), 0);
-            pc.light[0] = std::clamp(p.opacity, 0.f, 1.f) * (editor && !playMode && hudSel == 1 && hudPlane == i ? 1.f : 1.f);
+        D3D11_VIEWPORT vpFull; UINT nvp = 1; ctx->RSGetViewports(&nvp, &vpFull);
+        std::vector<CamPart> parts = CameraParts(sw, editor ? previewPose : weapPose);
+        auto partState = [&] {
             ctx->UpdateSubresource(cbPreview.Get(), 0, nullptr, &pc, 0, 0);
-            ctx->OMSetBlendState(p.glow ? bsAdd.Get() : bsPremul.Get(), nullptr, 0xFFFFFFFF);
-            UINT stride = sizeof(HVtx), off = 0; ctx->IASetVertexBuffers(0, 1, vbHud.GetAddressOf(), &stride, &off);
-            ctx->PSSetShaderResources(0, 1, hudTargets[i].srv.GetAddressOf());
-            ctx->Draw(n, 0);
+            ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); ctx->IASetInputLayout(layout.Get());
+            ctx->VSSetShader(vsPreview.Get(), nullptr, 0); ctx->PSSetShader(editor ? psPreview.Get() : nullptr, nullptr, 0);   // Play mode: already drawn lit, here only their depth
+            ctx->PSSetShaderResources(0, 1, texArray.GetAddressOf()); ctx->PSSetSamplers(0, 1, sampBlocks.GetAddressOf());
+            ctx->RSSetState(rsNoCull.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
+        };
+        auto drawParts = [&](bool cannon) {
+            for (const CamPart& c : parts) {
+                if (c.cannon != cannon) continue;
+                FrameRef f = ModelNamed(c.model); if (!f) continue;
+                const ModelGpu& g = c.gpu ? *c.gpu : GpuModel(c.model);
+                if (g.mesh) ctx->PSSetShaderResources(9, 1, g.tex.GetAddressOf());
+                for (int pass = 0; pass < 2; pass++) for (auto& part : g.parts) {
+                    const GpuChunk& gc = part.second; UINT n = pass == 0 ? gc.nO : gc.nC; if (!n) continue;
+                    V3 l{ part.first.x * (double)CS - f->pivot.x, part.first.y * (double)CS - f->pivot.y, part.first.z * (double)CS - f->pivot.z };
+                    V3 org = c.base + c.ax * l.x + c.ay * l.y + c.az * l.z;
+                    ChunkCB cc{ { (float)org.x, (float)org.y, (float)org.z, 0 }, { (float)c.ax.x, (float)c.ax.y, (float)c.ax.z, 0 }, { (float)c.ay.x, (float)c.ay.y, (float)c.ay.z, 0 }, { (float)c.az.x, (float)c.az.y, (float)c.az.z, 0 } };
+                    ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);
+                    UINT stride = sizeof(Vtx), off = 0;
+                    ctx->IASetVertexBuffers(0, 1, pass == 0 ? gc.vbO.GetAddressOf() : gc.vbC.GetAddressOf(), &stride, &off);
+                    ctx->IASetIndexBuffer(pass == 0 ? gc.ibO.Get() : gc.ibC.Get(), DXGI_FORMAT_R32_UINT, 0);
+                    ctx->DrawIndexed(n, 0, 0);
+                }
+            }
+        };
+        auto drawPlanes = [&] {   // the farthest first; they do not hide each other, but parts in front of them do
+            std::vector<int> order; for (int i = 0; i < (int)hud.planes.size() && i < (int)hudTargets.size(); i++) if (hud.planes[i].visible && hudTargets[i].srv) order.push_back(i);
+            std::sort(order.begin(), order.end(), [&](int a, int b) { return hud.planes[a].pos.z > hud.planes[b].pos.z; });
+            ctx->IASetInputLayout(layoutHud.Get()); ctx->VSSetShader(vsHud.Get(), nullptr, 0); ctx->PSSetShader(psHud.Get(), nullptr, 0);
+            ctx->PSSetSamplers(3, 1, sampClamp.GetAddressOf()); ctx->OMSetDepthStencilState(dsTestOnly.Get(), 0); ctx->RSSetState(rsNoCull.Get());
+            for (int i : order) {
+                const HudPlane& p = hud.planes[i];
+                D3D11_MAPPED_SUBRESOURCE m; if (FAILED(ctx->Map(vbHud.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) continue;
+                HVtx* v = (HVtx*)m.pData; int n = 0;
+                auto put = [&](int gx, int gy) { float u = (float)gx / HUD_GX, w = (float)gy / HUD_GY; V3 q = sw.apply(planePoint(p, u, w), p.sway); v[n++] = { { (float)q.x, (float)q.y, (float)q.z }, { u, w } }; };
+                for (int gy = 0; gy < HUD_GY; gy++) for (int gx = 0; gx < HUD_GX; gx++) { put(gx, gy); put(gx + 1, gy); put(gx + 1, gy + 1); put(gx, gy); put(gx + 1, gy + 1); put(gx, gy + 1); }
+                ctx->Unmap(vbHud.Get(), 0);
+                PreviewCB pp = pc; pp.light[0] = std::clamp(p.opacity, 0.f, 1.f); ctx->UpdateSubresource(cbPreview.Get(), 0, nullptr, &pp, 0, 0);
+                ctx->OMSetBlendState(p.glow ? bsAdd.Get() : bsPremul.Get(), nullptr, 0xFFFFFFFF);
+                UINT stride = sizeof(HVtx), off = 0; ctx->IASetVertexBuffers(0, 1, vbHud.GetAddressOf(), &stride, &off);
+                ctx->PSSetShaderResources(0, 1, hudTargets[i].srv.GetAddressOf());
+                ctx->Draw(n, 0);
+            }
+            ID3D11ShaderResourceView* none = nullptr; ctx->PSSetShaderResources(0, 1, &none);
+        };
+        bool front = weapons.cannonInFront;
+        if (editor) {   // colour: the lower layer first, then a fresh depth for the upper one
+            partState();
+            if (!front) { drawParts(true); if (ds) ctx->ClearDepthStencilView(ds, D3D11_CLEAR_DEPTH, 1, 0); partState(); drawParts(false); drawPlanes(); }
+            else { drawParts(false); drawPlanes(); if (ds) ctx->ClearDepthStencilView(ds, D3D11_CLEAR_DEPTH, 1, 0); partState(); drawParts(true); }
+        } else {        // Play mode (the parts are already lit in the picture): only depth, so the planes know what is in front of them
+            partState(); drawParts(false);
+            if (front) { D3D11_VIEWPORT z = vpFull; z.MinDepth = z.MaxDepth = 0; ctx->RSSetViewports(1, &z); drawParts(true); ctx->RSSetViewports(1, &vpFull); }   // the cannon hides the planes
+            drawPlanes();
         }
         ID3D11ShaderResourceView* none[10] = {}; ctx->PSSetShaderResources(0, 10, none);
         ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());
@@ -3740,6 +3762,9 @@ struct App {
         auto W = [&](V3 c) { return r * c.x + u * c.y + f * c.z; };   // camera space -> the world's directions
         for (const CamPart& c : CameraParts(hudSway, weapPose)) {
             FrameRef fr = ModelNamed(c.model); if (!fr) continue;
+            {   // two slices of depth: the cannon and the helmet never cut into each other
+                bool upper = c.cannon == weapons.cannonInFront; D3D11_VIEWPORT sv{ 0, 0, (float)rw, (float)rh, upper ? 0.f : 0.001f, upper ? 0.001f : 0.002f }; ctx->RSSetViewports(1, &sv);
+            }
             const ModelGpu& g = c.gpu ? *c.gpu : GpuModel(c.model);
             if (g.mesh) ctx->PSSetShaderResources(9, 1, g.tex.GetAddressOf());
             V3 ax = W(c.ax), ay = W(c.ay), az = W(c.az), base = W(c.base);
@@ -3768,7 +3793,7 @@ struct App {
         if ((hud.empty() && weapons.empty()) || !hudListsReady) return;
         ctx->OMSetRenderTargets(1, &out, dsv.Get()); ctx->ClearDepthStencilView(dsv.Get(), D3D11_CLEAR_DEPTH, 1.f, 0);
         D3D11_VIEWPORT v{ 0, 0, (float)rw, (float)rh, 0, 1 }; ctx->RSSetViewports(1, &v);
-        DrawHudScene(HudProj((float)rw / rh), hudSway, false);
+        DrawHudScene(HudProj((float)rw / rh), hudSway, false, dsv.Get());
     }
     // the editor's two pictures: around the camera (orbit), and through it (the preview, over the world as the editor camera sees it)
     void RenderHudViews() {
@@ -3778,7 +3803,7 @@ struct App {
             int w = (int)hudViewWant.x, h = (int)hudViewWant.y; if (w != hudViewDW || h != hudViewDH) { MakeTarget(hudView, w, h, &hudViewDSV); hudViewDW = w; hudViewDH = h; }
             ctx->OMSetRenderTargets(1, hudView.rtv.GetAddressOf(), hudViewDSV.Get()); ctx->ClearRenderTargetView(hudView.rtv.Get(), bg); ctx->ClearDepthStencilView(hudViewDSV.Get(), D3D11_CLEAR_DEPTH, 1, 0);
             D3D11_VIEWPORT v{ 0, 0, (float)w, (float)h, 0, 1 }; ctx->RSSetViewports(1, &v);
-            DrawHudScene(hudOrbVP, HudSway{}, true);
+            DrawHudScene(hudOrbVP, HudSway{}, true, hudViewDSV.Get());
         }
         if (hudPrevWant.x >= 16 && hudPrevWant.y >= 16) {
             int w = (int)hudPrevWant.x, h = (int)hudPrevWant.y; if (w != hudPrevDW || h != hudPrevDH) { MakeTarget(hudPrev, w, h, &hudPrevDSV); hudPrevDW = w; hudPrevDH = h; }
@@ -3789,7 +3814,7 @@ struct App {
                 ctx->VSSetShader(vsBlit.Get(), nullptr, 0); ctx->PSSetShader(psBlit.Get(), nullptr, 0); ctx->PSSetShaderResources(0, 1, sceneSRV.GetAddressOf()); ctx->PSSetSamplers(3, 1, sampClamp.GetAddressOf());
                 ctx->Draw(3, 0); ID3D11ShaderResourceView* none = nullptr; ctx->PSSetShaderResources(0, 1, &none);
             }
-            DrawHudScene(HudProj((float)w / h), previewSway, true);
+            DrawHudScene(HudProj((float)w / h), previewSway, true, hudPrevDSV.Get());
         }
         ctx->OMSetRenderTargets(0, nullptr, nullptr);
     }
@@ -3984,8 +4009,8 @@ struct App {
                 }
             }
             if (e.kind == HudKind::Bar || e.kind == HudKind::Text) {
-                int v = (int)e.value; const char* vn[] = { "Nothing", "Health", "A counter", "Has a key" };
-                Prop("Shows"); if (ImGui::Combo("##evl", &v, vn, 4)) { e.value = (HudValue)v; ch = true; }
+                int v = (int)e.value; const char* vn[] = { "Nothing", "Health", "A counter", "Has a key", "Beam charge" };
+                Prop("Shows"); if (ImGui::Combo("##evl", &v, vn, 5)) { e.value = (HudValue)v; ch = true; }
                 if (e.value == HudValue::Counter || e.value == HudValue::Key) { Prop(e.value == HudValue::Key ? "Key" : "Counter"); ch |= ImGui::InputTextWithHint("##evn", e.value == HudValue::Key ? "Red key" : "Missile", &e.valueName); }
                 if (e.value == HudValue::Counter || e.value == HudValue::None) { Prop("Full at"); ch |= ImGui::DragFloat("##emx", &e.max, 1, 1, 100000, "%.0f"); }
                 if (e.value == HudValue::Health) Hint("Full at the player's most health (Game settings).");
@@ -4131,6 +4156,7 @@ struct App {
     }
     // ================================================================== weapons (Samus controls, part 1): beams on arm cannons, missiles
     WeaponSet weapons; WeaponState weapState; WeaponPose weapPose, previewPose;
+    ParticleEmitter chargeFx{ particlePreset("Charge"), 77 }; V3 chargeAt{ 0, 0, 0 }; bool holdBeam = false;   // holdBeam: screenshots hold the button
     ModelGpu cannonGpu; int cannonClip = -1; float cannonT = 0; bool missilePrev = true; float firedPending = 0, previewFired = 0;
     bool selectWeaponsTab = false;
     int weapSel = 0, weapPoint = 1;   // the beam picked in the editor; the point being edited (0 pivot, 1 muzzle, 2 emitter)
@@ -4180,7 +4206,7 @@ struct App {
     static V3 Norm(V3 v) { double l = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z); return l > 1e-12 ? v * (1 / l) : V3{ 0, 0, 1 }; }
     V3 CannonDir(const CannonXf& x, V3 d) { return Norm(x.ax * d.x + x.ay * d.y + x.az * d.z); }
     // everything fixed to the camera: the HUD's 3D parts and the arm cannon
-    struct CamPart { std::string model; V3 base, ax, ay, az; const ModelGpu* gpu = nullptr; };
+    struct CamPart { std::string model; V3 base, ax, ay, az; const ModelGpu* gpu = nullptr; bool cannon = false; };
     std::vector<CamPart> CameraParts(const HudSway& sw, const WeaponPose& wp) {
         std::vector<CamPart> out;
         for (const HudPart& p : hud.parts) {
@@ -4190,12 +4216,21 @@ struct App {
             c.base = sw.apply(p.pos, p.sway); out.push_back(c);
         }
         if (const Beam* b = CurrentBeam()) {
-            CannonXf x; if (CannonPlacement(*b, sw, wp, x)) { CamPart c; c.model = b->model; c.base = x.base; c.ax = x.ax; c.ay = x.ay; c.az = x.az; c.gpu = cannonClip >= 0 ? &cannonGpu : nullptr; out.push_back(c); }
+            CannonXf x; if (CannonPlacement(*b, sw, wp, x)) { CamPart c; c.model = b->model; c.base = x.base; c.ax = x.ax; c.ay = x.ay; c.az = x.az; c.gpu = cannonClip >= 0 ? &cannonGpu : nullptr; c.cannon = true; out.push_back(c); }
         }
         return out;
     }
     // Play mode: a shot from the cannon's emitter toward what the crosshair points at; a flash at the muzzle
-    void LaunchShot(const Beam& b, bool missile) {
+    // a point on the cannon, in the world (as it shows on screen with the player's field of view)
+    bool CannonWorld(const Beam& b, V3 local, V3& out, const V3* dirLocal = nullptr, V3* dirOut = nullptr) {
+        V3 eye = player.eye(), fw = player.forward(), rr = Norm(cross({ 0, 1, 0 }, fw)), uu = cross(fw, rr);
+        double fk = std::tan(XMConvertToRadians(settings.fov) * 0.5) / std::max(1e-3, std::tan(XMConvertToRadians(hud.fov) * 0.5));
+        auto W = [&](V3 c) { return rr * (c.x * fk) + uu * (c.y * fk) + fw * c.z; };
+        CannonXf x; if (!CannonPlacement(b, hudSway, weapPose, x)) return false;
+        out = eye + W(CannonPoint(x, b, local)); if (dirLocal && dirOut) *dirOut = W(CannonDir(x, *dirLocal));
+        return true;
+    }
+    void LaunchShot(const Beam& b, bool missile, bool charged = false) {
         V3 eye = player.eye(), fw = player.forward(), rr = Norm(cross({ 0, 1, 0 }, fw)), uu = cross(fw, rr);
         // the cannon is drawn with the HUD's view angle: points move to where they show on screen with the player's own field of view
         double fk = std::tan(XMConvertToRadians(settings.fov) * 0.5) / std::max(1e-3, std::tan(XMConvertToRadians(hud.fov) * 0.5));
@@ -4209,33 +4244,47 @@ struct App {
         V3 target = eye + fw * hitT, d = target - from; double L = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
         Shot sh; sh.pos = from; sh.dir = L > 0.8 ? d * (1 / L) : fw;
         sh.speed = missile ? b.missileSpeed : b.speed; sh.size = missile ? b.size * 2.2f : b.size; sh.range = (float)range; sh.weapon = b.name; sh.missile = missile; sh.hitLook = b.hitLook;
-        uint32_t col = missile ? b.missileColor : b.color; sh.tint = col; V3 lc = Linear(col); sh.color = lc * 3.0;
-        ParticleSettings tp = particlePreset(missile ? "Smoke" : b.shotLook); tp.color0 = col; tp.color1 = col;
+        if (charged) { sh.speed *= std::max(0.05f, b.chargeSpeed); sh.size *= std::max(0.1f, b.chargeSize); sh.charged = true; }
+        uint32_t col = missile ? b.missileColor : b.color; sh.tint = col; V3 lc = Linear(col); sh.color = lc * (charged ? 6.0 : 3.0);
+        ParticleSettings tp = particlePreset(missile ? "Smoke" : b.shotLook); tp.color0 = charged ? 0xFFFFFF : col; tp.color1 = col;
+        if (charged) { tp.size0 *= 2.5f; tp.size1 *= 2.5f; tp.rate *= 1.5f; }
         sh.trail = ParticleEmitter(tp, (uint32_t)(shots.size() * 7919 + GetTickCount()));
         shots.push_back(sh);
-        ParticleSettings fp = particlePreset(b.flashLook); fp.burst = std::max(fp.burst, 8); SpawnFx(fp, mpos, mdir, col);
+        ParticleSettings fp = particlePreset(b.flashLook); fp.burst = std::max(fp.burst, 8) * (charged ? 3 : 1); if (charged) { fp.size0 *= 2; fp.speed *= 1.6f; } SpawnFx(fp, mpos, mdir, col);
     }
     void FireWeapons(double dt) {
         weapState.tick((float)dt);
         const Beam* b = CurrentBeam(); if (!b) return;
         bool can = Playing() && !play.dead() && OwnsBeam(*b);
-        bool L = can && Down(VK_LBUTTON), R = can && Down(VK_RBUTTON);
+        bool L = (can && Down(VK_LBUTTON)) || (holdBeam && OwnsBeam(*b)), R = can && Down(VK_RBUTTON);
         const std::string& counter = weapons.missileCounter;
         if (R && !missilePrev && b->missiles) {
             int left = inv.counts.count(counter) ? inv.counts[counter] : 0;
             if (weapState.fire(*b, true, ClipLenOf(b->model, b->missileClip), left)) { inv.counts[counter] = left; LaunchShot(*b, true); PlayCannon(true); firedPending += 2.5f; }
             else if (left <= 0) Toast("No missiles left");
         }
-        if (L && (b->auto_ || !shootPrev)) {
-            int none = 1;
-            if (weapState.fire(*b, false, ClipLenOf(b->model, b->fireClip), none)) { LaunchShot(*b, false); PlayCannon(false); firedPending += 1; }
+        {   // the beam: a press fires, holding charges (if the beam can), letting go when full fires the charged shot
+            auto r = weapState.beamButton(*b, L, shootPrev, (float)dt, ClipLenOf(b->model, b->fireClip));
+            if (r == WeaponState::Shot::Normal) { LaunchShot(*b, false); PlayCannon(false); firedPending += 1; }
+            if (r == WeaponState::Shot::Charged) { LaunchShot(*b, false, true); PlayCannon(false); firedPending += 2.2f; }
         }
-        shootPrev = Down(VK_LBUTTON); missilePrev = Down(VK_RBUTTON);
+        // the charge gathering at the muzzle: more and bigger as it fills
+        {
+            bool showing = weapState.charging && weapState.charge > 0;
+            if (showing) {
+                ParticleSettings cs = particlePreset(b->chargeLook.empty() ? "Charge" : b->chargeLook); float k = weapState.charge;
+                cs.color1 = b->color; cs.rate *= 0.4f + k; cs.size1 *= 0.6f + k * 1.4f; cs.areaSize = cs.areaSize * (0.5 + k * 0.8);
+                if (k >= 1) { cs.size1 *= 1.25f + 0.25f * (float)std::sin(animTime * 20); }   // full: it throbs
+                chargeFx.s = cs; CannonWorld(*b, b->muzzle.pos, chargeAt);
+            }
+            chargeFx.update(dt, chargeAt, 0, nullptr, showing);
+        }
+        shootPrev = L; missilePrev = Down(VK_RBUTTON);
     }
     void SwitchBeam(int to) {
         if (weapons.empty() || to < 0 || to >= (int)weapons.beams.size() || to == weapState.current) return;
         if (!OwnsBeam(weapons.beams[to])) { Toast("You have not found the " + weapons.beams[to].name + " yet"); return; }
-        weapState.current = to; cannonClip = -1; firedPending += 0.4f; Toast(weapons.beams[to].name);
+        weapState.current = to; weapState.charging = false; weapState.charge = 0; cannonClip = -1; firedPending += 0.4f; Toast(weapons.beams[to].name);
     }
 
     // ---- the Weapons tab: the cannon in its own 3D view, its three points (drag them), what it shoots
@@ -4302,6 +4351,8 @@ struct App {
         Prop("Walk bob"); ch |= ImGui::SliderFloat("##mw", &mo.walk, 0, 3, "%.2f");
         Prop("Landing dip"); ch |= ImGui::SliderFloat("##ml", &mo.land, 0, 3, "%.2f");
         Prop("Recoil"); ch |= ImGui::SliderFloat("##mr", &mo.recoil, 0, 3, "%.2f");
+        Prop("Cannon in front of the HUD"); ch |= ImGui::Checkbox("##cf", &weapons.cannonInFront);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("The cannon has its own layer, so it never cuts into the HUD.\nOff (like a visor): the HUD is drawn over the cannon.\nOn: the cannon covers the HUD.");
         Prop("Missile counter"); ch |= ImGui::InputText("##mc", &weapons.missileCounter);
         Prop("Missiles at the start"); ch |= ImGui::SliderInt("##ms", &weapons.missileStart, 0, 255);
         Prop("Most missiles"); ch |= ImGui::SliderInt("##mm", &weapons.missileMax, 0, 255);
@@ -4401,12 +4452,22 @@ struct App {
         Prop("Muzzle flash"); ch |= LookCombo("##bf", b.flashLook);
         Prop("Speed"); ch |= ImGui::SliderFloat("##bsp", &b.speed, 2, 200, "%.0f blocks/s");
         Prop("Shots per second"); ch |= ImGui::SliderFloat("##bfr", &b.fireRate, 0.2f, 30, "%.1f");
-        Prop("Hold to keep firing"); ch |= ImGui::Checkbox("##ba", &b.auto_);
+        ImGui::BeginDisabled(b.charge); Prop("Hold to keep firing"); ch |= ImGui::Checkbox("##ba", &b.auto_); ImGui::EndDisabled();
         Prop("Damage"); ch |= ImGui::SliderFloat("##bd", &b.damage, 0, 500, "%.0f");
         Prop("Range"); ch |= ImGui::SliderFloat("##brg", &b.range, 5, 300, "%.0f blocks");
         Prop("Thickness"); ch |= ImGui::SliderFloat("##bz", &b.size, 0.01f, 0.6f, "%.2f blocks");
         Prop("Firing animation"); ch |= ClipCombo("##bfc", b.model, b.fireClip);
         Prop("Wait until it is done"); ch |= ImGui::Checkbox("##bw", &b.waitForAnim);
+        ImGui::SeparatorText("Charge shot (hold the button)");
+        Prop("Can charge"); ch |= ImGui::Checkbox("##cc", &b.charge);
+        if (b.charge) {
+            Prop("Time to charge"); ch |= ImGui::SliderFloat("##ct", &b.chargeTime, 0.2f, 5, "%.1f s");
+            Prop("Charge look"); ch |= LookCombo("##cl", b.chargeLook);
+            Prop("Damage"); ch |= ImGui::SliderFloat("##cd", &b.chargeDamage, 1, 20, "x %.1f");
+            Prop("Size"); ch |= ImGui::SliderFloat("##cs", &b.chargeSize, 1, 10, "x %.1f");
+            Prop("Speed"); ch |= ImGui::SliderFloat("##csp", &b.chargeSpeed, 0.1f, 3, "x %.2f");
+            Hint("A tap fires a normal shot. Hold: it charges at the muzzle; let go when it is full for the charged shot. (Holding to keep firing is off while a beam can charge.) The HUD can show it: Shows > Beam charge.");
+        }
         ImGui::SeparatorText("Missiles (right mouse button)");
         Prop("Has missiles"); ch |= ImGui::Checkbox("##mo", &b.missiles);
         if (b.missiles) {
@@ -5234,6 +5295,11 @@ struct App {
                 frames(1, "weapons_missile");
                 run(40); weapState.current = 1; LaunchShot(weapons.beams[1], false); firedPending += 1; run(6); LaunchShot(weapons.beams[1], false); firedPending += 1; run(3);
                 frames(1, "weapons_wave_beam");
+                run(40); weapState.current = 0; holdBeam = true; run(80);
+                frames(1, "weapons_charging");
+                Log("charge: " + std::to_string(weapState.charge));
+                holdBeam = false; run(5);
+                frames(1, "weapons_charged_shot");
                 Log("weapons: " + std::to_string(shots.size()) + " shots flying, missiles left " + std::to_string(inv.counts["Missile"]));
                 StopPlay(); hud = HudLayout{}; weapons = WeaponSet{}; SaveHud();
             }

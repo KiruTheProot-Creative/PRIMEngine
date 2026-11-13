@@ -452,7 +452,7 @@ int main() {
         std::vector<WorldObject> v{ o }, v2; saveObjects("/tmp/prim_fx.txt", v); loadObjects("/tmp/prim_fx.txt", v2);
         CHECK(v2.size() == 1 && v2[0].kind == ObjKind::Particles && !v2[0].particles.additive && v2[0].particles.shape == PShape::Smoke && v2[0].particles.size1 == o.particles.size1
               && v2[0].light.type == LightType::Spot && v2[0].light.cone == 20 && v2[0].light.flicker == Flicker::Broken, "particles and lights save and load");
-        CHECK(particlePresets().size() == 10, "ten presets"); CHECK(particlePreset("Muzzle flash").life < 0.15f, "a short muzzle flash");
+        CHECK(particlePresets().size() == 11, "eleven presets"); CHECK(particlePreset("Muzzle flash").life < 0.15f, "a short muzzle flash");
     }
 
     // a door with moving parts inside moving parts (DOOR_02: the halves turn, then smaller pieces inside them slide)
@@ -498,10 +498,29 @@ int main() {
         CHECK(std::fabs(k1.offset.z) < 1e-3, "and it settles again");
         WeaponPose l1; l1.update(mo, 1.0 / 60, 0, true, 20, 0); for (int k = 0; k < 4; k++) l1.update(mo, 1.0 / 60, 0, false, 0, 0);
         CHECK(l1.offset.y < -0.003, "landing dips it (%.4f)", l1.offset.y);
-        w.beams[1].muzzle.yaw = 12.5f; w.beams[1].missileWait = false; w.beams[0].name = "Power % Beam"; w.motion.recoil = 0.3f; w.missileMax = 99;
+        w.beams[1].muzzle.yaw = 12.5f; w.beams[1].missileWait = false; w.beams[0].name = "Power % Beam"; w.motion.recoil = 0.3f; w.missileMax = 99; w.cannonInFront = true; w.beams[1].chargeTime = 2.5f; w.beams[0].charge = false;
         saveWeapons("/tmp/prim_weapons.txt", w); WeaponSet back; loadWeapons("/tmp/prim_weapons.txt", back);
         CHECK(back.beams.size() == 2 && back.beams[0].name == "Power % Beam" && back.beams[1].muzzle.yaw == 12.5f && !back.beams[1].missileWait && back.beams[0].missileWait
-              && back.beams[1].shotLook == "Magic" && back.motion.recoil == 0.3f && back.missileMax == 99 && back.beams[0].model == "@arm-cannon", "weapons save and load");
+              && back.beams[1].shotLook == "Magic" && back.motion.recoil == 0.3f && back.missileMax == 99 && back.beams[0].model == "@arm-cannon" && back.cannonInFront && back.beams[1].chargeTime == 2.5f && !back.beams[0].charge && back.beams[1].chargeLook == "Charge", "weapons save and load");
+        {   // the charge beam
+            Beam cb = defaultWeapons().beams[0]; WeaponState cs; bool was = false; int normal = 0, charged = 0;
+            auto step = [&](bool down, float dt) { auto r = cs.beamButton(cb, down, was, dt, 0.2f); was = down; cs.tick(dt); normal += r == WeaponState::Shot::Normal; charged += r == WeaponState::Shot::Charged; };
+            step(true, 0.016f); for (int k = 0; k < 5; k++) step(true, 0.016f); step(false, 0.016f);
+            CHECK(normal == 1 && charged == 0, "a tap fires one normal shot");
+            for (int k = 0; k < 30; k++) step(false, 0.016f);
+            step(true, 0.016f); for (int k = 0; k < 50; k++) step(true, 0.016f);
+            CHECK(cs.charging && cs.charge > 0.3f && cs.charge < 1, "holding fills the charge (%.2f)", cs.charge);
+            step(false, 0.016f); CHECK(charged == 0 && normal == 2 && cs.charge == 0, "letting go before it is full fires nothing more");
+            for (int k = 0; k < 30; k++) step(false, 0.016f);
+            step(true, 0.016f); for (int k = 0; k < 90; k++) step(true, 0.016f);
+            CHECK(cs.charge >= 1, "after the charge time it is full");
+            step(false, 0.016f); CHECK(charged == 1, "letting go when full fires the charged shot");
+            Beam pl = cb; pl.charge = false; pl.auto_ = true; WeaponState ps; int n = 0;
+            for (int k = 0; k < 60; k++) { if (ps.beamButton(pl, true, k > 0, 1.f / 60, 0) == WeaponState::Shot::Normal) n++; ps.tick(1.f / 60); }
+            CHECK(n >= 4 && n <= 6, "without charging, holding keeps firing at its rate (%d shots in 1 s)", n);
+            HudValues hv; hv.charge = 0.5f; HudElement he; he.value = HudValue::Charge; he.text = "{value}%";
+            CHECK(hudText(he, hv) == "50%" && hudMax(he, hv) == 100, "the HUD can show the charge");
+        }
         DoorSettings ds; CHECK(doorOpensFor(ds, "Wave Beam", false) && doorOpensFor(ds, "", true), "a plain door opens for any shot");
         ds.openedBy = "Wave Beam"; CHECK(doorOpensFor(ds, "Wave Beam", false) && !doorOpensFor(ds, "Power Beam", false) && !doorOpensFor(ds, "Wave Beam", true), "a Wave Beam door only for the Wave Beam");
         ds.openedBy = "Missile"; CHECK(doorOpensFor(ds, "Power Beam", true) && !doorOpensFor(ds, "Power Beam", false), "a missile door only for missiles");

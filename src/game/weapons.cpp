@@ -17,7 +17,7 @@ WeaponSet defaultWeapons() {
     Beam p; p.name = "Power Beam"; p.model = "@arm-cannon";
     p.pivot.pos = { 0.15, 0.15, 0.05 }; p.muzzle.pos = { 0.15, 0.15, 0.9 }; p.emitter.pos = { 0.15, 0.15, 0.95 };
     w.beams.push_back(p);
-    Beam v = p; v.name = "Wave Beam"; v.color = 0xC070FF; v.shotLook = "Magic"; v.fireRate = 3; v.speed = 35; v.size = 0.12f; v.auto_ = true;
+    Beam v = p; v.name = "Wave Beam"; v.color = 0xC070FF; v.shotLook = "Magic"; v.fireRate = 3; v.speed = 35; v.size = 0.12f;
     w.beams.push_back(v);
     return w;
 }
@@ -53,6 +53,23 @@ bool WeaponState::fire(const Beam& b, bool missile, float animLength, int& missi
     return true;
 }
 
+WeaponState::Shot WeaponState::beamButton(const Beam& b, bool down, bool wasDown, float dt, float animLength) {
+    int none = 1;
+    if (!b.charge) {   // plain: a press (or holding, for "keeps firing")
+        charging = false; charge = 0; held = 0;
+        return down && (b.auto_ || !wasDown) && fire(b, false, animLength, none) ? Shot::Normal : Shot::None;
+    }
+    Shot out = Shot::None;
+    if (down && !wasDown) { if (fire(b, false, animLength, none)) out = Shot::Normal; charging = true; held = 0; charge = 0; }
+    else if (down && charging) { held += dt; charge = std::clamp((held - tapTime) / std::max(0.05f, b.chargeTime), 0.f, 1.f); }
+    else if (!down && charging) {
+        charging = false;
+        if (charge >= 1) { cooldown = 1.f / std::max(0.1f, b.fireRate); animLeft = std::max(0.f, animLength); animIsMissile = false; out = Shot::Charged; }
+        charge = 0; held = 0;
+    }
+    return out;
+}
+
 // ------------------------------------------------------------------ saving (one line per beam; texts escaped)
 static std::string esc(const std::string& s) { std::string o; for (char c : s) { if (c == '%') o += "%25"; else if (c == ' ') o += "%20"; else if (c == '\n') o += "%0A"; else o += c; } return o.empty() ? "-" : o; }
 static std::string unesc(const std::string& s) {
@@ -67,13 +84,15 @@ bool saveWeapons(const std::string& path, const WeaponSet& w) {
     f << "weapons 1\n";
     f << "motion " << w.motion.idle << " " << w.motion.walk << " " << w.motion.land << " " << w.motion.recoil << "\n";
     f << "missiles " << esc(w.missileCounter) << " " << w.missileStart << " " << w.missileMax << "\n";
+    f << "layer " << w.cannonInFront << "\n";
     for (const Beam& b : w.beams) {
         f << "beam " << esc(b.name) << " " << esc(b.model);
         putPoint(f, b.pivot); putPoint(f, b.muzzle); putPoint(f, b.emitter);
         f << " " << b.viewPos.x << " " << b.viewPos.y << " " << b.viewPos.z << " " << b.viewYaw << " " << b.viewPitch << " " << b.viewRoll << " " << b.scale << " " << b.sway
           << " " << b.color << " " << esc(b.shotLook) << " " << esc(b.hitLook) << " " << esc(b.flashLook) << " " << b.speed << " " << b.damage << " " << b.fireRate << " " << b.range << " " << b.size
           << " " << b.auto_ << " " << b.waitForAnim << " " << esc(b.fireClip) << " " << b.missiles << " " << esc(b.missileClip) << " " << b.missileWait
-          << " " << b.missileSpeed << " " << b.missileDamage << " " << b.missileRate << " " << b.missileColor << " " << b.startsOwned << "\n";
+          << " " << b.missileSpeed << " " << b.missileDamage << " " << b.missileRate << " " << b.missileColor << " " << b.startsOwned
+          << " " << b.charge << " " << b.chargeTime << " " << b.chargeDamage << " " << b.chargeSize << " " << b.chargeSpeed << " " << esc(b.chargeLook) << "\n";
     }
     return (bool)f;
 }
@@ -83,6 +102,7 @@ bool loadWeapons(const std::string& path, WeaponSet& w) {
     while (std::getline(f, line)) {
         std::istringstream l(line); std::string k; l >> k;
         if (k == "motion") l >> w.motion.idle >> w.motion.walk >> w.motion.land >> w.motion.recoil;
+        else if (k == "layer") l >> w.cannonInFront;
         else if (k == "missiles") { std::string c; l >> c >> w.missileStart >> w.missileMax; w.missileCounter = unesc(c); }
         else if (k == "beam") {
             Beam b; std::string n, m, sl, hl, fl, fc, mc;
@@ -91,6 +111,7 @@ bool loadWeapons(const std::string& path, WeaponSet& w) {
               >> b.color >> sl >> hl >> fl >> b.speed >> b.damage >> b.fireRate >> b.range >> b.size
               >> b.auto_ >> b.waitForAnim >> fc >> b.missiles >> mc >> b.missileWait >> b.missileSpeed >> b.missileDamage >> b.missileRate >> b.missileColor >> b.startsOwned;
             if (!l) continue;
+            { Beam cb; std::string cl; if (l >> cb.charge >> cb.chargeTime >> cb.chargeDamage >> cb.chargeSize >> cb.chargeSpeed >> cl) { b.charge = cb.charge; b.chargeTime = cb.chargeTime; b.chargeDamage = cb.chargeDamage; b.chargeSize = cb.chargeSize; b.chargeSpeed = cb.chargeSpeed; b.chargeLook = unesc(cl); } }
             b.name = unesc(n); b.model = unesc(m); b.shotLook = unesc(sl); b.hitLook = unesc(hl); b.flashLook = unesc(fl); b.fireClip = unesc(fc); b.missileClip = unesc(mc);
             w.beams.push_back(b);
         }

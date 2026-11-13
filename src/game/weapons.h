@@ -29,6 +29,10 @@ struct Beam {
     bool missiles = true; std::string missileClip = "missile"; bool missileWait = true;   // default: wait until the missile animation is done
     float missileSpeed = 30, missileDamage = 30, missileRate = 1.5f; uint32_t missileColor = 0xFF8A3A;
     bool startsOwned = true;                            // else: picked up later (a key pickup with the beam's name gives it)
+    // charge shot: hold the button, let go when it is full
+    bool charge = true; float chargeTime = 1.0f;        // seconds to fill (after a short tap time)
+    float chargeDamage = 4, chargeSize = 3.5f, chargeSpeed = 0.8f;   // times the normal shot's
+    std::string chargeLook = "Charge";                  // particles gathering at the muzzle
 };
 
 // what the engine adds on top of the cannon's own animations
@@ -41,6 +45,7 @@ struct WeaponSet {
     WeaponMotion motion;
     std::string missileCounter = "Missile";            // the counter that holds missiles (the HUD can show it)
     int missileStart = 25, missileMax = 25;
+    bool cannonInFront = false;                         // the cannon's own layer: behind the HUD (like a visor) or in front of it
     bool empty() const { return beams.empty(); }
 };
 WeaponSet defaultWeapons();                             // a Power Beam and a Wave Beam on the built-in arm cannon
@@ -62,6 +67,11 @@ struct WeaponState {
     float cooldown = 0;                                 // until the next shot
     float animLeft = 0;                                 // the firing animation still playing (seconds)
     bool animIsMissile = false;
+    float charge = 0, held = 0; bool charging = false;  // charge: 0 .. 1 (full)
+    static constexpr float tapTime = 0.25f;            // held shorter than this: just a tap, no charge shown
+    enum class Shot { None, Normal, Charged };
+    // the beam button this step: a press fires a normal shot; with charging, holding fills it and letting go when full fires the charged shot
+    Shot beamButton(const Beam& b, bool down, bool wasDown, float dt, float animLength);
     void tick(float dt) { cooldown = std::max(0.f, cooldown - dt); animLeft = std::max(0.f, animLeft - dt); }
     // tries to fire (missile or beam); animLength: the animation that plays (0 if none); missilesLeft is used up
     bool fire(const Beam& b, bool missile, float animLength, int& missilesLeft);

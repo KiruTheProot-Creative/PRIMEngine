@@ -11,7 +11,7 @@
 namespace mc {
 
 enum class HudKind { Panel, Bar, Text, Image, Circle, COUNT };
-enum class HudValue { None, Health, Counter, Key, COUNT };   // what a bar / text shows
+enum class HudValue { None, Health, Counter, Key, Charge, COUNT };   // what a bar / text shows
 const char* hudKindName(HudKind k);
 const char* hudValueName(HudValue v);
 
@@ -86,7 +86,7 @@ void mirrorPart(HudPart& p);
 void mirrorElement(HudElement& e);
 
 // what a value is right now (bars, texts)
-struct HudValues { float health = 100, maxHealth = 100; std::map<std::string, int> counts; std::set<std::string> keys; };
+struct HudValues { float charge = 0; float health = 100, maxHealth = 100; std::map<std::string, int> counts; std::set<std::string> keys; };
 float hudValue(const HudElement& e, const HudValues& v);
 float hudMax(const HudElement& e, const HudValues& v);
 std::string hudText(const HudElement& e, const HudValues& v);

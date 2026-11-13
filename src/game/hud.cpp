@@ -8,7 +8,7 @@
 namespace mc {
 
 const char* hudKindName(HudKind k) { static const char* n[] = { "Panel", "Bar", "Text", "Image", "Circle" }; return n[std::clamp((int)k, 0, (int)HudKind::COUNT - 1)]; }
-const char* hudValueName(HudValue v) { static const char* n[] = { "Nothing", "Health", "A counter", "Has a key" }; return n[std::clamp((int)v, 0, (int)HudValue::COUNT - 1)]; }
+const char* hudValueName(HudValue v) { static const char* n[] = { "Nothing", "Health", "A counter", "Has a key", "Beam charge" }; return n[std::clamp((int)v, 0, (int)HudValue::COUNT - 1)]; }
 
 static const double DEG = 3.14159265358979 / 180;
 
@@ -42,10 +42,11 @@ float hudValue(const HudElement& e, const HudValues& v) {
     case HudValue::Health: return v.health;
     case HudValue::Counter: { auto it = v.counts.find(e.valueName); return it == v.counts.end() ? 0.f : (float)it->second; }
     case HudValue::Key: return v.keys.count(e.valueName) ? 1.f : 0.f;
+    case HudValue::Charge: return v.charge * 100;
     default: return hudMax(e, v);
     }
 }
-float hudMax(const HudElement& e, const HudValues& v) { return e.value == HudValue::Health ? v.maxHealth : e.value == HudValue::Key ? 1.f : std::max(1e-3f, e.max); }
+float hudMax(const HudElement& e, const HudValues& v) { return e.value == HudValue::Health ? v.maxHealth : e.value == HudValue::Key ? 1.f : e.value == HudValue::Charge ? 100.f : std::max(1e-3f, e.max); }
 std::string hudText(const HudElement& e, const HudValues& v) {
     std::string s = e.text;
     auto put = [&](const std::string& key, float x) { char b[32]; snprintf(b, sizeof b, "%d", (int)std::lround(x)); for (size_t at; (at = s.find(key)) != std::string::npos;) s.replace(at, key.size(), b); };
