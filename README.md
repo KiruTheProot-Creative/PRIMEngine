@@ -151,3 +151,5 @@ right mouse fires a missile (ammo is a counter, "Missile" by default, so the HUD
 - Idle breathing, walk bob, landing dip and recoil are made by the engine (strength sliders); the firing animations come from the cannon model.
 - A beam found later: switch off "Have it from the start"; a key pickup with the beam's name gives it.
 - Doors: **Opened by** any shot, one beam, or missiles.
+- **Charge shot:** a tap fires a normal shot; hold and it charges at the muzzle (particles and light); let go when it is full for a bigger, stronger shot (time, damage, size, speed and look per beam). The HUD can show it (Shows > Beam charge).
+- **The cannon's layer:** it has its own depth, so it never cuts into the HUD: behind the HUD (default, like a visor) or "Cannon in front of the HUD".
