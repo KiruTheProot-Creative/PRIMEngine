@@ -3881,7 +3881,6 @@ struct App {
             else { e.w = std::max(0.005f, snap(hudDragFrom.w + dx)); e.h = std::max(0.005f, snap(hudDragFrom.h + dy)); }
         }
         if (hudDrag && !ImGui::IsItemActive()) { hudDrag = 0; SaveHud(); }
-        ImGui::SetCursorScreenPos(ImVec2(ImGui::GetCursorScreenPos().x, o.y + cs.y));
     }
     void PlayerEditor() {
         if (!playerEdOpen) return;
