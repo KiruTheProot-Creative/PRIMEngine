@@ -122,3 +122,13 @@ The game's logic, without code. The **Events** panel (a tab next to Assets) hold
 - **Do**, in order: show a message, open / close / lock / unlock a door, move a platform (set its "Starts" to "By an event card"), show / hide an object, switch a light (or emitter) on / off, a burst of particles, teleport, heal / hurt / kill, set a checkpoint, give / take a key, add to a counter, turn a flag on / off, **wait** (the actions after it come later), win.
 
 Objects are found **by name**: every object called "Hall light" switches together. "Only once" cards run a single time per play. In Play mode a card lights up when it runs. Cards are saved per world in `events.txt`. Start from **+ From an example...** to see how they work.
+
+## Player editor, part 1: the HUD
+
+Open it with the **Player** button in the toolbar (or Game > Player editor). It's saved for the whole game in `hud.txt`.
+
+- **Planes (2D):** flat sheets in front of the camera, anywhere you like: nearer or farther than the 3D parts, so in front of or behind them. They can **bend** side to side and top to bottom, like the inside of a visor. Each plane holds **elements**: panels, bars (cut into pieces for energy tanks), text (`{value}` and `{max}` show a value), pictures (put in the project's `hud` folder) and circles. Bars and text can show health, a counter (missiles...) or whether you have a key.
+- **3D parts:** models fixed to the camera (your helmet). **Mirror copy** makes the other side, **Mirror** flips one, **Duplicate** (Ctrl+D) copies; this works for planes and elements too.
+- **Sway:** when you turn, the HUD stays behind a little and springs back, like in Metroid Prime. Strength, smoothness, walk bob, lean when turning; every plane and part has its own sway amount.
+- The editor shows the HUD from around the camera (drag to turn), a camera preview over the world, and the picked plane laid out flat: drag elements to move them and their corner to size them (Shift snaps).
+- Event cards can **show, hide and flash** HUD elements by name (there's a "Low energy: flash the HUD" example).
