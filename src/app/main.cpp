@@ -1535,6 +1535,7 @@ struct App {
             V3 col = Linear(s.tint); float seed = (float)((&s - shots.data()) * 0.618);
             for (int halo = 1; halo >= 0; halo--) {   // the halo first, then the ball itself
                 double k = halo ? 2.4 : 1.0, stretch = halo ? 1.6 : 1.45;
+                ctx->OMSetBlendState(halo ? bsAdd.Get() : bsPremul.Get(), nullptr, 0xFFFFFFFF);   // the halo adds light; the ball itself covers what is behind it
                 ChunkCB cc{ { (float)c.x, (float)c.y, (float)c.z, (float)(r * k) }, { (float)d.x, (float)d.y, (float)d.z, s.charged ? 1.f : 0.f }, { seed, (float)halo, s.age, 0 }, { (float)col.x, (float)col.y, (float)col.z, 1 } };
                 DrawSphereMesh(c - d * (r * 0.25), side * (r * k), up * (r * k), d * (r * k * stretch), cc);
             }

@@ -968,7 +968,9 @@ float4 PS_BeamOrb(FMOut i) : SV_Target
     float core = pow(facing, 3);                                                          // white-hot in the middle
     float rim = pow(1 - facing, 2);                                                       // the colour at the edges
     float energy = 0.6 + 0.8 * swirl * bands;
-    float3 c = col * (rim * 1.1 + energy * 0.45 + crackle * 0.9) + float3(1, 1, 1) * core * (0.35 + charged * 0.35);
+    // a solid ball of light: saturated colour, a white-hot middle, energy and crackle moving over it (it covers what is behind)
+    float3 c = col * (0.55 + energy * 0.55 + crackle * 0.9 + rim * 0.5) * 1.3 + float3(1, 1, 1) * core * (0.7 + charged * 0.5);
     float flicker = 0.92 + 0.08 * sin(t * 40 + gAxisY.x * 13);
-    return float4(c * flicker * 0.6, 0);                                                  // (each side of the ball adds its light)
+    float cover = saturate(0.45 + 0.55 * facing);                                         // the very edge lets a little through: soft, not a hard disc
+    return float4(c * flicker * cover, cover);                                            // premultiplied
 }
