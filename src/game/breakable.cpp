@@ -26,7 +26,7 @@ bool loadBreakables(const std::string& path, Breakables& b) {
 }
 bool breaksWith(const std::string& br, const std::string& weapon, bool missile, bool charged) {
     bool bomb = weapon == "Bomb";
-    if (br.empty()) return true;                         // any shot, bomb or missile
+    if (br.empty()) return weapon != "Speed Booster";    // any shot, bomb or missile (running into it does not count)
     if (br == "Bomb") return bomb;
     if (br == "Missile") return missile;
     if (br == "Charged shot") return charged && !missile && !bomb;

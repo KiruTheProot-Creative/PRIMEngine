@@ -18,6 +18,7 @@
 #include "../game/materials.h"
 #include "../game/anim.h"
 #include "../game/folders.h"
+#include "../game/items.h"
 #include "../game/sound.h"
 #include "../game/breakable.h"
 #include "../game/weather.h"
@@ -717,7 +718,14 @@ struct App {
             Controls c; bool fg = GetForegroundWindow() == hwnd;
             if (fg) { c.forward = Down('W'); c.back = Down('S'); c.left = Down('A'); c.right = Down('D'); c.jump = Down(VK_SPACE); c.sneak = Down(VK_SHIFT); c.sprint = Down(VK_CONTROL) && !Down('Z') && !Down('Y'); }
             if (playMode) { c.sprint = c.sprint && game.player.canSprint; if (play.dead()) c = Controls{}; }
-            player.update(*world, c, std::min(dt, 0.05), playMode ? game.player : PlayerRules{});
+            UpdateItemRules();
+            player.update(*world, c, std::min(dt, 0.05), playMode ? playRules : PlayerRules{});
+            if (playMode && player.boosting) {   // the Speed Booster: blocks marked for it break as you run into them
+                V3 f = player.forward(); double hw = player.halfW + 0.45;
+                for (int y = (int)std::floor(player.feet.y + 0.05); y <= (int)std::floor(player.feet.y + player.height - 0.05); y++)
+                    for (int x = (int)std::floor(player.feet.x - hw + f.x * 0.3); x <= (int)std::floor(player.feet.x + hw + f.x * 0.3); x++)
+                        for (int z = (int)std::floor(player.feet.z - hw + f.z * 0.3); z <= (int)std::floor(player.feet.z + hw + f.z * 0.3); z++) TryBreak(x, y, z, "Speed Booster", false, false);
+            }
             if (playMode) hoverValid = false; else if (toolMode) ToolInteract(dt); else Interact(dt);
         } else { lPrev = rPrev = mPrev = true; if (stroking) EndStroke(); }
         toolValid = toolMode && !playMode && world->raycast(player.eye(), player.forward(), 160.0, toolHit);   // where the brush is (shown even with the mouse free)
@@ -729,7 +737,7 @@ struct App {
         UpdateHudSway(std::min(dt, 0.05));
         if (playMode && !paused) UpdateDoors(std::min(dt, 0.05)); else if (!playMode && !doorRt.empty()) { doorRt.clear(); doorGpu.clear(); shots.clear(); RebuildSolids(); }
         if (playMode && !paused) {   // health, lava, falling out of the world, respawning
-            PlayState::Event e = play.tick(*world, player, game.player, playSpawn, playYaw, std::min(dt, 0.05));
+            PlayState::Event e = play.tick(*world, player, playRules, playSpawn, playYaw, std::min(dt, 0.05));
             if (e == PlayState::Died) { Toast(std::string("You ") + play.cause); Signal(When::Dies, ""); }
         }
         mouseDX = mouseDY = 0;
@@ -1268,8 +1276,8 @@ struct App {
             FrameRef f = ModelOf(o); V3 at = o.pos; if (f) { Box3 b = objectBounds(o, *f); at = (b.lo + b.hi) * 0.5; }
             ParticleSettings p = particlePreset(d.text.empty() ? "Sparks" : d.text); p.burst = std::max(p.burst, 30); SpawnFx(p, at, { 0, 1, 0 }); }); break;
         case Do::Teleport: { std::string t = d.target; pending = [this, t] { TravelTo("", t); }; break; }
-        case Do::Heal: play.health = std::min(game.player.maxHealth, play.health + d.number); Toast("+" + std::to_string((int)d.number) + " health"); break;
-        case Do::Hurt: if (!play.dead()) { play.health -= d.number; play.hurtFlash = 0.4; if (play.health <= 0) { play.health = 0; play.cause = "got hurt too much"; } } break;
+        case Do::Heal: play.health = std::min(playRules.maxHealth, play.health + d.number); Toast("+" + std::to_string((int)d.number) + " health"); break;
+        case Do::Hurt: if (!play.dead()) { play.health -= d.number * playRules.damageTaken; play.hurtFlash = 0.4; if (play.health <= 0) { play.health = 0; play.cause = "got hurt too much"; } } break;
         case Do::Kill: if (!play.dead()) { play.health = 0; play.cause = "were killed"; } break;
         case Do::Checkpoint: playSpawn = player.feet; playYaw = player.yaw; Toast("Checkpoint"); break;
         case Do::GiveKey: if (!nm.empty()) { inv.keys.insert(nm); Toast("You got the " + nm); } break;
@@ -1296,7 +1304,7 @@ struct App {
             if (!Overlaps(b, player.feet, player.halfW, player.height, o.kind == ObjKind::Trigger ? 0.0 : 0.15)) continue;
             now.insert(o.id); bool entered = !insideNow.count(o.id);
             switch (o.kind) {
-            case ObjKind::Pickup: { std::string said; if (!play.dead() && inv.collect(o, play.health, game.player.maxHealth, said)) { Toast(said); Signal(When::Pickup, o.name, o.pickup.type == PickupType::Health ? "Health" : o.pickup.name); } break; }
+            case ObjKind::Pickup: { std::string said; if (!play.dead() && inv.collect(o, play.health, playRules.maxHealth, said)) { Toast(said); if (o.pickup.type != PickupType::Health) ItemPicked(o.pickup.name); Signal(When::Pickup, o.name, o.pickup.type == PickupType::Health ? "Health" : o.pickup.name); } break; }
             case ObjKind::Checkpoint:
                 if (entered) { playSpawn = { o.pos.x, b.hi.y + 0.01, o.pos.z }; playYaw = player.yaw; Toast("Checkpoint"); }
                 break;
@@ -1310,7 +1318,7 @@ struct App {
                 switch (o.trigger.action) {
                 case TriggerAction::Message: if (!o.trigger.text.empty()) Message(o.trigger.text); break;   // empty: the event cards do the talking
                 case TriggerAction::Kill: if (!play.dead()) { play.health = 0; play.cause = "walked into a trap"; if (!o.trigger.text.empty()) Message(o.trigger.text); } break;
-                case TriggerAction::Heal: play.health = std::min(game.player.maxHealth, play.health + o.trigger.amount); Toast("+" + std::to_string((int)o.trigger.amount) + " health"); break;
+                case TriggerAction::Heal: play.health = std::min(playRules.maxHealth, play.health + o.trigger.amount); Toast("+" + std::to_string((int)o.trigger.amount) + " health"); break;
                 case TriggerAction::Checkpoint: playSpawn = player.feet; playYaw = player.yaw; Toast("Checkpoint"); break;
                 }
                 break;
@@ -1870,6 +1878,7 @@ struct App {
                 if (ImGui::Selectable("Missile (any kind)", o.door.openedBy == "Missile")) { o.door.openedBy = "Missile"; o.door.color = 0xFF3A3A; ch_ = true; }
                 for (const MissileType& m : weapons.missileTypes) if (m.name != "Missile" && ImGui::Selectable(m.name.c_str(), o.door.openedBy == m.name)) { o.door.openedBy = m.name; o.door.color = m.color; ch_ = true; }
                 if (ImGui::Selectable("Bomb", o.door.openedBy == "Bomb")) { o.door.openedBy = "Bomb"; o.door.color = 0xFFB040; ch_ = true; }
+                if (ImGui::Selectable("Power Bomb", o.door.openedBy == "Power Bomb")) { o.door.openedBy = "Power Bomb"; o.door.color = 0xFFE860; ch_ = true; }
                 ImGui::EndCombo();
             }
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Picking a beam also takes its colour.");
@@ -3148,7 +3157,8 @@ struct App {
         weapState.missile = 0; chargedOn = false;
         takenByWorld.clear(); insideNow.clear(); firedOnce.clear(); teleportLock = 0; bigMsgT = 0; playStartWorld = CurrentWorld(); startEditCam = editCam;
         playSpawn = info.hasSpawn ? info.spawn : player.feet; playYaw = info.hasSpawn ? info.spawnYaw : player.yaw;
-        play = PlayState{}; play.start(player, game.player, playSpawn, playYaw);
+        UpdateItemRules(); play = PlayState{}; play.start(player, playRules, playSpawn, playYaw);
+        for (const ItemDef& d : items.items) if (d.used && d.type == ItemType::PowerBomb && d.startsOwned) inv.counts[items.powerBombCounter] = items.powerBombStart;
         weapState = WeaponState{}; weapPose = WeaponPose{}; cannonClip = -1; firedPending = 0; missilePrev = true;
         activeTl.clear(); chargeTlOn = false; freeAim = FreeAim{}; aimYaw = aimPitch = 0; stepDist = 0;
         player.ball = false; bombsOut.clear(); flashes.clear(); broken.clear(); ballCamSet = false;
@@ -3179,11 +3189,11 @@ struct App {
         }
         if (hud.empty()) {
         float bw = 300 * ui, bh = 18 * ui; ImVec2 o(vx + (W - bw) * 0.5f, vy + H - bh - 24 * ui);   // health bar (until the game has its own HUD)
-        float f = game.player.maxHealth > 0 ? std::clamp(play.health / game.player.maxHealth, 0.f, 1.f) : 0.f;
+        float f = playRules.maxHealth > 0 ? std::clamp(play.health / playRules.maxHealth, 0.f, 1.f) : 0.f;
         dl->AddRectFilled(ImVec2(o.x - 3, o.y - 3), ImVec2(o.x + bw + 3, o.y + bh + 3), IM_COL32(0, 0, 0, 160), 4.f);
         ImU32 col = f > 0.5f ? IM_COL32(70, 210, 90, 255) : f > 0.25f ? IM_COL32(240, 190, 50, 255) : IM_COL32(230, 60, 50, 255);
         dl->AddRectFilled(o, ImVec2(o.x + bw * f, o.y + bh), col, 3.f);
-        char hb[64]; snprintf(hb, sizeof hb, "%.0f / %.0f", play.health, game.player.maxHealth);
+        char hb[64]; snprintf(hb, sizeof hb, "%.0f / %.0f", play.health, playRules.maxHealth);
         ImVec2 ts = ImGui::CalcTextSize(hb); dl->AddText(ImVec2(o.x + (bw - ts.x) * 0.5f, o.y + (bh - ts.y) * 0.5f), IM_COL32(255, 255, 255, 255), hb);
         }
         dl->AddText(ImVec2(vx + 12, vy + 10), IM_COL32(255, 255, 255, 200), game.name.c_str());
@@ -3211,7 +3221,7 @@ struct App {
         ImGui::Begin("Paused###play", nullptr, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize);
         ImGui::TextDisabled("%s", game.name.c_str());
         if (ImGui::Button("Keep playing", ImVec2(-1, 0))) { paused = false; Capture(true); }
-        if (ImGui::Button("Start over", ImVec2(-1, 0))) { play.start(player, game.player, playSpawn, playYaw); paused = false; Capture(true); }
+        if (ImGui::Button("Start over", ImVec2(-1, 0))) { play.start(player, playRules, playSpawn, playYaw); paused = false; Capture(true); }
         if (weapons.switchMode == 2 && !weapons.empty()) {   // like Super Metroid: the beam and missile are picked here
             ImGui::SeparatorText("Beam");
             for (int i = 0; i < (int)weapons.beams.size(); i++) {
@@ -3800,40 +3810,10 @@ struct App {
                 for (auto& w : worldList) if (ImGui::Selectable(w.c_str(), w == game.startWorld)) { game.startWorld = w; ch_ = true; }
                 ImGui::EndCombo();
             }
-            title("Player rules"); PlayerRules& r = game.player;
-            auto sl = [&](const char* l, float* v, float a, float b, const char* f) { Prop(l); ImGui::PushID(l); ch_ |= ImGui::SliderFloat("##v", v, a, b, f); ImGui::PopID(); };
-            {   // size
-                float hb = r.height; sl("Height", &r.height, 0.3f, 6, "%.2f blocks");
-                if (r.height != hb && hb > 0) r.eyeHeight = std::min(r.height - 0.05f, r.eyeHeight * r.height / hb);   // the eyes stay at the same place on the body
-                sl("Width", &r.width, 0.2f, 4, "%.2f blocks");
-                sl("Eye height", &r.eyeHeight, 0.1f, std::max(0.15f, r.height - 0.02f), "%.2f blocks");
-                sl("Steps up by itself", &r.stepHeight, 0, 2, "%.2f blocks");
-                sl("Morph ball size", &r.ballSize, 0.2f, 3, "%.2f blocks");
-                { const char* mo[] = { "None", "From the start", "Found later (\"Morph Ball\" pickup)" }; Prop("Morph ball (C)"); ImGui::Combo("##mb", &r.morphBall, mo, 3); }
-                if (r.morphBall) {
-                    sl("Rolling speed", &r.ballSpeed, 1, 20, "%.1f blocks/s");
-                    { const char* bo[] = { "None", "From the start", "Found later (\"Bombs\" pickup)" }; Prop("Bombs (fire button)"); ImGui::Combo("##bb", &r.bombs, bo, 3); }
-                    if (r.bombs) {
-                        sl("Bomb jump", &r.bombJump, 0, 6, "%.1f blocks");
-                        Prop("Bombs at once"); ImGui::SliderInt("##bao", &r.bombsAtOnce, 1, 6);
-                        sl("Fuse", &r.bombFuse, 0.2f, 3, "%.2f s"); sl("Reach", &r.bombReach, 0.5f, 4, "%.1f blocks");
-                        sl("Impact sphere", &r.bombSphere, 0, 10, "%.1f blocks across");
-                    }
-                    Prop("Ball model"); if (ImGui::BeginCombo("##bm", r.ballModel.c_str())) { if (ImGui::Selectable("@morph-ball (built in)", r.ballModel == "@morph-ball")) r.ballModel = "@morph-ball"; for (const std::string& n : PartModels()) if (ImGui::Selectable(n.c_str(), r.ballModel == n)) r.ballModel = n; ImGui::EndCombo(); }
-                }
-                Hint("Fits through gaps at least %.2f wide and %.2f tall. The morph ball comes with the Samus controls; its size already shows in the 3D viewer.", r.width, r.height);
-            }
-            sl("Walk speed", &r.walkSpeed, 1, 15, "%.1f blocks/s");
-            Prop("Can sprint (Ctrl)"); ch_ |= ImGui::Checkbox("##sprint", &r.canSprint);
-            if (r.canSprint) sl("Sprint speed", &r.sprintSpeed, 1, 25, "%.1f blocks/s");
-            sl("Jump height", &r.jumpHeight, 0.3f, 8, "%.2f blocks");
-            sl("Gravity", &r.gravity, 4, 80, "%.0f");
-            sl("Health", &r.maxHealth, 1, 500, "%.0f");
-            sl("Lava damage", &r.lavaDamage, 0, 200, "%.0f per second");
-            sl("Fall damage", &r.fallDamage, 0, 50, r.fallDamage <= 0 ? "off" : "%.0f per block (after 4)");
-            sl("Death below height", &r.voidDepth, -512, 0, "y = %.0f");
-            sl("Respawn after", &r.respawnDelay, 0, 10, "%.1f s");
-            if (ImGui::Button("Reset the rules")) { r = PlayerRules{}; ch_ = true; }
+            title("Player");
+            if (ImGui::Button("Body and movement...")) { playerEdOpen = true; focusPlayerEd = true; selectBodyTab = true; }
+            ImGui::SameLine(); if (ImGui::Button("Items...")) { playerEdOpen = true; focusPlayerEd = true; selectItemsTab = true; }
+            Hint("The player's size, moves, health and everything Samus can find are in the Player editor.");
             if (ch_) game.save(gamePath);
             Hint("Saved by itself. Press F5 to try it.");
             break; }
@@ -3909,7 +3889,7 @@ struct App {
     double prevPlayYaw = 0, prevPlayPitch = 0, prevVelY = 0; bool prevOnGround = true;
 
     std::string HudPath() const { return projectDir + "/hud.txt"; }
-    void LoadHud() { assetFolders = AssetFolders{}; loadAssetFolders(projectDir + "/asset_folders.txt", assetFolders);
+    void LoadHud() { items = defaultItems(); loadItems(projectDir + "/items.txt", items); assetFolders = AssetFolders{}; loadAssetFolders(projectDir + "/asset_folders.txt", assetFolders);
         animBlends = AnimBlends{}; loadAnimBlends(projectDir + "/anim_blend.txt", animBlends); cannonBlend.reset(); doorBlend.clear(); viewerBlend.reset();
         materials = Materials{}; loadMaterials(projectDir + "/materials.txt", materials); matsDirty = true; soundCache.clear(); playerSounds = PlayerSounds{}; loadPlayerSounds(projectDir + "/player_sounds.txt", playerSounds); activeTl.clear();
         hud = HudLayout{}; loadHud(HudPath(), hud); weapons = WeaponSet{}; loadWeapons(projectDir + "/weapons.txt", weapons); weapSel = 0; weapState = WeaponState{}; hudImages.clear(); hudSel = 0; hudPlane = 0; hudEl = -1; hudPart = 0; }
@@ -3989,7 +3969,7 @@ struct App {
         hudListsReady = false;
         bool need = (playMode && (!hud.empty() || !weapons.empty())) || (playerEdOpen && screen == Screen::Game && EditorView());
         if (!need) return;
-        if (playMode) { hudVals.health = play.health; hudVals.maxHealth = game.player.maxHealth; hudVals.counts = inv.counts; hudVals.keys = inv.keys; hudVals.charge = weapState.charge; }
+        if (playMode) { hudVals.health = play.health; hudVals.maxHealth = playRules.maxHealth; hudVals.counts = inv.counts; hudVals.keys = inv.keys; hudVals.charge = weapState.charge; }
         else { hudVals = HudValues{}; hudVals.charge = 0.6f; hudVals.maxHealth = game.player.maxHealth; hudVals.health = game.player.maxHealth * 0.76f; hudVals.counts["Missile"] = 25; hudVals.keys.insert("Red key"); }
         hudLists.resize(hud.planes.size());
         for (size_t i = 0; i < hud.planes.size(); i++) {
@@ -4525,7 +4505,10 @@ struct App {
             selectWeaponsTab = false;
             if (ImGui::BeginTabItem("Sounds", nullptr, selectSoundsTab ? ImGuiTabItemFlags_SetSelected : 0)) { SoundsTab(); ImGui::EndTabItem(); }
             selectSoundsTab = false;
-            if (ImGui::BeginTabItem("Body and controls")) { ImGui::Spacing(); Hint("Coming later: the player's model, size, moves and controls (Samus: morph ball, bombs, beams...)."); ImGui::EndTabItem(); }
+            if (ImGui::BeginTabItem("Body and movement", nullptr, selectBodyTab ? ImGuiTabItemFlags_SetSelected : 0)) { ImGui::BeginChild("body"); BodyTab(); ImGui::EndChild(); ImGui::EndTabItem(); }
+            selectBodyTab = false;
+            if (ImGui::BeginTabItem("Items", nullptr, selectItemsTab ? ImGuiTabItemFlags_SetSelected : 0)) { ImGui::BeginChild("items"); ItemsTab(); ImGui::EndChild(); ImGui::EndTabItem(); }
+            selectItemsTab = false;
             ImGui::EndTabBar();
         }
         ImGui::End();
@@ -4538,7 +4521,177 @@ struct App {
     std::string cannonBlendModel; int cannonPlayId = 0; bool cannonPosed = false; int viewerPlayId = 0; std::string viewerBlendModel;
     void SaveAnimBlends() { if (!projectDir.empty()) saveAnimBlends(projectDir + "/anim_blend.txt", animBlends); }
     ModelGpu cannonGpu; int cannonClip = -1; float cannonT = 0; bool missilePrev = true; float firedPending = 0, previewFired = 0;
-    bool selectWeaponsTab = false, selectSoundsTab = false; bool weapTimelineView = false;
+    bool selectWeaponsTab = false, selectSoundsTab = false; bool weapTimelineView = false; bool selectBodyTab = false, selectItemsTab = false;
+    // ---- Body and movement: the player's size, moves, health (game.txt)
+    void BodyTab() {
+        PlayerRules& r = game.player; bool ch = false;
+        auto sl = [&](const char* l, float* v, float a, float b, const char* f) { Prop(l); ImGui::PushID(l); ch |= ImGui::SliderFloat("##v", v, a, b, f); ImGui::PopID(); };
+        ImGui::SeparatorText("Body");
+        float hb = r.height; sl("Height", &r.height, 0.3f, 6, "%.2f blocks");
+        if (r.height != hb && hb > 0) r.eyeHeight = std::min(r.height - 0.05f, r.eyeHeight * r.height / hb);   // the eyes stay at the same place on the body
+        sl("Width", &r.width, 0.2f, 4, "%.2f blocks");
+        sl("Eye height", &r.eyeHeight, 0.1f, std::max(0.15f, r.height - 0.02f), "%.2f blocks");
+        sl("Steps up by itself", &r.stepHeight, 0, 2, "%.2f blocks");
+        Hint("Fits through gaps at least %.2f wide and %.2f tall.", r.width, r.height);
+        ImGui::SeparatorText("Moving");
+        sl("Walk speed", &r.walkSpeed, 1, 15, "%.1f blocks/s");
+        Prop("Can sprint (Ctrl)"); ch |= ImGui::Checkbox("##sprint", &r.canSprint);
+        if (r.canSprint) sl("Sprint speed", &r.sprintSpeed, 1, 25, "%.1f blocks/s");
+        sl("Jump height", &r.jumpHeight, 0.3f, 8, "%.2f blocks");
+        sl("Gravity", &r.gravity, 4, 80, "%.0f");
+        Hint("Items change some of this while playing (Hi-Jump Boots, Space Jump, Speed Booster, the Gravity Suit...): Items tab.");
+        ImGui::SeparatorText("Morph Ball (C)");
+        sl("Size", &r.ballSize, 0.2f, 3, "%.2f blocks");
+        sl("Rolling speed", &r.ballSpeed, 1, 20, "%.1f blocks/s");
+        Prop("Model");
+        if (ImGui::BeginCombo("##bm", r.ballModel.c_str())) {
+            if (ImGui::Selectable("@morph-ball (built in)", r.ballModel == "@morph-ball")) { r.ballModel = "@morph-ball"; ch = true; }
+            for (const std::string& n : PartModels()) if (ImGui::Selectable(n.c_str(), r.ballModel == n)) { r.ballModel = n; ch = true; }
+            ImGui::EndCombo();
+        }
+        ModelMaterialUI(r.ballModel.empty() ? std::string("@morph-ball") : r.ballModel);
+        Hint("Whether you have it (and the Bombs, Spring Ball, Power Bombs...): Items tab.");
+        ImGui::SeparatorText("Health and dying");
+        sl("Health", &r.maxHealth, 1, 500, "%.0f");
+        sl("Lava damage", &r.lavaDamage, 0, 200, "%.0f per second");
+        sl("Fall damage", &r.fallDamage, 0, 50, r.fallDamage <= 0 ? "off" : "%.0f per block (after 4)");
+        sl("Death below height", &r.voidDepth, -512, 0, "y = %.0f");
+        sl("Respawn after", &r.respawnDelay, 0, 10, "%.1f s");
+        Hint("Energy Tanks add to the health, suits take damage away: Items tab.");
+        ImGui::Spacing();
+        if (ImGui::Button("Reset all of this")) { r = PlayerRules{}; ch = true; }
+        if (ch) game.save(gamePath);
+        Hint("Saved by itself. Press F5 to try it.");
+    }
+    // ---- Items: everything Samus can find (items.txt); beams and missiles come from the Weapons tab
+    ItemSet items = defaultItems(); ItemEffects itemFx; PlayerRules playRules;
+    void SaveItems() { if (!projectDir.empty()) saveItems(projectDir + "/items.txt", items); }
+    int ItemHave(const std::string& n) const { auto it = inv.counts.find(n); return (it == inv.counts.end() ? 0 : it->second) + (inv.keys.count(n) ? 1 : 0); }
+    void UpdateItemRules() {   // what the items you have do: the rules the player plays by right now
+        playRules = game.player;
+        if (!playMode) { itemFx = ItemEffects{}; itemFx.maxHealth = game.player.maxHealth; return; }
+        itemFx = itemEffects(items, game.player, [this](const std::string& n) { return ItemHave(n); });
+        playRules.maxHealth = itemFx.maxHealth; playRules.jumpHeight = itemFx.jumpHeight; playRules.lavaDamage = game.player.lavaDamage * itemFx.lavaTaken;
+        playRules.damageTaken = itemFx.damageTaken; playRules.freeInLiquid = itemFx.freeInLiquid; playRules.airJumps = itemFx.airJumps;
+        playRules.speedBooster = itemFx.speedBooster; playRules.boostAfter = itemFx.boostAfter; playRules.boostSpeed = itemFx.boostSpeed;
+        playRules.springBall = itemFx.springBall; playRules.springJump = itemFx.springJump;
+    }
+    int MissileMax() const { return weapons.missileMax + itemFx.missileBonus; }
+    int PowerBombMax() const { return items.powerBombMax + itemFx.powerBombBonus; }
+    void ItemPicked(const std::string& name) {   // a pickup with an item's name: what it does right away
+        for (const ItemDef& d : items.items) {
+            if (!d.used || d.name != name) continue;
+            UpdateItemRules();
+            if (d.type == ItemType::EnergyTank) play.health = playRules.maxHealth;   // a tank fills you up
+            else if (d.type == ItemType::MissileExpansion && !weapons.missileCounter.empty()) { int& c = inv.counts[weapons.missileCounter]; c = std::min(MissileMax(), c + (int)std::lround(d.v[0])); }
+            else if (d.type == ItemType::PowerBombExpansion) { int& c = inv.counts[items.powerBombCounter]; c = std::min(PowerBombMax(), c + (int)std::lround(d.v[0])); }
+            else if (d.type == ItemType::PowerBomb) { int& c = inv.counts[items.powerBombCounter]; c = std::max(c, std::min(PowerBombMax(), items.powerBombStart)); }
+            if (!itemWorks(d.type)) Toast(d.name + " (its ability is coming later)");
+        }
+    }
+    void PlaceItemPickup(const std::string& name, bool counted) {   // a pickup for it, in front of you (editor)
+        WorldObject o; o.id = nextObjId++; o.model = counted ? "@gem" : "@key"; ApplyPreset(o);
+        o.pickup.type = counted ? PickupType::Collectible : PickupType::Key; o.pickup.name = name; o.name = UniqueObjectName(name); o.folder = "Pickups";
+        V3 f = player.forward(); o.pos = { std::floor(player.feet.x + f.x * 3) + 0.5, std::floor(player.feet.y + 0.01), std::floor(player.feet.z + f.z * 3) + 0.5 };
+        objects.push_back(o); sel = Sel::Object; selIndex = (int)objects.size() - 1; SaveObjectsNow(); Toast("Placed a pickup for the " + name);
+    }
+    void ItemsTab() {
+        bool ch = false; float ui = settings.uiScale;
+        Hint("Everything Samus can find. Ticked: in this game. \"Found later\": place a pickup for it (the button), or give it with an event card. Grey: its ability is coming later (you can already set it up and place it).");
+        auto have = [&](bool& start, const char* id) { int o = start ? 0 : 1; const char* hv[] = { "From the start", "Found later" }; ImGui::SetNextItemWidth(150 * ui); ImGui::PushID(id); bool c = ImGui::Combo("##have", &o, hv, 2); ImGui::PopID(); if (c) start = o == 0; return c; };
+        auto pickupBtn = [&](const std::string& name, bool counted) {
+            ImGui::SameLine(); ImGui::PushID(name.c_str()); if (ImGui::SmallButton("Place pickup")) PlaceItemPickup(name, counted); ImGui::PopID();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(counted ? "A counted pickup called \"%s\" in front of you (each one adds more)." : "A pickup called \"%s\" in front of you.", name.c_str());
+        };
+        if (ImGui::CollapsingHeader("Beams and missiles", ImGuiTreeNodeFlags_DefaultOpen)) {   // from the Weapons tab
+            bool wch = false;
+            for (Beam& b : weapons.beams) {
+                ImGui::PushID(&b); ImGui::Bullet(); ImGui::SameLine(); ImGui::Text("%s", b.name.c_str()); ImGui::SameLine(240 * ui);
+                wch |= have(b.startsOwned, "bh"); if (!b.startsOwned) pickupBtn(b.name, false);
+                ImGui::PopID();
+            }
+            for (MissileType& m : weapons.missileTypes) {
+                ImGui::PushID(&m); ImGui::Bullet(); ImGui::SameLine(); ImGui::Text("%s", m.name.c_str()); ImGui::SameLine(240 * ui);
+                wch |= have(m.startsOwned, "mh"); if (!m.startsOwned) pickupBtn(m.name, false);
+                ImGui::PopID();
+            }
+            if (wch) SaveHud();
+            if (ImGui::SmallButton("Edit them in the Weapons tab")) selectWeaponsTab = true;
+        }
+        if (ImGui::CollapsingHeader("Morph Ball and bombs", ImGuiTreeNodeFlags_DefaultOpen)) {
+            PlayerRules& r = game.player; bool gch = false;
+            const char* mo[] = { "Not in the game", "From the start", "Found later" };
+            ImGui::Bullet(); ImGui::SameLine(); ImGui::Text("Morph Ball (C)"); ImGui::SameLine(240 * ui); ImGui::SetNextItemWidth(150 * ui); gch |= ImGui::Combo("##mb", &r.morphBall, mo, 3);
+            if (r.morphBall == 2) pickupBtn("Morph Ball", false);
+            if (r.morphBall) {
+                ImGui::Bullet(); ImGui::SameLine(); ImGui::Text("Bombs (fire, rolled up)"); ImGui::SameLine(240 * ui); ImGui::SetNextItemWidth(150 * ui); gch |= ImGui::Combo("##bb", &r.bombs, mo, 3);
+                if (r.bombs == 2) pickupBtn("Bombs", false);
+                if (r.bombs && ImGui::TreeNode("Bomb settings")) {
+                    auto sl = [&](const char* l, float* v, float a, float b, const char* f) { Prop(l); ImGui::PushID(l); gch |= ImGui::SliderFloat("##v", v, a, b, f); ImGui::PopID(); };
+                    sl("Bomb jump", &r.bombJump, 0, 6, "%.1f blocks"); Prop("Bombs at once"); gch |= ImGui::SliderInt("##bao", &r.bombsAtOnce, 1, 6);
+                    sl("Fuse", &r.bombFuse, 0.2f, 3, "%.2f s"); sl("Reach", &r.bombReach, 0.5f, 4, "%.1f blocks"); sl("Impact sphere", &r.bombSphere, 0, 10, "%.1f blocks across");
+                    ImGui::TreePop();
+                }
+            }
+            if (gch) game.save(gamePath);
+        }
+        const char* groups[] = { "Morph Ball", "Suits", "Boots and moves", "Beam upgrades", "Visors", "Tanks and expansions" };
+        for (const char* g : groups) {
+            bool any = false; for (const ItemDef& d : items.items) any |= std::string(itemGroup(d.type)) == g;
+            if (!any && std::string(g) != "Suits") continue;
+            std::string head = std::string(g) == "Morph Ball" ? "Morph Ball upgrades" : g;
+            if (!ImGui::CollapsingHeader(head.c_str(), ImGuiTreeNodeFlags_DefaultOpen)) continue;
+            int del = -1;
+            for (int i = 0; i < (int)items.items.size(); i++) {
+                ItemDef& d = items.items[i]; if (std::string(itemGroup(d.type)) != g) continue;
+                ImGui::PushID(i);
+                ch |= ImGui::Checkbox("##used", &d.used); if (ImGui::IsItemHovered()) ImGui::SetTooltip("In this game");
+                ImGui::SameLine();
+                bool works = itemWorks(d.type), grey = !works || !d.used;
+                if (grey) ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+                bool open = ImGui::TreeNodeEx("it", 0, "%s%s", d.name.c_str(), works ? "" : "  (coming)");
+                if (grey) ImGui::PopStyleColor();
+                if (d.type == ItemType::Suit) {
+                    ImGui::SameLine(); ImVec2 p = ImGui::GetCursorScreenPos(); float h = ImGui::GetTextLineHeight();
+                    ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(p.x, p.y + 2), ImVec2(p.x + h, p.y + h), IM_COL32((d.color >> 16) & 255, (d.color >> 8) & 255, d.color & 255, 255), 3.f); ImGui::Dummy(ImVec2(h, h));
+                }
+                if (d.used) {
+                    ImGui::SameLine(240 * ui);
+                    if (itemCounted(d.type)) { ImGui::TextDisabled("each one adds more"); pickupBtn(d.name, true); }
+                    else { ch |= have(d.startsOwned, "h"); if (!d.startsOwned) pickupBtn(d.name, false); }
+                }
+                if (open) {
+                    Prop("Name"); ch |= ImGui::InputText("##nm", &d.name);
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Also the name of its pickup.");
+                    for (int k = 0; k < 3; k++) if (const char* vn = itemValueName(d.type, k)) { Prop(vn); ImGui::PushID(k); ch |= ImGui::DragFloat("##v", &d.v[k], 0.01f, 0, 1000, "%.2f"); ImGui::PopID(); }
+                    if (d.type == ItemType::Suit) {
+                        float c[3] = { ((d.color >> 16) & 255) / 255.f, ((d.color >> 8) & 255) / 255.f, (d.color & 255) / 255.f };
+                        Prop("Colour"); if (ImGui::ColorEdit3("##sc", c)) { d.color = ((uint32_t)(c[0] * 255 + 0.5f) << 16) | ((uint32_t)(c[1] * 255 + 0.5f) << 8) | (uint32_t)(c[2] * 255 + 0.5f); ch = true; }
+                        if (ImGui::SmallButton("Delete this suit")) del = i;
+                        Hint("The best suit you have counts: the last one in this list you own. Put them in upgrade order.");
+                    }
+                    if (d.type == ItemType::PowerBomb) {
+                        Prop("Counter"); ch |= ImGui::InputText("##pbc", &items.powerBombCounter);
+                        Prop("You get with it"); ch |= ImGui::SliderInt("##pbs", &items.powerBombStart, 0, 50);
+                        Prop("Most"); ch |= ImGui::SliderInt("##pbm", &items.powerBombMax, 1, 99);
+                        Hint("Rolled up: the right mouse button drops one (one at a time). It breaks blocks marked \"Power Bomb\" (and \"Bomb\"), and opens Power Bomb and bomb doors.");
+                    }
+                    if (d.type == ItemType::SpeedBooster) Hint("Sprint forward on the ground (or just run forward, if there is no sprint) for that long. While it lasts, blocks marked \"Speed Booster\" break when you run into them.");
+                    if (d.type == ItemType::ChargeBeam) Hint("In the game and found later: no beam can charge until you have it. Not in the game: each beam charges as set in the Weapons tab.");
+                    if (d.type == ItemType::SpaceJump) Hint("Press jump again in the air (as many times as set).");
+                    if (d.type == ItemType::SpringBall) Hint("Rolled up: jump.");
+                    if (d.type == ItemType::EnergyTank) Hint("Each one adds to the health (Body and movement > Health) and fills it up.");
+                    if (!works) Hint("Coming later: it can already be set up and placed as a pickup, but it does nothing yet.");
+                    ImGui::TreePop();
+                }
+                ImGui::PopID();
+            }
+            if (del >= 0) { items.items.erase(items.items.begin() + del); ch = true; }
+            if (std::string(g) == "Suits" && ImGui::SmallButton("+ Suit")) { ItemDef d; d.type = ItemType::Suit; d.name = "New Suit"; d.v[0] = 0.5f; d.v[1] = 0.5f; d.color = 0x60C0FF; items.items.push_back(d); ch = true; }
+        }
+        if (ch) SaveItems();
+    }
+
     int weapSel = 0, weapPoint = 1;   // the beam picked in the editor; the point being edited (0 pivot, 1 muzzle, 2 emitter)
     float weapYaw = 2.3f, weapPitch = 0.35f, weapDist = 2.2f; XMMATRIX weapVP = XMMatrixIdentity(); V3 weapEye{ 0, 0, 0 }; ImVec2 weapWant{ 0, 0 };
     HudTarget weapView; ComPtr<ID3D11DepthStencilView> weapDSV; int weapDW = 0, weapDH = 0; int weapDrag = -1; bool playerTabWeapons = false;
@@ -4685,6 +4838,8 @@ struct App {
         if (player.ball) {   // the morph ball: the fire button lays a bomb
             bool L = (Playing() && !play.dead() && Down(VK_LBUTTON)) || holdBeam;
             if (L && !shootPrev) DropBomb();
+            bool R = Playing() && !play.dead() && Down(VK_RBUTTON);
+            if (R && !missilePrev) DropPowerBomb();   // the right button: a Power Bomb
             shootPrev = L; missilePrev = Down(VK_RBUTTON); UpdateTimelines(dt, true); return;
         }
         if (weapons.switchMode == 1) PickBestWeapons();
@@ -4700,7 +4855,8 @@ struct App {
             else if (left < std::max(1, mt->cost)) Toast(left <= 0 ? std::string("No missiles left") : "Not enough missiles (a " + mt->name + " needs " + std::to_string(mt->cost) + ")");
         }
         {   // the beam: a press fires, holding charges (if the beam can), letting go when full fires the charged shot
-            auto r = weapState.beamButton(*b, L, shootPrev, (float)dt, AnimLen(*b, Beam::Fire));
+            Beam use = *b; use.charge = b->charge && itemFx.canCharge;   // the Charge Beam item (if it is in the game)
+            auto r = weapState.beamButton(use, L, shootPrev, (float)dt, AnimLen(*b, Beam::Fire));
             if (r == WeaponState::Shot::Normal) { StartTimeline(weapState.current, Beam::Fire); firedPending += 1; }
             if (r == WeaponState::Shot::Charged) { StopChargeTimeline(); chargeTlOn = false; StartTimeline(weapState.current, Beam::Charged); firedPending += 2.2f; }
             bool chargingNow = weapState.charging && weapState.charge > 0;   // the charging sounds (and animation) while it fills
@@ -5396,7 +5552,7 @@ struct App {
     // ================================================================== the morph ball, bombs, breakable blocks
     Breakables breakables; std::string breakTool;            // breakTool: what the "Breakable blocks" tool marks with ("" any shot)
     struct Broken { int x, y, z; BlockId was; }; std::vector<Broken> broken;   // Play mode: blocks broken (they come back when Play ends)
-    struct Bomb { V3 pos; float fuse; ParticleEmitter fx; }; std::vector<Bomb> bombsOut;
+    struct Bomb { V3 pos; float fuse; ParticleEmitter fx; bool power = false; }; std::vector<Bomb> bombsOut;
     struct Flash { V3 pos; float t; V3 col; double range; }; std::vector<Flash> flashes;
     V3 ballAx{ 1, 0, 0 }, ballAy{ 0, 1, 0 }, ballAz{ 0, 0, 1 }; V3 ballCamEye{ 0, 0, 0 }; bool ballCamSet = false;
     bool HasMorphBall() const { int m = game.player.morphBall; return m == 1 || (m == 2 && inv.keys.count("Morph Ball")); }
@@ -5434,7 +5590,37 @@ struct App {
         bombsOut.push_back({ BallCentre(), std::max(0.1f, game.player.bombFuse), ParticleEmitter(p, (uint32_t)(GetTickCount() + bombsOut.size())) });
         PlaySound(playerSounds.bomb);
     }
-    void Explode(V3 at) {
+    void DropPowerBomb() {   // rolled up, the right button: a Power Bomb (one at a time)
+        if (!itemFx.powerBombs) return;
+        for (const Bomb& b : bombsOut) if (b.power) return;
+        int& n = inv.counts[items.powerBombCounter]; if (n <= 0) { Toast("No " + items.powerBombCounter + " left"); return; }
+        n--;
+        ParticleSettings p = particlePreset("Charge"); p.color0 = 0xFFFFFF; p.color1 = 0xFFF0A0; p.areaSize = { 0.1, 0.1, 0.1 }; p.rate = 60; p.size1 = 0.09f;
+        Bomb b{ BallCentre(), itemFx.pbFuse, ParticleEmitter(p, (uint32_t)(GetTickCount() + 99)) }; b.power = true; bombsOut.push_back(b);
+        PlaySound(playerSounds.bomb);
+    }
+    void Explode(V3 at, bool power) {   // a bomb (or a Power Bomb) goes off
+        if (power) {
+            double reach = itemFx.pbReach;
+            ParticleSettings b = particlePreset("Impact"); b.burst = 160; b.speed = 14; b.color0 = 0xFFFFFF; b.color1 = 0xFFE080; b.size0 = 0.14f; SpawnFx(b, at, { 0, 1, 0 });
+            flashes.push_back({ at, 0, { 6.0, 5.0, 3.0 }, (float)(reach * 3) });
+            AddSphere(at, itemFx.pbSphere, 0xFFF4C0, 1.4f);
+            PlaySound(playerSounds.boom, 1, &at);
+            for (auto& p : blocksInReach(at, reach)) { TryBreak(p[0], p[1], p[2], "Power Bomb", false, false); TryBreak(p[0], p[1], p[2], "Bomb", false, false); }
+            for (WorldObject& o : objects) {   // Power Bomb (and bomb) doors
+                if (o.kind != ObjKind::Door || (o.door.openedBy != "Power Bomb" && o.door.openedBy != "Bomb") || Gone(o)) continue;
+                FrameRef f = ModelOf(o); if (!f) continue; Box3 fb = fieldBox(o, *f, OpeningOf(o.model));
+                V3 c{ std::clamp(at.x, fb.lo.x, fb.hi.x), std::clamp(at.y, fb.lo.y, fb.hi.y), std::clamp(at.z, fb.lo.z, fb.hi.z) }, d = c - at;
+                if (d.x * d.x + d.y * d.y + d.z * d.z <= (reach + 0.4) * (reach + 0.4) && DoorNow(o).blocks()) doorRt[o.id].shoot(0.5f, 0.5f);
+            }
+            for (const WorldObject& o : objects) {
+                if (o.name.empty() || Gone(o) || o.kind == ObjKind::Trigger) continue;
+                FrameRef f = ModelOf(o); if (!f) continue; Box3 bb = objectBounds(o, *f); double g = reach;
+                if (at.x > bb.lo.x - g && at.x < bb.hi.x + g && at.y > bb.lo.y - g && at.y < bb.hi.y + g && at.z > bb.lo.z - g && at.z < bb.hi.z + g) Signal(When::Shot, o.name);
+            }
+            return;
+        }
+
         ParticleSettings b = particlePreset("Impact"); b.burst = 70; b.speed = 6; b.color0 = 0xFFFFE0; b.color1 = 0xFF9020; b.size0 = 0.08f; SpawnFx(b, at, { 0, 1, 0 });
         ParticleSettings f = particlePreset("Fire"); f.rate = 0; f.burst = 30; f.burstEvery = 99; f.life = 0.4f; SpawnFx(f, at, { 0, 1, 0 });
         flashes.push_back({ at, 0, { 3.0, 1.8, 0.6 }, 7 });
@@ -5457,7 +5643,7 @@ struct App {
     }
     void UpdateBall(double dt) {   // bombs tick, flashes fade, and the ball turns as it rolls
         for (Bomb& b : bombsOut) { b.fuse -= (float)dt; b.fx.update(dt, b.pos, 0, nullptr, b.fuse > 0); }
-        for (size_t i = 0; i < bombsOut.size();) { if (bombsOut[i].fuse <= 0) { V3 at = bombsOut[i].pos; fx.push_back(bombsOut[i].fx); bombsOut.erase(bombsOut.begin() + i); Explode(at); } else i++; }
+        for (size_t i = 0; i < bombsOut.size();) { if (bombsOut[i].fuse <= 0) { V3 at = bombsOut[i].pos; bool pw = bombsOut[i].power; fx.push_back(bombsOut[i].fx); bombsOut.erase(bombsOut.begin() + i); Explode(at, pw); } else i++; }
         for (Flash& f : flashes) f.t += (float)dt;
         flashes.erase(std::remove_if(flashes.begin(), flashes.end(), [](const Flash& f) { return f.t > 0.35f; }), flashes.end());
         if (!player.ball) return;
@@ -5529,7 +5715,7 @@ struct App {
             Line3D(dl, c[0], c[7], (col & 0x00FFFFFF) | 0x60000000); Line3D(dl, c[3], c[4], (col & 0x00FFFFFF) | 0x60000000);   // a cross: "this one breaks"
         }
     }
-    std::vector<std::string> Breakers() { std::vector<std::string> v{ "", "Bomb", "Missile", "Charged shot" }; for (const Beam& b : weapons.beams) v.push_back(b.name); for (const MissileType& m : weapons.missileTypes) if (m.name != "Missile") v.push_back(m.name); return v; }
+    std::vector<std::string> Breakers() { std::vector<std::string> v{ "", "Bomb", "Power Bomb", "Speed Booster", "Missile", "Charged shot" }; for (const Beam& b : weapons.beams) v.push_back(b.name); for (const MissileType& m : weapons.missileTypes) if (m.name != "Missile") v.push_back(m.name); return v; }
     static std::string BreakerLabel(const std::string& b) { return b.empty() ? "Any shot (or bomb, or missile)" : b == "Bomb" ? "Bombs only" : b == "Missile" ? "Missiles only (any kind)" : b == "Charged shot" ? "Charged shots only" : b + " only"; }
     bool BreakerCombo(const char* id, std::string& v) {
         bool ch = false;
@@ -6522,6 +6708,7 @@ struct App {
                 poseAt(demoShots()[1]);
                 frames(8, "weapons_tab");
                 weapPoint = 2; weapYaw = 1.2f; frames(2, "weapons_tab_emitter"); scrollToBeamSounds = true; frames(3, "weapons_tab_sounds");
+                selectBodyTab = true; frames(3, "player_body_tab"); selectItemsTab = true; frames(3, "player_items_tab"); selectWeaponsTab = true; frames(2, "back_to_weapons_2");
                 {   // sounds: a few made-up WAVs in the project, on the player and on the Power Beam's timelines
                     std::error_code ec; fs::create_directories(fs::u8path(SoundsDir()), ec);
                     auto tone = [&](const char* name, float secs, float f0, float f1, float noise) {
@@ -6569,6 +6756,11 @@ struct App {
                     int before = shotsLaunched; holdBeam = false; run(2);
                     for (int k = 0; k < 4; k++) { holdBeam = true; run(1); holdBeam = false; run(14); }   // a tap every quarter second (the rate allows 5 a second)
                     Log("quick taps: " + std::to_string(shotsLaunched - before) + " shots from 4 taps");
+                    {   // items found: the rules change (2 Energy Tanks, the Space Jump Boots, the Gravity Suit)
+                        inv.counts["Energy Tank"] = 2; inv.keys.insert("Space Jump Boots"); inv.keys.insert("Gravity Suit"); UpdateItemRules();
+                        char ib[200]; snprintf(ib, sizeof ib, "items: health %.0f, air jumps %d, damage taken x%.2f, free in water %d", playRules.maxHealth, playRules.airJumps, playRules.damageTaken, (int)playRules.freeInLiquid); Log(ib);
+                        inv.counts.erase("Energy Tank"); inv.keys.erase("Space Jump Boots"); inv.keys.erase("Gravity Suit"); UpdateItemRules();
+                    }
                     b0.waitForAnim = keepWait; run(20);
                 }
                 run(40); weapState.current = 0; holdBeam = true; run(80);

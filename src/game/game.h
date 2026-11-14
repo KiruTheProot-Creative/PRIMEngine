@@ -59,6 +59,12 @@ struct PlayerRules {
     float bombJump = 2.2f;                            // how high a bomb right under the ball throws it (blocks)
     int bombsAtOnce = 3; float bombFuse = 0.9f, bombReach = 1.3f, bombSphere = 3.0f;   // bombSphere: the impact sphere (blocks across, 0: none)   // bombs out at the same time; seconds until they go off; how far they reach (blocks)
     std::string ballModel = "@morph-ball";
+    // set while playing by the items you have (Items tab); not saved with the rules
+    float damageTaken = 1;                            // suits: how much of the damage gets through
+    bool freeInLiquid = false;                        // the Gravity Suit: water and lava do not slow you
+    int airJumps = 0;                                 // Space Jump: jumps in the air
+    bool speedBooster = false; float boostAfter = 1.5f, boostSpeed = 2;   // run this long, then this much faster
+    bool springBall = false; float springJump = 1.2f; // jump while rolled up
     float jumpSpeed() const { return std::sqrt(2 * gravity * std::max(0.1f, jumpHeight)); }
     float bombJumpSpeed() const { return std::sqrt(2 * gravity * std::max(0.f, bombJump)); }
 };
@@ -78,6 +84,8 @@ struct Player {
     double halfW = HALF_W, height = HEIGHT, eyeH = EYE, stepH = 0.6;   // this player's size (from the game's player rules)
     void applySize(const PlayerRules& r);
     bool ball = false;                                // rolled up into the morph ball (a small round body that keeps rolling)
+    int airJumpsUsed = 0; bool jumpPrev = false;       // Space Jump
+    float runTime = 0; bool boosting = false;          // Speed Booster: how long you have been running; at full speed
     V3 feet{ 0.5, 0, 0.5 }, vel{ 0, 0, 0 };
     double yaw = 0, pitch = 0;      // radians; yaw 0 looks toward +Z
     bool flying = true, onGround = false;

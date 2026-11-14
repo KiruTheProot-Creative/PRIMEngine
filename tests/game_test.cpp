@@ -12,6 +12,7 @@
 #include "../src/game/materials.h"
 #include "../src/game/anim.h"
 #include "../src/game/folders.h"
+#include "../src/game/items.h"
 #include <map>
 #include <set>
 #include <filesystem>
@@ -841,6 +842,53 @@ int main() {
         CHECK(b.folderOf(b.modelIn, "DOOR 02") == "Doors/Big ones" && b.models.paths.count("Doors") && b.objects.paths.count("Level 1/Enemies") && b.blocks.paths.count("Empty folder") && b.folderOf(b.textureIn, "laser") == "Arsenal",
               "folders save and load (names with spaces, empty folders too)");
     }
+
+    {   // items
+        ItemSet is = defaultItems(); PlayerRules pr; std::map<std::string, int> got;
+        auto have = [&](const std::string& n) { auto it = got.find(n); return it == got.end() ? 0 : it->second; };
+        ItemEffects e0 = itemEffects(is, pr, have);
+        CHECK(e0.maxHealth == pr.maxHealth && e0.damageTaken == 1 && e0.airJumps == 0 && !e0.powerBombs && e0.canCharge && e0.suit < 0, "nothing found: plain Samus (the Charge Beam is had from the start)");
+        got["Energy Tank"] = 3; got["Missile Expansion"] = 2; got["Space Jump Boots"] = 1; got["Hi-Jump Boots"] = 1; got["Varia Suit"] = 1; got["Gravity Suit"] = 1; got["Power Bomb"] = 1;
+        ItemEffects e = itemEffects(is, pr, have);
+        CHECK(e.maxHealth == pr.maxHealth + 300 && e.missileBonus == 10 && e.airJumps == 1 && e.jumpHeight > pr.jumpHeight && e.powerBombs, "tanks add up; boots and Power Bombs work once found (%.0f energy)", e.maxHealth);
+        CHECK(e.suit >= 0 && is.items[e.suit].name == "Gravity Suit" && e.damageTaken == 0.25f && e.freeInLiquid, "the best suit you have counts (Gravity over Varia)");
+        { ItemSet c = is; for (auto& d : c.items) if (d.type == ItemType::ChargeBeam) d.startsOwned = false;
+          CHECK(!itemEffects(c, pr, have).canCharge, "a Charge Beam to be found: no charging until then");
+          got["Charge Beam"] = 1; CHECK(itemEffects(c, pr, have).canCharge, "found it: charging"); got.erase("Charge Beam");
+          for (auto& d : c.items) if (d.type == ItemType::ChargeBeam) d.used = false;
+          CHECK(itemEffects(c, pr, have).canCharge, "no Charge Beam in the game: beams charge as they are set"); }
+        { ItemSet u = is; for (auto& d : u.items) if (d.type == ItemType::SpaceJump) d.used = false; CHECK(itemEffects(u, pr, have).airJumps == 0, "an item not in the game does nothing, even if picked up"); }
+        CHECK(itemWorks(ItemType::SpaceJump) && !itemWorks(ItemType::ScrewAttack) && itemCounted(ItemType::EnergyTank) && !itemCounted(ItemType::Suit), "what works now / what is counted");
+        ItemSet sv = is; sv.items[0].v[0] = 50; sv.powerBombStart = 2; ItemDef extra; extra.type = ItemType::Suit; extra.name = "Fusion Suit"; extra.v[0] = 0.1f; sv.items.push_back(extra);
+        saveItems("/tmp/prim_items.txt", sv); ItemSet lb; loadItems("/tmp/prim_items.txt", lb);
+        CHECK(lb.items.size() == sv.items.size() && lb.items[0].v[0] == 50 && lb.powerBombStart == 2 && lb.items.back().name == "Fusion Suit", "items save and load (your own suits too)");
+        { std::ofstream old("/tmp/prim_items_old.txt"); old << "items 1\nitem energy_tank Energy%20Tank 1 0 100 0 0 16777215\n"; }
+        ItemSet ol; loadItems("/tmp/prim_items_old.txt", ol);
+        CHECK(ol.items.size() == defaultItems().items.size(), "an older list gets the newer kinds added (%zu)", ol.items.size());
+    }
+
+    {   // the items' moves (Space Jump, Speed Booster, Spring Ball, Gravity Suit)
+        BlockRegistry r2; registerBuiltinBlocks(r2); World w(r2); w.gen.layers = { { r2.find("stone"), 3 } }; w.stream({ 0, 0, 0 }, 4, 2, 100000);
+        auto stand = [&](Player& p) { p.flying = false; p.feet = { 0.5, 6, 0.5 }; p.vel = { 0, 0, 0 }; p.yaw = 3.14159265 / 2; for (int k = 0; k < 40; k++) p.update(w, Controls{}, 0.05, PlayerRules{}); };
+        PlayerRules sj; sj.airJumps = 1; Player p; stand(p);
+        Controls jump; jump.jump = true; p.update(w, jump, 0.02, sj); for (int k = 0; k < 15; k++) p.update(w, Controls{}, 0.02, sj);
+        double vBefore = p.vel.y; p.update(w, jump, 0.02, sj); bool second = p.vel.y > vBefore + 3;
+        for (int k = 0; k < 3; k++) p.update(w, Controls{}, 0.02, sj); double v2 = p.vel.y; p.update(w, jump, 0.02, sj);
+        CHECK(second && p.vel.y < v2 + 1, "Space Jump: one more jump in the air, not two");
+        Player q; stand(q); PlayerRules none; q.update(w, jump, 0.02, none); for (int k = 0; k < 15; k++) q.update(w, Controls{}, 0.02, none);
+        double qv = q.vel.y; q.update(w, jump, 0.02, none); CHECK(q.vel.y <= qv + 1e-9, "without it: no jump in the air");
+        PlayerRules sb; sb.speedBooster = true; sb.boostAfter = 0.5f; sb.boostSpeed = 2; Player b; stand(b);
+        Controls run; run.forward = true; run.sprint = true; b.update(w, run, 0.05, sb); double early = std::fabs(b.vel.x) + std::fabs(b.vel.z);
+        for (int k = 0; k < 15; k++) b.update(w, run, 0.05, sb); double late = std::fabs(b.vel.x) + std::fabs(b.vel.z);
+        CHECK(!early || (b.boosting && late > early * 1.8), "Speed Booster: after running a while, twice as fast (%.1f -> %.1f)", early, late);
+        b.update(w, Controls{}, 0.05, sb); CHECK(!b.boosting && b.runTime == 0, "stopping ends it");
+        PlayerRules spr; spr.springBall = true; Player s2; stand(s2); s2.ball = true; s2.update(w, Controls{}, 0.02, spr); s2.update(w, jump, 0.02, spr);
+        CHECK(s2.vel.y > 3, "Spring Ball: a jump while rolled up");
+        Player s3; stand(s3); s3.ball = true; s3.update(w, Controls{}, 0.02, PlayerRules{}); s3.update(w, jump, 0.02, PlayerRules{}); CHECK(s3.vel.y <= 0.01, "without it: no jumping as a ball");
+    }
+
+    CHECK(breaksWith("Speed Booster", "Speed Booster", false, false) && !breaksWith("", "Speed Booster", false, false) && breaksWith("Power Bomb", "Power Bomb", false, false) && !breaksWith("Power Bomb", "Bomb", false, false),
+          "Speed Booster blocks break when run into (plain ones do not); Power Bomb blocks only for Power Bombs");
 
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
     return fails ? 1 : 0;

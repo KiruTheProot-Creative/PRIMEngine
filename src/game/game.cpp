@@ -65,6 +65,13 @@ void Player::update(const World& w, const Controls& c, double dt, const PlayerRu
     if (c.right) mv += rt;
     if (c.left) mv = mv - rt;
     double speed = flying ? (c.sprint ? 21.6 : 10.9) : (c.sneak ? r.walkSpeed * 0.3 : (c.sprint && r.canSprint) ? r.sprintSpeed : r.walkSpeed);   // blocks per second
+    bool jumpEdge = c.jump && !jumpPrev; jumpPrev = c.jump;
+    if (!flying && !ball && r.speedBooster) {   // Speed Booster: keep running (sprinting, if there is sprint) and it kicks in
+        bool running = length(mv) > 0 && !c.sneak && (c.sprint || !r.canSprint) && c.forward;
+        if (!running) runTime = 0; else if (onGround || boosting) runTime += (float)dt;
+        boosting = running && runTime >= r.boostAfter;
+        if (boosting) speed *= r.boostSpeed;
+    } else { runTime = 0; boosting = false; }
     if (length(mv) > 0) mv = normalize(mv) * speed;
     if (flying) {
         // flying: quick to start and stop, Space up, Shift down
@@ -72,7 +79,7 @@ void Player::update(const World& w, const Controls& c, double dt, const PlayerRu
         vel.x += (mv.x - vel.x) * k; vel.z += (mv.z - vel.z) * k;
         double vy = (c.jump ? 7.5 : 0) - (c.sneak ? 7.5 : 0);
         vel.y += (vy - vel.y) * k;
-    } else if (int liq = w.liquidAt({ feet.x, feet.y + 0.6, feet.z })) {
+    } else if (int liq = r.freeInLiquid ? 0 : w.liquidAt({ feet.x, feet.y + 0.6, feet.z })) {   // (the Gravity Suit moves as on land)
         // swimming: slow, you sink a little, Space swims up; lava is much thicker
         double k = liq == 2 ? 0.3 : 0.55;
         vel.x = mv.x * k; vel.z = mv.z * k;
@@ -86,10 +93,13 @@ void Player::update(const World& w, const Controls& c, double dt, const PlayerRu
         double k = std::min(1.0, dt * (length(mv) > 0 ? 5.0 : 1.8));
         vel.x += (mv.x - vel.x) * k; vel.z += (mv.z - vel.z) * k;
         vel.y = std::max(vel.y - (double)r.gravity * dt, -78.0);
+        if (r.springBall && jumpEdge && onGround) vel.y = std::sqrt(2 * r.gravity * std::max(0.1f, r.springJump));   // the Spring Ball
     } else {
         vel.x = mv.x; vel.z = mv.z;
         vel.y = std::max(vel.y - (double)r.gravity * dt, -78.0);
+        if (onGround) airJumpsUsed = 0;
         if (c.jump && onGround) vel.y = r.jumpSpeed();   // default about 1.25 blocks high
+        else if (!onGround && jumpEdge && airJumpsUsed < r.airJumps) { vel.y = r.jumpSpeed(); airJumpsUsed++; }   // Space Jump: again in the air
     }
     feet = w.moveBox(feet, vel, halfW, height, dt, onGround, flying ? 0.0 : stepH);   // walking climbs half blocks and stairs by itself
     if (flying && onGround && c.sneak) flying = false;   // land by flying down onto the ground
@@ -166,7 +176,7 @@ PlayState::Event PlayState::tick(const World& w, Player& p, const PlayerRules& r
     if (!p.onGround && p.vel.y < 0 && !w.liquidAt({ p.feet.x, p.feet.y + 0.3, p.feet.z })) { if (!falling) { falling = true; fallStart = p.feet.y; } }
     else if (falling) {
         falling = false; double h = fallStart - p.feet.y;
-        if (p.onGround && r.fallDamage > 0 && h > 4) { health -= r.fallDamage * (float)(h - 4); cause = "fell too far"; }
+        if (p.onGround && r.fallDamage > 0 && h > 4) { health -= r.fallDamage * r.damageTaken * (float)(h - 4); cause = "fell too far"; }
     }
     if (p.feet.y < r.voidDepth) { health = 0; cause = "fell out of the world"; }
     if (health < before) hurtFlash = 0.4;
