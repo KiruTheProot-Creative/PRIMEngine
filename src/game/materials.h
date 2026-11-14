@@ -24,6 +24,7 @@ TexMaterial guessMaterial(const std::string& textureName);   // from its name, f
 
 struct Materials {
     std::map<std::string, TexMaterial> set;                   // textures someone set up, by name
+    bool guess = true;                                         // textures nobody set up: a guess from their name (else plain)
     TexMaterial of(const std::string& textureName) const;      // its own settings, or the guess
     bool isSet(const std::string& textureName) const { return set.count(textureName) > 0; }
     void put(const std::string& textureName, const TexMaterial& m) { set[textureName] = m; }

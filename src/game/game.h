@@ -31,7 +31,8 @@ struct Settings {
     float bumps = 1.0f;        // generated normals: a bumpy surface made from each texture's light and dark pixels (0 = off)
     float coat = 1.0f;         // coated textures: a fine noise over each pixel (0 = off)
     bool materials = true;     // texture materials: shiny, metal, glowing
-    bool hudGlow = true;       // the HUD's glow, and its light on the helmet's 3D parts
+    bool hudGlow = true;
+    bool guessMaterials = true; // textures nobody set up get a material guessed from their name       // the HUD's glow, and its light on the helmet's 3D parts
     bool load(const std::string& path);
     bool save(const std::string& path) const;
 };

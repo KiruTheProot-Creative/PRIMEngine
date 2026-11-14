@@ -406,6 +406,7 @@ struct App {
     std::string matTex;   // the texture picked in Blocks & textures (its material shows next to the list)
     void SaveMaterials() { if (!projectDir.empty()) saveMaterials(projectDir + "/materials.txt", materials); matsDirty = true; }
     void BindMaterials() {
+        if (materials.guess != settings.guessMaterials) { materials.guess = settings.guessMaterials; matsDirty = true; }
         if (matsDirty || !matSRV) {
             std::vector<float> t = materials.table(reg); size_t n = t.size() / 8; matsDirty = false;
             if (!matBuf || n != matCount) {
@@ -2967,6 +2968,8 @@ struct App {
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Coated textures: a fine noise inside each pixel, so big flat pixels look like stone, dirt, wood...\nPer texture: Blocks & textures > Textures > Coat.");
         ch_ |= ImGui::Checkbox("Texture materials (shiny, metal, glowing)", &settings.materials);
         ch_ |= ImGui::Checkbox("HUD glow (and its light on the helmet)", &settings.hudGlow);
+        if (ImGui::Checkbox("Guess materials from texture names", &settings.guessMaterials)) { ch_ = true; matsDirty = true; }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Textures you did not set up get a material from their name's words\n(iron: metal, glass / ice: shiny, lamp / lava: glowing...). Off: they stay plain.");
         const char* aq[] = { "Off (only block corners)", "Normal", "High" }; ch_ |= ImGui::Combo("Ambient occlusion", &settings.ambientOcclusion, aq, 3);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Soft shade in corners, under overhangs and where things touch.\nWorks for everything on screen.");
         if (settings.ambientOcclusion > 0) ch_ |= ImGui::SliderFloat("Occlusion strength", &settings.aoStrength, 0.2f, 3.f, "%.1f");

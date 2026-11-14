@@ -740,6 +740,10 @@ int main() {
     {   // materials per texture
         TexMaterial iron = guessMaterial("iron_block"), lamp = guessMaterial("Red Lamp"), dirt = guessMaterial("dirt"), glass = guessMaterial("glass");
         CHECK(iron.metal > 0.5f && iron.shine > 0.3f && lamp.glow > 0 && lamp.glowFrom > 0 && dirt == TexMaterial{} && glass.shine > 0.5f && glass.coat == 0, "a texture's name gives a first guess (iron: metal, lamp: glows, glass: shiny, dirt: plain)");
+        CHECK(guessMaterial("grass_slice") == TexMaterial{} && guessMaterial("twilight_grass") == TexMaterial{} && guessMaterial("Grass Block Top") == TexMaterial{} && guessMaterial("ironworks").metal > 0,
+              "guesses need a whole word (or its start): slice is not ice, twilight is not light");
+        CHECK(guessMaterial("GlowStone").glow > 0 && guessMaterial("polishedMarble").shine > 0 && guessMaterial("Ice_Block").shine > 0, "words split at _ spaces and capitals");
+        { Materials ng; ng.guess = false; CHECK(ng.of("iron_block") == TexMaterial{}, "guessing off: plain"); }
         Materials mats; TexMaterial gold; gold.metal = 1; gold.shine = 0.9f; gold.coat = 0.25f; mats.put("dirt", gold);
         CHECK(mats.of("dirt").metal == 1 && mats.of("iron_block").metal == iron.metal, "set up textures keep their settings, the others get the guess");
         BlockRegistry r; std::vector<uint8_t> px(16 * 16 * 4, 200); r.setTexture("dirt", 16, 16, px); r.setTexture("glow lamp", 16, 16, px);
