@@ -166,6 +166,14 @@ right mouse fires a missile (ammo is a counter, "Missile" by default, so the HUD
 - **3D models** (FBX and built-in) get the bumps and coat from their own picture's pixels too, and a **material per model** (shiny, metal, glow...): in the object Inspector, a HUD part, a beam's cannon or a missile kind, under "Material of ...". It counts everywhere that model is used.
 - **HUD glow:** each 2D plane gets a soft **Bloom** around what is drawn on it, and **Lights the helmet**: its light (in its colours; bigger and brighter elements give more) falls a little on the helmet's 3D parts. Settings > Look > HUD glow switches both.
 
+## Changing between animations (like the first prototype)
+
+When one animation takes over from another, or a model goes back to rest, its parts don't jump. In the 3D viewer (models with animations) under **Changing between animations**:
+- **Inertialization** (default): the parts keep moving the way they were and settle onto the new animation along a smooth curve. It stays smooth even when a new one starts in the middle of a change.
+- **Crossfade**: a mix from what was on screen to the new one, along a curve (linear, ease in, ease out, smooth).
+- **Cut**: no blending.
+- **Blend time** in seconds. Saved per model in `anim_blend.txt` and used everywhere the model is used: arm cannons (fire, charging, charged loop, missile, back to rest), doors (opening turning into closing) and the viewer.
+
 ## Sounds, timelines and free aim
 
 - **Sounds:** WAV files (PCM 8/16/24/32-bit or float, any rate). Import them in Player editor > **Sounds** (or from any sound picker); they go into the project's `sounds` folder. Every sound use has volume, pitch, random pitch (so steps don't sound the same) and a cut (start into the sound, how long). Settings > Sound volume for everything.

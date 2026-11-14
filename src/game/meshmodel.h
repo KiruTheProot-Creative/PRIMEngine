@@ -37,6 +37,10 @@ struct MeshModel {
     size_t triangles() const { return idx.size() / 3; }
     // the corners with the moving parts where an animation has them at `time` seconds (no clip: as imported)
     std::vector<MeshVert> posed(int clip, float time) const;
+    // the same in two steps, so poses can be blended: each moving part's 9 numbers (move xyz, turn xyz in degrees, size xyz)
+    // where the clip has them (no clip: at rest), then the corners for such a pose
+    std::vector<double> pose(int clip, float time) const;
+    std::vector<MeshVert> posedFrom(const std::vector<double>& pose) const;
     int findClip(const std::string& name) const;   // not case-sensitive; -1 if there is none
     bool save(const std::string& path) const;
     bool load(const std::string& path);

@@ -10,6 +10,7 @@
 #include "../src/game/weapons.h"
 #include "../src/game/breakable.h"
 #include "../src/game/materials.h"
+#include "../src/game/anim.h"
 #include <map>
 #include <set>
 #include <filesystem>
@@ -23,6 +24,7 @@ using namespace mc;
 int fails = 0;
 #define CHECK(c, ...) do { if (!(c)) { printf("FAIL: " __VA_ARGS__); printf("\n"); fails++; } else { printf("ok:   " __VA_ARGS__); printf("\n"); } } while (0)
 
+static double wrapTest(double d) { d = std::fmod(d + 180.0, 360.0); if (d < 0) d += 360.0; return d - 180.0; }
 int main() {
     BlockRegistry reg; registerBuiltinBlocks(reg);
     World w(reg); WorldInfo info; info.applyGenerator(w.gen, reg); w.stream({ 0, 0, 0 }, 4, 2, 100000);
@@ -764,6 +766,38 @@ int main() {
         p.opacity = 0.5f; CHECK(std::fabs(planeLight(p).x - a.x * 0.5) < 1e-6, "half see-through: half the light");
         p.bloom = 0.2f; p.lightUp = 0.9f; HudLayout h; h.planes = { p }; saveHud("/tmp/prim_hudglow.txt", h); HudLayout hb; loadHud("/tmp/prim_hudglow.txt", hb);
         CHECK(hb.planes.size() == 1 && hb.planes[0].bloom == 0.2f && hb.planes[0].lightUp == 0.9f, "a plane's glow and light save and load");
+    }
+
+    {   // smooth changes between animations
+        PartPose A(9, 0.0), B(9, 0.0); B[0] = 1; B[4] = 90;   // part 0: moved 1 along x, turned 90 degrees around y
+        BlendSettings cut; cut.mode = BlendMode::Cut;
+        { PoseBlender p; p.update(A, 1, 1 / 60.f, cut); CHECK(p.update(B, 2, 1 / 60.f, cut)[0] == 1, "cut: the new clip at once"); }
+        BlendSettings cf; cf.mode = BlendMode::Crossfade; cf.curve = BlendCurve::Linear; cf.time = 0.2f;
+        { PoseBlender p; p.update(A, 1, 0.1f, cf); const PartPose& h = p.update(B, 2, 0.1f, cf);
+          CHECK(std::fabs(h[0] - 0.5) < 1e-6 && std::fabs(h[4] - 45) < 1e-4 && p.busy(), "crossfade: half way after half the time (%.2f, %.1f deg)", h[0], h[4]);
+          p.update(B, 2, 0.15f, cf); CHECK(!p.busy() && p.update(B, 2, 0.01f, cf)[0] == 1, "then the new clip"); }
+        { BlendSettings sm = cf; sm.curve = BlendCurve::Smooth; PoseBlender p; p.update(A, 1, 0.05f, sm); double e = p.update(B, 2, 0.05f, sm)[0];
+          CHECK(e > 0 && e < 0.25, "smooth curve: starts slowly (%.3f after a quarter)", e); }
+        { PartPose R1(9, 0.0), R2(9, 0.0); R1[3] = 170; R2[3] = -170; PoseBlender p; p.update(R1, 1, 0.1f, cf); double m = p.update(R2, 2, 0.1f, cf)[3];
+          CHECK(std::fabs(std::fabs(wrapTest(m)) - 180) < 1e-3, "turns go the short way round (170 -> -170 passes 180, not 0: %.1f)", m); }
+        BlendSettings in; in.time = 0.25f;
+        { PoseBlender p; p.update(A, 1, 1 / 60.f, in); const PartPose& f0 = p.update(B, 2, 1 / 60.f, in);
+          CHECK(f0[0] < 0.1 && f0[4] < 9, "inertialization: no jump when the clip changes (%.3f)", f0[0]);
+          double last = f0[0]; bool steady = true; for (int k = 0; k < 30; k++) { double x = p.update(B, 2, 1 / 60.f, in)[0]; steady &= x >= last - 1e-9; last = x; }
+          CHECK(steady && std::fabs(last - 1) < 1e-6 && !p.busy(), "then it settles onto the new clip, never going back (%.4f)", last); }
+        {   // changing clips in the middle of a change: still no jump
+            PoseBlender p; p.update(A, 1, 1 / 60.f, in); for (int k = 0; k < 5; k++) p.update(B, 2, 1 / 60.f, in);
+            double before = p.now()[0]; double after = p.update(A, 3, 1 / 60.f, in)[0];
+            CHECK(std::fabs(after - before) < 0.08, "switching again mid-way stays smooth (%.3f -> %.3f)", before, after);
+        }
+        { PoseBlender p; p.update(A, 1, 1 / 60.f, in); PartPose moving = A; for (int k = 1; k <= 6; k++) { moving[0] = k * 0.05; p.update(moving, 1, 1 / 60.f, in); }
+          PartPose stopAt = moving; double x1 = p.update(stopAt, 2, 1 / 60.f, in)[0]; double x2 = p.update(stopAt, 2, 1 / 60.f, in)[0];
+          CHECK(std::fabs(x1 - 0.3) < 1e-9 && std::fabs(x2 - 0.3) < 1e-9, "a clip ending where the next starts: nothing to blend"); }
+        AnimBlends ab; ab.def.time = 0.3f; BlendSettings dm; dm.mode = BlendMode::Crossfade; dm.curve = BlendCurve::EaseOut; dm.time = 0.5f; ab.byModel["DOOR 02"] = dm;
+        saveAnimBlends("/tmp/prim_blend.txt", ab); AnimBlends ab2; loadAnimBlends("/tmp/prim_blend.txt", ab2);
+        CHECK(ab2.of("DOOR 02") == dm && ab2.of("other").time == 0.3f && ab2.of("other").mode == BlendMode::Inertialize, "change-over settings save and load (per model, and the default)");
+        MeshModel mm; CHECK(builtinShape("@arm-cannon", mm), "a model");
+        CHECK(mm.pose(-1, 0).size() == mm.parts.size() * 9, "a model's pose: 9 numbers per moving part");
     }
 
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);

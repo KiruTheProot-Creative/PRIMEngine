@@ -420,24 +420,34 @@ static float sampleTrack(const AnimTrack& t, float time) {
     float a = t.time[k - 1], b = t.time[k], f = b > a ? (time - a) / (b - a) : 0;
     return t.value[k - 1] + (t.value[k] - t.value[k - 1]) * f;
 }
+std::vector<double> MeshModel::pose(int clip, float time) const {
+    std::vector<double> p(parts.size() * 9);
+    for (size_t i = 0; i < parts.size(); i++) for (int k = 0; k < 3; k++) { p[i * 9 + k] = parts[i].t[k]; p[i * 9 + 3 + k] = parts[i].r[k]; p[i * 9 + 6 + k] = parts[i].s[k]; }
+    if (clip >= 0 && clip < (int)clips.size())
+        for (const AnimTrack& t : clips[clip].tracks) if (t.part >= 0 && t.part < (int)parts.size() && t.prop >= 0 && t.prop < 3 && t.axis >= 0 && t.axis < 3) p[t.part * 9 + t.prop * 3 + t.axis] = sampleTrack(t, time);
+    return p;
+}
 std::vector<MeshVert> MeshModel::posed(int clip, float time) const {
+    if (clip < 0 || clip >= (int)clips.size()) return raw;
+    return posedFrom(pose(clip, time));
+}
+std::vector<MeshVert> MeshModel::posedFrom(const std::vector<double>& pose) const {
     std::vector<MeshVert> out = raw;
-    if (clip < 0 || clip >= (int)clips.size() || parts.empty() || vpart.size() != raw.size()) return out;
+    if (parts.empty() || vpart.size() != raw.size() || pose.size() != parts.size() * 9) return out;
     std::vector<fbx::M4> moveBy(parts.size()); std::vector<char> done(parts.size(), 0);
     std::function<void(size_t, int)> solve = [&](size_t p, int depth) {   // a part moves by its own animation, on top of the part it hangs from
         if (done[p]) return;
         const MeshPart& mp = parts[p];
         int pp = mp.parentPart >= 0 && mp.parentPart < (int)parts.size() && mp.parentPart != (int)p && depth < 64 ? mp.parentPart : -1;
         if (pp >= 0) solve((size_t)pp, depth + 1);
-        double now[3][3] = { { mp.t[0], mp.t[1], mp.t[2] }, { mp.r[0], mp.r[1], mp.r[2] }, { mp.s[0], mp.s[1], mp.s[2] } };
-        for (const AnimTrack& t : clips[clip].tracks) if (t.part == (int)p && t.prop >= 0 && t.prop < 3 && t.axis >= 0 && t.axis < 3) now[t.prop][t.axis] = sampleTrack(t, time);
+        const double* now = &pose[p * 9];
         auto local = [&](const double T[3], const double R[3], const double S[3]) {
             V3 piv{ mp.pivot[0], mp.pivot[1], mp.pivot[2] };
             return fbx::mul(fbx::trans({ T[0], T[1], T[2] }), fbx::mul(fbx::trans(piv), fbx::mul(fbx::euler({ mp.pre[0], mp.pre[1], mp.pre[2] }, 0),
                    fbx::mul(fbx::euler({ R[0], R[1], R[2] }, mp.order), fbx::mul(fbx::trans(piv * -1), fbx::scal({ S[0], S[1], S[2] }))))));
         };
         fbx::M4 parent; std::copy(mp.parent, mp.parent + 16, parent.begin());
-        fbx::M4 rest = fbx::mul(parent, local(mp.t, mp.r, mp.s)), at = fbx::mul(parent, local(now[0], now[1], now[2]));
+        fbx::M4 rest = fbx::mul(parent, local(mp.t, mp.r, mp.s)), at = fbx::mul(parent, local(now, now + 3, now + 6));
         if (pp >= 0) at = fbx::mul(moveBy[pp], at);   // the parent's motion carries it
         moveBy[p] = fbx::mul(at, inverseAffine(rest)); done[p] = 1;
     };

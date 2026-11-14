@@ -16,6 +16,7 @@
 #include "../game/hud.h"
 #include "../game/weapons.h"
 #include "../game/materials.h"
+#include "../game/anim.h"
 #include "../game/sound.h"
 #include "../game/breakable.h"
 #include "../game/weather.h"
@@ -922,18 +923,29 @@ struct App {
                     ImGui::SameLine(); ImGui::PushID(c);
                     bool on = viewerClip == c;
                     if (on) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
-                    if (ImGui::Button((m.clips[c].name + " (" + std::to_string((int)std::lround(m.clips[c].length * 1000)) + " ms)").c_str())) { viewerClip = c; viewerTime = 0; }
+                    if (ImGui::Button((m.clips[c].name + " (" + std::to_string((int)std::lround(m.clips[c].length * 1000)) + " ms)").c_str())) { viewerClip = c; viewerTime = 0; viewerPlayId++; }
                     if (on) ImGui::PopStyleColor();
                     ImGui::PopID();
                 }
                 ImGui::SameLine(); ImGui::Checkbox("Loop", &viewerLoop);
-                ImGui::SameLine(); if (ImGui::SmallButton("As imported")) viewerClip = -1;
+                ImGui::SameLine(); if (ImGui::SmallButton("As imported")) { viewerClip = -1; viewerPlayId++; }
                 if (viewerClip >= (int)m.clips.size()) viewerClip = -1;
                 if (viewerClip >= 0) {
                     viewerTime += std::min(io.DeltaTime, 1.f / 30); float L = std::max(0.001f, m.clips[viewerClip].length);
                     if (viewerTime > L) viewerTime = viewerLoop ? std::fmod(viewerTime, L) : L;
                 }
-                Hint("%d moving parts. They play when the door opens and closes (next step).", (int)m.parts.size());
+                Hint("%d moving parts. Doors play \"open\" and \"close\"; arm cannons the clips set on their beam.", (int)m.parts.size());
+                {   // how one animation turns into the next (like the first prototype)
+                    ImGui::SeparatorText("Changing between animations");
+                    BlendSettings b = animBlends.of(m.name), before = b;
+                    int mode = (int)b.mode; const char* modes[] = { "Inertialization (smooth, keeps its swing)", "Crossfade (a mix)", "Cut (no blending)" };
+                    Prop("Blend type"); ImGui::Combo("##bmode", &mode, modes, 3); b.mode = (BlendMode)mode;
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Inertialization: the parts keep moving the way they were and settle onto the new animation.\nStays smooth even when a new one starts in the middle of a change.\nCrossfade: a plain mix from the old to the new, along the curve.");
+                    if (b.mode != BlendMode::Cut) { Prop("Blend time"); ImGui::SliderFloat("##btime", &b.time, 0.02f, 1.5f, "%.2f s"); }
+                    if (b.mode == BlendMode::Crossfade) { int cv = (int)b.curve; const char* curves[] = { "Linear", "Ease in", "Ease out", "Smooth" }; Prop("Curve"); ImGui::Combo("##bcurve", &cv, curves, 4); b.curve = (BlendCurve)cv; }
+                    if (!(b == before)) { animBlends.byModel[m.name] = b; SaveAnimBlends(); }
+                    Hint("Press another animation (or As imported) to watch the change. Counts everywhere this model is used.");
+                }
             }
         } else if (const BlockModel* bm = models.find(viewerModel)) Hint("Made of %d blocks. Block models are always 1 block per block; size objects in the Inspector.", bm->blockCount());
         ImGui::Checkbox("Player and morph ball", &viewerPeople); ImGui::SameLine(); ImGui::Checkbox("Collision boxes", &viewerBoxes); ImGui::SameLine(); ImGui::Checkbox("Size box", &viewerBounds);
@@ -966,9 +978,14 @@ struct App {
         WorldObject vo; vo.model = viewerModel;
         const ModelGpu* use = nullptr;
         auto it = meshModels.find(viewerModel);
-        if (viewerClip >= 0 && it != meshModels.end()) {   // the animation, this frame
-            const ModelGpu& base = GpuModel(viewerModel);
-            UploadMeshVerts(viewerAnim, it->second, it->second.posed(viewerClip, viewerTime)); viewerAnim.mesh = true; viewerAnim.tex = base.tex; use = &viewerAnim;
+        if (it != meshModels.end() && !it->second.parts.empty()) {   // the animation, this frame (blended into the next one)
+            if (viewerModel != viewerBlendModel) { viewerBlend.reset(); viewerBlendModel = viewerModel; }
+            float dt = std::min(ImGui::GetIO().DeltaTime, 1.f / 30);
+            const PartPose& p = viewerBlend.update(it->second.pose(viewerClip, viewerTime), viewerPlayId, dt, animBlends.of(viewerModel));
+            if (viewerClip >= 0 || viewerBlend.busy()) {
+                const ModelGpu& base = GpuModel(viewerModel);
+                UploadMeshVerts(viewerAnim, it->second, it->second.posedFrom(p)); viewerAnim.mesh = true; viewerAnim.tex = base.tex; use = &viewerAnim;
+            }
         }
         DrawObject(vo, 0, viewerEye, use); DrawObject(vo, 1, viewerEye, use);
         ID3D11ShaderResourceView* none[10] = {}; ctx->PSSetShaderResources(0, 10, none);
@@ -1683,7 +1700,7 @@ struct App {
     }
     // the door's place in Play mode: animations, forcefield, collision
     void UpdateDoors(double dt) {
-        if (!playMode) { doorRt.clear(); doorGpu.clear(); shots.clear(); return; }
+        if (!playMode) { doorRt.clear(); doorGpu.clear(); doorBlend.clear(); shots.clear(); return; }
         bool changed = false;
         for (WorldObject& o : objects) {
             if (o.kind != ObjKind::Door) continue;
@@ -1697,10 +1714,16 @@ struct App {
             if (before && !r.blocks()) Signal(When::DoorOpens, o.name); else if (!before && r.blocks()) Signal(When::DoorCloses, o.name);
             // the halves where the animation has them
             auto mi = meshModels.find(o.model);
-            if (mi != meshModels.end() && r.clip >= 0) {
-                int clip = ClipOf(o.model, r.clip); float t = r.clipTime;
-                if (r.clip == 1 && clip < 0 && CloseIsReversed(o.model)) { clip = ClipOf(o.model, 0); t = std::max(0.f, ClipLen(o.model, 0) - r.clipTime); }
-                ModelGpu& g = doorGpu[o.id]; UploadMeshVerts(g, mi->second, mi->second.posed(clip, t)); g.mesh = true; g.tex = GpuModel(o.model).tex;
+            if (mi != meshModels.end() && !mi->second.parts.empty()) {   // blended smoothly when opening turns into closing (or the other way)
+                int clip = -1; float t = 0;
+                if (r.clip >= 0) {
+                    clip = ClipOf(o.model, r.clip); t = r.clipTime;
+                    if (r.clip == 1 && clip < 0 && CloseIsReversed(o.model)) { clip = ClipOf(o.model, 0); t = std::max(0.f, ClipLen(o.model, 0) - r.clipTime); }
+                }
+                PoseBlender& pb = doorBlend[o.id];
+                const PartPose& p = pb.update(mi->second.pose(clip, t), r.clip, (float)dt, animBlends.of(o.model));
+                if (r.clip >= 0 || pb.busy()) { ModelGpu& g = doorGpu[o.id]; UploadMeshVerts(g, mi->second, mi->second.posedFrom(p)); g.mesh = true; g.tex = GpuModel(o.model).tex; }
+                else doorGpu.erase(o.id);
             } else doorGpu.erase(o.id);
         }
         if (changed) RebuildSolids();
@@ -3823,7 +3846,8 @@ struct App {
     double prevPlayYaw = 0, prevPlayPitch = 0, prevVelY = 0; bool prevOnGround = true;
 
     std::string HudPath() const { return projectDir + "/hud.txt"; }
-    void LoadHud() { materials = Materials{}; loadMaterials(projectDir + "/materials.txt", materials); matsDirty = true; soundCache.clear(); playerSounds = PlayerSounds{}; loadPlayerSounds(projectDir + "/player_sounds.txt", playerSounds); activeTl.clear();
+    void LoadHud() { animBlends = AnimBlends{}; loadAnimBlends(projectDir + "/anim_blend.txt", animBlends); cannonBlend.reset(); doorBlend.clear(); viewerBlend.reset();
+        materials = Materials{}; loadMaterials(projectDir + "/materials.txt", materials); matsDirty = true; soundCache.clear(); playerSounds = PlayerSounds{}; loadPlayerSounds(projectDir + "/player_sounds.txt", playerSounds); activeTl.clear();
         hud = HudLayout{}; loadHud(HudPath(), hud); weapons = WeaponSet{}; loadWeapons(projectDir + "/weapons.txt", weapons); weapSel = 0; weapState = WeaponState{}; hudImages.clear(); hudSel = 0; hudPlane = 0; hudEl = -1; hudPart = 0; }
     void SaveHud() {
         if (projectDir.empty()) return; std::error_code ec;
@@ -4446,6 +4470,9 @@ struct App {
     WeaponSet weapons; WeaponState weapState; WeaponPose weapPose, previewPose;
     bool chargeTlOn = false; float cannonSpeed = 1;
     ParticleEmitter chargeFx{ particlePreset("Charge"), 77 }; V3 chargeAt{ 0, 0, 0 }; bool holdBeam = false;   // holdBeam: screenshots hold the button
+    AnimBlends animBlends; PoseBlender cannonBlend, viewerBlend; std::map<uint32_t, PoseBlender> doorBlend;   // smooth changes between animations
+    std::string cannonBlendModel; int cannonPlayId = 0; bool cannonPosed = false; int viewerPlayId = 0; std::string viewerBlendModel;
+    void SaveAnimBlends() { if (!projectDir.empty()) saveAnimBlends(projectDir + "/anim_blend.txt", animBlends); }
     ModelGpu cannonGpu; int cannonClip = -1; float cannonT = 0; bool missilePrev = true; float firedPending = 0, previewFired = 0;
     bool selectWeaponsTab = false, selectSoundsTab = false; bool weapTimelineView = false;
     int weapSel = 0, weapPoint = 1;   // the beam picked in the editor; the point being edited (0 pivot, 1 muzzle, 2 emitter)
@@ -4467,14 +4494,23 @@ struct App {
         const Beam* b = CurrentBeam(); if (!b) return 0;
         auto it = meshModels.find(b->model); if (it == meshModels.end() || clip.empty()) return 0;
         int c = it->second.findClip(clip); if (c < 0) return 0;
-        cannonClip = c; cannonT = 0; cannonSpeed = 1; cannonLoop = loop; return it->second.clips[c].length;
+        cannonClip = c; cannonT = 0; cannonSpeed = 1; cannonLoop = loop; cannonPlayId++; return it->second.clips[c].length;
     }
-    void UpdateCannon(double dt) {
-        const Beam* b = CurrentBeam(); if (!b || cannonClip < 0) return;
-        auto mi = meshModels.find(b->model); if (mi == meshModels.end() || cannonClip >= (int)mi->second.clips.size()) { cannonClip = -1; return; }
-        float len = mi->second.clips[cannonClip].length; cannonT += (float)dt * cannonSpeed;
-        if (cannonT >= len) { if (cannonLoop && len > 0) cannonT = std::fmod(cannonT, len); else { cannonClip = -1; return; } }
-        UploadMeshVerts(cannonGpu, mi->second, mi->second.posed(cannonClip, cannonT)); cannonGpu.mesh = true; cannonGpu.tex = GpuModel(b->model).tex;
+    void UpdateCannon(double dt) {   // its animation, blended smoothly into the next one (and back to rest when it ends)
+        const Beam* b = CurrentBeam(); cannonPosed = false;
+        if (!b) { cannonClip = -1; return; }
+        auto mi = meshModels.find(b->model); if (mi == meshModels.end() || mi->second.parts.empty()) { cannonClip = -1; cannonBlend.reset(); return; }
+        if (b->model != cannonBlendModel) { cannonBlend.reset(); cannonBlendModel = b->model; }   // another cannon: nothing to blend from
+        const MeshModel& m = mi->second;
+        if (cannonClip >= (int)m.clips.size()) cannonClip = -1;
+        if (cannonClip >= 0) {
+            float len = m.clips[cannonClip].length; cannonT += (float)dt * cannonSpeed;
+            if (cannonT >= len) { if (cannonLoop && len > 0) cannonT = std::fmod(cannonT, len); else { cannonClip = -1; cannonT = 0; } }
+        }
+        int key = cannonClip >= 0 ? cannonPlayId * 2 : cannonPlayId * 2 + 1;   // each new play (and its end) is a change
+        const PartPose& p = cannonBlend.update(m.pose(cannonClip, cannonT), key, (float)dt, animBlends.of(b->model));
+        cannonPosed = cannonClip >= 0 || cannonBlend.busy();
+        if (cannonPosed) { UploadMeshVerts(cannonGpu, m, m.posedFrom(p)); cannonGpu.mesh = true; cannonGpu.tex = GpuModel(b->model).tex; }
     }
     // where the cannon is in camera space: a point on the model (blocks from its corner) -> camera space = base + ax * l.x + ay * l.y + az * l.z
     struct CannonXf { V3 base, ax, ay, az; };
@@ -4508,7 +4544,7 @@ struct App {
             c.base = sw.apply(p.pos, p.sway); out.push_back(c);
         }
         if (const Beam* b = CurrentBeam()) {
-            CannonXf x; if (CannonPlacement(*b, sw, wp, x)) { CamPart c; c.model = b->model; c.base = x.base; c.ax = x.ax; c.ay = x.ay; c.az = x.az; c.gpu = cannonClip >= 0 ? &cannonGpu : nullptr; c.cannon = true; out.push_back(c); }
+            CannonXf x; if (CannonPlacement(*b, sw, wp, x)) { CamPart c; c.model = b->model; c.base = x.base; c.ax = x.ax; c.ay = x.ay; c.az = x.az; c.gpu = cannonPosed ? &cannonGpu : nullptr; c.cannon = true; out.push_back(c); }
         }
         return out;
     }
@@ -4641,7 +4677,7 @@ struct App {
         ctx->IASetInputLayout(layout.Get()); ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         ctx->VSSetShader(vsPreview.Get(), nullptr, 0); ctx->PSSetShader(psPreview.Get(), nullptr, 0);
         ctx->PSSetShaderResources(0, 1, texArray.GetAddressOf()); ctx->PSSetSamplers(0, 1, sampBlocks.GetAddressOf());
-        WorldObject vo; vo.model = b.model; const ModelGpu* use = weapSel == weapState.current && cannonClip >= 0 ? &cannonGpu : nullptr;
+        WorldObject vo; vo.model = b.model; const ModelGpu* use = weapSel == weapState.current && cannonPosed ? &cannonGpu : nullptr;
         DrawObject(vo, 0, weapEye, use); DrawObject(vo, 1, weapEye, use);
         ID3D11ShaderResourceView* none[10] = {}; ctx->PSSetShaderResources(0, 10, none); ctx->RSSetState(rsCull.Get());
         ctx->OMSetRenderTargets(0, nullptr, nullptr);
@@ -6082,6 +6118,14 @@ struct App {
                     viewerModel = "DOOR_02"; viewerOpen = true; viewerFit = true; viewerYaw = -0.6f; viewerPitch = 0.25f; viewerClip = meshModels["DOOR_02"].findClip("open"); viewerLoop = false;
                     viewerTime = 0.62f; frames(1, "door2_viewer_turning");
                     viewerTime = 0.9f; frames(1, "door2_viewer_sliding_apart");
+                    {   // back to rest, blended: caught part way (a slow crossfade, so the picture shows it), then the default
+                        BlendSettings slow; slow.mode = BlendMode::Crossfade; slow.curve = BlendCurve::Smooth; slow.time = 1.2f; animBlends.byModel["DOOR_02"] = slow;
+                        frames(1, "door2_viewer_open_before_blend");
+                        viewerClip = -1; viewerPlayId++; frames(10, "door2_viewer_blending_back_to_rest");
+                        Log(std::string("door blend: ") + (viewerBlend.busy() ? "still blending" : "already done") + " after 10 frames");
+                        animBlends.byModel.erase("DOOR_02"); viewerBlend.reset();
+                        viewerClip = meshModels["DOOR_02"].findClip("open"); viewerTime = 0.9f;
+                    }
                     { PlayerRules keep = game.player; game.player.height = 1.2f; game.player.width = 0.5f; game.player.eyeHeight = 1.05f; game.player.ballSize = 0.75f; viewerClip = -1;
                       frames(1, "viewer_smaller_player_and_ball"); game.player = keep; }
                     viewerOpen = false; viewerClip = -1;
