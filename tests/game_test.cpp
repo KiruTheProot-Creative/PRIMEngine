@@ -11,6 +11,7 @@
 #include "../src/game/breakable.h"
 #include "../src/game/materials.h"
 #include "../src/game/anim.h"
+#include "../src/game/folders.h"
 #include <map>
 #include <set>
 #include <filesystem>
@@ -794,10 +795,45 @@ int main() {
           PartPose stopAt = moving; double x1 = p.update(stopAt, 2, 1 / 60.f, in)[0]; double x2 = p.update(stopAt, 2, 1 / 60.f, in)[0];
           CHECK(std::fabs(x1 - 0.3) < 1e-9 && std::fabs(x2 - 0.3) < 1e-9, "a clip ending where the next starts: nothing to blend"); }
         AnimBlends ab; ab.def.time = 0.3f; BlendSettings dm; dm.mode = BlendMode::Crossfade; dm.curve = BlendCurve::EaseOut; dm.time = 0.5f; ab.byModel["DOOR 02"] = dm;
+        ab.setSpeed("DOOR 02", "Charged Shot", 2.5f); ab.setSpeed("DOOR 02", "open", 1.f);
+        CHECK(ab.speedOf("DOOR 02", "charged shot") == 2.5f && ab.speedOf("DOOR 02", "open") == 1 && ab.speedOf("other", "charged shot") == 1, "each animation can have its own speed (not case-sensitive)");
         saveAnimBlends("/tmp/prim_blend.txt", ab); AnimBlends ab2; loadAnimBlends("/tmp/prim_blend.txt", ab2);
+        CHECK(ab2.speedOf("DOOR 02", "Charged shot") == 2.5f, "animation speeds save and load");
         CHECK(ab2.of("DOOR 02") == dm && ab2.of("other").time == 0.3f && ab2.of("other").mode == BlendMode::Inertialize, "change-over settings save and load (per model, and the default)");
         MeshModel mm; CHECK(builtinShape("@arm-cannon", mm), "a model");
         CHECK(mm.pose(-1, 0).size() == mm.parts.size() * 9, "a model's pose: 9 numbers per moving part");
+    }
+
+    {   // particles sucked into the middle (the charge gathering)
+        ParticleSettings cs = particlePreset("Charge"); CHECK(cs.pull > 0 && cs.area == PArea::Sphere, "the charge's particles are sucked in");
+        ParticleEmitter e(cs, 5); V3 o{ 10, 5, 10 }; e.update(0.05, o, 0, nullptr, true);
+        bool outside = !e.ps.empty(); for (const Particle& p : e.ps) { V3 d = p.pos - o; outside &= std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z) > 0.2; }
+        CHECK(outside, "they appear on the outside (%zu)", e.ps.size());
+        double before = 0; for (const Particle& p : e.ps) { V3 d = p.pos - o; before += std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z); } before /= std::max<size_t>(1, e.ps.size());
+        ParticleEmitter e2 = e; e2.update(0.1, o, 0, nullptr, false); double after = 0; for (const Particle& p : e2.ps) { V3 d = p.pos - o; after += std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z); } after /= std::max<size_t>(1, e2.ps.size());
+        CHECK(e2.ps.empty() || after < before, "and fly into the middle (%.3f -> %.3f)", before, after);
+        for (int k = 0; k < 60; k++) e.update(1 / 60.0, o, 0, nullptr, false);
+        CHECK(e.ps.empty(), "once there they are gone");
+        ParticleEmitter f(cs, 9); f.update(0.05, o, 0, nullptr, true); V3 o2{ 12, 5, 10 }; V3 p0 = f.ps.empty() ? V3{} : f.ps[0].pos; f.update(0.0001, o2, 0, nullptr, false);
+        CHECK(!f.ps.empty() && std::fabs(f.ps[0].pos.x - p0.x - 2) < 0.01, "they move along when the middle moves (the cannon turns)");
+    }
+
+    {   // folders you make yourself
+        CHECK(FolderTree::clean("  Weapons//Beams/ ") == "Weapons/Beams" && FolderTree::clean("a\\b") == "a/b" && FolderTree::parent("a/b/c") == "a/b" && FolderTree::leaf("a/b/c") == "c", "folder paths tidy up");
+        CHECK(FolderTree::within("a/b", "a") && !FolderTree::within("ab", "a") && FolderTree::within("x", ""), "inside a folder (not just a name starting the same)");
+        FolderTree t; t.add("Weapons/Beams/Power"); t.add("Doors");
+        CHECK(t.paths.count("Weapons") && t.paths.count("Weapons/Beams") && t.children("").size() == 2 && t.children("").front() == "Doors", "making a folder makes its parents; sorted");
+        CHECK(t.rename("Weapons", "Arsenal") && t.paths.count("Arsenal/Beams/Power") && !t.paths.count("Weapons"), "renaming a folder moves what is inside");
+        CHECK(!t.rename("Arsenal", "Arsenal/Beams/x"), "a folder can not go inside itself");
+        CHECK(t.rename("Arsenal/Beams", "Doors/Beams") && t.paths.count("Doors/Beams/Power") && t.paths.count("Arsenal"), "moving a folder into another");
+        t.remove("Doors/Beams"); CHECK(!t.paths.count("Doors/Beams/Power") && t.paths.count("Doors"), "deleting a folder deletes the ones inside it");
+        AssetFolders af; af.textureIn["laser"] = "Weapons/Beams"; af.textureIn["dirt"] = "Nature"; af.textures.add("Weapons/Beams"); af.textures.add("Nature");
+        AssetFolders::renameIn(af.textureIn, "Weapons", "Arsenal"); CHECK(af.folderOf(af.textureIn, "laser") == "Arsenal/Beams" && af.folderOf(af.textureIn, "dirt") == "Nature", "what is in a renamed folder moves along");
+        AssetFolders::dropIn(af.textureIn, "Arsenal/Beams"); CHECK(af.folderOf(af.textureIn, "laser") == "Arsenal", "what is in a deleted folder goes up one");
+        af.modelIn["DOOR 02"] = "Doors/Big ones"; af.models.add("Doors/Big ones"); af.objects.add("Level 1/Enemies"); af.blocks.add("Empty folder");
+        saveAssetFolders("/tmp/prim_folders.txt", af); AssetFolders b; loadAssetFolders("/tmp/prim_folders.txt", b);
+        CHECK(b.folderOf(b.modelIn, "DOOR 02") == "Doors/Big ones" && b.models.paths.count("Doors") && b.objects.paths.count("Level 1/Enemies") && b.blocks.paths.count("Empty folder") && b.folderOf(b.textureIn, "laser") == "Arsenal",
+              "folders save and load (names with spaces, empty folders too)");
     }
 
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);

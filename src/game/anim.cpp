@@ -1,5 +1,6 @@
 #include "anim.h"
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <fstream>
 #include <sstream>
@@ -81,10 +82,14 @@ static bool get(std::istringstream& l, BlendSettings& b) {
     b.curve = c == "linear" ? BlendCurve::Linear : c == "ease_in" ? BlendCurve::EaseIn : c == "ease_out" ? BlendCurve::EaseOut : BlendCurve::Smooth;
     b.time = std::max(0.f, t); return true;
 }
+std::string AnimBlends::clipKey(const std::string& model, const std::string& clip) {
+    std::string c = clip; for (char& ch : c) ch = (char)std::tolower((unsigned char)ch); return model + "/" + c;
+}
 bool saveAnimBlends(const std::string& path, const AnimBlends& a) {
     std::ofstream f(path); if (!f) return false;
     f << "anim_blend 1\n"; put(f, "default", "-", a.def);
     for (auto& kv : a.byModel) put(f, "model", kv.first, kv.second);
+    for (auto& kv : a.clipSpeed) f << "speed " << esc(kv.first) << " " << kv.second << "\n";
     return (bool)f;
 }
 bool loadAnimBlends(const std::string& path, AnimBlends& a) {
@@ -94,6 +99,7 @@ bool loadAnimBlends(const std::string& path, AnimBlends& a) {
         std::istringstream l(line); std::string k, n; l >> k >> n; BlendSettings b;
         if (k == "default" && get(l, b)) a.def = b;
         else if (k == "model" && get(l, b)) a.byModel[unesc(n)] = b;
+        else if (k == "speed") { float v; if (l >> v) a.clipSpeed[unesc(n)] = std::clamp(v, 0.01f, 20.f); }
     }
     return true;
 }

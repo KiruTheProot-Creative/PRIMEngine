@@ -34,6 +34,7 @@ struct ParticleSettings {
     bool collide = false, bounce = true;   // hit the blocks: bounce, or stop there
     bool light = false; float lightRange = 4; float lightIntensity = 1.5f;   // the emitter also lights its surroundings (fire)
     int maxParticles = 2000;
+    float pull = 0;                  // sucked in: they appear on the outside of the area and fly into the middle (blocks/s/s; 0: off)
 };
 ParticleSettings particlePreset(const std::string& name);
 std::vector<std::string> particlePresets();   // "Sparks", "Fire", "Smoke", ...
@@ -47,6 +48,7 @@ public:
     explicit ParticleEmitter(const ParticleSettings& set = {}, uint32_t seed = 1) : s(set), rng(seed ? seed : 1) {}
     // moves them, makes new ones at `origin` (turned by yaw degrees); world: for collisions (may be null)
     void update(double dt, V3 origin, double yaw, const World* w, bool emitting = true);
+    V3 lastOrigin{ 0, 0, 0 };
     void burstNow(int n, V3 origin, double yaw);
     float alive01(const Particle& p) const { return p.life > 0 ? std::min(1.f, p.age / p.life) : 1; }
 private:

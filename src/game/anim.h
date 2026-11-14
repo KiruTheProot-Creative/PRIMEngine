@@ -46,6 +46,11 @@ struct AnimBlends {
     std::map<std::string, BlendSettings> byModel;
     BlendSettings def;
     BlendSettings of(const std::string& model) const { auto it = byModel.find(model); return it != byModel.end() ? it->second : def; }
+    // how fast one of a model's animations plays (1: as made); everywhere it is used
+    std::map<std::string, float> clipSpeed;   // key: model + "/" + clip name (lower case)
+    static std::string clipKey(const std::string& model, const std::string& clip);
+    float speedOf(const std::string& model, const std::string& clip) const { auto it = clipSpeed.find(clipKey(model, clip)); return it != clipSpeed.end() ? it->second : 1.f; }
+    void setSpeed(const std::string& model, const std::string& clip, float s) { if (s == 1.f) clipSpeed.erase(clipKey(model, clip)); else clipSpeed[clipKey(model, clip)] = s; }
 };
 bool saveAnimBlends(const std::string& path, const AnimBlends& a);
 bool loadAnimBlends(const std::string& path, AnimBlends& a);

@@ -17,6 +17,7 @@
 #include "../game/weapons.h"
 #include "../game/materials.h"
 #include "../game/anim.h"
+#include "../game/folders.h"
 #include "../game/sound.h"
 #include "../game/breakable.h"
 #include "../game/weather.h"
@@ -930,8 +931,16 @@ struct App {
                 ImGui::SameLine(); ImGui::Checkbox("Loop", &viewerLoop);
                 ImGui::SameLine(); if (ImGui::SmallButton("As imported")) { viewerClip = -1; viewerPlayId++; }
                 if (viewerClip >= (int)m.clips.size()) viewerClip = -1;
+                if (viewerClip >= 0) {   // this animation's speed, everywhere it is used
+                    float sp = animBlends.speedOf(m.name, m.clips[viewerClip].name);
+                    Prop(("Speed of \"" + m.clips[viewerClip].name + "\"").c_str());
+                    if (ImGui::SliderFloat("##clipsp", &sp, 0.1f, 4.f, "x %.2f", ImGuiSliderFlags_Logarithmic)) { animBlends.setSpeed(m.name, m.clips[viewerClip].name, std::round(sp * 100) / 100); SaveAnimBlends(); }
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Faster or slower, everywhere this animation plays (doors, arm cannons...).\nx 1 = as it was made. Right-click: back to x 1.");
+                    if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) { animBlends.setSpeed(m.name, m.clips[viewerClip].name, 1.f); SaveAnimBlends(); }
+                    ImGui::SameLine(); ImGui::TextDisabled("%.2f s", m.clips[viewerClip].length / std::max(0.01f, sp));
+                }
                 if (viewerClip >= 0) {
-                    viewerTime += std::min(io.DeltaTime, 1.f / 30); float L = std::max(0.001f, m.clips[viewerClip].length);
+                    viewerTime += std::min(io.DeltaTime, 1.f / 30) * ClipSpeed(m.name, viewerClip); float L = std::max(0.001f, m.clips[viewerClip].length);
                     if (viewerTime > L) viewerTime = viewerLoop ? std::fmod(viewerTime, L) : L;
                 }
                 Hint("%d moving parts. Doors play \"open\" and \"close\"; arm cannons the clips set on their beam.", (int)m.parts.size());
@@ -1150,6 +1159,8 @@ struct App {
             Prop("Spread"); ImGui::SliderFloat("##spread", &P.spread, 0, 180, "%.0f deg");
             Prop("Speed"); ImGui::SliderFloat("##speed", &P.speed, 0, 30, "%.1f blocks/s"); Prop("Speed varies"); ImGui::SliderFloat("##speedv", &P.speedVar, 0, 15, "+- %.1f");
             Prop("Gravity"); ImGui::SliderFloat("##grav", &P.gravity, -30, 10, "%.1f"); Prop("Air drag"); ImGui::SliderFloat("##drag", &P.drag, 0, 5, "%.2f");
+            Prop("Sucked in"); ImGui::SliderFloat("##pull", &P.pull, 0, 30, P.pull <= 0 ? "no" : "%.1f");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("They appear on the outside of the area (a sphere) and fly into the middle, like energy gathering.");
             Prop("Spin"); ImGui::SliderFloat("##spin", &P.spin, 0, 3, "%.2f turns/s");
             Prop("Hit blocks"); ImGui::Checkbox("##col", &P.collide); if (P.collide) { ImGui::SameLine(); ImGui::Checkbox("bounce", &P.bounce); }
         }
@@ -1617,19 +1628,28 @@ struct App {
     // beam shots as glowing orbs: a bright ball stretched a little along the way it flies, with a soft halo around it
     ComPtr<ID3D11PixelShader> psOrb;
     void DrawOrbs() {
-        bool any = false; for (const Shot& s : shots) any |= s.orb && s.age < 50; if (!any) return;
+        const Beam* cb = playMode && weapState.charging && weapState.charge > 0 ? CurrentBeam() : nullptr;
+        bool any = cb != nullptr; for (const Shot& s : shots) any |= s.orb && s.age < 50; if (!any) return;
         BeginSphereDraw(psOrb.Get());
+        auto orb = [&](V3 world, V3 d, double r, uint32_t tint, bool charged, float age, float seed, double stretchK) {
+            V3 c = world - camPos;
+            V3 side = std::fabs(d.y) > 0.95 ? V3{ 1, 0, 0 } : Norm(cross({ 0, 1, 0 }, d)), up = cross(d, side);
+            V3 col = Linear(tint);
+            for (int halo = 1; halo >= 0; halo--) {   // the halo first, then the ball itself
+                double k = halo ? 2.4 : 1.0, stretch = (halo ? 1.6 : 1.45) * stretchK + (1 - stretchK);
+                ctx->OMSetBlendState(halo ? bsAdd.Get() : bsPremul.Get(), nullptr, 0xFFFFFFFF);   // the halo adds light; the ball itself covers what is behind it
+                ChunkCB cc{ { (float)c.x, (float)c.y, (float)c.z, (float)(r * k) }, { (float)d.x, (float)d.y, (float)d.z, charged ? 1.f : 0.f }, { seed, (float)halo, age, 0 }, { (float)col.x, (float)col.y, (float)col.z, 1 } };
+                DrawSphereMesh(c - d * (r * 0.25 * stretchK), side * (r * k), up * (r * k), d * (r * k * stretch), cc);
+            }
+        };
         for (const Shot& s : shots) {
             if (!s.orb || s.age >= 50) continue;
-            double r = std::max(0.02, s.size * 1.5); V3 c = s.pos - camPos, d = s.dir;
-            V3 side = std::fabs(d.y) > 0.95 ? V3{ 1, 0, 0 } : Norm(cross({ 0, 1, 0 }, d)), up = cross(d, side);
-            V3 col = Linear(s.tint); float seed = (float)((&s - shots.data()) * 0.618);
-            for (int halo = 1; halo >= 0; halo--) {   // the halo first, then the ball itself
-                double k = halo ? 2.4 : 1.0, stretch = halo ? 1.6 : 1.45;
-                ctx->OMSetBlendState(halo ? bsAdd.Get() : bsPremul.Get(), nullptr, 0xFFFFFFFF);   // the halo adds light; the ball itself covers what is behind it
-                ChunkCB cc{ { (float)c.x, (float)c.y, (float)c.z, (float)(r * k) }, { (float)d.x, (float)d.y, (float)d.z, s.charged ? 1.f : 0.f }, { seed, (float)halo, s.age, 0 }, { (float)col.x, (float)col.y, (float)col.z, 1 } };
-                DrawSphereMesh(c - d * (r * 0.25), side * (r * k), up * (r * k), d * (r * k * stretch), cc);
-            }
+            orb(s.pos, s.dir, std::max(0.02, s.size * 1.5), s.tint, s.charged, s.age, (float)((&s - shots.data()) * 0.618), 1.0);
+        }
+        if (cb) {   // the charge: an orb at the muzzle that grows as it fills (and throbs when full); particles are sucked into it
+            float k = std::clamp(weapState.charge, 0.f, 1.f);
+            double r = cb->size * (0.45 + 1.9 * k) * (k >= 1 ? 1.0 + 0.08 * std::sin(animTime * 20) : 1.0);
+            orb(chargeAt, Norm(player.forward()), r, cb->color, k >= 1, (float)animTime, 3.3f, 0.0);
         }
         EndSphereDraw();
     }
@@ -1691,7 +1711,7 @@ struct App {
     bool CloseIsReversed(const std::string& model) { return ClipOf(model, 1) < 0 && ClipOf(model, 0) >= 0; }   // no "close" animation: play "open" backwards
     float ClipLen(const std::string& model, int which) {
         int c = ClipOf(model, which); if (c < 0 && which == 1 && CloseIsReversed(model)) c = ClipOf(model, 0);
-        return c < 0 ? 0.f : meshModels[model].clips[c].length;
+        return c < 0 ? 0.f : meshModels[model].clips[c].length / ClipSpeed(model, c);   // seconds, at its own speed
     }
     DoorRuntime DoorNow(const WorldObject& o) const { auto it = doorRt.find(o.id); return playMode && it != doorRt.end() ? it->second : DoorRuntime{}; }
     void MakeDoor(WorldObject& o) {
@@ -1719,6 +1739,7 @@ struct App {
                 if (r.clip >= 0) {
                     clip = ClipOf(o.model, r.clip); t = r.clipTime;
                     if (r.clip == 1 && clip < 0 && CloseIsReversed(o.model)) { clip = ClipOf(o.model, 0); t = std::max(0.f, ClipLen(o.model, 0) - r.clipTime); }
+                    t *= ClipSpeed(o.model, clip);   // real seconds -> the clip's own time
                 }
                 PoseBlender& pb = doorBlend[o.id];
                 const PartPose& p = pb.update(mi->second.pose(clip, t), r.clip, (float)dt, animBlends.of(o.model));
@@ -3651,28 +3672,46 @@ struct App {
             }
             ImGui::TreePop();
         }
-        if (ImGui::TreeNodeEx("Objects", open, "Objects (%d)", (int)objects.size())) {   // by folder
-            std::vector<std::string> folders; for (auto& o : objects) if (std::find(folders.begin(), folders.end(), o.folder) == folders.end()) folders.push_back(o.folder);
-            std::sort(folders.begin(), folders.end());
+        if (ImGui::TreeNodeEx("Objects", open, "Objects (%d)", (int)objects.size())) {   // by folder (folders inside folders too)
+            FolderKind k = ObjectFolders();
+            FolderDrop(k, ""); FolderMenu(k, "");
             int act = -1, what = 0;
-            for (const std::string& f : folders) {
-                if (!ImGui::TreeNodeEx(f.c_str(), open)) continue;
+            std::function<void(const std::string&)> items = [&](const std::string& folder) {   // the objects right in this folder
                 for (int i = 0; i < (int)objects.size(); i++) {
-                    if (objects[i].folder != f) continue;
+                    if (FolderTree::clean(objects[i].folder) != folder) continue;
                     ImGui::PushID(i); Leaf(objects[i].name.c_str(), Sel::Object, i);
+                    if (ImGui::BeginDragDropSource()) { ImGui::SetDragDropPayload("PRIM_OBJ", objects[i].name.c_str(), objects[i].name.size() + 1); ImGui::Text("%s", objects[i].name.c_str()); ImGui::EndDragDropSource(); }
                     if (ImGui::BeginPopupContextItem("octx")) {
                         if (ImGui::MenuItem("Go there")) { sel = Sel::Object; selIndex = i; const WorldObject& o = objects[i]; player.feet = { o.pos.x, o.pos.y + 3, o.pos.z - 5 }; player.flying = true; player.yaw = 0; player.pitch = -0.4; }
                         if (ImGui::MenuItem("Move")) { act = i; what = 1; }
                         if (ImGui::MenuItem("Copy")) { act = i; what = 2; }
+                        if (ImGui::BeginMenu("Move to folder")) {
+                            std::string cur = FolderTree::clean(objects[i].folder);
+                            if (ImGui::MenuItem("(no folder)", nullptr, cur.empty())) { objects[i].folder.clear(); SaveObjectsNow(); }
+                            for (const std::string& c : assetFolders.objects.all()) if (ImGui::MenuItem(c.c_str(), nullptr, c == cur)) { objects[i].folder = c; SaveObjectsNow(); }
+                            ImGui::EndMenu();
+                        }
                         ImGui::Separator(); if (ImGui::MenuItem("Delete")) { act = i; what = 3; }
                         ImGui::EndPopup();
                     }
                     ImGui::PopID();
                 }
-                ImGui::TreePop();
-            }
+            };
+            std::function<void(const std::string&)> nodes = [&](const std::string& parent) {
+                for (const std::string& f : assetFolders.objects.children(parent)) {
+                    ImGui::PushID(f.c_str());
+                    bool node = ImGui::TreeNodeEx("of", open | ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick, "%s  (%d)", FolderTree::leaf(f).c_str(), k.count(f));
+                    if (ImGui::BeginDragDropSource()) { ImGui::SetDragDropPayload("PRIM_FOLDER9", f.c_str(), f.size() + 1); ImGui::Text("Folder %s", FolderTree::leaf(f).c_str()); ImGui::EndDragDropSource(); }
+                    FolderDrop(k, f); FolderMenu(k, f);
+                    if (node) { nodes(f); items(f); ImGui::TreePop(); }
+                    ImGui::PopID();
+                }
+            };
+            nodes(""); items("");
             if (act >= 0) { if (what == 1) PickUpObject(act); else if (what == 2) DuplicateObject(act); else DeleteObject(act); }
             if (objects.empty()) Hint("Press T, take the Selection box (slot 2), box some blocks and press \"Make into object\".");
+            else Hint("Right-click Objects or a folder: new folders. Drag objects (and folders) onto folders.");
+            RunFolderAction();
             ImGui::TreePop();
         }
         if (ImGui::TreeNodeEx("Game", open, "Game: %s", game.name.c_str())) {
@@ -3846,7 +3885,8 @@ struct App {
     double prevPlayYaw = 0, prevPlayPitch = 0, prevVelY = 0; bool prevOnGround = true;
 
     std::string HudPath() const { return projectDir + "/hud.txt"; }
-    void LoadHud() { animBlends = AnimBlends{}; loadAnimBlends(projectDir + "/anim_blend.txt", animBlends); cannonBlend.reset(); doorBlend.clear(); viewerBlend.reset();
+    void LoadHud() { assetFolders = AssetFolders{}; loadAssetFolders(projectDir + "/asset_folders.txt", assetFolders);
+        animBlends = AnimBlends{}; loadAnimBlends(projectDir + "/anim_blend.txt", animBlends); cannonBlend.reset(); doorBlend.clear(); viewerBlend.reset();
         materials = Materials{}; loadMaterials(projectDir + "/materials.txt", materials); matsDirty = true; soundCache.clear(); playerSounds = PlayerSounds{}; loadPlayerSounds(projectDir + "/player_sounds.txt", playerSounds); activeTl.clear();
         hud = HudLayout{}; loadHud(HudPath(), hud); weapons = WeaponSet{}; loadWeapons(projectDir + "/weapons.txt", weapons); weapSel = 0; weapState = WeaponState{}; hudImages.clear(); hudSel = 0; hudPlane = 0; hudEl = -1; hudPart = 0; }
     void SaveHud() {
@@ -4487,14 +4527,18 @@ struct App {
     }
     float ClipLenOf(const std::string& model, const std::string& clip) {
         auto it = meshModels.find(model); if (it == meshModels.end() || clip.empty()) return 0;
-        int c = it->second.findClip(clip); return c < 0 ? 0.f : it->second.clips[c].length;
+        int c = it->second.findClip(clip); return c < 0 ? 0.f : it->second.clips[c].length / ClipSpeed(model, c);   // seconds, at its own speed
+    }
+    float ClipSpeed(const std::string& model, int clip) {   // the speed set for one of a model's animations (3D viewer)
+        auto it = meshModels.find(model); if (it == meshModels.end() || clip < 0 || clip >= (int)it->second.clips.size()) return 1.f;
+        return std::max(0.01f, animBlends.speedOf(model, it->second.clips[clip].name));
     }
     bool cannonLoop = false;
     float PlayCannonClip(const std::string& clip, bool loop = false) {   // one of the cannon's own animations (if the model has it)
         const Beam* b = CurrentBeam(); if (!b) return 0;
         auto it = meshModels.find(b->model); if (it == meshModels.end() || clip.empty()) return 0;
         int c = it->second.findClip(clip); if (c < 0) return 0;
-        cannonClip = c; cannonT = 0; cannonSpeed = 1; cannonLoop = loop; cannonPlayId++; return it->second.clips[c].length;
+        cannonClip = c; cannonT = 0; cannonSpeed = 1; cannonLoop = loop; cannonPlayId++; return it->second.clips[c].length / ClipSpeed(b->model, c);
     }
     void UpdateCannon(double dt) {   // its animation, blended smoothly into the next one (and back to rest when it ends)
         const Beam* b = CurrentBeam(); cannonPosed = false;
@@ -4504,7 +4548,7 @@ struct App {
         const MeshModel& m = mi->second;
         if (cannonClip >= (int)m.clips.size()) cannonClip = -1;
         if (cannonClip >= 0) {
-            float len = m.clips[cannonClip].length; cannonT += (float)dt * cannonSpeed;
+            float len = m.clips[cannonClip].length; cannonT += (float)dt * cannonSpeed * ClipSpeed(b->model, cannonClip);
             if (cannonT >= len) { if (cannonLoop && len > 0) cannonT = std::fmod(cannonT, len); else { cannonClip = -1; cannonT = 0; } }
         }
         int key = cannonClip >= 0 ? cannonPlayId * 2 : cannonPlayId * 2 + 1;   // each new play (and its end) is a change
@@ -4694,11 +4738,21 @@ struct App {
     }
     bool ClipCombo(const char* id, const std::string& model, std::string& v) {
         bool ch = false; auto it = meshModels.find(model);
-        std::string shown = v.empty() ? "(none)" : v; if (!v.empty() && (it == meshModels.end() || it->second.findClip(v) < 0)) shown += "  (not in the model)";
+        bool found = !v.empty() && it != meshModels.end() && it->second.findClip(v) >= 0;
+        std::string shown = v.empty() ? "(none)" : v; if (!v.empty() && !found) shown += "  (not in the model)";
+        float w = ImGui::CalcItemWidth(); if (found) ImGui::SetNextItemWidth(std::max(60.f, w - 90 * settings.uiScale));
         if (ImGui::BeginCombo(id, shown.c_str())) {
             if (ImGui::Selectable("(none)", v.empty())) { v.clear(); ch = true; }
             if (it != meshModels.end()) for (auto& c : it->second.clips) if (ImGui::Selectable(c.name.c_str(), v == c.name)) { v = c.name; ch = true; }
             ImGui::EndCombo();
+        }
+        if (found) {   // that animation's own speed (the same as in the 3D viewer: everywhere it plays)
+            ImGui::SameLine(); ImGui::SetNextItemWidth(84 * settings.uiScale);
+            float sp = animBlends.speedOf(model, v); ImGui::PushID(id);
+            if (ImGui::DragFloat("##sp", &sp, 0.01f, 0.1f, 4.f, "x %.2f")) { animBlends.setSpeed(model, v, std::round(std::clamp(sp, 0.1f, 4.f) * 100) / 100); SaveAnimBlends(); }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("How fast \"%s\" plays, everywhere (x 1: as made).\nDrag, or double-click to type. Right-click: back to x 1.", v.c_str());
+            if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) { animBlends.setSpeed(model, v, 1.f); SaveAnimBlends(); }
+            ImGui::PopID();
         }
         return ch;
     }
@@ -5698,6 +5752,125 @@ struct App {
         ImGui::End();
         (void)ch;
     }
+    // ---- folders you make yourself (textures, models, blocks, objects): only for sorting, the files stay where they are
+    AssetFolders assetFolders; std::function<void()> folderAction; std::string folderText;
+    void SaveAssetFolders() { if (!projectDir.empty()) saveAssetFolders(projectDir + "/asset_folders.txt", assetFolders); }
+    struct FolderKind {
+        int kind = 0; FolderTree* tree = nullptr; const char* dragType = "";   // dragType: what can be dropped into its folders
+        std::function<int(const std::string&)> count;                          // things inside a folder (and its sub-folders)
+        std::function<void(const std::string& item, const std::string& folder)> moveItem;
+        std::function<void(const std::string& from, const std::string& to)> renamed;   // a folder got a new path: what is inside goes along
+        std::function<void(const std::string& folder)> deleted;                // a folder is gone: what was inside goes up one
+        std::string* selected = nullptr;                                        // the folder shown (and a flag: is this kind shown)
+        std::function<bool()> showing;
+    };
+    void FolderDrop(FolderKind& k, const std::string& path) {   // things (or folders) dropped onto a folder
+        if (!ImGui::BeginDragDropTarget()) return;
+        if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload(k.dragType)) { std::string item((const char*)pl->Data); FolderKind kk = k; folderAction = [kk, item, path] { kk.moveItem(item, path); }; }
+        std::string ft = std::string("PRIM_FOLDER") + std::to_string(k.kind);
+        if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload(ft.c_str())) {
+            std::string src((const char*)pl->Data); FolderKind kk = k;
+            folderAction = [kk, src, path] { std::string to = FolderTree::join(path, FolderTree::leaf(src)); if (kk.tree->rename(src, to)) kk.renamed(src, to); };
+        }
+        ImGui::EndDragDropTarget();
+    }
+    void FolderMenu(FolderKind& k, const std::string& path) {   // right-click a folder: a new one inside, rename, delete
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) folderText = path.empty() ? "New folder" : FolderTree::leaf(path);
+        if (!ImGui::BeginPopupContextItem("fmenu")) return;
+        ImGui::SetNextItemWidth(200 * settings.uiScale); ImGui::InputText("##fname", &folderText);
+        FolderKind kk = k; std::string name = FolderTree::clean(folderText);
+        ImGui::BeginDisabled(name.empty());
+        if (ImGui::Button(path.empty() ? "New folder" : "New folder inside")) { std::string np = FolderTree::join(path, name); folderAction = [kk, np] { kk.tree->add(np); }; ImGui::CloseCurrentPopup(); }
+        if (!path.empty()) {
+            ImGui::SameLine();
+            if (ImGui::Button("Rename")) { std::string to = FolderTree::join(FolderTree::parent(path), name); folderAction = [kk, path, to] { if (kk.tree->rename(path, to)) kk.renamed(path, to); }; ImGui::CloseCurrentPopup(); }
+        }
+        ImGui::EndDisabled();
+        if (!path.empty()) {
+            ImGui::Separator();
+            if (ImGui::MenuItem("Delete folder (what is in it moves up one)")) folderAction = [kk, path] { kk.deleted(path); kk.tree->remove(path); };
+        }
+        ImGui::EndPopup();
+    }
+    void FolderNodes(FolderKind& k, const std::string& parent) {
+        for (const std::string& p : k.tree->children(parent)) {
+            ImGui::PushID(p.c_str());
+            bool leaf = k.tree->children(p).empty(), sel = k.showing() && *k.selected == p;
+            ImGuiTreeNodeFlags f = ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick | (leaf ? ImGuiTreeNodeFlags_Leaf : 0) | (sel ? ImGuiTreeNodeFlags_Selected : 0);
+            bool open = ImGui::TreeNodeEx("f", f, "%s  (%d)", FolderTree::leaf(p).c_str(), k.count(p));
+            if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) { *k.selected = p; assetKind = k.kind; }
+            if (ImGui::BeginDragDropSource()) {   // folders can be dragged into other folders
+                std::string ft = std::string("PRIM_FOLDER") + std::to_string(k.kind); ImGui::SetDragDropPayload(ft.c_str(), p.c_str(), p.size() + 1);
+                ImGui::Text("Folder %s", FolderTree::leaf(p).c_str()); ImGui::EndDragDropSource();
+            }
+            FolderDrop(k, p); FolderMenu(k, p);
+            if (open) { FolderNodes(k, p); ImGui::TreePop(); }
+            ImGui::PopID();
+        }
+    }
+    void DragItem(const char* type, const std::string& name) {   // the last item can be dragged onto a folder
+        if (ImGui::BeginDragDropSource()) { ImGui::SetDragDropPayload(type, name.c_str(), name.size() + 1); ImGui::Text("%s", name.c_str()); ImGui::EndDragDropSource(); }
+    }
+    void RunFolderAction() { if (folderAction) { auto a = folderAction; folderAction = nullptr; a(); SaveAssetFolders(); } }
+    std::string BlockFolderOf(BlockId id) const { return FolderTree::clean(reg.get(id).category); }
+    void SetBlockFolder(BlockId id, const std::string& folder) {
+        if (!reg.has(id)) return; BlockDef nd = reg.get(id); nd.category = folder.empty() ? "Building" : folder;
+        ChangeBlocks([&] { reg.put(id, nd); }); library.saveBlocks(reg); assetFolders.blocks.add(nd.category);
+    }
+    void SaveObjectsNow() { if (world && !worldDir.empty()) saveObjects(worldDir + "/objects.txt", objects); }
+    FolderKind ObjectFolders() {   // objects keep their folder on themselves; empty folders are remembered here
+        for (auto& o : objects) if (!FolderTree::clean(o.folder).empty()) assetFolders.objects.add(o.folder);
+        FolderKind k; k.kind = 9; k.tree = &assetFolders.objects; k.dragType = "PRIM_OBJ"; k.selected = &objFolderSel; k.showing = [] { return false; };
+        k.count = [this](const std::string& f) { int n = 0; for (auto& o : objects) n += FolderTree::within(FolderTree::clean(o.folder), f); return n; };
+        k.moveItem = [this](const std::string& item, const std::string& f) { for (auto& o : objects) if (o.name == item) { o.folder = f; break; } SaveObjectsNow(); };
+        k.renamed = [this](const std::string& a, const std::string& b) { for (auto& o : objects) o.folder = FolderTree::moved(FolderTree::clean(o.folder), a, b); SaveObjectsNow(); };
+        k.deleted = [this](const std::string& f) { std::string up = FolderTree::parent(f); for (auto& o : objects) if (FolderTree::within(FolderTree::clean(o.folder), f)) o.folder = up; SaveObjectsNow(); };
+        return k;
+    }
+    std::string objFolderSel;
+    FolderKind TextureFolders() {
+        FolderKind k; k.kind = 1; k.tree = &assetFolders.textures; k.dragType = "PRIM_TEX"; k.selected = &assetCat; k.showing = [this] { return assetKind == 1; };
+        k.count = [this](const std::string& f) { int n = 0; for (int t = 1; t < (int)reg.textureCount(); t++) n += FolderTree::within(assetFolders.folderOf(assetFolders.textureIn, reg.image(t).name), f); return n; };
+        k.moveItem = [this](const std::string& item, const std::string& f) { assetFolders.textureIn[item] = f; };
+        k.renamed = [this](const std::string& a, const std::string& b) { AssetFolders::renameIn(assetFolders.textureIn, a, b); if (assetKind == 1) assetCat = FolderTree::moved(assetCat, a, b); };
+        k.deleted = [this](const std::string& f) { AssetFolders::dropIn(assetFolders.textureIn, f); if (assetKind == 1 && FolderTree::within(assetCat, f)) assetCat = FolderTree::parent(f); };
+        return k;
+    }
+    FolderKind ModelFolders() {
+        FolderKind k; k.kind = 3; k.tree = &assetFolders.models; k.dragType = "PRIM_MODEL"; k.selected = &assetCat; k.showing = [this] { return assetKind == 3; };
+        k.count = [this](const std::string& f) { int n = 0; for (const std::string& m : AllModelNames()) n += FolderTree::within(assetFolders.folderOf(assetFolders.modelIn, m), f); return n; };
+        k.moveItem = [this](const std::string& item, const std::string& f) { assetFolders.modelIn[item] = f; };
+        k.renamed = [this](const std::string& a, const std::string& b) { AssetFolders::renameIn(assetFolders.modelIn, a, b); if (assetKind == 3) assetCat = FolderTree::moved(assetCat, a, b); };
+        k.deleted = [this](const std::string& f) { AssetFolders::dropIn(assetFolders.modelIn, f); if (assetKind == 3 && FolderTree::within(assetCat, f)) assetCat = FolderTree::parent(f); };
+        return k;
+    }
+    FolderKind BlockFolders() {   // blocks keep their folder on themselves (their category); empty folders are remembered here
+        for (const std::string& c : BlockCategories()) assetFolders.blocks.add(c);
+        FolderKind k; k.kind = 0; k.tree = &assetFolders.blocks; k.dragType = "PRIM_BLOCK"; k.selected = &assetCat; k.showing = [this] { return assetKind == 0; };
+        k.count = [this](const std::string& f) { int n = 0; for (BlockId id = 1; id < reg.count(); id++) n += reg.has(id) && FolderTree::within(BlockFolderOf(id), f); return n; };
+        k.moveItem = [this](const std::string& item, const std::string& f) { SetBlockFolder(reg.find(item), f); };
+        k.renamed = [this](const std::string& a, const std::string& b) {
+            std::vector<std::pair<BlockId, std::string>> ch; for (BlockId id = 1; id < reg.count(); id++) if (reg.has(id) && FolderTree::within(BlockFolderOf(id), a)) ch.push_back({ id, FolderTree::moved(BlockFolderOf(id), a, b) });
+            if (!ch.empty()) { ChangeBlocks([&] { for (auto& c : ch) { BlockDef d = reg.get(c.first); d.category = c.second; reg.put(c.first, d); } }); library.saveBlocks(reg); }
+            if (assetKind == 0) assetCat = FolderTree::moved(assetCat, a, b);
+        };
+        k.deleted = [this](const std::string& f) {
+            std::string up = FolderTree::parent(f); if (up.empty()) up = "Building";
+            std::vector<BlockId> ch; for (BlockId id = 1; id < reg.count(); id++) if (reg.has(id) && FolderTree::within(BlockFolderOf(id), f)) ch.push_back(id);
+            if (!ch.empty()) { ChangeBlocks([&] { for (BlockId id : ch) { BlockDef d = reg.get(id); d.category = up; reg.put(id, d); } }); library.saveBlocks(reg); }
+            if (assetKind == 0 && FolderTree::within(assetCat, f)) assetCat = FolderTree::parent(f);
+        };
+        return k;
+    }
+    void FolderRoot(FolderKind& k, const char* label, int count) {   // "All ...": shows everything; drop here to take things out of their folder
+        ImGui::PushID(label);
+        ImGuiTreeNodeFlags f = ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen | ImGuiTreeNodeFlags_SpanAvailWidth | (k.showing() && k.selected->empty() ? ImGuiTreeNodeFlags_Selected : 0);
+        ImGui::TreeNodeEx("all", f, "%s  (%d)", label, count);
+        if (ImGui::IsItemClicked()) { k.selected->clear(); assetKind = k.kind; }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Right-click: a new folder.  Drag things onto a folder to put them in it\n(here: out of their folder). Drag folders into each other too.");
+        FolderDrop(k, ""); FolderMenu(k, "");
+        ImGui::PopID();
+    }
     // ---- Assets: blocks by folder, textures, shapes; thumbnails, search, size
     void Assets() {
         if (focusAssets) { ShowTab("Assets"); focusAssets = false; }
@@ -5712,15 +5885,18 @@ struct App {
         };
         int nb = 0; for (BlockId id = 1; id < reg.count(); id++) nb += reg.has(id);
         if (ImGui::TreeNodeEx("Blocks", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth)) {
-            folder("All blocks", 0, "", nb);
-            for (const std::string& c : BlockCategories()) { int n = 0; for (BlockId id = 1; id < reg.count(); id++) n += reg.has(id) && reg.get(id).category == c; folder(c.c_str(), 0, c, n); }
+            FolderKind k = BlockFolders(); FolderRoot(k, "All blocks", nb); FolderNodes(k, "");
             ImGui::TreePop();
         }
-        if (ImGui::TreeNodeEx("Textures", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth)) { folder("All textures", 1, "", (int)reg.textureCount() - 1); ImGui::TreePop(); }
+        if (ImGui::TreeNodeEx("Textures", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth)) {
+            FolderKind k = TextureFolders(); FolderRoot(k, "All textures", (int)reg.textureCount() - 1); FolderNodes(k, "");
+            ImGui::TreePop();
+        }
         if (ImGui::TreeNodeEx("Models", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth)) {
-            folder("All models", 3, "", (int)(models.models.size() + meshModels.size()));
-            int nb = 0; for (auto& kv : meshModels) nb += IsBuiltin(kv.first);
-            folder("Built from blocks", 3, "blocks", (int)models.models.size()); folder("Imported", 3, "imported", (int)meshModels.size() - nb); folder("Built in", 3, "builtin", nb);
+            FolderKind k = ModelFolders(); FolderRoot(k, "All models", (int)(models.models.size() + meshModels.size())); FolderNodes(k, "");
+            int nbi = 0; for (auto& kv : meshModels) nbi += IsBuiltin(kv.first);
+            ImGui::TextDisabled("by kind");
+            folder("Built from blocks", 3, "\tblocks", (int)models.models.size()); folder("Imported", 3, "\timported", (int)meshModels.size() - nbi); folder("Built in", 3, "\tbuiltin", nbi);
             ImGui::TreePop();
         }
         if (ImGui::TreeNodeEx("Shapes", ImGuiTreeNodeFlags_SpanAvailWidth)) {
@@ -5729,6 +5905,7 @@ struct App {
             ImGui::TreePop();
         }
         ImGui::EndChild();
+        RunFolderAction();
         ImGui::SameLine();
         // grid on the right
         ImGui::BeginGroup();
@@ -5743,18 +5920,25 @@ struct App {
         float s = assetSize * ui, labelH = ImGui::GetTextLineHeight() + 2, sp = ImGui::GetStyle().ItemSpacing.x;
         int cols = std::max(1, (int)((ImGui::GetContentRegionAvail().x + sp) / (s + sp))), n = 0;
         std::string q = Lower(assetSearch);
+        const char* dragType = nullptr;   // tiles can be dragged onto a folder on the left
         auto cell = [&](const char* id, const std::string& name, bool selected, ImVec2& p) {   // a tile with its name under it
             if (n % cols) ImGui::SameLine(); n++;
             ImGui::BeginGroup(); bool c = Tile(id, p, s, selected);
+            if (dragType) DragItem(dragType, name);
             std::string lab = name; while (lab.size() > 1 && ImGui::CalcTextSize(lab.c_str()).x > s) lab.pop_back();
             if (lab.size() < name.size() && lab.size() > 2) lab = lab.substr(0, lab.size() - 2) + "..";
             ImGui::TextUnformatted(lab.c_str()); ImGui::EndGroup(); (void)labelH;
             return c;
         };
+        if (!assetCat.empty() && assetCat[0] != '\t' && assetKind != 2) {   // the folder shown, and its sub-folders as a way in
+            ImGui::TextDisabled("%s", assetCat.c_str()); ImGui::SameLine();
+            if (ImGui::SmallButton("Up")) assetCat = FolderTree::parent(assetCat);
+        }
         if (assetKind == 0) {
+            dragType = "PRIM_BLOCK";
             for (BlockId id = 1; id < reg.count(); id++) {
                 if (!reg.has(id)) continue; const BlockDef& d = reg.get(id);
-                if (!assetCat.empty() && d.category != assetCat) continue;
+                if (!FolderTree::within(BlockFolderOf(id), assetCat)) continue;
                 if (!q.empty() && Lower(d.name).find(q) == std::string::npos) continue;
                 ImGui::PushID((int)id); ImVec2 p; bool hot = typeOf(hotbar[hotSel]) == id;
                 if (cell("b", d.name, sel == Sel::Block && selIndex == (int)id, p) && !ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
@@ -5768,7 +5952,7 @@ struct App {
                     if (ImGui::MenuItem("Edit")) Select(Sel::Block, (int)id);
                     if (ImGui::MenuItem("Duplicate")) { BlockDef c = d; c.name = reg.uniqueName(d.name + " copy"); BlockId nid = AIR; ChangeBlocks([&] { nid = reg.add(c); }); library.saveBlocks(reg); if (nid) Select(Sel::Block, (int)nid); }
                     if (ImGui::BeginMenu("Move to folder")) {
-                        for (const std::string& c : BlockCategories()) if (ImGui::MenuItem(c.c_str(), nullptr, c == d.category)) { BlockDef nd = d; nd.category = c; ChangeBlocks([&] { reg.put(id, nd); }); library.saveBlocks(reg); editorOpen = false; }
+                        for (const std::string& c : assetFolders.blocks.all()) if (ImGui::MenuItem(c.c_str(), nullptr, c == BlockFolderOf(id))) { SetBlockFolder(id, c); editorOpen = false; }
                         ImGui::EndMenu();
                     }
                     ImGui::Separator();
@@ -5778,8 +5962,10 @@ struct App {
                 ImGui::PopID();
             }
         } else if (assetKind == 1) {
+            dragType = "PRIM_TEX";
             for (int t = 1; t < (int)reg.textureCount(); t++) {
                 const TexImage& im = reg.image(t);
+                if (!FolderTree::within(assetFolders.folderOf(assetFolders.textureIn, im.name), assetCat)) continue;
                 if (!q.empty() && Lower(im.name).find(q) == std::string::npos) continue;
                 ImGui::PushID(t); ImVec2 p; std::string name = im.name;
                 if (cell("t", name, sel == Sel::Texture && selIndex == t, p)) Select(Sel::Texture, t);
@@ -5789,6 +5975,12 @@ struct App {
                     if (ImGui::MenuItem("Make a block")) MakeBlockFrom(name, ImportAs::Blocks);
                     if (ImGui::MenuItem("Make a cross plane (like flowers)")) MakeBlockFrom(name, ImportAs::CrossPlanes);
                     if (ImGui::MenuItem("Make a flat plane (like ladders)")) MakeBlockFrom(name, ImportAs::FlatPlanes);
+                    if (ImGui::BeginMenu("Move to folder")) {
+                        std::string cur = assetFolders.folderOf(assetFolders.textureIn, name);
+                        if (ImGui::MenuItem("(no folder)", nullptr, cur.empty())) { assetFolders.textureIn[name] = ""; SaveAssetFolders(); }
+                        for (const std::string& c : assetFolders.textures.all()) if (ImGui::MenuItem(c.c_str(), nullptr, c == cur)) { assetFolders.textureIn[name] = c; SaveAssetFolders(); }
+                        ImGui::EndMenu();
+                    }
                     ImGui::Separator();
                     if (ImGui::MenuItem("Delete texture...")) { deleteTexAsk = name; wantPopup = "Delete texture?"; }
                     ImGui::EndPopup();
@@ -5796,10 +5988,11 @@ struct App {
                 ImGui::PopID();
             }
         } else if (assetKind == 3) {
-            int mi = 0;
+            int mi = 0; dragType = "PRIM_MODEL";
             for (const std::string& name : AllModelNames()) {
                 mi++; bool mesh = IsMesh(name);
-                if (assetCat == "blocks" && mesh) continue; if (assetCat == "imported" && (!mesh || IsBuiltin(name))) continue; if (assetCat == "builtin" && !IsBuiltin(name)) continue;
+                if (assetCat == "\tblocks" && mesh) continue; if (assetCat == "\timported" && (!mesh || IsBuiltin(name))) continue; if (assetCat == "\tbuiltin" && !IsBuiltin(name)) continue;
+                if (!assetCat.empty() && assetCat[0] != '\t' && !FolderTree::within(assetFolders.folderOf(assetFolders.modelIn, name), assetCat)) continue;
                 if (!q.empty() && Lower(name).find(q) == std::string::npos) continue;
                 FrameRef f = ModelNamed(name);
                 ImGui::PushID(mi); ImVec2 p;
@@ -5811,6 +6004,12 @@ struct App {
                     if (ImGui::MenuItem("Place it")) StartPlacing(name);
                     if (ImGui::MenuItem("3D viewer")) { viewerModel = name; viewerOpen = true; viewerFit = true; viewerClip = -1; }
                     if (ImGui::MenuItem("Show in the Inspector")) { sel = Sel::Model; selModel = name; }
+                    if (ImGui::BeginMenu("Move to folder")) {
+                        std::string cur = assetFolders.folderOf(assetFolders.modelIn, name);
+                        if (ImGui::MenuItem("(no folder)", nullptr, cur.empty())) { assetFolders.modelIn[name] = ""; SaveAssetFolders(); }
+                        for (const std::string& c : assetFolders.models.all()) if (ImGui::MenuItem(c.c_str(), nullptr, c == cur)) { assetFolders.modelIn[name] = c; SaveAssetFolders(); }
+                        ImGui::EndMenu();
+                    }
                     ImGui::EndPopup();
                 }
                 ImGui::PopID();
@@ -6239,6 +6438,18 @@ struct App {
                     StopPlay(); sel = Sel::World; focusAssets = true;
                 }
                 sel = Sel::World;
+            }
+            {   // folders you make: textures in Nature/Ground, models in Doors, objects in Level 1/Doors (in the Outliner)
+                assetFolders.textures.add("Nature/Ground"); assetFolders.textures.add("Building");
+                for (const char* t : { "dirt", "grass_top", "grass_side", "sand" }) assetFolders.textureIn[t] = "Nature/Ground";
+                for (const char* t : { "bricks", "stone", "planks" }) assetFolders.textureIn[t] = "Building";
+                assetFolders.models.add("Doors/Big ones"); for (const std::string& m : AllModelNames()) if (m.rfind("DOOR", 0) == 0) assetFolders.modelIn[m] = "Doors/Big ones";
+                for (auto& o : objects) if (o.kind == ObjKind::Door) o.folder = "Level 1/Doors"; assetFolders.objects.add("Level 1/Doors");
+                SaveAssetFolders(); sel = Sel::World; focusAssets = true; assetKind = 1; assetCat = "Nature";
+                frames(3, "asset_folders_textures");
+                assetKind = 3; assetCat = "Doors"; frames(2, "asset_folders_models");
+                Log("folders: " + std::to_string(assetFolders.textures.paths.size()) + " texture folders, " + std::to_string(TextureFolders().count("Nature")) + " textures in Nature");
+                assetKind = 0; assetCat.clear();
             }
             {   // the Player editor (HUD): the example visor with two struts (one a mirrored copy), then in Play mode, then while turning (the sway)
                 hud = defaultHud(); playerEdOpen = true; focusPlayerEd = true; hudSel = 1; hudPlane = 0; sel = Sel::World;

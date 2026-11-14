@@ -30,8 +30,8 @@ ParticleSettings particlePreset(const std::string& n) {
         p.color0 = 0xFFB040; p.color1 = 0xFF3000; p.glow = 4; p.shape = PShape::Pixel; p.area = PArea::Disc; p.areaSize = { 1, 0, 1 }; }
     else if (n == "Beam trail") { p.rate = 120; p.life = 0.25f; p.lifeVar = 0.1f; p.spread = 180; p.speed = 0.3f; p.speedVar = 0.2f; p.drag = 2; p.size0 = 0.12f; p.size1 = 0;
         p.color0 = 0xB0F0FF; p.color1 = 0x2080FF; p.glow = 3; p.shape = PShape::Dot; }
-    else if (n == "Charge") { p.rate = 70; p.life = 0.22f; p.lifeVar = 0.08f; p.spread = 180; p.speed = 0.15f; p.speedVar = 0.1f; p.drag = 3; p.size0 = 0.015f; p.size1 = 0.045f;
-        p.color0 = 0xFFFFFF; p.color1 = 0xFFD860; p.glow = 5; p.shape = PShape::Flare; p.area = PArea::Sphere; p.areaSize = { 0.12, 0.12, 0.12 }; p.spin = 3; }
+    else if (n == "Charge") { p.rate = 90; p.life = 0.5f; p.lifeVar = 0.1f; p.spread = 180; p.speed = 0.25f; p.speedVar = 0.15f; p.drag = 1.5f; p.size0 = 0.035f; p.size1 = 0.012f;   // sucked into the charge
+        p.color0 = 0xFFFFFF; p.color1 = 0xFFD860; p.glow = 5; p.shape = PShape::Spark; p.area = PArea::Sphere; p.areaSize = { 0.3, 0.3, 0.3 }; p.spin = 3; p.pull = 9; }
     else if (n == "Muzzle flash") { p.rate = 0; p.burst = 10; p.burstEvery = 99; p.life = 0.07f; p.lifeVar = 0.03f; p.spread = 22; p.speed = 2.2f; p.speedVar = 0.8f; p.drag = 4;
         p.size0 = 0.035f; p.size1 = 0.01f; p.color0 = 0xFFFFF0; p.color1 = 0xFFD060; p.glow = 5; p.shape = PShape::Spark; p.light = false; }
     else if (n == "Impact") { p.rate = 0; p.burst = 30; p.burstEvery = 0; p.life = 0.45f; p.lifeVar = 0.2f; p.spread = 80; p.speed = 5; p.speedVar = 2; p.gravity = -10; p.drag = 1;
@@ -46,7 +46,7 @@ void ParticleEmitter::spawn(V3 o, double yaw) {
     Particle p;
     V3 off{ 0, 0, 0 };
     switch (s.area) {
-    case PArea::Sphere: { double u = rand01() * 6.2831853, v = rand01() * 2 - 1, r = std::cbrt(rand01()); double q = std::sqrt(1 - v * v); off = { std::cos(u) * q * r * s.areaSize.x, v * r * s.areaSize.y, std::sin(u) * q * r * s.areaSize.z }; break; }
+    case PArea::Sphere: { double u = rand01() * 6.2831853, v = rand01() * 2 - 1, r = s.pull > 0 ? 0.85 + 0.15 * rand01() : std::cbrt(rand01()); double q = std::sqrt(1 - v * v); off = { std::cos(u) * q * r * s.areaSize.x, v * r * s.areaSize.y, std::sin(u) * q * r * s.areaSize.z }; break; }
     case PArea::Box: off = { (rand01() - 0.5) * s.areaSize.x, (rand01() - 0.5) * s.areaSize.y, (rand01() - 0.5) * s.areaSize.z }; break;
     case PArea::Disc: { double u = rand01() * 6.2831853, r = std::sqrt(rand01()); off = { std::cos(u) * r * s.areaSize.x, 0, std::sin(u) * r * s.areaSize.z }; break; }
     default: break;
@@ -70,6 +70,8 @@ void ParticleEmitter::spawn(V3 o, double yaw) {
 void ParticleEmitter::burstNow(int n, V3 origin, double yaw) { for (int i = 0; i < n; i++) spawn(origin, yaw); }
 
 void ParticleEmitter::update(double dt, V3 origin, double yaw, const World* w, bool emitting) {
+    V3 shift = origin - lastOrigin; bool follow = s.pull > 0 && started; lastOrigin = origin;
+    if (follow) for (Particle& p : ps) p.pos = p.pos + shift;   // sucked-in ones move along with what they fly into
     if (emitting) {
         if (!started) { started = true; if (s.burst > 0) burstNow(s.burst, origin, yaw); }
         else if (s.burst > 0 && s.burstEvery > 0) { burstT += (float)dt; while (burstT >= s.burstEvery) { burstT -= s.burstEvery; burstNow(s.burst, origin, yaw); } }
@@ -79,6 +81,11 @@ void ParticleEmitter::update(double dt, V3 origin, double yaw, const World* w, b
     for (Particle& p : ps) {
         p.age += (float)dt;
         p.vel.y += s.gravity * dt; p.vel = p.vel * drag;
+        if (s.pull > 0) {   // into the middle; gone once there
+            V3 to = origin - p.pos; double d = std::sqrt(to.x * to.x + to.y * to.y + to.z * to.z);
+            if (d < 0.015 || (p.vel.x * to.x + p.vel.y * to.y + p.vel.z * to.z > 0 && d < std::sqrt(p.vel.x * p.vel.x + p.vel.y * p.vel.y + p.vel.z * p.vel.z) * dt)) { p.age = p.life; continue; }
+            p.vel = p.vel + to * (s.pull * dt / d);
+        }
         V3 next = p.pos + p.vel * dt;
         if (s.collide && w && w->solidAt((int)std::floor(next.x), (int)std::floor(next.y), (int)std::floor(next.z))) {
             if (!s.bounce) { p.age = p.life; continue; }

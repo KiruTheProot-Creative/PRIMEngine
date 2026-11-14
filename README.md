@@ -174,6 +174,12 @@ When one animation takes over from another, or a model goes back to rest, its pa
 - **Cut**: no blending.
 - **Blend time** in seconds. Saved per model in `anim_blend.txt` and used everywhere the model is used: arm cannons (fire, charging, charged loop, missile, back to rest), doors (opening turning into closing) and the viewer.
 
+## Folders you make (assets and objects)
+
+Textures, models and blocks (Assets panel) and objects (Outliner) can go into folders you make yourself, folders inside folders too ("Weapons/Beams"). Right-click "All ..." (or Objects) for a new folder; right-click a folder to make one inside it, rename it or delete it (what is in it moves up one). Drag things onto a folder to put them in it, drag them onto "All ..." to take them out, and drag folders into each other. Clicking a folder shows what is in it and in its sub-folders. Folders are only for sorting: the files stay where they are, so nothing breaks. Saved in the project's `asset_folders.txt` (blocks and objects keep theirs on themselves).
+
+Also: **speed per animation** (3D viewer: "Speed of ...", and next to each cannon animation in the Weapons tab), everywhere that animation plays; and the **charge** now grows an energy orb at the muzzle with particles sucked into it (particles: "Sucked in").
+
 ## Sounds, timelines and free aim
 
 - **Sounds:** WAV files (PCM 8/16/24/32-bit or float, any rate). Import them in Player editor > **Sounds** (or from any sound picker); they go into the project's `sounds` folder. Every sound use has volume, pitch, random pitch (so steps don't sound the same) and a cut (start into the sound, how long). Settings > Sound volume for everything.
