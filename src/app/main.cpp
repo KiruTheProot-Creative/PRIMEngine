@@ -6248,7 +6248,6 @@ struct App {
                 }
                 playerEdOpen = false;
                 StartPlay(false); poseAt(demoShots()[1]); hudSway.reset(); prevPlayYaw = player.yaw; prevPlayPitch = player.pitch; play.health = game.player.maxHealth; toastT = 0;
-                { TexMaterial cm; cm.metal = 0.8f; cm.shine = 0.65f; materials.put(ModelMatKey("@arm-cannon"), cm); SaveMaterials(); }   // a metal cannon
                 frames(3, "weapons_play_cannon");
                 auto run = [&](int n) { for (int k = 0; k < n; k++) { FrameBody(1.0 / 60); swap->Present(0, 0); retired.clear(); } };
                 LaunchShot(weapons.beams[0], 0, nullptr); PlayCannonClip(weapons.beams[0].fireClip); firedPending += 1; run(3); LaunchShot(weapons.beams[0], 0, nullptr); firedPending += 1; run(4);
