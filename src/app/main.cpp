@@ -4626,7 +4626,7 @@ struct App {
         out = eye + W(CannonPoint(x, b, local)); if (dirLocal && dirOut) *dirOut = W(CannonDir(x, *dirLocal));
         return true;
     }
-    int shotsLaunched = 0;
+    int shotsLaunched = 0; bool scrollToBeamSounds = false;
     void LaunchShot(const Beam& b, int beamIdx, const MissileType* m, bool charged = false) {
         bool missile = m != nullptr; shotsLaunched++;
         V3 eye = player.eye(), fw = player.forward(), rr = Norm(cross({ 0, 1, 0 }, fw)), uu = cross(fw, rr);
@@ -4951,6 +4951,7 @@ struct App {
             Hint("A tap fires a normal shot. Hold: it charges at the muzzle; let go when it is full for the charged shot. (Holding to keep firing is off while a beam can charge.) The HUD can show it: Shows > Beam charge.");
         }
         {   // a sound for every moment, in the order they happen
+            if (scrollToBeamSounds) { ImGui::SetScrollHereY(0.05f); scrollToBeamSounds = false; }
             ImGui::SeparatorText("Sounds (each moment)");
             auto slot = [&](const char* id, const char* when, SoundSet& set) { ImGui::TextColored(ImVec4(0.55f, 0.85f, 1, 1), "%s", when); ch |= SoundSetEdit(id, set); };
             slot("bfire", "1. A shot leaves the cannon", b.fireSound);
@@ -6520,7 +6521,7 @@ struct App {
                 hud = defaultHud(); weapons = defaultWeapons(); playerEdOpen = true; focusPlayerEd = true; selectWeaponsTab = true; weapSel = 0; weapPoint = 1;
                 poseAt(demoShots()[1]);
                 frames(8, "weapons_tab");
-                weapPoint = 2; weapYaw = 1.2f; frames(2, "weapons_tab_emitter");
+                weapPoint = 2; weapYaw = 1.2f; frames(2, "weapons_tab_emitter"); scrollToBeamSounds = true; frames(3, "weapons_tab_sounds");
                 {   // sounds: a few made-up WAVs in the project, on the player and on the Power Beam's timelines
                     std::error_code ec; fs::create_directories(fs::u8path(SoundsDir()), ec);
                     auto tone = [&](const char* name, float secs, float f0, float f1, float noise) {
