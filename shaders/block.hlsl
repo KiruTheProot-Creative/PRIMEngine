@@ -260,6 +260,7 @@ void surfaceDetail(VSOut i, inout float3 n, inout float3 albedo, TexMat m)
 float3 lightBlock(VSOut i, float3 albedo, bool front, out float3 n, out float shine, out float3 indirect)
 {
     n = front ? i.n : -i.n;
+    float3 nFlat = n;                                                                             // the face itself, before the generated bumps
     TexMat m = (TexMat)0; m.b = float4(1, 1, 0, 0);
     if (i.uvl.z < 16000) m = gMats[(uint)i.uvl.z]; else { m.a = gMM0; m.b = gMM1; }
     if (gSurf.x > 0 || gSurf.y > 0) surfaceDetail(i, n, albedo, m);
@@ -270,6 +271,7 @@ float3 lightBlock(VSOut i, float3 albedo, bool front, out float3 n, out float sh
     albedo = lerp(albedo, float3(0.92, 0.95, 1.0), snowy * 0.95);
     float wet = gWeather.w * open * (1 - snowy);
     albedo *= lerp(1, 0.55, wet);
+    n = normalize(lerp(n, nFlat, saturate(wet * 1.5 + snowy)));                                   // water and snow fill the little dents: smooth again
     float ndl = saturate(dot(n, gSunDir.xyz));
     float sh = ndl > 0 ? shadowAt(i.rel, n, ndl, i.pos.xy) * cloudShadow(i.rel) : 0;
     float sky = 0.55 + 0.45 * n.y;                                     // more sky light on top than on the sides
@@ -303,6 +305,7 @@ float3 lightBlock(VSOut i, float3 albedo, bool front, out float3 n, out float sh
         indirect = 0;                                                                                 // glowing things are never shaded
     }
     float3 v = -normalize(i.rel);
+    n = normalize(lerp(nFlat, n, 0.15));                                                          // reflections see a much calmer surface (else every pixel mirrors something else: noisy streaks)
     shine = max(max(i.mat.x, mshine), wet * lerp(0.25, 0.55, saturate(n.y)));    // wet ground shines like a puddle
     if (i.mat.y > 0.5) { shine = 1; c *= 0.15; indirect *= 0.15; }    // a mirror is (almost) only its reflection
     if (gRefl.x < 0.5 && shine > 0.01)   // reflections off: just a little of the sky mirrored

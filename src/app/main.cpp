@@ -5972,6 +5972,7 @@ struct App {
         for (const char* nm : { "textures_plain", "textures_bumps_coat_materials" }) { DemoShot d = shots[1]; d.name = nm; shots.push_back(d); }   // and plain textures vs. generated normals + coat + materials
         for (const char* nm : { "textures_ground_plain", "textures_ground_bumps_coat" }) {   // the sunlit path close up, looking down
             DemoShot d = shots[1]; d.name = nm; V3 dl = d.target - d.eye; d.target = { d.eye.x + dl.x * 0.12 + 0.6, d.eye.y - 2.4, d.eye.z + dl.z * 0.12 }; shots.push_back(d); }
+        { DemoShot d = shots.back(); d.name = "textures_ground_wet_bumps"; d.weather = "rain"; shots.push_back(d); }   // wet: the bumps go smooth, reflections stay calm
         for (const DemoShot& sh : shots) {
             settings.ambientOcclusion = sh.name == "ambient_occlusion_off" ? 0 : 1;
             bool plain = sh.name == "textures_plain" || sh.name == "textures_ground_plain"; settings.bumps = plain ? 0.f : 1.f; settings.coat = plain ? 0.f : 1.f; settings.materials = !plain;
