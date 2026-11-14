@@ -528,6 +528,9 @@ int main() {
         st.tick(5); CHECK(!st.fire(b, &mt, 1.2f, missiles), "no missiles left: none");
         Beam nw = b; nw.missileWait = false; WeaponState s2; int m2 = 5; s2.fire(nw, &mt, 3, m2); s2.tick(1.f / mt.rate + 0.01f);
         CHECK(s2.fire(nw, &mt, 3, m2), "with waiting off, it fires before the animation is done");
+        { WeaponState sx; int mm = 3; Beam bw = b; bw.waitForAnim = true; sx.fire(bw, nullptr, 2.0f, mm); sx.tick(1.f / bw.fireRate + 0.01f);
+          CHECK(sx.fire(bw, &mt, 1.0f, mm), "a missile does not wait for the beam's animation"); sx.tick(1.f / mt.rate + 0.01f);
+          Beam nb = b; nb.waitForAnim = false; CHECK(sx.fire(nb, nullptr, 0.3f, mm), "a beam that does not wait fires while the missile animation plays"); }
         { MissileType sup; sup.cost = 5; WeaponState s3; int m3 = 7; CHECK(s3.fire(b, &sup, 0, m3) && m3 == 2, "a Super Missile uses five");
           s3.tick(10); CHECK(!s3.fire(b, &sup, 0, m3) && m3 == 2, "not enough left for another: none (and none used up)"); }
         CHECK(bestOwned({ 1, 0, 1, 0 }, 0) == 2 && bestOwned({ 0, 0 }, 0) == 0 && bestOwned({ 1, 1, 1 }, 0) == 2, "no switching: always the best beam you have (the last one owned in the list)");
@@ -545,13 +548,14 @@ int main() {
         WeaponPose l1; l1.update(mo, 1.0 / 60, 0, true, 20, 0); for (int k = 0; k < 4; k++) l1.update(mo, 1.0 / 60, 0, false, 0, 0);
         CHECK(l1.offset.y < -0.003, "landing dips it (%.4f)", l1.offset.y);
         w.beams[1].muzzle.yaw = 12.5f; w.beams[1].missileWait = false; w.beams[0].name = "Power % Beam"; w.motion.recoil = 0.3f; w.missileMax = 99; w.cannonInFront = true; w.beams[1].chargeTime = 2.5f; w.beams[0].charge = false; w.missileTypes[1].sphere = 3.5f; w.switchMode = 2; w.beams[1].chargedClip = "glow loop"; w.beams[0].shotStyle = 0;
-        { SoundUse u; u.file = "done.wav"; w.beams[1].chargeDone.sounds = { u }; u.file = "hum.wav"; w.beams[1].chargedLoop.sounds = { u }; u.file = "zap hit.wav"; w.beams[0].hitSound.sounds = { u }; u.file = "boom.wav"; w.missileTypes[0].hit.sounds = { u }; u.file = "whoosh.wav"; w.missileTypes[1].launch.sounds = { u }; }
+        { SoundUse u; u.file = "done.wav"; w.beams[1].chargeDone.sounds = { u }; u.file = "hum.wav"; w.beams[1].chargedLoop.sounds = { u }; u.file = "zap hit.wav"; w.beams[0].hitSound.sounds = { u }; u.file = "boom.wav"; w.missileTypes[0].hit.sounds = { u }; u.file = "whoosh.wav"; w.missileTypes[1].launch.sounds = { u }; u.file = "pew.wav"; w.beams[0].fireSound.sounds = { u }; u.file = "hum up.wav"; w.beams[1].chargeUp.sounds = { u }; u.file = "big pew.wav"; w.beams[1].chargedShotSound.sounds = { u }; }
         saveWeapons("/tmp/prim_weapons.txt", w); WeaponSet back; loadWeapons("/tmp/prim_weapons.txt", back);
         CHECK(back.beams.size() == 2 && back.beams[0].name == "Power % Beam" && back.beams[1].muzzle.yaw == 12.5f && !back.beams[1].missileWait && back.beams[0].missileWait
               && back.beams[1].shotLook == "Magic" && back.motion.recoil == 0.3f && back.missileMax == 99 && back.beams[0].model == "@arm-cannon" && back.cannonInFront && back.missileTypes.size() == 2 && back.missileTypes[1].sphere == 3.5f && back.missileTypes[1].name == "Super Missile" && back.missileTypes[1].cost == 5 && !back.missileTypes[1].startsOwned
               && back.switchMode == 2 && back.beams[1].chargedClip == "glow loop" && back.beams[0].shotStyle == 0 && back.beams[1].shotStyle == 1
               && back.beams[1].chargeDone.sounds.size() == 1 && back.beams[1].chargedLoop.sounds[0].file == "hum.wav" && back.beams[0].hitSound.sounds[0].file == "zap hit.wav"
-              && back.missileTypes[0].hit.sounds[0].file == "boom.wav" && back.missileTypes[1].launch.sounds[0].file == "whoosh.wav" && back.beams[0].chargedHitSound.empty() && back.beams[1].chargeTime == 2.5f && !back.beams[0].charge && back.beams[1].chargeLook == "Charge", "weapons save and load");
+              && back.missileTypes[0].hit.sounds[0].file == "boom.wav" && back.missileTypes[1].launch.sounds[0].file == "whoosh.wav" && back.beams[0].chargedHitSound.empty()
+              && back.beams[0].fireSound.sounds[0].file == "pew.wav" && back.beams[1].chargeUp.sounds[0].file == "hum up.wav" && back.beams[1].chargedShotSound.sounds[0].file == "big pew.wav" && back.beams[1].chargeTime == 2.5f && !back.beams[0].charge && back.beams[1].chargeLook == "Charge", "weapons save and load");
         {   // an older file (missiles were set on each beam): the first beam's become the missile
             std::ifstream in("/tmp/prim_weapons.txt"); std::ofstream out("/tmp/prim_weapons_old.txt"); std::string ln;
             while (std::getline(in, ln)) if (ln.rfind("missile ", 0) != 0 && ln.rfind("msound ", 0) != 0) out << ln << "\n";

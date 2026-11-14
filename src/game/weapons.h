@@ -37,6 +37,7 @@ struct Beam {
     std::string chargingClip = "charging", chargedClip = "charged", chargedShotClip = "charged shot";   // the cannon: while filling (once), while full (loops), firing it
     SoundSet chargeDone, chargedLoop;                  // when it is full: a sound once, and a loop until you let go (the charging sounds stop)
     SoundSet hitSound, chargedHitSound;                 // where its shots hit
+    SoundSet fireSound, chargeUp, chargedShotSound;     // the moment a shot leaves; while it charges (cut when full); the moment the charged shot leaves
     float hitSphere = 0.35f, chargeSphere = 1.3f;       // impact spheres where shots hit (blocks across, 0: none)
     // timelines: the animation's speed, sounds, and when the shot leaves, for each thing the beam does
     enum TimelineKind { Fire, Charging, Charged, MissileShot, TIMELINES };

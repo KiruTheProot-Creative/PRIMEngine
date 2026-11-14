@@ -4626,8 +4626,9 @@ struct App {
         out = eye + W(CannonPoint(x, b, local)); if (dirLocal && dirOut) *dirOut = W(CannonDir(x, *dirLocal));
         return true;
     }
+    int shotsLaunched = 0;
     void LaunchShot(const Beam& b, int beamIdx, const MissileType* m, bool charged = false) {
-        bool missile = m != nullptr;
+        bool missile = m != nullptr; shotsLaunched++;
         V3 eye = player.eye(), fw = player.forward(), rr = Norm(cross({ 0, 1, 0 }, fw)), uu = cross(fw, rr);
         // the cannon is drawn with the HUD's view angle: points move to where they show on screen with the player's own field of view
         double fk = std::tan(XMConvertToRadians(settings.fov) * 0.5) / std::max(1e-3, std::tan(XMConvertToRadians(hud.fov) * 0.5));
@@ -4653,6 +4654,7 @@ struct App {
         shots.push_back(sh);
         ParticleSettings fp = particlePreset(b.flashLook); fp.burst = std::max(fp.burst, 8) * (charged ? 3 : 1); if (charged) { fp.size0 *= 2; fp.speed *= 1.6f; } SpawnFx(fp, mpos, mdir, col);
         if (missile) PlaySound(const_cast<MissileType*>(m)->launch);
+        else PlaySound(charged ? const_cast<Beam&>(b).chargedShotSound : const_cast<Beam&>(b).fireSound);   // the moment it leaves
     }
     // missiles: the kind picked now (one supply for all beams)
     bool OwnsMissile(const MissileType& m) const { return m.startsOwned || inv.keys.count(m.name) > 0; }
@@ -4702,7 +4704,10 @@ struct App {
             if (r == WeaponState::Shot::Normal) { StartTimeline(weapState.current, Beam::Fire); firedPending += 1; }
             if (r == WeaponState::Shot::Charged) { StopChargeTimeline(); chargeTlOn = false; StartTimeline(weapState.current, Beam::Charged); firedPending += 2.2f; }
             bool chargingNow = weapState.charging && weapState.charge > 0;   // the charging sounds (and animation) while it fills
-            if (chargingNow && !chargeTlOn) { StartTimeline(weapState.current, Beam::Charging); chargeTlOn = true; }
+            if (chargingNow && !chargeTlOn) {   // charging starts: its sound (cut when it is full or you let go) and its timeline
+                StartTimeline(weapState.current, Beam::Charging); chargeTlOn = true;
+                if (const SoundUse* u = const_cast<Beam*>(b)->chargeUp.pick(soundSeed)) PlaySound(*u, 1, nullptr, TAG_CHARGE);
+            }
             if (!chargingNow && chargeTlOn) { StopChargeTimeline(); chargeTlOn = false; }
             if (weapState.full() && !chargedOn) StartCharged(*b);       // full: the charging sound stops, "done" + the charged loop start together
             if (!weapState.full() && chargedOn) StopCharged();
@@ -4931,7 +4936,6 @@ struct App {
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("A glowing see-through bubble that grows where the shot hits, then fades. 0: none.");
         Prop("Firing animation"); ch |= ClipCombo("##bfc", b.model, b.fireClip);
         Prop("Wait until it is done"); ch |= ImGui::Checkbox("##bw", &b.waitForAnim);
-        ImGui::TextDisabled("Hit sound"); ch |= SoundSetEdit("bhit", b.hitSound);
         ImGui::SeparatorText("Charge shot (hold the button)");
         Prop("Can charge"); ch |= ImGui::Checkbox("##cc", &b.charge);
         if (b.charge) {
@@ -4944,12 +4948,21 @@ struct App {
             Prop("Charging animation"); ch |= ClipCombo("##cca", b.model, b.chargingClip);
             Prop("Full (loops)"); ch |= ClipCombo("##cfa", b.model, b.chargedClip);
             Prop("Charged shot animation"); ch |= ClipCombo("##csa", b.model, b.chargedShotClip);
-            ImGui::TextDisabled("Charging sounds: on the timeline (Charging); they stop when it is full");
-            ImGui::TextDisabled("Full: once"); ch |= SoundSetEdit("cdone", b.chargeDone);
-            ImGui::TextDisabled("Full: a loop until you let go"); ch |= SoundSetEdit("cloop", b.chargedLoop);
-            ImGui::TextDisabled("The charged shot: on the timeline (Charged shot)");
-            ImGui::TextDisabled("Charged hit (none: the normal hit sound)"); ch |= SoundSetEdit("chit", b.chargedHitSound);
             Hint("A tap fires a normal shot. Hold: it charges at the muzzle; let go when it is full for the charged shot. (Holding to keep firing is off while a beam can charge.) The HUD can show it: Shows > Beam charge.");
+        }
+        {   // a sound for every moment, in the order they happen
+            ImGui::SeparatorText("Sounds (each moment)");
+            auto slot = [&](const char* id, const char* when, SoundSet& set) { ImGui::TextColored(ImVec4(0.55f, 0.85f, 1, 1), "%s", when); ch |= SoundSetEdit(id, set); };
+            slot("bfire", "1. A shot leaves the cannon", b.fireSound);
+            slot("bhit", "2. It hits something", b.hitSound);
+            if (b.charge) {
+                slot("cup", "3. Charging: from holding the button until it is full (then cut off)", b.chargeUp);
+                slot("cdone", "4. Full: plays once", b.chargeDone);
+                slot("cloop", "5. Full: a loop until you let go", b.chargedLoop);
+                slot("cshot", "6. The charged shot leaves the cannon", b.chargedShotSound);
+                slot("chit", "7. The charged shot hits (none: the normal hit, 2)", b.chargedHitSound);
+            }
+            Hint("Several sounds in one slot: a random one each time. To time sounds exactly with the cannon's animation, put them on the timelines below instead (they play as well).");
         }
         ImGui::SeparatorText("Missiles from this cannon (right mouse button)");
         Prop("Missile animation"); ch |= ClipCombo("##mcl", b.model, b.missileClip);
@@ -5242,6 +5255,11 @@ struct App {
         if (beam < 0 || beam >= (int)weapons.beams.size()) return;
         const Beam& b = weapons.beams[beam];
         PlayCannonClip(beamClip(b, kind)); cannonSpeed = std::max(0.05f, b.timelines[kind].animSpeed);
+        if (!playMode) {   // the editor's preview: the sound slots too (in Play mode they play when the shot really leaves)
+            Beam& bb = weapons.beams[beam];
+            if (kind == Beam::Fire) PlaySound(bb.fireSound); else if (kind == Beam::Charged) PlaySound(bb.chargedShotSound);
+            else if (kind == Beam::Charging) { if (const SoundUse* u = bb.chargeUp.pick(soundSeed)) PlaySound(*u, 1, nullptr, TAG_CHARGE); }
+        }
         ActiveTl a; a.beam = beam; a.kind = kind; a.until = TimelineLen(b, kind); if (kind == Beam::Charging && playMode) a.until = 600;   // playing: charging runs until it is full or you let go (its sounds are cut then)
         a.play.start(b.timelines[kind]); activeTl.push_back(a);
         if (kind == Beam::Charging) activeTl.back().play.shotDone = true;   // charging shoots nothing
@@ -6545,6 +6563,13 @@ struct App {
                 weapState.missile = 0;
                 run(40); weapState.current = 1; LaunchShot(weapons.beams[1], 1, nullptr); firedPending += 1; run(6); LaunchShot(weapons.beams[1], 1, nullptr); firedPending += 1; run(3);
                 frames(1, "weapons_wave_beam");
+                {   // quick taps (with a slow firing animation and waiting off): every tap is a shot, none waits for the animation
+                    run(40); weapState.current = 0; Beam& b0 = weapons.beams[0]; bool keepWait = b0.waitForAnim; b0.waitForAnim = false;
+                    int before = shotsLaunched; holdBeam = false; run(2);
+                    for (int k = 0; k < 4; k++) { holdBeam = true; run(1); holdBeam = false; run(14); }   // a tap every quarter second (the rate allows 5 a second)
+                    Log("quick taps: " + std::to_string(shotsLaunched - before) + " shots from 4 taps");
+                    b0.waitForAnim = keepWait; run(20);
+                }
                 run(40); weapState.current = 0; holdBeam = true; run(80);
                 frames(1, "weapons_charging");
                 Log("charge: " + std::to_string(weapState.charge) + (chargedOn ? ", full: the charging sound stopped, 'done' and the charged loop started" : ", NOT full yet"));

@@ -72,7 +72,7 @@ bool WeaponState::fire(const Beam& b, const MissileType* m, float animLength, in
     if (cooldown > 0) return false;
     bool missile = m != nullptr;
     bool wait = missile ? b.missileWait : b.waitForAnim;
-    if (wait && animLeft > 0) return false;
+    if (wait && animLeft > 0 && animIsMissile == missile) return false;   // waits for its own animation (a beam shot never holds up a missile, nor the other way)
     int cost = missile ? std::max(1, m->cost) : 0;
     if (missile && missilesLeft < cost) return false;
     missilesLeft -= cost;
@@ -132,6 +132,7 @@ bool saveWeapons(const std::string& path, const WeaponSet& w) {
         f << "beam2 " << b.shotStyle << " " << esc(b.chargingClip) << " " << esc(b.chargedClip) << " " << esc(b.chargedShotClip) << "\n";
         auto bs = [&](const char* k, const SoundSet& set) { for (const SoundUse& u : set.sounds) f << "bsound " << k << " " << soundUseText(u) << "\n"; };
         bs("done", b.chargeDone); bs("loop", b.chargedLoop); bs("hit", b.hitSound); bs("chit", b.chargedHitSound);
+        bs("fire", b.fireSound); bs("up", b.chargeUp); bs("cshot", b.chargedShotSound);
         for (int k = 0; k < Beam::TIMELINES; k++) {   // its timelines (after the beam they belong to)
             const Timeline& t = b.timelines[k];
             f << "timeline " << k << " " << t.animSpeed << " " << t.shotAt << "\n";
@@ -167,7 +168,8 @@ bool loadWeapons(const std::string& path, WeaponSet& w) {
         }
         else if (k == "bsound" && !w.beams.empty()) {
             Beam& b = w.beams.back(); std::string slot, rest; l >> slot; std::getline(l, rest); SoundUse u;
-            SoundSet* set = slot == "done" ? &b.chargeDone : slot == "loop" ? &b.chargedLoop : slot == "hit" ? &b.hitSound : slot == "chit" ? &b.chargedHitSound : nullptr;
+            SoundSet* set = slot == "done" ? &b.chargeDone : slot == "loop" ? &b.chargedLoop : slot == "hit" ? &b.hitSound : slot == "chit" ? &b.chargedHitSound
+                : slot == "fire" ? &b.fireSound : slot == "up" ? &b.chargeUp : slot == "cshot" ? &b.chargedShotSound : nullptr;
             if (set && soundUseFrom(rest, u) && !u.empty()) set->sounds.push_back(u);
         }
         else if (k == "missiles") { std::string c; l >> c >> w.missileStart >> w.missileMax; w.missileCounter = unesc(c); }
