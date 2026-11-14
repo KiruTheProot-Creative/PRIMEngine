@@ -204,10 +204,9 @@ float shadowPCF(int c, float3 rel, float3 n, float ndl, float rB, float2 screen)
     if (any(uv < 0) || any(uv > 1) || s.z > 1) return 1;
     float bias = s.z - (0.02 + tb * 3) / 599;
     float radius = max(0.5, rB / tb), texel = gShadowInfo.x;             // in this map's pixels
-    float step = radius * 2 / 5, sum = 0;
-    float j = (frac(sin(dot(screen, float2(12.9898, 78.233))) * 43758.5453) - 0.5) * step * (radius > 3 ? 0.5 : 0);
+    float step = radius * 2 / 5, sum = 0;                                // no random jitter: each map keeps its blur small enough to stay smooth
     [unroll] for (int gy = 0; gy < 6; gy++) [unroll] for (int gx = 0; gx < 6; gx++)
-        sum += gShadow.SampleCmpLevelZero(gShadowSamp, float3(uv + (float2(gx, gy) - 2.5 + j) * step * texel, c), bias);
+        sum += gShadow.SampleCmpLevelZero(gShadowSamp, float3(uv + (float2(gx, gy) - 2.5) * step * texel, c), bias);
     return sum / 36;
 }
 float shadowAt(float3 rel, float3 n, float ndl, float2 screen)
@@ -234,7 +233,7 @@ float shadowAt(float3 rel, float3 n, float ndl, float2 screen)
         rB = clamp(0.033 + dz * 0.03 * gShadow2.y, 0.033, 0.77);
     }
     int cs = c;                                                          // a very soft edge: a coarser map, so its samples stay close together
-    [loop] while (cs < 3 && rB / gCascTexel[cs] > 6) cs++;
+    [loop] while (cs < 3 && rB / gCascTexel[cs] > 4) cs++;
     float sh = shadowPCF(cs, rel, n, ndl, rB, screen);
     if (edge > 0 && cs == c && c < 3) sh = lerp(sh, shadowPCF(c + 1, rel, n, ndl, rB, screen), edge);   // where two maps meet: a smooth blend
     float fade = saturate(length(rel.xz) / gCascR.w * 1.25 - 0.25);      // fade out where the last map ends
