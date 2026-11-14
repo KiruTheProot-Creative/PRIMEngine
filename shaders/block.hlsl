@@ -227,7 +227,7 @@ void surfaceDetail(VSOut i, inout float3 n, inout float3 albedo, TexMat m)
     float2 fw = max(abs(du1), abs(du2)) * float2(W, H);
     float near = saturate(1.6 - max(fw.x, fw.y) * 1.2);                                          // a pixel smaller than about a screen pixel: off (no shimmer)
     if (near <= 0) return;
-    int layer = (int)i.uvl.z; int2 c = int2(floor(tc)); float2 f = frac(tc);
+    int layer = (int)round(i.uvl.z); int2 c = int2(floor(tc)); float2 f = frac(tc);   // round: the layer arrives as e.g. 2.9999 (cutting it off gave the texture next to it)
     int2 sz = int2(W, H);
     #define HT(o) sqrt(lumOf(mesh ? gMeshTex.Load(int3(((c + (o)) % sz + sz) % sz, 0)).rgb : gTex.Load(int4(((c + (o)) % sz + sz) % sz, layer, 0)).rgb))
     float h0 = HT(int2(0, 0)), hr = HT(int2(1, 0)), hl = HT(int2(-1, 0)), hd = HT(int2(0, 1)), hu = HT(int2(0, -1));
@@ -262,7 +262,7 @@ float3 lightBlock(VSOut i, float3 albedo, bool front, out float3 n, out float sh
     n = front ? i.n : -i.n;
     float3 nFlat = n;                                                                             // the face itself, before the generated bumps
     TexMat m = (TexMat)0; m.b = float4(1, 1, 0, 0);
-    if (i.uvl.z < 16000) m = gMats[(uint)i.uvl.z]; else { m.a = gMM0; m.b = gMM1; }
+    if (i.uvl.z < 16000) m = gMats[(uint)round(i.uvl.z)]; else { m.a = gMM0; m.b = gMM1; }
     if (gSurf.x > 0 || gSurf.y > 0) surfaceDetail(i, n, albedo, m);
     if (gSurf.z < 0.5) { m.a = 0; }                                                               // materials off: plain
     // weather on surfaces: snow settles on tops open to the sky, rain makes things darker and shiny
