@@ -310,6 +310,11 @@ float3 lightBlock(VSOut i, float3 albedo, bool front, out float3 n, out float sh
         float fr = 0.04 + 0.96 * pow(1 - saturate(dot(n, v)), 5);
         c += skyColor(reflect(-v, n)) * fr * shine * 0.9 * lerp(float3(1, 1, 1), albedo * 1.5, metal);
     }
+    if (metal > 0.01)   // metal mirrors its surroundings in its own colour even when not polished (the sky here; reflections add the rest)
+    {
+        float3 rv = reflect(-v, n);
+        c += skyColor(rv) * albedo * metal * (0.35 + 0.65 * saturate(m.a.x)) * lerp(0.35, 1.0, i.ao) * (gRefl.x < 0.5 ? 1.0 : 0.6);
+    }
     float d = length(i.rel);
     float f = saturate((d - gFogRange.x) / max(gFogRange.y - gFogRange.x, 1));
     indirect *= 1 - f * f;
