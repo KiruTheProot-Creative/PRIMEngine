@@ -17,7 +17,8 @@ struct Settings {
     bool blockPreview = true;  // see-through preview where the next block goes
     float timeOfDay = 10.f;    // hours, 0 .. 24
     bool dayCycle = false;     // the sun moves (one day = 20 minutes)
-    int shadowQuality = 2;     // 0 off, 1 normal (2048), 2 high (4096)
+    int shadowQuality = 2;     // 0 off, 1 normal (4 x 1536), 2 high (4 x 2048): four maps, sharp near you, coarser farther out
+    float shadowDistance = 160; // blocks: how far shadows reach (the sharpness near you does not depend on it, nor on the render distance)
     int shadowSoft = 2;        // shadow edges: 0 sharp, 1 smooth, 2 soft like real sunlight (sharp near what casts them, softer farther away)
     float shadowSoftness = 1;  // how soft (smooth / realistic)
     float cloudCover = 0.5f;   // 0 = no clouds, 1 = overcast

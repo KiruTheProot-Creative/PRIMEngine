@@ -180,6 +180,10 @@ Textures, models and blocks (Assets panel) and objects (Outliner) can go into fo
 
 Also: **speed per animation** (3D viewer: "Speed of ...", and next to each cannon animation in the Weapons tab), everywhere that animation plays; and the **charge** now grows an energy orb at the muzzle with particles sucked into it (particles: "Sucked in").
 
+## Sun shadows: four cascades
+
+The sun's shadows use four shadow maps around you: the nearest covers about 13 blocks and is very sharp, each next one reaches farther with bigger pixels, and where two meet they blend smoothly (no line). How far shadows reach is its own setting (**Settings > Look > Shadow distance**, 24 to 512 blocks), so the sharpness near you no longer depends on the render distance. Soft edges keep the same size in blocks in every map; very soft ones are taken from a coarser map so they stay smooth.
+
 ## Sounds, timelines and free aim
 
 - **Sounds:** WAV files (PCM 8/16/24/32-bit or float, any rate). Import them in Player editor > **Sounds** (or from any sound picker); they go into the project's `sounds` folder. Every sound use has volume, pitch, random pitch (so steps don't sound the same) and a cut (start into the sound, how long). Settings > Sound volume for everything.

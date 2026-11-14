@@ -98,6 +98,9 @@ struct alignas(16) FrameCB {
     float env[4], envPart[4], envPartColor[4], refl[4], clipPlane[4], mirror[4], ao[4];
     float shadow2[4];   // x edge mode (0 sharp, 1 smooth, 2 realistic), y softness
     float surf[4];      // x generated normals (0 off), y coated textures (0 off), z texture materials on (1)
+    XMFLOAT4X4 cascVP[4];   // the four shadow maps (cascades), nearest first
+    float cascR[4];         // how far each reaches (blocks, from the camera)
+    float cascTexel[4];     // one shadow pixel in blocks, per cascade
 };
 struct alignas(16) ChunkCB { float offset[4]; float ax[4] = { 1, 0, 0, 0 }, ay[4] = { 0, 1, 0, 0 }, az[4] = { 0, 0, 1, 0 }; };   // axes: objects are turned and sized
 
@@ -352,12 +355,19 @@ struct App {
             bloomLv.push_back(L);
         }
     }
-    void MakeShadowMap(int size) {
-        shadowTex.Reset(); shadowDSV.Reset(); shadowSRV.Reset(); shadowSize = size; if (!size) return;
-        D3D11_TEXTURE2D_DESC d{}; d.Width = d.Height = (UINT)size; d.MipLevels = 1; d.ArraySize = 1; d.Format = DXGI_FORMAT_R32_TYPELESS; d.SampleDesc.Count = 1; d.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
+    static constexpr int CASCADES = 4; bool cascLogged = false;
+    ComPtr<ID3D11DepthStencilView> cascDSV[CASCADES];
+    void MakeShadowMap(int size) {   // four shadow maps in one array: cascade 0 near you (sharp) .. 3 far out (coarse)
+        shadowTex.Reset(); shadowDSV.Reset(); shadowSRV.Reset(); for (auto& d : cascDSV) d.Reset(); shadowSize = size; if (!size) return;
+        D3D11_TEXTURE2D_DESC d{}; d.Width = d.Height = (UINT)size; d.MipLevels = 1; d.ArraySize = CASCADES; d.Format = DXGI_FORMAT_R32_TYPELESS; d.SampleDesc.Count = 1; d.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
         HR(dev->CreateTexture2D(&d, nullptr, &shadowTex));
-        D3D11_DEPTH_STENCIL_VIEW_DESC dv{}; dv.Format = DXGI_FORMAT_D32_FLOAT; dv.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D; HR(dev->CreateDepthStencilView(shadowTex.Get(), &dv, &shadowDSV));
-        D3D11_SHADER_RESOURCE_VIEW_DESC sv{}; sv.Format = DXGI_FORMAT_R32_FLOAT; sv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D; sv.Texture2D.MipLevels = 1; HR(dev->CreateShaderResourceView(shadowTex.Get(), &sv, &shadowSRV));
+        for (int i = 0; i < CASCADES; i++) {
+            D3D11_DEPTH_STENCIL_VIEW_DESC dv{}; dv.Format = DXGI_FORMAT_D32_FLOAT; dv.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2DARRAY; dv.Texture2DArray.FirstArraySlice = i; dv.Texture2DArray.ArraySize = 1;
+            HR(dev->CreateDepthStencilView(shadowTex.Get(), &dv, &cascDSV[i]));
+        }
+        shadowDSV = cascDSV[0];
+        D3D11_SHADER_RESOURCE_VIEW_DESC sv{}; sv.Format = DXGI_FORMAT_R32_FLOAT; sv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY; sv.Texture2DArray.MipLevels = 1; sv.Texture2DArray.ArraySize = CASCADES;
+        HR(dev->CreateShaderResourceView(shadowTex.Get(), &sv, &shadowSRV));
     }
     void OnResize() {
         resized = false; ctx->OMSetRenderTargets(0, nullptr, nullptr); backRTV.Reset();
@@ -2548,19 +2558,27 @@ struct App {
         fc.camU[0] = (float)u.x; fc.camU[1] = (float)u.y; fc.camU[2] = (float)u.z; fc.proj[0] = std::tan(XMConvertToRadians(settings.fov) * 0.5f); fc.proj[1] = aspect;
 
         // ---- shadow map: the world seen from the sun, around the camera
-        int wantShadow = settings.shadowQuality <= 0 ? 0 : settings.shadowQuality == 1 ? 2048 : 4096;
+        int wantShadow = settings.shadowQuality <= 0 ? 0 : settings.shadowQuality == 1 ? 1536 : 2048;
         if (wantShadow != shadowSize) MakeShadowMap(wantShadow);
         bool shadows = shadowSize > 0 && fc.sunDir[3] > 0;
-        XMMATRIX svp = XMMatrixIdentity();
-        if (shadows) {
-            float R = std::min(112.f, settings.renderDistance * (float)CS);
+        XMMATRIX svp = XMMatrixIdentity(); XMMATRIX cvp[CASCADES];
+        if (shadows) {   // four cascades around the camera: sharp near you, coarser farther out (blended where they meet)
+            float far = std::clamp(settings.shadowDistance, 24.f, 512.f);
+            const float split[CASCADES] = { 0.08f, 0.2f, 0.45f, 1.0f };
             V3 L{ fc.sunDir[0], fc.sunDir[1], fc.sunDir[2] }, up = std::fabs(L.y) > 0.99 ? V3{ 0, 0, 1 } : V3{ 0, 1, 0 };
             V3 zx = L * -1.0, xx = normalize(cross(up, zx)), yx = cross(zx, xx);
             XMMATRIX lv = XMMatrixLookToLH(XMVectorSet((float)L.x * 300, (float)L.y * 300, (float)L.z * 300, 1), XMVectorSet((float)zx.x, (float)zx.y, (float)zx.z, 0), XMVectorSet((float)up.x, (float)up.y, (float)up.z, 0));
-            double texel = 2.0 * R / shadowSize, px = dot(camPos, xx), py = dot(camPos, yx);   // keep shadow pixels fixed to the world: no shimmering
-            float mx = (float)(px - std::floor(px / texel) * texel), my = (float)(py - std::floor(py / texel) * texel);
-            svp = lv * XMMatrixTranslation(mx, my, 0) * XMMatrixOrthographicLH(2 * R, 2 * R, 1, 600);
-            fc.shadowInfo[0] = 1.f / shadowSize; fc.shadowInfo[1] = R; fc.shadowInfo[2] = (float)texel * 1.5f; fc.shadowInfo[3] = 1.6f;
+            double px = dot(camPos, xx), py = dot(camPos, yx);
+            for (int c = 0; c < CASCADES; c++) {
+                float R = std::max(10.f, far * split[c]);
+                double texel = 2.0 * R / shadowSize;   // keep each map's pixels fixed to the world: no shimmering
+                float mx = (float)(px - std::floor(px / texel) * texel), my = (float)(py - std::floor(py / texel) * texel);
+                cvp[c] = lv * XMMatrixTranslation(mx, my, 0) * XMMatrixOrthographicLH(2 * R, 2 * R, 1, 600);
+                XMStoreFloat4x4(&fc.cascVP[c], cvp[c]); fc.cascR[c] = R; fc.cascTexel[c] = (float)texel;
+            }
+            svp = cvp[CASCADES - 1];
+            if (shotDir.size() && !cascLogged) { cascLogged = true; char b[160]; snprintf(b, sizeof b, "shadow cascades: %.0f / %.0f / %.0f / %.0f blocks, near pixel %.3f blocks", fc.cascR[0], fc.cascR[1], fc.cascR[2], fc.cascR[3], fc.cascTexel[0]); Log(b); }
+            fc.shadowInfo[0] = 1.f / shadowSize; fc.shadowInfo[1] = fc.cascR[CASCADES - 1]; fc.shadowInfo[2] = fc.cascTexel[0] * 1.5f; fc.shadowInfo[3] = 1.6f;
             fc.shadow2[0] = (float)std::clamp(settings.shadowSoft, 0, 2); fc.shadow2[1] = std::clamp(settings.shadowSoftness, 0.1f, 4.f);
             fc.surf[0] = std::clamp(settings.bumps, 0.f, 3.f); fc.surf[1] = std::clamp(settings.coat, 0.f, 3.f); fc.surf[2] = settings.materials ? 1.f : 0.f;
         } else fc.sunDir[3] = 0;
@@ -2632,13 +2650,17 @@ struct App {
         };
         ID3D11ShaderResourceView* none[5] = {};
         ctx->PSSetShaderResources(0, 5, none);
-        if (shadows) {
-            ctx->OMSetRenderTargets(0, nullptr, shadowDSV.Get()); ctx->ClearDepthStencilView(shadowDSV.Get(), D3D11_CLEAR_DEPTH, 1.f, 0);
+        if (shadows) {   // each cascade from the sun (only what is inside it gets drawn)
             D3D11_VIEWPORT sv{ 0, 0, (float)shadowSize, (float)shadowSize, 0, 1 }; ctx->RSSetViewports(1, &sv);
             ctx->RSSetState(rsShadow.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsShadow.Get(), nullptr, 0);
             ctx->PSSetShaderResources(0, 1, texArray.GetAddressOf()); ctx->PSSetSamplers(0, 1, sampBlocks.GetAddressOf());
-            ctx->PSSetShader(nullptr, nullptr, 0); drawChunks(svp, 0, false);
-            ctx->PSSetShader(psShadowCut.Get(), nullptr, 0); drawChunks(svp, 1, false);
+            for (int c = 0; c < CASCADES; c++) {
+                FrameCB cf = fc; XMStoreFloat4x4(&cf.shadowVP, cvp[c]); ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &cf, 0, 0);
+                ctx->OMSetRenderTargets(0, nullptr, cascDSV[c].Get()); ctx->ClearDepthStencilView(cascDSV[c].Get(), D3D11_CLEAR_DEPTH, 1.f, 0);
+                ctx->PSSetShader(nullptr, nullptr, 0); drawChunks(cvp[c], 0, false);
+                ctx->PSSetShader(psShadowCut.Get(), nullptr, 0); drawChunks(cvp[c], 1, false);
+            }
+            ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &fc, 0, 0);
         }
 
         if (skyMap) {
@@ -2996,6 +3018,8 @@ struct App {
         ch_ |= ImGui::Checkbox("The sun moves (a day is 20 minutes)", &settings.dayCycle);
         const char* sq[] = { "Off", "Normal", "High" }; ch_ |= ImGui::Combo("Shadows", &settings.shadowQuality, sq, 3);
         if (settings.shadowQuality > 0) {
+            ch_ |= ImGui::SliderFloat("Shadow distance", &settings.shadowDistance, 24, 512, "%.0f blocks");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("How far shadows reach. Four shadow maps: very sharp close to you, coarser farther out,\nblended where they meet. The sharpness near you stays the same however far this goes.");
             const char* se[] = { "Sharp", "Smooth", "Soft like sunlight" }; ch_ |= ImGui::Combo("Shadow edges", &settings.shadowSoft, se, 3);
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Soft like sunlight: sharp right next to what casts the shadow, softer the farther away it falls.");
             if (settings.shadowSoft > 0) ch_ |= ImGui::SliderFloat("Shadow softness", &settings.shadowSoftness, 0.25f, 3, "%.2f");

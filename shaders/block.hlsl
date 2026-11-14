@@ -32,6 +32,9 @@ cbuffer Frame : register(b0)
     float4 gAOSet;                  // ambient occlusion: x on (1) / off (0), y radius (blocks), z strength, w samples
     float4 gShadow2;                // shadow edges: x 0 sharp / 1 smooth / 2 soft like sunlight, y softness
     float4 gSurf;                   // x generated normals (0 off), y coated textures (0 off), z texture materials on (1)
+    row_major float4x4 gCascVP[4];  // the four sun shadow maps (cascades): camera-relative position -> that map, nearest first
+    float4 gCascR;                  // how far each reaches (blocks)
+    float4 gCascTexel;              // one shadow pixel in blocks, per cascade
 };
 cbuffer ChunkCB : register(b1)
 {
@@ -66,7 +69,7 @@ float3 dynLights(float3 rel, float3 n)
 float3 meshToRel(float3 p) { return gOffset.xyz + gAxisX.xyz * p.x + gAxisY.xyz * p.y + gAxisZ.xyz * p.z; }
 
 Texture2DArray gTex : register(t0);
-Texture2D<float> gShadow : register(t1);
+Texture2DArray<float> gShadow : register(t1);   // one slice per cascade
 Texture2D<float> gSceneDepth : register(t2);
 Texture3D<float2> gNoise : register(t3);       // tiling cloud noise: x soft billows, y puffy cells
 SamplerState gSamp : register(s0);
@@ -179,36 +182,63 @@ static const float2 kDisc[16] = {
     float2(0.54, -0.81), float2(0.45, 0.89), float2(-0.38, -0.32), float2(0.81, 0.59),
     float2(0.02, 0.69), float2(0.05, -0.20), float2(-0.62, 0.79), float2(0.62, 0.05) };
 
+// the first cascade that holds this point (nearest = sharpest), and how close to its edge it is (0..1: blend into the next)
+int cascadeFor(float3 rel, out float edge)
+{
+    edge = 1;
+    [unroll] for (int c = 0; c < 4; c++)
+    {
+        float4 s = mul(float4(rel, 1), gCascVP[c]);
+        float m = max(abs(s.x), abs(s.y));
+        if (m < 0.94 && s.z < 1) { edge = saturate((m - 0.72) / 0.22); return c; }
+    }
+    return 4;
+}
+// filtered samples from one cascade; rB: how soft the edge is, in blocks (0: as sharp as that map is)
+float shadowPCF(int c, float3 rel, float3 n, float ndl, float rB, float2 screen)
+{
+    float tb = gCascTexel[c];
+    float3 p = rel + n * tb * 1.5 * (1.5 - ndl);                       // push off the surface by about a shadow pixel: no "shadow acne"
+    float4 s = mul(float4(p, 1), gCascVP[c]);
+    float2 uv = float2(s.x, -s.y) * 0.5 + 0.5;
+    if (any(uv < 0) || any(uv > 1) || s.z > 1) return 1;
+    float bias = s.z - (0.02 + tb * 3) / 599;
+    float radius = max(0.5, rB / tb), texel = gShadowInfo.x;             // in this map's pixels
+    float step = radius * 2 / 5, sum = 0;
+    float j = (frac(sin(dot(screen, float2(12.9898, 78.233))) * 43758.5453) - 0.5) * step * (radius > 3 ? 0.5 : 0);
+    [unroll] for (int gy = 0; gy < 6; gy++) [unroll] for (int gx = 0; gx < 6; gx++)
+        sum += gShadow.SampleCmpLevelZero(gShadowSamp, float3(uv + (float2(gx, gy) - 2.5 + j) * step * texel, c), bias);
+    return sum / 36;
+}
 float shadowAt(float3 rel, float3 n, float ndl, float2 screen)
 {
     if (gSunDir.w < 0.5) return 1;
-    float3 p = rel + n * gShadowInfo.z * (1.5 - ndl);                 // push off the surface: no "shadow acne"
-    float4 s = mul(float4(p, 1), gShadowVP);
-    float2 uv = float2(s.x, -s.y) * 0.5 + 0.5;
-    if (any(uv < 0) || any(uv > 1) || s.z > 1) return 1;
-    float texel = gShadowInfo.x, bias = s.z - 0.0004;
-    float radius = gShadow2.x < 0.5 ? 0.5 : 1.3 * gShadow2.y;            // in shadow-map pixels
+    float edge; int c = cascadeFor(rel, edge);
+    if (c > 3) return 1;
+    float rB = gShadow2.x < 0.5 ? 0 : 0.0715 * gShadow2.y;              // the soft edge in blocks (the same in every cascade)
     if (gShadow2.x > 1.5)
     {   // like sunlight: look for what casts the shadow; the farther below it, the softer the edge
-        int2 at = int2(uv / texel); float blk = 0, cnt = 0;
+        float tb = gCascTexel[c];
+        float3 p = rel + n * tb * 1.5 * (1.5 - ndl);
+        float4 s = mul(float4(p, 1), gCascVP[c]);
+        float2 uv = float2(s.x, -s.y) * 0.5 + 0.5;
+        float texel = gShadowInfo.x, bias = s.z - (0.02 + tb * 3) / 599, sp = max(1.0, 0.165 / tb);
+        int size = int(1 / texel); int2 at = int2(uv / texel); float blk = 0, cnt = 0;
         [unroll] for (int by = 0; by < 4; by++) [unroll] for (int bx = 0; bx < 4; bx++)
         {
-            float d = gShadow.Load(int3(clamp(at + int2(bx * 3 - 4, by * 3 - 4), 0, int(1 / texel) - 1), 0));
+            float d = gShadow.Load(int4(clamp(at + int2(round((bx - 1.5) * sp), round((by - 1.5) * sp)), 0, size - 1), c, 0));
             if (d < bias) { blk += d; cnt += 1; }
         }
         if (cnt < 0.5) return 1;                                         // nothing above: lit
         float dz = (s.z - blk / cnt) * 599;                              // blocks from what casts it to here
-        float texelBlocks = gShadowInfo.z / 1.5;
-        radius = clamp(0.6 + dz * 0.03 * gShadow2.y / texelBlocks, 0.6, 14);
+        rB = clamp(0.033 + dz * 0.03 * gShadow2.y, 0.033, 0.77);
     }
-    // a grid of filtered samples: smooth, without grain
-    float step = radius * 2 / 5, sum = 0;
-    float j = (frac(sin(dot(screen, float2(12.9898, 78.233))) * 43758.5453) - 0.5) * step * (radius > 3 ? 0.5 : 0);   // a little jitter only on very soft edges
-    [unroll] for (int gy = 0; gy < 6; gy++) [unroll] for (int gx = 0; gx < 6; gx++)
-        sum += gShadow.SampleCmpLevelZero(gShadowSamp, uv + (float2(gx, gy) - 2.5 + j) * step * texel, bias);
-    float sh = sum / 36;
-    float edge = saturate(length(rel.xz) / gShadowInfo.y * 1.25 - 0.25);   // fade out where the shadow map ends
-    return lerp(sh, 1, edge * edge);
+    int cs = c;                                                          // a very soft edge: a coarser map, so its samples stay close together
+    [loop] while (cs < 3 && rB / gCascTexel[cs] > 6) cs++;
+    float sh = shadowPCF(cs, rel, n, ndl, rB, screen);
+    if (edge > 0 && cs == c && c < 3) sh = lerp(sh, shadowPCF(c + 1, rel, n, ndl, rB, screen), edge);   // where two maps meet: a smooth blend
+    float fade = saturate(length(rel.xz) / gCascR.w * 1.25 - 0.25);      // fade out where the last map ends
+    return lerp(sh, 1, fade * fade);
 }
 
 float lumOf(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }
@@ -766,9 +796,9 @@ float4 PS_Volume(SkyOut i) : SV_Target
             float sun = 1;
             if (gSunDir.w > 0.5)
             {
-                float4 s = mul(float4(rel, 1), gShadowVP);
+                float4 s = mul(float4(rel, 1), gCascVP[3]);                 // the light shafts: the widest map is plenty
                 float2 uv = float2(s.x, -s.y) * 0.5 + 0.5;
-                if (all(uv > 0) && all(uv < 1) && s.z < 1) sun = gShadow.SampleCmpLevelZero(gShadowSamp, uv, s.z - 0.001);
+                if (all(uv > 0) && all(uv < 1) && s.z < 1) sun = gShadow.SampleCmpLevelZero(gShadowSamp, float3(uv, 3), s.z - 0.001);
             }
             float a = exp(-d * dt);
             S += T * (gSunColor.rgb * sun * phase * 0.18 + amb) * (1 - a); T *= a;
