@@ -2563,14 +2563,14 @@ struct App {
         bool shadows = shadowSize > 0 && fc.sunDir[3] > 0;
         XMMATRIX svp = XMMatrixIdentity(); XMMATRIX cvp[CASCADES];
         if (shadows) {   // four cascades around the camera: sharp near you, coarser farther out (blended where they meet)
-            float far = std::clamp(settings.shadowDistance, 24.f, 512.f);
+            float reach = std::clamp(settings.shadowDistance, 24.f, 512.f);
             const float split[CASCADES] = { 0.08f, 0.2f, 0.45f, 1.0f };
             V3 L{ fc.sunDir[0], fc.sunDir[1], fc.sunDir[2] }, up = std::fabs(L.y) > 0.99 ? V3{ 0, 0, 1 } : V3{ 0, 1, 0 };
             V3 zx = L * -1.0, xx = normalize(cross(up, zx)), yx = cross(zx, xx);
             XMMATRIX lv = XMMatrixLookToLH(XMVectorSet((float)L.x * 300, (float)L.y * 300, (float)L.z * 300, 1), XMVectorSet((float)zx.x, (float)zx.y, (float)zx.z, 0), XMVectorSet((float)up.x, (float)up.y, (float)up.z, 0));
             double px = dot(camPos, xx), py = dot(camPos, yx);
             for (int c = 0; c < CASCADES; c++) {
-                float R = std::max(10.f, far * split[c]);
+                float R = std::max(10.f, reach * split[c]);
                 double texel = 2.0 * R / shadowSize;   // keep each map's pixels fixed to the world: no shimmering
                 float mx = (float)(px - std::floor(px / texel) * texel), my = (float)(py - std::floor(py / texel) * texel);
                 cvp[c] = lv * XMMatrixTranslation(mx, my, 0) * XMMatrixOrthographicLH(2 * R, 2 * R, 1, 600);
