@@ -266,14 +266,15 @@ float3 lightBlock(VSOut i, float3 albedo, bool front, out float3 n, out float sh
     if (gSurf.x > 0 || gSurf.y > 0) surfaceDetail(i, n, albedo, m);
     if (gSurf.z < 0.5) { m.a = 0; }                                                               // materials off: plain
     // weather on surfaces: snow settles on tops open to the sky, rain makes things darker and shiny
-    float open = (gWeather.w > 0.01 || gWeather2.x > 0.01) ? skyExposed(i.rel + n * 0.3) : 0;
-    float snowy = gWeather2.x * open * smoothstep(0.35, 0.85, n.y);
+    float open = (gWeather.w > 0.01 || gWeather2.x > 0.01) ? skyExposed(i.rel + nFlat * 0.3) : 0;
+    float snowy = gWeather2.x * open * smoothstep(0.35, 0.85, nFlat.y);
     albedo = lerp(albedo, float3(0.92, 0.95, 1.0), snowy * 0.95);
     float wet = gWeather.w * open * (1 - snowy);
     albedo *= lerp(1, 0.55, wet);
     n = normalize(lerp(n, nFlat, saturate(wet * 1.5 + snowy)));                                   // water and snow fill the little dents: smooth again
     float ndl = saturate(dot(n, gSunDir.xyz));
-    float sh = ndl > 0 ? shadowAt(i.rel, n, ndl, i.pos.xy) * cloudShadow(i.rel) : 0;
+    float ndlFlat = saturate(dot(nFlat, gSunDir.xyz));                                            // shadows ask with the flat face: the bumps would push each pixel's test
+    float sh = ndlFlat > 0 ? shadowAt(i.rel, nFlat, ndlFlat, i.pos.xy) * cloudShadow(i.rel) : 0; // a different way and the face would shadow itself in stripes
     float sky = 0.55 + 0.45 * n.y;                                     // more sky light on top than on the sides
     float3 light = gSunColor.rgb * ndl * sh + gAmbient.rgb * sky * i.ao;
     float lamp = max(i.lamp.r, max(i.lamp.g, i.lamp.b));
