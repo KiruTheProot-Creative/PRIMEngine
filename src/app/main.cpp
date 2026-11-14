@@ -1648,7 +1648,7 @@ struct App {
         }
         if (cb) {   // the charge: an orb at the muzzle that grows as it fills (and throbs when full); particles are sucked into it
             float k = std::clamp(weapState.charge, 0.f, 1.f);
-            double r = cb->size * (0.45 + 1.9 * k) * (k >= 1 ? 1.0 + 0.08 * std::sin(animTime * 20) : 1.0);
+            double r = cb->size * (0.35 + 1.15 * k) * (k >= 1 ? 1.0 + 0.08 * std::sin(animTime * 20) : 1.0);
             orb(chargeAt, Norm(player.forward()), r, cb->color, k >= 1, (float)animTime, 3.3f, 0.0);
         }
         EndSphereDraw();
