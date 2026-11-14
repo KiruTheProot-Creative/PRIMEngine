@@ -1,0 +1,220 @@
+sound: no sound device
+PRIMEngine screenshots, drawing with: graphics card, 1028x720
+shadow cascades: 13 / 32 / 72 / 160 blocks, near pixel 0.012 blocks
+  average brightness 142.1 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/01_overview_morning.png: 183 chunks with meshes, 67 drawn, 22 waiting frames, frame 763 ms
+  average brightness 98.5 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/02_house_noon.png: 198 chunks with meshes, 63 drawn, 5 waiting frames, frame 645 ms
+  average brightness 114.1 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/03_arches_afternoon.png: 198 chunks with meshes, 63 drawn, 5 waiting frames, frame 619 ms
+  average brightness 123.7 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/04_garden.png: 209 chunks with meshes, 65 drawn, 5 waiting frames, frame 596 ms
+  average brightness 129.8 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/05_tree_and_house_sunset.png: 215 chunks with meshes, 79 drawn, 5 waiting frames, frame 675 ms
+  average brightness 70.8 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/06_night.png: 215 chunks with meshes, 82 drawn, 5 waiting frames, frame 683 ms
+  average brightness 82.2 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/07_night_lamps.png: 215 chunks with meshes, 67 drawn, 5 waiting frames, frame 594 ms
+  average brightness 69.3 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/08_stars.png: 215 chunks with meshes, 6 drawn, 5 waiting frames, frame 875 ms
+  average brightness 81.3 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/09_colored_lamps.png: 215 chunks with meshes, 73 drawn, 5 waiting frames, frame 596 ms
+  average brightness 149.0 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/10_foggy_morning_light_shafts.png: 215 chunks with meshes, 80 drawn, 5 waiting frames, frame 799 ms
+  average brightness 160.4 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/11_clouds.png: 215 chunks with meshes, 5 drawn, 5 waiting frames, frame 932 ms
+  average brightness 176.9 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/12_clouds_sunset.png: 215 chunks with meshes, 70 drawn, 5 waiting frames, frame 925 ms
+  average brightness 73.6 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/13_overcast.png: 215 chunks with meshes, 80 drawn, 5 waiting frames, frame 497 ms
+  average brightness 65.6 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/14_rain.png: 215 chunks with meshes, 70 drawn, 5 waiting frames, frame 645 ms
+  average brightness 133.9 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/15_thunderstorm.png: 215 chunks with meshes, 78 drawn, 5 waiting frames, frame 569 ms
+  average brightness 101.6 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/16_intense_storm.png: 215 chunks with meshes, 64 drawn, 5 waiting frames, frame 551 ms
+  average brightness 127.5 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/17_snow.png: 215 chunks with meshes, 82 drawn, 5 waiting frames, frame 513 ms
+  average brightness 84.3 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/18_blizzard.png: 215 chunks with meshes, 71 drawn, 5 waiting frames, frame 507 ms
+  average brightness 108.7 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/19_foggy.png: 215 chunks with meshes, 80 drawn, 5 waiting frames, frame 686 ms
+  average brightness 145.8 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/20_water_pond_waterfall.png: 216 chunks with meshes, 62 drawn, 5 waiting frames, frame 602 ms
+  average brightness 85.5 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/21_underwater.png: 218 chunks with meshes, 57 drawn, 5 waiting frames, frame 417 ms
+  average brightness 73.1 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/22_lava_pool_dusk.png: 219 chunks with meshes, 60 drawn, 5 waiting frames, frame 539 ms
+  average brightness 144.1 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/23_reflections_metal_floor.png: 219 chunks with meshes, 75 drawn, 5 waiting frames, frame 656 ms
+  average brightness 78.3 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/24_mirror.png: 219 chunks with meshes, 61 drawn, 5 waiting frames, frame 615 ms
+  average brightness 61.9 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/25_rain_night_puddles.png: 219 chunks with meshes, 74 drawn, 5 waiting frames, frame 530 ms
+  average brightness 159.1 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/26_env_desert.png: 219 chunks with meshes, 85 drawn, 5 waiting frames, frame 736 ms
+  average brightness 153.3 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/27_env_arctic.png: 219 chunks with meshes, 87 drawn, 5 waiting frames, frame 714 ms
+  average brightness 25.5 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/28_env_space.png: 219 chunks with meshes, 77 drawn, 5 waiting frames, frame 296 ms
+  average brightness 76.4 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/29_env_space_station.png: 219 chunks with meshes, 88 drawn, 5 waiting frames, frame 353 ms
+  average brightness 80.8 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/30_env_volcanic.png: 219 chunks with meshes, 86 drawn, 5 waiting frames, frame 670 ms
+  average brightness 154.7 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/31_env_alien.png: 219 chunks with meshes, 87 drawn, 5 waiting frames, frame 694 ms
+  average brightness 146.3 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/32_env_martian_blue_sunset.png: 219 chunks with meshes, 81 drawn, 5 waiting frames, frame 766 ms
+  average brightness 115.4 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/33_ambient_occlusion_off.png: 219 chunks with meshes, 76 drawn, 5 waiting frames, frame 572 ms
+  average brightness 114.1 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/34_ambient_occlusion_on.png: 219 chunks with meshes, 76 drawn, 5 waiting frames, frame 623 ms
+  average brightness 99.7 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/35_textures_plain.png: 219 chunks with meshes, 76 drawn, 5 waiting frames, frame 577 ms
+  average brightness 98.5 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/36_textures_bumps_coat_materials.png: 219 chunks with meshes, 76 drawn, 5 waiting frames, frame 589 ms
+  average brightness 118.7 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/37_textures_ground_plain.png: 219 chunks with meshes, 24 drawn, 5 waiting frames, frame 405 ms
+  average brightness 115.0 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/38_textures_ground_bumps_coat.png: 219 chunks with meshes, 24 drawn, 5 waiting frames, frame 424 ms
+  average brightness 67.9 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/39_textures_ground_wet_bumps.png: 219 chunks with meshes, 24 drawn, 5 waiting frames, frame 470 ms
+  average brightness 71.6 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/40_editor.png
+  average brightness 71.4 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/41_editor_game_settings.png
+  average brightness 66.3 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/42_objects.png
+  average brightness 65.6 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/43_selection_box.png
+  average brightness 62.4 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/44_model_viewer.png
+  average brightness 63.1 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/45_fbx_door_viewer_half_open.png
+  average brightness 56.3 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/46_imported_models.png
+  average brightness 56.3 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/47_doors_editor.png
+  average brightness 87.0 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/48_doors_play.png
+  average brightness 62.5 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/49_door2_viewer_turning.png
+  average brightness 62.5 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/50_door2_viewer_sliding_apart.png
+  average brightness 62.5 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/51_door2_viewer_open_before_blend.png
+  average brightness 62.1 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/52_door2_viewer_blending_back_to_rest.png
+door blend: still blending after 10 frames
+  average brightness 61.9 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/53_viewer_smaller_player_and_ball.png
+  average brightness 98.0 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/54_door2_fields_parts_and_sheets.png
+  average brightness 92.9 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/55_door2_opening_in_play.png
+  average brightness 68.4 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/56_platforms_editor.png
+  average brightness 141.1 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/57_platforms_play_riding_the_lift.png
+lift ride: feet at 3.250000 blocks above the ground
+  average brightness 64.2 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/58_pickups_editor.png
+  average brightness 120.2 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/59_pickups_play.png
+  average brightness 46.2 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/60_lights_and_particles.png
+  average brightness 67.7 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/61_beam_impact_sparks.png
+  average brightness 44.7 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/62_events_editor.png
+  average brightness 41.1 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/63_events_panel_wide.png
+  average brightness 46.2 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/64_events_panel_docked_again.png
+  average brightness 52.1 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/65_events_play_dark.png
+  average brightness 72.3 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/66_events_play_lights_on.png
+event cards: 'hall wakes up' ran 1 time(s), lights off: 0
+  average brightness 42.8 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/67_asset_folders_textures.png
+  average brightness 41.3 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/68_asset_folders_models.png
+folders: 3 texture folders, 4 textures in Nature
+  average brightness 42.2 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/69_player_editor_hud.png
+  average brightness 40.8 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/70_player_editor_mirrored_strut.png
+  average brightness 41.3 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/71_player_editor_element_and_wiggle.png
+  average brightness 99.2 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/72_hud_play.png
+  average brightness 96.8 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/73_shadows_sharp.png
+  average brightness 96.8 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/74_shadows_smooth.png
+  average brightness 96.9 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/75_shadows_soft_like_sunlight.png
+HUD sway while turning: -7.400449 degrees
+  average brightness 111.7 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/76_hud_play_turning_sway.png
+  average brightness 50.2 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/77_weapons_tab.png
+  average brightness 50.2 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/78_weapons_tab_emitter.png
+  average brightness 51.1 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/79_weapons_tab_sounds.png
+  average brightness 48.4 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/80_weapons_timeline.png
+  average brightness 39.4 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/81_player_sounds_tab.png
+  average brightness 37.3 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/82_player_sounds_morph_ball.png
+  average brightness 37.3 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/83_back_to_weapons.png
+  average brightness 50.8 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/84_weapons_missile_kind.png
+  average brightness 96.2 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/85_weapons_play_cannon.png
+  average brightness 97.1 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/86_weapons_power_beam.png
+  average brightness 96.8 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/87_weapons_missile.png
+super missile: 5 missiles used, kind Super Missile
+  average brightness 97.0 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/88_weapons_super_missile.png
+  average brightness 97.4 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/89_weapons_super_missile_hit.png
+  average brightness 99.2 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/90_weapons_wave_beam.png
+quick taps: 4 shots from 4 taps
+  average brightness 110.1 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/91_weapons_charging.png
+charge: 1.000000, full: the charging sound stopped, 'done' and the charged loop started
+  average brightness 99.6 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/92_weapons_charged_shot.png
+  average brightness 98.0 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/93_weapons_free_aim.png
+free aim: cannon turned 28.737726 / 11.835688 degrees; sounds off (no device)
+  average brightness 153.1 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/94_beam_orbs_closeup.png
+  average brightness 148.9 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/95_missile_models_closeup.png
+  average brightness 151.2 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/96_impact_sphere_plasma.png
+  average brightness 95.5 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/97_pause_menu_pick_beam.png
+no switching: using the Wave Beam (the best one owned)
+weapons: 39 shots flying, missiles left 15
+  average brightness 38.1 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/98_textures_material.png
+  average brightness 38.8 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/99_textures_material_settled.png
+material of metal: metal 0.850000, shiny 0.600000
+  average brightness 55.4 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/100_breakable_tool.png
+C key in play mode: rolled up
+roll loop wanted on 4 of 4 rolling frame(s) [speed 4.85 ground 1 ball 1 paused 0] [speed 4.70 ground 1 ball 1 paused 0] [speed 4.56 ground 1 ball 1 paused 0] [speed 4.43 ground 1 ball 1 paused 0]
+  average brightness 90.7 of 255
+D:\a\PRIMEngine\PRIMEngine\shots/101_morph_ball.png
+TIMEOUT after 10 minutes
