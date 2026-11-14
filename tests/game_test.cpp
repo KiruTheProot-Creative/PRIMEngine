@@ -751,6 +751,17 @@ int main() {
         { Materials sp; TexMaterial a; a.glow = 0.5f; sp.put("my texture 2", a); saveMaterials("/tmp/prim_mats2.txt", sp); Materials b; loadMaterials("/tmp/prim_mats2.txt", b); CHECK(b.of("my texture 2").glow == 0.5f, "names with spaces save too"); }
     }
 
+    {   // a HUD plane's light on the helmet
+        HudPlane p; p.elements.clear(); CHECK(planeLight(p).x == 0, "an empty plane gives no light");
+        HudElement big; big.color = 0xFF0000; big.alpha = 1; big.w = 0.5f; big.h = 0.5f; p.elements.push_back(big);
+        V3 a = planeLight(p); CHECK(a.x > 0.2 && a.y == 0 && a.z == 0, "a red panel gives red light (%.2f)", a.x);
+        HudElement ring = big; ring.kind = HudKind::Circle; ring.filled = false; HudPlane q; q.elements = { ring };
+        CHECK(planeLight(q).x < a.x * 0.3, "an outline gives less than a filled panel");
+        p.opacity = 0.5f; CHECK(std::fabs(planeLight(p).x - a.x * 0.5) < 1e-6, "half see-through: half the light");
+        p.bloom = 0.2f; p.lightUp = 0.9f; HudLayout h; h.planes = { p }; saveHud("/tmp/prim_hudglow.txt", h); HudLayout hb; loadHud("/tmp/prim_hudglow.txt", hb);
+        CHECK(hb.planes.size() == 1 && hb.planes[0].bloom == 0.2f && hb.planes[0].lightUp == 0.9f, "a plane's glow and light save and load");
+    }
+
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
     return fails ? 1 : 0;
 }

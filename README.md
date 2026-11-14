@@ -163,6 +163,8 @@ right mouse fires a missile (ammo is a counter, "Missile" by default, so the HUD
 - **Bumpy textures** (Settings > Look, generated normals): each texture's light and dark pixels become little bumps and dents with a bevel at the pixel edges, so the sun and lights catch them. Nothing to paint.
 - **Texture coat** (Settings > Look, coated textures): a fine noise inside every pixel (4 x 4 specks), so big flat pixels look like stone, dirt or wood. Both fade out where pixels get smaller than the screen's.
 - **Materials per texture** (Blocks & textures > Textures: click a texture): shiny, metal (reflects in its own colour), glows (only its bright pixels if you like: a lamp's bulb, lava's cracks), and its own bumps and coat strength. Textures nobody set up get a guess from their name (iron / gold / metal, glass / ice, lamp / glow / lava...). Saved in the project's `materials.txt`.
+- **3D models** (FBX and built-in) get the bumps and coat from their own picture's pixels too, and a **material per model** (shiny, metal, glow...): in the object Inspector, a HUD part, a beam's cannon or a missile kind, under "Material of ...". It counts everywhere that model is used.
+- **HUD glow:** each 2D plane gets a soft **Bloom** around what is drawn on it, and **Lights the helmet**: its light (in its colours; bigger and brighter elements give more) falls a little on the helmet's 3D parts. Settings > Look > HUD glow switches both.
 
 ## Sounds, timelines and free aim
 

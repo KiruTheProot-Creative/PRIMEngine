@@ -28,6 +28,7 @@ bool Settings::load(const std::string& path) {
         else if (k == "ao_strength") f >> aoStrength;
         else if (k == "bumps") f >> bumps; else if (k == "coat") f >> coat;
         else if (k == "materials") { int v; f >> v; materials = v != 0; }
+        else if (k == "hud_glow") { int v; f >> v; hudGlow = v != 0; }
         else { std::string rest; std::getline(f, rest); }
     }
     renderDistance = std::max(2, std::min(48, renderDistance)); verticalDistance = std::max(1, std::min(16, verticalDistance));
@@ -41,7 +42,7 @@ bool Settings::save(const std::string& path) const {
       << "\ncloud_cover " << cloudCover << "\nground_fog " << groundFog << "\ncloud_shadows " << (cloudShadows ? 1 : 0)
       << "\nbloom " << bloom << "\nswaying " << (swaying ? 1 : 0) << "\nreflections " << reflections
       << "\nambient_occlusion " << ambientOcclusion << "\nao_strength " << aoStrength
-      << "\nbumps " << bumps << "\ncoat " << coat << "\nmaterials " << (materials ? 1 : 0) << "\n";
+      << "\nbumps " << bumps << "\ncoat " << coat << "\nmaterials " << (materials ? 1 : 0) << "\nhud_glow " << (hudGlow ? 1 : 0) << "\n";
     return (bool)f;
 }
 

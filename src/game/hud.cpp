@@ -110,6 +110,18 @@ static std::string unesc(const std::string& s) {
     for (size_t i = 0; i < s.size(); i++) { if (s[i] == '%' && i + 2 < s.size()) { o += (char)std::stoi(s.substr(i + 1, 2), nullptr, 16); i += 2; } else o += s[i]; }
     return o;
 }
+V3 planeLight(const HudPlane& p) {
+    V3 sum{ 0, 0, 0 }; if (!p.visible) return sum;
+    for (const HudElement& e : p.elements) {
+        if (!e.visible) continue;
+        double cover = e.kind == HudKind::Text ? 0.3 : (e.kind == HudKind::Panel || e.kind == HudKind::Circle) && !e.filled ? 0.15 : e.kind == HudKind::Circle ? 0.785 : 1.0;   // how much of its box is lit
+        double k = std::clamp((double)e.w, 0.0, 1.0) * std::clamp((double)e.h, 0.0, 1.0) * cover * std::clamp((double)e.alpha, 0.0, 1.0);
+        auto lin = [](uint32_t c, int sh) { return std::pow(((c >> sh) & 255) / 255.0, 2.2); };
+        sum = sum + V3{ lin(e.color, 16), lin(e.color, 8), lin(e.color, 0) } * k;
+    }
+    return sum * (double)std::clamp(p.opacity, 0.f, 1.f);
+}
+
 bool saveHud(const std::string& path, const HudLayout& h) {
     std::ofstream f(path); if (!f) return false;
     f << "hud 1\n";
@@ -117,7 +129,7 @@ bool saveHud(const std::string& path, const HudLayout& h) {
     f << "view " << h.fov << "\n";
     for (const HudPlane& p : h.planes) {
         f << "plane " << esc(p.name) << " " << p.pos.x << " " << p.pos.y << " " << p.pos.z << " " << p.yaw << " " << p.pitch << " " << p.roll << " " << p.width << " " << p.height
-          << " " << p.bendX << " " << p.bendY << " " << p.sway << " " << p.opacity << " " << p.glow << " " << p.visible << "\n";
+          << " " << p.bendX << " " << p.bendY << " " << p.sway << " " << p.opacity << " " << p.glow << " " << p.visible << " " << p.bloom << " " << p.lightUp << "\n";
         for (const HudElement& e : p.elements)
             f << "el " << esc(e.name) << " " << (int)e.kind << " " << e.x << " " << e.y << " " << e.w << " " << e.h << " " << e.color << " " << e.alpha << " " << esc(e.text) << " " << esc(e.image)
               << " " << (int)e.value << " " << esc(e.valueName) << " " << e.max << " " << e.segments << " " << e.textSize << " " << e.align << " " << e.filled << " " << e.thickness << " " << e.visible << "\n";
@@ -134,7 +146,7 @@ bool loadHud(const std::string& path, HudLayout& h) {
         std::istringstream l(line); std::string k; l >> k;
         if (k == "sway") { l >> h.sway.enabled >> h.sway.strength >> h.sway.smoothness >> h.sway.bob >> h.sway.tilt; float v; if (l >> v) h.sway.land = v; }
         else if (k == "view") { float v; if (l >> v) h.fov = std::clamp(v, 20.f, 150.f); }
-        else if (k == "plane") { HudPlane p; std::string n; l >> n >> p.pos.x >> p.pos.y >> p.pos.z >> p.yaw >> p.pitch >> p.roll >> p.width >> p.height >> p.bendX >> p.bendY >> p.sway >> p.opacity >> p.glow >> p.visible; p.name = unesc(n); h.planes.push_back(p); }
+        else if (k == "plane") { HudPlane p; std::string n; l >> n >> p.pos.x >> p.pos.y >> p.pos.z >> p.yaw >> p.pitch >> p.roll >> p.width >> p.height >> p.bendX >> p.bendY >> p.sway >> p.opacity >> p.glow >> p.visible; { float b, lu; if (l >> b >> lu) { p.bloom = b; p.lightUp = lu; } } p.name = unesc(n); h.planes.push_back(p); }
         else if (k == "el" && !h.planes.empty()) {
             HudElement e; std::string n, t, im, vn; int kind = 0, val = 0;
             l >> n >> kind >> e.x >> e.y >> e.w >> e.h >> e.color >> e.alpha >> t >> im >> val >> vn >> e.max >> e.segments >> e.textSize >> e.align >> e.filled >> e.thickness >> e.visible;

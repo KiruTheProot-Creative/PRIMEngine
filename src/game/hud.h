@@ -39,9 +39,13 @@ struct HudPlane {
     float bendX = 0.3f, bendY = 0.1f;                   // 0 flat .. 1 a quarter circle across (side to side / top to bottom)
     float sway = 1;                                     // how much of the sway it gets (0: fixed to the camera)
     float opacity = 1; bool glow = true;                // glow: added on top (light), else painted over
+    float bloom = 0.6f;                                 // a soft glow around what is drawn on it (0: none)
+    float lightUp = 0.35f;                              // how much its light falls on the helmet's 3D parts (0: none)
     bool visible = true;
     std::vector<HudElement> elements;
 };
+
+V3 planeLight(const HudPlane& p);   // the light it gives off (linear colour, more for bigger and brighter elements)
 
 struct HudPart {   // a 3D model fixed to the camera (helmet frame, visor struts...)
     std::string name = "Helmet part", model;

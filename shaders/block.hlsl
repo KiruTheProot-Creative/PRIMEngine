@@ -74,6 +74,7 @@ Texture2D gMeshTex : register(t9);              // an imported model's own pictu
 // materials per texture layer: a = shine, metal, glow, glow only above this brightness; b = bumps, coat
 struct TexMat { float4 a; float4 b; };
 StructuredBuffer<TexMat> gMats : register(t10);
+cbuffer MeshMatCB : register(b4) { float4 gMM0; float4 gMM1; };   // the material of the model being drawn (same numbers as a texture's)
 float4 albedoAt(float3 uvl) { return uvl.z > 16000 ? gMeshTex.Sample(gSamp, uvl.xy) : gTex.Sample(gSamp, uvl); }
 SamplerComparisonState gShadowSamp : register(s1);
 SamplerState gLinear : register(s2);
@@ -219,15 +220,16 @@ float hash21(float2 p) { p = frac(p * float2(123.34, 456.21)); p += dot(p, p + 4
 void surfaceDetail(VSOut i, inout float3 n, inout float3 albedo, TexMat m)
 {
     float3 dp1 = ddx(i.rel), dp2 = ddy(i.rel); float2 du1 = ddx(i.uvl.xy), du2 = ddy(i.uvl.xy);   // (before any branch)
-    if (i.uvl.z > 16000) return;                                                                  // an imported model's own picture: not here
-    uint W, H, L, M; gTex.GetDimensions(0, W, H, L, M);
+    bool mesh = i.uvl.z > 16000;                                                                  // an imported model: its own picture
+    uint W, H, L, M;
+    if (mesh) gMeshTex.GetDimensions(0, W, H, M); else gTex.GetDimensions(0, W, H, L, M);
     float2 tc = i.uvl.xy * float2(W, H);
     float2 fw = max(abs(du1), abs(du2)) * float2(W, H);
     float near = saturate(1.6 - max(fw.x, fw.y) * 1.2);                                          // a pixel smaller than about a screen pixel: off (no shimmer)
     if (near <= 0) return;
     int layer = (int)i.uvl.z; int2 c = int2(floor(tc)); float2 f = frac(tc);
     int2 sz = int2(W, H);
-    #define HT(o) sqrt(lumOf(gTex.Load(int4(((c + (o)) % sz + sz) % sz, layer, 0)).rgb))
+    #define HT(o) sqrt(lumOf(mesh ? gMeshTex.Load(int3(((c + (o)) % sz + sz) % sz, 0)).rgb : gTex.Load(int4(((c + (o)) % sz + sz) % sz, layer, 0)).rgb))
     float h0 = HT(int2(0, 0)), hr = HT(int2(1, 0)), hl = HT(int2(-1, 0)), hd = HT(int2(0, 1)), hu = HT(int2(0, -1));
     #undef HT
     float bump = gSurf.x * m.b.x * near;
@@ -259,7 +261,7 @@ float3 lightBlock(VSOut i, float3 albedo, bool front, out float3 n, out float sh
 {
     n = front ? i.n : -i.n;
     TexMat m = (TexMat)0; m.b = float4(1, 1, 0, 0);
-    if (i.uvl.z < 16000) m = gMats[(uint)i.uvl.z];
+    if (i.uvl.z < 16000) m = gMats[(uint)i.uvl.z]; else { m.a = gMM0; m.b = gMM1; }
     if (gSurf.x > 0 || gSurf.y > 0) surfaceDetail(i, n, albedo, m);
     if (gSurf.z < 0.5) { m.a = 0; }                                                               // materials off: plain
     // weather on surfaces: snow settles on tops open to the sky, rain makes things darker and shiny
@@ -958,9 +960,17 @@ HudOut VS_Hud(float3 p : POSITION, float2 uv : TEXCOORD0)
 {
     HudOut o; o.pos = mul(float4(p, 1), gPrevVP); o.uv = uv; return o;
 }
+// gPrevLight.y: the glow around what is drawn (the plane's smaller copies, blurred, added on top: a bloom)
 float4 PS_Hud(HudOut i) : SV_Target
 {
-    return gHudTex.Sample(gClamp, i.uv) * gPrevLight.x;
+    float4 c = gHudTex.Sample(gClamp, i.uv);
+    float bloom = gPrevLight.y;
+    if (bloom > 0)
+    {
+        float3 g = gHudTex.SampleLevel(gClamp, i.uv, 2.5).rgb * 0.45 + gHudTex.SampleLevel(gClamp, i.uv, 4).rgb * 0.45 + gHudTex.SampleLevel(gClamp, i.uv, 5.5).rgb * 0.5;
+        c.rgb += g * bloom * 1.6;                                                         // light only: the see-through parts stay see-through
+    }
+    return c * gPrevLight.x;
 }
 // a picture copied over the whole target (the camera preview's background)
 struct BlitOut { float4 pos : SV_Position; float2 uv : TEXCOORD0; };

@@ -269,7 +269,7 @@ struct App {
             { "TEXCOORD", 3, DXGI_FORMAT_R32_UINT, 0, 28, D3D11_INPUT_PER_VERTEX_DATA, 0 } };
         HR(dev->CreateInputLayout(el, 5, vb->GetBufferPointer(), vb->GetBufferSize(), &layout));
         auto cb = [&](UINT size, ComPtr<ID3D11Buffer>& out) { D3D11_BUFFER_DESC d{}; d.ByteWidth = size; d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_CONSTANT_BUFFER; HR(dev->CreateBuffer(&d, nullptr, &out)); };
-        cb(sizeof(FrameCB), cbFrame); cb(sizeof(ChunkCB), cbChunk); cb(sizeof(PreviewCB), cbPreview); cb(sizeof(LightCB), cbLights);
+        cb(sizeof(FrameCB), cbFrame); cb(sizeof(ChunkCB), cbChunk); cb(sizeof(PreviewCB), cbPreview); cb(sizeof(LightCB), cbLights); cb(32, cbMeshMat);
 
         D3D11_RASTERIZER_DESC rd{}; rd.FillMode = D3D11_FILL_SOLID; rd.CullMode = D3D11_CULL_BACK; rd.FrontCounterClockwise = FALSE; rd.DepthClipEnable = TRUE; HR(dev->CreateRasterizerState(&rd, &rsCull));
         rd.CullMode = D3D11_CULL_FRONT; HR(dev->CreateRasterizerState(&rd, &rsCullFront));   // mirrored views turn every triangle around
@@ -364,6 +364,43 @@ struct App {
         MakeBackbuffer();
     }
     // ---- materials per texture (shiny, metal, glowing, bumps, coat): a table the block shaders read by texture layer
+    ComPtr<ID3D11Buffer> cbMeshMat;   // the material of the model being drawn (b4)
+    static std::string ModelMatKey(const std::string& model) { return "model:" + model; }
+    // binds a model's own picture (if it is an imported one) and its material
+    void BindModelTex(const ModelGpu& g, const std::string& model) {
+        if (g.mesh) ctx->PSSetShaderResources(9, 1, g.tex.GetAddressOf());
+        TexMaterial m = materials.of(ModelMatKey(model)); float d[8] = { m.shine, m.metal, m.glow, m.glowFrom, m.bumps, m.coat, 0, 0 };
+        ctx->UpdateSubresource(cbMeshMat.Get(), 0, nullptr, d, 0, 0); ctx->PSSetConstantBuffers(4, 1, cbMeshMat.GetAddressOf());
+    }
+    bool MaterialSliders(TexMaterial& m) {
+        TexMaterial before = m;
+        Prop("Shiny"); ImGui::SliderFloat("##msh", &m.shine, 0, 1, m.shine <= 0 ? "matt" : "%.2f");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Reflects the world (with Reflections on) and catches the sun as a highlight.");
+        Prop("Metal"); ImGui::SliderFloat("##mme", &m.metal, 0, 1, m.metal <= 0 ? "no" : "%.2f");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Metal shows less of its plain colour and reflects in its own colour (gold looks golden).\nWorks best together with Shiny.");
+        Prop("Glows"); ImGui::SliderFloat("##mgl", &m.glow, 0, 2, m.glow <= 0 ? "no" : "%.2f");
+        if (m.glow > 0) { Prop("Only pixels brighter than"); ImGui::SliderFloat("##mgf", &m.glowFrom, 0, 0.95f, m.glowFrom <= 0 ? "all of it" : "%.2f");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("0: all of it glows. Higher: only its bright parts (a lamp's bulb, lava's cracks, a helmet's lights)."); }
+        Prop("Bumps"); ImGui::SliderFloat("##mbu", &m.bumps, 0, 3, m.bumps <= 0 ? "flat" : "x %.2f");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Generated normals: light and dark pixels become little bumps and dents.\nTimes the global setting (Settings > Look > Bumpy textures).");
+        Prop("Coat"); ImGui::SliderFloat("##mco", &m.coat, 0, 3, m.coat <= 0 ? "none" : "x %.2f");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Coated textures: a fine noise inside each pixel, so flat pixels look like a material.\nTimes the global setting (Settings > Look > Texture coat).");
+        return m != before;
+    }
+    // a model's material (the same everywhere it is used: objects, HUD parts, cannons, missiles)
+    void ModelMaterialUI(const std::string& model) {
+        if (model.empty()) return;
+        ImGui::PushID(("mm" + model).c_str());
+        std::string key = ModelMatKey(model); bool own = materials.isSet(key);
+        if (ImGui::TreeNode("mat", "Material of %s%s", model.c_str(), own ? "" : "  (plain)")) {
+            TexMaterial m = materials.of(key);
+            if (MaterialSliders(m)) { materials.put(key, m); SaveMaterials(); }
+            ImGui::BeginDisabled(!own); if (ImGui::SmallButton("Back to plain")) { materials.reset(key); SaveMaterials(); } ImGui::EndDisabled();
+            Hint("For the whole model, everywhere it is used (imported FBX and built-in models; models built from blocks use their textures' materials). Bumps and coat come from its own picture's pixels, best on pixel-art models.");
+            ImGui::TreePop();
+        }
+        ImGui::PopID();
+    }
     Materials materials; bool matsDirty = true; ComPtr<ID3D11Buffer> matBuf; ComPtr<ID3D11ShaderResourceView> matSRV; size_t matCount = 0;
     bool selectTexturesTab = false;
     std::string matTex;   // the texture picked in Blocks & textures (its material shows next to the list)
@@ -389,19 +426,9 @@ struct App {
         ImGui::SameLine(); ImGui::BeginGroup(); ImGui::Text("%s", name.c_str());
         bool own = materials.isSet(name); ImGui::TextDisabled(own ? "its own material" : "guessed from its name");
         ImGui::EndGroup();
-        TexMaterial m = materials.of(name), before = m;
-        Prop("Shiny"); ImGui::SliderFloat("##msh", &m.shine, 0, 1, m.shine <= 0 ? "matt" : "%.2f");
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Reflects the world (with Reflections on) and catches the sun as a highlight.");
-        Prop("Metal"); ImGui::SliderFloat("##mme", &m.metal, 0, 1, m.metal <= 0 ? "no" : "%.2f");
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Metal shows less of its plain colour and reflects in its own colour (gold looks golden).\nWorks best together with Shiny.");
-        Prop("Glows"); ImGui::SliderFloat("##mgl", &m.glow, 0, 2, m.glow <= 0 ? "no" : "%.2f");
-        if (m.glow > 0) { Prop("Only pixels brighter than"); ImGui::SliderFloat("##mgf", &m.glowFrom, 0, 0.95f, m.glowFrom <= 0 ? "all of it" : "%.2f"); }
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("0: the whole texture glows. Higher: only its bright parts (a lamp's bulb, lava's cracks).");
-        Prop("Bumps"); ImGui::SliderFloat("##mbu", &m.bumps, 0, 3, m.bumps <= 0 ? "flat" : "x %.2f");
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Generated normals: light and dark pixels become little bumps and dents.\nTimes the global setting (Settings > Look > Bumpy textures).");
-        Prop("Coat"); ImGui::SliderFloat("##mco", &m.coat, 0, 3, m.coat <= 0 ? "none" : "x %.2f");
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Coated textures: a fine noise inside each pixel, so flat pixels look like a material.\nTimes the global setting (Settings > Look > Texture coat).");
-        if (m != before) { materials.put(name, m); SaveMaterials(); }
+        TexMaterial m = materials.of(name);
+        if (MaterialSliders(m)) { materials.put(name, m); SaveMaterials(); }
+
         ImGui::BeginDisabled(!own); if (ImGui::Button("Back to the guess")) { materials.reset(name); SaveMaterials(); } ImGui::EndDisabled();
         ImGui::SameLine(); ImGui::TextDisabled("(changes show in the world right away)");
         if (!settings.materials || settings.bumps <= 0 || settings.coat <= 0) Hint("Some of it is switched off in Settings > Look (texture materials, bumpy textures, texture coat).");
@@ -1868,7 +1895,7 @@ struct App {
         FrameRef m = ModelOf(o); if (!m) return;
         auto dg = use ? doorGpu.end() : doorGpu.find(o.id);
         const ModelGpu& g = use ? *use : dg != doorGpu.end() ? dg->second : GpuModel(o.model);
-        if (g.mesh) ctx->PSSetShaderResources(9, 1, g.tex.GetAddressOf());   // the imported model's own picture
+        BindModelTex(g, o.model);   // the imported model's own picture, and the model's material
         double a = o.yaw * 3.14159265358979 / 180, c = std::cos(a), s = std::sin(a); V3 k = objectStretch(o, *m);   // doors: stretched to Width x Height
         V3 ax{ c * k.x, 0, -s * k.x }, ay{ 0, k.y, 0 }, az{ s * k.z, 0, c * k.z };
         for (auto& part : g.parts) {
@@ -2028,6 +2055,7 @@ struct App {
         Prop("Folder"); ImGui::InputText("##folder", &o.folder);
         Prop("Model");
         if (ImGui::BeginCombo("##model", o.model.c_str())) { for (auto& n : AllModelNames()) if (ImGui::Selectable(n.c_str(), n == o.model)) { o.model = n; ch_ = true; } ImGui::EndCombo(); }
+        ModelMaterialUI(o.model);
         { int k = (int)o.kind; const char* kn[] = { "Prop (it just stands there)", "Door (forcefield, opens)", "Platform (moves along a path)", "Pickup", "Checkpoint", "Teleporter", "Trigger zone (invisible)", "Light", "Particles" }; Prop("Kind");
           if (ImGui::Combo("##kind", &k, kn, 9)) { if (k == 1) MakeDoor(o); else if (k == 2) MakePlatform(o); else { o.kind = (ObjKind)k; if (o.kind == ObjKind::Pickup || o.kind == ObjKind::Trigger || o.kind == ObjKind::Light || o.kind == ObjKind::Particles) o.collide = Collide::None; } platRun.erase(o.id); ch_ = true; } }
         Prop("Position"); ch_ |= ImGui::InputScalarN("##pos", ImGuiDataType_Double, &o.pos.x, 3, nullptr, nullptr, "%.2f");
@@ -2938,6 +2966,7 @@ struct App {
         ch_ |= ImGui::SliderFloat("Texture coat", &settings.coat, 0, 2, settings.coat <= 0 ? "off" : "%.2f");
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Coated textures: a fine noise inside each pixel, so big flat pixels look like stone, dirt, wood...\nPer texture: Blocks & textures > Textures > Coat.");
         ch_ |= ImGui::Checkbox("Texture materials (shiny, metal, glowing)", &settings.materials);
+        ch_ |= ImGui::Checkbox("HUD glow (and its light on the helmet)", &settings.hudGlow);
         const char* aq[] = { "Off (only block corners)", "Normal", "High" }; ch_ |= ImGui::Combo("Ambient occlusion", &settings.ambientOcclusion, aq, 3);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Soft shade in corners, under overhangs and where things touch.\nWorks for everything on screen.");
         if (settings.ambientOcclusion > 0) ch_ |= ImGui::SliderFloat("Occlusion strength", &settings.aoStrength, 0.2f, 3.f, "%.1f");
@@ -3882,11 +3911,15 @@ struct App {
         }
         hudListsReady = true;
     }
-    void MakeTarget(HudTarget& t, int w, int h, ComPtr<ID3D11DepthStencilView>* dsvOut = nullptr) {
+    void MakeTarget(HudTarget& t, int w, int h, ComPtr<ID3D11DepthStencilView>* dsvOut = nullptr, bool mips = false) {
         if (t.w == w && t.h == h && t.rtv) return;
         if (t.srv) retired.push_back(t.srv);
-        D3D11_TEXTURE2D_DESC d{}; d.Width = (UINT)w; d.Height = (UINT)h; d.MipLevels = 1; d.ArraySize = 1; d.Format = DXGI_FORMAT_R8G8B8A8_UNORM; d.SampleDesc.Count = 1; d.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
-        t.tex.Reset(); t.rtv.Reset(); t.srv.Reset(); HR(dev->CreateTexture2D(&d, nullptr, &t.tex)); HR(dev->CreateRenderTargetView(t.tex.Get(), nullptr, &t.rtv)); HR(dev->CreateShaderResourceView(t.tex.Get(), nullptr, &t.srv));
+        D3D11_TEXTURE2D_DESC d{}; d.Width = (UINT)w; d.Height = (UINT)h; d.MipLevels = mips ? 0 : 1; d.ArraySize = 1; d.Format = DXGI_FORMAT_R8G8B8A8_UNORM; d.SampleDesc.Count = 1; d.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+        if (mips) d.MiscFlags = D3D11_RESOURCE_MISC_GENERATE_MIPS;   // smaller and smaller copies: the plane's glow is made from them
+        t.tex.Reset(); t.rtv.Reset(); t.srv.Reset(); HR(dev->CreateTexture2D(&d, nullptr, &t.tex));
+        D3D11_RENDER_TARGET_VIEW_DESC rd{}; rd.Format = d.Format; rd.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D; rd.Texture2D.MipSlice = 0;
+        HR(dev->CreateRenderTargetView(t.tex.Get(), &rd, &t.rtv)); HR(dev->CreateShaderResourceView(t.tex.Get(), nullptr, &t.srv));
+        d.MipLevels = 1; d.MiscFlags = 0;
         t.w = w; t.h = h;
         if (dsvOut) { d.Format = DXGI_FORMAT_D32_FLOAT; d.BindFlags = D3D11_BIND_DEPTH_STENCIL; ComPtr<ID3D11Texture2D> dt; HR(dev->CreateTexture2D(&d, nullptr, &dt)); dsvOut->Reset(); HR(dev->CreateDepthStencilView(dt.Get(), nullptr, dsvOut->GetAddressOf())); }
     }
@@ -3896,7 +3929,7 @@ struct App {
         for (ImTextureData* t : ImGui::GetPlatformIO().Textures) if (t->Status == ImTextureStatus_WantCreate || t->Status == ImTextureStatus_WantUpdates) ImGui_ImplDX11_UpdateTexture(t);   // new letter sizes, before they are used
         hudTargets.resize(hud.planes.size());
         for (size_t i = 0; i < hud.planes.size() && i < hudLists.size(); i++) {
-            int W, H; PlaneRes(hud.planes[i], W, H); MakeTarget(hudTargets[i], W, H);
+            int W, H; PlaneRes(hud.planes[i], W, H); MakeTarget(hudTargets[i], W, H, nullptr, true);
             const float clear[4] = { 0, 0, 0, 0 };
             ctx->OMSetRenderTargets(1, hudTargets[i].rtv.GetAddressOf(), nullptr); ctx->ClearRenderTargetView(hudTargets[i].rtv.Get(), clear);
             ImDrawList* dl = hudLists[i].get();
@@ -3906,6 +3939,7 @@ struct App {
             ImGui_ImplDX11_RenderDrawData(&dd);
         }
         ctx->OMSetRenderTargets(0, nullptr, nullptr);
+        for (size_t i = 0; i < hud.planes.size() && i < hudTargets.size(); i++) if (hudTargets[i].srv) ctx->GenerateMips(hudTargets[i].srv.Get());   // for the glow
     }
     // the parts and planes, seen through vp (camera space in); sway on top
     // the HUD's parts and planes, and the arm cannon on its own layer (behind the HUD or in front of it, never cutting into it)
@@ -3926,7 +3960,7 @@ struct App {
                 if (c.cannon != cannon) continue;
                 FrameRef f = ModelNamed(c.model); if (!f) continue;
                 const ModelGpu& g = c.gpu ? *c.gpu : GpuModel(c.model);
-                if (g.mesh) ctx->PSSetShaderResources(9, 1, g.tex.GetAddressOf());
+                BindModelTex(g, c.model);
                 for (int pass = 0; pass < 2; pass++) for (auto& part : g.parts) {
                     const GpuChunk& gc = part.second; UINT n = pass == 0 ? gc.nO : gc.nC; if (!n) continue;
                     V3 l{ part.first.x * (double)CS - f->pivot.x, part.first.y * (double)CS - f->pivot.y, part.first.z * (double)CS - f->pivot.z };
@@ -3952,7 +3986,7 @@ struct App {
                 auto put = [&](int gx, int gy) { float u = (float)gx / HUD_GX, w = (float)gy / HUD_GY; V3 q = sw.apply(planePoint(p, u, w), p.sway); v[n++] = { { (float)q.x, (float)q.y, (float)q.z }, { u, w } }; };
                 for (int gy = 0; gy < HUD_GY; gy++) for (int gx = 0; gx < HUD_GX; gx++) { put(gx, gy); put(gx + 1, gy); put(gx + 1, gy + 1); put(gx, gy); put(gx + 1, gy + 1); put(gx, gy + 1); }
                 ctx->Unmap(vbHud.Get(), 0);
-                PreviewCB pp = pc; pp.light[0] = std::clamp(p.opacity, 0.f, 1.f); ctx->UpdateSubresource(cbPreview.Get(), 0, nullptr, &pp, 0, 0);
+                PreviewCB pp = pc; pp.light[0] = std::clamp(p.opacity, 0.f, 1.f); pp.light[1] = std::clamp(p.bloom, 0.f, 3.f) * (settings.hudGlow ? 1.f : 0.f); ctx->UpdateSubresource(cbPreview.Get(), 0, nullptr, &pp, 0, 0);
                 ctx->OMSetBlendState(p.glow ? bsAdd.Get() : bsPremul.Get(), nullptr, 0xFFFFFFFF);
                 UINT stride = sizeof(HVtx), off = 0; ctx->IASetVertexBuffers(0, 1, vbHud.GetAddressOf(), &stride, &off);
                 ctx->PSSetShaderResources(0, 1, hudTargets[i].srv.GetAddressOf());
@@ -3986,13 +4020,28 @@ struct App {
         ctx->PSSetShaderResources(0, 5, srvs); ctx->PSSetSamplers(0, 3, samps);
         ID3D11Buffer* cbs[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->VSSetConstantBuffers(0, 2, cbs); ctx->PSSetConstantBuffers(0, 2, cbs);
         auto W = [&](V3 c) { return r * c.x + u * c.y + f * c.z; };   // camera space -> the world's directions
+        LightCB worldLights{}; bool hudLit = false;
+        if (settings.hudGlow) {   // each plane's light falls a little on the helmet's parts (only on them: added here, taken away after)
+            CollectLights(worldLights); LightCB lc = worldLights; int n = (int)lc.count[0];
+            for (const HudPlane& p : hud.planes) {
+                if (!p.visible || p.lightUp <= 0) continue;
+                V3 col = planeLight(p) * (double)(p.lightUp * 6.f); if (col.x + col.y + col.z < 1e-4) continue;
+                int k = n < 32 ? n++ : 31; V3 at = W(hudSway.apply(planePoint(p, 0.5f, 0.5f), p.sway));
+                float* P = lc.pos[k]; P[0] = (float)at.x; P[1] = (float)at.y; P[2] = (float)at.z; P[3] = std::max(p.width, p.height) * 1.6f;
+                float* C = lc.col[k]; C[0] = (float)col.x; C[1] = (float)col.y; C[2] = (float)col.z; C[3] = 0;
+                float* D = lc.dir[k]; D[0] = 0; D[1] = -1; D[2] = 0; D[3] = -1;
+                hudLit = true;
+            }
+            lc.count[0] = (float)n;
+            if (hudLit) { ctx->UpdateSubresource(cbLights.Get(), 0, nullptr, &lc, 0, 0); ctx->PSSetConstantBuffers(3, 1, cbLights.GetAddressOf()); }
+        }
         for (const CamPart& c : CameraParts(hudSway, weapPose)) {
             FrameRef fr = ModelNamed(c.model); if (!fr) continue;
             {   // two slices of depth: the cannon and the helmet never cut into each other
                 bool upper = c.cannon == weapons.cannonInFront; D3D11_VIEWPORT sv{ 0, 0, (float)rw, (float)rh, upper ? 0.f : 0.001f, upper ? 0.001f : 0.002f }; ctx->RSSetViewports(1, &sv);
             }
             const ModelGpu& g = c.gpu ? *c.gpu : GpuModel(c.model);
-            if (g.mesh) ctx->PSSetShaderResources(9, 1, g.tex.GetAddressOf());
+            BindModelTex(g, c.model);
             V3 ax = W(c.ax), ay = W(c.ay), az = W(c.az), base = W(c.base);
             for (int pass = 0; pass < 2; pass++) {
                 ctx->PSSetShader(pass == 0 ? psOpaque.Get() : psCutout.Get(), nullptr, 0);
@@ -4010,6 +4059,7 @@ struct App {
             }
         }
         ID3D11ShaderResourceView* none = nullptr; ctx->PSSetShaderResources(9, 1, &none);
+        if (hudLit) ctx->UpdateSubresource(cbLights.Get(), 0, nullptr, &worldLights, 0, 0);   // the world's own lights again
         D3D11_VIEWPORT full{ 0, 0, (float)rw, (float)rh, 0, 1 }; ctx->RSSetViewports(1, &full);
         ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &fc, 0, 0); ctx->RSSetState(rsCull.Get());
     }
@@ -4202,6 +4252,10 @@ struct App {
             Prop("Sway amount"); ch |= ImGui::SliderFloat("##psw", &p.sway, 0, 2, "%.2f");
             Prop("Opacity"); ch |= ImGui::SliderFloat("##pop", &p.opacity, 0, 1, "%.2f");
             Prop("Glow"); ch |= ImGui::Checkbox("##pgl", &p.glow); ImGui::SameLine(); ImGui::TextDisabled("(adds light, like a visor)");
+            Prop("Bloom"); ch |= ImGui::SliderFloat("##pbl", &p.bloom, 0, 2, p.bloom <= 0 ? "none" : "%.2f");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("A soft glow around everything drawn on this plane.");
+            Prop("Lights the helmet"); ch |= ImGui::SliderFloat("##plu", &p.lightUp, 0, 2, p.lightUp <= 0 ? "no" : "%.2f");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Its light falls a little on the 3D parts (helmet, struts, cannon), in its colours.\nBigger and brighter elements give more light. Shows in Play mode.");
         } else if (hudSel == 2) {
             HudElement& e = hud.planes[hudPlane].elements[hudEl];
             ImGui::SeparatorText(hudKindName(e.kind));
@@ -4250,6 +4304,7 @@ struct App {
             Prop("Name"); ch |= ImGui::InputText("##qn", &p.name);
             Prop("Model");
             if (ImGui::BeginCombo("##qm", p.model.empty() ? "(none)" : p.model.c_str())) { for (const std::string& n : PartModels()) if (ImGui::Selectable(n.c_str(), p.model == n)) { p.model = n; ch = true; } ImGui::EndCombo(); }
+            ModelMaterialUI(p.model);
             Prop("Shown"); ch |= ImGui::Checkbox("##qv", &p.visible);
             ch |= DragV3("Position", p.pos, 0.005f, "%.3f");
             { float r[3] = { p.yaw, p.pitch, p.roll }; Prop("Turn"); if (ImGui::DragFloat3("##qr", r, 0.5f, -180, 180, "%.0f deg")) { p.yaw = r[0]; p.pitch = r[1]; p.roll = r[2]; ch = true; } }
@@ -4728,6 +4783,7 @@ struct App {
             if (ImGui::Selectable("@arm-cannon (built in)", b.model == "@arm-cannon")) { b.model = "@arm-cannon"; ch = true; }
             ImGui::EndCombo();
         }
+        ModelMaterialUI(b.model);
         Prop("Have it from the start"); ch |= ImGui::Checkbox("##bo", &b.startsOwned);
         if (!b.startsOwned) Hint("Found later: a key pickup called \"%s\" gives it.", b.name.c_str());
         ImGui::SeparatorText("Points (drag them in the view)");
@@ -4799,6 +4855,7 @@ struct App {
             ImGui::EndCombo();
         }
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("It flies nose first: the model's front is +Z (its long side).");
+        ModelMaterialUI(m.model.empty() ? std::string("@missile") : m.model);
         Prop("Length"); ch |= ImGui::SliderFloat("##mlen", &m.size, 0.1f, 3, "%.2f blocks");
         Prop("You have it"); { int o = m.startsOwned ? 0 : 1; const char* ow[] = { "From the start", "Found later (a key pickup with its name)" }; if (ImGui::Combo("##mown", &o, ow, 2)) { m.startsOwned = o == 0; ch = true; } }
         { float c[3] = { ((m.color >> 16) & 255) / 255.f, ((m.color >> 8) & 255) / 255.f, (m.color & 255) / 255.f }; Prop("Colour"); if (ImGui::ColorEdit3("##mcc", c)) { m.color = ((uint32_t)(c[0] * 255 + 0.5f) << 16) | ((uint32_t)(c[1] * 255 + 0.5f) << 8) | (uint32_t)(c[2] * 255 + 0.5f); ch = true; } }
@@ -5296,7 +5353,7 @@ struct App {
     // a model with its middle at centre (world), turned and sized by the axes (each one block of the model)
     void DrawModelAxes(int pass, const std::string& model, V3 centre, V3 ax, V3 ay, V3 az, V3 cam) {
         FrameRef m = ModelNamed(model); if (!m) return;
-        const ModelGpu& g = GpuModel(model); if (g.mesh) ctx->PSSetShaderResources(9, 1, g.tex.GetAddressOf());
+        const ModelGpu& g = GpuModel(model); BindModelTex(g, model);
         V3 mc{ 0, m->sy * 0.5, 0 };   // the model's middle, from its pivot (bottom middle)
         V3 base = centre - cam - (ax * mc.x + ay * mc.y + az * mc.z);
         for (auto& part : g.parts) {
@@ -6191,6 +6248,7 @@ struct App {
                 }
                 playerEdOpen = false;
                 StartPlay(false); poseAt(demoShots()[1]); hudSway.reset(); prevPlayYaw = player.yaw; prevPlayPitch = player.pitch; play.health = game.player.maxHealth; toastT = 0;
+                { TexMaterial cm; cm.metal = 0.8f; cm.shine = 0.65f; materials.put(ModelMatKey("@arm-cannon"), cm); SaveMaterials(); }   // a metal cannon
                 frames(3, "weapons_play_cannon");
                 auto run = [&](int n) { for (int k = 0; k < n; k++) { FrameBody(1.0 / 60); swap->Present(0, 0); retired.clear(); } };
                 LaunchShot(weapons.beams[0], 0, nullptr); PlayCannonClip(weapons.beams[0].fireClip); firedPending += 1; run(3); LaunchShot(weapons.beams[0], 0, nullptr); firedPending += 1; run(4);
