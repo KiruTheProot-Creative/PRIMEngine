@@ -4674,7 +4674,7 @@ struct App {
                         Prop("Counter"); ch |= ImGui::InputText("##pbc", &items.powerBombCounter);
                         Prop("You get with it"); ch |= ImGui::SliderInt("##pbs", &items.powerBombStart, 0, 50);
                         Prop("Most"); ch |= ImGui::SliderInt("##pbm", &items.powerBombMax, 1, 99);
-                        Hint("Rolled up: the right mouse button drops one (one at a time). It breaks blocks marked \"Power Bomb\" (and \"Bomb\"), and opens Power Bomb and bomb doors.");
+                        Hint("Rolled up: F (the missile key) drops one (one at a time). It breaks blocks marked \"Power Bomb\" (and \"Bomb\"), and opens Power Bomb and bomb doors.");
                     }
                     if (d.type == ItemType::SpeedBooster) Hint("Sprint forward on the ground (or just run forward, if there is no sprint) for that long. While it lasts, blocks marked \"Speed Booster\" break when you run into them.");
                     if (d.type == ItemType::ChargeBeam) Hint("In the game and found later: no beam can charge until you have it. Not in the game: each beam charges as set in the Weapons tab.");
@@ -4838,14 +4838,14 @@ struct App {
         if (player.ball) {   // the morph ball: the fire button lays a bomb
             bool L = (Playing() && !play.dead() && Down(VK_LBUTTON)) || holdBeam;
             if (L && !shootPrev) DropBomb();
-            bool R = Playing() && !play.dead() && Down(VK_RBUTTON);
-            if (R && !missilePrev) DropPowerBomb();   // the right button: a Power Bomb
-            shootPrev = L; missilePrev = Down(VK_RBUTTON); UpdateTimelines(dt, true); return;
+            bool R = Playing() && !play.dead() && Down('F');
+            if (R && !missilePrev) DropPowerBomb();   // F (the missile key): a Power Bomb
+            shootPrev = L; missilePrev = Down('F'); UpdateTimelines(dt, true); return;
         }
         if (weapons.switchMode == 1) PickBestWeapons();
         const Beam* b = CurrentBeam(); if (!b) return;
         bool can = Playing() && !play.dead() && OwnsBeam(*b);
-        bool L = (can && Down(VK_LBUTTON)) || (holdBeam && OwnsBeam(*b)), R = (can && Down(VK_RBUTTON)) || forceMissile;
+        bool L = (can && Down(VK_LBUTTON)) || (holdBeam && OwnsBeam(*b)), R = (can && Down('F')) || forceMissile;   // F: missiles (the right mouse button is kept for lock-on)
         const std::string& counter = weapons.missileCounter;
         const MissileType* mt = CurrentMissile();
         if (R && !missilePrev && mt) {
@@ -4879,7 +4879,7 @@ struct App {
             }
             chargeFx.update(dt, chargeAt, 0, nullptr, showing);
         }
-        shootPrev = L; missilePrev = Down(VK_RBUTTON);
+        shootPrev = L; missilePrev = Down('F');
         UpdateTimelines(dt, true);
     }
     void SwitchBeam(int to) {
@@ -5121,7 +5121,7 @@ struct App {
             }
             Hint("Several sounds in one slot: a random one each time. To time sounds exactly with the cannon's animation, put them on the timelines below instead (they play as well).");
         }
-        ImGui::SeparatorText("Missiles from this cannon (right mouse button)");
+        ImGui::SeparatorText("Missiles from this cannon (F)");
         Prop("Missile animation"); ch |= ClipCombo("##mcl", b.model, b.missileClip);
         Prop("Wait until it is done"); ch |= ImGui::Checkbox("##mwt", &b.missileWait);
         Hint("The missiles themselves are the same for every beam: pick them in the list on the left (MISSILES).");
@@ -5590,7 +5590,7 @@ struct App {
         bombsOut.push_back({ BallCentre(), std::max(0.1f, game.player.bombFuse), ParticleEmitter(p, (uint32_t)(GetTickCount() + bombsOut.size())) });
         PlaySound(playerSounds.bomb);
     }
-    void DropPowerBomb() {   // rolled up, the right button: a Power Bomb (one at a time)
+    void DropPowerBomb() {   // rolled up, F (the missile key): a Power Bomb (one at a time)
         if (!itemFx.powerBombs) return;
         for (const Bomb& b : bombsOut) if (b.power) return;
         int& n = inv.counts[items.powerBombCounter]; if (n <= 0) { Toast("No " + items.powerBombCounter + " left"); return; }

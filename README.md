@@ -144,7 +144,7 @@ Open it with the **Player** button in the toolbar (or Game > Player editor). It'
 Player editor > **Weapons**. Every beam is its own **arm cannon model** with three points you drag in its 3D view:
 **pivot** (where it sits and turns), **muzzle** (the flash, with an arrow showing where it aims) and **emitter** (where shots start, with an arrow).
 In Play mode shots fly from the emitter to wherever the crosshair points. Left mouse fires the beam (hold, if "Hold to keep firing" is on),
-right mouse fires a missile (ammo is a counter, "Missile" by default, so the HUD can show it). Keys 1-9 or the mouse wheel switch beams.
+F fires a missile (the right mouse button is kept for lock-on) (ammo is a counter, "Missile" by default, so the HUD can show it). Keys 1-9 or the mouse wheel switch beams.
 
 - Each beam: colour, trail / hit / muzzle-flash looks (particles), speed, shots per second, damage, range, thickness, its firing animation and whether the next shot waits for it.
 - **Missiles** are one supply for all beams (MISSILES in the list). More kinds can be added and found later (a key pickup with the kind's name), like an Ice Missile or a Super Missile (the starter set has one that uses 5 missiles). Each kind: its 3D model (built-in `@missile`, or any model, flying nose first along +Z), length, colour, how many missiles it uses, speed, rate, damage, trail / hit looks, impact sphere, launch and hit sounds. Each beam only sets its cannon's missile animation and "wait until it is done" (on by default).
@@ -188,7 +188,7 @@ The sun's shadows use four shadow maps around you: the nearest covers about 13 b
 
 - **Body and movement** (was the Game panel's player rules): size, walking, sprint, jump, gravity, the Morph Ball's size, speed and model, health and dying.
 - **Items**: everything Samus can find, from across the Metroid games. Tick what is in your game, choose "from the start" or "found later", and press **Place pickup** to put its pickup in front of you (or give it with an event card). Beams and missile kinds (from the Weapons tab), the Morph Ball and Bombs are listed too.
-  - Working now: **Energy Tanks** (more health, and they fill you up), **Missile / Power Bomb Expansions**, **Power Bombs** (rolled up: right mouse button; break "Power Bomb" and "Bomb" blocks, open Power Bomb doors), **Varia / Gravity / Phazon Suits** and your own (damage taken, lava damage, moving freely in water and lava; the best one you have counts), **Hi-Jump Boots**, **Space Jump Boots** (jumps in the air), **Speed Booster** (run a while, then much faster; breaks "Speed Booster" blocks), **Spring Ball** (jump while rolled up), **Charge Beam** (no charging until found).
+  - Working now: **Energy Tanks** (more health, and they fill you up), **Missile / Power Bomb Expansions**, **Power Bombs** (rolled up: F; break "Power Bomb" and "Bomb" blocks, open Power Bomb doors), **Varia / Gravity / Phazon Suits** and your own (damage taken, lava damage, moving freely in water and lava; the best one you have counts), **Hi-Jump Boots**, **Space Jump Boots** (jumps in the air), **Speed Booster** (run a while, then much faster; breaks "Speed Booster" blocks), **Spring Ball** (jump while rolled up), **Charge Beam** (no charging until found).
   - Coming (already in the list, as pickups): Screw Attack, Grapple Beam, Spider Ball, Boost Ball, Shinespark, Wall Jump, Scan / Thermal / X-Ray Visor.
   - Saved in the project's `items.txt`.
 
