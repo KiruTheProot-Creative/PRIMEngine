@@ -200,6 +200,14 @@ The sun's shadows use four shadow maps around you: the nearest covers about 13 b
 - **Free aim** (Weapons > Aiming, Wii style): the mouse moves a cursor; the cannon and the shots follow it; past the dead zone the camera turns, faster toward the edge (dead zone, turning speed, cursor speed, how much the cannon follows).
 - Later, for exporting whole games: WAV to OGG.
 
+## The map (M): a hologram of what you have seen
+
+- The map is built only from blocks Samus has actually looked at: every frame a few hundred rays go out from her eyes, and the first solid block each one hits is charted (with a small patch of the same surface, so grazing looks are not speckled). The floor you walk on is charted too.
+- Press **M** in play (or **Map** in the pause menu). It is a 3D hologram: drag to turn it, right-drag to move it, the wheel zooms, **C** goes back to you, **M** or **Esc** closes it. You are the orange arrow.
+- **Doors** you have seen show as panels in the door's own colour and at the door's size.
+- **Map Stations** and **map cameras** (Tools > Objects > Add): both have an **ID**. Walking into a station wakes every map camera with the same ID; each looks all around from where it stands (as far as its "Sees" range) and charts everything it can see, doors included. Then the map opens and builds up. Map cameras are invisible in the game. A station with no camera of its ID looks around from itself. Each station works once per play.
+- The map is kept per world for the play session (it starts empty each time you press Play).
+
 ## Morph ball, bombs, breakable blocks
 
 - **Morph ball** (C in Play mode): you roll up into a ball of the ball size (Game settings > Player rules), seen from behind; it rolls up to speed and keeps rolling when you let go. C again stands up (if there is room). From the start, or found later (a key pickup called "Morph Ball"). Its model: built in, or any model.

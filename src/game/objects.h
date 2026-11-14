@@ -37,7 +37,9 @@ std::vector<Box3> modelBoxes(const BlockModel& m, const BlockRegistry& reg);
 enum class Collide { Exact, OneBox, None };
 const char* collideName(Collide c);
 
-enum class ObjKind { Prop, Door, Platform, Pickup, Checkpoint, Teleporter, Trigger, Light, Particles, COUNT };
+enum class ObjKind { Prop, Door, Platform, Pickup, Checkpoint, Teleporter, Trigger, Light, Particles, MapCamera, MapStation, COUNT };
+// the map: a Map Station (touch it) fires every map camera with the same ID; each camera looks all around and puts what it sees on the map
+struct MapSettings { int id = 1; float range = 48; };
 const char* kindName(ObjKind k);
 
 // a door: its model is stretched to fill Width x Height blocks; a forcefield sits in its opening
@@ -88,6 +90,7 @@ struct WorldObject {
     V3 size{ 2, 2, 2 };                               // trigger zones: their box (blocks)
     LightSettings light;                              // lights (and glowing emitters)
     ParticleSettings particles;                       // particle emitters
+    MapSettings map;                                  // map cameras and Map Stations
 };
 V3 objectStretch(const WorldObject& o, const ModelFrame& m);   // how much it is sized along its own x, y, z
 

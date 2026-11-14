@@ -531,7 +531,7 @@ std::vector<Box3> meshBoxes(const MeshModel& m, int maxCells, bool stillOnly) {
 }
 
 // ------------------------------------------------------------------ built-in looks for helper objects
-std::vector<std::string> builtinShapeNames() { return { "@health", "@key", "@gem", "@checkpoint", "@teleporter", "@zone", "@light", "@emitter" }; }
+std::vector<std::string> builtinShapeNames() { return { "@health", "@key", "@gem", "@checkpoint", "@teleporter", "@zone", "@light", "@emitter", "@map-camera", "@map-station" }; }
 bool builtinShape(const std::string& name, MeshModel& m) {
     Builder B;
     auto colour = [&](uint32_t c) { Img im = solid(((c >> 16) & 255) / 255.f, ((c >> 8) & 255) / 255.f, (c & 255) / 255.f, 1); int id = (int)B.imgs.size(); B.imgs.push_back(im); return id; };
@@ -624,6 +624,21 @@ bool builtinShape(const std::string& name, MeshModel& m) {
     else if (name == "@teleporter") { int d = colour(0x4A4060), v = colour(0xC070FF), w = colour(0xF0E0FF); prism(8, 1.0, 0, 0.18, d); prism(8, 0.78, 0.18, 0.22, v); prism(8, 0.35, 0.22, 0.25, w); }
     else if (name == "@zone") { int g = colour(0xFF9A3A); prism(4, 0.7071, 0, 1, g, 0.785398); }
     else if (name == "@light") { int y = colour(0xFFF0B0), d = colour(0x404048); prism(8, 0.08, 0, 0.15, d); diamond(0.16, 0.12, 0.3, 0.48, y); }   // a little bulb (seen in the editor only)
+    else if (name == "@map-camera") {   // a map reveal camera (seen in the editor only): a little box with a lens on +Z
+        int d = colour(0x3A4352), g = colour(0x6CF0FF);
+        slab({ -0.15, 0.3, -0.2 }, { 0.15, 0.55, 0.15 }, d);
+        slab({ -0.08, 0.36, 0.15 }, { 0.08, 0.5, 0.3 }, g);
+        prism(6, 0.04, 0, 0.3, d);
+    }
+    else if (name == "@map-station") {   // a map station terminal: a pedestal with a glowing hologram globe
+        int b = colour(0x4A5262), m = colour(0x7A8598), g = colour(0x5CFF9A), w = colour(0xD8FFE8);
+        prism(8, 0.55, 0, 0.12, b);
+        prism(6, 0.16, 0.12, 0.9, m);
+        prism(8, 0.4, 0.9, 1.0, b);
+        prism(8, 0.32, 1.0, 1.03, g);
+        diamond(0.22, 1.1, 1.35, 1.6, g);
+        diamond(0.08, 1.28, 1.35, 1.42, w);
+    }
     else if (name == "@emitter") { int o = colour(0xFF8040), d = colour(0x404048); prism(6, 0.22, 0, 0.08, d); prism(6, 0.08, 0.08, 0.3, o); }
     else return false;
     B.finish(m); m.name = name; m.source = "built in"; m.unitScale = 1; m.update();

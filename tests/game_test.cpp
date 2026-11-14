@@ -13,6 +13,7 @@
 #include "../src/game/anim.h"
 #include "../src/game/folders.h"
 #include "../src/game/items.h"
+#include "../src/game/map.h"
 #include <map>
 #include <set>
 #include <filesystem>
@@ -427,7 +428,7 @@ int main() {
         CHECK(v2.size() == 1 && v2[0].kind == ObjKind::Trigger && v2[0].size.x == 4 && v2[0].trigger.action == TriggerAction::Kill && v2[0].trigger.text == "Watch out!"
               && v2[0].teleport.world == "Level 2" && v2[0].teleport.target == "Arrival pad" && v2[0].door.key == "Red key" && v2[0].pickup.name == "Big gem", "helpers save and load (names with spaces too)");
         int shapes = 0; for (auto& n : builtinShapeNames()) { MeshModel m; shapes += builtinShape(n, m) && m.triangles() > 0; }
-        CHECK(shapes == 8, "all built-in looks build (%d)", shapes);
+        CHECK(shapes == 10, "all built-in looks build (%d)", shapes);
     }
 
     // particles and lights
@@ -889,6 +890,30 @@ int main() {
 
     CHECK(breaksWith("Speed Booster", "Speed Booster", false, false) && !breaksWith("", "Speed Booster", false, false) && breaksWith("Power Bomb", "Power Bomb", false, false) && !breaksWith("Power Bomb", "Bomb", false, false),
           "Speed Booster blocks break when run into (plain ones do not); Power Bomb blocks only for Power Bombs");
+
+    {   // the map: what has been seen
+        BlockRegistry rm; registerBuiltinBlocks(rm); World w(rm); w.gen.layers = { { rm.find("stone"), 3 } }; w.stream({ 0, 0, 0 }, 3, 2, 100000);
+        BlockId st = rm.find("stone"); for (int y = 3; y < 8; y++) for (int z = -6; z <= 6; z++) w.set(10, y, z, st);   // a wall 10 blocks east
+        SeenMap m; V3 eye{ 0.5, 4.6, 0.5 };
+        CHECK(m.look(w, eye, { 1, 0, 0 }, 40, 0, 1.0) && m.seen(10, 4, 0) && m.total == 1, "a look east: the wall block it hits is seen (and only that)");
+        CHECK(!m.look(w, eye, { 0, 1, 0 }, 40, 0, 1.0), "a look at the sky: nothing");
+        CHECK(!m.look(w, eye, { 1, 0, 0 }, 5, 0, 1.0) || m.total == 1, "out of range: nothing new");
+        m.look(w, eye, { 1, 0.1, 0.1 }, 40, 2, 2.0); CHECK(m.seen(10, 5, 1) || m.total > 4, "a patch of the same surface around the hit (%zu)", m.total);
+        CHECK(!m.seen(11, 4, 0), "not the blocks behind it");
+        SeenMap a; int hits = a.lookAround(w, eye, 3.14159265 / 2, 0, 1.2, 1.6, 400, 48, 1, 3.0);
+        CHECK(hits > 100 && a.seen(10, 4, 0) && !a.seen(-5, -1, 0), "looking around (east): the wall and the ground in front, nothing behind (%d hits)", hits);
+        SeenMap fl; fl.floorUnder(w, { 0.5, 0.0, 0.5 }, 1, 1.0); CHECK(fl.seen(0, -1, 0) && fl.total == 9, "the floor under your feet (%zu)", fl.total);
+        SeenMap cam; int ch = cam.revealFrom(w, { 3.5, 5.5, 0.5 }, 30, 2000, 1.0);
+        CHECK(ch > 800 && cam.seen(10, 4, 0) && cam.seen(3, -1, 0), "a map camera sees all around (%d)", ch);
+        std::vector<MapQuad> q = mapPanels(w, cam, chunkOf(10, 4, 0)); size_t faces = 0; for (auto& p : q) faces += (size_t)(p.w * p.h);
+        CHECK(!q.empty() && q.size() < faces, "panels: the seen faces, merged into bigger rectangles (%zu panels for %zu faces)", q.size(), faces);
+        bool openFaces = true; for (auto& p : q) { int x = (int)std::floor((p.p[0][0] + p.p[2][0]) / 2 - p.n[0] * 0.5), y = (int)std::floor((p.p[0][1] + p.p[2][1]) / 2 - p.n[1] * 0.5), z = (int)std::floor((p.p[0][2] + p.p[2][2]) / 2 - p.n[2] * 0.5); openFaces &= w.get(x + (int)p.n[0], y + (int)p.n[1], z + (int)p.n[2]) == AIR; }
+        CHECK(openFaces, "every panel faces the open air");
+        CHECK(canSee(w, eye, { 8.5, 4.5, 0.5 }, 40) && !canSee(w, eye, { 12.5, 4.5, 0.5 }, 40) && !canSee(w, eye, { 8.5, 4.5, 0.5 }, 5), "a door in front of the wall can be seen; one behind it (or too far) can not");
+        cam.doors.insert(42);
+        saveSeenMap("/tmp/prim_map.bin", cam); SeenMap back; loadSeenMap("/tmp/prim_map.bin", back);
+        CHECK(back.total == cam.total && back.seen(10, 4, 0) && back.dirty.size() == back.chunks.size() && back.doors.count(42), "the map saves and loads (seen doors too)");
+    }
 
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
     return fails ? 1 : 0;

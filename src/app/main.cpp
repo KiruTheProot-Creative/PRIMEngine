@@ -19,6 +19,7 @@
 #include "../game/anim.h"
 #include "../game/folders.h"
 #include "../game/items.h"
+#include "../game/map.h"
 #include "../game/sound.h"
 #include "../game/breakable.h"
 #include "../game/weather.h"
@@ -107,7 +108,8 @@ struct alignas(16) ChunkCB { float offset[4]; float ax[4] = { 1, 0, 0, 0 }, ay[4
 
 struct GpuChunk { ComPtr<ID3D11Buffer> vbO, ibO, vbC, ibC, vbW, ibW; UINT nO = 0, nC = 0, nW = 0; };
 struct ModelGpu { std::vector<std::pair<I3, GpuChunk>> parts; std::vector<Box3> boxes, boxesStill; bool mesh = false; ComPtr<ID3D11ShaderResourceView> tex; };   // boxesStill: without the moving parts (an open door)
-struct alignas(16) PreviewCB { float vp[16]; float light[4]; };   // a block model's meshes (16^3 pieces) and collision
+struct alignas(16) PreviewCB { float vp[16]; float light[4]; };
+struct alignas(16) MapCB { float vp[16]; float eye[4]; float center[4]; float mode[4]; };   // the map hologram   // a block model's meshes (16^3 pieces) and collision
 
 struct App;
 static App* g_app = nullptr;
@@ -191,6 +193,7 @@ struct App {
     float viewerYaw = 0.6f, viewerPitch = 0.35f, viewerDist = 8; ImVec2 viewerWant{ 0, 0 }; int viewerW = 0, viewerH = 0; V3 viewerEye{ 0, 0, 0 }; XMMATRIX viewerVP = XMMatrixIdentity();
     ComPtr<ID3D11RenderTargetView> viewerRTV; ComPtr<ID3D11ShaderResourceView> viewerSRV; ComPtr<ID3D11DepthStencilView> viewerDSV;
     ComPtr<ID3D11VertexShader> vsPreview; ComPtr<ID3D11PixelShader> psPreview; ComPtr<ID3D11Buffer> cbPreview;
+    ComPtr<ID3D11VertexShader> vsMap; ComPtr<ID3D11PixelShader> psMap; ComPtr<ID3D11InputLayout> layoutMap; ComPtr<ID3D11Buffer> cbMap;
     std::vector<WorldObject> objects; uint32_t nextObjId = 1;
     std::string placing, selModel, newModelName; double placeYaw = 0, placeScale = 1; int movingObj = -1, dupFrom = -1; bool replaceWithObject = true;
     I3 selA{ 0, 0, 0 }, selB{ 0, 0, 0 }; int selStage = 0; BlockModel clipboard; bool hasClip = false;   // selection box (tool 2)
@@ -259,6 +262,13 @@ struct App {
         b = Compile(src, "PS_FieldMesh", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psFieldMesh));
         b = Compile(src, "PS_ImpactSphere", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psSphere));
         b = Compile(src, "PS_BeamOrb", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psOrb));
+        b = Compile(src, "VS_Map", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsMap));
+        { D3D11_INPUT_ELEMENT_DESC me[] = {
+            { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 }, { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 24, D3D11_INPUT_PER_VERTEX_DATA, 0 }, { "TEXCOORD", 1, DXGI_FORMAT_R32G32_FLOAT, 0, 32, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            { "TEXCOORD", 2, DXGI_FORMAT_R32_FLOAT, 0, 40, D3D11_INPUT_PER_VERTEX_DATA, 0 }, { "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 44, D3D11_INPUT_PER_VERTEX_DATA, 0 } };
+          HR(dev->CreateInputLayout(me, 6, b->GetBufferPointer(), b->GetBufferSize(), &layoutMap)); }
+        b = Compile(src, "PS_Map", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psMap));
         b = Compile(src, "VS_Preview", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsPreview));
         b = Compile(src, "PS_Preview", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psPreview));
         InitHud(src);
@@ -275,7 +285,7 @@ struct App {
             { "TEXCOORD", 3, DXGI_FORMAT_R32_UINT, 0, 28, D3D11_INPUT_PER_VERTEX_DATA, 0 } };
         HR(dev->CreateInputLayout(el, 5, vb->GetBufferPointer(), vb->GetBufferSize(), &layout));
         auto cb = [&](UINT size, ComPtr<ID3D11Buffer>& out) { D3D11_BUFFER_DESC d{}; d.ByteWidth = size; d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_CONSTANT_BUFFER; HR(dev->CreateBuffer(&d, nullptr, &out)); };
-        cb(sizeof(FrameCB), cbFrame); cb(sizeof(ChunkCB), cbChunk); cb(sizeof(PreviewCB), cbPreview); cb(sizeof(LightCB), cbLights); cb(32, cbMeshMat);
+        cb(sizeof(FrameCB), cbFrame); cb(sizeof(ChunkCB), cbChunk); cb(sizeof(PreviewCB), cbPreview); cb(sizeof(LightCB), cbLights); cb(32, cbMeshMat); cb(sizeof(MapCB), cbMap);
 
         D3D11_RASTERIZER_DESC rd{}; rd.FillMode = D3D11_FILL_SOLID; rd.CullMode = D3D11_CULL_BACK; rd.FrontCounterClockwise = FALSE; rd.DepthClipEnable = TRUE; HR(dev->CreateRasterizerState(&rd, &rsCull));
         rd.CullMode = D3D11_CULL_FRONT; HR(dev->CreateRasterizerState(&rd, &rsCullFront));   // mirrored views turn every triangle around
@@ -636,6 +646,7 @@ struct App {
             else if (brushMenu) { brushMenu = false; Capture(true); }
             else if (inventory) { inventory = false; Capture(true); }
             else if (showSettings) showSettings = false;
+            else if (mapOpen) CloseMap();
             else if (playMode) { paused = !paused; Capture(!paused); }
             else if (captured) Capture(false);            // editor: the mouse goes back to the panels
             else if (editorOpen && !EditorView()) editorOpen = false;
@@ -643,6 +654,7 @@ struct App {
         }
         if (k == VK_F3) { showF3 = !showF3; return; }
         if (k == VK_F1) { hideHud = !hideHud; return; }
+        if (playMode && !typing && !repeat && k == 'M') { if (mapOpen) CloseMap(); else if (!showSettings) OpenMap(); return; }   // the map
         if (playMode && !typing && !repeat && !paused) {   // play mode keys (before the return below, which keeps the building tools out of play)
             if (k == 'C' && !Down(VK_CONTROL)) { ToggleBall(); return; }                                    // the morph ball
             if (!weapons.empty() && k >= '1' && k <= '9') { if (weapons.switchMode == 0) SwitchBeam((int)(k - '1')); else if (weapons.switchMode == 2) Toast("Pick beams in the menu (Esc)"); return; }   // the beams
@@ -1218,11 +1230,13 @@ struct App {
         else if (m == "@zone") { o.kind = ObjKind::Trigger; o.collide = Collide::None; o.folder = "Trigger zones"; o.size = { 3, 3, 3 }; }
         else if (m == "@light") { MakeLight(o); o.folder = "Lights"; }
         else if (m == "@emitter") { MakeEmitter(o); o.folder = "Particles"; o.particles = particlePreset("Fire"); }
+        else if (m == "@map-camera") { o.kind = ObjKind::MapCamera; o.collide = Collide::None; o.folder = "Map"; }
+        else if (m == "@map-station") { o.kind = ObjKind::MapStation; o.folder = "Map"; }
     }
     std::string PresetName(const WorldObject& o) const {
         switch (o.kind) {
         case ObjKind::Pickup: return o.pickup.type == PickupType::Health ? "Health" : o.pickup.name;
-        case ObjKind::Checkpoint: return "Checkpoint"; case ObjKind::Teleporter: return "Teleporter"; case ObjKind::Trigger: return "Zone"; case ObjKind::Light: return "Light"; case ObjKind::Particles: return "Particles";
+        case ObjKind::Checkpoint: return "Checkpoint"; case ObjKind::Teleporter: return "Teleporter"; case ObjKind::Trigger: return "Zone"; case ObjKind::Light: return "Light"; case ObjKind::Particles: return "Particles"; case ObjKind::MapCamera: return "Map camera"; case ObjKind::MapStation: return "Map Station";
         default: return o.model;
         }
     }
@@ -1297,7 +1311,7 @@ struct App {
         std::set<uint32_t> now;
         std::string travelWorld, travelTarget; bool travel = false; uint32_t from = 0;
         for (WorldObject& o : objects) {
-            if (o.kind != ObjKind::Pickup && o.kind != ObjKind::Checkpoint && o.kind != ObjKind::Teleporter && o.kind != ObjKind::Trigger) continue;
+            if (o.kind != ObjKind::Pickup && o.kind != ObjKind::Checkpoint && o.kind != ObjKind::Teleporter && o.kind != ObjKind::Trigger && o.kind != ObjKind::MapStation) continue;
             if (Gone(o)) continue;
             FrameRef f = ModelOf(o); if (!f) continue;
             Box3 b = objectBounds(o, *f);
@@ -1307,6 +1321,9 @@ struct App {
             case ObjKind::Pickup: { std::string said; if (!play.dead() && inv.collect(o, play.health, playRules.maxHealth, said)) { Toast(said); if (o.pickup.type != PickupType::Health) ItemPicked(o.pickup.name); Signal(When::Pickup, o.name, o.pickup.type == PickupType::Health ? "Health" : o.pickup.name); } break; }
             case ObjKind::Checkpoint:
                 if (entered) { playSpawn = { o.pos.x, b.hi.y + 0.01, o.pos.z }; playYaw = player.yaw; Toast("Checkpoint"); }
+                break;
+            case ObjKind::MapStation:
+                if (entered) UseMapStation(o);
                 break;
             case ObjKind::Teleporter:
                 if (teleportLock != o.id && !travel) { travel = true; travelWorld = o.teleport.world; travelTarget = o.teleport.target; from = o.id; }
@@ -1331,7 +1348,7 @@ struct App {
         {   // touching named objects (standing on one counts)
             std::set<uint32_t> touching;
             for (const WorldObject& o : objects) {
-                if (o.name.empty() || Gone(o) || o.kind == ObjKind::Trigger || o.kind == ObjKind::Pickup || o.kind == ObjKind::Light || o.kind == ObjKind::Particles) continue;
+                if (o.name.empty() || Gone(o) || o.kind == ObjKind::Trigger || o.kind == ObjKind::Pickup || o.kind == ObjKind::Light || o.kind == ObjKind::Particles || o.kind == ObjKind::MapCamera) continue;
                 FrameRef f = ModelOf(o); if (!f) continue;
                 WorldObject at = o; at.pos = o.pos + PlatformOffsets(o)[0];
                 if (!Overlaps(objectBounds(at, *f), player.feet, player.halfW, player.height, 0.08)) continue;
@@ -1339,6 +1356,7 @@ struct App {
             }
             touchNow = touching;
         }
+        UpdateMapSight();
         { EvHost h(*this); evRun.tick(events, dt, h); NoteFired(); }
         if (evSolids) { evSolids = false; RebuildSolids(); }
         if (travel) { (void)from; pending = [this, travelWorld, travelTarget] { TravelTo(travelWorld, travelTarget); }; }
@@ -1396,6 +1414,18 @@ struct App {
                 }
                 break; }
             case ObjKind::Particles: col = IM_COL32(255, 160, 100, 230); label = "Particles"; break;
+            case ObjKind::MapCamera: case ObjKind::MapStation: {
+                col = o.kind == ObjKind::MapCamera ? IM_COL32(90, 240, 255, 230) : IM_COL32(110, 255, 160, 230);
+                int cams = 0; for (const WorldObject& q : objects) if (q.kind == ObjKind::MapCamera && q.map.id == o.map.id) cams++;
+                label = (o.kind == ObjKind::MapCamera ? "Map camera, ID " : "Map Station, ID ") + std::to_string(o.map.id) + (o.kind == ObjKind::MapStation ? " (" + std::to_string(cams) + (cams == 1 ? " camera)" : " cameras)") : "");
+                bool picked = sel == Sel::Object && selIndex == i;
+                if (picked || (sel == Sel::Object && selIndex >= 0 && selIndex < (int)objects.size() && objects[selIndex].kind == ObjKind::MapStation && objects[selIndex].map.id == o.map.id && o.kind == ObjKind::MapCamera)) {
+                    if (o.kind == ObjKind::MapCamera) {   // how far it sees: a ring
+                        V3 c = MapCamEye(o); double r = o.map.range;
+                        for (int k = 0; k < 64; k++) { double a0 = k * 6.2832 / 64, a1 = (k + 1) * 6.2832 / 64; Line3D(dl, { c.x + std::cos(a0) * r, c.y, c.z + std::sin(a0) * r }, { c.x + std::cos(a1) * r, c.y, c.z + std::sin(a1) * r }, IM_COL32(90, 240, 255, 110)); }
+                    } else for (const WorldObject& q : objects) if (q.kind == ObjKind::MapCamera && q.map.id == o.map.id) Line3D(dl, o.pos + V3{ 0, 1.3, 0 }, MapCamEye(q), IM_COL32(110, 255, 160, 140));   // which cameras it wakes
+                }
+                break; }
             default: break;
             }
             if (label.empty()) continue;
@@ -2120,8 +2150,8 @@ struct App {
         Prop("Model");
         if (ImGui::BeginCombo("##model", o.model.c_str())) { for (auto& n : AllModelNames()) if (ImGui::Selectable(n.c_str(), n == o.model)) { o.model = n; ch_ = true; } ImGui::EndCombo(); }
         ModelMaterialUI(o.model);
-        { int k = (int)o.kind; const char* kn[] = { "Prop (it just stands there)", "Door (forcefield, opens)", "Platform (moves along a path)", "Pickup", "Checkpoint", "Teleporter", "Trigger zone (invisible)", "Light", "Particles" }; Prop("Kind");
-          if (ImGui::Combo("##kind", &k, kn, 9)) { if (k == 1) MakeDoor(o); else if (k == 2) MakePlatform(o); else { o.kind = (ObjKind)k; if (o.kind == ObjKind::Pickup || o.kind == ObjKind::Trigger || o.kind == ObjKind::Light || o.kind == ObjKind::Particles) o.collide = Collide::None; } platRun.erase(o.id); ch_ = true; } }
+        { int k = (int)o.kind; const char* kn[] = { "Prop (it just stands there)", "Door (forcefield, opens)", "Platform (moves along a path)", "Pickup", "Checkpoint", "Teleporter", "Trigger zone (invisible)", "Light", "Particles", "Map camera (invisible: a Map Station uses it)", "Map Station" }; Prop("Kind");
+          if (ImGui::Combo("##kind", &k, kn, 11)) { if (k == 1) MakeDoor(o); else if (k == 2) MakePlatform(o); else { o.kind = (ObjKind)k; if (o.kind == ObjKind::Pickup || o.kind == ObjKind::Trigger || o.kind == ObjKind::Light || o.kind == ObjKind::Particles || o.kind == ObjKind::MapCamera) o.collide = Collide::None; } platRun.erase(o.id); ch_ = true; } }
         Prop("Position"); ch_ |= ImGui::InputScalarN("##pos", ImGuiDataType_Double, &o.pos.x, 3, nullptr, nullptr, "%.2f");
         { float y = (float)o.yaw; Prop("Turn"); if (ImGui::SliderFloat("##yaw", &y, -180, 180, "%.0f deg")) { o.yaw = y; ch_ = true; }
           if (ImGui::SmallButton("-90")) { o.yaw = std::fmod(o.yaw - 90 + 540, 360) - 180; ch_ = true; } if (FlowButton("+90", true)) { o.yaw = std::fmod(o.yaw + 90 + 540, 360) - 180; ch_ = true; } }
@@ -2129,6 +2159,7 @@ struct App {
         HelperInspector(o);
         if (o.kind == ObjKind::Light) LightInspector(o);
         if (o.kind == ObjKind::Particles) ParticleInspector(o);
+        if (o.kind == ObjKind::MapCamera || o.kind == ObjKind::MapStation) MapInspector(o);
         if (o.kind == ObjKind::Door) DoorInspector(o, ch_);
         else if (o.kind != ObjKind::Trigger) { float sc = (float)o.scale; Prop("Size"); if (ImGui::SliderFloat("##scale", &sc, 0.1f, 8, "x %.2f", ImGuiSliderFlags_Logarithmic)) { o.scale = sc; ch_ = true; } }
         if (m && o.kind != ObjKind::Door && o.kind != ObjKind::Trigger) {
@@ -2647,7 +2678,7 @@ struct App {
                 if ((int)oi == movingObj) continue;
                 const WorldObject& o = objects[oi];
                 if (o.kind == ObjKind::Trigger || Gone(o)) continue;   // zones: invisible (the editor shows their box)
-                if ((o.kind == ObjKind::Light || o.kind == ObjKind::Particles) && (playMode || plainView) && IsBuiltin(o.model)) continue;   // the bulb / nozzle: editor only
+                if ((o.kind == ObjKind::Light || o.kind == ObjKind::Particles || o.kind == ObjKind::MapCamera) && (playMode || plainView) && IsBuiltin(o.model)) continue;   // the bulb / nozzle: editor only
                 if (o.kind == ObjKind::Pickup) {   // pickups turn and bob; gone once taken
                     if (playMode && inv.has(o.id)) continue;
                     WorldObject at = o; at.yaw += animTime * 90; at.pos.y += 0.12 + 0.1 * std::sin(animTime * 2.5 + o.id); DrawObject(at, pass); continue;
@@ -3155,6 +3186,7 @@ struct App {
         inv = PlayInventory{};
         if (!weapons.missileTypes.empty() && !weapons.missileCounter.empty()) inv.counts[weapons.missileCounter] = weapons.missileStart;
         weapState.missile = 0; chargedOn = false;
+        seenMaps.clear(); stationsUsed.clear(); mapGpu.clear(); mapGpuWorld.clear(); mapOpen = false;
         takenByWorld.clear(); insideNow.clear(); firedOnce.clear(); teleportLock = 0; bigMsgT = 0; playStartWorld = CurrentWorld(); startEditCam = editCam;
         playSpawn = info.hasSpawn ? info.spawn : player.feet; playYaw = info.hasSpawn ? info.spawnYaw : player.yaw;
         UpdateItemRules(); play = PlayState{}; play.start(player, playRules, playSpawn, playYaw);
@@ -3237,6 +3269,7 @@ struct App {
             }
             ImGui::Separator();
         }
+        if (ImGui::Button("Map (M)", ImVec2(-1, 0))) OpenMap();
         if (ImGui::Button("Settings", ImVec2(-1, 0))) showSettings = true;
         if (ImGui::Button("Stop playing (F5)", ImVec2(-1, 0))) StopPlay();
         ImGui::End();
@@ -3860,8 +3893,8 @@ struct App {
             }
             else if (toolSel == 2) {
                 ImGui::SeparatorText("Add");
-                const std::pair<const char*, const char*> add[] = { { "Light", "@light" }, { "Particles", "@emitter" }, { "Health", "@health" }, { "Key", "@key" }, { "Gem", "@gem" }, { "Checkpoint", "@checkpoint" }, { "Teleporter", "@teleporter" }, { "Trigger zone", "@zone" } };
-                for (int a = 0; a < 8; a++) { if (a) Flow(ButtonW(add[a].first)); if (ImGui::Button(add[a].first)) StartPlacing(add[a].second); }
+                const std::pair<const char*, const char*> add[] = { { "Light", "@light" }, { "Particles", "@emitter" }, { "Health", "@health" }, { "Key", "@key" }, { "Gem", "@gem" }, { "Checkpoint", "@checkpoint" }, { "Teleporter", "@teleporter" }, { "Trigger zone", "@zone" }, { "Map Station", "@map-station" }, { "Map camera", "@map-camera" } };
+                for (int a = 0; a < 10; a++) { if (a) Flow(ButtonW(add[a].first)); if (ImGui::Button(add[a].first)) StartPlacing(add[a].second); }
                 Hint("Click an object in the viewport to pick it. Pick a model in Assets > Models to place it."); if (!placing.empty()) Hint("Placing: %s. R turns it, Alt puts it off the grid, right click stops.", placing.c_str()); }
             else Hint("More tools are coming to this slot.");
             break;
@@ -4888,6 +4921,197 @@ struct App {
         if (playMode && weapons.switchMode == 1) return;   // no switching: always the best one
         StopChargeTimeline(); chargeTlOn = false;
         weapState.current = to; weapState.charging = false; weapState.charge = 0; cannonClip = -1; firedPending += 0.4f; Toast(weapons.beams[to].name);
+    }
+
+    // ================================================================== the map (M): a hologram of what you have seen
+    // Seen blocks come from your eyes (a few hundred rays a frame), the floor you walk on, and Map Stations: touching one
+    // wakes every map camera with the same ID, and each looks all around from where it is. Seen doors show in their own
+    // colour and size. The seen blocks are kept per world for this play session.
+    struct MapVert { float p[3], n[3], uv[2], size[2], born, col[4]; };
+    struct MapGpuChunk { ComPtr<ID3D11Buffer> vb; UINT count = 0; };
+    std::unordered_map<std::string, SeenMap> seenMaps;
+    std::set<std::string> stationsUsed;
+    std::unordered_map<I3, MapGpuChunk, I3Hash> mapGpu; std::string mapGpuWorld;
+    ComPtr<ID3D11Buffer> mapMarks; UINT mapMarksCap = 0;
+    HudTarget mapView; ComPtr<ID3D11DepthStencilView> mapDSV; int mapDW = 0, mapDH = 0; ImVec2 mapWant{ 0, 0 };
+    bool mapOpen = false; float mapYaw = 0, mapPitch = 0.8f, mapDist = 40; V3 mapCenter{ 0, 0, 0 }; double mapOpenT = 0; uint32_t mapFrame = 0;
+    static constexpr uint32_t MAP_TINT = 0x3AC8FF;
+    SeenMap& Seen() { return seenMaps[CurrentWorld()]; }
+    double uiClock = 0;   // seconds since the start, also while paused (the map's fade-ins)
+    double MapClock() const { return uiClock; }
+    V3 MapCamEye(const WorldObject& o) const { return o.pos + V3{ 0, 0.45, 0 }; }
+    bool DoorRect(const WorldObject& o, V3& c, V3& across) {   // a door's middle and the way its width runs
+        FrameRef f = ModelOf(o); if (!f) return false;
+        Box3 b = objectBounds(o, *f); c = (b.lo + b.hi) * 0.5;
+        double a = o.yaw * 3.14159265358979 / 180; across = { std::cos(a), 0, -std::sin(a) }; return true;
+    }
+    bool DoorSeenFrom(const WorldObject& o, V3 eye, double range) {   // its middle or a corner can be seen
+        V3 c, ac; if (!DoorRect(o, c, ac)) return false;
+        double hw = o.door.w * 0.45, hh = o.door.h * 0.45;
+        const V3 pts[5] = { c, c + ac * hw + V3{ 0, hh, 0 }, c - ac * hw + V3{ 0, hh, 0 }, c + ac * hw - V3{ 0, hh, 0 }, c - ac * hw - V3{ 0, hh, 0 } };
+        for (const V3& p : pts) if (canSee(*world, eye, p, range)) return true;
+        return false;
+    }
+    void UpdateMapSight() {   // every frame in play: what the eyes see goes on the map
+        if (!playMode || !world || play.dead()) return;
+        SeenMap& m = Seen(); double now = MapClock(); mapFrame++;
+        double fov = settings.fov * 3.14159265358979 / 180, aspect = (double)rw / std::max(1, rh);
+        V3 eye = player.eye();
+        m.lookAround(*world, eye, player.yaw, player.pitch, fov, aspect, 280, 48, mapFrame, now);
+        if (player.onGround) m.floorUnder(*world, player.feet, 1, now);
+        if (mapFrame % 4 == 0) {   // doors in view
+            V3 f = player.forward(); double cosHalf = std::cos(std::min(1.4, fov * 0.5 * std::max(1.0, aspect)));
+            for (const WorldObject& o : objects) {
+                if (o.kind != ObjKind::Door || m.doors.count(o.id)) continue;
+                V3 c, ac; if (!DoorRect(o, c, ac)) continue;
+                V3 d = c - eye; double l = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z); if (l > 48) continue;
+                if (l > 2 && (d.x * f.x + d.y * f.y + d.z * f.z) / l < cosHalf) continue;
+                if (DoorSeenFrom(o, eye, 48)) m.doors.insert(o.id);
+            }
+        }
+    }
+    void UseMapStation(const WorldObject& st) {   // wakes every map camera with the station's ID
+        std::string key = CurrentWorld() + "#" + std::to_string(st.id);
+        if (stationsUsed.count(key)) return;
+        stationsUsed.insert(key);
+        SeenMap& m = Seen(); double now = MapClock(); size_t before = m.total, doorsBefore = m.doors.size(); int cams = 0;
+        auto revealAt = [&](V3 eye, double range) {
+            m.revealFrom(*world, eye, range, 4000, now);
+            for (const WorldObject& o : objects) if (o.kind == ObjKind::Door && !m.doors.count(o.id) && DoorSeenFrom(o, eye, range)) m.doors.insert(o.id);
+        };
+        for (const WorldObject& o : objects) if (o.kind == ObjKind::MapCamera && o.map.id == st.map.id) { revealAt(MapCamEye(o), o.map.range); cams++; }
+        if (!cams) revealAt(st.pos + V3{ 0, 1.4, 0 }, st.map.range);   // no camera with this ID: the station looks around itself
+        Log("map station " + std::to_string(st.map.id) + ": " + std::to_string(cams) + " camera(s), " + std::to_string(m.total - before) + " blocks and " + std::to_string(m.doors.size() - doorsBefore) + " door(s) added");
+        Toast("Map data downloaded");
+        OpenMap();   // like in Prime: the map opens and shows what was added
+    }
+    void OpenMap() {
+        if (!playMode) return;
+        mapOpen = true; paused = true; Capture(false);
+        mapCenter = player.feet + V3{ 0, 1, 0 }; mapYaw = (float)(player.yaw + 3.14159265358979); mapPitch = 0.75f; mapDist = 34; mapOpenT = MapClock();
+    }
+    void CloseMap() { if (!mapOpen) return; mapOpen = false; paused = false; Capture(true); }
+    void BuildMapChunk(I3 cp, const SeenMap& m) {
+        std::vector<MapQuad> qs = mapPanels(*world, m, cp);
+        MapGpuChunk& g = mapGpu[cp]; g.vb.Reset(); g.count = 0;
+        if (qs.empty()) return;
+        float tint[3] = { ((MAP_TINT >> 16) & 255) / 255.f, ((MAP_TINT >> 8) & 255) / 255.f, (MAP_TINT & 255) / 255.f };
+        std::vector<MapVert> v; v.reserve(qs.size() * 6);
+        static const int idx[6] = { 0, 1, 2, 0, 2, 3 };
+        for (const MapQuad& q : qs) {
+            const float uv[4][2] = { { 0, 0 }, { q.w, 0 }, { q.w, q.h }, { 0, q.h } };
+            for (int k : idx) { MapVert x{}; for (int j = 0; j < 3; j++) { x.p[j] = q.p[k][j] + q.n[j] * 0.002f; x.n[j] = q.n[j]; } x.uv[0] = uv[k][0]; x.uv[1] = uv[k][1]; x.size[0] = q.w; x.size[1] = q.h; x.born = q.born;
+                x.col[0] = tint[0]; x.col[1] = tint[1]; x.col[2] = tint[2]; x.col[3] = 0; v.push_back(x); }
+        }
+        D3D11_BUFFER_DESC d{}; d.ByteWidth = (UINT)(v.size() * sizeof(MapVert)); d.Usage = D3D11_USAGE_IMMUTABLE; d.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+        D3D11_SUBRESOURCE_DATA sd{ v.data(), 0, 0 }; HR(dev->CreateBuffer(&d, &sd, &g.vb)); g.count = (UINT)v.size();
+    }
+    void MapMarkQuad(std::vector<MapVert>& v, V3 c, V3 u, V3 w, double hu, double hw, uint32_t rgb, float kind) {   // a rectangle: middle, two directions, half sizes
+        V3 n = Norm(cross(u, w)); float col[4] = { ((rgb >> 16) & 255) / 255.f, ((rgb >> 8) & 255) / 255.f, (rgb & 255) / 255.f, kind };
+        const V3 P[4] = { c - u * hu - w * hw, c + u * hu - w * hw, c + u * hu + w * hw, c - u * hu + w * hw };
+        const float UV[4][2] = { { 0, 0 }, { (float)(hu * 2), 0 }, { (float)(hu * 2), (float)(hw * 2) }, { 0, (float)(hw * 2) } };
+        for (int k : { 0, 1, 2, 0, 2, 3 }) { MapVert x{}; x.p[0] = (float)P[k].x; x.p[1] = (float)P[k].y; x.p[2] = (float)P[k].z; x.n[0] = (float)n.x; x.n[1] = (float)n.y; x.n[2] = (float)n.z;
+            x.uv[0] = UV[k][0]; x.uv[1] = UV[k][1]; x.size[0] = (float)(hu * 2); x.size[1] = (float)(hw * 2); x.born = -100; for (int j = 0; j < 4; j++) x.col[j] = col[j]; v.push_back(x); }
+    }
+    void MapMarkTri(std::vector<MapVert>& v, V3 a, V3 b, V3 c, uint32_t rgb) {
+        V3 n = Norm(cross(b - a, c - a)); float col[4] = { ((rgb >> 16) & 255) / 255.f, ((rgb >> 8) & 255) / 255.f, (rgb & 255) / 255.f, 2 };
+        for (V3 p : { a, b, c }) { MapVert x{}; x.p[0] = (float)p.x; x.p[1] = (float)p.y; x.p[2] = (float)p.z; x.n[0] = (float)n.x; x.n[1] = (float)n.y; x.n[2] = (float)n.z; x.uv[0] = x.uv[1] = 1; x.size[0] = x.size[1] = 2; x.born = -100; for (int j = 0; j < 4; j++) x.col[j] = col[j]; v.push_back(x); }
+    }
+    void RenderMap() {
+        if (!world || mapWant.x < 16 || mapWant.y < 16) return;
+        SeenMap& m = Seen();
+        if (mapGpuWorld != CurrentWorld()) { mapGpu.clear(); mapGpuWorld = CurrentWorld(); for (auto& kv : m.chunks) m.dirty.insert(kv.first); }
+        for (auto it = m.dirty.begin(); it != m.dirty.end();) {   // build the panels of what changed (only chunks that are loaded: their open faces need the blocks around)
+            if (world->loaded(it->x * CS, it->y * CS, it->z * CS)) { BuildMapChunk(*it, m); it = m.dirty.erase(it); } else ++it;
+        }
+        // the doors you have seen (their colour, their size) and you
+        std::vector<MapVert> marks;
+        for (const WorldObject& o : objects) {
+            if (o.kind != ObjKind::Door || !m.doors.count(o.id)) continue;
+            V3 c, ac; if (!DoorRect(o, c, ac)) continue;
+            MapMarkQuad(marks, c, ac, { 0, 1, 0 }, o.door.w * 0.5, o.door.h * 0.5, o.door.color, 1);
+        }
+        UINT doorVerts = (UINT)marks.size();
+        {   // you: an arrow pointing where you look, and a little pillar under it
+            V3 f{ std::sin(player.yaw), 0, std::cos(player.yaw) }, r{ f.z, 0, -f.x }, b = player.feet + V3{ 0, 0.15, 0 }; double s = 1.1;
+            V3 tip = b + f * (s * 1.1), l = b - f * (s * 0.7) - r * (s * 0.7), rr = b - f * (s * 0.7) + r * (s * 0.7), mid = b - f * (s * 0.3), top = b + V3{ 0, s * 0.45, 0 };
+            uint32_t col = 0xFF9A3A;
+            MapMarkTri(marks, tip, l, top, col); MapMarkTri(marks, tip, top, rr, col); MapMarkTri(marks, l, mid, top, col); MapMarkTri(marks, mid, rr, top, col);
+            MapMarkTri(marks, tip, mid, l, col); MapMarkTri(marks, tip, rr, mid, col);
+        }
+        UINT markVerts = (UINT)marks.size();
+        if (markVerts > mapMarksCap) {
+            mapMarksCap = markVerts + 64; D3D11_BUFFER_DESC d{}; d.ByteWidth = (UINT)(mapMarksCap * sizeof(MapVert)); d.Usage = D3D11_USAGE_DYNAMIC; d.BindFlags = D3D11_BIND_VERTEX_BUFFER; d.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+            mapMarks.Reset(); HR(dev->CreateBuffer(&d, nullptr, &mapMarks));
+        }
+        { D3D11_MAPPED_SUBRESOURCE ms; if (SUCCEEDED(ctx->Map(mapMarks.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) { memcpy(ms.pData, marks.data(), markVerts * sizeof(MapVert)); ctx->Unmap(mapMarks.Get(), 0); } }
+
+        int w = (int)mapWant.x, h = (int)mapWant.y; if (w != mapDW || h != mapDH) { MakeTarget(mapView, w, h, &mapDSV); mapDW = w; mapDH = h; }
+        const float bg[4] = { 0.006f, 0.014f, 0.03f, 1 };
+        ctx->OMSetRenderTargets(1, mapView.rtv.GetAddressOf(), mapDSV.Get()); ctx->ClearRenderTargetView(mapView.rtv.Get(), bg); ctx->ClearDepthStencilView(mapDSV.Get(), D3D11_CLEAR_DEPTH, 1, 0);
+        D3D11_VIEWPORT vp{ 0, 0, (float)w, (float)h, 0, 1 }; ctx->RSSetViewports(1, &vp);
+        V3 dir{ std::sin(mapYaw) * std::cos(mapPitch), std::sin(mapPitch), std::cos(mapYaw) * std::cos(mapPitch) }, eye = mapCenter + dir * mapDist;
+        XMMATRIX view = XMMatrixLookAtLH(XMVectorSet((float)eye.x, (float)eye.y, (float)eye.z, 1), XMVectorSet((float)mapCenter.x, (float)mapCenter.y, (float)mapCenter.z, 1), XMVectorSet(0, 1, 0, 0));
+        XMMATRIX proj = XMMatrixPerspectiveFovLH(XMConvertToRadians(45.f), (float)w / h, 0.3f, 4000.f);
+        MapCB mc{}; XMStoreFloat4x4((XMFLOAT4X4*)mc.vp, view * proj);
+        mc.eye[0] = (float)eye.x; mc.eye[1] = (float)eye.y; mc.eye[2] = (float)eye.z; mc.eye[3] = (float)MapClock();
+        mc.center[0] = (float)player.feet.x; mc.center[1] = (float)player.feet.y; mc.center[2] = (float)player.feet.z; mc.center[3] = (float)mapOpenT;
+        ctx->VSSetConstantBuffers(5, 1, cbMap.GetAddressOf()); ctx->PSSetConstantBuffers(5, 1, cbMap.GetAddressOf());
+        ctx->IASetInputLayout(layoutMap.Get()); ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        ctx->VSSetShader(vsMap.Get(), nullptr, 0); ctx->PSSetShader(psMap.Get(), nullptr, 0); ctx->RSSetState(rsNoCull.Get());
+        UINT stride = sizeof(MapVert), off = 0;
+        auto drawPanels = [&]() { for (auto& kv : mapGpu) if (kv.second.count) { ctx->IASetVertexBuffers(0, 1, kv.second.vb.GetAddressOf(), &stride, &off); ctx->Draw(kv.second.count, 0); } };
+        for (int pass = 0; pass < 2; pass++) {   // solid (nearest surface wins), then every edge again faintly on top: you see through the walls a little
+            mc.mode[0] = (float)pass; ctx->UpdateSubresource(cbMap.Get(), 0, nullptr, &mc, 0, 0);
+            ctx->OMSetBlendState(pass ? bsAdd.Get() : bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(pass ? dsOff.Get() : dsOn.Get(), 0);
+            drawPanels();
+            if (doorVerts) { ctx->IASetVertexBuffers(0, 1, mapMarks.GetAddressOf(), &stride, &off); ctx->Draw(doorVerts, 0); }
+        }
+        mc.mode[0] = 0; ctx->UpdateSubresource(cbMap.Get(), 0, nullptr, &mc, 0, 0);   // you: always on top
+        ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOff.Get(), 0);
+        ctx->IASetVertexBuffers(0, 1, mapMarks.GetAddressOf(), &stride, &off); ctx->Draw(markVerts - doorVerts, doorVerts);
+        ctx->RSSetState(rsCull.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
+        ctx->OMSetRenderTargets(0, nullptr, nullptr);
+    }
+    void MapScreen() {   // the map, full screen: drag turns it, right-drag moves it, the wheel zooms
+        const ImGuiViewport* vpt = ImGui::GetMainViewport();
+        ImGui::SetNextWindowPos(vpt->Pos); ImGui::SetNextWindowSize(vpt->Size);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0)); ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0);
+        ImGui::Begin("###map", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollWithMouse);
+        ImGui::PopStyleVar(2);
+        ImVec2 p = ImGui::GetCursorScreenPos(), sz = ImGui::GetContentRegionAvail(); mapWant = sz;
+        ImGui::InvisibleButton("##mapview", sz, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        if (mapView.srv && mapDW == (int)sz.x && mapDH == (int)sz.y) dl->AddImage((ImTextureID)(intptr_t)mapView.srv.Get(), p, ImVec2(p.x + sz.x, p.y + sz.y));
+        else dl->AddRectFilled(p, ImVec2(p.x + sz.x, p.y + sz.y), IM_COL32(2, 4, 8, 255));
+        ImGuiIO& io = ImGui::GetIO();
+        if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0)) { mapYaw += io.MouseDelta.x * 0.008f; mapPitch = std::clamp(mapPitch + io.MouseDelta.y * 0.008f, -1.45f, 1.52f); }
+        if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Right, 0)) {   // slide along the ground
+            V3 f{ -std::sin(mapYaw), 0, -std::cos(mapYaw) }, r{ -f.z, 0, f.x }; double k = mapDist * 0.0016;
+            mapCenter = mapCenter + r * (io.MouseDelta.x * k) + f * (io.MouseDelta.y * k);
+        }
+        if (ImGui::IsItemHovered() && io.MouseWheel != 0) mapDist = std::clamp(mapDist * std::pow(0.88f, io.MouseWheel), 6.f, 400.f);
+        float ui = settings.uiScale; const SeenMap& m = Seen();
+        dl->AddText(ImGui::GetFont(), ImGui::GetFontSize() * 1.6f, ImVec2(p.x + 26 * ui, p.y + 20 * ui), IM_COL32(120, 220, 255, 255), "MAP");
+        char line[160]; snprintf(line, sizeof line, "%s  -  %zu blocks charted, %zu door(s)", CurrentWorld().c_str(), m.total, m.doors.size());
+        dl->AddText(ImVec2(p.x + 28 * ui, p.y + 20 * ui + ImGui::GetFontSize() * 1.8f), IM_COL32(150, 200, 230, 220), line);
+        const char* help = "Drag: turn    Right-drag: move    Wheel: zoom    C: back to you    M / Esc: close";
+        ImVec2 hs = ImGui::CalcTextSize(help); dl->AddText(ImVec2(p.x + (sz.x - hs.x) * 0.5f, p.y + sz.y - hs.y - 18 * ui), IM_COL32(150, 200, 230, 200), help);
+        if (ImGui::IsKeyPressed(ImGuiKey_C, false)) { mapCenter = player.feet + V3{ 0, 1, 0 }; mapYaw = (float)(player.yaw + 3.14159265358979); }
+        if (m.total == 0) { const char* e = "Nothing charted yet: look around, or find a Map Station."; ImVec2 es = ImGui::CalcTextSize(e); dl->AddText(ImVec2(p.x + (sz.x - es.x) * 0.5f, p.y + sz.y * 0.5f), IM_COL32(150, 200, 230, 220), e); }
+        ImGui::End();
+    }
+    void MapInspector(WorldObject& o) {
+        bool cam = o.kind == ObjKind::MapCamera;
+        ImGui::SeparatorText(cam ? "Map camera" : "Map Station");
+        if (cam) Hint("Invisible in the game. When a Map Station with the same ID is used, this camera looks all around from here and puts everything it can see on the map (doors too, in their colour). Give several cameras the same ID to chart a bigger area.");
+        else Hint("Walking into it downloads the map: every map camera with the same ID looks all around. With no camera of that ID, it looks around from itself. Each station works once per play.");
+        int id = o.map.id; Prop("ID"); if (ImGui::InputInt("##mapid", &id)) o.map.id = std::clamp(id, 0, 9999);
+        Prop(cam ? "Sees (blocks)" : "Sees, without cameras"); ImGui::SliderFloat("##maprange", &o.map.range, 8, 160, "%.0f blocks");
+        int cams = 0, stations = 0; for (const WorldObject& q : objects) if (q.map.id == o.map.id) { if (q.kind == ObjKind::MapCamera) cams++; else if (q.kind == ObjKind::MapStation) stations++; }
+        ImGui::TextDisabled("ID %d: %d camera(s), %d station(s)", o.map.id, cams, stations);
+        if (cam && stations == 0) ImGui::TextColored(ImVec4(1, 0.75f, 0.3f, 1), "No Map Station has this ID yet.");
+        if (!cam && cams == 0) ImGui::TextDisabled("(no camera has this ID: it looks around itself)");
     }
 
     // ---- the Weapons tab: the cannon in its own 3D view, its three points (drag them), what it shoots
@@ -6861,6 +7085,33 @@ struct App {
                 brushMenu = true; frames(3, "terrain_brush_options");
                 brushMenu = false; toolMode = false; sel = Sel::World;
             }
+            {   // the map: look around a little (what you see goes on the map), then a Map Station wakes its camera; the hologram after each
+                const WorldObject* d0 = nullptr; for (const WorldObject& o : objects) if (o.kind == ObjKind::Door) { d0 = &o; break; }
+                V3 base = d0 ? d0->pos : V3{ 26, 0, 40 };
+                DemoShot look{ "m", { base.x + 3, base.y + player.eyeH, base.z - 11 }, { base.x + 3, base.y + 1.2, base.z }, 15.5f };
+                WorldObject cam; cam.id = nextObjId++; cam.model = "@map-camera"; ApplyPreset(cam); cam.name = UniqueObjectName("Map camera"); cam.pos = { base.x + 4, base.y + 2.5, base.z + 8 }; cam.map.id = 7; cam.map.range = 40; objects.push_back(cam);
+                WorldObject st; st.id = nextObjId++; st.model = "@map-station"; ApplyPreset(st); st.name = UniqueObjectName("Map Station"); st.pos = { base.x - 3.5, base.y, base.z - 8.5 }; st.map.id = 7; objects.push_back(st);
+                RebuildSolids(); sel = Sel::Object; selIndex = (int)objects.size() - 1;
+                poseAt(look); frames(4, "map_station_and_camera_editor"); sel = Sel::World;
+                StartPlay(false); poseAt(look); play.health = game.player.maxHealth; toastT = 0;
+                auto runM = [&](int k) { for (int f = 0; f < k; f++) { FrameBody(1.0 / 60); swap->Present(0, 0); retired.clear(); } };
+                double y0 = player.yaw, p0 = player.pitch;
+                for (int k = 0; k < 120; k++) { player.yaw = y0 + std::sin(k * 0.06) * 1.0; player.pitch = p0 - 0.1 + std::sin(k * 0.13) * 0.25; runM(1); }
+                player.yaw = y0; player.pitch = p0; runM(2);
+                Log("map after looking around: " + std::to_string(Seen().total) + " blocks, " + std::to_string(Seen().doors.size()) + " door(s) seen");
+                OnKey('M', false); runM(1); Log(std::string("M key: map ") + (mapOpen ? "open" : "NOT open"));
+                frames(90, "map_seen_by_looking");
+                mapYaw += 0.9f; mapPitch = 1.05f; mapDist = 48; frames(2, "map_seen_by_looking_turned");
+                OnKey(VK_ESCAPE, false); runM(2);
+                size_t beforeSt = Seen().total;
+                player.feet = { st.pos.x, st.pos.y, st.pos.z - 0.9 }; player.vel = { 0, 0, 0 }; runM(3);   // walk into the station
+                Log("map station: " + std::to_string(Seen().total - beforeSt) + " blocks added, map " + (mapOpen ? "opened" : "NOT opened"));
+                frames(20, "map_station_download_building");
+                frames(90, "map_station_download");
+                mapYaw += 0.7f; mapPitch = 0.6f; mapDist = 30; mapCenter = base + V3{ 0, 1.5, 0 }; frames(2, "map_doors_closeup");
+                CloseMap(); StopPlay();
+                objects.erase(std::remove_if(objects.begin(), objects.end(), [&](const WorldObject& o) { return o.id == cam.id || o.id == st.id; }), objects.end()); RebuildSolids();
+            }
             poseAt(demoShots()[1]);
             StartPlay(false); play.health = game.player.maxHealth * 0.65f; play.hurtFlash = 0.25; toastT = 0;
             frames(4, "play_hud");
@@ -6891,6 +7142,7 @@ struct App {
         if (!ev) vx = vy = 0;
         if (captureNext && screen == Screen::Game) { captureNext = false; Capture(true); }
         if (toastT > 0) toastT -= dt;
+        uiClock += dt;
         fpsAcc += dt; fpsN++; if (fpsAcc > 0.5) { fps = fpsN / fpsAcc; fpsAcc = 0; fpsN = 0; }
         PollTextures(dt);
         if (screen == Screen::Game) UpdateGame(dt);
@@ -6908,9 +7160,10 @@ struct App {
             ModelViewer();
             PlayerEditor();
         } else {
-            DrawHud(ImGui::GetForegroundDrawList());
+            if (!mapOpen) DrawHud(ImGui::GetForegroundDrawList());
             if (showF3) DrawF3();
-            if (paused && !showSettings) PauseMenu();
+            if (mapOpen) MapScreen();
+            else if (paused && !showSettings) PauseMenu();
         }
         if (showSettings) SettingsWindow();
         Popups();
@@ -6921,6 +7174,7 @@ struct App {
         const float bg[4] = { 0.10f, 0.11f, 0.13f, 1 };
         if (screen == Screen::Game && rw > 0) RenderWorld(ev ? sceneRTV.Get() : backRTV.Get());
         if (ev) { RenderViewer(); RenderHudViews(); RenderWeaponView(); }
+        if (mapOpen && !ev) RenderMap();
         ctx->OMSetRenderTargets(1, backRTV.GetAddressOf(), nullptr);
         if (screen != Screen::Game || ev) ctx->ClearRenderTargetView(backRTV.Get(), bg);
         D3D11_VIEWPORT v{ 0, 0, (float)cw, (float)ch, 0, 1 }; ctx->RSSetViewports(1, &v);

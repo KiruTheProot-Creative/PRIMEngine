@@ -87,7 +87,8 @@ const char* collideName(Collide c) { return c == Collide::Exact ? "Exact (from i
 // ------------------------------------------------------------------ placed objects
 const char* kindName(ObjKind k) {
     switch (k) { case ObjKind::Door: return "Door"; case ObjKind::Platform: return "Platform"; case ObjKind::Pickup: return "Pickup"; case ObjKind::Checkpoint: return "Checkpoint";
-    case ObjKind::Teleporter: return "Teleporter"; case ObjKind::Trigger: return "Trigger zone"; case ObjKind::Light: return "Light"; case ObjKind::Particles: return "Particles"; default: return "Prop"; }
+    case ObjKind::Teleporter: return "Teleporter"; case ObjKind::Trigger: return "Trigger zone"; case ObjKind::Light: return "Light"; case ObjKind::Particles: return "Particles";
+    case ObjKind::MapCamera: return "Map camera"; case ObjKind::MapStation: return "Map Station"; default: return "Prop"; }
 }
 const char* pickupName(PickupType t) { return t == PickupType::Key ? "Key" : t == PickupType::Collectible ? "Collectible (counted)" : "Health"; }
 const char* triggerName(TriggerAction a) { return a == TriggerAction::Kill ? "Kill (traps, acid ...)" : a == TriggerAction::Heal ? "Heal" : a == TriggerAction::Checkpoint ? "Checkpoint" : "Show a message"; }
@@ -215,7 +216,7 @@ bool saveObjects(const std::string& path, const std::vector<WorldObject>& objs) 
           << " " << P.speed << " " << P.speedVar << " " << P.gravity << " " << P.drag << " " << P.size0 << " " << P.size1 << " " << P.color0 << " " << P.color1 << " " << P.alpha0 << " " << P.alpha1
           << " " << P.glow << " " << (P.additive ? 1 : 0) << " " << (int)P.shape << " " << (int)P.area << " " << P.areaSize.x << " " << P.areaSize.y << " " << P.areaSize.z << " " << P.spin
           << " " << (P.collide ? 1 : 0) << " " << (P.bounce ? 1 : 0) << " " << (P.light ? 1 : 0) << " " << P.lightRange << " " << P.lightIntensity << " " << P.maxParticles;
-        f << " " << o.door.fieldSide << " " << o.door.fieldGap << " " << (o.door.fieldOnParts ? 1 : 0) << " " << esc(o.door.fieldParts) << " " << esc(o.door.openedBy) << " " << P.pull;
+        f << " " << o.door.fieldSide << " " << o.door.fieldGap << " " << (o.door.fieldOnParts ? 1 : 0) << " " << esc(o.door.fieldParts) << " " << esc(o.door.openedBy) << " " << P.pull << " " << o.map.id << " " << o.map.range;
         f << "\n";
     }
     return (bool)f;
@@ -250,7 +251,7 @@ bool loadObjects(const std::string& path, std::vector<WorldObject>& objs) {
             o.particles = P;
         }
         int fs = 0, fp = 0; float fg = 0; std::string fpn;   // forcefield placement (newer files)
-        if (l >> fs >> fg >> fp >> fpn) { o.door.fieldSide = std::clamp(fs, 0, 2); o.door.fieldGap = std::clamp(fg, 0.f, 2.f); o.door.fieldOnParts = fp != 0; o.door.fieldParts = unesc(fpn); std::string ob; if (l >> ob) o.door.openedBy = unesc(ob); float pl; if (l >> pl) o.particles.pull = std::max(0.f, pl); }
+        if (l >> fs >> fg >> fp >> fpn) { o.door.fieldSide = std::clamp(fs, 0, 2); o.door.fieldGap = std::clamp(fg, 0.f, 2.f); o.door.fieldOnParts = fp != 0; o.door.fieldParts = unesc(fpn); std::string ob; if (l >> ob) o.door.openedBy = unesc(ob); float pl; if (l >> pl) o.particles.pull = std::max(0.f, pl); int mid; float mr; if (l >> mid >> mr) { o.map.id = mid; o.map.range = std::max(1.f, mr); } }
         objs.push_back(o);
     }
     return true;

@@ -1092,3 +1092,51 @@ float4 PS_BeamOrb(FMOut i) : SV_Target
     float cover = saturate(0.45 + 0.55 * facing);                                         // the very edge lets a little through: soft, not a hard disc
     return float4(c * flicker * cover, cover);                                            // premultiplied
 }
+
+// ---------------------------------------------------------------- the map: a hologram of what has been seen
+cbuffer MapCB : register(b5)
+{
+    row_major float4x4 gMapVP;
+    float4 gMapEye;       // xyz where the map camera is (world), w the clock now (s, the same clock as `born`)
+    float4 gMapCenter;    // xyz the player (world), w when the map was opened (the build-up sweep starts there)
+    float4 gMapMode;      // x 0 solid, 1 see-through edges (added on top); y how far the map reaches (for the sweep)
+};
+struct MapIn { float3 p : POSITION; float3 n : NORMAL; float2 uv : TEXCOORD0; float2 size : TEXCOORD1; float born : TEXCOORD2; float4 col : COLOR; };
+struct MapOut { float4 pos : SV_Position; float3 w : TEXCOORD0; float3 n : NORMAL; float2 uv : TEXCOORD1; float2 size : TEXCOORD2; float born : TEXCOORD3; float4 col : COLOR; };
+MapOut VS_Map(MapIn i)
+{
+    MapOut o; o.pos = mul(float4(i.p, 1), gMapVP); o.w = i.p; o.n = i.n; o.uv = i.uv; o.size = i.size; o.born = i.born; o.col = i.col; return o;
+}
+// col.a: 0 a panel of seen blocks (rgb its tint), 1 a door (rgb the door's colour), 2 the player marker
+float4 PS_Map(MapOut i, bool front : SV_IsFrontFace) : SV_Target
+{
+    float t = gMapEye.w;
+    float3 n = normalize(front ? i.n : -i.n), v = normalize(gMapEye.xyz - i.w);
+    float facing = saturate(abs(dot(n, v)));
+    float2 e2 = min(i.uv, i.size - i.uv); float edge = min(e2.x, e2.y);                 // blocks to the panel's border
+    float px = max(fwidth(edge), 1e-4);
+    float outline = 1 - smoothstep(px * 0.7, px * 2.4, edge);                            // a crisp line around every panel
+    float2 gd = abs(frac(i.uv + 0.5) - 0.5) / max(fwidth(i.uv), 1e-4);
+    float grid = (1 - saturate(min(gd.x, gd.y) - 0.25)) * saturate(1.5 - max(fwidth(i.uv.x), fwidth(i.uv.y)) * 3);   // one line per block (fades out far away)
+    float3 d = i.w - gMapCenter.xyz;
+    float sweep = (t - gMapCenter.w) * 60 - length(d) * 0.8;                              // the map builds up outward from you when it opens
+    float appear = saturate(sweep / 6) * saturate((t - i.born) / 0.7);                    // ... and newly seen parts fade in
+    float front_ = saturate(1 - abs(sweep - 3) / 3);                                      // the bright front of that sweep
+    float kind = i.col.a; float3 base = i.col.rgb;
+    if (kind > 1.5) {                                                                     // you: solid, bright, pulsing
+        float pulse = 0.85 + 0.15 * sin(t * 6);
+        return float4(base * (0.55 + 0.7 * facing) * pulse, 1);
+    }
+    if (kind > 0.5) {                                                                     // a door: filled with its colour, the size of the door
+        float scan = 0.8 + 0.2 * sin(i.w.y * 7 - t * 3);
+        float3 c = base * (0.75 * scan + 1.6 * outline) * appear;
+        return float4(gMapMode.x > 0.5 ? c * 0.3 : c, 1);
+    }
+    if (gMapMode.x > 0.5) return float4(base * outline * 0.16 * appear, 1);              // through the walls: only the edges, faint
+    float shade = n.y > 0.5 ? 1.0 : (n.y < -0.5 ? 0.42 : 0.68);                          // floors brightest, ceilings dimmest
+    float rim = pow(1 - facing, 2);
+    float lines = 0.93 + 0.07 * sin(i.w.y * 6.2832 - t * 2.5);                            // slow scan lines
+    float3 c = base * shade * (0.15 + 0.25 * rim + 0.12 * grid + 1.0 * outline) * lines * appear;
+    c += base * front_ * 0.6 + float3(0.7, 1, 1) * front_ * outline * 0.4;
+    return float4(c, 1);
+}
