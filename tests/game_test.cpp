@@ -55,6 +55,8 @@ int main() {
           "world info (name, generator, exact player position, hotbar) survives saving");
     Settings s; s.renderDistance = 24; s.fov = 90; s.save(dir + "/s.txt"); Settings s2; s2.load(dir + "/s.txt");
     CHECK(s2.renderDistance == 24 && s2.fov == 90, "settings survive saving");
+    { Settings a; a.shadowDistance = 300; a.bumps = 0.5f; a.coat = 0; a.materials = false; a.hudGlow = false; a.guessMaterials = false; a.shadowQuality = 1; a.save(dir + "/s2.txt"); Settings b; b.load(dir + "/s2.txt");
+      CHECK(b.shadowDistance == 300 && b.bumps == 0.5f && b.coat == 0 && !b.materials && !b.hudGlow && !b.guessMaterials && b.shadowQuality == 1, "the newer look settings survive saving too"); }
     // weather
     {
         CHECK(weatherTypes().size() >= 10 && findWeather("intense_storm") >= 0 && findWeather("blizzard") >= 0, "%zu kinds of weather", weatherTypes().size());
