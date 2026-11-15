@@ -51,6 +51,7 @@ struct BlockDef {
     bool waves = false;                  // sways in the wind (leaves, plants)
     float shine = 0;                     // how much it reflects: 0 matt (dirt) .. 1 polished (metal, ice)
     bool mirror = false;                 // reflects like a mirror
+    bool texTurns = true;                // a turned block turns its textures too (false: they stay lined up with the world)
     int liquid = 0;                      // 0 not a liquid, 1 water, 2 lava
     bool spring = false;                 // a liquid that never runs dry (keeps pouring out)
     std::string category = "Building";   // folder in the asset browser

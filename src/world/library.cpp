@@ -54,7 +54,7 @@ bool Library::saveBlocks(const BlockRegistry& r) const {
               << "\nlook = " << (d.render == Render::Liquid ? "liquid" : d.render == Render::Cutout ? "see-through" : "solid")
               << "\nsolid = " << (d.solid ? "yes" : "no") << "\njoin_same = " << (d.cullSame ? "yes" : "no")
               << "\nlight = " << d.light << "\nlight_color = " << hex6(d.lightColor) << "\nwaves = " << (d.waves ? "yes" : "no")
-              << "\nshine = " << d.shine << "\nmirror = " << (d.mirror ? "yes" : "no")
+              << "\nshine = " << d.shine << "\nmirror = " << (d.mirror ? "yes" : "no") << "\ntexture_turns = " << (d.texTurns ? "yes" : "no")
               << "\nliquid = " << (d.liquid == 1 ? "water" : d.liquid == 2 ? "lava" : "none") << "\nspring = " << (d.spring ? "yes" : "no")
               << "\ncategory = " << d.category << "\nfaces =";
             for (auto& t : d.faces) f << ' ' << (t.empty() ? "-" : t);
@@ -113,6 +113,7 @@ bool Library::load(BlockRegistry& r, std::string* report) {
         else if (k == "waves") { d.waves = yes(v); seenWaves = true; }
         else if (k == "shine") { d.shine = std::max(0.f, std::min(1.f, (float)std::atof(v.c_str()))); seenShine = true; }
         else if (k == "mirror") d.mirror = yes(v);
+        else if (k == "texture_turns") d.texTurns = yes(v);
         else if (k == "light_color") { std::string h = v; if (!h.empty() && h[0] == '#') h.erase(0, 1); d.lightColor = (uint32_t)std::strtoul(h.c_str(), nullptr, 16) & 0xFFFFFF; }
         else if (k == "faces") {
             std::istringstream ss(v); std::vector<std::string> n; std::string t; while (ss >> t) n.push_back(t == "-" ? "" : t);

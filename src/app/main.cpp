@@ -2951,11 +2951,12 @@ struct App {
         dl->AddCallback(PointSampling, nullptr);
         int cur = -1;
         for (const T& e : list) {
-            int f = faceOfNormal(e.t->fn), layer = d.tex[f];
+            int f = faceOfNormal(e.t->fn), tf0; float u0, v0; turnedTexture(rotOf(v), d.texTurns, e.t->p[0][0], e.t->p[0][1], e.t->p[0][2], f, tf0, u0, v0);
+            int layer = d.tex[tf0];   // (a turned block's textures turn with it)
             if (layer != cur) { if (cur >= 0) dl->PopTexture(); dl->PushTexture(Icon(layer)); cur = layer; }
             dl->PrimReserve(3, 3);
             for (int k = 0; k < 3; k++) {
-                float u, vv; faceUV(e.t->p[k][0], e.t->p[k][1], e.t->p[k][2], f, u, vv);
+                float u, vv; int tf; turnedTexture(rotOf(v), d.texTurns, e.t->p[k][0], e.t->p[k][1], e.t->p[k][2], f, tf, u, vv);
                 float n[3] = { e.t->n[k][0], e.t->n[k][1], e.t->n[k][2] }; float l = normalShade(n);
                 ImU32 col = IM_COL32((int)(255 * l), (int)(255 * l), (int)(255 * l), 255);
                 dl->PrimVtx(proj(e.t->p[k]), ImVec2(u, vv), col);
@@ -3511,6 +3512,8 @@ struct App {
         Prop("Sways in the wind"); ImGui::Checkbox("##waves", &draft.waves);
         Prop("Shininess"); ImGui::SliderFloat("##shine", &draft.shine, 0, 1, draft.shine <= 0 ? "matt" : "%.2f");
         Prop("Mirror"); ImGui::Checkbox("##mirror", &draft.mirror);
+        Prop("Textures turn with it"); ImGui::Checkbox("##texturns", &draft.texTurns);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("On: a turned block (R while placing) turns its textures too: a log on its side shows its rings at the ends.\nOff: the textures stay lined up with the world (grass stays on top).");
         if (draft.shape != Shape::Cube) Hint(draft.shape == Shape::Cross ? "Stands in the middle of its block. You walk through it." : "Sticks to the side of the block you click on. You walk through it.");
 
         ImGui::Separator();
@@ -8110,6 +8113,43 @@ struct App {
                 scanLib = keepLib;
                 objects.erase(std::remove_if(objects.begin(), objects.end(), [&](const WorldObject& o) { return o.id == tm.id; }), objects.end()); RebuildSolids();
                 hud = keepHud; menu = keepMenu; items = keepItems;
+            }
+            {   // turned blocks turn their textures: a test block with an arrow (pointing up) on each face, in six turns; a log and grass tipped over
+                const WorldObject* d0 = nullptr; for (const WorldObject& o : objects) if (o.kind == ObjKind::Door) { d0 = &o; break; }
+                V3 base = d0 ? d0->pos : V3{ 26, 0, 40 }; int bx = (int)std::floor(base.x) - 14, by = (int)std::floor(base.y), bz = (int)std::floor(base.z) - 8;
+                static const uint32_t fc[6] = { 0xD03030, 0x702020, 0x30B040, 0x206028, 0x3060D0, 0x203470 };
+                BlockId test = AIR;
+                ChangeBlocks([&] {
+                    BlockDef d; d.name = "turn test"; d.category = "Test";
+                    for (int f = 0; f < 6; f++) {
+                        std::vector<uint8_t> px(16 * 16 * 4);
+                        for (int y = 0; y < 16; y++) for (int x = 0; x < 16; x++) {
+                            bool arrow = (y >= 2 && y <= 7 && std::abs(x - 7.5f) <= (y - 1.5f)) || (y > 7 && y <= 13 && x >= 6 && x <= 9);   // an arrow pointing to the top of the texture
+                            bool mark = x <= 2 && y >= 13;   // a dot in the bottom-left corner
+                            uint32_t c = arrow ? 0xFFFFFF : mark ? 0xFFE040 : fc[f]; uint8_t* q = &px[(y * 16 + x) * 4];
+                            q[0] = (c >> 16) & 255; q[1] = (c >> 8) & 255; q[2] = c & 255; q[3] = 255;
+                        }
+                        std::string n = "turntest_" + std::to_string(f); reg.setTexture(n, 16, 16, px); d.faces[f] = n;
+                    }
+                    test = reg.add(d);
+                });
+                int turns[6] = { 0, Shapes::turn(0, 1), Shapes::turn(Shapes::turn(0, 1), 1), Shapes::turn(0, 0), Shapes::turn(0, 2), Shapes::turn(Shapes::turn(0, 0), 1) };
+                for (int i = 0; i < 6; i++) world->set(bx + i * 2, by, bz, makeBlock(test, 0, turns[i]));
+                BlockId log = reg.find("log"), grass = reg.find("grass");
+                world->set(bx, by, bz + 3, log); world->set(bx + 2, by, bz + 3, makeBlock(log, 0, Shapes::turn(0, 0))); world->set(bx + 4, by, bz + 3, makeBlock(log, 0, Shapes::turn(0, 2)));
+                world->set(bx + 6, by, bz + 3, grass); world->set(bx + 8, by, bz + 3, makeBlock(grass, 0, Shapes::turn(0, 0))); world->set(bx + 10, by, bz + 3, makeBlock(grass, 0, Shapes::turn(0, 2)));
+                {   // and one placed the way you do it: R (turn) and Shift+R (tip) while holding it, then a click
+                    BlockId keepHeld = hotbar[hotSel]; hotbar[hotSel] = test; manualRot = true; manRot = Shapes::turn(Shapes::turn(0, 1), 2);
+                    player.feet = { bx + 12.5, (double)by, bz - 1.5 }; player.yaw = 0; player.pitch = -0.6; player.flying = true; hoverValid = world->raycast(player.eye(), player.forward(), 6.0, hover); UpdateTarget();
+                    if (targetValid) { world->set(tx, ty, tz, targetValue); Log("placed with R / Shift+R: rotation " + std::to_string(rotOf(targetValue)) + " at " + std::to_string(tx) + " " + std::to_string(ty) + " " + std::to_string(tz)); }
+                    else Log("placing with R: no target");
+                    manualRot = false; hotbar[hotSel] = keepHeld;
+                }
+                for (int i = 0; i < 6; i++) Log("turn test " + std::to_string(i) + ": rotation " + std::to_string(rotOf(world->get(bx + i * 2, by, bz))));
+                DemoShot sh{ "t", { bx + 6.0, by + 4.5, bz - 5.0 }, { bx + 6.0, by + 0.5, bz + 1.5 }, 12.f };
+                poseAt(sh); frames(8, "turned_block_textures");
+                DemoShot sh2{ "t2", { bx - 3.0, by + 3.5, bz + 6.5 }, { bx + 5.0, by + 0.5, bz + 1.0 }, 12.f };
+                poseAt(sh2); frames(4, "turned_block_textures_other_side");
             }
             poseAt(demoShots()[1]);
             StartPlay(false); play.health = game.player.maxHealth * 0.65f; play.hurtFlash = 0.25; toastT = 0;

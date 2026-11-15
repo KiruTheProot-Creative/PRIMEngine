@@ -49,6 +49,8 @@ public:
     static int rotFor(int fromA, int toA, int fromB, int toB);   // the rotation moving direction A to A' and B to B' (-1: none)
     static int turn(int r, int axis);                            // r, then a quarter turn around world axis 0=X 1=Y 2=Z
     static int sideAfter(int r, int side);                       // where a shape side ends up after rotation r
+    static int sideBefore(int r, int side);                      // which shape side ends up on `side` after rotation r
+    static void unturn(int r, float p[3]);                       // a point in the block (0..1) back to where it was before rotation r
     static int legacyPlaneRot(int facing);                       // M2 planes faced +X turned to `facing`
     // automatic rotation when placing: n = side clicked (its outward direction), look = the way you face (horizontal),
     // upperHalf = clicked on the upper half of a wall
@@ -74,10 +76,17 @@ inline int faceOfNormal(const float n[3]) {
     if (ax >= az) return n[0] >= 0 ? F_PX : F_NX;
     return n[2] >= 0 ? F_PZ : F_NZ;
 }
+// a turned block's textures turn with it: the face and point as they were before the turn, for the texture
+inline void turnedTexture(int rot, bool turns, float x, float y, float z, int face, int& texFace, float& u, float& v);
 // texture coordinates of a point inside the block on a face looking along `face` (textures stay world-aligned)
 inline void faceUV(float lx, float ly, float lz, int face, float& u, float& v) {
     int a = face / 2; bool pos = (face % 2) == 0;
     if (a == 1) { u = lx; v = lz; } else if (a == 0) { u = pos ? 1 - lz : lz; v = 1 - ly; } else { u = pos ? lx : 1 - lx; v = 1 - ly; }
+}
+inline void turnedTexture(int rot, bool turns, float x, float y, float z, int face, int& texFace, float& u, float& v) {
+    if (!turns || rot <= 0 || rot >= 24) { texFace = face; faceUV(x, y, z, face, u, v); return; }
+    float p[3] = { x, y, z }; Shapes::unturn(rot, p);
+    texFace = Shapes::sideBefore(rot, face); faceUV(p[0], p[1], p[2], texFace, u, v);
 }
 // Minecraft-style directional light: top 1.0, bottom 0.5, east/west 0.6, north/south 0.8
 inline float normalShade(const float n[3]) { return n[0] * n[0] * 0.6f + n[1] * n[1] * (n[1] > 0 ? 1.0f : 0.5f) + n[2] * n[2] * 0.8f; }

@@ -31,6 +31,11 @@ int indexOf(const Rot& q) {
 
 const Rot& Shapes::rot(int r) { return rots()[r >= 0 && r < 24 ? r : 0]; }
 int Shapes::sideAfter(int r, int side) { int o[3]; apply(rot(r), DIR[side], o); return faceOfDir(o); }
+int Shapes::sideBefore(int r, int side) { for (int s = 0; s < 6; s++) if (sideAfter(r, s) == side) return s; return side; }
+void Shapes::unturn(int r, float p[3]) {   // world = M * local around the middle: local = M^T * world
+    const Rot& m = rot(r); float d[3] = { p[0] - 0.5f, p[1] - 0.5f, p[2] - 0.5f };
+    for (int j = 0; j < 3; j++) p[j] = m.m[0][j] * d[0] + m.m[1][j] * d[1] + m.m[2][j] * d[2] + 0.5f;
+}
 int Shapes::rotFor(int fa, int ta, int fb, int tb) {
     for (int i = 0; i < 24; i++) if (sideAfter(i, fa) == ta && sideAfter(i, fb) == tb) return i;
     return -1;

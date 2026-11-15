@@ -155,7 +155,7 @@ void buildMesh(const BlockRegistry& reg, const MeshInput& in, ChunkMesh& out) {
         int shape = resolveShape(id, d);
         if (shape != Shapes::FULL) {
             // any other shape: prepared triangles, sides lying on the block border hidden like cube faces
-            const ShapeVariant& sv = shapes.variant(shape, rotOf(id)); bool two = shapes.info(shape).twoSided;
+            const int rot = rotOf(id); const ShapeVariant& sv = shapes.variant(shape, rot); bool two = shapes.info(shape).twoSided;
             int own[3]; if (d.light) d.lightLevels(own); else for (int c = 0; c < 3; c++) own[c] = lightAt(c, x, y, z);
             uint32_t litv = packLit(1.f, own, d.light > 0, d.mirror ? 1.f : d.shine, d.mirror);
             float wave = d.waves ? (shape == Shapes::CROSS || shape == Shapes::PLANE ? 2.f : 1.f) : 0.f;
@@ -163,11 +163,11 @@ void buildMesh(const BlockRegistry& reg, const MeshInput& in, ChunkMesh& out) {
                 if (sv.tris[g].empty()) continue;
                 if (g < 6) { int n[3] = { 0, 0, 0 }; n[g / 2] = (g % 2 == 0) ? 1 : -1; if (hidden(id, d, at(x + n[0], y + n[1], z + n[2]), g, sv.mask[g])) continue; }
                 for (const STri& t : sv.tris[g]) {
-                    int f = faceOfNormal(t.fn); float layer = (float)d.tex[f] + 16384.f * wave;
+                    int f = faceOfNormal(t.fn);
                     uint32_t base = (uint32_t)md.v.size();
                     for (int k = 0; k < 3; k++) {
-                        float u, v; faceUV(t.p[k][0], t.p[k][1], t.p[k][2], f, u, v);
-                        md.v.push_back({ x + t.p[k][0], y + t.p[k][1], z + t.p[k][2], u, v, layer, litv, packNormal(t.n[k][0], t.n[k][1], t.n[k][2], f) });
+                        float u, v; int tf; turnedTexture(rot, d.texTurns, t.p[k][0], t.p[k][1], t.p[k][2], f, tf, u, v);   // a turned block turns its textures too
+                        md.v.push_back({ x + t.p[k][0], y + t.p[k][1], z + t.p[k][2], u, v, (float)d.tex[tf] + 16384.f * wave, litv, packNormal(t.n[k][0], t.n[k][1], t.n[k][2], f) });
                     }
                     md.i.insert(md.i.end(), { base, base + 1, base + 2 });
                     if (two) md.i.insert(md.i.end(), { base, base + 2, base + 1 });
@@ -175,7 +175,7 @@ void buildMesh(const BlockRegistry& reg, const MeshInput& in, ChunkMesh& out) {
             }
             continue;
         }
-        int c[3] = { x, y, z };
+        int c[3] = { x, y, z }; const int cubeRot = rotOf(id);
         for (int f = 0; f < 6; f++) {
             int a = f / 2, sgn = (f % 2 == 0) ? 1 : -1, n[3] = { 0, 0, 0 }; n[a] = sgn;
             if (hidden(id, d, at(x + n[0], y + n[1], z + n[2]), f, ALL)) continue;
@@ -191,8 +191,8 @@ void buildMesh(const BlockRegistry& reg, const MeshInput& in, ChunkMesh& out) {
                 int o1 = occludes(at(s1[0], s1[1], s1[2])), o2 = occludes(at(s2[0], s2[1], s2[2])), oc = occludes(at(cc[0], cc[1], cc[2]));
                 ao[k] = (o1 && o2) ? 0 : 3 - (o1 + o2 + oc);
                 // texture coordinates inside the block: side faces keep "up" pointing up
-                float lx = p[0] - c[0], ly = p[1] - c[1], lz = p[2] - c[2], u, v;
-                if (a == 1) { u = lx; v = lz; } else if (a == 0) { u = sgn > 0 ? 1 - lz : lz; v = 1 - ly; } else { u = sgn > 0 ? lx : 1 - lx; v = 1 - ly; }
+                float lx = p[0] - c[0], ly = p[1] - c[1], lz = p[2] - c[2], u, v; int tf;
+                turnedTexture(cubeRot, d.texTurns, lx, ly, lz, f, tf, u, v);   // a turned cube turns its textures too (its top texture goes where its top went)
                 float shade = 0.4f + 0.6f * ao[k] / 3.f;   // corner darkening; the light itself comes from the sun in the shader
                 // smooth lamp light: average of the open cells touching this corner in front of the face
                 int bl[3] = { 0, 0, 0 };
@@ -203,7 +203,7 @@ void buildMesh(const BlockRegistry& reg, const MeshInput& in, ChunkMesh& out) {
                     if (cnt) for (int c = 0; c < 3; c++) bl[c] = (sum[c] + cnt / 2) / cnt;
                 }
                 if (d.light) d.lightLevels(bl);
-                q[k] = { p[0], p[1], p[2], u, v, (float)d.tex[f] + (d.waves ? 16384.f : 0.f), packLit(shade, bl, d.light > 0, d.mirror ? 1.f : d.shine, d.mirror), packNormal((float)n[0], (float)n[1], (float)n[2], f) };
+                q[k] = { p[0], p[1], p[2], u, v, (float)d.tex[tf] + (d.waves ? 16384.f : 0.f), packLit(shade, bl, d.light > 0, d.mirror ? 1.f : d.shine, d.mirror), packNormal((float)n[0], (float)n[1], (float)n[2], f) };
             }
             // split along the brighter diagonal, and wind each triangle clockwise when seen from outside
             uint32_t base = (uint32_t)md.v.size();

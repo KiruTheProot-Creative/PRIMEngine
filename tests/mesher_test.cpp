@@ -1,6 +1,8 @@
 // Mesher tests: hidden faces, glass, corner shading, winding, edges of the loaded area, worker threads.
 #include "../src/world/mesher.h"
+#include "../src/world/shapes.h"
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 using namespace mc;
 int fails = 0;
@@ -67,6 +69,30 @@ int main() {
         size_t threaded = 0; for (auto& g : got) threaded += g.opaque.i.size() + g.cutout.i.size();
         CHECK(threaded == direct && direct > 0, "%d chunks meshed on 4 threads match direct meshing (%zu indices)", jobs, threaded);
         printf("      direct meshing: %.3f ms per chunk\n", ms / jobs);
+    }
+    {   // turned blocks turn their textures: a log tipped over shows its rings (top texture) at the ends
+        BlockId log = reg.find("log"); const BlockDef& ld = reg.get(log);
+        int tip = Shapes::rotFor(F_PY, F_PX, F_PZ, F_PZ);   // its top now looks along +X
+        CHECK(tip > 0 && Shapes::sideBefore(tip, F_PX) == F_PY && Shapes::sideAfter(tip, Shapes::sideBefore(tip, F_NZ)) == F_NZ, "the turn and its way back");
+        bool back = true; for (int r = 0; r < 24; r++) for (float t : { 0.1f, 0.5f, 0.9f }) { float p[3] = { t, 0.3f, 0.8f }; float q[3]; const Rot& m = Shapes::rot(r);
+            for (int i = 0; i < 3; i++) q[i] = m.m[i][0] * (p[0] - 0.5f) + m.m[i][1] * (p[1] - 0.5f) + m.m[i][2] * (p[2] - 0.5f) + 0.5f; Shapes::unturn(r, q);
+            for (int i = 0; i < 3; i++) back &= std::fabs(q[i] - p[i]) < 1e-5f; }
+        CHECK(back, "every one of the 24 turns can be undone for a point in the block");
+        World t(reg); t.gen.kind = Generator::Void; for (int y = -1; y <= 1; y++) for (int z = -1; z <= 1; z++) for (int x = -1; x <= 1; x++) t.loadChunk({ x, y, z });
+        t.set(4, 4, 4, makeBlock(log, 0, tip));
+        ChunkMesh lm = meshOf(t, reg, { 0, 0, 0 }); int ends = 0, sides = 0, wrong = 0;
+        for (const Vtx& v : lm.opaque.v) { int f = faceOf(v), layer = (int)v.layer % 16384; bool end = f == F_PX || f == F_NX;
+            if (end) { ends += layer == ld.tex[F_PY] || layer == ld.tex[F_NY]; wrong += layer != ld.tex[F_PY] && layer != ld.tex[F_NY]; } else { sides += layer == ld.tex[F_PX]; wrong += layer != ld.tex[F_PX]; } }
+        CHECK(ld.tex[F_PY] != ld.tex[F_PX] && ends == 8 && sides == 16 && wrong == 0, "a tipped-over log: rings on its two ends, bark on the four sides (%d, %d, %d wrong)", ends, sides, wrong);
+        BlockDef nd = ld; nd.texTurns = false; reg.put(log, nd);
+        ChunkMesh wm = meshOf(t, reg, { 0, 0, 0 }); int topRings = 0; for (const Vtx& v : wm.opaque.v) if (faceOf(v) == F_PY && (int)v.layer % 16384 == ld.tex[F_PY]) topRings++;
+        CHECK(topRings == 4, "with 'textures turn' off they stay lined up with the world (rings on top)");
+        nd.texTurns = true; reg.put(log, nd);
+        t.set(4, 4, 4, makeBlock(log, 0, 0)); ChunkMesh um = meshOf(t, reg, { 0, 0, 0 }); int upRings = 0; for (const Vtx& v : um.opaque.v) if (faceOf(v) == F_PY && (int)v.layer % 16384 == ld.tex[F_PY]) upRings++;
+        CHECK(upRings == 4, "an unturned log: rings on top as before");
+        BlockId stairsLog = makeBlock(log, Shapes::get().find("stairs"), tip);
+        t.set(4, 4, 4, stairsLog); ChunkMesh sm = meshOf(t, reg, { 0, 0, 0 }); int px = 0; for (const Vtx& v : sm.opaque.v) if (faceOf(v) == F_PX && (int)v.layer % 16384 == ld.tex[F_PY]) px++;
+        CHECK(Shapes::get().find("stairs") > 0 && px > 0, "shapes turn their textures too (a tipped log stair shows rings toward +X)");
     }
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
     return fails ? 1 : 0;
