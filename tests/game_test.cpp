@@ -688,9 +688,13 @@ int main() {
         { HudLayout m = defaultHud(); HudElement* mm = nullptr; for (auto& e : m.planes[0].elements) if (e.kind == HudKind::Minimap) mm = &e;
           CHECK(mm != nullptr, "the starter visor has a minimap");
           CHECK(mm && !mm->onMap && mm->onPause && m.parts[0].onMap, "the starter minimap hides on the map screen; the helmet stays");
-          m.parts[1].onPause = false; m.planes[0].elements[0].onMap = false;
+          m.parts[1].onPause = false; m.planes[0].elements[0].onMap = false; m.pause.width = 1.3f; m.pause.color = 0xFF8800; m.pause.bendX = 0.5f;
           if (mm) { mm->mapRange = 31; mm->mapTilt = 70; mm->mapTurns = false; saveHud("/tmp/prim_hudmm.txt", m); HudLayout mb; loadHud("/tmp/prim_hudmm.txt", mb); const HudElement* b2 = nullptr; for (auto& e : mb.planes[0].elements) if (e.kind == HudKind::Minimap) b2 = &e;
             CHECK(b2 && b2->mapRange == 31 && b2->mapTilt == 70 && !b2->mapTurns && std::string(hudKindName(HudKind::Minimap)) == "Minimap", "the minimap saves and loads (range, tilt, turning)");
+            { std::ofstream of("/tmp/prim_hudold.txt"); of << "hud 1\nplane Visor 0 0 1 0 0 0 1.6 0.9 0.3 0.1 1 1 1 1\nel Mini 5 0.7 0.6 0.2 0.3 16777215 1 - - 0 - 100 1 1 0 1 2 1\n"; }
+            HudLayout old; loadHud("/tmp/prim_hudold.txt", old);
+            CHECK(old.planes.size() == 1 && old.planes[0].elements.size() == 1 && old.planes[0].elements[0].kind == HudKind::Minimap && !old.planes[0].elements[0].onMap, "a minimap from an older file hides on the map screen");
+            CHECK(mb.pause.width == 1.3f && mb.pause.color == 0xFF8800 && mb.pause.bendX == 0.5f, "the pause menu's look saves and loads");
             CHECK(!mb.parts[1].onPause && mb.parts[1].onMap && !mb.planes[0].elements[0].onMap && mb.planes[0].elements[0].onPause, "shown when paused / on the map: saved for elements and 3D parts"); } }
         MeshModel strut; CHECK(builtinShape("@visor-strut", strut) && strut.triangles() == 48, "the visor strut model builds");
     }

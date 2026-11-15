@@ -200,6 +200,10 @@ The sun's shadows use four shadow maps around you: the nearest covers about 13 b
 - **Free aim** (Weapons > Aiming, Wii style): the mouse moves a cursor; the cannon and the shots follow it; past the dead zone the camera turns, faster toward the edge (dead zone, turning speed, cursor speed, how much the cannon follows).
 - Later, for exporting whole games: WAV to OGG.
 
+## The pause menu: inside the helmet
+
+Esc while playing shows the menu on its own slightly bent pane inside the helmet, over everything else (the HUD elements and parts set to "stay when paused" stay around it). Pick with the mouse (it follows the bend), or W / S (arrow keys) and Enter. Player > HUD > Visor settings has its look: distance, height, width, bend, colour, how dark the glass behind it is and its glow; "Show it in the previews" puts it in the HUD previews while you tune it.
+
 ## The map (M): a hologram of what you have seen
 
 - The map is built only from blocks Samus has actually looked at: every frame a few hundred rays go out from her eyes, and the first solid block each one hits is charted (with a small patch of the same surface, so grazing looks are not speckled). The floor you walk on is charted too.

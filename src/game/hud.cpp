@@ -128,6 +128,7 @@ bool saveHud(const std::string& path, const HudLayout& h) {
     f << "hud 1\n";
     f << "sway " << h.sway.enabled << " " << h.sway.strength << " " << h.sway.smoothness << " " << h.sway.bob << " " << h.sway.tilt << " " << h.sway.land << "\n";
     f << "view " << h.fov << "\n";
+    f << "pause " << h.pause.dist << " " << h.pause.y << " " << h.pause.width << " " << h.pause.bendX << " " << h.pause.bendY << " " << h.pause.color << " " << h.pause.backing << " " << h.pause.bloom << "\n";
     for (const HudPlane& p : h.planes) {
         f << "plane " << esc(p.name) << " " << p.pos.x << " " << p.pos.y << " " << p.pos.z << " " << p.yaw << " " << p.pitch << " " << p.roll << " " << p.width << " " << p.height
           << " " << p.bendX << " " << p.bendY << " " << p.sway << " " << p.opacity << " " << p.glow << " " << p.visible << " " << p.bloom << " " << p.lightUp << "\n";
@@ -147,11 +148,12 @@ bool loadHud(const std::string& path, HudLayout& h) {
         std::istringstream l(line); std::string k; l >> k;
         if (k == "sway") { l >> h.sway.enabled >> h.sway.strength >> h.sway.smoothness >> h.sway.bob >> h.sway.tilt; float v; if (l >> v) h.sway.land = v; }
         else if (k == "view") { float v; if (l >> v) h.fov = std::clamp(v, 20.f, 150.f); }
+        else if (k == "pause") { PauseLook p; if (l >> p.dist >> p.y >> p.width >> p.bendX >> p.bendY >> p.color >> p.backing >> p.bloom) h.pause = p; }
         else if (k == "plane") { HudPlane p; std::string n; l >> n >> p.pos.x >> p.pos.y >> p.pos.z >> p.yaw >> p.pitch >> p.roll >> p.width >> p.height >> p.bendX >> p.bendY >> p.sway >> p.opacity >> p.glow >> p.visible; { float b, lu; if (l >> b >> lu) { p.bloom = b; p.lightUp = lu; } } p.name = unesc(n); h.planes.push_back(p); }
         else if (k == "el" && !h.planes.empty()) {
             HudElement e; std::string n, t, im, vn; int kind = 0, val = 0;
             l >> n >> kind >> e.x >> e.y >> e.w >> e.h >> e.color >> e.alpha >> t >> im >> val >> vn >> e.max >> e.segments >> e.textSize >> e.align >> e.filled >> e.thickness >> e.visible;
-            if (e.kind == HudKind::Minimap) e.onMap = false;   // (older files: the minimap hides on the map screen)
+            if (kind == (int)HudKind::Minimap) e.onMap = false;   // (older files: the minimap hides on the map screen)
             { float mr, mt; int tu; if (l >> mr >> mt >> tu) { e.mapRange = std::clamp(mr, 4.f, 200.f); e.mapTilt = std::clamp(mt, 10.f, 90.f); e.mapTurns = tu != 0; int op, om; if (l >> op >> om) { e.onPause = op != 0; e.onMap = om != 0; } } }
             e.name = unesc(n); e.text = unesc(t); e.image = unesc(im); e.valueName = unesc(vn);
             e.kind = (HudKind)std::clamp(kind, 0, (int)HudKind::COUNT - 1); e.value = (HudValue)std::clamp(val, 0, (int)HudValue::COUNT - 1);

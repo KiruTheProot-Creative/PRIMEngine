@@ -3258,31 +3258,150 @@ struct App {
             ImVec2 t2 = ImGui::CalcTextSize(b.c_str()); dl->AddText(ImVec2(vx + (W - t2.x) * 0.5f, vy + H * 0.38f + t1.y + 10), IM_COL32(255, 255, 255, 230), b.c_str());
         }
     }
-    void PauseMenu() {   // Esc while playing
-        Center(ImVec2(320 * settings.uiScale, 0));
-        ImGui::Begin("Paused###play", nullptr, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize);
-        ImGui::TextDisabled("%s", game.name.c_str());
-        if (ImGui::Button("Keep playing", ImVec2(-1, 0))) { paused = false; Capture(true); }
-        if (ImGui::Button("Start over", ImVec2(-1, 0))) { play.start(player, playRules, playSpawn, playYaw); paused = false; Capture(true); }
+    // ---- the pause menu (Esc while playing): drawn on its own bent plane in the helmet (hud.pause); the mouse is traced onto that plane
+    struct PauseItem { std::string label; int act = 0, arg = 0; bool enabled = true, current = false, header = false; };
+    enum { PA_KEEP, PA_RESTART, PA_BEAM, PA_MISSILE, PA_MAP, PA_SETTINGS, PA_STOP };
+    std::unique_ptr<ImDrawList> pauseList; HudTarget pauseTarget; bool pauseShown = false, pausePreview = false; int pauseSel = 0;
+    static constexpr int PAUSE_W = 1024;
+    std::vector<PauseItem> PauseItems() {
+        std::vector<PauseItem> v;
+        auto add = [&](const std::string& l, int a, int arg = 0, bool en = true, bool cur = false) { PauseItem it; it.label = l; it.act = a; it.arg = arg; it.enabled = en; it.current = cur; v.push_back(it); };
+        auto head = [&](const std::string& l) { PauseItem it; it.label = l; it.header = true; it.enabled = false; v.push_back(it); };
+        add("Keep playing", PA_KEEP); add("Start over", PA_RESTART);
         if (weapons.switchMode == 2 && !weapons.empty()) {   // like Super Metroid: the beam and missile are picked here
-            ImGui::SeparatorText("Beam");
-            for (int i = 0; i < (int)weapons.beams.size(); i++) {
-                const Beam& b = weapons.beams[i]; bool own = OwnsBeam(b); ImGui::PushID(i);
-                ImGui::BeginDisabled(!own); if (ImGui::Selectable(own ? b.name.c_str() : "???", weapState.current == i)) SwitchBeam(i); ImGui::EndDisabled(); ImGui::PopID();
-            }
+            head("Beam");
+            for (int i = 0; i < (int)weapons.beams.size(); i++) { const Beam& b = weapons.beams[i]; bool own = OwnsBeam(b); add(own ? b.name : "???", PA_BEAM, i, own, weapState.current == i); }
             if (weapons.missileTypes.size() > 1) {
-                ImGui::SeparatorText("Missiles");
-                for (int i = 0; i < (int)weapons.missileTypes.size(); i++) {
-                    const MissileType& m = weapons.missileTypes[i]; bool own = OwnsMissile(m); ImGui::PushID(100 + i);
-                    ImGui::BeginDisabled(!own); if (ImGui::Selectable(own ? m.name.c_str() : "???", weapState.missile == i)) SwitchMissile(i, true); ImGui::EndDisabled(); ImGui::PopID();
-                }
+                head("Missiles");
+                for (int i = 0; i < (int)weapons.missileTypes.size(); i++) { const MissileType& m = weapons.missileTypes[i]; bool own = OwnsMissile(m); add(own ? m.name : "???", PA_MISSILE, i, own, weapState.missile == i); }
             }
-            ImGui::Separator();
+            head("");
         }
-        if (ImGui::Button("Map (M)", ImVec2(-1, 0))) OpenMap();
-        if (ImGui::Button("Settings", ImVec2(-1, 0))) showSettings = true;
-        if (ImGui::Button("Stop playing (F5)", ImVec2(-1, 0))) StopPlay();
-        ImGui::End();
+        add("Map  (M)", PA_MAP); add("Settings", PA_SETTINGS); add("Stop playing  (F5)", PA_STOP);
+        return v;
+    }
+    // where each row sits on the menu's picture (PAUSE_W wide); returns the picture's height
+    int PauseLayout(const std::vector<PauseItem>& items, std::vector<ImVec4>& rows) {
+        float y = 168; rows.clear();
+        for (const PauseItem& it : items) { float h = it.header ? 50.f : 70.f; rows.push_back(ImVec4(70, y, PAUSE_W - 70.f, y + h - 8)); y += h; }
+        return (int)(y + 86);
+    }
+    HudPlane PausePlane(int H) const {
+        const PauseLook& L = hud.pause; HudPlane p; p.name = "Pause";
+        p.pos = { 0, L.y, std::max(0.2f, L.dist) }; p.width = std::max(0.1f, L.width); p.height = p.width * H / (float)PAUSE_W;
+        p.bendX = L.bendX; p.bendY = L.bendY; p.sway = 0.5f; p.opacity = 1; p.glow = false; p.bloom = L.bloom; p.lightUp = 0;
+        return p;
+    }
+    void BuildPauseList() {
+        pauseShown = (playMode && paused && !mapOpen && !showSettings) || (pausePreview && playerEdOpen && !playMode);
+        if (!pauseShown) return;
+        std::vector<PauseItem> items = PauseItems(); std::vector<ImVec4> rows; int H = PauseLayout(items, rows);
+        if (!pauseList) pauseList = std::make_unique<ImDrawList>(ImGui::GetDrawListSharedData());
+        ImDrawList* dl = pauseList.get(); dl->_ResetForNewFrame();
+        dl->PushClipRect(ImVec2(0, 0), ImVec2((float)PAUSE_W, (float)H)); dl->PushTexture(ImGui::GetIO().Fonts->TexRef);
+        const PauseLook& L = hud.pause; int r = (L.color >> 16) & 255, g = (L.color >> 8) & 255, b = L.color & 255;
+        auto C = [&](float a) { return IM_COL32(r, g, b, (int)(std::clamp(a, 0.f, 1.f) * 255)); };
+        ImFont* font = ImGui::GetFont(); float W = (float)PAUSE_W;
+        dl->AddRectFilled(ImVec2(6, 6), ImVec2(W - 6, H - 6.f), IM_COL32(3, 10, 18, (int)(std::clamp(L.backing, 0.f, 1.f) * 255)), 28);   // the dark glass behind
+        dl->AddRect(ImVec2(6, 6), ImVec2(W - 6, H - 6.f), C(0.75f), 28, 0, 4);
+        dl->AddLine(ImVec2(40, 18), ImVec2(160, 18), C(1), 6); dl->AddLine(ImVec2(W - 160, H - 18.f), ImVec2(W - 40, H - 18.f), C(1), 6);   // little accents
+        auto centered = [&](float size, float y, ImU32 col, const char* t) { ImVec2 ts = font->CalcTextSizeA(size, FLT_MAX, 0, t); dl->AddText(font, size, ImVec2((W - ts.x) * 0.5f, y), col, t); };
+        centered(78, 34, C(1), "PAUSED");
+        centered(32, 118, C(0.6f), game.name.c_str());
+        for (size_t i = 0; i < items.size(); i++) {
+            const PauseItem& it = items[i]; const ImVec4& q = rows[i];
+            if (it.header) {
+                float my = (q.y + q.w) * 0.5f;
+                if (it.label.empty()) { dl->AddLine(ImVec2(q.x + 40, my), ImVec2(q.z - 40, my), C(0.3f), 2); continue; }
+                ImVec2 ts = font->CalcTextSizeA(28, FLT_MAX, 0, it.label.c_str());
+                dl->AddText(font, 28, ImVec2((W - ts.x) * 0.5f, my - ts.y * 0.5f), C(0.65f), it.label.c_str());
+                dl->AddLine(ImVec2(q.x + 20, my), ImVec2((W - ts.x) * 0.5f - 20, my), C(0.35f), 2); dl->AddLine(ImVec2((W + ts.x) * 0.5f + 20, my), ImVec2(q.z - 20, my), C(0.35f), 2);
+                continue;
+            }
+            bool sel = (int)i == pauseSel;
+            if (sel) {   // the picked row: a lit bar
+                dl->AddRectFilled(ImVec2(q.x, q.y), ImVec2(q.z, q.w), C(0.22f), 14);
+                dl->AddRect(ImVec2(q.x, q.y), ImVec2(q.z, q.w), C(0.9f), 14, 0, 3);
+                dl->AddTriangleFilled(ImVec2(q.x + 22, q.y + 18), ImVec2(q.x + 22, q.w - 18), ImVec2(q.x + 42, (q.y + q.w) * 0.5f), C(1));
+            }
+            ImU32 tc = !it.enabled ? C(0.25f) : sel ? IM_COL32(235, 252, 255, 255) : C(0.85f);
+            ImVec2 ts = font->CalcTextSizeA(40, FLT_MAX, 0, it.label.c_str());
+            dl->AddText(font, 40, ImVec2((W - ts.x) * 0.5f, (q.y + q.w - ts.y) * 0.5f), tc, it.label.c_str());
+            if (it.current) dl->AddCircleFilled(ImVec2((W - ts.x) * 0.5f - 26, (q.y + q.w) * 0.5f), 8, C(1));   // the one you have now
+        }
+        centered(24, H - 66.f, C(0.45f), "Mouse or W / S to pick    Enter: choose    Esc: keep playing");
+        dl->PopTexture(); dl->PopClipRect();
+    }
+    void RenderPausePlane() {
+        if (!pauseShown || !pauseList) return;
+        std::vector<PauseItem> items = PauseItems(); std::vector<ImVec4> rows; int H = std::clamp(PauseLayout(items, rows), 32, 2048);
+        MakeTarget(pauseTarget, PAUSE_W, H, nullptr, true);
+        const float clear[4] = { 0, 0, 0, 0 };
+        ctx->OMSetRenderTargets(1, pauseTarget.rtv.GetAddressOf(), nullptr); ctx->ClearRenderTargetView(pauseTarget.rtv.Get(), clear);
+        ImDrawList* dl = pauseList.get();
+        if (dl->CmdBuffer.Size && dl->VtxBuffer.Size) {
+            ImDrawData dd; dd.Valid = true; dd.CmdLists.push_back(dl); dd.TotalVtxCount = dl->VtxBuffer.Size; dd.TotalIdxCount = dl->IdxBuffer.Size;
+            dd.DisplayPos = ImVec2(0, 0); dd.DisplaySize = ImVec2((float)PAUSE_W, (float)H); dd.FramebufferScale = ImVec2(1, 1); dd.Textures = nullptr;
+            ImGui_ImplDX11_RenderDrawData(&dd);
+        }
+        ctx->OMSetRenderTargets(0, nullptr, nullptr); ctx->GenerateMips(pauseTarget.srv.Get());
+    }
+    // a point on the menu's picture -> where it shows on screen (pixels in the 3D view)
+    ImVec2 PauseToScreen(const HudPlane& p, float u, float w) const {
+        V3 q = hudSway.apply(planePoint(p, u, w), p.sway);
+        XMVECTOR v = XMVector3TransformCoord(XMVectorSet((float)q.x, (float)q.y, (float)q.z, 1), HudProj((float)rw / std::max(1, rh)));
+        return ImVec2((XMVectorGetX(v) * 0.5f + 0.5f) * rw, (0.5f - XMVectorGetY(v) * 0.5f) * rh);
+    }
+    // the mouse (pixels in the 3D view) -> which row it is over (-1: none), by finding it on the bent plane
+    int PauseHit(ImVec2 m) const {
+        std::vector<PauseItem> items = const_cast<App*>(this)->PauseItems(); std::vector<ImVec4> rows; int H = const_cast<App*>(this)->PauseLayout(items, rows);
+        HudPlane p = PausePlane(H); const int GX = 40, GY = 24;
+        std::vector<ImVec2> sp((GX + 1) * (GY + 1));
+        for (int y = 0; y <= GY; y++) for (int x = 0; x <= GX; x++) sp[y * (GX + 1) + x] = PauseToScreen(p, (float)x / GX, (float)y / GY);
+        auto tri = [&](ImVec2 a, ImVec2 b, ImVec2 c, ImVec2 ua, ImVec2 ub, ImVec2 uc, ImVec2& out) {
+            float d = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y); if (std::fabs(d) < 1e-6f) return false;
+            float l1 = ((b.y - c.y) * (m.x - c.x) + (c.x - b.x) * (m.y - c.y)) / d, l2 = ((c.y - a.y) * (m.x - c.x) + (a.x - c.x) * (m.y - c.y)) / d, l3 = 1 - l1 - l2;
+            if (l1 < 0 || l2 < 0 || l3 < 0) return false;
+            out = ImVec2(ua.x * l1 + ub.x * l2 + uc.x * l3, ua.y * l1 + ub.y * l2 + uc.y * l3); return true;
+        };
+        for (int y = 0; y < GY; y++) for (int x = 0; x < GX; x++) {
+            ImVec2 a = sp[y * (GX + 1) + x], b = sp[y * (GX + 1) + x + 1], c = sp[(y + 1) * (GX + 1) + x + 1], d = sp[(y + 1) * (GX + 1) + x];
+            ImVec2 ua((float)x / GX, (float)y / GY), ub((float)(x + 1) / GX, (float)y / GY), uc((float)(x + 1) / GX, (float)(y + 1) / GY), ud((float)x / GX, (float)(y + 1) / GY), uv;
+            if (tri(a, b, c, ua, ub, uc, uv) || tri(a, c, d, ua, uc, ud, uv)) {
+                float px = uv.x * PAUSE_W, py = uv.y * H;
+                for (size_t i = 0; i < rows.size(); i++) if (!items[i].header && items[i].enabled && px >= rows[i].x && px <= rows[i].z && py >= rows[i].y && py <= rows[i].w) return (int)i;
+                return -1;
+            }
+        }
+        return -1;
+    }
+    void PauseChoose(const PauseItem& it) {
+        switch (it.act) {
+        case PA_KEEP: paused = false; Capture(true); break;
+        case PA_RESTART: play.start(player, playRules, playSpawn, playYaw); paused = false; Capture(true); break;
+        case PA_BEAM: SwitchBeam(it.arg); break;
+        case PA_MISSILE: SwitchMissile(it.arg, true); break;
+        case PA_MAP: OpenMap(); break;
+        case PA_SETTINGS: showSettings = true; break;
+        case PA_STOP: StopPlay(); break;
+        }
+    }
+    void PauseMenu() {   // Esc while playing: picking on the plane (it is drawn by BuildPauseList / DrawHudScene)
+        std::vector<PauseItem> items = PauseItems(); int n = (int)items.size();
+        auto ok = [&](int i) { return i >= 0 && i < n && !items[i].header && items[i].enabled; };
+        if (!ok(pauseSel)) { pauseSel = 0; while (pauseSel < n && !ok(pauseSel)) pauseSel++; }
+        auto step = [&](int d) { int i = pauseSel; for (int k = 0; k < n; k++) { i = (i + d + n) % n; if (ok(i)) { pauseSel = i; return; } } };
+        if (ImGui::IsKeyPressed(ImGuiKey_UpArrow) || ImGui::IsKeyPressed(ImGuiKey_W)) step(-1);
+        if (ImGui::IsKeyPressed(ImGuiKey_DownArrow) || ImGui::IsKeyPressed(ImGuiKey_S)) step(1);
+        ImGuiIO& io = ImGui::GetIO();
+        if (!io.WantCaptureMouse) {
+            int hit = PauseHit(ImVec2(io.MousePos.x - vx, io.MousePos.y - vy));
+            static ImVec2 lastMouse(-1, -1);
+            if (hit >= 0 && (io.MousePos.x != lastMouse.x || io.MousePos.y != lastMouse.y)) pauseSel = hit;   // the mouse picks only when it moves (the keys can pick too)
+            lastMouse = io.MousePos;
+            if (hit >= 0 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) { pauseSel = hit; PauseChoose(items[hit]); return; }
+        }
+        if ((ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter) || ImGui::IsKeyPressed(ImGuiKey_Space)) && ok(pauseSel)) PauseChoose(items[pauseSel]);
     }
     // ---- blocks & textures window (E in game, "Blocks & textures" on the title screen)
     float GridChildWidth(float s, int cols) { ImGuiStyle& st = ImGui::GetStyle(); return cols * (s + st.ItemSpacing.x) + st.ScrollbarSize + st.WindowPadding.x * 2; }
@@ -4090,23 +4209,27 @@ struct App {
                 }
             }
         };
+        auto drawPlane = [&](const HudPlane& p, ID3D11ShaderResourceView* srv) {
+            D3D11_MAPPED_SUBRESOURCE m; if (FAILED(ctx->Map(vbHud.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) return;
+            HVtx* v = (HVtx*)m.pData; int n = 0;
+            auto put = [&](int gx, int gy) { float u = (float)gx / HUD_GX, w = (float)gy / HUD_GY; V3 q = sw.apply(planePoint(p, u, w), p.sway); v[n++] = { { (float)q.x, (float)q.y, (float)q.z }, { u, w } }; };
+            for (int gy = 0; gy < HUD_GY; gy++) for (int gx = 0; gx < HUD_GX; gx++) { put(gx, gy); put(gx + 1, gy); put(gx + 1, gy + 1); put(gx, gy); put(gx + 1, gy + 1); put(gx, gy + 1); }
+            ctx->Unmap(vbHud.Get(), 0);
+            PreviewCB pp = pc; pp.light[0] = std::clamp(p.opacity, 0.f, 1.f); pp.light[1] = std::clamp(p.bloom, 0.f, 3.f) * (settings.hudGlow ? 1.f : 0.f); ctx->UpdateSubresource(cbPreview.Get(), 0, nullptr, &pp, 0, 0);
+            ctx->OMSetBlendState(p.glow ? bsAdd.Get() : bsPremul.Get(), nullptr, 0xFFFFFFFF);
+            UINT stride = sizeof(HVtx), off = 0; ctx->IASetVertexBuffers(0, 1, vbHud.GetAddressOf(), &stride, &off);
+            ctx->PSSetShaderResources(0, 1, &srv);
+            ctx->Draw(n, 0);
+        };
         auto drawPlanes = [&] {   // the farthest first; they do not hide each other, but parts in front of them do
             std::vector<int> order; for (int i = 0; i < (int)hud.planes.size() && i < (int)hudTargets.size(); i++) if (hud.planes[i].visible && hudTargets[i].srv) order.push_back(i);
             std::sort(order.begin(), order.end(), [&](int a, int b) { return hud.planes[a].pos.z > hud.planes[b].pos.z; });
             ctx->IASetInputLayout(layoutHud.Get()); ctx->VSSetShader(vsHud.Get(), nullptr, 0); ctx->PSSetShader(psHud.Get(), nullptr, 0);
             ctx->PSSetSamplers(3, 1, sampClamp.GetAddressOf()); ctx->OMSetDepthStencilState(dsTestOnly.Get(), 0); ctx->RSSetState(rsNoCull.Get());
-            for (int i : order) {
-                const HudPlane& p = hud.planes[i];
-                D3D11_MAPPED_SUBRESOURCE m; if (FAILED(ctx->Map(vbHud.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) continue;
-                HVtx* v = (HVtx*)m.pData; int n = 0;
-                auto put = [&](int gx, int gy) { float u = (float)gx / HUD_GX, w = (float)gy / HUD_GY; V3 q = sw.apply(planePoint(p, u, w), p.sway); v[n++] = { { (float)q.x, (float)q.y, (float)q.z }, { u, w } }; };
-                for (int gy = 0; gy < HUD_GY; gy++) for (int gx = 0; gx < HUD_GX; gx++) { put(gx, gy); put(gx + 1, gy); put(gx + 1, gy + 1); put(gx, gy); put(gx + 1, gy + 1); put(gx, gy + 1); }
-                ctx->Unmap(vbHud.Get(), 0);
-                PreviewCB pp = pc; pp.light[0] = std::clamp(p.opacity, 0.f, 1.f); pp.light[1] = std::clamp(p.bloom, 0.f, 3.f) * (settings.hudGlow ? 1.f : 0.f); ctx->UpdateSubresource(cbPreview.Get(), 0, nullptr, &pp, 0, 0);
-                ctx->OMSetBlendState(p.glow ? bsAdd.Get() : bsPremul.Get(), nullptr, 0xFFFFFFFF);
-                UINT stride = sizeof(HVtx), off = 0; ctx->IASetVertexBuffers(0, 1, vbHud.GetAddressOf(), &stride, &off);
-                ctx->PSSetShaderResources(0, 1, hudTargets[i].srv.GetAddressOf());
-                ctx->Draw(n, 0);
+            for (int i : order) drawPlane(hud.planes[i], hudTargets[i].srv.Get());
+            if (pauseShown && pauseTarget.srv && (!editor || pausePreview)) {   // the pause menu: on top of everything in the helmet
+                std::vector<PauseItem> items = PauseItems(); std::vector<ImVec4> rows; HudPlane pp = PausePlane(PauseLayout(items, rows));
+                ctx->OMSetDepthStencilState(dsOff.Get(), 0); drawPlane(pp, pauseTarget.srv.Get());
             }
             ID3D11ShaderResourceView* none = nullptr; ctx->PSSetShaderResources(0, 1, &none);
         };
@@ -4182,7 +4305,7 @@ struct App {
     XMMATRIX HudProj(float aspect) const { return XMMatrixPerspectiveFovLH(XMConvertToRadians(hud.fov), aspect, 0.01f, 60.f); }   // its own view angle: the HUD keeps its place whatever the player's field of view
     // Play mode: the HUD over the finished picture
     void DrawHudInGame(ID3D11RenderTargetView* out) {
-        if ((hud.empty() && weapons.empty()) || !hudListsReady) return;
+        if (!pauseShown && ((hud.empty() && weapons.empty()) || !hudListsReady)) return;   // (the pause menu is drawn here too)
         ctx->OMSetRenderTargets(1, &out, dsv.Get()); ctx->ClearDepthStencilView(dsv.Get(), D3D11_CLEAR_DEPTH, 1.f, 0);
         D3D11_VIEWPORT v{ 0, 0, (float)rw, (float)rh, 0, 1 }; ctx->RSSetViewports(1, &v);
         DrawHudScene(HudProj((float)rw / rh), hudSway, false, dsv.Get());
@@ -4354,6 +4477,19 @@ struct App {
             ImGui::SeparatorText("View");
             Prop("HUD view angle"); ch |= ImGui::SliderFloat("##hfov", &hud.fov, 40, 120, "%.0f deg");
             Hint("The HUD is laid out for this view angle and always stays where you put it on the screen, whatever field of view the player picks in the settings.");
+            ImGui::SeparatorText("Pause menu");
+            PauseLook& L = hud.pause;
+            Prop("Show it in the previews"); ImGui::Checkbox("##pzprev", &pausePreview);
+            Prop("Distance"); ch |= ImGui::SliderFloat("##pzd", &L.dist, 0.3f, 3, "%.2f");
+            Prop("Up / down"); ch |= ImGui::SliderFloat("##pzy", &L.y, -1, 1, "%.2f");
+            Prop("Width"); ch |= ImGui::SliderFloat("##pzw", &L.width, 0.2f, 3, "%.2f");
+            Prop("Bend side to side"); ch |= ImGui::SliderFloat("##pzbx", &L.bendX, 0, 1, "%.2f");
+            Prop("Bend top to bottom"); ch |= ImGui::SliderFloat("##pzby", &L.bendY, 0, 1, "%.2f");
+            Prop("Colour"); { float c[3] = { ((L.color >> 16) & 255) / 255.f, ((L.color >> 8) & 255) / 255.f, (L.color & 255) / 255.f };
+              if (ImGui::ColorEdit3("##pzc", c)) { L.color = ((uint32_t)(c[0] * 255 + 0.5f) << 16) | ((uint32_t)(c[1] * 255 + 0.5f) << 8) | (uint32_t)(c[2] * 255 + 0.5f); ch = true; } }
+            Prop("Dark glass behind"); ch |= ImGui::SliderFloat("##pzbk", &L.backing, 0, 1, "%.2f");
+            Prop("Glow"); ch |= ImGui::SliderFloat("##pzbl", &L.bloom, 0, 2, "%.2f");
+            Hint("Esc while playing: the menu shows on its own bent pane inside the helmet, over everything. Pick with the mouse (it follows the bend) or W / S and Enter.");
         } else if (hudSel == 1) {
             HudPlane& p = hud.planes[hudPlane];
             ImGui::SeparatorText("Plane");
@@ -7231,6 +7367,13 @@ struct App {
                     Log("minimap: " + std::to_string(miniDW) + " x " + std::to_string(miniDH) + " pixels; map " + std::to_string(Seen().total) + " blocks, " + std::to_string(Seen().mineTotal) + " seen yourself");
                     for (auto& pl : hud.planes) for (auto& el : pl.elements) if (el.kind == HudKind::Minimap) { el.mapTilt = 55; el.mapRange = 22; el.onPause = false; }
                     paused = true; Capture(false); frames(3, "pause_menu_visor_stays");   // paused: the visor stays, the minimap (set not to) does not
+                    {   // the mouse on the bent pause plane: the middle of each row must find that row
+                        std::vector<PauseItem> items = PauseItems(); std::vector<ImVec4> rows; int H = PauseLayout(items, rows); HudPlane pp = PausePlane(H); int good = 0, all = 0;
+                        for (int i = 0; i < (int)items.size(); i++) if (!items[i].header) { all++; ImVec2 c = PauseToScreen(pp, (rows[i].x + rows[i].z) * 0.5f / PAUSE_W, (rows[i].y + rows[i].w) * 0.5f / H); if (PauseHit(c) == i) good++; }
+                        Log("pause menu: the mouse finds " + std::to_string(good) + " of " + std::to_string(all) + " rows on the bent plane; outside it: " + std::to_string(PauseHit(ImVec2(3, 3))));
+                        for (int i = 0; i < (int)items.size(); i++) if (items[i].act == PA_MAP) pauseSel = i;
+                        frames(2, "pause_menu_map_picked");
+                    }
                     paused = false;
                     hud = keepHud;
                 }
@@ -7292,10 +7435,10 @@ struct App {
         }
         if (showSettings) SettingsWindow();
         Popups();
-        BuildHudLists();
+        BuildHudLists(); BuildPauseList();
         ImGui::Render();
         RenderMinimap();
-        RenderHudPlanes();
+        RenderHudPlanes(); RenderPausePlane();
 
         const float bg[4] = { 0.10f, 0.11f, 0.13f, 1 };
         if (screen == Screen::Game && rw > 0 && mapOpen && !ev) { RenderMap(); RenderMapScreen(backRTV.Get()); }   // the map screen: the map instead of the world, the visor over it

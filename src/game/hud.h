@@ -69,7 +69,16 @@ struct HudSwaySettings {
     float land = 1;                                     // landing: dips and shakes, more the faster you fall
 };
 
+struct PauseLook {   // the pause menu: on its own bent plane in the helmet
+    float dist = 0.85f, y = 0.0f, width = 0.95f;        // how far in front (camera space), up/down, how wide (blocks)
+    float bendX = 0.38f, bendY = 0.22f;                 // like a plane's bend
+    uint32_t color = 0x6CF0FF;                          // its light (text, lines, the picked row)
+    float backing = 0.55f;                              // how dark the panel behind the text is (0: none)
+    float bloom = 0.7f;
+};
+
 struct HudLayout {
+    PauseLook pause;
     std::vector<HudPlane> planes;
     std::vector<HudPart> parts;
     HudSwaySettings sway;
