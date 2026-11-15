@@ -685,6 +685,10 @@ int main() {
         CHECK(back.planes.size() == 1 && back.planes[0].elements.size() == h.planes[0].elements.size() && back.parts.size() == 2 && back.parts[1].mirror
               && back.sway.strength == 1.7f && back.sway.land == 0.4f && back.fov == 85 && back.planes[0].elements[1].text == "E N E R G Y {value}" && back.parts[0].name == "Strut % left"
               && back.planes[0].elements[3].valueName == "Missile" && back.planes[0].bendX == h.planes[0].bendX, "the HUD saves and loads");
+        { HudLayout m = defaultHud(); HudElement* mm = nullptr; for (auto& e : m.planes[0].elements) if (e.kind == HudKind::Minimap) mm = &e;
+          CHECK(mm != nullptr, "the starter visor has a minimap");
+          if (mm) { mm->mapRange = 31; mm->mapTilt = 70; mm->mapTurns = false; saveHud("/tmp/prim_hudmm.txt", m); HudLayout mb; loadHud("/tmp/prim_hudmm.txt", mb); const HudElement* b2 = nullptr; for (auto& e : mb.planes[0].elements) if (e.kind == HudKind::Minimap) b2 = &e;
+            CHECK(b2 && b2->mapRange == 31 && b2->mapTilt == 70 && !b2->mapTurns && std::string(hudKindName(HudKind::Minimap)) == "Minimap", "the minimap saves and loads (range, tilt, turning)"); } }
         MeshModel strut; CHECK(builtinShape("@visor-strut", strut) && strut.triangles() == 48, "the visor strut model builds");
     }
 
@@ -910,9 +914,16 @@ int main() {
         bool openFaces = true; for (auto& p : q) { int x = (int)std::floor((p.p[0][0] + p.p[2][0]) / 2 - p.n[0] * 0.5), y = (int)std::floor((p.p[0][1] + p.p[2][1]) / 2 - p.n[1] * 0.5), z = (int)std::floor((p.p[0][2] + p.p[2][2]) / 2 - p.n[2] * 0.5); openFaces &= w.get(x + (int)p.n[0], y + (int)p.n[1], z + (int)p.n[2]) == AIR; }
         CHECK(openFaces, "every panel faces the open air");
         CHECK(canSee(w, eye, { 8.5, 4.5, 0.5 }, 40) && !canSee(w, eye, { 12.5, 4.5, 0.5 }, 40) && !canSee(w, eye, { 8.5, 4.5, 0.5 }, 5), "a door in front of the wall can be seen; one behind it (or too far) can not");
-        cam.doors.insert(42);
+        CHECK(cam.mineTotal == 0 && !cam.mine(10, 4, 0), "what a map camera sees is downloaded, not yours");
+        { bool allDown = true; for (auto& p : q) allDown &= !p.mine; CHECK(allDown, "its panels are all 'downloaded'"); }
+        SeenMap mix = cam; mix.dirty.clear(); size_t before = mix.total;
+        CHECK(mix.mark(10, 4, 0, 5.0) && mix.total == before && mix.mineTotal == 1 && mix.mine(10, 4, 0) && mix.dirty.count(chunkOf(10, 4, 0)), "seeing a downloaded block yourself makes it yours (not new, but the map changes)");
+        CHECK(!mix.mark(10, 4, 0, 6.0) && !mix.mark(10, 4, 0, 6.0, false), "marking it again changes nothing");
+        { std::vector<MapQuad> q2 = mapPanels(w, mix, chunkOf(10, 4, 0)); int mineQ = 0; float mineArea = 0; for (auto& p : q2) if (p.mine) { mineQ++; mineArea += p.w * p.h; }
+          CHECK(mineQ >= 1 && mineArea <= 2.01f, "panels keep yours and downloaded apart (%d of yours, %.0f faces)", mineQ, mineArea); }
+        cam.doors.insert(42); cam.mark(10, 4, 0, 7.0);
         saveSeenMap("/tmp/prim_map.bin", cam); SeenMap back; loadSeenMap("/tmp/prim_map.bin", back);
-        CHECK(back.total == cam.total && back.seen(10, 4, 0) && back.dirty.size() == back.chunks.size() && back.doors.count(42), "the map saves and loads (seen doors too)");
+        CHECK(back.total == cam.total && back.seen(10, 4, 0) && back.dirty.size() == back.chunks.size() && back.doors.count(42) && back.mineTotal == 1 && back.mine(10, 4, 0) && !back.mine(10, 5, 0), "the map saves and loads (seen doors too, yours and downloaded apart)");
     }
 
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);

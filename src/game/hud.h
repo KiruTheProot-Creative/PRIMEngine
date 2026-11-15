@@ -10,7 +10,7 @@
 
 namespace mc {
 
-enum class HudKind { Panel, Bar, Text, Image, Circle, COUNT };
+enum class HudKind { Panel, Bar, Text, Image, Circle, Minimap, COUNT };
 enum class HudValue { None, Health, Counter, Key, Charge, COUNT };   // what a bar / text shows
 const char* hudKindName(HudKind k);
 const char* hudValueName(HudValue v);
@@ -29,6 +29,7 @@ struct HudElement {
     int align = 0;                                      // Text: 0 left, 1 middle, 2 right
     bool filled = true; float thickness = 2;            // Panel / Circle: filled or just the outline (pixels on a 1024-wide plane)
     bool visible = true;
+    float mapRange = 22, mapTilt = 55; bool mapTurns = true;   // Minimap: how far around you it shows (blocks), how steeply it looks down (90: straight down), turns with you
 };
 
 struct HudPlane {

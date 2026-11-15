@@ -206,6 +206,8 @@ The sun's shadows use four shadow maps around you: the nearest covers about 13 b
 - Press **M** in play (or **Map** in the pause menu). It is a 3D hologram: drag to turn it, right-drag to move it, the wheel zooms, **C** goes back to you, **M** or **Esc** closes it. You are the orange arrow.
 - **Doors** you have seen show as panels in the door's own colour and at the door's size.
 - **Map Stations** and **map cameras** (Tools > Objects > Add): both have an **ID**. Walking into a station wakes every map camera with the same ID; each looks all around from where it stands (as far as its "Sees" range) and charts everything it can see, doors included. Then the map opens and builds up. Map cameras are invisible in the game. A station with no camera of its ID looks around from itself. Each station works once per play.
+- Colours: **blue** is what you have seen yourself, **orange** (see-through, no fill) is what a Map Station showed you but you have not visited yet; it turns blue as soon as you see it. You are the pink arrow.
+- **Minimap on the HUD**: Player > HUD, add element > **Minimap** (the starter visor has one, bottom right). The same map, see-through, around you. Settings: how far around you it shows, how steeply it looks down (90: straight down), and whether it turns with you (you always point up) or keeps north up.
 - The map is kept per world for the play session (it starts empty each time you press Play).
 
 ## Morph ball, bombs, breakable blocks

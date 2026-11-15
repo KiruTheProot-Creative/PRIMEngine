@@ -7,7 +7,7 @@
 
 namespace mc {
 
-const char* hudKindName(HudKind k) { static const char* n[] = { "Panel", "Bar", "Text", "Image", "Circle" }; return n[std::clamp((int)k, 0, (int)HudKind::COUNT - 1)]; }
+const char* hudKindName(HudKind k) { static const char* n[] = { "Panel", "Bar", "Text", "Image", "Circle", "Minimap" }; return n[std::clamp((int)k, 0, (int)HudKind::COUNT - 1)]; }
 const char* hudValueName(HudValue v) { static const char* n[] = { "Nothing", "Health", "A counter", "Has a key", "Beam charge" }; return n[std::clamp((int)v, 0, (int)HudValue::COUNT - 1)]; }
 
 static const double DEG = 3.14159265358979 / 180;
@@ -96,6 +96,7 @@ HudLayout defaultHud() {
     HudElement mt = el("Missiles", HudKind::Text, 0.73f, 0.07f, 0.2f, 0.06f); mt.text = "{value}"; mt.value = HudValue::Counter; mt.valueName = "Missile"; mt.align = 2; mt.textSize = 1; v.elements.push_back(mt);
     HudElement ml = el("Missile label", HudKind::Text, 0.73f, 0.13f, 0.2f, 0.03f); ml.text = "MISSILES"; ml.align = 2; ml.textSize = 1; ml.alpha = 0.6f; v.elements.push_back(ml);
     HudElement radar = el("Radar", HudKind::Circle, 0.06f, 0.7f, 0.09f, 0.16f); radar.filled = false; radar.thickness = 3; radar.alpha = 0.6f; v.elements.push_back(radar);
+    HudElement mm = el("Minimap", HudKind::Minimap, 0.77f, 0.64f, 0.18f, 0.3f); mm.alpha = 0.9f; v.elements.push_back(mm);
     HudElement aim = el("Aim", HudKind::Circle, 0.49f, 0.482f, 0.02f, 0.036f); aim.filled = false; aim.alpha = 0.5f; v.elements.push_back(aim);
     h.planes.push_back(v);
     HudPart s; s.name = "Left strut"; s.model = "@visor-strut"; s.pos = { -0.62, -0.42, 0.55 }; s.roll = 18; s.yaw = -20; s.scale = 0.8;
@@ -114,7 +115,7 @@ V3 planeLight(const HudPlane& p) {
     V3 sum{ 0, 0, 0 }; if (!p.visible) return sum;
     for (const HudElement& e : p.elements) {
         if (!e.visible) continue;
-        double cover = e.kind == HudKind::Text ? 0.3 : (e.kind == HudKind::Panel || e.kind == HudKind::Circle) && !e.filled ? 0.15 : e.kind == HudKind::Circle ? 0.785 : 1.0;   // how much of its box is lit
+        double cover = e.kind == HudKind::Text ? 0.3 : (e.kind == HudKind::Panel || e.kind == HudKind::Circle) && !e.filled ? 0.15 : e.kind == HudKind::Circle ? 0.785 : e.kind == HudKind::Minimap ? 0.2 : 1.0;   // how much of its box is lit
         double k = std::clamp((double)e.w, 0.0, 1.0) * std::clamp((double)e.h, 0.0, 1.0) * cover * std::clamp((double)e.alpha, 0.0, 1.0);
         auto lin = [](uint32_t c, int sh) { return std::pow(((c >> sh) & 255) / 255.0, 2.2); };
         sum = sum + V3{ lin(e.color, 16), lin(e.color, 8), lin(e.color, 0) } * k;
@@ -132,7 +133,7 @@ bool saveHud(const std::string& path, const HudLayout& h) {
           << " " << p.bendX << " " << p.bendY << " " << p.sway << " " << p.opacity << " " << p.glow << " " << p.visible << " " << p.bloom << " " << p.lightUp << "\n";
         for (const HudElement& e : p.elements)
             f << "el " << esc(e.name) << " " << (int)e.kind << " " << e.x << " " << e.y << " " << e.w << " " << e.h << " " << e.color << " " << e.alpha << " " << esc(e.text) << " " << esc(e.image)
-              << " " << (int)e.value << " " << esc(e.valueName) << " " << e.max << " " << e.segments << " " << e.textSize << " " << e.align << " " << e.filled << " " << e.thickness << " " << e.visible << "\n";
+              << " " << (int)e.value << " " << esc(e.valueName) << " " << e.max << " " << e.segments << " " << e.textSize << " " << e.align << " " << e.filled << " " << e.thickness << " " << e.visible << " " << e.mapRange << " " << e.mapTilt << " " << e.mapTurns << "\n";
     }
     for (const HudPart& p : h.parts)
         f << "part " << esc(p.name) << " " << esc(p.model) << " " << p.pos.x << " " << p.pos.y << " " << p.pos.z << " " << p.yaw << " " << p.pitch << " " << p.roll << " " << p.scale
@@ -150,6 +151,7 @@ bool loadHud(const std::string& path, HudLayout& h) {
         else if (k == "el" && !h.planes.empty()) {
             HudElement e; std::string n, t, im, vn; int kind = 0, val = 0;
             l >> n >> kind >> e.x >> e.y >> e.w >> e.h >> e.color >> e.alpha >> t >> im >> val >> vn >> e.max >> e.segments >> e.textSize >> e.align >> e.filled >> e.thickness >> e.visible;
+            { float mr, mt; int tu; if (l >> mr >> mt >> tu) { e.mapRange = std::clamp(mr, 4.f, 200.f); e.mapTilt = std::clamp(mt, 10.f, 90.f); e.mapTurns = tu != 0; } }
             e.name = unesc(n); e.text = unesc(t); e.image = unesc(im); e.valueName = unesc(vn);
             e.kind = (HudKind)std::clamp(kind, 0, (int)HudKind::COUNT - 1); e.value = (HudValue)std::clamp(val, 0, (int)HudValue::COUNT - 1);
             h.planes.back().elements.push_back(e);

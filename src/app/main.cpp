@@ -193,7 +193,7 @@ struct App {
     float viewerYaw = 0.6f, viewerPitch = 0.35f, viewerDist = 8; ImVec2 viewerWant{ 0, 0 }; int viewerW = 0, viewerH = 0; V3 viewerEye{ 0, 0, 0 }; XMMATRIX viewerVP = XMMatrixIdentity();
     ComPtr<ID3D11RenderTargetView> viewerRTV; ComPtr<ID3D11ShaderResourceView> viewerSRV; ComPtr<ID3D11DepthStencilView> viewerDSV;
     ComPtr<ID3D11VertexShader> vsPreview; ComPtr<ID3D11PixelShader> psPreview; ComPtr<ID3D11Buffer> cbPreview;
-    ComPtr<ID3D11VertexShader> vsMap; ComPtr<ID3D11PixelShader> psMap; ComPtr<ID3D11InputLayout> layoutMap; ComPtr<ID3D11Buffer> cbMap;
+    ComPtr<ID3D11BlendState> bsPremul, bsNoColor; ComPtr<ID3D11VertexShader> vsMap; ComPtr<ID3D11PixelShader> psMap; ComPtr<ID3D11InputLayout> layoutMap; ComPtr<ID3D11Buffer> cbMap;
     std::vector<WorldObject> objects; uint32_t nextObjId = 1;
     std::string placing, selModel, newModelName; double placeYaw = 0, placeScale = 1; int movingObj = -1, dupFrom = -1; bool replaceWithObject = true;
     I3 selA{ 0, 0, 0 }, selB{ 0, 0, 0 }; int selStage = 0; BlockModel clipboard; bool hasClip = false;   // selection box (tool 2)
@@ -298,6 +298,8 @@ struct App {
         auto& rt = bd.RenderTarget[0]; rt.BlendEnable = TRUE; rt.SrcBlend = D3D11_BLEND_SRC_ALPHA; rt.DestBlend = D3D11_BLEND_INV_SRC_ALPHA; rt.BlendOp = D3D11_BLEND_OP_ADD;
         rt.SrcBlendAlpha = D3D11_BLEND_ONE; rt.DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA; rt.BlendOpAlpha = D3D11_BLEND_OP_ADD; HR(dev->CreateBlendState(&bd, &bsAlpha));
         rt.SrcBlend = rt.DestBlend = rt.SrcBlendAlpha = rt.DestBlendAlpha = D3D11_BLEND_ONE; HR(dev->CreateBlendState(&bd, &bsAdd));
+        rt.SrcBlend = rt.SrcBlendAlpha = D3D11_BLEND_ONE; rt.DestBlend = rt.DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA; HR(dev->CreateBlendState(&bd, &bsPremul));   // premultiplied pictures (the minimap on the HUD)
+        rt.BlendEnable = FALSE; rt.RenderTargetWriteMask = 0; HR(dev->CreateBlendState(&bd, &bsNoColor)); rt.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;   // depth only
         D3D11_SAMPLER_DESC sm{}; sm.Filter = D3D11_FILTER_MIN_MAG_POINT_MIP_LINEAR; sm.AddressU = sm.AddressV = sm.AddressW = D3D11_TEXTURE_ADDRESS_WRAP; sm.MaxLOD = D3D11_FLOAT32_MAX; HR(dev->CreateSamplerState(&sm, &sampBlocks));
         sm.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT; sm.AddressU = sm.AddressV = sm.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP; HR(dev->CreateSamplerState(&sm, &sampPoint));
         sm.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR; sm.AddressU = sm.AddressV = sm.AddressW = D3D11_TEXTURE_ADDRESS_WRAP; HR(dev->CreateSamplerState(&sm, &sampLinear));
@@ -3989,6 +3991,7 @@ struct App {
             break;
         }
         case HudKind::Image: if (ID3D11ShaderResourceView* s = HudImage(e.image)) dl->AddImage((ImTextureID)(intptr_t)s, p0, p1, ImVec2(0, 0), ImVec2(1, 1), col(1)); else dl->AddRect(p0, p1, col(0.5f)); break;
+        case HudKind::Minimap: DrawMinimapElement(dl, e, p0, p1, a); break;
         case HudKind::Circle: {
             ImVec2 c((p0.x + p1.x) * 0.5f, (p0.y + p1.y) * 0.5f); float r = std::min(p1.x - p0.x, p1.y - p0.y) * 0.5f;
             if (e.filled) dl->AddCircleFilled(c, r, col(1), 48); else dl->AddCircle(c, r - e.thickness * 0.5f, col(1), 48, e.thickness);
@@ -4266,6 +4269,7 @@ struct App {
         if (k == HudKind::Bar) { e.value = HudValue::Health; e.h = 0.025f; e.w = 0.3f; e.segments = 10; }
         if (k == HudKind::Image) { e.color = 0xFFFFFF; e.alpha = 1; e.w = 0.12f; e.h = 0.2f; auto f = HudImageFiles(); if (!f.empty()) e.image = f[0]; }
         if (k == HudKind::Circle) { e.w = 0.1f; e.h = 0.18f; e.filled = false; e.thickness = 3; }
+        if (k == HudKind::Minimap) { e.w = 0.18f; e.h = 0.3f; e.alpha = 0.9f; }
         hud.planes[hudPlane].elements.push_back(e); hudSel = 2; hudEl = (int)hud.planes[hudPlane].elements.size() - 1; SaveHud();
     }
     void HudList() {
@@ -4378,6 +4382,12 @@ struct App {
                 { int a = e.align; const char* an[] = { "Left", "Middle", "Right" }; Prop("Line up"); if (ImGui::Combo("##eal", &a, an, 3)) { e.align = a; ch = true; } }
             }
             if (e.kind == HudKind::Bar) { Prop("Pieces"); ch |= ImGui::SliderInt("##eseg", &e.segments, 1, 20); }
+            if (e.kind == HudKind::Minimap) {
+                Prop("Shows around you"); ch |= ImGui::SliderFloat("##emr", &e.mapRange, 6, 80, "%.0f blocks");
+                Prop("Looks down"); ch |= ImGui::SliderFloat("##emt", &e.mapTilt, 10, 90, "%.0f deg");
+                Prop("Turns with you"); ch |= ImGui::Checkbox("##emtu", &e.mapTurns);
+                Hint("The map (M) around you, see-through: blue what you have seen, orange what a Map Station showed you but you have not visited yet. Turning: you always point up. Not turning: north is up.");
+            }
             if (e.kind == HudKind::Panel || e.kind == HudKind::Circle) {
                 Prop("Filled"); ch |= ImGui::Checkbox("##ef", &e.filled);
                 if (!e.filled) { Prop("Line"); ch |= ImGui::SliderFloat("##eth", &e.thickness, 1, 16, "%.0f px"); }
@@ -4928,14 +4938,14 @@ struct App {
     // wakes every map camera with the same ID, and each looks all around from where it is. Seen doors show in their own
     // colour and size. The seen blocks are kept per world for this play session.
     struct MapVert { float p[3], n[3], uv[2], size[2], born, col[4]; };
-    struct MapGpuChunk { ComPtr<ID3D11Buffer> vb; UINT count = 0; };
+    struct MapGpuChunk { ComPtr<ID3D11Buffer> vb; UINT count = 0, mine = 0; };   // yours first, then the downloaded ones
     std::unordered_map<std::string, SeenMap> seenMaps;
     std::set<std::string> stationsUsed;
     std::unordered_map<I3, MapGpuChunk, I3Hash> mapGpu; std::string mapGpuWorld;
     ComPtr<ID3D11Buffer> mapMarks; UINT mapMarksCap = 0;
     HudTarget mapView; ComPtr<ID3D11DepthStencilView> mapDSV; int mapDW = 0, mapDH = 0; ImVec2 mapWant{ 0, 0 };
     bool mapOpen = false; float mapYaw = 0, mapPitch = 0.8f, mapDist = 40; V3 mapCenter{ 0, 0, 0 }; double mapOpenT = 0; uint32_t mapFrame = 0;
-    static constexpr uint32_t MAP_TINT = 0x3AC8FF;
+    static constexpr uint32_t MAP_TINT = 0x3AC8FF, MAP_DOWN = 0xFFB040, MAP_YOU = 0xFF4A6A;   // seen yourself, downloaded (not visited yet), you
     SeenMap& Seen() { return seenMaps[CurrentWorld()]; }
     double uiClock = 0;   // seconds since the start, also while paused (the map's fade-ins)
     double MapClock() const { return uiClock; }
@@ -4993,15 +5003,17 @@ struct App {
     void CloseMap() { if (!mapOpen) return; mapOpen = false; paused = false; Capture(true); }
     void BuildMapChunk(I3 cp, const SeenMap& m) {
         std::vector<MapQuad> qs = mapPanels(*world, m, cp);
-        MapGpuChunk& g = mapGpu[cp]; g.vb.Reset(); g.count = 0;
+        MapGpuChunk& g = mapGpu[cp]; g.vb.Reset(); g.count = g.mine = 0;
         if (qs.empty()) return;
-        float tint[3] = { ((MAP_TINT >> 16) & 255) / 255.f, ((MAP_TINT >> 8) & 255) / 255.f, (MAP_TINT & 255) / 255.f };
+        std::stable_partition(qs.begin(), qs.end(), [](const MapQuad& q) { return q.mine; });
         std::vector<MapVert> v; v.reserve(qs.size() * 6);
         static const int idx[6] = { 0, 1, 2, 0, 2, 3 };
         for (const MapQuad& q : qs) {
+            uint32_t tc = q.mine ? MAP_TINT : MAP_DOWN; float tint[3] = { ((tc >> 16) & 255) / 255.f, ((tc >> 8) & 255) / 255.f, (tc & 255) / 255.f };
             const float uv[4][2] = { { 0, 0 }, { q.w, 0 }, { q.w, q.h }, { 0, q.h } };
             for (int k : idx) { MapVert x{}; for (int j = 0; j < 3; j++) { x.p[j] = q.p[k][j] + q.n[j] * 0.002f; x.n[j] = q.n[j]; } x.uv[0] = uv[k][0]; x.uv[1] = uv[k][1]; x.size[0] = q.w; x.size[1] = q.h; x.born = q.born;
-                x.col[0] = tint[0]; x.col[1] = tint[1]; x.col[2] = tint[2]; x.col[3] = 0; v.push_back(x); }
+                x.col[0] = tint[0]; x.col[1] = tint[1]; x.col[2] = tint[2]; x.col[3] = q.mine ? 0.f : 0.25f; v.push_back(x); }
+            if (q.mine) g.mine += 6;
         }
         D3D11_BUFFER_DESC d{}; d.ByteWidth = (UINT)(v.size() * sizeof(MapVert)); d.Usage = D3D11_USAGE_IMMUTABLE; d.BindFlags = D3D11_BIND_VERTEX_BUFFER;
         D3D11_SUBRESOURCE_DATA sd{ v.data(), 0, 0 }; HR(dev->CreateBuffer(&d, &sd, &g.vb)); g.count = (UINT)v.size();
@@ -5017,14 +5029,17 @@ struct App {
         V3 n = Norm(cross(b - a, c - a)); float col[4] = { ((rgb >> 16) & 255) / 255.f, ((rgb >> 8) & 255) / 255.f, (rgb & 255) / 255.f, 2 };
         for (V3 p : { a, b, c }) { MapVert x{}; x.p[0] = (float)p.x; x.p[1] = (float)p.y; x.p[2] = (float)p.z; x.n[0] = (float)n.x; x.n[1] = (float)n.y; x.n[2] = (float)n.z; x.uv[0] = x.uv[1] = 1; x.size[0] = x.size[1] = 2; x.born = -100; for (int j = 0; j < 4; j++) x.col[j] = col[j]; v.push_back(x); }
     }
-    void RenderMap() {
-        if (!world || mapWant.x < 16 || mapWant.y < 16) return;
+    void UpdateMapGpu() {
         SeenMap& m = Seen();
         if (mapGpuWorld != CurrentWorld()) { mapGpu.clear(); mapGpuWorld = CurrentWorld(); for (auto& kv : m.chunks) m.dirty.insert(kv.first); }
-        for (auto it = m.dirty.begin(); it != m.dirty.end();) {   // build the panels of what changed (only chunks that are loaded: their open faces need the blocks around)
-            if (world->loaded(it->x * CS, it->y * CS, it->z * CS)) { BuildMapChunk(*it, m); it = m.dirty.erase(it); } else ++it;
+        int built = 0;
+        for (auto it = m.dirty.begin(); it != m.dirty.end() && built < 24;) {   // build the panels of what changed (only chunks that are loaded: their open faces need the blocks around)
+            if (world->loaded(it->x * CS, it->y * CS, it->z * CS)) { BuildMapChunk(*it, m); it = m.dirty.erase(it); built++; } else ++it;
         }
-        // the doors you have seen (their colour, their size) and you
+    }
+    // the doors you have seen (their colour, their size) and you: into the marks buffer; returns how many are doors (the rest is you)
+    UINT UploadMapMarks(UINT& total, double youSize = 1.1) {
+        SeenMap& m = Seen();
         std::vector<MapVert> marks;
         for (const WorldObject& o : objects) {
             if (o.kind != ObjKind::Door || !m.doors.count(o.id)) continue;
@@ -5033,9 +5048,9 @@ struct App {
         }
         UINT doorVerts = (UINT)marks.size();
         {   // you: an arrow pointing where you look, and a little pillar under it
-            V3 f{ std::sin(player.yaw), 0, std::cos(player.yaw) }, r{ f.z, 0, -f.x }, b = player.feet + V3{ 0, 0.15, 0 }; double s = 1.1;
+            V3 f{ std::sin(player.yaw), 0, std::cos(player.yaw) }, r{ f.z, 0, -f.x }, b = player.feet + V3{ 0, 0.15, 0 }; double s = youSize;
             V3 tip = b + f * (s * 1.1), l = b - f * (s * 0.7) - r * (s * 0.7), rr = b - f * (s * 0.7) + r * (s * 0.7), mid = b - f * (s * 0.3), top = b + V3{ 0, s * 0.45, 0 };
-            uint32_t col = 0xFF9A3A;
+            uint32_t col = MAP_YOU;
             MapMarkTri(marks, tip, l, top, col); MapMarkTri(marks, tip, top, rr, col); MapMarkTri(marks, l, mid, top, col); MapMarkTri(marks, mid, rr, top, col);
             MapMarkTri(marks, tip, mid, l, col); MapMarkTri(marks, tip, rr, mid, col);
         }
@@ -5045,6 +5060,11 @@ struct App {
             mapMarks.Reset(); HR(dev->CreateBuffer(&d, nullptr, &mapMarks));
         }
         { D3D11_MAPPED_SUBRESOURCE ms; if (SUCCEEDED(ctx->Map(mapMarks.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) { memcpy(ms.pData, marks.data(), markVerts * sizeof(MapVert)); ctx->Unmap(mapMarks.Get(), 0); } }
+        total = markVerts; return doorVerts;
+    }
+    void RenderMap() {
+        if (!world || mapWant.x < 16 || mapWant.y < 16) return;
+        UpdateMapGpu(); UINT markVerts = 0, doorVerts = UploadMapMarks(markVerts);
 
         int w = (int)mapWant.x, h = (int)mapWant.y; if (w != mapDW || h != mapDH) { MakeTarget(mapView, w, h, &mapDSV); mapDW = w; mapDH = h; }
         const float bg[4] = { 0.006f, 0.014f, 0.03f, 1 };
@@ -5060,13 +5080,15 @@ struct App {
         ctx->IASetInputLayout(layoutMap.Get()); ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         ctx->VSSetShader(vsMap.Get(), nullptr, 0); ctx->PSSetShader(psMap.Get(), nullptr, 0); ctx->RSSetState(rsNoCull.Get());
         UINT stride = sizeof(MapVert), off = 0;
-        auto drawPanels = [&]() { for (auto& kv : mapGpu) if (kv.second.count) { ctx->IASetVertexBuffers(0, 1, kv.second.vb.GetAddressOf(), &stride, &off); ctx->Draw(kv.second.count, 0); } };
-        for (int pass = 0; pass < 2; pass++) {   // solid (nearest surface wins), then every edge again faintly on top: you see through the walls a little
-            mc.mode[0] = (float)pass; ctx->UpdateSubresource(cbMap.Get(), 0, nullptr, &mc, 0, 0);
-            ctx->OMSetBlendState(pass ? bsAdd.Get() : bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(pass ? dsOff.Get() : dsOn.Get(), 0);
-            drawPanels();
-            if (doorVerts) { ctx->IASetVertexBuffers(0, 1, mapMarks.GetAddressOf(), &stride, &off); ctx->Draw(doorVerts, 0); }
-        }
+        auto drawPanels = [&](int which) {   // 0 yours, 1 downloaded, 2 all
+            for (auto& kv : mapGpu) { const MapGpuChunk& g = kv.second; UINT a = which == 1 ? g.mine : 0, b = which == 0 ? g.mine : g.count; if (b <= a) continue;
+                ctx->IASetVertexBuffers(0, 1, g.vb.GetAddressOf(), &stride, &off); ctx->Draw(b - a, a); }
+        };
+        auto drawDoors = [&]() { if (doorVerts) { ctx->IASetVertexBuffers(0, 1, mapMarks.GetAddressOf(), &stride, &off); ctx->Draw(doorVerts, 0); } };
+        auto state = [&](float mode, ID3D11BlendState* bs, ID3D11DepthStencilState* ds) { mc.mode[0] = mode; ctx->UpdateSubresource(cbMap.Get(), 0, nullptr, &mc, 0, 0); ctx->OMSetBlendState(bs, nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(ds, 0); };
+        state(0, bsOff.Get(), dsOn.Get()); drawPanels(0); drawDoors();          // yours: solid (the nearest surface wins)
+        state(0, bsAdd.Get(), dsTestOnly.Get()); drawPanels(1);                 // downloaded, not visited: see-through glow
+        state(1, bsAdd.Get(), dsOff.Get()); drawPanels(2); drawDoors();         // every edge again, faintly: you see through the walls a little
         mc.mode[0] = 0; ctx->UpdateSubresource(cbMap.Get(), 0, nullptr, &mc, 0, 0);   // you: always on top
         ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOff.Get(), 0);
         ctx->IASetVertexBuffers(0, 1, mapMarks.GetAddressOf(), &stride, &off); ctx->Draw(markVerts - doorVerts, doorVerts);
@@ -5093,13 +5115,60 @@ struct App {
         if (ImGui::IsItemHovered() && io.MouseWheel != 0) mapDist = std::clamp(mapDist * std::pow(0.88f, io.MouseWheel), 6.f, 400.f);
         float ui = settings.uiScale; const SeenMap& m = Seen();
         dl->AddText(ImGui::GetFont(), ImGui::GetFontSize() * 1.6f, ImVec2(p.x + 26 * ui, p.y + 20 * ui), IM_COL32(120, 220, 255, 255), "MAP");
-        char line[160]; snprintf(line, sizeof line, "%s  -  %zu blocks charted, %zu door(s)", CurrentWorld().c_str(), m.total, m.doors.size());
-        dl->AddText(ImVec2(p.x + 28 * ui, p.y + 20 * ui + ImGui::GetFontSize() * 1.8f), IM_COL32(150, 200, 230, 220), line);
+        char line[200]; snprintf(line, sizeof line, "%s  -  %zu blocks charted (%zu seen yourself), %zu door(s)", CurrentWorld().c_str(), m.total, m.mineTotal, m.doors.size());
+        float ly = p.y + 20 * ui + ImGui::GetFontSize() * 1.8f; dl->AddText(ImVec2(p.x + 28 * ui, ly), IM_COL32(150, 200, 230, 220), line);
+        {   // the legend
+            auto key = [&](float y, uint32_t c, const char* t) { float s = ImGui::GetFontSize() * 0.7f; ImVec2 a(p.x + 30 * ui, y + 3 * ui); dl->AddRect(a, ImVec2(a.x + s, a.y + s), IM_COL32((c >> 16) & 255, (c >> 8) & 255, c & 255, 255), 0, 0, 1.5f);
+                dl->AddText(ImVec2(a.x + s + 8 * ui, y), IM_COL32(150, 200, 230, 200), t); };
+            float lh = ImGui::GetFontSize() * 1.35f; ly += lh * 1.2f;
+            key(ly, MAP_TINT, "Seen"); key(ly + lh, MAP_DOWN, "From a Map Station, not visited yet"); key(ly + lh * 2, MAP_YOU, "You");
+        }
         const char* help = "Drag: turn    Right-drag: move    Wheel: zoom    C: back to you    M / Esc: close";
         ImVec2 hs = ImGui::CalcTextSize(help); dl->AddText(ImVec2(p.x + (sz.x - hs.x) * 0.5f, p.y + sz.y - hs.y - 18 * ui), IM_COL32(150, 200, 230, 200), help);
         if (ImGui::IsKeyPressed(ImGuiKey_C, false)) { mapCenter = player.feet + V3{ 0, 1, 0 }; mapYaw = (float)(player.yaw + 3.14159265358979); }
         if (m.total == 0) { const char* e = "Nothing charted yet: look around, or find a Map Station."; ImVec2 es = ImGui::CalcTextSize(e); dl->AddText(ImVec2(p.x + (sz.x - es.x) * 0.5f, p.y + sz.y * 0.5f), IM_COL32(150, 200, 230, 220), e); }
         ImGui::End();
+    }
+    // ---- the minimap on the HUD (a Minimap element): the same map, around you, see-through
+    HudTarget miniView; ComPtr<ID3D11DepthStencilView> miniDSV; int miniDW = 0, miniDH = 0, miniWantW = 0, miniWantH = 0; bool miniUsed = false; HudElement miniEl;
+    static void PremulBlend(const ImDrawList*, const ImDrawCmd*) { g_app->ctx->OMSetBlendState(g_app->bsPremul.Get(), nullptr, 0xFFFFFFFF); }
+    void DrawMinimapElement(ImDrawList* dl, const HudElement& e, ImVec2 p0, ImVec2 p1, float a) {
+        miniUsed = true; miniEl = e; miniWantW = std::clamp((int)(p1.x - p0.x), 16, 1024); miniWantH = std::clamp((int)(p1.y - p0.y), 16, 1024);
+        if (!miniView.srv) return;
+        int k = (int)std::clamp(a * 255, 0.f, 255.f);
+        dl->AddCallback(PremulBlend, nullptr); dl->AddImage((ImTextureID)(intptr_t)miniView.srv.Get(), p0, p1, ImVec2(0, 0), ImVec2(1, 1), IM_COL32(k, k, k, k)); dl->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
+    }
+    void RenderMinimap() {
+        if (!miniUsed || !world || mapOpen) { miniUsed = false; return; }
+        miniUsed = false;
+        int w = miniWantW, h = miniWantH; if (w != miniDW || h != miniDH) { MakeTarget(miniView, w, h, &miniDSV); miniDW = w; miniDH = h; }
+        const HudElement& e = miniEl; double range = std::max(4.f, e.mapRange), tilt = std::clamp(e.mapTilt, 10.f, 90.f) * 3.14159265358979 / 180;
+        UpdateMapGpu(); UINT markVerts = 0, doorVerts = UploadMapMarks(markVerts, std::max(1.1, range / 10));
+        const float clear[4] = { 0, 0, 0, 0 };
+        ctx->OMSetRenderTargets(1, miniView.rtv.GetAddressOf(), miniDSV.Get()); ctx->ClearRenderTargetView(miniView.rtv.Get(), clear); ctx->ClearDepthStencilView(miniDSV.Get(), D3D11_CLEAR_DEPTH, 1, 0);
+        D3D11_VIEWPORT vp{ 0, 0, (float)w, (float)h, 0, 1 }; ctx->RSSetViewports(1, &vp);
+        double yaw = e.mapTurns ? player.yaw + 3.14159265358979 : 3.14159265358979;   // turning: you always point up; else north is up
+        V3 c = player.feet + V3{ 0, 0.5, 0 }, dir{ std::sin(yaw) * std::cos(tilt), std::sin(tilt), std::cos(yaw) * std::cos(tilt) }, eye = c + dir * 300.0;
+        V3 up = tilt > 1.55 ? V3{ -std::sin(yaw), 0, -std::cos(yaw) } : V3{ 0, 1, 0 };
+        XMMATRIX view = XMMatrixLookAtLH(XMVectorSet((float)eye.x, (float)eye.y, (float)eye.z, 1), XMVectorSet((float)c.x, (float)c.y, (float)c.z, 1), XMVectorSet((float)up.x, (float)up.y, (float)up.z, 0));
+        float asp = (float)w / h, vh = (float)range * 2.05f, vw = vh * asp; if (asp < 1) { vw = (float)range * 2.05f; vh = vw / asp; }
+        XMMATRIX proj = XMMatrixOrthographicLH(vw, vh, 1.f, 600.f);
+        MapCB mc{}; XMStoreFloat4x4((XMFLOAT4X4*)mc.vp, view * proj);
+        mc.eye[0] = (float)eye.x; mc.eye[1] = (float)eye.y; mc.eye[2] = (float)eye.z; mc.eye[3] = (float)MapClock();
+        mc.center[0] = (float)player.feet.x; mc.center[1] = (float)player.feet.y; mc.center[2] = (float)player.feet.z; mc.center[3] = -1000;   // (no build-up sweep here)
+        mc.mode[2] = 1; mc.mode[3] = (float)range;
+        ctx->VSSetConstantBuffers(5, 1, cbMap.GetAddressOf()); ctx->PSSetConstantBuffers(5, 1, cbMap.GetAddressOf());
+        ctx->IASetInputLayout(layoutMap.Get()); ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        ctx->VSSetShader(vsMap.Get(), nullptr, 0); ctx->PSSetShader(psMap.Get(), nullptr, 0); ctx->RSSetState(rsNoCull.Get());
+        UINT stride = sizeof(MapVert), off = 0;
+        auto drawPanels = [&](bool yours) { for (auto& kv : mapGpu) { const MapGpuChunk& g = kv.second; UINT a = yours ? 0 : g.mine, b = yours ? g.mine : g.count; if (b <= a) continue; ctx->IASetVertexBuffers(0, 1, g.vb.GetAddressOf(), &stride, &off); ctx->Draw(b - a, a); } };
+        auto state = [&](ID3D11BlendState* bs, ID3D11DepthStencilState* ds) { ctx->UpdateSubresource(cbMap.Get(), 0, nullptr, &mc, 0, 0); ctx->OMSetBlendState(bs, nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(ds, 0); };
+        state(bsNoColor.Get(), dsOn.Get()); drawPanels(true);                         // where your panels are (depth only)
+        state(bsAdd.Get(), dsTestOnly.Get()); drawPanels(true); drawPanels(false);    // then all of it as see-through light, nearest surfaces only
+        if (doorVerts) { ctx->IASetVertexBuffers(0, 1, mapMarks.GetAddressOf(), &stride, &off); ctx->Draw(doorVerts, 0); }
+        state(bsOff.Get(), dsOff.Get()); ctx->IASetVertexBuffers(0, 1, mapMarks.GetAddressOf(), &stride, &off); ctx->Draw(markVerts - doorVerts, doorVerts);   // you, on top
+        ctx->RSSetState(rsCull.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
+        ctx->OMSetRenderTargets(0, nullptr, nullptr);
     }
     void MapInspector(WorldObject& o) {
         bool cam = o.kind == ObjKind::MapCamera;
@@ -7109,7 +7178,16 @@ struct App {
                 frames(6, "map_station_download_building");
                 uiClock += 3; frames(2, "map_station_download");
                 mapYaw += 0.7f; mapPitch = 0.6f; mapDist = 30; mapCenter = base + V3{ 0, 1.5, 0 }; frames(2, "map_doors_closeup");
-                CloseMap(); StopPlay();
+                CloseMap();
+                {   // the minimap on the HUD: see-through, around you (blue: seen, orange: from the station)
+                    HudLayout keepHud = hud; hud = defaultHud(); poseAt(look); player.yaw += 0.5; hudSway.reset(); toastT = 0;
+                    frames(3, "minimap_hud");
+                    for (auto& pl : hud.planes) for (auto& el : pl.elements) if (el.kind == HudKind::Minimap) { el.mapTilt = 90; el.mapRange = 34; }
+                    frames(3, "minimap_hud_top_down");
+                    Log("minimap: " + std::to_string(miniDW) + " x " + std::to_string(miniDH) + " pixels; map " + std::to_string(Seen().total) + " blocks, " + std::to_string(Seen().mineTotal) + " seen yourself");
+                    hud = keepHud;
+                }
+                StopPlay();
                 objects.erase(std::remove_if(objects.begin(), objects.end(), [&](const WorldObject& o) { return o.id == cam.id || o.id == st.id; }), objects.end()); RebuildSolids();
             }
             poseAt(demoShots()[1]);
@@ -7169,6 +7247,7 @@ struct App {
         Popups();
         BuildHudLists();
         ImGui::Render();
+        RenderMinimap();
         RenderHudPlanes();
 
         const float bg[4] = { 0.10f, 0.11f, 0.13f, 1 };
