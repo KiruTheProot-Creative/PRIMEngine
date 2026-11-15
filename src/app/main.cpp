@@ -7096,18 +7096,18 @@ struct App {
                 StartPlay(false); poseAt(look); play.health = game.player.maxHealth; toastT = 0;
                 auto runM = [&](int k) { for (int f = 0; f < k; f++) { FrameBody(1.0 / 60); swap->Present(0, 0); retired.clear(); } };
                 double y0 = player.yaw, p0 = player.pitch;
-                for (int k = 0; k < 120; k++) { player.yaw = y0 + std::sin(k * 0.06) * 1.0; player.pitch = p0 - 0.1 + std::sin(k * 0.13) * 0.25; runM(1); }
+                for (int k = 0; k < 120; k++) { player.yaw = y0 + std::sin(k * 0.06) * 1.0; player.pitch = p0 - 0.1 + std::sin(k * 0.13) * 0.25; UpdateMapSight(); uiClock += 1.0 / 60; }   // (the eyes only: no need to draw each frame)
                 player.yaw = y0; player.pitch = p0; runM(2);
                 Log("map after looking around: " + std::to_string(Seen().total) + " blocks, " + std::to_string(Seen().doors.size()) + " door(s) seen");
                 OnKey('M', false); runM(1); Log(std::string("M key: map ") + (mapOpen ? "open" : "NOT open"));
-                frames(90, "map_seen_by_looking");
+                uiClock += 3; frames(2, "map_seen_by_looking");   // (as if a few seconds went by: the map has built up)
                 mapYaw += 0.9f; mapPitch = 1.05f; mapDist = 48; frames(2, "map_seen_by_looking_turned");
                 OnKey(VK_ESCAPE, false); runM(2);
                 size_t beforeSt = Seen().total;
                 player.feet = { st.pos.x, st.pos.y, st.pos.z - 0.9 }; player.vel = { 0, 0, 0 }; runM(3);   // walk into the station
                 Log("map station: " + std::to_string(Seen().total - beforeSt) + " blocks added, map " + (mapOpen ? "opened" : "NOT opened"));
-                frames(20, "map_station_download_building");
-                frames(90, "map_station_download");
+                frames(6, "map_station_download_building");
+                uiClock += 3; frames(2, "map_station_download");
                 mapYaw += 0.7f; mapPitch = 0.6f; mapDist = 30; mapCenter = base + V3{ 0, 1.5, 0 }; frames(2, "map_doors_closeup");
                 CloseMap(); StopPlay();
                 objects.erase(std::remove_if(objects.begin(), objects.end(), [&](const WorldObject& o) { return o.id == cam.id || o.id == st.id; }), objects.end()); RebuildSolids();

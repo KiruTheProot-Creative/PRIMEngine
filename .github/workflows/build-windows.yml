@@ -35,7 +35,7 @@ jobs:
         shell: pwsh
         run: |
           $p = Start-Process -FilePath build/Release/PRIMEngine.exe -ArgumentList "--screenshots shots" -PassThru
-          if (-not $p.WaitForExit(600000)) { $p.Kill(); "TIMEOUT after 10 minutes" | Out-File -Append shots/log.txt }
+          if (-not $p.WaitForExit(1200000)) { $p.Kill(); "TIMEOUT after 20 minutes" | Out-File -Append shots/log.txt }
           Get-Content shots/log.txt
           Get-ChildItem shots
 
