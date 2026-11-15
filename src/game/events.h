@@ -8,7 +8,7 @@
 
 namespace mc {
 
-enum class When { GameStarts, EnterZone, LeaveZone, Touch, Shot, Pickup, DoorOpens, DoorCloses, Dies, Every, After, CountReaches, COUNT };
+enum class When { GameStarts, EnterZone, LeaveZone, Touch, Shot, Pickup, DoorOpens, DoorCloses, Dies, Every, After, CountReaches, Defeated, ZoneCleared, COUNT };   // Defeated: an enemy (by name, or its type); ZoneCleared: every enemy in a zone
 enum class If { HasKey, NoKey, CountAtLeast, FlagOn, FlagOff, HealthBelow, COUNT };
 enum class Do { Message, OpenDoor, CloseDoor, LockDoor, UnlockDoor, MovePlatform, Show, Hide, LightOn, LightOff, Particles, Teleport,
                 Heal, Hurt, Kill, Checkpoint, GiveKey, TakeKey, AddCount, FlagOn, FlagOff, Wait, Win,

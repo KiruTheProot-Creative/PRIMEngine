@@ -16,6 +16,7 @@
 #include "../src/game/map.h"
 #include "../src/game/visors.h"
 #include "../src/game/menu.h"
+#include "../src/game/enemies.h"
 #include <map>
 #include <set>
 #include <filesystem>
@@ -430,7 +431,7 @@ int main() {
         CHECK(v2.size() == 1 && v2[0].kind == ObjKind::Trigger && v2[0].size.x == 4 && v2[0].trigger.action == TriggerAction::Kill && v2[0].trigger.text == "Watch out!"
               && v2[0].teleport.world == "Level 2" && v2[0].teleport.target == "Arrival pad" && v2[0].door.key == "Red key" && v2[0].pickup.name == "Big gem", "helpers save and load (names with spaces too)");
         int shapes = 0; for (auto& n : builtinShapeNames()) { MeshModel m; shapes += builtinShape(n, m) && m.triangles() > 0; }
-        CHECK(shapes == 10, "all built-in looks build (%d)", shapes);
+        CHECK(shapes == 16, "all built-in looks build (%d)", shapes);
     }
 
     // particles and lights
@@ -959,9 +960,11 @@ int main() {
         objs[0].scan.on = true; objs[0].scan.id = 2; objs[1].scan.on = true; objs[1].scan.id = 2;
         saveObjects("/tmp/prim_scanobjs.txt", objs); std::vector<WorldObject> ob; loadObjects("/tmp/prim_scanobjs.txt", ob);
         CHECK(ob.size() == 3 && ob[0].scan.on && ob[0].scan.id == 2 && ob[1].scan.id == 2 && !ob[2].scan.on && ob[2].scan.id == 0, "objects keep which scan entry they show (two doors share one)");
+        { std::vector<WorldObject> en(1); en[0].id = 9; en[0].model = "@enemy-walker"; en[0].kind = ObjKind::Enemy; en[0].enemyType = 4; saveObjects("/tmp/prim_enemyobj.txt", en); std::vector<WorldObject> eb2; loadObjects("/tmp/prim_enemyobj.txt", eb2);
+          CHECK(eb2.size() == 1 && eb2[0].kind == ObjKind::Enemy && eb2[0].enemyType == 4 && std::string(kindName(ObjKind::Enemy)) == "Enemy", "a placed enemy keeps its type"); }
         {   // an older file: the text was on the object
             std::ifstream in("/tmp/prim_scanobjs.txt"); std::string all((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()); in.close();
-            size_t at = all.find(" 1 2\n"); if (at != std::string::npos) all.replace(at, 5, " 1 Old%20Door Research Line%20one.%0ALine%20two. 1 2.5\n");
+            size_t at = all.find(" 1 2 0\n"); if (at != std::string::npos) all.replace(at, 7, " 1 Old%20Door Research Line%20one.%0ALine%20two. 1 2.5\n");
             std::ofstream outF("/tmp/prim_scanobjs_old.txt"); outF << all; outF.close();
             std::vector<WorldObject> old; loadObjects("/tmp/prim_scanobjs_old.txt", old);
             CHECK(old.size() == 3 && old[0].scan.on && old[0].scan.id == 0 && old[0].scan.legacyName == "Old Door" && old[0].scan.legacyText == "Line one.\nLine two." && old[0].scan.legacyImportant && old[0].scan.legacyTime == 2.5f && old[1].scan.id == 2,
@@ -985,6 +988,89 @@ int main() {
               && b.pages[2].panes[0].yaw == m.pages[2].panes[0].yaw && b.pages[1].panes[1].items[1].kind == MenuKind::BeamList, "pages, panes and items save and load");
         auto val = [](const std::string& n) -> std::string { return n == "energy" ? "99" : n == "game" ? "Prime" : ""; };
         CHECK(menuFill("{game}: {energy} of {maxenergy} {", val) == "Prime: 99 of {maxenergy} {", "texts fill in {energy}, {game}... (unknown ones stay)");
+    }
+
+    {   // enemies: types, weaknesses, and how each one moves
+        printf("\nenemies\n");
+        EnemySet es = defaultEnemies();
+        CHECK(es.types.size() == 6 && es.find(1)->move == EnemyMove::Crawl && es.find(5)->move == EnemyMove::Drop && es.find(4)->shoots && es.find(2)->death == EnemyDeath::Fracture, "placeholder types: crawler, hopper, flyer, walker (shoots), dropper, turret");
+        const EnemyType& trooper = *es.find(4); const EnemyType& turret = *es.find(6); const EnemyType& reo = *es.find(3);
+        CHECK(enemyDamage(trooper, "Power Beam", false, false, false, 10) == 10 && enemyDamage(trooper, "Missile", true, false, false, 30) == 60 && enemyDamage(trooper, "Power Beam", false, true, false, 10) == 15, "weaknesses multiply (missiles x2, charged x1.5), the rest normal");
+        CHECK(enemyDamage(turret, "Power Beam", false, false, false, 10) == 0 && enemyDamage(turret, "Super Missile", true, false, false, 50) == 50 && enemyDamage(turret, "Bomb", false, false, true, 20) == 20, "'only its weaknesses': plain beams do nothing, missiles and bombs do");
+        CHECK(enemyDamage(reo, "Wave Beam", false, false, false, 10) == 20 && enemyDamage(reo, "Power Beam", false, false, false, 10) == 10, "a beam by name");
+        es.find(4)->name = "Space Pirate"; es.find(4)->weak.push_back({ "Ice Beam", 3 }); es.find(2)->drops.push_back({ "Missile", 5, 0.25f }); es.find(1)->sndDie = "pop.wav"; es.find(3)->scanId = 7;
+        saveEnemies("/tmp/prim_enemies.txt", es); EnemySet eb; CHECK(loadEnemies("/tmp/prim_enemies.txt", eb), "enemies load");
+        CHECK(eb.types.size() == 6 && eb.find(4)->name == "Space Pirate" && eb.find(4)->weak.size() == 3 && eb.find(4)->weak[2].times == 3 && eb.find(2)->drops.size() == 2 && eb.find(1)->sndDie == "pop.wav"
+              && eb.find(3)->scanId == 7 && eb.find(5)->move == EnemyMove::Drop && eb.find(6)->onlyWeak && eb.find(2)->death == EnemyDeath::Fracture, "enemy types save and load (weaknesses, drops, sounds, scan entry)");
+        EnemyType nt; nt.name = "New"; CHECK(eb.add(nt) == 7, "a new type gets the next ID");
+
+        // a little world: a floor at y = 0 (the top at 1), a wall at x = 10, a gap in the floor at x < 0
+        std::set<std::tuple<int, int, int>> extra;
+        auto solid = [&](int x, int y, int z) { if (extra.count({ x, y, z })) return true; return y == 0 && x >= 0 && x < 30 && z > -10 && z < 10; };
+        SolidFn sf = solid; V3 far{ 100, 50, 100 };
+        {   // a walker patrols, turns at the wall and at the edge
+            for (int y = 1; y <= 3; y++) for (int z = -9; z < 10; z++) extra.insert({ 10, y, z });
+            EnemyType w = *es.find(4); w.chases = false; w.shoots = false; EnemyState s; enemyStart(s, w, { 5.5, 1, 0.5 }, 90, sf);
+            double maxX = 0, minX = 99; for (int i = 0; i < 60 * 12; i++) { enemyUpdate(s, w, sf, far, false, 1 / 60.0); maxX = std::max(maxX, s.pos.x); minX = std::min(minX, s.pos.x); }
+            CHECK(s.onGround && std::fabs(s.pos.y - 1) < 0.01, "a walker stands on the floor (%.2f)", s.pos.y);
+            CHECK(maxX < 10 - enemyHalfWidth(w) + 0.01 && maxX > 9 && minX > 0 && minX < 1.2, "it walks to the wall, turns, walks to the edge and turns again (%.2f .. %.2f)", minX, maxX);
+            EnemyType c = *es.find(4); c.shoots = true; EnemyState t; enemyStart(t, c, { 5.5, 1, 0.5 }, 0, sf);
+            int shots = 0; V3 you{ 2.5, 1.9, 0.5 };
+            for (int i = 0; i < 60 * 4; i++) { EnemyTick k = enemyUpdate(t, c, sf, you, true, 1 / 60.0); shots += k.fire; if (k.fire) CHECK(k.shotDir.x < -0.8, "... and shoots at you"); }
+            CHECK(t.mode == EnemyMode::Chase && shots >= 2 && t.pos.x < 5.0 && t.pos.x > 2.5, "one that sees you comes closer and shoots (%d shots, at %.2f)", shots, t.pos.x);
+            extra.clear();
+        }
+        {   // a hopper hops
+            EnemyType h = *es.find(2); EnemyState s; enemyStart(s, h, { 5.5, 1, 0.5 }, 0, sf);
+            double top = 0; for (int i = 0; i < 60 * 3; i++) { enemyUpdate(s, h, sf, far, false, 1 / 60.0); top = std::max(top, s.pos.y); }
+            CHECK(top > 1 + h.hopHeight * 0.8 && top < 1 + h.hopHeight * 1.2, "a hopper jumps about as high as set (%.2f)", top - 1);
+        }
+        {   // a crawler goes all the way around a block floating in the air
+            extra.insert({ 50, 20, 0 });
+            auto s2 = [&](int x, int y, int z) { return extra.count({ x, y, z }) > 0; }; SolidFn sf2 = s2;
+            EnemyType z = *es.find(1); EnemyState s; enemyStart(s, z, { 50.5, 21, 0.5 }, 90, sf2);
+            CHECK(s.attached && s.n[1] == 1 && s.d[0] == 1, "a crawler clings to the top of the block, going +X");
+            std::set<int> sides; bool alwaysOn = true;
+            for (int i = 0; i < 60 * 6; i++) {
+                enemyUpdate(s, z, sf2, far, false, 1 / 60.0); sides.insert(s.n[0] * 3 + s.n[1] * 5 + s.n[2] * 7);
+                V3 c{ 50.5, 20.5, 0.5 }; double dx = std::fabs(s.pos.x - c.x), dy = std::fabs(s.pos.y - c.y); alwaysOn &= std::max(dx, dy) < 0.51 && std::max(dx, dy) > 0.49 - 0.01 || (dx <= 0.51 && dy <= 0.51);
+            }
+            CHECK(sides.size() == 4 && s.attached && alwaysOn, "... and goes around it: top, side, bottom, other side (%zu sides), staying on its surface", sides.size());
+            extra.clear();
+        }
+        {   // a crawler on the floor climbs a wall in its way
+            extra.insert({ 8, 1, 0 }); extra.insert({ 8, 2, 0 });
+            EnemyType z = *es.find(1); EnemyState s; enemyStart(s, z, { 5.5, 1, 0.5 }, 90, sf);
+            bool climbed = false, overTop = false;
+            for (int i = 0; i < 60 * 5; i++) { enemyUpdate(s, z, sf, far, false, 1 / 60.0); climbed |= s.attached && s.n[0] == -1 && s.d[1] == 1; overTop |= climbed && s.n[1] == 1 && s.cell[1] == 3; }
+            CHECK(climbed && overTop, "a crawler meeting a wall climbs up it and over the top");
+            extra.clear();
+        }
+        {   // a flyer hovers, then comes for you
+            EnemyType f = *es.find(3); EnemyState s; enemyStart(s, f, { 5.5, 1, 0.5 }, 0, sf);
+            CHECK(std::fabs(s.pos.y - (1 + f.hover)) < 0.01, "a flyer starts above where it was put");
+            V3 you{ 15.5, 2, 6.5 }; double d0 = std::hypot(s.pos.x - you.x, s.pos.z - you.z);
+            for (int i = 0; i < 60 * 3; i++) enemyUpdate(s, f, sf, you, true, 1 / 60.0);
+            CHECK(std::hypot(s.pos.x - you.x, s.pos.z - you.z) < d0 * 0.5 && s.mode == EnemyMode::Chase, "it flies toward you once it sees you");
+        }
+        {   // a dropper hangs from the ceiling, falls when you walk under it, digs in and bursts
+            for (int x = 0; x < 12; x++) for (int z = -3; z < 4; z++) extra.insert({ x, 6, z });
+            EnemyType k = *es.find(5); EnemyState s; enemyStart(s, k, { 5.5, 1, 0.5 }, 0, sf);
+            CHECK(std::fabs(s.pos.y + enemyHeight(k) - 6) < 0.01, "a dropper hangs under the ceiling (%.2f)", s.pos.y);
+            for (int i = 0; i < 60; i++) enemyUpdate(s, k, sf, { 10.5, 1.9, 0.5 }, true, 1 / 60.0);
+            CHECK(s.mode == EnemyMode::Idle, "you to the side: it stays up");
+            bool burst = false; double low = 99;
+            for (int i = 0; i < 60 * 3 && !burst; i++) { EnemyTick t = enemyUpdate(s, k, sf, { 6.0, 1.9, 0.5 }, true, 1 / 60.0); burst |= t.burst; low = std::min(low, s.pos.y); }
+            CHECK(burst && !s.alive() && low < 1.0 && low > 0.4, "you under it: it falls, digs into the floor and bursts (%.2f)", low);
+            extra.clear();
+        }
+        {   // being hit
+            EnemyType w = *es.find(4); EnemyState s; enemyStart(s, w, { 5.5, 1, 0.5 }, 0, sf);
+            enemyHit(s, w, 20, { 3.5, 1.5, 0.5 });
+            CHECK(s.health == w.health - 20 && s.hurtT > 0 && s.vel.x > 0 && s.mode == EnemyMode::Chase && s.alive(), "a hit: it loses health, flashes, is knocked back, and turns on you");
+            enemyHit(s, w, 1000, { 3.5, 1.5, 0.5 }); CHECK(!s.alive() && s.health == 0, "enough hits: it is dead");
+            Box3 b = enemyBox(s, w); CHECK(b.hi.y - b.lo.y == enemyHeight(w) && std::fabs((b.hi.x - b.lo.x) - 2 * enemyHalfWidth(w)) < 1e-6, "its hit box");
+        }
     }
 
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);

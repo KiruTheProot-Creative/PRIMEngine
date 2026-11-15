@@ -531,7 +531,7 @@ std::vector<Box3> meshBoxes(const MeshModel& m, int maxCells, bool stillOnly) {
 }
 
 // ------------------------------------------------------------------ built-in looks for helper objects
-std::vector<std::string> builtinShapeNames() { return { "@health", "@key", "@gem", "@checkpoint", "@teleporter", "@zone", "@light", "@emitter", "@map-camera", "@map-station" }; }
+std::vector<std::string> builtinShapeNames() { return { "@health", "@key", "@gem", "@checkpoint", "@teleporter", "@zone", "@light", "@emitter", "@map-camera", "@map-station", "@enemy-crawler", "@enemy-hopper", "@enemy-flyer", "@enemy-walker", "@enemy-skree", "@enemy-turret" }; }
 bool builtinShape(const std::string& name, MeshModel& m) {
     Builder B;
     auto colour = [&](uint32_t c) { Img im = solid(((c >> 16) & 255) / 255.f, ((c >> 8) & 255) / 255.f, (c & 255) / 255.f, 1); int id = (int)B.imgs.size(); B.imgs.push_back(im); return id; };
@@ -638,6 +638,49 @@ bool builtinShape(const std::string& name, MeshModel& m) {
         prism(8, 0.32, 1.0, 1.03, g);
         diamond(0.22, 1.1, 1.35, 1.6, g);
         diamond(0.08, 1.28, 1.35, 1.42, w);
+    }
+    else if (name == "@enemy-crawler") {   // a spiky shell that crawls over blocks (faces +Z)
+        int b = colour(0x9A5420), d = colour(0xE0A040), sp = colour(0xFFE6B0), e = colour(0xFF3020);
+        prism(10, 0.42, 0.0, 0.2, b);
+        diamond(0.32, 0.1, 0.22, 0.5, d);
+        for (int k = 0; k < 6; k++) { double a = k * 1.0471976 + 0.5, x = std::cos(a) * 0.3, z = std::sin(a) * 0.3; slab({ x - 0.035, 0.15, z - 0.035 }, { x + 0.035, 0.42, z + 0.035 }, sp); }
+        slab({ -0.14, 0.08, 0.36 }, { 0.14, 0.16, 0.45 }, e);
+    }
+    else if (name == "@enemy-hopper") {   // a squat frog-like hopper
+        int g = colour(0x3E8A30), l = colour(0x6CC050), y = colour(0xFFE040), k = colour(0x203018);
+        slab({ -0.34, 0.12, -0.34 }, { 0.34, 0.52, 0.26 }, g);
+        slab({ -0.28, 0.3, 0.2 }, { 0.28, 0.66, 0.48 }, l);
+        slab({ -0.24, 0.6, 0.3 }, { -0.1, 0.72, 0.44 }, y); slab({ 0.1, 0.6, 0.3 }, { 0.24, 0.72, 0.44 }, y);
+        slab({ -0.2, 0.64, 0.42 }, { -0.14, 0.7, 0.45 }, k); slab({ 0.14, 0.64, 0.42 }, { 0.2, 0.7, 0.45 }, k);
+        slab({ -0.46, 0, -0.36 }, { -0.3, 0.28, 0.06 }, g); slab({ 0.3, 0, -0.36 }, { 0.46, 0.28, 0.06 }, g);
+        slab({ -0.3, 0, 0.16 }, { -0.18, 0.16, 0.36 }, l); slab({ 0.18, 0, 0.16 }, { 0.3, 0.16, 0.36 }, l);
+    }
+    else if (name == "@enemy-flyer") {   // a beetle with clear wings
+        int b = colour(0x2E58A8), w = colour(0xA8E0FF), e = colour(0xFF4030);
+        diamond(0.26, 0.05, 0.32, 0.62, b);
+        slab({ -0.78, 0.36, -0.18 }, { -0.22, 0.4, 0.16 }, w); slab({ 0.22, 0.36, -0.18 }, { 0.78, 0.4, 0.16 }, w);
+        slab({ -0.12, 0.3, 0.2 }, { 0.12, 0.4, 0.28 }, e);
+    }
+    else if (name == "@enemy-walker") {   // an armoured trooper with an arm cannon
+        int a = colour(0x7A2E2E), d = colour(0x4A1818), v = colour(0xFF5020), m = colour(0x3C3C46), l = colour(0x5A2424);
+        slab({ -0.24, 0, -0.1 }, { -0.07, 0.52, 0.1 }, l); slab({ 0.07, 0, -0.1 }, { 0.24, 0.52, 0.1 }, l);
+        slab({ -0.3, 0.52, -0.17 }, { 0.3, 1.05, 0.17 }, a);
+        slab({ -0.16, 1.05, -0.14 }, { 0.16, 1.32, 0.15 }, d);
+        slab({ -0.12, 1.13, 0.14 }, { 0.12, 1.21, 0.19 }, v);
+        slab({ 0.3, 0.74, -0.06 }, { 0.42, 0.86, 0.46 }, m); slab({ 0.32, 0.76, 0.44 }, { 0.4, 0.84, 0.48 }, v);
+        slab({ -0.41, 0.58, -0.06 }, { -0.3, 1.0, 0.06 }, a);
+    }
+    else if (name == "@enemy-skree") {   // hangs from the ceiling: wings on top, a drill point below
+        int w = colour(0x6A2EA8), b = colour(0xA868E8), e = colour(0xFFD040);
+        slab({ -0.5, 0.74, -0.08 }, { 0.5, 0.8, 0.08 }, w); slab({ -0.08, 0.74, -0.42 }, { 0.08, 0.8, 0.42 }, w);
+        diamond(0.24, 0.0, 0.55, 0.8, b);
+        slab({ -0.1, 0.5, 0.17 }, { 0.1, 0.58, 0.22 }, e);
+    }
+    else if (name == "@enemy-turret") {   // a gun on a round base (the gun points +Z)
+        int b = colour(0x4E5666), d = colour(0x6E7686), g = colour(0x2A2A32), e = colour(0xFF3040);
+        prism(8, 0.45, 0, 0.22, b);
+        prism(8, 0.3, 0.22, 0.58, d);
+        slab({ -0.07, 0.36, 0 }, { 0.07, 0.5, 0.62 }, g); slab({ -0.09, 0.34, 0.6 }, { 0.09, 0.52, 0.64 }, e);
     }
     else if (name == "@emitter") { int o = colour(0xFF8040), d = colour(0x404048); prism(6, 0.22, 0, 0.08, d); prism(6, 0.08, 0.08, 0.3, o); }
     else return false;

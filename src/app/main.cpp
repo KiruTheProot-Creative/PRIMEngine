@@ -22,6 +22,7 @@
 #include "../game/map.h"
 #include "../game/visors.h"
 #include "../game/menu.h"
+#include "../game/enemies.h"
 #include "../game/sound.h"
 #include "../game/breakable.h"
 #include "../game/weather.h"
@@ -1240,11 +1241,17 @@ struct App {
         else if (m == "@emitter") { MakeEmitter(o); o.folder = "Particles"; o.particles = particlePreset("Fire"); }
         else if (m == "@map-camera") { o.kind = ObjKind::MapCamera; o.collide = Collide::None; o.folder = "Map"; }
         else if (m == "@map-station") { o.kind = ObjKind::MapStation; o.folder = "Map"; }
+        else if (m.rfind("@enemy-", 0) == 0) {   // an enemy: the first type with this look (or the first type)
+            o.kind = ObjKind::Enemy; o.folder = "Enemies"; o.enemyType = 0;
+            for (const EnemyType& t : enemies.types) if (t.model == m) { o.enemyType = t.id; break; }
+            if (!o.enemyType && !enemies.types.empty()) o.enemyType = enemies.types[0].id;
+            ApplyEnemyType(o);
+        }
     }
     std::string PresetName(const WorldObject& o) const {
         switch (o.kind) {
         case ObjKind::Pickup: return o.pickup.type == PickupType::Health ? "Health" : o.pickup.name;
-        case ObjKind::Checkpoint: return "Checkpoint"; case ObjKind::Teleporter: return "Teleporter"; case ObjKind::Trigger: return "Zone"; case ObjKind::Light: return "Light"; case ObjKind::Particles: return "Particles"; case ObjKind::MapCamera: return "Map camera"; case ObjKind::MapStation: return "Map Station";
+        case ObjKind::Checkpoint: return "Checkpoint"; case ObjKind::Teleporter: return "Teleporter"; case ObjKind::Trigger: return "Zone"; case ObjKind::Light: return "Light"; case ObjKind::Particles: return "Particles"; case ObjKind::MapCamera: return "Map camera"; case ObjKind::MapStation: return "Map Station"; case ObjKind::Enemy: { const EnemyType* t = enemies.find(o.enemyType); return t ? t->name.c_str() : "Enemy"; }
         default: return o.model;
         }
     }
@@ -1362,7 +1369,7 @@ struct App {
             }
             touchNow = touching;
         }
-        UpdateMapSight(); UpdateScan(dt);
+        UpdateMapSight(); UpdateScan(dt); UpdateEnemies(dt);
         { EvHost h(*this); evRun.tick(events, dt, h); NoteFired(); }
         if (evSolids) { evSolids = false; RebuildSolids(); }
         if (travel) { (void)from; pending = [this, travelWorld, travelTarget] { TravelTo(travelWorld, travelTarget); }; }
@@ -1822,6 +1829,8 @@ struct App {
                 }
             }
             for (const Box3& b : world->objectSolids) { double t; if (rayBox(s.pos, s.dir, b, t) && t < best - 1e-6) { best = t; door = -1; blockHit = false; } }
+            uint32_t enemyHitId = 0;   // enemies (where they are now)
+            for (auto& kv : enemyRt) { if (!kv.second.alive()) continue; const EnemyType* et = enemies.find(kv.second.type); if (!et) continue; double t; if (rayBox(s.pos, s.dir, enemyBox(kv.second, *et), t) && t < best - 1e-6) { best = t; enemyHitId = kv.first; door = -1; blockHit = false; } }
             if (door >= 0) blockHit = false;
             if (best < step && blockHit) TryBreak(h.x, h.y, h.z, s.weapon, s.missile, s.charged);   // a marked block: it may break
             if (best < step) {
@@ -1840,6 +1849,12 @@ struct App {
                     if (s.charged) { ParticleSettings bo = particlePreset(s.hitLook.empty() ? "Impact" : s.hitLook); bo.burst *= 3; bo.speed *= 1.6f; bo.size0 *= 2; SpawnFx(bo, at - s.dir * 0.08, s.dir * -1, s.tint); }
                     if (s.missile) { ParticleSettings bo = particlePreset("Fire"); bo.burst = 40; bo.life = 0.5f; SpawnFx(bo, at - s.dir * 0.1, s.dir * -1, s.tint); }
                     fx.push_back(s.trail);
+                    if (enemyHitId) {   // an enemy: its weaknesses decide what the hit does
+                        Beam* wb = s.beam >= 0 && s.beam < (int)weapons.beams.size() ? &weapons.beams[s.beam] : nullptr;
+                        MissileType* wm = s.mtype >= 0 && s.mtype < (int)weapons.missileTypes.size() ? &weapons.missileTypes[s.mtype] : nullptr;
+                        float base = wm ? wm->damage : wb ? wb->damage * (s.charged ? wb->chargeDamage : 1.f) : 10.f;
+                        DamageEnemy(enemyHitId, base, s.weapon, s.missile, s.charged, false, s.pos);
+                    }
                     for (const WorldObject& o : objects) {   // which named objects were hit (for "when something is shot")
                         if (o.name.empty() || Gone(o) || o.kind == ObjKind::Trigger) continue;
                         FrameRef f = ModelOf(o); if (!f) continue;
@@ -2011,7 +2026,8 @@ struct App {
         }
     }
     void LoadWorldObjects() {
-        objects.clear(); loadObjects(worldDir + "/objects.txt", objects); MigrateLegacyScans(); loadEvents(worldDir + "/events.txt", events); loadBreakables(worldDir + "/breakable.txt", breakables);
+        objects.clear(); loadObjects(worldDir + "/objects.txt", objects); MigrateLegacyScans(); enemyRt.clear(); enemyShots.clear(); enemyDrops.clear(); debris.clear();
+        for (WorldObject& o : objects) if (o.kind == ObjKind::Enemy) ApplyEnemyType(o); loadEvents(worldDir + "/events.txt", events); loadBreakables(worldDir + "/breakable.txt", breakables);
         nextObjId = 1; for (auto& o : objects) nextObjId = std::max(nextObjId, o.id + 1);
         movingObj = -1; placing.clear(); RebuildSolids();
     }
@@ -2156,8 +2172,8 @@ struct App {
         Prop("Model");
         if (ImGui::BeginCombo("##model", o.model.c_str())) { for (auto& n : AllModelNames()) if (ImGui::Selectable(n.c_str(), n == o.model)) { o.model = n; ch_ = true; } ImGui::EndCombo(); }
         ModelMaterialUI(o.model);
-        { int k = (int)o.kind; const char* kn[] = { "Prop (it just stands there)", "Door (forcefield, opens)", "Platform (moves along a path)", "Pickup", "Checkpoint", "Teleporter", "Trigger zone (invisible)", "Light", "Particles", "Map camera (invisible: a Map Station uses it)", "Map Station" }; Prop("Kind");
-          if (ImGui::Combo("##kind", &k, kn, 11)) { if (k == 1) MakeDoor(o); else if (k == 2) MakePlatform(o); else { o.kind = (ObjKind)k; if (o.kind == ObjKind::Pickup || o.kind == ObjKind::Trigger || o.kind == ObjKind::Light || o.kind == ObjKind::Particles || o.kind == ObjKind::MapCamera) o.collide = Collide::None; } platRun.erase(o.id); ch_ = true; } }
+        { int k = (int)o.kind; const char* kn[] = { "Prop (it just stands there)", "Door (forcefield, opens)", "Platform (moves along a path)", "Pickup", "Checkpoint", "Teleporter", "Trigger zone (invisible)", "Light", "Particles", "Map camera (invisible: a Map Station uses it)", "Map Station", "Enemy" }; Prop("Kind");
+          if (ImGui::Combo("##kind", &k, kn, 12)) { if (k == 1) MakeDoor(o); else if (k == 2) MakePlatform(o); else if (k == (int)ObjKind::Enemy) { o.kind = ObjKind::Enemy; if (!enemies.find(o.enemyType) && !enemies.types.empty()) o.enemyType = enemies.types[0].id; ApplyEnemyType(o); } else { o.kind = (ObjKind)k; if (o.kind == ObjKind::Pickup || o.kind == ObjKind::Trigger || o.kind == ObjKind::Light || o.kind == ObjKind::Particles || o.kind == ObjKind::MapCamera) o.collide = Collide::None; } platRun.erase(o.id); ch_ = true; } }
         Prop("Position"); ch_ |= ImGui::InputScalarN("##pos", ImGuiDataType_Double, &o.pos.x, 3, nullptr, nullptr, "%.2f");
         { float y = (float)o.yaw; Prop("Turn"); if (ImGui::SliderFloat("##yaw", &y, -180, 180, "%.0f deg")) { o.yaw = y; ch_ = true; }
           if (ImGui::SmallButton("-90")) { o.yaw = std::fmod(o.yaw - 90 + 540, 360) - 180; ch_ = true; } if (FlowButton("+90", true)) { o.yaw = std::fmod(o.yaw + 90 + 540, 360) - 180; ch_ = true; } }
@@ -2166,7 +2182,8 @@ struct App {
         if (o.kind == ObjKind::Light) LightInspector(o);
         if (o.kind == ObjKind::Particles) ParticleInspector(o);
         if (o.kind == ObjKind::MapCamera || o.kind == ObjKind::MapStation) MapInspector(o);
-        if (o.kind != ObjKind::MapCamera && o.kind != ObjKind::Light && o.kind != ObjKind::Trigger) ScanInspector(o);
+        if (o.kind == ObjKind::Enemy) EnemyInspector(o);
+        else if (o.kind != ObjKind::MapCamera && o.kind != ObjKind::Light && o.kind != ObjKind::Trigger) ScanInspector(o);
         if (o.kind == ObjKind::Door) DoorInspector(o, ch_);
         else if (o.kind != ObjKind::Trigger) { float sc = (float)o.scale; Prop("Size"); if (ImGui::SliderFloat("##scale", &sc, 0.1f, 8, "x %.2f", ImGuiSliderFlags_Logarithmic)) { o.scale = sc; ch_ = true; } }
         if (m && o.kind != ObjKind::Door && o.kind != ObjKind::Trigger) {
@@ -2686,6 +2703,7 @@ struct App {
                 const WorldObject& o = objects[oi];
                 if (o.kind == ObjKind::Trigger || Gone(o)) continue;   // zones: invisible (the editor shows their box)
                 if ((o.kind == ObjKind::Light || o.kind == ObjKind::Particles || o.kind == ObjKind::MapCamera) && (playMode || plainView) && IsBuiltin(o.model)) continue;   // the bulb / nozzle: editor only
+                if (o.kind == ObjKind::Enemy && playMode) { if (EnemyDrawable(o)) DrawEnemy(o, pass, camPos); continue; }   // enemies: where they are now
                 if (o.kind == ObjKind::Pickup) {   // pickups turn and bob; gone once taken
                     if (playMode && inv.has(o.id)) continue;
                     WorldObject at = o; at.yaw += animTime * 90; at.pos.y += 0.12 + 0.1 * std::sin(animTime * 2.5 + o.id); DrawObject(at, pass); continue;
@@ -2693,7 +2711,7 @@ struct App {
                 if (o.kind != ObjKind::Platform) { DrawObject(o, pass); continue; }
                 for (const V3& off : PlatformOffsets(o)) { WorldObject at = o; at.pos = o.pos + off; DrawObject(at, pass); }
             }
-            DrawBall(pass, camPos); DrawMissiles(pass, camPos);
+            DrawBall(pass, camPos); DrawMissiles(pass, camPos); DrawDebris(pass, camPos); DrawEnemyDrops(pass, camPos);
         };
         ID3D11ShaderResourceView* none[5] = {};
         ctx->PSSetShaderResources(0, 5, none);
@@ -2847,7 +2865,7 @@ struct App {
             ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());
         }
         if (weather.boltAge < 0.45 && E.atmosphere > 0.5f) DrawBolt();
-        DrawFields(); DrawSpheres(); DrawOrbs();   // door forcefields and test-beam shots
+        DrawFields(); DrawSpheres(); DrawOrbs(); DrawEnemyShots();   // door forcefields and test-beam shots
         DrawParticles();
         if (E.particleKind > 0.5f && E.particleAmount > 0.01f) {   // dust, embers, spores or ice sparkles floating in the air
             ctx->OMSetBlendState(bsAlpha.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsTestOnly.Get(), 0); ctx->RSSetState(rsNoCull.Get());
@@ -2858,6 +2876,7 @@ struct App {
 
         // ---- Play mode: the HUD's 3D parts, lit like the world (sun, its shadows, sky light, light objects), in front of everything
         if (playMode && (!hud.parts.empty() || !weapons.empty())) DrawHudPartsLit(fc, f, r, u, srvs, samps);
+        DrawEnemyFlashes();   // hit enemies flash
         bool scanMaskOn = DrawScanMask();   // the Scan Visor: what can be scanned, for the outlines
 
         // ---- clouds and ground fog over the picture (needs the depth: unbind it as a target first)
@@ -3217,6 +3236,7 @@ struct App {
         inv = PlayInventory{};
         if (!weapons.missileTypes.empty() && !weapons.missileCounter.empty()) inv.counts[weapons.missileCounter] = weapons.missileStart;
         weapState.missile = 0; chargedOn = false;
+        enemyRt.clear(); enemyGone.clear(); zonesCleared.clear(); enemyShots.clear(); enemyDrops.clear(); debris.clear(); enemyAnimT.clear(); enemyAnimClip.clear(); playerInvuln = 0;
         visor = 0; visorFlash = 0; scanLog.clear(); scanOpen = false; scanProgress = 0; scanTargetId = 0; menuScan = 0; menuScroll.clear(); menuScrollWho.clear();
         seenMaps.clear(); stationsUsed.clear(); mapGpu.clear(); mapGpuWorld.clear(); mapOpen = false;
         takenByWorld.clear(); insideNow.clear(); firedOnce.clear(); teleportLock = 0; bigMsgT = 0; playStartWorld = CurrentWorld(); startEditCam = editCam;
@@ -3901,8 +3921,8 @@ struct App {
             }
             else if (toolSel == 2) {
                 ImGui::SeparatorText("Add");
-                const std::pair<const char*, const char*> add[] = { { "Light", "@light" }, { "Particles", "@emitter" }, { "Health", "@health" }, { "Key", "@key" }, { "Gem", "@gem" }, { "Checkpoint", "@checkpoint" }, { "Teleporter", "@teleporter" }, { "Trigger zone", "@zone" }, { "Map Station", "@map-station" }, { "Map camera", "@map-camera" } };
-                for (int a = 0; a < 10; a++) { if (a) Flow(ButtonW(add[a].first)); if (ImGui::Button(add[a].first)) StartPlacing(add[a].second); }
+                const std::pair<const char*, const char*> add[] = { { "Light", "@light" }, { "Particles", "@emitter" }, { "Health", "@health" }, { "Key", "@key" }, { "Gem", "@gem" }, { "Checkpoint", "@checkpoint" }, { "Teleporter", "@teleporter" }, { "Trigger zone", "@zone" }, { "Map Station", "@map-station" }, { "Map camera", "@map-camera" }, { "Enemy", "@enemy-walker" } };
+                for (int a = 0; a < 11; a++) { if (a) Flow(ButtonW(add[a].first)); if (ImGui::Button(add[a].first)) StartPlacing(add[a].second); }
                 Hint("Click an object in the viewport to pick it. Pick a model in Assets > Models to place it."); if (!placing.empty()) Hint("Placing: %s. R turns it, Alt puts it off the grid, right click stops.", placing.c_str()); }
             else Hint("More tools are coming to this slot.");
             break;
@@ -3933,7 +3953,7 @@ struct App {
     void LoadHud() { items = defaultItems(); loadItems(projectDir + "/items.txt", items); assetFolders = AssetFolders{}; loadAssetFolders(projectDir + "/asset_folders.txt", assetFolders);
         animBlends = AnimBlends{}; loadAnimBlends(projectDir + "/anim_blend.txt", animBlends); cannonBlend.reset(); doorBlend.clear(); viewerBlend.reset();
         materials = Materials{}; loadMaterials(projectDir + "/materials.txt", materials); matsDirty = true; soundCache.clear(); playerSounds = PlayerSounds{}; loadPlayerSounds(projectDir + "/player_sounds.txt", playerSounds); activeTl.clear();
-        hud = HudLayout{}; loadHud(HudPath(), hud); visors = defaultVisors(); loadVisors(projectDir + "/visors.txt", visors); scanLib = ScanLibrary{}; loadScanLibrary(projectDir + "/scans.txt", scanLib); MigrateLegacyScans(); menu = defaultMenu(); loadMenu(projectDir + "/menu.txt", menu); weapons = WeaponSet{}; loadWeapons(projectDir + "/weapons.txt", weapons); weapSel = 0; weapState = WeaponState{}; hudImages.clear(); hudSel = 0; hudPlane = 0; hudEl = -1; hudPart = 0; }
+        hud = HudLayout{}; loadHud(HudPath(), hud); visors = defaultVisors(); loadVisors(projectDir + "/visors.txt", visors); scanLib = ScanLibrary{}; loadScanLibrary(projectDir + "/scans.txt", scanLib); MigrateLegacyScans(); menu = defaultMenu(); loadMenu(projectDir + "/menu.txt", menu); enemies = defaultEnemies(); loadEnemies(projectDir + "/enemies.txt", enemies); weapons = WeaponSet{}; loadWeapons(projectDir + "/weapons.txt", weapons); weapSel = 0; weapState = WeaponState{}; hudImages.clear(); hudSel = 0; hudPlane = 0; hudEl = -1; hudPart = 0; }
     void SaveHud() {
         if (projectDir.empty()) return; std::error_code ec;
         if (hud.empty()) fs::remove(fs::u8path(HudPath()), ec); else saveHud(HudPath(), hud);
@@ -4582,6 +4602,8 @@ struct App {
             selectMenuTab = false;
             if (ImGui::BeginTabItem("Visors", nullptr, selectVisorsTab ? ImGuiTabItemFlags_SetSelected : 0)) { VisorsTab(); ImGui::EndTabItem(); }
             selectVisorsTab = false;
+            if (ImGui::BeginTabItem("Enemies", nullptr, selectEnemiesTab ? ImGuiTabItemFlags_SetSelected : 0)) { EnemiesTab(); ImGui::EndTabItem(); }
+            selectEnemiesTab = false;
             ImGui::EndTabBar();
         }
         ImGui::End();
@@ -4979,6 +5001,10 @@ struct App {
         }
         if (made) SaveScans();
     }
+    const ScanDef* ScanDefOf(const WorldObject& o) const {   // its scan entry: its own, or (enemies) its type's
+        if (o.kind == ObjKind::Enemy) { const EnemyType* t = enemies.find(o.enemyType); return t && t->scanId ? scanLib.find(t->scanId) : nullptr; }
+        return o.scan.on ? scanLib.find(o.scan.id) : nullptr;
+    }
     int ScanUses(int id) const { int n = 0; for (const WorldObject& o : objects) if (o.scan.on && o.scan.id == id) n++; return n; }
     ScanLog scanLog; uint32_t scanTargetId = 0; float scanProgress = 0; bool scanOpen = false, holdScan = false; ScanEntry scanShown;
     struct ScanSeen { uint32_t id; int scanId; V3 c; double dist, ang, radius; bool done, important; std::string name; };
@@ -5012,10 +5038,13 @@ struct App {
         if (!playMode || visor != 1 || player.ball || play.dead() || !world) return;
         V3 eye = player.eye(), f = player.forward(); double range = visors.scanRange, half = settings.fov * 3.14159265358979 / 180 * 0.5 * 1.25;
         for (const WorldObject& o : objects) {
-            const ScanDef* def = o.scan.on ? scanLib.find(o.scan.id) : nullptr;
+            const ScanDef* def = ScanDefOf(o);
             if (!def || evHidden.count(o.id)) continue;
             FrameRef fr = ModelOf(o); V3 c = o.pos + V3{ 0, 0.5, 0 }; double rad = 0.5;
-            if (fr) { Box3 b = objectBounds(o, *fr); c = (b.lo + b.hi) * 0.5; V3 e = (b.hi - b.lo) * 0.5; rad = std::max(0.3, std::sqrt(e.x * e.x + e.y * e.y + e.z * e.z) * 0.6); }
+            if (o.kind == ObjKind::Enemy) {   // an enemy: where it is now (and only while alive)
+                auto it = enemyRt.find(o.id); const EnemyType* et = enemies.find(o.enemyType); if (it == enemyRt.end() || !it->second.alive() || !et) continue;
+                Box3 b = enemyBox(it->second, *et); c = (b.lo + b.hi) * 0.5; V3 e = (b.hi - b.lo) * 0.5; rad = std::max(0.3, std::sqrt(e.x * e.x + e.y * e.y + e.z * e.z) * 0.6);
+            } else if (fr) { Box3 b = objectBounds(o, *fr); c = (b.lo + b.hi) * 0.5; V3 e = (b.hi - b.lo) * 0.5; rad = std::max(0.3, std::sqrt(e.x * e.x + e.y * e.y + e.z * e.z) * 0.6); }
             V3 d = c - eye; double l = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z); if (l > range || l < 1e-3) continue;
             double ang = std::acos(std::clamp((d.x * f.x + d.y * f.y + d.z * f.z) / l, -1.0, 1.0)); if (ang > half) continue;
             if (!canSee(*world, eye, c, range) && !canSee(*world, eye, c + V3{ 0, rad * 0.7, 0 }, range)) continue;
@@ -5033,7 +5062,7 @@ struct App {
         bool hold = (Playing() && Down(VK_RBUTTON)) || holdScan;
         if (!best || !hold) { scanProgress = 0; return; }
         const WorldObject* o = nullptr; for (const WorldObject& q : objects) if (q.id == id) { o = &q; break; }
-        const ScanDef* def = o ? scanLib.find(o->scan.id) : nullptr;
+        const ScanDef* def = o ? ScanDefOf(*o) : nullptr;
         if (!o || !def) return;
         float time = best->done ? 0.3f : (def->time > 0 ? def->time : visors.scanTime);
         scanProgress += (float)dt / std::max(0.05f, time);
@@ -5076,7 +5105,7 @@ struct App {
             float k = sc.id == scanTargetId ? 1.25f : 1.f;
             float col[4] = { std::min(1.f, ((c >> 16) & 255) / 255.f * k), std::min(1.f, ((c >> 8) & 255) / 255.f * k), std::min(1.f, (c & 255) / 255.f * k), 1 };
             ctx->UpdateSubresource(cbFlat.Get(), 0, nullptr, col, 0, 0);
-            DrawObject(*o, 0); DrawObject(*o, 1);
+            if (o->kind == ObjKind::Enemy) DrawEnemy(*o, 0, camPos); else { DrawObject(*o, 0); DrawObject(*o, 1); }
         }
         ctx->RSSetState(rsCull.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0);
         ctx->OMSetRenderTargets(0, nullptr, nullptr);
@@ -5341,13 +5370,16 @@ struct App {
     }
     void RenderScanModel() {   // the picked scan entry's model, turning (for a Scan model item)
         if (smModel.empty() || !menuShown) return;
-        FrameRef f = ModelNamed(smModel); if (!f) return;
-        int w = smWantW, h = smWantH; if (w != smDW || h != smDH) { MakeTarget(scanModelView, w, h, &scanModelDSV); smDW = w; smDH = h; }
-        const float clear[4] = { 0, 0, 0, 0 };
-        ctx->OMSetRenderTargets(1, scanModelView.rtv.GetAddressOf(), scanModelDSV.Get()); ctx->ClearRenderTargetView(scanModelView.rtv.Get(), clear); ctx->ClearDepthStencilView(scanModelDSV.Get(), D3D11_CLEAR_DEPTH, 1, 0);
+        RenderModelSpin(scanModelView, scanModelDSV, smDW, smDH, smWantW, smWantH, smModel, 0, 0, 0, 0);
+    }
+    void RenderModelSpin(HudTarget& tgt, ComPtr<ID3D11DepthStencilView>& dsvT, int& dw, int& dh, int w, int h, const std::string& model, float br, float bg, float bb2, float ba) {   // a model alone, turning
+        FrameRef f = ModelNamed(model); if (!f || w < 8 || h < 8) return;
+        if (w != dw || h != dh) { MakeTarget(tgt, w, h, &dsvT); dw = w; dh = h; }
+        const float clear[4] = { br, bg, bb2, ba };
+        ctx->OMSetRenderTargets(1, tgt.rtv.GetAddressOf(), dsvT.Get()); ctx->ClearRenderTargetView(tgt.rtv.Get(), clear); ctx->ClearDepthStencilView(dsvT.Get(), D3D11_CLEAR_DEPTH, 1, 0);
         D3D11_VIEWPORT v{ 0, 0, (float)w, (float)h, 0, 1 }; ctx->RSSetViewports(1, &v);
-        WorldObject vo; vo.model = smModel; vo.yaw = (float)std::fmod(uiClock * 35.0, 360.0);
-        Box3 bb = objectBounds(vo, *f); V3 centre = (bb.lo + bb.hi) * 0.5, ext = (bb.hi - bb.lo) * 0.5;
+        WorldObject vo; vo.model = model; vo.yaw = (float)std::fmod(uiClock * 35.0, 360.0);
+        Box3 bbx = objectBounds(vo, *f); V3 centre = (bbx.lo + bbx.hi) * 0.5, ext = (bbx.hi - bbx.lo) * 0.5;
         double rad = std::max(0.2, std::sqrt(ext.x * ext.x + ext.y * ext.y + ext.z * ext.z));
         double dist = rad / std::tan(XMConvertToRadians(18)) * std::max(1.0, (double)h / w), pitch = 0.22;
         V3 eye = centre + V3{ 0, std::sin(pitch), -std::cos(pitch) } * dist;
@@ -5764,6 +5796,502 @@ struct App {
         if (uses > 1) ImGui::TextDisabled("(changes here show on all %d objects with this entry)", uses);
         Hint("The Scan Visor shows a marker on it. Scanning it once puts the entry into the scan index (the Logbook in the menu), and every object with the same entry counts as scanned too (its marker turns blue).");
         if (ch) SaveScans();
+    }
+    // ================================================================== enemies (Player editor > Enemies): types by ID, placed as Enemy objects
+    EnemySet enemies;
+    void SaveEnemies() { if (!projectDir.empty()) saveEnemies(projectDir + "/enemies.txt", enemies); }
+    std::map<uint32_t, EnemyState> enemyRt;                 // Play mode: each enemy's state, by object id
+    std::set<std::string> enemyGone;                        // "world#id": defeated for good (respawn: never)
+    std::set<std::string> zonesCleared;                     // "world#id": the zone's "cleared" card has fired
+    std::map<uint32_t, float> enemyAnimT; std::map<uint32_t, int> enemyAnimClip;
+    struct EnemyShot { V3 pos, dir; float speed, damage, life; uint32_t color; std::string from; };
+    std::vector<EnemyShot> enemyShots;
+    struct EnemyDropRt { V3 pos; std::string what; int amount; float life; uint32_t id; };
+    std::vector<EnemyDropRt> enemyDrops; uint32_t dropSeq = 0;
+    float playerInvuln = 0; uint32_t enemyRand = 12345;
+    float Rand01() { enemyRand = enemyRand * 1664525u + 1013904223u; return (enemyRand >> 8) / 16777216.f; }
+    // the model, fitted to the type's size (its largest side)
+    double EnemyFit(const EnemyType& t) {
+        WorldObject probe; probe.model = t.model; FrameRef f = ModelOf(probe); if (!f) return 1;
+        double m = std::max({ (double)f->sx, (double)f->sy, (double)f->sz, 0.05 }); return t.size / m;
+    }
+    void ApplyEnemyType(WorldObject& o) {   // the object shows its type's model, at the type's size
+        const EnemyType* t = enemies.find(o.enemyType); if (!t) return;
+        o.model = t->model; o.scale = EnemyFit(*t); o.collide = Collide::None;
+    }
+    bool EnemySolid(int x, int y, int z) const {
+        if (!world->loaded(x, y, z)) return true;   // (not there yet: a wall, so nothing falls out of the world)
+        BlockId v = world->get(x, y, z); if (v == AIR) return false;
+        const BlockDef& d = reg.get(v); return d.solid && !d.liquid;
+    }
+    V3 PlayerMiddle() const { return player.ball ? BallCentreC() : player.feet + V3{ 0, player.height * 0.55, 0 }; }
+    V3 BallCentreC() const { return player.feet + V3{ 0, std::max(0.05f, game.player.ballSize * 0.5f), 0 }; }
+    Box3 PlayerBox() const { double h = player.ball ? std::max(0.1f, game.player.ballSize) : player.height; return { { player.feet.x - player.halfW, player.feet.y, player.feet.z - player.halfW }, { player.feet.x + player.halfW, player.feet.y + h, player.feet.z + player.halfW } }; }
+    static bool BoxesTouch(const Box3& a, const Box3& b) { return a.lo.x < b.hi.x && a.hi.x > b.lo.x && a.lo.y < b.hi.y && a.hi.y > b.lo.y && a.lo.z < b.hi.z && a.hi.z > b.lo.z; }
+    void HurtPlayer(float dmg, V3 from, const std::string& by) {
+        if (!playMode || play.dead() || playerInvuln > 0 || dmg <= 0) return;
+        play.health -= dmg * playRules.damageTaken; play.hurtFlash = 0.4; playerInvuln = 0.8f;
+        V3 k = player.feet - from; k.y = 0; double l = std::sqrt(k.x * k.x + k.z * k.z); if (l > 1e-3) { player.vel.x += k.x / l * 6; player.vel.z += k.z / l * 6; } player.vel.y = std::max(player.vel.y, 4.0); player.onGround = false;
+        if (play.health <= 0) { play.health = 0; static std::string why; why = "defeated by " + by; play.cause = why.c_str(); }
+    }
+    const WorldObject* ObjById(uint32_t id) const { for (const WorldObject& o : objects) if (o.id == id) return &o; return nullptr; }
+    std::string GoneKey(uint32_t id) const { return CurrentWorld() + "#" + std::to_string(id); }
+    // a hit on an enemy: what it does depends on its weaknesses
+    void DamageEnemy(uint32_t id, float base, const std::string& weapon, bool missile, bool charged, bool bomb, V3 from) {
+        auto it = enemyRt.find(id); if (it == enemyRt.end() || !it->second.alive()) return;
+        const WorldObject* o = ObjById(id); const EnemyType* t = enemies.find(it->second.type); if (!o || !t) return;
+        float d = enemyDamage(*t, weapon, missile, charged, bomb, base);
+        Box3 b = enemyBox(it->second, *t); V3 c = (b.lo + b.hi) * 0.5;
+        if (d <= 0) {   // immune: it glances off
+            ParticleSettings p = particlePreset("Impact"); p.burst = 12; p.color0 = 0xC0C0C0; p.color1 = 0x606060; SpawnFx(p, c, { 0, 1, 0 });
+            if (it->second.mode == EnemyMode::Idle && t->move != EnemyMove::Drop && t->move != EnemyMove::Crawl) it->second.mode = EnemyMode::Chase;
+            return;
+        }
+        enemyHit(it->second, *t, d, from);
+        if (!t->sndHurt.empty() && it->second.alive()) { SoundUse u; u.file = t->sndHurt; PlaySound(u, 1, &c); }
+        if (!it->second.alive()) KillEnemy(*o, it->second, *t);
+    }
+    void KillEnemy(const WorldObject& o, EnemyState& s, const EnemyType& t, bool drops = true) {
+        Box3 b = enemyBox(s, t); V3 c = (b.lo + b.hi) * 0.5;
+        if (!t.sndDie.empty()) { SoundUse u; u.file = t.sndDie; PlaySound(u, 1, &c); } else PlaySound(playerSounds.boom, 0.5f, &c);
+        { ParticleSettings p = particlePreset("Impact"); p.burst = t.death == EnemyDeath::Burst ? 90 : 35; p.speed = 7; p.color0 = 0xFFFFFF; p.color1 = t.color; p.size0 = 0.09f; SpawnFx(p, c, { 0, 1, 0 }); }
+        flashes.push_back({ c, 0, { 2.5, 1.6, 0.8 }, 6 });
+        bool animated = false;
+        if (t.death == EnemyDeath::Animation) { auto mi = meshModels.find(t.model); animated = mi != meshModels.end() && mi->second.findClip(t.animDie) >= 0; }
+        if (t.death == EnemyDeath::Explode || t.death == EnemyDeath::Fracture || (t.death == EnemyDeath::Animation && !animated)) SpawnDebris(o, s, t, t.death == EnemyDeath::Explode);
+        if (drops) for (const EnemyDrop& d : t.drops) if (Rand01() < d.chance) {   // what it leaves behind
+            V3 at = c + V3{ (Rand01() - 0.5) * 0.6, 0, (Rand01() - 0.5) * 0.6 }; if (at.y < s.pos.y + 0.3) at.y = s.pos.y + 0.3;
+            enemyDrops.push_back({ at, d.what, d.amount, 12, ++dropSeq });
+        }
+        if (t.respawn == EnemyRespawn::Never) enemyGone.insert(GoneKey(o.id));
+        s.respawnIn = t.respawn == EnemyRespawn::After ? t.respawnTime : -1;
+        Signal(When::Defeated, o.name, t.name);
+        for (const WorldObject& z : objects) {   // a zone with every enemy in it defeated
+            if (z.kind != ObjKind::Trigger || z.name.empty() || zonesCleared.count(GoneKey(z.id))) continue;
+            Box3 zb{ z.pos - z.size * 0.5, z.pos + z.size * 0.5 }; zb.lo.y = z.pos.y; zb.hi.y = z.pos.y + z.size.y;
+            int in = 0, alive = 0;
+            for (const WorldObject& e : objects) {
+                if (e.kind != ObjKind::Enemy) continue;
+                V3 p = e.pos; if (p.x < zb.lo.x || p.x > zb.hi.x || p.y < zb.lo.y - 0.5 || p.y > zb.hi.y || p.z < zb.lo.z || p.z > zb.hi.z) continue;
+                in++; auto r = enemyRt.find(e.id); if (r == enemyRt.end() || r->second.alive()) alive++;
+            }
+            if (in > 0 && alive == 0) { zonesCleared.insert(GoneKey(z.id)); Signal(When::ZoneCleared, z.name); }
+        }
+    }
+    // ---- dying: the model in pieces (explode: little cubes; fracture: a few big chunks), flung and tumbling
+    struct DebrisSet { std::vector<ModelGpu> pieces; std::vector<V3> centres; };
+    std::map<std::string, DebrisSet> debrisSets;
+    struct Debris { std::string set, model; int piece; V3 pos, vel, ax, ay, az, spinAxis; double spin, scale; float life, maxLife; };
+    std::vector<Debris> debris;
+    bool ModelTriangles(const std::string& name, std::vector<Vtx>& out, bool& mesh) {   // the model's triangles, as loose triangles (block units)
+        out.clear(); mesh = false;
+        auto mi = meshModels.find(name);
+        if (mi != meshModels.end()) {
+            const MeshModel& m = mi->second; mesh = true; int none[3] = { 0, 0, 0 };
+            for (size_t i = 0; i + 2 < m.idx.size(); i += 3) for (int k = 0; k < 3; k++) {
+                const MeshVert& v = m.raw[m.idx[i + k]]; V3 p = m.blockPos(v);
+                out.push_back({ (float)p.x, (float)p.y, (float)p.z, v.uv[0], v.uv[1], 16383.f, packLit(1, none, false), packNormal(v.n[0], v.n[1], v.n[2], 0) });
+            }
+            return !out.empty();
+        }
+        const BlockModel* m = models.find(name); if (!m) return false;
+        for (int cy = 0; cy * CS < m->sy; cy++) for (int cz = 0; cz * CS < m->sz; cz++) for (int cx = 0; cx * CS < m->sx; cx++) {
+            MeshInput in; in.pos = { cx, cy, cz }; in.blocks.assign(PAD * PAD * PAD, AIR);
+            for (int y = -1; y <= CS; y++) for (int z = -1; z <= CS; z++) for (int x = -1; x <= CS; x++) { BlockId v = m->at(cx * CS + x, cy * CS + y, cz * CS + z); if (v != AIR && !reg.has(v)) v = AIR; in.blocks[padIdx(x, y, z)] = v; }
+            ChunkMesh cm; buildMesh(reg, in, cm);
+            for (const MeshData* md : { &cm.opaque, &cm.cutout }) for (uint32_t i : md->i) { Vtx v = md->v[i]; v.x += cx * CS; v.y += cy * CS; v.z += cz * CS; out.push_back(v); }
+        }
+        return !out.empty();
+    }
+    DebrisSet& DebrisOf(const std::string& model, bool explode) {
+        std::string key = model + (explode ? "#explode" : "#fracture");
+        auto it = debrisSets.find(key); if (it != debrisSets.end()) return it->second;
+        DebrisSet& ds = debrisSets[key];
+        std::vector<Vtx> tris; bool mesh = false; if (!ModelTriangles(model, tris, mesh)) return ds;
+        V3 lo{ 1e9, 1e9, 1e9 }, hi{ -1e9, -1e9, -1e9 };
+        for (const Vtx& v : tris) { lo.x = std::min(lo.x, (double)v.x); lo.y = std::min(lo.y, (double)v.y); lo.z = std::min(lo.z, (double)v.z); hi.x = std::max(hi.x, (double)v.x); hi.y = std::max(hi.y, (double)v.y); hi.z = std::max(hi.z, (double)v.z); }
+        V3 ext = hi - lo; double big = std::max({ ext.x, ext.y, ext.z, 1e-3 });
+        std::vector<V3> seeds; double cell = 0;
+        if (explode) {   // little cubes: a grid (one block of a block model, or about 1/7 of the model), at most ~180 pieces
+            cell = mesh ? big / 7 : 1.0;
+            while ((ext.x / cell + 1) * (ext.y / cell + 1) * (ext.z / cell + 1) > 180) cell *= 1.4;
+        } else {   // a few big chunks: the nearest of some random points
+            uint32_t r = 777; auto rnd = [&]() { r = r * 1664525u + 1013904223u; return (r >> 8) / 16777216.0; };
+            int n = 9; for (int i = 0; i < n; i++) seeds.push_back({ lo.x + ext.x * rnd(), lo.y + ext.y * rnd(), lo.z + ext.z * rnd() });
+        }
+        std::map<long long, std::vector<Vtx>> groups;
+        for (size_t i = 0; i + 2 < tris.size(); i += 3) {
+            V3 c{ (tris[i].x + tris[i + 1].x + tris[i + 2].x) / 3.0, (tris[i].y + tris[i + 1].y + tris[i + 2].y) / 3.0, (tris[i].z + tris[i + 1].z + tris[i + 2].z) / 3.0 };
+            V3 e1{ tris[i + 1].x - tris[i].x, tris[i + 1].y - tris[i].y, tris[i + 1].z - tris[i].z }, e2{ tris[i + 2].x - tris[i].x, tris[i + 2].y - tris[i].y, tris[i + 2].z - tris[i].z };
+            V3 nn = cross(e1, e2); { double l = std::sqrt(nn.x * nn.x + nn.y * nn.y + nn.z * nn.z); nn = l > 1e-9 ? nn * (1 / l) : V3{ 0, 1, 0 }; }
+            c = c - nn * (explode ? cell * 0.25 : 0.01);   // (a face belongs to the cube behind it)
+            long long key;
+            if (explode) key = ((long long)std::floor((c.x - lo.x) / cell) * 1000 + (long long)std::floor((c.y - lo.y) / cell)) * 1000 + (long long)std::floor((c.z - lo.z) / cell);
+            else { int best = 0; double bd = 1e18; for (int k = 0; k < (int)seeds.size(); k++) { V3 d = c - seeds[k]; double dd = d.x * d.x + d.y * d.y + d.z * d.z; if (dd < bd) { bd = dd; best = k; } } key = best; }
+            auto& g = groups[key]; g.push_back(tris[i]); g.push_back(tris[i + 1]); g.push_back(tris[i + 2]);
+        }
+        for (auto& kv : groups) {
+            MeshData md; md.v = kv.second; V3 c{ 0, 0, 0 };
+            for (uint32_t k = 0; k < (uint32_t)md.v.size(); k++) { md.i.push_back(k); c = c + V3{ md.v[k].x, md.v[k].y, md.v[k].z }; }
+            c = c * (1.0 / std::max<size_t>(1, md.v.size()));
+            ModelGpu g; GpuChunk gc; Upload(md, gc.vbO, gc.ibO, gc.nO); g.parts.push_back({ { 0, 0, 0 }, std::move(gc) });
+            g.mesh = mesh; if (mesh) g.tex = GpuModel(model).tex;
+            ds.pieces.push_back(std::move(g)); ds.centres.push_back(c);
+        }
+        return ds;
+    }
+    void SpawnDebris(const WorldObject& o, const EnemyState& s, const EnemyType& t, bool explode) {
+        DebrisSet& ds = DebrisOf(t.model, explode); FrameRef f = ModelOf(o); if (ds.pieces.empty() || !f) return;
+        double sc = EnemyFit(t); V3 up = s.up, fw = s.fwd, rt = Norm(cross(up, fw)); fw = cross(rt, up);
+        std::string key = t.model + (explode ? "#explode" : "#fracture");
+        V3 middle = (enemyBox(s, t).lo + enemyBox(s, t).hi) * 0.5;
+        for (size_t i = 0; i < ds.pieces.size() && debris.size() < 600; i++) {
+            V3 l = ds.centres[i] - f->pivot; V3 p = s.pos + rt * (l.x * sc) + up * (l.y * sc) + fw * (l.z * sc);
+            V3 out = p - middle; double ol = std::sqrt(out.x * out.x + out.y * out.y + out.z * out.z); out = ol > 1e-4 ? out * (1 / ol) : V3{ 0, 1, 0 };
+            double sp = explode ? 3 + Rand01() * 5 : 2 + Rand01() * 3;
+            Debris d; d.set = key; d.model = t.model; d.piece = (int)i; d.pos = p; d.vel = out * sp + V3{ 0, 2.5 + Rand01() * 2.5, 0 } + s.vel * 0.5;
+            d.ax = rt; d.ay = up; d.az = fw; d.spinAxis = Norm(V3{ Rand01() - 0.5, Rand01() - 0.5, Rand01() - 0.5 } + V3{ 0, 0.01, 0 }); d.spin = (explode ? 8 : 4) * (0.5 + Rand01());
+            d.scale = sc; d.maxLife = d.life = (explode ? 1.6f : 2.4f) + Rand01() * 0.8f; debris.push_back(d);
+        }
+    }
+    void UpdateDebris(double dt) {
+        for (Debris& d : debris) {
+            d.life -= (float)dt; d.vel.y -= 20 * dt;
+            V3 np = d.pos + d.vel * dt;
+            if (EnemySolid((int)std::floor(np.x), (int)std::floor(np.y - 0.05), (int)std::floor(np.z)) && d.vel.y < 0) {   // bounce on the floor
+                np.y = std::floor(np.y - 0.05) + 1.05; d.vel.y = -d.vel.y * 0.3; d.vel.x *= 0.6; d.vel.z *= 0.6; d.spin *= 0.6;
+            }
+            if (EnemySolid((int)std::floor(np.x), (int)std::floor(np.y), (int)std::floor(d.pos.z))) { np.x = d.pos.x; d.vel.x *= -0.3; }
+            if (EnemySolid((int)std::floor(d.pos.x), (int)std::floor(np.y), (int)std::floor(np.z))) { np.z = d.pos.z; d.vel.z *= -0.3; }
+            d.pos = np;
+            double a = d.spin * dt, c = std::cos(a), s = std::sin(a); V3 k = d.spinAxis;
+            auto rot = [&](V3 v) { V3 kxv = cross(k, v); double kd = k.x * v.x + k.y * v.y + k.z * v.z; return v * c + kxv * s + k * (kd * (1 - c)); };
+            d.ax = Norm(rot(d.ax)); d.ay = Norm(rot(d.ay)); d.az = Norm(cross(d.ax, d.ay)); d.ay = cross(d.az, d.ax);
+        }
+        debris.erase(std::remove_if(debris.begin(), debris.end(), [](const Debris& d) { return d.life <= 0; }), debris.end());
+    }
+    // draws a model's mesh (or a piece of it) with any axes: pos is where its pivot goes
+    void DrawModelPiece(const std::string& model, int pass, V3 cam, V3 pos, V3 ax, V3 ay, V3 az, const ModelGpu& g) {
+        WorldObject probe; probe.model = model; FrameRef m = ModelOf(probe); if (!m) return;
+        BindModelTex(g, model);
+        for (auto& part : g.parts) {
+            const GpuChunk& gc = part.second; UINT n = pass == 0 ? gc.nO : pass == 1 ? gc.nC : gc.nW; if (!n) continue;
+            V3 l{ part.first.x * (double)CS - m->pivot.x, part.first.y * (double)CS - m->pivot.y, part.first.z * (double)CS - m->pivot.z };
+            V3 org = pos - cam + ax * l.x + ay * l.y + az * l.z;
+            ChunkCB cc{ { (float)org.x, (float)org.y, (float)org.z, 0 }, { (float)ax.x, (float)ax.y, (float)ax.z, 0 }, { (float)ay.x, (float)ay.y, (float)ay.z, 0 }, { (float)az.x, (float)az.y, (float)az.z, 0 } };
+            ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);
+            UINT stride = sizeof(Vtx), off = 0;
+            ctx->IASetVertexBuffers(0, 1, pass == 0 ? gc.vbO.GetAddressOf() : pass == 1 ? gc.vbC.GetAddressOf() : gc.vbW.GetAddressOf(), &stride, &off);
+            ctx->IASetIndexBuffer(pass == 0 ? gc.ibO.Get() : pass == 1 ? gc.ibC.Get() : gc.ibW.Get(), DXGI_FORMAT_R32_UINT, 0);
+            ctx->DrawIndexed(n, 0, 0);
+        }
+    }
+    bool EnemyDrawable(const WorldObject& o) {   // in play: alive (or playing its die animation)
+        auto it = enemyRt.find(o.id); if (it == enemyRt.end()) return false;
+        if (it->second.alive()) return true;
+        const EnemyType* t = enemies.find(it->second.type);
+        if (!t || t->death != EnemyDeath::Animation) return false;
+        auto mi = meshModels.find(t->model); if (mi == meshModels.end()) return false; int c = mi->second.findClip(t->animDie);
+        return c >= 0 && it->second.deadT < mi->second.clips[c].length / std::max(0.05f, ClipSpeed(t->model, c)) + 0.4f;
+    }
+    void DrawEnemy(const WorldObject& o, int pass, V3 cam) {
+        const EnemyState& s = enemyRt[o.id]; const EnemyType* t = enemies.find(s.type); if (!t) return;
+        double sc = EnemyFit(*t); V3 up = Norm(s.up), fw = s.fwd, rt = Norm(cross(up, fw)); fw = cross(rt, up);
+        auto dg = doorGpu.find(o.id); const ModelGpu& g = dg != doorGpu.end() ? dg->second : GpuModel(t->model);
+        DrawModelPiece(t->model, pass, cam, s.pos, rt * sc, up * sc, fw * sc, g);
+    }
+    void DrawDebris(int pass, V3 cam) {
+        for (const Debris& d : debris) {
+            auto it = debrisSets.find(d.set); if (it == debrisSets.end() || d.piece >= (int)it->second.pieces.size()) continue;
+            double k = d.scale * std::min(1.0, d.life / 0.4);   // shrinks away at the end
+            WorldObject probe; probe.model = d.model; FrameRef m = ModelOf(probe); if (!m) continue;
+            V3 c = it->second.centres[d.piece] - m->pivot;   // the piece turns about its own middle
+            V3 at = d.pos - (d.ax * (c.x * k) + d.ay * (c.y * k) + d.az * (c.z * k));
+            DrawModelPiece(d.model, pass, cam, at, d.ax * k, d.ay * k, d.az * k, it->second.pieces[d.piece]);
+        }
+    }
+    void DrawEnemyDrops(int pass, V3 cam) {
+        for (const EnemyDropRt& d : enemyDrops) {
+            if (d.life < 3 && std::fmod(d.life, 0.25f) < 0.1f) continue;   // blinks before it is gone
+            WorldObject at; at.model = d.what == "Energy" ? "@health" : "@gem"; at.scale = 0.55; at.pos = d.pos + V3{ 0, 0.1 * std::sin(animTime * 3 + d.id), 0 }; at.yaw = animTime * 120;
+            DrawObject(at, pass, cam);
+        }
+    }
+    void EnemyAnimate(const WorldObject& o, const EnemyState& s, const EnemyType& t, double dt) {   // an imported model's clips: idle, move, attack, hurt, die
+        auto mi = meshModels.find(t.model); if (mi == meshModels.end() || mi->second.clips.empty()) { doorGpu.erase(o.id); return; }
+        const std::string& want = !s.alive() ? t.animDie : s.hurtT > 0 ? t.animHurt : s.mode == EnemyMode::Chase || s.mode == EnemyMode::Fall ? (t.shoots && s.seen ? t.animAttack : t.animMove) : (t.move == EnemyMove::Still ? t.animIdle : t.animMove);
+        int clip = mi->second.findClip(want); if (clip < 0) clip = mi->second.findClip(t.animIdle);
+        if (clip < 0) { doorGpu.erase(o.id); return; }
+        float& at = enemyAnimT[o.id]; int& last = enemyAnimClip[o.id];
+        if (last != clip) { last = clip; at = 0; }
+        at += (float)dt * ClipSpeed(t.model, clip);
+        float len = std::max(0.01f, mi->second.clips[clip].length), tt = !s.alive() ? std::min(at, len) : std::fmod(at, len);
+        PoseBlender& pb = doorBlend[o.id];
+        const PartPose& p = pb.update(mi->second.pose(clip, tt), clip, (float)dt, animBlends.of(t.model));
+        ModelGpu& g = doorGpu[o.id]; UploadMeshVerts(g, mi->second, mi->second.posedFrom(p)); g.mesh = true; g.tex = GpuModel(t.model).tex;
+    }
+    void UpdateEnemies(double dt) {   // every frame in play
+        if (!playMode || !world) return;
+        playerInvuln = std::max(0.f, playerInvuln - (float)dt);
+        SolidFn solid = [this](int x, int y, int z) { return EnemySolid(x, y, z); };
+        V3 you = PlayerMiddle(); Box3 youBox = PlayerBox();
+        for (const WorldObject& o : objects) {
+            if (o.kind != ObjKind::Enemy || evHidden.count(o.id) || enemyGone.count(GoneKey(o.id))) continue;
+            const EnemyType* t = enemies.find(o.enemyType); if (!t) continue;
+            auto found = enemyRt.find(o.id);
+            if (found == enemyRt.end()) { EnemyState s; s.obj = o.id; enemyStart(s, *t, o.pos, o.yaw, solid); found = enemyRt.emplace(o.id, s).first; }
+            EnemyState& s = found->second;
+            if (!s.alive()) {
+                s.deadT += (float)dt;
+                if (t->respawn == EnemyRespawn::After && s.respawnIn > 0 && s.deadT > s.respawnIn) { enemyStart(s, *t, o.pos, o.yaw, solid); continue; }
+                if (t->death == EnemyDeath::Animation) EnemyAnimate(o, s, *t, dt);
+                continue;
+            }
+            Box3 b = enemyBox(s, *t); V3 eye = (b.lo + b.hi) * 0.5 + s.up * (enemyHeight(*t) * 0.15);
+            V3 d = you - eye; double dist = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+            bool sees = !play.dead() && dist < std::max(t->sight, t->dropReach + 12.f) && canSee(*world, eye, you, dist + 1);
+            EnemyTick k = enemyUpdate(s, *t, solid, you, sees, dt);
+            if (k.noticed && !t->sndNotice.empty()) { SoundUse u; u.file = t->sndNotice; PlaySound(u, 1, &eye); }
+            if (k.fire) {
+                enemyShots.push_back({ k.shotFrom, k.shotDir, t->shotSpeed, t->shotDamage, t->shotRange / std::max(1.f, t->shotSpeed), t->shotColor, t->name });
+                if (!t->sndAttack.empty()) { SoundUse u; u.file = t->sndAttack; PlaySound(u, 1, &k.shotFrom); }
+            }
+            if (k.burst) {   // the dropper bursts: shrapnel all around, low
+                V3 at = s.pos + V3{ 0, 0.3, 0 };
+                for (int i = 0; i < std::max(1, t->shrapnel); i++) { double a = i * 6.2831853 / std::max(1, t->shrapnel); enemyShots.push_back({ at, Norm(V3{ std::cos(a), 0.25, std::sin(a) }), 9.f, t->touchDamage * 0.6f, 0.6f, t->color, t->name }); }
+                KillEnemy(o, s, *t);
+                continue;
+            }
+            if (BoxesTouch(enemyBox(s, *t), youBox)) HurtPlayer(t->touchDamage, (b.lo + b.hi) * 0.5, t->name);   // touching it hurts
+            EnemyAnimate(o, s, *t, dt);
+        }
+        for (EnemyShot& sh : enemyShots) {   // their shots
+            double step = sh.speed * dt; Hit h;
+            if (world->raycast(sh.pos, sh.dir, step, h)) { SpawnFx(particlePreset("Impact"), sh.pos + sh.dir * (h.t - 0.05), sh.dir * -1, sh.color); sh.life = 0; continue; }
+            V3 np = sh.pos + sh.dir * step;
+            Box3 pb = youBox; pb.lo = pb.lo - V3{ 0.1, 0.1, 0.1 }; pb.hi = pb.hi + V3{ 0.1, 0.1, 0.1 }; double tt;
+            if (rayBox(sh.pos, sh.dir, pb, tt) && tt <= step) { HurtPlayer(sh.damage, sh.pos, sh.from); SpawnFx(particlePreset("Impact"), np, sh.dir * -1, sh.color); sh.life = 0; continue; }
+            sh.pos = np; sh.life -= (float)dt;
+        }
+        enemyShots.erase(std::remove_if(enemyShots.begin(), enemyShots.end(), [](const EnemyShot& s) { return s.life <= 0; }), enemyShots.end());
+        for (EnemyDropRt& d : enemyDrops) {   // what they left: picked up by walking (or rolling) into it
+            d.life -= (float)dt;
+            Box3 db{ d.pos - V3{ 0.35, 0.35, 0.35 }, d.pos + V3{ 0.35, 0.35, 0.35 } };
+            if (d.life > 0 && BoxesTouch(db, youBox) && !play.dead()) {
+                if (d.what == "Energy") { if (play.health >= playRules.maxHealth) continue; play.health = std::min(playRules.maxHealth, play.health + (float)d.amount); Toast("+" + std::to_string(d.amount) + " energy"); }
+                else {
+                    int& c = inv.counts[d.what]; int most = d.what == weapons.missileCounter ? MissileMax() : d.what == items.powerBombCounter ? PowerBombMax() : 1 << 20;
+                    if (c >= most) continue; c = std::min(most, c + d.amount); Toast("+" + std::to_string(d.amount) + " " + d.what);
+                }
+                d.life = 0;
+            }
+        }
+        enemyDrops.erase(std::remove_if(enemyDrops.begin(), enemyDrops.end(), [](const EnemyDropRt& d) { return d.life <= 0; }), enemyDrops.end());
+        UpdateDebris(dt);
+    }
+    void DrawEnemyShots() {   // glowing balls, like the beam's orbs
+        if (enemyShots.empty()) return;
+        BeginSphereDraw(psOrb.Get());
+        for (size_t i = 0; i < enemyShots.size(); i++) {
+            const EnemyShot& s = enemyShots[i]; V3 c = s.pos - camPos, d = s.dir;
+            V3 side = std::fabs(d.y) > 0.95 ? V3{ 1, 0, 0 } : Norm(cross({ 0, 1, 0 }, d)), up = cross(d, side); V3 col = Linear(s.color); double r = 0.11;
+            for (int halo = 1; halo >= 0; halo--) {
+                double k = halo ? 2.4 : 1.0; ctx->OMSetBlendState(halo ? bsAdd.Get() : bsPremul.Get(), nullptr, 0xFFFFFFFF);
+                ChunkCB cc{ { (float)c.x, (float)c.y, (float)c.z, (float)(r * k) }, { (float)d.x, (float)d.y, (float)d.z, 0.f }, { (float)i * 0.618f, (float)halo, (float)animTime, 0 }, { (float)col.x, (float)col.y, (float)col.z, 1 } };
+                DrawSphereMesh(c, side * (r * k), up * (r * k), d * (r * k * 1.3), cc);
+            }
+        }
+        EndSphereDraw();
+    }
+    // the hurt flash: hit enemies drawn once more, bright, over themselves
+    void DrawEnemyFlashes() {
+        bool any = false; for (auto& kv : enemyRt) any |= kv.second.alive() && kv.second.hurtT > 0;
+        if (!any || !playMode) return;
+        ctx->OMSetRenderTargets(1, reflRTV.GetAddressOf(), dsv.Get());
+        D3D11_VIEWPORT v{ 0, 0, (float)rw, (float)rh, 0, 1 }; ctx->RSSetViewports(1, &v);
+        ctx->OMSetDepthStencilState(dsTestOnly.Get(), 0); ctx->OMSetBlendState(bsAdd.Get(), nullptr, 0xFFFFFFFF); ctx->RSSetState(rsNoCull.Get());
+        ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0); ctx->PSSetShader(psFlat.Get(), nullptr, 0);
+        ID3D11Buffer* cbs[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->VSSetConstantBuffers(0, 2, cbs); ctx->PSSetConstantBuffers(7, 1, cbFlat.GetAddressOf());
+        for (const WorldObject& o : objects) {
+            if (o.kind != ObjKind::Enemy) continue; auto it = enemyRt.find(o.id); if (it == enemyRt.end() || !it->second.alive() || it->second.hurtT <= 0) continue;
+            const EnemyType* t = enemies.find(it->second.type); if (!t) continue;
+            float k = it->second.hurtT / 0.25f * 2.5f; float col[4] = { k, k * 0.9f, k * 0.8f, 0 };
+            ctx->UpdateSubresource(cbFlat.Get(), 0, nullptr, col, 0, 0);
+            DrawEnemy(o, 0, camPos);
+        }
+        ctx->RSSetState(rsCull.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
+        ctx->OMSetRenderTargets(0, nullptr, nullptr);
+    }
+    // ---- Player editor > Enemies: the enemy types
+    int enemyEd = 1; bool selectEnemiesTab = false;
+    HudTarget enemyView; ComPtr<ID3D11DepthStencilView> enemyViewDSV; int evDW = 0, evDH = 0; ImVec2 enemyViewWant{ 0, 0 }; std::string enemyViewModel;
+    int EnemyUses(int id) const { int n = 0; for (const WorldObject& o : objects) if (o.kind == ObjKind::Enemy && o.enemyType == id) n++; return n; }
+    void RenderEnemyView() {   // the picked type's model, turning
+        if (enemyViewModel.empty() || enemyViewWant.x < 16 || enemyViewWant.y < 16) return;
+        RenderModelSpin(enemyView, enemyViewDSV, evDW, evDH, (int)enemyViewWant.x, (int)enemyViewWant.y, enemyViewModel, 0.18f, 0.20f, 0.24f, 1.f);
+        enemyViewModel.clear();
+    }
+    std::vector<std::string> WeaponNames() {   // what can hurt an enemy, for its weaknesses
+        std::vector<std::string> v = { "Any beam", "Missile", "Charged", "Bomb", "Power Bomb" };
+        for (const Beam& b : weapons.beams) if (std::find(v.begin(), v.end(), b.name) == v.end()) v.push_back(b.name);
+        for (const MissileType& m : weapons.missileTypes) if (std::find(v.begin(), v.end(), m.name) == v.end()) v.push_back(m.name);
+        return v;
+    }
+    bool ClipField(const char* id, const std::string& model, std::string& v) {   // an animation of the model (or a name to type)
+        auto mi = meshModels.find(model);
+        if (mi == meshModels.end() || mi->second.clips.empty()) return ImGui::InputText(id, &v);
+        bool ch = false; std::string shown = v.empty() ? "(none)" : v; if (!v.empty() && mi->second.findClip(v) < 0) shown += "  (not in the model)";
+        if (ImGui::BeginCombo(id, shown.c_str())) {
+            if (ImGui::Selectable("(none)", v.empty())) { v.clear(); ch = true; }
+            for (auto& c : mi->second.clips) if (ImGui::Selectable(c.name.c_str(), c.name == v)) { v = c.name; ch = true; }
+            ImGui::EndCombo();
+        }
+        return ch;
+    }
+    bool SoundFileField(const char* id, std::string& file) {
+        SoundUse u; u.file = file; bool ch = SoundEdit(id, u, false); if (ch) file = u.file; return ch;
+    }
+    void EnemiesTab() {
+        float ui = settings.uiScale; bool ch = false;
+        if (enemies.types.empty()) {
+            Hint("Enemy types: made once here, placed in the world as Enemy objects (Tools > Objects > Add > Enemy).");
+            if (ImGui::Button("Start with the placeholder enemies")) { enemies = defaultEnemies(); SaveEnemies(); }
+            ImGui::SameLine(); if (ImGui::Button("Start with one")) { EnemyType t; t.name = "Enemy"; enemyEd = enemies.add(t); SaveEnemies(); }
+            return;
+        }
+        if (!enemies.find(enemyEd)) enemyEd = enemies.types[0].id;
+        float listW = 230 * ui, sp = ImGui::GetStyle().ItemSpacing.x;
+        ImGui::BeginChild("enemylist", ImVec2(listW, 0), ImGuiChildFlags_Borders);
+        for (const EnemyType& t : enemies.types) { ImGui::PushID(t.id); std::string l = t.name + "   (" + std::to_string(EnemyUses(t.id)) + ")"; if (ImGui::Selectable(l.c_str(), t.id == enemyEd)) enemyEd = t.id; ImGui::PopID(); }
+        ImGui::Separator();
+        if (ImGui::Button("+ New")) { EnemyType t; t.name = "Enemy " + std::to_string(enemies.types.size() + 1); enemyEd = enemies.add(t); ch = true; }
+        ImGui::SameLine(); if (ImGui::Button("Duplicate")) { EnemyType c = *enemies.find(enemyEd); c.id = 0; c.name += " copy"; enemyEd = enemies.add(c); ch = true; }
+        int uses = EnemyUses(enemyEd);
+        ImGui::BeginDisabled(uses > 0); ImGui::SameLine(); if (ImGui::Button("Delete")) { enemies.types.erase(std::remove_if(enemies.types.begin(), enemies.types.end(), [&](const EnemyType& t) { return t.id == enemyEd; }), enemies.types.end()); ch = true; } ImGui::EndDisabled();
+        if (uses > 0 && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%d placed enem%s use%s it", uses, uses == 1 ? "y" : "ies", uses == 1 ? "s" : "");
+        ImGui::Spacing(); if (ImGui::SmallButton("Add the placeholder enemies")) { for (EnemyType t : defaultEnemies().types) { t.id = 0; enemies.add(t); } ch = true; }
+        ImGui::EndChild(); ImGui::SameLine();
+        EnemyType* tp = enemies.find(enemyEd);
+        if (!tp) { if (ch) SaveEnemies(); return; }
+        EnemyType& t = *tp;
+        float viewW = 300 * ui;
+        ImGui::BeginChild("enemyview", ImVec2(viewW, 0), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar);
+        {
+            ImVec2 sz(viewW, viewW); enemyViewWant = sz; enemyViewModel = t.model;
+            if (enemyView.srv && evDW == (int)sz.x && evDH == (int)sz.y) ImGui::Image((ImTextureID)(intptr_t)enemyView.srv.Get(), sz); else ImGui::Dummy(sz);
+            ImGui::TextDisabled("ID %d, placed %d time%s", t.id, uses, uses == 1 ? "" : "s");
+            Hint("Place it: Tools > Objects > Add > Enemy, then pick this type in its inspector.");
+        }
+        ImGui::EndChild(); ImGui::SameLine();
+        ImGui::BeginChild("enemyprops", ImVec2(0, 0), ImGuiChildFlags_Borders);
+        ImGui::SeparatorText("Enemy");
+        Prop("Name"); ch |= ImGui::InputText("##ename", &t.name);
+        Prop("Model");
+        if (ImGui::BeginCombo("##emodel", t.model.c_str())) {
+            for (const char* b : { "@enemy-crawler", "@enemy-hopper", "@enemy-flyer", "@enemy-walker", "@enemy-skree", "@enemy-turret" }) if (ImGui::Selectable(b, t.model == b)) { t.model = b; ch = true; }
+            ImGui::Separator();
+            for (auto& kv : meshModels) if (!IsBuiltin(kv.first) && ImGui::Selectable(kv.first.c_str(), t.model == kv.first)) { t.model = kv.first; ch = true; }
+            for (auto& kv : models.models) if (ImGui::Selectable(kv.first.c_str(), t.model == kv.first)) { t.model = kv.first; ch = true; }
+            ImGui::EndCombo();
+        }
+        Prop("Size (blocks)"); ch |= ImGui::SliderFloat("##esize", &t.size, 0.2f, 8, "%.2f");
+        Prop("Colour"); ch |= ColorU32("##ecol", t.color);
+        ImGui::SeparatorText("Health and harm");
+        Prop("Health"); ch |= ImGui::DragFloat("##ehp", &t.health, 0.5f, 1, 5000, "%.0f");
+        Prop("Hurts when touched"); ch |= ImGui::DragFloat("##etd", &t.touchDamage, 0.2f, 0, 500, "%.0f");
+        Prop("Knocked back"); ch |= ImGui::SliderFloat("##ekb", &t.knockback, 0, 15, "%.1f");
+        ImGui::SeparatorText("What hurts it");
+        Prop("Only its weaknesses"); ch |= ImGui::Checkbox("##eonly", &t.onlyWeak);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("On: everything else just bounces off (grey sparks).\nOff: everything hurts it, its weaknesses more.");
+        { std::vector<std::string> wn = WeaponNames(); int drop = -1;
+          for (int i = 0; i < (int)t.weak.size(); i++) {
+              ImGui::PushID(i); EnemyWeak& w = t.weak[i];
+              ImGui::SetNextItemWidth(150 * ui); if (ImGui::BeginCombo("##wb", w.by.c_str())) { for (auto& n : wn) if (ImGui::Selectable(n.c_str(), n == w.by)) { w.by = n; ch = true; } ImGui::EndCombo(); }
+              ImGui::SameLine(); ImGui::SetNextItemWidth(90 * ui); ch |= ImGui::DragFloat("##wt", &w.times, 0.05f, 0, 20, "x %.2f");
+              ImGui::SameLine(); if (ImGui::SmallButton("x")) drop = i;
+              ImGui::PopID();
+          }
+          if (drop >= 0) { t.weak.erase(t.weak.begin() + drop); ch = true; }
+          if (ImGui::SmallButton("+ Weakness")) { t.weak.push_back({ "Missile", 2 }); ch = true; } }
+        ImGui::SeparatorText("How it moves");
+        int mv = (int)t.move; Prop("Moves");
+        if (ImGui::BeginCombo("##emove", enemyMoveName(t.move))) { for (int i = 0; i < (int)EnemyMove::COUNT; i++) if (ImGui::Selectable(enemyMoveName((EnemyMove)i), i == mv)) { t.move = (EnemyMove)i; ch = true; } ImGui::EndCombo(); }
+        if (t.move != EnemyMove::Still) { Prop(t.move == EnemyMove::Crawl ? "Speed (along blocks)" : "Speed"); ch |= ImGui::SliderFloat("##esp", &t.speed, 0.2f, 15, "%.1f"); }
+        if (t.move == EnemyMove::Walk || t.move == EnemyMove::Fly || t.move == EnemyMove::Hop) { Prop("Goes after you"); ch |= ImGui::Checkbox("##ech", &t.chases); if (t.chases && t.move != EnemyMove::Hop) { Prop("  that fast"); ch |= ImGui::SliderFloat("##ecs", &t.chaseSpeed, 0.2f, 20, "%.1f"); } }
+        if (t.move != EnemyMove::Crawl && t.move != EnemyMove::Drop) { Prop("Sees you from"); ch |= ImGui::SliderFloat("##esight", &t.sight, 2, 60, "%.0f blocks"); }
+        if (t.move == EnemyMove::Hop) { Prop("Hop height"); ch |= ImGui::SliderFloat("##ehh", &t.hopHeight, 0.2f, 6, "%.1f"); Prop("Hops every"); ch |= ImGui::SliderFloat("##ehe", &t.hopEvery, 0.2f, 6, "%.1f s"); }
+        if (t.move == EnemyMove::Fly) { Prop("Flies this high"); ch |= ImGui::SliderFloat("##ehv", &t.hover, 0, 12, "%.1f blocks"); Prop("Wanders"); ch |= ImGui::SliderFloat("##erm", &t.roam, 0, 20, "%.1f blocks"); }
+        if (t.move == EnemyMove::Drop) { Prop("Drops when you are within"); ch |= ImGui::SliderFloat("##edr", &t.dropReach, 0.5f, 10, "%.1f blocks"); Prop("Shrapnel when it bursts"); ch |= ImGui::SliderInt("##esh", &t.shrapnel, 0, 16); }
+        const char* moveHint[] = { "Stays where it is and turns toward you.", "Walks back and forth, turning at walls and edges; once it sees you it comes for you (and stops at edges).",
+            "Crawls along the blocks it is on: over the top, down the sides, around the bottom, up walls (like a Zoomer).", "Floats around where it was put; once it sees you it flies at you.",
+            "Hops about; once it sees you it hops toward you.", "Hangs from the ceiling above where it was put. When you walk under it, it drops, digs into the floor and bursts into shrapnel (like a Skree)." };
+        Hint(moveHint[std::clamp((int)t.move, 0, 5)]);
+        ImGui::SeparatorText("Shooting");
+        Prop("Shoots"); ch |= ImGui::Checkbox("##eshoot", &t.shoots);
+        if (t.shoots) {
+            Prop("Every"); ch |= ImGui::SliderFloat("##esev", &t.shootEvery, 0.2f, 10, "%.1f s");
+            Prop("Shot damage"); ch |= ImGui::DragFloat("##esd", &t.shotDamage, 0.2f, 0, 500, "%.0f");
+            Prop("Shot speed"); ch |= ImGui::SliderFloat("##esspd", &t.shotSpeed, 2, 60, "%.0f");
+            Prop("Reaches"); ch |= ImGui::SliderFloat("##esr", &t.shotRange, 4, 100, "%.0f blocks");
+            Prop("Shot colour"); ch |= ColorU32("##esc", t.shotColor);
+        }
+        ImGui::SeparatorText("When it is defeated");
+        int de = (int)t.death; Prop("It");
+        if (ImGui::BeginCombo("##edeath", enemyDeathName(t.death))) { for (int i = 0; i < (int)EnemyDeath::COUNT; i++) if (ImGui::Selectable(enemyDeathName((EnemyDeath)i), i == de)) { t.death = (EnemyDeath)i; ch = true; } ImGui::EndCombo(); }
+        { int drop = -1; std::vector<std::string> what = { "Energy" }; if (!weapons.missileCounter.empty()) what.push_back(weapons.missileCounter); if (!items.powerBombCounter.empty()) what.push_back(items.powerBombCounter);
+          for (int i = 0; i < (int)t.drops.size(); i++) {
+              ImGui::PushID(100 + i); EnemyDrop& d = t.drops[i];
+              ImGui::SetNextItemWidth(120 * ui); if (ImGui::BeginCombo("##dw", d.what.c_str())) { for (auto& n : what) if (ImGui::Selectable(n.c_str(), n == d.what)) { d.what = n; ch = true; } ImGui::EndCombo(); }
+              ImGui::SameLine(); ImGui::SetNextItemWidth(70 * ui); ch |= ImGui::DragInt("##da", &d.amount, 0.2f, 1, 999, "+%d");
+              ImGui::SameLine(); ImGui::SetNextItemWidth(90 * ui); float pc = d.chance * 100; if (ImGui::SliderFloat("##dc", &pc, 0, 100, "%.0f%%")) { d.chance = pc / 100; ch = true; }
+              ImGui::SameLine(); if (ImGui::SmallButton("x")) drop = i;
+              ImGui::PopID();
+          }
+          if (drop >= 0) { t.drops.erase(t.drops.begin() + drop); ch = true; }
+          if (ImGui::SmallButton("+ Something it drops")) { t.drops.push_back({ "Energy", 10, 0.3f }); ch = true; } }
+        int rs = (int)t.respawn; Prop("Comes back");
+        if (ImGui::BeginCombo("##eresp", enemyRespawnName(t.respawn))) { for (int i = 0; i < (int)EnemyRespawn::COUNT; i++) if (ImGui::Selectable(enemyRespawnName((EnemyRespawn)i), i == rs)) { t.respawn = (EnemyRespawn)i; ch = true; } ImGui::EndCombo(); }
+        if (t.respawn == EnemyRespawn::After) { Prop("  after"); ch |= ImGui::SliderFloat("##erst", &t.respawnTime, 1, 600, "%.0f s"); }
+        ImGui::SeparatorText("Animations (an imported model's clips)");
+        Prop("Standing"); ch |= ClipField("##aid", t.model, t.animIdle);
+        Prop("Moving"); ch |= ClipField("##amv", t.model, t.animMove);
+        Prop("Attacking"); ch |= ClipField("##aat", t.model, t.animAttack);
+        Prop("Hurt"); ch |= ClipField("##ahu", t.model, t.animHurt);
+        Prop("Dying"); ch |= ClipField("##adi", t.model, t.animDie);
+        ImGui::SeparatorText("Sounds");
+        Prop("Notices you"); ch |= SoundFileField("esn", t.sndNotice);
+        Prop("Attacks"); ch |= SoundFileField("esa", t.sndAttack);
+        Prop("Is hurt"); ch |= SoundFileField("esh", t.sndHurt);
+        Prop("Dies"); ch |= SoundFileField("esd", t.sndDie);
+        ImGui::SeparatorText("Scan");
+        Prop("Scan entry");
+        { const ScanDef* d = scanLib.find(t.scanId); std::string shown = d ? "#" + std::to_string(d->id) + "  " + d->name : "(none)";
+          if (ImGui::BeginCombo("##escan", shown.c_str())) {
+              if (ImGui::Selectable("(none)", t.scanId == 0)) { t.scanId = 0; ch = true; }
+              if (ImGui::Selectable("+ New entry")) { ScanDef n; n.name = t.name; n.category = "Creatures"; t.scanId = scanLib.add(n); SaveScans(); ch = true; }
+              for (const ScanDef& x : scanLib.defs) { std::string l = "#" + std::to_string(x.id) + "  " + x.name; if (ImGui::Selectable(l.c_str(), x.id == t.scanId)) { t.scanId = x.id; ch = true; } }
+              ImGui::EndCombo();
+          }
+          if (ScanDef* sd = scanLib.find(t.scanId)) { ImGui::TextDisabled("Text"); if (ImGui::InputTextMultiline("##esctext", &sd->text, ImVec2(-1, 90 * ui))) SaveScans(); } }
+        Hint("Every enemy of this type can be scanned with this entry (Scan Visor). Their scan goes into the Logbook under its category.");
+        ImGui::EndChild();
+        if (ch) { SaveEnemies(); for (WorldObject& o : objects) if (o.kind == ObjKind::Enemy && o.enemyType == t.id) ApplyEnemyType(o); }
+    }
+    void EnemyInspector(WorldObject& o) {
+        ImGui::SeparatorText("Enemy");
+        const EnemyType* t = enemies.find(o.enemyType);
+        Prop("Type");
+        if (ImGui::BeginCombo("##etype", t ? t->name.c_str() : "(pick one)")) {
+            for (const EnemyType& x : enemies.types) if (ImGui::Selectable(x.name.c_str(), x.id == o.enemyType)) { o.enemyType = x.id; ApplyEnemyType(o); }
+            ImGui::Separator();
+            if (ImGui::Selectable("+ New type...")) { EnemyType n; n.name = "Enemy " + std::to_string(enemies.types.size() + 1); o.enemyType = enemies.add(n); SaveEnemies(); ApplyEnemyType(o); enemyEd = o.enemyType; playerEdOpen = true; focusPlayerEd = true; selectEnemiesTab = true; }
+            ImGui::EndCombo();
+        }
+        if (t) {
+            ImGui::TextDisabled("%s, %.0f health, hurts %.0f%s", enemyMoveName(t->move), t->health, t->touchDamage, t->shoots ? ", shoots" : "");
+            if (ImGui::Button("Edit the type...")) { enemyEd = t->id; playerEdOpen = true; focusPlayerEd = true; selectEnemiesTab = true; }
+            Hint(t->move == EnemyMove::Drop ? "It hangs from the ceiling above where it is put." : t->move == EnemyMove::Crawl ? "It clings to the block it is put on (or the nearest one) and crawls the way it faces." : t->move == EnemyMove::Fly ? "It floats above where it is put." : "It starts where it is put, facing the way it is turned.");
+        } else if (enemies.types.empty()) { if (ImGui::Button("Make the placeholder enemy types")) { enemies = defaultEnemies(); SaveEnemies(); o.enemyType = enemies.types[0].id; ApplyEnemyType(o); } }
     }
     // ================================================================== the map (M): a hologram of what you have seen
     // Seen blocks come from your eyes (a few hundred rays a frame), the floor you walk on, and Map Stations: touching one
@@ -6751,6 +7279,15 @@ struct App {
         Bomb b{ BallCentre(), itemFx.pbFuse, ParticleEmitter(p, (uint32_t)(GetTickCount() + 99)) }; b.power = true; bombsOut.push_back(b);
         PlaySound(playerSounds.bomb);
     }
+    void BombEnemies(V3 at, double reach, float dmg, const char* what) {
+        std::vector<uint32_t> hit;
+        for (auto& kv : enemyRt) {
+            if (!kv.second.alive()) continue; const EnemyType* et = enemies.find(kv.second.type); if (!et) continue; Box3 b = enemyBox(kv.second, *et);
+            V3 c{ std::clamp(at.x, b.lo.x, b.hi.x), std::clamp(at.y, b.lo.y, b.hi.y), std::clamp(at.z, b.lo.z, b.hi.z) }, d = c - at;
+            if (d.x * d.x + d.y * d.y + d.z * d.z <= (reach + 0.3) * (reach + 0.3)) hit.push_back(kv.first);
+        }
+        for (uint32_t id : hit) DamageEnemy(id, dmg, what, false, false, true, at);
+    }
     void Explode(V3 at, bool power) {   // a bomb (or a Power Bomb) goes off
         if (power) {
             double reach = itemFx.pbReach;
@@ -6759,6 +7296,7 @@ struct App {
             AddSphere(at, itemFx.pbSphere, 0xFFF4C0, 1.4f);
             PlaySound(playerSounds.boom, 1, &at);
             for (auto& p : blocksInReach(at, reach)) { TryBreak(p[0], p[1], p[2], "Power Bomb", false, false); TryBreak(p[0], p[1], p[2], "Bomb", false, false); }
+            BombEnemies(at, reach, 60, "Power Bomb");
             for (WorldObject& o : objects) {   // Power Bomb (and bomb) doors
                 if (o.kind != ObjKind::Door || (o.door.openedBy != "Power Bomb" && o.door.openedBy != "Bomb") || Gone(o)) continue;
                 FrameRef f = ModelOf(o); if (!f) continue; Box3 fb = fieldBox(o, *f, OpeningOf(o.model));
@@ -6780,6 +7318,7 @@ struct App {
         PlaySound(playerSounds.boom, 1, &at);
         double reach = std::max(0.3f, game.player.bombReach);
         for (auto& p : blocksInReach(at, reach)) TryBreak(p[0], p[1], p[2], "Bomb", false, false);
+        BombEnemies(at, reach, 15, "Bomb");
         if (player.ball) { double up = bombLift(at, BallCentre(), reach + 0.35, game.player.bombJumpSpeed()); if (up > 0) { player.vel.y = std::max(player.vel.y, up); player.onGround = false; } }
         for (WorldObject& o : objects) {   // bomb doors
             if (o.kind != ObjKind::Door || o.door.openedBy != "Bomb" || Gone(o)) continue;
@@ -6893,6 +7432,7 @@ struct App {
         if (k == "door") return o.kind == ObjKind::Door;
         if (k == "platform") return o.kind == ObjKind::Platform;
         if (k == "light") return o.kind == ObjKind::Light || o.kind == ObjKind::Particles;
+        if (k == "enemy") return o.kind == ObjKind::Enemy;
         return true;
     }
     std::vector<std::string> NamesOf(const std::string& kind) const {
@@ -8151,6 +8691,62 @@ struct App {
                 DemoShot sh2{ "t2", { bx - 3.0, by + 3.5, bz + 6.5 }, { bx + 5.0, by + 0.5, bz + 1.0 }, 12.f };
                 poseAt(sh2); frames(4, "turned_block_textures_other_side");
             }
+            {   // enemies: the six placeholder types placed, moving, shooting, hit, dying (explode / fracture), a Skree dropping, what they leave, the Enemies tab
+                const WorldObject* d0 = nullptr; for (const WorldObject& o : objects) if (o.kind == ObjKind::Door) { d0 = &o; break; }
+                V3 base = d0 ? d0->pos : V3{ 26, 0, 40 }; int ax = (int)std::floor(base.x) + 14, ay = (int)std::floor(base.y), az = (int)std::floor(base.z) - 12;
+                EnemySet keepEnemies = enemies; enemies = defaultEnemies(); HudLayout keepHud = hud; hud = defaultHud();
+                BlockId stone = reg.find("stone");
+                for (int y = 0; y < 3; y++) world->set(ax + 1, ay + y, az + 6, stone);                      // a pillar for the Zoomer
+                for (int x = -2; x <= 2; x++) for (int z = -2; z <= 2; z++) world->set(ax + 9 + x, ay + 5, az + 4 + z, stone);   // a ceiling for the Skree
+                std::vector<uint32_t> placed;
+                auto put = [&](const char* model, V3 at, double yaw) { WorldObject o; o.id = nextObjId++; o.model = model; ApplyPreset(o); o.name = UniqueObjectName(PresetName(o)); o.pos = at; o.yaw = yaw; objects.push_back(o); placed.push_back(o.id); return o.id; };
+                uint32_t zoomer = put("@enemy-crawler", { ax + 1.5, ay + 3.0, az + 6.5 }, 90);
+                uint32_t hornoad = put("@enemy-hopper", { ax + 4.5, (double)ay, az + 3.5 }, 0);
+                put("@enemy-flyer", { ax + 6.5, (double)ay, az + 8.5 }, 0);
+                uint32_t trooper = put("@enemy-walker", { ax + 3.5, (double)ay, az + 10.5 }, 180);
+                uint32_t skree = put("@enemy-skree", { ax + 9.5, (double)ay, az + 4.5 }, 0);
+                uint32_t turret = put("@enemy-turret", { ax + 12.5, (double)ay, az + 7.5 }, -90);
+                RebuildSolids();
+                DemoShot look{ "e", { ax + 6.5, ay + player.eyeH + 0.5, az - 4.0 }, { ax + 6.5, ay + 1.5, az + 6.0 }, 15.5f };
+                poseAt(look); sel = Sel::Object; selIndex = (int)objects.size() - 3; frames(4, "enemies_placed_editor"); sel = Sel::World;
+                StartPlay(false); poseAt(look); play.health = game.player.maxHealth; toastT = 0;
+                auto runE = [&](int k) { for (int f = 0; f < k; f++) { FrameBody(1.0 / 60); swap->Present(0, 0); retired.clear(); } };
+                runE(90);
+                for (uint32_t id : placed) { auto it = enemyRt.find(id); const WorldObject* o = ObjById(id); if (it != enemyRt.end() && o) { const EnemyState& es = it->second;
+                    Log("enemy " + o->name + ": at " + std::to_string(es.pos.x - ax).substr(0, 5) + " " + std::to_string(es.pos.y - ay).substr(0, 5) + " " + std::to_string(es.pos.z - az).substr(0, 5) + ", mode " + std::to_string((int)es.mode) + (es.attached ? ", clinging" : "")); } }
+                frames(2, "enemies_moving");
+                runE(30); frames(1, "enemies_moving_later");
+                Log("enemy shots in the air: " + std::to_string(enemyShots.size()) + ", health " + std::to_string((int)play.health));
+                {   // shoot the turret with the beam: immune (only missiles, charge and bombs hurt it)
+                    auto it = enemyRt.find(turret); float before = it != enemyRt.end() ? it->second.health : -1;
+                    DamageEnemy(turret, 10, "Power Beam", false, false, false, player.eye());
+                    float after = it != enemyRt.end() ? it->second.health : -1;
+                    DamageEnemy(turret, 30, "Missile", true, false, false, player.eye());
+                    Log("turret: a beam shot " + std::to_string((int)before) + " -> " + std::to_string((int)after) + " (immune), a missile -> " + std::to_string((int)(it != enemyRt.end() ? it->second.health : -1)));
+                }
+                DamageEnemy(hornoad, 8, "Power Beam", false, false, false, player.eye()); frames(1, "enemy_hit_flash");
+                DamageEnemy(trooper, 999, "Missile", true, false, false, player.eye()); runE(4); frames(1, "enemy_fracture");
+                DamageEnemy(zoomer, 999, "Power Beam", false, true, false, player.eye()); runE(3); frames(1, "enemy_explode");
+                runE(20); frames(1, "enemy_debris_falling");
+                Log("debris pieces flying: " + std::to_string(debris.size()) + ", drops: " + std::to_string(enemyDrops.size()));
+                {   // walk under the Skree
+                    DemoShot under{ "s", { ax + 9.5, ay + player.eyeH, az + 1.0 }, { ax + 9.5, ay + 3.5, az + 4.5 }, 15.5f };
+                    poseAt(under); player.feet = { ax + 9.5, (double)ay, az + 3.6 }; runE(1);
+                    auto it = enemyRt.find(skree); Log("Skree: " + std::string(it != enemyRt.end() && it->second.mode == EnemyMode::Idle ? "hanging" : "not hanging") + " at " + std::to_string(it != enemyRt.end() ? it->second.pos.y - ay : -1).substr(0, 5));
+                    runE(12); frames(1, "skree_falling");
+                    runE(40); Log(std::string("Skree: ") + (it != enemyRt.end() && !it->second.alive() ? "burst" : "still there") + ", health " + std::to_string((int)play.health));
+                    frames(1, "skree_burst");
+                }
+                for (auto& kv : enemyRt) if (kv.second.alive()) { const EnemyType* t = enemies.find(kv.second.type); const WorldObject* o = ObjById(kv.first); if (t && o) KillEnemy(*o, kv.second, *t); }
+                for (EnemyDropRt& d : enemyDrops) d.life = 11;
+                poseAt(look); runE(60); frames(2, "enemy_drops");
+                StopPlay();
+                playerEdOpen = true; focusPlayerEd = true; selectEnemiesTab = true; enemyEd = 4; frames(5, "enemies_tab");
+                enemyEd = 5; frames(2, "enemies_tab_skree");
+                playerEdOpen = false;
+                objects.erase(std::remove_if(objects.begin(), objects.end(), [&](const WorldObject& o) { return std::find(placed.begin(), placed.end(), o.id) != placed.end(); }), objects.end()); RebuildSolids();
+                enemies = keepEnemies; hud = keepHud;
+            }
             poseAt(demoShots()[1]);
             StartPlay(false); play.health = game.player.maxHealth * 0.65f; play.hurtFlash = 0.25; toastT = 0;
             frames(4, "play_hud");
@@ -8211,7 +8807,7 @@ struct App {
         BuildHudLists(); BuildMenuLists();
         ImGui::Render();
         RenderMinimap();
-        RenderHudPlanes(); RenderScanModel(); RenderMenuPanes();
+        RenderHudPlanes(); RenderScanModel(); RenderEnemyView(); RenderMenuPanes();
 
         const float bg[4] = { 0.10f, 0.11f, 0.13f, 1 };
         if (screen == Screen::Game && rw > 0 && mapOpen && !ev) { RenderMap(); RenderMapScreen(backRTV.Get()); }   // the map screen: the map instead of the world, the visor over it

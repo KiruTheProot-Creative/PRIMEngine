@@ -20,6 +20,8 @@ const Need& needOf(When w) {
         { "every few seconds", false, false, false, true, "", "seconds" },
         { "after some seconds", false, false, false, true, "", "seconds" },
         { "a counter reaches", false, true, false, true, "", "how many" },
+        { "an enemy is defeated:", true, false, false, false, "enemy" },
+        { "every enemy in a zone is defeated:", true, false, false, false, "zone" },
     };
     return n[std::clamp((int)w, 0, (int)When::COUNT - 1)];
 }
@@ -72,6 +74,8 @@ std::string describe(const EventCard& c) {
     case When::Every: s = "Every " + num(w.number) + " s"; break;
     case When::After: s = "After " + num(w.number) + " s"; break;
     case When::CountReaches: s = "When " + orAny(w.target, "a counter") + " reaches " + num(w.number); break;
+    case When::Defeated: s = "When " + orAny(w.target, "any enemy") + " is defeated"; break;
+    case When::ZoneCleared: s = "When every enemy in " + orAny(w.target, "a zone") + " is defeated"; break;
     default: break;
     }
     for (size_t k = 0; k < c.ifs.size(); k++) {

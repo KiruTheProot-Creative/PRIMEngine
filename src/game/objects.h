@@ -37,7 +37,7 @@ std::vector<Box3> modelBoxes(const BlockModel& m, const BlockRegistry& reg);
 enum class Collide { Exact, OneBox, None };
 const char* collideName(Collide c);
 
-enum class ObjKind { Prop, Door, Platform, Pickup, Checkpoint, Teleporter, Trigger, Light, Particles, MapCamera, MapStation, COUNT };
+enum class ObjKind { Prop, Door, Platform, Pickup, Checkpoint, Teleporter, Trigger, Light, Particles, MapCamera, MapStation, Enemy, COUNT };
 // the map: a Map Station (touch it) fires every map camera with the same ID; each camera looks all around and puts what it sees on the map
 struct MapSettings { int id = 1; float range = 48; };
 struct ScanInfo {   // can be scanned (Scan Visor): which scan entry it shows (scans.txt, by ID: objects share entries)
@@ -97,6 +97,7 @@ struct WorldObject {
     ParticleSettings particles;                       // particle emitters
     MapSettings map;                                  // map cameras and Map Stations
     ScanInfo scan;                                    // can be scanned (Scan Visor)
+    int enemyType = 0;                                // enemies: which enemy type (Player editor > Enemies, by ID)
 };
 V3 objectStretch(const WorldObject& o, const ModelFrame& m);   // how much it is sized along its own x, y, z
 
