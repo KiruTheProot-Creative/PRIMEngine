@@ -40,6 +40,12 @@ const char* collideName(Collide c);
 enum class ObjKind { Prop, Door, Platform, Pickup, Checkpoint, Teleporter, Trigger, Light, Particles, MapCamera, MapStation, COUNT };
 // the map: a Map Station (touch it) fires every map camera with the same ID; each camera looks all around and puts what it sees on the map
 struct MapSettings { int id = 1; float range = 48; };
+struct ScanInfo {   // what the Scan Visor finds on it (and the scan index shows)
+    bool on = false;
+    std::string name, category = "Research", text;
+    bool important = false;                           // a red marker: not to be missed
+    float time = 0;                                   // seconds to scan (0: the visor's own time)
+};
 const char* kindName(ObjKind k);
 
 // a door: its model is stretched to fill Width x Height blocks; a forcefield sits in its opening
@@ -91,6 +97,7 @@ struct WorldObject {
     LightSettings light;                              // lights (and glowing emitters)
     ParticleSettings particles;                       // particle emitters
     MapSettings map;                                  // map cameras and Map Stations
+    ScanInfo scan;                                    // can be scanned (Scan Visor)
 };
 V3 objectStretch(const WorldObject& o, const ModelFrame& m);   // how much it is sized along its own x, y, z
 

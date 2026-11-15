@@ -31,6 +31,7 @@ struct HudElement {
     bool visible = true;
     float mapRange = 22, mapTilt = 55; bool mapTurns = true;   // Minimap: how far around you it shows (blocks), how steeply it looks down (90: straight down), turns with you
     bool onPause = true, onMap = true;                  // still shown while the game is paused / on the map screen (M)
+    uint8_t visors = 0x0F;                              // which visors show it (bit 0 Combat, 1 Scan, 2 Thermal, 3 X-Ray)
 };
 
 struct HudPlane {
@@ -58,6 +59,7 @@ struct HudPart {   // a 3D model fixed to the camera (helmet frame, visor struts
     float sway = 0.6f;
     bool visible = true;
     bool onPause = true, onMap = true;                  // still shown while the game is paused / on the map screen (M)
+    uint8_t visors = 0x0F;                              // which visors show it
 };
 
 struct HudSwaySettings {
@@ -69,16 +71,7 @@ struct HudSwaySettings {
     float land = 1;                                     // landing: dips and shakes, more the faster you fall
 };
 
-struct PauseLook {   // the pause menu: on its own bent plane in the helmet
-    float dist = 0.85f, y = 0.0f, width = 0.95f;        // how far in front (camera space), up/down, how wide (blocks)
-    float bendX = 0.38f, bendY = 0.22f;                 // like a plane's bend
-    uint32_t color = 0x6CF0FF;                          // its light (text, lines, the picked row)
-    float backing = 0.55f;                              // how dark the panel behind the text is (0: none)
-    float bloom = 0.7f;
-};
-
 struct HudLayout {
-    PauseLook pause;
     std::vector<HudPlane> planes;
     std::vector<HudPart> parts;
     HudSwaySettings sway;

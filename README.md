@@ -200,9 +200,17 @@ The sun's shadows use four shadow maps around you: the nearest covers about 13 b
 - **Free aim** (Weapons > Aiming, Wii style): the mouse moves a cursor; the cannon and the shots follow it; past the dead zone the camera turns, faster toward the edge (dead zone, turning speed, cursor speed, how much the cannon follows).
 - Later, for exporting whole games: WAV to OGG.
 
-## The pause menu: inside the helmet
+## The pause menu (Player > Menu): tabs of bent panes
 
-Esc while playing shows the menu on its own slightly bent pane inside the helmet, over everything else (the HUD elements and parts set to "stay when paused" stay around it). Pick with the mouse (it follows the bend), or W / S (arrow keys) and Enter. Player > HUD > Visor settings has its look: distance, height, width, bend, colour, how dark the glass behind it is and its glow; "Show it in the previews" puts it in the HUD previews while you tune it.
+Esc while playing opens the menu inside the helmet: **pages shown as tabs** (Q / E or the tab bar switch them, a new page slides in), each made of one or more slightly bent **panes** (turned toward you for a wrap-around look), over everything else (the HUD elements and parts set to "stay when paused" stay around it). Pick with the mouse (it follows the bends), or W / S and Enter; lists scroll with the wheel.
+
+The starter menu has **Main** (keep playing, start over, map, settings, stop), **Inventory** (the items you found, "???" for the rest; beams and missiles to pick) and **Logbook** (the scan index: entries by category, the picked one's text and its model turning). Player editor > **Menu** changes all of it: add pages (tab or not), panes (where, turn, size, bend, colour, glass, glow, frame) and items: Panel, Text (with {energy} {missiles} {scans} {game} {world} filled in), Image, Button (keep playing, start over, map, settings, stop, go to a page, back), Tab bar, Item list, Beam list, Scan list, Scan text, Scan model. Drag items on the flat layout of a pane; the camera preview shows the page as in the game.
+
+## Visors (V) and scanning
+
+**V** switches between the visors you have: Combat, **Scan**, Thermal, X-Ray (Items tab: the Scan Visor is there from the start). Beams and missiles only fire with the Combat Visor. Player editor > **Visors** sets each visor's look over the world picture (never the HUD): tint, colourfulness, contrast, brightness, heat colours, scan lines, grain, outlines, colour fringes, dark edges, and a flash when switching; the preview shows it live. Thermal and X-Ray are only looks for now. Each HUD element and 3D part chooses which visors show it ("Shown in visors").
+
+Give any object a **scan entry** (its inspector: Scan): a name, a category, text, "important" (a red marker) and its own scan time. With the Scan Visor, everything scannable in reach gets a marker (orange, red if important, blue once scanned); aim at one and **hold the right mouse button** until the ring fills. Its text shows on a pane (click, E or Enter to go on) and it goes into the scan index. Objects with the same name share one entry.
 
 ## The map (M): a hologram of what you have seen
 

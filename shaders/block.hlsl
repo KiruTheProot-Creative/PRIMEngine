@@ -849,18 +849,60 @@ float4 PS_BloomUp(SkyOut i) : SV_Target
 }
 
 Texture2D gBloom : register(t1);
-float4 PS_Post(SkyOut i) : SV_Target
+// the visor's look (Player editor > Visors): over the world picture only, never over the HUD
+cbuffer VisorCB : register(b6)
 {
-    int2 px = int2(i.pos.xy);
+    float4 gVTint;    // rgb tint, w how much
+    float4 gVGrade;   // x colourfulness, y contrast, z brightness, w dark edges
+    float4 gVLines;   // x scan lines, y how many, z how fast they move, w grain
+    float4 gVEdge;    // rgb outline colour, w outlines
+    float4 gVMisc;    // x colour fringes (pixels), y time (s), z heat colours, w switching flash
+};
+float3 postBase(int2 px, float2 uv)   // exposure, glow, filmic curve (before gamma)
+{
     float3 c = gHdr.Load(int3(px, 0)).rgb;
-    float2 uv = i.ndc * float2(0.5, -0.5) + 0.5;
     c = lerp(c, gBloom.SampleLevel(gClamp, uv, 0).rgb / 6, gExtra.y);              // soft glow around bright things (6 levels added up)
     c *= gFogRange.z;
     c = tonemap(c);
     float l = dot(c, float3(0.2126, 0.7152, 0.0722));
-    c = max(lerp(l.xxx, c, 1.02), 0);
+    return max(lerp(l.xxx, c, 1.02), 0);
+}
+float postLum(int2 px, float2 uv) { return dot(postBase(px, uv), float3(0.2126, 0.7152, 0.0722)); }
+float3 heatPalette(float t)   // cold (dark blue) .. hot (white)
+{
+    t = saturate(t);
+    float3 a = float3(0.02, 0.0, 0.18), b = float3(0.35, 0.0, 0.6), c = float3(0.95, 0.1, 0.3), d = float3(1.0, 0.62, 0.0), e = float3(1.0, 1.0, 0.85);
+    if (t < 0.25) return lerp(a, b, t / 0.25);
+    if (t < 0.5) return lerp(b, c, (t - 0.25) / 0.25);
+    if (t < 0.75) return lerp(c, d, (t - 0.5) / 0.25);
+    return lerp(d, e, (t - 0.75) / 0.25);
+}
+float postHash(float2 p) { float3 p3 = frac(float3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return frac((p3.x + p3.y) * p3.z); }
+float4 PS_Post(SkyOut i) : SV_Target
+{
+    int2 px = int2(i.pos.xy);
+    float2 uv = i.ndc * float2(0.5, -0.5) + 0.5;
+    float3 c = postBase(px, uv);
+    if (gVMisc.x > 0.01) {   // colour fringes: red and blue a little apart
+        int2 o = int2((int)round(gVMisc.x), 0); float2 ou = float2(gVMisc.x / max(gDepth.z, 1), 0);
+        c.r = postBase(px + o, uv + ou).r; c.b = postBase(px - o, uv - ou).b;
+    }
+    const float3 W = float3(0.2126, 0.7152, 0.0722);
+    if (gVEdge.w > 0.001) {   // outlines where brightness jumps
+        float e = abs(postLum(px + int2(1, 0), uv) - postLum(px - int2(1, 0), uv)) + abs(postLum(px + int2(0, 1), uv) - postLum(px - int2(0, 1), uv));
+        c += gVEdge.rgb * saturate(e * 3) * gVEdge.w;
+    }
+    float l = dot(c, W);
+    c = lerp(c, heatPalette(pow(saturate(l), 0.8)), gVMisc.z);
+    l = dot(c, W); c = lerp(l.xxx, c, gVGrade.x);
+    c = (c - 0.5) * gVGrade.y + 0.5; c *= gVGrade.z;
+    l = dot(max(c, 0), W); c = lerp(c, l * gVTint.rgb * 1.4, gVTint.w);
+    c *= 1 - gVLines.x * (0.5 + 0.5 * sin(uv.y * gVLines.y * 6.2832 + gVMisc.y * gVLines.z));
+    c += (postHash(float2(px) + frac(gVMisc.y * 7.13) * 917) - 0.5) * gVLines.w;
     float2 v = i.ndc; c *= 1 - 0.18 * dot(v, v) * 0.5;                 // gentle vignette
-    return float4(pow(c, 1 / 2.2), 1);
+    c *= 1 - gVGrade.w * dot(v, v) * 0.5;                               // ... and the visor's own
+    c = lerp(c, float3(1, 1, 1), saturate(gVMisc.w) * 0.6);             // switching visors: a flash
+    return float4(pow(max(c, 0), 1 / 2.2), 1);
 }
 
 // ---------------------------------------------------------------- the 3D viewer: a model alone, with simple light

@@ -1,5 +1,6 @@
 #include "objects.h"
 #include "../world/shapes.h"
+#include "visors.h"
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
@@ -217,6 +218,7 @@ bool saveObjects(const std::string& path, const std::vector<WorldObject>& objs) 
           << " " << P.glow << " " << (P.additive ? 1 : 0) << " " << (int)P.shape << " " << (int)P.area << " " << P.areaSize.x << " " << P.areaSize.y << " " << P.areaSize.z << " " << P.spin
           << " " << (P.collide ? 1 : 0) << " " << (P.bounce ? 1 : 0) << " " << (P.light ? 1 : 0) << " " << P.lightRange << " " << P.lightIntensity << " " << P.maxParticles;
         f << " " << o.door.fieldSide << " " << o.door.fieldGap << " " << (o.door.fieldOnParts ? 1 : 0) << " " << esc(o.door.fieldParts) << " " << esc(o.door.openedBy) << " " << P.pull << " " << o.map.id << " " << o.map.range;
+        f << " " << (o.scan.on ? 1 : 0) << " " << escText(o.scan.name) << " " << escText(o.scan.category) << " " << escText(o.scan.text) << " " << (o.scan.important ? 1 : 0) << " " << o.scan.time;
         f << "\n";
     }
     return (bool)f;
@@ -252,6 +254,8 @@ bool loadObjects(const std::string& path, std::vector<WorldObject>& objs) {
         }
         int fs = 0, fp = 0; float fg = 0; std::string fpn;   // forcefield placement (newer files)
         if (l >> fs >> fg >> fp >> fpn) { o.door.fieldSide = std::clamp(fs, 0, 2); o.door.fieldGap = std::clamp(fg, 0.f, 2.f); o.door.fieldOnParts = fp != 0; o.door.fieldParts = unesc(fpn); std::string ob; if (l >> ob) o.door.openedBy = unesc(ob); float pl; if (l >> pl) o.particles.pull = std::max(0.f, pl); int mid; float mr; if (l >> mid >> mr) { o.map.id = mid; o.map.range = std::max(1.f, mr); } }
+        { int on = 0, imp = 0; std::string sn, sc, st; float tm = 0;   // scan entry (newer files)
+          if (l >> on >> sn >> sc >> st >> imp >> tm) { o.scan.on = on != 0; o.scan.name = unescText(sn); o.scan.category = unescText(sc); o.scan.text = unescText(st); o.scan.important = imp != 0; o.scan.time = std::max(0.f, tm); } }
         objs.push_back(o);
     }
     return true;

@@ -11,7 +11,7 @@ const char* itemTypeName(ItemType t) {
                                "screw_attack", "grapple_beam", "spider_ball", "boost_ball", "shinespark", "wall_jump", "scan_visor", "thermal_visor", "xray_visor" };
     int i = (int)t; return i >= 0 && i < (int)ItemType::COUNT ? n[i] : "?";
 }
-bool itemWorks(ItemType t) { return (int)t <= (int)ItemType::ChargeBeam; }
+bool itemWorks(ItemType t) { return (int)t <= (int)ItemType::ChargeBeam || t == ItemType::ScanVisor || t == ItemType::ThermalVisor || t == ItemType::XRayVisor; }   // (thermal / x-ray: their looks so far)
 bool itemCounted(ItemType t) { return t == ItemType::EnergyTank || t == ItemType::MissileExpansion || t == ItemType::PowerBombExpansion; }
 const char* itemGroup(ItemType t) {
     switch (t) {
@@ -61,7 +61,7 @@ ItemSet defaultItems() {
     add(ItemType::WallJump, "Wall Jump", false, false);
     add(ItemType::ChargeBeam, "Charge Beam", true, true);
     add(ItemType::GrappleBeam, "Grapple Beam", false, false);
-    add(ItemType::ScanVisor, "Scan Visor", false, true);
+    add(ItemType::ScanVisor, "Scan Visor", true, true);
     add(ItemType::ThermalVisor, "Thermal Visor", false, false);
     add(ItemType::XRayVisor, "X-Ray Visor", false, false);
     return s;

@@ -20,6 +20,8 @@
 #include "../game/folders.h"
 #include "../game/items.h"
 #include "../game/map.h"
+#include "../game/visors.h"
+#include "../game/menu.h"
 #include "../game/sound.h"
 #include "../game/breakable.h"
 #include "../game/weather.h"
@@ -109,7 +111,8 @@ struct alignas(16) ChunkCB { float offset[4]; float ax[4] = { 1, 0, 0, 0 }, ay[4
 struct GpuChunk { ComPtr<ID3D11Buffer> vbO, ibO, vbC, ibC, vbW, ibW; UINT nO = 0, nC = 0, nW = 0; };
 struct ModelGpu { std::vector<std::pair<I3, GpuChunk>> parts; std::vector<Box3> boxes, boxesStill; bool mesh = false; ComPtr<ID3D11ShaderResourceView> tex; };   // boxesStill: without the moving parts (an open door)
 struct alignas(16) PreviewCB { float vp[16]; float light[4]; };
-struct alignas(16) MapCB { float vp[16]; float eye[4]; float center[4]; float mode[4]; };   // the map hologram   // a block model's meshes (16^3 pieces) and collision
+struct alignas(16) MapCB { float vp[16]; float eye[4]; float center[4]; float mode[4]; };   // the map hologram
+struct alignas(16) VisorCB { float tint[4], grade[4], lines[4], edge[4], misc[4]; };   // the visor's look (post-processing)   // a block model's meshes (16^3 pieces) and collision
 
 struct App;
 static App* g_app = nullptr;
@@ -193,7 +196,7 @@ struct App {
     float viewerYaw = 0.6f, viewerPitch = 0.35f, viewerDist = 8; ImVec2 viewerWant{ 0, 0 }; int viewerW = 0, viewerH = 0; V3 viewerEye{ 0, 0, 0 }; XMMATRIX viewerVP = XMMatrixIdentity();
     ComPtr<ID3D11RenderTargetView> viewerRTV; ComPtr<ID3D11ShaderResourceView> viewerSRV; ComPtr<ID3D11DepthStencilView> viewerDSV;
     ComPtr<ID3D11VertexShader> vsPreview; ComPtr<ID3D11PixelShader> psPreview; ComPtr<ID3D11Buffer> cbPreview;
-    ComPtr<ID3D11BlendState> bsNoColor; ComPtr<ID3D11VertexShader> vsMap; ComPtr<ID3D11PixelShader> psMap; ComPtr<ID3D11InputLayout> layoutMap; ComPtr<ID3D11Buffer> cbMap;
+    ComPtr<ID3D11BlendState> bsNoColor; ComPtr<ID3D11Buffer> cbVisor; ComPtr<ID3D11VertexShader> vsMap; ComPtr<ID3D11PixelShader> psMap; ComPtr<ID3D11InputLayout> layoutMap; ComPtr<ID3D11Buffer> cbMap;
     std::vector<WorldObject> objects; uint32_t nextObjId = 1;
     std::string placing, selModel, newModelName; double placeYaw = 0, placeScale = 1; int movingObj = -1, dupFrom = -1; bool replaceWithObject = true;
     I3 selA{ 0, 0, 0 }, selB{ 0, 0, 0 }; int selStage = 0; BlockModel clipboard; bool hasClip = false;   // selection box (tool 2)
@@ -285,7 +288,7 @@ struct App {
             { "TEXCOORD", 3, DXGI_FORMAT_R32_UINT, 0, 28, D3D11_INPUT_PER_VERTEX_DATA, 0 } };
         HR(dev->CreateInputLayout(el, 5, vb->GetBufferPointer(), vb->GetBufferSize(), &layout));
         auto cb = [&](UINT size, ComPtr<ID3D11Buffer>& out) { D3D11_BUFFER_DESC d{}; d.ByteWidth = size; d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_CONSTANT_BUFFER; HR(dev->CreateBuffer(&d, nullptr, &out)); };
-        cb(sizeof(FrameCB), cbFrame); cb(sizeof(ChunkCB), cbChunk); cb(sizeof(PreviewCB), cbPreview); cb(sizeof(LightCB), cbLights); cb(32, cbMeshMat); cb(sizeof(MapCB), cbMap);
+        cb(sizeof(FrameCB), cbFrame); cb(sizeof(ChunkCB), cbChunk); cb(sizeof(PreviewCB), cbPreview); cb(sizeof(LightCB), cbLights); cb(32, cbMeshMat); cb(sizeof(MapCB), cbMap); cb(sizeof(VisorCB), cbVisor);
 
         D3D11_RASTERIZER_DESC rd{}; rd.FillMode = D3D11_FILL_SOLID; rd.CullMode = D3D11_CULL_BACK; rd.FrontCounterClockwise = FALSE; rd.DepthClipEnable = TRUE; HR(dev->CreateRasterizerState(&rd, &rsCull));
         rd.CullMode = D3D11_CULL_FRONT; HR(dev->CreateRasterizerState(&rd, &rsCullFront));   // mirrored views turn every triangle around
@@ -648,6 +651,7 @@ struct App {
             else if (inventory) { inventory = false; Capture(true); }
             else if (showSettings) showSettings = false;
             else if (mapOpen) CloseMap();
+            else if (scanOpen) CloseScan();
             else if (playMode) { paused = !paused; Capture(!paused); }
             else if (captured) Capture(false);            // editor: the mouse goes back to the panels
             else if (editorOpen && !EditorView()) editorOpen = false;
@@ -658,6 +662,7 @@ struct App {
         if (playMode && !typing && !repeat && k == 'M') { if (mapOpen) CloseMap(); else if (!showSettings) OpenMap(); return; }   // the map
         if (playMode && !typing && !repeat && !paused) {   // play mode keys (before the return below, which keeps the building tools out of play)
             if (k == 'E') { if (WorldObject* st = StationInReach()) UseMapStation(*st); return; }           // use: a Map Station in front of you
+            if (k == 'V' && !player.ball) { NextVisor(); return; }                                           // the visors
             if (k == 'C' && !Down(VK_CONTROL)) { ToggleBall(); return; }                                    // the morph ball
             if (!weapons.empty() && k >= '1' && k <= '9') { if (weapons.switchMode == 0) SwitchBeam((int)(k - '1')); else if (weapons.switchMode == 2) Toast("Pick beams in the menu (Esc)"); return; }   // the beams
             if (k == 'Q' && weapons.missileTypes.size() > 1 && !player.ball) { if (weapons.switchMode == 0) NextMissile(); else if (weapons.switchMode == 2) Toast("Pick missiles in the menu (Esc)"); return; }   // the missiles
@@ -1356,7 +1361,7 @@ struct App {
             }
             touchNow = touching;
         }
-        UpdateMapSight();
+        UpdateMapSight(); UpdateScan(dt);
         { EvHost h(*this); evRun.tick(events, dt, h); NoteFired(); }
         if (evSolids) { evSolids = false; RebuildSolids(); }
         if (travel) { (void)from; pending = [this, travelWorld, travelTarget] { TravelTo(travelWorld, travelTarget); }; }
@@ -2160,6 +2165,7 @@ struct App {
         if (o.kind == ObjKind::Light) LightInspector(o);
         if (o.kind == ObjKind::Particles) ParticleInspector(o);
         if (o.kind == ObjKind::MapCamera || o.kind == ObjKind::MapStation) MapInspector(o);
+        if (o.kind != ObjKind::MapCamera && o.kind != ObjKind::Light && o.kind != ObjKind::Trigger) ScanInspector(o);
         if (o.kind == ObjKind::Door) DoorInspector(o, ch_);
         else if (o.kind != ObjKind::Trigger) { float sc = (float)o.scale; Prop("Size"); if (ImGui::SliderFloat("##scale", &sc, 0.1f, 8, "x %.2f", ImGuiSliderFlags_Logarithmic)) { o.scale = sc; ch_ = true; } }
         if (m && o.kind != ObjKind::Door && o.kind != ObjKind::Trigger) {
@@ -2888,6 +2894,14 @@ struct App {
         // ---- final picture: exposure + filmic curve into the window (or the editor's viewport picture)
         ctx->OMSetRenderTargets(1, &out, nullptr);
         ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psPost.Get(), nullptr, 0);
+        {   // the visor's look
+            const VisorFx& x = CurrentVisorFx(); VisorCB vc{};
+            auto rgb = [](uint32_t c, float* o) { o[0] = ((c >> 16) & 255) / 255.f; o[1] = ((c >> 8) & 255) / 255.f; o[2] = (c & 255) / 255.f; };
+            rgb(x.tint, vc.tint); vc.tint[3] = x.tintAmount; vc.grade[0] = x.saturation; vc.grade[1] = x.contrast; vc.grade[2] = x.brightness; vc.grade[3] = x.vignette;
+            vc.lines[0] = x.lines; vc.lines[1] = x.lineCount; vc.lines[2] = x.lineSpeed; vc.lines[3] = x.noise; rgb(x.edgeColor, vc.edge); vc.edge[3] = x.edges;
+            vc.misc[0] = x.chroma; vc.misc[1] = (float)std::fmod(uiClock, 1000.0); vc.misc[2] = x.heat; vc.misc[3] = playMode && visors.switchFlash > 0 ? visorFlash / visors.switchFlash : 0;
+            ctx->UpdateSubresource(cbVisor.Get(), 0, nullptr, &vc, 0, 0); ctx->PSSetConstantBuffers(6, 1, cbVisor.GetAddressOf());
+        }
         { ID3D11ShaderResourceView* pv[2] = { volSRV.Get(), bloom ? bloomLv[0].srv.Get() : nullptr }; ctx->PSSetShaderResources(0, 2, pv); }
         ctx->Draw(3, 0);
         ctx->PSSetShaderResources(0, 4, none);
@@ -3196,6 +3210,7 @@ struct App {
         inv = PlayInventory{};
         if (!weapons.missileTypes.empty() && !weapons.missileCounter.empty()) inv.counts[weapons.missileCounter] = weapons.missileStart;
         weapState.missile = 0; chargedOn = false;
+        visor = 0; visorFlash = 0; scanLog.clear(); scanOpen = false; scanProgress = 0; scanTargetId = 0; menuScan = 0; menuScroll.clear();
         seenMaps.clear(); stationsUsed.clear(); mapGpu.clear(); mapGpuWorld.clear(); mapOpen = false;
         takenByWorld.clear(); insideNow.clear(); firedOnce.clear(); teleportLock = 0; bigMsgT = 0; playStartWorld = CurrentWorld(); startEditCam = editCam;
         playSpawn = info.hasSpawn ? info.spawn : player.feet; playYaw = info.hasSpawn ? info.spawnYaw : player.yaw;
@@ -3257,152 +3272,6 @@ struct App {
             dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(vx + (W - t1.x) * 0.5f, vy + H * 0.38f), IM_COL32(255, 230, 230, 255), a.c_str()); ImGui::PopFont();
             ImVec2 t2 = ImGui::CalcTextSize(b.c_str()); dl->AddText(ImVec2(vx + (W - t2.x) * 0.5f, vy + H * 0.38f + t1.y + 10), IM_COL32(255, 255, 255, 230), b.c_str());
         }
-    }
-    // ---- the pause menu (Esc while playing): drawn on its own bent plane in the helmet (hud.pause); the mouse is traced onto that plane
-    struct PauseItem { std::string label; int act = 0, arg = 0; bool enabled = true, current = false, header = false; };
-    enum { PA_KEEP, PA_RESTART, PA_BEAM, PA_MISSILE, PA_MAP, PA_SETTINGS, PA_STOP };
-    std::unique_ptr<ImDrawList> pauseList; bool pauseShown = false, pausePreview = false; int pauseSel = 0;   // (its picture: pauseTarget, below)
-    static constexpr int PAUSE_W = 1024;
-    std::vector<PauseItem> PauseItems() {
-        std::vector<PauseItem> v;
-        auto add = [&](const std::string& l, int a, int arg = 0, bool en = true, bool cur = false) { PauseItem it; it.label = l; it.act = a; it.arg = arg; it.enabled = en; it.current = cur; v.push_back(it); };
-        auto head = [&](const std::string& l) { PauseItem it; it.label = l; it.header = true; it.enabled = false; v.push_back(it); };
-        add("Keep playing", PA_KEEP); add("Start over", PA_RESTART);
-        if (weapons.switchMode == 2 && !weapons.empty()) {   // like Super Metroid: the beam and missile are picked here
-            head("Beam");
-            for (int i = 0; i < (int)weapons.beams.size(); i++) { const Beam& b = weapons.beams[i]; bool own = OwnsBeam(b); add(own ? b.name : "???", PA_BEAM, i, own, weapState.current == i); }
-            if (weapons.missileTypes.size() > 1) {
-                head("Missiles");
-                for (int i = 0; i < (int)weapons.missileTypes.size(); i++) { const MissileType& m = weapons.missileTypes[i]; bool own = OwnsMissile(m); add(own ? m.name : "???", PA_MISSILE, i, own, weapState.missile == i); }
-            }
-            head("");
-        }
-        add("Map  (M)", PA_MAP); add("Settings", PA_SETTINGS); add("Stop playing  (F5)", PA_STOP);
-        return v;
-    }
-    // where each row sits on the menu's picture (PAUSE_W wide); returns the picture's height
-    int PauseLayout(const std::vector<PauseItem>& items, std::vector<ImVec4>& rows) {
-        float y = 168; rows.clear();
-        for (const PauseItem& it : items) { float h = it.header ? 50.f : 70.f; rows.push_back(ImVec4(70, y, PAUSE_W - 70.f, y + h - 8)); y += h; }
-        return (int)(y + 86);
-    }
-    HudPlane PausePlane(int H) const {
-        const PauseLook& L = hud.pause; HudPlane p; p.name = "Pause";
-        p.pos = { 0, L.y, std::max(0.2f, L.dist) }; p.width = std::max(0.1f, L.width); p.height = p.width * H / (float)PAUSE_W;
-        float maxH = std::max(0.1f, L.width) * 0.72f; if (p.height > maxH) { p.width *= maxH / p.height; p.height = maxH; }   // a long menu (beams to pick) gets smaller, not taller than the view
-        p.bendX = L.bendX; p.bendY = L.bendY; p.sway = 0.5f; p.opacity = 1; p.glow = false; p.bloom = L.bloom; p.lightUp = 0;
-        return p;
-    }
-    void BuildPauseList() {
-        pauseShown = (playMode && paused && !mapOpen && !showSettings) || (pausePreview && playerEdOpen && !playMode);
-        if (!pauseShown) return;
-        std::vector<PauseItem> items = PauseItems(); std::vector<ImVec4> rows; int H = PauseLayout(items, rows);
-        if (!pauseList) pauseList = std::make_unique<ImDrawList>(ImGui::GetDrawListSharedData());
-        ImDrawList* dl = pauseList.get(); dl->_ResetForNewFrame();
-        dl->PushClipRect(ImVec2(0, 0), ImVec2((float)PAUSE_W, (float)H)); dl->PushTexture(ImGui::GetIO().Fonts->TexRef);
-        const PauseLook& L = hud.pause; int r = (L.color >> 16) & 255, g = (L.color >> 8) & 255, b = L.color & 255;
-        auto C = [&](float a) { return IM_COL32(r, g, b, (int)(std::clamp(a, 0.f, 1.f) * 255)); };
-        ImFont* font = ImGui::GetFont(); float W = (float)PAUSE_W;
-        dl->AddRectFilled(ImVec2(6, 6), ImVec2(W - 6, H - 6.f), IM_COL32(3, 10, 18, (int)(std::clamp(L.backing, 0.f, 1.f) * 255)), 28);   // the dark glass behind
-        dl->AddRect(ImVec2(6, 6), ImVec2(W - 6, H - 6.f), C(0.75f), 28.f, ImDrawFlags_None, 4.f);
-        dl->AddLine(ImVec2(40, 18), ImVec2(160, 18), C(1), 6); dl->AddLine(ImVec2(W - 160, H - 18.f), ImVec2(W - 40, H - 18.f), C(1), 6);   // little accents
-        auto centered = [&](float size, float y, ImU32 col, const char* t) { ImVec2 ts = font->CalcTextSizeA(size, FLT_MAX, 0, t); dl->AddText(font, size, ImVec2((W - ts.x) * 0.5f, y), col, t); };
-        centered(78, 34, C(1), "PAUSED");
-        centered(32, 118, C(0.6f), game.name.c_str());
-        for (size_t i = 0; i < items.size(); i++) {
-            const PauseItem& it = items[i]; const ImVec4& q = rows[i];
-            if (it.header) {
-                float my = (q.y + q.w) * 0.5f;
-                if (it.label.empty()) { dl->AddLine(ImVec2(q.x + 40, my), ImVec2(q.z - 40, my), C(0.3f), 2); continue; }
-                ImVec2 ts = font->CalcTextSizeA(28, FLT_MAX, 0, it.label.c_str());
-                dl->AddText(font, 28, ImVec2((W - ts.x) * 0.5f, my - ts.y * 0.5f), C(0.65f), it.label.c_str());
-                dl->AddLine(ImVec2(q.x + 20, my), ImVec2((W - ts.x) * 0.5f - 20, my), C(0.35f), 2); dl->AddLine(ImVec2((W + ts.x) * 0.5f + 20, my), ImVec2(q.z - 20, my), C(0.35f), 2);
-                continue;
-            }
-            bool sel = (int)i == pauseSel;
-            if (sel) {   // the picked row: a lit bar
-                dl->AddRectFilled(ImVec2(q.x, q.y), ImVec2(q.z, q.w), C(0.22f), 14);
-                dl->AddRect(ImVec2(q.x, q.y), ImVec2(q.z, q.w), C(0.9f), 14.f, ImDrawFlags_None, 3.f);
-                dl->AddTriangleFilled(ImVec2(q.x + 22, q.y + 18), ImVec2(q.x + 22, q.w - 18), ImVec2(q.x + 42, (q.y + q.w) * 0.5f), C(1));
-            }
-            ImU32 tc = !it.enabled ? C(0.25f) : sel ? IM_COL32(235, 252, 255, 255) : C(0.85f);
-            ImVec2 ts = font->CalcTextSizeA(40, FLT_MAX, 0, it.label.c_str());
-            dl->AddText(font, 40, ImVec2((W - ts.x) * 0.5f, (q.y + q.w - ts.y) * 0.5f), tc, it.label.c_str());
-            if (it.current) dl->AddCircleFilled(ImVec2((W - ts.x) * 0.5f - 26, (q.y + q.w) * 0.5f), 8, C(1));   // the one you have now
-        }
-        centered(24, H - 66.f, C(0.45f), "Mouse or W / S to pick    Enter: choose    Esc: keep playing");
-        dl->PopTexture(); dl->PopClipRect();
-    }
-    void RenderPausePlane() {
-        if (!pauseShown || !pauseList) return;
-        std::vector<PauseItem> items = PauseItems(); std::vector<ImVec4> rows; int H = std::clamp(PauseLayout(items, rows), 32, 2048);
-        MakeTarget(pauseTarget, PAUSE_W, H, nullptr, true);
-        const float clear[4] = { 0, 0, 0, 0 };
-        ctx->OMSetRenderTargets(1, pauseTarget.rtv.GetAddressOf(), nullptr); ctx->ClearRenderTargetView(pauseTarget.rtv.Get(), clear);
-        ImDrawList* dl = pauseList.get();
-        if (dl->CmdBuffer.Size && dl->VtxBuffer.Size) {
-            ImDrawData dd; dd.Valid = true; dd.CmdLists.push_back(dl); dd.TotalVtxCount = dl->VtxBuffer.Size; dd.TotalIdxCount = dl->IdxBuffer.Size;
-            dd.DisplayPos = ImVec2(0, 0); dd.DisplaySize = ImVec2((float)PAUSE_W, (float)H); dd.FramebufferScale = ImVec2(1, 1); dd.Textures = nullptr;
-            ImGui_ImplDX11_RenderDrawData(&dd);
-        }
-        ctx->OMSetRenderTargets(0, nullptr, nullptr); ctx->GenerateMips(pauseTarget.srv.Get());
-    }
-    // a point on the menu's picture -> where it shows on screen (pixels in the 3D view)
-    ImVec2 PauseToScreen(const HudPlane& p, float u, float w) const {
-        V3 q = hudSway.apply(planePoint(p, u, w), p.sway);
-        XMVECTOR v = XMVector3TransformCoord(XMVectorSet((float)q.x, (float)q.y, (float)q.z, 1), HudProj((float)rw / std::max(1, rh)));
-        return ImVec2((XMVectorGetX(v) * 0.5f + 0.5f) * rw, (0.5f - XMVectorGetY(v) * 0.5f) * rh);
-    }
-    // the mouse (pixels in the 3D view) -> which row it is over (-1: none), by finding it on the bent plane
-    int PauseHit(ImVec2 m) const {
-        std::vector<PauseItem> items = const_cast<App*>(this)->PauseItems(); std::vector<ImVec4> rows; int H = const_cast<App*>(this)->PauseLayout(items, rows);
-        HudPlane p = PausePlane(H); const int GX = 40, GY = 24;
-        std::vector<ImVec2> sp((GX + 1) * (GY + 1));
-        for (int y = 0; y <= GY; y++) for (int x = 0; x <= GX; x++) sp[y * (GX + 1) + x] = PauseToScreen(p, (float)x / GX, (float)y / GY);
-        auto tri = [&](ImVec2 a, ImVec2 b, ImVec2 c, ImVec2 ua, ImVec2 ub, ImVec2 uc, ImVec2& out) {
-            float d = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y); if (std::fabs(d) < 1e-6f) return false;
-            float l1 = ((b.y - c.y) * (m.x - c.x) + (c.x - b.x) * (m.y - c.y)) / d, l2 = ((c.y - a.y) * (m.x - c.x) + (a.x - c.x) * (m.y - c.y)) / d, l3 = 1 - l1 - l2;
-            if (l1 < 0 || l2 < 0 || l3 < 0) return false;
-            out = ImVec2(ua.x * l1 + ub.x * l2 + uc.x * l3, ua.y * l1 + ub.y * l2 + uc.y * l3); return true;
-        };
-        for (int y = 0; y < GY; y++) for (int x = 0; x < GX; x++) {
-            ImVec2 a = sp[y * (GX + 1) + x], b = sp[y * (GX + 1) + x + 1], c = sp[(y + 1) * (GX + 1) + x + 1], d = sp[(y + 1) * (GX + 1) + x];
-            ImVec2 ua((float)x / GX, (float)y / GY), ub((float)(x + 1) / GX, (float)y / GY), uc((float)(x + 1) / GX, (float)(y + 1) / GY), ud((float)x / GX, (float)(y + 1) / GY), uv;
-            if (tri(a, b, c, ua, ub, uc, uv) || tri(a, c, d, ua, uc, ud, uv)) {
-                float px = uv.x * PAUSE_W, py = uv.y * H;
-                for (size_t i = 0; i < rows.size(); i++) if (!items[i].header && items[i].enabled && px >= rows[i].x && px <= rows[i].z && py >= rows[i].y && py <= rows[i].w) return (int)i;
-                return -1;
-            }
-        }
-        return -1;
-    }
-    void PauseChoose(const PauseItem& it) {
-        switch (it.act) {
-        case PA_KEEP: paused = false; Capture(true); break;
-        case PA_RESTART: play.start(player, playRules, playSpawn, playYaw); paused = false; Capture(true); break;
-        case PA_BEAM: SwitchBeam(it.arg); break;
-        case PA_MISSILE: SwitchMissile(it.arg, true); break;
-        case PA_MAP: OpenMap(); break;
-        case PA_SETTINGS: showSettings = true; break;
-        case PA_STOP: StopPlay(); break;
-        }
-    }
-    void PauseMenu() {   // Esc while playing: picking on the plane (it is drawn by BuildPauseList / DrawHudScene)
-        std::vector<PauseItem> items = PauseItems(); int n = (int)items.size();
-        auto ok = [&](int i) { return i >= 0 && i < n && !items[i].header && items[i].enabled; };
-        if (!ok(pauseSel)) { pauseSel = 0; while (pauseSel < n && !ok(pauseSel)) pauseSel++; }
-        auto step = [&](int d) { int i = pauseSel; for (int k = 0; k < n; k++) { i = (i + d + n) % n; if (ok(i)) { pauseSel = i; return; } } };
-        if (ImGui::IsKeyPressed(ImGuiKey_UpArrow) || ImGui::IsKeyPressed(ImGuiKey_W)) step(-1);
-        if (ImGui::IsKeyPressed(ImGuiKey_DownArrow) || ImGui::IsKeyPressed(ImGuiKey_S)) step(1);
-        ImGuiIO& io = ImGui::GetIO();
-        if (!io.WantCaptureMouse) {
-            int hit = PauseHit(ImVec2(io.MousePos.x - vx, io.MousePos.y - vy));
-            static ImVec2 lastMouse(-1, -1);
-            if (hit >= 0 && (io.MousePos.x != lastMouse.x || io.MousePos.y != lastMouse.y)) pauseSel = hit;   // the mouse picks only when it moves (the keys can pick too)
-            lastMouse = io.MousePos;
-            if (hit >= 0 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) { pauseSel = hit; PauseChoose(items[hit]); return; }
-        }
-        if ((ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter) || ImGui::IsKeyPressed(ImGuiKey_Space)) && ok(pauseSel)) PauseChoose(items[pauseSel]);
     }
     // ---- blocks & textures window (E in game, "Blocks & textures" on the title screen)
     float GridChildWidth(float s, int cols) { ImGuiStyle& st = ImGui::GetStyle(); return cols * (s + st.ItemSpacing.x) + st.ScrollbarSize + st.WindowPadding.x * 2; }
@@ -4055,7 +3924,7 @@ struct App {
     void LoadHud() { items = defaultItems(); loadItems(projectDir + "/items.txt", items); assetFolders = AssetFolders{}; loadAssetFolders(projectDir + "/asset_folders.txt", assetFolders);
         animBlends = AnimBlends{}; loadAnimBlends(projectDir + "/anim_blend.txt", animBlends); cannonBlend.reset(); doorBlend.clear(); viewerBlend.reset();
         materials = Materials{}; loadMaterials(projectDir + "/materials.txt", materials); matsDirty = true; soundCache.clear(); playerSounds = PlayerSounds{}; loadPlayerSounds(projectDir + "/player_sounds.txt", playerSounds); activeTl.clear();
-        hud = HudLayout{}; loadHud(HudPath(), hud); weapons = WeaponSet{}; loadWeapons(projectDir + "/weapons.txt", weapons); weapSel = 0; weapState = WeaponState{}; hudImages.clear(); hudSel = 0; hudPlane = 0; hudEl = -1; hudPart = 0; }
+        hud = HudLayout{}; loadHud(HudPath(), hud); visors = defaultVisors(); loadVisors(projectDir + "/visors.txt", visors); menu = defaultMenu(); loadMenu(projectDir + "/menu.txt", menu); weapons = WeaponSet{}; loadWeapons(projectDir + "/weapons.txt", weapons); weapSel = 0; weapState = WeaponState{}; hudImages.clear(); hudSel = 0; hudPlane = 0; hudEl = -1; hudPart = 0; }
     void SaveHud() {
         if (projectDir.empty()) return; std::error_code ec;
         if (hud.empty()) fs::remove(fs::u8path(HudPath()), ec); else saveHud(HudPath(), hud);
@@ -4089,8 +3958,9 @@ struct App {
         std::sort(v.begin(), v.end()); return v;
     }
     bool ElementShown(const HudElement& e) const {
-        if (!playMode) return e.visible;
+        if (!playMode) return e.visible && ShownInVisor(e.visors);
         if (mapOpen ? !e.onMap : paused && !e.onPause) return false;   // the map screen / the pause menu: only what is set to stay
+        if (!ShownInVisor(e.visors)) return false;
         auto it = hudShown.find(e.name); return it == hudShown.end() ? e.visible : it->second;
     }
     // one element drawn into its plane's picture (W x H pixels)
@@ -4228,9 +4098,11 @@ struct App {
             ctx->IASetInputLayout(layoutHud.Get()); ctx->VSSetShader(vsHud.Get(), nullptr, 0); ctx->PSSetShader(psHud.Get(), nullptr, 0);
             ctx->PSSetSamplers(3, 1, sampClamp.GetAddressOf()); ctx->OMSetDepthStencilState(dsTestOnly.Get(), 0); ctx->RSSetState(rsNoCull.Get());
             for (int i : order) drawPlane(hud.planes[i], hudTargets[i].srv.Get());
-            if (pauseShown && pauseTarget.srv && (!editor || pausePreview)) {   // the pause menu: on top of everything in the helmet
-                std::vector<PauseItem> items = PauseItems(); std::vector<ImVec4> rows; HudPlane pp = PausePlane(PauseLayout(items, rows));
-                ctx->OMSetDepthStencilState(dsOff.Get(), 0); drawPlane(pp, pauseTarget.srv.Get());
+            if (menuShown && (!editor || menuPreview)) {   // the menu's panes: on top of everything in the helmet, the farthest first
+                std::vector<size_t> order; for (size_t i = 0; i < menuPanes.size() && i < menuTargets.size(); i++) if (menuTargets[i].srv) order.push_back(i);
+                std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return menuPanes[a].pos.z > menuPanes[b].pos.z; });
+                ctx->OMSetDepthStencilState(dsOff.Get(), 0);
+                for (size_t i : order) drawPlane(MenuPlaneNow(i), menuTargets[i].srv.Get());
             }
             ID3D11ShaderResourceView* none = nullptr; ctx->PSSetShaderResources(0, 1, &none);
         };
@@ -4306,7 +4178,7 @@ struct App {
     XMMATRIX HudProj(float aspect) const { return XMMatrixPerspectiveFovLH(XMConvertToRadians(hud.fov), aspect, 0.01f, 60.f); }   // its own view angle: the HUD keeps its place whatever the player's field of view
     // Play mode: the HUD over the finished picture
     void DrawHudInGame(ID3D11RenderTargetView* out) {
-        if (!pauseShown && ((hud.empty() && weapons.empty()) || !hudListsReady)) return;   // (the pause menu is drawn here too)
+        if (!menuShown && ((hud.empty() && weapons.empty()) || !hudListsReady)) return;   // (the pause menu is drawn here too)
         ctx->OMSetRenderTargets(1, &out, dsv.Get()); ctx->ClearDepthStencilView(dsv.Get(), D3D11_CLEAR_DEPTH, 1.f, 0);
         D3D11_VIEWPORT v{ 0, 0, (float)rw, (float)rh, 0, 1 }; ctx->RSSetViewports(1, &v);
         DrawHudScene(HudProj((float)rw / rh), hudSway, false, dsv.Get());
@@ -4459,6 +4331,12 @@ struct App {
         float f[3] = { (float)v.x, (float)v.y, (float)v.z }; Prop(label);
         if (ImGui::DragFloat3((std::string("##") + label).c_str(), f, speed, 0, 0, fmt)) { v = { f[0], f[1], f[2] }; return true; } return false;
     }
+    bool VisorMaskEdit(uint8_t& m) {   // which visors show it
+        bool ch = false; static const char* n[] = { "Combat", "Scan", "Thermal", "X-Ray" };
+        Prop("Shown in visors");
+        for (int v = 0; v < VISORS; v++) { bool b = (m >> v) & 1; if (v) ImGui::SameLine(); if (ImGui::Checkbox(n[v], &b)) { m = b ? (uint8_t)(m | (1 << v)) : (uint8_t)(m & ~(1 << v)); ch = true; } }
+        return ch;
+    }
     void HudProps() {
         float ui = settings.uiScale; bool ch = false;
         if (hudSel == 0) {
@@ -4478,19 +4356,6 @@ struct App {
             ImGui::SeparatorText("View");
             Prop("HUD view angle"); ch |= ImGui::SliderFloat("##hfov", &hud.fov, 40, 120, "%.0f deg");
             Hint("The HUD is laid out for this view angle and always stays where you put it on the screen, whatever field of view the player picks in the settings.");
-            ImGui::SeparatorText("Pause menu");
-            PauseLook& L = hud.pause;
-            Prop("Show it in the previews"); ImGui::Checkbox("##pzprev", &pausePreview);
-            Prop("Distance"); ch |= ImGui::SliderFloat("##pzd", &L.dist, 0.3f, 3, "%.2f");
-            Prop("Up / down"); ch |= ImGui::SliderFloat("##pzy", &L.y, -1, 1, "%.2f");
-            Prop("Width"); ch |= ImGui::SliderFloat("##pzw", &L.width, 0.2f, 3, "%.2f");
-            Prop("Bend side to side"); ch |= ImGui::SliderFloat("##pzbx", &L.bendX, 0, 1, "%.2f");
-            Prop("Bend top to bottom"); ch |= ImGui::SliderFloat("##pzby", &L.bendY, 0, 1, "%.2f");
-            Prop("Colour"); { float c[3] = { ((L.color >> 16) & 255) / 255.f, ((L.color >> 8) & 255) / 255.f, (L.color & 255) / 255.f };
-              if (ImGui::ColorEdit3("##pzc", c)) { L.color = ((uint32_t)(c[0] * 255 + 0.5f) << 16) | ((uint32_t)(c[1] * 255 + 0.5f) << 8) | (uint32_t)(c[2] * 255 + 0.5f); ch = true; } }
-            Prop("Dark glass behind"); ch |= ImGui::SliderFloat("##pzbk", &L.backing, 0, 1, "%.2f");
-            Prop("Glow"); ch |= ImGui::SliderFloat("##pzbl", &L.bloom, 0, 2, "%.2f");
-            Hint("Esc while playing: the menu shows on its own bent pane inside the helmet, over everything. Pick with the mouse (it follows the bend) or W / S and Enter.");
         } else if (hudSel == 1) {
             HudPlane& p = hud.planes[hudPlane];
             ImGui::SeparatorText("Plane");
@@ -4519,6 +4384,7 @@ struct App {
             Prop("Shown at the start"); ch |= ImGui::Checkbox("##ev", &e.visible);
             Prop("Stays when paused"); ch |= ImGui::Checkbox("##eop", &e.onPause);
             Prop("Stays on the map (M)"); ch |= ImGui::Checkbox("##eom", &e.onMap);
+            ch |= VisorMaskEdit(e.visors);
             { float r[4] = { e.x, e.y, e.w, e.h }; Prop("Place and size"); if (ImGui::DragFloat4("##er", r, 0.002f, 0, 1, "%.3f")) { e.x = r[0]; e.y = r[1]; e.w = std::max(0.002f, r[2]); e.h = std::max(0.002f, r[3]); ch = true; } }
             { float c[3] = { ((e.color >> 16) & 255) / 255.f, ((e.color >> 8) & 255) / 255.f, (e.color & 255) / 255.f }; Prop("Colour");
               if (ImGui::ColorEdit3("##ec", c)) { e.color = ((uint32_t)(c[0] * 255 + 0.5f) << 16) | ((uint32_t)(c[1] * 255 + 0.5f) << 8) | (uint32_t)(c[2] * 255 + 0.5f); ch = true; } }
@@ -4570,6 +4436,7 @@ struct App {
             Prop("Shown"); ch |= ImGui::Checkbox("##qv", &p.visible);
             Prop("Stays when paused"); ch |= ImGui::Checkbox("##qop", &p.onPause);
             Prop("Stays on the map (M)"); ch |= ImGui::Checkbox("##qom", &p.onMap);
+            ch |= VisorMaskEdit(p.visors);
             ch |= DragV3("Position", p.pos, 0.005f, "%.3f");
             { float r[3] = { p.yaw, p.pitch, p.roll }; Prop("Turn"); if (ImGui::DragFloat3("##qr", r, 0.5f, -180, 180, "%.0f deg")) { p.yaw = r[0]; p.pitch = r[1]; p.roll = r[2]; ch = true; } }
             { float s = (float)p.scale; Prop("Size"); if (ImGui::DragFloat("##qs", &s, 0.005f, 0.005f, 20, "x %.3f")) { p.scale = std::max(0.005f, s); ch = true; } }
@@ -4622,7 +4489,7 @@ struct App {
         ImGui::SetNextWindowSize(ImVec2(mv->WorkSize.x * 0.92f, mv->WorkSize.y * 0.9f), ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowPos(ImVec2(mv->WorkPos.x + mv->WorkSize.x * 0.5f, mv->WorkPos.y + mv->WorkSize.y * 0.5f), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
         if (focusPlayerEd) { ImGui::SetNextWindowFocus(); focusPlayerEd = false; }
-        hudViewWant = hudPrevWant = weapWant = ImVec2(0, 0);
+        hudViewWant = hudPrevWant = weapWant = ImVec2(0, 0); menuPreview = false; previewVisor = -1;
         if (!ImGui::Begin("Player editor", &playerEdOpen)) { ImGui::End(); return; }
         if (ImGui::BeginTabBar("player")) {
             if (ImGui::BeginTabItem("HUD")) {
@@ -4702,6 +4569,10 @@ struct App {
             selectBodyTab = false;
             if (ImGui::BeginTabItem("Items", nullptr, selectItemsTab ? ImGuiTabItemFlags_SetSelected : 0)) { ImGui::BeginChild("items"); ItemsTab(); ImGui::EndChild(); ImGui::EndTabItem(); }
             selectItemsTab = false;
+            if (ImGui::BeginTabItem("Menu", nullptr, selectMenuTab ? ImGuiTabItemFlags_SetSelected : 0)) { MenuTab(); ImGui::EndTabItem(); }
+            selectMenuTab = false;
+            if (ImGui::BeginTabItem("Visors", nullptr, selectVisorsTab ? ImGuiTabItemFlags_SetSelected : 0)) { VisorsTab(); ImGui::EndTabItem(); }
+            selectVisorsTab = false;
             ImGui::EndTabBar();
         }
         ImGui::End();
@@ -4954,6 +4825,7 @@ struct App {
         for (const HudPart& p : hud.parts) {
             if (!p.visible || !ModelNamed(p.model)) continue;
             if (playMode && (mapOpen ? !p.onMap : paused && !p.onPause)) continue;   // the map screen / the pause menu: only what is set to stay
+            if (!ShownInVisor(p.visors)) continue;
             CamPart c; c.model = p.model; partAxes(p, c.ax, c.ay, c.az); float k = p.sway;
             c.ax = rotateDeg(c.ax, sw.yaw * k, sw.pitch * k, sw.roll * k); c.ay = rotateDeg(c.ay, sw.yaw * k, sw.pitch * k, sw.roll * k); c.az = rotateDeg(c.az, sw.yaw * k, sw.pitch * k, sw.roll * k);
             c.base = sw.apply(p.pos, p.sway); out.push_back(c);
@@ -5038,7 +4910,7 @@ struct App {
         }
         if (weapons.switchMode == 1) PickBestWeapons();
         const Beam* b = CurrentBeam(); if (!b) return;
-        bool can = Playing() && !play.dead() && OwnsBeam(*b);
+        bool can = Playing() && !play.dead() && OwnsBeam(*b) && visor == 0;   // (other visors: no shooting, like in Prime)
         bool L = (can && Down(VK_LBUTTON)) || (holdBeam && OwnsBeam(*b)), R = (can && Down('F')) || forceMissile;   // F: missiles (the right mouse button is kept for lock-on)
         const std::string& counter = weapons.missileCounter;
         const MissileType* mt = CurrentMissile();
@@ -5084,6 +4956,715 @@ struct App {
         weapState.current = to; weapState.charging = false; weapState.charge = 0; cannonClip = -1; firedPending += 0.4f; Toast(weapons.beams[to].name);
     }
 
+    // ================================================================== visors (V): Combat, Scan, Thermal, X-Ray
+    VisorSettings visors; int visor = 0; float visorFlash = 0; int previewVisor = -1;
+    ScanLog scanLog; uint32_t scanTargetId = 0; float scanProgress = 0; bool scanOpen = false, holdScan = false; ScanEntry scanShown;
+    struct ScanSeen { uint32_t id; V3 c; double dist, ang, radius; bool done, important; std::string name; };
+    std::vector<ScanSeen> scanCands;
+    void SaveVisors() { if (!projectDir.empty()) saveVisors(projectDir + "/visors.txt", visors); }
+    bool HasItemType(ItemType t) const { for (const ItemDef& d : items.items) if (d.used && d.type == t && (d.startsOwned || ItemHave(d.name) > 0)) return true; return false; }
+    bool VisorOwned(int v) const {
+        if (v == 0) return true;
+        return HasItemType(v == 1 ? ItemType::ScanVisor : v == 2 ? ItemType::ThermalVisor : ItemType::XRayVisor);
+    }
+    void SetVisor(int v) {
+        if (v == visor || v < 0 || v >= VISORS) return;
+        visor = v; visorFlash = visors.switchFlash; scanProgress = 0; scanTargetId = 0; Toast(visorName((VisorKind)v));
+    }
+    void NextVisor() {
+        for (int k = 1; k < VISORS; k++) { int v = (visor + k) % VISORS; if (VisorOwned(v)) { SetVisor(v); return; } }
+        Toast("No other visors yet");
+    }
+    const VisorFx& CurrentVisorFx() const {
+        static const VisorFx plain;
+        if (playMode) return visors.fx[std::clamp(visor, 0, VISORS - 1)];
+        return previewVisor >= 0 && previewVisor < VISORS ? visors.fx[previewVisor] : plain;
+    }
+    bool ShownInVisor(uint8_t mask) const {   // the HUD: which visors show an element / part
+        int v = playMode ? visor : previewVisor; if (v < 0) return true;
+        return (mask >> v) & 1;
+    }
+    // what the Scan Visor sees: scannable objects in range, in view, not behind blocks
+    void UpdateScanCands() {
+        scanCands.clear();
+        if (!playMode || visor != 1 || player.ball || play.dead() || !world) return;
+        V3 eye = player.eye(), f = player.forward(); double range = visors.scanRange, half = settings.fov * 3.14159265358979 / 180 * 0.5 * 1.25;
+        for (const WorldObject& o : objects) {
+            if (!o.scan.on || o.scan.name.empty() || evHidden.count(o.id)) continue;
+            FrameRef fr = ModelOf(o); V3 c = o.pos + V3{ 0, 0.5, 0 }; double rad = 0.5;
+            if (fr) { Box3 b = objectBounds(o, *fr); c = (b.lo + b.hi) * 0.5; V3 e = (b.hi - b.lo) * 0.5; rad = std::max(0.3, std::sqrt(e.x * e.x + e.y * e.y + e.z * e.z) * 0.6); }
+            V3 d = c - eye; double l = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z); if (l > range || l < 1e-3) continue;
+            double ang = std::acos(std::clamp((d.x * f.x + d.y * f.y + d.z * f.z) / l, -1.0, 1.0)); if (ang > half) continue;
+            if (!canSee(*world, eye, c, range) && !canSee(*world, eye, c + V3{ 0, rad * 0.7, 0 }, range)) continue;
+            scanCands.push_back({ o.id, c, l, ang, rad, scanLog.has(o.scan.name), o.scan.important, o.scan.name });
+        }
+    }
+    void UpdateScan(double dt) {
+        visorFlash = std::max(0.f, visorFlash - (float)dt);
+        UpdateScanCands();
+        if (visor != 1) { scanProgress = 0; scanTargetId = 0; return; }
+        const ScanSeen* best = nullptr;   // the one nearest the crosshair (within its own size, or a few degrees)
+        for (const ScanSeen& s : scanCands) { double reach = std::max(0.09, std::atan2(s.radius, s.dist)); if (s.ang <= reach && (!best || s.ang < best->ang)) best = &s; }
+        uint32_t id = best ? best->id : 0;
+        if (id != scanTargetId) { scanTargetId = id; scanProgress = 0; }
+        bool hold = (Playing() && Down(VK_RBUTTON)) || holdScan;
+        if (!best || !hold) { scanProgress = 0; return; }
+        const WorldObject* o = nullptr; for (const WorldObject& q : objects) if (q.id == id) { o = &q; break; }
+        if (!o) return;
+        float time = best->done ? 0.3f : (o->scan.time > 0 ? o->scan.time : visors.scanTime);
+        scanProgress += (float)dt / std::max(0.05f, time);
+        if (scanProgress >= 1) {   // done: into the scan index, and its text on a pane
+            ScanEntry e; e.name = o->scan.name; e.category = o->scan.category.empty() ? "Research" : o->scan.category; e.text = o->scan.text; e.model = o->model; e.important = o->scan.important;
+            bool isNew = scanLog.add(e); scanShown = e; scanProgress = 0;
+            Log("scanned: " + e.name + (isNew ? " (new)" : ""));
+            OpenScan();
+        }
+    }
+    void OpenScan() { scanOpen = true; paused = true; Capture(false); menuSlideT = 0; menuSlideDir = 0; }
+    void CloseScan() { if (!scanOpen) return; scanOpen = false; paused = false; Capture(true); }
+    void ScanInput() {   // the scan's text is up: a click, E, Enter or Space closes it
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || ImGui::IsMouseClicked(ImGuiMouseButton_Right) || ImGui::IsKeyPressed(ImGuiKey_E) || ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_Space)) CloseScan();
+    }
+    void DrawScanMarkers(ImDrawList* dl) {   // the Scan Visor: a marker on everything scannable, the target with its progress
+        if (!playMode || visor != 1 || paused || mapOpen || hideHud) return;
+        float ui = settings.uiScale, t = (float)uiClock;
+        auto col = [&](uint32_t c, float a) { return IM_COL32((c >> 16) & 255, (c >> 8) & 255, c & 255, (int)(std::clamp(a, 0.f, 1.f) * 255)); };
+        for (const ScanSeen& s : scanCands) {
+            ImVec2 p; if (!Project(s.c, p)) continue;
+            uint32_t c = s.done ? visors.doneColor : s.important ? visors.importantColor : visors.markColor;
+            bool tgt = s.id == scanTargetId; float r = (tgt ? 15.f : 9.f) * ui;
+            ImVec2 d[4] = { ImVec2(p.x, p.y - r), ImVec2(p.x + r, p.y), ImVec2(p.x, p.y + r), ImVec2(p.x - r, p.y) };
+            dl->AddQuad(d[0], d[1], d[2], d[3], col(c, 0.95f), 2.f * ui);
+            if (!s.done) dl->AddQuadFilled(ImVec2(p.x, p.y - r * 0.4f), ImVec2(p.x + r * 0.4f, p.y), ImVec2(p.x, p.y + r * 0.4f), ImVec2(p.x - r * 0.4f, p.y), col(c, 0.8f));
+            if (!tgt) continue;
+            float R = 30 * ui, a0 = t * 2.f;   // turning brackets around the target
+            for (int k = 0; k < 4; k++) { float a = a0 + k * 1.5708f; dl->PathArcTo(p, R, a, a + 0.7f, 10); dl->PathStroke(col(c, 0.9f), 0, 2.5f * ui); }
+            if (scanProgress > 0) {   // the progress: a ring filling up
+                dl->PathArcTo(p, R + 7 * ui, -1.5708f, -1.5708f + 6.2832f * std::clamp(scanProgress, 0.f, 1.f), 48); dl->PathStroke(col(c, 1), 0, 4 * ui);
+                char pc[32]; snprintf(pc, sizeof pc, "%d%%", (int)(scanProgress * 100)); dl->AddText(ImVec2(p.x + R + 14 * ui, p.y - 8 * ui), col(c, 1), pc);
+            } else {
+                std::string label = s.done ? s.name : "Hold right mouse to scan";
+                dl->AddText(ImVec2(p.x + R + 12 * ui, p.y - 8 * ui), col(c, 0.95f), label.c_str());
+            }
+        }
+    }
+
+    // ================================================================== the pause menu (Player editor > Menu): pages as tabs, made of bent panes
+    MenuLayout menu;
+    void SaveMenu() { if (!projectDir.empty()) saveMenu(projectDir + "/menu.txt", menu); }
+    struct MenuHit { int pane; ImVec4 r; int kind; int arg; MenuAct act; std::string target; };   // kind: 0 button, 1 tab, 2 beam, 3 missile, 4 scan entry
+    std::vector<std::unique_ptr<ImDrawList>> menuLists; std::vector<HudTarget> menuTargets;
+    std::vector<MenuPane> menuPanes; std::vector<bool> menuPaneIsPage; std::vector<MenuHit> menuHits;
+    int menuPage = 0, menuSel = -2, menuScan = 0, menuSlideDir = 0, menuEdPage = 0; double menuSlideT = 1; std::vector<int> menuBack;
+    bool menuShown = false, menuPreview = false, menuWasOpen = false;
+    std::map<int, float> menuScroll;   // a list's scroll (pane * 256 + item)
+    HudTarget scanModelView; ComPtr<ID3D11DepthStencilView> scanModelDSV; int smDW = 0, smDH = 0, smWantW = 0, smWantH = 0; std::string smModel;
+    const ScanLog& ShownScans() {   // in the editor's preview: every scan entry in the world, as if all were scanned
+        if (playMode) return scanLog;
+        static ScanLog sample; sample.clear();
+        for (const WorldObject& o : objects) if (o.scan.on && !o.scan.name.empty()) sample.add({ o.scan.name, o.scan.category.empty() ? "Research" : o.scan.category, o.scan.text, o.model, o.scan.important });
+        if (sample.entries.empty()) { sample.add({ "Map Station", "Research", "A Chozo data terminal. It holds a map of the area around it.", "@map-station", false });
+            sample.add({ "Strange Door", "Research", "Its lock reacts to missiles.", "@door", true }); }
+        return sample;
+    }
+    std::string MenuValue(const std::string& n) {
+        if (n == "game") return game.name; if (n == "world") return CurrentWorld();
+        if (n == "energy") return std::to_string((int)std::lround(playMode ? play.health : game.player.maxHealth));
+        if (n == "maxenergy") return std::to_string((int)std::lround(playMode ? playRules.maxHealth : game.player.maxHealth));
+        if (n == "missiles") { auto it = inv.counts.find(weapons.missileCounter); return std::to_string(it == inv.counts.end() ? 0 : it->second); }
+        if (n == "scans") return std::to_string(ShownScans().entries.size());
+        return "";
+    }
+    MenuPane ScanResultPane() const {   // the text of what was just scanned
+        MenuPane p; p.name = "Scan"; p.pos = { 0, -0.14, 0.82 }; p.width = 0.98f; p.height = 0.44f; p.bendX = 0.3f; p.bendY = 0.12f;
+        p.color = scanShown.important ? visors.importantColor : 0x6CF0FF; p.backing = 0.7f;
+        MenuItem t; t.kind = MenuKind::ScanText; t.x = 0.05f; t.y = 0.07f; t.w = 0.9f; t.h = 0.76f; t.textSize = 32; p.items.push_back(t);
+        MenuItem h; h.kind = MenuKind::Text; h.text = "Click, E or Enter to continue"; h.x = 0.05f; h.y = 0.86f; h.w = 0.9f; h.h = 0.08f; h.textSize = 24; h.alpha = 0.55f; h.align = 2; p.items.push_back(h);
+        return p;
+    }
+    void GoToPage(int pg, bool remember = true) {
+        if (pg < 0 || pg >= (int)menu.pages.size() || pg == menuPage) return;
+        std::vector<int> tabs = menu.tabs(); auto at = [&](int p) { auto it = std::find(tabs.begin(), tabs.end(), p); return it == tabs.end() ? 1000 + p : (int)(it - tabs.begin()); };
+        menuSlideDir = at(pg) > at(menuPage) ? 1 : -1; menuSlideT = 0;
+        if (remember) menuBack.push_back(menuPage);
+        menuPage = pg; menuSel = -2;
+    }
+    void MenuDo(const MenuHit& h) {
+        switch (h.kind) {
+        case 1: GoToPage(h.arg); return;
+        case 2: SwitchBeam(h.arg); return;
+        case 3: SwitchMissile(h.arg, true); return;
+        case 4: menuScan = h.arg; return;
+        default: break;
+        }
+        switch (h.act) {
+        case MenuAct::Resume: paused = false; Capture(true); break;
+        case MenuAct::Restart: play.start(player, playRules, playSpawn, playYaw); paused = false; Capture(true); break;
+        case MenuAct::Map: OpenMap(); break;
+        case MenuAct::Settings: showSettings = true; break;
+        case MenuAct::Quit: StopPlay(); break;
+        case MenuAct::GoTo: { int p = menu.findPage(h.target); if (p >= 0) GoToPage(p); else Toast("No page called " + h.target); break; }
+        case MenuAct::Back: if (!menuBack.empty()) { int p = menuBack.back(); menuBack.pop_back(); GoToPage(p, false); } break;
+        default: break;
+        }
+    }
+    // one pane's picture: its glass, frame and items (and where its buttons and rows are, for the mouse and the keys)
+    void DrawMenuPane(ImDrawList* dl, const MenuPane& pn, int paneIdx) {
+        float W = (float)MENU_PANE_W, H = (float)menuPaneHeight(pn); ImFont* font = ImGui::GetFont();
+        auto C = [&](uint32_t c, float a) { return IM_COL32((c >> 16) & 255, (c >> 8) & 255, c & 255, (int)(std::clamp(a, 0.f, 1.f) * 255)); };
+        float round = std::min(28.f, H * 0.2f);
+        if (pn.backing > 0.001f) dl->AddRectFilled(ImVec2(6, 6), ImVec2(W - 6, H - 6), IM_COL32(3, 10, 18, (int)(std::clamp(pn.backing, 0.f, 1.f) * 255)), round);
+        if (pn.frame) { dl->AddRect(ImVec2(6, 6), ImVec2(W - 6, H - 6), C(pn.color, 0.75f), round, ImDrawFlags_None, 4.f); dl->AddLine(ImVec2(40, 18), ImVec2(160, 18), C(pn.color, 1), 6); }
+        auto text = [&](const std::string& s, float size, ImVec2 a, ImVec2 b, int align, ImU32 col, bool wrap) {
+            if (wrap) { dl->AddText(font, size, a, col, s.c_str(), nullptr, b.x - a.x); return; }
+            ImVec2 ts = font->CalcTextSizeA(size, FLT_MAX, 0, s.c_str());
+            float x = align == 0 ? a.x : align == 2 ? b.x - ts.x : (a.x + b.x - ts.x) * 0.5f; dl->AddText(font, size, ImVec2(x, (a.y + b.y - ts.y) * 0.5f), col, s.c_str());
+        };
+        auto hit = [&](ImVec4 r, int kind, int arg, MenuAct act = MenuAct::None, const std::string& tg = "") { menuHits.push_back({ paneIdx, r, kind, arg, act, tg }); return (int)menuHits.size() - 1 == menuSel; };
+        auto row = [&](ImVec4 r, const std::string& label, float size, uint32_t c, float a, bool sel, bool on, bool enabled, uint32_t textCol = 0) {   // a pickable row
+            if (sel) { dl->AddRectFilled(ImVec2(r.x, r.y), ImVec2(r.z, r.w), C(c, 0.22f * a), 12); dl->AddRect(ImVec2(r.x, r.y), ImVec2(r.z, r.w), C(c, 0.9f * a), 12, ImDrawFlags_None, 3.f);
+                dl->AddTriangleFilled(ImVec2(r.x + 16, r.y + (r.w - r.y) * 0.28f), ImVec2(r.x + 16, r.w - (r.w - r.y) * 0.28f), ImVec2(r.x + 32, (r.y + r.w) * 0.5f), C(c, a)); }
+            ImU32 tc = !enabled ? C(c, 0.25f * a) : textCol ? C(textCol, a) : sel ? IM_COL32(235, 252, 255, (int)(255 * a)) : C(c, 0.85f * a);
+            text(label, size, ImVec2(r.x + 44, r.y), ImVec2(r.z - 20, r.w), 0, tc, false);
+            if (on) dl->AddCircleFilled(ImVec2(r.x + 30 + 8, (r.y + r.w) * 0.5f), 7, C(c, a));
+        };
+        for (int ii = 0; ii < (int)pn.items.size(); ii++) {
+            const MenuItem& it = pn.items[ii];
+            ImVec2 a(it.x * W, it.y * H), b((it.x + it.w) * W, (it.y + it.h) * H); uint32_t c = it.color; float al = it.alpha;
+            switch (it.kind) {
+            case MenuKind::Panel:
+                if (it.filled) dl->AddRectFilled(a, b, C(c, al), it.rounding); else dl->AddRect(a, b, C(c, al), it.rounding, ImDrawFlags_None, it.thickness);
+                break;
+            case MenuKind::Text: {
+                std::string s = menuFill(it.text, [&](const std::string& n) { return MenuValue(n); });
+                bool multi = s.find('\n') != std::string::npos || font->CalcTextSizeA(it.textSize, FLT_MAX, 0, s.c_str()).x > b.x - a.x;
+                if (multi) dl->AddText(font, it.textSize, a, C(c, al), s.c_str(), nullptr, b.x - a.x); else text(s, it.textSize, a, b, it.align, C(c, al), false);
+                break; }
+            case MenuKind::Image:
+                if (ID3D11ShaderResourceView* im = HudImage(it.image)) dl->AddImage((ImTextureID)(intptr_t)im, a, b, ImVec2(0, 0), ImVec2(1, 1), C(0xFFFFFF, al));
+                else dl->AddRect(a, b, C(c, 0.4f * al), 8, ImDrawFlags_None, 2.f);
+                break;
+            case MenuKind::Button: {
+                ImVec4 r(a.x, a.y, b.x, b.y); bool sel = hit(r, 0, 0, it.act, it.target);
+                if (sel) { dl->AddRectFilled(a, b, C(c, 0.22f * al), 14); dl->AddRect(a, b, C(c, 0.9f * al), 14, ImDrawFlags_None, 3.f);
+                    dl->AddTriangleFilled(ImVec2(a.x + 22, a.y + (b.y - a.y) * 0.28f), ImVec2(a.x + 22, b.y - (b.y - a.y) * 0.28f), ImVec2(a.x + 42, (a.y + b.y) * 0.5f), C(c, al)); }
+                text(menuFill(it.text, [&](const std::string& n) { return MenuValue(n); }), it.textSize, a, b, it.align, sel ? IM_COL32(235, 252, 255, (int)(255 * al)) : C(c, 0.85f * al), false);
+                break; }
+            case MenuKind::TabBar: {
+                std::vector<int> tabs = menu.tabs(); if (tabs.empty()) break;
+                int showPage = playMode ? menuPage : menuEdPage;
+                float tw = (b.x - a.x) / tabs.size();
+                for (int k = 0; k < (int)tabs.size(); k++) {
+                    ImVec2 ta(a.x + tw * k + 6, a.y), tb(a.x + tw * (k + 1) - 6, b.y); bool cur = tabs[k] == showPage;
+                    bool sel = hit(ImVec4(ta.x, ta.y, tb.x, tb.y), 1, tabs[k]);
+                    if (cur) dl->AddRectFilled(ta, tb, C(c, 0.3f * al), 12);
+                    dl->AddRect(ta, tb, C(c, (cur ? 0.95f : sel ? 0.8f : 0.4f) * al), 12, ImDrawFlags_None, cur ? 3.f : 2.f);
+                    text(menu.pages[tabs[k]].name, it.textSize, ta, tb, 1, cur ? IM_COL32(235, 252, 255, (int)(255 * al)) : C(c, (sel ? 1.f : 0.7f) * al), false);
+                }
+                if (tabs.size() > 1) { text("Q", it.textSize * 0.6f, ImVec2(a.x - 40, a.y), ImVec2(a.x - 4, b.y), 1, C(c, 0.5f * al), false); text("E", it.textSize * 0.6f, ImVec2(b.x + 4, a.y), ImVec2(b.x + 40, b.y), 1, C(c, 0.5f * al), false); }
+                break; }
+            case MenuKind::ItemList: case MenuKind::BeamList: case MenuKind::ScanList: {   // lists: rows, headers, a scroll
+                float rh = it.textSize * 1.55f; int key = paneIdx * 256 + ii; float& scroll = menuScroll[key];
+                struct Row { std::string label; bool header = false, enabled = true, on = false; int kind = -1, arg = 0; uint32_t col = 0; };
+                std::vector<Row> rows;
+                if (it.kind == MenuKind::ItemList) {
+                    std::string group;
+                    for (const ItemDef& d : items.items) {
+                        if (!d.used) continue;
+                        int have = playMode ? ItemHave(d.name) + (d.startsOwned && !itemCounted(d.type) ? 1 : 0) : (d.startsOwned ? 1 : 0);
+                        if (itemGroup(d.type) != group) { group = itemGroup(d.type); rows.push_back({ group, true }); }
+                        Row r; r.label = have > 0 ? d.name : "???"; r.enabled = have > 0; if (have > 1 && itemCounted(d.type)) r.label += "  x" + std::to_string(have); rows.push_back(r);
+                    }
+                    if (rows.empty()) rows.push_back({ "No items in this game yet", true });
+                } else if (it.kind == MenuKind::BeamList) {
+                    if (!weapons.beams.empty()) rows.push_back({ "Beams", true });
+                    for (int i = 0; i < (int)weapons.beams.size(); i++) { bool own = OwnsBeam(weapons.beams[i]); Row r; r.label = own ? weapons.beams[i].name : "???"; r.enabled = own; r.on = weapState.current == i; r.kind = own ? 2 : -1; r.arg = i; rows.push_back(r); }
+                    if (!weapons.missileTypes.empty()) rows.push_back({ "Missiles", true });
+                    for (int i = 0; i < (int)weapons.missileTypes.size(); i++) { bool own = OwnsMissile(weapons.missileTypes[i]); Row r; r.label = own ? weapons.missileTypes[i].name : "???"; r.enabled = own; r.on = weapState.missile == i; r.kind = own ? 3 : -1; r.arg = i; rows.push_back(r); }
+                    if (rows.empty()) rows.push_back({ "No weapons yet", true });
+                } else {
+                    const ScanLog& lg = ShownScans();
+                    for (const std::string& cat : lg.categories()) {
+                        rows.push_back({ cat, true });
+                        for (int i = 0; i < (int)lg.entries.size(); i++) if (lg.entries[i].category == cat) { Row r; r.label = lg.entries[i].name; r.on = i == menuScan; r.kind = 4; r.arg = i; if (lg.entries[i].important) r.col = visors.importantColor; rows.push_back(r); }
+                    }
+                    if (rows.empty()) rows.push_back({ "Nothing scanned yet", true });
+                }
+                float total = 0; for (const Row& r : rows) total += r.header ? rh * 0.85f : rh;
+                scroll = std::clamp(scroll, 0.f, std::max(0.f, total - (b.y - a.y)));
+                dl->PushClipRect(a, b, true);
+                float y = a.y - scroll;
+                for (const Row& r : rows) {
+                    float h = r.header ? rh * 0.85f : rh;
+                    if (y + h > a.y - 1 && y < b.y + 1) {
+                        if (r.header) {
+                            ImVec2 ts = font->CalcTextSizeA(it.textSize * 0.8f, FLT_MAX, 0, r.label.c_str()); float my = y + h * 0.55f;
+                            dl->AddText(font, it.textSize * 0.8f, ImVec2(a.x + 8, my - ts.y * 0.5f), C(c, 0.65f * al), r.label.c_str());
+                            dl->AddLine(ImVec2(a.x + 20 + ts.x, my), ImVec2(b.x - 8, my), C(c, 0.3f * al), 2);
+                        } else {
+                            ImVec4 rr(a.x, y + 3, b.x, y + h - 3);
+                            bool sel = r.kind >= 0 && y >= a.y - 2 && y + h <= b.y + 2 ? hit(rr, r.kind, r.arg) : false;
+                            row(rr, r.label, it.textSize, c, al, sel, r.on, r.enabled, r.col);
+                        }
+                    }
+                    y += h;
+                }
+                dl->PopClipRect();
+                if (total > b.y - a.y) {   // a thin scroll bar
+                    float k = (b.y - a.y) / total, y0 = a.y + (scroll / total) * (b.y - a.y);
+                    dl->AddRectFilled(ImVec2(b.x - 6, y0), ImVec2(b.x - 1, y0 + (b.y - a.y) * k), C(c, 0.5f * al), 3);
+                }
+                break; }
+            case MenuKind::ScanText: {
+                const ScanLog& lg = ShownScans(); const ScanEntry* e = scanOpen ? &scanShown : (menuScan >= 0 && menuScan < (int)lg.entries.size() ? &lg.entries[menuScan] : nullptr);
+                if (!e) { text("Pick an entry", it.textSize, a, b, 1, C(c, 0.4f * al), false); break; }
+                uint32_t hc = e->important ? visors.importantColor : c;
+                float ts = it.textSize * 1.5f; dl->AddText(font, ts, a, C(hc, al), e->name.c_str());
+                dl->AddText(font, it.textSize * 0.8f, ImVec2(a.x, a.y + ts * 1.15f), C(c, 0.55f * al), (e->category + (e->important ? "   -   important" : "")).c_str());
+                float ty = a.y + ts * 1.15f + it.textSize * 1.3f; dl->AddLine(ImVec2(a.x, ty - it.textSize * 0.3f), ImVec2(b.x, ty - it.textSize * 0.3f), C(hc, 0.35f * al), 2);
+                dl->PushClipRect(ImVec2(a.x, ty), b, true);
+                dl->AddText(font, it.textSize, ImVec2(a.x, ty), C(0xE8F8FF, 0.92f * al), e->text.empty() ? "(no text)" : e->text.c_str(), nullptr, b.x - a.x);
+                dl->PopClipRect();
+                break; }
+            case MenuKind::ScanModel: {
+                const ScanLog& lg = ShownScans(); const ScanEntry* e = scanOpen ? &scanShown : (menuScan >= 0 && menuScan < (int)lg.entries.size() ? &lg.entries[menuScan] : nullptr);
+                float cx = (a.x + b.x) * 0.5f, by = b.y - (b.y - a.y) * 0.08f, rx = (b.x - a.x) * 0.36f;
+                for (int k = 0; k < 3; k++) dl->AddEllipse(ImVec2(cx, by), ImVec2(rx * (1 - k * 0.22f), rx * 0.16f * (1 - k * 0.22f)), C(c, (0.5f - k * 0.12f) * al), 0, 48, 2.f);   // a little pedestal of light
+                if (!e || e->model.empty()) break;
+                smModel = e->model; smWantW = std::clamp((int)(b.x - a.x), 16, 1024); smWantH = std::clamp((int)(b.y - a.y), 16, 1024);
+                if (scanModelView.srv && smDW == smWantW && smDH == smWantH) dl->AddImage((ImTextureID)(intptr_t)scanModelView.srv.Get(), a, b, ImVec2(0, 0), ImVec2(1, 1), C(0xFFFFFF, al));
+                break; }
+            default: break;
+            }
+        }
+    }
+    void BuildMenuLists() {
+        menuShown = false; menuHits.clear(); menuPanes.clear(); menuPaneIsPage.clear(); smModel.clear();
+        bool inMenu = playMode && paused && !mapOpen && !showSettings && !scanOpen, inScan = playMode && scanOpen;
+        bool preview = menuPreview && playerEdOpen && !playMode;
+        if (inMenu && !menuWasOpen) { menuPage = 0; menuBack.clear(); menuSel = -2; menuSlideT = 0; menuSlideDir = 0; }   // it opens on the first page
+        menuWasOpen = inMenu;
+        if (!(inMenu || inScan || preview)) return;
+        if (menu.pages.empty() && !inScan) return;
+        menuShown = true;
+        if (inScan) { menuPanes.push_back(ScanResultPane()); menuPaneIsPage.push_back(true); }
+        else {
+            int pg = preview ? std::clamp(menuEdPage, 0, (int)menu.pages.size() - 1) : std::clamp(menuPage, 0, (int)menu.pages.size() - 1);
+            for (const MenuPane& p : menu.always) { menuPanes.push_back(p); menuPaneIsPage.push_back(false); }
+            for (const MenuPane& p : menu.pages[pg].panes) { menuPanes.push_back(p); menuPaneIsPage.push_back(true); }
+        }
+        if (menuLists.size() < menuPanes.size()) menuLists.resize(menuPanes.size());
+        for (size_t i = 0; i < menuPanes.size(); i++) {
+            if (!menuLists[i]) menuLists[i] = std::make_unique<ImDrawList>(ImGui::GetDrawListSharedData());
+            ImDrawList* dl = menuLists[i].get(); dl->_ResetForNewFrame();
+            dl->PushClipRect(ImVec2(0, 0), ImVec2((float)MENU_PANE_W, (float)menuPaneHeight(menuPanes[i]))); dl->PushTexture(ImGui::GetIO().Fonts->TexRef);
+            DrawMenuPane(dl, menuPanes[i], (int)i);
+            dl->PopTexture(); dl->PopClipRect();
+        }
+        if (menuSel == -2 || menuSel >= (int)menuHits.size()) {   // nothing picked yet: the first button or row (not a tab)
+            menuSel = -1; for (int i = 0; i < (int)menuHits.size(); i++) if (menuHits[i].kind != 1) { menuSel = i; break; }
+        }
+    }
+    void RenderScanModel() {   // the picked scan entry's model, turning (for a Scan model item)
+        if (smModel.empty() || !menuShown) return;
+        FrameRef f = ModelNamed(smModel); if (!f) return;
+        int w = smWantW, h = smWantH; if (w != smDW || h != smDH) { MakeTarget(scanModelView, w, h, &scanModelDSV); smDW = w; smDH = h; }
+        const float clear[4] = { 0, 0, 0, 0 };
+        ctx->OMSetRenderTargets(1, scanModelView.rtv.GetAddressOf(), scanModelDSV.Get()); ctx->ClearRenderTargetView(scanModelView.rtv.Get(), clear); ctx->ClearDepthStencilView(scanModelDSV.Get(), D3D11_CLEAR_DEPTH, 1, 0);
+        D3D11_VIEWPORT v{ 0, 0, (float)w, (float)h, 0, 1 }; ctx->RSSetViewports(1, &v);
+        WorldObject vo; vo.model = smModel; vo.yaw = (float)std::fmod(uiClock * 35.0, 360.0);
+        Box3 bb = objectBounds(vo, *f); V3 centre = (bb.lo + bb.hi) * 0.5, ext = (bb.hi - bb.lo) * 0.5;
+        double rad = std::max(0.2, std::sqrt(ext.x * ext.x + ext.y * ext.y + ext.z * ext.z));
+        double dist = rad / std::tan(XMConvertToRadians(18)) * std::max(1.0, (double)h / w), pitch = 0.22;
+        V3 eye = centre + V3{ 0, std::sin(pitch), -std::cos(pitch) } * dist;
+        XMVECTOR fwd = XMVector3Normalize(XMVectorSet((float)(centre.x - eye.x), (float)(centre.y - eye.y), (float)(centre.z - eye.z), 0));
+        XMMATRIX vp = XMMatrixLookToLH(XMVectorZero(), fwd, XMVectorSet(0, 1, 0, 0)) * XMMatrixPerspectiveFovLH(XMConvertToRadians(36), (float)w / h, 0.02f, (float)(dist * 4 + 10));
+        ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsNoCull.Get());
+        PreviewCB pc{}; XMStoreFloat4x4((XMFLOAT4X4*)pc.vp, vp); pc.light[0] = -0.45f; pc.light[1] = 0.8f; pc.light[2] = -0.4f;
+        ctx->UpdateSubresource(cbPreview.Get(), 0, nullptr, &pc, 0, 0);
+        ctx->VSSetConstantBuffers(2, 1, cbPreview.GetAddressOf()); ctx->PSSetConstantBuffers(2, 1, cbPreview.GetAddressOf()); ctx->VSSetConstantBuffers(1, 1, cbChunk.GetAddressOf());
+        ctx->IASetInputLayout(layout.Get()); ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        ctx->VSSetShader(vsPreview.Get(), nullptr, 0); ctx->PSSetShader(psPreview.Get(), nullptr, 0);
+        ctx->PSSetShaderResources(0, 1, texArray.GetAddressOf()); ctx->PSSetSamplers(0, 1, sampBlocks.GetAddressOf());
+        DrawObject(vo, 0, eye); DrawObject(vo, 1, eye);
+        ID3D11ShaderResourceView* none[10] = {}; ctx->PSSetShaderResources(0, 10, none); ctx->RSSetState(rsCull.Get());
+        ctx->OMSetRenderTargets(0, nullptr, nullptr);
+    }
+    void RenderMenuPanes() {
+        if (!menuShown) return;
+        if (menuTargets.size() < menuPanes.size()) menuTargets.resize(menuPanes.size());
+        for (size_t i = 0; i < menuPanes.size(); i++) {
+            int H = menuPaneHeight(menuPanes[i]); MakeTarget(menuTargets[i], MENU_PANE_W, H, nullptr, true);
+            const float clear[4] = { 0, 0, 0, 0 };
+            ctx->OMSetRenderTargets(1, menuTargets[i].rtv.GetAddressOf(), nullptr); ctx->ClearRenderTargetView(menuTargets[i].rtv.Get(), clear);
+            ImDrawList* dl = menuLists[i].get();
+            if (dl->CmdBuffer.Size && dl->VtxBuffer.Size) {
+                ImDrawData dd; dd.Valid = true; dd.CmdLists.push_back(dl); dd.TotalVtxCount = dl->VtxBuffer.Size; dd.TotalIdxCount = dl->IdxBuffer.Size;
+                dd.DisplayPos = ImVec2(0, 0); dd.DisplaySize = ImVec2((float)MENU_PANE_W, (float)H); dd.FramebufferScale = ImVec2(1, 1); dd.Textures = nullptr;
+                ImGui_ImplDX11_RenderDrawData(&dd);
+            }
+            ctx->OMSetRenderTargets(0, nullptr, nullptr); ctx->GenerateMips(menuTargets[i].srv.Get());
+        }
+    }
+    // a shown pane's surface right now: a new page slides in and fades up
+    HudPlane MenuPlaneNow(size_t i) const {
+        HudPlane p = menuPanePlane(menuPanes[i]);
+        if (menuPaneIsPage[i]) {
+            double k = menu.slide > 0.001f ? std::clamp(menuSlideT / menu.slide, 0.0, 1.0) : 1.0, e = 1 - (1 - k) * (1 - k) * (1 - k);
+            p.pos.x += menuSlideDir * (1 - e) * 0.35; p.opacity = (float)(0.15 + 0.85 * e);
+        }
+        return p;
+    }
+    ImVec2 PlaneToScreen(const HudPlane& p, float u, float w) const {
+        V3 q = hudSway.apply(planePoint(p, u, w), p.sway);
+        XMVECTOR v = XMVector3TransformCoord(XMVectorSet((float)q.x, (float)q.y, (float)q.z, 1), HudProj((float)rw / std::max(1, rh)));
+        return ImVec2((XMVectorGetX(v) * 0.5f + 0.5f) * rw, (0.5f - XMVectorGetY(v) * 0.5f) * rh);
+    }
+    bool PlaneUV(const HudPlane& p, ImVec2 m, float& uo, float& vo) const {   // the mouse (pixels in the 3D view) -> where on the bent plane (0..1), if on it
+        const int GX = 40, GY = 24; std::vector<ImVec2> sp((GX + 1) * (GY + 1));
+        for (int y = 0; y <= GY; y++) for (int x = 0; x <= GX; x++) sp[y * (GX + 1) + x] = PlaneToScreen(p, (float)x / GX, (float)y / GY);
+        auto tri = [&](ImVec2 a, ImVec2 b, ImVec2 c, ImVec2 ua, ImVec2 ub, ImVec2 uc) {
+            float d = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y); if (std::fabs(d) < 1e-6f) return false;
+            float l1 = ((b.y - c.y) * (m.x - c.x) + (c.x - b.x) * (m.y - c.y)) / d, l2 = ((c.y - a.y) * (m.x - c.x) + (a.x - c.x) * (m.y - c.y)) / d, l3 = 1 - l1 - l2;
+            if (l1 < 0 || l2 < 0 || l3 < 0) return false;
+            uo = ua.x * l1 + ub.x * l2 + uc.x * l3; vo = ua.y * l1 + ub.y * l2 + uc.y * l3; return true;
+        };
+        for (int y = 0; y < GY; y++) for (int x = 0; x < GX; x++) {
+            ImVec2 a = sp[y * (GX + 1) + x], b = sp[y * (GX + 1) + x + 1], c = sp[(y + 1) * (GX + 1) + x + 1], d = sp[(y + 1) * (GX + 1) + x];
+            ImVec2 ua((float)x / GX, (float)y / GY), ub((float)(x + 1) / GX, (float)y / GY), uc((float)(x + 1) / GX, (float)(y + 1) / GY), ud((float)x / GX, (float)(y + 1) / GY);
+            if (tri(a, b, c, ua, ub, uc) || tri(a, c, d, ua, uc, ud)) return true;
+        }
+        return false;
+    }
+    int MenuHitAt(ImVec2 m, int* paneOut = nullptr) const {   // which button / row / tab the mouse is over (-1: none); the nearest pane wins
+        std::vector<size_t> order; for (size_t i = 0; i < menuPanes.size(); i++) order.push_back(i);
+        std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return menuPanes[a].pos.z < menuPanes[b].pos.z; });
+        for (size_t i : order) {
+            float u, v; if (!PlaneUV(MenuPlaneNow(i), m, u, v)) continue;
+            if (paneOut) *paneOut = (int)i;
+            float px = u * MENU_PANE_W, py = v * menuPaneHeight(menuPanes[i]);
+            for (int h = 0; h < (int)menuHits.size(); h++) if (menuHits[h].pane == (int)i && px >= menuHits[h].r.x && px <= menuHits[h].r.z && py >= menuHits[h].r.y && py <= menuHits[h].r.w) return h;
+            return -1;
+        }
+        return -1;
+    }
+    void MenuMouseCheck(const char* what) {   // (screenshots) the middle of every button / row / tab, traced back from the screen, must find itself
+        int good = 0; for (int h = 0; h < (int)menuHits.size(); h++) {
+            const MenuHit& m = menuHits[h]; int H = menuPaneHeight(menuPanes[m.pane]);
+            ImVec2 c = PlaneToScreen(MenuPlaneNow(m.pane), (m.r.x + m.r.z) * 0.5f / MENU_PANE_W, (m.r.y + m.r.w) * 0.5f / H);
+            if (MenuHitAt(c) == h) good++;
+        }
+        Log(std::string(what) + ": the mouse finds " + std::to_string(good) + " of " + std::to_string(menuHits.size()) + " buttons/rows/tabs on the bent panes; a corner of the screen: " + std::to_string(MenuHitAt(ImVec2(3, 3))));
+    }
+    void PauseMenu() {   // Esc while playing: picking in the menu (it is drawn by BuildMenuLists / DrawHudScene)
+        if (!menuShown) return;
+        int n = (int)menuHits.size();
+        auto step = [&](int d) { if (!n) return; int i = menuSel; for (int k = 0; k < n; k++) { i = ((i < 0 ? 0 : i) + d + n) % n; if (menuHits[i].kind != 1) { menuSel = i; return; } } };
+        if (ImGui::IsKeyPressed(ImGuiKey_UpArrow) || ImGui::IsKeyPressed(ImGuiKey_W)) step(-1);
+        if (ImGui::IsKeyPressed(ImGuiKey_DownArrow) || ImGui::IsKeyPressed(ImGuiKey_S)) step(1);
+        std::vector<int> tabs = menu.tabs();
+        if (!tabs.empty() && (ImGui::IsKeyPressed(ImGuiKey_Q) || ImGui::IsKeyPressed(ImGuiKey_E))) {   // Q / E: the tab before / after
+            auto it = std::find(tabs.begin(), tabs.end(), menuPage); int k = it == tabs.end() ? 0 : (int)(it - tabs.begin());
+            k = (k + (ImGui::IsKeyPressed(ImGuiKey_E) ? 1 : -1) + (int)tabs.size()) % (int)tabs.size(); GoToPage(tabs[k], false);
+        }
+        ImGuiIO& io = ImGui::GetIO();
+        if (!io.WantCaptureMouse) {
+            int pane = -1; int h = MenuHitAt(ImVec2(io.MousePos.x - vx, io.MousePos.y - vy), &pane);
+            static ImVec2 lastMouse(-1, -1);
+            if (h >= 0 && menuHits[h].kind != 1 && (io.MousePos.x != lastMouse.x || io.MousePos.y != lastMouse.y)) menuSel = h;   // the mouse picks only when it moves
+            lastMouse = io.MousePos;
+            if (pane >= 0 && io.MouseWheel != 0) for (auto& kv : menuScroll) if (kv.first / 256 == pane) kv.second -= io.MouseWheel * 60;   // lists on that pane scroll
+            if (h >= 0 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) { MenuHit hh = menuHits[h]; if (hh.kind != 1) menuSel = h; MenuDo(hh); return; }
+        }
+        if ((ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter) || ImGui::IsKeyPressed(ImGuiKey_Space)) && menuSel >= 0 && menuSel < n) { MenuHit hh = menuHits[menuSel]; MenuDo(hh); }
+    }
+
+    // ---- Player editor > Menu: pages (tabs), their panes, the panes' items
+    bool menuEdAlways = false; int menuEdPane = 0, menuEdItem = -1; bool selectMenuTab = false, selectVisorsTab = false; int visorEd = 1;
+    float menuDragX = 0, menuDragY = 0; int menuDragMode = 0;   // 1 move, 2 resize
+    std::vector<MenuPane>* MenuEdPanes() {
+        if (menuEdAlways) return &menu.always;
+        if (menuEdPage < 0 || menuEdPage >= (int)menu.pages.size()) return nullptr;
+        return &menu.pages[menuEdPage].panes;
+    }
+    MenuPane* MenuEdPane() { auto* v = MenuEdPanes(); return v && menuEdPane >= 0 && menuEdPane < (int)v->size() ? &(*v)[menuEdPane] : nullptr; }
+    MenuItem* MenuEdItem() { MenuPane* p = MenuEdPane(); return p && menuEdItem >= 0 && menuEdItem < (int)p->items.size() ? &p->items[menuEdItem] : nullptr; }
+    static bool ColorU32(const char* id, uint32_t& v) {
+        float c[3] = { ((v >> 16) & 255) / 255.f, ((v >> 8) & 255) / 255.f, (v & 255) / 255.f };
+        if (!ImGui::ColorEdit3(id, c)) return false;
+        v = ((uint32_t)(c[0] * 255 + 0.5f) << 16) | ((uint32_t)(c[1] * 255 + 0.5f) << 8) | (uint32_t)(c[2] * 255 + 0.5f); return true;
+    }
+    void MenuList(bool& ch) {
+        auto paneNodes = [&](std::vector<MenuPane>& panes, bool always, int page) {
+            for (int pi = 0; pi < (int)panes.size(); pi++) {
+                MenuPane& p = panes[pi]; ImGui::PushID(pi);
+                bool selP = menuEdAlways == always && (always || menuEdPage == page) && menuEdPane == pi && menuEdItem < 0;
+                ImGuiTreeNodeFlags f = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth | (selP ? ImGuiTreeNodeFlags_Selected : 0) | (p.items.empty() ? ImGuiTreeNodeFlags_Leaf : 0);
+                bool open = ImGui::TreeNodeEx("pane", f, "%s", (p.name + "  (pane)").c_str());
+                if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) { menuEdAlways = always; if (!always) menuEdPage = page; menuEdPane = pi; menuEdItem = -1; }
+                if (open) {
+                    for (int ii = 0; ii < (int)p.items.size(); ii++) {
+                        ImGui::PushID(ii); bool selI = menuEdAlways == always && (always || menuEdPage == page) && menuEdPane == pi && menuEdItem == ii;
+                        std::string l = p.items[ii].name + "  - " + menuKindName(p.items[ii].kind);
+                        ImGui::TreeNodeEx("it", ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen | ImGuiTreeNodeFlags_SpanAvailWidth | (selI ? ImGuiTreeNodeFlags_Selected : 0), "%s", l.c_str());
+                        if (ImGui::IsItemClicked()) { menuEdAlways = always; if (!always) menuEdPage = page; menuEdPane = pi; menuEdItem = ii; }
+                        ImGui::PopID();
+                    }
+                    ImGui::TreePop();
+                }
+                ImGui::PopID();
+            }
+        };
+        ImGui::SeparatorText("On every page");
+        ImGui::PushID("always"); paneNodes(menu.always, true, -1); ImGui::PopID();
+        ImGui::SeparatorText("Pages");
+        for (int pg = 0; pg < (int)menu.pages.size(); pg++) {
+            ImGui::PushID(1000 + pg); MenuPage& P = menu.pages[pg];
+            bool selPg = !menuEdAlways && menuEdPage == pg && menuEdPane < 0;
+            std::string l = P.name + (pg == 0 ? "  (opens first)" : "") + (P.tab ? "" : "  (not a tab)");
+            bool open = ImGui::TreeNodeEx("page", ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth | (selPg ? ImGuiTreeNodeFlags_Selected : 0), "%s", l.c_str());
+            if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) { menuEdAlways = false; menuEdPage = pg; menuEdPane = -1; menuEdItem = -1; }
+            if (open) { paneNodes(P.panes, false, pg); ImGui::TreePop(); }
+            ImGui::PopID();
+        }
+        ImGui::Separator();
+        if (ImGui::Button("+ Page")) { MenuPage p; p.name = "Page " + std::to_string(menu.pages.size() + 1); MenuPane pn; pn.name = "Pane"; p.panes.push_back(pn); menu.pages.push_back(p); menuEdAlways = false; menuEdPage = (int)menu.pages.size() - 1; menuEdPane = -1; menuEdItem = -1; ch = true; }
+        ImGui::SameLine(); if (ImGui::Button("+ Pane")) { if (auto* v = MenuEdPanes()) { MenuPane pn; pn.name = "Pane " + std::to_string(v->size() + 1); v->push_back(pn); menuEdPane = (int)v->size() - 1; menuEdItem = -1; ch = true; } }
+        ImGui::SameLine(); if (ImGui::Button("+ Item...")) ImGui::OpenPopup("additem");
+        if (ImGui::BeginPopup("additem")) {
+            for (int k = 0; k < (int)MenuKind::COUNT; k++) if (ImGui::Selectable(menuKindName((MenuKind)k))) {
+                MenuPane* p = MenuEdPane(); if (!p) { Toast("Pick a pane first"); break; }
+                MenuItem it; it.kind = (MenuKind)k; it.name = menuKindName((MenuKind)k);
+                if (it.kind == MenuKind::Button) { it.text = "Button"; it.act = MenuAct::Resume; }
+                if (it.kind == MenuKind::Text) it.text = "Text";
+                if (it.kind == MenuKind::Panel) { it.w = 0.5f; it.h = 0.3f; }
+                if (it.kind == MenuKind::ItemList || it.kind == MenuKind::BeamList || it.kind == MenuKind::ScanList || it.kind == MenuKind::ScanText || it.kind == MenuKind::ScanModel) { it.y = 0.15f; it.h = 0.8f; it.textSize = 32; }
+                p->items.push_back(it); menuEdItem = (int)p->items.size() - 1; ch = true;
+            }
+            ImGui::EndPopup();
+        }
+        if (ImGui::Button("Duplicate")) {
+            if (MenuItem* it = MenuEdItem()) { MenuItem c = *it; c.name += " copy"; c.y = std::min(0.95f, c.y + 0.05f); MenuEdPane()->items.push_back(c); menuEdItem = (int)MenuEdPane()->items.size() - 1; ch = true; }
+            else if (MenuPane* p = MenuEdPane()) { MenuPane c = *p; c.name += " copy"; c.pos.y -= 0.1; MenuEdPanes()->push_back(c); menuEdPane = (int)MenuEdPanes()->size() - 1; ch = true; }
+            else if (!menuEdAlways && menuEdPage >= 0 && menuEdPage < (int)menu.pages.size()) { MenuPage c = menu.pages[menuEdPage]; c.name += " copy"; menu.pages.push_back(c); menuEdPage = (int)menu.pages.size() - 1; ch = true; }
+        }
+        ImGui::SameLine(); if (ImGui::Button("Delete")) {
+            if (MenuEdItem()) { MenuEdPane()->items.erase(MenuEdPane()->items.begin() + menuEdItem); menuEdItem = -1; ch = true; }
+            else if (MenuEdPane()) { MenuEdPanes()->erase(MenuEdPanes()->begin() + menuEdPane); menuEdPane = -1; ch = true; }
+            else if (!menuEdAlways && menuEdPage >= 0 && menuEdPage < (int)menu.pages.size() && menu.pages.size() > 1) { menu.pages.erase(menu.pages.begin() + menuEdPage); menuEdPage = 0; ch = true; }
+        }
+        auto move = [&](int d) {
+            if (MenuEdItem()) { auto& v = MenuEdPane()->items; int j = menuEdItem + d; if (j >= 0 && j < (int)v.size()) { std::swap(v[menuEdItem], v[j]); menuEdItem = j; ch = true; } }
+            else if (MenuEdPane()) { auto& v = *MenuEdPanes(); int j = menuEdPane + d; if (j >= 0 && j < (int)v.size()) { std::swap(v[menuEdPane], v[j]); menuEdPane = j; ch = true; } }
+            else if (!menuEdAlways) { int j = menuEdPage + d; if (j >= 0 && j < (int)menu.pages.size()) { std::swap(menu.pages[menuEdPage], menu.pages[j]); menuEdPage = j; ch = true; } }
+        };
+        ImGui::SameLine(); if (ImGui::ArrowButton("##mup", ImGuiDir_Up)) move(-1);
+        ImGui::SameLine(); if (ImGui::ArrowButton("##mdn", ImGuiDir_Down)) move(1);
+        ImGui::Spacing();
+        if (ImGui::SmallButton("Back to the starter menu")) ImGui::OpenPopup("menureset");
+        if (ImGui::BeginPopup("menureset")) { ImGui::TextUnformatted("Replace this whole menu with the starter one?"); if (ImGui::Button("Yes, replace it")) { menu = defaultMenu(); menuEdAlways = false; menuEdPage = 0; menuEdPane = -1; menuEdItem = -1; ch = true; ImGui::CloseCurrentPopup(); } ImGui::EndPopup(); }
+    }
+    void MenuCanvas(ImVec2 avail, bool& ch) {   // the picked pane laid out flat: click an item to pick it, drag to move, the corner to resize
+        MenuPane* p = MenuEdPane();
+        if (!p) { ImGui::TextDisabled("Pick a pane (or an item) on the left to lay it out here."); return; }
+        int idx = (menuEdAlways ? 0 : (int)menu.always.size()) + menuEdPane;
+        float W = (float)MENU_PANE_W, H = (float)menuPaneHeight(*p), k = std::min(avail.x / W, avail.y / H); ImVec2 sz(W * k, H * k);
+        ImVec2 o = ImGui::GetCursorScreenPos(); ImDrawList* dl = ImGui::GetWindowDrawList();
+        dl->AddRectFilled(o, ImVec2(o.x + sz.x, o.y + sz.y), IM_COL32(20, 24, 30, 255));
+        if (idx < (int)menuTargets.size() && menuTargets[idx].srv) dl->AddImage((ImTextureID)(intptr_t)menuTargets[idx].srv.Get(), o, ImVec2(o.x + sz.x, o.y + sz.y));
+        ImGui::InvisibleButton("menucanvas", sz);
+        ImGuiIO& io = ImGui::GetIO(); float mx = (io.MousePos.x - o.x) / sz.x, my = (io.MousePos.y - o.y) / sz.y;
+        for (int i = 0; i < (int)p->items.size(); i++) {
+            const MenuItem& it = p->items[i]; ImVec2 a(o.x + it.x * sz.x, o.y + it.y * sz.y), b(o.x + (it.x + it.w) * sz.x, o.y + (it.y + it.h) * sz.y);
+            bool sel = i == menuEdItem; dl->AddRect(a, b, sel ? IM_COL32(255, 210, 80, 255) : IM_COL32(255, 255, 255, 60), 0, ImDrawFlags_None, sel ? 2.f : 1.f);
+            if (sel) dl->AddRectFilled(ImVec2(b.x - 8, b.y - 8), b, IM_COL32(255, 210, 80, 255));
+        }
+        if (ImGui::IsItemActivated()) {
+            menuDragMode = 0; MenuItem* s = MenuEdItem();
+            if (s && std::fabs(mx - (s->x + s->w)) * sz.x < 10 && std::fabs(my - (s->y + s->h)) * sz.y < 10) menuDragMode = 2;
+            else {
+                int hitI = -1; for (int i = (int)p->items.size() - 1; i >= 0; i--) { const MenuItem& it = p->items[i]; if (mx >= it.x && mx <= it.x + it.w && my >= it.y && my <= it.y + it.h) { hitI = i; break; } }
+                menuEdItem = hitI; if (hitI >= 0) menuDragMode = 1;
+            }
+            menuDragX = mx; menuDragY = my;
+        }
+        if (ImGui::IsItemActive() && menuDragMode) if (MenuItem* s = MenuEdItem()) {
+            float dx = mx - menuDragX, dy = my - menuDragY; menuDragX = mx; menuDragY = my;
+            if (dx != 0 || dy != 0) {
+                if (menuDragMode == 1) { s->x = std::clamp(s->x + dx, -0.5f, 1.f); s->y = std::clamp(s->y + dy, -0.5f, 1.f); }
+                else { s->w = std::clamp(s->w + dx, 0.02f, 1.5f); s->h = std::clamp(s->h + dy, 0.02f, 1.5f); }
+                ch = true;
+            }
+        }
+        ImGui::TextDisabled("%s: drag an item to move it, its corner to resize it", p->name.c_str());
+    }
+    void MenuProps(bool& ch) {
+        float ui = settings.uiScale;
+        if (MenuItem* it = MenuEdItem()) {
+            ImGui::SeparatorText("Item");
+            Prop("Name"); ch |= ImGui::InputText("##min", &it->name);
+            int k = (int)it->kind; Prop("Kind");
+            if (ImGui::BeginCombo("##mik", menuKindName(it->kind))) { for (int i = 0; i < (int)MenuKind::COUNT; i++) if (ImGui::Selectable(menuKindName((MenuKind)i), i == k)) { it->kind = (MenuKind)i; ch = true; } ImGui::EndCombo(); }
+            float xy[2] = { it->x, it->y }, wh[2] = { it->w, it->h };
+            Prop("Where (left, top)"); if (ImGui::DragFloat2("##mixy", xy, 0.002f, -0.5f, 1.f, "%.3f")) { it->x = xy[0]; it->y = xy[1]; ch = true; }
+            Prop("Size"); if (ImGui::DragFloat2("##miwh", wh, 0.002f, 0.02f, 1.5f, "%.3f")) { it->w = wh[0]; it->h = wh[1]; ch = true; }
+            Prop("Colour"); ch |= ColorU32("##mic", it->color);
+            Prop("See-through"); ch |= ImGui::SliderFloat("##mia", &it->alpha, 0, 1, "%.2f");
+            bool hasText = it->kind == MenuKind::Text || it->kind == MenuKind::Button;
+            if (hasText) {
+                Prop("Text");
+                if (it->kind == MenuKind::Text) ch |= ImGui::InputTextMultiline("##mit", &it->text, ImVec2(-1, 70 * ui)); else ch |= ImGui::InputText("##mit", &it->text);
+                Hint("{game} {world} {energy} {maxenergy} {missiles} {scans} are filled in.");
+            }
+            if (it->kind != MenuKind::Panel && it->kind != MenuKind::Image && it->kind != MenuKind::ScanModel) { Prop("Text size"); ch |= ImGui::SliderFloat("##mis", &it->textSize, 12, 120, "%.0f"); }
+            if (hasText) { const char* al[] = { "Left", "Middle", "Right" }; Prop("Line up"); ch |= ImGui::Combo("##mial", &it->align, al, 3); }
+            if (it->kind == MenuKind::Panel) {
+                Prop("Filled"); ch |= ImGui::Checkbox("##mif", &it->filled);
+                if (!it->filled) { Prop("Line"); ch |= ImGui::SliderFloat("##mith", &it->thickness, 1, 12, "%.0f"); }
+                Prop("Round corners"); ch |= ImGui::SliderFloat("##mir", &it->rounding, 0, 60, "%.0f");
+            }
+            if (it->kind == MenuKind::Image) { Prop("Picture"); ch |= ImGui::InputText("##mim", &it->image); Hint("The name of a picture in the assets (like on the HUD)."); }
+            if (it->kind == MenuKind::Button) {
+                Prop("Does");
+                if (ImGui::BeginCombo("##miact", menuActName(it->act))) { for (int i = 0; i < (int)MenuAct::COUNT; i++) if (ImGui::Selectable(menuActName((MenuAct)i), (int)it->act == i)) { it->act = (MenuAct)i; ch = true; } ImGui::EndCombo(); }
+                if (it->act == MenuAct::GoTo) {
+                    Prop("Page");
+                    if (ImGui::BeginCombo("##mitg", it->target.empty() ? "(pick a page)" : it->target.c_str())) { for (auto& pg : menu.pages) if (ImGui::Selectable(pg.name.c_str(), pg.name == it->target)) { it->target = pg.name; ch = true; } ImGui::EndCombo(); }
+                }
+            }
+            const char* what[] = { "A box or frame.", "Words (more lines: they wrap).", "A picture.", "Picked with the mouse or W / S and Enter: does what you set.", "The pages that are tabs; the one you are on is lit. Q / E switch too.",
+                "Everything the game has: what you found by name, the rest as ???.", "Beams and missiles: pick the one to use.", "The scan index: what you scanned, by category. Picking one shows it in a Scan text and a Scan model.",
+                "The picked scan entry: its name, category and text.", "The picked scan entry's model, turning." };
+            Hint(what[std::clamp((int)it->kind, 0, 9)]);
+        } else if (MenuPane* p = MenuEdPane()) {
+            ImGui::SeparatorText("Pane");
+            Prop("Name"); ch |= ImGui::InputText("##mpn", &p->name);
+            ch |= DragV3("Where", p->pos, 0.005f, "%.3f");
+            float r[3] = { p->yaw, p->pitch, p->roll }; Prop("Turn (side, tilt, roll)"); if (ImGui::DragFloat3("##mpr", r, 0.5f, -180, 180, "%.0f")) { p->yaw = r[0]; p->pitch = r[1]; p->roll = r[2]; ch = true; }
+            Prop("Width"); ch |= ImGui::SliderFloat("##mpw", &p->width, 0.05f, 3, "%.2f");
+            Prop("Height"); ch |= ImGui::SliderFloat("##mph", &p->height, 0.05f, 3, "%.2f");
+            Prop("Bend side to side"); ch |= ImGui::SliderFloat("##mpbx", &p->bendX, 0, 1, "%.2f");
+            Prop("Bend top to bottom"); ch |= ImGui::SliderFloat("##mpby", &p->bendY, 0, 1, "%.2f");
+            Prop("Colour"); ch |= ColorU32("##mpc", p->color);
+            Prop("Dark glass behind"); ch |= ImGui::SliderFloat("##mpbk", &p->backing, 0, 1, "%.2f");
+            Prop("Glow"); ch |= ImGui::SliderFloat("##mpgl", &p->bloom, 0, 2, "%.2f");
+            Prop("Frame"); ch |= ImGui::Checkbox("##mpfr", &p->frame);
+            Hint("A pane is a bent sheet inside the helmet, like a HUD plane. Turn panes on the left and right toward you (side turn) for a wrap-around look.");
+        } else if (!menuEdAlways && menuEdPage >= 0 && menuEdPage < (int)menu.pages.size()) {
+            MenuPage& P = menu.pages[menuEdPage];
+            ImGui::SeparatorText("Page");
+            Prop("Name"); { std::string old = P.name; if (ImGui::InputText("##mpgn", &P.name)) { ch = true; for (auto& pg : menu.pages) for (auto& pn : pg.panes) for (auto& it : pn.items) if (it.target == old) it.target = P.name; for (auto& pn : menu.always) for (auto& it : pn.items) if (it.target == old) it.target = P.name; } }
+            Prop("A tab"); ch |= ImGui::Checkbox("##mptab", &P.tab);
+            Hint("Tabs are in the tab bar and Q / E go through them. A page that is not a tab can still be opened by a button (Go to a page), and Back returns from it. The first page is where the menu opens.");
+            if (menuEdPage > 0 && ImGui::Button("Make it open first")) { std::swap(menu.pages[0], menu.pages[menuEdPage]); menuEdPage = 0; ch = true; }
+        } else ImGui::TextDisabled("Pick a page, pane or item on the left.");
+        ImGui::SeparatorText("All pages");
+        Prop("New page slides in"); ch |= ImGui::SliderFloat("##mslide", &menu.slide, 0, 1, "%.2f s");
+    }
+    void MenuTab() {
+        float ui = settings.uiScale; bool ch = false; menuPreview = true;
+        if (menu.pages.empty()) {
+            ImGui::Spacing(); Hint("The pause menu: pages shown as tabs, each made of bent panes inside the helmet with text, buttons, pictures and lists (items, beams, the scan index).");
+            if (ImGui::Button("Start with the example menu")) { menu = defaultMenu(); SaveMenu(); }
+            return;
+        }
+        menuEdPage = std::clamp(menuEdPage, 0, (int)menu.pages.size() - 1);
+        float listW = 260 * ui, propW = 340 * ui, sp = ImGui::GetStyle().ItemSpacing.x;
+        ImGui::BeginChild("menulist", ImVec2(listW, 0), ImGuiChildFlags_Borders); MenuList(ch); ImGui::EndChild();
+        ImGui::SameLine();
+        float midW = std::max(200.f, ImGui::GetContentRegionAvail().x - propW - sp), midH = ImGui::GetContentRegionAvail().y;
+        ImGui::BeginChild("menumid", ImVec2(midW, midH), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar);
+        {
+            float asp = (float)rw / std::max(1, rh); ImVec2 psz(midW, midW / asp); if (psz.y > midH * 0.55f) psz = ImVec2(midH * 0.55f * asp, midH * 0.55f);
+            ImGui::TextDisabled("Through the camera: %s", menuEdAlways ? "every page (shown with the picked page)" : ("the page \"" + menu.pages[menuEdPage].name + "\"").c_str());
+            hudPrevWant = ImVec2(std::floor(psz.x), std::floor(psz.y));
+            if (hudPrev.srv) ImGui::Image((ImTextureID)(intptr_t)hudPrev.srv.Get(), psz); else ImGui::Dummy(psz);
+            MenuCanvas(ImVec2(midW, ImGui::GetContentRegionAvail().y - ImGui::GetTextLineHeightWithSpacing()), ch);
+        }
+        ImGui::EndChild();
+        ImGui::SameLine();
+        ImGui::BeginChild("menuprops", ImVec2(0, 0), ImGuiChildFlags_Borders); MenuProps(ch); ImGui::EndChild();
+        if (ch) SaveMenu();
+    }
+    // ---- Player editor > Visors: each visor's look (over the world picture, never the HUD) and the Scan Visor's settings
+    void VisorsTab() {
+        float ui = settings.uiScale; bool ch = false; visorEd = std::clamp(visorEd, 0, VISORS - 1); previewVisor = visorEd;
+        float listW = 230 * ui, propW = 360 * ui, sp = ImGui::GetStyle().ItemSpacing.x;
+        ImGui::BeginChild("visorlist", ImVec2(listW, 0), ImGuiChildFlags_Borders);
+        for (int v = 0; v < VISORS; v++) if (ImGui::Selectable(visorName((VisorKind)v), visorEd == v)) visorEd = v;
+        ImGui::Separator();
+        if (visorEd == 0) Hint("The Combat Visor: always there. Beams and missiles only fire with it.");
+        else {
+            ItemType t = visorEd == 1 ? ItemType::ScanVisor : visorEd == 2 ? ItemType::ThermalVisor : ItemType::XRayVisor;
+            for (const ItemDef& d : items.items) if (d.type == t) { ImGui::TextDisabled("In the game: %s", d.used ? "yes" : "no"); ImGui::TextDisabled("From the start: %s", d.startsOwned ? "yes" : "no (a pickup)"); }
+            if (ImGui::SmallButton("Items...")) selectItemsTab = true;
+            Hint(visorEd == 1 ? "Scan Visor: markers on everything with a scan entry; aim at one and hold the right mouse button. What you scan goes into the scan index (the Logbook in the menu)."
+                 : visorEd == 2 ? "Thermal Visor: for now only its look (bright = hot). Seeing heat through things comes with the enemies." : "X-Ray Visor: for now only its look. Seeing through walls comes later.");
+        }
+        Hint("V switches visors while playing (only the ones you have).");
+        ImGui::EndChild(); ImGui::SameLine();
+        float midW = std::max(200.f, ImGui::GetContentRegionAvail().x - propW - sp), midH = ImGui::GetContentRegionAvail().y;
+        ImGui::BeginChild("visormid", ImVec2(midW, midH), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar);
+        {
+            float asp = (float)rw / std::max(1, rh); ImVec2 psz(midW, midW / asp); if (psz.y > midH - 30 * ui) psz = ImVec2((midH - 30 * ui) * asp, midH - 30 * ui);
+            ImGui::TextDisabled("Through the camera, with the %s", visorName((VisorKind)visorEd));
+            hudPrevWant = ImVec2(std::floor(psz.x), std::floor(psz.y));
+            if (hudPrev.srv) ImGui::Image((ImTextureID)(intptr_t)hudPrev.srv.Get(), psz); else ImGui::Dummy(psz);
+        }
+        ImGui::EndChild(); ImGui::SameLine();
+        ImGui::BeginChild("visorprops", ImVec2(0, 0), ImGuiChildFlags_Borders);
+        VisorFx& x = visors.fx[visorEd];
+        ImGui::SeparatorText("Colour");
+        Prop("Tint"); ch |= ColorU32("##vt", x.tint);
+        Prop("  how much"); ch |= ImGui::SliderFloat("##vta", &x.tintAmount, 0, 1, "%.2f");
+        Prop("Colourfulness"); ch |= ImGui::SliderFloat("##vs", &x.saturation, 0, 2, "%.2f");
+        Prop("Contrast"); ch |= ImGui::SliderFloat("##vc", &x.contrast, 0.3f, 2.5f, "%.2f");
+        Prop("Brightness"); ch |= ImGui::SliderFloat("##vb", &x.brightness, 0.2f, 2, "%.2f");
+        Prop("Heat colours"); ch |= ImGui::SliderFloat("##vh", &x.heat, 0, 1, "%.2f");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Colours by brightness, like a thermal camera: dark = cold (blue), bright = hot (yellow, white).");
+        ImGui::SeparatorText("Lines and grain");
+        Prop("Scan lines"); ch |= ImGui::SliderFloat("##vl", &x.lines, 0, 1, "%.2f");
+        Prop("  how many"); ch |= ImGui::SliderFloat("##vlc", &x.lineCount, 20, 800, "%.0f");
+        Prop("  moving"); ch |= ImGui::SliderFloat("##vls", &x.lineSpeed, -10, 10, "%.1f");
+        Prop("Grain"); ch |= ImGui::SliderFloat("##vn", &x.noise, 0, 0.3f, "%.3f");
+        ImGui::SeparatorText("Edges");
+        Prop("Outlines"); ch |= ImGui::SliderFloat("##ve", &x.edges, 0, 2, "%.2f");
+        Prop("  colour"); ch |= ColorU32("##vec", x.edgeColor);
+        Prop("Colour fringes"); ch |= ImGui::SliderFloat("##vch", &x.chroma, 0, 8, "%.1f px");
+        Prop("Dark edges"); ch |= ImGui::SliderFloat("##vv", &x.vignette, 0, 1.5f, "%.2f");
+        if (ImGui::Button("Back to its starter look")) { x = defaultVisors().fx[visorEd]; ch = true; }
+        if (visorEd == 1) {
+            ImGui::SeparatorText("Scanning");
+            Prop("Reaches"); ch |= ImGui::SliderFloat("##vsr", &visors.scanRange, 4, 120, "%.0f blocks");
+            Prop("Seconds to scan"); ch |= ImGui::SliderFloat("##vst", &visors.scanTime, 0.2f, 6, "%.1f");
+            Prop("Marker"); ch |= ColorU32("##vmk", visors.markColor);
+            Prop("Important marker"); ch |= ColorU32("##vmi", visors.importantColor);
+            Prop("Scanned marker"); ch |= ColorU32("##vmd", visors.doneColor);
+        }
+        ImGui::SeparatorText("Switching");
+        Prop("Flash"); ch |= ImGui::SliderFloat("##vfl", &visors.switchFlash, 0, 1, "%.2f s");
+        Hint("Which HUD elements and parts show in which visor: Player > HUD, on each element and part (\"Shown in visors\").");
+        ImGui::EndChild();
+        if (ch) SaveVisors();
+    }
+    void ScanInspector(WorldObject& o) {
+        float ui = settings.uiScale;
+        ImGui::SeparatorText("Scan");
+        Prop("Can be scanned"); ImGui::Checkbox("##scon", &o.scan.on);
+        if (!o.scan.on) return;
+        Prop("Name"); ImGui::InputText("##scn", &o.scan.name);
+        Prop("Category"); ImGui::InputText("##scc", &o.scan.category);
+        { std::vector<std::string> cats; for (const WorldObject& q : objects) if (q.scan.on && !q.scan.category.empty() && std::find(cats.begin(), cats.end(), q.scan.category) == cats.end()) cats.push_back(q.scan.category);
+          for (const char* d : { "Research", "Creatures", "Lore", "Pirate Data" }) if (std::find(cats.begin(), cats.end(), d) == cats.end()) cats.push_back(d);
+          ImGui::SameLine(); if (ImGui::SmallButton("...")) ImGui::OpenPopup("scancats");
+          if (ImGui::BeginPopup("scancats")) { for (auto& c : cats) if (ImGui::Selectable(c.c_str())) o.scan.category = c; ImGui::EndPopup(); } }
+        Prop("Important (red)"); ImGui::Checkbox("##scimp", &o.scan.important);
+        Prop("Seconds to scan"); ImGui::SliderFloat("##sct", &o.scan.time, 0, 10, o.scan.time <= 0 ? "the visor's own" : "%.1f s");
+        ImGui::TextDisabled("Text");
+        ImGui::InputTextMultiline("##sctext", &o.scan.text, ImVec2(-1, 120 * ui));
+        if (o.scan.name.empty()) ImGui::TextColored(ImVec4(1, 0.75f, 0.3f, 1), "Give it a name: the scan index lists it by name.");
+        Hint("The Scan Visor shows a marker on it; scanning it puts it in the scan index (the Logbook page of the menu) with this text and its model turning. Objects with the same name share one entry.");
+    }
     // ================================================================== the map (M): a hologram of what you have seen
     // Seen blocks come from your eyes (a few hundred rays a frame), the floor you walk on, and Map Stations: touching one
     // wakes every map camera with the same ID, and each looks all around from where it is. Seen doors show in their own
@@ -5094,7 +5675,6 @@ struct App {
     std::set<std::string> stationsUsed;
     std::unordered_map<I3, MapGpuChunk, I3Hash> mapGpu; std::string mapGpuWorld;
     ComPtr<ID3D11Buffer> mapMarks; UINT mapMarksCap = 0;
-    HudTarget pauseTarget;   // the pause menu's picture
     HudTarget mapView; ComPtr<ID3D11DepthStencilView> mapDSV; int mapDW = 0, mapDH = 0; ImVec2 mapWant{ 0, 0 };
     bool mapOpen = false; float mapYaw = 0, mapPitch = 0.8f, mapDist = 40; V3 mapCenter{ 0, 0, 0 }; double mapOpenT = 0; uint32_t mapFrame = 0;
     static constexpr uint32_t MAP_TINT = 0x3AC8FF, MAP_DOWN = 0xFFB040, MAP_YOU = 0xFF4A6A;   // seen yourself, downloaded (not visited yet), you
@@ -7369,18 +7949,65 @@ struct App {
                     Log("minimap: " + std::to_string(miniDW) + " x " + std::to_string(miniDH) + " pixels; map " + std::to_string(Seen().total) + " blocks, " + std::to_string(Seen().mineTotal) + " seen yourself");
                     for (auto& pl : hud.planes) for (auto& el : pl.elements) if (el.kind == HudKind::Minimap) { el.mapTilt = 55; el.mapRange = 22; el.onPause = false; }
                     paused = true; Capture(false); frames(3, "pause_menu_visor_stays");   // paused: the visor stays, the minimap (set not to) does not
-                    {   // the mouse on the bent pause plane: the middle of each row must find that row
-                        std::vector<PauseItem> items = PauseItems(); std::vector<ImVec4> rows; int H = PauseLayout(items, rows); HudPlane pp = PausePlane(H); int good = 0, all = 0;
-                        for (int i = 0; i < (int)items.size(); i++) if (!items[i].header) { all++; ImVec2 c = PauseToScreen(pp, (rows[i].x + rows[i].z) * 0.5f / PAUSE_W, (rows[i].y + rows[i].w) * 0.5f / H); if (PauseHit(c) == i) good++; }
-                        Log("pause menu: the mouse finds " + std::to_string(good) + " of " + std::to_string(all) + " rows on the bent plane; outside it: " + std::to_string(PauseHit(ImVec2(3, 3))));
-                        for (int i = 0; i < (int)items.size(); i++) if (items[i].act == PA_MAP) pauseSel = i;
-                        frames(2, "pause_menu_map_picked");
-                    }
+                    MenuMouseCheck("pause menu");
                     paused = false;
                     hud = keepHud;
                 }
                 StopPlay(); hud = keepHud0;
                 objects.erase(std::remove_if(objects.begin(), objects.end(), [&](const WorldObject& o) { return o.id == cam.id || o.id == st.id; }), objects.end()); RebuildSolids();
+            }
+            {   // visors and scanning: markers, a scan and its text, the menu's tabs (the Logbook: the scan index), the other visors' looks, the editor tabs
+                const WorldObject* d0 = nullptr; for (const WorldObject& o : objects) if (o.kind == ObjKind::Door) { d0 = &o; break; }
+                V3 base = d0 ? d0->pos : V3{ 26, 0, 40 };
+                DemoShot look{ "s", { base.x + 3, base.y + player.eyeH, base.z - 12 }, { base.x + 3, base.y + 1.2, base.z }, 15.5f };
+                HudLayout keepHud = hud; hud = defaultHud(); MenuLayout keepMenu = menu; menu = defaultMenu(); ItemSet keepItems = items;
+                for (ItemDef& d : items.items) if (d.type == ItemType::ThermalVisor || d.type == ItemType::XRayVisor) d.used = true;
+                int n = 0; std::vector<uint32_t> scanned;
+                static const char* names[] = { "Blast Shield", "Wave Door", "Old Hatch", "Purple Lock" };
+                for (WorldObject& o : objects) if (o.kind == ObjKind::Door && n < 4) {
+                    o.scan.on = true; o.scan.name = names[n]; o.scan.category = "Research"; o.scan.important = n == 1;
+                    o.scan.text = n == 1 ? "A door sealed by a wave of energy.\nOnly a Wave Beam shot can open it." : "A heavy door. Its lock is still working."; scanned.push_back(o.id); n++;
+                }
+                WorldObject tm; tm.id = nextObjId++; tm.model = "@map-station"; ApplyPreset(tm); tm.kind = ObjKind::Prop; tm.name = UniqueObjectName("Chozo Terminal"); tm.pos = { base.x + 3, base.y, base.z - 6.5 };
+                tm.scan.on = true; tm.scan.name = "Chozo Terminal"; tm.scan.category = "Lore";
+                tm.scan.text = "A Chozo data terminal, still humming.\n\nThe glyphs speak of a great darkness that fell from the sky, and of the hunter who would one day come to end it.";
+                objects.push_back(tm); RebuildSolids();
+                sel = Sel::Object; selIndex = (int)objects.size() - 1; poseAt(look); frames(4, "scan_entry_inspector"); sel = Sel::World;
+                StartPlay(false); poseAt(look); play.health = game.player.maxHealth; toastT = 0;
+                inv.keys.insert("Thermal Visor"); inv.keys.insert("X-Ray Visor");   // (as if found)
+                auto runS = [&](int k) { for (int f = 0; f < k; f++) { FrameBody(1.0 / 60); swap->Present(0, 0); retired.clear(); } };
+                auto aimAt = [&](V3 c) { V3 d = c - player.eye(); player.yaw = std::atan2(d.x, d.z); player.pitch = std::atan2(d.y, std::sqrt(d.x * d.x + d.z * d.z)); };
+                OnKey('V', false); runS(20); Log(std::string("V: ") + visorName((VisorKind)visor) + ", " + std::to_string(scanCands.size()) + " scannable in view");
+                frames(2, "scan_visor_markers");
+                aimAt(tm.pos + V3{ 0, 1.0, 0 }); runS(2);
+                holdScan = true; runS(30); frames(1, "scan_visor_scanning");
+                runS(60); holdScan = false; Log(std::string("scan: ") + (scanOpen ? "done, " : "NOT done, ") + std::to_string(scanLog.entries.size()) + " in the index");
+                frames(3, "scan_result");
+                CloseScan(); runS(2);
+                for (const WorldObject& o : objects) if (o.kind == ObjKind::Door && o.scan.important) { V3 c, ac; if (DoorRect(o, c, ac)) aimAt(c); }
+                holdScan = true; runS(100); holdScan = false; frames(2, "scan_result_important"); CloseScan(); runS(2);
+                for (const WorldObject& o : objects) if (o.kind == ObjKind::Door && o.scan.name == "Blast Shield") { V3 c, ac; if (DoorRect(o, c, ac)) aimAt(c); }
+                holdScan = true; runS(100); holdScan = false; CloseScan(); runS(2);
+                Log("scan index: " + std::to_string(scanLog.entries.size()) + " entries in " + std::to_string(scanLog.categories().size()) + " categories");
+                poseAt(look); runS(2);
+                OnKey(VK_ESCAPE, false); runS(1); menuSlideT = 10; frames(3, "menu_main");
+                MenuMouseCheck("menu");
+                GoToPage(1); menuSlideT = 0.08; frames(1, "menu_sliding_to_inventory"); menuSlideT = 10; frames(2, "menu_inventory");
+                GoToPage(2); menuScan = 0; for (int i = 0; i < (int)scanLog.entries.size(); i++) if (scanLog.entries[i].name == "Chozo Terminal") menuScan = i;
+                menuSlideT = 10; frames(4, "menu_logbook");
+                OnKey(VK_ESCAPE, false); runS(2);
+                SetVisor(2); visorFlash = 0; frames(2, "visor_thermal");
+                SetVisor(3); visorFlash = 0; frames(2, "visor_xray");
+                SetVisor(0); visorFlash = 0;
+                StopPlay();
+                playerEdOpen = true; focusPlayerEd = true; selectMenuTab = true; menuEdAlways = false; menuEdPage = 2; menuEdPane = 0; menuEdItem = 2; frames(5, "menu_editor_tab");
+                menuEdPage = 0; menuEdPane = 0; menuEdItem = 4; frames(3, "menu_editor_button");
+                selectVisorsTab = true; visorEd = 1; frames(4, "visors_tab_scan");
+                visorEd = 2; frames(2, "visors_tab_thermal");
+                playerEdOpen = false; frames(1, "after_visor_tabs");
+                for (WorldObject& o : objects) if (std::find(scanned.begin(), scanned.end(), o.id) != scanned.end()) o.scan = ScanInfo{};
+                objects.erase(std::remove_if(objects.begin(), objects.end(), [&](const WorldObject& o) { return o.id == tm.id; }), objects.end()); RebuildSolids();
+                hud = keepHud; menu = keepMenu; items = keepItems;
             }
             poseAt(demoShots()[1]);
             StartPlay(false); play.health = game.player.maxHealth * 0.65f; play.hurtFlash = 0.25; toastT = 0;
@@ -7412,7 +8039,7 @@ struct App {
         if (!ev) vx = vy = 0;
         if (captureNext && screen == Screen::Game) { captureNext = false; Capture(true); }
         if (toastT > 0) toastT -= dt;
-        uiClock += dt;
+        uiClock += dt; menuSlideT += dt;
         fpsAcc += dt; fpsN++; if (fpsAcc > 0.5) { fps = fpsN / fpsAcc; fpsAcc = 0; fpsN = 0; }
         PollTextures(dt);
         if (screen == Screen::Game) UpdateGame(dt);
@@ -7430,17 +8057,18 @@ struct App {
             ModelViewer();
             PlayerEditor();
         } else {
-            if (!mapOpen) DrawHud(ImGui::GetForegroundDrawList());
+            if (!mapOpen) { DrawHud(ImGui::GetForegroundDrawList()); DrawScanMarkers(ImGui::GetForegroundDrawList()); }
             if (showF3) DrawF3();
             if (mapOpen) MapScreen();
+            else if (scanOpen) ScanInput();
             else if (paused && !showSettings) PauseMenu();
         }
         if (showSettings) SettingsWindow();
         Popups();
-        BuildHudLists(); BuildPauseList();
+        BuildHudLists(); BuildMenuLists();
         ImGui::Render();
         RenderMinimap();
-        RenderHudPlanes(); RenderPausePlane();
+        RenderHudPlanes(); RenderScanModel(); RenderMenuPanes();
 
         const float bg[4] = { 0.10f, 0.11f, 0.13f, 1 };
         if (screen == Screen::Game && rw > 0 && mapOpen && !ev) { RenderMap(); RenderMapScreen(backRTV.Get()); }   // the map screen: the map instead of the world, the visor over it

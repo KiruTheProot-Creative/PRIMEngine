@@ -14,6 +14,8 @@
 #include "../src/game/folders.h"
 #include "../src/game/items.h"
 #include "../src/game/map.h"
+#include "../src/game/visors.h"
+#include "../src/game/menu.h"
 #include <map>
 #include <set>
 #include <filesystem>
@@ -688,13 +690,13 @@ int main() {
         { HudLayout m = defaultHud(); HudElement* mm = nullptr; for (auto& e : m.planes[0].elements) if (e.kind == HudKind::Minimap) mm = &e;
           CHECK(mm != nullptr, "the starter visor has a minimap");
           CHECK(mm && !mm->onMap && mm->onPause && m.parts[0].onMap, "the starter minimap hides on the map screen; the helmet stays");
-          m.parts[1].onPause = false; m.planes[0].elements[0].onMap = false; m.pause.width = 1.3f; m.pause.color = 0xFF8800; m.pause.bendX = 0.5f;
+          m.parts[1].onPause = false; m.planes[0].elements[0].onMap = false; m.planes[0].elements[1].visors = 0x2; m.parts[0].visors = 0x5;
           if (mm) { mm->mapRange = 31; mm->mapTilt = 70; mm->mapTurns = false; saveHud("/tmp/prim_hudmm.txt", m); HudLayout mb; loadHud("/tmp/prim_hudmm.txt", mb); const HudElement* b2 = nullptr; for (auto& e : mb.planes[0].elements) if (e.kind == HudKind::Minimap) b2 = &e;
             CHECK(b2 && b2->mapRange == 31 && b2->mapTilt == 70 && !b2->mapTurns && std::string(hudKindName(HudKind::Minimap)) == "Minimap", "the minimap saves and loads (range, tilt, turning)");
             { std::ofstream of("/tmp/prim_hudold.txt"); of << "hud 1\nplane Visor 0 0 1 0 0 0 1.6 0.9 0.3 0.1 1 1 1 1\nel Mini 5 0.7 0.6 0.2 0.3 16777215 1 - - 0 - 100 1 1 0 1 2 1\n"; }
             HudLayout old; loadHud("/tmp/prim_hudold.txt", old);
             CHECK(old.planes.size() == 1 && old.planes[0].elements.size() == 1 && old.planes[0].elements[0].kind == HudKind::Minimap && !old.planes[0].elements[0].onMap, "a minimap from an older file hides on the map screen");
-            CHECK(mb.pause.width == 1.3f && mb.pause.color == 0xFF8800 && mb.pause.bendX == 0.5f, "the pause menu's look saves and loads");
+            CHECK(mb.planes[0].elements[1].visors == 0x2 && mb.parts[0].visors == 0x5 && mb.planes[0].elements[0].visors == 0x0F, "which visors show an element / part: saved");
             CHECK(!mb.parts[1].onPause && mb.parts[1].onMap && !mb.planes[0].elements[0].onMap && mb.planes[0].elements[0].onPause, "shown when paused / on the map: saved for elements and 3D parts"); } }
         MeshModel strut; CHECK(builtinShape("@visor-strut", strut) && strut.triangles() == 48, "the visor strut model builds");
     }
@@ -931,6 +933,46 @@ int main() {
         cam.doors.insert(42); cam.mark(10, 4, 0, 7.0);
         saveSeenMap("/tmp/prim_map.bin", cam); SeenMap back; loadSeenMap("/tmp/prim_map.bin", back);
         CHECK(back.total == cam.total && back.seen(10, 4, 0) && back.dirty.size() == back.chunks.size() && back.doors.count(42) && back.mineTotal == 1 && back.mine(10, 4, 0) && !back.mine(10, 5, 0), "the map saves and loads (seen doors too, yours and downloaded apart)");
+    }
+
+    {   // visors, scan entries, the scan index
+        printf("\nvisors and scanning\n");
+        VisorSettings v = defaultVisors();
+        CHECK(v.fx[0].tintAmount == 0 && v.fx[0].saturation == 1 && v.fx[1].tintAmount > 0 && v.fx[2].heat > 0 && v.fx[3].saturation == 0, "starter looks: combat plain, scan tinted, thermal hot, x-ray grey");
+        CHECK(std::string(visorName(VisorKind::Scan)) == "Scan Visor" && ALL_VISORS == 15, "visor names");
+        { ItemSet is = defaultItems(); bool scanOn = false; for (auto& d : is.items) if (d.type == ItemType::ScanVisor) scanOn = d.used && d.startsOwned; CHECK(scanOn && itemWorks(ItemType::ScanVisor), "the Scan Visor is in the game from the start (and works)"); }
+        v.fx[1].lines = 0.7f; v.fx[3].edgeColor = 0x123456; v.scanRange = 31; v.importantColor = 0xAA0000;
+        saveVisors("/tmp/prim_visors.txt", v); VisorSettings b; CHECK(loadVisors("/tmp/prim_visors.txt", b), "visors load");
+        CHECK(b.fx[1].lines == 0.7f && b.fx[3].edgeColor == 0x123456 && b.scanRange == 31 && b.importantColor == 0xAA0000 && b.fx[2].heat == v.fx[2].heat, "visor looks and scan settings save and load");
+        std::string t = "Chozo Lore\n\nThe 100% truth:  spaces, tabs\tand -";
+        CHECK(unescText(escText(t)) == t && escText(t).find(' ') == std::string::npos && escText(t).find('\n') == std::string::npos && unescText(escText("")) == "", "scan text keeps line breaks, spaces and percent signs on one line of a file");
+        ScanLog log;
+        CHECK(log.add({ "Hornoad", "Creatures", "Hops.", "@zone", false }) && !log.add({ "Hornoad", "Creatures", "again", "", false }) && log.add({ "Chozo Lore", "Lore", "...", "", true }) && log.add({ "Geemer", "Creatures", "", "", false }),
+              "the scan index: one entry per name");
+        CHECK(log.entries.size() == 3 && log.has("Geemer") && !log.has("Zoomer") && log.categories() == std::vector<std::string>({ "Creatures", "Lore" }), "... and its categories in the order they came");
+        std::vector<WorldObject> objs(2); objs[0].id = 1; objs[0].model = "@zone"; objs[0].scan.on = true; objs[0].scan.name = "Old Door"; objs[0].scan.category = "Research";
+        objs[0].scan.text = "Line one.\nLine two, 50% rust."; objs[0].scan.important = true; objs[0].scan.time = 2.5f; objs[1].id = 2; objs[1].model = "@zone";
+        saveObjects("/tmp/prim_scanobjs.txt", objs); std::vector<WorldObject> ob; loadObjects("/tmp/prim_scanobjs.txt", ob);
+        CHECK(ob.size() == 2 && ob[0].scan.on && ob[0].scan.name == "Old Door" && ob[0].scan.text == objs[0].scan.text && ob[0].scan.important && ob[0].scan.time == 2.5f && !ob[1].scan.on && ob[1].scan.category == "Research",
+              "an object's scan entry saves and loads (text with line breaks)");
+    }
+    {   // the pause menu: pages as tabs, panes, items
+        printf("\nthe pause menu\n");
+        MenuLayout m = defaultMenu();
+        CHECK(m.pages.size() == 3 && m.findPage("Logbook") == 2 && m.findPage("Nope") == -1 && m.tabs() == std::vector<int>({ 0, 1, 2 }) && m.always.size() == 1 && m.always[0].items[0].kind == MenuKind::TabBar,
+              "starter menu: Main, Inventory, Logbook as tabs, a tab bar on every page");
+        bool lists = false; for (auto& p : m.pages[2].panes) for (auto& i : p.items) lists |= i.kind == MenuKind::ScanList; CHECK(lists, "the Logbook has the scan index");
+        const MenuPane& left = m.pages[2].panes[0];
+        HudPlane lp = menuPanePlane(left); CHECK(planePoint(lp, 0, 0.5f).z < planePoint(lp, 1, 0.5f).z && planePoint(lp, 0, 0.5f).x < planePoint(lp, 1, 0.5f).x, "a left pane turns toward you (its outer edge is nearer)");
+        CHECK(menuPaneHeight(left) == (int)std::lround(1024.0 * left.height / left.width), "a pane's picture: 1024 wide, its own shape");
+        m.pages[1].tab = false; m.pages[0].panes[0].items[2].target = "Some page"; m.pages[0].panes[0].items[2].act = MenuAct::GoTo; m.slide = 0.4f;
+        m.pages[2].panes[2].items[0].text = "Two words\nand a line"; m.pages[2].panes[1].frame = false; m.always[0].color = 0xFF00FF;
+        saveMenu("/tmp/prim_menu.txt", m); MenuLayout b; CHECK(loadMenu("/tmp/prim_menu.txt", b), "the menu loads");
+        CHECK(b.pages.size() == 3 && !b.pages[1].tab && b.pages[0].panes[0].items[2].act == MenuAct::GoTo && b.pages[0].panes[0].items[2].target == "Some page" && b.slide == 0.4f
+              && b.pages[2].panes[2].items[0].text == "Two words\nand a line" && !b.pages[2].panes[1].frame && b.always[0].color == 0xFF00FF && b.tabs() == std::vector<int>({ 0, 2 })
+              && b.pages[2].panes[0].yaw == m.pages[2].panes[0].yaw && b.pages[1].panes[1].items[1].kind == MenuKind::BeamList, "pages, panes and items save and load");
+        auto val = [](const std::string& n) -> std::string { return n == "energy" ? "99" : n == "game" ? "Prime" : ""; };
+        CHECK(menuFill("{game}: {energy} of {maxenergy} {", val) == "Prime: 99 of {maxenergy} {", "texts fill in {energy}, {game}... (unknown ones stay)");
     }
 
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
