@@ -5852,6 +5852,7 @@ struct App {
         if (!it->second.alive()) KillEnemy(*o, it->second, *t);
     }
     void KillEnemy(const WorldObject& o, EnemyState& s, const EnemyType& t, bool drops = true) {
+        if (s.alive()) { s.mode = EnemyMode::Dead; s.health = 0; s.deadT = 0; }
         Box3 b = enemyBox(s, t); V3 c = (b.lo + b.hi) * 0.5;
         if (!t.sndDie.empty()) { SoundUse u; u.file = t.sndDie; PlaySound(u, 1, &c); } else PlaySound(playerSounds.boom, 0.5f, &c);
         { ParticleSettings p = particlePreset("Impact"); p.burst = t.death == EnemyDeath::Burst ? 90 : 35; p.speed = 7; p.color0 = 0xFFFFFF; p.color1 = t.color; p.size0 = 0.09f; SpawnFx(p, c, { 0, 1, 0 }); }
@@ -6115,7 +6116,7 @@ struct App {
         for (const WorldObject& o : objects) {
             if (o.kind != ObjKind::Enemy) continue; auto it = enemyRt.find(o.id); if (it == enemyRt.end() || !it->second.alive() || it->second.hurtT <= 0) continue;
             const EnemyType* t = enemies.find(it->second.type); if (!t) continue;
-            float k = it->second.hurtT / 0.25f * 2.5f; float col[4] = { k, k * 0.9f, k * 0.8f, 0 };
+            float k = it->second.hurtT / 0.25f * 1.1f; float col[4] = { k, k * 0.9f, k * 0.8f, 0 };
             ctx->UpdateSubresource(cbFlat.Get(), 0, nullptr, col, 0, 0);
             DrawEnemy(o, 0, camPos);
         }
@@ -8693,7 +8694,7 @@ struct App {
             }
             {   // enemies: the six placeholder types placed, moving, shooting, hit, dying (explode / fracture), a Skree dropping, what they leave, the Enemies tab
                 const WorldObject* d0 = nullptr; for (const WorldObject& o : objects) if (o.kind == ObjKind::Door) { d0 = &o; break; }
-                V3 base = d0 ? d0->pos : V3{ 26, 0, 40 }; int ax = (int)std::floor(base.x) + 14, ay = (int)std::floor(base.y), az = (int)std::floor(base.z) - 12;
+                V3 base = d0 ? d0->pos : V3{ 26, 0, 40 }; int ax = (int)std::floor(base.x) + 34, ay = (int)std::floor(base.y), az = (int)std::floor(base.z) - 34;
                 EnemySet keepEnemies = enemies; enemies = defaultEnemies(); HudLayout keepHud = hud; hud = defaultHud();
                 BlockId stone = reg.find("stone");
                 for (int y = 0; y < 3; y++) world->set(ax + 1, ay + y, az + 6, stone);                      // a pillar for the Zoomer
@@ -8730,11 +8731,14 @@ struct App {
                 runE(20); frames(1, "enemy_debris_falling");
                 Log("debris pieces flying: " + std::to_string(debris.size()) + ", drops: " + std::to_string(enemyDrops.size()));
                 {   // walk under the Skree
-                    DemoShot under{ "s", { ax + 9.5, ay + player.eyeH, az + 1.0 }, { ax + 9.5, ay + 3.5, az + 4.5 }, 15.5f };
-                    poseAt(under); player.feet = { ax + 9.5, (double)ay, az + 3.6 }; runE(1);
+                    DemoShot side{ "s", { ax + 9.5, ay + player.eyeH, az - 1.5 }, { ax + 9.5, ay + 2.2, az + 4.5 }, 15.5f };
+                    poseAt(side); runE(2); frames(1, "skree_hanging");
                     auto it = enemyRt.find(skree); Log("Skree: " + std::string(it != enemyRt.end() && it->second.mode == EnemyMode::Idle ? "hanging" : "not hanging") + " at " + std::to_string(it != enemyRt.end() ? it->second.pos.y - ay : -1).substr(0, 5));
-                    runE(12); frames(1, "skree_falling");
-                    runE(40); Log(std::string("Skree: ") + (it != enemyRt.end() && !it->second.alive() ? "burst" : "still there") + ", health " + std::to_string((int)play.health));
+                    player.feet = { ax + 9.5, (double)ay, az + 4.0 }; runE(1);   // a step under it ...
+                    poseAt(side); playerInvuln = 0;                               // ... and back
+                    runE(14); frames(1, "skree_falling");
+                    runE(30); frames(1, "skree_digging_in");
+                    runE(25); Log(std::string("Skree: ") + (it != enemyRt.end() && !it->second.alive() ? "burst" : "still there") + ", health " + std::to_string((int)play.health));
                     frames(1, "skree_burst");
                 }
                 for (auto& kv : enemyRt) if (kv.second.alive()) { const EnemyType* t = enemies.find(kv.second.type); const WorldObject* o = ObjById(kv.first); if (t && o) KillEnemy(*o, kv.second, *t); }
