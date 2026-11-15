@@ -193,7 +193,7 @@ struct App {
     float viewerYaw = 0.6f, viewerPitch = 0.35f, viewerDist = 8; ImVec2 viewerWant{ 0, 0 }; int viewerW = 0, viewerH = 0; V3 viewerEye{ 0, 0, 0 }; XMMATRIX viewerVP = XMMatrixIdentity();
     ComPtr<ID3D11RenderTargetView> viewerRTV; ComPtr<ID3D11ShaderResourceView> viewerSRV; ComPtr<ID3D11DepthStencilView> viewerDSV;
     ComPtr<ID3D11VertexShader> vsPreview; ComPtr<ID3D11PixelShader> psPreview; ComPtr<ID3D11Buffer> cbPreview;
-    ComPtr<ID3D11BlendState> bsPremul, bsNoColor; ComPtr<ID3D11VertexShader> vsMap; ComPtr<ID3D11PixelShader> psMap; ComPtr<ID3D11InputLayout> layoutMap; ComPtr<ID3D11Buffer> cbMap;
+    ComPtr<ID3D11BlendState> bsNoColor; ComPtr<ID3D11VertexShader> vsMap; ComPtr<ID3D11PixelShader> psMap; ComPtr<ID3D11InputLayout> layoutMap; ComPtr<ID3D11Buffer> cbMap;
     std::vector<WorldObject> objects; uint32_t nextObjId = 1;
     std::string placing, selModel, newModelName; double placeYaw = 0, placeScale = 1; int movingObj = -1, dupFrom = -1; bool replaceWithObject = true;
     I3 selA{ 0, 0, 0 }, selB{ 0, 0, 0 }; int selStage = 0; BlockModel clipboard; bool hasClip = false;   // selection box (tool 2)
@@ -298,7 +298,6 @@ struct App {
         auto& rt = bd.RenderTarget[0]; rt.BlendEnable = TRUE; rt.SrcBlend = D3D11_BLEND_SRC_ALPHA; rt.DestBlend = D3D11_BLEND_INV_SRC_ALPHA; rt.BlendOp = D3D11_BLEND_OP_ADD;
         rt.SrcBlendAlpha = D3D11_BLEND_ONE; rt.DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA; rt.BlendOpAlpha = D3D11_BLEND_OP_ADD; HR(dev->CreateBlendState(&bd, &bsAlpha));
         rt.SrcBlend = rt.DestBlend = rt.SrcBlendAlpha = rt.DestBlendAlpha = D3D11_BLEND_ONE; HR(dev->CreateBlendState(&bd, &bsAdd));
-        rt.SrcBlend = rt.SrcBlendAlpha = D3D11_BLEND_ONE; rt.DestBlend = rt.DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA; HR(dev->CreateBlendState(&bd, &bsPremul));   // premultiplied pictures (the minimap on the HUD)
         rt.BlendEnable = FALSE; rt.RenderTargetWriteMask = 0; HR(dev->CreateBlendState(&bd, &bsNoColor)); rt.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;   // depth only
         D3D11_SAMPLER_DESC sm{}; sm.Filter = D3D11_FILTER_MIN_MAG_POINT_MIP_LINEAR; sm.AddressU = sm.AddressV = sm.AddressW = D3D11_TEXTURE_ADDRESS_WRAP; sm.MaxLOD = D3D11_FLOAT32_MAX; HR(dev->CreateSamplerState(&sm, &sampBlocks));
         sm.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT; sm.AddressU = sm.AddressV = sm.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP; HR(dev->CreateSamplerState(&sm, &sampPoint));
