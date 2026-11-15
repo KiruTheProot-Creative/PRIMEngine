@@ -8861,6 +8861,8 @@ struct App {
                     double d1 = LockPoint(lockId, rc) ? std::hypot(player.feet.x - rc.x, player.feet.z - rc.z) : -1;
                     Log("lock-on: circled " + std::to_string(length(player.feet - st)).substr(0, 4) + " blocks; distance " + std::to_string(d0).substr(0, 4) + " -> " + std::to_string(d1).substr(0, 4) + ", " + std::to_string(angleTo(player.eye(), player.yaw, player.pitch, rc)).substr(0, 4) + " deg off the middle");
                     demoCtl.right = false; missilePrev = false; forceMissile = true; runE(1); forceMissile = false;
+                    { const MissileType* mt = CurrentMissile(); Log("lock-on: missile button: " + std::to_string(inv.counts[weapons.missileCounter]) + " left, kind " + (mt ? mt->name : "-") + (mt && OwnsMissile(*mt) ? " (owned)" : " (not owned)") + ", cooldown " + std::to_string(weapState.cooldown).substr(0, 4) + ", anim " + std::to_string(weapState.animLeft).substr(0, 4) + ", missiles in the air " + std::to_string(std::count_if(this->shots.begin(), this->shots.end(), [](const Shot& q) { return q.missile; })));
+                      if (mt && !std::count_if(this->shots.begin(), this->shots.end(), [](const Shot& q) { return q.missile; })) { LaunchShot(weapons.beams[weapState.current], weapState.current, mt); Log("lock-on: (fired it by hand)"); } }
                     runE(9); int homing = 0; for (const Shot& sh : this->shots) if (sh.homeId) homing++;
                     frames(1, "lockon_missile_steering");
                     Log("lock-on: shots steering after it: " + std::to_string(homing));
