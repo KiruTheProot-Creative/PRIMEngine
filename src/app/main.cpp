@@ -3261,7 +3261,7 @@ struct App {
     // ---- the pause menu (Esc while playing): drawn on its own bent plane in the helmet (hud.pause); the mouse is traced onto that plane
     struct PauseItem { std::string label; int act = 0, arg = 0; bool enabled = true, current = false, header = false; };
     enum { PA_KEEP, PA_RESTART, PA_BEAM, PA_MISSILE, PA_MAP, PA_SETTINGS, PA_STOP };
-    std::unique_ptr<ImDrawList> pauseList; HudTarget pauseTarget; bool pauseShown = false, pausePreview = false; int pauseSel = 0;
+    std::unique_ptr<ImDrawList> pauseList; bool pauseShown = false, pausePreview = false; int pauseSel = 0;   // (its picture: pauseTarget, below)
     static constexpr int PAUSE_W = 1024;
     std::vector<PauseItem> PauseItems() {
         std::vector<PauseItem> v;
@@ -3303,7 +3303,7 @@ struct App {
         auto C = [&](float a) { return IM_COL32(r, g, b, (int)(std::clamp(a, 0.f, 1.f) * 255)); };
         ImFont* font = ImGui::GetFont(); float W = (float)PAUSE_W;
         dl->AddRectFilled(ImVec2(6, 6), ImVec2(W - 6, H - 6.f), IM_COL32(3, 10, 18, (int)(std::clamp(L.backing, 0.f, 1.f) * 255)), 28);   // the dark glass behind
-        dl->AddRect(ImVec2(6, 6), ImVec2(W - 6, H - 6.f), C(0.75f), 28, 0, 4);
+        dl->AddRect(ImVec2(6, 6), ImVec2(W - 6, H - 6.f), C(0.75f), 28.f, ImDrawFlags_None, 4.f);
         dl->AddLine(ImVec2(40, 18), ImVec2(160, 18), C(1), 6); dl->AddLine(ImVec2(W - 160, H - 18.f), ImVec2(W - 40, H - 18.f), C(1), 6);   // little accents
         auto centered = [&](float size, float y, ImU32 col, const char* t) { ImVec2 ts = font->CalcTextSizeA(size, FLT_MAX, 0, t); dl->AddText(font, size, ImVec2((W - ts.x) * 0.5f, y), col, t); };
         centered(78, 34, C(1), "PAUSED");
@@ -3321,7 +3321,7 @@ struct App {
             bool sel = (int)i == pauseSel;
             if (sel) {   // the picked row: a lit bar
                 dl->AddRectFilled(ImVec2(q.x, q.y), ImVec2(q.z, q.w), C(0.22f), 14);
-                dl->AddRect(ImVec2(q.x, q.y), ImVec2(q.z, q.w), C(0.9f), 14, 0, 3);
+                dl->AddRect(ImVec2(q.x, q.y), ImVec2(q.z, q.w), C(0.9f), 14.f, ImDrawFlags_None, 3.f);
                 dl->AddTriangleFilled(ImVec2(q.x + 22, q.y + 18), ImVec2(q.x + 22, q.w - 18), ImVec2(q.x + 42, (q.y + q.w) * 0.5f), C(1));
             }
             ImU32 tc = !it.enabled ? C(0.25f) : sel ? IM_COL32(235, 252, 255, 255) : C(0.85f);
@@ -5093,6 +5093,7 @@ struct App {
     std::set<std::string> stationsUsed;
     std::unordered_map<I3, MapGpuChunk, I3Hash> mapGpu; std::string mapGpuWorld;
     ComPtr<ID3D11Buffer> mapMarks; UINT mapMarksCap = 0;
+    HudTarget pauseTarget;   // the pause menu's picture
     HudTarget mapView; ComPtr<ID3D11DepthStencilView> mapDSV; int mapDW = 0, mapDH = 0; ImVec2 mapWant{ 0, 0 };
     bool mapOpen = false; float mapYaw = 0, mapPitch = 0.8f, mapDist = 40; V3 mapCenter{ 0, 0, 0 }; double mapOpenT = 0; uint32_t mapFrame = 0;
     static constexpr uint32_t MAP_TINT = 0x3AC8FF, MAP_DOWN = 0xFFB040, MAP_YOU = 0xFF4A6A;   // seen yourself, downloaded (not visited yet), you
