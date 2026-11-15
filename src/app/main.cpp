@@ -3289,6 +3289,7 @@ struct App {
     HudPlane PausePlane(int H) const {
         const PauseLook& L = hud.pause; HudPlane p; p.name = "Pause";
         p.pos = { 0, L.y, std::max(0.2f, L.dist) }; p.width = std::max(0.1f, L.width); p.height = p.width * H / (float)PAUSE_W;
+        float maxH = std::max(0.1f, L.width) * 0.72f; if (p.height > maxH) { p.width *= maxH / p.height; p.height = maxH; }   // a long menu (beams to pick) gets smaller, not taller than the view
         p.bendX = L.bendX; p.bendY = L.bendY; p.sway = 0.5f; p.opacity = 1; p.glow = false; p.bloom = L.bloom; p.lightUp = 0;
         return p;
     }
