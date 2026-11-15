@@ -3,6 +3,7 @@
 // what it shoots, missiles, and how the cannon moves (idle / walk / land / recoil, made by the engine). Plain C++, tested on Linux.
 #include "game.h"
 #include "sound.h"
+#include "lockon.h"
 #include <string>
 #include <vector>
 
@@ -81,6 +82,7 @@ struct WeaponSet {
     float turnSpeed = 140;                              // free aim: degrees per second at the very edge
     float cursorSpeed = 1;                              // free aim: how fast the mouse moves the cursor
     float cannonFollow = 1;                             // free aim: how much the cannon turns toward the cursor
+    LockOnSettings lock;                                // lock-on (right mouse button)
     bool empty() const { return beams.empty(); }
 };
 int bestOwned(const std::vector<char>& owned, int fallback);   // the last one you have (the list goes from weakest to best)

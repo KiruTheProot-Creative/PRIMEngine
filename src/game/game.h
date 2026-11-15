@@ -38,7 +38,9 @@ struct Settings {
     bool save(const std::string& path) const;
 };
 
-struct Controls { bool forward = false, back = false, left = false, right = false, jump = false, sneak = false, sprint = false; };
+struct Controls { bool forward = false, back = false, left = false, right = false, jump = false, sneak = false, sprint = false;
+                  bool orbit = false; V3 orbitAround{ 0, 0, 0 };   // lock-on: strafing alone circles this point at the same distance
+};
 
 // the rules of the player while playing (the game maker sets these)
 struct PlayerRules {
@@ -94,6 +96,8 @@ struct Player {
     void look(double dx, double dy);                     // mouse movement in radians
     void update(const World& w, const Controls& c, double dt, const PlayerRules& rules = PlayerRules{});
     void toggleFly() { flying = !flying; vel.y = 0; }
+    V3 dashVel{ 0, 0, 0 }; double dashT = 0; bool dashAir = false;   // lock-on dash: a hop to the side until you land
+    void dash(V3 sideways, double maxTime = 0.9) { dashVel = { sideways.x, 0, sideways.z }; dashT = maxTime; dashAir = false; }
 };
 
 // Play mode: health, lava, falling out of the world, coming back at the spawn point

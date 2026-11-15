@@ -1071,6 +1071,45 @@ int main() {
             enemyHit(s, w, 1000, { 3.5, 1.5, 0.5 }); CHECK(!s.alive() && s.health == 0, "enough hits: it is dead");
             Box3 b = enemyBox(s, w); CHECK(b.hi.y - b.lo.y == enemyHeight(w) && std::fabs((b.hi.x - b.lo.x) - 2 * enemyHalfWidth(w)) < 1e-6, "its hit box");
         }
+        { EnemySet e2 = defaultEnemies(); e2.find(2)->lockable = false; saveEnemies("/tmp/prim_enemies2.txt", e2); EnemySet b2; loadEnemies("/tmp/prim_enemies2.txt", b2);
+          CHECK(!b2.find(2)->lockable && b2.find(1)->lockable, "'can be locked onto' saves and loads"); }
+    }
+
+    {   // lock-on: picking a target, turning to it, circling it, homing, the dash
+        printf("\nlock-on\n");
+        LockOnSettings ls;
+        std::vector<LockCand> cs = { { 1, { 0, 0, 10 }, 10, 15 }, { 2, { 0, 0, 30 }, 30, 3 }, { 3, { 0, 0, 5 }, 5, 40 }, { 4, { 0, 0, 80 }, 80, 0 } };
+        int i = pickLockTarget(cs, ls);
+        CHECK(i == 1, "picks the one nearest the crosshair (not one outside the cone, not one out of range)");
+        cs[1].angDeg = 14; CHECK(pickLockTarget(cs, ls) == 0, "about as near the crosshair: the closer one wins");
+        CHECK(pickLockTarget({ cs[2], cs[3] }, ls) == -1, "nothing in the cone and range: no target");
+        double yaw = 0, pitch = 0; V3 eye{ 0, 1.6, 0 }, tg{ 10, 1.6, 0 };
+        for (int k = 0; k < 120; k++) lockLook(eye, tg, yaw, pitch, ls.turnSpeed, 1 / 60.0);
+        CHECK(std::fabs(yaw - 3.14159265 / 2) < 1e-3 && std::fabs(pitch) < 1e-3 && angleTo(eye, yaw, pitch, tg) < 0.1, "the view swings onto the target (yaw %.3f)", yaw);
+        yaw = 3.0; lockLook(eye, { -10, 1.6, -0.5 }, yaw, pitch, ls.turnSpeed, 1 / 60.0);
+        CHECK(yaw > 3.0, "it turns the short way round (across the back)");
+        V3 d = homeDir({ 0, 0, 1 }, { 0, 0, 0 }, { 10, 0, 10 }, 1.0, 0.1);
+        CHECK(std::fabs(length(d) - 1) < 1e-9 && std::fabs(std::acos(d.z) - 0.1) < 1e-6 && d.x > 0, "homing turns a shot a little toward the target");
+        d = homeDir({ 0, 0, 1 }, { 0, 0, 0 }, { 0.1, 0, 10 }, 5.0, 0.1);
+        CHECK(std::fabs(d.x - 0.1 / std::sqrt(100.01)) < 1e-9, "close enough: straight at it");
+
+        // circling: on a floor, strafing alone keeps the distance to the target
+        BlockRegistry r; registerBuiltinBlocks(r); World fw(r); fw.gen.layers = { { r.find("stone"), 3 } }; fw.stream({ 0, 0, 0 }, 3, 2, 100000);
+        Player pl; pl.flying = false; pl.feet = { 0.5, 3, -6 }; Controls none; for (int k = 0; k < 90; k++) pl.update(fw, none, 1 / 60.0);
+        V3 ctr{ 0.5, pl.feet.y, 0.5 }; double r0 = length(V3{ pl.feet.x - ctr.x, 0, pl.feet.z - ctr.z });
+        Controls oc; oc.right = true; oc.orbit = true; oc.orbitAround = ctr; double moved = 0; V3 last = pl.feet;
+        for (int k = 0; k < 120; k++) { lookAt(pl.eye(), ctr + V3{ 0, 1, 0 }, pl.yaw, pl.pitch); pl.update(fw, oc, 1 / 60.0); moved += length(pl.feet - last); last = pl.feet; }
+        double r1 = length(V3{ pl.feet.x - ctr.x, 0, pl.feet.z - ctr.z });
+        CHECK(std::fabs(r1 - r0) < 0.02 && moved > 3, "strafing while locked circles the target at the same distance (%.3f -> %.3f, walked %.1f)", r0, r1, moved);
+        // the dash: a hop to the side, over when you land
+        Player pd = pl; V3 side{ std::cos(pd.yaw), 0, -std::sin(pd.yaw) }; V3 st = pd.feet; Controls jc; jc.jump = true;
+        pd.dash(side * 9.0); bool air = false; int k = 0;
+        for (; k < 120; k++) { pd.update(fw, jc, 1 / 60.0); jc.jump = false; air |= !pd.onGround; if (air && pd.onGround) break; }
+        double sideways = (pd.feet.x - st.x) * side.x + (pd.feet.z - st.z) * side.z;
+        CHECK(air && pd.onGround && sideways > 2.0 && pd.dashT <= 0, "a dash: off the ground, %.2f blocks to the side, over on landing", sideways);
+        WeaponSet ws = defaultWeapons(); ws.lock.mode = 1; ws.lock.cone = 30; ws.lock.dash = false; ws.lock.lockedColor = 0x123456; ws.lock.missileHoming = 2.5f;
+        saveWeapons("/tmp/prim_lock.txt", ws); WeaponSet wb; loadWeapons("/tmp/prim_lock.txt", wb);
+        CHECK(wb.lock.mode == 1 && wb.lock.cone == 30 && !wb.lock.dash && wb.lock.lockedColor == 0x123456 && wb.lock.missileHoming == 2.5f, "lock-on settings save and load with the weapons");
     }
 
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);

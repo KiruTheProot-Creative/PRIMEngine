@@ -43,6 +43,7 @@ struct EnemyType {
     std::string sndNotice, sndAttack, sndHurt, sndDie;
     int scanId = 0;                                     // its scan entry (0: none)
     uint32_t color = 0xFF8040;                          // its bursts and hurt flash
+    bool lockable = true;                               // lock-on (right mouse) can pick it
 };
 struct EnemySet {
     std::vector<EnemyType> types;

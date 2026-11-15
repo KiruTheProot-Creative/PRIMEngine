@@ -73,6 +73,14 @@ void Player::update(const World& w, const Controls& c, double dt, const PlayerRu
         if (boosting) speed *= r.boostSpeed;
     } else { runTime = 0; boosting = false; }
     if (length(mv) > 0) mv = normalize(mv) * speed;
+    if (c.orbit && !flying && (c.left != c.right) && !c.forward && !c.back) {   // lock-on: around the target, keeping the distance
+        V3 p{ feet.x - c.orbitAround.x, 0, feet.z - c.orbitAround.z }; double rr = std::sqrt(p.x * p.x + p.z * p.z);
+        if (rr > 0.3 && dt > 1e-6) {
+            double th = (c.right ? 1 : -1) * speed * dt / rr, cs = std::cos(th), sn = std::sin(th);
+            V3 q{ p.x * cs - p.z * sn, 0, p.x * sn + p.z * cs };
+            mv = (q - p) * (1 / dt);
+        }
+    }
     if (flying) {
         // flying: quick to start and stop, Space up, Shift down
         double k = std::min(1.0, dt * 12);
@@ -96,12 +104,15 @@ void Player::update(const World& w, const Controls& c, double dt, const PlayerRu
         if (r.springBall && jumpEdge && onGround) vel.y = std::sqrt(2 * r.gravity * std::max(0.1f, r.springJump));   // the Spring Ball
     } else {
         vel.x = mv.x; vel.z = mv.z;
+        if (dashT > 0) { vel.x = dashVel.x + mv.x * 0.15; vel.z = dashVel.z + mv.z * 0.15; dashT -= dt; }   // a dash: sideways until you land
         vel.y = std::max(vel.y - (double)r.gravity * dt, -78.0);
         if (onGround) airJumpsUsed = 0;
         if (c.jump && onGround) vel.y = r.jumpSpeed();   // default about 1.25 blocks high
         else if (!onGround && jumpEdge && airJumpsUsed < r.airJumps) { vel.y = r.jumpSpeed(); airJumpsUsed++; }   // Space Jump: again in the air
     }
     feet = w.moveBox(feet, vel, halfW, height, dt, onGround, flying ? 0.0 : stepH);   // walking climbs half blocks and stairs by itself
+    if (dashT > 0) { if (!onGround) dashAir = true; else if (dashAir) dashT = 0; }   // the dash ends on landing
+    if (flying || ball) dashT = 0;
     if (flying && onGround && c.sneak) flying = false;   // land by flying down onto the ground
 }
 

@@ -731,14 +731,29 @@ struct App {
     // ================================================================== game update
     void UpdateGame(double dt) {
         player.applySize(game.player);   // the size from the player rules (editor camera too)
-        if (Playing()) {
-            if (FreeAiming()) {   // free aim: the mouse moves a cursor; near the edges the camera turns
+        bool locked = UpdateLockOn(dt);
+        if (Playing() || (playMode && demoDrive)) {
+            V3 lockC; bool lookLocked = locked && LockPoint(lockId, lockC);
+            if (lookLocked) {   // locked on: the view swings to the target and stays there; the mouse does not turn it
+                lockLook(player.eye(), lockC, player.yaw, player.pitch, weapons.lock.turnSpeed, dt);
+                if (FreeAiming()) { float k = (float)std::exp(-dt * 8); freeAim.x *= k; freeAim.y *= k; }
+            } else if (lockHeld && weapons.lock.holdLooksAhead && visor != 1) {   // holding with nothing locked: the view stays still
+            } else if (FreeAiming()) {   // free aim: the mouse moves a cursor; near the edges the camera turns
                 float ty, tp; freeAim.update(weapons, (float)(mouseDX * settings.mouseSensitivity), (float)(mouseDY * settings.mouseSensitivity), (float)rw, (float)rh, dt, ty, tp);
                 player.look(ty * 3.14159265358979 / 180, -tp * 3.14159265358979 / 180);
             } else { double s = 0.0022 * settings.mouseSensitivity; player.look(mouseDX * s, mouseDY * s); }
             Controls c; bool fg = GetForegroundWindow() == hwnd;
-            if (fg) { c.forward = Down('W'); c.back = Down('S'); c.left = Down('A'); c.right = Down('D'); c.jump = Down(VK_SPACE); c.sneak = Down(VK_SHIFT); c.sprint = Down(VK_CONTROL) && !Down('Z') && !Down('Y'); }
+            if (fg && Playing()) { c.forward = Down('W'); c.back = Down('S'); c.left = Down('A'); c.right = Down('D'); c.jump = Down(VK_SPACE); c.sneak = Down(VK_SHIFT); c.sprint = Down(VK_CONTROL) && !Down('Z') && !Down('Y'); }
+            if (demoDrive) c = demoCtl;
             if (playMode) { c.sprint = c.sprint && game.player.canSprint; if (play.dead()) c = Controls{}; }
+            if (lookLocked && !player.flying) {
+                if (weapons.lock.orbit) { c.orbit = true; c.orbitAround = lockC; }
+                // the dash: jump while strafing (A or D alone) hops to the side
+                if (weapons.lock.dash && c.jump && !lockJumpPrev && player.onGround && !player.ball && (c.left != c.right) && !c.forward && !c.back) {
+                    V3 rt{ std::cos(player.yaw), 0, -std::sin(player.yaw) }; player.dash(rt * (double)(c.right ? weapons.lock.dashSpeed : -weapons.lock.dashSpeed));
+                }
+            }
+            lockJumpPrev = c.jump;
             UpdateItemRules();
             player.update(*world, c, std::min(dt, 0.05), playMode ? playRules : PlayerRules{});
             if (playMode && player.boosting) {   // the Speed Booster: blocks marked for it break as you run into them
@@ -1631,7 +1646,7 @@ struct App {
     // ================================================================== doors (G2 attempt 3a)
     struct Shot { V3 pos, dir; float age = 0; ParticleEmitter trail{ particlePreset("Beam trail"), 11 };
                   float speed = 45, size = 0.07f, range = 80, travelled = 0; V3 color{ 0.4, 1.6, 3.0 }; uint32_t tint = 0; std::string weapon, hitLook = "Impact"; bool missile = false, charged = false;
-                  int beam = -1, mtype = -1; bool orb = false; float spin = 0; };   // beam / mtype: what fired it (sounds, sphere); orb: drawn as a glowing ball; mtype: drawn as the missile's model
+                  int beam = -1, mtype = -1; bool orb = false; float spin = 0; uint32_t homeId = 0; };   // homeId: locked on when it was fired: it steers after that one   // beam / mtype: what fired it (sounds, sphere); orb: drawn as a glowing ball; mtype: drawn as the missile's model
     std::map<uint32_t, DoorRuntime> doorRt;           // Play mode: each door's state, by object id
     std::map<uint32_t, ModelGpu> doorGpu;             // doors in the middle of an animation: their posed meshes
     std::vector<Shot> shots; bool shootPrev = true;
@@ -1817,6 +1832,10 @@ struct App {
             shootPrev = Down(VK_LBUTTON);
         }
         for (Shot& s : shots) {
+            if (s.homeId) {   // fired while locked on: it steers after the target
+                V3 c; float k = s.missile ? weapons.lock.missileHoming : weapons.lock.beamHoming;
+                if (k > 0 && LockPoint(s.homeId, c)) s.dir = homeDir(s.dir, s.pos, c, k, dt); else if (!LockPoint(s.homeId, c)) s.homeId = 0;
+            }
             double step = s.speed * dt; s.age += (float)dt;
             double best = step; int door = -1; Hit h; bool blockHit = false;
             if (world->raycast(s.pos, s.dir, step, h)) { best = h.t; blockHit = true; }
@@ -3245,6 +3264,7 @@ struct App {
         for (const ItemDef& d : items.items) if (d.used && d.type == ItemType::PowerBomb && d.startsOwned) inv.counts[items.powerBombCounter] = items.powerBombStart;
         weapState = WeaponState{}; weapPose = WeaponPose{}; cannonClip = -1; firedPending = 0; missilePrev = true;
         activeTl.clear(); chargeTlOn = false; freeAim = FreeAim{}; aimYaw = aimPitch = 0; stepDist = 0;
+        lockId = lockHint = 0; lockToggled = lockHeld = false; lockBtnPrev = true; player.dashT = 0;
         player.ball = false; bombsOut.clear(); flashes.clear(); broken.clear(); ballCamSet = false;
         for (int i = 0; i < (int)weapons.beams.size(); i++) if (weapons.beams[i].startsOwned) { weapState.current = i; break; }
         hudSway.reset(); hudShown.clear(); hudFlashAt.clear(); prevPlayYaw = player.yaw; prevPlayPitch = player.pitch; prevOnGround = true; prevVelY = 0;
@@ -4901,6 +4921,7 @@ struct App {
         if (charged) { tp.size0 *= 2.5f; tp.size1 *= 2.5f; tp.rate *= 1.5f; }
         if (sh.orb) { tp.size0 *= 0.7f; tp.size1 *= 0.7f; }   // the orb is the bright part now: a thinner trail behind it
         sh.trail = ParticleEmitter(tp, (uint32_t)(shots.size() * 7919 + GetTickCount()));
+        if (visor != 1) sh.homeId = lockId;
         shots.push_back(sh);
         ParticleSettings fp = particlePreset(b.flashLook); fp.burst = std::max(fp.burst, 8) * (charged ? 3 : 1); if (charged) { fp.size0 *= 2; fp.speed *= 1.6f; } SpawnFx(fp, mpos, mdir, col);
         if (missile) PlaySound(const_cast<MissileType*>(m)->launch);
@@ -6201,6 +6222,8 @@ struct App {
         Prop("Health"); ch |= ImGui::DragFloat("##ehp", &t.health, 0.5f, 1, 5000, "%.0f");
         Prop("Hurts when touched"); ch |= ImGui::DragFloat("##etd", &t.touchDamage, 0.2f, 0, 500, "%.0f");
         Prop("Knocked back"); ch |= ImGui::SliderFloat("##ekb", &t.knockback, 0, 15, "%.1f");
+        Prop("Can be locked onto"); ch |= ImGui::Checkbox("##elock", &t.lockable);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Lock-on (right mouse) can pick it.\nOff: for tiny or harmless things you should not keep locking onto.");
         ImGui::SeparatorText("What hurts it");
         Prop("Only its weaknesses"); ch |= ImGui::Checkbox("##eonly", &t.onlyWeak);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("On: everything else just bounces off (grey sparks).\nOff: everything hurts it, its weaknesses more.");
@@ -6659,6 +6682,31 @@ struct App {
             Prop("Cursor speed"); ch |= ImGui::SliderFloat("##cs2", &weapons.cursorSpeed, 0.2f, 4, "%.2f");
             Prop("Cannon follows"); ch |= ImGui::SliderFloat("##cfw", &weapons.cannonFollow, 0, 1.5f, "%.2f");
         }
+        ImGui::Separator(); ImGui::TextDisabled("LOCK-ON (right mouse button)");
+        {   LockOnSettings& L = weapons.lock;
+            Prop("Lock-on"); ch |= ImGui::Checkbox("##lkon", &L.on);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Like Prime's L button: the view stays on an enemy, A / D circle around it,\nshots go to it and missiles steer after it. Jump while circling: a dash to the side.");
+            ImGui::BeginDisabled(!L.on);
+            { const char* lm[] = { "Hold the button (like Prime)", "A press locks, the next lets go" }; Prop("Button"); ch |= ImGui::Combo("##lkm", &L.mode, lm, 2); }
+            Prop("Reach (blocks)"); ch |= ImGui::SliderFloat("##lkr", &L.range, 5, 150, "%.0f");
+            Prop("Picks within"); ch |= ImGui::SliderFloat("##lkc", &L.cone, 3, 60, "%.0f deg of the crosshair");
+            Prop("View swings"); ch |= ImGui::SliderFloat("##lkt", &L.turnSpeed, 2, 40, "%.0f (higher: snappier)");
+            Prop("Out of sight for"); ch |= ImGui::SliderFloat("##lkk", &L.keepTime, 0, 3, "%.1f s, then it lets go");
+            Prop("Shots go to the target"); ch |= ImGui::Checkbox("##lkba", &L.beamAim);
+            Prop("Beam shots steer"); ch |= ImGui::SliderFloat("##lkbh", &L.beamHoming, 0, 10, L.beamHoming <= 0 ? "no" : "%.1f");
+            Prop("Missiles steer"); ch |= ImGui::SliderFloat("##lkmh", &L.missileHoming, 0, 15, L.missileHoming <= 0 ? "no" : "%.1f");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("How hard shots fired while locked on turn after the target (radians a second).\n0: they fly straight.");
+            Prop("A / D circle the target"); ch |= ImGui::Checkbox("##lko", &L.orbit);
+            Prop("Dash (jump + A / D)"); ch |= ImGui::Checkbox("##lkd", &L.dash);
+            if (L.dash) { Prop("Dash speed"); ch |= ImGui::SliderFloat("##lkds", &L.dashSpeed, 3, 25, "%.1f blocks/s"); }
+            Prop("Scan Visor locks too"); ch |= ImGui::Checkbox("##lks", &L.scanLock);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Holding the right mouse button to scan also keeps the view on what you scan.");
+            Prop("Nothing to lock: hold the view"); ch |= ImGui::Checkbox("##lkla", &L.holdLooksAhead);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Holding the button with nothing to lock onto:\nOn (like Prime): the view stays still, so you can strafe straight.\nOff: the mouse still turns the view.");
+            Prop("Marker colour"); ch |= ColorU32("##lkcol", L.color);
+            Prop("Locked colour"); ch |= ColorU32("##lkcol2", L.lockedColor);
+            ImGui::EndDisabled();
+        }
         Prop("Cannon in front of the HUD"); ch |= ImGui::Checkbox("##cf", &weapons.cannonInFront);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("The cannon has its own layer, so it never cuts into the HUD.\nOff (like a visor): the HUD is drawn over the cannon.\nOn: the cannon covers the HUD.");
         ImGui::EndChild();
@@ -7061,9 +7109,89 @@ struct App {
 
     // ---- free aim (Wii style)
     FreeAim freeAim; float aimYaw = 0, aimPitch = 0;   // aimYaw / aimPitch: how far the cannon has turned toward the cursor (degrees)
+
+    // ---- lock-on (right mouse, like Prime's L): the view stays on the target, strafing circles it, shots go to it
+    uint32_t lockId = 0, lockHint = 0;   // locked onto (an object id: an enemy, or in the Scan Visor what is being scanned); what a press would pick
+    float lockLost = 0, lockAge = 0; bool lockBtnPrev = false, lockToggled = false, lockHeld = false, holdLock = false, lockJumpPrev = false;   // holdLock: screenshots hold the button
+    bool demoDrive = false; Controls demoCtl;   // screenshots: walk with these keys
+    bool LockPoint(uint32_t id, V3& c, double* radius = nullptr) const {   // where to look / shoot at: an enemy's middle (while alive), or a scannable object's
+        auto it = enemyRt.find(id);
+        if (it != enemyRt.end()) {
+            const EnemyType* t = enemies.find(it->second.type); if (!t || !it->second.alive()) return false;
+            Box3 b = enemyBox(it->second, *t); c = (b.lo + b.hi) * 0.5; if (radius) { V3 e = (b.hi - b.lo) * 0.5; *radius = std::max(0.3, length(e) * 0.7); } return true;
+        }
+        for (const ScanSeen& sc : scanCands) if (sc.id == id) { c = sc.c; if (radius) *radius = sc.radius; return true; }
+        return false;
+    }
+    uint32_t PickLock() {   // the enemy nearest the crosshair that can be locked onto (in range, in the cone, in sight)
+        const LockOnSettings& L = weapons.lock; std::vector<LockCand> cs; V3 eye = player.eye();
+        for (auto& kv : enemyRt) {
+            if (!kv.second.alive()) continue; const EnemyType* t = enemies.find(kv.second.type); if (!t || !t->lockable) continue;
+            V3 c; double rad = 0.5; if (!LockPoint(kv.first, c, &rad)) continue;
+            double dist = length(c - eye); if (dist > L.range || dist < 0.3) continue;
+            double ang = angleTo(eye, player.yaw, player.pitch, c); if (ang > L.cone + 10) continue;
+            if (!canSee(*world, eye, c, L.range + 1) && !canSee(*world, eye, c + V3{ 0, rad * 0.6, 0 }, L.range + 1)) continue;
+            cs.push_back({ kv.first, c, dist, ang });
+        }
+        int i = pickLockTarget(cs, L); return i >= 0 ? cs[i].id : 0;
+    }
+    bool UpdateLockOn(double dt) {   // returns: locked onto something this frame
+        const LockOnSettings& L = weapons.lock;
+        bool can = playMode && L.on && !paused && !mapOpen && !scanOpen && !play.dead() && !player.ball;
+        bool btn = can && ((Playing() && Down(VK_RBUTTON)) || holdLock), want = btn;
+        if (L.mode == 1) { if (btn && !lockBtnPrev) lockToggled = !lockToggled; want = lockToggled; }
+        lockBtnPrev = btn;
+        if (!can) lockToggled = false, want = false;
+        lockHint = can && visor != 1 && !lockId ? PickLock() : 0;
+        lockHeld = want;
+        if (!want || (visor == 1 && !L.scanLock)) { lockId = 0; lockLost = 0; return false; }
+        if (lockId) {   // still there, in range, in sight?
+            V3 c; double rad = 0.5;
+            if (!LockPoint(lockId, c, &rad) || length(c - player.eye()) > L.range * 1.3) lockId = 0;
+            else if (!canSee(*world, player.eye(), c, L.range * 1.3 + 1) && !canSee(*world, player.eye(), c + V3{ 0, rad * 0.6, 0 }, L.range * 1.3 + 1)) { lockLost += (float)dt; if (lockLost > L.keepTime) lockId = 0; }
+            else lockLost = 0;
+            if (visor == 1 && scanTargetId && lockId != scanTargetId) lockId = 0;   // (the Scan Visor: what is being scanned)
+        }
+        if (!lockId) {
+            uint32_t pick = visor == 1 ? scanTargetId : PickLock();
+            if (pick) { lockId = pick; lockLost = 0; lockAge = 0; }
+            if (!lockId && L.mode == 1 && visor != 1) lockToggled = false;   // (a press with nothing to lock onto does not stay on)
+        }
+        lockAge += (float)dt;
+        return lockId != 0;
+    }
+    void DrawLockMarkers(ImDrawList* dl) {   // what a press would lock onto, and the reticle on the target
+        if (!playMode || paused || mapOpen || hideHud || !weapons.lock.on) return;
+        const LockOnSettings& L = weapons.lock; float ui = settings.uiScale, t = (float)uiClock;
+        auto col = [&](uint32_t c, float a) { return IM_COL32((c >> 16) & 255, (c >> 8) & 255, c & 255, (int)(std::clamp(a, 0.f, 1.f) * 255)); };
+        if (lockId && visor != 1) {
+            V3 c; double rad = 0.5; ImVec2 p; if (!LockPoint(lockId, c, &rad) || !Project(c, p)) return;
+            float in = std::clamp(lockAge / 0.18f, 0.f, 1.f);                 // it closes in when it locks
+            float R = (34.f + (1 - in) * 40.f) * ui; ImU32 k = col(L.lockedColor, 0.95f * in + 0.05f);
+            for (int i = 0; i < 3; i++) {   // three arrowheads pointing in, turning slowly
+                float a = t * 1.6f + i * 2.0944f; ImVec2 dir(std::cos(a), std::sin(a)), pr(-dir.y, dir.x);
+                ImVec2 tip(p.x + dir.x * R * 0.62f, p.y + dir.y * R * 0.62f), b1(p.x + dir.x * R + pr.x * 9 * ui, p.y + dir.y * R + pr.y * 9 * ui), b2(p.x + dir.x * R - pr.x * 9 * ui, p.y + dir.y * R - pr.y * 9 * ui);
+                dl->AddTriangleFilled(tip, b1, b2, k);
+            }
+            dl->AddCircle(p, R * 1.12f, col(L.lockedColor, 0.45f * in), 48, 1.5f * ui);
+            dl->AddCircleFilled(p, 3.f * ui, k);
+            if (lockLost > 0) dl->AddCircle(p, R * 1.3f, col(L.lockedColor, 0.5f * (1 - lockLost / std::max(0.05f, L.keepTime))), 48, 1.f * ui);   // out of sight: fading
+            return;
+        }
+        if (lockHint && visor != 1) {   // the one a press would pick: four small corners
+            V3 c; double rad = 0.5; ImVec2 p; if (!LockPoint(lockHint, c, &rad) || !Project(c, p)) return;
+            float R = 20.f * ui, s = 7.f * ui; ImU32 k = col(L.color, 0.85f);
+            for (int i = 0; i < 4; i++) {
+                float sx = (i & 1) ? 1.f : -1.f, sy = (i & 2) ? 1.f : -1.f; ImVec2 q(p.x + sx * R, p.y + sy * R);
+                dl->AddLine(q, ImVec2(q.x - sx * s, q.y), k, 2.f * ui); dl->AddLine(q, ImVec2(q.x, q.y - sy * s), k, 2.f * ui);
+            }
+        }
+    }
     bool FreeAiming() const { return playMode && !weapons.empty() && weapons.aimMode == 1; }
-    V3 AimDir() {   // where shots go: through the cursor (free aim) or the middle of the screen
-        V3 fw = player.forward(); if (!FreeAiming()) return fw;
+    V3 AimDir() {   // where shots go: through the cursor (free aim) or the middle of the screen (locked on: at the target)
+        V3 fw = player.forward();
+        if (lockId && weapons.lock.beamAim) { V3 c; if (LockPoint(lockId, c)) { V3 d = c - player.eye(); if (length(d) > 0.3) return Norm(d); } }
+        if (!FreeAiming()) return fw;
         V3 r = Norm(cross({ 0, 1, 0 }, fw)), u = cross(fw, r), d = freeAim.dir(settings.fov, (float)rw / std::max(1, rh));
         return Norm(r * d.x + u * d.y + fw * d.z);
     }
@@ -8703,7 +8831,7 @@ struct App {
                 auto put = [&](const char* model, V3 at, double yaw) { WorldObject o; o.id = nextObjId++; o.model = model; ApplyPreset(o); o.name = UniqueObjectName(PresetName(o)); o.pos = at; o.yaw = yaw; objects.push_back(o); placed.push_back(o.id); return o.id; };
                 uint32_t zoomer = put("@enemy-crawler", { ax + 1.5, ay + 3.0, az + 6.5 }, 90);
                 uint32_t hornoad = put("@enemy-hopper", { ax + 4.5, (double)ay, az + 3.5 }, 0);
-                put("@enemy-flyer", { ax + 6.5, (double)ay, az + 8.5 }, 0);
+                uint32_t reo = put("@enemy-flyer", { ax + 6.5, (double)ay, az + 8.5 }, 0);
                 uint32_t trooper = put("@enemy-walker", { ax + 3.5, (double)ay, az + 10.5 }, 180);
                 uint32_t skree = put("@enemy-skree", { ax + 9.5, (double)ay, az + 4.5 }, 0);
                 uint32_t turret = put("@enemy-turret", { ax + 12.5, (double)ay, az + 7.5 }, -90);
@@ -8718,6 +8846,35 @@ struct App {
                 frames(2, "enemies_moving");
                 runE(30); frames(1, "enemies_moving_later");
                 Log("enemy shots in the air: " + std::to_string(enemyShots.size()) + ", health " + std::to_string((int)play.health));
+                {   // lock-on: the marker on what a press would pick, locked (the view swings to it), circling it, a missile steering after it, a dash
+                    DemoShot off{ "l", { ax + 6.5, ay + player.eyeH, az - 2.0 }, { ax + 3.0, ay + 1.6, az + 8.0 }, 15.5f };
+                    poseAt(off); runE(3); frames(1, "lockon_marker");
+                    { const WorldObject* h = ObjById(lockHint); Log("lock-on: a press would pick " + std::string(h ? h->name : "nothing")); }
+                    holdLock = true; demoDrive = true; demoCtl = Controls{}; runE(1); lockId = reo; lockAge = 0; runE(3); frames(1, "lockon_locking");
+                    runE(20); frames(1, "lockon_locked");
+                    V3 rc; double d0 = LockPoint(lockId, rc) ? std::hypot(player.feet.x - rc.x, player.feet.z - rc.z) : -1;
+                    Log("lock-on: locked onto " + std::string(ObjById(lockId) ? ObjById(lockId)->name : "nothing") + ", " + std::to_string(angleTo(player.eye(), player.yaw, player.pitch, rc)).substr(0, 4) + " deg off the middle");
+                    demoCtl.right = true; V3 st = player.feet;
+                    runE(60); frames(1, "lockon_circling");
+                    double d1 = LockPoint(lockId, rc) ? std::hypot(player.feet.x - rc.x, player.feet.z - rc.z) : -1;
+                    Log("lock-on: circled " + std::to_string(length(player.feet - st)).substr(0, 4) + " blocks; distance " + std::to_string(d0).substr(0, 4) + " -> " + std::to_string(d1).substr(0, 4) + " (the Reo moves too)");
+                    demoCtl.right = false; missilePrev = false; forceMissile = true; runE(1); forceMissile = false;
+                    int homing = 0; for (const Shot& sh : this->shots) if (sh.homeId) homing++;
+                    runE(9); frames(1, "lockon_missile_steering");
+                    Log("lock-on: shots steering after it: " + std::to_string(homing));
+                    runE(30);
+                    if (lockId) {   // (the missile may have got it: lock onto what is left)
+                        V3 s0 = player.feet; demoCtl.right = true; demoCtl.jump = true; runE(1); demoCtl.jump = false; runE(9); frames(1, "lockon_dash");
+                        runE(40); Log("lock-on: dash went " + std::to_string(length(player.feet - s0)).substr(0, 4) + " blocks (lands: " + (player.dashT <= 0 ? "yes" : "no") + ")");
+                    } else {
+                        Log("lock-on: the Reo is gone, the lock let go"); holdLock = false; runE(1); holdLock = true; runE(3);
+                        V3 s0 = player.feet; demoCtl.right = true; demoCtl.jump = true; runE(1); demoCtl.jump = false; runE(9); frames(1, "lockon_dash");
+                        runE(40); Log("lock-on: (relocked " + std::string(lockId ? "yes" : "no") + ") dash went " + std::to_string(length(player.feet - s0)).substr(0, 4) + " blocks");
+                    }
+                    holdLock = false; demoDrive = false; demoCtl = Controls{}; runE(1);
+                    Log(std::string("lock-on: let go: ") + (lockId ? "still locked" : "free"));
+                    poseAt(look); play.health = game.player.maxHealth; runE(2);
+                }
                 {   // shoot the turret with the beam: immune (only missiles, charge and bombs hurt it)
                     auto it = enemyRt.find(turret); float before = it != enemyRt.end() ? it->second.health : -1;
                     DamageEnemy(turret, 10, "Power Beam", false, false, false, player.eye());
@@ -8800,7 +8957,7 @@ struct App {
             ModelViewer();
             PlayerEditor();
         } else {
-            if (!mapOpen) { DrawHud(ImGui::GetForegroundDrawList()); DrawScanMarkers(ImGui::GetForegroundDrawList()); }
+            if (!mapOpen) { DrawHud(ImGui::GetForegroundDrawList()); DrawScanMarkers(ImGui::GetForegroundDrawList()); DrawLockMarkers(ImGui::GetForegroundDrawList()); }
             if (showF3) DrawF3();
             if (mapOpen) MapScreen();
             else if (scanOpen) ScanInput();

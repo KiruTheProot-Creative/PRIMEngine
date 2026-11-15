@@ -121,6 +121,9 @@ bool saveWeapons(const std::string& path, const WeaponSet& w) {
         for (const SoundUse& u : m.hit.sounds) f << "msound hit " << soundUseText(u) << "\n";
     }
     f << "aim " << w.aimMode << " " << w.deadZone << " " << w.turnSpeed << " " << w.cursorSpeed << " " << w.cannonFollow << "\n";
+    { const LockOnSettings& k = w.lock;
+      f << "lock " << k.on << " " << k.mode << " " << k.range << " " << k.cone << " " << k.turnSpeed << " " << k.keepTime << " " << k.beamAim << " " << k.beamHoming << " " << k.missileHoming
+        << " " << k.orbit << " " << k.dash << " " << k.dashSpeed << " " << k.scanLock << " " << k.holdLooksAhead << " " << k.color << " " << k.lockedColor << "\n"; }
     for (const Beam& b : w.beams) {
         f << "beam " << esc(b.name) << " " << esc(b.model);
         putPoint(f, b.pivot); putPoint(f, b.muzzle); putPoint(f, b.emitter);
@@ -149,6 +152,12 @@ bool loadWeapons(const std::string& path, WeaponSet& w) {
         if (k == "motion") l >> w.motion.idle >> w.motion.walk >> w.motion.land >> w.motion.recoil;
         else if (k == "layer") l >> w.cannonInFront;
         else if (k == "aim") l >> w.aimMode >> w.deadZone >> w.turnSpeed >> w.cursorSpeed >> w.cannonFollow;
+        else if (k == "lock") {
+            LockOnSettings n;
+            if (l >> n.on >> n.mode >> n.range >> n.cone >> n.turnSpeed >> n.keepTime >> n.beamAim >> n.beamHoming >> n.missileHoming >> n.orbit >> n.dash >> n.dashSpeed >> n.scanLock >> n.holdLooksAhead >> n.color >> n.lockedColor) {
+                n.mode = std::clamp(n.mode, 0, 1); n.range = std::clamp(n.range, 2.f, 500.f); n.cone = std::clamp(n.cone, 1.f, 90.f); w.lock = n;
+            }
+        }
         else if (k == "timeline" && !w.beams.empty()) { int t; float sp, at; if (l >> t >> sp >> at && t >= 0 && t < Beam::TIMELINES) { w.beams.back().timelines[t].animSpeed = sp; w.beams.back().timelines[t].shotAt = at; } }
         else if (k == "clip" && !w.beams.empty()) { int t; SoundClip c; std::string rest; if (l >> t >> c.at && t >= 0 && t < Beam::TIMELINES) { std::getline(l, rest); if (soundUseFrom(rest, c.sound)) w.beams.back().timelines[t].sounds.push_back(c); } }
         else if (k == "switch") l >> w.switchMode;

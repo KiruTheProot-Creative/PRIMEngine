@@ -220,6 +220,12 @@ A type has: its model (any model, fitted to its size) and colour; health, how mu
 
 In play your beams, missiles and bombs hit them (a white flash, a knock-back), and they hurt you by touching and by shooting (a short moment after each hit you cannot be hurt again). Event cards: "when an enemy is defeated" (by its name, or its type's name) and "when every enemy in a zone is defeated" (to open a door after a fight).
 
+## Lock-on (right mouse button)
+
+Like Prime's L button. Four small corners show the enemy a press would pick (the one nearest the crosshair, in reach and in sight). Hold the right mouse button: the view swings onto it and stays there, with turning arrowheads around it. **A / D circle it** at the same distance, W / S walk to and from it, your shots go straight to it, missiles (and a little the beam) **steer after it**, and **jumping while circling is a dash** to the side. It lets go when you let go of the button, when the enemy is defeated (holding on picks the next one), or when it stays out of sight for a moment. In the **Scan Visor** holding to scan also keeps the view on what you scan.
+
+Player > Weapons > Lock-on: on / off, hold or press-to-toggle, reach, how far from the crosshair it picks, how quickly the view swings, how long out of sight it may be, shots to the target, how hard beam shots and missiles steer, circling, the dash and its speed, the Scan Visor, "nothing to lock: hold the view" (like Prime, to strafe straight), and the two colours. Each enemy type has "Can be locked onto".
+
 ## The map (M): a hologram of what you have seen
 
 - The map is built only from blocks Samus has actually looked at: every frame a few hundred rays go out from her eyes, and the first solid block each one hits is charted (with a small patch of the same surface, so grazing looks are not speckled). The floor you walk on is charted too.
