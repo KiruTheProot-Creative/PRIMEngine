@@ -4498,7 +4498,7 @@ struct App {
         ImGui::SetNextWindowSize(ImVec2(mv->WorkSize.x * 0.92f, mv->WorkSize.y * 0.9f), ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowPos(ImVec2(mv->WorkPos.x + mv->WorkSize.x * 0.5f, mv->WorkPos.y + mv->WorkSize.y * 0.5f), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
         if (focusPlayerEd) { ImGui::SetNextWindowFocus(); focusPlayerEd = false; }
-        hudViewWant = hudPrevWant = weapWant = ImVec2(0, 0); menuPreview = false; previewVisor = -1;
+        hudViewWant = hudPrevWant = weapWant = ImVec2(0, 0);
         if (!ImGui::Begin("Player editor", &playerEdOpen)) { ImGui::End(); return; }
         if (ImGui::BeginTabBar("player")) {
             if (ImGui::BeginTabItem("HUD")) {
@@ -8191,6 +8191,7 @@ struct App {
         ev = EditorView();
         if (screen == Screen::Title) ProjectManager();
         else if (ev) {
+            menuPreview = false; previewVisor = -1;   // (the Menu / Visors tabs turn these on while they are open)
             EditorUI();
             if (showF3) DrawF3();
             if (inventory) InventoryScreen();
