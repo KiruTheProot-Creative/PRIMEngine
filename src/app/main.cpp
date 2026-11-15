@@ -3216,7 +3216,7 @@ struct App {
         inv = PlayInventory{};
         if (!weapons.missileTypes.empty() && !weapons.missileCounter.empty()) inv.counts[weapons.missileCounter] = weapons.missileStart;
         weapState.missile = 0; chargedOn = false;
-        visor = 0; visorFlash = 0; scanLog.clear(); scanOpen = false; scanProgress = 0; scanTargetId = 0; menuScan = 0; menuScroll.clear();
+        visor = 0; visorFlash = 0; scanLog.clear(); scanOpen = false; scanProgress = 0; scanTargetId = 0; menuScan = 0; menuScroll.clear(); menuScrollWho.clear();
         seenMaps.clear(); stationsUsed.clear(); mapGpu.clear(); mapGpuWorld.clear(); mapOpen = false;
         takenByWorld.clear(); insideNow.clear(); firedOnce.clear(); teleportLock = 0; bigMsgT = 0; playStartWorld = CurrentWorld(); startEditCam = editCam;
         playSpawn = info.hasSpawn ? info.spawn : player.feet; playYaw = info.hasSpawn ? info.spawnYaw : player.yaw;
@@ -5041,9 +5041,19 @@ struct App {
             OpenScan();
         }
     }
-    void OpenScan() { scanOpen = true; paused = true; Capture(false); menuSlideT = 0; menuSlideDir = 0; }
+    void OpenScan() { scanOpen = true; paused = true; Capture(false); menuSlideT = 0; menuSlideDir = 0; menuScrollWho[0] = -1; }   // (its text starts at the top)
     void CloseScan() { if (!scanOpen) return; scanOpen = false; paused = false; Capture(true); }
-    void ScanInput() {   // the scan's text is up: a click, E, Enter or Space closes it
+    void ScanTextScroll(int pane) {   // the wheel, W / S or the arrow keys scroll the texts on a pane
+        ImGuiIO& io = ImGui::GetIO(); float d = -io.MouseWheel * 70;
+        if (ImGui::IsKeyDown(ImGuiKey_DownArrow) || ImGui::IsKeyDown(ImGuiKey_S)) d += io.DeltaTime * 520;
+        if (ImGui::IsKeyDown(ImGuiKey_UpArrow) || ImGui::IsKeyDown(ImGuiKey_W)) d -= io.DeltaTime * 520;
+        if (ImGui::IsKeyPressed(ImGuiKey_PageDown)) d += 300;
+        if (ImGui::IsKeyPressed(ImGuiKey_PageUp)) d -= 300;
+        if (d == 0) return;
+        for (auto& kv : menuScrollWho) if (kv.first / 256 == pane) menuScroll[kv.first] += d;
+    }
+    void ScanInput() {   // the scan's text is up: the wheel / W / S scroll it; a click, E, Enter or Space closes it
+        ScanTextScroll(0);
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || ImGui::IsMouseClicked(ImGuiMouseButton_Right) || ImGui::IsKeyPressed(ImGuiKey_E) || ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_Space)) CloseScan();
     }
     HudTarget scanMask;   // the Scan Visor's outlines: scannable things drawn flat in their marker colour
@@ -5101,7 +5111,8 @@ struct App {
     std::vector<MenuPane> menuPanes; std::vector<bool> menuPaneIsPage; std::vector<MenuHit> menuHits;
     int menuPage = 0, menuSel = -2, menuScan = 0, menuSlideDir = 0, menuEdPage = 0; double menuSlideT = 1; std::vector<int> menuBack;
     bool menuShown = false, menuPreview = false, menuWasOpen = false;
-    std::map<int, float> menuScroll;   // a list's scroll (pane * 256 + item)
+    std::map<int, float> menuScroll;   // a list's / text's scroll (pane * 256 + item)
+    std::map<int, int> menuScrollWho;  // which scan entry a text's scroll belongs to (a new one starts at the top)
     HudTarget scanModelView; ComPtr<ID3D11DepthStencilView> scanModelDSV; int smDW = 0, smDH = 0, smWantW = 0, smWantH = 0; std::string smModel;
     const ScanLog& ShownScans() {   // in the editor's preview: every scan entry in the world, as if all were scanned
         if (playMode) return scanLog;
@@ -5123,7 +5134,7 @@ struct App {
         MenuPane p; p.name = "Scan"; p.pos = { 0, -0.14, 0.82 }; p.width = 0.98f; p.height = 0.44f; p.bendX = 0.3f; p.bendY = 0.12f;
         p.color = scanShown.important ? visors.importantColor : 0x6CF0FF; p.backing = 0.7f;
         MenuItem t; t.kind = MenuKind::ScanText; t.x = 0.05f; t.y = 0.07f; t.w = 0.9f; t.h = 0.76f; t.textSize = 32; p.items.push_back(t);
-        MenuItem h; h.kind = MenuKind::Text; h.text = "Click, E or Enter to continue"; h.x = 0.05f; h.y = 0.86f; h.w = 0.9f; h.h = 0.08f; h.textSize = 24; h.alpha = 0.55f; h.align = 2; p.items.push_back(h);
+        MenuItem h; h.kind = MenuKind::Text; h.text = "Wheel / W / S: scroll      Click, E or Enter: continue"; h.x = 0.05f; h.y = 0.86f; h.w = 0.9f; h.h = 0.08f; h.textSize = 24; h.alpha = 0.55f; h.align = 2; p.items.push_back(h);
         return p;
     }
     void GoToPage(int pg, bool remember = true) {
@@ -5266,9 +5277,25 @@ struct App {
                 float ts = it.textSize * 1.5f; dl->AddText(font, ts, a, C(hc, al), e->name.c_str());
                 dl->AddText(font, it.textSize * 0.8f, ImVec2(a.x, a.y + ts * 1.15f), C(c, 0.55f * al), (e->category + (e->important ? "   -   important" : "")).c_str());
                 float ty = a.y + ts * 1.15f + it.textSize * 1.3f; dl->AddLine(ImVec2(a.x, ty - it.textSize * 0.3f), ImVec2(b.x, ty - it.textSize * 0.3f), C(hc, 0.35f * al), 2);
-                dl->PushClipRect(ImVec2(a.x, ty), b, true);
-                dl->AddText(font, it.textSize, ImVec2(a.x, ty), C(0xE8F8FF, 0.92f * al), e->text.empty() ? "(no text)" : e->text.c_str(), nullptr, b.x - a.x);
-                dl->PopClipRect();
+                {   // the text: scrolls (wheel, W / S) when it is longer than the room it has
+                    const char* body = e->text.empty() ? "(no text)" : e->text.c_str(); float wrapW = b.x - a.x - 18;
+                    float textH = font->CalcTextSizeA(it.textSize, FLT_MAX, wrapW, body).y + it.textSize * 0.5f, room = b.y - ty;
+                    int key = paneIdx * 256 + ii; float& scroll = menuScroll[key];
+                    if (menuScrollWho[key] != e->id) { menuScrollWho[key] = e->id; scroll = 0; }   // a new entry starts at its top
+                    float most = std::max(0.f, textH - room); scroll = std::clamp(scroll, 0.f, most);
+                    dl->PushClipRect(ImVec2(a.x, ty), b, true);
+                    dl->AddText(font, it.textSize, ImVec2(a.x, ty - scroll), C(0xE8F8FF, 0.92f * al), body, nullptr, wrapW);
+                    dl->PopClipRect();
+                    if (most > 0) {
+                        float k = room / textH, y0 = ty + (scroll / textH) * room;   // a scroll bar
+                        dl->AddRectFilled(ImVec2(b.x - 7, ty), ImVec2(b.x - 2, b.y), C(c, 0.15f * al), 3);
+                        dl->AddRectFilled(ImVec2(b.x - 7, y0), ImVec2(b.x - 2, y0 + room * k), C(hc, 0.7f * al), 3);
+                        if (scroll < most - 1) {   // more below: a soft fade and a little arrow
+                            for (int f = 0; f < 6; f++) dl->AddRectFilled(ImVec2(a.x, b.y - (6 - f) * it.textSize * 0.12f), ImVec2(b.x - 10, b.y - (5 - f) * it.textSize * 0.12f), IM_COL32(3, 10, 18, (int)(pn.backing * 255 * f / 6.f)));
+                            float cx = (a.x + b.x) * 0.5f; dl->AddTriangleFilled(ImVec2(cx - 12, b.y - 16), ImVec2(cx + 12, b.y - 16), ImVec2(cx, b.y - 4), C(hc, 0.85f * al));
+                        }
+                    }
+                }
                 break; }
             case MenuKind::ScanModel: {
                 const ScanLog& lg = ShownScans(); const ScanEntry* e = scanOpen ? &scanShown : (menuScan >= 0 && menuScan < (int)lg.entries.size() ? &lg.entries[menuScan] : nullptr);
@@ -5406,6 +5433,7 @@ struct App {
         auto step = [&](int d) { if (!n) return; int i = menuSel; for (int k = 0; k < n; k++) { i = ((i < 0 ? 0 : i) + d + n) % n; if (menuHits[i].kind != 1) { menuSel = i; return; } } };
         if (ImGui::IsKeyPressed(ImGuiKey_UpArrow) || ImGui::IsKeyPressed(ImGuiKey_W)) step(-1);
         if (ImGui::IsKeyPressed(ImGuiKey_DownArrow) || ImGui::IsKeyPressed(ImGuiKey_S)) step(1);
+        if (ImGui::IsKeyPressed(ImGuiKey_PageDown) || ImGui::IsKeyPressed(ImGuiKey_PageUp)) { float d = ImGui::IsKeyPressed(ImGuiKey_PageDown) ? 300.f : -300.f; for (auto& kv : menuScrollWho) menuScroll[kv.first] += d; }   // long scan texts
         std::vector<int> tabs = menu.tabs();
         if (!tabs.empty() && (ImGui::IsKeyPressed(ImGuiKey_Q) || ImGui::IsKeyPressed(ImGuiKey_E))) {   // Q / E: the tab before / after
             auto it = std::find(tabs.begin(), tabs.end(), menuPage); int k = it == tabs.end() ? 0 : (int)(it - tabs.begin());
@@ -8034,7 +8062,7 @@ struct App {
                 int n = 0; std::vector<uint32_t> scanned; ScanLibrary keepLib = scanLib; scanLib = ScanLibrary{};
                 ScanDef dd; dd.name = "Blast Shield"; dd.text = "A heavy door. Its lock is still working."; int doorId = scanLib.add(dd);
                 dd.name = "Wave Door"; dd.important = true; dd.text = "A door sealed by a wave of energy.\nOnly a Wave Beam shot can open it."; int waveId = scanLib.add(dd);
-                dd.name = "Chozo Terminal"; dd.important = false; dd.category = "Lore"; dd.text = "A Chozo data terminal, still humming.\n\nThe glyphs speak of a great darkness that fell from the sky, and of the hunter who would one day come to end it.";
+                dd.name = "Chozo Terminal"; dd.important = false; dd.category = "Lore"; dd.text = "A Chozo data terminal, still humming.\n\nThe glyphs speak of a great darkness that fell from the sky, and of the hunter who would one day come to end it.\n\nThe lower rows are worn away by time. What is left tells of a temple in the north, sealed by twelve keys, and of a poison that crept into the water and the stone.\n\nThe last line is newer than the rest, carved in haste: \"It is awake. Do not open the door.\"";
                 int termId = scanLib.add(dd);
                 for (WorldObject& o : objects) if (o.kind == ObjKind::Door && n < 4) { o.scan.on = true; o.scan.id = n == 1 ? waveId : doorId; scanned.push_back(o.id); n++; }   // three doors share one entry
                 WorldObject tm; tm.id = nextObjId++; tm.model = "@map-station"; ApplyPreset(tm); tm.kind = ObjKind::Prop; tm.name = UniqueObjectName("Chozo Terminal"); tm.pos = { base.x + 3, base.y, base.z - 6.5 };
@@ -8051,6 +8079,7 @@ struct App {
                 holdScan = true; runS(30); frames(1, "scan_visor_scanning");
                 runS(60); holdScan = false; Log(std::string("scan: ") + (scanOpen ? "done, " : "NOT done, ") + std::to_string(scanLog.entries.size()) + " in the index");
                 frames(3, "scan_result");
+                menuScroll[0] = 1e6f; frames(2, "scan_result_scrolled_down");   // (the wheel / W / S: all the way down)
                 CloseScan(); runS(2);
                 for (const WorldObject& o : objects) if (o.kind == ObjKind::Door && o.scan.id == waveId) { V3 c, ac; if (DoorRect(o, c, ac)) aimAt(c); }
                 holdScan = true; runS(100); holdScan = false; frames(2, "scan_result_important"); CloseScan(); runS(2);
