@@ -8847,33 +8847,36 @@ struct App {
                 runE(30); frames(1, "enemies_moving_later");
                 Log("enemy shots in the air: " + std::to_string(enemyShots.size()) + ", health " + std::to_string((int)play.health));
                 {   // lock-on: the marker on what a press would pick, locked (the view swings to it), circling it, a missile steering after it, a dash
-                    DemoShot off{ "l", { ax + 6.5, ay + player.eyeH, az - 2.0 }, { ax + 3.0, ay + 1.6, az + 8.0 }, 15.5f };
+                    DemoShot off{ "l", { ax + 11.5, ay + player.eyeH, az + 0.5 }, { ax + 7.0, ay + 1.4, az + 9.0 }, 15.5f };   // the turret to the right (it stands still: good to circle)
+                    if (auto it = enemyRt.find(reo); it != enemyRt.end()) { it->second.pos = { ax + 3.5, ay + 3.0, az + 14.5 }; it->second.vel = { 0, 0, 0 }; }   // (the Reo out of the way)
+                    inv.counts[weapons.missileCounter] = 5; playerInvuln = 30;
                     poseAt(off); runE(3); frames(1, "lockon_marker");
                     { const WorldObject* h = ObjById(lockHint); Log("lock-on: a press would pick " + std::string(h ? h->name : "nothing")); }
-                    holdLock = true; demoDrive = true; demoCtl = Controls{}; runE(1); lockId = reo; lockAge = 0; runE(3); frames(1, "lockon_locking");
+                    holdLock = true; demoDrive = true; demoCtl = Controls{}; runE(1); lockId = turret; lockAge = 0; runE(3); frames(1, "lockon_locking");
                     runE(20); frames(1, "lockon_locked");
                     V3 rc; double d0 = LockPoint(lockId, rc) ? std::hypot(player.feet.x - rc.x, player.feet.z - rc.z) : -1;
                     Log("lock-on: locked onto " + std::string(ObjById(lockId) ? ObjById(lockId)->name : "nothing") + ", " + std::to_string(angleTo(player.eye(), player.yaw, player.pitch, rc)).substr(0, 4) + " deg off the middle");
                     demoCtl.right = true; V3 st = player.feet;
                     runE(60); frames(1, "lockon_circling");
                     double d1 = LockPoint(lockId, rc) ? std::hypot(player.feet.x - rc.x, player.feet.z - rc.z) : -1;
-                    Log("lock-on: circled " + std::to_string(length(player.feet - st)).substr(0, 4) + " blocks; distance " + std::to_string(d0).substr(0, 4) + " -> " + std::to_string(d1).substr(0, 4) + " (the Reo moves too)");
+                    Log("lock-on: circled " + std::to_string(length(player.feet - st)).substr(0, 4) + " blocks; distance " + std::to_string(d0).substr(0, 4) + " -> " + std::to_string(d1).substr(0, 4) + ", " + std::to_string(angleTo(player.eye(), player.yaw, player.pitch, rc)).substr(0, 4) + " deg off the middle");
                     demoCtl.right = false; missilePrev = false; forceMissile = true; runE(1); forceMissile = false;
-                    int homing = 0; for (const Shot& sh : this->shots) if (sh.homeId) homing++;
-                    runE(9); frames(1, "lockon_missile_steering");
+                    runE(9); int homing = 0; for (const Shot& sh : this->shots) if (sh.homeId) homing++;
+                    frames(1, "lockon_missile_steering");
                     Log("lock-on: shots steering after it: " + std::to_string(homing));
                     runE(30);
                     if (lockId) {   // (the missile may have got it: lock onto what is left)
                         V3 s0 = player.feet; demoCtl.right = true; demoCtl.jump = true; runE(1); demoCtl.jump = false; runE(9); frames(1, "lockon_dash");
                         runE(40); Log("lock-on: dash went " + std::to_string(length(player.feet - s0)).substr(0, 4) + " blocks (lands: " + (player.dashT <= 0 ? "yes" : "no") + ")");
                     } else {
-                        Log("lock-on: the Reo is gone, the lock let go"); holdLock = false; runE(1); holdLock = true; runE(3);
+                        Log("lock-on: the turret is gone, the lock let go"); holdLock = false; runE(1); holdLock = true; runE(3);
                         V3 s0 = player.feet; demoCtl.right = true; demoCtl.jump = true; runE(1); demoCtl.jump = false; runE(9); frames(1, "lockon_dash");
                         runE(40); Log("lock-on: (relocked " + std::string(lockId ? "yes" : "no") + ") dash went " + std::to_string(length(player.feet - s0)).substr(0, 4) + " blocks");
                     }
                     holdLock = false; demoDrive = false; demoCtl = Controls{}; runE(1);
                     Log(std::string("lock-on: let go: ") + (lockId ? "still locked" : "free"));
-                    poseAt(look); play.health = game.player.maxHealth; runE(2);
+                    if (auto it = enemyRt.find(turret); it != enemyRt.end() && it->second.alive()) it->second.health = enemies.find(it->second.type)->health;   // (whole again for the tests below)
+                    poseAt(look); play.health = game.player.maxHealth; playerInvuln = 0; runE(2);
                 }
                 {   // shoot the turret with the beam: immune (only missiles, charge and bombs hurt it)
                     auto it = enemyRt.find(turret); float before = it != enemyRt.end() ? it->second.health : -1;
