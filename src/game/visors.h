@@ -35,12 +35,30 @@ VisorSettings defaultVisors();
 bool saveVisors(const std::string& path, const VisorSettings& v);
 bool loadVisors(const std::string& path, VisorSettings& v);
 
-// ---- the scan index: what has been scanned (one entry per name: several objects can share an entry)
-struct ScanEntry { std::string name, category, text, model; bool important = false; };
+// ---- scan entries: written once (scans.txt), with an ID; any number of objects point to one (scan the door once: every
+// door with that ID counts as scanned)
+struct ScanDef {
+    int id = 0;
+    std::string name, category = "Research", text;
+    bool important = false;                                 // a red marker: not to be missed
+    float time = 0;                                         // seconds to scan (0: the visor's own time)
+};
+struct ScanLibrary {
+    std::vector<ScanDef> defs;
+    ScanDef* find(int id);
+    const ScanDef* find(int id) const;
+    int add(ScanDef d);                                     // gives it the next free ID (if it has none or a taken one); returns the ID
+    const ScanDef* findName(const std::string& name) const;
+};
+bool saveScanLibrary(const std::string& path, const ScanLibrary& l);
+bool loadScanLibrary(const std::string& path, ScanLibrary& l);
+
+// ---- the scan index: what has been scanned (one entry per ID)
+struct ScanEntry { int id = 0; std::string name, category, text, model; bool important = false; };
 struct ScanLog {
     std::vector<ScanEntry> entries;                         // in the order they were scanned
-    bool has(const std::string& name) const;
-    bool add(const ScanEntry& e);                           // true if it was new
+    bool has(int id) const;
+    bool add(const ScanEntry& e);                           // true if it was new (by ID)
     std::vector<std::string> categories() const;            // in the order they first came
     void clear() { entries.clear(); }
 };

@@ -40,11 +40,10 @@ const char* collideName(Collide c);
 enum class ObjKind { Prop, Door, Platform, Pickup, Checkpoint, Teleporter, Trigger, Light, Particles, MapCamera, MapStation, COUNT };
 // the map: a Map Station (touch it) fires every map camera with the same ID; each camera looks all around and puts what it sees on the map
 struct MapSettings { int id = 1; float range = 48; };
-struct ScanInfo {   // what the Scan Visor finds on it (and the scan index shows)
+struct ScanInfo {   // can be scanned (Scan Visor): which scan entry it shows (scans.txt, by ID: objects share entries)
     bool on = false;
-    std::string name, category = "Research", text;
-    bool important = false;                           // a red marker: not to be missed
-    float time = 0;                                   // seconds to scan (0: the visor's own time)
+    int id = 0;                                       // the scan entry (0: none yet)
+    std::string legacyName, legacyCategory, legacyText; bool legacyImportant = false; float legacyTime = 0;   // (older files kept the text on the object: made into an entry when loaded)
 };
 const char* kindName(ObjKind k);
 

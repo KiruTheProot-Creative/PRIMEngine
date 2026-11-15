@@ -49,13 +49,37 @@ bool loadVisors(const std::string& path, VisorSettings& v) {
     return true;
 }
 
-bool ScanLog::has(const std::string& name) const {
-    for (const ScanEntry& e : entries) if (e.name == name) return true;
+bool ScanLog::has(int id) const {
+    for (const ScanEntry& e : entries) if (e.id == id) return true;
     return false;
 }
 bool ScanLog::add(const ScanEntry& e) {
-    if (e.name.empty() || has(e.name)) return false;
+    if (e.id <= 0 || has(e.id)) return false;
     entries.push_back(e); return true;
+}
+
+ScanDef* ScanLibrary::find(int id) { for (ScanDef& d : defs) if (d.id == id) return &d; return nullptr; }
+const ScanDef* ScanLibrary::find(int id) const { for (const ScanDef& d : defs) if (d.id == id) return &d; return nullptr; }
+const ScanDef* ScanLibrary::findName(const std::string& name) const { for (const ScanDef& d : defs) if (d.name == name) return &d; return nullptr; }
+int ScanLibrary::add(ScanDef d) {
+    if (d.id <= 0 || find(d.id)) { int m = 0; for (const ScanDef& x : defs) m = std::max(m, x.id); d.id = m + 1; }
+    defs.push_back(d); return d.id;
+}
+bool saveScanLibrary(const std::string& path, const ScanLibrary& l) {
+    std::ofstream f(path); if (!f) return false;
+    f << "scans 1\n";
+    for (const ScanDef& d : l.defs) f << "scan " << d.id << " " << escText(d.name) << " " << escText(d.category) << " " << escText(d.text) << " " << (d.important ? 1 : 0) << " " << d.time << "\n";
+    return (bool)f;
+}
+bool loadScanLibrary(const std::string& path, ScanLibrary& l) {
+    std::ifstream f(path); if (!f) return false;
+    l = ScanLibrary{}; std::string line;
+    while (std::getline(f, line)) {
+        std::istringstream s(line); std::string k; s >> k; if (k != "scan") continue;
+        ScanDef d; std::string n, c, t; int imp = 0;
+        if (s >> d.id >> n >> c >> t >> imp >> d.time) { d.name = unescText(n); d.category = unescText(c); d.text = unescText(t); d.important = imp != 0; d.time = std::max(0.f, d.time); if (d.id > 0 && !l.find(d.id)) l.defs.push_back(d); }
+    }
+    return true;
 }
 std::vector<std::string> ScanLog::categories() const {
     std::vector<std::string> c;

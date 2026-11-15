@@ -2010,7 +2010,7 @@ struct App {
         }
     }
     void LoadWorldObjects() {
-        objects.clear(); loadObjects(worldDir + "/objects.txt", objects); loadEvents(worldDir + "/events.txt", events); loadBreakables(worldDir + "/breakable.txt", breakables);
+        objects.clear(); loadObjects(worldDir + "/objects.txt", objects); MigrateLegacyScans(); loadEvents(worldDir + "/events.txt", events); loadBreakables(worldDir + "/breakable.txt", breakables);
         nextObjId = 1; for (auto& o : objects) nextObjId = std::max(nextObjId, o.id + 1);
         movingObj = -1; placing.clear(); RebuildSolids();
     }
@@ -3924,7 +3924,7 @@ struct App {
     void LoadHud() { items = defaultItems(); loadItems(projectDir + "/items.txt", items); assetFolders = AssetFolders{}; loadAssetFolders(projectDir + "/asset_folders.txt", assetFolders);
         animBlends = AnimBlends{}; loadAnimBlends(projectDir + "/anim_blend.txt", animBlends); cannonBlend.reset(); doorBlend.clear(); viewerBlend.reset();
         materials = Materials{}; loadMaterials(projectDir + "/materials.txt", materials); matsDirty = true; soundCache.clear(); playerSounds = PlayerSounds{}; loadPlayerSounds(projectDir + "/player_sounds.txt", playerSounds); activeTl.clear();
-        hud = HudLayout{}; loadHud(HudPath(), hud); visors = defaultVisors(); loadVisors(projectDir + "/visors.txt", visors); menu = defaultMenu(); loadMenu(projectDir + "/menu.txt", menu); weapons = WeaponSet{}; loadWeapons(projectDir + "/weapons.txt", weapons); weapSel = 0; weapState = WeaponState{}; hudImages.clear(); hudSel = 0; hudPlane = 0; hudEl = -1; hudPart = 0; }
+        hud = HudLayout{}; loadHud(HudPath(), hud); visors = defaultVisors(); loadVisors(projectDir + "/visors.txt", visors); scanLib = ScanLibrary{}; loadScanLibrary(projectDir + "/scans.txt", scanLib); MigrateLegacyScans(); menu = defaultMenu(); loadMenu(projectDir + "/menu.txt", menu); weapons = WeaponSet{}; loadWeapons(projectDir + "/weapons.txt", weapons); weapSel = 0; weapState = WeaponState{}; hudImages.clear(); hudSel = 0; hudPlane = 0; hudEl = -1; hudPart = 0; }
     void SaveHud() {
         if (projectDir.empty()) return; std::error_code ec;
         if (hud.empty()) fs::remove(fs::u8path(HudPath()), ec); else saveHud(HudPath(), hud);
@@ -4958,8 +4958,21 @@ struct App {
 
     // ================================================================== visors (V): Combat, Scan, Thermal, X-Ray
     VisorSettings visors; int visor = 0; float visorFlash = 0; int previewVisor = -1;
+    ScanLibrary scanLib;   // the scan entries (scans.txt): objects point to one by ID
+    void SaveScans() { if (!projectDir.empty()) saveScanLibrary(projectDir + "/scans.txt", scanLib); }
+    void MigrateLegacyScans() {   // older files kept the scan text on each object: one entry per name
+        bool made = false;
+        for (WorldObject& o : objects) {
+            if (o.scan.id > 0 || o.scan.legacyName.empty()) continue;
+            if (const ScanDef* d = scanLib.findName(o.scan.legacyName)) o.scan.id = d->id;
+            else { ScanDef d; d.name = o.scan.legacyName; d.category = o.scan.legacyCategory.empty() ? "Research" : o.scan.legacyCategory; d.text = o.scan.legacyText; d.important = o.scan.legacyImportant; d.time = o.scan.legacyTime; o.scan.id = scanLib.add(d); made = true; }
+            o.scan.legacyName.clear();
+        }
+        if (made) SaveScans();
+    }
+    int ScanUses(int id) const { int n = 0; for (const WorldObject& o : objects) if (o.scan.on && o.scan.id == id) n++; return n; }
     ScanLog scanLog; uint32_t scanTargetId = 0; float scanProgress = 0; bool scanOpen = false, holdScan = false; ScanEntry scanShown;
-    struct ScanSeen { uint32_t id; V3 c; double dist, ang, radius; bool done, important; std::string name; };
+    struct ScanSeen { uint32_t id; int scanId; V3 c; double dist, ang, radius; bool done, important; std::string name; };
     std::vector<ScanSeen> scanCands;
     void SaveVisors() { if (!projectDir.empty()) saveVisors(projectDir + "/visors.txt", visors); }
     bool HasItemType(ItemType t) const { for (const ItemDef& d : items.items) if (d.used && d.type == t && (d.startsOwned || ItemHave(d.name) > 0)) return true; return false; }
@@ -4990,13 +5003,14 @@ struct App {
         if (!playMode || visor != 1 || player.ball || play.dead() || !world) return;
         V3 eye = player.eye(), f = player.forward(); double range = visors.scanRange, half = settings.fov * 3.14159265358979 / 180 * 0.5 * 1.25;
         for (const WorldObject& o : objects) {
-            if (!o.scan.on || o.scan.name.empty() || evHidden.count(o.id)) continue;
+            const ScanDef* def = o.scan.on ? scanLib.find(o.scan.id) : nullptr;
+            if (!def || evHidden.count(o.id)) continue;
             FrameRef fr = ModelOf(o); V3 c = o.pos + V3{ 0, 0.5, 0 }; double rad = 0.5;
             if (fr) { Box3 b = objectBounds(o, *fr); c = (b.lo + b.hi) * 0.5; V3 e = (b.hi - b.lo) * 0.5; rad = std::max(0.3, std::sqrt(e.x * e.x + e.y * e.y + e.z * e.z) * 0.6); }
             V3 d = c - eye; double l = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z); if (l > range || l < 1e-3) continue;
             double ang = std::acos(std::clamp((d.x * f.x + d.y * f.y + d.z * f.z) / l, -1.0, 1.0)); if (ang > half) continue;
             if (!canSee(*world, eye, c, range) && !canSee(*world, eye, c + V3{ 0, rad * 0.7, 0 }, range)) continue;
-            scanCands.push_back({ o.id, c, l, ang, rad, scanLog.has(o.scan.name), o.scan.important, o.scan.name });
+            scanCands.push_back({ o.id, def->id, c, l, ang, rad, scanLog.has(def->id), def->important, def->name });
         }
     }
     void UpdateScan(double dt) {
@@ -5010,13 +5024,14 @@ struct App {
         bool hold = (Playing() && Down(VK_RBUTTON)) || holdScan;
         if (!best || !hold) { scanProgress = 0; return; }
         const WorldObject* o = nullptr; for (const WorldObject& q : objects) if (q.id == id) { o = &q; break; }
-        if (!o) return;
-        float time = best->done ? 0.3f : (o->scan.time > 0 ? o->scan.time : visors.scanTime);
+        const ScanDef* def = o ? scanLib.find(o->scan.id) : nullptr;
+        if (!o || !def) return;
+        float time = best->done ? 0.3f : (def->time > 0 ? def->time : visors.scanTime);
         scanProgress += (float)dt / std::max(0.05f, time);
-        if (scanProgress >= 1) {   // done: into the scan index, and its text on a pane
-            ScanEntry e; e.name = o->scan.name; e.category = o->scan.category.empty() ? "Research" : o->scan.category; e.text = o->scan.text; e.model = o->model; e.important = o->scan.important;
+        if (scanProgress >= 1) {   // done: into the scan index (every object with this entry counts as scanned), and its text on a pane
+            ScanEntry e; e.id = def->id; e.name = def->name; e.category = def->category.empty() ? "Research" : def->category; e.text = def->text; e.model = o->model; e.important = def->important;
             bool isNew = scanLog.add(e); scanShown = e; scanProgress = 0;
-            Log("scanned: " + e.name + (isNew ? " (new)" : ""));
+            Log("scanned: " + e.name + " (ID " + std::to_string(e.id) + (isNew ? ", new)" : ")"));
             OpenScan();
         }
     }
@@ -5062,9 +5077,9 @@ struct App {
     const ScanLog& ShownScans() {   // in the editor's preview: every scan entry in the world, as if all were scanned
         if (playMode) return scanLog;
         static ScanLog sample; sample.clear();
-        for (const WorldObject& o : objects) if (o.scan.on && !o.scan.name.empty()) sample.add({ o.scan.name, o.scan.category.empty() ? "Research" : o.scan.category, o.scan.text, o.model, o.scan.important });
-        if (sample.entries.empty()) { sample.add({ "Map Station", "Research", "A Chozo data terminal. It holds a map of the area around it.", "@map-station", false });
-            sample.add({ "Strange Door", "Research", "Its lock reacts to missiles.", "@door", true }); }
+        for (const ScanDef& d : scanLib.defs) if (ScanUses(d.id)) { std::string model; for (const WorldObject& o : objects) if (o.scan.on && o.scan.id == d.id) { model = o.model; break; } sample.add({ d.id, d.name, d.category.empty() ? "Research" : d.category, d.text, model, d.important }); }
+        if (sample.entries.empty()) { sample.add({ 1, "Map Station", "Research", "A Chozo data terminal. It holds a map of the area around it.", "@map-station", false });
+            sample.add({ 2, "Strange Door", "Research", "Its lock reacts to missiles.", "@door", true }); }
         return sample;
     }
     std::string MenuValue(const std::string& n) {
@@ -5640,6 +5655,17 @@ struct App {
             Prop("Marker"); ch |= ColorU32("##vmk", visors.markColor);
             Prop("Important marker"); ch |= ColorU32("##vmi", visors.importantColor);
             Prop("Scanned marker"); ch |= ColorU32("##vmd", visors.doneColor);
+            ImGui::SeparatorText("Scan entries");
+            if (scanLib.defs.empty()) ImGui::TextDisabled("None yet: give an object a scan entry (its inspector: Scan).");
+            int del = -1;
+            for (int i = 0; i < (int)scanLib.defs.size(); i++) {
+                const ScanDef& x = scanLib.defs[i]; int u = ScanUses(x.id); ImGui::PushID(x.id);
+                ImGui::TextColored(x.important ? ImVec4(1, 0.4f, 0.35f, 1) : ImVec4(0.75f, 0.9f, 1, 1), "#%d  %s", x.id, x.name.empty() ? "(no name)" : x.name.c_str());
+                ImGui::SameLine(); ImGui::TextDisabled("%s, %d object%s", x.category.c_str(), u, u == 1 ? "" : "s");
+                if (u == 0) { ImGui::SameLine(); if (ImGui::SmallButton("Delete")) del = i; }
+                ImGui::PopID();
+            }
+            if (del >= 0) { scanLib.defs.erase(scanLib.defs.begin() + del); SaveScans(); }
         }
         ImGui::SeparatorText("Switching");
         Prop("Flash"); ch |= ImGui::SliderFloat("##vfl", &visors.switchFlash, 0, 1, "%.2f s");
@@ -5648,22 +5674,36 @@ struct App {
         if (ch) SaveVisors();
     }
     void ScanInspector(WorldObject& o) {
-        float ui = settings.uiScale;
+        float ui = settings.uiScale; bool ch = false;
         ImGui::SeparatorText("Scan");
         Prop("Can be scanned"); ImGui::Checkbox("##scon", &o.scan.on);
         if (!o.scan.on) return;
-        Prop("Name"); ImGui::InputText("##scn", &o.scan.name);
-        Prop("Category"); ImGui::InputText("##scc", &o.scan.category);
-        { std::vector<std::string> cats; for (const WorldObject& q : objects) if (q.scan.on && !q.scan.category.empty() && std::find(cats.begin(), cats.end(), q.scan.category) == cats.end()) cats.push_back(q.scan.category);
-          for (const char* d : { "Research", "Creatures", "Lore", "Pirate Data" }) if (std::find(cats.begin(), cats.end(), d) == cats.end()) cats.push_back(d);
+        ScanDef* d = scanLib.find(o.scan.id);
+        Prop("Scan entry");
+        std::string shown = d ? "#" + std::to_string(d->id) + "  " + (d->name.empty() ? "(no name)" : d->name) : "(none: pick or make one)";
+        if (ImGui::BeginCombo("##scid", shown.c_str())) {
+            if (ImGui::Selectable("+ New entry")) { ScanDef n; n.name = o.name; o.scan.id = scanLib.add(n); ch = true; }
+            for (const ScanDef& x : scanLib.defs) { std::string l = "#" + std::to_string(x.id) + "  " + (x.name.empty() ? "(no name)" : x.name) + "   (" + std::to_string(ScanUses(x.id)) + ")"; if (ImGui::Selectable(l.c_str(), x.id == o.scan.id)) o.scan.id = x.id; }
+            ImGui::EndCombo();
+        }
+        d = scanLib.find(o.scan.id);
+        if (!d) { if (ImGui::Button("Make a new entry for it")) { ScanDef n; n.name = o.name; o.scan.id = scanLib.add(n); SaveScans(); } Hint("A scan entry is written once and has an ID; any number of objects can show the same one (scan one door, and every door with that entry counts as scanned)."); return; }
+        int uses = ScanUses(d->id);
+        ImGui::TextDisabled("ID %d, used by %d object%s", d->id, uses, uses == 1 ? "" : "s");
+        if (uses > 1) { ImGui::SameLine(); if (ImGui::SmallButton("Give this one its own copy")) { ScanDef c = *d; c.id = 0; c.name += " (copy)"; o.scan.id = scanLib.add(c); SaveScans(); return; } }
+        Prop("Name"); ch |= ImGui::InputText("##scn", &d->name);
+        Prop("Category"); ch |= ImGui::InputText("##scc", &d->category);
+        { std::vector<std::string> cats; for (const ScanDef& x : scanLib.defs) if (!x.category.empty() && std::find(cats.begin(), cats.end(), x.category) == cats.end()) cats.push_back(x.category);
+          for (const char* c : { "Research", "Creatures", "Lore", "Pirate Data" }) if (std::find(cats.begin(), cats.end(), c) == cats.end()) cats.push_back(c);
           ImGui::SameLine(); if (ImGui::SmallButton("...")) ImGui::OpenPopup("scancats");
-          if (ImGui::BeginPopup("scancats")) { for (auto& c : cats) if (ImGui::Selectable(c.c_str())) o.scan.category = c; ImGui::EndPopup(); } }
-        Prop("Important (red)"); ImGui::Checkbox("##scimp", &o.scan.important);
-        Prop("Seconds to scan"); ImGui::SliderFloat("##sct", &o.scan.time, 0, 10, o.scan.time <= 0 ? "the visor's own" : "%.1f s");
+          if (ImGui::BeginPopup("scancats")) { for (auto& c : cats) if (ImGui::Selectable(c.c_str())) { d->category = c; ch = true; } ImGui::EndPopup(); } }
+        Prop("Important (red)"); ch |= ImGui::Checkbox("##scimp", &d->important);
+        Prop("Seconds to scan"); ch |= ImGui::SliderFloat("##sct", &d->time, 0, 10, d->time <= 0 ? "the visor's own" : "%.1f s");
         ImGui::TextDisabled("Text");
-        ImGui::InputTextMultiline("##sctext", &o.scan.text, ImVec2(-1, 120 * ui));
-        if (o.scan.name.empty()) ImGui::TextColored(ImVec4(1, 0.75f, 0.3f, 1), "Give it a name: the scan index lists it by name.");
-        Hint("The Scan Visor shows a marker on it; scanning it puts it in the scan index (the Logbook page of the menu) with this text and its model turning. Objects with the same name share one entry.");
+        ch |= ImGui::InputTextMultiline("##sctext", &d->text, ImVec2(-1, 120 * ui));
+        if (uses > 1) ImGui::TextDisabled("(changes here show on all %d objects with this entry)", uses);
+        Hint("The Scan Visor shows a marker on it. Scanning it once puts the entry into the scan index (the Logbook in the menu), and every object with the same entry counts as scanned too (its marker turns blue).");
+        if (ch) SaveScans();
     }
     // ================================================================== the map (M): a hologram of what you have seen
     // Seen blocks come from your eyes (a few hundred rays a frame), the floor you walk on, and Map Stations: touching one
@@ -7962,15 +8002,14 @@ struct App {
                 DemoShot look{ "s", { base.x + 3, base.y + player.eyeH, base.z - 12 }, { base.x + 3, base.y + 1.2, base.z }, 15.5f };
                 HudLayout keepHud = hud; hud = defaultHud(); MenuLayout keepMenu = menu; menu = defaultMenu(); ItemSet keepItems = items;
                 for (ItemDef& d : items.items) if (d.type == ItemType::ThermalVisor || d.type == ItemType::XRayVisor) d.used = true;
-                int n = 0; std::vector<uint32_t> scanned;
-                static const char* names[] = { "Blast Shield", "Wave Door", "Old Hatch", "Purple Lock" };
-                for (WorldObject& o : objects) if (o.kind == ObjKind::Door && n < 4) {
-                    o.scan.on = true; o.scan.name = names[n]; o.scan.category = "Research"; o.scan.important = n == 1;
-                    o.scan.text = n == 1 ? "A door sealed by a wave of energy.\nOnly a Wave Beam shot can open it." : "A heavy door. Its lock is still working."; scanned.push_back(o.id); n++;
-                }
+                int n = 0; std::vector<uint32_t> scanned; ScanLibrary keepLib = scanLib; scanLib = ScanLibrary{};
+                ScanDef dd; dd.name = "Blast Shield"; dd.text = "A heavy door. Its lock is still working."; int doorId = scanLib.add(dd);
+                dd.name = "Wave Door"; dd.important = true; dd.text = "A door sealed by a wave of energy.\nOnly a Wave Beam shot can open it."; int waveId = scanLib.add(dd);
+                dd.name = "Chozo Terminal"; dd.important = false; dd.category = "Lore"; dd.text = "A Chozo data terminal, still humming.\n\nThe glyphs speak of a great darkness that fell from the sky, and of the hunter who would one day come to end it.";
+                int termId = scanLib.add(dd);
+                for (WorldObject& o : objects) if (o.kind == ObjKind::Door && n < 4) { o.scan.on = true; o.scan.id = n == 1 ? waveId : doorId; scanned.push_back(o.id); n++; }   // three doors share one entry
                 WorldObject tm; tm.id = nextObjId++; tm.model = "@map-station"; ApplyPreset(tm); tm.kind = ObjKind::Prop; tm.name = UniqueObjectName("Chozo Terminal"); tm.pos = { base.x + 3, base.y, base.z - 6.5 };
-                tm.scan.on = true; tm.scan.name = "Chozo Terminal"; tm.scan.category = "Lore";
-                tm.scan.text = "A Chozo data terminal, still humming.\n\nThe glyphs speak of a great darkness that fell from the sky, and of the hunter who would one day come to end it.";
+                tm.scan.on = true; tm.scan.id = termId;
                 objects.push_back(tm); RebuildSolids();
                 sel = Sel::Object; selIndex = (int)objects.size() - 1; poseAt(look); frames(4, "scan_entry_inspector"); sel = Sel::World;
                 StartPlay(false); poseAt(look); play.health = game.player.maxHealth; toastT = 0;
@@ -7984,10 +8023,14 @@ struct App {
                 runS(60); holdScan = false; Log(std::string("scan: ") + (scanOpen ? "done, " : "NOT done, ") + std::to_string(scanLog.entries.size()) + " in the index");
                 frames(3, "scan_result");
                 CloseScan(); runS(2);
-                for (const WorldObject& o : objects) if (o.kind == ObjKind::Door && o.scan.important) { V3 c, ac; if (DoorRect(o, c, ac)) aimAt(c); }
+                for (const WorldObject& o : objects) if (o.kind == ObjKind::Door && o.scan.id == waveId) { V3 c, ac; if (DoorRect(o, c, ac)) aimAt(c); }
                 holdScan = true; runS(100); holdScan = false; frames(2, "scan_result_important"); CloseScan(); runS(2);
-                for (const WorldObject& o : objects) if (o.kind == ObjKind::Door && o.scan.name == "Blast Shield") { V3 c, ac; if (DoorRect(o, c, ac)) aimAt(c); }
+                for (const WorldObject& o : objects) if (o.kind == ObjKind::Door && o.scan.id == doorId) { V3 c, ac; if (DoorRect(o, c, ac)) { aimAt(c); break; } }
                 holdScan = true; runS(100); holdScan = false; CloseScan(); runS(2);
+                poseAt(look); runS(3);
+                { int blue = 0, all = 0; for (const ScanSeen& sc : scanCands) if (sc.scanId == doorId) { all++; if (sc.done) blue++; }
+                  Log("one Blast Shield scanned: " + std::to_string(blue) + " of " + std::to_string(all) + " Blast Shield doors in view count as scanned"); }
+                frames(2, "scan_one_door_marks_all");
                 Log("scan index: " + std::to_string(scanLog.entries.size()) + " entries in " + std::to_string(scanLog.categories().size()) + " categories");
                 poseAt(look); runS(2);
                 OnKey(VK_ESCAPE, false); runS(1); menuSlideT = 10; frames(3, "menu_main");
@@ -8006,6 +8049,7 @@ struct App {
                 visorEd = 2; frames(2, "visors_tab_thermal");
                 playerEdOpen = false; frames(1, "after_visor_tabs");
                 for (WorldObject& o : objects) if (std::find(scanned.begin(), scanned.end(), o.id) != scanned.end()) o.scan = ScanInfo{};
+                scanLib = keepLib;
                 objects.erase(std::remove_if(objects.begin(), objects.end(), [&](const WorldObject& o) { return o.id == tm.id; }), objects.end()); RebuildSolids();
                 hud = keepHud; menu = keepMenu; items = keepItems;
             }

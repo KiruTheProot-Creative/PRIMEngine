@@ -947,14 +947,26 @@ int main() {
         std::string t = "Chozo Lore\n\nThe 100% truth:  spaces, tabs\tand -";
         CHECK(unescText(escText(t)) == t && escText(t).find(' ') == std::string::npos && escText(t).find('\n') == std::string::npos && unescText(escText("")) == "", "scan text keeps line breaks, spaces and percent signs on one line of a file");
         ScanLog log;
-        CHECK(log.add({ "Hornoad", "Creatures", "Hops.", "@zone", false }) && !log.add({ "Hornoad", "Creatures", "again", "", false }) && log.add({ "Chozo Lore", "Lore", "...", "", true }) && log.add({ "Geemer", "Creatures", "", "", false }),
-              "the scan index: one entry per name");
-        CHECK(log.entries.size() == 3 && log.has("Geemer") && !log.has("Zoomer") && log.categories() == std::vector<std::string>({ "Creatures", "Lore" }), "... and its categories in the order they came");
-        std::vector<WorldObject> objs(2); objs[0].id = 1; objs[0].model = "@zone"; objs[0].scan.on = true; objs[0].scan.name = "Old Door"; objs[0].scan.category = "Research";
-        objs[0].scan.text = "Line one.\nLine two, 50% rust."; objs[0].scan.important = true; objs[0].scan.time = 2.5f; objs[1].id = 2; objs[1].model = "@zone";
+        CHECK(log.add({ 1, "Hornoad", "Creatures", "Hops.", "@zone", false }) && !log.add({ 1, "Hornoad (again)", "Creatures", "", "", false }) && log.add({ 7, "Chozo Lore", "Lore", "...", "", true }) && log.add({ 3, "Geemer", "Creatures", "", "", false }) && !log.add({ 0, "no id", "", "", "", false }),
+              "the scan index: one entry per ID");
+        CHECK(log.entries.size() == 3 && log.has(3) && !log.has(2) && log.categories() == std::vector<std::string>({ "Creatures", "Lore" }), "... and its categories in the order they came");
+        ScanLibrary lib; ScanDef d; d.name = "Blast Shield"; d.text = "A heavy door.\nIt holds."; d.important = true; d.time = 2.5f;
+        int a1 = lib.add(d); d.name = "Wave Door"; d.important = false; int a2 = lib.add(d); d.id = a1; d.name = "Taken id"; int a3 = lib.add(d);
+        CHECK(a1 == 1 && a2 == 2 && a3 == 3 && lib.find(2)->name == "Wave Door" && !lib.find(9) && lib.findName("Blast Shield")->id == 1, "scan entries get their own IDs (a taken one gets the next free)");
+        saveScanLibrary("/tmp/prim_scans.txt", lib); ScanLibrary lb; CHECK(loadScanLibrary("/tmp/prim_scans.txt", lb), "scan entries load");
+        CHECK(lb.defs.size() == 3 && lb.find(1)->text == "A heavy door.\nIt holds." && lb.find(1)->important && lb.find(1)->time == 2.5f && lb.find(3)->name == "Taken id", "scan entries save and load (text with line breaks)");
+        std::vector<WorldObject> objs(3); for (int i = 0; i < 3; i++) { objs[i].id = i + 1; objs[i].model = "@zone"; }
+        objs[0].scan.on = true; objs[0].scan.id = 2; objs[1].scan.on = true; objs[1].scan.id = 2;
         saveObjects("/tmp/prim_scanobjs.txt", objs); std::vector<WorldObject> ob; loadObjects("/tmp/prim_scanobjs.txt", ob);
-        CHECK(ob.size() == 2 && ob[0].scan.on && ob[0].scan.name == "Old Door" && ob[0].scan.text == objs[0].scan.text && ob[0].scan.important && ob[0].scan.time == 2.5f && !ob[1].scan.on && ob[1].scan.category == "Research",
-              "an object's scan entry saves and loads (text with line breaks)");
+        CHECK(ob.size() == 3 && ob[0].scan.on && ob[0].scan.id == 2 && ob[1].scan.id == 2 && !ob[2].scan.on && ob[2].scan.id == 0, "objects keep which scan entry they show (two doors share one)");
+        {   // an older file: the text was on the object
+            std::ifstream in("/tmp/prim_scanobjs.txt"); std::string all((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()); in.close();
+            size_t at = all.find(" 1 2\n"); if (at != std::string::npos) all.replace(at, 5, " 1 Old%20Door Research Line%20one.%0ALine%20two. 1 2.5\n");
+            std::ofstream outF("/tmp/prim_scanobjs_old.txt"); outF << all; outF.close();
+            std::vector<WorldObject> old; loadObjects("/tmp/prim_scanobjs_old.txt", old);
+            CHECK(old.size() == 3 && old[0].scan.on && old[0].scan.id == 0 && old[0].scan.legacyName == "Old Door" && old[0].scan.legacyText == "Line one.\nLine two." && old[0].scan.legacyImportant && old[0].scan.legacyTime == 2.5f && old[1].scan.id == 2,
+                  "an older file's scan text is still read (to be made into an entry)");
+        }
     }
     {   // the pause menu: pages as tabs, panes, items
         printf("\nthe pause menu\n");
