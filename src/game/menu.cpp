@@ -38,7 +38,7 @@ static MenuPane pane(const std::string& name, V3 pos, float yaw, float w, float 
 MenuLayout defaultMenu() {
     MenuLayout m;
     {   // on every page: the tabs
-        MenuPane t = pane("Tabs", { 0, 0.43, 0.95 }, 0, 1.25f, 0.13f); t.bendY = 0; t.backing = 0.5f;
+        MenuPane t = pane("Tabs", { 0, 0.42, 1.0 }, 0, 1.15f, 0.12f); t.bendY = 0; t.backing = 0.5f;
         t.items.push_back(item("Tabs", MenuKind::TabBar, 0.03f, 0.14f, 0.94f, 0.72f, "", 40));
         m.always.push_back(t);
     }
@@ -56,24 +56,24 @@ MenuLayout defaultMenu() {
     }
     {   // Inventory: what you have, and the beams / missiles to pick
         MenuPage pg; pg.name = "Inventory";
-        MenuPane a = pane("Items", { -0.44, -0.06, 0.86 }, -20, 0.72f, 0.66f);
+        MenuPane a = pane("Items", { -0.43, -0.05, 1.0 }, -18, 0.56f, 0.62f);
         a.items.push_back(item("Title", MenuKind::Text, 0.05f, 0.03f, 0.9f, 0.1f, "Items", 46));
-        a.items.push_back(item("Item list", MenuKind::ItemList, 0.05f, 0.15f, 0.9f, 0.81f, "", 32));
-        MenuPane b = pane("Arms", { 0.44, -0.06, 0.86 }, 20, 0.72f, 0.66f);
+        a.items.push_back(item("Item list", MenuKind::ItemList, 0.05f, 0.15f, 0.9f, 0.81f, "", 36));
+        MenuPane b = pane("Arms", { 0.43, -0.05, 1.0 }, 18, 0.56f, 0.62f);
         b.items.push_back(item("Title", MenuKind::Text, 0.05f, 0.03f, 0.9f, 0.1f, "Beams and missiles", 46));
         b.items.push_back(item("Beam list", MenuKind::BeamList, 0.05f, 0.15f, 0.9f, 0.81f, "", 34));
         pg.panes.push_back(a); pg.panes.push_back(b); m.pages.push_back(pg);
     }
     {   // Logbook: the scan index
         MenuPage pg; pg.name = "Logbook";
-        MenuPane a = pane("Entries", { -0.5, -0.06, 0.84 }, -24, 0.62f, 0.66f);
+        MenuPane a = pane("Entries", { -0.5, -0.05, 1.0 }, -20, 0.5f, 0.62f);
         a.items.push_back(item("Title", MenuKind::Text, 0.05f, 0.03f, 0.9f, 0.1f, "Scan index", 46));
         MenuItem c = item("Count", MenuKind::Text, 0.05f, 0.12f, 0.9f, 0.06f, "{scans} scanned", 26); c.alpha = 0.6f; a.items.push_back(c);
-        a.items.push_back(item("Scan list", MenuKind::ScanList, 0.05f, 0.2f, 0.9f, 0.77f, "", 30));
-        MenuPane mo = pane("Model", { 0, -0.02, 1.05 }, 0, 0.52f, 0.62f); mo.bendX = 0.1f; mo.bendY = 0.05f; mo.backing = 0.15f; mo.frame = false;
+        a.items.push_back(item("Scan list", MenuKind::ScanList, 0.05f, 0.2f, 0.9f, 0.77f, "", 36));
+        MenuPane mo = pane("Model", { 0, -0.03, 1.12 }, 0, 0.46f, 0.58f); mo.bendX = 0.1f; mo.bendY = 0.05f; mo.backing = 0.15f; mo.frame = false; mo.bloom = 0;
         mo.items.push_back(item("Model", MenuKind::ScanModel, 0.02f, 0.02f, 0.96f, 0.96f));
-        MenuPane t = pane("Entry", { 0.5, -0.06, 0.84 }, 24, 0.62f, 0.66f);
-        t.items.push_back(item("Text", MenuKind::ScanText, 0.06f, 0.04f, 0.88f, 0.92f, "", 30));
+        MenuPane t = pane("Entry", { 0.5, -0.05, 1.0 }, 20, 0.5f, 0.62f);
+        t.items.push_back(item("Text", MenuKind::ScanText, 0.06f, 0.04f, 0.88f, 0.92f, "", 36));
         pg.panes.push_back(a); pg.panes.push_back(mo); pg.panes.push_back(t); m.pages.push_back(pg);
     }
     return m;
