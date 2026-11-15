@@ -112,7 +112,7 @@ struct GpuChunk { ComPtr<ID3D11Buffer> vbO, ibO, vbC, ibC, vbW, ibW; UINT nO = 0
 struct ModelGpu { std::vector<std::pair<I3, GpuChunk>> parts; std::vector<Box3> boxes, boxesStill; bool mesh = false; ComPtr<ID3D11ShaderResourceView> tex; };   // boxesStill: without the moving parts (an open door)
 struct alignas(16) PreviewCB { float vp[16]; float light[4]; };
 struct alignas(16) MapCB { float vp[16]; float eye[4]; float center[4]; float mode[4]; };   // the map hologram
-struct alignas(16) VisorCB { float tint[4], grade[4], lines[4], edge[4], misc[4]; };   // the visor's look (post-processing)   // a block model's meshes (16^3 pieces) and collision
+struct alignas(16) VisorCB { float tint[4], grade[4], lines[4], edge[4], misc[4], hud[4], outline[4]; };   // the visor's look (post-processing)   // a block model's meshes (16^3 pieces) and collision
 
 struct App;
 static App* g_app = nullptr;
@@ -196,7 +196,7 @@ struct App {
     float viewerYaw = 0.6f, viewerPitch = 0.35f, viewerDist = 8; ImVec2 viewerWant{ 0, 0 }; int viewerW = 0, viewerH = 0; V3 viewerEye{ 0, 0, 0 }; XMMATRIX viewerVP = XMMatrixIdentity();
     ComPtr<ID3D11RenderTargetView> viewerRTV; ComPtr<ID3D11ShaderResourceView> viewerSRV; ComPtr<ID3D11DepthStencilView> viewerDSV;
     ComPtr<ID3D11VertexShader> vsPreview; ComPtr<ID3D11PixelShader> psPreview; ComPtr<ID3D11Buffer> cbPreview;
-    ComPtr<ID3D11BlendState> bsNoColor; ComPtr<ID3D11Buffer> cbVisor; ComPtr<ID3D11VertexShader> vsMap; ComPtr<ID3D11PixelShader> psMap; ComPtr<ID3D11InputLayout> layoutMap; ComPtr<ID3D11Buffer> cbMap;
+    ComPtr<ID3D11BlendState> bsNoColor; ComPtr<ID3D11Buffer> cbVisor, cbFlat; ComPtr<ID3D11PixelShader> psFlat; ComPtr<ID3D11VertexShader> vsMap; ComPtr<ID3D11PixelShader> psMap; ComPtr<ID3D11InputLayout> layoutMap; ComPtr<ID3D11Buffer> cbMap;
     std::vector<WorldObject> objects; uint32_t nextObjId = 1;
     std::string placing, selModel, newModelName; double placeYaw = 0, placeScale = 1; int movingObj = -1, dupFrom = -1; bool replaceWithObject = true;
     I3 selA{ 0, 0, 0 }, selB{ 0, 0, 0 }; int selStage = 0; BlockModel clipboard; bool hasClip = false;   // selection box (tool 2)
@@ -272,6 +272,7 @@ struct App {
             { "TEXCOORD", 2, DXGI_FORMAT_R32_FLOAT, 0, 40, D3D11_INPUT_PER_VERTEX_DATA, 0 }, { "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 44, D3D11_INPUT_PER_VERTEX_DATA, 0 } };
           HR(dev->CreateInputLayout(me, 6, b->GetBufferPointer(), b->GetBufferSize(), &layoutMap)); }
         b = Compile(src, "PS_Map", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psMap));
+        b = Compile(src, "PS_Flat", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psFlat));
         b = Compile(src, "VS_Preview", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsPreview));
         b = Compile(src, "PS_Preview", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psPreview));
         InitHud(src);
@@ -288,7 +289,7 @@ struct App {
             { "TEXCOORD", 3, DXGI_FORMAT_R32_UINT, 0, 28, D3D11_INPUT_PER_VERTEX_DATA, 0 } };
         HR(dev->CreateInputLayout(el, 5, vb->GetBufferPointer(), vb->GetBufferSize(), &layout));
         auto cb = [&](UINT size, ComPtr<ID3D11Buffer>& out) { D3D11_BUFFER_DESC d{}; d.ByteWidth = size; d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_CONSTANT_BUFFER; HR(dev->CreateBuffer(&d, nullptr, &out)); };
-        cb(sizeof(FrameCB), cbFrame); cb(sizeof(ChunkCB), cbChunk); cb(sizeof(PreviewCB), cbPreview); cb(sizeof(LightCB), cbLights); cb(32, cbMeshMat); cb(sizeof(MapCB), cbMap); cb(sizeof(VisorCB), cbVisor);
+        cb(sizeof(FrameCB), cbFrame); cb(sizeof(ChunkCB), cbChunk); cb(sizeof(PreviewCB), cbPreview); cb(sizeof(LightCB), cbLights); cb(32, cbMeshMat); cb(sizeof(MapCB), cbMap); cb(sizeof(VisorCB), cbVisor); cb(16, cbFlat);
 
         D3D11_RASTERIZER_DESC rd{}; rd.FillMode = D3D11_FILL_SOLID; rd.CullMode = D3D11_CULL_BACK; rd.FrontCounterClockwise = FALSE; rd.DepthClipEnable = TRUE; HR(dev->CreateRasterizerState(&rd, &rsCull));
         rd.CullMode = D3D11_CULL_FRONT; HR(dev->CreateRasterizerState(&rd, &rsCullFront));   // mirrored views turn every triangle around
@@ -2857,6 +2858,7 @@ struct App {
 
         // ---- Play mode: the HUD's 3D parts, lit like the world (sun, its shadows, sky light, light objects), in front of everything
         if (playMode && (!hud.parts.empty() || !weapons.empty())) DrawHudPartsLit(fc, f, r, u, srvs, samps);
+        bool scanMaskOn = DrawScanMask();   // the Scan Visor: what can be scanned, for the outlines
 
         // ---- clouds and ground fog over the picture (needs the depth: unbind it as a target first)
         ctx->PSSetShaderResources(0, 4, none);
@@ -2900,11 +2902,15 @@ struct App {
             rgb(x.tint, vc.tint); vc.tint[3] = x.tintAmount; vc.grade[0] = x.saturation; vc.grade[1] = x.contrast; vc.grade[2] = x.brightness; vc.grade[3] = x.vignette;
             vc.lines[0] = x.lines; vc.lines[1] = x.lineCount; vc.lines[2] = x.lineSpeed; vc.lines[3] = x.noise; rgb(x.edgeColor, vc.edge); vc.edge[3] = x.edges;
             vc.misc[0] = x.chroma; vc.misc[1] = (float)std::fmod(uiClock, 1000.0); vc.misc[2] = x.heat; vc.misc[3] = playMode && visors.switchFlash > 0 ? visorFlash / visors.switchFlash : 0;
+            vc.hud[0] = vc.hud[1] = -1;   // the helmet's parts: their slice of depth (see DrawHudPartsLit), left out of the look
+            if (playMode) { bool cannonUpper = weapons.cannonInFront; vc.hud[0] = cannonUpper ? 0.001f : 0.f; vc.hud[1] = cannonUpper ? 0.0021f : 0.001f; }
+            vc.outline[0] = scanMaskOn ? 1.f : 0.f; vc.outline[1] = std::max(1.f, 2.f * rh / 720.f); vc.outline[2] = 0.12f; vc.outline[3] = 0;
             ctx->UpdateSubresource(cbVisor.Get(), 0, nullptr, &vc, 0, 0); ctx->PSSetConstantBuffers(6, 1, cbVisor.GetAddressOf());
         }
-        { ID3D11ShaderResourceView* pv[2] = { volSRV.Get(), bloom ? bloomLv[0].srv.Get() : nullptr }; ctx->PSSetShaderResources(0, 2, pv); }
+        { ID3D11ShaderResourceView* pv[3] = { volSRV.Get(), bloom ? bloomLv[0].srv.Get() : nullptr, depthSRV.Get() }; ctx->PSSetShaderResources(0, 3, pv); }
+        { ID3D11ShaderResourceView* ms = scanMaskOn ? scanMask.srv.Get() : nullptr; ctx->PSSetShaderResources(11, 1, &ms); }
         ctx->Draw(3, 0);
-        ctx->PSSetShaderResources(0, 4, none);
+        ctx->PSSetShaderResources(0, 4, none); { ID3D11ShaderResourceView* nm = nullptr; ctx->PSSetShaderResources(11, 1, &nm); }
         if (playMode) DrawHudInGame(out);   // the player's HUD over everything
     }
     int drawnChunks = 0;
@@ -5039,6 +5045,29 @@ struct App {
     void CloseScan() { if (!scanOpen) return; scanOpen = false; paused = false; Capture(true); }
     void ScanInput() {   // the scan's text is up: a click, E, Enter or Space closes it
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || ImGui::IsMouseClicked(ImGuiMouseButton_Right) || ImGui::IsKeyPressed(ImGuiKey_E) || ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_Space)) CloseScan();
+    }
+    HudTarget scanMask;   // the Scan Visor's outlines: scannable things drawn flat in their marker colour
+    bool DrawScanMask() {
+        if (!playMode || visor != 1 || scanCands.empty() || player.ball) return false;
+        MakeTarget(scanMask, rw, rh);
+        const float clear[4] = { 0, 0, 0, 0 };
+        ctx->OMSetRenderTargets(1, scanMask.rtv.GetAddressOf(), dsv.Get()); ctx->ClearRenderTargetView(scanMask.rtv.Get(), clear);
+        D3D11_VIEWPORT v{ 0, 0, (float)rw, (float)rh, 0, 1 }; ctx->RSSetViewports(1, &v);
+        ctx->OMSetDepthStencilState(dsTestOnly.Get(), 0); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->RSSetState(rsNoCull.Get());
+        ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0); ctx->PSSetShader(psFlat.Get(), nullptr, 0);
+        ID3D11Buffer* cbs[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->VSSetConstantBuffers(0, 2, cbs); ctx->PSSetConstantBuffers(7, 1, cbFlat.GetAddressOf());
+        for (const ScanSeen& sc : scanCands) {
+            const WorldObject* o = nullptr; for (const WorldObject& q : objects) if (q.id == sc.id) { o = &q; break; }
+            if (!o) continue;
+            uint32_t c = sc.done ? visors.doneColor : sc.important ? visors.importantColor : visors.markColor;
+            float k = sc.id == scanTargetId ? 1.25f : 1.f;
+            float col[4] = { std::min(1.f, ((c >> 16) & 255) / 255.f * k), std::min(1.f, ((c >> 8) & 255) / 255.f * k), std::min(1.f, (c & 255) / 255.f * k), 1 };
+            ctx->UpdateSubresource(cbFlat.Get(), 0, nullptr, col, 0, 0);
+            DrawObject(*o, 0); DrawObject(*o, 1);
+        }
+        ctx->RSSetState(rsCull.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0);
+        ctx->OMSetRenderTargets(0, nullptr, nullptr);
+        return true;
     }
     void DrawScanMarkers(ImDrawList* dl) {   // the Scan Visor: a marker on everything scannable, the target with its progress
         if (!playMode || visor != 1 || paused || mapOpen || hideHud) return;

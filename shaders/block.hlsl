@@ -857,7 +857,10 @@ cbuffer VisorCB : register(b6)
     float4 gVLines;   // x scan lines, y how many, z how fast they move, w grain
     float4 gVEdge;    // rgb outline colour, w outlines
     float4 gVMisc;    // x colour fringes (pixels), y time (s), z heat colours, w switching flash
+    float4 gVHud;     // the helmet's 3D parts sit in this slice of depth (x from, y to): the visor's look leaves them alone
+    float4 gVOut;     // scan outlines: x on, y width (pixels), z fill inside, w pulse
 };
+Texture2D gScanMask : register(t11);   // scannable things, each in its marker colour (alpha: there is one)
 float3 postBase(int2 px, float2 uv)   // exposure, glow, filmic curve (before gamma)
 {
     float3 c = gHdr.Load(int3(px, 0)).rgb;
@@ -883,6 +886,11 @@ float4 PS_Post(SkyOut i) : SV_Target
     int2 px = int2(i.pos.xy);
     float2 uv = i.ndc * float2(0.5, -0.5) + 0.5;
     float3 c = postBase(px, uv);
+    float dz = gSceneDepth.Load(int3(px, 0));
+    if (dz >= gVHud.x && dz < gVHud.y) {   // the helmet's own parts: no visor look on them (the arm cannon gets it)
+        float2 v0 = i.ndc; c *= 1 - 0.18 * dot(v0, v0) * 0.5;
+        return float4(pow(max(c, 0), 1 / 2.2), 1);
+    }
     if (gVMisc.x > 0.01) {   // colour fringes: red and blue a little apart
         int2 o = int2((int)round(gVMisc.x), 0); float2 ou = float2(gVMisc.x / max(gDepth.z, 1), 0);
         c.r = postBase(px + o, uv + ou).r; c.b = postBase(px - o, uv - ou).b;
@@ -899,6 +907,13 @@ float4 PS_Post(SkyOut i) : SV_Target
     l = dot(max(c, 0), W); c = lerp(c, l * gVTint.rgb * 1.4, gVTint.w);
     c *= 1 - gVLines.x * (0.5 + 0.5 * sin(uv.y * gVLines.y * 6.2832 + gVMisc.y * gVLines.z));
     c += (postHash(float2(px) + frac(gVMisc.y * 7.13) * 917) - 0.5) * gVLines.w;
+    if (gVOut.x > 0.5) {   // the Scan Visor: an outline (and a faint fill) around everything scannable, in its marker's colour
+        float4 m = gScanMask.Load(int3(px, 0)); float4 edge = 0; int r = (int)gVOut.y;
+        [loop] for (int y = -r; y <= r; y += max(1, r / 2)) [loop] for (int x = -r; x <= r; x += max(1, r / 2)) { float4 n = gScanMask.Load(int3(px + int2(x, y), 0)); if (n.a > edge.a) edge = n; }
+        float pulse = 0.75 + 0.25 * sin(gVMisc.y * 4 + gVOut.w);
+        if (m.a < 0.5 && edge.a > 0.5) c = lerp(c, edge.rgb, 0.85 * pulse);   // just outside it: the outline
+        else if (m.a > 0.5) c = lerp(c, m.rgb, gVOut.z * pulse);             // on it: a faint tint
+    }
     float2 v = i.ndc; c *= 1 - 0.18 * dot(v, v) * 0.5;                 // gentle vignette
     c *= 1 - gVGrade.w * dot(v, v) * 0.5;                               // ... and the visor's own
     c = lerp(c, float3(1, 1, 1), saturate(gVMisc.w) * 0.6);             // switching visors: a flash
@@ -1189,3 +1204,7 @@ float4 PS_Map(MapOut i, bool front : SV_IsFrontFace) : SV_Target
     if (mini) { c *= fade * 1.25; return float4(c, saturate(max(c.r, max(c.g, c.b)) * 1.4)); }   // the HUD: premultiplied, see-through where it is dark
     return float4(c, 1);
 }
+
+// ---------------------------------------------------------------- a flat colour (the Scan Visor's outline mask)
+cbuffer FlatCB : register(b7) { float4 gFlat; };
+float4 PS_Flat(VSOut i) : SV_Target { return gFlat; }
