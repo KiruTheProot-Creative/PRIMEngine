@@ -657,6 +657,7 @@ struct App {
         if (k == VK_F1) { hideHud = !hideHud; return; }
         if (playMode && !typing && !repeat && k == 'M') { if (mapOpen) CloseMap(); else if (!showSettings) OpenMap(); return; }   // the map
         if (playMode && !typing && !repeat && !paused) {   // play mode keys (before the return below, which keeps the building tools out of play)
+            if (k == 'E') { if (WorldObject* st = StationInReach()) UseMapStation(*st); return; }           // use: a Map Station in front of you
             if (k == 'C' && !Down(VK_CONTROL)) { ToggleBall(); return; }                                    // the morph ball
             if (!weapons.empty() && k >= '1' && k <= '9') { if (weapons.switchMode == 0) SwitchBeam((int)(k - '1')); else if (weapons.switchMode == 2) Toast("Pick beams in the menu (Esc)"); return; }   // the beams
             if (k == 'Q' && weapons.missileTypes.size() > 1 && !player.ball) { if (weapons.switchMode == 0) NextMissile(); else if (weapons.switchMode == 2) Toast("Pick missiles in the menu (Esc)"); return; }   // the missiles
@@ -1323,9 +1324,7 @@ struct App {
             case ObjKind::Checkpoint:
                 if (entered) { playSpawn = { o.pos.x, b.hi.y + 0.01, o.pos.z }; playYaw = player.yaw; Toast("Checkpoint"); }
                 break;
-            case ObjKind::MapStation:
-                if (entered) UseMapStation(o);
-                break;
+            case ObjKind::MapStation: break;   // (used with E: StationInReach)
             case ObjKind::Teleporter:
                 if (teleportLock != o.id && !travel) { travel = true; travelWorld = o.teleport.world; travelTarget = o.teleport.target; from = o.id; }
                 break;
@@ -2947,6 +2946,16 @@ struct App {
     }
     void DrawHud(ImDrawList* dl) {
         const float cw = (float)rw, ch = (float)rh;   // the 3D picture's size (it sits at vx, vy in the window)
+        if (playMode && !paused && !mapOpen && !hideHud) if (WorldObject* st = StationInReach()) {   // "E: Map Station"
+            std::string used = stationsUsed.count(CurrentWorld() + "#" + std::to_string(st->id)) ? " (downloaded)" : "";
+            std::string t = "E   Use Map Station" + used; float ui = settings.uiScale;
+            ImVec2 ts = ImGui::CalcTextSize(t.c_str()); ImVec2 c(vx + cw * 0.5f, vy + ch * 0.64f), pad(14 * ui, 8 * ui);
+            ImVec2 a(c.x - ts.x * 0.5f - pad.x, c.y - pad.y), b(c.x + ts.x * 0.5f + pad.x, c.y + ts.y + pad.y);
+            dl->AddRectFilled(a, b, IM_COL32(4, 18, 28, 170), 6 * ui); dl->AddRect(a, b, IM_COL32(110, 255, 160, 200), 6 * ui, 0, 1.5f * ui);
+            ImVec2 kp(a.x + pad.x - 5 * ui, c.y - 3 * ui); ImVec2 kw = ImGui::CalcTextSize("E");
+            dl->AddRect(kp, ImVec2(kp.x + kw.x + 10 * ui, kp.y + kw.y + 6 * ui), IM_COL32(110, 255, 160, 255), 3 * ui, 0, 1.5f * ui);
+            dl->AddText(ImVec2(c.x - ts.x * 0.5f, c.y), IM_COL32(200, 255, 220, 255), t.c_str());
+        }
         if (envWin || (!playMode && showZones)) {   // zone boxes, coloured by environment
             static const ImU32 cols[] = { IM_COL32(120, 220, 120, 255), IM_COL32(255, 200, 90, 255), IM_COL32(150, 220, 255, 255), IM_COL32(200, 160, 255, 255), IM_COL32(255, 90, 50, 255), IM_COL32(120, 255, 170, 255), IM_COL32(230, 140, 90, 255) };
             for (const EnvZone& z : info.zones) {
@@ -4985,9 +4994,22 @@ struct App {
             }
         }
     }
+    WorldObject* StationInReach() {   // the Map Station you are standing at and facing (E uses it)
+        if (!playMode || player.ball || play.dead()) return nullptr;
+        V3 eye = player.eye(), f = player.forward(); WorldObject* best = nullptr; double bestD = 1e9;
+        for (WorldObject& o : objects) {
+            if (o.kind != ObjKind::MapStation) continue;
+            V3 c = o.pos + V3{ 0, 1.0, 0 }, d = c - eye; double l = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+            if (l > 2.8 || l < 1e-3) continue;
+            double hx = d.x / l, hz = d.z / l, fl = std::sqrt(f.x * f.x + f.z * f.z); if (fl < 1e-3) continue;
+            if ((hx * f.x + hz * f.z) / fl < 0.55 * std::sqrt(hx * hx + hz * hz) && l > 1.0) continue;   // roughly facing it (sideways is fine when very close)
+            if (l < bestD) { bestD = l; best = &o; }
+        }
+        return best;
+    }
     void UseMapStation(const WorldObject& st) {   // wakes every map camera with the station's ID
         std::string key = CurrentWorld() + "#" + std::to_string(st.id);
-        if (stationsUsed.count(key)) return;
+        if (stationsUsed.count(key)) { OpenMap(); return; }   // already downloaded: it just shows the map
         stationsUsed.insert(key);
         SeenMap& m = Seen(); double now = MapClock(); size_t before = m.total, doorsBefore = m.doors.size(); int cams = 0;
         auto revealAt = [&](V3 eye, double range) {
@@ -5193,7 +5215,7 @@ struct App {
         bool cam = o.kind == ObjKind::MapCamera;
         ImGui::SeparatorText(cam ? "Map camera" : "Map Station");
         if (cam) Hint("Invisible in the game. When a Map Station with the same ID is used, this camera looks all around from here and puts everything it can see on the map (doors too, in their colour). Give several cameras the same ID to chart a bigger area.");
-        else Hint("Walking into it downloads the map: every map camera with the same ID looks all around. With no camera of that ID, it looks around from itself. Each station works once per play.");
+        else Hint("Stand at it and press E: it downloads the map. Every map camera with the same ID looks all around. With no camera of that ID, it looks around from itself. It downloads once per play; after that E just shows the map.");
         int id = o.map.id; Prop("ID"); if (ImGui::InputInt("##mapid", &id)) o.map.id = std::clamp(id, 0, 9999);
         Prop(cam ? "Sees (blocks)" : "Sees, without cameras"); ImGui::SliderFloat("##maprange", &o.map.range, 8, 160, "%.0f blocks");
         int cams = 0, stations = 0; for (const WorldObject& q : objects) if (q.map.id == o.map.id) { if (q.kind == ObjKind::MapCamera) cams++; else if (q.kind == ObjKind::MapStation) stations++; }
@@ -7193,7 +7215,9 @@ struct App {
                 mapYaw += 0.9f; mapPitch = 1.05f; mapDist = 48; frames(2, "map_seen_by_looking_turned");
                 OnKey(VK_ESCAPE, false); runM(2);
                 size_t beforeSt = Seen().total;
-                player.feet = { st.pos.x, st.pos.y, st.pos.z - 0.9 }; player.vel = { 0, 0, 0 }; runM(3);   // walk into the station
+                player.feet = { st.pos.x, st.pos.y, st.pos.z - 1.7 }; player.vel = { 0, 0, 0 }; player.yaw = 0; player.pitch = -0.3; runM(3);   // step up to the station
+                Log(std::string("station in reach: ") + (StationInReach() ? "yes" : "NO")); frames(2, "map_station_press_e");
+                OnKey('E', false); runM(1);   // E: download
                 Log("map station: " + std::to_string(Seen().total - beforeSt) + " blocks added, map " + (mapOpen ? "opened" : "NOT opened"));
                 frames(6, "map_station_download_building");
                 uiClock += 3; frames(2, "map_station_download");
