@@ -8849,7 +8849,7 @@ struct App {
                 {   // lock-on: the marker on what a press would pick, locked (the view swings to it), circling it, a missile steering after it, a dash
                     DemoShot off{ "l", { ax + 11.5, ay + player.eyeH, az + 0.5 }, { ax + 7.0, ay + 1.4, az + 9.0 }, 15.5f };   // the turret to the right (it stands still: good to circle)
                     if (auto it = enemyRt.find(reo); it != enemyRt.end()) { it->second.pos = { ax + 3.5, ay + 3.0, az + 14.5 }; it->second.vel = { 0, 0, 0 }; }   // (the Reo out of the way)
-                    std::vector<MissileType> keepMis = weapons.missileTypes; if (weapons.missileTypes.empty()) weapons.missileTypes = defaultWeapons().missileTypes;   // (this demo's weapons have none)
+                    WeaponSet keepWeapons = weapons; weapons = defaultWeapons(); weapState = WeaponState{};   // (this demo has no weapons: the starter ones)
                     weapState.missile = 0; inv.counts[weapons.missileCounter] = 5; playerInvuln = 30;
                     poseAt(off); runE(3); frames(1, "lockon_marker");
                     { const WorldObject* h = ObjById(lockHint); Log("lock-on: a press would pick " + std::string(h ? h->name : "nothing")); }
@@ -8863,7 +8863,7 @@ struct App {
                     Log("lock-on: circled " + std::to_string(length(player.feet - st)).substr(0, 4) + " blocks; distance " + std::to_string(d0).substr(0, 4) + " -> " + std::to_string(d1).substr(0, 4) + ", " + std::to_string(angleTo(player.eye(), player.yaw, player.pitch, rc)).substr(0, 4) + " deg off the middle");
                     demoCtl.right = false; missilePrev = false; forceMissile = true; runE(1); forceMissile = false;
                     { const MissileType* mt = CurrentMissile(); Log("lock-on: missile button: " + std::to_string(inv.counts[weapons.missileCounter]) + " left, kind " + (mt ? mt->name : "-") + (mt && OwnsMissile(*mt) ? " (owned)" : " (not owned)") + ", cooldown " + std::to_string(weapState.cooldown).substr(0, 4) + ", anim " + std::to_string(weapState.animLeft).substr(0, 4) + ", missiles in the air " + std::to_string(std::count_if(this->shots.begin(), this->shots.end(), [](const Shot& q) { return q.missile; })));
-                      if (mt && inv.counts[weapons.missileCounter] == 5) { LaunchShot(weapons.beams[weapState.current], weapState.current, mt); Log("lock-on: (fired it by hand)"); } }
+                    }
                     runE(9); int homing = 0; for (const Shot& sh : this->shots) if (sh.homeId) homing++;
                     frames(1, "lockon_missile_steering");
                     Log("lock-on: shots steering after it: " + std::to_string(homing));
@@ -8879,7 +8879,7 @@ struct App {
                     holdLock = false; demoDrive = false; demoCtl = Controls{}; runE(1);
                     Log(std::string("lock-on: let go: ") + (lockId ? "still locked" : "free"));
                     if (auto it = enemyRt.find(turret); it != enemyRt.end() && it->second.alive()) it->second.health = enemies.find(it->second.type)->health;   // (whole again for the tests below)
-                    weapons.missileTypes = keepMis;
+                    weapons = keepWeapons; weapState = WeaponState{};
                     poseAt(look); play.health = game.player.maxHealth; playerInvuln = 0; runE(2);
                 }
                 {   // shoot the turret with the beam: immune (only missiles, charge and bombs hurt it)
