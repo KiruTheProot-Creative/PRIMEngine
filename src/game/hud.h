@@ -30,6 +30,7 @@ struct HudElement {
     bool filled = true; float thickness = 2;            // Panel / Circle: filled or just the outline (pixels on a 1024-wide plane)
     bool visible = true;
     float mapRange = 22, mapTilt = 55; bool mapTurns = true;   // Minimap: how far around you it shows (blocks), how steeply it looks down (90: straight down), turns with you
+    bool onPause = true, onMap = true;                  // still shown while the game is paused / on the map screen (M)
 };
 
 struct HudPlane {
@@ -56,6 +57,7 @@ struct HudPart {   // a 3D model fixed to the camera (helmet frame, visor struts
     bool mirror = false;                                // flipped left-right
     float sway = 0.6f;
     bool visible = true;
+    bool onPause = true, onMap = true;                  // still shown while the game is paused / on the map screen (M)
 };
 
 struct HudSwaySettings {

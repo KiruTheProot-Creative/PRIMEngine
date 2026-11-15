@@ -207,6 +207,7 @@ The sun's shadows use four shadow maps around you: the nearest covers about 13 b
 - **Doors** you have seen show as panels in the door's own colour and at the door's size.
 - **Map Stations** and **map cameras** (Tools > Objects > Add): both have an **ID**. Walking into a station wakes every map camera with the same ID; each looks all around from where it stands (as far as its "Sees" range) and charts everything it can see, doors included. Then the map opens and builds up. Map cameras are invisible in the game. A station with no camera of its ID looks around from itself. Each station works once per play.
 - Colours: **blue** is what you have seen yourself, **orange** (see-through, no fill) is what a Map Station showed you but you have not visited yet; it turns blue as soon as you see it. You are the pink arrow.
+- On the map screen the **visor stays**: every HUD element and 3D helmet part has "Stays when paused" and "Stays on the map (M)" (Player > HUD). The starter visor keeps its frame, energy and struts on the map and hides the aim and the minimap there. The arm cannon is put away on the map.
 - **Minimap on the HUD**: Player > HUD, add element > **Minimap** (the starter visor has one, bottom right). The same map, see-through, around you. Settings: how far around you it shows, how steeply it looks down (90: straight down), and whether it turns with you (you always point up) or keeps north up.
 - The map is kept per world for the play session (it starts empty each time you press Play).
 

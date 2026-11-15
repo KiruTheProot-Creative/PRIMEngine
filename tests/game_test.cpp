@@ -687,8 +687,11 @@ int main() {
               && back.planes[0].elements[3].valueName == "Missile" && back.planes[0].bendX == h.planes[0].bendX, "the HUD saves and loads");
         { HudLayout m = defaultHud(); HudElement* mm = nullptr; for (auto& e : m.planes[0].elements) if (e.kind == HudKind::Minimap) mm = &e;
           CHECK(mm != nullptr, "the starter visor has a minimap");
+          CHECK(mm && !mm->onMap && mm->onPause && m.parts[0].onMap, "the starter minimap hides on the map screen; the helmet stays");
+          m.parts[1].onPause = false; m.planes[0].elements[0].onMap = false;
           if (mm) { mm->mapRange = 31; mm->mapTilt = 70; mm->mapTurns = false; saveHud("/tmp/prim_hudmm.txt", m); HudLayout mb; loadHud("/tmp/prim_hudmm.txt", mb); const HudElement* b2 = nullptr; for (auto& e : mb.planes[0].elements) if (e.kind == HudKind::Minimap) b2 = &e;
-            CHECK(b2 && b2->mapRange == 31 && b2->mapTilt == 70 && !b2->mapTurns && std::string(hudKindName(HudKind::Minimap)) == "Minimap", "the minimap saves and loads (range, tilt, turning)"); } }
+            CHECK(b2 && b2->mapRange == 31 && b2->mapTilt == 70 && !b2->mapTurns && std::string(hudKindName(HudKind::Minimap)) == "Minimap", "the minimap saves and loads (range, tilt, turning)");
+            CHECK(!mb.parts[1].onPause && mb.parts[1].onMap && !mb.planes[0].elements[0].onMap && mb.planes[0].elements[0].onPause, "shown when paused / on the map: saved for elements and 3D parts"); } }
         MeshModel strut; CHECK(builtinShape("@visor-strut", strut) && strut.triangles() == 48, "the visor strut model builds");
     }
 

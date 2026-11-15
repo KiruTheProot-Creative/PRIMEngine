@@ -3961,6 +3961,7 @@ struct App {
     }
     bool ElementShown(const HudElement& e) const {
         if (!playMode) return e.visible;
+        if (mapOpen ? !e.onMap : paused && !e.onPause) return false;   // the map screen / the pause menu: only what is set to stay
         auto it = hudShown.find(e.name); return it == hudShown.end() ? e.visible : it->second;
     }
     // one element drawn into its plane's picture (W x H pixels)
@@ -4049,7 +4050,7 @@ struct App {
     }
     // the parts and planes, seen through vp (camera space in); sway on top
     // the HUD's parts and planes, and the arm cannon on its own layer (behind the HUD or in front of it, never cutting into it)
-    void DrawHudScene(const XMMATRIX& vp, const HudSway& sw, bool editor, ID3D11DepthStencilView* ds) {
+    void DrawHudScene(const XMMATRIX& vp, const HudSway& sw, bool editor, ID3D11DepthStencilView* ds, bool litParts = false) {   // litParts: draw the parts in colour here (the map screen: there is no world picture with them in it)
         ID3D11Buffer* cbs[3] = { cbFrame.Get(), cbChunk.Get(), cbPreview.Get() }; ctx->VSSetConstantBuffers(0, 3, cbs); ctx->PSSetConstantBuffers(0, 3, cbs);
         PreviewCB pc{}; XMStoreFloat4x4((XMFLOAT4X4*)pc.vp, vp); pc.light[0] = -0.35f; pc.light[1] = 0.75f; pc.light[2] = -0.55f;
         D3D11_VIEWPORT vpFull; UINT nvp = 1; ctx->RSGetViewports(&nvp, &vpFull);
@@ -4057,7 +4058,7 @@ struct App {
         auto partState = [&] {
             ctx->UpdateSubresource(cbPreview.Get(), 0, nullptr, &pc, 0, 0);
             ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); ctx->IASetInputLayout(layout.Get());
-            ctx->VSSetShader(vsPreview.Get(), nullptr, 0); ctx->PSSetShader(editor ? psPreview.Get() : nullptr, nullptr, 0);   // Play mode: already drawn lit, here only their depth
+            ctx->VSSetShader(vsPreview.Get(), nullptr, 0); ctx->PSSetShader(editor || litParts ? psPreview.Get() : nullptr, nullptr, 0);   // Play mode: already drawn lit, here only their depth
             ctx->PSSetShaderResources(0, 1, texArray.GetAddressOf()); ctx->PSSetSamplers(0, 1, sampBlocks.GetAddressOf());
             ctx->RSSetState(rsNoCull.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
         };
@@ -4101,7 +4102,7 @@ struct App {
             ID3D11ShaderResourceView* none = nullptr; ctx->PSSetShaderResources(0, 1, &none);
         };
         bool front = weapons.cannonInFront;
-        if (editor) {   // colour: the lower layer first, then a fresh depth for the upper one
+        if (editor || litParts) {   // colour: the lower layer first, then a fresh depth for the upper one
             partState();
             if (!front) { drawParts(true); if (ds) ctx->ClearDepthStencilView(ds, D3D11_CLEAR_DEPTH, 1, 0); partState(); drawParts(false); drawPlanes(); }
             else { drawParts(false); drawPlanes(); if (ds) ctx->ClearDepthStencilView(ds, D3D11_CLEAR_DEPTH, 1, 0); partState(); drawParts(true); }
@@ -4370,6 +4371,8 @@ struct App {
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Event cards show, hide and flash it by this name");
             { int k = (int)e.kind; const char* kn[] = { "Panel", "Bar", "Text", "Image", "Circle" }; Prop("Kind"); if (ImGui::Combo("##ek", &k, kn, 5)) { e.kind = (HudKind)k; ch = true; } }
             Prop("Shown at the start"); ch |= ImGui::Checkbox("##ev", &e.visible);
+            Prop("Stays when paused"); ch |= ImGui::Checkbox("##eop", &e.onPause);
+            Prop("Stays on the map (M)"); ch |= ImGui::Checkbox("##eom", &e.onMap);
             { float r[4] = { e.x, e.y, e.w, e.h }; Prop("Place and size"); if (ImGui::DragFloat4("##er", r, 0.002f, 0, 1, "%.3f")) { e.x = r[0]; e.y = r[1]; e.w = std::max(0.002f, r[2]); e.h = std::max(0.002f, r[3]); ch = true; } }
             { float c[3] = { ((e.color >> 16) & 255) / 255.f, ((e.color >> 8) & 255) / 255.f, (e.color & 255) / 255.f }; Prop("Colour");
               if (ImGui::ColorEdit3("##ec", c)) { e.color = ((uint32_t)(c[0] * 255 + 0.5f) << 16) | ((uint32_t)(c[1] * 255 + 0.5f) << 8) | (uint32_t)(c[2] * 255 + 0.5f); ch = true; } }
@@ -4419,6 +4422,8 @@ struct App {
             if (ImGui::BeginCombo("##qm", p.model.empty() ? "(none)" : p.model.c_str())) { for (const std::string& n : PartModels()) if (ImGui::Selectable(n.c_str(), p.model == n)) { p.model = n; ch = true; } ImGui::EndCombo(); }
             ModelMaterialUI(p.model);
             Prop("Shown"); ch |= ImGui::Checkbox("##qv", &p.visible);
+            Prop("Stays when paused"); ch |= ImGui::Checkbox("##qop", &p.onPause);
+            Prop("Stays on the map (M)"); ch |= ImGui::Checkbox("##qom", &p.onMap);
             ch |= DragV3("Position", p.pos, 0.005f, "%.3f");
             { float r[3] = { p.yaw, p.pitch, p.roll }; Prop("Turn"); if (ImGui::DragFloat3("##qr", r, 0.5f, -180, 180, "%.0f deg")) { p.yaw = r[0]; p.pitch = r[1]; p.roll = r[2]; ch = true; } }
             { float s = (float)p.scale; Prop("Size"); if (ImGui::DragFloat("##qs", &s, 0.005f, 0.005f, 20, "x %.3f")) { p.scale = std::max(0.005f, s); ch = true; } }
@@ -4802,11 +4807,12 @@ struct App {
         if (playMode && player.ball) return out;   // the morph ball: no helmet, no cannon
         for (const HudPart& p : hud.parts) {
             if (!p.visible || !ModelNamed(p.model)) continue;
+            if (playMode && (mapOpen ? !p.onMap : paused && !p.onPause)) continue;   // the map screen / the pause menu: only what is set to stay
             CamPart c; c.model = p.model; partAxes(p, c.ax, c.ay, c.az); float k = p.sway;
             c.ax = rotateDeg(c.ax, sw.yaw * k, sw.pitch * k, sw.roll * k); c.ay = rotateDeg(c.ay, sw.yaw * k, sw.pitch * k, sw.roll * k); c.az = rotateDeg(c.az, sw.yaw * k, sw.pitch * k, sw.roll * k);
             c.base = sw.apply(p.pos, p.sway); out.push_back(c);
         }
-        if (const Beam* b = CurrentBeam()) {
+        if (const Beam* b = playMode && mapOpen ? nullptr : CurrentBeam()) {   // (no cannon on the map screen)
             CannonXf x; if (CannonPlacement(*b, sw, wp, x)) { CamPart c; c.model = b->model; c.base = x.base; c.ax = x.ax; c.ay = x.ay; c.az = x.az; c.gpu = cannonPosed ? &cannonGpu : nullptr; c.cannon = true; out.push_back(c); }
         }
         return out;
@@ -5094,17 +5100,31 @@ struct App {
         ctx->RSSetState(rsCull.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
         ctx->OMSetRenderTargets(0, nullptr, nullptr);
     }
+    void RenderMapScreen(ID3D11RenderTargetView* out) {
+        ctx->OMSetRenderTargets(1, &out, dsv.Get()); ctx->ClearDepthStencilView(dsv.Get(), D3D11_CLEAR_DEPTH, 1.f, 0);
+        const float bg[4] = { 0.006f, 0.014f, 0.03f, 1 }; ctx->ClearRenderTargetView(out, bg);
+        D3D11_VIEWPORT v{ 0, 0, (float)rw, (float)rh, 0, 1 }; ctx->RSSetViewports(1, &v);
+        if (mapView.srv) {   // the map, full screen
+            ctx->IASetInputLayout(nullptr); ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            ctx->VSSetShader(vsBlit.Get(), nullptr, 0); ctx->PSSetShader(psBlit.Get(), nullptr, 0);
+            ctx->PSSetShaderResources(0, 1, mapView.srv.GetAddressOf()); ctx->PSSetSamplers(3, 1, sampClamp.GetAddressOf());
+            ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->RSSetState(rsNoCull.Get());
+            ctx->Draw(3, 0);
+            ID3D11ShaderResourceView* none = nullptr; ctx->PSSetShaderResources(0, 1, &none);
+        }
+        if (hudListsReady && !(hud.empty() && weapons.empty())) DrawHudScene(HudProj((float)rw / rh), hudSway, false, dsv.Get(), true);   // the visor stays (what is set to stay on the map)
+        ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());
+    }
     void MapScreen() {   // the map, full screen: drag turns it, right-drag moves it, the wheel zooms
         const ImGuiViewport* vpt = ImGui::GetMainViewport();
         ImGui::SetNextWindowPos(vpt->Pos); ImGui::SetNextWindowSize(vpt->Size);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0)); ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0);
-        ImGui::Begin("###map", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollWithMouse);
+        ImGui::Begin("###map", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBackground);
         ImGui::PopStyleVar(2);
         ImVec2 p = ImGui::GetCursorScreenPos(), sz = ImGui::GetContentRegionAvail(); mapWant = sz;
         ImGui::InvisibleButton("##mapview", sz, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
         ImDrawList* dl = ImGui::GetWindowDrawList();
-        if (mapView.srv && mapDW == (int)sz.x && mapDH == (int)sz.y) dl->AddImage((ImTextureID)(intptr_t)mapView.srv.Get(), p, ImVec2(p.x + sz.x, p.y + sz.y));
-        else dl->AddRectFilled(p, ImVec2(p.x + sz.x, p.y + sz.y), IM_COL32(2, 4, 8, 255));
+        // (the map itself is drawn under this window, with the visor over it: RenderMapScreen)
         ImGuiIO& io = ImGui::GetIO();
         if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0)) { mapYaw += io.MouseDelta.x * 0.008f; mapPitch = std::clamp(mapPitch + io.MouseDelta.y * 0.008f, -1.45f, 1.52f); }
         if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Right, 0)) {   // slide along the ground
@@ -7157,6 +7177,7 @@ struct App {
                 const WorldObject* d0 = nullptr; for (const WorldObject& o : objects) if (o.kind == ObjKind::Door) { d0 = &o; break; }
                 V3 base = d0 ? d0->pos : V3{ 26, 0, 40 };
                 DemoShot look{ "m", { base.x + 3, base.y + player.eyeH, base.z - 11 }, { base.x + 3, base.y + 1.2, base.z }, 15.5f };
+                HudLayout keepHud0 = hud; hud = defaultHud();   // the starter visor: it stays on the map screen (its frame, energy, helmet struts)
                 WorldObject cam; cam.id = nextObjId++; cam.model = "@map-camera"; ApplyPreset(cam); cam.name = UniqueObjectName("Map camera"); cam.pos = { base.x + 4, base.y + 2.5, base.z + 8 }; cam.map.id = 7; cam.map.range = 40; objects.push_back(cam);
                 WorldObject st; st.id = nextObjId++; st.model = "@map-station"; ApplyPreset(st); st.name = UniqueObjectName("Map Station"); st.pos = { base.x - 3.5, base.y, base.z - 8.5 }; st.map.id = 7; objects.push_back(st);
                 RebuildSolids(); sel = Sel::Object; selIndex = (int)objects.size() - 1;
@@ -7184,9 +7205,12 @@ struct App {
                     for (auto& pl : hud.planes) for (auto& el : pl.elements) if (el.kind == HudKind::Minimap) { el.mapTilt = 90; el.mapRange = 34; }
                     frames(3, "minimap_hud_top_down");
                     Log("minimap: " + std::to_string(miniDW) + " x " + std::to_string(miniDH) + " pixels; map " + std::to_string(Seen().total) + " blocks, " + std::to_string(Seen().mineTotal) + " seen yourself");
+                    for (auto& pl : hud.planes) for (auto& el : pl.elements) if (el.kind == HudKind::Minimap) { el.mapTilt = 55; el.mapRange = 22; el.onPause = false; }
+                    paused = true; Capture(false); frames(3, "pause_menu_visor_stays");   // paused: the visor stays, the minimap (set not to) does not
+                    paused = false;
                     hud = keepHud;
                 }
-                StopPlay();
+                StopPlay(); hud = keepHud0;
                 objects.erase(std::remove_if(objects.begin(), objects.end(), [&](const WorldObject& o) { return o.id == cam.id || o.id == st.id; }), objects.end()); RebuildSolids();
             }
             poseAt(demoShots()[1]);
@@ -7250,9 +7274,9 @@ struct App {
         RenderHudPlanes();
 
         const float bg[4] = { 0.10f, 0.11f, 0.13f, 1 };
-        if (screen == Screen::Game && rw > 0) RenderWorld(ev ? sceneRTV.Get() : backRTV.Get());
+        if (screen == Screen::Game && rw > 0 && mapOpen && !ev) { RenderMap(); RenderMapScreen(backRTV.Get()); }   // the map screen: the map instead of the world, the visor over it
+        else if (screen == Screen::Game && rw > 0) RenderWorld(ev ? sceneRTV.Get() : backRTV.Get());
         if (ev) { RenderViewer(); RenderHudViews(); RenderWeaponView(); }
-        if (mapOpen && !ev) RenderMap();
         ctx->OMSetRenderTargets(1, backRTV.GetAddressOf(), nullptr);
         if (screen != Screen::Game || ev) ctx->ClearRenderTargetView(backRTV.Get(), bg);
         D3D11_VIEWPORT v{ 0, 0, (float)cw, (float)ch, 0, 1 }; ctx->RSSetViewports(1, &v);

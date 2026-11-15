@@ -95,9 +95,9 @@ HudLayout defaultHud() {
     HudElement eb = el("Energy bar", HudKind::Bar, 0.07f, 0.125f, 0.3f, 0.022f); eb.value = HudValue::Health; eb.segments = 10; v.elements.push_back(eb);
     HudElement mt = el("Missiles", HudKind::Text, 0.73f, 0.07f, 0.2f, 0.06f); mt.text = "{value}"; mt.value = HudValue::Counter; mt.valueName = "Missile"; mt.align = 2; mt.textSize = 1; v.elements.push_back(mt);
     HudElement ml = el("Missile label", HudKind::Text, 0.73f, 0.13f, 0.2f, 0.03f); ml.text = "MISSILES"; ml.align = 2; ml.textSize = 1; ml.alpha = 0.6f; v.elements.push_back(ml);
-    HudElement radar = el("Radar", HudKind::Circle, 0.06f, 0.7f, 0.09f, 0.16f); radar.filled = false; radar.thickness = 3; radar.alpha = 0.6f; v.elements.push_back(radar);
-    HudElement mm = el("Minimap", HudKind::Minimap, 0.77f, 0.64f, 0.18f, 0.3f); mm.alpha = 0.9f; v.elements.push_back(mm);
-    HudElement aim = el("Aim", HudKind::Circle, 0.49f, 0.482f, 0.02f, 0.036f); aim.filled = false; aim.alpha = 0.5f; v.elements.push_back(aim);
+    HudElement radar = el("Radar", HudKind::Circle, 0.06f, 0.7f, 0.09f, 0.16f); radar.filled = false; radar.thickness = 3; radar.alpha = 0.6f; radar.onMap = false; v.elements.push_back(radar);
+    HudElement mm = el("Minimap", HudKind::Minimap, 0.77f, 0.64f, 0.18f, 0.3f); mm.alpha = 0.9f; mm.onMap = false; v.elements.push_back(mm);
+    HudElement aim = el("Aim", HudKind::Circle, 0.49f, 0.482f, 0.02f, 0.036f); aim.filled = false; aim.alpha = 0.5f; aim.onMap = false; v.elements.push_back(aim);
     h.planes.push_back(v);
     HudPart s; s.name = "Left strut"; s.model = "@visor-strut"; s.pos = { -0.62, -0.42, 0.55 }; s.roll = 18; s.yaw = -20; s.scale = 0.8;
     h.parts.push_back(s); mirrorPart(s); s.name = "Right strut"; h.parts.push_back(s);
@@ -133,11 +133,11 @@ bool saveHud(const std::string& path, const HudLayout& h) {
           << " " << p.bendX << " " << p.bendY << " " << p.sway << " " << p.opacity << " " << p.glow << " " << p.visible << " " << p.bloom << " " << p.lightUp << "\n";
         for (const HudElement& e : p.elements)
             f << "el " << esc(e.name) << " " << (int)e.kind << " " << e.x << " " << e.y << " " << e.w << " " << e.h << " " << e.color << " " << e.alpha << " " << esc(e.text) << " " << esc(e.image)
-              << " " << (int)e.value << " " << esc(e.valueName) << " " << e.max << " " << e.segments << " " << e.textSize << " " << e.align << " " << e.filled << " " << e.thickness << " " << e.visible << " " << e.mapRange << " " << e.mapTilt << " " << e.mapTurns << "\n";
+              << " " << (int)e.value << " " << esc(e.valueName) << " " << e.max << " " << e.segments << " " << e.textSize << " " << e.align << " " << e.filled << " " << e.thickness << " " << e.visible << " " << e.mapRange << " " << e.mapTilt << " " << e.mapTurns << " " << e.onPause << " " << e.onMap << "\n";
     }
     for (const HudPart& p : h.parts)
         f << "part " << esc(p.name) << " " << esc(p.model) << " " << p.pos.x << " " << p.pos.y << " " << p.pos.z << " " << p.yaw << " " << p.pitch << " " << p.roll << " " << p.scale
-          << " " << p.mirror << " " << p.sway << " " << p.visible << "\n";
+          << " " << p.mirror << " " << p.sway << " " << p.visible << " " << p.onPause << " " << p.onMap << "\n";
     return (bool)f;
 }
 bool loadHud(const std::string& path, HudLayout& h) {
@@ -151,11 +151,12 @@ bool loadHud(const std::string& path, HudLayout& h) {
         else if (k == "el" && !h.planes.empty()) {
             HudElement e; std::string n, t, im, vn; int kind = 0, val = 0;
             l >> n >> kind >> e.x >> e.y >> e.w >> e.h >> e.color >> e.alpha >> t >> im >> val >> vn >> e.max >> e.segments >> e.textSize >> e.align >> e.filled >> e.thickness >> e.visible;
-            { float mr, mt; int tu; if (l >> mr >> mt >> tu) { e.mapRange = std::clamp(mr, 4.f, 200.f); e.mapTilt = std::clamp(mt, 10.f, 90.f); e.mapTurns = tu != 0; } }
+            if (e.kind == HudKind::Minimap) e.onMap = false;   // (older files: the minimap hides on the map screen)
+            { float mr, mt; int tu; if (l >> mr >> mt >> tu) { e.mapRange = std::clamp(mr, 4.f, 200.f); e.mapTilt = std::clamp(mt, 10.f, 90.f); e.mapTurns = tu != 0; int op, om; if (l >> op >> om) { e.onPause = op != 0; e.onMap = om != 0; } } }
             e.name = unesc(n); e.text = unesc(t); e.image = unesc(im); e.valueName = unesc(vn);
             e.kind = (HudKind)std::clamp(kind, 0, (int)HudKind::COUNT - 1); e.value = (HudValue)std::clamp(val, 0, (int)HudValue::COUNT - 1);
             h.planes.back().elements.push_back(e);
-        } else if (k == "part") { HudPart p; std::string n, m; l >> n >> m >> p.pos.x >> p.pos.y >> p.pos.z >> p.yaw >> p.pitch >> p.roll >> p.scale >> p.mirror >> p.sway >> p.visible; p.name = unesc(n); p.model = unesc(m); h.parts.push_back(p); }
+        } else if (k == "part") { HudPart p; std::string n, m; l >> n >> m >> p.pos.x >> p.pos.y >> p.pos.z >> p.yaw >> p.pitch >> p.roll >> p.scale >> p.mirror >> p.sway >> p.visible; { int op, om; if (l >> op >> om) { p.onPause = op != 0; p.onMap = om != 0; } } p.name = unesc(n); p.model = unesc(m); h.parts.push_back(p); }
     }
     return true;
 }
