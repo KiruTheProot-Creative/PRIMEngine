@@ -8849,7 +8849,8 @@ struct App {
                 {   // lock-on: the marker on what a press would pick, locked (the view swings to it), circling it, a missile steering after it, a dash
                     DemoShot off{ "l", { ax + 11.5, ay + player.eyeH, az + 0.5 }, { ax + 7.0, ay + 1.4, az + 9.0 }, 15.5f };   // the turret to the right (it stands still: good to circle)
                     if (auto it = enemyRt.find(reo); it != enemyRt.end()) { it->second.pos = { ax + 3.5, ay + 3.0, az + 14.5 }; it->second.vel = { 0, 0, 0 }; }   // (the Reo out of the way)
-                    inv.counts[weapons.missileCounter] = 5; playerInvuln = 30;
+                    std::vector<MissileType> keepMis = weapons.missileTypes; if (weapons.missileTypes.empty()) weapons.missileTypes = defaultWeapons().missileTypes;   // (this demo's weapons have none)
+                    weapState.missile = 0; inv.counts[weapons.missileCounter] = 5; playerInvuln = 30;
                     poseAt(off); runE(3); frames(1, "lockon_marker");
                     { const WorldObject* h = ObjById(lockHint); Log("lock-on: a press would pick " + std::string(h ? h->name : "nothing")); }
                     holdLock = true; demoDrive = true; demoCtl = Controls{}; runE(1); lockId = turret; lockAge = 0; runE(3); frames(1, "lockon_locking");
@@ -8878,6 +8879,7 @@ struct App {
                     holdLock = false; demoDrive = false; demoCtl = Controls{}; runE(1);
                     Log(std::string("lock-on: let go: ") + (lockId ? "still locked" : "free"));
                     if (auto it = enemyRt.find(turret); it != enemyRt.end() && it->second.alive()) it->second.health = enemies.find(it->second.type)->health;   // (whole again for the tests below)
+                    weapons.missileTypes = keepMis;
                     poseAt(look); play.health = game.player.maxHealth; playerInvuln = 0; runE(2);
                 }
                 {   // shoot the turret with the beam: immune (only missiles, charge and bombs hurt it)
