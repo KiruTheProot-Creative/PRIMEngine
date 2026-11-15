@@ -4965,7 +4965,7 @@ struct App {
         for (WorldObject& o : objects) {
             if (o.scan.id > 0 || o.scan.legacyName.empty()) continue;
             if (const ScanDef* d = scanLib.findName(o.scan.legacyName)) o.scan.id = d->id;
-            else { ScanDef d; d.name = o.scan.legacyName; d.category = o.scan.legacyCategory.empty() ? "Research" : o.scan.legacyCategory; d.text = o.scan.legacyText; d.important = o.scan.legacyImportant; d.time = o.scan.legacyTime; o.scan.id = scanLib.add(d); made = true; }
+            else { ScanDef nd; nd.name = o.scan.legacyName; nd.category = o.scan.legacyCategory.empty() ? "Research" : o.scan.legacyCategory; nd.text = o.scan.legacyText; nd.important = o.scan.legacyImportant; nd.time = o.scan.legacyTime; o.scan.id = scanLib.add(nd); made = true; }
             o.scan.legacyName.clear();
         }
         if (made) SaveScans();
