@@ -79,7 +79,7 @@ int main() {
     lib.saveBlocks(r); { BlockRegistry r3; Library l3; l3.dir = lib.dir; l3.load(r3); BlockDef z; z.name = "z";
       CHECK(r3.add(z) == again + 1 && !r3.has(rock), "after reloading, new ids still continue after the deleted ones");
       CHECK(r3.get(again).light == 9 && r3.get(again).lightColor == 0x33CCFF, "light level and colour are saved");
-      CHECK(std::fabs(r3.get(again).shine - 0.75f) < 1e-4f && r3.get(again).mirror && !r3.get(again).texTurns && r3.get(stone).texTurns, "shininess, mirror and textures turning are saved"); }
+      CHECK(std::fabs(r3.get(again).shine - 0.75f) < 1e-4f && r3.get(again).mirror && !r3.get(again).texTurns && r3.get(r3.find("stone")).texTurns, "shininess, mirror and textures turning are saved"); }
     CHECK(r.uniqueName("new") == "new 2" && r.uniqueName("new", again) == "new", "unique names");
 
     // states: a plane keeps its facing in the upper bits
