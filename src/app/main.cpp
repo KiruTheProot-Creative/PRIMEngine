@@ -23,6 +23,7 @@
 #include "../game/visors.h"
 #include "../game/menu.h"
 #include "../game/options.h"
+#include "../game/cull.h"
 #include "../game/enemies.h"
 #include "../game/sound.h"
 #include "../game/breakable.h"
@@ -2076,6 +2077,8 @@ struct App {
     }
     // draws one object (pass 0 solid, 1 cut-out, 2 water) with the current shaders
     void DrawObject(const WorldObject& o, int pass) { DrawObject(o, pass, camPos); }
+    // culling objects: set while the world draws (each view: the camera, each shadow map, the reflection)
+    bool cullOn = false, cullCount = false; float cullVP[16] = {}; double cullFar = 0; int partsDrawn = 0, partsCulled = 0, partsDrawnShown = 0, partsCulledShown = 0;
     void DrawObject(const WorldObject& o, int pass, V3 cam, const ModelGpu* use = nullptr) {
         FrameRef m = ModelOf(o); if (!m) return;
         auto dg = use ? doorGpu.end() : doorGpu.find(o.id);
@@ -2087,6 +2090,12 @@ struct App {
             const GpuChunk& gc = part.second; UINT n = pass == 0 ? gc.nO : pass == 1 ? gc.nC : gc.nW; if (!n) continue;
             V3 l{ part.first.x * (double)CS - m->pivot.x, part.first.y * (double)CS - m->pivot.y, part.first.z * (double)CS - m->pivot.z };
             V3 org = o.pos - cam + ax * l.x + ay * l.y + az * l.z;
+            if (cullOn) {   // culling: a part (16 x 16 x 16 of the model) outside this view, or past the fog, is not drawn
+                V3 cs[8]; boxCorners(org, ax * (double)CS, ay * (double)CS, az * (double)CS, cs);
+                V3 mid = org + (ax + ay + az) * (CS * 0.5); double r = length(ax + ay + az) * CS * 0.5;
+                if ((cullFar > 0 && length(mid) - r > cullFar) || !cornersVisible(cullVP, cs)) { if (cullCount) partsCulled++; continue; }
+                if (cullCount) partsDrawn++;
+            }
             ChunkCB cc{ { (float)org.x, (float)org.y, (float)org.z, 0 }, { (float)ax.x, (float)ax.y, (float)ax.z, 0 }, { (float)ay.x, (float)ay.y, (float)ay.z, 0 }, { (float)az.x, (float)az.y, (float)az.z, 0 } };
             ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);
             UINT stride = sizeof(Vtx), off = 0;
@@ -2687,6 +2696,7 @@ struct App {
         FrameCB fc{}; XMStoreFloat4x4(&fc.viewProj, vp);
         SkyParams(fc, settings.timeOfDay);
         float fogEnd = settings.renderDistance * CS * 0.95f;
+        cullFar = fogEnd + 32;   // objects past the fog are not drawn (a little extra: tall ones still cast their shadows inward)
         fc.fogRange[0] = fogEnd * 0.45f; fc.fogRange[1] = fogEnd; fc.fogRange[2] = exposure * std::clamp(settings.brightness, 0.3f, 2.5f);
         fc.camF[0] = (float)f.x; fc.camF[1] = (float)f.y; fc.camF[2] = (float)f.z; fc.camR[0] = (float)r.x; fc.camR[1] = (float)r.y; fc.camR[2] = (float)r.z;
         fc.camU[0] = (float)u.x; fc.camU[1] = (float)u.y; fc.camU[2] = (float)u.z; fc.proj[0] = std::tan(XMConvertToRadians(settings.fov) * 0.5f); fc.proj[1] = aspect;
@@ -2768,6 +2778,7 @@ struct App {
                 ctx->IASetIndexBuffer(pass == 0 ? g.ibO.Get() : pass == 1 ? g.ibC.Get() : g.ibW.Get(), DXGI_FORMAT_R32_UINT, 0);
                 ctx->DrawIndexed(n, 0, 0); if (counting) drawnChunks += pass == 0;
             }
+            { XMFLOAT4X4 mm; XMStoreFloat4x4(&mm, m); std::memcpy(cullVP, &mm, sizeof cullVP); cullOn = true; cullCount = counting; }
             for (size_t oi = 0; oi < objects.size(); oi++) {   // objects: same shaders, turned and sized; platforms where they are on their path
                 if ((int)oi == movingObj) continue;
                 const WorldObject& o = objects[oi];
@@ -2782,6 +2793,7 @@ struct App {
                 for (const V3& off : PlatformOffsets(o)) { WorldObject at = o; at.pos = o.pos + off; DrawObject(at, pass); }
             }
             DrawBall(pass, camPos); DrawMissiles(pass, camPos); DrawDebris(pass, camPos); DrawEnemyDrops(pass, camPos);
+            cullOn = false; cullCount = false;
         };
         ID3D11ShaderResourceView* none[5] = {};
         ctx->PSSetShaderResources(0, 5, none);
@@ -2851,8 +2863,9 @@ struct App {
         ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0);
         ID3D11ShaderResourceView* srvs[5] = { texArray.Get(), shadows ? shadowSRV.Get() : nullptr, nullptr, noiseSRV.Get(), skyMap ? skyMapSRV.Get() : nullptr }; ctx->PSSetShaderResources(0, 5, srvs); BindMaterials();
         ID3D11SamplerState* samps[3] = { sampBlocks.Get(), sampShadow.Get(), sampLinear.Get() }; ctx->PSSetSamplers(0, 3, samps);
-        drawnChunks = 0;
+        drawnChunks = 0; partsDrawn = partsCulled = 0;
         ctx->PSSetShader(psOpaque.Get(), nullptr, 0); drawChunks(vp, 0, true);
+        partsDrawnShown = partsDrawn; partsCulledShown = partsCulled;
         ctx->PSSetShader(psCutout.Get(), nullptr, 0); drawChunks(vp, 1, false);
 
         // ---- ambient occlusion: soft shade where things are close together (half size, then a careful blur that takes away sky light)
@@ -3152,6 +3165,7 @@ struct App {
         ImGui::Text("Block: %d %d %d   Chunk: %d %d %d", b.x, b.y, b.z, c.x, c.y, c.z);
         ImGui::Text("Facing: %s   %s", dirs[((int)(yd / 90)) % 4], player.flying ? "flying" : "walking");
         ImGui::Text("Chunks: %zu loaded, %zu with meshes, %d drawn", world->loadedCount(), gpu.size(), drawnChunks);
+        ImGui::Text("Object parts: %d drawn, %d skipped (off screen or past the fog)", partsDrawnShown, partsCulledShown);
         ImGui::Text("Meshing: %zu waiting, %zu queued", world->dirty.size(), workers->pending());
         if (hoverValid) { BlockId hv = world->get(hover.x, hover.y, hover.z);
             ImGui::Text("Looking at: %s (%s, rotation %d) at %d %d %d", reg.get(hv).name.c_str(), Shapes::get().info(resolveShape(hv, reg.get(hv))).name.c_str(), rotOf(hv), hover.x, hover.y, hover.z); }

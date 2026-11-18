@@ -18,6 +18,7 @@
 #include "../src/game/menu.h"
 #include "../src/game/enemies.h"
 #include "../src/game/options.h"
+#include "../src/game/cull.h"
 #include <sstream>
 #include <algorithm>
 #include <map>
@@ -1126,6 +1127,20 @@ int main() {
         { std::ofstream o("/tmp/prim_settings_old.txt"); o << "shadows 1\nfov 80\n"; } Settings so; so.load("/tmp/prim_settings_old.txt");
         CHECK(so.shadowQuality == 1 && so.shadowRes == 1536 && so.fov == 80 && so.keys.key[(int)Act::Use][0] == 'E', "an older settings file: 'normal' shadows become 1536, keys the usual ones");
         optionReset(sl, "Controls"); CHECK(sl.keys.key[(int)Act::Forward][0] == 'W' && !sl.invertY && sl.lockMode == 0 && sl.shadowRes == 3072, "'back to the start values' for Controls: only the controls");
+    }
+
+    {   // culling: a box (a model part, turned and stretched) inside the view or not
+        printf("\nculling\n");
+        float zn = 0.05f, zf = 500, ys = 1 / std::tan(0.6f), xs = ys / 1.5f;
+        float m[16] = { xs, 0, 0, 0,  0, ys, 0, 0,  0, 0, zf / (zf - zn), 1,  0, 0, -zn * zf / (zf - zn), 0 };   // looking down +Z (like XMMatrixPerspectiveFovLH)
+        V3 c[8]; auto box = [&](V3 o, double s) { boxCorners(o, { s, 0, 0 }, { 0, s, 0 }, { 0, 0, s }, c); return cornersVisible(m, c); };
+        CHECK(box({ -1, -1, 10 }, 2), "a box in front: drawn");
+        CHECK(!box({ -1, -1, -12 }, 2), "behind you: skipped");
+        CHECK(!box({ 60, -1, 10 }, 2) && !box({ -1, 50, 10 }, 2), "far to the side, far above: skipped");
+        CHECK(box({ -8, -8, -8 }, 16), "a big part all around you: drawn");
+        CHECK(!box({ -1, -1, 600 }, 2), "past the far plane: skipped");
+        double a = 0.7; boxCorners({ 3, -1, 4 }, { std::cos(a) * 4, 0, -std::sin(a) * 4 }, { 0, 2, 0 }, { std::sin(a) * 4, 0, std::cos(a) * 4 }, c);
+        CHECK(cornersVisible(m, c), "a turned, stretched part poking into the view: drawn");
     }
 
     {   // lock-on: picking a target, turning to it, circling it, homing, the dash
