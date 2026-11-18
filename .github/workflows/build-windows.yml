@@ -3,6 +3,11 @@ name: Build Windows
 on:
   push:
   workflow_dispatch:
+    inputs:
+      screenshots:
+        description: "Also take the screenshots (about 20 minutes longer)"
+        type: boolean
+        default: false
 
 jobs:
   build:
@@ -32,6 +37,7 @@ jobs:
           }
 
       - name: Take screenshots
+        if: ${{ inputs.screenshots }}
         shell: pwsh
         run: |
           $p = Start-Process -FilePath build/Release/PRIMEngine.exe -ArgumentList "--screenshots shots" -PassThru
@@ -40,13 +46,13 @@ jobs:
           Get-ChildItem shots
 
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: ${{ always() && inputs.screenshots }}
         with:
           name: screenshots
           path: shots
 
       - name: Publish screenshots to the "screenshots" branch
-        if: always()
+        if: ${{ always() && inputs.screenshots }}
         shell: pwsh
         run: |
           Add-Type -AssemblyName System.Drawing
