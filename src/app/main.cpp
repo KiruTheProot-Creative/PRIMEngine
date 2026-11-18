@@ -5827,7 +5827,7 @@ struct App {
     void LoadScreens() { screensPath = projectDir + "/screens.txt"; if (!loadScreens(screensPath, screens) || screens.screens.empty()) screens = defaultScreens(); }
     void SaveScreens() { if (!projectDir.empty()) saveScreens(screensPath, screens); }
     std::string ScreensDir() { std::string d = projectDir + "/screens"; std::error_code ec; fs::create_directories(fs::u8path(d), ec); return d; }
-    Screen* CurScreen() { return curScreen >= 0 && curScreen < (int)screens.screens.size() ? &screens.screens[curScreen] : nullptr; }
+    mc::Screen* CurScreen() { return curScreen >= 0 && curScreen < (int)screens.screens.size() ? &screens.screens[curScreen] : nullptr; }
 
     // ---- pictures, GIFs and videos (in the game's "screens" folder)
     struct PicTex { media::Frames f; std::vector<ComPtr<ID3D11ShaderResourceView>> tex; bool failed = false; };
@@ -5916,7 +5916,7 @@ struct App {
         r[0] = 0.5f - sx * 0.5f; r[2] = 0.5f + sx * 0.5f; r[1] = 0.5f - sy * 0.5f; r[3] = 0.5f + sy * 0.5f;
     }
     // a screen into `out` (W x H): background, its items (ui: an ImDrawList at W x H), then the node graph; fade 0..1
-    void RenderScreenPicture(const Screen& sc, ID3D11RenderTargetView* out, int W, int H, ImDrawList* ui, float fade, bool sceneReady) {
+    void RenderScreenPicture(const mc::Screen& sc, ID3D11RenderTargetView* out, int W, int H, ImDrawList* ui, float fade, bool sceneReady) {
         InitCompositor(); if (!psComp || !cbComp) return;
         MakeCompRT(compBg, W, H); MakeCompRT(compBg2, W, H); MakeCompRT(compUi, W, H); MakeCompRT(compA, W, H); MakeCompRT(compB, W, H); MakeCompRT(compC, W, H);
         CompCB base{}; base.size[0] = (float)W; base.size[1] = (float)H; base.size[2] = 1.f / W; base.size[3] = 1.f / H;
@@ -5986,7 +5986,7 @@ struct App {
     }
 
     // ---- the items of a screen: drawn into screenList (W x H), buttons and options into screenHits
-    void BuildScreenList(const Screen& sc, int W, int H, bool live) {
+    void BuildScreenList(const mc::Screen& sc, int W, int H, bool live) {
         if (!screenList) screenList = std::make_unique<ImDrawList>(ImGui::GetDrawListSharedData());
         ImDrawList* dl = screenList.get(); dl->_ResetForNewFrame(); screenHits.clear();
         dl->PushClipRect(ImVec2(0, 0), ImVec2((float)W, (float)H)); dl->PushTexture(ImGui::GetIO().Fonts->TexRef);
@@ -6007,7 +6007,7 @@ struct App {
                 break; }
             case ScreenItemKind::Image: {
                 int iw = 0, ih = 0; ID3D11ShaderResourceView* im = PictureAt(it.image, screenT, true, &iw, &ih);
-                if (!im) { dl->AddRect(a, b, C(col.accent, 0.35f * al), 6, ImDrawFlags_None, 2); break; }
+                if (!im) { dl->AddRect(a, b, C(col.accent, 0.35f * al), 6.f, ImDrawFlags_None, 2.f); break; }
                 float r[4]; FitRect(iw, ih, (int)(b.x - a.x), (int)(b.y - a.y), 1, r);
                 dl->AddImage((ImTextureID)(intptr_t)im, ImVec2(a.x + r[0] * (b.x - a.x), a.y + r[1] * (b.y - a.y)), ImVec2(a.x + r[2] * (b.x - a.x), a.y + r[3] * (b.y - a.y)), ImVec2(0, 0), ImVec2(1, 1), C(0xFFFFFF, al));
                 break; }
@@ -6056,7 +6056,7 @@ struct App {
     }
 
     // ---- moving between screens
-    void PlaceScreenCamera(const Screen& sc) {   // a world background: look through its camera object (or from the spawn point)
+    void PlaceScreenCamera(const mc::Screen& sc) {   // a world background: look through its camera object (or from the spawn point)
         const ScreenBg& bg = sc.bg;
         for (const WorldObject& o : objects) if (!bg.camera.empty() && o.name == bg.camera) {
             player.flying = true; player.ball = false; player.feet = o.pos + V3{ 0, bg.height - player.eyeH, 0 };
@@ -6068,7 +6068,7 @@ struct App {
         if (idx < 0 || idx >= (int)screens.screens.size()) return;
         if (remember && curScreen >= 0 && curScreen != idx) screenBack.push_back(curScreen);
         curScreen = idx; screenT = 0; screenSel = -2; bindCapture = -1;
-        Screen& sc = screens.screens[idx];
+        mc::Screen& sc = screens.screens[idx];
         if (!playMode && sc.bg.kind == BgKind::World) {   // (only outside play: while playing, the game stays where it is)
             if (!sc.bg.world.empty() && sc.bg.world != CurrentWorld() && std::find(worldList.begin(), worldList.end(), sc.bg.world) != worldList.end()) {
                 travelling = true; SaveWorld(); OpenWorld(sc.bg.world); travelling = false;
@@ -6127,7 +6127,7 @@ struct App {
                     [&](const MenuHit& h) { if (h.kind == 8) ScreenAction((ScreenAct)h.arg, h.target); else if (h.kind == 9) Toast("Continue comes with save files"); }, false);
     }
     void UpdateScreens(double dt) {
-        Screen* sc = CurScreen(); if (!sc) return;
+        mc::Screen* sc = CurScreen(); if (!sc) return;
         screenT += dt;
         if (!playMode && sc->bg.kind == BgKind::World && sc->bg.turn != 0) player.yaw += sc->bg.turn * dt * 3.14159265358979 / 180;   // the view turns slowly
         // dying while playing: the death screen (if the game has one)
@@ -6143,7 +6143,7 @@ struct App {
     bool screensEdOpen = false, focusScreensEd = false; int scrEd = 0, scrItem = -1, scrNode = 0; float scrPrevW = 0, scrPrevH = 0;
     float scrDragX = 0, scrDragY = 0; int scrDragMode = 0;   // 1 move, 2 resize
     ImVec2 nodePan{ 40, 40 }; float nodeZoom = 1; int linkFrom = 0, linkTo = 0, linkSlot = -1; bool linkDragging = false;
-    Screen* EdScreen() { return scrEd >= 0 && scrEd < (int)screens.screens.size() ? &screens.screens[scrEd] : nullptr; }
+    mc::Screen* EdScreen() { return scrEd >= 0 && scrEd < (int)screens.screens.size() ? &screens.screens[scrEd] : nullptr; }
     std::vector<std::string> ScreenFiles(bool video) {
         std::vector<std::string> v; std::error_code ec;
         for (auto& e : fs::directory_iterator(fs::u8path(ScreensDir()), ec)) {
@@ -6177,12 +6177,12 @@ struct App {
         return ch;
     }
     void BuildScreenPreview() {   // (editor) the picked screen's items, at the preview's size
-        Screen* sc = EdScreen(); if (!sc || scrPrevW < 16 || scrPrevH < 16) return;
+        mc::Screen* sc = EdScreen(); if (!sc || scrPrevW < 16 || scrPrevH < 16) return;
         screenT = std::fmod(uiClock, 10000.0);
         BuildScreenList(*sc, (int)scrPrevW, (int)scrPrevH, false);
     }
     void RenderScreenPreview() {
-        Screen* sc = EdScreen(); if (!screensEdOpen || !sc || scrPrevW < 16 || scrPrevH < 16) return;
+        mc::Screen* sc = EdScreen(); if (!screensEdOpen || !sc || scrPrevW < 16 || scrPrevH < 16) return;
         MakeCompRT(screenPreview, (int)scrPrevW, (int)scrPrevH, DXGI_FORMAT_R8G8B8A8_UNORM);
         RenderScreenPicture(*sc, screenPreview.rtv.Get(), (int)scrPrevW, (int)scrPrevH, screenList.get(), 1.f, true);
     }
@@ -6199,7 +6199,7 @@ struct App {
         ImGui::BeginChild("scrlist", ImVec2(220 * ui, 0), ImGuiChildFlags_Borders);
         ImGui::TextDisabled("SCREENS");
         for (int i = 0; i < (int)screens.screens.size(); i++) {
-            Screen& s = screens.screens[i]; ImGui::PushID(i);
+            mc::Screen& s = screens.screens[i]; ImGui::PushID(i);
             std::string l = s.name + (s.role != ScreenRole::Custom ? "   (" + std::string(screenRoleName(s.role)) + ")" : "");
             if (ImGui::Selectable(l.c_str(), scrEd == i)) { scrEd = i; scrItem = -1; scrNode = 0; }
             ImGui::PopID();
@@ -6209,20 +6209,20 @@ struct App {
         if (ImGui::BeginPopup("addscr")) {
             for (ScreenRole r : { ScreenRole::MainMenu, ScreenRole::Options, ScreenRole::Death, ScreenRole::Credits, ScreenRole::Custom })
                 if (ImGui::Selectable(r == ScreenRole::Custom ? "Empty (your own)" : screenRoleName(r))) {
-                    Screen s = presetScreen(r); std::string base = s.name; int k = 2; while (screens.find(s.name) >= 0) s.name = base + " " + std::to_string(k++);
+                    mc::Screen s = presetScreen(r); std::string base = s.name; int k = 2; while (screens.find(s.name) >= 0) s.name = base + " " + std::to_string(k++);
                     if (screens.byRole(r) >= 0 && r != ScreenRole::Custom) s.role = ScreenRole::Custom;   // (one of each role: this one is a copy to play with)
                     screens.screens.push_back(s); scrEd = (int)screens.screens.size() - 1; scrItem = -1; ch = true;
                 }
             ImGui::EndPopup();
         }
-        if (Screen* s = EdScreen()) {
-            ImGui::SameLine(); if (ImGui::Button("Copy")) { Screen c = *s; c.name += " copy"; c.role = ScreenRole::Custom; screens.screens.push_back(c); scrEd = (int)screens.screens.size() - 1; ch = true; }
+        if (mc::Screen* s = EdScreen()) {
+            ImGui::SameLine(); if (ImGui::Button("Copy")) { mc::Screen c = *s; c.name += " copy"; c.role = ScreenRole::Custom; screens.screens.push_back(c); scrEd = (int)screens.screens.size() - 1; ch = true; }
             ImGui::SameLine(); if (ImGui::Button("Delete")) { screens.screens.erase(screens.screens.begin() + scrEd); scrEd = std::max(0, scrEd - 1); scrItem = -1; ch = true; }
         }
         ImGui::Spacing(); Hint("F6 (or \"From the menu\" in the toolbar) plays the game from its main menu. Options buttons lead to the Options screen; Esc goes back.");
         ImGui::EndChild();
         ImGui::SameLine();
-        Screen* sc = EdScreen();
+        mc::Screen* sc = EdScreen();
         if (!sc) { ImGui::TextDisabled("Make a screen on the left."); ImGui::End(); if (ch) SaveScreens(); return; }
         ImGui::BeginChild("scrmain", ImVec2(0, 0));
         {   // the screen itself
@@ -6230,7 +6230,7 @@ struct App {
             ImGui::SameLine(); ImGui::SetNextItemWidth(160 * ui);
             if (ImGui::BeginCombo("Is the##role", screenRoleName(sc->role))) {
                 for (int r = 0; r < (int)ScreenRole::COUNT; r++) if (ImGui::Selectable(screenRoleName((ScreenRole)r), (int)sc->role == r)) {
-                    if (r != (int)ScreenRole::Custom) for (Screen& o : screens.screens) if (o.role == (ScreenRole)r) o.role = ScreenRole::Custom;   // one of each
+                    if (r != (int)ScreenRole::Custom) for (mc::Screen& o : screens.screens) if (o.role == (ScreenRole)r) o.role = ScreenRole::Custom;   // one of each
                     sc->role = (ScreenRole)r; ch = true;
                 }
                 ImGui::EndCombo();
@@ -6253,7 +6253,7 @@ struct App {
         if (screenPreview.srv && screenPreview.w == (int)scrPrevW && screenPreview.h == (int)scrPrevH) ImGui::Image((ImTextureID)(intptr_t)screenPreview.srv.Get(), ImVec2(w, h));
         else ImGui::Dummy(ImVec2(w, h));
     }
-    void ScreenLayoutTab(Screen& sc, bool& ch) {
+    void ScreenLayoutTab(mc::Screen& sc, bool& ch) {
         float ui = settings.uiScale, propW = 340 * ui, sp = ImGui::GetStyle().ItemSpacing.x;
         float aw = std::max(200.f, ImGui::GetContentRegionAvail().x - propW - sp), ah = ImGui::GetContentRegionAvail().y;
         ImGui::BeginChild("scrcanvas", ImVec2(aw, ah), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar);
@@ -6267,7 +6267,7 @@ struct App {
             for (int i = 0; i < (int)sc.items.size(); i++) {
                 const ScreenItem& it = sc.items[i]; ImVec2 a(o.x + it.x * w, o.y + it.y * h), b(o.x + (it.x + it.w) * w, o.y + (it.y + it.h) * h);
                 bool picked = i == scrItem;
-                dl->AddRect(a, b, picked ? IM_COL32(255, 200, 60, 255) : IM_COL32(255, 255, 255, 50), 0, 0, picked ? 2.f : 1.f);
+                dl->AddRect(a, b, picked ? IM_COL32(255, 200, 60, 255) : IM_COL32(255, 255, 255, 50), 0.f, ImDrawFlags_None, picked ? 2.f : 1.f);
                 if (picked) dl->AddRectFilled(ImVec2(b.x - 7, b.y - 7), ImVec2(b.x + 1, b.y + 1), IM_COL32(255, 200, 60, 255));
             }
             if (hov && ImGui::IsMouseClicked(0)) {
@@ -6348,7 +6348,7 @@ struct App {
         if (it.kind == ScreenItemKind::Image) { Prop("Picture"); ch |= FileCombo("##sii", it.image, false); }
         if (it.kind == ScreenItemKind::Button) {
             Prop("Does"); if (ImGui::BeginCombo("##siact", screenActName(it.act))) { for (int k = 0; k < (int)ScreenAct::COUNT; k++) if (ImGui::Selectable(screenActName((ScreenAct)k), (int)it.act == k)) { it.act = (ScreenAct)k; ch = true; } ImGui::EndCombo(); }
-            if (it.act == ScreenAct::GoTo) { Prop("Screen"); if (ImGui::BeginCombo("##sitg", it.target.empty() ? "(pick one)" : it.target.c_str())) { for (const Screen& s : screens.screens) if (ImGui::Selectable(s.name.c_str(), s.name == it.target)) { it.target = s.name; ch = true; } ImGui::EndCombo(); } }
+            if (it.act == ScreenAct::GoTo) { Prop("Screen"); if (ImGui::BeginCombo("##sitg", it.target.empty() ? "(pick one)" : it.target.c_str())) { for (const mc::Screen& s : screens.screens) if (ImGui::Selectable(s.name.c_str(), s.name == it.target)) { it.target = s.name; ch = true; } ImGui::EndCombo(); } }
             if (it.act == ScreenAct::Continue) Hint("Greyed out until save files come.");
         }
         if (it.kind == ScreenItemKind::Options) {
@@ -6372,7 +6372,7 @@ struct App {
         }
         Prop("See-through"); { float op = 1 - it.alpha; if (ImGui::SliderFloat("##sial", &op, 0, 1, "%.2f")) { it.alpha = 1 - op; ch = true; } }
     }
-    void ScreenBgTab(Screen& sc, bool& ch) {
+    void ScreenBgTab(mc::Screen& sc, bool& ch) {
         float ui = settings.uiScale, propW = 380 * ui, sp = ImGui::GetStyle().ItemSpacing.x;
         float aw = std::max(200.f, ImGui::GetContentRegionAvail().x - propW - sp), ah = ImGui::GetContentRegionAvail().y;
         ImGui::BeginChild("bgprev", ImVec2(aw, ah), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar);
@@ -6415,7 +6415,7 @@ struct App {
     }
 
     // ---- the compositor's node editor (like Blender's): drag nodes, drag from an output to an input, right click to add
-    void NodeEditor(Screen& sc, bool& ch) {
+    void NodeEditor(mc::Screen& sc, bool& ch) {
         Compositor& g = sc.comp; float ui = settings.uiScale, z = nodeZoom * ui;
         ImGuiIO& io = ImGui::GetIO();
         float propW = 300 * ui, sp = ImGui::GetStyle().ItemSpacing.x;
@@ -6497,7 +6497,7 @@ struct App {
             bool picked = scrNode == n.id;
             dl->AddRectFilled(p, q, IM_COL32(48, 50, 56, 240), 6 * z);
             dl->AddRectFilled(p, ImVec2(q.x, p.y + head), colOf(in.group), 6 * z, ImDrawFlags_RoundCornersTop);
-            dl->AddRect(p, q, picked ? IM_COL32(255, 200, 60, 255) : IM_COL32(0, 0, 0, 160), 6 * z, 0, picked ? 2.f : 1.f);
+            dl->AddRect(p, q, picked ? IM_COL32(255, 200, 60, 255) : IM_COL32(0, 0, 0, 160), 6 * z, ImDrawFlags_None, picked ? 2.f : 1.f);
             for (int k = 0; k < in.inputs; k++) { ImVec2 s = inPos[{ n.id, k }]; dl->AddCircleFilled(s, 5 * z, n.in[k] ? IM_COL32(230, 200, 80, 255) : IM_COL32(140, 140, 150, 255)); }
             if (n.type != NodeType::Output) dl->AddCircleFilled(outPos[n.id], 5 * z, IM_COL32(230, 200, 80, 255));
             ImGui::PopID();
@@ -10049,7 +10049,7 @@ struct App {
         if (showSettings) SettingsWindow();
         Popups();
         BuildHudLists(); BuildMenuLists();
-        if (Screen* sc = CurScreen(); sc && !ev) BuildScreenList(*sc, cw, ch, true);
+        if (mc::Screen* sc = CurScreen(); sc && !ev) BuildScreenList(*sc, cw, ch, true);
         if (ev && screensEdOpen) BuildScreenPreview();
         ImGui::Render();
         RenderMinimap();
@@ -10058,7 +10058,7 @@ struct App {
         const float bg[4] = { 0.10f, 0.11f, 0.13f, 1 };
         if (screen == Screen::Game && rw > 0 && mapOpen && !ev) { RenderMap(); RenderMapScreen(backRTV.Get()); }   // the map screen: the map instead of the world, the visor over it
         else if (screen == Screen::Game && rw > 0 && CurScreen() && !ev) {   // a screen (main menu, death...): its background, items and compositor
-            Screen* sc = CurScreen(); bool world = sc->bg.kind == BgKind::World || sc->bg.kind == BgKind::Game;
+            mc::Screen* sc = CurScreen(); bool world = sc->bg.kind == BgKind::World || sc->bg.kind == BgKind::Game;
             if (world) RenderWorld(sceneRTV.Get());
             RenderScreenPicture(*sc, backRTV.Get(), cw, ch, screenList.get(), sc->fadeIn > 0.01f ? (float)std::clamp(screenT / sc->fadeIn, 0.0, 1.0) : 1.f, world);
         }
