@@ -180,6 +180,18 @@ Textures, models and blocks (Assets panel) and objects (Outliner) can go into fo
 
 Also: **speed per animation** (3D viewer: "Speed of ...", and next to each cannon animation in the Weapons tab), everywhere that animation plays; and the **charge** now grows an energy orb at the muzzle with particles sucked into it (particles: "Sucked in").
 
+## The Assets panel (like Unity's Project window)
+
+Everything the game is made of lives in **one folder structure you make yourself**: blocks, textures, models, sounds and music, pictures, videos, enemy types, bosses, screens, scan entries, worlds and prefabs, side by side (a `Bosses/Kraid` folder can hold his model, roar, music, enemy type and boss). The folders are the editor's own (`assets.txt`): the files stay where the engine keeps them, so sorting never breaks anything. New things you make or import elsewhere start in a folder of their kind; things you make in the panel go into the folder that is open. (Older projects: the old block / texture / model folders are carried over.)
+
+- **Left:** favourites, your folders (drag folders into folders), and **Built in** (the engine's models and the block shapes).
+- **Right:** the way to the folder (each step is a drop target too), search (`kraid t:sound`; `t:` + any kind), a kinds filter, **Create**, and the size slider (all the way down: a list). Every kind has its own picture: blocks, textures, 3D models, a sound's waveform, pictures and GIFs, a video's frame, enemy types (bosses wear a crown), a screen in miniature, worlds, prefabs.
+- **Click** picks it (the Inspector shows it), **Ctrl / Shift + click** picks several, **double-click** opens it (a folder, the 3D viewer, listening to a sound, the enemy / boss / screen editor, another world, placing a prefab). **Drag** things into folders to move them.
+- **Right-click:** open, place, rename (F2), duplicate (Ctrl+D), move to, favourite, **find where it is used** (in all worlds, enemy types, bosses, screens, weapons, the HUD ...), **show in Explorer**, delete (Del; files go into the project's `_trash` folder). Renaming a sound, picture or video renames the file and fixes every place that uses it.
+- **Importing:** drop files from Windows Explorer onto the panel (or Create > Import files): models, sounds and music, videos, and pictures (you pick: block textures, screen pictures or HUD pictures). They land in the open folder. Textures, sounds, pictures and prefabs changed on disk (painted, cut) are read again by themselves.
+- **Drag from the panel:** into the viewport to place a model, an enemy type or a prefab (click to put it down); onto any sound, picture, video or model field to use it there.
+- **Prefabs:** objects saved with all their settings (a red missile door, a save room, an enemy with its scan): drag an object or a whole Outliner folder into the panel, or "Save as a prefab" on an object. Place it like a model (R turns it, paths and zones turn along). Placed prefabs are copies: changing the prefab later does not change them.
+
 ## Culling: only what you can see is drawn
 
 - **Hidden sides**: a block side touching a solid block is never built; glass-like blocks can hide the sides between each other.
