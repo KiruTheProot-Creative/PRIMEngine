@@ -8,7 +8,7 @@
 namespace mc {
 
 const char* screenRoleName(ScreenRole r) {
-    static const char* n[] = { "Custom", "Main menu", "Options", "Death screen", "Credits" };
+    static const char* n[] = { "Custom", "Main menu", "Options", "Death screen", "Credits", "Files (save files)" };
     int i = (int)r; return i >= 0 && i < (int)ScreenRole::COUNT ? n[i] : "?";
 }
 const char* bgKindName(BgKind k) {
@@ -16,11 +16,11 @@ const char* bgKindName(BgKind k) {
     int i = (int)k; return i >= 0 && i < (int)BgKind::COUNT ? n[i] : "?";
 }
 const char* screenItemKindName(ScreenItemKind k) {
-    static const char* n[] = { "Panel", "Text", "Picture", "Button", "Options", "Credits roll" };
+    static const char* n[] = { "Panel", "Text", "Picture", "Button", "Options", "Credits roll", "Save files" };
     int i = (int)k; return i >= 0 && i < (int)ScreenItemKind::COUNT ? n[i] : "?";
 }
 const char* screenActName(ScreenAct a) {
-    static const char* n[] = { "Nothing", "New game", "Continue", "Options", "Credits", "Quit", "Go to a screen", "Back (the screen before)", "Try again", "Main menu" };
+    static const char* n[] = { "Nothing", "New game", "Continue", "Options", "Credits", "Quit", "Go to a screen", "Back (the screen before)", "Try again", "Main menu", "Files (pick a save file)" };
     int i = (int)a; return i >= 0 && i < (int)ScreenAct::COUNT ? n[i] : "?";
 }
 
@@ -131,8 +131,9 @@ Screen presetScreen(ScreenRole r) {
     case ScreenRole::Death: {
         s.name = "Death screen"; s.bg.kind = BgKind::Game; s.bg.dim = 0.35f;
         ScreenItem t = text("Title", "ENERGY DEPLETED", 0.1f, 0.3f, 0.8f, 0.12f, 0.08f); t.col.text = 0xFF4A3A; s.items.push_back(t);
-        s.items.push_back(button("Try again", ScreenAct::Retry, 0.38f, 0.52f, 0.24f));
-        s.items.push_back(button("Main menu", ScreenAct::MainMenu, 0.38f, 0.61f, 0.24f));
+        s.items.push_back(button("Try again", ScreenAct::Retry, 0.38f, 0.5f, 0.24f));
+        s.items.push_back(button("Last save", ScreenAct::Continue, 0.38f, 0.59f, 0.24f));
+        s.items.push_back(button("Main menu", ScreenAct::MainMenu, 0.38f, 0.68f, 0.24f));
         for (ScreenItem& i : s.items) if (i.kind == ScreenItemKind::Button) i.align = 1;
         s.comp = Compositor{};
         int bg = s.comp.add(NodeType::Background, 40, 60), ui = s.comp.add(NodeType::UI, 40, 240), hs = s.comp.add(NodeType::HueSat, 260, 60);
@@ -148,13 +149,20 @@ Screen presetScreen(ScreenRole r) {
         s.items.push_back(c);
         s.items.push_back(button("Back", ScreenAct::Back, 0.08f, 0.88f, 0.2f));
         break; }
+    case ScreenRole::Files: {
+        s.name = "Files";
+        s.items.push_back(text("Title", "Choose a file", 0.08f, 0.06f, 0.84f, 0.09f, 0.07f, 0));
+        ScreenItem f; f.name = "Save files"; f.kind = ScreenItemKind::SaveSlots; f.x = 0.08f; f.y = 0.19f; f.w = 0.84f; f.h = 0.62f; f.textSize = 0.034f; f.slots = 3; s.items.push_back(f);
+        ScreenItem hint = text("Hint", "Enter: play this file      Delete twice: erase it      Esc: back", 0.08f, 0.82f, 0.84f, 0.04f, 0.022f, 0); hint.alpha = 0.55f; s.items.push_back(hint);
+        s.items.push_back(button("Back", ScreenAct::Back, 0.08f, 0.88f, 0.2f));
+        break; }
     default: s.name = "Screen"; break;
     }
     return s;
 }
 ScreenSet defaultScreens() {
     ScreenSet s;
-    for (ScreenRole r : { ScreenRole::MainMenu, ScreenRole::Options, ScreenRole::Death, ScreenRole::Credits }) s.screens.push_back(presetScreen(r));
+    for (ScreenRole r : { ScreenRole::MainMenu, ScreenRole::Files, ScreenRole::Options, ScreenRole::Death, ScreenRole::Credits }) s.screens.push_back(presetScreen(r));
     return s;
 }
 int ScreenSet::find(const std::string& name) const { for (int i = 0; i < (int)screens.size(); i++) if (screens[i].name == name) return i; return -1; }
@@ -163,7 +171,7 @@ int ScreenSet::byRole(ScreenRole r) const { for (int i = 0; i < (int)screens.siz
 // ------------------------------------------------------------------ files
 bool saveScreens(const std::string& path, const ScreenSet& set) {
     std::ofstream f(path); if (!f) return false;
-    f << "screens 1\n";
+    f << "screens 2\n";
     for (const Screen& s : set.screens) {
         f << "screen " << escText(s.name) << " " << (int)s.role << " " << s.fadeIn << "\n";
         const ScreenBg& b = s.bg;
@@ -173,7 +181,7 @@ bool saveScreens(const std::string& path, const ScreenSet& set) {
             const ScreenColors& c = i.col;
             f << "item " << escText(i.name) << " " << (int)i.kind << " " << i.x << " " << i.y << " " << i.w << " " << i.h << " " << escText(i.text) << " " << escText(i.image) << " "
               << i.textSize << " " << i.align << " " << c.text << " " << c.accent << " " << c.picked << " " << c.dim << " " << c.fill << " " << c.fillAlpha << " " << i.alpha << " "
-              << (i.filled ? 1 : 0) << " " << (i.frame ? 1 : 0) << " " << i.rounding << " " << i.border << " " << (int)i.act << " " << escText(i.target) << " " << escText(i.group) << " " << i.speed << "\n";
+              << (i.filled ? 1 : 0) << " " << (i.frame ? 1 : 0) << " " << i.rounding << " " << i.border << " " << (int)i.act << " " << escText(i.target) << " " << escText(i.group) << " " << i.speed << " " << i.slots << "\n";
         }
         f << "comp " << s.comp.nextId << "\n";
         for (const CompNode& n : s.comp.nodes) {
@@ -187,10 +195,11 @@ bool saveScreens(const std::string& path, const ScreenSet& set) {
 }
 bool loadScreens(const std::string& path, ScreenSet& set) {
     std::ifstream f(path); if (!f) return false;
-    set = ScreenSet{}; std::string line; Screen* cur = nullptr;
+    set = ScreenSet{}; std::string line; Screen* cur = nullptr; int version = 1;
     while (std::getline(f, line)) {
         std::istringstream l(line); std::string k; l >> k;
-        if (k == "screen") {
+        if (k == "screens") l >> version;
+        else if (k == "screen") {
             Screen s; std::string n; int role = 0; l >> n >> role >> s.fadeIn; s.name = unescText(n);
             s.role = (ScreenRole)std::clamp(role, 0, (int)ScreenRole::COUNT - 1); s.comp = Compositor{};
             set.screens.push_back(s); cur = &set.screens.back();
@@ -205,6 +214,7 @@ bool loadScreens(const std::string& path, ScreenSet& set) {
             l >> n >> kind >> i.x >> i.y >> i.w >> i.h >> t >> im >> i.textSize >> i.align >> c.text >> c.accent >> c.picked >> c.dim >> c.fill >> c.fillAlpha >> i.alpha
               >> fl >> fr >> i.rounding >> i.border >> act >> tg >> gr >> i.speed;
             if (!l) continue;
+            { int sl; if (l >> sl) i.slots = std::clamp(sl, 1, 12); }
             i.name = unescText(n); i.text = unescText(t); i.image = unescText(im); i.target = unescText(tg); i.group = unescText(gr);
             i.kind = (ScreenItemKind)std::clamp(kind, 0, (int)ScreenItemKind::COUNT - 1); i.act = (ScreenAct)std::clamp(act, 0, (int)ScreenAct::COUNT - 1);
             i.filled = fl != 0; i.frame = fr != 0; cur->items.push_back(i);
@@ -218,6 +228,7 @@ bool loadScreens(const std::string& path, ScreenSet& set) {
         }
     }
     for (Screen& s : set.screens) for (CompNode& n : s.comp.nodes) for (int& i : n.in) if (i && !s.comp.find(i)) i = 0;   // (wires to nodes that are gone)
+    if (version < 2 && set.byRole(ScreenRole::Files) < 0) set.screens.insert(set.screens.begin() + std::min<size_t>(1, set.screens.size()), presetScreen(ScreenRole::Files));   // (from before save files)
     return true;
 }
 

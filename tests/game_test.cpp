@@ -20,6 +20,7 @@
 #include "../src/game/options.h"
 #include "../src/game/cull.h"
 #include "../src/game/screens.h"
+#include "../src/game/savegame.h"
 #include <sstream>
 #include <algorithm>
 #include <map>
@@ -436,7 +437,7 @@ int main() {
         CHECK(v2.size() == 1 && v2[0].kind == ObjKind::Trigger && v2[0].size.x == 4 && v2[0].trigger.action == TriggerAction::Kill && v2[0].trigger.text == "Watch out!"
               && v2[0].teleport.world == "Level 2" && v2[0].teleport.target == "Arrival pad" && v2[0].door.key == "Red key" && v2[0].pickup.name == "Big gem", "helpers save and load (names with spaces too)");
         int shapes = 0; for (auto& n : builtinShapeNames()) { MeshModel m; shapes += builtinShape(n, m) && m.triangles() > 0; }
-        CHECK(shapes == 16, "all built-in looks build (%d)", shapes);
+        CHECK(shapes == 17, "all built-in looks build (%d)", shapes);
     }
 
     // particles and lights
@@ -969,7 +970,7 @@ int main() {
           CHECK(eb2.size() == 1 && eb2[0].kind == ObjKind::Enemy && eb2[0].enemyType == 4 && std::string(kindName(ObjKind::Enemy)) == "Enemy", "a placed enemy keeps its type"); }
         {   // an older file: the text was on the object
             std::ifstream in("/tmp/prim_scanobjs.txt"); std::string all((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()); in.close();
-            size_t at = all.find(" 1 2 0\n"); if (at != std::string::npos) all.replace(at, 7, " 1 Old%20Door Research Line%20one.%0ALine%20two. 1 2.5\n");
+            size_t at = all.find(" 1 2 0 1 1\n"); if (at != std::string::npos) all.replace(at, 11, " 1 Old%20Door Research Line%20one.%0ALine%20two. 1 2.5\n");
             std::ofstream outF("/tmp/prim_scanobjs_old.txt"); outF << all; outF.close();
             std::vector<WorldObject> old; loadObjects("/tmp/prim_scanobjs_old.txt", old);
             CHECK(old.size() == 3 && old[0].scan.on && old[0].scan.id == 0 && old[0].scan.legacyName == "Old Door" && old[0].scan.legacyText == "Line one.\nLine two." && old[0].scan.legacyImportant && old[0].scan.legacyTime == 2.5f && old[1].scan.id == 2,
@@ -1133,12 +1134,13 @@ int main() {
     {   // screens: main menu, options, death, credits; the compositor's node graph
         printf("\nscreens and the compositor\n");
         ScreenSet ss = defaultScreens();
-        CHECK(ss.screens.size() == 4 && ss.byRole(ScreenRole::MainMenu) == 0 && ss.byRole(ScreenRole::Options) == 1 && ss.byRole(ScreenRole::Death) == 2 && ss.byRole(ScreenRole::Credits) == 3 && ss.find("Credits") == 3,
-              "starter screens: Main menu, Options, Death screen, Credits");
+        CHECK(ss.screens.size() == 5 && ss.byRole(ScreenRole::MainMenu) == 0 && ss.byRole(ScreenRole::Files) == 1 && ss.byRole(ScreenRole::Options) == 2 && ss.byRole(ScreenRole::Death) == 3 && ss.byRole(ScreenRole::Credits) == 4 && ss.find("Credits") == 4,
+              "starter screens: Main menu, Files, Options, Death screen, Credits");
+        { bool slots = false; for (const ScreenItem& i : ss.screens[1].items) slots |= i.kind == ScreenItemKind::SaveSlots && i.slots == 3; CHECK(slots, "the Files screen: three save files"); }
         const Screen& mm = ss.screens[0]; int btn = 0; bool newGame = false, opts = false;
         for (const ScreenItem& i : mm.items) if (i.kind == ScreenItemKind::Button) { btn++; newGame |= i.act == ScreenAct::NewGame; opts |= i.act == ScreenAct::Options; }
         CHECK(btn == 5 && newGame && opts, "the main menu: New game, Continue, Options, Credits, Quit");
-        bool optItem = false; for (const ScreenItem& i : ss.screens[1].items) optItem |= i.kind == ScreenItemKind::Options; CHECK(optItem, "the Options preset holds the options list");
+        bool optItem = false; for (const ScreenItem& i : ss.screens[2].items) optItem |= i.kind == ScreenItemKind::Options; CHECK(optItem, "the Options preset holds the options list");
         // the graph
         Compositor c = defaultCompositor(); std::vector<int> ord = c.order();
         CHECK(ord.size() == 6 && c.find(ord.back())->type == NodeType::Output && c.find(ord[0])->type == NodeType::Background, "the starter graph: Background + UI -> Alpha Over -> Glare -> Vignette -> Output, in order");
@@ -1158,15 +1160,47 @@ int main() {
         // save / load
         ss.screens[0].bg.kind = BgKind::World; ss.screens[0].bg.world = "Title Valley"; ss.screens[0].bg.camera = "Menu cam"; ss.screens[0].bg.turn = 3;
         ss.screens[0].items[0].col.accent = 0x123456; ss.screens[0].items[0].text = "Two words\nand a line";
-        ss.screens[1].items[2].group = "Controls"; ss.screens[3].comp.find(ss.screens[3].comp.output())->mute = true;
+        ss.screens[2].items[2].group = "Controls"; ss.screens[4].comp.find(ss.screens[4].comp.output())->mute = true; ss.screens[1].items[1].slots = 5;
         Screen cu = presetScreen(ScreenRole::Custom); cu.name = "My screen"; cu.bg.kind = BgKind::Video; cu.bg.file = "intro movie.mp4"; cu.bg.loop = false; ss.screens.push_back(cu);
         saveScreens("/tmp/prim_screens.txt", ss); ScreenSet sl; CHECK(loadScreens("/tmp/prim_screens.txt", sl), "screens load");
         const Screen& m0 = sl.screens[0];
-        CHECK(sl.screens.size() == 5 && m0.bg.kind == BgKind::World && m0.bg.world == "Title Valley" && m0.bg.camera == "Menu cam" && m0.bg.turn == 3 && m0.items[0].col.accent == 0x123456
-              && m0.items[0].text == "Two words\nand a line" && sl.screens[1].items[2].group == "Controls" && sl.screens[4].bg.file == "intro movie.mp4" && !sl.screens[4].bg.loop
-              && sl.screens[4].name == "My screen" && sl.screens[2].role == ScreenRole::Death, "backgrounds, items, colours and roles save and load");
-        CHECK(sl.screens[2].comp.order().size() == ss.screens[2].comp.order().size() && sl.screens[2].comp.nextId == ss.screens[2].comp.nextId && sl.screens[3].comp.find(sl.screens[3].comp.output())->mute,
+        CHECK(sl.screens.size() == 6 && sl.screens[1].items[1].slots == 5 && m0.bg.kind == BgKind::World && m0.bg.world == "Title Valley" && m0.bg.camera == "Menu cam" && m0.bg.turn == 3 && m0.items[0].col.accent == 0x123456
+              && m0.items[0].text == "Two words\nand a line" && sl.screens[2].items[2].group == "Controls" && sl.screens[5].bg.file == "intro movie.mp4" && !sl.screens[5].bg.loop
+              && sl.screens[5].name == "My screen" && sl.screens[3].role == ScreenRole::Death, "backgrounds, items, colours and roles save and load");
+        CHECK(sl.screens[3].comp.order().size() == ss.screens[3].comp.order().size() && sl.screens[3].comp.nextId == ss.screens[3].comp.nextId && sl.screens[4].comp.find(sl.screens[4].comp.output())->mute,
               "the node graphs save and load (wires, values, muted nodes)");
+        {   // screens saved before save files: they get a Files screen once
+            ScreenSet old = defaultScreens(); old.screens.erase(old.screens.begin() + 1); saveScreens("/tmp/prim_screens_old.txt", old);
+            { std::ifstream in("/tmp/prim_screens_old.txt"); std::stringstream b; b << in.rdbuf(); std::string t = b.str(); t.replace(t.find("screens 2"), 9, "screens 1"); std::ofstream out("/tmp/prim_screens_old.txt"); out << t; }
+            ScreenSet ol; loadScreens("/tmp/prim_screens_old.txt", ol);
+            CHECK(ol.screens.size() == 5 && ol.byRole(ScreenRole::Files) == 1, "older screens get the Files screen (after the main menu)");
+            ScreenSet nw = defaultScreens(); nw.screens.erase(nw.screens.begin() + 1); saveScreens("/tmp/prim_screens_new.txt", nw); ScreenSet nl; loadScreens("/tmp/prim_screens_new.txt", nl);
+            CHECK(nl.byRole(ScreenRole::Files) < 0, "a newer set without it stays without it");
+        }
+    }
+
+    {   // save files
+        printf("\nsave files\n");
+        SaveGame g; g.world = "Tallon Overworld"; g.place = "Save Station 1"; g.playTime = 3 * 3600 + 25 * 60 + 9; g.completion = 0.42f; g.health = 199; g.maxHealth = 299; g.savedAt = 1790000000;
+        g.pos = { 12.5, 64.25, -3.125 }; g.yaw = 1.25; g.keys = { "Morph Ball", "Wave Beam" }; g.counts = { { "Missile", 15 }, { "Energy Tank", 2 } };
+        g.taken["Tallon Overworld"] = { 4, 9, 17 }; g.taken["Chozo Ruins"] = { 2 }; g.beam = 1; g.missile = 0; g.visor = 1;
+        ScanEntry e; e.id = 7; e.name = "Strange Door"; e.category = "Research"; e.text = "Two lines\nand 100% sure"; e.model = "@door"; e.important = true; g.scans.push_back(e);
+        g.enemyGone = { "Chozo Ruins#12" }; g.zonesCleared = { "Tallon Overworld#3" }; g.stationsUsed = { "Tallon Overworld#5" }; g.flags = { "met the queen" }; g.maps = { "Tallon Overworld", "Chozo Ruins" };
+        CHECK(saveGame("/tmp/prim_save/file1", g), "a file saves");
+        SaveGame b; CHECK(loadGame("/tmp/prim_save/file1", b), "and loads");
+        CHECK(b.world == g.world && b.place == g.place && b.playTime == g.playTime && b.completion == g.completion && b.health == 199 && b.maxHealth == 299 && b.savedAt == g.savedAt
+              && b.pos.x == 12.5 && b.pos.y == 64.25 && b.pos.z == -3.125 && b.yaw == 1.25, "where, how long, how much, when");
+        CHECK(b.keys == g.keys && b.counts == g.counts && b.taken == g.taken && b.beam == 1 && b.visor == 1, "what you carry and what you took, per world");
+        CHECK(b.scans.size() == 1 && b.scans[0].text == "Two lines\nand 100% sure" && b.scans[0].important && b.scans[0].model == "@door", "the scan log");
+        CHECK(b.enemyGone == g.enemyGone && b.zonesCleared == g.zonesCleared && b.stationsUsed == g.stationsUsed && b.flags == g.flags && b.maps == g.maps, "defeated, cleared, stations, flags, maps");
+        { std::ofstream cut("/tmp/prim_save/file2/save.txt"); }
+        std::filesystem::create_directories("/tmp/prim_save/file2"); { std::ofstream cut("/tmp/prim_save/file2/save.txt"); cut << "save 1\nworld X\n"; }
+        SaveGame c; CHECK(!loadGame("/tmp/prim_save/file2", c) && !loadGame("/tmp/prim_save/none", c), "a file cut short (or none) is not a save");
+        CHECK(playTimeText(3 * 3600 + 25 * 60 + 9) == "3:25" && playTimeText(59) == "0:00" && playTimeText(600) == "0:10", "play time as hours:minutes");
+        CHECK(eraseGame("/tmp/prim_save/file1") && !loadGame("/tmp/prim_save/file1", c), "erasing a file");
+        { std::vector<WorldObject> os(1); os[0].kind = ObjKind::SaveStation; os[0].name = "Save Station 1"; os[0].save.ammo = false; saveObjects("/tmp/prim_savest.txt", os);
+          std::vector<WorldObject> ol; loadObjects("/tmp/prim_savest.txt", ol);
+          CHECK(ol.size() == 1 && ol[0].kind == ObjKind::SaveStation && ol[0].save.energy && !ol[0].save.ammo && std::string(kindName(ObjKind::SaveStation)) == "Save Station", "Save Stations save and load (what they fill up)"); }
     }
 
     {   // culling: a box (a model part, turned and stretched) inside the view or not

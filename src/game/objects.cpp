@@ -89,7 +89,7 @@ const char* collideName(Collide c) { return c == Collide::Exact ? "Exact (from i
 const char* kindName(ObjKind k) {
     switch (k) { case ObjKind::Door: return "Door"; case ObjKind::Platform: return "Platform"; case ObjKind::Pickup: return "Pickup"; case ObjKind::Checkpoint: return "Checkpoint";
     case ObjKind::Teleporter: return "Teleporter"; case ObjKind::Trigger: return "Trigger zone"; case ObjKind::Light: return "Light"; case ObjKind::Particles: return "Particles";
-    case ObjKind::MapCamera: return "Map camera"; case ObjKind::MapStation: return "Map Station"; case ObjKind::Enemy: return "Enemy"; default: return "Prop"; }
+    case ObjKind::MapCamera: return "Map camera"; case ObjKind::MapStation: return "Map Station"; case ObjKind::Enemy: return "Enemy"; case ObjKind::SaveStation: return "Save Station"; default: return "Prop"; }
 }
 const char* pickupName(PickupType t) { return t == PickupType::Key ? "Key" : t == PickupType::Collectible ? "Collectible (counted)" : "Health"; }
 const char* triggerName(TriggerAction a) { return a == TriggerAction::Kill ? "Kill (traps, acid ...)" : a == TriggerAction::Heal ? "Heal" : a == TriggerAction::Checkpoint ? "Checkpoint" : "Show a message"; }
@@ -218,7 +218,7 @@ bool saveObjects(const std::string& path, const std::vector<WorldObject>& objs) 
           << " " << P.glow << " " << (P.additive ? 1 : 0) << " " << (int)P.shape << " " << (int)P.area << " " << P.areaSize.x << " " << P.areaSize.y << " " << P.areaSize.z << " " << P.spin
           << " " << (P.collide ? 1 : 0) << " " << (P.bounce ? 1 : 0) << " " << (P.light ? 1 : 0) << " " << P.lightRange << " " << P.lightIntensity << " " << P.maxParticles;
         f << " " << o.door.fieldSide << " " << o.door.fieldGap << " " << (o.door.fieldOnParts ? 1 : 0) << " " << esc(o.door.fieldParts) << " " << esc(o.door.openedBy) << " " << P.pull << " " << o.map.id << " " << o.map.range;
-        f << " " << (o.scan.on ? 1 : 0) << " " << o.scan.id << " " << o.enemyType;
+        f << " " << (o.scan.on ? 1 : 0) << " " << o.scan.id << " " << o.enemyType << " " << (o.save.energy ? 1 : 0) << " " << (o.save.ammo ? 1 : 0);
         f << "\n";
     }
     return (bool)f;
@@ -257,7 +257,7 @@ bool loadObjects(const std::string& path, std::vector<WorldObject>& objs) {
         { int on = 0; std::string tok;   // can be scanned: on, the entry's ID (newer files); older ones kept the entry's text here
           if (l >> on >> tok) {
               o.scan.on = on != 0;
-              if (!tok.empty() && tok.find_first_not_of("0123456789") == std::string::npos) { o.scan.id = std::stoi(tok); int et; if (l >> et) o.enemyType = et; }
+              if (!tok.empty() && tok.find_first_not_of("0123456789") == std::string::npos) { o.scan.id = std::stoi(tok); int et; if (l >> et) { o.enemyType = et; int se, sa; if (l >> se >> sa) { o.save.energy = se != 0; o.save.ammo = sa != 0; } } }
               else { std::string sc, st; int imp = 0; float tm = 0; o.scan.legacyName = unescText(tok); if (l >> sc >> st >> imp >> tm) { o.scan.legacyCategory = unescText(sc); o.scan.legacyText = unescText(st); o.scan.legacyImportant = imp != 0; o.scan.legacyTime = std::max(0.f, tm); } }
           } }
         objs.push_back(o);

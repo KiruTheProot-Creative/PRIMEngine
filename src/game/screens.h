@@ -9,7 +9,7 @@
 
 namespace mc {
 
-enum class ScreenRole { Custom, MainMenu, Options, Death, Credits, COUNT };
+enum class ScreenRole { Custom, MainMenu, Options, Death, Credits, Files, COUNT };   // Files: picking a save file
 const char* screenRoleName(ScreenRole r);
 
 enum class BgKind { Color, Image, Video, World, Game, COUNT };   // Image: png / jpg / gif (moves); Game: the game as it is, behind
@@ -26,9 +26,9 @@ struct ScreenBg {
     float tilt = -8, height = 1.0f;                      // World: looking up (+) / down (-), degrees; the eye above the camera object (blocks)
 };
 
-enum class ScreenItemKind { Panel, Text, Image, Button, Options, Credits, COUNT };
+enum class ScreenItemKind { Panel, Text, Image, Button, Options, Credits, SaveSlots, COUNT };   // SaveSlots: the save files, one card each
 const char* screenItemKindName(ScreenItemKind k);
-enum class ScreenAct { None, NewGame, Continue, Options, Credits, Quit, GoTo, Back, Retry, MainMenu, COUNT };
+enum class ScreenAct { None, NewGame, Continue, Options, Credits, Quit, GoTo, Back, Retry, MainMenu, Files, COUNT };
 const char* screenActName(ScreenAct a);
 
 struct ScreenColors {
@@ -48,6 +48,7 @@ struct ScreenItem {
     ScreenAct act = ScreenAct::None; std::string target; // Button: what it does (GoTo: a screen's name)
     std::string group;                                   // Options: "" all three as tabs, or "Sound" / "Graphics" / "Controls"
     float speed = 0.06f;                                 // Credits: screen heights a second
+    int slots = 3;                                       // SaveSlots: how many files
 };
 
 // ---- the compositor: nodes wired together. Background and UI give pictures; the rest change them; Output is what shows.
@@ -96,7 +97,7 @@ struct ScreenSet {
     int find(const std::string& name) const;              // -1: none
     int byRole(ScreenRole r) const;                       // the first screen with that role (-1: none)
 };
-ScreenSet defaultScreens();                               // Main menu, Options, Death, Credits
+ScreenSet defaultScreens();                               // Main menu, Files, Options, Death, Credits
 bool saveScreens(const std::string& path, const ScreenSet& s);
 bool loadScreens(const std::string& path, ScreenSet& s);
 

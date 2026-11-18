@@ -25,6 +25,7 @@
 #include "../game/options.h"
 #include "../game/cull.h"
 #include "../game/screens.h"
+#include "../game/savegame.h"
 #include "media.h"
 #include "../world/visibility.h"
 #include "../game/enemies.h"
@@ -674,7 +675,7 @@ struct App {
         auto pressed = [&](Act a) { return !quiet && now[(int)a] && !actPrev[(int)a]; };
         if (pressed(Act::Map)) { if (mapOpen) CloseMap(); else if (!showSettings) OpenMap(); }   // the map (also from the pause menu)
         else if (!paused) {
-            if (pressed(Act::Use)) { if (WorldObject* st = StationInReach()) UseMapStation(*st); }   // use: a Map Station in front of you
+            if (pressed(Act::Use)) { if (WorldObject* st = StationInReach()) { if (st->kind == ObjKind::SaveStation) UseSaveStation(*st); else UseMapStation(*st); } }   // use: a Map / Save Station
             if (pressed(Act::Visor) && !player.ball) NextVisor();                                     // the visors
             if (pressed(Act::Ball) && (!Down(VK_CONTROL) || settings.keys.uses(Act::Ball, VK_CONTROL))) ToggleBall();   // the morph ball
             if (pressed(Act::NextMissile) && weapons.missileTypes.size() > 1 && !player.ball) { if (weapons.switchMode == 0) NextMissile(); else if (weapons.switchMode == 2) Toast("Pick missiles in the menu (Esc)"); }
@@ -721,6 +722,7 @@ struct App {
             else if (showSettings) showSettings = false;
             else if (mapOpen) CloseMap();
             else if (scanOpen) CloseScan();
+            else if (savePrompt) CloseSavePrompt();
             else if (playMode) { paused = !paused; Capture(!paused); }
             else if (captured) Capture(false);            // editor: the mouse goes back to the panels
             else if (editorOpen && !EditorView()) editorOpen = false;
@@ -1322,7 +1324,9 @@ struct App {
         else if (m == "@light") { MakeLight(o); o.folder = "Lights"; }
         else if (m == "@emitter") { MakeEmitter(o); o.folder = "Particles"; o.particles = particlePreset("Fire"); }
         else if (m == "@map-camera") { o.kind = ObjKind::MapCamera; o.collide = Collide::None; o.folder = "Map"; }
+        else if (m == "@save-station") { o.kind = ObjKind::SaveStation; o.collide = Collide::None; o.folder = "Save"; }
         else if (m == "@map-station") { o.kind = ObjKind::MapStation; o.folder = "Map"; }
+        else if (m == "@save-station") { o.kind = ObjKind::SaveStation; o.collide = Collide::None; o.folder = "Save"; }
         else if (m.rfind("@enemy-", 0) == 0) {   // an enemy: the first type with this look (or the first type)
             o.kind = ObjKind::Enemy; o.folder = "Enemies"; o.enemyType = 0;
             for (const EnemyType& t : enemies.types) if (t.model == m) { o.enemyType = t.id; break; }
@@ -1333,7 +1337,7 @@ struct App {
     std::string PresetName(const WorldObject& o) const {
         switch (o.kind) {
         case ObjKind::Pickup: return o.pickup.type == PickupType::Health ? "Health" : o.pickup.name;
-        case ObjKind::Checkpoint: return "Checkpoint"; case ObjKind::Teleporter: return "Teleporter"; case ObjKind::Trigger: return "Zone"; case ObjKind::Light: return "Light"; case ObjKind::Particles: return "Particles"; case ObjKind::MapCamera: return "Map camera"; case ObjKind::MapStation: return "Map Station"; case ObjKind::Enemy: { const EnemyType* t = enemies.find(o.enemyType); return t ? t->name.c_str() : "Enemy"; }
+        case ObjKind::Checkpoint: return "Checkpoint"; case ObjKind::Teleporter: return "Teleporter"; case ObjKind::Trigger: return "Zone"; case ObjKind::Light: return "Light"; case ObjKind::Particles: return "Particles"; case ObjKind::MapCamera: return "Map camera"; case ObjKind::MapStation: return "Map Station"; case ObjKind::SaveStation: return "Save Station"; case ObjKind::Enemy: { const EnemyType* t = enemies.find(o.enemyType); return t ? t->name.c_str() : "Enemy"; }
         default: return o.model;
         }
     }
@@ -1419,7 +1423,7 @@ struct App {
             case ObjKind::Checkpoint:
                 if (entered) { playSpawn = { o.pos.x, b.hi.y + 0.01, o.pos.z }; playYaw = player.yaw; Toast("Checkpoint"); }
                 break;
-            case ObjKind::MapStation: break;   // (used with E: StationInReach)
+            case ObjKind::MapStation: case ObjKind::SaveStation: break;   // (used with E: StationInReach)
             case ObjKind::Teleporter:
                 if (teleportLock != o.id && !travel) { travel = true; travelWorld = o.teleport.world; travelTarget = o.teleport.target; from = o.id; }
                 break;
@@ -2277,6 +2281,12 @@ struct App {
         if (o.kind == ObjKind::Light) LightInspector(o);
         if (o.kind == ObjKind::Particles) ParticleInspector(o);
         if (o.kind == ObjKind::MapCamera || o.kind == ObjKind::MapStation) MapInspector(o);
+        if (o.kind == ObjKind::SaveStation) {
+            ImGui::SeparatorText("Save Station");
+            Hint("Stand on it and press E: it fills you up, then asks to save the game into the file being played (picked on the Files screen). This is the only place a game saves, like Metroid Prime. Its name shows on the file.");
+            Prop("Fills up energy"); ImGui::Checkbox("##sven", &o.save.energy);
+            Prop("Fills up missiles / bombs"); ImGui::Checkbox("##svam", &o.save.ammo);
+        }
         if (o.kind == ObjKind::Enemy) EnemyInspector(o);
         else if (o.kind != ObjKind::MapCamera && o.kind != ObjKind::Light && o.kind != ObjKind::Trigger) ScanInspector(o);
         if (o.kind == ObjKind::Door) DoorInspector(o, ch_);
@@ -3122,7 +3132,7 @@ struct App {
         const float cw = (float)rw, ch = (float)rh;   // the 3D picture's size (it sits at vx, vy in the window)
         if (playMode && !paused && !mapOpen && !hideHud) if (WorldObject* st = StationInReach()) {   // "E: Map Station"
             std::string used = stationsUsed.count(CurrentWorld() + "#" + std::to_string(st->id)) ? " (downloaded)" : "";
-            std::string t = "E   Use Map Station" + used; float ui = settings.uiScale;
+            std::string t = st->kind == ObjKind::SaveStation ? "E   Save Station" : "E   Use Map Station" + used; float ui = settings.uiScale;
             ImVec2 ts = ImGui::CalcTextSize(t.c_str()); ImVec2 c(vx + cw * 0.5f, vy + ch * 0.64f), pad(14 * ui, 8 * ui);
             ImVec2 a(c.x - ts.x * 0.5f - pad.x, c.y - pad.y), b(c.x + ts.x * 0.5f + pad.x, c.y + ts.y + pad.y);
             dl->AddRectFilled(a, b, IM_COL32(4, 18, 28, 170), 6 * ui); dl->AddRect(a, b, IM_COL32(110, 255, 160, 200), 6 * ui, 0, 1.5f * ui);
@@ -3387,6 +3397,7 @@ struct App {
         if (!weapons.missileTypes.empty() && !weapons.missileCounter.empty()) inv.counts[weapons.missileCounter] = weapons.missileStart;
         weapState.missile = 0; chargedOn = false;
         enemyRt.clear(); enemyGone.clear(); zonesCleared.clear(); enemyShots.clear(); enemyDrops.clear(); debris.clear(); enemyAnimT.clear(); enemyAnimClip.clear(); playerInvuln = 0;
+        curSlot = -1; playTime = 0; savePrompt = false;
         visor = 0; visorFlash = 0; scanLog.clear(); scanOpen = false; scanProgress = 0; scanTargetId = 0; menuScan = 0; menuScroll.clear(); menuScrollWho.clear();
         seenMaps.clear(); stationsUsed.clear(); mapGpu.clear(); mapGpuWorld.clear(); mapOpen = false;
         takenByWorld.clear(); insideNow.clear(); firedOnce.clear(); teleportLock = 0; bigMsgT = 0; playStartWorld = CurrentWorld(); startEditCam = editCam;
@@ -5336,6 +5347,8 @@ struct App {
         menuPage = pg; menuSel = -2;
     }
     void MenuDo(const MenuHit& h) {
+        if (h.target == "save:yes") { WriteSave(); CloseSavePrompt(); return; }   // the Save Station's question
+        if (h.target == "save:no") { CloseSavePrompt(); return; }
         switch (h.kind) {
         case 1: GoToPage(h.arg); return;
         case 2: SwitchBeam(h.arg); return;
@@ -5621,15 +5634,16 @@ struct App {
                     }
     void BuildMenuLists() {
         menuShown = false; menuHits.clear(); menuPanes.clear(); menuPaneIsPage.clear(); smModel.clear();
-        bool inMenu = playMode && paused && !mapOpen && !showSettings && !scanOpen, inScan = playMode && scanOpen;
+        bool inMenu = playMode && paused && !mapOpen && !showSettings && !scanOpen && !savePrompt, inScan = playMode && scanOpen, inSave = playMode && savePrompt;
         bool preview = menuPreview && playerEdOpen && !playMode;
         inMenu = inMenu && curScreen < 0;
         if (inMenu && !menuWasOpen) { menuPage = 0; menuBack.clear(); menuSel = -2; menuSlideT = 0; menuSlideDir = 0; }   // it opens on the first page
         menuWasOpen = inMenu;
-        if (!(inMenu || inScan || preview)) return;
-        if (menu.pages.empty() && !inScan) return;
+        if (!(inMenu || inScan || inSave || preview)) return;
+        if (menu.pages.empty() && !inScan && !inSave) return;
         menuShown = true;
-        if (inScan) { menuPanes.push_back(ScanResultPane()); menuPaneIsPage.push_back(true); }
+        if (inSave) { menuPanes.push_back(SavePromptPane()); menuPaneIsPage.push_back(false); }
+        else if (inScan) { menuPanes.push_back(ScanResultPane()); menuPaneIsPage.push_back(true); }
         else {
             int pg = preview ? std::clamp(menuEdPage, 0, (int)menu.pages.size() - 1) : std::clamp(menuPage, 0, (int)menu.pages.size() - 1);
             for (const MenuPane& p : menu.always) { menuPanes.push_back(p); menuPaneIsPage.push_back(false); }
@@ -6012,7 +6026,7 @@ struct App {
                 dl->AddImage((ImTextureID)(intptr_t)im, ImVec2(a.x + r[0] * (b.x - a.x), a.y + r[1] * (b.y - a.y)), ImVec2(a.x + r[2] * (b.x - a.x), a.y + r[3] * (b.y - a.y)), ImVec2(0, 0), ImVec2(1, 1), C(0xFFFFFF, al));
                 break; }
             case ScreenItemKind::Button: {
-                bool off = it.act == ScreenAct::Continue;   // (no save files yet)
+                bool off = it.act == ScreenAct::Continue && (playMode ? curSlot < 0 : NewestSlot() == 0);   // (nothing saved yet)
                 MenuHit h{ 0, ImVec4(a.x, a.y, b.x, b.y), off ? 9 : 8, (int)it.act, MenuAct::None, it.target }; screenHits.push_back(h);
                 bool sel = live && (int)screenHits.size() - 1 == screenSel;
                 if (it.filled || sel) dl->AddRectFilled(a, b, sel ? C(col.accent, 0.25f * al) : C(col.fill, col.fillAlpha * al), rnd);
@@ -6025,6 +6039,25 @@ struct App {
             case ScreenItemKind::Options: {
                 OptColors oc{ col.accent, col.text, col.picked, col.dim, al };
                 DrawOptionsBlock(dl, a, b, ts, oc, it.group, 9000 + ii, screenHits, live ? screenSel : -1, 0, false);
+                break; }
+            case ScreenItemKind::SaveSlots: {   // the save files: a card each (an empty one starts a new game)
+                int n = std::clamp(it.slots, 1, 12); float gap = (b.y - a.y) * 0.03f, cardH = ((b.y - a.y) - gap * (n - 1)) / n;
+                for (int k = 1; k <= n; k++) {
+                    ImVec2 p0(a.x, a.y + (k - 1) * (cardH + gap)), p1(b.x, p0.y + cardH);
+                    MenuHit h{ 0, ImVec4(p0.x, p0.y, p1.x, p1.y), 10, k, MenuAct::None, "" }; screenHits.push_back(h);
+                    bool sel = live && (int)screenHits.size() - 1 == screenSel; auto info = slotInfo.find(k); bool used = info != slotInfo.end();
+                    float rr = cardH * 0.18f;
+                    dl->AddRectFilled(p0, p1, sel ? C(col.accent, 0.22f * al) : C(col.fill, col.fillAlpha * al), rr);
+                    dl->AddRect(p0, p1, C(col.accent, (sel ? 0.95f : 0.4f) * al), rr, ImDrawFlags_None, sel ? it.border + 1 : it.border);
+                    float pad = cardH * 0.18f, colW = (p1.x - p0.x) * 0.28f;
+                    TextIn(dl, font, "FILE " + std::to_string(k), ts * 1.25f, ImVec2(p0.x + pad, p0.y), ImVec2(p0.x + colW, p1.y), 0, sel ? C(col.picked, al) : C(col.accent, al));
+                    if (!used) { TextIn(dl, font, "Empty  -  a new game", ts, ImVec2(p0.x + colW, p0.y), ImVec2(p1.x - pad, p1.y), 0, C(col.dim, al)); continue; }
+                    const SaveGame& g = info->second; float mid = (p0.y + p1.y) * 0.5f;
+                    TextIn(dl, font, g.world + (g.place.empty() ? "" : "  -  " + g.place), ts, ImVec2(p0.x + colW, p0.y + cardH * 0.08f), ImVec2(p1.x - pad, mid), 0, C(col.text, al));
+                    char line[160]; std::snprintf(line, sizeof line, "Time %s      Energy %d / %d      Items %d%%", playTimeText(g.playTime).c_str(), (int)std::lround(g.health), (int)std::lround(g.maxHealth), (int)std::lround(g.completion * 100));
+                    TextIn(dl, font, line, ts * 0.82f, ImVec2(p0.x + colW, mid), ImVec2(p1.x - pad, p1.y - cardH * 0.08f), 0, C(col.dim, al * 1.2f));
+                    if (eraseArm == k && uiClock - eraseArmT < 3) TextIn(dl, font, "Delete again: erase", ts * 0.8f, ImVec2(p0.x, p0.y), ImVec2(p1.x - pad, p0.y + cardH * 0.4f), 2, IM_COL32(255, 90, 70, (int)(255 * al)));
+                }
                 break; }
             case ScreenItemKind::Credits: {   // the roll: comes up from below, line by line ("# " a heading)
                 std::string s = menuFill(it.text, [&](const std::string& n) { return MenuValue(n); });
@@ -6046,7 +6079,7 @@ struct App {
         dl->PopTexture(); dl->PopClipRect();
         if (live) {
             if (optSelTab >= 0) { for (int i = 0; i < (int)screenHits.size(); i++) if (screenHits[i].kind == 6 && screenHits[i].arg == optSelTab) screenSel = i; optSelTab = -1; }
-            if (screenSel == -2 || screenSel >= (int)screenHits.size()) { screenSel = -1; for (int i = 0; i < (int)screenHits.size(); i++) if (screenHits[i].kind == 8 || screenHits[i].kind == 5 || screenHits[i].kind == 7) { screenSel = i; break; } }
+            if (screenSel == -2 || screenSel >= (int)screenHits.size()) { screenSel = -1; for (int i = 0; i < (int)screenHits.size(); i++) if (screenHits[i].kind == 8 || screenHits[i].kind == 10 || screenHits[i].kind == 5 || screenHits[i].kind == 7) { screenSel = i; break; } }
         }
     }
     int ScreenHitAt(ImVec2 m, ImVec2* px) const {
@@ -6067,7 +6100,7 @@ struct App {
     void ShowScreen(int idx, bool remember) {
         if (idx < 0 || idx >= (int)screens.screens.size()) return;
         if (remember && curScreen >= 0 && curScreen != idx) screenBack.push_back(curScreen);
-        curScreen = idx; screenT = 0; screenSel = -2; bindCapture = -1;
+        curScreen = idx; screenT = 0; screenSel = -2; bindCapture = -1; RefreshSlots();
         mc::Screen& sc = screens.screens[idx];
         if (!playMode && sc.bg.kind == BgKind::World) {   // (only outside play: while playing, the game stays where it is)
             if (!sc.bg.world.empty() && sc.bg.world != CurrentWorld() && std::find(worldList.begin(), worldList.end(), sc.bg.world) != worldList.end()) {
@@ -6100,12 +6133,15 @@ struct App {
     }
     void ScreenAction(ScreenAct a, const std::string& target) {
         switch (a) {
-        case ScreenAct::NewGame: {
-            CloseScreens(); plainView = false;
-            std::string w = !game.startWorld.empty() ? game.startWorld : menuEditorWorld;
-            if (!w.empty() && w != CurrentWorld() && std::find(worldList.begin(), worldList.end(), w) != worldList.end()) { travelling = true; SaveWorld(); OpenWorld(w); travelling = false; }
-            player.flying = false; StartPlay(true); break; }
-        case ScreenAct::Continue: Toast("Continue comes with save files"); break;
+        case ScreenAct::NewGame: case ScreenAct::Files: {   // the Files screen picks the file (an empty one: a new game); without one: File 1
+            int f = screens.byRole(ScreenRole::Files);
+            if (f >= 0) ShowScreen(f, true); else if (a == ScreenAct::NewGame) StartSlot(1);
+            break; }
+        case ScreenAct::Continue: {   // the newest file (on the death screen: this file's last save)
+            RefreshSlots(); int k = playMode && curSlot >= 0 ? curSlot : NewestSlot();
+            if (playMode && curSlot == 0) { SaveGame g; if (loadGame(SlotDir(0), g)) { LoadSlot(0); break; } }
+            if (k > 0 && slotInfo.count(k)) LoadSlot(k); else Toast("No saved game yet");
+            break; }
         case ScreenAct::Options: { int o = screens.byRole(ScreenRole::Options); if (o >= 0) ShowScreen(o, true); else showSettings = true; break; }
         case ScreenAct::Credits: { int c = screens.byRole(ScreenRole::Credits); if (c >= 0) ShowScreen(c, true); break; }
         case ScreenAct::GoTo: { int i = screens.find(target); if (i >= 0) ShowScreen(i, true); else Toast("No screen called " + target); break; }
@@ -6124,7 +6160,8 @@ struct App {
     void ScreenInput() {   // keys and the mouse on the shown screen
         if (!CurScreen()) return;
         MenuControl(screenHits, screenSel, [&](ImVec2 m, int* pane, ImVec2* px) { if (pane) *pane = 0; return ScreenHitAt(m, px); },
-                    [&](const MenuHit& h) { if (h.kind == 8) ScreenAction((ScreenAct)h.arg, h.target); else if (h.kind == 9) Toast("Continue comes with save files"); }, false);
+                    [&](const MenuHit& h) { if (h.kind == 8) ScreenAction((ScreenAct)h.arg, h.target); else if (h.kind == 9) Toast("No saved game yet"); else if (h.kind == 10) SlotPicked(h.arg); }, false);
+        if (screenSel >= 0 && screenSel < (int)screenHits.size() && screenHits[screenSel].kind == 10 && (ImGui::IsKeyPressed(ImGuiKey_Delete) || ImGui::IsKeyPressed(ImGuiKey_Backspace))) SlotErase(screenHits[screenSel].arg);
     }
     void UpdateScreens(double dt) {
         mc::Screen* sc = CurScreen(); if (!sc) return;
@@ -6137,6 +6174,105 @@ struct App {
         int d = screens.byRole(ScreenRole::Death); if (d < 0) return;
         if (play.deadFor < std::min(0.6, game.player.respawnDelay * 0.5)) return;   // (a moment to see what happened)
         ShowScreen(d, false);
+    }
+
+    // ================================================================== save files (Prime style: only at Save Stations)
+    int curSlot = -1;          // the file being played (1, 2, 3...; 0: the editor's own test file when playing with F5; -1: none yet)
+    double playTime = 0;       // seconds played in this file
+    bool savePrompt = false; uint32_t saveStationId = 0;
+    std::map<int, SaveGame> slotInfo; int eraseArm = 0; double eraseArmT = 0;
+    std::string SlotDir(int slot) const { return projectDir + "/saves/" + (slot <= 0 ? std::string("editor") : "file" + std::to_string(slot)); }
+    int SlotCount() const { for (const mc::Screen& s : screens.screens) for (const ScreenItem& i : s.items) if (i.kind == ScreenItemKind::SaveSlots) return i.slots; return 3; }
+    void RefreshSlots() { slotInfo.clear(); for (int k = 1; k <= std::max(SlotCount(), 12); k++) { SaveGame g; if (loadGame(SlotDir(k), g)) slotInfo[k] = g; } }
+    int NewestSlot() const { int best = 0; int64_t at = -1; for (auto& kv : slotInfo) if (kv.first <= SlotCount() && kv.second.savedAt > at) { at = kv.second.savedAt; best = kv.first; } return best; }
+    // the items found (pickups that stay taken: keys, collectibles) of all there are, in every world
+    float Completion(int* found = nullptr, int* total = nullptr) {
+        takenByWorld[CurrentWorld()] = inv.taken;
+        int f = 0, t = 0;
+        for (const std::string& w : worldList) {
+            std::vector<WorldObject> os; if (w == CurrentWorld()) os = objects; else loadObjects(WorldsDir() + "/" + w + "/objects.txt", os);
+            auto tk = takenByWorld.find(w);
+            for (const WorldObject& o : os) if (o.kind == ObjKind::Pickup && o.pickup.type != PickupType::Health) {
+                t++; if (tk != takenByWorld.end()) { auto it = tk->second.find(o.id); if (it != tk->second.end() && it->second < 0) f++; }
+            }
+        }
+        if (found) *found = f; if (total) *total = t;
+        return t > 0 ? (float)f / t : 0.f;
+    }
+    void UseSaveStation(const WorldObject& st) {   // fills you up, then asks
+        if (st.save.energy) play.health = playRules.maxHealth;
+        if (st.save.ammo) {
+            if (!weapons.missileCounter.empty() && !weapons.missileTypes.empty()) inv.counts[weapons.missileCounter] = MissileMax();
+            for (const ItemDef& d : items.items) if (d.used && d.type == ItemType::PowerBomb && ItemHave(d.name) > 0) { inv.counts[items.powerBombCounter] = PowerBombMax(); break; }
+        }
+        saveStationId = st.id; savePrompt = true; paused = true; menuSel = -2; Capture(false);
+    }
+    void CloseSavePrompt() { savePrompt = false; paused = false; Capture(true); }
+    MenuPane SavePromptPane() {
+        MenuPane p; p.name = "Save"; p.pos = { 0, -0.04, 0.85 }; p.width = 0.82f; p.height = 0.4f; p.bendX = 0.3f; p.bendY = 0.12f; p.color = 0xFFC85A; p.backing = 0.7f;
+        auto text = [&](const std::string& t, float y, float h, float size, float al) { MenuItem i; i.kind = MenuKind::Text; i.text = t; i.x = 0.06f; i.y = y; i.w = 0.88f; i.h = h; i.textSize = size; i.alpha = al; i.color = 0xFFE6B0; p.items.push_back(i); };
+        text("SAVE STATION", 0.08f, 0.16f, 54, 1);
+        std::string file = curSlot > 0 ? "File " + std::to_string(curSlot) : "the editor's test file";
+        text("Energy restored. Save your progress to " + file + "?", 0.3f, 0.14f, 30, 0.8f);
+        auto button = [&](const char* t, float x, const char* tg) { MenuItem i; i.kind = MenuKind::Button; i.text = t; i.x = x; i.y = 0.58f; i.w = 0.36f; i.h = 0.24f; i.textSize = 42; i.color = 0xFFC85A; i.target = tg; p.items.push_back(i); };
+        button("Yes", 0.1f, "save:yes"); button("No", 0.54f, "save:no");
+        return p;
+    }
+    bool WriteSave() {
+        const WorldObject* st = nullptr; for (const WorldObject& o : objects) if (o.id == saveStationId) st = &o;
+        if (curSlot < 0) curSlot = 0;
+        SaveGame g; int found = 0, total = 0;
+        g.world = CurrentWorld(); g.place = st ? st->name : "Save Station"; g.playTime = playTime; g.completion = Completion(&found, &total);
+        g.health = play.health; g.maxHealth = playRules.maxHealth; g.savedAt = (int64_t)std::time(nullptr);
+        g.pos = player.feet; g.yaw = player.yaw;
+        g.keys = inv.keys; g.counts = inv.counts;
+        for (auto& w : takenByWorld) for (auto& t : w.second) if (t.second < 0) g.taken[w.first].insert(t.first);
+        g.beam = weapState.current; g.missile = weapState.missile; g.visor = visor;
+        g.scans = scanLog.entries; g.enemyGone = enemyGone; g.zonesCleared = zonesCleared; g.stationsUsed = stationsUsed; g.flags = evRun.flags;
+        for (auto& m : seenMaps) g.maps.push_back(m.first);
+        std::string dir = SlotDir(curSlot);
+        if (!saveGame(dir, g)) { Toast("Could not save"); return false; }
+        for (int i = 0; i < (int)g.maps.size(); i++) saveSeenMap(dir + "/map_" + std::to_string(i) + ".bin", seenMaps[g.maps[i]]);
+        RefreshSlots();
+        Toast(curSlot > 0 ? "Saved to File " + std::to_string(curSlot) : "Saved (the editor's test file: play from the main menu, F6, for real files)");
+        return true;
+    }
+    void GoToWorld(const std::string& w) {
+        if (!w.empty() && w != CurrentWorld() && std::find(worldList.begin(), worldList.end(), w) != worldList.end()) { travelling = true; SaveWorld(); OpenWorld(w); travelling = false; }
+    }
+    void StartSlot(int slot) {   // a new game in this file
+        CloseScreens(); plainView = false;
+        GoToWorld(!game.startWorld.empty() ? game.startWorld : menuEditorWorld);
+        player.flying = false; StartPlay(true);
+        curSlot = slot; playTime = 0;
+        Toast("A new game in File " + std::to_string(slot));
+    }
+    bool LoadSlot(int slot) {   // go on from where this file was saved
+        SaveGame g; std::string dir = SlotDir(slot);
+        if (!loadGame(dir, g)) { Toast("File " + std::to_string(slot) + " could not be read"); return false; }
+        CloseScreens(); plainView = false;
+        GoToWorld(g.world);
+        player.flying = false; StartPlay(true);
+        curSlot = slot; playTime = g.playTime;
+        inv.keys = g.keys; inv.counts = g.counts;
+        takenByWorld.clear(); for (auto& w : g.taken) for (uint32_t id : w.second) takenByWorld[w.first][id] = -1;
+        inv.taken = takenByWorld[CurrentWorld()];
+        UpdateItemRules(); play.health = std::clamp(g.health > 0 ? g.health : playRules.maxHealth, 1.f, playRules.maxHealth);
+        weapState.current = std::clamp(g.beam, 0, std::max(0, (int)weapons.beams.size() - 1)); weapState.missile = std::clamp(g.missile, 0, std::max(0, (int)weapons.missileTypes.size() - 1));
+        visor = std::clamp(g.visor, 0, VISORS - 1);
+        scanLog.entries = g.scans; enemyGone = g.enemyGone; zonesCleared = g.zonesCleared; stationsUsed = g.stationsUsed; evRun.flags.insert(g.flags.begin(), g.flags.end());
+        seenMaps.clear(); mapGpu.clear(); mapGpuWorld.clear();
+        for (int i = 0; i < (int)g.maps.size(); i++) { SeenMap m; if (loadSeenMap(dir + "/map_" + std::to_string(i) + ".bin", m)) seenMaps[g.maps[i]] = m; }
+        player.feet = g.pos; player.yaw = g.yaw; player.pitch = 0; player.vel = { 0, 0, 0 }; playSpawn = g.pos; playYaw = g.yaw;
+        enemyRt.clear();
+        Toast("File " + std::to_string(slot) + ": " + g.place);
+        return true;
+    }
+    void SlotPicked(int slot) { if (slotInfo.count(slot)) LoadSlot(slot); else StartSlot(slot); }
+    void SlotErase(int slot) {   // Delete twice (within 3 s) on a used file
+        if (!slotInfo.count(slot)) return;
+        if (eraseArm == slot && uiClock - eraseArmT < 3) { eraseGame(SlotDir(slot)); RefreshSlots(); eraseArm = 0; Toast("File " + std::to_string(slot) + " erased"); }
+        else { eraseArm = slot; eraseArmT = uiClock; Toast("Delete once more to erase File " + std::to_string(slot)); }
     }
 
     // ================================================================== the Screens editor: screens, their items on a 2D canvas, background, compositor
@@ -6313,6 +6449,7 @@ struct App {
                 if (it.kind == ScreenItemKind::Text) it.text = "Text";
                 if (it.kind == ScreenItemKind::Button) { it.text = "Button"; it.h = 0.07f; it.textSize = 0.036f; }
                 if (it.kind == ScreenItemKind::Options) { it.x = 0.1f; it.y = 0.15f; it.w = 0.8f; it.h = 0.7f; it.textSize = 0.032f; }
+                if (it.kind == ScreenItemKind::SaveSlots) { it.x = 0.1f; it.y = 0.18f; it.w = 0.8f; it.h = 0.6f; it.textSize = 0.034f; }
                 if (it.kind == ScreenItemKind::Credits) { it.text = "# Thanks\nfor playing"; it.y = 0.1f; it.w = 0.5f; it.h = 0.8f; it.x = 0.25f; }
                 if (it.kind == ScreenItemKind::Panel || it.kind == ScreenItemKind::Image) { it.w = 0.3f; it.h = 0.3f; }
                 sc.items.push_back(it); scrItem = (int)sc.items.size() - 1; ch = true;
@@ -6349,7 +6486,8 @@ struct App {
         if (it.kind == ScreenItemKind::Button) {
             Prop("Does"); if (ImGui::BeginCombo("##siact", screenActName(it.act))) { for (int k = 0; k < (int)ScreenAct::COUNT; k++) if (ImGui::Selectable(screenActName((ScreenAct)k), (int)it.act == k)) { it.act = (ScreenAct)k; ch = true; } ImGui::EndCombo(); }
             if (it.act == ScreenAct::GoTo) { Prop("Screen"); if (ImGui::BeginCombo("##sitg", it.target.empty() ? "(pick one)" : it.target.c_str())) { for (const mc::Screen& s : screens.screens) if (ImGui::Selectable(s.name.c_str(), s.name == it.target)) { it.target = s.name; ch = true; } ImGui::EndCombo(); } }
-            if (it.act == ScreenAct::Continue) Hint("Greyed out until save files come.");
+            if (it.act == ScreenAct::Continue) Hint("Goes on from the newest save file (on the death screen: this file's last save). Greyed out while there is none.");
+            if (it.act == ScreenAct::NewGame) Hint("Opens the Files screen (pick a file: an empty one starts a new game). Without a Files screen: a new game in File 1.");
         }
         if (it.kind == ScreenItemKind::Options) {
             const auto& gs = optionGroups(); int cur = 0; for (int k = 0; k < (int)gs.size(); k++) if (gs[k] == it.group) cur = k + 1;
@@ -6360,6 +6498,7 @@ struct App {
             }
         }
         if (it.kind == ScreenItemKind::Credits) { Prop("Speed"); ch |= ImGui::SliderFloat("##sisp", &it.speed, 0.005f, 0.3f, "%.3f screens/s"); }
+        if (it.kind == ScreenItemKind::SaveSlots) { Prop("Files"); ch |= ImGui::SliderInt("##sisl", &it.slots, 1, 12); Hint("Picking an empty file starts a new game in it; a used one goes on from its last save. Delete twice erases one. Games save only at Save Stations."); }
         ImGui::SeparatorText("Colours");
         ScreenColors& c = it.col;
         if (it.kind != ScreenItemKind::Panel && it.kind != ScreenItemKind::Image) { Prop("Text"); ch |= ColorU32("##sct", c.text); }
@@ -7415,10 +7554,15 @@ struct App {
             }
         }
     }
-    WorldObject* StationInReach() {   // the Map Station you are standing at and facing (E uses it)
+    WorldObject* StationInReach() {   // the Map Station you are standing at and facing, or the Save Station you stand in (E uses it)
         if (!playMode || player.ball || play.dead()) return nullptr;
         V3 eye = player.eye(), f = player.forward(); WorldObject* best = nullptr; double bestD = 1e9;
         for (WorldObject& o : objects) {
+            if (o.kind == ObjKind::SaveStation) {   // standing on its pad is enough
+                double dx = player.feet.x - o.pos.x, dz = player.feet.z - o.pos.z, dy = player.feet.y - o.pos.y;
+                if (dx * dx + dz * dz < 1.1 * 1.1 && dy > -0.5 && dy < 1.5) return &o;
+                continue;
+            }
             if (o.kind != ObjKind::MapStation) continue;
             V3 c = o.pos + V3{ 0, 1.0, 0 }, d = c - eye; double l = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
             if (l > 2.8 || l < 1e-3) continue;
@@ -10025,7 +10169,7 @@ struct App {
         uiClock += dt; menuSlideT += dt;
         fpsAcc += dt; fpsN++; if (fpsAcc > 0.5) { fps = fpsN / fpsAcc; fpsAcc = 0; fpsN = 0; }
         PollTextures(dt);
-        if (screen == Screen::Game) { UpdateGame(dt); UpdateScreens(dt); CheckDeathScreen(); }
+        if (screen == Screen::Game) { UpdateGame(dt); UpdateScreens(dt); CheckDeathScreen(); if (playMode && !paused && !CurScreen()) playTime += dt; }
 
         ImGui::GetStyle().FontScaleMain = settings.uiScale;
         ImGui_ImplDX11_NewFrame(); ImGui_ImplWin32_NewFrame(); ImGui::NewFrame();

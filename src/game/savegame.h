@@ -1,0 +1,37 @@
+#pragma once
+// Save files (like Metroid Prime): saved only at Save Stations, into the file you picked on the Files screen. A file
+// remembers where you saved, what you carry, what you took / defeated / scanned / mapped in every world, the game's
+// flags, how long you have played and how much you have found. Plain C++, tested.
+#include "../core/math.h"
+#include "visors.h"
+#include <cstdint>
+#include <map>
+#include <set>
+#include <string>
+#include <vector>
+
+namespace mc {
+
+struct SaveGame {
+    // what the Files screen shows
+    std::string world, place;                          // the world, and the Save Station's name
+    double playTime = 0;                               // seconds
+    float completion = 0;                              // 0..1: the items found of all there are
+    float health = 0, maxHealth = 0;
+    int64_t savedAt = 0;                               // when (seconds since 1970)
+    // where you go on
+    V3 pos{ 0, 0, 0 }; double yaw = 0;
+    // what you have
+    std::set<std::string> keys; std::map<std::string, int> counts;
+    std::map<std::string, std::set<uint32_t>> taken;    // per world: pickups taken for good
+    int beam = 0, missile = 0, visor = 0;
+    std::vector<ScanEntry> scans;
+    std::set<std::string> enemyGone, zonesCleared, stationsUsed, flags;
+    std::vector<std::string> maps;                     // worlds with a seen map (map_<i>.bin next to the file, i: the place here)
+};
+bool saveGame(const std::string& dir, const SaveGame& g);   // dir/save.txt (the folder is made)
+bool loadGame(const std::string& dir, SaveGame& g);
+bool eraseGame(const std::string& dir);
+std::string playTimeText(double seconds);            // "0:07", "12:34" (hours : minutes)
+
+} // namespace mc

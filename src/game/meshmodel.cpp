@@ -531,7 +531,7 @@ std::vector<Box3> meshBoxes(const MeshModel& m, int maxCells, bool stillOnly) {
 }
 
 // ------------------------------------------------------------------ built-in looks for helper objects
-std::vector<std::string> builtinShapeNames() { return { "@health", "@key", "@gem", "@checkpoint", "@teleporter", "@zone", "@light", "@emitter", "@map-camera", "@map-station", "@enemy-crawler", "@enemy-hopper", "@enemy-flyer", "@enemy-walker", "@enemy-skree", "@enemy-turret" }; }
+std::vector<std::string> builtinShapeNames() { return { "@health", "@key", "@gem", "@checkpoint", "@teleporter", "@zone", "@light", "@emitter", "@map-camera", "@map-station", "@enemy-crawler", "@enemy-hopper", "@enemy-flyer", "@enemy-walker", "@enemy-skree", "@enemy-turret", "@save-station" }; }
 bool builtinShape(const std::string& name, MeshModel& m) {
     Builder B;
     auto colour = [&](uint32_t c) { Img im = solid(((c >> 16) & 255) / 255.f, ((c >> 8) & 255) / 255.f, (c & 255) / 255.f, 1); int id = (int)B.imgs.size(); B.imgs.push_back(im); return id; };
@@ -638,6 +638,16 @@ bool builtinShape(const std::string& name, MeshModel& m) {
         prism(8, 0.32, 1.0, 1.03, g);
         diamond(0.22, 1.1, 1.35, 1.6, g);
         diamond(0.08, 1.28, 1.35, 1.42, w);
+    }
+    else if (name == "@save-station") {   // a save station: a round pad with a glowing ring, four posts and a ring of light above
+        int b = colour(0x4A5262), m = colour(0x7A8598), g = colour(0xFFC85A), w = colour(0xFFF4D8);
+        prism(16, 1.1, 0, 0.14, b);
+        prism(16, 0.95, 0.14, 0.17, g);
+        prism(16, 0.7, 0.17, 0.2, m);
+        for (int k = 0; k < 4; k++) { double a = k * 1.5707963 + 0.785398, x = std::cos(a) * 0.95, z = std::sin(a) * 0.95; slab({ x - 0.07, 0.14, z - 0.07 }, { x + 0.07, 2.3, z + 0.07 }, m); }
+        prism(16, 1.02, 2.3, 2.38, b);
+        prism(16, 0.92, 2.38, 2.42, g);
+        diamond(0.12, 0.9, 1.05, 1.2, w);
     }
     else if (name == "@enemy-crawler") {   // a spiky shell that crawls over blocks (faces +Z)
         int b = colour(0x9A5420), d = colour(0xE0A040), sp = colour(0xFFE6B0), e = colour(0xFF3020);
