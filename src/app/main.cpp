@@ -5871,7 +5871,7 @@ struct App {
 
     // ================================================================== screens (Screens editor): main menu, options, death, credits, your own
     ScreenSet screens; std::string screensPath;
-    int curScreen = -1, screenSel = -2; std::vector<int> screenBack; double screenT = 0;
+    int curScreen = -1, screenSel = -2; std::vector<int> screenBack; double screenT = 0, screenPrevT = -1; bool screenAudible = false;   // audible: sound cues and typing play (in play, or the timeline playing)
     bool menuSession = false; std::string menuEditorWorld; Player menuEditorCam;   // playing from the main menu (and what to go back to)
     std::vector<MenuHit> screenHits; std::unique_ptr<ImDrawList> screenList;
     void LoadScreens() { screensPath = projectDir + "/screens.txt"; if (!loadScreens(screensPath, screens) || screens.screens.empty()) screens = defaultScreens(); }
@@ -6044,9 +6044,14 @@ struct App {
         auto C = [&](uint32_t c, float a) { return IM_COL32((c >> 16) & 255, (c >> 8) & 255, c & 255, (int)(std::clamp(a, 0.f, 1.f) * 255)); };
         for (int ii = 0; ii < (int)sc.items.size(); ii++) {
             const ScreenItem& it = sc.items[ii]; const ScreenColors& col = it.col;
+            if (it.kind == ScreenItemKind::Sound) {   // a sound cue: plays when its time comes
+                if ((live || screenAudible) && !it.sound.empty() && screenPrevT < it.showAt && screenT >= it.showAt && screenT - it.showAt < 0.5) PlaySoundIn(SND_MENUS, it.sound);
+                continue;
+            }
             float shown = itemShown(it, screenT); if (shown <= 0.002f) continue;   // (not yet / not any more)
-            float al = it.alpha * shown, age = (float)std::max(0.0, screenT - it.showAt), k = 1 + it.grow * age;
-            float cx = (it.x + it.w * 0.5f + it.driftX * age) * W, cy = (it.y + it.h * 0.5f + it.driftY * age) * H;
+            ItemPose ps = itemPose(it, screenT);
+            float al = it.alpha * shown * std::clamp(ps.alpha, 0.f, 1.f), age = (float)std::max(0.0, screenT - it.showAt), k = (1 + it.grow * age) * std::max(0.01f, ps.scale);
+            float cx = (ps.x + it.w * 0.5f + it.driftX * age) * W, cy = (ps.y + it.h * 0.5f + it.driftY * age) * H;
             ImVec2 a(cx - it.w * W * 0.5f * k, cy - it.h * H * 0.5f * k), b(cx + it.w * W * 0.5f * k, cy + it.h * H * 0.5f * k);
             float ts = std::max(6.f, it.textSize * H * k), rnd = it.rounding * (b.y - a.y) * 0.5f;
             switch (it.kind) {
@@ -6056,13 +6061,25 @@ struct App {
                 break;
             case ScreenItemKind::Text: {
                 std::string s = menuFill(it.text, [&](const std::string& n) { return MenuValue(n); });
+                size_t n = s.size();
                 if (it.typeSpeed > 0) {   // typed letter by letter (a sound per letter)
-                    size_t n = typedBytes(s, it, screenT);
-                    if (live) { size_t& was = typed[ii]; if (n > was) { if (!it.typeSound.empty() && n <= s.size() && !std::isspace((unsigned char)s[n - 1])) PlaySoundIn(SND_MENUS, it.typeSound); was = n; } }
-                    s = s.substr(0, n);
+                    n = typedBytes(s, it, screenT);
+                    if (live || screenAudible) { size_t& was = typed[ii]; if (n > was) { if (!it.typeSound.empty() && n <= s.size() && !std::isspace((unsigned char)s[n - 1])) PlaySoundIn(SND_MENUS, it.typeSound); } was = n; }
                 }
-                bool multi = s.find('\n') != std::string::npos || font->CalcTextSizeA(ts, FLT_MAX, 0, s.c_str()).x > b.x - a.x;
-                if (multi) dl->AddText(font, ts, a, C(col.text, al), s.c_str(), nullptr, b.x - a.x); else TextIn(dl, font, s, ts, a, b, it.align, C(col.text, al));
+                // laid out whole (typed letters appear where they will stay), lined up left / middle / right and top / middle / bottom
+                auto measure = [&](const char* p0, const char* p1) { return font->CalcTextSizeA(ts, FLT_MAX, 0, p0, p1).x; };
+                std::vector<TextLine> lines = wrapText(s, b.x - a.x, measure);
+                float lh = ts * 1.2f, total = lines.empty() ? 0 : lh * (lines.size() - 1) + ts;
+                float y = it.valign == 0 ? a.y : it.valign == 2 ? b.y - total : (a.y + b.y - total) * 0.5f;
+                for (const TextLine& ln : lines) {
+                    size_t vis = std::min(ln.end, n);
+                    if (vis > ln.start) {
+                        float lw = measure(s.data() + ln.start, s.data() + ln.end);
+                        float x = it.align == 0 ? a.x : it.align == 2 ? b.x - lw : (a.x + b.x - lw) * 0.5f;
+                        dl->AddText(font, ts, ImVec2(x, y), C(col.text, al), s.data() + ln.start, s.data() + vis);
+                    }
+                    y += lh;
+                }
                 break; }
             case ScreenItemKind::Image: {
                 int iw = 0, ih = 0; ID3D11ShaderResourceView* im = PictureAt(it.image, screenT, true, &iw, &ih);
@@ -6122,6 +6139,7 @@ struct App {
             }
         }
         dl->PopTexture(); dl->PopClipRect();
+        screenPrevT = screenT;
         if (live) {
             if (optSelTab >= 0) { for (int i = 0; i < (int)screenHits.size(); i++) if (screenHits[i].kind == 6 && screenHits[i].arg == optSelTab) screenSel = i; optSelTab = -1; }
             if (screenSel == -2 || screenSel >= (int)screenHits.size()) { screenSel = -1; for (int i = 0; i < (int)screenHits.size(); i++) if (screenHits[i].kind == 8 || screenHits[i].kind == 10 || screenHits[i].kind == 5 || screenHits[i].kind == 7) { screenSel = i; break; } }
@@ -6145,7 +6163,7 @@ struct App {
     void ShowScreen(int idx, bool remember) {
         if (idx < 0 || idx >= (int)screens.screens.size()) return;
         if (remember && curScreen >= 0 && curScreen != idx) screenBack.push_back(curScreen);
-        curScreen = idx; screenT = 0; screenSel = -2; bindCapture = -1; RefreshSlots(); typed.clear();
+        curScreen = idx; screenT = 0; screenPrevT = -1; screenSel = -2; bindCapture = -1; RefreshSlots(); typed.clear();
         mc::Screen& sc = screens.screens[idx];
         if (sc.musicMode == 1 && !sc.music.empty()) PlayMusic(sc.music, sc.musicFade); else if (sc.musicMode == 2) StopMusic(sc.musicFade);
         if (!playMode && sc.bg.kind == BgKind::World) {   // (only outside play: while playing, the game stays where it is)
@@ -6374,7 +6392,10 @@ struct App {
 
     // ================================================================== the Screens editor: screens, their items on a 2D canvas, background, compositor
     bool screensEdOpen = false, focusScreensEd = false; int scrEd = 0, scrItem = -1, scrNode = 0; float scrPrevW = 0, scrPrevH = 0;
-    float scrDragX = 0, scrDragY = 0; int scrDragMode = 0;   // 1 move, 2 resize
+    // the timeline (Screens > Layout): the playhead, playing, zoom; dragging bars, edges, keyframes, the playhead, the screen's end
+    double scrPlayT = 0, scrPrevT = -1, scrClock = -1; bool scrPlaying = true, scrAudible = false, tlSnap = true; std::map<int, size_t> scrTyped;
+    float tlPps = 60, tlScroll = 0, tlRowScroll = 0; int tlDrag = 0, tlDragItem = -1, tlDragKey = -1, tlKeySel = -1; float tlGrabT = 0, tlOrigA = 0, tlOrigB = 0; std::vector<float> tlOrigKeys;
+    float scrDragX = 0, scrDragY = 0, scrOrig[6] = {}; int scrDragMode = 0;   // 1 move, 2 resize; where the mouse took it, and what it was (x y w h scale alpha)
     ImVec2 nodePan{ 40, 40 }; float nodeZoom = 1; int linkFrom = 0, linkTo = 0, linkSlot = -1; bool linkDragging = false;
     mc::Screen* EdScreen() { return scrEd >= 0 && scrEd < (int)screens.screens.size() ? &screens.screens[scrEd] : nullptr; }
     std::vector<std::string> ScreenFiles(bool video) {
@@ -6411,8 +6432,14 @@ struct App {
     }
     void BuildScreenPreview() {   // (editor) the picked screen's items, at the preview's size
         mc::Screen* sc = EdScreen(); if (!sc || scrPrevW < 16 || scrPrevH < 16) return;
-        screenT = std::fmod(uiClock, sc->duration > 0 ? sc->duration + 0.75 : 10000.0);   // (a splash plays over and over)
+        double keepT = screenT, keepP = screenPrevT; bool keepA = screenAudible; auto keepTyped = typed;   // (the game's own screen keeps its time)
+        double now = uiClock, dt = scrClock < 0 ? 0 : std::clamp(now - scrClock, 0.0, 0.1); scrClock = now;
+        float len = screenLength(*sc);
+        if (scrPlaying) { scrPlayT += dt; if (scrPlayT > len + 0.6) { scrPlayT = 0; scrPrevT = -1; scrTyped.clear(); } }   // (plays over and over)
+        screenT = scrPlayT; screenPrevT = scrPrevT; screenAudible = scrPlaying && scrAudible; typed = scrTyped;
         BuildScreenList(*sc, (int)scrPrevW, (int)scrPrevH, false);
+        scrPrevT = screenT; scrTyped = typed;
+        screenT = keepT; screenPrevT = keepP; screenAudible = keepA; typed = keepTyped;
     }
     void RenderScreenPreview() {
         mc::Screen* sc = EdScreen(); if (!screensEdOpen || !sc || scrPrevW < 16 || scrPrevH < 16) return;
@@ -6488,56 +6515,295 @@ struct App {
         if (screenPreview.srv && screenPreview.w == (int)scrPrevW && screenPreview.h == (int)scrPrevH) ImGui::Image((ImTextureID)(intptr_t)screenPreview.srv.Get(), ImVec2(w, h));
         else ImGui::Dummy(ImVec2(w, h));
     }
+    // ---- the timeline: one row per item (back to front), its bar from when it appears to when it goes, fades as slopes,
+    // keyframes as diamonds; the playhead (what the canvas shows), the screen's end. Drag bars, their ends, keys, the playhead.
+    static ImU32 TlKindColor(ScreenItemKind k, int a) {
+        uint32_t c = k == ScreenItemKind::Text ? 0x4C8DFF : k == ScreenItemKind::Image ? 0x45B884 : k == ScreenItemKind::Sound ? 0xA875F0 : k == ScreenItemKind::Button ? 0xD99A3A : k == ScreenItemKind::Panel ? 0x7D8C9C : 0x6A7A8A;
+        return IM_COL32((c >> 16) & 255, (c >> 8) & 255, c & 255, a);
+    }
+    void ScreenTimeline(mc::Screen& sc, bool& ch, float height) {
+        float ui = settings.uiScale; ImGuiIO& io = ImGui::GetIO(); float len = screenLength(sc);
+        // ---- the bar above: play, back to the start, the time, adding things at the playhead, snapping, zoom
+        if (ImGui::Button(scrPlaying ? "Pause" : "Play", ImVec2(64 * ui, 0))) {
+            scrPlaying = !scrPlaying; scrAudible = scrPlaying;
+            if (scrPlaying) { if (scrPlayT >= len) scrPlayT = 0; scrPrevT = scrPlayT - 0.001; scrTyped.clear(); }
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Play from the playhead, with its sounds (typing, sound cues).");
+        ImGui::SameLine(); if (ImGui::Button("|<")) { scrPlayT = 0; scrPrevT = -1; scrTyped.clear(); }
+        ImGui::SameLine(); ImGui::AlignTextToFramePadding(); ImGui::Text("%5.2f s", scrPlayT); ImGui::SameLine(); ImGui::TextDisabled(sc.duration > 0 ? "of %.1f s" : "(stays: no end)", sc.duration);
+        auto addHere = [&](ScreenItemKind k) {
+            ScreenItem it; it.kind = k; float t = (float)scrPlayT; it.showAt = t; it.fade = 0.5f;
+            int n = 1; for (const ScreenItem& e : sc.items) if (e.kind == k) n++;
+            if (k == ScreenItemKind::Text) { it.name = "Text " + std::to_string(n); it.text = "New text"; it.x = 0.15f; it.y = 0.38f; it.w = 0.7f; it.h = 0.2f; it.textSize = 0.04f; it.hideAt = t + 4; }
+            if (k == ScreenItemKind::Image) { it.name = "Picture " + std::to_string(n); it.x = 0.3f; it.y = 0.25f; it.w = 0.4f; it.h = 0.45f; it.hideAt = t + 4; }
+            if (k == ScreenItemKind::Sound) { it.name = "Sound " + std::to_string(n); it.fade = 0; }
+            sc.items.push_back(it); scrItem = (int)sc.items.size() - 1; tlKeySel = -1; ch = true;
+        };
+        ImGui::SameLine(); if (ImGui::Button("+ Text")) addHere(ScreenItemKind::Text);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("A text from the playhead on (4 s; drag its ends to change).");
+        ImGui::SameLine(); if (ImGui::Button("+ Picture")) addHere(ScreenItemKind::Image);
+        ImGui::SameLine(); if (ImGui::Button("+ Sound")) addHere(ScreenItemKind::Sound);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("A sound that plays at the playhead (a boom, a voice, a sting).");
+        ImGui::SameLine(); ImGui::Checkbox("Snap", &tlSnap);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Bars, ends and keys snap to the playhead, to other bars' ends and to 0.05 s.\nHold Shift while dragging: no snapping.");
+        ImGui::SameLine(); ImGui::SetNextItemWidth(std::max(60.f, ImGui::GetContentRegionAvail().x)); { float z = tlPps; if (ImGui::SliderFloat("##tlz", &z, 10, 400, "zoom %.0f", ImGuiSliderFlags_Logarithmic)) tlPps = z; }
+
+        // ---- the timeline itself
+        float h = std::max(80.f, height - ImGui::GetFrameHeightWithSpacing() - 2);
+        ImGui::BeginChild("timeline", ImVec2(0, h), ImGuiChildFlags_Borders, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+        ImVec2 o = ImGui::GetCursorScreenPos(), sz = ImGui::GetContentRegionAvail();
+        float nameW = 150 * ui, rulerH = 22 * ui, rowH = 24 * ui, x0 = o.x + nameW, x1 = o.x + sz.x;
+        ImGui::InvisibleButton("##tl", ImVec2(std::max(1.f, sz.x), std::max(1.f, sz.y)), ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
+        bool hov = ImGui::IsItemHovered(); ImDrawList* dl = ImGui::GetWindowDrawList(); ImVec2 mp = io.MousePos;
+        int n = (int)sc.items.size(); float rowsH = sz.y - rulerH;
+        tlRowScroll = std::clamp(tlRowScroll, 0.f, std::max(0.f, n * rowH - rowsH));
+        auto X = [&](float t) { return x0 + (t - tlScroll) * tlPps; };
+        auto T = [&](float x) { return tlScroll + (x - x0) / tlPps; };
+        auto rowY = [&](int i) { return o.y + rulerH + i * rowH - tlRowScroll; };
+        // the wheel: Ctrl zooms (around the mouse), Shift (or a sideways wheel) moves along, else up / down through the rows
+        if (hov && (io.MouseWheel != 0 || io.MouseWheelH != 0)) {
+            if (io.KeyCtrl) { float tm = T(mp.x); tlPps = std::clamp(tlPps * std::pow(1.2f, io.MouseWheel), 10.f, 400.f); tlScroll = tm - (mp.x - x0) / tlPps; }
+            else if (io.KeyShift || io.MouseWheelH != 0 || n * rowH <= rowsH) tlScroll -= (io.MouseWheel + io.MouseWheelH) * 60 / tlPps;
+            else tlRowScroll -= io.MouseWheel * rowH * 2;
+        }
+        if (scrPlaying && tlDrag == 0) {   // keeps the playhead in view
+            if (X((float)scrPlayT) > x1 - 30) tlScroll = (float)scrPlayT - (x1 - x0) * 0.15f / tlPps;
+            if (X((float)scrPlayT) < x0) tlScroll = std::max(0.f, (float)scrPlayT - 0.5f);
+        }
+        tlScroll = std::max(0.f, tlScroll);
+        // snapping: to 0.05 s, and (Snap on) to the playhead, the start, the screen's end and the other bars' ends near the mouse
+        auto snap = [&](float v, int self) {
+            if (io.KeyShift) return std::max(0.f, v);
+            float best = std::round(v / 0.05f) * 0.05f;
+            if (tlSnap) {
+                float bestPx = 7; auto tryC = [&](float c) { float d = std::fabs(X(c) - X(v)); if (d < bestPx) { bestPx = d; best = c; } };
+                tryC((float)scrPlayT); tryC(0); if (sc.duration > 0) tryC(sc.duration);
+                for (int i = 0; i < n; i++) if (i != self) { tryC(sc.items[i].showAt); if (sc.items[i].hideAt > 0) tryC(sc.items[i].hideAt); }
+            }
+            return std::max(0.f, best);
+        };
+
+        // ---- drawing
+        dl->PushClipRect(o, ImVec2(x1, o.y + sz.y), true);
+        dl->AddRectFilled(ImVec2(x0, o.y), ImVec2(x1, o.y + sz.y), IM_COL32(22, 25, 30, 255));
+        dl->AddRectFilled(ImVec2(x0, o.y), ImVec2(x1, o.y + rulerH), IM_COL32(34, 38, 46, 255));
+        if (sc.duration > 0 && X(sc.duration) < x1) dl->AddRectFilled(ImVec2(std::max(x0, X(sc.duration)), o.y + rulerH), ImVec2(x1, o.y + sz.y), IM_COL32(0, 0, 0, 90));   // past the end
+        {   // the ruler: seconds
+            float major = tlPps >= 90 ? 1 : tlPps >= 35 ? 2 : tlPps >= 15 ? 5 : 10, minor = tlPps >= 160 ? 0.1f : tlPps >= 60 ? 0.25f : major / 2;
+            for (float t = std::floor(T(x0) / minor) * minor; X(t) < x1; t += minor) {
+                if (t < -1e-4f) continue; float x = X(t); bool big = std::fabs(std::remainder(t, major)) < 1e-3f;
+                dl->AddLine(ImVec2(x, o.y + rulerH * (big ? 0.35f : 0.7f)), ImVec2(x, o.y + rulerH), IM_COL32(150, 160, 175, big ? 200 : 90));
+                if (big) { char b[16]; snprintf(b, sizeof b, "%gs", std::round(t * 100) / 100); dl->AddText(ImVec2(x + 3, o.y + 1), IM_COL32(170, 180, 195, 220), b); dl->AddLine(ImVec2(x, o.y + rulerH), ImVec2(x, o.y + sz.y), IM_COL32(255, 255, 255, 12)); }
+            }
+        }
+        for (int i = 0; i < n; i++) {   // the rows
+            float y = rowY(i); if (y + rowH < o.y + rulerH || y > o.y + sz.y) continue;
+            const ScreenItem& it = sc.items[i]; bool sel = i == scrItem;
+            dl->PushClipRect(ImVec2(o.x, o.y + rulerH), ImVec2(x1, o.y + sz.y), true);
+            if (sel) dl->AddRectFilled(ImVec2(o.x, y), ImVec2(x1, y + rowH), IM_COL32(255, 200, 60, 22));
+            if (i % 2) dl->AddRectFilled(ImVec2(x0, y), ImVec2(x1, y + rowH), IM_COL32(255, 255, 255, 6));
+            dl->AddRectFilled(ImVec2(o.x + 4, y + rowH * 0.3f), ImVec2(o.x + 8, y + rowH * 0.7f), TlKindColor(it.kind, 255), 1.f);
+            dl->PushClipRect(ImVec2(o.x, y), ImVec2(x0 - 4, y + rowH), true);
+            dl->AddText(ImVec2(o.x + 13, y + (rowH - ImGui::GetTextLineHeight()) * 0.5f), sel ? IM_COL32(255, 220, 120, 255) : IM_COL32(210, 215, 225, 255), it.name.c_str());
+            dl->PopClipRect();
+            dl->PushClipRect(ImVec2(x0, y), ImVec2(x1, y + rowH), true);
+            float a = X(it.showAt), b = X(itemEnd(it, len)), top = y + 3, bot = y + rowH - 3;
+            bool stays = it.hideAt <= 0 && it.kind != ScreenItemKind::Sound;
+            dl->AddRectFilled(ImVec2(a, top), ImVec2(b, bot), TlKindColor(it.kind, sel ? 230 : 160), 3.f);
+            if (stays) dl->AddRectFilledMultiColor(ImVec2(std::max(a, b - 40), top), ImVec2(b, bot), IM_COL32(0, 0, 0, 0), IM_COL32(22, 25, 30, 220), IM_COL32(22, 25, 30, 220), IM_COL32(0, 0, 0, 0));   // (goes on)
+            if (it.kind != ScreenItemKind::Sound) {   // fading: slopes at both ends
+                float fi = std::min(b - a, it.fade * tlPps); if (fi > 1 && it.showAt > 0) dl->AddTriangleFilled(ImVec2(a, top), ImVec2(a + fi, top), ImVec2(a, bot), IM_COL32(0, 0, 0, 110));
+                float fo = std::min(b - a, it.fadeOutTime() * tlPps); if (fo > 1 && !stays) dl->AddTriangleFilled(ImVec2(b - fo, top), ImVec2(b, top), ImVec2(b, bot), IM_COL32(0, 0, 0, 110));
+            }
+            if (it.kind == ScreenItemKind::Text && it.typeSpeed > 0) {   // how long the typing takes
+                size_t letters = 0; for (unsigned char c : it.text) if ((c & 0xC0) != 0x80) letters++;
+                float te = X(it.showAt + letters / it.typeSpeed); dl->AddLine(ImVec2(a + 1, bot - 2), ImVec2(std::min(te, b), bot - 2), IM_COL32(255, 255, 255, 170), 2.f);
+            }
+            {   // what it is, on its bar
+                std::string lab = it.kind == ScreenItemKind::Text ? it.text.substr(0, it.text.find('\n')) : it.kind == ScreenItemKind::Image ? it.image : it.kind == ScreenItemKind::Sound ? it.sound.file : it.name;
+                if (lab.empty()) lab = it.name;
+                dl->PushClipRect(ImVec2(std::max(a, x0) + 4, top), ImVec2(b - 2, bot), true);
+                dl->AddText(ImVec2(std::max(a, x0) + 5, y + (rowH - ImGui::GetTextLineHeight()) * 0.5f), IM_COL32(255, 255, 255, 235), lab.c_str());
+                dl->PopClipRect();
+            }
+            for (int k = 0; k < (int)it.keys.size(); k++) {   // keyframes
+                float kx = X(it.keys[k].t), cy = y + rowH * 0.5f, r = rowH * 0.28f; bool ks = sel && k == tlKeySel;
+                ImVec2 pts[4] = { ImVec2(kx, cy - r), ImVec2(kx + r, cy), ImVec2(kx, cy + r), ImVec2(kx - r, cy) };
+                dl->AddConvexPolyFilled(pts, 4, ks ? IM_COL32(255, 210, 80, 255) : IM_COL32(245, 245, 250, 255)); dl->AddPolyline(pts, 4, IM_COL32(0, 0, 0, 200), ImDrawFlags_Closed, 1.f);
+            }
+            dl->PopClipRect(); dl->PopClipRect();
+        }
+        if (n == 0) dl->AddText(ImVec2(o.x + 10, o.y + rulerH + 8), IM_COL32(150, 155, 165, 255), "Nothing yet: add a text, a picture or a sound at the playhead (above), or an item (right).");
+        dl->AddLine(ImVec2(x0, o.y), ImVec2(x0, o.y + sz.y), IM_COL32(255, 255, 255, 30));
+        if (sc.duration > 0 && X(sc.duration) >= x0 && X(sc.duration) <= x1) {   // the screen's end
+            float ex = X(sc.duration); dl->AddLine(ImVec2(ex, o.y), ImVec2(ex, o.y + sz.y), IM_COL32(255, 90, 80, 220), 2.f);
+            dl->AddTriangleFilled(ImVec2(ex - 6, o.y), ImVec2(ex + 6, o.y), ImVec2(ex, o.y + 9), IM_COL32(255, 90, 80, 255));
+        }
+        {   // the playhead
+            float px = X((float)scrPlayT);
+            if (px >= x0 && px <= x1) { dl->AddLine(ImVec2(px, o.y), ImVec2(px, o.y + sz.y), IM_COL32(255, 210, 70, 255), 1.5f); dl->AddRectFilled(ImVec2(px - 5, o.y), ImVec2(px + 5, o.y + rulerH * 0.55f), IM_COL32(255, 210, 70, 255), 2.f); }
+        }
+        dl->PopClipRect();
+
+        // ---- the mouse: what is under it
+        auto rowAt = [&](float my) { if (my < o.y + rulerH) return -2; int r = (int)std::floor((my - o.y - rulerH + tlRowScroll) / rowH); return r >= 0 && r < n ? r : -1; };
+        int hr = hov ? rowAt(mp.y) : -1; int hzone = 0, hkey = -1;   // 1 the bar, 2 its start, 3 its end, 4 a key
+        if (hr >= 0 && mp.x >= x0) {
+            const ScreenItem& it = sc.items[hr]; float a = X(it.showAt), b = X(itemEnd(it, len));
+            for (int k = 0; k < (int)it.keys.size(); k++) if (std::fabs(mp.x - X(it.keys[k].t)) < rowH * 0.3f) { hzone = 4; hkey = k; }
+            if (!hzone) { if (std::fabs(mp.x - a) < 5) hzone = 2; else if (std::fabs(mp.x - b) < 5 && it.kind != ScreenItemKind::Sound) hzone = 3; else if (mp.x > a && mp.x < b) hzone = 1; }
+            if (hzone == 2 || hzone == 3) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+            if (hzone && tlDrag == 0) {
+                char tip[200]; float e = itemEnd(it, len);
+                if (hzone == 4) snprintf(tip, sizeof tip, "Keyframe at %.2f s\nDrag: move it   Right-click: delete", it.keys[hkey].t);
+                else snprintf(tip, sizeof tip, "%s\n%.2f s - %s\nDrag to move it, its ends to change them. Right-click: more", it.name.c_str(), it.showAt, it.hideAt > 0 || it.kind == ScreenItemKind::Sound ? (std::to_string(e).substr(0, std::to_string(e).find('.') + 3) + " s").c_str() : "stays");
+                ImGui::SetTooltip("%s", tip);
+            }
+        }
+        bool nearEnd = hov && sc.duration > 0 && std::fabs(mp.x - X(sc.duration)) < 6 && (hr == -2 || hzone == 0);
+        if (nearEnd) { ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW); if (tlDrag == 0) ImGui::SetTooltip("The screen's end (%.2f s): it goes on to the next. Drag to change.", sc.duration); }
+        if (hov && ImGui::IsMouseClicked(0)) {
+            tlDrag = 0; tlDragItem = hr; tlGrabT = T(mp.x);
+            if (nearEnd) tlDrag = 6;
+            else if (hr == -2) { if (mp.x >= x0) { tlDrag = 5; scrPlaying = false; } }
+            else if (hr >= 0 && mp.x < x0) { scrItem = hr; tlKeySel = -1; }
+            else if (hr >= 0) {
+                ScreenItem& it = sc.items[hr]; scrItem = hr;
+                if (hzone == 0) { tlDrag = 5; scrPlaying = false; tlKeySel = -1; }
+                else {
+                    tlDrag = hzone; tlDragKey = hkey; tlKeySel = hzone == 4 ? hkey : -1; tlOrigA = it.showAt; tlOrigB = it.hideAt;
+                    tlOrigKeys.clear(); for (const ItemKey& k : it.keys) tlOrigKeys.push_back(k.t);
+                }
+            } else if (mp.x >= x0) { tlDrag = 5; scrPlaying = false; }
+        }
+        if (tlDrag && ImGui::IsMouseDown(0)) {
+            float t = T(mp.x), d = t - tlGrabT; ScreenItem* it = tlDragItem >= 0 && tlDragItem < n ? &sc.items[tlDragItem] : nullptr;
+            if (tlDrag == 5) { scrPlayT = std::max(0.f, snap(t, -1)); scrPrevT = scrPlayT; }
+            else if (tlDrag == 6) { float v = std::max(0.1f, snap(t, -1)); if (v != sc.duration) { sc.duration = v; ch = true; } }
+            else if (it && tlDrag == 1) {   // the whole bar (its keys go along)
+                float na = snap(tlOrigA + d, tlDragItem);
+                if (it->hideAt > 0 && tlSnap && !io.KeyShift) { float nb = snap(tlOrigB + d, tlDragItem); if (std::fabs(X(nb) - X(tlOrigB + d)) < std::fabs(X(na) - X(tlOrigA + d))) na = nb - (tlOrigB - tlOrigA); }   // (its end can snap too)
+                na = std::max(0.f, na); float dd = na - tlOrigA;
+                it->showAt = na; if (tlOrigB > 0) it->hideAt = tlOrigB + dd;
+                for (size_t k = 0; k < it->keys.size() && k < tlOrigKeys.size(); k++) it->keys[k].t = std::max(0.f, tlOrigKeys[k] + dd);
+                ch = true;
+            }
+            else if (it && tlDrag == 2) { float v = snap(t, tlDragItem); if (it->hideAt > 0) v = std::min(v, it->hideAt - 0.05f); it->showAt = std::max(0.f, v); ch = true; }
+            else if (it && tlDrag == 3) { it->hideAt = std::max(it->showAt + 0.05f, snap(t, tlDragItem)); ch = true; }
+            else if (it && tlDrag == 4 && tlDragKey >= 0 && tlDragKey < (int)it->keys.size()) {   // a key: between its neighbours
+                float v = snap(t, tlDragItem);
+                if (tlDragKey > 0) v = std::max(v, it->keys[tlDragKey - 1].t + 0.02f);
+                if (tlDragKey + 1 < (int)it->keys.size()) v = std::min(v, it->keys[tlDragKey + 1].t - 0.02f);
+                it->keys[tlDragKey].t = std::max(0.f, v); scrPlayT = it->keys[tlDragKey].t; scrPrevT = scrPlayT; ch = true;
+            }
+        }
+        if (!ImGui::IsMouseDown(0)) tlDrag = 0;
+        // ---- right-click: more
+        if (hov && ImGui::IsMouseClicked(1)) {
+            tlDragItem = hr; tlDragKey = hkey;
+            if (hr == -2 || (hr == -1 && mp.x >= x0)) { tlGrabT = T(mp.x); ImGui::OpenPopup("tlruler"); }
+            else if (hr >= 0) { scrItem = hr; tlKeySel = hkey; ImGui::OpenPopup("tlitem"); }
+        }
+        if (ImGui::BeginPopup("tlruler")) {
+            float t = snap(tlGrabT, -1);
+            if (ImGui::Selectable(("The screen ends here (" + std::to_string(t).substr(0, std::to_string(t).find('.') + 3) + " s)").c_str())) { sc.duration = std::max(0.1f, t); ch = true; }
+            if (ImGui::Selectable("It never ends by itself", sc.duration <= 0)) { sc.duration = 0; ch = true; }
+            if (ImGui::Selectable("Playhead here")) { scrPlayT = t; scrPrevT = t; scrPlaying = false; }
+            ImGui::EndPopup();
+        }
+        if (ImGui::BeginPopup("tlitem")) {
+            if (tlDragItem >= 0 && tlDragItem < (int)sc.items.size()) {
+                ScreenItem& it = sc.items[tlDragItem]; float t = (float)scrPlayT;
+                if (tlDragKey >= 0 && tlDragKey < (int)it.keys.size()) {
+                    ItemKey& k = it.keys[tlDragKey];
+                    if (ImGui::MenuItem("Smooth (eases in and out)", nullptr, k.smooth)) { k.smooth = !k.smooth; ch = true; }
+                    if (ImGui::MenuItem("Delete this keyframe")) { it.keys.erase(it.keys.begin() + tlDragKey); tlKeySel = -1; ch = true; }
+                    ImGui::Separator();
+                }
+                if (ImGui::MenuItem("Starts at the playhead")) { if (it.hideAt > 0 && t >= it.hideAt) it.hideAt = t + std::max(0.5f, it.hideAt - it.showAt); it.showAt = t; ch = true; }
+                if (it.kind != ScreenItemKind::Sound) {
+                    if (ImGui::MenuItem("Ends at the playhead", nullptr, false, t > it.showAt)) { it.hideAt = t; ch = true; }
+                    if (ImGui::MenuItem("Stays (no end)", nullptr, it.hideAt <= 0)) { it.hideAt = 0; ch = true; }
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("Keyframe here (where it is now)")) { ItemPose p = itemPose(it, t); ItemKey k; k.t = t; k.x = p.x; k.y = p.y; k.scale = p.scale; k.alpha = p.alpha; setKey(it, k); ch = true; }
+                    if (!it.keys.empty() && ImGui::MenuItem("Remove all its keyframes")) { ItemPose p = itemPose(it, t); it.x = p.x; it.y = p.y; it.keys.clear(); tlKeySel = -1; ch = true; }
+                }
+                ImGui::Separator();
+                if (ImGui::MenuItem("Copy")) { ScreenItem c = it; c.name += " copy"; sc.items.push_back(c); scrItem = (int)sc.items.size() - 1; ch = true; }
+                if (ImGui::MenuItem("Delete")) { sc.items.erase(sc.items.begin() + tlDragItem); scrItem = -1; tlKeySel = -1; ch = true; }
+            }
+            ImGui::EndPopup();
+        }
+        ImGui::EndChild();
+    }
     void ScreenLayoutTab(mc::Screen& sc, bool& ch) {
         float ui = settings.uiScale, propW = 340 * ui, sp = ImGui::GetStyle().ItemSpacing.x;
         float aw = std::max(200.f, ImGui::GetContentRegionAvail().x - propW - sp), ah = ImGui::GetContentRegionAvail().y;
         ImGui::BeginChild("scrcanvas", ImVec2(aw, ah), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar);
-        {   // the canvas: the screen as it will look; click an item to pick it, drag to move, the corner to resize
+        {   // the canvas: the screen as it will look at the playhead; click an item to pick it, drag to move, the corner to resize
             float aspect = (float)std::max(1, cw) / std::max(1, ch_());
-            float w = aw, h = w / aspect; if (h > ah * 0.72f) { h = ah * 0.72f; w = h * aspect; }
+            float w = aw, h = w / aspect; if (h > ah * 0.58f) { h = ah * 0.58f; w = h * aspect; }
             ImVec2 o = ImGui::GetCursorScreenPos(); ScreenPreviewImage(w, h);
             ImDrawList* dl = ImGui::GetWindowDrawList(); ImGuiIO& io = ImGui::GetIO();
             ImGui::SetCursorScreenPos(o); ImGui::InvisibleButton("##scrcv", ImVec2(w, h));
             bool hov = ImGui::IsItemHovered(); ImVec2 m((io.MousePos.x - o.x) / w, (io.MousePos.y - o.y) / h);
+            float t = (float)scrPlayT;
+            auto rectOf = [&](const ScreenItem& it, ImVec2& a, ImVec2& b) {   // where it shows at the playhead (0..1)
+                ItemPose p = itemPose(it, t); float age = std::max(0.f, t - it.showAt), k = (1 + it.grow * age) * std::max(0.01f, p.scale);
+                float cx = p.x + it.w * 0.5f + it.driftX * age, cy = p.y + it.h * 0.5f + it.driftY * age;
+                a = ImVec2(cx - it.w * 0.5f * k, cy - it.h * 0.5f * k); b = ImVec2(cx + it.w * 0.5f * k, cy + it.h * 0.5f * k);
+            };
+            auto there = [&](int i) { const ScreenItem& it = sc.items[i]; return it.kind != ScreenItemKind::Sound && (i == scrItem || itemShown(it, t) > 0.002f); };
             for (int i = 0; i < (int)sc.items.size(); i++) {
-                const ScreenItem& it = sc.items[i]; ImVec2 a(o.x + it.x * w, o.y + it.y * h), b(o.x + (it.x + it.w) * w, o.y + (it.y + it.h) * h);
-                bool picked = i == scrItem;
-                dl->AddRect(a, b, picked ? IM_COL32(255, 200, 60, 255) : IM_COL32(255, 255, 255, 50), 0.f, ImDrawFlags_None, picked ? 2.f : 1.f);
+                if (!there(i)) continue;
+                const ScreenItem& it = sc.items[i]; ImVec2 ra, rb; rectOf(it, ra, rb); ImVec2 a(o.x + ra.x * w, o.y + ra.y * h), b(o.x + rb.x * w, o.y + rb.y * h);
+                bool picked = i == scrItem, gone = itemShown(it, t) <= 0.002f;
+                dl->AddRect(a, b, picked ? IM_COL32(255, 200, 60, gone ? 110 : 255) : IM_COL32(255, 255, 255, 50), 0.f, ImDrawFlags_None, picked ? 2.f : 1.f);
                 if (picked) dl->AddRectFilled(ImVec2(b.x - 7, b.y - 7), ImVec2(b.x + 1, b.y + 1), IM_COL32(255, 200, 60, 255));
+                if (picked && !it.keys.empty()) dl->AddText(ImVec2(a.x + 3, a.y + 2), IM_COL32(255, 200, 60, 230), "keyframes");
             }
             if (hov && ImGui::IsMouseClicked(0)) {
                 scrDragMode = 0;
-                if (scrItem >= 0 && scrItem < (int)sc.items.size()) {   // the picked one's corner: resize
-                    const ScreenItem& it = sc.items[scrItem];
-                    if (std::fabs(m.x - (it.x + it.w)) * w < 9 && std::fabs(m.y - (it.y + it.h)) * h < 9) scrDragMode = 2;
+                if (scrItem >= 0 && scrItem < (int)sc.items.size() && there(scrItem)) {   // the picked one's corner: resize
+                    ImVec2 ra, rb; rectOf(sc.items[scrItem], ra, rb);
+                    if (std::fabs(m.x - rb.x) * w < 9 && std::fabs(m.y - rb.y) * h < 9) scrDragMode = 2;
                 }
                 if (!scrDragMode) {
                     scrItem = -1;
-                    for (int i = (int)sc.items.size() - 1; i >= 0; i--) { const ScreenItem& it = sc.items[i]; if (m.x >= it.x && m.x <= it.x + it.w && m.y >= it.y && m.y <= it.y + it.h) { scrItem = i; break; } }
+                    for (int i = (int)sc.items.size() - 1; i >= 0; i--) { if (!there(i) || itemShown(sc.items[i], t) <= 0.002f) continue; ImVec2 ra, rb; rectOf(sc.items[i], ra, rb); if (m.x >= ra.x && m.x <= rb.x && m.y >= ra.y && m.y <= rb.y) { scrItem = i; break; } }
                     if (scrItem >= 0) scrDragMode = 1;
                 }
-                if (scrItem >= 0) { scrDragX = m.x - (scrDragMode == 1 ? sc.items[scrItem].x : sc.items[scrItem].w); scrDragY = m.y - (scrDragMode == 1 ? sc.items[scrItem].y : sc.items[scrItem].h); }
+                if (scrItem >= 0) {
+                    const ScreenItem& it = sc.items[scrItem]; ItemPose p = itemPose(it, t);
+                    scrDragX = m.x; scrDragY = m.y; scrOrig[0] = p.x; scrOrig[1] = p.y; scrOrig[2] = it.w; scrOrig[3] = it.h; scrOrig[4] = p.scale; scrOrig[5] = p.alpha;
+                    if (!it.keys.empty()) scrPlaying = false;   // (moving it makes a keyframe here: hold still)
+                }
             }
             if (scrDragMode && ImGui::IsMouseDown(0) && scrItem >= 0 && scrItem < (int)sc.items.size()) {
-                ScreenItem& it = sc.items[scrItem]; float nx = m.x - scrDragX, ny = m.y - scrDragY;
-                if (io.KeyCtrl) { nx = std::round(nx * 40) / 40; ny = std::round(ny * 40) / 40; }   // Ctrl: on a grid
-                if (scrDragMode == 1) { if (nx != it.x || ny != it.y) { it.x = nx; it.y = ny; ch = true; } }
-                else { nx = std::max(0.01f, nx); ny = std::max(0.01f, ny); if (nx != it.w || ny != it.h) { it.w = nx; it.h = ny; ch = true; } }
+                ScreenItem& it = sc.items[scrItem]; float dx = m.x - scrDragX, dy = m.y - scrDragY;
+                if (dx != 0 || dy != 0) {
+                    bool keyed = !it.keys.empty();
+                    if (scrDragMode == 1) {
+                        float nx = scrOrig[0] + dx, ny = scrOrig[1] + dy;
+                        if (io.KeyCtrl) { nx = std::round(nx * 40) / 40; ny = std::round(ny * 40) / 40; }   // Ctrl: on a grid
+                        if (keyed) { ItemKey k; k.t = t; k.x = nx; k.y = ny; k.scale = scrOrig[4]; k.alpha = scrOrig[5]; for (const ItemKey& e : it.keys) if (std::fabs(e.t - t) < 0.02f) k.smooth = e.smooth; setKey(it, k); }
+                        else { it.x = nx; it.y = ny; }
+                    } else if (keyed) {   // resizing an animated one: its size at the playhead
+                        ItemKey k; k.t = t; k.x = scrOrig[0]; k.y = scrOrig[1]; k.scale = std::max(0.05f, scrOrig[4] + dx / std::max(0.01f, it.w)); k.alpha = scrOrig[5];
+                        for (const ItemKey& e : it.keys) if (std::fabs(e.t - t) < 0.02f) k.smooth = e.smooth; setKey(it, k);
+                    } else {
+                        float nw = scrOrig[2] + dx, nh = scrOrig[3] + dy;
+                        if (io.KeyCtrl) { nw = std::round(nw * 40) / 40; nh = std::round(nh * 40) / 40; }
+                        it.w = std::max(0.01f, nw); it.h = std::max(0.01f, nh);
+                    }
+                    ch = true;
+                }
             }
             if (!ImGui::IsMouseDown(0)) scrDragMode = 0;
-            ImGui::SetCursorScreenPos(ImVec2(o.x, o.y + h + 6));
-            ImGui::TextDisabled("Click an item to pick it, drag it to move, its corner to resize (Ctrl: on a grid). The preview runs the compositor too.");
+            ImGui::SetCursorScreenPos(ImVec2(o.x, o.y + h + 4));
+            ImGui::TextDisabled("The screen at the playhead. Click to pick, drag to move, the corner resizes (Ctrl: on a grid). An item with keyframes gets a keyframe where you drag it.");
         }
-        {   // the items
-            ImGui::TextDisabled("ITEMS (back to front)");
-            ImGui::BeginChild("scritems", ImVec2(0, 0), ImGuiChildFlags_Borders);
-            for (int i = 0; i < (int)sc.items.size(); i++) {
-                ImGui::PushID(i); std::string l = sc.items[i].name + "  - " + screenItemKindName(sc.items[i].kind);
-                if (ImGui::Selectable(l.c_str(), scrItem == i)) scrItem = i;
-                ImGui::PopID();
-            }
-            ImGui::EndChild();
-        }
+        ScreenTimeline(sc, ch, ImGui::GetContentRegionAvail().y);
         ImGui::EndChild();
         ImGui::SameLine();
         ImGui::BeginChild("scrprops", ImVec2(propW, ah), ImGuiChildFlags_Borders);
@@ -6571,6 +6837,13 @@ struct App {
         float ui = settings.uiScale;
         Prop("Name"); ch |= ImGui::InputText("##sin", &it.name);
         Prop("Kind"); if (ImGui::BeginCombo("##sik", screenItemKindName(it.kind))) { for (int k = 0; k < (int)ScreenItemKind::COUNT; k++) if (ImGui::Selectable(screenItemKindName((ScreenItemKind)k), (int)it.kind == k)) { it.kind = (ScreenItemKind)k; ch = true; } ImGui::EndCombo(); }
+        if (it.kind == ScreenItemKind::Sound) {   // a sound cue: what, and when
+            Prop("Sound"); ch |= SoundEdit("##sisnd", it.sound, false);
+            Prop("Plays at"); ch |= ImGui::DragFloat("##sisat", &it.showAt, 0.01f, 0, 600, "%.2f s");
+            Hint("It plays once when its time comes (drag its bar on the timeline). Press Play below the canvas to hear it with the rest.");
+            return;
+        }
+        if (!it.keys.empty()) Hint("Its place, size and see-through come from its keyframes (below). Place / Size here: its size without them.");
         Prop("Place"); { float v[2] = { it.x, it.y }; if (ImGui::DragFloat2("##sip", v, 0.002f, -0.5f, 1.5f, "%.3f")) { it.x = v[0]; it.y = v[1]; ch = true; } }
         Prop("Size"); { float v[2] = { it.w, it.h }; if (ImGui::DragFloat2("##sis", v, 0.002f, 0.01f, 2, "%.3f")) { it.w = v[0]; it.h = v[1]; ch = true; } }
         bool hasText = it.kind == ScreenItemKind::Text || it.kind == ScreenItemKind::Button || it.kind == ScreenItemKind::Credits;
@@ -6581,6 +6854,7 @@ struct App {
         }
         if (it.kind != ScreenItemKind::Panel && it.kind != ScreenItemKind::Image) { Prop("Text size"); ch |= ImGui::SliderFloat("##sitz", &it.textSize, 0.01f, 0.2f, "%.3f of the height"); }
         if (hasText) { const char* al[] = { "Left", "Middle", "Right" }; Prop("Lined up"); ch |= ImGui::Combo("##sia", &it.align, al, 3); }
+        if (it.kind == ScreenItemKind::Text) { const char* va[] = { "Top", "Middle", "Bottom" }; Prop("Up / down"); ch |= ImGui::Combo("##siva", &it.valign, va, 3); }
         if (it.kind == ScreenItemKind::Image) { Prop("Picture"); ch |= FileCombo("##sii", it.image, false); }
         if (it.kind == ScreenItemKind::Button) {
             Prop("Does"); if (ImGui::BeginCombo("##siact", screenActName(it.act))) { for (int k = 0; k < (int)ScreenAct::COUNT; k++) if (ImGui::Selectable(screenActName((ScreenAct)k), (int)it.act == k)) { it.act = (ScreenAct)k; ch = true; } ImGui::EndCombo(); }
@@ -6612,14 +6886,40 @@ struct App {
         ImGui::SeparatorText("Timing");
         Prop("Appears at"); ch |= ImGui::SliderFloat("##tsa", &it.showAt, 0, 60, it.showAt <= 0 ? "right away" : "%.1f s");
         Prop("Goes at"); ch |= ImGui::SliderFloat("##tha", &it.hideAt, 0, 60, it.hideAt <= 0 ? "stays" : "%.1f s");
-        Prop("Fades over"); ch |= ImGui::SliderFloat("##tfd", &it.fade, 0, 3, "%.2f s");
+        Prop("Fades in over"); ch |= ImGui::SliderFloat("##tfd", &it.fade, 0, 5, "%.2f s");
+        Prop("Fades out over"); { float fo = it.fadeOutTime(); if (ImGui::SliderFloat("##tfo", &fo, 0, 5, "%.2f s")) { it.fadeOut = fo; ch = true; } }
         if (it.kind == ScreenItemKind::Text) {
             Prop("Typed"); ch |= ImGui::SliderFloat("##tty", &it.typeSpeed, 0, 80, it.typeSpeed <= 0 ? "all at once" : "%.0f letters/s");
             if (it.typeSpeed > 0) { Prop("Letter sound"); ch |= SoundEdit("##ttsnd", it.typeSound, false); }
         }
         Prop("Moves"); { float v[2] = { it.driftX, it.driftY }; if (ImGui::DragFloat2("##tdr", v, 0.0005f, -0.5f, 0.5f, "%.4f/s")) { it.driftX = v[0]; it.driftY = v[1]; ch = true; } }
         Prop("Grows"); ch |= ImGui::SliderFloat("##tgr", &it.grow, -0.2f, 0.5f, "%.3f/s");
-        Hint("Seconds after the screen appears. For splash screens and intros (like Super Metroid's): fade text and pictures in and out, type a story letter by letter, let a picture slowly drift and grow.");
+        Hint("Seconds after the screen appears (the timeline under the canvas shows it all). For splash screens and intros (like Super Metroid's): fade text and pictures in and out, type a story letter by letter, let a picture slowly drift and grow.");
+        ImGui::SeparatorText("Keyframes (moving over time)");
+        {   float t = (float)scrPlayT; char kb[64]; snprintf(kb, sizeof kb, "+ Keyframe at the playhead (%.2f s)", t);
+            if (ImGui::Button(kb)) { ItemPose p = itemPose(it, t); ItemKey k; k.t = t; k.x = p.x; k.y = p.y; k.scale = p.scale; k.alpha = p.alpha; setKey(it, k); ch = true; }
+            int drop = -1;
+            for (int k = 0; k < (int)it.keys.size(); k++) {
+                ItemKey& key = it.keys[k]; ImGui::PushID(7000 + k);
+                bool sel = k == tlKeySel; std::string hdr = (sel ? "> " : "") + std::to_string(key.t).substr(0, std::to_string(key.t).find('.') + 3) + " s###key";
+                bool open = ImGui::TreeNodeEx(hdr.c_str(), sel ? ImGuiTreeNodeFlags_DefaultOpen : 0);
+                ImGui::SameLine(); if (ImGui::SmallButton("go")) { scrPlayT = key.t; scrPrevT = key.t; scrPlaying = false; tlKeySel = k; }
+                ImGui::SameLine(); if (ImGui::SmallButton("x")) drop = k;
+                if (open) {
+                    Prop("At"); if (ImGui::DragFloat("##kt", &key.t, 0.01f, 0, 600, "%.2f s")) { float v = key.t; ItemKey c = key; it.keys.erase(it.keys.begin() + k); c.t = v; setKey(it, c); ch = true; ImGui::TreePop(); ImGui::PopID(); break; }
+                    Prop("Place"); { float v[2] = { key.x, key.y }; if (ImGui::DragFloat2("##kp", v, 0.002f, -1, 2, "%.3f")) { key.x = v[0]; key.y = v[1]; ch = true; } }
+                    Prop("Size"); ch |= ImGui::SliderFloat("##ks", &key.scale, 0.05f, 5, "x %.2f");
+                    Prop("Shows"); ch |= ImGui::SliderFloat("##ka", &key.alpha, 0, 1, "%.2f");
+                    Prop("Smooth"); ch |= ImGui::Checkbox("##ksm", &key.smooth);
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("On: it eases into this keyframe (slows down to arrive). Off: a steady move.");
+                    ImGui::TreePop();
+                }
+                ImGui::PopID();
+            }
+            if (drop >= 0) { it.keys.erase(it.keys.begin() + drop); tlKeySel = -1; ch = true; }
+            Hint(it.keys.empty() ? "Make a picture glide across, zoom in slowly, or fade half away: put a keyframe at one time, move the playhead, put another, and drag it on the canvas to where it should be then. In between it moves on its own."
+                                 : "Dragging it on the canvas changes (or makes) the keyframe at the playhead. Diamonds on its timeline bar: drag to move one, right-click to delete it.");
+        }
     }
     void ScreenSoundTab(mc::Screen& sc, bool& ch) {
         ImGui::BeginChild("sndtab", ImVec2(0, 0));

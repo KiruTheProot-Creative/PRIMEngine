@@ -5,6 +5,7 @@
 // roll) and a compositor: post-processing as a node graph, like Blender's, ending in an Output. Plain C++, tested.
 #include "sound.h"
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -28,7 +29,7 @@ struct ScreenBg {
     float tilt = -8, height = 1.0f;                      // World: looking up (+) / down (-), degrees; the eye above the camera object (blocks)
 };
 
-enum class ScreenItemKind { Panel, Text, Image, Button, Options, Credits, SaveSlots, COUNT };   // SaveSlots: the save files, one card each
+enum class ScreenItemKind { Panel, Text, Image, Button, Options, Credits, SaveSlots, Sound, COUNT };   // SaveSlots: the save files, one card each; Sound: plays at its time (not seen)
 const char* screenItemKindName(ScreenItemKind k);
 enum class ScreenAct { None, NewGame, Continue, Options, Credits, Quit, GoTo, Back, Retry, MainMenu, Files, COUNT };
 const char* screenActName(ScreenAct a);
@@ -37,6 +38,7 @@ struct ScreenColors {
     uint32_t text = 0xD8EEF8, accent = 0x6CF0FF, picked = 0xFFFFFF, dim = 0x587888, fill = 0x07121C;
     float fillAlpha = 0.6f;
 };
+struct ItemKey { float t = 0, x = 0, y = 0, scale = 1, alpha = 1; bool smooth = true; };   // a keyframe: at t seconds the item is here (its top left), this big, this see-through
 struct ScreenItem {
     std::string name = "Item";
     ScreenItemKind kind = ScreenItemKind::Text;
@@ -45,6 +47,7 @@ struct ScreenItem {
     std::string image;                                   // Image: a picture or GIF in the "screens" folder
     float textSize = 0.045f;                             // as a part of the screen's height
     int align = 1;                                       // 0 left, 1 middle, 2 right
+    int valign = 1;                                      // Text: 0 top, 1 middle, 2 bottom of its box
     ScreenColors col; float alpha = 1;
     bool filled = true, frame = true; float rounding = 0.25f, border = 2;   // Panel / Button: a fill, a frame line, round corners (part of the height)
     ScreenAct act = ScreenAct::None; std::string target; // Button: what it does (GoTo: a screen's name)
@@ -52,10 +55,22 @@ struct ScreenItem {
     float speed = 0.06f;                                 // Credits: screen heights a second
     int slots = 3;                                       // SaveSlots: how many files
     // timing (splash screens, intros): seconds after the screen appears
-    float showAt = 0, hideAt = 0, fade = 0.4f;           // appears at, goes at (0: stays), fading over this long
+    float showAt = 0, hideAt = 0, fade = 0.4f;           // appears at, goes at (0: stays), fading in over this long
+    float fadeOut = -1;                                  // fading out over this long (< 0: as long as it fades in)
     float typeSpeed = 0; SoundUse typeSound;             // Text: letters a second as if typed (0: all at once), a sound per letter
     float driftX = 0, driftY = 0, grow = 0;              // moves (screen widths / heights a second), grows (a second), from when it appears
+    std::vector<ItemKey> keys;                           // keyframes (sorted by time): where it is, how big, how see-through over time
+    SoundUse sound;                                      // Sound: what plays at showAt
+    float fadeOutTime() const { return fadeOut < 0 ? fade : fadeOut; }
 };
+// where an item is t seconds into its screen: its keyframes (between two: blended), else where it was put
+struct ItemPose { float x, y, scale, alpha; };
+ItemPose itemPose(const ScreenItem& it, double t);
+void setKey(ScreenItem& it, const ItemKey& k);            // puts a keyframe at k.t (replacing one within 0.02 s), keeps them sorted
+float itemEnd(const ScreenItem& it, float screenLength); // when its bar on the timeline ends (staying ones: the screen's length)
+// a text broken into lines that fit a width (at spaces; new lines kept): byte ranges [start, end) of the text
+struct TextLine { size_t start, end; };
+std::vector<TextLine> wrapText(const std::string& s, float width, const std::function<float(const char*, const char*)>& measure);
 // how much of an item shows t seconds into its screen (0..1), from its timing
 float itemShown(const ScreenItem& it, double t);
 // how many letters of a typed text show t seconds in (whole UTF-8 letters: returns bytes)
@@ -106,6 +121,7 @@ struct Screen {
     float duration = 0; bool untilVideoEnds = false;      // goes on by itself after this long (0: stays) / when its video ends
     std::string next; bool skippable = true;              // the screen after it (empty: the main menu); a key or click goes on early
 };
+float screenLength(const Screen& s);                     // its duration, or (staying) a little past its last item's times, at least 10 s
 Screen presetScreen(ScreenRole r);                        // ready-made: main menu, options, death, credits, files, splash (and an empty one)
 Screen presetStory();                                     // ready-made: an intro of typed text (like Super Metroid's)
 struct ScreenSet {

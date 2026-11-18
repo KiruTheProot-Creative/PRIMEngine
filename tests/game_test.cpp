@@ -1176,6 +1176,32 @@ int main() {
             ScreenItem al; CHECK(itemShown(al, 0) == 1 && itemShown(al, 100) == 1, "without timing: always there");
             ScreenItem ty; ty.typeSpeed = 10; ty.showAt = 1; std::string txt = "H\xC3\xA9llo";   // (an e with an accent: two bytes)
             CHECK(typedBytes(txt, ty, 0.5) == 0 && typedBytes(txt, ty, 1.15) == 1 && typedBytes(txt, ty, 1.25) == 3 && typedBytes(txt, ty, 9) == txt.size(), "typed letter by letter (a two-byte letter whole)");
+            {   // the timeline: fading out on its own, keyframes, wrapping text
+                ScreenItem fo; fo.showAt = 1; fo.hideAt = 5; fo.fade = 0.5f; fo.fadeOut = 2;
+                CHECK(std::fabs(itemShown(fo, 1.25) - 0.5f) < 1e-4 && std::fabs(itemShown(fo, 4) - 0.5f) < 1e-4, "it fades in over 0.5 s and out over 2 s");
+                ScreenItem ki; ki.x = 0.5f; ki.y = 0.5f;
+                ItemPose p0 = itemPose(ki, 3); CHECK(p0.x == 0.5f && p0.scale == 1, "without keyframes: where it was put");
+                ItemKey a; a.t = 1; a.x = 0; a.y = 0.2f; a.smooth = false; ItemKey b; b.t = 3; b.x = 1; b.y = 0.2f; b.scale = 2; b.alpha = 0; b.smooth = false;
+                setKey(ki, b); setKey(ki, a);
+                ItemPose pm = itemPose(ki, 2), pb = itemPose(ki, 0), pe = itemPose(ki, 9);
+                CHECK(ki.keys.size() == 2 && ki.keys[0].t == 1 && std::fabs(pm.x - 0.5f) < 1e-5 && std::fabs(pm.scale - 1.5f) < 1e-5 && std::fabs(pm.alpha - 0.5f) < 1e-5, "between two keys: halfway (sorted)");
+                CHECK(pb.x == 0 && pe.x == 1 && pe.alpha == 0, "before the first key / after the last: held");
+                ki.keys[1].smooth = true; ItemPose ps = itemPose(ki, 1.5); CHECK(ps.x > 0 && ps.x < 0.25f, "smooth: eases in (%.3f at a quarter)", ps.x);
+                ItemKey a2 = a; a2.t = 1.01f; a2.x = 0.3f; setKey(ki, a2); CHECK(ki.keys.size() == 2 && ki.keys[0].x == 0.3f, "a key at (nearly) the same time replaces it");
+                auto m1 = [](const char* b, const char* e) { return (float)(e - b); };
+                std::string w = "hello world foo\n\nbar";
+                auto ln = wrapText(w, 10, m1); std::vector<std::string> got; for (auto& l : ln) got.push_back(w.substr(l.start, l.end - l.start));
+                CHECK(got.size() == 4 && got[0] == "hello" && got[1] == "world foo" && got[2] == "" && got[3] == "bar", "text wraps at spaces, keeps new lines (%d lines)", (int)got.size());
+                auto one = wrapText("short", 100, m1); CHECK(one.size() == 1 && one[0].end == 5, "a short text: one line");
+                mc::Screen tl; tl.duration = 0; ScreenItem e1; e1.showAt = 2; e1.hideAt = 14; tl.items.push_back(e1);
+                CHECK(screenLength(tl) == 16 && itemEnd(e1, 16) == 14, "a staying screen's timeline runs a little past its last item");
+                ScreenSet ks = defaultScreens(); ks.screens[0].items[0].keys = ki.keys; ks.screens[0].items[0].fadeOut = 1.5f; ks.screens[0].items[0].valign = 2;
+                ScreenItem sn; sn.kind = ScreenItemKind::Sound; sn.sound.file = "boom.wav"; sn.showAt = 3; ks.screens[0].items.push_back(sn);
+                saveScreens("/tmp/prim_screens_keys.txt", ks); ScreenSet kl; loadScreens("/tmp/prim_screens_keys.txt", kl);
+                const ScreenItem& r0 = kl.screens[0].items[0];
+                CHECK(r0.keys.size() == 2 && r0.keys[1].scale == 2 && r0.keys[1].smooth && r0.fadeOut == 1.5f && r0.valign == 2 && kl.screens[0].items.back().kind == ScreenItemKind::Sound && kl.screens[0].items.back().sound.file == "boom.wav",
+                      "keyframes, fading out, lining up and sound cues save and load");
+            }
             ScreenSet ts = defaultScreens(); ts.startSound.file = "start.wav"; ts.startFade = 2.25f; ts.fadeWithSound = false; ts.sounds.hover.file = "tick.wav"; ts.sounds.click.file = "beep.wav"; ts.sounds.click.volume = 0.5f;
             mc::Screen& sp = ts.screens[5]; sp.next = "Story"; sp.musicMode = 1; sp.music.file = "title theme.mp3"; sp.musicFade = 2.5f; sp.untilVideoEnds = true; sp.skippable = false; sp.sounds.back.file = "back.wav";
             ts.screens[6].items[0].typeSound.file = "type.wav"; ts.screens[6].items[0].driftY = -0.01f;
@@ -1183,17 +1209,17 @@ int main() {
             const mc::Screen& a = tl.screens[5]; const ScreenItem& st = tl.screens[6].items[0];
             CHECK(tl.sounds.hover.file == "tick.wav" && tl.sounds.click.file == "beep.wav" && tl.sounds.click.volume == 0.5f && tl.sounds.back.file.empty() && a.sounds.back.file == "back.wav" && tl.startSound.file == "start.wav" && tl.startFade == 2.25f && !tl.fadeWithSound, "interface sounds (the game's and a screen's own) and the game-start sound save and load");
             CHECK(a.musicMode == 1 && a.music.file == "title theme.mp3" && a.musicFade == 2.5f && a.duration == 4 && a.untilVideoEnds && !a.skippable && a.next == "Story", "music and going on by itself save and load");
-            CHECK(st.typeSpeed == 22 && st.typeSound.file == "type.wav" && st.driftY == -0.01f && st.showAt == 0.8f && st.hideAt == 13.5f, "an item's timing, typing and drift save and load");
+            CHECK(st.typeSpeed == 22 && st.typeSound.file == "type.wav" && st.driftY == -0.01f && st.showAt == 0.8f && st.hideAt == 6.4f && st.fadeOut == 0.8f, "an item's timing, typing and drift save and load");
         }
         {   // the story used to follow the splash (version 2): now it is the intro of a new game
             ScreenSet o2 = defaultScreens(); o2.screens[5].next = "Story"; o2.screens[6].role = ScreenRole::Custom; saveScreens("/tmp/prim_screens_v2.txt", o2);
-            { std::ifstream in("/tmp/prim_screens_v2.txt"); std::stringstream b; b << in.rdbuf(); std::string t = b.str(); t.replace(t.find("screens 3"), 9, "screens 2"); std::ofstream out("/tmp/prim_screens_v2.txt"); out << t; }
+            { std::ifstream in("/tmp/prim_screens_v2.txt"); std::stringstream b; b << in.rdbuf(); std::string t = b.str(); t.replace(t.find("screens 4"), 9, "screens 2"); std::ofstream out("/tmp/prim_screens_v2.txt"); out << t; }
             ScreenSet l2; loadScreens("/tmp/prim_screens_v2.txt", l2);
             CHECK(l2.screens[5].next.empty() && l2.screens[6].role == ScreenRole::NewGameIntro, "an older splash -> story chain becomes splash -> main menu, story after an empty file");
         }
         {   // screens saved before save files: they get a Files screen once
             ScreenSet old = defaultScreens(); old.screens.erase(old.screens.begin() + 1); saveScreens("/tmp/prim_screens_old.txt", old);
-            { std::ifstream in("/tmp/prim_screens_old.txt"); std::stringstream b; b << in.rdbuf(); std::string t = b.str(); t.replace(t.find("screens 3"), 9, "screens 1"); std::ofstream out("/tmp/prim_screens_old.txt"); out << t; }
+            { std::ifstream in("/tmp/prim_screens_old.txt"); std::stringstream b; b << in.rdbuf(); std::string t = b.str(); t.replace(t.find("screens 4"), 9, "screens 1"); std::ofstream out("/tmp/prim_screens_old.txt"); out << t; }
             ScreenSet ol; loadScreens("/tmp/prim_screens_old.txt", ol);
             CHECK(ol.screens.size() == 7 && ol.byRole(ScreenRole::Files) == 1, "older screens get the Files screen (after the main menu)");
             ScreenSet nw = defaultScreens(); nw.screens.erase(nw.screens.begin() + 1); saveScreens("/tmp/prim_screens_new.txt", nw); ScreenSet nl; loadScreens("/tmp/prim_screens_new.txt", nl);

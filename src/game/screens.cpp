@@ -1,6 +1,7 @@
 #include "screens.h"
 #include "visors.h"   // escText / unescText
 #include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <functional>
 #include <sstream>
@@ -16,7 +17,7 @@ const char* bgKindName(BgKind k) {
     int i = (int)k; return i >= 0 && i < (int)BgKind::COUNT ? n[i] : "?";
 }
 const char* screenItemKindName(ScreenItemKind k) {
-    static const char* n[] = { "Panel", "Text", "Picture", "Button", "Options", "Credits roll", "Save files" };
+    static const char* n[] = { "Panel", "Text", "Picture", "Button", "Options", "Credits roll", "Save files", "Sound" };
     int i = (int)k; return i >= 0 && i < (int)ScreenItemKind::COUNT ? n[i] : "?";
 }
 const char* screenActName(ScreenAct a) {
@@ -167,11 +168,16 @@ Screen presetScreen(ScreenRole r) {
     }
     return s;
 }
-static Screen storyScreen() {   // an intro like Super Metroid's: text typed over the dark, then the main menu
-    Screen s; s.name = "Story"; s.role = ScreenRole::NewGameIntro; s.comp = defaultCompositor(); s.bg.color = 0x02040A; s.bg.color2 = 0x0A1424; s.duration = 14; s.fadeIn = 1;
-    ScreenItem t = text("Story", "The research station on planet Zebes\nhas gone silent.\n\nThe last message spoke of creatures\nthat drain the life from anything they touch.\n\nOne hunter is sent to find out why.",
-                        0.12f, 0.25f, 0.76f, 0.5f, 0.034f, 0);
-    t.showAt = 0.8f; t.hideAt = 13.5f; t.fade = 0.8f; t.typeSpeed = 22; s.items.push_back(t);
+static Screen storyScreen() {   // an intro like Super Metroid's: pages of text typed over the dark, one after another, then the game
+    Screen s; s.name = "Story"; s.role = ScreenRole::NewGameIntro; s.comp = defaultCompositor(); s.bg.color = 0x02040A; s.bg.color2 = 0x0A1424; s.duration = 20; s.fadeIn = 1;
+    const char* pages[] = { "The research station on planet Zebes\nhas gone silent.",
+                            "The last message spoke of creatures\nthat drain the life from anything they touch.",
+                            "One hunter is sent to find out why." };
+    float at[] = { 0.8f, 7.0f, 13.4f }, to[] = { 6.4f, 12.8f, 19.4f };
+    for (int i = 0; i < 3; i++) {
+        ScreenItem t = text("Page " + std::to_string(i + 1), pages[i], 0.1f, 0.3f, 0.8f, 0.4f, 0.036f, 1);
+        t.showAt = at[i]; t.hideAt = to[i]; t.fade = 0.4f; t.fadeOut = 0.8f; t.typeSpeed = 22; s.items.push_back(t);
+    }
     ScreenItem k = text("Skip", "any key: skip", 0.7f, 0.92f, 0.26f, 0.04f, 0.02f, 2); k.alpha = 0.4f; k.showAt = 2; s.items.push_back(k);
     return s;
 }
@@ -187,11 +193,57 @@ int ScreenSet::byRole(ScreenRole r) const { for (int i = 0; i < (int)screens.siz
 
 // ------------------------------------------------------------------ timing
 float itemShown(const ScreenItem& it, double t) {
-    double f = std::max(0.01f, it.fade);
+    double f = std::max(0.01f, it.fade), fo = std::max(0.01f, it.fadeOutTime());
     double in = (t - it.showAt) / f; double k = std::clamp(in, 0.0, 1.0);
     if (it.showAt <= 0 && t >= 0) k = 1;
-    if (it.hideAt > 0) k = std::min(k, std::clamp((it.hideAt - t) / f, 0.0, 1.0));
+    if (it.hideAt > 0) k = std::min(k, std::clamp((it.hideAt - t) / fo, 0.0, 1.0));
     return (float)k;
+}
+ItemPose itemPose(const ScreenItem& it, double t) {
+    if (it.keys.empty()) return { it.x, it.y, 1, 1 };
+    const std::vector<ItemKey>& k = it.keys;
+    auto pose = [](const ItemKey& a) { return ItemPose{ a.x, a.y, a.scale, a.alpha }; };
+    if (t <= k.front().t) return pose(k.front());
+    if (t >= k.back().t) return pose(k.back());
+    size_t i = 1; while (i < k.size() && k[i].t < t) i++;
+    const ItemKey& a = k[i - 1]; const ItemKey& b = k[i];
+    float u = b.t - a.t > 1e-5f ? (float)((t - a.t) / (b.t - a.t)) : 1.f; u = std::clamp(u, 0.f, 1.f);
+    if (b.smooth) u = u * u * (3 - 2 * u);   // eases in and out
+    return { a.x + (b.x - a.x) * u, a.y + (b.y - a.y) * u, a.scale + (b.scale - a.scale) * u, a.alpha + (b.alpha - a.alpha) * u };
+}
+void setKey(ScreenItem& it, const ItemKey& k) {
+    for (ItemKey& e : it.keys) if (std::fabs(e.t - k.t) < 0.02f) { e = k; return; }
+    it.keys.push_back(k);
+    std::sort(it.keys.begin(), it.keys.end(), [](const ItemKey& a, const ItemKey& b) { return a.t < b.t; });
+}
+float itemEnd(const ScreenItem& it, float len) {
+    if (it.kind == ScreenItemKind::Sound) return it.showAt + std::max(0.3f, it.sound.length > 0 ? it.sound.length : 0.6f);
+    return it.hideAt > 0 ? it.hideAt : std::max(len, it.showAt + 0.5f);
+}
+float screenLength(const Screen& s) {
+    if (s.duration > 0) return s.duration;
+    float e = 0;
+    for (const ScreenItem& it : s.items) { e = std::max(e, it.showAt + it.fade); e = std::max(e, it.hideAt); for (const ItemKey& k : it.keys) e = std::max(e, k.t); }
+    return std::max(10.f, e + 2);
+}
+std::vector<TextLine> wrapText(const std::string& s, float width, const std::function<float(const char*, const char*)>& measure) {
+    std::vector<TextLine> out; const char* d = s.data(); size_t n = s.size(), p = 0;
+    while (true) {   // one paragraph (up to a new line) at a time
+        size_t pe = s.find('\n', p); if (pe == std::string::npos) pe = n;
+        size_t ls = p, le = p, i = p;   // the line so far: [ls, le)
+        while (i < pe) {
+            size_t ws = i; while (ws < pe && s[ws] == ' ') ws++;          // the next word: [ws, we)
+            if (ws >= pe) break;
+            size_t we = ws; while (we < pe && s[we] != ' ') we++;
+            if (le > ls && measure(d + ls, d + we) > width) { out.push_back({ ls, le }); ls = ws; }   // doesn't fit: a new line from this word
+            le = we; i = we;
+        }
+        if (le < ls) le = ls;
+        out.push_back({ ls, le });
+        if (pe >= n) break;
+        p = pe + 1;
+    }
+    return out;
 }
 size_t typedBytes(const std::string& text, const ScreenItem& it, double t) {
     if (it.typeSpeed <= 0) return text.size();
@@ -204,7 +256,7 @@ size_t typedBytes(const std::string& text, const ScreenItem& it, double t) {
 // ------------------------------------------------------------------ files
 bool saveScreens(const std::string& path, const ScreenSet& set) {
     std::ofstream f(path); if (!f) return false;
-    f << "screens 3\n";
+    f << "screens 4\n";
     auto snd = [&](const char* k, const UiSounds& u) { f << k << " " << soundUseText(u.hover) << " " << soundUseText(u.click) << " " << soundUseText(u.back) << "\n"; };
     snd("uisounds", set.sounds);
     f << "start " << set.startFade << " " << (set.fadeWithSound ? 1 : 0) << " " << soundUseText(set.startSound) << "\n";
@@ -222,6 +274,9 @@ bool saveScreens(const std::string& path, const ScreenSet& set) {
               << i.textSize << " " << i.align << " " << c.text << " " << c.accent << " " << c.picked << " " << c.dim << " " << c.fill << " " << c.fillAlpha << " " << i.alpha << " "
               << (i.filled ? 1 : 0) << " " << (i.frame ? 1 : 0) << " " << i.rounding << " " << i.border << " " << (int)i.act << " " << escText(i.target) << " " << escText(i.group) << " " << i.speed << " " << i.slots << "\n";
             f << "anim " << i.showAt << " " << i.hideAt << " " << i.fade << " " << i.typeSpeed << " " << i.driftX << " " << i.driftY << " " << i.grow << " " << soundUseText(i.typeSound) << "\n";
+            f << "anim2 " << i.fadeOut << " " << i.valign << "\n";
+            for (const ItemKey& k : i.keys) f << "key " << k.t << " " << k.x << " " << k.y << " " << k.scale << " " << k.alpha << " " << (k.smooth ? 1 : 0) << "\n";
+            if (!i.sound.empty()) f << "isound " << soundUseText(i.sound) << "\n";
         }
         f << "comp " << s.comp.nextId << "\n";
         for (const CompNode& n : s.comp.nodes) {
@@ -271,6 +326,9 @@ bool loadScreens(const std::string& path, ScreenSet& set) {
             ScreenItem& i = cur->items.back(); std::string rest;
             l >> i.showAt >> i.hideAt >> i.fade >> i.typeSpeed >> i.driftX >> i.driftY >> i.grow; std::getline(l, rest); soundUseFrom(rest, i.typeSound);
         }
+        else if (k == "anim2" && !cur->items.empty()) { ScreenItem& i = cur->items.back(); l >> i.fadeOut >> i.valign; i.valign = std::clamp(i.valign, 0, 2); }
+        else if (k == "key" && !cur->items.empty()) { ItemKey kk; int sm = 1; if (l >> kk.t >> kk.x >> kk.y >> kk.scale >> kk.alpha >> sm) { kk.smooth = sm != 0; setKey(cur->items.back(), kk); } }
+        else if (k == "isound" && !cur->items.empty()) { std::string rest; std::getline(l, rest); soundUseFrom(rest, cur->items.back().sound); }
         else if (k == "comp") l >> cur->comp.nextId;
         else if (k == "node") {
             CompNode n; int type = 2, mute = 0;
