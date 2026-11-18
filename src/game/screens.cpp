@@ -168,16 +168,12 @@ Screen presetScreen(ScreenRole r) {
     }
     return s;
 }
-static Screen storyScreen() {   // an intro like Super Metroid's: pages of text typed over the dark, one after another, then the game
-    Screen s; s.name = "Story"; s.role = ScreenRole::NewGameIntro; s.comp = defaultCompositor(); s.bg.color = 0x02040A; s.bg.color2 = 0x0A1424; s.duration = 20; s.fadeIn = 1;
-    const char* pages[] = { "The research station on planet Zebes\nhas gone silent.",
-                            "The last message spoke of creatures\nthat drain the life from anything they touch.",
-                            "One hunter is sent to find out why." };
-    float at[] = { 0.8f, 7.0f, 13.4f }, to[] = { 6.4f, 12.8f, 19.4f };
-    for (int i = 0; i < 3; i++) {
-        ScreenItem t = text("Page " + std::to_string(i + 1), pages[i], 0.1f, 0.3f, 0.8f, 0.4f, 0.036f, 1);
-        t.showAt = at[i]; t.hideAt = to[i]; t.fade = 0.4f; t.fadeOut = 0.8f; t.typeSpeed = 22; s.items.push_back(t);
+static Screen storyScreen() {   // an intro like Super Metroid's: a stack of steps - text typed over the dark, page after page, then the game
+    Screen s; s.name = "Story"; s.role = ScreenRole::NewGameIntro; s.comp = defaultCompositor(); s.bg.color = 0x02040A; s.bg.color2 = 0x0A1424; s.fadeIn = 1; s.useStack = true;
+    for (const char* page : { "The research station on planet Zebes\nhas gone silent.", "The last message spoke of creatures\nthat drain the life from anything they touch.", "One hunter is sent to find out why." }) {
+        StackStep st; st.kind = StepKind::Text; st.text = page; st.place = 1; st.hold = 2.5f; s.stack.push_back(st);
     }
+    s.duration = buildStack(s.stack).length;
     ScreenItem k = text("Skip", "any key: skip", 0.7f, 0.92f, 0.26f, 0.04f, 0.02f, 2); k.alpha = 0.4f; k.showAt = 2; s.items.push_back(k);
     return s;
 }
@@ -192,6 +188,50 @@ int ScreenSet::find(const std::string& name) const { for (int i = 0; i < (int)sc
 int ScreenSet::byRole(ScreenRole r) const { for (int i = 0; i < (int)screens.size(); i++) if (screens[i].role == r) return i; return -1; }
 
 // ------------------------------------------------------------------ timing
+const char* stepKindName(StepKind k) {
+    static const char* n[] = { "Picture", "Text", "Wait", "Sound", "Clear" };
+    int i = (int)k; return i >= 0 && i < (int)StepKind::COUNT ? n[i] : "?";
+}
+StackBuild buildStack(const std::vector<StackStep>& steps) {
+    StackBuild b; float t = 0.4f; int pic = -1, txt = -1;
+    auto letters = [](const std::string& s) { size_t n = 0; for (unsigned char c : s) if ((c & 0xC0) != 0x80) n++; return n; };
+    auto fadeAway = [&](int& i, float at, float over) { if (i < 0) return; b.items[i].hideAt = at + over; b.items[i].fadeOut = over; i = -1; };
+    for (size_t k = 0; k < steps.size(); k++) {
+        const StackStep& s = steps[k]; b.starts.push_back(t);
+        switch (s.kind) {
+        case StepKind::Picture: {   // a new page: the one before fades as this one comes
+            float f = std::max(0.05f, s.fade);
+            fadeAway(txt, t, 0.5f); fadeAway(pic, t, f);
+            ScreenItem it; it.name = "Picture " + std::to_string(k + 1); it.kind = ScreenItemKind::Image; it.image = s.file; it.showAt = t; it.fade = f;
+            if (s.place == 1) { it.x = 0.15f; it.y = 0.06f; it.w = 0.7f; it.h = 0.58f; } else { it.x = 0; it.y = 0; it.w = 1; it.h = 1; }
+            if (s.zoom) {   // slowly closer, from when it starts to show
+                ItemKey a; a.t = t; a.x = it.x; a.y = it.y; a.smooth = false; ItemKey z = a; z.t = t + f + std::max(0.1f, s.zoomTime); z.scale = std::max(0.1f, s.zoomTo); z.smooth = true;
+                it.keys = { a, z };
+            }
+            b.items.push_back(it); pic = (int)b.items.size() - 1;
+            t += f + (s.zoom ? std::max(0.1f, s.zoomTime) : 0.f);
+            break; }
+        case StepKind::Text: {   // the text before goes first
+            if (txt >= 0) { fadeAway(txt, t, 0.4f); t += 0.45f; }
+            ScreenItem it; it.name = "Text " + std::to_string(k + 1); it.kind = ScreenItemKind::Text; it.text = s.text; it.showAt = t; it.fade = 0.15f;
+            it.typeSpeed = s.typeSpeed; it.typeSound = s.sound; it.textSize = s.textSize; it.col.text = s.color; it.align = s.align;
+            it.x = 0.1f; it.w = 0.8f;
+            if (s.place == 2) { it.y = 0.05f; it.h = 0.22f; it.valign = 0; } else if (s.place == 1) { it.y = 0.32f; it.h = 0.36f; it.valign = 1; } else { it.y = 0.68f; it.h = 0.26f; it.valign = 0; }
+            b.items.push_back(it); txt = (int)b.items.size() - 1;
+            t += (s.typeSpeed > 0 ? letters(s.text) / s.typeSpeed : 0.f) + std::max(0.f, s.hold);
+            break; }
+        case StepKind::Wait: t += std::max(0.f, s.hold); break;
+        case StepKind::Sound: {
+            ScreenItem it; it.name = "Sound " + std::to_string(k + 1); it.kind = ScreenItemKind::Sound; it.sound = s.sound; it.showAt = t; b.items.push_back(it);
+            t += std::max(0.f, s.hold); break; }
+        case StepKind::Clear: { float f = std::max(0.05f, s.fade); fadeAway(txt, t, f); fadeAway(pic, t, f); t += f; break; }
+        default: break;
+        }
+    }
+    float end = steps.empty() ? 0 : 1.f; fadeAway(txt, t, end); fadeAway(pic, t, end);   // at the end all of it fades away
+    b.length = t + end + (steps.empty() ? 0 : 0.3f);
+    return b;
+}
 float itemShown(const ScreenItem& it, double t) {
     double f = std::max(0.01f, it.fade), fo = std::max(0.01f, it.fadeOutTime());
     double in = (t - it.showAt) / f; double k = std::clamp(in, 0.0, 1.0);
@@ -268,6 +308,12 @@ bool saveScreens(const std::string& path, const ScreenSet& set) {
         snd("ssounds", s.sounds);
         f << "music " << s.musicMode << " " << s.musicFade << " " << soundUseText(s.music) << "\n";
         f << "seq " << s.duration << " " << (s.untilVideoEnds ? 1 : 0) << " " << (s.skippable ? 1 : 0) << " " << escText(s.next) << "\n";
+        if (s.useStack) f << "usestack 1\n";
+        for (const StackStep& st : s.stack) {
+            f << "step " << (int)st.kind << " " << escText(st.file) << " " << (st.zoom ? 1 : 0) << " " << st.zoomTo << " " << st.zoomTime << " " << st.place << " " << escText(st.text) << " "
+              << st.typeSpeed << " " << st.hold << " " << st.fade << " " << st.textSize << " " << st.color << " " << st.align << "\n";
+            if (!st.sound.empty()) f << "stsound " << soundUseText(st.sound) << "\n";
+        }
         for (const ScreenItem& i : s.items) {
             const ScreenColors& c = i.col;
             f << "item " << escText(i.name) << " " << (int)i.kind << " " << i.x << " " << i.y << " " << i.w << " " << i.h << " " << escText(i.text) << " " << escText(i.image) << " "
@@ -321,6 +367,14 @@ bool loadScreens(const std::string& path, ScreenSet& set) {
             i.filled = fl != 0; i.frame = fr != 0; cur->items.push_back(i);
         } else if (k == "ssounds") readSnd(cur->sounds);
         else if (k == "music") { std::string rest; l >> cur->musicMode >> cur->musicFade; std::getline(l, rest); soundUseFrom(rest, cur->music); cur->musicMode = std::clamp(cur->musicMode, 0, 2); }
+        else if (k == "usestack") { int u = 0; l >> u; cur->useStack = u != 0; }
+        else if (k == "step") {
+            StackStep st; int kd = 1, z = 0; std::string fl, tx;
+            if (l >> kd >> fl >> z >> st.zoomTo >> st.zoomTime >> st.place >> tx >> st.typeSpeed >> st.hold >> st.fade >> st.textSize >> st.color >> st.align) {
+                st.kind = (StepKind)std::clamp(kd, 0, (int)StepKind::COUNT - 1); st.file = unescText(fl); st.text = unescText(tx); st.zoom = z != 0; cur->stack.push_back(st);
+            }
+        }
+        else if (k == "stsound" && !cur->stack.empty()) { std::string rest; std::getline(l, rest); soundUseFrom(rest, cur->stack.back().sound); }
         else if (k == "seq") { int uv = 0, sk = 1; std::string nx; l >> cur->duration >> uv >> sk >> nx; cur->untilVideoEnds = uv != 0; cur->skippable = sk != 0; cur->next = unescText(nx); }
         else if (k == "anim" && !cur->items.empty()) {
             ScreenItem& i = cur->items.back(); std::string rest;
@@ -339,6 +393,7 @@ bool loadScreens(const std::string& path, ScreenSet& set) {
         }
     }
     for (Screen& s : set.screens) for (CompNode& n : s.comp.nodes) for (int& i : n.in) if (i && !s.comp.find(i)) i = 0;   // (wires to nodes that are gone)
+    for (Screen& s : set.screens) if (s.useStack) s.duration = buildStack(s.stack).length;   // (a stack lasts as long as its steps)
     if (version < 3) {   // (the story used to come right after the splash: now it comes after picking an empty file)
         int sp = set.byRole(ScreenRole::Intro), st = set.find("Story");
         if (sp >= 0 && st >= 0 && set.screens[sp].next == "Story" && set.screens[st].role == ScreenRole::Custom && set.byRole(ScreenRole::NewGameIntro) < 0) { set.screens[sp].next.clear(); set.screens[st].role = ScreenRole::NewGameIntro; }

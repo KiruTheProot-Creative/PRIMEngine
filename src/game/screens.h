@@ -109,6 +109,24 @@ struct Compositor {
 };
 Compositor defaultCompositor();                           // Background + UI -> Alpha Over -> Glare -> Vignette -> Output
 
+// ---- the stack (intros, like Super Metroid's): steps played one after another, the timing worked out by itself.
+// A picture starts a new page (the page before fades away); a text replaces the text before it; Clear fades all away.
+enum class StepKind { Picture, Text, Wait, Sound, Clear, COUNT };
+const char* stepKindName(StepKind k);
+struct StackStep {
+    StepKind kind = StepKind::Text;
+    std::string file;                                    // Picture: a picture / GIF in the "screens" folder
+    bool zoom = false; float zoomTo = 1.2f, zoomTime = 4;   // Picture: zooms in slowly (to this size, over this long; then the next step), or stays (the next step right after it faded in)
+    int place = 0;                                       // Picture: 0 the whole screen, 1 the top part (text under it); Text: 0 bottom, 1 middle, 2 top
+    std::string text;                                    // Text: what it says ({game} {world})
+    float typeSpeed = 22; SoundUse sound;                // Text: letters a second (0: all at once), a sound per letter; Sound: what plays
+    float hold = 2;                                      // Text: seconds it stays once typed; Wait: seconds; Sound: seconds to wait after it starts
+    float fade = 0.8f;                                   // Picture: fading in; Clear: fading out
+    float textSize = 0.036f; uint32_t color = 0xD8EEF8; int align = 1;
+};
+struct StackBuild { std::vector<ScreenItem> items; std::vector<float> starts; float length = 0; };   // its items, when each step starts, how long it all takes
+StackBuild buildStack(const std::vector<StackStep>& steps);
+
 struct Screen {
     std::string name = "Screen";
     ScreenRole role = ScreenRole::Custom;
@@ -120,6 +138,7 @@ struct Screen {
     int musicMode = 0; SoundUse music; float musicFade = 1;   // 0 keeps what plays, 1 plays this (loops), 2 silence; fading over musicFade seconds
     float duration = 0; bool untilVideoEnds = false;      // goes on by itself after this long (0: stays) / when its video ends
     std::string next; bool skippable = true;              // the screen after it (empty: the main menu); a key or click goes on early
+    bool useStack = false; std::vector<StackStep> stack;  // made as a stack (its items come from the steps; it lasts as long as they take)
 };
 float screenLength(const Screen& s);                     // its duration, or (staying) a little past its last item's times, at least 10 s
 Screen presetScreen(ScreenRole r);                        // ready-made: main menu, options, death, credits, files, splash (and an empty one)

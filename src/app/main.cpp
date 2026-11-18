@@ -6072,8 +6072,10 @@ struct App {
         dl->PushClipRect(ImVec2(0, 0), ImVec2((float)W, (float)H)); dl->PushTexture(ImGui::GetIO().Fonts->TexRef);
         ImFont* font = ImGui::GetFont();
         auto C = [&](uint32_t c, float a) { return IM_COL32((c >> 16) & 255, (c >> 8) & 255, c & 255, (int)(std::clamp(a, 0.f, 1.f) * 255)); };
-        for (int ii = 0; ii < (int)sc.items.size(); ii++) {
-            const ScreenItem& it = sc.items[ii]; const ScreenColors& col = it.col;
+        const std::vector<ScreenItem>* itemList = &sc.items; std::vector<ScreenItem> merged;
+        if (sc.useStack) { merged = buildStack(sc.stack).items; merged.insert(merged.end(), sc.items.begin(), sc.items.end()); itemList = &merged; }   // (a stack: its steps' items, then the screen's own)
+        for (int ii = 0; ii < (int)itemList->size(); ii++) {
+            const ScreenItem& it = (*itemList)[ii]; const ScreenColors& col = it.col;
             if (it.kind == ScreenItemKind::Sound) {   // a sound cue: plays when its time comes
                 if ((live || screenAudible) && !it.sound.empty() && screenPrevT < it.showAt && screenT >= it.showAt && screenT - it.showAt < 0.5) PlaySoundIn(SND_MENUS, it.sound);
                 continue;
@@ -6492,7 +6494,7 @@ struct App {
         for (int i = 0; i < (int)screens.screens.size(); i++) {
             mc::Screen& s = screens.screens[i]; ImGui::PushID(i);
             std::string l = s.name + (s.role != ScreenRole::Custom ? "   (" + std::string(screenRoleName(s.role)) + ")" : "");
-            if (ImGui::Selectable(l.c_str(), scrEd == i)) { scrEd = i; scrItem = -1; scrNode = 0; }
+            if (ImGui::Selectable(l.c_str(), scrEd == i)) { scrEd = i; scrItem = -1; scrNode = 0; stackSel = -1; scrPlayT = 0; scrPrevT = -1; }
             ImGui::PopID();
         }
         ImGui::Spacing();
@@ -6767,6 +6769,142 @@ struct App {
         }
         ImGui::EndChild();
     }
+    // ---- the stack (intros): steps one after another - a picture (stays / zooms in), a text typed, a wait, a sound, clear
+    int stackSel = -1;
+    static ImU32 StepColor(StepKind k) { return k == StepKind::Picture ? IM_COL32(69, 184, 132, 255) : k == StepKind::Text ? IM_COL32(76, 141, 255, 255) : k == StepKind::Sound ? IM_COL32(168, 117, 240, 255) : k == StepKind::Clear ? IM_COL32(140, 140, 150, 255) : IM_COL32(200, 160, 70, 255); }
+    std::string StepSummary(const StackStep& s) {
+        switch (s.kind) {
+        case StepKind::Picture: return (s.file.empty() ? std::string("(pick a picture)") : s.file) + (s.zoom ? "  -  zooms in" : "  -  stays");
+        case StepKind::Text: { std::string t = s.text.substr(0, s.text.find('\n')); if (t.size() < s.text.size()) t += " ..."; return t.empty() ? "(no text yet)" : t; }
+        case StepKind::Wait: { char b[32]; snprintf(b, sizeof b, "%.1f s", s.hold); return b; }
+        case StepKind::Sound: return s.sound.empty() ? "(pick a sound)" : s.sound.file;
+        case StepKind::Clear: return "everything fades away";
+        default: return "";
+        }
+    }
+    StackStep NewStep(const mc::Screen& sc, StepKind k, int after) {   // a new step: a text looks like the text before it
+        StackStep s; s.kind = k;
+        if (k == StepKind::Text) {
+            s.text = "New text";
+            for (int i = std::min(after, (int)sc.stack.size() - 1); i >= 0; i--) if (sc.stack[i].kind == StepKind::Text) { const StackStep& p = sc.stack[i]; s.place = p.place; s.typeSpeed = p.typeSpeed; s.sound = p.sound; s.hold = p.hold; s.textSize = p.textSize; s.color = p.color; s.align = p.align; break; }
+        }
+        if (k == StepKind::Wait) s.hold = 1.5f;
+        if (k == StepKind::Sound) s.hold = 0;
+        if (k == StepKind::Clear) s.fade = 1;
+        return s;
+    }
+    void StackChanged(mc::Screen& sc, bool& ch) { sc.duration = buildStack(sc.stack).length; ch = true; }
+    void ScreenStack(mc::Screen& sc, bool& ch, float height) {
+        float ui = settings.uiScale; StackBuild bd = buildStack(sc.stack);
+        if (sc.duration != bd.length) { sc.duration = bd.length; ch = true; }
+        stackSel = std::min(stackSel, (int)sc.stack.size() - 1);
+        // ---- above: play, back to the start, the time, adding steps
+        if (ImGui::Button(scrPlaying ? "Pause" : "Play", ImVec2(64 * ui, 0))) {
+            scrPlaying = !scrPlaying; scrAudible = scrPlaying;
+            if (scrPlaying) { if (scrPlayT >= bd.length) scrPlayT = 0; scrPrevT = scrPlayT - 0.001; scrTyped.clear(); }
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Play it from where it is, with its sounds.");
+        ImGui::SameLine(); if (ImGui::Button("|<")) { scrPlayT = 0; scrPrevT = -1; scrTyped.clear(); }
+        ImGui::SameLine(); ImGui::AlignTextToFramePadding(); ImGui::Text("%5.1f s", scrPlayT); ImGui::SameLine(); ImGui::TextDisabled("of %.1f s", bd.length);
+        int at = stackSel >= 0 ? stackSel + 1 : (int)sc.stack.size();   // new steps go after the picked one
+        for (StepKind k : { StepKind::Picture, StepKind::Text, StepKind::Wait, StepKind::Sound, StepKind::Clear }) {
+            ImGui::SameLine(); std::string l = std::string("+ ") + stepKindName(k);
+            ImGui::PushStyleColor(ImGuiCol_Button, ImGui::ColorConvertU32ToFloat4((StepColor(k) & 0x00FFFFFF) | 0x80000000));
+            if (ImGui::Button(l.c_str())) { sc.stack.insert(sc.stack.begin() + at, NewStep(sc, k, at - 1)); stackSel = at; scrItem = -1; StackChanged(sc, ch); bd = buildStack(sc.stack); scrPlayT = bd.starts[at]; scrPlaying = false; }
+            ImGui::PopStyleColor();
+        }
+        ImGui::SameLine(); ImGui::TextDisabled("(after the picked step)");
+        // ---- the list
+        float h = std::max(80.f, height - ImGui::GetFrameHeightWithSpacing() - 2);
+        ImGui::BeginChild("stack", ImVec2(0, h), ImGuiChildFlags_Borders);
+        ImDrawList* dl = ImGui::GetWindowDrawList(); float rowH = 42 * ui, w = ImGui::GetContentRegionAvail().x;
+        int drop = -1, moveFrom = -1, moveTo = -1, dup = -1;
+        int playing = -1; for (int i = 0; i < (int)bd.starts.size(); i++) if (scrPlayT >= bd.starts[i]) playing = i;
+        for (int i = 0; i < (int)sc.stack.size(); i++) {
+            StackStep& st = sc.stack[i]; ImGui::PushID(i);
+            ImVec2 p = ImGui::GetCursorScreenPos(); bool picked = i == stackSel;
+            ImGui::InvisibleButton("##step", ImVec2(w - 3 * ImGui::GetFrameHeight() - 20 * ui, rowH));
+            bool hov = ImGui::IsItemHovered();
+            if (ImGui::IsItemClicked()) {   // picked: the preview shows it (whole: faded in, typed)
+                stackSel = i; scrItem = -1; scrPlaying = false;
+                float show = bd.starts[i] + (st.kind == StepKind::Picture ? st.fade + (st.zoom ? st.zoomTime : 0) : st.kind == StepKind::Text ? (st.typeSpeed > 0 ? (float)st.text.size() / st.typeSpeed : 0) + 0.6f : 0.05f);
+                scrPlayT = std::min(show, (i + 1 < (int)bd.starts.size() ? bd.starts[i + 1] : bd.length) - 0.05f); scrPrevT = scrPlayT;
+            }
+            if (ImGui::BeginDragDropSource()) { ImGui::SetDragDropPayload("PRIM_STEP", &i, sizeof i); ImGui::Text("%d. %s", i + 1, stepKindName(st.kind)); ImGui::EndDragDropSource(); }
+            if (ImGui::BeginDragDropTarget()) { if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload("PRIM_STEP")) { moveFrom = *(const int*)pl->Data; moveTo = i; } ImGui::EndDragDropTarget(); }
+            if (ImGui::BeginPopupContextItem("##sctx")) {
+                if (ImGui::MenuItem("Duplicate")) dup = i;
+                if (ImGui::MenuItem("Delete")) drop = i;
+                ImGui::EndPopup();
+            }
+            ImVec2 b(p.x + w - 3 * ImGui::GetFrameHeight() - 20 * ui, p.y + rowH);
+            dl->AddRectFilled(p, b, picked ? IM_COL32(60, 85, 135, 230) : hov ? IM_COL32(52, 56, 66, 255) : IM_COL32(40, 43, 50, 255), 5.f);
+            if (i == playing && scrPlaying) dl->AddRect(p, b, IM_COL32(255, 210, 70, 220), 5.f, 0, 2.f);
+            dl->AddRectFilled(p, ImVec2(p.x + 5 * ui, b.y), StepColor(st.kind), 5.f, ImDrawFlags_RoundCornersLeft);
+            float th = rowH - 8; ImVec2 tp(p.x + 12 * ui, p.y + 4);   // a little picture of the step
+            dl->AddRectFilled(tp, ImVec2(tp.x + th * 1.5f, tp.y + th), IM_COL32(18, 20, 26, 255), 3.f);
+            if (st.kind == StepKind::Picture && !st.file.empty()) { int iw = 0, ih = 0; ID3D11ShaderResourceView* im = PictureAt(st.file, uiClock, true, &iw, &ih); if (im && iw > 0 && ih > 0) { float k = std::min(th * 1.5f / iw, th / (float)ih), ww = iw * k, hh = ih * k; ImVec2 a(tp.x + (th * 1.5f - ww) * 0.5f, tp.y + (th - hh) * 0.5f); dl->AddImage((ImTextureID)(intptr_t)im, a, ImVec2(a.x + ww, a.y + hh)); } }
+            else {
+                const char* glyph = st.kind == StepKind::Text ? "Aa" : st.kind == StepKind::Wait ? "..." : st.kind == StepKind::Sound ? "~))" : st.kind == StepKind::Clear ? "fade" : "?";
+                ImVec2 gs = ImGui::CalcTextSize(glyph); dl->AddText(ImVec2(tp.x + (th * 1.5f - gs.x) * 0.5f, tp.y + (th - gs.y) * 0.5f), StepColor(st.kind), glyph);
+            }
+            float tx = tp.x + th * 1.5f + 10 * ui;
+            char head[64]; snprintf(head, sizeof head, "%d.  %s", i + 1, stepKindName(st.kind));
+            dl->AddText(ImVec2(tx, p.y + 4), IM_COL32(235, 238, 245, 255), head);
+            char when[48]; snprintf(when, sizeof when, "at %.1f s", i < (int)bd.starts.size() ? bd.starts[i] : 0.f);
+            ImVec2 ws = ImGui::CalcTextSize(when); dl->AddText(ImVec2(b.x - ws.x - 8, p.y + 4), IM_COL32(150, 155, 168, 255), when);
+            dl->PushClipRect(ImVec2(tx, p.y), ImVec2(b.x - 8, b.y), true);
+            dl->AddText(ImVec2(tx, p.y + 4 + ImGui::GetTextLineHeight() + 2), IM_COL32(170, 178, 192, 255), StepSummary(st).c_str());
+            dl->PopClipRect();
+            ImGui::SameLine(); ImGui::BeginGroup();
+            ImGui::BeginDisabled(i == 0); if (ImGui::ArrowButton("##u", ImGuiDir_Up)) { moveFrom = i; moveTo = i - 1; } ImGui::EndDisabled();
+            ImGui::SameLine(); ImGui::BeginDisabled(i + 1 >= (int)sc.stack.size()); if (ImGui::ArrowButton("##d", ImGuiDir_Down)) { moveFrom = i; moveTo = i + 1; } ImGui::EndDisabled();
+            ImGui::SameLine(); if (ImGui::Button("x", ImVec2(ImGui::GetFrameHeight(), 0))) drop = i;
+            ImGui::EndGroup();
+            ImGui::PopID();
+        }
+        if (sc.stack.empty()) Hint("An empty stack. Add steps above: a picture (it stays, or zooms in slowly), a text typed under it, a wait, a sound, or clear (all fades away). They play one after another, top to bottom; a new picture starts a new page.");
+        ImGui::EndChild();
+        if (moveFrom >= 0 && moveTo >= 0 && moveFrom != moveTo && moveFrom < (int)sc.stack.size() && moveTo < (int)sc.stack.size()) {
+            StackStep s = sc.stack[moveFrom]; sc.stack.erase(sc.stack.begin() + moveFrom); sc.stack.insert(sc.stack.begin() + moveTo, s);
+            if (stackSel == moveFrom) stackSel = moveTo; StackChanged(sc, ch);
+        }
+        if (dup >= 0) { sc.stack.insert(sc.stack.begin() + dup + 1, sc.stack[dup]); stackSel = dup + 1; StackChanged(sc, ch); }
+        if (drop >= 0) { sc.stack.erase(sc.stack.begin() + drop); if (stackSel >= drop) stackSel--; StackChanged(sc, ch); }
+    }
+    void StepProps(mc::Screen& sc, StackStep& s, bool& ch) {
+        bool c = false; float ui = settings.uiScale;
+        Prop("Step"); int k = (int)s.kind;
+        if (ImGui::BeginCombo("##stk", stepKindName(s.kind))) { for (int i = 0; i < (int)StepKind::COUNT; i++) if (ImGui::Selectable(stepKindName((StepKind)i), i == k)) { s.kind = (StepKind)i; c = true; } ImGui::EndCombo(); }
+        switch (s.kind) {
+        case StepKind::Picture: {
+            Prop("Picture"); c |= FileCombo("##stf", s.file, false);
+            Prop("It"); int z = s.zoom ? 1 : 0; const char* zz[] = { "Stays", "Zooms in slowly" }; if (ImGui::Combo("##stz", &z, zz, 2)) { s.zoom = z == 1; c = true; }
+            if (s.zoom) { Prop("  closer, to"); c |= ImGui::SliderFloat("##stzt", &s.zoomTo, 1.02f, 3, "x %.2f"); Prop("  over"); c |= ImGui::SliderFloat("##stzs", &s.zoomTime, 0.5f, 20, "%.1f s"); }
+            Prop("Fades in over"); c |= ImGui::SliderFloat("##stfd", &s.fade, 0.05f, 4, "%.1f s");
+            Prop("Where"); const char* pl[] = { "The whole screen", "The top part (text under it)" }; c |= ImGui::Combo("##stpl", &s.place, pl, 2);
+            Hint(s.zoom ? "It fades in and slowly zooms in; the next step starts when the zoom is done." : "It fades in and stays; the next step (a text, say) starts right after it faded in.");
+            Hint("A picture starts a new page: the picture and text before it fade away as it comes.");
+            break; }
+        case StepKind::Text: {
+            ImGui::TextDisabled("Says"); c |= ImGui::InputTextMultiline("##stt", &s.text, ImVec2(-1, 90 * ui));
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("{game} {world} are filled in. New lines stay; long lines wrap.");
+            Prop("Typed"); c |= ImGui::SliderFloat("##stts", &s.typeSpeed, 0, 80, s.typeSpeed <= 0 ? "all at once" : "%.0f letters/s");
+            if (s.typeSpeed > 0) { Prop("Letter sound"); c |= SoundEdit("##stsn", s.sound, false); }
+            Prop("Stays for"); c |= ImGui::SliderFloat("##sth", &s.hold, 0, 15, "%.1f s once typed");
+            Prop("Where"); const char* pl[] = { "Bottom", "Middle", "Top" }; c |= ImGui::Combo("##stpl", &s.place, pl, 3);
+            Prop("Size"); c |= ImGui::SliderFloat("##stsz", &s.textSize, 0.015f, 0.12f, "%.3f");
+            Prop("Colour"); c |= ColorU32("##stc", s.color);
+            Prop("Lined up"); const char* al[] = { "Left", "Middle", "Right" }; c |= ImGui::Combo("##sta", &s.align, al, 3);
+            Hint("It is typed letter by letter, stays a while, then the next step. A new text replaces this one (it fades first).");
+            break; }
+        case StepKind::Wait: Prop("Waits"); c |= ImGui::SliderFloat("##stw", &s.hold, 0, 20, "%.1f s"); Hint("Nothing new for a while: what is there stays."); break;
+        case StepKind::Sound: Prop("Sound"); c |= SoundEdit("##sts", s.sound, false); Prop("Then waits"); c |= ImGui::SliderFloat("##stw", &s.hold, 0, 20, "%.1f s"); Hint("It plays, and the next step starts after the wait (0: right away, while it plays)."); break;
+        case StepKind::Clear: Prop("Fades away over"); c |= ImGui::SliderFloat("##stcf", &s.fade, 0.05f, 5, "%.1f s"); Hint("The picture and text that are there fade away (to the background)."); break;
+        default: break;
+        }
+        if (c) StackChanged(sc, ch);
+    }
     void ScreenLayoutTab(mc::Screen& sc, bool& ch) {
         float ui = settings.uiScale, propW = 340 * ui, sp = ImGui::GetStyle().ItemSpacing.x;
         float aw = std::max(200.f, ImGui::GetContentRegionAvail().x - propW - sp), ah = ImGui::GetContentRegionAvail().y;
@@ -6834,7 +6972,13 @@ struct App {
             ImGui::SetCursorScreenPos(ImVec2(o.x, o.y + h + 4));
             ImGui::TextDisabled("The screen at the playhead. Click to pick, drag to move, the corner resizes (Ctrl: on a grid). An item with keyframes gets a keyframe where you drag it.");
         }
-        ScreenTimeline(sc, ch, ImGui::GetContentRegionAvail().y);
+        {   // made as a stack (steps one after another) or on a timeline (every item where you put it)
+            int m = sc.useStack ? 0 : 1; ImGui::AlignTextToFramePadding(); ImGui::TextDisabled("Made as"); ImGui::SameLine();
+            bool chm = ImGui::RadioButton("a stack", &m, 0); if (ImGui::IsItemHovered()) ImGui::SetTooltip("Steps one after another (pictures, texts, waits, sounds): the timing works itself out. For intros.");
+            ImGui::SameLine(); chm |= ImGui::RadioButton("a timeline", &m, 1); if (ImGui::IsItemHovered()) ImGui::SetTooltip("Every item on a timeline, where you put it, with keyframes. For splash screens and anything free.");
+            if (chm && sc.useStack != (m == 0)) { sc.useStack = m == 0; if (sc.useStack) sc.duration = buildStack(sc.stack).length; stackSel = -1; scrPlayT = 0; scrPrevT = -1; ch = true; }
+        }
+        if (sc.useStack) ScreenStack(sc, ch, ImGui::GetContentRegionAvail().y); else ScreenTimeline(sc, ch, ImGui::GetContentRegionAvail().y);
         ImGui::EndChild();
         ImGui::SameLine();
         ImGui::BeginChild("scrprops", ImVec2(propW, ah), ImGuiChildFlags_Borders);
@@ -6860,7 +7004,8 @@ struct App {
         }
         ImGui::Separator();
         if (scrItem >= 0 && scrItem < (int)sc.items.size()) ScreenItemProps(sc.items[scrItem], ch);
-        else ImGui::TextDisabled("Pick an item (on the canvas or in the list).");
+        else if (sc.useStack && stackSel >= 0 && stackSel < (int)sc.stack.size()) { ImGui::SeparatorText(("Step " + std::to_string(stackSel + 1)).c_str()); StepProps(sc, sc.stack[stackSel], ch); }
+        else ImGui::TextDisabled(sc.useStack ? "Pick a step in the stack (or an item on the canvas)." : "Pick an item (on the canvas or in the list).");
         ImGui::EndChild();
     }
     int ch_() const { return ch; }
@@ -6960,7 +7105,8 @@ struct App {
         if (sc.musicMode != 0) { Prop("Fades over"); ch |= ImGui::SliderFloat("##mfade", &sc.musicFade, 0, 6, "%.1f s"); }
         Hint("WAV, MP3, M4A, WMA or FLAC from the game's sounds (import them in the sound pickers). \"Keep\" lets the music of the screen before go on (the Options screen keeps the main menu's). Playing a game fades it out.");
         ImGui::SeparatorText("Goes on by itself (splash screens, intros)");
-        Prop("After"); ch |= ImGui::SliderFloat("##sqdur", &sc.duration, 0, 120, sc.duration <= 0 ? "never (stays)" : "%.1f s");
+        if (sc.useStack) { Prop("After"); ImGui::Text("%.1f s (as long as its stack)", sc.duration); }
+        else { Prop("After"); ch |= ImGui::SliderFloat("##sqdur", &sc.duration, 0, 120, sc.duration <= 0 ? "never (stays)" : "%.1f s"); }
         Prop("Or when the video ends"); ch |= ImGui::Checkbox("##sqvid", &sc.untilVideoEnds);
         Prop("Then"); if (ImGui::BeginCombo("##sqnext", sc.next.empty() ? "(the main menu)" : sc.next.c_str())) {
             if (ImGui::Selectable("(the main menu)", sc.next.empty())) { sc.next.clear(); ch = true; }

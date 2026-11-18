@@ -1203,9 +1203,36 @@ int main() {
                 CHECK(r0.keys.size() == 2 && r0.keys[1].scale == 2 && r0.keys[1].smooth && r0.fadeOut == 1.5f && r0.valign == 2 && kl.screens[0].items.back().kind == ScreenItemKind::Sound && kl.screens[0].items.back().sound.file == "boom.wav",
                       "keyframes, fading out, lining up and sound cues save and load");
             }
+            {   // the stack: steps one after another, the timing worked out
+                std::vector<StackStep> st;
+                StackStep p1; p1.kind = StepKind::Picture; p1.file = "zebes.png"; p1.fade = 1; st.push_back(p1);                     // stays: the text right after it faded in
+                StackStep t1; t1.kind = StepKind::Text; t1.text = "0123456789"; t1.typeSpeed = 10; t1.hold = 2; st.push_back(t1);   // 1 s typing + 2 s
+                StackStep p2; p2.kind = StepKind::Picture; p2.file = "ridley.png"; p2.fade = 1; p2.zoom = true; p2.zoomTo = 1.5f; p2.zoomTime = 3; p2.place = 1; st.push_back(p2);
+                StackStep t2; t2.kind = StepKind::Text; t2.text = "abc"; t2.typeSpeed = 0; t2.hold = 1; st.push_back(t2);
+                StackStep t3; t3.kind = StepKind::Text; t3.text = "next"; t3.typeSpeed = 0; t3.hold = 1; st.push_back(t3);
+                StackStep w; w.kind = StepKind::Wait; w.hold = 2; st.push_back(w);
+                StackStep sd; sd.kind = StepKind::Sound; sd.sound.file = "boom.wav"; sd.hold = 0.5f; st.push_back(sd);
+                StackBuild bd = buildStack(st);
+                CHECK(bd.starts.size() == 7 && std::fabs(bd.starts[1] - (bd.starts[0] + 1)) < 1e-4, "a picture that stays: the text starts right after it faded in");
+                CHECK(std::fabs(bd.starts[2] - (bd.starts[1] + 3)) < 1e-4, "a typed text: typing, then it stays a while (%.2f)", bd.starts[2] - bd.starts[1]);
+                CHECK(std::fabs(bd.starts[3] - (bd.starts[2] + 4)) < 1e-4, "a picture that zooms: the next step after the zoom");
+                const ScreenItem& pic1 = bd.items[0]; const ScreenItem& txt1 = bd.items[1]; const ScreenItem& pic2 = bd.items[2];
+                CHECK(pic1.hideAt > 0 && pic1.hideAt <= bd.starts[2] + 1.01f && txt1.hideAt > 0 && txt1.hideAt <= bd.starts[2] + 0.51f, "a new picture: the page before fades away");
+                CHECK(pic2.keys.size() == 2 && pic2.keys[1].scale == 1.5f && pic2.y < 0.1f && pic2.h < 0.7f, "the zooming picture has its zoom (and sits in the top part)");
+                const ScreenItem& tx2 = bd.items[3]; const ScreenItem& tx3 = bd.items[4];
+                CHECK(tx2.hideAt > 0 && tx3.showAt >= tx2.hideAt - 1e-4, "a text replaces the one before (it fades first)");
+                CHECK(bd.items.back().kind == ScreenItemKind::Sound && std::fabs(bd.items.back().showAt - bd.starts[6]) < 1e-4 && bd.length > bd.starts[6] + 0.5f, "a sound plays at its step; it all ends after the last");
+                CHECK(tx3.hideAt > 0 && pic2.hideAt > 0, "at the end everything fades away");
+                ScreenSet ks = defaultScreens(); int story = ks.find("Story");
+                CHECK(story >= 0 && ks.screens[story].useStack && ks.screens[story].stack.size() == 3 && ks.screens[story].duration == buildStack(ks.screens[story].stack).length, "the Story preset is a stack (and lasts as long as it)");
+                ks.screens[story].stack.insert(ks.screens[story].stack.begin(), p2); ks.screens[story].stack[1].sound.file = "type.wav";
+                saveScreens("/tmp/prim_stack.txt", ks); ScreenSet kl; loadScreens("/tmp/prim_stack.txt", kl); const mc::Screen& ls = kl.screens[story];
+                CHECK(ls.useStack && ls.stack.size() == 4 && ls.stack[0].zoom && ls.stack[0].zoomTo == 1.5f && ls.stack[0].file == "ridley.png" && ls.stack[1].sound.file == "type.wav" && ls.stack[1].text == ks.screens[story].stack[1].text
+                      && std::fabs(ls.duration - buildStack(ls.stack).length) < 1e-4, "a stack saves and loads (and its length is worked out again)");
+            }
             ScreenSet ts = defaultScreens(); ts.startSound.file = "start.wav"; ts.startFade = 2.25f; ts.fadeWithSound = false; ts.sounds.hover.file = "tick.wav"; ts.sounds.click.file = "beep.wav"; ts.sounds.click.volume = 0.5f;
             mc::Screen& sp = ts.screens[5]; sp.next = "Story"; sp.musicMode = 1; sp.music.file = "title theme.mp3"; sp.musicFade = 2.5f; sp.untilVideoEnds = true; sp.skippable = false; sp.sounds.back.file = "back.wav";
-            ts.screens[6].items[0].typeSound.file = "type.wav"; ts.screens[6].items[0].driftY = -0.01f;
+            { ScreenItem& ti = ts.screens[6].items[0]; ti.typeSound.file = "type.wav"; ti.driftY = -0.01f; ti.typeSpeed = 22; ti.showAt = 0.8f; ti.hideAt = 6.4f; ti.fadeOut = 0.8f; }
             saveScreens("/tmp/prim_screens_t.txt", ts); ScreenSet tl; loadScreens("/tmp/prim_screens_t.txt", tl);
             const mc::Screen& a = tl.screens[5]; const ScreenItem& st = tl.screens[6].items[0];
             CHECK(tl.sounds.hover.file == "tick.wav" && tl.sounds.click.file == "beep.wav" && tl.sounds.click.volume == 0.5f && tl.sounds.back.file.empty() && a.sounds.back.file == "back.wav" && tl.startSound.file == "start.wav" && tl.startFade == 2.25f && !tl.fadeWithSound, "interface sounds (the game's and a screen's own) and the game-start sound save and load");

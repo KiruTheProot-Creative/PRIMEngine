@@ -240,6 +240,16 @@ The game's own flat screens outside of play. A new game starts with four: **Main
 - **Music** per screen: keep what is playing (the Options screen keeps the main menu's), play this (it loops, fading in over the seconds you set), or silence. WAV, **MP3, M4A, WMA, FLAC** (through Windows). Starting a game fades it out. Options > Sound > **Music**.
 - **Splash screens and intros**: a screen can go on by itself after some seconds or when its video ends, to the screen you pick (or the main menu); a key or click skips (if allowed). The screen with the role **Splash (shown first)** is where F6 starts; the one with the role **Intro of a new game** (the story) comes after picking an empty file, then the game. Picking a file (or Continue) plays the **game-start sound** and fades to black - as long as the sound, or the seconds you set - and the game fades in. Items have **timing**: when they appear and go, how long they fade, **typed text** letter by letter with a sound per letter (like Super Metroid's intro), slow drifting and growing. New games come with a **Splash** (the game's name fading in and out, before the main menu) and a **Story** (typed text, after picking an empty file); "+ Screen" adds more.
 
+### The stack (intros: Screens > Layout, "Made as: a stack")
+
+An intro (like Super Metroid's) is a list of steps, played top to bottom; the timing works itself out:
+
+- **Picture**: it **stays** (the next step, a text say, starts right after it faded in) or **zooms in slowly** (closer, to the size and over the seconds you set; the next step starts when the zoom is done). The whole screen, or the top part with the text under it. A new picture starts a new page: the picture and text before it fade away as it comes.
+- **Text**: typed letter by letter (a sound per letter), it stays a while, then the next step; a new text replaces it (it fades first). Bottom, middle or top; size, colour, lined up.
+- **Wait** (seconds), **Sound** (plays; then waits, or not), **Clear** (everything fades away).
+
+Add steps with the buttons above the list (they go after the picked one), drag them (or the arrows) to change the order, right-click to duplicate or delete. Picking a step shows it on the canvas (faded in, typed) and its settings on the right. Play plays it all with its sounds. The screen lasts as long as its steps take, then goes on. The Story preset is a stack; a screen can be switched to a timeline (and back) at any time.
+
 ### The timeline (Screens > Layout, under the canvas)
 
 Every item of a screen is a row (back to front), with a bar from when it appears to when it goes; slopes at its ends are its fade in / fade out, a white line under a text is how long its typing takes. The **playhead** (yellow) is what the canvas shows: click or drag in the ruler to move it, **Play** plays from there with the sounds (typing, sound cues). Drag a bar to move it, its ends to change them; the red line is the screen's end (drag it; right-click the ruler: end here / never ends). Snapping to the playhead, other bars' ends and 0.05 s (Shift: none). Ctrl + wheel zooms, Shift + wheel moves along. Right-click a bar: starts / ends at the playhead, stays, keyframe here, copy, delete.
@@ -247,7 +257,6 @@ Every item of a screen is a row (back to front), with a bar from when it appears
 - **+ Text / + Picture / + Sound** add one at the playhead. A **Sound** item is a sound cue: it plays once at its time (a boom, a voice line).
 - **Keyframes** (diamonds on a bar): where an item is, how big and how see-through at a time; in between it moves on its own (smooth: easing in and out). Add one at the playhead (right-click its bar, or the item's Keyframes), move the playhead, drag the item on the canvas: that makes the next one. A picture gliding across, a slow zoom, a text sliding in.
 - Texts line up left / middle / right and top / middle / bottom inside their box, wrapped at spaces; typed letters appear where they will stay.
-- The Story preset is now three pages typed one after another.
 
 ## Save files (like Metroid Prime)
 
