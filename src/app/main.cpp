@@ -6394,7 +6394,7 @@ struct App {
     bool screensEdOpen = false, focusScreensEd = false; int scrEd = 0, scrItem = -1, scrNode = 0; float scrPrevW = 0, scrPrevH = 0;
     // the timeline (Screens > Layout): the playhead, playing, zoom; dragging bars, edges, keyframes, the playhead, the screen's end
     double scrPlayT = 0, scrPrevT = -1, scrClock = -1; bool scrPlaying = true, scrAudible = false, tlSnap = true; std::map<int, size_t> scrTyped;
-    float tlPps = 60, tlScroll = 0, tlRowScroll = 0; int tlDrag = 0, tlDragItem = -1, tlDragKey = -1, tlKeySel = -1; float tlGrabT = 0, tlOrigA = 0, tlOrigB = 0; std::vector<float> tlOrigKeys;
+    float tlPps = 60, tlScroll = 0, tlRowScroll = 0; int stDrag = 0, tlDragItem = -1, tlDragKey = -1, tlKeySel = -1; float tlGrabT = 0, tlOrigA = 0, tlOrigB = 0; std::vector<float> tlOrigKeys;
     float scrDragX = 0, scrDragY = 0, scrOrig[6] = {}; int scrDragMode = 0;   // 1 move, 2 resize; where the mouse took it, and what it was (x y w h scale alpha)
     ImVec2 nodePan{ 40, 40 }; float nodeZoom = 1; int linkFrom = 0, linkTo = 0, linkSlot = -1; bool linkDragging = false;
     mc::Screen* EdScreen() { return scrEd >= 0 && scrEd < (int)screens.screens.size() ? &screens.screens[scrEd] : nullptr; }
@@ -6566,7 +6566,7 @@ struct App {
             else if (io.KeyShift || io.MouseWheelH != 0 || n * rowH <= rowsH) tlScroll -= (io.MouseWheel + io.MouseWheelH) * 60 / tlPps;
             else tlRowScroll -= io.MouseWheel * rowH * 2;
         }
-        if (scrPlaying && tlDrag == 0) {   // keeps the playhead in view
+        if (scrPlaying && stDrag == 0) {   // keeps the playhead in view
             if (X((float)scrPlayT) > x1 - 30) tlScroll = (float)scrPlayT - (x1 - x0) * 0.15f / tlPps;
             if (X((float)scrPlayT) < x0) tlScroll = std::max(0.f, (float)scrPlayT - 0.5f);
         }
@@ -6653,7 +6653,7 @@ struct App {
             for (int k = 0; k < (int)it.keys.size(); k++) if (std::fabs(mp.x - X(it.keys[k].t)) < rowH * 0.3f) { hzone = 4; hkey = k; }
             if (!hzone) { if (std::fabs(mp.x - a) < 5) hzone = 2; else if (std::fabs(mp.x - b) < 5 && it.kind != ScreenItemKind::Sound) hzone = 3; else if (mp.x > a && mp.x < b) hzone = 1; }
             if (hzone == 2 || hzone == 3) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
-            if (hzone && tlDrag == 0) {
+            if (hzone && stDrag == 0) {
                 char tip[200]; float e = itemEnd(it, len);
                 if (hzone == 4) snprintf(tip, sizeof tip, "Keyframe at %.2f s\nDrag: move it   Right-click: delete", it.keys[hkey].t);
                 else snprintf(tip, sizeof tip, "%s\n%.2f s - %s\nDrag to move it, its ends to change them. Right-click: more", it.name.c_str(), it.showAt, it.hideAt > 0 || it.kind == ScreenItemKind::Sound ? (std::to_string(e).substr(0, std::to_string(e).find('.') + 3) + " s").c_str() : "stays");
@@ -6661,26 +6661,26 @@ struct App {
             }
         }
         bool nearEnd = hov && sc.duration > 0 && std::fabs(mp.x - X(sc.duration)) < 6 && (hr == -2 || hzone == 0);
-        if (nearEnd) { ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW); if (tlDrag == 0) ImGui::SetTooltip("The screen's end (%.2f s): it goes on to the next. Drag to change.", sc.duration); }
+        if (nearEnd) { ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW); if (stDrag == 0) ImGui::SetTooltip("The screen's end (%.2f s): it goes on to the next. Drag to change.", sc.duration); }
         if (hov && ImGui::IsMouseClicked(0)) {
-            tlDrag = 0; tlDragItem = hr; tlGrabT = T(mp.x);
-            if (nearEnd) tlDrag = 6;
-            else if (hr == -2) { if (mp.x >= x0) { tlDrag = 5; scrPlaying = false; } }
+            stDrag = 0; tlDragItem = hr; tlGrabT = T(mp.x);
+            if (nearEnd) stDrag = 6;
+            else if (hr == -2) { if (mp.x >= x0) { stDrag = 5; scrPlaying = false; } }
             else if (hr >= 0 && mp.x < x0) { scrItem = hr; tlKeySel = -1; }
             else if (hr >= 0) {
                 ScreenItem& it = sc.items[hr]; scrItem = hr;
-                if (hzone == 0) { tlDrag = 5; scrPlaying = false; tlKeySel = -1; }
+                if (hzone == 0) { stDrag = 5; scrPlaying = false; tlKeySel = -1; }
                 else {
-                    tlDrag = hzone; tlDragKey = hkey; tlKeySel = hzone == 4 ? hkey : -1; tlOrigA = it.showAt; tlOrigB = it.hideAt;
+                    stDrag = hzone; tlDragKey = hkey; tlKeySel = hzone == 4 ? hkey : -1; tlOrigA = it.showAt; tlOrigB = it.hideAt;
                     tlOrigKeys.clear(); for (const ItemKey& k : it.keys) tlOrigKeys.push_back(k.t);
                 }
-            } else if (mp.x >= x0) { tlDrag = 5; scrPlaying = false; }
+            } else if (mp.x >= x0) { stDrag = 5; scrPlaying = false; }
         }
-        if (tlDrag && ImGui::IsMouseDown(0)) {
+        if (stDrag && ImGui::IsMouseDown(0)) {
             float t = T(mp.x), d = t - tlGrabT; ScreenItem* it = tlDragItem >= 0 && tlDragItem < n ? &sc.items[tlDragItem] : nullptr;
-            if (tlDrag == 5) { scrPlayT = std::max(0.f, snap(t, -1)); scrPrevT = scrPlayT; }
-            else if (tlDrag == 6) { float v = std::max(0.1f, snap(t, -1)); if (v != sc.duration) { sc.duration = v; ch = true; } }
-            else if (it && tlDrag == 1) {   // the whole bar (its keys go along)
+            if (stDrag == 5) { scrPlayT = std::max(0.f, snap(t, -1)); scrPrevT = scrPlayT; }
+            else if (stDrag == 6) { float v = std::max(0.1f, snap(t, -1)); if (v != sc.duration) { sc.duration = v; ch = true; } }
+            else if (it && stDrag == 1) {   // the whole bar (its keys go along)
                 float na = snap(tlOrigA + d, tlDragItem);
                 if (it->hideAt > 0 && tlSnap && !io.KeyShift) { float nb = snap(tlOrigB + d, tlDragItem); if (std::fabs(X(nb) - X(tlOrigB + d)) < std::fabs(X(na) - X(tlOrigA + d))) na = nb - (tlOrigB - tlOrigA); }   // (its end can snap too)
                 na = std::max(0.f, na); float dd = na - tlOrigA;
@@ -6688,16 +6688,16 @@ struct App {
                 for (size_t k = 0; k < it->keys.size() && k < tlOrigKeys.size(); k++) it->keys[k].t = std::max(0.f, tlOrigKeys[k] + dd);
                 ch = true;
             }
-            else if (it && tlDrag == 2) { float v = snap(t, tlDragItem); if (it->hideAt > 0) v = std::min(v, it->hideAt - 0.05f); it->showAt = std::max(0.f, v); ch = true; }
-            else if (it && tlDrag == 3) { it->hideAt = std::max(it->showAt + 0.05f, snap(t, tlDragItem)); ch = true; }
-            else if (it && tlDrag == 4 && tlDragKey >= 0 && tlDragKey < (int)it->keys.size()) {   // a key: between its neighbours
+            else if (it && stDrag == 2) { float v = snap(t, tlDragItem); if (it->hideAt > 0) v = std::min(v, it->hideAt - 0.05f); it->showAt = std::max(0.f, v); ch = true; }
+            else if (it && stDrag == 3) { it->hideAt = std::max(it->showAt + 0.05f, snap(t, tlDragItem)); ch = true; }
+            else if (it && stDrag == 4 && tlDragKey >= 0 && tlDragKey < (int)it->keys.size()) {   // a key: between its neighbours
                 float v = snap(t, tlDragItem);
                 if (tlDragKey > 0) v = std::max(v, it->keys[tlDragKey - 1].t + 0.02f);
                 if (tlDragKey + 1 < (int)it->keys.size()) v = std::min(v, it->keys[tlDragKey + 1].t - 0.02f);
                 it->keys[tlDragKey].t = std::max(0.f, v); scrPlayT = it->keys[tlDragKey].t; scrPrevT = scrPlayT; ch = true;
             }
         }
-        if (!ImGui::IsMouseDown(0)) tlDrag = 0;
+        if (!ImGui::IsMouseDown(0)) stDrag = 0;
         // ---- right-click: more
         if (hov && ImGui::IsMouseClicked(1)) {
             tlDragItem = hr; tlDragKey = hkey;
