@@ -1325,3 +1325,70 @@ float4 PS_Map(MapOut i, bool front : SV_IsFrontFace) : SV_Target
 // ---------------------------------------------------------------- a flat colour (the Scan Visor's outline mask)
 cbuffer FlatCB : register(b7) { float4 gFlat; };
 float4 PS_Flat(VSOut i) : SV_Target { return gFlat; }
+
+// ---------------------------------------------------------------- the screens' compositor (Screens editor): one pass per node (blur and glare take a few)
+cbuffer CompCB : register(b8)
+{
+    float4 gCP0;    // the node's values 0..3
+    float4 gCP1;    // x, y values 4..5, z mode, w which operation
+    float4 gCC0, gCC1, gCC2;   // its colours
+    float4 gCSize;  // w, h, 1 / w, 1 / h
+    float4 gCMisc;  // x time (s), y pixels per 1080, zw a blur's step (pixels)
+    float4 gCRect;  // a picture's place on the screen (u0, v0, u1, v1)
+};
+Texture2D gCompA : register(t12);
+Texture2D gCompB : register(t13);
+float4 compA(float2 uv) { return gCompA.SampleLevel(gClamp, uv, 0); }
+float compLum(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }
+float3 rgb2hsv(float3 c)
+{
+    float4 K = float4(0, -1.0 / 3, 2.0 / 3, -1); float4 p = lerp(float4(c.bg, K.wz), float4(c.gb, K.xy), step(c.b, c.g));
+    float4 q = lerp(float4(p.xyw, c.r), float4(c.r, p.yzx), step(p.x, c.r)); float d = q.x - min(q.w, q.y);
+    return float3(abs(q.z + (q.w - q.y) / (6 * d + 1e-10)), d / (q.x + 1e-10), q.x);
+}
+float3 hsv2rgb(float3 c) { float3 p = abs(frac(c.xxx + float3(1, 2.0 / 3, 1.0 / 3)) * 6 - 3); return c.z * lerp(1, saturate(p - 1), c.y); }
+float compHash(float2 p) { return frac(sin(dot(p, float2(12.9898, 78.233))) * 43758.5453); }
+float4 PS_Comp(BlitOut i) : SV_Target
+{
+    int op = (int)round(gCP1.w); float2 uv = i.uv; float4 a = 0;
+    if (op != 1 && op != 2 && op != 6 && op != 14 && op != 15 && op != 16) a = compA(uv);
+    switch (op)
+    {
+    case 0: return float4(a.rgb * gCP0.x, a.a);                                                   // copy (with a fade)
+    case 1: return float4(lerp(gCC0.rgb, gCC1.rgb, uv.y), 1);                                    // a gradient
+    case 2: { float2 q = (uv - gCRect.xy) / max(gCRect.zw - gCRect.xy, 1e-5);                  // a picture where it sits
+              if (any(q < 0) || any(q > 1)) return float4(0, 0, 0, 1);
+              float4 c = gCompA.SampleLevel(gLinear, q, 0); return float4(c.rgb * c.a, 1); }
+    case 3: return float4(a.rgb * (1 - gCP0.x), a.a);                                             // darker
+    case 4: { float4 b = gCompB.SampleLevel(gClamp, uv, 0) * gCP0.x; return a * (1 - b.a) + b; }  // alpha over (premultiplied)
+    case 5: { float4 b = gCompB.SampleLevel(gClamp, uv, 0); int m = (int)round(gCP1.z); float3 r;
+              if (m == 1) r = a.rgb + b.rgb; else if (m == 2) r = a.rgb * b.rgb; else if (m == 3) r = 1 - (1 - a.rgb) * (1 - b.rgb);
+              else if (m == 4) r = lerp(2 * a.rgb * b.rgb, 1 - 2 * (1 - a.rgb) * (1 - b.rgb), step(0.5, a.rgb));
+              else if (m == 5) r = abs(a.rgb - b.rgb); else if (m == 6) r = max(a.rgb, b.rgb); else if (m == 7) r = min(a.rgb, b.rgb); else r = b.rgb;
+              return float4(lerp(a.rgb, r, gCP0.x), max(a.a, b.a * gCP0.x)); }
+    case 6: { float4 s = 0; float wsum = 0;                                                        // blur along one direction
+              [unroll] for (int k = -12; k <= 12; k++) { float w = exp(-k * k / 50.0); s += compA(uv + gCMisc.zw * gCSize.zw * (k / 12.0)) * w; wsum += w; }
+              return s / wsum; }
+    case 7: { float l = max(a.r, max(a.g, a.b)); return float4(a.rgb * max(0, l - gCP0.x) / max(l, 1e-3), 1); }   // the bright parts (for glare)
+    case 8: { float4 b = gCompB.SampleLevel(gClamp, uv, 0); return float4(a.rgb + b.rgb * gCP0.y * gCC0.rgb, a.a); }  // glare added
+    case 9: { float3 c = max(a.rgb * gCP0.z * gCC2.rgb + gCP0.x * gCC0.rgb, 0); return float4(pow(c, 1 / max(gCP0.y * gCC1.rgb, 0.05)), a.a); }   // lift / gamma / gain
+    case 10: { float3 h = rgb2hsv(max(a.rgb, 0)); h.x = frac(h.x + gCP0.x); h.y = saturate(h.y * gCP0.y); h.z *= gCP0.z; return float4(hsv2rgb(h), a.a); }
+    case 11: { float k = gCP0.y >= 0 ? 1 / max(1 - gCP0.y, 0.02) : 1 + gCP0.y; return float4(max((a.rgb - 0.5) * k + 0.5 + gCP0.x, 0), a.a); }
+    case 12: return float4(lerp(a.rgb, 1 - saturate(a.rgb), gCP0.x), a.a);
+    case 13: { float2 d = (uv - 0.5) * float2(gCSize.x * gCSize.w, 1); float r = length(d) * 2;   // vignette
+               float v = smoothstep(gCP0.y, gCP0.y + gCP0.z, r) * gCP0.x; return float4(lerp(a.rgb, gCC0.rgb, v), a.a); }
+    case 14: { float2 d = (uv - 0.5) * gCP0.x * gCMisc.y * gCSize.zw * 2;                           // chromatic fringes
+               return float4(compA(uv + d).r, compA(uv).g, compA(uv - d).b, compA(uv).a); }
+    case 15: { float2 c = uv - 0.5; float r2 = dot(c, c) * 4;                                      // lens distortion
+               float3 k = gCP0.x + float3(-1, 0, 1) * gCP0.y;
+               return float4(compA(0.5 + c * (1 + k.r * r2)).r, compA(0.5 + c * (1 + k.g * r2)).g, compA(0.5 + c * (1 + k.b * r2)).b, compA(0.5 + c * (1 + k.g * r2)).a); }
+    case 16: { float2 px = max(gCP0.x * gCMisc.y, 1) * gCSize.zw; return compA((floor(uv / px) + 0.5) * px); }   // pixelate
+    case 17: { float2 cell = floor(uv * gCSize.xy / max(gCP0.y * gCMisc.y, 1)); float t = floor(gCMisc.x * 24) * gCP0.z;
+               return float4(a.rgb + (compHash(cell + t * 17.13) - 0.5) * gCP0.x, a.a); }              // grain
+    case 18: { float s = sin((uv.y * gCP0.y + gCMisc.x * gCP0.z * 0.05) * 6.2831853); return float4(a.rgb * (1 - gCP0.x * (0.5 + 0.5 * s)), a.a); }   // scan lines
+    case 19: { float2 o = gCSize.zw; float4 n = compA(uv + float2(o.x, 0)) + compA(uv - float2(o.x, 0)) + compA(uv + float2(0, o.y)) + compA(uv - float2(0, o.y));
+               return float4(max(a.rgb + (a.rgb * 4 - n.rgb) * gCP0.x, 0), a.a); }                  // sharpen
+    case 20: return float4(lerp(a.rgb, lerp(gCC0.rgb, gCC1.rgb, saturate(compLum(a.rgb))), gCP0.x), a.a);   // gradient map
+    }
+    return a;
+}

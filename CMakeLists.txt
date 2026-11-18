@@ -25,11 +25,11 @@ endforeach()
 if(WIN32)
     set(IMGUI third_party/imgui)
     add_executable(PRIMEngine WIN32
-        src/app/main.cpp
+        src/app/main.cpp src/app/media.cpp
         ${IMGUI}/imgui.cpp ${IMGUI}/imgui_draw.cpp ${IMGUI}/imgui_tables.cpp ${IMGUI}/imgui_widgets.cpp ${IMGUI}/imgui_stdlib.cpp
         ${IMGUI}/backends/imgui_impl_win32.cpp ${IMGUI}/backends/imgui_impl_dx11.cpp)
     target_include_directories(PRIMEngine PRIVATE ${IMGUI})
-    target_link_libraries(PRIMEngine primcore d3d11 dxgi d3dcompiler comdlg32 shell32 xaudio2 ole32)
+    target_link_libraries(PRIMEngine primcore d3d11 dxgi d3dcompiler comdlg32 shell32 xaudio2 ole32 windowscodecs mfplat mfreadwrite mfuuid)
     add_custom_command(TARGET PRIMEngine POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/shaders $<TARGET_FILE_DIR:PRIMEngine>/shaders
         COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/assets $<TARGET_FILE_DIR:PRIMEngine>/assets)

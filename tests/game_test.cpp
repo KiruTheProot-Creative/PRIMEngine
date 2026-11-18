@@ -987,10 +987,10 @@ int main() {
         HudPlane lp = menuPanePlane(left); CHECK(planePoint(lp, 0, 0.5f).z < planePoint(lp, 1, 0.5f).z && planePoint(lp, 0, 0.5f).x < planePoint(lp, 1, 0.5f).x, "a left pane turns toward you (its outer edge is nearer)");
         CHECK(menuPaneHeight(left) == (int)std::lround(1024.0 * left.height / left.width), "a pane's picture: 1024 wide, its own shape");
         m.pages[1].tab = false; m.pages[0].panes[0].items[2].target = "Some page"; m.pages[0].panes[0].items[2].act = MenuAct::GoTo; m.slide = 0.4f;
-        m.pages[2].panes[2].items[0].text = "Two words\nand a line"; m.pages[2].panes[1].frame = false; m.always[0].color = 0xFF00FF;
+        m.pages[2].panes[2].items[0].text = "Two words\nand a line"; m.pages[3].panes[0].items[0].ownColors = true; m.pages[3].panes[0].items[0].c3 = 0xABCDEF; m.pages[2].panes[1].frame = false; m.always[0].color = 0xFF00FF;
         saveMenu("/tmp/prim_menu.txt", m); MenuLayout b; CHECK(loadMenu("/tmp/prim_menu.txt", b), "the menu loads");
         CHECK(b.pages.size() == 4 && !b.pages[1].tab && b.pages[0].panes[0].items[2].act == MenuAct::GoTo && b.pages[0].panes[0].items[2].target == "Some page" && b.slide == 0.4f
-              && b.pages[2].panes[2].items[0].text == "Two words\nand a line" && !b.pages[2].panes[1].frame && b.always[0].color == 0xFF00FF && b.tabs() == std::vector<int>({ 0, 2, 3 }) && b.optionsPage() == 3
+              && b.pages[2].panes[2].items[0].text == "Two words\nand a line" && !b.pages[2].panes[1].frame && b.always[0].color == 0xFF00FF && b.tabs() == std::vector<int>({ 0, 2, 3 }) && b.optionsPage() == 3 && b.pages[3].panes[0].items[0].ownColors && b.pages[3].panes[0].items[0].c3 == 0xABCDEF
               && b.pages[2].panes[0].yaw == m.pages[2].panes[0].yaw && b.pages[1].panes[1].items[1].kind == MenuKind::BeamList, "pages, panes and items save and load");
         {   // a menu saved before the Options page: it gets one, and its Settings button now says Options
             MenuLayout o = defaultMenu(); o.pages.pop_back(); o.pages[0].panes[0].items[5].text = o.pages[0].panes[0].items[5].name = "Settings";

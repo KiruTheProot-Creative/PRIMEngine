@@ -23,6 +23,7 @@ struct ScreenBg {
     std::string world, camera;                           // World: which world, and the object to look through (a Map Camera...; empty: its spawn point)
     float turn = 0;                                      // World: the view turns slowly (degrees a second)
     float dim = 0;                                       // darker (0..1)
+    float tilt = -8, height = 1.0f;                      // World: looking up (+) / down (-), degrees; the eye above the camera object (blocks)
 };
 
 enum class ScreenItemKind { Panel, Text, Image, Button, Options, Credits, COUNT };

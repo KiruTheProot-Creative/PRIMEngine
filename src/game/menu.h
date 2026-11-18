@@ -27,6 +27,7 @@ struct MenuItem {
     int align = 1;                                      // 0 left, 1 middle, 2 right
     bool filled = false; float thickness = 3, rounding = 12;   // Panel
     MenuAct act = MenuAct::None; std::string target;    // Button: what it does (GoTo: the page's name)
+    bool ownColors = false; uint32_t c2 = 0xD8EEF8, c3 = 0xFFFFFF, c4 = 0x587888;   // Options: its own text / picked / dim colours (color: the accent)
 };
 
 struct MenuPane {

@@ -168,7 +168,7 @@ bool saveScreens(const std::string& path, const ScreenSet& set) {
         f << "screen " << escText(s.name) << " " << (int)s.role << " " << s.fadeIn << "\n";
         const ScreenBg& b = s.bg;
         f << "bg " << (int)b.kind << " " << b.color << " " << b.color2 << " " << escText(b.file) << " " << b.fit << " " << b.speed << " " << (b.loop ? 1 : 0) << " "
-          << escText(b.world) << " " << escText(b.camera) << " " << b.turn << " " << b.dim << "\n";
+          << escText(b.world) << " " << escText(b.camera) << " " << b.turn << " " << b.dim << " " << b.tilt << " " << b.height << "\n";
         for (const ScreenItem& i : s.items) {
             const ScreenColors& c = i.col;
             f << "item " << escText(i.name) << " " << (int)i.kind << " " << i.x << " " << i.y << " " << i.w << " " << i.h << " " << escText(i.text) << " " << escText(i.image) << " "
@@ -198,6 +198,7 @@ bool loadScreens(const std::string& path, ScreenSet& set) {
         else if (k == "bg") {
             ScreenBg& b = cur->bg; int kind = 0, loop = 1; std::string file, world, cam;
             l >> kind >> b.color >> b.color2 >> file >> b.fit >> b.speed >> loop >> world >> cam >> b.turn >> b.dim;
+            { float tl, ht; if (l >> tl >> ht) { b.tilt = tl; b.height = ht; } }
             b.kind = (BgKind)std::clamp(kind, 0, (int)BgKind::COUNT - 1); b.file = unescText(file); b.world = unescText(world); b.camera = unescText(cam); b.loop = loop != 0;
         } else if (k == "item") {
             ScreenItem i; ScreenColors& c = i.col; std::string n, t, im, tg, gr; int kind = 1, fl = 1, fr = 1, act = 0;

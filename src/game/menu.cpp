@@ -96,7 +96,7 @@ static void writePane(std::ostream& f, const MenuPane& p) {
       << " " << p.bendX << " " << p.bendY << " " << p.color << " " << p.backing << " " << p.bloom << " " << (p.frame ? 1 : 0) << "\n";
     for (const MenuItem& i : p.items)
         f << "item " << escText(i.name) << " " << (int)i.kind << " " << i.x << " " << i.y << " " << i.w << " " << i.h << " " << i.color << " " << i.alpha << " " << escText(i.text) << " " << escText(i.image)
-          << " " << i.textSize << " " << i.align << " " << (i.filled ? 1 : 0) << " " << i.thickness << " " << i.rounding << " " << (int)i.act << " " << escText(i.target) << "\n";
+          << " " << i.textSize << " " << i.align << " " << (i.filled ? 1 : 0) << " " << i.thickness << " " << i.rounding << " " << (int)i.act << " " << escText(i.target) << " " << (i.ownColors ? 1 : 0) << " " << i.c2 << " " << i.c3 << " " << i.c4 << "\n";
 }
 bool saveMenu(const std::string& path, const MenuLayout& m) {
     std::ofstream f(path); if (!f) return false;
@@ -123,6 +123,7 @@ bool loadMenu(const std::string& path, MenuLayout& m) {
             l >> n >> kind >> i.x >> i.y >> i.w >> i.h >> i.color >> i.alpha >> t >> im >> i.textSize >> i.align >> fl >> i.thickness >> i.rounding >> act >> tg;
             i.name = unescText(n); i.text = unescText(t); i.image = unescText(im); i.target = unescText(tg); i.filled = fl != 0;
             i.kind = (MenuKind)std::clamp(kind, 0, (int)MenuKind::COUNT - 1); i.act = (MenuAct)std::clamp(act, 0, (int)MenuAct::COUNT - 1);
+            { int own = 0; uint32_t c2, c3, c4; if (l >> own >> c2 >> c3 >> c4) { i.ownColors = own != 0; i.c2 = c2; i.c3 = c3; i.c4 = c4; } }   // (older files: none)
             panes->back().items.push_back(i);
         }
     }
