@@ -35,6 +35,7 @@ cbuffer Frame : register(b0)
     row_major float4x4 gCascVP[4];  // the four sun shadow maps (cascades): camera-relative position -> that map, nearest first
     float4 gCascR;                  // how far each reaches (blocks)
     float4 gCascTexel;              // one shadow pixel in blocks, per cascade
+    float4 gPrecip;                 // falling things: x their own clock (s, steady), yz how far the wind has carried them so far (blocks), w -
 };
 cbuffer ChunkCB : register(b1)
 {
@@ -467,7 +468,7 @@ RainOut particle(uint id, float kind, float amount, uint salt)
     if (drop >= (uint)(amount * kMaxDrops)) { o.pos = float4(0, 0, -1, 1); return o; }
     float3 h = hash3u(drop * 3 + salt);
     float3 box = float3(36, 30, 36);
-    float t = gVolume.z;
+    float t = gPrecip.x;
     float2 wind = float2(1, 0.45) * gWeather2.z;
     float3 vel;
     if (kind < 0.5) vel = float3(wind.x * 4.0, -(15 + h.x * 5), wind.y * 4.0);
@@ -475,7 +476,8 @@ RainOut particle(uint id, float kind, float amount, uint salt)
     else if (kind < 2.5) vel = float3(wind.x * 3.0 + 0.6, -(0.15 + h.x * 0.2), wind.y * 3.0 + 0.2);
     else if (kind < 3.5) vel = float3(wind.x * 0.8, 0.5 + h.x * 0.7, wind.y * 0.8);
     else vel = float3(wind.x * 0.6, -(0.1 + h.x * 0.15), wind.y * 0.6);
-    float3 p = h * box * 7 + vel * t;
+    float3 p = h * box * 7 + (vel - float3(wind.x, 0, wind.y) * (kind < 2.5 ? 3.0 : kind < 3.5 ? 0.8 : 0.6)) * t
+             + float3(gPrecip.y, 0, gPrecip.z) * (kind < 2.5 ? 3.0 : kind < 3.5 ? 0.8 : 0.6);   // (the wind's part: added up as it went)
     if (kind > 0.5) p.xz += float2(sin(t * 1.3 + h.y * 40), cos(t * 1.1 + h.z * 40)) * (kind > 2.5 ? 0.9 : 0.6);   // drifting
     float3 rel = (frac((p - gCamPos.xyz) / box) - 0.5) * box;
     static const float2 q[6] = { float2(0, 0), float2(1, 0), float2(1, 1), float2(0, 0), float2(1, 1), float2(0, 1) };
@@ -501,13 +503,13 @@ RainOut rainDrop(uint id, uint salt, bool far)
     uint per = far ? 6 : 12, drop = id / per, c = id % per;
     if (drop >= (uint)(amount * (far ? kFarDrops : kNearDrops))) return o;
     float3 h = hash3u(drop * 3 + salt);
-    float t = gVolume.z;
+    float t = gPrecip.x;                                                           // a steady clock (the weather changing never makes them jump)
     float3 box = far ? float3(150, 100, 150) : float3(40, 56, 40);
     float low = far ? -44 : -16;                                                   // the column: from low to low + box.y around the camera
     float2 wind = float2(1, 0.45) * gWeather2.z;
-    float speed = snow ? 1.6 + h.x * 0.9 : 13 + h.x * 5;
-    float3 vel = float3(wind.x * (snow ? 2.5 : 4.0), -speed, wind.y * (snow ? 2.5 : 4.0));
-    float3 p = h * box * 7 + vel * t;
+    float speed = snow ? 1.6 + h.x * 0.9 : 13 + h.x * 5, push = snow ? 2.5 : 4.0;
+    float3 vel = float3(wind.x * push, -speed, wind.y * push);                     // (now: for the streaks' slant and where a splash was)
+    float3 p = h * box * 7 + float3(gPrecip.y * push, -speed * t, gPrecip.z * push); // how far the wind has carried them, added up as it went
     if (snow) p.xz += float2(sin(t * 1.3 + h.y * 40), cos(t * 1.1 + h.z * 40)) * 0.6;   // flakes drift
     float3 rel;
     rel.xz = (frac((p.xz - gCamPos.xz) / box.xz) - 0.5) * box.xz;

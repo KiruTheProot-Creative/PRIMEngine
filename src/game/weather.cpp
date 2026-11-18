@@ -38,7 +38,12 @@ void Weather::update(double dt, V3 player) {
     const WeatherLook& g = weatherTypes()[target].look;
     float k = 1 - (float)std::exp(-dt / 7.0);
     auto mv = [&](float& a, float b) { a += (b - a) * k; };
-    mv(now.cover, g.cover); mv(now.dark, g.dark); mv(now.rain, g.rain); mv(now.snow, g.snow); mv(now.wind, g.wind);
+    mv(now.cover, g.cover); mv(now.dark, g.dark); mv(now.wind, g.wind);
+    {   // rain and snow start and stop faster (a few seconds), so a change shows right away
+        float kp = 1 - (float)std::exp(-dt / 2.5);
+        now.rain += (g.rain - now.rain) * kp; now.snow += (g.snow - now.snow) * kp;
+        if (now.rain < 0.01f && g.rain == 0) now.rain = 0; if (now.snow < 0.01f && g.snow == 0) now.snow = 0;
+    }
     mv(now.strikesPerMin, g.strikesPerMin); mv(now.fog, g.fog); mv(now.dim, g.dim);
 
     // by itself: every 3 to 10 minutes, mostly to a "neighbouring" weather (clear -> cloudy -> rain -> storm ...)
