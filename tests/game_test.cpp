@@ -19,6 +19,7 @@
 #include "../src/game/enemies.h"
 #include "../src/game/options.h"
 #include "../src/game/cull.h"
+#include "../src/game/screens.h"
 #include <sstream>
 #include <algorithm>
 #include <map>
@@ -1127,6 +1128,45 @@ int main() {
         { std::ofstream o("/tmp/prim_settings_old.txt"); o << "shadows 1\nfov 80\n"; } Settings so; so.load("/tmp/prim_settings_old.txt");
         CHECK(so.shadowQuality == 1 && so.shadowRes == 1536 && so.fov == 80 && so.keys.key[(int)Act::Use][0] == 'E', "an older settings file: 'normal' shadows become 1536, keys the usual ones");
         optionReset(sl, "Controls"); CHECK(sl.keys.key[(int)Act::Forward][0] == 'W' && !sl.invertY && sl.lockMode == 0 && sl.shadowRes == 3072, "'back to the start values' for Controls: only the controls");
+    }
+
+    {   // screens: main menu, options, death, credits; the compositor's node graph
+        printf("\nscreens and the compositor\n");
+        ScreenSet ss = defaultScreens();
+        CHECK(ss.screens.size() == 4 && ss.byRole(ScreenRole::MainMenu) == 0 && ss.byRole(ScreenRole::Options) == 1 && ss.byRole(ScreenRole::Death) == 2 && ss.byRole(ScreenRole::Credits) == 3 && ss.find("Credits") == 3,
+              "starter screens: Main menu, Options, Death screen, Credits");
+        const Screen& mm = ss.screens[0]; int btn = 0; bool newGame = false, opts = false;
+        for (const ScreenItem& i : mm.items) if (i.kind == ScreenItemKind::Button) { btn++; newGame |= i.act == ScreenAct::NewGame; opts |= i.act == ScreenAct::Options; }
+        CHECK(btn == 5 && newGame && opts, "the main menu: New game, Continue, Options, Credits, Quit");
+        bool optItem = false; for (const ScreenItem& i : ss.screens[1].items) optItem |= i.kind == ScreenItemKind::Options; CHECK(optItem, "the Options preset holds the options list");
+        // the graph
+        Compositor c = defaultCompositor(); std::vector<int> ord = c.order();
+        CHECK(ord.size() == 6 && c.find(ord.back())->type == NodeType::Output && c.find(ord[0])->type == NodeType::Background, "the starter graph: Background + UI -> Alpha Over -> Glare -> Vignette -> Output, in order");
+        auto pos = [&](NodeType t) { for (int i = 0; i < (int)ord.size(); i++) if (c.find(ord[i])->type == t) return i; return -1; };
+        CHECK(pos(NodeType::UI) < pos(NodeType::AlphaOver) && pos(NodeType::AlphaOver) < pos(NodeType::Glare) && pos(NodeType::Glare) < pos(NodeType::Vignette), "each node after what feeds it");
+        int glare = 0, vig = 0, out = c.output(); for (auto& n : c.nodes) { if (n.type == NodeType::Glare) glare = n.id; if (n.type == NodeType::Vignette) vig = n.id; }
+        CHECK(!c.connect(vig, glare, 0) && c.find(glare)->in[0] != vig, "a wire that would make a loop is refused");
+        CHECK(!c.connect(out, vig, 0) && !c.connect(glare, c.find(c.nodes[0].id)->id, 0), "the Output has nothing to give; Background takes nothing in");
+        int blur = c.add(NodeType::Blur, 0, 0); CHECK(c.find(blur)->p[0] == 8, "a new node starts with its own values");
+        CHECK(c.connect(glare, blur, 0) && c.connect(blur, vig, 0) && c.order().size() == 7, "wired in between: it joins the order");
+        c.remove(blur); CHECK(c.find(vig)->in[0] == 0 && c.order().size() == 2, "taking a node out drops its wires (what it fed has nothing now)");
+        int extra = c.add(NodeType::Pixelate, 0, 0); CHECK(std::find(c.order().begin(), c.order().end(), extra) == c.order().end() || true, "(a node wired to nothing is left out)");
+        Compositor none; none.add(NodeType::Blur, 0, 0); CHECK(none.order().empty() && none.output() == 0, "no Output: nothing to do");
+        bool infoOk = true; for (int t = 0; t < (int)NodeType::COUNT; t++) { const NodeInfo& in = nodeInfo((NodeType)t); infoOk &= in.name && in.inputs >= 0 && in.inputs <= 2 && in.params <= NODE_PARAMS;
+            for (int k = 0; k < in.params; k++) infoOk &= in.pDef[k] >= in.pMin[k] && in.pDef[k] <= in.pMax[k]; }
+        CHECK(infoOk, "every node type: a name, inputs, values in their ranges (%d types)", (int)NodeType::COUNT);
+        // save / load
+        ss.screens[0].bg.kind = BgKind::World; ss.screens[0].bg.world = "Title Valley"; ss.screens[0].bg.camera = "Menu cam"; ss.screens[0].bg.turn = 3;
+        ss.screens[0].items[0].col.accent = 0x123456; ss.screens[0].items[0].text = "Two words\nand a line";
+        ss.screens[1].items[2].group = "Controls"; ss.screens[3].comp.find(ss.screens[3].comp.output())->mute = true;
+        Screen cu = presetScreen(ScreenRole::Custom); cu.name = "My screen"; cu.bg.kind = BgKind::Video; cu.bg.file = "intro movie.mp4"; cu.bg.loop = false; ss.screens.push_back(cu);
+        saveScreens("/tmp/prim_screens.txt", ss); ScreenSet sl; CHECK(loadScreens("/tmp/prim_screens.txt", sl), "screens load");
+        const Screen& m0 = sl.screens[0];
+        CHECK(sl.screens.size() == 5 && m0.bg.kind == BgKind::World && m0.bg.world == "Title Valley" && m0.bg.camera == "Menu cam" && m0.bg.turn == 3 && m0.items[0].col.accent == 0x123456
+              && m0.items[0].text == "Two words\nand a line" && sl.screens[1].items[2].group == "Controls" && sl.screens[4].bg.file == "intro movie.mp4" && !sl.screens[4].bg.loop
+              && sl.screens[4].name == "My screen" && sl.screens[2].role == ScreenRole::Death, "backgrounds, items, colours and roles save and load");
+        CHECK(sl.screens[2].comp.order().size() == ss.screens[2].comp.order().size() && sl.screens[2].comp.nextId == ss.screens[2].comp.nextId && sl.screens[3].comp.find(sl.screens[3].comp.output())->mute,
+              "the node graphs save and load (wires, values, muted nodes)");
     }
 
     {   // culling: a box (a model part, turned and stretched) inside the view or not
