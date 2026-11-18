@@ -22,6 +22,7 @@
 #include "../src/game/screens.h"
 #include "../src/game/savegame.h"
 #include "../src/game/bosses.h"
+#include "../src/game/assets.h"
 #include <sstream>
 #include <algorithm>
 #include <map>
@@ -1395,6 +1396,47 @@ int main() {
         for (int i = 0; i < 2; i++) bossUpdate(sb, sd, se, kt, floor, you, nullptr, 1 / 60.0);   // lands first
         for (int i = 0; i < 120; i++) { BossTick k = bossUpdate(sb, sd, se, kt, floor, you, nullptr, 1 / 60.0); slammed |= k.slam; top = std::max(top, se.pos.y); }
         CHECK(slammed && top > 1.5, "a slam: up %.1f blocks and a shockwave on landing", top);
+    }
+
+    {   // the asset manager: one folder structure for everything, searching, prefabs
+        AssetTree at;
+        AssetId roar{ AssetType::Sound, "roar.wav" }, kraid{ AssetType::Model, "Kraid" }, kt{ AssetType::Enemy, "7" };
+        at.put(roar, "Bosses/Kraid/Sounds"); at.put(kraid, "Bosses/Kraid"); at.put(kt, "Bosses/Kraid");
+        CHECK(at.folderOf(roar) == "Bosses/Kraid/Sounds" && at.folders.paths.count("Bosses") && at.in("Bosses/Kraid").size() == 2 && at.countWithin("Bosses") == 3, "assets of every kind in one folder structure");
+        at.favourites.insert(roar.str()); at.favourites.insert("folder:Bosses/Kraid/Sounds");
+        CHECK(at.renameFolder("Bosses/Kraid", "Bosses/Kraid (NES)") && at.folderOf(roar) == "Bosses/Kraid (NES)/Sounds" && at.folderOf(kt) == "Bosses/Kraid (NES)" && at.favourites.count("folder:Bosses/Kraid (NES)/Sounds"),
+              "renaming a folder takes what is inside along (and its favourites)");
+        CHECK(!at.renameFolder("Bosses", "Bosses/Inner"), "a folder can't go inside itself");
+        at.renameAsset(roar, "kraid roar.wav"); AssetId roar2{ AssetType::Sound, "kraid roar.wav" };
+        CHECK(!at.has(roar) && at.folderOf(roar2) == "Bosses/Kraid (NES)/Sounds" && at.favourites.count(roar2.str()), "a renamed asset stays where it was (and a favourite)");
+        at.removeFolder("Bosses/Kraid (NES)/Sounds"); CHECK(at.folderOf(roar2) == "Bosses/Kraid (NES)" && !at.folders.paths.count("Bosses/Kraid (NES)/Sounds"), "deleting a folder: what was inside moves up");
+        AssetId newOne{ AssetType::Texture, "lava" };
+        int ad = at.adopt({ roar2, kraid, kt, newOne }, [](const AssetId& a) { return std::string(assetTypePlural(a.type)); });
+        CHECK(ad == 1 && at.folderOf(newOne) == "Textures" && at.folderOf(kraid) == "Bosses/Kraid (NES)", "new assets (made anywhere) start in a folder of their kind; known ones stay");
+        at.prune({ roar2, kraid, newOne }); CHECK(!at.has(kt), "assets that are gone are forgotten");
+        saveAssetTree("/tmp/prim_assets.txt", at); AssetTree al; loadAssetTree("/tmp/prim_assets.txt", al);
+        CHECK(al.where == at.where && al.folders.paths == at.folders.paths && al.favourites == at.favourites, "the folder structure saves and loads (names with spaces too)");
+        AssetId pa; CHECK(AssetId::parse("sound:kraid roar.wav", pa) && pa.type == AssetType::Sound && pa.key == "kraid roar.wav" && !AssetId::parse("nope:x", pa), "asset ids read back");
+        AssetQuery q1 = parseAssetQuery("Kraid t:sound"), q2 = parseAssetQuery("t:mod t:pic");
+        CHECK(assetMatches(q1, AssetType::Sound, "kraid roar.wav") && !assetMatches(q1, AssetType::Model, "Kraid") && !assetMatches(q1, AssetType::Sound, "ridley.wav"), "search: words and a kind");
+        CHECK(q2.types.size() == 2 && q2.types.count(AssetType::Model) && q2.types.count(AssetType::Picture) && q2.words.empty(), "search: kinds by the start of their name");
+        std::set<std::string> taken{ "Kraid", "Kraid 2", "roar.wav" };
+        auto tk = [&](const std::string& n) { return taken.count(n) > 0; };
+        CHECK(uniqueAssetName("Kraid", tk) == "Kraid 3" && uniqueAssetName("roar.wav", tk) == "roar 2.wav" && uniqueAssetName("Ridley", tk) == "Ridley" && uniqueAssetName("Kraid 2", tk) == "Kraid 3", "free names (files keep their ending)");
+        // prefabs
+        WorldObject d1; d1.name = "Door"; d1.kind = ObjKind::Door; d1.pos = { 10, 5, 20 }; d1.yaw = 0; d1.door.color = 0xFF0000; d1.door.openedBy = "Missile";
+        WorldObject z1; z1.name = "Hall"; z1.kind = ObjKind::Trigger; z1.pos = { 14, 5, 20 }; z1.size = { 6, 3, 2 };
+        WorldObject pl; pl.name = "Lift"; pl.kind = ObjKind::Platform; pl.pos = { 12, 5, 22 }; pl.platform.points = { { 0, 0, 0 }, { 4, 0, 0 } };
+        Prefab pf = makePrefab("Red door room", { d1, z1, pl });
+        CHECK(pf.objects.size() == 3 && std::fabs(pf.objects[0].pos.x + 2) < 1e-9 && std::fabs(pf.objects[0].pos.z + 1) < 1e-9 && pf.objects[0].pos.y == 0, "a prefab keeps its objects from its bottom middle");
+        CHECK(savePrefab("/tmp/prim_prefab.txt", pf), "a prefab saves");
+        Prefab lp; CHECK(loadPrefab("/tmp/prim_prefab.txt", lp) && lp.name == "prim_prefab" && lp.objects.size() == 3 && lp.objects[0].door.color == 0xFF0000 && lp.objects[0].door.openedBy == "Missile", "a prefab loads with all its settings");
+        uint32_t nid = 100; std::set<std::string> names{ "Door" };
+        auto fresh = [&](const std::string& n) { std::string r = uniqueAssetName(n, [&](const std::string& x) { return names.count(x) > 0; }); names.insert(r); return r; };
+        auto placed = placePrefab(lp, { 0, 10, 0 }, 90, nid, fresh);
+        CHECK(placed.size() == 3 && placed[0].id == 100 && placed[2].id == 102 && nid == 103 && placed[0].name == "Door 2" && placed[1].name == "Hall", "placed: new IDs, free names");
+        CHECK(std::fabs(placed[0].pos.x - (-1)) < 1e-6 && std::fabs(placed[0].pos.z - 2) < 1e-6 && placed[0].pos.y == 10 && placed[0].yaw == 90, "turned a quarter: places and ways turn (door at %.2f %.2f)", placed[0].pos.x, placed[0].pos.z);
+        CHECK(std::fabs(placed[2].platform.points[1].z + 4) < 1e-6 && std::fabs(placed[2].platform.points[1].x) < 1e-6 && placed[1].size.x == 2 && placed[1].size.z == 6, "its paths turn, zones' boxes turn");
     }
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
     return fails ? 1 : 0;

@@ -27,6 +27,7 @@
 #include "../game/screens.h"
 #include "../game/savegame.h"
 #include "../game/bosses.h"
+#include "../game/assets.h"
 #include "media.h"
 #include "../world/visibility.h"
 #include "../game/enemies.h"
@@ -197,7 +198,7 @@ struct App {
     double fps = 0; int fpsN = 0; double fpsAcc = 0;
 
     // ---- the editor (G1): docked panels around the viewport, and Play mode
-    enum class Sel { None, World, Weather, Environment, Zone, Spawn, Player, Game, Block, Texture, Shape, Tool, Object, Selection, Model };
+    enum class Sel { None, World, Weather, Environment, Zone, Spawn, Player, Game, Block, Texture, Shape, Tool, Object, Selection, Model, Asset };
     // ---- objects (G2)
     ModelLibrary models; std::map<std::string, ModelGpu> modelGpu; std::map<std::string, MeshModel> meshModels;
     // the 3D viewer
@@ -552,6 +553,12 @@ struct App {
     }
     void OnDrop(HDROP d) {
         UINT n = DragQueryFileA(d, 0xFFFFFFFF, nullptr, 0);
+        POINT pt{ 0, 0 }; DragQueryPoint(d, &pt);
+        if (screen == Screen::Game && !playMode && OverAssets(pt)) {   // dropped onto the Assets panel: imported into the folder shown there
+            std::vector<std::string> paths; for (UINT i = 0; i < n; i++) { wchar_t w[MAX_PATH * 2]; if (DragQueryFileW(d, i, w, MAX_PATH * 2)) { int len = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr); std::string u(len > 0 ? len - 1 : 0, '\0'); if (len > 0) WideCharToMultiByte(CP_UTF8, 0, w, -1, u.data(), len, nullptr, nullptr); paths.push_back(u); } }
+            DragFinish(d); SetForegroundWindow(hwnd);
+            ImportInto(paths, !assetDir.empty() && assetDir[0] == '\t' ? "" : assetDir); return;
+        }
         for (UINT i = 0; i < n; i++) { char path[MAX_PATH]; if (DragQueryFileA(d, i, path, MAX_PATH)) { if (isModelFile(path) && screen == Screen::Game) ImportModelFile(path); else importFiles.push_back(path); } }
         DragFinish(d); SetForegroundWindow(hwnd);
         if (importFiles.empty()) return;
@@ -2172,11 +2179,13 @@ struct App {
         return true;
     }
     void StartPlacing(const std::string& model) {
+        placingPrefab.clear(); placingEnemy = 0;
         placing = model; placeYaw = 0; placeScale = 1; movingObj = -1; dupFrom = -1; toolMode = true; toolSel = 2; sel = Sel::Tool;
         Toast("Placing " + model + ": click to put it down, R turns it, right click stops");
     }
     void PickUpObject(int i) {   // move: the object follows the crosshair until you click again
         if (i < 0 || i >= (int)objects.size()) return;
+        placingPrefab.clear(); placingEnemy = 0;
         placing = objects[i].model; placeYaw = objects[i].yaw; placeScale = objects[i].scale; movingObj = i; toolMode = true; toolSel = 2;
         RebuildSolids(); Toast("Moving " + objects[i].name + ": click to put it down, right click puts it back");
     }
@@ -2187,6 +2196,7 @@ struct App {
     }
     void DuplicateObject(int i) {
         if (i < 0 || i >= (int)objects.size()) return;
+        placingPrefab.clear(); placingEnemy = 0;
         placing = objects[i].model; placeYaw = objects[i].yaw; placeScale = objects[i].scale; movingObj = -1; dupFrom = i; toolMode = true; toolSel = 2;
         Toast("Placing a copy: click to put it down");
     }
@@ -2232,12 +2242,27 @@ struct App {
         if (!placing.empty()) {
             if (right) {   // stop placing (a moved object goes back where it was)
                 if (movingObj >= 0) { int i = movingObj; movingObj = -1; sel = Sel::Object; selIndex = i; }
-                placing.clear(); dupFrom = -1; RebuildSolids(); return;
+                placing.clear(); dupFrom = -1; placingPrefab.clear(); placingEnemy = 0; RebuildSolids(); return;
             }
             WorldObject o; if (!left || !PlacePose(o)) return;
             o.scale = placeScale;
             PlacePose(o);
             if (movingObj >= 0) { WorldObject& t = objects[movingObj]; t.pos = o.pos; t.yaw = o.yaw; sel = Sel::Object; selIndex = movingObj; movingObj = -1; placing.clear(); }
+            else if (!placingPrefab.empty()) {   // a prefab: copies of all its objects, turned as the preview
+                const Prefab* pf = PrefabNamed(placingPrefab);
+                if (pf) {
+                    std::set<std::string> taken;
+                    auto fresh = [&](const std::string& n0) { std::string r = uniqueAssetName(n0.empty() ? "Object" : n0, [&](const std::string& x) { if (taken.count(x)) return true; for (const WorldObject& ob : objects) if (ob.name == x) return true; return false; }); taken.insert(r); return r; };
+                    double dy = pf->objects.empty() ? 0 : o.yaw - pf->objects[0].yaw;
+                    for (WorldObject& n : placePrefab(*pf, o.pos, dy, nextObjId, fresh)) { if (n.kind == ObjKind::Enemy) ApplyEnemyType(n); objects.push_back(n); }
+                    sel = Sel::Object; selIndex = (int)objects.size() - 1;
+                }
+            }
+            else if (placingEnemy > 0) {   // an enemy type (from the Assets)
+                WorldObject n = o; n.id = nextObjId++; n.kind = ObjKind::Enemy; n.enemyType = placingEnemy; n.folder = "Enemies"; ApplyEnemyType(n);
+                const EnemyType* et = enemies.find(placingEnemy); n.name = UniqueObjectName(et ? et->name : "Enemy");
+                objects.push_back(n); sel = Sel::Object; selIndex = (int)objects.size() - 1;
+            }
             else {
                 bool dup = dupFrom >= 0 && dupFrom < (int)objects.size();
                 WorldObject n = dup ? objects[dupFrom] : o;
@@ -2292,7 +2317,10 @@ struct App {
         Prop("Folder"); ImGui::InputText("##folder", &o.folder);
         Prop("Model");
         if (ImGui::BeginCombo("##model", o.model.c_str())) { for (auto& n : AllModelNames()) if (ImGui::Selectable(n.c_str(), n == o.model)) { o.model = n; ch_ = true; } ImGui::EndCombo(); }
+        { std::string f; if (AcceptAsset(AssetType::Model, f)) { o.model = f; ch_ = true; } }
         ModelMaterialUI(o.model);
+        if (ImGui::SmallButton("Save as a prefab")) MakePrefab({ o }, !assetDir.empty() && assetDir[0] == '\t' ? "" : assetDir);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Into the Assets (the folder open there), with all its settings, to place again anywhere.\nOr drag it (or a whole folder of objects) from the Outliner into the Assets.");
         { int k = (int)o.kind; const char* kn[] = { "Prop (it just stands there)", "Door (forcefield, opens)", "Platform (moves along a path)", "Pickup", "Checkpoint", "Teleporter", "Trigger zone (invisible)", "Light", "Particles", "Map camera (invisible: a Map Station uses it)", "Map Station", "Enemy" }; Prop("Kind");
           if (ImGui::Combo("##kind", &k, kn, 12)) { if (k == 1) MakeDoor(o); else if (k == 2) MakePlatform(o); else if (k == (int)ObjKind::Enemy) { o.kind = ObjKind::Enemy; if (!enemies.find(o.enemyType) && !enemies.types.empty()) o.enemyType = enemies.types[0].id; ApplyEnemyType(o); } else { o.kind = (ObjKind)k; if (o.kind == ObjKind::Pickup || o.kind == ObjKind::Trigger || o.kind == ObjKind::Light || o.kind == ObjKind::Particles || o.kind == ObjKind::MapCamera) o.collide = Collide::None; } platRun.erase(o.id); ch_ = true; } }
         Prop("Position"); ch_ |= ImGui::InputScalarN("##pos", ImGuiDataType_Double, &o.pos.x, 3, nullptr, nullptr, "%.2f");
@@ -3332,7 +3360,7 @@ struct App {
         library = Library{}; library.dir = dir; library.load(reg); UploadTextures(); ghostKey = 0xFFFFFFFFu;   // this game's blocks and textures
         models.loadAll(dir + "/models"); modelGpu.clear(); LoadMeshModels(); viewerOpen = false;
         game = GameSettings{}; gamePath = dir + "/game.txt"; game.load(gamePath); LoadHud(); LoadScreens(); pics.clear(); vids.clear(); CloseScreens(); menuSession = false;
-        RefreshWorlds();
+        RefreshWorlds(); LoadAssetTree();
         auto has = [&](const std::string& n) { return !n.empty() && std::find(worldList.begin(), worldList.end(), n) != worldList.end(); };
         std::string w = has(game.lastWorld) ? game.lastWorld : has(game.startWorld) ? game.startWorld : worldList.empty() ? "" : worldList[0];
         if (w.empty()) CreateWorld("Level 1", firstWorldType); else OpenWorld(w);
@@ -3975,6 +4003,7 @@ struct App {
                     ImGui::PushID(i); Leaf(objects[i].name.c_str(), Sel::Object, i);
                     if (ImGui::BeginDragDropSource()) { ImGui::SetDragDropPayload("PRIM_OBJ", objects[i].name.c_str(), objects[i].name.size() + 1); ImGui::Text("%s", objects[i].name.c_str()); ImGui::EndDragDropSource(); }
                     if (ImGui::BeginPopupContextItem("octx")) {
+                        if (ImGui::MenuItem("Save as a prefab")) MakePrefab({ objects[i] }, !assetDir.empty() && assetDir[0] == '\t' ? "" : assetDir);
                         if (ImGui::MenuItem("Go there")) { sel = Sel::Object; selIndex = i; const WorldObject& o = objects[i]; player.feet = { o.pos.x, o.pos.y + 3, o.pos.z - 5 }; player.flying = true; player.yaw = 0; player.pitch = -0.4; }
                         if (ImGui::MenuItem("Move")) { act = i; what = 1; }
                         if (ImGui::MenuItem("Copy")) { act = i; what = 2; }
@@ -4127,6 +4156,7 @@ struct App {
         case Sel::Object: ObjectInspector(); break;
         case Sel::Selection: SelectionInspector(); break;
         case Sel::Model: ModelInspector(); break;
+        case Sel::Asset: AssetInspector(); break;
         default: Hint("Pick something in the Outliner or the Assets."); break;
         }
         ImGui::End();
@@ -6428,6 +6458,7 @@ struct App {
             if (ImGui::Selectable(video ? "Import a video..." : "Import a picture or GIF...")) { std::string n = ImportScreenFile(video); if (!n.empty()) { file = n; ch = true; } }
             ImGui::EndCombo();
         }
+        { std::string f; if (AcceptAsset(video ? AssetType::Video : AssetType::Picture, f)) { file = f; ch = true; } }
         return ch;
     }
     void BuildScreenPreview() {   // (editor) the picked screen's items, at the preview's size
@@ -6487,7 +6518,7 @@ struct App {
         if (!sc) { ImGui::TextDisabled("Make a screen on the left."); ImGui::End(); if (ch) SaveScreens(); return; }
         ImGui::BeginChild("scrmain", ImVec2(0, 0));
         {   // the screen itself
-            ImGui::SetNextItemWidth(200 * ui); ch |= ImGui::InputText("Name##scn", &sc->name);
+            ImGui::SetNextItemWidth(200 * ui); { std::string was = sc->name; if (ImGui::InputText("Name##scn", &sc->name)) { ch = true; assetTree.renameAsset({ AssetType::Screen, was }, sc->name); SaveAssetTree(); } }
             ImGui::SameLine(); ImGui::SetNextItemWidth(160 * ui);
             if (ImGui::BeginCombo("Is the##role", screenRoleName(sc->role))) {
                 for (int r = 0; r < (int)ScreenRole::COUNT; r++) if (ImGui::Selectable(screenRoleName((ScreenRole)r), (int)sc->role == r)) {
@@ -8348,6 +8379,7 @@ struct App {
             for (auto& kv : models.models) if (ImGui::Selectable(kv.first.c_str(), t.model == kv.first)) { t.model = kv.first; ch = true; }
             ImGui::EndCombo();
         }
+        { std::string f; if (AcceptAsset(AssetType::Model, f)) { t.model = f; ch = true; } }
         Prop("Size (blocks)"); ch |= ImGui::SliderFloat("##esize", &t.size, 0.2f, 8, "%.2f");
         Prop("Colour"); ch |= ColorU32("##ecol", t.color);
         ImGui::SeparatorText("Health and harm");
@@ -9172,6 +9204,7 @@ struct App {
             ImGui::Separator(); if (ImGui::Selectable("Import sounds...")) ImportSounds();
             ImGui::EndCombo();
         }
+        { std::string f; if (AcceptAsset(AssetType::Sound, f)) { s.file = f; ch = true; } }   // (a sound dragged from the Assets)
         ImGui::SameLine(); ImGui::BeginDisabled(s.empty()); if (ImGui::ArrowButton("##play", ImGuiDir_Right)) PlaySound(s); ImGui::EndDisabled();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip(audioOk ? "Listen" : "No sound device found");
         if (!s.empty()) {
@@ -10111,167 +10144,928 @@ struct App {
         FolderDrop(k, ""); FolderMenu(k, "");
         ImGui::PopID();
     }
-    // ---- Assets: blocks by folder, textures, shapes; thumbnails, search, size
+    // ================================================================== the asset manager (the Assets panel, like Unity's Project window)
+    // One folder structure for everything (assets.txt: only the editor's; the files stay where the engine keeps them).
+    struct AssetEntry { AssetId id; std::string name; bool builtin = false; };
+    AssetTree assetTree; bool assetMigrate = false;
+    std::vector<AssetEntry> assetList; std::map<std::string, int> assetAt; double assetListT = -100;
+    std::string assetDir = "", assetFocus;                 // the folder shown ("\tbuiltin/..." : built in); the picked thing (an asset's str(), or "folder:...")
+    std::set<std::string> assetPicks;                      // picked (Ctrl / Shift: several)
+    AssetId selAsset;                                       // the Inspector shows it (Sel::Asset)
+    std::string assetRename, assetRenameText; bool assetRenameFocus = false;
+    std::string assetFilterText; std::set<AssetType> assetKinds; bool assetHere = false;   // search, kinds shown, only in this folder
+    const std::string* adoptInto = nullptr; std::map<AssetType, std::string> assetNextIn;   // where new assets go (now / the next of a kind)
+    std::vector<std::string> assetAskDelete; std::vector<std::string> assetUses; std::string assetUsesOf;
+    std::vector<std::string> assetPicImport; std::string assetPicImportDir;
+    std::string placingPrefab; int placingEnemy = 0;
+    std::map<std::string, std::vector<float>> waveCache; std::map<std::string, Prefab> prefabCache;
+    std::map<std::string, long long> watchMt; double watchT = 0; bool watchPrimed = false;
+    ImVec4 assetsRect{ 0, 0, 0, 0 };                        // where the panel is (files dropped from Explorer onto it are imported there)
+    std::string inspRenameOf, inspRenameText;
+    std::string AssetsPath() const { return projectDir + "/assets.txt"; }
+    std::string PrefabsDir() const { return projectDir + "/prefabs"; }
+    std::string TrashDir() { std::string d = projectDir + "/_trash"; std::error_code ec; fs::create_directories(fs::u8path(d), ec); return d; }
+    void SaveAssetTree() { if (!projectDir.empty()) saveAssetTree(AssetsPath(), assetTree); }
+    void LoadAssetTree() { assetTree = AssetTree{}; assetMigrate = !loadAssetTree(AssetsPath(), assetTree); assetListT = -100; assetDir.clear(); assetPicks.clear(); prefabCache.clear(); waveCache.clear(); watchMt.clear(); watchPrimed = false; }
+    static bool IsAudioExt(const std::string& e) { return e == ".wav" || e == ".mp3" || e == ".m4a" || e == ".aac" || e == ".wma" || e == ".flac"; }
+    static bool IsPicExt(const std::string& e) { return e == ".png" || e == ".jpg" || e == ".jpeg" || e == ".gif" || e == ".bmp" || e == ".tif" || e == ".tiff"; }
+    static bool IsVidExt(const std::string& e) { return e == ".mp4" || e == ".wmv" || e == ".avi" || e == ".mov" || e == ".mkv" || e == ".m4v" || e == ".webm"; }
+    static std::string ExtOf(const std::string& f) { return Lower(fs::u8path(f).extension().u8string()); }
+    std::vector<std::string> FilesIn(const std::string& dir, bool (*ok)(const std::string&)) {
+        std::vector<std::string> v; std::error_code ec;
+        for (auto& e : fs::directory_iterator(fs::u8path(dir), ec)) if (e.is_regular_file(ec) && ok(ExtOf(e.path().u8string()))) v.push_back(e.path().filename().u8string());
+        std::sort(v.begin(), v.end()); return v;
+    }
+    int TextureIndex(const std::string& name) const { for (int t = 1; t < (int)reg.textureCount(); t++) if (reg.image(t).name == name) return t; return 0; }
+    void CollectAssets() {
+        assetList.clear();
+        auto add = [&](AssetType t, const std::string& key, const std::string& name, bool b = false) { assetList.push_back({ { t, key }, name, b }); };
+        for (BlockId id = 1; id < reg.count(); id++) if (reg.has(id)) add(AssetType::Block, std::to_string(id), reg.get(id).name);
+        for (int t = 1; t < (int)reg.textureCount(); t++) add(AssetType::Texture, reg.image(t).name, reg.image(t).name);
+        for (const std::string& m : AllModelNames()) add(AssetType::Model, m, m, IsBuiltin(m));
+        for (const std::string& f : FilesIn(SoundsDir(), IsAudioExt)) add(AssetType::Sound, f, f);
+        for (const std::string& f : ScreenFiles(false)) add(AssetType::Picture, "screens/" + f, f);
+        for (const std::string& f : FilesIn(projectDir + "/hud", IsPicExt)) add(AssetType::Picture, "hud/" + f, f);
+        for (const std::string& f : ScreenFiles(true)) add(AssetType::Video, "screens/" + f, f);
+        for (const EnemyType& t : enemies.types) add(AssetType::Enemy, std::to_string(t.id), t.name);
+        for (const BossDef& b : bosses.bosses) add(AssetType::Boss, std::to_string(b.enemyType), BossTitle(b));
+        for (const mc::Screen& s : screens.screens) add(AssetType::Screen, s.name, s.name);
+        for (const ScanDef& d : scanLib.defs) add(AssetType::Scan, std::to_string(d.id), d.name.empty() ? "Scan " + std::to_string(d.id) : d.name);
+        for (const std::string& w : worldList) add(AssetType::World, w, w);
+        for (const std::string& f : FilesIn(PrefabsDir(), [](const std::string& e) { return e == ".txt"; })) { std::string n = fs::u8path(f).stem().u8string(); add(AssetType::Prefab, n, n); }
+        std::sort(assetList.begin(), assetList.end(), [](const AssetEntry& a, const AssetEntry& b) { std::string x = Lower(a.name), y = Lower(b.name); return x != y ? x < y : a.id < b.id; });
+        assetAt.clear(); for (int i = 0; i < (int)assetList.size(); i++) assetAt[assetList[i].id.str()] = i;
+    }
+    void RefreshAssets(bool force = false) {
+        if (projectDir.empty()) return;
+        if (!force && uiClock - assetListT < 2.0) return;
+        assetListT = uiClock; CollectAssets();
+        std::vector<AssetId> mine; for (const AssetEntry& e : assetList) if (!e.builtin) mine.push_back(e.id);
+        std::set<AssetType> used;
+        int n = assetTree.adopt(mine, [&](const AssetId& a) -> std::string {
+            if (adoptInto) return *adoptInto;
+            auto it = assetNextIn.find(a.type); if (it != assetNextIn.end()) { used.insert(a.type); return it->second; }
+            if (assetMigrate) {   // (from the old folders, kept per kind)
+                if (a.type == AssetType::Block) { BlockId id = (BlockId)std::atoi(a.key.c_str()); return FolderTree::join("Blocks", reg.has(id) ? FolderTree::clean(reg.get(id).category) : ""); }
+                if (a.type == AssetType::Texture) return FolderTree::join("Textures", assetFolders.folderOf(assetFolders.textureIn, a.key));
+                if (a.type == AssetType::Model) return FolderTree::join("Models", assetFolders.folderOf(assetFolders.modelIn, a.key));
+            }
+            return assetTypePlural(a.type);
+        });
+        for (AssetType t : used) assetNextIn.erase(t);
+        size_t before = assetTree.where.size(); assetTree.prune(mine);
+        if (n || assetTree.where.size() != before || assetMigrate) SaveAssetTree();
+        assetMigrate = false;
+    }
+    void AdoptNow(const std::string& folder) { adoptInto = &folder; RefreshAssets(true); adoptInto = nullptr; }
+    const AssetEntry* AssetFind(const std::string& s) const { auto it = assetAt.find(s); return it == assetAt.end() ? nullptr : &assetList[it->second]; }
+    static std::string FileOfKey(const AssetId& a) { size_t sl = a.key.find('/'); return (a.type == AssetType::Picture || a.type == AssetType::Video) && sl != std::string::npos ? a.key.substr(sl + 1) : a.key; }
+    std::string AssetPath(const AssetId& a) {   // its file on disk (or the file it is kept in)
+        switch (a.type) {
+        case AssetType::Sound: return SoundsDir() + "/" + a.key;
+        case AssetType::Picture: case AssetType::Video: return projectDir + "/" + a.key;
+        case AssetType::Prefab: return PrefabsDir() + "/" + a.key + ".txt";
+        case AssetType::World: return WorldsDir() + "/" + a.key;
+        case AssetType::Model: return meshModels.count(a.key) ? MeshPath(a.key) : models.dir;
+        case AssetType::Texture: { std::error_code ec; for (auto& e : fs::directory_iterator(fs::u8path(projectDir + "/textures"), ec)) if (e.path().stem().u8string() == a.key) return e.path().u8string(); return projectDir + "/textures"; }
+        case AssetType::Enemy: return projectDir + "/enemies.txt";
+        case AssetType::Boss: return projectDir + "/bosses.txt";
+        case AssetType::Screen: return projectDir + "/screens.txt";
+        case AssetType::Scan: return projectDir + "/scans.txt";
+        default: return projectDir;
+        }
+    }
+    static std::wstring Wide(const std::string& s) {
+        if (s.empty()) return L""; int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0); if (n <= 0) return L"";
+        std::wstring w((size_t)n - 1, L'\0'); MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, w.data(), n); return w;
+    }
+    void ShowInExplorer(const std::string& path) {
+        std::string p = path; std::replace(p.begin(), p.end(), '/', '\\'); std::error_code ec;
+        std::wstring args = fs::is_directory(fs::u8path(path), ec) ? L"\"" + Wide(p) + L"\"" : L"/select,\"" + Wide(p) + L"\"";
+        ShellExecuteW(nullptr, L"open", L"explorer.exe", args.c_str(), nullptr, SW_SHOWNORMAL);
+    }
+    const Prefab* PrefabNamed(const std::string& n) {
+        auto it = prefabCache.find(n); if (it != prefabCache.end()) return &it->second;
+        Prefab p; if (!loadPrefab(PrefabsDir() + "/" + n + ".txt", p)) return nullptr;
+        return &(prefabCache[n] = p);
+    }
+    const std::vector<float>& Wave(const std::string& file) {   // a sound's outline (64 peaks), for its picture
+        static const std::vector<float> none;
+        auto it = waveCache.find(file); if (it != waveCache.end()) return it->second;
+        std::error_code ec; auto size = fs::file_size(fs::u8path(SoundsDir() + "/" + file), ec);
+        if (ec || size > 4u * 1024 * 1024) { waveCache[file] = {}; return none; }   // (big music files: no outline, no waiting)
+        std::vector<float>& w = waveCache[file]; auto d = LoadSound(file); if (!d || d->samples.empty()) return w;
+        w.assign(64, 0.f); size_t n = d->samples.size();
+        for (size_t i = 0; i < n; i++) { size_t b = i * 64 / n; w[b] = std::max(w[b], std::fabs(d->samples[i])); }
+        float top = 0.01f; for (float v : w) top = std::max(top, v); for (float& v : w) v /= top;
+        return w;
+    }
+    // ---- pictures for the tiles
+    void FolderIcon(ImDrawList* dl, ImVec2 c, float s, bool open) {
+        float w = s * 0.62f, h = s * 0.46f; ImVec2 a(c.x - w * 0.5f, c.y - h * 0.38f), b(c.x + w * 0.5f, c.y + h * 0.62f);
+        dl->AddRectFilled(ImVec2(a.x, a.y - h * 0.16f), ImVec2(a.x + w * 0.42f, a.y + 2), IM_COL32(214, 168, 72, 255), 3.f);
+        dl->AddRectFilled(a, b, open ? IM_COL32(246, 202, 104, 255) : IM_COL32(232, 186, 88, 255), 3.f);
+        dl->AddLine(ImVec2(a.x + 2, a.y + h * 0.18f), ImVec2(b.x - 2, a.y + h * 0.18f), IM_COL32(255, 228, 160, 160));
+    }
+    void ImageFit(ImDrawList* dl, ID3D11ShaderResourceView* im, int iw, int ih, ImVec2 p, float s, float pad) {
+        if (!im) return; float box = s - pad * 2, k = iw > 0 && ih > 0 ? std::min(box / iw, box / ih) : 1; float w = iw > 0 ? iw * k : box, h = ih > 0 ? ih * k : box;
+        ImVec2 a(p.x + (s - w) * 0.5f, p.y + (s - h) * 0.5f); dl->AddImage((ImTextureID)(intptr_t)im, a, ImVec2(a.x + w, a.y + h));
+    }
+    void AssetThumb(ImDrawList* dl, const AssetEntry& e, ImVec2 p, float s) {
+        ImVec2 c(p.x + s * 0.5f, p.y + s * 0.5f); const std::string& k = e.id.key;
+        switch (e.id.type) {
+        case AssetType::Block: { BlockId id = (BlockId)std::atoi(k.c_str()); if (reg.has(id)) BlockIcon(dl, id, c, s * 0.7f); break; }
+        case AssetType::Texture: { int t = TextureIndex(k); if (t > 0) TextureImage(t, p, s, s * 0.12f); break; }
+        case AssetType::Model: ModelIcon(dl, k, c, s * 0.8f); break;
+        case AssetType::Sound: {
+            const std::vector<float>& w = Wave(k); float x0 = p.x + s * 0.12f, bw = s * 0.76f / 32, mid = c.y;
+            if (w.empty()) {   // a note
+                dl->AddCircleFilled(ImVec2(c.x - s * 0.08f, c.y + s * 0.12f), s * 0.1f, IM_COL32(190, 150, 255, 255));
+                dl->AddRectFilled(ImVec2(c.x - s * 0.0f, c.y - s * 0.22f), ImVec2(c.x + s * 0.035f, c.y + s * 0.12f), IM_COL32(190, 150, 255, 255));
+                dl->AddRectFilled(ImVec2(c.x, c.y - s * 0.22f), ImVec2(c.x + s * 0.16f, c.y - s * 0.15f), IM_COL32(190, 150, 255, 255));
+            } else for (int i = 0; i < 32; i++) { float v = std::max(w[i * 2], w[i * 2 + 1]) * s * 0.3f + 1; dl->AddRectFilled(ImVec2(x0 + i * bw, mid - v), ImVec2(x0 + (i + 0.7f) * bw, mid + v), IM_COL32(176, 132, 255, 230)); }
+            break; }
+        case AssetType::Picture: {
+            int iw = 0, ih = 0; std::string f = FileOfKey(e.id); ID3D11ShaderResourceView* im = nullptr;
+            if (k.rfind("hud/", 0) == 0) { im = HudImage(f); iw = ih = 1; } else im = PictureAt(f, uiClock, true, &iw, &ih);
+            ImageFit(dl, im, iw, ih, p, s, s * 0.08f); break; }
+        case AssetType::Video: {
+            int iw = 0, ih = 0; ID3D11ShaderResourceView* im = VideoAt(FileOfKey(e.id), 0.5, false, &iw, &ih); ImageFit(dl, im, iw, ih, p, s, s * 0.08f);
+            dl->AddTriangleFilled(ImVec2(c.x - s * 0.1f, c.y - s * 0.13f), ImVec2(c.x - s * 0.1f, c.y + s * 0.13f), ImVec2(c.x + s * 0.14f, c.y), IM_COL32(255, 255, 255, 220)); break; }
+        case AssetType::Enemy: case AssetType::Boss: {
+            const EnemyType* t = enemies.find(std::atoi(k.c_str())); if (t) ModelIcon(dl, t->model, c, s * 0.75f);
+            if (e.id.type == AssetType::Boss) {   // a crown
+                float r = s * 0.12f; ImVec2 q(p.x + s - r * 1.6f, p.y + r * 1.1f);
+                ImVec2 pts[5] = { ImVec2(q.x - r, q.y + r * 0.6f), ImVec2(q.x - r, q.y - r * 0.5f), ImVec2(q.x, q.y + r * 0.05f), ImVec2(q.x + r, q.y - r * 0.5f), ImVec2(q.x + r, q.y + r * 0.6f) };
+                dl->AddConvexPolyFilled(pts, 5, IM_COL32(255, 205, 60, 255));
+            }
+            break; }
+        case AssetType::Screen: {
+            int sci = screens.find(k); float w = s * 0.78f, h = w * 9 / 16; ImVec2 a(c.x - w / 2, c.y - h / 2), b(c.x + w / 2, c.y + h / 2);
+            uint32_t c1 = 0x101820, c2 = 0x203040; if (sci >= 0) { c1 = screens.screens[sci].bg.color; c2 = screens.screens[sci].bg.color2; }
+            auto C = [](uint32_t v) { return IM_COL32((v >> 16) & 255, (v >> 8) & 255, v & 255, 255); };
+            dl->AddRectFilledMultiColor(a, b, C(c1), C(c1), C(c2), C(c2));
+            if (sci >= 0) for (const ScreenItem& it : screens.screens[sci].items) if (it.kind != ScreenItemKind::Sound) dl->AddRect(ImVec2(a.x + it.x * w, a.y + it.y * h), ImVec2(a.x + (it.x + it.w) * w, a.y + (it.y + it.h) * h), IM_COL32(120, 230, 255, 150));
+            dl->AddRect(a, b, IM_COL32(200, 210, 220, 200)); break; }
+        case AssetType::Scan: {
+            dl->AddCircle(c, s * 0.26f, IM_COL32(110, 200, 255, 255), 24, 2.f); dl->AddCircle(c, s * 0.12f, IM_COL32(110, 200, 255, 200), 16, 1.5f);
+            for (int i = 0; i < 4; i++) { float an = i * 1.5708f + 0.785f; dl->AddLine(ImVec2(c.x + std::cos(an) * s * 0.3f, c.y + std::sin(an) * s * 0.3f), ImVec2(c.x + std::cos(an) * s * 0.38f, c.y + std::sin(an) * s * 0.38f), IM_COL32(110, 200, 255, 255), 2.f); }
+            break; }
+        case AssetType::World: {
+            float w = s * 0.7f; ImVec2 a(c.x - w / 2, c.y - w / 2), b(c.x + w / 2, c.y + w / 2);
+            dl->AddRectFilledMultiColor(a, ImVec2(b.x, c.y + w * 0.1f), IM_COL32(90, 150, 230, 255), IM_COL32(90, 150, 230, 255), IM_COL32(170, 210, 255, 255), IM_COL32(170, 210, 255, 255));
+            dl->AddRectFilled(ImVec2(a.x, c.y + w * 0.1f), b, IM_COL32(90, 170, 80, 255)); dl->AddRectFilled(ImVec2(a.x, c.y + w * 0.22f), b, IM_COL32(130, 95, 60, 255));
+            dl->AddRect(a, b, IM_COL32(220, 230, 240, 200)); break; }
+        case AssetType::Prefab: {
+            const Prefab* pf = PrefabNamed(k); if (pf && !pf->objects.empty()) ModelIcon(dl, pf->objects[0].model, c, s * 0.7f);
+            dl->AddRect(ImVec2(p.x + s * 0.1f, p.y + s * 0.1f), ImVec2(p.x + s * 0.9f, p.y + s * 0.9f), IM_COL32(90, 170, 255, 200), 4.f, 0, 2.f);
+            if (pf && pf->objects.size() > 1) { char b[16]; snprintf(b, sizeof b, "x%d", (int)pf->objects.size()); dl->AddText(ImVec2(p.x + s * 0.14f, p.y + s * 0.12f), IM_COL32(150, 200, 255, 255), b); }
+            break; }
+        default: break;
+        }
+    }
+    static ImU32 AssetKindColor(AssetType t) {
+        static const ImU32 c[] = { IM_COL32(150, 150, 150, 255), IM_COL32(220, 120, 60, 255), IM_COL32(80, 180, 230, 255), IM_COL32(170, 120, 255, 255), IM_COL32(70, 190, 130, 255), IM_COL32(230, 80, 110, 255),
+                                   IM_COL32(230, 90, 60, 255), IM_COL32(255, 200, 60, 255), IM_COL32(100, 220, 230, 255), IM_COL32(110, 160, 255, 255), IM_COL32(110, 200, 90, 255), IM_COL32(90, 140, 255, 255) };
+        int i = (int)t; return i >= 0 && i < 12 ? c[i] : IM_COL32(200, 200, 200, 255);
+    }
+    // ---- doing things with assets
+    void AssetSelect(const AssetEntry& e) {   // the Inspector shows it
+        assetFocus = e.id.str();
+        switch (e.id.type) {
+        case AssetType::Block: Select(Sel::Block, std::atoi(e.id.key.c_str())); break;
+        case AssetType::Texture: { int t = TextureIndex(e.id.key); if (t > 0) Select(Sel::Texture, t); break; }
+        case AssetType::Model: sel = Sel::Model; selModel = e.id.key; editorOpen = false; break;
+        default: sel = Sel::Asset; selAsset = e.id; editorOpen = false; assetUsesOf.clear(); break;
+        }
+    }
+    void AssetOpen(const AssetEntry& e) {   // a double-click
+        const std::string& k = e.id.key;
+        switch (e.id.type) {
+        case AssetType::Block: { BlockId id = (BlockId)std::atoi(k.c_str()); if (reg.has(id)) { hotbar[hotSel] = id; Select(Sel::Block, id); Toast("Building with " + reg.get(id).name); } break; }
+        case AssetType::Texture: AssetSelect(e); break;
+        case AssetType::Model: viewerModel = k; viewerOpen = true; viewerFit = true; viewerClip = -1; break;
+        case AssetType::Sound: { SoundUse u; u.file = k; u.pitchVar = 0; PlaySound(u); break; }
+        case AssetType::Enemy: enemyEd = std::atoi(k.c_str()); playerEdOpen = true; focusPlayerEd = true; selectEnemiesTab = true; break;
+        case AssetType::Boss: bossEd = std::atoi(k.c_str()); playerEdOpen = true; focusPlayerEd = true; selectBossesTab = true; break;
+        case AssetType::Screen: { int i = screens.find(k); if (i >= 0) { scrEd = i; scrItem = -1; screensEdOpen = true; focusScreensEd = true; } break; }
+        case AssetType::World: if (!playMode && k != CurrentWorld()) { std::string w = k; pending = [this, w] { SaveWorld(); OpenWorld(w); }; } break;
+        case AssetType::Prefab: StartPlacingPrefab(k); break;
+        default: AssetSelect(e); break;
+        }
+    }
+    bool AssetRenamable(const AssetId& a) const {
+        return a.type == AssetType::Sound || a.type == AssetType::Picture || a.type == AssetType::Video || a.type == AssetType::Enemy || a.type == AssetType::Boss
+            || a.type == AssetType::Screen || a.type == AssetType::Scan || a.type == AssetType::Prefab;
+    }
+    void StartRename(const std::string& what) {
+        AssetId a; std::string cur;
+        if (what.rfind("folder:", 0) == 0) cur = FolderTree::leaf(what.substr(7));
+        else if (AssetId::parse(what, a)) {
+            if (a.type == AssetType::Block) { Select(Sel::Block, std::atoi(a.key.c_str())); Toast("Rename it in the Inspector (Name)"); return; }
+            if (!AssetRenamable(a)) { Toast(std::string(assetTypePlural(a.type)) + " are used by their names: duplicate it and use the copy instead"); return; }
+            const AssetEntry* e = AssetFind(what); cur = e ? e->name : a.key;
+        } else return;
+        assetRename = what; assetRenameText = cur; assetRenameFocus = true;
+    }
+    // every project text file where `token` is a whole word: replace it (renaming a file used by name) or count it (finding usages)
+    int ProjectTokens(const std::string& token, const std::string* replaceWith, std::vector<std::string>* where) {
+        int total = 0; std::error_code ec;
+        for (auto it = fs::recursive_directory_iterator(fs::u8path(projectDir), ec); it != fs::recursive_directory_iterator(); it.increment(ec)) {
+            if (ec) break; const fs::path& p = it->path(); std::string rel = fs::relative(p, fs::u8path(projectDir), ec).generic_u8string();
+            if (it->is_directory(ec)) { if (rel == "_trash") it.disable_recursion_pending(); continue; }
+            if (ExtOf(p.u8string()) != ".txt" || rel == "assets.txt" || rel == "asset_folders.txt") continue;
+            std::ifstream f(p); if (!f) continue; std::stringstream ss; ss << f.rdbuf(); std::string text = ss.str(), out; out.reserve(text.size());
+            int n = 0; std::vector<std::string> names; size_t i = 0, lineStart = 0;
+            while (i < text.size()) {
+                if (text[i] == '\n') lineStart = i + 1;
+                bool starts = (i == 0 || std::isspace((unsigned char)text[i - 1])) && text.compare(i, token.size(), token) == 0 && (i + token.size() == text.size() || std::isspace((unsigned char)text[i + token.size()]));
+                if (starts) {
+                    n++;
+                    if (where && rel.find("objects.txt") != std::string::npos && text.compare(lineStart, 7, "object ") == 0) {   // which object
+                        std::istringstream l(text.substr(lineStart, text.find('\n', lineStart) - lineStart)); std::string k, id, nm; l >> k >> id >> nm; names.push_back(unescText(nm));
+                    }
+                    if (replaceWith) out += *replaceWith; i += token.size(); continue;
+                }
+                if (replaceWith) out += text[i];
+                i++;
+            }
+            if (!n) continue;
+            total += n;
+            if (replaceWith) { std::ofstream o(p, std::ios::trunc); o << out; }
+            if (where) {
+                std::string label = rel;
+                if (rel.rfind("worlds/", 0) == 0) { size_t sl = rel.find('/', 7); std::string w = rel.substr(7, sl - 7), file = sl == std::string::npos ? "" : rel.substr(sl + 1);
+                    label = "World " + w + ": " + (file == "objects.txt" ? "objects" : file == "events.txt" ? "event cards" : fs::u8path(file).stem().u8string()); }
+                else if (rel.rfind("prefabs/", 0) == 0) label = "Prefab " + fs::u8path(rel).stem().u8string();
+                else { static const std::map<std::string, std::string> nice = { { "enemies.txt", "Enemy types" }, { "bosses.txt", "Bosses" }, { "screens.txt", "Screens" }, { "weapons.txt", "Weapons" },
+                        { "player_sounds.txt", "Player sounds" }, { "hud.txt", "HUD" }, { "items.txt", "Items" }, { "menu.txt", "Menu" }, { "visors.txt", "Visors" }, { "materials.txt", "Materials" }, { "blocks.txt", "Blocks" }, { "scans.txt", "Scan entries" } };
+                    auto nt = nice.find(rel); if (nt != nice.end()) label = nt->second; }
+                if (!names.empty()) { label += ":"; for (size_t k = 0; k < names.size() && k < 6; k++) label += (k ? ", " : " ") + names[k]; if (names.size() > 6) label += " ..."; }
+                else if (n > 1) label += " (" + std::to_string(n) + " times)";
+                where->push_back(label);
+            }
+        }
+        return total;
+    }
+    std::vector<std::string> AssetUsages(const AssetId& a) {   // where it is used (all worlds)
+        std::vector<std::string> out; SaveObjectsNow();
+        auto eachWorld = [&](const std::function<void(const std::string&, const std::vector<WorldObject>&)>& fn) {
+            for (const std::string& w : worldList) {
+                if (w == CurrentWorld()) { fn(w, objects); continue; }
+                std::vector<WorldObject> objs; if (loadObjects(WorldsDir() + "/" + w + "/objects.txt", objs)) fn(w, objs);
+            }
+        };
+        switch (a.type) {
+        case AssetType::Enemy: case AssetType::Boss: {
+            int id = std::atoi(a.key.c_str());
+            eachWorld([&](const std::string& w, const std::vector<WorldObject>& objs) { std::string l; int n = 0; for (const WorldObject& o : objs) if (o.kind == ObjKind::Enemy && o.enemyType == id && !spawnedIds.count(o.id)) { if (n < 6) l += (n ? ", " : " ") + o.name; n++; } if (n) out.push_back("World " + w + ":" + l + (n > 6 ? " ..." : "")); });
+            for (const BossDef& b : bosses.bosses) for (const BossPhase& ph : b.phases) for (const BossMove& m : ph.moves) if (m.kind == BossMoveKind::Spawn && m.spawnType == id) out.push_back("Boss " + BossTitle(b) + " spawns it (" + ph.name + ")");
+            if (a.type == AssetType::Enemy && bosses.forType(id)) out.push_back("It is a boss (Bosses)");
+            break; }
+        case AssetType::Scan: {
+            int id = std::atoi(a.key.c_str());
+            for (const EnemyType& t : enemies.types) if (t.scanId == id) out.push_back("Enemy type " + t.name);
+            eachWorld([&](const std::string& w, const std::vector<WorldObject>& objs) { std::string l; int n = 0; for (const WorldObject& o : objs) if (o.scan.id == id) { if (n < 6) l += (n ? ", " : " ") + o.name; n++; } if (n) out.push_back("World " + w + ":" + l); });
+            break; }
+        case AssetType::Screen:
+            for (const mc::Screen& s : screens.screens) {
+                if (s.next == a.key) out.push_back("Screen " + s.name + ": goes on to it");
+                for (const ScreenItem& it : s.items) if (it.kind == ScreenItemKind::Button && it.act == ScreenAct::GoTo && it.target == a.key) out.push_back("Screen " + s.name + ": the button " + it.name);
+            }
+            break;
+        case AssetType::World:
+            if (game.startWorld == a.key) out.push_back("The game starts in it");
+            eachWorld([&](const std::string& w, const std::vector<WorldObject>& objs) { for (const WorldObject& o : objs) if (o.kind == ObjKind::Teleporter && o.teleport.world == a.key) out.push_back("World " + w + ": the teleporter " + o.name); });
+            break;
+        case AssetType::Block: out.push_back("(Blocks built into worlds are not counted here.)"); break;
+        case AssetType::Prefab: out.push_back("(Placed prefabs are copies: changing it does not change them.)"); break;
+        default: ProjectTokens(escText(FileOfKey(a)), nullptr, &out); break;
+        }
+        return out;
+    }
+    void ReloadAfterRename() {   // the project's text files changed under us: read them again
+        bool keepWorld = world != nullptr;
+        LoadHud(); LoadScreens(); pics.clear(); vids.clear(); soundCache.clear(); waveCache.clear(); prefabCache.clear();
+        if (keepWorld) { objects.clear(); loadObjects(worldDir + "/objects.txt", objects); loadEvents(worldDir + "/events.txt", events); RebuildSolids(); }
+    }
+    bool RenameAsset(const std::string& what, const std::string& newName0) {
+        std::string newName = newName0; while (!newName.empty() && std::isspace((unsigned char)newName.back())) newName.pop_back();
+        if (newName.empty()) return false;
+        if (what.rfind("folder:", 0) == 0) {
+            std::string f = what.substr(7), to = FolderTree::join(FolderTree::parent(f), newName);
+            if (to == f) return true;
+            if (assetTree.folders.paths.count(to)) { Toast("There is a folder called that already"); return false; }
+            if (assetTree.renameFolder(f, to)) { if (FolderTree::within(assetDir, f)) assetDir = FolderTree::moved(assetDir, f, to); SaveAssetTree(); return true; }
+            return false;
+        }
+        AssetId a; if (!AssetId::parse(what, a)) return false;
+        switch (a.type) {
+        case AssetType::Sound: case AssetType::Picture: case AssetType::Video: {   // the file, and every place it is used by name
+            if (playMode) { Toast("Rename files in the editor (F5: back)"); return false; }
+            std::string oldFile = FileOfKey(a), ext = fs::u8path(oldFile).extension().u8string(), nf = newName;
+            if (Lower(fs::u8path(nf).extension().u8string()) != Lower(ext)) nf += ext;
+            if (nf == oldFile) return true;
+            std::string dir = fs::u8path(AssetPath(a)).parent_path().u8string(); std::error_code ec;
+            if (fs::exists(fs::u8path(dir + "/" + nf), ec)) { Toast("A file called " + nf + " is there already"); return false; }
+            SaveObjectsNow(); SaveScreens(); SaveEnemies(); SaveBosses();
+            fs::rename(fs::u8path(dir + "/" + oldFile), fs::u8path(dir + "/" + nf), ec); if (ec) { Toast("Could not rename it: " + ec.message()); return false; }
+            std::string rep = escText(nf); int n = ProjectTokens(escText(oldFile), &rep, nullptr);
+            std::string newKey = a.type == AssetType::Sound ? nf : a.key.substr(0, a.key.find('/') + 1) + nf;
+            assetTree.renameAsset(a, newKey); SaveAssetTree(); ReloadAfterRename(); RefreshAssets(true);
+            assetFocus = AssetId{ a.type, newKey }.str(); if (sel == Sel::Asset && selAsset == a) selAsset.key = newKey;
+            Toast("Renamed to " + nf + (n ? " (and in " + std::to_string(n) + " place" + (n == 1 ? "" : "s") + " it is used)" : "")); return true; }
+        case AssetType::Enemy: if (EnemyType* t = enemies.find(std::atoi(a.key.c_str()))) { t->name = newName; SaveEnemies(); } break;
+        case AssetType::Boss: if (BossDef* b = bosses.forType(std::atoi(a.key.c_str()))) { b->title = newName; SaveBosses(); } break;
+        case AssetType::Scan: if (ScanDef* d = scanLib.find(std::atoi(a.key.c_str()))) { d->name = newName; SaveScans(); } break;
+        case AssetType::Screen: {
+            int i = screens.find(a.key); if (i < 0) return false;
+            if (screens.find(newName) >= 0 && newName != a.key) { Toast("There is a screen called that already"); return false; }
+            for (mc::Screen& s : screens.screens) { if (s.next == a.key) s.next = newName; for (ScreenItem& it : s.items) if (it.target == a.key) it.target = newName; }
+            screens.screens[i].name = newName; SaveScreens(); assetTree.renameAsset(a, newName); SaveAssetTree(); assetFocus = AssetId{ a.type, newName }.str(); if (sel == Sel::Asset && selAsset == a) selAsset.key = newName;
+            break; }
+        case AssetType::Prefab: {
+            std::error_code ec; std::string to = PrefabsDir() + "/" + newName + ".txt";
+            if (fs::exists(fs::u8path(to), ec)) { Toast("There is a prefab called that already"); return false; }
+            fs::rename(fs::u8path(AssetPath(a)), fs::u8path(to), ec); if (ec) return false;
+            prefabCache.erase(a.key); assetTree.renameAsset(a, newName); SaveAssetTree(); assetFocus = AssetId{ a.type, newName }.str(); if (sel == Sel::Asset && selAsset == a) selAsset.key = newName;
+            break; }
+        default: return false;
+        }
+        RefreshAssets(true); return true;
+    }
+    void DuplicateAsset(const std::string& what) {
+        AssetId a; if (!AssetId::parse(what, a)) return;
+        std::string folder = assetTree.folderOf(a); std::error_code ec;
+        auto copyFile = [&](const std::string& dir, const std::string& file) {
+            std::string n = uniqueAssetName(file, [&](const std::string& x) { std::error_code e2; return fs::exists(fs::u8path(dir + "/" + x), e2); });
+            fs::copy_file(fs::u8path(dir + "/" + file), fs::u8path(dir + "/" + n), ec); return n;
+        };
+        switch (a.type) {
+        case AssetType::Block: { BlockId id = (BlockId)std::atoi(a.key.c_str()); if (!reg.has(id)) return; BlockDef c = reg.get(id); c.name = reg.uniqueName(c.name + " copy"); ChangeBlocks([&] { reg.add(c); }); library.saveBlocks(reg); break; }
+        case AssetType::Model: {
+            auto mi = meshModels.find(a.key);
+            if (mi != meshModels.end()) { MeshModel m = mi->second; m.name = UniqueModelName(m.name + " copy"); meshModels[m.name] = m; SaveMesh(m); ModelChanged(m.name); }
+            else if (const BlockModel* bm = models.find(a.key)) { BlockModel m = *bm; m.name = UniqueModelName(m.name + " copy"); models.store(m); ModelChanged(m.name); }
+            break; }
+        case AssetType::Sound: copyFile(SoundsDir(), a.key); break;
+        case AssetType::Picture: case AssetType::Video: copyFile(fs::u8path(AssetPath(a)).parent_path().u8string(), FileOfKey(a)); break;
+        case AssetType::Prefab: copyFile(PrefabsDir(), a.key + ".txt"); break;
+        case AssetType::Enemy: { const EnemyType* t = enemies.find(std::atoi(a.key.c_str())); if (!t) return; EnemyType c = *t; c.id = 0; c.name += " copy"; enemies.add(c); SaveEnemies(); break; }
+        case AssetType::Boss: {
+            const BossDef* b = bosses.forType(std::atoi(a.key.c_str())); const EnemyType* t = enemies.find(std::atoi(a.key.c_str())); if (!b || !t) return;
+            EnemyType c = *t; c.id = 0; c.name += " copy"; int id = enemies.add(c); SaveEnemies();
+            BossDef nb = *b; nb.enemyType = id; if (!nb.title.empty()) nb.title += " copy"; bosses.bosses.push_back(nb); SaveBosses(); break; }
+        case AssetType::Screen: { int i = screens.find(a.key); if (i < 0) return; mc::Screen c = screens.screens[i]; c.role = ScreenRole::Custom; c.name = uniqueAssetName(c.name + " copy", [&](const std::string& x) { return screens.find(x) >= 0; }); screens.screens.push_back(c); SaveScreens(); break; }
+        case AssetType::Scan: { const ScanDef* d = scanLib.find(std::atoi(a.key.c_str())); if (!d) return; ScanDef c = *d; c.id = 0; c.name += " copy"; scanLib.add(c); SaveScans(); break; }
+        default: Toast(std::string(assetTypePlural(a.type)) + " can't be duplicated here"); return;
+        }
+        AdoptNow(folder);
+    }
+    bool DeleteAsset(const AssetId& a, std::string& why) {   // false (and why): not deleted
+        std::error_code ec;
+        auto trash = [&](const std::string& path) { std::string name = fs::u8path(path).filename().u8string(), to = TrashDir() + "/" + name;
+            if (fs::exists(fs::u8path(to), ec)) to = TrashDir() + "/" + std::to_string((long long)std::chrono::system_clock::now().time_since_epoch().count()) + " " + name;
+            fs::rename(fs::u8path(path), fs::u8path(to), ec); return !ec; };
+        switch (a.type) {
+        case AssetType::Block: { BlockId id = (BlockId)std::atoi(a.key.c_str()); if (!reg.has(id)) return false; ChangeBlocks([&] { reg.remove(id); }); library.saveBlocks(reg); editorOpen = false; return true; }
+        case AssetType::Texture: ChangeBlocks([&] { library.deleteTexture(a.key, reg); }); return true;
+        case AssetType::Model: {
+            for (const std::string& u : AssetUsages(a)) if (u.rfind("World", 0) == 0) { why = "it is placed in worlds"; return false; }
+            if (models.find(a.key)) models.remove(a.key); else { trash(MeshPath(a.key)); meshModels.erase(a.key); }
+            modelGpu.erase(a.key); if (selModel == a.key) { selModel.clear(); sel = Sel::None; } if (viewerModel == a.key) viewerOpen = false; return true; }
+        case AssetType::Sound: soundCache.erase(a.key); waveCache.erase(a.key); return trash(AssetPath(a));
+        case AssetType::Picture: pics.erase(FileOfKey(a)); hudImages.erase(FileOfKey(a)); return trash(AssetPath(a));
+        case AssetType::Video: vids.erase(FileOfKey(a)); return trash(AssetPath(a));
+        case AssetType::Prefab: prefabCache.erase(a.key); return trash(AssetPath(a));
+        case AssetType::Enemy: {
+            int id = std::atoi(a.key.c_str()); if (EnemyUsesAll(id) > 0) { why = "it is placed in worlds"; return false; }
+            enemies.types.erase(std::remove_if(enemies.types.begin(), enemies.types.end(), [&](const EnemyType& t) { return t.id == id; }), enemies.types.end());
+            bosses.bosses.erase(std::remove_if(bosses.bosses.begin(), bosses.bosses.end(), [&](const BossDef& b) { return b.enemyType == id; }), bosses.bosses.end());
+            SaveEnemies(); SaveBosses(); return true; }
+        case AssetType::Boss: { int id = std::atoi(a.key.c_str()); bosses.bosses.erase(std::remove_if(bosses.bosses.begin(), bosses.bosses.end(), [&](const BossDef& b) { return b.enemyType == id; }), bosses.bosses.end()); SaveBosses(); return true; }
+        case AssetType::Screen: { int i = screens.find(a.key); if (i < 0) return false; screens.screens.erase(screens.screens.begin() + i); scrEd = 0; scrItem = -1; SaveScreens(); return true; }
+        case AssetType::Scan: { int id = std::atoi(a.key.c_str()); scanLib.defs.erase(std::remove_if(scanLib.defs.begin(), scanLib.defs.end(), [&](const ScanDef& d) { return d.id == id; }), scanLib.defs.end()); SaveScans(); return true; }
+        case AssetType::World: if (a.key == CurrentWorld()) { why = "it is open (open another world first)"; return false; } DeleteWorld(a.key); RefreshWorlds(); return true;
+        default: return false;
+        }
+    }
+    int EnemyUsesAll(int id) {   // placed, in all worlds
+        int n = 0;
+        for (const std::string& w : worldList) {
+            if (w == CurrentWorld()) { for (const WorldObject& o : objects) n += o.kind == ObjKind::Enemy && o.enemyType == id && !spawnedIds.count(o.id); continue; }
+            std::vector<WorldObject> objs; if (loadObjects(WorldsDir() + "/" + w + "/objects.txt", objs)) for (const WorldObject& o : objs) n += o.kind == ObjKind::Enemy && o.enemyType == id;
+        }
+        return n;
+    }
+    // ---- prefabs
+    bool MakePrefab(const std::vector<WorldObject>& objs, const std::string& folder, std::string want = "") {
+        if (objs.empty()) return false;
+        if (want.empty()) want = objs.size() == 1 ? objs[0].name : objs[0].folder.empty() ? "Prefab" : FolderTree::leaf(objs[0].folder);
+        std::error_code ec; fs::create_directories(fs::u8path(PrefabsDir()), ec);
+        std::string n = uniqueAssetName(want, [&](const std::string& x) { std::error_code e2; return fs::exists(fs::u8path(PrefabsDir() + "/" + x + ".txt"), e2); });
+        std::vector<WorldObject> clean; for (const WorldObject& o : objs) if (!spawnedIds.count(o.id)) clean.push_back(o);
+        if (!savePrefab(PrefabsDir() + "/" + n + ".txt", makePrefab(n, clean))) return false;
+        prefabCache.erase(n); AdoptNow(folder); Toast("Made the prefab " + n + " (" + std::to_string(clean.size()) + " object" + (clean.size() == 1 ? "" : "s") + ")");
+        return true;
+    }
+    void StartPlacingPrefab(const std::string& n) {
+        const Prefab* p = PrefabNamed(n); if (!p || p->objects.empty()) { Toast("The prefab is empty"); return; }
+        if (playMode) return;
+        StartPlacing(p->objects[0].model); placingPrefab = n; placingEnemy = 0;
+        Toast("Placing the prefab " + n + ": click to put it down, R turns it, right click stops");
+    }
+    void StartPlacingEnemy(int type) {
+        const EnemyType* t = enemies.find(type); if (!t || playMode) return;
+        StartPlacing(t->model); placingEnemy = type; placingPrefab.clear();
+        Toast("Placing " + t->name + ": click to put it down, R turns it, right click stops");
+    }
+    std::vector<std::string> AssetPayload(const std::string& self) {   // what a drag carries: the picked ones if it is one of them
+        if (assetPicks.count(self) && assetPicks.size() > 1) return { assetPicks.begin(), assetPicks.end() };
+        return { self };
+    }
+    void DragAssets(const std::string& self, const std::string& label) {
+        if (!ImGui::BeginDragDropSource()) return;
+        std::string data; std::vector<std::string> v = AssetPayload(self); for (const std::string& s : v) data += s + "\n";
+        ImGui::SetDragDropPayload("PRIM_ASSET", data.c_str(), data.size() + 1);
+        if (v.size() > 1) ImGui::Text("%d things", (int)v.size()); else ImGui::Text("%s", label.c_str());
+        ImGui::EndDragDropSource();
+    }
+    static std::vector<std::string> PayloadLines(const ImGuiPayload* pl) { std::vector<std::string> v; std::stringstream ss((const char*)pl->Data); std::string l; while (std::getline(ss, l)) if (!l.empty()) v.push_back(l); return v; }
+    void DropIntoFolder(const std::string& folder) {   // a drop target: assets / folders move in, an object from the Outliner becomes a prefab
+        if (!ImGui::BeginDragDropTarget()) return;
+        if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload("PRIM_ASSET")) {
+            for (const std::string& s : PayloadLines(pl)) {
+                if (s.rfind("folder:", 0) == 0) { std::string f = s.substr(7); if (FolderTree::within(folder, f)) continue; std::string to = FolderTree::join(folder, FolderTree::leaf(f)); if (to != f && assetTree.renameFolder(f, to) && FolderTree::within(assetDir, f)) assetDir = FolderTree::moved(assetDir, f, to); }
+                else { AssetId a; if (AssetId::parse(s, a) && assetTree.has(a)) assetTree.put(a, folder); }
+            }
+            SaveAssetTree();
+        }
+        if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload("PRIM_OBJ")) {
+            std::string name((const char*)pl->Data); std::vector<WorldObject> objs; for (const WorldObject& o : objects) if (o.name == name) objs.push_back(o);
+            MakePrefab(objs, folder);
+        }
+        if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload("PRIM_FOLDER9")) {   // an Outliner folder: all its objects as one prefab
+            std::string f((const char*)pl->Data); std::vector<WorldObject> objs; for (const WorldObject& o : objects) if (FolderTree::within(FolderTree::clean(o.folder), f)) objs.push_back(o);
+            MakePrefab(objs, folder, FolderTree::leaf(f));
+        }
+        ImGui::EndDragDropTarget();
+    }
+    // a field takes an asset dropped on it (sounds onto sound fields, pictures onto picture fields...)
+    bool AcceptAsset(AssetType t, std::string& out) {
+        if (!ImGui::BeginDragDropTarget()) return false;
+        bool got = false;
+        if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload("PRIM_ASSET")) {
+            for (const std::string& s : PayloadLines(pl)) {
+                AssetId a; if (!AssetId::parse(s, a) || a.type != t) continue;
+                if ((t == AssetType::Picture || t == AssetType::Video) && a.key.rfind("screens/", 0) != 0) continue;   // (a HUD picture is not one of the screens' pictures)
+                out = (t == AssetType::Picture || t == AssetType::Video) ? FileOfKey(a) : a.key; got = true; break;
+            }
+            if (!got) Toast(std::string("Only a ") + assetTypeName(t) + " fits there");
+        }
+        ImGui::EndDragDropTarget(); return got;
+    }
+    void ViewportDrop() {   // assets dropped into the viewport: models, enemies and prefabs are placed (click to put them down)
+        if (!ImGui::BeginDragDropTarget()) return;
+        if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload("PRIM_ASSET")) {
+            for (const std::string& s : PayloadLines(pl)) {
+                AssetId a; if (!AssetId::parse(s, a)) continue;
+                if (a.type == AssetType::Model) { StartPlacing(a.key); break; }
+                if (a.type == AssetType::Enemy || a.type == AssetType::Boss) { StartPlacingEnemy(std::atoi(a.key.c_str())); break; }
+                if (a.type == AssetType::Prefab) { StartPlacingPrefab(a.key); break; }
+                if (a.type == AssetType::Block) { BlockId id = (BlockId)std::atoi(a.key.c_str()); if (reg.has(id)) { hotbar[hotSel] = id; Toast("Building with " + reg.get(id).name); } break; }
+            }
+            focusView = true;
+        }
+        ImGui::EndDragDropTarget();
+    }
+    // ---- importing: any file, into the folder shown
+    void ImportInto(const std::vector<std::string>& paths, const std::string& folder) {
+        std::vector<std::string> pics2; int n = 0; std::error_code ec;
+        for (const std::string& p : paths) {
+            std::string ext = ExtOf(p), name = fs::u8path(p).filename().u8string();
+            if (isModelFile(p)) { assetNextIn[AssetType::Model] = folder; if (ImportModelFile(p)) n++; }
+            else if (IsAudioExt(ext)) { fs::create_directories(fs::u8path(SoundsDir()), ec); fs::copy_file(fs::u8path(p), fs::u8path(SoundsDir() + "/" + name), fs::copy_options::overwrite_existing, ec); soundCache.erase(name); waveCache.erase(name); n++; }
+            else if (IsVidExt(ext)) { fs::copy_file(fs::u8path(p), fs::u8path(ScreensDir() + "/" + name), fs::copy_options::overwrite_existing, ec); vids.erase(name); n++; }
+            else if (IsPicExt(ext)) pics2.push_back(p);
+            else Toast(name + ": not a kind of file the engine knows");
+        }
+        AdoptNow(folder);
+        if (!pics2.empty()) { assetPicImport = pics2; assetPicImportDir = folder; wantPopup = "Import pictures as"; }
+        if (n) Toast("Imported " + std::to_string(n) + " file" + (n == 1 ? "" : "s") + (folder.empty() ? "" : " into " + folder));
+    }
+    bool OverAssets(POINT pt) const { return assetsRect.z > 0 && pt.x >= assetsRect.x && pt.y >= assetsRect.y && pt.x <= assetsRect.x + assetsRect.z && pt.y <= assetsRect.y + assetsRect.w; }
+    // ---- files changed outside (a texture painted, a sound cut): read again
+    void WatchAssetFiles() {
+        if (projectDir.empty() || uiClock - watchT < 1.5) return;
+        watchT = uiClock; std::error_code ec; bool texChanged = false;
+        auto scan = [&](const std::string& dir, int kind) {
+            for (auto& e : fs::directory_iterator(fs::u8path(dir), ec)) {
+                if (!e.is_regular_file(ec)) continue;
+                long long t = (long long)e.last_write_time(ec).time_since_epoch().count(); std::string key = dir + "/" + e.path().filename().u8string();
+                auto it = watchMt.find(key); bool changed = it != watchMt.end() && it->second != t; watchMt[key] = t;
+                if (!changed || !watchPrimed) continue;
+                std::string f = e.path().filename().u8string();
+                if (kind == 0) { soundCache.erase(f); waveCache.erase(f); }
+                else if (kind == 1) { pics.erase(f); vids.erase(f); }
+                else if (kind == 2) hudImages.erase(f);
+                else if (kind == 3) texChanged = true;
+                else if (kind == 4) prefabCache.erase(e.path().stem().u8string());
+            }
+        };
+        scan(SoundsDir(), 0); scan(ScreensDir(), 1); scan(projectDir + "/hud", 2); scan(projectDir + "/textures", 3); scan(PrefabsDir(), 4);
+        if (texChanged && !playMode) { ChangeBlocks([&] { library = Library{}; library.dir = projectDir; library.load(reg); }); Toast("Textures changed on disk: read again"); }
+        watchPrimed = true;
+    }
+    // ---- the panel
+    void AssetCreateMenu(const std::string& folder) {
+        if (ImGui::MenuItem("Folder")) {
+            std::string n = uniqueAssetName("New folder", [&](const std::string& x) { return assetTree.folders.paths.count(FolderTree::join(folder, x)) > 0; });
+            std::string p = FolderTree::join(folder, n); assetTree.folders.add(p); SaveAssetTree(); assetDir = folder; StartRename("folder:" + p);
+        }
+        ImGui::Separator();
+        if (ImGui::MenuItem("Block")) { assetNextIn[AssetType::Block] = folder; NewBlock(); sel = Sel::Block; selIndex = 0; }
+        if (ImGui::MenuItem("Enemy type")) { EnemyType t; t.name = uniqueAssetName("Enemy", [&](const std::string& x) { for (auto& e : enemies.types) if (e.name == x) return true; return false; }); int id = enemies.add(t); SaveEnemies(); AdoptNow(folder); assetFocus = AssetId{ AssetType::Enemy, std::to_string(id) }.str(); }
+        if (ImGui::MenuItem("Boss (and its enemy type)")) {
+            EnemyType t; t.name = uniqueAssetName("Boss", [&](const std::string& x) { for (auto& e : enemies.types) if (e.name == x) return true; return false; }); t.size = 3; t.health = 600; t.respawn = EnemyRespawn::Never;
+            int id = enemies.add(t); SaveEnemies(); bosses.bosses.push_back(defaultBoss(id)); SaveBosses(); AdoptNow(folder); assetFocus = AssetId{ AssetType::Boss, std::to_string(id) }.str();
+        }
+        if (ImGui::MenuItem("Screen")) { mc::Screen s = presetScreen(ScreenRole::Custom); s.name = uniqueAssetName("Screen", [&](const std::string& x) { return screens.find(x) >= 0; }); screens.screens.push_back(s); SaveScreens(); AdoptNow(folder); assetFocus = AssetId{ AssetType::Screen, s.name }.str(); }
+        if (ImGui::MenuItem("Scan entry")) { ScanDef d; d.name = "New scan"; d.category = "Research"; int id = scanLib.add(d); SaveScans(); AdoptNow(folder); assetFocus = AssetId{ AssetType::Scan, std::to_string(id) }.str(); }
+        bool objPicked = sel == Sel::Object && selIndex >= 0 && selIndex < (int)objects.size();
+        if (ImGui::MenuItem("Prefab from the picked object", nullptr, false, objPicked)) MakePrefab({ objects[selIndex] }, folder);
+        if (!objPicked && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Pick an object in the world first.\nOr drag objects (or a whole folder) from the Outliner into a folder here.");
+        if (ImGui::MenuItem("World...")) { newName = "New World"; newType = 0; wantPopup = "New world"; assetNextIn[AssetType::World] = folder; }
+        ImGui::Separator();
+        if (ImGui::MenuItem("Import files...")) {
+            auto f = PickFiles("Everything the engine knows\0*.png;*.jpg;*.jpeg;*.gif;*.bmp;*.tif;*.tiff;*.wav;*.mp3;*.m4a;*.aac;*.wma;*.flac;*.mp4;*.wmv;*.avi;*.mov;*.mkv;*.m4v;*.webm;*.bbmodel;*.obj;*.gltf;*.glb;*.fbx\0All files\0*.*\0", "Import into the Assets");
+            if (!f.empty()) ImportInto(f, folder);
+        }
+    }
+    void AssetFolderNode(const std::string& path) {   // a folder in the tree on the left (and its sub-folders)
+        auto kids = assetTree.folders.children(path);
+        ImGuiTreeNodeFlags fl = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick | ImGuiTreeNodeFlags_SpanAvailWidth | (kids.empty() ? ImGuiTreeNodeFlags_Leaf : 0) | (assetDir == path ? ImGuiTreeNodeFlags_Selected : 0);
+        if (!assetDir.empty() && assetDir != path && FolderTree::within(assetDir, path)) ImGui::SetNextItemOpen(true, ImGuiCond_Always);   // (the way to the open folder stays open)
+        bool open = ImGui::TreeNodeEx(("##f" + path).c_str(), fl, "%s", FolderTree::leaf(path).c_str());
+        if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) { assetDir = path; assetFilterText.clear(); }
+        if (ImGui::BeginDragDropSource()) { std::string d = "folder:" + path + "\n"; ImGui::SetDragDropPayload("PRIM_ASSET", d.c_str(), d.size() + 1); ImGui::Text("Folder %s", FolderTree::leaf(path).c_str()); ImGui::EndDragDropSource(); }
+        DropIntoFolder(path);
+        if (ImGui::BeginPopupContextItem(("##fc" + path).c_str())) { AssetFolderMenu(path); ImGui::EndPopup(); }
+        ImGui::SameLine(); ImGui::TextDisabled("%d", assetTree.countWithin(path));
+        if (open) { for (const std::string& k : kids) AssetFolderNode(k); ImGui::TreePop(); }
+    }
+    void AssetFolderMenu(const std::string& path) {
+        if (ImGui::MenuItem("Open")) assetDir = path;
+        if (ImGui::BeginMenu("Create")) { AssetCreateMenu(path); ImGui::EndMenu(); }
+        ImGui::Separator();
+        if (ImGui::MenuItem("Rename", "F2")) StartRename("folder:" + path);
+        bool fav = assetTree.favourites.count("folder:" + path) > 0;
+        if (ImGui::MenuItem(fav ? "Not a favourite" : "Favourite", nullptr, fav)) { if (fav) assetTree.favourites.erase("folder:" + path); else assetTree.favourites.insert("folder:" + path); SaveAssetTree(); }
+        if (ImGui::MenuItem("Delete the folder...", "Del")) { assetAskDelete = { "folder:" + path }; ImGui::CloseCurrentPopup(); wantPopup = "Delete from the Assets?"; }
+    }
+    void AssetMenu(const AssetEntry& e) {   // right-click on an asset
+        std::string s = e.id.str(); AssetType t = e.id.type;
+        if (ImGui::MenuItem("Open", "Enter")) AssetOpen(e);
+        if (t == AssetType::Model && ImGui::MenuItem("Place it")) StartPlacing(e.id.key);
+        if ((t == AssetType::Enemy || t == AssetType::Boss) && ImGui::MenuItem("Place one")) StartPlacingEnemy(std::atoi(e.id.key.c_str()));
+        if (t == AssetType::Prefab && ImGui::MenuItem("Place it")) StartPlacingPrefab(e.id.key);
+        if (t == AssetType::Boss && ImGui::MenuItem("Fight it now")) FightNow(std::atoi(e.id.key.c_str()));
+        if (t == AssetType::Sound && ImGui::MenuItem("Listen")) { SoundUse u; u.file = e.id.key; u.pitchVar = 0; PlaySound(u); }
+        ImGui::Separator();
+        if (!e.builtin) {
+            if (ImGui::MenuItem("Rename", "F2")) StartRename(s);
+            if (ImGui::MenuItem("Duplicate", "Ctrl+D")) DuplicateAsset(s);
+            if (ImGui::BeginMenu("Move to")) {
+                if (ImGui::MenuItem("Assets (the top)", nullptr, assetTree.folderOf(e.id).empty())) { for (const std::string& x : AssetPayload(s)) { AssetId a; if (AssetId::parse(x, a)) assetTree.put(a, ""); } SaveAssetTree(); }
+                for (const std::string& f : assetTree.folders.all()) if (ImGui::MenuItem(f.c_str(), nullptr, assetTree.folderOf(e.id) == f)) { for (const std::string& x : AssetPayload(s)) { AssetId a; if (AssetId::parse(x, a)) assetTree.put(a, f); } SaveAssetTree(); }
+                ImGui::EndMenu();
+            }
+            bool fav = assetTree.favourites.count(s) > 0;
+            if (ImGui::MenuItem(fav ? "Not a favourite" : "Favourite", nullptr, fav)) { if (fav) assetTree.favourites.erase(s); else assetTree.favourites.insert(s); SaveAssetTree(); }
+        }
+        if (ImGui::MenuItem("Find where it is used")) { AssetSelect(e); if (sel != Sel::Asset) { sel = Sel::Asset; selAsset = e.id; } assetUses = AssetUsages(e.id); assetUsesOf = s; }
+        if (ImGui::MenuItem("Show in Explorer")) ShowInExplorer(AssetPath(e.id));
+        if (!e.builtin) { ImGui::Separator(); if (ImGui::MenuItem("Delete...", "Del")) { assetAskDelete = AssetPayload(s); wantPopup = "Delete from the Assets?"; } }
+    }
     void Assets() {
         if (focusAssets) { ShowTab("Assets"); focusAssets = false; }
         ImGui::Begin("Assets");
-        float ui = settings.uiScale;
-        // folder tree on the left
-        ImGui::BeginChild("folders", ImVec2(190 * ui, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_ResizeX);
-        auto folder = [&](const char* label, int kind, const std::string& cat, int count) {
-            ImGuiTreeNodeFlags f = ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen | ImGuiTreeNodeFlags_SpanAvailWidth | (assetKind == kind && assetCat == cat ? ImGuiTreeNodeFlags_Selected : 0);
-            ImGui::TreeNodeEx((std::to_string(kind) + label).c_str(), f, "%s  (%d)", label, count);
-            if (ImGui::IsItemClicked()) { assetKind = kind; assetCat = cat; }
-        };
-        int nb = 0; for (BlockId id = 1; id < reg.count(); id++) nb += reg.has(id);
-        if (ImGui::TreeNodeEx("Blocks", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth)) {
-            FolderKind k = BlockFolders(); FolderRoot(k, "All blocks", nb); FolderNodes(k, "");
+        { ImVec2 wp = ImGui::GetWindowPos(), ws = ImGui::GetWindowSize(); assetsRect = ImVec4(wp.x, wp.y, ws.x, ws.y); }   // (client pixels, like a drop's point)
+        RefreshAssets(); WatchAssetFiles();
+        float ui = settings.uiScale; ImGuiIO& io = ImGui::GetIO();
+        bool builtinDir = !assetDir.empty() && assetDir[0] == '\t';
+        if (!builtinDir && !assetDir.empty() && !assetTree.folders.paths.count(assetDir)) assetDir = FolderTree::parent(assetDir);
+        // ---- left: favourites, the folders, built in
+        ImGui::BeginChild("atree", ImVec2(210 * ui, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_ResizeX);
+        if (!assetTree.favourites.empty() && ImGui::TreeNodeEx("Favourites", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth)) {
+            for (const std::string& f : assetTree.favourites) {
+                ImGui::PushID(f.c_str());
+                if (f.rfind("folder:", 0) == 0) { std::string p = f.substr(7); if (ImGui::Selectable(("  " + FolderTree::leaf(p)).c_str(), assetDir == p)) { assetDir = p; assetFilterText.clear(); } DropIntoFolder(p); }
+                else if (const AssetEntry* e = AssetFind(f)) {
+                    ImVec2 cp = ImGui::GetCursorScreenPos(); ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(cp.x + 5, cp.y + ImGui::GetTextLineHeight() * 0.5f + 1), 3.5f, AssetKindColor(e->id.type));
+                    if (ImGui::Selectable(("  " + e->name).c_str(), assetFocus == f)) { assetDir = assetTree.folderOf(e->id); assetFilterText.clear(); assetPicks = { f }; AssetSelect(*e); }
+                    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) AssetOpen(*e);
+                    DragAssets(f, e->name);
+                }
+                ImGui::PopID();
+            }
             ImGui::TreePop();
         }
-        if (ImGui::TreeNodeEx("Textures", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth)) {
-            FolderKind k = TextureFolders(); FolderRoot(k, "All textures", (int)reg.textureCount() - 1); FolderNodes(k, "");
-            ImGui::TreePop();
+        {
+            ImGuiTreeNodeFlags fl = ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth | (assetDir.empty() ? ImGuiTreeNodeFlags_Selected : 0);
+            bool open = ImGui::TreeNodeEx("Assets##root", fl);
+            if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) { assetDir.clear(); assetFilterText.clear(); }
+            DropIntoFolder("");
+            if (ImGui::BeginPopupContextItem("##rootc")) { if (ImGui::BeginMenu("Create")) { AssetCreateMenu(""); ImGui::EndMenu(); } ImGui::EndPopup(); }
+            if (open) { for (const std::string& k : assetTree.folders.children("")) AssetFolderNode(k); ImGui::TreePop(); }
         }
-        if (ImGui::TreeNodeEx("Models", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth)) {
-            FolderKind k = ModelFolders(); FolderRoot(k, "All models", (int)(models.models.size() + meshModels.size())); FolderNodes(k, "");
-            int nbi = 0; for (auto& kv : meshModels) nbi += IsBuiltin(kv.first);
-            ImGui::TextDisabled("by kind");
-            folder("Built from blocks", 3, "\tblocks", (int)models.models.size()); folder("Imported", 3, "\timported", (int)meshModels.size() - nbi); folder("Built in", 3, "\tbuiltin", nbi);
-            ImGui::TreePop();
-        }
-        if (ImGui::TreeNodeEx("Shapes", ImGuiTreeNodeFlags_SpanAvailWidth)) {
-            const Shapes& S = Shapes::get(); folder("All shapes", 2, "", S.count() - 1);
-            for (const std::string& c : S.categories()) { int n = 0; for (int i = 1; i < S.count(); i++) n += S.info(i).category == c; folder(c.c_str(), 2, c, n); }
+        if (ImGui::TreeNodeEx("Built in", ImGuiTreeNodeFlags_SpanAvailWidth)) {
+            if (ImGui::Selectable("  Models##bim", assetDir == "\tbuiltin/models")) { assetDir = "\tbuiltin/models"; assetFilterText.clear(); }
+            if (ImGui::Selectable("  Shapes##bis", assetDir == "\tbuiltin/shapes")) { assetDir = "\tbuiltin/shapes"; assetFilterText.clear(); }
             ImGui::TreePop();
         }
         ImGui::EndChild();
-        RunFolderAction();
         ImGui::SameLine();
-        // grid on the right
+        // ---- right: the way here, searching, the contents
         ImGui::BeginGroup();
-        ImGui::SetNextItemWidth(220 * ui); ImGui::InputTextWithHint("##search", "Search...", &assetSearch);
-        ImGui::SameLine(); ImGui::SetNextItemWidth(120 * ui); ImGui::SliderFloat("##size", &assetSize, 36, 128, "size %.0f");
-        ImGui::SameLine();
-        if (assetKind == 3) { if (ImGui::Button("Import models...")) ImportModelsDialog(); if (ImGui::IsItemHovered()) ImGui::SetTooltip("Blockbench (.bbmodel), .obj, glTF (.gltf / .glb), FBX (.fbx)"); }
-        else if (ImGui::Button("Import images...")) { auto f = PickImages(); if (!f.empty()) { importFiles = f; wantPopup = "Import images"; } }
-        ImGui::SameLine(); if (ImGui::Button("New block")) { NewBlock(); if (!assetCat.empty() && assetKind == 0) draft.category = assetCat; sel = Sel::Block; selIndex = 0; }
-        ImGui::SameLine(); ImGui::TextDisabled(assetKind == 0 ? "Click: build with it.  Right click: more." : assetKind == 1 ? "Click: look at it.  Right click: more." : assetKind == 3 ? "Click: place it in the world." : "Click: give the held block this shape.");
-        ImGui::BeginChild("grid", ImVec2(0, 0), ImGuiChildFlags_Borders);
-        float s = assetSize * ui, labelH = ImGui::GetTextLineHeight() + 2, sp = ImGui::GetStyle().ItemSpacing.x;
-        int cols = std::max(1, (int)((ImGui::GetContentRegionAvail().x + sp) / (s + sp))), n = 0;
-        std::string q = Lower(assetSearch);
-        const char* dragType = nullptr;   // tiles can be dragged onto a folder on the left
-        auto cell = [&](const char* id, const std::string& name, bool selected, ImVec2& p) {   // a tile with its name under it
-            if (n % cols) ImGui::SameLine(); n++;
-            ImGui::BeginGroup(); bool c = Tile(id, p, s, selected);
-            if (dragType) DragItem(dragType, name);
-            std::string lab = name; while (lab.size() > 1 && ImGui::CalcTextSize(lab.c_str()).x > s) lab.pop_back();
-            if (lab.size() < name.size() && lab.size() > 2) lab = lab.substr(0, lab.size() - 2) + "..";
-            ImGui::TextUnformatted(lab.c_str()); ImGui::EndGroup(); (void)labelH;
-            return c;
-        };
-        if (!assetCat.empty() && assetCat[0] != '\t' && assetKind != 2) {   // the folder shown, and its sub-folders as a way in
-            ImGui::TextDisabled("%s", assetCat.c_str()); ImGui::SameLine();
-            if (ImGui::SmallButton("Up")) assetCat = FolderTree::parent(assetCat);
+        {
+            if (ImGui::ArrowButton("##up", ImGuiDir_Up) && !assetDir.empty()) assetDir = builtinDir ? "" : FolderTree::parent(assetDir);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Up a folder (Backspace)");
+            ImGui::SameLine(); if (ImGui::SmallButton("Assets")) { assetDir.clear(); assetFilterText.clear(); } DropIntoFolder("");
+            if (builtinDir) { ImGui::SameLine(); ImGui::TextDisabled(">"); ImGui::SameLine(); ImGui::TextUnformatted(assetDir == "\tbuiltin/models" ? "Built in models" : "Built in shapes"); }
+            else if (!assetDir.empty()) {
+                std::string acc; std::stringstream ss(assetDir); std::string part;
+                while (std::getline(ss, part, '/')) {
+                    acc = FolderTree::join(acc, part); ImGui::SameLine(); ImGui::TextDisabled(">"); ImGui::SameLine(); ImGui::PushID(acc.c_str());
+                    if (ImGui::SmallButton(part.c_str())) assetDir = acc;
+                    DropIntoFolder(acc); ImGui::PopID();
+                }
+            }
+            float right = 220 * ui + 110 * ui + 190 * ui;
+            ImGui::SameLine(std::max(ImGui::GetCursorPosX() + 8, ImGui::GetContentRegionMax().x - right));
+            ImGui::SetNextItemWidth(210 * ui); ImGui::InputTextWithHint("##asearch", "Search (t:sound, t:model ...)", &assetFilterText);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Words in the name, and kinds: t:block t:texture t:model t:sound t:picture t:video t:enemy t:boss t:screen t:scan t:world t:prefab");
+            ImGui::SameLine(); ImGui::SetNextItemWidth(100 * ui);
+            std::string kindsLabel = assetKinds.empty() ? "All kinds" : assetKinds.size() == 1 ? assetTypePlural(*assetKinds.begin()) : std::to_string(assetKinds.size()) + " kinds";
+            if (ImGui::BeginCombo("##akinds", kindsLabel.c_str())) {
+                { bool all = assetKinds.empty(); if (ImGui::Checkbox("All kinds", &all) && all) assetKinds.clear(); }
+                for (int k = 0; k < (int)AssetType::COUNT; k++) { bool on = assetKinds.count((AssetType)k) > 0; if (ImGui::Checkbox(assetTypePlural((AssetType)k), &on)) { if (on) assetKinds.insert((AssetType)k); else assetKinds.erase((AssetType)k); } }
+                ImGui::EndCombo();
+            }
+            ImGui::SameLine(); if (ImGui::Button("Create")) ImGui::OpenPopup("acreate");
+            if (ImGui::BeginPopup("acreate")) { AssetCreateMenu(builtinDir ? "" : assetDir); ImGui::EndPopup(); }
+            ImGui::SameLine(); ImGui::SetNextItemWidth(std::max(50.f, ImGui::GetContentRegionAvail().x)); ImGui::SliderFloat("##asize", &assetSize, 24, 128, assetSize < 44 ? "list" : "size %.0f");
         }
-        if (assetKind == 0) {
-            dragType = "PRIM_BLOCK";
-            for (BlockId id = 1; id < reg.count(); id++) {
-                if (!reg.has(id)) continue; const BlockDef& d = reg.get(id);
-                if (!FolderTree::within(BlockFolderOf(id), assetCat)) continue;
-                if (!q.empty() && Lower(d.name).find(q) == std::string::npos) continue;
-                ImGui::PushID((int)id); ImVec2 p; bool hot = typeOf(hotbar[hotSel]) == id;
-                if (cell("b", d.name, sel == Sel::Block && selIndex == (int)id, p) && !ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
-                    hotbar[hotSel] = shapeOf(hotbar[hotSel]) && hot ? hotbar[hotSel] : id; Select(Sel::Block, (int)id);
-                }
-                if (hot) ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(p.x + s - 7, p.y + 7), 4, IM_COL32(120, 220, 255, 255));
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s\nFolder: %s", d.name.c_str(), d.category.c_str());
-                BlockIcon(ImGui::GetWindowDrawList(), id, ImVec2(p.x + s * 0.5f, p.y + s * 0.5f), s * 0.7f);
-                if (ImGui::BeginPopupContextItem("ctx")) {
-                    if (ImGui::MenuItem("Build with it")) hotbar[hotSel] = id;
-                    if (ImGui::MenuItem("Edit")) Select(Sel::Block, (int)id);
-                    if (ImGui::MenuItem("Duplicate")) { BlockDef c = d; c.name = reg.uniqueName(d.name + " copy"); BlockId nid = AIR; ChangeBlocks([&] { nid = reg.add(c); }); library.saveBlocks(reg); if (nid) Select(Sel::Block, (int)nid); }
-                    if (ImGui::BeginMenu("Move to folder")) {
-                        for (const std::string& c : assetFolders.blocks.all()) if (ImGui::MenuItem(c.c_str(), nullptr, c == BlockFolderOf(id))) { SetBlockFolder(id, c); editorOpen = false; }
-                        ImGui::EndMenu();
-                    }
-                    ImGui::Separator();
-                    if (ImGui::MenuItem("Delete...")) { deleteBlockAsk = id; wantPopup = "Delete block?"; }
-                    ImGui::EndPopup();
-                }
-                ImGui::PopID();
+        AssetQuery q = parseAssetQuery(assetFilterText); for (AssetType t : assetKinds) q.types.insert(t);
+        bool searching = !assetFilterText.empty();
+        ImGui::BeginChild("agrid", ImVec2(0, 0), ImGuiChildFlags_Borders);
+        bool gridFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+        bool list = assetSize < 44; float s = (list ? 22 : assetSize) * ui, sp = ImGui::GetStyle().ItemSpacing.x;
+        int cols = list ? 1 : std::max(1, (int)((ImGui::GetContentRegionAvail().x + sp) / (s + 12 * ui + sp))), n = 0;
+        float cellW = list ? ImGui::GetContentRegionAvail().x : s + 12 * ui;
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        bool anyClicked = false;
+        // one tile (or list row): returns its button's hover / click state through ImGui
+        auto tile = [&](const std::string& id, const std::string& label, const std::string& sub, bool picked, const std::function<void(ImVec2, float)>& pic, ImU32 kindCol) {
+            if (n % cols) ImGui::SameLine(); n++;
+            ImVec2 p = ImGui::GetCursorScreenPos(); float h = list ? s : s + ImGui::GetTextLineHeight() * 1.2f + 4;
+            ImGui::PushID(id.c_str());
+            ImGui::InvisibleButton("##t", ImVec2(cellW, h), ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
+            bool hov = ImGui::IsItemHovered();
+            if (picked || hov) dl->AddRectFilled(p, ImVec2(p.x + cellW, p.y + h), picked ? IM_COL32(70, 100, 160, 200) : IM_COL32(255, 255, 255, 18), 4.f);
+            ImVec2 pp = list ? p : ImVec2(p.x + (cellW - s) * 0.5f, p.y + 2);
+            dl->PushClipRect(pp, ImVec2(pp.x + s, pp.y + s), true); pic(pp, s); dl->PopClipRect();
+            if (!list) dl->AddLine(ImVec2(pp.x + 4, pp.y + s + 1), ImVec2(pp.x + s - 4, pp.y + s + 1), kindCol, 2.f);
+            else dl->AddRectFilled(ImVec2(p.x + s + 4, p.y + s * 0.3f), ImVec2(p.x + s + 7, p.y + s * 0.7f), kindCol);
+            if (assetRename != id) {
+                ImVec2 tp = list ? ImVec2(p.x + s + 12, p.y + (s - ImGui::GetTextLineHeight()) * 0.5f) : ImVec2(p.x + 2, p.y + s + 4);
+                float maxW = list ? cellW * 0.5f : cellW - 4; std::string lab = label;
+                if (ImGui::CalcTextSize(lab.c_str()).x > maxW) { while (lab.size() > 1 && ImGui::CalcTextSize((lab + "..").c_str()).x > maxW) lab.pop_back(); lab += ".."; }
+                float tw = ImGui::CalcTextSize(lab.c_str()).x; if (!list) tp.x = p.x + (cellW - tw) * 0.5f;
+                dl->AddText(tp, IM_COL32(225, 228, 235, 255), lab.c_str());
+                if (list && !sub.empty()) dl->AddText(ImVec2(p.x + s + 12 + cellW * 0.5f, tp.y), IM_COL32(150, 155, 165, 255), sub.c_str());
             }
-        } else if (assetKind == 1) {
-            dragType = "PRIM_TEX";
-            for (int t = 1; t < (int)reg.textureCount(); t++) {
-                const TexImage& im = reg.image(t);
-                if (!FolderTree::within(assetFolders.folderOf(assetFolders.textureIn, im.name), assetCat)) continue;
-                if (!q.empty() && Lower(im.name).find(q) == std::string::npos) continue;
-                ImGui::PushID(t); ImVec2 p; std::string name = im.name;
-                if (cell("t", name, sel == Sel::Texture && selIndex == t, p)) Select(Sel::Texture, t);
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s  (%d x %d%s)", name.c_str(), im.w, im.h, im.transparent ? ", see-through" : "");
-                TextureImage(t, p, s, 4);
-                if (ImGui::BeginPopupContextItem("ctx")) {
-                    if (ImGui::MenuItem("Make a block")) MakeBlockFrom(name, ImportAs::Blocks);
-                    if (ImGui::MenuItem("Make a cross plane (like flowers)")) MakeBlockFrom(name, ImportAs::CrossPlanes);
-                    if (ImGui::MenuItem("Make a flat plane (like ladders)")) MakeBlockFrom(name, ImportAs::FlatPlanes);
-                    if (ImGui::BeginMenu("Move to folder")) {
-                        std::string cur = assetFolders.folderOf(assetFolders.textureIn, name);
-                        if (ImGui::MenuItem("(no folder)", nullptr, cur.empty())) { assetFolders.textureIn[name] = ""; SaveAssetFolders(); }
-                        for (const std::string& c : assetFolders.textures.all()) if (ImGui::MenuItem(c.c_str(), nullptr, c == cur)) { assetFolders.textureIn[name] = c; SaveAssetFolders(); }
-                        ImGui::EndMenu();
-                    }
-                    ImGui::Separator();
-                    if (ImGui::MenuItem("Delete texture...")) { deleteTexAsk = name; wantPopup = "Delete texture?"; }
-                    ImGui::EndPopup();
-                }
-                ImGui::PopID();
-            }
-        } else if (assetKind == 3) {
-            int mi = 0; dragType = "PRIM_MODEL";
-            for (const std::string& name : AllModelNames()) {
-                mi++; bool mesh = IsMesh(name);
-                if (assetCat == "\tblocks" && mesh) continue; if (assetCat == "\timported" && (!mesh || IsBuiltin(name))) continue; if (assetCat == "\tbuiltin" && !IsBuiltin(name)) continue;
-                if (!assetCat.empty() && assetCat[0] != '\t' && !FolderTree::within(assetFolders.folderOf(assetFolders.modelIn, name), assetCat)) continue;
-                if (!q.empty() && Lower(name).find(q) == std::string::npos) continue;
-                FrameRef f = ModelNamed(name);
-                ImGui::PushID(mi); ImVec2 p;
-                if (cell("m", name, sel == Sel::Model && selModel == name, p) && !ImGui::IsMouseReleased(ImGuiMouseButton_Right)) { StartPlacing(name); sel = Sel::Model; selModel = name; }
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s\n%.2f x %.2f x %.2f blocks%s\nClick to place it, double-click for the 3D viewer", name.c_str(), f->sx, f->sy, f->sz, mesh ? " (imported)" : "");
-                if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) { viewerModel = name; viewerOpen = true; viewerFit = true; viewerClip = -1; placing.clear(); }
-                ModelIcon(ImGui::GetWindowDrawList(), name, ImVec2(p.x + s * 0.5f, p.y + s * 0.5f), s * 0.8f);
-                if (ImGui::BeginPopupContextItem("ctx")) {
-                    if (ImGui::MenuItem("Place it")) StartPlacing(name);
-                    if (ImGui::MenuItem("3D viewer")) { viewerModel = name; viewerOpen = true; viewerFit = true; viewerClip = -1; }
-                    if (ImGui::MenuItem("Show in the Inspector")) { sel = Sel::Model; selModel = name; }
-                    if (ImGui::BeginMenu("Move to folder")) {
-                        std::string cur = assetFolders.folderOf(assetFolders.modelIn, name);
-                        if (ImGui::MenuItem("(no folder)", nullptr, cur.empty())) { assetFolders.modelIn[name] = ""; SaveAssetFolders(); }
-                        for (const std::string& c : assetFolders.models.all()) if (ImGui::MenuItem(c.c_str(), nullptr, c == cur)) { assetFolders.modelIn[name] = c; SaveAssetFolders(); }
-                        ImGui::EndMenu();
-                    }
-                    ImGui::EndPopup();
-                }
-                ImGui::PopID();
-            }
-        } else {
+            ImGui::PopID();
+            return hov;
+        };
+        ImVec2 renameAt(0, 0); float renameW = 0; bool renameShown = false;
+        auto renameBox = [&](ImVec2 at, float w) { renameAt = at; renameW = w; renameShown = true; };   // (drawn after the tiles, over the name)
+        auto pickClick = [&](const std::string& id) {   // Ctrl: add / take away; Shift: add
+            if (io.KeyCtrl) { if (!assetPicks.erase(id)) assetPicks.insert(id); }
+            else if (io.KeyShift) assetPicks.insert(id);
+            else assetPicks = { id };
+            assetFocus = id; anyClicked = true;
+        };
+        if (builtinDir && assetDir == "\tbuiltin/shapes") {   // the shapes blocks can be built in
             const Shapes& S = Shapes::get(); BlockId held = reg.has(hotbar[hotSel]) ? hotbar[hotSel] : reg.find("stone");
             int cur = held ? resolveShape(held, reg.get(held)) : 0;
             for (int id = 1; id < S.count() && held; id++) {
-                const ShapeInfo& si = S.info(id);
-                if (!assetCat.empty() && si.category != assetCat && q.empty()) continue;
-                if (!q.empty() && Lower(si.name).find(q) == std::string::npos) continue;
-                ImGui::PushID(id); ImVec2 p;
-                if (cell("s", si.name, id == cur, p)) { if (reg.has(hotbar[hotSel])) hotbar[hotSel] = makeBlock(typeOf(hotbar[hotSel]), id); manualRot = false; Select(Sel::Shape, id); }
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", si.name.c_str());
-                ShapeIcon(ImGui::GetWindowDrawList(), reg.get(held), makeBlock(typeOf(held), id), ImVec2(p.x + s * 0.5f, p.y + s * 0.5f), s * 0.72f);
-                ImGui::PopID();
+                const ShapeInfo& si = S.info(id); if (searching && Lower(si.name).find(Lower(assetFilterText)) == std::string::npos) continue;
+                bool h = tile("shape" + std::to_string(id), si.name, si.category, id == cur, [&](ImVec2 p, float sz) { ShapeIcon(dl, reg.get(held), makeBlock(typeOf(held), id), ImVec2(p.x + sz * 0.5f, p.y + sz * 0.5f), sz * 0.72f); }, IM_COL32(150, 150, 150, 255));
+                if (h && ImGui::IsMouseClicked(0)) { if (reg.has(hotbar[hotSel])) hotbar[hotSel] = makeBlock(typeOf(hotbar[hotSel]), id); manualRot = false; Select(Sel::Shape, id); }
+                if (h) ImGui::SetTooltip("%s\nClick: build with this shape", si.name.c_str());
+            }
+        } else {
+            // folders first (not while searching)
+            std::vector<std::string> folderTiles; if (!searching && !builtinDir) folderTiles = assetTree.folders.children(assetDir);
+            for (const std::string& f : folderTiles) {
+                std::string id = "folder:" + f; bool picked = assetPicks.count(id) > 0;
+                bool h = tile(id, FolderTree::leaf(f), std::to_string(assetTree.countWithin(f)) + " inside", picked, [&](ImVec2 p, float sz) { FolderIcon(dl, ImVec2(p.x + sz * 0.5f, p.y + sz * 0.5f), sz, picked); }, IM_COL32(232, 186, 88, 255));
+                if (h && ImGui::IsMouseClicked(0)) pickClick(id);
+                if (h && ImGui::IsMouseDoubleClicked(0)) { assetDir = f; assetPicks.clear(); }
+                ImVec2 at = ImGui::GetItemRectMin();
+                if (h && !ImGui::IsMouseDragging(0)) ImGui::SetTooltip("%s\n%d inside. Double-click: open. Drop things here to move them in.", f.c_str(), assetTree.countWithin(f));
+                if (ImGui::BeginDragDropSource()) { std::string d; for (const std::string& x : AssetPayload(id)) d += x + "\n"; ImGui::SetDragDropPayload("PRIM_ASSET", d.c_str(), d.size() + 1); ImGui::Text("Folder %s", FolderTree::leaf(f).c_str()); ImGui::EndDragDropSource(); }
+                DropIntoFolder(f);
+                if (ImGui::BeginPopupContextItem(("##fc" + f).c_str())) { AssetFolderMenu(f); ImGui::EndPopup(); }
+                if (assetRename == id) renameBox(list ? ImVec2(at.x + s + 12, at.y) : ImVec2(at.x, at.y + s + 2), list ? cellW * 0.5f : cellW);
+            }
+            // the assets
+            for (const AssetEntry& e : assetList) {
+                if (builtinDir) { if (!e.builtin || e.id.type != AssetType::Model) continue; if (searching && !assetMatches(q, e.id.type, e.name)) continue; }
+                else {
+                    if (e.builtin) continue;
+                    std::string where = assetTree.folderOf(e.id);
+                    if (searching || !assetKinds.empty()) { if (!assetMatches(q, e.id.type, e.name)) continue; if (!searching && where != assetDir) continue; if (searching && assetHere && !FolderTree::within(where, assetDir)) continue; }
+                    else if (where != assetDir) continue;
+                }
+                std::string id = e.id.str(); bool picked = assetPicks.count(id) > 0;
+                std::string sub = std::string(assetTypeName(e.id.type)) + (searching ? "   in " + (assetTree.folderOf(e.id).empty() ? std::string("Assets") : assetTree.folderOf(e.id)) : "");
+                bool h = tile(id, e.name, sub, picked, [&](ImVec2 p, float sz) { AssetThumb(dl, e, p, sz); }, AssetKindColor(e.id.type));
+                if (h && ImGui::IsMouseReleased(0) && !ImGui::IsMouseDragPastThreshold(0)) { pickClick(id); AssetSelect(e); }
+                if (h && ImGui::IsMouseDoubleClicked(0)) AssetOpen(e);
+                if (h && ImGui::IsMouseClicked(1) && !assetPicks.count(id)) { assetPicks = { id }; assetFocus = id; }
+                if (h && !ImGui::IsMouseDragging(0)) {
+                    std::string tip = e.name + "\n" + assetTypeName(e.id.type) + (e.builtin ? " (built in)" : "   in " + (assetTree.folderOf(e.id).empty() ? std::string("Assets") : assetTree.folderOf(e.id)));
+                    if (e.id.type == AssetType::Sound) tip += "\n" + std::to_string(SoundSeconds(e.id.key)).substr(0, 4) + " s. Double-click: listen";
+                    else if (e.id.type == AssetType::Model || e.id.type == AssetType::Enemy || e.id.type == AssetType::Prefab) tip += "\nDrag it into the viewport to place it";
+                    ImGui::SetTooltip("%s", tip.c_str());
+                }
+                ImVec2 mn = ImGui::GetItemRectMin();
+                DragAssets(id, e.name);
+                ImGui::PushID(id.c_str()); if (ImGui::BeginPopupContextItem("##ac")) { AssetMenu(e); ImGui::EndPopup(); } ImGui::PopID();
+                if (assetRename == id) renameBox(list ? ImVec2(mn.x + s + 12, mn.y) : ImVec2(mn.x, mn.y + s + 2), list ? cellW * 0.5f : cellW);
             }
         }
-        if (!n) ImGui::TextDisabled(q.empty() ? "Nothing here yet." : "Nothing is called that.");
+        if (n == 0) ImGui::TextDisabled(searching ? "Nothing is called that." : builtinDir ? "Nothing here." : "An empty folder. Drop files from Explorer here, drag assets in, or right-click: Create.");
+        // the empty space: a click picks nothing, right-click creates, things can be dropped onto it
+        ImVec2 rest = ImGui::GetContentRegionAvail(); if (rest.y < 40) rest.y = 40;
+        ImGui::InvisibleButton("##aempty", ImVec2(std::max(1.f, rest.x), rest.y), ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
+        if (ImGui::IsItemClicked(0) && !anyClicked) assetPicks.clear();
+        if (!builtinDir) DropIntoFolder(assetDir);
+        if (renameShown) {   // typing a new name, where the name was
+            ImVec2 keep = ImGui::GetCursorScreenPos(); ImGui::SetCursorScreenPos(renameAt); ImGui::SetNextItemWidth(renameW);
+            if (assetRenameFocus) ImGui::SetKeyboardFocusHere();
+            bool done = ImGui::InputText("##ren", &assetRenameText, ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+            bool esc = ImGui::IsKeyPressed(ImGuiKey_Escape), left = ImGui::IsItemDeactivated() && !assetRenameFocus;
+            assetRenameFocus = false;
+            if (esc) assetRename.clear();
+            else if (done || left) { std::string w2 = assetRename; assetRename.clear(); RenameAsset(w2, assetRenameText); }
+            ImGui::SetCursorScreenPos(keep);
+        }
+        if (!builtinDir && ImGui::BeginPopupContextItem("##aspace")) {
+            if (ImGui::BeginMenu("Create")) { AssetCreateMenu(assetDir); ImGui::EndMenu(); }
+            if (ImGui::MenuItem("Import files...")) { auto f = PickFiles("Everything the engine knows\0*.png;*.jpg;*.jpeg;*.gif;*.bmp;*.wav;*.mp3;*.m4a;*.wma;*.flac;*.mp4;*.wmv;*.avi;*.mov;*.bbmodel;*.obj;*.gltf;*.glb;*.fbx\0All files\0*.*\0", "Import into the Assets"); if (!f.empty()) ImportInto(f, assetDir); }
+            if (ImGui::MenuItem("Show the project folder in Explorer")) ShowInExplorer(projectDir);
+            ImGui::EndPopup();
+        }
+        // keys (while the panel has the keyboard)
+        if (gridFocused && assetRename.empty() && !io.WantTextInput) {
+            std::string one = assetPicks.size() == 1 ? *assetPicks.begin() : assetFocus;
+            if (ImGui::IsKeyPressed(ImGuiKey_F2) && !one.empty()) StartRename(one);
+            if (ImGui::IsKeyPressed(ImGuiKey_Delete) && !assetPicks.empty()) { assetAskDelete = { assetPicks.begin(), assetPicks.end() }; wantPopup = "Delete from the Assets?"; }
+            if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_D)) for (const std::string& x : std::vector<std::string>(assetPicks.begin(), assetPicks.end())) if (x.rfind("folder:", 0) != 0) DuplicateAsset(x);
+            if (ImGui::IsKeyPressed(ImGuiKey_Enter) && !one.empty()) { if (one.rfind("folder:", 0) == 0) assetDir = one.substr(7); else if (const AssetEntry* e = AssetFind(one)) AssetOpen(*e); }
+            if (ImGui::IsKeyPressed(ImGuiKey_Backspace) && !assetDir.empty()) assetDir = builtinDir ? "" : FolderTree::parent(assetDir);
+            if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_A)) { assetPicks.clear(); for (const AssetEntry& e : assetList) if (!e.builtin && assetTree.folderOf(e.id) == assetDir) assetPicks.insert(e.id.str()); }
+        }
         ImGui::EndChild();
         ImGui::EndGroup();
         ImGui::End();
+    }
+    void AssetPopups() {   // (asked from the main popups place)
+        float ui = settings.uiScale;
+        if (ImGui::BeginPopupModal("Delete from the Assets?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            int folders = 0; for (const std::string& s : assetAskDelete) folders += s.rfind("folder:", 0) == 0;
+            ImGui::Text("Delete %d thing%s?", (int)assetAskDelete.size(), assetAskDelete.size() == 1 ? "" : "s");
+            ImGui::BeginChild("dl", ImVec2(420 * ui, std::min(220.f * ui, (float)assetAskDelete.size() * ImGui::GetTextLineHeightWithSpacing() + 8)), ImGuiChildFlags_Borders);
+            for (const std::string& s : assetAskDelete) {
+                if (s.rfind("folder:", 0) == 0) { ImGui::Text("Folder %s  (what is inside moves up a folder)", s.substr(7).c_str()); continue; }
+                const AssetEntry* e = AssetFind(s); ImGui::Text("%s  -  %s", e ? e->name.c_str() : s.c_str(), e ? assetTypeName(e->id.type) : "");
+            }
+            ImGui::EndChild();
+            ImGui::TextDisabled("Files (sounds, pictures, videos, imported models, prefabs) go into the project's _trash folder.\nBlocks still in worlds turn into \"missing\" blocks; enemy types and models placed in worlds are kept.");
+            if (ImGui::Button("Delete", ImVec2(140 * ui, 0))) {
+                int done = 0; std::string fail;
+                for (const std::string& s : assetAskDelete) {
+                    if (s.rfind("folder:", 0) == 0) { assetTree.removeFolder(s.substr(7)); if (FolderTree::within(assetDir, s.substr(7))) assetDir = FolderTree::parent(s.substr(7)); done++; continue; }
+                    AssetId a; if (!AssetId::parse(s, a)) continue; std::string why;
+                    if (DeleteAsset(a, why)) { assetTree.forget(a); done++; if (sel == Sel::Asset && selAsset == a) sel = Sel::None; }
+                    else if (!why.empty()) { const AssetEntry* e = AssetFind(s); fail += (fail.empty() ? "" : ", ") + (e ? e->name : a.key) + ": " + why; }
+                }
+                SaveAssetTree(); assetPicks.clear(); RefreshAssets(true);
+                Toast("Deleted " + std::to_string(done) + (fail.empty() ? "" : ". Kept " + fail)); ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine(); if (ImGui::Button("Cancel", ImVec2(140 * ui, 0))) ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+        }
+        if (ImGui::BeginPopupModal("Import pictures as", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::Text("%d picture%s: what are they for?", (int)assetPicImport.size(), assetPicImport.size() == 1 ? "" : "s");
+            if (ImGui::Button("Block textures", ImVec2(260 * ui, 0))) { assetNextIn[AssetType::Texture] = assetPicImportDir; importFiles = assetPicImport; assetPicImport.clear(); ImGui::CloseCurrentPopup(); wantPopup = "Import images"; }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Textures for blocks (pixel art, tiles); you can make blocks from them right away.");
+            if (ImGui::Button("Pictures (screens, menus, intros)", ImVec2(260 * ui, 0))) {
+                std::error_code ec; for (const std::string& p : assetPicImport) { std::string name = fs::u8path(p).filename().u8string(); fs::copy_file(fs::u8path(p), fs::u8path(ScreensDir() + "/" + name), fs::copy_options::overwrite_existing, ec); pics.erase(name); }
+                AdoptNow(assetPicImportDir); assetPicImport.clear(); ImGui::CloseCurrentPopup();
+            }
+            if (ImGui::Button("HUD pictures", ImVec2(260 * ui, 0))) {
+                std::error_code ec; fs::create_directories(fs::u8path(projectDir + "/hud"), ec);
+                for (const std::string& p : assetPicImport) { std::string name = fs::u8path(p).filename().u8string(); fs::copy_file(fs::u8path(p), fs::u8path(projectDir + "/hud/" + name), fs::copy_options::overwrite_existing, ec); hudImages.erase(name); }
+                AdoptNow(assetPicImportDir); assetPicImport.clear(); ImGui::CloseCurrentPopup();
+            }
+            if (ImGui::Button("Cancel", ImVec2(260 * ui, 0))) { assetPicImport.clear(); ImGui::CloseCurrentPopup(); }
+            ImGui::EndPopup();
+        }
+    }
+    // ---- the Inspector for an asset (the kinds without an inspector of their own)
+    void AssetInspector() {
+        const AssetEntry* e = AssetFind(selAsset.str()); if (!e) { Hint("Pick something in the Assets."); return; }
+        float ui = settings.uiScale; ImDrawList* dl = ImGui::GetWindowDrawList(); const std::string& k = e->id.key;
+        ImGui::SeparatorText(assetTypeName(e->id.type));
+        float s = std::min(ImGui::GetContentRegionAvail().x, 180 * ui); ImVec2 p = ImGui::GetCursorScreenPos();
+        dl->AddRectFilled(p, ImVec2(p.x + s, p.y + s), IM_COL32(30, 32, 38, 255), 4.f);
+        if (e->id.type == AssetType::Video) { int iw = 0, ih = 0; ImageFit(dl, VideoAt(FileOfKey(e->id), uiClock, true, &iw, &ih), iw, ih, p, s, 4); }   // (plays)
+        else AssetThumb(dl, *e, p, s);
+        ImGui::Dummy(ImVec2(s, s));
+        if (AssetRenamable(e->id)) {
+            if (inspRenameOf != e->id.str()) { inspRenameText = e->name; inspRenameOf = e->id.str(); }
+            Prop("Name"); ImGui::InputText("##aname", &inspRenameText);
+            if (ImGui::IsItemDeactivatedAfterEdit() && inspRenameText != e->name) { std::string w = e->id.str(), nn = inspRenameText; inspRenameOf.clear(); RenameAsset(w, nn); return; }
+            if (!ImGui::IsItemActive() && inspRenameText != e->name) inspRenameText = e->name;   // (renamed somewhere else)
+        } else ImGui::TextUnformatted(e->name.c_str());
+        Prop("Folder"); ImGui::TextUnformatted(assetTree.folderOf(e->id).empty() ? "Assets" : ("Assets/" + assetTree.folderOf(e->id)).c_str());
+        { std::error_code ec; std::string path = AssetPath(e->id); auto sz = fs::is_regular_file(fs::u8path(path), ec) ? fs::file_size(fs::u8path(path), ec) : 0;
+          if (sz) { Prop("File"); ImGui::Text("%s  (%.1f KB)", fs::u8path(path).filename().u8string().c_str(), sz / 1024.0); } }
+        switch (e->id.type) {
+        case AssetType::Sound: {
+            auto d = LoadSound(k);
+            if (d) Hint("%.2f s, %s, %d Hz", d->seconds(), d->channels == 1 ? "mono" : d->channels == 2 ? "stereo" : "more channels", d->rate);
+            if (ImGui::Button("Listen")) { SoundUse u; u.file = k; u.pitchVar = 0; PlaySound(u); }
+            ImGui::SameLine(); if (ImGui::Button("Stop all sounds")) { for (Voice& v : voices) if (v.v && v.tag != TAG_MUSIC) v.v->Stop(); }
+            Hint("Drag it onto any sound field (enemies, bosses, screens, weapons ...) to use it there.");
+            break; }
+        case AssetType::Picture: {
+            int iw = 0, ih = 0; if (k.rfind("screens/", 0) == 0) { PictureAt(FileOfKey(e->id), 0, true, &iw, &ih); Hint("%d x %d pixels. For screens (menus, intros): drag it onto a picture field.", iw, ih); }
+            else Hint("A HUD picture (Player editor > HUD).");
+            break; }
+        case AssetType::Video: Hint("For screens: a background, or an intro movie. Drag it onto a video field."); break;
+        case AssetType::Enemy: {
+            const EnemyType* t = enemies.find(std::atoi(k.c_str())); if (!t) break;
+            Hint("%s, %.0f health, hurts %.0f%s. Model: %s", enemyMoveName(t->move), t->health, t->touchDamage, t->shoots ? ", shoots" : "", t->model.c_str());
+            if (ImGui::Button("Edit (Player editor)")) AssetOpen(*e);
+            if (FlowButton("Place one")) StartPlacingEnemy(t->id);
+            if (bosses.forType(t->id)) Hint("It is a boss.");
+            break; }
+        case AssetType::Boss: {
+            const BossDef* b = bosses.forType(std::atoi(k.c_str())); if (!b) break;
+            Hint("%.0f health, %d phase%s, %d weak point%s / armour. %s", b->health, (int)b->phases.size(), b->phases.size() == 1 ? "" : "s", (int)b->parts.size(), b->parts.size() == 1 ? "" : "s", b->arena.empty() ? "No arena." : ("Arena: " + b->arena).c_str());
+            if (ImGui::Button("Edit (Player editor)")) AssetOpen(*e);
+            if (FlowButton("Fight it now")) FightNow(b->enemyType);
+            if (FlowButton("Place one")) StartPlacingEnemy(b->enemyType);
+            break; }
+        case AssetType::Screen: {
+            int i = screens.find(k); if (i < 0) break; const mc::Screen& sc = screens.screens[i];
+            Hint("%s. %d item%s.%s", screenRoleName(sc.role), (int)sc.items.size(), sc.items.size() == 1 ? "" : "s", sc.duration > 0 ? (" Goes on after " + std::to_string((int)sc.duration) + " s.").c_str() : "");
+            if (ImGui::Button("Edit (Screens)")) AssetOpen(*e);
+            break; }
+        case AssetType::Scan: {
+            ScanDef* d = scanLib.find(std::atoi(k.c_str())); if (!d) break; bool ch = false;
+            Prop("Category"); ch |= ImGui::InputText("##scat", &d->category);
+            ImGui::TextDisabled("Text"); ch |= ImGui::InputTextMultiline("##stext", &d->text, ImVec2(-1, 110 * ui));
+            if (ch) SaveScans();
+            break; }
+        case AssetType::World:
+            Hint(k == CurrentWorld() ? "The world that is open now." : "Double-click (or Open) to open it.");
+            if (k != CurrentWorld() && !playMode && ImGui::Button("Open")) AssetOpen(*e);
+            break;
+        case AssetType::Prefab: {
+            const Prefab* pf = PrefabNamed(k); if (!pf) break;
+            Hint("%d object%s. Placing it puts copies of them (with all their settings) where you click; R turns them.", (int)pf->objects.size(), pf->objects.size() == 1 ? "" : "s");
+            for (size_t i = 0; i < pf->objects.size() && i < 12; i++) ImGui::BulletText("%s", pf->objects[i].name.c_str());
+            if (ImGui::Button("Place it")) StartPlacingPrefab(k);
+            bool objPicked = sel == Sel::Object && selIndex >= 0 && selIndex < (int)objects.size(); (void)objPicked;
+            break; }
+        default: break;
+        }
+        ImGui::Spacing();
+        if (ImGui::Button("Find where it is used")) { assetUses = AssetUsages(e->id); assetUsesOf = e->id.str(); }
+        if (FlowButton("Show in Explorer")) ShowInExplorer(AssetPath(e->id));
+        bool fav = assetTree.favourites.count(e->id.str()) > 0;
+        if (FlowButton(fav ? "Not a favourite" : "Favourite")) { if (fav) assetTree.favourites.erase(e->id.str()); else assetTree.favourites.insert(e->id.str()); SaveAssetTree(); }
+        if (assetUsesOf == e->id.str()) {
+            ImGui::SeparatorText("Used in");
+            if (assetUses.empty()) Hint("Nowhere: nothing uses it.");
+            for (const std::string& u : assetUses) ImGui::BulletText("%s", u.c_str());
+        }
     }
     // ---- the viewport: the 3D picture inside a panel
     void Viewport() {
@@ -10281,6 +11075,7 @@ struct App {
         ImVec2 avail = ImGui::GetContentRegionAvail(), p = ImGui::GetCursorScreenPos();
         viewSize = avail; vx = p.x; vy = p.y;
         ImGui::Image((ImTextureID)(intptr_t)sceneSRV.Get(), ImVec2(std::max(1.f, avail.x), std::max(1.f, avail.y)));
+        if (!playMode) ViewportDrop();   // models, enemies, prefabs dragged in from the Assets
         if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !captured) captureNext = true;
         ImDrawList* dl = ImGui::GetWindowDrawList();
         dl->PushClipRect(p, ImVec2(p.x + avail.x, p.y + avail.y), true);
@@ -10305,6 +11100,7 @@ struct App {
     // ---- questions (import, delete)
     void Popups() {
         if (wantPopup) { ImGui::OpenPopup(wantPopup); wantPopup = nullptr; }
+        AssetPopups();
         float ui = settings.uiScale;
         auto buttons = [&](const char* yes, bool enabled) {   // [yes] [Cancel]; true when yes was clicked
             ImGui::BeginDisabled(!enabled); bool y = ImGui::Button(yes, ImVec2(140 * ui, 0)) || (enabled && ImGui::IsKeyPressed(ImGuiKey_Enter)); ImGui::EndDisabled();
