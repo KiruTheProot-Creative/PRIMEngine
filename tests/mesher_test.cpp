@@ -1,5 +1,8 @@
 // Mesher tests: hidden faces, glass, corner shading, winding, edges of the loaded area, worker threads.
 #include "../src/world/mesher.h"
+#include "../src/world/visibility.h"
+#include <set>
+#include <map>
 #include "../src/world/shapes.h"
 #include <chrono>
 #include <cmath>
@@ -93,6 +96,37 @@ int main() {
         BlockId stairsLog = makeBlock(log, Shapes::get().find("stairs"), tip);
         t.set(4, 4, 4, stairsLog); ChunkMesh sm = meshOf(t, reg, { 0, 0, 0 }); int px = 0; for (const Vtx& v : sm.opaque.v) if (faceOf(v) == F_PX && (int)v.layer % 16384 == ld.tex[F_PY]) px++;
         CHECK(Shapes::get().find("stairs") > 0 && px > 0, "shapes turn their textures too (a tipped log stair shows rings toward +X)");
+    }
+    {   // cave culling: which sides of a chunk are joined, and the walk from the camera
+        printf("\ncave culling\n");
+        std::vector<uint8_t> sol(CS3, 0);
+        CHECK(chunkSeeMask(sol.data()) == SEE_ALL, "an empty chunk: every side joined");
+        std::fill(sol.begin(), sol.end(), 1); CHECK(chunkSeeMask(sol.data()) == 0, "a solid chunk: nothing joined");
+        for (int y = 0; y < CS; y++) for (int z = 0; z < CS; z++) for (int x = 0; x < CS; x++) sol[Chunk::idx(x, y, z)] = y < 8 ? 1 : 0;   // solid floor, air above
+        uint16_t f = chunkSeeMask(sol.data());
+        CHECK(seeConnects(f, 0, 1) && seeConnects(f, 0, 3) && seeConnects(f, 4, 5) && !seeConnects(f, 2, 3) && !seeConnects(f, 2, 0), "half solid (the bottom): the sides and the top are joined, the bottom with nothing");
+        std::fill(sol.begin(), sol.end(), 1); for (int x = 0; x < CS; x++) sol[Chunk::idx(x, 8, 8)] = 0;   // a tunnel along X
+        f = chunkSeeMask(sol.data()); CHECK(f == (1u << seePair(0, 1)), "a tunnel along X: only -X with +X");
+        int pairs = 0; std::set<int> bits; for (int a = 0; a < 6; a++) for (int b = a + 1; b < 6; b++) { bits.insert(seePair(a, b)); pairs++; }
+        CHECK(pairs == 15 && bits.size() == 15 && *bits.rbegin() == 14, "15 side pairs, 15 bits");
+
+        // a world of chunks: open air above y >= 0, solid below; a sealed cave room deep down; a shaft down to a second cave
+        std::map<std::tuple<int, int, int>, uint16_t> masks;
+        auto see = [&](I3 c) -> uint16_t { auto it = masks.find({ c.x, c.y, c.z }); if (it != masks.end()) return it->second; return c.y >= 0 ? SEE_ALL : 0; };
+        auto all = [](I3) { return true; };
+        std::vector<I3> vis; auto has = [&](I3 c) { for (const I3& v : vis) if (v.x == c.x && v.y == c.y && v.z == c.z) return true; return false; };
+        masks[{ 3, -3, 0 }] = 0;                                    // (a room sealed in rock: solid around it)
+        visibleChunks({ 0, 1, 0 }, 6, 4, see, all, vis);
+        CHECK(has({ 5, 1, 2 }) && has({ 0, 0, 0 }) && !has({ 0, -2, 0 }) && !has({ 3, -3, 0 }), "standing in the open: the surface chunks show, the rock and the cave under it do not (%d of %d)", (int)vis.size(), 13 * 13 * 9);
+        // a shaft: chunk (0,-1,0) joins top and bottom, (0,-2,0) is a cave joined on all sides with (1,-2,0) open too
+        masks[{ 0, -1, 0 }] = (uint16_t)(1u << seePair(2, 3)); masks[{ 0, -2, 0 }] = SEE_ALL; masks[{ 1, -2, 0 }] = SEE_ALL;
+        visibleChunks({ 0, 1, 0 }, 6, 4, see, all, vis);
+        CHECK(has({ 0, -1, 0 }) && has({ 0, -2, 0 }) && has({ 1, -2, 0 }) && has({ 0, -3, 0 }) && !has({ 3, -3, 0 }) && !has({ 4, -2, 0 }), "looking down a shaft: the shaft, the cave at its bottom and what touches it show; the sealed room still not");
+        visibleChunks({ 3, -3, 0 }, 6, 4, see, all, vis);
+        CHECK(vis.size() == 7 && has({ 3, -3, 0 }) && has({ 4, -3, 0 }) && !has({ 0, 1, 0 }), "standing inside the sealed room: only it and the rock right around it");
+        auto front = [](I3 c) { return c.z >= 0; };
+        visibleChunks({ 0, 1, 0 }, 6, 4, see, front, vis);
+        CHECK(has({ 0, 1, 4 }) && !has({ 0, 1, -3 }) && has({ 0, 1, 0 }), "the view: chunks behind you are not walked to");
     }
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
     return fails ? 1 : 0;

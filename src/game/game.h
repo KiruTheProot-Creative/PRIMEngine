@@ -53,6 +53,7 @@ struct Settings {
     float volWeapons = 1, volMovement = 1, volEnemies = 1, volWorld = 1;   // sound groups (times soundVolume, the master)
     bool invertY = false;      // the mouse: up looks down
     int lockMode = 0;          // lock-on: 0 as the game says, 1 hold the button, 2 a press locks / the next lets go
+    bool caveCulling = true;   // chunks hidden behind walls / in rock are not drawn
     KeyBinds keys;
     bool load(const std::string& path);
     bool save(const std::string& path) const;

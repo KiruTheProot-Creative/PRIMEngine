@@ -21,7 +21,7 @@ Field field(Settings& s, const std::string& k) {
     else if (k == "swaying") r.b = &s.swaying; else if (k == "hud_glow") r.b = &s.hudGlow;
     else if (k == "bumps") r.f = &s.bumps; else if (k == "coat") r.f = &s.coat; else if (k == "materials") r.b = &s.materials; else if (k == "guess_materials") r.b = &s.guessMaterials;
     else if (k == "time_of_day") r.f = &s.timeOfDay; else if (k == "day_cycle") r.b = &s.dayCycle; else if (k == "block_preview") r.b = &s.blockPreview;
-    else if (k == "sensitivity") r.f = &s.mouseSensitivity; else if (k == "invert_y") r.b = &s.invertY; else if (k == "lock_mode") r.i = &s.lockMode;
+    else if (k == "sensitivity") r.f = &s.mouseSensitivity; else if (k == "invert_y") r.b = &s.invertY; else if (k == "lock_mode") r.i = &s.lockMode; else if (k == "cave_culling") r.b = &s.caveCulling;
     return r;
 }
 float readField(const Field& f) { return f.f ? *f.f : f.i ? (float)*f.i : f.b ? (*f.b ? 1.f : 0.f) : 0.f; }
@@ -61,6 +61,7 @@ const std::vector<OptionDef>& optionDefs() {
         v.push_back(slider("ui_scale", "Interface size", G, "Screen", 0.75f, 2, 0.05f, "%"));
         v.push_back(slider("render_distance", "Render distance", G, "Distance", 2, 32, 1, "%.0f chunks"));
         v.push_back(slider("vertical_distance", "Up / down distance", G, "Distance", 1, 12, 1, "%.0f chunks"));
+        v.push_back(toggle("cave_culling", "Skip what is behind walls", G, "Distance", "Chunks you cannot see from where you are (rock, closed caves, the other side of walls) are not drawn. Off: everything in range is drawn."));
         v.push_back(toggle("shadows", "Shadows", G, "Shadows"));
         v.push_back(needs(choice("shadow_res", "Shadow resolution", G, "Shadows", { "1024", "1536", "2048", "3072", "4096 (heavy)" }, { 1024, 1536, 2048, 3072, 4096 },
                                  "The size of each of the four shadow maps. Higher: crisper shadows, more graphics memory."), "shadows"));

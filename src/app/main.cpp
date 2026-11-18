@@ -24,6 +24,7 @@
 #include "../game/menu.h"
 #include "../game/options.h"
 #include "../game/cull.h"
+#include "../world/visibility.h"
 #include "../game/enemies.h"
 #include "../game/sound.h"
 #include "../game/breakable.h"
@@ -63,6 +64,7 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM,
 #include <fstream>
 #include <sstream>
 #include <unordered_map>
+#include <unordered_set>
 #include <functional>
 #include <cctype>
 #include <cstdarg>
@@ -2078,7 +2080,7 @@ struct App {
     // draws one object (pass 0 solid, 1 cut-out, 2 water) with the current shaders
     void DrawObject(const WorldObject& o, int pass) { DrawObject(o, pass, camPos); }
     // culling objects: set while the world draws (each view: the camera, each shadow map, the reflection)
-    bool cullOn = false, cullCount = false; float cullVP[16] = {}; double cullFar = 0; int partsDrawn = 0, partsCulled = 0, partsDrawnShown = 0, partsCulledShown = 0;
+    bool cullOn = false, cullCount = false, cullCave = false; float cullVP[16] = {}; double cullFar = 0; int partsDrawn = 0, partsCulled = 0, partsDrawnShown = 0, partsCulledShown = 0;
     void DrawObject(const WorldObject& o, int pass, V3 cam, const ModelGpu* use = nullptr) {
         FrameRef m = ModelOf(o); if (!m) return;
         auto dg = use ? doorGpu.end() : doorGpu.find(o.id);
@@ -2093,7 +2095,8 @@ struct App {
             if (cullOn) {   // culling: a part (16 x 16 x 16 of the model) outside this view, or past the fog, is not drawn
                 V3 cs[8]; boxCorners(org, ax * (double)CS, ay * (double)CS, az * (double)CS, cs);
                 V3 mid = org + (ax + ay + az) * (CS * 0.5); double r = length(ax + ay + az) * CS * 0.5;
-                if ((cullFar > 0 && length(mid) - r > cullFar) || !cornersVisible(cullVP, cs)) { if (cullCount) partsCulled++; continue; }
+                if ((cullFar > 0 && length(mid) - r > cullFar) || !cornersVisible(cullVP, cs)
+                    || (cullCave && !CaveSeen(mid + cam - V3{ r, r, r }, mid + cam + V3{ r, r, r }))) { if (cullCount) partsCulled++; continue; }   // (and inside rock / behind walls)
                 if (cullCount) partsDrawn++;
             }
             ChunkCB cc{ { (float)org.x, (float)org.y, (float)org.z, 0 }, { (float)ax.x, (float)ax.y, (float)ax.z, 0 }, { (float)ay.x, (float)ay.y, (float)ay.z, 0 }, { (float)az.x, (float)az.y, (float)az.z, 0 } };
@@ -2587,10 +2590,38 @@ struct App {
         for (auto& m : done) {
             auto it = latestSeq.find(m.pos);
             if (it == latestSeq.end() || it->second != m.seq || !world->chunk(m.pos)) continue;   // outdated or unloaded meanwhile
+            if (m.see == SEE_ALL) chunkSee.erase(m.pos); else chunkSee[m.pos] = m.see;   // cave culling: its sides joined by air
             if (m.opaque.empty() && m.cutout.empty() && m.water.empty()) { gpu.erase(m.pos); continue; }
             GpuChunk& g = gpu[m.pos]; Upload(m.opaque, g.vbO, g.ibO, g.nO); Upload(m.cutout, g.vbC, g.ibC, g.nC); Upload(m.water, g.vbW, g.ibW, g.nW);
         }
         for (auto it = gpu.begin(); it != gpu.end();) { if (!world->chunk(it->first)) { latestSeq.erase(it->first); it = gpu.erase(it); } else ++it; }
+        for (auto it = chunkSee.begin(); it != chunkSee.end();) { if (!world->chunk(it->first)) it = chunkSee.erase(it); else ++it; }
+    }
+    // ---- cave culling: which chunks can be seen from the camera (through air, never back toward it)
+    std::unordered_map<I3, uint16_t, I3Hash> chunkSee;   // chunks with something solid in them (the rest: SEE_ALL)
+    bool caveOn = false; int caveHidden = 0, caveHiddenShown = 0; std::vector<I3> caveList;
+    I3 caveCam{ 0, 0, 0 }; int caveR = 0, caveV = 0; std::vector<uint8_t> caveGrid;   // seen chunks around the camera's chunk (outside it: drawn)
+    bool CaveIn(I3 c) const {
+        int dx = c.x - caveCam.x, dy = c.y - caveCam.y, dz = c.z - caveCam.z;
+        if (dx < -caveR || dx > caveR || dy < -caveV || dy > caveV || dz < -caveR || dz > caveR) return true;
+        return caveGrid[((size_t)(dy + caveV) * (2 * caveR + 1) + (dz + caveR)) * (2 * caveR + 1) + (dx + caveR)] != 0;
+    }
+    void UpdateCaveCulling(const XMMATRIX& vp) {
+        caveOn = settings.caveCulling && world; if (!caveOn) return;
+        I3 cam = chunkOf(ifloor(camPos.x), ifloor(camPos.y), ifloor(camPos.z));
+        auto see = [&](I3 c) -> uint16_t { auto it = chunkSee.find(c); return it == chunkSee.end() ? SEE_ALL : it->second; };
+        auto inView = [&](I3 c) { return BoxVisible(vp, (float)(c.x * (double)CS - camPos.x), (float)(c.y * (double)CS - camPos.y), (float)(c.z * (double)CS - camPos.z), (float)CS); };
+        caveCam = cam; caveR = settings.renderDistance + 1; caveV = settings.verticalDistance + 1;
+        visibleChunks(cam, caveR, caveV, see, inView, caveList);
+        caveGrid.assign((size_t)(2 * caveR + 1) * (2 * caveR + 1) * (2 * caveV + 1), 0);
+        for (const I3& c : caveList) caveGrid[((size_t)(c.y - cam.y + caveV) * (2 * caveR + 1) + (c.z - cam.z + caveR)) * (2 * caveR + 1) + (c.x - cam.x + caveR)] = 1;
+    }
+    bool CaveSeen(V3 lo, V3 hi) const {   // (world positions) is any chunk this box touches seen?
+        if (!caveOn) return true;
+        I3 a = chunkOf(ifloor(lo.x), ifloor(lo.y), ifloor(lo.z)), b = chunkOf(ifloor(hi.x), ifloor(hi.y), ifloor(hi.z));
+        if ((b.x - a.x + 1) * (b.y - a.y + 1) * (b.z - a.z + 1) > 27) return true;   // (something huge: just draw it)
+        for (int y = a.y; y <= b.y; y++) for (int z = a.z; z <= b.z; z++) for (int x = a.x; x <= b.x; x++) if (CaveIn({ x, y, z })) return true;
+        return false;
     }
 
     // ================================================================== rendering
@@ -2766,9 +2797,10 @@ struct App {
         ID3D11Buffer* cbs[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->VSSetConstantBuffers(0, 2, cbs); ctx->PSSetConstantBuffers(0, 2, cbs);
         BindLights();   // light objects, glowing emitters, shots
         ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
-        auto drawChunks = [&](const XMMATRIX& m, int pass, bool counting) {
+        auto drawChunks = [&](const XMMATRIX& m, int pass, bool counting, bool cave = false) {   // cave: the camera's own view (cave culling applies)
             for (auto& kv : gpu) {
                 const GpuChunk& g = kv.second; UINT n = pass == 0 ? g.nO : pass == 1 ? g.nC : g.nW; if (!n) continue;
+                if (cave && caveOn && !CaveIn(kv.first)) { if (counting) caveHidden++; continue; }
                 // chunk origin relative to the camera, computed in double: no jitter however far you go
                 float ox = (float)(kv.first.x * (double)CS - camPos.x), oy = (float)(kv.first.y * (double)CS - camPos.y), oz = (float)(kv.first.z * (double)CS - camPos.z);
                 if (!BoxVisible(m, ox, oy, oz, (float)CS)) continue;
@@ -2778,7 +2810,7 @@ struct App {
                 ctx->IASetIndexBuffer(pass == 0 ? g.ibO.Get() : pass == 1 ? g.ibC.Get() : g.ibW.Get(), DXGI_FORMAT_R32_UINT, 0);
                 ctx->DrawIndexed(n, 0, 0); if (counting) drawnChunks += pass == 0;
             }
-            { XMFLOAT4X4 mm; XMStoreFloat4x4(&mm, m); std::memcpy(cullVP, &mm, sizeof cullVP); cullOn = true; cullCount = counting; }
+            { XMFLOAT4X4 mm; XMStoreFloat4x4(&mm, m); std::memcpy(cullVP, &mm, sizeof cullVP); cullOn = true; cullCount = counting; cullCave = cave && caveOn; }
             for (size_t oi = 0; oi < objects.size(); oi++) {   // objects: same shaders, turned and sized; platforms where they are on their path
                 if ((int)oi == movingObj) continue;
                 const WorldObject& o = objects[oi];
@@ -2793,7 +2825,7 @@ struct App {
                 for (const V3& off : PlatformOffsets(o)) { WorldObject at = o; at.pos = o.pos + off; DrawObject(at, pass); }
             }
             DrawBall(pass, camPos); DrawMissiles(pass, camPos); DrawDebris(pass, camPos); DrawEnemyDrops(pass, camPos);
-            cullOn = false; cullCount = false;
+            cullOn = false; cullCount = false; cullCave = false;
         };
         ID3D11ShaderResourceView* none[5] = {};
         ctx->PSSetShaderResources(0, 5, none);
@@ -2863,10 +2895,11 @@ struct App {
         ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0);
         ID3D11ShaderResourceView* srvs[5] = { texArray.Get(), shadows ? shadowSRV.Get() : nullptr, nullptr, noiseSRV.Get(), skyMap ? skyMapSRV.Get() : nullptr }; ctx->PSSetShaderResources(0, 5, srvs); BindMaterials();
         ID3D11SamplerState* samps[3] = { sampBlocks.Get(), sampShadow.Get(), sampLinear.Get() }; ctx->PSSetSamplers(0, 3, samps);
-        drawnChunks = 0; partsDrawn = partsCulled = 0;
-        ctx->PSSetShader(psOpaque.Get(), nullptr, 0); drawChunks(vp, 0, true);
-        partsDrawnShown = partsDrawn; partsCulledShown = partsCulled;
-        ctx->PSSetShader(psCutout.Get(), nullptr, 0); drawChunks(vp, 1, false);
+        drawnChunks = 0; partsDrawn = partsCulled = 0; caveHidden = 0;
+        UpdateCaveCulling(vp);
+        ctx->PSSetShader(psOpaque.Get(), nullptr, 0); drawChunks(vp, 0, true, true);
+        partsDrawnShown = partsDrawn; partsCulledShown = partsCulled; caveHiddenShown = caveHidden;
+        ctx->PSSetShader(psCutout.Get(), nullptr, 0); drawChunks(vp, 1, false, true);
 
         // ---- ambient occlusion: soft shade where things are close together (half size, then a careful blur that takes away sky light)
         ctx->PSSetShaderResources(0, 5, none);
@@ -2934,7 +2967,7 @@ struct App {
                 ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0); ctx->PSSetShader(psWater.Get(), nullptr, 0);
                 ID3D11ShaderResourceView* ws[5] = { hdrSRV.Get(), shadows ? shadowSRV.Get() : nullptr, depthCopySRV.Get(), noiseSRV.Get(), skyMap ? skyMapSRV.Get() : nullptr }; ctx->PSSetShaderResources(0, 5, ws);
                 ID3D11SamplerState* wss[4] = { sampBlocks.Get(), sampShadow.Get(), sampLinear.Get(), sampClamp.Get() }; ctx->PSSetSamplers(0, 4, wss);
-                drawChunks(vp, 2, false);
+                drawChunks(vp, 2, false, true);
                 ctx->PSSetShaderResources(0, 5, none); ctx->RSSetState(rsCull.Get());
                 ctx->PSSetShaderResources(0, 5, srvs);
             }
@@ -3164,7 +3197,7 @@ struct App {
         ImGui::Text("XYZ: %.3f / %.3f / %.3f", p.x, p.y, p.z);
         ImGui::Text("Block: %d %d %d   Chunk: %d %d %d", b.x, b.y, b.z, c.x, c.y, c.z);
         ImGui::Text("Facing: %s   %s", dirs[((int)(yd / 90)) % 4], player.flying ? "flying" : "walking");
-        ImGui::Text("Chunks: %zu loaded, %zu with meshes, %d drawn", world->loadedCount(), gpu.size(), drawnChunks);
+        ImGui::Text("Chunks: %zu loaded, %zu with meshes, %d drawn, %d hidden behind walls%s", world->loadedCount(), gpu.size(), drawnChunks, caveHiddenShown, caveOn ? "" : " (off)");
         ImGui::Text("Object parts: %d drawn, %d skipped (off screen or past the fog)", partsDrawnShown, partsCulledShown);
         ImGui::Text("Meshing: %zu waiting, %zu queued", world->dirty.size(), workers->pending());
         if (hoverValid) { BlockId hv = world->get(hover.x, hover.y, hover.z);

@@ -1,5 +1,6 @@
 #include "mesher.h"
 #include "shapes.h"
+#include "visibility.h"
 
 namespace mc {
 
@@ -79,6 +80,11 @@ void buildMesh(const BlockRegistry& reg, const MeshInput& in, ChunkMesh& out) {
     const Shapes& shapes = Shapes::get();
     auto at = [&](int x, int y, int z) { return B[padIdx(x, y, z)]; };
     auto occludes = [&](BlockId id) { return isPlainCube(reg, id) && reg.get(id).render == Render::Opaque; };   // corner shading
+    {   // cave culling: which of the chunk's sides are joined by things you can see through
+        std::vector<uint8_t> solid(CS3);
+        for (int y = 0; y < CS; y++) for (int z = 0; z < CS; z++) for (int x = 0; x < CS; x++) { BlockId id = at(x, y, z); solid[Chunk::idx(x, y, z)] = id != UNKNOWN && occludes(id); }
+        out.see = chunkSeeMask(solid.data());
+    }
     // is the part `need` of our side `f` hidden by the neighbour there?
     auto hidden = [&](BlockId self, const BlockDef& d, BlockId nb, int f, const SideMask& need) {
         if (nb == UNKNOWN) return true;

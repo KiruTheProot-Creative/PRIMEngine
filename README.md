@@ -180,6 +180,13 @@ Textures, models and blocks (Assets panel) and objects (Outliner) can go into fo
 
 Also: **speed per animation** (3D viewer: "Speed of ...", and next to each cannon animation in the Weapons tab), everywhere that animation plays; and the **charge** now grows an energy orb at the muzzle with particles sucked into it (particles: "Sucked in").
 
+## Culling: only what you can see is drawn
+
+- **Hidden sides**: a block side touching a solid block is never built; glass-like blocks can hide the sides between each other.
+- **Off screen**: chunks and object parts (each 16 x 16 x 16 piece of a model: doors, platforms, pickups, enemies...) outside the view are skipped, for the camera, each shadow map and the reflection. Objects past the fog are skipped too.
+- **Behind walls** (cave culling, like Minecraft's): each chunk remembers which of its sides are joined by air inside it; from the camera a walk goes chunk to chunk only through those openings and only away from you. Rock, closed caves and rooms behind walls are not drawn (nor the objects in them). Options > Graphics > "Skip what is behind walls" turns it off.
+- **F3** shows the counts: chunks drawn and hidden behind walls, object parts drawn and skipped.
+
 ## Sun shadows: four cascades
 
 The sun's shadows use four shadow maps around you: the nearest covers about 13 blocks and is very sharp, each next one reaches farther with bigger pixels, and where two meet they blend smoothly (no line). How far shadows reach is its own setting (**Settings > Look > Shadow distance**, 24 to 512 blocks), so the sharpness near you no longer depends on the render distance. Soft edges keep the same size in blocks in every map; very soft ones are taken from a coarser map so they stay smooth.
