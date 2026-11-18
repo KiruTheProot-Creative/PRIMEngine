@@ -92,6 +92,40 @@ float skyExposed(float3 rel)
     if (any(uv < 0) || any(uv > 1)) return 1;
     return gSkyMap.SampleCmpLevelZero(gShadowSamp, uv, s.z - 0.003);
 }
+// the height (camera-relative) of the first thing under the open sky at rel.xz: where rain lands (known: inside the map)
+float groundBelow(float3 rel, out bool known)
+{
+    known = false;
+    if (gWeather2.w < 0.5) return -1e5;
+    float4 s = mul(float4(rel, 1), gSkyVP);
+    float2 uv = float2(s.x, -s.y) * 0.5 + 0.5;
+    if (any(uv < 0.002) || any(uv > 0.998)) return -1e5;
+    float d = gSkyMap.Load(int3((int2)(uv * 512), 0));
+    if (d >= 0.9999) return -1e5;                                                   // nothing under it (the void)
+    known = true;
+    return (d - rel.x * gSkyVP[0][2] - rel.z * gSkyVP[2][2] - gSkyVP[3][2]) / gSkyVP[1][2];   // depth back to a height (the map looks straight down)
+}
+// rain on a surface: little rings spreading from where drops land (slope to bend the normal), wp: world position
+float2 rainRipples(float2 wp, float t)
+{
+    float2 slope = 0;
+    [unroll] for (int layer = 0; layer < 2; layer++)
+    {
+        float2 q = wp * (layer == 0 ? 1.6 : 2.3) + layer * 17.3;
+        float2 cell = floor(q);
+        [unroll] for (int oy = -1; oy <= 1; oy++) [unroll] for (int ox = -1; ox <= 1; ox++)
+        {
+            float2 c = cell + float2(ox, oy);
+            float3 h = frac(sin(float3(dot(c, float2(127.1, 311.7)), dot(c, float2(269.5, 183.3)), dot(c, float2(419.2, 371.9)))) * 43758.5453);
+            float ph = frac(t * (0.9 + h.z * 0.6) + h.x * 7);                       // each cell: a new drop every second or so
+            float2 dv = q - (c + 0.15 + h.xy * 0.7); float d = length(dv);
+            float r = ph * 0.75, w = d - r;                                          // the ring grows ...
+            float ring = sin(w * 38) * exp(-w * w * 160) * (1 - ph) * (1 - ph);       // ... and fades
+            slope += (d > 1e-4 ? dv / d : 0) * ring;
+        }
+    }
+    return slope * 0.22;
+}
 
 // ---------------------------------------------------------------- clouds (a layer high above the world)
 static const float kCloudBottom = 190, kCloudTop = 290;
@@ -301,6 +335,11 @@ float3 lightBlock(VSOut i, float3 albedo, bool front, out float3 n, out float sh
     float wet = gWeather.w * open * (1 - snowy);
     albedo *= lerp(1, 0.55, wet);
     n = normalize(lerp(n, nFlat, saturate(wet * 1.5 + snowy)));                                   // water and snow fill the little dents: smooth again
+    if (gWeather.x > 0.02 && wet > 0.2 && nFlat.y > 0.9)                                          // raining on wet tops: drops land in the film of water
+    {
+        float2 rip = rainRipples((gCamPos.xyz + i.rel).xz, gVolume.z) * saturate(gWeather.x * 1.5) * saturate((wet - 0.2) * 2) * saturate(1 - length(i.rel) / 40);
+        n = normalize(n + float3(rip.x, 0, rip.y));
+    }
     float ndl = saturate(dot(n, gSunDir.xyz));
     float ndlFlat = saturate(dot(nFlat, gSunDir.xyz));                                            // shadows ask with the flat face: the bumps would push each pixel's test
     float sh = ndlFlat > 0 ? shadowAt(i.rel, nFlat, ndlFlat, i.pos.xy) * cloudShadow(i.rel) : 0; // a different way and the face would shadow itself in stripes
@@ -451,7 +490,77 @@ RainOut particle(uint id, float kind, float amount, uint salt)
     o.fade = saturate(dist - 0.6) * saturate((box.x * 0.5 - max(abs(rel.x), abs(rel.z))) / 5) * saturate((box.y * 0.5 - abs(rel.y)) / 4);
     return o;
 }
-RainOut VS_Rain(uint id : SV_VertexID) { return particle(id, gWeather.y > gWeather.x ? 1 : 0, max(gWeather.x, gWeather.y), 1); }
+// rain and snow falling from high above: each drop falls until it meets the first thing under the open sky (the "what is above"
+// map), then rain makes a ring and a little crown of droplets there, snow lies for a moment; then it falls again from the top.
+// far: a second, bigger layer of drops further out (no landing: the world in front hides them), so the rain fills the distance.
+static const uint kNearDrops = 16000, kFarDrops = 9000;
+RainOut rainDrop(uint id, uint salt, bool far)
+{
+    RainOut o = (RainOut)0; o.pos = float4(0, 0, -1, 1);
+    bool snow = gWeather.y > gWeather.x; float amount = max(gWeather.x, gWeather.y);
+    uint per = far ? 6 : 12, drop = id / per, c = id % per;
+    if (drop >= (uint)(amount * (far ? kFarDrops : kNearDrops))) return o;
+    float3 h = hash3u(drop * 3 + salt);
+    float t = gVolume.z;
+    float3 box = far ? float3(150, 100, 150) : float3(40, 56, 40);
+    float low = far ? -44 : -16;                                                   // the column: from low to low + box.y around the camera
+    float2 wind = float2(1, 0.45) * gWeather2.z;
+    float speed = snow ? 1.6 + h.x * 0.9 : 13 + h.x * 5;
+    float3 vel = float3(wind.x * (snow ? 2.5 : 4.0), -speed, wind.y * (snow ? 2.5 : 4.0));
+    float3 p = h * box * 7 + vel * t;
+    if (snow) p.xz += float2(sin(t * 1.3 + h.y * 40), cos(t * 1.1 + h.z * 40)) * 0.6;   // flakes drift
+    float3 rel;
+    rel.xz = (frac((p.xz - gCamPos.xz) / box.xz) - 0.5) * box.xz;
+    rel.y = frac((p.y - gCamPos.y) / box.y) * box.y + low;
+    static const float2 q[6] = { float2(0, 0), float2(1, 0), float2(1, 1), float2(0, 0), float2(1, 1), float2(0, 1) };
+    float2 k = q[c % 6];
+    float edge = saturate((box.x * 0.5 - max(abs(rel.x), abs(rel.z))) / 6) * saturate((rel.y - low) / 3) * saturate((low + box.y - rel.y) / 6);   // fades at the box's sides, appears at the top
+    float rnd = frac(h.z * 7.13) * 0.4;
+    bool known = false; float g = far ? -1e5 : groundBelow(rel, known);
+    if (known && rel.y < g)
+    {   // it has landed
+        float tau = (g - rel.y) / speed, life = snow ? 2.5 : 0.38;
+        if (tau > life) return o;                                                   // gone until it falls again
+        float2 at = rel.xz - vel.xz * tau; bool k2; float g2 = groundBelow(float3(at.x, g, at.y), k2);
+        if (!k2 || abs(g2 - g) > 0.6) { at = rel.xz; g2 = g; }                      // (it landed over an edge: keep it where it is)
+        float3 base = float3(at.x, g2 + 0.025, at.y), center = base;
+        float e = tau / life, fade = (1 - e) * edge;
+        float dist = length(base);
+        if (snow)
+        {
+            if (c >= 6) return o;
+            float sz = 0.05 + dist * 0.0015;
+            o.pos = mul(float4(base + (gCamR.xyz * (k.x - 0.5) + gCamU.xyz * (k.y - 0.5)) * sz * 2, 1), gViewProj);
+            o.uv = k; o.rel = base; o.kind = 1 + rnd; o.fade = fade * saturate(dist - 0.6); return o;
+        }
+        if (c < 6)
+        {   // the ring on the surface
+            float r = 0.05 + 0.34 * sqrt(e);
+            o.pos = mul(float4(base + float3((k.x - 0.5) * 2 * r, 0, (k.y - 0.5) * 2 * r), 1), gViewProj);
+            o.uv = k; o.rel = base; o.kind = 5 + rnd; o.fade = fade * saturate(1 - dist / 30);
+        }
+        else
+        {   // a little crown of droplets jumping up (only at first)
+            if (e > 0.6) return o;
+            float up = 0.05 + 0.14 * sin(e / 0.6 * 3.14159), sz = 0.09 + 0.08 * e;
+            center = base + float3(0, up, 0);
+            o.pos = mul(float4(center + (gCamR.xyz * (k.x - 0.5) + float3(0, 1, 0) * (k.y - 0.5)) * sz * 2, 1), gViewProj);
+            o.uv = k; o.rel = center; o.kind = 6 + rnd; o.fade = (1 - e / 0.6) * edge * saturate(1 - dist / 22);
+        }
+        return o;
+    }
+    if (c >= 6) return o;
+    float dist = length(rel);
+    float3 offs;
+    if (!snow) { float3 ax = normalize(vel), side = normalize(cross(ax, rel)); offs = side * (k.x - 0.5) * 2 * (0.01 + dist * 0.0012) * (far ? 1.6 : 1) + ax * (k.y - 0.5) * (far ? 1.5 : 0.6); }
+    else offs = (gCamR.xyz * (k.x - 0.5) + gCamU.xyz * (k.y - 0.5)) * (0.07 + dist * 0.002) * (far ? 1.8 : 1);
+    o.pos = mul(float4(rel + offs, 1), gViewProj);
+    o.uv = k; o.rel = rel; o.kind = (snow ? 1 : 0) + rnd;
+    o.fade = saturate(dist - 0.6) * edge * (far ? saturate((dist - 16) / 10) * 0.75 : 1);
+    return o;
+}
+RainOut VS_Rain(uint id : SV_VertexID) { return rainDrop(id, 1, false); }
+RainOut VS_RainFar(uint id : SV_VertexID) { return rainDrop(id, 13, true); }
 RainOut VS_Dust(uint id : SV_VertexID) { return particle(id, gEnvPart.x, gEnvPart.y, 9); }
 float4 PS_Rain(RainOut i) : SV_Target
 {
@@ -459,6 +568,11 @@ float4 PS_Rain(RainOut i) : SV_Target
     if (i.fade <= 0.001 || (kind < 1.5 && skyExposed(i.rel) < 0.5)) discard;      // no rain or snow under a roof (dust floats everywhere)
     float3 lc = gAmbient.rgb * 1.4 + gSunColor.rgb * 0.25 + gWeather2.y * float3(1.6, 1.7, 2.2);
     float2 d = i.uv * 2 - 1; float rd = saturate(1 - dot(d, d));
+    if (kind > 5.5) { float2 a = i.uv * 2 - 1; float dots = 0;                                       // the crown: a few droplets
+        dots += saturate(1 - length(a - float2(-0.45, -0.1)) / 0.22); dots += saturate(1 - length(a - float2(0.1, 0.35)) / 0.2); dots += saturate(1 - length(a - float2(0.5, -0.2)) / 0.18);
+        return float4(lc * 1.3, saturate(dots) * 0.6 * i.fade); }
+    if (kind > 4.5) { float d = length(i.uv * 2 - 1); float ring = exp(-pow((d - 0.78) / 0.12, 2)) + 0.35 * exp(-pow((d - 0.45) / 0.1, 2));   // the ring where a drop landed
+        return float4(lc * 1.2, saturate(ring) * 0.42 * i.fade); }
     if (kind < 0.5) return float4(lc, (1 - abs(i.uv.x * 2 - 1)) * 0.28 * i.fade);
     if (kind < 1.5) return float4(lc * 1.2, rd * rd * 0.9 * i.fade);
     if (kind < 2.5) return float4(gEnvPartColor.rgb * lc, rd * 0.55 * i.fade);
@@ -685,6 +799,7 @@ float4 PS_Water(VSOut i, bool front : SV_IsFrontFace) : SV_Target
         float2 q1 = gNoise.SampleLevel(gLinear, float3(wp.x * 0.06 + t * 0.025, wp.z * 0.06, t * 0.015), 0).xy - 0.5;
         float2 q2 = gNoise.SampleLevel(gLinear, float3(wp.x * 0.21 - t * 0.04, wp.z * 0.21 + t * 0.03, 0.37 + t * 0.02), 0).xy - 0.5;
         float2 slope = q1 * 0.30 + q2 * 0.16 + float2(sin(wp.x * 0.8 + wp.z * 0.35 + t * 1.5), cos(wp.z * 0.9 - wp.x * 0.3 + t * 1.2)) * 0.035;
+        if (gWeather.x > 0.02 && n.y > 0 && front) slope += rainRipples(wp.xz, t) * 1.6 * saturate(gWeather.x * 1.5) * skyExposed(i.rel + float3(0, 0.3, 0)) * saturate(1 - length(i.rel) / 50);   // rain: rings where drops land
         n = normalize(float3(slope.x, n.y > 0 ? 1 : -1, slope.y));
     }
     float dist = length(i.rel); float3 dir = i.rel / max(dist, 1e-4), v = -dir;

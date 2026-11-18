@@ -131,7 +131,7 @@ struct App {
     ComPtr<ID3D11Device> dev; ComPtr<ID3D11DeviceContext> ctx; ComPtr<IDXGISwapChain> swap; ComPtr<ID3D11RenderTargetView> backRTV;
     ComPtr<ID3D11Texture2D> depthTex; ComPtr<ID3D11DepthStencilView> dsv;
     ComPtr<ID3D11VertexShader> vsBlock, vsSky, vsShadow; ComPtr<ID3D11PixelShader> psOpaque, psCutout, psSky, psGhost, psShadowCut, psPost, psVolume, psBloomDown, psBloomUp, psRain, psBolt;
-    ComPtr<ID3D11VertexShader> vsSkyMap, vsRain, vsDust;
+    ComPtr<ID3D11VertexShader> vsSkyMap, vsRain, vsRainFar, vsDust;
     ComPtr<ID3D11PixelShader> psReflect, psAO, psAOApply;
     ComPtr<ID3D11Texture2D> indTex, aoTex; ComPtr<ID3D11RenderTargetView> indRTV, aoRTV; ComPtr<ID3D11ShaderResourceView> indSRV, aoSRV;   // ambient occlusion
     ComPtr<ID3D11Texture2D> mirTex, mirDepth; ComPtr<ID3D11RenderTargetView> mirRTV; ComPtr<ID3D11ShaderResourceView> mirSRV; ComPtr<ID3D11DepthStencilView> mirDSV;   // a mirror's view (half size)
@@ -245,6 +245,7 @@ struct App {
         b = Compile(src, "PS_BloomUp", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psBloomUp));
         b = Compile(src, "VS_SkyMap", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsSkyMap));
         b = Compile(src, "VS_Rain", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsRain));
+        b = Compile(src, "VS_RainFar", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsRainFar));
         b = Compile(src, "VS_Dust", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsDust));
         b = Compile(src, "PS_Rain", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psRain));
         b = Compile(src, "PS_Bolt", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psBolt));
@@ -2849,6 +2850,7 @@ struct App {
             ctx->PSSetShaderResources(0, 1, texArray.GetAddressOf()); ctx->PSSetSamplers(0, 1, sampBlocks.GetAddressOf());
             ctx->PSSetShader(nullptr, nullptr, 0); drawChunks(skyvp, 0, false);
             ctx->PSSetShader(psShadowCut.Get(), nullptr, 0); drawChunks(skyvp, 1, false);
+            ctx->PSSetShader(nullptr, nullptr, 0); drawChunks(skyvp, 2, false);   // water too: rain lands on it (and not on the lake's floor)
             ctx->PSSetShaderResources(0, 1, none);
         }
 
@@ -2976,8 +2978,11 @@ struct App {
         // ---- rain or snow, then lightning
         if (W.rain > 0.02f || W.snow > 0.02f) {
             ctx->OMSetBlendState(bsAlpha.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsTestOnly.Get(), 0); ctx->RSSetState(rsNoCull.Get());
-            ctx->IASetInputLayout(nullptr); ctx->VSSetShader(vsRain.Get(), nullptr, 0); ctx->PSSetShader(psRain.Get(), nullptr, 0);
-            ctx->Draw(6 * 14000, 0);
+            ctx->IASetInputLayout(nullptr); ctx->PSSetShader(psRain.Get(), nullptr, 0);
+            if (skyMap) ctx->VSSetShaderResources(4, 1, skyMapSRV.GetAddressOf());   // the drops look up where they land
+            ctx->VSSetShader(vsRainFar.Get(), nullptr, 0); ctx->Draw(6 * 9000, 0);     // far out: fills the distance
+            ctx->VSSetShader(vsRain.Get(), nullptr, 0); ctx->Draw(12 * 16000, 0);      // near: they land, splash and ripple
+            { ID3D11ShaderResourceView* n1[1] = {}; ctx->VSSetShaderResources(4, 1, n1); }
             ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());
         }
         if (weather.boltAge < 0.45 && E.atmosphere > 0.5f) DrawBolt();
