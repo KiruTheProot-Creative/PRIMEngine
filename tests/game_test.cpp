@@ -1227,6 +1227,10 @@ int main() {
                 CHECK(story >= 0 && ks.screens[story].useStack && ks.screens[story].stack.size() == 3 && ks.screens[story].duration == buildStack(ks.screens[story].stack).length, "the Story preset is a stack (and lasts as long as it)");
                 ks.screens[story].stack.insert(ks.screens[story].stack.begin(), p2); ks.screens[story].stack[1].sound.file = "type.wav";
                 saveScreens("/tmp/prim_stack.txt", ks); ScreenSet kl; loadScreens("/tmp/prim_stack.txt", kl); const mc::Screen& ls = kl.screens[story];
+                CHECK(buildStack({ [] { StackStep x; x.kind = StepKind::Text; x.text = "hi"; x.weight = 0.5f; x.outline = 0.4f; x.outlineColor = 0x102030; return x; }() }).items[0].outline == 0.4f, "a text step's thickness and outline reach its text");
+                ks.screens[story].stack[2].weight = 0.6f; ks.screens[story].stack[2].outline = 0.3f; ks.screens[story].stack[2].outlineColor = 0x112233; ks.screens[story].items[0].weight = 0.25f; ks.screens[story].items[0].outline = 0.5f; ks.screens[story].items[0].outlineColor = 0x445566;
+                saveScreens("/tmp/prim_stack.txt", ks); loadScreens("/tmp/prim_stack.txt", kl);
+                CHECK(ls.stack[2].weight == 0.6f && ls.stack[2].outline == 0.3f && ls.stack[2].outlineColor == 0x112233 && ls.items[0].weight == 0.25f && ls.items[0].outline == 0.5f && ls.items[0].outlineColor == 0x445566, "thickness and outlines save and load (steps and items)");
                 CHECK(ls.useStack && ls.stack.size() == 4 && ls.stack[0].zoom && ls.stack[0].zoomTo == 1.5f && ls.stack[0].file == "ridley.png" && ls.stack[1].sound.file == "type.wav" && ls.stack[1].text == ks.screens[story].stack[1].text
                       && std::fabs(ls.duration - buildStack(ls.stack).length) < 1e-4, "a stack saves and loads (and its length is worked out again)");
             }

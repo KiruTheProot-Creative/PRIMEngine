@@ -5583,6 +5583,30 @@ struct App {
     }
     // the options list (Sound, Graphics, Controls): on a pause menu pane or a flat screen; hits go into `hits` (sel: the picked one)
     struct OptColors { uint32_t accent, text, picked, dim; float alpha; };
+    // text with thicker letters and an outline: the outline is drawn in rings all around the outside (behind), so the letters
+    // stay whole (not a stroke over their edges); thicker letters are the letter drawn a little around itself
+    struct TextLook { float weight = 0, outline = 0; uint32_t outlineColor = 0; };
+    static void StyledText(ImDrawList* dl, ImFont* font, float size, ImVec2 at, ImU32 col, const char* b, const char* e, const TextLook& lk) {
+        float bw = std::max(0.f, lk.weight) * size * 0.045f, ow = std::max(0.f, lk.outline) * size * 0.14f;
+        float alpha = ((col >> IM_COL32_A_SHIFT) & 255) / 255.f; if (alpha <= 0.002f) return;
+        auto stampAlpha = [&](int n) { return n <= 1 ? alpha : 1.f - std::pow(1.f - std::min(alpha, 0.999f), 1.f / std::max(1.f, n * 0.35f)); };   // many stamps add up to about one
+        if (ow > 0.2f) {   // the outline: rings out to the letters' thickness + the outline's width
+            float R = bw + ow; int rings = std::max(1, (int)std::ceil(R / 1.25f)), dirs = std::clamp((int)(R * 4), 8, 32);
+            ImU32 oc = (lk.outlineColor & 0xFF) << 16 | (lk.outlineColor & 0xFF00) | (lk.outlineColor >> 16 & 0xFF); float oa = stampAlpha(rings * dirs / 4);
+            ImU32 c = oc | ((ImU32)std::clamp((int)(oa * 255), 0, 255) << IM_COL32_A_SHIFT);
+            for (int r = 1; r <= rings; r++) { float rad = R * r / rings; for (int d = 0; d < dirs; d++) { float an = 6.2831853f * (d + 0.5f * (r & 1)) / dirs; dl->AddText(font, size, ImVec2(at.x + std::cos(an) * rad, at.y + std::sin(an) * rad), c, b, e); } }
+        }
+        if (bw > 0.15f) {   // thicker: the letter a little around itself
+            int dirs = std::clamp((int)(bw * 6), 8, 24); float sa = stampAlpha(dirs / 2 + 1); ImU32 c = (col & ~IM_COL32_A_MASK) | ((ImU32)std::clamp((int)(sa * 255), 0, 255) << IM_COL32_A_SHIFT);
+            for (float rad : { bw, bw * 0.5f }) for (int d = 0; d < dirs; d++) { float an = 6.2831853f * d / dirs; dl->AddText(font, size, ImVec2(at.x + std::cos(an) * rad, at.y + std::sin(an) * rad), c, b, e); }
+            dl->AddText(font, size, at, c, b, e);
+        } else dl->AddText(font, size, at, col, b, e);
+    }
+    static void TextInStyled(ImDrawList* dl, ImFont* font, const std::string& s, float size, ImVec2 a, ImVec2 b, int align, ImU32 col, const TextLook& lk) {
+        if (lk.weight <= 0 && lk.outline <= 0) { TextIn(dl, font, s, size, a, b, align, col); return; }
+        ImVec2 ts = font->CalcTextSizeA(size, FLT_MAX, 0, s.c_str());
+        float x = align == 0 ? a.x : align == 2 ? b.x - ts.x : (a.x + b.x - ts.x) * 0.5f; StyledText(dl, font, size, ImVec2(x, (a.y + b.y - ts.y) * 0.5f), col, s.c_str(), s.c_str() + s.size(), lk);
+    }
     static void TextIn(ImDrawList* dl, ImFont* font, const std::string& s, float size, ImVec2 a, ImVec2 b, int align, ImU32 col) {
         ImVec2 ts = font->CalcTextSizeA(size, FLT_MAX, 0, s.c_str());
         float x = align == 0 ? a.x : align == 2 ? b.x - ts.x : (a.x + b.x - ts.x) * 0.5f; dl->AddText(font, size, ImVec2(x, (a.y + b.y - ts.y) * 0.5f), col, s.c_str());
@@ -6101,6 +6125,7 @@ struct App {
                 // laid out whole (typed letters appear where they will stay), lined up left / middle / right and top / middle / bottom
                 auto measure = [&](const char* p0, const char* p1) { return font->CalcTextSizeA(ts, FLT_MAX, 0, p0, p1).x; };
                 std::vector<TextLine> lines = wrapText(s, b.x - a.x, measure);
+                TextLook look{ it.weight, it.outline, it.outlineColor };
                 float lh = ts * 1.2f, total = lines.empty() ? 0 : lh * (lines.size() - 1) + ts;
                 float y = it.valign == 0 ? a.y : it.valign == 2 ? b.y - total : (a.y + b.y - total) * 0.5f;
                 for (const TextLine& ln : lines) {
@@ -6108,7 +6133,7 @@ struct App {
                     if (vis > ln.start) {
                         float lw = measure(s.data() + ln.start, s.data() + ln.end);
                         float x = it.align == 0 ? a.x : it.align == 2 ? b.x - lw : (a.x + b.x - lw) * 0.5f;
-                        dl->AddText(font, ts, ImVec2(x, y), C(col.text, al), s.data() + ln.start, s.data() + vis);
+                        StyledText(dl, font, ts, ImVec2(x, y), C(col.text, al), s.data() + ln.start, s.data() + vis, look);
                     }
                     y += lh;
                 }
@@ -6127,8 +6152,8 @@ struct App {
                 if (it.frame || sel) dl->AddRect(a, b, C(col.accent, (sel ? 0.95f : 0.45f) * al), rnd, ImDrawFlags_None, sel ? it.border + 1 : it.border);
                 float pad = (b.y - a.y) * 0.45f;
                 if (sel) { float mid = (a.y + b.y) * 0.5f, s2 = (b.y - a.y) * 0.18f; dl->AddTriangleFilled(ImVec2(a.x + pad * 0.5f, mid - s2), ImVec2(a.x + pad * 0.5f, mid + s2), ImVec2(a.x + pad * 0.5f + s2 * 1.4f, mid), C(col.accent, al)); }
-                TextIn(dl, font, menuFill(it.text, [&](const std::string& n) { return MenuValue(n); }), ts, ImVec2(a.x + pad * (it.align == 0 ? 1.6f : 1), a.y), ImVec2(b.x - pad, b.y), it.align,
-                       off ? C(col.dim, 0.6f * al) : sel ? C(col.picked, al) : C(col.text, al));
+                TextInStyled(dl, font, menuFill(it.text, [&](const std::string& n) { return MenuValue(n); }), ts, ImVec2(a.x + pad * (it.align == 0 ? 1.6f : 1), a.y), ImVec2(b.x - pad, b.y), it.align,
+                       off ? C(col.dim, 0.6f * al) : sel ? C(col.picked, al) : C(col.text, al), TextLook{ it.weight, it.outline, it.outlineColor });
                 break; }
             case ScreenItemKind::Options: {
                 OptColors oc{ col.accent, col.text, col.picked, col.dim, al };
@@ -6162,7 +6187,7 @@ struct App {
                 dl->PushClipRect(a, b, true);
                 for (const std::string& l : lines) {
                     bool head = l.rfind("# ", 0) == 0; float hh = head ? lh * 1.5f : lh;
-                    if (y + hh > a.y && y < b.y) TextIn(dl, font, head ? l.substr(2) : l, head ? ts * 1.35f : ts, ImVec2(a.x, y), ImVec2(b.x, y + hh), it.align, head ? C(col.accent, al) : C(col.text, al));
+                    if (y + hh > a.y && y < b.y) TextInStyled(dl, font, head ? l.substr(2) : l, head ? ts * 1.35f : ts, ImVec2(a.x, y), ImVec2(b.x, y + hh), it.align, head ? C(col.accent, al) : C(col.text, al), TextLook{ it.weight, it.outline, it.outlineColor });
                     y += hh;
                 }
                 dl->PopClipRect();
@@ -6872,6 +6897,15 @@ struct App {
         if (dup >= 0) { sc.stack.insert(sc.stack.begin() + dup + 1, sc.stack[dup]); stackSel = dup + 1; StackChanged(sc, ch); }
         if (drop >= 0) { sc.stack.erase(sc.stack.begin() + drop); if (stackSel >= drop) stackSel--; StackChanged(sc, ch); }
     }
+    bool TextLookUI(float& weight, float& outline, uint32_t& outlineColor) {   // thickness and outline (texts, buttons, credits, stack texts)
+        bool c = false;
+        Prop("Thickness"); c |= ImGui::SliderFloat("##tlw", &weight, 0, 1, weight <= 0 ? "normal" : "%.2f");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Thicker letters (0: as the font is).");
+        Prop("Outline"); c |= ImGui::SliderFloat("##tlo", &outline, 0, 1, outline <= 0 ? "none" : "%.2f");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("A line all around the outside of the letters (the letters stay whole, it is not drawn over them).");
+        if (outline > 0) { Prop("Outline colour"); c |= ColorU32("##tloc", outlineColor); }
+        return c;
+    }
     void StepProps(mc::Screen& sc, StackStep& s, bool& ch) {
         bool c = false; float ui = settings.uiScale;
         Prop("Step"); int k = (int)s.kind;
@@ -6896,6 +6930,7 @@ struct App {
             Prop("Size"); c |= ImGui::SliderFloat("##stsz", &s.textSize, 0.015f, 0.12f, "%.3f");
             Prop("Colour"); c |= ColorU32("##stc", s.color);
             Prop("Lined up"); const char* al[] = { "Left", "Middle", "Right" }; c |= ImGui::Combo("##sta", &s.align, al, 3);
+            c |= TextLookUI(s.weight, s.outline, s.outlineColor);
             Hint("It is typed letter by letter, stays a while, then the next step. A new text replaces this one (it fades first).");
             break; }
         case StepKind::Wait: Prop("Waits"); c |= ImGui::SliderFloat("##stw", &s.hold, 0, 20, "%.1f s"); Hint("Nothing new for a while: what is there stays."); break;
@@ -7031,6 +7066,7 @@ struct App {
         if (it.kind != ScreenItemKind::Panel && it.kind != ScreenItemKind::Image) { Prop("Text size"); ch |= ImGui::SliderFloat("##sitz", &it.textSize, 0.01f, 0.2f, "%.3f of the height"); }
         if (hasText) { const char* al[] = { "Left", "Middle", "Right" }; Prop("Lined up"); ch |= ImGui::Combo("##sia", &it.align, al, 3); }
         if (it.kind == ScreenItemKind::Text) { const char* va[] = { "Top", "Middle", "Bottom" }; Prop("Up / down"); ch |= ImGui::Combo("##siva", &it.valign, va, 3); }
+        if (hasText) ch |= TextLookUI(it.weight, it.outline, it.outlineColor);
         if (it.kind == ScreenItemKind::Image) { Prop("Picture"); ch |= FileCombo("##sii", it.image, false); }
         if (it.kind == ScreenItemKind::Button) {
             Prop("Does"); if (ImGui::BeginCombo("##siact", screenActName(it.act))) { for (int k = 0; k < (int)ScreenAct::COUNT; k++) if (ImGui::Selectable(screenActName((ScreenAct)k), (int)it.act == k)) { it.act = (ScreenAct)k; ch = true; } ImGui::EndCombo(); }

@@ -257,6 +257,7 @@ Every item of a screen is a row (back to front), with a bar from when it appears
 - **+ Text / + Picture / + Sound** add one at the playhead. A **Sound** item is a sound cue: it plays once at its time (a boom, a voice line).
 - **Keyframes** (diamonds on a bar): where an item is, how big and how see-through at a time; in between it moves on its own (smooth: easing in and out). Add one at the playhead (right-click its bar, or the item's Keyframes), move the playhead, drag the item on the canvas: that makes the next one. A picture gliding across, a slow zoom, a text sliding in.
 - Texts line up left / middle / right and top / middle / bottom inside their box, wrapped at spaces; typed letters appear where they will stay.
+- Texts (and buttons, credits, stack texts) can have **thicker letters** and an **outline**: a line all around the outside of the letters in a colour you pick (the letters stay whole; it is not a stroke drawn over their edges).
 
 ## Save files (like Metroid Prime)
 

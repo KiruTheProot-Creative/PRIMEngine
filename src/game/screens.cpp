@@ -215,6 +215,7 @@ StackBuild buildStack(const std::vector<StackStep>& steps) {
             if (txt >= 0) { fadeAway(txt, t, 0.4f); t += 0.45f; }
             ScreenItem it; it.name = "Text " + std::to_string(k + 1); it.kind = ScreenItemKind::Text; it.text = s.text; it.showAt = t; it.fade = 0.15f;
             it.typeSpeed = s.typeSpeed; it.typeSound = s.sound; it.textSize = s.textSize; it.col.text = s.color; it.align = s.align;
+            it.weight = s.weight; it.outline = s.outline; it.outlineColor = s.outlineColor;
             it.x = 0.1f; it.w = 0.8f;
             if (s.place == 2) { it.y = 0.05f; it.h = 0.22f; it.valign = 0; } else if (s.place == 1) { it.y = 0.32f; it.h = 0.36f; it.valign = 1; } else { it.y = 0.68f; it.h = 0.26f; it.valign = 0; }
             b.items.push_back(it); txt = (int)b.items.size() - 1;
@@ -311,7 +312,7 @@ bool saveScreens(const std::string& path, const ScreenSet& set) {
         if (s.useStack) f << "usestack 1\n";
         for (const StackStep& st : s.stack) {
             f << "step " << (int)st.kind << " " << escText(st.file) << " " << (st.zoom ? 1 : 0) << " " << st.zoomTo << " " << st.zoomTime << " " << st.place << " " << escText(st.text) << " "
-              << st.typeSpeed << " " << st.hold << " " << st.fade << " " << st.textSize << " " << st.color << " " << st.align << "\n";
+              << st.typeSpeed << " " << st.hold << " " << st.fade << " " << st.textSize << " " << st.color << " " << st.align << " " << st.weight << " " << st.outline << " " << st.outlineColor << "\n";
             if (!st.sound.empty()) f << "stsound " << soundUseText(st.sound) << "\n";
         }
         for (const ScreenItem& i : s.items) {
@@ -321,6 +322,7 @@ bool saveScreens(const std::string& path, const ScreenSet& set) {
               << (i.filled ? 1 : 0) << " " << (i.frame ? 1 : 0) << " " << i.rounding << " " << i.border << " " << (int)i.act << " " << escText(i.target) << " " << escText(i.group) << " " << i.speed << " " << i.slots << "\n";
             f << "anim " << i.showAt << " " << i.hideAt << " " << i.fade << " " << i.typeSpeed << " " << i.driftX << " " << i.driftY << " " << i.grow << " " << soundUseText(i.typeSound) << "\n";
             f << "anim2 " << i.fadeOut << " " << i.valign << "\n";
+            if (i.weight > 0 || i.outline > 0) f << "tstyle " << i.weight << " " << i.outline << " " << i.outlineColor << "\n";
             for (const ItemKey& k : i.keys) f << "key " << k.t << " " << k.x << " " << k.y << " " << k.scale << " " << k.alpha << " " << (k.smooth ? 1 : 0) << "\n";
             if (!i.sound.empty()) f << "isound " << soundUseText(i.sound) << "\n";
         }
@@ -371,7 +373,9 @@ bool loadScreens(const std::string& path, ScreenSet& set) {
         else if (k == "step") {
             StackStep st; int kd = 1, z = 0; std::string fl, tx;
             if (l >> kd >> fl >> z >> st.zoomTo >> st.zoomTime >> st.place >> tx >> st.typeSpeed >> st.hold >> st.fade >> st.textSize >> st.color >> st.align) {
-                st.kind = (StepKind)std::clamp(kd, 0, (int)StepKind::COUNT - 1); st.file = unescText(fl); st.text = unescText(tx); st.zoom = z != 0; cur->stack.push_back(st);
+                st.kind = (StepKind)std::clamp(kd, 0, (int)StepKind::COUNT - 1); st.file = unescText(fl); st.text = unescText(tx); st.zoom = z != 0;
+                { float w = 0, o = 0; uint32_t oc = 0; if (l >> w >> o >> oc) { st.weight = w; st.outline = o; st.outlineColor = oc; } }   // (older files: plain letters)
+                cur->stack.push_back(st);
             }
         }
         else if (k == "stsound" && !cur->stack.empty()) { std::string rest; std::getline(l, rest); soundUseFrom(rest, cur->stack.back().sound); }
@@ -380,6 +384,7 @@ bool loadScreens(const std::string& path, ScreenSet& set) {
             ScreenItem& i = cur->items.back(); std::string rest;
             l >> i.showAt >> i.hideAt >> i.fade >> i.typeSpeed >> i.driftX >> i.driftY >> i.grow; std::getline(l, rest); soundUseFrom(rest, i.typeSound);
         }
+        else if (k == "tstyle" && !cur->items.empty()) { ScreenItem& i = cur->items.back(); l >> i.weight >> i.outline >> i.outlineColor; }
         else if (k == "anim2" && !cur->items.empty()) { ScreenItem& i = cur->items.back(); l >> i.fadeOut >> i.valign; i.valign = std::clamp(i.valign, 0, 2); }
         else if (k == "key" && !cur->items.empty()) { ItemKey kk; int sm = 1; if (l >> kk.t >> kk.x >> kk.y >> kk.scale >> kk.alpha >> sm) { kk.smooth = sm != 0; setKey(cur->items.back(), kk); } }
         else if (k == "isound" && !cur->items.empty()) { std::string rest; std::getline(l, rest); soundUseFrom(rest, cur->items.back().sound); }

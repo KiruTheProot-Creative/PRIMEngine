@@ -48,6 +48,8 @@ struct ScreenItem {
     float textSize = 0.045f;                             // as a part of the screen's height
     int align = 1;                                       // 0 left, 1 middle, 2 right
     int valign = 1;                                      // Text: 0 top, 1 middle, 2 bottom of its box
+    float weight = 0;                                    // texts: thicker letters (0 normal .. 1 heavy)
+    float outline = 0; uint32_t outlineColor = 0x000000; // texts: a line all around the outside of the letters (0 none .. 1 thick); the letters stay whole
     ScreenColors col; float alpha = 1;
     bool filled = true, frame = true; float rounding = 0.25f, border = 2;   // Panel / Button: a fill, a frame line, round corners (part of the height)
     ScreenAct act = ScreenAct::None; std::string target; // Button: what it does (GoTo: a screen's name)
@@ -123,6 +125,7 @@ struct StackStep {
     float hold = 2;                                      // Text: seconds it stays once typed; Wait: seconds; Sound: seconds to wait after it starts
     float fade = 0.8f;                                   // Picture: fading in; Clear: fading out
     float textSize = 0.036f; uint32_t color = 0xD8EEF8; int align = 1;
+    float weight = 0, outline = 0; uint32_t outlineColor = 0x000000;   // Text: thicker letters, an outline around them
 };
 struct StackBuild { std::vector<ScreenItem> items; std::vector<float> starts; float length = 0; };   // its items, when each step starts, how long it all takes
 StackBuild buildStack(const std::vector<StackStep>& steps);
