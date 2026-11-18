@@ -119,16 +119,20 @@ struct StackStep {
     StepKind kind = StepKind::Text;
     std::string file;                                    // Picture: a picture / GIF in the "screens" folder
     bool zoom = false; float zoomTo = 1.2f, zoomTime = 4;   // Picture: zooms in slowly (to this size, over this long; then the next step), or stays (the next step right after it faded in)
-    int place = 0;                                       // Picture: 0 the whole screen, 1 the top part (text under it); Text: 0 bottom, 1 middle, 2 top
+    int place = 0;                                       // Picture: 0 the whole screen, 1 the top part (text under it), 2 the middle (a logo); Text: 0 bottom, 1 middle, 2 top, 3 under the middle (a line under a title)
     std::string text;                                    // Text: what it says ({game} {world})
     float typeSpeed = 22; SoundUse sound;                // Text: letters a second (0: all at once), a sound per letter; Sound: what plays
     float hold = 2;                                      // Text: seconds it stays once typed; Wait: seconds; Sound: seconds to wait after it starts
     float fade = 0.8f;                                   // Picture: fading in; Clear: fading out
     float textSize = 0.036f; uint32_t color = 0xD8EEF8; int align = 1;
     float weight = 0, outline = 0; uint32_t outlineColor = 0x000000;   // Text: thicker letters, an outline around them
+    float textFade = 0.15f;                              // Text: fading in over this long
+    bool keep = false;                                   // Text: comes with the text before (instead of replacing it: a title and a line under it)
 };
-struct StackBuild { std::vector<ScreenItem> items; std::vector<float> starts; float length = 0; };   // its items, when each step starts, how long it all takes
+struct StackBuild { std::vector<ScreenItem> items; std::vector<float> starts; float end = 0, length = 0; };   // its items, when each step starts, when the last is done, how long it all takes
 StackBuild buildStack(const std::vector<StackStep>& steps);
+// a timeline's texts, pictures and sounds as steps (taken out of `items`; what can't be a step stays there), timed about the same
+std::vector<StackStep> stepsFromItems(std::vector<ScreenItem>& items);
 
 struct Screen {
     std::string name = "Screen";

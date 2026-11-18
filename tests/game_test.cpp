@@ -1223,14 +1223,35 @@ int main() {
                 CHECK(tx2.hideAt > 0 && tx3.showAt >= tx2.hideAt - 1e-4, "a text replaces the one before (it fades first)");
                 CHECK(bd.items.back().kind == ScreenItemKind::Sound && std::fabs(bd.items.back().showAt - bd.starts[6]) < 1e-4 && bd.length > bd.starts[6] + 0.5f, "a sound plays at its step; it all ends after the last");
                 CHECK(tx3.hideAt > 0 && pic2.hideAt > 0, "at the end everything fades away");
+                {   // splash things: a text with the one before, its own fade; a timeline turned into steps
+                    StackStep ti; ti.kind = StepKind::Text; ti.text = "GAME"; ti.place = 1; ti.typeSpeed = 0; ti.textFade = 0.8f; ti.hold = 0.5f;
+                    StackStep sub = ti; sub.text = "made with"; sub.keep = true; sub.place = 3; sub.textFade = 0.6f; sub.hold = 1.5f;
+                    StackBuild sb = buildStack({ ti, sub });
+                    CHECK(std::fabs(sb.starts[1] - (sb.starts[0] + 1.3f)) < 1e-4 && std::fabs(sb.items[0].fade - 0.8f) < 1e-4, "a text shown at once: it fades in over its own time, then stays");
+                    CHECK(sb.items[0].hideAt > sb.starts[1] + 1.5f && sb.items[1].y > sb.items[0].y, "a text that comes with the one before: both stay (the line under the title)");
+                    ScreenSet ds = defaultScreens(); const mc::Screen& spl = ds.screens[ds.byRole(ScreenRole::Intro)];
+                    CHECK(spl.useStack && spl.stack.size() == 2 && spl.stack[1].keep && spl.items.empty(), "the Splash preset is a stack too");
+                    std::vector<ScreenItem> old;
+                    { ScreenItem a1; a1.kind = ScreenItemKind::Text; a1.text = "{game}"; a1.y = 0.4f; a1.h = 0.14f; a1.showAt = 0.5f; a1.hideAt = 3.6f; a1.fade = 0.8f; old.push_back(a1);
+                      ScreenItem a2; a2.kind = ScreenItemKind::Text; a2.text = "made with"; a2.y = 0.56f; a2.h = 0.05f; a2.showAt = 1.3f; a2.hideAt = 3.4f; a2.fade = 0.6f; old.push_back(a2);
+                      ScreenItem bt; bt.kind = ScreenItemKind::Button; bt.text = "Skip"; old.push_back(bt);
+                      ScreenItem lg; lg.kind = ScreenItemKind::Image; lg.image = "logo.png"; lg.x = 0.3f; lg.y = 0.2f; lg.w = 0.4f; lg.h = 0.4f; lg.showAt = 4; lg.fade = 1; old.push_back(lg); }
+                    std::vector<StackStep> conv = stepsFromItems(old); StackBuild cb = buildStack(conv);
+                    int texts = 0, picsN = 0; for (auto& c2 : conv) { texts += c2.kind == StepKind::Text; picsN += c2.kind == StepKind::Picture; }
+                    CHECK(old.size() == 1 && old[0].kind == ScreenItemKind::Button && texts == 2 && picsN == 1, "a timeline's texts and pictures become steps (a button stays an item)");
+                    int sub2 = -1; for (int k2 = 0; k2 < (int)conv.size(); k2++) if (conv[k2].kind == StepKind::Text && conv[k2].text == "made with") sub2 = k2;
+                    CHECK(sub2 >= 0 && conv[sub2].keep && conv[sub2].place == 3, "the line under the title stays with it");
+                    float firstAt = 0, picAt = 0; for (size_t k2 = 0; k2 < conv.size(); k2++) { if (conv[k2].text == "{game}") firstAt = cb.starts[k2]; if (conv[k2].kind == StepKind::Picture) picAt = cb.starts[k2]; }
+                    CHECK(std::fabs(firstAt - 0.5f) < 0.06f && std::fabs(picAt - 4) < 0.06f, "steps come at about their old times (%.2f, %.2f)", firstAt, picAt);
+                }
                 ScreenSet ks = defaultScreens(); int story = ks.find("Story");
                 CHECK(story >= 0 && ks.screens[story].useStack && ks.screens[story].stack.size() == 3 && ks.screens[story].duration == buildStack(ks.screens[story].stack).length, "the Story preset is a stack (and lasts as long as it)");
                 ks.screens[story].stack.insert(ks.screens[story].stack.begin(), p2); ks.screens[story].stack[1].sound.file = "type.wav";
                 saveScreens("/tmp/prim_stack.txt", ks); ScreenSet kl; loadScreens("/tmp/prim_stack.txt", kl); const mc::Screen& ls = kl.screens[story];
                 CHECK(buildStack({ [] { StackStep x; x.kind = StepKind::Text; x.text = "hi"; x.weight = 0.5f; x.outline = 0.4f; x.outlineColor = 0x102030; return x; }() }).items[0].outline == 0.4f, "a text step's thickness and outline reach its text");
                 ks.screens[story].stack[2].weight = 0.6f; ks.screens[story].stack[2].outline = 0.3f; ks.screens[story].stack[2].outlineColor = 0x112233; ks.screens[story].items[0].weight = 0.25f; ks.screens[story].items[0].outline = 0.5f; ks.screens[story].items[0].outlineColor = 0x445566;
-                saveScreens("/tmp/prim_stack.txt", ks); loadScreens("/tmp/prim_stack.txt", kl);
-                CHECK(ls.stack[2].weight == 0.6f && ls.stack[2].outline == 0.3f && ls.stack[2].outlineColor == 0x112233 && ls.items[0].weight == 0.25f && ls.items[0].outline == 0.5f && ls.items[0].outlineColor == 0x445566, "thickness and outlines save and load (steps and items)");
+                saveScreens("/tmp/prim_stack2.txt", ks); ScreenSet kl2; loadScreens("/tmp/prim_stack2.txt", kl2); const mc::Screen& ls2 = kl2.screens[story];
+                CHECK(ls2.stack[2].weight == 0.6f && ls2.stack[2].outline == 0.3f && ls2.stack[2].outlineColor == 0x112233 && ls2.items[0].weight == 0.25f && ls2.items[0].outline == 0.5f && ls2.items[0].outlineColor == 0x445566, "thickness and outlines save and load (steps and items)");
                 CHECK(ls.useStack && ls.stack.size() == 4 && ls.stack[0].zoom && ls.stack[0].zoomTo == 1.5f && ls.stack[0].file == "ridley.png" && ls.stack[1].sound.file == "type.wav" && ls.stack[1].text == ks.screens[story].stack[1].text
                       && std::fabs(ls.duration - buildStack(ls.stack).length) < 1e-4, "a stack saves and loads (and its length is worked out again)");
             }
@@ -1240,7 +1261,7 @@ int main() {
             saveScreens("/tmp/prim_screens_t.txt", ts); ScreenSet tl; loadScreens("/tmp/prim_screens_t.txt", tl);
             const mc::Screen& a = tl.screens[5]; const ScreenItem& st = tl.screens[6].items[0];
             CHECK(tl.sounds.hover.file == "tick.wav" && tl.sounds.click.file == "beep.wav" && tl.sounds.click.volume == 0.5f && tl.sounds.back.file.empty() && a.sounds.back.file == "back.wav" && tl.startSound.file == "start.wav" && tl.startFade == 2.25f && !tl.fadeWithSound, "interface sounds (the game's and a screen's own) and the game-start sound save and load");
-            CHECK(a.musicMode == 1 && a.music.file == "title theme.mp3" && a.musicFade == 2.5f && a.duration == 4 && a.untilVideoEnds && !a.skippable && a.next == "Story", "music and going on by itself save and load");
+            CHECK(a.musicMode == 1 && a.music.file == "title theme.mp3" && a.musicFade == 2.5f && a.useStack && std::fabs(a.duration - buildStack(a.stack).length) < 1e-4 && a.untilVideoEnds && !a.skippable && a.next == "Story", "music and going on by itself save and load");
             CHECK(st.typeSpeed == 22 && st.typeSound.file == "type.wav" && st.driftY == -0.01f && st.showAt == 0.8f && st.hideAt == 6.4f && st.fadeOut == 0.8f, "an item's timing, typing and drift save and load");
         }
         {   // the story used to follow the splash (version 2): now it is the intro of a new game

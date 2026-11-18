@@ -161,8 +161,10 @@ Screen presetScreen(ScreenRole r) {
         s.name = "Splash"; s.bg.color = s.bg.color2 = 0x000000; s.comp = Compositor{}; s.fadeIn = 0.6f; s.duration = 4; s.next = "";
         { int bg = s.comp.add(NodeType::Background, 40, 60), ui = s.comp.add(NodeType::UI, 40, 220), over = s.comp.add(NodeType::AlphaOver, 300, 120), gl = s.comp.add(NodeType::Glare, 520, 120), out = s.comp.add(NodeType::Output, 740, 120);
           s.comp.connect(bg, over, 0); s.comp.connect(ui, over, 1); s.comp.connect(over, gl, 0); s.comp.connect(gl, out, 0); }
-        ScreenItem t = text("Title", "{game}", 0.1f, 0.4f, 0.8f, 0.14f, 0.1f); t.showAt = 0.5f; t.hideAt = 3.6f; t.fade = 0.8f; t.grow = 0.02f; s.items.push_back(t);
-        ScreenItem m = text("Made with", "made with PRIMEngine", 0.1f, 0.56f, 0.8f, 0.05f, 0.028f); m.showAt = 1.3f; m.hideAt = 3.4f; m.fade = 0.6f; m.alpha = 0.6f; s.items.push_back(m);
+        s.useStack = true;   // (a stack: the name, then a line under it, then on)
+        StackStep t; t.kind = StepKind::Text; t.text = "{game}"; t.place = 1; t.textSize = 0.1f; t.typeSpeed = 0; t.textFade = 0.8f; t.hold = 0.6f; s.stack.push_back(t);
+        StackStep m; m.kind = StepKind::Text; m.text = "made with PRIMEngine"; m.keep = true; m.place = 3; m.textSize = 0.028f; m.color = 0x7A8A9A; m.typeSpeed = 0; m.textFade = 0.6f; m.hold = 1.6f; s.stack.push_back(m);
+        s.duration = buildStack(s.stack).length;
         break; }
     default: s.name = "Screen"; break;
     }
@@ -193,17 +195,18 @@ const char* stepKindName(StepKind k) {
     int i = (int)k; return i >= 0 && i < (int)StepKind::COUNT ? n[i] : "?";
 }
 StackBuild buildStack(const std::vector<StackStep>& steps) {
-    StackBuild b; float t = 0.4f; int pic = -1, txt = -1;
+    StackBuild b; float t = 0.4f; int pic = -1, txt = -1; std::vector<int> kept;   // kept: texts staying along with the newest one
     auto letters = [](const std::string& s) { size_t n = 0; for (unsigned char c : s) if ((c & 0xC0) != 0x80) n++; return n; };
     auto fadeAway = [&](int& i, float at, float over) { if (i < 0) return; b.items[i].hideAt = at + over; b.items[i].fadeOut = over; i = -1; };
+    auto textsAway = [&](float at, float over) { for (int k : kept) { int j = k; fadeAway(j, at, over); } kept.clear(); fadeAway(txt, at, over); };
     for (size_t k = 0; k < steps.size(); k++) {
         const StackStep& s = steps[k]; b.starts.push_back(t);
         switch (s.kind) {
         case StepKind::Picture: {   // a new page: the one before fades as this one comes
             float f = std::max(0.05f, s.fade);
-            fadeAway(txt, t, 0.5f); fadeAway(pic, t, f);
+            textsAway(t, 0.5f); fadeAway(pic, t, f);
             ScreenItem it; it.name = "Picture " + std::to_string(k + 1); it.kind = ScreenItemKind::Image; it.image = s.file; it.showAt = t; it.fade = f;
-            if (s.place == 1) { it.x = 0.15f; it.y = 0.06f; it.w = 0.7f; it.h = 0.58f; } else { it.x = 0; it.y = 0; it.w = 1; it.h = 1; }
+            if (s.place == 1) { it.x = 0.15f; it.y = 0.06f; it.w = 0.7f; it.h = 0.58f; } else if (s.place == 2) { it.x = 0.3f; it.y = 0.2f; it.w = 0.4f; it.h = 0.42f; } else { it.x = 0; it.y = 0; it.w = 1; it.h = 1; }
             if (s.zoom) {   // slowly closer, from when it starts to show
                 ItemKey a; a.t = t; a.x = it.x; a.y = it.y; a.smooth = false; ItemKey z = a; z.t = t + f + std::max(0.1f, s.zoomTime); z.scale = std::max(0.1f, s.zoomTo); z.smooth = true;
                 it.keys = { a, z };
@@ -212,26 +215,58 @@ StackBuild buildStack(const std::vector<StackStep>& steps) {
             t += f + (s.zoom ? std::max(0.1f, s.zoomTime) : 0.f);
             break; }
         case StepKind::Text: {   // the text before goes first
-            if (txt >= 0) { fadeAway(txt, t, 0.4f); t += 0.45f; }
-            ScreenItem it; it.name = "Text " + std::to_string(k + 1); it.kind = ScreenItemKind::Text; it.text = s.text; it.showAt = t; it.fade = 0.15f;
+            if (s.keep) { if (txt >= 0) kept.push_back(txt); txt = -1; }
+            else if (txt >= 0 || !kept.empty()) { textsAway(t, 0.4f); t += 0.45f; }
+            ScreenItem it; it.name = "Text " + std::to_string(k + 1); it.kind = ScreenItemKind::Text; it.text = s.text; it.showAt = t; it.fade = std::max(0.02f, s.textFade);
             it.typeSpeed = s.typeSpeed; it.typeSound = s.sound; it.textSize = s.textSize; it.col.text = s.color; it.align = s.align;
             it.weight = s.weight; it.outline = s.outline; it.outlineColor = s.outlineColor;
             it.x = 0.1f; it.w = 0.8f;
-            if (s.place == 2) { it.y = 0.05f; it.h = 0.22f; it.valign = 0; } else if (s.place == 1) { it.y = 0.32f; it.h = 0.36f; it.valign = 1; } else { it.y = 0.68f; it.h = 0.26f; it.valign = 0; }
+            if (s.place == 2) { it.y = 0.05f; it.h = 0.22f; it.valign = 0; } else if (s.place == 1) { it.y = 0.32f; it.h = 0.36f; it.valign = 1; } else if (s.place == 3) { it.y = 0.6f; it.h = 0.1f; it.valign = 0; } else { it.y = 0.68f; it.h = 0.26f; it.valign = 0; }
             b.items.push_back(it); txt = (int)b.items.size() - 1;
-            t += (s.typeSpeed > 0 ? letters(s.text) / s.typeSpeed : 0.f) + std::max(0.f, s.hold);
+            t += std::max(s.typeSpeed > 0 ? letters(s.text) / s.typeSpeed : 0.f, s.typeSpeed > 0 ? 0.f : std::max(0.02f, s.textFade)) + std::max(0.f, s.hold);   // (shown at once: once it has faded in)
             break; }
         case StepKind::Wait: t += std::max(0.f, s.hold); break;
         case StepKind::Sound: {
             ScreenItem it; it.name = "Sound " + std::to_string(k + 1); it.kind = ScreenItemKind::Sound; it.sound = s.sound; it.showAt = t; b.items.push_back(it);
             t += std::max(0.f, s.hold); break; }
-        case StepKind::Clear: { float f = std::max(0.05f, s.fade); fadeAway(txt, t, f); fadeAway(pic, t, f); t += f; break; }
+        case StepKind::Clear: { float f = std::max(0.05f, s.fade); textsAway(t, f); fadeAway(pic, t, f); t += f; break; }
         default: break;
         }
     }
-    float end = steps.empty() ? 0 : 1.f; fadeAway(txt, t, end); fadeAway(pic, t, end);   // at the end all of it fades away
+    float end = steps.empty() ? 0 : 1.f; b.end = t; textsAway(t, end); fadeAway(pic, t, end);   // at the end all of it fades away
     b.length = t + end + (steps.empty() ? 0 : 0.3f);
     return b;
+}
+std::vector<StackStep> stepsFromItems(std::vector<ScreenItem>& items) {
+    std::vector<ScreenItem> moving, rest;
+    for (const ScreenItem& it : items) (it.kind == ScreenItemKind::Text || it.kind == ScreenItemKind::Image || it.kind == ScreenItemKind::Sound) ? moving.push_back(it) : rest.push_back(it);
+    std::stable_sort(moving.begin(), moving.end(), [](const ScreenItem& a, const ScreenItem& b) { return a.showAt < b.showAt; });
+    std::vector<StackStep> st; const ScreenItem* prevText = nullptr;
+    for (size_t i = 0; i < moving.size(); i++) {
+        const ScreenItem& it = moving[i];
+        float next = buildStack(st).end; if (st.empty()) next = 0.4f;
+        if (it.showAt > next + 0.05f) { StackStep w; w.kind = StepKind::Wait; w.hold = it.showAt - next; st.push_back(w); }   // (a pause, so it comes at about its time)
+        StackStep s;
+        if (it.kind == ScreenItemKind::Text) {
+            s.kind = StepKind::Text; s.text = it.text; s.typeSpeed = it.typeSpeed; s.sound = it.typeSound; s.textSize = it.textSize; s.color = it.col.text; s.align = it.align;
+            s.weight = it.weight; s.outline = it.outline; s.outlineColor = it.outlineColor; s.textFade = std::max(0.02f, it.fade);
+            float cy = it.y + it.h * 0.5f; s.place = cy < 0.3f ? 2 : cy > 0.66f ? 0 : cy >= 0.53f ? 3 : 1;
+            s.keep = prevText && (prevText->hideAt <= 0 || prevText->hideAt > it.showAt);   // (still there when this one comes)
+            s.hold = 0; prevText = &it;
+        } else if (it.kind == ScreenItemKind::Image) {
+            s.kind = StepKind::Picture; s.file = it.image; s.fade = std::max(0.05f, it.fade);
+            s.place = it.w >= 0.95f && it.h >= 0.95f ? 0 : it.y < 0.12f && it.w >= 0.6f ? 1 : 2;
+            if (it.grow > 0) { s.zoom = true; s.zoomTime = 3; s.zoomTo = 1 + it.grow * 3; }
+        } else { s.kind = StepKind::Sound; s.sound = it.sound; s.hold = 0; }
+        st.push_back(s);
+        if (s.kind == StepKind::Text) {   // it stays until the next one comes (or until it goes)
+            float typed = buildStack(st).end;   // (when this one is done showing, with no stay)
+            float until = i + 1 < moving.size() ? moving[i + 1].showAt : it.hideAt > 0 ? it.hideAt : typed + 1.5f;
+            st.back().hold = std::max(0.f, until - typed);
+        }
+    }
+    items = rest;
+    return st;
 }
 float itemShown(const ScreenItem& it, double t) {
     double f = std::max(0.01f, it.fade), fo = std::max(0.01f, it.fadeOutTime());
@@ -312,7 +347,7 @@ bool saveScreens(const std::string& path, const ScreenSet& set) {
         if (s.useStack) f << "usestack 1\n";
         for (const StackStep& st : s.stack) {
             f << "step " << (int)st.kind << " " << escText(st.file) << " " << (st.zoom ? 1 : 0) << " " << st.zoomTo << " " << st.zoomTime << " " << st.place << " " << escText(st.text) << " "
-              << st.typeSpeed << " " << st.hold << " " << st.fade << " " << st.textSize << " " << st.color << " " << st.align << " " << st.weight << " " << st.outline << " " << st.outlineColor << "\n";
+              << st.typeSpeed << " " << st.hold << " " << st.fade << " " << st.textSize << " " << st.color << " " << st.align << " " << st.weight << " " << st.outline << " " << st.outlineColor << " " << st.textFade << " " << (st.keep ? 1 : 0) << "\n";
             if (!st.sound.empty()) f << "stsound " << soundUseText(st.sound) << "\n";
         }
         for (const ScreenItem& i : s.items) {
@@ -375,6 +410,7 @@ bool loadScreens(const std::string& path, ScreenSet& set) {
             if (l >> kd >> fl >> z >> st.zoomTo >> st.zoomTime >> st.place >> tx >> st.typeSpeed >> st.hold >> st.fade >> st.textSize >> st.color >> st.align) {
                 st.kind = (StepKind)std::clamp(kd, 0, (int)StepKind::COUNT - 1); st.file = unescText(fl); st.text = unescText(tx); st.zoom = z != 0;
                 { float w = 0, o = 0; uint32_t oc = 0; if (l >> w >> o >> oc) { st.weight = w; st.outline = o; st.outlineColor = oc; } }   // (older files: plain letters)
+                { float tf = 0.15f; int kp = 0; if (l >> tf >> kp) { st.textFade = tf; st.keep = kp != 0; } }
                 cur->stack.push_back(st);
             }
         }

@@ -246,9 +246,10 @@ An intro (like Super Metroid's) is a list of steps, played top to bottom; the ti
 
 - **Picture**: it **stays** (the next step, a text say, starts right after it faded in) or **zooms in slowly** (closer, to the size and over the seconds you set; the next step starts when the zoom is done). The whole screen, or the top part with the text under it. A new picture starts a new page: the picture and text before it fade away as it comes.
 - **Text**: typed letter by letter (a sound per letter), it stays a while, then the next step; a new text replaces it (it fades first). Bottom, middle or top; size, colour, lined up.
+- A picture can also sit in **the middle** (a logo); a text can fade in over its own time and **come with the text before** (a title and a line under it: "under the middle").
 - **Wait** (seconds), **Sound** (plays; then waits, or not), **Clear** (everything fades away).
 
-Add steps with the buttons above the list (they go after the picked one), drag them (or the arrows) to change the order, right-click to duplicate or delete. Picking a step shows it on the canvas (faded in, typed) and its settings on the right. Play plays it all with its sounds. The screen lasts as long as its steps take, then goes on. The Story preset is a stack; a screen can be switched to a timeline (and back) at any time.
+Add steps with the buttons above the list (they go after the picked one), drag them (or the arrows) to change the order, right-click to duplicate or delete. Picking a step shows it on the canvas (faded in, typed) and its settings on the right. Play plays it all with its sounds. The screen lasts as long as its steps take, then goes on. The Story and Splash presets are stacks; a screen can be switched to a timeline (and back) at any time. Switching a timeline screen to a stack turns its texts, pictures and sounds into steps (at about the same times); buttons and the rest stay items.
 
 ### The timeline (Screens > Layout, under the canvas)
 

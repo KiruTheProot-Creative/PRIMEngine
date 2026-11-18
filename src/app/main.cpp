@@ -6800,7 +6800,7 @@ struct App {
     std::string StepSummary(const StackStep& s) {
         switch (s.kind) {
         case StepKind::Picture: return (s.file.empty() ? std::string("(pick a picture)") : s.file) + (s.zoom ? "  -  zooms in" : "  -  stays");
-        case StepKind::Text: { std::string t = s.text.substr(0, s.text.find('\n')); if (t.size() < s.text.size()) t += " ..."; return t.empty() ? "(no text yet)" : t; }
+        case StepKind::Text: { std::string t = s.text.substr(0, s.text.find('\n')); if (t.size() < s.text.size()) t += " ..."; return (t.empty() ? "(no text yet)" : t) + (s.keep ? "   (with the text before)" : ""); }
         case StepKind::Wait: { char b[32]; snprintf(b, sizeof b, "%.1f s", s.hold); return b; }
         case StepKind::Sound: return s.sound.empty() ? "(pick a sound)" : s.sound.file;
         case StepKind::Clear: return "everything fades away";
@@ -6916,7 +6916,7 @@ struct App {
             Prop("It"); int z = s.zoom ? 1 : 0; const char* zz[] = { "Stays", "Zooms in slowly" }; if (ImGui::Combo("##stz", &z, zz, 2)) { s.zoom = z == 1; c = true; }
             if (s.zoom) { Prop("  closer, to"); c |= ImGui::SliderFloat("##stzt", &s.zoomTo, 1.02f, 3, "x %.2f"); Prop("  over"); c |= ImGui::SliderFloat("##stzs", &s.zoomTime, 0.5f, 20, "%.1f s"); }
             Prop("Fades in over"); c |= ImGui::SliderFloat("##stfd", &s.fade, 0.05f, 4, "%.1f s");
-            Prop("Where"); const char* pl[] = { "The whole screen", "The top part (text under it)" }; c |= ImGui::Combo("##stpl", &s.place, pl, 2);
+            Prop("Where"); const char* pl[] = { "The whole screen", "The top part (text under it)", "The middle (a logo)" }; c |= ImGui::Combo("##stpl", &s.place, pl, 3);
             Hint(s.zoom ? "It fades in and slowly zooms in; the next step starts when the zoom is done." : "It fades in and stays; the next step (a text, say) starts right after it faded in.");
             Hint("A picture starts a new page: the picture and text before it fade away as it comes.");
             break; }
@@ -6925,13 +6925,16 @@ struct App {
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("{game} {world} are filled in. New lines stay; long lines wrap.");
             Prop("Typed"); c |= ImGui::SliderFloat("##stts", &s.typeSpeed, 0, 80, s.typeSpeed <= 0 ? "all at once" : "%.0f letters/s");
             if (s.typeSpeed > 0) { Prop("Letter sound"); c |= SoundEdit("##stsn", s.sound, false); }
-            Prop("Stays for"); c |= ImGui::SliderFloat("##sth", &s.hold, 0, 15, "%.1f s once typed");
-            Prop("Where"); const char* pl[] = { "Bottom", "Middle", "Top" }; c |= ImGui::Combo("##stpl", &s.place, pl, 3);
+            Prop("Fades in over"); c |= ImGui::SliderFloat("##sttf", &s.textFade, 0.02f, 4, "%.2f s");
+            Prop("Stays for"); c |= ImGui::SliderFloat("##sth", &s.hold, 0, 15, s.typeSpeed > 0 ? "%.1f s once typed" : "%.1f s once there");
+            Prop("Where"); const char* pl[] = { "Bottom", "Middle", "Top", "Under the middle (a line under a title)" }; c |= ImGui::Combo("##stpl", &s.place, pl, 4);
+            Prop("Comes with the text before"); c |= ImGui::Checkbox("##stk2", &s.keep);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("On: the text before stays (a title and a line under it: put them in different places).\nOff: it replaces the text before.");
             Prop("Size"); c |= ImGui::SliderFloat("##stsz", &s.textSize, 0.015f, 0.12f, "%.3f");
             Prop("Colour"); c |= ColorU32("##stc", s.color);
             Prop("Lined up"); const char* al[] = { "Left", "Middle", "Right" }; c |= ImGui::Combo("##sta", &s.align, al, 3);
             c |= TextLookUI(s.weight, s.outline, s.outlineColor);
-            Hint("It is typed letter by letter, stays a while, then the next step. A new text replaces this one (it fades first).");
+            Hint(s.typeSpeed > 0 ? "It is typed letter by letter, stays a while, then the next step. A new text replaces this one (it fades first), unless the new one comes with it." : "It fades in, stays a while, then the next step. A new text replaces this one, unless the new one comes with it.");
             break; }
         case StepKind::Wait: Prop("Waits"); c |= ImGui::SliderFloat("##stw", &s.hold, 0, 20, "%.1f s"); Hint("Nothing new for a while: what is there stays."); break;
         case StepKind::Sound: Prop("Sound"); c |= SoundEdit("##sts", s.sound, false); Prop("Then waits"); c |= ImGui::SliderFloat("##stw", &s.hold, 0, 20, "%.1f s"); Hint("It plays, and the next step starts after the wait (0: right away, while it plays)."); break;
@@ -7011,7 +7014,15 @@ struct App {
             int m = sc.useStack ? 0 : 1; ImGui::AlignTextToFramePadding(); ImGui::TextDisabled("Made as"); ImGui::SameLine();
             bool chm = ImGui::RadioButton("a stack", &m, 0); if (ImGui::IsItemHovered()) ImGui::SetTooltip("Steps one after another (pictures, texts, waits, sounds): the timing works itself out. For intros.");
             ImGui::SameLine(); chm |= ImGui::RadioButton("a timeline", &m, 1); if (ImGui::IsItemHovered()) ImGui::SetTooltip("Every item on a timeline, where you put it, with keyframes. For splash screens and anything free.");
-            if (chm && sc.useStack != (m == 0)) { sc.useStack = m == 0; if (sc.useStack) sc.duration = buildStack(sc.stack).length; stackSel = -1; scrPlayT = 0; scrPrevT = -1; ch = true; }
+            if (chm && sc.useStack != (m == 0)) {
+                sc.useStack = m == 0;
+                if (sc.useStack && sc.stack.empty()) {   // its texts, pictures and sounds become steps (at about the same times)
+                    size_t before = sc.items.size(); sc.stack = stepsFromItems(sc.items); scrItem = -1;
+                    if (!sc.stack.empty()) Toast("Its " + std::to_string(before - sc.items.size()) + " texts, pictures and sounds became steps" + (sc.items.empty() ? "" : " (the rest stays as items)"));
+                }
+                if (sc.useStack) sc.duration = buildStack(sc.stack).length;
+                stackSel = -1; scrPlayT = 0; scrPrevT = -1; ch = true;
+            }
         }
         if (sc.useStack) ScreenStack(sc, ch, ImGui::GetContentRegionAvail().y); else ScreenTimeline(sc, ch, ImGui::GetContentRegionAvail().y);
         ImGui::EndChild();
