@@ -6241,6 +6241,7 @@ struct App {
         if (!w.empty() && w != CurrentWorld() && std::find(worldList.begin(), worldList.end(), w) != worldList.end()) { travelling = true; SaveWorld(); OpenWorld(w); travelling = false; }
     }
     void StartSlot(int slot) {   // a new game in this file
+        if (playMode) StopPlay();
         CloseScreens(); plainView = false;
         GoToWorld(!game.startWorld.empty() ? game.startWorld : menuEditorWorld);
         player.flying = false; StartPlay(true);
@@ -6250,6 +6251,7 @@ struct App {
     bool LoadSlot(int slot) {   // go on from where this file was saved
         SaveGame g; std::string dir = SlotDir(slot);
         if (!loadGame(dir, g)) { Toast("File " + std::to_string(slot) + " could not be read"); return false; }
+        if (playMode) StopPlay();   // (from the death screen: start clean)
         CloseScreens(); plainView = false;
         GoToWorld(g.world);
         player.flying = false; StartPlay(true);
