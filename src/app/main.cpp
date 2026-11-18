@@ -5729,7 +5729,8 @@ struct App {
         bool enter = ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter) || ImGui::IsKeyPressed(ImGuiKey_Space);
         if (menuSel >= 0 && menuSel < n && menuHits[menuSel].kind >= 5) {   // on an option: A / D (or the arrows) change it, Enter flips / sets a key
             MenuHit mh = menuHits[menuSel]; int dir = (ImGui::IsKeyPressed(ImGuiKey_LeftArrow) || ImGui::IsKeyPressed(ImGuiKey_A)) ? -1 : (ImGui::IsKeyPressed(ImGuiKey_RightArrow) || ImGui::IsKeyPressed(ImGuiKey_D)) ? 1 : 0;
-            if (mh.kind == 6) { if (dir) { int g = std::clamp(menuOptGroup + dir, 0, (int)optionGroups().size() - 1); if (g != menuOptGroup) { menuOptGroup = g; optSelTab = g; } } else if (enter) menuOptGroup = mh.arg; return; }
+            if (mh.kind == 6 && (dir || enter)) { if (dir) { int g = std::clamp(menuOptGroup + dir, 0, (int)optionGroups().size() - 1); if (g != menuOptGroup) { menuOptGroup = g; optSelTab = g; } } else menuOptGroup = mh.arg; return; }
+            // (otherwise on to the mouse below: it used to stop here whenever the Sound / Graphics / Controls tabs were picked, which they are when the page opens)
             if (mh.kind == 7) {
                 const OptionDef& d = optionDefs()[mh.arg];
                 if (dir) menuBindSlot = dir < 0 ? 0 : 1;
