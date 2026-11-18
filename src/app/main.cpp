@@ -26,6 +26,7 @@
 #include "../game/cull.h"
 #include "../game/screens.h"
 #include "../game/savegame.h"
+#include "../game/bosses.h"
 #include "media.h"
 #include "../world/visibility.h"
 #include "../game/enemies.h"
@@ -623,7 +624,7 @@ struct App {
         { std::vector<Broken> keep = broken; RestoreBroken(); world->saveAll(); for (const Broken& b : keep) world->set(b.x, b.y, b.z, AIR); broken = keep; }   // Play mode: broken blocks are not saved broken
         if (!playMode) { std::vector<std::array<int, 3>> gone; for (auto& kv : breakables.marks) if (world->get(kv.first[0], kv.first[1], kv.first[2]) == AIR && world->loaded(kv.first[0], kv.first[1], kv.first[2])) gone.push_back(kv.first); for (auto& g : gone) breakables.marks.erase(g); }
         { std::error_code e2; if (breakables.marks.empty()) fs::remove(fs::u8path(worldDir + "/breakable.txt"), e2); else saveBreakables(worldDir + "/breakable.txt", breakables); }
-        saveObjects(worldDir + "/objects.txt", objects); SaveHud();
+        saveObjects(worldDir + "/objects.txt", SavedObjects()); SaveHud();
         std::error_code ec; if (!events.empty()) saveEvents(worldDir + "/events.txt", events); else fs::remove(worldDir + "/events.txt", ec);
     }
     void CloseWorld() {   // the project stays open
@@ -843,7 +844,7 @@ struct App {
         if (playMode && !paused) UpdateDoors(std::min(dt, 0.05)); else if (!playMode && !doorRt.empty()) { doorRt.clear(); doorGpu.clear(); shots.clear(); RebuildSolids(); }
         if (playMode && !paused) {   // health, lava, falling out of the world, respawning
             PlayState::Event e = play.tick(*world, player, playRules, playSpawn, playYaw, std::min(dt, 0.05));
-            if (e == PlayState::Died) { Toast(std::string("You ") + play.cause); Signal(When::Dies, ""); }
+            if (e == PlayState::Died) { Toast(std::string("You ") + play.cause); Signal(When::Dies, ""); ResetBossFights(); }
         }
         mouseDX = mouseDY = 0;
         weather.update(dt, player.feet);
@@ -1361,9 +1362,9 @@ struct App {
     };
     void NoteFired() { for (int i = 0; i < (int)events.size(); i++) { int n = evRun.firedCount(i); if (n != evSeen[i]) { evSeen[i] = n; evFlash[i] = animTime; } } }
     std::map<int, int> evSeen;
-    void Signal(When k, const std::string& subject, const std::string& also = "") {
+    void Signal(When k, const std::string& subject, const std::string& also = "", float number = 0) {
         if (!playMode || events.empty()) return;
-        EvHost h(*this); evRun.signal(events, { k, subject, also }, h); NoteFired();
+        EvHost h(*this); evRun.signal(events, { k, subject, also, number }, h); NoteFired();
     }
     void EvStart(bool keepFlags = false) {
         std::set<std::string> fl = evRun.flags;
@@ -1403,6 +1404,12 @@ struct App {
         case Do::HudShow: hudShown[nm] = true; break;
         case Do::HudHide: hudShown[nm] = false; break;
         case Do::HudFlash: hudFlashAt[nm] = animTime; hudShown[nm] = true; break;
+        case Do::StartFight: each([&](WorldObject& o) { StartBossFight(o); }); break;
+        case Do::Shake: camShake = std::max(camShake, std::max(0.f, d.number)); break;
+        case Do::Countdown: countdownT = countdownMax = std::max(0.1f, d.number); countdownLabel = d.text; break;
+        case Do::StopCountdown: countdownT = -1; break;
+        case Do::PlayMusic: { SoundUse u; u.file = d.text; PlayMusic(u, 1.f); break; }
+        case Do::StopMusic: StopMusic(1.5f); break;
         default: break;
         }
     }
@@ -1410,6 +1417,8 @@ struct App {
         animTime += dt;
         if (!playMode) return;
         inv.tick((float)dt); bigMsgT = std::max(0.f, bigMsgT - (float)dt);
+        camShake = std::max(0.f, camShake - (float)dt * 1.4f);
+        if (countdownT > 0) { countdownT -= (float)dt; if (countdownT <= 0) { countdownT = -1; Signal(When::CountdownOver, ""); } }
         std::set<uint32_t> now;
         std::string travelWorld, travelTarget; bool travel = false; uint32_t from = 0;
         for (WorldObject& o : objects) {
@@ -1920,8 +1929,19 @@ struct App {
                 }
             }
             for (const Box3& b : world->objectSolids) { double t; if (rayBox(s.pos, s.dir, b, t) && t < best - 1e-6) { best = t; door = -1; blockHit = false; } }
-            uint32_t enemyHitId = 0;   // enemies (where they are now)
-            for (auto& kv : enemyRt) { if (!kv.second.alive()) continue; const EnemyType* et = enemies.find(kv.second.type); if (!et) continue; double t; if (rayBox(s.pos, s.dir, enemyBox(kv.second, *et), t) && t < best - 1e-6) { best = t; enemyHitId = kv.first; door = -1; blockHit = false; } }
+            uint32_t enemyHitId = 0; std::string enemyHitPart;   // enemies (where they are now); a boss: which part
+            for (auto& kv : enemyRt) {
+                if (!kv.second.alive()) continue; const EnemyType* et = enemies.find(kv.second.type); if (!et) continue; double t;
+                if (rayBox(s.pos, s.dir, enemyBox(kv.second, *et), t) && t < best - 1e-6) { best = t; enemyHitId = kv.first; enemyHitPart.clear(); door = -1; blockHit = false; }
+                const BossDef* bd = bosses.forType(et->id); if (!bd || bd->parts.empty()) continue;
+                double bestPart = 1e30; std::string which; double depth = enemyHalfWidth(*et) * 1.2;
+                for (const BossPart& bp : bd->parts) {   // its weak points and armour: the nearest the shot goes through
+                    Box3 pb; if (!BossPartWorld(kv.first, kv.second, *et, bp, pb)) continue; double tp;
+                    if (!rayBox(s.pos, s.dir, pb, tp) || tp >= bestPart) continue;
+                    if (tp < best - 1e-6 || (enemyHitId == kv.first && tp <= best + depth && tp < step)) { bestPart = tp; which = bp.name; }
+                }
+                if (!which.empty()) { if (bestPart < best) best = bestPart; enemyHitId = kv.first; enemyHitPart = which; door = -1; blockHit = false; }
+            }
             if (door >= 0) blockHit = false;
             if (best < step && blockHit) TryBreak(h.x, h.y, h.z, s.weapon, s.missile, s.charged);   // a marked block: it may break
             if (best < step) {
@@ -1944,7 +1964,7 @@ struct App {
                         Beam* wb = s.beam >= 0 && s.beam < (int)weapons.beams.size() ? &weapons.beams[s.beam] : nullptr;
                         MissileType* wm = s.mtype >= 0 && s.mtype < (int)weapons.missileTypes.size() ? &weapons.missileTypes[s.mtype] : nullptr;
                         float base = wm ? wm->damage : wb ? wb->damage * (s.charged ? wb->chargeDamage : 1.f) : 10.f;
-                        DamageEnemy(enemyHitId, base, s.weapon, s.missile, s.charged, false, s.pos);
+                        DamageEnemy(enemyHitId, base, s.weapon, s.missile, s.charged, false, s.pos, enemyHitPart);
                     }
                     for (const WorldObject& o : objects) {   // which named objects were hit (for "when something is shot")
                         if (o.name.empty() || Gone(o) || o.kind == ObjKind::Trigger) continue;
@@ -2127,6 +2147,7 @@ struct App {
     }
     void LoadWorldObjects() {
         objects.clear(); loadObjects(worldDir + "/objects.txt", objects); MigrateLegacyScans(); enemyRt.clear(); enemyShots.clear(); enemyDrops.clear(); debris.clear();
+        spawnedIds.clear(); spawnQueue.clear(); bossRt.clear(); bossPose.clear(); bossSealed.clear(); bossShown = 0;
         for (WorldObject& o : objects) if (o.kind == ObjKind::Enemy) ApplyEnemyType(o); loadEvents(worldDir + "/events.txt", events); loadBreakables(worldDir + "/breakable.txt", breakables);
         nextObjId = 1; for (auto& o : objects) nextObjId = std::max(nextObjId, o.id + 1);
         movingObj = -1; placing.clear(); RebuildSolids();
@@ -2743,6 +2764,11 @@ struct App {
         aspect = (float)rw / rh; camPos = player.eye();
         V3 f = player.forward();
         if (playMode && player.ball) BallCamera(camPos, f);   // the morph ball: seen from behind
+        if (playMode && camShake > 0.001f && settings.screenShake > 0) {   // bosses, slams, roars: the view shakes
+            double k = std::min(1.5, (double)camShake) * settings.screenShake, tt = animTime;
+            camPos += V3{ std::sin(tt * 53.1) * 0.09 * k, std::sin(tt * 61.7 + 1.3) * 0.07 * k, std::sin(tt * 47.3 + 2.1) * 0.09 * k };
+            f = normalize(f + V3{ std::sin(tt * 37.9) * 0.025 * k, std::sin(tt * 43.3 + 0.7) * 0.025 * k, std::sin(tt * 31.1 + 1.9) * 0.025 * k });
+        }
         V3 r = normalize(cross({ 0, 1, 0 }, f)), u = cross(f, r);
         float farZ = (settings.renderDistance + 2) * CS * 1.5f;
         view = XMMatrixLookToLH(XMVectorZero(), XMVectorSet((float)f.x, (float)f.y, (float)f.z, 0), XMVectorSet(0, 1, 0, 0));   // camera at the origin
@@ -3399,6 +3425,7 @@ struct App {
         if (!weapons.missileTypes.empty() && !weapons.missileCounter.empty()) inv.counts[weapons.missileCounter] = weapons.missileStart;
         weapState.missile = 0; chargedOn = false;
         enemyRt.clear(); enemyGone.clear(); zonesCleared.clear(); enemyShots.clear(); enemyDrops.clear(); debris.clear(); enemyAnimT.clear(); enemyAnimClip.clear(); playerInvuln = 0;
+        bossRt.clear(); bossPose.clear(); bossSealed.clear(); bossShown = 0; bossBarFade = 0; spawnQueue.clear(); camShake = 0; countdownT = -1;
         curSlot = -1; playTime = 0; savePrompt = false;
         visor = 0; visorFlash = 0; scanLog.clear(); scanOpen = false; scanProgress = 0; scanTargetId = 0; menuScan = 0; menuScroll.clear(); menuScrollWho.clear();
         seenMaps.clear(); stationsUsed.clear(); mapGpu.clear(); mapGpuWorld.clear(); mapOpen = false;
@@ -3423,6 +3450,7 @@ struct App {
             travelling = true; SaveWorld(); OpenWorld(playStartWorld); travelling = false; editCam = startEditCam;
         }
         RestoreBroken(); bombsOut.clear(); flashes.clear(); StopRoll();   // broken blocks come back
+        ClearSpawned(); bossRt.clear(); bossPose.clear(); bossSealed.clear(); bossShown = 0; camShake = 0; countdownT = -1;
         playMode = false; paused = false; player = editCam; player.ball = false; Capture(false); captureNext = false; platRun.clear();
         evHidden.clear(); evOff.clear(); evLocked.clear(); evHeld.clear(); evKick.clear(); evFlash.clear(); RebuildSolids();
         Toast("Back in the editor");
@@ -3451,6 +3479,7 @@ struct App {
             for (const std::string& k : inv.keys) { dl->AddRectFilled(ImVec2(vx + 12, y + 3), ImVec2(vx + 22, y + 13), IM_COL32(255, 210, 60, 255), 2.f); dl->AddText(ImVec2(vx + 28, y), IM_COL32(255, 230, 150, 240), k.c_str()); y += ImGui::GetTextLineHeight() + 4; }
             for (auto& c : inv.counts) { std::string t = c.first + "  x " + std::to_string(c.second); dl->AddCircleFilled(ImVec2(vx + 17, y + 8), 5, IM_COL32(90, 230, 255, 255)); dl->AddText(ImVec2(vx + 28, y), IM_COL32(180, 240, 255, 240), t.c_str()); y += ImGui::GetTextLineHeight() + 4; }
         }
+        DrawBossBar(dl); DrawCountdown(dl);
         if (bigMsgT > 0 && !bigMsg.empty()) {   // a trigger zone's message, big in the middle
             float a = std::min(1.f, bigMsgT / 0.6f);
             ImGui::PushFont(nullptr, ImGui::GetFontSize() * 1.8f); ImVec2 ts = ImGui::CalcTextSize(bigMsg.c_str()); ImVec2 p(vx + (W - ts.x) * 0.5f, vy + H * 0.25f);
@@ -4122,7 +4151,7 @@ struct App {
     void LoadHud() { items = defaultItems(); loadItems(projectDir + "/items.txt", items); assetFolders = AssetFolders{}; loadAssetFolders(projectDir + "/asset_folders.txt", assetFolders);
         animBlends = AnimBlends{}; loadAnimBlends(projectDir + "/anim_blend.txt", animBlends); cannonBlend.reset(); doorBlend.clear(); viewerBlend.reset();
         materials = Materials{}; loadMaterials(projectDir + "/materials.txt", materials); matsDirty = true; soundCache.clear(); playerSounds = PlayerSounds{}; loadPlayerSounds(projectDir + "/player_sounds.txt", playerSounds); activeTl.clear();
-        hud = HudLayout{}; loadHud(HudPath(), hud); visors = defaultVisors(); loadVisors(projectDir + "/visors.txt", visors); scanLib = ScanLibrary{}; loadScanLibrary(projectDir + "/scans.txt", scanLib); MigrateLegacyScans(); menu = defaultMenu(); loadMenu(projectDir + "/menu.txt", menu); enemies = defaultEnemies(); loadEnemies(projectDir + "/enemies.txt", enemies); weapons = WeaponSet{}; loadWeapons(projectDir + "/weapons.txt", weapons); weapSel = 0; weapState = WeaponState{}; hudImages.clear(); hudSel = 0; hudPlane = 0; hudEl = -1; hudPart = 0; }
+        hud = HudLayout{}; loadHud(HudPath(), hud); visors = defaultVisors(); loadVisors(projectDir + "/visors.txt", visors); scanLib = ScanLibrary{}; loadScanLibrary(projectDir + "/scans.txt", scanLib); MigrateLegacyScans(); menu = defaultMenu(); loadMenu(projectDir + "/menu.txt", menu); enemies = defaultEnemies(); loadEnemies(projectDir + "/enemies.txt", enemies); bosses = BossSet{}; loadBosses(projectDir + "/bosses.txt", bosses); weapons = WeaponSet{}; loadWeapons(projectDir + "/weapons.txt", weapons); weapSel = 0; weapState = WeaponState{}; hudImages.clear(); hudSel = 0; hudPlane = 0; hudEl = -1; hudPart = 0; }
     void SaveHud() {
         if (projectDir.empty()) return; std::error_code ec;
         if (hud.empty()) fs::remove(fs::u8path(HudPath()), ec); else saveHud(HudPath(), hud);
@@ -4773,6 +4802,8 @@ struct App {
             selectVisorsTab = false;
             if (ImGui::BeginTabItem("Enemies", nullptr, selectEnemiesTab ? ImGuiTabItemFlags_SetSelected : 0)) { EnemiesTab(); ImGui::EndTabItem(); }
             selectEnemiesTab = false;
+            if (ImGui::BeginTabItem("Bosses", nullptr, selectBossesTab ? ImGuiTabItemFlags_SetSelected : 0)) { BossesTab(); ImGui::EndTabItem(); }
+            selectBossesTab = false;
             ImGui::EndTabBar();
         }
         ImGui::End();
@@ -7128,7 +7159,7 @@ struct App {
     std::set<std::string> enemyGone;                        // "world#id": defeated for good (respawn: never)
     std::set<std::string> zonesCleared;                     // "world#id": the zone's "cleared" card has fired
     std::map<uint32_t, float> enemyAnimT; std::map<uint32_t, int> enemyAnimClip;
-    struct EnemyShot { V3 pos, dir; float speed, damage, life; uint32_t color; std::string from; };
+    struct EnemyShot { V3 pos, dir; float speed, damage, life; uint32_t color; std::string from; float gravity = 0, homing = 0, size = 0.22f; };
     std::vector<EnemyShot> enemyShots;
     struct EnemyDropRt { V3 pos; std::string what; int amount; float life; uint32_t id; };
     std::vector<EnemyDropRt> enemyDrops; uint32_t dropSeq = 0;
@@ -7161,11 +7192,12 @@ struct App {
     const WorldObject* ObjById(uint32_t id) const { for (const WorldObject& o : objects) if (o.id == id) return &o; return nullptr; }
     std::string GoneKey(uint32_t id) const { return CurrentWorld() + "#" + std::to_string(id); }
     // a hit on an enemy: what it does depends on its weaknesses
-    void DamageEnemy(uint32_t id, float base, const std::string& weapon, bool missile, bool charged, bool bomb, V3 from) {
+    void DamageEnemy(uint32_t id, float base, const std::string& weapon, bool missile, bool charged, bool bomb, V3 from, const std::string& part = "") {
         auto it = enemyRt.find(id); if (it == enemyRt.end() || !it->second.alive()) return;
         const WorldObject* o = ObjById(id); const EnemyType* t = enemies.find(it->second.type); if (!o || !t) return;
         float d = enemyDamage(*t, weapon, missile, charged, bomb, base);
         Box3 b = enemyBox(it->second, *t); V3 c = (b.lo + b.hi) * 0.5;
+        if (const BossDef* bd = bosses.forType(t->id)) { HitBoss(*o, it->second, *t, *bd, d, part, from); return; }
         if (d <= 0) {   // immune: it glances off
             ParticleSettings p = particlePreset("Impact"); p.burst = 12; p.color0 = 0xC0C0C0; p.color1 = 0x606060; SpawnFx(p, c, { 0, 1, 0 });
             if (it->second.mode == EnemyMode::Idle && t->move != EnemyMove::Drop && t->move != EnemyMove::Crawl) it->second.mode = EnemyMode::Chase;
@@ -7342,9 +7374,9 @@ struct App {
             DrawObject(at, pass, cam);
         }
     }
-    void EnemyAnimate(const WorldObject& o, const EnemyState& s, const EnemyType& t, double dt) {   // an imported model's clips: idle, move, attack, hurt, die
+    void EnemyAnimate(const WorldObject& o, const EnemyState& s, const EnemyType& t, double dt, const std::string* force = nullptr) {   // an imported model's clips: idle, move, attack, hurt, die
         auto mi = meshModels.find(t.model); if (mi == meshModels.end() || mi->second.clips.empty()) { doorGpu.erase(o.id); return; }
-        const std::string& want = !s.alive() ? t.animDie : s.hurtT > 0 ? t.animHurt : s.mode == EnemyMode::Chase || s.mode == EnemyMode::Fall ? (t.shoots && s.seen ? t.animAttack : t.animMove) : (t.move == EnemyMove::Still ? t.animIdle : t.animMove);
+        const std::string& want = force && !force->empty() && s.alive() ? *force : !s.alive() ? t.animDie : s.hurtT > 0 ? t.animHurt : s.mode == EnemyMode::Chase || s.mode == EnemyMode::Fall ? (t.shoots && s.seen ? t.animAttack : t.animMove) : (t.move == EnemyMove::Still ? t.animIdle : t.animMove);
         int clip = mi->second.findClip(want); if (clip < 0) clip = mi->second.findClip(t.animIdle);
         if (clip < 0) { doorGpu.erase(o.id); return; }
         float& at = enemyAnimT[o.id]; int& last = enemyAnimClip[o.id];
@@ -7353,7 +7385,9 @@ struct App {
         float len = std::max(0.01f, mi->second.clips[clip].length), tt = !s.alive() ? std::min(at, len) : std::fmod(at, len);
         PoseBlender& pb = doorBlend[o.id];
         const PartPose& p = pb.update(mi->second.pose(clip, tt), clip, (float)dt, animBlends.of(t.model));
-        ModelGpu& g = doorGpu[o.id]; UploadMeshVerts(g, mi->second, mi->second.posedFrom(p)); g.mesh = true; g.tex = GpuModel(t.model).tex;
+        std::vector<MeshVert> posed = mi->second.posedFrom(p);
+        if (const BossDef* bd = bosses.forType(t.id)) BossPoseBoxes(o.id, mi->second, posed, *bd);
+        ModelGpu& g = doorGpu[o.id]; UploadMeshVerts(g, mi->second, posed); g.mesh = true; g.tex = GpuModel(t.model).tex;
     }
     void UpdateEnemies(double dt) {   // every frame in play
         if (!playMode || !world) return;
@@ -7375,6 +7409,7 @@ struct App {
             Box3 b = enemyBox(s, *t); V3 eye = (b.lo + b.hi) * 0.5 + s.up * (enemyHeight(*t) * 0.15);
             V3 d = you - eye; double dist = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
             bool sees = !play.dead() && dist < std::max(t->sight, t->dropReach + 12.f) && canSee(*world, eye, you, dist + 1);
+            if (const BossDef* bd = bosses.forType(t->id)) { UpdateBoss(o, s, *t, *bd, solid, you, sees, dt); continue; }   // a boss: its phases and moves
             EnemyTick k = enemyUpdate(s, *t, solid, you, sees, dt);
             if (k.noticed && !t->sndNotice.empty()) { SoundUse u; u.file = t->sndNotice; PlaySoundIn(SND_ENEMIES, u, 1, &eye); }
             if (k.fire) {
@@ -7391,6 +7426,8 @@ struct App {
             EnemyAnimate(o, s, *t, dt);
         }
         for (EnemyShot& sh : enemyShots) {   // their shots
+            if (sh.gravity > 0) { V3 v = sh.dir * sh.speed; v.y -= sh.gravity * dt; double l = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z); if (l > 1e-6) { sh.speed = (float)l; sh.dir = v * (1 / l); } }
+            if (sh.homing > 0 && !play.dead()) sh.dir = homeDir(sh.dir, sh.pos, you, sh.homing, dt);
             double step = sh.speed * dt; Hit h;
             if (world->raycast(sh.pos, sh.dir, step, h)) { SpawnFx(particlePreset("Impact"), sh.pos + sh.dir * (h.t - 0.05), sh.dir * -1, sh.color); sh.life = 0; continue; }
             V3 np = sh.pos + sh.dir * step;
@@ -7399,6 +7436,7 @@ struct App {
             sh.pos = np; sh.life -= (float)dt;
         }
         enemyShots.erase(std::remove_if(enemyShots.begin(), enemyShots.end(), [](const EnemyShot& s) { return s.life <= 0; }), enemyShots.end());
+        SpawnQueued(); UpdateBossBar(dt);
         for (EnemyDropRt& d : enemyDrops) {   // what they left: picked up by walking (or rolling) into it
             d.life -= (float)dt;
             Box3 db{ d.pos - V3{ 0.35, 0.35, 0.35 }, d.pos + V3{ 0.35, 0.35, 0.35 } };
@@ -7419,7 +7457,7 @@ struct App {
         BeginSphereDraw(psOrb.Get());
         for (size_t i = 0; i < enemyShots.size(); i++) {
             const EnemyShot& s = enemyShots[i]; V3 c = s.pos - camPos, d = s.dir;
-            V3 side = std::fabs(d.y) > 0.95 ? V3{ 1, 0, 0 } : Norm(cross({ 0, 1, 0 }, d)), up = cross(d, side); V3 col = Linear(s.color); double r = 0.11;
+            V3 side = std::fabs(d.y) > 0.95 ? V3{ 1, 0, 0 } : Norm(cross({ 0, 1, 0 }, d)), up = cross(d, side); V3 col = Linear(s.color); double r = std::max(0.05, s.size * 0.5);
             for (int halo = 1; halo >= 0; halo--) {
                 double k = halo ? 2.4 : 1.0; ctx->OMSetBlendState(halo ? bsAdd.Get() : bsPremul.Get(), nullptr, 0xFFFFFFFF);
                 ChunkCB cc{ { (float)c.x, (float)c.y, (float)c.z, (float)(r * k) }, { (float)d.x, (float)d.y, (float)d.z, 0.f }, { (float)i * 0.618f, (float)halo, (float)animTime, 0 }, { (float)col.x, (float)col.y, (float)col.z, 1 } };
@@ -7430,7 +7468,7 @@ struct App {
     }
     // the hurt flash: hit enemies drawn once more, bright, over themselves
     void DrawEnemyFlashes() {
-        bool any = false; for (auto& kv : enemyRt) any |= kv.second.alive() && kv.second.hurtT > 0;
+        bool any = false; float gl[3]; for (auto& kv : enemyRt) any |= kv.second.alive() && (kv.second.hurtT > 0 || BossGlow(kv.first, gl));
         if (!any || !playMode) return;
         ctx->OMSetRenderTargets(1, reflRTV.GetAddressOf(), dsv.Get());
         D3D11_VIEWPORT v{ 0, 0, (float)rw, (float)rh, 0, 1 }; ctx->RSSetViewports(1, &v);
@@ -7438,14 +7476,505 @@ struct App {
         ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0); ctx->PSSetShader(psFlat.Get(), nullptr, 0);
         ID3D11Buffer* cbs[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->VSSetConstantBuffers(0, 2, cbs); ctx->PSSetConstantBuffers(7, 1, cbFlat.GetAddressOf());
         for (const WorldObject& o : objects) {
-            if (o.kind != ObjKind::Enemy) continue; auto it = enemyRt.find(o.id); if (it == enemyRt.end() || !it->second.alive() || it->second.hurtT <= 0) continue;
+            if (o.kind != ObjKind::Enemy) continue; auto it = enemyRt.find(o.id); if (it == enemyRt.end() || !it->second.alive()) continue;
+            bool glow = BossGlow(o.id, gl); if (it->second.hurtT <= 0 && !glow) continue;
             const EnemyType* t = enemies.find(it->second.type); if (!t) continue;
             float k = it->second.hurtT / 0.25f * 1.1f; float col[4] = { k, k * 0.9f, k * 0.8f, 0 };
+            if (glow) { col[0] += gl[0]; col[1] += gl[1]; col[2] += gl[2]; }
             ctx->UpdateSubresource(cbFlat.Get(), 0, nullptr, col, 0, 0);
             DrawEnemy(o, 0, camPos);
         }
         ctx->RSSetState(rsCull.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
         ctx->OMSetRenderTargets(0, nullptr, nullptr);
+    }
+    // ================================================================== bosses (Player editor > Bosses): an enemy type made a boss
+    BossSet bosses; int bossEd = 0; bool selectBossesTab = false; int bossPhaseEd = 0;
+    void SaveBosses() { if (!projectDir.empty()) saveBosses(projectDir + "/bosses.txt", bosses); }
+    std::map<uint32_t, BossState> bossRt;                   // Play mode: each boss's fight, by object id
+    std::map<uint32_t, std::map<std::string, Box3>> bossPose;   // its model parts where the animation has them now (model blocks)
+    std::map<std::string, Box3> bossRest;                   // "model#part": where the part is without animation
+    uint32_t bossShown = 0, fightNowId = 0; float bossBarLag = 1, bossBarFade = 0;   // the boss bar: whose; its white part catching up; fading out
+    std::set<uint32_t> bossSealed;                          // doors the fight locked
+    std::set<uint32_t> spawnedIds;                          // enemies a boss called in (not saved with the world)
+    std::vector<std::pair<int, V3>> spawnQueue;
+    float camShake = 0, countdownT = -1, countdownMax = 0; std::string countdownLabel;
+    std::vector<WorldObject> SavedObjects() const {
+        if (spawnedIds.empty()) return objects;
+        std::vector<WorldObject> v; for (const WorldObject& o : objects) if (!spawnedIds.count(o.id)) v.push_back(o); return v;
+    }
+    void ClearSpawned() {
+        if (spawnedIds.empty()) return;
+        for (uint32_t id : spawnedIds) { enemyRt.erase(id); doorGpu.erase(id); }
+        objects.erase(std::remove_if(objects.begin(), objects.end(), [&](const WorldObject& o) { return spawnedIds.count(o.id) > 0; }), objects.end());
+        spawnedIds.clear(); spawnQueue.clear();
+    }
+    std::string BossTitle(const BossDef& d) const { if (!d.title.empty()) return d.title; const EnemyType* t = enemies.find(d.enemyType); return t ? t->name : "Boss"; }
+    static Box3 ZoneBox(const WorldObject& z) { Box3 zb{ z.pos - z.size * 0.5, z.pos + z.size * 0.5 }; zb.lo.y = z.pos.y; zb.hi.y = z.pos.y + z.size.y; return zb; }
+    static V3 Mid(const Box3& b) { return (b.lo + b.hi) * 0.5; }
+    void StartBossFight(const WorldObject& o) {
+        if (!playMode || o.kind != ObjKind::Enemy || evHidden.count(o.id) || enemyGone.count(GoneKey(o.id))) return;
+        const BossDef* d = bosses.forType(o.enemyType); const EnemyType* t = enemies.find(o.enemyType); if (!d || !t) return;
+        auto it = enemyRt.find(o.id); if (it == enemyRt.end() || !it->second.alive()) return;
+        BossState& b = bossRt[o.id]; if (b.fighting) return;
+        bossStart(b, *d, it->second); bossShown = o.id; bossBarLag = 1; bossBarFade = 0;
+        V3 c = Mid(enemyBox(it->second, *t));
+        if (!d->roar.empty()) PlaySoundIn(SND_ENEMIES, d->roar, 1, &c); else if (!t->sndNotice.empty()) { SoundUse u; u.file = t->sndNotice; PlaySoundIn(SND_ENEMIES, u, 1, &c); }
+        camShake = std::max(camShake, 0.35f);
+        if (!d->music.empty()) PlayMusic(d->music, 1.0f);
+        if (d->sealDoors && !d->arena.empty())   // the arena's doors shut and lock
+            for (const WorldObject& z : objects) if (z.kind == ObjKind::Trigger && z.name == d->arena) {
+                Box3 zb = ZoneBox(z); zb.lo = zb.lo - V3{ 2, 2, 2 }; zb.hi = zb.hi + V3{ 2, 2, 2 };
+                for (const WorldObject& dr : objects) {
+                    if (dr.kind != ObjKind::Door) continue; V3 p = dr.pos;
+                    if (p.x < zb.lo.x || p.x > zb.hi.x || p.y < zb.lo.y || p.y > zb.hi.y || p.z < zb.lo.z || p.z > zb.hi.z) continue;
+                    evHeld.erase(dr.id); DoorRuntime& r = doorRt[dr.id];
+                    if (r.state == DoorRuntime::Open || r.state == DoorRuntime::Opening || r.state == DoorRuntime::Dissolving) { r.state = DoorRuntime::Closing; r.t = 0; }
+                    evLocked.insert(dr.id); bossSealed.insert(dr.id);
+                }
+            }
+        Signal(When::FightStarts, o.name, t->name);
+    }
+    void UnsealDoors() { for (uint32_t id : bossSealed) evLocked.erase(id); bossSealed.clear(); }
+    void ResetBossFights() {   // you died: the fight starts over when you come back
+        bool any = false;
+        for (auto& kv : bossRt) {
+            if (!kv.second.fighting) continue; any = true;
+            auto it = enemyRt.find(kv.first); V3 home = kv.second.home; kv.second = BossState{};
+            if (it != enemyRt.end() && it->second.alive()) { it->second.pos = home; it->second.vel = { 0, 0, 0 }; if (const EnemyType* t = enemies.find(it->second.type)) it->second.health = t->health; }
+        }
+        if (!any) return;
+        UnsealDoors(); StopMusic(1.5f); bossShown = 0; countdownT = -1; ClearSpawned();
+        for (EnemyShot& s : enemyShots) s.life = 0;
+    }
+    void UpdateBoss(const WorldObject& o, EnemyState& s, const EnemyType& t, const BossDef& d, const SolidFn& solid, V3 you, bool sees, double dt) {
+        BossState& b = bossRt[o.id];
+        if (fightNowId == o.id) { fightNowId = 0; StartBossFight(o); }
+        if (!b.fighting) {   // waiting: in its arena, or until it sees you
+            bool go = false;
+            if (d.arena.empty()) go = sees;
+            else for (const WorldObject& z : objects) if (z.kind == ObjKind::Trigger && z.name == d.arena && !Gone(z) && Overlaps(ZoneBox(z), player.feet, player.halfW, player.height, 0)) { go = true; break; }
+            if (go && !play.dead()) StartBossFight(o);
+            if (!b.fighting) { s.hurtT = std::max(0.f, s.hurtT - (float)dt); EnemyAnimate(o, s, t, dt, &t.animIdle); return; }
+        }
+        V3 c = Mid(enemyBox(s, t));
+        if (b.dying) {   // explosions all over it, then it goes
+            float before = b.dieT; bossUpdate(b, d, s, t, solid, you, nullptr, dt);
+            if (std::floor(b.dieT / 0.2f) != std::floor(before / 0.2f)) {
+                Box3 eb = enemyBox(s, t); V3 at{ eb.lo.x + (eb.hi.x - eb.lo.x) * Rand01(), eb.lo.y + (eb.hi.y - eb.lo.y) * Rand01(), eb.lo.z + (eb.hi.z - eb.lo.z) * Rand01() };
+                ParticleSettings p = particlePreset("Fire"); p.burst = 30; p.life = 0.5f; SpawnFx(p, at, { 0, 1, 0 }, t.color);
+                ParticleSettings q = particlePreset("Impact"); q.burst = 25; q.speed = 6; SpawnFx(q, at, { 0, 1, 0 });
+                flashes.push_back({ at, 0, { 2.0, 1.4, 0.7 }, 5 }); PlaySoundIn(SND_ENEMIES, playerSounds.boom, 0.45f, &at); camShake = std::max(camShake, 0.25f);
+            }
+            if (b.dieT >= d.deathTime) {
+                b.fighting = b.dying = false; bossBarFade = 2.f;
+                UnsealDoors(); StopMusic(2.f);
+                evRun.flags.insert(d.flag.empty() ? BossTitle(d) + " defeated" : d.flag);
+                camShake = std::max(camShake, 0.6f);
+                KillEnemy(o, s, t);
+                return;
+            }
+            EnemyAnimate(o, s, t, dt, &t.animHurt); return;
+        }
+        BossTick k = bossUpdate(b, d, s, t, solid, you, [this](const std::string& n) { return evRun.flags.count(n) > 0; }, dt);
+        if (k.phaseStarted >= 0 && k.phaseStarted < (int)d.phases.size()) {
+            const BossPhase& p = d.phases[k.phaseStarted];
+            if (p.musicMode == 1 && !p.music.empty()) PlayMusic(p.music, 1.0f);
+            Signal(When::BossPhase, o.name, t.name, (float)(k.phaseStarted + 1));
+        }
+        if (k.sound) PlaySoundIn(SND_ENEMIES, *k.sound, 1, &c);
+        for (const BossShot& sh : k.shots) {
+            double sp = std::sqrt(sh.vel.x * sh.vel.x + sh.vel.y * sh.vel.y + sh.vel.z * sh.vel.z);
+            EnemyShot e{ sh.from, sp > 1e-6 ? sh.vel * (1 / sp) : V3{ 0, 0, 1 }, (float)std::max(0.1, sp), sh.damage, sh.life, sh.color, BossTitle(d) };
+            e.gravity = sh.gravity; e.homing = sh.homing; e.size = sh.size; enemyShots.push_back(e);
+        }
+        if (k.spawnCount > 0 && enemies.find(k.spawnType)) {   // it calls in enemies (a dozen at most)
+            int alive = 0; for (uint32_t id : spawnedIds) { auto r = enemyRt.find(id); if (r == enemyRt.end() || r->second.alive()) alive++; }
+            for (int i = 0; i < k.spawnCount && alive + (int)spawnQueue.size() < 12; i++)
+                spawnQueue.push_back({ k.spawnType, k.spawnAt + V3{ (Rand01() - 0.5) * 2, 0.3, (Rand01() - 0.5) * 2 } });
+        }
+        if (k.slam) {   // a shockwave along the floor: jump over it
+            ParticleSettings p = particlePreset("Impact"); p.burst = 80; p.speed = 9; SpawnFx(p, s.pos + V3{ 0, 0.2, 0 }, { 0, 1, 0 }, t.color);
+            double dx = player.feet.x - s.pos.x, dz = player.feet.z - s.pos.z;
+            if (std::sqrt(dx * dx + dz * dz) < k.slamRadius && player.onGround && std::fabs(player.feet.y - s.pos.y) < 1.5) HurtPlayer(k.slamDamage, s.pos, BossTitle(d));
+        }
+        camShake = std::max(camShake, k.shake);
+        if (b.introT <= 0 && BoxesTouch(enemyBox(s, t), PlayerBox())) HurtPlayer(t.touchDamage, c, BossTitle(d));   // touching it hurts
+        EnemyAnimate(o, s, t, dt, b.anim.empty() ? nullptr : &b.anim);
+    }
+    void HitBoss(const WorldObject& o, EnemyState& s, const EnemyType& t, const BossDef& d, float dmg, const std::string& part, V3 from) {
+        BossState& b = bossRt[o.id];
+        if (!b.fighting && d.arena.empty() && !play.dead()) StartBossFight(o);   // shooting it wakes it up
+        BossHitResult r = bossHit(b, d, s, part, dmg);
+        if (r.deflected) {   // armour, a closed weak point, its shield: it glances off
+            ParticleSettings p = particlePreset("Impact"); p.burst = 14; p.color0 = 0xE0E0E0; p.color1 = 0x707070; SpawnFx(p, from, { 0, 1, 0 });
+            return;
+        }
+        if (r.broke) {
+            V3 at = Mid(enemyBox(s, t));
+            for (const BossPart& bp : d.parts) if (bp.name == part) { Box3 pb; if (BossPartWorld(o.id, s, t, bp, pb)) at = Mid(pb); }
+            ParticleSettings p = particlePreset("Impact"); p.burst = 90; p.speed = 8; p.color0 = 0xFFFFFF; p.color1 = t.color; p.size0 = 0.1f; SpawnFx(p, at, { 0, 1, 0 });
+            flashes.push_back({ at, 0, { 2.5, 1.6, 0.8 }, 6 }); PlaySoundIn(SND_ENEMIES, playerSounds.boom, 0.7f, &at); camShake = std::max(camShake, 0.35f);
+        }
+        if (r.damage > 0 && !t.sndHurt.empty()) { V3 c = Mid(enemyBox(s, t)); SoundUse u; u.file = t.sndHurt; PlaySoundIn(SND_ENEMIES, u, 1, &c); }
+    }
+    void BossPoseBoxes(uint32_t id, const MeshModel& m, const std::vector<MeshVert>& posed, const BossDef& d) {
+        for (const BossPart& p : d.parts) {
+            if (p.modelPart.empty()) continue;
+            int pi = -1; for (int i = 0; i < (int)m.parts.size(); i++) if (m.parts[i].name == p.modelPart) { pi = i; break; }
+            if (pi < 0) continue;
+            Box3 b{ { 1e30, 1e30, 1e30 }, { -1e30, -1e30, -1e30 } }; bool any = false;
+            for (size_t i = 0; i < posed.size() && i < m.vpart.size(); i++) if (m.vpart[i] == pi) {
+                V3 q = m.blockPos(posed[i]); any = true;
+                b.lo = { std::min(b.lo.x, q.x), std::min(b.lo.y, q.y), std::min(b.lo.z, q.z) }; b.hi = { std::max(b.hi.x, q.x), std::max(b.hi.y, q.y), std::max(b.hi.z, q.z) };
+            }
+            if (any) bossPose[id][p.modelPart] = b;
+        }
+    }
+    bool BossPartWorld(uint32_t id, const EnemyState& s, const EnemyType& t, const BossPart& p, Box3& out) {   // where a part is now (world blocks)
+        if (p.modelPart.empty()) { out = bossPartBox(p, s, t); return true; }
+        auto mi = meshModels.find(t.model); if (mi == meshModels.end()) return false;
+        Box3 lb; bool have = false;
+        auto pi = bossPose.find(id);
+        if (pi != bossPose.end()) { auto bi = pi->second.find(p.modelPart); if (bi != pi->second.end()) { lb = bi->second; have = true; } }
+        if (!have) {   // not animated: where the part is in the model as it was made
+            std::string key = t.model + "#" + p.modelPart; auto ri = bossRest.find(key);
+            if (ri == bossRest.end()) {
+                const MeshModel& m = mi->second; int idx = -1; for (int i = 0; i < (int)m.parts.size(); i++) if (m.parts[i].name == p.modelPart) { idx = i; break; }
+                Box3 b{ { 1e30, 1e30, 1e30 }, { -1e30, -1e30, -1e30 } };
+                if (idx >= 0) for (size_t i = 0; i < m.raw.size() && i < m.vpart.size(); i++) if (m.vpart[i] == idx) {
+                    V3 q = m.blockPos(m.raw[i]); b.lo = { std::min(b.lo.x, q.x), std::min(b.lo.y, q.y), std::min(b.lo.z, q.z) }; b.hi = { std::max(b.hi.x, q.x), std::max(b.hi.y, q.y), std::max(b.hi.z, q.z) };
+                }
+                ri = bossRest.emplace(key, b).first;
+            }
+            lb = ri->second;
+        }
+        if (lb.lo.x > lb.hi.x) return false;
+        WorldObject probe; probe.model = t.model; FrameRef f = ModelOf(probe); if (!f) return false;
+        double sc = EnemyFit(t); V3 up = Norm(s.up), fw = s.fwd, rt = Norm(cross(up, fw)); fw = cross(rt, up);
+        out = { { 1e30, 1e30, 1e30 }, { -1e30, -1e30, -1e30 } };
+        for (int i = 0; i < 8; i++) {
+            V3 l{ ((i & 1) ? lb.hi.x : lb.lo.x) - f->pivot.x, ((i & 2) ? lb.hi.y : lb.lo.y) - f->pivot.y, ((i & 4) ? lb.hi.z : lb.lo.z) - f->pivot.z };
+            V3 w = s.pos + rt * (l.x * sc) + up * (l.y * sc) + fw * (l.z * sc);
+            out.lo = { std::min(out.lo.x, w.x), std::min(out.lo.y, w.y), std::min(out.lo.z, w.z) }; out.hi = { std::max(out.hi.x, w.x), std::max(out.hi.y, w.y), std::max(out.hi.z, w.z) };
+        }
+        out.lo = out.lo - V3{ 0.05, 0.05, 0.05 }; out.hi = out.hi + V3{ 0.05, 0.05, 0.05 };
+        return true;
+    }
+    bool BossGlow(uint32_t id, float gl[3]) {   // a boss glowing: its phase's colour, its shield, dying
+        auto bi = bossRt.find(id); if (bi == bossRt.end() || !bi->second.fighting) return false;
+        auto ei = enemyRt.find(id); if (ei == enemyRt.end()) return false;
+        const BossDef* d = bosses.forType(ei->second.type); if (!d) return false;
+        const BossState& b = bi->second; gl[0] = gl[1] = gl[2] = 0; bool any = false;
+        if (b.dying) { float k = 0.45f + 0.45f * (float)std::sin(animTime * 40); gl[0] = k; gl[1] = k * 0.8f; gl[2] = k * 0.6f; return true; }
+        if (b.shieldT > 0) { float k = 0.3f + 0.15f * (float)std::sin(animTime * 12); gl[0] += k * 0.4f; gl[1] += k * 0.8f; gl[2] += k; any = true; }
+        if (b.introT <= 0 && b.phase >= 0 && b.phase < (int)d->phases.size() && d->phases[b.phase].tintAmount > 0) {
+            const BossPhase& p = d->phases[b.phase]; float k = p.tintAmount * (0.6f + 0.4f * (float)std::sin(animTime * 5));
+            gl[0] += ((p.tint >> 16) & 255) / 255.f * k; gl[1] += ((p.tint >> 8) & 255) / 255.f * k; gl[2] += (p.tint & 255) / 255.f * k; any = true;
+        }
+        return any;
+    }
+    void SpawnQueued() {
+        for (auto& q : spawnQueue) {
+            const EnemyType* t = enemies.find(q.first); if (!t) continue;
+            WorldObject o; o.id = nextObjId++; o.kind = ObjKind::Enemy; o.enemyType = q.first; o.pos = q.second; o.yaw = Rand01() * 360; o.folder = "(spawned)";
+            ApplyEnemyType(o); objects.push_back(o); spawnedIds.insert(o.id);
+            ParticleSettings p = particlePreset("Impact"); p.burst = 30; SpawnFx(p, q.second + V3{ 0, 0.4, 0 }, { 0, 1, 0 }, t->color);
+        }
+        spawnQueue.clear();
+    }
+    void UpdateBossBar(double dt) {
+        if (!bossShown) return;
+        auto bi = bossRt.find(bossShown); auto ei = enemyRt.find(bossShown);
+        if (bi == bossRt.end() || ei == enemyRt.end()) { bossShown = 0; return; }
+        if (bi->second.fighting) { float f = bossHealthFrac(bi->second, ei->second); bossBarLag = f > bossBarLag ? f : std::max(f, bossBarLag - (float)dt * 0.35f); }
+        else { bossBarLag = std::max(0.f, bossBarLag - (float)dt * 0.6f); bossBarFade -= (float)dt; if (bossBarFade <= 0) bossShown = 0; }
+    }
+    void DrawBossBar(ImDrawList* dl) {
+        if (!bossShown) return;
+        auto bi = bossRt.find(bossShown); auto ei = enemyRt.find(bossShown); const WorldObject* o = ObjById(bossShown);
+        if (bi == bossRt.end() || ei == enemyRt.end() || !o) return;
+        const BossDef* d = bosses.forType(o->enemyType); if (!d) return;
+        const BossState& b = bi->second; float a = b.fighting ? 1.f : std::clamp(bossBarFade, 0.f, 1.f); if (a <= 0) return;
+        float f = b.fighting && !b.dying ? bossHealthFrac(b, ei->second) : 0.f, lag = bossBarLag;
+        if (b.fighting && b.introT > 0 && d->introTime > 0) { f *= 1 - b.introT / d->introTime; lag = f; }   // it fills up while it roars
+        const float W = (float)rw, ui = settings.uiScale; float bw = std::min(W * 0.6f, 560 * ui), bh = 12 * ui;
+        ImVec2 p(vx + (W - bw) * 0.5f, vy + 44 * ui);
+        std::string title = BossTitle(*d);
+        ImGui::PushFont(nullptr, ImGui::GetFontSize() * 1.25f); ImVec2 ts = ImGui::CalcTextSize(title.c_str());
+        dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(p.x + (bw - ts.x) * 0.5f + 1, p.y - ts.y - 3 + 1), IM_COL32(0, 0, 0, (int)(180 * a)), title.c_str());
+        dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(p.x + (bw - ts.x) * 0.5f, p.y - ts.y - 3), IM_COL32(255, 255, 255, (int)(240 * a)), title.c_str());
+        ImGui::PopFont();
+        uint32_t bc = d->barColor; ImU32 fill = IM_COL32((bc >> 16) & 255, (bc >> 8) & 255, bc & 255, (int)(255 * a));
+        dl->AddRectFilled(ImVec2(p.x - 3, p.y - 3), ImVec2(p.x + bw + 3, p.y + bh + 3), IM_COL32(0, 0, 0, (int)(170 * a)), 3.f);
+        if (lag > f) dl->AddRectFilled(ImVec2(p.x + bw * f, p.y), ImVec2(p.x + bw * lag, p.y + bh), IM_COL32(255, 255, 255, (int)(190 * a)), 2.f);
+        if (f > 0) dl->AddRectFilled(p, ImVec2(p.x + bw * f, p.y + bh), fill, 2.f);
+        if (bi->second.shieldT > 0) dl->AddRect(ImVec2(p.x - 2, p.y - 2), ImVec2(p.x + bw + 2, p.y + bh + 2), IM_COL32(140, 220, 255, (int)(220 * a)), 3.f, 0, 2.f);
+    }
+    void DrawCountdown(ImDrawList* dl) {
+        if (countdownT <= 0) return;
+        const float W = (float)rw, ui = settings.uiScale;
+        int cs = (int)std::floor(countdownT * 100); char tb[32]; snprintf(tb, sizeof tb, "%d:%02d.%02d", cs / 6000, (cs / 100) % 60, cs % 100);
+        std::string t = countdownLabel.empty() ? std::string(tb) : countdownLabel + "   " + tb;
+        bool urgent = countdownT < 10, blink = urgent && std::fmod(animTime, 0.5) < 0.25;
+        ImGui::PushFont(nullptr, ImGui::GetFontSize() * 2.0f); ImVec2 ts = ImGui::CalcTextSize(t.c_str());
+        ImVec2 p(vx + (W - ts.x) * 0.5f, vy + (bossShown ? 70 : 24) * ui);
+        dl->AddRectFilled(ImVec2(p.x - 14, p.y - 6), ImVec2(p.x + ts.x + 14, p.y + ts.y + 6), IM_COL32(0, 0, 0, 140), 6.f);
+        dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), p, blink ? IM_COL32(255, 60, 50, 255) : urgent ? IM_COL32(255, 200, 190, 255) : IM_COL32(255, 255, 255, 240), t.c_str());
+        ImGui::PopFont();
+    }
+    // ---- Player editor > Bosses
+    void FightNow(int type) {   // play, standing in front of the first one placed in this world, and the fight starts
+        const WorldObject* o = nullptr; for (const WorldObject& x : objects) if (x.kind == ObjKind::Enemy && x.enemyType == type) { o = &x; break; }
+        if (!o) { Toast("Place one first: Tools > Objects > Add > Enemy, then pick its type"); return; }
+        const EnemyType* t = enemies.find(type); double dist = std::max(8.0, (t ? t->size : 1) * 3.0), a = o->yaw * 3.14159265358979 / 180;
+        V3 spot = o->pos + V3{ std::sin(a) * dist, 0.2, std::cos(a) * dist }; uint32_t id = o->id; V3 at = o->pos;
+        StartPlay(); if (!playMode) return;
+        player.feet = spot; player.vel = { 0, 0, 0 }; V3 dd = at - spot; player.yaw = std::atan2(dd.x, dd.z); player.pitch = 0; playSpawn = spot; playYaw = player.yaw;
+        fightNowId = id;
+    }
+    bool PartCombo(const char* id, const BossDef& d, std::string& v, bool weakOnly, const char* none) {
+        bool ch = false;
+        if (ImGui::BeginCombo(id, v.empty() ? (none[0] ? none : "(pick one)") : v.c_str())) {
+            if (none[0] && ImGui::Selectable(none, v.empty())) { v.clear(); ch = true; }
+            for (const BossPart& p : d.parts) if ((!weakOnly || p.role == PartRole::Weak) && ImGui::Selectable(p.name.c_str(), p.name == v)) { v = p.name; ch = true; }
+            ImGui::EndCombo();
+        }
+        return ch;
+    }
+    bool BossMoveEdit(BossMove& m, const BossDef& d, const EnemyType* t, PickOrder order) {
+        bool ch = false; float ui = settings.uiScale; const std::string model = t ? t->model : std::string();
+        Prop("Takes"); ch |= ImGui::SliderFloat("##mt", &m.time, 0.1f, 10, "%.1f s");
+        switch (m.kind) {
+        case BossMoveKind::Walk: case BossMoveKind::Chase: case BossMoveKind::Dash:
+            Prop("Speed"); ch |= ImGui::SliderFloat("##msp", &m.speed, 0.2f, 20, "%.1f blocks/s"); break;
+        case BossMoveKind::MoveTo:
+            Prop("To (from where it starts)"); { float v[3] = { (float)m.offset.x, (float)m.offset.y, (float)m.offset.z }; if (ImGui::DragFloat3("##mof", v, 0.1f, -60, 60, "%.1f")) { m.offset = { v[0], v[1], v[2] }; ch = true; } }
+            Prop("Speed"); ch |= ImGui::SliderFloat("##msp", &m.speed, 0.2f, 20, "%.1f blocks/s"); break;
+        case BossMoveKind::Hover:
+            Prop("This high"); ch |= ImGui::SliderFloat("##mh", &m.height, 0, 20, "%.1f blocks");
+            Prop("Speed"); ch |= ImGui::SliderFloat("##msp", &m.speed, 0.2f, 20, "%.1f blocks/s"); break;
+        case BossMoveKind::JumpAt: case BossMoveKind::Hop:
+            Prop("Jump height"); ch |= ImGui::SliderFloat("##mh", &m.height, 0.2f, 12, "%.1f blocks");
+            Prop("Speed"); ch |= ImGui::SliderFloat("##msp", &m.speed, 0.2f, 20, "%.1f blocks/s"); break;
+        case BossMoveKind::Slam:
+            Prop("Jump height"); ch |= ImGui::SliderFloat("##mh", &m.height, 0.2f, 12, "%.1f blocks");
+            Prop("Shockwave reaches"); ch |= ImGui::SliderFloat("##msr", &m.slamRadius, 1, 30, "%.1f blocks");
+            Prop("Shockwave hurts"); ch |= ImGui::DragFloat("##msd", &m.slamDamage, 0.2f, 0, 500, "%.0f");
+            Prop("Screen shake"); ch |= ImGui::SliderFloat("##msh", &m.shake, 0, 1.5f, "%.2f"); break;
+        case BossMoveKind::Roar:
+            Prop("Screen shake"); ch |= ImGui::SliderFloat("##msh", &m.shake, 0, 1.5f, "%.2f"); break;
+        case BossMoveKind::Spawn: {
+            Prop("Enemy"); const EnemyType* st = enemies.find(m.spawnType);
+            if (ImGui::BeginCombo("##mst", st ? st->name.c_str() : "(pick one)")) { for (const EnemyType& x : enemies.types) if ((!t || x.id != t->id) && ImGui::Selectable(x.name.c_str(), x.id == m.spawnType)) { m.spawnType = x.id; ch = true; } ImGui::EndCombo(); }
+            Prop("How many"); ch |= ImGui::SliderInt("##msc", &m.spawnCount, 1, 6); break;
+        }
+        case BossMoveKind::OpenWeak: case BossMoveKind::CloseWeak:
+            Prop("Weak point"); ch |= PartCombo("##mpt", d, m.part, true, "(all of them)"); break;
+        case BossMoveKind::Shoot: {
+            Prop("Pattern"); int pt = (int)m.pattern;
+            if (ImGui::BeginCombo("##mpat", shotPatternName(m.pattern))) { for (int i = 0; i < (int)ShotPattern::COUNT; i++) if (ImGui::Selectable(shotPatternName((ShotPattern)i), i == pt)) { m.pattern = (ShotPattern)i; ch = true; } ImGui::EndCombo(); }
+            Prop("Shots"); ch |= ImGui::SliderInt("##mcnt", &m.count, 1, 32);
+            if (m.pattern == ShotPattern::Spread || m.pattern == ShotPattern::Homing || m.pattern == ShotPattern::Lob || m.pattern == ShotPattern::Aimed) { Prop("Fanned over"); ch |= ImGui::SliderFloat("##mspr", &m.spread, 0, 180, "%.0f degrees"); }
+            if (m.pattern == ShotPattern::Rain) { Prop("Spread around you"); ch |= ImGui::SliderFloat("##mspr", &m.spread, 10, 120, "%.0f"); }
+            Prop("Again every"); ch |= ImGui::SliderFloat("##mev", &m.every, 0, 5, m.every <= 0 ? "once" : "%.2f s");
+            Prop("Speed"); ch |= ImGui::SliderFloat("##mss", &m.shotSpeed, 1, 60, "%.0f");
+            Prop("Damage"); ch |= ImGui::DragFloat("##mdmg", &m.damage, 0.2f, 0, 500, "%.0f");
+            Prop("Size"); ch |= ImGui::SliderFloat("##msz", &m.size, 0.08f, 2, "%.2f blocks");
+            Prop("Colour"); ch |= ColorU32("##mcol", m.color);
+            if (m.pattern == ShotPattern::Lob) { Prop("Gravity"); ch |= ImGui::SliderFloat("##mgr", &m.gravity, 2, 40, "%.0f"); }
+            if (m.pattern == ShotPattern::Homing) { Prop("Turns toward you"); ch |= ImGui::SliderFloat("##mho", &m.homing, 0.2f, 10, "%.1f"); }
+            if (m.pattern != ShotPattern::Rain) {
+                Prop("From (right, up, ahead)"); float v[3] = { (float)m.from.x, (float)m.from.y, (float)m.from.z };
+                if (ImGui::DragFloat3("##mfr", v, 0.05f, -20, 20, "%.2f")) { m.from = { v[0], v[1], v[2] }; ch = true; }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Where the shots leave it: blocks from its middle (right, up, ahead). It turns with it.");
+            }
+            break;
+        }
+        default: break;
+        }
+        Prop("Animation"); ch |= ClipField("##man", model, m.anim);
+        Prop("Sound"); ch |= SoundEdit("##msnd", m.sound, false);
+        if (order != PickOrder::InOrder) { Prop("How often"); ch |= ImGui::SliderFloat("##mw", &m.weight, 0, 10, "%.1f"); if (ImGui::IsItemHovered()) ImGui::SetTooltip("Picked at random: a move with 2 comes twice as often as one with 1. 0: never."); }
+        if (order == PickOrder::ByDistance) { Prop("Only within"); ch |= ImGui::SliderFloat("##mrg", &m.range, 0, 60, m.range <= 0 ? "any distance" : "%.0f blocks"); if (ImGui::IsItemHovered()) ImGui::SetTooltip("Picked when you are this close (moves for your distance come first; \"any distance\" ones when none fits)."); }
+        (void)ui;
+        return ch;
+    }
+    void BossesTab() {
+        float ui = settings.uiScale; bool ch = false;
+        auto typeName = [&](int id) { const EnemyType* t = enemies.find(id); return t ? t->name : "(type " + std::to_string(id) + " is gone)"; };
+        float listW = 230 * ui;
+        ImGui::BeginChild("bosslist", ImVec2(listW, 0), ImGuiChildFlags_Borders);
+        for (BossDef& b : bosses.bosses) { ImGui::PushID(b.enemyType); std::string l = BossTitle(b) + "   (" + typeName(b.enemyType) + ")"; if (ImGui::Selectable(l.c_str(), b.enemyType == bossEd)) bossEd = b.enemyType; ImGui::PopID(); }
+        if (bosses.bosses.empty()) Hint("No bosses yet.");
+        ImGui::Separator();
+        ImGui::TextDisabled("Make an enemy type a boss:");
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::BeginCombo("##mkboss", "pick an enemy type...")) {
+            for (const EnemyType& t : enemies.types) if (!bosses.forType(t.id) && ImGui::Selectable(t.name.c_str())) {
+                BossDef d = defaultBoss(t.id); d.health = std::max(300.f, t.health); bosses.bosses.push_back(d); bossEd = t.id; ch = true;
+                if (EnemyType* et = enemies.find(t.id)) { et->respawn = EnemyRespawn::Never; SaveEnemies(); }
+            }
+            if (enemies.types.empty()) ImGui::TextDisabled("Make an enemy type first (Enemies tab)");
+            ImGui::EndCombo();
+        }
+        if (ImGui::Button("+ Kraid-like example")) {   // a new enemy type and a boss on it, ready to place
+            EnemyType t; t.name = "Kraid"; t.model = "@enemy-walker"; t.size = 4; t.health = 800; t.touchDamage = 20; t.knockback = 0; t.move = EnemyMove::Walk; t.respawn = EnemyRespawn::Never; t.color = 0x60C060; t.sight = 30;
+            int id = enemies.add(t); SaveEnemies(); bosses.bosses.push_back(kraidExample(id)); bossEd = id; ch = true;
+            Toast("Made the enemy type \"Kraid\" and its boss fight. Place it: Tools > Objects > Add > Enemy");
+        }
+        ImGui::EndChild(); ImGui::SameLine();
+        BossDef* dp = bosses.forType(bossEd);
+        if (!dp && !bosses.bosses.empty()) { bossEd = bosses.bosses[0].enemyType; dp = bosses.forType(bossEd); }
+        ImGui::BeginChild("bossprops", ImVec2(0, 0), ImGuiChildFlags_Borders);
+        if (!dp) {
+            Hint("A boss is an enemy type with a health bar, weak points and armour, phases, moves, an arena that seals its doors, its own music and a big death.");
+            Hint("Make one: pick an enemy type on the left (Kraid, Ridley, Mother Brain: make the enemy type in the Enemies tab first, with its model and size), or start from the Kraid-like example.");
+            ImGui::EndChild(); if (ch) SaveBosses(); return;
+        }
+        BossDef& d = *dp; const EnemyType* t = enemies.find(d.enemyType);
+        if (ImGui::Button("Fight it now (F5 back)")) FightNow(d.enemyType);
+        ImGui::SameLine(); if (ImGui::Button("Edit the enemy type...")) { enemyEd = d.enemyType; selectEnemiesTab = true; }
+        ImGui::SameLine(); if (ImGui::Button("Not a boss any more")) { bosses.bosses.erase(std::remove_if(bosses.bosses.begin(), bosses.bosses.end(), [&](const BossDef& b) { return b.enemyType == bossEd; }), bosses.bosses.end()); SaveBosses(); ImGui::EndChild(); return; }
+        ImGui::SeparatorText("Boss");
+        Prop("Enemy type"); ImGui::TextUnformatted(typeName(d.enemyType).c_str());
+        Prop("Name on the bar"); ch |= ImGui::InputTextWithHint("##btitle", t ? t->name.c_str() : "Boss", &d.title);
+        Prop("Health"); ch |= ImGui::DragFloat("##bhp", &d.health, 1, 1, 100000, "%.0f");
+        Prop("Bar colour"); ch |= ColorU32("##bcol", d.barColor);
+        Prop("Shots on its body hurt"); ch |= ImGui::Checkbox("##bbody", &d.bodyHurts);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Off: only its weak points can hurt it (everything else glances off).\nThe enemy type's weaknesses still count (e.g. only missiles).");
+
+        ImGui::SeparatorText("The fight");
+        Prop("Arena (a zone)"); ch |= ObjectPick("##barena", d.arena, "zone", true);
+        Hint(d.arena.empty() ? "No arena: the fight starts when it sees you (or you shoot it)." : "Walking into this zone starts the fight.");
+        if (!d.arena.empty()) { Prop("Doors seal"); ch |= ImGui::Checkbox("##bseal", &d.sealDoors); if (ImGui::IsItemHovered()) ImGui::SetTooltip("The doors in and around the arena close and lock until it is defeated."); }
+        Prop("Intro (roars, can't be hurt)"); ch |= ImGui::SliderFloat("##bintro", &d.introTime, 0, 6, "%.1f s");
+        Prop("Intro animation"); ch |= ClipField("##bian", t ? t->model : "", d.introAnim);
+        Prop("Roar"); ch |= SoundEdit("##broar", d.roar, false);
+        Prop("Music"); ch |= SoundEdit("##bmus", d.music, false);
+        Hint("The music starts with the fight and fades out when it is defeated.");
+        Prop("Explodes for"); ch |= ImGui::SliderFloat("##bdie", &d.deathTime, 0.2f, 8, "%.1f s");
+        Prop("Flag when defeated"); ch |= ImGui::InputTextWithHint("##bflag", (BossTitle(d) + " defeated").c_str(), &d.flag);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Event cards can check this flag (\"only if a flag is on\"): statues, doors, the escape.\nEvent cards can also use \"when an enemy is defeated\".");
+
+        ImGui::SeparatorText("Weak points and armour");
+        Hint("Parts of it that take hits differently. A weak point: more damage (only while open, if it opens and closes). Armour: shots bounce off. Breakable armour: takes hits until it breaks off.");
+        const MeshModel* mm = nullptr; if (t) { auto mi = meshModels.find(t->model); if (mi != meshModels.end()) mm = &mi->second; }
+        { int drop = -1;
+          for (int i = 0; i < (int)d.parts.size(); i++) {
+              BossPart& p = d.parts[i]; ImGui::PushID(3000 + i);
+              std::string hdr = p.name + "  (" + partRoleName(p.role) + ")###part";
+              bool open = ImGui::TreeNodeEx(hdr.c_str(), ImGuiTreeNodeFlags_SpanAvailWidth);
+              ImGui::SameLine(ImGui::GetContentRegionAvail().x + ImGui::GetCursorPosX() - ImGui::GetFrameHeight()); if (ImGui::SmallButton("x")) drop = i;
+              if (open) {
+                  Prop("Name"); ch |= ImGui::InputText("##pn", &p.name);
+                  Prop("It is"); int r = (int)p.role;
+                  if (ImGui::BeginCombo("##pr", partRoleName(p.role))) { for (int k = 0; k < (int)PartRole::COUNT; k++) if (ImGui::Selectable(partRoleName((PartRole)k), k == r)) { p.role = (PartRole)k; ch = true; } ImGui::EndCombo(); }
+                  Prop("Where");
+                  if (ImGui::BeginCombo("##pm", p.modelPart.empty() ? "a box on its body" : p.modelPart.c_str())) {
+                      if (ImGui::Selectable("a box on its body", p.modelPart.empty())) { p.modelPart.clear(); ch = true; }
+                      if (mm) for (const MeshPart& q : mm->parts) if (ImGui::Selectable(q.name.c_str(), q.name == p.modelPart)) { p.modelPart = q.name; ch = true; }
+                      if (!mm || mm->parts.empty()) ImGui::TextDisabled("(its model has no moving parts: use a box)");
+                      ImGui::EndCombo();
+                  }
+                  if (ImGui::IsItemHovered()) ImGui::SetTooltip("A moving part of its imported model (it follows the animation: a mouth that opens, an eye),\nor a box on its body.");
+                  if (p.modelPart.empty()) {
+                      auto range = [&](const char* label, const char* id, double& lo, double& hi) {
+                          Prop(label); float v[2] = { (float)lo * 100, (float)hi * 100 };
+                          if (ImGui::DragFloat2(id, v, 0.5f, 0, 100, "%.0f%%")) { lo = std::clamp(std::min(v[0], v[1]), 0.f, 100.f) / 100; hi = std::clamp(std::max(v[0], v[1]), 0.f, 100.f) / 100; ch = true; }
+                      };
+                      range("Left .. right", "##bx", p.box.lo.x, p.box.hi.x);
+                      range("Bottom .. top", "##by", p.box.lo.y, p.box.hi.y);
+                      range("Back .. front", "##bz", p.box.lo.z, p.box.hi.z);
+                  }
+                  if (p.role == PartRole::Weak) {
+                      Prop("Damage"); ch |= ImGui::SliderFloat("##pd", &p.damage, 0.5f, 10, "x %.1f");
+                      Prop("Open from the start"); ch |= ImGui::Checkbox("##po", &p.startsOpen);
+                      if (ImGui::IsItemHovered()) ImGui::SetTooltip("Off: it can only be hit after an \"Open weak point\" move (and until a \"Close weak point\" one).");
+                  }
+                  if (p.role == PartRole::Breakable) { Prop("Its own health"); ch |= ImGui::DragFloat("##ph", &p.health, 0.5f, 1, 10000, "%.0f"); Hint("A phase can start when it breaks."); }
+                  ImGui::TreePop();
+              }
+              ImGui::PopID();
+          }
+          if (drop >= 0) { d.parts.erase(d.parts.begin() + drop); ch = true; }
+          if (ImGui::SmallButton("+ Weak point")) { BossPart p; p.name = "Weak point " + std::to_string(d.parts.size() + 1); d.parts.push_back(p); ch = true; }
+          ImGui::SameLine(); if (ImGui::SmallButton("+ Armour")) { BossPart p; p.name = "Armour " + std::to_string(d.parts.size() + 1); p.role = PartRole::Armour; p.box = { { 0, 0.2, 0.8 }, { 1, 0.8, 1 } }; d.parts.push_back(p); ch = true; }
+          ImGui::SameLine(); if (ImGui::SmallButton("+ Breakable armour")) { BossPart p; p.name = "Plate " + std::to_string(d.parts.size() + 1); p.role = PartRole::Breakable; p.health = 80; p.box = { { 0.2, 0.3, 0.8 }, { 0.8, 0.7, 1 } }; d.parts.push_back(p); ch = true; } }
+
+        ImGui::SeparatorText("Phases");
+        Hint("The fight in parts. The first phase starts with the fight; each later one starts when its moment comes (health low, a part broken, time, a flag), and it plays its own moves.");
+        if (d.phases.empty()) { BossPhase p; d.phases.push_back(p); ch = true; }
+        bossPhaseEd = std::clamp(bossPhaseEd, 0, (int)d.phases.size() - 1);
+        if (ImGui::BeginTabBar("phases", ImGuiTabBarFlags_FittingPolicyScroll)) {
+            for (int i = 0; i < (int)d.phases.size(); i++) {
+                std::string l = std::to_string(i + 1) + ". " + d.phases[i].name + "###ph" + std::to_string(i);
+                if (ImGui::BeginTabItem(l.c_str())) { bossPhaseEd = i; ImGui::EndTabItem(); }
+            }
+            if (ImGui::TabItemButton("+", ImGuiTabItemFlags_Trailing)) {
+                BossPhase p = d.phases.back(); p.name = "Phase " + std::to_string(d.phases.size() + 1); p.start = PhaseStart::HealthBelow;
+                p.value = std::max(5.f, (d.phases.size() == 1 ? 100.f : d.phases.back().value) * 0.5f); p.speed = std::min(3.f, p.speed * 1.25f);
+                d.phases.push_back(p); bossPhaseEd = (int)d.phases.size() - 1; ch = true;
+            }
+            ImGui::EndTabBar();
+        }
+        BossPhase& ph = d.phases[bossPhaseEd]; ImGui::PushID(5000 + bossPhaseEd);
+        Prop("Name"); ch |= ImGui::InputText("##phn", &ph.name);
+        if (bossPhaseEd == 0) Hint("Starts with the fight.");
+        else {
+            Prop("Starts when"); int st = (int)ph.start;
+            if (ImGui::BeginCombo("##phs", phaseStartName(ph.start))) { for (int k = 0; k < (int)PhaseStart::COUNT; k++) if (ImGui::Selectable(phaseStartName((PhaseStart)k), k == st)) { ph.start = (PhaseStart)k; ch = true; } ImGui::EndCombo(); }
+            if (ph.start == PhaseStart::HealthBelow) { Prop("  health below"); ch |= ImGui::SliderFloat("##phv", &ph.value, 1, 100, "%.0f%%"); }
+            if (ph.start == PhaseStart::AfterTime) { Prop("  seconds"); ch |= ImGui::DragFloat("##phv", &ph.value, 0.5f, 0, 3600, "%.0f s"); }
+            if (ph.start == PhaseStart::PartBroken) { Prop("  part"); ch |= PartCombo("##phw", d, ph.what, false, ""); }
+            if (ph.start == PhaseStart::Flag) { Prop("  flag"); ch |= ImGui::InputTextWithHint("##phw", "Statue raised", &ph.what); }
+        }
+        Prop("Moves are picked"); int po = (int)ph.order;
+        if (ImGui::BeginCombo("##pho", pickOrderName(ph.order))) { for (int k = 0; k < (int)PickOrder::COUNT; k++) if (ImGui::Selectable(pickOrderName((PickOrder)k), k == po)) { ph.order = (PickOrder)k; ch = true; } ImGui::EndCombo(); }
+        Prop("Speed"); ch |= ImGui::SliderFloat("##phsp", &ph.speed, 0.25f, 4, "x %.2f");
+        Prop("Glows"); ch |= ColorU32("##phtc", ph.tint);
+        Prop("  how much"); ch |= ImGui::SliderFloat("##phta", &ph.tintAmount, 0, 1, ph.tintAmount <= 0 ? "no" : "%.2f");
+        Prop("Music"); { const char* mm2[] = { "keep playing", "change to" }; ch |= ImGui::Combo("##phm", &ph.musicMode, mm2, 2); }
+        if (ph.musicMode == 1) { Prop("  this"); ch |= SoundEdit("##phmus", ph.music, false); }
+        if (bossPhaseEd > 0) { if (ImGui::SmallButton("Remove this phase")) { d.phases.erase(d.phases.begin() + bossPhaseEd); bossPhaseEd = 0; ImGui::PopID(); ImGui::EndChild(); SaveBosses(); return; } }
+        ImGui::SeparatorText("Moves");
+        { int drop = -1, up = -1;
+          for (int i = 0; i < (int)ph.moves.size(); i++) {
+              BossMove& m = ph.moves[i]; ImGui::PushID(6000 + i);
+              char hdr[160]; snprintf(hdr, sizeof hdr, "%d. %s  (%.1f s)%s###mv", i + 1, bossMoveName(m.kind), m.time, m.kind == BossMoveKind::Shoot ? (std::string("  ") + shotPatternName(m.pattern)).c_str() : "");
+              bool open = ImGui::TreeNodeEx(hdr, ImGuiTreeNodeFlags_SpanAvailWidth);
+              float bw = ImGui::GetFrameHeight();
+              ImGui::SameLine(ImGui::GetContentRegionAvail().x + ImGui::GetCursorPosX() - bw * 2 - ImGui::GetStyle().ItemSpacing.x);
+              ImGui::BeginDisabled(i == 0); if (ImGui::ArrowButton("##up", ImGuiDir_Up)) up = i; ImGui::EndDisabled();
+              ImGui::SameLine(); if (ImGui::Button("x", ImVec2(bw, 0))) drop = i;
+              if (open) {
+                  Prop("Move"); int k = (int)m.kind;
+                  if (ImGui::BeginCombo("##mk", bossMoveName(m.kind))) { for (int j = 0; j < (int)BossMoveKind::COUNT; j++) if (ImGui::Selectable(bossMoveName((BossMoveKind)j), j == k)) { m.kind = (BossMoveKind)j; ch = true; } ImGui::EndCombo(); }
+                  ch |= BossMoveEdit(m, d, t, ph.order);
+                  ImGui::TreePop();
+              }
+              ImGui::PopID();
+          }
+          if (drop >= 0) { ph.moves.erase(ph.moves.begin() + drop); ch = true; }
+          if (up > 0) { std::swap(ph.moves[up], ph.moves[up - 1]); ch = true; }
+          ImGui::SetNextItemWidth(220 * ui);
+          if (ImGui::BeginCombo("##addmove", "+ Add a move...")) {
+              for (int j = 0; j < (int)BossMoveKind::COUNT; j++) if (ImGui::Selectable(bossMoveName((BossMoveKind)j))) {
+                  BossMove m; m.kind = (BossMoveKind)j;
+                  if (m.kind == BossMoveKind::Shoot) { m.pattern = ShotPattern::Spread; m.count = 3; }
+                  if (m.kind == BossMoveKind::Roar) m.shake = 0.3f;
+                  if (m.kind == BossMoveKind::Slam) { m.height = 2.5f; m.time = 1.6f; m.shake = 0.5f; }
+                  if (m.kind == BossMoveKind::Spawn && !enemies.types.empty()) m.spawnType = enemies.types[0].id;
+                  ph.moves.push_back(m); ch = true;
+              }
+              ImGui::EndCombo();
+          }
+          if (ph.moves.empty()) Hint("No moves: it just stands there. Add some: walking, shooting, jumping at you, slams, a shield, opening its weak point...");
+        }
+        ImGui::PopID();
+        ImGui::SeparatorText("With event cards");
+        Hint("Event cards can react to the fight: \"a boss fight starts\", \"a boss reaches phase\", \"an enemy is defeated\". And do things: \"start the boss fight of\", \"shake the screen\", \"start a countdown\" (an escape: when it runs out, kill the player), \"play music\".");
+        ImGui::EndChild();
+        if (ch) SaveBosses();
     }
     // ---- Player editor > Enemies: the enemy types
     int enemyEd = 1; bool selectEnemiesTab = false;
@@ -9005,6 +9534,7 @@ struct App {
         if (w->DockNode && w->DockNode->TabBar) w->DockNode->TabBar->NextSelectedTabId = w->TabId;
     }
     // the fields one part needs, on the same line as its kind (each field gets an equal share of the rest of the row)
+    const char* inlineTextHint = nullptr;
     bool InlineFields(const Need& n, std::string& obj, std::string& name, std::string& text, float& num, char nk, bool anyObj, bool isWhen, bool isParticles, float width) {
         int count = (int)n.object + (int)n.name + (int)n.text + (int)n.number; if (!count) return false;
         float sp = ImGui::GetStyle().ItemSpacing.x, w = std::floor((width - sp * (count - 1)) / count); bool ch = false; bool first = true;
@@ -9014,7 +9544,7 @@ struct App {
         if (n.text) {
             next();
             if (isParticles) { if (ImGui::BeginCombo("##fx", text.empty() ? "Sparks" : text.c_str())) { for (auto& pn : particlePresets()) if (ImGui::Selectable(pn.c_str(), text == pn)) { text = pn; ch = true; } ImGui::EndCombo(); } }
-            else ch |= ImGui::InputTextWithHint("##txt", "what it says", &text);
+            else ch |= ImGui::InputTextWithHint("##txt", inlineTextHint ? inlineTextHint : "what it says", &text);
         }
         if (n.number) { next(); std::string f = std::string("%.1f ") + (std::string(n.numberLabel) == "seconds" ? "s" : n.numberLabel); ch |= ImGui::DragFloat("##num", &num, 0.1f, 0, 10000, f.c_str()); }
         return ch;
@@ -9080,7 +9610,9 @@ struct App {
                 float btn = bw * 2 + sp * 2;
                 KindRow(d.kind, btn, kc);
                 if (kc) { const Need& n = needOf(d.kind); if (n.object && d.target.empty()) d.target = FirstName(n.objectKind); if (d.kind == Do::Wait) d.number = 1; ch = true; }
-                ch |= InlineFields(needOf(d.kind), d.target, d.text, d.text, d.number, NameKind(d.kind), false, false, d.kind == Do::Particles, ImGui::GetContentRegionAvail().x - btn);
+                if (d.kind == Do::PlayMusic) { ImGui::SameLine(); ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - btn); ch |= SoundFileField("evmus", d.text); }
+                else { inlineTextHint = d.kind == Do::Countdown ? "label (Escape!)" : nullptr;
+                       ch |= InlineFields(needOf(d.kind), d.target, d.text, d.text, d.number, NameKind(d.kind), false, false, d.kind == Do::Particles, ImGui::GetContentRegionAvail().x - btn); inlineTextHint = nullptr; }
                 ImGui::SameLine(); ImGui::BeginDisabled(k == 0); if (ImGui::ArrowButton("##up", ImGuiDir_Up)) up = k; ImGui::EndDisabled();
                 ImGui::SameLine(); if (ImGui::Button("x", ImVec2(bw, 0))) drop = k;
                 ImGui::PopID();
@@ -9225,7 +9757,7 @@ struct App {
         if (!reg.has(id)) return; BlockDef nd = reg.get(id); nd.category = folder.empty() ? "Building" : folder;
         ChangeBlocks([&] { reg.put(id, nd); }); library.saveBlocks(reg); assetFolders.blocks.add(nd.category);
     }
-    void SaveObjectsNow() { if (world && !worldDir.empty()) saveObjects(worldDir + "/objects.txt", objects); }
+    void SaveObjectsNow() { if (world && !worldDir.empty()) saveObjects(worldDir + "/objects.txt", SavedObjects()); }
     FolderKind ObjectFolders() {   // objects keep their folder on themselves; empty folders are remembered here
         for (auto& o : objects) if (!FolderTree::clean(o.folder).empty()) assetFolders.objects.add(o.folder);
         FolderKind k; k.kind = 9; k.tree = &assetFolders.objects; k.dragType = "PRIM_OBJ"; k.selected = &objFolderSel; k.showing = [] { return false; };

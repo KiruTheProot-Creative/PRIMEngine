@@ -77,6 +77,7 @@ bool Settings::load(const std::string& path) {
         else if (k == "invert_y") { int v; f >> v; invertY = v != 0; }
         else if (k == "lock_mode") f >> lockMode;
         else if (k == "cave_culling") { int v; f >> v; caveCulling = v != 0; }
+        else if (k == "screen_shake") f >> screenShake;
         else if (k == "key") {
             std::string n; int a = 0, b = 0; f >> n >> a >> b;
             for (int i = 0; i < (int)Act::COUNT; i++) if (n == actKey((Act)i)) { keys.key[i][0] = a; keys.key[i][1] = b; }
@@ -85,7 +86,7 @@ bool Settings::load(const std::string& path) {
     }
     if (!hadRes) shadowRes = shadowQuality == 1 ? 1536 : 2048;   // (older files: "normal" shadows were 1536, "high" 2048)
     shadowQuality = std::max(0, std::min(2, shadowQuality)); shadowRes = std::max(512, std::min(4096, shadowRes));
-    brightness = std::max(0.3f, std::min(2.5f, brightness)); lockMode = std::max(0, std::min(2, lockMode));
+    brightness = std::max(0.3f, std::min(2.5f, brightness)); screenShake = std::max(0.f, std::min(2.f, screenShake)); lockMode = std::max(0, std::min(2, lockMode));
     renderDistance = std::max(2, std::min(48, renderDistance)); verticalDistance = std::max(1, std::min(16, verticalDistance));
     return true;
 }
@@ -99,7 +100,7 @@ bool Settings::save(const std::string& path) const {
       << "\nambient_occlusion " << ambientOcclusion << "\nao_strength " << aoStrength
       << "\nbumps " << bumps << "\ncoat " << coat << "\nmaterials " << (materials ? 1 : 0) << "\nhud_glow " << (hudGlow ? 1 : 0) << "\nguess_materials " << (guessMaterials ? 1 : 0)
       << "\nshadow_res " << shadowRes << "\nbrightness " << brightness << "\nfullscreen " << (fullscreen ? 1 : 0)
-      << "\nvolumes " << volWeapons << " " << volMovement << " " << volEnemies << " " << volWorld << "\nvolumes2 " << volMenus << " " << volMusic << "\ninvert_y " << (invertY ? 1 : 0) << "\nlock_mode " << lockMode << "\ncave_culling " << (caveCulling ? 1 : 0) << "\n";
+      << "\nvolumes " << volWeapons << " " << volMovement << " " << volEnemies << " " << volWorld << "\nvolumes2 " << volMenus << " " << volMusic << "\ninvert_y " << (invertY ? 1 : 0) << "\nlock_mode " << lockMode << "\ncave_culling " << (caveCulling ? 1 : 0) << "\nscreen_shake " << screenShake << "\n";
     for (int i = 0; i < (int)Act::COUNT; i++) f << "key " << actKey((Act)i) << " " << keys.key[i][0] << " " << keys.key[i][1] << "\n";
     return (bool)f;
 }

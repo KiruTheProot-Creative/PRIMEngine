@@ -250,6 +250,21 @@ A type has: its model (any model, fitted to its size) and colour; health, how mu
 
 In play your beams, missiles and bombs hit them (a white flash, a knock-back), and they hurt you by touching and by shooting (a short moment after each hit you cannot be hurt again). Event cards: "when an enemy is defeated" (by its name, or its type's name) and "when every enemy in a zone is defeated" (to open a door after a fight).
 
+## Bosses (Player > Bosses)
+
+A boss is an **enemy type** made a boss (bosses.txt): pick the type on the left, or start from the **Kraid-like example** (it makes the enemy type too). No code anywhere:
+
+- **Boss:** the name on the boss bar, health, the bar's colour, whether shots on its body hurt it (off: only its weak points). The type's weaknesses still count (only missiles, say).
+- **Weak points and armour:** parts of it that take hits differently. A part is a moving part of its imported model (it follows the animation: a mouth that opens) or a box on its body (left..right, bottom..top, back..front, in %). **Weak point:** more damage, and it can open and close (only hittable while open). **Armour:** shots glance off. **Breakable armour:** has its own health and breaks off; a phase can start when it does.
+- **Phases:** the first starts with the fight; later ones start when its health drops below a %, a part breaks, some seconds pass, or a flag turns on. Each has its own speed, a glow colour, its music (keep or change), and its **moves**, picked in order, at random (how often each) or by your distance.
+- **Moves:** wait, walk side to side, chase you, move to a spot, hover, jump at you, hop, dash (a wall ends it with a thud), shoot, slam (a shockwave along the floor: jump over it), spawn enemies, shield (nothing hurts it), open / close a weak point, roar. Each takes some seconds and can play an animation of its model and a sound. **Shooting** patterns: aimed at you, a fan, straight ahead (Kraid's belly spikes), a ring all around, rain from above you, homing, lobbed in an arc (Kraid's claws); how many, how fast, damage, size, colour, again every few seconds, and where they leave it.
+- **The fight:** an **arena** zone starts it when you walk in (no arena: when it sees you or you shoot it) and the doors around it **seal** until it is defeated. An intro first (it roars, can't be hurt, the bar fills up), its **music**, then a **death**: explosions all over it, the doors open, the music fades, and a flag ("Kraid defeated", or your own) turns on for event cards.
+- **Fight it now** in the tab: play, standing in front of the first one placed, and the fight starts.
+
+In play the boss bar shows at the top (a white part catches up after each hit). If you die the fight starts over. Screen shake (roars, slams, explosions) can be turned down in Options > Graphics > Screen shake.
+
+Event cards for bosses: **when** a boss fight starts / a boss reaches phase N / the countdown runs out; **do** start the boss fight of, shake the screen, start a countdown (a label and seconds, big at the top, red under 10 s: Mother Brain's escape is "when Mother Brain is defeated: start a countdown 'Escape!' 60 s" plus "when the countdown runs out: kill the player"), stop the countdown, play music, stop the music. Statues: "when Kraid is defeated: turn a flag on", and a phase or a door that waits for it.
+
 ## Lock-on (right mouse button)
 
 Like Prime's L button. Four small corners show the enemy a press would pick (the one nearest the crosshair, in reach and in sight). Hold the right mouse button: the view swings onto it and stays there, with turning arrowheads around it. **A / D circle it** at the same distance, W / S walk to and from it, your shots go straight to it, missiles (and a little the beam) **steer after it**, and **jumping while circling is a dash** to the side. It lets go when you let go of the button, when the enemy is defeated (holding on picks the next one), or when it stays out of sight for a moment. In the **Scan Visor** holding to scan also keeps the view on what you scan.

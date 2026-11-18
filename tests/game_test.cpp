@@ -21,6 +21,7 @@
 #include "../src/game/cull.h"
 #include "../src/game/screens.h"
 #include "../src/game/savegame.h"
+#include "../src/game/bosses.h"
 #include <sstream>
 #include <algorithm>
 #include <map>
@@ -1275,6 +1276,100 @@ int main() {
         CHECK(wb.lock.mode == 1 && wb.lock.cone == 30 && !wb.lock.dash && wb.lock.lockedColor == 0x123456 && wb.lock.missileHoming == 2.5f, "lock-on settings save and load with the weapons");
     }
 
+
+    {   // bosses
+        SolidFn floor = [](int, int y, int) { return y < 0; };
+        EnemyType kt; kt.id = 7; kt.size = 3; kt.move = EnemyMove::Walk;
+        BossDef d = kraidExample(7);
+        BossSet bs; bs.bosses.push_back(d); BossDef d2 = defaultBoss(9); d2.parts[0].modelPart = "Head"; d2.parts[0].role = PartRole::Breakable; d2.parts[0].health = 40;
+        d2.roar.file = "roar.wav"; d2.phases[0].moves[1].sound.file = "pew.wav"; d2.phases[0].moves[1].sound.volume = 0.5f; d2.arena = "Kraid Lair"; bs.bosses.push_back(d2);
+        CHECK(saveBosses("/tmp/prim_bosses.txt", bs), "bosses save");
+        BossSet lb; CHECK(loadBosses("/tmp/prim_bosses.txt", lb) && lb.bosses.size() == 2, "bosses load (%d)", (int)lb.bosses.size());
+        const BossDef* l7 = lb.forType(7), *l9 = lb.forType(9);
+        CHECK(l7 && l7->title == "Kraid" && l7->phases.size() == 2 && l7->phases[1].moves.size() == 4 && l7->phases[1].start == PhaseStart::HealthBelow && l7->phases[1].value == 50
+              && l7->phases[0].moves[1].pattern == ShotPattern::Straight && l7->parts.size() == 1 && l7->parts[0].name == "Mouth", "Kraid's phases, moves and parts come back");
+        CHECK(l9 && l9->parts[0].modelPart == "Head" && l9->parts[0].role == PartRole::Breakable && l9->roar.file == "roar.wav" && l9->phases[0].moves[1].sound.file == "pew.wav"
+              && l9->phases[0].moves[1].sound.volume == 0.5f && l9->arena == "Kraid Lair", "model parts, sounds and the arena come back");
+
+        EnemyState e; enemyStart(e, kt, { 0.5, 0, 0.5 }, 0, floor); e.obj = 3;
+        BossState b; V3 you{ 0.5, 0, 14 };
+        BossHitResult early = bossHit(b, d, e, "", 50); CHECK(early.deflected && e.health > 0, "before the fight it can't be hurt");
+        bossStart(b, d, e); CHECK(b.fighting && e.health == 800 && b.open.count("Mouth"), "the fight starts at full health, the mouth open");
+        BossHitResult intro = bossHit(b, d, e, "", 50); CHECK(intro.deflected && e.health == 800, "during its intro roar it can't be hurt");
+        bool introOver = false; for (int i = 0; i < 120 && !introOver; i++) introOver = bossUpdate(b, d, e, kt, floor, you, nullptr, 1 / 60.0).introOver;
+        CHECK(introOver && b.phase == 0, "the intro ends and phase 1 begins");
+        BossHitResult body = bossHit(b, d, e, "", 10), mouth = bossHit(b, d, e, "Mouth", 10);
+        CHECK(body.damage == 10 && mouth.damage == 20 && e.health == 770, "a hit on the body does 10, on the mouth (weak x2) 20 (health %.0f)", e.health);
+        int shots = 0; bool straight = true; V3 startPos = e.pos; double far = 0;
+        for (int i = 0; i < 60 * 6; i++) {
+            BossTick k = bossUpdate(b, d, e, kt, floor, you, nullptr, 1 / 60.0);
+            for (const BossShot& s : k.shots) { shots++; if (b.move == 1 && std::fabs(s.vel.y) > 1e-6) straight = false; }
+            far = std::max(far, std::sqrt((e.pos.x - startPos.x) * (e.pos.x - startPos.x) + (e.pos.z - startPos.z) * (e.pos.z - startPos.z)));
+        }
+        CHECK(shots >= 6 && straight, "it shoots belly spikes straight ahead and lobs claws (%d shots)", shots);
+        CHECK(far > 1 && std::fabs(e.pos.y) < 0.01, "it walks side to side on the floor (%.1f blocks away at most)", far);
+        CHECK(e.fwd.z > 0.9, "it faces you");
+        e.health = 390; int started = -1; for (int i = 0; i < 3 && started < 0; i++) started = bossUpdate(b, d, e, kt, floor, you, nullptr, 1 / 60.0).phaseStarted;
+        CHECK(started == 1 && b.phase == 1, "below half health the angry phase starts");
+        // lobbed shots land near you
+        BossMove lob; lob.kind = BossMoveKind::Shoot; lob.pattern = ShotPattern::Lob; lob.count = 1; lob.shotSpeed = 8; lob.gravity = 14;
+        BossDef ld; ld.introTime = 0; BossPhase lp; lp.moves.push_back(lob); ld.phases.push_back(lp);
+        EnemyState le; enemyStart(le, kt, { 0.5, 0, 0.5 }, 0, floor); BossState lb2; bossStart(lb2, ld, le);
+        BossTick lt; for (int i = 0; i < 5 && lt.shots.empty(); i++) lt = bossUpdate(lb2, ld, le, kt, floor, you, nullptr, 1 / 60.0);
+        if (!lt.shots.empty()) {
+            BossShot s = lt.shots[0]; V3 pos = s.from, vel = s.vel; for (int i = 0; i < 600 && !(vel.y < 0 && pos.y <= you.y); i++) { vel.y -= s.gravity / 60.0; pos += vel * (1 / 60.0); }
+            CHECK(std::fabs(pos.z - you.z) < 1 && std::fabs(pos.x - you.x) < 1, "a lobbed shot comes down on you (lands at %.1f %.1f)", pos.x, pos.z);
+        } else CHECK(false, "a lobbed shot comes down on you (no shot)");
+        // a ring and a spread
+        BossDef rd = ld; rd.phases[0].moves[0].pattern = ShotPattern::Ring; rd.phases[0].moves[0].count = 8;
+        BossState rb; bossStart(rb, rd, le); BossTick rt = bossUpdate(rb, rd, le, kt, floor, you, nullptr, 1 / 60.0);
+        double sx = 0, sz = 0; for (auto& s : rt.shots) { sx += s.vel.x; sz += s.vel.z; }
+        CHECK(rt.shots.size() == 8 && std::fabs(sx) < 1e-6 && std::fabs(sz) < 1e-6, "a ring: 8 shots evenly all around");
+        // weak points that open and close; armour; breakable armour; the shield
+        BossDef wd; wd.introTime = 0; wd.bodyHurts = false;
+        BossPart wp; wp.name = "Eye"; wp.startsOpen = false; wd.parts.push_back(wp);
+        BossPart ar; ar.name = "Shell"; ar.role = PartRole::Armour; wd.parts.push_back(ar);
+        BossPart br; br.name = "Plate"; br.role = PartRole::Breakable; br.health = 30; wd.parts.push_back(br);
+        BossPhase wph; BossMove op; op.kind = BossMoveKind::OpenWeak; op.time = 1; BossMove sh; sh.kind = BossMoveKind::Shield; sh.time = 1; BossMove cl; cl.kind = BossMoveKind::CloseWeak; cl.time = 1;
+        wph.moves = { cl, op, sh }; wd.phases.push_back(wph);
+        BossPhase brk; brk.start = PhaseStart::PartBroken; brk.what = "Plate"; brk.moves = { op }; wd.phases.push_back(brk);
+        EnemyState we; enemyStart(we, kt, { 0.5, 0, 0.5 }, 0, floor); BossState wb; bossStart(wb, wd, we);
+        bossUpdate(wb, wd, we, kt, floor, you, nullptr, 1 / 60.0);
+        CHECK(bossHit(wb, wd, we, "Eye", 10).deflected && bossHit(wb, wd, we, "", 10).deflected && bossHit(wb, wd, we, "Shell", 10).deflected, "closed eye, armour and the body (when only weak points hurt) deflect");
+        for (int i = 0; i < 70; i++) bossUpdate(wb, wd, we, kt, floor, you, nullptr, 1 / 60.0);
+        CHECK(wb.move >= 0 && wb.open.count("Eye") && bossHit(wb, wd, we, "Eye", 10).damage == 20, "after its 'open' move the eye can be hit (x2)");
+        for (int i = 0; i < 70; i++) bossUpdate(wb, wd, we, kt, floor, you, nullptr, 1 / 60.0);
+        CHECK(wb.shieldT > 0 && bossHit(wb, wd, we, "Eye", 10).deflected, "while shielded nothing hurts it");
+        for (int i = 0; i < 70; i++) bossUpdate(wb, wd, we, kt, floor, you, nullptr, 1 / 60.0);
+        BossHitResult p1 = bossHit(wb, wd, we, "Plate", 20), p2 = bossHit(wb, wd, we, "Plate", 20);
+        CHECK(!p1.broke && p2.broke && p1.damage == 0 && wb.broken.count("Plate"), "breakable armour takes the hits and breaks");
+        int ps = -1; for (int i = 0; i < 3 && ps < 0; i++) ps = bossUpdate(wb, wd, we, kt, floor, you, nullptr, 1 / 60.0).phaseStarted;
+        CHECK(ps == 1, "a phase that starts when the plate breaks");
+        // flags, defeat
+        BossDef fd = ld; BossPhase fp = lp; fp.start = PhaseStart::Flag; fp.what = "Statue"; fd.phases.push_back(fp);
+        BossState fb; bossStart(fb, fd, le); bool flag = false; FlagFn fl = [&](const std::string& n) { return flag && n == "Statue"; };
+        bossUpdate(fb, fd, le, kt, floor, you, fl, 1 / 60.0); int fbefore = fb.phase; flag = true; bossUpdate(fb, fd, le, kt, floor, you, fl, 1 / 60.0);
+        CHECK(fbefore == 0 && fb.phase == 1, "a phase that starts when a flag turns on");
+        BossHitResult kill = bossHit(fb, fd, le, "", 10000); CHECK(fb.dying && le.health == 0 && kill.damage > 0, "out of health: it starts dying");
+        // boss events
+        EventCard bc; bc.when.kind = When::BossPhase; bc.when.target = "Kraid"; bc.when.number = 2; EventDo sk; sk.kind = Do::Shake; sk.number = 0.5f; bc.dos.push_back(sk);
+        EventDo cd; cd.kind = Do::Countdown; cd.number = 60; cd.text = "Escape!"; bc.dos.push_back(cd);
+        CHECK(describe(bc) == "When Kraid reaches phase 2: shake the screen (0.5), count down 60 s (\"Escape!\").", "a boss card reads: %s", describe(bc).c_str());
+        struct BH : EventHost { int runs = 0; bool hasKey(const std::string&) override { return false; } int count(const std::string&) override { return 0; } float health() override { return 99; } void run(const EventDo&) override { runs++; } } bh;
+        EventRunner erb; std::vector<EventCard> bcs{ bc }; erb.start(bcs, bh);
+        erb.signal(bcs, { When::BossPhase, "Kraid", "", 1 }, bh); int r1 = bh.runs; erb.signal(bcs, { When::BossPhase, "Kraid", "", 2 }, bh);
+        CHECK(r1 == 0 && bh.runs == 2, "a phase card runs for its phase only");
+        // part boxes turn with it
+        BossPart front; front.box = { { 0.4, 0.4, 0.9 }, { 0.6, 0.6, 1.0 } };
+        EnemyState pe; enemyStart(pe, kt, { 0.5, 0, 0.5 }, 0, floor); pe.fwd = { 0, 0, 1 }; Box3 bz = bossPartBox(front, pe, kt); pe.fwd = { 1, 0, 0 }; Box3 bx = bossPartBox(front, pe, kt);
+        CHECK(bz.lo.z > 1.0 && bx.lo.x > 1.0 && std::fabs((bx.lo.z + bx.hi.z) / 2 - 0.5) < 0.01, "a part on its front stays on its front when it turns");
+        // jumping, slam
+        BossMove slam; slam.kind = BossMoveKind::Slam; slam.time = 2; slam.height = 2; BossDef sd; sd.introTime = 0; BossPhase sp2; sp2.moves = { slam }; sd.phases.push_back(sp2);
+        EnemyState se; enemyStart(se, kt, { 0.5, 0, 0.5 }, 0, floor); BossState sb; bossStart(sb, sd, se); bool slammed = false; double top = 0;
+        for (int i = 0; i < 2; i++) bossUpdate(sb, sd, se, kt, floor, you, nullptr, 1 / 60.0);   // lands first
+        for (int i = 0; i < 120; i++) { BossTick k = bossUpdate(sb, sd, se, kt, floor, you, nullptr, 1 / 60.0); slammed |= k.slam; top = std::max(top, se.pos.y); }
+        CHECK(slammed && top > 1.5, "a slam: up %.1f blocks and a shockwave on landing", top);
+    }
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
     return fails ? 1 : 0;
 }

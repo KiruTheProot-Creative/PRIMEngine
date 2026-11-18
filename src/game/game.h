@@ -55,6 +55,7 @@ struct Settings {
     bool invertY = false;      // the mouse: up looks down
     int lockMode = 0;          // lock-on: 0 as the game says, 1 hold the button, 2 a press locks / the next lets go
     bool caveCulling = true;   // chunks hidden behind walls / in rock are not drawn
+    float screenShake = 1;     // bosses, slams, roars shake the view this much (0: never)
     KeyBinds keys;
     bool load(const std::string& path);
     bool save(const std::string& path) const;

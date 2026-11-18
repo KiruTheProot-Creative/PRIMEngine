@@ -11,7 +11,7 @@ Field field(Settings& s, const std::string& k) {
     Field r;
     if (k == "volume") r.f = &s.soundVolume; else if (k == "vol_weapons") r.f = &s.volWeapons; else if (k == "vol_movement") r.f = &s.volMovement;
     else if (k == "vol_enemies") r.f = &s.volEnemies; else if (k == "vol_world") r.f = &s.volWorld; else if (k == "vol_menus") r.f = &s.volMenus; else if (k == "vol_music") r.f = &s.volMusic;
-    else if (k == "fullscreen") r.b = &s.fullscreen; else if (k == "vsync") r.b = &s.vsync; else if (k == "brightness") r.f = &s.brightness;
+    else if (k == "fullscreen") r.b = &s.fullscreen; else if (k == "vsync") r.b = &s.vsync; else if (k == "brightness") r.f = &s.brightness; else if (k == "screen_shake") r.f = &s.screenShake;
     else if (k == "fov") r.f = &s.fov; else if (k == "ui_scale") r.f = &s.uiScale;
     else if (k == "render_distance") r.i = &s.renderDistance; else if (k == "vertical_distance") r.i = &s.verticalDistance;
     else if (k == "shadows") r.i = &s.shadowQuality; else if (k == "shadow_res") r.i = &s.shadowRes; else if (k == "shadow_distance") r.f = &s.shadowDistance;
@@ -61,6 +61,7 @@ const std::vector<OptionDef>& optionDefs() {
         v.push_back(slider("brightness", "Brightness", G, "Screen", 0.3f, 2.5f, 0.05f, "%"));
         v.push_back(slider("fov", "Field of view", G, "Screen", 50, 110, 1, "%.0f"));
         v.push_back(slider("ui_scale", "Interface size", G, "Screen", 0.75f, 2, 0.05f, "%"));
+        v.push_back(slider("screen_shake", "Screen shake", G, "Screen", 0, 2, 0.05f, "%", "off", "Bosses stomping, slams and roars shake the view."));
         v.push_back(slider("render_distance", "Render distance", G, "Distance", 2, 32, 1, "%.0f chunks"));
         v.push_back(slider("vertical_distance", "Up / down distance", G, "Distance", 1, 12, 1, "%.0f chunks"));
         v.push_back(toggle("cave_culling", "Skip what is behind walls", G, "Distance", "Chunks you cannot see from where you are (rock, closed caves, the other side of walls) are not drawn. Off: everything in range is drawn."));

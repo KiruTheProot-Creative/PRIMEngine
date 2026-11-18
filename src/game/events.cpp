@@ -1,5 +1,6 @@
 #include "events.h"
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <fstream>
 #include <sstream>
@@ -22,6 +23,9 @@ const Need& needOf(When w) {
         { "a counter reaches", false, true, false, true, "", "how many" },
         { "an enemy is defeated:", true, false, false, false, "enemy" },
         { "every enemy in a zone is defeated:", true, false, false, false, "zone" },
+        { "a boss fight starts:", true, false, false, false, "enemy" },
+        { "a boss reaches phase", true, false, false, true, "enemy", "phase" },
+        { "the countdown runs out" },
     };
     return n[std::clamp((int)w, 0, (int)When::COUNT - 1)];
 }
@@ -52,6 +56,12 @@ const Need& needOf(Do d) {
         { "wait", false, false, false, true, "", "seconds" },
         { "win: show", false, false, true },
         { "show HUD element", false, true }, { "hide HUD element", false, true }, { "flash HUD element", false, true },
+        { "start the boss fight of", true, false, false, false, "enemy" },
+        { "shake the screen", false, false, false, true, "", "how hard" },
+        { "start a countdown", false, false, true, true, "", "seconds" },
+        { "stop the countdown" },
+        { "play music", false, false, true },
+        { "stop the music" },
     };
     return n[std::clamp((int)d, 0, (int)Do::COUNT - 1)];
 }
@@ -76,6 +86,9 @@ std::string describe(const EventCard& c) {
     case When::CountReaches: s = "When " + orAny(w.target, "a counter") + " reaches " + num(w.number); break;
     case When::Defeated: s = "When " + orAny(w.target, "any enemy") + " is defeated"; break;
     case When::ZoneCleared: s = "When every enemy in " + orAny(w.target, "a zone") + " is defeated"; break;
+    case When::FightStarts: s = "When the fight with " + orAny(w.target, "any boss") + " starts"; break;
+    case When::BossPhase: s = "When " + orAny(w.target, "any boss") + (w.number > 0 ? " reaches phase " + num(w.number) : " reaches a new phase"); break;
+    case When::CountdownOver: s = "When the countdown runs out"; break;
     default: break;
     }
     for (size_t k = 0; k < c.ifs.size(); k++) {
@@ -121,6 +134,12 @@ std::string describe(const EventCard& c) {
         case Do::HudShow: a = "show " + n + " on the HUD"; break;
         case Do::HudHide: a = "hide " + n + " on the HUD"; break;
         case Do::HudFlash: a = "flash " + n + " on the HUD"; break;
+        case Do::StartFight: a = "start the fight with " + orAny(t, "?"); break;
+        case Do::Shake: a = "shake the screen (" + num(d.number) + ")"; break;
+        case Do::Countdown: a = "count down " + num(d.number) + " s" + (d.text.empty() ? "" : " (\"" + d.text + "\")"); break;
+        case Do::StopCountdown: a = "stop the countdown"; break;
+        case Do::PlayMusic: a = "play the music " + orAny(d.text, "?"); break;
+        case Do::StopMusic: a = "stop the music"; break;
         default: break;
         }
         s += (k == 0 ? " " : ", ") + a;
@@ -207,6 +226,7 @@ void EventRunner::signal(const std::vector<EventCard>& cards, const EventSignal&
         if (w.kind != s.kind) continue;
         bool any = w.target.empty();   // no object named: any one
         if (!any && w.target != s.subject && w.target != s.also) continue;
+        if (w.kind == When::BossPhase && w.number > 0 && std::lround(w.number) != std::lround(s.number)) continue;   // that phase only
         fire(cards, i, h);
     }
 }

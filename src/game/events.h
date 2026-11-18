@@ -8,11 +8,13 @@
 
 namespace mc {
 
-enum class When { GameStarts, EnterZone, LeaveZone, Touch, Shot, Pickup, DoorOpens, DoorCloses, Dies, Every, After, CountReaches, Defeated, ZoneCleared, COUNT };   // Defeated: an enemy (by name, or its type); ZoneCleared: every enemy in a zone
+enum class When { GameStarts, EnterZone, LeaveZone, Touch, Shot, Pickup, DoorOpens, DoorCloses, Dies, Every, After, CountReaches, Defeated, ZoneCleared,
+                  FightStarts, BossPhase, CountdownOver, COUNT };   // bosses: the fight of an enemy starts, it reaches a phase (number: which, 0 any); the countdown runs out   // Defeated: an enemy (by name, or its type); ZoneCleared: every enemy in a zone
 enum class If { HasKey, NoKey, CountAtLeast, FlagOn, FlagOff, HealthBelow, COUNT };
 enum class Do { Message, OpenDoor, CloseDoor, LockDoor, UnlockDoor, MovePlatform, Show, Hide, LightOn, LightOff, Particles, Teleport,
                 Heal, Hurt, Kill, Checkpoint, GiveKey, TakeKey, AddCount, FlagOn, FlagOff, Wait, Win,
-                HudShow, HudHide, HudFlash, COUNT };   // HUD: an element on the player's HUD, by name
+                HudShow, HudHide, HudFlash,
+                StartFight, Shake, Countdown, StopCountdown, PlayMusic, StopMusic, COUNT };   // HUD: an element on the player's HUD, by name; StartFight: a boss
 
 // what each kind needs: an object (and which kind of object), a name, a text, a number
 struct Need { const char* label; bool object = false, name = false, text = false, number = false; const char* objectKind = ""; const char* numberLabel = ""; };
@@ -36,7 +38,7 @@ bool saveEvents(const std::string& path, const std::vector<EventCard>& cards);
 bool loadEvents(const std::string& path, std::vector<EventCard>& cards);
 
 // something that happened in the game (subject: the object's name, or a pickup / key / counter name)
-struct EventSignal { When kind; std::string subject, also; };   // also: a second name that may match (a pickup's "Gem" besides its object name)
+struct EventSignal { When kind; std::string subject, also; float number = 0; };   // number: a boss phase   // also: a second name that may match (a pickup's "Gem" besides its object name)
 
 // what the game answers and does for the cards
 struct EventHost {
