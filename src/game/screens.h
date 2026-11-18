@@ -10,7 +10,8 @@
 
 namespace mc {
 
-enum class ScreenRole { Custom, MainMenu, Options, Death, Credits, Files, Intro, COUNT };   // Files: picking a save file; Intro: the first screen (splash, story), before the main menu
+enum class ScreenRole { Custom, MainMenu, Options, Death, Credits, Files, Intro, NewGameIntro, COUNT };
+// Files: picking a save file; Intro: the splash, shown first (before the main menu); NewGameIntro: the story, after picking an empty file (then the game)
 const char* screenRoleName(ScreenRole r);
 
 enum class BgKind { Color, Image, Video, World, Game, COUNT };   // Image: png / jpg / gif (moves); Game: the game as it is, behind
@@ -112,6 +113,7 @@ struct ScreenSet {
     int find(const std::string& name) const;              // -1: none
     int byRole(ScreenRole r) const;                       // the first screen with that role (-1: none)
     UiSounds sounds;                                      // the game's interface sounds (every screen and the pause menu)
+    SoundUse startSound; float startFade = 1.5f; bool fadeWithSound = true;   // picking a file: this sound, and the screen fades to black (as long as the sound, or startFade s)
 };
 ScreenSet defaultScreens();                               // Main menu, Files, Options, Death, Credits
 bool saveScreens(const std::string& path, const ScreenSet& s);

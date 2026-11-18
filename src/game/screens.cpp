@@ -8,7 +8,7 @@
 namespace mc {
 
 const char* screenRoleName(ScreenRole r) {
-    static const char* n[] = { "Custom", "Main menu", "Options", "Death screen", "Credits", "Files (save files)", "Intro (shown first)" };
+    static const char* n[] = { "Custom", "Main menu", "Options", "Death screen", "Credits", "Files (save files)", "Splash (shown first)", "Intro of a new game (after an empty file)" };
     int i = (int)r; return i >= 0 && i < (int)ScreenRole::COUNT ? n[i] : "?";
 }
 const char* bgKindName(BgKind k) {
@@ -157,7 +157,7 @@ Screen presetScreen(ScreenRole r) {
         s.items.push_back(button("Back", ScreenAct::Back, 0.08f, 0.88f, 0.2f));
         break; }
     case ScreenRole::Intro: {   // a splash: the game's name fades in and out, then on to the story
-        s.name = "Splash"; s.bg.color = s.bg.color2 = 0x000000; s.comp = Compositor{}; s.fadeIn = 0.6f; s.duration = 4; s.next = "Story";
+        s.name = "Splash"; s.bg.color = s.bg.color2 = 0x000000; s.comp = Compositor{}; s.fadeIn = 0.6f; s.duration = 4; s.next = "";
         { int bg = s.comp.add(NodeType::Background, 40, 60), ui = s.comp.add(NodeType::UI, 40, 220), over = s.comp.add(NodeType::AlphaOver, 300, 120), gl = s.comp.add(NodeType::Glare, 520, 120), out = s.comp.add(NodeType::Output, 740, 120);
           s.comp.connect(bg, over, 0); s.comp.connect(ui, over, 1); s.comp.connect(over, gl, 0); s.comp.connect(gl, out, 0); }
         ScreenItem t = text("Title", "{game}", 0.1f, 0.4f, 0.8f, 0.14f, 0.1f); t.showAt = 0.5f; t.hideAt = 3.6f; t.fade = 0.8f; t.grow = 0.02f; s.items.push_back(t);
@@ -168,7 +168,7 @@ Screen presetScreen(ScreenRole r) {
     return s;
 }
 static Screen storyScreen() {   // an intro like Super Metroid's: text typed over the dark, then the main menu
-    Screen s; s.name = "Story"; s.role = ScreenRole::Custom; s.comp = defaultCompositor(); s.bg.color = 0x02040A; s.bg.color2 = 0x0A1424; s.duration = 14; s.fadeIn = 1;
+    Screen s; s.name = "Story"; s.role = ScreenRole::NewGameIntro; s.comp = defaultCompositor(); s.bg.color = 0x02040A; s.bg.color2 = 0x0A1424; s.duration = 14; s.fadeIn = 1;
     ScreenItem t = text("Story", "The research station on planet Zebes\nhas gone silent.\n\nThe last message spoke of creatures\nthat drain the life from anything they touch.\n\nOne hunter is sent to find out why.",
                         0.12f, 0.25f, 0.76f, 0.5f, 0.034f, 0);
     t.showAt = 0.8f; t.hideAt = 13.5f; t.fade = 0.8f; t.typeSpeed = 22; s.items.push_back(t);
@@ -179,7 +179,7 @@ Screen presetStory() { return storyScreen(); }
 ScreenSet defaultScreens() {
     ScreenSet s;
     for (ScreenRole r : { ScreenRole::MainMenu, ScreenRole::Files, ScreenRole::Options, ScreenRole::Death, ScreenRole::Credits }) s.screens.push_back(presetScreen(r));
-    s.screens.push_back(presetScreen(ScreenRole::Intro)); s.screens.push_back(storyScreen());   // a splash, then a story, then the main menu
+    s.screens.push_back(presetScreen(ScreenRole::Intro)); s.screens.push_back(storyScreen());   // a splash before the main menu; the story after picking an empty file
     return s;
 }
 int ScreenSet::find(const std::string& name) const { for (int i = 0; i < (int)screens.size(); i++) if (screens[i].name == name) return i; return -1; }
@@ -204,9 +204,10 @@ size_t typedBytes(const std::string& text, const ScreenItem& it, double t) {
 // ------------------------------------------------------------------ files
 bool saveScreens(const std::string& path, const ScreenSet& set) {
     std::ofstream f(path); if (!f) return false;
-    f << "screens 2\n";
+    f << "screens 3\n";
     auto snd = [&](const char* k, const UiSounds& u) { f << k << " " << soundUseText(u.hover) << " " << soundUseText(u.click) << " " << soundUseText(u.back) << "\n"; };
     snd("uisounds", set.sounds);
+    f << "start " << set.startFade << " " << (set.fadeWithSound ? 1 : 0) << " " << soundUseText(set.startSound) << "\n";
     for (const Screen& s : set.screens) {
         f << "screen " << escText(s.name) << " " << (int)s.role << " " << s.fadeIn << "\n";
         const ScreenBg& b = s.bg;
@@ -243,6 +244,7 @@ bool loadScreens(const std::string& path, ScreenSet& set) {
             one(0, u.hover); one(6, u.click); one(12, u.back); };
         if (k == "screens") l >> version;
         else if (k == "uisounds") readSnd(set.sounds);
+        else if (k == "start") { int ws = 1; std::string rest; l >> set.startFade >> ws; std::getline(l, rest); soundUseFrom(rest, set.startSound); set.fadeWithSound = ws != 0; }
         else if (k == "screen") {
             Screen s; std::string n; int role = 0; l >> n >> role >> s.fadeIn; s.name = unescText(n);
             s.role = (ScreenRole)std::clamp(role, 0, (int)ScreenRole::COUNT - 1); s.comp = Compositor{};
@@ -279,6 +281,10 @@ bool loadScreens(const std::string& path, ScreenSet& set) {
         }
     }
     for (Screen& s : set.screens) for (CompNode& n : s.comp.nodes) for (int& i : n.in) if (i && !s.comp.find(i)) i = 0;   // (wires to nodes that are gone)
+    if (version < 3) {   // (the story used to come right after the splash: now it comes after picking an empty file)
+        int sp = set.byRole(ScreenRole::Intro), st = set.find("Story");
+        if (sp >= 0 && st >= 0 && set.screens[sp].next == "Story" && set.screens[st].role == ScreenRole::Custom && set.byRole(ScreenRole::NewGameIntro) < 0) { set.screens[sp].next.clear(); set.screens[st].role = ScreenRole::NewGameIntro; }
+    }
     if (version < 2 && set.byRole(ScreenRole::Files) < 0) set.screens.insert(set.screens.begin() + std::min<size_t>(1, set.screens.size()), presetScreen(ScreenRole::Files));   // (from before save files)
     return true;
 }

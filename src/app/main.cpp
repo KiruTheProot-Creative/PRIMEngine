@@ -711,6 +711,7 @@ struct App {
         if (k == VK_F6 && !repeat && !playMode && !menuSession) { PlayFromMenu(); return; }
         if (k == VK_ESCAPE && bindCapture >= 0) { bindCapture = -1; keysQuiet = GetTickCount64() + 250; return; }   // setting a key: Esc says never mind
         if (k == VK_ESCAPE && CurScreen()) {   // a screen is up: Esc goes back (not from the main menu or the death screen)
+            if (startOn) return;
             ScreenRole r = CurScreen()->role;
             if (!screenBack.empty() || (playMode && r != ScreenRole::Death)) ScreenBack();
             return;
@@ -6124,7 +6125,7 @@ struct App {
         }
         if (playMode) { paused = true; Capture(false); }
     }
-    void CloseScreens() { curScreen = -1; screenBack.clear(); bindCapture = -1; }
+    void CloseScreens() { curScreen = -1; screenBack.clear(); bindCapture = -1; inNewGameIntro = false; }
     void PlayFromMenu() {   // F6: the game as a player starts it, from the main menu
         if (screen != Screen::Game || playMode) return;
         int mm = screens.byRole(ScreenRole::MainMenu);
@@ -6150,12 +6151,12 @@ struct App {
         switch (a) {
         case ScreenAct::NewGame: case ScreenAct::Files: {   // the Files screen picks the file (an empty one: a new game); without one: File 1
             int f = screens.byRole(ScreenRole::Files);
-            if (f >= 0) ShowScreen(f, true); else if (a == ScreenAct::NewGame) StartSlot(1);
+            if (f >= 0) ShowScreen(f, true); else if (a == ScreenAct::NewGame) BeginStart(1, false);
             break; }
         case ScreenAct::Continue: {   // the newest file (on the death screen: this file's last save)
             RefreshSlots(); int k = playMode && curSlot >= 0 ? curSlot : NewestSlot();
-            if (playMode && curSlot == 0) { SaveGame g; if (loadGame(SlotDir(0), g)) { LoadSlot(0); break; } }
-            if (k > 0 && slotInfo.count(k)) LoadSlot(k); else Toast("No saved game yet");
+            if (playMode && curSlot == 0) { SaveGame g; if (loadGame(SlotDir(0), g)) { BeginStart(0, true); break; } }
+            if (k > 0 && slotInfo.count(k)) BeginStart(k, true); else Toast("No saved game yet");
             break; }
         case ScreenAct::Options: { int o = screens.byRole(ScreenRole::Options); if (o >= 0) ShowScreen(o, true); else showSettings = true; break; }
         case ScreenAct::Credits: { int c = screens.byRole(ScreenRole::Credits); if (c >= 0) ShowScreen(c, true); break; }
@@ -6174,7 +6175,7 @@ struct App {
         if (playMode) { CloseScreens(); paused = false; Capture(true); }   // (a screen opened while playing: back to the game)
     }
     void ScreenInput() {   // keys and the mouse on the shown screen
-        if (!CurScreen()) return;
+        if (!CurScreen() || startOn) return;   // (starting a file: nothing until the game is there)
         mc::Screen* sc = CurScreen(); bool timed = sc->duration > 0 || sc->untilVideoEnds;
         if (timed && sc->skippable && screenT > 0.35 && bindCapture < 0) {   // a splash / intro: any key or click goes on
             for (int k = ImGuiKey_NamedKey_BEGIN; k < ImGuiKey_NamedKey_END; k++) if (k != ImGuiKey_F5 && ImGui::IsKeyPressed((ImGuiKey)k, false)) { ScreenNext(); return; }
@@ -6183,14 +6184,16 @@ struct App {
         MenuControl(screenHits, screenSel, [&](ImVec2 m, int* pane, ImVec2* px) { if (pane) *pane = 0; return ScreenHitAt(m, px); },
                     [&](const MenuHit& h) {
                         if (h.kind == 9) { Toast("No saved game yet"); return; }
-                        PlayUi(h.kind == 8 && (ScreenAct)h.arg == ScreenAct::Back ? 2 : 1);
+                        bool starts = (h.kind == 10 || (h.kind == 8 && ((ScreenAct)h.arg == ScreenAct::Continue || ((ScreenAct)h.arg == ScreenAct::NewGame && screens.byRole(ScreenRole::Files) < 0)))) && !screens.startSound.empty();
+                        if (!starts) PlayUi(h.kind == 8 && (ScreenAct)h.arg == ScreenAct::Back ? 2 : 1);   // (starting a file has its own sound)
                         if (h.kind == 8) ScreenAction((ScreenAct)h.arg, h.target); else if (h.kind == 10) SlotPicked(h.arg); }, false);
         if (screenSel != before && before >= 0 && screenSel >= 0) PlayUi(0);
         if (screenSel >= 0 && screenSel < (int)screenHits.size() && screenHits[screenSel].kind == 10 && (ImGui::IsKeyPressed(ImGuiKey_Delete) || ImGui::IsKeyPressed(ImGuiKey_Backspace))) SlotErase(screenHits[screenSel].arg);
     }
     std::map<int, size_t> typed;   // typed texts: how much has shown (for the letter sound)
-    void ScreenNext() {   // a splash / intro is over: its next screen (or the main menu)
+    void ScreenNext() {   // a splash / intro is over: its next screen (or the main menu; after a new game's intro: the game)
         mc::Screen* sc = CurScreen(); if (!sc) return;
+        if (inNewGameIntro && (sc->next.empty() || screens.find(sc->next) < 0)) { int sl = pendingSlot > 0 ? pendingSlot : 1; pendingSlot = 0; StartSlot(sl); blackIn = 1; return; }
         int idx = sc->next.empty() ? -1 : screens.find(sc->next);
         if (idx < 0 || idx == curScreen) idx = screens.byRole(ScreenRole::MainMenu);
         if (idx < 0) { if (menuSession) LeaveMenuSession(); else CloseScreens(); return; }
@@ -6307,7 +6310,31 @@ struct App {
         Toast("File " + std::to_string(slot) + ": " + g.place);
         return true;
     }
-    void SlotPicked(int slot) { if (slotInfo.count(slot)) LoadSlot(slot); else StartSlot(slot); }
+    void SlotPicked(int slot) { BeginStart(slot, slotInfo.count(slot) > 0); }
+    // ---- starting a file: the game-start sound, the screen fades to black, then the game (a new one: its intro first, if there is one)
+    bool startOn = false, inNewGameIntro = false; double startT = 0, startLen = 1.5; int startSlotN = 0, pendingSlot = 0; bool startLoad = false; float blackIn = 0;
+    float BlackLevel() const { return startOn ? (float)std::clamp(startT / std::max(0.05, startLen), 0.0, 1.0) : blackIn; }
+    void BeginStart(int slot, bool load) {
+        if (startOn) return;
+        startOn = true; startT = 0; startSlotN = slot; startLoad = load;
+        const SoundUse& snd = screens.startSound; double len = screens.startFade;
+        if (!snd.empty()) {
+            PlaySoundIn(SND_MENUS, snd);
+            if (screens.fadeWithSound) { float sec = SoundSeconds(snd.file); if (snd.length > 0) sec = std::min(sec, snd.length); if (sec > 0.05f) len = sec / std::max(0.1f, snd.pitch); }   // as long as the sound
+        }
+        startLen = std::clamp(len, 0.05, 20.0);
+        StopMusic((float)startLen);
+    }
+    void UpdateStart(double dt) {
+        if (!startOn) { if (blackIn > 0) blackIn = std::max(0.f, blackIn - (float)dt / 0.9f); return; }   // (after: back from black)
+        startT += dt; if (startT < startLen) return;
+        startOn = false; blackIn = 1;
+        int slot = startSlotN;
+        if (startLoad) { LoadSlot(slot); return; }
+        int intro = screens.byRole(ScreenRole::NewGameIntro);
+        if (intro >= 0) { if (playMode) StopPlay(); pendingSlot = slot; screenBack.clear(); ShowScreen(intro, false); inNewGameIntro = true; blackIn = 0; return; }   // (the intro fades in itself)
+        StartSlot(slot);
+    }
     void SlotErase(int slot) {   // Delete twice (within 3 s) on a used file
         if (!slotInfo.count(slot)) return;
         if (eraseArm == slot && uiClock - eraseArmT < 3) { eraseGame(SlotDir(slot)); RefreshSlots(); eraseArm = 0; Toast("File " + std::to_string(slot) + " erased"); }
@@ -6579,12 +6606,17 @@ struct App {
             ImGui::EndCombo();
         }
         Prop("A key or click skips"); ch |= ImGui::Checkbox("##sqskip", &sc.skippable);
-        Hint("Give the first one the role \"Intro (shown first)\": playing from the menu (F6) starts there and goes screen to screen to the main menu. A video background with \"or when the video ends\" makes an intro movie.");
+        Hint("The role \"Splash (shown first)\": playing from the menu (F6) starts there and goes screen to screen to the main menu. The role \"Intro of a new game\": shown after picking an empty file, screen to screen, then the game starts. A video background with \"or when the video ends\" makes an intro movie.");
         ImGui::SeparatorText("This screen's interface sounds");
         Prop("Picking"); ch |= SoundEdit("##shov", sc.sounds.hover, false);
         Prop("Using"); ch |= SoundEdit("##sclk", sc.sounds.click, false);
         Prop("Going back"); ch |= SoundEdit("##sbak", sc.sounds.back, false);
         ImGui::TextDisabled("(empty: the game's, below)");
+        ImGui::SeparatorText("Starting a file (picking it on the Files screen, Continue)");
+        Prop("Game-start sound"); ch |= SoundEdit("##gstart", screens.startSound, true);
+        Prop("Fade as long as the sound"); ch |= ImGui::Checkbox("##gsfw", &screens.fadeWithSound);
+        if (!screens.fadeWithSound || screens.startSound.empty()) { Prop("Fade to black"); ch |= ImGui::SliderFloat("##gsfd", &screens.startFade, 0.1f, 8, "%.1f s"); }
+        Hint("The sound plays, the screen (and the music) fade to black, then the game fades in. An empty file goes to the screen with the role \"Intro of a new game\" first (the story), then into the game.");
         ImGui::SeparatorText("The game's interface sounds (every screen and the pause menu)");
         Prop("Picking"); ch |= SoundEdit("##ghov", screens.sounds.hover, false);
         Prop("Using"); ch |= SoundEdit("##gclk", screens.sounds.click, false);
@@ -10291,7 +10323,7 @@ struct App {
         uiClock += dt; menuSlideT += dt;
         fpsAcc += dt; fpsN++; if (fpsAcc > 0.5) { fps = fpsN / fpsAcc; fpsAcc = 0; fpsN = 0; }
         PollTextures(dt);
-        if (screen == Screen::Game) { UpdateGame(dt); UpdateScreens(dt); CheckDeathScreen(); if (playMode && !paused && !CurScreen()) playTime += dt; }
+        if (screen == Screen::Game) { UpdateGame(dt); UpdateScreens(dt); UpdateStart(dt); CheckDeathScreen(); if (playMode && !paused && !CurScreen()) playTime += dt; }
 
         ImGui::GetStyle().FontScaleMain = settings.uiScale;
         ImGui_ImplDX11_NewFrame(); ImGui_ImplWin32_NewFrame(); ImGui::NewFrame();
@@ -10319,6 +10351,7 @@ struct App {
         Popups();
         BuildHudLists(); BuildMenuLists();
         if (mc::Screen* sc = CurScreen(); sc && !ev) BuildScreenList(*sc, cw, ch, true);
+        if (float bl = BlackLevel(); bl > 0.001f && !ev) ImGui::GetForegroundDrawList()->AddRectFilled(ImVec2(0, 0), ImVec2((float)cw, (float)ch), IM_COL32(0, 0, 0, (int)(bl * 255)));   // starting a file: to black and back
         if (ev && screensEdOpen) BuildScreenPreview();
         ImGui::Render();
         RenderMinimap();
