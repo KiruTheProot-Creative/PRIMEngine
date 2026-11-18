@@ -8,6 +8,19 @@
 
 namespace mc {
 
+// what the player's keys do (Options > Controls): two keys each (Windows key codes: 1 left mouse, 2 right mouse, 'W'...; 0: none)
+enum class Act { Forward, Back, Left, Right, Jump, Sprint, Walk, Fire, Missile, LockOn, Use, Visor, Ball, NextMissile, Map, COUNT };
+const char* actName(Act a);   // "Move forward"...
+const char* actKey(Act a);    // "forward"... (in settings.txt)
+struct KeyBinds {
+    int key[(int)Act::COUNT][2];
+    KeyBinds();               // the usual keys
+    bool down(Act a, bool (*isDown)(int)) const { for (int k : key[(int)a]) if (k && isDown(k)) return true; return false; }
+    bool uses(Act a, int vk) const { return vk && (key[(int)a][0] == vk || key[(int)a][1] == vk); }
+    void set(Act a, int slot, int vk);   // another action using that key loses it (no key does two things)
+};
+const char* keyNameFallback(int vk);   // "Left mouse", "Space", "W", "F5"... ("" when unknown: the app asks Windows)
+
 struct Settings {
     int renderDistance = 10;   // chunks around you, sideways
     int verticalDistance = 5;  // chunks above and below you
@@ -17,7 +30,7 @@ struct Settings {
     bool blockPreview = true;  // see-through preview where the next block goes
     float timeOfDay = 10.f;    // hours, 0 .. 24
     bool dayCycle = false;     // the sun moves (one day = 20 minutes)
-    int shadowQuality = 2;     // 0 off, 1 normal (4 x 1536), 2 high (4 x 2048): four maps, sharp near you, coarser farther out
+    int shadowQuality = 1;     // 0 off, above: on (four maps, sharp near you, coarser farther out; their size: shadowRes)
     float shadowDistance = 160; // blocks: how far shadows reach (the sharpness near you does not depend on it, nor on the render distance)
     int shadowSoft = 2;        // shadow edges: 0 sharp, 1 smooth, 2 soft like real sunlight (sharp near what casts them, softer farther away)
     float shadowSoftness = 1;  // how soft (smooth / realistic)
@@ -34,6 +47,13 @@ struct Settings {
     bool materials = true;     // texture materials: shiny, metal, glowing
     bool hudGlow = true;
     bool guessMaterials = true; // textures nobody set up get a material guessed from their name       // the HUD's glow, and its light on the helmet's 3D parts
+    int shadowRes = 2048;      // each shadow map's size (pixels)
+    float brightness = 1.0f;   // the whole picture
+    bool fullscreen = false;   // borderless, over the whole screen
+    float volWeapons = 1, volMovement = 1, volEnemies = 1, volWorld = 1;   // sound groups (times soundVolume, the master)
+    bool invertY = false;      // the mouse: up looks down
+    int lockMode = 0;          // lock-on: 0 as the game says, 1 hold the button, 2 a press locks / the next lets go
+    KeyBinds keys;
     bool load(const std::string& path);
     bool save(const std::string& path) const;
 };

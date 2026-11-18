@@ -17,6 +17,9 @@
 #include "../src/game/visors.h"
 #include "../src/game/menu.h"
 #include "../src/game/enemies.h"
+#include "../src/game/options.h"
+#include <sstream>
+#include <algorithm>
 #include <map>
 #include <set>
 #include <filesystem>
@@ -974,8 +977,9 @@ int main() {
     {   // the pause menu: pages as tabs, panes, items
         printf("\nthe pause menu\n");
         MenuLayout m = defaultMenu();
-        CHECK(m.pages.size() == 3 && m.findPage("Logbook") == 2 && m.findPage("Nope") == -1 && m.tabs() == std::vector<int>({ 0, 1, 2 }) && m.always.size() == 1 && m.always[0].items[0].kind == MenuKind::TabBar,
-              "starter menu: Main, Inventory, Logbook as tabs, a tab bar on every page");
+        CHECK(m.pages.size() == 4 && m.findPage("Logbook") == 2 && m.findPage("Nope") == -1 && m.tabs() == std::vector<int>({ 0, 1, 2, 3 }) && m.always.size() == 1 && m.always[0].items[0].kind == MenuKind::TabBar,
+              "starter menu: Main, Inventory, Logbook, Options as tabs, a tab bar on every page");
+        CHECK(m.optionsPage() == 3 && m.pages[0].panes[0].items[5].act == MenuAct::Settings && m.pages[0].panes[0].items[5].text == "Options", "the Options page, and Main's Options button");
         bool lists = false; for (auto& p : m.pages[2].panes) for (auto& i : p.items) lists |= i.kind == MenuKind::ScanList; CHECK(lists, "the Logbook has the scan index");
         const MenuPane& left = m.pages[2].panes[0];
         HudPlane lp = menuPanePlane(left); CHECK(planePoint(lp, 0, 0.5f).z < planePoint(lp, 1, 0.5f).z && planePoint(lp, 0, 0.5f).x < planePoint(lp, 1, 0.5f).x, "a left pane turns toward you (its outer edge is nearer)");
@@ -983,9 +987,18 @@ int main() {
         m.pages[1].tab = false; m.pages[0].panes[0].items[2].target = "Some page"; m.pages[0].panes[0].items[2].act = MenuAct::GoTo; m.slide = 0.4f;
         m.pages[2].panes[2].items[0].text = "Two words\nand a line"; m.pages[2].panes[1].frame = false; m.always[0].color = 0xFF00FF;
         saveMenu("/tmp/prim_menu.txt", m); MenuLayout b; CHECK(loadMenu("/tmp/prim_menu.txt", b), "the menu loads");
-        CHECK(b.pages.size() == 3 && !b.pages[1].tab && b.pages[0].panes[0].items[2].act == MenuAct::GoTo && b.pages[0].panes[0].items[2].target == "Some page" && b.slide == 0.4f
-              && b.pages[2].panes[2].items[0].text == "Two words\nand a line" && !b.pages[2].panes[1].frame && b.always[0].color == 0xFF00FF && b.tabs() == std::vector<int>({ 0, 2 })
+        CHECK(b.pages.size() == 4 && !b.pages[1].tab && b.pages[0].panes[0].items[2].act == MenuAct::GoTo && b.pages[0].panes[0].items[2].target == "Some page" && b.slide == 0.4f
+              && b.pages[2].panes[2].items[0].text == "Two words\nand a line" && !b.pages[2].panes[1].frame && b.always[0].color == 0xFF00FF && b.tabs() == std::vector<int>({ 0, 2, 3 }) && b.optionsPage() == 3
               && b.pages[2].panes[0].yaw == m.pages[2].panes[0].yaw && b.pages[1].panes[1].items[1].kind == MenuKind::BeamList, "pages, panes and items save and load");
+        {   // a menu saved before the Options page: it gets one, and its Settings button now says Options
+            MenuLayout o = defaultMenu(); o.pages.pop_back(); o.pages[0].panes[0].items[5].text = o.pages[0].panes[0].items[5].name = "Settings";
+            saveMenu("/tmp/prim_menu_old.txt", o);
+            { std::ifstream in("/tmp/prim_menu_old.txt"); std::stringstream ss; ss << in.rdbuf(); std::string t = ss.str(); t.replace(t.find("menu 2"), 6, "menu 1"); std::ofstream out("/tmp/prim_menu_old.txt"); out << t; }
+            MenuLayout ob; loadMenu("/tmp/prim_menu_old.txt", ob);
+            CHECK(ob.pages.size() == 4 && ob.optionsPage() == 3 && ob.pages[0].panes[0].items[5].text == "Options", "an older menu gets the Options page");
+            MenuLayout nb = defaultMenu(); nb.pages.pop_back(); saveMenu("/tmp/prim_menu_new.txt", nb); MenuLayout nl; loadMenu("/tmp/prim_menu_new.txt", nl);
+            CHECK(nl.pages.size() == 3 && nl.optionsPage() < 0, "a newer menu without it stays without it (it was taken out on purpose)");
+        }
         auto val = [](const std::string& n) -> std::string { return n == "energy" ? "99" : n == "game" ? "Prime" : ""; };
         CHECK(menuFill("{game}: {energy} of {maxenergy} {", val) == "Prime: 99 of {maxenergy} {", "texts fill in {energy}, {game}... (unknown ones stay)");
     }
@@ -1073,6 +1086,46 @@ int main() {
         }
         { EnemySet e2 = defaultEnemies(); e2.find(2)->lockable = false; saveEnemies("/tmp/prim_enemies2.txt", e2); EnemySet b2; loadEnemies("/tmp/prim_enemies2.txt", b2);
           CHECK(!b2.find(2)->lockable && b2.find(1)->lockable, "'can be locked onto' saves and loads"); }
+    }
+
+    {   // options: Sound, Graphics, Controls (one list for the in-visor page and the editor's window)
+        printf("\noptions\n");
+        const auto& defs = optionDefs(); Settings st; int bad = 0, keysN = 0; std::set<std::string> keys;
+        for (const OptionDef& d : defs) {
+            if (!keys.insert(d.key).second) bad++;
+            if (std::find(optionGroups().begin(), optionGroups().end(), d.group) == optionGroups().end()) bad++;
+            if (d.type == OptType::Key) { keysN++; continue; }
+            if (d.type == OptType::Reset) continue;
+            Settings t; float v0 = optionGet(t, d); optionStep(t, d, 1); optionStep(t, d, -1);
+            if (d.type != OptType::Toggle && std::fabs(optionGet(t, d) - v0) > 1e-4f && !(d.type == OptType::Slider && v0 >= d.hi - 1e-4f) && !(d.type == OptType::Choice && v0 >= d.choices.size() - 1)) bad++;   // one step right and back: where it was
+            Settings u; optionSet(u, d, 1e9f); float hi = optionGet(u, d); optionSet(u, d, -1e9f); float lo = optionGet(u, d);
+            if (d.type == OptType::Slider && (hi != d.hi || lo != d.lo)) bad++;
+            if (d.type == OptType::Choice && (hi != (float)d.choices.size() - 1 || lo != 0)) bad++;
+            if (optionText(u, d).empty()) bad++;
+        }
+        CHECK(bad == 0 && keysN == (int)Act::COUNT, "every option: a unique key, a group, reads back what it was set to, stays in range, shows a value (%d options)", (int)defs.size());
+        const OptionDef& res = defs[findOption("shadow_res")];
+        st.shadowRes = 2048; CHECK(optionText(st, res) == "2048" && optionGet(st, res) == 2, "shadow resolution shows as its size");
+        optionStep(st, res, 1); CHECK(st.shadowRes == 3072, "a step right: the next size up"); optionStep(st, res, 1); optionStep(st, res, 1); CHECK(st.shadowRes == 4096, "it stops at the end");
+        const OptionDef& vol = defs[findOption("volume")]; st.soundVolume = 0.75f; CHECK(optionText(st, vol) == "75%", "volumes as percentages");
+        st.soundVolume = 0; CHECK(optionText(st, vol) == "silent", "...and at the bottom: silent");
+        const OptionDef& rd = defs[findOption("render_distance")]; st.renderDistance = 10; optionStep(st, rd, 1); CHECK(st.renderDistance == 11 && optionText(st, rd) == "11 chunks", "whole numbers stay whole");
+        const OptionDef& sh = defs[findOption("shadows")]; const OptionDef& sd = defs[findOption("shadow_distance")];
+        st.shadowQuality = 0; CHECK(!optionShown(st, sd, true) && optionShown(st, sh, true), "shadow settings hide while shadows are off");
+        optionStep(st, sh, 1); CHECK(st.shadowQuality == 1 && optionShown(st, sd, true), "a toggle flips (and they show again)");
+        CHECK(!optionShown(st, defs[findOption("time_of_day")], true) && optionShown(st, defs[findOption("time_of_day")], false), "the time of day: only in the editor");
+        // keys
+        KeyBinds kb; CHECK(kb.key[(int)Act::Forward][0] == 'W' && kb.key[(int)Act::LockOn][0] == 2 && kb.key[(int)Act::Missile][0] == 'F', "the usual keys (W, right mouse for lock-on, F for missiles)");
+        kb.set(Act::Jump, 0, 'W'); CHECK(kb.key[(int)Act::Jump][0] == 'W' && kb.key[(int)Act::Forward][0] == 0x26 && kb.key[(int)Act::Forward][1] == 0, "a key taken from another action: that one loses it (its second key moves up)");
+        static bool fakeDown[256] = {}; fakeDown['W'] = true; CHECK(kb.down(Act::Jump, [](int k) { return fakeDown[k & 255]; }) && !kb.down(Act::Forward, [](int k) { return fakeDown[k & 255]; }), "down() asks both keys");
+        CHECK(std::string(keyNameFallback(1)) == "Left mouse" && std::string(keyNameFallback('Q')) == "Q" && std::string(keyNameFallback(0x74)) == "F5" && std::string(keyNameFallback(0xBA)) == "", "key names");
+        Settings sv; sv.keys = kb; sv.shadowRes = 3072; sv.volEnemies = 0.4f; sv.invertY = true; sv.lockMode = 2; sv.brightness = 1.3f; sv.fullscreen = true;
+        sv.save("/tmp/prim_settings.txt"); Settings sl; sl.load("/tmp/prim_settings.txt");
+        CHECK(sl.keys.key[(int)Act::Jump][0] == 'W' && sl.keys.key[(int)Act::Forward][0] == 0x26 && sl.shadowRes == 3072 && sl.volEnemies == 0.4f && sl.invertY && sl.lockMode == 2 && sl.brightness == 1.3f && sl.fullscreen,
+              "options and keys save and load");
+        { std::ofstream o("/tmp/prim_settings_old.txt"); o << "shadows 1\nfov 80\n"; } Settings so; so.load("/tmp/prim_settings_old.txt");
+        CHECK(so.shadowQuality == 1 && so.shadowRes == 1536 && so.fov == 80 && so.keys.key[(int)Act::Use][0] == 'E', "an older settings file: 'normal' shadows become 1536, keys the usual ones");
+        optionReset(sl, "Controls"); CHECK(sl.keys.key[(int)Act::Forward][0] == 'W' && !sl.invertY && sl.lockMode == 0 && sl.shadowRes == 3072, "'back to the start values' for Controls: only the controls");
     }
 
     {   // lock-on: picking a target, turning to it, circling it, homing, the dash

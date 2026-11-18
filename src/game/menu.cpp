@@ -8,16 +8,20 @@
 namespace mc {
 
 const char* menuKindName(MenuKind k) {
-    static const char* n[] = { "Panel", "Text", "Image", "Button", "Tab bar", "Item list", "Beam list", "Scan list", "Scan text", "Scan model" };
+    static const char* n[] = { "Panel", "Text", "Image", "Button", "Tab bar", "Item list", "Beam list", "Scan list", "Scan text", "Scan model", "Options" };
     int i = (int)k; return i >= 0 && i < (int)MenuKind::COUNT ? n[i] : "?";
 }
 const char* menuActName(MenuAct a) {
-    static const char* n[] = { "Nothing", "Keep playing", "Start over", "Open the map", "Settings", "Stop playing", "Go to a page", "Back (the page before)" };
+    static const char* n[] = { "Nothing", "Keep playing", "Start over", "Open the map", "Options", "Stop playing", "Go to a page", "Back (the page before)" };
     int i = (int)a; return i >= 0 && i < (int)MenuAct::COUNT ? n[i] : "?";
 }
 
 int MenuLayout::findPage(const std::string& name) const {
     for (int i = 0; i < (int)pages.size(); i++) if (pages[i].name == name) return i;
+    return -1;
+}
+int MenuLayout::optionsPage() const {
+    for (int i = 0; i < (int)pages.size(); i++) for (const MenuPane& p : pages[i].panes) for (const MenuItem& it : p.items) if (it.kind == MenuKind::Options) return i;
     return -1;
 }
 std::vector<int> MenuLayout::tabs() const {
@@ -50,7 +54,7 @@ MenuLayout defaultMenu() {
         p.items.push_back(button("Keep playing", MenuAct::Resume, 0.31f));
         p.items.push_back(button("Start over", MenuAct::Restart, 0.43f));
         p.items.push_back(button("Map  (M)", MenuAct::Map, 0.55f));
-        p.items.push_back(button("Settings", MenuAct::Settings, 0.67f));
+        p.items.push_back(button("Options", MenuAct::Settings, 0.67f));
         p.items.push_back(button("Stop playing  (F5)", MenuAct::Quit, 0.79f));
         pg.panes.push_back(p); m.pages.push_back(pg);
     }
@@ -76,7 +80,15 @@ MenuLayout defaultMenu() {
         t.items.push_back(item("Text", MenuKind::ScanText, 0.06f, 0.04f, 0.88f, 0.92f, "", 36));
         pg.panes.push_back(a); pg.panes.push_back(mo); pg.panes.push_back(t); m.pages.push_back(pg);
     }
+    m.pages.push_back(defaultOptionsPage());
     return m;
+}
+
+MenuPage defaultOptionsPage() {
+    MenuPage pg; pg.name = "Options";
+    MenuPane p = pane("Options", { 0, -0.07, 0.95 }, 0, 1.12f, 0.7f); p.bendX = 0.38f; p.bendY = 0.16f; p.backing = 0.62f;
+    p.items.push_back(item("Options", MenuKind::Options, 0.04f, 0.05f, 0.92f, 0.9f, "", 32));
+    pg.panes.push_back(p); return pg;
 }
 
 static void writePane(std::ostream& f, const MenuPane& p) {
@@ -88,17 +100,18 @@ static void writePane(std::ostream& f, const MenuPane& p) {
 }
 bool saveMenu(const std::string& path, const MenuLayout& m) {
     std::ofstream f(path); if (!f) return false;
-    f << "menu 1\nslide " << m.slide << "\nalways\n";
+    f << "menu 2\nslide " << m.slide << "\nalways\n";
     for (const MenuPane& p : m.always) writePane(f, p);
     for (const MenuPage& pg : m.pages) { f << "page " << escText(pg.name) << " " << (pg.tab ? 1 : 0) << "\n"; for (const MenuPane& p : pg.panes) writePane(f, p); }
     return (bool)f;
 }
 bool loadMenu(const std::string& path, MenuLayout& m) {
     std::ifstream f(path); if (!f) return false;
-    m = MenuLayout{}; std::string line; std::vector<MenuPane>* panes = &m.always;
+    m = MenuLayout{}; std::string line; std::vector<MenuPane>* panes = &m.always; int version = 1;
     while (std::getline(f, line)) {
         std::istringstream l(line); std::string k; l >> k;
-        if (k == "slide") { float s; if (l >> s) m.slide = std::clamp(s, 0.f, 2.f); }
+        if (k == "menu") l >> version;
+        else if (k == "slide") { float s; if (l >> s) m.slide = std::clamp(s, 0.f, 2.f); }
         else if (k == "always") panes = &m.always;
         else if (k == "page") { MenuPage pg; std::string n; int t = 1; l >> n >> t; pg.name = unescText(n); pg.tab = t != 0; m.pages.push_back(pg); panes = &m.pages.back().panes; }
         else if (k == "pane") {
@@ -112,6 +125,10 @@ bool loadMenu(const std::string& path, MenuLayout& m) {
             i.kind = (MenuKind)std::clamp(kind, 0, (int)MenuKind::COUNT - 1); i.act = (MenuAct)std::clamp(act, 0, (int)MenuAct::COUNT - 1);
             panes->back().items.push_back(i);
         }
+    }
+    if (version < 2 && m.optionsPage() < 0) {   // menus from before the Options page: it is added (Settings buttons now lead there)
+        m.pages.push_back(defaultOptionsPage());
+        for (MenuPage& pg : m.pages) for (MenuPane& p : pg.panes) for (MenuItem& it : p.items) if (it.kind == MenuKind::Button && it.act == MenuAct::Settings && it.text == "Settings") it.text = it.name = "Options";
     }
     return true;
 }

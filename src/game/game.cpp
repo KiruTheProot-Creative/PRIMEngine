@@ -1,14 +1,52 @@
 #include "game.h"
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 
 namespace mc {
 
+// ------------------------------------------------------------------ keys
+const char* actName(Act a) {
+    static const char* n[] = { "Move forward", "Move back", "Move left", "Move right", "Jump", "Sprint", "Walk slowly", "Fire / bomb", "Missile / Power Bomb",
+                               "Lock-on / scan", "Use", "Next visor", "Morph Ball", "Next missile kind", "Map" };
+    int i = (int)a; return i >= 0 && i < (int)Act::COUNT ? n[i] : "?";
+}
+const char* actKey(Act a) {
+    static const char* n[] = { "forward", "back", "left", "right", "jump", "sprint", "walk", "fire", "missile", "lockon", "use", "visor", "ball", "next_missile", "map" };
+    int i = (int)a; return i >= 0 && i < (int)Act::COUNT ? n[i] : "?";
+}
+KeyBinds::KeyBinds() {
+    static const int d[(int)Act::COUNT][2] = { { 'W', 0x26 }, { 'S', 0x28 }, { 'A', 0x25 }, { 'D', 0x27 }, { 0x20, 0 }, { 0x11, 0 }, { 0x10, 0 }, { 1, 0 }, { 'F', 0 },
+                                               { 2, 0 }, { 'E', 0 }, { 'V', 0 }, { 'C', 0 }, { 'Q', 0 }, { 'M', 0 } };
+    for (int i = 0; i < (int)Act::COUNT; i++) { key[i][0] = d[i][0]; key[i][1] = d[i][1]; }
+}
+void KeyBinds::set(Act a, int slot, int vk) {
+    int i = (int)a; if (i < 0 || i >= (int)Act::COUNT || slot < 0 || slot > 1) return;
+    if (vk) for (int j = 0; j < (int)Act::COUNT; j++) for (int s = 0; s < 2; s++) if (key[j][s] == vk && !(j == i && s == slot)) key[j][s] = 0;
+    key[i][slot] = vk;
+    for (auto& k : key) if (!k[0] && k[1]) { k[0] = k[1]; k[1] = 0; }   // the first slot is never empty while the second is not
+}
+const char* keyNameFallback(int vk) {
+    switch (vk) {
+    case 0: return "-"; case 1: return "Left mouse"; case 2: return "Right mouse"; case 4: return "Middle mouse"; case 5: return "Mouse 4"; case 6: return "Mouse 5";
+    case 0x08: return "Backspace"; case 0x09: return "Tab"; case 0x0D: return "Enter"; case 0x10: return "Shift"; case 0x11: return "Ctrl"; case 0x12: return "Alt";
+    case 0x14: return "Caps Lock"; case 0x1B: return "Esc"; case 0x20: return "Space"; case 0x21: return "Page Up"; case 0x22: return "Page Down"; case 0x23: return "End"; case 0x24: return "Home";
+    case 0x25: return "Left"; case 0x26: return "Up"; case 0x27: return "Right"; case 0x28: return "Down"; case 0x2D: return "Insert"; case 0x2E: return "Delete";
+    case 0xA0: return "Left Shift"; case 0xA1: return "Right Shift"; case 0xA2: return "Left Ctrl"; case 0xA3: return "Right Ctrl"; case 0xA4: return "Left Alt"; case 0xA5: return "Alt Gr";
+    default: break;
+    }
+    static char buf[8][8]; static int at = 0; char* b = buf[at = (at + 1) % 8];
+    if ((vk >= '0' && vk <= '9') || (vk >= 'A' && vk <= 'Z')) { b[0] = (char)vk; b[1] = 0; return b; }
+    if (vk >= 0x70 && vk <= 0x87) { std::snprintf(b, 8, "F%d", vk - 0x6F); return b; }
+    if (vk >= 0x60 && vk <= 0x69) { std::snprintf(b, 8, "Num %d", vk - 0x60); return b; }
+    return "";
+}
+
 // ------------------------------------------------------------------ settings
 bool Settings::load(const std::string& path) {
     std::ifstream f(path); if (!f) return false;
-    std::string k;
+    std::string k; bool hadRes = false;
     while (f >> k) {
         if (k == "render_distance") f >> renderDistance; else if (k == "vertical_distance") f >> verticalDistance;
         else if (k == "fov") f >> fov; else if (k == "mouse_sensitivity") f >> mouseSensitivity; else if (k == "sound_volume") f >> soundVolume; else if (k == "ui_scale") f >> uiScale;
@@ -31,8 +69,21 @@ bool Settings::load(const std::string& path) {
         else if (k == "materials") { int v; f >> v; materials = v != 0; }
         else if (k == "hud_glow") { int v; f >> v; hudGlow = v != 0; }
         else if (k == "guess_materials") { int v; f >> v; guessMaterials = v != 0; }
+        else if (k == "shadow_res") { f >> shadowRes; hadRes = true; }
+        else if (k == "brightness") f >> brightness;
+        else if (k == "fullscreen") { int v; f >> v; fullscreen = v != 0; }
+        else if (k == "volumes") f >> volWeapons >> volMovement >> volEnemies >> volWorld;
+        else if (k == "invert_y") { int v; f >> v; invertY = v != 0; }
+        else if (k == "lock_mode") f >> lockMode;
+        else if (k == "key") {
+            std::string n; int a = 0, b = 0; f >> n >> a >> b;
+            for (int i = 0; i < (int)Act::COUNT; i++) if (n == actKey((Act)i)) { keys.key[i][0] = a; keys.key[i][1] = b; }
+        }
         else { std::string rest; std::getline(f, rest); }
     }
+    if (!hadRes) shadowRes = shadowQuality == 1 ? 1536 : 2048;   // (older files: "normal" shadows were 1536, "high" 2048)
+    shadowQuality = std::max(0, std::min(2, shadowQuality)); shadowRes = std::max(512, std::min(4096, shadowRes));
+    brightness = std::max(0.3f, std::min(2.5f, brightness)); lockMode = std::max(0, std::min(2, lockMode));
     renderDistance = std::max(2, std::min(48, renderDistance)); verticalDistance = std::max(1, std::min(16, verticalDistance));
     return true;
 }
@@ -44,7 +95,10 @@ bool Settings::save(const std::string& path) const {
       << "\ncloud_cover " << cloudCover << "\nground_fog " << groundFog << "\ncloud_shadows " << (cloudShadows ? 1 : 0)
       << "\nbloom " << bloom << "\nswaying " << (swaying ? 1 : 0) << "\nreflections " << reflections
       << "\nambient_occlusion " << ambientOcclusion << "\nao_strength " << aoStrength
-      << "\nbumps " << bumps << "\ncoat " << coat << "\nmaterials " << (materials ? 1 : 0) << "\nhud_glow " << (hudGlow ? 1 : 0) << "\nguess_materials " << (guessMaterials ? 1 : 0) << "\n";
+      << "\nbumps " << bumps << "\ncoat " << coat << "\nmaterials " << (materials ? 1 : 0) << "\nhud_glow " << (hudGlow ? 1 : 0) << "\nguess_materials " << (guessMaterials ? 1 : 0)
+      << "\nshadow_res " << shadowRes << "\nbrightness " << brightness << "\nfullscreen " << (fullscreen ? 1 : 0)
+      << "\nvolumes " << volWeapons << " " << volMovement << " " << volEnemies << " " << volWorld << "\ninvert_y " << (invertY ? 1 : 0) << "\nlock_mode " << lockMode << "\n";
+    for (int i = 0; i < (int)Act::COUNT; i++) f << "key " << actKey((Act)i) << " " << keys.key[i][0] << " " << keys.key[i][1] << "\n";
     return (bool)f;
 }
 

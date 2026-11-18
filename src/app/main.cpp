@@ -22,6 +22,7 @@
 #include "../game/map.h"
 #include "../game/visors.h"
 #include "../game/menu.h"
+#include "../game/options.h"
 #include "../game/enemies.h"
 #include "../game/sound.h"
 #include "../game/breakable.h"
@@ -386,6 +387,22 @@ struct App {
         D3D11_SHADER_RESOURCE_VIEW_DESC sv{}; sv.Format = DXGI_FORMAT_R32_FLOAT; sv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY; sv.Texture2DArray.MipLevels = 1; sv.Texture2DArray.ArraySize = CASCADES;
         HR(dev->CreateShaderResourceView(shadowTex.Get(), &sv, &shadowSRV));
     }
+    bool fsOn = false; RECT fsWindowed{};   // fullscreen (Options > Graphics): borderless over the monitor the window is on
+    void ApplyFullscreen() {
+        if (settings.fullscreen == fsOn || !hwnd) return;
+        fsOn = settings.fullscreen;
+        if (fsOn) {
+            GetWindowRect(hwnd, &fsWindowed);
+            MONITORINFO mi{ sizeof mi }; GetMonitorInfoA(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mi);
+            SetWindowLongA(hwnd, GWL_STYLE, WS_POPUP | WS_VISIBLE);
+            SetWindowPos(hwnd, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right - mi.rcMonitor.left, mi.rcMonitor.bottom - mi.rcMonitor.top, SWP_FRAMECHANGED | SWP_NOOWNERZORDER);
+        } else {
+            SetWindowLongA(hwnd, GWL_STYLE, WS_OVERLAPPEDWINDOW | WS_VISIBLE);
+            RECT r = fsWindowed; if (r.right - r.left < 200) r = { 100, 100, 1380, 860 };
+            SetWindowPos(hwnd, nullptr, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_FRAMECHANGED | SWP_NOZORDER | SWP_NOOWNERZORDER);
+        }
+        resized = true;
+    }
     void OnResize() {
         resized = false; ctx->OMSetRenderTargets(0, nullptr, nullptr); backRTV.Reset();
         HR(swap->ResizeBuffers(0, 0, 0, DXGI_FORMAT_UNKNOWN, 0));
@@ -640,13 +657,49 @@ struct App {
     }
     bool Playing() const { return screen == Screen::Game && captured && !paused && !inventory && !shapeMenu && !brushMenu; }
     static bool Down(int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; }
+    bool ActDown(Act a) const { return settings.keys.down(a, &App::Down); }   // the player's keys (Options > Controls)
+    bool actPrev[(int)Act::COUNT] = {}; ULONGLONG keysQuiet = 0;
+    void PlayKeys() {   // the play keys that do something once per press (any key or mouse button: Options > Controls)
+        bool now[(int)Act::COUNT]; bool fg = GetForegroundWindow() == hwnd;
+        for (int i = 0; i < (int)Act::COUNT; i++) now[i] = fg && ActDown((Act)i);
+        bool quiet = !playMode || bindCapture >= 0 || GetTickCount64() < keysQuiet || ImGui::GetIO().WantTextInput || screen != Screen::Game;
+        auto pressed = [&](Act a) { return !quiet && now[(int)a] && !actPrev[(int)a]; };
+        if (pressed(Act::Map)) { if (mapOpen) CloseMap(); else if (!showSettings) OpenMap(); }   // the map (also from the pause menu)
+        else if (!paused) {
+            if (pressed(Act::Use)) { if (WorldObject* st = StationInReach()) UseMapStation(*st); }   // use: a Map Station in front of you
+            if (pressed(Act::Visor) && !player.ball) NextVisor();                                     // the visors
+            if (pressed(Act::Ball) && (!Down(VK_CONTROL) || settings.keys.uses(Act::Ball, VK_CONTROL))) ToggleBall();   // the morph ball
+            if (pressed(Act::NextMissile) && weapons.missileTypes.size() > 1 && !player.ball) { if (weapons.switchMode == 0) NextMissile(); else if (weapons.switchMode == 2) Toast("Pick missiles in the menu (Esc)"); }
+        }
+        std::memcpy(actPrev, now, sizeof now);
+    }
+    // ---- setting a key (Options > Controls): the next key or mouse button pressed
+    int bindCapture = -1; bool capSnap[256] = {};   // action * 2 + slot
+    void StartBindCapture(int act, int slot) { bindCapture = act * 2 + slot; for (int vk = 1; vk < 256; vk++) capSnap[vk] = Down(vk); }
+    void PollBindCapture() {
+        if (bindCapture < 0) return;
+        for (int vk = 1; vk < 255; vk++) {
+            if (vk == VK_ESCAPE || (vk >= 0x15 && vk <= 0x1A) || vk == 0xE5 || vk == VK_LWIN || vk == VK_RWIN || vk == VK_APPS || vk == VK_PACKET) continue;
+            bool d = Down(vk); if (!d) { capSnap[vk] = false; continue; }
+            if (capSnap[vk]) continue;   // held when it started: only once it has been let go
+            settings.keys.set((Act)(bindCapture / 2), bindCapture % 2, vk); settings.save(settingsPath);   // (Shift / Ctrl / Alt: the plain ones come first, so either side works)
+            bindCapture = -1; keysQuiet = GetTickCount64() + 300; return;
+        }
+    }
+    std::string KeyLabel(int vk) const {   // a key's name, the way this keyboard writes it
+        const char* n = keyNameFallback(vk); if (*n) return n;
+        char b[64] = {}; UINT sc = MapVirtualKeyA((UINT)vk, MAPVK_VK_TO_VSC);
+        if (sc && GetKeyNameTextA((LONG)(sc << 16), b, sizeof b) > 0) return b;
+        char h[16]; std::snprintf(h, sizeof h, "Key %d", vk); return h;
+    }
     void OnKey(WPARAM k, bool repeat) {
         if (screen != Screen::Game) {
-            if (k == VK_ESCAPE) { if (editorOpen) editorOpen = false; else if (showSettings) showSettings = false; else libraryOpen = false; }
+            if (k == VK_ESCAPE) { if (bindCapture >= 0) bindCapture = -1; else if (editorOpen) editorOpen = false; else if (showSettings) showSettings = false; else libraryOpen = false; }
             return;
         }
         bool typing = ImGui::GetIO().WantTextInput;
         if (k == VK_F5 && !repeat) { if (playMode) StopPlay(); else StartPlay(); return; }
+        if (k == VK_ESCAPE && bindCapture >= 0) { bindCapture = -1; keysQuiet = GetTickCount64() + 250; return; }   // setting a key: Esc says never mind
         if (k == VK_ESCAPE) {
             if (shapeMenu) { shapeMenu = false; Capture(true); }
             else if (brushMenu) { brushMenu = false; Capture(true); }
@@ -661,13 +714,9 @@ struct App {
         }
         if (k == VK_F3) { showF3 = !showF3; return; }
         if (k == VK_F1) { hideHud = !hideHud; return; }
-        if (playMode && !typing && !repeat && k == 'M') { if (mapOpen) CloseMap(); else if (!showSettings) OpenMap(); return; }   // the map
-        if (playMode && !typing && !repeat && !paused) {   // play mode keys (before the return below, which keeps the building tools out of play)
-            if (k == 'E') { if (WorldObject* st = StationInReach()) UseMapStation(*st); return; }           // use: a Map Station in front of you
-            if (k == 'V' && !player.ball) { NextVisor(); return; }                                           // the visors
-            if (k == 'C' && !Down(VK_CONTROL)) { ToggleBall(); return; }                                    // the morph ball
+        if (playMode && !typing && !repeat && !paused) {   // play mode keys (before the return below, which keeps the building tools out of play; the others: PlayKeys)
             if (!weapons.empty() && k >= '1' && k <= '9') { if (weapons.switchMode == 0) SwitchBeam((int)(k - '1')); else if (weapons.switchMode == 2) Toast("Pick beams in the menu (Esc)"); return; }   // the beams
-            if (k == 'Q' && weapons.missileTypes.size() > 1 && !player.ball) { if (weapons.switchMode == 0) NextMissile(); else if (weapons.switchMode == 2) Toast("Pick missiles in the menu (Esc)"); return; }   // the missiles
+            if (playMode && settings.keys.uses(Act::Map, (int)k) | settings.keys.uses(Act::Use, (int)k) | settings.keys.uses(Act::Visor, (int)k) | settings.keys.uses(Act::Ball, (int)k) | settings.keys.uses(Act::NextMissile, (int)k)) return;
         }
         if (typing || playMode) return;                   // playing: no building tools
         if (Down(VK_CONTROL) && k == 'Z') { if (history.undo(*world)) Toast("Undo"); return; }
@@ -731,6 +780,7 @@ struct App {
     // ================================================================== game update
     void UpdateGame(double dt) {
         player.applySize(game.player);   // the size from the player rules (editor camera too)
+        PlayKeys();
         bool locked = UpdateLockOn(dt);
         if (Playing() || (playMode && demoDrive)) {
             V3 lockC; bool lookLocked = locked && LockPoint(lockId, lockC);
@@ -739,11 +789,12 @@ struct App {
                 if (FreeAiming()) { float k = (float)std::exp(-dt * 8); freeAim.x *= k; freeAim.y *= k; }
             } else if (lockHeld && weapons.lock.holdLooksAhead && visor != 1) {   // holding with nothing locked: the view stays still
             } else if (FreeAiming()) {   // free aim: the mouse moves a cursor; near the edges the camera turns
-                float ty, tp; freeAim.update(weapons, (float)(mouseDX * settings.mouseSensitivity), (float)(mouseDY * settings.mouseSensitivity), (float)rw, (float)rh, dt, ty, tp);
+                float ty, tp; freeAim.update(weapons, (float)(mouseDX * settings.mouseSensitivity), (float)(mouseDY * settings.mouseSensitivity * (settings.invertY ? -1 : 1)), (float)rw, (float)rh, dt, ty, tp);
                 player.look(ty * 3.14159265358979 / 180, -tp * 3.14159265358979 / 180);
-            } else { double s = 0.0022 * settings.mouseSensitivity; player.look(mouseDX * s, mouseDY * s); }
+            } else { double s = 0.0022 * settings.mouseSensitivity; player.look(mouseDX * s, mouseDY * s * (settings.invertY ? -1 : 1)); }
             Controls c; bool fg = GetForegroundWindow() == hwnd;
-            if (fg && Playing()) { c.forward = Down('W'); c.back = Down('S'); c.left = Down('A'); c.right = Down('D'); c.jump = Down(VK_SPACE); c.sneak = Down(VK_SHIFT); c.sprint = Down(VK_CONTROL) && !Down('Z') && !Down('Y'); }
+            if (fg && Playing()) { c.forward = ActDown(Act::Forward); c.back = ActDown(Act::Back); c.left = ActDown(Act::Left); c.right = ActDown(Act::Right); c.jump = ActDown(Act::Jump); c.sneak = ActDown(Act::Walk);
+                                   c.sprint = ActDown(Act::Sprint) && (playMode || (!Down('Z') && !Down('Y'))); }
             if (demoDrive) c = demoCtl;
             if (playMode) { c.sprint = c.sprint && game.player.canSprint; if (play.dead()) c = Controls{}; }
             if (lookLocked && !player.flying) {
@@ -1827,9 +1878,9 @@ struct App {
         // the test beam: click to shoot (G5 brings real weapons)
         if (!weapons.empty() || player.ball) FireWeapons(dt);   // the player's beams and missiles (and the morph ball's bombs)
         else {
-            bool L = Down(VK_LBUTTON) && Playing() && !play.dead();
+            bool L = ActDown(Act::Fire) && Playing() && !play.dead();
             if (L && !shootPrev) { Shot sh; sh.pos = player.eye() + player.forward() * 0.6; sh.dir = player.forward(); shots.push_back(sh); }
-            shootPrev = Down(VK_LBUTTON);
+            shootPrev = ActDown(Act::Fire);
         }
         for (Shot& s : shots) {
             if (s.homeId) {   // fired while locked on: it steers after the target
@@ -1862,8 +1913,8 @@ struct App {
                         float across = wm ? wm->sphere : !wb ? 0.f : s.charged ? wb->chargeSphere : wb->hitSphere;
                         AddSphere(at - s.dir * 0.05, across, s.tint, s.missile ? 0.55f : s.charged ? 0.45f : 0.22f);
                         V3 sa = at - s.dir * 0.05;
-                        if (wm) PlaySound(wm->hit, 1, &sa);
-                        else if (wb) PlaySound(s.charged && !wb->chargedHitSound.empty() ? wb->chargedHitSound : wb->hitSound, 1, &sa);
+                        if (wm) PlaySoundIn(SND_WEAPONS, wm->hit, 1, &sa);
+                        else if (wb) PlaySoundIn(SND_WEAPONS, s.charged && !wb->chargedHitSound.empty() ? wb->chargedHitSound : wb->hitSound, 1, &sa);
                     }
                     if (s.charged) { ParticleSettings bo = particlePreset(s.hitLook.empty() ? "Impact" : s.hitLook); bo.burst *= 3; bo.speed *= 1.6f; bo.size0 *= 2; SpawnFx(bo, at - s.dir * 0.08, s.dir * -1, s.tint); }
                     if (s.missile) { ParticleSettings bo = particlePreset("Fire"); bo.burst = 40; bo.life = 0.5f; SpawnFx(bo, at - s.dir * 0.1, s.dir * -1, s.tint); }
@@ -2636,12 +2687,12 @@ struct App {
         FrameCB fc{}; XMStoreFloat4x4(&fc.viewProj, vp);
         SkyParams(fc, settings.timeOfDay);
         float fogEnd = settings.renderDistance * CS * 0.95f;
-        fc.fogRange[0] = fogEnd * 0.45f; fc.fogRange[1] = fogEnd; fc.fogRange[2] = exposure;
+        fc.fogRange[0] = fogEnd * 0.45f; fc.fogRange[1] = fogEnd; fc.fogRange[2] = exposure * std::clamp(settings.brightness, 0.3f, 2.5f);
         fc.camF[0] = (float)f.x; fc.camF[1] = (float)f.y; fc.camF[2] = (float)f.z; fc.camR[0] = (float)r.x; fc.camR[1] = (float)r.y; fc.camR[2] = (float)r.z;
         fc.camU[0] = (float)u.x; fc.camU[1] = (float)u.y; fc.camU[2] = (float)u.z; fc.proj[0] = std::tan(XMConvertToRadians(settings.fov) * 0.5f); fc.proj[1] = aspect;
 
         // ---- shadow map: the world seen from the sun, around the camera
-        int wantShadow = settings.shadowQuality <= 0 ? 0 : settings.shadowQuality == 1 ? 1536 : 2048;
+        int wantShadow = settings.shadowQuality <= 0 ? 0 : std::clamp(settings.shadowRes, 512, 4096);
         if (wantShadow != shadowSize) MakeShadowMap(wantShadow);
         bool shadows = shadowSize > 0 && fc.sunDir[3] > 0;
         XMMATRIX svp = XMMatrixIdentity(); XMMATRIX cvp[CASCADES];
@@ -3110,48 +3161,63 @@ struct App {
         ImGui::End();
     }
     void Center(ImVec2 size) { ImGui::SetNextWindowPos(ImVec2(cw * 0.5f, ch * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f)); ImGui::SetNextWindowSize(size, ImGuiCond_Always); }
-    void SettingsWindow() {
-        Center(ImVec2(460 * settings.uiScale, 0));
+    void OptionChanged(const OptionDef& d) {   // after an option changed (here or in the visor menu): kept
+        if (d.key == "guess_materials") matsDirty = true;
+        settings.save(settingsPath);
+    }
+    void SettingsWindow() {   // the editor's window: the same options as the in-visor Options page (and a few for the editor)
+        Center(ImVec2(520 * settings.uiScale, 0));
+        ImGui::SetNextWindowSizeConstraints(ImVec2(0, 0), ImVec2(FLT_MAX, ch * 0.85f));
         ImGui::Begin("Settings", &showSettings, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove);
-        bool ch_ = false;
-        ch_ |= ImGui::SliderInt("Render distance", &settings.renderDistance, 2, 32, "%d chunks");
-        ch_ |= ImGui::SliderInt("Up/down distance", &settings.verticalDistance, 1, 12, "%d chunks");
-        ch_ |= ImGui::SliderFloat("Field of view", &settings.fov, 50, 110, "%.0f");
-        ch_ |= ImGui::SliderFloat("Mouse sensitivity", &settings.mouseSensitivity, 0.1f, 3.f, "%.2f");
-        ch_ |= ImGui::SliderFloat("Sound volume", &settings.soundVolume, 0, 2, "%.2f");
-        ch_ |= ImGui::SliderFloat("UI size", &settings.uiScale, 0.75f, 2.f, "%.2f");
-        ch_ |= ImGui::Checkbox("VSync", &settings.vsync);
-        ch_ |= ImGui::Checkbox("Show where the next block goes (see-through preview)", &settings.blockPreview);
-        ImGui::SeparatorText("Look");
-        ch_ |= ImGui::SliderFloat("Time of day", &settings.timeOfDay, 0, 24, "%.1f h");
-        ch_ |= ImGui::Checkbox("The sun moves (a day is 20 minutes)", &settings.dayCycle);
-        const char* sq[] = { "Off", "Normal", "High" }; ch_ |= ImGui::Combo("Shadows", &settings.shadowQuality, sq, 3);
-        if (settings.shadowQuality > 0) {
-            ch_ |= ImGui::SliderFloat("Shadow distance", &settings.shadowDistance, 24, 512, "%.0f blocks");
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("How far shadows reach. Four shadow maps: very sharp close to you, coarser farther out,\nblended where they meet. The sharpness near you stays the same however far this goes.");
-            const char* se[] = { "Sharp", "Smooth", "Soft like sunlight" }; ch_ |= ImGui::Combo("Shadow edges", &settings.shadowSoft, se, 3);
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Soft like sunlight: sharp right next to what casts the shadow, softer the farther away it falls.");
-            if (settings.shadowSoft > 0) ch_ |= ImGui::SliderFloat("Shadow softness", &settings.shadowSoftness, 0.25f, 3, "%.2f");
+        PollBindCapture();
+        const auto& defs = optionDefs();
+        if (ImGui::BeginTabBar("##opt")) {
+            for (const std::string& g : optionGroups()) {
+                if (!ImGui::BeginTabItem(g.c_str())) continue;
+                ImGui::BeginChild("##optlist", ImVec2(500 * settings.uiScale, std::min(ch * 0.62f, 560 * settings.uiScale)), ImGuiChildFlags_None);
+                std::string sec = "\x01";
+                for (int i = 0; i < (int)defs.size(); i++) {
+                    const OptionDef& d = defs[i]; if (d.group != g || !optionShown(settings, d, false)) continue;
+                    if (d.section != sec) { sec = d.section; if (!sec.empty()) ImGui::SeparatorText(sec.c_str()); }
+                    ImGui::PushID(i); bool ch_ = false; float v = optionGet(settings, d);
+                    switch (d.type) {
+                    case OptType::Slider: {
+                        std::string t; for (char c : optionText(settings, d)) { t += c; if (c == '%') t += '%'; }   // (ImGui reads % as a format)
+                        ImGui::SetNextItemWidth(220 * settings.uiScale);
+                        if (ImGui::SliderFloat(d.label.c_str(), &v, d.lo, d.hi, t.c_str(), ImGuiSliderFlags_NoInput)) { optionSet(settings, d, d.step >= 1 ? std::round(v) : v); ch_ = true; }
+                        break; }
+                    case OptType::Toggle: { bool b = v > 0.5f; if (ImGui::Checkbox(d.label.c_str(), &b)) { optionSet(settings, d, b ? 1.f : 0.f); ch_ = true; } break; }
+                    case OptType::Choice: {
+                        int c = (int)std::lround(v); ImGui::SetNextItemWidth(220 * settings.uiScale);
+                        if (ImGui::BeginCombo(d.label.c_str(), optionText(settings, d).c_str())) {
+                            for (int k = 0; k < (int)d.choices.size(); k++) if (ImGui::Selectable(d.choices[k].c_str(), k == c)) { optionSet(settings, d, (float)k); ch_ = true; }
+                            ImGui::EndCombo();
+                        }
+                        break; }
+                    case OptType::Key: {
+                        ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted(d.label.c_str()); ImGui::SameLine(200 * settings.uiScale);
+                        for (int sl = 0; sl < 2; sl++) {
+                            if (sl) ImGui::SameLine(); ImGui::PushID(sl);
+                            bool cap = bindCapture == d.act * 2 + sl; int vk = settings.keys.key[d.act][sl];
+                            std::string lab = cap ? "press a key..." : vk ? KeyLabel(vk) : "-";
+                            if (ImGui::Button((lab + "##k").c_str(), ImVec2(130 * settings.uiScale, 0))) StartBindCapture(d.act, sl);
+                            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Click, then press a key or a mouse button (Esc: never mind).\nRight click: no key.");
+                            if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) { settings.keys.set((Act)d.act, sl, 0); ch_ = true; }
+                            ImGui::PopID();
+                        }
+                        break; }
+                    case OptType::Reset: ImGui::Spacing(); if (ImGui::Button(d.label.c_str())) { optionReset(settings, d.group); ch_ = true; } break;
+                    }
+                    if (!d.tip.empty() && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", d.tip.c_str());
+                    if (ch_) OptionChanged(d);
+                    ImGui::PopID();
+                }
+                ImGui::EndChild();
+                ImGui::EndTabItem();
+            }
+            ImGui::EndTabBar();
         }
-        ch_ |= ImGui::SliderFloat("Clouds", &settings.cloudCover, 0, 1, settings.cloudCover <= 0 ? "none" : "%.2f");
-        ch_ |= ImGui::Checkbox("Cloud shadows on the ground", &settings.cloudShadows);
-        ch_ |= ImGui::SliderFloat("Ground fog", &settings.groundFog, 0, 2, settings.groundFog <= 0 ? "none" : "%.2f");
-        ch_ |= ImGui::SliderFloat("Glow (bloom)", &settings.bloom, 0, 1, settings.bloom <= 0 ? "off" : "%.2f");
-        ch_ |= ImGui::Checkbox("Leaves and plants sway in the wind", &settings.swaying);
-        const char* rq[] = { "Off (only the sky)", "Normal", "High" }; ch_ |= ImGui::Combo("Reflections", &settings.reflections, rq, 3);
-        ch_ |= ImGui::SliderFloat("Bumpy textures", &settings.bumps, 0, 2, settings.bumps <= 0 ? "off" : "%.2f");
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Generated normals: each texture's light and dark pixels become little bumps and dents that catch the light.\nPer texture: Blocks & textures > Textures > Bumps.");
-        ch_ |= ImGui::SliderFloat("Texture coat", &settings.coat, 0, 2, settings.coat <= 0 ? "off" : "%.2f");
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Coated textures: a fine noise inside each pixel, so big flat pixels look like stone, dirt, wood...\nPer texture: Blocks & textures > Textures > Coat.");
-        ch_ |= ImGui::Checkbox("Texture materials (shiny, metal, glowing)", &settings.materials);
-        ch_ |= ImGui::Checkbox("HUD glow (and its light on the helmet)", &settings.hudGlow);
-        if (ImGui::Checkbox("Guess materials from texture names", &settings.guessMaterials)) { ch_ = true; matsDirty = true; }
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Textures you did not set up get a material from their name's words\n(iron: metal, glass / ice: shiny, lamp / lava: glowing...). Off: they stay plain.");
-        const char* aq[] = { "Off (only block corners)", "Normal", "High" }; ch_ |= ImGui::Combo("Ambient occlusion", &settings.ambientOcclusion, aq, 3);
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Soft shade in corners, under overhangs and where things touch.\nWorks for everything on screen.");
-        if (settings.ambientOcclusion > 0) ch_ |= ImGui::SliderFloat("Occlusion strength", &settings.aoStrength, 0.2f, 3.f, "%.1f");
-        if (ch_) settings.save(settingsPath);
-        if (ImGui::Button("Done", ImVec2(-1, 0))) showSettings = false;
+        if (ImGui::Button("Done", ImVec2(-1, 0))) { showSettings = false; bindCapture = -1; }
         ImGui::End();
     }
     // ================================================================== project manager (the start screen)
@@ -4924,8 +4990,8 @@ struct App {
         if (visor != 1) sh.homeId = lockId;
         shots.push_back(sh);
         ParticleSettings fp = particlePreset(b.flashLook); fp.burst = std::max(fp.burst, 8) * (charged ? 3 : 1); if (charged) { fp.size0 *= 2; fp.speed *= 1.6f; } SpawnFx(fp, mpos, mdir, col);
-        if (missile) PlaySound(const_cast<MissileType*>(m)->launch);
-        else PlaySound(charged ? const_cast<Beam&>(b).chargedShotSound : const_cast<Beam&>(b).fireSound);   // the moment it leaves
+        if (missile) PlaySoundIn(SND_WEAPONS, const_cast<MissileType*>(m)->launch);
+        else PlaySoundIn(SND_WEAPONS, charged ? const_cast<Beam&>(b).chargedShotSound : const_cast<Beam&>(b).fireSound);   // the moment it leaves
     }
     // missiles: the kind picked now (one supply for all beams)
     bool OwnsMissile(const MissileType& m) const { return m.startsOwned || inv.keys.count(m.name) > 0; }
@@ -4954,16 +5020,16 @@ struct App {
     void FireWeapons(double dt) {
         weapState.tick((float)dt);
         if (player.ball) {   // the morph ball: the fire button lays a bomb
-            bool L = (Playing() && !play.dead() && Down(VK_LBUTTON)) || holdBeam;
+            bool L = (Playing() && !play.dead() && ActDown(Act::Fire)) || holdBeam;
             if (L && !shootPrev) DropBomb();
-            bool R = Playing() && !play.dead() && Down('F');
+            bool R = Playing() && !play.dead() && ActDown(Act::Missile);
             if (R && !missilePrev) DropPowerBomb();   // F (the missile key): a Power Bomb
-            shootPrev = L; missilePrev = Down('F'); UpdateTimelines(dt, true); return;
+            shootPrev = L; missilePrev = ActDown(Act::Missile); UpdateTimelines(dt, true); return;
         }
         if (weapons.switchMode == 1) PickBestWeapons();
         const Beam* b = CurrentBeam(); if (!b) return;
         bool can = Playing() && !play.dead() && OwnsBeam(*b) && visor == 0;   // (other visors: no shooting, like in Prime)
-        bool L = (can && Down(VK_LBUTTON)) || (holdBeam && OwnsBeam(*b)), R = (can && Down('F')) || forceMissile;   // F: missiles (the right mouse button is kept for lock-on)
+        bool L = (can && ActDown(Act::Fire)) || (holdBeam && OwnsBeam(*b)), R = (can && ActDown(Act::Missile)) || forceMissile;   // F: missiles (the right mouse button is kept for lock-on)
         const std::string& counter = weapons.missileCounter;
         const MissileType* mt = CurrentMissile();
         if (R && !missilePrev && mt) {
@@ -4980,7 +5046,7 @@ struct App {
             bool chargingNow = weapState.charging && weapState.charge > 0;   // the charging sounds (and animation) while it fills
             if (chargingNow && !chargeTlOn) {   // charging starts: its sound (cut when it is full or you let go) and its timeline
                 StartTimeline(weapState.current, Beam::Charging); chargeTlOn = true;
-                if (const SoundUse* u = const_cast<Beam*>(b)->chargeUp.pick(soundSeed)) PlaySound(*u, 1, nullptr, TAG_CHARGE);
+                if (const SoundUse* u = const_cast<Beam*>(b)->chargeUp.pick(soundSeed)) PlaySoundIn(SND_WEAPONS, *u, 1, nullptr, TAG_CHARGE);
             }
             if (!chargingNow && chargeTlOn) { StopChargeTimeline(); chargeTlOn = false; }
             if (weapState.full() && !chargedOn) StartCharged(*b);       // full: the charging sound stops, "done" + the charged loop start together
@@ -4997,7 +5063,7 @@ struct App {
             }
             chargeFx.update(dt, chargeAt, 0, nullptr, showing);
         }
-        shootPrev = L; missilePrev = Down('F');
+        shootPrev = L; missilePrev = ActDown(Act::Missile);
         UpdateTimelines(dt, true);
     }
     void SwitchBeam(int to) {
@@ -5080,7 +5146,7 @@ struct App {
         for (const ScanSeen& s : scanCands) { double reach = std::max(0.09, std::atan2(s.radius, s.dist)); if (s.ang <= reach && (!best || s.ang < best->ang)) best = &s; }
         uint32_t id = best ? best->id : 0;
         if (id != scanTargetId) { scanTargetId = id; scanProgress = 0; }
-        bool hold = (Playing() && Down(VK_RBUTTON)) || holdScan;
+        bool hold = (Playing() && ActDown(Act::LockOn)) || holdScan;
         if (!best || !hold) { scanProgress = 0; return; }
         const WorldObject* o = nullptr; for (const WorldObject& q : objects) if (q.id == id) { o = &q; break; }
         const ScanDef* def = o ? ScanDefOf(*o) : nullptr;
@@ -5159,7 +5225,10 @@ struct App {
     // ================================================================== the pause menu (Player editor > Menu): pages as tabs, made of bent panes
     MenuLayout menu;
     void SaveMenu() { if (!projectDir.empty()) saveMenu(projectDir + "/menu.txt", menu); }
-    struct MenuHit { int pane; ImVec4 r; int kind; int arg; MenuAct act; std::string target; };   // kind: 0 button, 1 tab, 2 beam, 3 missile, 4 scan entry
+    struct MenuHit { int pane; ImVec4 r; int kind; int arg; MenuAct act; std::string target; bool hidden = false; float vx0 = 0, vx1 = 0; };
+    // kind: 0 button, 1 tab, 2 beam, 3 missile, 4 scan entry, 5 an option, 6 an options group tab, 7 a key; hidden: scrolled out of view (keys reach it, the mouse does not);
+    // vx0 / vx1: an option's value part (a slider's track, a key's two boxes)
+    int menuOptGroup = 0, optSelTab = -1, menuBindSlot = 0, optDrag = -1;
     std::vector<std::unique_ptr<ImDrawList>> menuLists; std::vector<HudTarget> menuTargets;
     std::vector<MenuPane> menuPanes; std::vector<bool> menuPaneIsPage; std::vector<MenuHit> menuHits;
     int menuPage = 0, menuSel = -2, menuScan = 0, menuSlideDir = 0, menuEdPage = 0; double menuSlideT = 1; std::vector<int> menuBack;
@@ -5209,7 +5278,7 @@ struct App {
         case MenuAct::Resume: paused = false; Capture(true); break;
         case MenuAct::Restart: play.start(player, playRules, playSpawn, playYaw); paused = false; Capture(true); break;
         case MenuAct::Map: OpenMap(); break;
-        case MenuAct::Settings: showSettings = true; break;
+        case MenuAct::Settings: { int op = menu.optionsPage(); if (op >= 0) GoToPage(op); else showSettings = true; break; }
         case MenuAct::Quit: StopPlay(); break;
         case MenuAct::GoTo: { int p = menu.findPage(h.target); if (p >= 0) GoToPage(p); else Toast("No page called " + h.target); break; }
         case MenuAct::Back: if (!menuBack.empty()) { int p = menuBack.back(); menuBack.pop_back(); GoToPage(p, false); } break;
@@ -5350,6 +5419,111 @@ struct App {
                     }
                 }
                 break; }
+            case MenuKind::Options: {   // the player's options: Sound, Graphics, Controls (its own tabs unless it shows one group)
+                const auto& defs = optionDefs(); const auto& groups = optionGroups();
+                int g = -1; for (int k = 0; k < (int)groups.size(); k++) if (groups[k] == it.text) g = k;
+                float top = a.y, ts = it.textSize;
+                if (g < 0) {
+                    g = std::clamp(menuOptGroup, 0, (int)groups.size() - 1);
+                    float th = ts * 1.5f, tw = (b.x - a.x) / groups.size();
+                    for (int k = 0; k < (int)groups.size(); k++) {
+                        ImVec2 ta(a.x + tw * k + 6, a.y), tb(a.x + tw * (k + 1) - 6, a.y + th); bool cur = k == g;
+                        bool sel = hit(ImVec4(ta.x, ta.y, tb.x, tb.y), 6, k);
+                        if (cur) dl->AddRectFilled(ta, tb, C(c, 0.28f * al), 12);
+                        dl->AddRect(ta, tb, C(c, (cur ? 0.95f : sel ? 0.85f : 0.35f) * al), 12, ImDrawFlags_None, sel ? 3.f : cur ? 2.5f : 2.f);
+                        text(groups[k], ts * 1.05f, ta, tb, 1, cur || sel ? IM_COL32(235, 252, 255, (int)(255 * al)) : C(c, 0.7f * al), false);
+                    }
+                    top = a.y + th + ts * 0.5f;
+                }
+                float hintH = ts * 1.1f, bottom = b.y - hintH, rh = ts * 1.62f;
+                int key = paneIdx * 256 + ii; float& scroll = menuScroll[key];
+                struct Row { int def; std::string head; };
+                std::vector<Row> rows; std::string sec = "\x01";
+                for (int i = 0; i < (int)defs.size(); i++) {
+                    const OptionDef& d = defs[i]; if (d.group != groups[g] || !optionShown(settings, d, true)) continue;
+                    if (d.section != sec) { sec = d.section; if (!sec.empty()) rows.push_back({ -1, sec }); }
+                    rows.push_back({ i, "" });
+                }
+                float total = 0; for (const Row& r : rows) total += r.def < 0 ? rh * 0.85f : rh;
+                float room = bottom - top; scroll = std::clamp(scroll, 0.f, std::max(0.f, total - room));
+                dl->PushClipRect(ImVec2(a.x, top), ImVec2(b.x, bottom), true);
+                float y = top - scroll, valX = a.x + (b.x - a.x) * 0.5f, want = scroll;
+                for (const Row& r : rows) {
+                    float h = r.def < 0 ? rh * 0.85f : rh;
+                    bool vis = y + h > top - 1 && y < bottom + 1;
+                    if (r.def < 0) {
+                        if (vis) { ImVec2 hs = font->CalcTextSizeA(ts * 0.78f, FLT_MAX, 0, r.head.c_str()); float my = y + h * 0.58f;
+                            dl->AddText(font, ts * 0.78f, ImVec2(a.x + 8, my - hs.y * 0.5f), C(c, 0.6f * al), r.head.c_str());
+                            dl->AddLine(ImVec2(a.x + 22 + hs.x, my), ImVec2(b.x - 14, my), C(c, 0.25f * al), 2); }
+                        y += h; continue;
+                    }
+                    const OptionDef& d = defs[r.def];
+                    ImVec4 rr(a.x, y + 3, b.x - 14, y + h - 3); bool inView = y >= top - 2 && y + h <= bottom + 2;
+                    bool sel = hit(rr, d.type == OptType::Key ? 7 : 5, r.def); MenuHit& mh = menuHits.back(); mh.hidden = !inView;
+                    if (sel && !inView) want = y < top ? scroll - (top - y) : scroll + (y + h - bottom);   // keys moved here: it scrolls into view
+                    float vx1 = rr.z - 18; mh.vx0 = valX; mh.vx1 = vx1;
+                    if (vis) {
+                        if (sel) { dl->AddRectFilled(ImVec2(rr.x, rr.y), ImVec2(rr.z, rr.w), C(c, 0.2f * al), 12); dl->AddRect(ImVec2(rr.x, rr.y), ImVec2(rr.z, rr.w), C(c, 0.85f * al), 12, ImDrawFlags_None, 3.f);
+                            dl->AddTriangleFilled(ImVec2(rr.x + 14, rr.y + (rr.w - rr.y) * 0.3f), ImVec2(rr.x + 14, rr.w - (rr.w - rr.y) * 0.3f), ImVec2(rr.x + 28, (rr.y + rr.w) * 0.5f), C(c, al)); }
+                        ImU32 lc = sel ? IM_COL32(235, 252, 255, (int)(255 * al)) : C(c, 0.85f * al), dim = C(c, 0.45f * al);
+                        float my = (rr.y + rr.w) * 0.5f;
+                        if (d.type == OptType::Reset) { text(d.label, ts * 0.9f, ImVec2(rr.x + 40, rr.y), ImVec2(rr.z - 20, rr.w), 0, sel ? lc : dim, false); y += h; continue; }
+                        text(d.label, ts, ImVec2(rr.x + 40, rr.y), ImVec2(valX - 10, rr.w), 0, lc, false);
+                        float v = optionGet(settings, d);
+                        switch (d.type) {
+                        case OptType::Slider: {
+                            float tw2 = (vx1 - valX) * 0.6f, k = std::clamp((v - d.lo) / std::max(1e-6f, d.hi - d.lo), 0.f, 1.f), tx1 = valX + tw2;
+                            mh.vx1 = tx1;
+                            dl->AddRectFilled(ImVec2(valX, my - 4), ImVec2(tx1, my + 4), C(c, 0.22f * al), 4);
+                            dl->AddRectFilled(ImVec2(valX, my - 4), ImVec2(valX + tw2 * k, my + 4), C(c, (sel ? 0.95f : 0.7f) * al), 4);
+                            dl->AddCircleFilled(ImVec2(valX + tw2 * k, my), sel ? 12.f : 9.f, sel ? IM_COL32(235, 252, 255, (int)(255 * al)) : C(c, al));
+                            text(optionText(settings, d), ts * 0.9f, ImVec2(tx1 + 14, rr.y), ImVec2(vx1, rr.w), 2, lc, false);
+                            break; }
+                        case OptType::Toggle: {
+                            bool on = v > 0.5f; ImVec2 p0(valX, my - ts * 0.5f), p1(valX + ts * 2.6f, my + ts * 0.5f);
+                            dl->AddRectFilled(p0, p1, C(c, (on ? 0.55f : 0.08f) * al), ts * 0.5f); dl->AddRect(p0, p1, C(c, 0.8f * al), ts * 0.5f, ImDrawFlags_None, 2.f);
+                            float kx = on ? p1.x - ts * 0.5f : p0.x + ts * 0.5f; dl->AddCircleFilled(ImVec2(kx, my), ts * 0.36f, on ? IM_COL32(235, 252, 255, (int)(255 * al)) : C(c, 0.6f * al));
+                            text(on ? "On" : "Off", ts * 0.9f, ImVec2(p1.x + 16, rr.y), ImVec2(vx1, rr.w), 0, on ? lc : dim, false);
+                            break; }
+                        case OptType::Choice: {
+                            int ci = (int)std::lround(v); bool canL = ci > 0, canR = ci < (int)d.choices.size() - 1; float aw = ts * 0.32f;
+                            dl->AddTriangleFilled(ImVec2(valX, my), ImVec2(valX + aw * 1.6f, my - aw), ImVec2(valX + aw * 1.6f, my + aw), canL ? C(c, al) : C(c, 0.15f * al));
+                            dl->AddTriangleFilled(ImVec2(vx1, my), ImVec2(vx1 - aw * 1.6f, my - aw), ImVec2(vx1 - aw * 1.6f, my + aw), canR ? C(c, al) : C(c, 0.15f * al));
+                            text(optionText(settings, d), ts * 0.9f, ImVec2(valX + aw * 2.5f, rr.y), ImVec2(vx1 - aw * 2.5f, rr.w), 1, lc, false);
+                            break; }
+                        case OptType::Key: {
+                            float bw = (vx1 - valX - 12) * 0.5f;
+                            for (int sl = 0; sl < 2; sl++) {
+                                ImVec2 p0(valX + sl * (bw + 12), rr.y + 5), p1(p0.x + bw, rr.w - 5);
+                                bool cap = bindCapture == d.act * 2 + sl, here = sel && menuBindSlot == sl; int vk = settings.keys.key[d.act][sl];
+                                float pulse = cap ? 0.5f + 0.5f * std::sin((float)uiClock * 8) : 0;
+                                dl->AddRectFilled(p0, p1, C(c, (cap ? 0.25f + 0.25f * pulse : here ? 0.3f : 0.08f) * al), 8);
+                                dl->AddRect(p0, p1, C(c, (here || cap ? 0.95f : 0.4f) * al), 8, ImDrawFlags_None, here || cap ? 3.f : 1.5f);
+                                text(cap ? "press a key" : vk ? KeyLabel(vk) : "-", ts * 0.82f, p0, p1, 1, cap || here ? IM_COL32(235, 252, 255, (int)(255 * al)) : vk ? C(c, 0.9f * al) : dim, false);
+                            }
+                            break; }
+                        default: break;
+                        }
+                    }
+                    y += h;
+                }
+                dl->PopClipRect();
+                if (want != scroll) scroll = std::clamp(want, 0.f, std::max(0.f, total - room));
+                if (total > room) {   // a scroll bar
+                    float k = room / total, y0 = top + (scroll / total) * room;
+                    dl->AddRectFilled(ImVec2(b.x - 7, top), ImVec2(b.x - 2, bottom), C(c, 0.12f * al), 3);
+                    dl->AddRectFilled(ImVec2(b.x - 7, y0), ImVec2(b.x - 2, y0 + room * k), C(c, 0.6f * al), 3);
+                }
+                {   // what the keys do here
+                    const MenuHit* cur = menuSel >= 0 && menuSel < (int)menuHits.size() ? &menuHits[menuSel] : nullptr;
+                    std::string hint = bindCapture >= 0 ? "Press a key or a mouse button      Esc: never mind"
+                                     : cur && cur->kind == 7 ? "A / D: which key      Enter: set it      Delete: none"
+                                     : cur && cur->kind == 5 && defs[cur->arg].type == OptType::Reset ? "Enter: back to the start values"
+                                     : cur && cur->kind == 6 ? "A / D: Sound, Graphics, Controls"
+                                     : "W / S: pick      A / D: change      Q / E: pages";
+                    text(hint, ts * 0.72f, ImVec2(a.x, bottom + 4), ImVec2(b.x - 10, b.y), 2, C(c, 0.5f * al), false);
+                }
+                break; }
             case MenuKind::ScanModel: {
                 const ScanLog& lg = ShownScans(); const ScanEntry* e = scanOpen ? &scanShown : (menuScan >= 0 && menuScan < (int)lg.entries.size() ? &lg.entries[menuScan] : nullptr);
                 float cx = (a.x + b.x) * 0.5f, by = b.y - (b.y - a.y) * 0.08f, rx = (b.x - a.x) * 0.36f;
@@ -5385,6 +5559,7 @@ struct App {
             DrawMenuPane(dl, menuPanes[i], (int)i);
             dl->PopTexture(); dl->PopClipRect();
         }
+        if (optSelTab >= 0) { for (int i = 0; i < (int)menuHits.size(); i++) if (menuHits[i].kind == 6 && menuHits[i].arg == optSelTab) menuSel = i; optSelTab = -1; }   // (A / D on the options' tabs: stays on the tab)
         if (menuSel == -2 || menuSel >= (int)menuHits.size()) {   // nothing picked yet: the first button or row (not a tab)
             menuSel = -1; for (int i = 0; i < (int)menuHits.size(); i++) if (menuHits[i].kind != 1) { menuSel = i; break; }
         }
@@ -5463,28 +5638,29 @@ struct App {
         }
         return false;
     }
-    int MenuHitAt(ImVec2 m, int* paneOut = nullptr) const {   // which button / row / tab the mouse is over (-1: none); the nearest pane wins
+    int MenuHitAt(ImVec2 m, int* paneOut = nullptr, ImVec2* pxOut = nullptr) const {   // which button / row / tab the mouse is over (-1: none); the nearest pane wins; pxOut: where on that pane's picture
         std::vector<size_t> order; for (size_t i = 0; i < menuPanes.size(); i++) order.push_back(i);
         std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return menuPanes[a].pos.z < menuPanes[b].pos.z; });
         for (size_t i : order) {
             float u, v; if (!PlaneUV(MenuPlaneNow(i), m, u, v)) continue;
             if (paneOut) *paneOut = (int)i;
-            float px = u * MENU_PANE_W, py = v * menuPaneHeight(menuPanes[i]);
-            for (int h = 0; h < (int)menuHits.size(); h++) if (menuHits[h].pane == (int)i && px >= menuHits[h].r.x && px <= menuHits[h].r.z && py >= menuHits[h].r.y && py <= menuHits[h].r.w) return h;
+            float px = u * MENU_PANE_W, py = v * menuPaneHeight(menuPanes[i]); if (pxOut) *pxOut = ImVec2(px, py);
+            for (int h = 0; h < (int)menuHits.size(); h++) if (menuHits[h].pane == (int)i && !menuHits[h].hidden && px >= menuHits[h].r.x && px <= menuHits[h].r.z && py >= menuHits[h].r.y && py <= menuHits[h].r.w) return h;
             return -1;
         }
         return -1;
     }
     void MenuMouseCheck(const char* what) {   // (screenshots) the middle of every button / row / tab, traced back from the screen, must find itself
-        int good = 0; for (int h = 0; h < (int)menuHits.size(); h++) {
-            const MenuHit& m = menuHits[h]; int H = menuPaneHeight(menuPanes[m.pane]);
+        int good = 0, shown = 0; for (int h = 0; h < (int)menuHits.size(); h++) {
+            const MenuHit& m = menuHits[h]; if (m.hidden) continue; shown++; int H = menuPaneHeight(menuPanes[m.pane]);
             ImVec2 c = PlaneToScreen(MenuPlaneNow(m.pane), (m.r.x + m.r.z) * 0.5f / MENU_PANE_W, (m.r.y + m.r.w) * 0.5f / H);
             if (MenuHitAt(c) == h) good++;
         }
-        Log(std::string(what) + ": the mouse finds " + std::to_string(good) + " of " + std::to_string(menuHits.size()) + " buttons/rows/tabs on the bent panes; a corner of the screen: " + std::to_string(MenuHitAt(ImVec2(3, 3))));
+        Log(std::string(what) + ": the mouse finds " + std::to_string(good) + " of " + std::to_string(shown) + " buttons/rows/tabs on the bent panes; a corner of the screen: " + std::to_string(MenuHitAt(ImVec2(3, 3))));
     }
     void PauseMenu() {   // Esc while playing: picking in the menu (it is drawn by BuildMenuLists / DrawHudScene)
         if (!menuShown) return;
+        if (bindCapture >= 0) { PollBindCapture(); return; }   // setting a key: nothing else until it has one (Esc: never mind)
         int n = (int)menuHits.size();
         auto step = [&](int d) { if (!n) return; int i = menuSel; for (int k = 0; k < n; k++) { i = ((i < 0 ? 0 : i) + d + n) % n; if (menuHits[i].kind != 1) { menuSel = i; return; } } };
         if (ImGui::IsKeyPressed(ImGuiKey_UpArrow) || ImGui::IsKeyPressed(ImGuiKey_W)) step(-1);
@@ -5495,16 +5671,62 @@ struct App {
             auto it = std::find(tabs.begin(), tabs.end(), menuPage); int k = it == tabs.end() ? 0 : (int)(it - tabs.begin());
             k = (k + (ImGui::IsKeyPressed(ImGuiKey_E) ? 1 : -1) + (int)tabs.size()) % (int)tabs.size(); GoToPage(tabs[k], false);
         }
+        bool enter = ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter) || ImGui::IsKeyPressed(ImGuiKey_Space);
+        if (menuSel >= 0 && menuSel < n && menuHits[menuSel].kind >= 5) {   // on an option: A / D (or the arrows) change it, Enter flips / sets a key
+            MenuHit mh = menuHits[menuSel]; int dir = (ImGui::IsKeyPressed(ImGuiKey_LeftArrow) || ImGui::IsKeyPressed(ImGuiKey_A)) ? -1 : (ImGui::IsKeyPressed(ImGuiKey_RightArrow) || ImGui::IsKeyPressed(ImGuiKey_D)) ? 1 : 0;
+            if (mh.kind == 6) { if (dir) { int g = std::clamp(menuOptGroup + dir, 0, (int)optionGroups().size() - 1); if (g != menuOptGroup) { menuOptGroup = g; optSelTab = g; } } else if (enter) menuOptGroup = mh.arg; return; }
+            if (mh.kind == 7) {
+                const OptionDef& d = optionDefs()[mh.arg];
+                if (dir) menuBindSlot = dir < 0 ? 0 : 1;
+                if (enter) StartBindCapture(d.act, menuBindSlot);
+                if (ImGui::IsKeyPressed(ImGuiKey_Delete) || ImGui::IsKeyPressed(ImGuiKey_Backspace)) { settings.keys.set((Act)d.act, menuBindSlot, 0); OptionChanged(d); }
+                if (dir || enter) return;
+            }
+            if (mh.kind == 5) {
+                const OptionDef& d = optionDefs()[mh.arg];
+                if (d.type == OptType::Reset) { if (enter) { optionReset(settings, d.group); OptionChanged(d); Toast(d.group + ": back to the start values"); } }
+                else if (dir) { optionStep(settings, d, dir); OptionChanged(d); }
+                else if (enter && d.type != OptType::Slider) { optionStep(settings, d, d.type == OptType::Choice && optionGet(settings, d) >= d.choices.size() - 1 ? -(int)d.choices.size() : 1); OptionChanged(d); }
+                if (dir || enter) return;
+            }
+        }
         ImGuiIO& io = ImGui::GetIO();
         if (!io.WantCaptureMouse) {
-            int pane = -1; int h = MenuHitAt(ImVec2(io.MousePos.x - vx, io.MousePos.y - vy), &pane);
+            int pane = -1; ImVec2 px; int h = MenuHitAt(ImVec2(io.MousePos.x - vx, io.MousePos.y - vy), &pane, &px);
             static ImVec2 lastMouse(-1, -1);
-            if (h >= 0 && menuHits[h].kind != 1 && (io.MousePos.x != lastMouse.x || io.MousePos.y != lastMouse.y)) menuSel = h;   // the mouse picks only when it moves
+            if (h >= 0 && menuHits[h].kind != 1 && (io.MousePos.x != lastMouse.x || io.MousePos.y != lastMouse.y) && optDrag < 0) menuSel = h;   // the mouse picks only when it moves
             lastMouse = io.MousePos;
             if (pane >= 0 && io.MouseWheel != 0) for (auto& kv : menuScroll) if (kv.first / 256 == pane) kv.second -= io.MouseWheel * 60;   // lists on that pane scroll
-            if (h >= 0 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) { MenuHit hh = menuHits[h]; if (hh.kind != 1) menuSel = h; MenuDo(hh); return; }
+            if (optDrag >= 0) {   // dragging a slider: follows the mouse while the button is held
+                if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) optDrag = -1;
+                else if (h >= 0 && menuHits[h].kind == 5 && menuHits[h].arg == optDrag) {
+                    const OptionDef& d = optionDefs()[optDrag]; const MenuHit& mh = menuHits[h];
+                    float k = std::clamp((px.x - mh.vx0) / std::max(1.f, mh.vx1 - mh.vx0), 0.f, 1.f), v = d.lo + k * (d.hi - d.lo);
+                    v = d.lo + std::round((v - d.lo) / d.step) * d.step;
+                    if (std::fabs(v - optionGet(settings, d)) > 1e-5f) { optionSet(settings, d, v); OptionChanged(d); }
+                }
+                return;
+            }
+            if (h >= 0 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                MenuHit hh = menuHits[h]; if (hh.kind != 1) menuSel = h;
+                if (hh.kind == 5) {   // an option: a slider goes where you click (and drags), a toggle flips, a choice steps toward the side you click
+                    const OptionDef& d = optionDefs()[hh.arg];
+                    if (d.type == OptType::Slider) { optDrag = hh.arg; if (px.x >= hh.vx0 - 20) { float k = std::clamp((px.x - hh.vx0) / std::max(1.f, hh.vx1 - hh.vx0), 0.f, 1.f), v = d.lo + k * (d.hi - d.lo); optionSet(settings, d, d.lo + std::round((v - d.lo) / d.step) * d.step); OptionChanged(d); } }
+                    else if (d.type == OptType::Reset) { optionReset(settings, d.group); OptionChanged(d); Toast(d.group + ": back to the start values"); }
+                    else if (d.type == OptType::Choice) { optionStep(settings, d, px.x < (hh.vx0 + hh.vx1) * 0.5f ? -1 : 1); OptionChanged(d); }
+                    else { optionStep(settings, d, 1); OptionChanged(d); }
+                    return;
+                }
+                if (hh.kind == 7) { menuBindSlot = px.x < (hh.vx0 + hh.vx1) * 0.5f ? 0 : 1; StartBindCapture(optionDefs()[hh.arg].act, menuBindSlot); return; }
+                if (hh.kind == 6) { menuOptGroup = hh.arg; return; }
+                MenuDo(hh); return;
+            }
+            if (h >= 0 && ImGui::IsMouseClicked(ImGuiMouseButton_Right) && menuHits[h].kind == 7) {   // right click on a key: none
+                const OptionDef& d = optionDefs()[menuHits[h].arg]; menuBindSlot = px.x < (menuHits[h].vx0 + menuHits[h].vx1) * 0.5f ? 0 : 1;
+                settings.keys.set((Act)d.act, menuBindSlot, 0); OptionChanged(d); return;
+            }
         }
-        if ((ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter) || ImGui::IsKeyPressed(ImGuiKey_Space)) && menuSel >= 0 && menuSel < n) { MenuHit hh = menuHits[menuSel]; MenuDo(hh); }
+        if (enter && menuSel >= 0 && menuSel < n) { MenuHit hh = menuHits[menuSel]; MenuDo(hh); }
     }
 
     // ---- Player editor > Menu: pages (tabs), their panes, the panes' items
@@ -5557,6 +5779,8 @@ struct App {
         }
         ImGui::Separator();
         if (ImGui::Button("+ Page")) { MenuPage p; p.name = "Page " + std::to_string(menu.pages.size() + 1); MenuPane pn; pn.name = "Pane"; p.panes.push_back(pn); menu.pages.push_back(p); menuEdAlways = false; menuEdPage = (int)menu.pages.size() - 1; menuEdPane = -1; menuEdItem = -1; ch = true; }
+        if (menu.optionsPage() < 0) { ImGui::SameLine(); if (ImGui::Button("+ Options page")) { menu.pages.push_back(defaultOptionsPage()); menuEdAlways = false; menuEdPage = (int)menu.pages.size() - 1; menuEdPane = 0; menuEdItem = -1; ch = true; }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("The player's options (Sound, Graphics, Controls) as a page of the menu.\nOptions buttons lead there."); }
         ImGui::SameLine(); if (ImGui::Button("+ Pane")) { if (auto* v = MenuEdPanes()) { MenuPane pn; pn.name = "Pane " + std::to_string(v->size() + 1); v->push_back(pn); menuEdPane = (int)v->size() - 1; menuEdItem = -1; ch = true; } }
         ImGui::SameLine(); if (ImGui::Button("+ Item...")) ImGui::OpenPopup("additem");
         if (ImGui::BeginPopup("additem")) {
@@ -5652,6 +5876,15 @@ struct App {
                 Prop("Round corners"); ch |= ImGui::SliderFloat("##mir", &it->rounding, 0, 60, "%.0f");
             }
             if (it->kind == MenuKind::Image) { Prop("Picture"); ch |= ImGui::InputText("##mim", &it->image); Hint("The name of a picture in the assets (like on the HUD)."); }
+            if (it->kind == MenuKind::Options) {   // which options: all (with their own tabs) or one group
+                const auto& gs = optionGroups(); int cur = 0; for (int k = 0; k < (int)gs.size(); k++) if (gs[k] == it->text) cur = k + 1;
+                Prop("Shows"); if (ImGui::BeginCombo("##mio", cur ? gs[cur - 1].c_str() : "All (Sound, Graphics, Controls as tabs)")) {
+                    if (ImGui::Selectable("All (Sound, Graphics, Controls as tabs)", cur == 0)) { it->text.clear(); ch = true; }
+                    for (int k = 0; k < (int)gs.size(); k++) if (ImGui::Selectable(gs[k].c_str(), cur == k + 1)) { it->text = gs[k]; ch = true; }
+                    ImGui::EndCombo();
+                }
+                Hint("The player's own options: they are kept for this computer, not for the game. One group per item lets you put Sound, Graphics and Controls on panes of their own.");
+            }
             if (it->kind == MenuKind::Button) {
                 Prop("Does");
                 if (ImGui::BeginCombo("##miact", menuActName(it->act))) { for (int i = 0; i < (int)MenuAct::COUNT; i++) if (ImGui::Selectable(menuActName((MenuAct)i), (int)it->act == i)) { it->act = (MenuAct)i; ch = true; } ImGui::EndCombo(); }
@@ -5869,13 +6102,13 @@ struct App {
             return;
         }
         enemyHit(it->second, *t, d, from);
-        if (!t->sndHurt.empty() && it->second.alive()) { SoundUse u; u.file = t->sndHurt; PlaySound(u, 1, &c); }
+        if (!t->sndHurt.empty() && it->second.alive()) { SoundUse u; u.file = t->sndHurt; PlaySoundIn(SND_ENEMIES, u, 1, &c); }
         if (!it->second.alive()) KillEnemy(*o, it->second, *t);
     }
     void KillEnemy(const WorldObject& o, EnemyState& s, const EnemyType& t, bool drops = true) {
         if (s.alive()) { s.mode = EnemyMode::Dead; s.health = 0; s.deadT = 0; }
         Box3 b = enemyBox(s, t); V3 c = (b.lo + b.hi) * 0.5;
-        if (!t.sndDie.empty()) { SoundUse u; u.file = t.sndDie; PlaySound(u, 1, &c); } else PlaySound(playerSounds.boom, 0.5f, &c);
+        if (!t.sndDie.empty()) { SoundUse u; u.file = t.sndDie; PlaySoundIn(SND_ENEMIES, u, 1, &c); } else PlaySoundIn(SND_ENEMIES, playerSounds.boom, 0.5f, &c);
         { ParticleSettings p = particlePreset("Impact"); p.burst = t.death == EnemyDeath::Burst ? 90 : 35; p.speed = 7; p.color0 = 0xFFFFFF; p.color1 = t.color; p.size0 = 0.09f; SpawnFx(p, c, { 0, 1, 0 }); }
         flashes.push_back({ c, 0, { 2.5, 1.6, 0.8 }, 6 });
         bool animated = false;
@@ -6073,10 +6306,10 @@ struct App {
             V3 d = you - eye; double dist = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
             bool sees = !play.dead() && dist < std::max(t->sight, t->dropReach + 12.f) && canSee(*world, eye, you, dist + 1);
             EnemyTick k = enemyUpdate(s, *t, solid, you, sees, dt);
-            if (k.noticed && !t->sndNotice.empty()) { SoundUse u; u.file = t->sndNotice; PlaySound(u, 1, &eye); }
+            if (k.noticed && !t->sndNotice.empty()) { SoundUse u; u.file = t->sndNotice; PlaySoundIn(SND_ENEMIES, u, 1, &eye); }
             if (k.fire) {
                 enemyShots.push_back({ k.shotFrom, k.shotDir, t->shotSpeed, t->shotDamage, t->shotRange / std::max(1.f, t->shotSpeed), t->shotColor, t->name });
-                if (!t->sndAttack.empty()) { SoundUse u; u.file = t->sndAttack; PlaySound(u, 1, &k.shotFrom); }
+                if (!t->sndAttack.empty()) { SoundUse u; u.file = t->sndAttack; PlaySoundIn(SND_ENEMIES, u, 1, &k.shotFrom); }
             }
             if (k.burst) {   // the dropper bursts: shrapnel all around, low
                 V3 at = s.pos + V3{ 0, 0.3, 0 };
@@ -6938,7 +7171,7 @@ struct App {
         UINT32 len = s.length > 0 ? (UINT32)std::min<double>(s.length * w->rate, frames - begin) : 0;
         XAUDIO2_BUFFER b{}; b.AudioBytes = (UINT32)(w->samples.size() * 4); b.pAudioData = (const BYTE*)w->samples.data(); b.Flags = XAUDIO2_END_OF_STREAM; b.PlayBegin = begin; b.PlayLength = len;
         if (loop) { b.LoopBegin = begin; b.LoopLength = len; b.LoopCount = XAUDIO2_LOOP_INFINITE; }
-        float volume = s.volume * vol * std::clamp(settings.soundVolume, 0.f, 2.f);
+        float volume = s.volume * vol * CatVolume(soundCat);
         if (at) {   // in the world: quieter with distance, and from its side
             V3 d = *at - player.eye(); double dist = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
             volume *= (float)std::clamp(1.0 - dist / 40.0, 0.0, 1.0); volume *= volume > 0 ? 1.f : 0.f;
@@ -6955,6 +7188,14 @@ struct App {
     }
     // a set of sounds: one of them, at random (never the same twice in a row)
     IXAudio2SourceVoice* PlaySound(SoundSet& set, float vol = 1, const V3* at = nullptr, int tag = 0) { const SoundUse* u = set.pick(soundSeed); return u ? PlaySound(*u, vol, at, tag) : nullptr; }
+    // sound groups (Options > Sound): each its own volume, times the master
+    enum { SND_WORLD, SND_WEAPONS, SND_MOVEMENT, SND_ENEMIES };
+    int soundCat = SND_WORLD;
+    float CatVolume(int cat) const {
+        float g = cat == SND_WEAPONS ? settings.volWeapons : cat == SND_MOVEMENT ? settings.volMovement : cat == SND_ENEMIES ? settings.volEnemies : settings.volWorld;
+        return std::clamp(settings.soundVolume, 0.f, 2.f) * std::clamp(g, 0.f, 2.f);
+    }
+    template <class... A> IXAudio2SourceVoice* PlaySoundIn(int cat, A&&... a) { int k = soundCat; soundCat = cat; IXAudio2SourceVoice* v = PlaySound(std::forward<A>(a)...); soundCat = k; return v; }
     // the editor for a set: each sound with its own settings; add one, or import several at once
     bool SoundSetEdit(const char* id, SoundSet& set) {
         bool ch = false; ImGui::PushID(id); int drop = -1;
@@ -7086,9 +7327,9 @@ struct App {
         if (rollVol < 0.01f && want <= 0) { StopRoll(); return; }
         if (!rollVoice) {
             const SoundUse* u = playerSounds.roll.pick(soundSeed); if (!u) return;
-            rollUse = *u; rollVoice = PlaySound(rollUse, 1, nullptr, TAG_ROLL, true); if (!rollVoice) return;
+            rollUse = *u; rollVoice = PlaySoundIn(SND_MOVEMENT, rollUse, 1, nullptr, TAG_ROLL, true); if (!rollVoice) return;
         }
-        rollVoice->SetVolume(rollUse.volume * rollVol * std::clamp(settings.soundVolume, 0.f, 2.f));
+        rollVoice->SetVolume(rollUse.volume * rollVol * CatVolume(SND_MOVEMENT));
         rollVoice->SetFrequencyRatio(std::clamp(rollUse.pitch * pitch, 0.1f, 4.f));
     }
     void UpdatePlayerSounds(double dt, bool landed, float fallSpeed, bool jumped) {
@@ -7096,15 +7337,15 @@ struct App {
         if (!playMode) return;
         if (player.ball) {   // rolled up: no steps, no jumps; its own landing (bomb jumps land here too)
             stepDist = 0;
-            if (landed) { float v = playerSounds.landVolume(fallSpeed); if (v > 0) PlaySound(playerSounds.ballLand, v); }
+            if (landed) { float v = playerSounds.landVolume(fallSpeed); if (v > 0) PlaySoundIn(SND_MOVEMENT, playerSounds.ballLand, v); }
             return;
         }
         if (player.onGround) {
             stepDist += (float)(std::sqrt(player.vel.x * player.vel.x + player.vel.z * player.vel.z) * dt);
-            if (stepDist >= std::max(0.2f, playerSounds.stepEvery)) { stepDist = 0; PlaySound(playerSounds.step); }
+            if (stepDist >= std::max(0.2f, playerSounds.stepEvery)) { stepDist = 0; PlaySoundIn(SND_MOVEMENT, playerSounds.step); }
         }
-        if (jumped) PlaySound(playerSounds.jump);
-        if (landed) { float v = playerSounds.landVolume(fallSpeed); if (v > 0) PlaySound(playerSounds.land, v); stepDist = 0; }
+        if (jumped) PlaySoundIn(SND_MOVEMENT, playerSounds.jump);
+        if (landed) { float v = playerSounds.landVolume(fallSpeed); if (v > 0) PlaySoundIn(SND_MOVEMENT, playerSounds.land, v); stepDist = 0; }
     }
 
     // ---- free aim (Wii style)
@@ -7138,8 +7379,9 @@ struct App {
     bool UpdateLockOn(double dt) {   // returns: locked onto something this frame
         const LockOnSettings& L = weapons.lock;
         bool can = playMode && L.on && !paused && !mapOpen && !scanOpen && !play.dead() && !player.ball;
-        bool btn = can && ((Playing() && Down(VK_RBUTTON)) || holdLock), want = btn;
-        if (L.mode == 1) { if (btn && !lockBtnPrev) lockToggled = !lockToggled; want = lockToggled; }
+        bool btn = can && ((Playing() && ActDown(Act::LockOn)) || holdLock), want = btn;
+        int mode = settings.lockMode == 0 ? L.mode : settings.lockMode - 1;   // (Options > Controls can say hold / toggle for this player)
+        if (mode == 1) { if (btn && !lockBtnPrev) lockToggled = !lockToggled; want = lockToggled; }
         lockBtnPrev = btn;
         if (!can) lockToggled = false, want = false;
         lockHint = can && visor != 1 && !lockId ? PickLock() : 0;
@@ -7155,7 +7397,7 @@ struct App {
         if (!lockId) {
             uint32_t pick = visor == 1 ? scanTargetId : PickLock();
             if (pick) { lockId = pick; lockLost = 0; lockAge = 0; }
-            if (!lockId && L.mode == 1 && visor != 1) lockToggled = false;   // (a press with nothing to lock onto does not stay on)
+            if (!lockId && mode == 1 && visor != 1) lockToggled = false;   // (a press with nothing to lock onto does not stay on)
         }
         lockAge += (float)dt;
         return lockId != 0;
@@ -7223,8 +7465,8 @@ struct App {
         PlayCannonClip(beamClip(b, kind)); cannonSpeed = std::max(0.05f, b.timelines[kind].animSpeed);
         if (!playMode) {   // the editor's preview: the sound slots too (in Play mode they play when the shot really leaves)
             Beam& bb = weapons.beams[beam];
-            if (kind == Beam::Fire) PlaySound(bb.fireSound); else if (kind == Beam::Charged) PlaySound(bb.chargedShotSound);
-            else if (kind == Beam::Charging) { if (const SoundUse* u = bb.chargeUp.pick(soundSeed)) PlaySound(*u, 1, nullptr, TAG_CHARGE); }
+            if (kind == Beam::Fire) PlaySoundIn(SND_WEAPONS, bb.fireSound); else if (kind == Beam::Charged) PlaySoundIn(SND_WEAPONS, bb.chargedShotSound);
+            else if (kind == Beam::Charging) { if (const SoundUse* u = bb.chargeUp.pick(soundSeed)) PlaySoundIn(SND_WEAPONS, *u, 1, nullptr, TAG_CHARGE); }
         }
         ActiveTl a; a.beam = beam; a.kind = kind; a.until = TimelineLen(b, kind); if (kind == Beam::Charging && playMode) a.until = 600;   // playing: charging runs until it is full or you let go (its sounds are cut then)
         a.play.start(b.timelines[kind]); activeTl.push_back(a);
@@ -7236,7 +7478,7 @@ struct App {
             if (a.beam >= (int)weapons.beams.size()) { a.play.t = -1; continue; }
             a.play.step(dt, now, shot, a.until);
             const Beam& b = weapons.beams[a.beam];
-            for (int i : now) PlaySound(b.timelines[a.kind].sounds[i].sound, 1, nullptr, a.kind == Beam::Charging ? TAG_CHARGE : 0);
+            for (int i : now) PlaySoundIn(SND_WEAPONS, b.timelines[a.kind].sounds[i].sound, 1, nullptr, a.kind == Beam::Charging ? TAG_CHARGE : 0);
             if (shot) {
                 if (shoot && playMode) LaunchShot(b, a.beam, a.kind == Beam::MissileShot ? CurrentMissile() : nullptr, a.kind == Beam::Charged);
                 else if (!playMode) previewFired += a.kind == Beam::MissileShot ? 2.5f : a.kind == Beam::Charged ? 2.2f : 1.f;   // the editor's preview: only the kick
@@ -7249,8 +7491,8 @@ struct App {
     bool chargedOn = false, forceMissile = false;   // forceMissile: screenshots press the missile button
     void StartCharged(const Beam& b) {
         StopSounds(TAG_CHARGE); activeTl.erase(std::remove_if(activeTl.begin(), activeTl.end(), [](const ActiveTl& a) { return a.kind == Beam::Charging; }), activeTl.end());
-        PlaySound(const_cast<Beam&>(b).chargeDone);
-        if (const SoundUse* u = const_cast<Beam&>(b).chargedLoop.pick(soundSeed)) PlaySound(*u, 1, nullptr, TAG_CHARGED, true);
+        PlaySoundIn(SND_WEAPONS, const_cast<Beam&>(b).chargeDone);
+        if (const SoundUse* u = const_cast<Beam&>(b).chargedLoop.pick(soundSeed)) PlaySoundIn(SND_WEAPONS, *u, 1, nullptr, TAG_CHARGED, true);
         PlayCannonClip(b.chargedClip, true); chargedOn = true;
     }
     void StopCharged() { if (!chargedOn) return; StopSounds(TAG_CHARGED); if (cannonLoop) { cannonClip = -1; cannonLoop = false; } chargedOn = false; }
@@ -7371,12 +7613,12 @@ struct App {
         if (!playMode || play.dead()) return;
         if (!player.ball) {
             if (!HasMorphBall()) { Toast(game.player.morphBall == 0 ? "No morph ball in this game" : "You have not found the Morph Ball yet"); return; }
-            player.ball = true; player.applySize(game.player); ballCamSet = false; PlaySound(playerSounds.morph);
+            player.ball = true; player.applySize(game.player); ballCamSet = false; PlaySoundIn(SND_MOVEMENT, playerSounds.morph);
             StopChargeTimeline(); chargeTlOn = false; weapState.charging = false; weapState.charge = 0;
         } else {
             PlayerRules r = game.player; Player stand = player; stand.ball = false; stand.applySize(r);
             if (!world->boxFree(player.feet, stand.halfW, stand.height)) { Toast("No room to stand up here"); return; }
-            player.ball = false; player.applySize(game.player); PlaySound(playerSounds.morph, 0.8f);
+            player.ball = false; player.applySize(game.player); PlaySoundIn(SND_MOVEMENT, playerSounds.morph, 0.8f);
         }
     }
     void BreakBlock(int x, int y, int z) {
@@ -7397,7 +7639,7 @@ struct App {
         if ((int)bombsOut.size() >= std::max(1, game.player.bombsAtOnce)) return;
         ParticleSettings p = particlePreset("Charge"); p.color0 = 0xFFFFFF; p.color1 = 0xFFC040; p.areaSize = { 0.06, 0.06, 0.06 }; p.rate = 40; p.size1 = 0.06f;
         bombsOut.push_back({ BallCentre(), std::max(0.1f, game.player.bombFuse), ParticleEmitter(p, (uint32_t)(GetTickCount() + bombsOut.size())) });
-        PlaySound(playerSounds.bomb);
+        PlaySoundIn(SND_MOVEMENT, playerSounds.bomb);
     }
     void DropPowerBomb() {   // rolled up, F (the missile key): a Power Bomb (one at a time)
         if (!itemFx.powerBombs) return;
@@ -7406,7 +7648,7 @@ struct App {
         n--;
         ParticleSettings p = particlePreset("Charge"); p.color0 = 0xFFFFFF; p.color1 = 0xFFF0A0; p.areaSize = { 0.1, 0.1, 0.1 }; p.rate = 60; p.size1 = 0.09f;
         Bomb b{ BallCentre(), itemFx.pbFuse, ParticleEmitter(p, (uint32_t)(GetTickCount() + 99)) }; b.power = true; bombsOut.push_back(b);
-        PlaySound(playerSounds.bomb);
+        PlaySoundIn(SND_MOVEMENT, playerSounds.bomb);
     }
     void BombEnemies(V3 at, double reach, float dmg, const char* what) {
         std::vector<uint32_t> hit;
@@ -7423,7 +7665,7 @@ struct App {
             ParticleSettings b = particlePreset("Impact"); b.burst = 160; b.speed = 14; b.color0 = 0xFFFFFF; b.color1 = 0xFFE080; b.size0 = 0.14f; SpawnFx(b, at, { 0, 1, 0 });
             flashes.push_back({ at, 0, { 6.0, 5.0, 3.0 }, (float)(reach * 3) });
             AddSphere(at, itemFx.pbSphere, 0xFFF4C0, 1.4f);
-            PlaySound(playerSounds.boom, 1, &at);
+            PlaySoundIn(SND_MOVEMENT, playerSounds.boom, 1, &at);
             for (auto& p : blocksInReach(at, reach)) { TryBreak(p[0], p[1], p[2], "Power Bomb", false, false); TryBreak(p[0], p[1], p[2], "Bomb", false, false); }
             BombEnemies(at, reach, 60, "Power Bomb");
             for (WorldObject& o : objects) {   // Power Bomb (and bomb) doors
@@ -7444,7 +7686,7 @@ struct App {
         ParticleSettings f = particlePreset("Fire"); f.rate = 0; f.burst = 30; f.burstEvery = 99; f.life = 0.4f; SpawnFx(f, at, { 0, 1, 0 });
         flashes.push_back({ at, 0, { 3.0, 1.8, 0.6 }, 7 });
         AddSphere(at, game.player.bombSphere, 0xFFB850, 0.5f);
-        PlaySound(playerSounds.boom, 1, &at);
+        PlaySoundIn(SND_MOVEMENT, playerSounds.boom, 1, &at);
         double reach = std::max(0.3f, game.player.bombReach);
         for (auto& p : blocksInReach(at, reach)) TryBreak(p[0], p[1], p[2], "Bomb", false, false);
         BombEnemies(at, reach, 15, "Bomb");
@@ -8768,11 +9010,27 @@ struct App {
                 GoToPage(1); menuSlideT = 0.08; frames(1, "menu_sliding_to_inventory"); menuSlideT = 10; frames(2, "menu_inventory");
                 GoToPage(2); menuScan = 0; for (int i = 0; i < (int)scanLog.entries.size(); i++) if (scanLog.entries[i].name == "Chozo Terminal") menuScan = i;
                 menuSlideT = 10; frames(4, "menu_logbook");
+                if (int op = menu.optionsPage(); op >= 0) {   // the Options page: Sound, Graphics (shadow resolution), Controls (setting a key)
+                    Settings keepSet = settings;
+                    auto pickRow = [&](int kind, int arg) { for (int i = 0; i < (int)menuHits.size(); i++) if (menuHits[i].kind == kind && menuHits[i].arg == arg) { menuSel = i; return true; } return false; };
+                    MenuHit go{ 0, ImVec4(0, 0, 0, 0), 0, 0, MenuAct::Settings, "" }; MenuDo(go); menuOptGroup = 0; menuSel = -2; menuSlideT = 10; runS(1); pickRow(5, findOption("vol_weapons")); frames(3, "menu_options_sound");
+                    MenuMouseCheck("options");
+                    menuOptGroup = 1; menuSel = -2; frames(3, "menu_options_graphics");
+                    int sr = findOption("shadow_res"); bool found = pickRow(5, sr); frames(3, "menu_options_shadow_res");
+                    optionStep(settings, optionDefs()[sr], 1); frames(3, "menu_options_shadow_res_3072");
+                    Log("options: shadow resolution row " + std::string(found ? "reached" : "NOT reached") + " (it scrolls into view), now " + optionText(settings, optionDefs()[sr]) + ", the shadow maps are " + std::to_string(shadowSize) + " px");
+                    menuOptGroup = 2; menuSel = -2; frames(3, "menu_options_controls");
+                    pickRow(7, findOption("key_jump")); menuBindSlot = 1; StartBindCapture((int)Act::Jump, 1); frames(2, "menu_options_key_waiting");
+                    bindCapture = -1; settings.keys.set(Act::Jump, 1, 'X'); frames(2, "menu_options_key_set");
+                    Log(std::string("options: Jump is now ") + KeyLabel(settings.keys.key[(int)Act::Jump][0]) + " / " + KeyLabel(settings.keys.key[(int)Act::Jump][1]) + ", Lock-on " + KeyLabel(settings.keys.key[(int)Act::LockOn][0]));
+                    settings = keepSet; settings.save(settingsPath); menuOptGroup = 0;
+                }
                 OnKey(VK_ESCAPE, false); runS(2);
                 SetVisor(2); visorFlash = 0; frames(2, "visor_thermal");
                 SetVisor(3); visorFlash = 0; frames(2, "visor_xray");
                 SetVisor(0); visorFlash = 0;
                 StopPlay();
+                showSettings = true; frames(3, "settings_window"); showSettings = false;
                 playerEdOpen = true; focusPlayerEd = true; selectMenuTab = true; menuEdAlways = false; menuEdPage = 2; menuEdPane = 0; menuEdItem = 2; frames(5, "menu_editor_tab");
                 menuEdPage = 0; menuEdPane = 0; menuEdItem = 4; frames(3, "menu_editor_button");
                 selectVisorsTab = true; visorEd = 1; frames(4, "visors_tab_scan");
@@ -8936,6 +9194,7 @@ struct App {
     // ================================================================== frame
     void FrameBody(double dt) {   // everything but showing the picture (screenshots grab it before)
         if (audioOk) UpdateAudio();
+        ApplyFullscreen();
         if (resized) OnResize();
         if (pending) { auto f = std::move(pending); pending = nullptr; f(); }
         bool ev = EditorView();

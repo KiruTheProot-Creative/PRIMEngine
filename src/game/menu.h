@@ -11,7 +11,7 @@
 
 namespace mc {
 
-enum class MenuKind { Panel, Text, Image, Button, TabBar, ItemList, BeamList, ScanList, ScanText, ScanModel, COUNT };
+enum class MenuKind { Panel, Text, Image, Button, TabBar, ItemList, BeamList, ScanList, ScanText, ScanModel, Options, COUNT };   // Options: the player's options (text: one group, or empty: all, with their own tabs)
 const char* menuKindName(MenuKind k);
 enum class MenuAct { None, Resume, Restart, Map, Settings, Quit, GoTo, Back, COUNT };
 const char* menuActName(MenuAct a);
@@ -53,7 +53,9 @@ struct MenuLayout {
     float slide = 0.22f;                                // seconds a new page takes to slide in
     int findPage(const std::string& name) const;        // -1: none
     std::vector<int> tabs() const;                      // the pages in the tab bar, in order
+    int optionsPage() const;                            // the page with an Options item (-1: none)
 };
+MenuPage defaultOptionsPage();                          // "Options": Sound, Graphics, Controls on one wide pane
 MenuLayout defaultMenu();                               // Main (resume, map, settings...), Inventory, Logbook (the scan index)
 bool saveMenu(const std::string& path, const MenuLayout& m);
 bool loadMenu(const std::string& path, MenuLayout& m);
