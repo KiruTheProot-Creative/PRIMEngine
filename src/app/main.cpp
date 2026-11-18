@@ -5489,7 +5489,7 @@ struct App {
                 }
                 break; }
             case MenuKind::Options: {   // the player's options: Sound, Graphics, Controls (its own tabs unless it shows one group)
-                OptColors oc{ c, it.ownColors ? it.c2 : 0xD8EEF8u, it.ownColors ? it.c3 : 0xEBFCFFu, it.ownColors ? it.c4 : c, al };
+                OptColors oc{ c, it.ownColors ? it.c2 : c, it.ownColors ? it.c3 : 0xEBFCFFu, it.ownColors ? it.c4 : c, al };
                 DrawOptionsBlock(dl, a, b, it.textSize, oc, it.text, paneIdx * 256 + ii, menuHits, menuSel, paneIdx, true);
                 break; }
             case MenuKind::ScanModel: {
@@ -6699,6 +6699,9 @@ struct App {
                     ImGui::EndCombo();
                 }
                 Hint("The player's own options: they are kept for this computer, not for the game. One group per item lets you put Sound, Graphics and Controls on panes of their own.");
+                Prop("Own colours"); ch |= ImGui::Checkbox("##mioc", &it->ownColors);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Off: everything in the item's colour (above). On: its own text, picked and dim colours.");
+                if (it->ownColors) { Prop("Text"); ch |= ColorU32("##mioc2", it->c2); Prop("Picked"); ch |= ColorU32("##mioc3", it->c3); Prop("Dim"); ch |= ColorU32("##mioc4", it->c4); }
             }
             if (it->kind == MenuKind::Button) {
                 Prop("Does");
