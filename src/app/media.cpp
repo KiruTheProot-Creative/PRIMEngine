@@ -86,6 +86,32 @@ bool loadPicture(const std::string& path, Frames& out, std::string& err) {
     return true;
 }
 
+bool loadAudio(const std::string& path, int& channels, int& rate, std::vector<float>& samples, std::string& err, double maxSeconds) {
+    init(); samples.clear(); channels = rate = 0;
+    ComPtr<IMFSourceReader> r;
+    if (FAILED(MFCreateSourceReaderFromURL(wide(path).c_str(), nullptr, &r))) { err = "Windows cannot read this sound"; return false; }
+    r->SetStreamSelection((DWORD)MF_SOURCE_READER_ALL_STREAMS, FALSE); r->SetStreamSelection((DWORD)MF_SOURCE_READER_FIRST_AUDIO_STREAM, TRUE);
+    ComPtr<IMFMediaType> mt; MFCreateMediaType(&mt); mt->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio); mt->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_Float);
+    if (FAILED(r->SetCurrentMediaType((DWORD)MF_SOURCE_READER_FIRST_AUDIO_STREAM, nullptr, mt.Get()))) { err = "no sound in it"; return false; }
+    ComPtr<IMFMediaType> cur; r->GetCurrentMediaType((DWORD)MF_SOURCE_READER_FIRST_AUDIO_STREAM, &cur);
+    channels = (int)MFGetAttributeUINT32(cur.Get(), MF_MT_AUDIO_NUM_CHANNELS, 0); rate = (int)MFGetAttributeUINT32(cur.Get(), MF_MT_AUDIO_SAMPLES_PER_SECOND, 0);
+    if (channels <= 0 || rate <= 0) { err = "no sound in it"; return false; }
+    size_t most = (size_t)(maxSeconds * rate * channels);
+    for (;;) {
+        DWORD idx = 0, flags = 0; LONGLONG t = 0; ComPtr<IMFSample> sm;
+        if (FAILED(r->ReadSample((DWORD)MF_SOURCE_READER_FIRST_AUDIO_STREAM, 0, &idx, &flags, &t, &sm))) break;
+        if (flags & MF_SOURCE_READERF_ENDOFSTREAM) break;
+        if (!sm) continue;
+        ComPtr<IMFMediaBuffer> b; if (FAILED(sm->ConvertToContiguousBuffer(&b))) break;
+        BYTE* p = nullptr; DWORD len = 0; if (FAILED(b->Lock(&p, nullptr, &len))) break;
+        size_t n = len / sizeof(float); const float* fp = (const float*)p; samples.insert(samples.end(), fp, fp + n);
+        b->Unlock();
+        if (samples.size() >= most) { samples.resize(most); break; }
+    }
+    if (samples.empty()) { err = "no sound in it"; return false; }
+    return true;
+}
+
 Video::~Video() { close(); }
 void Video::close() { if (reader) { reader->Release(); reader = nullptr; } w = h = 0; rgba.clear(); ended = false; nextTime = -1; base = 0; }
 

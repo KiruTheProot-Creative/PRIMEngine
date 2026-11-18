@@ -1134,8 +1134,8 @@ int main() {
     {   // screens: main menu, options, death, credits; the compositor's node graph
         printf("\nscreens and the compositor\n");
         ScreenSet ss = defaultScreens();
-        CHECK(ss.screens.size() == 5 && ss.byRole(ScreenRole::MainMenu) == 0 && ss.byRole(ScreenRole::Files) == 1 && ss.byRole(ScreenRole::Options) == 2 && ss.byRole(ScreenRole::Death) == 3 && ss.byRole(ScreenRole::Credits) == 4 && ss.find("Credits") == 4,
-              "starter screens: Main menu, Files, Options, Death screen, Credits");
+        CHECK(ss.screens.size() == 7 && ss.byRole(ScreenRole::Intro) == 5 && ss.screens[5].next == "Story" && ss.find("Story") == 6 && ss.byRole(ScreenRole::MainMenu) == 0 && ss.byRole(ScreenRole::Files) == 1 && ss.byRole(ScreenRole::Options) == 2 && ss.byRole(ScreenRole::Death) == 3 && ss.byRole(ScreenRole::Credits) == 4 && ss.find("Credits") == 4,
+              "starter screens: Main menu, Files, Options, Death screen, Credits, a Splash and a Story (shown first)");
         { bool slots = false; for (const ScreenItem& i : ss.screens[1].items) slots |= i.kind == ScreenItemKind::SaveSlots && i.slots == 3; CHECK(slots, "the Files screen: three save files"); }
         const Screen& mm = ss.screens[0]; int btn = 0; bool newGame = false, opts = false;
         for (const ScreenItem& i : mm.items) if (i.kind == ScreenItemKind::Button) { btn++; newGame |= i.act == ScreenAct::NewGame; opts |= i.act == ScreenAct::Options; }
@@ -1164,16 +1164,31 @@ int main() {
         Screen cu = presetScreen(ScreenRole::Custom); cu.name = "My screen"; cu.bg.kind = BgKind::Video; cu.bg.file = "intro movie.mp4"; cu.bg.loop = false; ss.screens.push_back(cu);
         saveScreens("/tmp/prim_screens.txt", ss); ScreenSet sl; CHECK(loadScreens("/tmp/prim_screens.txt", sl), "screens load");
         const Screen& m0 = sl.screens[0];
-        CHECK(sl.screens.size() == 6 && sl.screens[1].items[1].slots == 5 && m0.bg.kind == BgKind::World && m0.bg.world == "Title Valley" && m0.bg.camera == "Menu cam" && m0.bg.turn == 3 && m0.items[0].col.accent == 0x123456
-              && m0.items[0].text == "Two words\nand a line" && sl.screens[2].items[2].group == "Controls" && sl.screens[5].bg.file == "intro movie.mp4" && !sl.screens[5].bg.loop
-              && sl.screens[5].name == "My screen" && sl.screens[3].role == ScreenRole::Death, "backgrounds, items, colours and roles save and load");
+        CHECK(sl.screens.size() == 8 && sl.screens[1].items[1].slots == 5 && m0.bg.kind == BgKind::World && m0.bg.world == "Title Valley" && m0.bg.camera == "Menu cam" && m0.bg.turn == 3 && m0.items[0].col.accent == 0x123456
+              && m0.items[0].text == "Two words\nand a line"  && sl.screens[2].items[2].group == "Controls" && sl.screens[7].bg.file == "intro movie.mp4" && !sl.screens[7].bg.loop
+              && sl.screens[7].name == "My screen" && sl.screens[3].role == ScreenRole::Death, "backgrounds, items, colours and roles save and load");
         CHECK(sl.screens[3].comp.order().size() == ss.screens[3].comp.order().size() && sl.screens[3].comp.nextId == ss.screens[3].comp.nextId && sl.screens[4].comp.find(sl.screens[4].comp.output())->mute,
               "the node graphs save and load (wires, values, muted nodes)");
+        {   // timing: fading in and out, typing, interface sounds, music, going on by itself
+            ScreenItem it; it.showAt = 1; it.hideAt = 5; it.fade = 0.5f;
+            CHECK(itemShown(it, 0.5) == 0 && std::fabs(itemShown(it, 1.25) - 0.5f) < 1e-4 && itemShown(it, 3) == 1 && std::fabs(itemShown(it, 4.75) - 0.5f) < 1e-4 && itemShown(it, 6) == 0, "an item fades in at its time and out at its end");
+            ScreenItem al; CHECK(itemShown(al, 0) == 1 && itemShown(al, 100) == 1, "without timing: always there");
+            ScreenItem ty; ty.typeSpeed = 10; ty.showAt = 1; std::string txt = "H\xC3\xA9llo";   // (an e with an accent: two bytes)
+            CHECK(typedBytes(txt, ty, 0.5) == 0 && typedBytes(txt, ty, 1.15) == 1 && typedBytes(txt, ty, 1.25) == 3 && typedBytes(txt, ty, 9) == txt.size(), "typed letter by letter (a two-byte letter whole)");
+            ScreenSet ts = defaultScreens(); ts.sounds.hover.file = "tick.wav"; ts.sounds.click.file = "beep.wav"; ts.sounds.click.volume = 0.5f;
+            mc::Screen& sp = ts.screens[5]; sp.musicMode = 1; sp.music.file = "title theme.mp3"; sp.musicFade = 2.5f; sp.untilVideoEnds = true; sp.skippable = false; sp.sounds.back.file = "back.wav";
+            ts.screens[6].items[0].typeSound.file = "type.wav"; ts.screens[6].items[0].driftY = -0.01f;
+            saveScreens("/tmp/prim_screens_t.txt", ts); ScreenSet tl; loadScreens("/tmp/prim_screens_t.txt", tl);
+            const mc::Screen& a = tl.screens[5]; const ScreenItem& st = tl.screens[6].items[0];
+            CHECK(tl.sounds.hover.file == "tick.wav" && tl.sounds.click.file == "beep.wav" && tl.sounds.click.volume == 0.5f && tl.sounds.back.file.empty() && a.sounds.back.file == "back.wav", "interface sounds (the game's and a screen's own) save and load");
+            CHECK(a.musicMode == 1 && a.music.file == "title theme.mp3" && a.musicFade == 2.5f && a.duration == 4 && a.untilVideoEnds && !a.skippable && a.next == "Story", "music and going on by itself save and load");
+            CHECK(st.typeSpeed == 22 && st.typeSound.file == "type.wav" && st.driftY == -0.01f && st.showAt == 0.8f && st.hideAt == 13.5f, "an item's timing, typing and drift save and load");
+        }
         {   // screens saved before save files: they get a Files screen once
             ScreenSet old = defaultScreens(); old.screens.erase(old.screens.begin() + 1); saveScreens("/tmp/prim_screens_old.txt", old);
             { std::ifstream in("/tmp/prim_screens_old.txt"); std::stringstream b; b << in.rdbuf(); std::string t = b.str(); t.replace(t.find("screens 2"), 9, "screens 1"); std::ofstream out("/tmp/prim_screens_old.txt"); out << t; }
             ScreenSet ol; loadScreens("/tmp/prim_screens_old.txt", ol);
-            CHECK(ol.screens.size() == 5 && ol.byRole(ScreenRole::Files) == 1, "older screens get the Files screen (after the main menu)");
+            CHECK(ol.screens.size() == 7 && ol.byRole(ScreenRole::Files) == 1, "older screens get the Files screen (after the main menu)");
             ScreenSet nw = defaultScreens(); nw.screens.erase(nw.screens.begin() + 1); saveScreens("/tmp/prim_screens_new.txt", nw); ScreenSet nl; loadScreens("/tmp/prim_screens_new.txt", nl);
             CHECK(nl.byRole(ScreenRole::Files) < 0, "a newer set without it stays without it");
         }

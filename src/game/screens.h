@@ -3,13 +3,14 @@
 // credits and any of your own. Each has a background (a colour, a picture or GIF, a video, a world seen through a camera,
 // or the game itself behind), items laid out on a 2D canvas (panels, text, pictures, buttons, the options list, a credits
 // roll) and a compositor: post-processing as a node graph, like Blender's, ending in an Output. Plain C++, tested.
+#include "sound.h"
 #include <cstdint>
 #include <string>
 #include <vector>
 
 namespace mc {
 
-enum class ScreenRole { Custom, MainMenu, Options, Death, Credits, Files, COUNT };   // Files: picking a save file
+enum class ScreenRole { Custom, MainMenu, Options, Death, Credits, Files, Intro, COUNT };   // Files: picking a save file; Intro: the first screen (splash, story), before the main menu
 const char* screenRoleName(ScreenRole r);
 
 enum class BgKind { Color, Image, Video, World, Game, COUNT };   // Image: png / jpg / gif (moves); Game: the game as it is, behind
@@ -49,7 +50,16 @@ struct ScreenItem {
     std::string group;                                   // Options: "" all three as tabs, or "Sound" / "Graphics" / "Controls"
     float speed = 0.06f;                                 // Credits: screen heights a second
     int slots = 3;                                       // SaveSlots: how many files
+    // timing (splash screens, intros): seconds after the screen appears
+    float showAt = 0, hideAt = 0, fade = 0.4f;           // appears at, goes at (0: stays), fading over this long
+    float typeSpeed = 0; SoundUse typeSound;             // Text: letters a second as if typed (0: all at once), a sound per letter
+    float driftX = 0, driftY = 0, grow = 0;              // moves (screen widths / heights a second), grows (a second), from when it appears
 };
+// how much of an item shows t seconds into its screen (0..1), from its timing
+float itemShown(const ScreenItem& it, double t);
+// how many letters of a typed text show t seconds in (whole UTF-8 letters: returns bytes)
+size_t typedBytes(const std::string& text, const ScreenItem& it, double t);
+struct UiSounds { SoundUse hover, click, back; };       // picking something, using it, going back (empty: none / the game's own)
 
 // ---- the compositor: nodes wired together. Background and UI give pictures; the rest change them; Output is what shows.
 enum class NodeType { Background, UI, Output, AlphaOver, Mix, Blur, Glare, ColorBalance, HueSat, BrightContrast, Invert,
@@ -90,12 +100,18 @@ struct Screen {
     std::vector<ScreenItem> items;
     Compositor comp;
     float fadeIn = 0.35f;                                 // seconds it takes to appear
+    UiSounds sounds;                                      // its own interface sounds (empty: the game's)
+    int musicMode = 0; SoundUse music; float musicFade = 1;   // 0 keeps what plays, 1 plays this (loops), 2 silence; fading over musicFade seconds
+    float duration = 0; bool untilVideoEnds = false;      // goes on by itself after this long (0: stays) / when its video ends
+    std::string next; bool skippable = true;              // the screen after it (empty: the main menu); a key or click goes on early
 };
-Screen presetScreen(ScreenRole r);                        // ready-made: main menu, options, death, credits (and an empty one)
+Screen presetScreen(ScreenRole r);                        // ready-made: main menu, options, death, credits, files, splash (and an empty one)
+Screen presetStory();                                     // ready-made: an intro of typed text (like Super Metroid's)
 struct ScreenSet {
     std::vector<Screen> screens;
     int find(const std::string& name) const;              // -1: none
     int byRole(ScreenRole r) const;                       // the first screen with that role (-1: none)
+    UiSounds sounds;                                      // the game's interface sounds (every screen and the pause menu)
 };
 ScreenSet defaultScreens();                               // Main menu, Files, Options, Death, Credits
 bool saveScreens(const std::string& path, const ScreenSet& s);

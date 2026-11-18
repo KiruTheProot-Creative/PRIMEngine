@@ -10,7 +10,7 @@ struct Field { float* f = nullptr; int* i = nullptr; bool* b = nullptr; };
 Field field(Settings& s, const std::string& k) {
     Field r;
     if (k == "volume") r.f = &s.soundVolume; else if (k == "vol_weapons") r.f = &s.volWeapons; else if (k == "vol_movement") r.f = &s.volMovement;
-    else if (k == "vol_enemies") r.f = &s.volEnemies; else if (k == "vol_world") r.f = &s.volWorld;
+    else if (k == "vol_enemies") r.f = &s.volEnemies; else if (k == "vol_world") r.f = &s.volWorld; else if (k == "vol_menus") r.f = &s.volMenus; else if (k == "vol_music") r.f = &s.volMusic;
     else if (k == "fullscreen") r.b = &s.fullscreen; else if (k == "vsync") r.b = &s.vsync; else if (k == "brightness") r.f = &s.brightness;
     else if (k == "fov") r.f = &s.fov; else if (k == "ui_scale") r.f = &s.uiScale;
     else if (k == "render_distance") r.i = &s.renderDistance; else if (k == "vertical_distance") r.i = &s.verticalDistance;
@@ -52,6 +52,8 @@ const std::vector<OptionDef>& optionDefs() {
         v.push_back(slider("vol_movement", "Movement", S, "Volume", 0, 2, 0.05f, "%", "silent", "Steps, jumps, landing, the Morph Ball and its bombs."));
         v.push_back(slider("vol_enemies", "Enemies", S, "Volume", 0, 2, 0.05f, "%", "silent", "Enemies noticing you, attacking, getting hurt, dying."));
         v.push_back(slider("vol_world", "World", S, "Volume", 0, 2, 0.05f, "%", "silent", "Doors, events and everything else."));
+        v.push_back(slider("vol_menus", "Menus", S, "Volume", 0, 2, 0.05f, "%", "silent", "Picking and using things in the menus, typed text."));
+        v.push_back(slider("vol_music", "Music", S, "Volume", 0, 2, 0.05f, "%", "silent"));
         v.push_back(reset(S));
 
         v.push_back(toggle("fullscreen", "Fullscreen", G, "Screen", "Borderless, over the whole screen."));

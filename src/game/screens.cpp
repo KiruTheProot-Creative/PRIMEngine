@@ -8,7 +8,7 @@
 namespace mc {
 
 const char* screenRoleName(ScreenRole r) {
-    static const char* n[] = { "Custom", "Main menu", "Options", "Death screen", "Credits", "Files (save files)" };
+    static const char* n[] = { "Custom", "Main menu", "Options", "Death screen", "Credits", "Files (save files)", "Intro (shown first)" };
     int i = (int)r; return i >= 0 && i < (int)ScreenRole::COUNT ? n[i] : "?";
 }
 const char* bgKindName(BgKind k) {
@@ -156,32 +156,71 @@ Screen presetScreen(ScreenRole r) {
         ScreenItem hint = text("Hint", "Enter: play this file      Delete twice: erase it      Esc: back", 0.08f, 0.82f, 0.84f, 0.04f, 0.022f, 0); hint.alpha = 0.55f; s.items.push_back(hint);
         s.items.push_back(button("Back", ScreenAct::Back, 0.08f, 0.88f, 0.2f));
         break; }
+    case ScreenRole::Intro: {   // a splash: the game's name fades in and out, then on to the story
+        s.name = "Splash"; s.bg.color = s.bg.color2 = 0x000000; s.comp = Compositor{}; s.fadeIn = 0.6f; s.duration = 4; s.next = "Story";
+        { int bg = s.comp.add(NodeType::Background, 40, 60), ui = s.comp.add(NodeType::UI, 40, 220), over = s.comp.add(NodeType::AlphaOver, 300, 120), gl = s.comp.add(NodeType::Glare, 520, 120), out = s.comp.add(NodeType::Output, 740, 120);
+          s.comp.connect(bg, over, 0); s.comp.connect(ui, over, 1); s.comp.connect(over, gl, 0); s.comp.connect(gl, out, 0); }
+        ScreenItem t = text("Title", "{game}", 0.1f, 0.4f, 0.8f, 0.14f, 0.1f); t.showAt = 0.5f; t.hideAt = 3.6f; t.fade = 0.8f; t.grow = 0.02f; s.items.push_back(t);
+        ScreenItem m = text("Made with", "made with PRIMEngine", 0.1f, 0.56f, 0.8f, 0.05f, 0.028f); m.showAt = 1.3f; m.hideAt = 3.4f; m.fade = 0.6f; m.alpha = 0.6f; s.items.push_back(m);
+        break; }
     default: s.name = "Screen"; break;
     }
     return s;
 }
+static Screen storyScreen() {   // an intro like Super Metroid's: text typed over the dark, then the main menu
+    Screen s; s.name = "Story"; s.role = ScreenRole::Custom; s.comp = defaultCompositor(); s.bg.color = 0x02040A; s.bg.color2 = 0x0A1424; s.duration = 14; s.fadeIn = 1;
+    ScreenItem t = text("Story", "The research station on planet Zebes\nhas gone silent.\n\nThe last message spoke of creatures\nthat drain the life from anything they touch.\n\nOne hunter is sent to find out why.",
+                        0.12f, 0.25f, 0.76f, 0.5f, 0.034f, 0);
+    t.showAt = 0.8f; t.hideAt = 13.5f; t.fade = 0.8f; t.typeSpeed = 22; s.items.push_back(t);
+    ScreenItem k = text("Skip", "any key: skip", 0.7f, 0.92f, 0.26f, 0.04f, 0.02f, 2); k.alpha = 0.4f; k.showAt = 2; s.items.push_back(k);
+    return s;
+}
+Screen presetStory() { return storyScreen(); }
 ScreenSet defaultScreens() {
     ScreenSet s;
     for (ScreenRole r : { ScreenRole::MainMenu, ScreenRole::Files, ScreenRole::Options, ScreenRole::Death, ScreenRole::Credits }) s.screens.push_back(presetScreen(r));
+    s.screens.push_back(presetScreen(ScreenRole::Intro)); s.screens.push_back(storyScreen());   // a splash, then a story, then the main menu
     return s;
 }
 int ScreenSet::find(const std::string& name) const { for (int i = 0; i < (int)screens.size(); i++) if (screens[i].name == name) return i; return -1; }
 int ScreenSet::byRole(ScreenRole r) const { for (int i = 0; i < (int)screens.size(); i++) if (screens[i].role == r) return i; return -1; }
 
+// ------------------------------------------------------------------ timing
+float itemShown(const ScreenItem& it, double t) {
+    double f = std::max(0.01f, it.fade);
+    double in = (t - it.showAt) / f; double k = std::clamp(in, 0.0, 1.0);
+    if (it.showAt <= 0 && t >= 0) k = 1;
+    if (it.hideAt > 0) k = std::min(k, std::clamp((it.hideAt - t) / f, 0.0, 1.0));
+    return (float)k;
+}
+size_t typedBytes(const std::string& text, const ScreenItem& it, double t) {
+    if (it.typeSpeed <= 0) return text.size();
+    double n = (t - it.showAt) * it.typeSpeed; if (n <= 0) return 0;
+    size_t letters = (size_t)n, i = 0, seen = 0;
+    while (i < text.size() && seen < letters) { i++; while (i < text.size() && ((unsigned char)text[i] & 0xC0) == 0x80) i++; seen++; }   // whole UTF-8 letters
+    return i;
+}
+
 // ------------------------------------------------------------------ files
 bool saveScreens(const std::string& path, const ScreenSet& set) {
     std::ofstream f(path); if (!f) return false;
     f << "screens 2\n";
+    auto snd = [&](const char* k, const UiSounds& u) { f << k << " " << soundUseText(u.hover) << " " << soundUseText(u.click) << " " << soundUseText(u.back) << "\n"; };
+    snd("uisounds", set.sounds);
     for (const Screen& s : set.screens) {
         f << "screen " << escText(s.name) << " " << (int)s.role << " " << s.fadeIn << "\n";
         const ScreenBg& b = s.bg;
         f << "bg " << (int)b.kind << " " << b.color << " " << b.color2 << " " << escText(b.file) << " " << b.fit << " " << b.speed << " " << (b.loop ? 1 : 0) << " "
           << escText(b.world) << " " << escText(b.camera) << " " << b.turn << " " << b.dim << " " << b.tilt << " " << b.height << "\n";
+        snd("ssounds", s.sounds);
+        f << "music " << s.musicMode << " " << s.musicFade << " " << soundUseText(s.music) << "\n";
+        f << "seq " << s.duration << " " << (s.untilVideoEnds ? 1 : 0) << " " << (s.skippable ? 1 : 0) << " " << escText(s.next) << "\n";
         for (const ScreenItem& i : s.items) {
             const ScreenColors& c = i.col;
             f << "item " << escText(i.name) << " " << (int)i.kind << " " << i.x << " " << i.y << " " << i.w << " " << i.h << " " << escText(i.text) << " " << escText(i.image) << " "
               << i.textSize << " " << i.align << " " << c.text << " " << c.accent << " " << c.picked << " " << c.dim << " " << c.fill << " " << c.fillAlpha << " " << i.alpha << " "
               << (i.filled ? 1 : 0) << " " << (i.frame ? 1 : 0) << " " << i.rounding << " " << i.border << " " << (int)i.act << " " << escText(i.target) << " " << escText(i.group) << " " << i.speed << " " << i.slots << "\n";
+            f << "anim " << i.showAt << " " << i.hideAt << " " << i.fade << " " << i.typeSpeed << " " << i.driftX << " " << i.driftY << " " << i.grow << " " << soundUseText(i.typeSound) << "\n";
         }
         f << "comp " << s.comp.nextId << "\n";
         for (const CompNode& n : s.comp.nodes) {
@@ -198,7 +237,12 @@ bool loadScreens(const std::string& path, ScreenSet& set) {
     set = ScreenSet{}; std::string line; Screen* cur = nullptr; int version = 1;
     while (std::getline(f, line)) {
         std::istringstream l(line); std::string k; l >> k;
+        auto readSnd = [&](UiSounds& u) { std::string rest; std::getline(l, rest); std::istringstream r(rest); std::string tok[18];
+            for (int q = 0; q < 18; q++) r >> tok[q];
+            auto one = [&](int at, SoundUse& su) { std::string t6; for (int q = 0; q < 6; q++) t6 += tok[at + q] + " "; soundUseFrom(t6, su); };
+            one(0, u.hover); one(6, u.click); one(12, u.back); };
         if (k == "screens") l >> version;
+        else if (k == "uisounds") readSnd(set.sounds);
         else if (k == "screen") {
             Screen s; std::string n; int role = 0; l >> n >> role >> s.fadeIn; s.name = unescText(n);
             s.role = (ScreenRole)std::clamp(role, 0, (int)ScreenRole::COUNT - 1); s.comp = Compositor{};
@@ -218,7 +262,14 @@ bool loadScreens(const std::string& path, ScreenSet& set) {
             i.name = unescText(n); i.text = unescText(t); i.image = unescText(im); i.target = unescText(tg); i.group = unescText(gr);
             i.kind = (ScreenItemKind)std::clamp(kind, 0, (int)ScreenItemKind::COUNT - 1); i.act = (ScreenAct)std::clamp(act, 0, (int)ScreenAct::COUNT - 1);
             i.filled = fl != 0; i.frame = fr != 0; cur->items.push_back(i);
-        } else if (k == "comp") l >> cur->comp.nextId;
+        } else if (k == "ssounds") readSnd(cur->sounds);
+        else if (k == "music") { std::string rest; l >> cur->musicMode >> cur->musicFade; std::getline(l, rest); soundUseFrom(rest, cur->music); cur->musicMode = std::clamp(cur->musicMode, 0, 2); }
+        else if (k == "seq") { int uv = 0, sk = 1; std::string nx; l >> cur->duration >> uv >> sk >> nx; cur->untilVideoEnds = uv != 0; cur->skippable = sk != 0; cur->next = unescText(nx); }
+        else if (k == "anim" && !cur->items.empty()) {
+            ScreenItem& i = cur->items.back(); std::string rest;
+            l >> i.showAt >> i.hideAt >> i.fade >> i.typeSpeed >> i.driftX >> i.driftY >> i.grow; std::getline(l, rest); soundUseFrom(rest, i.typeSound);
+        }
+        else if (k == "comp") l >> cur->comp.nextId;
         else if (k == "node") {
             CompNode n; int type = 2, mute = 0;
             l >> n.id >> type >> n.x >> n.y; for (float& p : n.p) l >> p; for (uint32_t& c : n.c) l >> c; l >> n.mode >> n.in[0] >> n.in[1] >> mute;

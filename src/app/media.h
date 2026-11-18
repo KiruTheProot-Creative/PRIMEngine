@@ -20,6 +20,9 @@ struct Frames {
 };
 bool loadPicture(const std::string& utf8Path, Frames& out, std::string& err);   // png, jpg, bmp, gif (all frames), tif...
 
+// any sound Windows can read (MP3, M4A / AAC, WMA, WAV...) as floats, channels interleaved (at most `maxSeconds`)
+bool loadAudio(const std::string& utf8Path, int& channels, int& rate, std::vector<float>& samples, std::string& err, double maxSeconds = 900);
+
 class Video {
 public:
     ~Video();
@@ -28,6 +31,7 @@ public:
     // decodes up to t seconds in (from the start); true when the picture changed. At the end: loops (loop) or stays on the last frame.
     bool frameAt(double t, bool loop);
     int w = 0, h = 0; double duration = 0;
+    bool done() const { return ended; }        // (not looping) it has played to the end
     std::vector<uint8_t> rgba;                 // the current frame
 private:
     IMFSourceReader* reader = nullptr;

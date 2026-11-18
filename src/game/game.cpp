@@ -73,6 +73,7 @@ bool Settings::load(const std::string& path) {
         else if (k == "brightness") f >> brightness;
         else if (k == "fullscreen") { int v; f >> v; fullscreen = v != 0; }
         else if (k == "volumes") f >> volWeapons >> volMovement >> volEnemies >> volWorld;
+        else if (k == "volumes2") f >> volMenus >> volMusic;
         else if (k == "invert_y") { int v; f >> v; invertY = v != 0; }
         else if (k == "lock_mode") f >> lockMode;
         else if (k == "cave_culling") { int v; f >> v; caveCulling = v != 0; }
@@ -98,7 +99,7 @@ bool Settings::save(const std::string& path) const {
       << "\nambient_occlusion " << ambientOcclusion << "\nao_strength " << aoStrength
       << "\nbumps " << bumps << "\ncoat " << coat << "\nmaterials " << (materials ? 1 : 0) << "\nhud_glow " << (hudGlow ? 1 : 0) << "\nguess_materials " << (guessMaterials ? 1 : 0)
       << "\nshadow_res " << shadowRes << "\nbrightness " << brightness << "\nfullscreen " << (fullscreen ? 1 : 0)
-      << "\nvolumes " << volWeapons << " " << volMovement << " " << volEnemies << " " << volWorld << "\ninvert_y " << (invertY ? 1 : 0) << "\nlock_mode " << lockMode << "\ncave_culling " << (caveCulling ? 1 : 0) << "\n";
+      << "\nvolumes " << volWeapons << " " << volMovement << " " << volEnemies << " " << volWorld << "\nvolumes2 " << volMenus << " " << volMusic << "\ninvert_y " << (invertY ? 1 : 0) << "\nlock_mode " << lockMode << "\ncave_culling " << (caveCulling ? 1 : 0) << "\n";
     for (int i = 0; i < (int)Act::COUNT; i++) f << "key " << actKey((Act)i) << " " << keys.key[i][0] << " " << keys.key[i][1] << "\n";
     return (bool)f;
 }

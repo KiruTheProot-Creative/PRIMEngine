@@ -3238,6 +3238,7 @@ struct App {
     void Center(ImVec2 size) { ImGui::SetNextWindowPos(ImVec2(cw * 0.5f, ch * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f)); ImGui::SetNextWindowSize(size, ImGuiCond_Always); }
     void OptionChanged(const OptionDef& d) {   // after an option changed (here or in the visor menu): kept
         if (d.key == "guess_materials") matsDirty = true;
+        if (CurScreen() || (playMode && paused)) PlayUi(1);
         settings.save(settingsPath);
     }
     void SettingsWindow() {   // the editor's window: the same options as the in-visor Options page (and a few for the editor)
@@ -3403,6 +3404,7 @@ struct App {
         takenByWorld.clear(); insideNow.clear(); firedOnce.clear(); teleportLock = 0; bigMsgT = 0; playStartWorld = CurrentWorld(); startEditCam = editCam;
         playSpawn = info.hasSpawn ? info.spawn : player.feet; playYaw = info.hasSpawn ? info.spawnYaw : player.yaw;
         UpdateItemRules(); play = PlayState{}; play.start(player, playRules, playSpawn, playYaw);
+        StopMusic(1.2f);   // (the menu's music fades as the game starts)
         for (const ItemDef& d : items.items) if (d.used && d.type == ItemType::PowerBomb && d.startsOwned) inv.counts[items.powerBombCounter] = items.powerBombStart;
         weapState = WeaponState{}; weapPose = WeaponPose{}; cannonClip = -1; firedPending = 0; missilePrev = true;
         activeTl.clear(); chargeTlOn = false; freeAim = FreeAim{}; aimYaw = aimPitch = 0; stepDist = 0;
@@ -5758,7 +5760,9 @@ struct App {
     }
     void PauseMenu() {   // Esc while playing: picking in the menu (it is drawn by BuildMenuLists / DrawHudScene)
         if (!menuShown) return;
-        MenuControl(menuHits, menuSel, [&](ImVec2 m, int* pane, ImVec2* px) { return MenuHitAt(m, pane, px); }, [&](const MenuHit& h) { MenuDo(h); }, true);
+        int before = menuSel;
+        MenuControl(menuHits, menuSel, [&](ImVec2 m, int* pane, ImVec2* px) { return MenuHitAt(m, pane, px); }, [&](const MenuHit& h) { PlayUi(h.act == MenuAct::Back ? 2 : 1); MenuDo(h); }, true);
+        if (menuSel != before && before >= 0 && menuSel >= 0) PlayUi(0);
     }
     // keys and the mouse over a set of picked things (the pause menu's bent panes, or a flat screen): W / S, A / D, Enter, clicks, drags
     void MenuControl(std::vector<MenuHit>& hits, int& sel, const std::function<int(ImVec2, int*, ImVec2*)>& hitAt, const std::function<void(const MenuHit&)>& doIt, bool pages) {
@@ -6007,8 +6011,12 @@ struct App {
         ImFont* font = ImGui::GetFont();
         auto C = [&](uint32_t c, float a) { return IM_COL32((c >> 16) & 255, (c >> 8) & 255, c & 255, (int)(std::clamp(a, 0.f, 1.f) * 255)); };
         for (int ii = 0; ii < (int)sc.items.size(); ii++) {
-            const ScreenItem& it = sc.items[ii]; const ScreenColors& col = it.col; float al = it.alpha;
-            ImVec2 a(it.x * W, it.y * H), b((it.x + it.w) * W, (it.y + it.h) * H); float ts = std::max(6.f, it.textSize * H), rnd = it.rounding * (b.y - a.y) * 0.5f;
+            const ScreenItem& it = sc.items[ii]; const ScreenColors& col = it.col;
+            float shown = itemShown(it, screenT); if (shown <= 0.002f) continue;   // (not yet / not any more)
+            float al = it.alpha * shown, age = (float)std::max(0.0, screenT - it.showAt), k = 1 + it.grow * age;
+            float cx = (it.x + it.w * 0.5f + it.driftX * age) * W, cy = (it.y + it.h * 0.5f + it.driftY * age) * H;
+            ImVec2 a(cx - it.w * W * 0.5f * k, cy - it.h * H * 0.5f * k), b(cx + it.w * W * 0.5f * k, cy + it.h * H * 0.5f * k);
+            float ts = std::max(6.f, it.textSize * H * k), rnd = it.rounding * (b.y - a.y) * 0.5f;
             switch (it.kind) {
             case ScreenItemKind::Panel:
                 if (it.filled) dl->AddRectFilled(a, b, C(col.fill, col.fillAlpha * al), rnd);
@@ -6016,6 +6024,11 @@ struct App {
                 break;
             case ScreenItemKind::Text: {
                 std::string s = menuFill(it.text, [&](const std::string& n) { return MenuValue(n); });
+                if (it.typeSpeed > 0) {   // typed letter by letter (a sound per letter)
+                    size_t n = typedBytes(s, it, screenT);
+                    if (live) { size_t& was = typed[ii]; if (n > was) { if (!it.typeSound.empty() && n <= s.size() && !std::isspace((unsigned char)s[n - 1])) PlaySoundIn(SND_MENUS, it.typeSound); was = n; } }
+                    s = s.substr(0, n);
+                }
                 bool multi = s.find('\n') != std::string::npos || font->CalcTextSizeA(ts, FLT_MAX, 0, s.c_str()).x > b.x - a.x;
                 if (multi) dl->AddText(font, ts, a, C(col.text, al), s.c_str(), nullptr, b.x - a.x); else TextIn(dl, font, s, ts, a, b, it.align, C(col.text, al));
                 break; }
@@ -6100,8 +6113,9 @@ struct App {
     void ShowScreen(int idx, bool remember) {
         if (idx < 0 || idx >= (int)screens.screens.size()) return;
         if (remember && curScreen >= 0 && curScreen != idx) screenBack.push_back(curScreen);
-        curScreen = idx; screenT = 0; screenSel = -2; bindCapture = -1; RefreshSlots();
+        curScreen = idx; screenT = 0; screenSel = -2; bindCapture = -1; RefreshSlots(); typed.clear();
         mc::Screen& sc = screens.screens[idx];
+        if (sc.musicMode == 1 && !sc.music.empty()) PlayMusic(sc.music, sc.musicFade); else if (sc.musicMode == 2) StopMusic(sc.musicFade);
         if (!playMode && sc.bg.kind == BgKind::World) {   // (only outside play: while playing, the game stays where it is)
             if (!sc.bg.world.empty() && sc.bg.world != CurrentWorld() && std::find(worldList.begin(), worldList.end(), sc.bg.world) != worldList.end()) {
                 travelling = true; SaveWorld(); OpenWorld(sc.bg.world); travelling = false;
@@ -6116,11 +6130,12 @@ struct App {
         int mm = screens.byRole(ScreenRole::MainMenu);
         if (mm < 0) { Toast("There is no main menu yet (Screens editor): playing right away"); StartPlay(); return; }
         menuSession = true; menuEditorWorld = CurrentWorld(); menuEditorCam = player; plainView = true; editorOpen = false;
-        Capture(false); ShowScreen(mm, false);
+        int first = screens.byRole(ScreenRole::Intro);   // a splash / intro first, if the game has one
+        Capture(false); ShowScreen(first >= 0 ? first : mm, false);
     }
     void LeaveMenuSession() {   // back to the editor, as it was
         if (playMode) StopPlay();
-        CloseScreens(); menuSession = false; plainView = false;
+        CloseScreens(); menuSession = false; plainView = false; StopMusic(0.4f);
         if (!menuEditorWorld.empty() && menuEditorWorld != CurrentWorld()) { travelling = true; SaveWorld(); OpenWorld(menuEditorWorld); travelling = false; }
         player = menuEditorCam; player.ball = false; Capture(false);
         Toast("Back in the editor");
@@ -6154,18 +6169,40 @@ struct App {
         }
     }
     void ScreenBack() {
+        PlayUi(2);
         if (!screenBack.empty()) { int p = screenBack.back(); screenBack.pop_back(); ShowScreen(p, false); return; }
         if (playMode) { CloseScreens(); paused = false; Capture(true); }   // (a screen opened while playing: back to the game)
     }
     void ScreenInput() {   // keys and the mouse on the shown screen
         if (!CurScreen()) return;
+        mc::Screen* sc = CurScreen(); bool timed = sc->duration > 0 || sc->untilVideoEnds;
+        if (timed && sc->skippable && screenT > 0.35 && bindCapture < 0) {   // a splash / intro: any key or click goes on
+            for (int k = ImGuiKey_NamedKey_BEGIN; k < ImGuiKey_NamedKey_END; k++) if (k != ImGuiKey_F5 && ImGui::IsKeyPressed((ImGuiKey)k, false)) { ScreenNext(); return; }
+        }
+        int before = screenSel;
         MenuControl(screenHits, screenSel, [&](ImVec2 m, int* pane, ImVec2* px) { if (pane) *pane = 0; return ScreenHitAt(m, px); },
-                    [&](const MenuHit& h) { if (h.kind == 8) ScreenAction((ScreenAct)h.arg, h.target); else if (h.kind == 9) Toast("No saved game yet"); else if (h.kind == 10) SlotPicked(h.arg); }, false);
+                    [&](const MenuHit& h) {
+                        if (h.kind == 9) { Toast("No saved game yet"); return; }
+                        PlayUi(h.kind == 8 && (ScreenAct)h.arg == ScreenAct::Back ? 2 : 1);
+                        if (h.kind == 8) ScreenAction((ScreenAct)h.arg, h.target); else if (h.kind == 10) SlotPicked(h.arg); }, false);
+        if (screenSel != before && before >= 0 && screenSel >= 0) PlayUi(0);
         if (screenSel >= 0 && screenSel < (int)screenHits.size() && screenHits[screenSel].kind == 10 && (ImGui::IsKeyPressed(ImGuiKey_Delete) || ImGui::IsKeyPressed(ImGuiKey_Backspace))) SlotErase(screenHits[screenSel].arg);
+    }
+    std::map<int, size_t> typed;   // typed texts: how much has shown (for the letter sound)
+    void ScreenNext() {   // a splash / intro is over: its next screen (or the main menu)
+        mc::Screen* sc = CurScreen(); if (!sc) return;
+        int idx = sc->next.empty() ? -1 : screens.find(sc->next);
+        if (idx < 0 || idx == curScreen) idx = screens.byRole(ScreenRole::MainMenu);
+        if (idx < 0) { if (menuSession) LeaveMenuSession(); else CloseScreens(); return; }
+        screenBack.clear(); ShowScreen(idx, false);
     }
     void UpdateScreens(double dt) {
         mc::Screen* sc = CurScreen(); if (!sc) return;
         screenT += dt;
+        if (sc->duration > 0 && screenT >= sc->duration) { ScreenNext(); return; }
+        if (sc->untilVideoEnds && sc->bg.kind == BgKind::Video && screenT > 0.5) {
+            auto it = vids.find(sc->bg.file); if (it == vids.end() || !it->second || it->second->failed || (it->second->v.done() && !sc->bg.loop)) { ScreenNext(); return; }
+        }
         if (!playMode && sc->bg.kind == BgKind::World && sc->bg.turn != 0) player.yaw += sc->bg.turn * dt * 3.14159265358979 / 180;   // the view turns slowly
         // dying while playing: the death screen (if the game has one)
     }
@@ -6316,7 +6353,7 @@ struct App {
     }
     void BuildScreenPreview() {   // (editor) the picked screen's items, at the preview's size
         mc::Screen* sc = EdScreen(); if (!sc || scrPrevW < 16 || scrPrevH < 16) return;
-        screenT = std::fmod(uiClock, 10000.0);
+        screenT = std::fmod(uiClock, sc->duration > 0 ? sc->duration + 0.75 : 10000.0);   // (a splash plays over and over)
         BuildScreenList(*sc, (int)scrPrevW, (int)scrPrevH, false);
     }
     void RenderScreenPreview() {
@@ -6345,7 +6382,8 @@ struct App {
         ImGui::Spacing();
         if (ImGui::Button("+ Screen")) ImGui::OpenPopup("addscr");
         if (ImGui::BeginPopup("addscr")) {
-            for (ScreenRole r : { ScreenRole::MainMenu, ScreenRole::Options, ScreenRole::Death, ScreenRole::Credits, ScreenRole::Custom })
+            if (ImGui::Selectable("Story (typed text, like Super Metroid's intro)")) { mc::Screen s = presetStory(); std::string base = s.name; int k = 2; while (screens.find(s.name) >= 0) s.name = base + " " + std::to_string(k++); screens.screens.push_back(s); scrEd = (int)screens.screens.size() - 1; scrItem = -1; ch = true; }
+            for (ScreenRole r : { ScreenRole::MainMenu, ScreenRole::Files, ScreenRole::Intro, ScreenRole::Options, ScreenRole::Death, ScreenRole::Credits, ScreenRole::Custom })
                 if (ImGui::Selectable(r == ScreenRole::Custom ? "Empty (your own)" : screenRoleName(r))) {
                     mc::Screen s = presetScreen(r); std::string base = s.name; int k = 2; while (screens.find(s.name) >= 0) s.name = base + " " + std::to_string(k++);
                     if (screens.byRole(r) >= 0 && r != ScreenRole::Custom) s.role = ScreenRole::Custom;   // (one of each role: this one is a copy to play with)
@@ -6380,6 +6418,7 @@ struct App {
             if (ImGui::BeginTabItem("Layout")) { ScreenLayoutTab(*sc, ch); ImGui::EndTabItem(); }
             if (ImGui::BeginTabItem("Background")) { ScreenBgTab(*sc, ch); ImGui::EndTabItem(); }
             if (ImGui::BeginTabItem("Compositor")) { NodeEditor(*sc, ch); ImGui::EndTabItem(); }
+            if (ImGui::BeginTabItem("Sound & timing")) { ScreenSoundTab(*sc, ch); ImGui::EndTabItem(); }
             ImGui::EndTabBar();
         }
         ImGui::EndChild();
@@ -6512,6 +6551,46 @@ struct App {
             Prop("Round corners"); ch |= ImGui::SliderFloat("##sro", &it.rounding, 0, 1, "%.2f"); Prop("Frame width"); ch |= ImGui::SliderFloat("##sbw", &it.border, 0.5f, 8, "%.1f px");
         }
         Prop("See-through"); { float op = 1 - it.alpha; if (ImGui::SliderFloat("##sial", &op, 0, 1, "%.2f")) { it.alpha = 1 - op; ch = true; } }
+        ImGui::SeparatorText("Timing");
+        Prop("Appears at"); ch |= ImGui::SliderFloat("##tsa", &it.showAt, 0, 60, it.showAt <= 0 ? "right away" : "%.1f s");
+        Prop("Goes at"); ch |= ImGui::SliderFloat("##tha", &it.hideAt, 0, 60, it.hideAt <= 0 ? "stays" : "%.1f s");
+        Prop("Fades over"); ch |= ImGui::SliderFloat("##tfd", &it.fade, 0, 3, "%.2f s");
+        if (it.kind == ScreenItemKind::Text) {
+            Prop("Typed"); ch |= ImGui::SliderFloat("##tty", &it.typeSpeed, 0, 80, it.typeSpeed <= 0 ? "all at once" : "%.0f letters/s");
+            if (it.typeSpeed > 0) { Prop("Letter sound"); ch |= SoundEdit("##ttsnd", it.typeSound, false); }
+        }
+        Prop("Moves"); { float v[2] = { it.driftX, it.driftY }; if (ImGui::DragFloat2("##tdr", v, 0.0005f, -0.5f, 0.5f, "%.4f/s")) { it.driftX = v[0]; it.driftY = v[1]; ch = true; } }
+        Prop("Grows"); ch |= ImGui::SliderFloat("##tgr", &it.grow, -0.2f, 0.5f, "%.3f/s");
+        Hint("Seconds after the screen appears. For splash screens and intros (like Super Metroid's): fade text and pictures in and out, type a story letter by letter, let a picture slowly drift and grow.");
+    }
+    void ScreenSoundTab(mc::Screen& sc, bool& ch) {
+        ImGui::BeginChild("sndtab", ImVec2(0, 0));
+        ImGui::SeparatorText("Music");
+        { const char* mm[] = { "Keep what is playing", "Play this (it loops)", "Silence" }; Prop("When it shows"); ch |= ImGui::Combo("##mmode", &sc.musicMode, mm, 3); }
+        if (sc.musicMode == 1) { Prop("Music"); ch |= SoundEdit("##music", sc.music, false); }
+        if (sc.musicMode != 0) { Prop("Fades over"); ch |= ImGui::SliderFloat("##mfade", &sc.musicFade, 0, 6, "%.1f s"); }
+        Hint("WAV, MP3, M4A, WMA or FLAC from the game's sounds (import them in the sound pickers). \"Keep\" lets the music of the screen before go on (the Options screen keeps the main menu's). Playing a game fades it out.");
+        ImGui::SeparatorText("Goes on by itself (splash screens, intros)");
+        Prop("After"); ch |= ImGui::SliderFloat("##sqdur", &sc.duration, 0, 120, sc.duration <= 0 ? "never (stays)" : "%.1f s");
+        Prop("Or when the video ends"); ch |= ImGui::Checkbox("##sqvid", &sc.untilVideoEnds);
+        Prop("Then"); if (ImGui::BeginCombo("##sqnext", sc.next.empty() ? "(the main menu)" : sc.next.c_str())) {
+            if (ImGui::Selectable("(the main menu)", sc.next.empty())) { sc.next.clear(); ch = true; }
+            for (const mc::Screen& o : screens.screens) if (&o != &sc && ImGui::Selectable(o.name.c_str(), o.name == sc.next)) { sc.next = o.name; ch = true; }
+            ImGui::EndCombo();
+        }
+        Prop("A key or click skips"); ch |= ImGui::Checkbox("##sqskip", &sc.skippable);
+        Hint("Give the first one the role \"Intro (shown first)\": playing from the menu (F6) starts there and goes screen to screen to the main menu. A video background with \"or when the video ends\" makes an intro movie.");
+        ImGui::SeparatorText("This screen's interface sounds");
+        Prop("Picking"); ch |= SoundEdit("##shov", sc.sounds.hover, false);
+        Prop("Using"); ch |= SoundEdit("##sclk", sc.sounds.click, false);
+        Prop("Going back"); ch |= SoundEdit("##sbak", sc.sounds.back, false);
+        ImGui::TextDisabled("(empty: the game's, below)");
+        ImGui::SeparatorText("The game's interface sounds (every screen and the pause menu)");
+        Prop("Picking"); ch |= SoundEdit("##ghov", screens.sounds.hover, false);
+        Prop("Using"); ch |= SoundEdit("##gclk", screens.sounds.click, false);
+        Prop("Going back"); ch |= SoundEdit("##gbak", screens.sounds.back, false);
+        Hint("Picking: the mouse or W / S moves to another button or row. Using: a click / Enter (and changing an option). Going back: Back, Esc.");
+        ImGui::EndChild();
     }
     void ScreenBgTab(mc::Screen& sc, bool& ch) {
         float ui = settings.uiScale, propW = 380 * ui, sp = ImGui::GetStyle().ItemSpacing.x;
@@ -8108,16 +8187,21 @@ struct App {
         if (file.empty()) return nullptr;
         auto it = soundCache.find(file); if (it != soundCache.end()) return it->second;
         std::shared_ptr<WavData>& w = soundCache[file];
+        auto d = std::make_shared<WavData>(); std::string err;
+        if (Lower(fs::u8path(file).extension().u8string()) != ".wav") {   // MP3, M4A, WMA, FLAC...: through Windows
+            if (!media::loadAudio(SoundsDir() + "/" + file, d->channels, d->rate, d->samples, err)) { Toast(file + ": " + err); return nullptr; }
+            w = d; return w;
+        }
         std::ifstream f(fs::u8path(SoundsDir() + "/" + file), std::ios::binary); if (!f) return nullptr;
         std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-        auto d = std::make_shared<WavData>(); std::string err;
         if (!readWav(bytes, *d, err)) { Toast(file + ": " + err); return nullptr; }
         w = d; return w;
     }
     float SoundSeconds(const std::string& file) { auto w = LoadSound(file); return w ? w->seconds() : 0.f; }
     std::vector<std::string> SoundFiles() const {
         std::vector<std::string> v; std::error_code ec;
-        for (auto& e : fs::directory_iterator(fs::u8path(SoundsDir()), ec)) if (Lower(e.path().extension().string()) == ".wav") v.push_back(e.path().filename().u8string());
+        for (auto& e : fs::directory_iterator(fs::u8path(SoundsDir()), ec)) { std::string x = Lower(e.path().extension().string());
+            if (x == ".wav" || x == ".mp3" || x == ".m4a" || x == ".aac" || x == ".wma" || x == ".flac") v.push_back(e.path().filename().u8string()); }
         std::sort(v.begin(), v.end()); return v;
     }
     // plays a sound; at: a place in the world (quieter far away, from the side it comes from); tag: to stop it later
@@ -8125,7 +8209,7 @@ struct App {
         if (!audioOk || s.empty() || vol <= 0.001f) return nullptr;
         std::shared_ptr<WavData> w = LoadSound(s.file); if (!w || w->samples.empty()) return nullptr;
         if (voices.size() >= 48) {   // too many: the oldest one stops (never the roll loop)
-            auto old = std::find_if(voices.begin(), voices.end(), [](const Voice& v) { return v.tag != TAG_ROLL; });
+            auto old = std::find_if(voices.begin(), voices.end(), [](const Voice& v) { return v.tag != TAG_ROLL && v.tag != TAG_MUSIC; });
             if (old != voices.end()) { old->v->DestroyVoice(); voices.erase(old); }
         }
         WAVEFORMATEX fmt{}; fmt.wFormatTag = WAVE_FORMAT_IEEE_FLOAT; fmt.nChannels = (WORD)w->channels; fmt.nSamplesPerSec = (DWORD)w->rate; fmt.wBitsPerSample = 32;
@@ -8153,10 +8237,11 @@ struct App {
     // a set of sounds: one of them, at random (never the same twice in a row)
     IXAudio2SourceVoice* PlaySound(SoundSet& set, float vol = 1, const V3* at = nullptr, int tag = 0) { const SoundUse* u = set.pick(soundSeed); return u ? PlaySound(*u, vol, at, tag) : nullptr; }
     // sound groups (Options > Sound): each its own volume, times the master
-    enum { SND_WORLD, SND_WEAPONS, SND_MOVEMENT, SND_ENEMIES };
+    enum { SND_WORLD, SND_WEAPONS, SND_MOVEMENT, SND_ENEMIES, SND_MENUS, SND_MUSIC };
     int soundCat = SND_WORLD;
     float CatVolume(int cat) const {
-        float g = cat == SND_WEAPONS ? settings.volWeapons : cat == SND_MOVEMENT ? settings.volMovement : cat == SND_ENEMIES ? settings.volEnemies : settings.volWorld;
+        float g = cat == SND_WEAPONS ? settings.volWeapons : cat == SND_MOVEMENT ? settings.volMovement : cat == SND_ENEMIES ? settings.volEnemies
+                : cat == SND_MENUS ? settings.volMenus : cat == SND_MUSIC ? settings.volMusic : settings.volWorld;
         return std::clamp(settings.soundVolume, 0.f, 2.f) * std::clamp(g, 0.f, 2.f);
     }
     template <class... A> IXAudio2SourceVoice* PlaySoundIn(int cat, A&&... a) { int k = soundCat; soundCat = cat; IXAudio2SourceVoice* v = PlaySound(std::forward<A>(a)...); soundCat = k; return v; }
@@ -8209,7 +8294,7 @@ struct App {
     }
     void ImportSounds() {
         std::error_code ec; fs::create_directories(fs::u8path(SoundsDir()), ec); int n = 0;
-        for (const std::string& f : PickFiles("WAV sounds (*.wav)\0*.wav\0", "Import sounds")) {
+        for (const std::string& f : PickFiles("Sounds and music (WAV, MP3, M4A, WMA, FLAC)\0*.wav;*.mp3;*.m4a;*.aac;*.wma;*.flac\0", "Import sounds")) {
             fs::path s = fs::u8path(f); std::string name = s.filename().u8string();
             fs::copy_file(s, fs::u8path(SoundsDir() + "/" + name), fs::copy_options::overwrite_existing, ec);
             if (!ec) { n++; soundCache.erase(name); }
@@ -8416,6 +8501,41 @@ struct App {
     static constexpr int TAG_CHARGE = 7;
     static constexpr int TAG_ROLL = 8;
     static constexpr int TAG_CHARGED = 9;
+    static constexpr int TAG_MUSIC = 12;
+    // ---- music (screens: the main menu...): one plays, the one before fades out
+    IXAudio2SourceVoice* musicV = nullptr; SoundUse musicUse; float musicLevel = 0, musicFadeS = 1;
+    struct MusicOut { IXAudio2SourceVoice* v; float level, fade, vol; }; std::vector<MusicOut> musicOut;
+    void StopVoice(IXAudio2SourceVoice* v) { for (Voice& x : voices) if (x.v == v) { x.v->Stop(); x.v->DestroyVoice(); x.v = nullptr; } voices.erase(std::remove_if(voices.begin(), voices.end(), [](const Voice& q) { return !q.v; }), voices.end()); }
+    void PlayMusic(const SoundUse& m, float fade) {
+        if (m.empty()) return;
+        if (musicV && m.file == musicUse.file) { musicUse = m; return; }   // already playing: it goes on
+        StopMusic(fade);
+        musicUse = m; musicFadeS = std::max(0.f, fade); musicLevel = musicFadeS > 0.01f ? 0.f : 1.f;
+        musicV = PlaySoundIn(SND_MUSIC, m, 1, nullptr, TAG_MUSIC, true);
+        if (musicV) musicV->SetVolume(musicLevel * m.volume * CatVolume(SND_MUSIC));
+    }
+    void StopMusic(float fade) {
+        if (!musicV) return;
+        musicOut.push_back({ musicV, musicLevel, std::max(0.01f, fade), musicUse.volume }); musicV = nullptr; musicUse = SoundUse{};
+    }
+    void UpdateMusic(double dt) {
+        float base = CatVolume(SND_MUSIC);
+        if (musicV) { musicLevel = std::min(1.f, musicLevel + (float)dt / std::max(0.01f, musicFadeS)); musicV->SetVolume(musicLevel * musicUse.volume * base); }
+        for (MusicOut& o : musicOut) {
+            o.level -= (float)dt / o.fade;
+            if (o.level <= 0) { StopVoice(o.v); o.v = nullptr; } else o.v->SetVolume(o.level * o.vol * base);
+        }
+        musicOut.erase(std::remove_if(musicOut.begin(), musicOut.end(), [](const MusicOut& o) { return !o.v; }), musicOut.end());
+    }
+    // ---- interface sounds: 0 picking something, 1 using it, 2 going back (a screen's own, else the game's)
+    double uiSoundAt[3] = { -1, -1, -1 };
+    void PlayUi(int k) {
+        auto pick = [&](const UiSounds& u) -> const SoundUse& { return k == 0 ? u.hover : k == 1 ? u.click : u.back; };
+        const mc::Screen* sc = CurScreen(); const SoundUse& own = sc ? pick(sc->sounds) : pick(screens.sounds);
+        const SoundUse& s = !own.empty() ? own : pick(screens.sounds);
+        if (s.empty() || uiClock - uiSoundAt[k] < 0.05) return;   // (not twice at once)
+        uiSoundAt[k] = uiClock; PlaySoundIn(SND_MENUS, s);
+    }
     float AnimLen(const Beam& b, int kind) {   // the cannon's animation for this timeline, at its speed (charging never holds up a shot)
         return kind == Beam::Charging ? 0.f : ClipLenOf(b.model, beamClip(b, kind)) / std::max(0.05f, b.timelines[kind].animSpeed);
     }
@@ -10157,7 +10277,7 @@ struct App {
 
     // ================================================================== frame
     void FrameBody(double dt) {   // everything but showing the picture (screenshots grab it before)
-        if (audioOk) UpdateAudio();
+        if (audioOk) { UpdateAudio(); UpdateMusic(dt); }
         ApplyFullscreen();
         if (resized) OnResize();
         if (pending) { auto f = std::move(pending); pending = nullptr; f(); }

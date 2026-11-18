@@ -51,6 +51,7 @@ struct Settings {
     float brightness = 1.0f;   // the whole picture
     bool fullscreen = false;   // borderless, over the whole screen
     float volWeapons = 1, volMovement = 1, volEnemies = 1, volWorld = 1;   // sound groups (times soundVolume, the master)
+    float volMenus = 1, volMusic = 0.8f;
     bool invertY = false;      // the mouse: up looks down
     int lockMode = 0;          // lock-on: 0 as the game says, 1 hold the button, 2 a press locks / the next lets go
     bool caveCulling = true;   // chunks hidden behind walls / in rock are not drawn
