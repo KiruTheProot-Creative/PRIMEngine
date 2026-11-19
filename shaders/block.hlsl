@@ -1399,3 +1399,20 @@ float4 PS_Comp(BlitOut i) : SV_Target
     }
     return a;
 }
+
+// ---- a 3D HUD part's glow behind it: its outline in one colour (small), blurred, then laid around it (not over it)
+float4 PS_FlatPrev(PrevOut i) : SV_Target { return gFlat; }
+cbuffer GlowCB : register(b9) { float4 gGlowDir; };   // xy: one blur step (uv), z: how bright when laid down
+float4 PS_GlowBlur(BlitOut i) : SV_Target
+{
+    static const float w[5] = { 0.2270, 0.1945, 0.1216, 0.0540, 0.0162 };
+    float4 c = gCompA.SampleLevel(gClamp, i.uv, 0) * w[0];
+    [unroll] for (int k = 1; k < 5; k++) { float2 o = gGlowDir.xy * k; c += (gCompA.SampleLevel(gClamp, i.uv + o, 0) + gCompA.SampleLevel(gClamp, i.uv - o, 0)) * w[k]; }
+    return c;
+}
+float4 PS_GlowComp(BlitOut i) : SV_Target
+{
+    float4 b = gCompA.SampleLevel(gClamp, i.uv, 0);
+    float inside = gCompB.SampleLevel(gClamp, i.uv, 0).a;      // where the part itself is: no glow on top of it
+    return float4(b.rgb * (1 - saturate(inside)) * gGlowDir.z, 0);
+}

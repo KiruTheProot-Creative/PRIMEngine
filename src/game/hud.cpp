@@ -135,9 +135,11 @@ bool saveHud(const std::string& path, const HudLayout& h) {
             f << "el " << esc(e.name) << " " << (int)e.kind << " " << e.x << " " << e.y << " " << e.w << " " << e.h << " " << e.color << " " << e.alpha << " " << esc(e.text) << " " << esc(e.image)
               << " " << (int)e.value << " " << esc(e.valueName) << " " << e.max << " " << e.segments << " " << e.textSize << " " << e.align << " " << e.filled << " " << e.thickness << " " << e.visible << " " << e.mapRange << " " << e.mapTilt << " " << e.mapTurns << " " << e.onPause << " " << e.onMap << " " << (int)e.visors << "\n";
     }
-    for (const HudPart& p : h.parts)
+    for (const HudPart& p : h.parts) {
         f << "part " << esc(p.name) << " " << esc(p.model) << " " << p.pos.x << " " << p.pos.y << " " << p.pos.z << " " << p.yaw << " " << p.pitch << " " << p.roll << " " << p.scale
           << " " << p.mirror << " " << p.sway << " " << p.visible << " " << p.onPause << " " << p.onMap << " " << (int)p.visors << "\n";
+        if (p.glow > 0) f << "partglow " << p.glow << " " << p.glowColor << " " << p.glowSize << "\n";   // (right after its part)
+    }
     return (bool)f;
 }
 bool loadHud(const std::string& path, HudLayout& h) {
@@ -156,6 +158,7 @@ bool loadHud(const std::string& path, HudLayout& h) {
             e.name = unesc(n); e.text = unesc(t); e.image = unesc(im); e.valueName = unesc(vn);
             e.kind = (HudKind)std::clamp(kind, 0, (int)HudKind::COUNT - 1); e.value = (HudValue)std::clamp(val, 0, (int)HudValue::COUNT - 1);
             h.planes.back().elements.push_back(e);
+        } else if (k == "partglow" && !h.parts.empty()) { HudPart& p = h.parts.back(); l >> p.glow >> p.glowColor >> p.glowSize;
         } else if (k == "part") { HudPart p; std::string n, m; l >> n >> m >> p.pos.x >> p.pos.y >> p.pos.z >> p.yaw >> p.pitch >> p.roll >> p.scale >> p.mirror >> p.sway >> p.visible; { int op, om; if (l >> op >> om) { p.onPause = op != 0; p.onMap = om != 0; int vm; if (l >> vm) p.visors = (uint8_t)(vm & 15); } } p.name = unesc(n); p.model = unesc(m); h.parts.push_back(p); }
     }
     return true;

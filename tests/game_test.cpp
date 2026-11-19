@@ -1506,6 +1506,11 @@ int main() {
         std::set<std::string> keys; for (auto& g : gameSoundSlots()) keys.insert(g.key);
         CHECK(keys.size() == gameSoundSlots().size() && !keys.count("step") && !keys.count("roll"), "every game sound has its own key (%d)", (int)keys.size());
     }
+    {   // a 3D HUD part's glow behind it
+        HudLayout hl = defaultHud(); hl.parts[0].glow = 0.8f; hl.parts[0].glowColor = 0xFF8020; hl.parts[0].glowSize = 1.5f;
+        saveHud("/tmp/prim_hudglow.txt", hl); HudLayout hb; loadHud("/tmp/prim_hudglow.txt", hb);
+        CHECK(hb.parts.size() == hl.parts.size() && hb.parts[0].glow == 0.8f && hb.parts[0].glowColor == 0xFF8020 && hb.parts[0].glowSize == 1.5f && hb.parts[1].glow == 0, "a HUD part's glow behind it saves and loads (only on its own part)");
+    }
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
     return fails ? 1 : 0;
 }

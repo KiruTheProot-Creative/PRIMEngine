@@ -60,6 +60,7 @@ struct HudPart {   // a 3D model fixed to the camera (helmet frame, visor struts
     bool visible = true;
     bool onPause = true, onMap = true;                  // still shown while the game is paused / on the map screen (M)
     uint8_t visors = 0x0F;                              // which visors show it
+    float glow = 0; uint32_t glowColor = 0x60E0FF; float glowSize = 1;   // a soft glow right behind it, around its outline (0: none); how far it spreads
 };
 
 struct HudSwaySettings {

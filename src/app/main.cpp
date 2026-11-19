@@ -4291,7 +4291,9 @@ struct App {
     HudLayout hud; HudSway hudSway, previewSway; HudValues hudVals;
     std::map<std::string, bool> hudShown; std::map<std::string, double> hudFlashAt;   // Play mode: event cards showing / hiding / flashing elements by name
     struct HudTarget { ComPtr<ID3D11Texture2D> tex; ComPtr<ID3D11RenderTargetView> rtv; ComPtr<ID3D11ShaderResourceView> srv; int w = 0, h = 0; };
+    HudTarget glowMask, glowA, glowB;   // a HUD part's glow behind it (a quarter of the screen's size)
     std::vector<HudTarget> hudTargets; std::vector<std::unique_ptr<ImDrawList>> hudLists; bool hudListsReady = false;
+    ComPtr<ID3D11PixelShader> psFlatPrev, psGlowBlur, psGlowComp; ComPtr<ID3D11Buffer> cbGlow;   // a HUD part's glow behind it
     ComPtr<ID3D11VertexShader> vsHud, vsBlit; ComPtr<ID3D11PixelShader> psHud, psBlit; ComPtr<ID3D11InputLayout> layoutHud; ComPtr<ID3D11Buffer> vbHud; ComPtr<ID3D11BlendState> bsPremul;
     std::map<std::string, ComPtr<ID3D11ShaderResourceView>> hudImages;
     struct HVtx { float p[3], uv[2]; };
@@ -4320,6 +4322,10 @@ struct App {
         b = Compile(src, "PS_Hud", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psHud));
         b = Compile(src, "VS_Blit", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsBlit));
         b = Compile(src, "PS_Blit", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psBlit));
+        b = Compile(src, "PS_FlatPrev", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psFlatPrev));
+        b = Compile(src, "PS_GlowBlur", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psGlowBlur));
+        b = Compile(src, "PS_GlowComp", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psGlowComp));
+        { D3D11_BUFFER_DESC cd{}; cd.ByteWidth = 16; cd.Usage = D3D11_USAGE_DEFAULT; cd.BindFlags = D3D11_BIND_CONSTANT_BUFFER; HR(dev->CreateBuffer(&cd, nullptr, &cbGlow)); }
         D3D11_BUFFER_DESC d{}; d.ByteWidth = sizeof(HVtx) * HUD_VERTS; d.Usage = D3D11_USAGE_DYNAMIC; d.BindFlags = D3D11_BIND_VERTEX_BUFFER; d.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE; HR(dev->CreateBuffer(&d, nullptr, &vbHud));
         D3D11_BLEND_DESC bd{}; auto& rt = bd.RenderTarget[0]; rt.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL; rt.BlendEnable = TRUE;
         rt.SrcBlend = D3D11_BLEND_ONE; rt.DestBlend = D3D11_BLEND_INV_SRC_ALPHA; rt.BlendOp = D3D11_BLEND_OP_ADD;
@@ -4444,9 +4450,9 @@ struct App {
             ctx->PSSetShaderResources(0, 1, texArray.GetAddressOf()); ctx->PSSetShaderResources(14, 1, emitArray.GetAddressOf()); ctx->PSSetSamplers(0, 1, sampBlocks.GetAddressOf());
             ctx->RSSetState(rsNoCull.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
         };
-        auto drawParts = [&](bool cannon) {
+        auto drawParts = [&](bool cannon, const CamPart* only = nullptr) {
             for (const CamPart& c : parts) {
-                if (c.cannon != cannon) continue;
+                if (only ? &c != only : c.cannon != cannon) continue;
                 FrameRef f = ModelNamed(c.model); if (!f) continue;
                 const ModelGpu& g = c.gpu ? *c.gpu : GpuModel(c.model);
                 BindModelTex(g, c.model);
@@ -4475,6 +4481,41 @@ struct App {
             ctx->PSSetShaderResources(0, 1, &srv);
             ctx->Draw(n, 0);
         };
+        auto drawGlow = [&] {   // parts that glow behind them: their outlines in one colour (a quarter as big), blurred, laid around them (not over them)
+            bool any = false; float spread = 1; for (const CamPart& c : parts) if (c.glow > 0) { any = true; spread = std::max(spread, c.glowSize); }
+            if (!any || !psGlowBlur) return;
+            ID3D11RenderTargetView* keepR = nullptr; ID3D11DepthStencilView* keepD = nullptr; ctx->OMGetRenderTargets(1, &keepR, &keepD);
+            int gw = std::max(16, (int)vpFull.Width / 4), gh = std::max(16, (int)vpFull.Height / 4);
+            MakeTarget(glowMask, gw, gh); MakeTarget(glowA, gw, gh); MakeTarget(glowB, gw, gh);
+            D3D11_VIEWPORT gv{ 0, 0, (float)gw, (float)gh, 0, 1 }; ctx->RSSetViewports(1, &gv);
+            const float clear[4] = { 0, 0, 0, 0 };
+            ctx->OMSetRenderTargets(1, glowMask.rtv.GetAddressOf(), nullptr); ctx->ClearRenderTargetView(glowMask.rtv.Get(), clear);
+            partState(); ctx->PSSetShader(psFlatPrev.Get(), nullptr, 0); ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->PSSetConstantBuffers(7, 1, cbFlat.GetAddressOf());
+            for (const CamPart& c : parts) {
+                if (c.glow <= 0) continue;
+                float col[4] = { ((c.glowColor >> 16) & 255) / 255.f * c.glow, ((c.glowColor >> 8) & 255) / 255.f * c.glow, (c.glowColor & 255) / 255.f * c.glow, 1 };
+                ctx->UpdateSubresource(cbFlat.Get(), 0, nullptr, col, 0, 0); drawParts(false, &c);
+            }
+            // blurred: across, down, and again (wider for a bigger glow)
+            ctx->IASetInputLayout(nullptr); ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); ctx->VSSetShader(vsBlit.Get(), nullptr, 0); ctx->PSSetShader(psGlowBlur.Get(), nullptr, 0);
+            ctx->PSSetSamplers(3, 1, sampClamp.GetAddressOf()); ctx->PSSetConstantBuffers(9, 1, cbGlow.GetAddressOf()); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
+            ID3D11ShaderResourceView* none = nullptr;
+            auto pass = [&](HudTarget& from, HudTarget& to, float dx, float dy) {
+                float d[4] = { dx * spread / gw, dy * spread / gh, 0, 0 }; ctx->UpdateSubresource(cbGlow.Get(), 0, nullptr, d, 0, 0);
+                ctx->PSSetShaderResources(12, 1, &none); ctx->OMSetRenderTargets(1, to.rtv.GetAddressOf(), nullptr);
+                ctx->PSSetShaderResources(12, 1, from.srv.GetAddressOf()); ctx->Draw(3, 0);
+            };
+            pass(glowMask, glowA, 1.5f, 0); pass(glowA, glowB, 0, 1.5f); pass(glowB, glowA, 3, 0); pass(glowA, glowB, 0, 3);
+            // laid onto the picture, around the parts
+            ctx->PSSetShaderResources(12, 1, &none); ctx->OMSetRenderTargets(1, &keepR, keepD); ctx->RSSetViewports(1, &vpFull);
+            float d[4] = { 0, 0, 2.2f, 0 }; ctx->UpdateSubresource(cbGlow.Get(), 0, nullptr, d, 0, 0);
+            ctx->PSSetShader(psGlowComp.Get(), nullptr, 0); ctx->OMSetBlendState(bsAdd.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOff.Get(), 0);
+            ID3D11ShaderResourceView* two[2] = { glowB.srv.Get(), glowMask.srv.Get() }; ctx->PSSetShaderResources(12, 2, two); ctx->Draw(3, 0);
+            ID3D11ShaderResourceView* none2[2] = {}; ctx->PSSetShaderResources(12, 2, none2);
+            if (keepR) keepR->Release(); if (keepD) keepD->Release();
+            ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0);
+            ID3D11Buffer* cbs2[3] = { cbFrame.Get(), cbChunk.Get(), cbPreview.Get() }; ctx->VSSetConstantBuffers(0, 3, cbs2); ctx->PSSetConstantBuffers(0, 3, cbs2);
+        };
         auto drawPlanes = [&] {   // the farthest first; they do not hide each other, but parts in front of them do
             std::vector<int> order; for (int i = 0; i < (int)hud.planes.size() && i < (int)hudTargets.size(); i++) if (hud.planes[i].visible && hudTargets[i].srv) order.push_back(i);
             std::sort(order.begin(), order.end(), [&](int a, int b) { return hud.planes[a].pos.z > hud.planes[b].pos.z; });
@@ -4492,12 +4533,12 @@ struct App {
         bool front = weapons.cannonInFront;
         if (editor || litParts) {   // colour: the lower layer first, then a fresh depth for the upper one
             partState();
-            if (!front) { drawParts(true); if (ds) ctx->ClearDepthStencilView(ds, D3D11_CLEAR_DEPTH, 1, 0); partState(); drawParts(false); drawPlanes(); }
-            else { drawParts(false); drawPlanes(); if (ds) ctx->ClearDepthStencilView(ds, D3D11_CLEAR_DEPTH, 1, 0); partState(); drawParts(true); }
+            if (!front) { drawParts(true); if (ds) ctx->ClearDepthStencilView(ds, D3D11_CLEAR_DEPTH, 1, 0); partState(); drawParts(false); drawGlow(); drawPlanes(); }
+            else { drawParts(false); drawGlow(); drawPlanes(); if (ds) ctx->ClearDepthStencilView(ds, D3D11_CLEAR_DEPTH, 1, 0); partState(); drawParts(true); }
         } else {        // Play mode (the parts are already lit in the picture): only depth, so the planes know what is in front of them
             partState(); drawParts(false);
             if (front) { D3D11_VIEWPORT z = vpFull; z.MinDepth = z.MaxDepth = 0; ctx->RSSetViewports(1, &z); drawParts(true); ctx->RSSetViewports(1, &vpFull); }   // the cannon hides the planes
-            drawPlanes();
+            drawGlow(); drawPlanes();
         }
         ID3D11ShaderResourceView* none[10] = {}; ctx->PSSetShaderResources(0, 10, none);
         ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());
@@ -4825,6 +4866,9 @@ struct App {
             { float s = (float)p.scale; Prop("Size"); if (ImGui::DragFloat("##qs", &s, 0.005f, 0.005f, 20, "x %.3f")) { p.scale = std::max(0.005f, s); ch = true; } }
             Prop("Mirrored"); ch |= ImGui::Checkbox("##qmi", &p.mirror);
             Prop("Sway amount"); ch |= ImGui::SliderFloat("##qsw", &p.sway, 0, 2, "%.2f");
+            Prop("Glow behind it"); ch |= ImGui::SliderFloat("##qgl", &p.glow, 0, 2, p.glow <= 0 ? "none" : "%.2f");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("A soft glow right behind the part: it shows around its outline, like a border of light.");
+            if (p.glow > 0) { Prop("  colour"); ch |= ColorU32("##qgc", p.glowColor); Prop("  spreads"); ch |= ImGui::SliderFloat("##qgs", &p.glowSize, 0.3f, 4, "x %.2f"); }
             Hint("Camera space: x right, y up, z forward, in blocks. The camera is at 0, 0, 0.");
         }
         if (ch) SaveHud();
@@ -5205,7 +5249,7 @@ struct App {
     static V3 Norm(V3 v) { double l = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z); return l > 1e-12 ? v * (1 / l) : V3{ 0, 0, 1 }; }
     V3 CannonDir(const CannonXf& x, V3 d) { return Norm(x.ax * d.x + x.ay * d.y + x.az * d.z); }
     // everything fixed to the camera: the HUD's 3D parts and the arm cannon
-    struct CamPart { std::string model; V3 base, ax, ay, az; const ModelGpu* gpu = nullptr; bool cannon = false; };
+    struct CamPart { std::string model; V3 base, ax, ay, az; const ModelGpu* gpu = nullptr; bool cannon = false; float glow = 0, glowSize = 1; uint32_t glowColor = 0; };
     std::vector<CamPart> CameraParts(const HudSway& sw, const WeaponPose& wp) {
         std::vector<CamPart> out;
         if (playMode && player.ball) return out;   // the morph ball: no helmet, no cannon
@@ -5215,7 +5259,7 @@ struct App {
             if (!ShownInVisor(p.visors)) continue;
             CamPart c; c.model = p.model; partAxes(p, c.ax, c.ay, c.az); float k = p.sway;
             c.ax = rotateDeg(c.ax, sw.yaw * k, sw.pitch * k, sw.roll * k); c.ay = rotateDeg(c.ay, sw.yaw * k, sw.pitch * k, sw.roll * k); c.az = rotateDeg(c.az, sw.yaw * k, sw.pitch * k, sw.roll * k);
-            c.base = sw.apply(p.pos, p.sway); out.push_back(c);
+            c.base = sw.apply(p.pos, p.sway); c.glow = p.glow; c.glowColor = p.glowColor; c.glowSize = p.glowSize; out.push_back(c);
         }
         if (const Beam* b = playMode && mapOpen ? nullptr : CurrentBeam()) {   // (no cannon on the map screen)
             CannonXf x; if (CannonPlacement(*b, sw, wp, x)) { CamPart c; c.model = b->model; c.base = x.base; c.ax = x.ax; c.ay = x.ay; c.az = x.az; c.gpu = cannonPosed ? &cannonGpu : nullptr; c.cannon = true; out.push_back(c); }
