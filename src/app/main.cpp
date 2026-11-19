@@ -2384,7 +2384,7 @@ struct App {
         if (hasClip) Hint("Copied: %d x %d x %d. Ctrl+V pastes it where you look.", clipboard.sx, clipboard.sy, clipboard.sz);
     }
     void ModelInspector() {
-        FrameRef f = ModelNamed(selModel); if (!f) { Hint("Pick a model in Assets > Models."); return; }
+        FrameRef f = ModelNamed(selModel); if (!f) { Hint("Pick a model in the Assets."); return; }
         const BlockModel* m = models.find(selModel); auto mm = meshModels.find(selModel);
         ImGui::SeparatorText("Model");
         float s = std::min(ImGui::GetContentRegionAvail().x, 140 * settings.uiScale); ImVec2 p = ImGui::GetCursorScreenPos();
@@ -4148,9 +4148,9 @@ struct App {
             }
             else if (toolSel == 2) {
                 ImGui::SeparatorText("Add");
-                const std::pair<const char*, const char*> add[] = { { "Light", "@light" }, { "Particles", "@emitter" }, { "Health", "@health" }, { "Key", "@key" }, { "Gem", "@gem" }, { "Checkpoint", "@checkpoint" }, { "Teleporter", "@teleporter" }, { "Trigger zone", "@zone" }, { "Map Station", "@map-station" }, { "Map camera", "@map-camera" }, { "Enemy", "@enemy-walker" } };
-                for (int a = 0; a < 11; a++) { if (a) Flow(ButtonW(add[a].first)); if (ImGui::Button(add[a].first)) StartPlacing(add[a].second); }
-                Hint("Click an object in the viewport to pick it. Pick a model in Assets > Models to place it."); if (!placing.empty()) Hint("Placing: %s. R turns it, Alt puts it off the grid, right click stops.", placing.c_str()); }
+                const std::pair<const char*, const char*> add[] = { { "Light", "@light" }, { "Particles", "@emitter" }, { "Health", "@health" }, { "Key", "@key" }, { "Gem", "@gem" }, { "Checkpoint", "@checkpoint" }, { "Teleporter", "@teleporter" }, { "Trigger zone", "@zone" }, { "Map Station", "@map-station" }, { "Map camera", "@map-camera" }, { "Enemy", "@enemy-walker" }, { "Save Station", "@save-station" } };
+                for (int a = 0; a < 12; a++) { if (a) Flow(ButtonW(add[a].first)); if (ImGui::Button(add[a].first)) StartPlacing(add[a].second); }
+                Hint("Click an object in the viewport to pick it. To place a model (props, doors: a model with an \"open\" animation), drag it from the Assets into the viewport, or right-click it there > Place it. A placed object's Kind (Inspector) makes it a door, a platform, a pickup ..."); if (!placing.empty()) Hint("Placing: %s. R turns it, Alt puts it off the grid, right click stops.", placing.c_str()); }
             else Hint("More tools are coming to this slot.");
             break;
         case Sel::Object: ObjectInspector(); break;
@@ -10927,6 +10927,26 @@ struct App {
         if (ImGui::MenuItem("Prefab from the picked object", nullptr, false, objPicked)) MakePrefab({ objects[selIndex] }, folder);
         if (!objPicked && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Pick an object in the world first.\nOr drag objects (or a whole folder) from the Outliner into a folder here.");
         if (ImGui::MenuItem("World...")) { newName = "New World"; newType = 0; wantPopup = "New world"; assetNextIn[AssetType::World] = folder; }
+        ImGui::Separator();
+        if (ImGui::BeginMenu("Object in the world")) {   // like Unity's GameObject menu: picked, then click in the viewport to put it down
+            const std::pair<const char*, const char*> objs[] = { { "Light", "@light" }, { "Particles", "@emitter" }, { "Energy (health)", "@health" }, { "Key", "@key" }, { "Gem (a collectible)", "@gem" },
+                { "Checkpoint", "@checkpoint" }, { "Teleporter", "@teleporter" }, { "Trigger zone", "@zone" }, { "Save Station", "@save-station" }, { "Map Station", "@map-station" }, { "Map camera", "@map-camera" } };
+            for (auto& o : objs) if (ImGui::MenuItem(o.first)) { StartPlacing(o.second); focusView = true; }
+            if (ImGui::BeginMenu("Enemy")) {
+                for (const EnemyType& t : enemies.types) if (ImGui::MenuItem(t.name.c_str())) { StartPlacingEnemy(t.id); focusView = true; }
+                if (enemies.types.empty()) ImGui::TextDisabled("Make an enemy type first");
+                ImGui::EndMenu();
+            }
+            if (ImGui::BeginMenu("Door")) {
+                bool any = false;
+                for (const std::string& m : AllModelNames()) if (!IsBuiltin(m) && ClipOf(m, 0) >= 0) { any = true; if (ImGui::MenuItem(m.c_str())) { StartPlacing(m); focusView = true; } }
+                if (!any) ImGui::TextDisabled("Import a door model with an \"open\" animation first");
+                ImGui::EndMenu();
+            }
+            ImGui::Separator();
+            ImGui::TextDisabled("Props, platforms: place any model, then set its Kind");
+            ImGui::EndMenu();
+        }
         ImGui::Separator();
         if (ImGui::MenuItem("Import files...")) {
             auto f = PickFiles("Everything the engine knows\0*.png;*.jpg;*.jpeg;*.gif;*.bmp;*.tif;*.tiff;*.wav;*.mp3;*.m4a;*.aac;*.wma;*.flac;*.mp4;*.wmv;*.avi;*.mov;*.mkv;*.m4v;*.webm;*.bbmodel;*.obj;*.gltf;*.glb;*.fbx\0All files\0*.*\0", "Import into the Assets");
