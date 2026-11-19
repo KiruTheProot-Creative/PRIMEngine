@@ -1490,6 +1490,15 @@ int main() {
         CHECK(std::fabs(placed[0].pos.x - (-1)) < 1e-6 && std::fabs(placed[0].pos.z - 2) < 1e-6 && placed[0].pos.y == 10 && placed[0].yaw == 90, "turned a quarter: places and ways turn (door at %.2f %.2f)", placed[0].pos.x, placed[0].pos.z);
         CHECK(std::fabs(placed[2].platform.points[1].z + 4) < 1e-6 && std::fabs(placed[2].platform.points[1].x) < 1e-6 && placed[1].size.x == 2 && placed[1].size.z == 6, "its paths turn, zones' boxes turn");
     }
+    {   // the game's own sounds (visors, scanning, menus, pickups, alerts)
+        PlayerSounds ps; SoundUse a; a.file = "visor.wav"; ps.visor.sounds.push_back(a); SoundUse b; b.file = "scan loop.wav"; b.volume = 0.5f; ps.scanLoop.sounds.push_back(b);
+        SoundUse c; c.file = "alarm.wav"; ps.lowHealth.sounds.push_back(c); ps.lowHealthAt = 25; ps.lowHealthEvery = 0.9f; ps.scanPitch = 0.8f;
+        savePlayerSounds("/tmp/prim_psounds.txt", ps); PlayerSounds pl; loadPlayerSounds("/tmp/prim_psounds.txt", pl);
+        CHECK(pl.visor.sounds.size() == 1 && pl.visor.sounds[0].file == "visor.wav" && pl.scanLoop.sounds[0].file == "scan loop.wav" && pl.scanLoop.sounds[0].volume == 0.5f && pl.lowHealth.sounds.size() == 1
+              && pl.lowHealthAt == 25 && pl.lowHealthEvery == 0.9f && pl.scanPitch == 0.8f && pl.menuOpen.sounds.empty(), "the game's own sounds save and load");
+        std::set<std::string> keys; for (auto& g : gameSoundSlots()) keys.insert(g.key);
+        CHECK(keys.size() == gameSoundSlots().size() && !keys.count("step") && !keys.count("roll"), "every game sound has its own key (%d)", (int)keys.size());
+    }
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
     return fails ? 1 : 0;
 }

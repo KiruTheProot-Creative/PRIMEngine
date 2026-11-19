@@ -180,6 +180,15 @@ Textures, models and blocks (Assets panel) and objects (Outliner) can go into fo
 
 Also: **speed per animation** (3D viewer: "Speed of ...", and next to each cannon animation in the Weapons tab), everywhere that animation plays; and the **charge** now grows an energy orb at the muzzle with particles sucked into it (particles: "Sucked in").
 
+## The game's own sounds (Player > Sounds)
+
+Besides steps, jumps, the morph ball and bombs, the Sounds tab has the sounds of the helmet and the game around you (each can have several: a random one plays):
+
+- **Visors and scanning:** switching visors (one for all, or each visor its own), onto something scannable, scanning (a loop that rises as it fills), scan done, a new entry, the scan text coming up and going away.
+- **Menu and map:** the pause menu opening / closing, the map opening / closing. (Picking and using buttons in the menus: the game's interface sounds, Screens > Sound & timing.)
+- **Weapons:** another beam, another missile, firing with none left (missiles, power bombs), locking on, letting go.
+- **Pickups and alerts:** energy, missiles / bombs picked up (from enemies too), an item (upgrades, tanks), the game saved, a message, getting hurt, the low-energy alarm (below the energy you set, every so many seconds), dying.
+
 ## The Assets panel (like Unity's Project window)
 
 Everything the game is made of lives in **one folder structure you make yourself**: blocks, textures, models, sounds and music, pictures, videos, enemy types, bosses, screens, scan entries, worlds and prefabs, side by side (a `Bosses/Kraid` folder can hold his model, roar, music, enemy type and boss). The folders are the editor's own (`assets.txt`): the files stay where the engine keeps them, so sorting never breaks anything. New things you make or import elsewhere start in a folder of their kind; things you make in the panel go into the folder that is open. (Older projects: the old block / texture / model folders are carried over.)

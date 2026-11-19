@@ -56,7 +56,19 @@ struct PlayerSounds {
     float stepEvery = 1.7f;                             // blocks walked per step sound
     float landQuiet = 4, landLoud = 20;                 // falling speeds: quiet landing .. full volume
     float landVolume(float fallSpeed) const;            // 0 below landQuiet, rises to 1 at landLoud
+    // the game's own sounds while playing: the helmet, the menus, pickups, alerts
+    SoundSet visor, visorCombat, visorScan, visorThermal, visorXRay;   // switching visors (a visor's own, else the one for all)
+    SoundSet scanTarget, scanLoop, scanDone, scanNew, scanOpen, scanClose;   // Scan Visor: onto something scannable, scanning (a loop, rising), done, a new entry, its text up / away
+    SoundSet menuOpen, menuClose, mapOpen, mapClose;    // the pause menu, the map
+    SoundSet beamSwitch, missileSwitch, empty, lockOn, lockOff;   // another beam / missile, firing with none left, lock-on onto / off
+    SoundSet pickHealth, pickAmmo, itemGet, saved, message;       // energy / ammo picked up, an item (an upgrade), the game saved, a message
+    SoundSet hurt, lowHealth, death;                    // getting hurt, the low-energy alarm (again and again), dying
+    float scanPitch = 0.5f;                             // the scanning loop goes this much higher as it fills
+    float lowHealthAt = 30, lowHealthEvery = 1.2f;      // the alarm: below this much energy, every so many seconds
 };
+// the game's own sounds (above): their keys in the file, for the editor and saving
+struct GameSoundSlot { const char* key; const char* label; SoundSet PlayerSounds::* set; const char* group; };
+const std::vector<GameSoundSlot>& gameSoundSlots();
 bool savePlayerSounds(const std::string& path, const PlayerSounds& p);
 bool loadPlayerSounds(const std::string& path, PlayerSounds& p);
 std::string soundUseText(const SoundUse& s);            // one line (for saving with other things)

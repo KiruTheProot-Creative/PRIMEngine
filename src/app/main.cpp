@@ -732,7 +732,7 @@ struct App {
             else if (mapOpen) CloseMap();
             else if (scanOpen) CloseScan();
             else if (savePrompt) CloseSavePrompt();
-            else if (playMode) { paused = !paused; Capture(!paused); }
+            else if (playMode) { paused = !paused; Capture(!paused); GameSnd(paused ? &PlayerSounds::menuOpen : &PlayerSounds::menuClose); }
             else if (captured) Capture(false);            // editor: the mouse goes back to the panels
             else if (editorOpen && !EditorView()) editorOpen = false;
             return;
@@ -851,7 +851,7 @@ struct App {
         if (playMode && !paused) UpdateDoors(std::min(dt, 0.05)); else if (!playMode && !doorRt.empty()) { doorRt.clear(); doorGpu.clear(); shots.clear(); RebuildSolids(); }
         if (playMode && !paused) {   // health, lava, falling out of the world, respawning
             PlayState::Event e = play.tick(*world, player, playRules, playSpawn, playYaw, std::min(dt, 0.05));
-            if (e == PlayState::Died) { Toast(std::string("You ") + play.cause); Signal(When::Dies, ""); ResetBossFights(); }
+            if (e == PlayState::Died) { Toast(std::string("You ") + play.cause); GameSnd(&PlayerSounds::death, SND_MOVEMENT); StopScanLoop(); Signal(When::Dies, ""); ResetBossFights(); }
         }
         mouseDX = mouseDY = 0;
         weather.update(dt, player.feet);
@@ -1353,7 +1353,7 @@ struct App {
     static bool Overlaps(const Box3& b, V3 f, double hw, double H, double grow) {
         return f.x + hw > b.lo.x - grow && f.x - hw < b.hi.x + grow && f.z + hw > b.lo.z - grow && f.z - hw < b.hi.z + grow && f.y + H > b.lo.y - grow && f.y < b.hi.y + grow;
     }
-    void Message(const std::string& t) { bigMsg = t; bigMsgT = 3.5f; }
+    void Message(const std::string& t) { bigMsg = t; bigMsgT = 3.5f; if (!t.empty()) GameSnd(&PlayerSounds::message); }
     // ================================================================== event cards (G3): "when ... only if ... do ..."
     std::vector<EventCard> events; EventRunner evRun;
     std::set<uint32_t> evHidden, evOff, evLocked, evHeld, evKick, touchNow; bool evSolids = false;
@@ -1401,7 +1401,7 @@ struct App {
             ParticleSettings p = particlePreset(d.text.empty() ? "Sparks" : d.text); p.burst = std::max(p.burst, 30); SpawnFx(p, at, { 0, 1, 0 }); }); break;
         case Do::Teleport: { std::string t = d.target; pending = [this, t] { TravelTo("", t); }; break; }
         case Do::Heal: play.health = std::min(playRules.maxHealth, play.health + d.number); Toast("+" + std::to_string((int)d.number) + " health"); break;
-        case Do::Hurt: if (!play.dead()) { play.health -= d.number * playRules.damageTaken; play.hurtFlash = 0.4; if (play.health <= 0) { play.health = 0; play.cause = "got hurt too much"; } } break;
+        case Do::Hurt: if (!play.dead()) { play.health -= d.number * playRules.damageTaken; play.hurtFlash = 0.4; GameSnd(&PlayerSounds::hurt, SND_MOVEMENT); if (play.health <= 0) { play.health = 0; play.cause = "got hurt too much"; } } break;
         case Do::Kill: if (!play.dead()) { play.health = 0; play.cause = "were killed"; } break;
         case Do::Checkpoint: playSpawn = player.feet; playYaw = player.yaw; Toast("Checkpoint"); break;
         case Do::GiveKey: if (!nm.empty()) { inv.keys.insert(nm); Toast("You got the " + nm); } break;
@@ -1436,7 +1436,7 @@ struct App {
             if (!Overlaps(b, player.feet, player.halfW, player.height, o.kind == ObjKind::Trigger ? 0.0 : 0.15)) continue;
             now.insert(o.id); bool entered = !insideNow.count(o.id);
             switch (o.kind) {
-            case ObjKind::Pickup: { std::string said; if (!play.dead() && inv.collect(o, play.health, playRules.maxHealth, said)) { Toast(said); if (o.pickup.type != PickupType::Health) ItemPicked(o.pickup.name); Signal(When::Pickup, o.name, o.pickup.type == PickupType::Health ? "Health" : o.pickup.name); } break; }
+            case ObjKind::Pickup: { std::string said; if (!play.dead() && inv.collect(o, play.health, playRules.maxHealth, said)) { Toast(said); GameSnd(o.pickup.type == PickupType::Health ? &PlayerSounds::pickHealth : &PlayerSounds::itemGet, SND_WORLD); if (o.pickup.type != PickupType::Health) ItemPicked(o.pickup.name); Signal(When::Pickup, o.name, o.pickup.type == PickupType::Health ? "Health" : o.pickup.name); } break; }
             case ObjKind::Checkpoint:
                 if (entered) { playSpawn = { o.pos.x, b.hi.y + 0.01, o.pos.z }; playYaw = player.yaw; Toast("Checkpoint"); }
                 break;
@@ -3477,7 +3477,7 @@ struct App {
         if (!playStartWorld.empty() && playStartWorld != CurrentWorld()) {   // went through a teleporter: back to the world you were editing
             travelling = true; SaveWorld(); OpenWorld(playStartWorld); travelling = false; editCam = startEditCam;
         }
-        RestoreBroken(); bombsOut.clear(); flashes.clear(); StopRoll();   // broken blocks come back
+        RestoreBroken(); bombsOut.clear(); flashes.clear(); StopRoll(); StopScanLoop();   // broken blocks come back
         ClearSpawned(); bossRt.clear(); bossPose.clear(); bossSealed.clear(); bossShown = 0; camShake = 0; countdownT = -1;
         playMode = false; paused = false; player = editCam; player.ball = false; Capture(false); captureNext = false; platRun.clear();
         evHidden.clear(); evOff.clear(); evLocked.clear(); evHeld.clear(); evKick.clear(); evFlash.clear(); RebuildSolids();
@@ -5154,6 +5154,7 @@ struct App {
     void SwitchMissile(int to, bool quiet = false) {
         if (to < 0 || to >= (int)weapons.missileTypes.size()) return;
         if (!OwnsMissile(weapons.missileTypes[to])) { if (!quiet) Toast("You have not found the " + weapons.missileTypes[to].name + " yet"); return; }
+        if (to != weapState.missile && !quiet) GameSnd(&PlayerSounds::missileSwitch, SND_WEAPONS);
         weapState.missile = to; if (!quiet) Toast(weapons.missileTypes[to].name);
     }
     void NextMissile() {   // Q: the next missile kind you have
@@ -5180,7 +5181,7 @@ struct App {
             int left = inv.counts.count(counter) ? inv.counts[counter] : 0;
             if (!OwnsMissile(*mt)) Toast("You have not found the " + mt->name + " yet");
             else if (weapState.fire(*b, mt, AnimLen(*b, Beam::MissileShot), left)) { inv.counts[counter] = left; StartTimeline(weapState.current, Beam::MissileShot); firedPending += mt->cost > 1 ? 3.5f : 2.5f; }
-            else if (left < std::max(1, mt->cost)) Toast(left <= 0 ? std::string("No missiles left") : "Not enough missiles (a " + mt->name + " needs " + std::to_string(mt->cost) + ")");
+            else if (left < std::max(1, mt->cost)) { Toast(left <= 0 ? std::string("No missiles left") : "Not enough missiles (a " + mt->name + " needs " + std::to_string(mt->cost) + ")"); GameSnd(&PlayerSounds::empty, SND_WEAPONS); }
         }
         {   // the beam: a press fires, holding charges (if the beam can), letting go when full fires the charged shot
             Beam use = *b; use.charge = b->charge && itemFx.canCharge;   // the Charge Beam item (if it is in the game)
@@ -5215,7 +5216,7 @@ struct App {
         if (!OwnsBeam(weapons.beams[to])) { Toast("You have not found the " + weapons.beams[to].name + " yet"); return; }
         if (playMode && weapons.switchMode == 1) return;   // no switching: always the best one
         StopChargeTimeline(); chargeTlOn = false;
-        weapState.current = to; weapState.charging = false; weapState.charge = 0; cannonClip = -1; firedPending += 0.4f; Toast(weapons.beams[to].name);
+        weapState.current = to; weapState.charging = false; weapState.charge = 0; cannonClip = -1; firedPending += 0.4f; Toast(weapons.beams[to].name); GameSnd(&PlayerSounds::beamSwitch, SND_WEAPONS);
     }
 
     // ================================================================== visors (V): Combat, Scan, Thermal, X-Ray
@@ -5249,6 +5250,8 @@ struct App {
     void SetVisor(int v) {
         if (v == visor || v < 0 || v >= VISORS) return;
         visor = v; visorFlash = visors.switchFlash; scanProgress = 0; scanTargetId = 0; Toast(visorName((VisorKind)v));
+        SoundSet PlayerSounds::* own[] = { &PlayerSounds::visorCombat, &PlayerSounds::visorScan, &PlayerSounds::visorThermal, &PlayerSounds::visorXRay };
+        GameSnd(v < 4 && !(playerSounds.*own[v]).sounds.empty() ? own[v] : &PlayerSounds::visor);
     }
     void NextVisor() {
         for (int k = 1; k < VISORS; k++) { int v = (visor + k) % VISORS; if (VisorOwned(v)) { SetVisor(v); return; } }
@@ -5289,7 +5292,7 @@ struct App {
         const ScanSeen* best = nullptr;   // the one nearest the crosshair (within its own size, or a few degrees)
         for (const ScanSeen& s : scanCands) { double reach = std::max(0.09, std::atan2(s.radius, s.dist)); if (s.ang <= reach && (!best || s.ang < best->ang)) best = &s; }
         uint32_t id = best ? best->id : 0;
-        if (id != scanTargetId) { scanTargetId = id; scanProgress = 0; }
+        if (id != scanTargetId) { scanTargetId = id; scanProgress = 0; if (id) GameSnd(&PlayerSounds::scanTarget); }
         bool hold = (Playing() && ActDown(Act::LockOn)) || holdScan;
         if (!best || !hold) { scanProgress = 0; return; }
         const WorldObject* o = nullptr; for (const WorldObject& q : objects) if (q.id == id) { o = &q; break; }
@@ -5299,13 +5302,14 @@ struct App {
         scanProgress += (float)dt / std::max(0.05f, time);
         if (scanProgress >= 1) {   // done: into the scan index (every object with this entry counts as scanned), and its text on a pane
             ScanEntry e; e.id = def->id; e.name = def->name; e.category = def->category.empty() ? "Research" : def->category; e.text = def->text; e.model = o->model; e.important = def->important;
-            bool isNew = scanLog.add(e); scanShown = e; scanProgress = 0;
+            bool isNew = scanLog.add(e); scanShown = e; scanProgress = 0; StopScanLoop();
+            GameSnd(isNew && !playerSounds.scanNew.sounds.empty() ? &PlayerSounds::scanNew : &PlayerSounds::scanDone);
             Log("scanned: " + e.name + " (ID " + std::to_string(e.id) + (isNew ? ", new)" : ")"));
             OpenScan();
         }
     }
-    void OpenScan() { scanOpen = true; paused = true; Capture(false); menuSlideT = 0; menuSlideDir = 0; menuScrollWho[0] = -1; }   // (its text starts at the top)
-    void CloseScan() { if (!scanOpen) return; scanOpen = false; paused = false; Capture(true); }
+    void OpenScan() { scanOpen = true; paused = true; Capture(false); menuSlideT = 0; menuSlideDir = 0; menuScrollWho[0] = -1; GameSnd(&PlayerSounds::scanOpen); }   // (its text starts at the top)
+    void CloseScan() { if (!scanOpen) return; scanOpen = false; paused = false; Capture(true); GameSnd(&PlayerSounds::scanClose); }
     void ScanTextScroll(int pane) {   // the wheel, W / S or the arrow keys scroll the texts on a pane
         ImGuiIO& io = ImGui::GetIO(); float d = -io.MouseWheel * 70;
         if (ImGui::IsKeyDown(ImGuiKey_DownArrow) || ImGui::IsKeyDown(ImGuiKey_S)) d += io.DeltaTime * 520;
@@ -5411,7 +5415,7 @@ struct App {
         menuPage = pg; menuSel = -2;
     }
     void MenuDo(const MenuHit& h) {
-        if (h.target == "save:yes") { WriteSave(); CloseSavePrompt(); return; }   // the Save Station's question
+        if (h.target == "save:yes") { if (WriteSave()) GameSnd(&PlayerSounds::saved); CloseSavePrompt(); return; }   // the Save Station's question
         if (h.target == "save:no") { CloseSavePrompt(); return; }
         switch (h.kind) {
         case 1: GoToPage(h.arg); return;
@@ -5421,7 +5425,7 @@ struct App {
         default: break;
         }
         switch (h.act) {
-        case MenuAct::Resume: paused = false; Capture(true); break;
+        case MenuAct::Resume: paused = false; Capture(true); GameSnd(&PlayerSounds::menuClose); break;
         case MenuAct::Restart: play.start(player, playRules, playSpawn, playYaw); paused = false; Capture(true); break;
         case MenuAct::Map: OpenMap(); break;
         case MenuAct::Settings: { int op = menu.optionsPage(); if (op >= 0) GoToPage(op); else showSettings = true; break; }
@@ -7709,7 +7713,7 @@ struct App {
     static bool BoxesTouch(const Box3& a, const Box3& b) { return a.lo.x < b.hi.x && a.hi.x > b.lo.x && a.lo.y < b.hi.y && a.hi.y > b.lo.y && a.lo.z < b.hi.z && a.hi.z > b.lo.z; }
     void HurtPlayer(float dmg, V3 from, const std::string& by) {
         if (!playMode || play.dead() || playerInvuln > 0 || dmg <= 0) return;
-        play.health -= dmg * playRules.damageTaken; play.hurtFlash = 0.4; playerInvuln = 0.8f;
+        play.health -= dmg * playRules.damageTaken; play.hurtFlash = 0.4; playerInvuln = 0.8f; if (play.health > 0) GameSnd(&PlayerSounds::hurt, SND_MOVEMENT);
         V3 k = player.feet - from; k.y = 0; double l = std::sqrt(k.x * k.x + k.z * k.z); if (l > 1e-3) { player.vel.x += k.x / l * 6; player.vel.z += k.z / l * 6; } player.vel.y = std::max(player.vel.y, 4.0); player.onGround = false;
         if (play.health <= 0) { play.health = 0; static std::string why; why = "defeated by " + by; play.cause = why.c_str(); }
     }
@@ -7965,10 +7969,10 @@ struct App {
             d.life -= (float)dt;
             Box3 db{ d.pos - V3{ 0.35, 0.35, 0.35 }, d.pos + V3{ 0.35, 0.35, 0.35 } };
             if (d.life > 0 && BoxesTouch(db, youBox) && !play.dead()) {
-                if (d.what == "Energy") { if (play.health >= playRules.maxHealth) continue; play.health = std::min(playRules.maxHealth, play.health + (float)d.amount); Toast("+" + std::to_string(d.amount) + " energy"); }
+                if (d.what == "Energy") { if (play.health >= playRules.maxHealth) continue; play.health = std::min(playRules.maxHealth, play.health + (float)d.amount); Toast("+" + std::to_string(d.amount) + " energy"); GameSnd(&PlayerSounds::pickHealth, SND_WORLD); }
                 else {
                     int& c = inv.counts[d.what]; int most = d.what == weapons.missileCounter ? MissileMax() : d.what == items.powerBombCounter ? PowerBombMax() : 1 << 20;
-                    if (c >= most) continue; c = std::min(most, c + d.amount); Toast("+" + std::to_string(d.amount) + " " + d.what);
+                    if (c >= most) continue; c = std::min(most, c + d.amount); Toast("+" + std::to_string(d.amount) + " " + d.what); GameSnd(&PlayerSounds::pickAmmo, SND_WORLD);
                 }
                 d.life = 0;
             }
@@ -8756,10 +8760,10 @@ struct App {
     }
     void OpenMap() {
         if (!playMode) return;
-        mapOpen = true; paused = true; Capture(false);
+        mapOpen = true; paused = true; Capture(false); GameSnd(&PlayerSounds::mapOpen);
         mapCenter = player.feet + V3{ 0, 1, 0 }; mapYaw = (float)(player.yaw + 3.14159265358979); mapPitch = 0.75f; mapDist = 34; mapOpenT = MapClock();
     }
-    void CloseMap() { if (!mapOpen) return; mapOpen = false; paused = false; Capture(true); }
+    void CloseMap() { if (!mapOpen) return; mapOpen = false; paused = false; Capture(true); GameSnd(&PlayerSounds::mapClose); }
     void BuildMapChunk(I3 cp, const SeenMap& m) {
         std::vector<MapQuad> qs = mapPanels(*world, m, cp);
         MapGpuChunk& g = mapGpu[cp]; g.vb.Reset(); g.count = g.mine = 0;
@@ -9435,6 +9439,23 @@ struct App {
             ImGui::SeparatorText("Bomb laid"); ch |= SoundSetEdit("bomb", playerSounds.bomb);
             ImGui::SeparatorText("Bomb goes off"); ch |= SoundSetEdit("boom", playerSounds.boom);
             ImGui::SeparatorText("A block breaks"); ch |= SoundSetEdit("crumble", playerSounds.crumble);
+            {   // the game's own sounds: the helmet, the menus, pickups, alerts
+                const char* group = "";
+                for (const GameSoundSlot& g : gameSoundSlots()) {
+                    if (std::strcmp(group, g.group) != 0) {
+                        group = g.group; ImGui::Spacing();
+                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.85f, 1, 1)); ImGui::SeparatorText(group); ImGui::PopStyleColor();
+                    }
+                    ImGui::TextDisabled("%s", g.label); ch |= SoundSetEdit(g.key, playerSounds.*g.set);
+                    if (g.set == &PlayerSounds::scanLoop) { Prop("Higher as it fills"); ch |= ImGui::SliderFloat("##scp", &playerSounds.scanPitch, 0, 2, playerSounds.scanPitch <= 0 ? "no" : "%.2f"); }
+                    if (g.set == &PlayerSounds::lowHealth) {
+                        Prop("Below"); ch |= ImGui::DragFloat("##lha", &playerSounds.lowHealthAt, 0.5f, 0, 1000, "%.0f energy");
+                        Prop("Every"); ch |= ImGui::SliderFloat("##lhe", &playerSounds.lowHealthEvery, 0.2f, 5, "%.1f s");
+                    }
+                    if (g.set == &PlayerSounds::visor) Hint("A visor's own sound (below) plays instead, if it has one.");
+                }
+                Hint("Menus: picking and using buttons in the pause menu are the game's interface sounds (Screens > Sound & timing). Each sound here can have several: a random one plays.");
+            }
             { float r[2] = { playerSounds.landQuiet, playerSounds.landLoud }; Prop("Quiet .. loud at"); if (ImGui::DragFloat2("##ll", r, 0.1f, 0, 80, "%.1f blocks/s")) { playerSounds.landQuiet = r[0]; playerSounds.landLoud = std::max(r[0] + 0.5f, r[1]); ch = true; } }
             Hint("Each can have as many sounds as you like: a random one plays each time, never the same twice in a row (great for steps). Rolled up, the steps and jumps go quiet: the rolling loop plays instead, louder (and higher) the faster you roll, and silent in the air. Landing gets louder the faster you fall: silent below the first speed, full volume at the second. The numbers under each sound: volume, pitch, random pitch; then the cut (start into the sound, how long).");
             ImGui::TableNextColumn();
@@ -9450,6 +9471,22 @@ struct App {
             ImGui::EndTable();
         }
         if (ch) SavePlayerSounds();
+    }
+    // the game's own sounds (Player editor > Sounds): visors, scanning, the menus, pickups, alerts
+    void GameSnd(SoundSet PlayerSounds::* which, int cat = SND_MENUS, float vol = 1) { if (playMode) PlaySoundIn(cat, playerSounds.*which, vol); }
+    IXAudio2SourceVoice* scanVoice = nullptr; SoundUse scanUse; float lowHealthT = 0;
+    static constexpr int TAG_SCAN = 31;
+    void StopScanLoop() { if (scanVoice) StopSounds(TAG_SCAN); scanVoice = nullptr; }
+    void UpdateGameSounds(double dt) {   // the scanning loop (rising as it fills), the low-energy alarm
+        bool scanning = playMode && !paused && visor == 1 && scanProgress > 0 && scanTargetId;
+        if (!scanning) StopScanLoop();
+        else {
+            if (!scanVoice) { const SoundUse* u = playerSounds.scanLoop.pick(soundSeed); if (u) { scanUse = *u; scanVoice = PlaySoundIn(SND_MENUS, scanUse, 1, nullptr, TAG_SCAN, true); } }
+            if (scanVoice) scanVoice->SetFrequencyRatio(std::clamp(scanUse.pitch * (1 + playerSounds.scanPitch * std::clamp(scanProgress, 0.f, 1.f)), 0.1f, 4.f));
+        }
+        if (playMode && !paused && !play.dead() && play.health > 0 && play.health < playerSounds.lowHealthAt && !playerSounds.lowHealth.sounds.empty()) {
+            lowHealthT -= (float)dt; if (lowHealthT <= 0) { GameSnd(&PlayerSounds::lowHealth); lowHealthT = std::max(0.2f, playerSounds.lowHealthEvery); }
+        } else lowHealthT = 0;
     }
     // Play mode: steps, jumping, landing
     bool scrollToRoll = false;
@@ -9470,6 +9507,7 @@ struct App {
     }
     void UpdatePlayerSounds(double dt, bool landed, float fallSpeed, bool jumped) {
         UpdateRoll(dt);
+        UpdateGameSounds(dt);
         if (!playMode) return;
         if (player.ball) {   // rolled up: no steps, no jumps; its own landing (bomb jumps land here too)
             stepDist = 0;
@@ -9522,7 +9560,7 @@ struct App {
         if (!can) lockToggled = false, want = false;
         lockHint = can && visor != 1 && !lockId ? PickLock() : 0;
         lockHeld = want;
-        if (!want || (visor == 1 && !L.scanLock)) { lockId = 0; lockLost = 0; return false; }
+        if (!want || (visor == 1 && !L.scanLock)) { if (lockId && visor != 1) GameSnd(&PlayerSounds::lockOff, SND_WEAPONS); lockId = 0; lockLost = 0; return false; }
         if (lockId) {   // still there, in range, in sight?
             V3 c; double rad = 0.5;
             if (!LockPoint(lockId, c, &rad) || length(c - player.eye()) > L.range * 1.3) lockId = 0;
@@ -9532,7 +9570,7 @@ struct App {
         }
         if (!lockId) {
             uint32_t pick = visor == 1 ? scanTargetId : PickLock();
-            if (pick) { lockId = pick; lockLost = 0; lockAge = 0; }
+            if (pick) { lockId = pick; lockLost = 0; lockAge = 0; if (visor != 1) GameSnd(&PlayerSounds::lockOn, SND_WEAPONS); }
             if (!lockId && mode == 1 && visor != 1) lockToggled = false;   // (a press with nothing to lock onto does not stay on)
         }
         lockAge += (float)dt;
@@ -9815,7 +9853,7 @@ struct App {
     void DropPowerBomb() {   // rolled up, F (the missile key): a Power Bomb (one at a time)
         if (!itemFx.powerBombs) return;
         for (const Bomb& b : bombsOut) if (b.power) return;
-        int& n = inv.counts[items.powerBombCounter]; if (n <= 0) { Toast("No " + items.powerBombCounter + " left"); return; }
+        int& n = inv.counts[items.powerBombCounter]; if (n <= 0) { Toast("No " + items.powerBombCounter + " left"); GameSnd(&PlayerSounds::empty, SND_WEAPONS); return; }
         n--;
         ParticleSettings p = particlePreset("Charge"); p.color0 = 0xFFFFFF; p.color1 = 0xFFF0A0; p.areaSize = { 0.1, 0.1, 0.1 }; p.rate = 60; p.size1 = 0.09f;
         Bomb b{ BallCentre(), itemFx.pbFuse, ParticleEmitter(p, (uint32_t)(GetTickCount() + 99)) }; b.power = true; bombsOut.push_back(b);

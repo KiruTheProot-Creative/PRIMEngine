@@ -102,12 +102,33 @@ bool soundUseFrom(const std::string& text, SoundUse& s) {
     if (!(l >> f >> r.volume >> r.pitch >> r.pitchVar >> r.trimStart >> r.length)) return false;
     r.file = unesc(f); s = r; return true;
 }
+const std::vector<GameSoundSlot>& gameSoundSlots() {
+    static const std::vector<GameSoundSlot> v = {
+        { "visor", "Switching visors (all)", &PlayerSounds::visor, "Visors and scanning" }, { "visor_combat", "  to the Combat Visor", &PlayerSounds::visorCombat, "Visors and scanning" },
+        { "visor_scan", "  to the Scan Visor", &PlayerSounds::visorScan, "Visors and scanning" }, { "visor_thermal", "  to the Thermal Visor", &PlayerSounds::visorThermal, "Visors and scanning" },
+        { "visor_xray", "  to the X-Ray Visor", &PlayerSounds::visorXRay, "Visors and scanning" },
+        { "scan_target", "Onto something to scan", &PlayerSounds::scanTarget, "Visors and scanning" }, { "scan_loop", "Scanning (a loop)", &PlayerSounds::scanLoop, "Visors and scanning" },
+        { "scan_done", "Scan done", &PlayerSounds::scanDone, "Visors and scanning" }, { "scan_new", "A new scan entry", &PlayerSounds::scanNew, "Visors and scanning" },
+        { "scan_open", "Scan text comes up", &PlayerSounds::scanOpen, "Visors and scanning" }, { "scan_close", "Scan text goes away", &PlayerSounds::scanClose, "Visors and scanning" },
+        { "menu_open", "Pause menu opens", &PlayerSounds::menuOpen, "Menu and map" }, { "menu_close", "Pause menu closes", &PlayerSounds::menuClose, "Menu and map" },
+        { "map_open", "Map opens", &PlayerSounds::mapOpen, "Menu and map" }, { "map_close", "Map closes", &PlayerSounds::mapClose, "Menu and map" },
+        { "beam_switch", "Another beam", &PlayerSounds::beamSwitch, "Weapons" }, { "missile_switch", "Another missile", &PlayerSounds::missileSwitch, "Weapons" },
+        { "empty", "Firing with none left", &PlayerSounds::empty, "Weapons" }, { "lock_on", "Locking on", &PlayerSounds::lockOn, "Weapons" }, { "lock_off", "Letting go", &PlayerSounds::lockOff, "Weapons" },
+        { "pick_health", "Energy picked up", &PlayerSounds::pickHealth, "Pickups and alerts" }, { "pick_ammo", "Missiles / bombs picked up", &PlayerSounds::pickAmmo, "Pickups and alerts" },
+        { "item_get", "An item (upgrade, tank)", &PlayerSounds::itemGet, "Pickups and alerts" }, { "saved", "The game is saved", &PlayerSounds::saved, "Pickups and alerts" },
+        { "message", "A message", &PlayerSounds::message, "Pickups and alerts" },
+        { "hurt", "Getting hurt", &PlayerSounds::hurt, "Pickups and alerts" }, { "low_health", "Low energy (an alarm)", &PlayerSounds::lowHealth, "Pickups and alerts" }, { "death", "Dying", &PlayerSounds::death, "Pickups and alerts" },
+    };
+    return v;
+}
 bool savePlayerSounds(const std::string& path, const PlayerSounds& p) {
     std::ofstream f(path); if (!f) return false;
     f << "sounds 1";
     auto put = [&](const char* k, const SoundSet& s) { for (const SoundUse& u : s.sounds) if (!u.empty()) f << "\n" << k << " " << soundUseText(u); };   // one line per sound
     put("step", p.step); put("jump", p.jump); put("land", p.land); put("morph", p.morph); put("bomb", p.bomb); put("boom", p.boom); put("crumble", p.crumble);
     put("roll", p.roll); put("ball_land", p.ballLand); f << "\nroll_pitch " << p.rollPitch;
+    for (const GameSoundSlot& g : gameSoundSlots()) put(g.key, p.*g.set);
+    f << "\nscan_pitch " << p.scanPitch << "\nlow_health_at " << p.lowHealthAt << " " << p.lowHealthEvery;
     f << "\nevery " << p.stepEvery << "\nlanding " << p.landQuiet << " " << p.landLoud << "\n";
     return (bool)f;
 }
@@ -117,7 +138,10 @@ bool loadPlayerSounds(const std::string& path, PlayerSounds& p) {
     while (std::getline(f, line)) {
         std::istringstream l(line); std::string k; l >> k; std::string rest; std::getline(l, rest);
         SoundSet* set = k == "step" ? &p.step : k == "jump" ? &p.jump : k == "land" ? &p.land : k == "morph" ? &p.morph : k == "bomb" ? &p.bomb : k == "boom" ? &p.boom : k == "crumble" ? &p.crumble : k == "roll" ? &p.roll : k == "ball_land" ? &p.ballLand : nullptr;
+        if (!set) for (const GameSoundSlot& g : gameSoundSlots()) if (k == g.key) { set = &(p.*g.set); break; }
         if (set) { SoundUse u; if (soundUseFrom(rest, u) && !u.empty()) set->sounds.push_back(u); }
+        else if (k == "scan_pitch") { std::istringstream r(rest); r >> p.scanPitch; }
+        else if (k == "low_health_at") { std::istringstream r(rest); r >> p.lowHealthAt >> p.lowHealthEvery; }
         else if (k == "roll_pitch") { std::istringstream r(rest); r >> p.rollPitch; }
         else if (k == "every") { std::istringstream r(rest); r >> p.stepEvery; }
         else if (k == "landing") { std::istringstream r(rest); r >> p.landQuiet >> p.landLoud; }
