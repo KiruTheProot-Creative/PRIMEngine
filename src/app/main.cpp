@@ -672,7 +672,7 @@ struct App {
         } else { io.ConfigFlags &= ~ImGuiConfigFlags_NoMouse; ClipCursor(nullptr); }
         mouseDX = mouseDY = 0;
     }
-    bool Playing() const { return screen == Screen::Game && captured && !paused && !inventory && !shapeMenu && !brushMenu; }
+    bool Playing() const { return screen == Screen::Game && captured && !paused && !inventory && !shapeMenu && !brushMenu && !saveAnimId; }   // (saving: the station's animation first)
     static bool Down(int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; }
     bool ActDown(Act a) const { return settings.keys.down(a, &App::Down); }   // the player's keys (Options > Controls)
     bool actPrev[(int)Act::COUNT] = {}; ULONGLONG keysQuiet = 0;
@@ -1884,7 +1884,8 @@ struct App {
     }
     // the door's place in Play mode: animations, forcefield, collision
     void UpdateDoors(double dt) {
-        if (!playMode) { doorRt.clear(); doorGpu.clear(); doorBlend.clear(); shots.clear(); return; }
+        if (!playMode) { doorRt.clear(); doorGpu.clear(); doorBlend.clear(); shots.clear(); saveAnimId = 0; return; }
+        UpdateSaveAnim(dt);
         bool changed = false;
         for (WorldObject& o : objects) {
             if (o.kind != ObjKind::Door) continue;
@@ -2336,6 +2337,20 @@ struct App {
             Hint("Stand on it and press E: it fills you up, then asks to save the game into the file being played (picked on the Files screen). This is the only place a game saves, like Metroid Prime. Its name shows on the file.");
             Prop("Fills up energy"); ImGui::Checkbox("##sven", &o.save.energy);
             Prop("Fills up missiles / bombs"); ImGui::Checkbox("##svam", &o.save.ammo);
+            {   // after saving: one of its model's animations (the player can't move until it is done)
+                auto mi = meshModels.find(o.model); int autoClip = SaveClipOf([&] { WorldObject t = o; t.save.anim.clear(); return t; }());
+                std::string autoName = autoClip >= 0 && mi != meshModels.end() ? "automatic: " + mi->second.clips[autoClip].name : "automatic (none found)";
+                std::string shown = o.save.anim.empty() ? autoName : o.save.anim == "-" ? "(none)" : o.save.anim;
+                Prop("After saving, plays");
+                if (ImGui::BeginCombo("##svan", shown.c_str())) {
+                    if (ImGui::Selectable(autoName.c_str(), o.save.anim.empty())) o.save.anim.clear();
+                    if (ImGui::Selectable("(none)", o.save.anim == "-")) o.save.anim = "-";
+                    if (mi != meshModels.end()) for (const AnimClip& c : mi->second.clips) if (ImGui::Selectable(c.name.c_str(), o.save.anim == c.name)) o.save.anim = c.name;
+                    ImGui::EndCombo();
+                }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("One of its model's own animations (imported with it, e.g. from an FBX).\nAfter \"Yes\" it plays, and you can only move again once it is done.\nAutomatic: an animation with \"save\" in its name (or its only one).");
+                if (mi == meshModels.end() || mi->second.clips.empty()) Hint("Its model has no animations: import one with an animation (FBX, glTF ...) to have it play after saving.");
+            }
         }
         if (o.kind == ObjKind::Enemy) EnemyInspector(o);
         else if (o.kind != ObjKind::MapCamera && o.kind != ObjKind::Light && o.kind != ObjKind::Trigger) ScanInspector(o);
@@ -5415,7 +5430,11 @@ struct App {
         menuPage = pg; menuSel = -2;
     }
     void MenuDo(const MenuHit& h) {
-        if (h.target == "save:yes") { if (WriteSave()) GameSnd(&PlayerSounds::saved); CloseSavePrompt(); return; }   // the Save Station's question
+        if (h.target == "save:yes") {
+            bool ok = WriteSave(); if (ok) GameSnd(&PlayerSounds::saved); CloseSavePrompt();
+            if (ok) if (const WorldObject* st = ObjById(saveStationId)) StartSaveAnim(*st);
+            return;
+        }   // the Save Station's question
         if (h.target == "save:no") { CloseSavePrompt(); return; }
         switch (h.kind) {
         case 1: GoToPage(h.arg); return;
@@ -6358,6 +6377,30 @@ struct App {
         saveStationId = st.id; savePrompt = true; paused = true; menuSel = -2; Capture(false);
     }
     void CloseSavePrompt() { savePrompt = false; paused = false; Capture(true); }
+    // after saving: the station plays its animation (from its model), and only then can you move again
+    uint32_t saveAnimId = 0; int saveAnimClip = -1; float saveAnimT = 0, saveAnimLen = 0;
+    int SaveClipOf(const WorldObject& st) {   // which of its model's animations: the one picked, or one called "save" (or its only one)
+        if (st.save.anim == "-") return -1;
+        auto mi = meshModels.find(st.model); if (mi == meshModels.end() || mi->second.clips.empty()) return -1;
+        if (!st.save.anim.empty()) return mi->second.findClip(st.save.anim);
+        for (int i = 0; i < (int)mi->second.clips.size(); i++) if (Lower(mi->second.clips[i].name).find("save") != std::string::npos) return i;
+        return mi->second.clips.size() == 1 ? 0 : -1;
+    }
+    void StartSaveAnim(const WorldObject& st) {
+        int c = SaveClipOf(st); if (c < 0) return;
+        const MeshModel& m = meshModels[st.model]; float len = m.clips[c].length / std::max(0.01f, ClipSpeed(st.model, c));
+        if (len <= 0.01f) return;
+        saveAnimId = st.id; saveAnimClip = c; saveAnimT = 0; saveAnimLen = len;
+    }
+    void UpdateSaveAnim(double dt) {
+        if (!saveAnimId) return;
+        const WorldObject* st = ObjById(saveAnimId); auto mi = st ? meshModels.find(st->model) : meshModels.end();
+        if (!st || mi == meshModels.end() || saveAnimClip < 0 || saveAnimClip >= (int)mi->second.clips.size() || !playMode) { if (saveAnimId) doorGpu.erase(saveAnimId); saveAnimId = 0; return; }
+        saveAnimT += (float)dt;
+        if (saveAnimT >= saveAnimLen) { doorGpu.erase(saveAnimId); saveAnimId = 0; return; }   // done: back as it was, you can move
+        PartPose p = mi->second.pose(saveAnimClip, saveAnimT * ClipSpeed(st->model, saveAnimClip));
+        ModelGpu& g = doorGpu[saveAnimId]; UploadMeshVerts(g, mi->second, mi->second.posedFrom(p)); g.mesh = true; g.tex = GpuModel(st->model).tex;
+    }
     MenuPane SavePromptPane() {
         MenuPane p; p.name = "Save"; p.pos = { 0, -0.04, 0.85 }; p.width = 0.82f; p.height = 0.4f; p.bendX = 0.3f; p.bendY = 0.12f; p.color = 0xFFC85A; p.backing = 0.7f;
         auto text = [&](const std::string& t, float y, float h, float size, float al) { MenuItem i; i.kind = MenuKind::Text; i.text = t; i.x = 0.06f; i.y = y; i.w = 0.88f; i.h = h; i.textSize = size; i.alpha = al; i.color = 0xFFE6B0; p.items.push_back(i); };

@@ -970,9 +970,14 @@ int main() {
         CHECK(ob.size() == 3 && ob[0].scan.on && ob[0].scan.id == 2 && ob[1].scan.id == 2 && !ob[2].scan.on && ob[2].scan.id == 0, "objects keep which scan entry they show (two doors share one)");
         { std::vector<WorldObject> en(1); en[0].id = 9; en[0].model = "@enemy-walker"; en[0].kind = ObjKind::Enemy; en[0].enemyType = 4; saveObjects("/tmp/prim_enemyobj.txt", en); std::vector<WorldObject> eb2; loadObjects("/tmp/prim_enemyobj.txt", eb2);
           CHECK(eb2.size() == 1 && eb2[0].kind == ObjKind::Enemy && eb2[0].enemyType == 4 && std::string(kindName(ObjKind::Enemy)) == "Enemy", "a placed enemy keeps its type"); }
+        { std::vector<WorldObject> sv(1); sv[0].id = 3; sv[0].model = "@save-station"; sv[0].kind = ObjKind::SaveStation; sv[0].save.anim = "Save Spin"; sv[0].save.ammo = false;
+          saveObjects("/tmp/prim_saveobj.txt", sv); std::vector<WorldObject> sl; loadObjects("/tmp/prim_saveobj.txt", sl);
+          CHECK(sl.size() == 1 && sl[0].save.anim == "Save Spin" && !sl[0].save.ammo && sl[0].save.energy, "a Save Station keeps its animation after saving");
+          sv[0].save.anim.clear(); saveObjects("/tmp/prim_saveobj.txt", sv); loadObjects("/tmp/prim_saveobj.txt", sl);
+          CHECK(sl[0].save.anim.empty(), "(no animation picked: picked by itself)"); }
         {   // an older file: the text was on the object
             std::ifstream in("/tmp/prim_scanobjs.txt"); std::string all((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()); in.close();
-            size_t at = all.find(" 1 2 0 1 1\n"); if (at != std::string::npos) all.replace(at, 11, " 1 Old%20Door Research Line%20one.%0ALine%20two. 1 2.5\n");
+            size_t at = all.find(" 1 2 0 1 1 -\n"); if (at != std::string::npos) all.replace(at, 13, " 1 Old%20Door Research Line%20one.%0ALine%20two. 1 2.5\n");
             std::ofstream outF("/tmp/prim_scanobjs_old.txt"); outF << all; outF.close();
             std::vector<WorldObject> old; loadObjects("/tmp/prim_scanobjs_old.txt", old);
             CHECK(old.size() == 3 && old[0].scan.on && old[0].scan.id == 0 && old[0].scan.legacyName == "Old Door" && old[0].scan.legacyText == "Line one.\nLine two." && old[0].scan.legacyImportant && old[0].scan.legacyTime == 2.5f && old[1].scan.id == 2,
