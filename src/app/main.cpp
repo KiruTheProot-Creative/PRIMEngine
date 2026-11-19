@@ -421,6 +421,11 @@ struct App {
         MakeBackbuffer();
     }
     // ---- materials per texture (shiny, metal, glowing, bumps, coat): a table the block shaders read by texture layer
+    // emission maps (see UploadTextures): per texture layer, and per model
+    struct EmitInfo { bool on = false; V3 col{ 0, 0, 0 }; };   // col: the average glowing colour (linear)
+    std::vector<EmitInfo> emitInfo; ComPtr<ID3D11ShaderResourceView> emitArray; bool emissionDirty = false;
+    struct ModelEmit { bool on = false; V3 col{ 0, 0, 0 }; ComPtr<ID3D11ShaderResourceView> srv; };
+    std::map<std::string, ModelEmit> modelEmit;
     ComPtr<ID3D11Buffer> cbMeshMat;   // the material of the model being drawn (b4)
     static std::string ModelMatKey(const std::string& model) { return "model:" + model; }
     // binds a model's own picture (if it is an imported one) and its material
@@ -541,10 +546,6 @@ struct App {
         Hint("Glowing textures light themselves up; they do not light up blocks around them (use a lamp block or a light for that).");
     }
     // ---- emission maps: a picture per texture (or model) of what glows, in the project's "emission" folder
-    struct EmitInfo { bool on = false; V3 col{ 0, 0, 0 }; };   // col: the average glowing colour (linear)
-    std::vector<EmitInfo> emitInfo; ComPtr<ID3D11ShaderResourceView> emitArray; bool emissionDirty = false;
-    struct ModelEmit { bool on = false; V3 col{ 0, 0, 0 }; ComPtr<ID3D11ShaderResourceView> srv; };
-    std::map<std::string, ModelEmit> modelEmit;
     std::string EmissionDir() const { return projectDir + "/emission"; }
     std::string EmitFileFor(const std::string& key) {   // key: a texture's name, or "model:<name>"; "" when it has none
         if (projectDir.empty()) return "";
