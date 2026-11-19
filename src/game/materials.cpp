@@ -37,7 +37,7 @@ std::vector<float> Materials::table(const BlockRegistry& reg) const {
     std::vector<float> t(std::max<size_t>(1, reg.textureCount()) * 8, 0.f);
     for (size_t i = 0; i < reg.textureCount(); i++) {
         TexMaterial m = i == 0 ? TexMaterial{} : of(reg.image((int)i).name);
-        float* p = &t[i * 8]; p[0] = m.shine; p[1] = m.metal; p[2] = m.glow; p[3] = m.glowFrom; p[4] = m.bumps; p[5] = m.coat;
+        float* p = &t[i * 8]; p[0] = m.shine; p[1] = m.metal; p[2] = m.glow; p[3] = m.glowFrom; p[4] = m.bumps; p[5] = m.coat; p[6] = m.emit;
     }
     return t;
 }
@@ -51,7 +51,7 @@ static std::string unesc(const std::string& s) {
 bool saveMaterials(const std::string& path, const Materials& m) {
     std::ofstream f(path); if (!f) return false;
     f << "materials 1\n";
-    for (auto& kv : m.set) { const TexMaterial& t = kv.second; f << "tex " << esc(kv.first) << " " << t.shine << " " << t.metal << " " << t.glow << " " << t.glowFrom << " " << t.bumps << " " << t.coat << "\n"; }
+    for (auto& kv : m.set) { const TexMaterial& t = kv.second; f << "tex " << esc(kv.first) << " " << t.shine << " " << t.metal << " " << t.glow << " " << t.glowFrom << " " << t.bumps << " " << t.coat << " " << esc(t.emitMap) << " " << t.emit << " " << t.lights << "\n"; }
     return (bool)f;
 }
 bool loadMaterials(const std::string& path, Materials& m) {
@@ -59,7 +59,9 @@ bool loadMaterials(const std::string& path, Materials& m) {
     m = Materials{}; std::string line;
     while (std::getline(f, line)) {
         std::istringstream l(line); std::string k, n; l >> k; if (k != "tex") continue;
-        TexMaterial t; if (l >> n >> t.shine >> t.metal >> t.glow >> t.glowFrom >> t.bumps >> t.coat) m.set[unesc(n)] = t;
+        TexMaterial t; if (!(l >> n >> t.shine >> t.metal >> t.glow >> t.glowFrom >> t.bumps >> t.coat)) continue;
+        std::string em; if (l >> em >> t.emit >> t.lights) t.emitMap = unesc(em);   // (older files: no emission map)
+        m.set[unesc(n)] = t;
     }
     return true;
 }

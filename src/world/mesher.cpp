@@ -31,7 +31,7 @@ bool gatherInput(const World& w, I3 pos, MeshInput& out) {
                 uint8_t v = 255;   // not loaded: blocks light
                 if (c) {
                     BlockId b = c->get(lx, ly, lz);
-                    if (b != AIR) { const BlockDef& d = w.reg.get(b); v = d.light ? colorOf(typeOf(b), d) : (d.render == Render::Opaque && resolveShape(b, d) == Shapes::FULL) ? 255 : 0; }
+                    if (b != AIR) { const BlockDef& d = w.reg.get(b); v = d.lightOf() ? colorOf(typeOf(b), d) : (d.render == Render::Opaque && resolveShape(b, d) == Shapes::FULL) ? 255 : 0; }
                     else v = 0;
                 }
                 out.lightSrc[lpadIdx(lx + cx * CS, ly + cy * CS, lz + cz * CS)] = v;
@@ -120,7 +120,7 @@ void buildMesh(const BlockRegistry& reg, const MeshInput& in, ChunkMesh& out) {
             float h[2][2] = { { corner(0, 0), corner(0, 1) }, { corner(1, 0), corner(1, 1) } };   // [x][z]
             bool lava = d.liquid == 2;
             MeshData& lm = lava ? out.opaque : out.water;
-            int own[3]; if (d.light) d.lightLevels(own); else for (int c = 0; c < 3; c++) own[c] = lightAt(c, x, y, z);
+            int own[3]; if (d.lightOf()) d.lightLevels(own); else for (int c = 0; c < 3; c++) own[c] = lightAt(c, x, y, z);
             uint32_t litv = packLit(1.f, own, lava, lava ? 0.f : d.shine, false);
             float kind = lava ? 4.f : 3.f;
             auto quad = [&](const float p[4][3], int f) {   // corners in order around the face; wound to face along f
@@ -162,7 +162,7 @@ void buildMesh(const BlockRegistry& reg, const MeshInput& in, ChunkMesh& out) {
         if (shape != Shapes::FULL) {
             // any other shape: prepared triangles, sides lying on the block border hidden like cube faces
             const int rot = rotOf(id); const ShapeVariant& sv = shapes.variant(shape, rot); bool two = shapes.info(shape).twoSided;
-            int own[3]; if (d.light) d.lightLevels(own); else for (int c = 0; c < 3; c++) own[c] = lightAt(c, x, y, z);
+            int own[3]; if (d.lightOf()) d.lightLevels(own); else for (int c = 0; c < 3; c++) own[c] = lightAt(c, x, y, z);
             uint32_t litv = packLit(1.f, own, d.light > 0, d.mirror ? 1.f : d.shine, d.mirror);
             float wave = d.waves ? (shape == Shapes::CROSS || shape == Shapes::PLANE ? 2.f : 1.f) : 0.f;
             for (int g = 0; g < 7; g++) {
@@ -208,7 +208,7 @@ void buildMesh(const BlockRegistry& reg, const MeshInput& in, ChunkMesh& out) {
                     take(L); take(s1); take(s2); if (!(occludes(at(s1[0], s1[1], s1[2])) && occludes(at(s2[0], s2[1], s2[2])))) take(cc);
                     if (cnt) for (int c = 0; c < 3; c++) bl[c] = (sum[c] + cnt / 2) / cnt;
                 }
-                if (d.light) d.lightLevels(bl);
+                if (d.lightOf()) d.lightLevels(bl);
                 q[k] = { p[0], p[1], p[2], u, v, (float)d.tex[tf] + (d.waves ? 16384.f : 0.f), packLit(shade, bl, d.light > 0, d.mirror ? 1.f : d.shine, d.mirror), packNormal((float)n[0], (float)n[1], (float)n[2], f) };
             }
             // split along the brighter diagonal, and wind each triangle clockwise when seen from outside

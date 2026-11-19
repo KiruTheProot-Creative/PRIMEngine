@@ -16,7 +16,11 @@ struct TexMaterial {
     float glowFrom = 0;     // only pixels brighter than this glow (0: all of it; 0.6: just the bright parts, like a lamp's bulb)
     float bumps = 1;        // how bumpy the generated surface is (times the global setting; 0: flat)
     float coat = 1;         // how strong the fine noise coat is (times the global setting; 0: none)
-    bool operator==(const TexMaterial& o) const { return shine == o.shine && metal == o.metal && glow == o.glow && glowFrom == o.glowFrom && bumps == o.bumps && coat == o.coat; }
+    // an emission map: a second picture (same layout as the texture) of what glows and in which colour (black: nothing)
+    std::string emitMap;    // its file in the textures folder ("": none; a file called <texture>_e / _emission / _emissive / _glow .png is found by itself)
+    float emit = 1.5f;      // how bright it glows
+    float lights = 6;       // it lights up what is around it: blocks built from it shine this far (0 none .. 15 like a lamp), models a light this far
+    bool operator==(const TexMaterial& o) const { return shine == o.shine && metal == o.metal && glow == o.glow && glowFrom == o.glowFrom && bumps == o.bumps && coat == o.coat && emitMap == o.emitMap && emit == o.emit && lights == o.lights; }
     bool operator!=(const TexMaterial& o) const { return !(*this == o); }
 };
 
@@ -29,7 +33,7 @@ struct Materials {
     bool isSet(const std::string& textureName) const { return set.count(textureName) > 0; }
     void put(const std::string& textureName, const TexMaterial& m) { set[textureName] = m; }
     void reset(const std::string& textureName) { set.erase(textureName); }   // back to the guess
-    // for the shaders: 8 floats per texture layer (shine, metal, glow, glowFrom, bumps, coat, 0, 0)
+    // for the shaders: 8 floats per texture layer (shine, metal, glow, glowFrom, bumps, coat, emit, 0); emit is only used where an emission map is loaded
     std::vector<float> table(const BlockRegistry& reg) const;
 };
 bool saveMaterials(const std::string& path, const Materials& m);

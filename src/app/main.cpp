@@ -424,12 +424,25 @@ struct App {
     ComPtr<ID3D11Buffer> cbMeshMat;   // the material of the model being drawn (b4)
     static std::string ModelMatKey(const std::string& model) { return "model:" + model; }
     // binds a model's own picture (if it is an imported one) and its material
+    const ModelEmit& ModelEmitOf(const std::string& model) {
+        auto it = modelEmit.find(model); if (it != modelEmit.end()) return it->second;
+        ModelEmit& e = modelEmit[model]; std::string f = EmitFileFor(ModelMatKey(model)); int w = 0, h = 0; std::vector<uint8_t> rgba;
+        if (!f.empty() && readImage(f, w, h, rgba) && w > 0 && h > 0) {
+            EmitInfo a = EmitAverage(rgba); e.on = a.on; e.col = a.col;
+            D3D11_TEXTURE2D_DESC d{}; d.Width = (UINT)w; d.Height = (UINT)h; d.MipLevels = 1; d.ArraySize = 1; d.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB; d.SampleDesc.Count = 1; d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            D3D11_SUBRESOURCE_DATA sd{ rgba.data(), (UINT)w * 4, 0 }; ComPtr<ID3D11Texture2D> t;
+            if (SUCCEEDED(dev->CreateTexture2D(&d, &sd, &t))) dev->CreateShaderResourceView(t.Get(), nullptr, &e.srv);
+            if (!e.srv) e.on = false;
+        }
+        return e;
+    }
     void BindModelTex(const ModelGpu& g, const std::string& model) {
         if (g.mesh) ctx->PSSetShaderResources(9, 1, g.tex.GetAddressOf());
-        TexMaterial m = materials.of(ModelMatKey(model)); float d[8] = { m.shine, m.metal, m.glow, m.glowFrom, m.bumps, m.coat, 0, 0 };
+        const ModelEmit& me = ModelEmitOf(model); ID3D11ShaderResourceView* es = me.on ? me.srv.Get() : nullptr; ctx->PSSetShaderResources(15, 1, &es);
+        TexMaterial m = materials.of(ModelMatKey(model)); float d[8] = { m.shine, m.metal, m.glow, m.glowFrom, m.bumps, m.coat, me.on ? m.emit : 0.f, 0 };
         ctx->UpdateSubresource(cbMeshMat.Get(), 0, nullptr, d, 0, 0); ctx->PSSetConstantBuffers(4, 1, cbMeshMat.GetAddressOf());
     }
-    bool MaterialSliders(TexMaterial& m) {
+    bool MaterialSliders(TexMaterial& m, const std::string& key = "") {
         TexMaterial before = m;
         Prop("Shiny"); ImGui::SliderFloat("##msh", &m.shine, 0, 1, m.shine <= 0 ? "matt" : "%.2f");
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Reflects the world (with Reflections on) and catches the sun as a highlight.");
@@ -442,6 +455,40 @@ struct App {
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Generated normals: light and dark pixels become little bumps and dents.\nTimes the global setting (Settings > Look > Bumpy textures).");
         Prop("Coat"); ImGui::SliderFloat("##mco", &m.coat, 0, 3, m.coat <= 0 ? "none" : "x %.2f");
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Coated textures: a fine noise inside each pixel, so flat pixels look like a material.\nTimes the global setting (Settings > Look > Texture coat).");
+        if (!key.empty()) {   // an emission map: a picture of what glows (and it lights up what is around it)
+            ImGui::SeparatorText("Emission map");
+            bool isModel = key.rfind("model:", 0) == 0; std::string base = isModel ? key.substr(6) : key;
+            TexMaterial probe = materials.of(key); probe.emitMap = m.emitMap; std::string found;
+            { TexMaterial keep = materials.of(key); bool had = materials.isSet(key); materials.put(key, probe); found = EmitFileFor(key); if (had) materials.put(key, keep); else materials.reset(key); }
+            std::string shown = found.empty() ? "(none)" : fs::u8path(found).filename().u8string() + (m.emitMap.empty() ? "  (found by itself)" : "");
+            Prop("Picture");
+            if (ImGui::BeginCombo("##mem", shown.c_str())) {
+                if (ImGui::Selectable("(none, or found by itself)", m.emitMap.empty())) m.emitMap.clear();
+                std::error_code ec; std::vector<std::string> files;
+                for (auto& e : fs::directory_iterator(fs::u8path(EmissionDir()), ec)) if (e.is_regular_file(ec)) { std::string x = ExtOf(e.path().u8string()); if (x == ".png" || x == ".jpg" || x == ".jpeg") files.push_back(e.path().filename().u8string()); }
+                std::sort(files.begin(), files.end());
+                for (const std::string& f : files) if (ImGui::Selectable(f.c_str(), m.emitMap == f)) m.emitMap = f;
+                ImGui::Separator();
+                if (ImGui::Selectable("Pick a picture...")) {
+                    auto pick = PickFiles("Pictures\0*.png;*.jpg;*.jpeg\0", "The emission map (black: nothing glows)");
+                    if (!pick.empty()) {
+                        fs::create_directories(fs::u8path(EmissionDir()), ec);
+                        std::string to = base + ExtOf(pick[0]); for (char& c : to) if (c == '/' || c == '\\' || c == ':') c = '_';
+                        fs::copy_file(fs::u8path(pick[0]), fs::u8path(EmissionDir() + "/" + to), fs::copy_options::overwrite_existing, ec);
+                        m.emitMap = to; emissionDirty = true;
+                    }
+                }
+                if (ImGui::Selectable("Open the emission folder")) { fs::create_directories(fs::u8path(EmissionDir()), ec); ShowInExplorer(EmissionDir()); }
+                ImGui::EndCombo();
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("A picture laid out like the %s: black where nothing glows, colours where it does.\nA picture called \"%s.png\" in the project's emission folder is found by itself.", isModel ? "model's own picture" : "texture", base.c_str());
+            if (!found.empty()) {
+                Prop("Brightness"); ImGui::SliderFloat("##meb", &m.emit, 0, 6, m.emit <= 0 ? "off" : "%.2f");
+                Prop("Lights up around it"); ImGui::SliderFloat("##mel", &m.lights, 0, 15, m.lights <= 0 ? "no" : isModel ? "%.0f blocks" : "light level %.0f");
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip(isModel ? "A light at the model's middle, in the colour it glows, reaching this far." : "Blocks built from it light up what is around them in the colour they glow,\nlike a lamp (15: as far as a lamp). A block's own Glows setting comes first.");
+            }
+            if (m.emitMap != before.emitMap || m.lights != before.lights) emissionDirty = true;
+        }
         return m != before;
     }
     // a model's material (the same everywhere it is used: objects, HUD parts, cannons, missiles)
@@ -451,7 +498,7 @@ struct App {
         std::string key = ModelMatKey(model); bool own = materials.isSet(key);
         if (ImGui::TreeNode("mat", "Material of %s%s", model.c_str(), own ? "" : "  (plain)")) {
             TexMaterial m = materials.of(key);
-            if (MaterialSliders(m)) { materials.put(key, m); SaveMaterials(); }
+            if (MaterialSliders(m, key)) { materials.put(key, m); SaveMaterials(); }
             ImGui::BeginDisabled(!own); if (ImGui::SmallButton("Back to plain")) { materials.reset(key); SaveMaterials(); } ImGui::EndDisabled();
             Hint("For the whole model, everywhere it is used (imported FBX and built-in models; models built from blocks use their textures' materials). Bumps and coat come from its own picture's pixels, best on pixel-art models.");
             ImGui::TreePop();
@@ -466,6 +513,7 @@ struct App {
         if (materials.guess != settings.guessMaterials) { materials.guess = settings.guessMaterials; matsDirty = true; }
         if (matsDirty || !matSRV) {
             std::vector<float> t = materials.table(reg); size_t n = t.size() / 8; matsDirty = false;
+            for (size_t i = 0; i < n; i++) if (i >= emitInfo.size() || !emitInfo[i].on) t[i * 8 + 6] = 0;   // (no emission map: nothing to glow)
             if (!matBuf || n != matCount) {
                 if (matSRV) retired.push_back(matSRV);
                 D3D11_BUFFER_DESC d{}; d.ByteWidth = (UINT)(n * 32); d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_SHADER_RESOURCE; d.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED; d.StructureByteStride = 32;
@@ -485,18 +533,41 @@ struct App {
         bool own = materials.isSet(name); ImGui::TextDisabled(own ? "its own material" : "guessed from its name");
         ImGui::EndGroup();
         TexMaterial m = materials.of(name);
-        if (MaterialSliders(m)) { materials.put(name, m); SaveMaterials(); }
+        if (MaterialSliders(m, name)) { materials.put(name, m); SaveMaterials(); }
 
         ImGui::BeginDisabled(!own); if (ImGui::Button("Back to the guess")) { materials.reset(name); SaveMaterials(); } ImGui::EndDisabled();
         ImGui::SameLine(); ImGui::TextDisabled("(changes show in the world right away)");
         if (!settings.materials || settings.bumps <= 0 || settings.coat <= 0) Hint("Some of it is switched off in Settings > Look (texture materials, bumpy textures, texture coat).");
         Hint("Glowing textures light themselves up; they do not light up blocks around them (use a lamp block or a light for that).");
     }
-    void UploadTextures() {
-        const int S = reg.layerSize(), n = (int)reg.textureCount(); int mips = 1; while ((S >> mips) > 0) mips++;
-        std::vector<std::vector<uint8_t>> px(n); for (int i = 0; i < n; i++) px[i] = reg.layer(i, S);
-        // sRGB textures: the shader gets real light values. Smaller copies (mips) are averaged in linear light.
-        D3D11_TEXTURE2D_DESC d{}; d.Width = d.Height = (UINT)S; d.MipLevels = (UINT)mips; d.ArraySize = (UINT)n; d.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB; d.SampleDesc.Count = 1;
+    // ---- emission maps: a picture per texture (or model) of what glows, in the project's "emission" folder
+    struct EmitInfo { bool on = false; V3 col{ 0, 0, 0 }; };   // col: the average glowing colour (linear)
+    std::vector<EmitInfo> emitInfo; ComPtr<ID3D11ShaderResourceView> emitArray; bool emissionDirty = false;
+    struct ModelEmit { bool on = false; V3 col{ 0, 0, 0 }; ComPtr<ID3D11ShaderResourceView> srv; };
+    std::map<std::string, ModelEmit> modelEmit;
+    std::string EmissionDir() const { return projectDir + "/emission"; }
+    std::string EmitFileFor(const std::string& key) {   // key: a texture's name, or "model:<name>"; "" when it has none
+        if (projectDir.empty()) return "";
+        std::string base = key.rfind("model:", 0) == 0 ? key.substr(6) : key, dir = EmissionDir(); std::error_code ec;
+        const std::string& own = materials.of(key).emitMap;
+        if (!own.empty()) { std::string p = dir + "/" + own; return fs::exists(fs::u8path(p), ec) ? p : ""; }
+        for (const char* suf : { "", "_e", "_emission", "_emissive", "_glow" }) for (const char* ext : { ".png", ".jpg", ".jpeg" }) {
+            std::string p = dir + "/" + base + suf + ext; if (fs::exists(fs::u8path(p), ec)) return p;
+        }
+        return "";
+    }
+    static EmitInfo EmitAverage(const std::vector<uint8_t>& rgba) {   // the colour it glows in, on average (its dark pixels left out)
+        EmitInfo e; double r = 0, g = 0, b = 0; int n = 0;
+        for (size_t i = 0; i + 3 < rgba.size(); i += 4) {
+            double R = std::pow(rgba[i] / 255.0, 2.2), G = std::pow(rgba[i + 1] / 255.0, 2.2), B = std::pow(rgba[i + 2] / 255.0, 2.2);
+            if (std::max(R, std::max(G, B)) < 0.02) continue; r += R; g += G; b += B; n++;
+        }
+        if (n) { e.on = true; e.col = { r / n, g / n, b / n }; }
+        return e;
+    }
+    ComPtr<ID3D11ShaderResourceView> MakeArray(const std::vector<std::vector<uint8_t>>& px, int S) {   // sRGB, its smaller copies averaged in linear light
+        const int n = (int)px.size(); int mips = 1; while ((S >> mips) > 0) mips++;
+        D3D11_TEXTURE2D_DESC d{}; d.Width = d.Height = (UINT)S; d.MipLevels = (UINT)mips; d.ArraySize = (UINT)std::max(1, n); d.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB; d.SampleDesc.Count = 1;
         d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
         ComPtr<ID3D11Texture2D> t; HR(dev->CreateTexture2D(&d, nullptr, &t));
         static float toLin[256]; if (toLin[255] == 0) for (int k = 0; k < 256; k++) toLin[k] = std::pow(k / 255.f, 2.2f);
@@ -513,9 +584,30 @@ struct App {
                 cur.swap(nx); sz = h;
             }
         }
+        ComPtr<ID3D11ShaderResourceView> srv; HR(dev->CreateShaderResourceView(t.Get(), nullptr, &srv)); return srv;
+    }
+    static std::vector<uint8_t> ScaleNearest(const std::vector<uint8_t>& src, int w, int h, int S) {   // (pixel art stays crisp)
+        std::vector<uint8_t> o((size_t)S * S * 4);
+        for (int y = 0; y < S; y++) for (int x = 0; x < S; x++) { int sx = x * w / S, sy = y * h / S; for (int c = 0; c < 4; c++) o[((size_t)y * S + x) * 4 + c] = src[((size_t)sy * w + sx) * 4 + c]; }
+        return o;
+    }
+    void UploadTextures() {
+        const int S = reg.layerSize(), n = (int)reg.textureCount();
+        std::vector<std::vector<uint8_t>> px(n); for (int i = 0; i < n; i++) px[i] = reg.layer(i, S);
+        ComPtr<ID3D11ShaderResourceView> made = MakeArray(px, S);
+        {   // the emission maps, layer by layer (black where a texture has none)
+            std::vector<std::vector<uint8_t>> ex(n); emitInfo.assign(n, {});
+            for (int i = 0; i < n; i++) {
+                std::string f = i > 0 ? EmitFileFor(reg.image(i).name) : ""; int w = 0, h = 0; std::vector<uint8_t> rgba;
+                if (!f.empty() && readImage(f, w, h, rgba) && w > 0 && h > 0) { ex[i] = ScaleNearest(rgba, w, h, S); emitInfo[i] = EmitAverage(ex[i]); }
+                else ex[i].assign((size_t)S * S * 4, 0);
+            }
+            if (emitArray) retired.push_back(emitArray);
+            emitArray = MakeArray(ex, S);
+        }
         if (texArray) retired.push_back(texArray);
         for (auto& i : icons) retired.push_back(i);
-        texArray.Reset(); HR(dev->CreateShaderResourceView(t.Get(), nullptr, &texArray)); matsDirty = true;
+        texArray = made; matsDirty = true;
         icons.clear();
         for (int i = 0; i < n; i++) {
             D3D11_TEXTURE2D_DESC id{}; id.Width = id.Height = (UINT)S; id.MipLevels = 1; id.ArraySize = 1; id.Format = DXGI_FORMAT_R8G8B8A8_UNORM; id.SampleDesc.Count = 1; id.BindFlags = D3D11_BIND_SHADER_RESOURCE;
@@ -526,9 +618,21 @@ struct App {
     static int Threads() { return (int)std::max(2u, std::thread::hardware_concurrency()) - 1; }
     // Every change to blocks or textures goes through here: the mesh threads read the registry, so they pause,
     // then the textures are re-uploaded and every loaded chunk is rebuilt with the new look.
+    void ApplyEmissionLights() {   // blocks built from a texture with an emission map light up what is around them (like a lamp; their own Glows setting first)
+        for (BlockId id = 1; id < reg.count(); id++) {
+            if (!reg.has(id)) continue; const BlockDef& d = reg.get(id); int best = 0; V3 col{ 0, 0, 0 };
+            for (int f = 0; f < 6; f++) {
+                int t = d.tex[f]; if (t <= 0 || t >= (int)emitInfo.size() || !emitInfo[t].on) continue;
+                int L = std::clamp((int)std::lround(materials.of(reg.image(t).name).lights), 0, 15); if (L > best) { best = L; col = emitInfo[t].col; }
+            }
+            uint32_t c = 0;
+            if (best) { double m = std::max(1e-6, std::max(col.x, std::max(col.y, col.z))); auto ch = [&](double v) { return (uint32_t)std::lround(std::pow(v / m, 1 / 2.2) * 255); }; c = ch(col.x) << 16 | ch(col.y) << 8 | ch(col.z); }
+            if (d.autoLight != best || d.autoLightColor != c) { BlockDef nd = d; nd.autoLight = best; nd.autoLightColor = c; reg.put(id, nd); }
+        }
+    }
     template <class F> void ChangeBlocks(F fn) {
         if (workers) workers->stop();
-        fn(); reg.resolve(); UploadTextures(); ghostKey = 0xFFFFFFFFu;
+        fn(); reg.resolve(); UploadTextures(); ApplyEmissionLights(); modelEmit.clear(); ghostKey = 0xFFFFFFFFu;
         if (world) world->recountEmitters();   // a block may glow (or stop glowing) now
         if (workers) workers->start(Threads());
         if (world) { latestSeq.clear(); for (auto& kv : world->chunks) world->dirty.insert(kv.first); }
@@ -1115,7 +1219,7 @@ struct App {
         ctx->VSSetConstantBuffers(1, 1, cbChunk.GetAddressOf());
         ctx->IASetInputLayout(layout.Get()); ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         ctx->VSSetShader(vsPreview.Get(), nullptr, 0); ctx->PSSetShader(psPreview.Get(), nullptr, 0);
-        ctx->PSSetShaderResources(0, 1, texArray.GetAddressOf()); ctx->PSSetSamplers(0, 1, sampBlocks.GetAddressOf());
+        ctx->PSSetShaderResources(0, 1, texArray.GetAddressOf()); ctx->PSSetShaderResources(14, 1, emitArray.GetAddressOf()); ctx->PSSetSamplers(0, 1, sampBlocks.GetAddressOf());
         WorldObject vo; vo.model = viewerModel;
         const ModelGpu* use = nullptr;
         auto it = meshModels.find(viewerModel);
@@ -1177,6 +1281,11 @@ struct App {
                 V3 d{ std::sin(a) * std::cos(t), -std::sin(t), std::cos(a) * std::cos(t) };
                 V3 p{ o.pos.x, o.pos.y + 0.3, o.pos.z };
                 all.push_back({ p, std::max(0.5f, s.range), c, s.type == LightType::Spot ? 1 : 0, d, std::cos(s.cone * 3.14159265358979 / 180), dist(p) });
+            } else if (o.kind != ObjKind::Enemy && !o.model.empty() && o.model[0] != '@' && !evHidden.count(o.id)) {   // a model with an emission map: a light at its middle
+                const ModelEmit& me = ModelEmitOf(o.model); if (!me.on) continue;
+                TexMaterial m = materials.of(ModelMatKey(o.model)); if (m.lights <= 0 || m.emit <= 0) continue;
+                FrameRef f = ModelOf(o); if (!f) continue; Box3 b = objectBounds(o, *f); V3 p = (b.lo + b.hi) * 0.5;
+                all.push_back({ p, std::max(1.0f, m.lights), me.col * (double)(m.emit * 1.2f), 0, { 0, -1, 0 }, -1, dist(p) });
             } else if (o.kind == ObjKind::Particles && o.particles.light) {
                 const ParticleSettings& s = o.particles; double k = s.lightIntensity * flickerAt(Flicker::Candle, animTime * 1.3, o.id);
                 V3 c0 = ColorOf(s.color0), c1 = ColorOf(s.color1); V3 c{ std::pow((c0.x + c1.x) / 2, 2.2) * k, std::pow((c0.y + c1.y) / 2, 2.2) * k, std::pow((c0.z + c1.z) / 2, 2.2) * k };
@@ -2926,7 +3035,7 @@ struct App {
         if (shadows) {   // each cascade from the sun (only what is inside it gets drawn)
             D3D11_VIEWPORT sv{ 0, 0, (float)shadowSize, (float)shadowSize, 0, 1 }; ctx->RSSetViewports(1, &sv);
             ctx->RSSetState(rsShadow.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsShadow.Get(), nullptr, 0);
-            ctx->PSSetShaderResources(0, 1, texArray.GetAddressOf()); ctx->PSSetSamplers(0, 1, sampBlocks.GetAddressOf());
+            ctx->PSSetShaderResources(0, 1, texArray.GetAddressOf()); ctx->PSSetShaderResources(14, 1, emitArray.GetAddressOf()); ctx->PSSetSamplers(0, 1, sampBlocks.GetAddressOf());
             for (int c = 0; c < CASCADES; c++) {
                 FrameCB cf = fc; XMStoreFloat4x4(&cf.shadowVP, cvp[c]); ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &cf, 0, 0);
                 ctx->OMSetRenderTargets(0, nullptr, cascDSV[c].Get()); ctx->ClearDepthStencilView(cascDSV[c].Get(), D3D11_CLEAR_DEPTH, 1.f, 0);
@@ -2940,7 +3049,7 @@ struct App {
             ctx->OMSetRenderTargets(0, nullptr, skyMapDSV.Get()); ctx->ClearDepthStencilView(skyMapDSV.Get(), D3D11_CLEAR_DEPTH, 1.f, 0);
             D3D11_VIEWPORT sv{ 0, 0, 512, 512, 0, 1 }; ctx->RSSetViewports(1, &sv);
             ctx->RSSetState(rsShadow.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsSkyMap.Get(), nullptr, 0);
-            ctx->PSSetShaderResources(0, 1, texArray.GetAddressOf()); ctx->PSSetSamplers(0, 1, sampBlocks.GetAddressOf());
+            ctx->PSSetShaderResources(0, 1, texArray.GetAddressOf()); ctx->PSSetShaderResources(14, 1, emitArray.GetAddressOf()); ctx->PSSetSamplers(0, 1, sampBlocks.GetAddressOf());
             ctx->PSSetShader(nullptr, nullptr, 0); drawChunks(skyvp, 0, false);
             ctx->PSSetShader(psShadowCut.Get(), nullptr, 0); drawChunks(skyvp, 1, false);
             ctx->PSSetShader(nullptr, nullptr, 0); drawChunks(skyvp, 2, false);   // water too: rain lands on it (and not on the lake's floor)
@@ -3375,6 +3484,7 @@ struct App {
         library = Library{}; library.dir = dir; library.load(reg); UploadTextures(); ghostKey = 0xFFFFFFFFu;   // this game's blocks and textures
         models.loadAll(dir + "/models"); modelGpu.clear(); LoadMeshModels(); viewerOpen = false;
         game = GameSettings{}; gamePath = dir + "/game.txt"; game.load(gamePath); LoadHud(); LoadScreens(); pics.clear(); vids.clear(); CloseScreens(); menuSession = false;
+        UploadTextures(); ApplyEmissionLights(); modelEmit.clear();   // (now with the materials: their emission maps)
         RefreshWorlds(); LoadAssetTree();
         auto has = [&](const std::string& n) { return !n.empty() && std::find(worldList.begin(), worldList.end(), n) != worldList.end(); };
         std::string w = has(game.lastWorld) ? game.lastWorld : has(game.startWorld) ? game.startWorld : worldList.empty() ? "" : worldList[0];
@@ -4330,7 +4440,7 @@ struct App {
             ctx->UpdateSubresource(cbPreview.Get(), 0, nullptr, &pc, 0, 0);
             ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); ctx->IASetInputLayout(layout.Get());
             ctx->VSSetShader(vsPreview.Get(), nullptr, 0); ctx->PSSetShader(editor || litParts ? psPreview.Get() : nullptr, nullptr, 0);   // Play mode: already drawn lit, here only their depth
-            ctx->PSSetShaderResources(0, 1, texArray.GetAddressOf()); ctx->PSSetSamplers(0, 1, sampBlocks.GetAddressOf());
+            ctx->PSSetShaderResources(0, 1, texArray.GetAddressOf()); ctx->PSSetShaderResources(14, 1, emitArray.GetAddressOf()); ctx->PSSetSamplers(0, 1, sampBlocks.GetAddressOf());
             ctx->RSSetState(rsNoCull.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
         };
         auto drawParts = [&](bool cannon) {
@@ -5796,7 +5906,7 @@ struct App {
         ctx->VSSetConstantBuffers(2, 1, cbPreview.GetAddressOf()); ctx->PSSetConstantBuffers(2, 1, cbPreview.GetAddressOf()); ctx->VSSetConstantBuffers(1, 1, cbChunk.GetAddressOf());
         ctx->IASetInputLayout(layout.Get()); ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         ctx->VSSetShader(vsPreview.Get(), nullptr, 0); ctx->PSSetShader(psPreview.Get(), nullptr, 0);
-        ctx->PSSetShaderResources(0, 1, texArray.GetAddressOf()); ctx->PSSetSamplers(0, 1, sampBlocks.GetAddressOf());
+        ctx->PSSetShaderResources(0, 1, texArray.GetAddressOf()); ctx->PSSetShaderResources(14, 1, emitArray.GetAddressOf()); ctx->PSSetSamplers(0, 1, sampBlocks.GetAddressOf());
         DrawObject(vo, 0, eye); DrawObject(vo, 1, eye);
         ID3D11ShaderResourceView* none[10] = {}; ctx->PSSetShaderResources(0, 10, none); ctx->RSSetState(rsCull.Get());
         ctx->OMSetRenderTargets(0, nullptr, nullptr);
@@ -9018,7 +9128,7 @@ struct App {
         ctx->VSSetConstantBuffers(2, 1, cbPreview.GetAddressOf()); ctx->PSSetConstantBuffers(2, 1, cbPreview.GetAddressOf()); ctx->VSSetConstantBuffers(1, 1, cbChunk.GetAddressOf());
         ctx->IASetInputLayout(layout.Get()); ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         ctx->VSSetShader(vsPreview.Get(), nullptr, 0); ctx->PSSetShader(psPreview.Get(), nullptr, 0);
-        ctx->PSSetShaderResources(0, 1, texArray.GetAddressOf()); ctx->PSSetSamplers(0, 1, sampBlocks.GetAddressOf());
+        ctx->PSSetShaderResources(0, 1, texArray.GetAddressOf()); ctx->PSSetShaderResources(14, 1, emitArray.GetAddressOf()); ctx->PSSetSamplers(0, 1, sampBlocks.GetAddressOf());
         WorldObject vo; vo.model = b.model; const ModelGpu* use = weapSel == weapState.current && cannonPosed ? &cannonGpu : nullptr;
         DrawObject(vo, 0, weapEye, use); DrawObject(vo, 1, weapEye, use);
         ID3D11ShaderResourceView* none[10] = {}; ctx->PSSetShaderResources(0, 10, none); ctx->RSSetState(rsCull.Get());
@@ -10947,8 +11057,8 @@ struct App {
                 else if (kind == 4) prefabCache.erase(e.path().stem().u8string());
             }
         };
-        scan(SoundsDir(), 0); scan(ScreensDir(), 1); scan(projectDir + "/hud", 2); scan(projectDir + "/textures", 3); scan(PrefabsDir(), 4);
-        if (texChanged && !playMode) { ChangeBlocks([&] { library = Library{}; library.dir = projectDir; library.load(reg); }); Toast("Textures changed on disk: read again"); }
+        scan(SoundsDir(), 0); scan(ScreensDir(), 1); scan(projectDir + "/hud", 2); scan(projectDir + "/textures", 3); scan(PrefabsDir(), 4); scan(EmissionDir(), 3);   // (emission maps: like textures)
+        if (texChanged && !playMode) { ChangeBlocks([&] { library = Library{}; library.dir = projectDir; library.load(reg); }); Toast("Textures (or emission maps) changed on disk: read again"); }
         watchPrimed = true;
     }
     // ---- the panel
@@ -12249,6 +12359,7 @@ struct App {
 
         ImGui::GetStyle().FontScaleMain = settings.uiScale;
         ImGui_ImplDX11_NewFrame(); ImGui_ImplWin32_NewFrame(); ImGui::NewFrame();
+        if (emissionDirty && !ImGui::IsAnyItemActive()) { emissionDirty = false; ChangeBlocks([] {}); }   // an emission map or its light changed: textures, block light and models again
         ev = EditorView();
         if (screen == Screen::Title) ProjectManager();
         else if (ev) {

@@ -30,6 +30,24 @@ int main() {
     CHECK(faces(meshOf(w, reg, { 0, 0, 0 }).cutout) == 22, "leaves keep the faces between them (bushy look)");
     w.set(7, 5, 5, glass);
     CHECK(faces(meshOf(w, reg, { 0, 0, 0 }).opaque) == 10, "stone next to glass keeps its face behind the glass");
+    {   // a block lit by its texture's emission map lights what is around it, like a lamp (but does not glow all over)
+        BlockRegistry r2; registerBuiltinBlocks(r2);
+        BlockDef gd = r2.get(r2.find("stone")); gd.name = "glow panel"; gd.light = 0; gd.autoLight = 12; gd.autoLightColor = 0x2080FF; BlockId gp = r2.add(gd);
+        World lw(r2); lw.gen.kind = Generator::Void;
+        for (int y = -1; y <= 1; y++) for (int z = -1; z <= 1; z++) for (int x = -1; x <= 1; x++) lw.loadChunk({ x, y, z });
+        lw.set(5, 5, 5, gp); BlockId st = r2.find("stone"); lw.set(8, 5, 5, st); lw.recountEmitters();
+        ChunkMesh lm = meshOf(lw, r2, { 0, 0, 0 });
+        int bestB = 0, bestR = 0; bool panelGlows = false;
+        for (const Vtx& v : lm.opaque.v) {
+            int rr = (v.lit >> 8) & 15, bb = (v.lit >> 16) & 15;
+            if (v.x > 7.9f && v.x < 8.1f) { bestB = std::max(bestB, bb); bestR = std::max(bestR, rr); }   // the stone's face toward it
+            if (v.x > 4.9f && v.x < 6.1f && ((v.lit >> 20) & 1)) panelGlows = true;
+        }
+        int lv[3]; r2.get(gp).lightLevels(lv);
+        CHECK(lv[2] == 12 && lv[0] < lv[2] && r2.get(gp).lightOf() == 12, "light from an emission map: its strength and colour (%d %d %d)", lv[0], lv[1], lv[2]);
+        CHECK(bestB >= 8 && bestB > bestR, "the stone next to it is lit blue by it (blue %d, red %d)", bestB, bestR);
+        CHECK(!panelGlows, "the block itself is not flooded with light (its emission map shows what glows)");
+    }
     // a block across the border: the neighbour chunk hides the shared face
     w.set(15, 2, 2, stone); w.set(16, 2, 2, stone);
     size_t a = faces(meshOf(w, reg, { 0, 0, 0 }).opaque), b = faces(meshOf(w, reg, { 1, 0, 0 }).opaque);

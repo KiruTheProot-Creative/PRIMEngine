@@ -75,9 +75,11 @@ Texture2D<float> gSceneDepth : register(t2);
 Texture3D<float2> gNoise : register(t3);       // tiling cloud noise: x soft billows, y puffy cells
 SamplerState gSamp : register(s0);
 Texture2D gMeshTex : register(t9);              // an imported model's own picture (its vertices use layer 16383)
-// materials per texture layer: a = shine, metal, glow, glow only above this brightness; b = bumps, coat
+// materials per texture layer: a = shine, metal, glow, glow only above this brightness; b = bumps, coat, emission map brightness (0: none)
 struct TexMat { float4 a; float4 b; };
 StructuredBuffer<TexMat> gMats : register(t10);
+Texture2DArray gEmitTex : register(t14);        // emission maps, one per texture layer (black: nothing glows)
+Texture2D gMeshEmit : register(t15);            // the emission map of the model being drawn
 cbuffer MeshMatCB : register(b4) { float4 gMM0; float4 gMM1; };   // the material of the model being drawn (same numbers as a texture's)
 float4 albedoAt(float3 uvl) { return uvl.z > 16000 ? gMeshTex.Sample(gSamp, uvl.xy) : gTex.Sample(gSamp, uvl); }
 SamplerComparisonState gShadowSamp : register(s1);
@@ -368,6 +370,11 @@ float3 lightBlock(VSOut i, float3 albedo, bool front, out float3 n, out float sh
         float lum = sqrt(lumOf(albedo));
         float e = m.a.z * smoothstep(m.a.w, m.a.w + 0.08, lum);
         c += albedo * e * 3.0;
+    }
+    if (m.b.z > 0)                                                                                // its emission map: what glows, in its own colours
+    {
+        float3 em = i.uvl.z < 16000 ? gEmitTex.Sample(gSamp, i.uvl).rgb : gMeshEmit.Sample(gSamp, i.uvl.xy).rgb;
+        c += em * m.b.z * 2.5;
     }
     if (i.lamp.a > 0.5)                                                                               // the lamp itself glows in its colour
     {

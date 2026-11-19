@@ -785,6 +785,8 @@ int main() {
         saveMaterials("/tmp/prim_mats.txt", mats); Materials back; loadMaterials("/tmp/prim_mats.txt", back);
         CHECK(back.isSet("dirt") && back.of("dirt") == gold && !back.isSet("iron_block"), "materials save and load");
         mats.reset("dirt"); CHECK(!mats.isSet("dirt") && mats.of("dirt") == TexMaterial{}, "reset: back to the guess");
+        { Materials em; TexMaterial t; t.emitMap = "panel lights_e.png"; t.emit = 2.5f; t.lights = 9; em.put("panel lights", t); saveMaterials("/tmp/prim_mats3.txt", em); Materials eb; loadMaterials("/tmp/prim_mats3.txt", eb);
+          CHECK(eb.of("panel lights").emitMap == "panel lights_e.png" && eb.of("panel lights").emit == 2.5f && eb.of("panel lights").lights == 9 && eb.of("panel lights") == t, "an emission map, its brightness and its light save and load"); }
         { Materials sp; TexMaterial a; a.glow = 0.5f; sp.put("my texture 2", a); saveMaterials("/tmp/prim_mats2.txt", sp); Materials b; loadMaterials("/tmp/prim_mats2.txt", b); CHECK(b.of("my texture 2").glow == 0.5f, "names with spaces save too"); }
     }
 

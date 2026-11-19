@@ -48,7 +48,7 @@ void World::set(int x, int y, int z, BlockId id) {
     if (c.get(lx, ly, lz) == id) return;
     BlockId old = c.get(lx, ly, lz);
     c.set(lx, ly, lz, id); c.modified = true;
-    int lo = reg.get(old).light, ln = reg.get(id).light;
+    int lo = reg.get(old).lightOf(), ln = reg.get(id).lightOf();
     if (old != AIR && lo) c.emitters--;
     if (id != AIR && ln) c.emitters++;
     if (old != AIR && reg.get(old).mirror) c.mirrors--;
@@ -138,7 +138,7 @@ int World::tickLiquids() {
 
 int World::countEmitters(const Chunk& c) const {
     if (!c.nonAir) return 0;
-    int n = 0; for (BlockId v : c.b) if (v != AIR && reg.get(v).light) n++;
+    int n = 0; for (BlockId v : c.b) if (v != AIR && reg.get(v).lightOf()) n++;
     return n;
 }
 void World::recountEmitters() { for (auto& kv : chunks) { kv.second->emitters = countEmitters(*kv.second); kv.second->mirrors = countMirrors(*kv.second); } }

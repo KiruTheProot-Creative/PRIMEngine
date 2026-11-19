@@ -44,9 +44,12 @@ struct BlockDef {
     int light = 0;                       // glows: 0 = no, 1..15 = how far its light reaches (lamp = 15)
     uint32_t lightColor = 0xFFB873;      // colour of that light, 0xRRGGBB (warm lamp orange)
     // light levels (0..15) per colour channel a glowing block starts with: its brightest channel = light
+    int autoLight = 0; uint32_t autoLightColor = 0;   // (not saved) light from its textures' emission maps, set by the editor
+    int lightOf() const { return light > 0 ? light : autoLight; }   // how far its light reaches (its own setting first)
     void lightLevels(int out[3]) const {
-        int c[3] = { (int)(lightColor >> 16) & 255, (int)(lightColor >> 8) & 255, (int)lightColor & 255 }, m = std::max(1, std::max(c[0], std::max(c[1], c[2])));
-        for (int i = 0; i < 3; i++) out[i] = (light * c[i] + m / 2) / m;
+        int L = lightOf(); uint32_t col = light > 0 ? lightColor : autoLightColor;
+        int c[3] = { (int)(col >> 16) & 255, (int)(col >> 8) & 255, (int)col & 255 }, m = std::max(1, std::max(c[0], std::max(c[1], c[2])));
+        for (int i = 0; i < 3; i++) out[i] = (L * c[i] + m / 2) / m;
     }
     bool waves = false;                  // sways in the wind (leaves, plants)
     float shine = 0;                     // how much it reflects: 0 matt (dirt) .. 1 polished (metal, ice)
