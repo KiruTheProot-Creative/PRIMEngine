@@ -1628,8 +1628,10 @@ POut VS_Particle(PIn i)
     POut o;
     float size = i.info.x;
     float3 view = normalize(i.pos), p;
-    bool streak = fmod(i.info.w, 2) > 0.5;   // info.w: 1 = streak, +2 = soft (smoke) instead of glowing
-    if (streak)
+    int fl = (int)(i.info.w + 0.5);
+    bool streak = (fl & 1) != 0;   // info.w: 1 = streak, +2 = soft (smoke) instead of glowing, +4 = a ribbon's corner (already where it goes)
+    if ((fl & 4) != 0) p = i.pos;
+    else if (streak)
     {
         float3 v = i.vel - dot(i.vel, view) * view; float sp = length(v);
         float3 ax = sp > 1e-4 ? v / sp : gCamU.xyz;
@@ -1643,7 +1645,7 @@ POut VS_Particle(PIn i)
         float2 k = float2(c * i.corner.x - s * i.corner.y, s * i.corner.x + c * i.corner.y);
         p = i.pos + (gCamR.xyz * k.x + gCamU.xyz * k.y) * size * 0.5;
     }
-    o.pos = mul(float4(p, 1), gViewProj); o.uv = i.corner; o.col = i.col; o.rel = p; o.shape = i.info.z; o.seed = i.info.y; o.soft = i.info.w >= 1.5 ? 1 : 0;
+    o.pos = mul(float4(p, 1), gViewProj); o.uv = i.corner; o.col = i.col; o.rel = p; o.shape = i.info.z; o.seed = i.info.y; o.soft = (fl & 2) != 0 ? 1 : 0;
     return o;
 }
 float4 PS_Particle(POut i) : SV_Target
@@ -1658,6 +1660,7 @@ float4 PS_Particle(POut i) : SV_Target
     }
     else if (shape == 3) a = max(abs(q.x), abs(q.y)) < 0.75 ? 1 : 0;                                   // pixel
     else if (shape == 4) a = exp(-pow((r - 0.7) * 7, 2));                                                // ring
+    else if (shape == 6) a = exp(-q.x * q.x * 3.2) * 0.75 + exp(-q.x * q.x * 28) * 0.6;                     // ribbon: soft edges, a bright line down its middle
     else if (shape == 5) a = exp(-r * r * 9) + exp(-abs(q.x) * 14) * saturate(1 - abs(q.y)) + exp(-abs(q.y) * 14) * saturate(1 - abs(q.x));   // flare
     else a = exp(-r * r * 4.5) * saturate(1 - r);                                                        // soft dot
     // soft where it meets the world

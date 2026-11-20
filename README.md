@@ -459,6 +459,6 @@ Player > Weapons > Lock-on: on / off, hold or press-to-toggle, reach, how far fr
 - **How it rolls (3D editor)**, Body and movement > Morph Ball: the ball rolls on the spot in a little 3D view, with handles you drag:
   - the **axle** (yellow): the line the ball should roll around, like a wheel. **Balancing** pulls it across the way you roll, so the ball always rights itself and its middle stays in the middle (0: it tumbles freely).
   - the **turning point**: drag the model's middle (pink) off the point it turns around (white), for a ball that wobbles or rolls off-centre.
-  - the **trail** (ring in the trail's colour): where its glowing tail starts, behind / up / to the side; an example trail streams from it all the time. Colour, size and length below the view.
+  - the **trail** (ring in the trail's colour): where its glowing tail starts, behind / up / to the side; an example trail streams from it all the time. Colour, length and style below the view: **glowing dots**, a **ribbon of light** (a glowing strip that fades away behind the ball: width, how much thinner it gets, glow, and thin **edge streaks** that last a little longer), or both.
   - Drag empty space or hold the right mouse to turn the view, the wheel zooms; "Pause rolling" and a speed slider help line things up.
 - Sounds for the morph ball, bombs and breaking blocks: Player editor > Sounds.
