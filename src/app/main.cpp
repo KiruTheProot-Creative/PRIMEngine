@@ -4296,6 +4296,12 @@ struct App {
                 float z = d[0] * fc.camF[0] + d[1] * fc.camF[1] + d[2] * fc.camF[2];
                 float strength = settings.lensFlares ? std::max(0.f, lk.flare) : 0.f;
                 strength *= std::clamp((d[1] + 0.03f) * 12, 0.f, 1.f) * (1 - nightAmount) * (fc.envPart[2] > 0.5f ? 0.f : 1.f);
+                {   // is anything between you and the sun? (blocks, shut doors) - the picture can't tell when the sun is off screen
+                    float want = 1; V3 sd{ d[0], d[1], d[2] }; Hit hh;
+                    if (world && (world->raycast(camPos, sd, 384, hh) || world->sightBlocked(camPos, sd, 384) < 384)) want = 0;
+                    sunSeen += (want - sunSeen) * std::min(1.f, ImGui::GetIO().DeltaTime * 10);
+                    strength *= sunSeen;
+                }
                 if (z > 0.05f && strength > 0) {
                     float x = (d[0] * fc.camR[0] + d[1] * fc.camR[1] + d[2] * fc.camR[2]) / (z * fc.proj[0] * fc.proj[1]), y = (d[0] * fc.camU[0] + d[1] * fc.camU[1] + d[2] * fc.camU[2]) / (z * fc.proj[0]);
                     float edge = std::clamp(1.6f - std::max(std::fabs(x), std::fabs(y)), 0.f, 1.f);
@@ -4678,7 +4684,7 @@ struct App {
         ImGui::End();
     }
     // ---- Play mode
-    float editClock = -1;
+    float editClock = -1; float sunSeen = 1;   // (sunSeen: the lens flare's "nothing in front of the sun", eased)
     void StartPlay(bool grabMouse = true) {
         if (screen != Screen::Game || playMode) return;
         EndStroke(); brushMenu = false; placing.clear(); dupFrom = -1; platRun.clear(); previewPlatforms = false; if (movingObj >= 0) { movingObj = -1; RebuildSolids(); }

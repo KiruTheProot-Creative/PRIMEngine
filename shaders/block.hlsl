@@ -1513,7 +1513,7 @@ float4 PS_Post(SkyOut i) : SV_Target
         [unroll] for (int y = -2; y <= 2; y++) [unroll] for (int x = -2; x <= 2; x++)
         {
             int2 q = spx + int2(x, y) * 7;
-            vis += (all(q >= 0) && all(q < int2(gDepth.zw))) ? (gSceneDepth.Load(int3(q, 0)) >= 0.99999 ? 1 : 0) : 0.5;
+            vis += (all(q >= 0) && all(q < int2(gDepth.zw))) ? (gSceneDepth.Load(int3(q, 0)) >= 0.99999 ? 1 : 0) : 1;   // (off screen: the CPU's look toward the sun, in gFlare.z, decides)
         }
         vis /= 25;
         float k = gFlare.z * vis;
