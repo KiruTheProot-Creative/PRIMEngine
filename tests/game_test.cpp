@@ -149,7 +149,7 @@ int main() {
         CHECK(ps.health > 50 && ps.health < 70, "lava hurts (%.0f health after 1 s)", ps.health);
         int ev = 0; for (int k = 0; k < 120 && ev != PlayState::Died; k++) ev = ps.tick(w, q, pr, sp, 0, 1.0 / 60);
         CHECK(ev == PlayState::Died && ps.dead() && ps.deaths == 1, "staying in lava kills");
-        for (int k = 0; k < 200 && ev != PlayState::Respawned; k++) ev = ps.tick(w, q, pr, sp, 0, 1.0 / 60);
+        for (int k = 0; k < 600 && ev != PlayState::Respawned; k++) ev = ps.tick(w, q, pr, sp, 0, 1.0 / 60);   // (after the death sequence)
         CHECK(ev == PlayState::Respawned && ps.health == pr.maxHealth && q.feet.x == 0.5, "after dying you come back at the spawn point");
         q.feet = { 0.5, -70, 0.5 }; ev = ps.tick(w, q, pr, sp, 0, 1.0 / 60);
         CHECK(ev == PlayState::Died && std::string(ps.cause) == "fell out of the world", "falling out of the world kills");
@@ -1581,6 +1581,16 @@ int main() {
         CHECK(ps.lowHealthVolume(0) == 1 && ps.lowHealthVolume(2) < 1 && ps.lowHealthVolume(2) > 0.2f && std::fabs(ps.lowHealthVolume(10) - 0.2f) < 1e-5, "the low-energy alarm fades from full to its quiet level");
         savePlayerSounds("/tmp/prim_ps_low.txt", ps); PlayerSounds pl; loadPlayerSounds("/tmp/prim_ps_low.txt", pl);
         CHECK(pl.lowHealthFade == 4 && pl.lowHealthQuiet == 0.2f, "... and its fade saves and loads");
+    }
+    {   // the death sequence: its settings save and load, and you come back only after it
+        GameSettings g; g.player.deathHit = 0.3f; g.player.deathStatic = 2; g.player.deathTvOff = false; g.player.deathStaticColor = 0x40FF80; g.player.respawnDelay = 1;
+        g.save("/tmp/prim_game_death.txt"); GameSettings gl; gl.load("/tmp/prim_game_death.txt");
+        CHECK(gl.player.deathHit == 0.3f && gl.player.deathStatic == 2 && !gl.player.deathTvOff && gl.player.deathStaticColor == 0x40FF80 && gl.player.deathFx, "the death sequence's settings save and load");
+        World w(reg); Player p; PlayState ps; ps.start(p, gl.player, { 0, 64, 0 }, 0); ps.health = 0;
+        ps.tick(w, p, gl.player, { 0, 64, 0 }, 0, 0.01); CHECK(ps.dead(), "dead");
+        double total = gl.player.deathLength(); bool back = false; for (double t = 0; t < total - 0.05; t += 0.05) if (ps.tick(w, p, gl.player, { 0, 64, 0 }, 0, 0.05) == PlayState::Respawned) back = true;
+        CHECK(!back && ps.dead(), "no coming back during the death sequence (%.2f s, respawn after 1 s)", total);
+        for (int k = 0; k < 20 && ps.dead(); k++) ps.tick(w, p, gl.player, { 0, 64, 0 }, 0, 0.05); CHECK(!ps.dead(), "... back right after it");
     }
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
     return fails ? 1 : 0;

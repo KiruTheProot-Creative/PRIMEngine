@@ -137,7 +137,7 @@ struct ModelGpu { std::vector<std::pair<I3, GpuChunk>> parts; std::vector<Box3> 
 struct alignas(16) PreviewCB { float vp[16]; float light[4]; };
 struct alignas(16) MapCB { float vp[16]; float eye[4]; float center[4]; float mode[4]; };   // the map hologram
 struct alignas(16) VisorCB { float tint[4], grade[4], lines[4], edge[4], misc[4], hud[4], outline[4]; };
-struct alignas(16) LookCB { float k0[4], k1[4], shadow[4], high[4], adapt[4]; };   // the colour look (b10)   // the visor's look (post-processing)   // a block model's meshes (16^3 pieces) and collision
+struct alignas(16) LookCB { float k0[4], k1[4], shadow[4], high[4], adapt[4], death[4], deathCol[4]; };   // the colour look (b10)   // the visor's look (post-processing)   // a block model's meshes (16^3 pieces) and collision
 
 struct App;
 static App* g_app = nullptr;
@@ -3488,9 +3488,15 @@ struct App {
             camPos += V3{ std::sin(tt * 53.1) * 0.09 * k, std::sin(tt * 61.7 + 1.3) * 0.07 * k, std::sin(tt * 47.3 + 2.1) * 0.09 * k };
             f = normalize(f + V3{ std::sin(tt * 37.9) * 0.025 * k, std::sin(tt * 43.3 + 0.7) * 0.025 * k, std::sin(tt * 31.1 + 1.9) * 0.025 * k });
         }
-        V3 r = normalize(cross({ 0, 1, 0 }, f)), u = cross(f, r);
+        V3 upv{ 0, 1, 0 };
+        {   // dying: the view sinks (to the knees) and tilts
+            DeathFx dfx = DeathNow();
+            if (dfx.drop > 0 && !player.ball) camPos.y -= dfx.drop * std::max(0.3, (double)game.player.eyeHeight * 0.5);
+            if (dfx.roll > 0) { double a = dfx.roll * 0.21; V3 r0 = normalize(cross({ 0, 1, 0 }, f)); upv = V3{ 0, 1, 0 } * std::cos(a) + r0 * std::sin(a); f = normalize(f + V3{ 0, -0.25 * dfx.roll, 0 }); }
+        }
+        V3 r = normalize(cross(upv, f)), u = cross(f, r);
         float farZ = (settings.renderDistance + 2) * CS * 1.5f;
-        view = XMMatrixLookToLH(XMVectorZero(), XMVectorSet((float)f.x, (float)f.y, (float)f.z, 0), XMVectorSet(0, 1, 0, 0));   // camera at the origin
+        view = XMMatrixLookToLH(XMVectorZero(), XMVectorSet((float)f.x, (float)f.y, (float)f.z, 0), XMVectorSet((float)upv.x, (float)upv.y, (float)upv.z, 0));   // camera at the origin
         proj = XMMatrixPerspectiveFovLH(XMConvertToRadians(settings.fov), aspect, 0.05f, farZ);
         XMMATRIX vp = view * proj;
         FrameCB fc{}; XMStoreFloat4x4(&fc.viewProj, vp);
@@ -3911,6 +3917,8 @@ struct App {
             lc.k1[0] = lk.warmth; lc.k1[1] = settings.filmFx ? lk.fringes : 0; lc.k1[2] = settings.filmFx ? lk.grain : 0; lc.k1[3] = lk.vignette;
             lin(lk.shadows, lc.shadow); lc.shadow[3] = lk.shadowsAmount; lin(lk.highlights, lc.high); lc.high[3] = lk.highlightsAmount;
             lc.adapt[0] = adaptOn ? lk.adapt : 0; lc.adapt[1] = std::min(ImGui::GetIO().DeltaTime, 0.1f); lc.adapt[2] = std::max(0.05f, lk.adaptSpeed);
+            { DeathFx dfx = DeathNow(); lc.death[0] = dfx.stat; lc.death[1] = dfx.shut; lc.death[2] = dfx.tv; lc.death[3] = (float)std::fmod(animTime, 1000.0);
+              for (int k = 0; k < 3; k++) lc.deathCol[k] = std::pow(((game.player.deathStaticColor >> (16 - 8 * k)) & 255) / 255.f, 2.2f); lc.deathCol[3] = dfx.black; }
             ctx->UpdateSubresource(cbLook.Get(), 0, nullptr, &lc, 0, 0); ctx->PSSetConstantBuffers(10, 1, cbLook.GetAddressOf());
         }
         if (adaptOn) {
@@ -4353,7 +4361,7 @@ struct App {
             dl->AddRectFilled(ImVec2(p.x - 18, p.y - 10), ImVec2(p.x + ts.x + 18, p.y + ts.y + 10), IM_COL32(0, 0, 0, (int)(130 * a)), 6.f);
             dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), p, IM_COL32(255, 255, 255, (int)(255 * a)), bigMsg.c_str()); ImGui::PopFont();
         }
-        if (play.dead() && screens.byRole(ScreenRole::Death) < 0) {   // (the game's own death screen shows instead, if it has one)
+        if (play.dead() && screens.byRole(ScreenRole::Death) < 0 && (!game.player.deathFx || play.deadFor >= game.player.deathLength())) {   // (the game's own death screen shows instead, if it has one; after the death sequence)
             dl->AddRectFilled(ImVec2(vx, vy), ImVec2(vx + W, vy + H), IM_COL32(60, 0, 0, 140));
             std::string a = "You died", b = std::string("You ") + play.cause + ". Back in " + std::to_string((int)std::ceil(std::max(0.0, game.player.respawnDelay - play.deadFor))) + " s";
             ImGui::PushFont(nullptr, ImGui::GetFontSize() * 2.5f); ImVec2 t1 = ImGui::CalcTextSize(a.c_str());
@@ -5147,7 +5155,7 @@ struct App {
     // one element drawn into its plane's picture (W x H pixels)
     void DrawHudElement(ImDrawList* dl, const HudElement& e, float W, float H, const HudValues& v) {
         if (!ElementShown(e)) return;
-        float a = e.alpha;
+        float a = e.alpha * (playMode ? DeathHudAlpha(e) : 1.f); if (a <= 0.001f) return;
         if (playMode) { auto f = hudFlashAt.find(e.name); if (f != hudFlashAt.end() && animTime - f->second < 1.5) a *= 0.25f + 0.75f * (0.5f + 0.5f * (float)std::cos((animTime - f->second) * 18)); }
         auto col = [&](float k) { return IM_COL32((e.color >> 16) & 255, (e.color >> 8) & 255, e.color & 255, (int)std::clamp(a * k * 255, 0.f, 255.f)); };
         ImVec2 p0(e.x * W, e.y * H), p1((e.x + e.w) * W, (e.y + e.h) * H);
@@ -5164,7 +5172,8 @@ struct App {
             break;
         }
         case HudKind::Text: {
-            std::string t = hudText(e, v); ImFont* font = ImGui::GetFont(); float size = std::max(4.f, (p1.y - p0.y) * e.textSize);
+            std::string t = hudText(e, v);
+            if (playMode && DeathNow().hudGlitch > 0) for (char& ch : t) if (ch >= '0' && ch <= '9' && std::fmod(animTime * 31 + (&ch - t.data()) * 0.37, 1.0) < 0.6) ch = (char)('0' + (int)(std::fmod(animTime * 97 + (&ch - t.data()) * 7.1, 10.0)));   // dying: the numbers scramble ImFont* font = ImGui::GetFont(); float size = std::max(4.f, (p1.y - p0.y) * e.textSize);
             ImVec2 ts = font->CalcTextSizeA(size, FLT_MAX, 0, t.c_str());
             float x = e.align == 0 ? p0.x : e.align == 1 ? (p0.x + p1.x - ts.x) * 0.5f : p1.x - ts.x;
             dl->AddText(font, size, ImVec2(x, (p0.y + p1.y - ts.y) * 0.5f), col(1), t.c_str());
@@ -5884,6 +5893,22 @@ struct App {
         sl("Fall damage", &r.fallDamage, 0, 50, r.fallDamage <= 0 ? "off" : "%.0f per block (after 4)");
         sl("Death below height", &r.voidDepth, -512, 0, "y = %.0f");
         sl("Respawn after", &r.respawnDelay, 0, 10, "%.1f s");
+        ImGui::SeparatorText("The death sequence");
+        Prop("Death sequence"); ch |= ImGui::Checkbox("##dfx", &r.deathFx);
+        if (r.deathFx) {
+            sl("The hit", &r.deathHit, 0, 2, r.deathHit <= 0 ? "left out" : "%.2f s");
+            Prop("... in slow motion"); ch |= ImGui::Checkbox("##dsm", &r.deathSlowMo);
+            sl("Static", &r.deathStatic, 0, 4, r.deathStatic <= 0 ? "left out" : "%.2f s");
+            sl("... how strong", &r.deathStaticAmount, 0, 2, "%.2f");
+            { float c[3] = { ((r.deathStaticColor >> 16) & 255) / 255.f, ((r.deathStaticColor >> 8) & 255) / 255.f, (r.deathStaticColor & 255) / 255.f }; Prop("... its colour");
+              if (ImGui::ColorEdit3("##dsc", c, ImGuiColorEditFlags_NoInputs)) { r.deathStaticColor = ((uint32_t)std::lround(c[0] * 255) << 16) | ((uint32_t)std::lround(c[1] * 255) << 8) | (uint32_t)std::lround(c[2] * 255); ch = true; } }
+            sl("The suit shuts down", &r.deathShutdown, 0, 4, r.deathShutdown <= 0 ? "left out" : "%.2f s");
+            Prop("... the view sinks"); ch |= ImGui::Checkbox("##ddr", &r.deathDrop);
+            sl("Switching off", &r.deathOff, 0, 2, r.deathOff <= 0 ? "left out" : "%.2f s");
+            Prop("... like an old TV"); ch |= ImGui::Checkbox("##dtv", &r.deathTvOff);
+            Prop("Any button skips"); ch |= ImGui::Checkbox("##dsk", &r.deathSkip);
+            Hint("%.1f s in all. The hit: slow motion, a flash. Static: the visor fills with noise, the HUD flickers and drops out piece by piece. The suit shuts down: colour drains away, it goes dark, the view sinks. Then it switches off - and the Death screen (Screens) comes, or you come back. Sounds: Player > Sounds > Death.", r.deathLength());
+        }
         Hint("Energy Tanks add to the health, suits take damage away: Items tab.");
         ImGui::Spacing();
         if (ImGui::Button("Reset all of this")) { r = PlayerRules{}; ch = true; }
@@ -7325,10 +7350,62 @@ struct App {
         if (!playMode && sc->bg.kind == BgKind::World && sc->bg.turn != 0) player.yaw += sc->bg.turn * dt * 3.14159265358979 / 180;   // the view turns slowly
         // dying while playing: the death screen (if the game has one)
     }
+    // ---- the death sequence (Player > Rules > Health and dying): the hit, static, the suit shutting down, the picture switching off
+    struct DeathFx { float slow = 1, stat = 0, shut = 0, tv = 0, black = 0, drop = 0, roll = 0, hud = 1, hudGlitch = 0; float statPhase = -1; };
+    DeathFx DeathNow() const {
+        DeathFx f; const PlayerRules& r = game.player;
+        if (!playMode || !play.dead() || !r.deathFx) return f;
+        float t = (float)play.deadFor, h = std::max(0.f, r.deathHit), s = std::max(0.f, r.deathStatic), d = std::max(0.f, r.deathShutdown), o = std::max(0.f, r.deathOff);
+        auto sm = [](float x) { x = std::clamp(x, 0.f, 1.f); return x * x * (3 - 2 * x); };
+        float amt = std::clamp(r.deathStaticAmount, 0.f, 2.f);
+        if (t < h) { f.slow = r.deathSlowMo ? 0.3f : 1.f; f.stat = 0.35f * amt * (t / std::max(h, 1e-3f)); f.hudGlitch = 0.3f; return f; }
+        t -= h;
+        if (t < s) { float k = t / std::max(s, 1e-3f); f.stat = amt * (0.35f + 0.65f * sm(k)); f.statPhase = k; f.hudGlitch = 1; return f; }
+        t -= s; f.hud = 0;
+        if (t < d) { float m = sm(t / std::max(d, 1e-3f)); f.stat = amt * (1 - m) * 0.7f; f.shut = m; if (r.deathDrop) { f.drop = m; f.roll = m; } return f; }
+        t -= d; f.shut = 1; if (r.deathDrop) { f.drop = 1; f.roll = 1; }
+        float q = std::clamp(t / std::max(o, 1e-3f), 0.f, 1.f);
+        if (r.deathTvOff && o > 0) f.tv = q; else f.black = q;
+        if (t >= o) { f.tv = r.deathTvOff ? 1.f : 0.f; f.black = 1; }
+        return f;
+    }
+    float DeathHudAlpha(const HudElement& e) const {   // the HUD dying: each element flickers and drops out at its own moment during the static
+        DeathFx f = DeathNow(); if (f.hud <= 0) return 0; if (f.statPhase < 0) return f.hudGlitch > 0 && std::fmod(animTime * 23, 1.0) < 0.15 ? 0.4f : 1.f;
+        uint32_t hsh = 2166136261u; for (char ch : e.name) hsh = (hsh ^ (uint8_t)ch) * 16777619u; hsh ^= (uint32_t)(e.x * 1000) * 2654435761u ^ (uint32_t)(e.y * 1000) * 40503u;
+        float at = 0.15f + 0.8f * ((hsh >> 8) % 1000) / 1000.f;   // when it goes
+        if (f.statPhase >= at) return 0;
+        if (f.statPhase > at - 0.25f) return std::fmod(animTime * (17 + (hsh % 13)), 1.0) < 0.5 ? 1.f : 0.f;   // flickering before it goes
+        return 1;
+    }
+    int deathPhaseWas = -1; IXAudio2SourceVoice* deathStaticVoice = nullptr; SoundUse deathStaticUse; IXAudio2SourceVoice* powerVoice = nullptr; SoundUse powerUse;
+    static constexpr int TAG_DEATHSTATIC = 34, TAG_POWERDOWN = 35;
+    void UpdateDeathSounds() {
+        const PlayerRules& r = game.player; DeathFx f = DeathNow();
+        int phase = !playMode || !play.dead() || !r.deathFx ? -1 : f.statPhase >= 0 ? 1 : f.hud > 0 ? 0 : f.tv > 0 || f.black > 0 ? 3 : 2;
+        if (phase != deathPhaseWas) {
+            if (phase == 1 && !playerSounds.deathStatic.empty()) { if (const SoundUse* u = playerSounds.deathStatic.pick(soundSeed)) { deathStaticUse = *u; deathStaticVoice = PlaySoundIn(SND_MENUS, deathStaticUse, 0.02f, nullptr, TAG_DEATHSTATIC, true); } }
+            if (phase == 2 && !playerSounds.deathPowerDown.empty()) { if (const SoundUse* u = playerSounds.deathPowerDown.pick(soundSeed)) { powerUse = *u; powerVoice = PlaySoundIn(SND_MENUS, powerUse, 1, nullptr, TAG_POWERDOWN); } }
+            if (phase == 3 && deathPhaseWas == 2) GameSnd(&PlayerSounds::deathOff);
+            if (phase < 0 || phase == 3) { if (deathStaticVoice) StopSounds(TAG_DEATHSTATIC); deathStaticVoice = nullptr; }
+            if (phase < 0) { if (powerVoice) StopSounds(TAG_POWERDOWN); powerVoice = nullptr; }
+            deathPhaseWas = phase;
+        }
+        if (deathStaticVoice) deathStaticVoice->SetVolume(deathStaticUse.volume * std::clamp(f.stat, 0.f, 1.5f) * CatVolume(SND_MENUS));
+        if (powerVoice && phase == 2) powerVoice->SetFrequencyRatio(std::clamp(powerUse.pitch * (1 - 0.5f * std::clamp(playerSounds.powerDownFall, 0.f, 1.f) * f.shut), 0.1f, 4.f));
+    }
+    bool deathSkipHeld = true;
+    void DeathSkip() {   // any button after the first moment: straight to the end
+        const PlayerRules& r = game.player;
+        if (!playMode || !play.dead() || !r.deathFx || !r.deathSkip || paused) { deathSkipHeld = true; return; }
+        if (play.deadFor < r.deathHit + 0.6) { deathSkipHeld = ActDown(Act::Jump) || ActDown(Act::Fire) || Down(VK_SPACE) || Down(VK_RETURN); return; }
+        bool any = GetForegroundWindow() == hwnd && (ActDown(Act::Jump) || ActDown(Act::Fire) || Down(VK_SPACE) || Down(VK_RETURN));
+        if (any && !deathSkipHeld) play.deadFor = std::max(play.deadFor, (double)r.deathLength());   // (a new press: not the trigger still held from before)
+        deathSkipHeld = any;
+    }
     void CheckDeathScreen() {
         if (!playMode || curScreen >= 0 || !play.dead()) return;
         int d = screens.byRole(ScreenRole::Death); if (d < 0) return;
-        if (play.deadFor < std::min(0.6, game.player.respawnDelay * 0.5)) return;   // (a moment to see what happened)
+        if (play.deadFor < (game.player.deathFx ? game.player.deathLength() : std::min(0.6, game.player.respawnDelay * 0.5))) return;   // (after the death sequence, or a moment to see what happened)
         ShowScreen(d, false);
     }
 
@@ -8719,7 +8796,7 @@ struct App {
     std::map<uint32_t, float> enemyAnimT; std::map<uint32_t, int> enemyAnimClip;
     struct EnemyShot { V3 pos, dir; float speed, damage, life; uint32_t color; std::string from; float gravity = 0, homing = 0, size = 0.22f; };
     std::vector<EnemyShot> enemyShots;
-    struct EnemyDropRt { V3 pos; std::string what; int amount; float life; uint32_t id; };
+    struct EnemyDropRt { V3 pos; std::string what; int amount; float life; uint32_t id; V3 vel{ 0, 0, 0 }; };
     std::vector<EnemyDropRt> enemyDrops; uint32_t dropSeq = 0;
     float playerInvuln = 0; uint32_t enemyRand = 12345;
     float Rand01() { enemyRand = enemyRand * 1664525u + 1013904223u; return (enemyRand >> 8) / 16777216.f; }
@@ -8774,9 +8851,10 @@ struct App {
         bool animated = false;
         if (t.death == EnemyDeath::Animation) { auto mi = meshModels.find(t.model); animated = mi != meshModels.end() && mi->second.findClip(t.animDie) >= 0; }
         if (t.death == EnemyDeath::Explode || t.death == EnemyDeath::Fracture || (t.death == EnemyDeath::Animation && !animated)) SpawnDebris(o, s, t, t.death == EnemyDeath::Explode);
-        if (drops) for (const EnemyDrop& d : t.drops) if (Rand01() < d.chance) {   // what it leaves behind
+        if (drops) for (const EnemyDrop& d : t.drops) if (Rand01() < d.chance) {   // what it leaves behind (nothing you could not use: missiles before the launcher ...)
+            if (d.what != "Energy" && ((d.what == weapons.missileCounter && MissileMax() <= 0) || (d.what == items.powerBombCounter && PowerBombMax() <= 0))) continue;
             V3 at = c + V3{ (Rand01() - 0.5) * 0.6, 0, (Rand01() - 0.5) * 0.6 }; if (at.y < s.pos.y + 0.3) at.y = s.pos.y + 0.3;
-            enemyDrops.push_back({ at, d.what, d.amount, 12, ++dropSeq });
+            enemyDrops.push_back({ at, d.what, d.amount, 12, ++dropSeq, V3{ (Rand01() - 0.5) * 2.0, 2.5, (Rand01() - 0.5) * 2.0 } });
         }
         if (t.respawn == EnemyRespawn::Never) enemyGone.insert(GoneKey(o.id));
         s.respawnIn = t.respawn == EnemyRespawn::After ? t.respawnTime : -1;
@@ -8995,14 +9073,23 @@ struct App {
         }
         enemyShots.erase(std::remove_if(enemyShots.begin(), enemyShots.end(), [](const EnemyShot& s) { return s.life <= 0; }), enemyShots.end());
         SpawnQueued(); UpdateBossBar(dt);
-        for (EnemyDropRt& d : enemyDrops) {   // what they left: picked up by walking (or rolling) into it
+        for (EnemyDropRt& d : enemyDrops) {   // what they left: it hops out, falls to the ground, and is pulled to you when you are close (like Prime)
             d.life -= (float)dt;
-            Box3 db{ d.pos - V3{ 0.35, 0.35, 0.35 }, d.pos + V3{ 0.35, 0.35, 0.35 } };
+            V3 to = you - d.pos; double dist = std::sqrt(to.x * to.x + to.y * to.y + to.z * to.z);
+            if (dist < 3.0 && !play.dead()) { d.vel = to * (std::min(14.0, 4.0 + (3.0 - dist) * 6.0) / std::max(dist, 1e-3)); d.pos = d.pos + d.vel * dt; }
+            else {
+                d.vel.y -= 14 * dt; d.vel.x *= std::exp(-3 * dt); d.vel.z *= std::exp(-3 * dt);
+                V3 np = d.pos + d.vel * dt;
+                if (EnemySolid(ifloor(np.x), ifloor(np.y - 0.3), ifloor(np.z))) { np.y = std::floor(np.y - 0.3) + 1.3; d.vel = { 0, 0, 0 }; }
+                if (EnemySolid(ifloor(np.x), ifloor(np.y), ifloor(np.z))) { np.x = d.pos.x; np.z = d.pos.z; }
+                d.pos = np;
+            }
+            Box3 db{ d.pos - V3{ 0.45, 0.45, 0.45 }, d.pos + V3{ 0.45, 0.45, 0.45 } };
             if (d.life > 0 && BoxesTouch(db, youBox) && !play.dead()) {
-                if (d.what == "Energy") { if (play.health >= playRules.maxHealth) continue; play.health = std::min(playRules.maxHealth, play.health + (float)d.amount); Toast("+" + std::to_string(d.amount) + " energy"); GameSnd(&PlayerSounds::pickHealth, SND_WORLD); }
+                if (d.what == "Energy") { int got = (int)std::lround(std::min(playRules.maxHealth, play.health + (float)d.amount) - play.health); play.health = std::min(playRules.maxHealth, play.health + (float)d.amount); if (got > 0) Toast("+" + std::to_string(got) + " energy"); GameSnd(&PlayerSounds::pickHealth, SND_WORLD); }
                 else {
                     int& c = inv.counts[d.what]; int most = d.what == weapons.missileCounter ? MissileMax() : d.what == items.powerBombCounter ? PowerBombMax() : 1 << 20;
-                    if (c >= most) continue; c = std::min(most, c + d.amount); Toast("+" + std::to_string(d.amount) + " " + d.what); GameSnd(&PlayerSounds::pickAmmo, SND_WORLD);
+                    int got = std::max(0, std::min(most, c + d.amount) - c); c += got; if (got > 0) Toast("+" + std::to_string(got) + " " + d.what); GameSnd(&PlayerSounds::pickAmmo, SND_WORLD);   // (full: picked up anyway)
                 }
                 d.life = 0;
             }
@@ -13261,7 +13348,11 @@ struct App {
         uiClock += dt; menuSlideT += dt;
         fpsAcc += dt; fpsN++; if (fpsAcc > 0.5) { fps = fpsN / fpsAcc; fpsAcc = 0; fpsN = 0; }
         PollTextures(dt);
-        if (screen == Screen::Game) { UpdateGame(dt); UpdateScreens(dt); UpdateStart(dt); CheckDeathScreen(); if (playMode && !paused && !CurScreen()) playTime += dt; }
+        if (screen == Screen::Game) {
+            float slow = DeathNow().slow; double gdt = dt * slow; UpdateGame(gdt);
+            if (slow < 1 && playMode && !paused && play.dead()) play.deadFor += dt - gdt;   // (slow motion: the world slows, the sequence does not)
+            DeathSkip(); UpdateDeathSounds();
+            UpdateScreens(dt); UpdateStart(dt); CheckDeathScreen(); if (playMode && !paused && !CurScreen()) playTime += dt; }
 
         ImGui::GetStyle().FontScaleMain = settings.uiScale;
         ImGui_ImplDX11_NewFrame(); ImGui_ImplWin32_NewFrame(); ImGui::NewFrame();

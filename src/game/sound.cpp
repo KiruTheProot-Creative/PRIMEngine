@@ -126,7 +126,9 @@ const std::vector<GameSoundSlot>& gameSoundSlots() {
         { "loop_thermal", "In the Thermal Visor (a loop)", &PlayerSounds::loopThermal, "Visors and scanning" }, { "loop_xray", "In the X-Ray Visor (a loop)", &PlayerSounds::loopXRay, "Visors and scanning" },
         { "door_open", "A door opens", &PlayerSounds::doorOpen, "Doors" }, { "door_close", "A door closes", &PlayerSounds::doorClose, "Doors" },
         { "door_field", "Its forcefield is shot away", &PlayerSounds::doorField, "Doors" }, { "door_locked", "It won't open (locked, wrong weapon, no key)", &PlayerSounds::doorLocked, "Doors" },
-        { "hurt", "Getting hurt", &PlayerSounds::hurt, "Pickups and alerts" }, { "low_health", "Low energy (an alarm, a loop)", &PlayerSounds::lowHealth, "Pickups and alerts" }, { "death", "Dying", &PlayerSounds::death, "Pickups and alerts" },
+        { "hurt", "Getting hurt", &PlayerSounds::hurt, "Pickups and alerts" }, { "low_health", "Low energy (an alarm, a loop)", &PlayerSounds::lowHealth, "Pickups and alerts" },
+        { "death", "Dying: the hit", &PlayerSounds::death, "Death" }, { "death_static", "Static in the visor (a loop)", &PlayerSounds::deathStatic, "Death" },
+        { "death_power", "The suit powering down", &PlayerSounds::deathPowerDown, "Death" }, { "death_off", "The picture switching off", &PlayerSounds::deathOff, "Death" },
     };
     return v;
 }
@@ -137,7 +139,7 @@ bool savePlayerSounds(const std::string& path, const PlayerSounds& p) {
     put("step", p.step); put("jump", p.jump); put("land", p.land); put("morph", p.morph); put("bomb", p.bomb); put("boom", p.boom); put("crumble", p.crumble);
     put("roll", p.roll); put("ball_land", p.ballLand); f << "\nroll_pitch " << p.rollPitch;
     for (const GameSoundSlot& g : gameSoundSlots()) put(g.key, p.*g.set);
-    f << "\nscan_pitch " << p.scanPitch << "\nlow_health_at " << p.lowHealthAt << " " << p.lowHealthEvery << "\nvisor_loop_volume " << p.visorLoopVolume << "\nlow_health_fade " << p.lowHealthFade << " " << p.lowHealthQuiet;
+    f << "\nscan_pitch " << p.scanPitch << "\nlow_health_at " << p.lowHealthAt << " " << p.lowHealthEvery << "\nvisor_loop_volume " << p.visorLoopVolume << "\nlow_health_fade " << p.lowHealthFade << " " << p.lowHealthQuiet << "\npower_down_fall " << p.powerDownFall;
     f << "\nevery " << p.stepEvery << "\nlanding " << p.landQuiet << " " << p.landLoud << "\n";
     return (bool)f;
 }
@@ -154,6 +156,7 @@ bool loadPlayerSounds(const std::string& path, PlayerSounds& p) {
         else if (k == "roll_pitch") { std::istringstream r(rest); r >> p.rollPitch; }
         else if (k == "visor_loop_volume") { std::istringstream r(rest); r >> p.visorLoopVolume; }
         else if (k == "low_health_fade") { std::istringstream r(rest); r >> p.lowHealthFade >> p.lowHealthQuiet; }
+        else if (k == "power_down_fall") { std::istringstream r(rest); r >> p.powerDownFall; }
         else if (k == "every") { std::istringstream r(rest); r >> p.stepEvery; }
         else if (k == "landing") { std::istringstream r(rest); r >> p.landQuiet >> p.landLoud; }
     }

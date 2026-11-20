@@ -1309,6 +1309,8 @@ cbuffer LookCB : register(b10)
     float4 gLkShadow;  // rgb: colour in the dark parts (linear), w how much
     float4 gLkHigh;    // rgb: colour in the bright parts, w how much
     float4 gLkAdapt;   // x how much the eye adapts, y seconds since last frame, z how fast, w -
+    float4 gDeath;     // dying: x static in the visor, y the suit shutting down (dark, grey), z the picture switching off (0..1), w the clock
+    float4 gDeathCol;  // rgb the static's colour, w black
 };
 Texture2D gExposure : register(t16);   // 1x1: the eye's adaptation (stops), see PS_Adapt
 Texture2D gLumTex : register(t17);     // log brightness of the picture, with mips (PS_LumLog)
@@ -1396,15 +1398,51 @@ float3 heatPalette(float t)   // cold (dark blue) .. hot (white)
     return lerp(d, e, (t - 0.75) / 0.25);
 }
 float postHash(float2 p) { float3 p3 = frac(float3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return frac((p3.x + p3.y) * p3.z); }
+// dying: static, the suit shutting down, black (applied last, before gamma)
+float3 deathFx(float3 c, int2 px, float boost)
+{
+    const float3 W = float3(0.2126, 0.7152, 0.0722); float t = gDeath.w;
+    float a = gDeath.x;
+    if (a > 0.001)
+    {
+        float n = postHash(float2(px) * 0.73 + frac(t * 13.7) * 517);
+        c = lerp(c, gDeathCol.rgb * n * 1.4, saturate(a * 0.55));                     // noise in the static's colour
+        c *= 1 - a * 0.35 * (float)(px.y & 1);                                          // scanlines
+        c *= 1 - a * 0.25 * postHash(float2(floor(t * 30), 7));                         // the whole picture flickering
+    }
+    float sd = gDeath.y;
+    if (sd > 0.001) { float l = dot(c, W); c = lerp(c, l.xxx, sd) * (1 - 0.92 * sd); }   // the colour drains away, it goes dark
+    return c * (1 - gDeathCol.w) * boost;
+}
 float4 PS_Post(SkyOut i) : SV_Target
 {
+    float tvBoost = 1;
+    if (gDeath.z > 0.001)   // an old TV switching off: the picture squeezes into a bright line, the line into a dot, then black
+    {
+        float p = gDeath.z;
+        if (p >= 0.6)
+        {
+            float q = saturate((p - 0.6) / 0.4), w = lerp(0.7, 0.0, q * q), lh = 3 / max(gDepth.w, 1);
+            float k = saturate(1 - abs(i.ndc.y) / lh) * saturate(1 - abs(i.ndc.x) / max(w, 1e-4)) * (1 - q * 0.6);
+            return float4(k.xxx * (1 - gDeathCol.w * 0), 1);
+        }
+        float band = lerp(1, 0.004, smoothstep(0, 1, p / 0.6));
+        if (abs(i.ndc.y) > band) return float4(0, 0, 0, 1);
+        i.ndc.y /= band; i.pos.y = (-i.ndc.y * 0.5 + 0.5) * gDepth.w;
+        tvBoost = 1 + 4 * (1 - band) * (1 - band);
+    }
+    if (gDeath.x > 0.01)   // static: rows of the picture torn sideways
+    {
+        float row = floor(i.pos.y / 7), ft = floor(gDeath.w * 24);
+        if (postHash(float2(row, ft)) > 1 - 0.35 * gDeath.x) { float sh = (postHash(float2(row + 3.1, ft)) - 0.5) * 90 * gDeath.x; i.pos.x = clamp(i.pos.x + sh, 0, gDepth.z - 1); i.ndc.x = i.pos.x / gDepth.z * 2 - 1; }
+    }
     int2 px = int2(i.pos.xy);
     float2 uv = i.ndc * float2(0.5, -0.5) + 0.5;
     float dz = gSceneDepth.Load(int3(px, 0));
     if (dz >= gVHud.x && dz < gVHud.y) {   // the helmet's own parts: no visor look, no grade, no eye adaptation on them (the arm cannon gets it)
         float3 h = postBase(px, uv, 1);
         float2 v0 = i.ndc; h *= 1 - 0.18 * dot(v0, v0) * 0.5;
-        return float4(pow(max(h, 0), 1 / 2.2), 1);
+        return float4(pow(max(deathFx(h, px, tvBoost), 0), 1 / 2.2), 1);
     }
     float expo = lookExposure();
     float3 c = postBase(px, uv, expo);
@@ -1443,7 +1481,7 @@ float4 PS_Post(SkyOut i) : SV_Target
     float2 v = i.ndc; c *= 1 - gLk1.w * dot(v, v) * 0.5;               // the look's vignette
     c *= 1 - gVGrade.w * dot(v, v) * 0.5;                               // ... and the visor's own
     c = lerp(c, float3(1, 1, 1), saturate(gVMisc.w) * 0.6);             // switching visors: a flash
-    return float4(pow(max(c, 0), 1 / 2.2), 1);
+    return float4(pow(max(deathFx(c, px, tvBoost), 0), 1 / 2.2), 1);
 }
 
 // ---------------------------------------------------------------- the 3D viewer: a model alone, with simple light

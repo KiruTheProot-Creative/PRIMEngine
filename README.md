@@ -199,6 +199,23 @@ which fades in over a second and a half as you walk in.
 - The **HUD's 3D parts** (helmet, arm cannon) are always lit by the world around you: lights, glowing blocks nearby,
   the sun and the darkness.
 
+## The death sequence (Player > Rules > Health and dying)
+
+Like Metroid Prime: when your energy runs out the suit dies with you.
+
+1. **The hit** - slow motion, a flash, the last hurt.
+2. **Static** - the visor fills with noise in a colour of your choice, rows tear sideways, scanlines flicker; the HUD
+   glitches, its numbers scramble, and its elements flicker and drop out one by one.
+3. **The suit shuts down** - the colour drains away and it goes dark; the view sinks and tilts.
+4. **Switching off** - like an old TV: the picture squeezes into a bright line, then a dot, then black.
+
+Then the Death screen (Screens) or you come back. Each part's length (0 leaves it out), slow motion, the sinking view,
+the TV switch-off and "any button skips" can be changed. Sounds (Player > Sounds > Death): the hit, static (a loop that
+rises and fades), the suit powering down (its pitch falls), the switch-off.
+
+Enemy drops hop out, fall to the ground, and are pulled to you when you are close; full energy or ammo still takes
+them. No drops of what you cannot use yet (missiles before the launcher).
+
 ## Door sounds and visor loops
 
 - **Doors** (Player > Sounds > Doors): opening, closing, the forcefield shot away, and "won't open" (locked, the wrong

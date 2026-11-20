@@ -79,7 +79,13 @@ struct PlayerRules {
     float maxHealth = 100;
     float lavaDamage = 40;                            // health per second in lava
     float voidDepth = -64;                            // fall below this height and you die
-    float respawnDelay = 2;                           // seconds before you come back at the spawn point
+    float respawnDelay = 2;                           // seconds before you come back at the spawn point (at least as long as the death sequence)
+    // the death sequence (like Metroid Prime): the hit (slow motion), the visor filling with static, the suit shutting down, the picture switching off
+    bool deathFx = true;
+    float deathHit = 0.4f, deathStatic = 1.2f, deathShutdown = 1.5f, deathOff = 0.5f;   // seconds of each part (0: left out)
+    bool deathSlowMo = true, deathDrop = true, deathTvOff = true, deathSkip = true;     // slow motion; the view sinks and tilts; an old TV switching off; any button skips to the end
+    float deathStaticAmount = 1; uint32_t deathStaticColor = 0x9FE8FF;
+    float deathLength() const { return deathFx ? std::max(0.f, deathHit) + std::max(0.f, deathStatic) + std::max(0.f, deathShutdown) + std::max(0.f, deathOff) : 0.f; }
     float fallDamage = 0;                             // health per block fallen beyond 4 blocks (0 = off)
     bool canSprint = true;
     float width = 0.6f, height = 1.8f, eyeHeight = 1.62f;   // the player's size (blocks): it fits through gaps wider and taller than this
