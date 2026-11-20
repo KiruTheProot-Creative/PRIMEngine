@@ -4656,7 +4656,7 @@ struct App {
         if (screen != Screen::Game || playMode) return;
         EndStroke(); brushMenu = false; placing.clear(); dupFrom = -1; platRun.clear(); previewPlatforms = false; if (movingObj >= 0) { movingObj = -1; RebuildSolids(); }
         editCam = player; playMode = true; paused = false; inventory = false; shapeMenu = false; editorOpen = false;
-        inv = PlayInventory{};
+        inv = PlayInventory{}; poppedIds.clear(); StopSounds(TAG_FANFARE);
         if (!weapons.missileTypes.empty() && !weapons.missileCounter.empty()) inv.counts[weapons.missileCounter] = weapons.missileStart;
         weapState.missile = 0; chargedOn = false;
         enemyRt.clear(); enemyGone.clear(); doorsOpened.clear(); zonesCleared.clear(); enemyShots.clear(); enemyDrops.clear(); debris.clear(); enemyAnimT.clear(); enemyAnimClip.clear(); playerInvuln = 0;
@@ -6329,6 +6329,7 @@ struct App {
     struct ItemBanner { std::string title, text; double t = -1; } itemBanner;
     HudTarget itemModelView; ComPtr<ID3D11DepthStencilView> itemModelDSV; int imDW = 0, imDH = 0, imWantW = 0, imWantH = 0; std::string imModel;
     float musicDuckNow = 1; bool itemGetKeyPrev = true;
+    static constexpr int TAG_FANFARE = 38; std::set<uint32_t> poppedIds;   // the fanfare (one at a time; stops when the pop-up closes); pickups that already popped up this play
     int PopupHintOf(const std::string& n, int pickupType = -1) const {
         for (const Beam& b : weapons.beams) if (b.name == n) return HINT_BEAM;
         for (const MissileType& m : weapons.missileTypes) if (m.name == n) return HINT_MISSILE;
@@ -6340,6 +6341,8 @@ struct App {
     std::string ItemFill(const std::string& s) { return menuFill(s, [&](const std::string& n) { return MenuValue(n); }); }
     void ItemGetShow(const WorldObject& o) {   // a pickup was taken: its pop-up, banner or just the sound
         const std::string& n = o.pickup.name;
+        if (!poppedIds.insert(o.id).second) return;   // (never twice for the same pickup)
+        if (CurScreen() && CurScreen()->role == ScreenRole::ItemGet) return;   // (one is showing already)
         GetPopup p = popupFor(items, n, PopupHintOf(n, (int)o.pickup.type));
         std::string key = "got:" + n; bool first = !evRun.flags.count(key); evRun.flags.insert(key);   // (saved with the game: the first one stays the first)
         bool counted = popupCounted(items, n) || o.pickup.type == PickupType::Collectible;
@@ -6348,7 +6351,8 @@ struct App {
         int scr = screens.byRole(ScreenRole::ItemGet);
         if (style == POPUP_BIG && scr >= 0) {
             const SoundUse& fan = !p.fanfare.empty() ? p.fanfare : items.fanfare;
-            if (!fan.empty()) PlaySoundIn(SND_MUSIC, fan); else GameSnd(&PlayerSounds::itemGet, SND_WORLD);
+            StopSounds(TAG_FANFARE);
+            if (!fan.empty()) PlaySoundIn(SND_MUSIC, fan, 1.f, nullptr, TAG_FANFARE, false); else GameSnd(&PlayerSounds::itemGet, SND_WORLD);
             itemGetKeyPrev = true; ShowScreen(scr, false);
             return;
         }
@@ -6361,7 +6365,7 @@ struct App {
         bool any = GetForegroundWindow() == hwnd && (ActDown(Act::Jump) || ActDown(Act::Fire) || Down(VK_RETURN) || Down(VK_SPACE) || Down(VK_LBUTTON));
         bool press = any && !itemGetKeyPrev; itemGetKeyPrev = any;
         if (!sc || screenT < sc->holdMin || !press) return;
-        PlayUi(1); CloseScreens(); if (playMode) { paused = false; Capture(true); }
+        PlayUi(1); StopSounds(TAG_FANFARE); CloseScreens(); if (playMode) { paused = false; Capture(true); }
     }
     void RenderItemModel() {   // the found item, turning (an Item model on the shown screen)
         if (imModel.empty() || imWantW < 8 || imWantH < 8) { imModel.clear(); return; }
@@ -7771,7 +7775,8 @@ struct App {
         if (remember && curScreen >= 0 && curScreen != idx) screenBack.push_back(curScreen);
         curScreen = idx; screenT = 0; screenPrevT = -1; screenSel = -2; bindCapture = -1; RefreshSlots(); typed.clear();
         mc::Screen& sc = screens.screens[idx];
-        if (sc.musicMode == 1 && !sc.music.empty()) PlayMusic(sc.music, sc.musicFade); else if (sc.musicMode == 2) StopMusic(sc.musicFade);
+        if (sc.role == ScreenRole::ItemGet && sc.musicMode == 1 && !sc.music.empty()) { StopSounds(TAG_FANFARE); PlaySoundIn(SND_MUSIC, sc.music, 1.f, nullptr, TAG_FANFARE, false); }   // (the pop-up's "music" is a jingle: once, not looping; the game's music ducks meanwhile)
+        else if (sc.musicMode == 1 && !sc.music.empty()) PlayMusic(sc.music, sc.musicFade); else if (sc.musicMode == 2) StopMusic(sc.musicFade);
         if (!playMode && sc.bg.kind == BgKind::World) {   // (only outside play: while playing, the game stays where it is)
             if (!sc.bg.world.empty() && sc.bg.world != CurrentWorld() && std::find(worldList.begin(), worldList.end(), sc.bg.world) != worldList.end()) {
                 travelling = true; SaveWorld(); OpenWorld(sc.bg.world); travelling = false;
@@ -7825,7 +7830,7 @@ struct App {
         }
     }
     void ScreenBack() {
-        PlayUi(2);
+        PlayUi(2); StopSounds(TAG_FANFARE);
         if (!screenBack.empty()) { int p = screenBack.back(); screenBack.pop_back(); ShowScreen(p, false); return; }
         if (playMode) { CloseScreens(); paused = false; Capture(true); }   // (a screen opened while playing: back to the game)
     }
