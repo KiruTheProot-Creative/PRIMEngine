@@ -1559,6 +1559,15 @@ int main() {
         CHECK(hl.planes.size() == 1 && hl.planes[0].elements.size() == 2 && hl.planes[0].elements[0].kind == HudKind::Tanks && hl.planes[0].elements[0].tankRows == 3 && hl.planes[0].elements[0].tankShape == 2
               && hl.planes[0].elements[1].fullAtMost, "HUD: an energy tanks element and \"full at the most\" save and load");
     }
+    {   // materials: fake shine (picture or glint lights) saves and loads; older files keep it off
+        Materials ms; TexMaterial m; m.fake = FakeShine::Glints; m.fakeStrength = 1.7f; m.fakeTint = 0xFF8000; m.fakeBeam = true; m.fakeWorld = false; m.fakePreset = SHINE_PRESETS;
+        m.fakeMap = "cannon shine.png"; m.fakeMask = "mask.png"; m.glints[2].on = true; m.glints[2].yaw = 123; m.glints[2].sharp = 0.95f; ms.put("model:Arm Cannon", m);
+        saveMaterials("/tmp/prim_fake.txt", ms); Materials ml; loadMaterials("/tmp/prim_fake.txt", ml);
+        CHECK(ml.isSet("model:Arm Cannon") && ml.of("model:Arm Cannon") == m, "fake shine (glints, tint, beam colour, pictures) saves and loads");
+        { std::ofstream o("/tmp/prim_fake_old.txt"); o << "materials 1\ntex dirt 0.2 0 0 0 1 1 - 1.5 6\n"; } Materials mo; loadMaterials("/tmp/prim_fake_old.txt", mo);
+        CHECK(mo.of("dirt").fake == FakeShine::Off && mo.of("dirt").shine == 0.2f, "an older materials file: no fake shine");
+        CHECK(std::string(shinePresetName(SHINE_PRESETS)) == "Your own picture", "shine pictures: presets, then your own");
+    }
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
     return fails ? 1 : 0;
 }

@@ -33,6 +33,10 @@ TexMaterial Materials::of(const std::string& name) const {
     auto it = set.find(name); return it != set.end() ? it->second : guess ? guessMaterial(name) : TexMaterial{};
 }
 
+const char* shinePresetName(int i) {
+    static const char* n[] = { "Studio streak", "Sharp dot", "Soft band", "Rim (edges)", "Your own picture" };
+    return n[i < 0 ? 0 : i > SHINE_PRESETS ? SHINE_PRESETS : i];
+}
 std::vector<float> Materials::table(const BlockRegistry& reg) const {
     std::vector<float> t(std::max<size_t>(1, reg.textureCount()) * 8, 0.f);
     for (size_t i = 0; i < reg.textureCount(); i++) {
@@ -51,7 +55,10 @@ static std::string unesc(const std::string& s) {
 bool saveMaterials(const std::string& path, const Materials& m) {
     std::ofstream f(path); if (!f) return false;
     f << "materials 1\n";
-    for (auto& kv : m.set) { const TexMaterial& t = kv.second; f << "tex " << esc(kv.first) << " " << t.shine << " " << t.metal << " " << t.glow << " " << t.glowFrom << " " << t.bumps << " " << t.coat << " " << esc(t.emitMap) << " " << t.emit << " " << t.lights << "\n"; }
+    for (auto& kv : m.set) { const TexMaterial& t = kv.second; f << "tex " << esc(kv.first) << " " << t.shine << " " << t.metal << " " << t.glow << " " << t.glowFrom << " " << t.bumps << " " << t.coat << " " << esc(t.emitMap) << " " << t.emit << " " << t.lights
+      << " " << (int)t.fake << " " << t.fakeStrength << " " << t.fakeTint << " " << t.fakeBeam << " " << t.fakeWorld << " " << t.fakePreset << " " << esc(t.fakeMap) << " " << esc(t.fakeMask);
+      for (const Glint& g : t.glints) f << " " << g.on << " " << g.yaw << " " << g.pitch << " " << g.color << " " << g.sharp << " " << g.power;
+      f << "\n"; }
     return (bool)f;
 }
 bool loadMaterials(const std::string& path, Materials& m) {
@@ -61,6 +68,12 @@ bool loadMaterials(const std::string& path, Materials& m) {
         std::istringstream l(line); std::string k, n; l >> k; if (k != "tex") continue;
         TexMaterial t; if (!(l >> n >> t.shine >> t.metal >> t.glow >> t.glowFrom >> t.bumps >> t.coat)) continue;
         std::string em; if (l >> em >> t.emit >> t.lights) t.emitMap = unesc(em);   // (older files: no emission map)
+        { int fk; float fs; uint32_t ft; int fb, fw, fp; std::string fm, fma;   // fake shine (newer files)
+          if (l >> fk >> fs >> ft >> fb >> fw >> fp >> fm >> fma) {
+              t.fake = (FakeShine)std::clamp(fk, 0, (int)FakeShine::COUNT - 1); t.fakeStrength = fs; t.fakeTint = ft; t.fakeBeam = fb != 0; t.fakeWorld = fw != 0;
+              t.fakePreset = std::clamp(fp, 0, SHINE_PRESETS); t.fakeMap = unesc(fm); t.fakeMask = unesc(fma);
+              for (Glint& g : t.glints) { int on; Glint r; if (l >> on >> r.yaw >> r.pitch >> r.color >> r.sharp >> r.power) { r.on = on != 0; g = r; } }
+          } }
         m.set[unesc(n)] = t;
     }
     return true;

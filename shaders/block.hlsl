@@ -144,7 +144,16 @@ struct TexMat { float4 a; float4 b; };
 StructuredBuffer<TexMat> gMats : register(t10);
 Texture2DArray gEmitTex : register(t14);        // emission maps, one per texture layer (black: nothing glows)
 Texture2D gMeshEmit : register(t15);            // the emission map of the model being drawn
-cbuffer MeshMatCB : register(b4) { float4 gMM0; float4 gMM1; };   // the material of the model being drawn (same numbers as a texture's)
+cbuffer MeshMatCB : register(b4)   // the material of the model being drawn (same numbers as a texture's), and its fake shine
+{
+    float4 gMM0; float4 gMM1;
+    float4 gFS0;          // fake shine: x 0 off / 1 picture / 2 glint lights, y strength, z 1 fixed to the world / 0 to the camera, w a mask picture
+    float4 gFSTint;       // rgb tint (linear), w which picture (0..3 built in, 4 your own)
+    float4 gGlintDir[3];  // xyz where each glint light shines from, w sharpness (0..1)
+    float4 gGlintCol[3];  // rgb colour x brightness, w on
+};
+Texture2D gShineTex : register(t27);   // your own shine picture (black: nothing, bright: a highlight), looked up by the surface's direction
+Texture2D gShineMask : register(t28);  // where it shines, laid out like the model's own picture
 float4 albedoAt(float3 uvl) { return uvl.z > 16000 ? gMeshTex.Sample(gSamp, uvl.xy) : gTex.Sample(gSamp, uvl); }
 SamplerState gLinear : register(s2);
 Texture2D<float> gSkyMap : register(t4);
@@ -418,6 +427,41 @@ void surfaceDetail(VSOut i, inout float3 n, inout float3 albedo, TexMat m)
     }
 }
 
+// fake shine: highlights that are painted on rather than worked out from lights. The surface's direction - in the world
+// (so they slide as you turn, like Metroid Prime's arm cannon) or in the camera's view (a "matcap") - picks a spot in a
+// shine picture (built in or your own), or lights up under up to three glint lights that only make highlights
+float shinePreset(int p, float2 q)   // q: -1..1 across the "ball" (x right, y up)
+{
+    if (p == 0) return exp(-pow((q.x + 0.38 - q.y * 0.25) * 7, 2)) * smoothstep(-0.3, 0.55, q.y) + exp(-dot(q - float2(0.45, 0.5), q - float2(0.45, 0.5)) * 90) * 0.8;   // a long streak and a small dot
+    if (p == 1) return exp(-dot(q - float2(-0.35, 0.45), q - float2(-0.35, 0.45)) * 70);                                                                           // one sharp dot
+    if (p == 2) return exp(-pow((q.y - 0.55) * 5, 2)) * 0.75 * saturate(1.2 - abs(q.x));                                                                           // a soft band across the top
+    return smoothstep(0.72, 1.0, length(q)) * 0.8;                                                                                                                 // the edges (rim)
+}
+float3 fakeShine(VSOut i, float3 n)
+{
+    float3 v = -normalize(i.rel), add = 0;
+    float3 nc = float3(dot(n, gCamR.xyz), dot(n, gCamU.xyz), -dot(n, gCamF.xyz));   // the direction in the camera's view (z: toward you)
+    if (gFS0.x < 1.5)
+    {
+        float2 q = gFS0.z > 0.5 ? float2(n.x, n.y) : nc.xy;                            // fixed to the world: its own directions (like Prime) / to the camera
+        int p = (int)round(gFSTint.w);
+        add = p >= 4 ? gShineTex.SampleLevel(gLinear, q * float2(0.5, -0.5) + 0.5, 0).rgb : shinePreset(p, q).xxx;
+    }
+    else
+    {
+        [unroll] for (int k = 0; k < 3; k++)
+        {
+            if (gGlintCol[k].w < 0.5) continue;
+            float3 d = gGlintDir[k].xyz;
+            float3 L = normalize(gFS0.z > 0.5 ? d : gCamR.xyz * d.x + gCamU.xyz * d.y - gCamF.xyz * d.z);
+            float pw = lerp(6, 900, gGlintDir[k].w * gGlintDir[k].w);
+            float3 h = normalize(L + v);
+            add += gGlintCol[k].rgb * pow(saturate(dot(n, h)), pw) * (pw + 8) / 60;
+        }
+    }
+    float mask = gFS0.w > 0.5 && i.uvl.z >= 16000 ? dot(gShineMask.Sample(gSamp, i.uvl.xy).rgb, float3(0.333, 0.333, 0.334)) : 1;
+    return add * gFSTint.rgb * gFS0.y * mask;
+}
 float3 lightBlock(VSOut i, float3 albedo, bool front, out float3 n, out float shine, out float3 indirect)
 {
     n = front ? i.n : -i.n;
@@ -457,6 +501,7 @@ float3 lightBlock(VSOut i, float3 albedo, bool front, out float3 n, out float sh
     float3 dyn = dynLightsSpec(i.rel, n, -normalize(i.rel), lerp(10, 380, dShine * dShine), gOffset.w < 0.5, dSpec) * lerp(0.6, 1, i.ao);   // placed lights, strips, glowing emitters, shots
     float3 c = albedo * (light + dyn) * (1 - 0.75 * metal);                                       // metal: little plain colour ...
     c += dSpec * lerp(float3(0.04, 0.04, 0.04) + 0.5 * dShine, albedo * 1.4, metal) * max(dShine, 0.12);   // the lights' highlights
+    if (gFS0.x > 0.5 && gOffset.w < 0.5) c += fakeShine(i, n);                                    // fake shine (models): painted-on glints, like Prime's arm cannon
     indirect = albedo * (light - gSunColor.rgb * ndl * sh) * (1 - 0.75 * metal);
     float3 v0 = -normalize(i.rel);
     float mshine = saturate(m.a.x);

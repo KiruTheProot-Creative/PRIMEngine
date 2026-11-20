@@ -337,7 +337,7 @@ struct App {
             { "TEXCOORD", 3, DXGI_FORMAT_R32_UINT, 0, 28, D3D11_INPUT_PER_VERTEX_DATA, 0 } };
         HR(dev->CreateInputLayout(el, 5, vb->GetBufferPointer(), vb->GetBufferSize(), &layout));
         auto cb = [&](UINT size, ComPtr<ID3D11Buffer>& out) { D3D11_BUFFER_DESC d{}; d.ByteWidth = size; d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_CONSTANT_BUFFER; HR(dev->CreateBuffer(&d, nullptr, &out)); };
-        cb(sizeof(FrameCB), cbFrame); cb(sizeof(ChunkCB), cbChunk); cb(sizeof(PreviewCB), cbPreview); cb(32, cbMeshMat); cb(sizeof(MapCB), cbMap); cb(sizeof(VisorCB), cbVisor); cb(16, cbFlat); cb(sizeof(LookCB), cbLook);
+        cb(sizeof(FrameCB), cbFrame); cb(sizeof(ChunkCB), cbChunk); cb(sizeof(PreviewCB), cbPreview); cb(sizeof(MeshMatCB), cbMeshMat); cb(sizeof(MapCB), cbMap); cb(sizeof(VisorCB), cbVisor); cb(16, cbFlat); cb(sizeof(LookCB), cbLook);
 
         D3D11_RASTERIZER_DESC rd{}; rd.FillMode = D3D11_FILL_SOLID; rd.CullMode = D3D11_CULL_BACK; rd.FrontCounterClockwise = FALSE; rd.DepthClipEnable = TRUE; HR(dev->CreateRasterizerState(&rd, &rsCull));
         rd.CullMode = D3D11_CULL_FRONT; HR(dev->CreateRasterizerState(&rd, &rsCullFront));   // mirrored views turn every triangle around
@@ -471,6 +471,21 @@ struct App {
     struct ModelEmit { bool on = false; V3 col{ 0, 0, 0 }; ComPtr<ID3D11ShaderResourceView> srv; };
     std::map<std::string, ModelEmit> modelEmit;
     ComPtr<ID3D11Buffer> cbMeshMat;   // the material of the model being drawn (b4)
+    struct alignas(16) MeshMatCB { float mm0[4], mm1[4], fs0[4], fsTint[4], gdir[3][4], gcol[3][4]; };
+    std::map<std::string, ComPtr<ID3D11ShaderResourceView>> shinePics;   // fake shine pictures and masks (the project's "shine" folder), loaded once
+    std::string ShineDir() const { return projectDir + "/shine"; }
+    ID3D11ShaderResourceView* ShinePic(const std::string& file) {
+        if (file.empty() || projectDir.empty()) return nullptr;
+        auto it = shinePics.find(file); if (it != shinePics.end()) return it->second.Get();
+        ComPtr<ID3D11ShaderResourceView>& srv = shinePics[file]; int w = 0, h = 0; std::vector<uint8_t> rgba;
+        if (readImage(ShineDir() + "/" + file, w, h, rgba) && w > 0 && h > 0) {
+            D3D11_TEXTURE2D_DESC d{}; d.Width = (UINT)w; d.Height = (UINT)h; d.MipLevels = 1; d.ArraySize = 1; d.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB; d.SampleDesc.Count = 1; d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            D3D11_SUBRESOURCE_DATA sd{ rgba.data(), (UINT)w * 4, 0 }; ComPtr<ID3D11Texture2D> t;
+            if (SUCCEEDED(dev->CreateTexture2D(&d, &sd, &t))) dev->CreateShaderResourceView(t.Get(), nullptr, &srv);
+        }
+        return srv.Get();
+    }
+    void UnbindModelMat() { MeshMatCB z{}; ctx->UpdateSubresource(cbMeshMat.Get(), 0, nullptr, &z, 0, 0); ctx->PSSetConstantBuffers(4, 1, cbMeshMat.GetAddressOf()); }
     static std::string ModelMatKey(const std::string& model) { return "model:" + model; }
     // binds a model's own picture (if it is an imported one) and its material
     const ModelEmit& ModelEmitOf(const std::string& model) {
@@ -488,8 +503,24 @@ struct App {
     void BindModelTex(const ModelGpu& g, const std::string& model) {
         if (g.mesh) ctx->PSSetShaderResources(9, 1, g.tex.GetAddressOf());
         const ModelEmit& me = ModelEmitOf(model); ID3D11ShaderResourceView* es = me.on ? me.srv.Get() : nullptr; ctx->PSSetShaderResources(15, 1, &es);
-        TexMaterial m = materials.of(ModelMatKey(model)); float d[8] = { m.shine, m.metal, m.glow, m.glowFrom, m.bumps, m.coat, me.on ? m.emit : 0.f, 0 };
-        ctx->UpdateSubresource(cbMeshMat.Get(), 0, nullptr, d, 0, 0); ctx->PSSetConstantBuffers(4, 1, cbMeshMat.GetAddressOf());
+        TexMaterial m = materials.of(ModelMatKey(model)); MeshMatCB d{};
+        float mm[8] = { m.shine, m.metal, m.glow, m.glowFrom, m.bumps, m.coat, me.on ? m.emit : 0.f, 0 }; std::memcpy(d.mm0, mm, sizeof mm);
+        if (m.fake != FakeShine::Off && m.fakeStrength > 0) {   // fake shine
+            ID3D11ShaderResourceView* pic = m.fake == FakeShine::Picture && m.fakePreset >= SHINE_PRESETS ? ShinePic(m.fakeMap) : nullptr;
+            ID3D11ShaderResourceView* mask = ShinePic(m.fakeMask);
+            d.fs0[0] = (float)(int)m.fake; d.fs0[1] = m.fakeStrength; d.fs0[2] = m.fakeWorld ? 1.f : 0.f; d.fs0[3] = mask ? 1.f : 0.f;
+            uint32_t tint = m.fakeTint; if (m.fakeBeam) if (const Beam* b = CurrentBeam()) tint = b->color;
+            for (int k = 0; k < 3; k++) d.fsTint[k] = std::pow(((tint >> (16 - 8 * k)) & 255) / 255.f, 2.2f);
+            d.fsTint[3] = m.fakePreset >= SHINE_PRESETS && !pic ? 0.f : (float)m.fakePreset;   // (your own picture missing: the first built-in one)
+            for (int g = 0; g < 3; g++) {
+                const Glint& gl = m.glints[g]; double ya = gl.yaw * 3.14159265358979 / 180, pa = gl.pitch * 3.14159265358979 / 180;
+                d.gdir[g][0] = (float)(std::sin(ya) * std::cos(pa)); d.gdir[g][1] = (float)std::sin(pa); d.gdir[g][2] = (float)(std::cos(ya) * std::cos(pa)); d.gdir[g][3] = std::clamp(gl.sharp, 0.f, 1.f);
+                for (int k = 0; k < 3; k++) d.gcol[g][k] = std::pow(((gl.color >> (16 - 8 * k)) & 255) / 255.f, 2.2f) * gl.power;
+                d.gcol[g][3] = gl.on ? 1.f : 0.f;
+            }
+            ID3D11ShaderResourceView* two[2] = { pic, mask }; ctx->PSSetShaderResources(27, 2, two);
+        }
+        ctx->UpdateSubresource(cbMeshMat.Get(), 0, nullptr, &d, 0, 0); ctx->PSSetConstantBuffers(4, 1, cbMeshMat.GetAddressOf());
     }
     bool MaterialSliders(TexMaterial& m, const std::string& key = "") {
         TexMaterial before = m;
@@ -537,8 +568,65 @@ struct App {
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip(isModel ? "A light at the model's middle, in the colour it glows, reaching this far." : "Blocks built from it light up what is around them in the colour they glow,\nlike a lamp (15: as far as a lamp). A block's own Glows setting comes first.");
             }
             if (m.emitMap != before.emitMap || m.lights != before.lights) emissionDirty = true;
+            if (isModel) FakeShineUI(m);
         }
         return m != before;
+    }
+    // fake shine: painted-on glints (like Metroid Prime's arm cannon), for models
+    void PicCombo(const char* id, std::string& file, const char* none, const char* pickTitle) {
+        if (ImGui::BeginCombo(id, file.empty() ? none : file.c_str())) {
+            if (ImGui::Selectable(none, file.empty())) file.clear();
+            std::error_code ec; std::vector<std::string> files;
+            for (auto& e : fs::directory_iterator(fs::u8path(ShineDir()), ec)) if (e.is_regular_file(ec)) { std::string x = ExtOf(e.path().u8string()); if (x == ".png" || x == ".jpg" || x == ".jpeg") files.push_back(e.path().filename().u8string()); }
+            std::sort(files.begin(), files.end());
+            for (const std::string& f : files) if (ImGui::Selectable(f.c_str(), file == f)) file = f;
+            ImGui::Separator();
+            if (ImGui::Selectable("Pick a picture...")) {
+                auto pick = PickFiles("Pictures\0*.png;*.jpg;*.jpeg\0", pickTitle);
+                if (!pick.empty()) {
+                    fs::create_directories(fs::u8path(ShineDir()), ec); std::string to = fs::u8path(pick[0]).filename().u8string();
+                    fs::copy_file(fs::u8path(pick[0]), fs::u8path(ShineDir() + "/" + to), fs::copy_options::overwrite_existing, ec); shinePics.erase(to); file = to;
+                }
+            }
+            if (ImGui::Selectable("Open the shine folder")) { std::error_code e2; fs::create_directories(fs::u8path(ShineDir()), e2); ShowInExplorer(ShineDir()); }
+            if (ImGui::Selectable("Reload the pictures")) shinePics.clear();
+            ImGui::EndCombo();
+        }
+    }
+    void FakeShineUI(TexMaterial& m) {
+        ImGui::SeparatorText("Fake shine");
+        { int k = (int)m.fake; const char* kn[] = { "Off", "Shine picture", "Glint lights" }; Prop("Fake shine"); ImGui::Combo("##fsk", &k, kn, 3); m.fake = (FakeShine)k; }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Highlights painted on, like Metroid Prime's arm cannon: they always glint (even in the dark)\nand slide over the model as you turn. Added on top of the real lighting.");
+        if (m.fake == FakeShine::Off) return;
+        Prop("Strength"); ImGui::SliderFloat("##fss", &m.fakeStrength, 0, 4, "%.2f");
+        { float c[3] = { ((m.fakeTint >> 16) & 255) / 255.f, ((m.fakeTint >> 8) & 255) / 255.f, (m.fakeTint & 255) / 255.f }; Prop("Tint");
+          ImGui::BeginDisabled(m.fakeBeam); if (ImGui::ColorEdit3("##fst", c, ImGuiColorEditFlags_NoInputs)) m.fakeTint = ((uint32_t)std::lround(c[0] * 255) << 16) | ((uint32_t)std::lround(c[1] * 255) << 8) | (uint32_t)std::lround(c[2] * 255); ImGui::EndDisabled();
+          ImGui::SameLine(); ImGui::Checkbox("the beam's colour##fsb", &m.fakeBeam); }
+        { int w = m.fakeWorld ? 0 : 1; const char* wn[] = { "Slides when you turn (like Prime)", "Stays put (fixed to the camera)" }; Prop("The glints"); if (ImGui::Combo("##fsw", &w, wn, 2)) m.fakeWorld = w == 0; }
+        if (m.fake == FakeShine::Picture) {
+            Prop("Shine picture");
+            if (ImGui::BeginCombo("##fsp", shinePresetName(m.fakePreset))) { for (int p = 0; p <= SHINE_PRESETS; p++) if (ImGui::Selectable(shinePresetName(p), m.fakePreset == p)) m.fakePreset = p; ImGui::EndCombo(); }
+            if (m.fakePreset >= SHINE_PRESETS) { Prop("... picture"); PicCombo("##fsm", m.fakeMap, "(none)", "The shine picture (black: nothing, bright: a highlight)"); }
+            Hint("Your own: a picture of a shiny ball seen from the front (black with bright spots and streaks). Where the model faces up shows its top, where it faces left its left side.");
+        } else {
+            for (int g = 0; g < 3; g++) {
+                Glint& gl = m.glints[g]; ImGui::PushID(g);
+                ImGui::Checkbox("##gon", &gl.on); ImGui::SameLine();
+                if (ImGui::TreeNode("gl", "Glint light %d", g + 1)) {
+                    Prop("From (turn)"); ImGui::SliderFloat("##gy", &gl.yaw, -180, 180, "%.0f deg");
+                    Prop("From (height)"); ImGui::SliderFloat("##gp", &gl.pitch, -90, 90, "%.0f deg");
+                    { float c[3] = { ((gl.color >> 16) & 255) / 255.f, ((gl.color >> 8) & 255) / 255.f, (gl.color & 255) / 255.f }; Prop("Colour");
+                      if (ImGui::ColorEdit3("##gc", c, ImGuiColorEditFlags_NoInputs)) gl.color = ((uint32_t)std::lround(c[0] * 255) << 16) | ((uint32_t)std::lround(c[1] * 255) << 8) | (uint32_t)std::lround(c[2] * 255); }
+                    Prop("Sharpness"); ImGui::SliderFloat("##gs", &gl.sharp, 0, 1, gl.sharp < 0.3f ? "soft sheen %.2f" : gl.sharp > 0.8f ? "tiny dot %.2f" : "%.2f");
+                    Prop("Brightness"); ImGui::SliderFloat("##gb", &gl.power, 0, 4, "%.2f");
+                    ImGui::TreePop();
+                }
+                ImGui::PopID();
+            }
+            Hint("Lights that only make highlights (they light nothing else). Fixed to the camera: turn 0 / height 0 shines from where you look from.");
+        }
+        Prop("Only where"); PicCombo("##fsmask", m.fakeMask, "everywhere", "A mask laid out like the model's own picture: white shines, black does not");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("A picture laid out like the model's own picture (imported models): white where it shines, black where not.");
     }
     // a model's material (the same everywhere it is used: objects, HUD parts, cannons, missiles)
     void ModelMaterialUI(const std::string& model, bool openFirst = false) {
@@ -3310,6 +3398,7 @@ struct App {
         PrepareLights(fc);   // light objects, strips, glowing emitters, shots, glowing blocks (for objects) - sorted into clusters
         ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
         auto drawChunks = [&](const XMMATRIX& m, int pass, bool counting, bool cave = false) {   // cave: the camera's own view (cave culling applies)
+            UnbindModelMat();   // (the world's blocks: no model's material left over)
             for (auto& kv : gpu) {
                 const GpuChunk& g = kv.second; UINT n = pass == 0 ? g.nO : pass == 1 ? g.nC : g.nW; if (!n) continue;
                 if (cave && caveOn && !CaveIn(kv.first)) { if (counting) caveHidden++; continue; }

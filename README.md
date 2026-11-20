@@ -199,6 +199,18 @@ which fades in over a second and a half as you walk in.
 - The **HUD's 3D parts** (helmet, arm cannon) are always lit by the world around you: lights, glowing blocks nearby,
   the sun and the darkness.
 
+## Fake shine (models): glints like Metroid Prime's arm cannon
+
+In a model's material (Assets > the model, or anywhere its material shows): **Fake shine**. Highlights painted on rather
+than worked out from lights - they always glint, even in pitch darkness, and slide over the model as you turn.
+
+- **Shine picture**: built in (studio streak, sharp dot, soft band, rim) or your own - a picture of a shiny ball seen
+  from the front, black with bright spots (kept in the project's `shine` folder). The way the surface faces picks the spot.
+- **Glint lights**: up to three lights that only make highlights: where they shine from, colour, sharpness (soft
+  sheen .. tiny dot), brightness.
+- **Slides when you turn** (fixed to the world, like Prime) or **stays put** (fixed to the camera, a "matcap").
+- Strength, a tint or **the current beam's colour**, and a mask (laid out like the model's picture) for where it shines.
+
 ## Textures: bumps, coat and materials (like Complementary)
 
 - **Bumpy textures** (Settings > Look, generated normals): each texture's light and dark pixels become little bumps and dents with a bevel at the pixel edges, so the sun and lights catch them. Nothing to paint.

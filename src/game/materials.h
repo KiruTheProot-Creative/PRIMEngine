@@ -9,6 +9,20 @@
 
 namespace mc {
 
+// fake shine (like Metroid Prime's arm cannon): highlights painted on, not worked out from real lights - they always
+// glint, even in the dark, and slide over the model as you turn. Either a shine picture (black with bright spots,
+// looked up by which way the surface faces - a "matcap") or up to three glint lights that only make highlights.
+enum class FakeShine { Off, Picture, Glints, COUNT };
+struct Glint {
+    bool on = false;
+    float yaw = 0, pitch = 30;          // where it shines from (degrees): world (0 yaw: from the north) or, fixed to the camera, from the viewer
+    uint32_t color = 0xFFFFFF;
+    float sharp = 0.6f, power = 1;      // 0 a soft sheen .. 1 a tiny sharp dot; how bright
+    bool operator==(const Glint& o) const { return on == o.on && yaw == o.yaw && pitch == o.pitch && color == o.color && sharp == o.sharp && power == o.power; }
+};
+const char* shinePresetName(int i);    // the built-in shine pictures (0 .. SHINE_PRESETS-1); SHINE_PRESETS: your own picture
+constexpr int SHINE_PRESETS = 4;
+
 struct TexMaterial {
     float shine = 0;        // 0 matt .. 1 polished (reflections, a sun highlight)
     float metal = 0;        // 0 .. 1: metal reflects in its own colour and has less plain colour
@@ -20,7 +34,18 @@ struct TexMaterial {
     std::string emitMap;    // its file in the textures folder ("": none; a file called <texture>_e / _emission / _emissive / _glow .png is found by itself)
     float emit = 1.5f;      // how bright it glows
     float lights = 6;       // it lights up what is around it: blocks built from it shine this far (0 none .. 15 like a lamp), models a light this far
-    bool operator==(const TexMaterial& o) const { return shine == o.shine && metal == o.metal && glow == o.glow && glowFrom == o.glowFrom && bumps == o.bumps && coat == o.coat && emitMap == o.emitMap && emit == o.emit && lights == o.lights; }
+    // fake shine (models)
+    FakeShine fake = FakeShine::Off;
+    float fakeStrength = 1; uint32_t fakeTint = 0xFFFFFF; bool fakeBeam = false;   // tint: a colour, or the current beam's colour
+    bool fakeWorld = true;              // slides when you turn (fixed to the world, like Prime) / stays put (fixed to the camera)
+    int fakePreset = 0;                 // the shine picture: a built-in one, or SHINE_PRESETS = fakeMap
+    std::string fakeMap, fakeMask;      // your own shine picture; a mask (laid out like the model's picture: white shines, black not)
+    Glint glints[3] = { { true, -40, 45, 0xFFFFFF, 0.7f, 1 }, { true, 70, 15, 0xA8D8FF, 0.4f, 0.5f }, {} };
+    bool operator==(const TexMaterial& o) const {
+        return shine == o.shine && metal == o.metal && glow == o.glow && glowFrom == o.glowFrom && bumps == o.bumps && coat == o.coat && emitMap == o.emitMap && emit == o.emit && lights == o.lights
+            && fake == o.fake && fakeStrength == o.fakeStrength && fakeTint == o.fakeTint && fakeBeam == o.fakeBeam && fakeWorld == o.fakeWorld && fakePreset == o.fakePreset && fakeMap == o.fakeMap && fakeMask == o.fakeMask
+            && glints[0] == o.glints[0] && glints[1] == o.glints[1] && glints[2] == o.glints[2];
+    }
     bool operator!=(const TexMaterial& o) const { return !(*this == o); }
 };
 
