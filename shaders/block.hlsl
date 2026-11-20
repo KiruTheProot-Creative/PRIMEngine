@@ -1055,6 +1055,8 @@ float4 PS_Reflect(SkyOut i) : SV_Target
 
     // where the ray finds nothing on screen: the sky (only if this spot is under the open sky, else a dim guess)
     float open = skyExposed(P + n * 0.3);
+    if (gSkyVolO.w > 0.5) open = max(open, saturate(skyAt(P + n * 0.5) * 1.3));                       // block by block: a slope or slab is not a roof over itself
+    else if (abs(n.y) < 0.9) open = max(open, skyExposed(P + n * 0.3 + float3(0, 1.05, 0)));          // (no sky light volume: look just above it)
     float3 fallback = (skyColor(r) * lerp(0.15, 1, open * saturate(r.y * 4 + 0.6)) + gAmbient.rgb * 0.15 * (1 - open)) * skyVis(P, n);
     float edge = 0;
     if (hit) { float2 e = min(huv, 1 - huv); edge = saturate(min(e.x, e.y) * 12) * saturate(1 - travelled / gRefl.z); }   // fade near the picture's edges
