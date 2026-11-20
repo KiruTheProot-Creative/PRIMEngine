@@ -30,6 +30,7 @@ struct ColorLook {
     float fogHeight = 64, fogThin = 0;        // it thins out above this height (world Y) over this many blocks (0: the same everywhere)
     uint32_t fogColor = 0xB0B8C8; float fogGlow = 0;   // its colour, and how much it glows by itself (city haze)
     float lightFog = 0.35f;                   // lights in the air: their glow and beams (0: none)
+    float bounce = 1;                         // bounce light: lit and glowing surfaces light the ones near them (0: none)
 };
 ColorLook lerp(const ColorLook& a, const ColorLook& b, float t);
 const std::vector<ColorLook>& lookPresets();   // Natural, Classic, Neon night, Toxic, Inferno, Chozo dusk, Frozen, Noir

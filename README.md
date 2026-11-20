@@ -186,6 +186,9 @@ which fades in over a second and a half as you walk in.
 - Lights make **highlights** on shiny and wet surfaces (neon on wet streets).
 - **True darkness** (World > Environment, on by default): no sky light under roofs and in caves - only lights, lamps
   and glowing things light them. Light fades in near openings and cave mouths; fog and the distance go dark inside too.
+- **Bounce light** (screen-space GI): lit and glowing surfaces light the ones near them - a green glow tints the wall
+  beside it, a sunlit floor lights the ceiling a little. Strength per look (*Bounce light*), Options > Graphics >
+  *Bounce light*: off, normal, far-reaching.
 - The **HUD's 3D parts** (helmet, arm cannon) are always lit by the world around you: lights, glowing blocks nearby,
   the sun and the darkness.
 

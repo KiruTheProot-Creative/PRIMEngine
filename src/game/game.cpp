@@ -72,6 +72,7 @@ bool Settings::load(const std::string& path) {
         else if (k == "film_fx") { int v; f >> v; filmFx = v != 0; }
         else if (k == "light_shadows") f >> lightShadows;
         else if (k == "light_fog") { int v; f >> v; lightFog = v != 0; }
+        else if (k == "bounce") f >> bounce;
         else if (k == "guess_materials") { int v; f >> v; guessMaterials = v != 0; }
         else if (k == "shadow_res") { f >> shadowRes; hadRes = true; }
         else if (k == "brightness") f >> brightness;
@@ -104,7 +105,7 @@ bool Settings::save(const std::string& path) const {
       << "\nambient_occlusion " << ambientOcclusion << "\nao_strength " << aoStrength
       << "\nbumps " << bumps << "\ncoat " << coat << "\nmaterials " << (materials ? 1 : 0) << "\nhud_glow " << (hudGlow ? 1 : 0) << "\nguess_materials " << (guessMaterials ? 1 : 0)
       << "\nshadow_res " << shadowRes << "\nbrightness " << brightness << "\nfullscreen " << (fullscreen ? 1 : 0)
-      << "\nvolumes " << volWeapons << " " << volMovement << " " << volEnemies << " " << volWorld << "\nvolumes2 " << volMenus << " " << volMusic << "\ninvert_y " << (invertY ? 1 : 0) << "\nlock_mode " << lockMode << "\ncave_culling " << (caveCulling ? 1 : 0) << "\nscreen_shake " << screenShake << "\neye_adapt " << (eyeAdapt ? 1 : 0) << "\nfilm_fx " << (filmFx ? 1 : 0) << "\nlight_shadows " << lightShadows << "\nlight_fog " << (lightFog ? 1 : 0) << "\n";
+      << "\nvolumes " << volWeapons << " " << volMovement << " " << volEnemies << " " << volWorld << "\nvolumes2 " << volMenus << " " << volMusic << "\ninvert_y " << (invertY ? 1 : 0) << "\nlock_mode " << lockMode << "\ncave_culling " << (caveCulling ? 1 : 0) << "\nscreen_shake " << screenShake << "\neye_adapt " << (eyeAdapt ? 1 : 0) << "\nfilm_fx " << (filmFx ? 1 : 0) << "\nlight_shadows " << lightShadows << "\nlight_fog " << (lightFog ? 1 : 0) << "\nbounce " << bounce << "\n";
     for (int i = 0; i < (int)Act::COUNT; i++) f << "key " << actKey((Act)i) << " " << keys.key[i][0] << " " << keys.key[i][1] << "\n";
     return (bool)f;
 }

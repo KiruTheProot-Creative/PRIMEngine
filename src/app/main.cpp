@@ -122,6 +122,7 @@ struct alignas(16) FrameCB {
     float occ[4];           // x true darkness on, y how open the sky is around the camera
     float lookFog[4];       // the look's fog: x thickness, y height, z thins over, w lights in the air
     float lookFogCol[4];    // rgb colour (linear), w its own glow
+    float gi[4];            // bounce light: x strength, y reach (blocks)
 };
 struct alignas(16) ChunkCB { float offset[4]; float ax[4] = { 1, 0, 0, 0 }, ay[4] = { 0, 1, 0, 0 }, az[4] = { 0, 0, 1, 0 }; };   // axes: objects are turned and sized
 
@@ -149,6 +150,7 @@ struct App {
     ComPtr<ID3D11Texture2D> indTex, aoTex; ComPtr<ID3D11RenderTargetView> indRTV, aoRTV; ComPtr<ID3D11ShaderResourceView> indSRV, aoSRV;   // ambient occlusion
     ComPtr<ID3D11Texture2D> mirTex, mirDepth; ComPtr<ID3D11RenderTargetView> mirRTV; ComPtr<ID3D11ShaderResourceView> mirSRV; ComPtr<ID3D11DepthStencilView> mirDSV;   // a mirror's view (half size)
     ComPtr<ID3D11RasterizerState> rsCullFront; MirrorPlane lastMirror;
+    ComPtr<ID3D11Texture2D> albTex, giTex; ComPtr<ID3D11RenderTargetView> albRTV, giRTV; ComPtr<ID3D11ShaderResourceView> albSRV, giSRV; ComPtr<ID3D11PixelShader> psGI, psGIApply;   // bounce light
     ComPtr<ID3D11Texture2D> surfTex, reflTex; ComPtr<ID3D11RenderTargetView> surfRTV, reflRTV; ComPtr<ID3D11ShaderResourceView> surfSRV, reflSRV;   // for reflections
     ComPtr<ID3D11Texture2D> skyMapTex; ComPtr<ID3D11DepthStencilView> skyMapDSV; ComPtr<ID3D11ShaderResourceView> skyMapSRV;   // what is above each spot
     Weather weather; bool weatherWin = false;
@@ -310,6 +312,8 @@ struct App {
         b = Compile(src, "PS_Water", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psWater));
         b = Compile(src, "PS_Post", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psPost));
         MakeLightResources();
+        b = Compile(src, "PS_GI", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psGI));
+        b = Compile(src, "PS_GIApply", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psGIApply));
         b = Compile(src, "PS_LumLog", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psLumLog));
         b = Compile(src, "PS_Adapt", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psAdapt));
         {   // eye adaptation: the picture's brightness (256x256 with mips: the last one is the average) and the eye (1x1, two of them, back and forth)
@@ -391,7 +395,10 @@ struct App {
         reflTex.Reset(); reflRTV.Reset(); reflSRV.Reset();
         HR(dev->CreateTexture2D(&d, nullptr, &reflTex)); HR(dev->CreateRenderTargetView(reflTex.Get(), nullptr, &reflRTV)); HR(dev->CreateShaderResourceView(reflTex.Get(), nullptr, &reflSRV));
         { D3D11_TEXTURE2D_DESC sd2 = d; sd2.Format = DXGI_FORMAT_R8G8B8A8_UNORM; surfTex.Reset(); surfRTV.Reset(); surfSRV.Reset();
-          HR(dev->CreateTexture2D(&sd2, nullptr, &surfTex)); HR(dev->CreateRenderTargetView(surfTex.Get(), nullptr, &surfRTV)); HR(dev->CreateShaderResourceView(surfTex.Get(), nullptr, &surfSRV)); }
+          HR(dev->CreateTexture2D(&sd2, nullptr, &surfTex)); HR(dev->CreateRenderTargetView(surfTex.Get(), nullptr, &surfRTV)); HR(dev->CreateShaderResourceView(surfTex.Get(), nullptr, &surfSRV));
+          albTex.Reset(); albRTV.Reset(); albSRV.Reset(); HR(dev->CreateTexture2D(&sd2, nullptr, &albTex)); HR(dev->CreateRenderTargetView(albTex.Get(), nullptr, &albRTV)); HR(dev->CreateShaderResourceView(albTex.Get(), nullptr, &albSRV));
+          D3D11_TEXTURE2D_DESC gd = d; gd.Width = std::max(1u, (UINT)rw / 2); gd.Height = std::max(1u, (UINT)rh / 2); gd.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+          giTex.Reset(); giRTV.Reset(); giSRV.Reset(); HR(dev->CreateTexture2D(&gd, nullptr, &giTex)); HR(dev->CreateRenderTargetView(giTex.Get(), nullptr, &giRTV)); HR(dev->CreateShaderResourceView(giTex.Get(), nullptr, &giSRV)); }
         {   // the mirror view: half size, own depth
             D3D11_TEXTURE2D_DESC md = d; md.Width = std::max<UINT>(1, d.Width / 2); md.Height = std::max<UINT>(1, d.Height / 2);
             mirTex.Reset(); mirRTV.Reset(); mirSRV.Reset(); mirDepth.Reset(); mirDSV.Reset();
@@ -3186,6 +3193,7 @@ struct App {
             fc.lookFog[0] = std::max(0.f, lk.fog) * atm; fc.lookFog[1] = lk.fogHeight; fc.lookFog[2] = std::max(0.f, lk.fogThin); fc.lookFog[3] = std::max(0.f, lk.lightFog) * (settings.lightFog ? 1.f : 0.f);
             for (int k = 0; k < 3; k++) fc.lookFogCol[k] = std::pow(((lk.fogColor >> (16 - 8 * k)) & 255) / 255.f, 2.2f);
             fc.lookFogCol[3] = std::max(0.f, lk.fogGlow);
+            fc.gi[0] = settings.bounce > 0 ? std::max(0.f, lk.bounce) : 0.f; fc.gi[1] = settings.bounce >= 2 ? 6.f : 4.f;
         }
         fc.weather[0] = W.rain; fc.weather[1] = W.snow; fc.weather[2] = W.dark; fc.weather[3] = weather.wetness * E.atmosphere;
         fc.weather2[0] = weather.snowCover * E.atmosphere; fc.weather2[1] = weather.flash * E.atmosphere; fc.weather2[2] = W.wind; fc.weather2[3] = skyMap ? 1.f : 0.f;
@@ -3321,8 +3329,8 @@ struct App {
         ctx->PSSetShaderResources(3, 1, noiseSRV.GetAddressOf()); ctx->PSSetSamplers(2, 1, sampLinear.GetAddressOf());   // the planet uses the cloud noise
         ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psSky.Get(), nullptr, 0); ctx->Draw(3, 0);
         ctx->RSSetState(rsCull.Get());
-        { const float zero[4] = { 0, 0, 0, 0 }; ctx->ClearRenderTargetView(surfRTV.Get(), zero); ctx->ClearRenderTargetView(indRTV.Get(), zero);
-          ID3D11RenderTargetView* three[3] = { hdrRTV.Get(), surfRTV.Get(), indRTV.Get() }; ctx->OMSetRenderTargets(3, three, dsv.Get()); }   // blocks also note direction + shininess, and their sky light
+        { const float zero[4] = { 0, 0, 0, 0 }; ctx->ClearRenderTargetView(surfRTV.Get(), zero); ctx->ClearRenderTargetView(indRTV.Get(), zero); ctx->ClearRenderTargetView(albRTV.Get(), zero);
+          ID3D11RenderTargetView* four[4] = { hdrRTV.Get(), surfRTV.Get(), indRTV.Get(), albRTV.Get() }; ctx->OMSetRenderTargets(4, four, dsv.Get()); }   // blocks also note direction + shininess, and their sky light
         ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0);
         ID3D11ShaderResourceView* srvs[5] = { texArray.Get(), shadows ? shadowSRV.Get() : nullptr, nullptr, noiseSRV.Get(), skyMap ? skyMapSRV.Get() : nullptr }; ctx->PSSetShaderResources(0, 5, srvs); BindMaterials();
         ID3D11SamplerState* samps[3] = { sampBlocks.Get(), sampShadow.Get(), sampLinear.Get() }; ctx->PSSetSamplers(0, 3, samps);
@@ -3347,6 +3355,23 @@ struct App {
             { ID3D11ShaderResourceView* r9[9] = { nullptr, nullptr, depthSRV.Get(), nullptr, nullptr, nullptr, nullptr, indSRV.Get(), aoSRV.Get() }; ctx->PSSetShaderResources(0, 9, r9); }
             ctx->Draw(3, 0);
             { ID3D11ShaderResourceView* n9[9] = {}; ctx->PSSetShaderResources(0, 9, n9); }
+            ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
+        }
+        // ---- bounce light: lit and glowing surfaces light the ones near them (half size, then blurred and added)
+        if (fc.gi[0] > 0.001f) {
+            ctx->OMSetRenderTargets(1, giRTV.GetAddressOf(), nullptr);
+            ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->IASetInputLayout(nullptr); ctx->RSSetState(rsNoCull.Get()); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
+            D3D11_VIEWPORT hv{ 0, 0, (float)std::max(1, rw / 2), (float)std::max(1, rh / 2), 0, 1 }; ctx->RSSetViewports(1, &hv);
+            ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psGI.Get(), nullptr, 0);
+            { ID3D11ShaderResourceView* r6[6] = { hdrSRV.Get(), nullptr, depthSRV.Get(), nullptr, nullptr, surfSRV.Get() }; ctx->PSSetShaderResources(0, 6, r6); }
+            ctx->Draw(3, 0);
+            { ID3D11ShaderResourceView* n6[6] = {}; ctx->PSSetShaderResources(0, 6, n6); }
+            ctx->RSSetViewports(1, &v);
+            ctx->OMSetRenderTargets(1, hdrRTV.GetAddressOf(), nullptr); ctx->OMSetBlendState(bsAdd.Get(), nullptr, 0xFFFFFFFF);
+            ctx->PSSetShader(psGIApply.Get(), nullptr, 0); ctx->PSSetSamplers(3, 1, sampClamp.GetAddressOf());
+            { ID3D11ShaderResourceView* d1 = depthSRV.Get(); ctx->PSSetShaderResources(2, 1, &d1); ID3D11ShaderResourceView* g2[2] = { giSRV.Get(), albSRV.Get() }; ctx->PSSetShaderResources(24, 2, g2); }
+            ctx->Draw(3, 0);
+            { ID3D11ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(2, 1, &n1); ID3D11ShaderResourceView* n2[2] = {}; ctx->PSSetShaderResources(24, 2, n2); }
             ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
         }
         // ---- reflections: shiny pixels look for what they mirror in the picture (depth must not be a target while read)
@@ -4095,6 +4120,7 @@ struct App {
             }
             Prop("Lights in the air"); ch |= ImGui::SliderFloat("##lfog", &L.lightFog, 0, 3, L.lightFog <= 0 ? "none" : "%.2f");
             Hint("Lights glow in the fog and haze; spotlights make beams (with their shadows).");
+            Prop("Bounce light"); ch |= ImGui::SliderFloat("##bnc", &L.bounce, 0, 3, L.bounce <= 0 ? "none" : "%.2f");
             if (ch) { L.name = name; if (own) *own = L; else looks.looks.push_back(L); looksDirty = true; own = OwnLook(name); }
             static char newName[64] = "";
             if (ImGui::SmallButton("Copy as a new look")) { ColorLook c = L; int n = 1; do c.name = name + " " + std::to_string(++n); while (looks.find(c.name)); looks.looks.push_back(c); name = c.name; looksDirty = true; }

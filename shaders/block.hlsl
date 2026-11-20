@@ -40,6 +40,7 @@ cbuffer Frame : register(b0)
     float4 gOcc;                    // x true darkness on (sky light only where the sky is), y how open the sky is around the camera (0..1)
     float4 gLookFog;                // the look's air: x fog thickness, y height (world Y) it thins above, z over how many blocks (0: everywhere), w lights in the air
     float4 gLookFogCol;             // rgb its colour (linear), w how much it glows by itself
+    float4 gGI;                     // bounce light: x strength (0: off), y how far it reaches (blocks)
 };
 float lookFogAt(float y) { return gLookFog.x * (gLookFog.z > 0.01 ? exp(-max(y - gLookFog.y, 0) / gLookFog.z) : 1); }
 cbuffer ChunkCB : register(b1)
@@ -246,7 +247,7 @@ struct VSOut { float4 pos : SV_Position; float3 uvl : TEXCOORD0; float ao : TEXC
 // what the reflection pass needs per pixel: direction of the surface (rgb) and how shiny it is (a)
 // color: the lit picture; surface: direction + shininess (reflections); indirect: the part of the light that
 // comes from the sky and lamps (not the sun), which ambient occlusion takes away in corners
-struct PSOut { float4 color : SV_Target0; float4 surface : SV_Target1; float4 indirect : SV_Target2; };
+struct PSOut { float4 color : SV_Target0; float4 surface : SV_Target1; float4 indirect : SV_Target2; float4 albedo : SV_Target3; };   // albedo: for bounce light
 
 float3 unpackNormal(uint n) { return normalize(float3(n & 255, (n >> 8) & 255, (n >> 16) & 255) / 255.0 * 2 - 1); }
 
@@ -508,7 +509,8 @@ PSOut PS_Opaque(VSOut i, bool front : SV_IsFrontFace)
     float4 t = albedoAt(i.uvl);
     PSOut o; float3 n; float sh;
     o.indirect = 0;
-    if (i.kind > 3.5) { o.color = float4(lavaColor(i.rel), 1); o.surface = float4(i.n * 0.5 + 0.5, 0); return o; }
+    o.albedo = float4(t.rgb, 1);
+    if (i.kind > 3.5) { o.color = float4(lavaColor(i.rel), 1); o.surface = float4(i.n * 0.5 + 0.5, 0); o.albedo = 0; return o; }
     float3 ind;
     o.color = float4(lightBlock(i, t.rgb, front, n, sh, ind), 1);
     o.surface = float4(n * 0.5 + 0.5, i.mat.y > 0.5 ? 1 : min(sh, 0.98));   // 1 = mirror
@@ -521,6 +523,7 @@ PSOut PS_Cutout(VSOut i, bool front : SV_IsFrontFace)
     float4 t = albedoAt(i.uvl);
     clip(t.a - 0.5);
     PSOut o; float3 n; float sh; float3 ind;
+    o.albedo = float4(t.rgb, 1);
     o.color = float4(lightBlock(i, t.rgb, front, n, sh, ind), 1);
     o.surface = float4(n * 0.5 + 0.5, i.mat.y > 0.5 ? 1 : min(sh, 0.98));
     o.indirect = float4(ind, 0);
@@ -1635,4 +1638,52 @@ float4 PS_GlowComp(BlitOut i) : SV_Target
     float4 b = gCompA.SampleLevel(gClamp, i.uv, 0);
     float inside = gCompB.SampleLevel(gClamp, i.uv, 0).a;      // where the part itself is: no glow on top of it
     return float4(b.rgb * (1 - saturate(inside)) * gGlowDir.z, 0);
+}
+
+// ---------------------------------------------------------------- bounce light (screen-space GI): light bouncing off lit and glowing
+// surfaces onto the ones near them - a green glow tints the wall beside it, a sunlit floor lights the ceiling a little
+Texture2D gGITex : register(t24);
+Texture2D gAlbedo : register(t25);
+float3 relAt(int2 fp, float zb)
+{
+    float2 ndc = (float2(fp) + 0.5) / gDepth.zw * float2(2, -2) + float2(-1, 1);
+    float3 d = normalize(gCamF.xyz + gCamR.xyz * (ndc.x * gProj.x * gProj.y) + gCamU.xyz * (ndc.y * gProj.x));
+    return d * linDepth(zb) / max(dot(d, gCamF.xyz), 1e-3);
+}
+float4 PS_GI(SkyOut i) : SV_Target   // half size
+{
+    float2 uv = i.ndc * float2(0.5, -0.5) + 0.5;
+    int2 fp = clamp(int2(uv * gDepth.zw), int2(0, 0), int2(gDepth.zw) - 1);
+    float zb = gSceneDepth.Load(int3(fp, 0)); if (zb >= 1) return 0;
+    float3 P = relAt(fp, zb); float dist = length(P);
+    float3 n = normalize(gSurface.Load(int3(fp, 0)).xyz * 2 - 1);
+    float rot = ign(i.pos.xy) * 6.2832;
+    float rpx = clamp(gGI.y / max(dist, 0.5) * gDepth.w / (2 * gProj.x), 4, gDepth.w * 0.15);   // the reach, in pixels at this distance
+    float3 sum = 0; const int N = 16;
+    [loop] for (int k = 0; k < N; k++)
+    {
+        float a = rot + k * 2.39996, r = rpx * sqrt((k + 0.5) / N);
+        int2 sp = fp + int2(round(float2(cos(a), sin(a)) * r));
+        if (any(sp < 0) || any(sp >= int2(gDepth.zw))) continue;
+        float zs = gSceneDepth.Load(int3(sp, 0)); if (zs >= 1) continue;
+        float3 v = relAt(sp, zs) - P; float d = length(v); if (d < 0.05 || d > gGI.y * 2) continue; v /= d;
+        float3 nS = normalize(gSurface.Load(int3(sp, 0)).xyz * 2 - 1);
+        float w = saturate(dot(n, v)) * saturate(dot(nS, -v) + 0.25);   // facing each other (glowing things shine every way, a bit)
+        sum += gHdr.Load(int3(sp, 0)).rgb * w / (1 + d * d / (gGI.y * gGI.y) * 4);
+    }
+    return float4(min(sum / N * gGI.x * 2.2, 16), 1);
+}
+float4 PS_GIApply(SkyOut i) : SV_Target   // full size: a careful blur (only across similar distances), times the surface's colour
+{
+    int2 px = int2(i.pos.xy);
+    float zb = gSceneDepth.Load(int3(px, 0)); if (zb >= 1) return 0;
+    float lz = linDepth(zb); float2 uv = (float2(px) + 0.5) / gDepth.zw, ht = 2 / gDepth.zw;
+    float3 s = 0; float w = 0;
+    [unroll] for (int y = -1; y <= 1; y++) [unroll] for (int x = -1; x <= 1; x++)
+    {
+        float2 u = uv + float2(x, y) * ht; int2 q = clamp(int2(u * gDepth.zw), int2(0, 0), int2(gDepth.zw) - 1);
+        float ww = exp(-abs(linDepth(gSceneDepth.Load(int3(q, 0))) - lz) / max(lz * 0.04, 0.08)) * (x == 0 && y == 0 ? 2 : 1);
+        s += gGITex.SampleLevel(gClamp, u, 0).rgb * ww; w += ww;
+    }
+    return float4(s / max(w, 1e-4) * gAlbedo.Load(int3(px, 0)).rgb, 0);
 }
