@@ -93,11 +93,17 @@ struct PlayerRules {
     float stepHeight = 0.6f;                          // walks up ledges this high by itself
     float ballSize = 1.0f;                            // the morph ball's size (blocks)
     uint32_t morphColor = 0xFFB040; float morphFx = 1; bool morphHudFx = true;   // morphing: an energy shell, sparks and a flash in this colour (0: none); the HUD glows too
+    float bounceDamage = 0.5f;                        // a shot bounced back by a door that needs another weapon: hurts you this much of its damage (0: never)
     int morphBall = 1, bombs = 1;                     // 0 none, 1 from the start, 2 found later (a key pickup called "Morph Ball" / "Bombs")
     float ballSpeed = 7;                              // rolling speed (blocks / s)
     float bombJump = 2.2f;                            // how high a bomb right under the ball throws it (blocks)
     int bombsAtOnce = 3; float bombFuse = 0.9f, bombReach = 1.3f, bombSphere = 3.0f;   // bombSphere: the impact sphere (blocks across, 0: none)   // bombs out at the same time; seconds until they go off; how far they reach (blocks)
     std::string ballModel = "@morph-ball";
+    // how the ball rolls (Morph Ball 3D editor): the model's axle (its own directions) is pulled across the way it rolls,
+    // so it rolls like a wheel around it and always comes back to the middle; pivot: the point it turns around (from the model's middle, in ball sizes)
+    V3 ballAxle{ 1, 0, 0 }; float ballBalance = 0; V3 ballPivot{ 0, 0, 0 };   // balance: how fast it rights itself (0: tumbles freely)
+    bool ballTrail = false; V3 trailPoint{ 0.5, 0, 0 };   // a glowing tail while rolling; where it starts: behind, up, to the side (blocks, from the ball's middle)
+    uint32_t trailColor = 0x60C8FF; float trailSize = 0.16f, trailLife = 0.35f;
     // set while playing by the items you have (Items tab); not saved with the rules
     float damageTaken = 1;                            // suits: how much of the damage gets through
     bool freeInLiquid = false;                        // the Gravity Suit: water and lava do not slow you

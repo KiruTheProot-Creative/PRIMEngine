@@ -23,7 +23,7 @@ bool saveGame(const std::string& dir, const SaveGame& g) {
         for (auto& w : g.taken) { f << "taken " << escText(w.first); for (uint32_t id : w.second) f << " " << id; f << "\n"; }
         for (const ScanEntry& e : g.scans) f << "scan " << e.id << " " << escText(e.name) << " " << escText(e.category) << " " << escText(e.text) << " " << escText(e.model) << " " << (e.important ? 1 : 0) << "\n";
         auto set = [&](const char* k, const std::set<std::string>& s) { for (const std::string& v : s) f << k << " " << escText(v) << "\n"; };
-        set("gone", g.enemyGone); set("cleared", g.zonesCleared); set("station", g.stationsUsed); set("flag", g.flags);
+        set("gone", g.enemyGone); set("cleared", g.zonesCleared); set("station", g.stationsUsed); set("flag", g.flags); set("dooropen", g.doorsOpened);
         for (const std::string& m : g.maps) f << "map " << escText(m) << "\n";
         f << "end\n";
         if (!f) return false;
@@ -53,6 +53,7 @@ bool loadGame(const std::string& dir, SaveGame& g) {
         else if (k == "cleared") { l >> a; g.zonesCleared.insert(unescText(a)); }
         else if (k == "station") { l >> a; g.stationsUsed.insert(unescText(a)); }
         else if (k == "flag") { l >> a; g.flags.insert(unescText(a)); }
+        else if (k == "dooropen") { l >> a; g.doorsOpened.insert(unescText(a)); }
         else if (k == "map") { l >> a; g.maps.push_back(unescText(a)); }
         else if (k == "end") ended = true;
     }

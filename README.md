@@ -91,6 +91,8 @@ In the editor, **T** swaps the hotbar between blocks and tools. Slot 1 is the **
 - Width x Height in blocks: the model is stretched to fill it (1 x 1 for the morph ball, 2 x 3, 4 x 2 ...).
 - Forcefield: a glowing field in the door's opening, in a colour you pick. In Play mode, click to shoot the test beam: the field dissolves from where it was hit, the door plays its "open" animation, stays open (longer while you stand in it), plays "close" and the field comes back. Without a forcefield the door opens when you walk up to it.
 - Collision follows: the door halves and the field block you while it is shut; the frame always does.
+- **The wrong weapon:** a door that opens with one weapon (Door > "Opened by") sends any other shot **bouncing back** off its field, with sparks and the locked sound. A bounced shot can hit you (Body and movement > "Bounced shots hurt you": how much of its damage, 0 = never).
+- **Opened once, open for good:** once you open such a door with the right weapon, it turns into an any-weapon door (blue field, any shot opens it). This is remembered in the save game.
 
 ## Platforms and elevators (G2)
 
@@ -454,4 +456,9 @@ Player > Weapons > Lock-on: on / off, hold or press-to-toggle, reach, how far fr
 - **Bombs** (the fire button while rolled up): up to 3 at once, they go off after a short fuse, break blocks marked for bombs, open bomb doors (door "Opened by": Bomb), and throw the ball up (bomb jump height). Found later: a "Bombs" pickup.
 - **Breakable blocks:** the new tool (T, slot 5) marks blocks (left click, hold and sweep to mark many; right click unmarks), or mark a whole selection box. Each mark says what breaks it: any shot (or bomb / missile), bombs only, missiles only, charged shots only, or one beam. The editor shows them with a coloured outline; in the game they look like any other block. Broken blocks come back when Play ends.
 - **Editing:** doors cannot be opened while you edit, so you go straight through them.
+- **How it rolls (3D editor)**, Body and movement > Morph Ball: the ball rolls on the spot in a little 3D view, with handles you drag:
+  - the **axle** (yellow): the line the ball should roll around, like a wheel. **Balancing** pulls it across the way you roll, so the ball always rights itself and its middle stays in the middle (0: it tumbles freely).
+  - the **turning point**: drag the model's middle (pink) off the point it turns around (white), for a ball that wobbles or rolls off-centre.
+  - the **trail** (ring in the trail's colour): where its glowing tail starts, behind / up / to the side; an example trail streams from it all the time. Colour, size and length below the view.
+  - Drag empty space or hold the right mouse to turn the view, the wheel zooms; "Pause rolling" and a speed slider help line things up.
 - Sounds for the morph ball, bombs and breaking blocks: Player editor > Sounds.

@@ -1874,6 +1874,7 @@ struct App {
         for (auto& e : fx) push(e);
         if (playMode) push(chargeFx);   // the charge gathering at the muzzle
         for (auto& b : bombsOut) push(b.fx);
+        if (playMode) push(ballTrailFx);   // the morph ball's tail
         for (auto& s : shots) push(s.trail);
         particleCount = (int)((add.size() + soft.size()) / 6);
         if (add.empty() && soft.empty()) return;
@@ -2390,7 +2391,7 @@ struct App {
     // ================================================================== doors (G2 attempt 3a)
     struct Shot { V3 pos, dir; float age = 0; ParticleEmitter trail{ particlePreset("Beam trail"), 11 };
                   float speed = 45, size = 0.07f, range = 80, travelled = 0; V3 color{ 0.4, 1.6, 3.0 }; uint32_t tint = 0; std::string weapon, hitLook = "Impact"; bool missile = false, charged = false;
-                  int beam = -1, mtype = -1; bool orb = false; float spin = 0; uint32_t homeId = 0; };   // homeId: locked on when it was fired: it steers after that one   // beam / mtype: what fired it (sounds, sphere); orb: drawn as a glowing ball; mtype: drawn as the missile's model
+                  int beam = -1, mtype = -1; bool orb = false; float spin = 0; uint32_t homeId = 0; bool bounced = false; };   // bounced: sent back by a door (it can hit you)   // homeId: locked on when it was fired: it steers after that one   // beam / mtype: what fired it (sounds, sphere); orb: drawn as a glowing ball; mtype: drawn as the missile's model
     std::map<uint32_t, DoorRuntime> doorRt;           // Play mode: each door's state, by object id
     std::map<uint32_t, ModelGpu> doorGpu;             // doors in the middle of an animation: their posed meshes
     std::vector<Shot> shots; bool shootPrev = true;
@@ -2507,7 +2508,7 @@ struct App {
         D3D11_MAPPED_SUBRESOURCE ms; if (FAILED(ctx->Map(vbFieldMesh.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) return false;
         std::memcpy(ms.pData, v.data(), v.size() * sizeof(FMVtx)); ctx->Unmap(vbFieldMesh.Get(), 0);
         V3 org, ac, up; fieldQuad(o, f, OpeningOf(o.model), org, ac, up, 0);
-        V3 hit = org + ac * r.hitU + up * r.hitV - camPos, col = Linear(o.door.color);
+        V3 hit = org + ac * r.hitU + up * r.hitV - camPos, col = Linear(DoorColor(o));
         double size = std::max(std::sqrt(ac.x * ac.x + ac.y * ac.y + ac.z * ac.z), std::sqrt(up.x * up.x + up.y * up.y + up.z * up.z));
         ChunkCB cc{ { (float)hit.x, (float)hit.y, (float)hit.z, (float)size }, { 0, 0, 0, 0 }, { 0, 0, 0, 0 }, { (float)col.x, (float)col.y, (float)col.z, r.field } };
         ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);
@@ -2626,10 +2627,34 @@ struct App {
                 if (!which.empty()) { if (bestPart < best) best = bestPart; enemyHitId = kv.first; enemyHitPart = which; door = -1; blockHit = false; }
             }
             if (door >= 0) blockHit = false;
+            if (s.bounced && game.player.bounceDamage > 0 && !play.dead()) {   // bounced back: it can hit you
+                double tp; if (rayBox(s.pos, s.dir, PlayerBox(), tp) && tp < best && tp < step) {
+                    V3 at = s.pos + s.dir * tp;
+                    Beam* wb = s.beam >= 0 && s.beam < (int)weapons.beams.size() ? &weapons.beams[s.beam] : nullptr;
+                    MissileType* wm = s.mtype >= 0 && s.mtype < (int)weapons.missileTypes.size() ? &weapons.missileTypes[s.mtype] : nullptr;
+                    float base = wm ? wm->damage : wb ? wb->damage * (s.charged ? wb->chargeDamage : 1.f) : 10.f;
+                    HurtPlayer(base * game.player.bounceDamage, at, "your own shot");
+                    SpawnFx(particlePreset(s.hitLook.empty() ? "Impact" : s.hitLook), at, s.dir * -1, s.tint); fx.push_back(s.trail); s.age = 99; continue;
+                }
+            }
+            if (door >= 0 && !s.bounced && best < step) {   // a door that needs another weapon: the shot bounces back off its field
+                const WorldObject& o = objects[door];
+                if (!evLocked.count(o.id) && !DoorOpens(o, s.weapon, s.missile)) {
+                    FrameRef f = ModelOf(o); Box3 fb = fieldBox(o, *f, OpeningOf(o.model)); V3 at = s.pos + s.dir * best;
+                    double dl[6] = { std::fabs(at.x - fb.lo.x), std::fabs(at.x - fb.hi.x), std::fabs(at.y - fb.lo.y), std::fabs(at.y - fb.hi.y), std::fabs(at.z - fb.lo.z), std::fabs(at.z - fb.hi.z) };
+                    int side = (int)(std::min_element(dl, dl + 6) - dl); V3 n{ 0, 0, 0 }; (side / 2 == 0 ? n.x : side / 2 == 1 ? n.y : n.z) = (side & 1) ? 1 : -1;
+                    double dn = s.dir.x * n.x + s.dir.y * n.y + s.dir.z * n.z; s.dir = Norm(s.dir - n * (2 * dn));
+                    s.pos = at + n * 0.06; s.bounced = true; s.homeId = 0; s.travelled = 0;
+                    SpawnFx(particlePreset("Sparks"), at, n, DoorColor(o)); AddSphere(at, 0.3f, DoorColor(o), 0.18f);
+                    Box3 db = objectBounds(o, *f); V3 dc = (db.lo + db.hi) * 0.5;
+                    Toast("This door opens with " + (o.door.openedBy == "Missile" ? std::string("a missile") : "the " + o.door.openedBy)); PlaySoundIn(SND_WORLD, playerSounds.doorLocked, 1, &dc);
+                    continue;
+                }
+            }
             if (best < step && blockHit) TryBreak(h.x, h.y, h.z, s.weapon, s.missile, s.charged);   // a marked block: it may break
             if (best < step) {
                 {   // sparks where it hits; its tail stays a moment
-                    V3 at = s.pos + s.dir * best; uint32_t tint = door >= 0 ? objects[door].door.color : s.tint;
+                    V3 at = s.pos + s.dir * best; uint32_t tint = door >= 0 ? DoorColor(objects[door]) : s.tint;
                     SpawnFx(particlePreset(s.hitLook.empty() ? "Impact" : s.hitLook), at - s.dir * 0.05, s.dir * -1, tint);
                     {   // the impact sphere (small for beam shots, bigger for charged shots and missiles) and the hit sound
                         Beam* wb = s.beam >= 0 && s.beam < (int)weapons.beams.size() ? &weapons.beams[s.beam] : nullptr;
@@ -2663,9 +2688,9 @@ struct App {
                     float u = (float)std::clamp(dot(q, ac) / std::max(1e-9, dot(ac, ac)), 0.0, 1.0), v = (float)std::clamp(dot(q, up) / std::max(1e-9, dot(up, up)), 0.0, 1.0);
                     Box3 db = objectBounds(o, *f); V3 dc = (db.lo + db.hi) * 0.5;
                     if (evLocked.count(o.id)) { Toast("This door is locked"); PlaySoundIn(SND_WORLD, playerSounds.doorLocked, 1, &dc); }
-                    else if (!doorOpensFor(o.door, s.weapon, s.missile)) { Toast("This door opens with " + (o.door.openedBy == "Missile" ? std::string("a missile") : "the " + o.door.openedBy)); PlaySoundIn(SND_WORLD, playerSounds.doorLocked, 1, &dc); }
+                    else if (!DoorOpens(o, s.weapon, s.missile)) { Toast("This door opens with " + (o.door.openedBy == "Missile" ? std::string("a missile") : "the " + o.door.openedBy)); PlaySoundIn(SND_WORLD, playerSounds.doorLocked, 1, &dc); }
                     else if (!o.door.key.empty() && !inv.keys.count(o.door.key)) { Toast("This door needs the " + o.door.key); PlaySoundIn(SND_WORLD, playerSounds.doorLocked, 1, &dc); }
-                    else doorRt[o.id].shoot(u, v);
+                    else { doorRt[o.id].shoot(u, v); if (!o.door.openedBy.empty()) doorsOpened.insert(DoorKey(o)); }   // the right weapon once: any shot from now on
                 }
                 s.age = 99;
             } else { s.pos = s.pos + s.dir * step; s.travelled += (float)step; if (s.travelled > s.range) { fx.push_back(s.trail); s.age = 99; } }
@@ -2673,6 +2698,12 @@ struct App {
         shots.erase(std::remove_if(shots.begin(), shots.end(), [](const Shot& s) { return s.age > 2.5f; }), shots.end());
     }
     // forcefields (and the beam): glowing see-through quads, added on top of the picture
+    // weapon doors: once opened with the right weapon they open for any shot (and look like it)
+    std::set<std::string> doorsOpened;
+    std::string DoorKey(const WorldObject& o) const { return CurrentWorld() + ":" + std::to_string(o.id); }
+    bool DoorUnlocked(const WorldObject& o) const { return playMode && !o.door.openedBy.empty() && doorsOpened.count(DoorKey(o)); }
+    bool DoorOpens(const WorldObject& o, const std::string& weapon, bool missile) const { return DoorUnlocked(o) || doorOpensFor(o.door, weapon, missile); }
+    uint32_t DoorColor(const WorldObject& o) const { return DoorUnlocked(o) ? DoorSettings{}.color : o.door.color; }
     void DrawFields() {
         bool any = false; for (auto& o : objects) any |= o.kind == ObjKind::Door && o.door.field;
         if (!any && shots.empty()) return;
@@ -2686,7 +2717,7 @@ struct App {
             if (o.door.fieldOnParts && DrawFieldOnParts(o, *f, r)) continue;
             for (int side = 0; side < 2; side++) {   // a sheet just in front of the door, and / or just behind it
                 if ((o.door.fieldSide == 1 && side == 1) || (o.door.fieldSide == 2 && side == 0)) continue;
-                V3 org, ac, up; fieldQuad(o, *f, OpeningOf(o.model), org, ac, up, side); V3 rel = org - camPos, col = Linear(o.door.color);
+                V3 org, ac, up; fieldQuad(o, *f, OpeningOf(o.model), org, ac, up, side); V3 rel = org - camPos, col = Linear(DoorColor(o));
                 ChunkCB cc{ { (float)rel.x, (float)rel.y, (float)rel.z, 0 }, { (float)ac.x, (float)ac.y, (float)ac.z, r.hitU }, { (float)up.x, (float)up.y, (float)up.z, r.hitV }, { (float)col.x, (float)col.y, (float)col.z, r.field } };
                 ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0); ctx->Draw(6, 0);
             }
@@ -4325,7 +4356,7 @@ struct App {
         inv = PlayInventory{};
         if (!weapons.missileTypes.empty() && !weapons.missileCounter.empty()) inv.counts[weapons.missileCounter] = weapons.missileStart;
         weapState.missile = 0; chargedOn = false;
-        enemyRt.clear(); enemyGone.clear(); zonesCleared.clear(); enemyShots.clear(); enemyDrops.clear(); debris.clear(); enemyAnimT.clear(); enemyAnimClip.clear(); playerInvuln = 0;
+        enemyRt.clear(); enemyGone.clear(); doorsOpened.clear(); zonesCleared.clear(); enemyShots.clear(); enemyDrops.clear(); debris.clear(); enemyAnimT.clear(); enemyAnimClip.clear(); playerInvuln = 0;
         bossRt.clear(); bossPose.clear(); bossSealed.clear(); bossShown = 0; bossBarFade = 0; spawnQueue.clear(); camShake = 0; countdownT = -1;
         curSlot = -1; playTime = 0; savePrompt = false;
         visor = 0; visorFlash = 0; scanLog.clear(); scanOpen = false; scanProgress = 0; scanTargetId = 0; menuScan = 0; menuScroll.clear(); menuScrollWho.clear();
@@ -4338,7 +4369,7 @@ struct App {
         weapState = WeaponState{}; weapPose = WeaponPose{}; cannonClip = -1; firedPending = 0; missilePrev = true;
         activeTl.clear(); chargeTlOn = false; freeAim = FreeAim{}; aimYaw = aimPitch = 0; stepDist = 0;
         lockId = lockHint = 0; lockToggled = lockHeld = false; lockBtnPrev = true; player.dashT = 0;
-        player.ball = false; bombsOut.clear(); flashes.clear(); broken.clear(); ballCamSet = false;
+        player.ball = false; bombsOut.clear(); flashes.clear(); broken.clear(); ballCamSet = false; ballTrailFx.ps.clear();
         for (int i = 0; i < (int)weapons.beams.size(); i++) if (weapons.beams[i].startsOwned) { weapState.current = i; break; }
         hudSway.reset(); hudShown.clear(); hudFlashAt.clear(); prevPlayYaw = player.yaw; prevPlayPitch = player.pitch; prevOnGround = true; prevVelY = 0;
         EvStart();
@@ -5932,6 +5963,7 @@ struct App {
             ImGui::EndCombo();
         }
         ModelMaterialUI(r.ballModel.empty() ? std::string("@morph-ball") : r.ballModel);
+        if (ImGui::TreeNode("How it rolls (3D editor)")) { ch |= BallEditorUI(r); ImGui::TreePop(); }
         Hint("Whether you have it (and the Bombs, Spring Ball, Power Bombs...): Items tab.");
         ImGui::SeparatorText("Health and dying");
         sl("Health", &r.maxHealth, 1, 500, "%.0f");
@@ -5939,6 +5971,8 @@ struct App {
         sl("Fall damage", &r.fallDamage, 0, 50, r.fallDamage <= 0 ? "off" : "%.0f per block (after 4)");
         sl("Death below height", &r.voidDepth, -512, 0, "y = %.0f");
         sl("Respawn after", &r.respawnDelay, 0, 10, "%.1f s");
+        sl("Bounced shots hurt you", &r.bounceDamage, 0, 2, r.bounceDamage <= 0 ? "never" : "%.2f x their damage");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("A door that needs another weapon sends the shot back; if it hits you, this much of its damage.\nOnce a door is opened with the right weapon, any shot opens it from then on (saved).");
         ImGui::SeparatorText("The death sequence");
         Prop("Death sequence"); ch |= ImGui::Checkbox("##dfx", &r.deathFx);
         if (r.deathFx) {
@@ -7531,7 +7565,7 @@ struct App {
         g.keys = inv.keys; g.counts = inv.counts;
         for (auto& w : takenByWorld) for (auto& t : w.second) if (t.second < 0) g.taken[w.first].insert(t.first);
         g.beam = weapState.current; g.missile = weapState.missile; g.visor = visor;
-        g.scans = scanLog.entries; g.enemyGone = enemyGone; g.zonesCleared = zonesCleared; g.stationsUsed = stationsUsed; g.flags = evRun.flags;
+        g.scans = scanLog.entries; g.enemyGone = enemyGone; g.doorsOpened = doorsOpened; g.zonesCleared = zonesCleared; g.stationsUsed = stationsUsed; g.flags = evRun.flags;
         for (auto& m : seenMaps) g.maps.push_back(m.first);
         std::string dir = SlotDir(curSlot);
         if (!saveGame(dir, g)) { Toast("Could not save"); return false; }
@@ -7565,7 +7599,7 @@ struct App {
         UpdateItemRules(); play.health = std::clamp(g.health > 0 ? g.health : playRules.maxHealth, 1.f, playRules.maxHealth);
         weapState.current = std::clamp(g.beam, 0, std::max(0, (int)weapons.beams.size() - 1)); weapState.missile = std::clamp(g.missile, 0, std::max(0, (int)weapons.missileTypes.size() - 1));
         visor = std::clamp(g.visor, 0, VISORS - 1);
-        scanLog.entries = g.scans; enemyGone = g.enemyGone; zonesCleared = g.zonesCleared; stationsUsed = g.stationsUsed; evRun.flags.insert(g.flags.begin(), g.flags.end());
+        scanLog.entries = g.scans; enemyGone = g.enemyGone; doorsOpened = g.doorsOpened; zonesCleared = g.zonesCleared; stationsUsed = g.stationsUsed; evRun.flags.insert(g.flags.begin(), g.flags.end());
         seenMaps.clear(); mapGpu.clear(); mapGpuWorld.clear();
         for (int i = 0; i < (int)g.maps.size(); i++) { SeenMap m; if (loadSeenMap(dir + "/map_" + std::to_string(i) + ".bin", m)) seenMaps[g.maps[i]] = m; }
         player.feet = g.pos; player.yaw = g.yaw; player.pitch = 0; player.vel = { 0, 0, 0 }; playSpawn = g.pos; playYaw = g.yaw;
@@ -11331,13 +11365,51 @@ struct App {
         for (size_t i = 0; i < bombsOut.size();) { if (bombsOut[i].fuse <= 0) { V3 at = bombsOut[i].pos; bool pw = bombsOut[i].power; fx.push_back(bombsOut[i].fx); bombsOut.erase(bombsOut.begin() + i); Explode(at, pw); } else i++; }
         for (Flash& f : flashes) f.t += (float)dt;
         flashes.erase(std::remove_if(flashes.begin(), flashes.end(), [](const Flash& f) { return f.t > 0.35f; }), flashes.end());
-        if (!player.ball) return;
-        double sp = std::sqrt(player.vel.x * player.vel.x + player.vel.z * player.vel.z), r = std::max(0.05, game.player.ballSize * 0.5);
-        if (sp > 1e-4) {   // roll: turn around the axis across the way it goes
-            V3 axis = Norm(cross({ 0, 1, 0 }, { player.vel.x, 0, player.vel.z })); double a = sp * dt / r, c = std::cos(a), s = std::sin(a);
-            auto rot = [&](V3 v) { V3 kxv = cross(axis, v); double kd = axis.x * v.x + axis.y * v.y + axis.z * v.z; return v * c + kxv * s + axis * (kd * (1 - c)); };
-            ballAx = Norm(rot(ballAx)); ballAy = Norm(rot(ballAy)); ballAz = Norm(cross(ballAx, ballAy)); ballAy = cross(ballAz, ballAx);
+        double sp = std::sqrt(player.vel.x * player.vel.x + player.vel.z * player.vel.z);
+        bool rolling = playMode && player.ball && sp > 0.3;
+        if (player.ball) {
+            if (sp > 1e-4) ballHeading = V3{ player.vel.x / sp, 0, player.vel.z / sp };
+            else if (std::fabs(ballHeading.x) + std::fabs(ballHeading.z) < 1e-6) ballHeading = V3{ std::sin(player.yaw), 0, std::cos(player.yaw) };
+            RollBall(ballAx, ballAy, ballAz, ballHeading, sp, dt, game.player);
         }
+        {   // the tail: from the trail point while it rolls
+            const PlayerRules& r = game.player; ballTrailFx.s = BallTrailLook(r, sp);
+            ballTrailFx.update(dt, BallTrailPoint(r, BallCentre(), ballHeading), 0, nullptr, rolling && r.ballTrail);
+        }
+    }
+    V3 ballHeading{ 0, 0, 1 }; ParticleEmitter ballTrailFx{ ParticleSettings{}, 77 };
+    // one step of rolling: turn around the axis across the way it goes; then the axle is pulled onto that axis (balancing)
+    static void RollBall(V3& ax, V3& ay, V3& az, V3 heading, double speed, double dt, const PlayerRules& r) {
+        double rad = std::max(0.05, r.ballSize * 0.5);
+        V3 axis = Norm(cross({ 0, 1, 0 }, heading));
+        auto turn = [](V3& x, V3& y, V3& z, V3 k, double a) {
+            double c = std::cos(a), s = std::sin(a);
+            auto rot = [&](V3 v) { V3 kxv = cross(k, v); double kd = k.x * v.x + k.y * v.y + k.z * v.z; return v * c + kxv * s + k * (kd * (1 - c)); };
+            x = Norm(rot(x)); y = Norm(rot(y)); z = Norm(cross(x, y)); y = cross(z, x);
+        };
+        if (speed > 1e-4) turn(ax, ay, az, axis, speed * dt / rad);
+        if (r.ballBalance > 0 && speed > 0.05) {   // balancing: the axle (in the model's own directions) comes round to the rolling axis (the nearer end)
+            V3 m = Norm(r.ballAxle), a = Norm(ax * m.x + ay * m.y + az * m.z);
+            V3 t = (a.x * axis.x + a.y * axis.y + a.z * axis.z) < 0 ? axis * -1.0 : axis;
+            V3 c = cross(a, t); double sn = std::sqrt(c.x * c.x + c.y * c.y + c.z * c.z), cs = a.x * t.x + a.y * t.y + a.z * t.z;
+            double k = 1 - std::exp(-r.ballBalance * dt * std::min(1.0, speed / 2.0));
+            if (sn > 1e-6) turn(ax, ay, az, c * (1 / sn), std::atan2(sn, cs) * k);
+        }
+    }
+    static V3 BallTrailPoint(const PlayerRules& r, V3 centre, V3 heading) {   // behind, up, to the side of the ball's middle
+        V3 side = Norm(cross({ 0, 1, 0 }, heading));
+        return centre - heading * r.trailPoint.x + V3{ 0, r.trailPoint.y, 0 } + side * r.trailPoint.z;
+    }
+    static ParticleSettings BallTrailLook(const PlayerRules& r, double speed) {
+        ParticleSettings p = particlePreset("Beam trail");
+        p.rate = (float)std::clamp(40 + speed * 18, 40.0, 260.0); p.life = std::max(0.05f, r.trailLife); p.lifeVar = p.life * 0.25f;
+        p.size0 = std::max(0.01f, r.trailSize); p.size1 = 0; p.color0 = r.trailColor; p.color1 = r.trailColor; p.speed = 0.2f; p.speedVar = 0.15f;
+        return p;
+    }
+    // the ball model's point it turns around: its middle, moved by the pivot (in ball sizes)
+    V3 BallPivotIn(const ModelFrame& m) const {
+        double big = std::max({ m.sx, m.sy, m.sz });
+        return V3{ 0, m.sy * 0.5, 0 } + game.player.ballPivot * big;
     }
     // the third-person camera behind the ball (it does not go through walls)
     void BallCamera(V3& eye, V3& fwd) {
@@ -11355,13 +11427,152 @@ struct App {
         const std::string& model = game.player.ballModel.empty() ? std::string("@morph-ball") : game.player.ballModel;
         FrameRef m = ModelNamed(model); if (!m) return;
         double s = game.player.ballSize / std::max(0.05, std::max({ m->sx, m->sy, m->sz }));   // scaled so its biggest side is the ball size
-        DrawModelAxes(pass, model, BallCentre(), ballAx * s, ballAy * s, ballAz * s, cam);
+        V3 pv = BallPivotIn(*m); DrawModelAxes(pass, model, BallCentre(), ballAx * s, ballAy * s, ballAz * s, cam, &pv);
+    }
+    // ---- the Morph Ball 3D editor: the ball rolls on the spot (the floor runs past), with handles for its axle, its turning point and the trail
+    HudTarget ballEdView; ComPtr<ID3D11DepthStencilView> ballEdDSV; int beDW = 0, beDH = 0; int beWantW = 0, beWantH = 0; bool beShown = false;
+    float beYaw = 2.3f, bePitch = 0.32f, beZoom = 1; float beSpeedK = 0.6f; bool bePause = false; double beScroll = 0;
+    V3 beAx{ 1, 0, 0 }, beAy{ 0, 1, 0 }, beAz{ 0, 0, 1 }; int beDrag = 0;   // 1 axle, 2 turning point, 3 trail point, 4 orbit
+    struct BeDot { V3 pos; float age, life, seed; }; std::vector<BeDot> beTrail; float beAcc = 0;
+    V3 BeCentre() const { return V3{ 0, std::max(0.05f, game.player.ballSize * 0.5f), 0 }; }
+    void BeCamera(int w, int h, V3& eye, XMMATRIX& vp, V3& right, V3& up, V3& fwd) const {
+        V3 c = BeCentre(); double dist = (game.player.ballSize * 2.4 + 0.9) * beZoom;
+        V3 d{ std::sin(beYaw) * std::cos(bePitch), std::sin(bePitch), std::cos(beYaw) * std::cos(bePitch) };
+        eye = c + d * dist; fwd = Norm(c - eye); right = Norm(cross({ 0, 1, 0 }, fwd)); up = cross(fwd, right);
+        vp = XMMatrixLookToLH(XMVectorZero(), XMVectorSet((float)fwd.x, (float)fwd.y, (float)fwd.z, 0), XMVectorSet(0, 1, 0, 0)) * XMMatrixPerspectiveFovLH(XMConvertToRadians(40), (float)w / std::max(1, h), 0.02f, (float)(dist * 6 + 20));
+    }
+    bool BallEditorUI(PlayerRules& r) {
+        bool ch = false; ImGuiIO& io = ImGui::GetIO(); float dt = std::min(0.05f, io.DeltaTime);
+        float W = std::min(ImGui::GetContentRegionAvail().x, 420.f), H = std::floor(W * 0.75f);
+        if (W < 40) return false;
+        beShown = true; beWantW = (int)W; beWantH = (int)H;
+        // the ball rolls forward (+z) on the spot
+        double speed = bePause ? 0.0 : r.ballSpeed * beSpeedK;
+        RollBall(beAx, beAy, beAz, V3{ 0, 0, 1 }, speed, dt, r); beScroll += speed * dt;
+        V3 C = BeCentre(), fwdH{ 0, 0, 1 };
+        {   // the example trail: dots leave the trail point and the floor carries them away behind
+            float life = std::max(0.05f, r.trailLife), rate = (float)std::clamp(40 + speed * 18, 40.0, 260.0);
+            if (speed > 0.05) { beAcc += rate * dt; while (beAcc >= 1) { beAcc -= 1; float sd = (float)((beTrail.size() * 7919 + (size_t)(beScroll * 1000)) % 1000) / 1000.f; beTrail.push_back({ BallTrailPoint(r, C, fwdH), 0, life * (0.8f + 0.4f * sd), sd }); } }
+            for (BeDot& d : beTrail) { d.age += dt; d.pos.z -= speed * dt; d.pos.y += (d.seed - 0.5) * 0.3 * dt; d.pos.x += (std::fmod(d.seed * 7.3f, 1.f) - 0.5) * 0.3 * dt; }
+            beTrail.erase(std::remove_if(beTrail.begin(), beTrail.end(), [](const BeDot& d) { return d.age >= d.life; }), beTrail.end());
+            if (beTrail.size() > 600) beTrail.erase(beTrail.begin(), beTrail.begin() + (beTrail.size() - 600));
+        }
+        ImVec2 p0 = ImGui::GetCursorScreenPos();
+        if (ballEdView.srv && beDW == (int)W && beDH == (int)H) ImGui::Image((ImTextureID)(intptr_t)ballEdView.srv.Get(), ImVec2(W, H)); else ImGui::Dummy(ImVec2(W, H));
+        ImGui::SetCursorScreenPos(p0); ImGui::InvisibleButton("##balled", ImVec2(W, H), ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
+        bool hov = ImGui::IsItemHovered(), act = ImGui::IsItemActive();
+        V3 eye, right, up, fwd; XMMATRIX vp; BeCamera((int)W, (int)H, eye, vp, right, up, fwd);
+        double focal = H * 0.5 / std::tan(XMConvertToRadians(20));
+        auto proj = [&](V3 p, ImVec2& out, double* depth = nullptr) {
+            V3 q = p - eye; XMVECTOR v = XMVector4Transform(XMVectorSet((float)q.x, (float)q.y, (float)q.z, 1), vp); float w = XMVectorGetW(v); if (w < 0.02f) return false;
+            out = ImVec2(p0.x + (XMVectorGetX(v) / w * 0.5f + 0.5f) * W, p0.y + (0.5f - XMVectorGetY(v) / w * 0.5f) * H); if (depth) *depth = w; return true;
+        };
+        // the handles
+        double big = 1;   // ball sizes -> world
+        V3 m = Norm(r.ballAxle), axW = Norm(beAx * m.x + beAy * m.y + beAz * m.z), axTip = C + axW * (r.ballSize * 0.8);
+        V3 midW = C - (beAx * r.ballPivot.x + beAy * r.ballPivot.y + beAz * r.ballPivot.z) * (r.ballSize * big);   // where the model's middle is now
+        V3 trW = BallTrailPoint(r, C, fwdH);
+        ImVec2 sTip, sMid, sTr, sC; bool okTip = proj(axTip, sTip), okMid = proj(midW, sMid), okTr = proj(trW, sTr), okC = proj(C, sC);
+        auto near2 = [&](ImVec2 a) { float dx = io.MousePos.x - a.x, dy = io.MousePos.y - a.y; return dx * dx + dy * dy < 11 * 11; };
+        if (ImGui::IsItemActivated()) {
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) beDrag = 4;
+            else if (okTr && r.ballTrail && near2(sTr)) beDrag = 3;
+            else if (okTip && near2(sTip)) beDrag = 1;
+            else if (okMid && near2(sMid)) beDrag = 2;
+            else beDrag = 4;
+        }
+        if (!act) beDrag = 0;
+        if (act && (io.MouseDelta.x != 0 || io.MouseDelta.y != 0)) {
+            auto moved = [&](V3 p) { double depth = (p - eye).x * fwd.x + (p - eye).y * fwd.y + (p - eye).z * fwd.z, k = std::max(0.05, depth) / focal; return p + right * (io.MouseDelta.x * k) - up * (io.MouseDelta.y * k); };
+            if (beDrag == 4) { beYaw += io.MouseDelta.x * 0.01f; bePitch = std::clamp(bePitch + io.MouseDelta.y * 0.01f, -1.2f, 1.45f); }
+            else if (beDrag == 1) {   // the axle: its end follows the mouse; stored in the model's own directions
+                V3 d = Norm(moved(axTip) - C); r.ballAxle = V3{ d.x * beAx.x + d.y * beAx.y + d.z * beAx.z, d.x * beAy.x + d.y * beAy.y + d.z * beAy.z, d.x * beAz.x + d.y * beAz.y + d.z * beAz.z }; ch = true;
+            } else if (beDrag == 2) {   // the model's middle, dragged off the turning point
+                V3 o = (moved(midW) - C) * (-1.0 / std::max(0.05f, r.ballSize));
+                r.ballPivot = V3{ std::clamp(o.x * beAx.x + o.y * beAx.y + o.z * beAx.z, -1.0, 1.0), std::clamp(o.x * beAy.x + o.y * beAy.y + o.z * beAy.z, -1.0, 1.0), std::clamp(o.x * beAz.x + o.y * beAz.y + o.z * beAz.z, -1.0, 1.0) }; ch = true;
+            } else if (beDrag == 3) {   // the trail point: behind, up, to the side
+                V3 o = moved(trW) - C; r.trailPoint = V3{ std::clamp(-o.z, -3.0, 3.0), std::clamp(o.y, -3.0, 3.0), std::clamp(o.x, -3.0, 3.0) }; ch = true;
+            }
+        }
+        if (hov && io.MouseWheel != 0) beZoom = std::clamp(beZoom * (io.MouseWheel > 0 ? 0.88f : 1.0f / 0.88f), 0.35f, 4.f);
+        ImDrawList* dl = ImGui::GetWindowDrawList(); dl->PushClipRect(p0, ImVec2(p0.x + W, p0.y + H), true);
+        {   // the floor: lines running past
+            const int N = 8; double step = std::max(0.25, r.ballSize * 0.5), off = std::fmod(beScroll, step);
+            for (int i = -N; i <= N; i++) {
+                ImVec2 a, b; double z = i * step - off;
+                if (proj(V3{ -N * step, 0, z }, a) && proj(V3{ N * step, 0, z }, b)) dl->AddLine(a, b, IM_COL32(120, 140, 170, 60));
+                if (proj(V3{ i * step, 0, -N * step }, a) && proj(V3{ i * step, 0, N * step }, b)) dl->AddLine(a, b, IM_COL32(120, 140, 170, 60));
+            }
+            ImVec2 a, b; if (proj(C - V3{ 0, C.y, 0 }, a) && proj(C - V3{ 0, C.y, 0 } + fwdH * (r.ballSize * 1.4), b)) { dl->AddLine(a, b, IM_COL32(255, 255, 255, 110), 2); dl->AddCircleFilled(b, 3, IM_COL32(255, 255, 255, 140)); }
+        }
+        {   // the example trail (faint when the trail is off)
+            uint32_t tc = r.trailColor; float on = r.ballTrail ? 1.f : 0.25f;
+            for (const BeDot& d : beTrail) {
+                ImVec2 s; double dep; if (!proj(d.pos, s, &dep)) continue; float k = 1 - d.age / d.life;
+                float rad = (float)std::max(0.6, r.trailSize * 0.5 * k * focal / dep);
+                dl->AddCircleFilled(s, rad, IM_COL32((tc >> 16) & 255, (tc >> 8) & 255, tc & 255, (int)(200 * k * on)));
+            }
+        }
+        {   // the handles: axle (yellow), the model's middle (pink) on its line to the turning point (white), the trail point (trail colour)
+            ImVec2 sTail; if (okC && proj(C - axW * (r.ballSize * 0.8), sTail) && okTip) { dl->AddLine(sTail, sTip, IM_COL32(255, 210, 60, 230), 2.5f); }
+            if (okTip) dl->AddCircleFilled(sTip, beDrag == 1 || near2(sTip) ? 8.f : 6.f, IM_COL32(255, 210, 60, 255));
+            if (okC) dl->AddCircle(sC, 5, IM_COL32(255, 255, 255, 220), 0, 2);
+            if (okC && okMid) dl->AddLine(sC, sMid, IM_COL32(255, 120, 200, 160), 1.5f);
+            if (okMid) dl->AddCircleFilled(sMid, beDrag == 2 || near2(sMid) ? 7.f : 5.f, IM_COL32(255, 120, 200, 255));
+            if (okTr && r.ballTrail) { uint32_t tc = r.trailColor; dl->AddCircle(sTr, beDrag == 3 || near2(sTr) ? 9.f : 7.f, IM_COL32((tc >> 16) & 255, (tc >> 8) & 255, tc & 255, 255), 0, 2.5f); dl->AddCircleFilled(sTr, 3, IM_COL32(255, 255, 255, 255)); }
+        }
+        dl->AddText(ImVec2(p0.x + 6, p0.y + 4), IM_COL32(220, 225, 235, 200), "drag the handles  -  drag empty space / right mouse: turn  -  wheel: zoom");
+        dl->PopClipRect();
+        ImGui::Checkbox("Pause rolling", &bePause); ImGui::SameLine(); ImGui::SetNextItemWidth(140); ImGui::SliderFloat("##bes", &beSpeedK, 0.05f, 2.f, "speed x%.2f");
+        ImGui::SameLine(); if (ImGui::SmallButton("Reset turn")) { beAx = { 1, 0, 0 }; beAy = { 0, 1, 0 }; beAz = { 0, 0, 1 }; }
+        ImGui::TextColored(ImVec4(1, 0.82f, 0.25f, 1), "Axle"); ImGui::SameLine(); ImGui::TextDisabled("(yellow: the line it should roll around, like a wheel)");
+        Prop("Axle (model)"); { float a[3] = { (float)r.ballAxle.x, (float)r.ballAxle.y, (float)r.ballAxle.z }; if (ImGui::DragFloat3("##bax", a, 0.01f, -1, 1, "%.2f")) { r.ballAxle = V3{ a[0], a[1], a[2] }; ch = true; } }
+        Prop("... snap to"); for (int i = 0; i < 3; i++) { ImGui::SameLine(); if (ImGui::SmallButton(i == 0 ? "X" : i == 1 ? "Y" : "Z")) { r.ballAxle = V3{ i == 0 ? 1.0 : 0, i == 1 ? 1.0 : 0, i == 2 ? 1.0 : 0 }; ch = true; } }
+        Prop("Balancing"); ch |= ImGui::SliderFloat("##bbal", &r.ballBalance, 0, 20, r.ballBalance <= 0 ? "off (tumbles freely)" : "%.1f");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("How fast the ball rights itself while rolling: the axle comes round across the way it rolls,\nso the ball rolls around it and its middle stays in the middle.");
+        ImGui::TextColored(ImVec4(1, 0.47f, 0.78f, 1), "Turning point"); ImGui::SameLine(); ImGui::TextDisabled("(pink: the model's middle - drag it off the white point it turns around)");
+        Prop("Offset (ball sizes)"); { float a[3] = { (float)r.ballPivot.x, (float)r.ballPivot.y, (float)r.ballPivot.z }; if (ImGui::DragFloat3("##bpv", a, 0.005f, -1, 1, "%.3f")) { r.ballPivot = V3{ a[0], a[1], a[2] }; ch = true; } }
+        if (ImGui::SmallButton("Middle")) { r.ballPivot = V3{ 0, 0, 0 }; ch = true; }
+        ImGui::SeparatorText("Trail");
+        Prop("Trail while rolling"); ch |= ImGui::Checkbox("##btr", &r.ballTrail);
+        if (r.ballTrail) {
+            Prop("Behind / up / side"); { float a[3] = { (float)r.trailPoint.x, (float)r.trailPoint.y, (float)r.trailPoint.z }; if (ImGui::DragFloat3("##btp", a, 0.01f, -3, 3, "%.2f")) { r.trailPoint = V3{ a[0], a[1], a[2] }; ch = true; } }
+            float c[3] = { ((r.trailColor >> 16) & 255) / 255.f, ((r.trailColor >> 8) & 255) / 255.f, (r.trailColor & 255) / 255.f }; Prop("Colour");
+            if (ImGui::ColorEdit3("##btc", c, ImGuiColorEditFlags_NoInputs)) { r.trailColor = ((uint32_t)std::lround(c[0] * 255) << 16) | ((uint32_t)std::lround(c[1] * 255) << 8) | (uint32_t)std::lround(c[2] * 255); ch = true; }
+            Prop("Size"); ch |= ImGui::SliderFloat("##bts", &r.trailSize, 0.02f, 1, "%.2f blocks");
+            Prop("Length"); ch |= ImGui::SliderFloat("##btl", &r.trailLife, 0.05f, 2, "%.2f s");
+        } else ImGui::TextDisabled("(the faint dots: what it would look like)");
+        return ch;
+    }
+    void RenderBallEditor() {
+        bool shown = beShown; beShown = false;
+        if (!shown || beWantW < 16 || beWantH < 16) return;
+        const std::string& model = game.player.ballModel.empty() ? std::string("@morph-ball") : game.player.ballModel;
+        FrameRef m = ModelNamed(model); if (!m) return;
+        int w = beWantW, h = beWantH;
+        if (w != beDW || h != beDH) { MakeTarget(ballEdView, w, h, &ballEdDSV); beDW = w; beDH = h; }
+        const float clear[4] = { 0.10f, 0.11f, 0.14f, 1 };
+        ctx->OMSetRenderTargets(1, ballEdView.rtv.GetAddressOf(), ballEdDSV.Get()); ctx->ClearRenderTargetView(ballEdView.rtv.Get(), clear); ctx->ClearDepthStencilView(ballEdDSV.Get(), D3D11_CLEAR_DEPTH, 1, 0);
+        D3D11_VIEWPORT v{ 0, 0, (float)w, (float)h, 0, 1 }; ctx->RSSetViewports(1, &v);
+        V3 eye, right, up, fwd; XMMATRIX vp; BeCamera(w, h, eye, vp, right, up, fwd);
+        ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsNoCull.Get());
+        PreviewCB pc{}; XMStoreFloat4x4((XMFLOAT4X4*)pc.vp, vp); pc.light[0] = -0.45f; pc.light[1] = 0.8f; pc.light[2] = -0.4f;
+        ctx->UpdateSubresource(cbPreview.Get(), 0, nullptr, &pc, 0, 0);
+        ctx->VSSetConstantBuffers(2, 1, cbPreview.GetAddressOf()); ctx->PSSetConstantBuffers(2, 1, cbPreview.GetAddressOf()); ctx->VSSetConstantBuffers(1, 1, cbChunk.GetAddressOf());
+        ctx->IASetInputLayout(layout.Get()); ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        ctx->VSSetShader(vsPreview.Get(), nullptr, 0); ctx->PSSetShader(psPreview.Get(), nullptr, 0);
+        ctx->PSSetShaderResources(0, 1, texArray.GetAddressOf()); ctx->PSSetShaderResources(14, 1, emitArray.GetAddressOf()); ctx->PSSetSamplers(0, 1, sampBlocks.GetAddressOf());
+        double s = game.player.ballSize / std::max(0.05, std::max({ m->sx, m->sy, m->sz }));
+        V3 pv = BallPivotIn(*m);
+        for (int pass = 0; pass < 2; pass++) DrawModelAxes(pass, model, BeCentre(), beAx * s, beAy * s, beAz * s, eye, &pv);
+        ID3D11ShaderResourceView* none[10] = {}; ctx->PSSetShaderResources(0, 10, none); ctx->RSSetState(rsCull.Get());
+        ctx->OMSetRenderTargets(0, nullptr, nullptr);
     }
     // a model with its middle at centre (world), turned and sized by the axes (each one block of the model)
-    void DrawModelAxes(int pass, const std::string& model, V3 centre, V3 ax, V3 ay, V3 az, V3 cam) {
+    void DrawModelAxes(int pass, const std::string& model, V3 centre, V3 ax, V3 ay, V3 az, V3 cam, const V3* turnAt = nullptr) {
         FrameRef m = ModelNamed(model); if (!m) return;
         const ModelGpu& g = GpuModel(model); BindModelTex(g, model);
-        V3 mc{ 0, m->sy * 0.5, 0 };   // the model's middle, from its pivot (bottom middle)
+        V3 mc = turnAt ? *turnAt : V3{ 0, m->sy * 0.5, 0 };   // the model's middle (or the point given), from its pivot (bottom middle)
         V3 base = centre - cam - (ax * mc.x + ay * mc.y + az * mc.z);
         for (auto& part : g.parts) {
             const GpuChunk& gc = part.second; UINT n = pass == 0 ? gc.nO : pass == 1 ? gc.nC : gc.nW; if (!n) continue;
@@ -13653,7 +13864,7 @@ struct App {
         if (ev && screensEdOpen) BuildScreenPreview();
         ImGui::Render();
         RenderMinimap();
-        RenderHudPlanes(); RenderScanModel(); RenderEnemyView(); RenderMenuPanes();
+        RenderHudPlanes(); RenderScanModel(); RenderEnemyView(); RenderBallEditor(); RenderMenuPanes();
 
         const float bg[4] = { 0.10f, 0.11f, 0.13f, 1 };
         if (screen == Screen::Game && rw > 0 && mapOpen && !ev) { RenderMap(); RenderMapScreen(backRTV.Get()); }   // the map screen: the map instead of the world, the visor over it

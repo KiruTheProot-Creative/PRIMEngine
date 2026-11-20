@@ -27,6 +27,7 @@ struct SaveGame {
     int beam = 0, missile = 0, visor = 0;
     std::vector<ScanEntry> scans;
     std::set<std::string> enemyGone, zonesCleared, stationsUsed, flags;
+    std::set<std::string> doorsOpened;                  // "world:id": weapon doors opened once with the right weapon (any shot opens them now)
     std::vector<std::string> maps;                     // worlds with a seen map (map_<i>.bin next to the file, i: the place here)
 };
 bool saveGame(const std::string& dir, const SaveGame& g);   // dir/save.txt (the folder is made)
