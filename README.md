@@ -215,6 +215,7 @@ which fades in over a second and a half as you walk in.
 - **Reflection resolution** (Options > Graphics > Effects): full, three quarters, half or a quarter. The reflection rays are traced into a smaller picture and laid over the full one, which is much faster, and softer at the edges of shiny things.
 - **Anti-aliasing** (Options > Graphics > Effects): smooths the jagged, stair-stepped edges of blocks and models in the finished picture. It finds where the brightness jumps and blends along the edge. "Smoother edges" looks a little further along each edge. It costs very little.
 - **Bounce light** (screen-space GI): lit and glowing surfaces light the ones near them - a green glow tints the wall
+  - **De-noised:** each frame looks a little differently, and the frames are blended together (following the camera as it moves), so the dots average out into smooth light within a few frames. Spots that were hidden a moment ago, or a light that goes out, start fresh instead of smearing. The blur after it only mixes surfaces at the same distance that face the same way. It costs about as much as one small blur.
   beside it, a sunlit floor lights the ceiling a little. Strength per look (*Bounce light*), Options > Graphics >
   *Bounce light*: off, normal, far-reaching.
 - The **HUD's 3D parts** (helmet, arm cannon) are always lit by the world around you: lights, glowing blocks nearby,

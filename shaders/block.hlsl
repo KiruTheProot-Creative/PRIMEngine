@@ -47,7 +47,9 @@ cbuffer Frame : register(b0)
     float4 gSplash[8];              // splashes on water: xyz where (relative to the camera), w how long ago (s; < 0: none)
     float4 gPlanar;                 // x 1: the mirror view is a shiny floor / water (every shiny pixel on that plane uses it), 0: only mirror blocks; y objects for reflection rays
     float4 gMinLight;               // rgb: the least light in closed spaces (true darkness); w: the reflection rays' resolution (1 full .. 0.25)
-    float4 gAA;                     // anti-aliasing: x how far along an edge it looks (pixels), y how strong
+    float4 gAA;                     // anti-aliasing: x how far along an edge it looks (pixels), y how strong; z a frame number (0..63: noise that changes each frame)
+    row_major float4x4 gHistVP;     // the frame before: camera-relative (then) -> its screen (bounce light's memory)
+    float4 gHistCam;                // xyz how far the camera moved since (now - then); w 1 = the memory is usable
 };
 float lookFogAt(float y) { return gLookFog.x * (gLookFog.z > 0.01 ? exp(-max(y - gLookFog.y, 0) / gLookFog.z) : 1); }
 cbuffer ChunkCB : register(b1)
@@ -1963,7 +1965,7 @@ float4 PS_GI(SkyOut i) : SV_Target   // half size
     float zb = gSceneDepth.Load(int3(fp, 0)); if (zb >= 1) return 0;
     float3 P = relAt(fp, zb); float dist = length(P);
     float3 n = normalize(gSurface.Load(int3(fp, 0)).xyz * 2 - 1);
-    float rot = ign(i.pos.xy) * 6.2832;
+    float rot = ign(i.pos.xy + gAA.z * float2(5.588238, 3.137)) * 6.2832;   // (a different pattern each frame: the memory averages the dots away)
     float rpx = clamp(gGI.y / max(dist, 0.5) * gDepth.w / (2 * gProj.x), 4, gDepth.w * 0.15);   // the reach, in pixels at this distance
     float3 sum = 0; const int N = 16;
     [loop] for (int k = 0; k < N; k++)
@@ -1979,16 +1981,44 @@ float4 PS_GI(SkyOut i) : SV_Target   // half size
     }
     return float4(min(sum / N * gGI.x * 2.2, 16), 1);
 }
-float4 PS_GIApply(SkyOut i) : SV_Target   // full size: a careful blur (only across similar distances), times the surface's colour
+// the memory (half size): this frame's bounce light blended into what the frames before found at the same spot (followed as the camera moves);
+// a spot that was hidden before, or something else, starts again. rgb: the light, a: how far away (to check next time)
+Texture2D gGINew : register(t36);
+Texture2D gGIHist : register(t37);
+float4 PS_GITemp(SkyOut i) : SV_Target
+{
+    float2 uv = i.ndc * float2(0.5, -0.5) + 0.5;
+    int2 fp = clamp(int2(uv * gDepth.zw), int2(0, 0), int2(gDepth.zw) - 1);
+    float zb = gSceneDepth.Load(int3(fp, 0)); if (zb >= 1) return 0;
+    float lz = linDepth(zb);
+    int2 hp = int2(i.pos.xy);
+    float3 cur = gGINew.Load(int3(hp, 0)).rgb;
+    if (gHistCam.w < 0.5) return float4(cur, lz);
+    float4 c = mul(float4(relAt(fp, zb) + gHistCam.xyz, 1), gHistVP);   // where it was on the screen a frame ago
+    if (c.w <= 0.05) return float4(cur, lz);
+    float2 puv = c.xy / c.w * float2(0.5, -0.5) + 0.5;
+    if (any(puv < 0.001) || any(puv > 0.999)) return float4(cur, lz);
+    float4 h = gGIHist.SampleLevel(gClamp, puv, 0);
+    if (abs(h.a - c.w) > max(c.w * 0.05, 0.12)) return float4(cur, lz);   // something else was there: start again
+    // keep the memory near what is around it now (so a light that goes out fades fast, not over seconds)
+    float3 lo = cur, hi = cur;
+    [unroll] for (int y = -1; y <= 1; y++) [unroll] for (int x = -1; x <= 1; x++) { float3 q = gGINew.Load(int3(hp + int2(x, y), 0)).rgb; lo = min(lo, q); hi = max(hi, q); }
+    float3 pad = (hi - lo) * 0.5 + 0.02;
+    float3 old = clamp(h.rgb, lo - pad, hi + pad);
+    return float4(lerp(old, cur, 0.1), lz);
+}
+float4 PS_GIApply(SkyOut i) : SV_Target   // full size: a careful blur (only across similar distances and directions), times the surface's colour
 {
     int2 px = int2(i.pos.xy);
     float zb = gSceneDepth.Load(int3(px, 0)); if (zb >= 1) return 0;
     float lz = linDepth(zb); float2 uv = (float2(px) + 0.5) / gDepth.zw, ht = 2 / gDepth.zw;
+    float3 n0 = normalize(gSurface.Load(int3(px, 0)).xyz * 2 - 1);
     float3 s = 0; float w = 0;
     [unroll] for (int y = -1; y <= 1; y++) [unroll] for (int x = -1; x <= 1; x++)
     {
         float2 u = uv + float2(x, y) * ht; int2 q = clamp(int2(u * gDepth.zw), int2(0, 0), int2(gDepth.zw) - 1);
-        float ww = exp(-abs(linDepth(gSceneDepth.Load(int3(q, 0))) - lz) / max(lz * 0.04, 0.08)) * (x == 0 && y == 0 ? 2 : 1);
+        float3 nq = normalize(gSurface.Load(int3(q, 0)).xyz * 2 - 1);
+        float ww = exp(-abs(linDepth(gSceneDepth.Load(int3(q, 0))) - lz) / max(lz * 0.06, 0.12)) * pow(saturate(dot(n0, nq)), 4) * (x == 0 && y == 0 ? 2 : 1);
         s += gGITex.SampleLevel(gClamp, u, 0).rgb * ww; w += ww;
     }
     return float4(s / max(w, 1e-4) * gAlbedo.Load(int3(px, 0)).rgb, 0);

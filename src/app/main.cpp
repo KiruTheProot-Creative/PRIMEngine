@@ -133,7 +133,9 @@ struct alignas(16) FrameCB {
     float splash[8][4];     // splashes on water (rings): where (camera-relative), how long ago
     float planar[4];        // x 1: the mirror view is a shiny floor / water
     float minLight[4];      // rgb the least light in closed spaces (true darkness); w the reflection rays' resolution
-    float aa[4];            // anti-aliasing: how far along an edge, how strong
+    float aa[4];            // anti-aliasing: how far along an edge, how strong; z a frame number (changing noise)
+    XMFLOAT4X4 histVP;      // the frame before's camera-relative view (bounce light's memory)
+    float histCam[4];       // how far the camera moved since; w 1 = usable
 };
 struct alignas(16) ChunkCB { float offset[4]; float ax[4] = { 1, 0, 0, 0 }, ay[4] = { 0, 1, 0, 0 }, az[4] = { 0, 0, 1, 0 }; };   // axes: objects are turned and sized
 
@@ -170,7 +172,9 @@ struct App {
     ComPtr<ID3D11Texture2D> indTex, aoTex; ComPtr<ID3D11RenderTargetView> indRTV, aoRTV; ComPtr<ID3D11ShaderResourceView> indSRV, aoSRV;   // ambient occlusion
     ComPtr<ID3D11Texture2D> mirTex, mirDepth; ComPtr<ID3D11RenderTargetView> mirRTV; ComPtr<ID3D11ShaderResourceView> mirSRV; ComPtr<ID3D11DepthStencilView> mirDSV;   // a mirror's view (half size)
     ComPtr<ID3D11RasterizerState> rsCullFront; MirrorPlane lastMirror;
-    ComPtr<ID3D11Texture2D> albTex, giTex; ComPtr<ID3D11RenderTargetView> albRTV, giRTV; ComPtr<ID3D11ShaderResourceView> albSRV, giSRV; ComPtr<ID3D11PixelShader> psGI, psGIApply;   // bounce light
+    ComPtr<ID3D11Texture2D> albTex, giTex; ComPtr<ID3D11RenderTargetView> albRTV, giRTV; ComPtr<ID3D11ShaderResourceView> albSRV, giSRV; ComPtr<ID3D11PixelShader> psGI, psGIApply, psGITemp;   // bounce light
+    ComPtr<ID3D11Texture2D> giHistTex[2]; ComPtr<ID3D11RenderTargetView> giHistRTV[2]; ComPtr<ID3D11ShaderResourceView> giHistSRV[2]; int giCur = 0; bool giHistOk = false;   // its memory (two, taking turns)
+    XMMATRIX histVPNow = XMMatrixIdentity(), histVPPrev = XMMatrixIdentity(); V3 histCamPrev{ 0, 0, 0 }; uint32_t frameNo = 0;
     ComPtr<ID3D11Texture2D> surfTex, reflTex; ComPtr<ID3D11RenderTargetView> surfRTV, reflRTV; ComPtr<ID3D11ShaderResourceView> surfSRV, reflSRV;   // for reflections
     ComPtr<ID3D11Texture2D> skyMapTex; ComPtr<ID3D11DepthStencilView> skyMapDSV; ComPtr<ID3D11ShaderResourceView> skyMapSRV;   // what is above each spot
     Weather weather; bool weatherWin = false;
@@ -339,6 +343,7 @@ struct App {
         b = Compile(src, "PS_BlurComp", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psBlurComp));
         b = Compile(src, "PS_GI", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psGI));
         b = Compile(src, "PS_GIApply", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psGIApply));
+        b = Compile(src, "PS_GITemp", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psGITemp));
         b = Compile(src, "PS_LumLog", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psLumLog));
         b = Compile(src, "PS_Adapt", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psAdapt));
         {   // eye adaptation: the picture's brightness (256x256 with mips: the last one is the average) and the eye (1x1, two of them, back and forth)
@@ -424,7 +429,9 @@ struct App {
           HR(dev->CreateTexture2D(&sd2, nullptr, &surfTex)); HR(dev->CreateRenderTargetView(surfTex.Get(), nullptr, &surfRTV)); HR(dev->CreateShaderResourceView(surfTex.Get(), nullptr, &surfSRV));
           albTex.Reset(); albRTV.Reset(); albSRV.Reset(); HR(dev->CreateTexture2D(&sd2, nullptr, &albTex)); HR(dev->CreateRenderTargetView(albTex.Get(), nullptr, &albRTV)); HR(dev->CreateShaderResourceView(albTex.Get(), nullptr, &albSRV));
           D3D11_TEXTURE2D_DESC gd = d; gd.Width = std::max(1u, (UINT)rw / 2); gd.Height = std::max(1u, (UINT)rh / 2); gd.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-          giTex.Reset(); giRTV.Reset(); giSRV.Reset(); HR(dev->CreateTexture2D(&gd, nullptr, &giTex)); HR(dev->CreateRenderTargetView(giTex.Get(), nullptr, &giRTV)); HR(dev->CreateShaderResourceView(giTex.Get(), nullptr, &giSRV)); }
+          giTex.Reset(); giRTV.Reset(); giSRV.Reset(); HR(dev->CreateTexture2D(&gd, nullptr, &giTex)); HR(dev->CreateRenderTargetView(giTex.Get(), nullptr, &giRTV)); HR(dev->CreateShaderResourceView(giTex.Get(), nullptr, &giSRV));
+          for (int k = 0; k < 2; k++) { giHistTex[k].Reset(); giHistRTV[k].Reset(); giHistSRV[k].Reset(); HR(dev->CreateTexture2D(&gd, nullptr, &giHistTex[k])); HR(dev->CreateRenderTargetView(giHistTex[k].Get(), nullptr, &giHistRTV[k])); HR(dev->CreateShaderResourceView(giHistTex[k].Get(), nullptr, &giHistSRV[k])); }
+          giHistOk = false; }
         {   // the mirror view: half size, own depth
             D3D11_TEXTURE2D_DESC md = d; md.Width = std::max<UINT>(1, d.Width / 2); md.Height = std::max<UINT>(1, d.Height / 2);
             mirTex.Reset(); mirRTV.Reset(); mirSRV.Reset(); mirDepth.Reset(); mirDSV.Reset();
@@ -3851,6 +3858,13 @@ struct App {
         proj = XMMatrixPerspectiveFovLH(XMConvertToRadians(settings.fov), aspect, 0.05f, farZ);
         XMMATRIX vp = view * proj;
         FrameCB fc{}; XMStoreFloat4x4(&fc.viewProj, vp);
+        {   // bounce light's memory: the frame before's view, and how far the camera moved since
+            histVPNow = vp; XMStoreFloat4x4(&fc.histVP, histVPPrev);
+            fc.histCam[0] = (float)(camPos.x - histCamPrev.x); fc.histCam[1] = (float)(camPos.y - histCamPrev.y); fc.histCam[2] = (float)(camPos.z - histCamPrev.z);
+            double moved = std::sqrt(fc.histCam[0] * fc.histCam[0] + fc.histCam[1] * fc.histCam[1] + fc.histCam[2] * fc.histCam[2]);
+            fc.histCam[3] = giHistOk && moved < 8 ? 1.f : 0.f;   // (a jump across the world: start again)
+            fc.aa[2] = (float)(++frameNo % 64);
+        }
         SkyParams(fc, settings.timeOfDay);
         float fogEnd = settings.renderDistance * CS * 0.95f;
         cullFar = fogEnd + 32;   // objects past the fog are not drawn (a little extra: tall ones still cast their shadows inward)
@@ -4130,14 +4144,24 @@ struct App {
             { ID3D11ShaderResourceView* r6[6] = { hdrSRV.Get(), nullptr, depthSRV.Get(), nullptr, nullptr, surfSRV.Get() }; ctx->PSSetShaderResources(0, 6, r6); }
             ctx->Draw(3, 0);
             { ID3D11ShaderResourceView* n6[6] = {}; ctx->PSSetShaderResources(0, 6, n6); }
+            {   // the de-noiser: this frame blended into the memory of the frames before (followed as the camera moves)
+                int nx = 1 - giCur;
+                ctx->OMSetRenderTargets(1, giHistRTV[nx].GetAddressOf(), nullptr); ctx->PSSetShader(psGITemp.Get(), nullptr, 0); ctx->PSSetSamplers(3, 1, sampClamp.GetAddressOf());
+                { ID3D11ShaderResourceView* d1 = depthSRV.Get(); ctx->PSSetShaderResources(2, 1, &d1); ID3D11ShaderResourceView* h2[2] = { giSRV.Get(), giHistSRV[giCur].Get() }; ctx->PSSetShaderResources(36, 2, h2); }
+                ctx->Draw(3, 0);
+                { ID3D11ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(2, 1, &n1); ID3D11ShaderResourceView* n2[2] = {}; ctx->PSSetShaderResources(36, 2, n2); }
+                giCur = nx; giHistOk = true;
+            }
             ctx->RSSetViewports(1, &v);
             ctx->OMSetRenderTargets(1, hdrRTV.GetAddressOf(), nullptr); ctx->OMSetBlendState(bsAdd.Get(), nullptr, 0xFFFFFFFF);
             ctx->PSSetShader(psGIApply.Get(), nullptr, 0); ctx->PSSetSamplers(3, 1, sampClamp.GetAddressOf());
-            { ID3D11ShaderResourceView* d1 = depthSRV.Get(); ctx->PSSetShaderResources(2, 1, &d1); ID3D11ShaderResourceView* g2[2] = { giSRV.Get(), albSRV.Get() }; ctx->PSSetShaderResources(24, 2, g2); }
+            { ID3D11ShaderResourceView* d1 = depthSRV.Get(); ctx->PSSetShaderResources(2, 1, &d1); ID3D11ShaderResourceView* s5 = surfSRV.Get(); ctx->PSSetShaderResources(5, 1, &s5);
+              ID3D11ShaderResourceView* g2[2] = { giHistSRV[giCur].Get(), albSRV.Get() }; ctx->PSSetShaderResources(24, 2, g2); }
             ctx->Draw(3, 0);
-            { ID3D11ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(2, 1, &n1); ID3D11ShaderResourceView* n2[2] = {}; ctx->PSSetShaderResources(24, 2, n2); }
+            { ID3D11ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(2, 1, &n1); ctx->PSSetShaderResources(5, 1, &n1); ID3D11ShaderResourceView* n2[2] = {}; ctx->PSSetShaderResources(24, 2, n2); }
             ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
-        }
+        } else giHistOk = false;   // (off: the memory starts fresh when it comes back)
+        histVPPrev = histVPNow; histCamPrev = camPos;
         // ---- reflections: shiny pixels look for what they mirror in the picture (depth must not be a target while read)
         ctx->OMSetRenderTargets(1, reflRTV.GetAddressOf(), nullptr);
         ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->IASetInputLayout(nullptr); ctx->RSSetState(rsNoCull.Get());
