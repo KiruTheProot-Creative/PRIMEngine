@@ -25,6 +25,7 @@
 #include "../src/game/assets.h"
 #include "../src/game/looks.h"
 #include "../src/game/surfaces.h"
+#include "../src/game/buildmodes.h"
 #include <sstream>
 #include <algorithm>
 #include <map>
@@ -1617,6 +1618,58 @@ int main() {
         const DropLook* dl = el.drop("Missile");
         CHECK(dl && dl->model == "missile pickup" && dl->bigFrom == 5 && dl->bigModel == "missile big" && dl->light == 3 && dl->sound.file == "missile get.wav" && dl->life == 20 && !el.drop("Energy"), "drop looks save and load");
         CHECK(el.types.size() == es.types.size() && el.types[0].drops.size() == es.types[0].drops.size(), "... and the enemies' own drops are still there");
+    }
+    {   // build modes: the shapes come out right
+        auto has = [](const std::vector<I3>& v, I3 p) { for (auto& q : v) if (q == p) return true; return false; };
+        auto line = buildShape(BuildMode::Line, 0, false, { 0, 5, 0 }, { 7, 6, 2 }, 0);
+        CHECK(line.size() == 8 && has(line, { 7, 5, 0 }) && !has(line, { 7, 6, 2 }), "a line goes straight along its longest axis");
+        auto up = buildShape(BuildMode::Line, 0, false, { 0, 0, 0 }, { 1, 9, 0 }, 0);
+        CHECK(up.size() == 10 && has(up, { 0, 9, 0 }), "... also straight up");
+        auto wall = buildShape(BuildMode::Wall, FILL_SOLID, false, { 0, 0, 0 }, { 5, 0, 2 }, 3);
+        CHECK(wall.size() == 6 * 4 && has(wall, { 5, 3, 0 }) && !has(wall, { 5, 3, 2 }), "a wall stands along x or z, as high as asked");
+        auto wallO = buildShape(BuildMode::Wall, FILL_HOLLOW, false, { 0, 0, 0 }, { 5, 0, 0 }, 3);
+        CHECK(wallO.size() == 6 * 4 - 4 * 2 && !has(wallO, { 2, 1, 0 }), "... or just its outline");
+        auto floor = buildShape(BuildMode::Floor, FILL_SOLID, false, { 0, 2, 0 }, { 3, 9, -3 }, 0);
+        CHECK(floor.size() == 16 && has(floor, { 3, 2, -3 }), "a floor stays on the start's level");
+        auto cube = buildShape(BuildMode::Cube, FILL_SOLID, false, { 0, 0, 0 }, { 4, 0, 4 }, 4);
+        auto hollow = buildShape(BuildMode::Cube, FILL_HOLLOW, false, { 0, 0, 0 }, { 4, 0, 4 }, 4);
+        auto walls = buildShape(BuildMode::Cube, FILL_WALLS, false, { 0, 0, 0 }, { 4, 0, 4 }, 4);
+        auto edges = buildShape(BuildMode::Cube, FILL_EDGES, false, { 0, 0, 0 }, { 4, 0, 4 }, 4);
+        CHECK(cube.size() == 125 && hollow.size() == 125 - 27 && walls.size() == 5 * 16 && edges.size() == 12 * 3 + 8, "cubes: filled, hollow, walls only, edges only");
+        CHECK(!has(walls, { 2, 0, 2 }) && !has(walls, { 2, 4, 2 }) && has(hollow, { 2, 4, 2 }), "... walls only: open top and bottom");
+        auto circle = buildShape(BuildMode::Circle, FILL_SOLID, true, { 10, 0, 10 }, { 14, 0, 10 }, 0);
+        CHECK(has(circle, { 10, 0, 10 }) && has(circle, { 14, 0, 10 }) && has(circle, { 6, 0, 10 }) && has(circle, { 10, 0, 14 }) && !has(circle, { 14, 0, 14 }), "a circle from its middle: round, radius as dragged");
+        auto ring = buildShape(BuildMode::Circle, FILL_HOLLOW, true, { 0, 0, 0 }, { 6, 0, 0 }, 0);
+        CHECK(!has(ring, { 0, 0, 0 }) && has(ring, { 6, 0, 0 }) && ring.size() < circle.size() * 2, "... or a ring");
+        auto tube = buildShape(BuildMode::Cylinder, FILL_WALLS, true, { 0, 0, 0 }, { 5, 0, 0 }, 9);
+        CHECK(!has(tube, { 0, 0, 0 }) && !has(tube, { 0, 9, 0 }) && has(tube, { 5, 9, 0 }) && has(tube, { -5, 0, 0 }), "a cylinder as a tube: open at both ends (a shaft)");
+        auto ball = buildShape(BuildMode::Sphere, FILL_SOLID, true, { 0, 0, 0 }, { 4, 0, 0 }, 4);
+        auto shell = buildShape(BuildMode::Sphere, FILL_HOLLOW, true, { 0, 0, 0 }, { 4, 0, 0 }, 4);
+        CHECK(has(ball, { 0, 0, 0 }) && has(ball, { 0, 4, 0 }) && has(ball, { 0, -4, 0 }) && !has(ball, { 4, 4, 0 }) && !has(shell, { 0, 0, 0 }) && has(shell, { 4, 0, 0 }), "spheres: solid and as a shell");
+        CHECK(ball.size() > 200 && ball.size() < 729, "... about the right size");
+        auto pyr = buildShape(BuildMode::Pyramid, FILL_SOLID, false, { 0, 0, 0 }, { 6, 0, 6 }, 3);
+        CHECK(has(pyr, { 0, 0, 0 }) && has(pyr, { 3, 3, 3 }) && !has(pyr, { 0, 3, 0 }) && !has(pyr, { 0, 1, 0 }), "a pyramid narrows to its top");
+        auto inv = buildShape(BuildMode::Pyramid, FILL_SOLID, false, { 0, 0, 0 }, { 6, 0, 6 }, -3);
+        CHECK(has(inv, { 0, 0, 0 }) && has(inv, { 3, -3, 3 }) && !has(inv, { 0, -3, 0 }), "... and points down when the height is below the start");
+        auto cone = buildShape(BuildMode::Cone, FILL_SOLID, true, { 0, 0, 0 }, { 5, 0, 0 }, 6);
+        CHECK(has(cone, { 5, 0, 0 }) && has(cone, { 0, 6, 0 }) && !has(cone, { 5, 4, 0 }), "a cone");
+        auto dome = buildShape(BuildMode::Dome, FILL_WALLS, true, { 0, 0, 0 }, { 6, 0, 0 }, 6);
+        CHECK(!has(dome, { 0, 0, 0 }) && has(dome, { 6, 0, 0 }) && has(dome, { 0, 6, 0 }), "a dome without its floor, but with its top");
+        auto slope = buildShape(BuildMode::Slope, FILL_HOLLOW, false, { 0, 0, 0 }, { 4, 0, 1 }, 4);
+        CHECK(has(slope, { 0, 0, 0 }) && has(slope, { 4, 4, 1 }) && has(slope, { 2, 2, 0 }) && !has(slope, { 4, 0, 0 }), "a slope: a ramp from the start up to the height");
+        auto steep = buildShape(BuildMode::Slope, FILL_HOLLOW, false, { 0, 0, 0 }, { 2, 0, 0 }, 6);
+        bool gapless = true; for (int y = 0; y <= 6; y++) { bool any = false; for (auto& p : steep) any |= p.y == y; gapless &= any; }
+        CHECK(gapless, "... a steep one has no gaps");
+        auto dw = buildShape(BuildMode::DiagWall, FILL_SOLID, false, { 0, 0, 0 }, { 4, 0, 4 }, 2);
+        CHECK(dw.size() == 5 * 3 && has(dw, { 2, 1, 2 }) && !has(dw, { 2, 1, 0 }), "a diagonal wall");
+        auto dl3 = buildShape(BuildMode::DiagLine, 0, false, { 0, 0, 0 }, { 4, 0, 0 }, 4);
+        CHECK(dl3.size() == 5 && has(dl3, { 2, 2, 0 }) && has(dl3, { 4, 4, 0 }), "a diagonal line climbs to the height");
+        bool capped = false; auto big = buildShape(BuildMode::Cube, FILL_SOLID, false, { 0, 0, 0 }, { 99, 0, 99 }, 99, 50000, &capped);
+        CHECK(capped && big.size() == 50000, "a huge shape stops at the limit");
+        bool cp2 = false; auto far = buildShape(BuildMode::Floor, FILL_SOLID, false, { 0, 0, 0 }, { 5000, 0, 0 }, 0, 50000, &cp2);
+        CHECK(far.size() == 256 && !cp2, "shapes are at most 256 blocks across");
+        CHECK(buildSteps(BuildMode::Floor) == 2 && buildSteps(BuildMode::Cube) == 3 && buildSteps(BuildMode::Normal) == 1 && buildFills(BuildMode::Line).empty() && buildHasCentre(BuildMode::Sphere) && !buildHasCentre(BuildMode::Cube), "steps, fills, from-the-middle");
+        I3 bs = buildBoxSize(cube); CHECK(bs.x == 5 && bs.y == 5 && bs.z == 5, "the size readout");
     }
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
     return fails ? 1 : 0;

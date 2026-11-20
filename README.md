@@ -23,6 +23,7 @@ A block world engine in C++ (Windows, Direct3D 11). Think of Minecraft built as 
 | Middle click | pick the block you look at |
 | 1–9, mouse wheel | choose a hotbar slot |
 | E | block inventory |
+| Tab (hold) | build modes: the radial menu (line, wall, cube, sphere ...) |
 | Ctrl+Z / Ctrl+Y | undo / redo |
 | Ctrl+S | save |
 | F3 | debug info (position, chunks, fps) |
@@ -77,6 +78,17 @@ In the editor, **T** swaps the hotbar between blocks and tools. Slot 1 is the **
 - **Q** opens its options: 6 shapes (sphere, cube, cylinder, dome, diamond, pyramid) and 10 things it does (add, remove, paint, replace, smooth, raise, lower, flatten, fill, roughen), with size, height, strength, paint depth, lump size and the material.
 - Left click uses it, right click does the opposite (add/remove, raise/lower). Hold to keep going. Shift + wheel or + / - changes the size. One stroke is one undo step.
 - Turning blocks by hand moved: R turns, **Shift+R** tips over (T is now the tools).
+
+## Build modes (Tab)
+
+Like the Effortless Building mod: shapes built (or broken) in a few clicks, with a see-through preview.
+- **Hold Tab**: a ring of modes appears. Move the mouse to one and let go of Tab (or click it). **Normal** is one block, as before.
+- Modes: **Line** (along x, y or z), **Wall**, **Floor**, **Cube**, **Diagonal line**, **Diagonal wall**, **Slope** (a ramp; slopes and stairs turn up it), **Circle**, **Cylinder**, **Sphere**, **Pyramid**, **Cone**, **Dome**.
+- The middle of the ring has the options (click them while holding Tab): **fill** (filled, hollow / outline, walls only, edges only, no floor - what the mode has), **corner or middle** (round shapes can start from their middle: the distance you drag is the radius), and **replace** (build over the blocks there, or only into air and water).
+- Building: **right click** where it starts, move to the **corner** and right click, then for 3D shapes look up or down for the **height** and right click once more. The shape shows see-through as you go, with its box and size ("12 x 4 x 3 = 144 blocks").
+- Breaking: the same with **left click**; what will break shows in red.
+- **Esc**, Tab or the other mouse button cancels a shape. A whole shape is one undo step (Ctrl+Z). Shapes reach far (48 blocks), are at most 256 blocks across and stop at 50000 blocks.
+- The mode stays when you change blocks; **T** (the tools) sets it back to Normal.
 
 ## Objects (G2)
 

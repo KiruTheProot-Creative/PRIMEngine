@@ -30,6 +30,7 @@
 #include "../game/assets.h"
 #include "../game/looks.h"
 #include "../game/surfaces.h"
+#include "../game/buildmodes.h"
 #include <tuple>
 #include <future>
 #include <memory>
@@ -187,7 +188,7 @@ struct App {
     BloomLevel blurSrc; std::vector<BloomLevel> blurLv; ComPtr<ID3D11PixelShader> psBlurComp; float blurAmt = 0;   // paused: the world blurred behind the menu
     std::vector<BloomLevel> bloomLv; ComPtr<ID3D11BlendState> bsAdd; float nightAmount = 0, nightEyeLimit = 2;
     ComPtr<ID3D11Texture2D> shadowTex; ComPtr<ID3D11DepthStencilView> shadowDSV; ComPtr<ID3D11ShaderResourceView> shadowSRV; int shadowSize = 0;
-    ComPtr<ID3D11RasterizerState> rsShadow, rsNoCull; ComPtr<ID3D11SamplerState> sampShadow; std::string driverName = "graphics card";
+    ComPtr<ID3D11RasterizerState> rsShadow, rsNoCull, rsGhostBias; ComPtr<ID3D11SamplerState> sampShadow; std::string driverName = "graphics card";
     ComPtr<ID3D11Buffer> cbFrame, cbChunk;
     ComPtr<ID3D11RasterizerState> rsCull; ComPtr<ID3D11DepthStencilState> dsOn, dsOff, dsTestOnly; ComPtr<ID3D11BlendState> bsOff, bsAlpha;
     ComPtr<ID3D11Buffer> vbGhost, ibGhost; UINT nGhost = 0; BlockId ghostKey = 0xFFFFFFFFu;   // the see-through preview block
@@ -348,6 +349,7 @@ struct App {
         rd.CullMode = D3D11_CULL_FRONT; HR(dev->CreateRasterizerState(&rd, &rsCullFront));   // mirrored views turn every triangle around
         rd.CullMode = D3D11_CULL_NONE; HR(dev->CreateRasterizerState(&rd, &rsNoCull));   // full-screen passes (sky, final picture)
         rd.SlopeScaledDepthBias = 1.5f; rd.DepthClipEnable = FALSE; HR(dev->CreateRasterizerState(&rd, &rsShadow));
+        { D3D11_RASTERIZER_DESC gd{}; gd.FillMode = D3D11_FILL_SOLID; gd.CullMode = D3D11_CULL_BACK; gd.DepthClipEnable = TRUE; gd.DepthBias = -64; gd.SlopeScaledDepthBias = -1.5f; HR(dev->CreateRasterizerState(&gd, &rsGhostBias)); }   // build-mode previews: pulled a little toward you (they sit on the blocks they replace)
         D3D11_DEPTH_STENCIL_DESC dd{}; dd.DepthEnable = TRUE; dd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL; dd.DepthFunc = D3D11_COMPARISON_LESS_EQUAL; HR(dev->CreateDepthStencilState(&dd, &dsOn));
         dd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO; HR(dev->CreateDepthStencilState(&dd, &dsTestOnly));
         dd.DepthEnable = FALSE; HR(dev->CreateDepthStencilState(&dd, &dsOff));
@@ -969,6 +971,7 @@ struct App {
             if (!screenBack.empty() || (playMode && r != ScreenRole::Death)) ScreenBack();
             return;
         }
+        if (k == VK_ESCAPE && bStage > 0 && !playMode) { bStage = 0; Toast("Shape cancelled"); return; }   // build modes: never mind this shape
         if (k == VK_ESCAPE) {
             if (shapeMenu) { shapeMenu = false; Capture(true); }
             else if (brushMenu) { brushMenu = false; Capture(true); }
@@ -998,7 +1001,7 @@ struct App {
         if (Down(VK_CONTROL) && k == 'D' && sel == Sel::Object) { DuplicateObject(selIndex); return; }
         if (k == 'E' && !paused) { if (EditorView()) { Capture(false); focusAssets = true; } else { inventory = !inventory; editorOpen = false; shapeMenu = false; Capture(!inventory); } return; }
         if (k == 'T' && !repeat && !paused && !inventory) {   // block hotbar <-> tool hotbar
-            toolMode = !toolMode; shapeMenu = brushMenu = false; EndStroke();
+            toolMode = !toolMode; shapeMenu = brushMenu = false; EndStroke(); bmode = BuildMode::Normal; bStage = 0;   // (build modes: back to Normal)
             if (toolMode && EditorView()) sel = Sel::Tool; else if (sel == Sel::Tool) sel = Sel::World;
             Toast(toolMode ? "Tools (T: back to blocks, Q: brush options)" : "Blocks"); return;
         }
@@ -1052,6 +1055,7 @@ struct App {
     void UpdateGame(double dt) {
         player.applySize(game.player);   // the size from the player rules (editor camera too)
         PlayKeys();
+        UpdateRadial();   // build modes: holding Tab (the mouse moves its pointer, not the view)
         bool locked = UpdateLockOn(dt);
         if (Playing() || (playMode && demoDrive)) {
             V3 lockC; bool lookLocked = locked && LockPoint(lockId, lockC);
@@ -3354,10 +3358,231 @@ struct App {
         if (ImGui::Button("Done (Q)", ImVec2(-1, 0))) { brushMenu = false; Capture(true); }
         ImGui::End();
     }
+    // ================================================================== build modes (like the Effortless Building mod): hold Tab for the radial menu
+    // right click: start, then the corner, then the height (for 3D shapes); left click does the same for breaking. Esc / Tab / the other button cancels.
+    BuildMode bmode = BuildMode::Normal; int bFill[(int)BuildMode::COUNT] = {}; bool bCentre = false, bReplace = false;
+    int bStage = 0; I3 bA{}, bB{}; int bH = 0; bool bBreak = false; BlockId bBlock = 0;   // stage 1: choosing the corner, 2: the height
+    std::vector<I3> bCells; bool bCapped = false; std::string bKey;
+    struct GhostChunk { I3 c; ComPtr<ID3D11Buffer> vb, ib; UINT n = 0; }; std::vector<GhostChunk> bGhost;
+    bool radialOpen = false, radialClickPrev = false; ImVec2 radialCur{ 0, 0 }; int radialHover = -1, radialOpt = -1;
+    static constexpr int RADIAL_N = (int)BuildMode::COUNT;
+    void SetBuildMode(BuildMode m) {
+        if (m == bmode) return;
+        bmode = m; bStage = 0; bGhost.clear(); bKey.clear();
+        Toast(m == BuildMode::Normal ? std::string("Build mode: Normal (one block)") : std::string("Build mode: ") + buildModeName(m) + "   (right click: build, left click: break, Esc: cancel)");
+    }
+    // the closest point between the view ray and a line (p0 + u*dir); false when the line is behind you
+    static bool RayLine(V3 e, V3 d, V3 p0, V3 dir, double& u, double& dist) {
+        V3 w0 = p0 - e; double b = dot(dir, d), dd = dot(dir, w0), ee = dot(d, w0), den = 1 - b * b;
+        if (den < 1e-6) return false;
+        u = (b * ee - dd) / den; double s = (ee - b * dd) / den; if (s < 0) return false;
+        V3 q = p0 + dir * u, r = e + d * s; dist = length(q - r); return true;
+    }
+    void UpdateBuildPoints() {
+        V3 e = player.eye(), d = player.forward();
+        if (bStage == 1) {
+            if (bmode == BuildMode::Line) {   // the axis line through the start nearest to where you look
+                V3 c{ bA.x + 0.5, bA.y + 0.5, bA.z + 0.5 }; double best = 1e30; I3 nb = bB;
+                const V3 ax[3] = { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } };
+                for (int k = 0; k < 3; k++) { double u, dist; if (!RayLine(e, d, c, ax[k], u, dist) || dist >= best) continue; best = dist; int n = (int)std::lround(std::clamp(u, -255.0, 255.0)); nb = { bA.x + (k == 0 ? n : 0), bA.y + (k == 1 ? n : 0), bA.z + (k == 2 ? n : 0) }; }
+                bB = nb;
+            } else {   // on the start's level
+                double py = bA.y + 0.5; if (std::fabs(d.y) < 1e-4) return;
+                double t = (py - e.y) / d.y; if (t < 0 || t > 400) return;
+                V3 p = e + d * t; bB = { std::clamp(ifloor(p.x), bA.x - 255, bA.x + 255), bA.y, std::clamp(ifloor(p.z), bA.z - 255, bA.z + 255) };
+            }
+        } else if (bStage == 2) {   // the height: along the line straight up from the corner
+            I3 s = buildSnap(bmode, bA, bB); double u, dist;
+            if (RayLine(e, d, { s.x + 0.5, bA.y + 0.5, s.z + 0.5 }, { 0, 1, 0 }, u, dist)) bH = std::clamp(bA.y + (int)std::lround(u), bA.y - 255, bA.y + 255);
+        }
+    }
+    BlockId BuildValue() const {   // the held block, turned as at the start (a slope: up the ramp)
+        if (bmode != BuildMode::Slope || manualRot || !reg.has(bBlock)) return bBlock;
+        I3 s = buildSnap(bmode, bA, bB); bool up = bH >= bA.y; int face;
+        if (std::abs(s.x - bA.x) >= std::abs(s.z - bA.z)) face = ((s.x > bA.x) == up) ? F_PX : F_NX; else face = ((s.z > bA.z) == up) ? F_PZ : F_NZ;
+        int shape = resolveShape(bBlock, reg.get(bBlock));
+        return makeBlock(typeOf(bBlock), shapeOf(bBlock), Shapes::placeRot(Shapes::get().info(shape).place, F_PY, face, false));
+    }
+    bool BuildCellOk(I3 p, BlockId v) const {   // can this cell take the block (or be broken)?
+        if (!world->loaded(p.x, p.y, p.z)) return false;
+        BlockId there = world->get(p.x, p.y, p.z);
+        if (bBreak) return there != AIR;
+        if (there == v) return false;
+        if (!bReplace && there != AIR && !reg.get(there).liquid) return false;
+        if (reg.get(v).solid) {   // never inside yourself
+            const Player& q = player;
+            if (p.x + 1 > q.feet.x - q.halfW && p.x < q.feet.x + q.halfW && p.z + 1 > q.feet.z - q.halfW && p.z < q.feet.z + q.halfW && p.y + 1 > q.feet.y && p.y < q.feet.y + q.height) return false;
+        }
+        return true;
+    }
+    void UpdateBuildPreview() {
+        BlockId v = BuildValue();
+        std::string key = std::to_string((int)bmode) + "," + std::to_string(bFill[(int)bmode]) + "," + (bCentre ? "c" : "-") + (bReplace ? "r" : "-") + (bBreak ? "b" : "-") + "," + std::to_string(bStage)
+            + "," + std::to_string(bA.x) + "," + std::to_string(bA.y) + "," + std::to_string(bA.z) + "," + std::to_string(bB.x) + "," + std::to_string(bB.y) + "," + std::to_string(bB.z) + "," + std::to_string(bH) + "," + std::to_string(v);
+        if (key == bKey) return;
+        bKey = key;
+        int h = bStage >= 2 ? bH : bA.y;
+        std::vector<I3> all = buildShape(bmode, bFill[(int)bmode], bCentre, bA, bB, h, 50000, &bCapped);
+        bCells.clear(); bCells.reserve(all.size());
+        for (const I3& p : all) if (BuildCellOk(p, v)) bCells.push_back(p);
+        // the see-through preview: the shape's blocks meshed chunk by chunk (faces between them hidden)
+        bGhost.clear();
+        std::unordered_map<I3, MeshInput, I3Hash> per; std::unordered_set<I3, I3Hash> real;
+        for (const I3& p : bCells) {
+            BlockId val = bBreak ? world->get(p.x, p.y, p.z) : v; I3 c = chunkOf(p.x, p.y, p.z); real.insert(c);
+            for (int dy = -1; dy <= 1; dy++) for (int dz = -1; dz <= 1; dz++) for (int dx = -1; dx <= 1; dx++) {
+                I3 cc{ c.x + dx, c.y + dy, c.z + dz }; int lx = p.x - cc.x * CS, ly = p.y - cc.y * CS, lz = p.z - cc.z * CS;
+                if (lx < -1 || lx > CS || ly < -1 || ly > CS || lz < -1 || lz > CS) continue;
+                MeshInput& in = per[cc]; if (in.blocks.empty()) { in.pos = cc; in.blocks.assign(PAD * PAD * PAD, AIR); }
+                in.blocks[padIdx(lx, ly, lz)] = val;
+            }
+        }
+        for (auto& kv : per) {
+            if (!real.count(kv.first)) continue;
+            ChunkMesh cm; buildMesh(reg, kv.second, cm);
+            MeshData all2 = cm.opaque; uint32_t base = (uint32_t)all2.v.size();
+            all2.v.insert(all2.v.end(), cm.cutout.v.begin(), cm.cutout.v.end()); for (uint32_t i : cm.cutout.i) all2.i.push_back(base + i);
+            base = (uint32_t)all2.v.size(); all2.v.insert(all2.v.end(), cm.water.v.begin(), cm.water.v.end()); for (uint32_t i : cm.water.i) all2.i.push_back(base + i);
+            if (all2.i.empty()) continue;
+            GhostChunk g; g.c = kv.first; Upload(all2, g.vb, g.ib, g.n); bGhost.push_back(std::move(g));
+        }
+    }
+    void CommitBuild() {
+        UpdateBuildPreview();
+        BlockId v = BuildValue(); std::vector<Edit> ed; ed.reserve(bCells.size());
+        for (const I3& p : bCells) {
+            if (!BuildCellOk(p, v)) continue;
+            BlockId was = world->get(p.x, p.y, p.z), now = bBreak ? AIR : v;
+            world->set(p.x, p.y, p.z, now); ed.push_back({ p.x, p.y, p.z, was, now });
+        }
+        size_t n = ed.size();
+        if (n) history.push(std::move(ed));
+        Toast(n ? std::to_string(n) + (bBreak ? " blocks broken" : " blocks placed") + (bCapped ? " (stopped at 50000)" : "") + "   (Ctrl+Z undoes it)" : std::string("Nothing to change there"));
+        bStage = 0; bGhost.clear(); bKey.clear(); bCells.clear();
+    }
+    void BuildModeInteract(bool L, bool R) {
+        bool lE = L && !lPrev, rE = R && !rPrev;
+        if (bStage == 0) {
+            if (rE && targetValid) { bBreak = false; bA = { tx, ty, tz }; bBlock = targetValue; }
+            else if (lE && hoverValid) { bBreak = true; bA = { hover.x, hover.y, hover.z }; bBlock = hotbar[hotSel]; }
+            else return;
+            bB = bA; bH = bA.y; bStage = 1; bKey.clear(); UpdateBuildPreview(); return;
+        }
+        bool go = bBreak ? lE : rE, other = bBreak ? rE : lE;
+        if (other) { bStage = 0; bGhost.clear(); Toast("Shape cancelled"); return; }
+        UpdateBuildPoints(); UpdateBuildPreview();
+        if (!go) return;
+        if (bStage == 1 && buildSteps(bmode) >= 3) { bStage = 2; bH = bA.y; bKey.clear(); UpdateBuildPreview(); return; }
+        CommitBuild();
+    }
+    // ---- the radial menu (hold Tab): the modes around, their options in the middle (click them)
+    void UpdateRadial() {
+        bool want = !playMode && !toolMode && Playing() && world && Down(VK_TAB) && GetForegroundWindow() == hwnd && !ImGui::GetIO().WantTextInput;
+        if (want && !radialOpen) { radialOpen = true; radialCur = ImVec2(0, 0); radialClickPrev = Down(VK_LBUTTON); if (bStage > 0) { bStage = 0; bGhost.clear(); Toast("Shape cancelled"); } }
+        if (!radialOpen) return;
+        float ui = settings.uiScale, maxR = 200 * ui;
+        radialCur.x += (float)mouseDX * 0.8f; radialCur.y += (float)mouseDY * 0.8f; mouseDX = mouseDY = 0;
+        float l = std::sqrt(radialCur.x * radialCur.x + radialCur.y * radialCur.y); if (l > maxR) { radialCur.x *= maxR / l; radialCur.y *= maxR / l; l = maxR; }
+        radialHover = -1; radialOpt = -1;
+        if (l >= 80 * ui) { float a = std::atan2(radialCur.x, -radialCur.y); if (a < 0) a += 6.2831853f; radialHover = (int)std::floor(a / (6.2831853f / RADIAL_N) + 0.5f) % RADIAL_N; }
+        else for (int i = 0; i < 3; i++) { ImVec2 c = RadialOptPos(i); float dx = radialCur.x - c.x, dy = radialCur.y - c.y; if (dx * dx + dy * dy < 24 * ui * 24 * ui) radialOpt = i; }
+        bool click = Down(VK_LBUTTON); bool clicked = click && !radialClickPrev; radialClickPrev = click;
+        if (clicked) {
+            if (radialHover >= 0) SetBuildMode((BuildMode)radialHover);
+            else if (radialOpt == 0) { std::vector<int> f = buildFills(bmode); if (!f.empty()) { int& cur = bFill[(int)bmode]; size_t i = 0; while (i < f.size() && f[i] != cur) i++; cur = f[(i + 1) % f.size()]; Toast(std::string("Fill: ") + buildFillName(bmode, cur)); } }
+            else if (radialOpt == 1 && buildHasCentre(bmode)) { bCentre = !bCentre; Toast(bCentre ? "Start from the middle" : "Start from a corner"); }
+            else if (radialOpt == 2) { bReplace = !bReplace; Toast(bReplace ? "Replace: builds over blocks that are there" : "Replace off: only fills air (and water)"); }
+        }
+        if (!want) {   // Tab let go: the mode under the pointer
+            if (radialHover >= 0) SetBuildMode((BuildMode)radialHover);
+            radialOpen = false; lPrev = Down(VK_LBUTTON); rPrev = Down(VK_RBUTTON);
+        }
+    }
+    ImVec2 RadialOptPos(int i) const { float ui = settings.uiScale; return i == 0 ? ImVec2(0, -34 * ui) : i == 1 ? ImVec2(-32 * ui, 22 * ui) : ImVec2(32 * ui, 22 * ui); }
+    void DrawModeIcon(ImDrawList* dl, BuildMode m, ImVec2 c, float s, ImU32 col) {
+        float h = s * 0.5f, t = std::max(1.5f, s * 0.07f);
+        auto P = [&](float x, float y) { return ImVec2(c.x + x * h, c.y + y * h); };
+        switch (m) {
+        case BuildMode::Normal: dl->AddRect(P(-0.4f, -0.4f), P(0.4f, 0.4f), col, 0, 0, t); break;
+        case BuildMode::Line: for (int i = 0; i < 4; i++) dl->AddRectFilled(P(-0.95f + i * 0.5f, -0.2f), P(-0.6f + i * 0.5f, 0.2f), col); break;
+        case BuildMode::DiagLine: for (int i = 0; i < 4; i++) dl->AddRectFilled(P(-0.95f + i * 0.5f, 0.6f - i * 0.45f), P(-0.6f + i * 0.5f, 0.95f - i * 0.45f), col); break;
+        case BuildMode::Wall: dl->AddRect(P(-0.9f, -0.7f), P(0.9f, 0.7f), col, 0, 0, t); dl->AddLine(P(-0.9f, 0), P(0.9f, 0), col, t * 0.6f); dl->AddLine(P(-0.3f, -0.7f), P(-0.3f, 0), col, t * 0.6f); dl->AddLine(P(0.3f, 0), P(0.3f, 0.7f), col, t * 0.6f); break;
+        case BuildMode::Floor: dl->AddQuad(P(-0.5f, -0.45f), P(0.95f, -0.45f), P(0.5f, 0.45f), P(-0.95f, 0.45f), col, t); break;
+        case BuildMode::Cube: dl->AddRect(P(-0.8f, -0.4f), P(0.4f, 0.8f), col, 0, 0, t); dl->AddLine(P(-0.8f, -0.4f), P(-0.4f, -0.8f), col, t); dl->AddLine(P(0.4f, -0.4f), P(0.8f, -0.8f), col, t); dl->AddLine(P(0.4f, 0.8f), P(0.8f, 0.4f), col, t); dl->AddLine(P(-0.4f, -0.8f), P(0.8f, -0.8f), col, t); dl->AddLine(P(0.8f, -0.8f), P(0.8f, 0.4f), col, t); break;
+        case BuildMode::DiagWall: dl->AddQuad(P(-0.9f, -0.2f), P(0.9f, -0.85f), P(0.9f, 0.3f), P(-0.9f, 0.9f), col, t); break;
+        case BuildMode::Slope: dl->AddTriangle(P(-0.9f, 0.7f), P(0.9f, 0.7f), P(0.9f, -0.7f), col, t); break;
+        case BuildMode::Circle: dl->AddCircle(c, h * 0.8f, col, 0, t); break;
+        case BuildMode::Cylinder: dl->AddEllipse(P(0, -0.6f), ImVec2(h * 0.7f, h * 0.25f), col, 0, 0, t); dl->AddLine(P(-0.7f, -0.6f), P(-0.7f, 0.6f), col, t); dl->AddLine(P(0.7f, -0.6f), P(0.7f, 0.6f), col, t); dl->PathArcTo(P(0, 0.6f), h * 0.7f, 0, 3.14159f); dl->PathStroke(col, 0, t); break;
+        case BuildMode::Sphere: dl->AddCircle(c, h * 0.8f, col, 0, t); dl->AddEllipse(c, ImVec2(h * 0.8f, h * 0.28f), col, 0, 0, t * 0.6f); break;
+        case BuildMode::Pyramid: dl->AddTriangle(P(0, -0.85f), P(-0.9f, 0.7f), P(0.9f, 0.7f), col, t); dl->AddLine(P(0, -0.85f), P(0.15f, 0.7f), col, t * 0.6f); break;
+        case BuildMode::Cone: dl->AddLine(P(0, -0.85f), P(-0.8f, 0.55f), col, t); dl->AddLine(P(0, -0.85f), P(0.8f, 0.55f), col, t); dl->AddEllipse(P(0, 0.55f), ImVec2(h * 0.8f, h * 0.25f), col, 0, 0, t); break;
+        case BuildMode::Dome: dl->PathArcTo(P(0, 0.5f), h * 0.85f, 3.14159f, 6.28318f); dl->PathStroke(col, 0, t); dl->AddLine(P(-0.85f, 0.5f), P(0.85f, 0.5f), col, t); break;
+        default: break;
+        }
+    }
+    void DrawBuildHud(ImDrawList* dl, ImVec2 m, ImVec2 hotbarPos, float s) {
+        float ui = settings.uiScale;
+        if (!toolMode) {   // which mode, next to the hotbar
+            ImVec2 a(hotbarPos.x - s - 14, hotbarPos.y), b(a.x + s, a.y + s);
+            bool on = bmode != BuildMode::Normal;
+            dl->AddRectFilled(ImVec2(a.x - 3, a.y - 3), ImVec2(b.x + 3, b.y + 3), on ? IM_COL32(20, 50, 70, 190) : IM_COL32(0, 0, 0, 120), 4);
+            DrawModeIcon(dl, bmode, ImVec2(a.x + s * 0.5f, a.y + s * 0.5f), s * 0.62f, on ? IM_COL32(120, 220, 255, 255) : IM_COL32(200, 200, 200, 160));
+            const char* t = "Tab"; ImVec2 ts = ImGui::CalcTextSize(t); dl->AddText(ImVec2(a.x + (s - ts.x) * 0.5f, a.y - ts.y - 4), IM_COL32(220, 220, 220, 170), t);
+        }
+        if (bStage > 0 && !bCells.empty()) {   // the shape's box and its size
+            I3 lo = bCells[0], hi = bCells[0];
+            for (const I3& p : bCells) { lo.x = std::min(lo.x, p.x); lo.y = std::min(lo.y, p.y); lo.z = std::min(lo.z, p.z); hi.x = std::max(hi.x, p.x); hi.y = std::max(hi.y, p.y); hi.z = std::max(hi.z, p.z); }
+            V3 c[8]; for (int i = 0; i < 8; i++) c[i] = { (double)((i & 1) ? hi.x + 1 : lo.x), (double)((i & 2) ? hi.y + 1 : lo.y), (double)((i & 4) ? hi.z + 1 : lo.z) };
+            const int e[12][2] = { { 0, 1 }, { 2, 3 }, { 4, 5 }, { 6, 7 }, { 0, 2 }, { 1, 3 }, { 4, 6 }, { 5, 7 }, { 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 } };
+            ImU32 bc = bBreak ? IM_COL32(255, 90, 70, 200) : IM_COL32(120, 220, 255, 200);
+            for (auto& k : e) Line3D(dl, c[k[0]], c[k[1]], bc);
+        }
+        if (bStage > 0) {
+            I3 sz = buildBoxSize(bCells);
+            std::string l1 = std::string(buildModeName(bmode)) + (buildFills(bmode).empty() ? "" : std::string(" - ") + buildFillName(bmode, bFill[(int)bmode])) + (bBreak ? "  (breaking)" : "");
+            char b2[128]; snprintf(b2, sizeof b2, "%d x %d x %d = %zu blocks%s", sz.x, sz.y, sz.z, bCells.size(), bCapped ? " (limit)" : "");
+            const char* l3 = bStage == 1 ? (buildSteps(bmode) >= 3 ? (bBreak ? "left click: the corner" : "right click: the corner") : (bBreak ? "left click: break it" : "right click: build it")) : (bBreak ? "look up / down, left click: the height" : "look up / down, right click: the height");
+            ImVec2 p(m.x + 22 * ui, m.y + 16 * ui); float lh = ImGui::GetTextLineHeight();
+            ImVec2 w1 = ImGui::CalcTextSize(l1.c_str()), w2 = ImGui::CalcTextSize(b2), w3 = ImGui::CalcTextSize(l3); float w = std::max({ w1.x, w2.x, w3.x });
+            dl->AddRectFilled(ImVec2(p.x - 6, p.y - 4), ImVec2(p.x + w + 6, p.y + lh * 3 + 8), IM_COL32(0, 0, 0, 150), 4);
+            dl->AddText(p, IM_COL32(150, 225, 255, 255), l1.c_str()); dl->AddText(ImVec2(p.x, p.y + lh + 2), IM_COL32(255, 255, 255, 240), b2); dl->AddText(ImVec2(p.x, p.y + 2 * lh + 4), IM_COL32(200, 200, 200, 200), l3);
+        }
+        if (!radialOpen) return;
+        // the radial menu
+        float r0 = 80 * ui, r1 = 190 * ui, slice = 6.2831853f / RADIAL_N;
+        dl->AddCircleFilled(m, r1 + 6 * ui, IM_COL32(8, 14, 22, 170), 96);
+        for (int i = 0; i < RADIAL_N; i++) {
+            float a0 = -1.5707963f + (i - 0.5f) * slice + 0.012f, a1 = a0 + slice - 0.024f;
+            bool hov = i == radialHover, cur = i == (int)bmode;
+            dl->PathArcTo(m, r1, a0, a1, 10); dl->PathArcTo(m, r0, a1, a0, 6);
+            dl->PathFillConvex(hov ? IM_COL32(60, 150, 210, 230) : cur ? IM_COL32(30, 80, 115, 220) : IM_COL32(25, 35, 48, 210));
+            float am = -1.5707963f + i * slice, rm = (r0 + r1) * 0.5f;
+            ImVec2 ic(m.x + std::cos(am) * rm, m.y + std::sin(am) * rm - 7 * ui);
+            DrawModeIcon(dl, (BuildMode)i, ic, 34 * ui, hov || cur ? IM_COL32(255, 255, 255, 255) : IM_COL32(170, 200, 225, 230));
+            const char* nm = buildModeName((BuildMode)i); ImVec2 ts = ImGui::CalcTextSize(nm); float k = std::min(1.f, 60 * ui / std::max(1.f, ts.x));
+            dl->AddText(ImGui::GetFont(), ImGui::GetFontSize() * k, ImVec2(ic.x - ts.x * k * 0.5f, ic.y + 19 * ui), hov ? IM_COL32(255, 255, 255, 255) : IM_COL32(190, 210, 230, 220), nm);
+        }
+        // the options in the middle (for the chosen mode)
+        dl->AddCircleFilled(m, r0 - 6 * ui, IM_COL32(14, 22, 32, 235), 48);
+        std::vector<int> fills = buildFills(bmode);
+        const char* lab[3] = { fills.empty() ? "-" : buildFillName(bmode, bFill[(int)bmode]), bCentre ? "Middle" : "Corner", bReplace ? "Replace" : "Air only" };
+        bool can[3] = { !fills.empty(), buildHasCentre(bmode), true };
+        for (int i = 0; i < 3; i++) {
+            ImVec2 c(m.x + RadialOptPos(i).x, m.y + RadialOptPos(i).y);
+            dl->AddCircleFilled(c, 24 * ui, !can[i] ? IM_COL32(30, 34, 40, 200) : radialOpt == i ? IM_COL32(70, 160, 220, 240) : IM_COL32(40, 60, 80, 230), 32);
+            float k = 0.78f; ImVec2 ts = ImGui::CalcTextSize(lab[i]); k = std::min(k, 44 * ui / std::max(1.f, ts.x));
+            dl->AddText(ImGui::GetFont(), ImGui::GetFontSize() * k, ImVec2(c.x - ts.x * k * 0.5f, c.y - ts.y * k * 0.5f), can[i] ? IM_COL32(255, 255, 255, 240) : IM_COL32(120, 120, 120, 200), lab[i]);
+        }
+        { const char* t = radialHover >= 0 ? buildModeName((BuildMode)radialHover) : "click: pick / change"; ImVec2 ts = ImGui::CalcTextSize(t); dl->AddText(ImVec2(m.x - ts.x * 0.5f, m.y + r1 + 12 * ui), IM_COL32(255, 255, 255, 230), t); }
+        dl->AddCircleFilled(ImVec2(m.x + radialCur.x, m.y + radialCur.y), 5 * ui, IM_COL32(255, 255, 255, 255)); dl->AddCircle(ImVec2(m.x + radialCur.x, m.y + radialCur.y), 7 * ui, IM_COL32(0, 0, 0, 200), 0, 1.5f);
+    }
     void Interact(double dt) {
-        hoverValid = world->raycast(player.eye(), player.forward(), 6.0, hover);
+        bool shaping = bmode != BuildMode::Normal;
+        hoverValid = world->raycast(player.eye(), player.forward(), shaping ? 48.0 : 6.0, hover);   // build modes reach further
         bool L = Down(VK_LBUTTON), R = Down(VK_RBUTTON), M = Down(VK_MBUTTON);
         breakCool -= dt; placeCool -= dt;
+        if (radialOpen) { UpdateTarget(); lPrev = L; rPrev = R; mPrev = M; return; }
+        if (shaping) { UpdateTarget(); BuildModeInteract(L, R); L = R = false; }   // (the middle click still picks blocks)
         if (L && (!lPrev || breakCool <= 0) && hoverValid) {
             BlockId was = world->get(hover.x, hover.y, hover.z);
             world->set(hover.x, hover.y, hover.z, AIR); history.push({ { hover.x, hover.y, hover.z, was, AIR } }); breakCool = 0.25;
@@ -3376,6 +3601,7 @@ struct App {
         }
         if (!L) breakCool = 0;
         if (!R) placeCool = 0;
+        if (shaping) { L = Down(VK_LBUTTON); R = Down(VK_RBUTTON); }
         lPrev = L; rPrev = R; mPrev = M;
     }
     int LookFace() const { V3 f = player.forward(); return std::fabs(f.x) > std::fabs(f.z) ? (f.x > 0 ? F_PX : F_NX) : (f.z > 0 ? F_PZ : F_NZ); }
@@ -3868,7 +4094,17 @@ struct App {
         ctx->OMSetRenderTargets(1, reflRTV.GetAddressOf(), dsv.Get()); ctx->RSSetState(rsCull.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0);
         ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0);
         ctx->PSSetShaderResources(0, 5, srvs);
-        if (settings.blockPreview && Playing() && targetValid) {   // see-through preview of the next block
+        if (bStage > 0 && !bGhost.empty() && !playMode && Playing()) {   // build modes: the whole shape, see-through (red: what breaks)
+            ctx->OMSetBlendState(bsAlpha.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsTestOnly.Get(), 0); ctx->PSSetShader(psGhost.Get(), nullptr, 0); ctx->RSSetState(rsGhostBias.Get());
+            for (const GhostChunk& g : bGhost) {
+                if (!g.n) continue;
+                ChunkCB cc{ { (float)(g.c.x * (double)CS - camPos.x), (float)(g.c.y * (double)CS - camPos.y), (float)(g.c.z * (double)CS - camPos.z), bBreak ? 2.f : 0.f } }; ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);
+                UINT stride = sizeof(Vtx), off = 0; ctx->IASetVertexBuffers(0, 1, g.vb.GetAddressOf(), &stride, &off); ctx->IASetIndexBuffer(g.ib.Get(), DXGI_FORMAT_R32_UINT, 0);
+                ctx->DrawIndexed(g.n, 0, 0);
+            }
+            ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());
+        }
+        if (settings.blockPreview && Playing() && targetValid && bStage == 0) {   // see-through preview of the next block
             if (ghostKey != targetValue) {
                 ghostKey = targetValue;
                 MeshInput in; in.pos = { 0, 0, 0 }; in.blocks.assign(PAD * PAD * PAD, AIR); in.blocks[padIdx(0, 0, 0)] = targetValue;
@@ -4192,6 +4428,7 @@ struct App {
         }
         int hs = toolMode ? toolSel : hotSel;
         dl->AddRect(ImVec2(o.x + hs * s - 2, o.y - 2), ImVec2(o.x + hs * s + s + 2, o.y + s + 2), IM_COL32(255, 255, 255, 255), 0.f, 0, 3.f);
+        DrawBuildHud(dl, m, o, s);   // build modes: the mode, the shape's size, the radial menu (Tab)
         if (toolMode) {
             std::string label = ToolLabel();
             ImVec2 ts = ImGui::CalcTextSize(label.c_str()); dl->AddText(ImVec2(vx + (cw - ts.x) * 0.5f, o.y - ts.y - 8), IM_COL32(255, 255, 255, 230), label.c_str());

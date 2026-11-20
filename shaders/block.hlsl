@@ -595,7 +595,9 @@ float4 PS_Ghost(VSOut i) : SV_Target
 {
     float4 t = albedoAt(i.uvl);
     clip(t.a - 0.5);
-    return float4(t.rgb * (gAmbient.rgb + gSunColor.rgb * 0.3) * 1.2, 0.5);
+    float3 c = t.rgb * (gAmbient.rgb + gSunColor.rgb * 0.3) * 1.2;
+    if (gOffset.w > 1.5) return float4(lerp(c, float3(1.0, 0.12, 0.08), 0.65), 0.55);   // build modes: blocks about to be broken
+    return float4(c, 0.5);
 }
 
 // ---------------------------------------------------------------- shadow map
