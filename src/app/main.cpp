@@ -132,6 +132,7 @@ struct alignas(16) FrameCB {
     float voxM[4];          // xyz where the corner sits in the wrapping 3D texture, w ready
     float splash[8][4];     // splashes on water (rings): where (camera-relative), how long ago
     float planar[4];        // x 1: the mirror view is a shiny floor / water
+    float minLight[4];      // rgb the least light in closed spaces (true darkness); w the reflection rays' resolution
 };
 struct alignas(16) ChunkCB { float offset[4]; float ax[4] = { 1, 0, 0, 0 }, ay[4] = { 0, 1, 0, 0 }, az[4] = { 0, 0, 1, 0 }; };   // axes: objects are turned and sized
 
@@ -155,7 +156,16 @@ struct App {
     ComPtr<ID3D11Texture2D> depthTex; ComPtr<ID3D11DepthStencilView> dsv;
     ComPtr<ID3D11VertexShader> vsBlock, vsSky, vsShadow; ComPtr<ID3D11PixelShader> psOpaque, psCutout, psSky, psGhost, psShadowCut, psPost, psVolume, psBloomDown, psBloomUp, psRain, psBolt;
     ComPtr<ID3D11VertexShader> vsSkyMap, vsRain, vsRainFar, vsDust;
-    ComPtr<ID3D11PixelShader> psReflect, psAO, psAOApply;
+    ComPtr<ID3D11PixelShader> psReflect, psAO, psAOApply, psReflComp;
+    ComPtr<ID3D11Texture2D> reflLowTex; ComPtr<ID3D11RenderTargetView> reflLowRTV; ComPtr<ID3D11ShaderResourceView> reflLowSRV; int reflLowW = 0, reflLowH = 0;   // reflections traced smaller
+    float ReflScale() const { static const float k[4] = { 1.f, 0.75f, 0.5f, 0.25f }; return k[std::clamp(settings.reflectRes, 0, 3)]; }
+    void EnsureReflLow(int w, int h) {
+        if (reflLowTex && w == reflLowW && h == reflLowH) return;
+        D3D11_TEXTURE2D_DESC d{}; d.Width = (UINT)w; d.Height = (UINT)h; d.MipLevels = 1; d.ArraySize = 1; d.Format = DXGI_FORMAT_R16G16B16A16_FLOAT; d.SampleDesc.Count = 1; d.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+        reflLowTex.Reset(); reflLowRTV.Reset(); reflLowSRV.Reset();
+        HR(dev->CreateTexture2D(&d, nullptr, &reflLowTex)); HR(dev->CreateRenderTargetView(reflLowTex.Get(), nullptr, &reflLowRTV)); HR(dev->CreateShaderResourceView(reflLowTex.Get(), nullptr, &reflLowSRV));
+        reflLowW = w; reflLowH = h;
+    }
     ComPtr<ID3D11Texture2D> indTex, aoTex; ComPtr<ID3D11RenderTargetView> indRTV, aoRTV; ComPtr<ID3D11ShaderResourceView> indSRV, aoSRV;   // ambient occlusion
     ComPtr<ID3D11Texture2D> mirTex, mirDepth; ComPtr<ID3D11RenderTargetView> mirRTV; ComPtr<ID3D11ShaderResourceView> mirSRV; ComPtr<ID3D11DepthStencilView> mirDSV;   // a mirror's view (half size)
     ComPtr<ID3D11RasterizerState> rsCullFront; MirrorPlane lastMirror;
@@ -290,6 +300,7 @@ struct App {
             D3D11_SHADER_RESOURCE_VIEW_DESC sv{}; sv.Format = DXGI_FORMAT_R32_FLOAT; sv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D; sv.Texture2D.MipLevels = 1; HR(dev->CreateShaderResourceView(skyMapTex.Get(), &sv, &skyMapSRV));
         }
         b = Compile(src, "PS_Reflect", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psReflect));
+        b = Compile(src, "PS_ReflComp", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psReflComp));
         b = Compile(src, "VS_Particle", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsParticle));
         { D3D11_INPUT_ELEMENT_DESC pe[] = {
             { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 }, { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0 },
@@ -868,6 +879,7 @@ struct App {
         worldDir = WorldsDir() + "/" + folder;
         game.lastWorld = folder; game.save(gamePath); RefreshWorlds();
         info = WorldInfo{}; info.load(worldDir);
+        if (!info.keepClock) settings.timeOfDay = info.startHour;   // the world's own start time (not wherever the clock was left)
         world = std::make_unique<World>(reg); info.applyGenerator(world->gen, reg);
         world->store = std::make_unique<RegionStore>(worldDir + "/region");
         workers = std::make_unique<MeshWorkers>(reg); workers->start(Threads());
@@ -3883,6 +3895,10 @@ struct App {
         fc.clipPlane[3] = 1;   // nothing cut away (except while drawing a mirror's view)
         lastMirror = settings.reflections > 0 ? world->nearestMirror(camPos, player.forward(), 48) : MirrorPlane{};
         fc.planar[0] = 0;
+        {   // the least light in closed spaces (true darkness), and how big the reflections are traced
+            float ml = info.trueDark ? std::clamp(info.minLight, 0.f, 1.f) : 0.f; V3 mc = Linear(info.minLightColor);
+            fc.minLight[0] = (float)mc.x * ml * 0.45f; fc.minLight[1] = (float)mc.y * ml * 0.45f; fc.minLight[2] = (float)mc.z * ml * 0.45f; fc.minLight[3] = ReflScale();
+        }
         if (!lastMirror.valid && settings.reflections > 0 && settings.planarFloors) { lastMirror = FloorMirror(); fc.planar[0] = lastMirror.valid ? 1.f : 0.f; }   // no mirror block: the shiny floor or water near you
         if (lastMirror.valid) {
             float n[3] = { 0, 0, 0 }; n[lastMirror.axis] = (float)lastMirror.sign;
@@ -4124,7 +4140,17 @@ struct App {
         { ID3D11ShaderResourceView* r7[7] = { hdrSRV.Get(), shadows ? shadowSRV.Get() : nullptr, depthSRV.Get(), nullptr, skyMap ? skyMapSRV.Get() : nullptr, surfSRV.Get(), lastMirror.valid ? mirSRV.Get() : nullptr }; ctx->PSSetShaderResources(0, 7, r7);
           ctx->PSSetShaderResources(14, 1, emitArray.GetAddressOf()); BindMaterials(); }
         ctx->PSSetSamplers(3, 1, sampClamp.GetAddressOf());
-        ctx->Draw(3, 0);
+        if (float rs = ReflScale(); rs < 0.999f && settings.reflections > 0) {   // smaller: the rays traced into a smaller picture, then laid over the full one
+            int lw = std::max(1, (int)std::lround(rw * rs)), lh = std::max(1, (int)std::lround(rh * rs)); EnsureReflLow(lw, lh);
+            const float clr[4] = { 0, 0, 0, 0 }; ctx->OMSetRenderTargets(1, reflLowRTV.GetAddressOf(), nullptr); ctx->ClearRenderTargetView(reflLowRTV.Get(), clr);
+            D3D11_VIEWPORT sv{ 0, 0, (float)lw, (float)lh, 0, 1 }; ctx->RSSetViewports(1, &sv);
+            ctx->Draw(3, 0);
+            D3D11_VIEWPORT fv{ 0, 0, (float)rw, (float)rh, 0, 1 }; ctx->RSSetViewports(1, &fv);
+            ctx->OMSetRenderTargets(1, reflRTV.GetAddressOf(), nullptr); ctx->PSSetShader(psReflComp.Get(), nullptr, 0);
+            ctx->PSSetShaderResources(34, 1, reflLowSRV.GetAddressOf());
+            ctx->Draw(3, 0);
+            ID3D11ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(34, 1, &n1);
+        } else ctx->Draw(3, 0);
         { ID3D11ShaderResourceView* n7[7] = {}; ctx->PSSetShaderResources(0, 7, n7); }
         // everything after this draws over the reflected picture, still depth-tested against the world
         ctx->OMSetRenderTargets(1, reflRTV.GetAddressOf(), dsv.Get()); ctx->RSSetState(rsCull.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0);
@@ -4652,10 +4678,12 @@ struct App {
         ImGui::End();
     }
     // ---- Play mode
+    float editClock = -1;
     void StartPlay(bool grabMouse = true) {
         if (screen != Screen::Game || playMode) return;
         EndStroke(); brushMenu = false; placing.clear(); dupFrom = -1; platRun.clear(); previewPlatforms = false; if (movingObj >= 0) { movingObj = -1; RebuildSolids(); }
         editCam = player; playMode = true; paused = false; inventory = false; shapeMenu = false; editorOpen = false;
+        editClock = settings.timeOfDay; if (!info.keepClock) settings.timeOfDay = info.startHour;   // play starts at the world's start time
         inv = PlayInventory{}; poppedIds.clear(); StopSounds(TAG_FANFARE);
         if (!weapons.missileTypes.empty() && !weapons.missileCounter.empty()) inv.counts[weapons.missileCounter] = weapons.missileStart;
         weapState.missile = 0; chargedOn = false;
@@ -4687,6 +4715,7 @@ struct App {
         RestoreBroken(); bombsOut.clear(); flashes.clear(); StopRoll(); StopScanLoop();   // broken blocks come back
         ClearSpawned(); bossRt.clear(); bossPose.clear(); bossSealed.clear(); bossShown = 0; camShake = 0; countdownT = -1;
         playMode = false; paused = false; player = editCam; player.ball = false; Capture(false); captureNext = false; platRun.clear();
+        if (editClock >= 0) { settings.timeOfDay = editClock; editClock = -1; }   // (the editor's clock as it was)
         evHidden.clear(); evOff.clear(); evLocked.clear(); evHeld.clear(); evKick.clear(); evFlash.clear(); RebuildSolids();
         Toast("Back in the editor");
     }
@@ -4873,6 +4902,23 @@ struct App {
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("How dark nights are: the moon's light, the night sky's glow, and how much the eye (and eye adaptation) brightens them.\nDark: you need lights, glowing blocks and the visor to see.");
         ImGui::Checkbox("True darkness", &info.trueDark);
         Hint("No sky light under roofs and in caves: only lights, lamps and glowing things light them (it fades in near openings).");
+        if (info.trueDark) {
+            Prop("Least light inside"); ImGui::SliderFloat("##minl", &info.minLight, 0, 1, info.minLight <= 0.001f ? "none (pitch dark)" : "%.2f");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Closed spaces (under roofs, in caves) are never darker than this, even with no lights at all.\nThe open air isn't changed.");
+            if (info.minLight > 0) {
+                float c[3] = { ((info.minLightColor >> 16) & 255) / 255.f, ((info.minLightColor >> 8) & 255) / 255.f, (info.minLightColor & 255) / 255.f }; Prop("... its colour");
+                if (ImGui::ColorEdit3("##minlc", c, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_PickerHueWheel)) info.minLightColor = ((uint32_t)std::lround(c[0] * 255) << 16) | ((uint32_t)std::lround(c[1] * 255) << 8) | (uint32_t)std::lround(c[2] * 255);
+            }
+        }
+        {   // the clock when the world opens
+            int hm = (int)std::lround(info.startHour * 60) % (24 * 60); char lab[32]; snprintf(lab, sizeof lab, "%02d:%02d", hm / 60, hm % 60);
+            Prop("Starts at"); ImGui::BeginDisabled(info.keepClock); ImGui::SliderFloat("##sth", &info.startHour, 0, 23.99f, lab); ImGui::EndDisabled();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("The time of day when the world opens in the editor and when play starts.");
+            ImGui::SameLine(); if (ImGui::SmallButton("Now")) info.startHour = settings.timeOfDay;
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Use the time it is right now");
+            Prop("Keep the clock running"); ImGui::Checkbox("##kclk", &info.keepClock);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("On: the world opens at whatever time it was when you left it (the day cycle goes on).\nOff: always at the start time.");
+        }
         if (ImGui::Button("Add a zone around me")) AddZoneHere();
         ImGui::Separator();
         Prop("Look"); LookCombo("##wlook", info.look, false);

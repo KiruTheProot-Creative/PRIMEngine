@@ -46,6 +46,7 @@ cbuffer Frame : register(b0)
     float4 gVoxM;                   // xyz where that corner sits in the (wrapping) 3D texture, w 1 = ready
     float4 gSplash[8];              // splashes on water: xyz where (relative to the camera), w how long ago (s; < 0: none)
     float4 gPlanar;                 // x 1: the mirror view is a shiny floor / water (every shiny pixel on that plane uses it), 0: only mirror blocks; y objects for reflection rays
+    float4 gMinLight;               // rgb: the least light in closed spaces (true darkness); w: the reflection rays' resolution (1 full .. 0.25)
 };
 float lookFogAt(float y) { return gLookFog.x * (gLookFog.z > 0.01 ? exp(-max(y - gLookFog.y, 0) / gLookFog.z) : 1); }
 cbuffer ChunkCB : register(b1)
@@ -502,6 +503,7 @@ float3 lightBlock(VSOut i, float3 albedo, bool front, out float3 n, out float sh
     }
     float sky = 0.55 + 0.45 * n.y;                                     // more sky light on top than on the sides
     float3 light = gSunColor.rgb * ndl * sh + gAmbient.rgb * sky * i.ao * skyV;
+    light = max(light, gMinLight.rgb * sky * i.ao * (1 - skyV));                                   // closed spaces: never darker than the world's minimum
     float lamp = max(i.lamp.r, max(i.lamp.g, i.lamp.b));
     float3 hue = lamp > 0 ? i.lamp.rgb / lamp : 0;                                                   // the colour of the lamps nearby
     light += hue * (pow(lamp, 3.2) * 0.9) * gExtra.w * lerp(0.5, 1, i.ao);
@@ -939,6 +941,7 @@ float3 reflLight(float3 hp, float3 hn, float2 pixel, out float sv)   // light at
     float sh = ndl > 0 ? shadowAt(hp, hn, ndl, pixel) : 0;
     float farOut = gSunDir.w < 0.5 ? 1 : saturate((length(hp) - gCascR.w * 0.92) / max(gCascR.w * 0.08, 1)); sh *= lerp(1, sv, farOut);
     float3 light = gSunColor.rgb * ndl * sh + gAmbient.rgb * (0.55 + 0.45 * hn.y) * sv;
+    light = max(light, gMinLight.rgb * (0.55 + 0.45 * hn.y) * (1 - sv));
     float3 dif = 0, sp = 0; uint nl = (uint)gCl1.y;                 // the nearest lights (glowing blocks around you too)
     [loop] for (uint k = 0; k < nl; k++) evalLight(gLightBuf[k], hp, hn, -normalize(hp), 16, true, dif, sp);
     return light + dif;
@@ -1046,13 +1049,15 @@ bool voxelTrace(float3 P, float3 n, float3 r, float2 pixel, out float3 col)
     col = voxShade(hitP, hitN, hitLayer, hitId, hitUV, length(hitP - P), pixel);
     return true;
 }
+// gMinLight.w < 1: drawn smaller (only the reflection: rgb what it adds, a how much of the picture it covers), then PS_ReflComp lays it over
 float4 PS_Reflect(SkyOut i) : SV_Target
 {
-    int2 px = int2(i.pos.xy);
+    float rs = gMinLight.w > 0.01 ? gMinLight.w : 1; bool small = rs < 0.999;
+    int2 px = int2(min(i.pos.xy / rs, gDepth.zw - 1));
     float3 scene = gHdr.Load(int3(px, 0)).rgb;
     float4 g = gSurface.Load(int3(px, 0));
     float shine = g.a;
-    if (shine < 0.02 || gRefl.x < 0.5) return float4(scene, 1);
+    if (shine < 0.02 || gRefl.x < 0.5) return small ? float4(0, 0, 0, 0) : float4(scene, 1);
     float3 n = normalize(g.xyz * 2 - 1);
     float3 dir = normalize(gCamF.xyz + gCamR.xyz * (i.ndc.x * gProj.x * gProj.y) + gCamU.xyz * (i.ndc.y * gProj.x));
     float zb = gSceneDepth.Load(int3(px, 0));
@@ -1097,7 +1102,18 @@ float4 PS_Reflect(SkyOut i) : SV_Target
     float f0 = mirror ? 0.9 : 0.02 + 0.6 * shine;
     float F = f0 + (1 - f0) * pow(1 - NdotV, 5);
     float amount = mirror ? 1 : saturate(shine * 1.2);
+    if (small) return float4(refl * F * amount, F * amount * 0.5);
     return float4(scene * (1 - F * amount * 0.5) + refl * F * amount, 1);
+}
+// the smaller reflections laid over the full picture (only on shiny pixels)
+Texture2D gReflLow : register(t34);
+float4 PS_ReflComp(SkyOut i) : SV_Target
+{
+    int2 px = int2(i.pos.xy);
+    float3 scene = gHdr.Load(int3(px, 0)).rgb;
+    if (gSurface.Load(int3(px, 0)).a < 0.02 || gRefl.x < 0.5) return float4(scene, 1);
+    float4 r = gReflLow.SampleLevel(gClamp, (float2(px) + 0.5) / gDepth.zw, 0);
+    return float4(scene * (1 - r.a) + r.rgb, 1);
 }
 
 // ---------------------------------------------------------------- water: waves, what is under it (bent, and bluer the deeper), reflections

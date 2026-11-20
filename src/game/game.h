@@ -40,6 +40,7 @@ struct Settings {
     float bloom = 0.5f;        // glow around bright things, 0 = off
     bool swaying = true;       // leaves and plants move in the wind
     int reflections = 1;       // 0 off, 1 normal, 2 high
+    int reflectRes = 0;        // reflection resolution: 0 full, 1 three quarters, 2 half, 3 a quarter (rays traced smaller, laid over the full picture)
     int ambientOcclusion = 1;  // soft shadow in corners and under things, for everything on screen: 0 off, 1 normal, 2 high
     float aoStrength = 1.0f;
     float bumps = 1.0f;        // generated normals: a bumpy surface made from each texture's light and dark pixels (0 = off)
@@ -179,6 +180,8 @@ struct WorldInfo {
     std::string look = "Natural";                   // the colour look (Looks: tone curve, exposure, bloom, grading ...)
     bool trueDark = true;                           // no sky light under roofs and in caves: only lights, lamps and glowing things light them
     float nightDark = 0.85f;                        // how dark nights are: 0 bright (the old nights) .. 1 pitch dark (only the moon, faintly, and your lights)
+    float minLight = 0; uint32_t minLightColor = 0x8C9AB0;   // true darkness: the least light in closed spaces (0 none .. 1 bright), in this colour
+    float startHour = 10; bool keepClock = false;   // the clock when the world opens (and play starts): this hour, or (keepClock) where it was left
     bool hasSpawn = false; V3 spawn{ 0.5, 0, 0.5 }; double spawnYaw = 0;   // where the player starts when playing
     std::vector<EnvZone> zones;
     bool load(const std::string& dir);

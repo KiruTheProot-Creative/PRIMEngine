@@ -17,7 +17,7 @@ Field field(Settings& s, const std::string& k) {
     else if (k == "shadows") r.i = &s.shadowQuality; else if (k == "shadow_res") r.i = &s.shadowRes; else if (k == "shadow_distance") r.f = &s.shadowDistance;
     else if (k == "shadow_soft") r.i = &s.shadowSoft; else if (k == "shadow_softness") r.f = &s.shadowSoftness;
     else if (k == "clouds") r.f = &s.cloudCover; else if (k == "cloud_shadows") r.b = &s.cloudShadows; else if (k == "fog") r.f = &s.groundFog;
-    else if (k == "bloom") r.f = &s.bloom; else if (k == "reflections") r.i = &s.reflections; else if (k == "ao") r.i = &s.ambientOcclusion; else if (k == "ao_strength") r.f = &s.aoStrength;
+    else if (k == "bloom") r.f = &s.bloom; else if (k == "reflections") r.i = &s.reflections; else if (k == "reflect_res") r.i = &s.reflectRes; else if (k == "ao") r.i = &s.ambientOcclusion; else if (k == "ao_strength") r.f = &s.aoStrength;
     else if (k == "swaying") r.b = &s.swaying; else if (k == "hud_glow") r.b = &s.hudGlow;
     else if (k == "eye_adapt") r.b = &s.eyeAdapt; else if (k == "film_fx") r.b = &s.filmFx; else if (k == "light_shadows") r.i = &s.lightShadows; else if (k == "light_fog") r.b = &s.lightFog; else if (k == "bounce") r.i = &s.bounce; else if (k == "planar_floors") r.b = &s.planarFloors; else if (k == "lens_flares") r.b = &s.lensFlares;
     else if (k == "bumps") r.f = &s.bumps; else if (k == "coat") r.f = &s.coat; else if (k == "materials") r.b = &s.materials; else if (k == "guess_materials") r.b = &s.guessMaterials;
@@ -85,6 +85,7 @@ const std::vector<OptionDef>& optionDefs() {
         v.push_back(choice("light_shadows", "Shadows from lamps", G, "Shadows", { "Off", "2 lights", "4 lights", "8 lights (heavy)" }, { 0, 2, 4, 8 },
                            "Lights set to cast shadows: this many of the nearest really do."));
         v.push_back(choice("reflections", "Reflections", G, "Effects", { "Off (only the sky)", "Normal", "High" }));
+        v.push_back(needs(choice("reflect_res", "Reflection resolution", G, "Effects", { "Full", "Three quarters", "Half", "A quarter (fastest)" }), "reflections"));
         v.push_back(choice("ao", "Ambient occlusion", G, "Effects", { "Off (only block corners)", "Normal", "High" }, {}, "Soft shade in corners, under overhangs and where things touch."));
         v.push_back(needs(slider("ao_strength", "Occlusion strength", G, "Effects", 0.2f, 3, 0.1f, "%.1f"), "ao"));
         v.push_back(toggle("swaying", "Leaves sway in the wind", G, "Effects"));

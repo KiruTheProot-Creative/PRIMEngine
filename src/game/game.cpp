@@ -63,6 +63,7 @@ bool Settings::load(const std::string& path) {
         else if (k == "bloom") f >> bloom;
         else if (k == "swaying") { int v; f >> v; swaying = v != 0; }
         else if (k == "reflections") f >> reflections;
+        else if (k == "reflect_res") { f >> reflectRes; reflectRes = std::clamp(reflectRes, 0, 3); }
         else if (k == "ambient_occlusion") f >> ambientOcclusion;
         else if (k == "ao_strength") f >> aoStrength;
         else if (k == "bumps") f >> bumps; else if (k == "coat") f >> coat;
@@ -103,7 +104,7 @@ bool Settings::save(const std::string& path) const {
       << "\nui_scale " << uiScale << "\nvsync " << (vsync ? 1 : 0) << "\nblock_preview " << (blockPreview ? 1 : 0)
       << "\ntime_of_day " << timeOfDay << "\nday_cycle " << (dayCycle ? 1 : 0) << "\nshadows " << shadowQuality << "\nshadow_distance " << shadowDistance << "\nshadow_soft " << shadowSoft << "\nshadow_softness " << shadowSoftness
       << "\ncloud_cover " << cloudCover << "\nground_fog " << groundFog << "\ncloud_shadows " << (cloudShadows ? 1 : 0)
-      << "\nbloom " << bloom << "\nswaying " << (swaying ? 1 : 0) << "\nreflections " << reflections
+      << "\nbloom " << bloom << "\nswaying " << (swaying ? 1 : 0) << "\nreflections " << reflections << "\nreflect_res " << reflectRes
       << "\nambient_occlusion " << ambientOcclusion << "\nao_strength " << aoStrength
       << "\nbumps " << bumps << "\ncoat " << coat << "\nmaterials " << (materials ? 1 : 0) << "\nhud_glow " << (hudGlow ? 1 : 0) << "\nguess_materials " << (guessMaterials ? 1 : 0)
       << "\nshadow_res " << shadowRes << "\nbrightness " << brightness << "\nfullscreen " << (fullscreen ? 1 : 0)
@@ -283,6 +284,7 @@ bool WorldInfo::save(const std::string& dir) const {
     f << "\nplayer " << player.feet.x << " " << player.feet.y << " " << player.feet.z << " " << player.yaw << " " << player.pitch << " " << (player.flying ? 1 : 0) << "\nhotbar " << hotSel;
     for (auto& h : hotbar) { std::string e = h; for (size_t p; (p = e.find(' ')) != std::string::npos;) e.replace(p, 1, "%20"); f << " " << (e.empty() ? "-" : e); }   // names may have spaces
     f << "\nweather " << weather << " " << (autoWeather ? 1 : 0) << "\nenvironment " << environment << "\ntrue_dark " << (trueDark ? 1 : 0) << "\nnight_dark " << nightDark << "\n";
+    f << "min_light " << minLight << " " << minLightColor << "\nstart_hour " << startHour << " " << (keepClock ? 1 : 0) << "\n";
     if (hasSpawn) f << "spawn " << spawn.x << " " << spawn.y << " " << spawn.z << " " << spawnYaw << "\n";
     f << "look " << escLook(look) << "\n";
     for (auto& z : zones) { f << "zone " << z.env << " " << z.lo.x << " " << z.lo.y << " " << z.lo.z << " " << z.hi.x << " " << z.hi.y << " " << z.hi.z << " " << z.name << "\n"; if (!z.look.empty()) f << "zonelook " << escLook(z.look) << "\n"; }
@@ -302,6 +304,8 @@ bool WorldInfo::load(const std::string& dir) {
         else if (k == "environment") f >> environment;
         else if (k == "true_dark") { int v; f >> v; trueDark = v != 0; }
         else if (k == "night_dark") { f >> nightDark; nightDark = std::clamp(nightDark, 0.f, 1.f); }
+        else if (k == "min_light") { f >> minLight >> minLightColor; minLight = std::clamp(minLight, 0.f, 1.f); }
+        else if (k == "start_hour") { int kc = 0; f >> startHour >> kc; keepClock = kc != 0; startHour = std::clamp(startHour, 0.f, 23.99f); }
         else if (k == "look") { std::string l; f >> l; look = unescLook(l); }
         else if (k == "zonelook") { std::string l; f >> l; if (!zones.empty()) zones.back().look = unescLook(l); }
         else if (k == "spawn") { f >> spawn.x >> spawn.y >> spawn.z >> spawnYaw; hasSpawn = true; }

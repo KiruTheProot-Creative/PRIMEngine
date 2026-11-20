@@ -209,7 +209,10 @@ which fades in over a second and a half as you walk in.
 - **Nights** (World > Environment): how dark they are, from bright to pitch dark (dark by default): the moon's light,
   the night sky's glow and how much the eye (and eye adaptation) brightens them all shrink.
 - **True darkness** (World > Environment, on by default): no sky light under roofs and in caves - only lights, lamps
+- **Least light inside** (World > Environment, with true darkness): closed spaces are never darker than this, in the colour you pick, even with no lights at all. The open air stays as it is.
+- **Starts at** (World > Environment): the time of day when the world opens in the editor and when play starts (stopping play puts the editor's clock back). "Keep the clock running" opens it at whatever time it was left instead.
   and glowing things light them. Light fades in near openings and cave mouths; fog and the distance go dark inside too.
+- **Reflection resolution** (Options > Graphics > Effects): full, three quarters, half or a quarter. The reflection rays are traced into a smaller picture and laid over the full one, which is much faster, and softer at the edges of shiny things.
 - **Bounce light** (screen-space GI): lit and glowing surfaces light the ones near them - a green glow tints the wall
   beside it, a sunlit floor lights the ceiling a little. Strength per look (*Bounce light*), Options > Graphics >
   *Bounce light*: off, normal, far-reaching.
