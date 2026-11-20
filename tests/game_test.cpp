@@ -938,6 +938,14 @@ int main() {
         CHECK(openFaces, "every panel faces the open air");
         CHECK(canSee(w, eye, { 8.5, 4.5, 0.5 }, 40) && !canSee(w, eye, { 12.5, 4.5, 0.5 }, 40) && !canSee(w, eye, { 8.5, 4.5, 0.5 }, 5), "a door in front of the wall can be seen; one behind it (or too far) can not");
         CHECK(cam.mineTotal == 0 && !cam.mine(10, 4, 0), "what a map camera sees is downloaded, not yours");
+        {   // a shut door in the way: you (and map cameras) can't see through it
+            World& wd = w; wd.sightBlockers.push_back({ { 5.0, 3.0, -1.0 }, { 5.3, 8.0, 2.0 } });
+            SeenMap d1; CHECK(!d1.look(wd, eye, { 1, 0, 0 }, 40, 0, 1.0) && !d1.seen(10, 4, 0), "a look through a shut door: nothing beyond it");
+            SeenMap d2; d2.revealFrom(wd, { 0.5, 5.5, 0.5 }, 30, 2000, 1.0); CHECK(!d2.seen(10, 5, 0) && d2.seen(10, 5, 5), "a map camera doesn't see through it either (but past it)");
+            CHECK(!canSee(wd, eye, { 8.5, 4.5, 0.5 }, 40) && canSee(wd, eye, { 5.15, 4.5, 0.5 }, 40), "a door behind a shut door can't be seen; the shut door itself can");
+            CHECK(wd.sightBlocked(eye, { 1, 0, 0 }, 40) > 4.4 && wd.sightBlocked(eye, { 1, 0, 0 }, 40) < 4.6 && wd.sightBlocked(eye, { -1, 0, 0 }, 40) == 40, "how far to the door");
+            wd.sightBlockers.clear(); SeenMap d3; CHECK(d3.look(wd, eye, { 1, 0, 0 }, 40, 0, 1.0), "door open: seen again");
+        }
         { bool allDown = true; for (auto& p : q) allDown &= !p.mine; CHECK(allDown, "its panels are all 'downloaded'"); }
         SeenMap mix = cam; mix.dirty.clear(); size_t before = mix.total;
         CHECK(mix.mark(10, 4, 0, 5.0) && mix.total == before && mix.mineTotal == 1 && mix.mine(10, 4, 0) && mix.dirty.count(chunkOf(10, 4, 0)), "seeing a downloaded block yourself makes it yours (not new, but the map changes)");

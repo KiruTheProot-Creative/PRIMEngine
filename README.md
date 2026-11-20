@@ -103,6 +103,7 @@ Like the Effortless Building mod: shapes built (or broken) in a few clicks, with
 - Width x Height in blocks: the model is stretched to fill it (1 x 1 for the morph ball, 2 x 3, 4 x 2 ...).
 - Forcefield: a glowing field in the door's opening, in a colour you pick. In Play mode, click to shoot the test beam: the field dissolves from where it was hit, the door plays its "open" animation, stays open (longer while you stand in it), plays "close" and the field comes back. Without a forcefield the door opens when you walk up to it.
 - Collision follows: the door halves and the field block you while it is shut; the frame always does.
+- **A shut door is a real wall:** no sky light gets in through it (true darkness stays dark), and you can't see the map through it: what's behind only goes on the map once the door is open (map cameras can't look through shut doors either). Opening it lets the light in.
 - **The wrong weapon:** a door that opens with one weapon (Door > "Opened by") sends any other shot **bouncing back** off its field, with sparks and the locked sound. A bounced shot can hit you (Body and movement > "Bounced shots hurt you": how much of its damage, 0 = never).
 - **Opened once, open for good:** once you open such a door with the right weapon, it turns into an any-weapon door (blue field, any shot opens it). This is remembered in the save game.
 

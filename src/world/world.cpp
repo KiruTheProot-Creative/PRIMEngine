@@ -262,6 +262,21 @@ bool World::raycast(V3 o, V3 d, double maxT, Hit& hit) const {
     return false;
 }
 
+double World::sightBlocked(V3 o, V3 d, double maxT, const V3* ignore) const {
+    double best = maxT;
+    for (const Box3& b : sightBlockers) {
+        if (ignore && ignore->x >= b.lo.x && ignore->x <= b.hi.x && ignore->y >= b.lo.y && ignore->y <= b.hi.y && ignore->z >= b.lo.z && ignore->z <= b.hi.z) continue;
+        double t0 = 0, t1 = best; bool hit = true;
+        const double oo[3] = { o.x, o.y, o.z }, dd[3] = { d.x, d.y, d.z }, lo[3] = { b.lo.x, b.lo.y, b.lo.z }, hi[3] = { b.hi.x, b.hi.y, b.hi.z };
+        for (int k = 0; k < 3 && hit; k++) {
+            if (std::fabs(dd[k]) < 1e-12) { if (oo[k] < lo[k] || oo[k] > hi[k]) hit = false; continue; }
+            double a = (lo[k] - oo[k]) / dd[k], c = (hi[k] - oo[k]) / dd[k]; if (a > c) std::swap(a, c);
+            t0 = std::max(t0, a); t1 = std::min(t1, c); if (t0 > t1) hit = false;
+        }
+        if (hit && t0 < best) best = t0;
+    }
+    return best;
+}
 bool World::boxFree(V3 f, double h, double H) const {
     const double e = 1e-5;
     double lo[3] = { f.x - h + e, f.y + e, f.z - h + e }, hi[3] = { f.x + h - e, f.y + H - e, f.z + h - e };

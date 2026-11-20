@@ -1655,6 +1655,10 @@ struct App {
     }
     uint64_t SkyVolSignature(I3 o) const {   // changes when any chunk in (or above) the volume changes, loads or unloads
         uint64_t h = 1469598103934665603ull;
+        for (const Box3& b : world->sightBlockers) {   // shut doors (opening one lets the light in)
+            const double v[6] = { b.lo.x, b.lo.y, b.lo.z, b.hi.x, b.hi.y, b.hi.z };
+            for (double x : v) h = (h ^ (uint64_t)(int64_t)std::llround(x * 64)) * 1099511628211ull;
+        }
         for (int cy = (int)std::floor(o.y / (double)CS); cy <= (int)std::floor((o.y + SVY + 63) / (double)CS); cy++)
             for (int cz = (int)std::floor(o.z / (double)CS); cz <= (int)std::floor((o.z + SVZ - 1) / (double)CS); cz++)
                 for (int cx = (int)std::floor(o.x / (double)CS); cx <= (int)std::floor((o.x + SVX - 1) / (double)CS); cx++) {
@@ -1694,6 +1698,15 @@ struct App {
                                 if (y < SVY) job->solid[((size_t)z * SVY + y) * SVX + x] = 1; else job->topOpen[(size_t)z * SVX + x] = 0;
                             } } }
                 }
+        for (const Box3& b : world->sightBlockers) {   // shut doors: every cell they reach into keeps the sky out
+            const double g = 0.02;
+            int x0 = std::max(0, ifloor(b.lo.x + g) - o.x), x1 = std::min(SVX - 1, ifloor(b.hi.x - g) - o.x);
+            int y0 = std::max(0, ifloor(b.lo.y + g) - o.y), y1 = std::min(SVY + 63, ifloor(b.hi.y - g) - o.y);
+            int z0 = std::max(0, ifloor(b.lo.z + g) - o.z), z1 = std::min(SVZ - 1, ifloor(b.hi.z - g) - o.z);
+            for (int z = z0; z <= z1; z++) for (int y = y0; y <= y1; y++) for (int x = x0; x <= x1; x++) {
+                if (y < SVY) job->solid[((size_t)z * SVY + y) * SVX + x] = 1; else job->topOpen[(size_t)z * SVX + x] = 0;
+            }
+        }
         skyVolBusy = true;
         skyVolFuture = std::async(std::launch::async, [job]() {
             const int N = SVX * SVY * SVZ; job->out.assign(N, 0); std::vector<uint8_t> L(N, 0); std::vector<int> q[16];
@@ -2847,9 +2860,13 @@ struct App {
     void ModelChanged(const std::string& name) { modelGpu.erase(name); RebuildSolids(); }
     void RebuildSolids() {   // the collision boxes the player bumps into
         if (!world) return;
-        world->objectSolids.clear();
+        world->objectSolids.clear(); world->sightBlockers.clear();
         for (size_t i = 0; i < objects.size(); i++) {
             if ((int)i == movingObj || Gone(objects[i])) continue;
+            if (objects[i].kind == ObjKind::Door) {   // a shut door is a wall for light and for the map (editing: always shut)
+                FrameRef dm = ModelOf(objects[i]);
+                if (dm && (!playMode || DoorNow(objects[i]).blocks())) world->sightBlockers.push_back(objectBounds(objects[i], *dm));
+            }
             if (!playMode && objects[i].kind == ObjKind::Door) continue;   // editing: doors cannot be opened, so you go through them
             FrameRef m = ModelOf(objects[i]); if (!m) continue;
             const WorldObject& o = objects[i];

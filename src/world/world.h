@@ -56,6 +56,8 @@ public:
     bool solidAt(int x, int y, int z) const;          // unloaded chunks count as solid so you never fall through
     bool boxFree(V3 feet, double halfW, double height) const;   // also checks objectSolids
     std::vector<Box3> objectSolids;                   // collision boxes of the objects in the world (doors, props ...)
+    std::vector<Box3> sightBlockers;                  // what you can't see (or light can't get) through besides blocks: shut doors
+    double sightBlocked(V3 o, V3 d, double maxT, const V3* ignoreInside = nullptr) const;   // the nearest blocker along the ray (maxT: none); ignoreInside: not the box with this point in it
     // moves a box (feet position) with collision; stepUp > 0 lets a walker climb steps that low while on the ground
     V3 moveBox(V3 feet, V3& vel, double halfW, double height, double dt, bool& onGround, double stepUp = 0) const;
 

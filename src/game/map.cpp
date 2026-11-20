@@ -40,6 +40,7 @@ static bool firstSolid(const World& w, V3 o, V3 d, double range, int& hx, int& h
     double tx = first(o.x, d.x, x), ty = first(o.y, d.y, y), tz = first(o.z, d.z, z);
     double dx = std::fabs(d.x) < 1e-12 ? 1e30 : 1 / std::fabs(d.x), dy = std::fabs(d.y) < 1e-12 ? 1e30 : 1 / std::fabs(d.y), dz = std::fabs(d.z) < 1e-12 ? 1e30 : 1 / std::fabs(d.z);
     nx = ny = nz = 0;
+    range = w.sightBlocked(o, d, range);   // a shut door: the look stops there
     for (int steps = 0; steps < 1024; steps++) {
         double t;
         if (tx < ty && tx < tz) { x += sx; t = tx; tx += dx; nx = -sx; ny = nz = 0; }
@@ -55,8 +56,9 @@ static bool firstSolid(const World& w, V3 o, V3 d, double range, int& hx, int& h
 bool canSee(const World& w, V3 eye, V3 target, double range) {
     V3 d = target - eye; double len = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
     if (len > range) return false; if (len < 1e-6) return true;
-    int hx, hy, hz, nx, ny, nz;
-    if (!firstSolid(w, eye, d * (1.0 / len), len - 0.3, hx, hy, hz, nx, ny, nz)) return true;   // (stops just short of the target itself)
+    int hx, hy, hz, nx, ny, nz; V3 dir = d * (1.0 / len);
+    if (w.sightBlocked(eye, dir, len - 0.3, &target) < len - 0.3) return false;   // another shut door in the way (not the one looked at)
+    if (!firstSolid(w, eye, dir, len - 0.3, hx, hy, hz, nx, ny, nz)) return true;   // (stops just short of the target itself)
     return false;
 }
 
