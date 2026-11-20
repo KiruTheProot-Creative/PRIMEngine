@@ -1576,6 +1576,12 @@ int main() {
         saveObjects("/tmp/prim_door_snd.txt", ob); std::vector<WorldObject> ol; loadObjects("/tmp/prim_door_snd.txt", ol);
         CHECK(ol.size() == 1 && ol[0].door.openSound.file == "blast door.wav" && std::fabs(ol[0].door.openSound.pitch - 0.8f) < 1e-5 && ol[0].door.closeSound.empty(), "a door's own sounds save and load");
     }
+    {   // the low-energy alarm: loud, then quieter
+        PlayerSounds ps; ps.lowHealthFade = 4; ps.lowHealthQuiet = 0.2f;
+        CHECK(ps.lowHealthVolume(0) == 1 && ps.lowHealthVolume(2) < 1 && ps.lowHealthVolume(2) > 0.2f && std::fabs(ps.lowHealthVolume(10) - 0.2f) < 1e-5, "the low-energy alarm fades from full to its quiet level");
+        savePlayerSounds("/tmp/prim_ps_low.txt", ps); PlayerSounds pl; loadPlayerSounds("/tmp/prim_ps_low.txt", pl);
+        CHECK(pl.lowHealthFade == 4 && pl.lowHealthQuiet == 0.2f, "... and its fade saves and loads");
+    }
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
     return fails ? 1 : 0;
 }

@@ -67,7 +67,9 @@ struct PlayerSounds {
     SoundSet loopCombat, loopScan, loopThermal, loopXRay; // a loop playing all the time you are in that visor (the helmet's hum, the scan visor's whirr ...)
     float visorLoopVolume = 1;                          // those loops, this loud
     float scanPitch = 0.5f;                             // the scanning loop goes this much higher as it fills
-    float lowHealthAt = 30, lowHealthEvery = 1.2f;      // the alarm: below this much energy, every so many seconds
+    float lowHealthAt = 30, lowHealthEvery = 1.2f;      // the alarm: below this much energy (every: older files, no longer used)
+    float lowHealthFade = 6, lowHealthQuiet = 0.15f;    // the alarm is a loop: full volume at first, then quieter over this many seconds, down to this (getting hurt again: loud again)
+    float lowHealthVolume(float sinceLoud) const;       // its volume this long after it was last loud
 };
 // the game's own sounds (above): their keys in the file, for the editor and saving
 struct GameSoundSlot { const char* key; const char* label; SoundSet PlayerSounds::* set; const char* group; };

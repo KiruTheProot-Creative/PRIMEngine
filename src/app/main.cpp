@@ -10480,7 +10480,9 @@ struct App {
                     if (g.set == &PlayerSounds::scanLoop) { Prop("Higher as it fills"); ch |= ImGui::SliderFloat("##scp", &playerSounds.scanPitch, 0, 2, playerSounds.scanPitch <= 0 ? "no" : "%.2f"); }
                     if (g.set == &PlayerSounds::lowHealth) {
                         Prop("Below"); ch |= ImGui::DragFloat("##lha", &playerSounds.lowHealthAt, 0.5f, 0, 1000, "%.0f energy");
-                        Prop("Every"); ch |= ImGui::SliderFloat("##lhe", &playerSounds.lowHealthEvery, 0.2f, 5, "%.1f s");
+                        Prop("Gets quieter over"); ch |= ImGui::SliderFloat("##lhf", &playerSounds.lowHealthFade, 0, 30, playerSounds.lowHealthFade <= 0.01f ? "never" : "%.1f s");
+                        Prop("... down to"); ch |= ImGui::SliderFloat("##lhq", &playerSounds.lowHealthQuiet, 0, 1, playerSounds.lowHealthQuiet <= 0 ? "silent" : "%.2f");
+                        Hint("A loop: full volume when your energy gets low (and again each time you get hurt), then quieter and quieter.");
                     }
                     if (g.set == &PlayerSounds::visor) Hint("A visor's own sound (below) plays instead, if it has one.");
                     if (g.set == &PlayerSounds::loopXRay) { Prop("Visor loops, volume"); ch |= ImGui::SliderFloat("##vlv", &playerSounds.visorLoopVolume, 0, 2, "%.2f"); Hint("Each plays on and on while you are in that visor (quieter in the pause menu), fading in when you switch."); }
@@ -10508,6 +10510,8 @@ struct App {
     IXAudio2SourceVoice* scanVoice = nullptr; SoundUse scanUse; float lowHealthT = 0;
     static constexpr int TAG_SCAN = 31;
     void StopScanLoop() { if (scanVoice) StopSounds(TAG_SCAN); scanVoice = nullptr; }
+    IXAudio2SourceVoice* lowVoice = nullptr; SoundUse lowUse; float lowLastHealth = 0; static constexpr int TAG_LOWALARM = 33;
+    void StopLowAlarm() { if (lowVoice) StopSounds(TAG_LOWALARM); lowVoice = nullptr; }
     IXAudio2SourceVoice* visorVoice = nullptr; SoundUse visorUse; int visorLoopOf = -1; float visorLoopVol = 0;
     static constexpr int TAG_VISORLOOP = 32;
     void StopVisorLoop() { if (visorVoice) StopSounds(TAG_VISORLOOP); visorVoice = nullptr; visorLoopOf = -1; visorLoopVol = 0; }
@@ -10517,7 +10521,7 @@ struct App {
         if (want < 0 || want > 3 || (playerSounds.*loops[want]).empty()) { StopVisorLoop(); return; }
         if (want != visorLoopOf) {
             StopVisorLoop(); const SoundUse* u = (playerSounds.*loops[want]).pick(soundSeed); if (!u) return;
-            visorUse = *u; visorVoice = PlaySoundIn(SND_MENUS, visorUse, 0.001f, nullptr, TAG_VISORLOOP, true); if (!visorVoice) return;
+            visorUse = *u; visorVoice = PlaySoundIn(SND_MENUS, visorUse, 0.02f, nullptr, TAG_VISORLOOP, true); if (!visorVoice) return;
             visorLoopOf = want; visorLoopVol = 0;
         }
         float target = paused ? 0.35f : 1.f;
@@ -10532,9 +10536,16 @@ struct App {
             if (!scanVoice) { const SoundUse* u = playerSounds.scanLoop.pick(soundSeed); if (u) { scanUse = *u; scanVoice = PlaySoundIn(SND_MENUS, scanUse, 1, nullptr, TAG_SCAN, true); } }
             if (scanVoice) scanVoice->SetFrequencyRatio(std::clamp(scanUse.pitch * (1 + playerSounds.scanPitch * std::clamp(scanProgress, 0.f, 1.f)), 0.1f, 4.f));
         }
-        if (playMode && !paused && !play.dead() && play.health > 0 && play.health < playerSounds.lowHealthAt && !playerSounds.lowHealth.sounds.empty()) {
-            lowHealthT -= (float)dt; if (lowHealthT <= 0) { GameSnd(&PlayerSounds::lowHealth); lowHealthT = std::max(0.2f, playerSounds.lowHealthEvery); }
-        } else lowHealthT = 0;
+        // the low-energy alarm: a loop, loud when it starts (and again each time you get hurt), then quieter and quieter
+        bool low = playMode && !play.dead() && play.health > 0 && play.health < playerSounds.lowHealthAt && !playerSounds.lowHealth.empty();
+        if (!low) StopLowAlarm();
+        else {
+            if (!lowVoice) { const SoundUse* u = playerSounds.lowHealth.pick(soundSeed); if (u) { lowUse = *u; lowVoice = PlaySoundIn(SND_MENUS, lowUse, 0.02f, nullptr, TAG_LOWALARM, true); lowHealthT = 0; } }
+            if (play.health < lowLastHealth - 0.01f) lowHealthT = 0;   // hurt again: loud again
+            if (!paused) lowHealthT += (float)dt;
+            if (lowVoice) lowVoice->SetVolume(lowUse.volume * playerSounds.lowHealthVolume(lowHealthT) * (paused ? 0.35f : 1.f) * CatVolume(SND_MENUS));
+        }
+        lowLastHealth = play.health;
     }
     // Play mode: steps, jumping, landing
     bool scrollToRoll = false;
