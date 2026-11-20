@@ -1017,6 +1017,7 @@ bool voxelTrace(float3 P, float3 n, float3 r, float2 pixel, out float3 col)
             uint pair = face < 2 ? vt.faces.x : face < 4 ? vt.faces.y : vt.faces.z;
             uint layer = (face & 1) ? (pair >> 16) : (pair & 0xFFFF);
             bool see = vt.info.x == 2 && gVoxTex.SampleLevel(gSamp, float3(uv, layer), 0).a < 0.5;   // a see-through pixel (glass, leaves): the ray goes on
+            if (vt.info.x == 3 && t < 1.75) see = true;   // slopes, slabs, stairs right next to where the ray starts: (as whole blocks) they would reflect themselves
             if (!see) { found = true; hitId = id; hitLayer = layer; hitUV = uv; hitN = hn; hitP = hpv + gVoxO.xyz; hitT = t; break; }
         }
         if (tMax.x < tMax.y && tMax.x < tMax.z) { t = tMax.x; tMax.x += tDelta.x; cell.x += stp.x; axis = 0; }
@@ -1057,7 +1058,19 @@ float4 PS_Reflect(SkyOut i) : SV_Target
     float3 fallback = (skyColor(r) * lerp(0.15, 1, open * saturate(r.y * 4 + 0.6)) + gAmbient.rgb * 0.15 * (1 - open)) * skyVis(P, n);
     float edge = 0;
     if (hit) { float2 e = min(huv, 1 - huv); edge = saturate(min(e.x, e.y) * 12) * saturate(1 - travelled / gRefl.z); }   // fade near the picture's edges
-    if (edge < 0.99) { float3 vc; if (voxelTrace(P, n, r, i.pos.xy, vc)) fallback = vc; }   // off screen / behind you: the blocks themselves
+    if (edge < 0.99)   // off screen / behind you: the blocks themselves
+    {
+        // the surface's real (flat) direction from the depth next to it: bumps and slopes must not start the ray inside the block
+        int2 pr = min(px + int2(1, 0), int2(gDepth.zw) - 1), pd = min(px + int2(0, 1), int2(gDepth.zw) - 1);
+        float2 nr = (float2(pr) + 0.5) / gDepth.zw * float2(2, -2) + float2(-1, 1), nd = (float2(pd) + 0.5) / gDepth.zw * float2(2, -2) + float2(-1, 1);
+        float3 dr = normalize(gCamF.xyz + gCamR.xyz * (nr.x * gProj.x * gProj.y) + gCamU.xyz * (nr.y * gProj.x)), dd = normalize(gCamF.xyz + gCamR.xyz * (nd.x * gProj.x * gProj.y) + gCamU.xyz * (nd.y * gProj.x));
+        float3 Pr = dr * linDepth(gSceneDepth.Load(int3(pr, 0))) / max(dot(dr, gCamF.xyz), 1e-3), Pd = dd * linDepth(gSceneDepth.Load(int3(pd, 0))) / max(dot(dd, gCamF.xyz), 1e-3);
+        float3 ng = cross(Pd - P, Pr - P); ng = dot(ng, ng) > 1e-12 ? normalize(ng) : n;
+        if (dot(ng, -dir) < 0) ng = -ng;
+        if (dot(ng, n) < 0.3 || length(Pr - P) > dist * 0.05 || length(Pd - P) > dist * 0.05) ng = n;   // (an edge next to it: trust the surface's own)
+        float3 rv = r; float rn = dot(rv, ng); if (rn < 0.03) rv = normalize(rv + ng * (0.03 - rn));   // never into the surface
+        float3 vc; if (voxelTrace(P + ng * 0.03, ng, rv, i.pos.xy, vc)) fallback = vc;
+    }
     float3 refl = fallback;
     float2 suv = (float2(px) + 0.5) / gDepth.zw;
     if ((mirror || gPlanar.x > 0.5) && gRefl.w > 0.5 && abs(dot(P, gMirror.xyz) + gMirror.w) < 0.08 && dot(n, gMirror.xyz) > 0.9)

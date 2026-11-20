@@ -87,7 +87,7 @@ void PlayerSounds::rollMix(float speed, float top, float& volume, float& pitch) 
     volume = speed < 0.15f ? 0.f : 0.25f + 0.75f * t;   // still: silent; slow: soft; full speed: full volume
     pitch = 1.f + rollPitch * (t - 0.5f);                // a bit lower when slow, a bit higher when fast
 }
-float PlayerSounds::landVolume(float v) const { return std::clamp((v - landQuiet) / std::max(0.1f, landLoud - landQuiet), 0.f, 1.f); }
+float PlayerSounds::landVolume(float v) const { return v >= landQuiet ? 1.f : 0.f; }   // always the same volume (only very small drops are silent)
 static std::string esc(const std::string& s) { std::string o; for (char c : s) { if (c == '%') o += "%25"; else if (c == ' ') o += "%20"; else if (c == '\n') o += "%0A"; else o += c; } return o.empty() ? "-" : o; }
 static std::string unesc(const std::string& s) {
     if (s == "-") return ""; std::string o;

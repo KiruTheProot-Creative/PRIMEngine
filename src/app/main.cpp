@@ -1467,7 +1467,7 @@ struct App {
         if (d.render == Render::Opaque || d.render == Render::Cutout) if (d.shape == Shape::Cube && !d.liquid && voxPal.size() < 65535) {
             if (voxPal.empty()) voxPal.push_back(VoxGpuType{});
             VoxGpuType t{}; for (int f = 0; f < 6; f++) t.faces[f / 2] |= (uint32_t)(d.tex[f] & 0xFFFF) << (16 * (f & 1));
-            t.info[0] = d.render == Render::Cutout ? 2 : 1; t.info[1] = (uint32_t)d.lightOf();
+            t.info[0] = d.render == Render::Cutout ? 2 : resolveShape(b, d) != Shapes::FULL ? 3 : 1; t.info[1] = (uint32_t)d.lightOf();   // 3: slopes, slabs, stairs (shown as whole blocks, but never by the surface itself)
             if (d.lightOf() > 0) { int lv[3]; d.lightLevels(lv); t.info[2] = ((uint32_t)(lv[0] * 17) << 16) | ((uint32_t)(lv[1] * 17) << 8) | (uint32_t)(lv[2] * 17); }
             idx = (uint16_t)voxPal.size(); voxPal.push_back(t); voxPalDirty = true;
         }
@@ -10679,7 +10679,8 @@ struct App {
                 }
                 Hint("Menus: picking and using buttons in the pause menu are the game's interface sounds (Screens > Sound & timing). Each sound here can have several: a random one plays.");
             }
-            { float r[2] = { playerSounds.landQuiet, playerSounds.landLoud }; Prop("Quiet .. loud at"); if (ImGui::DragFloat2("##ll", r, 0.1f, 0, 80, "%.1f blocks/s")) { playerSounds.landQuiet = r[0]; playerSounds.landLoud = std::max(r[0] + 0.5f, r[1]); ch = true; } }
+            Prop("Plays from"); ch |= ImGui::DragFloat("##ll", &playerSounds.landQuiet, 0.1f, 0, 40, "falling %.1f blocks/s");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Always the same volume; only drops slower than this are silent (stepping off a small ledge).");
             Hint("Each can have as many sounds as you like: a random one plays each time, never the same twice in a row (great for steps). Rolled up, the steps and jumps go quiet: the rolling loop plays instead, louder (and higher) the faster you roll, and silent in the air. Landing gets louder the faster you fall: silent below the first speed, full volume at the second. The numbers under each sound: volume, pitch, random pitch; then the cut (start into the sound, how long).");
             ImGui::TableNextColumn();
             ImGui::SeparatorText("All sounds in the project");

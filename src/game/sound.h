@@ -54,8 +54,8 @@ struct PlayerSounds {
     float rollPitch = 0.35f;                            // how much higher the roll sounds at full speed (0 = always the same)
     void rollMix(float speed, float topSpeed, float& volume, float& pitch) const;   // the roll loop at this speed: volume 0..1, pitch factor
     float stepEvery = 1.7f;                             // blocks walked per step sound
-    float landQuiet = 4, landLoud = 20;                 // falling speeds: quiet landing .. full volume
-    float landVolume(float fallSpeed) const;            // 0 below landQuiet, rises to 1 at landLoud
+    float landQuiet = 4, landLoud = 20;                 // a landing plays from this falling speed on (landLoud: older files, not used)
+    float landVolume(float fallSpeed) const;            // 0 below landQuiet, else 1 (always the same volume)
     // the game's own sounds while playing: the helmet, the menus, pickups, alerts
     SoundSet visor, visorCombat, visorScan, visorThermal, visorXRay;   // switching visors (a visor's own, else the one for all)
     SoundSet scanTarget, scanLoop, scanDone, scanNew, scanOpen, scanClose;   // Scan Visor: onto something scannable, scanning (a loop, rising), done, a new entry, its text up / away
