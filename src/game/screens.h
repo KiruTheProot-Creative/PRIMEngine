@@ -11,7 +11,8 @@
 
 namespace mc {
 
-enum class ScreenRole { Custom, MainMenu, Options, Death, Credits, Files, Intro, NewGameIntro, COUNT };
+enum class ScreenRole { Custom, MainMenu, Options, Death, Credits, Files, Intro, NewGameIntro, ItemGet, COUNT };
+// ItemGet: the item pop-up while playing (the game stops behind it); {itemtitle} {itemtext} {itemname} and an Item model show what was found
 // Files: picking a save file; Intro: the splash, shown first (before the main menu); NewGameIntro: the story, after picking an empty file (then the game)
 const char* screenRoleName(ScreenRole r);
 
@@ -29,7 +30,7 @@ struct ScreenBg {
     float tilt = -8, height = 1.0f;                      // World: looking up (+) / down (-), degrees; the eye above the camera object (blocks)
 };
 
-enum class ScreenItemKind { Panel, Text, Image, Button, Options, Credits, SaveSlots, Sound, COUNT };   // SaveSlots: the save files, one card each; Sound: plays at its time (not seen)
+enum class ScreenItemKind { Panel, Text, Image, Button, Options, Credits, SaveSlots, Sound, ItemModel, COUNT };   // ItemModel: the found item's 3D model, turning (Item get screen)   // SaveSlots: the save files, one card each; Sound: plays at its time (not seen)
 const char* screenItemKindName(ScreenItemKind k);
 enum class ScreenAct { None, NewGame, Continue, Options, Credits, Quit, GoTo, Back, Retry, MainMenu, Files, COUNT };
 const char* screenActName(ScreenAct a);
@@ -146,6 +147,7 @@ struct Screen {
     float duration = 0; bool untilVideoEnds = false;      // goes on by itself after this long (0: stays) / when its video ends
     std::string next; bool skippable = true;              // the screen after it (empty: the main menu); a key or click goes on early
     bool useStack = false; std::vector<StackStep> stack;  // made as a stack (its items come from the steps; it lasts as long as they take)
+    float holdMin = 0.8f;                                 // Item get: seconds before a button closes it (so a held jump doesn't skip it)
 };
 float screenLength(const Screen& s);                     // its duration, or (staying) a little past its last item's times, at least 10 s
 Screen presetScreen(ScreenRole r);                        // ready-made: main menu, options, death, credits, files, splash (and an empty one)

@@ -4,6 +4,7 @@
 // kinds, the Morph Ball and Bombs live elsewhere (Weapons tab, Body and movement) and are only listed with these.
 // Some abilities are not built yet ("coming"): they can already be set up and placed as pickups. Plain C++, tested.
 #include "game.h"
+#include "sound.h"
 #include <functional>
 #include <string>
 #include <vector>
@@ -28,10 +29,32 @@ struct ItemDef {
     float v[3] = { 0, 0, 0 };                // its numbers (see itemValueName)
     uint32_t color = 0xFFFFFF;               // suits: their colour (shown in the list)
 };
+// the item pop-up (the "Item get" screen, Screens editor): what it says when you pick something up. By pickup name: an item,
+// a beam, a missile kind, "Morph Ball", "Bombs", a key or collectible. Texts: {name} {missiles} {key:ball} {key:fire} ... are filled in.
+enum PopupStyle { POPUP_BIG = 0, POPUP_BANNER = 1, POPUP_NONE = 2 };   // big: the game stops for the "Item get" screen; banner: a strip, the game goes on; none: just the sound
+struct GetPopup {
+    std::string name;                        // the pickup it is for
+    int style = POPUP_BIG;
+    bool bigFirstOnly = true;                // counted ones (tanks, expansions): big the first time, a banner after
+    std::string title, text;
+    SoundUse fanfare;                        // plays with it (empty: the shared one)
+    std::string model;                       // turning in the pop-up (empty: the pickup's own model)
+};
+enum PopupHint { HINT_NONE = 0, HINT_BEAM, HINT_MISSILE, HINT_MORPH, HINT_BOMBS, HINT_KEY };   // what a name is, for its default text
+
 struct ItemSet {
     std::vector<ItemDef> items;
     std::string powerBombCounter = "Power Bombs"; int powerBombStart = 0, powerBombMax = 5;
+    std::vector<GetPopup> popups;            // the ones set up (the rest: their default)
+    SoundUse fanfare;                        // the shared fanfare (empty: the "item get" sound)
+    float musicDuck = 0.15f;                 // the music while a big pop-up shows (0 silent .. 1 as loud as before)
+    const ItemDef* byName(const std::string& n) const { for (const ItemDef& d : items) if (d.name == n) return &d; return nullptr; }
 };
+GetPopup defaultPopup(const ItemSet& s, const std::string& name, int hint);   // a ready-made text for it
+GetPopup popupFor(const ItemSet& s, const std::string& name, int hint);       // its own, or the default
+void setPopup(ItemSet& s, const GetPopup& p);                                 // stores it (replaces the one with its name)
+bool popupCounted(const ItemSet& s, const std::string& name);                 // a tank / expansion (you find several)
+int popupStyleNow(const GetPopup& p, bool counted, int howMany);              // the style for this pickup (the second expansion: a banner)
 ItemSet defaultItems();                      // the Metroid set (what works is in the game; what is coming is not, yet)
 
 // what the items you have do. have(name): how many of it you have (picked up); the ones you start with count already

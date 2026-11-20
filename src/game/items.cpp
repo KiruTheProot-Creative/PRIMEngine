@@ -99,17 +99,72 @@ ItemEffects itemEffects(const ItemSet& s, const PlayerRules& base, const std::fu
     return e;
 }
 
-static std::string esc(const std::string& s) { std::string o; for (char c : s) { if (c == '%') o += "%25"; else if (c == ' ') o += "%20"; else o += c; } return o.empty() ? "-" : o; }
+static std::string esc(const std::string& s) { std::string o; for (char c : s) { if (c == '%') o += "%25"; else if (c == ' ') o += "%20"; else if (c == '\n') o += "%0A"; else o += c; } return o.empty() ? "-" : o; }
 static std::string unesc(const std::string& s) {
     if (s == "-") return ""; std::string o;
     for (size_t i = 0; i < s.size(); i++) { if (s[i] == '%' && i + 2 < s.size()) { o += (char)std::stoi(s.substr(i + 1, 2), nullptr, 16); i += 2; } else o += s[i]; }
     return o;
 }
+GetPopup defaultPopup(const ItemSet& s, const std::string& name, int hint) {
+    GetPopup p; p.name = name; p.title = "{name}";
+    const ItemDef* d = s.byName(name);
+    if (d) {
+        p.bigFirstOnly = itemCounted(d->type);
+        switch (d->type) {
+        case ItemType::EnergyTank: p.text = "Your suit can store more energy now. Energy fills up all the way."; break;
+        case ItemType::MissileExpansion: p.text = "You can carry more missiles now: {missiles} in all."; break;
+        case ItemType::PowerBombExpansion: p.text = "You can carry more Power Bombs now."; break;
+        case ItemType::PowerBomb: p.text = "A huge blast that clears everything around you. Drop one while rolled up."; break;
+        case ItemType::Suit: p.text = "Your suit is stronger now: less damage, and new places to go."; break;
+        case ItemType::HiJump: p.text = "Your jumps reach much higher now."; break;
+        case ItemType::SpaceJump: p.text = "Press {key:jump} again in the air to jump once more."; break;
+        case ItemType::SpeedBooster: p.text = "Keep running and you speed up until nothing stops you."; break;
+        case ItemType::SpringBall: p.text = "Press {key:jump} while rolled up to hop."; break;
+        case ItemType::ChargeBeam: p.text = "Hold {key:fire} to gather energy, let go for a stronger shot."; break;
+        case ItemType::ScrewAttack: p.text = "Spin through the air and tear through what's in your way."; break;
+        case ItemType::GrappleBeam: p.text = "Latch onto grapple points and swing across gaps."; break;
+        case ItemType::SpiderBall: p.text = "Roll along magnetic rails, even up walls and ceilings."; break;
+        case ItemType::BoostBall: p.text = "Build up speed while rolled up and shoot forward."; break;
+        case ItemType::Shinespark: p.text = "Store the Speed Booster's power and launch yourself with it."; break;
+        case ItemType::WallJump: p.text = "Jump off walls to climb up narrow shafts."; break;
+        case ItemType::ScanVisor: p.text = "Press {key:visor} to switch visors. Scan things to learn about them."; break;
+        case ItemType::ThermalVisor: p.text = "See heat: warm things glow through the dark."; break;
+        case ItemType::XRayVisor: p.text = "See through walls and find what is hidden."; break;
+        default: p.text = ""; break;
+        }
+        return p;
+    }
+    switch (hint) {
+    case HINT_BEAM: p.text = "A new beam for your arm cannon."; break;
+    case HINT_MISSILE: p.text = "Press {key:missile} to fire a missile. Some doors only open for them."; break;
+    case HINT_MORPH: p.text = "Press {key:ball} to roll into a ball and fit through small gaps."; break;
+    case HINT_BOMBS: p.text = "Press {key:fire} while rolled up to drop a bomb."; break;
+    default: p.style = POPUP_BANNER; p.text = ""; break;   // keys, collectibles: a banner
+    }
+    return p;
+}
+GetPopup popupFor(const ItemSet& s, const std::string& name, int hint) {
+    for (const GetPopup& p : s.popups) if (p.name == name) return p;
+    return defaultPopup(s, name, hint);
+}
+void setPopup(ItemSet& s, const GetPopup& p) {
+    for (GetPopup& q : s.popups) if (q.name == p.name) { q = p; return; }
+    s.popups.push_back(p);
+}
+bool popupCounted(const ItemSet& s, const std::string& name) { const ItemDef* d = s.byName(name); return d && itemCounted(d->type); }
+int popupStyleNow(const GetPopup& p, bool counted, int howMany) {
+    if (p.style == POPUP_BIG && counted && p.bigFirstOnly && howMany > 1) return POPUP_BANNER;
+    return p.style;
+}
+
 bool saveItems(const std::string& path, const ItemSet& s) {
     std::ofstream f(path); if (!f) return false;
     f << "items 1\npower_bombs " << esc(s.powerBombCounter) << " " << s.powerBombStart << " " << s.powerBombMax << "\n";
     for (const ItemDef& d : s.items)
         f << "item " << itemTypeName(d.type) << " " << esc(d.name) << " " << d.used << " " << d.startsOwned << " " << d.v[0] << " " << d.v[1] << " " << d.v[2] << " " << d.color << "\n";
+    f << "popups " << esc(soundUseText(s.fanfare)) << " " << s.musicDuck << "\n";
+    for (const GetPopup& p : s.popups)
+        f << "popup " << esc(p.name) << " " << p.style << " " << p.bigFirstOnly << " " << esc(p.title) << " " << esc(p.text) << " " << esc(soundUseText(p.fanfare)) << " " << esc(p.model) << "\n";
     return (bool)f;
 }
 bool loadItems(const std::string& path, ItemSet& s) {
@@ -118,6 +173,12 @@ bool loadItems(const std::string& path, ItemSet& s) {
     while (std::getline(f, line)) {
         std::istringstream l(line); std::string k; l >> k;
         if (k == "power_bombs") { std::string c; l >> c >> out.powerBombStart >> out.powerBombMax; out.powerBombCounter = unesc(c); }
+        else if (k == "popups") { std::string fa; l >> fa >> out.musicDuck; soundUseFrom(unesc(fa), out.fanfare); }
+        else if (k == "popup") {
+            std::string n, t, x, fa, m; GetPopup p; l >> n >> p.style >> p.bigFirstOnly >> t >> x >> fa >> m; if (!l && !l.eof()) continue;
+            p.name = unesc(n); p.title = unesc(t); p.text = unesc(x); soundUseFrom(unesc(fa), p.fanfare); p.model = unesc(m);
+            if (!p.name.empty()) out.popups.push_back(p);
+        }
         else if (k == "item") {
             std::string t, n; ItemDef d; l >> t >> n >> d.used >> d.startsOwned >> d.v[0] >> d.v[1] >> d.v[2] >> d.color; if (!l) continue;
             int ti = -1; for (int i = 0; i < (int)ItemType::COUNT; i++) if (t == itemTypeName((ItemType)i)) ti = i;

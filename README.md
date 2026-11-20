@@ -384,6 +384,18 @@ The game's own flat screens outside of play. A new game starts with four: **Main
 - **Compositor**: post-processing as a **node graph, like Blender's**. Background and UI feed nodes - Alpha Over, Mix (mix, add, multiply, screen, overlay, difference, lighten, darken), Blur, Glare, Color Balance (lift / gamma / gain, each tintable), Hue / Saturation, Bright / Contrast, Invert, Gradient Map, Vignette, Chromatic, Lens Distort, Pixelate, Grain, Scanlines, Sharpen - wired into an Output. Right click adds a node, drag from a node's Image to an input, right / middle drag moves around, the wheel zooms, Delete removes, M mutes. A wire that would make a loop is refused.
 - **F6** (or "From the menu" in the toolbar) plays the game the way a player starts it: the main menu, then New game into the start world. Stopping from the pause menu goes back to the main menu; F5 goes back to the editor. Dying shows the death screen (if there is one). Esc goes back a screen.
 
+### The item pop-up (the "Item get" screen)
+
+- Picking up an item (a beam, missiles, the Morph Ball, Bombs, a tank, a suit ...) **stops the game** for the **Item get** screen. The game stays frozen and blurred behind it, the found item's **model turns** in it, a title and a text show (typed in), the **fanfare** plays, and the music goes quiet. **Jump, fire, Enter or a click** closes it, after a short hold time (Screens > Sound & timing) so a held jump can't skip it.
+- Its look is an ordinary screen in the Screens editor: move and style everything, change the compositor. **{itemtitle}**, **{itemtext}** and **{itemname}** fill in, and the new **Item model** item shows the item. Games made before this get the screen added by themselves.
+- What it says, per item: Player > Items, the **Pop-up** button next to an item (keys and collectibles: in the pickup's Inspector).
+  - **Style:** big pop-up, banner (a strip at the top, the game goes on) or none (just the sound).
+  - **Title and text:** {name} {missiles} {energy} and the keys you play with fill in, like {key:ball} or {key:jump}.
+  - Its own **fanfare** and **model**.
+  - Each item starts with a ready-made text.
+- **Tanks and expansions:** the first one is the big pop-up, the ones after a banner ("Big only the first time"; remembered in the save file).
+- The shared fanfare and how quiet the music gets: Player > Items > Item pop-up.
+
 ### Sound, music, splash screens and intros (Screens > Sound & timing)
 
 - **Interface sounds**: picking (the mouse or W / S moves to another button), using (a click / Enter, changing an option) and going back - for the whole game (every screen and the pause menu), and per screen if it wants its own. Options > Sound > **Menus** sets their volume.

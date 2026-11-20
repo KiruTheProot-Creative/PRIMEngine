@@ -2148,7 +2148,10 @@ struct App {
             if (!Overlaps(b, player.feet, player.halfW, player.height, o.kind == ObjKind::Trigger ? 0.0 : 0.15)) continue;
             now.insert(o.id); bool entered = !insideNow.count(o.id);
             switch (o.kind) {
-            case ObjKind::Pickup: { std::string said; if (!play.dead() && inv.collect(o, play.health, playRules.maxHealth, said)) { Toast(said); GameSnd(o.pickup.type == PickupType::Health ? &PlayerSounds::pickHealth : &PlayerSounds::itemGet, SND_WORLD); if (o.pickup.type != PickupType::Health) ItemPicked(o.pickup.name); Signal(When::Pickup, o.name, o.pickup.type == PickupType::Health ? "Health" : o.pickup.name); } break; }
+            case ObjKind::Pickup: { std::string said; if (!play.dead() && inv.collect(o, play.health, playRules.maxHealth, said)) {
+                if (o.pickup.type == PickupType::Health) { Toast(said); GameSnd(&PlayerSounds::pickHealth, SND_WORLD); }
+                else { ItemPicked(o.pickup.name); ItemGetShow(o); }   // the item pop-up (or a banner)
+                Signal(When::Pickup, o.name, o.pickup.type == PickupType::Health ? "Health" : o.pickup.name); } break; }
             case ObjKind::Checkpoint:
                 if (entered) { playSpawn = { o.pos.x, b.hi.y + 0.01, o.pos.z }; playYaw = player.yaw; Toast("Checkpoint"); }
                 break;
@@ -2277,7 +2280,10 @@ struct App {
             int t = (int)o.pickup.type; const char* tn[] = { pickupName(PickupType::Health), pickupName(PickupType::Key), pickupName(PickupType::Collectible) };
             Prop("Gives"); ImGui::Combo("##ptype", &t, tn, 3); o.pickup.type = (PickupType)t;
             if (o.pickup.type == PickupType::Health) { Prop("Health"); ImGui::SliderFloat("##pamt", &o.pickup.amount, 1, 200, "+%.0f"); }
-            else { Prop(o.pickup.type == PickupType::Key ? "Key name" : "Counted as"); ImGui::InputText("##pname", &o.pickup.name); }
+            else {
+                Prop(o.pickup.type == PickupType::Key ? "Key name" : "Counted as"); ImGui::InputText("##pname", &o.pickup.name);
+                bool pch = false; PopupButton(o.pickup.name, PopupHintOf(o.pickup.name, (int)o.pickup.type), pch); if (pch) SaveItems();   // what shows when it is picked up
+            }
             if (o.pickup.type == PickupType::Key) Hint("Doors that need \"%s\" open once you have it (Door > Needs key).", o.pickup.name.c_str());
             Prop("Comes back after"); ImGui::SliderFloat("##presp", &o.pickup.respawn, 0, 120, o.pickup.respawn <= 0 ? "never" : "%.0f s");
             break; }
@@ -4686,6 +4692,7 @@ struct App {
     }
     void PlayHud(ImDrawList* dl) {
         const float W = (float)rw, H = (float)rh, ui = settings.uiScale;
+        DrawItemBanner(dl);
         if (play.hurtFlash > 0) {   // red edges when hurt
             ImU32 r = IM_COL32(200, 0, 0, (int)(play.hurtFlash / 0.4 * 120)), z = IM_COL32(200, 0, 0, 0); float e = 90 * ui;
             dl->AddRectFilledMultiColor(ImVec2(vx, vy), ImVec2(vx + W, vy + e), r, r, z, z);
@@ -6317,6 +6324,97 @@ struct App {
     }
     int MissileMax() const { return weapons.missileMax + itemFx.missileBonus; }
     int PowerBombMax() const { return items.powerBombMax + itemFx.powerBombBonus; }
+    // ================================================================== the item pop-up ("Item get" screen; banners for small things)
+    struct ItemGetNow { std::string name, title, text, model; } itemGetNow;
+    struct ItemBanner { std::string title, text; double t = -1; } itemBanner;
+    HudTarget itemModelView; ComPtr<ID3D11DepthStencilView> itemModelDSV; int imDW = 0, imDH = 0, imWantW = 0, imWantH = 0; std::string imModel;
+    float musicDuckNow = 1; bool itemGetKeyPrev = true;
+    int PopupHintOf(const std::string& n, int pickupType = -1) const {
+        for (const Beam& b : weapons.beams) if (b.name == n) return HINT_BEAM;
+        for (const MissileType& m : weapons.missileTypes) if (m.name == n) return HINT_MISSILE;
+        if (n == "Morph Ball") return HINT_MORPH;
+        if (n == "Bombs") return HINT_BOMBS;
+        if (pickupType == (int)PickupType::Key || pickupType == (int)PickupType::Collectible) return HINT_KEY;
+        return HINT_NONE;
+    }
+    std::string ItemFill(const std::string& s) { return menuFill(s, [&](const std::string& n) { return MenuValue(n); }); }
+    void ItemGetShow(const WorldObject& o) {   // a pickup was taken: its pop-up, banner or just the sound
+        const std::string& n = o.pickup.name;
+        GetPopup p = popupFor(items, n, PopupHintOf(n, (int)o.pickup.type));
+        std::string key = "got:" + n; bool first = !evRun.flags.count(key); evRun.flags.insert(key);   // (saved with the game: the first one stays the first)
+        bool counted = popupCounted(items, n) || o.pickup.type == PickupType::Collectible;
+        int style = popupStyleNow(p, counted, first ? 1 : 2);
+        itemGetNow = { n, p.title, p.text, p.model.empty() ? o.model : p.model };
+        int scr = screens.byRole(ScreenRole::ItemGet);
+        if (style == POPUP_BIG && scr >= 0) {
+            const SoundUse& fan = !p.fanfare.empty() ? p.fanfare : items.fanfare;
+            if (!fan.empty()) PlaySoundIn(SND_MUSIC, fan); else GameSnd(&PlayerSounds::itemGet, SND_WORLD);
+            itemGetKeyPrev = true; ShowScreen(scr, false);
+            return;
+        }
+        GameSnd(&PlayerSounds::itemGet, SND_WORLD);
+        if (style == POPUP_NONE) return;
+        itemBanner.title = ItemFill(p.title); itemBanner.text = ItemFill(p.text); itemBanner.t = 0;   // a banner: the game goes on
+    }
+    void ItemGetInput() {   // the pop-up: after its hold time, jump / fire / Enter / a click closes it
+        mc::Screen* sc = CurScreen();
+        bool any = GetForegroundWindow() == hwnd && (ActDown(Act::Jump) || ActDown(Act::Fire) || Down(VK_RETURN) || Down(VK_SPACE) || Down(VK_LBUTTON));
+        bool press = any && !itemGetKeyPrev; itemGetKeyPrev = any;
+        if (!sc || screenT < sc->holdMin || !press) return;
+        PlayUi(1); CloseScreens(); if (playMode) { paused = false; Capture(true); }
+    }
+    void RenderItemModel() {   // the found item, turning (an Item model on the shown screen)
+        if (imModel.empty() || imWantW < 8 || imWantH < 8) { imModel.clear(); return; }
+        RenderModelSpin(itemModelView, itemModelDSV, imDW, imDH, imWantW, imWantH, imModel, 0, 0, 0, 0);
+        imModel.clear();
+    }
+    void DrawItemBanner(ImDrawList* dl) {   // small finds: a strip at the top that slides in and out (the game goes on)
+        if (itemBanner.t < 0) return;
+        itemBanner.t += ImGui::GetIO().DeltaTime; const double life = 3.5;
+        if (itemBanner.t > life) { itemBanner.t = -1; return; }
+        float ui = settings.uiScale, k = (float)std::min({ 1.0, itemBanner.t / 0.25, (life - itemBanner.t) / 0.4 }); k = std::clamp(k, 0.f, 1.f);
+        ImVec2 ts = ImGui::CalcTextSize(itemBanner.title.c_str()), xs = ImGui::CalcTextSize(itemBanner.text.c_str());
+        float w = std::max(ts.x * 1.25f, xs.x) + 48 * ui, h = (itemBanner.text.empty() ? 34 : 56) * ui;
+        ImVec2 a(vx + (rw - w) * 0.5f, vy + 18 * ui - (1 - k) * (h + 20 * ui)), b(a.x + w, a.y + h);
+        int al = (int)(255 * k);
+        dl->AddRectFilled(a, b, IM_COL32(4, 16, 26, (int)(200 * k)), 6 * ui); dl->AddRect(a, b, IM_COL32(108, 240, 255, (int)(200 * k)), 6 * ui, 0, 2 * ui);
+        dl->AddText(ImGui::GetFont(), ImGui::GetFontSize() * 1.25f, ImVec2(a.x + (w - ts.x * 1.25f) * 0.5f, a.y + 7 * ui), IM_COL32(108, 240, 255, al), itemBanner.title.c_str());
+        if (!itemBanner.text.empty()) dl->AddText(ImVec2(a.x + (w - xs.x) * 0.5f, a.y + 32 * ui), IM_COL32(216, 238, 248, al), itemBanner.text.c_str());
+    }
+    bool PopupEditor(const std::string& name, int hint) {   // Items tab: an item's pop-up
+        bool ch = false; float ui = settings.uiScale; GetPopup p = popupFor(items, name, hint);
+        ImGui::SeparatorText(("Pop-up: " + name).c_str());
+        const char* st[] = { "Big pop-up (the game stops)", "Banner (the game goes on)", "None (just the sound)" };
+        Prop("Style"); ImGui::SetNextItemWidth(240 * ui); ch |= ImGui::Combo("##ps", &p.style, st, 3);
+        if (popupCounted(items, name) && p.style == POPUP_BIG) { Prop("Big only the first time"); ch |= ImGui::Checkbox("##pbf", &p.bigFirstOnly); if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tanks and expansions: the first one is the big pop-up, the ones after only a banner."); }
+        if (p.style != POPUP_NONE) {
+            Prop("Title"); ImGui::SetNextItemWidth(320 * ui); ch |= ImGui::InputText("##pt", &p.title);
+            Prop("Text"); ch |= ImGui::InputTextMultiline("##px", &p.text, ImVec2(320 * ui, 70 * ui));
+            Hint("Filled in: {name} {missiles} {energy} {maxenergy}, and the keys: {key:jump} {key:fire} {key:missile} {key:ball} {key:visor} {key:map} {key:use}.");
+        }
+        if (p.style == POPUP_BIG) {
+            Prop("Fanfare"); ch |= SoundEdit("##pf", p.fanfare, true);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Plays with the pop-up (empty: the shared fanfare at the top of this tab).");
+            Prop("Model"); ImGui::SetNextItemWidth(240 * ui);
+            if (ImGui::BeginCombo("##pm", p.model.empty() ? "(the pickup's own)" : p.model.c_str())) {
+                if (ImGui::Selectable("(the pickup's own)", p.model.empty())) { p.model.clear(); ch = true; }
+                for (const std::string& m : AllModelNames()) if (ImGui::Selectable(m.c_str(), p.model == m)) { p.model = m; ch = true; }
+                ImGui::EndCombo();
+            }
+        }
+        if (ImGui::SmallButton("Default text")) { p = defaultPopup(items, name, hint); ch = true; }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Back to the ready-made text for it.");
+        ImGui::SameLine(); if (ImGui::SmallButton("Edit the pop-up's look")) { int i = screens.byRole(ScreenRole::ItemGet); if (i >= 0) { screensEdOpen = true; focusScreensEd = true; scrEd = i; } }
+        if (ch) setPopup(items, p);
+        return ch;
+    }
+    void PopupButton(const std::string& name, int hint, bool& ch) {   // the small button next to an item
+        ImGui::SameLine(); ImGui::PushID(("pop" + name).c_str());
+        if (ImGui::SmallButton("Pop-up")) ImGui::OpenPopup("popedit");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("What shows when you pick it up");
+        if (ImGui::BeginPopup("popedit")) { ch |= PopupEditor(name, hint); ImGui::EndPopup(); }
+        ImGui::PopID();
+    }
     void ItemPicked(const std::string& name) {   // a pickup with an item's name: what it does right away
         for (const ItemDef& d : items.items) {
             if (!d.used || d.name != name) continue;
@@ -6338,7 +6436,15 @@ struct App {
         bool ch = false; float ui = settings.uiScale;
         Hint("Everything Samus can find. Ticked: in this game. \"Found later\": place a pickup for it (the button), or give it with an event card. Grey: its ability is coming later (you can already set it up and place it).");
         auto have = [&](bool& start, const char* id) { int o = start ? 0 : 1; const char* hv[] = { "From the start", "Found later" }; ImGui::SetNextItemWidth(150 * ui); ImGui::PushID(id); bool c = ImGui::Combo("##have", &o, hv, 2); ImGui::PopID(); if (c) start = o == 0; return c; };
+        if (ImGui::CollapsingHeader("Item pop-up (when you pick something up)")) {
+            Prop("Fanfare (all items)"); ch |= SoundEdit("##fanall", items.fanfare, true);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Plays with the big pop-up (an item can have its own). Empty: the \"item get\" sound.");
+            Prop("Music meanwhile"); ImGui::SetNextItemWidth(200 * ui); ch |= ImGui::SliderFloat("##duck", &items.musicDuck, 0, 1, items.musicDuck <= 0.001f ? "silent" : "%.2f as loud");
+            Hint("Each item's \"Pop-up\" button sets what it says. The pop-up's look: the \"Item get\" screen in the Screens editor.");
+            if (ImGui::SmallButton("Edit the pop-up's look")) { int i = screens.byRole(ScreenRole::ItemGet); if (i >= 0) { screensEdOpen = true; focusScreensEd = true; scrEd = i; } }
+        }
         auto pickupBtn = [&](const std::string& name, bool counted) {
+            PopupButton(name, PopupHintOf(name), ch);
             ImGui::SameLine(); ImGui::PushID(name.c_str()); if (ImGui::SmallButton("Place pickup")) PlaceItemPickup(name, counted); ImGui::PopID();
             if (ImGui::IsItemHovered()) ImGui::SetTooltip(counted ? "A counted pickup called \"%s\" in front of you (each one adds more)." : "A pickup called \"%s\" in front of you.", name.c_str());
         };
@@ -6812,6 +6918,18 @@ struct App {
         if (n == "maxenergy") return std::to_string((int)std::lround(playMode ? playRules.maxHealth : game.player.maxHealth));
         if (n == "missiles") { auto it = inv.counts.find(weapons.missileCounter); return std::to_string(it == inv.counts.end() ? 0 : it->second); }
         if (n == "scans") return std::to_string(ShownScans().entries.size());
+        if (n == "itemname" || n == "name" || n == "itemtitle" || n == "itemtext") {   // the item pop-up (in the editor: the Morph Ball, as an example)
+            std::string nm = itemGetNow.name.empty() ? "Morph Ball" : itemGetNow.name;
+            if (n == "itemname" || n == "name") return nm;
+            GetPopup p = itemGetNow.name.empty() ? popupFor(items, nm, HINT_MORPH) : GetPopup{};
+            const std::string& t = itemGetNow.name.empty() ? (n == "itemtitle" ? p.title : p.text) : (n == "itemtitle" ? itemGetNow.title : itemGetNow.text);
+            return menuFill(t, [&](const std::string& m) { return m == "itemtitle" || m == "itemtext" ? std::string() : MenuValue(m); });
+        }
+        if (n.rfind("key:", 0) == 0) {   // the key an action is on: {key:jump} {key:ball} ...
+            std::string a = n.substr(4);
+            for (int i = 0; i < (int)Act::COUNT; i++) if (a == actKey((Act)i)) { int vk = settings.keys.key[i][0] ? settings.keys.key[i][0] : settings.keys.key[i][1]; return vk ? KeyLabel(vk) : std::string("(no key)"); }
+            return "?";
+        }
         return "";
     }
     MenuPane ScanResultPane() const {   // the text of what was just scanned
@@ -7350,7 +7468,10 @@ struct App {
     int curScreen = -1, screenSel = -2; std::vector<int> screenBack; double screenT = 0, screenPrevT = -1; bool screenAudible = false;   // audible: sound cues and typing play (in play, or the timeline playing)
     bool menuSession = false; std::string menuEditorWorld; Player menuEditorCam;   // playing from the main menu (and what to go back to)
     std::vector<MenuHit> screenHits; std::unique_ptr<ImDrawList> screenList;
-    void LoadScreens() { screensPath = projectDir + "/screens.txt"; if (!loadScreens(screensPath, screens) || screens.screens.empty()) screens = defaultScreens(); }
+    void LoadScreens() {
+        screensPath = projectDir + "/screens.txt"; if (!loadScreens(screensPath, screens) || screens.screens.empty()) screens = defaultScreens();
+        if (screens.byRole(ScreenRole::ItemGet) < 0) { screens.screens.push_back(presetScreen(ScreenRole::ItemGet)); SaveScreens(); }   // (older games: the item pop-up arrives)
+    }
     void SaveScreens() { if (!projectDir.empty()) saveScreens(screensPath, screens); }
     std::string ScreensDir() { std::string d = projectDir + "/screens"; std::error_code ec; fs::create_directories(fs::u8path(d), ec); return d; }
     mc::Screen* CurScreen() { return curScreen >= 0 && curScreen < (int)screens.screens.size() ? &screens.screens[curScreen] : nullptr; }
@@ -7560,6 +7681,12 @@ struct App {
                     y += lh;
                 }
                 break; }
+            case ScreenItemKind::ItemModel: {   // the found item, turning (in the editor: the Morph Ball)
+                std::string mdl = !itemGetNow.model.empty() ? itemGetNow.model : std::string("@morph-ball");
+                imModel = mdl; imWantW = std::max(8, (int)(b.x - a.x)); imWantH = std::max(8, (int)(b.y - a.y));
+                if (itemModelView.srv && imDW == imWantW && imDH == imWantH) dl->AddImage((ImTextureID)(intptr_t)itemModelView.srv.Get(), a, b, ImVec2(0, 0), ImVec2(1, 1), C(0xFFFFFF, al));
+                else if (!live) dl->AddRect(a, b, C(col.accent, 0.35f * al), 6.f, ImDrawFlags_None, 2.f);
+                break; }
             case ScreenItemKind::Image: {
                 int iw = 0, ih = 0; ID3D11ShaderResourceView* im = PictureAt(it.image, screenT, true, &iw, &ih);
                 if (!im) { dl->AddRect(a, b, C(col.accent, 0.35f * al), 6.f, ImDrawFlags_None, 2.f); break; }
@@ -7705,6 +7832,7 @@ struct App {
     void ScreenInput() {   // keys and the mouse on the shown screen
         if (!CurScreen() || startOn) return;   // (starting a file: nothing until the game is there)
         mc::Screen* sc = CurScreen(); bool timed = sc->duration > 0 || sc->untilVideoEnds;
+        if (sc->role == ScreenRole::ItemGet) { ItemGetInput(); return; }   // the item pop-up: a button closes it (after its hold time)
         if (timed && sc->skippable && screenT > 0.35 && bindCapture < 0) {   // a splash / intro: any key or click goes on
             for (int k = ImGuiKey_NamedKey_BEGIN; k < ImGuiKey_NamedKey_END; k++) if (k != ImGuiKey_F5 && ImGui::IsKeyPressed((ImGuiKey)k, false)) { ScreenNext(); return; }
         }
@@ -8024,7 +8152,7 @@ struct App {
         if (ImGui::Button("+ Screen")) ImGui::OpenPopup("addscr");
         if (ImGui::BeginPopup("addscr")) {
             if (ImGui::Selectable("Story (typed text, like Super Metroid's intro)")) { mc::Screen s = presetStory(); std::string base = s.name; int k = 2; while (screens.find(s.name) >= 0) s.name = base + " " + std::to_string(k++); screens.screens.push_back(s); scrEd = (int)screens.screens.size() - 1; scrItem = -1; ch = true; }
-            for (ScreenRole r : { ScreenRole::MainMenu, ScreenRole::Files, ScreenRole::Intro, ScreenRole::Options, ScreenRole::Death, ScreenRole::Credits, ScreenRole::Custom })
+            for (ScreenRole r : { ScreenRole::MainMenu, ScreenRole::Files, ScreenRole::Intro, ScreenRole::Options, ScreenRole::Death, ScreenRole::Credits, ScreenRole::ItemGet, ScreenRole::Custom })
                 if (ImGui::Selectable(r == ScreenRole::Custom ? "Empty (your own)" : screenRoleName(r))) {
                     mc::Screen s = presetScreen(r); std::string base = s.name; int k = 2; while (screens.find(s.name) >= 0) s.name = base + " " + std::to_string(k++);
                     if (screens.byRole(r) >= 0 && r != ScreenRole::Custom) s.role = ScreenRole::Custom;   // (one of each role: this one is a copy to play with)
@@ -8649,6 +8777,11 @@ struct App {
         if (sc.musicMode == 1) { Prop("Music"); ch |= SoundEdit("##music", sc.music, false); }
         if (sc.musicMode != 0) { Prop("Fades over"); ch |= ImGui::SliderFloat("##mfade", &sc.musicFade, 0, 6, "%.1f s"); }
         Hint("WAV, MP3, M4A, WMA or FLAC from the game's sounds (import them in the sound pickers). \"Keep\" lets the music of the screen before go on (the Options screen keeps the main menu's). Playing a game fades it out.");
+        if (sc.role == ScreenRole::ItemGet) {
+            ImGui::SeparatorText("Item pop-up");
+            Prop("A button closes it after"); ch |= ImGui::SliderFloat("##hold", &sc.holdMin, 0, 5, "%.1f s");
+            Hint("Jump, fire, Enter or a click closes it, but not before this (so a jump you were holding doesn't skip it). The fanfare and the music: Player > Items > Item pop-up. What it says: each item's Pop-up button there.");
+        }
         ImGui::SeparatorText("Goes on by itself (splash screens, intros)");
         if (sc.useStack) { Prop("After"); ImGui::Text("%.1f s (as long as its stack)", sc.duration); }
         else { Prop("After"); ch |= ImGui::SliderFloat("##sqdur", &sc.duration, 0, 120, sc.duration <= 0 ? "never (stays)" : "%.1f s"); }
@@ -11333,7 +11466,11 @@ struct App {
     }
     void UpdateMusic(double dt) {
         float base = CatVolume(SND_MUSIC);
-        if (musicV) { musicLevel = std::min(1.f, musicLevel + (float)dt / std::max(0.01f, musicFadeS)); musicV->SetVolume(musicLevel * musicUse.volume * base); }
+        {   // the item pop-up: the music goes quiet while it shows (the fanfare plays)
+            float want = CurScreen() && CurScreen()->role == ScreenRole::ItemGet ? std::clamp(items.musicDuck, 0.f, 1.f) : 1.f;
+            musicDuckNow += (want - musicDuckNow) * (float)std::min(1.0, dt * (want < musicDuckNow ? 10.0 : 2.5));
+        }
+        if (musicV) { musicLevel = std::min(1.f, musicLevel + (float)dt / std::max(0.01f, musicFadeS)); musicV->SetVolume(musicLevel * musicUse.volume * base * musicDuckNow); }
         for (MusicOut& o : musicOut) {
             o.level -= (float)dt / o.fade;
             if (o.level <= 0) { StopVoice(o.v); o.v = nullptr; } else o.v->SetVolume(o.level * o.vol * base);
@@ -14273,7 +14410,7 @@ struct App {
         if (ev && screensEdOpen) BuildScreenPreview();
         ImGui::Render();
         RenderMinimap();
-        RenderHudPlanes(); RenderScanModel(); RenderEnemyView(); RenderBallEditor(); RenderMenuPanes();
+        RenderHudPlanes(); RenderScanModel(); RenderEnemyView(); RenderBallEditor(); RenderItemModel(); RenderMenuPanes();
 
         const float bg[4] = { 0.10f, 0.11f, 0.13f, 1 };
         if (screen == Screen::Game && rw > 0 && mapOpen && !ev) { RenderMap(); RenderMapScreen(backRTV.Get()); }   // the map screen: the map instead of the world, the visor over it

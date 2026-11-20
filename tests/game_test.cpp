@@ -1154,7 +1154,7 @@ int main() {
     {   // screens: main menu, options, death, credits; the compositor's node graph
         printf("\nscreens and the compositor\n");
         ScreenSet ss = defaultScreens();
-        CHECK(ss.screens.size() == 7 && ss.byRole(ScreenRole::Intro) == 5 && ss.screens[5].next.empty() && ss.byRole(ScreenRole::NewGameIntro) == 6 && ss.find("Story") == 6 && ss.byRole(ScreenRole::MainMenu) == 0 && ss.byRole(ScreenRole::Files) == 1 && ss.byRole(ScreenRole::Options) == 2 && ss.byRole(ScreenRole::Death) == 3 && ss.byRole(ScreenRole::Credits) == 4 && ss.find("Credits") == 4,
+        CHECK(ss.screens.size() == 8 && ss.byRole(ScreenRole::Intro) == 5 && ss.screens[5].next.empty() && ss.byRole(ScreenRole::NewGameIntro) == 6 && ss.find("Story") == 6 && ss.byRole(ScreenRole::MainMenu) == 0 && ss.byRole(ScreenRole::Files) == 1 && ss.byRole(ScreenRole::Options) == 2 && ss.byRole(ScreenRole::Death) == 3 && ss.byRole(ScreenRole::Credits) == 4 && ss.find("Credits") == 4,
               "starter screens: Main menu, Files, Options, Death screen, Credits, a Splash (shown first) and a Story (after picking an empty file)");
         { bool slots = false; for (const ScreenItem& i : ss.screens[1].items) slots |= i.kind == ScreenItemKind::SaveSlots && i.slots == 3; CHECK(slots, "the Files screen: three save files"); }
         const Screen& mm = ss.screens[0]; int btn = 0; bool newGame = false, opts = false;
@@ -1184,9 +1184,9 @@ int main() {
         Screen cu = presetScreen(ScreenRole::Custom); cu.name = "My screen"; cu.bg.kind = BgKind::Video; cu.bg.file = "intro movie.mp4"; cu.bg.loop = false; ss.screens.push_back(cu);
         saveScreens("/tmp/prim_screens.txt", ss); ScreenSet sl; CHECK(loadScreens("/tmp/prim_screens.txt", sl), "screens load");
         const Screen& m0 = sl.screens[0];
-        CHECK(sl.screens.size() == 8 && sl.screens[1].items[1].slots == 5 && m0.bg.kind == BgKind::World && m0.bg.world == "Title Valley" && m0.bg.camera == "Menu cam" && m0.bg.turn == 3 && m0.items[0].col.accent == 0x123456
-              && m0.items[0].text == "Two words\nand a line"  && sl.screens[2].items[2].group == "Controls" && sl.screens[7].bg.file == "intro movie.mp4" && !sl.screens[7].bg.loop
-              && sl.screens[7].name == "My screen" && sl.screens[3].role == ScreenRole::Death, "backgrounds, items, colours and roles save and load");
+        CHECK(sl.screens.size() == 9 && sl.screens[1].items[1].slots == 5 && m0.bg.kind == BgKind::World && m0.bg.world == "Title Valley" && m0.bg.camera == "Menu cam" && m0.bg.turn == 3 && m0.items[0].col.accent == 0x123456
+              && m0.items[0].text == "Two words\nand a line"  && sl.screens[2].items[2].group == "Controls" && sl.screens[8].bg.file == "intro movie.mp4" && !sl.screens[8].bg.loop
+              && sl.screens[8].name == "My screen" && sl.screens[3].role == ScreenRole::Death, "backgrounds, items, colours and roles save and load");
         CHECK(sl.screens[3].comp.order().size() == ss.screens[3].comp.order().size() && sl.screens[3].comp.nextId == ss.screens[3].comp.nextId && sl.screens[4].comp.find(sl.screens[4].comp.output())->mute,
               "the node graphs save and load (wires, values, muted nodes)");
         {   // timing: fading in and out, typing, interface sounds, music, going on by itself
@@ -1292,7 +1292,7 @@ int main() {
             ScreenSet old = defaultScreens(); old.screens.erase(old.screens.begin() + 1); saveScreens("/tmp/prim_screens_old.txt", old);
             { std::ifstream in("/tmp/prim_screens_old.txt"); std::stringstream b; b << in.rdbuf(); std::string t = b.str(); t.replace(t.find("screens 4"), 9, "screens 1"); std::ofstream out("/tmp/prim_screens_old.txt"); out << t; }
             ScreenSet ol; loadScreens("/tmp/prim_screens_old.txt", ol);
-            CHECK(ol.screens.size() == 7 && ol.byRole(ScreenRole::Files) == 1, "older screens get the Files screen (after the main menu)");
+            CHECK(ol.screens.size() == 8 && ol.byRole(ScreenRole::Files) == 1, "older screens get the Files screen (after the main menu)");
             ScreenSet nw = defaultScreens(); nw.screens.erase(nw.screens.begin() + 1); saveScreens("/tmp/prim_screens_new.txt", nw); ScreenSet nl; loadScreens("/tmp/prim_screens_new.txt", nl);
             CHECK(nl.byRole(ScreenRole::Files) < 0, "a newer set without it stays without it");
         }
@@ -1678,6 +1678,26 @@ int main() {
         CHECK(far.size() == 256 && !cp2, "shapes are at most 256 blocks across");
         CHECK(buildSteps(BuildMode::Floor) == 2 && buildSteps(BuildMode::Cube) == 3 && buildSteps(BuildMode::Normal) == 1 && buildFills(BuildMode::Line).empty() && buildHasCentre(BuildMode::Sphere) && !buildHasCentre(BuildMode::Cube), "steps, fills, from-the-middle");
         I3 bs = buildBoxSize(cube); CHECK(bs.x == 5 && bs.y == 5 && bs.z == 5, "the size readout");
+    }
+    {   // the item pop-up: texts per pickup, big the first time for expansions, the Item get screen
+        ItemSet is = defaultItems();
+        GetPopup mb = popupFor(is, "Morph Ball", HINT_MORPH);
+        CHECK(mb.style == POPUP_BIG && mb.title == "{name}" && mb.text.find("{key:ball}") != std::string::npos, "the Morph Ball's default pop-up: big, its key filled in");
+        std::string mx; for (const ItemDef& d : is.items) if (d.type == ItemType::MissileExpansion) mx = d.name;
+        GetPopup me = popupFor(is, mx, HINT_NONE);
+        CHECK(popupCounted(is, mx) && me.bigFirstOnly && popupStyleNow(me, true, 1) == POPUP_BIG && popupStyleNow(me, true, 2) == POPUP_BANNER, "expansions: big the first time, a banner after");
+        CHECK(popupFor(is, "Red key", HINT_KEY).style == POPUP_BANNER, "keys and collectibles: a banner by default");
+        GetPopup own = mb; own.title = "MORPH BALL"; own.text = "Two lines\nof text, 100% mine"; own.fanfare.file = "item fanfare.wav"; own.model = "orb"; own.style = POPUP_BIG;
+        setPopup(is, own); is.fanfare.file = "jingle.ogg"; is.musicDuck = 0.3f;
+        saveItems("/tmp/prim_popups.txt", is); ItemSet il; loadItems("/tmp/prim_popups.txt", il);
+        GetPopup back = popupFor(il, "Morph Ball", HINT_MORPH);
+        CHECK(back.title == "MORPH BALL" && back.text == own.text && back.fanfare.file == "item fanfare.wav" && back.model == "orb" && il.fanfare.file == "jingle.ogg" && il.musicDuck == 0.3f, "pop-ups save and load (new lines, spaces and % too)");
+        ScreenSet ss = defaultScreens(); int ig = ss.byRole(ScreenRole::ItemGet);
+        CHECK(ig >= 0 && ss.screens[ig].bg.kind == BgKind::Game, "new games come with an Item get screen, over the game");
+        bool hasModel = false; for (auto& it : ss.screens[ig].items) hasModel |= it.kind == ScreenItemKind::ItemModel;
+        CHECK(hasModel, "... with the item's model in it");
+        ss.screens[ig].holdMin = 1.7f; saveScreens("/tmp/prim_scr_ig.txt", ss); ScreenSet sl; loadScreens("/tmp/prim_scr_ig.txt", sl);
+        CHECK(sl.byRole(ScreenRole::ItemGet) >= 0 && sl.screens[sl.byRole(ScreenRole::ItemGet)].holdMin == 1.7f, "its hold time saves and loads");
     }
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
     return fails ? 1 : 0;
