@@ -44,6 +44,7 @@ cbuffer Frame : register(b0)
     float4 gSkyVolO;                // the sky light around you (96 x 64 x 96 blocks): xyz its corner relative to the camera, w 1 = ready
     float4 gVoxO;                   // the blocks around you for reflection rays (192 x 96 x 192): xyz its corner relative to the camera, w most steps
     float4 gVoxM;                   // xyz where that corner sits in the (wrapping) 3D texture, w 1 = ready
+    float4 gPlanar;                 // x 1: the mirror view is a shiny floor / water (every shiny pixel on that plane uses it), 0: only mirror blocks; y objects for reflection rays
 };
 float lookFogAt(float y) { return gLookFog.x * (gLookFog.z > 0.01 ? exp(-max(y - gLookFog.y, 0) / gLookFog.z) : 1); }
 cbuffer ChunkCB : register(b1)
@@ -917,19 +918,32 @@ StructuredBuffer<VoxType> gVoxPal : register(t31);
 Texture2DArray gVoxTex : register(t29);            // the block textures (the same array as t0 in the world pass)
 static const int3 VOXN = int3(192, 96, 192);
 uint voxAt(int3 q) { uint3 s = uint3(q + int3(gVoxM.xyz)) % uint3(VOXN); return gVox.Load(int4(int3(s), 0)); }
-float3 voxShade(float3 hp, float3 hn, uint layer, uint id, float2 uv, float t, float2 pixel)
+// objects (props, doors, platforms, pickups ...): a small voxel copy of each model (32 x 32 x 32, its colours), placed where it is
+Texture3D gObjBricks : register(t32);              // 8 x 8 copies side by side (256 x 256 x 32)
+struct ObjVox { float4 r0, r1, r2; float4 info; }; // camera-relative position -> 0..1 inside the copy (three rows); info.x which copy
+StructuredBuffer<ObjVox> gObjVox : register(t33);
+float3 reflLight(float3 hp, float3 hn, float2 pixel, out float sv)   // light at a point a reflection ray found
 {
-    VoxType vt = gVoxPal[id];
-    float4 tex = gVoxTex.SampleLevel(gSamp, float3(uv, layer), clamp(log2(max(t, 1) * 0.35), 0, 4));
-    float3 albedo = tex.rgb; TexMat m = gMats[layer];
     float ndl = saturate(dot(hn, gSunDir.xyz));
-    float sv = skyVis(hp, hn);
+    sv = skyVis(hp, hn);
     float sh = ndl > 0 ? shadowAt(hp, hn, ndl, pixel) : 0;
     float farOut = gSunDir.w < 0.5 ? 1 : saturate((length(hp) - gCascR.w * 0.92) / max(gCascR.w * 0.08, 1)); sh *= lerp(1, sv, farOut);
     float3 light = gSunColor.rgb * ndl * sh + gAmbient.rgb * (0.55 + 0.45 * hn.y) * sv;
     float3 dif = 0, sp = 0; uint nl = (uint)gCl1.y;                 // the nearest lights (glowing blocks around you too)
     [loop] for (uint k = 0; k < nl; k++) evalLight(gLightBuf[k], hp, hn, -normalize(hp), 16, true, dif, sp);
-    float3 c = albedo * (light + dif);
+    return light + dif;
+}
+float3 reflFog(float3 c, float3 hp, float sv)
+{
+    float d = length(hp), f = saturate((d - gFogRange.x) / max(gFogRange.y - gFogRange.x, 1));
+    return lerp(c, skyColor(normalize(hp)) * max(sv, gOcc.y), f * f);
+}
+float3 voxShade(float3 hp, float3 hn, uint layer, uint id, float2 uv, float t, float2 pixel)
+{
+    VoxType vt = gVoxPal[id];
+    float4 tex = gVoxTex.SampleLevel(gSamp, float3(uv, layer), clamp(log2(max(t, 1) * 0.35), 0, 4));
+    float3 albedo = tex.rgb; TexMat m = gMats[layer];
+    float sv; float3 c = albedo * reflLight(hp, hn, pixel, sv);
     if (vt.info.y > 0)   // a lamp block glows in its colour
     {
         float3 lc = float3((vt.info.z >> 16) & 255, (vt.info.z >> 8) & 255, vt.info.z & 255) / 255.0;
@@ -937,8 +951,46 @@ float3 voxShade(float3 hp, float3 hn, uint layer, uint id, float2 uv, float t, f
     }
     if (gSurf.z > 0.5 && m.a.z > 0) c += albedo * m.a.z * smoothstep(m.a.w, m.a.w + 0.08, sqrt(dot(albedo, float3(0.2126, 0.7152, 0.0722)))) * 3.0;
     if (m.b.z > 0) c += gEmitTex.SampleLevel(gSamp, float3(uv, layer), 0).rgb * m.b.z * 2.5;
-    float d = length(hp), f = saturate((d - gFogRange.x) / max(gFogRange.y - gFogRange.x, 1));
-    return lerp(c, skyColor(normalize(hp)) * max(sv, gOcc.y), f * f);
+    return reflFog(c, hp, sv);
+}
+// the nearest object a ray meets before maxT: its colour and the side it hit
+bool objectTrace(float3 P, float3 r, float maxT, out float tHit, out float3 nHit, out float3 albedo)
+{
+    tHit = maxT; nHit = 0; albedo = 0; bool found = false;
+    uint count = gVoxM.w > 0.5 ? (uint)gPlanar.y : 0;
+    [loop] for (uint k = 0; k < count; k++)
+    {
+        ObjVox ov = gObjVox[k];
+        float3 o = float3(dot(ov.r0.xyz, P) + ov.r0.w, dot(ov.r1.xyz, P) + ov.r1.w, dot(ov.r2.xyz, P) + ov.r2.w);
+        float3 d = float3(dot(ov.r0.xyz, r), dot(ov.r1.xyz, r), dot(ov.r2.xyz, r));
+        float3 inv = 1 / (abs(d) > 1e-8 ? d : 1e-8);
+        float3 t0 = (0 - o) * inv, t1 = (1 - o) * inv, tn = min(t0, t1), tf = max(t0, t1);
+        float te = max(max(tn.x, tn.y), max(tn.z, 0.02)), tx = min(min(tf.x, tf.y), tf.z);
+        if (tx <= te || te >= tHit) continue;
+        // step through its 32 x 32 x 32 copy
+        float3 g = (o + d * (te + 1e-4)) * 32, gd = d * 32;
+        int3 cell = clamp(int3(floor(g)), 0, 31), stp = int3(sign(gd));
+        float3 ginv = 1 / (abs(gd) > 1e-8 ? gd : 1e-8);
+        float3 tMax = ((float3(cell) + float3(stp > 0)) - g) * ginv + te, tDelta = abs(ginv);
+        float t = te; int axis = 0; { float3 a = abs(tn - te); axis = a.x < 1e-4 ? 0 : a.y < 1e-4 ? 1 : 2; }
+        int2 base = int2((int)ov.info.x % 8, (int)ov.info.x / 8) * 32;
+        [loop] for (int s = 0; s < 96; s++)
+        {
+            if (any(cell < 0) || any(cell > 31) || t >= tHit) break;
+            float4 v = gObjBricks.Load(int4(base.x + cell.x, base.y + cell.y, cell.z, 0));
+            if (v.a > 0.5)
+            {
+                float3 nl = axis == 0 ? float3(-stp.x, 0, 0) : axis == 1 ? float3(0, -stp.y, 0) : float3(0, 0, -stp.z);
+                tHit = t; albedo = v.rgb; found = true;
+                nHit = normalize(ov.r0.xyz * nl.x + ov.r1.xyz * nl.y + ov.r2.xyz * nl.z);
+                break;
+            }
+            if (tMax.x < tMax.y && tMax.x < tMax.z) { t = tMax.x; tMax.x += tDelta.x; cell.x += stp.x; axis = 0; }
+            else if (tMax.y < tMax.z) { t = tMax.y; tMax.y += tDelta.y; cell.y += stp.y; axis = 1; }
+            else { t = tMax.z; tMax.z += tDelta.z; cell.z += stp.z; axis = 2; }
+        }
+    }
+    return found;
 }
 bool voxelTrace(float3 P, float3 n, float3 r, float2 pixel, out float3 col)
 {
@@ -949,7 +1001,7 @@ bool voxelTrace(float3 P, float3 n, float3 r, float2 pixel, out float3 col)
     float3 inv = 1 / max(abs(r), 1e-6) * sign(r + 1e-9);
     float3 tMax = ((float3(cell) + float3(stp > 0)) - o) * inv, tDelta = abs(inv);
     float t = 0; int axis = 1; int steps = (int)gVoxO.w;
-    bool found = false; uint hitId = 0, hitLayer = 0; float2 hitUV = 0; float3 hitN = 0, hitP = 0;
+    bool found = false; uint hitId = 0, hitLayer = 0; float2 hitUV = 0; float3 hitN = 0, hitP = 0; float hitT = gRefl.z * 1.5;
     [loop] for (int k = 0; k < steps; k++)
     {
         if (any(cell < 0) || any(cell >= VOXN) || t > gRefl.z * 1.5) break;
@@ -965,11 +1017,18 @@ bool voxelTrace(float3 P, float3 n, float3 r, float2 pixel, out float3 col)
             uint pair = face < 2 ? vt.faces.x : face < 4 ? vt.faces.y : vt.faces.z;
             uint layer = (face & 1) ? (pair >> 16) : (pair & 0xFFFF);
             bool see = vt.info.x == 2 && gVoxTex.SampleLevel(gSamp, float3(uv, layer), 0).a < 0.5;   // a see-through pixel (glass, leaves): the ray goes on
-            if (!see) { found = true; hitId = id; hitLayer = layer; hitUV = uv; hitN = hn; hitP = hpv + gVoxO.xyz; break; }
+            if (!see) { found = true; hitId = id; hitLayer = layer; hitUV = uv; hitN = hn; hitP = hpv + gVoxO.xyz; hitT = t; break; }
         }
         if (tMax.x < tMax.y && tMax.x < tMax.z) { t = tMax.x; tMax.x += tDelta.x; cell.x += stp.x; axis = 0; }
         else if (tMax.y < tMax.z) { t = tMax.y; tMax.y += tDelta.y; cell.y += stp.y; axis = 1; }
         else { t = tMax.z; tMax.z += tDelta.z; cell.z += stp.z; axis = 2; }
+    }
+    float3 Ps = P + n * 0.02; float ot; float3 on, oa;
+    if (objectTrace(Ps, r, hitT, ot, on, oa))   // an object before the block: its voxel copy
+    {
+        float3 hp = Ps + r * ot; float sv;
+        col = reflFog(oa * reflLight(hp, on, pixel, sv), hp, sv);
+        return true;
     }
     if (!found) return false;
     col = voxShade(hitP, hitN, hitLayer, hitId, hitUV, length(hitP - P), pixel);
@@ -1001,9 +1060,10 @@ float4 PS_Reflect(SkyOut i) : SV_Target
     if (edge < 0.99) { float3 vc; if (voxelTrace(P, n, r, i.pos.xy, vc)) fallback = vc; }   // off screen / behind you: the blocks themselves
     float3 refl = fallback;
     float2 suv = (float2(px) + 0.5) / gDepth.zw;
-    if (mirror && gRefl.w > 0.5 && abs(dot(P, gMirror.xyz) + gMirror.w) < 0.08 && dot(n, gMirror.xyz) > 0.9)
-    {
-        refl = gMirrorView.SampleLevel(gClamp, suv, 0).rgb;     // a true mirror: everything, even what is behind you
+    if ((mirror || gPlanar.x > 0.5) && gRefl.w > 0.5 && abs(dot(P, gMirror.xyz) + gMirror.w) < 0.08 && dot(n, gMirror.xyz) > 0.9)
+    {   // a mirror, or the shiny floor drawn as its own reflected view: everything, even animated things and what is behind you
+        float2 wob = mirror ? 0 : (n - gMirror.xyz).xz * float2(0.06, -0.06);   // bumps and ripples bend it a little
+        refl = gMirrorView.SampleLevel(gClamp, saturate(suv + wob), 0).rgb;
         hit = false;
     }
     else if (hit) refl = lerp(fallback, gHdr.SampleLevel(gClamp, huv, 0).rgb, edge);
@@ -1050,6 +1110,11 @@ float4 PS_Water(VSOut i, bool front : SV_IsFrontFace) : SV_Target
     float wedge = 0; if (ssr) { float2 e = min(huv, 1 - huv); wedge = saturate(min(e.x, e.y) * 12) * saturate(1 - travelled / gRefl.z); }
     if (front && gRefl.x > 0.5 && wedge < 0.99) { float3 vc; if (voxelTrace(i.rel, n, r, i.pos.xy, vc)) refl = vc; }   // the blocks around, off screen too
     if (ssr) refl = lerp(refl, gHdr.SampleLevel(gClamp, huv, 0).rgb, wedge);
+    if (front && gRefl.w > 0.5 && gPlanar.x > 0.5 && abs(dot(i.rel, gMirror.xyz) + gMirror.w) < 0.2 && gMirror.y > 0.9)   // this water is the reflected floor: everything mirrored
+    {
+        float2 suvw = (i.pos.xy) / gDepth.zw + (n.xz - gMirror.xz) * float2(0.05, -0.05);
+        refl = gMirrorView.SampleLevel(gClamp, saturate(suvw), 0).rgb;
+    }
     float NdotV = saturate(abs(dot(n, v)));
     float F = front ? 0.02 + 0.98 * pow(1 - NdotV, 5) : 0.08;
     float3 c = lerp(refr, refl, F);

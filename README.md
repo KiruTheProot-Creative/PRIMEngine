@@ -199,6 +199,19 @@ which fades in over a second and a half as you walk in.
 - The **HUD's 3D parts** (helmet, arm cannon) are always lit by the world around you: lights, glowing blocks nearby,
   the sun and the darkness.
 
+## Reflections: voxel ray tracing, objects, exact floors and water
+
+Works on any graphics card (no RTX needed), with Options > Graphics > Reflections on.
+
+- **Voxel ray tracing**: the blocks around you (192 x 96 x 192) are kept on the graphics card; reflection rays step
+  through them block by block, so shiny surfaces and water reflect what is **off screen and behind you** too - lit
+  by the sun, sky light / darkness, lights and glowing blocks, with fog. What is on screen still comes from the picture.
+- **Objects** in reflections: each model gets a small voxel copy (32 x 32 x 32, its colours), placed where the object
+  is - props, doors, platforms, pickups. Enemies only show while on screen.
+- **Exact floors and water**: the shiny floor or water near you (the height with the most polished blocks or water
+  in front of you, or wet ground in the rain) is reflected by drawing the world once more, mirrored - everything,
+  animated enemies too. Options > Graphics > *Exact floor and water reflections*. Mirror blocks keep their own view.
+
 ## Fake shine (models): glints like Metroid Prime's arm cannon
 
 In a model's material (Assets > the model, or anywhere its material shows): **Fake shine**. Highlights painted on rather

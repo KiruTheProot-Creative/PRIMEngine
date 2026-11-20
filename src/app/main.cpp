@@ -128,6 +128,7 @@ struct alignas(16) FrameCB {
     float skyVol[4];        // the sky light volume: xyz its corner relative to the camera, w ready
     float voxO[4];          // reflection rays' blocks: xyz the corner relative to the camera, w most steps
     float voxM[4];          // xyz where the corner sits in the wrapping 3D texture, w ready
+    float planar[4];        // x 1: the mirror view is a shiny floor / water
 };
 struct alignas(16) ChunkCB { float offset[4]; float ax[4] = { 1, 0, 0, 0 }, ay[4] = { 0, 1, 0, 0 }, az[4] = { 0, 0, 1, 0 }; };   // axes: objects are turned and sized
 
@@ -1471,7 +1472,96 @@ struct App {
         }
         voxIdx[b] = idx; return idx;
     }
-    void ResetVoxels() { voxIdx.clear(); voxPal.clear(); voxPalDirty = true; for (auto& sl : voxSlots) sl = VoxSlot{}; voxReady = false; }
+    // ---- objects in reflection rays: a 32 x 32 x 32 voxel copy of each model (its colours), up to 64 models, and where
+    // the nearest objects are (as a transform from camera-relative positions into their copy)
+    struct ObjVoxGpu { float r0[4], r1[4], r2[4], info[4]; };
+    ComPtr<ID3D11Texture3D> brickTex; ComPtr<ID3D11ShaderResourceView> brickSRV; ComPtr<ID3D11Buffer> objVoxBuf; ComPtr<ID3D11ShaderResourceView> objVoxSRV;
+    std::map<std::string, int> brickOf; std::vector<std::string> brickModel; std::vector<double> brickUsed; int objVoxCount = 0;
+    std::map<int, V3> layerColor;
+    V3 LayerColor(int L) {   // a texture's average colour (linear), for blocks in models
+        auto it = layerColor.find(L); if (it != layerColor.end()) return it->second;
+        V3 c{ 0.5, 0.5, 0.5 };
+        if (L > 0 && L < (int)reg.textureCount()) { const TexImage& im = reg.image(L); double r = 0, g = 0, b = 0; int n = 0;
+            for (size_t i = 0; i + 3 < im.rgba.size(); i += 4) if (im.rgba[i + 3] > 127) { r += std::pow(im.rgba[i] / 255.0, 2.2); g += std::pow(im.rgba[i + 1] / 255.0, 2.2); b += std::pow(im.rgba[i + 2] / 255.0, 2.2); n++; }
+            if (n) c = { r / n, g / n, b / n }; }
+        return layerColor[L] = c;
+    }
+    int BrickFor(const std::string& model) {   // its copy (made the first time it is needed); -1: none
+        auto it = brickOf.find(model); if (it != brickOf.end()) { brickUsed[it->second] = animTime; return it->second; }
+        if (!brickTex) {
+            D3D11_TEXTURE3D_DESC d{}; d.Width = 256; d.Height = 256; d.Depth = 32; d.MipLevels = 1; d.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB; d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            HR(dev->CreateTexture3D(&d, nullptr, &brickTex)); HR(dev->CreateShaderResourceView(brickTex.Get(), nullptr, &brickSRV));
+        }
+        int slot = -1;
+        if ((int)brickModel.size() < 64) { slot = (int)brickModel.size(); brickModel.push_back(model); brickUsed.push_back(animTime); }
+        else { slot = 0; for (int i = 1; i < 64; i++) if (brickUsed[i] < brickUsed[slot]) slot = i; brickOf.erase(brickModel[slot]); brickModel[slot] = model; brickUsed[slot] = animTime; }
+        brickOf[model] = slot;
+        const int N = 32; std::vector<double> acc((size_t)N * N * N * 4, 0.0);
+        auto add = [&](double fx, double fy, double fz, V3 col) {   // fx..: 0..1 inside the model
+            int x = std::clamp((int)(fx * N), 0, N - 1), y = std::clamp((int)(fy * N), 0, N - 1), z = std::clamp((int)(fz * N), 0, N - 1);
+            double* a = &acc[(((size_t)z * N + y) * N + x) * 4]; a[0] += col.x; a[1] += col.y; a[2] += col.z; a[3] += 1;
+        };
+        if (const BlockModel* bm = models.find(model)) {
+            for (int z = 0; z < N; z++) for (int y = 0; y < N; y++) for (int x = 0; x < N; x++) {
+                BlockId b = bm->at((int)((x + 0.5) / N * bm->sx), (int)((y + 0.5) / N * bm->sy), (int)((z + 0.5) / N * bm->sz)); if (b == AIR) continue;
+                const BlockDef& d = reg.get(b); if (d.render == Render::Air || d.liquid || d.shape != Shape::Cube) continue;
+                add((x + 0.5) / N, (y + 0.5) / N, (z + 0.5) / N, LayerColor(d.tex[F_PY]));
+            }
+        } else if (auto mi = meshModels.find(model); mi != meshModels.end()) {
+            const MeshModel& mm = mi->second; double sx = std::max(1e-6, mm.sx), sy = std::max(1e-6, mm.sy), sz = std::max(1e-6, mm.sz);
+            double cell = std::min({ sx, sy, sz }) / N; long budget = 3000000;
+            auto texel = [&](float u, float v) { int tx = ((int)std::floor(u * mm.tw) % mm.tw + mm.tw) % mm.tw, ty = ((int)std::floor(v * mm.th) % mm.th + mm.th) % mm.th; size_t i = ((size_t)ty * mm.tw + tx) * 4;
+                return i + 3 < mm.tex.size() ? V3{ std::pow(mm.tex[i] / 255.0, 2.2), std::pow(mm.tex[i + 1] / 255.0, 2.2), std::pow(mm.tex[i + 2] / 255.0, 2.2) } : V3{ 0.7, 0.7, 0.7 }; };
+            for (size_t t = 0; t + 2 < mm.idx.size() && budget > 0; t += 3) {
+                const MeshVert &A = mm.raw[mm.idx[t]], &B = mm.raw[mm.idx[t + 1]], &C = mm.raw[mm.idx[t + 2]];
+                V3 a = mm.blockPos(A), b = mm.blockPos(B), c = mm.blockPos(C);
+                double e = std::max({ length(b - a), length(c - a), length(c - b) }); int n = std::clamp((int)std::ceil(e / cell * 1.5), 1, 48);
+                for (int i = 0; i <= n; i++) for (int j = 0; i + j <= n; j++) {
+                    double u = (double)i / n, v = (double)j / n; V3 p = a + (b - a) * u + (c - a) * v;
+                    float tu = (float)(A.uv[0] + (B.uv[0] - A.uv[0]) * u + (C.uv[0] - A.uv[0]) * v), tv = (float)(A.uv[1] + (B.uv[1] - A.uv[1]) * u + (C.uv[1] - A.uv[1]) * v);
+                    add(p.x / sx, p.y / sy, p.z / sz, texel(tu, tv)); budget--;
+                }
+            }
+        }
+        std::vector<uint8_t> px((size_t)N * N * N * 4, 0);
+        for (size_t i = 0; i < (size_t)N * N * N; i++) { double* a = &acc[i * 4]; if (a[3] <= 0) continue;
+            for (int k = 0; k < 3; k++) px[i * 4 + k] = (uint8_t)std::clamp((int)std::lround(std::pow(a[k] / a[3], 1 / 2.2) * 255), 0, 255); px[i * 4 + 3] = 255; }
+        D3D11_BOX box{ (UINT)(slot % 8 * N), (UINT)(slot / 8 * N), 0, (UINT)(slot % 8 * N + N), (UINT)(slot / 8 * N + N), (UINT)N };
+        ctx->UpdateSubresource(brickTex.Get(), 0, &box, px.data(), N * 4, N * N * 4);
+        return slot;
+    }
+    void UpdateObjectVoxels() {   // the nearest objects (not enemies: they move and bend) for this frame's reflection rays
+        objVoxCount = 0; if (!voxReady || !world) return;
+        if (!objVoxBuf) objVoxBuf = MakeStructured(48, sizeof(ObjVoxGpu), objVoxSRV);
+        std::vector<std::pair<double, size_t>> near;
+        for (size_t i = 0; i < objects.size(); i++) {
+            const WorldObject& o = objects[i];
+            if (o.kind == ObjKind::Trigger || o.kind == ObjKind::Enemy || o.kind == ObjKind::Light || o.kind == ObjKind::Particles || o.kind == ObjKind::MapCamera || Gone(o) || IsBuiltin(o.model)) continue;
+            if (o.kind == ObjKind::Pickup && playMode && inv.has(o.id)) continue;
+            V3 d = o.pos - camPos; double dist = length(d); if (dist < 72) near.push_back({ dist, i });
+        }
+        std::sort(near.begin(), near.end());
+        std::vector<ObjVoxGpu> out;
+        for (auto& nd : near) {
+            if (out.size() >= 48) break;
+            const WorldObject& src = objects[nd.second]; FrameRef m = ModelOf(src); if (!m || m->sx <= 0 || m->sy <= 0 || m->sz <= 0) continue;
+            WorldObject o = src; o.pos = src.pos + PlatformOffsets(src)[0];
+            int b = BrickFor(o.model); if (b < 0) continue;
+            double a = o.yaw * 3.14159265358979 / 180, c = std::cos(a), sn = std::sin(a); V3 k = objectStretch(o, *m);
+            V3 base = camPos - o.pos;   // rel + base = position from the object
+            // l = pivot + (dx c - dz s)/kx, (dy)/ky, (dx s + dz c)/kz ;  uvw = l / size
+            double ux = 1 / (k.x * m->sx), uy = 1 / (k.y * m->sy), uz = 1 / (k.z * m->sz);
+            ObjVoxGpu g{};
+            g.r0[0] = (float)(c * ux); g.r0[1] = 0; g.r0[2] = (float)(-sn * ux); g.r0[3] = (float)((base.x * c - base.z * sn) * ux + m->pivot.x / m->sx);
+            g.r1[0] = 0; g.r1[1] = (float)uy; g.r1[2] = 0; g.r1[3] = (float)(base.y * uy + m->pivot.y / m->sy);
+            g.r2[0] = (float)(sn * uz); g.r2[1] = 0; g.r2[2] = (float)(c * uz); g.r2[3] = (float)((base.x * sn + base.z * c) * uz + m->pivot.z / m->sz);
+            g.info[0] = (float)b; out.push_back(g);
+        }
+        if (!out.empty()) Upload(objVoxBuf.Get(), out.data(), out.size() * sizeof(ObjVoxGpu));
+        objVoxCount = (int)out.size();
+    }
+    void ResetVoxels() {
+        brickOf.clear(); brickModel.clear(); brickUsed.clear(); layerColor.clear(); voxIdx.clear(); voxPal.clear(); voxPalDirty = true; for (auto& sl : voxSlots) sl = VoxSlot{}; voxReady = false; }
     void UpdateVoxels() {
         if (!world || settings.reflections <= 0) { voxReady = false; return; }
         if (!voxTex) {
@@ -1504,6 +1594,40 @@ struct App {
             Upload(voxPalBuf.Get(), voxPal.data(), voxPal.size() * sizeof(VoxGpuType)); voxPalDirty = false;
         }
         voxReady = !voxPal.empty() && voxPalSRV;
+    }
+    // ---- the shiny floor (or water) near you, reflected exactly: the height with the most shiny tops (water, polished
+    // blocks, wet ground in the rain) in front of you; looked for a few times a second
+    MirrorPlane floorPlane; double floorAge = 99; V3 floorAt{ 1e9, 0, 0 };
+    MirrorPlane FloorMirror() {
+        floorAge += ImGui::GetIO().DeltaTime; V3 dm = camPos - floorAt;
+        if (floorAge < 0.25 && dm.x * dm.x + dm.y * dm.y + dm.z * dm.z < 1) return floorPlane.valid && camPos.y > floorPlane.coord + 0.05 ? floorPlane : MirrorPlane{};
+        floorAge = 0; floorAt = camPos; floorPlane = MirrorPlane{};
+        std::unordered_map<BlockId, float> shineOf; std::map<int, float> score;   // height (sixteenths) -> how much shiny floor there is
+        V3 fw = player.forward(); bool wet = weather.wetness > 0.3f && envState.now.atmosphere > 0.5f;
+        int cx = ifloor(camPos.x), cy = ifloor(camPos.y), cz = ifloor(camPos.z), R = 32;
+        for (int z = cz - R; z <= cz + R; z += 1) for (int x = cx - R; x <= cx + R; x += 1) {
+            double dx = x + 0.5 - camPos.x, dz = z + 0.5 - camPos.z, hd = std::sqrt(dx * dx + dz * dz); if (hd > R) continue;
+            if (hd > 3 && (dx * fw.x + dz * fw.z) / hd < -0.2) continue;   // behind you
+            BlockId above = world->get(x, cy + 1, z);
+            for (int y = cy; y >= cy - 12; y--) {
+                BlockId b = world->get(x, y, z); if (b == AIR) { above = b; continue; }
+                const BlockDef& d = reg.get(b); float top = 1, s = 0;
+                if (d.liquid == 1) { top = liquidLevel(b) / 16.f * 0.92f; s = 1; }
+                else if (d.render == Render::Opaque || d.render == Render::Cutout) {
+                    auto it = shineOf.find(b);
+                    if (it == shineOf.end()) { int L = d.tex[F_PY]; float sh = std::max(d.shine, d.mirror ? 1.f : 0.f); if (L > 0 && L < (int)reg.textureCount()) sh = std::max(sh, materials.of(reg.image(L).name).shine); it = shineOf.emplace(b, sh).first; }
+                    s = it->second >= 0.4f ? it->second : wet ? 0.5f : 0.f;
+                    if (resolveShape(b, d) != Shapes::FULL) s = 0;   // (slabs, stairs: not a floor)
+                }
+                if (s > 0 && (above == AIR || reg.get(above).render != Render::Opaque)) score[(int)std::lround((y + top) * 16)] += s / (1 + hd / 10);
+                break;   // only the topmost thing in this column below you
+            }
+        }
+        float best = 0; int bestH = 0; for (auto& kv : score) if (kv.second > best) { best = kv.second; bestH = kv.first; }
+        if (best < 4) return MirrorPlane{};
+        double h = bestH / 16.0; if (camPos.y < h + 0.05) return MirrorPlane{};
+        floorPlane.valid = true; floorPlane.axis = 1; floorPlane.sign = 1; floorPlane.coord = h; floorPlane.center = { camPos.x, h, camPos.z }; floorPlane.dist = camPos.y - h;
+        return floorPlane;
     }
     // true darkness, block by block: sky light around you spreads like Minecraft's (15 under the open sky, one less per
     // block sideways or up, through anything that is not a full opaque block) - so it goes round corners and into cave
@@ -3407,6 +3531,8 @@ struct App {
         fc.depth[0] = 0.05f; fc.depth[1] = farZ; fc.depth[2] = (float)rw; fc.depth[3] = (float)rh;
         fc.clipPlane[3] = 1;   // nothing cut away (except while drawing a mirror's view)
         lastMirror = settings.reflections > 0 ? world->nearestMirror(camPos, player.forward(), 48) : MirrorPlane{};
+        fc.planar[0] = 0;
+        if (!lastMirror.valid && settings.reflections > 0 && settings.planarFloors) { lastMirror = FloorMirror(); fc.planar[0] = lastMirror.valid ? 1.f : 0.f; }   // no mirror block: the shiny floor or water near you
         if (lastMirror.valid) {
             float n[3] = { 0, 0, 0 }; n[lastMirror.axis] = (float)lastMirror.sign;
             double camA = lastMirror.axis == 0 ? camPos.x : lastMirror.axis == 1 ? camPos.y : camPos.z;
@@ -3453,13 +3579,14 @@ struct App {
                 fc.voxO[3] = settings.reflections >= 2 ? 220.f : 110.f;
                 fc.voxM[0] = (float)md(voxC0.x * CS, VCX * CS); fc.voxM[1] = (float)md(voxC0.y * CS, VCY * CS); fc.voxM[2] = (float)md(voxC0.z * CS, VCZ * CS);
                 fc.voxM[3] = voxReady ? 1.f : 0.f;
+            UpdateObjectVoxels(); fc.planar[1] = (float)objVoxCount;
             }
         }
         fc.weather[0] = W.rain; fc.weather[1] = W.snow; fc.weather[2] = W.dark; fc.weather[3] = weather.wetness * E.atmosphere;
         fc.weather2[0] = weather.snowCover * E.atmosphere; fc.weather2[1] = weather.flash * E.atmosphere; fc.weather2[2] = W.wind; fc.weather2[3] = skyMap ? 1.f : 0.f;
         ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &fc, 0, 0);
         ID3D11Buffer* cbs[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->VSSetConstantBuffers(0, 2, cbs); ctx->PSSetConstantBuffers(0, 2, cbs);
-        { ID3D11ShaderResourceView* vx[3] = { texArray.Get(), voxReady ? voxSRV.Get() : nullptr, voxReady ? voxPalSRV.Get() : nullptr }; ctx->PSSetShaderResources(29, 3, vx); }   // reflection rays' blocks
+        { ID3D11ShaderResourceView* vx[5] = { texArray.Get(), voxReady ? voxSRV.Get() : nullptr, voxReady ? voxPalSRV.Get() : nullptr, brickSRV.Get(), objVoxSRV.Get() }; ctx->PSSetShaderResources(29, 5, vx); }   // reflection rays' blocks and objects
         PrepareLights(fc);   // light objects, strips, glowing emitters, shots, glowing blocks (for objects) - sorted into clusters
         ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
         auto drawChunks = [&](const XMMATRIX& m, int pass, bool counting, bool cave = false) {   // cave: the camera's own view (cave culling applies)
@@ -3687,6 +3814,7 @@ struct App {
                 ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsNoCull.Get());
                 ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0); ctx->PSSetShader(psWater.Get(), nullptr, 0);
                 ID3D11ShaderResourceView* ws[5] = { hdrSRV.Get(), shadows ? shadowSRV.Get() : nullptr, depthCopySRV.Get(), noiseSRV.Get(), skyMap ? skyMapSRV.Get() : nullptr }; ctx->PSSetShaderResources(0, 5, ws);
+                { ID3D11ShaderResourceView* mv = lastMirror.valid ? mirSRV.Get() : nullptr; ctx->PSSetShaderResources(6, 1, &mv); }
                 ID3D11SamplerState* wss[4] = { sampBlocks.Get(), sampShadow.Get(), sampLinear.Get(), sampClamp.Get() }; ctx->PSSetSamplers(0, 4, wss);
                 drawChunks(vp, 2, false, true);
                 ctx->PSSetShaderResources(0, 5, none); ctx->RSSetState(rsCull.Get());
