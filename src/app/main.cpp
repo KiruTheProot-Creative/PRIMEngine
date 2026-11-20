@@ -179,6 +179,7 @@ struct App {
     ComPtr<ID3D11Texture2D> volTex; ComPtr<ID3D11RenderTargetView> volRTV; ComPtr<ID3D11ShaderResourceView> volSRV;      // ... with clouds and fog
     ComPtr<ID3D11ShaderResourceView> depthSRV, noiseSRV, depthCopySRV; ComPtr<ID3D11Texture2D> depthCopy; ComPtr<ID3D11PixelShader> psWater; ComPtr<ID3D11SamplerState> sampLinear, sampClamp; double cloudTime = 0, precipTime = 0, precipWindX = 0, precipWindZ = 0;
     struct BloomLevel { ComPtr<ID3D11Texture2D> tex; ComPtr<ID3D11RenderTargetView> rtv; ComPtr<ID3D11ShaderResourceView> srv; int w = 0, h = 0; };
+    BloomLevel blurSrc; std::vector<BloomLevel> blurLv; ComPtr<ID3D11PixelShader> psBlurComp; float blurAmt = 0;   // paused: the world blurred behind the menu
     std::vector<BloomLevel> bloomLv; ComPtr<ID3D11BlendState> bsAdd; float nightAmount = 0;
     ComPtr<ID3D11Texture2D> shadowTex; ComPtr<ID3D11DepthStencilView> shadowDSV; ComPtr<ID3D11ShaderResourceView> shadowSRV; int shadowSize = 0;
     ComPtr<ID3D11RasterizerState> rsShadow, rsNoCull; ComPtr<ID3D11SamplerState> sampShadow; std::string driverName = "graphics card";
@@ -315,6 +316,7 @@ struct App {
         b = Compile(src, "PS_Water", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psWater));
         b = Compile(src, "PS_Post", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psPost));
         MakeLightResources();
+        b = Compile(src, "PS_BlurComp", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psBlurComp));
         b = Compile(src, "PS_GI", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psGI));
         b = Compile(src, "PS_GIApply", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psGIApply));
         b = Compile(src, "PS_LumLog", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psLumLog));
@@ -412,6 +414,12 @@ struct App {
         HR(dev->CreateTexture2D(&d, nullptr, &volTex)); HR(dev->CreateRenderTargetView(volTex.Get(), nullptr, &volRTV)); HR(dev->CreateShaderResourceView(volTex.Get(), nullptr, &volSRV));
         { D3D11_TEXTURE2D_DESC sd3 = d; sd3.Format = DXGI_FORMAT_R8G8B8A8_UNORM; sceneTex.Reset(); sceneRTV.Reset(); sceneSRV.Reset();
           HR(dev->CreateTexture2D(&sd3, nullptr, &sceneTex)); HR(dev->CreateRenderTargetView(sceneTex.Get(), nullptr, &sceneRTV)); HR(dev->CreateShaderResourceView(sceneTex.Get(), nullptr, &sceneSRV)); }
+        {   // the menu blur: the picture, then four ever smaller copies
+            auto mk = [&](BloomLevel& L, int w, int h) { L = BloomLevel{}; L.w = std::max(1, w); L.h = std::max(1, h);
+                D3D11_TEXTURE2D_DESC bd2{}; bd2.Width = (UINT)L.w; bd2.Height = (UINT)L.h; bd2.MipLevels = 1; bd2.ArraySize = 1; bd2.Format = DXGI_FORMAT_R8G8B8A8_UNORM; bd2.SampleDesc.Count = 1; bd2.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+                HR(dev->CreateTexture2D(&bd2, nullptr, &L.tex)); HR(dev->CreateRenderTargetView(L.tex.Get(), nullptr, &L.rtv)); HR(dev->CreateShaderResourceView(L.tex.Get(), nullptr, &L.srv)); };
+            mk(blurSrc, rw, rh); blurLv.resize(4); for (int i = 0, w = rw / 2, h = rh / 2; i < 4; i++, w /= 2, h /= 2) mk(blurLv[i], w, h);
+        }
         bloomLv.clear();   // half size, quarter size, ... six levels
         for (int i = 0, w = rw / 2, h = rh / 2; i < 6; i++, w = std::max(1, w / 2), h = std::max(1, h / 2)) {
             BloomLevel L; L.w = std::max(1, w); L.h = std::max(1, h);
@@ -991,6 +999,10 @@ struct App {
         if (playMode && !paused) { UpdateBall(std::min(dt, 0.05)); UpdateSpheres(std::min(dt, 0.05)); }
         if (!playMode && !spheres.empty()) spheres.clear();
         UpdateHudSway(std::min(dt, 0.05));
+        {   // paused (the pause menu, a scan's text, saving, options): the world blurs behind it; not on the map
+            float target = playMode && paused && !mapOpen ? 1.f : 0.f;
+            blurAmt += (target - blurAmt) * (float)(1 - std::exp(-dt * 10)); if (std::fabs(target - blurAmt) < 0.003f) blurAmt = target;
+        }
         if (playMode && !paused) UpdateDoors(std::min(dt, 0.05)); else if (!playMode && !doorRt.empty()) { doorRt.clear(); doorGpu.clear(); shots.clear(); RebuildSolids(); }
         if (playMode && !paused) {   // health, lava, falling out of the world, respawning
             PlayState::Event e = play.tick(*world, player, playRules, playSpawn, playYaw, std::min(dt, 0.05));
@@ -3620,8 +3632,9 @@ struct App {
             adaptCur = nx; D3D11_VIEWPORT fv{ 0, 0, (float)rw, (float)rh, 0, 1 }; ctx->RSSetViewports(1, &fv);
         }
 
-        // ---- final picture: exposure + filmic curve into the window (or the editor's viewport picture)
-        ctx->OMSetRenderTargets(1, &out, nullptr);
+        // ---- final picture: exposure + filmic curve into the window (or the editor's viewport picture); paused: first into a picture to blur
+        bool blurOn = blurAmt > 0.005f && blurSrc.rtv && blurLv.size() == 4;
+        { ID3D11RenderTargetView* tgt = blurOn ? blurSrc.rtv.Get() : out; ctx->OMSetRenderTargets(1, &tgt, nullptr); }
         ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psPost.Get(), nullptr, 0);
         {   // the visor's look
             const VisorFx& x = CurrentVisorFx(); VisorCB vc{};
@@ -3640,6 +3653,28 @@ struct App {
         ctx->Draw(3, 0);
         { ID3D11ShaderResourceView* nx = nullptr; ctx->PSSetShaderResources(16, 1, &nx); }
         ctx->PSSetShaderResources(0, 4, none); { ID3D11ShaderResourceView* nm = nullptr; ctx->PSSetShaderResources(11, 1, &nm); }
+        if (blurOn) {   // the menu blur: shrink four times, grow back (each step softer), then over the window - the helmet's parts stay sharp
+            ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->PSSetSamplers(3, 1, sampClamp.GetAddressOf());
+            ctx->PSSetShader(psBloomDown.Get(), nullptr, 0);
+            for (int i = 0; i < 4; i++) {
+                const BloomLevel& srcL = i == 0 ? blurSrc : blurLv[i - 1];
+                ChunkCB cc{ { 1.f / srcL.w, 1.f / srcL.h, 1, 0 } }; ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);
+                ctx->OMSetRenderTargets(1, blurLv[i].rtv.GetAddressOf(), nullptr); D3D11_VIEWPORT bv{ 0, 0, (float)blurLv[i].w, (float)blurLv[i].h, 0, 1 }; ctx->RSSetViewports(1, &bv);
+                ID3D11ShaderResourceView* sv = srcL.srv.Get(); ctx->PSSetShaderResources(0, 1, &sv); ctx->Draw(3, 0); ctx->PSSetShaderResources(0, 1, none);
+            }
+            ctx->PSSetShader(psBloomUp.Get(), nullptr, 0);
+            for (int i = 3; i > 0; i--) {
+                ChunkCB cc{ { 1.f / blurLv[i].w, 1.f / blurLv[i].h, 1, 0 } }; ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);
+                ctx->OMSetRenderTargets(1, blurLv[i - 1].rtv.GetAddressOf(), nullptr); D3D11_VIEWPORT bv{ 0, 0, (float)blurLv[i - 1].w, (float)blurLv[i - 1].h, 0, 1 }; ctx->RSSetViewports(1, &bv);
+                ID3D11ShaderResourceView* sv = blurLv[i].srv.Get(); ctx->PSSetShaderResources(0, 1, &sv); ctx->Draw(3, 0); ctx->PSSetShaderResources(0, 1, none);
+            }
+            D3D11_VIEWPORT fv{ 0, 0, (float)rw, (float)rh, 0, 1 }; ctx->RSSetViewports(1, &fv);
+            ChunkCB cc{ { std::clamp(blurAmt, 0.f, 1.f), 0, 0, 0 } }; ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);
+            ctx->OMSetRenderTargets(1, &out, nullptr); ctx->PSSetShader(psBlurComp.Get(), nullptr, 0);
+            { ID3D11ShaderResourceView* bs[3] = { blurSrc.srv.Get(), blurLv[0].srv.Get(), depthSRV.Get() }; ctx->PSSetShaderResources(0, 3, bs); }
+            ctx->Draw(3, 0);
+            ctx->PSSetShaderResources(0, 4, none);
+        }
         if (playMode) DrawHudInGame(out);   // the player's HUD over everything
     }
     int drawnChunks = 0;
@@ -4013,7 +4048,6 @@ struct App {
         char hb[64]; snprintf(hb, sizeof hb, "%.0f / %.0f", play.health, playRules.maxHealth);
         ImVec2 ts = ImGui::CalcTextSize(hb); dl->AddText(ImVec2(o.x + (bw - ts.x) * 0.5f, o.y + (bh - ts.y) * 0.5f), IM_COL32(255, 255, 255, 255), hb);
         }
-        dl->AddText(ImVec2(vx + 12, vy + 10), IM_COL32(255, 255, 255, 200), game.name.c_str());
         if (hud.empty()) {   // what you carry
             float y = vy + 10 + ImGui::GetTextLineHeight() + 6;
             for (const std::string& k : inv.keys) { dl->AddRectFilled(ImVec2(vx + 12, y + 3), ImVec2(vx + 22, y + 13), IM_COL32(255, 210, 60, 255), 2.f); dl->AddText(ImVec2(vx + 28, y), IM_COL32(255, 230, 150, 240), k.c_str()); y += ImGui::GetTextLineHeight() + 4; }
@@ -4845,6 +4879,22 @@ struct App {
         }
         case HudKind::Image: if (ID3D11ShaderResourceView* s = HudImage(e.image)) dl->AddImage((ImTextureID)(intptr_t)s, p0, p1, ImVec2(0, 0), ImVec2(1, 1), col(1)); else dl->AddRect(p0, p1, col(0.5f)); break;
         case HudKind::Minimap: DrawMinimapElement(dl, e, p0, p1, a); break;
+        case HudKind::Tanks: {   // a box per energy tank you have, the full ones lit; the bottom row fills first (like Metroid Prime)
+            int n = v.tanks, full = fullTanks(v); if (n <= 0) break;
+            int per = std::max(1, e.segments), rows = std::max(1, e.tankRows);
+            float cw = (p1.x - p0.x) / per, chh = (p1.y - p0.y) / rows, gap = std::min(cw, chh) * 0.2f, rr = e.tankShape == 1 ? std::min(cw, chh) * 0.25f : 0.f;
+            for (int k = 0; k < n; k++) {
+                int row = k / per, colI = k % per; if (row >= rows) break;
+                float x0 = e.align == 2 ? p1.x - (colI + 1) * cw : p0.x + colI * cw, y1 = p1.y - row * chh;
+                ImVec2 a0(x0 + gap * 0.5f, y1 - chh + gap * 0.5f), a1(x0 + cw - gap * 0.5f, y1 - gap * 0.5f);
+                bool lit = k < full;
+                if (e.tankShape == 2) {
+                    ImVec2 c((a0.x + a1.x) * 0.5f, (a0.y + a1.y) * 0.5f); float r = std::min(a1.x - a0.x, a1.y - a0.y) * 0.5f;
+                    dl->AddCircleFilled(c, r, col(lit ? 1.f : 0.18f), 24); dl->AddCircle(c, r, col(0.7f), 24, 1.5f);
+                } else { dl->AddRectFilled(a0, a1, col(lit ? 1.f : 0.18f), rr); dl->AddRect(a0, a1, col(0.7f), rr, 0, 1.5f); }
+            }
+            break;
+        }
         case HudKind::Circle: {
             ImVec2 c((p0.x + p1.x) * 0.5f, (p0.y + p1.y) * 0.5f); float r = std::min(p1.x - p0.x, p1.y - p0.y) * 0.5f;
             if (e.filled) dl->AddCircleFilled(c, r, col(1), 48); else dl->AddCircle(c, r - e.thickness * 0.5f, col(1), 48, e.thickness);
@@ -4858,8 +4908,18 @@ struct App {
         hudListsReady = false;
         bool need = (playMode && (!hud.empty() || !weapons.empty())) || (playerEdOpen && screen == Screen::Game && EditorView());
         if (!need) return;
-        if (playMode) { hudVals.health = play.health; hudVals.maxHealth = playRules.maxHealth; hudVals.counts = inv.counts; hudVals.keys = inv.keys; hudVals.charge = weapState.charge; }
-        else { hudVals = HudValues{}; hudVals.charge = 0.6f; hudVals.maxHealth = game.player.maxHealth; hudVals.health = game.player.maxHealth * 0.76f; hudVals.counts["Missile"] = 25; hudVals.keys.insert("Red key"); }
+        if (playMode) {
+            hudVals.health = play.health; hudVals.maxHealth = playRules.maxHealth; hudVals.counts = inv.counts; hudVals.keys = inv.keys; hudVals.charge = weapState.charge;
+            hudVals.tanks = 0; hudVals.tankSize = 100; bool sized = false;
+            for (const ItemDef& d : items.items) if (d.used && d.type == ItemType::EnergyTank) { hudVals.tanks += ItemHave(d.name); if (!sized) { hudVals.tankSize = std::max(1.f, (float)d.v[0]); sized = true; } }
+            hudVals.most.clear();
+            if (!weapons.missileCounter.empty()) hudVals.most[weapons.missileCounter] = MissileMax();
+            if (!items.powerBombCounter.empty()) hudVals.most[items.powerBombCounter] = PowerBombMax();
+        }
+        else {   // the editor's preview: made-up values
+            hudVals = HudValues{}; hudVals.charge = 0.6f; hudVals.tanks = 5; hudVals.tankSize = 100; hudVals.maxHealth = game.player.maxHealth + 500; hudVals.health = 376;
+            hudVals.counts["Missile"] = 25; hudVals.most["Missile"] = 50; hudVals.keys.insert("Red key");
+        }
         hudLists.resize(hud.planes.size());
         for (size_t i = 0; i < hud.planes.size(); i++) {
             const HudPlane& p = hud.planes[i]; int W, H; PlaneRes(p, W, H);
@@ -5162,6 +5222,7 @@ struct App {
         if (k == HudKind::Image) { e.color = 0xFFFFFF; e.alpha = 1; e.w = 0.12f; e.h = 0.2f; auto f = HudImageFiles(); if (!f.empty()) e.image = f[0]; }
         if (k == HudKind::Circle) { e.w = 0.1f; e.h = 0.18f; e.filled = false; e.thickness = 3; }
         if (k == HudKind::Minimap) { e.w = 0.18f; e.h = 0.3f; e.alpha = 0.9f; }
+        if (k == HudKind::Tanks) { e.w = 0.2f; e.h = 0.05f; e.segments = 7; e.tankRows = 2; }
         hud.planes[hudPlane].elements.push_back(e); hudSel = 2; hudEl = (int)hud.planes[hudPlane].elements.size() - 1; SaveHud();
     }
     void HudList() {
@@ -5267,7 +5328,8 @@ struct App {
             ImGui::SeparatorText(hudKindName(e.kind));
             Prop("Name"); ch |= ImGui::InputText("##en", &e.name);
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Event cards show, hide and flash it by this name");
-            { int k = (int)e.kind; const char* kn[] = { "Panel", "Bar", "Text", "Image", "Circle" }; Prop("Kind"); if (ImGui::Combo("##ek", &k, kn, 5)) { e.kind = (HudKind)k; ch = true; } }
+            { int k = (int)e.kind; Prop("Kind");
+              if (ImGui::BeginCombo("##ek", hudKindName(e.kind))) { for (int q = 0; q < (int)HudKind::COUNT; q++) if (ImGui::Selectable(hudKindName((HudKind)q), q == k)) { e.kind = (HudKind)q; ch = true; } ImGui::EndCombo(); } }
             Prop("Shown at the start"); ch |= ImGui::Checkbox("##ev", &e.visible);
             Prop("Stays when paused"); ch |= ImGui::Checkbox("##eop", &e.onPause);
             Prop("Stays on the map (M)"); ch |= ImGui::Checkbox("##eom", &e.onMap);
@@ -5283,6 +5345,13 @@ struct App {
                 { int a = e.align; const char* an[] = { "Left", "Middle", "Right" }; Prop("Line up"); if (ImGui::Combo("##eal", &a, an, 3)) { e.align = a; ch = true; } }
             }
             if (e.kind == HudKind::Bar) { Prop("Pieces"); ch |= ImGui::SliderInt("##eseg", &e.segments, 1, 20); }
+            if (e.kind == HudKind::Tanks) {
+                Prop("Per row"); ch |= ImGui::SliderInt("##etpr", &e.segments, 1, 20);
+                Prop("Rows"); ch |= ImGui::SliderInt("##etr", &e.tankRows, 1, 8);
+                { int sh = e.tankShape; const char* sn[] = { "Squares", "Rounded", "Round" }; Prop("Shape"); if (ImGui::Combo("##ets2", &sh, sn, 3)) { e.tankShape = sh; ch = true; } }
+                { int d = e.align == 2 ? 1 : 0; const char* dn[] = { "Left to right", "Right to left" }; Prop("Fills"); if (ImGui::Combo("##etd", &d, dn, 2)) { e.align = d ? 2 : 0; ch = true; } }
+                Hint("A box for each Energy Tank the player has (none: nothing shown); the full ones are lit. The bottom row fills first. Pair it with a text showing \"Energy in this tank\".");
+            }
             if (e.kind == HudKind::Minimap) {
                 Prop("Shows around you"); ch |= ImGui::SliderFloat("##emr", &e.mapRange, 6, 80, "%.0f blocks");
                 Prop("Looks down"); ch |= ImGui::SliderFloat("##emt", &e.mapTilt, 10, 90, "%.0f deg");
@@ -5306,11 +5375,18 @@ struct App {
                 }
             }
             if (e.kind == HudKind::Bar || e.kind == HudKind::Text) {
-                int v = (int)e.value; const char* vn[] = { "Nothing", "Health", "A counter", "Has a key", "Beam charge" };
-                Prop("Shows"); if (ImGui::Combo("##evl", &v, vn, 5)) { e.value = (HudValue)v; ch = true; }
+                int v = (int)e.value; Prop("Shows");
+                if (ImGui::BeginCombo("##evl", hudValueName(e.value))) { for (int q = 0; q < (int)HudValue::COUNT; q++) if (ImGui::Selectable(hudValueName((HudValue)q), q == v)) { e.value = (HudValue)q; ch = true; } ImGui::EndCombo(); }
                 if (e.value == HudValue::Counter || e.value == HudValue::Key) { Prop(e.value == HudValue::Key ? "Key" : "Counter"); ch |= ImGui::InputTextWithHint("##evn", e.value == HudValue::Key ? "Red key" : "Missile", &e.valueName); }
-                if (e.value == HudValue::Counter || e.value == HudValue::None) { Prop("Full at"); ch |= ImGui::DragFloat("##emx", &e.max, 1, 1, 100000, "%.0f"); }
-                if (e.value == HudValue::Health) Hint("Full at the player's most health (Game settings).");
+                if (e.value == HudValue::Counter) {
+                    int fm = e.fullAtMost ? 1 : 0; const char* fn2[] = { "This number", "The most it can hold" }; Prop("Full at"); if (ImGui::Combo("##efm", &fm, fn2, 2)) { e.fullAtMost = fm != 0; ch = true; }
+                    if (!e.fullAtMost) { Prop("... number"); ch |= ImGui::DragFloat("##emx", &e.max, 1, 1, 100000, "%.0f"); }
+                    else Hint("Grows as the player finds expansions (Missiles, Power Bombs). {max} in a text shows it too. Other counters: full at the number below.");
+                    if (e.fullAtMost) { Prop("... otherwise"); ch |= ImGui::DragFloat("##emx2", &e.max, 1, 1, 100000, "%.0f"); }
+                }
+                if (e.value == HudValue::None) { Prop("Full at"); ch |= ImGui::DragFloat("##emx", &e.max, 1, 1, 100000, "%.0f"); }
+                if (e.value == HudValue::Health) Hint("Full at the player's most health (Game settings), Energy Tanks included.");
+                if (e.value == HudValue::TankEnergy) Hint("Like Metroid's ENERGY 76: the energy in the tank being used now (full tanks are shown by an Energy tanks element).");
             }
             Hint("Drag it in the layout below the preview. Event cards can show, hide or flash \"%s\".", e.name.c_str());
         } else if (hudSel == 3) {

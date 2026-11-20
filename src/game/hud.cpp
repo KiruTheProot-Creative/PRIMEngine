@@ -7,8 +7,8 @@
 
 namespace mc {
 
-const char* hudKindName(HudKind k) { static const char* n[] = { "Panel", "Bar", "Text", "Image", "Circle", "Minimap" }; return n[std::clamp((int)k, 0, (int)HudKind::COUNT - 1)]; }
-const char* hudValueName(HudValue v) { static const char* n[] = { "Nothing", "Health", "A counter", "Has a key", "Beam charge" }; return n[std::clamp((int)v, 0, (int)HudValue::COUNT - 1)]; }
+const char* hudKindName(HudKind k) { static const char* n[] = { "Panel", "Bar", "Text", "Image", "Circle", "Minimap", "Energy tanks" }; return n[std::clamp((int)k, 0, (int)HudKind::COUNT - 1)]; }
+const char* hudValueName(HudValue v) { static const char* n[] = { "Nothing", "Health", "A counter", "Has a key", "Beam charge", "Energy in this tank", "Energy tanks you have" }; return n[std::clamp((int)v, 0, (int)HudValue::COUNT - 1)]; }
 
 static const double DEG = 3.14159265358979 / 180;
 
@@ -37,8 +37,14 @@ void mirrorPlane(HudPlane& p) { p.pos.x = -p.pos.x; p.yaw = -p.yaw; p.roll = -p.
 void mirrorPart(HudPart& p) { p.pos.x = -p.pos.x; p.yaw = -p.yaw; p.roll = -p.roll; p.mirror = !p.mirror; }
 void mirrorElement(HudElement& e) { e.x = 1 - e.x - e.w; if (e.align != 1) e.align = 2 - e.align; }
 
+int fullTanks(const HudValues& v) {
+    if (v.tanks <= 0 || v.tankSize <= 0) return 0;
+    return std::clamp((int)std::floor(v.health / v.tankSize + 1e-4), 0, v.tanks);
+}
 float hudValue(const HudElement& e, const HudValues& v) {
     switch (e.value) {
+    case HudValue::TankEnergy: return std::max(0.f, v.health - fullTanks(v) * v.tankSize);
+    case HudValue::Tanks: return (float)v.tanks;
     case HudValue::Health: return v.health;
     case HudValue::Counter: { auto it = v.counts.find(e.valueName); return it == v.counts.end() ? 0.f : (float)it->second; }
     case HudValue::Key: return v.keys.count(e.valueName) ? 1.f : 0.f;
@@ -46,7 +52,17 @@ float hudValue(const HudElement& e, const HudValues& v) {
     default: return hudMax(e, v);
     }
 }
-float hudMax(const HudElement& e, const HudValues& v) { return e.value == HudValue::Health ? v.maxHealth : e.value == HudValue::Key ? 1.f : e.value == HudValue::Charge ? 100.f : std::max(1e-3f, e.max); }
+float hudMax(const HudElement& e, const HudValues& v) {
+    switch (e.value) {
+    case HudValue::Health: return v.maxHealth;
+    case HudValue::Key: return 1.f;
+    case HudValue::Charge: return 100.f;
+    case HudValue::TankEnergy: return std::max({ 1.f, v.tankSize, v.maxHealth - v.tanks * v.tankSize });
+    case HudValue::Tanks: return std::max(1.f, (float)v.tanks);
+    case HudValue::Counter: if (e.fullAtMost) { auto it = v.most.find(e.valueName); if (it != v.most.end()) return std::max(1.f, (float)it->second); } return std::max(1e-3f, e.max);
+    default: return std::max(1e-3f, e.max);
+    }
+}
 std::string hudText(const HudElement& e, const HudValues& v) {
     std::string s = e.text;
     auto put = [&](const std::string& key, float x) { char b[32]; snprintf(b, sizeof b, "%d", (int)std::lround(x)); for (size_t at; (at = s.find(key)) != std::string::npos;) s.replace(at, key.size(), b); };
@@ -133,7 +149,7 @@ bool saveHud(const std::string& path, const HudLayout& h) {
           << " " << p.bendX << " " << p.bendY << " " << p.sway << " " << p.opacity << " " << p.glow << " " << p.visible << " " << p.bloom << " " << p.lightUp << "\n";
         for (const HudElement& e : p.elements)
             f << "el " << esc(e.name) << " " << (int)e.kind << " " << e.x << " " << e.y << " " << e.w << " " << e.h << " " << e.color << " " << e.alpha << " " << esc(e.text) << " " << esc(e.image)
-              << " " << (int)e.value << " " << esc(e.valueName) << " " << e.max << " " << e.segments << " " << e.textSize << " " << e.align << " " << e.filled << " " << e.thickness << " " << e.visible << " " << e.mapRange << " " << e.mapTilt << " " << e.mapTurns << " " << e.onPause << " " << e.onMap << " " << (int)e.visors << "\n";
+              << " " << (int)e.value << " " << esc(e.valueName) << " " << e.max << " " << e.segments << " " << e.textSize << " " << e.align << " " << e.filled << " " << e.thickness << " " << e.visible << " " << e.mapRange << " " << e.mapTilt << " " << e.mapTurns << " " << e.onPause << " " << e.onMap << " " << (int)e.visors << " " << e.fullAtMost << " " << e.tankRows << " " << e.tankShape << "\n";
     }
     for (const HudPart& p : h.parts) {
         f << "part " << esc(p.name) << " " << esc(p.model) << " " << p.pos.x << " " << p.pos.y << " " << p.pos.z << " " << p.yaw << " " << p.pitch << " " << p.roll << " " << p.scale
@@ -154,7 +170,7 @@ bool loadHud(const std::string& path, HudLayout& h) {
             HudElement e; std::string n, t, im, vn; int kind = 0, val = 0;
             l >> n >> kind >> e.x >> e.y >> e.w >> e.h >> e.color >> e.alpha >> t >> im >> val >> vn >> e.max >> e.segments >> e.textSize >> e.align >> e.filled >> e.thickness >> e.visible;
             if (kind == (int)HudKind::Minimap) e.onMap = false;   // (older files: the minimap hides on the map screen)
-            { float mr, mt; int tu; if (l >> mr >> mt >> tu) { e.mapRange = std::clamp(mr, 4.f, 200.f); e.mapTilt = std::clamp(mt, 10.f, 90.f); e.mapTurns = tu != 0; int op, om; if (l >> op >> om) { e.onPause = op != 0; e.onMap = om != 0; int vm; if (l >> vm) e.visors = (uint8_t)(vm & 15); } } }
+            { float mr, mt; int tu; if (l >> mr >> mt >> tu) { e.mapRange = std::clamp(mr, 4.f, 200.f); e.mapTilt = std::clamp(mt, 10.f, 90.f); e.mapTurns = tu != 0; int op, om; if (l >> op >> om) { e.onPause = op != 0; e.onMap = om != 0; int vm; if (l >> vm) { e.visors = (uint8_t)(vm & 15); int fm, tr, ts; if (l >> fm >> tr >> ts) { e.fullAtMost = fm != 0; e.tankRows = std::clamp(tr, 1, 8); e.tankShape = std::clamp(ts, 0, 2); } } } } }
             e.name = unesc(n); e.text = unesc(t); e.image = unesc(im); e.valueName = unesc(vn);
             e.kind = (HudKind)std::clamp(kind, 0, (int)HudKind::COUNT - 1); e.value = (HudValue)std::clamp(val, 0, (int)HudValue::COUNT - 1);
             h.planes.back().elements.push_back(e);

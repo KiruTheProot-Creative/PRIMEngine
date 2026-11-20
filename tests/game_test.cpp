@@ -1544,6 +1544,21 @@ int main() {
         }
         CHECK(wl.look == "Neon night" && wl.zones.size() == 2 && wl.zones[0].look == "Tourian green" && wl.zones[1].look.empty() && wl.zones[1].name == "Plain", "a world's look and its zones' looks save and load");
     }
+    {   // HUD: energy tanks, energy in this tank, counters full at the most they can hold
+        HudValues v; v.maxHealth = 400; v.tanks = 3; v.tankSize = 100; v.health = 276;
+        HudElement te; te.value = HudValue::TankEnergy; HudElement tk; tk.value = HudValue::Tanks;
+        CHECK(fullTanks(v) == 2 && hudValue(te, v) == 76 && hudValue(tk, v) == 3 && hudMax(te, v) == 100, "energy tanks: 276 of 400 = 2 full tanks and 76 (got %d, %.0f)", fullTanks(v), hudValue(te, v));
+        v.health = 400; CHECK(fullTanks(v) == 3 && hudValue(te, v) == 100, "all full: every tank full, 100 in the last");
+        v.health = 40; CHECK(fullTanks(v) == 0 && hudValue(te, v) == 40, "low: no full tanks");
+        HudElement m; m.value = HudValue::Counter; m.valueName = "Missile"; m.max = 5; v.most["Missile"] = 25;
+        CHECK(hudMax(m, v) == 5, "a counter is full at its number ...");
+        m.fullAtMost = true; CHECK(hudMax(m, v) == 25, "... or at the most it can hold");
+        m.text = "{value}/{max}"; v.counts["Missile"] = 12; CHECK(hudText(m, v) == "12/25", "text: {max} is the most it can hold");
+        HudLayout h; HudPlane p; HudElement el; el.kind = HudKind::Tanks; el.tankRows = 3; el.tankShape = 2; el.segments = 5; p.elements.push_back(el); p.elements.push_back(m); h.planes.push_back(p);
+        saveHud("/tmp/prim_hud_tanks.txt", h); HudLayout hl; loadHud("/tmp/prim_hud_tanks.txt", hl);
+        CHECK(hl.planes.size() == 1 && hl.planes[0].elements.size() == 2 && hl.planes[0].elements[0].kind == HudKind::Tanks && hl.planes[0].elements[0].tankRows == 3 && hl.planes[0].elements[0].tankShape == 2
+              && hl.planes[0].elements[1].fullAtMost, "HUD: an energy tanks element and \"full at the most\" save and load");
+    }
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
     return fails ? 1 : 0;
 }

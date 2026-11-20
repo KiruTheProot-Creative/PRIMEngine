@@ -10,8 +10,8 @@
 
 namespace mc {
 
-enum class HudKind { Panel, Bar, Text, Image, Circle, Minimap, COUNT };
-enum class HudValue { None, Health, Counter, Key, Charge, COUNT };   // what a bar / text shows
+enum class HudKind { Panel, Bar, Text, Image, Circle, Minimap, Tanks, COUNT };   // Tanks: a box per energy tank you have (full ones lit)
+enum class HudValue { None, Health, Counter, Key, Charge, TankEnergy, Tanks, COUNT };   // what a bar / text shows (TankEnergy: the energy in the tank being used, like Metroid's "ENERGY 76")
 const char* hudKindName(HudKind k);
 const char* hudValueName(HudValue v);
 
@@ -32,6 +32,8 @@ struct HudElement {
     float mapRange = 22, mapTilt = 55; bool mapTurns = true;   // Minimap: how far around you it shows (blocks), how steeply it looks down (90: straight down), turns with you
     bool onPause = true, onMap = true;                  // still shown while the game is paused / on the map screen (M)
     uint8_t visors = 0x0F;                              // which visors show it (bit 0 Combat, 1 Scan, 2 Thermal, 3 X-Ray)
+    bool fullAtMost = false;                            // a counter: full at the most it can hold (grows with expansions), not at "max"
+    int tankRows = 2, tankShape = 0;                    // Tanks: rows it is laid out for (segments: how many per row), 0 square / 1 rounded / 2 round
 };
 
 struct HudPlane {
@@ -96,7 +98,12 @@ void mirrorPart(HudPart& p);
 void mirrorElement(HudElement& e);
 
 // what a value is right now (bars, texts)
-struct HudValues { float charge = 0; float health = 100, maxHealth = 100; std::map<std::string, int> counts; std::set<std::string> keys; };
+struct HudValues {
+    float charge = 0; float health = 100, maxHealth = 100; std::map<std::string, int> counts; std::set<std::string> keys;
+    int tanks = 0; float tankSize = 100;                // energy tanks you have, energy in each
+    std::map<std::string, int> most;                    // the most a counter can hold right now (missiles: grows with expansions)
+};
+int fullTanks(const HudValues& v);                      // how many of your energy tanks are full
 float hudValue(const HudElement& e, const HudValues& v);
 float hudMax(const HudElement& e, const HudValues& v);
 std::string hudText(const HudElement& e, const HudValues& v);

@@ -132,6 +132,13 @@ Open it with the **Player** button in the toolbar (or Game > Player editor). It'
 - **Sway:** when you turn, the HUD stays behind a little and springs back, like in Metroid Prime. Strength, smoothness, walk bob, lean when turning; every plane and part has its own sway amount.
 - The editor shows the HUD from around the camera (drag to turn), a camera preview over the world, and the picked plane laid out flat: drag elements to move them and their corner to size them (Shift snaps).
 - Event cards can **show, hide and flash** HUD elements by name (there's a "Low energy: flash the HUD" example).
+- **Energy tanks** element: a box for each Energy Tank the player has (none until the first one), the full ones lit, the
+  bottom row filling first like Metroid Prime (per row, rows, squares / rounded / round, left-to-right or right-to-left).
+  Pair it with a text showing **Energy in this tank** for the "ENERGY 76" number.
+- Counters: **Full at** a number, or **the most it can hold** - it grows with Missile and Power Bomb expansions (and
+  `{max}` in a text shows it).
+- **Paused** (pause menu, a finished scan's text, saving, options): the world and the arm cannon blur behind the menu;
+  the helmet's own parts and the HUD stay sharp.
 
 ### Door forcefields and animations (update)
 

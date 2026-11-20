@@ -1698,3 +1698,15 @@ float4 PS_GIApply(SkyOut i) : SV_Target   // full size: a careful blur (only acr
     }
     return float4(s / max(w, 1e-4) * gAlbedo.Load(int3(px, 0)).rgb, 0);
 }
+
+// ---------------------------------------------------------------- paused / reading a scan: the world (and the arm cannon) blurred behind the menu
+// t0 the sharp picture, t1 the blurred one, t2 depth; gOffset.x how much (0..1)
+float4 PS_BlurComp(SkyOut i) : SV_Target
+{
+    int2 px = int2(i.pos.xy); float2 uv = i.ndc * float2(0.5, -0.5) + 0.5;
+    float3 sharp = gHdr.Load(int3(px, 0)).rgb;
+    float dz = gSceneDepth.Load(int3(px, 0));
+    if (dz >= gVHud.x && dz < gVHud.y) return float4(sharp, 1);           // the helmet's own parts stay sharp
+    float3 b = gBloom.SampleLevel(gClamp, uv, 0).rgb * (1 - 0.2 * gOffset.x);
+    return float4(lerp(sharp, b, saturate(gOffset.x)), 1);
+}
