@@ -240,6 +240,14 @@ For Energy and each counter (Missiles, Power Bombs ...): a model and size, a **b
 Prime's large energy), spinning and bobbing, a light (reach, colour, brightness), its own pickup sound, how long it
 stays and when it starts blinking. A kind without its own look uses the placeholder.
 
+## Water and the sun
+
+- **Under water** (your head under): every sound but menus and music is muffled (Player > Sounds > Water: how much),
+  with its own loop. Jumping in and climbing out splash (and have sounds).
+- **Shots hitting water** splash: droplets, rings spreading over the surface, a sound.
+- **Lens flare**: looking toward the sun (when nothing is in front of it) - a glow, a streak and rings of light along
+  the line through the middle of the screen. Strength per look; Options > Graphics > *Lens flares*.
+
 ## Door sounds and visor loops
 
 - **Doors** (Player > Sounds > Doors): opening, closing, the forcefield shot away, and "won't open" (locked, the wrong

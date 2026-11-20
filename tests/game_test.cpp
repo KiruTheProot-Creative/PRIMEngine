@@ -1518,10 +1518,10 @@ int main() {
         CHECK(pre.size() >= 6 && pre[0].name == "Natural" && pre[1].curve == ToneCurve::Classic, "looks: presets (Natural first, Classic keeps the old curve)");
         LookSet ls; ColorLook mine = pre[2]; mine.name = "Tourian green"; mine.shadows = 0x103010; mine.bloomSize = 1.7f; ls.looks.push_back(mine);
         ColorLook neon2 = pre[2]; neon2.exposure = -1; ls.looks.push_back(neon2);   // a preset made your own
-        mine.fog = 0.05f; mine.fogColor = 0x20FF40; mine.lightFog = 2; mine.bounce = 2.5f; ls.looks[0] = mine;
+        mine.fog = 0.05f; mine.fogColor = 0x20FF40; mine.lightFog = 2; mine.bounce = 2.5f; mine.flare = 1.25f; ls.looks[0] = mine;
         saveLooks("/tmp/prim_looks.txt", ls); LookSet lb; loadLooks("/tmp/prim_looks.txt", lb);
         CHECK(lb.looks.size() == 2 && lb.get("Tourian green").bloomSize == 1.7f && lb.get("Tourian green").shadows == 0x103010 && lb.get("Neon night").exposure == -1, "your own looks save and load (names with spaces too)");
-        CHECK(lb.get("Tourian green").fog == 0.05f && lb.get("Tourian green").fogColor == 0x20FF40 && lb.get("Tourian green").lightFog == 2 && lb.get("Tourian green").bounce == 2.5f, "a look's fog and lights-in-the-air save and load");
+        CHECK(lb.get("Tourian green").fog == 0.05f && lb.get("Tourian green").fogColor == 0x20FF40 && lb.get("Tourian green").lightFog == 2 && lb.get("Tourian green").bounce == 2.5f && lb.get("Tourian green").flare == 1.25f, "a look's fog and lights-in-the-air save and load");
         { std::ofstream o("/tmp/prim_looks_old.txt"); o << "looks 1\nlook Old 1 0 0.5 1.5 1 1 0 3166368 0 16756848 0 1 1 0 0 0.18\n"; } LookSet lo; loadLooks("/tmp/prim_looks_old.txt", lo);
         CHECK(lo.looks.size() == 1 && lo.get("Old").fog == 0 && lo.get("Old").lightFog == 0.35f, "an older looks file (no fog yet) still loads");
         CHECK(lb.get("Inferno").warmth > 0 && lb.get("nope").name == "Natural", "a preset you did not change comes from the presets; an unknown look: Natural");
@@ -1538,7 +1538,7 @@ int main() {
           CHECK(!sl.eyeAdapt && !sl.filmFx && findOption("eye_adapt") >= 0 && findOption("film_fx") >= 0, "Options: eye adaptation and film effects (save, load, in the menu)"); }
         { WorldInfo wd; wd.trueDark = false; wd.save("/tmp/prim_wdark"); WorldInfo wdl; wdl.load("/tmp/prim_wdark"); CHECK(!wdl.trueDark && WorldInfo{}.trueDark, "true darkness: on unless a world turns it off (saved)"); }
         { WorldInfo wn; wn.nightDark = 0.3f; wn.save("/tmp/prim_wnight"); WorldInfo wl2; wl2.load("/tmp/prim_wnight"); CHECK(wl2.nightDark == 0.3f && WorldInfo{}.nightDark > 0.5f, "how dark nights are: saved (dark by default)"); }
-        { Settings se; se.lightShadows = 8; se.save("/tmp/prim_set_ls.txt"); Settings sl; sl.load("/tmp/prim_set_ls.txt"); CHECK(sl.lightShadows == 8 && findOption("light_shadows") >= 0 && findOption("bounce") >= 0 && findOption("light_fog") >= 0, "Options: shadows from lamps"); }
+        { Settings se; se.lightShadows = 8; se.save("/tmp/prim_set_ls.txt"); Settings sl; sl.load("/tmp/prim_set_ls.txt"); CHECK(sl.lightShadows == 8 && findOption("light_shadows") >= 0 && findOption("bounce") >= 0 && findOption("light_fog") >= 0 && findOption("lens_flares") >= 0, "Options: shadows from lamps"); }
         {   // lights: strips and shadows save and load (older files: none)
             std::vector<WorldObject> ob(1); ob[0].id = 7; ob[0].kind = ObjKind::Light; ob[0].light.type = LightType::Strip; ob[0].light.length = 6.5f; ob[0].light.shadows = true;
             saveObjects("/tmp/prim_lobj.txt", ob); std::vector<WorldObject> ol; loadObjects("/tmp/prim_lobj.txt", ol);
@@ -1571,8 +1571,9 @@ int main() {
         CHECK(std::string(shinePresetName(SHINE_PRESETS)) == "Your own picture", "shine pictures: presets, then your own");
     }
     {   // sounds: doors (the game's and a door's own) and visor loops save and load
-        PlayerSounds ps; SoundUse u; u.file = "door open.wav"; u.volume = 0.8f; ps.doorOpen.sounds.push_back(u); u.file = "hum.wav"; ps.loopScan.sounds.push_back(u); ps.visorLoopVolume = 0.6f; u.file = "unmorph.wav"; ps.unmorph.sounds.push_back(u);
+        PlayerSounds ps; SoundUse u; u.file = "door open.wav"; u.volume = 0.8f; ps.doorOpen.sounds.push_back(u); u.file = "hum.wav"; ps.loopScan.sounds.push_back(u); ps.visorLoopVolume = 0.6f; u.file = "unmorph.wav"; ps.unmorph.sounds.push_back(u); u.file = "splash.wav"; ps.waterIn.sounds.push_back(u); ps.muffleHz = 500;
         savePlayerSounds("/tmp/prim_ps_door.txt", ps); PlayerSounds pl; loadPlayerSounds("/tmp/prim_ps_door.txt", pl);
+        CHECK(pl.waterIn.sounds.size() == 1 && pl.muffleHz == 500, "water sounds and the muffling save and load");
         CHECK(pl.unmorph.sounds.size() == 1 && pl.unmorph.sounds[0].file == "unmorph.wav", "the standing-up sound saves and loads");
         CHECK(pl.doorOpen.sounds.size() == 1 && pl.doorOpen.sounds[0].file == "door open.wav" && pl.loopScan.sounds.size() == 1 && pl.visorLoopVolume == 0.6f, "door sounds and visor loops save and load");
         std::vector<WorldObject> ob(1); ob[0].id = 3; ob[0].kind = ObjKind::Door; ob[0].door.openSound.file = "blast door.wav"; ob[0].door.openSound.pitch = 0.8f;

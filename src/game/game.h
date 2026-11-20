@@ -59,7 +59,8 @@ struct Settings {
     bool eyeAdapt = true;      // the picture gets brighter in dark places and darker in bright ones (as the world's look says)
     bool filmFx = true;        // the look's film grain and lens colour fringes
     bool lightFog = true;
-    bool planarFloors = true;  // the shiny floor or water near you is reflected exactly (the world drawn once more)
+    bool planarFloors = true;
+    bool lensFlares = true;    // the sun makes a lens flare (as much as the area's look says)  // the shiny floor or water near you is reflected exactly (the world drawn once more)
     int bounce = 1;            // bounce light (screen-space GI): 0 off, 1 normal, 2 far-reaching      // lights glow in the air (beams, halos)
     int lightShadows = 4;      // how many lights (the nearest that cast shadows) get real shadows: 0, 2, 4, 8
     KeyBinds keys;

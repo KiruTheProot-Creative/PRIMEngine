@@ -64,6 +64,8 @@ struct PlayerSounds {
     SoundSet pickHealth, pickAmmo, itemGet, saved, message;       // energy / ammo picked up, an item (an upgrade), the game saved, a message
     SoundSet hurt, lowHealth, death;                    // getting hurt, the low-energy alarm (again and again), dying (the hit)
     SoundSet deathStatic, deathPowerDown, deathOff;     // the death sequence: static (a loop, rising and fading), the suit powering down, the picture switching off
+    SoundSet waterIn, waterOut, underwater, shotWater;  // water: jumping in, climbing out, a loop while your head is under, a shot hitting the surface
+    float muffleHz = 700;                               // under water every sound (but menus and music) is muffled down to this (Hz; 20000: not at all)
     float powerDownFall = 0.5f;                         // the power-down sound's pitch falls this much (0: not at all .. 1: an octave) as the suit dies
     SoundSet doorOpen, doorClose, doorField, doorLocked; // doors (each door can have its own open / close): opening, closing, its forcefield shot away, won't open
     SoundSet loopCombat, loopScan, loopThermal, loopXRay; // a loop playing all the time you are in that visor (the helmet's hum, the scan visor's whirr ...)

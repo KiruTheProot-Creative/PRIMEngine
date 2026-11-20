@@ -19,7 +19,7 @@ Field field(Settings& s, const std::string& k) {
     else if (k == "clouds") r.f = &s.cloudCover; else if (k == "cloud_shadows") r.b = &s.cloudShadows; else if (k == "fog") r.f = &s.groundFog;
     else if (k == "bloom") r.f = &s.bloom; else if (k == "reflections") r.i = &s.reflections; else if (k == "ao") r.i = &s.ambientOcclusion; else if (k == "ao_strength") r.f = &s.aoStrength;
     else if (k == "swaying") r.b = &s.swaying; else if (k == "hud_glow") r.b = &s.hudGlow;
-    else if (k == "eye_adapt") r.b = &s.eyeAdapt; else if (k == "film_fx") r.b = &s.filmFx; else if (k == "light_shadows") r.i = &s.lightShadows; else if (k == "light_fog") r.b = &s.lightFog; else if (k == "bounce") r.i = &s.bounce; else if (k == "planar_floors") r.b = &s.planarFloors;
+    else if (k == "eye_adapt") r.b = &s.eyeAdapt; else if (k == "film_fx") r.b = &s.filmFx; else if (k == "light_shadows") r.i = &s.lightShadows; else if (k == "light_fog") r.b = &s.lightFog; else if (k == "bounce") r.i = &s.bounce; else if (k == "planar_floors") r.b = &s.planarFloors; else if (k == "lens_flares") r.b = &s.lensFlares;
     else if (k == "bumps") r.f = &s.bumps; else if (k == "coat") r.f = &s.coat; else if (k == "materials") r.b = &s.materials; else if (k == "guess_materials") r.b = &s.guessMaterials;
     else if (k == "time_of_day") r.f = &s.timeOfDay; else if (k == "day_cycle") r.b = &s.dayCycle; else if (k == "block_preview") r.b = &s.blockPreview;
     else if (k == "sensitivity") r.f = &s.mouseSensitivity; else if (k == "invert_y") r.b = &s.invertY; else if (k == "lock_mode") r.i = &s.lockMode; else if (k == "cave_culling") r.b = &s.caveCulling;
@@ -79,6 +79,7 @@ const std::vector<OptionDef>& optionDefs() {
         v.push_back(toggle("eye_adapt", "Eye adaptation", G, "Effects", "Like your eyes or a camera: dark places slowly get brighter, bright ones darker (as much as the area's look says)."));
         v.push_back(needs(toggle("planar_floors", "Exact floor and water reflections", G, "Effects", "The shiny floor or water near you mirrors everything exactly, animated things too (the world is drawn once more, at half size)."), "reflections"));
         v.push_back(choice("bounce", "Bounce light", G, "Effects", { "Off", "Normal", "Far-reaching" }, {}, "Lit and glowing surfaces light the ones near them (a green glow tints the wall beside it)."));
+        v.push_back(toggle("lens_flares", "Lens flares", G, "Effects", "Looking toward the sun: a glow, a streak and rings of light (if it is not behind something)."));
         v.push_back(toggle("light_fog", "Lights glow in the air", G, "Effects", "Beams and halos around lights in fog and haze."));
         v.push_back(toggle("film_fx", "Film grain and lens fringes", G, "Effects", "When the area's look has them."));
         v.push_back(choice("light_shadows", "Shadows from lamps", G, "Shadows", { "Off", "2 lights", "4 lights", "8 lights (heavy)" }, { 0, 2, 4, 8 },

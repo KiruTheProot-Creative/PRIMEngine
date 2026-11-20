@@ -44,6 +44,7 @@ cbuffer Frame : register(b0)
     float4 gSkyVolO;                // the sky light around you (96 x 64 x 96 blocks): xyz its corner relative to the camera, w 1 = ready
     float4 gVoxO;                   // the blocks around you for reflection rays (192 x 96 x 192): xyz its corner relative to the camera, w most steps
     float4 gVoxM;                   // xyz where that corner sits in the (wrapping) 3D texture, w 1 = ready
+    float4 gSplash[8];              // splashes on water: xyz where (relative to the camera), w how long ago (s; < 0: none)
     float4 gPlanar;                 // x 1: the mirror view is a shiny floor / water (every shiny pixel on that plane uses it), 0: only mirror blocks; y objects for reflection rays
 };
 float lookFogAt(float y) { return gLookFog.x * (gLookFog.z > 0.01 ? exp(-max(y - gLookFog.y, 0) / gLookFog.z) : 1); }
@@ -1100,6 +1101,13 @@ float4 PS_Water(VSOut i, bool front : SV_IsFrontFace) : SV_Target
         float2 q2 = gNoise.SampleLevel(gLinear, float3(wp.x * 0.21 - t * 0.04, wp.z * 0.21 + t * 0.03, 0.37 + t * 0.02), 0).xy - 0.5;
         float2 slope = q1 * 0.30 + q2 * 0.16 + float2(sin(wp.x * 0.8 + wp.z * 0.35 + t * 1.5), cos(wp.z * 0.9 - wp.x * 0.3 + t * 1.2)) * 0.035;
         if (gWeather.x > 0.02 && n.y > 0 && front) slope += rainRipples(wp.xz, t) * 1.6 * saturate(gWeather.x * 1.5) * skyExposed(i.rel + float3(0, 0.3, 0)) * saturate(1 - length(i.rel) / 50);   // rain: rings where drops land
+        [unroll] for (int k = 0; k < 8; k++)   // shots and splashes: rings spreading from where they hit
+        {
+            float4 sp = gSplash[k]; if (sp.w < 0 || sp.w > 2.5 || abs(i.rel.y - sp.y) > 0.8) continue;
+            float2 d = i.rel.xz - sp.xz; float r = length(d), front0 = sp.w * 2.6;
+            float ring = sin((r - front0) * 9) * exp(-pow((r - front0) * 1.6, 2)) * (1 - sp.w / 2.5) * 0.55;
+            slope += d / max(r, 1e-3) * ring;
+        }
         n = normalize(float3(slope.x, n.y > 0 ? 1 : -1, slope.y));
     }
     float dist = length(i.rel); float3 dir = i.rel / max(dist, 1e-4), v = -dir;
@@ -1326,6 +1334,8 @@ cbuffer LookCB : register(b10)
     float4 gLkAdapt;   // x how much the eye adapts, y seconds since last frame, z how fast, w how many stops it may brighten (dark nights: less)
     float4 gDeath;     // dying: x static in the visor, y the suit shutting down (dark, grey), z the picture switching off (0..1), w the clock
     float4 gDeathCol;  // rgb the static's colour, w black
+    float4 gFlare;     // the sun's lens flare: xy where the sun is on screen (-1..1), z how strong (0: none)
+    float4 gFlareCol;  // its colour
 };
 Texture2D gExposure : register(t16);   // 1x1: the eye's adaptation (stops), see PS_Adapt
 Texture2D gLumTex : register(t17);     // log brightness of the picture, with mips (PS_LumLog)
@@ -1470,6 +1480,32 @@ float4 PS_Post(SkyOut i) : SV_Target
         }
     }
     c = lookGrade(c);
+    if (gFlare.z > 0.001)   // lens flare: a glow and a streak around the sun, rings along the line through the middle - only if nothing is in front of the sun
+    {
+        float2 sp = gFlare.xy, asp = float2(gDepth.z / max(gDepth.w, 1), 1);
+        int2 spx = int2((sp * float2(0.5, -0.5) + 0.5) * gDepth.zw); float vis = 0;
+        [unroll] for (int y = -2; y <= 2; y++) [unroll] for (int x = -2; x <= 2; x++)
+        {
+            int2 q = spx + int2(x, y) * 7;
+            vis += (all(q >= 0) && all(q < int2(gDepth.zw))) ? (gSceneDepth.Load(int3(q, 0)) >= 0.99999 ? 1 : 0) : 0.5;
+        }
+        vis /= 25;
+        float k = gFlare.z * vis;
+        if (k > 0.001)
+        {
+            float2 dv = (i.ndc - sp) * asp;
+            float3 add = exp(-length(dv) * 5) * 0.35 + exp(-abs(dv.y) * 70) * exp(-abs(dv.x) * 2.2) * 0.14;   // glow and a horizontal streak
+            const float at[6] = { 0.45, -0.15, -0.4, -0.65, -0.95, -1.3 }, rad[6] = { 0.05, 0.13, 0.035, 0.22, 0.07, 0.32 };
+            const float3 tint[6] = { float3(1, 0.8, 0.5), float3(0.5, 0.8, 1), float3(1, 0.6, 0.9), float3(0.6, 1, 0.7), float3(1, 0.9, 0.6), float3(0.5, 0.6, 1) };
+            [unroll] for (int g = 0; g < 6; g++)
+            {
+                float d = length((i.ndc - sp * at[g]) * asp);
+                float disc = smoothstep(rad[g], rad[g] * 0.7, d), rim = exp(-pow((d - rad[g]) * 60, 2));
+                add += tint[g] * (disc * 0.035 + rim * 0.05);
+            }
+            c += add * gFlareCol.rgb * k;
+        }
+    }
     const float3 W = float3(0.2126, 0.7152, 0.0722);
     if (gVEdge.w > 0.001) {   // outlines where brightness jumps
         float e = abs(postLum(px + int2(1, 0), uv, expo) - postLum(px - int2(1, 0), uv, expo)) + abs(postLum(px + int2(0, 1), uv, expo) - postLum(px - int2(0, 1), uv, expo));

@@ -26,7 +26,7 @@ ColorLook lerp(const ColorLook& a, const ColorLook& b, float t) {
     o.bloom = L(a.bloom, b.bloom); o.bloomSize = L(a.bloomSize, b.bloomSize);
     o.fringes = L(a.fringes, b.fringes); o.grain = L(a.grain, b.grain); o.vignette = L(a.vignette, b.vignette);
     o.fog = L(a.fog, b.fog); o.fogHeight = L(a.fogHeight, b.fogHeight); o.fogThin = L(a.fogThin, b.fogThin);
-    o.fogColor = mixColor(a.fogColor, b.fogColor, t); o.fogGlow = L(a.fogGlow, b.fogGlow); o.lightFog = L(a.lightFog, b.lightFog); o.bounce = L(a.bounce, b.bounce);
+    o.fogColor = mixColor(a.fogColor, b.fogColor, t); o.fogGlow = L(a.fogGlow, b.fogGlow); o.lightFog = L(a.lightFog, b.lightFog); o.bounce = L(a.bounce, b.bounce); o.flare = L(a.flare, b.flare);
     return o;
 }
 
@@ -38,7 +38,7 @@ const std::vector<ColorLook>& lookPresets() {
         ColorLook neon; neon.name = "Neon night"; neon.exposure = -0.3f; neon.adapt = 0.35f; neon.contrast = 1.15f; neon.saturation = 1.2f; neon.warmth = -0.15f;
         neon.shadows = 0x2A3A8C; neon.shadowsAmount = 0.45f; neon.highlights = 0xFF6AC8; neon.highlightsAmount = 0.25f;
         neon.bloom = 1.6f; neon.bloomSize = 1.35f; neon.fringes = 0.35f; neon.grain = 0.25f; neon.vignette = 0.32f;
-        neon.fog = 0.02f; neon.fogColor = 0x6A4AB0; neon.fogGlow = 0.12f; neon.lightFog = 1.4f; neon.bounce = 1.5f; p.push_back(neon);
+        neon.fog = 0.02f; neon.fogColor = 0x6A4AB0; neon.fogGlow = 0.12f; neon.lightFog = 1.4f; neon.bounce = 1.5f; neon.flare = 0.8f; p.push_back(neon);
         ColorLook tox; tox.name = "Toxic"; tox.exposure = -0.2f; tox.contrast = 1.1f; tox.saturation = 1.1f; tox.shadows = 0x1E3A12; tox.shadowsAmount = 0.5f;
         tox.highlights = 0xC8FF5A; tox.highlightsAmount = 0.35f; tox.bloom = 1.4f; tox.bloomSize = 1.25f; tox.grain = 0.15f; tox.vignette = 0.3f;
         tox.fog = 0.03f; tox.fogColor = 0x4A8A2A; tox.fogGlow = 0.08f; tox.lightFog = 1.0f; tox.bounce = 1.4f; p.push_back(tox);
@@ -73,7 +73,7 @@ bool saveLooks(const std::string& path, const LookSet& s) {
     for (const ColorLook& l : s.looks)
         f << "look " << escText(l.name) << " " << (int)l.curve << " " << l.exposure << " " << l.adapt << " " << l.adaptSpeed << " " << l.contrast << " " << l.saturation << " " << l.warmth << " "
           << l.shadows << " " << l.shadowsAmount << " " << l.highlights << " " << l.highlightsAmount << " " << l.bloom << " " << l.bloomSize << " " << l.fringes << " " << l.grain << " " << l.vignette
-          << " " << l.fog << " " << l.fogHeight << " " << l.fogThin << " " << l.fogColor << " " << l.fogGlow << " " << l.lightFog << " " << l.bounce << "\n";
+          << " " << l.fog << " " << l.fogHeight << " " << l.fogThin << " " << l.fogColor << " " << l.fogGlow << " " << l.lightFog << " " << l.bounce << " " << l.flare << "\n";
     return (bool)f;
 }
 bool loadLooks(const std::string& path, LookSet& s) {
@@ -83,7 +83,7 @@ bool loadLooks(const std::string& path, LookSet& s) {
         std::istringstream l(line); std::string k, n; int c = 1; l >> k; if (k != "look") continue;
         ColorLook o;
         if (!(l >> n >> c >> o.exposure >> o.adapt >> o.adaptSpeed >> o.contrast >> o.saturation >> o.warmth >> o.shadows >> o.shadowsAmount >> o.highlights >> o.highlightsAmount >> o.bloom >> o.bloomSize >> o.fringes >> o.grain >> o.vignette)) continue;
-        { ColorLook a; if (l >> a.fog >> a.fogHeight >> a.fogThin >> a.fogColor >> a.fogGlow >> a.lightFog) { o.fog = a.fog; o.fogHeight = a.fogHeight; o.fogThin = a.fogThin; o.fogColor = a.fogColor; o.fogGlow = a.fogGlow; o.lightFog = a.lightFog; float bo; if (l >> bo) o.bounce = bo; } }   // (newer files)
+        { ColorLook a; if (l >> a.fog >> a.fogHeight >> a.fogThin >> a.fogColor >> a.fogGlow >> a.lightFog) { o.fog = a.fog; o.fogHeight = a.fogHeight; o.fogThin = a.fogThin; o.fogColor = a.fogColor; o.fogGlow = a.fogGlow; o.lightFog = a.lightFog; float bo; if (l >> bo) { o.bounce = bo; float fl; if (l >> fl) o.flare = fl; } } }   // (newer files)
         o.name = unescText(n); o.curve = (ToneCurve)std::clamp(c, 0, (int)ToneCurve::COUNT - 1);
         bool dup = false; for (const ColorLook& x : s.looks) dup |= x.name == o.name;
         if (!dup && !o.name.empty()) s.looks.push_back(o);

@@ -129,6 +129,7 @@ struct alignas(16) FrameCB {
     float skyVol[4];        // the sky light volume: xyz its corner relative to the camera, w ready
     float voxO[4];          // reflection rays' blocks: xyz the corner relative to the camera, w most steps
     float voxM[4];          // xyz where the corner sits in the wrapping 3D texture, w ready
+    float splash[8][4];     // splashes on water (rings): where (camera-relative), how long ago
     float planar[4];        // x 1: the mirror view is a shiny floor / water
 };
 struct alignas(16) ChunkCB { float offset[4]; float ax[4] = { 1, 0, 0, 0 }, ay[4] = { 0, 1, 0, 0 }, az[4] = { 0, 0, 1, 0 }; };   // axes: objects are turned and sized
@@ -138,7 +139,7 @@ struct ModelGpu { std::vector<std::pair<I3, GpuChunk>> parts; std::vector<Box3> 
 struct alignas(16) PreviewCB { float vp[16]; float light[4]; };
 struct alignas(16) MapCB { float vp[16]; float eye[4]; float center[4]; float mode[4]; };   // the map hologram
 struct alignas(16) VisorCB { float tint[4], grade[4], lines[4], edge[4], misc[4], hud[4], outline[4]; };
-struct alignas(16) LookCB { float k0[4], k1[4], shadow[4], high[4], adapt[4], death[4], deathCol[4]; };   // the colour look (b10)   // the visor's look (post-processing)   // a block model's meshes (16^3 pieces) and collision
+struct alignas(16) LookCB { float k0[4], k1[4], shadow[4], high[4], adapt[4], death[4], deathCol[4], flare[4], flareCol[4]; };   // the colour look (b10)   // the visor's look (post-processing)   // a block model's meshes (16^3 pieces) and collision
 
 struct App;
 static App* g_app = nullptr;
@@ -1106,7 +1107,7 @@ struct App {
         world->liquidTimer += dt;   // water and lava flow 10 steps a second
         for (int k = 0; k < 3 && world->liquidTimer >= 0.1; k++) { world->liquidTimer -= 0.1; world->tickLiquids(); }
         if (world->liquidTimer > 0.3) world->liquidTimer = 0;
-        envState.update(dt, player.eye(), info.environment, info.zones); UpdateLook(dt, false); UpdateCamOpen(dt); UpdateLampProxies(dt); UpdateSkyVolume(); UpdateVoxels();
+        envState.update(dt, player.eye(), info.environment, info.zones); UpdateLook(dt, false); UpdateCamOpen(dt); UpdateLampProxies(dt); UpdateSkyVolume(); UpdateVoxels(); UpdateWater(dt);
         if (looksDirty && !ImGui::IsAnyItemActive()) { looksDirty = false; if (!projectDir.empty()) saveLooks(projectDir + "/looks.txt", looks); }
         cloudTime += dt * (0.5 + weather.now.wind);
         precipTime += dt; { float w = EffWeather().wind; precipWindX += dt * w; precipWindZ += dt * w * 0.45; }   // (added up: a change of wind only changes how they move from now on)
@@ -2587,6 +2588,11 @@ struct App {
                 if (k > 0 && LockPoint(s.homeId, c)) s.dir = homeDir(s.dir, s.pos, c, k, dt); else if (!LockPoint(s.homeId, c)) s.homeId = 0;
             }
             double step = s.speed * dt; s.age += (float)dt;
+            {   // through the water's surface: a splash
+                V3 np = s.pos + s.dir * step; bool a = world->liquidAt(s.pos) == 1, b = world->liquidAt(np) == 1;
+                if (a != b) { double lo = 0, hi = step; for (int k = 0; k < 8; k++) { double m = (lo + hi) / 2; if ((world->liquidAt(s.pos + s.dir * m) == 1) == a) lo = m; else hi = m; }
+                              WaterSplash(s.pos + s.dir * hi, s.missile ? 1.f : s.charged ? 0.8f : 0.5f, true); }
+            }
             double best = step; int door = -1; Hit h; bool blockHit = false;
             if (world->raycast(s.pos, s.dir, step, h)) { best = h.t; blockHit = true; }
             for (size_t i = 0; i < objects.size(); i++) {   // forcefields and doors, then any object in the way
@@ -3602,6 +3608,7 @@ struct App {
                 fc.voxM[0] = (float)md(voxC0.x * CS, VCX * CS); fc.voxM[1] = (float)md(voxC0.y * CS, VCY * CS); fc.voxM[2] = (float)md(voxC0.z * CS, VCZ * CS);
                 fc.voxM[3] = voxReady ? 1.f : 0.f;
             UpdateObjectVoxels(); fc.planar[1] = (float)objVoxCount;
+            for (int k = 0; k < 8; k++) { fc.splash[k][3] = -1; if (k < (int)splashes.size()) { V3 r = splashes[k].pos - camPos; fc.splash[k][0] = (float)r.x; fc.splash[k][1] = (float)r.y; fc.splash[k][2] = (float)r.z; fc.splash[k][3] = splashes[k].t; } }
             }
         }
         fc.weather[0] = W.rain; fc.weather[1] = W.snow; fc.weather[2] = W.dark; fc.weather[3] = weather.wetness * E.atmosphere;
@@ -3925,6 +3932,18 @@ struct App {
             lc.adapt[0] = adaptOn ? lk.adapt : 0; lc.adapt[1] = std::min(ImGui::GetIO().DeltaTime, 0.1f); lc.adapt[2] = std::max(0.05f, lk.adaptSpeed); lc.adapt[3] = nightEyeLimit;
             { DeathFx dfx = DeathNow(); lc.death[0] = dfx.stat; lc.death[1] = dfx.shut; lc.death[2] = dfx.tv; lc.death[3] = (float)std::fmod(animTime, 1000.0);
               for (int k = 0; k < 3; k++) lc.deathCol[k] = std::pow(((game.player.deathStaticColor >> (16 - 8 * k)) & 255) / 255.f, 2.2f); lc.deathCol[3] = dfx.black; }
+            {   // the sun's lens flare: where it is on screen (in front of you, above the horizon, by day, not under water)
+                float d[3] = { fc.sunDir[0], fc.sunDir[1], fc.sunDir[2] };
+                float z = d[0] * fc.camF[0] + d[1] * fc.camF[1] + d[2] * fc.camF[2];
+                float strength = settings.lensFlares ? std::max(0.f, lk.flare) : 0.f;
+                strength *= std::clamp((d[1] + 0.03f) * 12, 0.f, 1.f) * (1 - nightAmount) * (fc.envPart[2] > 0.5f ? 0.f : 1.f);
+                if (z > 0.05f && strength > 0) {
+                    float x = (d[0] * fc.camR[0] + d[1] * fc.camR[1] + d[2] * fc.camR[2]) / (z * fc.proj[0] * fc.proj[1]), y = (d[0] * fc.camU[0] + d[1] * fc.camU[1] + d[2] * fc.camU[2]) / (z * fc.proj[0]);
+                    float edge = std::clamp(1.6f - std::max(std::fabs(x), std::fabs(y)), 0.f, 1.f);
+                    lc.flare[0] = x; lc.flare[1] = y; lc.flare[2] = strength * edge;
+                    float m = std::max({ fc.sunColor[0], fc.sunColor[1], fc.sunColor[2], 1e-3f }); for (int k = 0; k < 3; k++) lc.flareCol[k] = fc.sunColor[k] / m;
+                }
+            }
             ctx->UpdateSubresource(cbLook.Get(), 0, nullptr, &lc, 0, 0); ctx->PSSetConstantBuffers(10, 1, cbLook.GetAddressOf());
         }
         if (adaptOn) {
@@ -4574,6 +4593,7 @@ struct App {
             Prop("Lights in the air"); ch |= ImGui::SliderFloat("##lfog", &L.lightFog, 0, 3, L.lightFog <= 0 ? "none" : "%.2f");
             Hint("Lights glow in the fog and haze; spotlights make beams (with their shadows).");
             Prop("Bounce light"); ch |= ImGui::SliderFloat("##bnc", &L.bounce, 0, 3, L.bounce <= 0 ? "none" : "%.2f");
+            Prop("Lens flare"); ch |= ImGui::SliderFloat("##flr", &L.flare, 0, 2, L.flare <= 0 ? "none" : "%.2f");
             if (ch) { L.name = name; if (own) *own = L; else looks.looks.push_back(L); looksDirty = true; own = OwnLook(name); }
             static char newName[64] = "";
             if (ImGui::SmallButton("Copy as a new look")) { ColorLook c = L; int n = 1; do c.name = name + " " + std::to_string(++n); while (looks.find(c.name)); looks.looks.push_back(c); name = c.name; looksDirty = true; }
@@ -10469,9 +10489,20 @@ struct App {
         if (FAILED(XAudio2Create(&xa, 0, XAUDIO2_DEFAULT_PROCESSOR))) { Log("sound: XAudio2 could not start"); return; }
         if (FAILED(xa->CreateMasteringVoice(&master))) { Log("sound: no sound device"); xa->Release(); xa = nullptr; return; }
         XAUDIO2_VOICE_DETAILS d; master->GetVoiceDetails(&d); masterChannels = (int)d.InputChannels; audioOk = true;
+        if (FAILED(xa->CreateSubmixVoice(&gameMix, d.InputChannels, d.InputSampleRate, XAUDIO2_VOICE_USEFILTER))) gameMix = nullptr;   // the game's sounds go through here (muffled under water)
+        mixRate = d.InputSampleRate;
+    }
+    IXAudio2SubmixVoice* gameMix = nullptr; UINT32 mixRate = 48000; float muffleNow = 0;
+    void UpdateMuffle(double dt, bool under) {   // under water: a low-pass filter on everything but menus and music
+        if (!gameMix) return;
+        muffleNow += ((under ? 1.f : 0.f) - muffleNow) * (float)std::min(1.0, dt * 8);
+        float hz = std::exp(std::log(20000.f) + (std::log(std::clamp(playerSounds.muffleHz, 100.f, 20000.f)) - std::log(20000.f)) * muffleNow);
+        XAUDIO2_FILTER_PARAMETERS fp{ LowPassFilter, std::min(1.f, XAudio2CutoffFrequencyToRadians(hz, mixRate)), 1.0f };
+        gameMix->SetFilterParameters(&fp);
     }
     void ShutdownAudio() {
         for (Voice& v : voices) if (v.v) v.v->DestroyVoice(); voices.clear();
+        if (gameMix) gameMix->DestroyVoice(); gameMix = nullptr;
         if (master) master->DestroyVoice(); master = nullptr; if (xa) xa->Release(); xa = nullptr; audioOk = false;
     }
     std::string SoundsDir() const { return projectDir + "/sounds"; }
@@ -10506,7 +10537,9 @@ struct App {
         }
         WAVEFORMATEX fmt{}; fmt.wFormatTag = WAVE_FORMAT_IEEE_FLOAT; fmt.nChannels = (WORD)w->channels; fmt.nSamplesPerSec = (DWORD)w->rate; fmt.wBitsPerSample = 32;
         fmt.nBlockAlign = (WORD)(4 * w->channels); fmt.nAvgBytesPerSec = fmt.nSamplesPerSec * fmt.nBlockAlign;
-        IXAudio2SourceVoice* v = nullptr; if (FAILED(xa->CreateSourceVoice(&v, &fmt, 0, 4.f))) return nullptr;
+        bool viaMix = gameMix && soundCat != SND_MENUS && soundCat != SND_MUSIC;
+        XAUDIO2_SEND_DESCRIPTOR sd{ 0, viaMix ? (IXAudio2Voice*)gameMix : (IXAudio2Voice*)master }; XAUDIO2_VOICE_SENDS sends{ 1, &sd };
+        IXAudio2SourceVoice* v = nullptr; if (FAILED(xa->CreateSourceVoice(&v, &fmt, 0, 4.f, nullptr, &sends))) return nullptr;
         UINT32 frames = (UINT32)(w->samples.size() / w->channels), begin = (UINT32)std::clamp((double)s.trimStart * w->rate, 0.0, (double)frames - 1);
         UINT32 len = s.length > 0 ? (UINT32)std::min<double>(s.length * w->rate, frames - begin) : 0;
         XAUDIO2_BUFFER b{}; b.AudioBytes = (UINT32)(w->samples.size() * 4); b.pAudioData = (const BYTE*)w->samples.data(); b.Flags = XAUDIO2_END_OF_STREAM; b.PlayBegin = begin; b.PlayLength = len;
@@ -10518,7 +10551,7 @@ struct App {
             if (w->channels == 1 && masterChannels >= 2 && dist > 0.01) {
                 V3 r = Norm(cross({ 0, 1, 0 }, player.forward())); float pan = (float)std::clamp((d.x * r.x + d.y * r.y + d.z * r.z) / dist, -1.0, 1.0);
                 std::vector<float> m(masterChannels, 0.f); m[0] = std::sqrt(0.5f * (1 - pan)); m[1] = std::sqrt(0.5f * (1 + pan));
-                v->SetOutputMatrix(master, 1, masterChannels, m.data());
+                v->SetOutputMatrix(viaMix ? (IXAudio2Voice*)gameMix : (IXAudio2Voice*)master, 1, masterChannels, m.data());
             }
         }
         v->SetVolume(volume); v->SetFrequencyRatio(randomPitch(s, soundSeed));
@@ -10677,6 +10710,7 @@ struct App {
                         Hint("A loop: full volume when your energy gets low (and again each time you get hurt), then quieter and quieter.");
                     }
                     if (g.set == &PlayerSounds::visor) Hint("A visor's own sound (below) plays instead, if it has one.");
+                    if (g.set == &PlayerSounds::shotWater) { Prop("Under water: muffled to"); ch |= ImGui::SliderFloat("##mhz", &playerSounds.muffleHz, 200, 20000, playerSounds.muffleHz >= 19000 ? "not muffled" : "%.0f Hz", ImGuiSliderFlags_Logarithmic); Hint("With your head under water every sound but menus and music is muffled (lower: more)."); }
                     if (g.set == &PlayerSounds::loopXRay) { Prop("Visor loops, volume"); ch |= ImGui::SliderFloat("##vlv", &playerSounds.visorLoopVolume, 0, 2, "%.2f"); Hint("Each plays on and on while you are in that visor (quieter in the pause menu), fading in when you switch."); }
                 }
                 Hint("Menus: picking and using buttons in the pause menu are the game's interface sounds (Screens > Sound & timing). Each sound here can have several: a random one plays.");
@@ -11165,6 +11199,33 @@ struct App {
     float MorphHudGlow() const {   // the HUD flaring up as you morph (fades in 0.6 s)
         if (!game.player.morphHudFx || game.player.morphFx <= 0) return 0;
         float t = (float)animTime - morphFlash; if (t < 0 || t > 0.6f) return 0; return (1 - t / 0.6f) * (1 - t / 0.6f) * game.player.morphFx;
+    }
+    // ---- water: splashes (shots, jumping in), rings on the surface, muffled sounds under it
+    struct SplashRt { V3 pos; float t; }; std::vector<SplashRt> splashes; bool feetWet = false, headWet = false;
+    IXAudio2SourceVoice* underVoice = nullptr; SoundUse underUse; static constexpr int TAG_UNDERWATER = 37;
+    void WaterSplash(V3 at, float strength, bool shot) {
+        splashes.push_back({ at, 0.f }); if (splashes.size() > 8) splashes.erase(splashes.begin());
+        ParticleSettings p = particlePreset("Drips"); p.rate = 0; p.burst = (int)(10 + 30 * strength); p.burstEvery = 99; p.speed = 2.5f + 3.5f * strength; p.speedVar = 1.5f; p.spread = 35;
+        p.dir = { 0, 1, 0 }; p.gravity = -14; p.life = 0.8f; p.size0 = 0.06f; p.size1 = 0.03f; p.color0 = 0xE8F4FF; p.color1 = 0x9CC8E8; p.glow = 0; p.collide = false;
+        SpawnFx(p, at + V3{ 0, 0.05, 0 }, { 0, 1, 0 });
+        if (shot) PlaySoundIn(SND_WORLD, playerSounds.shotWater, std::clamp(0.5f + strength * 0.5f, 0.f, 1.f), &at);
+    }
+    void UpdateWater(double dt) {
+        for (SplashRt& s : splashes) s.t += (float)dt; splashes.erase(std::remove_if(splashes.begin(), splashes.end(), [](const SplashRt& s) { return s.t > 2.5f; }), splashes.end());
+        bool feet = playMode && world && world->liquidAt(player.feet + V3{ 0, 0.1, 0 }) == 1;
+        bool head = playMode && world && world->liquidAt(player.eye()) == 1;
+        if (playMode && feet != feetWet) {   // in or out: a splash where the surface is
+            V3 at = player.feet; for (int k = 0; k < 24 && world->liquidAt(at + V3{ 0, 0.1, 0 }) == 1; k++) at.y += 0.25;
+            float sp = (float)std::min(1.0, std::fabs(player.vel.y) / 12.0);
+            if (feet) { WaterSplash(at, 0.4f + sp, false); PlaySoundIn(SND_MOVEMENT, playerSounds.waterIn, 0.6f + 0.4f * sp); }
+            else { WaterSplash(at, 0.3f, false); PlaySoundIn(SND_MOVEMENT, playerSounds.waterOut); }
+        }
+        feetWet = feet; headWet = head;
+        UpdateMuffle(dt, head && !paused);
+        if (head && !paused && !playerSounds.underwater.empty()) {
+            if (!underVoice) if (const SoundUse* u = playerSounds.underwater.pick(soundSeed)) { underUse = *u; int c = soundCat; soundCat = SND_MENUS; underVoice = PlaySound(underUse, 0.02f, nullptr, TAG_UNDERWATER, true); soundCat = c; }
+            if (underVoice) underVoice->SetVolume(underUse.volume * CatVolume(SND_WORLD));
+        } else if (underVoice) { StopSounds(TAG_UNDERWATER); underVoice = nullptr; }
     }
     void ToggleBall() {
         if (!playMode || play.dead()) return;
