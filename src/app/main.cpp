@@ -184,7 +184,7 @@ struct App {
     ComPtr<ID3D11ShaderResourceView> depthSRV, noiseSRV, depthCopySRV; ComPtr<ID3D11Texture2D> depthCopy; ComPtr<ID3D11PixelShader> psWater; ComPtr<ID3D11SamplerState> sampLinear, sampClamp; double cloudTime = 0, precipTime = 0, precipWindX = 0, precipWindZ = 0;
     struct BloomLevel { ComPtr<ID3D11Texture2D> tex; ComPtr<ID3D11RenderTargetView> rtv; ComPtr<ID3D11ShaderResourceView> srv; int w = 0, h = 0; };
     BloomLevel blurSrc; std::vector<BloomLevel> blurLv; ComPtr<ID3D11PixelShader> psBlurComp; float blurAmt = 0;   // paused: the world blurred behind the menu
-    std::vector<BloomLevel> bloomLv; ComPtr<ID3D11BlendState> bsAdd; float nightAmount = 0;
+    std::vector<BloomLevel> bloomLv; ComPtr<ID3D11BlendState> bsAdd; float nightAmount = 0, nightEyeLimit = 2;
     ComPtr<ID3D11Texture2D> shadowTex; ComPtr<ID3D11DepthStencilView> shadowDSV; ComPtr<ID3D11ShaderResourceView> shadowSRV; int shadowSize = 0;
     ComPtr<ID3D11RasterizerState> rsShadow, rsNoCull; ComPtr<ID3D11SamplerState> sampShadow; std::string driverName = "graphics card";
     ComPtr<ID3D11Buffer> cbFrame, cbChunk;
@@ -3418,18 +3418,20 @@ struct App {
         const float* sunLow = E.sunLow; const float* sunHigh = E.sunHigh; const float moonC[3] = { 0.10f, 0.13f, 0.22f };
         float sc[3]; mix(sunLow, sunHigh, sstep(0.05f, 0.45f, h), sc);
         float k = moon ? sstep(0.04f, 0.2f, -h) : sstep(-0.04f, 0.08f, h);
-        for (int i = 0; i < 3; i++) fc.sunColor[i] = (moon ? moonC[i] : sc[i]) * k;
-        const float ambNight[3] = { 0.035f, 0.05f, 0.10f };
+        const float nd = std::clamp(info.nightDark, 0.f, 1.f), nightK = 1 - day;   // dark nights: the moon, the night sky's light and the eye's help all shrink
+        for (int i = 0; i < 3; i++) fc.sunColor[i] = (moon ? moonC[i] * (1 - 0.8f * nd) : sc[i]) * k;
+        const float ambNight[3] = { 0.035f * (1 - 0.9f * nd), 0.05f * (1 - 0.9f * nd), 0.10f * (1 - 0.88f * nd) };
         float amb[3]; mix(ambNight, E.ambDay, day, amb); mix(amb, E.ambLow, low * 0.6f, amb);
         for (int i = 0; i < 3; i++) fc.ambient[i] = E.ambDay[i] + (amb[i] - E.ambDay[i]) * atm;   // no air: only a faint, steady light
-        const float topNight[3] = { 0.004f, 0.008f, 0.025f }, horNight[3] = { 0.02f, 0.03f, 0.07f };
+        const float skyN = 1 - 0.7f * nd, topNight[3] = { 0.004f * skyN, 0.008f * skyN, 0.025f * skyN }, horNight[3] = { 0.02f * skyN, 0.03f * skyN, 0.07f * skyN };
         mix(topNight, E.dayTop, day, fc.skyTop); float hz[3]; mix(horNight, E.dayHorizon, day, hz); mix(hz, E.lowHorizon, low, fc.skyHorizon);
         const float glowMoon[3] = { 0.06f, 0.08f, 0.12f };
         float gl[3]; mix(E.glowDay, E.glowLow, low, gl); for (int i = 0; i < 3; i++) fc.sunGlow[i] = moon ? glowMoon[i] : gl[i] * k;
         for (int i = 0; i < 3; i++) { fc.skyTop[i] *= atm; fc.skyHorizon[i] *= atm; fc.sunGlow[i] *= atm; }
         if (atm < 0.5f && moon) for (int i = 0; i < 3; i++) fc.sunColor[i] = 0;   // in space there is no moon lighting the ground
         fc.sunGlow[3] = moon ? 2.f * atm : 40.f + 60.f * (1 - atm);
-        exposure = 1.0f + 2.5f * (1 - day);                         // the eye adjusts a little at night
+        exposure = 1.0f + 2.5f * (1 - day) * (1 - 0.9f * nd);       // the eye adjusts a little at night (dark nights: hardly)
+        nightEyeLimit = 2 - 1.8f * nd * nightK;                       // eye adaptation may not brighten dark nights back up
         // weather: clouds swallow sunlight, the sky turns grey; lightning flashes light everything up
         const WeatherLook W = EffWeather(); float dim = W.dim;
         auto lum = [](const float c[3]) { return c[0] * 0.2126f + c[1] * 0.7152f + c[2] * 0.0722f; };
@@ -3920,7 +3922,7 @@ struct App {
             lc.k0[0] = (float)(int)lk.curve; lc.k0[1] = lk.exposure; lc.k0[2] = lk.contrast; lc.k0[3] = lk.saturation;
             lc.k1[0] = lk.warmth; lc.k1[1] = settings.filmFx ? lk.fringes : 0; lc.k1[2] = settings.filmFx ? lk.grain : 0; lc.k1[3] = lk.vignette;
             lin(lk.shadows, lc.shadow); lc.shadow[3] = lk.shadowsAmount; lin(lk.highlights, lc.high); lc.high[3] = lk.highlightsAmount;
-            lc.adapt[0] = adaptOn ? lk.adapt : 0; lc.adapt[1] = std::min(ImGui::GetIO().DeltaTime, 0.1f); lc.adapt[2] = std::max(0.05f, lk.adaptSpeed);
+            lc.adapt[0] = adaptOn ? lk.adapt : 0; lc.adapt[1] = std::min(ImGui::GetIO().DeltaTime, 0.1f); lc.adapt[2] = std::max(0.05f, lk.adaptSpeed); lc.adapt[3] = nightEyeLimit;
             { DeathFx dfx = DeathNow(); lc.death[0] = dfx.stat; lc.death[1] = dfx.shut; lc.death[2] = dfx.tv; lc.death[3] = (float)std::fmod(animTime, 1000.0);
               for (int k = 0; k < 3; k++) lc.deathCol[k] = std::pow(((game.player.deathStaticColor >> (16 - 8 * k)) & 255) / 255.f, 2.2f); lc.deathCol[3] = dfx.black; }
             ctx->UpdateSubresource(cbLook.Get(), 0, nullptr, &lc, 0, 0); ctx->PSSetConstantBuffers(10, 1, cbLook.GetAddressOf());
@@ -4512,6 +4514,8 @@ struct App {
         Prop("Air"); EnvCombo("##air", info.environment);
         Hint("The air of this whole world. Zones (in the Outliner) can have their own.");
         Hint("You are in: %s", envState.inZone ? ("the zone \"" + envState.zoneName + "\"").c_str() : "the world's own air");
+        Prop("Nights"); ImGui::SliderFloat("##nd", &info.nightDark, 0, 1, info.nightDark < 0.2f ? "bright" : info.nightDark > 0.9f ? "pitch dark" : info.nightDark > 0.6f ? "dark %.2f" : "%.2f");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("How dark nights are: the moon's light, the night sky's glow, and how much the eye (and eye adaptation) brightens them.\nDark: you need lights, glowing blocks and the visor to see.");
         ImGui::Checkbox("True darkness", &info.trueDark);
         Hint("No sky light under roofs and in caves: only lights, lamps and glowing things light them (it fades in near openings).");
         if (ImGui::Button("Add a zone around me")) AddZoneHere();

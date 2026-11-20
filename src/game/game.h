@@ -167,6 +167,7 @@ struct WorldInfo {
     std::string environment = "temperate";
     std::string look = "Natural";                   // the colour look (Looks: tone curve, exposure, bloom, grading ...)
     bool trueDark = true;                           // no sky light under roofs and in caves: only lights, lamps and glowing things light them
+    float nightDark = 0.85f;                        // how dark nights are: 0 bright (the old nights) .. 1 pitch dark (only the moon, faintly, and your lights)
     bool hasSpawn = false; V3 spawn{ 0.5, 0, 0.5 }; double spawnYaw = 0;   // where the player starts when playing
     std::vector<EnvZone> zones;
     bool load(const std::string& dir);

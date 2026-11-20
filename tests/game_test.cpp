@@ -1537,6 +1537,7 @@ int main() {
         { Settings se; se.eyeAdapt = false; se.filmFx = false; se.save("/tmp/prim_set_look.txt"); Settings sl; sl.load("/tmp/prim_set_look.txt");
           CHECK(!sl.eyeAdapt && !sl.filmFx && findOption("eye_adapt") >= 0 && findOption("film_fx") >= 0, "Options: eye adaptation and film effects (save, load, in the menu)"); }
         { WorldInfo wd; wd.trueDark = false; wd.save("/tmp/prim_wdark"); WorldInfo wdl; wdl.load("/tmp/prim_wdark"); CHECK(!wdl.trueDark && WorldInfo{}.trueDark, "true darkness: on unless a world turns it off (saved)"); }
+        { WorldInfo wn; wn.nightDark = 0.3f; wn.save("/tmp/prim_wnight"); WorldInfo wl2; wl2.load("/tmp/prim_wnight"); CHECK(wl2.nightDark == 0.3f && WorldInfo{}.nightDark > 0.5f, "how dark nights are: saved (dark by default)"); }
         { Settings se; se.lightShadows = 8; se.save("/tmp/prim_set_ls.txt"); Settings sl; sl.load("/tmp/prim_set_ls.txt"); CHECK(sl.lightShadows == 8 && findOption("light_shadows") >= 0 && findOption("bounce") >= 0 && findOption("light_fog") >= 0, "Options: shadows from lamps"); }
         {   // lights: strips and shadows save and load (older files: none)
             std::vector<WorldObject> ob(1); ob[0].id = 7; ob[0].kind = ObjKind::Light; ob[0].light.type = LightType::Strip; ob[0].light.length = 6.5f; ob[0].light.shadows = true;

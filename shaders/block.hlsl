@@ -1308,7 +1308,7 @@ cbuffer LookCB : register(b10)
     float4 gLk1;       // x warmth (-1 cold .. 1 warm), y lens fringes, z grain, w vignette
     float4 gLkShadow;  // rgb: colour in the dark parts (linear), w how much
     float4 gLkHigh;    // rgb: colour in the bright parts, w how much
-    float4 gLkAdapt;   // x how much the eye adapts, y seconds since last frame, z how fast, w -
+    float4 gLkAdapt;   // x how much the eye adapts, y seconds since last frame, z how fast, w how many stops it may brighten (dark nights: less)
     float4 gDeath;     // dying: x static in the visor, y the suit shutting down (dark, grey), z the picture switching off (0..1), w the clock
     float4 gDeathCol;  // rgb the static's colour, w black
 };
@@ -1384,7 +1384,7 @@ float4 PS_Adapt(SkyOut i) : SV_Target
 {
     float2 a = gLumTex.SampleLevel(gClamp, float2(0.5, 0.5), 12).rg;
     float avg = a.x / max(a.y, 1e-4);
-    float target = clamp(log2(0.18) - avg, -2, 2);
+    float target = clamp(log2(0.18) - avg, -2, max(gLkAdapt.w, 0));
     float prev = gExposure.Load(int3(0, 0, 0)).r; if (!(prev == prev) || abs(prev) > 4) prev = 0;
     return float4(prev + (target - prev) * (1 - exp(-gLkAdapt.y * gLkAdapt.z)), 0, 0, 1);
 }

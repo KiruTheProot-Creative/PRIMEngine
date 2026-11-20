@@ -191,6 +191,8 @@ which fades in over a second and a half as you walk in.
 - **Casts shadows**: tick it on a light; the nearest few such lights get real shadows (Options > Graphics > *Shadows
   from lamps*: off, 2, 4, 8).
 - Lights make **highlights** on shiny and wet surfaces (neon on wet streets).
+- **Nights** (World > Environment): how dark they are, from bright to pitch dark (dark by default): the moon's light,
+  the night sky's glow and how much the eye (and eye adaptation) brightens them all shrink.
 - **True darkness** (World > Environment, on by default): no sky light under roofs and in caves - only lights, lamps
   and glowing things light them. Light fades in near openings and cave mouths; fog and the distance go dark inside too.
 - **Bounce light** (screen-space GI): lit and glowing surfaces light the ones near them - a green glow tints the wall

@@ -272,7 +272,7 @@ bool WorldInfo::save(const std::string& dir) const {
     for (auto& l : layers) f << " " << l.first << " " << l.second;
     f << "\nplayer " << player.feet.x << " " << player.feet.y << " " << player.feet.z << " " << player.yaw << " " << player.pitch << " " << (player.flying ? 1 : 0) << "\nhotbar " << hotSel;
     for (auto& h : hotbar) { std::string e = h; for (size_t p; (p = e.find(' ')) != std::string::npos;) e.replace(p, 1, "%20"); f << " " << (e.empty() ? "-" : e); }   // names may have spaces
-    f << "\nweather " << weather << " " << (autoWeather ? 1 : 0) << "\nenvironment " << environment << "\ntrue_dark " << (trueDark ? 1 : 0) << "\n";
+    f << "\nweather " << weather << " " << (autoWeather ? 1 : 0) << "\nenvironment " << environment << "\ntrue_dark " << (trueDark ? 1 : 0) << "\nnight_dark " << nightDark << "\n";
     if (hasSpawn) f << "spawn " << spawn.x << " " << spawn.y << " " << spawn.z << " " << spawnYaw << "\n";
     f << "look " << escLook(look) << "\n";
     for (auto& z : zones) { f << "zone " << z.env << " " << z.lo.x << " " << z.lo.y << " " << z.lo.z << " " << z.hi.x << " " << z.hi.y << " " << z.hi.z << " " << z.name << "\n"; if (!z.look.empty()) f << "zonelook " << escLook(z.look) << "\n"; }
@@ -291,6 +291,7 @@ bool WorldInfo::load(const std::string& dir) {
         else if (k == "weather") { int a = 0; f >> weather >> a; autoWeather = a != 0; }
         else if (k == "environment") f >> environment;
         else if (k == "true_dark") { int v; f >> v; trueDark = v != 0; }
+        else if (k == "night_dark") { f >> nightDark; nightDark = std::clamp(nightDark, 0.f, 1.f); }
         else if (k == "look") { std::string l; f >> l; look = unescLook(l); }
         else if (k == "zonelook") { std::string l; f >> l; if (!zones.empty()) zones.back().look = unescLook(l); }
         else if (k == "spawn") { f >> spawn.x >> spawn.y >> spawn.z >> spawnYaw; hasSpawn = true; }
