@@ -5319,7 +5319,8 @@ struct App {
             auto put = [&](int gx, int gy) { float u = (float)gx / HUD_GX, w = (float)gy / HUD_GY; V3 q = sw.apply(planePoint(p, u, w), p.sway); v[n++] = { { (float)q.x, (float)q.y, (float)q.z }, { u, w } }; };
             for (int gy = 0; gy < HUD_GY; gy++) for (int gx = 0; gx < HUD_GX; gx++) { put(gx, gy); put(gx + 1, gy); put(gx + 1, gy + 1); put(gx, gy); put(gx + 1, gy + 1); put(gx, gy + 1); }
             ctx->Unmap(vbHud.Get(), 0);
-            PreviewCB pp = pc; pp.light[0] = std::clamp(p.opacity, 0.f, 1.f); pp.light[1] = std::clamp(p.bloom, 0.f, 3.f) * (settings.hudGlow ? 1.f : 0.f); ctx->UpdateSubresource(cbPreview.Get(), 0, nullptr, &pp, 0, 0);
+            float mg = playMode ? MorphHudGlow() : 0.f;
+            PreviewCB pp = pc; pp.light[0] = std::clamp(p.opacity, 0.f, 1.f); pp.light[1] = std::clamp(p.bloom, 0.f, 3.f) * (settings.hudGlow ? 1.f : 0.f) + mg * 2.5f; pp.light[2] = mg * 1.5f; ctx->UpdateSubresource(cbPreview.Get(), 0, nullptr, &pp, 0, 0);
             ctx->OMSetBlendState(p.glow ? bsAdd.Get() : bsPremul.Get(), nullptr, 0xFFFFFFFF);
             UINT stride = sizeof(HVtx), off = 0; ctx->IASetVertexBuffers(0, 1, vbHud.GetAddressOf(), &stride, &off);
             ctx->PSSetShaderResources(0, 1, &srv);
@@ -5897,6 +5898,13 @@ struct App {
         ImGui::SeparatorText("Morph Ball (C)");
         sl("Size", &r.ballSize, 0.2f, 3, "%.2f blocks");
         sl("Rolling speed", &r.ballSpeed, 1, 20, "%.1f blocks/s");
+        sl("Morph effect", &r.morphFx, 0, 2, r.morphFx <= 0 ? "none" : "%.2f");
+        if (r.morphFx > 0) {
+            float c[3] = { ((r.morphColor >> 16) & 255) / 255.f, ((r.morphColor >> 8) & 255) / 255.f, (r.morphColor & 255) / 255.f }; Prop("... colour");
+            if (ImGui::ColorEdit3("##mfc", c, ImGuiColorEditFlags_NoInputs)) { r.morphColor = ((uint32_t)std::lround(c[0] * 255) << 16) | ((uint32_t)std::lround(c[1] * 255) << 8) | (uint32_t)std::lround(c[2] * 255); ch = true; }
+            Prop("... the HUD too"); ch |= ImGui::Checkbox("##mfh", &r.morphHudFx);
+            Hint("Morphing: an energy shell collapses onto the ball (or bursts from it), sparks, a flash of light; the HUD flares up and its energy sparks away. Standing up next to a wall or a step: you are pushed to where you fit.");
+        }
         Prop("Model");
         if (ImGui::BeginCombo("##bm", r.ballModel.c_str())) {
             if (ImGui::Selectable("@morph-ball (built in)", r.ballModel == "@morph-ball")) { r.ballModel = "@morph-ball"; ch = true; }
@@ -11120,16 +11128,55 @@ struct App {
     bool HasMorphBall() const { int m = game.player.morphBall; return m == 1 || (m == 2 && inv.keys.count("Morph Ball")); }
     bool HasBombs() const { int m = game.player.bombs; return HasMorphBall() && (m == 1 || (m == 2 && inv.keys.count("Bombs"))); }
     V3 BallCentre() const { return { player.feet.x, player.feet.y + player.height * 0.5, player.feet.z }; }
+    // the nearest spot (a little sideways, or up onto a step) where a body this size fits - never through a wall
+    bool FreeSpotNear(V3 feet, double halfW, double height, V3& out) {
+        double best = 1e9; bool found = false;
+        for (int ring = 1; ring <= 8 && !found; ring++) {
+            double r = ring * 0.1;
+            for (int k = 0; k < 16; k++) {
+                double a = k * 3.14159265358979 / 8; V3 off{ std::cos(a) * r, 0, std::sin(a) * r };
+                for (double up : { 0.0, 0.25, 0.5 }) {
+                    V3 p = feet + off + V3{ 0, up, 0 };
+                    if (!world->boxFree(p, halfW, height)) continue;
+                    if (!canSee(*world, feet + V3{ 0, std::min(0.3, height * 0.5), 0 }, p + V3{ 0, std::min(0.3, height * 0.5), 0 }, r + 1)) continue;   // (not through a wall)
+                    double d = r + up * 1.5; if (d < best) { best = d; out = p; found = true; }
+                }
+            }
+        }
+        return found;
+    }
+    float morphFlash = -10;   // when you last morphed (the HUD's glow)
+    void MorphFx(bool in) {   // an energy shell (collapsing onto the ball, or bursting from it), sparks, a flash of light, the HUD glowing
+        const PlayerRules& r = game.player; morphFlash = (float)animTime; if (r.morphFx <= 0) return;
+        V3 c = BallCentre(); double rad = std::max(0.3, (double)r.ballSize * 0.5); uint32_t col = r.morphColor;
+        ImpactSphere sp; sp.pos = c; sp.color = col; sp.life = 0.45f; sp.radius = (float)(in ? rad * 2.6 : rad * 3.0); sp.inward = in; spheres.push_back(sp);
+        ParticleSettings p = particlePreset("Sparks"); p.burst = (int)(40 * r.morphFx); p.color0 = 0xFFFFFF; p.color1 = col; p.speed = in ? 3.5f : 6; p.spread = 180; p.gravity = -4; p.life = 0.5f; p.collide = false; p.glow = 6; p.area = PArea::Sphere; p.areaSize = { rad, rad, rad };
+        SpawnFx(p, c, { 0, 1, 0 });
+        flashes.push_back({ c, 0.f, Linear(col) * (2.5 * r.morphFx), 5.0 });
+        if (r.morphHudFx) {   // the visor's energy going too: sparks in front of where your eyes were
+            V3 eye = player.feet + V3{ 0, game.player.eyeHeight, 0 }, fw = player.forward();
+            ParticleSettings h = particlePreset("Sparks"); h.burst = (int)(30 * r.morphFx); h.color0 = 0xFFFFFF; h.color1 = col; h.speed = 2.5f; h.spread = 180; h.gravity = 0; h.life = 0.4f; h.collide = false; h.glow = 5; h.size0 = 0.03f; h.size1 = 0.01f;
+            h.area = PArea::Box; h.areaSize = { 0.5, 0.3, 0.05 }; SpawnFx(h, eye + fw * 0.7, fw * -1.0);
+        }
+    }
+    float MorphHudGlow() const {   // the HUD flaring up as you morph (fades in 0.6 s)
+        if (!game.player.morphHudFx || game.player.morphFx <= 0) return 0;
+        float t = (float)animTime - morphFlash; if (t < 0 || t > 0.6f) return 0; return (1 - t / 0.6f) * (1 - t / 0.6f) * game.player.morphFx;
+    }
     void ToggleBall() {
         if (!playMode || play.dead()) return;
         if (!player.ball) {
             if (!HasMorphBall()) { Toast(game.player.morphBall == 0 ? "No morph ball in this game" : "You have not found the Morph Ball yet"); return; }
             player.ball = true; player.applySize(game.player); ballCamSet = false; PlaySoundIn(SND_MOVEMENT, playerSounds.morph);
+            if (!world->boxFree(player.feet, player.halfW, player.height)) { V3 to; if (FreeSpotNear(player.feet, player.halfW, player.height, to)) player.feet = to; }   // a ball bigger than you: pushed out of the walls
+            MorphFx(true);
             StopChargeTimeline(); chargeTlOn = false; weapState.charging = false; weapState.charge = 0;
         } else {
             PlayerRules r = game.player; Player stand = player; stand.ball = false; stand.applySize(r);
-            if (!world->boxFree(player.feet, stand.halfW, stand.height)) { Toast("No room to stand up here"); return; }
-            player.ball = false; player.applySize(game.player); PlaySoundIn(SND_MOVEMENT, playerSounds.morph, 0.8f);
+            V3 at = player.feet;
+            if (!world->boxFree(at, stand.halfW, stand.height) && !FreeSpotNear(player.feet, stand.halfW, stand.height, at)) { Toast("No room to stand up here"); return; }   // a little off a wall or a step: pushed to where you fit
+            player.feet = at; player.ball = false; player.applySize(game.player); PlaySoundIn(SND_MOVEMENT, playerSounds.morph, 0.8f);
+            MorphFx(false);
         }
     }
     void BreakBlock(int x, int y, int z) {

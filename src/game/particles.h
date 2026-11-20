@@ -79,6 +79,7 @@ float flickerAt(Flicker f, double time, uint32_t seed);   // 0..1 brightness
 // an impact sphere: a glowing see-through shell that grows fast from where something went off, then fades (explosions, missiles, charged shots)
 struct ImpactSphere {
     V3 pos{ 0, 0, 0 }; float t = 0, life = 0.45f, radius = 1.5f; uint32_t color = 0xFFC060;
+    bool inward = false;       // shrinks onto its middle instead of growing (morphing into the ball)
     float radiusNow() const;   // grows quickly at first, slowly at the end
     float alphaNow() const;    // bright at first, gone at the end
     bool done() const { return t >= life; }

@@ -1636,6 +1636,7 @@ float4 PS_Hud(HudOut i) : SV_Target
         float3 g = gHudTex.SampleLevel(gClamp, i.uv, 2.5).rgb * 0.45 + gHudTex.SampleLevel(gClamp, i.uv, 4).rgb * 0.45 + gHudTex.SampleLevel(gClamp, i.uv, 5.5).rgb * 0.5;
         c.rgb += g * bloom * 1.6;                                                         // light only: the see-through parts stay see-through
     }
+    c.rgb *= 1 + gPrevLight.z;                                                            // a flash (morphing)
     return c * gPrevLight.x;
 }
 // a picture copied over the whole target (the camera preview's background)

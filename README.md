@@ -218,6 +218,14 @@ rises and fades), the suit powering down (its pitch falls), the switch-off.
 Enemy drops hop out, fall to the ground, and are pulled to you when you are close; full energy or ammo still takes
 them. No drops of what you cannot use yet (missiles before the launcher).
 
+## Morphing
+
+- Rolling up, an energy shell collapses onto the ball (standing up: it bursts from it), sparks fly and a flash of light
+  goes off; the HUD flares up and its energy sparks away. Colour and strength (0: none): Player > Body and movement >
+  Morph Ball.
+- Safe morphing: standing up next to a wall or a step pushes you to the nearest spot where you fit (never through a
+  wall); a ball bigger than you is pushed out of the walls too. Only with no room at all: "No room to stand up here".
+
 ## Surfaces: Samus's steps on what she walks on (Player > Surfaces)
 
 Each block can be made of a **surface** (a block's settings: *Surface*): Metal, Grate, Rock, Dirt, Sand, Wood, Glass,

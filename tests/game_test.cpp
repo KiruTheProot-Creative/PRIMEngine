@@ -1585,8 +1585,9 @@ int main() {
         CHECK(pl.lowHealthFade == 4 && pl.lowHealthQuiet == 0.2f, "... and its fade saves and loads");
     }
     {   // the death sequence: its settings save and load, and you come back only after it
-        GameSettings g; g.player.deathHit = 0.3f; g.player.deathStatic = 2; g.player.deathTvOff = false; g.player.deathStaticColor = 0x40FF80; g.player.respawnDelay = 1;
+        GameSettings g; g.player.deathHit = 0.3f; g.player.deathStatic = 2; g.player.deathTvOff = false; g.player.deathStaticColor = 0x40FF80; g.player.respawnDelay = 1; g.player.morphColor = 0x40A0FF; g.player.morphFx = 1.5f; g.player.morphHudFx = false;
         g.save("/tmp/prim_game_death.txt"); GameSettings gl; gl.load("/tmp/prim_game_death.txt");
+        CHECK(gl.player.morphColor == 0x40A0FF && gl.player.morphFx == 1.5f && !gl.player.morphHudFx, "the morph effect's settings save and load");
         CHECK(gl.player.deathHit == 0.3f && gl.player.deathStatic == 2 && !gl.player.deathTvOff && gl.player.deathStaticColor == 0x40FF80 && gl.player.deathFx, "the death sequence's settings save and load");
         World w(reg); Player p; PlayState ps; ps.start(p, gl.player, { 0, 64, 0 }, 0); ps.health = 0;
         ps.tick(w, p, gl.player, { 0, 64, 0 }, 0, 0.01); CHECK(ps.dead(), "dead");
