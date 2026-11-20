@@ -29,6 +29,7 @@
 #include "../game/bosses.h"
 #include "../game/assets.h"
 #include "../game/looks.h"
+#include "../game/surfaces.h"
 #include <tuple>
 #include <future>
 #include <memory>
@@ -1773,6 +1774,9 @@ struct App {
         for (const Flash& fl : flashes) simple(fl.pos, fl.range, fl.col * (1 - fl.t / 0.35));
         for (const ImpactSphere& sp : spheres) { double a = sp.alphaNow(); if (a > 0.02) simple(sp.pos, 1.5 + sp.radiusNow() * 2.5, Linear(sp.color) * (3.5 * a)); }
         if (playMode && weapState.charging && weapState.charge > 0) if (const Beam* b = CurrentBeam()) simple(chargeAt, 2.0 + 2.5 * weapState.charge, Linear(b->color) * (0.6 + 1.6 * weapState.charge));
+        for (const EnemyDropRt& d : enemyDrops) if (const DropLook* lk = enemies.drop(d.what)) if (lk->light > 0) {   // glowing drops
+            V3 c = ColorOf(lk->lightColor); simple(d.pos, lk->light, V3{ std::pow(c.x, 2.2), std::pow(c.y, 2.2), std::pow(c.z, 2.2) } * (double)lk->lightPower);
+        }
         for (const LampProxy& lp : lampProxies) all.push_back({ lp.p, lp.range, lp.col, 0, { 0, -1, 0 }, -1, { 0, 0, 0 }, true, false, dist(lp.p) });
         std::sort(all.begin(), all.end(), [](const L& a, const L& b) { return a.dist - a.range < b.dist - b.range; });
         frameLights.clear(); casters.clear(); int wantShadows = std::clamp(settings.lightShadows, 0, 8);
@@ -4677,6 +4681,13 @@ struct App {
             if (ImGui::ColorEdit3("##lcol", col, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_PickerHueWheel))
                 draft.lightColor = ((uint32_t)std::lround(col[0] * 255) << 16) | ((uint32_t)std::lround(col[1] * 255) << 8) | (uint32_t)std::lround(col[2] * 255);
         }
+        Prop("Surface");
+        if (ImGui::BeginCombo("##surf", draft.surface.empty() ? "(none)" : draft.surface.c_str())) {
+            if (ImGui::Selectable("(none)", draft.surface.empty())) draft.surface.clear();
+            for (const Surface& x : surfaces.list) if (ImGui::Selectable(x.name.c_str(), draft.surface == x.name)) draft.surface = x.name;
+            ImGui::EndCombo();
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("What it is made of: Samus's steps, jumps, landings and rolling on it sound like it (Player > Surfaces).");
         Prop("Sways in the wind"); ImGui::Checkbox("##waves", &draft.waves);
         Prop("Shininess"); ImGui::SliderFloat("##shine", &draft.shine, 0, 1, draft.shine <= 0 ? "matt" : "%.2f");
         Prop("Mirror"); ImGui::Checkbox("##mirror", &draft.mirror);
@@ -5108,7 +5119,8 @@ struct App {
     std::string HudPath() const { return projectDir + "/hud.txt"; }
     void LoadHud() { items = defaultItems(); loadItems(projectDir + "/items.txt", items); looks = LookSet{}; loadLooks(projectDir + "/looks.txt", looks); looksDirty = false; assetFolders = AssetFolders{}; loadAssetFolders(projectDir + "/asset_folders.txt", assetFolders);
         animBlends = AnimBlends{}; loadAnimBlends(projectDir + "/anim_blend.txt", animBlends); cannonBlend.reset(); doorBlend.clear(); viewerBlend.reset();
-        materials = Materials{}; loadMaterials(projectDir + "/materials.txt", materials); matsDirty = true; soundCache.clear(); playerSounds = PlayerSounds{}; loadPlayerSounds(projectDir + "/player_sounds.txt", playerSounds); activeTl.clear();
+        materials = Materials{}; loadMaterials(projectDir + "/materials.txt", materials); matsDirty = true; soundCache.clear(); playerSounds = PlayerSounds{}; loadPlayerSounds(projectDir + "/player_sounds.txt", playerSounds);
+        if (!loadSurfaces(projectDir + "/surfaces.txt", surfaces)) surfaces = defaultSurfaces(); activeTl.clear();
         hud = HudLayout{}; loadHud(HudPath(), hud); visors = defaultVisors(); loadVisors(projectDir + "/visors.txt", visors); scanLib = ScanLibrary{}; loadScanLibrary(projectDir + "/scans.txt", scanLib); MigrateLegacyScans(); menu = defaultMenu(); loadMenu(projectDir + "/menu.txt", menu); enemies = defaultEnemies(); loadEnemies(projectDir + "/enemies.txt", enemies); bosses = BossSet{}; loadBosses(projectDir + "/bosses.txt", bosses); weapons = WeaponSet{}; loadWeapons(projectDir + "/weapons.txt", weapons); weapSel = 0; weapState = WeaponState{}; hudImages.clear(); hudSel = 0; hudPlane = 0; hudEl = -1; hudPart = 0; }
     void SaveHud() {
         if (projectDir.empty()) return; std::error_code ec;
@@ -5834,6 +5846,7 @@ struct App {
             selectWeaponsTab = false;
             if (ImGui::BeginTabItem("Sounds", nullptr, selectSoundsTab ? ImGuiTabItemFlags_SetSelected : 0)) { SoundsTab(); ImGui::EndTabItem(); }
             selectSoundsTab = false;
+            if (ImGui::BeginTabItem("Surfaces")) { SurfacesTab(); ImGui::EndTabItem(); }
             if (ImGui::BeginTabItem("Body and movement", nullptr, selectBodyTab ? ImGuiTabItemFlags_SetSelected : 0)) { ImGui::BeginChild("body"); BodyTab(); ImGui::EndChild(); ImGui::EndTabItem(); }
             selectBodyTab = false;
             if (ImGui::BeginTabItem("Items", nullptr, selectItemsTab ? ImGuiTabItemFlags_SetSelected : 0)) { ImGui::BeginChild("items"); ItemsTab(); ImGui::EndChild(); ImGui::EndTabItem(); }
@@ -8855,7 +8868,8 @@ struct App {
         if (drops) for (const EnemyDrop& d : t.drops) if (Rand01() < d.chance) {   // what it leaves behind (nothing you could not use: missiles before the launcher ...)
             if (d.what != "Energy" && ((d.what == weapons.missileCounter && MissileMax() <= 0) || (d.what == items.powerBombCounter && PowerBombMax() <= 0))) continue;
             V3 at = c + V3{ (Rand01() - 0.5) * 0.6, 0, (Rand01() - 0.5) * 0.6 }; if (at.y < s.pos.y + 0.3) at.y = s.pos.y + 0.3;
-            enemyDrops.push_back({ at, d.what, d.amount, 12, ++dropSeq, V3{ (Rand01() - 0.5) * 2.0, 2.5, (Rand01() - 0.5) * 2.0 } });
+            const DropLook* lk = enemies.drop(d.what);
+            enemyDrops.push_back({ at, d.what, d.amount, lk ? std::max(1.f, lk->life) : 12.f, ++dropSeq, V3{ (Rand01() - 0.5) * 2.0, 2.5, (Rand01() - 0.5) * 2.0 } });
         }
         if (t.respawn == EnemyRespawn::Never) enemyGone.insert(GoneKey(o.id));
         s.respawnIn = t.respawn == EnemyRespawn::After ? t.respawnTime : -1;
@@ -9006,8 +9020,15 @@ struct App {
     }
     void DrawEnemyDrops(int pass, V3 cam) {
         for (const EnemyDropRt& d : enemyDrops) {
-            if (d.life < 3 && std::fmod(d.life, 0.25f) < 0.1f) continue;   // blinks before it is gone
-            WorldObject at; at.model = d.what == "Energy" ? "@health" : "@gem"; at.scale = 0.55; at.pos = d.pos + V3{ 0, 0.1 * std::sin(animTime * 3 + d.id), 0 }; at.yaw = animTime * 120;
+            const DropLook* lk = enemies.drop(d.what);
+            if (d.life < (lk ? lk->blinkAt : 3.f) && std::fmod(d.life, 0.25f) < 0.1f) continue;   // blinks before it is gone
+            WorldObject at; at.model = d.what == "Energy" ? "@health" : "@gem"; at.scale = 0.55;
+            if (lk) {
+                bool big = lk->bigFrom > 0 && d.amount >= lk->bigFrom && !lk->bigModel.empty();
+                if (big) { at.model = lk->bigModel; at.scale = lk->bigScale; } else { if (!lk->model.empty()) at.model = lk->model; at.scale = lk->scale; }
+            }
+            if (!ModelOf(at)) { at.model = d.what == "Energy" ? "@health" : "@gem"; }   // (a model that is gone: the placeholder)
+            at.pos = d.pos + V3{ 0, (lk ? lk->bob : 0.1) * std::sin(animTime * 3 + d.id), 0 }; at.yaw = animTime * (lk ? lk->spin : 120.f) + d.id * 37;
             DrawObject(at, pass, cam);
         }
     }
@@ -9087,10 +9108,10 @@ struct App {
             }
             Box3 db{ d.pos - V3{ 0.45, 0.45, 0.45 }, d.pos + V3{ 0.45, 0.45, 0.45 } };
             if (d.life > 0 && BoxesTouch(db, youBox) && !play.dead()) {
-                if (d.what == "Energy") { int got = (int)std::lround(std::min(playRules.maxHealth, play.health + (float)d.amount) - play.health); play.health = std::min(playRules.maxHealth, play.health + (float)d.amount); if (got > 0) Toast("+" + std::to_string(got) + " energy"); GameSnd(&PlayerSounds::pickHealth, SND_WORLD); }
+                if (d.what == "Energy") { int got = (int)std::lround(std::min(playRules.maxHealth, play.health + (float)d.amount) - play.health); play.health = std::min(playRules.maxHealth, play.health + (float)d.amount); if (got > 0) Toast("+" + std::to_string(got) + " energy"); DropSound(d, &PlayerSounds::pickHealth); }
                 else {
                     int& c = inv.counts[d.what]; int most = d.what == weapons.missileCounter ? MissileMax() : d.what == items.powerBombCounter ? PowerBombMax() : 1 << 20;
-                    int got = std::max(0, std::min(most, c + d.amount) - c); c += got; if (got > 0) Toast("+" + std::to_string(got) + " " + d.what); GameSnd(&PlayerSounds::pickAmmo, SND_WORLD);   // (full: picked up anyway)
+                    int got = std::max(0, std::min(most, c + d.amount) - c); c += got; if (got > 0) Toast("+" + std::to_string(got) + " " + d.what); DropSound(d, &PlayerSounds::pickAmmo);   // (full: picked up anyway)
                 }
                 d.life = 0;
             }
@@ -9651,6 +9672,55 @@ struct App {
     bool SoundFileField(const char* id, std::string& file) {
         SoundUse u; u.file = file; bool ch = SoundEdit(id, u, false); if (ch) file = u.file; return ch;
     }
+    void DropSound(const EnemyDropRt& d, SoundSet PlayerSounds::* fallback) {   // the drop's own pickup sound, or the game's
+        const DropLook* lk = enemies.drop(d.what);
+        if (lk && !lk->sound.empty()) PlaySoundIn(SND_WORLD, lk->sound, 1); else GameSnd(fallback, SND_WORLD);
+    }
+    std::vector<std::string> DropKinds() const {   // Energy, the counters, and anything enemies drop
+        std::vector<std::string> v{ "Energy" };
+        auto add = [&](const std::string& w) { if (!w.empty() && std::find(v.begin(), v.end(), w) == v.end()) v.push_back(w); };
+        add(weapons.missileCounter); add(items.powerBombCounter);
+        for (const EnemyType& t : enemies.types) for (const EnemyDrop& d : t.drops) add(d.what);
+        for (const DropLook& d : enemies.drops) add(d.what);
+        return v;
+    }
+    bool enemyDropsPage = false;
+    void DropLooksUI(bool& ch) {
+        ImGui::TextWrapped("How the drops look - what enemies leave when they die. A kind without its own look uses the placeholder.");
+        for (const std::string& kind : DropKinds()) {
+            ImGui::PushID(kind.c_str());
+            DropLook* lk = nullptr; for (DropLook& d : enemies.drops) if (d.what == kind) lk = &d;
+            bool open = ImGui::CollapsingHeader((kind + (lk ? "" : "   (placeholder)")).c_str());
+            if (open) {
+                if (!lk) { if (ImGui::Button("Give it its own look")) { DropLook d; d.what = kind; if (kind == "Energy") d.lightColor = 0xFFC060; else d.lightColor = 0xFF6040; enemies.drops.push_back(d); ch = true; } ImGui::PopID(); continue; }
+                auto modelCombo = [&](const char* id, std::string& m, const char* none) {
+                    if (ImGui::BeginCombo(id, m.empty() ? none : m.c_str())) {
+                        if (ImGui::Selectable(none, m.empty())) { m.clear(); ch = true; }
+                        for (const std::string& n : PartModels()) if (ImGui::Selectable(n.c_str(), m == n)) { m = n; ch = true; }
+                        ImGui::EndCombo();
+                    }
+                };
+                Prop("Model"); modelCombo("##dm", lk->model, "(the placeholder)");
+                Prop("Size"); ch |= ImGui::SliderFloat("##ds", &lk->scale, 0.05f, 3, "%.2f");
+                Prop("Bigger one from"); ch |= ImGui::DragInt("##dbf", &lk->bigFrom, 1, 0, 10000, lk->bigFrom <= 0 ? "never" : "%d on");
+                if (lk->bigFrom > 0) { Prop("... its model"); modelCombo("##dbm", lk->bigModel, "(none)"); Prop("... its size"); ch |= ImGui::SliderFloat("##dbs", &lk->bigScale, 0.05f, 3, "%.2f"); }
+                Prop("Spins"); ch |= ImGui::SliderFloat("##dsp", &lk->spin, -720, 720, "%.0f deg/s");
+                Prop("Bobs"); ch |= ImGui::SliderFloat("##dbo", &lk->bob, 0, 0.5f, "%.2f blocks");
+                Prop("Light"); ch |= ImGui::SliderFloat("##dl", &lk->light, 0, 8, lk->light <= 0 ? "none" : "%.1f blocks");
+                if (lk->light > 0) {
+                    float c[3] = { ((lk->lightColor >> 16) & 255) / 255.f, ((lk->lightColor >> 8) & 255) / 255.f, (lk->lightColor & 255) / 255.f };
+                    Prop("... colour"); if (ImGui::ColorEdit3("##dlc", c, ImGuiColorEditFlags_NoInputs)) { lk->lightColor = ((uint32_t)std::lround(c[0] * 255) << 16) | ((uint32_t)std::lround(c[1] * 255) << 8) | (uint32_t)std::lround(c[2] * 255); ch = true; }
+                    Prop("... brightness"); ch |= ImGui::SliderFloat("##dlp", &lk->lightPower, 0, 4, "%.2f");
+                }
+                Prop("Pickup sound"); ch |= SoundEdit("dsnd", lk->sound, true);
+                Prop("Stays for"); ch |= ImGui::SliderFloat("##dlife", &lk->life, 1, 60, "%.0f s");
+                Prop("Blinks the last"); ch |= ImGui::SliderFloat("##dbl", &lk->blinkAt, 0, 10, "%.1f s");
+                Hint("Its material (glow, emission, fake shine): Assets > the model. No pickup sound: the game's (Sounds tab > Pickups).");
+                if (ImGui::SmallButton("Back to the placeholder")) { enemies.drops.erase(enemies.drops.begin() + (lk - enemies.drops.data())); ch = true; }
+            }
+            ImGui::PopID();
+        }
+    }
     void EnemiesTab() {
         float ui = settings.uiScale; bool ch = false;
         if (enemies.types.empty()) {
@@ -9662,7 +9732,7 @@ struct App {
         if (!enemies.find(enemyEd)) enemyEd = enemies.types[0].id;
         float listW = 230 * ui, sp = ImGui::GetStyle().ItemSpacing.x;
         ImGui::BeginChild("enemylist", ImVec2(listW, 0), ImGuiChildFlags_Borders);
-        for (const EnemyType& t : enemies.types) { ImGui::PushID(t.id); std::string l = t.name + "   (" + std::to_string(EnemyUses(t.id)) + ")"; if (ImGui::Selectable(l.c_str(), t.id == enemyEd)) enemyEd = t.id; ImGui::PopID(); }
+        for (const EnemyType& t : enemies.types) { ImGui::PushID(t.id); std::string l = t.name + "   (" + std::to_string(EnemyUses(t.id)) + ")"; if (ImGui::Selectable(l.c_str(), t.id == enemyEd && !enemyDropsPage)) { enemyEd = t.id; enemyDropsPage = false; } ImGui::PopID(); }
         ImGui::Separator();
         if (ImGui::Button("+ New")) { EnemyType t; t.name = "Enemy " + std::to_string(enemies.types.size() + 1); enemyEd = enemies.add(t); ch = true; }
         ImGui::SameLine(); if (ImGui::Button("Duplicate")) { EnemyType c = *enemies.find(enemyEd); c.id = 0; c.name += " copy"; enemyEd = enemies.add(c); ch = true; }
@@ -9670,7 +9740,9 @@ struct App {
         ImGui::BeginDisabled(uses > 0); ImGui::SameLine(); if (ImGui::Button("Delete")) { enemies.types.erase(std::remove_if(enemies.types.begin(), enemies.types.end(), [&](const EnemyType& t) { return t.id == enemyEd; }), enemies.types.end()); ch = true; } ImGui::EndDisabled();
         if (uses > 0 && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%d placed enem%s use%s it", uses, uses == 1 ? "y" : "ies", uses == 1 ? "s" : "");
         ImGui::Spacing(); if (ImGui::SmallButton("Add the placeholder enemies")) { for (EnemyType t : defaultEnemies().types) { t.id = 0; enemies.add(t); } ch = true; }
+        ImGui::Separator(); if (ImGui::Selectable("Drops: how they look", enemyDropsPage)) enemyDropsPage = true;
         ImGui::EndChild(); ImGui::SameLine();
+        if (enemyDropsPage) { ImGui::BeginChild("droplooks", ImVec2(0, 0), ImGuiChildFlags_Borders); DropLooksUI(ch); ImGui::EndChild(); if (ch) SaveEnemies(); return; }
         EnemyType* tp = enemies.find(enemyEd);
         if (!tp) { if (ch) SaveEnemies(); return; }
         EnemyType& t = *tp;
@@ -10536,6 +10608,24 @@ struct App {
         ImGui::PopID(); return ch;
     }
     void SavePlayerSounds() { if (!projectDir.empty()) savePlayerSounds(projectDir + "/player_sounds.txt", playerSounds); }
+    // ---- surfaces: what the block under Samus is made of changes her steps (Surfaces tab)
+    SurfaceSet surfaces = defaultSurfaces(); int surfEd = 0;
+    void SaveSurfaces() { if (!projectDir.empty()) saveSurfaces(projectDir + "/surfaces.txt", surfaces); }
+    Surface* SurfaceUnder() {   // in water: the water; else the block under her feet (the middle, then the corners: on an edge, the one she stands on)
+        if (!world) return nullptr;
+        auto tagAt = [&](double x, double y, double z) -> Surface* {
+            BlockId b = world->get(ifloor(x), ifloor(y), ifloor(z)); if (b == AIR) return nullptr;
+            const BlockDef& d = reg.get(b); return d.surface.empty() ? nullptr : surfaces.find(d.surface);
+        };
+        V3 f = player.feet;
+        { BlockId b = world->get(ifloor(f.x), ifloor(f.y + 0.1), ifloor(f.z)); if (b != AIR && reg.get(b).liquid) if (Surface* s = tagAt(f.x, f.y + 0.1, f.z)) return s; }
+        if (Surface* s = tagAt(f.x, f.y - 0.05, f.z)) return s;
+        double h = std::max(0.1, (player.ball ? game.player.ballSize : game.player.width) * 0.45);
+        for (auto o : { V3{ h, 0, h }, V3{ -h, 0, h }, V3{ h, 0, -h }, V3{ -h, 0, -h } }) if (Surface* s = tagAt(f.x + o.x, f.y - 0.05, f.z + o.z)) return s;
+        return nullptr;
+    }
+    IXAudio2SourceVoice* surfRollVoice = nullptr; SoundUse surfRollUse; std::string surfRollOf; static constexpr int TAG_SURFROLL = 36;
+    void StopSurfRoll() { if (surfRollVoice) StopSounds(TAG_SURFROLL); surfRollVoice = nullptr; surfRollOf.clear(); }
     void SoundsTab() {
         float ui = settings.uiScale; bool ch = false;
         ImGui::Spacing();
@@ -10635,13 +10725,61 @@ struct App {
         }
         lowLastHealth = play.health;
     }
+    // ---- the Surfaces tab: what blocks are made of, and how Samus sounds on each
+    void SurfacesTab() {
+        float ui = settings.uiScale; bool ch = false;
+        ImGui::Spacing();
+        ImGui::TextWrapped("Each block can be made of a surface (the block's settings: Surface). Walking, jumping, landing and rolling on it plays its sounds - on top of Samus's own (Sounds tab), or instead of them.");
+        ImGui::Separator();
+        surfEd = std::clamp(surfEd, 0, std::max(0, (int)surfaces.list.size() - 1));
+        ImGui::BeginChild("surflist", ImVec2(220 * ui, 0), ImGuiChildFlags_Borders);
+        for (int i = 0; i < (int)surfaces.list.size(); i++) {
+            const Surface& x = surfaces.list[i]; int nb = 0; for (int b = 1; b < (int)reg.count(); b++) if (reg.has((BlockId)b) && reg.get((BlockId)b).surface == x.name) nb++;
+            bool any = !x.step.empty() || !x.jump.empty() || !x.land.empty() || !x.roll.empty();
+            std::string l = x.name + "   (" + std::to_string(nb) + " block" + (nb == 1 ? "" : "s") + ")" + (any ? "" : "  - silent");
+            ImGui::PushID(i); if (ImGui::Selectable(l.c_str(), i == surfEd)) surfEd = i; ImGui::PopID();
+        }
+        ImGui::Separator();
+        if (ImGui::Button("+ New")) { Surface x; int n = 1; do x.name = "Surface " + std::to_string(n++); while (surfaces.find(x.name)); surfaces.list.push_back(x); surfEd = (int)surfaces.list.size() - 1; ch = true; }
+        if (surfaces.list.empty()) { ImGui::SameLine(); if (ImGui::Button("The starters")) { surfaces = defaultSurfaces(); ch = true; } }
+        ImGui::EndChild();
+        if (!surfaces.list.empty()) {
+            ImGui::SameLine(); ImGui::BeginChild("surfprops", ImVec2(0, 0), ImGuiChildFlags_Borders);
+            Surface& x = surfaces.list[surfEd];
+            static char nameBuf[64]; static int nameFor = -1; if (nameFor != surfEd) { std::snprintf(nameBuf, sizeof nameBuf, "%s", x.name.c_str()); nameFor = surfEd; }
+            Prop("Name"); ImGui::InputText("##sn", nameBuf, sizeof nameBuf);
+            if (ImGui::IsItemDeactivatedAfterEdit() && nameBuf[0] && x.name != nameBuf && !surfaces.find(nameBuf)) {   // renamed: its blocks follow
+                std::string old = x.name, nn = nameBuf; x.name = nn;
+                ChangeBlocks([&] { for (int b = 1; b < (int)reg.count(); b++) if (reg.has((BlockId)b) && reg.get((BlockId)b).surface == old) { BlockDef d = reg.get((BlockId)b); d.surface = nn; reg.put((BlockId)b, d); } });
+                library.saveBlocks(reg); ch = true;
+            }
+            Prop("Volume"); ch |= ImGui::SliderFloat("##sv", &x.volume, 0, 2, "%.2f");
+            Prop("Instead of Samus's own"); ch |= ImGui::Checkbox("##sr", &x.replace);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("On: only this surface's sounds play here (water, snow: the metal boots would sound wrong).\nOff: they play on top of Samus's own steps, jumps, landings and rolling.");
+            ImGui::SeparatorText("Steps"); ch |= SoundSetEdit("sf_step", x.step);
+            ImGui::SeparatorText("Jumping off it"); ch |= SoundSetEdit("sf_jump", x.jump);
+            ImGui::SeparatorText("Landing on it (louder from higher)"); ch |= SoundSetEdit("sf_land", x.land);
+            ImGui::SeparatorText("Morph Ball rolling on it (a loop)"); ch |= SoundSetEdit("sf_roll", x.roll);
+            ImGui::SeparatorText("Blocks made of it");
+            { int shown = 0; for (int b = 1; b < (int)reg.count(); b++) if (reg.has((BlockId)b) && reg.get((BlockId)b).surface == x.name) { ImGui::BulletText("%s", reg.get((BlockId)b).name.c_str()); shown++; }
+              if (!shown) Hint("None yet: pick this surface in a block's settings (Blocks: edit a block > Surface)."); }
+            ImGui::Spacing();
+            if (ImGui::Button("Delete this surface")) {
+                std::string old = x.name; surfaces.list.erase(surfaces.list.begin() + surfEd); surfEd = std::max(0, surfEd - 1);
+                ChangeBlocks([&] { for (int b = 1; b < (int)reg.count(); b++) if (reg.has((BlockId)b) && reg.get((BlockId)b).surface == old) { BlockDef d = reg.get((BlockId)b); d.surface.clear(); reg.put((BlockId)b, d); } });
+                library.saveBlocks(reg); ch = true;
+            }
+            ImGui::EndChild();
+        }
+        if (ch) SaveSurfaces();
+    }
     // Play mode: steps, jumping, landing
     bool scrollToRoll = false;
     IXAudio2SourceVoice* rollVoice = nullptr; SoundUse rollUse; float rollVol = 0; int rollTests = 0;   // the morph ball's rolling loop
     void StopRoll() { if (rollVoice) StopSounds(TAG_ROLL); rollVoice = nullptr; rollVol = 0; }
-    void UpdateRoll(double dt) {
+    void UpdateRoll(double dt, bool replaced = false) {   // replaced: the surface's own rolling plays instead
         float speed = (float)std::sqrt(player.vel.x * player.vel.x + player.vel.z * player.vel.z), want = 0, pitch = 1;
-        if (playMode && !paused && player.ball && player.onGround) playerSounds.rollMix(speed, game.player.ballSpeed, want, pitch);
+        if (playMode && !paused && player.ball && player.onGround && !replaced) playerSounds.rollMix(speed, game.player.ballSpeed, want, pitch);
         if (want > 0) rollTests++;
         rollVol += (want - rollVol) * (float)std::min(1.0, dt * 12);   // fades in and out quickly, no clicks
         if (rollVol < 0.01f && want <= 0) { StopRoll(); return; }
@@ -10653,20 +10791,33 @@ struct App {
         rollVoice->SetFrequencyRatio(std::clamp(rollUse.pitch * pitch, 0.1f, 4.f));
     }
     void UpdatePlayerSounds(double dt, bool landed, float fallSpeed, bool jumped) {
-        UpdateRoll(dt);
+        Surface* sf = playMode ? SurfaceUnder() : nullptr;
+        UpdateRoll(dt, sf && sf->replace && !sf->roll.empty());
+        {   // rolling on a surface: its own loop too (or instead), like the ball's
+            float speed = (float)std::sqrt(player.vel.x * player.vel.x + player.vel.z * player.vel.z), want = 0, pitch = 1;
+            if (sf && !sf->roll.empty() && playMode && !paused && player.ball && player.onGround) playerSounds.rollMix(speed, game.player.ballSpeed, want, pitch);
+            if (want <= 0 || !sf || sf->name != surfRollOf) StopSurfRoll();
+            if (want > 0 && sf && !surfRollVoice) { if (const SoundUse* u = sf->roll.pick(soundSeed)) { surfRollUse = *u; surfRollVoice = PlaySoundIn(SND_MOVEMENT, surfRollUse, 0.02f, nullptr, TAG_SURFROLL, true); surfRollOf = sf->name; } }
+            if (surfRollVoice) { surfRollVoice->SetVolume(surfRollUse.volume * want * sf->volume * CatVolume(SND_MOVEMENT)); surfRollVoice->SetFrequencyRatio(std::clamp(surfRollUse.pitch * pitch, 0.1f, 4.f)); }
+        }
         UpdateGameSounds(dt);
         if (!playMode) return;
+        auto both = [&](SoundSet& own, SoundSet Surface::* layer, float v) {   // the character's own, and the surface's on top (or instead)
+            bool has = sf && !(sf->*layer).empty();
+            if (!has || !sf->replace) PlaySoundIn(SND_MOVEMENT, own, v);
+            if (has) PlaySoundIn(SND_MOVEMENT, sf->*layer, v * std::max(0.f, sf->volume));
+        };
         if (player.ball) {   // rolled up: no steps, no jumps; its own landing (bomb jumps land here too)
             stepDist = 0;
-            if (landed) { float v = playerSounds.landVolume(fallSpeed); if (v > 0) PlaySoundIn(SND_MOVEMENT, playerSounds.ballLand, v); }
+            if (landed) { float v = playerSounds.landVolume(fallSpeed); if (v > 0) both(playerSounds.ballLand, &Surface::land, v); }
             return;
         }
         if (player.onGround) {
             stepDist += (float)(std::sqrt(player.vel.x * player.vel.x + player.vel.z * player.vel.z) * dt);
-            if (stepDist >= std::max(0.2f, playerSounds.stepEvery)) { stepDist = 0; PlaySoundIn(SND_MOVEMENT, playerSounds.step); }
+            if (stepDist >= std::max(0.2f, playerSounds.stepEvery)) { stepDist = 0; both(playerSounds.step, &Surface::step, 1); }
         }
-        if (jumped) PlaySoundIn(SND_MOVEMENT, playerSounds.jump);
-        if (landed) { float v = playerSounds.landVolume(fallSpeed); if (v > 0) PlaySoundIn(SND_MOVEMENT, playerSounds.land, v); stepDist = 0; }
+        if (jumped) both(playerSounds.jump, &Surface::jump, 1);
+        if (landed) { float v = playerSounds.landVolume(fallSpeed); if (v > 0) both(playerSounds.land, &Surface::land, v); stepDist = 0; }
     }
 
     // ---- free aim (Wii style)
@@ -11777,7 +11928,7 @@ struct App {
                     label = "World " + w + ": " + (file == "objects.txt" ? "objects" : file == "events.txt" ? "event cards" : fs::u8path(file).stem().u8string()); }
                 else if (rel.rfind("prefabs/", 0) == 0) label = "Prefab " + fs::u8path(rel).stem().u8string();
                 else { static const std::map<std::string, std::string> nice = { { "enemies.txt", "Enemy types" }, { "bosses.txt", "Bosses" }, { "screens.txt", "Screens" }, { "weapons.txt", "Weapons" },
-                        { "player_sounds.txt", "Player sounds" }, { "hud.txt", "HUD" }, { "items.txt", "Items" }, { "menu.txt", "Menu" }, { "visors.txt", "Visors" }, { "materials.txt", "Materials" }, { "blocks.txt", "Blocks" }, { "scans.txt", "Scan entries" } };
+                        { "player_sounds.txt", "Player sounds" }, { "hud.txt", "HUD" }, { "items.txt", "Items" }, { "menu.txt", "Menu" }, { "visors.txt", "Visors" }, { "materials.txt", "Materials" }, { "blocks.txt", "Blocks" }, { "surfaces.txt", "Surfaces" }, { "scans.txt", "Scan entries" } };
                     auto nt = nice.find(rel); if (nt != nice.end()) label = nt->second; }
                 if (!names.empty()) { label += ":"; for (size_t k = 0; k < names.size() && k < 6; k++) label += (k ? ", " : " ") + names[k]; if (names.size() > 6) label += " ..."; }
                 else if (n > 1) label += " (" + std::to_string(n) + " times)";

@@ -268,6 +268,10 @@ void registerBuiltinBlocks(BlockRegistry& r) {
     { BlockId b = r.find("lamp"); BlockDef d = r.get(b); d.category = "Lights"; r.put(b, d); }
     { BlockId b = r.find("glass"); BlockDef d = r.get(b); d.category = "Glass & metal"; r.put(b, d); b = r.find("metal"); d = r.get(b); d.category = "Glass & metal"; r.put(b, d); }
     addBuiltinLiquids(r);
+    for (auto& ns : { std::pair<const char*, const char*>{ "stone", "Rock" }, { "cobblestone", "Rock" }, { "grass", "Dirt" }, { "dirt", "Dirt" }, { "sand", "Sand" }, { "planks", "Wood" }, { "log", "Wood" },
+                      { "bricks", "Rock" }, { "metal", "Metal" }, { "glass", "Glass" }, { "leaves", "Organic" }, { "water", "Water" }, { "water spring", "Water" } }) {   // what they are made of (Surfaces)
+        BlockId b = r.find(ns.first); if (!b) continue; BlockDef d = r.get(b); d.surface = ns.second; r.put(b, d);
+    }
 }
 
 } // namespace mc

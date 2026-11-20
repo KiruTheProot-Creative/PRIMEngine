@@ -44,6 +44,7 @@ EnemySet defaultEnemies() {
     return s;
 }
 
+const DropLook* EnemySet::drop(const std::string& what) const { for (const DropLook& d : drops) if (d.what == what) return &d; return nullptr; }
 bool saveEnemies(const std::string& path, const EnemySet& s) {
     std::ofstream f(path); if (!f) return false;
     f << "enemies 1\n";
@@ -56,6 +57,9 @@ bool saveEnemies(const std::string& path, const EnemySet& s) {
         for (const EnemyWeak& w : t.weak) f << "weak " << escText(w.by) << " " << w.times << "\n";
         for (const EnemyDrop& d : t.drops) f << "drop " << escText(d.what) << " " << d.amount << " " << d.chance << "\n";
     }
+    for (const DropLook& d : s.drops)
+        f << "droplook " << escText(d.what) << " " << escText(d.model) << " " << d.scale << " " << d.bigFrom << " " << escText(d.bigModel) << " " << d.bigScale << " " << d.spin << " " << d.bob << " "
+          << d.lightColor << " " << d.light << " " << d.lightPower << " " << escText(soundUseText(d.sound)) << " " << d.life << " " << d.blinkAt << "\n";
     return (bool)f;
 }
 bool loadEnemies(const std::string& path, EnemySet& s) {
@@ -63,6 +67,14 @@ bool loadEnemies(const std::string& path, EnemySet& s) {
     s = EnemySet{}; std::string line;
     while (std::getline(f, line)) {
         std::istringstream l(line); std::string k; l >> k;
+        if (k == "droplook") {
+            DropLook d; std::string w, m, bm, snd;
+            if (l >> w >> m >> d.scale >> d.bigFrom >> bm >> d.bigScale >> d.spin >> d.bob >> d.lightColor >> d.light >> d.lightPower >> snd >> d.life >> d.blinkAt) {
+                d.what = unescText(w); d.model = unescText(m); d.bigModel = unescText(bm); soundUseFrom(unescText(snd), d.sound);
+                if (!d.what.empty() && !s.drop(d.what)) s.drops.push_back(d);
+            }
+            continue;
+        }
         if (k == "enemy") {
             EnemyType t; std::string n, m, a[5], snd[4]; int mv = 1, ch = 1, sh = 0, ow = 0, rs = 1, de = 0;
             l >> t.id >> n >> m >> t.size >> mv >> t.health >> t.touchDamage >> t.knockback >> t.speed >> t.chaseSpeed >> t.sight >> ch >> sh >> t.shootEvery >> t.shotSpeed >> t.shotDamage >> t.shotRange >> t.shotColor

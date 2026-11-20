@@ -58,6 +58,7 @@ struct BlockDef {
     int liquid = 0;                      // 0 not a liquid, 1 water, 2 lava
     bool spring = false;                 // a liquid that never runs dry (keeps pouring out)
     std::string category = "Building";   // folder in the asset browser
+    std::string surface;                 // what it is made of, for Samus's steps on it (Surfaces tab): Rock, Metal, Water ... ("" none)
     bool exists = true;                  // false = a deleted id (kept so old worlds stay readable)
 };
 

@@ -216,6 +216,20 @@ rises and fades), the suit powering down (its pitch falls), the switch-off.
 Enemy drops hop out, fall to the ground, and are pulled to you when you are close; full energy or ammo still takes
 them. No drops of what you cannot use yet (missiles before the launcher).
 
+## Surfaces: Samus's steps on what she walks on (Player > Surfaces)
+
+Each block can be made of a **surface** (a block's settings: *Surface*): Metal, Grate, Rock, Dirt, Sand, Wood, Glass,
+Organic, Snow, Ice, Water to start with - rename them, add your own. Each surface has its own **steps**, **jump**,
+**landing** (louder from higher) and **Morph Ball rolling** loop (louder and higher the faster), played on top of
+Samus's own sounds or **instead** of them (water and snow start that way). On a block's edge it is the one she stands
+on; in water, the water. Built-in blocks come tagged (stone: Rock, metal: Metal, water: Water ...).
+
+## Drops: how they look (Player > Enemies > Drops: how they look)
+
+For Energy and each counter (Missiles, Power Bombs ...): a model and size, a **bigger one from some amount on** (like
+Prime's large energy), spinning and bobbing, a light (reach, colour, brightness), its own pickup sound, how long it
+stays and when it starts blinking. A kind without its own look uses the placeholder.
+
 ## Door sounds and visor loops
 
 - **Doors** (Player > Sounds > Doors): opening, closing, the forcefield shot away, and "won't open" (locked, the wrong

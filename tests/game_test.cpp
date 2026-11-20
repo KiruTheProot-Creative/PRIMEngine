@@ -24,6 +24,7 @@
 #include "../src/game/bosses.h"
 #include "../src/game/assets.h"
 #include "../src/game/looks.h"
+#include "../src/game/surfaces.h"
 #include <sstream>
 #include <algorithm>
 #include <map>
@@ -1591,6 +1592,23 @@ int main() {
         double total = gl.player.deathLength(); bool back = false; for (double t = 0; t < total - 0.05; t += 0.05) if (ps.tick(w, p, gl.player, { 0, 64, 0 }, 0, 0.05) == PlayState::Respawned) back = true;
         CHECK(!back && ps.dead(), "no coming back during the death sequence (%.2f s, respawn after 1 s)", total);
         for (int k = 0; k < 20 && ps.dead(); k++) ps.tick(w, p, gl.player, { 0, 64, 0 }, 0, 0.05); CHECK(!ps.dead(), "... back right after it");
+    }
+    {   // surfaces: their sounds save and load; blocks know what they are made of
+        SurfaceSet ss = defaultSurfaces(); CHECK(ss.find("Metal") && ss.find("Water") && ss.find("Water")->replace && !ss.find("Metal")->replace, "surfaces: starters (water and snow replace the steps)");
+        SoundUse u; u.file = "metal step 1.wav"; ss.find("Metal")->step.sounds.push_back(u); u.file = "metal roll.wav"; u.pitch = 1.2f; ss.find("Metal")->roll.sounds.push_back(u); ss.find("Metal")->volume = 0.7f;
+        Surface g; g.name = "Chozo grate"; g.replace = true; ss.list.push_back(g);
+        saveSurfaces("/tmp/prim_surf.txt", ss); SurfaceSet sl; loadSurfaces("/tmp/prim_surf.txt", sl);
+        CHECK(sl.list.size() == ss.list.size() && sl.find("Metal")->step.sounds.size() == 1 && sl.find("Metal")->roll.sounds[0].file == "metal roll.wav" && std::fabs(sl.find("Metal")->roll.sounds[0].pitch - 1.2f) < 1e-5
+              && sl.find("Metal")->volume == 0.7f && sl.find("Chozo grate") && sl.find("Chozo grate")->replace, "surfaces and their sounds save and load (names with spaces too)");
+        BlockRegistry rr; registerBuiltinBlocks(rr);
+        CHECK(rr.get(rr.find("stone")).surface == "Rock" && rr.get(rr.find("metal")).surface == "Metal" && rr.get(rr.find("water")).surface == "Water", "built-in blocks know what they are made of");
+    }
+    {   // drops: how they look, saved with the enemies
+        EnemySet es = defaultEnemies(); DropLook d; d.what = "Missile"; d.model = "missile pickup"; d.bigFrom = 5; d.bigModel = "missile big"; d.light = 3; d.lightColor = 0xFF4020; d.sound.file = "missile get.wav"; d.life = 20; es.drops.push_back(d);
+        saveEnemies("/tmp/prim_drops.txt", es); EnemySet el; loadEnemies("/tmp/prim_drops.txt", el);
+        const DropLook* dl = el.drop("Missile");
+        CHECK(dl && dl->model == "missile pickup" && dl->bigFrom == 5 && dl->bigModel == "missile big" && dl->light == 3 && dl->sound.file == "missile get.wav" && dl->life == 20 && !el.drop("Energy"), "drop looks save and load");
+        CHECK(el.types.size() == es.types.size() && el.types[0].drops.size() == es.types[0].drops.size(), "... and the enemies' own drops are still there");
     }
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
     return fails ? 1 : 0;

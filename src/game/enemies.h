@@ -5,6 +5,7 @@
 // sounds and scan entry. The moving and deciding is here (plain C++, tested); the game draws them, hits them and gets
 // hurt by them. Collision is against the world's solid blocks (a function says which cells are solid).
 #include "game.h"
+#include "sound.h"
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -45,8 +46,21 @@ struct EnemyType {
     uint32_t color = 0xFF8040;                          // its bursts and hurt flash
     bool lockable = true;                               // lock-on (right mouse) can pick it
 };
+// how a kind of drop looks (Energy, or a counter: Missile, Power Bomb ...): a model, a bigger one from some amount on,
+// spinning and bobbing, a light, its own pickup sound, how long it stays
+struct DropLook {
+    std::string what = "Energy";
+    std::string model; float scale = 0.55f;             // model: "" the built-in placeholder
+    int bigFrom = 0; std::string bigModel; float bigScale = 0.8f;   // from this amount on (0: never), this model instead (like Prime's large energy)
+    float spin = 120, bob = 0.1f;                       // degrees a second; blocks up and down
+    uint32_t lightColor = 0xFFD080; float light = 0, lightPower = 1;   // a light around it: reach (0: none), brightness
+    SoundUse sound;                                     // picking it up (none: the game's pickup sound)
+    float life = 12, blinkAt = 3;                       // seconds it stays; blinks for the last few
+};
 struct EnemySet {
     std::vector<EnemyType> types;
+    std::vector<DropLook> drops;                        // the drops' looks (a kind without one: the placeholder)
+    const DropLook* drop(const std::string& what) const;
     EnemyType* find(int id);
     const EnemyType* find(int id) const;
     int add(EnemyType t);                               // the next free ID (if it has none or a taken one)
