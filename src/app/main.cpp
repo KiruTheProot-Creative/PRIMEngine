@@ -1533,16 +1533,16 @@ struct App {
     void UpdateObjectVoxels() {   // the nearest objects (not enemies: they move and bend) for this frame's reflection rays
         objVoxCount = 0; if (!voxReady || !world) return;
         if (!objVoxBuf) objVoxBuf = MakeStructured(48, sizeof(ObjVoxGpu), objVoxSRV);
-        std::vector<std::pair<double, size_t>> near;
+        std::vector<std::pair<double, size_t>> nearObjs;
         for (size_t i = 0; i < objects.size(); i++) {
             const WorldObject& o = objects[i];
             if (o.kind == ObjKind::Trigger || o.kind == ObjKind::Enemy || o.kind == ObjKind::Light || o.kind == ObjKind::Particles || o.kind == ObjKind::MapCamera || Gone(o) || IsBuiltin(o.model)) continue;
             if (o.kind == ObjKind::Pickup && playMode && inv.has(o.id)) continue;
-            V3 d = o.pos - camPos; double dist = length(d); if (dist < 72) near.push_back({ dist, i });
+            V3 d = o.pos - camPos; double dist = length(d); if (dist < 72) nearObjs.push_back({ dist, i });
         }
-        std::sort(near.begin(), near.end());
+        std::sort(nearObjs.begin(), nearObjs.end());
         std::vector<ObjVoxGpu> out;
-        for (auto& nd : near) {
+        for (auto& nd : nearObjs) {
             if (out.size() >= 48) break;
             const WorldObject& src = objects[nd.second]; FrameRef m = ModelOf(src); if (!m || m->sx <= 0 || m->sy <= 0 || m->sz <= 0) continue;
             WorldObject o = src; o.pos = src.pos + PlatformOffsets(src)[0];
