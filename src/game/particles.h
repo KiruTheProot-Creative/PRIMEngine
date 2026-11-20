@@ -62,7 +62,7 @@ struct ParticleLook { V3 pos, vel; float size, rot, r, g, b, a; };
 ParticleLook lookOf(const ParticleEmitter& e, const Particle& p);
 
 // lights (objects, glowing emitters, shots)
-enum class LightType { Point, Spot };
+enum class LightType { Point, Spot, Strip };   // Strip: a glowing tube (neon), lit along its length
 enum class Flicker { None, Candle, Broken, Pulse };
 struct LightSettings {
     LightType type = LightType::Point;
@@ -70,6 +70,8 @@ struct LightSettings {
     float intensity = 2, range = 8;  // range: blocks
     float cone = 35, tilt = 45;      // spotlights: half-angle, and how far it looks down (degrees; it turns with the object)
     Flicker flicker = Flicker::None;
+    bool shadows = false;            // casts shadows (the few nearest such lights do)
+    float length = 4;                // strips: how long (blocks); it lies along where the object faces, tilted by "tilt"
 };
 const char* flickerName(Flicker f);
 float flickerAt(Flicker f, double time, uint32_t seed);   // 0..1 brightness

@@ -36,37 +36,96 @@ cbuffer Frame : register(b0)
     float4 gCascR;                  // how far each reaches (blocks)
     float4 gCascTexel;              // one shadow pixel in blocks, per cascade
     float4 gPrecip;                 // falling things: x their own clock (s, steady), yz how far the wind has carried them so far (blocks), w -
+    row_major float4x4 gOccVP;      // camera-relative position -> the "roofs" map (opaque things seen from straight above)
+    float4 gOcc;                    // x true darkness on (sky light only where the sky is), y how open the sky is around the camera (0..1)
 };
 cbuffer ChunkCB : register(b1)
 {
     float4 gOffset;                 // where the mesh's (0,0,0) is, relative to the camera (a chunk's origin)
     float4 gAxisX, gAxisY, gAxisZ;  // the mesh's axes: objects are turned and sized; 1,0,0 / 0,1,0 / 0,0,1 for the world's chunks
 };
-// lights placed in the world (and glowing emitters, shots): up to 32 near the camera
-cbuffer Lights : register(b3)
+// lights placed in the world (lamps, strips, glowing emitters, shots ...): hundreds of them, sorted into "clusters" -
+// little boxes of the view (a grid across the screen, sliced by distance) - so each pixel only looks at the lights near it
+struct LightData
 {
-    float4 gLightCount;             // x: how many
-    float4 gLightPos[32];           // xyz relative to the camera, w reach (blocks)
-    float4 gLightCol[32];           // rgb colour x brightness, w 1 = spotlight
-    float4 gLightDir[32];           // spotlights: xyz where it points, w cos(cone)
+    float4 pos;   // xyz relative to the camera, w reach (blocks)
+    float4 col;   // rgb colour x brightness, w kind: 0 point, 1 spot, 2 strip; +8: only for objects (blocks have that light already)
+    float4 dir;   // spotlights: xyz where it points, w cos(cone)
+    float4 ext;   // strips: xyz half the tube (from its middle to one end), w its shadow slot (-1: none)
 };
-float3 dynLights(float3 rel, float3 n)
+struct ShadowVP { float4 r0, r1, r2, r3; };
+SamplerComparisonState gShadowSamp : register(s1);
+StructuredBuffer<LightData> gLightBuf : register(t19);
+StructuredBuffer<uint2> gClusters : register(t20);      // per cluster: where its list starts, how many
+StructuredBuffer<uint> gClusterIdx : register(t21);     // the lists (light numbers)
+Texture2DArray<float> gLightShadow : register(t22);     // shadows of a few lights: 6 slices each (a cube; spotlights use the first)
+StructuredBuffer<ShadowVP> gLightShadowVP : register(t23);
+cbuffer ClusterCB : register(b11)
 {
-    float3 sum = 0;
-    int count = (int)gLightCount.x;
-    [loop] for (int k = 0; k < count; k++)
-    {
-        float3 L = gLightPos[k].xyz - rel; float d = length(L); float range = gLightPos[k].w;
-        if (d >= range) continue;
-        L /= max(d, 1e-4);
-        float att = 1 - d / range; att *= att;
-        float ndl = saturate(dot(n, L) * 0.85 + 0.15);   // a little light wraps round edges, softer look
-        float cone = 1;
-        if (gLightCol[k].w > 0.5) { float c = dot(-L, gLightDir[k].xyz), c0 = gLightDir[k].w; cone = smoothstep(c0, c0 + (1 - c0) * 0.35, c); }
-        sum += gLightCol[k].rgb * att * ndl * cone;
-    }
-    return sum;
+    float4 gCl0;   // x 1 = use the clusters, 0 = just go through a list; y, z grid across / down; w distance slices
+    float4 gCl1;   // x list start, y list length; z nearest slice (blocks), w log(farthest / nearest)
+};
+uint clusterOf(float3 rel)
+{
+    float z = dot(rel, gCamF.xyz), zz = max(z, 1e-3);
+    float2 ndc = float2(dot(rel, gCamR.xyz) / (zz * gProj.x * gProj.y), dot(rel, gCamU.xyz) / (zz * gProj.x));
+    float2 uv = saturate(float2(ndc.x, -ndc.y) * 0.5 + 0.5);
+    uint gx = (uint)gCl0.y, gy = (uint)gCl0.z, gz = (uint)gCl0.w;
+    uint cx = min((uint)(uv.x * gx), gx - 1), cy = min((uint)(uv.y * gy), gy - 1);
+    uint cz = (uint)clamp(log(max(z, gCl1.z) / gCl1.z) / gCl1.w * gz, 0, gz - 1);
+    return (cz * gy + cy) * gx + cx;
 }
+float lightShadow(LightData L, float3 p, int type)
+{
+    int slot = (int)L.ext.w; if (slot < 0) return 1;
+    int face = 0;
+    if (type != 1) {   // a cube: which side
+        float3 v = p - L.pos.xyz, a = abs(v);
+        face = a.x >= a.y && a.x >= a.z ? (v.x > 0 ? 0 : 1) : a.y >= a.z ? (v.y > 0 ? 2 : 3) : (v.z > 0 ? 4 : 5);
+    }
+    int sl = slot * 6 + face; ShadowVP m = gLightShadowVP[sl];
+    float4 s = mul(float4(p, 1), float4x4(m.r0, m.r1, m.r2, m.r3));
+    if (s.w <= 1e-4) return 1;
+    float3 q = s.xyz / s.w; float2 uv = float2(q.x, -q.y) * 0.5 + 0.5;
+    if (any(uv < 0) || any(uv > 1) || q.z > 1) return 1;
+    const float t = 1.0 / 512; float z = q.z - 0.00025, r = 0;
+    r += gLightShadow.SampleCmpLevelZero(gShadowSamp, float3(uv + float2(-0.5, -0.5) * t, sl), z);
+    r += gLightShadow.SampleCmpLevelZero(gShadowSamp, float3(uv + float2(0.5, -0.5) * t, sl), z);
+    r += gLightShadow.SampleCmpLevelZero(gShadowSamp, float3(uv + float2(-0.5, 0.5) * t, sl), z);
+    r += gLightShadow.SampleCmpLevelZero(gShadowSamp, float3(uv + float2(0.5, 0.5) * t, sl), z);
+    return r * 0.25;
+}
+void evalLight(LightData L, float3 rel, float3 n, float3 v, float pw, bool object, inout float3 dif, inout float3 spec)
+{
+    int kind = (int)round(L.col.w); bool objOnly = kind >= 8; int type = kind & 7;
+    if (objOnly && !object) return;
+    float3 lp = L.pos.xyz;
+    if (type == 2) { float3 a = lp - L.ext.xyz, ab = L.ext.xyz * 2; lp = a + ab * saturate(dot(rel - a, ab) / max(dot(ab, ab), 1e-4)); }   // a tube: its nearest point
+    float3 Lv = lp - rel; float d = length(Lv); float range = L.pos.w;
+    if (d >= range) return;
+    Lv /= max(d, 1e-4);
+    float att = 1 - d / range; att *= att;
+    if (type == 1) { float c = dot(-Lv, L.dir.xyz), c0 = L.dir.w; att *= smoothstep(c0, c0 + (1 - c0) * 0.35, c); }
+    if (att <= 0) return;
+    if (L.ext.w >= 0) att *= lightShadow(L, rel + n * (0.03 + d * 0.012), type);
+    float3 c = L.col.rgb * att;
+    dif += c * saturate(dot(n, Lv) * 0.85 + 0.15);   // a little light wraps round edges, softer look
+    float3 h = normalize(Lv + v);
+    spec += c * pow(saturate(dot(n, h)), pw) * (pw + 8) / 25 * saturate(dot(n, Lv));
+}
+float3 dynLightsSpec(float3 rel, float3 n, float3 v, float pw, bool object, out float3 spec)
+{
+    float3 dif = 0; spec = 0;
+    if (gCl0.x > 0.5) {
+        uint2 cl = gClusters[clusterOf(rel)];
+        [loop] for (uint k = 0; k < cl.y; k++) evalLight(gLightBuf[gClusterIdx[cl.x + k]], rel, n, v, pw, object, dif, spec);
+    } else {
+        uint s0 = (uint)gCl1.x, e = s0 + (uint)gCl1.y;
+        [loop] for (uint k = s0; k < e; k++) evalLight(gLightBuf[k], rel, n, v, pw, object, dif, spec);
+    }
+    return dif;
+}
+float3 dynLights(float3 rel, float3 n) { float3 sp; return dynLightsSpec(rel, n, -normalize(rel), 16, true, sp); }
 float3 meshToRel(float3 p) { return gOffset.xyz + gAxisX.xyz * p.x + gAxisY.xyz * p.y + gAxisZ.xyz * p.z; }
 
 Texture2DArray gTex : register(t0);
@@ -82,7 +141,6 @@ Texture2DArray gEmitTex : register(t14);        // emission maps, one per textur
 Texture2D gMeshEmit : register(t15);            // the emission map of the model being drawn
 cbuffer MeshMatCB : register(b4) { float4 gMM0; float4 gMM1; };   // the material of the model being drawn (same numbers as a texture's)
 float4 albedoAt(float3 uvl) { return uvl.z > 16000 ? gMeshTex.Sample(gSamp, uvl.xy) : gTex.Sample(gSamp, uvl); }
-SamplerComparisonState gShadowSamp : register(s1);
 SamplerState gLinear : register(s2);
 Texture2D<float> gSkyMap : register(t4);
 
@@ -94,6 +152,28 @@ float skyExposed(float3 rel)
     float2 uv = float2(s.x, -s.y) * 0.5 + 0.5;
     if (any(uv < 0) || any(uv > 1)) return 1;
     return gSkyMap.SampleCmpLevelZero(gShadowSamp, uv, s.z - 0.003);
+}
+// true darkness: how much sky light reaches a spot. The "roofs" map (opaque things seen from above, around you) says whether
+// anything is overhead; a few spots around it too, so light fades in near openings and cave mouths instead of a hard edge
+Texture2D<float> gSkyOcc : register(t18);
+float skyOpenAt(float3 rel)
+{
+    float4 s = mul(float4(rel, 1), gOccVP);
+    float2 uv = float2(s.x, -s.y) * 0.5 + 0.5;
+    if (any(uv < 0) || any(uv > 1)) return 1;
+    return gSkyOcc.SampleCmpLevelZero(gShadowSamp, uv, s.z - 0.0015);
+}
+float skyVis(float3 rel, float3 n)
+{
+    if (gOcc.x < 0.5) return 1;
+    float3 p = rel + n * 0.55 + float3(0, 0.05, 0);
+    float s = skyOpenAt(p) * 2, w = 2;
+    [unroll] for (int k = 0; k < 8; k++)
+    {
+        float a = k * 0.785398 + 0.39; float3 d = float3(cos(a), 0, sin(a));
+        s += skyOpenAt(p + d * 1.6) + skyOpenAt(p + d * 4.0) * 0.5; w += 1.5;
+    }
+    return saturate(s / w * 1.6);
 }
 // the height (camera-relative) of the first thing under the open sky at rel.xz: where rain lands (known: inside the map)
 float groundBelow(float3 rel, out bool known)
@@ -346,14 +426,22 @@ float3 lightBlock(VSOut i, float3 albedo, bool front, out float3 n, out float sh
     float ndl = saturate(dot(n, gSunDir.xyz));
     float ndlFlat = saturate(dot(nFlat, gSunDir.xyz));                                            // shadows ask with the flat face: the bumps would push each pixel's test
     float sh = ndlFlat > 0 ? shadowAt(i.rel, nFlat, ndlFlat, i.pos.xy) * cloudShadow(i.rel) : 0; // a different way and the face would shadow itself in stripes
+    float skyV = skyVis(i.rel, nFlat);                                 // true darkness: no sky light where the sky is not
+    {   // past the sun's shadow maps (or with shadows off) the roofs map keeps the sun out of caves
+        float farOut = gSunDir.w < 0.5 ? 1 : saturate((length(i.rel) - gCascR.w * 0.92) / max(gCascR.w * 0.08, 1));
+        sh *= lerp(1, skyV, farOut);
+    }
     float sky = 0.55 + 0.45 * n.y;                                     // more sky light on top than on the sides
-    float3 light = gSunColor.rgb * ndl * sh + gAmbient.rgb * sky * i.ao;
+    float3 light = gSunColor.rgb * ndl * sh + gAmbient.rgb * sky * i.ao * skyV;
     float lamp = max(i.lamp.r, max(i.lamp.g, i.lamp.b));
     float3 hue = lamp > 0 ? i.lamp.rgb / lamp : 0;                                                   // the colour of the lamps nearby
     light += hue * (pow(lamp, 3.2) * 0.9) * gExtra.w * lerp(0.5, 1, i.ao);
-    float3 dyn = dynLights(i.rel, n) * lerp(0.6, 1, i.ao);                                               // placed lights, glowing emitters, shots
     float metal = saturate(m.a.y);
+    float dShine = max(max(saturate(m.a.x), i.mat.x), wet * 0.9);                                  // how shiny for the lights' highlights (wet streets!)
+    float3 dSpec;
+    float3 dyn = dynLightsSpec(i.rel, n, -normalize(i.rel), lerp(10, 380, dShine * dShine), gOffset.w < 0.5, dSpec) * lerp(0.6, 1, i.ao);   // placed lights, strips, glowing emitters, shots
     float3 c = albedo * (light + dyn) * (1 - 0.75 * metal);                                       // metal: little plain colour ...
+    c += dSpec * lerp(float3(0.04, 0.04, 0.04) + 0.5 * dShine, albedo * 1.4, metal) * max(dShine, 0.12);   // the lights' highlights
     indirect = albedo * (light - gSunColor.rgb * ndl * sh) * (1 - 0.75 * metal);
     float3 v0 = -normalize(i.rel);
     float mshine = saturate(m.a.x);
@@ -388,17 +476,17 @@ float3 lightBlock(VSOut i, float3 albedo, bool front, out float3 n, out float sh
     if (gRefl.x < 0.5 && shine > 0.01)   // reflections off: just a little of the sky mirrored
     {
         float fr = 0.04 + 0.96 * pow(1 - saturate(dot(n, v)), 5);
-        c += skyColor(reflect(-v, n)) * fr * shine * 0.9 * lerp(float3(1, 1, 1), albedo * 1.5, metal);
+        c += skyColor(reflect(-v, n)) * fr * shine * 0.9 * lerp(float3(1, 1, 1), albedo * 1.5, metal) * skyV;
     }
     if (metal > 0.01)   // metal mirrors its surroundings in its own colour even when not polished (the sky here; reflections add the rest)
     {
         float3 rv = reflect(-v, n);
-        c += skyColor(rv) * albedo * metal * (0.35 + 0.65 * saturate(m.a.x)) * lerp(0.35, 1.0, i.ao) * (gRefl.x < 0.5 ? 1.0 : 0.6);
+        c += skyColor(rv) * albedo * metal * (0.35 + 0.65 * saturate(m.a.x)) * lerp(0.35, 1.0, i.ao) * (gRefl.x < 0.5 ? 1.0 : 0.6) * skyV;
     }
     float d = length(i.rel);
     float f = saturate((d - gFogRange.x) / max(gFogRange.y - gFogRange.x, 1));
     indirect *= 1 - f * f;
-    return lerp(c, skyColor(normalize(i.rel)), f * f);
+    return lerp(c, skyColor(normalize(i.rel)) * max(skyV, gOcc.y), f * f);   // in a cave the distance fades to dark, not to the sky
 }
 
 // lava: a dark crust with glowing cracks that slowly churn
@@ -777,7 +865,7 @@ float4 PS_Reflect(SkyOut i) : SV_Target
 
     // where the ray finds nothing on screen: the sky (only if this spot is under the open sky, else a dim guess)
     float open = skyExposed(P + n * 0.3);
-    float3 fallback = skyColor(r) * lerp(0.15, 1, open * saturate(r.y * 4 + 0.6)) + gAmbient.rgb * 0.15 * (1 - open);
+    float3 fallback = (skyColor(r) * lerp(0.15, 1, open * saturate(r.y * 4 + 0.6)) + gAmbient.rgb * 0.15 * (1 - open)) * skyVis(P, n);
     float3 refl = fallback;
     float2 suv = (float2(px) + 0.5) / gDepth.zw;
     if (mirror && gRefl.w > 0.5 && abs(dot(P, gMirror.xyz) + gMirror.w) < 0.08 && dot(n, gMirror.xyz) > 0.9)
@@ -827,7 +915,8 @@ float4 PS_Water(VSOut i, bool front : SV_IsFrontFace) : SV_Target
     float3 r = reflect(dir, n);
     if (front && r.y < 0.02) r.y = 0.02;
     float open = skyExposed(i.rel + float3(0, 0.3, 0));
-    float3 refl = skyColor(r) * lerp(0.25, 1, open);
+    float wsv = skyVis(i.rel, float3(0, 1, 0)); deep *= wsv; refr = behind * absorb + deep * (1 - absorb);
+    float3 refl = skyColor(r) * lerp(0.25, 1, open) * wsv;
     float2 huv; float travelled;
     if (front && gRefl.x > 0.5 && traceScreen(i.rel, n, r, dist, i.pos.xy, huv, travelled))
     {
@@ -916,7 +1005,8 @@ float4 PS_Volume(SkyOut i) : SV_Target
             float3 rel = dir * t;
             float y = cam.y + rel.y;
             float d = gVolume.y * exp(-max(y - 1, 0) / 7) + gVolume.y * 0.06 + gEnv.w;  // a low layer, a thin haze everywhere, dust of the place
-            float sun = 1;
+            float open = gOcc.x > 0.5 ? skyOpenAt(rel + float3(0, 0.5, 0)) : 1;   // true darkness: fog under a roof gets no sky light
+            float sun = open;
             if (gSunDir.w > 0.5)
             {
                 float4 s = mul(float4(rel, 1), gCascVP[3]);                 // the light shafts: the widest map is plenty
@@ -924,7 +1014,7 @@ float4 PS_Volume(SkyOut i) : SV_Target
                 if (all(uv > 0) && all(uv < 1) && s.z < 1) sun = gShadow.SampleCmpLevelZero(gShadowSamp, float3(uv, 3), s.z - 0.001);
             }
             float a = exp(-d * dt);
-            S += T * (gSunColor.rgb * sun * phase * 0.18 + amb) * (1 - a); T *= a;
+            S += T * (gSunColor.rgb * sun * phase * 0.18 + amb * open) * (1 - a); T *= a;
         }
         scene = scene * T + S;
     }

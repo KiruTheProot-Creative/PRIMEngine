@@ -218,7 +218,7 @@ bool saveObjects(const std::string& path, const std::vector<WorldObject>& objs) 
           << " " << P.glow << " " << (P.additive ? 1 : 0) << " " << (int)P.shape << " " << (int)P.area << " " << P.areaSize.x << " " << P.areaSize.y << " " << P.areaSize.z << " " << P.spin
           << " " << (P.collide ? 1 : 0) << " " << (P.bounce ? 1 : 0) << " " << (P.light ? 1 : 0) << " " << P.lightRange << " " << P.lightIntensity << " " << P.maxParticles;
         f << " " << o.door.fieldSide << " " << o.door.fieldGap << " " << (o.door.fieldOnParts ? 1 : 0) << " " << esc(o.door.fieldParts) << " " << esc(o.door.openedBy) << " " << P.pull << " " << o.map.id << " " << o.map.range;
-        f << " " << (o.scan.on ? 1 : 0) << " " << o.scan.id << " " << o.enemyType << " " << (o.save.energy ? 1 : 0) << " " << (o.save.ammo ? 1 : 0) << " " << escText(o.save.anim);
+        f << " " << (o.scan.on ? 1 : 0) << " " << o.scan.id << " " << o.enemyType << " " << (o.save.energy ? 1 : 0) << " " << (o.save.ammo ? 1 : 0) << " " << escText(o.save.anim) << " " << (L.shadows ? 1 : 0) << " " << L.length;
         f << "\n";
     }
     return (bool)f;
@@ -245,7 +245,7 @@ bool loadObjects(const std::string& path, std::vector<WorldObject>& objs) {
             o.trigger.action = (TriggerAction)std::clamp(ta, 0, 3); o.trigger.text = unesc(tx); o.trigger.once = once != 0; o.door.key = unesc(dk);
         }
         int lt, fl; LightSettings L;   // lights and particles (newer files)
-        if (l >> lt >> L.color >> L.intensity >> L.range >> L.cone >> L.tilt >> fl) { L.type = (LightType)std::clamp(lt, 0, 1); L.flicker = (Flicker)std::clamp(fl, 0, 3); o.light = L; }
+        if (l >> lt >> L.color >> L.intensity >> L.range >> L.cone >> L.tilt >> fl) { L.type = (LightType)std::clamp(lt, 0, 2); L.flicker = (Flicker)std::clamp(fl, 0, 3); o.light = L; }
         ParticleSettings P; int add, sh, ar, co, bo, li;
         if (l >> P.rate >> P.burst >> P.burstEvery >> P.life >> P.lifeVar >> P.dir.x >> P.dir.y >> P.dir.z >> P.spread >> P.speed >> P.speedVar >> P.gravity >> P.drag >> P.size0 >> P.size1
               >> P.color0 >> P.color1 >> P.alpha0 >> P.alpha1 >> P.glow >> add >> sh >> ar >> P.areaSize.x >> P.areaSize.y >> P.areaSize.z >> P.spin >> co >> bo >> li >> P.lightRange >> P.lightIntensity >> P.maxParticles) {
@@ -257,7 +257,7 @@ bool loadObjects(const std::string& path, std::vector<WorldObject>& objs) {
         { int on = 0; std::string tok;   // can be scanned: on, the entry's ID (newer files); older ones kept the entry's text here
           if (l >> on >> tok) {
               o.scan.on = on != 0;
-              if (!tok.empty() && tok.find_first_not_of("0123456789") == std::string::npos) { o.scan.id = std::stoi(tok); int et; if (l >> et) { o.enemyType = et; int se, sa; if (l >> se >> sa) { o.save.energy = se != 0; o.save.ammo = sa != 0; std::string an; if (l >> an) o.save.anim = unescText(an); } } }
+              if (!tok.empty() && tok.find_first_not_of("0123456789") == std::string::npos) { o.scan.id = std::stoi(tok); int et; if (l >> et) { o.enemyType = et; int se, sa; if (l >> se >> sa) { o.save.energy = se != 0; o.save.ammo = sa != 0; std::string an; if (l >> an) { o.save.anim = unescText(an); int ls; float ll; if (l >> ls >> ll) { o.light.shadows = ls != 0; o.light.length = std::clamp(ll, 0.25f, 64.f); } } } } }
               else { std::string sc, st; int imp = 0; float tm = 0; o.scan.legacyName = unescText(tok); if (l >> sc >> st >> imp >> tm) { o.scan.legacyCategory = unescText(sc); o.scan.legacyText = unescText(st); o.scan.legacyImportant = imp != 0; o.scan.legacyTime = std::max(0.f, tm); } }
           } }
         objs.push_back(o);

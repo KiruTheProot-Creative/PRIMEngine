@@ -29,6 +29,7 @@
 #include "../game/bosses.h"
 #include "../game/assets.h"
 #include "../game/looks.h"
+#include <tuple>
 #include "media.h"
 #include "../world/visibility.h"
 #include "../game/enemies.h"
@@ -117,6 +118,8 @@ struct alignas(16) FrameCB {
     float cascR[4];         // how far each reaches (blocks, from the camera)
     float cascTexel[4];     // one shadow pixel in blocks, per cascade
     float precip[4];        // rain, snow, dust: x their own steady clock, yz how far the wind has carried them
+    XMFLOAT4X4 occVP;       // the "roofs" map (true darkness)
+    float occ[4];           // x true darkness on, y how open the sky is around the camera
 };
 struct alignas(16) ChunkCB { float offset[4]; float ax[4] = { 1, 0, 0, 0 }, ay[4] = { 0, 1, 0, 0 }, az[4] = { 0, 0, 1, 0 }; };   // axes: objects are turned and sized
 
@@ -304,6 +307,7 @@ struct App {
         b = Compile(src, "PS_AOApply", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psAOApply));
         b = Compile(src, "PS_Water", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psWater));
         b = Compile(src, "PS_Post", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psPost));
+        MakeLightResources();
         b = Compile(src, "PS_LumLog", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psLumLog));
         b = Compile(src, "PS_Adapt", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psAdapt));
         {   // eye adaptation: the picture's brightness (256x256 with mips: the last one is the average) and the eye (1x1, two of them, back and forth)
@@ -322,7 +326,7 @@ struct App {
             { "TEXCOORD", 3, DXGI_FORMAT_R32_UINT, 0, 28, D3D11_INPUT_PER_VERTEX_DATA, 0 } };
         HR(dev->CreateInputLayout(el, 5, vb->GetBufferPointer(), vb->GetBufferSize(), &layout));
         auto cb = [&](UINT size, ComPtr<ID3D11Buffer>& out) { D3D11_BUFFER_DESC d{}; d.ByteWidth = size; d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_CONSTANT_BUFFER; HR(dev->CreateBuffer(&d, nullptr, &out)); };
-        cb(sizeof(FrameCB), cbFrame); cb(sizeof(ChunkCB), cbChunk); cb(sizeof(PreviewCB), cbPreview); cb(sizeof(LightCB), cbLights); cb(32, cbMeshMat); cb(sizeof(MapCB), cbMap); cb(sizeof(VisorCB), cbVisor); cb(16, cbFlat); cb(sizeof(LookCB), cbLook);
+        cb(sizeof(FrameCB), cbFrame); cb(sizeof(ChunkCB), cbChunk); cb(sizeof(PreviewCB), cbPreview); cb(32, cbMeshMat); cb(sizeof(MapCB), cbMap); cb(sizeof(VisorCB), cbVisor); cb(16, cbFlat); cb(sizeof(LookCB), cbLook);
 
         D3D11_RASTERIZER_DESC rd{}; rd.FillMode = D3D11_FILL_SOLID; rd.CullMode = D3D11_CULL_BACK; rd.FrontCounterClockwise = FALSE; rd.DepthClipEnable = TRUE; HR(dev->CreateRasterizerState(&rd, &rsCull));
         rd.CullMode = D3D11_CULL_FRONT; HR(dev->CreateRasterizerState(&rd, &rsCullFront));   // mirrored views turn every triangle around
@@ -985,7 +989,7 @@ struct App {
         world->liquidTimer += dt;   // water and lava flow 10 steps a second
         for (int k = 0; k < 3 && world->liquidTimer >= 0.1; k++) { world->liquidTimer -= 0.1; world->tickLiquids(); }
         if (world->liquidTimer > 0.3) world->liquidTimer = 0;
-        envState.update(dt, player.eye(), info.environment, info.zones); UpdateLook(dt, false);
+        envState.update(dt, player.eye(), info.environment, info.zones); UpdateLook(dt, false); UpdateCamOpen(dt); UpdateLampProxies(dt);
         if (looksDirty && !ImGui::IsAnyItemActive()) { looksDirty = false; if (!projectDir.empty()) saveLooks(projectDir + "/looks.txt", looks); }
         cloudTime += dt * (0.5 + weather.now.wind);
         precipTime += dt; { float w = EffWeather().wind; precipWindX += dt * w; precipWindZ += dt * w * 0.45; }   // (added up: a change of wind only changes how they move from now on)
@@ -1262,11 +1266,80 @@ struct App {
 
     // ================================================================== lights and particles (G2 attempt 5)
     struct PVtx { float pos[3], corner[2], col[4], info[4], vel[3]; };   // info: size, turn, shape, streak
-    struct alignas(16) LightCB { float count[4]; float pos[32][4], col[32][4], dir[32][4]; };
+    struct LightGpu { float pos[4], col[4], dir[4], ext[4]; };   // see LightData in block.hlsl
+    struct alignas(16) ClusterCB { float c0[4], c1[4]; };
+    static constexpr int CLX = 16, CLY = 9, CLZ = 24, CLN = CLX * CLY * CLZ, MAXLIGHTS = 1024, CLMAX = 96, HUDLIGHTS = 64, LSH = 512;
+    static constexpr float CL_NEAR = 0.5f, CL_FAR = 1000.f;
+    ComPtr<ID3D11Buffer> lightBuf, clusterBuf, clusterIdxBuf, lshVPBuf, hudLightBuf, cbCluster; ComPtr<ID3D11ShaderResourceView> lightSRV, clusterSRV, clusterIdxSRV, lshVPSRV, hudLightSRV;
+    ComPtr<ID3D11Texture2D> lshTex; ComPtr<ID3D11DepthStencilView> lshDSV[48]; ComPtr<ID3D11ShaderResourceView> lshSRV;   // shadows of up to 8 lights (6 sides each)
+    ComPtr<ID3D11Texture2D> occTex; ComPtr<ID3D11DepthStencilView> occDSV; ComPtr<ID3D11ShaderResourceView> occSRV;   // the roofs map (true darkness)
+    XMMATRIX occBase = XMMatrixIdentity(); V3 occCam{ 0, 0, 0 }; int occAge = 1000; float camOpen = 1; bool lightShadowPass = false;
+    std::vector<LightGpu> frameLights; int frameLightCount = 0;
+    struct ShadowCaster { V3 rel; double range; int type; V3 dir; double cosCone; int slot; };
+    std::vector<ShadowCaster> casters; XMFLOAT4X4 lshVP[48];
+    struct LampProxy { V3 p; double range; V3 col; };
+    std::vector<LampProxy> lampProxies; V3 lampScanAt{ 1e9, 0, 0 }; double lampScanAge = 99;
+    void Upload(ID3D11Buffer* b, const void* data, size_t bytes) {
+        if (!b || !bytes) return; D3D11_MAPPED_SUBRESOURCE m;
+        if (SUCCEEDED(ctx->Map(b, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) { std::memcpy(m.pData, data, bytes); ctx->Unmap(b, 0); }
+    }
+    ComPtr<ID3D11Buffer> MakeStructured(UINT count, UINT stride, ComPtr<ID3D11ShaderResourceView>& srv) {
+        D3D11_BUFFER_DESC d{}; d.ByteWidth = count * stride; d.Usage = D3D11_USAGE_DYNAMIC; d.BindFlags = D3D11_BIND_SHADER_RESOURCE; d.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+        d.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED; d.StructureByteStride = stride; ComPtr<ID3D11Buffer> b; HR(dev->CreateBuffer(&d, nullptr, &b));
+        D3D11_SHADER_RESOURCE_VIEW_DESC sv{}; sv.Format = DXGI_FORMAT_UNKNOWN; sv.ViewDimension = D3D11_SRV_DIMENSION_BUFFER; sv.Buffer.FirstElement = 0; sv.Buffer.NumElements = count;
+        HR(dev->CreateShaderResourceView(b.Get(), &sv, &srv)); return b;
+    }
+    void MakeLightResources() {
+        lightBuf = MakeStructured(MAXLIGHTS, sizeof(LightGpu), lightSRV); hudLightBuf = MakeStructured(HUDLIGHTS, sizeof(LightGpu), hudLightSRV);
+        clusterBuf = MakeStructured(CLN, 8, clusterSRV); clusterIdxBuf = MakeStructured(CLN * 24, 4, clusterIdxSRV); lshVPBuf = MakeStructured(48, 64, lshVPSRV);
+        { D3D11_BUFFER_DESC d{}; d.ByteWidth = sizeof(ClusterCB); d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_CONSTANT_BUFFER; HR(dev->CreateBuffer(&d, nullptr, &cbCluster)); }
+        auto depthArray = [&](UINT size, UINT n, ComPtr<ID3D11Texture2D>& tex, ComPtr<ID3D11DepthStencilView>* dsvs, ComPtr<ID3D11ShaderResourceView>& srv) {
+            D3D11_TEXTURE2D_DESC d{}; d.Width = d.Height = size; d.MipLevels = 1; d.ArraySize = n; d.Format = DXGI_FORMAT_R32_TYPELESS; d.SampleDesc.Count = 1; d.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
+            HR(dev->CreateTexture2D(&d, nullptr, &tex));
+            for (UINT k = 0; k < n; k++) { D3D11_DEPTH_STENCIL_VIEW_DESC dv{}; dv.Format = DXGI_FORMAT_D32_FLOAT; dv.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2DARRAY; dv.Texture2DArray.FirstArraySlice = k; dv.Texture2DArray.ArraySize = 1; HR(dev->CreateDepthStencilView(tex.Get(), &dv, &dsvs[k])); }
+            D3D11_SHADER_RESOURCE_VIEW_DESC sv{}; sv.Format = DXGI_FORMAT_R32_FLOAT;
+            if (n > 1) { sv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY; sv.Texture2DArray.MipLevels = 1; sv.Texture2DArray.ArraySize = n; }
+            else { sv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D; sv.Texture2D.MipLevels = 1; }
+            HR(dev->CreateShaderResourceView(tex.Get(), &sv, &srv));
+        };
+        depthArray(LSH, 48, lshTex, lshDSV, lshSRV); depthArray(1024, 1, occTex, &occDSV, occSRV);
+    }
+    // glowing blocks near you as lights too - only for objects, models, enemies and the HUD (blocks get theirs from the mesher)
+    void UpdateLampProxies(double dt) {
+        lampScanAge += dt; if (!world) { lampProxies.clear(); return; }
+        V3 d = camPos - lampScanAt; if (lampScanAge < 0.5 && d.x * d.x + d.y * d.y + d.z * d.z < 2.0) return;
+        lampScanAge = 0; lampScanAt = camPos; lampProxies.clear();
+        const int R = 18; int cx = (int)std::floor(camPos.x), cy = (int)std::floor(camPos.y), cz = (int)std::floor(camPos.z);
+        struct Cell { V3 p{ 0, 0, 0 }; V3 col{ 0, 0, 0 }; int n = 0, lv = 0; }; std::map<std::tuple<int, int, int>, Cell> cells;
+        for (int ky = (int)std::floor((cy - R) / (double)CS); ky <= (int)std::floor((cy + R) / (double)CS); ky++)
+            for (int kz = (int)std::floor((cz - R) / (double)CS); kz <= (int)std::floor((cz + R) / (double)CS); kz++)
+                for (int kx = (int)std::floor((cx - R) / (double)CS); kx <= (int)std::floor((cx + R) / (double)CS); kx++) {
+                    if (!world->emittersNear({ kx, ky, kz })) continue;
+                    for (int y = std::max(ky * CS, cy - R); y < std::min(ky * CS + CS, cy + R + 1); y++)
+                        for (int z = std::max(kz * CS, cz - R); z < std::min(kz * CS + CS, cz + R + 1); z++)
+                            for (int x = std::max(kx * CS, cx - R); x < std::min(kx * CS + CS, cx + R + 1); x++) {
+                                BlockId b = world->get(x, y, z); if (b == AIR) continue;
+                                const BlockDef& def = world->reg.get(b); if (!def.lightOf()) continue;
+                                int lv[3]; def.lightLevels(lv); int m = std::max(lv[0], std::max(lv[1], lv[2])); if (m <= 0) continue;
+                                Cell& c = cells[{ (int)std::floor(x / 4.0), (int)std::floor(y / 4.0), (int)std::floor(z / 4.0) }];
+                                c.p = c.p + V3{ x + 0.5, y + 0.5, z + 0.5 }; c.col = c.col + V3{ lv[0] / 15.0, lv[1] / 15.0, lv[2] / 15.0 }; c.n++; c.lv = std::max(c.lv, m);
+                            }
+                }
+        for (auto& kv : cells) { const Cell& c = kv.second; double k = 1.0 / c.n; lampProxies.push_back({ c.p * k, c.lv + 1.5, c.col * (k * std::min(2.0, std::sqrt((double)c.n)) * 1.1) }); }
+    }
+    void UpdateCamOpen(double dt) {   // how open the sky is around the camera (true darkness: fog and the distance go dark in caves)
+        if (!world) return; int open = 0, tot = 0; int y0 = (int)std::floor(camPos.y) + 1;
+        for (int dz = -3; dz <= 3; dz += 3) for (int dx = -3; dx <= 3; dx += 3) {
+            tot++; int x = (int)std::floor(camPos.x) + dx, z = (int)std::floor(camPos.z) + dz; bool blocked = false;
+            for (int y = y0; y < y0 + 72 && !blocked; y++) { BlockId b = world->get(x, y, z); if (b != AIR && world->reg.get(b).render == Render::Opaque) blocked = true; }
+            if (!blocked) open++;
+        }
+        float t = tot ? open / (float)tot : 1; camOpen += (t - camOpen) * (float)(1 - std::exp(-dt * 2.5));
+    }
     std::map<uint32_t, ParticleEmitter> emitters;     // the particle emitters placed in the world, by object id
     std::vector<ParticleEmitter> fx;                  // one-off effects (sparks where a shot hits, a finished trail ...)
     ComPtr<ID3D11VertexShader> vsParticle; ComPtr<ID3D11PixelShader> psParticle; ComPtr<ID3D11InputLayout> layoutParticle;
-    ComPtr<ID3D11Buffer> vbParticles, cbLights; UINT vbParticlesCap = 0; int particleCount = 0;
+    ComPtr<ID3D11Buffer> vbParticles; UINT vbParticlesCap = 0; int particleCount = 0;
     static V3 ColorOf(uint32_t c) { return { ((c >> 16) & 255) / 255.0, ((c >> 8) & 255) / 255.0, (c & 255) / 255.0 }; }
     void MakeLight(WorldObject& o) { o.kind = ObjKind::Light; o.collide = Collide::None; if (o.folder == "Props") o.folder = "Lights"; }
     void MakeEmitter(WorldObject& o) { o.kind = ObjKind::Particles; o.collide = Collide::None; if (o.folder == "Props") o.folder = "Particles"; }
@@ -1291,11 +1364,13 @@ struct App {
         fx.erase(std::remove_if(fx.begin(), fx.end(), [](const ParticleEmitter& e) { return e.ps.empty(); }), fx.end());
         for (Shot& s : shots) { V3 from = s.mtype >= 0 ? s.pos - s.dir * (double)s.size : s.pos; s.spin += (float)dt * 5; s.trail.update(dt, from, 0, nullptr, s.age < 50); }   // beam tails (missiles: from the back)
     }
-    // every light that shines this frame: light objects, glowing emitters, shots (the nearest 32)
-    void CollectLights(LightCB& lc) {
-        struct L { V3 p; double range; V3 col; int spot; V3 dir; double cosCone; double dist; };
+    // every light that shines this frame: light objects (points, spots, strips), glowing models and emitters, shots,
+    // glowing blocks near you (for objects only) - the most important first, up to 1024; a few of them get shadows
+    void CollectLights() {
+        struct L { V3 p; double range; V3 col; int type; V3 dir; double cosCone; V3 half; bool objOnly; bool shadow; double dist; };
         std::vector<L> all;
         auto dist = [&](V3 p) { V3 d = p - camPos; return std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z); };
+        auto simple = [&](V3 p, double range, V3 col) { all.push_back({ p, range, col, 0, { 0, -1, 0 }, -1, { 0, 0, 0 }, false, false, dist(p) }); };
         for (const WorldObject& o : objects) {
             if (SwitchedOff(o)) continue;
             if (o.kind == ObjKind::Light) {
@@ -1304,40 +1379,102 @@ struct App {
                 double a = o.yaw * 3.14159265358979 / 180, t = s.tilt * 3.14159265358979 / 180;
                 V3 d{ std::sin(a) * std::cos(t), -std::sin(t), std::cos(a) * std::cos(t) };
                 V3 p{ o.pos.x, o.pos.y + 0.3, o.pos.z };
-                all.push_back({ p, std::max(0.5f, s.range), c, s.type == LightType::Spot ? 1 : 0, d, std::cos(s.cone * 3.14159265358979 / 180), dist(p) });
+                int type = s.type == LightType::Spot ? 1 : s.type == LightType::Strip ? 2 : 0;
+                V3 half = type == 2 ? d * (double)(s.length * 0.5f) : V3{ 0, 0, 0 };
+                if (type == 2) c = c * std::max(1.0, std::sqrt((double)s.length) * 0.8);   // a long tube gives more light
+                all.push_back({ p, std::max(0.5f, s.range), c, type, d, std::cos(s.cone * 3.14159265358979 / 180), half, false, s.shadows, dist(p) });
             } else if (o.kind != ObjKind::Enemy && !o.model.empty() && o.model[0] != '@' && !evHidden.count(o.id)) {   // a model with an emission map: a light at its middle
                 const ModelEmit& me = ModelEmitOf(o.model); if (!me.on) continue;
                 TexMaterial m = materials.of(ModelMatKey(o.model)); if (m.lights <= 0 || m.emit <= 0) continue;
                 FrameRef f = ModelOf(o); if (!f) continue; Box3 b = objectBounds(o, *f); V3 p = (b.lo + b.hi) * 0.5;
-                all.push_back({ p, std::max(1.0f, m.lights), me.col * (double)(m.emit * 1.2f), 0, { 0, -1, 0 }, -1, dist(p) });
+                simple(p, std::max(1.0f, m.lights), me.col * (double)(m.emit * 1.2f));
             } else if (o.kind == ObjKind::Particles && o.particles.light) {
                 const ParticleSettings& s = o.particles; double k = s.lightIntensity * flickerAt(Flicker::Candle, animTime * 1.3, o.id);
                 V3 c0 = ColorOf(s.color0), c1 = ColorOf(s.color1); V3 c{ std::pow((c0.x + c1.x) / 2, 2.2) * k, std::pow((c0.y + c1.y) / 2, 2.2) * k, std::pow((c0.z + c1.z) / 2, 2.2) * k };
                 V3 p = EmitterOrigin(o); p.y += 0.4;
-                all.push_back({ p, std::max(0.5f, s.lightRange), c, 0, { 0, -1, 0 }, -1, dist(p) });
+                simple(p, std::max(0.5f, s.lightRange), c);
             }
         }
-        for (const Shot& s : shots) if (s.age < 50) all.push_back({ s.pos, s.missile ? 6.0 : 4.5, s.color * 0.6, 0, { 0, -1, 0 }, -1, dist(s.pos) });
-        for (const Bomb& b : bombsOut) all.push_back({ b.pos, 2.5, V3{ 1.6, 1.0, 0.3 } * (0.6 + 0.4 * std::sin(animTime * 18)), 0, { 0, -1, 0 }, -1, dist(b.pos) });
-        for (const Flash& fl : flashes) all.push_back({ fl.pos, fl.range, fl.col * (1 - fl.t / 0.35), 0, { 0, -1, 0 }, -1, dist(fl.pos) });
-        for (const ImpactSphere& sp : spheres) { double a = sp.alphaNow(); if (a > 0.02) all.push_back({ sp.pos, 1.5 + sp.radiusNow() * 2.5, Linear(sp.color) * (3.5 * a), 0, { 0, -1, 0 }, -1, dist(sp.pos) }); }
-        if (playMode && weapState.charging && weapState.charge > 0) if (const Beam* b = CurrentBeam()) all.push_back({ chargeAt, 2.0 + 2.5 * weapState.charge, Linear(b->color) * (0.6 + 1.6 * weapState.charge), 0, { 0, -1, 0 }, -1, dist(chargeAt) });
+        for (const Shot& s : shots) if (s.age < 50) simple(s.pos, s.missile ? 6.0 : 4.5, s.color * 0.6);
+        for (const Bomb& b : bombsOut) simple(b.pos, 2.5, V3{ 1.6, 1.0, 0.3 } * (0.6 + 0.4 * std::sin(animTime * 18)));
+        for (const Flash& fl : flashes) simple(fl.pos, fl.range, fl.col * (1 - fl.t / 0.35));
+        for (const ImpactSphere& sp : spheres) { double a = sp.alphaNow(); if (a > 0.02) simple(sp.pos, 1.5 + sp.radiusNow() * 2.5, Linear(sp.color) * (3.5 * a)); }
+        if (playMode && weapState.charging && weapState.charge > 0) if (const Beam* b = CurrentBeam()) simple(chargeAt, 2.0 + 2.5 * weapState.charge, Linear(b->color) * (0.6 + 1.6 * weapState.charge));
+        for (const LampProxy& lp : lampProxies) all.push_back({ lp.p, lp.range, lp.col, 0, { 0, -1, 0 }, -1, { 0, 0, 0 }, true, false, dist(lp.p) });
         std::sort(all.begin(), all.end(), [](const L& a, const L& b) { return a.dist - a.range < b.dist - b.range; });
-        int n = 0;
+        frameLights.clear(); casters.clear(); int wantShadows = std::clamp(settings.lightShadows, 0, 8);
         for (const L& l : all) {
-            if (n >= 32) break; if (l.dist - l.range > 96) continue;
-            V3 r = l.p - camPos;
-            float* P = lc.pos[n]; P[0] = (float)r.x; P[1] = (float)r.y; P[2] = (float)r.z; P[3] = (float)l.range;
-            float* C = lc.col[n]; C[0] = (float)l.col.x; C[1] = (float)l.col.y; C[2] = (float)l.col.z; C[3] = (float)l.spot;
-            float* D = lc.dir[n]; D[0] = (float)l.dir.x; D[1] = (float)l.dir.y; D[2] = (float)l.dir.z; D[3] = (float)l.cosCone;
-            n++;
+            if ((int)frameLights.size() >= MAXLIGHTS) break; double hl = std::sqrt(l.half.x * l.half.x + l.half.y * l.half.y + l.half.z * l.half.z);
+            if (l.dist - l.range - hl > 200) continue;
+            V3 r = l.p - camPos; LightGpu g{};
+            g.pos[0] = (float)r.x; g.pos[1] = (float)r.y; g.pos[2] = (float)r.z; g.pos[3] = (float)l.range;
+            g.col[0] = (float)l.col.x; g.col[1] = (float)l.col.y; g.col[2] = (float)l.col.z; g.col[3] = (float)(l.type + (l.objOnly ? 8 : 0));
+            g.dir[0] = (float)l.dir.x; g.dir[1] = (float)l.dir.y; g.dir[2] = (float)l.dir.z; g.dir[3] = (float)l.cosCone;
+            g.ext[0] = (float)l.half.x; g.ext[1] = (float)l.half.y; g.ext[2] = (float)l.half.z; g.ext[3] = -1;
+            if (l.shadow && (int)casters.size() < wantShadows && l.dist - l.range < 64) { g.ext[3] = (float)casters.size(); casters.push_back({ r, l.range + hl, l.type, l.dir, l.cosCone, (int)casters.size() }); }
+            frameLights.push_back(g);
         }
-        lc.count[0] = (float)n;
+        frameLightCount = (int)frameLights.size();
     }
-    void BindLights() {
-        LightCB lc{}; CollectLights(lc);
-        ctx->UpdateSubresource(cbLights.Get(), 0, nullptr, &lc, 0, 0);
-        ctx->PSSetConstantBuffers(3, 1, cbLights.GetAddressOf());
+    void SetClusterMode(bool clustered, int start, int count) {
+        ClusterCB c{ { clustered ? 1.f : 0.f, (float)CLX, (float)CLY, (float)CLZ }, { (float)start, (float)count, CL_NEAR, std::log(CL_FAR / CL_NEAR) } };
+        ctx->UpdateSubresource(cbCluster.Get(), 0, nullptr, &c, 0, 0); ctx->PSSetConstantBuffers(11, 1, cbCluster.GetAddressOf());
+    }
+    void BindLightBuffers(bool hud) {
+        ID3D11ShaderResourceView* v[3] = { hud ? hudLightSRV.Get() : lightSRV.Get(), clusterSRV.Get(), clusterIdxSRV.Get() }; ctx->PSSetShaderResources(19, 3, v);
+        ID3D11ShaderResourceView* m = lshVPSRV.Get(); ctx->PSSetShaderResources(23, 1, &m);
+    }
+    // sort the lights into the clusters (boxes of the view: 16 x 9 across the screen, 24 slices of distance)
+    void PrepareLights(const FrameCB& fc) {
+        CollectLights();
+        static std::vector<uint32_t> cnt, lists, flat; static std::vector<uint32_t> ranges;
+        cnt.assign(CLN, 0); lists.resize((size_t)CLN * CLMAX);
+        const float th = fc.proj[0], asp = fc.proj[1], lz = std::log(CL_FAR / CL_NEAR);
+        auto slice = [&](float z) { return std::clamp((int)(std::log(std::max(z, CL_NEAR) / CL_NEAR) / lz * CLZ), 0, CLZ - 1); };
+        for (int i = 0; i < (int)frameLights.size(); i++) {
+            const LightGpu& g = frameLights[i];
+            float hl = std::sqrt(g.ext[0] * g.ext[0] + g.ext[1] * g.ext[1] + g.ext[2] * g.ext[2]), r = g.pos[3] + hl;
+            float vx = g.pos[0] * fc.camR[0] + g.pos[1] * fc.camR[1] + g.pos[2] * fc.camR[2];
+            float vy = g.pos[0] * fc.camU[0] + g.pos[1] * fc.camU[1] + g.pos[2] * fc.camU[2];
+            float vz = g.pos[0] * fc.camF[0] + g.pos[1] * fc.camF[1] + g.pos[2] * fc.camF[2];
+            if (vz + r <= 0) continue;
+            int s0 = slice(vz - r), s1 = slice(vz + r), x0 = 0, x1 = CLX - 1, y0 = 0, y1 = CLY - 1;
+            float zmin = vz - r, zmax = vz + r;
+            if (zmin > 0.05f) {
+                auto lo = [&](float a) { return a < 0 ? a / zmin : a / zmax; }; auto hi = [&](float a) { return a > 0 ? a / zmin : a / zmax; };
+                float nx0 = lo(vx - r) / (th * asp), nx1 = hi(vx + r) / (th * asp), ny0 = lo(vy - r) / th, ny1 = hi(vy + r) / th;
+                if (nx1 < -1 || nx0 > 1 || ny1 < -1 || ny0 > 1) continue;
+                x0 = std::clamp((int)std::floor((nx0 * 0.5f + 0.5f) * CLX), 0, CLX - 1); x1 = std::clamp((int)std::floor((nx1 * 0.5f + 0.5f) * CLX), 0, CLX - 1);
+                y0 = std::clamp((int)std::floor((-ny1 * 0.5f + 0.5f) * CLY), 0, CLY - 1); y1 = std::clamp((int)std::floor((-ny0 * 0.5f + 0.5f) * CLY), 0, CLY - 1);
+            }
+            for (int z = s0; z <= s1; z++) for (int y = y0; y <= y1; y++) for (int x = x0; x <= x1; x++) {
+                int c = (z * CLY + y) * CLX + x; if (cnt[c] < (uint32_t)CLMAX) lists[(size_t)c * CLMAX + cnt[c]++] = (uint32_t)i;
+            }
+        }
+        ranges.assign((size_t)CLN * 2, 0); flat.clear();
+        for (int c = 0; c < CLN; c++) {
+            uint32_t n = cnt[c]; if (flat.size() + n > (size_t)CLN * 24) n = (uint32_t)((size_t)CLN * 24 - flat.size());
+            ranges[c * 2] = (uint32_t)flat.size(); ranges[c * 2 + 1] = n;
+            flat.insert(flat.end(), lists.begin() + (size_t)c * CLMAX, lists.begin() + (size_t)c * CLMAX + n);
+        }
+        Upload(lightBuf.Get(), frameLights.data(), frameLights.size() * sizeof(LightGpu));
+        Upload(clusterBuf.Get(), ranges.data(), ranges.size() * 4); Upload(clusterIdxBuf.Get(), flat.data(), flat.size() * 4);
+        for (const ShadowCaster& sc : casters) {   // each shadow-casting light: a cube (spotlights: one view along the cone)
+            int faces = sc.type == 1 ? 1 : 6; XMVECTOR eye = XMVectorSet((float)sc.rel.x, (float)sc.rel.y, (float)sc.rel.z, 1);
+            for (int f = 0; f < faces; f++) {
+                XMVECTOR dir, up; float fov = 2 * std::atan(1.03f);
+                if (sc.type == 1) { dir = XMVectorSet((float)sc.dir.x, (float)sc.dir.y, (float)sc.dir.z, 0); up = std::fabs(sc.dir.y) > 0.95 ? XMVectorSet(1, 0, 0, 0) : XMVectorSet(0, 1, 0, 0);
+                                    fov = std::min(3.0f, 2 * (float)std::acos(std::clamp(sc.cosCone, -1.0, 1.0)) + 0.2f); }
+                else {
+                    static const float D[6][3] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
+                    dir = XMVectorSet(D[f][0], D[f][1], D[f][2], 0); up = f == 2 ? XMVectorSet(0, 0, -1, 0) : f == 3 ? XMVectorSet(0, 0, 1, 0) : XMVectorSet(0, 1, 0, 0);
+                }
+                XMMATRIX m = XMMatrixLookToLH(eye, dir, up) * XMMatrixPerspectiveFovLH(fov, 1, 0.05f, (float)std::max(1.0, sc.range));
+                XMStoreFloat4x4(&lshVP[sc.slot * 6 + f], m);
+            }
+        }
+        if (!casters.empty()) Upload(lshVPBuf.Get(), lshVP, sizeof lshVP);
+        BindLightBuffers(false); SetClusterMode(true, 0, 0);
     }
     // all particles as quads: glowing ones added on top, soft ones (smoke) blended, back to front
     void DrawParticles() {
@@ -1393,15 +1530,18 @@ struct App {
     }
     void LightInspector(WorldObject& o) {
         LightSettings& L = o.light; ImGui::SeparatorText("Light");
-        int t = (int)L.type; const char* tn[] = { "Point (shines all around)", "Spot (a cone)" }; Prop("Kind of light"); ImGui::Combo("##lt", &t, tn, 2); L.type = (LightType)t;
+        int t = (int)L.type; const char* tn[] = { "Point (shines all around)", "Spot (a cone)", "Strip (a glowing tube, neon)" }; Prop("Kind of light"); ImGui::Combo("##lt", &t, tn, 3); L.type = (LightType)t;
         float c[3] = { ((L.color >> 16) & 255) / 255.f, ((L.color >> 8) & 255) / 255.f, (L.color & 255) / 255.f };
         Prop("Colour"); if (ImGui::ColorEdit3("##lc", c, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_PickerHueWheel)) L.color = ((uint32_t)std::lround(c[0] * 255) << 16) | ((uint32_t)std::lround(c[1] * 255) << 8) | (uint32_t)std::lround(c[2] * 255);
         Prop("Brightness"); ImGui::SliderFloat("##li", &L.intensity, 0.1f, 10, "%.1f");
         Prop("Reach"); ImGui::SliderFloat("##lr", &L.range, 1, 40, "%.0f blocks");
+        if (L.type == LightType::Strip) { Prop("Length"); ImGui::SliderFloat("##llen", &L.length, 0.5f, 32, "%.1f blocks"); Prop("Tilt"); ImGui::SliderFloat("##ltilt", &L.tilt, -90, 90, "%.0f deg"); Hint("It lies along where the object faces (Turn); tilt 90 stands it upright."); }
+        Prop("Casts shadows"); ImGui::Checkbox("##lsh", &L.shadows);
+        if (L.shadows) Hint("The nearest few lights that cast shadows really do (Options > Graphics: Shadows from lamps).");
         if (L.type == LightType::Spot) { Prop("Cone"); ImGui::SliderFloat("##lcone", &L.cone, 5, 80, "%.0f deg"); Prop("Looks down"); ImGui::SliderFloat("##ltilt", &L.tilt, -90, 90, "%.0f deg"); Hint("It points where the object faces (Turn), tilted down by this."); }
         int f = (int)L.flicker; const char* fn[] = { flickerName(Flicker::None), flickerName(Flicker::Candle), flickerName(Flicker::Broken), flickerName(Flicker::Pulse) };
         Prop("Flicker"); ImGui::Combo("##lf", &f, fn, 4); L.flicker = (Flicker)f;
-        Hint("Lights shine on blocks and objects as you move (up to 32 near you at once). The bulb is only seen in the editor.");
+        Hint("Lights shine on blocks, objects and the HUD's 3D parts (hundreds at once). The bulb is only seen in the editor.");
     }
     void ParticleInspector(WorldObject& o) {
         ParticleSettings& P = o.particles; ImGui::SeparatorText("Particles");
@@ -1649,10 +1789,15 @@ struct App {
             case ObjKind::Pickup: col = IM_COL32(255, 230, 120, 230); label = o.pickup.type == PickupType::Health ? "+" + std::to_string((int)o.pickup.amount) + " health" : o.pickup.name; break;
             case ObjKind::Door: if (!o.door.key.empty()) { col = IM_COL32(255, 210, 80, 230); label = "Needs: " + o.door.key; } break;
             case ObjKind::Light: {
-                col = IM_COL32(255, 235, 150, 230); label = o.light.type == LightType::Spot ? "Spot light" : "Light";
+                col = IM_COL32(255, 235, 150, 230); label = o.light.type == LightType::Spot ? "Spot light" : o.light.type == LightType::Strip ? "Light strip" : "Light";
                 if (sel == Sel::Object && selIndex == i) {
                     V3 c{ o.pos.x, o.pos.y + 0.3, o.pos.z }; double r = o.light.range;
-                    if (o.light.type == LightType::Point) for (int k = 0; k < 48; k++) { double a0 = k * 6.2832 / 48, a1 = (k + 1) * 6.2832 / 48; Line3D(dl, { c.x + std::cos(a0) * r, c.y, c.z + std::sin(a0) * r }, { c.x + std::cos(a1) * r, c.y, c.z + std::sin(a1) * r }, IM_COL32(255, 235, 150, 110)); }
+                    if (o.light.type == LightType::Strip) {   // the tube itself
+                        double a = o.yaw * 3.14159265358979 / 180, t = o.light.tilt * 3.14159265358979 / 180;
+                        V3 d{ std::sin(a) * std::cos(t), -std::sin(t), std::cos(a) * std::cos(t) }; d = d * (double)(o.light.length * 0.5f);
+                        Line3D(dl, c - d, c + d, IM_COL32(255, 235, 150, 230));
+                    }
+                    if (o.light.type != LightType::Spot) for (int k = 0; k < 48; k++) { double a0 = k * 6.2832 / 48, a1 = (k + 1) * 6.2832 / 48; Line3D(dl, { c.x + std::cos(a0) * r, c.y, c.z + std::sin(a0) * r }, { c.x + std::cos(a1) * r, c.y, c.z + std::sin(a1) * r }, IM_COL32(255, 235, 150, 110)); }
                     else {
                         double a = o.yaw * 3.14159265358979 / 180, t = o.light.tilt * 3.14159265358979 / 180, cn = o.light.cone * 3.14159265358979 / 180;
                         V3 d{ std::sin(a) * std::cos(t), -std::sin(t), std::cos(a) * std::cos(t) }, up = std::fabs(d.y) < 0.9 ? V3{ 0, 1, 0 } : V3{ 1, 0, 0 };
@@ -3022,11 +3167,23 @@ struct App {
             skyvp = XMMatrixLookToLH(XMVectorSet(0, 300, 0, 1), XMVectorSet(0, -1, 0, 0), XMVectorSet(0, 0, 1, 0)) * XMMatrixTranslation(mx, mz, 0) * XMMatrixOrthographicLH(2 * R, 2 * R, 1, 700);
         }
         XMStoreFloat4x4(&fc.skyVP, skyvp);
+        bool occRender = false;
+        if (info.trueDark) {   // the roofs map: redrawn every few frames or after moving; in between it is shifted to the camera
+            V3 dm = camPos - occCam; occAge++;
+            if (occAge >= 4 || std::fabs(dm.x) > 24 || std::fabs(dm.z) > 24 || std::fabs(dm.y) > 48) {
+                const float R = 128; double texel = 2.0 * R / 1024, px = camPos.x, pz = camPos.z;
+                float mx = (float)(px - std::floor(px / texel) * texel), mz = (float)(pz - std::floor(pz / texel) * texel);
+                occBase = XMMatrixLookToLH(XMVectorSet(0, 300, 0, 1), XMVectorSet(0, -1, 0, 0), XMVectorSet(0, 0, 1, 0)) * XMMatrixTranslation(mx, mz, 0) * XMMatrixOrthographicLH(2 * R, 2 * R, 1, 700);
+                occCam = camPos; occAge = 0; occRender = true; dm = { 0, 0, 0 };
+            }
+            XMStoreFloat4x4(&fc.occVP, XMMatrixTranslation((float)dm.x, (float)dm.y, (float)dm.z) * occBase);
+            fc.occ[0] = 1; fc.occ[1] = camOpen;
+        } else { fc.occ[0] = 0; fc.occ[1] = 1; occAge = 1000; }
         fc.weather[0] = W.rain; fc.weather[1] = W.snow; fc.weather[2] = W.dark; fc.weather[3] = weather.wetness * E.atmosphere;
         fc.weather2[0] = weather.snowCover * E.atmosphere; fc.weather2[1] = weather.flash * E.atmosphere; fc.weather2[2] = W.wind; fc.weather2[3] = skyMap ? 1.f : 0.f;
         ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &fc, 0, 0);
         ID3D11Buffer* cbs[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->VSSetConstantBuffers(0, 2, cbs); ctx->PSSetConstantBuffers(0, 2, cbs);
-        BindLights();   // light objects, glowing emitters, shots
+        PrepareLights(fc);   // light objects, strips, glowing emitters, shots, glowing blocks (for objects) - sorted into clusters
         ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
         auto drawChunks = [&](const XMMATRIX& m, int pass, bool counting, bool cave = false) {   // cave: the camera's own view (cave culling applies)
             for (auto& kv : gpu) {
@@ -3035,7 +3192,7 @@ struct App {
                 // chunk origin relative to the camera, computed in double: no jitter however far you go
                 float ox = (float)(kv.first.x * (double)CS - camPos.x), oy = (float)(kv.first.y * (double)CS - camPos.y), oz = (float)(kv.first.z * (double)CS - camPos.z);
                 if (!BoxVisible(m, ox, oy, oz, (float)CS)) continue;
-                ChunkCB cc{ { ox, oy, oz, 0 } }; ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);
+                ChunkCB cc{ { ox, oy, oz, 1 } }; ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);   // w 1: the world's blocks (their lamp light is baked in)
                 UINT stride = sizeof(Vtx), off = 0;
                 ctx->IASetVertexBuffers(0, 1, pass == 0 ? g.vbO.GetAddressOf() : pass == 1 ? g.vbC.GetAddressOf() : g.vbW.GetAddressOf(), &stride, &off);
                 ctx->IASetIndexBuffer(pass == 0 ? g.ibO.Get() : pass == 1 ? g.ibC.Get() : g.ibW.Get(), DXGI_FORMAT_R32_UINT, 0);
@@ -3046,6 +3203,7 @@ struct App {
                 if ((int)oi == movingObj) continue;
                 const WorldObject& o = objects[oi];
                 if (o.kind == ObjKind::Trigger || Gone(o)) continue;   // zones: invisible (the editor shows their box)
+                if (lightShadowPass && (o.kind == ObjKind::Light || o.kind == ObjKind::Particles)) continue;   // a lamp's bulb never shadows its own light
                 if ((o.kind == ObjKind::Light || o.kind == ObjKind::Particles || o.kind == ObjKind::MapCamera) && (playMode || plainView) && IsBuiltin(o.model)) continue;   // the bulb / nozzle: editor only
                 if (o.kind == ObjKind::Enemy && playMode) { if (EnemyDrawable(o)) DrawEnemy(o, pass, camPos); continue; }   // enemies: where they are now
                 if (o.kind == ObjKind::Pickup) {   // pickups turn and bob; gone once taken
@@ -3072,6 +3230,37 @@ struct App {
             }
             ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &fc, 0, 0);
         }
+        {   // shadows of the few lights that cast them (a cube each, spotlights one view)
+            ID3D11ShaderResourceView* n1[1] = {}; ctx->PSSetShaderResources(22, 1, n1);
+            if (!casters.empty()) {
+                D3D11_VIEWPORT sv{ 0, 0, (float)LSH, (float)LSH, 0, 1 }; ctx->RSSetViewports(1, &sv);
+                ctx->RSSetState(rsShadow.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsShadow.Get(), nullptr, 0);
+                ctx->PSSetShaderResources(0, 1, texArray.GetAddressOf()); ctx->PSSetShaderResources(14, 1, emitArray.GetAddressOf()); ctx->PSSetSamplers(0, 1, sampBlocks.GetAddressOf());
+                lightShadowPass = true;
+                for (const ShadowCaster& sc : casters) for (int f = 0; f < (sc.type == 1 ? 1 : 6); f++) {
+                    int sl = sc.slot * 6 + f; XMMATRIX m = XMLoadFloat4x4(&lshVP[sl]);
+                    FrameCB cf = fc; cf.shadowVP = lshVP[sl]; ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &cf, 0, 0);
+                    ctx->OMSetRenderTargets(0, nullptr, lshDSV[sl].Get()); ctx->ClearDepthStencilView(lshDSV[sl].Get(), D3D11_CLEAR_DEPTH, 1.f, 0);
+                    ctx->PSSetShader(nullptr, nullptr, 0); drawChunks(m, 0, false);
+                    ctx->PSSetShader(psShadowCut.Get(), nullptr, 0); drawChunks(m, 1, false);
+                }
+                lightShadowPass = false;
+                ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &fc, 0, 0);
+            }
+            ctx->OMSetRenderTargets(0, nullptr, nullptr);
+            ID3D11ShaderResourceView* ls = lshSRV.Get(); ctx->PSSetShaderResources(22, 1, &ls);
+        }
+        if (occRender) {   // the roofs map: opaque things seen from straight above (true darkness)
+            ID3D11ShaderResourceView* n1[1] = {}; ctx->PSSetShaderResources(18, 1, n1);
+            FrameCB cf = fc; XMStoreFloat4x4(&cf.skyVP, occBase); ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &cf, 0, 0);
+            ctx->OMSetRenderTargets(0, nullptr, occDSV.Get()); ctx->ClearDepthStencilView(occDSV.Get(), D3D11_CLEAR_DEPTH, 1.f, 0);
+            D3D11_VIEWPORT sv{ 0, 0, 1024, 1024, 0, 1 }; ctx->RSSetViewports(1, &sv);
+            ctx->RSSetState(rsShadow.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsSkyMap.Get(), nullptr, 0);
+            ctx->PSSetShader(nullptr, nullptr, 0); lightShadowPass = true; drawChunks(occBase, 0, false); lightShadowPass = false;
+            ctx->OMSetRenderTargets(0, nullptr, nullptr);
+            ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &fc, 0, 0);
+        }
+        { ID3D11ShaderResourceView* oc = info.trueDark ? occSRV.Get() : nullptr; ctx->PSSetShaderResources(18, 1, &oc); }
 
         if (skyMap) {
             ctx->OMSetRenderTargets(0, nullptr, skyMapDSV.Get()); ctx->ClearDepthStencilView(skyMapDSV.Get(), D3D11_CLEAR_DEPTH, 1.f, 0);
@@ -3098,6 +3287,7 @@ struct App {
             for (int i = 0; i < 4; i++) mc.clipPlane[i] = fc.mirror[i];    // nothing behind the mirror
             mc.refl[3] = 0;
             ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &mc, 0, 0);
+            SetClusterMode(false, 0, std::min(frameLightCount, 64));   // the clusters fit the camera's view, not the mirror's: the nearest lights instead
             const float black[4] = { 0, 0, 0, 1 };
             ctx->OMSetRenderTargets(1, mirRTV.GetAddressOf(), mirDSV.Get()); ctx->ClearRenderTargetView(mirRTV.Get(), black); ctx->ClearDepthStencilView(mirDSV.Get(), D3D11_CLEAR_DEPTH, 1.f, 0);
             D3D11_VIEWPORT mv{ 0, 0, (float)std::max(1, rw / 2), (float)std::max(1, rh / 2), 0, 1 }; ctx->RSSetViewports(1, &mv);
@@ -3111,6 +3301,7 @@ struct App {
             ctx->PSSetShader(psCutout.Get(), nullptr, 0); drawChunks(mvp, 1, false);
             ctx->PSSetShaderResources(0, 5, none);
             ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &fc, 0, 0);
+            SetClusterMode(true, 0, 0);
         }
 
         // ---- the world, into the HDR picture
@@ -3839,6 +4030,8 @@ struct App {
         Prop("Air"); EnvCombo("##air", info.environment);
         Hint("The air of this whole world. Zones (in the Outliner) can have their own.");
         Hint("You are in: %s", envState.inZone ? ("the zone \"" + envState.zoneName + "\"").c_str() : "the world's own air");
+        ImGui::Checkbox("True darkness", &info.trueDark);
+        Hint("No sky light under roofs and in caves: only lights, lamps and glowing things light them (it fades in near openings).");
         if (ImGui::Button("Add a zone around me")) AddZoneHere();
         ImGui::Separator();
         Prop("Look"); LookCombo("##wlook", info.look, false);
@@ -4675,20 +4868,18 @@ struct App {
         ctx->PSSetShaderResources(0, 5, srvs); ctx->PSSetSamplers(0, 3, samps);
         ID3D11Buffer* cbs[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->VSSetConstantBuffers(0, 2, cbs); ctx->PSSetConstantBuffers(0, 2, cbs);
         auto W = [&](V3 c) { return r * c.x + u * c.y + f * c.z; };   // camera space -> the world's directions
-        LightCB worldLights{}; bool hudLit = false;
-        if (settings.hudGlow) {   // each plane's light falls a little on the helmet's parts (only on them: added here, taken away after)
-            CollectLights(worldLights); LightCB lc = worldLights; int n = (int)lc.count[0];
-            for (const HudPlane& p : hud.planes) {
-                if (!p.visible || p.lightUp <= 0) continue;
+        {   // the world's lights always fall on the helmet's parts (the nearest ones, glowing blocks around you too), and each HUD plane's own light
+            std::vector<LightGpu> hl; for (int k = 0; k < frameLightCount && (int)hl.size() < HUDLIGHTS - 8; k++) hl.push_back(frameLights[k]);
+            if (settings.hudGlow) for (const HudPlane& p : hud.planes) {
+                if ((int)hl.size() >= HUDLIGHTS || !p.visible || p.lightUp <= 0) continue;
                 V3 col = planeLight(p) * (double)(p.lightUp * 6.f); if (col.x + col.y + col.z < 1e-4) continue;
-                int k = n < 32 ? n++ : 31; V3 at = W(hudSway.apply(planePoint(p, 0.5f, 0.5f), p.sway));
-                float* P = lc.pos[k]; P[0] = (float)at.x; P[1] = (float)at.y; P[2] = (float)at.z; P[3] = std::max(p.width, p.height) * 1.6f;
-                float* C = lc.col[k]; C[0] = (float)col.x; C[1] = (float)col.y; C[2] = (float)col.z; C[3] = 0;
-                float* D = lc.dir[k]; D[0] = 0; D[1] = -1; D[2] = 0; D[3] = -1;
-                hudLit = true;
+                V3 at = W(hudSway.apply(planePoint(p, 0.5f, 0.5f), p.sway)); LightGpu g{};
+                g.pos[0] = (float)at.x; g.pos[1] = (float)at.y; g.pos[2] = (float)at.z; g.pos[3] = std::max(p.width, p.height) * 1.6f;
+                g.col[0] = (float)col.x; g.col[1] = (float)col.y; g.col[2] = (float)col.z; g.col[3] = 0; g.dir[1] = -1; g.dir[3] = -1; g.ext[3] = -1;
+                hl.push_back(g);
             }
-            lc.count[0] = (float)n;
-            if (hudLit) { ctx->UpdateSubresource(cbLights.Get(), 0, nullptr, &lc, 0, 0); ctx->PSSetConstantBuffers(3, 1, cbLights.GetAddressOf()); }
+            Upload(hudLightBuf.Get(), hl.data(), hl.size() * sizeof(LightGpu));
+            BindLightBuffers(true); SetClusterMode(false, 0, (int)hl.size());
         }
         for (const CamPart& c : CameraParts(hudSway, weapPose)) {
             FrameRef fr = ModelNamed(c.model); if (!fr) continue;
@@ -4714,7 +4905,7 @@ struct App {
             }
         }
         ID3D11ShaderResourceView* none = nullptr; ctx->PSSetShaderResources(9, 1, &none);
-        if (hudLit) ctx->UpdateSubresource(cbLights.Get(), 0, nullptr, &worldLights, 0, 0);   // the world's own lights again
+        BindLightBuffers(false); SetClusterMode(true, 0, 0);   // the world's own lights again
         D3D11_VIEWPORT full{ 0, 0, (float)rw, (float)rh, 0, 1 }; ctx->RSSetViewports(1, &full);
         ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &fc, 0, 0); ctx->RSSetState(rsCull.Get());
     }

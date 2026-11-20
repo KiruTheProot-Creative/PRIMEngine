@@ -58,6 +58,7 @@ struct Settings {
     float screenShake = 1;     // bosses, slams, roars shake the view this much (0: never)
     bool eyeAdapt = true;      // the picture gets brighter in dark places and darker in bright ones (as the world's look says)
     bool filmFx = true;        // the look's film grain and lens colour fringes
+    int lightShadows = 4;      // how many lights (the nearest that cast shadows) get real shadows: 0, 2, 4, 8
     KeyBinds keys;
     bool load(const std::string& path);
     bool save(const std::string& path) const;
@@ -156,6 +157,7 @@ struct WorldInfo {
     std::string weather = "partly_cloudy"; bool autoWeather = false;
     std::string environment = "temperate";
     std::string look = "Natural";                   // the colour look (Looks: tone curve, exposure, bloom, grading ...)
+    bool trueDark = true;                           // no sky light under roofs and in caves: only lights, lamps and glowing things light them
     bool hasSpawn = false; V3 spawn{ 0.5, 0, 0.5 }; double spawnYaw = 0;   // where the player starts when playing
     std::vector<EnvZone> zones;
     bool load(const std::string& dir);

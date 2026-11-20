@@ -172,6 +172,20 @@ which fades in over a second and a half as you walk in.
   ("Back to the preset" undoes that); "Copy as a new look" makes another. Saved in `looks.txt` in the project.
 - Options > Graphics: *Eye adaptation* and *Film grain and lens fringes* can be turned off.
 
+## Lights: hundreds at once, strips, shadows, true darkness
+
+- Lights are sorted into **clusters** (boxes of the view), so hundreds can shine at once: placed lights, glowing models
+  and particles, shots, bombs, explosions.
+- **Light strips**: Light > Kind of light > *Strip*, a glowing tube (neon) with a length; it lies where the object faces,
+  *Tilt* 90 stands it upright.
+- **Casts shadows**: tick it on a light; the nearest few such lights get real shadows (Options > Graphics > *Shadows
+  from lamps*: off, 2, 4, 8).
+- Lights make **highlights** on shiny and wet surfaces (neon on wet streets).
+- **True darkness** (World > Environment, on by default): no sky light under roofs and in caves - only lights, lamps
+  and glowing things light them. Light fades in near openings and cave mouths; fog and the distance go dark inside too.
+- The **HUD's 3D parts** (helmet, arm cannon) are always lit by the world around you: lights, glowing blocks nearby,
+  the sun and the darkness.
+
 ## Textures: bumps, coat and materials (like Complementary)
 
 - **Bumpy textures** (Settings > Look, generated normals): each texture's light and dark pixels become little bumps and dents with a bevel at the pixel edges, so the sun and lights catch them. Nothing to paint.

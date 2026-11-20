@@ -70,6 +70,7 @@ bool Settings::load(const std::string& path) {
         else if (k == "hud_glow") { int v; f >> v; hudGlow = v != 0; }
         else if (k == "eye_adapt") { int v; f >> v; eyeAdapt = v != 0; }
         else if (k == "film_fx") { int v; f >> v; filmFx = v != 0; }
+        else if (k == "light_shadows") f >> lightShadows;
         else if (k == "guess_materials") { int v; f >> v; guessMaterials = v != 0; }
         else if (k == "shadow_res") { f >> shadowRes; hadRes = true; }
         else if (k == "brightness") f >> brightness;
@@ -102,7 +103,7 @@ bool Settings::save(const std::string& path) const {
       << "\nambient_occlusion " << ambientOcclusion << "\nao_strength " << aoStrength
       << "\nbumps " << bumps << "\ncoat " << coat << "\nmaterials " << (materials ? 1 : 0) << "\nhud_glow " << (hudGlow ? 1 : 0) << "\nguess_materials " << (guessMaterials ? 1 : 0)
       << "\nshadow_res " << shadowRes << "\nbrightness " << brightness << "\nfullscreen " << (fullscreen ? 1 : 0)
-      << "\nvolumes " << volWeapons << " " << volMovement << " " << volEnemies << " " << volWorld << "\nvolumes2 " << volMenus << " " << volMusic << "\ninvert_y " << (invertY ? 1 : 0) << "\nlock_mode " << lockMode << "\ncave_culling " << (caveCulling ? 1 : 0) << "\nscreen_shake " << screenShake << "\neye_adapt " << (eyeAdapt ? 1 : 0) << "\nfilm_fx " << (filmFx ? 1 : 0) << "\n";
+      << "\nvolumes " << volWeapons << " " << volMovement << " " << volEnemies << " " << volWorld << "\nvolumes2 " << volMenus << " " << volMusic << "\ninvert_y " << (invertY ? 1 : 0) << "\nlock_mode " << lockMode << "\ncave_culling " << (caveCulling ? 1 : 0) << "\nscreen_shake " << screenShake << "\neye_adapt " << (eyeAdapt ? 1 : 0) << "\nfilm_fx " << (filmFx ? 1 : 0) << "\nlight_shadows " << lightShadows << "\n";
     for (int i = 0; i < (int)Act::COUNT; i++) f << "key " << actKey((Act)i) << " " << keys.key[i][0] << " " << keys.key[i][1] << "\n";
     return (bool)f;
 }
@@ -265,7 +266,7 @@ bool WorldInfo::save(const std::string& dir) const {
     for (auto& l : layers) f << " " << l.first << " " << l.second;
     f << "\nplayer " << player.feet.x << " " << player.feet.y << " " << player.feet.z << " " << player.yaw << " " << player.pitch << " " << (player.flying ? 1 : 0) << "\nhotbar " << hotSel;
     for (auto& h : hotbar) { std::string e = h; for (size_t p; (p = e.find(' ')) != std::string::npos;) e.replace(p, 1, "%20"); f << " " << (e.empty() ? "-" : e); }   // names may have spaces
-    f << "\nweather " << weather << " " << (autoWeather ? 1 : 0) << "\nenvironment " << environment << "\n";
+    f << "\nweather " << weather << " " << (autoWeather ? 1 : 0) << "\nenvironment " << environment << "\ntrue_dark " << (trueDark ? 1 : 0) << "\n";
     if (hasSpawn) f << "spawn " << spawn.x << " " << spawn.y << " " << spawn.z << " " << spawnYaw << "\n";
     f << "look " << escLook(look) << "\n";
     for (auto& z : zones) { f << "zone " << z.env << " " << z.lo.x << " " << z.lo.y << " " << z.lo.z << " " << z.hi.x << " " << z.hi.y << " " << z.hi.z << " " << z.name << "\n"; if (!z.look.empty()) f << "zonelook " << escLook(z.look) << "\n"; }
@@ -283,6 +284,7 @@ bool WorldInfo::load(const std::string& dir) {
         else if (k == "hotbar") { f >> hotSel; for (auto& h : hotbar) { f >> h; if (h == "-") h.clear(); for (size_t p; (p = h.find("%20")) != std::string::npos;) h.replace(p, 3, " "); } hotSel = std::max(0, std::min(8, hotSel)); }
         else if (k == "weather") { int a = 0; f >> weather >> a; autoWeather = a != 0; }
         else if (k == "environment") f >> environment;
+        else if (k == "true_dark") { int v; f >> v; trueDark = v != 0; }
         else if (k == "look") { std::string l; f >> l; look = unescLook(l); }
         else if (k == "zonelook") { std::string l; f >> l; if (!zones.empty()) zones.back().look = unescLook(l); }
         else if (k == "spawn") { f >> spawn.x >> spawn.y >> spawn.z >> spawnYaw; hasSpawn = true; }

@@ -980,7 +980,7 @@ int main() {
           CHECK(sl[0].save.anim.empty(), "(no animation picked: picked by itself)"); }
         {   // an older file: the text was on the object
             std::ifstream in("/tmp/prim_scanobjs.txt"); std::string all((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()); in.close();
-            size_t at = all.find(" 1 2 0 1 1 -\n"); if (at != std::string::npos) all.replace(at, 13, " 1 Old%20Door Research Line%20one.%0ALine%20two. 1 2.5\n");
+            size_t at = all.find(" 1 2 0 1 1 - 0 4\n"); if (at != std::string::npos) all.replace(at, 17, " 1 Old%20Door Research Line%20one.%0ALine%20two. 1 2.5\n");
             std::ofstream outF("/tmp/prim_scanobjs_old.txt"); outF << all; outF.close();
             std::vector<WorldObject> old; loadObjects("/tmp/prim_scanobjs_old.txt", old);
             CHECK(old.size() == 3 && old[0].scan.on && old[0].scan.id == 0 && old[0].scan.legacyName == "Old Door" && old[0].scan.legacyText == "Line one.\nLine two." && old[0].scan.legacyImportant && old[0].scan.legacyTime == 2.5f && old[1].scan.id == 2,
@@ -1531,6 +1531,13 @@ int main() {
         wi.save("/tmp/prim_wlook"); WorldInfo wl; wl.load("/tmp/prim_wlook");
         { Settings se; se.eyeAdapt = false; se.filmFx = false; se.save("/tmp/prim_set_look.txt"); Settings sl; sl.load("/tmp/prim_set_look.txt");
           CHECK(!sl.eyeAdapt && !sl.filmFx && findOption("eye_adapt") >= 0 && findOption("film_fx") >= 0, "Options: eye adaptation and film effects (save, load, in the menu)"); }
+        { WorldInfo wd; wd.trueDark = false; wd.save("/tmp/prim_wdark"); WorldInfo wdl; wdl.load("/tmp/prim_wdark"); CHECK(!wdl.trueDark && WorldInfo{}.trueDark, "true darkness: on unless a world turns it off (saved)"); }
+        { Settings se; se.lightShadows = 8; se.save("/tmp/prim_set_ls.txt"); Settings sl; sl.load("/tmp/prim_set_ls.txt"); CHECK(sl.lightShadows == 8 && findOption("light_shadows") >= 0, "Options: shadows from lamps"); }
+        {   // lights: strips and shadows save and load (older files: none)
+            std::vector<WorldObject> ob(1); ob[0].id = 7; ob[0].kind = ObjKind::Light; ob[0].light.type = LightType::Strip; ob[0].light.length = 6.5f; ob[0].light.shadows = true;
+            saveObjects("/tmp/prim_lobj.txt", ob); std::vector<WorldObject> ol; loadObjects("/tmp/prim_lobj.txt", ol);
+            CHECK(ol.size() == 1 && ol[0].light.type == LightType::Strip && ol[0].light.shadows && std::fabs(ol[0].light.length - 6.5f) < 1e-4, "a light strip with shadows saves and loads");
+        }
         CHECK(wl.look == "Neon night" && wl.zones.size() == 2 && wl.zones[0].look == "Tourian green" && wl.zones[1].look.empty() && wl.zones[1].name == "Plain", "a world's look and its zones' looks save and load");
     }
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
