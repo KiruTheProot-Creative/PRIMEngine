@@ -33,6 +33,20 @@ enum class Shape : uint8_t {
 };
 enum Face { F_PX = 0, F_NX, F_PY, F_NY, F_PZ, F_NZ };   // +X -X +Y(top) -Y(bottom) +Z -Z
 
+// one face glowing on its own (Blocks > edit a block > the glow button under a texture): only this block's face, not every
+// block using that texture. It gets its own copy of the texture (a hidden "@glow" layer) with these glow settings.
+struct FaceGlow {
+    int mode = 0;                   // 0 off (the texture's own material), 1 the whole face glows, 2 only its bright parts, 3 an emission picture
+    uint32_t color = 0xFFFFFF;      // tint (white: its own colours)
+    float strength = 1.0f;          // how bright
+    float from = 0.5f;              // bright parts: only pixels brighter than this
+    int lights = 0;                 // lights up around it (0 no .. 15 like a lamp)
+    std::string map;                // emission picture: its file in the project's emission folder
+    bool on() const { return mode > 0; }
+    bool operator==(const FaceGlow& o) const { return mode == o.mode && color == o.color && strength == o.strength && from == o.from && lights == o.lights && map == o.map; }
+    bool operator!=(const FaceGlow& o) const { return !(*this == o); }
+};
+
 struct BlockDef {
     std::string name;
     Render render = Render::Opaque;
@@ -59,10 +73,15 @@ struct BlockDef {
     bool spring = false;                 // a liquid that never runs dry (keeps pouring out)
     std::string category = "Building";   // folder in the asset browser
     std::string surface;                 // what it is made of, for Samus's steps on it (Surfaces tab): Rock, Metal, Water ... ("" none)
+    FaceGlow glow[6];                    // faces that glow on their own
     bool exists = true;                  // false = a deleted id (kept so old worlds stay readable)
 };
 
-struct TexImage { std::string name; int w = 0, h = 0; std::vector<uint8_t> rgba; bool transparent = false; };
+struct TexImage {
+    std::string name; int w = 0, h = 0; std::vector<uint8_t> rgba; bool transparent = false;
+    std::string baseName; FaceGlow glow;   // a glowing face's own copy (hidden from the texture lists): the texture it copies, and how it glows
+    bool variant() const { return !baseName.empty(); }
+};
 
 class BlockRegistry {
 public:
@@ -88,7 +107,8 @@ public:
     size_t count() const { return defs.size(); }            // ids are 0 .. count()-1 (check has())
     BlockId find(const std::string& name) const;
     BlockId liquidBlock(int kind) const;                    // the (flowing, not spring) block of that liquid; 0 if none
-    void resolve();                                         // texture names -> layers (after any change)
+    void resolve();                                         // texture names -> layers (after any change); glowing faces get their own copies
+    static std::string glowLayerName(BlockId id, int face);
     std::string uniqueName(const std::string& want, BlockId except = AIR) const;
     int nextId = 1;                                         // ids below this were given out once (saved in blocks.txt)
 

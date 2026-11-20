@@ -146,6 +146,12 @@ Texture2D gMeshTex : register(t9);              // an imported model's own pictu
 // materials per texture layer: a = shine, metal, glow, glow only above this brightness; b = bumps, coat, emission map brightness (0: none)
 struct TexMat { float4 a; float4 b; };
 StructuredBuffer<TexMat> gMats : register(t10);
+float3 glowTint(float w)   // b.w: a glowing face's colour, 0xRRGGBB as a number (0: its own colours)
+{
+    if (w < 0.5) return float3(1, 1, 1);
+    uint c = (uint)round(w);
+    return float3((c >> 16) & 255, (c >> 8) & 255, c & 255) / 255.0;
+}
 Texture2DArray gEmitTex : register(t14);        // emission maps, one per texture layer (black: nothing glows)
 Texture2D gMeshEmit : register(t15);            // the emission map of the model being drawn
 cbuffer MeshMatCB : register(b4)   // the material of the model being drawn (same numbers as a texture's), and its fake shine
@@ -517,16 +523,17 @@ float3 lightBlock(VSOut i, float3 albedo, bool front, out float3 n, out float sh
         float3 specCol = lerp(float3(0.04, 0.04, 0.04) + 0.3 * mshine, albedo * 1.4, metal);
         c += gSunColor.rgb * sh * ndl * spec * specCol * max(mshine, 0.35);
     }
+    float3 gTint = glowTint(i.uvl.z < 16000 ? m.b.w : 0);                                        // a glowing face's colour (white: its own)
     if (m.a.z > 0)                                                                                // glowing pixels (the bright ones, if set)
     {
         float lum = sqrt(lumOf(albedo));
         float e = m.a.z * smoothstep(m.a.w, m.a.w + 0.08, lum);
-        c += albedo * e * 3.0;
+        c += albedo * gTint * e * 3.0;
     }
     if (m.b.z > 0)                                                                                // its emission map: what glows, in its own colours
     {
         float3 em = i.uvl.z < 16000 ? gEmitTex.Sample(gSamp, i.uvl).rgb : gMeshEmit.Sample(gSamp, i.uvl.xy).rgb;
-        c += em * m.b.z * 2.5;
+        c += em * gTint * m.b.z * 2.5;
     }
     if (i.lamp.a > 0.5)                                                                               // the lamp itself glows in its colour
     {
@@ -952,8 +959,9 @@ float3 voxShade(float3 hp, float3 hn, uint layer, uint id, float2 uv, float t, f
         float3 lc = float3((vt.info.z >> 16) & 255, (vt.info.z >> 8) & 255, vt.info.z & 255) / 255.0;
         c = (dot(albedo, float3(0.2126, 0.7152, 0.0722)) * lc * 0.85 + albedo * lc * 0.3) * 3.2 * gExtra.w;
     }
-    if (gSurf.z > 0.5 && m.a.z > 0) c += albedo * m.a.z * smoothstep(m.a.w, m.a.w + 0.08, sqrt(dot(albedo, float3(0.2126, 0.7152, 0.0722)))) * 3.0;
-    if (m.b.z > 0) c += gEmitTex.SampleLevel(gSamp, float3(uv, layer), 0).rgb * m.b.z * 2.5;
+    float3 gTint = glowTint(m.b.w);
+    if (gSurf.z > 0.5 && m.a.z > 0) c += albedo * gTint * m.a.z * smoothstep(m.a.w, m.a.w + 0.08, sqrt(dot(albedo, float3(0.2126, 0.7152, 0.0722)))) * 3.0;
+    if (m.b.z > 0) c += gEmitTex.SampleLevel(gSamp, float3(uv, layer), 0).rgb * gTint * m.b.z * 2.5;
     return reflFog(c, hp, sv);
 }
 // the nearest object a ray meets before maxT: its colour and the side it hit

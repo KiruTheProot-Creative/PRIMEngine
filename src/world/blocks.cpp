@@ -64,7 +64,13 @@ void BlockRegistry::put(BlockId id, const BlockDef& d) {
     id = typeOf(id); if (id == AIR) return;
     if (defs.size() <= id) { BlockDef gap; gap.exists = false; defs.resize(id + 1, gap); }
     defs[id] = d; defs[id].exists = true; nextId = std::max<int>(nextId, id + 1);
-    for (int f = 0; f < 6; f++) { int t = textureIndex(d.faces[f]); defs[id].tex[f] = t < 0 ? 0 : t; }
+    for (int f = 0; f < 6; f++) {
+        int t = textureIndex(d.faces[f]); defs[id].tex[f] = t < 0 ? 0 : t;
+        if (d.glow[f].on()) {   // its glowing copy, if it is there and still right (else resolve() makes it)
+            int v = textureIndex(glowLayerName(id, f));
+            if (v > 0 && textures[v].baseName == d.faces[f] && textures[v].glow == d.glow[f]) defs[id].tex[f] = v;
+        }
+    }
 }
 void BlockRegistry::remove(BlockId id) {
     id = typeOf(id); if (id == AIR || id >= defs.size()) return;
@@ -78,8 +84,18 @@ BlockId BlockRegistry::find(const std::string& name) const {
     for (size_t i = 1; i < defs.size(); i++) if (defs[i].exists && defs[i].name == name) return (BlockId)i;
     return AIR;
 }
+std::string BlockRegistry::glowLayerName(BlockId id, int face) { return "@glow " + std::to_string(typeOf(id)) + "." + std::to_string(face); }
 void BlockRegistry::resolve() {
-    for (auto& d : defs) for (int f = 0; f < 6; f++) { int t = textureIndex(d.faces[f]); d.tex[f] = t < 0 ? 0 : t; }
+    textures.erase(std::remove_if(textures.begin() + 1, textures.end(), [](const TexImage& t) { return t.variant(); }), textures.end());   // glowing faces' copies: made again
+    for (size_t id = 0; id < defs.size(); id++) {
+        BlockDef& d = defs[id];
+        for (int f = 0; f < 6; f++) {
+            int t = textureIndex(d.faces[f]); d.tex[f] = t < 0 ? 0 : t;
+            if (!d.exists || !d.glow[f].on() || t <= 0) continue;
+            TexImage v = textures[t]; v.name = glowLayerName((BlockId)id, f); v.baseName = textures[t].name; v.glow = d.glow[f];
+            textures.push_back(std::move(v)); d.tex[f] = (int)textures.size() - 1;
+        }
+    }
 }
 std::string BlockRegistry::uniqueName(const std::string& want, BlockId except) const {
     std::string base = want.empty() ? "block" : want, n = base; int k = 2;

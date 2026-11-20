@@ -1,4 +1,5 @@
 // Library tests: default files, PNG round trip, blocks.txt round trip, import, hot reload, deleting, plane meshes.
+#include "../src/game/materials.h"
 #include "../src/world/library.h"
 #include "../src/world/mesher.h"
 #include "../src/core/png.h"
@@ -136,6 +137,27 @@ int main() {
         }
         CHECK(nearRed[0] >= 13 && nearRed[1] == 0 && nearRed[2] <= 5, "next to the red lamp: red %d green %d blue %d", nearRed[0], nearRed[1], nearRed[2]);
         CHECK(mid[0] >= 8 && mid[2] >= 8 && mid[1] == 0, "between red and blue: purple (red %d, blue %d)", mid[0], mid[2]);
+    }
+
+    {   // a face glowing on its own: its own hidden copy of the texture, saved with the block
+        BlockRegistry g; Library gl; gl.dir = lib.dir; gl.load(g);
+        BlockId st = g.find("stone"); BlockDef d = g.get(st); int baseTex = d.tex[F_PY]; size_t before = g.textureCount();
+        d.glow[F_PY].mode = 1; d.glow[F_PY].color = 0x40FF80; d.glow[F_PY].strength = 2.5f; d.glow[F_PY].lights = 7;
+        d.glow[F_NX].mode = 3; d.glow[F_NX].map = "rune glow.png";
+        g.put(st, d); g.resolve();
+        const BlockDef& gd = g.get(st); const TexImage& top = g.image(gd.tex[F_PY]);
+        CHECK(g.textureCount() == before + 2 && top.variant() && top.baseName == d.faces[F_PY] && top.glow.color == 0x40FF80 && gd.tex[F_PZ] == baseTex, "a glowing face gets its own copy of the texture; the other faces keep theirs");
+        CHECK(top.w == g.image(baseTex).w && top.rgba == g.image(baseTex).rgba, "... the same picture");
+        BlockDef again = gd; again.autoLight = 3; g.put(st, again);
+        CHECK(g.get(st).tex[F_PY] == gd.tex[F_PY], "changing something else keeps its copy");
+        g.resolve(); CHECK(g.textureCount() == before + 2, "resolving again doesn't pile up copies");
+        Materials mats; std::vector<float> tb = mats.table(g); int L = g.get(st).tex[F_PY];
+        CHECK(tb[L * 8 + 2] == 2.5f && tb[L * 8 + 3] == 0 && tb[L * 8 + 7] == (float)0x40FF80 && tb[baseTex * 8 + 2] == mats.of(d.faces[F_PY]).glow, "its material: the whole face glows, tinted; the texture itself doesn't change");
+        gl.saveBlocks(g); BlockRegistry g2; Library l2; l2.dir = lib.dir; l2.load(g2);
+        const BlockDef& ld = g2.get(g2.find("stone"));
+        CHECK(ld.glow[F_PY] == d.glow[F_PY] && ld.glow[F_NX].mode == 3 && ld.glow[F_NX].map == "rune glow.png" && !ld.glow[F_PZ].on() && g2.image(ld.tex[F_PY]).variant(), "glowing faces save and load (a picture name with a space too)");
+        BlockDef off = ld; for (auto& x : off.glow) x = FaceGlow{}; g2.put(g2.find("stone"), off); g2.resolve();
+        CHECK(g2.textureCount() == before && !g2.image(g2.get(g2.find("stone")).tex[F_PY]).variant(), "glow off: the copies go away");
     }
 
     fs::remove_all(base);

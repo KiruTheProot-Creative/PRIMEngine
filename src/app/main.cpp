@@ -741,7 +741,12 @@ struct App {
         {   // the emission maps, layer by layer (black where a texture has none)
             std::vector<std::vector<uint8_t>> ex(n); emitInfo.assign(n, {});
             for (int i = 0; i < n; i++) {
-                std::string f = i > 0 ? EmitFileFor(reg.image(i).name) : ""; int w = 0, h = 0; std::vector<uint8_t> rgba;
+                const TexImage& ti = reg.image(i); std::string f;
+                if (i > 0 && ti.variant()) {   // a glowing face's copy: its own picture, or its texture's
+                    std::error_code ec2; std::string own = ti.glow.mode == 3 && !ti.glow.map.empty() ? EmissionDir() + "/" + ti.glow.map : "";
+                    f = ti.glow.mode == 3 ? (fs::exists(fs::u8path(own), ec2) ? own : "") : EmitFileFor(ti.baseName);
+                } else if (i > 0) f = EmitFileFor(ti.name);
+                int w = 0, h = 0; std::vector<uint8_t> rgba;
                 if (!f.empty() && readImage(f, w, h, rgba) && w > 0 && h > 0) { ex[i] = ScaleNearest(rgba, w, h, S); emitInfo[i] = EmitAverage(ex[i]); }
                 else ex[i].assign((size_t)S * S * 4, 0);
             }
@@ -765,8 +770,16 @@ struct App {
         for (BlockId id = 1; id < reg.count(); id++) {
             if (!reg.has(id)) continue; const BlockDef& d = reg.get(id); int best = 0; V3 col{ 0, 0, 0 };
             for (int f = 0; f < 6; f++) {
-                int t = d.tex[f]; if (t <= 0 || t >= (int)emitInfo.size() || !emitInfo[t].on) continue;
-                int L = std::clamp((int)std::lround(materials.of(reg.image(t).name).lights), 0, 15); if (L > best) { best = L; col = emitInfo[t].col; }
+                int t = d.tex[f]; if (t <= 0 || t >= (int)emitInfo.size()) continue;
+                const TexImage& ti = reg.image(t);
+                if (ti.variant()) {   // a glowing face: its own "lights up around it", in the colour it glows
+                    int L = std::clamp(ti.glow.lights, 0, 15); if (L <= best) continue;
+                    EmitInfo e = ti.glow.mode == 3 ? emitInfo[t] : EmitAverage(ti.rgba); if (!e.on) continue;
+                    V3 tc = Linear(ti.glow.color); best = L; col = { e.col.x * tc.x, e.col.y * tc.y, e.col.z * tc.z };
+                    continue;
+                }
+                if (!emitInfo[t].on) continue;
+                int L = std::clamp((int)std::lround(materials.of(ti.name).lights), 0, 15); if (L > best) { best = L; col = emitInfo[t].col; }
             }
             uint32_t c = 0;
             if (best) { double m = std::max(1e-6, std::max(col.x, std::max(col.y, col.z))); auto ch = [&](double v) { return (uint32_t)std::lround(std::pow(v / m, 1 / 2.2) * 255); }; c = ch(col.x) << 16 | ch(col.y) << 8 | ch(col.z); }
@@ -4772,6 +4785,7 @@ struct App {
             if (ImGui::BeginTabItem("Textures", nullptr, selectTexturesTab ? ImGuiTabItemFlags_SetSelected : 0)) {
                 ImGui::BeginChild("textures", ImVec2(GridChildWidth(s, cols), (s + ImGui::GetStyle().ItemSpacing.y) * 5 + 12), ImGuiChildFlags_Borders);
                 for (int t = 1, n = 0; t < (int)reg.textureCount(); t++) {
+                    if (reg.image(t).variant()) continue;   // (glowing faces' copies)
                     ImGui::PushID(t); ImVec2 p;
                     const TexImage& im = reg.image(t);
                     if (Tile("t", p, s, im.name == matTex)) { if (ImGui::IsMouseReleased(ImGuiMouseButton_Right)) ImGui::OpenPopup("tex"); else matTex = im.name; }
@@ -5054,12 +5068,21 @@ struct App {
             TextureImage(draft.tex[slots[i].faces[0]], tp, ts, 4);
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s\nClick to choose a texture", draft.faces[slots[i].faces[0]].empty() ? "(no texture)" : draft.faces[slots[i].faces[0]].c_str());
             ImGui::TextDisabled("%s", slots[i].label);
+            {   // this face glowing on its own (only this block's face, not the texture everywhere)
+                FaceGlow& g0 = draft.glow[slots[i].faces[0]];
+                if (g0.on()) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.75f, 0.55f, 0.1f, 0.85f));
+                if (ImGui::SmallButton(g0.on() ? "Glows" : "Glow")) ImGui::OpenPopup("glow");
+                if (g0.on()) ImGui::PopStyleColor();
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Make this face glow (only on this block - other blocks with the same texture don't).");
+                if (ImGui::BeginPopup("glow")) { FaceGlow g = g0; if (FaceGlowUI(g, slots[i].label)) for (int f : slots[i].faces) draft.glow[f] = g; ImGui::EndPopup(); }
+            }
             ImGui::EndGroup();
             if (ImGui::BeginPopup("pick")) {   // choose a texture for this slot
                 ImGui::TextDisabled("Choose a texture for: %s", slots[i].label);
                 float s = 48 * ui; int n = 0;
                 ImGui::BeginChild("pickgrid", ImVec2(GridChildWidth(s, 8), (s + ImGui::GetStyle().ItemSpacing.y) * 4 + 12), ImGuiChildFlags_Borders);
                 for (int t = 1; t < (int)reg.textureCount(); t++) {
+                    if (reg.image(t).variant()) continue;
                     ImGui::PushID(t); ImVec2 q;
                     if (Tile("t", q, s)) { for (int f : slots[i].faces) draft.faces[f] = reg.image(t).name; if (draft.shape == Shape::Cube && faceMode == 0 && reg.image(t).transparent) draft.render = Render::Cutout; ImGui::CloseCurrentPopup(); }
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", reg.image(t).name.c_str());
@@ -11914,6 +11937,46 @@ struct App {
         ID3D11ShaderResourceView* none[10] = {}; ctx->PSSetShaderResources(0, 10, none); ctx->RSSetState(rsCull.Get());
         ctx->OMSetRenderTargets(0, nullptr, nullptr);
     }
+    bool FaceGlowUI(FaceGlow& g, const char* label) {   // a block face's own glow (block editor)
+        bool ch = false; float ui = settings.uiScale;
+        ImGui::SeparatorText((std::string("Glow: ") + label).c_str());
+        const char* modes[] = { "Off (the texture's own)", "The whole face", "Only its bright parts", "An emission picture" };
+        Prop("Glows"); ImGui::SetNextItemWidth(220 * ui); ch |= ImGui::Combo("##fgm", &g.mode, modes, 4);
+        if (g.on()) {
+            float c[3] = { ((g.color >> 16) & 255) / 255.f, ((g.color >> 8) & 255) / 255.f, (g.color & 255) / 255.f }; Prop("Colour");
+            if (ImGui::ColorEdit3("##fgc", c, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_PickerHueWheel)) { g.color = ((uint32_t)std::lround(c[0] * 255) << 16) | ((uint32_t)std::lround(c[1] * 255) << 8) | (uint32_t)std::lround(c[2] * 255); ch = true; }
+            ImGui::SameLine(); if (ImGui::SmallButton("Its own")) { g.color = 0xFFFFFF; ch = true; }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("White: it glows in the texture's own colours. Any other colour tints the glow.");
+            Prop("Brightness"); ImGui::SetNextItemWidth(220 * ui); ch |= ImGui::SliderFloat("##fgs", &g.strength, 0.05f, 6, "%.2f");
+            if (g.mode == 2) { Prop("Brighter than"); ImGui::SetNextItemWidth(220 * ui); ch |= ImGui::SliderFloat("##fgf", &g.from, 0, 1, "%.2f"); if (ImGui::IsItemHovered()) ImGui::SetTooltip("Only the texture's pixels brighter than this glow (like a lamp's bulb, or runes)."); }
+            if (g.mode == 3) {
+                Prop("Picture"); ImGui::SetNextItemWidth(220 * ui);
+                if (ImGui::BeginCombo("##fgp", g.map.empty() ? "(choose one)" : g.map.c_str())) {
+                    std::error_code ec; std::vector<std::string> files;
+                    for (auto& e : fs::directory_iterator(fs::u8path(EmissionDir()), ec)) if (e.is_regular_file(ec)) { std::string x = ExtOf(e.path().u8string()); if (x == ".png" || x == ".jpg" || x == ".jpeg") files.push_back(e.path().filename().u8string()); }
+                    std::sort(files.begin(), files.end());
+                    for (const std::string& f : files) if (ImGui::Selectable(f.c_str(), g.map == f)) { g.map = f; ch = true; }
+                    ImGui::Separator();
+                    if (ImGui::Selectable("Pick a picture...")) {
+                        auto pick = PickFiles("Pictures\0*.png;*.jpg;*.jpeg\0", "The emission picture (black: nothing glows)");
+                        if (!pick.empty()) {
+                            fs::create_directories(fs::u8path(EmissionDir()), ec);
+                            std::string to = fs::u8path(pick[0]).filename().u8string();
+                            fs::copy_file(fs::u8path(pick[0]), fs::u8path(EmissionDir() + "/" + to), fs::copy_options::overwrite_existing, ec);
+                            g.map = to; ch = true;
+                        }
+                    }
+                    if (ImGui::Selectable("Open the emission folder")) { fs::create_directories(fs::u8path(EmissionDir()), ec); ShowInExplorer(EmissionDir()); }
+                    ImGui::EndCombo();
+                }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("A picture laid out like the texture: black where nothing glows, colours where it does.");
+            }
+            Prop("Lights up around it"); ImGui::SetNextItemWidth(220 * ui); ch |= ImGui::SliderInt("##fgl", &g.lights, 0, 15, g.lights ? "light level %d" : "no");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("The block lights up what is around it, in the colour this face glows (the block's own \"Glows\" setting comes first).");
+        }
+        Hint("Only this block's face glows. Other blocks with the same texture stay as they are. Save the block to see it.");
+        return ch;
+    }
     // a model with its middle at centre (world), turned and sized by the axes (each one block of the model)
     void DrawModelAxes(int pass, const std::string& model, V3 centre, V3 ax, V3 ay, V3 az, V3 cam, const V3* turnAt = nullptr) {
         FrameRef m = ModelNamed(model); if (!m) return;
@@ -12305,7 +12368,7 @@ struct App {
     std::string objFolderSel;
     FolderKind TextureFolders() {
         FolderKind k; k.kind = 1; k.tree = &assetFolders.textures; k.dragType = "PRIM_TEX"; k.selected = &assetCat; k.showing = [this] { return assetKind == 1; };
-        k.count = [this](const std::string& f) { int n = 0; for (int t = 1; t < (int)reg.textureCount(); t++) n += FolderTree::within(assetFolders.folderOf(assetFolders.textureIn, reg.image(t).name), f); return n; };
+        k.count = [this](const std::string& f) { int n = 0; for (int t = 1; t < (int)reg.textureCount(); t++) if (!reg.image(t).variant()) n += FolderTree::within(assetFolders.folderOf(assetFolders.textureIn, reg.image(t).name), f); return n; };
         k.moveItem = [this](const std::string& item, const std::string& f) { assetFolders.textureIn[item] = f; };
         k.renamed = [this](const std::string& a, const std::string& b) { AssetFolders::renameIn(assetFolders.textureIn, a, b); if (assetKind == 1) assetCat = FolderTree::moved(assetCat, a, b); };
         k.deleted = [this](const std::string& f) { AssetFolders::dropIn(assetFolders.textureIn, f); if (assetKind == 1 && FolderTree::within(assetCat, f)) assetCat = FolderTree::parent(f); };
@@ -12383,7 +12446,7 @@ struct App {
         assetList.clear();
         auto add = [&](AssetType t, const std::string& key, const std::string& name, bool b = false) { assetList.push_back({ { t, key }, name, b }); };
         for (BlockId id = 1; id < reg.count(); id++) if (reg.has(id)) add(AssetType::Block, std::to_string(id), reg.get(id).name);
-        for (int t = 1; t < (int)reg.textureCount(); t++) add(AssetType::Texture, reg.image(t).name, reg.image(t).name);
+        for (int t = 1; t < (int)reg.textureCount(); t++) if (!reg.image(t).variant()) add(AssetType::Texture, reg.image(t).name, reg.image(t).name);   // (not glowing faces' copies)
         for (const std::string& m : AllModelNames()) add(AssetType::Model, m, m, IsBuiltin(m));
         for (const std::string& f : FilesIn(SoundsDir(), IsAudioExt)) add(AssetType::Sound, f, f);
         for (const std::string& f : ScreenFiles(false)) add(AssetType::Picture, "screens/" + f, f);

@@ -40,8 +40,17 @@ const char* shinePresetName(int i) {
 std::vector<float> Materials::table(const BlockRegistry& reg) const {
     std::vector<float> t(std::max<size_t>(1, reg.textureCount()) * 8, 0.f);
     for (size_t i = 0; i < reg.textureCount(); i++) {
-        TexMaterial m = i == 0 ? TexMaterial{} : of(reg.image((int)i).name);
-        float* p = &t[i * 8]; p[0] = m.shine; p[1] = m.metal; p[2] = m.glow; p[3] = m.glowFrom; p[4] = m.bumps; p[5] = m.coat; p[6] = m.emit;
+        const TexImage& im = reg.image((int)i);
+        TexMaterial m = i == 0 ? TexMaterial{} : of(im.variant() ? im.baseName : im.name);
+        float tint = 0;
+        if (im.variant()) {   // a face glowing on its own: its glow on top of the texture's material
+            const FaceGlow& g = im.glow;
+            if (g.mode == 1) { m.glow = g.strength; m.glowFrom = 0; }
+            else if (g.mode == 2) { m.glow = g.strength; m.glowFrom = g.from; }
+            else if (g.mode == 3) m.emit = g.strength;
+            if ((g.color & 0xFFFFFF) != 0xFFFFFF) tint = (float)(g.color & 0xFFFFFF);   // (exact: 24 bits fit a float)
+        }
+        float* p = &t[i * 8]; p[0] = m.shine; p[1] = m.metal; p[2] = m.glow; p[3] = m.glowFrom; p[4] = m.bumps; p[5] = m.coat; p[6] = m.emit; p[7] = tint;
     }
     return t;
 }

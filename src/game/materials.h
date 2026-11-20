@@ -58,7 +58,8 @@ struct Materials {
     bool isSet(const std::string& textureName) const { return set.count(textureName) > 0; }
     void put(const std::string& textureName, const TexMaterial& m) { set[textureName] = m; }
     void reset(const std::string& textureName) { set.erase(textureName); }   // back to the guess
-    // for the shaders: 8 floats per texture layer (shine, metal, glow, glowFrom, bumps, coat, emit, 0); emit is only used where an emission map is loaded
+    // for the shaders: 8 floats per texture layer (shine, metal, glow, glowFrom, bumps, coat, emit, tint); emit is only used where an emission map is loaded;
+    // tint: a glowing face's colour, 0xRRGGBB as a number (0: its own colours). Glowing faces' copies (TexImage::variant) take their texture's material plus their glow.
     std::vector<float> table(const BlockRegistry& reg) const;
 };
 bool saveMaterials(const std::string& path, const Materials& m);

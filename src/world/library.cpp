@@ -58,6 +58,10 @@ bool Library::saveBlocks(const BlockRegistry& r) const {
               << "\nliquid = " << (d.liquid == 1 ? "water" : d.liquid == 2 ? "lava" : "none") << "\nspring = " << (d.spring ? "yes" : "no")
               << "\ncategory = " << d.category << "\nsurface = " << (d.surface.empty() ? "-" : d.surface) << "\nfaces =";
             for (auto& t : d.faces) f << ' ' << (t.empty() ? "-" : t);
+            for (int k = 0; k < 6; k++) if (d.glow[k].on()) {   // a face glowing on its own
+                const FaceGlow& g = d.glow[k];
+                f << "\nface_glow = " << k << " " << g.mode << " " << hex6(g.color) << " " << g.strength << " " << g.from << " " << g.lights << " " << (g.map.empty() ? "-" : g.map);
+            }
             f << "\n";
         }
         if (!f) return false;
@@ -117,6 +121,14 @@ bool Library::load(BlockRegistry& r, std::string* report) {
         else if (k == "mirror") d.mirror = yes(v);
         else if (k == "texture_turns") d.texTurns = yes(v);
         else if (k == "light_color") { std::string h = v; if (!h.empty() && h[0] == '#') h.erase(0, 1); d.lightColor = (uint32_t)std::strtoul(h.c_str(), nullptr, 16) & 0xFFFFFF; }
+        else if (k == "face_glow") {
+            std::istringstream ss(v); int fi = -1; FaceGlow g; std::string col, map;
+            if (ss >> fi >> g.mode >> col >> g.strength >> g.from >> g.lights) {
+                if (!col.empty() && col[0] == '#') col.erase(0, 1); g.color = (uint32_t)std::strtoul(col.c_str(), nullptr, 16) & 0xFFFFFF;
+                std::getline(ss, map); map = trim(map); g.map = map == "-" ? "" : map;
+                if (fi >= 0 && fi < 6) d.glow[fi] = g;
+            }
+        }
         else if (k == "faces") {
             std::istringstream ss(v); std::vector<std::string> n; std::string t; while (ss >> t) n.push_back(t == "-" ? "" : t);
             for (int i = 0; i < 6; i++) d.faces[i] = n.empty() ? "" : n[std::min(i, (int)n.size() - 1)];
