@@ -5896,7 +5896,7 @@ struct App {
         if (playMode) {
             float ty = wrapDeg(player.yaw - prevPlayYaw), tp = wrapDeg(player.pitch - prevPlayPitch);
             bool landed = player.onGround && !prevOnGround; float fall = (float)std::max(0.0, -prevVelY);
-            float speed = (float)std::sqrt(player.vel.x * player.vel.x + player.vel.z * player.vel.z) * (player.onGround ? 1.f : 0.f);
+            float speed = (float)std::sqrt(player.vel.x * player.vel.x + player.vel.z * player.vel.z) * (player.onGround && !paused ? 1.f : 0.f);   // (paused - a pop-up, the menu: standing still)
             hudSway.update(hud.sway, dt, ty, tp, speed, landed, fall);
             weapPose.update(weapons.motion, dt, speed, landed, fall, firedPending); firedPending = 0;
             UpdatePlayerSounds(dt, landed, fall, prevOnGround && !player.onGround && player.vel.y > 0.5);
@@ -11381,7 +11381,7 @@ struct App {
             if (surfRollVoice) { surfRollVoice->SetVolume(surfRollUse.volume * want * sf->volume * CatVolume(SND_MOVEMENT)); surfRollVoice->SetFrequencyRatio(std::clamp(surfRollUse.pitch * pitch, 0.1f, 4.f)); }
         }
         UpdateGameSounds(dt);
-        if (!playMode) return;
+        if (!playMode || paused) return;   // (paused: no steps - the game stands still behind a pop-up or the menu)
         auto both = [&](SoundSet& own, SoundSet Surface::* layer, float v) {   // the character's own, and the surface's on top (or instead)
             bool has = sf && !(sf->*layer).empty();
             if (!has || !sf->replace) PlaySoundIn(SND_MOVEMENT, own, v);
