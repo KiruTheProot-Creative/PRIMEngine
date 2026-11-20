@@ -10497,7 +10497,7 @@ struct App {
         if (!gameMix) return;
         muffleNow += ((under ? 1.f : 0.f) - muffleNow) * (float)std::min(1.0, dt * 8);
         float hz = std::exp(std::log(20000.f) + (std::log(std::clamp(playerSounds.muffleHz, 100.f, 20000.f)) - std::log(20000.f)) * muffleNow);
-        XAUDIO2_FILTER_PARAMETERS fp{ LowPassFilter, std::min(1.f, XAudio2CutoffFrequencyToRadians(hz, mixRate)), 1.0f };
+        XAUDIO2_FILTER_PARAMETERS fp{ LowPassFilter, std::min(1.f, 2.f * std::sin(3.14159265f * std::min(hz, mixRate / 6.f) / (float)mixRate)), 1.0f };
         gameMix->SetFilterParameters(&fp);
     }
     void ShutdownAudio() {
