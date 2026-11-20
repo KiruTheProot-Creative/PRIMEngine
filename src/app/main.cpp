@@ -5173,7 +5173,8 @@ struct App {
         }
         case HudKind::Text: {
             std::string t = hudText(e, v);
-            if (playMode && DeathNow().hudGlitch > 0) for (char& ch : t) if (ch >= '0' && ch <= '9' && std::fmod(animTime * 31 + (&ch - t.data()) * 0.37, 1.0) < 0.6) ch = (char)('0' + (int)(std::fmod(animTime * 97 + (&ch - t.data()) * 7.1, 10.0)));   // dying: the numbers scramble ImFont* font = ImGui::GetFont(); float size = std::max(4.f, (p1.y - p0.y) * e.textSize);
+            if (playMode && DeathNow().hudGlitch > 0) for (char& ch : t) if (ch >= '0' && ch <= '9' && std::fmod(animTime * 31 + (&ch - t.data()) * 0.37, 1.0) < 0.6) ch = (char)('0' + (int)(std::fmod(animTime * 97 + (&ch - t.data()) * 7.1, 10.0)));   // dying: the numbers scramble
+            ImFont* font = ImGui::GetFont(); float size = std::max(4.f, (p1.y - p0.y) * e.textSize);
             ImVec2 ts = font->CalcTextSizeA(size, FLT_MAX, 0, t.c_str());
             float x = e.align == 0 ? p0.x : e.align == 1 ? (p0.x + p1.x - ts.x) * 0.5f : p1.x - ts.x;
             dl->AddText(font, size, ImVec2(x, (p0.y + p1.y - ts.y) * 0.5f), col(1), t.c_str());
