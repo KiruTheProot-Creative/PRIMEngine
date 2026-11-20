@@ -916,14 +916,11 @@ struct VoxType { uint4 faces; uint4 info; };      // faces: texture layer per fa
 StructuredBuffer<VoxType> gVoxPal : register(t31);
 Texture2DArray gVoxTex : register(t29);            // the block textures (the same array as t0 in the world pass)
 static const int3 VOXN = int3(192, 96, 192);
-uint voxAt(int3 q) { int3 s = (q + int3(gVoxM.xyz)) % VOXN; return gVox.Load(int4(s, 0)); }
-float3 voxShade(float3 hp, float3 hn, int face, uint id, float2 uv, float t, float2 pixel, out bool see)
+uint voxAt(int3 q) { uint3 s = uint3(q + int3(gVoxM.xyz)) % uint3(VOXN); return gVox.Load(int4(int3(s), 0)); }
+float3 voxShade(float3 hp, float3 hn, uint layer, uint id, float2 uv, float t, float2 pixel)
 {
-    VoxType vt = gVoxPal[id]; see = false;
-    uint pair = face < 2 ? vt.faces.x : face < 4 ? vt.faces.y : vt.faces.z;
-    uint layer = (face & 1) ? (pair >> 16) : (pair & 0xFFFF);
+    VoxType vt = gVoxPal[id];
     float4 tex = gVoxTex.SampleLevel(gSamp, float3(uv, layer), clamp(log2(max(t, 1) * 0.35), 0, 4));
-    if (vt.info.x == 2 && tex.a < 0.5) { see = true; return 0; }   // a see-through pixel of glass / leaves: the ray goes on
     float3 albedo = tex.rgb; TexMat m = gMats[layer];
     float ndl = saturate(dot(hn, gSunDir.xyz));
     float sv = skyVis(hp, hn);
@@ -952,26 +949,31 @@ bool voxelTrace(float3 P, float3 n, float3 r, float2 pixel, out float3 col)
     float3 inv = 1 / max(abs(r), 1e-6) * sign(r + 1e-9);
     float3 tMax = ((float3(cell) + float3(stp > 0)) - o) * inv, tDelta = abs(inv);
     float t = 0; int axis = 1; int steps = (int)gVoxO.w;
+    bool found = false; uint hitId = 0, hitLayer = 0; float2 hitUV = 0; float3 hitN = 0, hitP = 0;
     [loop] for (int k = 0; k < steps; k++)
     {
-        if (any(cell < 0) || any(cell >= VOXN)) return false;
+        if (any(cell < 0) || any(cell >= VOXN) || t > gRefl.z * 1.5) break;
         uint id = k > 0 ? voxAt(cell) : 0;                              // (the first block: where the ray starts)
         if (id != 0)
         {
-            float3 hpv = o + r * t, hp = hpv + gVoxO.xyz;
-            float3 hn = 0; hn[axis] = -stp[axis];
-            int face = axis * 2 + (hn[axis] > 0 ? 0 : 1);
+            float3 hpv = o + r * t;
+            float3 hn = axis == 0 ? float3(-stp.x, 0, 0) : axis == 1 ? float3(0, -stp.y, 0) : float3(0, 0, -stp.z);
+            int face = axis * 2 + ((axis == 0 ? hn.x : axis == 1 ? hn.y : hn.z) > 0 ? 0 : 1);
             float3 f = frac(hpv);
             float2 uv = axis == 0 ? float2(hn.x > 0 ? 1 - f.z : f.z, 1 - f.y) : axis == 1 ? float2(f.x, hn.y > 0 ? f.z : 1 - f.z) : float2(hn.z > 0 ? f.x : 1 - f.x, 1 - f.y);
-            bool see; float3 c = voxShade(hp, hn, face, id, uv, length(hp - P), pixel, see);
-            if (!see) { col = c; return true; }
+            VoxType vt = gVoxPal[id];
+            uint pair = face < 2 ? vt.faces.x : face < 4 ? vt.faces.y : vt.faces.z;
+            uint layer = (face & 1) ? (pair >> 16) : (pair & 0xFFFF);
+            bool see = vt.info.x == 2 && gVoxTex.SampleLevel(gSamp, float3(uv, layer), 0).a < 0.5;   // a see-through pixel (glass, leaves): the ray goes on
+            if (!see) { found = true; hitId = id; hitLayer = layer; hitUV = uv; hitN = hn; hitP = hpv + gVoxO.xyz; break; }
         }
         if (tMax.x < tMax.y && tMax.x < tMax.z) { t = tMax.x; tMax.x += tDelta.x; cell.x += stp.x; axis = 0; }
         else if (tMax.y < tMax.z) { t = tMax.y; tMax.y += tDelta.y; cell.y += stp.y; axis = 1; }
         else { t = tMax.z; tMax.z += tDelta.z; cell.z += stp.z; axis = 2; }
-        if (t > gRefl.z * 1.5) return false;
     }
-    return false;
+    if (!found) return false;
+    col = voxShade(hitP, hitN, hitLayer, hitId, hitUV, length(hitP - P), pixel);
+    return true;
 }
 float4 PS_Reflect(SkyOut i) : SV_Target
 {
