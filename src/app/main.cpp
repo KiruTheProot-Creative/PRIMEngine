@@ -4440,7 +4440,7 @@ struct App {
     // the HUD's parts and planes, and the arm cannon on its own layer (behind the HUD or in front of it, never cutting into it)
     void DrawHudScene(const XMMATRIX& vp, const HudSway& sw, bool editor, ID3D11DepthStencilView* ds, bool litParts = false) {   // litParts: draw the parts in colour here (the map screen: there is no world picture with them in it)
         ID3D11Buffer* cbs[3] = { cbFrame.Get(), cbChunk.Get(), cbPreview.Get() }; ctx->VSSetConstantBuffers(0, 3, cbs); ctx->PSSetConstantBuffers(0, 3, cbs);
-        PreviewCB pc{}; XMStoreFloat4x4((XMFLOAT4X4*)pc.vp, vp); pc.light[0] = -0.35f; pc.light[1] = 0.75f; pc.light[2] = -0.55f;
+        PreviewCB pc{}; XMStoreFloat4x4((XMFLOAT4X4*)pc.vp, vp); pc.light[0] = -0.35f; pc.light[1] = 0.75f; pc.light[2] = -0.55f; pc.light[3] = 1;   // (w: emission maps glow)
         D3D11_VIEWPORT vpFull; UINT nvp = 1; ctx->RSGetViewports(&nvp, &vpFull);
         std::vector<CamPart> parts = CameraParts(sw, editor ? previewPose : weapPose);
         auto partState = [&] {

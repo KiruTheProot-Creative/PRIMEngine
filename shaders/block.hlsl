@@ -1071,6 +1071,13 @@ float4 PS_Preview(PrevOut i, bool front : SV_IsFrontFace) : SV_Target
     float d = saturate(dot(n, normalize(gPrevLight.xyz)));
     float3 c = t.rgb * (0.45 + 0.3 * (0.5 + 0.5 * n.y) + 0.9 * d) * lerp(0.6, 1, i.ao);
     if (i.glow > 0.5) c = t.rgb * 1.3;
+    if (gPrevLight.w > 0.5)                                             // (the HUD's 3D parts) emission maps glow here too
+    {
+        float3 em = 0;
+        if (i.uvl.z > 16000) { if (gMM1.z > 0) em = gMeshEmit.Sample(gSamp, i.uvl.xy).rgb * gMM1.z; }
+        else { TexMat m = gMats[(uint)round(i.uvl.z)]; em = gEmitTex.Sample(gSamp, i.uvl).rgb * m.b.z; }
+        c += em * 2.5;
+    }
     return float4(pow(saturate(c), 1 / 2.2), 1);
 }
 
