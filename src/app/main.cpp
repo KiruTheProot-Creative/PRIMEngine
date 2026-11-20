@@ -497,11 +497,13 @@ struct App {
         return m != before;
     }
     // a model's material (the same everywhere it is used: objects, HUD parts, cannons, missiles)
-    void ModelMaterialUI(const std::string& model) {
+    void ModelMaterialUI(const std::string& model, bool openFirst = false) {
         if (model.empty()) return;
         ImGui::PushID(("mm" + model).c_str());
         std::string key = ModelMatKey(model); bool own = materials.isSet(key);
-        if (ImGui::TreeNode("mat", "Material of %s%s", model.c_str(), own ? "" : "  (plain)")) {
+        bool emits = !EmitFileFor(key).empty();
+        if (openFirst) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+        if (ImGui::TreeNode("mat", "Material of %s%s%s", model.c_str(), own ? "" : "  (plain)", emits ? "  (glows)" : "")) {
             TexMaterial m = materials.of(key);
             if (MaterialSliders(m, key)) { materials.put(key, m); SaveMaterials(); }
             ImGui::BeginDisabled(!own); if (ImGui::SmallButton("Back to plain")) { materials.reset(key); SaveMaterials(); } ImGui::EndDisabled();
@@ -2515,6 +2517,7 @@ struct App {
         float s = std::min(ImGui::GetContentRegionAvail().x, 140 * settings.uiScale); ImVec2 p = ImGui::GetCursorScreenPos();
         ImGui::GetWindowDrawList()->AddRectFilled(p, ImVec2(p.x + s, p.y + s), IM_COL32(30, 32, 38, 255), 4.f);
         ModelIcon(ImGui::GetWindowDrawList(), selModel, ImVec2(p.x + s * 0.5f, p.y + s * 0.5f), s * 0.8f); ImGui::Dummy(ImVec2(s, s));
+        ModelMaterialUI(selModel, true);   // shiny, metal, its emission map ... (everywhere it is used)
         ImGui::Text("%s", selModel.c_str());
         int used = 0; for (auto& o : objects) used += o.model == selModel;
         if (m) Hint("Block model: %d x %d x %d blocks, %d blocks in it. Used %d times in this world.", m->sx, m->sy, m->sz, m->blockCount(), used);
