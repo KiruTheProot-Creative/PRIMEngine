@@ -985,16 +985,91 @@ cbuffer VisorCB : register(b6)
     float4 gVOut;     // scan outlines: x on, y width (pixels), z fill inside, w pulse
 };
 Texture2D gScanMask : register(t11);   // scannable things, each in its marker colour (alpha: there is one)
-float3 postBase(int2 px, float2 uv)   // exposure, glow, filmic curve (before gamma)
+// the colour look (Looks): tone curve, exposure, contrast and the grade after it
+cbuffer LookCB : register(b10)
+{
+    float4 gLk0;       // x tone curve (0 Classic, 1 Film, 2 Neutral), y exposure (stops), z contrast, w colourfulness
+    float4 gLk1;       // x warmth (-1 cold .. 1 warm), y lens fringes, z grain, w vignette
+    float4 gLkShadow;  // rgb: colour in the dark parts (linear), w how much
+    float4 gLkHigh;    // rgb: colour in the bright parts, w how much
+    float4 gLkAdapt;   // x how much the eye adapts, y seconds since last frame, z how fast, w -
+};
+Texture2D gExposure : register(t16);   // 1x1: the eye's adaptation (stops), see PS_Adapt
+Texture2D gLumTex : register(t17);     // log brightness of the picture, with mips (PS_LumLog)
+// "AgX" (Troy Sobotka's film-like curve; polynomial fit by Benjamin Wrensch): very bright colours bleach toward white
+// like film instead of turning into flat neon blobs
+float3 agxCurve(float3 x)
+{
+    float3 x2 = x * x, x4 = x2 * x2;
+    return 15.5 * x4 * x2 - 40.14 * x4 * x + 31.96 * x4 - 6.868 * x2 * x + 0.4298 * x2 + 0.1191 * x - 0.00232;
+}
+float3 tonemapAgX(float3 v)
+{
+    const float3x3 M = float3x3(0.842479062253094, 0.0423282422610123, 0.0423756549057051,
+                                0.0784335999999992, 0.878468636469772, 0.0784336,
+                                0.0792237451477643, 0.0791661274605434, 0.879142973793104);
+    const float3x3 Mi = float3x3(1.19687900512017, -0.0528968517574562, -0.0529716355144438,
+                                 -0.0980208811401368, 1.15190312990417, -0.0980434501171241,
+                                 -0.0990297440797205, -0.0989611768448433, 1.15107367264116);
+    const float lo = -12.47393, hi = 4.026069;
+    v = mul(max(v * 0.65, 1e-10), M);
+    v = (clamp(log2(v), lo, hi) - lo) / (hi - lo);
+    v = mul(agxCurve(v), Mi);
+    return pow(saturate(v), 2.2);
+}
+float3 tonemapNeutral(float3 c)   // Khronos "PBR Neutral": colours stay as they are until they get very bright
+{
+    const float start = 0.76, desat = 0.15;
+    float x = min(c.r, min(c.g, c.b)); float off = x < 0.08 ? x - 6.25 * x * x : 0.04; c -= off;
+    float peak = max(c.r, max(c.g, c.b)); if (peak < start) return max(c, 0);
+    const float d = 1 - start; float np = 1 - d * d / (peak + d - start);
+    c *= np / peak; float g = 1 - 1 / (desat * (peak - np) + 1);
+    return saturate(lerp(c, np.xxx, g));
+}
+float lookExposure() { return exp2(gLk0.y + gLkAdapt.x * gExposure.Load(int3(0, 0, 0)).r); }
+float3 postBase(int2 px, float2 uv, float expo)   // exposure, glow, contrast, the tone curve (before gamma)
 {
     float3 c = gHdr.Load(int3(px, 0)).rgb;
     c = lerp(c, gBloom.SampleLevel(gClamp, uv, 0).rgb / 6, gExtra.y);              // soft glow around bright things (6 levels added up)
-    c *= gFogRange.z;
-    c = tonemap(c);
-    float l = dot(c, float3(0.2126, 0.7152, 0.0722));
-    return max(lerp(l.xxx, c, 1.02), 0);
+    c *= gFogRange.z * expo;
+    float l0 = dot(c, float3(0.2126, 0.7152, 0.0722));
+    c *= pow(max(l0, 1e-6) / 0.18, max(gLk0.z, 0.05) - 1);                           // contrast around middle grey
+    if (gLk0.x > 1.5) c = tonemapNeutral(c);
+    else if (gLk0.x > 0.5) c = tonemapAgX(c);
+    else { c = tonemap(c); float l = dot(c, float3(0.2126, 0.7152, 0.0722)); c = lerp(l.xxx, c, 1.02); }
+    return max(c, 0);
 }
-float postLum(int2 px, float2 uv) { return dot(postBase(px, uv), float3(0.2126, 0.7152, 0.0722)); }
+float postLum(int2 px, float2 uv, float expo) { return dot(postBase(px, uv, expo), float3(0.2126, 0.7152, 0.0722)); }
+float3 lookGrade(float3 c)   // warmth, colourfulness, colours in the shadows and highlights
+{
+    const float3 W = float3(0.2126, 0.7152, 0.0722);
+    c *= max(1 + gLk1.x * float3(0.2, 0.02, -0.25), 0);
+    float l = dot(c, W); c = lerp(l.xxx, c, gLk0.w);
+    l = saturate(dot(max(c, 0), W));
+    float sw = (1 - smoothstep(0.0, 0.45, l)) * gLkShadow.w, hw = smoothstep(0.3, 1.0, l) * gLkHigh.w;
+    float3 st = min(gLkShadow.rgb / max(dot(gLkShadow.rgb, W), 0.02), 4), ht = min(gLkHigh.rgb / max(dot(gLkHigh.rgb, W), 0.02), 4);
+    c = lerp(c, c * st, sw) + gLkShadow.rgb * sw * 0.025;    // (a little lift too, so pure black takes the colour)
+    c = lerp(c, c * ht, hw);
+    return max(c, 0);
+}
+// auto exposure: 1) the picture's log brightness (weighted to the middle) into a small texture, mips average it
+float4 PS_LumLog(SkyOut i) : SV_Target
+{
+    float2 uv = i.ndc * float2(0.5, -0.5) + 0.5;
+    float3 c = gHdr.SampleLevel(gClamp, uv, 0).rgb * gFogRange.z;
+    float l = clamp(log2(max(dot(c, float3(0.2126, 0.7152, 0.0722)), 1e-4)), -12, 8);
+    float w = 1 - 0.75 * saturate(dot(i.ndc, i.ndc) * 0.5);
+    return float4(l * w, w, 0, 1);
+}
+// 2) the eye moves toward "middle grey on average", a bit each frame (1x1 texture, ping-pong); clamped to +-2 stops
+float4 PS_Adapt(SkyOut i) : SV_Target
+{
+    float2 a = gLumTex.SampleLevel(gClamp, float2(0.5, 0.5), 12).rg;
+    float avg = a.x / max(a.y, 1e-4);
+    float target = clamp(log2(0.18) - avg, -2, 2);
+    float prev = gExposure.Load(int3(0, 0, 0)).r; if (!(prev == prev) || abs(prev) > 4) prev = 0;
+    return float4(prev + (target - prev) * (1 - exp(-gLkAdapt.y * gLkAdapt.z)), 0, 0, 1);
+}
 float3 heatPalette(float t)   // cold (dark blue) .. hot (white)
 {
     t = saturate(t);
@@ -1009,19 +1084,26 @@ float4 PS_Post(SkyOut i) : SV_Target
 {
     int2 px = int2(i.pos.xy);
     float2 uv = i.ndc * float2(0.5, -0.5) + 0.5;
-    float3 c = postBase(px, uv);
     float dz = gSceneDepth.Load(int3(px, 0));
-    if (dz >= gVHud.x && dz < gVHud.y) {   // the helmet's own parts: no visor look on them (the arm cannon gets it)
-        float2 v0 = i.ndc; c *= 1 - 0.18 * dot(v0, v0) * 0.5;
-        return float4(pow(max(c, 0), 1 / 2.2), 1);
+    if (dz >= gVHud.x && dz < gVHud.y) {   // the helmet's own parts: no visor look, no grade, no eye adaptation on them (the arm cannon gets it)
+        float3 h = postBase(px, uv, 1);
+        float2 v0 = i.ndc; h *= 1 - 0.18 * dot(v0, v0) * 0.5;
+        return float4(pow(max(h, 0), 1 / 2.2), 1);
     }
-    if (gVMisc.x > 0.01) {   // colour fringes: red and blue a little apart
-        int2 o = int2((int)round(gVMisc.x), 0); float2 ou = float2(gVMisc.x / max(gDepth.z, 1), 0);
-        c.r = postBase(px + o, uv + ou).r; c.b = postBase(px - o, uv - ou).b;
+    float expo = lookExposure();
+    float3 c = postBase(px, uv, expo);
+    {   // colour fringes: red and blue a little apart - the visor's (sideways) and the lens's (toward the edges)
+        float2 rad = i.ndc * float2(1, -1) * gLk1.y * 0.004 * gDepth.z;
+        float2 of = float2(gVMisc.x, 0) + rad;
+        if (dot(of, of) > 0.25) {
+            int2 o = int2(round(of)); float2 ou = of / max(gDepth.zw, 1);
+            c.r = postBase(px + o, uv + ou, expo).r; c.b = postBase(px - o, uv - ou, expo).b;
+        }
     }
+    c = lookGrade(c);
     const float3 W = float3(0.2126, 0.7152, 0.0722);
     if (gVEdge.w > 0.001) {   // outlines where brightness jumps
-        float e = abs(postLum(px + int2(1, 0), uv) - postLum(px - int2(1, 0), uv)) + abs(postLum(px + int2(0, 1), uv) - postLum(px - int2(0, 1), uv));
+        float e = abs(postLum(px + int2(1, 0), uv, expo) - postLum(px - int2(1, 0), uv, expo)) + abs(postLum(px + int2(0, 1), uv, expo) - postLum(px - int2(0, 1), uv, expo));
         c += gVEdge.rgb * saturate(e * 3) * gVEdge.w;
     }
     float l = dot(c, W);
@@ -1038,7 +1120,11 @@ float4 PS_Post(SkyOut i) : SV_Target
         if (m.a < 0.5 && edge.a > 0.5) c = lerp(c, edge.rgb, 0.85 * pulse);   // just outside it: the outline
         else if (m.a > 0.5) c = lerp(c, m.rgb, gVOut.z * pulse);             // on it: a faint tint
     }
-    float2 v = i.ndc; c *= 1 - 0.18 * dot(v, v) * 0.5;                 // gentle vignette
+    {   // film grain (stronger in the dark parts, like film)
+        float g = postHash(float2(px) * 1.37 + frac(gVMisc.y * 3.71) * 613) + postHash(float2(px) * 0.71 + frac(gVMisc.y * 5.3) * 271) - 1;
+        c += g * gLk1.z * 0.07 * (1.1 - saturate(dot(c, W)));
+    }
+    float2 v = i.ndc; c *= 1 - gLk1.w * dot(v, v) * 0.5;               // the look's vignette
     c *= 1 - gVGrade.w * dot(v, v) * 0.5;                               // ... and the visor's own
     c = lerp(c, float3(1, 1, 1), saturate(gVMisc.w) * 0.6);             // switching visors: a flash
     return float4(pow(max(c, 0), 1 / 2.2), 1);

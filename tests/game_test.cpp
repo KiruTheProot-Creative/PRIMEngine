@@ -23,6 +23,7 @@
 #include "../src/game/savegame.h"
 #include "../src/game/bosses.h"
 #include "../src/game/assets.h"
+#include "../src/game/looks.h"
 #include <sstream>
 #include <algorithm>
 #include <map>
@@ -1510,6 +1511,27 @@ int main() {
         HudLayout hl = defaultHud(); hl.parts[0].glow = 0.8f; hl.parts[0].glowColor = 0xFF8020; hl.parts[0].glowSize = 1.5f;
         saveHud("/tmp/prim_hudglow.txt", hl); HudLayout hb; loadHud("/tmp/prim_hudglow.txt", hb);
         CHECK(hb.parts.size() == hl.parts.size() && hb.parts[0].glow == 0.8f && hb.parts[0].glowColor == 0xFF8020 && hb.parts[0].glowSize == 1.5f && hb.parts[1].glow == 0, "a HUD part's glow behind it saves and loads (only on its own part)");
+    }
+    {   // looks: tone curve, exposure, grading; presets and your own; a world's and a zone's
+        const auto& pre = lookPresets();
+        CHECK(pre.size() >= 6 && pre[0].name == "Natural" && pre[1].curve == ToneCurve::Classic, "looks: presets (Natural first, Classic keeps the old curve)");
+        LookSet ls; ColorLook mine = pre[2]; mine.name = "Tourian green"; mine.shadows = 0x103010; mine.bloomSize = 1.7f; ls.looks.push_back(mine);
+        ColorLook neon2 = pre[2]; neon2.exposure = -1; ls.looks.push_back(neon2);   // a preset made your own
+        saveLooks("/tmp/prim_looks.txt", ls); LookSet lb; loadLooks("/tmp/prim_looks.txt", lb);
+        CHECK(lb.looks.size() == 2 && lb.get("Tourian green").bloomSize == 1.7f && lb.get("Tourian green").shadows == 0x103010 && lb.get("Neon night").exposure == -1, "your own looks save and load (names with spaces too)");
+        CHECK(lb.get("Inferno").warmth > 0 && lb.get("nope").name == "Natural", "a preset you did not change comes from the presets; an unknown look: Natural");
+        auto nm = lb.names(); CHECK(nm[0] == "Tourian green" && std::count(nm.begin(), nm.end(), std::string("Neon night")) == 1, "the list: yours first, each name once");
+        ColorLook a = pre[0], b = pre[3]; b.shadows = 0xFF0000; a.shadows = 0x000000; ColorLook h = lerp(a, b, 0.5f);
+        CHECK(std::fabs(h.bloom - (a.bloom + b.bloom) / 2) < 1e-5 && ((h.shadows >> 16) & 255) >= 127 && ((h.shadows >> 16) & 255) <= 128, "looks blend (colours too)");
+        LookState st; st.update(0, pre[0], "Natural", true); st.update(0.75, pre[4], "Inferno");
+        CHECK(st.now.warmth > 0.05f && st.now.warmth < pre[4].warmth, "walking into another look: it fades in (%.2f)", st.now.warmth);
+        st.update(1.0, pre[4], "Inferno"); CHECK(st.now.warmth == pre[4].warmth, "... and is there after a second and a half");
+        WorldInfo wi; wi.look = "Neon night"; EnvZone z; z.name = "Tourian"; z.env = "space"; z.lo = { 0, 0, 0 }; z.hi = { 9, 9, 9 }; z.look = "Tourian green"; wi.zones.push_back(z);
+        EnvZone z2 = z; z2.name = "Plain"; z2.look.clear(); wi.zones.push_back(z2);
+        wi.save("/tmp/prim_wlook"); WorldInfo wl; wl.load("/tmp/prim_wlook");
+        { Settings se; se.eyeAdapt = false; se.filmFx = false; se.save("/tmp/prim_set_look.txt"); Settings sl; sl.load("/tmp/prim_set_look.txt");
+          CHECK(!sl.eyeAdapt && !sl.filmFx && findOption("eye_adapt") >= 0 && findOption("film_fx") >= 0, "Options: eye adaptation and film effects (save, load, in the menu)"); }
+        CHECK(wl.look == "Neon night" && wl.zones.size() == 2 && wl.zones[0].look == "Tourian green" && wl.zones[1].look.empty() && wl.zones[1].name == "Plain", "a world's look and its zones' looks save and load");
     }
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
     return fails ? 1 : 0;

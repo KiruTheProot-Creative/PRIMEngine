@@ -56,6 +56,8 @@ struct Settings {
     int lockMode = 0;          // lock-on: 0 as the game says, 1 hold the button, 2 a press locks / the next lets go
     bool caveCulling = true;   // chunks hidden behind walls / in rock are not drawn
     float screenShake = 1;     // bosses, slams, roars shake the view this much (0: never)
+    bool eyeAdapt = true;      // the picture gets brighter in dark places and darker in bright ones (as the world's look says)
+    bool filmFx = true;        // the look's film grain and lens colour fringes
     KeyBinds keys;
     bool load(const std::string& path);
     bool save(const std::string& path) const;
@@ -153,6 +155,7 @@ struct WorldInfo {
     std::string hotbar[9]; int hotSel = 0;
     std::string weather = "partly_cloudy"; bool autoWeather = false;
     std::string environment = "temperate";
+    std::string look = "Natural";                   // the colour look (Looks: tone curve, exposure, bloom, grading ...)
     bool hasSpawn = false; V3 spawn{ 0.5, 0, 0.5 }; double spawnYaw = 0;   // where the player starts when playing
     std::vector<EnvZone> zones;
     bool load(const std::string& dir);

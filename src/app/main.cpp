@@ -28,6 +28,7 @@
 #include "../game/savegame.h"
 #include "../game/bosses.h"
 #include "../game/assets.h"
+#include "../game/looks.h"
 #include "media.h"
 #include "../world/visibility.h"
 #include "../game/enemies.h"
@@ -123,7 +124,8 @@ struct GpuChunk { ComPtr<ID3D11Buffer> vbO, ibO, vbC, ibC, vbW, ibW; UINT nO = 0
 struct ModelGpu { std::vector<std::pair<I3, GpuChunk>> parts; std::vector<Box3> boxes, boxesStill; bool mesh = false; ComPtr<ID3D11ShaderResourceView> tex; };   // boxesStill: without the moving parts (an open door)
 struct alignas(16) PreviewCB { float vp[16]; float light[4]; };
 struct alignas(16) MapCB { float vp[16]; float eye[4]; float center[4]; float mode[4]; };   // the map hologram
-struct alignas(16) VisorCB { float tint[4], grade[4], lines[4], edge[4], misc[4], hud[4], outline[4]; };   // the visor's look (post-processing)   // a block model's meshes (16^3 pieces) and collision
+struct alignas(16) VisorCB { float tint[4], grade[4], lines[4], edge[4], misc[4], hud[4], outline[4]; };
+struct alignas(16) LookCB { float k0[4], k1[4], shadow[4], high[4], adapt[4]; };   // the colour look (b10)   // the visor's look (post-processing)   // a block model's meshes (16^3 pieces) and collision
 
 struct App;
 static App* g_app = nullptr;
@@ -146,6 +148,14 @@ struct App {
     ComPtr<ID3D11Texture2D> skyMapTex; ComPtr<ID3D11DepthStencilView> skyMapDSV; ComPtr<ID3D11ShaderResourceView> skyMapSRV;   // what is above each spot
     Weather weather; bool weatherWin = false;
     EnvState envState; bool envWin = false;
+    LookSet looks; LookState lookState; bool looksDirty = false;   // colour looks (looks.txt): the world's, a zone's
+    ComPtr<ID3D11PixelShader> psLumLog, psAdapt; ComPtr<ID3D11Buffer> cbLook;
+    ComPtr<ID3D11Texture2D> lumTex, adaptTex[2]; ComPtr<ID3D11RenderTargetView> lumRTV, adaptRTV[2]; ComPtr<ID3D11ShaderResourceView> lumSRV, adaptSRV[2]; int adaptCur = 0;
+    std::string CurrentLookName() const {   // the zone you are in (when it has its own look), else the world's
+        if (envState.inZone) for (const auto& z : info.zones) if (z.name == envState.zoneName && !z.look.empty()) return z.look;
+        return info.look;
+    }
+    void UpdateLook(double dt, bool instant) { std::string n = CurrentLookName(); lookState.update(dt, looks.get(n), n, instant); }
     // the weather as this environment allows it (no weather in space, snow instead of rain where it is cold)
     WeatherLook EffWeather() const {
         WeatherLook w = weather.now; const EnvLook& E = envState.now; float a = E.atmosphere;
@@ -294,6 +304,16 @@ struct App {
         b = Compile(src, "PS_AOApply", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psAOApply));
         b = Compile(src, "PS_Water", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psWater));
         b = Compile(src, "PS_Post", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psPost));
+        b = Compile(src, "PS_LumLog", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psLumLog));
+        b = Compile(src, "PS_Adapt", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psAdapt));
+        {   // eye adaptation: the picture's brightness (256x256 with mips: the last one is the average) and the eye (1x1, two of them, back and forth)
+            D3D11_TEXTURE2D_DESC d{}; d.Width = d.Height = 256; d.MipLevels = 0; d.ArraySize = 1; d.Format = DXGI_FORMAT_R16G16_FLOAT; d.SampleDesc.Count = 1;
+            d.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE; d.MiscFlags = D3D11_RESOURCE_MISC_GENERATE_MIPS;
+            HR(dev->CreateTexture2D(&d, nullptr, &lumTex)); HR(dev->CreateRenderTargetView(lumTex.Get(), nullptr, &lumRTV)); HR(dev->CreateShaderResourceView(lumTex.Get(), nullptr, &lumSRV));
+            d.Width = d.Height = 1; d.MipLevels = 1; d.Format = DXGI_FORMAT_R32_FLOAT; d.MiscFlags = 0;
+            for (int k = 0; k < 2; k++) { HR(dev->CreateTexture2D(&d, nullptr, &adaptTex[k])); HR(dev->CreateRenderTargetView(adaptTex[k].Get(), nullptr, &adaptRTV[k])); HR(dev->CreateShaderResourceView(adaptTex[k].Get(), nullptr, &adaptSRV[k]));
+                                          const float z[4] = { 0, 0, 0, 0 }; ctx->ClearRenderTargetView(adaptRTV[k].Get(), z); }
+        }
         b = Compile(src, "VS_Sky", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsSky));
         b = Compile(src, "PS_Sky", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psSky));
         D3D11_INPUT_ELEMENT_DESC el[] = {
@@ -302,7 +322,7 @@ struct App {
             { "TEXCOORD", 3, DXGI_FORMAT_R32_UINT, 0, 28, D3D11_INPUT_PER_VERTEX_DATA, 0 } };
         HR(dev->CreateInputLayout(el, 5, vb->GetBufferPointer(), vb->GetBufferSize(), &layout));
         auto cb = [&](UINT size, ComPtr<ID3D11Buffer>& out) { D3D11_BUFFER_DESC d{}; d.ByteWidth = size; d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_CONSTANT_BUFFER; HR(dev->CreateBuffer(&d, nullptr, &out)); };
-        cb(sizeof(FrameCB), cbFrame); cb(sizeof(ChunkCB), cbChunk); cb(sizeof(PreviewCB), cbPreview); cb(sizeof(LightCB), cbLights); cb(32, cbMeshMat); cb(sizeof(MapCB), cbMap); cb(sizeof(VisorCB), cbVisor); cb(16, cbFlat);
+        cb(sizeof(FrameCB), cbFrame); cb(sizeof(ChunkCB), cbChunk); cb(sizeof(PreviewCB), cbPreview); cb(sizeof(LightCB), cbLights); cb(32, cbMeshMat); cb(sizeof(MapCB), cbMap); cb(sizeof(VisorCB), cbVisor); cb(16, cbFlat); cb(sizeof(LookCB), cbLook);
 
         D3D11_RASTERIZER_DESC rd{}; rd.FillMode = D3D11_FILL_SOLID; rd.CullMode = D3D11_CULL_BACK; rd.FrontCounterClockwise = FALSE; rd.DepthClipEnable = TRUE; HR(dev->CreateRasterizerState(&rd, &rsCull));
         rd.CullMode = D3D11_CULL_FRONT; HR(dev->CreateRasterizerState(&rd, &rsCullFront));   // mirrored views turn every triangle around
@@ -725,7 +745,7 @@ struct App {
             BlockId t = reg.find(e); hotbar[i] = t ? makeBlock(t, Shapes::get().find(shape)) : AIR;
         }
         hotSel = info.hotSel;
-        envState.update(0, player.eye(), info.environment, info.zones, true);
+        envState.update(0, player.eye(), info.environment, info.zones, true); UpdateLook(0, true);
         { int wi = findWeather(info.weather); weather = Weather{}; weather.set(wi < 0 ? 1 : wi, true); weather.autoChange = info.autoWeather;
           weather.wetness = weather.now.rain > 0.1f ? 1.f : 0.f; weather.snowCover = weather.now.snow > 0.1f ? 1.f : 0.f; weather.seed((uint32_t)std::time(nullptr)); }
         screen = Screen::Game; paused = false; inventory = false; autosave = 0; if (!travelling) playMode = false; sel = Sel::World;
@@ -965,7 +985,8 @@ struct App {
         world->liquidTimer += dt;   // water and lava flow 10 steps a second
         for (int k = 0; k < 3 && world->liquidTimer >= 0.1; k++) { world->liquidTimer -= 0.1; world->tickLiquids(); }
         if (world->liquidTimer > 0.3) world->liquidTimer = 0;
-        envState.update(dt, player.eye(), info.environment, info.zones);
+        envState.update(dt, player.eye(), info.environment, info.zones); UpdateLook(dt, false);
+        if (looksDirty && !ImGui::IsAnyItemActive()) { looksDirty = false; if (!projectDir.empty()) saveLooks(projectDir + "/looks.txt", looks); }
         cloudTime += dt * (0.5 + weather.now.wind);
         precipTime += dt; { float w = EffWeather().wind; precipWindX += dt * w; precipWindZ += dt * w * 0.45; }   // (added up: a change of wind only changes how they move from now on)
         if (settings.dayCycle) { settings.timeOfDay += (float)(dt * 24.0 / 1200.0); if (settings.timeOfDay >= 24) settings.timeOfDay -= 24; }
@@ -2839,6 +2860,9 @@ struct App {
     }
     // sun, sky and light colours for an hour of the day
     float exposure = 1;
+    float BloomNorm() const {   // a wider glow (the look's size) weighs the blurry levels more: keep the total about the same
+        float s = std::clamp(lookState.now.bloomSize, 0.3f, 2.5f), sum = 0, w = 1; for (int k = 0; k < 6; k++, w *= s) sum += w; return 6 / std::max(sum, 0.1f);
+    }
     void SkyParams(FrameCB& fc, float hour) {
         auto mix = [](const float a[3], const float b[3], float t, float o[3]) { for (int i = 0; i < 3; i++) o[i] = a[i] + (b[i] - a[i]) * t; };
         auto sstep = [](float a, float b, float x) { float t = std::min(1.f, std::max(0.f, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
@@ -2988,7 +3012,7 @@ struct App {
         fc.ao[0] = settings.ambientOcclusion > 0 ? 1.f : 0.f; fc.ao[1] = settings.ambientOcclusion >= 2 ? 3.0f : 2.0f;
         fc.ao[2] = std::clamp(settings.aoStrength, 0.f, 3.f); fc.ao[3] = settings.ambientOcclusion >= 2 ? 20.f : 12.f;
         fc.refl[0] = settings.reflections > 0 ? 1.f : 0.f; fc.refl[1] = settings.reflections >= 2 ? 48.f : 28.f; fc.refl[2] = settings.reflections >= 2 ? 120.f : 64.f;
-        fc.extra[0] = nightAmount * (1 - W.cover * 0.8f); fc.extra[1] = 0.15f * std::max(0.f, settings.bloom); fc.extra[2] = settings.swaying ? 0.5f + W.wind : 0.f; fc.extra[3] = 1;
+        fc.extra[0] = nightAmount * (1 - W.cover * 0.8f); fc.extra[1] = std::min(0.9f, 0.15f * std::max(0.f, settings.bloom) * std::max(0.f, lookState.now.bloom) * BloomNorm()); fc.extra[2] = settings.swaying ? 0.5f + W.wind : 0.f; fc.extra[3] = 1;
         // "what is above" map: only needed while it rains/snows or surfaces are wet/snowy
         bool skyMap = W.rain > 0.01f || W.snow > 0.01f || weather.wetness > 0.01f || weather.snowCover > 0.01f;
         XMMATRIX skyvp = XMMatrixIdentity();
@@ -3229,14 +3253,37 @@ struct App {
                 ctx->PSSetShaderResources(0, 1, &src); ctx->Draw(3, 0); ctx->PSSetShaderResources(0, 1, none);
             }
             ctx->PSSetShader(psBloomUp.Get(), nullptr, 0); ctx->OMSetBlendState(bsAdd.Get(), nullptr, 0xFFFFFFFF);
+            const float spread = std::clamp(lookState.now.bloomSize, 0.3f, 2.5f);   // the look: wider glow = the blurrier levels count more
             for (size_t i = bloomLv.size() - 1; i > 0; i--) {
-                ChunkCB cc{ { 1.f / bloomLv[i].w, 1.f / bloomLv[i].h, 1, 0 } }; ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);
+                ChunkCB cc{ { 1.f / bloomLv[i].w, 1.f / bloomLv[i].h, spread, 0 } }; ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);
                 ctx->OMSetRenderTargets(1, bloomLv[i - 1].rtv.GetAddressOf(), nullptr);
                 D3D11_VIEWPORT bv{ 0, 0, (float)bloomLv[i - 1].w, (float)bloomLv[i - 1].h, 0, 1 }; ctx->RSSetViewports(1, &bv);
                 ID3D11ShaderResourceView* src = bloomLv[i].srv.Get(); ctx->PSSetShaderResources(0, 1, &src); ctx->Draw(3, 0); ctx->PSSetShaderResources(0, 1, none);
             }
             ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
             D3D11_VIEWPORT fv{ 0, 0, (float)rw, (float)rh, 0, 1 }; ctx->RSSetViewports(1, &fv);
+        }
+
+        // ---- the colour look, and the eye adapting to how bright the picture is
+        const ColorLook& lk = lookState.now; bool adaptOn = settings.eyeAdapt && lk.adapt > 0.001f;
+        {
+            LookCB lc{}; auto lin = [](uint32_t c, float* o) { for (int k = 0; k < 3; k++) o[k] = std::pow(((c >> (16 - 8 * k)) & 255) / 255.f, 2.2f); };
+            lc.k0[0] = (float)(int)lk.curve; lc.k0[1] = lk.exposure; lc.k0[2] = lk.contrast; lc.k0[3] = lk.saturation;
+            lc.k1[0] = lk.warmth; lc.k1[1] = settings.filmFx ? lk.fringes : 0; lc.k1[2] = settings.filmFx ? lk.grain : 0; lc.k1[3] = lk.vignette;
+            lin(lk.shadows, lc.shadow); lc.shadow[3] = lk.shadowsAmount; lin(lk.highlights, lc.high); lc.high[3] = lk.highlightsAmount;
+            lc.adapt[0] = adaptOn ? lk.adapt : 0; lc.adapt[1] = std::min(ImGui::GetIO().DeltaTime, 0.1f); lc.adapt[2] = std::max(0.05f, lk.adaptSpeed);
+            ctx->UpdateSubresource(cbLook.Get(), 0, nullptr, &lc, 0, 0); ctx->PSSetConstantBuffers(10, 1, cbLook.GetAddressOf());
+        }
+        if (adaptOn) {
+            ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psLumLog.Get(), nullptr, 0);
+            ctx->OMSetRenderTargets(1, lumRTV.GetAddressOf(), nullptr); D3D11_VIEWPORT lv{ 0, 0, 256, 256, 0, 1 }; ctx->RSSetViewports(1, &lv);
+            { ID3D11ShaderResourceView* h = volSRV.Get(); ctx->PSSetShaderResources(0, 1, &h); } ctx->Draw(3, 0); ctx->PSSetShaderResources(0, 1, none);
+            ctx->OMSetRenderTargets(0, nullptr, nullptr); ctx->GenerateMips(lumSRV.Get());
+            int nx = 1 - adaptCur; ctx->PSSetShader(psAdapt.Get(), nullptr, 0);
+            ctx->OMSetRenderTargets(1, adaptRTV[nx].GetAddressOf(), nullptr); D3D11_VIEWPORT av{ 0, 0, 1, 1, 0, 1 }; ctx->RSSetViewports(1, &av);
+            { ID3D11ShaderResourceView* a[2] = { adaptSRV[adaptCur].Get(), lumSRV.Get() }; ctx->PSSetShaderResources(16, 2, a); } ctx->Draw(3, 0);
+            { ID3D11ShaderResourceView* n2[2] = { nullptr, nullptr }; ctx->PSSetShaderResources(16, 2, n2); }
+            adaptCur = nx; D3D11_VIEWPORT fv{ 0, 0, (float)rw, (float)rh, 0, 1 }; ctx->RSSetViewports(1, &fv);
         }
 
         // ---- final picture: exposure + filmic curve into the window (or the editor's viewport picture)
@@ -3255,7 +3302,9 @@ struct App {
         }
         { ID3D11ShaderResourceView* pv[3] = { volSRV.Get(), bloom ? bloomLv[0].srv.Get() : nullptr, depthSRV.Get() }; ctx->PSSetShaderResources(0, 3, pv); }
         { ID3D11ShaderResourceView* ms = scanMaskOn ? scanMask.srv.Get() : nullptr; ctx->PSSetShaderResources(11, 1, &ms); }
+        { ID3D11ShaderResourceView* ex = adaptOn ? adaptSRV[adaptCur].Get() : nullptr; ctx->PSSetShaderResources(16, 1, &ex); }
         ctx->Draw(3, 0);
+        { ID3D11ShaderResourceView* nx = nullptr; ctx->PSSetShaderResources(16, 1, &nx); }
         ctx->PSSetShaderResources(0, 4, none); { ID3D11ShaderResourceView* nm = nullptr; ctx->PSSetShaderResources(11, 1, &nm); }
         if (playMode) DrawHudInGame(out);   // the player's HUD over everything
     }
@@ -3768,12 +3817,14 @@ struct App {
         (void)ui;
         Prop("Name"); ImGui::InputText("##name", &z.name);
         Prop("Air"); EnvCombo("##air", z.env);
+        Prop("Look"); LookCombo("##look", z.look, true);
         Prop("From"); ImGui::InputInt3("##from", &z.lo.x);
         Prop("To"); ImGui::InputInt3("##to", &z.hi.x);
         if (ImGui::SmallButton("From = here")) z.lo = here;
         if (FlowButton("To = here", true)) z.hi = here;
         if (FlowButton("Go there", true)) { player.feet = { (z.lo.x + z.hi.x) * 0.5 + 0.5, (double)std::min(z.lo.y, z.hi.y), (z.lo.z + z.hi.z) * 0.5 + 0.5 }; player.flying = true; }
         if (FlowButton("Delete", true)) del = true;
+        if (!z.look.empty()) { ImGui::Separator(); LookEditor(z.look); }
         if (z.lo.x > z.hi.x) std::swap(z.lo.x, z.hi.x);
         if (z.lo.y > z.hi.y) std::swap(z.lo.y, z.hi.y);
         if (z.lo.z > z.hi.z) std::swap(z.lo.z, z.hi.z);
@@ -3789,6 +3840,71 @@ struct App {
         Hint("The air of this whole world. Zones (in the Outliner) can have their own.");
         Hint("You are in: %s", envState.inZone ? ("the zone \"" + envState.zoneName + "\"").c_str() : "the world's own air");
         if (ImGui::Button("Add a zone around me")) AddZoneHere();
+        ImGui::Separator();
+        Prop("Look"); LookCombo("##wlook", info.look, false);
+        Hint("How the picture is \"developed\": tone curve, exposure, glow, colours. A zone can have its own (it fades in as you walk in).");
+        LookEditor(info.look);
+    }
+    // ---- colour looks: pick one, edit it (a preset you change becomes your own; "Back to the preset" undoes that)
+    void LookCombo(const char* id, std::string& name, bool allowNone) {
+        std::string shown = name.empty() ? std::string("(the world's)") : name;
+        if (ImGui::BeginCombo(id, shown.c_str())) {
+            if (allowNone && ImGui::Selectable("(the world's)", name.empty())) name.clear();
+            for (const auto& n : looks.names()) {
+                bool own = false; for (const auto& l : looks.looks) if (l.name == n) own = true;
+                bool preset = false; for (const auto& p : lookPresets()) if (p.name == n) preset = true;
+                std::string lbl = n + (own && preset ? "  (changed)" : own ? "  (yours)" : "");
+                if (ImGui::Selectable(lbl.c_str(), n == name)) name = n;
+            }
+            ImGui::EndCombo();
+        }
+    }
+    ColorLook* OwnLook(const std::string& name) { for (auto& l : looks.looks) if (l.name == name) return &l; return nullptr; }
+    void LookEditor(std::string& name) {
+        if (name.empty()) return;
+        ImGui::PushID("lookedit"); ImGui::PushID(name.c_str());
+        ColorLook* own = OwnLook(name); const ColorLook* preset = nullptr; for (const auto& p : lookPresets()) if (p.name == name) preset = &p;
+        ColorLook L = own ? *own : looks.get(name); bool ch = false;
+        if (ImGui::TreeNodeEx("Edit this look", ImGuiTreeNodeFlags_SpanAvailWidth)) {
+            auto col = [&](const char* id, uint32_t& c) {
+                float f[3] = { ((c >> 16) & 255) / 255.f, ((c >> 8) & 255) / 255.f, (c & 255) / 255.f };
+                if (ImGui::ColorEdit3(id, f, ImGuiColorEditFlags_NoInputs)) { c = ((uint32_t)std::lround(f[0] * 255) << 16) | ((uint32_t)std::lround(f[1] * 255) << 8) | (uint32_t)std::lround(f[2] * 255); ch = true; }
+            };
+            int cv = (int)L.curve; Prop("Tone curve");
+            if (ImGui::Combo("##curve", &cv, "Classic (the old one)\0Film (bright colours turn white, like film)\0Neutral (true colours)\0")) { L.curve = (ToneCurve)cv; ch = true; }
+            Prop("Exposure"); ch |= ImGui::SliderFloat("##exp", &L.exposure, -3, 3, "%+.2f stops");
+            Prop("Eye adaptation"); ch |= ImGui::SliderFloat("##adapt", &L.adapt, 0, 1, L.adapt <= 0 ? "off" : "%.2f");
+            if (L.adapt > 0) { Prop("... how fast"); ch |= ImGui::SliderFloat("##adsp", &L.adaptSpeed, 0.1f, 6, "%.1f"); }
+            Prop("Contrast"); ch |= ImGui::SliderFloat("##con", &L.contrast, 0.5f, 1.8f, "%.2f");
+            Prop("Colourfulness"); ch |= ImGui::SliderFloat("##sat", &L.saturation, 0, 2, "%.2f");
+            Prop("Warmth"); ch |= ImGui::SliderFloat("##warm", &L.warmth, -1, 1, "%+.2f");
+            Prop("Shadows colour"); col("##shc", L.shadows); ImGui::SameLine(); ImGui::SetNextItemWidth(-1); ch |= ImGui::SliderFloat("##sha", &L.shadowsAmount, 0, 1, L.shadowsAmount <= 0 ? "none" : "%.2f");
+            Prop("Highlights colour"); col("##hic", L.highlights); ImGui::SameLine(); ImGui::SetNextItemWidth(-1); ch |= ImGui::SliderFloat("##hia", &L.highlightsAmount, 0, 1, L.highlightsAmount <= 0 ? "none" : "%.2f");
+            Prop("Glow strength"); ch |= ImGui::SliderFloat("##bl", &L.bloom, 0, 3, "%.2f");
+            Prop("Glow size"); ch |= ImGui::SliderFloat("##bls", &L.bloomSize, 0.5f, 2, "%.2f");
+            Prop("Lens fringes"); ch |= ImGui::SliderFloat("##fr", &L.fringes, 0, 1, L.fringes <= 0 ? "none" : "%.2f");
+            Prop("Film grain"); ch |= ImGui::SliderFloat("##gr", &L.grain, 0, 1, L.grain <= 0 ? "none" : "%.2f");
+            Prop("Dark corners"); ch |= ImGui::SliderFloat("##vig", &L.vignette, 0, 1, "%.2f");
+            if (ch) { L.name = name; if (own) *own = L; else looks.looks.push_back(L); looksDirty = true; own = OwnLook(name); }
+            static char newName[64] = "";
+            if (ImGui::SmallButton("Copy as a new look")) { ColorLook c = L; int n = 1; do c.name = name + " " + std::to_string(++n); while (looks.find(c.name)); looks.looks.push_back(c); name = c.name; looksDirty = true; }
+            if (own && preset && FlowButton("Back to the preset", true)) { looks.looks.erase(looks.looks.begin() + (own - looks.looks.data())); looksDirty = true; own = nullptr; }
+            if (own && !preset) {
+                ImGui::SetNextItemWidth(150 * settings.uiScale); ImGui::InputTextWithHint("##rn", "new name", newName, sizeof newName); ImGui::SameLine();
+                if (ImGui::SmallButton("Rename") && newName[0] && !looks.find(newName)) {
+                    std::string old = name, nn = newName; own->name = nn; newName[0] = 0;
+                    if (info.look == old) info.look = nn; for (auto& z : info.zones) if (z.look == old) z.look = nn;
+                    name = nn; looksDirty = true;
+                }
+                if (FlowButton("Delete look", true)) {
+                    std::string old = name; looks.looks.erase(looks.looks.begin() + (own - looks.looks.data()));
+                    if (info.look == old) info.look = "Natural"; for (auto& z : info.zones) if (z.look == old) z.look.clear();
+                    looksDirty = true;
+                }
+            }
+            ImGui::TreePop();
+        }
+        ImGui::PopID(); ImGui::PopID();
     }
     void WeatherBody() {
         Hint("This world's weather (it fades over in about 20 seconds):");
@@ -4309,7 +4425,7 @@ struct App {
     double prevPlayYaw = 0, prevPlayPitch = 0, prevVelY = 0; bool prevOnGround = true;
 
     std::string HudPath() const { return projectDir + "/hud.txt"; }
-    void LoadHud() { items = defaultItems(); loadItems(projectDir + "/items.txt", items); assetFolders = AssetFolders{}; loadAssetFolders(projectDir + "/asset_folders.txt", assetFolders);
+    void LoadHud() { items = defaultItems(); loadItems(projectDir + "/items.txt", items); looks = LookSet{}; loadLooks(projectDir + "/looks.txt", looks); looksDirty = false; assetFolders = AssetFolders{}; loadAssetFolders(projectDir + "/asset_folders.txt", assetFolders);
         animBlends = AnimBlends{}; loadAnimBlends(projectDir + "/anim_blend.txt", animBlends); cannonBlend.reset(); doorBlend.clear(); viewerBlend.reset();
         materials = Materials{}; loadMaterials(projectDir + "/materials.txt", materials); matsDirty = true; soundCache.clear(); playerSounds = PlayerSounds{}; loadPlayerSounds(projectDir + "/player_sounds.txt", playerSounds); activeTl.clear();
         hud = HudLayout{}; loadHud(HudPath(), hud); visors = defaultVisors(); loadVisors(projectDir + "/visors.txt", visors); scanLib = ScanLibrary{}; loadScanLibrary(projectDir + "/scans.txt", scanLib); MigrateLegacyScans(); menu = defaultMenu(); loadMenu(projectDir + "/menu.txt", menu); enemies = defaultEnemies(); loadEnemies(projectDir + "/enemies.txt", enemies); bosses = BossSet{}; loadBosses(projectDir + "/bosses.txt", bosses); weapons = WeaponSet{}; loadWeapons(projectDir + "/weapons.txt", weapons); weapSel = 0; weapState = WeaponState{}; hudImages.clear(); hudSel = 0; hudPlane = 0; hudEl = -1; hudPart = 0; }

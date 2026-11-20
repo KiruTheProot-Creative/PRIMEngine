@@ -19,6 +19,7 @@ Field field(Settings& s, const std::string& k) {
     else if (k == "clouds") r.f = &s.cloudCover; else if (k == "cloud_shadows") r.b = &s.cloudShadows; else if (k == "fog") r.f = &s.groundFog;
     else if (k == "bloom") r.f = &s.bloom; else if (k == "reflections") r.i = &s.reflections; else if (k == "ao") r.i = &s.ambientOcclusion; else if (k == "ao_strength") r.f = &s.aoStrength;
     else if (k == "swaying") r.b = &s.swaying; else if (k == "hud_glow") r.b = &s.hudGlow;
+    else if (k == "eye_adapt") r.b = &s.eyeAdapt; else if (k == "film_fx") r.b = &s.filmFx;
     else if (k == "bumps") r.f = &s.bumps; else if (k == "coat") r.f = &s.coat; else if (k == "materials") r.b = &s.materials; else if (k == "guess_materials") r.b = &s.guessMaterials;
     else if (k == "time_of_day") r.f = &s.timeOfDay; else if (k == "day_cycle") r.b = &s.dayCycle; else if (k == "block_preview") r.b = &s.blockPreview;
     else if (k == "sensitivity") r.f = &s.mouseSensitivity; else if (k == "invert_y") r.b = &s.invertY; else if (k == "lock_mode") r.i = &s.lockMode; else if (k == "cave_culling") r.b = &s.caveCulling;
@@ -75,6 +76,8 @@ const std::vector<OptionDef>& optionDefs() {
         v.push_back(toggle("cloud_shadows", "Cloud shadows", G, "Sky"));
         v.push_back(slider("fog", "Ground fog", G, "Sky", 0, 2, 0.05f, "%", "none"));
         v.push_back(slider("bloom", "Glow (bloom)", G, "Effects", 0, 1, 0.05f, "%", "off"));
+        v.push_back(toggle("eye_adapt", "Eye adaptation", G, "Effects", "Like your eyes or a camera: dark places slowly get brighter, bright ones darker (as much as the area's look says)."));
+        v.push_back(toggle("film_fx", "Film grain and lens fringes", G, "Effects", "When the area's look has them."));
         v.push_back(choice("reflections", "Reflections", G, "Effects", { "Off (only the sky)", "Normal", "High" }));
         v.push_back(choice("ao", "Ambient occlusion", G, "Effects", { "Off (only block corners)", "Normal", "High" }, {}, "Soft shade in corners, under overhangs and where things touch."));
         v.push_back(needs(slider("ao_strength", "Occlusion strength", G, "Effects", 0.2f, 3, 0.1f, "%.1f"), "ao"));

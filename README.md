@@ -158,6 +158,20 @@ F fires a missile (the right mouse button is kept for lock-on) (ammo is a counte
 - **Charge shot:** a tap fires a normal shot; hold and it charges at the muzzle (particles and light); let go when it is full for a bigger, stronger shot (time, damage, size, speed and look per beam). The HUD can show it (Shows > Beam charge).
 - **The cannon's layer:** it has its own depth, so it never cuts into the HUD: behind the HUD (default, like a visor) or "Cannon in front of the HUD".
 
+## Looks: film-like colour (World > Environment, or a zone)
+
+How the picture is "developed", like a film or a colour grade. A world has a look; an environment zone can have its own,
+which fades in over a second and a half as you walk in.
+
+- **Tone curve**: *Film* (AgX: very bright colours bleach toward white like real film, neon stays rich instead of
+  turning into flat blobs), *Neutral* (true colours) or *Classic* (the old curve).
+- **Exposure** and **eye adaptation**: dark places slowly get brighter, bright ones darker (up to two stops).
+- **Contrast, colourfulness, warmth**, a **colour in the shadows** and one **in the highlights** (split toning).
+- **Glow strength and size** (bloom), **lens fringes**, **film grain**, **dark corners**.
+- Presets: Natural, Classic, Neon night, Toxic, Inferno, Chozo dusk, Frozen, Noir. Changing a preset makes it your own
+  ("Back to the preset" undoes that); "Copy as a new look" makes another. Saved in `looks.txt` in the project.
+- Options > Graphics: *Eye adaptation* and *Film grain and lens fringes* can be turned off.
+
 ## Textures: bumps, coat and materials (like Complementary)
 
 - **Bumpy textures** (Settings > Look, generated normals): each texture's light and dark pixels become little bumps and dents with a bevel at the pixel edges, so the sun and lights catch them. Nothing to paint.

@@ -28,7 +28,7 @@ int findEnv(const std::string& key);   // -1 if unknown
 EnvLook lerp(const EnvLook& a, const EnvLook& b, float t);
 
 // a box in the world with its own environment (both corners included)
-struct EnvZone { std::string name, env; I3 lo, hi; bool contains(V3 p) const; };
+struct EnvZone { std::string name, env; I3 lo, hi; std::string look; bool contains(V3 p) const; };   // look: its own colour look ("": the world's)
 
 // which environment is around you, fading smoothly when you walk into another one
 class EnvState {
