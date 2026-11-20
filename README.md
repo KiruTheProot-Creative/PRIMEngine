@@ -213,6 +213,7 @@ which fades in over a second and a half as you walk in.
 - **Starts at** (World > Environment): the time of day when the world opens in the editor and when play starts (stopping play puts the editor's clock back). "Keep the clock running" opens it at whatever time it was left instead.
   and glowing things light them. Light fades in near openings and cave mouths; fog and the distance go dark inside too.
 - **Reflection resolution** (Options > Graphics > Effects): full, three quarters, half or a quarter. The reflection rays are traced into a smaller picture and laid over the full one, which is much faster, and softer at the edges of shiny things.
+- **Anti-aliasing** (Options > Graphics > Effects): smooths the jagged, stair-stepped edges of blocks and models in the finished picture. It finds where the brightness jumps and blends along the edge. "Smoother edges" looks a little further along each edge. It costs very little.
 - **Bounce light** (screen-space GI): lit and glowing surfaces light the ones near them - a green glow tints the wall
   beside it, a sunlit floor lights the ceiling a little. Strength per look (*Bounce light*), Options > Graphics >
   *Bounce light*: off, normal, far-reaching.

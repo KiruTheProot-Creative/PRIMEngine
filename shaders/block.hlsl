@@ -47,6 +47,7 @@ cbuffer Frame : register(b0)
     float4 gSplash[8];              // splashes on water: xyz where (relative to the camera), w how long ago (s; < 0: none)
     float4 gPlanar;                 // x 1: the mirror view is a shiny floor / water (every shiny pixel on that plane uses it), 0: only mirror blocks; y objects for reflection rays
     float4 gMinLight;               // rgb: the least light in closed spaces (true darkness); w: the reflection rays' resolution (1 full .. 0.25)
+    float4 gAA;                     // anti-aliasing: x how far along an edge it looks (pixels), y how strong
 };
 float lookFogAt(float y) { return gLookFog.x * (gLookFog.z > 0.01 ? exp(-max(y - gLookFog.y, 0) / gLookFog.z) : 1); }
 cbuffer ChunkCB : register(b1)
@@ -2003,4 +2004,28 @@ float4 PS_BlurComp(SkyOut i) : SV_Target
     if (dz >= gVHud.x && dz < gVHud.y) return float4(sharp, 1);           // the helmet's own parts stay sharp
     float3 b = gBloom.SampleLevel(gClamp, uv, 0).rgb * (1 - 0.2 * gOffset.x);
     return float4(lerp(sharp, b, saturate(gOffset.x)), 1);
+}
+
+// ---------------------------------------------------------------- anti-aliasing: jagged edges in the finished picture smoothed along their direction
+Texture2D gAASrc : register(t35);
+float aaLuma(float3 c) { return dot(c, float3(0.299, 0.587, 0.114)); }
+float4 PS_AA(SkyOut i) : SV_Target
+{
+    float2 px = 1.0 / gDepth.zw, uv = i.pos.xy * px;
+    float3 c = gAASrc.SampleLevel(gClamp, uv, 0).rgb;
+    float lc = aaLuma(c);
+    float lnw = aaLuma(gAASrc.SampleLevel(gClamp, uv + float2(-1, -1) * px, 0).rgb), lne = aaLuma(gAASrc.SampleLevel(gClamp, uv + float2(1, -1) * px, 0).rgb);
+    float lsw = aaLuma(gAASrc.SampleLevel(gClamp, uv + float2(-1, 1) * px, 0).rgb), lse = aaLuma(gAASrc.SampleLevel(gClamp, uv + float2(1, 1) * px, 0).rgb);
+    float lo = min(lc, min(min(lnw, lne), min(lsw, lse))), hi = max(lc, max(max(lnw, lne), max(lsw, lse)));
+    if (hi - lo < max(0.04, hi * 0.15)) return float4(c, 1);                                       // no edge here: as it is
+    // which way the edge runs: across the brightness change
+    float2 d = float2((lsw + lse) - (lnw + lne), (lnw + lsw) - (lne + lse));
+    float soft = max((lnw + lne + lsw + lse) * 0.03, 1.0 / 128);
+    d = clamp(d / (min(abs(d.x), abs(d.y)) + soft), -gAA.x, gAA.x) * px;
+    // two samples close by along it, then two further out
+    float3 nearC = 0.5 * (gAASrc.SampleLevel(gClamp, uv - d / 6, 0).rgb + gAASrc.SampleLevel(gClamp, uv + d / 6, 0).rgb);
+    float3 farC = nearC * 0.5 + 0.25 * (gAASrc.SampleLevel(gClamp, uv - d * 0.5, 0).rgb + gAASrc.SampleLevel(gClamp, uv + d * 0.5, 0).rgb);
+    float lf = aaLuma(farC);
+    float3 o = (lf < lo || lf > hi) ? nearC : farC;                                                // the far ones crossed another edge: only the near ones
+    return float4(lerp(c, o, gAA.y), 1);
 }

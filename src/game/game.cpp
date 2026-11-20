@@ -64,6 +64,7 @@ bool Settings::load(const std::string& path) {
         else if (k == "swaying") { int v; f >> v; swaying = v != 0; }
         else if (k == "reflections") f >> reflections;
         else if (k == "reflect_res") { f >> reflectRes; reflectRes = std::clamp(reflectRes, 0, 3); }
+        else if (k == "anti_alias") { f >> antiAlias; antiAlias = std::clamp(antiAlias, 0, 2); }
         else if (k == "ambient_occlusion") f >> ambientOcclusion;
         else if (k == "ao_strength") f >> aoStrength;
         else if (k == "bumps") f >> bumps; else if (k == "coat") f >> coat;
@@ -104,7 +105,7 @@ bool Settings::save(const std::string& path) const {
       << "\nui_scale " << uiScale << "\nvsync " << (vsync ? 1 : 0) << "\nblock_preview " << (blockPreview ? 1 : 0)
       << "\ntime_of_day " << timeOfDay << "\nday_cycle " << (dayCycle ? 1 : 0) << "\nshadows " << shadowQuality << "\nshadow_distance " << shadowDistance << "\nshadow_soft " << shadowSoft << "\nshadow_softness " << shadowSoftness
       << "\ncloud_cover " << cloudCover << "\nground_fog " << groundFog << "\ncloud_shadows " << (cloudShadows ? 1 : 0)
-      << "\nbloom " << bloom << "\nswaying " << (swaying ? 1 : 0) << "\nreflections " << reflections << "\nreflect_res " << reflectRes
+      << "\nbloom " << bloom << "\nswaying " << (swaying ? 1 : 0) << "\nreflections " << reflections << "\nreflect_res " << reflectRes << "\nanti_alias " << antiAlias
       << "\nambient_occlusion " << ambientOcclusion << "\nao_strength " << aoStrength
       << "\nbumps " << bumps << "\ncoat " << coat << "\nmaterials " << (materials ? 1 : 0) << "\nhud_glow " << (hudGlow ? 1 : 0) << "\nguess_materials " << (guessMaterials ? 1 : 0)
       << "\nshadow_res " << shadowRes << "\nbrightness " << brightness << "\nfullscreen " << (fullscreen ? 1 : 0)

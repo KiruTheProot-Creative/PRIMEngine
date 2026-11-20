@@ -133,6 +133,7 @@ struct alignas(16) FrameCB {
     float splash[8][4];     // splashes on water (rings): where (camera-relative), how long ago
     float planar[4];        // x 1: the mirror view is a shiny floor / water
     float minLight[4];      // rgb the least light in closed spaces (true darkness); w the reflection rays' resolution
+    float aa[4];            // anti-aliasing: how far along an edge, how strong
 };
 struct alignas(16) ChunkCB { float offset[4]; float ax[4] = { 1, 0, 0, 0 }, ay[4] = { 0, 1, 0, 0 }, az[4] = { 0, 0, 1, 0 }; };   // axes: objects are turned and sized
 
@@ -156,7 +157,7 @@ struct App {
     ComPtr<ID3D11Texture2D> depthTex; ComPtr<ID3D11DepthStencilView> dsv;
     ComPtr<ID3D11VertexShader> vsBlock, vsSky, vsShadow; ComPtr<ID3D11PixelShader> psOpaque, psCutout, psSky, psGhost, psShadowCut, psPost, psVolume, psBloomDown, psBloomUp, psRain, psBolt;
     ComPtr<ID3D11VertexShader> vsSkyMap, vsRain, vsRainFar, vsDust;
-    ComPtr<ID3D11PixelShader> psReflect, psAO, psAOApply, psReflComp;
+    ComPtr<ID3D11PixelShader> psReflect, psAO, psAOApply, psReflComp, psAA;
     ComPtr<ID3D11Texture2D> reflLowTex; ComPtr<ID3D11RenderTargetView> reflLowRTV; ComPtr<ID3D11ShaderResourceView> reflLowSRV; int reflLowW = 0, reflLowH = 0;   // reflections traced smaller
     float ReflScale() const { static const float k[4] = { 1.f, 0.75f, 0.5f, 0.25f }; return k[std::clamp(settings.reflectRes, 0, 3)]; }
     void EnsureReflLow(int w, int h) {
@@ -195,6 +196,7 @@ struct App {
     ComPtr<ID3D11Texture2D> volTex; ComPtr<ID3D11RenderTargetView> volRTV; ComPtr<ID3D11ShaderResourceView> volSRV;      // ... with clouds and fog
     ComPtr<ID3D11ShaderResourceView> depthSRV, noiseSRV, depthCopySRV; ComPtr<ID3D11Texture2D> depthCopy; ComPtr<ID3D11PixelShader> psWater; ComPtr<ID3D11SamplerState> sampLinear, sampClamp; double cloudTime = 0, precipTime = 0, precipWindX = 0, precipWindZ = 0;
     struct BloomLevel { ComPtr<ID3D11Texture2D> tex; ComPtr<ID3D11RenderTargetView> rtv; ComPtr<ID3D11ShaderResourceView> srv; int w = 0, h = 0; };
+    BloomLevel aaSrc;   // anti-aliasing: the finished picture, before its edges are smoothed
     BloomLevel blurSrc; std::vector<BloomLevel> blurLv; ComPtr<ID3D11PixelShader> psBlurComp; float blurAmt = 0;   // paused: the world blurred behind the menu
     std::vector<BloomLevel> bloomLv; ComPtr<ID3D11BlendState> bsAdd; float nightAmount = 0, nightEyeLimit = 2;
     ComPtr<ID3D11Texture2D> shadowTex; ComPtr<ID3D11DepthStencilView> shadowDSV; ComPtr<ID3D11ShaderResourceView> shadowSRV; int shadowSize = 0;
@@ -301,6 +303,7 @@ struct App {
         }
         b = Compile(src, "PS_Reflect", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psReflect));
         b = Compile(src, "PS_ReflComp", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psReflComp));
+        b = Compile(src, "PS_AA", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psAA));
         b = Compile(src, "VS_Particle", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsParticle));
         { D3D11_INPUT_ELEMENT_DESC pe[] = {
             { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 }, { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0 },
@@ -436,6 +439,7 @@ struct App {
             auto mk = [&](BloomLevel& L, int w, int h) { L = BloomLevel{}; L.w = std::max(1, w); L.h = std::max(1, h);
                 D3D11_TEXTURE2D_DESC bd2{}; bd2.Width = (UINT)L.w; bd2.Height = (UINT)L.h; bd2.MipLevels = 1; bd2.ArraySize = 1; bd2.Format = DXGI_FORMAT_R8G8B8A8_UNORM; bd2.SampleDesc.Count = 1; bd2.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
                 HR(dev->CreateTexture2D(&bd2, nullptr, &L.tex)); HR(dev->CreateRenderTargetView(L.tex.Get(), nullptr, &L.rtv)); HR(dev->CreateShaderResourceView(L.tex.Get(), nullptr, &L.srv)); };
+            mk(aaSrc, rw, rh);
             mk(blurSrc, rw, rh); blurLv.resize(4); for (int i = 0, w = rw / 2, h = rh / 2; i < 4; i++, w /= 2, h /= 2) mk(blurLv[i], w, h);
         }
         bloomLv.clear();   // half size, quarter size, ... six levels
@@ -3897,6 +3901,7 @@ struct App {
         fc.planar[0] = 0;
         {   // the least light in closed spaces (true darkness), and how big the reflections are traced
             float ml = info.trueDark ? std::clamp(info.minLight, 0.f, 1.f) : 0.f; V3 mc = Linear(info.minLightColor);
+            fc.aa[0] = settings.antiAlias >= 2 ? 12.f : 8.f; fc.aa[1] = settings.antiAlias >= 2 ? 1.f : 0.85f;
             fc.minLight[0] = (float)mc.x * ml * 0.45f; fc.minLight[1] = (float)mc.y * ml * 0.45f; fc.minLight[2] = (float)mc.z * ml * 0.45f; fc.minLight[3] = ReflScale();
         }
         if (!lastMirror.valid && settings.reflections > 0 && settings.planarFloors) { lastMirror = FloorMirror(); fc.planar[0] = lastMirror.valid ? 1.f : 0.f; }   // no mirror block: the shiny floor or water near you
@@ -4325,7 +4330,9 @@ struct App {
 
         // ---- final picture: exposure + filmic curve into the window (or the editor's viewport picture); paused: first into a picture to blur
         bool blurOn = blurAmt > 0.005f && blurSrc.rtv && blurLv.size() == 4;
-        { ID3D11RenderTargetView* tgt = blurOn ? blurSrc.rtv.Get() : out; ctx->OMSetRenderTargets(1, &tgt, nullptr); }
+        ID3D11RenderTargetView* finalTgt = blurOn ? blurSrc.rtv.Get() : out;
+        bool aaOn = settings.antiAlias > 0 && aaSrc.rtv && aaSrc.w == rw && aaSrc.h == rh;   // anti-aliasing: first into a picture, then smoothed into where it goes
+        { ID3D11RenderTargetView* tgt = aaOn ? aaSrc.rtv.Get() : finalTgt; ctx->OMSetRenderTargets(1, &tgt, nullptr); }
         ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psPost.Get(), nullptr, 0);
         {   // the visor's look
             const VisorFx& x = CurrentVisorFx(); VisorCB vc{};
@@ -4344,6 +4351,12 @@ struct App {
         ctx->Draw(3, 0);
         { ID3D11ShaderResourceView* nx = nullptr; ctx->PSSetShaderResources(16, 1, &nx); }
         ctx->PSSetShaderResources(0, 4, none); { ID3D11ShaderResourceView* nm = nullptr; ctx->PSSetShaderResources(11, 1, &nm); }
+        if (aaOn) {   // smooth the jagged edges
+            ctx->OMSetRenderTargets(1, &finalTgt, nullptr); ctx->PSSetShader(psAA.Get(), nullptr, 0); ctx->PSSetSamplers(3, 1, sampClamp.GetAddressOf());
+            ctx->PSSetShaderResources(35, 1, aaSrc.srv.GetAddressOf()); ctx->Draw(3, 0);
+            ID3D11ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(35, 1, &n1);
+            ctx->PSSetShader(psPost.Get(), nullptr, 0);
+        }
         if (blurOn) {   // the menu blur: shrink four times, grow back (each step softer), then over the window - the helmet's parts stay sharp
             ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->PSSetSamplers(3, 1, sampClamp.GetAddressOf());
             ctx->PSSetShader(psBloomDown.Get(), nullptr, 0);
