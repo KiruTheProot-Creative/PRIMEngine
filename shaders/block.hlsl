@@ -42,6 +42,8 @@ cbuffer Frame : register(b0)
     float4 gLookFogCol;             // rgb its colour (linear), w how much it glows by itself
     float4 gGI;                     // bounce light: x strength (0: off), y how far it reaches (blocks)
     float4 gSkyVolO;                // the sky light around you (96 x 64 x 96 blocks): xyz its corner relative to the camera, w 1 = ready
+    float4 gVoxO;                   // the blocks around you for reflection rays (192 x 96 x 192): xyz its corner relative to the camera, w most steps
+    float4 gVoxM;                   // xyz where that corner sits in the (wrapping) 3D texture, w 1 = ready
 };
 float lookFogAt(float y) { return gLookFog.x * (gLookFog.z > 0.01 ? exp(-max(y - gLookFog.y, 0) / gLookFog.z) : 1); }
 cbuffer ChunkCB : register(b1)
@@ -907,6 +909,70 @@ float4 PS_AOApply(SkyOut i) : SV_Target
     return float4(-ind * (1 - ao), 0);   // added on top of the picture: takes the hidden sky light away
 }
 
+// ---------------------------------------------------------------- voxel ray tracing: reflection rays step through the blocks around you
+// block by block (a copy of them on the graphics card), so they find what is off screen and behind you too - any graphics card
+Texture3D<uint> gVox : register(t30);              // palette number per block (0: nothing), wrapping (only changed chunks are sent)
+struct VoxType { uint4 faces; uint4 info; };      // faces: texture layer per face, two per number (16 bits each); info: x 1 solid / 2 cut-out, y lamp level, z lamp colour
+StructuredBuffer<VoxType> gVoxPal : register(t31);
+Texture2DArray gVoxTex : register(t29);            // the block textures (the same array as t0 in the world pass)
+static const int3 VOXN = int3(192, 96, 192);
+uint voxAt(int3 q) { int3 s = (q + int3(gVoxM.xyz)) % VOXN; return gVox.Load(int4(s, 0)); }
+float3 voxShade(float3 hp, float3 hn, int face, uint id, float2 uv, float t, float2 pixel, out bool see)
+{
+    VoxType vt = gVoxPal[id]; see = false;
+    uint pair = face < 2 ? vt.faces.x : face < 4 ? vt.faces.y : vt.faces.z;
+    uint layer = (face & 1) ? (pair >> 16) : (pair & 0xFFFF);
+    float4 tex = gVoxTex.SampleLevel(gSamp, float3(uv, layer), clamp(log2(max(t, 1) * 0.35), 0, 4));
+    if (vt.info.x == 2 && tex.a < 0.5) { see = true; return 0; }   // a see-through pixel of glass / leaves: the ray goes on
+    float3 albedo = tex.rgb; TexMat m = gMats[layer];
+    float ndl = saturate(dot(hn, gSunDir.xyz));
+    float sv = skyVis(hp, hn);
+    float sh = ndl > 0 ? shadowAt(hp, hn, ndl, pixel) : 0;
+    float farOut = gSunDir.w < 0.5 ? 1 : saturate((length(hp) - gCascR.w * 0.92) / max(gCascR.w * 0.08, 1)); sh *= lerp(1, sv, farOut);
+    float3 light = gSunColor.rgb * ndl * sh + gAmbient.rgb * (0.55 + 0.45 * hn.y) * sv;
+    float3 dif = 0, sp = 0; uint nl = (uint)gCl1.y;                 // the nearest lights (glowing blocks around you too)
+    [loop] for (uint k = 0; k < nl; k++) evalLight(gLightBuf[k], hp, hn, -normalize(hp), 16, true, dif, sp);
+    float3 c = albedo * (light + dif);
+    if (vt.info.y > 0)   // a lamp block glows in its colour
+    {
+        float3 lc = float3((vt.info.z >> 16) & 255, (vt.info.z >> 8) & 255, vt.info.z & 255) / 255.0;
+        c = (dot(albedo, float3(0.2126, 0.7152, 0.0722)) * lc * 0.85 + albedo * lc * 0.3) * 3.2 * gExtra.w;
+    }
+    if (gSurf.z > 0.5 && m.a.z > 0) c += albedo * m.a.z * smoothstep(m.a.w, m.a.w + 0.08, sqrt(dot(albedo, float3(0.2126, 0.7152, 0.0722)))) * 3.0;
+    if (m.b.z > 0) c += gEmitTex.SampleLevel(gSamp, float3(uv, layer), 0).rgb * m.b.z * 2.5;
+    float d = length(hp), f = saturate((d - gFogRange.x) / max(gFogRange.y - gFogRange.x, 1));
+    return lerp(c, skyColor(normalize(hp)) * max(sv, gOcc.y), f * f);
+}
+bool voxelTrace(float3 P, float3 n, float3 r, float2 pixel, out float3 col)
+{
+    col = 0;
+    if (gVoxM.w < 0.5) return false;
+    float3 o = P + n * 0.02 - gVoxO.xyz;                                 // into the volume's own blocks
+    int3 cell = int3(floor(o)), stp = int3(sign(r));
+    float3 inv = 1 / max(abs(r), 1e-6) * sign(r + 1e-9);
+    float3 tMax = ((float3(cell) + float3(stp > 0)) - o) * inv, tDelta = abs(inv);
+    float t = 0; int axis = 1; int steps = (int)gVoxO.w;
+    [loop] for (int k = 0; k < steps; k++)
+    {
+        if (any(cell < 0) || any(cell >= VOXN)) return false;
+        uint id = k > 0 ? voxAt(cell) : 0;                              // (the first block: where the ray starts)
+        if (id != 0)
+        {
+            float3 hpv = o + r * t, hp = hpv + gVoxO.xyz;
+            float3 hn = 0; hn[axis] = -stp[axis];
+            int face = axis * 2 + (hn[axis] > 0 ? 0 : 1);
+            float3 f = frac(hpv);
+            float2 uv = axis == 0 ? float2(hn.x > 0 ? 1 - f.z : f.z, 1 - f.y) : axis == 1 ? float2(f.x, hn.y > 0 ? f.z : 1 - f.z) : float2(hn.z > 0 ? f.x : 1 - f.x, 1 - f.y);
+            bool see; float3 c = voxShade(hp, hn, face, id, uv, length(hp - P), pixel, see);
+            if (!see) { col = c; return true; }
+        }
+        if (tMax.x < tMax.y && tMax.x < tMax.z) { t = tMax.x; tMax.x += tDelta.x; cell.x += stp.x; axis = 0; }
+        else if (tMax.y < tMax.z) { t = tMax.y; tMax.y += tDelta.y; cell.y += stp.y; axis = 1; }
+        else { t = tMax.z; tMax.z += tDelta.z; cell.z += stp.z; axis = 2; }
+        if (t > gRefl.z * 1.5) return false;
+    }
+    return false;
+}
 float4 PS_Reflect(SkyOut i) : SV_Target
 {
     int2 px = int2(i.pos.xy);
@@ -928,6 +994,9 @@ float4 PS_Reflect(SkyOut i) : SV_Target
     // where the ray finds nothing on screen: the sky (only if this spot is under the open sky, else a dim guess)
     float open = skyExposed(P + n * 0.3);
     float3 fallback = (skyColor(r) * lerp(0.15, 1, open * saturate(r.y * 4 + 0.6)) + gAmbient.rgb * 0.15 * (1 - open)) * skyVis(P, n);
+    float edge = 0;
+    if (hit) { float2 e = min(huv, 1 - huv); edge = saturate(min(e.x, e.y) * 12) * saturate(1 - travelled / gRefl.z); }   // fade near the picture's edges
+    if (edge < 0.99) { float3 vc; if (voxelTrace(P, n, r, i.pos.xy, vc)) fallback = vc; }   // off screen / behind you: the blocks themselves
     float3 refl = fallback;
     float2 suv = (float2(px) + 0.5) / gDepth.zw;
     if (mirror && gRefl.w > 0.5 && abs(dot(P, gMirror.xyz) + gMirror.w) < 0.08 && dot(n, gMirror.xyz) > 0.9)
@@ -935,12 +1004,7 @@ float4 PS_Reflect(SkyOut i) : SV_Target
         refl = gMirrorView.SampleLevel(gClamp, suv, 0).rgb;     // a true mirror: everything, even what is behind you
         hit = false;
     }
-    else if (hit)
-    {
-        float2 e = min(huv, 1 - huv);
-        float edge = saturate(min(e.x, e.y) * 12) * saturate(1 - travelled / gRefl.z);   // fade near the picture's edges
-        refl = lerp(fallback, gHdr.SampleLevel(gClamp, huv, 0).rgb, edge);
-    }
+    else if (hit) refl = lerp(fallback, gHdr.SampleLevel(gClamp, huv, 0).rgb, edge);
     float NdotV = saturate(dot(n, -dir));
     float f0 = mirror ? 0.9 : 0.02 + 0.6 * shine;
     float F = f0 + (1 - f0) * pow(1 - NdotV, 5);
@@ -980,11 +1044,10 @@ float4 PS_Water(VSOut i, bool front : SV_IsFrontFace) : SV_Target
     float wsv = skyVis(i.rel, float3(0, 1, 0)); deep *= wsv; refr = behind * absorb + deep * (1 - absorb);
     float3 refl = skyColor(r) * lerp(0.25, 1, open) * wsv;
     float2 huv; float travelled;
-    if (front && gRefl.x > 0.5 && traceScreen(i.rel, n, r, dist, i.pos.xy, huv, travelled))
-    {
-        float2 e = min(huv, 1 - huv);
-        refl = lerp(refl, gHdr.SampleLevel(gClamp, huv, 0).rgb, saturate(min(e.x, e.y) * 12) * saturate(1 - travelled / gRefl.z));
-    }
+    bool ssr = front && gRefl.x > 0.5 && traceScreen(i.rel, n, r, dist, i.pos.xy, huv, travelled);
+    float wedge = 0; if (ssr) { float2 e = min(huv, 1 - huv); wedge = saturate(min(e.x, e.y) * 12) * saturate(1 - travelled / gRefl.z); }
+    if (front && gRefl.x > 0.5 && wedge < 0.99) { float3 vc; if (voxelTrace(i.rel, n, r, i.pos.xy, vc)) refl = vc; }   // the blocks around, off screen too
+    if (ssr) refl = lerp(refl, gHdr.SampleLevel(gClamp, huv, 0).rgb, wedge);
     float NdotV = saturate(abs(dot(n, v)));
     float F = front ? 0.02 + 0.98 * pow(1 - NdotV, 5) : 0.08;
     float3 c = lerp(refr, refl, F);

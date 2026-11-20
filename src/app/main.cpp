@@ -126,6 +126,8 @@ struct alignas(16) FrameCB {
     float lookFogCol[4];    // rgb colour (linear), w its own glow
     float gi[4];            // bounce light: x strength, y reach (blocks)
     float skyVol[4];        // the sky light volume: xyz its corner relative to the camera, w ready
+    float voxO[4];          // reflection rays' blocks: xyz the corner relative to the camera, w most steps
+    float voxM[4];          // xyz where the corner sits in the wrapping 3D texture, w ready
 };
 struct alignas(16) ChunkCB { float offset[4]; float ax[4] = { 1, 0, 0, 0 }, ay[4] = { 0, 1, 0, 0 }, az[4] = { 0, 0, 1, 0 }; };   // axes: objects are turned and sized
 
@@ -727,6 +729,7 @@ struct App {
         return o;
     }
     void UploadTextures() {
+        ResetVoxels();   // (the reflection rays' palette points at texture layers)
         const int S = reg.layerSize(), n = (int)reg.textureCount();
         std::vector<std::vector<uint8_t>> px(n); for (int i = 0; i < n; i++) px[i] = reg.layer(i, S);
         ComPtr<ID3D11ShaderResourceView> made = MakeArray(px, S);
@@ -857,7 +860,7 @@ struct App {
             BlockId t = reg.find(e); hotbar[i] = t ? makeBlock(t, Shapes::get().find(shape)) : AIR;
         }
         hotSel = info.hotSel;
-        envState.update(0, player.eye(), info.environment, info.zones, true); UpdateLook(0, true); opaqueCache.clear(); skyVolValid = false; skyVolSig = 0;
+        envState.update(0, player.eye(), info.environment, info.zones, true); UpdateLook(0, true); opaqueCache.clear(); skyVolValid = false; skyVolSig = 0; ResetVoxels();
         { int wi = findWeather(info.weather); weather = Weather{}; weather.set(wi < 0 ? 1 : wi, true); weather.autoChange = info.autoWeather;
           weather.wetness = weather.now.rain > 0.1f ? 1.f : 0.f; weather.snowCover = weather.now.snow > 0.1f ? 1.f : 0.f; weather.seed((uint32_t)std::time(nullptr)); }
         screen = Screen::Game; paused = false; inventory = false; autosave = 0; if (!travelling) playMode = false; sel = Sel::World;
@@ -1101,7 +1104,7 @@ struct App {
         world->liquidTimer += dt;   // water and lava flow 10 steps a second
         for (int k = 0; k < 3 && world->liquidTimer >= 0.1; k++) { world->liquidTimer -= 0.1; world->tickLiquids(); }
         if (world->liquidTimer > 0.3) world->liquidTimer = 0;
-        envState.update(dt, player.eye(), info.environment, info.zones); UpdateLook(dt, false); UpdateCamOpen(dt); UpdateLampProxies(dt); UpdateSkyVolume();
+        envState.update(dt, player.eye(), info.environment, info.zones); UpdateLook(dt, false); UpdateCamOpen(dt); UpdateLampProxies(dt); UpdateSkyVolume(); UpdateVoxels();
         if (looksDirty && !ImGui::IsAnyItemActive()) { looksDirty = false; if (!projectDir.empty()) saveLooks(projectDir + "/looks.txt", looks); }
         cloudTime += dt * (0.5 + weather.now.wind);
         precipTime += dt; { float w = EffWeather().wind; precipWindX += dt * w; precipWindZ += dt * w * 0.45; }   // (added up: a change of wind only changes how they move from now on)
@@ -1448,6 +1451,60 @@ struct App {
         }
         float t = tot ? open / (float)tot : 1; camOpen += (t - camOpen) * (float)(1 - std::exp(-dt * 2.5));
     }
+    // ---- the blocks around you on the graphics card, for reflection rays (voxel ray tracing): 192 x 96 x 192 blocks, a
+    // wrapping 3D texture of palette numbers (only chunks that changed or came into range are sent, nearest first)
+    static constexpr int VCX = 12, VCY = 6, VCZ = 12;
+    struct VoxGpuType { uint32_t faces[4]; uint32_t info[4]; };
+    ComPtr<ID3D11Texture3D> voxTex; ComPtr<ID3D11ShaderResourceView> voxSRV; ComPtr<ID3D11Buffer> voxPalBuf; ComPtr<ID3D11ShaderResourceView> voxPalSRV; size_t voxPalCap = 0; bool voxPalDirty = true;
+    std::unordered_map<BlockId, uint16_t> voxIdx; std::vector<VoxGpuType> voxPal;
+    struct VoxSlot { I3 key{ INT32_MIN, 0, 0 }; uint32_t ver = 0xFFFFFFFFu; };
+    std::vector<VoxSlot> voxSlots; I3 voxC0{ 0, 0, 0 }; bool voxReady = false;
+    uint16_t VoxIndex(BlockId b) {
+        if (b == AIR) return 0; auto it = voxIdx.find(b); if (it != voxIdx.end()) return it->second;
+        const BlockDef& d = reg.get(b); uint16_t idx = 0;
+        if (d.render == Render::Opaque || d.render == Render::Cutout) if (d.shape == Shape::Cube && !d.liquid && voxPal.size() < 65535) {
+            if (voxPal.empty()) voxPal.push_back(VoxGpuType{});
+            VoxGpuType t{}; for (int f = 0; f < 6; f++) t.faces[f / 2] |= (uint32_t)(d.tex[f] & 0xFFFF) << (16 * (f & 1));
+            t.info[0] = d.render == Render::Cutout ? 2 : 1; t.info[1] = (uint32_t)d.lightOf();
+            if (d.lightOf() > 0) { int lv[3]; d.lightLevels(lv); t.info[2] = ((uint32_t)(lv[0] * 17) << 16) | ((uint32_t)(lv[1] * 17) << 8) | (uint32_t)(lv[2] * 17); }
+            idx = (uint16_t)voxPal.size(); voxPal.push_back(t); voxPalDirty = true;
+        }
+        voxIdx[b] = idx; return idx;
+    }
+    void ResetVoxels() { voxIdx.clear(); voxPal.clear(); voxPalDirty = true; for (auto& sl : voxSlots) sl = VoxSlot{}; voxReady = false; }
+    void UpdateVoxels() {
+        if (!world || settings.reflections <= 0) { voxReady = false; return; }
+        if (!voxTex) {
+            D3D11_TEXTURE3D_DESC d{}; d.Width = VCX * CS; d.Height = VCY * CS; d.Depth = VCZ * CS; d.MipLevels = 1; d.Format = DXGI_FORMAT_R16_UINT; d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            std::vector<uint16_t> zero((size_t)d.Width * d.Height * d.Depth, 0); D3D11_SUBRESOURCE_DATA sd{ zero.data(), d.Width * 2, d.Width * d.Height * 2 };
+            HR(dev->CreateTexture3D(&d, &sd, &voxTex)); HR(dev->CreateShaderResourceView(voxTex.Get(), nullptr, &voxSRV));
+            voxSlots.assign(VCX * VCY * VCZ, VoxSlot{});
+        }
+        I3 cc = chunkOf(ifloor(camPos.x), ifloor(camPos.y), ifloor(camPos.z)); voxC0 = { cc.x - VCX / 2, cc.y - VCY / 2, cc.z - VCZ / 2 };
+        struct Stale { int slot; I3 k; int d; }; std::vector<Stale> stale;
+        auto md = [](int a, int m) { return ((a % m) + m) % m; };
+        for (int y = 0; y < VCY; y++) for (int z = 0; z < VCZ; z++) for (int x = 0; x < VCX; x++) {
+            I3 k{ voxC0.x + x, voxC0.y + y, voxC0.z + z }; int slot = (md(k.y, VCY) * VCZ + md(k.z, VCZ)) * VCX + md(k.x, VCX);
+            const Chunk* c = world->chunk(k); uint32_t ver = c ? c->version : 0xFFFFFFFEu;
+            const VoxSlot& sl = voxSlots[slot]; if (!(sl.key == k) || sl.ver != ver) stale.push_back({ slot, k, std::abs(k.x - cc.x) + std::abs(k.y - cc.y) + std::abs(k.z - cc.z) });
+        }
+        std::sort(stale.begin(), stale.end(), [](const Stale& a, const Stale& b) { return a.d < b.d; });
+        static std::vector<uint16_t> buf(CS * CS * CS);
+        for (size_t n = 0; n < stale.size() && n < 24; n++) {
+            const Stale& st = stale[n]; const Chunk* c = world->chunk(st.k);
+            if (c && c->nonAir > 0) { for (int y = 0; y < CS; y++) for (int z = 0; z < CS; z++) for (int x = 0; x < CS; x++) buf[(z * CS + y) * CS + x] = VoxIndex(c->b[(y * CS + z) * CS + x]); }
+            else std::fill(buf.begin(), buf.end(), (uint16_t)0);
+            int sx = md(st.k.x, VCX) * CS, sy = md(st.k.y, VCY) * CS, sz = md(st.k.z, VCZ) * CS;
+            D3D11_BOX box{ (UINT)sx, (UINT)sy, (UINT)sz, (UINT)(sx + CS), (UINT)(sy + CS), (UINT)(sz + CS) };
+            ctx->UpdateSubresource(voxTex.Get(), 0, &box, buf.data(), CS * 2, CS * CS * 2);
+            voxSlots[st.slot].key = st.k; voxSlots[st.slot].ver = c ? c->version : 0xFFFFFFFEu;
+        }
+        if (voxPalDirty && !voxPal.empty()) {
+            if (voxPal.size() > voxPalCap) { voxPalCap = std::max<size_t>(voxPal.size() * 2, 256); voxPalBuf = MakeStructured((UINT)voxPalCap, sizeof(VoxGpuType), voxPalSRV); }
+            Upload(voxPalBuf.Get(), voxPal.data(), voxPal.size() * sizeof(VoxGpuType)); voxPalDirty = false;
+        }
+        voxReady = !voxPal.empty() && voxPalSRV;
+    }
     // true darkness, block by block: sky light around you spreads like Minecraft's (15 under the open sky, one less per
     // block sideways or up, through anything that is not a full opaque block) - so it goes round corners and into cave
     // mouths but never through walls. Worked out on another thread when blocks change or you move far.
@@ -1666,7 +1723,7 @@ struct App {
             }
         }
         if (!casters.empty()) Upload(lshVPBuf.Get(), lshVP, sizeof lshVP);
-        BindLightBuffers(false); SetClusterMode(true, 0, 0);
+        BindLightBuffers(false); SetClusterMode(true, 0, std::min(frameLightCount, 32));
     }
     // all particles as quads: glowing ones added on top, soft ones (smoke) blended, back to front
     void DrawParticles() {
@@ -3390,11 +3447,19 @@ struct App {
             fc.gi[0] = settings.bounce > 0 ? std::max(0.f, lk.bounce) : 0.f; fc.gi[1] = settings.bounce >= 2 ? 6.f : 4.f;
             fc.skyVol[0] = (float)(skyVolOrigin.x - camPos.x); fc.skyVol[1] = (float)(skyVolOrigin.y - camPos.y); fc.skyVol[2] = (float)(skyVolOrigin.z - camPos.z);
             fc.skyVol[3] = info.trueDark && skyVolValid ? 1.f : 0.f;
+            {   // reflection rays' blocks
+                auto md = [](int a, int m) { return ((a % m) + m) % m; };
+                fc.voxO[0] = (float)(voxC0.x * (double)CS - camPos.x); fc.voxO[1] = (float)(voxC0.y * (double)CS - camPos.y); fc.voxO[2] = (float)(voxC0.z * (double)CS - camPos.z);
+                fc.voxO[3] = settings.reflections >= 2 ? 220.f : 110.f;
+                fc.voxM[0] = (float)md(voxC0.x * CS, VCX * CS); fc.voxM[1] = (float)md(voxC0.y * CS, VCY * CS); fc.voxM[2] = (float)md(voxC0.z * CS, VCZ * CS);
+                fc.voxM[3] = voxReady ? 1.f : 0.f;
+            }
         }
         fc.weather[0] = W.rain; fc.weather[1] = W.snow; fc.weather[2] = W.dark; fc.weather[3] = weather.wetness * E.atmosphere;
         fc.weather2[0] = weather.snowCover * E.atmosphere; fc.weather2[1] = weather.flash * E.atmosphere; fc.weather2[2] = W.wind; fc.weather2[3] = skyMap ? 1.f : 0.f;
         ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &fc, 0, 0);
         ID3D11Buffer* cbs[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->VSSetConstantBuffers(0, 2, cbs); ctx->PSSetConstantBuffers(0, 2, cbs);
+        { ID3D11ShaderResourceView* vx[3] = { texArray.Get(), voxReady ? voxSRV.Get() : nullptr, voxReady ? voxPalSRV.Get() : nullptr }; ctx->PSSetShaderResources(29, 3, vx); }   // reflection rays' blocks
         PrepareLights(fc);   // light objects, strips, glowing emitters, shots, glowing blocks (for objects) - sorted into clusters
         ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
         auto drawChunks = [&](const XMMATRIX& m, int pass, bool counting, bool cave = false) {   // cave: the camera's own view (cave culling applies)
@@ -3516,7 +3581,7 @@ struct App {
             ctx->PSSetShader(psCutout.Get(), nullptr, 0); drawChunks(mvp, 1, false);
             ctx->PSSetShaderResources(0, 5, none);
             ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &fc, 0, 0);
-            SetClusterMode(true, 0, 0);
+            SetClusterMode(true, 0, std::min(frameLightCount, 32));
         }
 
         // ---- the world, into the HDR picture
@@ -3577,7 +3642,8 @@ struct App {
         ctx->OMSetRenderTargets(1, reflRTV.GetAddressOf(), nullptr);
         ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->IASetInputLayout(nullptr); ctx->RSSetState(rsNoCull.Get());
         ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psReflect.Get(), nullptr, 0);
-        { ID3D11ShaderResourceView* r7[7] = { hdrSRV.Get(), nullptr, depthSRV.Get(), nullptr, skyMap ? skyMapSRV.Get() : nullptr, surfSRV.Get(), lastMirror.valid ? mirSRV.Get() : nullptr }; ctx->PSSetShaderResources(0, 7, r7); }
+        { ID3D11ShaderResourceView* r7[7] = { hdrSRV.Get(), shadows ? shadowSRV.Get() : nullptr, depthSRV.Get(), nullptr, skyMap ? skyMapSRV.Get() : nullptr, surfSRV.Get(), lastMirror.valid ? mirSRV.Get() : nullptr }; ctx->PSSetShaderResources(0, 7, r7);
+          ctx->PSSetShaderResources(14, 1, emitArray.GetAddressOf()); BindMaterials(); }
         ctx->PSSetSamplers(3, 1, sampClamp.GetAddressOf());
         ctx->Draw(3, 0);
         { ID3D11ShaderResourceView* n7[7] = {}; ctx->PSSetShaderResources(0, 7, n7); }
@@ -5207,7 +5273,7 @@ struct App {
             }
         }
         ID3D11ShaderResourceView* none = nullptr; ctx->PSSetShaderResources(9, 1, &none);
-        BindLightBuffers(false); SetClusterMode(true, 0, 0);   // the world's own lights again
+        BindLightBuffers(false); SetClusterMode(true, 0, std::min(frameLightCount, 32));   // the world's own lights again
         D3D11_VIEWPORT full{ 0, 0, (float)rw, (float)rh, 0, 1 }; ctx->RSSetViewports(1, &full);
         ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &fc, 0, 0); ctx->RSSetState(rsCull.Get());
     }
