@@ -1877,19 +1877,19 @@ struct App {
         if (playMode && (game.player.trailStyle != 1)) push(ballTrailFx);   // the morph ball's tail
         if (playMode && game.player.trailStyle != 0 && ballRibbon.size() >= 2) {   // ... or its ribbon of light: a strip facing you, fading away behind
             const PlayerRules& R = game.player; V3 lc = Linear(R.trailColor);
-            auto strip = [&](double width, float lifeK, double offset, float bright) {
+            auto strip = [&](double width, float lifeK, double offset, float bright, int facing, int offFacing) {
                 size_t n = ballRibbon.size(); double life = std::max(0.05f, R.trailLife) * lifeK;
-                std::vector<V3> sides(n); std::vector<float> f(n);
+                std::vector<V3> sides(n), offs(n); std::vector<float> f(n);
                 for (size_t i = 0; i < n; i++) {
-                    V3 a = ballRibbon[i > 0 ? i - 1 : 0].pos, b = ballRibbon[i + 1 < n ? i + 1 : n - 1].pos, d = b - a;
-                    V3 view = ballRibbon[i].pos - camPos; V3 sd = cross(view, d); double l = std::sqrt(sd.x * sd.x + sd.y * sd.y + sd.z * sd.z);
-                    sides[i] = l > 1e-9 ? sd * (1 / l) : (i ? sides[i - 1] : V3{ 0, 1, 0 }); f[i] = (float)std::min(1.0, ballRibbon[i].age / life);
+                    V3 a = ballRibbon[i > 0 ? i - 1 : 0].pos, b = ballRibbon[i + 1 < n ? i + 1 : n - 1].pos;
+                    sides[i] = RibbonSide(facing, b - a, ballRibbon[i].pos - camPos, i ? sides[i - 1] : V3{ 0, 1, 0 }); f[i] = (float)std::min(1.0, ballRibbon[i].age / life);
+                    offs[i] = offset != 0 ? RibbonSide(offFacing, b - a, ballRibbon[i].pos - camPos, i ? offs[i - 1] : V3{ 0, 1, 0 }) : V3{ 0, 0, 0 };
                 }
                 for (size_t i = 0; i + 1 < n; i++) {
                     if (f[i] >= 1 && f[i + 1] >= 1) continue;
                     V3 c[4]; float al[2], ys[2] = { f[i], f[i + 1] };
                     for (int k = 0; k < 2; k++) {
-                        size_t j = i + k; double w = width * (1 - R.ribbonTaper * f[j]) * 0.5; V3 m = ballRibbon[j].pos - camPos + sides[j] * (offset * (1 - R.ribbonTaper * f[j]));
+                        size_t j = i + k; double w = width * (1 - R.ribbonTaper * f[j]) * 0.5; V3 m = ballRibbon[j].pos - camPos + offs[j] * (offset * (1 - R.ribbonTaper * f[j]));
                         c[k * 2] = m - sides[j] * w; c[k * 2 + 1] = m + sides[j] * w; al[k] = (float)std::pow(1.0 - f[j], 1.6) * bright * R.ribbonGlow;
                     }
                     auto vtx = [&](int q) { int k = q / 2; float col[4] = { (float)lc.x * al[k], (float)lc.y * al[k], (float)lc.z * al[k], 1 };
@@ -1897,8 +1897,13 @@ struct App {
                     add.push_back(vtx(0)); add.push_back(vtx(1)); add.push_back(vtx(3)); add.push_back(vtx(0)); add.push_back(vtx(3)); add.push_back(vtx(2));
                 }
             };
-            strip(std::max(0.02f, R.ribbonWidth), 1, 0, 1);
-            if (R.ribbonStreaks) { double t = std::max(0.015, R.ribbonWidth * 0.06), e = R.ribbonWidth * 0.42; strip(t, 1.5f, e, 1.4f); strip(t, 1.5f, -e, 1.4f); }
+            int fc = std::clamp(R.ribbonFacing, 0, 3);
+            if (fc == 3) { strip(std::max(0.02f, R.ribbonWidth), 1, 0, 0.6f, 1, 1); strip(std::max(0.02f, R.ribbonWidth), 1, 0, 0.6f, 2, 2); }   // a cross: each half as bright
+            else strip(std::max(0.02f, R.ribbonWidth), 1, 0, 1, fc, fc);
+            if (R.ribbonStreaks) {   // thin lines at the band's edges (a cross: top and bottom), turned to the camera so they never vanish edge-on
+                int of = fc == 3 ? 1 : fc; double t = std::max(0.015, R.ribbonWidth * 0.06), e = R.ribbonWidth * 0.42;
+                strip(t, 1.5f, e, 1.4f, 0, of); strip(t, 1.5f, -e, 1.4f, 0, of);
+            }
         }
         for (auto& s : shots) push(s.trail);
         particleCount = (int)((add.size() + soft.size()) / 6);
@@ -11439,6 +11444,14 @@ struct App {
         p.size0 = std::max(0.01f, r.trailSize); p.size1 = 0; p.color0 = r.trailColor; p.color1 = r.trailColor; p.speed = 0.2f; p.speedVar = 0.15f;
         return p;
     }
+    // which way a ribbon's width goes at a point: d the way it runs, view from the camera; 0 facing the camera, 1 upright, 2 flat
+    static V3 RibbonSide(int facing, V3 d, V3 view, V3 prev) {
+        auto nrm = [&](V3 v) { double l = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z); return l > 1e-9 ? v * (1 / l) : prev; };
+        double dl = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z); if (dl < 1e-9) return prev; d = d * (1 / dl);
+        if (facing == 1) { V3 up{ 0, 1, 0 }; return nrm(up - d * d.y); }
+        if (facing == 2) return nrm(cross({ 0, 1, 0 }, d));
+        return nrm(cross(view, d));
+    }
     // the ball model's point it turns around: its middle, moved by the pivot (in ball sizes)
     V3 BallPivotIn(const ModelFrame& m) const {
         double big = std::max({ m.sx, m.sy, m.sz });
@@ -11544,28 +11557,34 @@ struct App {
         }
         if (r.trailStyle != 0 && beRibbon.size() >= 2) {   // the example ribbon: a strip facing you, in layers (soft outside, bright middle)
             uint32_t tc = r.trailColor; float on = r.ballTrail ? 1.f : 0.25f; double life = std::max(0.05f, r.trailLife);
-            auto strip = [&](double width, double lifeK, double offset, float bright) {
-                size_t n = beRibbon.size(); std::vector<ImVec2> s(n); std::vector<float> rad(n), f(n), off(n); std::vector<char> ok(n);
+            auto strip = [&](double width, double lifeK, double offset, float bright, int facing, int offFacing) {   // in 3D like the game's: each corner projected
+                size_t n = beRibbon.size(); std::vector<V3> sd(n), od(n); std::vector<float> f(n);
                 for (size_t i = 0; i < n; i++) {
-                    double dep = 1; ok[i] = proj(beRibbon[i].pos, s[i], &dep); f[i] = (float)std::min(1.0, beRibbon[i].age / (life * lifeK));
-                    double px = focal / std::max(0.05, dep), tk = 1 - r.ribbonTaper * f[i]; rad[i] = (float)(width * tk * 0.5 * px); off[i] = (float)(offset * tk * px);
+                    V3 a = beRibbon[i > 0 ? i - 1 : 0].pos, b = beRibbon[i + 1 < n ? i + 1 : n - 1].pos;
+                    sd[i] = RibbonSide(facing, b - a, beRibbon[i].pos - eye, i ? sd[i - 1] : V3{ 0, 1, 0 });
+                    od[i] = RibbonSide(offFacing, b - a, beRibbon[i].pos - eye, i ? od[i - 1] : V3{ 0, 1, 0 });
+                    f[i] = (float)std::min(1.0, beRibbon[i].age / (life * lifeK));
                 }
                 for (int layer = 0; layer < 3; layer++) {
                     float wk = layer == 0 ? 1.f : layer == 1 ? 0.6f : 0.18f, ak = layer == 0 ? 0.35f : layer == 1 ? 0.45f : 0.8f;
                     for (size_t i = 0; i + 1 < n; i++) {
-                        if (!ok[i] || !ok[i + 1] || (f[i] >= 1 && f[i + 1] >= 1)) continue;
-                        ImVec2 a = s[i > 0 && ok[i - 1] ? i - 1 : i], b = s[i + 2 < n && ok[i + 2] ? i + 2 : i + 1]; float dx = b.x - a.x, dy = b.y - a.y, l = std::sqrt(dx * dx + dy * dy); if (l < 1e-3f) continue;
-                        ImVec2 nrm(-dy / l, dx / l); float o0 = off[i], o1 = off[i + 1];
-                        ImVec2 c0(s[i].x + nrm.x * o0, s[i].y + nrm.y * o0), c1(s[i + 1].x + nrm.x * o1, s[i + 1].y + nrm.y * o1);
-                        float w0 = std::max(0.5f, rad[i] * wk), w1 = std::max(0.5f, rad[i + 1] * wk);
+                        if (f[i] >= 1 && f[i + 1] >= 1) continue;
+                        ImVec2 q[4]; bool good = true;
+                        for (int k = 0; k < 2 && good; k++) {
+                            size_t j = i + k; double tk = 1 - r.ribbonTaper * f[j], w = width * tk * 0.5 * wk; V3 m = beRibbon[j].pos + od[j] * (offset * tk);
+                            good = proj(m - sd[j] * w, q[k == 0 ? 0 : 1]) && proj(m + sd[j] * w, q[k == 0 ? 3 : 2]);
+                        }
+                        if (!good) continue;
                         float al = (float)std::pow(1.0 - (f[i] + f[i + 1]) * 0.5, 1.6) * ak * bright * on * std::min(1.f, r.ribbonGlow);
                         ImU32 col = IM_COL32((tc >> 16) & 255, (tc >> 8) & 255, tc & 255, (int)std::clamp(al * 255.f, 0.f, 255.f));
-                        dl->AddQuadFilled(ImVec2(c0.x - nrm.x * w0, c0.y - nrm.y * w0), ImVec2(c1.x - nrm.x * w1, c1.y - nrm.y * w1), ImVec2(c1.x + nrm.x * w1, c1.y + nrm.y * w1), ImVec2(c0.x + nrm.x * w0, c0.y + nrm.y * w0), col);
+                        dl->AddQuadFilled(q[0], q[1], q[2], q[3], col);
+                        if (facing == 0 && width < 0.1) dl->AddLine(ImVec2((q[0].x + q[3].x) * 0.5f, (q[0].y + q[3].y) * 0.5f), ImVec2((q[1].x + q[2].x) * 0.5f, (q[1].y + q[2].y) * 0.5f), col, 1.f);   // thin streaks: at least a line
                     }
                 }
             };
-            strip(std::max(0.02f, r.ribbonWidth), 1, 0, 1);
-            if (r.ribbonStreaks) { double t = std::max(0.015, r.ribbonWidth * 0.06), e = r.ribbonWidth * 0.42; strip(t, 1.5, e, 1.2f); strip(t, 1.5, -e, 1.2f); }
+            int fc = std::clamp(r.ribbonFacing, 0, 3); double W = std::max(0.02f, r.ribbonWidth);
+            if (fc == 3) { strip(W, 1, 0, 0.6f, 1, 1); strip(W, 1, 0, 0.6f, 2, 2); } else strip(W, 1, 0, 1, fc, fc);
+            if (r.ribbonStreaks) { int of = fc == 3 ? 1 : fc; double t = std::max(0.015, r.ribbonWidth * 0.06), e = r.ribbonWidth * 0.42; strip(t, 1.5, e, 1.2f, 0, of); strip(t, 1.5, -e, 1.2f, 0, of); }
         }
         if (r.trailStyle != 1) {   // the example trail (faint when the trail is off)
             uint32_t tc = r.trailColor; float on = r.ballTrail ? 1.f : 0.25f;
@@ -11608,6 +11627,8 @@ struct App {
                 Prop("Ribbon width"); ch |= ImGui::SliderFloat("##brw", &r.ribbonWidth, 0.05f, 3, "%.2f blocks");
                 Prop("Thinner at the end"); ch |= ImGui::SliderFloat("##brt", &r.ribbonTaper, 0, 1, "%.2f");
                 Prop("Glow"); ch |= ImGui::SliderFloat("##brg", &r.ribbonGlow, 0.1f, 5, "%.2f");
+                Prop("Turned"); { static const char* fn[] = { "Facing the camera", "Upright (a standing band)", "Flat (lying down)", "Cross (upright + flat)" }; ImGui::SetNextItemWidth(200); ch |= ImGui::Combo("##brf", &r.ribbonFacing, fn, 4); }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Upright / flat / cross stay put in the world (they don't turn with the camera).\nCross looks solid from every side.");
                 Prop("Edge streaks"); ch |= ImGui::Checkbox("##brs", &r.ribbonStreaks);
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Two thin lines along the ribbon's edges that stay a little longer (like a light streak).");
                 ImGui::TextDisabled("Tip: put the trail point in the ball's middle (0 / 0 / 0) and the ribbon as wide as the ball,\nfor a streak of light the ball pulls behind it.");

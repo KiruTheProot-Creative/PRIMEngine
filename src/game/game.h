@@ -105,7 +105,8 @@ struct PlayerRules {
     bool ballTrail = false; V3 trailPoint{ 0.5, 0, 0 };   // a glowing tail while rolling; where it starts: behind, up, to the side (blocks, from the ball's middle)
     uint32_t trailColor = 0x60C8FF; float trailSize = 0.16f, trailLife = 0.35f;
     int trailStyle = 0;                               // 0 glowing dots, 1 a ribbon of light (a streak behind the ball), 2 both
-    float ribbonWidth = 0.8f, ribbonTaper = 0.6f, ribbonGlow = 1.5f; bool ribbonStreaks = true;   // the ribbon: how wide (blocks), how much thinner at its end (0..1), how bright; thin lines along its edges that last longer
+    float ribbonWidth = 0.8f, ribbonTaper = 0.6f, ribbonGlow = 1.5f; bool ribbonStreaks = true;
+    int ribbonFacing = 3;                             // the ribbon's turn: 0 always facing the camera, 1 upright (a standing band), 2 flat (lying on the floor), 3 a cross of both (solid from every side)   // the ribbon: how wide (blocks), how much thinner at its end (0..1), how bright; thin lines along its edges that last longer
     // set while playing by the items you have (Items tab); not saved with the rules
     float damageTaken = 1;                            // suits: how much of the damage gets through
     bool freeInLiquid = false;                        // the Gravity Suit: water and lava do not slow you

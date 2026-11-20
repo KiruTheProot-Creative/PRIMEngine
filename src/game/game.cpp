@@ -211,7 +211,7 @@ bool GameSettings::save(const std::string& path) const {
       << "\nmorph_fx " << p.morphColor << " " << p.morphFx << " " << (p.morphHudFx ? 1 : 0) << "\nbounce_damage " << p.bounceDamage
       << "\nball_axle " << p.ballAxle.x << " " << p.ballAxle.y << " " << p.ballAxle.z << " " << p.ballBalance << " " << p.ballPivot.x << " " << p.ballPivot.y << " " << p.ballPivot.z
       << "\nball_trail " << (p.ballTrail ? 1 : 0) << " " << p.trailPoint.x << " " << p.trailPoint.y << " " << p.trailPoint.z << " " << p.trailColor << " " << p.trailSize << " " << p.trailLife
-      << "\nball_ribbon " << p.trailStyle << " " << p.ribbonWidth << " " << p.ribbonTaper << " " << p.ribbonGlow << " " << (p.ribbonStreaks ? 1 : 0)
+      << "\nball_ribbon " << p.trailStyle << " " << p.ribbonWidth << " " << p.ribbonTaper << " " << p.ribbonGlow << " " << (p.ribbonStreaks ? 1 : 0) << " " << p.ribbonFacing
       << "\ndeath_fx " << p.deathFx << " " << p.deathHit << " " << p.deathStatic << " " << p.deathShutdown << " " << p.deathOff << " " << p.deathSlowMo << " " << p.deathDrop << " " << p.deathTvOff << " " << p.deathSkip << " " << p.deathStaticAmount << " " << p.deathStaticColor
       << "\nmorph_ball " << p.morphBall << "\nbombs " << p.bombs << "\nball_speed " << p.ballSpeed << "\nbomb_jump " << p.bombJump << "\nbombs_at_once " << p.bombsAtOnce
       << "\nbomb_fuse " << p.bombFuse << "\nbomb_reach " << p.bombReach << "\nbomb_sphere " << p.bombSphere << "\nball_model " << (p.ballModel.empty() ? "-" : p.ballModel) << "\n";
@@ -232,7 +232,7 @@ bool GameSettings::load(const std::string& path) {
         else if (k == "can_sprint") { int v; f >> v; p.canSprint = v != 0; }
         else if (k == "bounce_damage") f >> p.bounceDamage;
         else if (k == "ball_axle") f >> p.ballAxle.x >> p.ballAxle.y >> p.ballAxle.z >> p.ballBalance >> p.ballPivot.x >> p.ballPivot.y >> p.ballPivot.z;
-        else if (k == "ball_ribbon") { int st = 1; f >> p.trailStyle >> p.ribbonWidth >> p.ribbonTaper >> p.ribbonGlow >> st; p.ribbonStreaks = st != 0; }
+        else if (k == "ball_ribbon") { int st = 1; f >> p.trailStyle >> p.ribbonWidth >> p.ribbonTaper >> p.ribbonGlow >> st; p.ribbonStreaks = st != 0; int fc; if (f >> fc) p.ribbonFacing = fc; else f.clear(); }
         else if (k == "ball_trail") { int on = 0; f >> on >> p.trailPoint.x >> p.trailPoint.y >> p.trailPoint.z >> p.trailColor >> p.trailSize >> p.trailLife; p.ballTrail = on != 0; }
         else if (k == "morph_fx") { int hf = 1; f >> p.morphColor >> p.morphFx >> hf; p.morphHudFx = hf != 0; }
         else if (k == "death_fx") { int on, sm, dr, tv, sk; f >> on >> p.deathHit >> p.deathStatic >> p.deathShutdown >> p.deathOff >> sm >> dr >> tv >> sk >> p.deathStaticAmount >> p.deathStaticColor;
