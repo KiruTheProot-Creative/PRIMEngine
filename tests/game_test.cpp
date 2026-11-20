@@ -980,7 +980,7 @@ int main() {
           CHECK(sl[0].save.anim.empty(), "(no animation picked: picked by itself)"); }
         {   // an older file: the text was on the object
             std::ifstream in("/tmp/prim_scanobjs.txt"); std::string all((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()); in.close();
-            size_t at = all.find(" 1 2 0 1 1 - 0 4\n"); if (at != std::string::npos) all.replace(at, 17, " 1 Old%20Door Research Line%20one.%0ALine%20two. 1 2.5\n");
+            size_t at = all.find(" 1 2 0 1 1 - 0 4 -%201%201%200.05%200%200 -%201%201%200.05%200%200\n"); if (at != std::string::npos) all.replace(at, 67, " 1 Old%20Door Research Line%20one.%0ALine%20two. 1 2.5\n");
             std::ofstream outF("/tmp/prim_scanobjs_old.txt"); outF << all; outF.close();
             std::vector<WorldObject> old; loadObjects("/tmp/prim_scanobjs_old.txt", old);
             CHECK(old.size() == 3 && old[0].scan.on && old[0].scan.id == 0 && old[0].scan.legacyName == "Old Door" && old[0].scan.legacyText == "Line one.\nLine two." && old[0].scan.legacyImportant && old[0].scan.legacyTime == 2.5f && old[1].scan.id == 2,
@@ -1567,6 +1567,14 @@ int main() {
         { std::ofstream o("/tmp/prim_fake_old.txt"); o << "materials 1\ntex dirt 0.2 0 0 0 1 1 - 1.5 6\n"; } Materials mo; loadMaterials("/tmp/prim_fake_old.txt", mo);
         CHECK(mo.of("dirt").fake == FakeShine::Off && mo.of("dirt").shine == 0.2f, "an older materials file: no fake shine");
         CHECK(std::string(shinePresetName(SHINE_PRESETS)) == "Your own picture", "shine pictures: presets, then your own");
+    }
+    {   // sounds: doors (the game's and a door's own) and visor loops save and load
+        PlayerSounds ps; SoundUse u; u.file = "door open.wav"; u.volume = 0.8f; ps.doorOpen.sounds.push_back(u); u.file = "hum.wav"; ps.loopScan.sounds.push_back(u); ps.visorLoopVolume = 0.6f;
+        savePlayerSounds("/tmp/prim_ps_door.txt", ps); PlayerSounds pl; loadPlayerSounds("/tmp/prim_ps_door.txt", pl);
+        CHECK(pl.doorOpen.sounds.size() == 1 && pl.doorOpen.sounds[0].file == "door open.wav" && pl.loopScan.sounds.size() == 1 && pl.visorLoopVolume == 0.6f, "door sounds and visor loops save and load");
+        std::vector<WorldObject> ob(1); ob[0].id = 3; ob[0].kind = ObjKind::Door; ob[0].door.openSound.file = "blast door.wav"; ob[0].door.openSound.pitch = 0.8f;
+        saveObjects("/tmp/prim_door_snd.txt", ob); std::vector<WorldObject> ol; loadObjects("/tmp/prim_door_snd.txt", ol);
+        CHECK(ol.size() == 1 && ol[0].door.openSound.file == "blast door.wav" && std::fabs(ol[0].door.openSound.pitch - 0.8f) < 1e-5 && ol[0].door.closeSound.empty(), "a door's own sounds save and load");
     }
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
     return fails ? 1 : 0;

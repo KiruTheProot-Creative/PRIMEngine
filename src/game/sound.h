@@ -63,6 +63,9 @@ struct PlayerSounds {
     SoundSet beamSwitch, missileSwitch, empty, lockOn, lockOff;   // another beam / missile, firing with none left, lock-on onto / off
     SoundSet pickHealth, pickAmmo, itemGet, saved, message;       // energy / ammo picked up, an item (an upgrade), the game saved, a message
     SoundSet hurt, lowHealth, death;                    // getting hurt, the low-energy alarm (again and again), dying
+    SoundSet doorOpen, doorClose, doorField, doorLocked; // doors (each door can have its own open / close): opening, closing, its forcefield shot away, won't open
+    SoundSet loopCombat, loopScan, loopThermal, loopXRay; // a loop playing all the time you are in that visor (the helmet's hum, the scan visor's whirr ...)
+    float visorLoopVolume = 1;                          // those loops, this loud
     float scanPitch = 0.5f;                             // the scanning loop goes this much higher as it fills
     float lowHealthAt = 30, lowHealthEvery = 1.2f;      // the alarm: below this much energy, every so many seconds
 };

@@ -5,6 +5,7 @@
 #include "game.h"
 #include "platform.h"
 #include "particles.h"
+#include "sound.h"
 #include <map>
 #include <set>
 #include <string>
@@ -59,6 +60,7 @@ struct DoorSettings {
     bool fieldOnParts = false;                        // the field shimmers on the door's moving parts instead of a flat sheet
     std::string fieldParts;                           // which moving parts (names, comma separated); empty: all of them
     std::string openedBy;                             // which weapon opens it: empty any shot, a beam's name, or "Missile"
+    SoundUse openSound, closeSound;                   // its own sounds (none: the game's door sounds, Player > Sounds)
 };
 bool doorOpensFor(const DoorSettings& d, const std::string& weapon, bool missile);
 

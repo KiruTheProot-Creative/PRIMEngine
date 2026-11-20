@@ -2545,7 +2545,13 @@ struct App {
             Box3 b = objectBounds(o, *f); V3 c = (b.lo + b.hi) * 0.5, d = player.feet - c;
             bool nearby = std::sqrt(d.x * d.x + d.z * d.z) < std::max(o.door.w, o.door.h) * 0.5 + 1.2 && player.feet.y < b.hi.y && player.feet.y > b.lo.y - 1;
             if (!o.door.field && nearby && r.state == DoorRuntime::Closed && !evLocked.count(o.id) && (o.door.key.empty() || inv.keys.count(o.door.key))) r.open();   // a plain door opens when you walk up
+            DoorRuntime::State was = r.state;
             r.tick((float)dt, nearby || evHeld.count(o.id), ClipLen(o.model, 0), ClipLen(o.model, 1), o.door.stayOpen);
+            if (r.state != was) {   // its sounds, from where the door is: the field going, opening, closing
+                if (r.state == DoorRuntime::Dissolving) PlaySoundIn(SND_WORLD, playerSounds.doorField, 1, &c);
+                if (r.state == DoorRuntime::Opening) { if (!o.door.openSound.empty()) PlaySoundIn(SND_WORLD, o.door.openSound, 1, &c); else PlaySoundIn(SND_WORLD, playerSounds.doorOpen, 1, &c); }
+                if (r.state == DoorRuntime::Closing) { if (!o.door.closeSound.empty()) PlaySoundIn(SND_WORLD, o.door.closeSound, 1, &c); else PlaySoundIn(SND_WORLD, playerSounds.doorClose, 1, &c); }
+            }
             changed |= before != r.blocks();
             if (before && !r.blocks()) Signal(When::DoorOpens, o.name); else if (!before && r.blocks()) Signal(When::DoorCloses, o.name);
             // the halves where the animation has them
@@ -2645,9 +2651,10 @@ struct App {
                     V3 p = s.pos + s.dir * best, q = p - org;
                     auto dot = [](V3 a, V3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; };
                     float u = (float)std::clamp(dot(q, ac) / std::max(1e-9, dot(ac, ac)), 0.0, 1.0), v = (float)std::clamp(dot(q, up) / std::max(1e-9, dot(up, up)), 0.0, 1.0);
-                    if (evLocked.count(o.id)) Toast("This door is locked");
-                    else if (!doorOpensFor(o.door, s.weapon, s.missile)) Toast("This door opens with " + (o.door.openedBy == "Missile" ? std::string("a missile") : "the " + o.door.openedBy));
-                    else if (!o.door.key.empty() && !inv.keys.count(o.door.key)) Toast("This door needs the " + o.door.key);
+                    Box3 db = objectBounds(o, *f); V3 dc = (db.lo + db.hi) * 0.5;
+                    if (evLocked.count(o.id)) { Toast("This door is locked"); PlaySoundIn(SND_WORLD, playerSounds.doorLocked, 1, &dc); }
+                    else if (!doorOpensFor(o.door, s.weapon, s.missile)) { Toast("This door opens with " + (o.door.openedBy == "Missile" ? std::string("a missile") : "the " + o.door.openedBy)); PlaySoundIn(SND_WORLD, playerSounds.doorLocked, 1, &dc); }
+                    else if (!o.door.key.empty() && !inv.keys.count(o.door.key)) { Toast("This door needs the " + o.door.key); PlaySoundIn(SND_WORLD, playerSounds.doorLocked, 1, &dc); }
                     else doorRt[o.id].shoot(u, v);
                 }
                 s.age = 99;
@@ -2733,6 +2740,9 @@ struct App {
             }
         }
         Prop("Stays open (s)"); ImGui::SliderFloat("##stay", &o.door.stayOpen, 0.5f, 15, "%.1f s");
+        Prop("Opening sound"); ch_ |= SoundEdit("dso", o.door.openSound, true);
+        Prop("Closing sound"); ch_ |= SoundEdit("dsc", o.door.closeSound, true);
+        Hint("None: the game's door sounds (Player > Sounds > Doors). They come from where the door is.");
         Prop("Needs key"); ImGui::InputTextWithHint("##dkey", "no key needed", &o.door.key);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("The name of a key pickup, like \"Red key\".");
         int op = ClipOf(o.model, 0), cl = ClipOf(o.model, 1);
@@ -10473,6 +10483,7 @@ struct App {
                         Prop("Every"); ch |= ImGui::SliderFloat("##lhe", &playerSounds.lowHealthEvery, 0.2f, 5, "%.1f s");
                     }
                     if (g.set == &PlayerSounds::visor) Hint("A visor's own sound (below) plays instead, if it has one.");
+                    if (g.set == &PlayerSounds::loopXRay) { Prop("Visor loops, volume"); ch |= ImGui::SliderFloat("##vlv", &playerSounds.visorLoopVolume, 0, 2, "%.2f"); Hint("Each plays on and on while you are in that visor (quieter in the pause menu), fading in when you switch."); }
                 }
                 Hint("Menus: picking and using buttons in the pause menu are the game's interface sounds (Screens > Sound & timing). Each sound here can have several: a random one plays.");
             }
@@ -10497,7 +10508,24 @@ struct App {
     IXAudio2SourceVoice* scanVoice = nullptr; SoundUse scanUse; float lowHealthT = 0;
     static constexpr int TAG_SCAN = 31;
     void StopScanLoop() { if (scanVoice) StopSounds(TAG_SCAN); scanVoice = nullptr; }
+    IXAudio2SourceVoice* visorVoice = nullptr; SoundUse visorUse; int visorLoopOf = -1; float visorLoopVol = 0;
+    static constexpr int TAG_VISORLOOP = 32;
+    void StopVisorLoop() { if (visorVoice) StopSounds(TAG_VISORLOOP); visorVoice = nullptr; visorLoopOf = -1; visorLoopVol = 0; }
+    void UpdateVisorLoop(double dt) {   // the visor you are in: its loop, all the time (quieter while paused); a new visor: a new loop, faded in
+        int want = playMode && !play.dead() ? visor : -1;
+        SoundSet PlayerSounds::* loops[] = { &PlayerSounds::loopCombat, &PlayerSounds::loopScan, &PlayerSounds::loopThermal, &PlayerSounds::loopXRay };
+        if (want < 0 || want > 3 || (playerSounds.*loops[want]).empty()) { StopVisorLoop(); return; }
+        if (want != visorLoopOf) {
+            StopVisorLoop(); const SoundUse* u = (playerSounds.*loops[want]).pick(soundSeed); if (!u) return;
+            visorUse = *u; visorVoice = PlaySoundIn(SND_MENUS, visorUse, 0.001f, nullptr, TAG_VISORLOOP, true); if (!visorVoice) return;
+            visorLoopOf = want; visorLoopVol = 0;
+        }
+        float target = paused ? 0.35f : 1.f;
+        visorLoopVol += (target - visorLoopVol) * (float)std::min(1.0, dt * 4);
+        if (visorVoice) { visorVoice->SetVolume(visorUse.volume * std::max(0.f, playerSounds.visorLoopVolume) * visorLoopVol * CatVolume(SND_MENUS)); visorVoice->SetFrequencyRatio(std::clamp(visorUse.pitch, 0.1f, 4.f)); }
+    }
     void UpdateGameSounds(double dt) {   // the scanning loop (rising as it fills), the low-energy alarm
+        UpdateVisorLoop(dt);
         bool scanning = playMode && !paused && visor == 1 && scanProgress > 0 && scanTargetId;
         if (!scanning) StopScanLoop();
         else {

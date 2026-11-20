@@ -199,6 +199,14 @@ which fades in over a second and a half as you walk in.
 - The **HUD's 3D parts** (helmet, arm cannon) are always lit by the world around you: lights, glowing blocks nearby,
   the sun and the darkness.
 
+## Door sounds and visor loops
+
+- **Doors** (Player > Sounds > Doors): opening, closing, the forcefield shot away, and "won't open" (locked, the wrong
+  weapon, no key). They come from where the door is (quieter far away, from its side). Each door can also have its
+  **own** opening / closing sound (the door's inspector) - e.g. a heavy blast door and a small hatch.
+- **Visor loops** (Player > Sounds > Visors): a loop for each visor that plays all the time you are in it (the helmet's
+  hum, the Scan Visor's whirr ...), fading in when you switch, quieter in the pause menu; one volume for all of them.
+
 ## Reflections: voxel ray tracing, objects, exact floors and water
 
 Works on any graphics card (no RTX needed), with Options > Graphics > Reflections on.
