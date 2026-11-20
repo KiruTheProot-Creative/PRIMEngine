@@ -3567,6 +3567,10 @@ struct App {
             ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());
         }
         ctx->OMSetRenderTargets(0, nullptr, nullptr); ctx->PSSetShaderResources(0, 5, none);
+        // back to full-screen drawing for bloom and the final picture (they only set their pixel shaders)
+        ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->RSSetState(rsNoCull.Get());
+        ctx->IASetInputLayout(nullptr); ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); ctx->VSSetShader(vsSky.Get(), nullptr, 0);
+        { D3D11_VIEWPORT fv{ 0, 0, (float)rw, (float)rh, 0, 1 }; ctx->RSSetViewports(1, &fv); }
 
         // ---- bloom: shrink the picture step by step, then add the blurry copies back up
         ctx->PSSetShaderResources(0, 4, none);
