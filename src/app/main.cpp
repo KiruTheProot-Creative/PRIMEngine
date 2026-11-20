@@ -30,6 +30,8 @@
 #include "../game/assets.h"
 #include "../game/looks.h"
 #include <tuple>
+#include <future>
+#include <memory>
 #include "media.h"
 #include "../world/visibility.h"
 #include "../game/enemies.h"
@@ -123,6 +125,7 @@ struct alignas(16) FrameCB {
     float lookFog[4];       // the look's fog: x thickness, y height, z thins over, w lights in the air
     float lookFogCol[4];    // rgb colour (linear), w its own glow
     float gi[4];            // bounce light: x strength, y reach (blocks)
+    float skyVol[4];        // the sky light volume: xyz its corner relative to the camera, w ready
 };
 struct alignas(16) ChunkCB { float offset[4]; float ax[4] = { 1, 0, 0, 0 }, ay[4] = { 0, 1, 0, 0 }, az[4] = { 0, 0, 1, 0 }; };   // axes: objects are turned and sized
 
@@ -758,7 +761,7 @@ struct App {
             BlockId t = reg.find(e); hotbar[i] = t ? makeBlock(t, Shapes::get().find(shape)) : AIR;
         }
         hotSel = info.hotSel;
-        envState.update(0, player.eye(), info.environment, info.zones, true); UpdateLook(0, true);
+        envState.update(0, player.eye(), info.environment, info.zones, true); UpdateLook(0, true); opaqueCache.clear(); skyVolValid = false; skyVolSig = 0;
         { int wi = findWeather(info.weather); weather = Weather{}; weather.set(wi < 0 ? 1 : wi, true); weather.autoChange = info.autoWeather;
           weather.wetness = weather.now.rain > 0.1f ? 1.f : 0.f; weather.snowCover = weather.now.snow > 0.1f ? 1.f : 0.f; weather.seed((uint32_t)std::time(nullptr)); }
         screen = Screen::Game; paused = false; inventory = false; autosave = 0; if (!travelling) playMode = false; sel = Sel::World;
@@ -998,7 +1001,7 @@ struct App {
         world->liquidTimer += dt;   // water and lava flow 10 steps a second
         for (int k = 0; k < 3 && world->liquidTimer >= 0.1; k++) { world->liquidTimer -= 0.1; world->tickLiquids(); }
         if (world->liquidTimer > 0.3) world->liquidTimer = 0;
-        envState.update(dt, player.eye(), info.environment, info.zones); UpdateLook(dt, false); UpdateCamOpen(dt); UpdateLampProxies(dt);
+        envState.update(dt, player.eye(), info.environment, info.zones); UpdateLook(dt, false); UpdateCamOpen(dt); UpdateLampProxies(dt); UpdateSkyVolume();
         if (looksDirty && !ImGui::IsAnyItemActive()) { looksDirty = false; if (!projectDir.empty()) saveLooks(projectDir + "/looks.txt", looks); }
         cloudTime += dt * (0.5 + weather.now.wind);
         precipTime += dt; { float w = EffWeather().wind; precipWindX += dt * w; precipWindZ += dt * w * 0.45; }   // (added up: a change of wind only changes how they move from now on)
@@ -1344,6 +1347,86 @@ struct App {
             if (!blocked) open++;
         }
         float t = tot ? open / (float)tot : 1; camOpen += (t - camOpen) * (float)(1 - std::exp(-dt * 2.5));
+    }
+    // true darkness, block by block: sky light around you spreads like Minecraft's (15 under the open sky, one less per
+    // block sideways or up, through anything that is not a full opaque block) - so it goes round corners and into cave
+    // mouths but never through walls. Worked out on another thread when blocks change or you move far.
+    static constexpr int SVX = 96, SVY = 64, SVZ = 96;
+    struct SkyVolJob { I3 origin; std::vector<uint8_t> solid, topOpen, out; };
+    std::future<std::shared_ptr<SkyVolJob>> skyVolFuture; bool skyVolBusy = false, skyVolValid = false; I3 skyVolOrigin{ 0, 0, 0 };
+    uint64_t skyVolSig = 0; int skyVolTick = 0;
+    ComPtr<ID3D11Texture3D> skyVolTex; ComPtr<ID3D11ShaderResourceView> skyVolSRV; ComPtr<ID3D11SamplerState> sampSkyVol;
+    std::unordered_map<BlockId, uint8_t> opaqueCache;
+    bool BlocksSky(BlockId b) {
+        if (b == AIR) return false; auto it = opaqueCache.find(b); if (it != opaqueCache.end()) return it->second != 0;
+        const BlockDef& d = world->reg.get(b); bool s = d.render == Render::Opaque && resolveShape(b, d) == Shapes::FULL;
+        opaqueCache[b] = s ? 1 : 0; return s;
+    }
+    I3 SkyVolOriginFor(V3 c) const {
+        auto snap = [](double v, int half) { return (int)std::floor((v - half) / 8.0) * 8; };
+        return { snap(c.x, SVX / 2), snap(c.y, SVY / 2), snap(c.z, SVZ / 2) };
+    }
+    uint64_t SkyVolSignature(I3 o) const {   // changes when any chunk in (or above) the volume changes, loads or unloads
+        uint64_t h = 1469598103934665603ull;
+        for (int cy = (int)std::floor(o.y / (double)CS); cy <= (int)std::floor((o.y + SVY + 63) / (double)CS); cy++)
+            for (int cz = (int)std::floor(o.z / (double)CS); cz <= (int)std::floor((o.z + SVZ - 1) / (double)CS); cz++)
+                for (int cx = (int)std::floor(o.x / (double)CS); cx <= (int)std::floor((o.x + SVX - 1) / (double)CS); cx++) {
+                    const Chunk* c = world->chunk({ cx, cy, cz }); uint64_t v = c ? 0x9E3779B97F4A7C15ull ^ (uint64_t)c->version : 7;
+                    h = (h ^ v) * 1099511628211ull;
+                }
+        return h;
+    }
+    void UpdateSkyVolume() {
+        if (!world || !info.trueDark) { skyVolValid = false; return; }
+        if (!skyVolTex) {
+            D3D11_TEXTURE3D_DESC d{}; d.Width = SVX; d.Height = SVY; d.Depth = SVZ; d.MipLevels = 1; d.Format = DXGI_FORMAT_R8_UNORM; d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            HR(dev->CreateTexture3D(&d, nullptr, &skyVolTex)); HR(dev->CreateShaderResourceView(skyVolTex.Get(), nullptr, &skyVolSRV));
+            D3D11_SAMPLER_DESC sd{}; sd.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR; sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP; sd.MaxLOD = D3D11_FLOAT32_MAX; HR(dev->CreateSamplerState(&sd, &sampSkyVol));
+        }
+        if (skyVolBusy) {   // a finished job: upload it
+            if (skyVolFuture.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
+            std::shared_ptr<SkyVolJob> j = skyVolFuture.get(); skyVolBusy = false;
+            if (j) { ctx->UpdateSubresource(skyVolTex.Get(), 0, nullptr, j->out.data(), SVX, SVX * SVY); skyVolOrigin = j->origin; skyVolValid = true; }
+            return;
+        }
+        if (++skyVolTick < 6 && skyVolValid) return; skyVolTick = 0;
+        I3 want = SkyVolOriginFor(camPos);
+        bool moved = !skyVolValid || std::abs(want.x - skyVolOrigin.x) >= 16 || std::abs(want.y - skyVolOrigin.y) >= 12 || std::abs(want.z - skyVolOrigin.z) >= 16;
+        I3 o = moved ? want : skyVolOrigin; uint64_t sig = SkyVolSignature(o);
+        if (!moved && sig == skyVolSig) return;
+        skyVolSig = sig;
+        auto job = std::make_shared<SkyVolJob>(); job->origin = o; job->solid.assign((size_t)SVX * SVY * SVZ, 0); job->topOpen.assign((size_t)SVX * SVZ, 1);
+        for (int cy = (int)std::floor(o.y / (double)CS); cy <= (int)std::floor((o.y + SVY + 63) / (double)CS); cy++)   // the blocks (and 64 more above, for the columns)
+            for (int cz = (int)std::floor(o.z / (double)CS); cz <= (int)std::floor((o.z + SVZ - 1) / (double)CS); cz++)
+                for (int cx = (int)std::floor(o.x / (double)CS); cx <= (int)std::floor((o.x + SVX - 1) / (double)CS); cx++) {
+                    const Chunk* c = world->chunk({ cx, cy, cz }); if (!c || c->nonAir == 0) continue;
+                    for (int ly = 0; ly < CS; ly++) { int y = cy * CS + ly - o.y; if (y < 0 || y >= SVY + 64) continue;
+                        for (int lz = 0; lz < CS; lz++) { int z = cz * CS + lz - o.z; if (z < 0 || z >= SVZ) continue;
+                            for (int lx = 0; lx < CS; lx++) { int x = cx * CS + lx - o.x; if (x < 0 || x >= SVX) continue;
+                                if (!BlocksSky(c->b[(ly * CS + lz) * CS + lx])) continue;
+                                if (y < SVY) job->solid[((size_t)z * SVY + y) * SVX + x] = 1; else job->topOpen[(size_t)z * SVX + x] = 0;
+                            } } }
+                }
+        skyVolBusy = true;
+        skyVolFuture = std::async(std::launch::async, [job]() {
+            const int N = SVX * SVY * SVZ; job->out.assign(N, 0); std::vector<uint8_t> L(N, 0); std::vector<int> q[16];
+            auto at = [](int x, int y, int z) { return (z * SVY + y) * SVX + x; };
+            for (int z = 0; z < SVZ; z++) for (int x = 0; x < SVX; x++) {   // straight down from the open sky: full light
+                if (!job->topOpen[z * SVX + x]) continue;
+                for (int y = SVY - 1; y >= 0 && !job->solid[at(x, y, z)]; y--) { L[at(x, y, z)] = 15; q[15].push_back(at(x, y, z)); }
+            }
+            for (int lv = 15; lv > 1; lv--)   // then it spreads, one darker each block (down too: under an overhang)
+                for (size_t k = 0; k < q[lv].size(); k++) {
+                    int i = q[lv][k]; if (L[i] != lv) continue; int x = i % SVX, y = (i / SVX) % SVY, z = i / (SVX * SVY);
+                    const int d[6][3] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
+                    for (auto& dd : d) {
+                        int nx = x + dd[0], ny = y + dd[1], nz = z + dd[2]; if (nx < 0 || ny < 0 || nz < 0 || nx >= SVX || ny >= SVY || nz >= SVZ) continue;
+                        int j = at(nx, ny, nz); if (job->solid[j] || L[j] >= lv - 1) continue; L[j] = (uint8_t)(lv - 1); q[lv - 1].push_back(j);
+                    }
+                }
+            for (int i = 0; i < N; i++) job->out[i] = (uint8_t)(L[i] * 17);
+            return job;
+        });
     }
     std::map<uint32_t, ParticleEmitter> emitters;     // the particle emitters placed in the world, by object id
     std::vector<ParticleEmitter> fx;                  // one-off effects (sparks where a shot hits, a finished trail ...)
@@ -2223,7 +2306,15 @@ struct App {
                     if (rayBox(s.pos, s.dir, fb, t) && t < best) { best = t; door = (int)i; }
                 }
             }
-            for (const Box3& b : world->objectSolids) { double t; if (rayBox(s.pos, s.dir, b, t) && t < best - 1e-6) { best = t; door = -1; blockHit = false; } }
+            {   // solid objects in the way - but not the door's own halves and frame: from behind, its halves can stick out past the field
+                Box3 db{ { 0, 0, 0 }, { 0, 0, 0 } }; bool haveDoor = false;
+                if (door >= 0) if (FrameRef df = ModelOf(objects[door])) { db = objectBounds(objects[door], *df); haveDoor = true; }
+                const double g = 0.02;
+                for (const Box3& b : world->objectSolids) {
+                    if (haveDoor && b.lo.x >= db.lo.x - g && b.lo.y >= db.lo.y - g && b.lo.z >= db.lo.z - g && b.hi.x <= db.hi.x + g && b.hi.y <= db.hi.y + g && b.hi.z <= db.hi.z + g) continue;
+                    double t; if (rayBox(s.pos, s.dir, b, t) && t < best - 1e-6) { best = t; door = -1; blockHit = false; }
+                }
+            }
             uint32_t enemyHitId = 0; std::string enemyHitPart;   // enemies (where they are now); a boss: which part
             for (auto& kv : enemyRt) {
                 if (!kv.second.alive()) continue; const EnemyType* et = enemies.find(kv.second.type); if (!et) continue; double t;
@@ -2419,6 +2510,9 @@ struct App {
         auto dg = use ? doorGpu.end() : doorGpu.find(o.id);
         const ModelGpu& g = use ? *use : dg != doorGpu.end() ? dg->second : GpuModel(o.model);
         BindModelTex(g, o.model);   // the imported model's own picture, and the model's material
+        ID3D11RasterizerState* rsWas = nullptr; bool twoSided = o.kind == ObjKind::Door && g.mesh;   // imported door halves are often one-sided: seen from behind they had holes
+        if (twoSided) { ctx->RSGetState(&rsWas); if (rsWas == rsCull.Get() || rsWas == rsCullFront.Get()) ctx->RSSetState(rsNoCull.Get()); }   // (shadow passes keep theirs)
+        struct RsBack { ID3D11DeviceContext* c; ID3D11RasterizerState*& s; bool on; ~RsBack() { if (on) { c->RSSetState(s); if (s) s->Release(); } } } rsBack{ ctx.Get(), rsWas, twoSided };
         double a = o.yaw * 3.14159265358979 / 180, c = std::cos(a), s = std::sin(a); V3 k = objectStretch(o, *m);   // doors: stretched to Width x Height
         V3 ax{ c * k.x, 0, -s * k.x }, ay{ 0, k.y, 0 }, az{ s * k.z, 0, c * k.z };
         for (auto& part : g.parts) {
@@ -2429,7 +2523,7 @@ struct App {
                 V3 cs[8]; boxCorners(org, ax * (double)CS, ay * (double)CS, az * (double)CS, cs);
                 V3 mid = org + (ax + ay + az) * (CS * 0.5); double r = length(ax + ay + az) * CS * 0.5;
                 if ((cullFar > 0 && length(mid) - r > cullFar) || !cornersVisible(cullVP, cs)
-                    || (cullCave && !CaveSeen(mid + cam - V3{ r, r, r }, mid + cam + V3{ r, r, r }))) { if (cullCount) partsCulled++; continue; }   // (and inside rock / behind walls)
+                    || (cullCave && o.kind != ObjKind::Door && !CaveSeen(mid + cam - V3{ r, r, r }, mid + cam + V3{ r, r, r }))) { if (cullCount) partsCulled++; continue; }   // (and inside rock / behind walls; not doors: they sit in walls)
                 if (cullCount) partsDrawn++;
             }
             ChunkCB cc{ { (float)org.x, (float)org.y, (float)org.z, 0 }, { (float)ax.x, (float)ax.y, (float)ax.z, 0 }, { (float)ay.x, (float)ay.y, (float)ay.z, 0 }, { (float)az.x, (float)az.y, (float)az.z, 0 } };
@@ -3194,6 +3288,8 @@ struct App {
             for (int k = 0; k < 3; k++) fc.lookFogCol[k] = std::pow(((lk.fogColor >> (16 - 8 * k)) & 255) / 255.f, 2.2f);
             fc.lookFogCol[3] = std::max(0.f, lk.fogGlow);
             fc.gi[0] = settings.bounce > 0 ? std::max(0.f, lk.bounce) : 0.f; fc.gi[1] = settings.bounce >= 2 ? 6.f : 4.f;
+            fc.skyVol[0] = (float)(skyVolOrigin.x - camPos.x); fc.skyVol[1] = (float)(skyVolOrigin.y - camPos.y); fc.skyVol[2] = (float)(skyVolOrigin.z - camPos.z);
+            fc.skyVol[3] = info.trueDark && skyVolValid ? 1.f : 0.f;
         }
         fc.weather[0] = W.rain; fc.weather[1] = W.snow; fc.weather[2] = W.dark; fc.weather[3] = weather.wetness * E.atmosphere;
         fc.weather2[0] = weather.snowCover * E.atmosphere; fc.weather2[1] = weather.flash * E.atmosphere; fc.weather2[2] = W.wind; fc.weather2[3] = skyMap ? 1.f : 0.f;
@@ -3276,7 +3372,9 @@ struct App {
             ctx->OMSetRenderTargets(0, nullptr, nullptr);
             ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &fc, 0, 0);
         }
-        { ID3D11ShaderResourceView* oc = info.trueDark ? occSRV.Get() : nullptr; ctx->PSSetShaderResources(18, 1, &oc); }
+        { ID3D11ShaderResourceView* oc = info.trueDark ? occSRV.Get() : nullptr; ctx->PSSetShaderResources(18, 1, &oc);
+          ID3D11ShaderResourceView* sv = info.trueDark && skyVolValid ? skyVolSRV.Get() : nullptr; ctx->PSSetShaderResources(26, 1, &sv);
+          if (sampSkyVol) ctx->PSSetSamplers(4, 1, sampSkyVol.GetAddressOf()); }
 
         if (skyMap) {
             ctx->OMSetRenderTargets(0, nullptr, skyMapDSV.Get()); ctx->ClearDepthStencilView(skyMapDSV.Get(), D3D11_CLEAR_DEPTH, 1.f, 0);
@@ -3440,14 +3538,6 @@ struct App {
             ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());
         }
         if (weather.boltAge < 0.45 && E.atmosphere > 0.5f) DrawBolt();
-        DrawFields(); DrawSpheres(); DrawOrbs(); DrawEnemyShots();   // door forcefields and test-beam shots
-        DrawParticles();
-        if (E.particleKind > 0.5f && E.particleAmount > 0.01f) {   // dust, embers, spores or ice sparkles floating in the air
-            ctx->OMSetBlendState(bsAlpha.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsTestOnly.Get(), 0); ctx->RSSetState(rsNoCull.Get());
-            ctx->IASetInputLayout(nullptr); ctx->VSSetShader(vsDust.Get(), nullptr, 0); ctx->PSSetShader(psRain.Get(), nullptr, 0);
-            ctx->Draw(6 * 14000, 0);
-            ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());
-        }
 
         // ---- Play mode: the HUD's 3D parts, lit like the world (sun, its shadows, sky light, light objects), in front of everything
         if (playMode && (!hud.parts.empty() || !weapons.empty())) DrawHudPartsLit(fc, f, r, u, srvs, samps);
@@ -3461,6 +3551,22 @@ struct App {
         ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psVolume.Get(), nullptr, 0);
         { ID3D11ShaderResourceView* v4[4] = { reflSRV.Get(), shadows ? shadowSRV.Get() : nullptr, depthSRV.Get(), noiseSRV.Get() }; ctx->PSSetShaderResources(0, 4, v4); }
         ctx->Draw(3, 0);
+
+        // ---- glowing effects after the clouds and fog: they do not write depth, so the clouds (far away) would cover them
+        ctx->PSSetShaderResources(0, 4, none);
+        ctx->OMSetRenderTargets(1, volRTV.GetAddressOf(), dsv.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());
+        ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0);
+        ctx->PSSetShaderResources(0, 5, srvs); ctx->PSSetSamplers(0, 3, samps);
+        { ID3D11Buffer* cbs2[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->VSSetConstantBuffers(0, 2, cbs2); ctx->PSSetConstantBuffers(0, 2, cbs2); }
+        DrawFields(); DrawSpheres(); DrawOrbs(); DrawEnemyShots();   // door forcefields and test-beam shots
+        DrawParticles();
+        if (E.particleKind > 0.5f && E.particleAmount > 0.01f) {   // dust, embers, spores or ice sparkles floating in the air
+            ctx->OMSetBlendState(bsAlpha.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsTestOnly.Get(), 0); ctx->RSSetState(rsNoCull.Get());
+            ctx->IASetInputLayout(nullptr); ctx->VSSetShader(vsDust.Get(), nullptr, 0); ctx->PSSetShader(psRain.Get(), nullptr, 0);
+            ctx->Draw(6 * 14000, 0);
+            ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());
+        }
+        ctx->OMSetRenderTargets(0, nullptr, nullptr); ctx->PSSetShaderResources(0, 5, none);
 
         // ---- bloom: shrink the picture step by step, then add the blurry copies back up
         ctx->PSSetShaderResources(0, 4, none);

@@ -41,6 +41,7 @@ cbuffer Frame : register(b0)
     float4 gLookFog;                // the look's air: x fog thickness, y height (world Y) it thins above, z over how many blocks (0: everywhere), w lights in the air
     float4 gLookFogCol;             // rgb its colour (linear), w how much it glows by itself
     float4 gGI;                     // bounce light: x strength (0: off), y how far it reaches (blocks)
+    float4 gSkyVolO;                // the sky light around you (96 x 64 x 96 blocks): xyz its corner relative to the camera, w 1 = ready
 };
 float lookFogAt(float y) { return gLookFog.x * (gLookFog.z > 0.01 ? exp(-max(y - gLookFog.y, 0) / gLookFog.z) : 1); }
 cbuffer ChunkCB : register(b1)
@@ -167,17 +168,27 @@ float skyOpenAt(float3 rel)
     if (any(uv < 0) || any(uv > 1)) return 1;
     return gSkyOcc.SampleCmpLevelZero(gShadowSamp, uv, s.z - 0.0015);
 }
+// near you: sky light worked out block by block (like Minecraft's: around corners and into cave mouths, never through
+// walls), 0..15 in a 3D texture; farther out only the roofs map (is anything straight above?)
+Texture3D<float> gSkyVol : register(t26);
+SamplerState gSkyVolSamp : register(s4);
+float skyAt(float3 p)
+{
+    if (gSkyVolO.w > 0.5)
+    {
+        float3 q = (p - gSkyVolO.xyz) / float3(96, 64, 96);
+        if (all(q > 0.02) && all(q < 0.98))
+        {
+            float l = gSkyVol.SampleLevel(gSkyVolSamp, q, 0) * 15;
+            return saturate((pow(0.8, 15 - l) - 0.035) / 0.965);     // each block farther from the sky: a bit darker, 0 at level 0
+        }
+    }
+    return skyOpenAt(p);
+}
 float skyVis(float3 rel, float3 n)
 {
     if (gOcc.x < 0.5) return 1;
-    float3 p = rel + n * 0.55 + float3(0, 0.05, 0);
-    float s = skyOpenAt(p) * 2, w = 2;
-    [unroll] for (int k = 0; k < 8; k++)
-    {
-        float a = k * 0.785398 + 0.39; float3 d = float3(cos(a), 0, sin(a));
-        s += skyOpenAt(p + d * 1.6) + skyOpenAt(p + d * 4.0) * 0.5; w += 1.5;
-    }
-    return saturate(s / w * 1.6);
+    return skyAt(rel + n * 0.5);
 }
 // the height (camera-relative) of the first thing under the open sky at rel.xz: where rain lands (known: inside the map)
 float groundBelow(float3 rel, out bool known)
@@ -1012,7 +1023,7 @@ float4 PS_Volume(SkyOut i) : SV_Target
             float y = cam.y + rel.y;
             float dl = lookFogAt(y);
             float d = gVolume.y * exp(-max(y - 1, 0) / 7) + gVolume.y * 0.06 + gEnv.w + dl;  // a low layer, a thin haze everywhere, dust of the place, the look's fog
-            float open = gOcc.x > 0.5 ? skyOpenAt(rel + float3(0, 0.5, 0)) : 1;   // true darkness: fog under a roof gets no sky light
+            float open = gOcc.x > 0.5 ? skyAt(rel) : 1;   // true darkness: fog under a roof gets no sky light
             float sun = open;
             if (gSunDir.w > 0.5)
             {
