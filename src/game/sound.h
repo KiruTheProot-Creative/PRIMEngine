@@ -49,7 +49,7 @@ struct SoundSet {
 // the player's own sounds
 struct PlayerSounds {
     SoundSet step, jump, land;
-    SoundSet morph, bomb, boom, crumble;                // morph ball in / out, a bomb laid, a bomb going off, a breakable block breaking
+    SoundSet morph, unmorph, bomb, boom, crumble;       // rolling up into the morph ball, standing back up (none: the rolling-up one, a bit quieter), a bomb laid, going off, a breakable block breaking
     SoundSet roll, ballLand;                            // morph ball: the rolling loop (louder and higher the faster it rolls), and its own landing
     float rollPitch = 0.35f;                            // how much higher the roll sounds at full speed (0 = always the same)
     void rollMix(float speed, float topSpeed, float& volume, float& pitch) const;   // the roll loop at this speed: volume 0..1, pitch factor

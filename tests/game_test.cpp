@@ -1571,8 +1571,9 @@ int main() {
         CHECK(std::string(shinePresetName(SHINE_PRESETS)) == "Your own picture", "shine pictures: presets, then your own");
     }
     {   // sounds: doors (the game's and a door's own) and visor loops save and load
-        PlayerSounds ps; SoundUse u; u.file = "door open.wav"; u.volume = 0.8f; ps.doorOpen.sounds.push_back(u); u.file = "hum.wav"; ps.loopScan.sounds.push_back(u); ps.visorLoopVolume = 0.6f;
+        PlayerSounds ps; SoundUse u; u.file = "door open.wav"; u.volume = 0.8f; ps.doorOpen.sounds.push_back(u); u.file = "hum.wav"; ps.loopScan.sounds.push_back(u); ps.visorLoopVolume = 0.6f; u.file = "unmorph.wav"; ps.unmorph.sounds.push_back(u);
         savePlayerSounds("/tmp/prim_ps_door.txt", ps); PlayerSounds pl; loadPlayerSounds("/tmp/prim_ps_door.txt", pl);
+        CHECK(pl.unmorph.sounds.size() == 1 && pl.unmorph.sounds[0].file == "unmorph.wav", "the standing-up sound saves and loads");
         CHECK(pl.doorOpen.sounds.size() == 1 && pl.doorOpen.sounds[0].file == "door open.wav" && pl.loopScan.sounds.size() == 1 && pl.visorLoopVolume == 0.6f, "door sounds and visor loops save and load");
         std::vector<WorldObject> ob(1); ob[0].id = 3; ob[0].kind = ObjKind::Door; ob[0].door.openSound.file = "blast door.wav"; ob[0].door.openSound.pitch = 0.8f;
         saveObjects("/tmp/prim_door_snd.txt", ob); std::vector<WorldObject> ol; loadObjects("/tmp/prim_door_snd.txt", ol);

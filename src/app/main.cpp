@@ -10651,7 +10651,9 @@ struct App {
             Prop("A step every"); ch |= ImGui::SliderFloat("##se", &playerSounds.stepEvery, 0.4f, 5, "%.1f blocks walked");
             ImGui::SeparatorText("Jump"); ch |= SoundSetEdit("jump", playerSounds.jump);
             ImGui::SeparatorText("Landing"); ch |= SoundSetEdit("land", playerSounds.land);
-            ImGui::SeparatorText("Morph ball in / out"); ch |= SoundSetEdit("morph", playerSounds.morph);
+            ImGui::SeparatorText("Rolling up into the Morph Ball"); ch |= SoundSetEdit("morph", playerSounds.morph);
+            ImGui::SeparatorText("Standing back up"); ch |= SoundSetEdit("unmorph", playerSounds.unmorph);
+            if (playerSounds.unmorph.empty()) Hint("None: the rolling-up sound plays, a bit quieter.");
             if (scrollToRoll) { ImGui::SetScrollHereY(0.1f); scrollToRoll = false; }
             ImGui::SeparatorText("Morph ball rolling (a loop)"); ch |= SoundSetEdit("roll", playerSounds.roll);
             Prop("Higher when fast"); ch |= ImGui::SliderFloat("##rp", &playerSounds.rollPitch, 0, 1, playerSounds.rollPitch <= 0 ? "no" : "%.2f");
@@ -11176,7 +11178,8 @@ struct App {
             PlayerRules r = game.player; Player stand = player; stand.ball = false; stand.applySize(r);
             V3 at = player.feet;
             if (!world->boxFree(at, stand.halfW, stand.height) && !FreeSpotNear(player.feet, stand.halfW, stand.height, at)) { Toast("No room to stand up here"); return; }   // a little off a wall or a step: pushed to where you fit
-            player.feet = at; player.ball = false; player.applySize(game.player); PlaySoundIn(SND_MOVEMENT, playerSounds.morph, 0.8f);
+            player.feet = at; player.ball = false; player.applySize(game.player);
+            if (!playerSounds.unmorph.empty()) PlaySoundIn(SND_MOVEMENT, playerSounds.unmorph); else PlaySoundIn(SND_MOVEMENT, playerSounds.morph, 0.8f);
             MorphFx(false);
         }
     }

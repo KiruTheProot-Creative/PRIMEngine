@@ -136,7 +136,7 @@ bool savePlayerSounds(const std::string& path, const PlayerSounds& p) {
     std::ofstream f(path); if (!f) return false;
     f << "sounds 1";
     auto put = [&](const char* k, const SoundSet& s) { for (const SoundUse& u : s.sounds) if (!u.empty()) f << "\n" << k << " " << soundUseText(u); };   // one line per sound
-    put("step", p.step); put("jump", p.jump); put("land", p.land); put("morph", p.morph); put("bomb", p.bomb); put("boom", p.boom); put("crumble", p.crumble);
+    put("step", p.step); put("jump", p.jump); put("land", p.land); put("morph", p.morph); put("unmorph", p.unmorph); put("bomb", p.bomb); put("boom", p.boom); put("crumble", p.crumble);
     put("roll", p.roll); put("ball_land", p.ballLand); f << "\nroll_pitch " << p.rollPitch;
     for (const GameSoundSlot& g : gameSoundSlots()) put(g.key, p.*g.set);
     f << "\nscan_pitch " << p.scanPitch << "\nlow_health_at " << p.lowHealthAt << " " << p.lowHealthEvery << "\nvisor_loop_volume " << p.visorLoopVolume << "\nlow_health_fade " << p.lowHealthFade << " " << p.lowHealthQuiet << "\npower_down_fall " << p.powerDownFall;
@@ -148,7 +148,7 @@ bool loadPlayerSounds(const std::string& path, PlayerSounds& p) {
     p = PlayerSounds{}; std::string line;
     while (std::getline(f, line)) {
         std::istringstream l(line); std::string k; l >> k; std::string rest; std::getline(l, rest);
-        SoundSet* set = k == "step" ? &p.step : k == "jump" ? &p.jump : k == "land" ? &p.land : k == "morph" ? &p.morph : k == "bomb" ? &p.bomb : k == "boom" ? &p.boom : k == "crumble" ? &p.crumble : k == "roll" ? &p.roll : k == "ball_land" ? &p.ballLand : nullptr;
+        SoundSet* set = k == "step" ? &p.step : k == "jump" ? &p.jump : k == "land" ? &p.land : k == "morph" ? &p.morph : k == "unmorph" ? &p.unmorph : k == "bomb" ? &p.bomb : k == "boom" ? &p.boom : k == "crumble" ? &p.crumble : k == "roll" ? &p.roll : k == "ball_land" ? &p.ballLand : nullptr;
         if (!set) for (const GameSoundSlot& g : gameSoundSlots()) if (k == g.key) { set = &(p.*g.set); break; }
         if (set) { SoundUse u; if (soundUseFrom(rest, u) && !u.empty()) set->sounds.push_back(u); }
         else if (k == "scan_pitch") { std::istringstream r(rest); r >> p.scanPitch; }
