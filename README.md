@@ -171,6 +171,9 @@ which fades in over a second and a half as you walk in.
 - Presets: Natural, Classic, Neon night, Toxic, Inferno, Chozo dusk, Frozen, Noir. Changing a preset makes it your own
   ("Back to the preset" undoes that); "Copy as a new look" makes another. Saved in `looks.txt` in the project.
 - Options > Graphics: *Eye adaptation* and *Film grain and lens fringes* can be turned off.
+- **The air** (in each look): *Fog* (thickness, colour, a glow of its own like city haze, optionally thinning out above
+  a height) and *Lights in the air*: every light glows in fog and haze, spotlights make visible beams - with their
+  shadows when they cast them. Options > Graphics > *Lights glow in the air* turns that off.
 
 ## Lights: hundreds at once, strips, shadows, true darkness
 

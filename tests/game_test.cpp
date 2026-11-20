@@ -1517,8 +1517,12 @@ int main() {
         CHECK(pre.size() >= 6 && pre[0].name == "Natural" && pre[1].curve == ToneCurve::Classic, "looks: presets (Natural first, Classic keeps the old curve)");
         LookSet ls; ColorLook mine = pre[2]; mine.name = "Tourian green"; mine.shadows = 0x103010; mine.bloomSize = 1.7f; ls.looks.push_back(mine);
         ColorLook neon2 = pre[2]; neon2.exposure = -1; ls.looks.push_back(neon2);   // a preset made your own
+        mine.fog = 0.05f; mine.fogColor = 0x20FF40; mine.lightFog = 2; ls.looks[0] = mine;
         saveLooks("/tmp/prim_looks.txt", ls); LookSet lb; loadLooks("/tmp/prim_looks.txt", lb);
         CHECK(lb.looks.size() == 2 && lb.get("Tourian green").bloomSize == 1.7f && lb.get("Tourian green").shadows == 0x103010 && lb.get("Neon night").exposure == -1, "your own looks save and load (names with spaces too)");
+        CHECK(lb.get("Tourian green").fog == 0.05f && lb.get("Tourian green").fogColor == 0x20FF40 && lb.get("Tourian green").lightFog == 2, "a look's fog and lights-in-the-air save and load");
+        { std::ofstream o("/tmp/prim_looks_old.txt"); o << "looks 1\nlook Old 1 0 0.5 1.5 1 1 0 3166368 0 16756848 0 1 1 0 0 0.18\n"; } LookSet lo; loadLooks("/tmp/prim_looks_old.txt", lo);
+        CHECK(lo.looks.size() == 1 && lo.get("Old").fog == 0 && lo.get("Old").lightFog == 0.35f, "an older looks file (no fog yet) still loads");
         CHECK(lb.get("Inferno").warmth > 0 && lb.get("nope").name == "Natural", "a preset you did not change comes from the presets; an unknown look: Natural");
         auto nm = lb.names(); CHECK(nm[0] == "Tourian green" && std::count(nm.begin(), nm.end(), std::string("Neon night")) == 1, "the list: yours first, each name once");
         ColorLook a = pre[0], b = pre[3]; b.shadows = 0xFF0000; a.shadows = 0x000000; ColorLook h = lerp(a, b, 0.5f);

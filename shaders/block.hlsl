@@ -38,7 +38,10 @@ cbuffer Frame : register(b0)
     float4 gPrecip;                 // falling things: x their own clock (s, steady), yz how far the wind has carried them so far (blocks), w -
     row_major float4x4 gOccVP;      // camera-relative position -> the "roofs" map (opaque things seen from straight above)
     float4 gOcc;                    // x true darkness on (sky light only where the sky is), y how open the sky is around the camera (0..1)
+    float4 gLookFog;                // the look's air: x fog thickness, y height (world Y) it thins above, z over how many blocks (0: everywhere), w lights in the air
+    float4 gLookFogCol;             // rgb its colour (linear), w how much it glows by itself
 };
+float lookFogAt(float y) { return gLookFog.x * (gLookFog.z > 0.01 ? exp(-max(y - gLookFog.y, 0) / gLookFog.z) : 1); }
 cbuffer ChunkCB : register(b1)
 {
     float4 gOffset;                 // where the mesh's (0,0,0) is, relative to the camera (a chunk's origin)
@@ -991,7 +994,7 @@ float4 PS_Volume(SkyOut i) : SV_Target
     }
 
     // ---- ground fog: thick near the ground, lit by the sun where the shadow map says the sun reaches (light shafts)
-    if (gVolume.y > 0 || gEnv.w > 0)
+    if (gVolume.y > 0 || gEnv.w > 0 || gLookFog.x > 0)
     {
         float tMax = min(dist, 192);
         const int N = 20;
@@ -1004,7 +1007,8 @@ float4 PS_Volume(SkyOut i) : SV_Target
             float t = (k + jitter) * dt;
             float3 rel = dir * t;
             float y = cam.y + rel.y;
-            float d = gVolume.y * exp(-max(y - 1, 0) / 7) + gVolume.y * 0.06 + gEnv.w;  // a low layer, a thin haze everywhere, dust of the place
+            float dl = lookFogAt(y);
+            float d = gVolume.y * exp(-max(y - 1, 0) / 7) + gVolume.y * 0.06 + gEnv.w + dl;  // a low layer, a thin haze everywhere, dust of the place, the look's fog
             float open = gOcc.x > 0.5 ? skyOpenAt(rel + float3(0, 0.5, 0)) : 1;   // true darkness: fog under a roof gets no sky light
             float sun = open;
             if (gSunDir.w > 0.5)
@@ -1014,9 +1018,42 @@ float4 PS_Volume(SkyOut i) : SV_Target
                 if (all(uv > 0) && all(uv < 1) && s.z < 1) sun = gShadow.SampleCmpLevelZero(gShadowSamp, float3(uv, 3), s.z - 0.001);
             }
             float a = exp(-d * dt);
-            S += T * (gSunColor.rgb * sun * phase * 0.18 + amb * open) * (1 - a); T *= a;
+            float3 tint = lerp(float3(1, 1, 1), gLookFogCol.rgb * 1.6, dl / max(d, 1e-4));   // the look's fog in its own colour
+            S += T * ((gSunColor.rgb * sun * phase * 0.18 + amb * open) * tint + gLookFogCol.rgb * gLookFogCol.w * dl / max(d, 1e-4)) * (1 - a); T *= a;
         }
         scene = scene * T + S;
+    }
+    // ---- lights in the air: every light near you glows in the fog and haze (spotlights make beams, with their shadows)
+    if (gLookFog.w > 0.001 && gCl0.x > 0.5)
+    {
+        float tMax = min(dist, 64);
+        const int NL = 24;
+        float dt = tMax / NL, T = 1;
+        float3 S = 0;
+        [loop] for (int k = 0; k < NL; k++)
+        {
+            float t = (k + jitter) * dt;
+            float3 rel = dir * t;
+            float y = cam.y + rel.y;
+            float dens = 0.012 + gVolume.y * exp(-max(y - 1, 0) / 7) * 0.5 + gEnv.w + lookFogAt(y) * 2;   // even clear air glows a little around lights
+            uint2 cl = gClusters[clusterOf(rel)]; float3 Ls = 0;
+            [loop] for (uint j = 0; j < min(cl.y, 24u); j++)
+            {
+                LightData L = gLightBuf[gClusterIdx[cl.x + j]];
+                int kind = (int)round(L.col.w); if (kind >= 8) continue; int type = kind & 7;
+                float3 lp = L.pos.xyz;
+                if (type == 2) { float3 a = lp - L.ext.xyz, ab = L.ext.xyz * 2; lp = a + ab * saturate(dot(rel - a, ab) / max(dot(ab, ab), 1e-4)); }
+                float3 Lv = lp - rel; float d = length(Lv); if (d >= L.pos.w) continue;
+                float att = 1 - d / L.pos.w; att *= att; att /= 1 + d * d * 0.15;   // brighter right at the light
+                if (type == 1) { float c = dot(-Lv / max(d, 1e-4), L.dir.xyz), c0 = L.dir.w; att *= smoothstep(c0, c0 + (1 - c0) * 0.35, c) * 2.5; }
+                if (att <= 0) continue;
+                if (L.ext.w >= 0) att *= lightShadow(L, rel, type);
+                Ls += L.col.rgb * att;
+            }
+            float a = exp(-dens * dt);
+            S += T * Ls * gLookFog.w * (1 - a) * 0.8; T *= a;
+        }
+        scene += S;
     }
     // under water / in lava: the view gets murky
     if (gEnvPart.z > 0.5)

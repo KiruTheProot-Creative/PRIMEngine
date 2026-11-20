@@ -120,6 +120,8 @@ struct alignas(16) FrameCB {
     float precip[4];        // rain, snow, dust: x their own steady clock, yz how far the wind has carried them
     XMFLOAT4X4 occVP;       // the "roofs" map (true darkness)
     float occ[4];           // x true darkness on, y how open the sky is around the camera
+    float lookFog[4];       // the look's fog: x thickness, y height, z thins over, w lights in the air
+    float lookFogCol[4];    // rgb colour (linear), w its own glow
 };
 struct alignas(16) ChunkCB { float offset[4]; float ax[4] = { 1, 0, 0, 0 }, ay[4] = { 0, 1, 0, 0 }, az[4] = { 0, 0, 1, 0 }; };   // axes: objects are turned and sized
 
@@ -3179,6 +3181,12 @@ struct App {
             XMStoreFloat4x4(&fc.occVP, XMMatrixTranslation((float)dm.x, (float)dm.y, (float)dm.z) * occBase);
             fc.occ[0] = 1; fc.occ[1] = camOpen;
         } else { fc.occ[0] = 0; fc.occ[1] = 1; occAge = 1000; }
+        {   // the look's air
+            const ColorLook& lk = lookState.now; float atm = std::max(0.15f, envState.now.atmosphere);
+            fc.lookFog[0] = std::max(0.f, lk.fog) * atm; fc.lookFog[1] = lk.fogHeight; fc.lookFog[2] = std::max(0.f, lk.fogThin); fc.lookFog[3] = std::max(0.f, lk.lightFog) * (settings.lightFog ? 1.f : 0.f);
+            for (int k = 0; k < 3; k++) fc.lookFogCol[k] = std::pow(((lk.fogColor >> (16 - 8 * k)) & 255) / 255.f, 2.2f);
+            fc.lookFogCol[3] = std::max(0.f, lk.fogGlow);
+        }
         fc.weather[0] = W.rain; fc.weather[1] = W.snow; fc.weather[2] = W.dark; fc.weather[3] = weather.wetness * E.atmosphere;
         fc.weather2[0] = weather.snowCover * E.atmosphere; fc.weather2[1] = weather.flash * E.atmosphere; fc.weather2[2] = W.wind; fc.weather2[3] = skyMap ? 1.f : 0.f;
         ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &fc, 0, 0);
@@ -4078,6 +4086,15 @@ struct App {
             Prop("Lens fringes"); ch |= ImGui::SliderFloat("##fr", &L.fringes, 0, 1, L.fringes <= 0 ? "none" : "%.2f");
             Prop("Film grain"); ch |= ImGui::SliderFloat("##gr", &L.grain, 0, 1, L.grain <= 0 ? "none" : "%.2f");
             Prop("Dark corners"); ch |= ImGui::SliderFloat("##vig", &L.vignette, 0, 1, "%.2f");
+            ImGui::SeparatorText("The air");
+            Prop("Fog"); ch |= ImGui::SliderFloat("##fog", &L.fog, 0, 0.15f, L.fog <= 0 ? "none" : "%.3f");
+            if (L.fog > 0) {
+                Prop("Fog colour"); col("##fogc", L.fogColor); ImGui::SameLine(); ImGui::SetNextItemWidth(-1); ch |= ImGui::SliderFloat("##fogg", &L.fogGlow, 0, 1, L.fogGlow <= 0 ? "no glow" : "glows %.2f");
+                Prop("Thins out above"); ch |= ImGui::SliderFloat("##fogh", &L.fogHeight, -64, 256, "Y %.0f");
+                Prop("... over"); ch |= ImGui::SliderFloat("##fogt", &L.fogThin, 0, 64, L.fogThin <= 0 ? "the same everywhere" : "%.0f blocks");
+            }
+            Prop("Lights in the air"); ch |= ImGui::SliderFloat("##lfog", &L.lightFog, 0, 3, L.lightFog <= 0 ? "none" : "%.2f");
+            Hint("Lights glow in the fog and haze; spotlights make beams (with their shadows).");
             if (ch) { L.name = name; if (own) *own = L; else looks.looks.push_back(L); looksDirty = true; own = OwnLook(name); }
             static char newName[64] = "";
             if (ImGui::SmallButton("Copy as a new look")) { ColorLook c = L; int n = 1; do c.name = name + " " + std::to_string(++n); while (looks.find(c.name)); looks.looks.push_back(c); name = c.name; looksDirty = true; }

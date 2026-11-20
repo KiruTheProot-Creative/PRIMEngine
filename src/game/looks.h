@@ -25,6 +25,11 @@ struct ColorLook {
     float fringes = 0;                        // lens colour fringes toward the edges
     float grain = 0;                          // film grain
     float vignette = 0.18f;                   // darker corners
+    // the air: fog of this look (on top of the weather's ground fog) and how much lights glow in it (beams, halos)
+    float fog = 0;                            // how thick (0: none)
+    float fogHeight = 64, fogThin = 0;        // it thins out above this height (world Y) over this many blocks (0: the same everywhere)
+    uint32_t fogColor = 0xB0B8C8; float fogGlow = 0;   // its colour, and how much it glows by itself (city haze)
+    float lightFog = 0.35f;                   // lights in the air: their glow and beams (0: none)
 };
 ColorLook lerp(const ColorLook& a, const ColorLook& b, float t);
 const std::vector<ColorLook>& lookPresets();   // Natural, Classic, Neon night, Toxic, Inferno, Chozo dusk, Frozen, Noir
