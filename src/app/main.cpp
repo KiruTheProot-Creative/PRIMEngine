@@ -226,7 +226,7 @@ struct App {
         D3D11_SAMPLER_DESC sm{}; sm.Filter = D3D11_FILTER_MIN_MAG_POINT_MIP_LINEAR; sm.AddressU = sm.AddressV = sm.AddressW = D3D11_TEXTURE_ADDRESS_WRAP; sm.MaxLOD = D3D11_FLOAT32_MAX; sm.MipLODBias = bias;
         ComPtr<ID3D11SamplerState> s; if (SUCCEEDED(dev->CreateSamplerState(&sm, &s))) sampBlocks = s;
     }      // ... with clouds and fog
-    ComPtr<ID3D11ShaderResourceView> depthSRV, noiseSRV, depthCopySRV; ComPtr<ID3D11Texture2D> depthCopy; ComPtr<ID3D11PixelShader> psWater; ComPtr<ID3D11SamplerState> sampLinear, sampClamp; double cloudTime = 0, precipTime = 0, precipWindX = 0, precipWindZ = 0;
+    ComPtr<ID3D11ShaderResourceView> depthSRV, noiseSRV, depthCopySRV; ComPtr<ID3D11Texture2D> depthCopy; ComPtr<ID3D11DepthStencilView> depthCopyDSV; bool waterNow = false; ComPtr<ID3D11PixelShader> psWater; ComPtr<ID3D11SamplerState> sampLinear, sampClamp; double cloudTime = 0, precipTime = 0, precipWindX = 0, precipWindZ = 0;   // depthCopy: the world's depth without the water (see-through things behind the water test against it)
     struct BloomLevel { ComPtr<ID3D11Texture2D> tex; ComPtr<ID3D11RenderTargetView> rtv; ComPtr<ID3D11ShaderResourceView> srv; int w = 0, h = 0; };
     BloomLevel aaSrc;   // anti-aliasing: the finished picture, before its edges are smoothed
     // render scale: the world drawn at sceneW x sceneH (rw x rh while it is drawn), then fitted to the screen (rw x rh the rest of the time)
@@ -469,8 +469,8 @@ struct App {
         depthTex.Reset(); dsv.Reset(); depthSRV.Reset(); HR(dev->CreateTexture2D(&d, nullptr, &depthTex));
         { D3D11_DEPTH_STENCIL_VIEW_DESC dv{}; dv.Format = DXGI_FORMAT_D32_FLOAT; dv.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D; HR(dev->CreateDepthStencilView(depthTex.Get(), &dv, &dsv));
           D3D11_SHADER_RESOURCE_VIEW_DESC sv{}; sv.Format = DXGI_FORMAT_R32_FLOAT; sv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D; sv.Texture2D.MipLevels = 1; HR(dev->CreateShaderResourceView(depthTex.Get(), &sv, &depthSRV));
-          depthCopy.Reset(); depthCopySRV.Reset(); D3D11_TEXTURE2D_DESC cd = d; cd.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-          HR(dev->CreateTexture2D(&cd, nullptr, &depthCopy)); HR(dev->CreateShaderResourceView(depthCopy.Get(), &sv, &depthCopySRV)); }
+          depthCopy.Reset(); depthCopySRV.Reset(); depthCopyDSV.Reset(); D3D11_TEXTURE2D_DESC cd = d; cd.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_DEPTH_STENCIL;
+          HR(dev->CreateTexture2D(&cd, nullptr, &depthCopy)); HR(dev->CreateShaderResourceView(depthCopy.Get(), &sv, &depthCopySRV)); HR(dev->CreateDepthStencilView(depthCopy.Get(), &dv, &depthCopyDSV)); }
         d.Format = DXGI_FORMAT_R16G16B16A16_FLOAT; d.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
         hdrTex.Reset(); hdrRTV.Reset(); hdrSRV.Reset();
         HR(dev->CreateTexture2D(&d, nullptr, &hdrTex)); HR(dev->CreateRenderTargetView(hdrTex.Get(), nullptr, &hdrRTV)); HR(dev->CreateShaderResourceView(hdrTex.Get(), nullptr, &hdrSRV));
@@ -4583,46 +4583,11 @@ struct App {
         ctx->OMSetRenderTargets(1, reflRTV.GetAddressOf(), dsv.Get()); ctx->RSSetState(rsCull.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0);
         ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0);
         ctx->PSSetShaderResources(0, 5, srvs);
-        if (bStage > 0 && !bGhost.empty() && !playMode && Playing()) {   // build modes: the whole shape, see-through (red: what breaks)
-            ctx->OMSetBlendState(bsAlpha.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsTestOnly.Get(), 0); ctx->PSSetShader(psGhost.Get(), nullptr, 0); ctx->RSSetState(rsGhostBias.Get());
-            for (const GhostChunk& g : bGhost) {
-                if (!g.n) continue;
-                ChunkCB cc{ { (float)(g.c.x * (double)CS - camPos.x), (float)(g.c.y * (double)CS - camPos.y), (float)(g.c.z * (double)CS - camPos.z), bBreak ? 2.f : 0.f } }; ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);
-                UINT stride = sizeof(Vtx), off = 0; ctx->IASetVertexBuffers(0, 1, g.vb.GetAddressOf(), &stride, &off); ctx->IASetIndexBuffer(g.ib.Get(), DXGI_FORMAT_R32_UINT, 0);
-                ctx->DrawIndexed(g.n, 0, 0);
-            }
-            ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());
-        }
-        if (settings.blockPreview && Playing() && targetValid && bStage == 0) {   // see-through preview of the next block
-            if (ghostKey != targetValue) {
-                ghostKey = targetValue;
-                MeshInput in; in.pos = { 0, 0, 0 }; in.blocks.assign(PAD * PAD * PAD, AIR); in.blocks[padIdx(0, 0, 0)] = targetValue;
-                ChunkMesh cm; buildMesh(reg, in, cm);
-                MeshData all = cm.opaque; uint32_t base = (uint32_t)all.v.size();
-                all.v.insert(all.v.end(), cm.cutout.v.begin(), cm.cutout.v.end()); for (uint32_t i : cm.cutout.i) all.i.push_back(base + i);
-                Upload(all, vbGhost, ibGhost, nGhost);
-            }
-            if (nGhost) {
-                ChunkCB cc{ { (float)(tx - camPos.x), (float)(ty - camPos.y), (float)(tz - camPos.z), 0 } }; ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);
-                ctx->OMSetBlendState(bsAlpha.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsTestOnly.Get(), 0); ctx->PSSetShader(psGhost.Get(), nullptr, 0);
-                UINT stride = sizeof(Vtx), off = 0; ctx->IASetVertexBuffers(0, 1, vbGhost.GetAddressOf(), &stride, &off); ctx->IASetIndexBuffer(ibGhost.Get(), DXGI_FORMAT_R32_UINT, 0);
-                ctx->DrawIndexed(nGhost, 0, 0);
-                ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0);
-            }
-        }
-        if (toolMode && toolSel == 2 && !placing.empty() && !playMode) {   // the object you are placing, see-through
-            WorldObject o; o.scale = placeScale;
-            if (PlacePose(o)) {
-                ctx->OMSetBlendState(bsAlpha.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsTestOnly.Get(), 0); ctx->PSSetShader(psGhost.Get(), nullptr, 0);
-                DrawObject(o, 0); DrawObject(o, 1);
-                ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0);
-            }
-        }
-
         GpuMark("water");
         // ---- water: drawn over the finished world; it reads a copy of the depth (to know how deep it is) and writes its own
         {
             bool anyWater = false; for (auto& kv : gpu) if (kv.second.nW) { anyWater = true; break; }
+            waterNow = anyWater && depthCopyDSV;
             if (anyWater) {
                 ctx->OMSetRenderTargets(0, nullptr, nullptr);
                 ctx->CopyResource(depthCopy.Get(), depthTex.Get());
@@ -4636,6 +4601,49 @@ struct App {
                 ctx->PSSetShaderResources(0, 5, none); ctx->RSSetState(rsCull.Get());
                 ctx->PSSetShaderResources(0, 5, srvs);
             }
+        }
+
+        {   // ---- the previews (a build mode's shape, the next block, the object you are placing): after the water, tested against the world
+            // without it, so water in front never hides them (inside the water or behind it, from above or from under the water)
+            ctx->OMSetRenderTargets(1, reflRTV.GetAddressOf(), waterNow ? depthCopyDSV.Get() : dsv.Get()); ctx->RSSetState(rsCull.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0);
+            ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0); ctx->PSSetShaderResources(0, 5, srvs);
+            { ID3D11Buffer* cbs2[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->VSSetConstantBuffers(0, 2, cbs2); ctx->PSSetConstantBuffers(0, 2, cbs2); }
+            if (bStage > 0 && !bGhost.empty() && !playMode && Playing()) {   // build modes: the whole shape, see-through (red: what breaks)
+                ctx->OMSetBlendState(bsAlpha.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsTestOnly.Get(), 0); ctx->PSSetShader(psGhost.Get(), nullptr, 0); ctx->RSSetState(rsGhostBias.Get());
+                for (const GhostChunk& g : bGhost) {
+                    if (!g.n) continue;
+                    ChunkCB cc{ { (float)(g.c.x * (double)CS - camPos.x), (float)(g.c.y * (double)CS - camPos.y), (float)(g.c.z * (double)CS - camPos.z), bBreak ? 2.f : 0.f } }; ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);
+                    UINT stride = sizeof(Vtx), off = 0; ctx->IASetVertexBuffers(0, 1, g.vb.GetAddressOf(), &stride, &off); ctx->IASetIndexBuffer(g.ib.Get(), DXGI_FORMAT_R32_UINT, 0);
+                    ctx->DrawIndexed(g.n, 0, 0);
+                }
+                ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());
+            }
+            if (settings.blockPreview && Playing() && targetValid && bStage == 0) {   // see-through preview of the next block
+                if (ghostKey != targetValue) {
+                    ghostKey = targetValue;
+                    MeshInput in; in.pos = { 0, 0, 0 }; in.blocks.assign(PAD * PAD * PAD, AIR); in.blocks[padIdx(0, 0, 0)] = targetValue;
+                    ChunkMesh cm; buildMesh(reg, in, cm);
+                    MeshData all = cm.opaque; uint32_t base = (uint32_t)all.v.size();
+                    all.v.insert(all.v.end(), cm.cutout.v.begin(), cm.cutout.v.end()); for (uint32_t i : cm.cutout.i) all.i.push_back(base + i);
+                    Upload(all, vbGhost, ibGhost, nGhost);
+                }
+                if (nGhost) {
+                    ChunkCB cc{ { (float)(tx - camPos.x), (float)(ty - camPos.y), (float)(tz - camPos.z), 0 } }; ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);
+                    ctx->OMSetBlendState(bsAlpha.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsTestOnly.Get(), 0); ctx->PSSetShader(psGhost.Get(), nullptr, 0);
+                    UINT stride = sizeof(Vtx), off = 0; ctx->IASetVertexBuffers(0, 1, vbGhost.GetAddressOf(), &stride, &off); ctx->IASetIndexBuffer(ibGhost.Get(), DXGI_FORMAT_R32_UINT, 0);
+                    ctx->DrawIndexed(nGhost, 0, 0);
+                    ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0);
+                }
+            }
+            if (toolMode && toolSel == 2 && !placing.empty() && !playMode) {   // the object you are placing, see-through
+                WorldObject o; o.scale = placeScale;
+                if (PlacePose(o)) {
+                    ctx->OMSetBlendState(bsAlpha.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsTestOnly.Get(), 0); ctx->PSSetShader(psGhost.Get(), nullptr, 0);
+                    DrawObject(o, 0); DrawObject(o, 1);
+                    ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0);
+                }
+            }
+            ctx->OMSetRenderTargets(1, reflRTV.GetAddressOf(), dsv.Get());
         }
 
         GpuMark("rain, snow");
@@ -4675,7 +4683,7 @@ struct App {
         GpuMark("particles, effects");
         // ---- glowing effects after the clouds and fog: they do not write depth, so the clouds (far away) would cover them
         ctx->PSSetShaderResources(0, 4, none);
-        ctx->OMSetRenderTargets(1, volRTV.GetAddressOf(), dsv.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());
+        ctx->OMSetRenderTargets(1, volRTV.GetAddressOf(), waterNow ? depthCopyDSV.Get() : dsv.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());   // (water in front never hides them)
         ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0);
         ctx->PSSetShaderResources(0, 5, srvs); ctx->PSSetSamplers(0, 3, samps);
         { ID3D11Buffer* cbs2[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->VSSetConstantBuffers(0, 2, cbs2); ctx->PSSetConstantBuffers(0, 2, cbs2); }
