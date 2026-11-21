@@ -53,7 +53,7 @@ bool saveEnemies(const std::string& path, const EnemySet& s) {
           << t.speed << " " << t.chaseSpeed << " " << t.sight << " " << (t.chases ? 1 : 0) << " " << (t.shoots ? 1 : 0) << " " << t.shootEvery << " " << t.shotSpeed << " " << t.shotDamage << " " << t.shotRange << " " << t.shotColor << " "
           << t.hopHeight << " " << t.hopEvery << " " << t.hover << " " << t.roam << " " << t.dropReach << " " << t.shrapnel << " " << (t.onlyWeak ? 1 : 0) << " " << (int)t.respawn << " " << t.respawnTime << " " << (int)t.death << " "
           << escText(t.animIdle) << " " << escText(t.animMove) << " " << escText(t.animAttack) << " " << escText(t.animHurt) << " " << escText(t.animDie) << " "
-          << escText(t.sndNotice) << " " << escText(t.sndAttack) << " " << escText(t.sndHurt) << " " << escText(t.sndDie) << " " << t.scanId << " " << t.color << " " << (t.lockable ? 1 : 0) << "\n";
+          << escText(t.sndNotice) << " " << escText(t.sndAttack) << " " << escText(t.sndHurt) << " " << escText(t.sndDie) << " " << t.scanId << " " << t.color << " " << (t.lockable ? 1 : 0) << " " << (t.onRadar ? 1 : 0) << "\n";
         for (const EnemyWeak& w : t.weak) f << "weak " << escText(w.by) << " " << w.times << "\n";
         for (const EnemyDrop& d : t.drops) f << "drop " << escText(d.what) << " " << d.amount << " " << d.chance << "\n";
     }
@@ -80,7 +80,7 @@ bool loadEnemies(const std::string& path, EnemySet& s) {
             l >> t.id >> n >> m >> t.size >> mv >> t.health >> t.touchDamage >> t.knockback >> t.speed >> t.chaseSpeed >> t.sight >> ch >> sh >> t.shootEvery >> t.shotSpeed >> t.shotDamage >> t.shotRange >> t.shotColor
               >> t.hopHeight >> t.hopEvery >> t.hover >> t.roam >> t.dropReach >> t.shrapnel >> ow >> rs >> t.respawnTime >> de >> a[0] >> a[1] >> a[2] >> a[3] >> a[4] >> snd[0] >> snd[1] >> snd[2] >> snd[3] >> t.scanId >> t.color;
             if (!l || t.id <= 0 || s.find(t.id)) continue;
-            { int lk = 1; if (l >> lk) t.lockable = lk != 0; }   // (older files: every enemy can be locked onto)
+            { int lk = 1; if (l >> lk) t.lockable = lk != 0; int rd = 1; if (l >> rd) t.onRadar = rd != 0; }   // (older files: every enemy can be locked onto and shows on the radar)
             t.name = unescText(n); t.model = unescText(m); t.move = (EnemyMove)std::clamp(mv, 0, (int)EnemyMove::COUNT - 1); t.chases = ch != 0; t.shoots = sh != 0; t.onlyWeak = ow != 0;
             t.respawn = (EnemyRespawn)std::clamp(rs, 0, (int)EnemyRespawn::COUNT - 1); t.death = (EnemyDeath)std::clamp(de, 0, (int)EnemyDeath::COUNT - 1);
             t.animIdle = unescText(a[0]); t.animMove = unescText(a[1]); t.animAttack = unescText(a[2]); t.animHurt = unescText(a[3]); t.animDie = unescText(a[4]);

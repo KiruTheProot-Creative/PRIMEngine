@@ -3,6 +3,7 @@
 // and 3D helmet parts, all in camera space, swaying behind the camera like in Metroid Prime. Plain C++, tested on Linux.
 // Camera space: x right, y up, z forward (blocks); the camera is at (0, 0, 0).
 #include "game.h"
+#include "sound.h"
 #include <map>
 #include <set>
 #include <string>
@@ -10,7 +11,7 @@
 
 namespace mc {
 
-enum class HudKind { Panel, Bar, Text, Image, Circle, Minimap, Tanks, COUNT };   // Tanks: a box per energy tank you have (full ones lit)
+enum class HudKind { Panel, Bar, Text, Image, Circle, Minimap, Tanks, Radar, COUNT };   // Radar: enemies around you as dots   // Tanks: a box per energy tank you have (full ones lit)
 enum class HudValue { None, Health, Counter, Key, Charge, TankEnergy, Tanks, COUNT };   // what a bar / text shows (TankEnergy: the energy in the tank being used, like Metroid's "ENERGY 76")
 const char* hudKindName(HudKind k);
 const char* hudValueName(HudValue v);
@@ -34,6 +35,8 @@ struct HudElement {
     uint8_t visors = 0x0F;                              // which visors show it (bit 0 Combat, 1 Scan, 2 Thermal, 3 X-Ray)
     bool fullAtMost = false;                            // a counter: full at the most it can hold (grows with expansions), not at "max"
     int tankRows = 2, tankShape = 0;                    // Tanks: rows it is laid out for (segments: how many per row), 0 square / 1 rounded / 2 round
+    int radarShape = 0; bool radarSweep = true;         // Radar: 0 circle, 1 arc (what is in front), 2 bar (left to right around you); a sweeping line that lights the dots up (mapRange: how far it reaches)
+    SoundUse radarSound;                                // Radar: plays when an enemy comes into range
 };
 
 struct HudPlane {

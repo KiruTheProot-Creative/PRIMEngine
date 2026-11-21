@@ -21,7 +21,7 @@ Field field(Settings& s, const std::string& k) {
     else if (k == "clouds") r.f = &s.cloudCover; else if (k == "cloud_shadows") r.b = &s.cloudShadows; else if (k == "fog") r.f = &s.groundFog;
     else if (k == "bloom") r.f = &s.bloom; else if (k == "reflections") r.i = &s.reflections; else if (k == "reflect_res") r.i = &s.reflectRes; else if (k == "anti_alias") r.i = &s.antiAlias; else if (k == "render_scale") r.f = &s.renderScale; else if (k == "upscaler") r.i = &s.upscaler; else if (k == "up_sharpness") r.f = &s.upSharp; else if (k == "pixel_shadows") r.i = &s.pixelShadows; else if (k == "probes") r.i = &s.probes; else if (k == "show_fps") r.b = &s.showFps; else if (k == "ao") r.i = &s.ambientOcclusion; else if (k == "ao_strength") r.f = &s.aoStrength;
     else if (k == "swaying") r.b = &s.swaying; else if (k == "hud_glow") r.b = &s.hudGlow;
-    else if (k == "eye_adapt") r.b = &s.eyeAdapt; else if (k == "film_fx") r.b = &s.filmFx; else if (k == "light_shadows") r.i = &s.lightShadows; else if (k == "light_fog") r.b = &s.lightFog; else if (k == "bounce") r.i = &s.bounce; else if (k == "planar_floors") r.b = &s.planarFloors; else if (k == "lens_flares") r.b = &s.lensFlares;
+    else if (k == "eye_adapt") r.b = &s.eyeAdapt; else if (k == "film_fx") r.b = &s.filmFx; else if (k == "motion_blur") r.f = &s.motionBlur; else if (k == "light_shadows") r.i = &s.lightShadows; else if (k == "light_fog") r.b = &s.lightFog; else if (k == "bounce") r.i = &s.bounce; else if (k == "planar_floors") r.b = &s.planarFloors; else if (k == "lens_flares") r.b = &s.lensFlares;
     else if (k == "bumps") r.f = &s.bumps; else if (k == "coat") r.f = &s.coat; else if (k == "materials") r.b = &s.materials; else if (k == "guess_materials") r.b = &s.guessMaterials;
     else if (k == "time_of_day") r.f = &s.timeOfDay; else if (k == "day_cycle") r.b = &s.dayCycle; else if (k == "block_preview") r.b = &s.blockPreview;
     else if (k == "sensitivity") r.f = &s.mouseSensitivity; else if (k == "invert_y") r.b = &s.invertY; else if (k == "lock_mode") r.i = &s.lockMode; else if (k == "cave_culling") r.b = &s.caveCulling;
@@ -127,6 +127,7 @@ const std::vector<OptionDef>& optionDefs() {
         v.push_back(toggle("eye_adapt", "Eye adaptation", P, "Light", "Like your eyes or a camera: dark places slowly get brighter, bright ones darker (as much as the area's look says)."));
         v.push_back(toggle("lens_flares", "Lens flares", P, "Light", "Looking toward the sun: a glow, a streak and rings of light (if it is not behind something)."));
         v.push_back(toggle("film_fx", "Film grain and lens fringes", P, "Film", "When the area's look has them."));
+        v.push_back(slider("motion_blur", "Motion blur", P, "Motion", 0, 1, 0.05f, "%", "off", "The picture smears a little as you turn and move, like a camera. The helmet and the arm cannon stay sharp. Looks the same at any frame rate."));
         v.push_back(reset(P));
 
         v.push_back(slider("sensitivity", "Mouse sensitivity", C, "Mouse", 0.1f, 3, 0.05f, "%.2f"));

@@ -217,7 +217,7 @@ struct App {
     ComPtr<ID3D11Texture2D> volLowTex, aoTex2; ComPtr<ID3D11RenderTargetView> volLowRTV, aoRTV2; ComPtr<ID3D11ShaderResourceView> volLowSRV, aoSRV2;
     ComPtr<ID3D11PixelShader> psVolumeLow, psAOBlur;
     // PrimeScaler: the picture rebuilt at the screen's size from several frames (the camera moves a fraction of a pixel each frame)
-    ComPtr<ID3D11PixelShader> psPrimeScale, psPrimeSharpen; float jitX = 0, jitY = 0; XMMATRIX jitM = XMMatrixIdentity(); float sampBias = 0;
+    ComPtr<ID3D11PixelShader> psPrimeScale, psPrimeSharpen, psMotionBlur; double frameDt = 1.0 / 60; V3 blurPrevCam{ 0, 0, 0 }; float jitX = 0, jitY = 0; XMMATRIX jitM = XMMatrixIdentity(); float sampBias = 0;
     static float Halton(uint32_t i, uint32_t b) { float f = 1, r = 0; while (i > 0) { f /= (float)b; r += f * (float)(i % b); i /= b; } return r; }
     bool PrimeOn() const { return settings.upscaler == 1; }
     void SetTextureSharpness(float bias) {   // PrimeScaler below 100%: the textures pick their detail as if drawn at the screen's size (pixel art stays crisp)
@@ -389,6 +389,7 @@ struct App {
         b = Compile(src, "PS_AOBlur", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psAOBlur));
         b = Compile(src, "PS_PrimeScale", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psPrimeScale));
         b = Compile(src, "PS_PrimeSharpen", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psPrimeSharpen));
+        b = Compile(src, "PS_MotionBlur", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psMotionBlur));
         b = Compile(src, "PS_Water", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psWater));
         b = Compile(src, "PS_Post", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psPost));
         MakeLightResources();
@@ -1639,32 +1640,72 @@ struct App {
         ctx->UpdateSubresource(brickTex.Get(), 0, &box, px.data(), N * 4, N * N * 4);
         return slot;
     }
-    void UpdateObjectVoxels() {   // the nearest objects (not enemies: they move and bend) for this frame's reflection rays
+    // one thing for the reflection rays: drawn as world = pos + [ax ay az] (L - pivot), so L = pivot + [ax ay az]^-1 (world - pos), and its copy is L / size
+    bool VoxAxes(std::vector<ObjVoxGpu>& out, const std::string& model, V3 pos, V3 ax, V3 ay, V3 az) {
+        if (out.size() >= 48) return false;
+        WorldObject probe; probe.model = model; FrameRef m = ModelOf(probe); if (!m || m->sx <= 0 || m->sy <= 0 || m->sz <= 0) return false;
+        double det = dot(ax, cross(ay, az)); if (std::fabs(det) < 1e-12) return false;
+        int b = BrickFor(model); if (b < 0) return false;
+        V3 r[3] = { cross(ay, az) * (1 / det), cross(az, ax) * (1 / det), cross(ax, ay) * (1 / det) }, d = camPos - pos;
+        double size[3] = { m->sx, m->sy, m->sz }, piv[3] = { m->pivot.x, m->pivot.y, m->pivot.z };
+        ObjVoxGpu g{}; float* rows[3] = { g.r0, g.r1, g.r2 };
+        for (int i = 0; i < 3; i++) { rows[i][0] = (float)(r[i].x / size[i]); rows[i][1] = (float)(r[i].y / size[i]); rows[i][2] = (float)(r[i].z / size[i]); rows[i][3] = (float)((dot(r[i], d) + piv[i]) / size[i]); }
+        g.info[0] = (float)b; out.push_back(g); return true;
+    }
+    bool VoxObject(std::vector<ObjVoxGpu>& out, const WorldObject& o) {   // a placed object (turned by its yaw, stretched to its size)
+        FrameRef m = ModelOf(o); if (!m || m->sx <= 0 || m->sy <= 0 || m->sz <= 0) return false;
+        double a = o.yaw * 3.14159265358979 / 180, c = std::cos(a), sn = std::sin(a); V3 k = objectStretch(o, *m);
+        return VoxAxes(out, o.model, o.pos, V3{ c, 0, -sn } * k.x, V3{ 0, 1, 0 } * k.y, V3{ sn, 0, c } * k.z);
+    }
+    void UpdateObjectVoxels() {   // the nearest objects and things that move (enemies, the Morph Ball, missiles, drops) for this frame's reflection rays
         objVoxCount = 0; if (!voxReady || !world) return;
         if (!objVoxBuf) objVoxBuf = MakeStructured(48, sizeof(ObjVoxGpu), objVoxSRV);
-        std::vector<std::pair<double, size_t>> nearObjs;
+        struct Near { double dist; int what; size_t i; };   // what: 0 object, 1 enemy, 2 the ball, 3 a missile, 4 a drop
+        std::vector<Near> nearList;
+        auto consider = [&](V3 p, int what, size_t i) { double dist = length(p - camPos); if (dist < 72) nearList.push_back({ dist, what, i }); };
         for (size_t i = 0; i < objects.size(); i++) {
             const WorldObject& o = objects[i];
-            if (o.kind == ObjKind::Trigger || o.kind == ObjKind::Enemy || o.kind == ObjKind::Light || o.kind == ObjKind::Particles || o.kind == ObjKind::MapCamera || Gone(o) || IsBuiltin(o.model)) continue;
+            if (o.kind == ObjKind::Trigger || o.kind == ObjKind::Light || o.kind == ObjKind::Particles || o.kind == ObjKind::MapCamera || Gone(o) || IsBuiltin(o.model)) continue;
             if (o.kind == ObjKind::Pickup && playMode && inv.has(o.id)) continue;
-            V3 d = o.pos - camPos; double dist = length(d); if (dist < 72) nearObjs.push_back({ dist, i });
+            if (o.kind == ObjKind::Enemy) { if (playMode && EnemyDrawable(o)) consider(enemyRt[o.id].pos, 1, i); continue; }
+            consider(o.pos, 0, i);
         }
-        std::sort(nearObjs.begin(), nearObjs.end());
+        if (playMode && player.ball) consider(BallCentre(), 2, 0);
+        for (size_t i = 0; i < shots.size(); i++) if (shots[i].mtype >= 0 && shots[i].age < 50 && shots[i].mtype < (int)weapons.missileTypes.size()) consider(shots[i].pos, 3, i);
+        for (size_t i = 0; i < enemyDrops.size(); i++) consider(enemyDrops[i].pos, 4, i);
+        std::sort(nearList.begin(), nearList.end(), [](const Near& a, const Near& b) { return a.dist < b.dist; });
         std::vector<ObjVoxGpu> out;
-        for (auto& nd : nearObjs) {
+        for (const Near& n : nearList) {
             if (out.size() >= 48) break;
-            const WorldObject& src = objects[nd.second]; FrameRef m = ModelOf(src); if (!m || m->sx <= 0 || m->sy <= 0 || m->sz <= 0) continue;
-            WorldObject o = src; o.pos = src.pos + PlatformOffsets(src)[0];
-            int b = BrickFor(o.model); if (b < 0) continue;
-            double a = o.yaw * 3.14159265358979 / 180, c = std::cos(a), sn = std::sin(a); V3 k = objectStretch(o, *m);
-            V3 base = camPos - o.pos;   // rel + base = position from the object
-            // l = pivot + (dx c - dz s)/kx, (dy)/ky, (dx s + dz c)/kz ;  uvw = l / size
-            double ux = 1 / (k.x * m->sx), uy = 1 / (k.y * m->sy), uz = 1 / (k.z * m->sz);
-            ObjVoxGpu g{};
-            g.r0[0] = (float)(c * ux); g.r0[1] = 0; g.r0[2] = (float)(-sn * ux); g.r0[3] = (float)((base.x * c - base.z * sn) * ux + m->pivot.x / m->sx);
-            g.r1[0] = 0; g.r1[1] = (float)uy; g.r1[2] = 0; g.r1[3] = (float)(base.y * uy + m->pivot.y / m->sy);
-            g.r2[0] = (float)(sn * uz); g.r2[1] = 0; g.r2[2] = (float)(c * uz); g.r2[3] = (float)((base.x * sn + base.z * c) * uz + m->pivot.z / m->sz);
-            g.info[0] = (float)b; out.push_back(g);
+            if (n.what == 0) { const WorldObject& src = objects[n.i]; WorldObject o = src; o.pos = src.pos + PlatformOffsets(src)[0]; VoxObject(out, o); }
+            else if (n.what == 1) {   // an enemy where it is now, turned and leaning as drawn (its model at rest)
+                const WorldObject& o = objects[n.i]; const EnemyState& st = enemyRt[o.id]; const EnemyType* t = enemies.find(st.type); if (!t) continue;
+                double sc = EnemyFit(*t); V3 up = Norm(st.up), fw = st.fwd, rt = Norm(cross(up, fw)); fw = cross(rt, up);
+                VoxAxes(out, t->model, st.pos, rt * sc, up * sc, fw * sc);
+            }
+            else if (n.what == 2) {   // the Morph Ball, rolling
+                const std::string& model = game.player.ballModel.empty() ? std::string("@morph-ball") : game.player.ballModel;
+                FrameRef m = ModelNamed(model); if (!m) continue;
+                double sz = game.player.ballSize / std::max(0.05, std::max({ m->sx, m->sy, m->sz })); V3 pv = BallPivotIn(*m), ax = ballAx * sz, ay = ballAy * sz, az = ballAz * sz;
+                VoxAxes(out, model, BallCentre() - (ax * pv.x + ay * pv.y + az * pv.z), ax, ay, az);
+            }
+            else if (n.what == 3) {   // a missile, flying
+                const Shot& sh = shots[n.i]; const MissileType& mt = weapons.missileTypes[sh.mtype]; const std::string& model = mt.model.empty() ? std::string("@missile") : mt.model;
+                FrameRef f = ModelNamed(model); if (!f) continue;
+                double k = std::max(0.05f, mt.size) / std::max(0.05, f->sz); V3 d = sh.dir;
+                V3 side = std::fabs(d.y) > 0.95 ? V3{ 1, 0, 0 } : Norm(cross({ 0, 1, 0 }, d)), up = cross(d, side);
+                double a = sh.spin, ca = std::cos(a), sa = std::sin(a); V3 ax = (side * ca + up * sa) * k, ay = (up * ca - side * sa) * k, az = d * k;
+                V3 centre = sh.pos - d * (mt.size * 0.5);
+                VoxAxes(out, model, centre - ay * (f->sy * 0.5), ax, ay, az);
+            }
+            else {   // a drop (energy, missiles), bobbing and spinning
+                const EnemyDropRt& d = enemyDrops[n.i]; const DropLook* lk = enemies.drop(d.what);
+                WorldObject at; at.model = d.what == "Energy" ? "@health" : "@gem"; at.scale = 0.55;
+                if (lk) { bool big = lk->bigFrom > 0 && d.amount >= lk->bigFrom && !lk->bigModel.empty(); if (big) { at.model = lk->bigModel; at.scale = lk->bigScale; } else { if (!lk->model.empty()) at.model = lk->model; at.scale = lk->scale; } }
+                if (!ModelOf(at)) at.model = d.what == "Energy" ? "@health" : "@gem";
+                at.pos = d.pos + V3{ 0, (lk ? lk->bob : 0.1) * std::sin(animTime * 3 + d.id), 0 }; at.yaw = animTime * (lk ? lk->spin : 120.f) + d.id * 37;
+                VoxObject(out, at);
+            }
         }
         if (!out.empty()) Upload(objVoxBuf.Get(), out.data(), out.size() * sizeof(ObjVoxGpu));
         objVoxCount = (int)out.size();
@@ -4521,6 +4562,21 @@ struct App {
         ctx->IASetInputLayout(nullptr); ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); ctx->VSSetShader(vsSky.Get(), nullptr, 0);
         { D3D11_VIEWPORT fv{ 0, 0, (float)rw, (float)rh, 0, 1 }; ctx->RSSetViewports(1, &fv); }
 
+        GpuMark("motion blur");
+        {   // ---- motion blur: the picture smeared along how the camera moved it (into the other full picture, then the two swap names)
+            V3 jd = camPos - blurPrevCam; bool jumped = std::sqrt(jd.x * jd.x + jd.y * jd.y + jd.z * jd.z) > 4; blurPrevCam = camPos;
+            if (settings.motionBlur > 0.01f && !jumped && !paused) {
+                float k = (float)std::clamp(settings.motionBlur * (1.0 / 60) / std::max(frameDt, 1e-3), 0.0, 4.0);   // (the same smear at any frame rate: a sixtieth of a second at most)
+                ChunkCB cc{ { k, playMode ? 0.0021f : 0.f, 0.06f, 0 } }; ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);
+                { ID3D11Buffer* cbs[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->PSSetConstantBuffers(0, 2, cbs); }
+                ctx->OMSetRenderTargets(1, reflRTV.GetAddressOf(), nullptr); ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
+                ctx->RSSetState(rsNoCull.Get()); ctx->IASetInputLayout(nullptr); ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psMotionBlur.Get(), nullptr, 0);
+                { ID3D11ShaderResourceView* s3[3] = { volSRV.Get(), nullptr, depthSRV.Get() }; ctx->PSSetShaderResources(0, 3, s3); }
+                ctx->Draw(3, 0);
+                { ID3D11ShaderResourceView* n3[3] = {}; ctx->PSSetShaderResources(0, 3, n3); }
+                std::swap(volTex, reflTex); std::swap(volRTV, reflRTV); std::swap(volSRV, reflSRV);
+            }
+        }
         GpuMark("bloom");
         // ---- bloom: shrink the picture step by step, then add the blurry copies back up
         ctx->PSSetShaderResources(0, 4, none);
@@ -5975,6 +6031,7 @@ struct App {
         }
         case HudKind::Image: if (ID3D11ShaderResourceView* s = HudImage(e.image)) dl->AddImage((ImTextureID)(intptr_t)s, p0, p1, ImVec2(0, 0), ImVec2(1, 1), col(1)); else dl->AddRect(p0, p1, col(0.5f)); break;
         case HudKind::Minimap: DrawMinimapElement(dl, e, p0, p1, a); break;
+        case HudKind::Radar: DrawRadarElement(dl, e, p0, p1, a); break;
         case HudKind::Tanks: {   // a box per energy tank you have, the full ones lit; the bottom row fills first (like Metroid Prime)
             int n = v.tanks, full = fullTanks(v); if (n <= 0) break;
             int per = std::max(1, e.segments), rows = std::max(1, e.tankRows);
@@ -6328,6 +6385,7 @@ struct App {
         if (k == HudKind::Circle) { e.w = 0.1f; e.h = 0.18f; e.filled = false; e.thickness = 3; }
         if (k == HudKind::Minimap) { e.w = 0.18f; e.h = 0.3f; e.alpha = 0.9f; }
         if (k == HudKind::Tanks) { e.w = 0.2f; e.h = 0.05f; e.segments = 7; e.tankRows = 2; }
+        if (k == HudKind::Radar) { e.w = 0.12f; e.h = 0.2f; e.alpha = 0.9f; e.mapRange = 30; e.filled = false; e.thickness = 2; }
         hud.planes[hudPlane].elements.push_back(e); hudSel = 2; hudEl = (int)hud.planes[hudPlane].elements.size() - 1; SaveHud();
     }
     void HudList() {
@@ -6456,6 +6514,15 @@ struct App {
                 { int sh = e.tankShape; const char* sn[] = { "Squares", "Rounded", "Round" }; Prop("Shape"); if (ImGui::Combo("##ets2", &sh, sn, 3)) { e.tankShape = sh; ch = true; } }
                 { int d = e.align == 2 ? 1 : 0; const char* dn[] = { "Left to right", "Right to left" }; Prop("Fills"); if (ImGui::Combo("##etd", &d, dn, 2)) { e.align = d ? 2 : 0; ch = true; } }
                 Hint("A box for each Energy Tank the player has (none: nothing shown); the full ones are lit. The bottom row fills first. Pair it with a text showing \"Energy in this tank\".");
+            }
+            if (e.kind == HudKind::Radar) {
+                { int sh = e.radarShape; const char* sn[] = { "Circle", "Arc (in front)", "Bar (all around)" }; Prop("Shape"); if (ImGui::Combo("##ers", &sh, sn, 3)) { e.radarShape = sh; ch = true; } }
+                Prop("Reaches"); ch |= ImGui::SliderFloat("##err", &e.mapRange, 8, 120, "%.0f blocks");
+                Prop("Sweeping line"); ch |= ImGui::Checkbox("##erw", &e.radarSweep);
+                Prop("Filled"); ch |= ImGui::Checkbox("##erf", &e.filled);
+                Prop("Line"); ch |= ImGui::SliderFloat("##erl", &e.thickness, 1, 8, "%.0f px");
+                Prop("Enemy comes near"); ch |= SoundEdit("##ersnd", e.radarSound, false);
+                Hint("Enemies near you as dots (their burst colour), straight ahead is always up. A small arrow: far above or below you. Bosses get a ring. Each enemy can be left off it (Enemies: \"Shows on the radar\"). Circle: all around you. Arc: only what is in front. Bar: all around, left to right like a compass.");
             }
             if (e.kind == HudKind::Minimap) {
                 Prop("Shows around you"); ch |= ImGui::SliderFloat("##emr", &e.mapRange, 6, 80, "%.0f blocks");
@@ -10882,6 +10949,8 @@ struct App {
         Prop("Hurts when touched"); ch |= ImGui::DragFloat("##etd", &t.touchDamage, 0.2f, 0, 500, "%.0f");
         Prop("Knocked back"); ch |= ImGui::SliderFloat("##ekb", &t.knockback, 0, 15, "%.1f");
         Prop("Can be locked onto"); ch |= ImGui::Checkbox("##elock", &t.lockable);
+        Prop("Shows on the radar"); ch |= ImGui::Checkbox("##eradar", &t.onRadar);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("A dot on the HUD's radar when it is near.\nOff: sneaky enemies, or tiny critters that would clutter it.");
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Lock-on (right mouse) can pick it.\nOff: for tiny or harmless things you should not keep locking onto.");
         ImGui::SeparatorText("What hurts it");
         Prop("Only its weaknesses"); ch |= ImGui::Checkbox("##eonly", &t.onlyWeak);
@@ -11203,6 +11272,80 @@ struct App {
         if (ImGui::IsKeyPressed(ImGuiKey_C, false)) { mapCenter = player.feet + V3{ 0, 1, 0 }; mapYaw = (float)(player.yaw + 3.14159265358979); }
         if (m.total == 0) { const char* e = "Nothing charted yet: look around, or find a Map Station."; ImVec2 es = ImGui::CalcTextSize(e); dl->AddText(ImVec2(p.x + (sz.x - es.x) * 0.5f, p.y + sz.y * 0.5f), IM_COL32(150, 200, 230, 220), e); }
         ImGui::End();
+    }
+    // ---- the radar on the HUD (a Radar element): enemies around you as dots, straight ahead up
+    std::set<int> radarIn; double radarSoundAt = -1;
+    void DrawRadarElement(ImDrawList* dl, const HudElement& e, ImVec2 p0, ImVec2 p1, float a) {
+        auto rgba = [&](uint32_t c, float k) { return IM_COL32((c >> 16) & 255, (c >> 8) & 255, c & 255, (int)std::clamp(a * k * 255, 0.f, 255.f)); };
+        const float PI = 3.14159265f, px = hudPx; double range = std::max(4.f, e.mapRange);
+        struct Blip { double fx, fz, dy; uint32_t col; bool boss; int id; };
+        std::vector<Blip> blips;
+        double yaw = player.yaw; V3 fwd{ std::sin(yaw), 0, std::cos(yaw) }, rgt{ std::cos(yaw), 0, -std::sin(yaw) };
+        if (playMode) {
+            std::set<int> now;
+            for (const WorldObject& o : objects) {
+                if (o.kind != ObjKind::Enemy) continue;
+                auto it = enemyRt.find(o.id); if (it == enemyRt.end() || !it->second.alive()) continue;
+                const EnemyType* t = enemies.find(it->second.type); if (!t || !t->onRadar) continue;
+                V3 d = it->second.pos - player.feet; double fx = dot(d, rgt), fz = dot(d, fwd);
+                if (fx * fx + fz * fz > range * range) continue;
+                blips.push_back({ fx, fz, d.y, t->color, bosses.forType(t->id) != nullptr, o.id }); now.insert(o.id);
+            }
+            bool fresh = false; for (int id : now) if (!radarIn.count(id)) fresh = true;
+            if (fresh && !e.radarSound.empty() && animTime - radarSoundAt > 0.25 && !paused) { PlaySoundIn(SND_MENUS, e.radarSound); radarSoundAt = animTime; }
+            radarIn = now;
+        } else {   // the editor's preview: a few made-up ones
+            blips = { { range * 0.3, range * 0.5, 0, 0xFF5040, false, 1 }, { -range * 0.55, range * 0.2, 6, 0xFFB040, false, 2 }, { range * 0.15, -range * 0.6, -6, 0xFF5040, false, 3 }, { -range * 0.2, range * 0.75, 0, 0xFF3060, true, 4 } };
+        }
+        double period = 2.4, ph = std::fmod(animTime / period, 1.0);
+        auto bright = [&](double ang) {   // ang: 0 straight ahead, clockwise, 0..1 of a turn - lit up as the line passes
+            if (!e.radarSweep) return 1.f;
+            double age = std::fmod(ph - ang + 2.0, 1.0) * period; return (float)(0.45 + 0.55 * std::exp(-age * 2.2)); };
+        auto dot = [&](ImVec2 c, float r, const Blip& b, float k) {
+            dl->AddCircleFilled(c, r, rgba(b.col, k), 12);
+            if (b.boss) dl->AddCircle(c, r * 1.9f, rgba(b.col, k * 0.9f), 16, 1.5f * px);
+            if (std::fabs(b.dy) > 2.5) {   // far above / below: a little arrow
+                float s = r * 0.9f, y = b.dy > 0 ? c.y - r - s * 0.4f : c.y + r + s * 0.4f, dir = b.dy > 0 ? -1.f : 1.f;
+                dl->AddTriangleFilled(ImVec2(c.x - s, y), ImVec2(c.x + s, y), ImVec2(c.x, y + dir * s * 1.2f), rgba(b.col, k));
+            }
+        };
+        float lw = std::max(1.f, e.thickness * px);
+        if (e.radarShape == 2) {   // a bar: left to right all around you (straight ahead in the middle), nearer: bigger
+            float cy = (p0.y + p1.y) * 0.5f, wdt = p1.x - p0.x, cx = (p0.x + p1.x) * 0.5f, hh = p1.y - p0.y;
+            if (e.filled) dl->AddRectFilled(p0, p1, rgba(e.color, 0.12f));
+            dl->AddRect(p0, p1, rgba(e.color, 0.7f), 0, 0, lw);
+            dl->AddLine(ImVec2(cx, p0.y), ImVec2(cx, p0.y + hh * 0.25f), rgba(e.color, 0.8f), lw); dl->AddLine(ImVec2(cx, p1.y), ImVec2(cx, p1.y - hh * 0.25f), rgba(e.color, 0.8f), lw);
+            if (e.radarSweep) { float sx = p0.x + (float)(0.5 - 0.5 * std::cos(ph * 2 * PI)) * wdt; dl->AddLine(ImVec2(sx, p0.y), ImVec2(sx, p1.y), rgba(e.color, 0.35f), lw); }
+            for (const Blip& b : blips) {
+                double ang = std::atan2(b.fx, b.fz), dist = std::sqrt(b.fx * b.fx + b.fz * b.fz) / range;
+                float x = cx + (float)(ang / PI) * wdt * 0.5f, r = hh * (0.32f - 0.17f * (float)dist);
+                float k = e.radarSweep ? (float)(0.45 + 0.55 * std::exp(-std::fabs((x - (p0.x + (float)(0.5 - 0.5 * std::cos(ph * 2 * PI)) * wdt)) / wdt) * 6)) : 1.f;
+                dot(ImVec2(x, cy), r, b, k * (1 - 0.6f * (float)dist));
+            }
+            return;
+        }
+        bool arc = e.radarShape == 1;
+        ImVec2 c = arc ? ImVec2((p0.x + p1.x) * 0.5f, p1.y) : ImVec2((p0.x + p1.x) * 0.5f, (p0.y + p1.y) * 0.5f);
+        float R = arc ? std::min((p1.x - p0.x) * 0.5f, p1.y - p0.y) : std::min(p1.x - p0.x, p1.y - p0.y) * 0.5f;
+        float a0 = arc ? PI : 0, a1 = arc ? 2 * PI : 2 * PI;
+        if (e.filled) { dl->PathArcTo(c, R, a0, a1, 48); if (arc) dl->PathLineTo(c); dl->PathFillConvex(rgba(e.color, 0.12f)); }
+        dl->PathArcTo(c, R, a0, a1, 48); if (arc) { dl->PathLineTo(c); dl->PathStroke(rgba(e.color, 0.7f), ImDrawFlags_Closed, lw); } else dl->PathStroke(rgba(e.color, 0.7f), ImDrawFlags_Closed, lw);
+        dl->PathArcTo(c, R * 0.5f, a0, a1, 32); dl->PathStroke(rgba(e.color, 0.25f), arc ? 0 : ImDrawFlags_Closed, std::max(1.f, lw * 0.5f));   // half the reach
+        dl->AddCircleFilled(c, std::max(2.f, R * 0.04f), rgba(e.color, 0.9f), 10);   // you
+        if (e.radarSweep) {   // the line going round (the arc: back and forth), with a fading tail
+            for (int t = 0; t < 6; t++) {
+                double ang = arc ? (0.5 - 0.5 * std::cos((ph - t * 0.012) * 2 * PI)) * 0.5 - 0.25 : ph - t * 0.012;
+                float s = (float)(ang * 2 * PI); dl->AddLine(c, ImVec2(c.x + std::sin(s) * R, c.y - std::cos(s) * R), rgba(e.color, 0.4f * (1 - t / 6.f)), lw);
+            }
+        }
+        for (const Blip& b : blips) {
+            if (arc && b.fz < 0) continue;   // (the arc: only what is in front)
+            double dist = std::sqrt(b.fx * b.fx + b.fz * b.fz) / range; float fade = 1 - std::clamp(((float)dist - 0.85f) / 0.15f, 0.f, 1.f);
+            ImVec2 q(c.x + (float)(b.fx / range) * R, c.y - (float)(b.fz / range) * R);
+            double ang = std::fmod(std::atan2(b.fx, b.fz) / (2 * PI) + 1.0, 1.0);
+            float k = arc && e.radarSweep ? (float)(0.45 + 0.55 * std::exp(-std::fabs(std::atan2(b.fx, b.fz) / (2 * PI) - ((0.5 - 0.5 * std::cos(ph * 2 * PI)) * 0.5 - 0.25)) * 12)) : bright(ang);
+            dot(q, R * (0.075f - 0.035f * (float)dist), b, k * fade);
+        }
     }
     // ---- the minimap on the HUD (a Minimap element): the same map, around you, see-through
     HudTarget miniView; ComPtr<ID3D11DepthStencilView> miniDSV; int miniDW = 0, miniDH = 0, miniWantW = 0, miniWantH = 0; bool miniUsed = false; HudElement miniEl;
@@ -14961,7 +15104,7 @@ struct App {
 
     // ================================================================== frame
     void FrameBody(double dt) {   // everything but showing the picture (screenshots grab it before)
-        CpuBegin();
+        CpuBegin(); frameDt = dt;
         if (audioOk) { UpdateAudio(); UpdateMusic(dt); }
         CpuMark("resizing, textures");
         ApplyFullscreen();

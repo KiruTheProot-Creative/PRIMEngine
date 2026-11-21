@@ -2353,3 +2353,32 @@ float4 PS_PrimeSharpen(SkyOut i) : SV_Target   // PrimeScaler's picture onto the
     float3 r = c + (c - (n + s + e + w) * 0.25) * gOffset.w * 1.6;
     return float4(saturate(clamp(r, mn, mx)), 1);
 }
+
+// ---------------------------------------------------------------- motion blur: the picture smeared along how the camera moved it since the frame before
+// gOffset: x how long (a share of the frame's movement), y where the helmet's depth ends (it moves with you: never smeared), z the longest smear (0..1 of the picture)
+float4 PS_MotionBlur(SkyOut i) : SV_Target
+{
+    int2 px = int2(i.pos.xy);
+    float3 c0 = gHdr.Load(int3(px, 0)).rgb;
+    float z = gSceneDepth.Load(int3(px, 0));
+    if (z < gOffset.y) return float4(c0, 1);
+    float2 uv = (float2(px) + 0.5) / gDepth.zw;
+    float3 dir = normalize(gCamF.xyz + gCamR.xyz * (i.ndc.x * gProj.x * gProj.y) + gCamU.xyz * (i.ndc.y * gProj.x));
+    float3 P = z >= 1 ? dir * 1e4 : dir * (linDepth(z) / max(dot(dir, gCamF.xyz), 1e-3));
+    float4 c = mul(float4(P + gHistCam.xyz, 1), gHistVP);
+    if (c.w <= 1e-3) return float4(c0, 1);
+    float2 v = (uv - (c.xy / c.w * float2(0.5, -0.5) + 0.5)) * gOffset.x;
+    float L = length(v); if (L > gOffset.z) v *= gOffset.z / L;
+    if (length(v * gDepth.zw) < 0.75) return float4(c0, 1);   // (less than a pixel: nothing to smear)
+    const int N = 12; float j = ign(i.pos.xy + gAA.z * float2(3.1, 1.7));
+    float3 sum = c0; float w = 1;
+    [loop] for (int k = 0; k < N; k++)
+    {
+        float2 su = uv + v * ((k + j) / N - 0.5);
+        if (any(su < 0) || any(su > 1)) continue;
+        int2 sp = min(int2(su * gDepth.zw), int2(gDepth.zw) - 1);
+        if (gSceneDepth.Load(int3(sp, 0)) < gOffset.y) continue;   // (the helmet's parts do not smear into the world)
+        sum += gHdr.Load(int3(sp, 0)).rgb; w += 1;
+    }
+    return float4(sum / w, 1);
+}

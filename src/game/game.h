@@ -66,6 +66,7 @@ struct Settings {
     float screenShake = 1;     // bosses, slams, roars shake the view this much (0: never)
     bool eyeAdapt = true;      // the picture gets brighter in dark places and darker in bright ones (as the world's look says)
     bool filmFx = true;        // the look's film grain and lens colour fringes
+    float motionBlur = 0;      // the picture smeared as the camera moves (0 off .. 1: as long as a sixtieth of a second)
     bool lightFog = true;
     bool planarFloors = true;
     bool lensFlares = true;    // the sun makes a lens flare (as much as the area's look says)  // the shiny floor or water near you is reflected exactly (the world drawn once more)

@@ -7,7 +7,7 @@
 
 namespace mc {
 
-const char* hudKindName(HudKind k) { static const char* n[] = { "Panel", "Bar", "Text", "Image", "Circle", "Minimap", "Energy tanks" }; return n[std::clamp((int)k, 0, (int)HudKind::COUNT - 1)]; }
+const char* hudKindName(HudKind k) { static const char* n[] = { "Panel", "Bar", "Text", "Image", "Circle", "Minimap", "Energy tanks", "Radar" }; return n[std::clamp((int)k, 0, (int)HudKind::COUNT - 1)]; }
 const char* hudValueName(HudValue v) { static const char* n[] = { "Nothing", "Health", "A counter", "Has a key", "Beam charge", "Energy in this tank", "Energy tanks you have" }; return n[std::clamp((int)v, 0, (int)HudValue::COUNT - 1)]; }
 
 static const double DEG = 3.14159265358979 / 180;
@@ -149,7 +149,7 @@ bool saveHud(const std::string& path, const HudLayout& h) {
           << " " << p.bendX << " " << p.bendY << " " << p.sway << " " << p.opacity << " " << p.glow << " " << p.visible << " " << p.bloom << " " << p.lightUp << "\n";
         for (const HudElement& e : p.elements)
             f << "el " << esc(e.name) << " " << (int)e.kind << " " << e.x << " " << e.y << " " << e.w << " " << e.h << " " << e.color << " " << e.alpha << " " << esc(e.text) << " " << esc(e.image)
-              << " " << (int)e.value << " " << esc(e.valueName) << " " << e.max << " " << e.segments << " " << e.textSize << " " << e.align << " " << e.filled << " " << e.thickness << " " << e.visible << " " << e.mapRange << " " << e.mapTilt << " " << e.mapTurns << " " << e.onPause << " " << e.onMap << " " << (int)e.visors << " " << e.fullAtMost << " " << e.tankRows << " " << e.tankShape << "\n";
+              << " " << (int)e.value << " " << esc(e.valueName) << " " << e.max << " " << e.segments << " " << e.textSize << " " << e.align << " " << e.filled << " " << e.thickness << " " << e.visible << " " << e.mapRange << " " << e.mapTilt << " " << e.mapTurns << " " << e.onPause << " " << e.onMap << " " << (int)e.visors << " " << e.fullAtMost << " " << e.tankRows << " " << e.tankShape << " " << e.radarShape << " " << e.radarSweep << " " << esc(soundUseText(e.radarSound)) << "\n";
     }
     for (const HudPart& p : h.parts) {
         f << "part " << esc(p.name) << " " << esc(p.model) << " " << p.pos.x << " " << p.pos.y << " " << p.pos.z << " " << p.yaw << " " << p.pitch << " " << p.roll << " " << p.scale
@@ -170,7 +170,7 @@ bool loadHud(const std::string& path, HudLayout& h) {
             HudElement e; std::string n, t, im, vn; int kind = 0, val = 0;
             l >> n >> kind >> e.x >> e.y >> e.w >> e.h >> e.color >> e.alpha >> t >> im >> val >> vn >> e.max >> e.segments >> e.textSize >> e.align >> e.filled >> e.thickness >> e.visible;
             if (kind == (int)HudKind::Minimap) e.onMap = false;   // (older files: the minimap hides on the map screen)
-            { float mr, mt; int tu; if (l >> mr >> mt >> tu) { e.mapRange = std::clamp(mr, 4.f, 200.f); e.mapTilt = std::clamp(mt, 10.f, 90.f); e.mapTurns = tu != 0; int op, om; if (l >> op >> om) { e.onPause = op != 0; e.onMap = om != 0; int vm; if (l >> vm) { e.visors = (uint8_t)(vm & 15); int fm, tr, ts; if (l >> fm >> tr >> ts) { e.fullAtMost = fm != 0; e.tankRows = std::clamp(tr, 1, 8); e.tankShape = std::clamp(ts, 0, 2); } } } } }
+            { float mr, mt; int tu; if (l >> mr >> mt >> tu) { e.mapRange = std::clamp(mr, 4.f, 200.f); e.mapTilt = std::clamp(mt, 10.f, 90.f); e.mapTurns = tu != 0; int op, om; if (l >> op >> om) { e.onPause = op != 0; e.onMap = om != 0; int vm; if (l >> vm) { e.visors = (uint8_t)(vm & 15); int fm, tr, ts; if (l >> fm >> tr >> ts) { e.fullAtMost = fm != 0; e.tankRows = std::clamp(tr, 1, 8); e.tankShape = std::clamp(ts, 0, 2); int rs, rw; std::string rsnd; if (l >> rs >> rw >> rsnd) { e.radarShape = std::clamp(rs, 0, 2); e.radarSweep = rw != 0; soundUseFrom(unesc(rsnd), e.radarSound); } } } } } }
             e.name = unesc(n); e.text = unesc(t); e.image = unesc(im); e.valueName = unesc(vn);
             e.kind = (HudKind)std::clamp(kind, 0, (int)HudKind::COUNT - 1); e.value = (HudValue)std::clamp(val, 0, (int)HudValue::COUNT - 1);
             h.planes.back().elements.push_back(e);
