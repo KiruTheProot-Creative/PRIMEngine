@@ -7293,115 +7293,187 @@ struct App {
         ImVec2 ts = font->CalcTextSizeA(size, FLT_MAX, 0, s.c_str());
         float x = align == 0 ? a.x : align == 2 ? b.x - ts.x : (a.x + b.x - ts.x) * 0.5f; dl->AddText(font, size, ImVec2(x, (a.y + b.y - ts.y) * 0.5f), col, s.c_str());
     }
+    // ---- the options list (Options screen, pause menu): sharp panels - slanted tabs, rows with a bright bar when picked,
+    // OFF | ON switches, < value > boxes, segmented sliders, and a panel saying what the picked option does. Texts always fit.
     void DrawOptionsBlock(ImDrawList* dl, ImVec2 a, ImVec2 b, float ts, const OptColors& oc, const std::string& group, int scrollKey, std::vector<MenuHit>& hits, int sel, int pane, bool pages) {
-        float al = oc.alpha; uint32_t c = oc.accent;
+        float al = oc.alpha; uint32_t c = oc.accent; ImFont* font = ImGui::GetFont();
         auto C = [&](uint32_t col, float aa) { return IM_COL32((col >> 16) & 255, (col >> 8) & 255, col & 255, (int)(std::clamp(aa, 0.f, 1.f) * 255)); };
-        auto text = [&](const std::string& s, float size, ImVec2 p0, ImVec2 p1, int align, ImU32 col, bool) { TextIn(dl, ImGui::GetFont(), s, size, p0, p1, align, col); };
+        // a text that always fits its box: a little smaller if it must, then cut off with "..."
+        auto fit = [&](const std::string& s, float size, ImVec2 p0, ImVec2 p1, int align, ImU32 col) {
+            float room = std::max(4.f, p1.x - p0.x); std::string t = s; float sz = size;
+            float w = font->CalcTextSizeA(sz, FLT_MAX, 0, t.c_str()).x;
+            if (w > room) { sz = size * std::max(0.78f, room / w); w = font->CalcTextSizeA(sz, FLT_MAX, 0, t.c_str()).x; }
+            if (w > room) {
+                while (!t.empty() && font->CalcTextSizeA(sz, FLT_MAX, 0, (t + "...").c_str()).x > room) { t.pop_back(); while (!t.empty() && (t.back() & 0xC0) == 0x80) t.pop_back(); }
+                t += "...";
+            }
+            TextIn(dl, font, t, sz, p0, p1, align, col);
+        };
+        // a box with two corners cut off (top left, bottom right): the sharp look
+        auto cutBox = [&](ImVec2 p0, ImVec2 p1, float cut, ImU32 fill, ImU32 line, float thick) {
+            cut = std::min(cut, std::min(p1.x - p0.x, p1.y - p0.y) * 0.45f);
+            ImVec2 pts[6] = { ImVec2(p0.x + cut, p0.y), ImVec2(p1.x, p0.y), ImVec2(p1.x, p1.y - cut), ImVec2(p1.x - cut, p1.y), ImVec2(p0.x, p1.y), ImVec2(p0.x, p0.y + cut) };
+            if (fill) dl->AddConvexPolyFilled(pts, 6, fill);
+            if (line) dl->AddPolyline(pts, 6, line, ImDrawFlags_Closed, thick);
+        };
         auto hit = [&](ImVec4 r, int kind, int arg) { MenuHit h{ pane, r, kind, arg, MenuAct::None, "" }; hits.push_back(h); return (int)hits.size() - 1 == sel; };
-                const auto& defs = optionDefs(); const auto& groups = optionGroups();
-                int g = -1; for (int k = 0; k < (int)groups.size(); k++) if (groups[k] == group) g = k;
-                float top = a.y; ImFont* font = ImGui::GetFont();
-                if (g < 0) {
-                    g = std::clamp(menuOptGroup, 0, (int)groups.size() - 1);
-                    float th = ts * 1.5f, tw = (b.x - a.x) / groups.size();
-                    for (int k = 0; k < (int)groups.size(); k++) {
-                        ImVec2 ta(a.x + tw * k + 6, a.y), tb(a.x + tw * (k + 1) - 6, a.y + th); bool cur = k == g;
-                        bool sel = hit(ImVec4(ta.x, ta.y, tb.x, tb.y), 6, k);
-                        if (cur) dl->AddRectFilled(ta, tb, C(c, 0.28f * al), 12);
-                        dl->AddRect(ta, tb, C(c, (cur ? 0.95f : sel ? 0.85f : 0.35f) * al), 12, ImDrawFlags_None, sel ? 3.f : cur ? 2.5f : 2.f);
-                        text(groups[k], ts * 1.05f, ta, tb, 1, cur || sel ? C(oc.picked, al) : C(c, 0.7f * al), false);
-                    }
-                    top = a.y + th + ts * 0.5f;
+        const auto& defs = optionDefs(); const auto& groups = optionGroups();
+        int g = -1; for (int k = 0; k < (int)groups.size(); k++) if (groups[k] == group) g = k;
+        float top = a.y;
+        if (g < 0) {   // the tabs: slanted, the open one filled with a bright line under it
+            g = std::clamp(menuOptGroup, 0, (int)groups.size() - 1);
+            float th = ts * 1.55f, gap = ts * 0.35f, tw = std::min((b.x - a.x - gap * (groups.size() - 1)) / groups.size(), ts * 9.f), sl = th * 0.35f;
+            for (int k = 0; k < (int)groups.size(); k++) {
+                ImVec2 ta(a.x + (tw + gap) * k, a.y), tb(ta.x + tw, a.y + th); bool cur = k == g;
+                bool picked = hit(ImVec4(ta.x, ta.y, tb.x, tb.y), 6, k);
+                ImVec2 q[4] = { ImVec2(ta.x + sl, ta.y), ImVec2(tb.x, ta.y), ImVec2(tb.x - sl, tb.y), ImVec2(ta.x, tb.y) };
+                dl->AddConvexPolyFilled(q, 4, C(c, (cur ? 0.32f : picked ? 0.16f : 0.05f) * al));
+                dl->AddPolyline(q, 4, C(c, (cur || picked ? 0.95f : 0.3f) * al), ImDrawFlags_Closed, picked ? 2.5f : 1.5f);
+                std::string up = groups[k]; for (char& ch : up) ch = (char)std::toupper((unsigned char)ch);
+                fit(up, ts * 0.95f, ImVec2(ta.x + sl, ta.y), ImVec2(tb.x - sl, tb.y), 1, cur || picked ? C(oc.picked, al) : C(c, 0.65f * al));
+            }
+            dl->AddLine(ImVec2(a.x, a.y + th + 3), ImVec2(b.x, a.y + th + 3), C(c, 0.35f * al), 1.5f);
+            { ImVec2 ta(a.x + (tw + gap) * g, a.y); dl->AddRectFilled(ImVec2(ta.x, a.y + th + 1), ImVec2(ta.x + tw, a.y + th + 5), C(c, al)); }
+            top = a.y + th + ts * 0.6f;
+        }
+        float hintH = ts * 1.3f, bottom = b.y - hintH, rh = ts * 1.7f;
+        // the description panel: to the right when there is room, else a strip at the bottom
+        bool side = (b.x - a.x) > ts * 30;
+        float listR = side ? a.x + (b.x - a.x) * 0.63f : b.x, descH = side ? 0 : ts * 3.2f;
+        float listBottom = bottom - descH;
+        float& scroll = menuScroll[scrollKey];
+        struct Row { int def; std::string head; };
+        std::vector<Row> rows; std::string sec = "\x01";
+        for (int i = 0; i < (int)defs.size(); i++) {
+            const OptionDef& d = defs[i]; if (d.group != groups[g] || !optionShown(settings, d, true)) continue;
+            if (d.section != sec) { sec = d.section; if (!sec.empty()) rows.push_back({ -1, sec }); }
+            rows.push_back({ i, "" });
+        }
+        float headH = rh * 0.9f, total = 0; for (const Row& r : rows) total += r.def < 0 ? headH : rh;
+        float room = listBottom - top; scroll = std::clamp(scroll, 0.f, std::max(0.f, total - room));
+        float rowR = listR - 12, valW = std::clamp((rowR - a.x) * 0.44f, ts * 7.f, ts * 13.f), valX = rowR - valW - 8, want = scroll;
+        int selDef = -1;
+        dl->PushClipRect(ImVec2(a.x, top), ImVec2(listR, listBottom), true);
+        float y = top - scroll;
+        for (const Row& r : rows) {
+            float h = r.def < 0 ? headH : rh;
+            bool vis = y + h > top - 1 && y < listBottom + 1;
+            if (r.def < 0) {   // a section: a small square, its name in capitals, a thin line
+                if (vis) {
+                    std::string up = r.head; for (char& ch : up) ch = (char)std::toupper((unsigned char)ch);
+                    float hs = ts * 0.72f, my = y + h * 0.62f; ImVec2 tsz = font->CalcTextSizeA(hs, FLT_MAX, 0, up.c_str());
+                    dl->AddRectFilled(ImVec2(a.x + 4, my - hs * 0.22f), ImVec2(a.x + 4 + hs * 0.44f, my + hs * 0.22f), C(c, 0.9f * al));
+                    dl->AddText(font, hs, ImVec2(a.x + 8 + hs * 0.7f, my - tsz.y * 0.5f), C(c, 0.85f * al), up.c_str());
+                    dl->AddLine(ImVec2(a.x + 18 + hs * 0.7f + tsz.x, my), ImVec2(rowR, my), C(c, 0.22f * al), 1.f);
                 }
-                float hintH = ts * 1.1f, bottom = b.y - hintH, rh = ts * 1.62f;
-                float& scroll = menuScroll[scrollKey];
-                struct Row { int def; std::string head; };
-                std::vector<Row> rows; std::string sec = "\x01";
-                for (int i = 0; i < (int)defs.size(); i++) {
-                    const OptionDef& d = defs[i]; if (d.group != groups[g] || !optionShown(settings, d, true)) continue;
-                    if (d.section != sec) { sec = d.section; if (!sec.empty()) rows.push_back({ -1, sec }); }
-                    rows.push_back({ i, "" });
-                }
-                float total = 0; for (const Row& r : rows) total += r.def < 0 ? rh * 0.85f : rh;
-                float room = bottom - top; scroll = std::clamp(scroll, 0.f, std::max(0.f, total - room));
-                dl->PushClipRect(ImVec2(a.x, top), ImVec2(b.x, bottom), true);
-                float y = top - scroll, valX = a.x + (b.x - a.x) * 0.5f, want = scroll;
-                for (const Row& r : rows) {
-                    float h = r.def < 0 ? rh * 0.85f : rh;
-                    bool vis = y + h > top - 1 && y < bottom + 1;
-                    if (r.def < 0) {
-                        if (vis) { ImVec2 hs = font->CalcTextSizeA(ts * 0.78f, FLT_MAX, 0, r.head.c_str()); float my = y + h * 0.58f;
-                            dl->AddText(font, ts * 0.78f, ImVec2(a.x + 8, my - hs.y * 0.5f), C(c, 0.6f * al), r.head.c_str());
-                            dl->AddLine(ImVec2(a.x + 22 + hs.x, my), ImVec2(b.x - 14, my), C(c, 0.25f * al), 2); }
-                        y += h; continue;
+                y += h; continue;
+            }
+            const OptionDef& d = defs[r.def];
+            ImVec4 rr(a.x, y + 2, rowR, y + h - 2); bool inView = y >= top - 2 && y + h <= listBottom + 2;
+            bool picked = hit(rr, d.type == OptType::Key ? 7 : 5, r.def); MenuHit& mh = hits.back(); mh.hidden = !inView;
+            if (picked) { selDef = r.def; if (!inView) want = y < top ? scroll - (top - y) : scroll + (y + h - listBottom); }
+            float vx1 = rowR - 6; mh.vx0 = valX; mh.vx1 = vx1;
+            if (vis) {
+                float my = (rr.y + rr.w) * 0.5f;
+                if (picked) { cutBox(ImVec2(rr.x, rr.y), ImVec2(rr.z, rr.w), ts * 0.45f, C(c, 0.16f * al), C(c, 0.75f * al), 1.5f); dl->AddRectFilled(ImVec2(rr.x, rr.y + 3), ImVec2(rr.x + 4, rr.w - 3), C(oc.picked, al)); }
+                else dl->AddLine(ImVec2(rr.x + 10, rr.w + 1), ImVec2(rr.z, rr.w + 1), C(c, 0.1f * al), 1.f);
+                ImU32 lc = picked ? C(oc.picked, al) : C(oc.text, 0.9f * al), dim = C(oc.dim, 0.6f * al);
+                if (d.type == OptType::Reset) { fit(d.label, ts * 0.9f, ImVec2(rr.x + 16, rr.y), ImVec2(rr.z - 10, rr.w), 0, picked ? lc : dim); y += h; continue; }
+                fit(d.label, ts * 0.92f, ImVec2(rr.x + 16, rr.y), ImVec2(valX - 12, rr.w), 0, lc);
+                float v = optionGet(settings, d);
+                switch (d.type) {
+                case OptType::Slider: {   // a segmented bar, the number after it
+                    float numW = ts * 3.4f, bx0 = valX, bx1 = vx1 - numW, k = std::clamp((v - d.lo) / std::max(1e-6f, d.hi - d.lo), 0.f, 1.f);
+                    mh.vx0 = bx0; mh.vx1 = bx1;
+                    int segs = std::max(8, std::min(20, (int)((bx1 - bx0) / (ts * 0.55f)))); float sw = (bx1 - bx0) / segs;
+                    for (int s2 = 0; s2 < segs; s2++) {
+                        bool on = (s2 + 0.5f) / segs <= k;
+                        dl->AddRectFilled(ImVec2(bx0 + s2 * sw + 1, my - ts * 0.22f), ImVec2(bx0 + (s2 + 1) * sw - 1, my + ts * 0.22f), C(c, (on ? (picked ? 0.95f : 0.7f) : 0.14f) * al));
                     }
-                    const OptionDef& d = defs[r.def];
-                    ImVec4 rr(a.x, y + 3, b.x - 14, y + h - 3); bool inView = y >= top - 2 && y + h <= bottom + 2;
-                    bool sel = hit(rr, d.type == OptType::Key ? 7 : 5, r.def); MenuHit& mh = hits.back(); mh.hidden = !inView;
-                    if (sel && !inView) want = y < top ? scroll - (top - y) : scroll + (y + h - bottom);   // keys moved here: it scrolls into view
-                    float vx1 = rr.z - 18; mh.vx0 = valX; mh.vx1 = vx1;
-                    if (vis) {
-                        if (sel) { dl->AddRectFilled(ImVec2(rr.x, rr.y), ImVec2(rr.z, rr.w), C(c, 0.2f * al), 12); dl->AddRect(ImVec2(rr.x, rr.y), ImVec2(rr.z, rr.w), C(c, 0.85f * al), 12, ImDrawFlags_None, 3.f);
-                            dl->AddTriangleFilled(ImVec2(rr.x + 14, rr.y + (rr.w - rr.y) * 0.3f), ImVec2(rr.x + 14, rr.w - (rr.w - rr.y) * 0.3f), ImVec2(rr.x + 28, (rr.y + rr.w) * 0.5f), C(c, al)); }
-                        ImU32 lc = sel ? C(oc.picked, al) : C(oc.text, 0.92f * al), dim = C(oc.dim, 0.5f * al);
-                        float my = (rr.y + rr.w) * 0.5f;
-                        if (d.type == OptType::Reset) { text(d.label, ts * 0.9f, ImVec2(rr.x + 40, rr.y), ImVec2(rr.z - 20, rr.w), 0, sel ? lc : dim, false); y += h; continue; }
-                        text(d.label, ts, ImVec2(rr.x + 40, rr.y), ImVec2(valX - 10, rr.w), 0, lc, false);
-                        float v = optionGet(settings, d);
-                        switch (d.type) {
-                        case OptType::Slider: {
-                            float tw2 = (vx1 - valX) * 0.6f, k = std::clamp((v - d.lo) / std::max(1e-6f, d.hi - d.lo), 0.f, 1.f), tx1 = valX + tw2;
-                            mh.vx1 = tx1;
-                            dl->AddRectFilled(ImVec2(valX, my - 4), ImVec2(tx1, my + 4), C(c, 0.22f * al), 4);
-                            dl->AddRectFilled(ImVec2(valX, my - 4), ImVec2(valX + tw2 * k, my + 4), C(c, (sel ? 0.95f : 0.7f) * al), 4);
-                            dl->AddCircleFilled(ImVec2(valX + tw2 * k, my), sel ? 12.f : 9.f, sel ? C(oc.picked, al) : C(c, al));
-                            text(optionText(settings, d), ts * 0.9f, ImVec2(tx1 + 14, rr.y), ImVec2(vx1, rr.w), 2, lc, false);
-                            break; }
-                        case OptType::Toggle: {
-                            bool on = v > 0.5f; ImVec2 p0(valX, my - ts * 0.5f), p1(valX + ts * 2.6f, my + ts * 0.5f);
-                            dl->AddRectFilled(p0, p1, C(c, (on ? 0.55f : 0.08f) * al), ts * 0.5f); dl->AddRect(p0, p1, C(c, 0.8f * al), ts * 0.5f, ImDrawFlags_None, 2.f);
-                            float kx = on ? p1.x - ts * 0.5f : p0.x + ts * 0.5f; dl->AddCircleFilled(ImVec2(kx, my), ts * 0.36f, on ? C(oc.picked, al) : C(c, 0.6f * al));
-                            text(on ? "On" : "Off", ts * 0.9f, ImVec2(p1.x + 16, rr.y), ImVec2(vx1, rr.w), 0, on ? lc : dim, false);
-                            break; }
-                        case OptType::Choice: {
-                            int ci = (int)std::lround(v); bool canL = ci > 0, canR = ci < (int)d.choices.size() - 1; float aw = ts * 0.32f;
-                            dl->AddTriangleFilled(ImVec2(valX, my), ImVec2(valX + aw * 1.6f, my - aw), ImVec2(valX + aw * 1.6f, my + aw), canL ? C(c, al) : C(c, 0.15f * al));
-                            dl->AddTriangleFilled(ImVec2(vx1, my), ImVec2(vx1 - aw * 1.6f, my - aw), ImVec2(vx1 - aw * 1.6f, my + aw), canR ? C(c, al) : C(c, 0.15f * al));
-                            text(optionText(settings, d), ts * 0.9f, ImVec2(valX + aw * 2.5f, rr.y), ImVec2(vx1 - aw * 2.5f, rr.w), 1, lc, false);
-                            break; }
-                        case OptType::Key: {
-                            float bw = (vx1 - valX - 12) * 0.5f;
-                            for (int sl = 0; sl < 2; sl++) {
-                                ImVec2 p0(valX + sl * (bw + 12), rr.y + 5), p1(p0.x + bw, rr.w - 5);
-                                bool cap = bindCapture == d.act * 2 + sl, here = sel && menuBindSlot == sl; int vk = settings.keys.key[d.act][sl];
-                                float pulse = cap ? 0.5f + 0.5f * std::sin((float)uiClock * 8) : 0;
-                                dl->AddRectFilled(p0, p1, C(c, (cap ? 0.25f + 0.25f * pulse : here ? 0.3f : 0.08f) * al), 8);
-                                dl->AddRect(p0, p1, C(c, (here || cap ? 0.95f : 0.4f) * al), 8, ImDrawFlags_None, here || cap ? 3.f : 1.5f);
-                                text(cap ? "press a key" : vk ? KeyLabel(vk) : "-", ts * 0.82f, p0, p1, 1, cap || here ? C(oc.picked, al) : vk ? C(c, 0.9f * al) : dim, false);
-                            }
-                            break; }
-                        default: break;
+                    fit(optionText(settings, d), ts * 0.85f, ImVec2(bx1 + 6, rr.y), ImVec2(vx1, rr.w), 2, lc);
+                    break; }
+                case OptType::Toggle: {   // OFF | ON, the chosen half filled
+                    bool on = v > 0.5f; float hw = std::min(valW * 0.5f, ts * 3.2f), x0 = vx1 - hw * 2, hh = ts * 0.5f;
+                    for (int s2 = 0; s2 < 2; s2++) {
+                        bool here = (s2 == 1) == on; ImVec2 p0(x0 + s2 * hw, my - hh), p1(x0 + (s2 + 1) * hw - (s2 == 0 ? 2 : 0), my + hh);
+                        uint32_t fc2 = s2 == 0 ? oc.dim : c;
+                        dl->AddRectFilled(p0, p1, C(fc2, (here ? (s2 == 0 ? 0.55f : 0.85f) : 0.06f) * al));
+                        dl->AddRect(p0, p1, C(fc2, (here ? 0.9f : 0.3f) * al), 0, ImDrawFlags_None, 1.f);
+                        TextIn(dl, font, s2 == 0 ? "OFF" : "ON", ts * 0.78f, p0, p1, 1, here ? C(s2 == 0 ? oc.text : 0x041018, al) : dim);
+                    }
+                    break; }
+                case OptType::Choice: {   // < value > in a sharp box
+                    int ci = (int)std::lround(v); bool canL = ci > 0, canR = ci < (int)d.choices.size() - 1; float aw = ts * 0.3f;
+                    ImVec2 p0(valX, my - ts * 0.55f), p1(vx1, my + ts * 0.55f);
+                    cutBox(p0, p1, ts * 0.3f, C(c, (picked ? 0.14f : 0.05f) * al), C(c, (picked ? 0.7f : 0.25f) * al), 1.f);
+                    dl->AddTriangleFilled(ImVec2(p0.x + aw * 0.8f, my), ImVec2(p0.x + aw * 2.2f, my - aw), ImVec2(p0.x + aw * 2.2f, my + aw), canL ? C(c, al) : C(c, 0.15f * al));
+                    dl->AddTriangleFilled(ImVec2(p1.x - aw * 0.8f, my), ImVec2(p1.x - aw * 2.2f, my - aw), ImVec2(p1.x - aw * 2.2f, my + aw), canR ? C(c, al) : C(c, 0.15f * al));
+                    fit(optionText(settings, d), ts * 0.85f, ImVec2(p0.x + aw * 3, rr.y), ImVec2(p1.x - aw * 3, rr.w), 1, lc);
+                    break; }
+                case OptType::Key: {   // two keys, each in a sharp box
+                    float bw = (vx1 - valX - 8) * 0.5f;
+                    for (int s2 = 0; s2 < 2; s2++) {
+                        ImVec2 p0(valX + s2 * (bw + 8), rr.y + 5), p1(p0.x + bw, rr.w - 5);
+                        bool cap = bindCapture == d.act * 2 + s2, here = picked && menuBindSlot == s2; int vk = settings.keys.key[d.act][s2];
+                        float pulse = cap ? 0.5f + 0.5f * std::sin((float)uiClock * 8) : 0;
+                        cutBox(p0, p1, ts * 0.25f, C(c, (cap ? 0.25f + 0.25f * pulse : here ? 0.3f : 0.06f) * al), C(c, (here || cap ? 0.95f : 0.35f) * al), here || cap ? 2.f : 1.f);
+                        fit(cap ? "press a key" : vk ? KeyLabel(vk) : "-", ts * 0.8f, ImVec2(p0.x + 4, p0.y), ImVec2(p1.x - 4, p1.y), 1, cap || here ? C(oc.picked, al) : vk ? C(c, 0.9f * al) : dim);
+                    }
+                    break; }
+                default: break;
+                }
+            }
+            y += h;
+        }
+        dl->PopClipRect();
+        if (want != scroll) scroll = std::clamp(want, 0.f, std::max(0.f, total - room));
+        if (total > room) {   // a thin scroll bar
+            float k = room / total, y0 = top + (scroll / total) * room;
+            dl->AddRectFilled(ImVec2(listR - 5, top), ImVec2(listR - 3, listBottom), C(c, 0.12f * al));
+            dl->AddRectFilled(ImVec2(listR - 6, y0), ImVec2(listR - 2, y0 + room * k), C(c, 0.75f * al));
+        }
+        {   // what the picked option does
+            ImVec2 p0 = side ? ImVec2(listR + ts * 0.6f, top) : ImVec2(a.x, listBottom + ts * 0.3f), p1 = side ? ImVec2(b.x, bottom - ts * 0.3f) : ImVec2(b.x, bottom - ts * 0.2f);
+            cutBox(p0, p1, ts * 0.8f, C(oc.dim, 0.08f * al), C(c, 0.35f * al), 1.f);
+            if (selDef >= 0) {
+                const OptionDef& d = defs[selDef]; float pad = ts * 0.6f;
+                std::string tip = d.tip.empty() ? std::string() : d.tip;
+                if (side) {
+                    fit(d.label, ts * 1.05f, ImVec2(p0.x + pad, p0.y + pad * 0.5f), ImVec2(p1.x - pad, p0.y + pad * 0.5f + ts * 1.4f), 0, C(oc.picked, al));
+                    float ly = p0.y + pad * 0.5f + ts * 1.6f; dl->AddLine(ImVec2(p0.x + pad, ly), ImVec2(p1.x - pad, ly), C(c, 0.4f * al), 1.f);
+                    if (d.type != OptType::Key && d.type != OptType::Reset) fit(optionText(settings, d), ts * 0.85f, ImVec2(p0.x + pad, ly + ts * 0.3f), ImVec2(p1.x - pad, ly + ts * 1.4f), 0, C(c, al));
+                    if (!tip.empty()) {
+                        float tsz = ts * 0.8f; auto measure = [&](const char* q0, const char* q1) { return font->CalcTextSizeA(tsz, FLT_MAX, 0, q0, q1).x; };
+                        float ty = ly + ts * 1.7f;
+                        for (const TextLine& ln : wrapText(tip, p1.x - p0.x - pad * 2, measure)) {
+                            if (ty + tsz > p1.y - pad * 0.5f) break;
+                            dl->AddText(font, tsz, ImVec2(p0.x + pad, ty), C(oc.text, 0.8f * al), tip.data() + ln.start, tip.data() + ln.end); ty += tsz * 1.3f;
                         }
                     }
-                    y += h;
+                } else {
+                    fit(d.label + (tip.empty() ? "" : ":  " + tip), ts * 0.8f, ImVec2(p0.x + pad, p0.y), ImVec2(p1.x - pad, p1.y), 0, C(oc.text, 0.85f * al));
                 }
-                dl->PopClipRect();
-                if (want != scroll) scroll = std::clamp(want, 0.f, std::max(0.f, total - room));
-                if (total > room) {   // a scroll bar
-                    float k = room / total, y0 = top + (scroll / total) * room;
-                    dl->AddRectFilled(ImVec2(b.x - 7, top), ImVec2(b.x - 2, bottom), C(c, 0.12f * al), 3);
-                    dl->AddRectFilled(ImVec2(b.x - 7, y0), ImVec2(b.x - 2, y0 + room * k), C(c, 0.6f * al), 3);
-                }
-                {   // what the keys do here
-                    const MenuHit* cur = sel >= 0 && sel < (int)hits.size() ? &hits[sel] : nullptr;
-                    std::string hint = bindCapture >= 0 ? "Press a key or a mouse button      Esc: never mind"
-                                     : cur && cur->kind == 7 ? "A / D: which key      Enter: set it      Delete: none"
-                                     : cur && cur->kind == 5 && defs[cur->arg].type == OptType::Reset ? "Enter: back to the start values"
-                                     : cur && cur->kind == 6 ? "A / D: Sound, Graphics, Controls"
-                                     : pages ? "W / S: pick      A / D: change      Q / E: pages" : "W / S: pick      A / D: change      Esc: back";
-                    text(hint, ts * 0.72f, ImVec2(a.x, bottom + 4), ImVec2(b.x - 10, b.y), 2, C(c, 0.5f * al), false);
-                }
-                    }
+            }
+        }
+        {   // the keys, in little boxes, at the bottom right
+            const MenuHit* cur = sel >= 0 && sel < (int)hits.size() ? &hits[sel] : nullptr;
+            std::vector<std::pair<std::string, std::string>> keys;
+            if (bindCapture >= 0) keys = { { "any key", "set it" }, { "Esc", "never mind" } };
+            else if (cur && cur->kind == 7) keys = { { "A/D", "which key" }, { "Enter", "set it" }, { "Del", "none" } };
+            else if (cur && cur->kind == 5 && defs[cur->arg].type == OptType::Reset) keys = { { "Enter", "back to the start values" } };
+            else if (cur && cur->kind == 6) keys = { { "A/D", "Sound, Graphics, Controls" } };
+            else if (pages) keys = { { "W/S", "pick" }, { "A/D", "change" }, { "Q/E", "pages" } };
+            else keys = { { "W/S", "pick" }, { "A/D", "change" }, { "Esc", "back" } };
+            float ks = ts * 0.7f, x = b.x - 4, my = (bottom + b.y) * 0.5f;
+            for (int k = (int)keys.size() - 1; k >= 0; k--) {
+                float lw = font->CalcTextSizeA(ks, FLT_MAX, 0, keys[k].second.c_str()).x, kw = font->CalcTextSizeA(ks, FLT_MAX, 0, keys[k].first.c_str()).x + ks;
+                x -= lw; dl->AddText(font, ks, ImVec2(x, my - ks * 0.5f), C(c, 0.6f * al), keys[k].second.c_str());
+                x -= kw + ks * 0.4f; ImVec2 k0(x, my - ks * 0.75f), k1(x + kw, my + ks * 0.75f);
+                dl->AddRect(k0, k1, C(c, 0.7f * al), 0, ImDrawFlags_None, 1.f); TextIn(dl, font, keys[k].first, ks, k0, k1, 1, C(oc.picked, 0.9f * al));
+                x -= ks * 1.4f;
+            }
+        }
+    }
     void BuildMenuLists() {
         menuShown = false; menuHits.clear(); menuPanes.clear(); menuPaneIsPage.clear(); smModel.clear();
         bool inMenu = playMode && paused && !mapOpen && !showSettings && !scanOpen && !savePrompt, inScan = playMode && scanOpen, inSave = playMode && savePrompt;
