@@ -4661,9 +4661,9 @@ struct App {
                 V3 jd = camPos - primePrevCam;
                 if (outScreen != primeLastOut || frameNo != primeFrame + 1 || std::sqrt(jd.x * jd.x + jd.y * jd.y + jd.z * jd.z) > 4) primeOk = false;   // a new view, a skipped frame, a jump: start again
                 int nx = 1 - primeCur;
-                float small = std::clamp(1.f - (float)sceneW / std::max(1, rw) * 2.f, 0.f, 1.f);   // 0 at 50% and above, up to 1 at 0%: below 50% a longer memory and more sharpening
-                ChunkCB cc{ { jitX, jitY, primeOk ? 0.f : 1.f, std::clamp(settings.upSharp + small * 0.6f, 0.f, 1.f) }, { (float)rw, (float)rh, (float)sceneW, (float)sceneH },
-                            { playMode ? 0.0021f : 0.f, sceneW < rw ? 14.f + small * 30.f : 9.f, 0, 0 } };
+                float lowK = std::clamp(1.f - (float)sceneW / std::max(1, rw) * 2.f, 0.f, 1.f);   // 0 at 50% and above, up to 1 at 0%: below 50% a longer memory and more sharpening
+                ChunkCB cc{ { jitX, jitY, primeOk ? 0.f : 1.f, std::clamp(settings.upSharp + lowK * 0.6f, 0.f, 1.f) }, { (float)rw, (float)rh, (float)sceneW, (float)sceneH },
+                            { playMode ? 0.0021f : 0.f, sceneW < rw ? 14.f + lowK * 30.f : 9.f, 0, 0 } };
                 ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);
                 { ID3D11Buffer* cbs[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->PSSetConstantBuffers(0, 2, cbs); }
                 ctx->OMSetRenderTargets(1, primeHist[nx].rtv.GetAddressOf(), nullptr); ctx->PSSetShader(psPrimeScale.Get(), nullptr, 0);
