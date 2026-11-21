@@ -618,7 +618,7 @@ float3 lightBlock(VSOut i, float3 albedo, bool front, out float3 n, out float sh
     float lamp = max(i.lamp.r, max(i.lamp.g, i.lamp.b));
     float3 hue = lamp > 0 ? i.lamp.rgb / lamp : 0;                                                   // the colour of the lamps nearby
     light += hue * (pow(lamp, 3.2) * 0.9) * gExtra.w * lerp(0.5, 1, i.ao) * ambMul;
-    float metal = saturate(m.a.y);
+    float metal = saturate(m.a.y) * saturate(max(saturate(m.a.x), i.mat.x) * 4);   // (metal only shows when it is shiny at all: matt metal is just its colour)
     float dShine = max(max(saturate(m.a.x), i.mat.x), wet * 0.9);                                  // how shiny for the lights' highlights (wet streets!)
     float3 dSpec;
     sFlatN = nFlat;

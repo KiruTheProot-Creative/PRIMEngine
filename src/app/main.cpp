@@ -5727,6 +5727,22 @@ struct App {
             if (own) { Prop("Roughness"); ImGui::SliderFloat("##rough", &draft.roughness, 0, 1, draft.roughness <= 0.001f ? "sharp" : "%.2f");
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("How blurry its reflections are: 0 sharp (polished stone, glass), higher: glossy and soft (brushed metal, wet rock, plastic)."); }
         }
+        {   // its textures' own material (shiny, metal ...): shown here, so a "matt" block that still reflects isn't a mystery
+            std::vector<std::string> seen;
+            for (const std::string& t : draft.faces) if (!t.empty() && std::find(seen.begin(), seen.end(), t) == seen.end()) seen.push_back(t);
+            for (const std::string& t : seen) {
+                TexMaterial m = materials.of(t); if (m.shine <= 0 && m.metal <= 0) continue;
+                bool guessed = !materials.set.count(t);
+                ImGui::PushID(t.c_str());
+                ImGui::TextColored(ImVec4(1, 0.8f, 0.4f, 1), "Its texture \"%s\" is %s%s%s", t.c_str(), m.metal > 0 ? "metal" : "", m.metal > 0 && m.shine > 0 ? ", " : "", m.shine > 0 ? "shiny" : "");
+                if (guessed) { ImGui::SameLine(); ImGui::TextDisabled("(guessed from its name)"); }
+                Prop("Texture: shiny"); if (ImGui::SliderFloat("##tsh", &m.shine, 0, 1, m.shine <= 0 ? "matt" : "%.2f")) { materials.put(t, m); SaveMaterials(); }
+                Prop("Texture: metal"); if (ImGui::SliderFloat("##tme", &m.metal, 0, 1, m.metal <= 0 ? "no" : "%.2f")) { materials.put(t, m); SaveMaterials(); }
+                if (ImGui::SmallButton("Make it matt")) { m.shine = 0; m.metal = 0; materials.put(t, m); SaveMaterials(); }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("No shine and no metal on this texture (every block using it).");
+                ImGui::PopID();
+            }
+        }
         Prop("Mirror"); ImGui::Checkbox("##mirror", &draft.mirror);
         Prop("Textures turn with it"); ImGui::Checkbox("##texturns", &draft.texTurns);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("On: a turned block (R while placing) turns its textures too: a log on its side shows its rings at the ends.\nOff: the textures stay lined up with the world (grass stays on top).");
