@@ -53,6 +53,7 @@
 #include <shellapi.h>
 #include <commdlg.h>
 #include <d3d11.h>
+#include <dxgi1_5.h>
 #include <xaudio2.h>
 #include <d3dcompiler.h>
 #include <DirectXMath.h>
@@ -263,7 +264,7 @@ struct App {
     bool lPrev = true, rPrev = true, mPrev = true;
     bool hoverValid = false; Hit hover{};
     std::string toast; double toastT = 0;
-    double fps = 0; int fpsN = 0; double fpsAcc = 0;
+    double fps = 0; int fpsN = 0; double fpsAcc = 0; bool tearing = false;
 
     // ---- the editor (G1): docked panels around the viewport, and Play mode
     enum class Sel { None, World, Weather, Environment, Zone, Spawn, Player, Game, Block, Texture, Shape, Tool, Object, Selection, Model, Asset };
@@ -298,8 +299,13 @@ struct App {
 
     // ================================================================== setup
     void Init() {
-        DXGI_SWAP_CHAIN_DESC sd{}; sd.BufferCount = 2; sd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM; sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+        DXGI_SWAP_CHAIN_DESC sd{}; sd.BufferCount = 3; sd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM; sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
         sd.OutputWindow = hwnd; sd.SampleDesc.Count = 1; sd.Windowed = TRUE; sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+        {   // VSync off: really off (the screen may tear) where Windows allows it
+            ComPtr<IDXGIFactory1> f1; ComPtr<IDXGIFactory5> f5; BOOL ok = FALSE;
+            if (SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&f1))) && SUCCEEDED(f1.As(&f5)) && SUCCEEDED(f5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &ok, sizeof ok)) && ok) tearing = true;
+            if (tearing) sd.Flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+        }
         D3D_FEATURE_LEVEL fl = D3D_FEATURE_LEVEL_11_0, got;
         if (FAILED(D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, &fl, 1, D3D11_SDK_VERSION, &sd, &swap, &dev, &got, &ctx))) {
             driverName = "software (WARP)";   // no usable graphics card (e.g. the build machine): Windows draws it on the processor
@@ -516,7 +522,7 @@ struct App {
     }
     void OnResize() {
         resized = false; ctx->OMSetRenderTargets(0, nullptr, nullptr); backRTV.Reset();
-        HR(swap->ResizeBuffers(0, 0, 0, DXGI_FORMAT_UNKNOWN, 0));
+        HR(swap->ResizeBuffers(0, 0, 0, DXGI_FORMAT_UNKNOWN, tearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0));
         RECT r; GetClientRect(hwnd, &r); cw = std::max<int>(2, r.right); ch = std::max<int>(2, r.bottom);
         MakeBackbuffer();
     }
@@ -1174,20 +1180,26 @@ struct App {
             if (e == PlayState::Died) { Toast(std::string("You ") + play.cause); GameSnd(&PlayerSounds::death, SND_MOVEMENT); StopScanLoop(); Signal(When::Dies, ""); ResetBossFights(); }
         }
         mouseDX = mouseDY = 0;
-        weather.update(dt, player.feet);
+        CpuMark("game: weather, liquids"); weather.update(dt, player.feet);
         world->liquidTimer += dt;   // water and lava flow 10 steps a second
         for (int k = 0; k < 3 && world->liquidTimer >= 0.1; k++) { world->liquidTimer -= 0.1; world->tickLiquids(); }
         if (world->liquidTimer > 0.3) world->liquidTimer = 0;
-        envState.update(dt, player.eye(), info.environment, info.zones); UpdateLook(dt, false); UpdateCamOpen(dt); UpdateLampProxies(dt); UpdateSkyVolume(); UpdateVoxels(); UpdateWater(dt);
+        envState.update(dt, player.eye(), info.environment, info.zones); UpdateLook(dt, false); UpdateCamOpen(dt);
+        CpuMark("game: lamp lights"); UpdateLampProxies(dt);
+        CpuMark("game: sky volume"); UpdateSkyVolume();
+        CpuMark("game: light voxels"); UpdateVoxels();
+        CpuMark("game: water"); UpdateWater(dt);
+        CpuMark("game: other");
         if (looksDirty && !ImGui::IsAnyItemActive()) { looksDirty = false; if (!projectDir.empty()) saveLooks(projectDir + "/looks.txt", looks); }
         cloudTime += dt * (0.5 + weather.now.wind);
         precipTime += dt; { float w = EffWeather().wind; precipWindX += dt * w; precipWindZ += dt * w * 0.45; }   // (added up: a change of wind only changes how they move from now on)
         if (settings.dayCycle) { settings.timeOfDay += (float)(dt * 24.0 / 1200.0); if (settings.timeOfDay >= 24) settings.timeOfDay -= 24; }
         // load chunks around the player and keep their meshes fresh
         I3 pc = chunkOf(ifloor(player.feet.x), ifloor(player.feet.y), ifloor(player.feet.z));
-        world->stream(pc, settings.renderDistance, settings.verticalDistance, 24);
-        ScheduleMeshing(pc);
-        CollectMeshes();
+        CpuMark("game: loading chunks"); world->stream(pc, settings.renderDistance, settings.verticalDistance, 24);
+        CpuMark("game: meshing"); ScheduleMeshing(pc);
+        CpuMark("game: uploading meshes"); CollectMeshes();
+        CpuMark("game: other");
         if ((autosave += dt) > 60) { autosave = 0; SaveWorld(); }
     }
     // ---- panel layout helpers: everything fits the width of whatever panel it is in
@@ -3868,15 +3880,41 @@ struct App {
         ctx->DrawIndexed(nBolt, 0, 0);
         ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());
     }
-    // ---- the GPU timer (with the FPS counter on): how long each step of the picture takes on the graphics card, read a few frames
-    // later so it never waits (timestamp queries); shown under the counter, the slowest first
+    // ---- the timers (with the FPS counter on): how long each step takes, on the graphics card (timestamp queries, read a few
+    // frames later so it never waits) and on the processor (a clock); shown under the counter, the slowest first
     struct GpuTimer {
         static constexpr int F = 4, N = 32;
-        ComPtr<ID3D11Query> dis[F], ts[F][N]; const char* name[F][N] = {}; int n[F] = {}; bool live[F] = {}; int cur = 0; bool made = false;
+        ComPtr<ID3D11Query> dis[F], ts[F][N]; const char* name[F][N] = {}; int n[F] = {}; bool live[F] = {}; int age[F] = {}; int cur = 0; bool made = false, rec = false;
         std::map<std::string, double> ms; double total = 0;
     } gpuT;
+    struct CpuTimer {
+        std::chrono::steady_clock::time_point t, frameStart, lastEnd; const char* cur = nullptr; bool rec = false, had = false;
+        std::map<std::string, double> acc, ms; double total = 0;
+    } cpuT;
     bool GpuOn() const { return settings.showFps; }
+    void CpuMark(const char* step) {   // from here on, the processor's time goes to `step`
+        if (!cpuT.rec) return;
+        auto now = std::chrono::steady_clock::now();
+        if (cpuT.cur) cpuT.acc[cpuT.cur] += std::chrono::duration<double, std::milli>(now - cpuT.t).count();
+        cpuT.cur = step; cpuT.t = now;
+    }
+    void CpuBegin() {
+        cpuT.rec = GpuOn(); if (!cpuT.rec) { cpuT.had = false; return; }
+        auto now = std::chrono::steady_clock::now(); cpuT.acc.clear();
+        if (cpuT.had) cpuT.acc["window messages"] = std::chrono::duration<double, std::milli>(now - cpuT.lastEnd).count();
+        cpuT.frameStart = now; cpuT.t = now; cpuT.cur = "sound and music";
+    }
+    void CpuEnd() {
+        if (!cpuT.rec) return;
+        CpuMark(nullptr); cpuT.rec = false;
+        auto now = std::chrono::steady_clock::now(); double tot = 0;
+        for (auto& kv : cpuT.ms) kv.second *= 0.9;
+        for (auto& kv : cpuT.acc) { cpuT.ms[kv.first] += kv.second * 0.1; tot += kv.second; }
+        cpuT.total = cpuT.had ? cpuT.total * 0.9 + tot * 0.1 : tot;
+        cpuT.lastEnd = now; cpuT.had = true;
+    }
     void GpuBegin() {
+        gpuT.rec = false;
         if (!GpuOn()) return;
         if (!gpuT.made) {
             D3D11_QUERY_DESC qd{}; qd.Query = D3D11_QUERY_TIMESTAMP_DISJOINT;
@@ -3885,51 +3923,61 @@ struct App {
             for (int f = 0; f < GpuTimer::F; f++) for (int k = 0; k < GpuTimer::N; k++) if (FAILED(dev->CreateQuery(&qd, &gpuT.ts[f][k]))) return;
             gpuT.made = true;
         }
-        int f = gpuT.cur; if (gpuT.live[f]) return;   // (still waiting for that one's numbers)
-        ctx->Begin(gpuT.dis[f].Get()); gpuT.n[f] = 0; gpuT.live[f] = true;
-        GpuMark("setup");
+        int f = gpuT.cur;
+        if (gpuT.live[f]) { if (++gpuT.age[f] < 30) return; gpuT.live[f] = false; }   // (still waiting for that one's numbers; given up after a while)
+        ctx->Begin(gpuT.dis[f].Get()); gpuT.n[f] = 0; gpuT.rec = true;
     }
-    void GpuMark(const char* step) {   // from here on, the time goes to `step` (until the next mark)
-        if (!GpuOn() || !gpuT.made) return;
-        int f = gpuT.cur; if (!gpuT.live[f] || gpuT.n[f] >= GpuTimer::N) return;
+    void GpuMark(const char* step) {   // from here on, the time goes to `step` (until the next mark), on both
+        CpuMark(step);
+        if (!gpuT.rec) return;
+        int f = gpuT.cur; if (gpuT.n[f] >= GpuTimer::N) return;
         ctx->End(gpuT.ts[f][gpuT.n[f]].Get()); gpuT.name[f][gpuT.n[f]++] = step;
     }
     void GpuEnd() {
-        if (!GpuOn() || !gpuT.made) return;
-        int f = gpuT.cur;
-        if (gpuT.live[f] && gpuT.n[f] > 0 && gpuT.name[f][gpuT.n[f] - 1] != std::string("end")) { GpuMark("end"); ctx->End(gpuT.dis[f].Get()); gpuT.cur = (f + 1) % GpuTimer::F; }
+        if (!GpuOn()) { gpuT.rec = false; return; }
+        if (gpuT.rec) {   // this frame's marks are sent: wait for their numbers, the next slot records
+            int f = gpuT.cur;
+            if (gpuT.n[f] < GpuTimer::N) { ctx->End(gpuT.ts[f][gpuT.n[f]].Get()); gpuT.name[f][gpuT.n[f]++] = "end"; }
+            ctx->End(gpuT.dis[f].Get()); gpuT.live[f] = true; gpuT.age[f] = 0; gpuT.rec = false;
+            gpuT.cur = (f + 1) % GpuTimer::F;
+        }
         for (int k = 0; k < GpuTimer::F; k++) {   // any finished frame: its numbers (eased, so they can be read)
-            if (!gpuT.live[k] || k == gpuT.cur) continue;
+            if (!gpuT.live[k]) continue;
             D3D11_QUERY_DATA_TIMESTAMP_DISJOINT dj{};
             if (ctx->GetData(gpuT.dis[k].Get(), &dj, sizeof dj, D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK) continue;
-            gpuT.live[k] = false; if (dj.Disjoint || dj.Frequency == 0) continue;
             std::vector<UINT64> t(gpuT.n[k], 0); bool ok = true;
             for (int i = 0; i < gpuT.n[k] && ok; i++) ok = ctx->GetData(gpuT.ts[k][i].Get(), &t[i], sizeof(UINT64), D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK;
             if (!ok) continue;
+            gpuT.live[k] = false; if (dj.Disjoint || dj.Frequency == 0 || gpuT.n[k] < 2) continue;
             std::map<std::string, double> now;
-            for (int i = 0; i + 1 < gpuT.n[k]; i++) now[gpuT.name[k][i]] += double(t[i + 1] - t[i]) * 1000.0 / double(dj.Frequency);
-            double tot = gpuT.n[k] > 1 ? double(t[gpuT.n[k] - 1] - t[0]) * 1000.0 / double(dj.Frequency) : 0;
+            for (int i = 0; i + 1 < gpuT.n[k]; i++) if (t[i + 1] >= t[i]) now[gpuT.name[k][i]] += double(t[i + 1] - t[i]) * 1000.0 / double(dj.Frequency);
+            double tot = t[gpuT.n[k] - 1] >= t[0] ? double(t[gpuT.n[k] - 1] - t[0]) * 1000.0 / double(dj.Frequency) : 0;
             for (auto& kv : gpuT.ms) kv.second *= 0.9;
             for (auto& kv : now) gpuT.ms[kv.first] += kv.second * 0.1;
             gpuT.total = gpuT.total * 0.9 + tot * 0.1;
         }
     }
-    void DrawGpuTimes(ImDrawList* dl, ImVec2 topRight) {   // under the FPS counter: each step's milliseconds, the slowest first
-        if (gpuT.ms.empty()) return;
-        std::vector<std::pair<double, std::string>> v; for (auto& kv : gpuT.ms) if (kv.second > 0.02) v.push_back({ kv.second, kv.first });
+    float DrawTimeList(ImDrawList* dl, ImVec2 topRight, const char* title, const std::map<std::string, double>& ms, double total) {   // one list: its steps' milliseconds, the slowest first; returns where it ends
+        std::vector<std::pair<double, std::string>> v; for (auto& kv : ms) if (kv.second > 0.02) v.push_back({ kv.second, kv.first });
         std::sort(v.rbegin(), v.rend());
-        float lh = ImGui::GetTextLineHeight() + 2, w = 260 * settings.uiScale, y = topRight.y;
-        int rows = std::min<int>((int)v.size(), 16);
+        float lh = ImGui::GetTextLineHeight() + 2, w = 300 * settings.uiScale, y = topRight.y;
+        int rows = std::min<int>((int)v.size(), 14);
         dl->AddRectFilled(ImVec2(topRight.x - w - 6, y - 3), ImVec2(topRight.x + 6, y + lh * (rows + 1) + 3), IM_COL32(0, 0, 0, 150), 4);
-        char b[96]; snprintf(b, sizeof b, "graphics card  %.2f ms", gpuT.total);
+        char b[128]; snprintf(b, sizeof b, "%s  %.2f ms", title, total);
         dl->AddText(ImVec2(topRight.x - w, y), IM_COL32(200, 220, 235, 230), b); y += lh;
         double most = v.empty() ? 1 : std::max(0.5, v[0].first);
         for (int i = 0; i < rows; i++) {
             float k = (float)(v[i].first / most);
-            dl->AddRectFilled(ImVec2(topRight.x - w, y + 2), ImVec2(topRight.x - w + w * 0.38f * k, y + lh - 3), v[i].first > 4 ? IM_COL32(255, 110, 90, 150) : v[i].first > 1.5 ? IM_COL32(255, 210, 100, 140) : IM_COL32(110, 230, 160, 120));
+            dl->AddRectFilled(ImVec2(topRight.x - w, y + 2), ImVec2(topRight.x - w + w * 0.3f * k, y + lh - 3), v[i].first > 4 ? IM_COL32(255, 110, 90, 150) : v[i].first > 1.5 ? IM_COL32(255, 210, 100, 140) : IM_COL32(110, 230, 160, 120));
             snprintf(b, sizeof b, "%6.2f  %s", v[i].first, v[i].second.c_str());
-            dl->AddText(ImVec2(topRight.x - w * 0.6f, y), IM_COL32(235, 240, 245, 235), b); y += lh;
+            dl->AddText(ImVec2(topRight.x - w * 0.68f, y), IM_COL32(235, 240, 245, 235), b); y += lh;
         }
+        return y + 12;
+    }
+    void DrawGpuTimes(ImDrawList* dl, ImVec2 topRight) {   // under the FPS counter: where the time goes
+        float y = topRight.y;
+        if (!gpuT.ms.empty()) y = DrawTimeList(dl, ImVec2(topRight.x, y), "graphics card", gpuT.ms, gpuT.total);
+        if (!cpuT.ms.empty()) DrawTimeList(dl, ImVec2(topRight.x, y), "processor", cpuT.ms, cpuT.total);
     }
     void RenderWorld(ID3D11RenderTargetView* outScreen) {
         // render scale: drawn at the world's own size into a picture of that size, fitted to the screen at the end (the HUD over it at the screen's size)
@@ -14825,7 +14873,9 @@ struct App {
 
     // ================================================================== frame
     void FrameBody(double dt) {   // everything but showing the picture (screenshots grab it before)
+        CpuBegin();
         if (audioOk) { UpdateAudio(); UpdateMusic(dt); }
+        CpuMark("resizing, textures");
         ApplyFullscreen();
         if (resized) OnResize();
         if (pending) { auto f = std::move(pending); pending = nullptr; f(); }
@@ -14847,11 +14897,14 @@ struct App {
         fpsAcc += dt; fpsN++; if (fpsAcc > 0.5) { fps = fpsN / fpsAcc; fpsAcc = 0; fpsN = 0; }
         PollTextures(dt);
         if (screen == Screen::Game) {
+            CpuMark("game: player, objects");
             float slow = DeathNow().slow; double gdt = dt * slow; UpdateGame(gdt);
+            CpuMark("screens, death");
             if (slow < 1 && playMode && !paused && play.dead()) play.deadFor += dt - gdt;   // (slow motion: the world slows, the sequence does not)
             DeathSkip(); UpdateDeathSounds();
             UpdateScreens(dt); UpdateStart(dt); CheckDeathScreen(); if (playMode && !paused && !CurScreen()) playTime += dt; }
 
+        CpuMark("building menus, HUD, editor");
         ImGui::GetStyle().FontScaleMain = settings.uiScale;
         ImGui_ImplDX11_NewFrame(); ImGui_ImplWin32_NewFrame(); ImGui::NewFrame();
         if (emissionDirty && !ImGui::IsAnyItemActive()) { emissionDirty = false; ChangeBlocks([] {}); }   // an emission map or its light changed: textures, block light and models again
@@ -14882,7 +14935,7 @@ struct App {
         if (float bl = BlackLevel(); bl > 0.001f && !ev) ImGui::GetForegroundDrawList()->AddRectFilled(ImVec2(0, 0), ImVec2((float)cw, (float)ch), IM_COL32(0, 0, 0, (int)(bl * 255)));   // starting a file: to black and back
         if (ev && screensEdOpen) BuildScreenPreview();
         ImGui::Render();
-        GpuBegin(); GpuMark("minimap, HUD and menu pictures");
+        GpuBegin(); GpuMark("minimap, HUD and menu pictures");   // (each mark: the graphics card's time and the processor's)
         RenderMinimap();
         RenderHudPlanes(); RenderScanModel(); RenderEnemyView(); RenderBallEditor(); RenderItemModel(); RenderMenuPanes();
 
@@ -14904,8 +14957,10 @@ struct App {
     }
     void Frame(double dt) {
         FrameBody(dt);
-        swap->Present(settings.vsync ? 1 : 0, 0);
+        CpuMark("waiting for the screen (VSync) or the card");
+        swap->Present(settings.vsync ? 1 : 0, (!settings.vsync && tearing) ? DXGI_PRESENT_ALLOW_TEARING : 0);
         retired.clear();
+        CpuEnd();
     }
 };
 
