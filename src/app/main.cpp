@@ -3868,6 +3868,69 @@ struct App {
         ctx->DrawIndexed(nBolt, 0, 0);
         ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());
     }
+    // ---- the GPU timer (with the FPS counter on): how long each step of the picture takes on the graphics card, read a few frames
+    // later so it never waits (timestamp queries); shown under the counter, the slowest first
+    struct GpuTimer {
+        static constexpr int F = 4, N = 32;
+        ComPtr<ID3D11Query> dis[F], ts[F][N]; const char* name[F][N] = {}; int n[F] = {}; bool live[F] = {}; int cur = 0; bool made = false;
+        std::map<std::string, double> ms; double total = 0;
+    } gpuT;
+    bool GpuOn() const { return settings.showFps; }
+    void GpuBegin() {
+        if (!GpuOn()) return;
+        if (!gpuT.made) {
+            D3D11_QUERY_DESC qd{}; qd.Query = D3D11_QUERY_TIMESTAMP_DISJOINT;
+            for (int f = 0; f < GpuTimer::F; f++) { if (FAILED(dev->CreateQuery(&qd, &gpuT.dis[f]))) return; }
+            qd.Query = D3D11_QUERY_TIMESTAMP;
+            for (int f = 0; f < GpuTimer::F; f++) for (int k = 0; k < GpuTimer::N; k++) if (FAILED(dev->CreateQuery(&qd, &gpuT.ts[f][k]))) return;
+            gpuT.made = true;
+        }
+        int f = gpuT.cur; if (gpuT.live[f]) return;   // (still waiting for that one's numbers)
+        ctx->Begin(gpuT.dis[f].Get()); gpuT.n[f] = 0; gpuT.live[f] = true;
+        GpuMark("setup");
+    }
+    void GpuMark(const char* step) {   // from here on, the time goes to `step` (until the next mark)
+        if (!GpuOn() || !gpuT.made) return;
+        int f = gpuT.cur; if (!gpuT.live[f] || gpuT.n[f] >= GpuTimer::N) return;
+        ctx->End(gpuT.ts[f][gpuT.n[f]].Get()); gpuT.name[f][gpuT.n[f]++] = step;
+    }
+    void GpuEnd() {
+        if (!GpuOn() || !gpuT.made) return;
+        int f = gpuT.cur;
+        if (gpuT.live[f] && gpuT.n[f] > 0 && gpuT.name[f][gpuT.n[f] - 1] != std::string("end")) { GpuMark("end"); ctx->End(gpuT.dis[f].Get()); gpuT.cur = (f + 1) % GpuTimer::F; }
+        for (int k = 0; k < GpuTimer::F; k++) {   // any finished frame: its numbers (eased, so they can be read)
+            if (!gpuT.live[k] || k == gpuT.cur) continue;
+            D3D11_QUERY_DATA_TIMESTAMP_DISJOINT dj{};
+            if (ctx->GetData(gpuT.dis[k].Get(), &dj, sizeof dj, D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK) continue;
+            gpuT.live[k] = false; if (dj.Disjoint || dj.Frequency == 0) continue;
+            std::vector<UINT64> t(gpuT.n[k], 0); bool ok = true;
+            for (int i = 0; i < gpuT.n[k] && ok; i++) ok = ctx->GetData(gpuT.ts[k][i].Get(), &t[i], sizeof(UINT64), D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK;
+            if (!ok) continue;
+            std::map<std::string, double> now;
+            for (int i = 0; i + 1 < gpuT.n[k]; i++) now[gpuT.name[k][i]] += double(t[i + 1] - t[i]) * 1000.0 / double(dj.Frequency);
+            double tot = gpuT.n[k] > 1 ? double(t[gpuT.n[k] - 1] - t[0]) * 1000.0 / double(dj.Frequency) : 0;
+            for (auto& kv : gpuT.ms) kv.second *= 0.9;
+            for (auto& kv : now) gpuT.ms[kv.first] += kv.second * 0.1;
+            gpuT.total = gpuT.total * 0.9 + tot * 0.1;
+        }
+    }
+    void DrawGpuTimes(ImDrawList* dl, ImVec2 topRight) {   // under the FPS counter: each step's milliseconds, the slowest first
+        if (gpuT.ms.empty()) return;
+        std::vector<std::pair<double, std::string>> v; for (auto& kv : gpuT.ms) if (kv.second > 0.02) v.push_back({ kv.second, kv.first });
+        std::sort(v.rbegin(), v.rend());
+        float lh = ImGui::GetTextLineHeight() + 2, w = 260 * settings.uiScale, y = topRight.y;
+        int rows = std::min<int>((int)v.size(), 16);
+        dl->AddRectFilled(ImVec2(topRight.x - w - 6, y - 3), ImVec2(topRight.x + 6, y + lh * (rows + 1) + 3), IM_COL32(0, 0, 0, 150), 4);
+        char b[96]; snprintf(b, sizeof b, "graphics card  %.2f ms", gpuT.total);
+        dl->AddText(ImVec2(topRight.x - w, y), IM_COL32(200, 220, 235, 230), b); y += lh;
+        double most = v.empty() ? 1 : std::max(0.5, v[0].first);
+        for (int i = 0; i < rows; i++) {
+            float k = (float)(v[i].first / most);
+            dl->AddRectFilled(ImVec2(topRight.x - w, y + 2), ImVec2(topRight.x - w + w * 0.38f * k, y + lh - 3), v[i].first > 4 ? IM_COL32(255, 110, 90, 150) : v[i].first > 1.5 ? IM_COL32(255, 210, 100, 140) : IM_COL32(110, 230, 160, 120));
+            snprintf(b, sizeof b, "%6.2f  %s", v[i].first, v[i].second.c_str());
+            dl->AddText(ImVec2(topRight.x - w * 0.6f, y), IM_COL32(235, 240, 245, 235), b); y += lh;
+        }
+    }
     void RenderWorld(ID3D11RenderTargetView* outScreen) {
         // render scale: drawn at the world's own size into a picture of that size, fitted to the screen at the end (the HUD over it at the screen's size)
         bool scaledNow = Scaled() && upSrc.rtv; int dispW = rw, dispH = rh;
@@ -3908,6 +3971,7 @@ struct App {
         fc.camF[0] = (float)f.x; fc.camF[1] = (float)f.y; fc.camF[2] = (float)f.z; fc.camR[0] = (float)r.x; fc.camR[1] = (float)r.y; fc.camR[2] = (float)r.z;
         fc.camU[0] = (float)u.x; fc.camU[1] = (float)u.y; fc.camU[2] = (float)u.z; fc.proj[0] = std::tan(XMConvertToRadians(settings.fov) * 0.5f); fc.proj[1] = aspect;
 
+        GpuMark("shadow maps");
         // ---- shadow map: the world seen from the sun, around the camera
         int wantShadow = settings.shadowQuality <= 0 ? 0 : std::clamp(settings.shadowRes, 512, 4096);
         if (wantShadow != shadowSize) MakeShadowMap(wantShadow);
@@ -4115,6 +4179,7 @@ struct App {
             ctx->PSSetShaderResources(0, 1, none);
         }
 
+        GpuMark("mirror view");
         // ---- a mirror in view: draw the world once more, reflected in its plane (half size, only what is in front of the mirror)
         if (lastMirror.valid) {
             FrameCB mc = fc;
@@ -4146,6 +4211,7 @@ struct App {
             SetClusterMode(true, 0, std::min(frameLightCount, 32));
         }
 
+        GpuMark("sky");
         // ---- the world, into the HDR picture
         const float black[4] = { 0, 0, 0, 1 };
         ctx->OMSetRenderTargets(1, hdrRTV.GetAddressOf(), dsv.Get()); ctx->ClearRenderTargetView(hdrRTV.Get(), black); ctx->ClearDepthStencilView(dsv.Get(), D3D11_CLEAR_DEPTH, 1.f, 0);
@@ -4156,6 +4222,7 @@ struct App {
         ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psSky.Get(), nullptr, 0); ctx->Draw(3, 0);
         ctx->RSSetState(rsCull.Get());
         { ID3D11ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(39, 1, &n1); }
+        GpuMark("light probes");
         if (probesOn) {   // light probes: this frame's turn traces its rays through the blocks (the rest keep what they knew)
             int nx = 1 - probeCur;
             ctx->OMSetRenderTargets(1, probeRTV[nx].GetAddressOf(), nullptr);
@@ -4172,6 +4239,7 @@ struct App {
             ctx->RSSetViewports(1, &v); ctx->RSSetState(rsCull.Get());
         }
         { ID3D11ShaderResourceView* pb = probesOn ? probeSRV[probeCur].Get() : nullptr; ctx->PSSetShaderResources(39, 1, &pb); }   // (the world reads the probes)
+        GpuMark("blocks and models");
         { const float zero[4] = { 0, 0, 0, 0 }; ctx->ClearRenderTargetView(surfRTV.Get(), zero); ctx->ClearRenderTargetView(indRTV.Get(), zero); ctx->ClearRenderTargetView(albRTV.Get(), zero);
           ID3D11RenderTargetView* four[4] = { hdrRTV.Get(), surfRTV.Get(), indRTV.Get(), albRTV.Get() }; ctx->OMSetRenderTargets(4, four, dsv.Get()); }   // blocks also note direction + shininess, and their sky light
         ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0);
@@ -4183,6 +4251,7 @@ struct App {
         partsDrawnShown = partsDrawn; partsCulledShown = partsCulled; caveHiddenShown = caveHidden;
         ctx->PSSetShader(psCutout.Get(), nullptr, 0); drawChunks(vp, 1, false, true);
 
+        GpuMark("ambient occlusion");
         // ---- ambient occlusion: soft shade where things are close together (half size, then a careful blur that takes away sky light)
         ctx->PSSetShaderResources(0, 5, none);
         if (settings.ambientOcclusion > 0) {
@@ -4200,6 +4269,7 @@ struct App {
             { ID3D11ShaderResourceView* n9[9] = {}; ctx->PSSetShaderResources(0, 9, n9); }
             ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
         }
+        GpuMark("bounce light");
         // ---- bounce light: lit and glowing surfaces light the ones near them (half size, then blurred and added)
         if (fc.gi[0] > 0.001f) {
             ctx->OMSetRenderTargets(1, giRTV.GetAddressOf(), nullptr);
@@ -4227,6 +4297,7 @@ struct App {
             ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
         } else giHistOk = false;   // (off: the memory starts fresh when it comes back)
         histVPPrev = histVPNow; histCamPrev = camPos;
+        GpuMark("reflections");
         // ---- reflections: shiny pixels look for what they mirror in the picture (depth must not be a target while read)
         ctx->OMSetRenderTargets(1, reflRTV.GetAddressOf(), nullptr);
         ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->IASetInputLayout(nullptr); ctx->RSSetState(rsNoCull.Get());
@@ -4286,6 +4357,7 @@ struct App {
             }
         }
 
+        GpuMark("water");
         // ---- water: drawn over the finished world; it reads a copy of the depth (to know how deep it is) and writes its own
         {
             bool anyWater = false; for (auto& kv : gpu) if (kv.second.nW) { anyWater = true; break; }
@@ -4304,6 +4376,7 @@ struct App {
             }
         }
 
+        GpuMark("rain, snow");
         // ---- rain or snow, then lightning
         if (W.rain > 0.02f || W.snow > 0.02f) {
             ctx->OMSetBlendState(bsAlpha.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsTestOnly.Get(), 0); ctx->RSSetState(rsNoCull.Get());
@@ -4316,11 +4389,13 @@ struct App {
         }
         if (weather.boltAge < 0.45 && E.atmosphere > 0.5f) DrawBolt();
 
+        GpuMark("arm cannon, helmet");
         // ---- Play mode: the HUD's 3D parts, lit like the world (sun, its shadows, sky light, light objects), in front of everything
         if (playMode && (!hud.parts.empty() || !weapons.empty())) DrawHudPartsLit(fc, f, r, u, srvs, samps);
         DrawEnemyFlashes();   // hit enemies flash
         bool scanMaskOn = DrawScanMask();   // the Scan Visor: what can be scanned, for the outlines
 
+        GpuMark("clouds, fog");
         // ---- clouds and ground fog over the picture (needs the depth: unbind it as a target first)
         ctx->PSSetShaderResources(0, 4, none);
         ctx->OMSetRenderTargets(1, volRTV.GetAddressOf(), nullptr);
@@ -4329,6 +4404,7 @@ struct App {
         { ID3D11ShaderResourceView* v4[4] = { reflSRV.Get(), shadows ? shadowSRV.Get() : nullptr, depthSRV.Get(), noiseSRV.Get() }; ctx->PSSetShaderResources(0, 4, v4); }
         ctx->Draw(3, 0);
 
+        GpuMark("particles, effects");
         // ---- glowing effects after the clouds and fog: they do not write depth, so the clouds (far away) would cover them
         ctx->PSSetShaderResources(0, 4, none);
         ctx->OMSetRenderTargets(1, volRTV.GetAddressOf(), dsv.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());
@@ -4349,6 +4425,7 @@ struct App {
         ctx->IASetInputLayout(nullptr); ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); ctx->VSSetShader(vsSky.Get(), nullptr, 0);
         { D3D11_VIEWPORT fv{ 0, 0, (float)rw, (float)rh, 0, 1 }; ctx->RSSetViewports(1, &fv); }
 
+        GpuMark("bloom");
         // ---- bloom: shrink the picture step by step, then add the blurry copies back up
         ctx->PSSetShaderResources(0, 4, none);
         bool bloom = settings.bloom > 0 && !bloomLv.empty();
@@ -4375,6 +4452,7 @@ struct App {
             D3D11_VIEWPORT fv{ 0, 0, (float)rw, (float)rh, 0, 1 }; ctx->RSSetViewports(1, &fv);
         }
 
+        GpuMark("eye adaptation");
         // ---- the colour look, and the eye adapting to how bright the picture is
         const ColorLook& lk = lookState.now; bool adaptOn = settings.eyeAdapt && lk.adapt > 0.001f;
         {
@@ -4417,6 +4495,7 @@ struct App {
             adaptCur = nx; D3D11_VIEWPORT fv{ 0, 0, (float)rw, (float)rh, 0, 1 }; ctx->RSSetViewports(1, &fv);
         }
 
+        GpuMark("final picture, anti-aliasing");
         // ---- final picture: exposure + filmic curve into the window (or the editor's viewport picture); paused: first into a picture to blur
         bool blurOn = blurAmt > 0.005f && blurSrc.rtv && blurLv.size() == 4;
         ID3D11RenderTargetView* finalTgt = blurOn ? blurSrc.rtv.Get() : out;
@@ -4468,6 +4547,7 @@ struct App {
             ctx->Draw(3, 0);
             ctx->PSSetShaderResources(0, 4, none);
         }
+        GpuMark("fitting to the screen, HUD");
         if (scaledNow) {   // fitted to the screen: enlarged and sharpened, or (supersampled) averaged down
             rw = dispW; rh = dispH; out = outScreen;
             ctx->OMSetRenderTargets(1, &out, nullptr); D3D11_VIEWPORT fv{ 0, 0, (float)rw, (float)rh, 0, 1 }; ctx->RSSetViewports(1, &fv);
@@ -4589,6 +4669,7 @@ struct App {
             dl->AddRectFilled(ImVec2(p.x - 6, p.y - 3), ImVec2(p.x + ts.x + 6, p.y + ts.y + 3), IM_COL32(0, 0, 0, 140), 4);
             ImU32 col = fps >= 120 ? IM_COL32(120, 255, 160, 255) : fps >= 55 ? IM_COL32(255, 230, 120, 255) : IM_COL32(255, 110, 90, 255);
             dl->AddText(p, col, ft);
+            DrawGpuTimes(dl, ImVec2(vx + cw - 12, p.y + ts.y + 10));   // where the time goes
         }
         if (hideHud) return;
         ImVec2 m(vx + cw * 0.5f, vy + ch * 0.5f);   // crosshair
@@ -4646,6 +4727,30 @@ struct App {
         ImGui::End();
     }
     void Center(ImVec2 size) { ImGui::SetNextWindowPos(ImVec2(cw * 0.5f, ch * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f)); ImGui::SetNextWindowSize(size, ImGuiCond_Always); }
+    // the game's quality presets (projectDir/presets.txt): named by the game maker, shown in the options as "Quality preset"
+    std::vector<QualityPreset> presets = defaultPresets();
+    void LoadPresets() { presets = defaultPresets(); if (!projectDir.empty()) loadPresets(projectDir + "/presets.txt", presets); gamePresets = &presets; }
+    void SavePresets() { if (!projectDir.empty()) savePresets(projectDir + "/presets.txt", presets); }
+    void PresetEditor() {   // (editor) rename the presets, set one from your own settings, add or remove one
+        if (!ImGui::TreeNode("Quality presets of this game")) return;
+        bool ch = false; int del = -1, cur = matchingPreset(settings, presets);
+        for (int i = 0; i < (int)presets.size(); i++) {
+            ImGui::PushID(i);
+            if (ImGui::RadioButton("##use", cur == i)) { applyPreset(settings, presets[i]); settings.save(settingsPath); }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Use it");
+            ImGui::SameLine(); ImGui::SetNextItemWidth(170 * settings.uiScale); ch |= ImGui::InputText("##pn", &presets[i].name);
+            ImGui::SameLine(); if (ImGui::SmallButton("Set from my settings")) { std::string n = presets[i].name; presets[i] = presetFrom(settings, n); ch = true; }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("This preset becomes what your graphics options are right now.");
+            ImGui::SameLine(); if (ImGui::SmallButton("x")) del = i;
+            ImGui::PopID();
+        }
+        if (del >= 0 && presets.size() > 1) { presets.erase(presets.begin() + del); ch = true; }
+        if (ImGui::SmallButton("+ A preset from my settings")) { presets.push_back(presetFrom(settings, "My preset")); ch = true; }
+        ImGui::SameLine(); if (ImGui::SmallButton("Back to the starter presets")) { presets = defaultPresets(); ch = true; }
+        Hint("Players pick these in Options > Display > Quality preset (in this order, lowest first). Changing one option by hand shows \"Custom\".");
+        if (ch) SavePresets();
+        ImGui::TreePop();
+    }
     void OptionChanged(const OptionDef& d) {   // after an option changed (here or in the visor menu): kept
         if (d.key == "guess_materials") matsDirty = true;
         if (CurScreen() || (playMode && paused)) PlayUi(1);
@@ -4693,6 +4798,15 @@ struct App {
                         }
                         break; }
                     case OptType::Reset: ImGui::Spacing(); if (ImGui::Button(d.label.c_str())) { optionReset(settings, d.group); ch_ = true; } break;
+                    case OptType::Preset: {
+                        int c = (int)std::lround(v); ImGui::SetNextItemWidth(220 * settings.uiScale);
+                        if (ImGui::BeginCombo(d.label.c_str(), optionText(settings, d).c_str())) {
+                            for (int k = 0; k < (int)presets.size(); k++) if (ImGui::Selectable(presets[k].name.c_str(), k == c)) { applyPreset(settings, presets[k]); ch_ = true; }
+                            ImGui::EndCombo();
+                        }
+                        if (!d.tip.empty() && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", d.tip.c_str());
+                        PresetEditor();
+                        break; }
                     }
                     if (!d.tip.empty() && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", d.tip.c_str());
                     if (ch_) OptionChanged(d);
@@ -5659,7 +5773,7 @@ struct App {
         animBlends = AnimBlends{}; loadAnimBlends(projectDir + "/anim_blend.txt", animBlends); cannonBlend.reset(); doorBlend.clear(); viewerBlend.reset();
         materials = Materials{}; loadMaterials(projectDir + "/materials.txt", materials); matsDirty = true; soundCache.clear(); playerSounds = PlayerSounds{}; loadPlayerSounds(projectDir + "/player_sounds.txt", playerSounds);
         if (!loadSurfaces(projectDir + "/surfaces.txt", surfaces)) surfaces = defaultSurfaces(); activeTl.clear();
-        hud = HudLayout{}; loadHud(HudPath(), hud); visors = defaultVisors(); loadVisors(projectDir + "/visors.txt", visors); scanLib = ScanLibrary{}; loadScanLibrary(projectDir + "/scans.txt", scanLib); MigrateLegacyScans(); menu = defaultMenu(); loadMenu(projectDir + "/menu.txt", menu); enemies = defaultEnemies(); loadEnemies(projectDir + "/enemies.txt", enemies); bosses = BossSet{}; loadBosses(projectDir + "/bosses.txt", bosses); weapons = WeaponSet{}; loadWeapons(projectDir + "/weapons.txt", weapons); weapSel = 0; weapState = WeaponState{}; hudImages.clear(); hudSel = 0; hudPlane = 0; hudEl = -1; hudPart = 0; }
+        hud = HudLayout{}; loadHud(HudPath(), hud); visors = defaultVisors(); loadVisors(projectDir + "/visors.txt", visors); scanLib = ScanLibrary{}; loadScanLibrary(projectDir + "/scans.txt", scanLib); MigrateLegacyScans(); menu = defaultMenu(); loadMenu(projectDir + "/menu.txt", menu); LoadPresets(); enemies = defaultEnemies(); loadEnemies(projectDir + "/enemies.txt", enemies); bosses = BossSet{}; loadBosses(projectDir + "/bosses.txt", bosses); weapons = WeaponSet{}; loadWeapons(projectDir + "/weapons.txt", weapons); weapSel = 0; weapState = WeaponState{}; hudImages.clear(); hudSel = 0; hudPlane = 0; hudEl = -1; hudPart = 0; }
     void SaveHud() {
         if (projectDir.empty()) return; std::error_code ec;
         if (hud.empty()) fs::remove(fs::u8path(HudPath()), ec); else saveHud(HudPath(), hud);
@@ -7534,8 +7648,9 @@ struct App {
                         TextIn(dl, font, s2 == 0 ? "OFF" : "ON", ts * 0.78f, p0, p1, 1, here ? C(s2 == 0 ? oc.text : 0x041018, al) : dim);
                     }
                     break; }
-                case OptType::Choice: {   // < value > in a sharp box
-                    int ci = (int)std::lround(v); bool canL = ci > 0, canR = ci < (int)d.choices.size() - 1; float aw = ts * 0.3f;
+                case OptType::Choice: case OptType::Preset: {   // < value > in a sharp box (a preset: the game's presets, or Custom)
+                    int ci = (int)std::lround(v); int nChoices = d.type == OptType::Preset ? (int)presets.size() : (int)d.choices.size();
+                    bool canL = d.type == OptType::Preset ? (ci != 0 && nChoices > 0) : ci > 0, canR = d.type == OptType::Preset ? (ci < nChoices - 1 && nChoices > 0) : ci < nChoices - 1; float aw = ts * 0.3f;
                     ImVec2 p0(valX, my - ts * 0.55f), p1(vx1, my + ts * 0.55f);
                     cutBox(p0, p1, ts * 0.3f, C(c, (picked ? 0.14f : 0.05f) * al), C(c, (picked ? 0.7f : 0.25f) * al), 1.f);
                     dl->AddTriangleFilled(ImVec2(p0.x + aw * 0.8f, my), ImVec2(p0.x + aw * 2.2f, my - aw), ImVec2(p0.x + aw * 2.2f, my + aw), canL ? C(c, al) : C(c, 0.15f * al));
@@ -7766,7 +7881,7 @@ struct App {
                 const OptionDef& d = optionDefs()[mh.arg];
                 if (d.type == OptType::Reset) { if (enter) { optionReset(settings, d.group); OptionChanged(d); Toast(d.group + ": back to the start values"); } }
                 else if (dir) { optionStep(settings, d, dir); OptionChanged(d); }
-                else if (enter && d.type != OptType::Slider) { optionStep(settings, d, d.type == OptType::Choice && optionGet(settings, d) >= d.choices.size() - 1 ? -(int)d.choices.size() : 1); OptionChanged(d); }
+                else if (enter && d.type != OptType::Slider) { optionStep(settings, d, d.type == OptType::Choice && optionGet(settings, d) >= d.choices.size() - 1 ? -(int)d.choices.size() : d.type == OptType::Preset && optionGet(settings, d) >= (float)presets.size() - 1 ? -(int)presets.size() : 1); OptionChanged(d); }
                 if (dir || enter) return;
             }
         }
@@ -7793,7 +7908,7 @@ struct App {
                     const OptionDef& d = optionDefs()[hh.arg];
                     if (d.type == OptType::Slider) { optDrag = hh.arg; if (px.x >= hh.vx0 - 20) { float k = std::clamp((px.x - hh.vx0) / std::max(1.f, hh.vx1 - hh.vx0), 0.f, 1.f), v = d.lo + k * (d.hi - d.lo); optionSet(settings, d, d.lo + std::round((v - d.lo) / d.step) * d.step); OptionChanged(d); } }
                     else if (d.type == OptType::Reset) { optionReset(settings, d.group); OptionChanged(d); Toast(d.group + ": back to the start values"); }
-                    else if (d.type == OptType::Choice) { optionStep(settings, d, px.x < (hh.vx0 + hh.vx1) * 0.5f ? -1 : 1); OptionChanged(d); }
+                    else if (d.type == OptType::Choice || d.type == OptType::Preset) { optionStep(settings, d, px.x < (hh.vx0 + hh.vx1) * 0.5f ? -1 : 1); OptionChanged(d); }
                     else { optionStep(settings, d, 1); OptionChanged(d); }
                     return;
                 }
@@ -14767,6 +14882,7 @@ struct App {
         if (float bl = BlackLevel(); bl > 0.001f && !ev) ImGui::GetForegroundDrawList()->AddRectFilled(ImVec2(0, 0), ImVec2((float)cw, (float)ch), IM_COL32(0, 0, 0, (int)(bl * 255)));   // starting a file: to black and back
         if (ev && screensEdOpen) BuildScreenPreview();
         ImGui::Render();
+        GpuBegin(); GpuMark("minimap, HUD and menu pictures");
         RenderMinimap();
         RenderHudPlanes(); RenderScanModel(); RenderEnemyView(); RenderBallEditor(); RenderItemModel(); RenderMenuPanes();
 
@@ -14782,7 +14898,9 @@ struct App {
         ctx->OMSetRenderTargets(1, backRTV.GetAddressOf(), nullptr);
         if (screen != Screen::Game || ev) ctx->ClearRenderTargetView(backRTV.Get(), bg);
         D3D11_VIEWPORT v{ 0, 0, (float)cw, (float)ch, 0, 1 }; ctx->RSSetViewports(1, &v);
+        GpuMark("editor and interface");
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+        GpuEnd();
     }
     void Frame(double dt) {
         FrameBody(dt);

@@ -47,9 +47,8 @@ MenuLayout defaultMenu() {
         t.items.push_back(item("Tabs", MenuKind::TabBar, 0.03f, 0.12f, 0.94f, 0.76f, "", 38));
         m.always.push_back(t);
         MenuPane b = pane("Actions", { 0, -0.47, 1.02 }, 0, 0.95f, 0.1f); b.bendY = 0; b.bendX = 0.2f; b.backing = 0.45f;
-        MenuItem o = item("Options", MenuKind::Button, 0.02f, 0.14f, 0.28f, 0.72f, "Options", 34); o.act = MenuAct::Settings; b.items.push_back(o);
-        MenuItem q = item("Quick save", MenuKind::Button, 0.36f, 0.14f, 0.28f, 0.72f, "Quick save", 34); q.act = MenuAct::QuickSave; b.items.push_back(q);
-        MenuItem x = item("Quit", MenuKind::Button, 0.7f, 0.14f, 0.28f, 0.72f, "Quit", 34); x.act = MenuAct::Quit; b.items.push_back(x);
+        MenuItem o = item("Options", MenuKind::Button, 0.02f, 0.14f, 0.3f, 0.72f, "Options", 34); o.act = MenuAct::Settings; b.items.push_back(o);
+        MenuItem x = item("Quit", MenuKind::Button, 0.68f, 0.14f, 0.3f, 0.72f, "Quit", 34); x.act = MenuAct::Quit; b.items.push_back(x);   // (a Quick save button can be added in Player > Menu)
         m.always.push_back(b);
     }
     auto side = [&](const std::string& name, float x, float yaw) { MenuPane p = pane(name, { x, -0.02, 0.98 }, yaw, 0.42f, 0.72f); p.bendX = 0.15f; p.bendY = 0.12f; return p; };

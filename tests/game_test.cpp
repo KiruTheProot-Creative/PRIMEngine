@@ -1706,12 +1706,25 @@ int main() {
         const MenuPage& inv = m.pages[m.findPage("Inventory")]; bool cats = false, detail = false, list = false;
         for (const MenuPane& p : inv.panes) for (const MenuItem& it : p.items) { cats |= it.kind == MenuKind::Categories; detail |= it.kind == MenuKind::ItemDetail; list |= it.kind == MenuKind::ItemList && it.text == "category"; }
         CHECK(inv.panes.size() == 3 && cats && detail && list, "Inventory: kinds, the picked item, the items of that kind");
-        bool qs = false; for (const MenuItem& it : m.always[1].items) qs |= it.act == MenuAct::QuickSave;
-        CHECK(qs && std::string(menuActName(MenuAct::QuickSave)) == "Quick save", "a Quick save button");
+        bool qs = false, op = false; for (const MenuItem& it : m.always[1].items) { qs |= it.act == MenuAct::QuickSave; op |= it.act == MenuAct::Settings; }
+        CHECK(!qs && op && std::string(menuActName(MenuAct::QuickSave)) == "Quick save", "Options and Quit below (Quick save only if you add it)");
         saveMenu("/tmp/prim_menu3.txt", m); MenuLayout l; loadMenu("/tmp/prim_menu3.txt", l);
         CHECK(l.pages.size() == m.pages.size() && l.pages[1].panes[0].items[0].kind == MenuKind::Categories && l.pages[1].panes[1].items[0].kind == MenuKind::ItemDetail, "it saves and loads");
         PlayerRules pr; pr.quickSave = true; GameSettings gi; gi.player = pr; gi.save("/tmp/prim_qs_game.txt"); GameSettings gl; gl.load("/tmp/prim_qs_game.txt");
         CHECK(gl.player.quickSave, "the quick save rule saves and loads");
+    }
+    {   // quality presets
+        std::vector<QualityPreset> ps = defaultPresets(); gamePresets = &ps;
+        CHECK(ps.size() == 6 && ps[0].name == "Very low" && ps[5].name == "Prime", "six presets: Very low .. Prime");
+        Settings st; applyPreset(st, ps[4]);
+        CHECK(matchingPreset(st, ps) == 4 && st.shadowRes == 3072 && st.probes == 2 && optionText(st, optionDefs()[findOption("quality_preset")]) == "Ultra", "a preset sets its options, and is recognised again");
+        st.bloom = 0.11f; CHECK(matchingPreset(st, ps) < 0 && optionText(st, optionDefs()[findOption("quality_preset")]) == "Custom", "changed by hand: Custom");
+        optionStep(st, optionDefs()[findOption("quality_preset")], 1); CHECK(matchingPreset(st, ps) == 0, "from Custom, the next step: the first preset");
+        optionStep(st, optionDefs()[findOption("quality_preset")], 1); CHECK(matchingPreset(st, ps) == 1, "... and on");
+        ps[2].name = "My Game's Medium"; QualityPreset mine = presetFrom(st, "Potato mode"); ps.push_back(mine);
+        savePresets("/tmp/prim_presets.txt", ps); std::vector<QualityPreset> back; loadPresets("/tmp/prim_presets.txt", back);
+        CHECK(back.size() == 7 && back[2].name == "My Game's Medium" && back[6].name == "Potato mode" && back[6].values.size() == presetKeys().size(), "renamed and own presets save and load");
+        gamePresets = nullptr;
     }
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
     return fails ? 1 : 0;

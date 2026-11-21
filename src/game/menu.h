@@ -59,7 +59,7 @@ struct MenuLayout {
     int optionsPage() const;                            // the page with an Options item (-1: none)
 };
 MenuPage defaultOptionsPage();                          // "Options": Sound, Graphics, Controls on one wide pane
-MenuLayout defaultMenu();                               // the three-pane helmet menu: tabs on top (System, Inventory, Log), Options / Quick save / Quit below
+MenuLayout defaultMenu();                               // the three-pane helmet menu: tabs on top (System, Inventory, Log), Options / Quit below
 MenuLayout classicMenu();                               // the first layout: Main, Inventory, Logbook, Options
 bool saveMenu(const std::string& path, const MenuLayout& m);
 bool loadMenu(const std::string& path, MenuLayout& m);

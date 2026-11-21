@@ -2,6 +2,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <fstream>
+#include <sstream>
 
 namespace mc {
 
@@ -58,6 +60,8 @@ const std::vector<OptionDef>& optionDefs() {
         v.push_back(reset(S));
 
         // ---- Display: the screen, the picture, the HUD
+        { OptionDef p; p.key = "quality_preset"; p.label = "Quality preset"; p.group = D; p.section = "Quality"; p.type = OptType::Preset;
+          p.tip = "Sets the heavy graphics options at once (shadows, light, reflections, distance, render scale...). Change one by hand and it says Custom."; v.push_back(p); }
         v.push_back(toggle("fullscreen", "Fullscreen", D, "Screen", "Borderless, over the whole screen."));
         v.push_back(toggle("vsync", "VSync", D, "Screen", "Waits for the screen: no tearing, frame rate up to the screen's."));
         v.push_back(choice("render_scale", "Render scale", D, "Screen", { "50% (fastest)", "67%", "75%", "85%", "100% (the screen's own)", "125%", "150%", "200% (supersampled)" }, { 0.5f, 0.67f, 0.75f, 0.85f, 1.f, 1.25f, 1.5f, 2.f },
@@ -136,6 +140,7 @@ int findOption(const std::string& key) {
 }
 
 float optionGet(const Settings& s, const OptionDef& d) {
+    if (d.type == OptType::Preset) return gamePresets ? (float)matchingPreset(s, *gamePresets) : -1.f;
     Field f = field(const_cast<Settings&>(s), d.key); float v = readField(f);
     if (d.type == OptType::Choice && !d.values.empty()) {
         int best = 0; for (int i = 1; i < (int)d.values.size(); i++) if (std::fabs(d.values[i] - v) < std::fabs(d.values[best] - v)) best = i;
@@ -157,6 +162,12 @@ void optionSet(Settings& s, const OptionDef& d, float v) {
 }
 
 void optionStep(Settings& s, const OptionDef& d, int dir) {
+    if (d.type == OptType::Preset) {   // the next / previous preset (from Custom: the nearest end)
+        if (!gamePresets || gamePresets->empty()) return;
+        int n = (int)gamePresets->size(), cur = matchingPreset(s, *gamePresets);
+        int to = cur < 0 ? (dir > 0 ? 0 : n - 1) : std::clamp(cur + dir, 0, n - 1);
+        applyPreset(s, (*gamePresets)[to]); return;
+    }
     float v = optionGet(s, d);
     switch (d.type) {
     case OptType::Slider: { float n = std::round((v + dir * d.step - d.lo) / d.step) * d.step + d.lo; optionSet(s, d, n); break; }
@@ -167,6 +178,7 @@ void optionStep(Settings& s, const OptionDef& d, int dir) {
 }
 
 std::string optionText(const Settings& s, const OptionDef& d) {
+    if (d.type == OptType::Preset) { int i = gamePresets ? matchingPreset(s, *gamePresets) : -1; return i >= 0 ? (*gamePresets)[i].name : "Custom"; }
     float v = optionGet(s, d); char b[64];
     switch (d.type) {
     case OptType::Toggle: return v > 0.5f ? "On" : "Off";
@@ -190,8 +202,76 @@ void optionReset(Settings& s, const std::string& group) {
     for (const OptionDef& d : optionDefs()) {
         if (d.group != group || !d.inGame) continue;
         if (d.type == OptType::Key) s.keys.key[d.act][0] = fresh.keys.key[d.act][0], s.keys.key[d.act][1] = fresh.keys.key[d.act][1];
-        else if (d.type != OptType::Reset) writeField(field(s, d.key), readField(field(fresh, d.key)));
+        else if (d.type != OptType::Reset && d.type != OptType::Preset) writeField(field(s, d.key), readField(field(fresh, d.key)));
     }
+}
+
+// ------------------------------------------------------------------ quality presets
+std::vector<QualityPreset>* gamePresets = nullptr;
+const std::vector<std::string>& presetKeys() {
+    static const std::vector<std::string> k = { "render_scale", "render_distance", "vertical_distance", "shadows", "shadow_res", "shadow_distance", "shadow_soft", "light_shadows",
+        "probes", "bounce", "ao", "reflections", "reflect_res", "planar_floors", "anti_alias", "bloom", "light_fog", "clouds", "cloud_shadows", "bumps", "coat", "swaying", "lens_flares" };
+    return k;
+}
+std::vector<QualityPreset> defaultPresets() {
+    // render_scale, render_distance, vertical_distance, shadows, shadow_res, shadow_distance, shadow_soft, light_shadows, probes, bounce, ao, reflections, reflect_res,
+    // planar_floors, anti_alias, bloom, light_fog, clouds, cloud_shadows, bumps, coat, swaying, lens_flares
+    struct Row { const char* name; float v[23]; };
+    static const Row rows[] = {
+        { "Very low", { 0.67f, 6, 3, 0, 1024, 48, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0.3f, 0, 0.3f, 0, 0, 0, 0, 0 } },
+        { "Low",      { 0.85f, 8, 4, 1, 1024, 64, 0, 0, 0, 0, 1, 0, 2, 0, 1, 0.5f, 0, 0.5f, 0, 0.5f, 0.5f, 1, 0 } },
+        { "Medium",   { 1, 10, 5, 1, 2048, 96, 1, 2, 0, 1, 1, 1, 2, 0, 1, 0.7f, 1, 0.6f, 1, 1, 1, 1, 1 } },
+        { "High",     { 1, 14, 6, 1, 2048, 160, 2, 4, 1, 1, 1, 1, 1, 1, 1, 0.8f, 1, 0.7f, 1, 1, 1, 1, 1 } },
+        { "Ultra",    { 1, 20, 8, 1, 3072, 256, 2, 4, 2, 2, 2, 2, 0, 1, 2, 0.8f, 1, 0.75f, 1, 1, 1, 1, 1 } },
+        { "Prime",    { 1.5f, 28, 10, 1, 4096, 384, 2, 8, 2, 2, 2, 2, 0, 1, 2, 0.85f, 1, 0.8f, 1, 1.2f, 1.2f, 1, 1 } },
+    };
+    std::vector<QualityPreset> out;
+    for (const Row& r : rows) { QualityPreset p; p.name = r.name; for (size_t k = 0; k < presetKeys().size(); k++) p.values.push_back({ presetKeys()[k], r.v[k] }); out.push_back(p); }
+    return out;
+}
+QualityPreset presetFrom(const Settings& s, const std::string& name) {
+    QualityPreset p; p.name = name;
+    for (const std::string& k : presetKeys()) p.values.push_back({ k, readField(field(const_cast<Settings&>(s), k)) });
+    return p;
+}
+void applyPreset(Settings& s, const QualityPreset& p) {
+    for (const auto& kv : p.values) {
+        int i = findOption(kv.first);
+        if (i < 0) { writeField(field(s, kv.first), kv.second); continue; }
+        const OptionDef& d = optionDefs()[i];
+        if (d.type == OptType::Choice && !d.values.empty()) {   // choices with their own values: the nearest one
+            int best = 0; for (int j = 1; j < (int)d.values.size(); j++) if (std::fabs(d.values[j] - kv.second) < std::fabs(d.values[best] - kv.second)) best = j;
+            optionSet(s, d, (float)best);
+        } else optionSet(s, d, kv.second);
+    }
+}
+int matchingPreset(const Settings& s, const std::vector<QualityPreset>& ps) {
+    for (int i = 0; i < (int)ps.size(); i++) {
+        bool same = true;
+        for (const auto& kv : ps[i].values) { float v = readField(field(const_cast<Settings&>(s), kv.first)); if (std::fabs(v - kv.second) > 1e-3f * std::max(1.f, std::fabs(kv.second))) { same = false; break; } }
+        if (same) return i;
+    }
+    return -1;
+}
+static std::string pesc(const std::string& s) { std::string o; for (char c : s) { if (c == '%') o += "%25"; else if (c == ' ') o += "%20"; else o += c; } return o.empty() ? "-" : o; }
+static std::string punesc(const std::string& s) { if (s == "-") return ""; std::string o; for (size_t i = 0; i < s.size(); i++) { if (s[i] == '%' && i + 2 < s.size()) { o += (char)std::stoi(s.substr(i + 1, 2), nullptr, 16); i += 2; } else o += s[i]; } return o; }
+bool savePresets(const std::string& path, const std::vector<QualityPreset>& ps) {
+    std::ofstream f(path); if (!f) return false;
+    f << "presets 1\n";
+    for (const QualityPreset& p : ps) { f << "preset " << pesc(p.name); for (const auto& kv : p.values) f << " " << kv.first << "=" << kv.second; f << "\n"; }
+    return (bool)f;
+}
+bool loadPresets(const std::string& path, std::vector<QualityPreset>& ps) {
+    std::ifstream f(path); if (!f) return false;
+    std::vector<QualityPreset> out; std::string line;
+    while (std::getline(f, line)) {
+        std::istringstream l(line); std::string k, n; l >> k; if (k != "preset" || !(l >> n)) continue;
+        QualityPreset p; p.name = punesc(n); std::string kv;
+        while (l >> kv) { size_t e = kv.find('='); if (e != std::string::npos) p.values.push_back({ kv.substr(0, e), (float)std::atof(kv.c_str() + e + 1) }); }
+        out.push_back(p);
+    }
+    if (out.empty()) return false;
+    ps = out; return true;
 }
 
 } // namespace mc

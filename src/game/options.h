@@ -7,7 +7,7 @@
 
 namespace mc {
 
-enum class OptType { Slider, Toggle, Choice, Key, Reset };
+enum class OptType { Slider, Toggle, Choice, Key, Reset, Preset };   // Preset: the game's quality presets (sets many options at once)
 
 struct OptionDef {
     std::string key, label, group, section, tip;   // group: "Sound", "Graphics", "Controls"; section: a heading inside it
@@ -32,5 +32,17 @@ void optionStep(Settings& s, const OptionDef& d, int dir);       // one step lef
 std::string optionText(const Settings& s, const OptionDef& d);   // "70", "On", "2048", "75%"... (not for keys)
 bool optionShown(const Settings& s, const OptionDef& d, bool inGame);
 void optionReset(Settings& s, const std::string& group);         // the group's options back to how they start
+
+// ---- quality presets: named sets of the heavy graphics options. Each game has its own (the game maker can rename them and
+// set them from their own settings); the options list shows the one that matches, or "Custom".
+struct QualityPreset { std::string name; std::vector<std::pair<std::string, float>> values; };
+const std::vector<std::string>& presetKeys();                   // the options a preset sets
+std::vector<QualityPreset> defaultPresets();                    // Very low, Low, Medium, High, Ultra, Prime
+QualityPreset presetFrom(const Settings& s, const std::string& name);   // the current settings as a preset
+void applyPreset(Settings& s, const QualityPreset& p);
+int matchingPreset(const Settings& s, const std::vector<QualityPreset>& ps);   // -1: none (Custom)
+bool savePresets(const std::string& path, const std::vector<QualityPreset>& ps);
+bool loadPresets(const std::string& path, std::vector<QualityPreset>& ps);
+extern std::vector<QualityPreset>* gamePresets;                  // the game's own (set by the app; the Preset option shows and steps through these)
 
 } // namespace mc
