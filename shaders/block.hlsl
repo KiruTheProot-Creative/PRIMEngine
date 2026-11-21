@@ -1247,6 +1247,31 @@ Texture2D<float4> gProbes : register(t39);
 float probeKey(int3 k) { uint3 wc = uint3(int3(gProbeB.xyz) + k); return (float)((wc.x & 255u) | ((wc.y & 255u) << 8) | ((wc.z & 255u) << 16)); }
 int3 probeSlot(int3 k) { return (k + int3(gProbeM.xyz)) % PRN; }
 // the light arriving at a surface (rel, facing n) from the probes around it; w: how sure (0: no probe could say)
+bool voxLineBlocked(float3 a, float3 b)   // is there a solid block on the straight line a -> b (camera-relative)? every block it passes, edges and corners too
+{
+    float3 o = a - gVoxO.xyz, e = b - gVoxO.xyz, r = e - o; float len = length(r); if (len < 1e-3) return false;
+    r /= len;
+    int3 cell = int3(floor(o)), goal = int3(floor(e)), stp = int3(sign(r));
+    float3 inv = 1 / max(abs(r), 1e-6) * sign(r + 1e-9);
+    float3 tMax = ((float3(cell) + float3(stp > 0)) - o) * inv, tDelta = abs(inv);
+    [loop] for (int k = 0; k < 24; k++)
+    {
+        if (any(cell < 0) || any(cell >= VOXN)) return false;
+        uint id = voxAt(cell); if (id != 0 && gVoxPal[id].info.x == 1) return true;
+        if (all(cell == goal)) return false;
+        float t = min(tMax.x, min(tMax.y, tMax.z)); if (t > len) return false;
+        const float tie = 0.02;
+        #define LSOLID(c) (all((c) >= 0) && all((c) < VOXN) && voxAt(c) != 0 && gVoxPal[voxAt(c)].info.x == 1)
+        if (abs(tMax.x - t) < tie && abs(tMax.y - t) < tie && (LSOLID(cell + int3(stp.x, 0, 0)) || LSOLID(cell + int3(0, stp.y, 0)))) return true;
+        if (abs(tMax.x - t) < tie && abs(tMax.z - t) < tie && (LSOLID(cell + int3(stp.x, 0, 0)) || LSOLID(cell + int3(0, 0, stp.z)))) return true;
+        if (abs(tMax.y - t) < tie && abs(tMax.z - t) < tie && (LSOLID(cell + int3(0, stp.y, 0)) || LSOLID(cell + int3(0, 0, stp.z)))) return true;
+        #undef LSOLID
+        if (tMax.x < tMax.y && tMax.x < tMax.z) { tMax.x += tDelta.x; cell.x += stp.x; }
+        else if (tMax.y < tMax.z) { tMax.y += tDelta.y; cell.y += stp.y; }
+        else { tMax.z += tDelta.z; cell.z += stp.z; }
+    }
+    return false;
+}
 float3 probeLight(float3 rel, float3 n, bool leakCheck, out float wsum)
 {
     wsum = 0; float3 acc = 0;
@@ -1266,12 +1291,7 @@ float3 probeLight(float3 rel, float3 n, bool leakCheck, out float wsum)
         float3 tri = lerp(1 - f, f, float3(o));
         float wt = tri.x * tri.y * tri.z;
         float face = (dot(n, to / dist) + 1) * 0.5; wt *= face * face + 0.05;   // probes behind the surface count little
-        if (leakCheck && gVoxM.w > 0.5)   // a block between the surface and the probe: it can't see this spot (no light through walls)
-        {
-            float3 q0 = rel + n * 0.3 + (pp - rel - n * 0.3) * 0.5 - gVoxO.xyz, q1 = rel + n * 0.3 + (pp - rel - n * 0.3) * 0.85 - gVoxO.xyz;
-            int3 c0 = int3(floor(q0)), c1 = int3(floor(q1));
-            if ((all(c0 >= 0) && all(c0 < VOXN) && voxAt(c0) != 0) || (all(c1 >= 0) && all(c1 < VOXN) && voxAt(c1) != 0)) wt *= 0.02;
-        }
+        if (leakCheck && gVoxM.w > 0.5 && voxLineBlocked(rel + n * 0.03, pp)) continue;   // a block between the surface and the probe: it can't see this spot (no light through walls or the seams of corners)
         acc += L * wt; wsum += wt;
     }
     return wsum > 1e-5 ? acc / wsum : 0;
