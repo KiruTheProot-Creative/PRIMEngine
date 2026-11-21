@@ -1502,7 +1502,7 @@ struct App {
     static constexpr float CL_NEAR = 0.5f, CL_FAR = 1000.f;
     size_t clusterIdxCap = 0;   // (the boxes' light lists all together: grows when many lights reach far)
     ComPtr<ID3D11Buffer> lightBuf, clusterBuf, clusterIdxBuf, lshVPBuf, hudLightBuf, cbCluster; ComPtr<ID3D11ShaderResourceView> lightSRV, clusterSRV, clusterIdxSRV, lshVPSRV, hudLightSRV;
-    static constexpr int LSH_MAX = 64;   // lights with shadow maps at most
+    static constexpr int LSH_MAX = 128;   // lights with shadow maps at most
     ComPtr<ID3D11Texture2D> lshTex; std::vector<ComPtr<ID3D11DepthStencilView>> lshDSV; ComPtr<ID3D11ShaderResourceView> lshSRV; int lshCount = -1, lshRes = 0;   // their maps: 6 sides each
     // a light keeps its map (its slot) while it stays in reach, and the map is only drawn again when something near it moves or changes
     struct LshSlot { uint64_t key = 0; bool valid = false; }; std::vector<LshSlot> lshSlots; std::vector<std::pair<V3, double>> lshMovers; std::vector<V3> meshesChanged;

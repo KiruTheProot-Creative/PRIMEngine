@@ -75,7 +75,7 @@ struct Settings {
     bool planarFloors = true;
     bool lensFlares = true;    // the sun makes a lens flare (as much as the area's look says)  // the shiny floor or water near you is reflected exactly (the world drawn once more)
     int bounce = 1;            // bounce light (screen-space GI): 0 off, 1 normal, 2 far-reaching      // lights glow in the air (beams, halos)
-    int lightShadows = 4;      // how many lights (the nearest that cast shadows) get real shadows (shadow maps): 0 .. 64
+    int lightShadows = 4;      // how many lights (the nearest that cast shadows) get real shadows (shadow maps): 0 .. 128
     float lightShadowDist = 48; // ... only lights this near (blocks); they fade out toward it
     int lightShadowRes = 512;  // each side of a light's shadow map: 128, 256, 512
     float lampDistance = 64;   // real lamp blocks shine this far away (blocks), fading out toward it

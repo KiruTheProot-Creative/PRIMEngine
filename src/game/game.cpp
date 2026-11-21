@@ -85,7 +85,7 @@ bool Settings::load(const std::string& path) {
         else if (k == "lamp_blocks") { f >> lampBlocks; lampBlocks = std::clamp(lampBlocks, 0, 2); }
         else if (k == "lamp_fill") { f >> lampFill; lampFill = std::clamp(lampFill, 0.f, 1.f); }
         else if (k == "motion_blur") { f >> motionBlur; motionBlur = std::clamp(motionBlur, 0.f, 1.f); }
-        else if (k == "light_shadows") { f >> lightShadows; lightShadows = std::clamp(lightShadows, 0, 64); }
+        else if (k == "light_shadows") { f >> lightShadows; lightShadows = std::clamp(lightShadows, 0, 128); }
         else if (k == "light_shadow_distance") { f >> lightShadowDist; lightShadowDist = std::clamp(lightShadowDist, 8.f, 256.f); }
         else if (k == "light_shadow_res") { f >> lightShadowRes; lightShadowRes = lightShadowRes <= 128 ? 128 : lightShadowRes <= 256 ? 256 : 512; }
         else if (k == "lamp_distance") { f >> lampDistance; lampDistance = std::clamp(lampDistance, 16.f, 256.f); }
