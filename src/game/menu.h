@@ -11,9 +11,11 @@
 
 namespace mc {
 
-enum class MenuKind { Panel, Text, Image, Button, TabBar, ItemList, BeamList, ScanList, ScanText, ScanModel, Options, COUNT };   // Options: the player's options (text: one group, or empty: all, with their own tabs)
+enum class MenuKind { Panel, Text, Image, Button, TabBar, ItemList, BeamList, ScanList, ScanText, ScanModel, Options, Categories, ItemDetail, COUNT };
+// Categories: a list of kinds to pick (text "items": Beams, Morph Ball, Suits...; "log": the scan categories) - an Item list / Scan list with
+// text "category" on the same page shows only that kind. Item detail: the picked item, big - its model turning, its name, what it does.   // Options: the player's options (text: one group, or empty: all, with their own tabs)
 const char* menuKindName(MenuKind k);
-enum class MenuAct { None, Resume, Restart, Map, Settings, Quit, GoTo, Back, COUNT };
+enum class MenuAct { None, Resume, Restart, Map, Settings, Quit, GoTo, Back, QuickSave, COUNT };   // QuickSave: only if the game allows it (Body and movement)
 const char* menuActName(MenuAct a);
 
 struct MenuItem {
@@ -57,7 +59,8 @@ struct MenuLayout {
     int optionsPage() const;                            // the page with an Options item (-1: none)
 };
 MenuPage defaultOptionsPage();                          // "Options": Sound, Graphics, Controls on one wide pane
-MenuLayout defaultMenu();                               // Main (resume, map, settings...), Inventory, Logbook (the scan index)
+MenuLayout defaultMenu();                               // the three-pane helmet menu: tabs on top (System, Inventory, Log), Options / Quick save / Quit below
+MenuLayout classicMenu();                               // the first layout: Main, Inventory, Logbook, Options
 bool saveMenu(const std::string& path, const MenuLayout& m);
 bool loadMenu(const std::string& path, MenuLayout& m);
 

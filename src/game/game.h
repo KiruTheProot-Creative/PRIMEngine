@@ -99,6 +99,7 @@ struct PlayerRules {
     float stepHeight = 0.6f;                          // walks up ledges this high by itself
     float ballSize = 1.0f;                            // the morph ball's size (blocks)
     uint32_t morphColor = 0xFFB040; float morphFx = 1; bool morphHudFx = true;   // morphing: an energy shell, sparks and a flash in this colour (0: none); the HUD glows too
+    bool quickSave = false;                           // the pause menu's Quick save works anywhere (off: only Save Stations save, like Prime)
     float bounceDamage = 0.5f;                        // a shot bounced back by a door that needs another weapon: hurts you this much of its damage (0: never)
     int morphBall = 1, bombs = 1;                     // 0 none, 1 from the start, 2 found later (a key pickup called "Morph Ball" / "Bombs")
     float ballSpeed = 7;                              // rolling speed (blocks / s)

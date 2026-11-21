@@ -214,7 +214,7 @@ bool GameSettings::save(const std::string& path) const {
       << "\nwalk_speed " << p.walkSpeed << "\nsprint_speed " << p.sprintSpeed << "\njump_height " << p.jumpHeight << "\ngravity " << p.gravity
       << "\nmax_health " << p.maxHealth << "\nlava_damage " << p.lavaDamage << "\nvoid_depth " << p.voidDepth << "\nrespawn_delay " << p.respawnDelay
       << "\nfall_damage " << p.fallDamage << "\ncan_sprint " << (p.canSprint ? 1 : 0)
-      << "\nmorph_fx " << p.morphColor << " " << p.morphFx << " " << (p.morphHudFx ? 1 : 0) << "\nbounce_damage " << p.bounceDamage
+      << "\nmorph_fx " << p.morphColor << " " << p.morphFx << " " << (p.morphHudFx ? 1 : 0) << "\nbounce_damage " << p.bounceDamage << "\nquick_save " << (p.quickSave ? 1 : 0)
       << "\nball_axle " << p.ballAxle.x << " " << p.ballAxle.y << " " << p.ballAxle.z << " " << p.ballBalance << " " << p.ballPivot.x << " " << p.ballPivot.y << " " << p.ballPivot.z
       << "\nball_trail " << (p.ballTrail ? 1 : 0) << " " << p.trailPoint.x << " " << p.trailPoint.y << " " << p.trailPoint.z << " " << p.trailColor << " " << p.trailSize << " " << p.trailLife
       << "\nball_ribbon " << p.trailStyle << " " << p.ribbonWidth << " " << p.ribbonTaper << " " << p.ribbonGlow << " " << (p.ribbonStreaks ? 1 : 0) << " " << p.ribbonFacing
@@ -237,6 +237,7 @@ bool GameSettings::load(const std::string& path) {
         else if (k == "void_depth") f >> p.voidDepth; else if (k == "respawn_delay") f >> p.respawnDelay; else if (k == "fall_damage") f >> p.fallDamage;
         else if (k == "can_sprint") { int v; f >> v; p.canSprint = v != 0; }
         else if (k == "bounce_damage") f >> p.bounceDamage;
+        else if (k == "quick_save") { int v = 0; f >> v; p.quickSave = v != 0; }
         else if (k == "ball_axle") f >> p.ballAxle.x >> p.ballAxle.y >> p.ballAxle.z >> p.ballBalance >> p.ballPivot.x >> p.ballPivot.y >> p.ballPivot.z;
         else if (k == "ball_ribbon") { int st = 1; f >> p.trailStyle >> p.ribbonWidth >> p.ribbonTaper >> p.ribbonGlow >> st; p.ribbonStreaks = st != 0; int fc; if (f >> fc) p.ribbonFacing = fc; else f.clear(); }
         else if (k == "ball_trail") { int on = 0; f >> on >> p.trailPoint.x >> p.trailPoint.y >> p.trailPoint.z >> p.trailColor >> p.trailSize >> p.trailLife; p.ballTrail = on != 0; }

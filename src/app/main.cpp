@@ -6456,6 +6456,8 @@ struct App {
         sl("Death below height", &r.voidDepth, -512, 0, "y = %.0f");
         sl("Respawn after", &r.respawnDelay, 0, 10, "%.1f s");
         sl("Bounced shots hurt you", &r.bounceDamage, 0, 2, r.bounceDamage <= 0 ? "never" : "%.2f x their damage");
+        Prop("Quick save from the pause menu"); ch |= ImGui::Checkbox("##qsave", &r.quickSave);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("On: the pause menu's Quick save saves anywhere.\nOff: only Save Stations save (like Prime); the button is greyed out.");
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("A door that needs another weapon sends the shot back; if it hits you, this much of its damage.\nOnce a door is opened with the right weapon, any shot opens it from then on (saved).");
         ImGui::SeparatorText("The death sequence");
         Prop("Death sequence"); ch |= ImGui::Checkbox("##dfx", &r.deathFx);
@@ -7132,6 +7134,9 @@ struct App {
         case 2: SwitchBeam(h.arg); return;
         case 3: SwitchMissile(h.arg, true); return;
         case 4: menuScan = h.arg; return;
+        case 11: menuCat = h.arg; menuItemPick.clear(); return;   // a kind of items
+        case 12: { std::vector<InvEntry> es = InventoryEntries(); if (h.arg >= 0 && h.arg < (int)es.size() && es[h.arg].have) menuItemPick = es[h.arg].name; return; }
+        case 13: menuLogCat = h.arg; return;   // a log category
         default: break;
         }
         switch (h.act) {
@@ -7142,16 +7147,56 @@ struct App {
         case MenuAct::Quit: if (menuSession) BackToMainMenu(); else StopPlay(); break;
         case MenuAct::GoTo: { int p = menu.findPage(h.target); if (p >= 0) GoToPage(p); else Toast("No page called " + h.target); break; }
         case MenuAct::Back: if (!menuBack.empty()) { int p = menuBack.back(); menuBack.pop_back(); GoToPage(p, false); } break;
+        case MenuAct::QuickSave:
+            if (!game.player.quickSave) { Toast("Save at a Save Station"); break; }
+            if (play.dead()) break;
+            saveStationId = 0; quickSaving = true; if (WriteSave()) { Toast("Saved"); GameSnd(&PlayerSounds::saved); } else Toast("Could not save"); quickSaving = false;
+            break;
         default: break;
         }
     }
     // one pane's picture: its glass, frame and items (and where its buttons and rows are, for the mouse and the keys)
+    // ---- the inventory, for the pause menu: everything in the game by kind (what you haven't found: ??????)
+    struct InvEntry { std::string name, group; bool have = false; int count = 0, hint = HINT_NONE; };
+    std::vector<InvEntry> InventoryEntries() const {
+        std::vector<InvEntry> v;
+        for (const Beam& b : weapons.beams) v.push_back({ b.name, "Beams", playMode ? OwnsBeam(b) : b.startsOwned, 1, HINT_BEAM });
+        for (const MissileType& m : weapons.missileTypes) v.push_back({ m.name, "Beams", playMode ? OwnsMissile(m) : m.startsOwned, 1, HINT_MISSILE });
+        if (game.player.morphBall) v.push_back({ "Morph Ball", "Morph Ball", playMode ? HasMorphBall() : game.player.morphBall == 1, 1, HINT_MORPH });
+        if (game.player.morphBall && game.player.bombs) v.push_back({ "Bombs", "Morph Ball", playMode ? HasBombs() : game.player.bombs == 1, 1, HINT_BOMBS });
+        for (const ItemDef& d : items.items) {
+            if (!d.used) continue;
+            int have = playMode ? ItemHave(d.name) + (d.startsOwned && !itemCounted(d.type) ? 1 : 0) : (d.startsOwned ? 1 : 0);
+            v.push_back({ d.name, itemGroup(d.type), have > 0, have, HINT_NONE });
+        }
+        return v;
+    }
+    std::vector<std::string> InventoryGroups() const { std::vector<std::string> g; for (const InvEntry& e : InventoryEntries()) if (std::find(g.begin(), g.end(), e.group) == g.end()) g.push_back(e.group); return g; }
+    int menuCat = 0, menuLogCat = 0; std::string menuItemPick;   // the picked kind (items / log) and item
+    std::string ItemModelFor(const std::string& n) const {   // what the item looks like: its pop-up's model, else its pickup's in this world
+        GetPopup p = popupFor(items, n, HINT_NONE); if (!p.model.empty()) return p.model;
+        for (const WorldObject& o : objects) if (o.kind == ObjKind::Pickup && o.pickup.name == n && !o.model.empty()) return o.model;
+        return "@gem";
+    }
     void DrawMenuPane(ImDrawList* dl, const MenuPane& pn, int paneIdx) {
         float W = (float)MENU_PANE_W, H = (float)menuPaneHeight(pn); ImFont* font = ImGui::GetFont();
         auto C = [&](uint32_t c, float a) { return IM_COL32((c >> 16) & 255, (c >> 8) & 255, c & 255, (int)(std::clamp(a, 0.f, 1.f) * 255)); };
-        float round = std::min(28.f, H * 0.2f);
-        if (pn.backing > 0.001f) dl->AddRectFilled(ImVec2(6, 6), ImVec2(W - 6, H - 6), IM_COL32(3, 10, 18, (int)(std::clamp(pn.backing, 0.f, 1.f) * 255)), round);
-        if (pn.frame) { dl->AddRect(ImVec2(6, 6), ImVec2(W - 6, H - 6), C(pn.color, 0.75f), round, ImDrawFlags_None, 4.f); dl->AddLine(ImVec2(40, 18), ImVec2(160, 18), C(pn.color, 1), 6); }
+        // the sharp look: boxes with two corners cut off, thin bright frames, a bar on what is picked
+        auto cutBox = [&](ImVec2 p0, ImVec2 p1, float cut, ImU32 fill, ImU32 line, float thick) {
+            cut = std::min(cut, std::min(p1.x - p0.x, p1.y - p0.y) * 0.45f);
+            ImVec2 pts[6] = { ImVec2(p0.x + cut, p0.y), ImVec2(p1.x, p0.y), ImVec2(p1.x, p1.y - cut), ImVec2(p1.x - cut, p1.y), ImVec2(p0.x, p1.y), ImVec2(p0.x, p0.y + cut) };
+            if (fill) dl->AddConvexPolyFilled(pts, 6, fill);
+            if (line) dl->AddPolyline(pts, 6, line, ImDrawFlags_Closed, thick);
+        };
+        {   // the pane: dark glass with cut corners, a thin frame, little corner marks
+            float cut = std::min(46.f, H * 0.18f);
+            if (pn.backing > 0.001f) cutBox(ImVec2(6, 6), ImVec2(W - 6, H - 6), cut, IM_COL32(3, 10, 18, (int)(std::clamp(pn.backing, 0.f, 1.f) * 255)), 0, 0);
+            if (pn.frame) {
+                cutBox(ImVec2(6, 6), ImVec2(W - 6, H - 6), cut, 0, C(pn.color, 0.7f), 3.f);
+                dl->AddLine(ImVec2(6 + cut + 10, 16), ImVec2(6 + cut + 150, 16), C(pn.color, 1), 5);   // a bright mark along the top
+                dl->AddLine(ImVec2(W - 16, H - 6 - cut - 10), ImVec2(W - 16, H - 6 - cut - 90), C(pn.color, 0.8f), 4);
+            }
+        }
         auto text = [&](const std::string& s, float size, ImVec2 a, ImVec2 b, int align, ImU32 col, bool wrap) {
             if (wrap) { dl->AddText(font, size, a, col, s.c_str(), nullptr, b.x - a.x); return; }
             ImVec2 ts = font->CalcTextSizeA(size, FLT_MAX, 0, s.c_str());
@@ -7159,8 +7204,8 @@ struct App {
         };
         auto hit = [&](ImVec4 r, int kind, int arg, MenuAct act = MenuAct::None, const std::string& tg = "") { menuHits.push_back({ paneIdx, r, kind, arg, act, tg }); return (int)menuHits.size() - 1 == menuSel; };
         auto row = [&](ImVec4 r, const std::string& label, float size, uint32_t c, float a, bool sel, bool on, bool enabled, uint32_t textCol = 0) {   // a pickable row
-            if (sel) { dl->AddRectFilled(ImVec2(r.x, r.y), ImVec2(r.z, r.w), C(c, 0.22f * a), 12); dl->AddRect(ImVec2(r.x, r.y), ImVec2(r.z, r.w), C(c, 0.9f * a), 12, ImDrawFlags_None, 3.f);
-                dl->AddTriangleFilled(ImVec2(r.x + 16, r.y + (r.w - r.y) * 0.28f), ImVec2(r.x + 16, r.w - (r.w - r.y) * 0.28f), ImVec2(r.x + 32, (r.y + r.w) * 0.5f), C(c, a)); }
+            if (sel) { cutBox(ImVec2(r.x, r.y), ImVec2(r.z, r.w), (r.w - r.y) * 0.3f, C(c, 0.2f * a), C(c, 0.85f * a), 2.f); dl->AddRectFilled(ImVec2(r.x, r.y + 5), ImVec2(r.x + 6, r.w - 5), IM_COL32(235, 252, 255, (int)(255 * a))); }
+            else dl->AddLine(ImVec2(r.x + 14, r.w + 2), ImVec2(r.z, r.w + 2), C(c, 0.12f * a), 1.5f);
             ImU32 tc = !enabled ? C(c, 0.25f * a) : textCol ? C(textCol, a) : sel ? IM_COL32(235, 252, 255, (int)(255 * a)) : C(c, 0.85f * a);
             text(label, size, ImVec2(r.x + 44, r.y), ImVec2(r.z - 20, r.w), 0, tc, false);
             if (on) dl->AddCircleFilled(ImVec2(r.x + 30 + 8, (r.y + r.w) * 0.5f), 7, C(c, a));
@@ -7183,20 +7228,24 @@ struct App {
                 break;
             case MenuKind::Button: {
                 ImVec4 r(a.x, a.y, b.x, b.y); bool sel = hit(r, 0, 0, it.act, it.target);
-                if (sel) { dl->AddRectFilled(a, b, C(c, 0.22f * al), 14); dl->AddRect(a, b, C(c, 0.9f * al), 14, ImDrawFlags_None, 3.f);
-                    dl->AddTriangleFilled(ImVec2(a.x + 22, a.y + (b.y - a.y) * 0.28f), ImVec2(a.x + 22, b.y - (b.y - a.y) * 0.28f), ImVec2(a.x + 42, (a.y + b.y) * 0.5f), C(c, al)); }
-                text(menuFill(it.text, [&](const std::string& n) { return MenuValue(n); }), it.textSize, a, b, it.align, sel ? IM_COL32(235, 252, 255, (int)(255 * al)) : C(c, 0.85f * al), false);
+                bool off = it.act == MenuAct::QuickSave && !game.player.quickSave;   // (saving only at Save Stations)
+                cutBox(a, b, (b.y - a.y) * 0.32f, C(c, (sel ? 0.22f : 0.05f) * al), C(c, (sel ? 0.95f : off ? 0.15f : 0.35f) * al), sel ? 2.5f : 1.5f);
+                if (sel) dl->AddRectFilled(ImVec2(a.x + 4, a.y + 8), ImVec2(a.x + 10, b.y - 8), IM_COL32(235, 252, 255, (int)(255 * al)));
+                text(menuFill(it.text, [&](const std::string& n) { return MenuValue(n); }), it.textSize, a, b, it.align, off ? C(c, 0.3f * al) : sel ? IM_COL32(235, 252, 255, (int)(255 * al)) : C(c, 0.85f * al), false);
                 break; }
             case MenuKind::TabBar: {
                 std::vector<int> tabs = menu.tabs(); if (tabs.empty()) break;
                 int showPage = playMode ? menuPage : menuEdPage;
                 float tw = (b.x - a.x) / tabs.size();
                 for (int k = 0; k < (int)tabs.size(); k++) {
-                    ImVec2 ta(a.x + tw * k + 6, a.y), tb(a.x + tw * (k + 1) - 6, b.y); bool cur = tabs[k] == showPage;
+                    ImVec2 ta(a.x + tw * k + 8, a.y), tb(a.x + tw * (k + 1) - 8, b.y); bool cur = tabs[k] == showPage;
                     bool sel = hit(ImVec4(ta.x, ta.y, tb.x, tb.y), 1, tabs[k]);
-                    if (cur) dl->AddRectFilled(ta, tb, C(c, 0.3f * al), 12);
-                    dl->AddRect(ta, tb, C(c, (cur ? 0.95f : sel ? 0.8f : 0.4f) * al), 12, ImDrawFlags_None, cur ? 3.f : 2.f);
-                    text(menu.pages[tabs[k]].name, it.textSize, ta, tb, 1, cur ? IM_COL32(235, 252, 255, (int)(255 * al)) : C(c, (sel ? 1.f : 0.7f) * al), false);
+                    float sl = (tb.y - ta.y) * 0.4f; ImVec2 q[4] = { ImVec2(ta.x + sl, ta.y), ImVec2(tb.x, ta.y), ImVec2(tb.x - sl, tb.y), ImVec2(ta.x, tb.y) };   // slanted
+                    dl->AddConvexPolyFilled(q, 4, C(c, (cur ? 0.32f : sel ? 0.16f : 0.04f) * al));
+                    dl->AddPolyline(q, 4, C(c, (cur || sel ? 0.95f : 0.35f) * al), ImDrawFlags_Closed, cur ? 2.5f : 1.5f);
+                    if (cur) dl->AddRectFilled(ImVec2(ta.x + sl * 0.5f, tb.y + 4), ImVec2(tb.x - sl * 0.5f, tb.y + 9), C(c, al));
+                    std::string up = menu.pages[tabs[k]].name; for (char& ch : up) ch = (char)std::toupper((unsigned char)ch);
+                    text(up, it.textSize, ta, tb, 1, cur ? IM_COL32(235, 252, 255, (int)(255 * al)) : C(c, (sel ? 1.f : 0.7f) * al), false);
                 }
                 if (tabs.size() > 1) { text("Q", it.textSize * 0.6f, ImVec2(a.x - 40, a.y), ImVec2(a.x - 4, b.y), 1, C(c, 0.5f * al), false); text("E", it.textSize * 0.6f, ImVec2(b.x + 4, a.y), ImVec2(b.x + 40, b.y), 1, C(c, 0.5f * al), false); }
                 break; }
@@ -7204,7 +7253,18 @@ struct App {
                 float rh = it.textSize * 1.55f; int key = paneIdx * 256 + ii; float& scroll = menuScroll[key];
                 struct Row { std::string label; bool header = false, enabled = true, on = false; int kind = -1, arg = 0; uint32_t col = 0; };
                 std::vector<Row> rows;
-                if (it.kind == MenuKind::ItemList) {
+                if (it.kind == MenuKind::ItemList && it.text == "category") {   // the picked kind's items: picking one shows it in the Item detail
+                    std::vector<std::string> gs = InventoryGroups(); std::string g = gs.empty() ? "" : gs[std::clamp(menuCat, 0, (int)gs.size() - 1)];
+                    rows.push_back({ g, true });
+                    int k = 0;
+                    for (const InvEntry& e : InventoryEntries()) {
+                        if (e.group != g) { k++; continue; }
+                        Row r; r.label = e.have ? e.name : "??????"; r.enabled = e.have; r.kind = 12; r.arg = k++; r.on = e.have && e.name == menuItemPick;
+                        if (e.have && e.count > 1) r.label += "  x" + std::to_string(e.count);
+                        rows.push_back(r);
+                    }
+                    if (rows.size() <= 1) rows.push_back({ "Nothing of this kind", true });
+                } else if (it.kind == MenuKind::ItemList) {
                     std::string group;
                     for (const ItemDef& d : items.items) {
                         if (!d.used) continue;
@@ -7220,8 +7280,10 @@ struct App {
                     for (int i = 0; i < (int)weapons.missileTypes.size(); i++) { bool own = OwnsMissile(weapons.missileTypes[i]); Row r; r.label = own ? weapons.missileTypes[i].name : "???"; r.enabled = own; r.on = weapState.missile == i; r.kind = own ? 3 : -1; r.arg = i; rows.push_back(r); }
                     if (rows.empty()) rows.push_back({ "No weapons yet", true });
                 } else {
-                    const ScanLog& lg = ShownScans();
-                    for (const std::string& cat : lg.categories()) {
+                    const ScanLog& lg = ShownScans(); std::vector<std::string> cats = lg.categories();
+                    std::string only = it.text == "category" && !cats.empty() ? cats[std::clamp(menuLogCat, 0, (int)cats.size() - 1)] : "";
+                    for (const std::string& cat : cats) {
+                        if (!only.empty() && cat != only) continue;
                         rows.push_back({ cat, true });
                         for (int i = 0; i < (int)lg.entries.size(); i++) if (lg.entries[i].category == cat) { Row r; r.label = lg.entries[i].name; r.on = i == menuScan; r.kind = 4; r.arg = i; if (lg.entries[i].important) r.col = visors.importantColor; rows.push_back(r); }
                     }
@@ -7250,6 +7312,44 @@ struct App {
                 if (total > b.y - a.y) {   // a thin scroll bar
                     float k = (b.y - a.y) / total, y0 = a.y + (scroll / total) * (b.y - a.y);
                     dl->AddRectFilled(ImVec2(b.x - 6, y0), ImVec2(b.x - 1, y0 + (b.y - a.y) * k), C(c, 0.5f * al), 3);
+                }
+                break; }
+            case MenuKind::Categories: {   // kinds to pick: the inventory's (Beams, Morph Ball, Suits...) or the log's (the scan categories)
+                bool log = it.text == "log";
+                std::vector<std::string> cs = log ? ShownScans().categories() : InventoryGroups();
+                int& cur = log ? menuLogCat : menuCat; if (!cs.empty()) cur = std::clamp(cur, 0, (int)cs.size() - 1);
+                float rh = it.textSize * 1.75f;
+                if (cs.empty()) { text(log ? "Nothing scanned yet" : "Nothing in this game yet", it.textSize * 0.85f, a, ImVec2(b.x, a.y + rh), 0, C(c, 0.4f * al), false); break; }
+                for (int k = 0; k < (int)cs.size(); k++) {
+                    ImVec4 rr(a.x, a.y + k * rh + 3, b.x, a.y + (k + 1) * rh - 3); if (rr.w > b.y) break;
+                    bool sel = hit(rr, log ? 13 : 11, k);
+                    bool here = k == cur;
+                    if (here && !sel) cutBox(ImVec2(rr.x, rr.y), ImVec2(rr.z, rr.w), (rr.w - rr.y) * 0.3f, C(c, 0.12f * al), C(c, 0.5f * al), 1.5f);
+                    row(rr, cs[k], it.textSize, c, al, sel, here, true);
+                }
+                break; }
+            case MenuKind::ItemDetail: {   // the picked item, big: its model turning, its name, what it does (its pop-up text)
+                std::vector<InvEntry> es = InventoryEntries(); const InvEntry* e = nullptr;
+                for (const InvEntry& x : es) if (x.name == menuItemPick && x.have) e = &x;
+                if (!e) { text("Pick something on the right", it.textSize, a, b, 1, C(c, 0.4f * al), false); break; }
+                float mh = (b.y - a.y) * 0.46f; ImVec2 m0(a.x + (b.x - a.x) * 0.25f, a.y), m1(b.x - (b.x - a.x) * 0.25f, a.y + mh);
+                float cx = (m0.x + m1.x) * 0.5f, by = m1.y - mh * 0.06f, rx = (m1.x - m0.x) * 0.4f;
+                for (int k = 0; k < 3; k++) dl->AddEllipse(ImVec2(cx, by), ImVec2(rx * (1 - k * 0.22f), rx * 0.16f * (1 - k * 0.22f)), C(c, (0.45f - k * 0.12f) * al), 0, 48, 2.f);   // a pedestal of light
+                imModel = ItemModelFor(e->name); imWantW = std::max(16, (int)(m1.x - m0.x)); imWantH = std::max(16, (int)(m1.y - m0.y));
+                if (itemModelView.srv && imDW == imWantW && imDH == imWantH) dl->AddImage((ImTextureID)(intptr_t)itemModelView.srv.Get(), m0, m1, ImVec2(0, 0), ImVec2(1, 1), C(0xFFFFFF, al));
+                GetPopup p = popupFor(items, e->name, e->hint);
+                std::string title = ItemFill(menuFill(p.title, [&](const std::string& n) { return n == "name" ? e->name : std::string(); }));
+                if (title.empty() || title.find('{') != std::string::npos) title = e->name;
+                float ty = a.y + mh + it.textSize * 0.4f, ts = it.textSize * 1.35f;
+                text(title, ts, ImVec2(a.x, ty), ImVec2(b.x, ty + ts * 1.2f), 1, IM_COL32(235, 252, 255, (int)(255 * al)), false);
+                ty += ts * 1.35f; dl->AddLine(ImVec2(a.x + (b.x - a.x) * 0.15f, ty), ImVec2(b.x - (b.x - a.x) * 0.15f, ty), C(c, 0.5f * al), 2.f);
+                std::string body = ItemFill(p.text); if (body.empty()) body = e->count > 1 ? "You have " + std::to_string(e->count) + "." : "";
+                float tsz = it.textSize; auto measure = [&](const char* q0, const char* q1) { return font->CalcTextSizeA(tsz, FLT_MAX, 0, q0, q1).x; };
+                float y2 = ty + tsz * 0.6f;
+                for (const TextLine& ln : wrapText(body, b.x - a.x - 20, measure)) {
+                    if (y2 + tsz > b.y) break;
+                    float lw = measure(body.data() + ln.start, body.data() + ln.end);
+                    dl->AddText(font, tsz, ImVec2((a.x + b.x - lw) * 0.5f, y2), C(0xE8F8FF, 0.9f * al), body.data() + ln.start, body.data() + ln.end); y2 += tsz * 1.3f;
                 }
                 break; }
             case MenuKind::ScanText: {
@@ -8237,11 +8337,12 @@ struct App {
         button("Yes", 0.1f, "save:yes"); button("No", 0.54f, "save:no");
         return p;
     }
+    bool quickSaving = false;
     bool WriteSave() {
         const WorldObject* st = nullptr; for (const WorldObject& o : objects) if (o.id == saveStationId) st = &o;
         if (curSlot < 0) curSlot = 0;
         SaveGame g; int found = 0, total = 0;
-        g.world = CurrentWorld(); g.place = st ? st->name : "Save Station"; g.playTime = playTime; g.completion = Completion(&found, &total);
+        g.world = CurrentWorld(); g.place = st ? st->name : quickSaving ? "Quick save" : "Save Station"; g.playTime = playTime; g.completion = Completion(&found, &total);
         g.health = play.health; g.maxHealth = playRules.maxHealth; g.savedAt = (int64_t)std::time(nullptr);
         g.pos = player.feet; g.yaw = player.yaw;
         g.keys = inv.keys; g.counts = inv.counts;
@@ -9313,8 +9414,11 @@ struct App {
         ImGui::SameLine(); if (ImGui::ArrowButton("##mup", ImGuiDir_Up)) move(-1);
         ImGui::SameLine(); if (ImGui::ArrowButton("##mdn", ImGuiDir_Down)) move(1);
         ImGui::Spacing();
-        if (ImGui::SmallButton("Back to the starter menu")) ImGui::OpenPopup("menureset");
-        if (ImGui::BeginPopup("menureset")) { ImGui::TextUnformatted("Replace this whole menu with the starter one?"); if (ImGui::Button("Yes, replace it")) { menu = defaultMenu(); menuEdAlways = false; menuEdPage = 0; menuEdPane = -1; menuEdItem = -1; ch = true; ImGui::CloseCurrentPopup(); } ImGui::EndPopup(); }
+        if (ImGui::SmallButton("Use the new three-pane menu")) ImGui::OpenPopup("menureset");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("The sharp helmet menu: tabs on top (System, Inventory, Log), three bent panes, Options / Quick save / Quit below.");
+        ImGui::SameLine(); if (ImGui::SmallButton("The first menu")) ImGui::OpenPopup("menuclassic");
+        if (ImGui::BeginPopup("menuclassic")) { ImGui::TextUnformatted("Replace this whole menu with the first one (Main, Inventory, Logbook)?"); if (ImGui::Button("Yes, replace it")) { menu = classicMenu(); menuEdAlways = false; menuEdPage = 0; menuEdPane = -1; menuEdItem = -1; ch = true; ImGui::CloseCurrentPopup(); } ImGui::EndPopup(); }
+        if (ImGui::BeginPopup("menureset")) { ImGui::TextUnformatted("Replace this whole menu with the new three-pane one?"); if (ImGui::Button("Yes, replace it")) { menu = defaultMenu(); menuEdAlways = false; menuEdPage = 0; menuEdPane = -1; menuEdItem = -1; ch = true; ImGui::CloseCurrentPopup(); } ImGui::EndPopup(); }
     }
     void MenuCanvas(ImVec2 avail, bool& ch) {   // the picked pane laid out flat: click an item to pick it, drag to move, the corner to resize
         MenuPane* p = MenuEdPane();

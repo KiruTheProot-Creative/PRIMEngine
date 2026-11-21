@@ -381,6 +381,15 @@ The sun's shadows use four shadow maps around you: the nearest covers about 13 b
 
 ## The pause menu (Player > Menu): tabs of bent panes
 
+**The three-pane menu** (new games start with it; Player > Menu > "Use the new three-pane menu" for older ones, "The first menu" goes back):
+- **Tabs on top:** System, Inventory, Log (Q / E switch them). **Below:** Options, Quick save, Quit.
+- **Inventory:** the kinds on the left (Beams, Morph Ball, Suits, Boots and moves, Visors, Tanks and expansions ...), the items of that kind on the right (what you haven't found yet: ??????), and the picked item big in the middle: its model turning on a pedestal of light, its name, and its pop-up text (keys filled in).
+- **Log:** the scan categories on the left, their entries on the right, the picked entry in the middle (its model and its text).
+- **System:** your energy, missiles and scans, the game and world name, Keep playing, the map, Start over.
+- **Quick save** works only if the game allows it (Body and movement > "Quick save from the pause menu"); otherwise it is greyed out and only Save Stations save.
+- **The sharp look** everywhere in the pause menu: panes of dark glass with cut corners and thin bright frames, slanted tabs with a bar under the open one, buttons and rows with a bright bar when picked.
+- New menu items for your own pages: **Categories** (text "items" or "log") and **Item detail**; an Item list or Scan list with text "category" shows only the picked kind.
+
 Esc while playing opens the menu inside the helmet: **pages shown as tabs** (Q / E or the tab bar switch them, a new page slides in), each made of one or more slightly bent **panes** (turned toward you for a wrap-around look), over everything else (the HUD elements and parts set to "stay when paused" stay around it). Pick with the mouse (it follows the bends), or W / S and Enter; lists scroll with the wheel.
 
 The starter menu has **Main** (keep playing, start over, map, settings, stop), **Inventory** (the items you found, "???" for the rest; beams and missiles to pick) and **Logbook** (the scan index: entries by category, the picked one's text and its model turning). Player editor > **Menu** changes all of it: add pages (tab or not), panes (where, turn, size, bend, colour, glass, glow, frame) and items: Panel, Text (with {energy} {missiles} {scans} {game} {world} filled in), Image, Button (keep playing, start over, map, settings, stop, go to a page, back), Tab bar, Item list, Beam list, Scan list, Scan text, Scan model. Drag items on the flat layout of a pane; the camera preview shows the page as in the game.

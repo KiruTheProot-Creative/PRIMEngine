@@ -999,7 +999,7 @@ int main() {
     }
     {   // the pause menu: pages as tabs, panes, items
         printf("\nthe pause menu\n");
-        MenuLayout m = defaultMenu();
+        MenuLayout m = classicMenu();
         CHECK(m.pages.size() == 4 && m.findPage("Logbook") == 2 && m.findPage("Nope") == -1 && m.tabs() == std::vector<int>({ 0, 1, 2, 3 }) && m.always.size() == 1 && m.always[0].items[0].kind == MenuKind::TabBar,
               "starter menu: Main, Inventory, Logbook, Options as tabs, a tab bar on every page");
         CHECK(m.optionsPage() == 3 && m.pages[0].panes[0].items[5].act == MenuAct::Settings && m.pages[0].panes[0].items[5].text == "Options", "the Options page, and Main's Options button");
@@ -1014,12 +1014,12 @@ int main() {
               && b.pages[2].panes[2].items[0].text == "Two words\nand a line" && !b.pages[2].panes[1].frame && b.always[0].color == 0xFF00FF && b.tabs() == std::vector<int>({ 0, 2, 3 }) && b.optionsPage() == 3 && b.pages[3].panes[0].items[0].ownColors && b.pages[3].panes[0].items[0].c3 == 0xABCDEF
               && b.pages[2].panes[0].yaw == m.pages[2].panes[0].yaw && b.pages[1].panes[1].items[1].kind == MenuKind::BeamList, "pages, panes and items save and load");
         {   // a menu saved before the Options page: it gets one, and its Settings button now says Options
-            MenuLayout o = defaultMenu(); o.pages.pop_back(); o.pages[0].panes[0].items[5].text = o.pages[0].panes[0].items[5].name = "Settings";
+            MenuLayout o = classicMenu(); o.pages.pop_back(); o.pages[0].panes[0].items[5].text = o.pages[0].panes[0].items[5].name = "Settings";
             saveMenu("/tmp/prim_menu_old.txt", o);
             { std::ifstream in("/tmp/prim_menu_old.txt"); std::stringstream ss; ss << in.rdbuf(); std::string t = ss.str(); t.replace(t.find("menu 2"), 6, "menu 1"); std::ofstream out("/tmp/prim_menu_old.txt"); out << t; }
             MenuLayout ob; loadMenu("/tmp/prim_menu_old.txt", ob);
             CHECK(ob.pages.size() == 4 && ob.optionsPage() == 3 && ob.pages[0].panes[0].items[5].text == "Options", "an older menu gets the Options page");
-            MenuLayout nb = defaultMenu(); nb.pages.pop_back(); saveMenu("/tmp/prim_menu_new.txt", nb); MenuLayout nl; loadMenu("/tmp/prim_menu_new.txt", nl);
+            MenuLayout nb = classicMenu(); nb.pages.pop_back(); saveMenu("/tmp/prim_menu_new.txt", nb); MenuLayout nl; loadMenu("/tmp/prim_menu_new.txt", nl);
             CHECK(nl.pages.size() == 3 && nl.optionsPage() < 0, "a newer menu without it stays without it (it was taken out on purpose)");
         }
         auto val = [](const std::string& n) -> std::string { return n == "energy" ? "99" : n == "game" ? "Prime" : ""; };
@@ -1698,6 +1698,20 @@ int main() {
         CHECK(hasModel, "... with the item's model in it");
         ss.screens[ig].holdMin = 1.7f; saveScreens("/tmp/prim_scr_ig.txt", ss); ScreenSet sl; loadScreens("/tmp/prim_scr_ig.txt", sl);
         CHECK(sl.byRole(ScreenRole::ItemGet) >= 0 && sl.screens[sl.byRole(ScreenRole::ItemGet)].holdMin == 1.7f, "its hold time saves and loads");
+    }
+    {   // the three-pane helmet menu
+        MenuLayout m = defaultMenu(); std::vector<int> tabs = m.tabs();
+        CHECK(tabs.size() == 3 && m.pages[tabs[0]].name == "System" && m.pages[tabs[1]].name == "Inventory" && m.pages[tabs[2]].name == "Log", "tabs: System, Inventory, Log");
+        CHECK(m.always.size() == 2 && m.optionsPage() >= 0 && !m.pages[m.optionsPage()].tab, "a tab bar and the actions on every page; Options opened from its button");
+        const MenuPage& inv = m.pages[m.findPage("Inventory")]; bool cats = false, detail = false, list = false;
+        for (const MenuPane& p : inv.panes) for (const MenuItem& it : p.items) { cats |= it.kind == MenuKind::Categories; detail |= it.kind == MenuKind::ItemDetail; list |= it.kind == MenuKind::ItemList && it.text == "category"; }
+        CHECK(inv.panes.size() == 3 && cats && detail && list, "Inventory: kinds, the picked item, the items of that kind");
+        bool qs = false; for (const MenuItem& it : m.always[1].items) qs |= it.act == MenuAct::QuickSave;
+        CHECK(qs && std::string(menuActName(MenuAct::QuickSave)) == "Quick save", "a Quick save button");
+        saveMenu("/tmp/prim_menu3.txt", m); MenuLayout l; loadMenu("/tmp/prim_menu3.txt", l);
+        CHECK(l.pages.size() == m.pages.size() && l.pages[1].panes[0].items[0].kind == MenuKind::Categories && l.pages[1].panes[1].items[0].kind == MenuKind::ItemDetail, "it saves and loads");
+        PlayerRules pr; pr.quickSave = true; GameSettings gi; gi.player = pr; gi.save("/tmp/prim_qs_game.txt"); GameSettings gl; gl.load("/tmp/prim_qs_game.txt");
+        CHECK(gl.player.quickSave, "the quick save rule saves and loads");
     }
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
     return fails ? 1 : 0;

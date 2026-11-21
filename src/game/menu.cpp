@@ -8,11 +8,11 @@
 namespace mc {
 
 const char* menuKindName(MenuKind k) {
-    static const char* n[] = { "Panel", "Text", "Image", "Button", "Tab bar", "Item list", "Beam list", "Scan list", "Scan text", "Scan model", "Options" };
+    static const char* n[] = { "Panel", "Text", "Image", "Button", "Tab bar", "Item list", "Beam list", "Scan list", "Scan text", "Scan model", "Options", "Categories", "Item detail" };
     int i = (int)k; return i >= 0 && i < (int)MenuKind::COUNT ? n[i] : "?";
 }
 const char* menuActName(MenuAct a) {
-    static const char* n[] = { "Nothing", "Keep playing", "Start over", "Open the map", "Options", "Stop playing", "Go to a page", "Back (the page before)" };
+    static const char* n[] = { "Nothing", "Keep playing", "Start over", "Open the map", "Options", "Stop playing", "Go to a page", "Back (the page before)", "Quick save" };
     int i = (int)a; return i >= 0 && i < (int)MenuAct::COUNT ? n[i] : "?";
 }
 
@@ -39,7 +39,65 @@ static MenuPane pane(const std::string& name, V3 pos, float yaw, float w, float 
     MenuPane p; p.name = name; p.pos = pos; p.yaw = yaw; p.width = w; p.height = h; return p;
 }
 
+// the three-pane helmet menu: a tab bar on top, three bent panes (a list to pick from, the picked thing big, what is in it), actions below
 MenuLayout defaultMenu() {
+    MenuLayout m; m.slide = 0.2f;
+    {   // on every page: the tabs on top, the actions below
+        MenuPane t = pane("Tabs", { 0, 0.43, 1.02 }, 0, 0.95f, 0.11f); t.bendY = 0; t.bendX = 0.2f; t.backing = 0.45f;
+        t.items.push_back(item("Tabs", MenuKind::TabBar, 0.03f, 0.12f, 0.94f, 0.76f, "", 38));
+        m.always.push_back(t);
+        MenuPane b = pane("Actions", { 0, -0.47, 1.02 }, 0, 0.95f, 0.1f); b.bendY = 0; b.bendX = 0.2f; b.backing = 0.45f;
+        MenuItem o = item("Options", MenuKind::Button, 0.02f, 0.14f, 0.28f, 0.72f, "Options", 34); o.act = MenuAct::Settings; b.items.push_back(o);
+        MenuItem q = item("Quick save", MenuKind::Button, 0.36f, 0.14f, 0.28f, 0.72f, "Quick save", 34); q.act = MenuAct::QuickSave; b.items.push_back(q);
+        MenuItem x = item("Quit", MenuKind::Button, 0.7f, 0.14f, 0.28f, 0.72f, "Quit", 34); x.act = MenuAct::Quit; b.items.push_back(x);
+        m.always.push_back(b);
+    }
+    auto side = [&](const std::string& name, float x, float yaw) { MenuPane p = pane(name, { x, -0.02, 0.98 }, yaw, 0.42f, 0.72f); p.bendX = 0.15f; p.bendY = 0.12f; return p; };
+    {   // System: where you are and how you are doing, the map, starting over
+        MenuPage pg; pg.name = "System";
+        MenuPane l = side("Status", -0.62f, -24);
+        l.items.push_back(item("Title", MenuKind::Text, 0.07f, 0.04f, 0.86f, 0.1f, "Status", 40));
+        MenuItem e = item("Energy", MenuKind::Text, 0.07f, 0.18f, 0.86f, 0.08f, "Energy  {energy} / {maxenergy}", 30); e.align = 0; l.items.push_back(e);
+        MenuItem mi = item("Missiles", MenuKind::Text, 0.07f, 0.28f, 0.86f, 0.08f, "Missiles  {missiles}", 30); mi.align = 0; l.items.push_back(mi);
+        MenuItem sc = item("Scans", MenuKind::Text, 0.07f, 0.38f, 0.86f, 0.08f, "Scanned  {scans}", 30); sc.align = 0; l.items.push_back(sc);
+        MenuPane c = pane("System", { 0, -0.02, 0.92 }, 0, 0.72f, 0.72f); c.bendX = 0.25f; c.bendY = 0.12f;
+        c.items.push_back(item("Title", MenuKind::Text, 0.05f, 0.04f, 0.9f, 0.13f, "{game}", 56));
+        MenuItem w = item("World", MenuKind::Text, 0.05f, 0.17f, 0.9f, 0.06f, "{world}", 28); w.alpha = 0.6f; c.items.push_back(w);
+        c.items.push_back(button("Keep playing", MenuAct::Resume, 0.32f));
+        c.items.push_back(button("Map  (M)", MenuAct::Map, 0.45f));
+        c.items.push_back(button("Start over", MenuAct::Restart, 0.58f));
+        MenuPane r = side("Help", 0.62f, 24);
+        r.items.push_back(item("Title", MenuKind::Text, 0.07f, 0.04f, 0.86f, 0.1f, "Keys", 40));
+        MenuItem k = item("Keys", MenuKind::Text, 0.07f, 0.18f, 0.86f, 0.7f, "Q / E  pages\nW / S  pick\nEnter  use\nEsc  back to the game", 28); k.align = 0; r.items.push_back(k);
+        pg.panes.push_back(l); pg.panes.push_back(c); pg.panes.push_back(r); m.pages.push_back(pg);
+    }
+    {   // Inventory: kinds on the left, the picked item in the middle, what you have of that kind on the right (?????? for what you haven't found)
+        MenuPage pg; pg.name = "Inventory";
+        MenuPane l = side("Kinds", -0.62f, -24);
+        l.items.push_back(item("Kinds", MenuKind::Categories, 0.06f, 0.05f, 0.88f, 0.9f, "items", 34));
+        MenuPane c = pane("Item", { 0, -0.02, 0.92 }, 0, 0.72f, 0.72f); c.bendX = 0.25f; c.bendY = 0.12f;
+        c.items.push_back(item("Detail", MenuKind::ItemDetail, 0.05f, 0.04f, 0.9f, 0.92f, "", 32));
+        MenuPane r = side("Items", 0.62f, 24);
+        r.items.push_back(item("Items", MenuKind::ItemList, 0.06f, 0.05f, 0.88f, 0.9f, "category", 32));
+        pg.panes.push_back(l); pg.panes.push_back(c); pg.panes.push_back(r); m.pages.push_back(pg);
+    }
+    {   // Log: the scan categories, the picked entry (its model and its text), the entries of that category
+        MenuPage pg; pg.name = "Log";
+        MenuPane l = side("Categories", -0.62f, -24);
+        l.items.push_back(item("Categories", MenuKind::Categories, 0.06f, 0.05f, 0.88f, 0.9f, "log", 34));
+        MenuPane c = pane("Entry", { 0, -0.02, 0.92 }, 0, 0.72f, 0.72f); c.bendX = 0.25f; c.bendY = 0.12f;
+        c.items.push_back(item("Model", MenuKind::ScanModel, 0.3f, 0.03f, 0.4f, 0.38f));
+        c.items.push_back(item("Text", MenuKind::ScanText, 0.06f, 0.42f, 0.88f, 0.55f, "", 30));
+        MenuPane r = side("Entries", 0.62f, 24);
+        MenuItem n = item("Count", MenuKind::Text, 0.06f, 0.03f, 0.88f, 0.07f, "{scans} scanned", 26); n.alpha = 0.6f; r.items.push_back(n);
+        r.items.push_back(item("Entries", MenuKind::ScanList, 0.06f, 0.11f, 0.88f, 0.85f, "category", 32));
+        pg.panes.push_back(l); pg.panes.push_back(c); pg.panes.push_back(r); m.pages.push_back(pg);
+    }
+    MenuPage op = defaultOptionsPage(); op.tab = false; m.pages.push_back(op);   // (Options: the button below opens it)
+    return m;
+}
+
+MenuLayout classicMenu() {
     MenuLayout m;
     {   // on every page: the tabs
         MenuPane t = pane("Tabs", { 0, 0.42, 1.0 }, 0, 1.15f, 0.12f); t.bendY = 0; t.backing = 0.5f;
