@@ -37,7 +37,7 @@ cbuffer Frame : register(b0)
     float4 gCascTexel;              // one shadow pixel in blocks, per cascade
     float4 gPrecip;                 // falling things: x their own clock (s, steady), yz how far the wind has carried them so far (blocks), w -
     row_major float4x4 gOccVP;      // camera-relative position -> the "roofs" map (opaque things seen from straight above)
-    float4 gOcc;                    // x true darkness on (sky light only where the sky is), y how open the sky is around the camera (0..1)
+    float4 gOcc;                    // x true darkness on (sky light only where the sky is), y how open the sky is around the camera (0..1), z the light shafts' strength (god rays)
     float4 gLookFog;                // the look's air: x fog thickness, y height (world Y) it thins above, z over how many blocks (0: everywhere), w lights in the air
     float4 gLookFogCol;             // rgb its colour (linear), w how much it glows by itself
     float4 gGI;                     // bounce light: x strength (0: off), y how far it reaches (blocks)
@@ -556,8 +556,8 @@ void waterLight(float3 rel, float3 nFlat, float3 n, float2 pixel, out float3 sun
         if (high) { float2 e = float2(0.045, 0.03) * (1 + depth * 0.15); cc = float3(causticAt(p + e, t, true), causticAt(p, t, true), causticAt(p - e, t, true)); }
         else cc = causticAt(p, t, false).xxx;
         float k = saturate(depth * 3) * exp(-depth * 0.09) * farK * gWater2.z;   // soft right at the surface, fading deeper down
-        sunMul = lerp(1, 0.55 + cc, k);
-        ambMul = lerp(1, 0.68 + cc * 0.8, k * 0.9);
+        sunMul = max(lerp(1, 0.55 + cc, k), 0.15);
+        ambMul = max(lerp(1, 0.68 + cc * 0.8, k * 0.9), 0.25);
         return;
     }
     if (depth > -4 && gWater.y > 0.5 && gSunDir.y > -0.05)
@@ -1570,7 +1570,7 @@ float4 PS_VolumeLow(SkyOut i) : SV_Target   // a smaller picture: what the air a
             }
             float a = exp(-d * dt);
             float3 tint = lerp(float3(1, 1, 1), gLookFogCol.rgb * 1.6, dl / max(d, 1e-4));   // the look's fog in its own colour
-            S += T * ((gSunColor.rgb * sun * phase * 0.18 + amb * open) * tint + gLookFogCol.rgb * gLookFogCol.w * dl / max(d, 1e-4)) * (1 - a); T *= a;
+            S += T * ((gSunColor.rgb * sun * phase * 0.18 * gOcc.z + amb * open) * tint + gLookFogCol.rgb * gLookFogCol.w * dl / max(d, 1e-4)) * (1 - a); T *= a;
         }
         sAll = sAll * T + S; tAll *= T;
     }
@@ -1626,7 +1626,7 @@ float4 PS_VolumeLow(SkyOut i) : SV_Target   // a smaller picture: what the air a
             float beam = pow(saturate(1 - causticCells(p, tm * 0.4) * 1.7), 2.5);
             S += sun * beam * exp(-s * 0.1 - depth * 0.07) * dt;
         }
-        sAll += S * gSunColor.rgb * float3(0.35, 0.85, 0.95) * phaseHG(dot(dir, L), 0.55) * 12.566 * 0.045 * cloudShadow(float3(0, 0, 0));
+        sAll += S * gSunColor.rgb * float3(0.35, 0.85, 0.95) * phaseHG(dot(dir, L), 0.55) * 12.566 * 0.045 * gOcc.z * cloudShadow(float3(0, 0, 0));
     }
     return float4(sAll, tAll);
 }

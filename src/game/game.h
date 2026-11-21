@@ -84,6 +84,8 @@ struct Settings {
     bool waterShafts = true;   // light shafts when you are under water
     bool waterFoam = true;     // foam where the water meets the shore, and soft edges there
     bool visorDrops = true;    // water drops on the visor after you come out of the water (and in the rain)
+    float causticStrength = 1.5f;   // how bright the caustics' lines are (0 .. 3)
+    float godrays = 1;         // how strong the sun's light shafts are in fog and haze, and under water (0 off .. 3)
     KeyBinds keys;
     bool load(const std::string& path);
     bool save(const std::string& path) const;

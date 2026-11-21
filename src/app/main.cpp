@@ -4340,7 +4340,7 @@ struct App {
         }
         XMStoreFloat4x4(&fc.waterVP, watervp);
         fc.water[0] = (float)settings.waterCaustics; fc.water[1] = settings.waterCausticsAbove ? 1.f : 0.f; fc.water[2] = waterMap ? 1.f : 0.f; fc.water[3] = settings.waterShafts ? 1.f : 0.f;
-        fc.water2[0] = settings.waterFoam ? 1.f : 0.f; fc.water2[1] = settings.visorDrops && playMode ? visorWet : 0.f; fc.water2[2] = 1; fc.water2[3] = settings.visorDrops && playMode ? visorRain : 0.f;
+        fc.water2[0] = settings.waterFoam ? 1.f : 0.f; fc.water2[1] = settings.visorDrops && playMode ? visorWet : 0.f; fc.water2[2] = settings.causticStrength; fc.water2[3] = settings.visorDrops && playMode ? visorRain : 0.f;
         bool occRender = false;
         if (info.trueDark) {   // the roofs map: redrawn every few frames or after moving; in between it is shifted to the camera
             V3 dm = camPos - occCam; occAge++;
@@ -4353,6 +4353,7 @@ struct App {
             XMStoreFloat4x4(&fc.occVP, XMMatrixTranslation((float)dm.x, (float)dm.y, (float)dm.z) * occBase);
             fc.occ[0] = 1; fc.occ[1] = camOpen;
         } else { fc.occ[0] = 0; fc.occ[1] = 1; occAge = 1000; }
+        fc.occ[2] = std::max(0.f, settings.godrays);   // (z: the light shafts' strength)
         {   // the look's air
             const ColorLook& lk = lookState.now; float atm = std::max(0.15f, envState.now.atmosphere);
             fc.lookFog[0] = std::max(0.f, lk.fog) * atm; fc.lookFog[1] = lk.fogHeight; fc.lookFog[2] = std::max(0.f, lk.fogThin); fc.lookFog[3] = std::max(0.f, lk.lightFog) * (settings.lightFog ? 1.f : 0.f);
