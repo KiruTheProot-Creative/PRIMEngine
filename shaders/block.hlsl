@@ -1264,7 +1264,7 @@ float4 PS_ReflComp(SkyOut i) : SV_Target
         float rad = rough * rough * 0.05 + rough * 0.012; float3 s = r.rgb; float wa = r.a;
         [unroll] for (int k = 0; k < 12; k++)
         {
-            float ang = k * 2.39996 + ign(i.pos.xy) * 6.2832, dk = sqrt((k + 0.5) / 12);
+            float ang = k * 2.39996 + frac(52.9829189 * frac(dot(i.pos.xy, float2(0.06711056, 0.00583715)))) * 6.2832, dk = sqrt((k + 0.5) / 12);
             float4 q = gReflLow.SampleLevel(gClamp, uv + float2(cos(ang), sin(ang) * gDepth.z / gDepth.w) * rad * dk, 0);
             s += q.rgb; wa += q.a;
         }
