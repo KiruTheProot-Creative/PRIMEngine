@@ -1500,6 +1500,7 @@ struct App {
     struct alignas(16) ClusterCB { float c0[4], c1[4]; };
     static constexpr int CLX = 16, CLY = 9, CLZ = 24, CLN = CLX * CLY * CLZ, MAXLIGHTS = 1024, CLMAX = 96, HUDLIGHTS = 64, LSH = 512;
     static constexpr float CL_NEAR = 0.5f, CL_FAR = 1000.f;
+    size_t clusterIdxCap = 0;   // (the boxes' light lists all together: grows when many lights reach far)
     ComPtr<ID3D11Buffer> lightBuf, clusterBuf, clusterIdxBuf, lshVPBuf, hudLightBuf, cbCluster; ComPtr<ID3D11ShaderResourceView> lightSRV, clusterSRV, clusterIdxSRV, lshVPSRV, hudLightSRV;
     static constexpr int LSH_MAX = 64;   // lights with shadow maps at most
     ComPtr<ID3D11Texture2D> lshTex; std::vector<ComPtr<ID3D11DepthStencilView>> lshDSV; ComPtr<ID3D11ShaderResourceView> lshSRV; int lshCount = -1, lshRes = 0;   // their maps: 6 sides each
@@ -1524,7 +1525,7 @@ struct App {
     }
     void MakeLightResources() {
         lightBuf = MakeStructured(MAXLIGHTS, sizeof(LightGpu), lightSRV); hudLightBuf = MakeStructured(HUDLIGHTS, sizeof(LightGpu), hudLightSRV);
-        clusterBuf = MakeStructured(CLN, 8, clusterSRV); clusterIdxBuf = MakeStructured(CLN * 24, 4, clusterIdxSRV); lshVPBuf = MakeStructured(LSH_MAX * 6, 64, lshVPSRV);
+        clusterBuf = MakeStructured(CLN, 8, clusterSRV); clusterIdxBuf = MakeStructured(CLN * 24, 4, clusterIdxSRV); clusterIdxCap = CLN * 24; lshVPBuf = MakeStructured(LSH_MAX * 6, 64, lshVPSRV);
         { D3D11_BUFFER_DESC d{}; d.ByteWidth = sizeof(ClusterCB); d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_CONSTANT_BUFFER; HR(dev->CreateBuffer(&d, nullptr, &cbCluster)); }
         auto depthArray = [&](UINT size, UINT n, ComPtr<ID3D11Texture2D>& tex, ComPtr<ID3D11DepthStencilView>* dsvs, ComPtr<ID3D11ShaderResourceView>& srv) {
             D3D11_TEXTURE2D_DESC d{}; d.Width = d.Height = size; d.MipLevels = 1; d.ArraySize = n; d.Format = DXGI_FORMAT_R32_TYPELESS; d.SampleDesc.Count = 1; d.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
@@ -2106,11 +2107,12 @@ struct App {
         }
         ranges.assign((size_t)CLN * 2, 0); flat.clear();
         for (int c = 0; c < CLN; c++) {
-            uint32_t n = cnt[c]; if (flat.size() + n > (size_t)CLN * 24) n = (uint32_t)((size_t)CLN * 24 - flat.size());
+            uint32_t n = cnt[c];   // (all of them: the list grows below if it must - a full list used to drop the far boxes' lights)
             ranges[c * 2] = (uint32_t)flat.size(); ranges[c * 2 + 1] = n;
             flat.insert(flat.end(), lists.begin() + (size_t)c * CLMAX, lists.begin() + (size_t)c * CLMAX + n);
         }
         Upload(lightBuf.Get(), frameLights.data(), frameLights.size() * sizeof(LightGpu));
+        if (flat.size() > clusterIdxCap) { clusterIdxCap = flat.size() * 3 / 2; clusterIdxSRV.Reset(); clusterIdxBuf = MakeStructured((UINT)clusterIdxCap, 4, clusterIdxSRV); }
         Upload(clusterBuf.Get(), ranges.data(), ranges.size() * 4); Upload(clusterIdxBuf.Get(), flat.data(), flat.size() * 4);
         for (const ShadowCaster& sc : casters) {   // each shadow-casting light: a cube (spotlights: one view along the cone)
             int faces = sc.type == 1 ? 1 : 6; XMVECTOR eye = XMVectorSet((float)sc.rel.x, (float)sc.rel.y, (float)sc.rel.z, 1);
@@ -7897,6 +7899,7 @@ struct App {
         auto hit = [&](ImVec4 r, int kind, int arg) { MenuHit h{ pane, r, kind, arg, MenuAct::None, "" }; hits.push_back(h); return (int)hits.size() - 1 == sel; };
         const auto& defs = optionDefs(); const auto& groups = optionGroups();
         int g = std::clamp(menuOptGroup, 0, (int)groups.size() - 1);
+        if (part == 0) ts = std::max(ts, (b.x - a.x) / 13.f); else if (part == 1) ts = std::max(ts, (b.x - a.x) / 18.f);   // (a side pane: the text as big as its width allows)
         float W = b.x - a.x, gap = ts * 0.7f, hintH = ts * 1.6f, bottom = part == 0 || part == 1 ? b.y : b.y - hintH;
         float lx0 = a.x, lx1 = a.x + W * 0.2f, rx1 = b.x, rx0 = b.x - W * 0.36f, cx0 = lx1 + gap, cx1 = rx0 - gap;
         if (part == 0) { lx0 = a.x; lx1 = b.x; } else if (part == 1) { rx0 = a.x + ts * 0.3f; rx1 = b.x; } else if (part == 2) { cx0 = a.x; cx1 = b.x; }

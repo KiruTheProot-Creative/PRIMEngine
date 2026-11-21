@@ -137,7 +137,7 @@ void evalLight(LightData L, float3 rel, float3 n, float3 v, float pw, bool objec
     float att = 1 - d / range; att *= att;
     if (type == 1) { float c = dot(-Lv, L.dir.xyz), c0 = L.dir.w; att *= smoothstep(c0, c0 + (1 - c0) * 0.35, c); }
     if (att <= 0) return;
-    if (L.ext.w >= 0) att *= lightShadow(L, pixSnap(rel, n) + n * (0.03 + d * 0.012), type);
+    if (L.ext.w >= 0) att *= lightShadow(L, pixSnap(rel, n) + n * (0.05 + d * 0.02), type);   // (a little off the surface: no shadow speckles where the light grazes it)
     else if (voxSh) att *= voxShadow(pixSnap(rel, n) + n * 0.04, lp);   // a lamp block: its shadow from the blocks between
     float3 c = L.col.rgb * att;
     dif += c * saturate(dot(n, Lv) * 0.85 + 0.15);   // a little light wraps round edges, softer look
