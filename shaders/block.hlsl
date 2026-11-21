@@ -1030,7 +1030,7 @@ float3 voxShade(float3 hp, float3 hn, uint layer, uint id, float2 uv, float t, f
 bool objectTrace(float3 P, float3 r, float maxT, out float tHit, out float3 nHit, out float3 albedo)
 {
     tHit = maxT; nHit = 0; albedo = 0; bool found = false;
-    uint count = gVoxM.w > 0.5 ? (uint)gPlanar.y : 0;
+    uint count = (((uint)gVoxM.w) & 3u) == 3u ? (uint)gPlanar.y : 0;
     [loop] for (uint k = 0; k < count; k++)
     {
         ObjVox ov = gObjVox[k];
@@ -1069,21 +1069,24 @@ bool objectTrace(float3 P, float3 r, float maxT, out float tHit, out float3 nHit
 // shades it (the lamp's own block does not). The point is already snapped to the texture pixels when shadows are pixelated.
 float voxShadow(float3 P, float3 lp)
 {
-    if (gVoxM.w < 0.5) return 1;
+    if ((((uint)gVoxM.w) & 5u) != 5u) return 1;   // (ray traced lamp shadows off)
     float3 o = P - gVoxO.xyz, e = lp - gVoxO.xyz, r = e - o; float len = length(r); if (len < 0.6) return 1;
     r /= len;
     int3 cell = int3(floor(o)), goal = int3(floor(e)), stp = int3(sign(r));
     float3 inv = 1 / max(abs(r), 1e-6) * sign(r + 1e-9);
     float3 tMax = ((float3(cell) + float3(stp > 0)) - o) * inv, tDelta = abs(inv);
+    float stopAt = len - 0.9;   // (the last bit to the lamp is inside it or right next to it: a lamp set into a ceiling or wall is not hidden by the blocks around it)
     [loop] for (int k = 0; k < 64; k++)
     {
         if (any(cell < 0) || any(cell >= VOXN) || all(cell == goal)) return 1;
-        if (k > 0)
+        uint id = voxAt(cell);
+        if (id != 0)
         {
-            uint id = voxAt(cell);
-            if (id != 0) { uint kind = gVoxPal[id].info.x; if (kind == 1 || kind == 3) return 0; }   // (see-through blocks let it through)
+            uint kind = gVoxPal[id].info.x;
+            if (kind == 1 && k == 0) return 0;          // the point itself is inside a solid block (a corner): no light leaks through the edge
+            if (k > 0 && (kind == 1 || kind == 3)) return 0;   // (see-through blocks let it through)
         }
-        float t = min(tMax.x, min(tMax.y, tMax.z)); if (t > len) return 1;
+        float t = min(tMax.x, min(tMax.y, tMax.z)); if (t > stopAt) return 1;
         if (tMax.x < tMax.y && tMax.x < tMax.z) { tMax.x += tDelta.x; cell.x += stp.x; }
         else if (tMax.y < tMax.z) { tMax.y += tDelta.y; cell.y += stp.y; }
         else { tMax.z += tDelta.z; cell.z += stp.z; }
@@ -1093,7 +1096,7 @@ float voxShadow(float3 P, float3 lp)
 bool voxelTrace(float3 P, float3 n, float3 r, float2 pixel, out float3 col)
 {
     col = 0;
-    if (gVoxM.w < 0.5) return false;
+    if ((((uint)gVoxM.w) & 3u) != 3u) return false;   // (ray traced reflections off: only the screen, else the sky)
     float3 o = P + n * 0.02 - gVoxO.xyz;                                 // into the volume's own blocks
     int3 cell = int3(floor(o)), stp = int3(sign(r));
     float3 inv = 1 / max(abs(r), 1e-6) * sign(r + 1e-9);

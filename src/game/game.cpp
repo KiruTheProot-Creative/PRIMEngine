@@ -78,6 +78,10 @@ bool Settings::load(const std::string& path) {
         else if (k == "hud_glow") { int v; f >> v; hudGlow = v != 0; }
         else if (k == "eye_adapt") { int v; f >> v; eyeAdapt = v != 0; }
         else if (k == "film_fx") { int v; f >> v; filmFx = v != 0; }
+        else if (k == "ray_tracing") { int v; f >> v; rayTracing = v != 0; }
+        else if (k == "rt_reflections") { int v; f >> v; rtReflect = v != 0; }
+        else if (k == "rt_objects") { int v; f >> v; rtObjects = v != 0; }
+        else if (k == "rt_lamp_shadows") { int v; f >> v; rtShadows = v != 0; }
         else if (k == "lamp_blocks") { f >> lampBlocks; lampBlocks = std::clamp(lampBlocks, 0, 2); }
         else if (k == "lamp_fill") { f >> lampFill; lampFill = std::clamp(lampFill, 0.f, 1.f); }
         else if (k == "motion_blur") { f >> motionBlur; motionBlur = std::clamp(motionBlur, 0.f, 1.f); }
@@ -118,7 +122,7 @@ bool Settings::save(const std::string& path) const {
       << "\nambient_occlusion " << ambientOcclusion << "\nao_strength " << aoStrength
       << "\nbumps " << bumps << "\ncoat " << coat << "\nmaterials " << (materials ? 1 : 0) << "\nhud_glow " << (hudGlow ? 1 : 0) << "\nguess_materials " << (guessMaterials ? 1 : 0)
       << "\nshadow_res " << shadowRes << "\nbrightness " << brightness << "\nfullscreen " << (fullscreen ? 1 : 0)
-      << "\nvolumes " << volWeapons << " " << volMovement << " " << volEnemies << " " << volWorld << "\nvolumes2 " << volMenus << " " << volMusic << "\ninvert_y " << (invertY ? 1 : 0) << "\nlock_mode " << lockMode << "\ncave_culling " << (caveCulling ? 1 : 0) << "\nscreen_shake " << screenShake << "\neye_adapt " << (eyeAdapt ? 1 : 0) << "\nfilm_fx " << (filmFx ? 1 : 0) << "\nlight_shadows " << lightShadows << "\nlight_fog " << (lightFog ? 1 : 0) << "\nbounce " << bounce << "\nplanar_floors " << (planarFloors ? 1 : 0) << "\nlens_flares " << (lensFlares ? 1 : 0) << "\nmotion_blur " << motionBlur << "\nlamp_blocks " << lampBlocks << "\nlamp_fill " << lampFill << "\n";
+      << "\nvolumes " << volWeapons << " " << volMovement << " " << volEnemies << " " << volWorld << "\nvolumes2 " << volMenus << " " << volMusic << "\ninvert_y " << (invertY ? 1 : 0) << "\nlock_mode " << lockMode << "\ncave_culling " << (caveCulling ? 1 : 0) << "\nscreen_shake " << screenShake << "\neye_adapt " << (eyeAdapt ? 1 : 0) << "\nfilm_fx " << (filmFx ? 1 : 0) << "\nlight_shadows " << lightShadows << "\nlight_fog " << (lightFog ? 1 : 0) << "\nbounce " << bounce << "\nplanar_floors " << (planarFloors ? 1 : 0) << "\nlens_flares " << (lensFlares ? 1 : 0) << "\nmotion_blur " << motionBlur << "\nray_tracing " << (rayTracing ? 1 : 0) << "\nrt_reflections " << (rtReflect ? 1 : 0) << "\nrt_objects " << (rtObjects ? 1 : 0) << "\nrt_lamp_shadows " << (rtShadows ? 1 : 0) << "\nlamp_blocks " << lampBlocks << "\nlamp_fill " << lampFill << "\n";
     for (int i = 0; i < (int)Act::COUNT; i++) f << "key " << actKey((Act)i) << " " << keys.key[i][0] << " " << keys.key[i][1] << "\n";
     return (bool)f;
 }

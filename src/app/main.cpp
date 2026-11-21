@@ -1750,7 +1750,8 @@ struct App {
     void ResetVoxels() {
         brickOf.clear(); brickModel.clear(); brickUsed.clear(); layerColor.clear(); voxIdx.clear(); voxPal.clear(); voxPalDirty = true; for (auto& sl : voxSlots) sl = VoxSlot{}; voxReady = false; }
     void UpdateVoxels() {
-        if (!world || (settings.reflections <= 0 && settings.probes <= 0)) { voxReady = false; return; }   // (reflection rays and light probes step through it)
+        bool want = settings.rayTracing && ((settings.reflections > 0 && settings.rtReflect) || settings.probes > 0 || (settings.lampBlocks >= 2 && settings.rtShadows));
+        if (!world || !want) { voxReady = false; return; }   // (reflection rays, light probes and lamp shadows step through it)
         if (!voxTex) {
             D3D11_TEXTURE3D_DESC d{}; d.Width = VCX * CS; d.Height = VCY * CS; d.Depth = VCZ * CS; d.MipLevels = 1; d.Format = DXGI_FORMAT_R16_UINT; d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
             std::vector<uint16_t> zero((size_t)d.Width * d.Height * d.Depth, 0); D3D11_SUBRESOURCE_DATA sd{ zero.data(), d.Width * 2, d.Width * d.Height * 2 };
@@ -4179,7 +4180,7 @@ struct App {
             float ml = info.trueDark ? std::clamp(info.minLight, 0.f, 1.f) : 0.f; V3 mc = Linear(info.minLightColor);
             fc.aa[0] = settings.antiAlias >= 2 ? 12.f : 8.f; fc.aa[1] = settings.antiAlias >= 2 ? 1.f : 0.85f;
             fc.aa[3] = (float)(settings.pixelShadows == 16 || settings.pixelShadows == 32 ? settings.pixelShadows : 0);   // pixelated shadows
-            probesOn = settings.probes > 0 && voxReady;
+            probesOn = settings.rayTracing && settings.probes > 0 && voxReady;
             if (probesOn) {   // light probes: the grid around you, in whole probe steps (so they stay put in the world as you move)
                 int S = settings.probes >= 2 ? 2 : 4; EnsureProbes(S);
                 int bx = (int)std::floor(camPos.x / S) - 16, by = (int)std::floor(camPos.y / S) - 8, bz = (int)std::floor(camPos.z / S) - 16;
@@ -4238,8 +4239,9 @@ struct App {
                 fc.voxO[0] = (float)(voxC0.x * (double)CS - camPos.x); fc.voxO[1] = (float)(voxC0.y * (double)CS - camPos.y); fc.voxO[2] = (float)(voxC0.z * (double)CS - camPos.z);
                 fc.voxO[3] = settings.reflections >= 2 ? 220.f : 110.f;
                 fc.voxM[0] = (float)md(voxC0.x * CS, VCX * CS); fc.voxM[1] = (float)md(voxC0.y * CS, VCY * CS); fc.voxM[2] = (float)md(voxC0.z * CS, VCZ * CS);
-                fc.voxM[3] = voxReady ? 1.f : 0.f;
-            UpdateObjectVoxels(); fc.planar[1] = (float)objVoxCount;
+                fc.voxM[3] = voxReady ? (float)(1 + (settings.rtReflect ? 2 : 0) + (settings.rtShadows ? 4 : 0)) : 0.f;   // what may step through it: 1 the copy is there, 2 reflections, 4 lamp shadows
+            if (settings.rtObjects) UpdateObjectVoxels(); else objVoxCount = 0;
+            fc.planar[1] = (float)objVoxCount;
             for (int k = 0; k < 8; k++) { fc.splash[k][3] = -1; if (k < (int)splashes.size()) { V3 r = splashes[k].pos - camPos; fc.splash[k][0] = (float)r.x; fc.splash[k][1] = (float)r.y; fc.splash[k][2] = (float)r.z; fc.splash[k][3] = splashes[k].t; } }
             }
         }
