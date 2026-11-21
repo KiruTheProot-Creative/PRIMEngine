@@ -366,6 +366,7 @@ The sun's shadows use four shadow maps around you: the nearest covers about 13 b
 
 ## Player editor: Body and movement, Items
 
+- **Movement feel** (Body and movement > Moving): "Gets up to speed in" and "Stops in" (seconds; 0: at once, like before) make Samus speed up and slow down smoothly instead of in one frame, and "Steering in the air" sets how much you can steer and slow down mid-jump (lower: jumps keep their momentum). Enemy knockback now really pushes you back.
 - **Body and movement** (was the Game panel's player rules): size, walking, sprint, jump, gravity, the Morph Ball's size, speed and model, health and dying.
 - **Items**: everything Samus can find, from across the Metroid games. Tick what is in your game, choose "from the start" or "found later", and press **Place pickup** to put its pickup in front of you (or give it with an event card). Beams and missile kinds (from the Weapons tab), the Morph Ball and Bombs are listed too.
   - Working now: **Energy Tanks** (more health, and they fill you up), **Missile / Power Bomb Expansions**, **Power Bombs** (rolled up: F; break "Power Bomb" and "Bomb" blocks, open Power Bomb doors), **Varia / Gravity / Phazon Suits** and your own (damage taken, lava damage, moving freely in water and lava; the best one you have counts), **Hi-Jump Boots**, **Space Jump Boots** (jumps in the air), **Speed Booster** (run a while, then much faster; breaks "Speed Booster" blocks), **Spring Ball** (jump while rolled up), **Charge Beam** (no charging until found).

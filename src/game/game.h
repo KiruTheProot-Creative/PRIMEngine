@@ -91,6 +91,8 @@ struct Controls { bool forward = false, back = false, left = false, right = fals
 // the rules of the player while playing (the game maker sets these)
 struct PlayerRules {
     float walkSpeed = 4.32f, sprintSpeed = 5.61f;   // blocks per second
+    float accelTime = 0.12f, stopTime = 0.25f;        // seconds to get up to speed / to stop from walking speed (0: at once)
+    float airControl = 0.6f;                          // how much you can steer and slow down in the air (1: as on the ground, 0: not at all)
     float jumpHeight = 1.25f;                         // blocks
     float gravity = 32;                               // blocks per second per second
     float maxHealth = 100;

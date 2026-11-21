@@ -185,7 +185,17 @@ void Player::update(const World& w, const Controls& c, double dt, const PlayerRu
         vel.y = std::max(vel.y - (double)r.gravity * dt, -78.0);
         if (r.springBall && jumpEdge && onGround) vel.y = std::sqrt(2 * r.gravity * std::max(0.1f, r.springJump));   // the Spring Ball
     } else {
-        vel.x = mv.x; vel.z = mv.z;
+        {   // on foot: gets up to speed and slows down over a moment (not in one frame); in the air you steer less (momentum, like Prime)
+            bool moving = length(mv) > 0;
+            double accRate = std::max(speed, 0.1) / std::max(1e-3, (double)r.accelTime), stopRate = std::max((double)r.walkSpeed, 0.1) / std::max(1e-3, (double)r.stopTime);
+            double rate = moving ? accRate : stopRate;
+            if (moving && vel.x * mv.x + vel.z * mv.z < 0) rate = std::max(accRate, stopRate);   // (turning back: as quick as stopping)
+            if ((moving && r.accelTime <= 1e-3) || (!moving && r.stopTime <= 1e-3)) rate = 1e9;   // (0: at once)
+            if (!onGround) rate *= std::clamp((double)r.airControl, 0.0, 1.0);
+            double dx = mv.x - vel.x, dz = mv.z - vel.z, dl = std::sqrt(dx * dx + dz * dz), most = rate * dt;
+            if (dl > most && dl > 1e-9) { dx *= most / dl; dz *= most / dl; }
+            vel.x += dx; vel.z += dz;
+        }
         if (dashT > 0) { vel.x = dashVel.x + mv.x * 0.15; vel.z = dashVel.z + mv.z * 0.15; dashT -= dt; }   // a dash: sideways until you land
         vel.y = std::max(vel.y - (double)r.gravity * dt, -78.0);
         if (onGround) airJumpsUsed = 0;
@@ -223,7 +233,7 @@ bool GameSettings::save(const std::string& path) const {
     const PlayerRules& p = player;
     f << "name " << name << "\nstart_world " << (startWorld.empty() ? "-" : startWorld) << "\nlast_world " << (lastWorld.empty() ? "-" : lastWorld)
       << "\nplayer_width " << p.width << "\nplayer_height " << p.height << "\neye_height " << p.eyeHeight << "\nstep_height " << p.stepHeight << "\nball_size " << p.ballSize
-      << "\nwalk_speed " << p.walkSpeed << "\nsprint_speed " << p.sprintSpeed << "\njump_height " << p.jumpHeight << "\ngravity " << p.gravity
+      << "\nwalk_speed " << p.walkSpeed << "\nsprint_speed " << p.sprintSpeed << "\nmove_feel " << p.accelTime << " " << p.stopTime << " " << p.airControl << "\njump_height " << p.jumpHeight << "\ngravity " << p.gravity
       << "\nmax_health " << p.maxHealth << "\nlava_damage " << p.lavaDamage << "\nvoid_depth " << p.voidDepth << "\nrespawn_delay " << p.respawnDelay
       << "\nfall_damage " << p.fallDamage << "\ncan_sprint " << (p.canSprint ? 1 : 0)
       << "\nmorph_fx " << p.morphColor << " " << p.morphFx << " " << (p.morphHudFx ? 1 : 0) << "\nbounce_damage " << p.bounceDamage << "\nquick_save " << (p.quickSave ? 1 : 0)
@@ -248,6 +258,7 @@ bool GameSettings::load(const std::string& path) {
         else if (k == "gravity") f >> p.gravity; else if (k == "max_health") f >> p.maxHealth; else if (k == "lava_damage") f >> p.lavaDamage;
         else if (k == "void_depth") f >> p.voidDepth; else if (k == "respawn_delay") f >> p.respawnDelay; else if (k == "fall_damage") f >> p.fallDamage;
         else if (k == "can_sprint") { int v; f >> v; p.canSprint = v != 0; }
+        else if (k == "move_feel") { f >> p.accelTime >> p.stopTime >> p.airControl; p.accelTime = std::clamp(p.accelTime, 0.f, 2.f); p.stopTime = std::clamp(p.stopTime, 0.f, 2.f); p.airControl = std::clamp(p.airControl, 0.f, 1.f); }
         else if (k == "bounce_damage") f >> p.bounceDamage;
         else if (k == "quick_save") { int v = 0; f >> v; p.quickSave = v != 0; }
         else if (k == "ball_axle") f >> p.ballAxle.x >> p.ballAxle.y >> p.ballAxle.z >> p.ballBalance >> p.ballPivot.x >> p.ballPivot.y >> p.ballPivot.z;

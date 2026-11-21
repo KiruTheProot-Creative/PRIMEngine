@@ -49,7 +49,14 @@ int main() {
     for (int i = 0; i < 120; i++) p.update(w, c, 1 / 60.0);
     CHECK(p.onGround && std::fabs(p.feet.y) < 1e-3, "walking mode: falls onto the grass (y=%.3f)", p.feet.y);
     c.forward = true; for (int i = 0; i < 60; i++) p.update(w, c, 1 / 60.0);
-    CHECK(std::fabs(p.feet.z - 0.5 - 4.32) < 0.05, "walks 4.3 blocks per second toward +Z (z=%.2f)", p.feet.z);
+    CHECK(std::fabs(p.feet.z - 0.5 - (4.32 - 0.5 * 0.12 * 4.32)) < 0.08, "walks 4.3 blocks per second toward +Z, after getting up to speed in 0.12 s (z=%.2f)", p.feet.z);
+    {   // letting go: she slows down over a quarter second (not in one frame)
+        c.forward = false; double z0 = p.feet.z; p.update(w, c, 1 / 60.0);
+        CHECK(p.vel.z > 3.5, "one frame after letting go she is still moving (%.2f blocks/s)", p.vel.z);
+        for (int i = 0; i < 60; i++) p.update(w, c, 1 / 60.0);
+        double slid = p.feet.z - z0;
+        CHECK(std::fabs(p.vel.z) < 1e-6 && slid > 0.35 && slid < 0.8, "and comes to a stop about half a block on (%.2f blocks)", slid);
+    }
     c.forward = false; p.toggleFly(); c.jump = true; for (int i = 0; i < 60; i++) p.update(w, c, 1 / 60.0);
     CHECK(p.flying && p.feet.y > 5, "flying: Space rises (y=%.2f)", p.feet.y);
     c.jump = false; c.sneak = true; for (int i = 0; i < 120; i++) p.update(w, c, 1 / 60.0);

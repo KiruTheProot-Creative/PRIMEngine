@@ -6886,6 +6886,11 @@ struct App {
         sl("Walk speed", &r.walkSpeed, 1, 15, "%.1f blocks/s");
         Prop("Can sprint (Ctrl)"); ch |= ImGui::Checkbox("##sprint", &r.canSprint);
         if (r.canSprint) sl("Sprint speed", &r.sprintSpeed, 1, 25, "%.1f blocks/s");
+        sl("Gets up to speed in", &r.accelTime, 0, 1, "%.2f s");
+        sl("Stops in", &r.stopTime, 0, 1, "%.2f s");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("How long Samus takes to stop when you let go (0: at once). A little makes her feel heavy and smooth.");
+        sl("Steering in the air", &r.airControl, 0, 1, "%.2f");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("1: steer and stop in the air as on the ground. Lower: jumps keep their momentum (Metroid Prime keeps quite a lot).");
         sl("Jump height", &r.jumpHeight, 0.3f, 8, "%.2f blocks");
         sl("Gravity", &r.gravity, 4, 80, "%.0f");
         Hint("Items change some of this while playing (Hi-Jump Boots, Space Jump, Speed Booster, the Gravity Suit...): Items tab.");
