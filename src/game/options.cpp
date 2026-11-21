@@ -17,7 +17,7 @@ Field field(Settings& s, const std::string& k) {
     else if (k == "shadows") r.i = &s.shadowQuality; else if (k == "shadow_res") r.i = &s.shadowRes; else if (k == "shadow_distance") r.f = &s.shadowDistance;
     else if (k == "shadow_soft") r.i = &s.shadowSoft; else if (k == "shadow_softness") r.f = &s.shadowSoftness;
     else if (k == "clouds") r.f = &s.cloudCover; else if (k == "cloud_shadows") r.b = &s.cloudShadows; else if (k == "fog") r.f = &s.groundFog;
-    else if (k == "bloom") r.f = &s.bloom; else if (k == "reflections") r.i = &s.reflections; else if (k == "reflect_res") r.i = &s.reflectRes; else if (k == "anti_alias") r.i = &s.antiAlias; else if (k == "pixel_shadows") r.i = &s.pixelShadows; else if (k == "probes") r.i = &s.probes; else if (k == "show_fps") r.b = &s.showFps; else if (k == "ao") r.i = &s.ambientOcclusion; else if (k == "ao_strength") r.f = &s.aoStrength;
+    else if (k == "bloom") r.f = &s.bloom; else if (k == "reflections") r.i = &s.reflections; else if (k == "reflect_res") r.i = &s.reflectRes; else if (k == "anti_alias") r.i = &s.antiAlias; else if (k == "render_scale") r.f = &s.renderScale; else if (k == "pixel_shadows") r.i = &s.pixelShadows; else if (k == "probes") r.i = &s.probes; else if (k == "show_fps") r.b = &s.showFps; else if (k == "ao") r.i = &s.ambientOcclusion; else if (k == "ao_strength") r.f = &s.aoStrength;
     else if (k == "swaying") r.b = &s.swaying; else if (k == "hud_glow") r.b = &s.hudGlow;
     else if (k == "eye_adapt") r.b = &s.eyeAdapt; else if (k == "film_fx") r.b = &s.filmFx; else if (k == "light_shadows") r.i = &s.lightShadows; else if (k == "light_fog") r.b = &s.lightFog; else if (k == "bounce") r.i = &s.bounce; else if (k == "planar_floors") r.b = &s.planarFloors; else if (k == "lens_flares") r.b = &s.lensFlares;
     else if (k == "bumps") r.f = &s.bumps; else if (k == "coat") r.f = &s.coat; else if (k == "materials") r.b = &s.materials; else if (k == "guess_materials") r.b = &s.guessMaterials;
@@ -84,6 +84,8 @@ const std::vector<OptionDef>& optionDefs() {
         v.push_back(toggle("film_fx", "Film grain and lens fringes", G, "Effects", "When the area's look has them."));
         v.push_back(choice("light_shadows", "Shadows from lamps", G, "Shadows", { "Off", "2 lights", "4 lights", "8 lights (heavy)" }, { 0, 2, 4, 8 },
                            "Lights set to cast shadows: this many of the nearest really do."));
+        v.push_back(choice("render_scale", "Render scale", G, "Screen", { "50% (fastest)", "67%", "75%", "85%", "100% (the screen's own)", "125%", "150%", "200% (supersampled)" }, { 0.5f, 0.67f, 0.75f, 0.85f, 1.f, 1.25f, 1.5f, 2.f },
+                           "The 3D world is drawn this much of the screen's size, then fitted to it. Below 100%: faster (sharpened as it is enlarged). Above 100%: the smoothest edges there are, but heavy. The HUD and menus always stay sharp."));
         v.push_back(choice("anti_alias", "Anti-aliasing", G, "Effects", { "Off", "Smooth edges", "Smoother edges" }));
         v.push_back(choice("probes", "Light probes (bounce light everywhere)", G, "Effects", { "Off", "Wide (every 4 blocks)", "Fine (every 2 blocks)" }));
         v.push_back(choice("pixel_shadows", "Pixelated shadows", G, "Shadows", { "Off (smooth)", "16 pixels a block", "32 pixels a block" }, { 0, 16, 32 }));

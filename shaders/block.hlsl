@@ -2203,6 +2203,14 @@ float4 PS_AA(SkyOut i) : SV_Target
     float lsw = aaLuma(gAASrc.SampleLevel(gClamp, uv + float2(-1, 1) * px, 0).rgb), lse = aaLuma(gAASrc.SampleLevel(gClamp, uv + float2(1, 1) * px, 0).rgb);
     float lo = min(lc, min(min(lnw, lne), min(lsw, lse))), hi = max(lc, max(max(lnw, lne), max(lsw, lse)));
     if (hi - lo < max(0.04, hi * 0.15)) return float4(c, 1);                                       // no edge here: as it is
+    {   // only the edges of things (where the distance jumps) - the pixels painted inside a texture stay crisp (pixel art!)
+        int2 p0 = int2(i.pos.xy), mx = int2(gDepth.zw) - 1;
+        float d0 = linDepth(gSceneDepth.Load(int3(p0, 0)));
+        float d1 = linDepth(gSceneDepth.Load(int3(clamp(p0 + int2(1, 1), 0, mx), 0))), d2 = linDepth(gSceneDepth.Load(int3(clamp(p0 + int2(-1, -1), 0, mx), 0)));
+        float d3 = linDepth(gSceneDepth.Load(int3(clamp(p0 + int2(1, -1), 0, mx), 0))), d4 = linDepth(gSceneDepth.Load(int3(clamp(p0 + int2(-1, 1), 0, mx), 0)));
+        float jump = max(max(abs(d1 - d0), abs(d2 - d0)), max(abs(d3 - d0), abs(d4 - d0)));
+        if (jump < max(d0 * 0.03, 0.05)) return float4(c, 1);
+    }
     // which way the edge runs: across the brightness change
     float2 d = float2((lsw + lse) - (lnw + lne), (lnw + lsw) - (lne + lse));
     float soft = max((lnw + lne + lsw + lse) * 0.03, 1.0 / 128);
@@ -2213,4 +2221,27 @@ float4 PS_AA(SkyOut i) : SV_Target
     float lf = aaLuma(farC);
     float3 o = (lf < lo || lf > hi) ? nearC : farC;                                                // the far ones crossed another edge: only the near ones
     return float4(lerp(c, o, gAA.y), 1);
+}
+
+// ---------------------------------------------------------------- render scale: the world's picture fitted to the screen
+// smaller than the screen: enlarged smoothly, then sharpened a little; bigger (supersampled): each screen pixel averages the pixels it covers
+Texture2D gUpSrc : register(t40);
+float4 PS_Upscale(SkyOut i) : SV_Target
+{
+    float2 uv = i.ndc * float2(0.5, -0.5) + 0.5; float sw, sh; gUpSrc.GetDimensions(sw, sh);
+    float2 du = float2(abs(ddx(uv.x)), abs(ddy(uv.y)));                 // one screen pixel, in the picture's 0..1
+    float3 c;
+    if (du.x * sw > 1.01)   // supersampled: a small box over the screen pixel
+    {
+        c = 0.25 * (gUpSrc.SampleLevel(gClamp, uv + du * float2(-0.25, -0.25), 0).rgb + gUpSrc.SampleLevel(gClamp, uv + du * float2(0.25, -0.25), 0).rgb
+                  + gUpSrc.SampleLevel(gClamp, uv + du * float2(-0.25, 0.25), 0).rgb + gUpSrc.SampleLevel(gClamp, uv + du * float2(0.25, 0.25), 0).rgb);
+    }
+    else
+    {
+        float2 t = 1 / float2(sw, sh); c = gUpSrc.SampleLevel(gClamp, uv, 0).rgb;
+        float3 n = gUpSrc.SampleLevel(gClamp, uv + float2(t.x, 0), 0).rgb + gUpSrc.SampleLevel(gClamp, uv - float2(t.x, 0), 0).rgb
+                 + gUpSrc.SampleLevel(gClamp, uv + float2(0, t.y), 0).rgb + gUpSrc.SampleLevel(gClamp, uv - float2(0, t.y), 0).rgb;
+        if (du.x * sw < 0.99) c = saturate(c + (c - n * 0.25) * 0.45);  // enlarged: sharpened
+    }
+    return float4(c, 1);
 }

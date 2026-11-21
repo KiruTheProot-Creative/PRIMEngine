@@ -213,6 +213,19 @@ struct App {
     ComPtr<ID3D11ShaderResourceView> depthSRV, noiseSRV, depthCopySRV; ComPtr<ID3D11Texture2D> depthCopy; ComPtr<ID3D11PixelShader> psWater; ComPtr<ID3D11SamplerState> sampLinear, sampClamp; double cloudTime = 0, precipTime = 0, precipWindX = 0, precipWindZ = 0;
     struct BloomLevel { ComPtr<ID3D11Texture2D> tex; ComPtr<ID3D11RenderTargetView> rtv; ComPtr<ID3D11ShaderResourceView> srv; int w = 0, h = 0; };
     BloomLevel aaSrc;   // anti-aliasing: the finished picture, before its edges are smoothed
+    // render scale: the world drawn at sceneW x sceneH (rw x rh while it is drawn), then fitted to the screen (rw x rh the rest of the time)
+    int sceneW = 0, sceneH = 0; BloomLevel upSrc; ComPtr<ID3D11PixelShader> psUpscale; ComPtr<ID3D11DepthStencilView> dispDSV; int dispDW = 0, dispDH = 0;
+    bool Scaled() const { return sceneW > 0 && (sceneW != rw || sceneH != rh); }
+    ID3D11DepthStencilView* DisplayDSV() { return Scaled() && dispDSV ? dispDSV.Get() : dsv.Get(); }   // a depth buffer the screen's size (the HUD over a scaled world)
+    void MakeDisplayTargets() {   // at the screen's size: the picture the editor shows / a screen's world background, the HUD's depth, and the scaled world before it is fitted
+        D3D11_TEXTURE2D_DESC d{}; d.Width = (UINT)rw; d.Height = (UINT)rh; d.MipLevels = 1; d.ArraySize = 1; d.Format = DXGI_FORMAT_R8G8B8A8_UNORM; d.SampleDesc.Count = 1; d.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+        if (sceneSRV) retired.push_back(sceneSRV);
+        sceneTex.Reset(); sceneRTV.Reset(); sceneSRV.Reset(); HR(dev->CreateTexture2D(&d, nullptr, &sceneTex)); HR(dev->CreateRenderTargetView(sceneTex.Get(), nullptr, &sceneRTV)); HR(dev->CreateShaderResourceView(sceneTex.Get(), nullptr, &sceneSRV));
+        D3D11_TEXTURE2D_DESC z = d; z.Format = DXGI_FORMAT_D32_FLOAT; z.BindFlags = D3D11_BIND_DEPTH_STENCIL; ComPtr<ID3D11Texture2D> zt; HR(dev->CreateTexture2D(&z, nullptr, &zt)); dispDSV.Reset(); HR(dev->CreateDepthStencilView(zt.Get(), nullptr, &dispDSV));
+        dispDW = rw; dispDH = rh;
+        D3D11_TEXTURE2D_DESC u = d; u.Width = (UINT)std::max(16, sceneW); u.Height = (UINT)std::max(16, sceneH); upSrc = BloomLevel{}; upSrc.w = (int)u.Width; upSrc.h = (int)u.Height;
+        HR(dev->CreateTexture2D(&u, nullptr, &upSrc.tex)); HR(dev->CreateRenderTargetView(upSrc.tex.Get(), nullptr, &upSrc.rtv)); HR(dev->CreateShaderResourceView(upSrc.tex.Get(), nullptr, &upSrc.srv));
+    }
     BloomLevel blurSrc; std::vector<BloomLevel> blurLv; ComPtr<ID3D11PixelShader> psBlurComp; float blurAmt = 0;   // paused: the world blurred behind the menu
     std::vector<BloomLevel> bloomLv; ComPtr<ID3D11BlendState> bsAdd; float nightAmount = 0, nightEyeLimit = 2;
     ComPtr<ID3D11Texture2D> shadowTex; ComPtr<ID3D11DepthStencilView> shadowDSV; ComPtr<ID3D11ShaderResourceView> shadowSRV; int shadowSize = 0;
@@ -320,6 +333,7 @@ struct App {
         b = Compile(src, "PS_Reflect", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psReflect));
         b = Compile(src, "PS_ReflComp", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psReflComp));
         b = Compile(src, "PS_AA", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psAA));
+        b = Compile(src, "PS_Upscale", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psUpscale));
         b = Compile(src, "VS_Particle", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsParticle));
         { D3D11_INPUT_ELEMENT_DESC pe[] = {
             { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 }, { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0 },
@@ -3854,7 +3868,12 @@ struct App {
         ctx->DrawIndexed(nBolt, 0, 0);
         ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());
     }
-    void RenderWorld(ID3D11RenderTargetView* out) {
+    void RenderWorld(ID3D11RenderTargetView* outScreen) {
+        // render scale: drawn at the world's own size into a picture of that size, fitted to the screen at the end (the HUD over it at the screen's size)
+        bool scaledNow = Scaled() && upSrc.rtv; int dispW = rw, dispH = rh;
+        struct SizeBack { App& a; int w, h; bool on; ~SizeBack() { if (on) { a.rw = w; a.rh = h; } } } sizeBack{ *this, dispW, dispH, scaledNow };
+        if (scaledNow) { rw = sceneW; rh = sceneH; }
+        ID3D11RenderTargetView* out = scaledNow ? upSrc.rtv.Get() : outScreen;
         aspect = (float)rw / rh; camPos = player.eye();
         V3 f = player.forward();
         if (playMode && player.ball) BallCamera(camPos, f);   // the morph ball: seen from behind
@@ -4423,8 +4442,8 @@ struct App {
         ctx->PSSetShaderResources(0, 4, none); { ID3D11ShaderResourceView* nm = nullptr; ctx->PSSetShaderResources(11, 1, &nm); }
         if (aaOn) {   // smooth the jagged edges
             ctx->OMSetRenderTargets(1, &finalTgt, nullptr); ctx->PSSetShader(psAA.Get(), nullptr, 0); ctx->PSSetSamplers(3, 1, sampClamp.GetAddressOf());
-            ctx->PSSetShaderResources(35, 1, aaSrc.srv.GetAddressOf()); ctx->Draw(3, 0);
-            ID3D11ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(35, 1, &n1);
+            ctx->PSSetShaderResources(35, 1, aaSrc.srv.GetAddressOf()); ctx->PSSetShaderResources(2, 1, depthSRV.GetAddressOf()); ctx->Draw(3, 0);
+            ID3D11ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(35, 1, &n1); ctx->PSSetShaderResources(2, 1, &n1);
             ctx->PSSetShader(psPost.Get(), nullptr, 0);
         }
         if (blurOn) {   // the menu blur: shrink four times, grow back (each step softer), then over the window - the helmet's parts stay sharp
@@ -4449,7 +4468,15 @@ struct App {
             ctx->Draw(3, 0);
             ctx->PSSetShaderResources(0, 4, none);
         }
-        if (playMode) DrawHudInGame(out);   // the player's HUD over everything
+        if (scaledNow) {   // fitted to the screen: enlarged and sharpened, or (supersampled) averaged down
+            rw = dispW; rh = dispH; out = outScreen;
+            ctx->OMSetRenderTargets(1, &out, nullptr); D3D11_VIEWPORT fv{ 0, 0, (float)rw, (float)rh, 0, 1 }; ctx->RSSetViewports(1, &fv);
+            ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->RSSetState(rsNoCull.Get()); ctx->IASetInputLayout(nullptr);
+            ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psUpscale.Get(), nullptr, 0); ctx->PSSetSamplers(3, 1, sampClamp.GetAddressOf());
+            ctx->PSSetShaderResources(40, 1, upSrc.srv.GetAddressOf()); ctx->Draw(3, 0);
+            ID3D11ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(40, 1, &n1); ctx->RSSetState(rsCull.Get());
+        }
+        if (playMode) DrawHudInGame(out);   // the player's HUD over everything (at the screen's size)
     }
     int drawnChunks = 0;
     bool Project(V3 p, ImVec2& out) const {   // world point -> screen (for the block outline)
@@ -5953,9 +5980,10 @@ struct App {
     // Play mode: the HUD over the finished picture
     void DrawHudInGame(ID3D11RenderTargetView* out) {
         if (!menuShown && ((hud.empty() && weapons.empty()) || !hudListsReady)) return;   // (the pause menu is drawn here too)
-        ctx->OMSetRenderTargets(1, &out, dsv.Get()); ctx->ClearDepthStencilView(dsv.Get(), D3D11_CLEAR_DEPTH, 1.f, 0);
+        ID3D11DepthStencilView* hd = DisplayDSV();
+        ctx->OMSetRenderTargets(1, &out, hd); ctx->ClearDepthStencilView(hd, D3D11_CLEAR_DEPTH, 1.f, 0);
         D3D11_VIEWPORT v{ 0, 0, (float)rw, (float)rh, 0, 1 }; ctx->RSSetViewports(1, &v);
-        DrawHudScene(HudProj((float)rw / rh), hudSway, false, dsv.Get());
+        DrawHudScene(HudProj((float)rw / rh), hudSway, false, hd);
     }
     // the editor's two pictures: around the camera (orbit), and through it (the preview, over the world as the editor camera sees it)
     void RenderHudViews() {
@@ -10774,7 +10802,7 @@ struct App {
         ctx->OMSetRenderTargets(0, nullptr, nullptr);
     }
     void RenderMapScreen(ID3D11RenderTargetView* out) {
-        ctx->OMSetRenderTargets(1, &out, dsv.Get()); ctx->ClearDepthStencilView(dsv.Get(), D3D11_CLEAR_DEPTH, 1.f, 0);
+        ctx->OMSetRenderTargets(1, &out, DisplayDSV()); ctx->ClearDepthStencilView(DisplayDSV(), D3D11_CLEAR_DEPTH, 1.f, 0);
         const float bg[4] = { 0.006f, 0.014f, 0.03f, 1 }; ctx->ClearRenderTargetView(out, bg);
         D3D11_VIEWPORT v{ 0, 0, (float)rw, (float)rh, 0, 1 }; ctx->RSSetViewports(1, &v);
         if (mapView.srv) {   // the map, full screen
@@ -10785,7 +10813,7 @@ struct App {
             ctx->Draw(3, 0);
             ID3D11ShaderResourceView* none = nullptr; ctx->PSSetShaderResources(0, 1, &none);
         }
-        if (hudListsReady && !(hud.empty() && weapons.empty())) DrawHudScene(HudProj((float)rw / rh), hudSway, false, dsv.Get(), true);   // the visor stays (what is set to stay on the map)
+        if (hudListsReady && !(hud.empty() && weapons.empty())) DrawHudScene(HudProj((float)rw / rh), hudSway, false, DisplayDSV(), true);   // the visor stays (what is set to stay on the map)
         ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());
     }
     void MapScreen() {   // the map, full screen: drag turns it, right-drag moves it, the wheel zooms
@@ -14585,7 +14613,14 @@ struct App {
         bool ev = EditorView();
         int wantW = ev ? (int)viewSize.x : cw, wantH = ev ? (int)viewSize.y : ch;   // the editor draws the world at the viewport panel's size
         wantW = std::max(16, wantW); wantH = std::max(16, wantH);
-        if (wantW != rw || wantH != rh) { rw = wantW; rh = wantH; MakeTargets(); }
+        {   // render scale: the world's own targets at the scaled size, the screen's at the screen's
+            float sc = std::clamp(settings.renderScale, 0.25f, 2.f);
+            int sW = std::max(16, (int)std::lround(wantW * sc)), sH = std::max(16, (int)std::lround(wantH * sc));
+            if (wantW != rw || wantH != rh || sW != sceneW || sH != sceneH || dispDW != wantW || dispDH != wantH) {
+                rw = sW; rh = sH; MakeTargets(); sceneW = sW; sceneH = sH;
+                rw = wantW; rh = wantH; MakeDisplayTargets();
+            }
+        }
         if (!ev) vx = vy = 0;
         if (captureNext && screen == Screen::Game) { captureNext = false; Capture(true); }
         if (toastT > 0) toastT -= dt;

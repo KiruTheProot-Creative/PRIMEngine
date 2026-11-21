@@ -40,6 +40,7 @@ struct Settings {
     float bloom = 0.5f;        // glow around bright things, 0 = off
     bool swaying = true;       // leaves and plants move in the wind
     int reflections = 1;       // 0 off, 1 normal, 2 high
+    float renderScale = 1;     // the 3D world drawn at this part of the screen's size (0.5 .. 2: below 1 faster, above 1 supersampled); the HUD and menus stay sharp
     int antiAlias = 1;
     int pixelShadows = 0;      // shadows snapped to the texture's pixels: 0 off, 16 or 32 a block
     int probes = 0;            // light probes (bounce light everywhere, through the blocks): 0 off, 1 wide (every 4 blocks), 2 fine (every 2 blocks)
