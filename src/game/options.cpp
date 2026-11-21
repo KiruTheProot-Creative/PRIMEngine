@@ -19,7 +19,7 @@ Field field(Settings& s, const std::string& k) {
     else if (k == "shadows") r.i = &s.shadowQuality; else if (k == "shadow_res") r.i = &s.shadowRes; else if (k == "shadow_distance") r.f = &s.shadowDistance;
     else if (k == "shadow_soft") r.i = &s.shadowSoft; else if (k == "shadow_softness") r.f = &s.shadowSoftness;
     else if (k == "clouds") r.f = &s.cloudCover; else if (k == "cloud_shadows") r.b = &s.cloudShadows; else if (k == "fog") r.f = &s.groundFog;
-    else if (k == "bloom") r.f = &s.bloom; else if (k == "reflections") r.i = &s.reflections; else if (k == "reflect_res") r.i = &s.reflectRes; else if (k == "anti_alias") r.i = &s.antiAlias; else if (k == "render_scale") r.f = &s.renderScale; else if (k == "pixel_shadows") r.i = &s.pixelShadows; else if (k == "probes") r.i = &s.probes; else if (k == "show_fps") r.b = &s.showFps; else if (k == "ao") r.i = &s.ambientOcclusion; else if (k == "ao_strength") r.f = &s.aoStrength;
+    else if (k == "bloom") r.f = &s.bloom; else if (k == "reflections") r.i = &s.reflections; else if (k == "reflect_res") r.i = &s.reflectRes; else if (k == "anti_alias") r.i = &s.antiAlias; else if (k == "render_scale") r.f = &s.renderScale; else if (k == "upscaler") r.i = &s.upscaler; else if (k == "up_sharpness") r.f = &s.upSharp; else if (k == "pixel_shadows") r.i = &s.pixelShadows; else if (k == "probes") r.i = &s.probes; else if (k == "show_fps") r.b = &s.showFps; else if (k == "ao") r.i = &s.ambientOcclusion; else if (k == "ao_strength") r.f = &s.aoStrength;
     else if (k == "swaying") r.b = &s.swaying; else if (k == "hud_glow") r.b = &s.hudGlow;
     else if (k == "eye_adapt") r.b = &s.eyeAdapt; else if (k == "film_fx") r.b = &s.filmFx; else if (k == "light_shadows") r.i = &s.lightShadows; else if (k == "light_fog") r.b = &s.lightFog; else if (k == "bounce") r.i = &s.bounce; else if (k == "planar_floors") r.b = &s.planarFloors; else if (k == "lens_flares") r.b = &s.lensFlares;
     else if (k == "bumps") r.f = &s.bumps; else if (k == "coat") r.f = &s.coat; else if (k == "materials") r.b = &s.materials; else if (k == "guess_materials") r.b = &s.guessMaterials;
@@ -64,8 +64,12 @@ const std::vector<OptionDef>& optionDefs() {
           p.tip = "Sets the heavy graphics options at once (shadows, light, reflections, distance, render scale...). Change one by hand and it says Custom."; v.push_back(p); }
         v.push_back(toggle("fullscreen", "Fullscreen", D, "Screen", "Borderless, over the whole screen."));
         v.push_back(toggle("vsync", "VSync", D, "Screen", "Waits for the screen: no tearing, frame rate up to the screen's."));
-        v.push_back(choice("render_scale", "Render scale", D, "Screen", { "50% (fastest)", "67%", "75%", "85%", "100% (the screen's own)", "125%", "150%", "200% (supersampled)" }, { 0.5f, 0.67f, 0.75f, 0.85f, 1.f, 1.25f, 1.5f, 2.f },
-                           "The 3D world is drawn this much of the screen's size, then fitted to it. Below 100%: faster (sharpened as it is enlarged). Above 100%: the smoothest edges there are, but heavy. The HUD and menus always stay sharp."));
+        v.push_back(choice("render_scale", "Render scale", D, "Screen", { "33% (ultra performance)", "50% (performance)", "58% (balanced)", "67% (quality)", "75%", "85%", "100% (the screen's own)", "125%", "150%", "200% (supersampled)" },
+                           { 0.33f, 0.5f, 0.58f, 0.67f, 0.75f, 0.85f, 1.f, 1.25f, 1.5f, 2.f },
+                           "The 3D world is drawn this much of the screen's size, then fitted to it. Below 100%: faster (the upscaler rebuilds the detail). Above 100%: the smoothest edges there are, but heavy. The HUD and menus always stay sharp."));
+        v.push_back(choice("upscaler", "Upscaler", D, "Screen", { "Sharp (this frame only)", "PrimeScaler" }, {},
+                           "PrimeScaler: the camera moves a fraction of a pixel every frame, and the picture is rebuilt from several frames, so a smaller render scale still looks sharp. At 100% it is the smoothest anti-aliasing. Sharp: enlarges this frame only (fast, softer)."));
+        v.push_back(slider("up_sharpness", "Sharpness", D, "Screen", 0, 1, 0.05f, "%", "off", "How much PrimeScaler sharpens its picture."));
         v.push_back(slider("brightness", "Brightness", D, "Picture", 0.3f, 2.5f, 0.05f, "%"));
         v.push_back(slider("fov", "Field of view", D, "Picture", 50, 110, 1, "%.0f"));
         v.push_back(slider("screen_shake", "Screen shake", D, "Picture", 0, 2, 0.05f, "%", "off", "Bosses stomping, slams and roars shake the view."));
@@ -118,7 +122,7 @@ const std::vector<OptionDef>& optionDefs() {
         v.push_back(reset(SH));
 
         // ---- Post-processing: what happens to the finished picture
-        v.push_back(choice("anti_alias", "Anti-aliasing", P, "Edges", { "Off", "Smooth edges", "Smoother edges" }, {}, "Smooths the stair-stepped edges of things (the pixels inside textures stay crisp)."));
+        v.push_back(choice("anti_alias", "Anti-aliasing", P, "Edges", { "Off", "Smooth edges", "Smoother edges" }, {}, "Smooths the stair-stepped edges of things (the pixels inside textures stay crisp). With PrimeScaler on, it does this itself."));
         v.push_back(slider("bloom", "Glow (bloom)", P, "Light", 0, 1, 0.05f, "%", "off"));
         v.push_back(toggle("eye_adapt", "Eye adaptation", P, "Light", "Like your eyes or a camera: dark places slowly get brighter, bright ones darker (as much as the area's look says)."));
         v.push_back(toggle("lens_flares", "Lens flares", P, "Light", "Looking toward the sun: a glow, a streak and rings of light (if it is not behind something)."));
@@ -210,20 +214,20 @@ void optionReset(Settings& s, const std::string& group) {
 std::vector<QualityPreset>* gamePresets = nullptr;
 const std::vector<std::string>& presetKeys() {
     static const std::vector<std::string> k = { "render_scale", "render_distance", "vertical_distance", "shadows", "shadow_res", "shadow_distance", "shadow_soft", "light_shadows",
-        "probes", "bounce", "ao", "reflections", "reflect_res", "planar_floors", "anti_alias", "bloom", "light_fog", "clouds", "cloud_shadows", "bumps", "coat", "swaying", "lens_flares" };
+        "probes", "bounce", "ao", "reflections", "reflect_res", "planar_floors", "anti_alias", "bloom", "light_fog", "clouds", "cloud_shadows", "bumps", "coat", "swaying", "lens_flares", "upscaler" };
     return k;
 }
 std::vector<QualityPreset> defaultPresets() {
     // render_scale, render_distance, vertical_distance, shadows, shadow_res, shadow_distance, shadow_soft, light_shadows, probes, bounce, ao, reflections, reflect_res,
-    // planar_floors, anti_alias, bloom, light_fog, clouds, cloud_shadows, bumps, coat, swaying, lens_flares
-    struct Row { const char* name; float v[23]; };
+    // planar_floors, anti_alias, bloom, light_fog, clouds, cloud_shadows, bumps, coat, swaying, lens_flares, upscaler
+    struct Row { const char* name; float v[24]; };
     static const Row rows[] = {
-        { "Very low", { 0.67f, 6, 3, 0, 1024, 48, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0.3f, 0, 0.3f, 0, 0, 0, 0, 0 } },
-        { "Low",      { 0.85f, 8, 4, 1, 1024, 64, 0, 0, 0, 0, 1, 0, 2, 0, 1, 0.5f, 0, 0.5f, 0, 0.5f, 0.5f, 1, 0 } },
-        { "Medium",   { 1, 10, 5, 1, 2048, 96, 1, 2, 0, 1, 1, 1, 2, 0, 1, 0.7f, 1, 0.6f, 1, 1, 1, 1, 1 } },
-        { "High",     { 1, 14, 6, 1, 2048, 160, 2, 4, 1, 1, 1, 1, 1, 1, 1, 0.8f, 1, 0.7f, 1, 1, 1, 1, 1 } },
-        { "Ultra",    { 1, 20, 8, 1, 3072, 256, 2, 4, 2, 2, 2, 2, 0, 1, 2, 0.8f, 1, 0.75f, 1, 1, 1, 1, 1 } },
-        { "Prime",    { 1.5f, 28, 10, 1, 4096, 384, 2, 8, 2, 2, 2, 2, 0, 1, 2, 0.85f, 1, 0.8f, 1, 1.2f, 1.2f, 1, 1 } },
+        { "Very low", { 0.5f, 6, 3, 0, 1024, 48, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0.3f, 0, 0.3f, 0, 0, 0, 0, 0, 1 } },
+        { "Low",      { 0.58f, 8, 4, 1, 1024, 64, 0, 0, 0, 0, 1, 0, 2, 0, 1, 0.5f, 0, 0.5f, 0, 0.5f, 0.5f, 1, 0, 1 } },
+        { "Medium",   { 0.67f, 10, 5, 1, 2048, 96, 1, 2, 0, 1, 1, 1, 2, 0, 1, 0.7f, 1, 0.6f, 1, 1, 1, 1, 1, 1 } },
+        { "High",     { 0.85f, 14, 6, 1, 2048, 160, 2, 4, 1, 1, 1, 1, 1, 1, 1, 0.8f, 1, 0.7f, 1, 1, 1, 1, 1, 1 } },
+        { "Ultra",    { 1, 20, 8, 1, 3072, 256, 2, 4, 2, 2, 2, 2, 0, 1, 2, 0.8f, 1, 0.75f, 1, 1, 1, 1, 1, 1 } },
+        { "Prime",    { 1.5f, 28, 10, 1, 4096, 384, 2, 8, 2, 2, 2, 2, 0, 1, 2, 0.85f, 1, 0.8f, 1, 1.2f, 1.2f, 1, 1, 1 } },
     };
     std::vector<QualityPreset> out;
     for (const Row& r : rows) { QualityPreset p; p.name = r.name; for (size_t k = 0; k < presetKeys().size(); k++) p.values.push_back({ presetKeys()[k], r.v[k] }); out.push_back(p); }

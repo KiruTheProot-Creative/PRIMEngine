@@ -2279,3 +2279,76 @@ float4 PS_Upscale(SkyOut i) : SV_Target
     }
     return float4(c, 1);
 }
+
+// ---------------------------------------------------------------- PrimeScaler: the picture rebuilt at the screen's size from several frames.
+// Every frame the camera moves a fraction of a pixel (always a different spot), so the frames' pixels land in slightly different places:
+// together they hold more detail than one frame. Each screen pixel keeps what it learned (rgb) and how many frames that is (a), follows
+// what it shows as the camera moves, and never keeps a colour that is not around it now (no smearing, no ghosts).
+// gOffset: xy this frame's shift (world picture pixels), z 1 = start again, w sharpening; gAxisX.zw: the world picture's size;
+// gAxisY: x where the helmet's depth ends (it moves with you), y how many frames at most
+Texture2D gPrimeHist : register(t42);
+float3 toYCoCg(float3 c) { return float3(dot(c, float3(0.25, 0.5, 0.25)), dot(c, float3(0.5, 0, -0.5)), dot(c, float3(-0.25, 0.5, -0.25))); }
+float3 fromYCoCg(float3 c) { return float3(c.x + c.y - c.z, c.x + c.z, c.x - c.y - c.z); }
+float4 primeHistAt(float2 uv, float2 size)   // the frames before at uv, sharp (Catmull-Rom from five reads)
+{
+    float2 p = uv * size, c = floor(p - 0.5) + 0.5, f = p - c;
+    float2 w0 = f * (-0.5 + f * (1 - 0.5 * f)), w1 = 1 + f * f * (-2.5 + 1.5 * f), w2 = f * (0.5 + f * (2 - 1.5 * f)), w3 = f * f * (-0.5 + 0.5 * f);
+    float2 w12 = w1 + w2, o12 = w2 / w12;
+    float2 t0 = (c - 1) / size, t3 = (c + 2) / size, t12 = (c + o12) / size;
+    float a = w12.x * w0.y, b = w0.x * w12.y, m = w12.x * w12.y, d = w3.x * w12.y, e = w12.x * w3.y;
+    float4 r = gPrimeHist.SampleLevel(gClamp, float2(t12.x, t0.y), 0) * a + gPrimeHist.SampleLevel(gClamp, float2(t0.x, t12.y), 0) * b
+             + gPrimeHist.SampleLevel(gClamp, t12, 0) * m + gPrimeHist.SampleLevel(gClamp, float2(t3.x, t12.y), 0) * d
+             + gPrimeHist.SampleLevel(gClamp, float2(t12.x, t3.y), 0) * e;
+    return r / (a + b + m + d + e);
+}
+float4 PS_PrimeScale(SkyOut i) : SV_Target
+{
+    float2 D; gPrimeHist.GetDimensions(D.x, D.y);
+    float2 S = gAxisX.zw, j = gOffset.xy;
+    float2 uv = i.pos.xy / D;                     // this screen pixel's centre, 0..1
+    float2 x = uv * S;                            // ... in the world picture's pixels
+    int2 q = int2(floor(x + j)), hi = int2(S) - 1; // the nearest of this frame's pixels (each was taken at its centre minus the shift)
+    float3 sum = 0, m1 = 0, m2 = 0, cMin = 1e9, cMax = -1e9; float wsum = 0, zClose = 1;
+    [unroll] for (int y = -1; y <= 1; y++)
+    [unroll] for (int xx = -1; xx <= 1; xx++)
+    {
+        int2 qq = clamp(q + int2(xx, y), int2(0, 0), hi);
+        float3 c = toYCoCg(gUpSrc.Load(int3(qq, 0)).rgb);
+        float2 d = x - (float2(qq) + 0.5 - j);
+        float w = exp(-2.2 * dot(d, d));
+        sum += c * w; wsum += w; m1 += c; m2 += c * c; cMin = min(cMin, c); cMax = max(cMax, c);
+        zClose = min(zClose, gSceneDepth.Load(int3(qq, 0)).r);   // (the nearest thing around: edges follow the thing in front)
+    }
+    float3 cur = sum / max(wsum, 1e-4);
+    float2 dn = (x - (float2(q) + 0.5 - j)) * (D / S);            // how far this frame's nearest pixel landed from this pixel's centre (screen pixels)
+    float conf = exp(-1.6 * dot(dn, dn));                         // near: this frame tells a lot about this pixel
+    float3 mean = m1 / 9, sd = sqrt(max(m2 / 9 - mean * mean, 0));
+    // where this was on the screen a frame ago
+    float2 puv = uv;
+    if (zClose >= gAxisY.x)   // (the helmet and the arm cannon move with you: they stay put)
+    {
+        float2 ndc = uv * float2(2, -2) + float2(-1, 1);
+        float3 dir = normalize(gCamF.xyz + gCamR.xyz * (ndc.x * gProj.x * gProj.y) + gCamU.xyz * (ndc.y * gProj.x));
+        float3 P = zClose >= 1 ? dir * 1e4 : dir * (linDepth(zClose) / max(dot(dir, gCamF.xyz), 1e-3));
+        float4 c = mul(float4(P + gHistCam.xyz, 1), gHistVP);
+        puv = c.w > 1e-3 ? c.xy / c.w * float2(0.5, -0.5) + 0.5 : float2(-1, -1);
+    }
+    bool ok = gOffset.z < 0.5 && all(puv > 0) && all(puv < 1);
+    if (!ok) return float4(fromYCoCg(cur), conf);                 // nothing to remember here: this frame alone
+    float4 h = primeHistAt(puv, D);
+    float3 hc = clamp(toYCoCg(max(h.rgb, 0)), max(cMin, mean - sd * 1.25), min(cMax, mean + sd * 1.25));   // only colours that are around it now
+    float moved = length((uv - puv) * D);
+    float n = min(h.a, lerp(gAxisY.y, 3, saturate(moved / 48)));  // moving fast: lean on the past less (it is blurrier there)
+    float a = max(conf / (n + conf), 1 / (gAxisY.y + 1));
+    return float4(fromYCoCg(lerp(hc, cur, a)), n + conf);
+}
+float4 PS_PrimeSharpen(SkyOut i) : SV_Target   // PrimeScaler's picture onto the screen, sharpened (never past its neighbours: no halos)
+{
+    float2 D; gPrimeHist.GetDimensions(D.x, D.y); int2 p = int2(i.pos.xy), hi = int2(D) - 1;
+    float3 c = gPrimeHist.Load(int3(p, 0)).rgb;
+    float3 n = gPrimeHist.Load(int3(clamp(p + int2(0, -1), int2(0, 0), hi), 0)).rgb, s = gPrimeHist.Load(int3(clamp(p + int2(0, 1), int2(0, 0), hi), 0)).rgb;
+    float3 e = gPrimeHist.Load(int3(clamp(p + int2(1, 0), int2(0, 0), hi), 0)).rgb, w = gPrimeHist.Load(int3(clamp(p + int2(-1, 0), int2(0, 0), hi), 0)).rgb;
+    float3 mn = min(c, min(min(n, s), min(e, w))), mx = max(c, max(max(n, s), max(e, w)));
+    float3 r = c + (c - (n + s + e + w) * 0.25) * gOffset.w * 1.6;
+    return float4(saturate(clamp(r, mn, mx)), 1);
+}

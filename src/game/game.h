@@ -42,6 +42,8 @@ struct Settings {
     int reflections = 1;       // 0 off, 1 normal, 2 high
     float renderScale = 1;     // the 3D world drawn at this part of the screen's size (0.5 .. 2: below 1 faster, above 1 supersampled); the HUD and menus stay sharp
     int antiAlias = 1;
+    int upscaler = 1;          // fitting the world to the screen: 0 Sharp (this frame only), 1 PrimeScaler (rebuilt from several frames; at 100% the smoothest edges)
+    float upSharp = 0.5f;      // PrimeScaler's sharpening
     int pixelShadows = 0;      // shadows snapped to the texture's pixels: 0 off, 16 or 32 a block
     int probes = 0;            // light probes (bounce light everywhere, through the blocks): 0 off, 1 wide (every 4 blocks), 2 fine (every 2 blocks)
     bool showFps = false;      // frames a second in the corner         // smoothing jagged edges: 0 off, 1 smooth, 2 smoother (looks further along each edge)

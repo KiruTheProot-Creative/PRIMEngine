@@ -215,7 +215,18 @@ struct App {
     // a quarter above (their cost stays about the same whatever the resolution), then brought back up carefully
     int lowW = 1, lowH = 1;
     ComPtr<ID3D11Texture2D> volLowTex, aoTex2; ComPtr<ID3D11RenderTargetView> volLowRTV, aoRTV2; ComPtr<ID3D11ShaderResourceView> volLowSRV, aoSRV2;
-    ComPtr<ID3D11PixelShader> psVolumeLow, psAOBlur;      // ... with clouds and fog
+    ComPtr<ID3D11PixelShader> psVolumeLow, psAOBlur;
+    // PrimeScaler: the picture rebuilt at the screen's size from several frames (the camera moves a fraction of a pixel each frame)
+    BloomLevel primeHist[2]; int primeCur = 0; bool primeOk = false; V3 primePrevCam{ 0, 0, 0 }; uint32_t primeFrame = 0; ID3D11RenderTargetView* primeLastOut = nullptr;
+    ComPtr<ID3D11PixelShader> psPrimeScale, psPrimeSharpen; float jitX = 0, jitY = 0; XMMATRIX jitM = XMMatrixIdentity(); float sampBias = 0;
+    static float Halton(uint32_t i, uint32_t b) { float f = 1, r = 0; while (i > 0) { f /= (float)b; r += f * (float)(i % b); i /= b; } return r; }
+    bool PrimeOn() const { return settings.upscaler == 1; }
+    void SetTextureSharpness(float bias) {   // PrimeScaler below 100%: the textures pick their detail as if drawn at the screen's size (pixel art stays crisp)
+        if (std::fabs(bias - sampBias) < 1e-3f && sampBlocks) return;
+        sampBias = bias;
+        D3D11_SAMPLER_DESC sm{}; sm.Filter = D3D11_FILTER_MIN_MAG_POINT_MIP_LINEAR; sm.AddressU = sm.AddressV = sm.AddressW = D3D11_TEXTURE_ADDRESS_WRAP; sm.MaxLOD = D3D11_FLOAT32_MAX; sm.MipLODBias = bias;
+        ComPtr<ID3D11SamplerState> s; if (SUCCEEDED(dev->CreateSamplerState(&sm, &s))) sampBlocks = s;
+    }      // ... with clouds and fog
     ComPtr<ID3D11ShaderResourceView> depthSRV, noiseSRV, depthCopySRV; ComPtr<ID3D11Texture2D> depthCopy; ComPtr<ID3D11PixelShader> psWater; ComPtr<ID3D11SamplerState> sampLinear, sampClamp; double cloudTime = 0, precipTime = 0, precipWindX = 0, precipWindZ = 0;
     struct BloomLevel { ComPtr<ID3D11Texture2D> tex; ComPtr<ID3D11RenderTargetView> rtv; ComPtr<ID3D11ShaderResourceView> srv; int w = 0, h = 0; };
     BloomLevel aaSrc;   // anti-aliasing: the finished picture, before its edges are smoothed
@@ -376,6 +387,8 @@ struct App {
         b = Compile(src, "PS_AO", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psAO));
         b = Compile(src, "PS_AOApply", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psAOApply));
         b = Compile(src, "PS_AOBlur", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psAOBlur));
+        b = Compile(src, "PS_PrimeScale", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psPrimeScale));
+        b = Compile(src, "PS_PrimeSharpen", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psPrimeSharpen));
         b = Compile(src, "PS_Water", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psWater));
         b = Compile(src, "PS_Post", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psPost));
         MakeLightResources();
@@ -3992,7 +4005,9 @@ struct App {
     }
     void RenderWorld(ID3D11RenderTargetView* outScreen) {
         // render scale: drawn at the world's own size into a picture of that size, fitted to the screen at the end (the HUD over it at the screen's size)
-        bool scaledNow = Scaled() && upSrc.rtv; int dispW = rw, dispH = rh;
+        bool temporal = PrimeOn() && upSrc.rtv && upSrc.w == std::max(16, sceneW) && upSrc.h == std::max(16, sceneH);
+        bool scaledNow = (Scaled() || temporal) && upSrc.rtv; int dispW = rw, dispH = rh;
+        SetTextureSharpness(temporal && sceneW < rw ? std::log2((float)sceneW / std::max(1, rw)) : 0.f);
         struct SizeBack { App& a; int w, h; bool on; ~SizeBack() { if (on) { a.rw = w; a.rh = h; } } } sizeBack{ *this, dispW, dispH, scaledNow };
         if (scaledNow) { rw = sceneW; rh = sceneH; }
         ID3D11RenderTargetView* out = scaledNow ? upSrc.rtv.Get() : outScreen;
@@ -4022,6 +4037,11 @@ struct App {
             double moved = std::sqrt(fc.histCam[0] * fc.histCam[0] + fc.histCam[1] * fc.histCam[1] + fc.histCam[2] * fc.histCam[2]);
             fc.histCam[3] = giHistOk && moved < 8 ? 1.f : 0.f;   // (a jump across the world: start again)
             fc.aa[2] = (float)(++frameNo % 64);
+        }
+        jitM = XMMatrixIdentity(); jitX = jitY = 0;
+        if (temporal) {   // PrimeScaler: this frame's fraction-of-a-pixel shift (16 spots, spread evenly)
+            uint32_t k = frameNo % 16 + 1; jitX = Halton(k, 2) - 0.5f; jitY = Halton(k, 3) - 0.5f;
+            jitM = XMMatrixTranslation(2 * jitX / rw, -2 * jitY / rh, 0); vp = vp * jitM; XMStoreFloat4x4(&fc.viewProj, vp);
         }
         SkyParams(fc, settings.timeOfDay);
         float fogEnd = settings.renderDistance * CS * 0.95f;
@@ -4574,7 +4594,7 @@ struct App {
         // ---- final picture: exposure + filmic curve into the window (or the editor's viewport picture); paused: first into a picture to blur
         bool blurOn = blurAmt > 0.005f && blurSrc.rtv && blurLv.size() == 4;
         ID3D11RenderTargetView* finalTgt = blurOn ? blurSrc.rtv.Get() : out;
-        bool aaOn = settings.antiAlias > 0 && aaSrc.rtv && aaSrc.w == rw && aaSrc.h == rh;   // anti-aliasing: first into a picture, then smoothed into where it goes
+        bool aaOn = !temporal && settings.antiAlias > 0 && aaSrc.rtv && aaSrc.w == rw && aaSrc.h == rh;   // (PrimeScaler smooths the edges itself)   // anti-aliasing: first into a picture, then smoothed into where it goes
         { ID3D11RenderTargetView* tgt = aaOn ? aaSrc.rtv.Get() : finalTgt; ctx->OMSetRenderTargets(1, &tgt, nullptr); }
         ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psPost.Get(), nullptr, 0);
         {   // the visor's look
@@ -4627,9 +4647,37 @@ struct App {
             rw = dispW; rh = dispH; out = outScreen;
             ctx->OMSetRenderTargets(1, &out, nullptr); D3D11_VIEWPORT fv{ 0, 0, (float)rw, (float)rh, 0, 1 }; ctx->RSSetViewports(1, &fv);
             ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->RSSetState(rsNoCull.Get()); ctx->IASetInputLayout(nullptr);
-            ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psUpscale.Get(), nullptr, 0); ctx->PSSetSamplers(3, 1, sampClamp.GetAddressOf());
-            ctx->PSSetShaderResources(40, 1, upSrc.srv.GetAddressOf()); ctx->Draw(3, 0);
-            ID3D11ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(40, 1, &n1); ctx->RSSetState(rsCull.Get());
+            ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetSamplers(3, 1, sampClamp.GetAddressOf());
+            if (temporal) {   // PrimeScaler: this frame and the ones before, into its memory at the screen's size; then sharpened onto the screen
+                if (primeHist[0].w != rw || primeHist[0].h != rh || !primeHist[0].rtv) {
+                    for (BloomLevel& L : primeHist) {
+                        L = BloomLevel{}; L.w = rw; L.h = rh;
+                        D3D11_TEXTURE2D_DESC hd{}; hd.Width = (UINT)rw; hd.Height = (UINT)rh; hd.MipLevels = 1; hd.ArraySize = 1; hd.Format = DXGI_FORMAT_R16G16B16A16_FLOAT; hd.SampleDesc.Count = 1; hd.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+                        HR(dev->CreateTexture2D(&hd, nullptr, &L.tex)); HR(dev->CreateRenderTargetView(L.tex.Get(), nullptr, &L.rtv)); HR(dev->CreateShaderResourceView(L.tex.Get(), nullptr, &L.srv));
+                    }
+                    primeOk = false;
+                }
+                V3 jd = camPos - primePrevCam;
+                if (outScreen != primeLastOut || frameNo != primeFrame + 1 || std::sqrt(jd.x * jd.x + jd.y * jd.y + jd.z * jd.z) > 4) primeOk = false;   // a new view, a skipped frame, a jump: start again
+                int nx = 1 - primeCur;
+                ChunkCB cc{ { jitX, jitY, primeOk ? 0.f : 1.f, std::clamp(settings.upSharp, 0.f, 1.f) }, { (float)rw, (float)rh, (float)sceneW, (float)sceneH },
+                            { playMode ? 0.0021f : 0.f, sceneW < rw ? 14.f : 9.f, 0, 0 } };
+                ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);
+                { ID3D11Buffer* cbs[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->PSSetConstantBuffers(0, 2, cbs); }
+                ctx->OMSetRenderTargets(1, primeHist[nx].rtv.GetAddressOf(), nullptr); ctx->PSSetShader(psPrimeScale.Get(), nullptr, 0);
+                { ID3D11ShaderResourceView* d1 = depthSRV.Get(); ctx->PSSetShaderResources(2, 1, &d1); ctx->PSSetShaderResources(40, 1, upSrc.srv.GetAddressOf()); ctx->PSSetShaderResources(42, 1, primeHist[primeCur].srv.GetAddressOf()); }
+                ctx->Draw(3, 0);
+                { ID3D11ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(2, 1, &n1); ctx->PSSetShaderResources(40, 1, &n1); ctx->PSSetShaderResources(42, 1, &n1); }
+                ctx->OMSetRenderTargets(1, &out, nullptr); ctx->PSSetShader(psPrimeSharpen.Get(), nullptr, 0);
+                ctx->PSSetShaderResources(42, 1, primeHist[nx].srv.GetAddressOf()); ctx->Draw(3, 0);
+                { ID3D11ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(42, 1, &n1); }
+                primeCur = nx; primeOk = true; primePrevCam = camPos; primeFrame = frameNo; primeLastOut = outScreen;
+            } else {
+                ctx->PSSetShader(psUpscale.Get(), nullptr, 0);
+                ctx->PSSetShaderResources(40, 1, upSrc.srv.GetAddressOf()); ctx->Draw(3, 0);
+                ID3D11ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(40, 1, &n1);
+            }
+            ctx->RSSetState(rsCull.Get());
         }
         if (playMode) DrawHudInGame(out);   // the player's HUD over everything (at the screen's size)
     }
@@ -6114,7 +6162,7 @@ struct App {
     // the parts in the HDR picture: positions turned from camera space into the world (so the world's light falls on them),
     // seen with the HUD's own view angle, squeezed into the front 0.2 % of the depth so the world never cuts into them
     void DrawHudPartsLit(const FrameCB& fc, V3 f, V3 r, V3 u, ID3D11ShaderResourceView* const* srvs, ID3D11SamplerState* const* samps) {
-        FrameCB hc = fc; XMStoreFloat4x4(&hc.viewProj, view * HudProj((float)rw / std::max(1, rh)));
+        FrameCB hc = fc; XMStoreFloat4x4(&hc.viewProj, view * HudProj((float)rw / std::max(1, rh)) * jitM);   // (PrimeScaler's shift too)
         hc.clipPlane[0] = hc.clipPlane[1] = hc.clipPlane[2] = 0; hc.clipPlane[3] = 1;
         ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &hc, 0, 0);
         ctx->OMSetRenderTargets(1, reflRTV.GetAddressOf(), dsv.Get());
