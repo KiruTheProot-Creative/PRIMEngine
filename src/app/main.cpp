@@ -8724,7 +8724,7 @@ struct App {
             bool sel = live && (int)screenHits.size() - 1 == screenSel; auto info = slotInfo.find(k); bool used = info != slotInfo.end();
             if (sel) { p0.y -= H * 0.02f; p1.y -= H * 0.02f; }   // (the picked card lifts a little)
             dl->AddRectFilled(p0, p1, sel ? C(col.accent, std::min(it.pickFill, 0.35f) * al) : C(col.fill, col.fillAlpha * al));
-            dl->AddRect(p0, p1, C(col.accent, (sel ? 1.f : 0.35f) * al), 0, ImDrawFlags_None, sel ? it.border + 1 : it.border);
+            dl->AddRect(p0, p1, C(col.accent, (sel ? 1.f : 0.35f) * al), 0.f, ImDrawFlags_None, sel ? it.border + 1 : it.border);
             if (sel && it.corners) {
                 float L = cw * 0.1f, th = it.border + 1.5f; ImU32 c = C(col.picked, al);
                 dl->AddLine(ImVec2(p0.x - 3, p0.y - 3), ImVec2(p0.x - 3 + L, p0.y - 3), c, th); dl->AddLine(ImVec2(p0.x - 3, p0.y - 3), ImVec2(p0.x - 3, p0.y - 3 + L), c, th);
@@ -8752,7 +8752,7 @@ struct App {
                 int tanks = std::max(0, (int)std::lround((g.maxHealth - 99) / 100.0)), full = std::max(0, (int)std::floor((g.health - 99) / 100.0 + 1e-3));
                 float sq = ts * 0.75f, gp = sq * 0.35f, x = x0;
                 for (int t = 0; t < tanks && x + sq <= x1; t++, x += sq + gp) {
-                    if (t < full) dl->AddRectFilled(ImVec2(x, y), ImVec2(x + sq, y + sq), acc); else dl->AddRect(ImVec2(x, y), ImVec2(x + sq, y + sq), C(col.accent, 0.5f * al), 0, ImDrawFlags_None, 2);
+                    if (t < full) dl->AddRectFilled(ImVec2(x, y), ImVec2(x + sq, y + sq), acc); else dl->AddRect(ImVec2(x, y), ImVec2(x + sq, y + sq), C(col.accent, 0.5f * al), 0.f, ImDrawFlags_None, 2.f);
                 }
                 char e[32]; std::snprintf(e, sizeof e, "%d", (int)std::lround(std::max(0.f, g.health)));
                 TextIn(dl, font, std::string(e), ts * 0.9f, ImVec2(x + gp, y - ts * 0.15f), ImVec2(x1, y + sq + ts * 0.15f), 0, C(col.text, al));
