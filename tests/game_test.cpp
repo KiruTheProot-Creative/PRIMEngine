@@ -1728,6 +1728,16 @@ int main() {
         CHECK(hasModel, "... with the item's model in it");
         ss.screens[ig].holdMin = 1.7f; saveScreens("/tmp/prim_scr_ig.txt", ss); ScreenSet sl; loadScreens("/tmp/prim_scr_ig.txt", sl);
         CHECK(sl.byRole(ScreenRole::ItemGet) >= 0 && sl.screens[sl.byRole(ScreenRole::ItemGet)].holdMin == 1.7f, "its hold time saves and loads");
+        {   // the visor look: picked buttons are solid bars with a tip, files are cards, panels have bracket corners
+            ScreenSet vs = defaultScreens(); const Screen& m = vs.screens[vs.byRole(ScreenRole::MainMenu)]; int tips = 0, solid = 0; bool tipText = false;
+            for (const ScreenItem& i : m.items) { if (i.kind == ScreenItemKind::Button) { tips += !i.tip.empty(); solid += i.pickFill >= 0.99f; } tipText |= i.text == "{tip}"; }
+            bool cards = false; for (const ScreenItem& i : vs.screens[vs.byRole(ScreenRole::Files)].items) cards |= i.kind == ScreenItemKind::SaveSlots && i.cards == 1 && i.corners;
+            CHECK(tips == 5 && solid == 5 && tipText && cards, "the visor look: lit bars with tips on the main menu, file cards side by side");
+            vs.screens[0].items[3].tip = "Go on: {continue}"; vs.screens[0].items[3].corners = true; vs.screens[0].items[3].pickFill = 0.6f;
+            saveScreens("/tmp/prim_scr_look.txt", vs); ScreenSet vl; loadScreens("/tmp/prim_scr_look.txt", vl);
+            const ScreenItem& b = vl.screens[0].items[3]; int ci = -1; for (int i = 0; i < (int)vl.screens[1].items.size(); i++) if (vl.screens[1].items[i].kind == ScreenItemKind::SaveSlots) ci = i;
+            CHECK(b.tip == "Go on: {continue}" && b.corners && b.pickFill == 0.6f && ci >= 0 && vl.screens[1].items[ci].cards == 1, "tips, bracket corners, picked fill and card layout save and load");
+        }
         int gs = ss.byRole(ScreenRole::GameSaved); bool says = false; for (auto& it : gs >= 0 ? ss.screens[gs].items : std::vector<ScreenItem>{}) says |= it.text.find("{savetitle}") != std::string::npos;
         CHECK(gs >= 0 && says && ss.screens[gs].bg.kind == BgKind::Game, "new games come with a \"Game Saved!\" pop-up, over the game");
         ss.screens[gs].holdMin = 1.2f; saveScreens("/tmp/prim_scr_gs.txt", ss); ScreenSet sg; loadScreens("/tmp/prim_scr_gs.txt", sg);

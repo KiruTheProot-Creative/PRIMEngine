@@ -58,6 +58,10 @@ struct ScreenItem {
     std::string group;                                   // Options: "" all three as tabs, or "Sound" / "Graphics" / "Controls"
     float speed = 0.06f;                                 // Credits: screen heights a second
     int slots = 3;                                       // SaveSlots: how many files
+    int cards = 0;                                       // SaveSlots: 0 one row each (top to bottom), 1 cards side by side (energy tanks, missiles)
+    float pickFill = 0.25f;                              // Button / SaveSlots: how strongly the picked one is filled with the accent (1: a solid bar, its text in the Picked colour)
+    bool corners = false;                                // Panel / Button / SaveSlots: bracket corners, like a visor's frame
+    std::string tip;                                     // Button: a line about what it does ({tip} in a text shows the picked button's)
     // timing (splash screens, intros): seconds after the screen appears
     float showAt = 0, hideAt = 0, fade = 0.4f;           // appears at, goes at (0: stays), fading in over this long
     float fadeOut = -1;                                  // fading out over this long (< 0: as long as it fades in)

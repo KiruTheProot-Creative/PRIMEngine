@@ -7611,6 +7611,15 @@ struct App {
         if (n == "maxenergy") return std::to_string((int)std::lround(playMode ? playRules.maxHealth : game.player.maxHealth));
         if (n == "missiles") { auto it = inv.counts.find(weapons.missileCounter); return std::to_string(it == inv.counts.end() ? 0 : it->second); }
         if (n == "scans") return std::to_string(ShownScans().entries.size());
+        if (n == "tip") return menuFill(pickedTip, [&](const std::string& m) { return m == "tip" ? std::string() : MenuValue(m); });
+        if (n == "savefile") {   // the "Game Saved!" pop-up: which file, at which station
+            const WorldObject* st = ObjById(saveStationId); std::string f = curSlot > 0 ? "FILE " + std::to_string(curSlot) : std::string("TEST FILE");
+            return st && !st->name.empty() ? f + "  -  " + st->name : f;
+        }
+        if (n == "continue") {   // the newest file, in a line: "File 2 · 41% · 3:12"
+            int k = NewestSlot(); auto it = slotInfo.find(k); if (!k || it == slotInfo.end()) return "";
+            char b[96]; std::snprintf(b, sizeof b, "File %d  -  %d%%  -  %s", k, (int)std::lround(it->second.completion * 100), playTimeText(it->second.playTime).c_str()); return b;
+        }
         if (n == "savetitle" || n == "savetext") {   // the "Game Saved!" pop-up: the station's own words (in the editor: the first station's, or the automatic ones)
             const WorldObject* st = ObjById(saveStationId);
             if (!st) for (const WorldObject& o : objects) if (o.kind == ObjKind::SaveStation) { st = &o; break; }
@@ -8470,6 +8479,7 @@ struct App {
         bool enter = ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter) || ImGui::IsKeyPressed(ImGuiKey_Space);
         if (menuSel >= 0 && menuSel < n && menuHits[menuSel].kind >= 5) {   // on an option: A / D (or the arrows) change it, Enter flips / sets a key
             MenuHit mh = menuHits[menuSel]; int dir = (ImGui::IsKeyPressed(ImGuiKey_LeftArrow) || ImGui::IsKeyPressed(ImGuiKey_A)) ? -1 : (ImGui::IsKeyPressed(ImGuiKey_RightArrow) || ImGui::IsKeyPressed(ImGuiKey_D)) ? 1 : 0;
+            if (mh.kind == 10 && dir) { step(dir); return; }   // save files (cards side by side): A / D go to the next one
             if (mh.kind == 6 && optColHits == &menuHits && uiClock - optColAt < 0.25) {   // in columns: D / Enter go into the category's options
                 if ((dir > 0 || enter) && optColFirstRow >= 0 && optColFirstRow < n) { menuSel = optColFirstRow; return; }
                 if (dir || enter) return;
@@ -8702,12 +8712,74 @@ struct App {
     }
 
     // ---- the items of a screen: drawn into screenList (W x H), buttons and options into screenHits
+    std::string pickedTip;   // the picked button's tip (a text's {tip})
+    // the save files as cards side by side: FILE k and its %, where it was saved, energy tanks, time and missiles (an empty one: a new game)
+    void SaveCards(ImDrawList* dl, ImFont* font, const ScreenItem& it, ImVec2 a, ImVec2 b, float ts, float al, bool live) {
+        const ScreenColors& col = it.col;
+        auto C = [&](uint32_t c, float x) { return IM_COL32((c >> 16) & 255, (c >> 8) & 255, c & 255, (int)(std::clamp(x, 0.f, 1.f) * 255)); };
+        int n = std::clamp(it.slots, 1, 12); float gap = (b.x - a.x) * 0.025f, cw = ((b.x - a.x) - gap * (n - 1)) / n, H = b.y - a.y;
+        for (int k = 1; k <= n; k++) {
+            ImVec2 p0(a.x + (k - 1) * (cw + gap), a.y), p1(p0.x + cw, b.y);
+            MenuHit h{ 0, ImVec4(p0.x, p0.y, p1.x, p1.y), 10, k, MenuAct::None, "" }; screenHits.push_back(h);
+            bool sel = live && (int)screenHits.size() - 1 == screenSel; auto info = slotInfo.find(k); bool used = info != slotInfo.end();
+            if (sel) { p0.y -= H * 0.02f; p1.y -= H * 0.02f; }   // (the picked card lifts a little)
+            dl->AddRectFilled(p0, p1, sel ? C(col.accent, std::min(it.pickFill, 0.35f) * al) : C(col.fill, col.fillAlpha * al));
+            dl->AddRect(p0, p1, C(col.accent, (sel ? 1.f : 0.35f) * al), 0, ImDrawFlags_None, sel ? it.border + 1 : it.border);
+            if (sel && it.corners) {
+                float L = cw * 0.1f, th = it.border + 1.5f; ImU32 c = C(col.picked, al);
+                dl->AddLine(ImVec2(p0.x - 3, p0.y - 3), ImVec2(p0.x - 3 + L, p0.y - 3), c, th); dl->AddLine(ImVec2(p0.x - 3, p0.y - 3), ImVec2(p0.x - 3, p0.y - 3 + L), c, th);
+                dl->AddLine(ImVec2(p1.x + 3, p1.y + 3), ImVec2(p1.x + 3 - L, p1.y + 3), c, th); dl->AddLine(ImVec2(p1.x + 3, p1.y + 3), ImVec2(p1.x + 3, p1.y + 3 - L), c, th);
+            }
+            float pad = cw * 0.07f, x0 = p0.x + pad, x1 = p1.x - pad, y = p0.y + pad;
+            ImU32 head = sel ? C(col.picked, al) : C(col.text, al), dim = C(col.dim, al), acc = C(col.accent, al);
+            if (!used) {
+                float mid = (p0.y + p1.y) * 0.5f, s = ts * 1.1f;
+                dl->AddLine(ImVec2((x0 + x1) * 0.5f - s, mid - ts * 2.2f), ImVec2((x0 + x1) * 0.5f + s, mid - ts * 2.2f), acc, 3); dl->AddLine(ImVec2((x0 + x1) * 0.5f, mid - ts * 2.2f - s), ImVec2((x0 + x1) * 0.5f, mid - ts * 2.2f + s), acc, 3);
+                TextIn(dl, font, "FILE " + std::to_string(k), ts * 1.3f, ImVec2(x0, mid - ts), ImVec2(x1, mid + ts * 0.4f), 1, head);
+                TextIn(dl, font, "Empty  -  start a new game", ts * 0.8f, ImVec2(x0, mid + ts * 0.5f), ImVec2(x1, mid + ts * 1.6f), 1, dim);
+                continue;
+            }
+            const SaveGame& g = info->second;
+            TextIn(dl, font, "FILE " + std::to_string(k), ts * 1.3f, ImVec2(x0, y), ImVec2(x1, y + ts * 1.5f), 0, head);
+            char pc[16]; std::snprintf(pc, sizeof pc, "%d%%", (int)std::lround(g.completion * 100));
+            TextIn(dl, font, pc, ts * 0.9f, ImVec2(x0, y), ImVec2(x1, y + ts * 1.5f), 2, acc);
+            y += ts * 2.4f;
+            TextIn(dl, font, "LAST SAVE", ts * 0.6f, ImVec2(x0, y), ImVec2(x1, y + ts * 0.8f), 0, dim); y += ts * 0.9f;
+            TextIn(dl, font, g.place.empty() ? g.world : g.place, ts, ImVec2(x0, y), ImVec2(x1, y + ts * 1.2f), 0, C(col.text, al)); y += ts * 1.2f;
+            TextIn(dl, font, g.world, ts * 0.75f, ImVec2(x0, y), ImVec2(x1, y + ts), 0, dim); y += ts * 1.8f;
+            TextIn(dl, font, "ENERGY", ts * 0.6f, ImVec2(x0, y), ImVec2(x1, y + ts * 0.8f), 0, dim); y += ts * 1.0f;
+            {   // energy tanks: one square per 100 above the first 99, filled as far as the energy goes
+                int tanks = std::max(0, (int)std::lround((g.maxHealth - 99) / 100.0)), full = std::max(0, (int)std::floor((g.health - 99) / 100.0 + 1e-3));
+                float sq = ts * 0.75f, gp = sq * 0.35f, x = x0;
+                for (int t = 0; t < tanks && x + sq <= x1; t++, x += sq + gp) {
+                    if (t < full) dl->AddRectFilled(ImVec2(x, y), ImVec2(x + sq, y + sq), acc); else dl->AddRect(ImVec2(x, y), ImVec2(x + sq, y + sq), C(col.accent, 0.5f * al), 0, ImDrawFlags_None, 2);
+                }
+                char e[32]; std::snprintf(e, sizeof e, "%d", (int)std::lround(std::max(0.f, g.health)));
+                TextIn(dl, font, std::string(e), ts * 0.9f, ImVec2(x + gp, y - ts * 0.15f), ImVec2(x1, y + sq + ts * 0.15f), 0, C(col.text, al));
+                y += sq + ts * 1.2f;
+            }
+            char line[96]; int mis = 0; { auto m = g.counts.find(weapons.missileCounter); if (m != g.counts.end()) mis = m->second; }
+            std::snprintf(line, sizeof line, "%s played", playTimeText(g.playTime).c_str());
+            TextIn(dl, font, line, ts * 0.8f, ImVec2(x0, p1.y - pad - ts), ImVec2(x1, p1.y - pad), 0, dim);
+            if (!weapons.missileCounter.empty()) { std::snprintf(line, sizeof line, "%d missiles", mis); TextIn(dl, font, line, ts * 0.8f, ImVec2(x0, p1.y - pad - ts), ImVec2(x1, p1.y - pad), 2, dim); }
+            if (eraseArm == k && uiClock - eraseArmT < 3) TextIn(dl, font, "Delete again: erase", ts * 0.8f, ImVec2(x0, p1.y - pad - ts * 2.4f), ImVec2(x1, p1.y - pad - ts * 1.2f), 1, IM_COL32(255, 90, 70, (int)(255 * al)));
+        }
+    }
     void BuildScreenList(const mc::Screen& sc, int W, int H, bool live) {
         if (!screenList) screenList = std::make_unique<ImDrawList>(ImGui::GetDrawListSharedData());
         ImDrawList* dl = screenList.get(); dl->_ResetForNewFrame(); screenHits.clear();
         dl->PushClipRect(ImVec2(0, 0), ImVec2((float)W, (float)H)); dl->PushTexture(ImGui::GetIO().Fonts->TexRef);
         ImFont* font = ImGui::GetFont();
         auto C = [&](uint32_t c, float a) { return IM_COL32((c >> 16) & 255, (c >> 8) & 255, c & 255, (int)(std::clamp(a, 0.f, 1.f) * 255)); };
+        auto brackets = [&](ImVec2 a, ImVec2 b, ImU32 c, float th) {   // a visor frame's corners: short L shapes just outside the box
+            float L = std::min(b.x - a.x, b.y - a.y) * 0.16f; L = std::clamp(L, 6.f, 40.f); float o = th * 0.5f + 1;
+            ImVec2 A(a.x - o, a.y - o), B(b.x + o, b.y + o);
+            dl->AddLine(A, ImVec2(A.x + L, A.y), c, th); dl->AddLine(A, ImVec2(A.x, A.y + L), c, th);
+            dl->AddLine(ImVec2(B.x, A.y), ImVec2(B.x - L, A.y), c, th); dl->AddLine(ImVec2(B.x, A.y), ImVec2(B.x, A.y + L), c, th);
+            dl->AddLine(ImVec2(A.x, B.y), ImVec2(A.x + L, B.y), c, th); dl->AddLine(ImVec2(A.x, B.y), ImVec2(A.x, B.y - L), c, th);
+            dl->AddLine(B, ImVec2(B.x - L, B.y), c, th); dl->AddLine(B, ImVec2(B.x, B.y - L), c, th);
+        };
+        std::string tipNow;   // the picked button's tip (for {tip})
         const std::vector<ScreenItem>* itemList = &sc.items; std::vector<ScreenItem> merged;
         if (sc.useStack) { merged = buildStack(sc.stack).items; merged.insert(merged.end(), sc.items.begin(), sc.items.end()); itemList = &merged; }   // (a stack: its steps' items, then the screen's own)
         for (int ii = 0; ii < (int)itemList->size(); ii++) {
@@ -8726,6 +8798,7 @@ struct App {
             case ScreenItemKind::Panel:
                 if (it.filled) dl->AddRectFilled(a, b, C(col.fill, col.fillAlpha * al), rnd);
                 if (it.frame) dl->AddRect(a, b, C(col.accent, 0.8f * al), rnd, ImDrawFlags_None, it.border);
+                if (it.corners) brackets(a, b, C(col.picked, 0.9f * al), it.border + 1.5f);
                 break;
             case ScreenItemKind::Text: {
                 std::string s = menuFill(it.text, [&](const std::string& n) { return MenuValue(n); });
@@ -8766,10 +8839,14 @@ struct App {
                 bool off = it.act == ScreenAct::Continue && (playMode ? curSlot < 0 : NewestSlot() == 0);   // (nothing saved yet)
                 MenuHit h{ 0, ImVec4(a.x, a.y, b.x, b.y), off ? 9 : 8, (int)it.act, MenuAct::None, it.target }; screenHits.push_back(h);
                 bool sel = live && (int)screenHits.size() - 1 == screenSel;
-                if (it.filled || sel) dl->AddRectFilled(a, b, sel ? C(col.accent, 0.25f * al) : C(col.fill, col.fillAlpha * al), rnd);
+                if (sel) tipNow = it.tip;
+                bool solid = sel && it.pickFill >= 0.99f;
+                if (solid) for (int g = 3; g >= 1; g--) dl->AddRectFilled(ImVec2(a.x - g * 4, a.y - g * 4), ImVec2(b.x + g * 4, b.y + g * 4), C(col.accent, 0.06f * al), rnd + g * 4);   // (a soft glow around a solid bar)
+                if (it.filled || sel) dl->AddRectFilled(a, b, sel ? C(col.accent, it.pickFill * al) : C(col.fill, col.fillAlpha * al), rnd);
+                if (sel && it.corners) brackets(a, b, C(col.accent, al), it.border + 1);
                 if (it.frame || sel) dl->AddRect(a, b, C(col.accent, (sel ? 0.95f : 0.45f) * al), rnd, ImDrawFlags_None, sel ? it.border + 1 : it.border);
                 float pad = (b.y - a.y) * 0.45f;
-                if (sel) { float mid = (a.y + b.y) * 0.5f, s2 = (b.y - a.y) * 0.18f; dl->AddTriangleFilled(ImVec2(a.x + pad * 0.5f, mid - s2), ImVec2(a.x + pad * 0.5f, mid + s2), ImVec2(a.x + pad * 0.5f + s2 * 1.4f, mid), C(col.accent, al)); }
+                if (sel) { float mid = (a.y + b.y) * 0.5f, s2 = (b.y - a.y) * 0.18f; dl->AddTriangleFilled(ImVec2(a.x + pad * 0.5f, mid - s2), ImVec2(a.x + pad * 0.5f, mid + s2), ImVec2(a.x + pad * 0.5f + s2 * 1.4f, mid), solid ? C(col.picked, al) : C(col.accent, al)); }
                 TextInStyled(dl, font, menuFill(it.text, [&](const std::string& n) { return MenuValue(n); }), ts, ImVec2(a.x + pad * (it.align == 0 ? 1.6f : 1), a.y), ImVec2(b.x - pad, b.y), it.align,
                        off ? C(col.dim, 0.6f * al) : sel ? C(col.picked, al) : C(col.text, al), TextLook{ it.weight, it.outline, it.outlineColor });
                 break; }
@@ -8778,6 +8855,7 @@ struct App {
                 optColSel = &screenSel; DrawOptionsBlock(dl, a, b, ts, oc, it.group, 9000 + ii, screenHits, live ? screenSel : -1, 0, false);
                 break; }
             case ScreenItemKind::SaveSlots: {   // the save files: a card each (an empty one starts a new game)
+                if (it.cards == 1) { SaveCards(dl, font, it, a, b, ts, al, live); break; }
                 int n = std::clamp(it.slots, 1, 12); float gap = (b.y - a.y) * 0.03f, cardH = ((b.y - a.y) - gap * (n - 1)) / n;
                 for (int k = 1; k <= n; k++) {
                     ImVec2 p0(a.x, a.y + (k - 1) * (cardH + gap)), p1(b.x, p0.y + cardH);
@@ -8814,7 +8892,7 @@ struct App {
             }
         }
         dl->PopTexture(); dl->PopClipRect();
-        screenPrevT = screenT;
+        screenPrevT = screenT; if (live) pickedTip = tipNow;
         if (live) {
             if (optSelTab >= 0) { for (int i = 0; i < (int)screenHits.size(); i++) if (screenHits[i].kind == 6 && screenHits[i].arg == optSelTab) screenSel = i; optSelTab = -1; }
             if (screenSel == -2 || screenSel >= (int)screenHits.size()) { screenSel = -1; for (int i = 0; i < (int)screenHits.size(); i++) if (screenHits[i].kind == 8 || screenHits[i].kind == 10 || screenHits[i].kind == 5 || screenHits[i].kind == 7) { screenSel = i; break; } }
@@ -9224,6 +9302,12 @@ struct App {
         MakeCompRT(screenPreview, (int)scrPrevW, (int)scrPrevH, DXGI_FORMAT_R8G8B8A8_UNORM);
         RenderScreenPicture(*sc, screenPreview.rtv.Get(), (int)scrPrevW, (int)scrPrevH, screenList.get(), 1.f, true);
     }
+    static void ApplyReadyLook(mc::Screen& sc) {   // a built-in screen back to the ready-made look
+        mc::Screen p = sc.role == ScreenRole::NewGameIntro ? presetStory() : presetScreen(sc.role);
+        if (sc.useStack) { sc.comp = p.comp; return; }   // (a splash / story: its own steps stay)
+        bool ownBg = sc.bg.kind == BgKind::World || sc.bg.kind == BgKind::Image || sc.bg.kind == BgKind::Video;
+        sc.items = p.items; sc.comp = p.comp; if (!ownBg) sc.bg = p.bg; sc.fadeIn = p.fadeIn;
+    }
     void ScreensEditor() {
         if (!screensEdOpen) return;
         float ui = settings.uiScale; const ImGuiViewport* mv = ImGui::GetMainViewport();
@@ -9244,6 +9328,14 @@ struct App {
         }
         ImGui::Spacing();
         if (ImGui::Button("+ Screen")) ImGui::OpenPopup("addscr");
+        ImGui::SameLine(); if (ImGui::Button("Ready-made look...")) ImGui::OpenPopup("newlook");
+        if (ImGui::BeginPopup("newlook")) {   // the built-in screens' look (the visor style): one screen or all, keeping their names, music, sounds and own backgrounds
+            ImGui::TextDisabled("Puts the ready-made look back (items, colours, effects).\nKept: names, music, sounds, and a world / picture / video background.\nIntros keep their text (only the effects change).");
+            bool one = scrEd >= 0 && scrEd < (int)screens.screens.size() && screens.screens[scrEd].role != ScreenRole::Custom;
+            if (one && ImGui::Selectable(("This screen: " + screens.screens[scrEd].name).c_str())) { ApplyReadyLook(screens.screens[scrEd]); ch = true; }
+            if (ImGui::Selectable("All the built-in screens")) { for (mc::Screen& sc : screens.screens) if (sc.role != ScreenRole::Custom) ApplyReadyLook(sc); ch = true; }
+            ImGui::EndPopup();
+        }
         if (ImGui::BeginPopup("addscr")) {
             if (ImGui::Selectable("Story (typed text, like Super Metroid's intro)")) { mc::Screen s = presetStory(); std::string base = s.name; int k = 2; while (screens.find(s.name) >= 0) s.name = base + " " + std::to_string(k++); screens.screens.push_back(s); scrEd = (int)screens.screens.size() - 1; scrItem = -1; ch = true; }
             for (ScreenRole r : { ScreenRole::MainMenu, ScreenRole::Files, ScreenRole::Intro, ScreenRole::Options, ScreenRole::Death, ScreenRole::Credits, ScreenRole::ItemGet, ScreenRole::GameSaved, ScreenRole::Custom })
@@ -9814,6 +9906,12 @@ struct App {
             }
         }
         if (it.kind == ScreenItemKind::Credits) { Prop("Speed"); ch |= ImGui::SliderFloat("##sisp", &it.speed, 0.005f, 0.3f, "%.3f screens/s"); }
+        if (it.kind == ScreenItemKind::SaveSlots) { const char* ly[] = { "Rows (top to bottom)", "Cards side by side" }; Prop("Layout"); ch |= ImGui::Combo("##sicd", &it.cards, ly, 2); }
+        if (it.kind == ScreenItemKind::Button) {
+            char tb[256]; std::snprintf(tb, sizeof tb, "%s", it.tip.c_str()); Prop("Tip"); ImGui::SetNextItemWidth(-1);
+            if (ImGui::InputTextWithHint("##sitip", "(none)", tb, sizeof tb)) { it.tip = tb; ch = true; }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("What it does, in a line. A text with {tip} in it shows the picked button's tip.");
+        }
         if (it.kind == ScreenItemKind::SaveSlots) { Prop("Files"); ch |= ImGui::SliderInt("##sisl", &it.slots, 1, 12); Hint("Picking an empty file starts a new game in it; a used one goes on from its last save. Delete twice erases one. Games save only at Save Stations."); }
         ImGui::SeparatorText("Colours");
         ScreenColors& c = it.col;
@@ -9824,6 +9922,11 @@ struct App {
             Prop("Fill"); ch |= ColorU32("##scf", c.fill); Prop("Fill strength"); ch |= ImGui::SliderFloat("##scfa", &c.fillAlpha, 0, 1, "%.2f");
             Prop("Filled"); ch |= ImGui::Checkbox("##sfl", &it.filled); ImGui::SameLine(); ImGui::TextUnformatted("Frame"); ImGui::SameLine(); ch |= ImGui::Checkbox("##sfr", &it.frame);
             Prop("Round corners"); ch |= ImGui::SliderFloat("##sro", &it.rounding, 0, 1, "%.2f"); Prop("Frame width"); ch |= ImGui::SliderFloat("##sbw", &it.border, 0.5f, 8, "%.1f px");
+        }
+        if (it.kind == ScreenItemKind::Panel || it.kind == ScreenItemKind::Button || it.kind == ScreenItemKind::SaveSlots) { Prop("Bracket corners"); ch |= ImGui::Checkbox("##sbc", &it.corners); }
+        if (it.kind == ScreenItemKind::Button || it.kind == ScreenItemKind::SaveSlots) {
+            Prop("Picked: filled"); ch |= ImGui::SliderFloat("##spf", &it.pickFill, 0, 1, it.pickFill >= 0.99f ? "a solid bar" : "%.2f");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("How strongly the picked one fills with the accent colour. A solid bar: set Picked (the text colour) dark.");
         }
         Prop("See-through"); { float op = 1 - it.alpha; if (ImGui::SliderFloat("##sial", &op, 0, 1, "%.2f")) { it.alpha = 1 - op; ch = true; } }
         ImGui::SeparatorText("Timing");

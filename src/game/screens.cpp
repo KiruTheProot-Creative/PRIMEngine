@@ -111,101 +111,151 @@ static ScreenItem text(const std::string& name, const std::string& t, float x, f
 static ScreenItem button(const std::string& t, ScreenAct a, float x, float y, float w = 0.3f) {
     ScreenItem i; i.name = t; i.kind = ScreenItemKind::Button; i.text = t; i.act = a; i.x = x; i.y = y; i.w = w; i.h = 0.07f; i.textSize = 0.036f; i.align = 0; return i;
 }
+static const uint32_t VISOR_CYAN = 0x6CF0FF, VISOR_DARK = 0x03070C, DEATH_RED = 0xFF5A4A, SAVE_AMBER = 0xFFC85A;
+static ScreenItem rule(const std::string& name, float x, float y, float w, uint32_t c, float a) {   // a thin line (or a small bar)
+    ScreenItem i; i.name = name; i.kind = ScreenItemKind::Panel; i.x = x; i.y = y; i.w = w; i.h = 0.0025f; i.frame = false; i.col.fill = c; i.col.fillAlpha = a; i.rounding = 0; return i;
+}
+static void visorButton(ScreenItem& b) {   // the visor look: no box until picked, then a solid lit bar with dark letters
+    b.filled = false; b.frame = false; b.rounding = 0; b.pickFill = 1; b.col.picked = VISOR_DARK; b.col.text = 0x9FC2D2; b.col.accent = VISOR_CYAN;
+}
+static ScreenItem visorPanel(const std::string& name, float x, float y, float w, float h) {   // a framed pane of dark glass with bracket corners
+    ScreenItem p; p.name = name; p.kind = ScreenItemKind::Panel; p.x = x; p.y = y; p.w = w; p.h = h; p.col.fill = 0x08182A; p.col.fillAlpha = 0.8f; p.col.accent = VISOR_CYAN; p.col.picked = 0xB8F8FF;
+    p.rounding = 0; p.border = 1; p.corners = true; return p;
+}
+static void hintBar(Screen& s, const std::string& left, const std::string& right) {   // a dark strip along the bottom: the keys on the left, a note on the right
+    ScreenItem bar = rule("Hint bar", 0, 0.938f, 1, VISOR_DARK, 0.7f); bar.h = 0.062f; s.items.push_back(bar);
+    s.items.push_back(rule("Hint bar line", 0, 0.938f, 1, VISOR_CYAN, 0.25f));
+    ScreenItem l = text("Keys", left, 0.075f, 0.938f, 0.5f, 0.062f, 0.0167f, 0); l.col.text = 0x9FC2D2; s.items.push_back(l);
+    ScreenItem r = text("Note", right, 0.5f, 0.938f, 0.425f, 0.062f, 0.0167f, 2); r.col.text = 0x5E8193; s.items.push_back(r);
+}
+static void visorComp(Screen& s, float scan) {   // Background + UI -> Alpha Over -> Glare -> Scanlines -> Vignette -> Output
+    s.comp = Compositor{};
+    int bg = s.comp.add(NodeType::Background, 40, 60), ui = s.comp.add(NodeType::UI, 40, 220), over = s.comp.add(NodeType::AlphaOver, 300, 120), gl = s.comp.add(NodeType::Glare, 520, 120);
+    int sl = s.comp.add(NodeType::Scanlines, 740, 120), vig = s.comp.add(NodeType::Vignette, 960, 120), out = s.comp.add(NodeType::Output, 1180, 120);
+    s.comp.find(gl)->p[0] = 0.8f; s.comp.find(gl)->p[1] = 0.7f; s.comp.find(sl)->p[0] = scan; s.comp.find(sl)->p[1] = 300; s.comp.find(vig)->p[0] = 0.45f;
+    s.comp.connect(bg, over, 0); s.comp.connect(ui, over, 1); s.comp.connect(over, gl, 0); s.comp.connect(gl, sl, 0); s.comp.connect(sl, vig, 0); s.comp.connect(vig, out, 0);
+}
 Screen presetScreen(ScreenRole r) {
     Screen s; s.role = r; s.comp = defaultCompositor();
     switch (r) {
-    case ScreenRole::MainMenu: {
-        s.name = "Main menu";
-        s.items.push_back(text("Title", "{game}", 0.08f, 0.14f, 0.84f, 0.14f, 0.11f, 0));
-        ScreenItem sub = text("Subtitle", "Press a button", 0.08f, 0.28f, 0.6f, 0.05f, 0.03f, 0); sub.text = "A PRIMEngine game"; sub.col.text = 0x6CF0FF; sub.alpha = 0.7f; s.items.push_back(sub);
-        float y = 0.44f;
-        for (auto b : { std::make_pair("New game", ScreenAct::NewGame), std::make_pair("Continue", ScreenAct::Continue), std::make_pair("Options", ScreenAct::Options),
-                        std::make_pair("Credits", ScreenAct::Credits), std::make_pair("Quit", ScreenAct::Quit) }) { s.items.push_back(button(b.first, b.second, 0.08f, y)); y += 0.085f; }
+    case ScreenRole::MainMenu: {   // the title: the game's name top left, a list of buttons where the picked one is a lit bar, what it does under it, a hint bar at the bottom
+        s.name = "Main menu"; s.bg.color = 0x0C2533; s.bg.color2 = 0x03070C;
+        ScreenItem k = text("Kicker", "A PRIMENGINE GAME", 0.075f, 0.15f, 0.5f, 0.03f, 0.0156f, 0); k.col.text = VISOR_CYAN; k.weight = 0.3f; s.items.push_back(k);
+        ScreenItem t = text("Title", "{game}", 0.075f, 0.18f, 0.85f, 0.13f, 0.1f, 0); t.weight = 0.6f; t.valign = 0; s.items.push_back(t);
+        s.items.push_back(rule("Line", 0.075f, 0.32f, 0.26f, VISOR_CYAN, 0.8f));
+        const char* tips[] = { "Go on from your newest save: {continue}", "Pick a file and start from the beginning.", "Sound, picture, controls.", "Who made this game.", "Back to the desktop." };
+        float y = 0.46f; int n = 0;
+        for (auto b : { std::make_pair("Continue", ScreenAct::Continue), std::make_pair("New game", ScreenAct::NewGame), std::make_pair("Options", ScreenAct::Options),
+                        std::make_pair("Credits", ScreenAct::Credits), std::make_pair("Quit", ScreenAct::Quit) }) {
+            ScreenItem bt = button(b.first, b.second, 0.06f, y, 0.35f); bt.h = 0.062f; bt.textSize = 0.029f; bt.weight = 0.25f; visorButton(bt); bt.tip = tips[n++]; s.items.push_back(bt); y += 0.069f;
+        }
+        ScreenItem tp = text("Tip", "{tip}", 0.075f, 0.82f, 0.6f, 0.04f, 0.019f, 0); tp.col.text = 0x9FC2D2; s.items.push_back(tp);
+        hintBar(s, "ENTER  select       W / S  move", "made with PRIMEngine");
+        ScreenItem ro = text("Readout", "SYSTEM ONLINE", 0.6f, 0.13f, 0.325f, 0.03f, 0.0144f, 2); ro.col.text = VISOR_CYAN; ro.alpha = 0.75f; s.items.push_back(ro);
+        for (int i = 0; i < 4; i++) { ScreenItem p = rule("Readout bar", 0.865f + i * 0.0165f, 0.17f, 0.0138f, VISOR_CYAN, i < 3 ? 0.75f : 0.2f); p.h = 0.0067f; s.items.push_back(p); }
+        visorComp(s, 0.1f);
         break; }
-    case ScreenRole::Options: {
-        s.name = "Options";
-        s.items.push_back(text("Title", "Options", 0.08f, 0.06f, 0.84f, 0.09f, 0.07f, 0));
-        ScreenItem p; p.name = "Backing"; p.kind = ScreenItemKind::Panel; p.x = 0.07f; p.y = 0.17f; p.w = 0.86f; p.h = 0.68f; p.col.fillAlpha = 0.55f; s.items.push_back(p);
-        ScreenItem o; o.name = "Options"; o.kind = ScreenItemKind::Options; o.x = 0.09f; o.y = 0.19f; o.w = 0.82f; o.h = 0.64f; o.textSize = 0.032f; s.items.push_back(o);
-        s.items.push_back(button("Back", ScreenAct::Back, 0.08f, 0.88f, 0.2f));
+    case ScreenRole::Options: {   // the options list in a framed visor panel
+        s.name = "Options"; s.bg.color = 0x0C2533; s.bg.color2 = 0x03070C;
+        ScreenItem t = text("Title", "OPTIONS", 0.06f, 0.05f, 0.5f, 0.08f, 0.044f, 0); t.weight = 0.4f; s.items.push_back(t);
+        ScreenItem p = visorPanel("Backing", 0.0375f, 0.16f, 0.925f, 0.7f); s.items.push_back(p);
+        ScreenItem o; o.name = "Options"; o.kind = ScreenItemKind::Options; o.x = 0.055f; o.y = 0.18f; o.w = 0.89f; o.h = 0.66f; o.textSize = 0.028f; s.items.push_back(o);
+        ScreenItem bk = button("Back", ScreenAct::Back, 0.06f, 0.895f, 0.12f); bk.h = 0.053f; bk.textSize = 0.02f; bk.align = 1; visorButton(bk); bk.frame = true; s.items.push_back(bk);
+        ScreenItem h = text("Hint", "Q / E  group       A / D  change       ESC  back", 0.3f, 0.895f, 0.64f, 0.053f, 0.0167f, 2); h.col.text = 0x9FC2D2; s.items.push_back(h);
+        visorComp(s, 0.1f);
         break; }
-    case ScreenRole::Death: {
-        s.name = "Death screen"; s.bg.kind = BgKind::Game; s.bg.dim = 0.35f;
-        ScreenItem t = text("Title", "ENERGY DEPLETED", 0.1f, 0.3f, 0.8f, 0.12f, 0.08f); t.col.text = 0xFF4A3A; s.items.push_back(t);
-        s.items.push_back(button("Try again", ScreenAct::Retry, 0.38f, 0.5f, 0.24f));
-        s.items.push_back(button("Last save", ScreenAct::Continue, 0.38f, 0.59f, 0.24f));
-        s.items.push_back(button("Main menu", ScreenAct::MainMenu, 0.38f, 0.68f, 0.24f));
-        for (ScreenItem& i : s.items) if (i.kind == ScreenItemKind::Button) i.align = 1;
+    case ScreenRole::Death: {   // red: the game grey and blurred behind, "ENERGY DEPLETED" with its colours torn apart, three ways back
+        s.name = "Death screen"; s.bg.kind = BgKind::Game; s.bg.dim = 0.45f;
+        ScreenItem tanks = text("Tanks", "", 0.37f, 0.27f, 0.26f, 0.025f, 0.02f); tanks.kind = ScreenItemKind::Panel; tanks.filled = false; tanks.frame = true; tanks.col.accent = DEATH_RED; tanks.rounding = 0; tanks.border = 2; s.items.push_back(tanks);
+        ScreenItem t = text("Title", "ENERGY DEPLETED", 0.05f, 0.31f, 0.9f, 0.11f, 0.089f); t.col.text = DEATH_RED; t.weight = 0.6f; s.items.push_back(t);
+        ScreenItem sub = text("Subtitle", "SUIT INTEGRITY LOST", 0.1f, 0.425f, 0.8f, 0.035f, 0.0167f); sub.col.text = 0xC08880; sub.showAt = 0.6f; s.items.push_back(sub);
+        const char* tips[] = { "From the last checkpoint.", "From the last Save Station you used.", "Leave this game." };
+        float y = 0.56f; int n = 0;
+        for (auto b : { std::make_pair("TRY AGAIN", ScreenAct::Retry), std::make_pair("LOAD LAST SAVE", ScreenAct::Continue), std::make_pair("MAIN MENU", ScreenAct::MainMenu) }) {
+            ScreenItem bt = button(b.first, b.second, 0.38f, y, 0.24f); bt.h = 0.062f; bt.textSize = 0.022f; bt.align = 1; bt.weight = 0.25f; visorButton(bt);
+            bt.frame = true; bt.border = 1.5f; bt.col.accent = DEATH_RED; bt.col.text = 0xE8B8B0; bt.tip = tips[n++]; bt.showAt = 0.9f + n * 0.08f; s.items.push_back(bt); y += 0.075f;
+        }
+        ScreenItem tp = text("Tip", "{tip}", 0.1f, 0.92f, 0.8f, 0.035f, 0.0167f); tp.col.text = 0xA87872; s.items.push_back(tp);
         s.comp = Compositor{};
         int bg = s.comp.add(NodeType::Background, 40, 60), ui = s.comp.add(NodeType::UI, 40, 240), hs = s.comp.add(NodeType::HueSat, 260, 60);
-        int bl = s.comp.add(NodeType::Blur, 480, 60), over = s.comp.add(NodeType::AlphaOver, 700, 140), vig = s.comp.add(NodeType::Vignette, 920, 140), out = s.comp.add(NodeType::Output, 1140, 140);
-        s.comp.find(hs)->p[1] = 0.25f; s.comp.find(bl)->p[0] = 6; s.comp.find(vig)->p[0] = 0.7f; s.comp.find(vig)->c[0] = 0x400000;
-        s.comp.connect(bg, hs, 0); s.comp.connect(hs, bl, 0); s.comp.connect(bl, over, 0); s.comp.connect(ui, over, 1); s.comp.connect(over, vig, 0); s.comp.connect(vig, out, 0);
+        int bl = s.comp.add(NodeType::Blur, 480, 60), over = s.comp.add(NodeType::AlphaOver, 700, 140), ch = s.comp.add(NodeType::Chromatic, 920, 140), sl = s.comp.add(NodeType::Scanlines, 1140, 140);
+        int vig = s.comp.add(NodeType::Vignette, 1360, 140), out = s.comp.add(NodeType::Output, 1580, 140);
+        s.comp.find(hs)->p[1] = 0.15f; s.comp.find(bl)->p[0] = 8; s.comp.find(ch)->p[0] = 3; s.comp.find(sl)->p[0] = 0.18f; s.comp.find(sl)->p[1] = 300; s.comp.find(sl)->p[2] = 12;
+        s.comp.find(vig)->p[0] = 0.85f; s.comp.find(vig)->c[0] = 0x6E0000;
+        s.comp.connect(bg, hs, 0); s.comp.connect(hs, bl, 0); s.comp.connect(bl, over, 0); s.comp.connect(ui, over, 1); s.comp.connect(over, ch, 0); s.comp.connect(ch, sl, 0); s.comp.connect(sl, vig, 0); s.comp.connect(vig, out, 0);
         s.fadeIn = 1.2f;
         break; }
-    case ScreenRole::Credits: {
-        s.name = "Credits";
-        ScreenItem c; c.name = "Credits roll"; c.kind = ScreenItemKind::Credits; c.x = 0.15f; c.y = 0.05f; c.w = 0.7f; c.h = 0.8f; c.textSize = 0.036f;
-        c.text = "# {game}\n\n# Made by\nYou\n\n# Made with\nPRIMEngine\n\n\nThank you for playing!";
+    case ScreenRole::Credits: {   // the roll between the visor's edges, fading at the top and bottom
+        s.name = "Credits"; s.bg.color = s.bg.color2 = 0x02040A;
+        ScreenItem c; c.name = "Credits roll"; c.kind = ScreenItemKind::Credits; c.x = 0.25f; c.y = 0.12f; c.w = 0.5f; c.h = 0.76f; c.textSize = 0.031f;
+        c.text = "# {game}\n\n# Made by\nYou\n\n# Made with\nPRIMEngine\n\n\nTHANK YOU FOR PLAYING";
         s.items.push_back(c);
-        s.items.push_back(button("Back", ScreenAct::Back, 0.08f, 0.88f, 0.2f));
+        for (float x : { 0.1875f, 0.8125f }) { ScreenItem e = rule("Edge", x, 0.22f, 0.0008f, VISOR_CYAN, 0.25f); e.h = 0.56f; s.items.push_back(e); }
+        ScreenItem bk = button("Back", ScreenAct::Back, 0.06f, 0.895f, 0.12f); bk.h = 0.053f; bk.textSize = 0.02f; bk.align = 1; visorButton(bk); bk.frame = true; s.items.push_back(bk);
+        visorComp(s, 0.06f);
         break; }
-    case ScreenRole::Files: {
-        s.name = "Files";
-        s.items.push_back(text("Title", "Choose a file", 0.08f, 0.06f, 0.84f, 0.09f, 0.07f, 0));
-        ScreenItem f; f.name = "Save files"; f.kind = ScreenItemKind::SaveSlots; f.x = 0.08f; f.y = 0.19f; f.w = 0.84f; f.h = 0.62f; f.textSize = 0.034f; f.slots = 3; s.items.push_back(f);
-        ScreenItem hint = text("Hint", "Enter: play this file      Delete twice: erase it      Esc: back", 0.08f, 0.82f, 0.84f, 0.04f, 0.022f, 0); hint.alpha = 0.55f; s.items.push_back(hint);
-        s.items.push_back(button("Back", ScreenAct::Back, 0.08f, 0.88f, 0.2f));
+    case ScreenRole::Files: {   // the save files as cards side by side
+        s.name = "Files"; s.bg.color = 0x0C2533; s.bg.color2 = 0x03070C;
+        ScreenItem t = text("Title", "SELECT FILE", 0.075f, 0.065f, 0.6f, 0.07f, 0.049f, 0); t.weight = 0.4f; s.items.push_back(t);
+        ScreenItem sub = text("Subtitle", "PICK WHERE YOUR GAME IS KEPT", 0.075f, 0.135f, 0.6f, 0.03f, 0.0144f, 0); sub.col.text = 0x7FA3B5; s.items.push_back(sub);
+        ScreenItem f; f.name = "Save files"; f.kind = ScreenItemKind::SaveSlots; f.x = 0.075f; f.y = 0.2f; f.w = 0.85f; f.h = 0.58f; f.textSize = 0.028f; f.slots = 3;
+        f.cards = 1; f.corners = true; f.pickFill = 0.15f; f.border = 1.5f; f.col.fill = 0x08182A; f.col.fillAlpha = 0.78f; f.col.dim = 0x7FA3B5; f.col.picked = VISOR_CYAN; s.items.push_back(f);
+        ScreenItem bk = button("Back", ScreenAct::Back, 0.075f, 0.87f, 0.12f); bk.h = 0.053f; bk.textSize = 0.02f; bk.align = 1; visorButton(bk); bk.frame = true; s.items.push_back(bk);
+        ScreenItem hint = text("Hint", "A / D  pick a file       ENTER  play       DELETE twice  erase       ESC  back", 0.25f, 0.87f, 0.675f, 0.053f, 0.0167f, 2); hint.col.text = 0x9FC2D2; s.items.push_back(hint);
+        visorComp(s, 0.1f);
         break; }
     case ScreenRole::Intro: {   // a splash: the game's name fades in and out, then on to the story
         s.name = "Splash"; s.bg.color = s.bg.color2 = 0x000000; s.comp = Compositor{}; s.fadeIn = 0.6f; s.duration = 4; s.next = "";
-        { int bg = s.comp.add(NodeType::Background, 40, 60), ui = s.comp.add(NodeType::UI, 40, 220), over = s.comp.add(NodeType::AlphaOver, 300, 120), gl = s.comp.add(NodeType::Glare, 520, 120), out = s.comp.add(NodeType::Output, 740, 120);
-          s.comp.connect(bg, over, 0); s.comp.connect(ui, over, 1); s.comp.connect(over, gl, 0); s.comp.connect(gl, out, 0); }
+        { int bg = s.comp.add(NodeType::Background, 40, 60), ui = s.comp.add(NodeType::UI, 40, 220), over = s.comp.add(NodeType::AlphaOver, 300, 120), gl = s.comp.add(NodeType::Glare, 520, 120), sl = s.comp.add(NodeType::Scanlines, 740, 120), out = s.comp.add(NodeType::Output, 960, 120);
+          s.comp.find(sl)->p[0] = 0.08f; s.comp.find(sl)->p[1] = 300;
+          s.comp.connect(bg, over, 0); s.comp.connect(ui, over, 1); s.comp.connect(over, gl, 0); s.comp.connect(gl, sl, 0); s.comp.connect(sl, out, 0); }
         s.useStack = true;   // (a stack: the name, then a line under it, then on)
-        StackStep t; t.kind = StepKind::Text; t.text = "{game}"; t.place = 1; t.textSize = 0.1f; t.typeSpeed = 0; t.textFade = 0.8f; t.hold = 0.6f; s.stack.push_back(t);
-        StackStep m; m.kind = StepKind::Text; m.text = "made with PRIMEngine"; m.keep = true; m.place = 3; m.textSize = 0.028f; m.color = 0x7A8A9A; m.typeSpeed = 0; m.textFade = 0.6f; m.hold = 1.6f; s.stack.push_back(m);
+        StackStep t; t.kind = StepKind::Text; t.text = "{game}"; t.place = 1; t.textSize = 0.093f; t.weight = 0.6f; t.typeSpeed = 0; t.textFade = 0.8f; t.hold = 0.6f; s.stack.push_back(t);
+        StackStep m; m.kind = StepKind::Text; m.text = "MADE WITH PRIMENGINE"; m.keep = true; m.place = 3; m.textSize = 0.018f; m.color = 0x7FA3B5; m.typeSpeed = 0; m.textFade = 0.6f; m.hold = 1.6f; s.stack.push_back(m);
         s.duration = buildStack(s.stack).length;
         break; }
-    case ScreenRole::ItemGet: {   // the item pop-up: the game frozen and blurred behind a framed panel, the item turning on the left
-        s.name = "Item get"; s.bg.kind = BgKind::Game; s.bg.dim = 0.25f; s.fadeIn = 0.25f; s.holdMin = 0.8f;
-        ScreenItem p; p.name = "Panel"; p.kind = ScreenItemKind::Panel; p.x = 0.17f; p.y = 0.3f; p.w = 0.66f; p.h = 0.36f; p.col.fillAlpha = 0.72f; p.col.fill = 0x04101A; p.col.accent = 0x6CF0FF; p.border = 2.5f; p.rounding = 0.08f;
-        p.keys = { { 0, 0.17f, 0.33f, 0.96f, 0, true }, { 0.25f, 0.17f, 0.3f, 1, 1, true } }; s.items.push_back(p);
-        ScreenItem m; m.name = "Item model"; m.kind = ScreenItemKind::ItemModel; m.x = 0.19f; m.y = 0.33f; m.w = 0.17f; m.h = 0.3f; m.showAt = 0.1f; m.fade = 0.3f; s.items.push_back(m);
-        ScreenItem t = text("Title", "{itemtitle}", 0.38f, 0.33f, 0.43f, 0.08f, 0.05f, 0); t.col.text = 0x6CF0FF; t.weight = 0.4f; t.showAt = 0.1f; t.fade = 0.25f; s.items.push_back(t);
-        ScreenItem l; l.name = "Line"; l.kind = ScreenItemKind::Panel; l.x = 0.38f; l.y = 0.415f; l.w = 0.43f; l.h = 0.004f; l.frame = false; l.col.fill = 0x6CF0FF; l.col.fillAlpha = 0.6f; l.rounding = 0; l.showAt = 0.15f; s.items.push_back(l);
-        ScreenItem x = text("Text", "{itemtext}", 0.38f, 0.43f, 0.43f, 0.16f, 0.03f, 0); x.valign = 0; x.showAt = 0.2f; x.typeSpeed = 70; s.items.push_back(x);
-        ScreenItem h = text("Continue", "{key:jump}: continue", 0.38f, 0.6f, 0.43f, 0.04f, 0.022f, 2); h.alpha = 0.6f; h.showAt = 0.8f; h.fade = 0.4f; s.items.push_back(h);
+    case ScreenRole::ItemGet: {   // the item pop-up: the game frozen and blurred behind a framed visor panel, the item turning on the left
+        s.name = "Item get"; s.bg.kind = BgKind::Game; s.bg.dim = 0.3f; s.fadeIn = 0.25f; s.holdMin = 0.8f;
+        ScreenItem p = visorPanel("Panel", 0.169f, 0.278f, 0.6625f, 0.444f); p.col.fill = 0x04101A; p.col.fillAlpha = 0.86f; p.border = 2;
+        p.keys = { { 0, 0.169f, 0.31f, 0.96f, 0, true }, { 0.25f, 0.169f, 0.278f, 1, 1, true } }; s.items.push_back(p);
+        ScreenItem m; m.name = "Item model"; m.kind = ScreenItemKind::ItemModel; m.x = 0.19f; m.y = 0.31f; m.w = 0.19f; m.h = 0.34f; m.showAt = 0.1f; m.fade = 0.3f; s.items.push_back(m);
+        ScreenItem k = text("Kicker", "ITEM ACQUIRED", 0.41f, 0.315f, 0.38f, 0.03f, 0.0156f, 0); k.col.text = VISOR_CYAN; k.weight = 0.3f; k.showAt = 0.1f; s.items.push_back(k);
+        ScreenItem t = text("Title", "{itemtitle}", 0.41f, 0.345f, 0.38f, 0.08f, 0.056f, 0); t.col.text = VISOR_CYAN; t.weight = 0.6f; t.showAt = 0.1f; t.fade = 0.25f; s.items.push_back(t);
+        ScreenItem l = rule("Line", 0.41f, 0.435f, 0.36f, VISOR_CYAN, 0.6f); l.showAt = 0.15f; s.items.push_back(l);
+        ScreenItem x = text("Text", "{itemtext}", 0.41f, 0.455f, 0.38f, 0.16f, 0.0245f, 0); x.col.text = 0xC8E2EE; x.valign = 0; x.showAt = 0.2f; x.typeSpeed = 70; s.items.push_back(x);
+        ScreenItem h = text("Continue", "{key:jump}: continue", 0.41f, 0.645f, 0.38f, 0.04f, 0.0178f, 0); h.col.text = 0x9FC2D2; h.showAt = 0.8f; h.fade = 0.4f; s.items.push_back(h);
         s.comp = Compositor{};
         int bg = s.comp.add(NodeType::Background, 40, 60), ui = s.comp.add(NodeType::UI, 40, 240), bl = s.comp.add(NodeType::Blur, 260, 60);
-        int over = s.comp.add(NodeType::AlphaOver, 480, 140), gl = s.comp.add(NodeType::Glare, 700, 140), vig = s.comp.add(NodeType::Vignette, 920, 140), out = s.comp.add(NodeType::Output, 1140, 140);
-        s.comp.find(bl)->p[0] = 5; s.comp.find(vig)->p[0] = 0.5f;
-        s.comp.connect(bg, bl, 0); s.comp.connect(bl, over, 0); s.comp.connect(ui, over, 1); s.comp.connect(over, gl, 0); s.comp.connect(gl, vig, 0); s.comp.connect(vig, out, 0);
+        int over = s.comp.add(NodeType::AlphaOver, 480, 140), gl = s.comp.add(NodeType::Glare, 700, 140), sl = s.comp.add(NodeType::Scanlines, 920, 140), vig = s.comp.add(NodeType::Vignette, 1140, 140), out = s.comp.add(NodeType::Output, 1360, 140);
+        s.comp.find(bl)->p[0] = 8; s.comp.find(sl)->p[0] = 0.1f; s.comp.find(sl)->p[1] = 300; s.comp.find(vig)->p[0] = 0.5f;
+        s.comp.connect(bg, bl, 0); s.comp.connect(bl, over, 0); s.comp.connect(ui, over, 1); s.comp.connect(over, gl, 0); s.comp.connect(gl, sl, 0); s.comp.connect(sl, vig, 0); s.comp.connect(vig, out, 0);
         break; }
-    case ScreenRole::GameSaved: {   // after a Save Station: "Game Saved!" in a framed panel, the game frozen and blurred behind
-        s.name = "Game saved"; s.bg.kind = BgKind::Game; s.bg.dim = 0.3f; s.fadeIn = 0.25f; s.holdMin = 0.8f;
-        ScreenItem p; p.name = "Panel"; p.kind = ScreenItemKind::Panel; p.x = 0.25f; p.y = 0.36f; p.w = 0.5f; p.h = 0.26f; p.col.fillAlpha = 0.72f; p.col.fill = 0x1A1204; p.col.accent = 0xFFC85A; p.border = 2.5f; p.rounding = 0.08f;
-        p.keys = { { 0, 0.17f, 0.33f, 0.96f, 0, true }, { 0.25f, 0.17f, 0.3f, 1, 1, true } }; s.items.push_back(p);
-        ScreenItem t = text("Title", "{savetitle}", 0.27f, 0.39f, 0.46f, 0.08f, 0.055f, 1); t.col.text = 0xFFC85A; t.weight = 0.4f; t.showAt = 0.1f; t.fade = 0.25f; s.items.push_back(t);
-        ScreenItem l; l.name = "Line"; l.kind = ScreenItemKind::Panel; l.x = 0.32f; l.y = 0.48f; l.w = 0.36f; l.h = 0.004f; l.frame = false; l.col.fill = 0xFFC85A; l.col.fillAlpha = 0.6f; l.rounding = 0; l.showAt = 0.15f; s.items.push_back(l);
-        ScreenItem x = text("Text", "{savetext}", 0.27f, 0.5f, 0.46f, 0.06f, 0.028f, 1); x.col.text = 0xFFE6B0; x.showAt = 0.25f; x.typeSpeed = 70; s.items.push_back(x);
-        ScreenItem h = text("Continue", "{key:jump}: continue", 0.27f, 0.565f, 0.46f, 0.04f, 0.02f, 1); h.alpha = 0.6f; h.showAt = 0.8f; h.fade = 0.4f; s.items.push_back(h);
+    case ScreenRole::GameSaved: {   // after a Save Station: "GAME SAVED!" in an amber visor panel, the game frozen and blurred behind
+        s.name = "Game saved"; s.bg.kind = BgKind::Game; s.bg.dim = 0.35f; s.fadeIn = 0.25f; s.holdMin = 0.8f;
+        ScreenItem p = visorPanel("Panel", 0.25f, 0.3f, 0.5f, 0.4f); p.col.fill = 0x1A1204; p.col.fillAlpha = 0.88f; p.col.accent = SAVE_AMBER; p.col.picked = 0xFFE6B0; p.border = 2;
+        p.keys = { { 0, 0.25f, 0.33f, 0.96f, 0, true }, { 0.25f, 0.25f, 0.3f, 1, 1, true } }; s.items.push_back(p);
+        ScreenItem k = text("Kicker", "{savefile}", 0.27f, 0.34f, 0.46f, 0.03f, 0.0144f, 1); k.col.text = 0xC9A970; k.weight = 0.3f; k.showAt = 0.1f; s.items.push_back(k);
+        ScreenItem t = text("Title", "{savetitle}", 0.27f, 0.38f, 0.46f, 0.09f, 0.071f, 1); t.col.text = SAVE_AMBER; t.weight = 0.6f; t.showAt = 0.1f; t.fade = 0.25f; s.items.push_back(t);
+        ScreenItem l = rule("Line", 0.37f, 0.48f, 0.26f, SAVE_AMBER, 0.7f); l.showAt = 0.15f; s.items.push_back(l);
+        ScreenItem x = text("Text", "{savetext}", 0.27f, 0.5f, 0.46f, 0.05f, 0.0245f, 1); x.col.text = 0xF2DDB6; x.showAt = 0.25f; x.typeSpeed = 70; s.items.push_back(x);
+        ScreenItem h = text("Continue", "{key:jump}: continue", 0.27f, 0.63f, 0.46f, 0.04f, 0.0167f, 1); h.col.text = 0xC9A970; h.showAt = 0.8f; h.fade = 0.4f; s.items.push_back(h);
         s.comp = Compositor{};
         int bg = s.comp.add(NodeType::Background, 40, 60), ui = s.comp.add(NodeType::UI, 40, 240), bl = s.comp.add(NodeType::Blur, 260, 60);
-        int over = s.comp.add(NodeType::AlphaOver, 480, 140), gl = s.comp.add(NodeType::Glare, 700, 140), vig = s.comp.add(NodeType::Vignette, 920, 140), out = s.comp.add(NodeType::Output, 1140, 140);
-        s.comp.find(bl)->p[0] = 5; s.comp.find(vig)->p[0] = 0.5f;
-        s.comp.connect(bg, bl, 0); s.comp.connect(bl, over, 0); s.comp.connect(ui, over, 1); s.comp.connect(over, gl, 0); s.comp.connect(gl, vig, 0); s.comp.connect(vig, out, 0);
+        int over = s.comp.add(NodeType::AlphaOver, 480, 140), gl = s.comp.add(NodeType::Glare, 700, 140), sl = s.comp.add(NodeType::Scanlines, 920, 140), vig = s.comp.add(NodeType::Vignette, 1140, 140), out = s.comp.add(NodeType::Output, 1360, 140);
+        s.comp.find(bl)->p[0] = 8; s.comp.find(sl)->p[0] = 0.1f; s.comp.find(sl)->p[1] = 300; s.comp.find(vig)->p[0] = 0.55f; s.comp.find(vig)->c[0] = 0x140C00;
+        s.comp.connect(bg, bl, 0); s.comp.connect(bl, over, 0); s.comp.connect(ui, over, 1); s.comp.connect(over, gl, 0); s.comp.connect(gl, sl, 0); s.comp.connect(sl, vig, 0); s.comp.connect(vig, out, 0);
         break; }
     default: s.name = "Screen"; break;
     }
     return s;
 }
 static Screen storyScreen() {   // an intro like Super Metroid's: a stack of steps - text typed over the dark, page after page, then the game
-    Screen s; s.name = "Story"; s.role = ScreenRole::NewGameIntro; s.comp = defaultCompositor(); s.bg.color = 0x02040A; s.bg.color2 = 0x0A1424; s.fadeIn = 1; s.useStack = true;
+    Screen s; s.name = "Story"; s.role = ScreenRole::NewGameIntro; s.comp = defaultCompositor(); s.bg.color = 0x02040A; s.bg.color2 = 0x0A1B28; s.fadeIn = 1; s.useStack = true;
     for (const char* page : { "The research station on planet Zebes\nhas gone silent.", "The last message spoke of creatures\nthat drain the life from anything they touch.", "One hunter is sent to find out why." }) {
-        StackStep st; st.kind = StepKind::Text; st.text = page; st.place = 1; st.hold = 2.5f; s.stack.push_back(st);
+        StackStep st; st.kind = StepKind::Text; st.text = page; st.place = 1; st.hold = 2.5f; st.textSize = 0.04f; st.weight = 0.2f; s.stack.push_back(st);
     }
     s.duration = buildStack(s.stack).length;
-    ScreenItem k = text("Skip", "any key: skip", 0.7f, 0.92f, 0.26f, 0.04f, 0.02f, 2); k.alpha = 0.4f; k.showAt = 2; s.items.push_back(k);
+    ScreenItem k = text("Skip", "ANY KEY: SKIP", 0.7f, 0.9f, 0.24f, 0.04f, 0.0156f, 2); k.col.text = 0x7FA3B5; k.showAt = 2; s.items.push_back(k);
     return s;
 }
 Screen presetStory() { return storyScreen(); }
@@ -390,6 +440,7 @@ bool saveScreens(const std::string& path, const ScreenSet& set) {
             f << "anim " << i.showAt << " " << i.hideAt << " " << i.fade << " " << i.typeSpeed << " " << i.driftX << " " << i.driftY << " " << i.grow << " " << soundUseText(i.typeSound) << "\n";
             f << "anim2 " << i.fadeOut << " " << i.valign << "\n";
             if (i.weight > 0 || i.outline > 0) f << "tstyle " << i.weight << " " << i.outline << " " << i.outlineColor << "\n";
+            if (i.cards || i.pickFill != 0.25f || i.corners || !i.tip.empty()) f << "look2 " << i.cards << " " << i.pickFill << " " << (i.corners ? 1 : 0) << " " << escText(i.tip) << "\n";
             for (const ItemKey& k : i.keys) f << "key " << k.t << " " << k.x << " " << k.y << " " << k.scale << " " << k.alpha << " " << (k.smooth ? 1 : 0) << "\n";
             if (!i.sound.empty()) f << "isound " << soundUseText(i.sound) << "\n";
         }
@@ -453,6 +504,7 @@ bool loadScreens(const std::string& path, ScreenSet& set) {
             ScreenItem& i = cur->items.back(); std::string rest;
             l >> i.showAt >> i.hideAt >> i.fade >> i.typeSpeed >> i.driftX >> i.driftY >> i.grow; std::getline(l, rest); soundUseFrom(rest, i.typeSound);
         }
+        else if (k == "look2" && !cur->items.empty()) { ScreenItem& i = cur->items.back(); int co = 0; std::string tp; l >> i.cards >> i.pickFill >> co >> tp; i.corners = co != 0; i.tip = unescText(tp); i.pickFill = std::clamp(i.pickFill, 0.f, 1.f); }
         else if (k == "tstyle" && !cur->items.empty()) { ScreenItem& i = cur->items.back(); l >> i.weight >> i.outline >> i.outlineColor; }
         else if (k == "anim2" && !cur->items.empty()) { ScreenItem& i = cur->items.back(); l >> i.fadeOut >> i.valign; i.valign = std::clamp(i.valign, 0, 2); }
         else if (k == "key" && !cur->items.empty()) { ItemKey kk; int sm = 1; if (l >> kk.t >> kk.x >> kk.y >> kk.scale >> kk.alpha >> sm) { kk.smooth = sm != 0; setKey(cur->items.back(), kk); } }
