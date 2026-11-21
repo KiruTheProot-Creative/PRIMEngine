@@ -165,6 +165,24 @@ int main() {
         PlayerRules fr; fr.fallDamage = 5; PlayState fs; Player f; fs.start(f, fr, { 0.5, 20, 0.5 }, 0);
         for (int k = 0; k < 300; k++) { f.update(w, Controls{}, 1.0 / 60, fr); fs.tick(w, f, fr, { 0.5, 20, 0.5 }, 0, 1.0 / 60); }
         CHECK(fs.health < fr.maxHealth && fs.health > 0 && !fs.dead(), "a long fall hurts when fall damage is on (%.0f health)", fs.health);
+        {   // swimming: a pool with a one-block ledge around it; holding Space and walking into the ledge climbs out
+            for (int x = 19; x <= 24; x++) for (int z = 19; z <= 24; z++) {
+                bool edge = x == 19 || x == 24 || z == 19 || z == 24;
+                for (int y = 0; y <= 2; y++) w.set(x, y, z, edge ? r.find("stone") : r.liquidBlock(1));
+                w.set(x, 3, z, edge ? r.find("stone") : AIR);
+            }
+            Player s; s.flying = false; s.feet = { 21.5, 0.5, 21.5 }; s.yaw = 0;   // (yaw 0 looks toward +Z: the ledge at z 24)
+            Controls up; up.jump = true; double top = 0;
+            for (int k = 0; k < 120; k++) { s.update(w, up, 1.0 / 60, pr); top = std::max(top, s.feet.y); }
+            CHECK(top > 1.5 && s.feet.z < 23, "Space swims up to the surface (%.2f)", top);
+            Controls out = up; out.forward = true; bool heard = false;
+            for (int k = 0; k < 240 && !(s.onGround && s.feet.z > 24.2); k++) { s.update(w, out, 1.0 / 60, pr); heard |= s.jumpedOut; }
+            CHECK(s.feet.y >= 3.99 && heard, "jumping out of the water onto a ledge works (feet at %.2f, z %.2f)", s.feet.y, s.feet.z);
+            Player t; t.flying = false; t.feet = { 21.5, 0.5, 21.5 }; bool tapped = false; Controls none;
+            for (int k = 0; k < 90; k++) t.update(w, up, 1.0 / 60, pr);   // up to the surface, then let go and tap Space
+            t.update(w, none, 1.0 / 60, pr); t.update(w, up, 1.0 / 60, pr); tapped = t.jumpedOut;
+            CHECK(tapped && t.vel.y > 6, "at the surface a tap of Space jumps (%.1f blocks/s)", t.vel.y);
+        }
     }
 
     // game projects

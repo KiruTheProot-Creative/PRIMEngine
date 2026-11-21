@@ -6474,7 +6474,7 @@ struct App {
             float speed = (float)std::sqrt(player.vel.x * player.vel.x + player.vel.z * player.vel.z) * (player.onGround && !paused ? 1.f : 0.f);   // (paused - a pop-up, the menu: standing still)
             hudSway.update(hud.sway, dt, ty, tp, speed, landed, fall);
             weapPose.update(weapons.motion, dt, speed, landed, fall, firedPending); firedPending = 0;
-            UpdatePlayerSounds(dt, landed, fall, prevOnGround && !player.onGround && player.vel.y > 0.5);
+            UpdatePlayerSounds(dt, landed, fall, (prevOnGround && !player.onGround && player.vel.y > 0.5) || player.jumpedOut);; player.jumpedOut = false;   // (jumpedOut: up out of the water; heard once)
         }
         prevPlayYaw = player.yaw; prevPlayPitch = player.pitch; prevVelY = player.vel.y; prevOnGround = player.onGround;
         if (playerEdOpen && !playMode) {

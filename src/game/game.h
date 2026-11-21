@@ -152,6 +152,7 @@ struct Player {
     void applySize(const PlayerRules& r);
     bool ball = false;                                // rolled up into the morph ball (a small round body that keeps rolling)
     int airJumpsUsed = 0; bool jumpPrev = false;       // Space Jump
+    bool jumpedOut = false;                           // this update: jumped up out of water / lava (for the jump sound)
     float runTime = 0; bool boosting = false;          // Speed Booster: how long you have been running; at full speed
     V3 feet{ 0.5, 0, 0.5 }, vel{ 0, 0, 0 };
     double yaw = 0, pitch = 0;      // radians; yaw 0 looks toward +Z

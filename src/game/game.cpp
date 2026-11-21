@@ -148,6 +148,7 @@ void Player::update(const World& w, const Controls& c, double dt, const PlayerRu
     if (c.left) mv = mv - rt;
     double speed = flying ? (c.sprint ? 21.6 : 10.9) : (c.sneak ? r.walkSpeed * 0.3 : (c.sprint && r.canSprint) ? r.sprintSpeed : r.walkSpeed);   // blocks per second
     bool jumpEdge = c.jump && !jumpPrev; jumpPrev = c.jump;
+    jumpedOut = false;
     if (!flying && !ball && r.speedBooster) {   // Speed Booster: keep running (sprinting, if there is sprint) and it kicks in
         bool running = length(mv) > 0 && !c.sneak && (c.sprint || !r.canSprint) && c.forward;
         if (!running) runTime = 0; else if (onGround || boosting) runTime += (float)dt;
@@ -174,9 +175,19 @@ void Player::update(const World& w, const Controls& c, double dt, const PlayerRu
         double k = liq == 2 ? 0.3 : 0.55;
         vel.x = mv.x * k; vel.z = mv.z * k;
         vel.y = std::max(vel.y - (liq == 2 ? 3.0 : 6.0) * dt, liq == 2 ? -0.8 : -2.2);
-        if (c.jump) vel.y = std::min(vel.y + (liq == 2 ? 10.0 : 22.0) * dt, liq == 2 ? 1.2 : 3.2);
+        double swimUp = liq == 2 ? 1.2 : 3.2;
+        if (c.jump && vel.y < swimUp) vel.y = std::min(vel.y + (liq == 2 ? 10.0 : 22.0) * dt, swimUp);   // (never slows down a jump out)
         if (c.sneak) vel.y = std::max(vel.y - 10.0 * dt, -3.0);
-        if (c.jump && onGround && !w.liquidAt(eye())) vel.y = 6.5;   // climb out at the shore
+        bool headOut = !w.liquidAt(eye()), wall = false;
+        if (c.jump && headOut && length(mv) > 0) {   // swimming into a ledge with Space held: climb out on its own
+            V3 d = normalize(mv) * (halfW + 0.2);
+            wall = w.solidAt((int)std::floor(feet.x + d.x), (int)std::floor(feet.y + 0.7), (int)std::floor(feet.z + d.z));
+        }
+        if (c.jump && headOut && (jumpEdge || onGround || wall) && vel.y < 3.5) {   // head above the surface: jump out (onto a ledge, too)
+            double h = std::max(0.1f, r.jumpHeight) + 0.75;   // a normal jump, from the feet's depth under the surface (a ledge one block up is in reach)
+            vel.y = std::sqrt(2 * r.gravity * h) * (liq == 2 ? 0.7 : 1.0);
+            jumpedOut = true;
+        }
     } else if (ball) {
         // the morph ball: rolls up to speed and keeps rolling a while when you let go; no jumping (bombs throw it up)
         if (length(mv) > 0) mv = normalize(mv) * (double)r.ballSpeed;
@@ -199,8 +210,11 @@ void Player::update(const World& w, const Controls& c, double dt, const PlayerRu
         if (dashT > 0) { vel.x = dashVel.x + mv.x * 0.15; vel.z = dashVel.z + mv.z * 0.15; dashT -= dt; }   // a dash: sideways until you land
         vel.y = std::max(vel.y - (double)r.gravity * dt, -78.0);
         if (onGround) airJumpsUsed = 0;
+        int wade = r.freeInLiquid || onGround ? 0 : w.liquidAt({ feet.x, feet.y + 0.15, feet.z });   // bobbing at the surface (between swim strokes)
         if (c.jump && onGround) vel.y = r.jumpSpeed();   // default about 1.25 blocks high
-        else if (!onGround && jumpEdge && airJumpsUsed < r.airJumps) { vel.y = r.jumpSpeed(); airJumpsUsed++; }   // Space Jump: again in the air
+        else if (wade && jumpEdge && vel.y < 3.5 && !w.liquidAt(eye())) {   // a jump out of the water, as when swimming (not a Space Jump)
+            vel.y = std::sqrt(2 * r.gravity * (std::max(0.1f, r.jumpHeight) + 0.75)) * (wade == 2 ? 0.7 : 1.0); jumpedOut = true;
+        } else if (!onGround && jumpEdge && airJumpsUsed < r.airJumps) { vel.y = r.jumpSpeed(); airJumpsUsed++; }   // Space Jump: again in the air
     }
     feet = w.moveBox(feet, vel, halfW, height, dt, onGround, flying ? 0.0 : stepH);   // walking climbs half blocks and stairs by itself
     if (dashT > 0) { if (!onGround) dashAir = true; else if (dashAir) dashT = 0; }   // the dash ends on landing
