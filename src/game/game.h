@@ -66,6 +66,8 @@ struct Settings {
     float screenShake = 1;     // bosses, slams, roars shake the view this much (0: never)
     bool eyeAdapt = true;      // the picture gets brighter in dark places and darker in bright ones (as the world's look says)
     bool filmFx = true;        // the look's film grain and lens colour fringes
+    int lampBlocks = 2;        // glowing blocks: 0 classic (light spreads block by block), 1 real light, 2 real light and shadows
+    float lampFill = 0.35f;    // real lamp blocks: how much of the classic spreading light stays as a soft fill (0 none .. 1 all)
     float motionBlur = 0;      // the picture smeared as the camera moves (0 off .. 1: as long as a sixtieth of a second)
     bool lightFog = true;
     bool planarFloors = true;

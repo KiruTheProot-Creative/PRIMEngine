@@ -1501,10 +1501,10 @@ struct App {
     ComPtr<ID3D11Texture2D> occTex; ComPtr<ID3D11DepthStencilView> occDSV; ComPtr<ID3D11ShaderResourceView> occSRV;   // the roofs map (true darkness)
     XMMATRIX occBase = XMMatrixIdentity(); V3 occCam{ 0, 0, 0 }; int occAge = 1000; float camOpen = 1; bool lightShadowPass = false;
     std::vector<LightGpu> frameLights; int frameLightCount = 0;
-    struct ShadowCaster { V3 rel; double range; int type; V3 dir; double cosCone; int slot; };
+    struct ShadowCaster { V3 rel; double range; int type; V3 dir; double cosCone; int slot; float nearZ = 0.05f; };   // nearZ: a lamp block's view starts outside its own block
     std::vector<ShadowCaster> casters; XMFLOAT4X4 lshVP[48];
     struct LampProxy { V3 p; double range; V3 col; };
-    std::vector<LampProxy> lampProxies; V3 lampScanAt{ 1e9, 0, 0 }; double lampScanAge = 99;
+    std::vector<LampProxy> lampProxies, realLamps; V3 lampScanAt{ 1e9, 0, 0 }; double lampScanAge = 99; int lampDropNow = -1;
     void Upload(ID3D11Buffer* b, const void* data, size_t bytes) {
         if (!b || !bytes) return; D3D11_MAPPED_SUBRESOURCE m;
         if (SUCCEEDED(ctx->Map(b, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) { std::memcpy(m.pData, data, bytes); ctx->Unmap(b, 0); }
@@ -1532,9 +1532,44 @@ struct App {
     }
     // glowing blocks near you as lights too - only for objects, models, enemies and the HUD (blocks get theirs from the mesher)
     void UpdateLampProxies(double dt) {
-        lampScanAge += dt; if (!world) { lampProxies.clear(); return; }
+        {   // real lamp blocks: their spreading light is only a soft fill (the chunks are built again when that changes)
+            int want = settings.lampBlocks > 0 ? (int)std::lround((1 - std::clamp(settings.lampFill, 0.f, 1.f)) * 12) : 0;
+            if (want != lampDropNow) { bool first = lampDropNow < 0; lampDropNow = want; setLampFillDrop(want); if (world && !first) { latestSeq.clear(); for (auto& kv : world->chunks) world->dirty.insert(kv.first); } }
+        }
+        lampScanAge += dt; if (!world) { lampProxies.clear(); realLamps.clear(); return; }
         V3 d = camPos - lampScanAt; if (lampScanAge < 0.5 && d.x * d.x + d.y * d.y + d.z * d.z < 2.0) return;
-        lampScanAge = 0; lampScanAt = camPos; lampProxies.clear();
+        lampScanAge = 0; lampScanAt = camPos; lampProxies.clear(); realLamps.clear();
+        bool real = settings.lampBlocks > 0;
+        struct One { V3 p; int lv[3]; }; std::vector<One> reals;   // real lamp blocks (up to 40 blocks away)
+        if (real) {
+            const int RR = 40; int cx = (int)std::floor(camPos.x), cy = (int)std::floor(camPos.y), cz = (int)std::floor(camPos.z);
+            for (int ky = (int)std::floor((cy - RR) / (double)CS); ky <= (int)std::floor((cy + RR) / (double)CS); ky++)
+                for (int kz = (int)std::floor((cz - RR) / (double)CS); kz <= (int)std::floor((cz + RR) / (double)CS); kz++)
+                    for (int kx = (int)std::floor((cx - RR) / (double)CS); kx <= (int)std::floor((cx + RR) / (double)CS); kx++) {
+                        if (!world->emittersNear({ kx, ky, kz })) continue;
+                        const Chunk* ch = world->chunk({ kx, ky, kz }); if (!ch) continue;
+                        for (int ly = 0; ly < CS; ly++) for (int lz = 0; lz < CS; lz++) for (int lx = 0; lx < CS; lx++) {
+                            BlockId b = ch->get(lx, ly, lz); if (b == AIR) continue;
+                            const BlockDef& def = world->reg.get(b); if (!def.lightOf() || !def.realLight || def.liquid) continue;
+                            One o; o.p = V3{ kx * (double)CS + lx + 0.5, ky * (double)CS + ly + 0.5, kz * (double)CS + lz + 0.5 }; def.lightLevels(o.lv);
+                            if (std::max({ o.lv[0], o.lv[1], o.lv[2] }) > 0) reals.push_back(o);
+                        }
+                    }
+            // many glowing blocks together (a lit wall): merged into fewer lights, bigger cells until there are not too many
+            for (int cell = 1; ; cell *= 2) {
+                std::map<std::tuple<int, int, int>, std::vector<const One*>> g;
+                for (const One& o : reals) g[{ (int)std::floor(o.p.x / cell), (int)std::floor(o.p.y / cell), (int)std::floor(o.p.z / cell) }].push_back(&o);
+                if (g.size() > 160 && cell < 8) continue;
+                for (auto& kv : g) {
+                    V3 p{ 0, 0, 0 }, col{ 0, 0, 0 }; int m = 0;
+                    for (const One* o : kv.second) { p = p + o->p; col = col + V3{ o->lv[0] / 15.0, o->lv[1] / 15.0, o->lv[2] / 15.0 }; m = std::max(m, std::max({ o->lv[0], o->lv[1], o->lv[2] })); }
+                    double k = 1.0 / kv.second.size();
+                    realLamps.push_back({ p * k, m + 1.5 + (cell > 1 ? cell * 0.5 : 0), col * (k * std::sqrt((double)kv.second.size()) * 2.2) });
+                }
+                break;
+            }
+        }
+        lampProxies.clear();
         const int R = 18; int cx = (int)std::floor(camPos.x), cy = (int)std::floor(camPos.y), cz = (int)std::floor(camPos.z);
         struct Cell { V3 p{ 0, 0, 0 }; V3 col{ 0, 0, 0 }; int n = 0, lv = 0; }; std::map<std::tuple<int, int, int>, Cell> cells;
         for (int ky = (int)std::floor((cy - R) / (double)CS); ky <= (int)std::floor((cy + R) / (double)CS); ky++)
@@ -1546,6 +1581,7 @@ struct App {
                             for (int x = std::max(kx * CS, cx - R); x < std::min(kx * CS + CS, cx + R + 1); x++) {
                                 BlockId b = world->get(x, y, z); if (b == AIR) continue;
                                 const BlockDef& def = world->reg.get(b); if (!def.lightOf()) continue;
+                                if (real && def.realLight && !def.liquid) continue;   // (a real lamp lights objects itself)
                                 int lv[3]; def.lightLevels(lv); int m = std::max(lv[0], std::max(lv[1], lv[2])); if (m <= 0) continue;
                                 Cell& c = cells[{ (int)std::floor(x / 4.0), (int)std::floor(y / 4.0), (int)std::floor(z / 4.0) }];
                                 c.p = c.p + V3{ x + 0.5, y + 0.5, z + 0.5 }; c.col = c.col + V3{ lv[0] / 15.0, lv[1] / 15.0, lv[2] / 15.0 }; c.n++; c.lv = std::max(c.lv, m);
@@ -1903,7 +1939,7 @@ struct App {
     // every light that shines this frame: light objects (points, spots, strips), glowing models and emitters, shots,
     // glowing blocks near you (for objects only) - the most important first, up to 1024; a few of them get shadows
     void CollectLights() {
-        struct L { V3 p; double range; V3 col; int type; V3 dir; double cosCone; V3 half; bool objOnly; bool shadow; double dist; };
+        struct L { V3 p; double range; V3 col; int type; V3 dir; double cosCone; V3 half; bool objOnly; bool shadow; double dist; bool lamp = false; };   // lamp: a real lamp block
         std::vector<L> all;
         auto dist = [&](V3 p) { V3 d = p - camPos; return std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z); };
         auto simple = [&](V3 p, double range, V3 col) { all.push_back({ p, range, col, 0, { 0, -1, 0 }, -1, { 0, 0, 0 }, false, false, dist(p) }); };
@@ -1940,17 +1976,21 @@ struct App {
             V3 c = ColorOf(lk->lightColor); simple(d.pos, lk->light, V3{ std::pow(c.x, 2.2), std::pow(c.y, 2.2), std::pow(c.z, 2.2) } * (double)lk->lightPower);
         }
         for (const LampProxy& lp : lampProxies) all.push_back({ lp.p, lp.range, lp.col, 0, { 0, -1, 0 }, -1, { 0, 0, 0 }, true, false, dist(lp.p) });
+        for (const LampProxy& lp : realLamps) all.push_back({ lp.p, lp.range, lp.col, 0, { 0, -1, 0 }, -1, { 0, 0, 0 }, false, settings.lampBlocks >= 2, dist(lp.p), true });
         std::sort(all.begin(), all.end(), [](const L& a, const L& b) { return a.dist - a.range < b.dist - b.range; });
         frameLights.clear(); casters.clear(); int wantShadows = std::clamp(settings.lightShadows, 0, 8);
+        int forObjects = 0; for (const L& l : all) if (l.shadow && !l.lamp && l.dist - l.range < 64) forObjects++;
+        int lampSlots = wantShadows - std::min(forObjects, wantShadows), lampsGot = 0;   // (light objects that cast shadows go first; the nearest lamp blocks get what is left)
         for (const L& l : all) {
             if ((int)frameLights.size() >= MAXLIGHTS) break; double hl = std::sqrt(l.half.x * l.half.x + l.half.y * l.half.y + l.half.z * l.half.z);
             if (l.dist - l.range - hl > 200) continue;
             V3 r = l.p - camPos; LightGpu g{};
             g.pos[0] = (float)r.x; g.pos[1] = (float)r.y; g.pos[2] = (float)r.z; g.pos[3] = (float)l.range;
-            g.col[0] = (float)l.col.x; g.col[1] = (float)l.col.y; g.col[2] = (float)l.col.z; g.col[3] = (float)(l.type + (l.objOnly ? 8 : 0));
+            g.col[0] = (float)l.col.x; g.col[1] = (float)l.col.y; g.col[2] = (float)l.col.z; g.col[3] = (float)(l.type + (l.objOnly ? 8 : 0) + (l.lamp && l.shadow ? 16 : 0));   // 16: its shadow through the blocks
             g.dir[0] = (float)l.dir.x; g.dir[1] = (float)l.dir.y; g.dir[2] = (float)l.dir.z; g.dir[3] = (float)l.cosCone;
             g.ext[0] = (float)l.half.x; g.ext[1] = (float)l.half.y; g.ext[2] = (float)l.half.z; g.ext[3] = -1;
-            if (l.shadow && (int)casters.size() < wantShadows && l.dist - l.range < 64) { g.ext[3] = (float)casters.size(); casters.push_back({ r, l.range + hl, l.type, l.dir, l.cosCone, (int)casters.size() }); }
+            bool slot = l.shadow && (int)casters.size() < wantShadows && l.dist - l.range < 64 && (!l.lamp || lampsGot < lampSlots);
+            if (slot) { g.ext[3] = (float)casters.size(); casters.push_back({ r, l.range + hl, l.type, l.dir, l.cosCone, (int)casters.size(), l.lamp ? 0.9f : 0.05f }); if (l.lamp) lampsGot++; }
             frameLights.push_back(g);
         }
         frameLightCount = (int)frameLights.size();
@@ -2008,7 +2048,7 @@ struct App {
                     static const float D[6][3] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
                     dir = XMVectorSet(D[f][0], D[f][1], D[f][2], 0); up = f == 2 ? XMVectorSet(0, 0, -1, 0) : f == 3 ? XMVectorSet(0, 0, 1, 0) : XMVectorSet(0, 1, 0, 0);
                 }
-                XMMATRIX m = XMMatrixLookToLH(eye, dir, up) * XMMatrixPerspectiveFovLH(fov, 1, 0.05f, (float)std::max(1.0, sc.range));
+                XMMATRIX m = XMMatrixLookToLH(eye, dir, up) * XMMatrixPerspectiveFovLH(fov, 1, sc.nearZ, (float)std::max(1.0, sc.range));
                 XMStoreFloat4x4(&lshVP[sc.slot * 6 + f], m);
             }
         }
@@ -5499,6 +5539,10 @@ struct App {
             Prop("Solid"); ImGui::Checkbox("##solid", &draft.solid); if (ImGui::IsItemHovered()) ImGui::SetTooltip("You bump into it.");
         }
         Prop("Glows"); ImGui::SliderInt("##light", &draft.light, 0, 15, draft.light ? "light level %d" : "no");
+        if (draft.light && !draft.liquid) {
+            Prop("Real light"); ImGui::Checkbox("##reallight", &draft.realLight);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("On: with the game's \"Lamp blocks\" set to real light, it lights things like a lamp, by direction, with shadows.\nOff: the classic light that spreads block by block (good for big glowing areas, many lights at once).");
+        }
         if (draft.light) {
             float col[3] = { ((draft.lightColor >> 16) & 255) / 255.f, ((draft.lightColor >> 8) & 255) / 255.f, (draft.lightColor & 255) / 255.f };
             Prop("Light colour");

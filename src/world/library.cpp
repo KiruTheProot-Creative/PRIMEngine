@@ -54,7 +54,7 @@ bool Library::saveBlocks(const BlockRegistry& r) const {
               << "\nlook = " << (d.render == Render::Liquid ? "liquid" : d.render == Render::Cutout ? "see-through" : "solid")
               << "\nsolid = " << (d.solid ? "yes" : "no") << "\njoin_same = " << (d.cullSame ? "yes" : "no")
               << "\nlight = " << d.light << "\nlight_color = " << hex6(d.lightColor) << "\nwaves = " << (d.waves ? "yes" : "no")
-              << "\nshine = " << d.shine << "\nroughness = " << d.roughness << "\nmirror = " << (d.mirror ? "yes" : "no") << "\ntexture_turns = " << (d.texTurns ? "yes" : "no")
+              << "\nshine = " << d.shine << "\nroughness = " << d.roughness << "\nreal_light = " << (d.realLight ? "yes" : "no") << "\nmirror = " << (d.mirror ? "yes" : "no") << "\ntexture_turns = " << (d.texTurns ? "yes" : "no")
               << "\nliquid = " << (d.liquid == 1 ? "water" : d.liquid == 2 ? "lava" : "none") << "\nspring = " << (d.spring ? "yes" : "no")
               << "\ncategory = " << d.category << "\nsurface = " << (d.surface.empty() ? "-" : d.surface) << "\nfaces =";
             for (auto& t : d.faces) f << ' ' << (t.empty() ? "-" : t);
@@ -118,6 +118,7 @@ bool Library::load(BlockRegistry& r, std::string* report) {
         else if (k == "light") { d.light = std::max(0, std::min(15, std::atoi(v.c_str()))); seenLight = true; }
         else if (k == "waves") { d.waves = yes(v); seenWaves = true; }
         else if (k == "shine") { d.shine = std::max(0.f, std::min(1.f, (float)std::atof(v.c_str()))); seenShine = true; }
+        else if (k == "real_light") d.realLight = v != "no";
         else if (k == "roughness") { float r = (float)std::atof(v.c_str()); d.roughness = r < 0 ? -1.f : std::min(1.f, r); }
         else if (k == "mirror") d.mirror = yes(v);
         else if (k == "texture_turns") d.texTurns = yes(v);

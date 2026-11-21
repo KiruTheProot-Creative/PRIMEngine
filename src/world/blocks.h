@@ -67,6 +67,7 @@ struct BlockDef {
     }
     bool waves = false;                  // sways in the wind (leaves, plants)
     float shine = 0;                     // how much it reflects: 0 matt (dirt) .. 1 polished (metal, ice)
+    bool realLight = true;               // its glow is a real light (lights by direction, casts shadows) when the game's "Lamp blocks" says so; off: the classic spreading light (liquids always are)
     float roughness = -1;                // how blurry its reflections are: 0 sharp .. 1 very soft; below 0: its textures' own (Materials)
     bool mirror = false;                 // reflects like a mirror
     bool texTurns = true;                // a turned block turns its textures too (false: they stay lined up with the world)

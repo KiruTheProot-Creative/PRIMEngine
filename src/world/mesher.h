@@ -49,6 +49,8 @@ struct MeshInput {
 static inline int padIdx(int x, int y, int z) { return ((y + 1) * PAD + (z + 1)) * PAD + (x + 1); }   // x,y,z in -1..16
 
 bool gatherInput(const World& w, I3 pos, MeshInput& out);   // false if the chunk is not loaded
+void setLampFillDrop(int levels);   // real lamp blocks: their spreading light this many levels lower (a soft fill; their real light does the rest)
+int lampFillDrop();
 void buildMesh(const BlockRegistry& reg, const MeshInput& in, ChunkMesh& out);
 
 class MeshWorkers {

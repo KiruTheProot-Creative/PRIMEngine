@@ -1,9 +1,13 @@
+#include <atomic>
 #include "mesher.h"
 #include "shapes.h"
 #include "visibility.h"
 
 namespace mc {
 
+static std::atomic<int> gLampDrop{ 0 };
+void setLampFillDrop(int levels) { gLampDrop = levels < 0 ? 0 : levels > 15 ? 15 : levels; }
+int lampFillDrop() { return gLampDrop; }
 bool gatherInput(const World& w, I3 pos, MeshInput& out) {
     const Chunk* self = w.chunk(pos); if (!self) return false;
     out.pos = pos; out.blocks.assign(PAD * PAD * PAD, UNKNOWN);
@@ -22,7 +26,9 @@ bool gatherInput(const World& w, I3 pos, MeshInput& out) {
         auto colorOf = [&](BlockId t, const BlockDef& d) -> uint8_t {
             auto it = slot.find(t); if (it != slot.end()) return it->second;
             if (out.lightColors.size() >= 254) return 1;
-            int lv[3]; d.lightLevels(lv); out.lightColors.push_back({ (uint8_t)lv[0], (uint8_t)lv[1], (uint8_t)lv[2] });
+            int lv[3]; d.lightLevels(lv);
+            if (int drop = gLampDrop; drop > 0 && d.realLight && !d.liquid) for (int& c : lv) c = c > drop ? c - drop : 0;   // (a real lamp: only a soft fill spreads)
+            out.lightColors.push_back({ (uint8_t)lv[0], (uint8_t)lv[1], (uint8_t)lv[2] });
             return slot[t] = (uint8_t)(out.lightColors.size() - 1);
         };
         for (int cy = -1; cy <= 1; cy++) for (int cz = -1; cz <= 1; cz++) for (int cx = -1; cx <= 1; cx++) {

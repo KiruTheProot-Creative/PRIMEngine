@@ -122,9 +122,10 @@ float lightShadow(LightData L, float3 p, int type)
     r += gLightShadow.SampleCmpLevelZero(gShadowSamp, float3(uv + float2(0.5, 0.5) * t, sl), z);
     return r * 0.25;
 }
+float voxShadow(float3 P, float3 lp);   // (below: a lamp block's shadow, through the blocks)
 void evalLight(LightData L, float3 rel, float3 n, float3 v, float pw, bool object, inout float3 dif, inout float3 spec)
 {
-    int kind = (int)round(L.col.w); bool objOnly = kind >= 8; int type = kind & 7;
+    int kind = (int)round(L.col.w); bool voxSh = kind >= 16; kind -= voxSh ? 16 : 0; bool objOnly = kind >= 8; int type = kind & 7;
     if (objOnly && !object) return;
     float3 lp = L.pos.xyz;
     if (type == 2) { float3 a = lp - L.ext.xyz, ab = L.ext.xyz * 2; lp = a + ab * saturate(dot(rel - a, ab) / max(dot(ab, ab), 1e-4)); }   // a tube: its nearest point
@@ -135,6 +136,7 @@ void evalLight(LightData L, float3 rel, float3 n, float3 v, float pw, bool objec
     if (type == 1) { float c = dot(-Lv, L.dir.xyz), c0 = L.dir.w; att *= smoothstep(c0, c0 + (1 - c0) * 0.35, c); }
     if (att <= 0) return;
     if (L.ext.w >= 0) att *= lightShadow(L, pixSnap(rel, n) + n * (0.03 + d * 0.012), type);
+    else if (voxSh) att *= voxShadow(pixSnap(rel, n) + n * 0.04, lp);   // a lamp block: its shadow from the blocks between
     float3 c = L.col.rgb * att;
     dif += c * saturate(dot(n, Lv) * 0.85 + 0.15);   // a little light wraps round edges, softer look
     float3 h = normalize(Lv + v);
@@ -1063,6 +1065,31 @@ bool objectTrace(float3 P, float3 r, float maxT, out float tHit, out float3 nHit
     }
     return found;
 }
+// a lamp block's shadow: from the point toward the lamp, block by block through the copy of the world; any solid block in between
+// shades it (the lamp's own block does not). The point is already snapped to the texture pixels when shadows are pixelated.
+float voxShadow(float3 P, float3 lp)
+{
+    if (gVoxM.w < 0.5) return 1;
+    float3 o = P - gVoxO.xyz, e = lp - gVoxO.xyz, r = e - o; float len = length(r); if (len < 0.6) return 1;
+    r /= len;
+    int3 cell = int3(floor(o)), goal = int3(floor(e)), stp = int3(sign(r));
+    float3 inv = 1 / max(abs(r), 1e-6) * sign(r + 1e-9);
+    float3 tMax = ((float3(cell) + float3(stp > 0)) - o) * inv, tDelta = abs(inv);
+    [loop] for (int k = 0; k < 64; k++)
+    {
+        if (any(cell < 0) || any(cell >= VOXN) || all(cell == goal)) return 1;
+        if (k > 0)
+        {
+            uint id = voxAt(cell);
+            if (id != 0) { uint kind = gVoxPal[id].info.x; if (kind == 1 || kind == 3) return 0; }   // (see-through blocks let it through)
+        }
+        float t = min(tMax.x, min(tMax.y, tMax.z)); if (t > len) return 1;
+        if (tMax.x < tMax.y && tMax.x < tMax.z) { tMax.x += tDelta.x; cell.x += stp.x; }
+        else if (tMax.y < tMax.z) { tMax.y += tDelta.y; cell.y += stp.y; }
+        else { tMax.z += tDelta.z; cell.z += stp.z; }
+    }
+    return 1;
+}
 bool voxelTrace(float3 P, float3 n, float3 r, float2 pixel, out float3 col)
 {
     col = 0;
@@ -1461,7 +1488,7 @@ float4 PS_VolumeLow(SkyOut i) : SV_Target   // a smaller picture: what the air a
             [loop] for (uint j = 0; j < min(cl.y, 24u); j++)
             {
                 LightData L = gLightBuf[gClusterIdx[cl.x + j]];
-                int kind = (int)round(L.col.w); if (kind >= 8) continue; int type = kind & 7;
+                int kind = (int)round(L.col.w); if (kind >= 16) kind -= 16; if (kind >= 8) continue; int type = kind & 7;
                 float3 lp = L.pos.xyz;
                 if (type == 2) { float3 a = lp - L.ext.xyz, ab = L.ext.xyz * 2; lp = a + ab * saturate(dot(rel - a, ab) / max(dot(ab, ab), 1e-4)); }
                 float3 Lv = lp - rel; float d = length(Lv); if (d >= L.pos.w) continue;

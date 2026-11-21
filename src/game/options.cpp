@@ -21,7 +21,7 @@ Field field(Settings& s, const std::string& k) {
     else if (k == "clouds") r.f = &s.cloudCover; else if (k == "cloud_shadows") r.b = &s.cloudShadows; else if (k == "fog") r.f = &s.groundFog;
     else if (k == "bloom") r.f = &s.bloom; else if (k == "reflections") r.i = &s.reflections; else if (k == "reflect_res") r.i = &s.reflectRes; else if (k == "anti_alias") r.i = &s.antiAlias; else if (k == "render_scale") r.f = &s.renderScale; else if (k == "upscaler") r.i = &s.upscaler; else if (k == "up_sharpness") r.f = &s.upSharp; else if (k == "pixel_shadows") r.i = &s.pixelShadows; else if (k == "probes") r.i = &s.probes; else if (k == "show_fps") r.b = &s.showFps; else if (k == "ao") r.i = &s.ambientOcclusion; else if (k == "ao_strength") r.f = &s.aoStrength;
     else if (k == "swaying") r.b = &s.swaying; else if (k == "hud_glow") r.b = &s.hudGlow;
-    else if (k == "eye_adapt") r.b = &s.eyeAdapt; else if (k == "film_fx") r.b = &s.filmFx; else if (k == "motion_blur") r.f = &s.motionBlur; else if (k == "light_shadows") r.i = &s.lightShadows; else if (k == "light_fog") r.b = &s.lightFog; else if (k == "bounce") r.i = &s.bounce; else if (k == "planar_floors") r.b = &s.planarFloors; else if (k == "lens_flares") r.b = &s.lensFlares;
+    else if (k == "eye_adapt") r.b = &s.eyeAdapt; else if (k == "film_fx") r.b = &s.filmFx; else if (k == "motion_blur") r.f = &s.motionBlur; else if (k == "lamp_blocks") r.i = &s.lampBlocks; else if (k == "lamp_fill") r.f = &s.lampFill; else if (k == "light_shadows") r.i = &s.lightShadows; else if (k == "light_fog") r.b = &s.lightFog; else if (k == "bounce") r.i = &s.bounce; else if (k == "planar_floors") r.b = &s.planarFloors; else if (k == "lens_flares") r.b = &s.lensFlares;
     else if (k == "bumps") r.f = &s.bumps; else if (k == "coat") r.f = &s.coat; else if (k == "materials") r.b = &s.materials; else if (k == "guess_materials") r.b = &s.guessMaterials;
     else if (k == "time_of_day") r.f = &s.timeOfDay; else if (k == "day_cycle") r.b = &s.dayCycle; else if (k == "block_preview") r.b = &s.blockPreview;
     else if (k == "sensitivity") r.f = &s.mouseSensitivity; else if (k == "invert_y") r.b = &s.invertY; else if (k == "lock_mode") r.i = &s.lockMode; else if (k == "cave_culling") r.b = &s.caveCulling;
@@ -97,6 +97,9 @@ const std::vector<OptionDef>& optionDefs() {
         v.push_back(reset(W));
 
         // ---- Lighting: light that bounces, shade in corners, reflections
+        v.push_back(choice("lamp_blocks", "Lamp blocks", L, "Light", { "Classic (spreads block by block)", "Real light", "Real light and shadows" }, {},
+                           "Real light: glowing blocks light things by direction, like lamps, and fall off smoothly. And shadows: walls and pillars block it (through the blocks for every lamp; the nearest lamps also let enemies and objects cast shadows, as many as \"Shadows from lamps\" allows)."));
+        v.push_back(slider("lamp_fill", "Lamp fill light", L, "Light", 0, 1, 0.05f, "%", "none", "With real lamp blocks: how much of the classic spreading light stays, as a soft fill that creeps round corners (so shadows are dark, but never pitch black)."));
         v.push_back(choice("probes", "Light probes", L, "Light", { "Off", "Wide (every 4 blocks)", "Fine (every 2 blocks)" }, {},
                            "Bounce light everywhere: invisible probes trace rays through the blocks and learn what light reaches them (the sun, the sky, lamps, glowing blocks, coloured walls). No light through walls. Any graphics card."));
         v.push_back(choice("bounce", "Bounce light (on screen)", L, "Light", { "Off", "Normal", "Far-reaching" }, {}, "Lit and glowing surfaces light the ones near them (a green glow tints the wall beside it)."));
@@ -215,20 +218,20 @@ void optionReset(Settings& s, const std::string& group) {
 std::vector<QualityPreset>* gamePresets = nullptr;
 const std::vector<std::string>& presetKeys() {
     static const std::vector<std::string> k = { "render_scale", "render_distance", "vertical_distance", "shadows", "shadow_res", "shadow_distance", "shadow_soft", "light_shadows",
-        "probes", "bounce", "ao", "reflections", "reflect_res", "planar_floors", "anti_alias", "bloom", "light_fog", "clouds", "cloud_shadows", "bumps", "coat", "swaying", "lens_flares", "upscaler" };
+        "probes", "bounce", "ao", "reflections", "reflect_res", "planar_floors", "anti_alias", "bloom", "light_fog", "clouds", "cloud_shadows", "bumps", "coat", "swaying", "lens_flares", "upscaler", "lamp_blocks" };
     return k;
 }
 std::vector<QualityPreset> defaultPresets() {
     // render_scale, render_distance, vertical_distance, shadows, shadow_res, shadow_distance, shadow_soft, light_shadows, probes, bounce, ao, reflections, reflect_res,
-    // planar_floors, anti_alias, bloom, light_fog, clouds, cloud_shadows, bumps, coat, swaying, lens_flares, upscaler
-    struct Row { const char* name; float v[24]; };
+    // planar_floors, anti_alias, bloom, light_fog, clouds, cloud_shadows, bumps, coat, swaying, lens_flares, upscaler, lamp_blocks
+    struct Row { const char* name; float v[25]; };
     static const Row rows[] = {
-        { "Very low", { 0.5f, 6, 3, 0, 1024, 48, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0.3f, 0, 0.3f, 0, 0, 0, 0, 0, 1 } },
-        { "Low",      { 0.58f, 8, 4, 1, 1024, 64, 0, 0, 0, 0, 1, 0, 2, 0, 1, 0.5f, 0, 0.5f, 0, 0.5f, 0.5f, 1, 0, 1 } },
-        { "Medium",   { 0.67f, 10, 5, 1, 2048, 96, 1, 2, 0, 1, 1, 1, 2, 0, 1, 0.7f, 1, 0.6f, 1, 1, 1, 1, 1, 1 } },
-        { "High",     { 0.85f, 14, 6, 1, 2048, 160, 2, 4, 1, 1, 1, 1, 1, 1, 1, 0.8f, 1, 0.7f, 1, 1, 1, 1, 1, 1 } },
-        { "Ultra",    { 1, 20, 8, 1, 3072, 256, 2, 4, 2, 2, 2, 2, 0, 1, 2, 0.8f, 1, 0.75f, 1, 1, 1, 1, 1, 1 } },
-        { "Prime",    { 1.5f, 28, 10, 1, 4096, 384, 2, 8, 2, 2, 2, 2, 0, 1, 2, 0.85f, 1, 0.8f, 1, 1.2f, 1.2f, 1, 1, 1 } },
+        { "Very low", { 0.5f, 6, 3, 0, 1024, 48, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0.3f, 0, 0.3f, 0, 0, 0, 0, 0, 1, 0 } },
+        { "Low",      { 0.58f, 8, 4, 1, 1024, 64, 0, 0, 0, 0, 1, 0, 2, 0, 1, 0.5f, 0, 0.5f, 0, 0.5f, 0.5f, 1, 0, 1, 0 } },
+        { "Medium",   { 0.67f, 10, 5, 1, 2048, 96, 1, 2, 0, 1, 1, 1, 2, 0, 1, 0.7f, 1, 0.6f, 1, 1, 1, 1, 1, 1, 1 } },
+        { "High",     { 0.85f, 14, 6, 1, 2048, 160, 2, 4, 1, 1, 1, 1, 1, 1, 1, 0.8f, 1, 0.7f, 1, 1, 1, 1, 1, 1, 2 } },
+        { "Ultra",    { 1, 20, 8, 1, 3072, 256, 2, 4, 2, 2, 2, 2, 0, 1, 2, 0.8f, 1, 0.75f, 1, 1, 1, 1, 1, 1, 2 } },
+        { "Prime",    { 1.5f, 28, 10, 1, 4096, 384, 2, 8, 2, 2, 2, 2, 0, 1, 2, 0.85f, 1, 0.8f, 1, 1.2f, 1.2f, 1, 1, 1, 2 } },
     };
     std::vector<QualityPreset> out;
     for (const Row& r : rows) { QualityPreset p; p.name = r.name; for (size_t k = 0; k < presetKeys().size(); k++) p.values.push_back({ presetKeys()[k], r.v[k] }); out.push_back(p); }
