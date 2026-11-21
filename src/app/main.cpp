@@ -1541,7 +1541,7 @@ struct App {
     }
     void EnsureLightShadowMaps() {   // the lamps' shadow maps: as many and as sharp as the settings say (sharper ones step down if they would take too much memory)
         int n = std::clamp(settings.lightShadows, 0, LSH_MAX), res = settings.lightShadowRes <= 128 ? 128 : settings.lightShadowRes <= 256 ? 256 : 512;
-        while (res > 128 && (double)std::max(n, 1) * 6 * res * res * 4 > 320.0 * 1024 * 1024) res /= 2;
+        while (res > 128 && (double)std::max(n, 1) * 6 * res * res * 4 > 400.0 * 1024 * 1024) res /= 2;   // (128 sharp ones would be 800 MB: they step down to fit)
         if (n == lshCount && res == lshRes && lshTex) return;
         if (lshSRV) retired.push_back(lshSRV);
         lshCount = n; lshRes = res; int slices = std::max(1, n) * 6;
