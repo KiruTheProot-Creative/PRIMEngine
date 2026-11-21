@@ -291,7 +291,7 @@ float cloudShadow(float3 rel)
 }
 
 struct VSIn { float3 pos : POSITION; float2 uv : TEXCOORD0; float layer : TEXCOORD1; uint lit : TEXCOORD2; uint normal : TEXCOORD3; };
-struct VSOut { float4 pos : SV_Position; float3 uvl : TEXCOORD0; float ao : TEXCOORD1; float3 rel : TEXCOORD2; float3 n : TEXCOORD3; float4 lamp : TEXCOORD4; float2 mat : TEXCOORD5; float kind : TEXCOORD6; float clip : SV_ClipDistance0; };
+struct VSOut { float4 pos : SV_Position; float3 uvl : TEXCOORD0; float ao : TEXCOORD1; float3 rel : TEXCOORD2; float3 n : TEXCOORD3; float4 lamp : TEXCOORD4; float3 mat : TEXCOORD5; float kind : TEXCOORD6; float clip : SV_ClipDistance0; };
 // what the reflection pass needs per pixel: direction of the surface (rgb) and how shiny it is (a)
 // color: the lit picture; surface: direction + shininess (reflections); indirect: the part of the light that
 // comes from the sky and lamps (not the sun), which ambient occlusion takes away in corners
@@ -326,7 +326,7 @@ VSOut VS_Block(VSIn i)
     float3 nl = unpackNormal(i.normal);
     o.n = normalize(gAxisX.xyz * nl.x + gAxisY.xyz * nl.y + gAxisZ.xyz * nl.z);
     o.lamp = float4(float3((i.lit >> 8) & 15, (i.lit >> 12) & 15, (i.lit >> 16) & 15) / 15.0, (i.lit >> 20) & 1);
-    o.mat = float2(((i.lit >> 21) & 15) / 15.0, (i.lit >> 25) & 1);
+    o.mat = float3(((i.lit >> 21) & 15) / 15.0, (i.lit >> 25) & 1, ((i.lit >> 30) & 1) ? ((i.lit >> 26) & 15) / 15.0 : -1);   // z: the block's own roughness (-1: its textures')
     o.clip = dot(p, gClipPlane.xyz) + gClipPlane.w;
     o.kind = floor(i.layer / 16384);
     return o;
@@ -602,7 +602,8 @@ PSOut PS_Opaque(VSOut i, bool front : SV_IsFrontFace)
     float4 t = albedoAt(i.uvl);
     PSOut o; float3 n; float sh;
     o.indirect = 0;
-    o.albedo = float4(t.rgb, i.uvl.z < 16000 ? gMats[(uint)round(i.uvl.z)].c.x : 0);   // a: how rough (blurry reflections)
+    o.albedo = float4(t.rgb, i.uvl.z < 16000 ? gMats[(uint)round(i.uvl.z)].c.x : 0);
+    if (i.mat.z >= 0) o.albedo.a = i.mat.z;   // (the block's own roughness)   // a: how rough (blurry reflections)
     if (i.kind > 3.5) { o.color = float4(lavaColor(i.rel), 1); o.surface = float4(i.n * 0.5 + 0.5, 0); o.albedo = 0; return o; }
     float3 ind;
     o.color = float4(lightBlock(i, t.rgb, front, n, sh, ind), 1);
@@ -617,6 +618,7 @@ PSOut PS_Cutout(VSOut i, bool front : SV_IsFrontFace)
     clip(t.a - 0.5);
     PSOut o; float3 n; float sh; float3 ind;
     o.albedo = float4(t.rgb, i.uvl.z < 16000 ? gMats[(uint)round(i.uvl.z)].c.x : 0);
+    if (i.mat.z >= 0) o.albedo.a = i.mat.z;   // (the block's own roughness)
     o.color = float4(lightBlock(i, t.rgb, front, n, sh, ind), 1);
     o.surface = float4(n * 0.5 + 0.5, i.mat.y > 0.5 ? 1 : min(sh, 0.98));
     o.indirect = float4(ind, 0);

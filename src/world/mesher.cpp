@@ -163,7 +163,7 @@ void buildMesh(const BlockRegistry& reg, const MeshInput& in, ChunkMesh& out) {
             // any other shape: prepared triangles, sides lying on the block border hidden like cube faces
             const int rot = rotOf(id); const ShapeVariant& sv = shapes.variant(shape, rot); bool two = shapes.info(shape).twoSided;
             int own[3]; if (d.lightOf()) d.lightLevels(own); else for (int c = 0; c < 3; c++) own[c] = lightAt(c, x, y, z);
-            uint32_t litv = packLit(1.f, own, d.light > 0, d.mirror ? 1.f : d.shine, d.mirror);
+            uint32_t litv = packLit(1.f, own, d.light > 0, d.mirror ? 1.f : d.shine, d.mirror, d.roughness);
             float wave = d.waves ? (shape == Shapes::CROSS || shape == Shapes::PLANE ? 2.f : 1.f) : 0.f;
             for (int g = 0; g < 7; g++) {
                 if (sv.tris[g].empty()) continue;
@@ -209,7 +209,7 @@ void buildMesh(const BlockRegistry& reg, const MeshInput& in, ChunkMesh& out) {
                     if (cnt) for (int c = 0; c < 3; c++) bl[c] = (sum[c] + cnt / 2) / cnt;
                 }
                 if (d.lightOf()) d.lightLevels(bl);
-                q[k] = { p[0], p[1], p[2], u, v, (float)d.tex[tf] + (d.waves ? 16384.f : 0.f), packLit(shade, bl, d.light > 0, d.mirror ? 1.f : d.shine, d.mirror), packNormal((float)n[0], (float)n[1], (float)n[2], f) };
+                q[k] = { p[0], p[1], p[2], u, v, (float)d.tex[tf] + (d.waves ? 16384.f : 0.f), packLit(shade, bl, d.light > 0, d.mirror ? 1.f : d.shine, d.mirror, d.roughness), packNormal((float)n[0], (float)n[1], (float)n[2], f) };
             }
             // split along the brighter diagonal, and wind each triangle clockwise when seen from outside
             uint32_t base = (uint32_t)md.v.size();

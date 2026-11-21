@@ -19,11 +19,12 @@ inline uint32_t packNormal(float nx, float ny, float nz, int face) {
     auto b = [](float v) { int q = (int)((v * 0.5f + 0.5f) * 255.f + 0.5f); return (uint32_t)(q < 0 ? 0 : q > 255 ? 255 : q); };
     return b(nx) | (b(ny) << 8) | (b(nz) << 16) | ((uint32_t)(face & 7) << 24);
 }
-inline uint32_t packLit(float ao, const int rgb[3], bool emissive, float shine = 0, bool mirror = false) {
+inline uint32_t packLit(float ao, const int rgb[3], bool emissive, float shine = 0, bool mirror = false, float rough = -1) {   // rough < 0: the textures' own
     int a = (int)(ao * 255 + 0.5f); a = a < 0 ? 0 : a > 255 ? 255 : a;
     int s = (int)(shine * 15 + 0.5f); s = s < 0 ? 0 : s > 15 ? 15 : s;
     return (uint32_t)a | ((uint32_t)(rgb[0] & 15) << 8) | ((uint32_t)(rgb[1] & 15) << 12) | ((uint32_t)(rgb[2] & 15) << 16) | ((emissive ? 1u : 0u) << 20)
-         | ((uint32_t)s << 21) | ((mirror ? 1u : 0u) << 25);
+         | ((uint32_t)s << 21) | ((mirror ? 1u : 0u) << 25)
+         | (rough >= 0 ? (1u << 30) | ((uint32_t)(rough >= 1 ? 15 : (int)(rough * 15 + 0.5f)) << 26) : 0u);   // bits 26-29 the block's own roughness, bit 30: it has one
 }
 inline float shineOf(const Vtx& v) { return ((v.lit >> 21) & 15) / 15.f; }
 inline int faceOf(const Vtx& v) { return (int)((v.normal >> 24) & 7); }

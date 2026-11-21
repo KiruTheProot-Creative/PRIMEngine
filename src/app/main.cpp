@@ -5514,6 +5514,13 @@ struct App {
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("What it is made of: Samus's steps, jumps, landings and rolling on it sound like it (Player > Surfaces).");
         Prop("Sways in the wind"); ImGui::Checkbox("##waves", &draft.waves);
         Prop("Shininess"); ImGui::SliderFloat("##shine", &draft.shine, 0, 1, draft.shine <= 0 ? "matt" : "%.2f");
+        {   // roughness: its own, or what its textures say (Materials)
+            bool own = draft.roughness >= 0; Prop("Own roughness");
+            if (ImGui::Checkbox("##ownrough", &own)) draft.roughness = own ? 0.3f : -1.f;
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Off: the roughness its textures have (Materials).\nOn: this block's own, for every side.");
+            if (own) { Prop("Roughness"); ImGui::SliderFloat("##rough", &draft.roughness, 0, 1, draft.roughness <= 0.001f ? "sharp" : "%.2f");
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("How blurry its reflections are: 0 sharp (polished stone, glass), higher: glossy and soft (brushed metal, wet rock, plastic)."); }
+        }
         Prop("Mirror"); ImGui::Checkbox("##mirror", &draft.mirror);
         Prop("Textures turn with it"); ImGui::Checkbox("##texturns", &draft.texTurns);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("On: a turned block (R while placing) turns its textures too: a log on its side shows its rings at the ends.\nOff: the textures stay lined up with the world (grass stays on top).");
@@ -11278,7 +11285,7 @@ struct App {
     void DrawRadarElement(ImDrawList* dl, const HudElement& e, ImVec2 p0, ImVec2 p1, float a) {
         auto rgba = [&](uint32_t c, float k) { return IM_COL32((c >> 16) & 255, (c >> 8) & 255, c & 255, (int)std::clamp(a * k * 255, 0.f, 255.f)); };
         const float PI = 3.14159265f, px = hudPx; double range = std::max(4.f, e.mapRange);
-        struct Blip { double fx, fz, dy; uint32_t col; bool boss; int id; };
+        struct Blip { double fx, fz, dy; uint32_t col; bool boss; uint32_t id; };
         std::vector<Blip> blips;
         double yaw = player.yaw; V3 fwd{ std::sin(yaw), 0, std::cos(yaw) }, rgt{ std::cos(yaw), 0, -std::sin(yaw) };
         if (playMode) {
