@@ -352,6 +352,7 @@ struct App {
         b = Compile(src, "VS_Rain", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsRain));
         b = Compile(src, "VS_RainFar", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsRainFar));
         b = Compile(src, "PS_Comp", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psComp));   // the screens' compositor
+        b = Compile(src, "PS_HudDepth", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psHudDepth));   // the helmet's depth into the depth without water
         b = Compile(src, "PS_Planet", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psPlanet));   // Space backgrounds: stars and a planet
         b = Compile(src, "VS_Dust", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsDust));
         b = Compile(src, "PS_Rain", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psRain));
@@ -4712,7 +4713,17 @@ struct App {
 
         GpuMark("arm cannon, helmet");
         // ---- Play mode: the HUD's 3D parts, lit like the world (sun, its shadows, sky light, light objects), in front of everything
-        if (playMode && (!hud.parts.empty() || !weapons.empty())) DrawHudPartsLit(fc, f, r, u, srvs, samps);
+        if (playMode && (!hud.parts.empty() || !weapons.empty())) {
+            DrawHudPartsLit(fc, f, r, u, srvs, samps);
+            if (waterNow && psHudDepth) {   // effects and fields test against the world's depth without the water: the helmet's parts go in there too
+                ctx->PSSetShaderResources(0, 5, none); ctx->OMSetRenderTargets(0, nullptr, depthCopyDSV.Get());
+                D3D11_VIEWPORT fv{ 0, 0, (float)rw, (float)rh, 0, 1 }; ctx->RSSetViewports(1, &fv);
+                ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->RSSetState(rsNoCull.Get());
+                ctx->IASetInputLayout(nullptr); ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psHudDepth.Get(), nullptr, 0);
+                ctx->PSSetShaderResources(2, 1, depthSRV.GetAddressOf()); ctx->Draw(3, 0);
+                ctx->PSSetShaderResources(0, 5, none); ctx->OMSetRenderTargets(0, nullptr, nullptr);
+            }
+        }
         DrawEnemyFlashes();   // hit enemies flash
         bool scanMaskOn = DrawScanMask();   // the Scan Visor: what can be scanned, for the outlines
 
@@ -8657,7 +8668,7 @@ struct App {
     // a screen into `out` (W x H): background, its items (ui: an ImDrawList at W x H), then the node graph; fade 0..1
     // ---- planets: one shader draws the stars, a haze and the planet in its layers (Space backgrounds, the Planets editor's preview)
     struct alignas(16) PlanetCB { float a[4], pos[4], sun[4], axis[4], neb[4], ocean[4], deep[4], land[4], band[8][4], ice[4], cloud[4], cloud2[4], atmo[4], atmo2[4], night[4], ring[4], ring2[4], ring3[4]; };
-    ComPtr<ID3D11PixelShader> psPlanet; ComPtr<ID3D11Buffer> cbPlanet;
+    ComPtr<ID3D11PixelShader> psPlanet, psHudDepth; ComPtr<ID3D11Buffer> cbPlanet;
     Planet PlanetFor(const std::string& name) const { int i = planets.find(name); return i >= 0 ? planets.planets[i] : name.empty() && !planets.planets.empty() ? planets.planets[0] : defaultPlanet(); }
     void DrawPlanet(ID3D11RenderTargetView* dst, int W, int H, const Planet& pl, const ScreenBg& v, double t) {
         if (!psPlanet || W < 2 || H < 2) return;

@@ -1496,6 +1496,13 @@ float4 PS_Water(VSOut i, bool front : SV_IsFrontFace) : SV_Target
 // ---------------------------------------------------------------- volumetrics: clouds and ground fog over the picture
 float ign(float2 px) { return frac(52.9829189 * frac(dot(px, float2(0.06711056, 0.00583715)))); }   // even per-pixel noise: no banding
 
+// the helmet's and the arm cannon's depth copied into the world's depth without the water (so effects drawn against it stay behind them)
+void PS_HudDepth(SkyOut i, out float depth : SV_Depth)
+{
+    float z = gSceneDepth.Load(int3(i.pos.xy, 0));
+    if (z > 0.0021) discard;
+    depth = z;
+}
 float4 PS_VolumeLow(SkyOut i) : SV_Target   // a smaller picture: what the air adds (rgb) and lets through (a)
 {
     int2 px = min(int2((i.ndc * float2(0.5, -0.5) + 0.5) * gDepth.zw), int2(gDepth.zw) - 1);   // (the full-size pixel this one stands for)
