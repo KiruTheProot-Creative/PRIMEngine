@@ -5090,7 +5090,7 @@ struct App {
         if (toastT > 0) { ImVec2 ts = ImGui::CalcTextSize(toast.c_str()); dl->AddRectFilled(ImVec2(vx + (cw - ts.x) * 0.5f - 10, vy + 60), ImVec2(vx + (cw + ts.x) * 0.5f + 10, vy + 66 + ts.y + 6), IM_COL32(0, 0, 0, 150), 4); dl->AddText(ImVec2(vx + (cw - ts.x) * 0.5f, vy + 66), IM_COL32(255, 255, 255, 240), toast.c_str()); }
     }
     void DrawF3() {
-        ImGui::SetNextWindowPos(ImVec2(vx + 8, vy + 8));   // (the 3D view's corner, not the window's: in the editor that's next to the panels) ImGui::SetNextWindowBgAlpha(0.45f);
+        ImGui::SetNextWindowPos(ImVec2(vx + 8, vy + 8)); ImGui::SetNextWindowBgAlpha(0.45f);   // (the 3D view's corner, not the window's: in the editor that's next to the panels)
         ImGui::Begin("##f3", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav);
         V3 p = player.feet; I3 b{ ifloor(p.x), ifloor(p.y), ifloor(p.z) }; I3 c = chunkOf(b.x, b.y, b.z);
         const char* dirs[4] = { "south (+Z)", "west (-X)", "north (-Z)", "east (+X)" };
