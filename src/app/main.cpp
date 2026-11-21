@@ -1064,6 +1064,9 @@ struct App {
         if (k == VK_F5 && !repeat) { if (menuSession) LeaveMenuSession(); else if (playMode) StopPlay(); else StartPlay(); return; }
         if (k == VK_F6 && !repeat && !playMode && !menuSession) { PlayFromMenu(); return; }
         if (k == VK_ESCAPE && bindCapture >= 0) { bindCapture = -1; keysQuiet = GetTickCount64() + 250; return; }   // setting a key: Esc says never mind
+        if (k == VK_ESCAPE && optColHits && optColSel && uiClock - optColAt < 0.25 && optColGroupHit >= 0) {   // the options in columns: from an option back to the categories
+            int sl = *optColSel; if (sl >= 0 && sl < (int)optColHits->size() && ((*optColHits)[sl].kind == 5 || (*optColHits)[sl].kind == 7)) { *optColSel = optColGroupHit; PlayUi(2); return; }
+        }
         if (k == VK_ESCAPE && CurScreen()) {   // a screen is up: Esc goes back (not from the main menu or the death screen)
             if (startOn) return;
             ScreenRole r = CurScreen()->role;
@@ -7440,10 +7443,13 @@ struct App {
     // ================================================================== the pause menu (Player editor > Menu): pages as tabs, made of bent panes
     MenuLayout menu;
     void SaveMenu() { if (!projectDir.empty()) saveMenu(projectDir + "/menu.txt", menu); }
-    struct MenuHit { int pane; ImVec4 r; int kind; int arg; MenuAct act; std::string target; bool hidden = false; float vx0 = 0, vx1 = 0; };
+    struct MenuHit { int pane; ImVec4 r; int kind; int arg; MenuAct act; std::string target; bool hidden = false; float vx0 = 0, vx1 = 0; bool noKeys = false; };   // noKeys: only the mouse uses it (the options' big control in the middle)
     // kind: 0 button, 1 tab, 2 beam, 3 missile, 4 scan entry, 5 an option, 6 an options group tab, 7 a key; hidden: scrolled out of view (keys reach it, the mouse does not);
     // vx0 / vx1: an option's value part (a slider's track, a key's two boxes)
     int menuOptGroup = 0, optSelTab = -1, menuBindSlot = 0, optDrag = -1;
+    // the options in columns (categories left, their options right, the picked one big in the middle): which hit is the open category,
+    // the first option, and the option last picked (the middle shows it while the mouse is on its big control)
+    int optColGroupHit = -1, optColFirstRow = -1, optColDef = -1; std::vector<MenuHit>* optColHits = nullptr; int* optColSel = nullptr; double optColAt = -1;
     std::vector<std::unique_ptr<ImDrawList>> menuLists; std::vector<HudTarget> menuTargets;
     std::vector<MenuPane> menuPanes; std::vector<bool> menuPaneIsPage; std::vector<MenuHit> menuHits;
     int menuPage = 0, menuSel = -2, menuScan = 0, menuSlideDir = 0, menuEdPage = 0; double menuSlideT = 1; std::vector<int> menuBack;
@@ -7752,7 +7758,7 @@ struct App {
                 break; }
             case MenuKind::Options: {   // the player's options: Sound, Graphics, Controls (its own tabs unless it shows one group)
                 OptColors oc{ c, it.ownColors ? it.c2 : c, it.ownColors ? it.c3 : 0xEBFCFFu, it.ownColors ? it.c4 : c, al };
-                DrawOptionsBlock(dl, a, b, it.textSize, oc, it.text, paneIdx * 256 + ii, menuHits, menuSel, paneIdx, true);
+                optColSel = &menuSel; DrawOptionsBlock(dl, a, b, it.textSize, oc, it.text, paneIdx * 256 + ii, menuHits, menuSel, paneIdx, true);
                 break; }
             case MenuKind::ScanModel: {
                 const ScanLog& lg = ShownScans(); const ScanEntry* e = scanOpen ? &scanShown : (menuScan >= 0 && menuScan < (int)lg.entries.size() ? &lg.entries[menuScan] : nullptr);
@@ -7798,6 +7804,182 @@ struct App {
     }
     // ---- the options list (Options screen, pause menu): sharp panels - slanted tabs, rows with a bright bar when picked,
     // OFF | ON switches, < value > boxes, segmented sliders, and a panel saying what the picked option does. Texts always fit.
+    // the options in three columns (like Metroid Prime): the categories on the left, the open one's options on the right,
+    // the picked option big in the middle (its name, its value to change, what it does); the keys at the bottom
+    void DrawOptionsColumns(ImDrawList* dl, ImVec2 a, ImVec2 b, float ts, const OptColors& oc, int scrollKey, std::vector<MenuHit>& hits, int sel, int pane, bool pages) {
+        float al = oc.alpha; uint32_t c = oc.accent; ImFont* font = ImGui::GetFont();
+        auto C = [&](uint32_t col, float aa) { return IM_COL32((col >> 16) & 255, (col >> 8) & 255, col & 255, (int)(std::clamp(aa, 0.f, 1.f) * 255)); };
+        auto fit = [&](const std::string& s0, float size, ImVec2 p0, ImVec2 p1, int align, ImU32 col) {
+            float room = std::max(4.f, p1.x - p0.x); std::string t = s0; float sz = size;
+            float w = font->CalcTextSizeA(sz, FLT_MAX, 0, t.c_str()).x;
+            if (w > room) { sz = size * std::max(0.78f, room / w); w = font->CalcTextSizeA(sz, FLT_MAX, 0, t.c_str()).x; }
+            if (w > room) { while (!t.empty() && font->CalcTextSizeA(sz, FLT_MAX, 0, (t + "...").c_str()).x > room) { t.pop_back(); while (!t.empty() && (t.back() & 0xC0) == 0x80) t.pop_back(); } t += "..."; }
+            TextIn(dl, font, t, sz, p0, p1, align, col);
+        };
+        auto cutBox = [&](ImVec2 p0, ImVec2 p1, float cut, ImU32 fill, ImU32 line, float thick) {
+            cut = std::min(cut, std::min(p1.x - p0.x, p1.y - p0.y) * 0.45f);
+            ImVec2 pts[6] = { ImVec2(p0.x + cut, p0.y), ImVec2(p1.x, p0.y), ImVec2(p1.x, p1.y - cut), ImVec2(p1.x - cut, p1.y), ImVec2(p0.x, p1.y), ImVec2(p0.x, p0.y + cut) };
+            if (fill) dl->AddConvexPolyFilled(pts, 6, fill);
+            if (line) dl->AddPolyline(pts, 6, line, ImDrawFlags_Closed, thick);
+        };
+        auto upper = [](std::string t) { for (char& ch : t) ch = (char)std::toupper((unsigned char)ch); return t; };
+        auto hit = [&](ImVec4 r, int kind, int arg) { MenuHit h{ pane, r, kind, arg, MenuAct::None, "" }; hits.push_back(h); return (int)hits.size() - 1 == sel; };
+        const auto& defs = optionDefs(); const auto& groups = optionGroups();
+        int g = std::clamp(menuOptGroup, 0, (int)groups.size() - 1);
+        float W = b.x - a.x, gap = ts * 0.7f, hintH = ts * 1.6f, bottom = b.y - hintH;
+        float lx0 = a.x, lx1 = a.x + W * 0.2f, rx1 = b.x, rx0 = b.x - W * 0.36f, cx0 = lx1 + gap, cx1 = rx0 - gap;
+        optColHits = &hits; optColAt = uiClock; optColGroupHit = -1; optColFirstRow = -1;
+        // ---- left: the categories, one under the other (the open one filled)
+        {
+            int ng = (int)groups.size(); float bh = std::min(ts * 2.3f, (bottom - a.y) / std::max(1, ng) - ts * 0.3f), y = a.y;
+            for (int k = 0; k < ng; k++) {
+                ImVec2 p0(lx0, y), p1(lx1, y + bh); bool cur = k == g;
+                if (cur) optColGroupHit = (int)hits.size();
+                bool picked = hit(ImVec4(p0.x, p0.y, p1.x, p1.y), 6, k);
+                if (picked && k != g) { menuOptGroup = k; optSelTab = k; }   // (pointing at a category opens it, like Metroid Prime)
+                cutBox(p0, p1, ts * 0.55f, C(c, (cur ? 0.3f : picked ? 0.16f : 0.05f) * al), C(c, (cur || picked ? 0.95f : 0.35f) * al), picked ? 2.5f : 1.5f);
+                if (cur) dl->AddRectFilled(ImVec2(p1.x + 3, p0.y + bh * 0.25f), ImVec2(p1.x + 7, p1.y - bh * 0.25f), C(oc.picked, al));   // (a notch toward its options)
+                fit(upper(groups[k]), ts * 0.95f, ImVec2(p0.x + ts * 0.8f, p0.y), ImVec2(p1.x - ts * 0.5f, p1.y), 0, cur || picked ? C(oc.picked, al) : C(c, 0.7f * al));
+                y += bh + ts * 0.3f;
+            }
+        }
+        // ---- right: the open category's options (sections as small headings), each with its value, small
+        struct Row { int def; std::string head; };
+        std::vector<Row> rows; std::string sec = "\x01";
+        for (int i = 0; i < (int)defs.size(); i++) {
+            const OptionDef& d = defs[i]; if (d.group != groups[g] || !optionShown(settings, d, true)) continue;
+            if (d.section != sec) { sec = d.section; if (!sec.empty()) rows.push_back({ -1, sec }); }
+            rows.push_back({ i, "" });
+        }
+        float rh = ts * 1.75f, headH = rh * 0.85f, top = a.y, total = 0; for (const Row& r : rows) total += r.def < 0 ? headH : rh;
+        float& scroll = menuScroll[scrollKey]; float room = bottom - top; scroll = std::clamp(scroll, 0.f, std::max(0.f, total - room));
+        float want = scroll; int selDef = -1;
+        cutBox(ImVec2(rx0 - ts * 0.3f, top - ts * 0.3f), ImVec2(rx1, bottom), ts * 0.8f, C(oc.dim, 0.05f * al), C(c, 0.25f * al), 1.f);
+        dl->PushClipRect(ImVec2(rx0, top), ImVec2(rx1, bottom), true);
+        float y = top - scroll;
+        for (const Row& r : rows) {
+            float h = r.def < 0 ? headH : rh; bool vis = y + h > top - 1 && y < bottom + 1;
+            if (r.def < 0) {
+                if (vis) { std::string up = upper(r.head); float hs = ts * 0.7f, my = y + h * 0.6f; ImVec2 tsz = font->CalcTextSizeA(hs, FLT_MAX, 0, up.c_str());
+                    dl->AddRectFilled(ImVec2(rx0 + 6, my - hs * 0.2f), ImVec2(rx0 + 6 + hs * 0.4f, my + hs * 0.2f), C(c, 0.9f * al));
+                    dl->AddText(font, hs, ImVec2(rx0 + 10 + hs * 0.6f, my - tsz.y * 0.5f), C(c, 0.8f * al), up.c_str());
+                    dl->AddLine(ImVec2(rx0 + 18 + hs * 0.6f + tsz.x, my), ImVec2(rx1 - 10, my), C(c, 0.2f * al), 1.f); }
+                y += h; continue;
+            }
+            const OptionDef& d = defs[r.def];
+            ImVec4 rr(rx0, y + 2, rx1 - 10, y + h - 2); bool inView = y >= top - 2 && y + h <= bottom + 2;
+            if (optColFirstRow < 0) optColFirstRow = (int)hits.size();
+            bool picked = hit(rr, d.type == OptType::Key ? 7 : 5, r.def); MenuHit& mh = hits.back(); mh.hidden = !inView;
+            float valX = rr.z - (rr.z - rr.x) * 0.42f; mh.vx0 = valX; mh.vx1 = rr.z - 6;
+            if (picked) { selDef = r.def; if (!inView) want = y < top ? scroll - (top - y) : scroll + (y + h - bottom); }
+            bool lit = picked;
+            if (vis) {
+                if (picked) { cutBox(ImVec2(rr.x, rr.y), ImVec2(rr.z, rr.w), ts * 0.45f, C(c, 0.18f * al), C(c, 0.8f * al), 1.5f); dl->AddRectFilled(ImVec2(rr.x, rr.y + 3), ImVec2(rr.x + 4, rr.w - 3), C(oc.picked, al)); }
+                else dl->AddLine(ImVec2(rr.x + 10, rr.w + 1), ImVec2(rr.z, rr.w + 1), C(c, 0.1f * al), 1.f);
+                ImU32 lc = picked || lit ? C(oc.picked, al) : C(oc.text, 0.9f * al);
+                fit(d.label, ts * 0.9f, ImVec2(rr.x + 14, rr.y), ImVec2(d.type == OptType::Reset ? rr.z - 8 : valX - 8, rr.w), 0, d.type == OptType::Reset && !picked ? C(oc.dim, 0.6f * al) : lc);
+                if (d.type == OptType::Key) {
+                    int k0 = settings.keys.key[d.act][0], k1 = settings.keys.key[d.act][1];
+                    fit(std::string(k0 ? KeyLabel(k0) : "-") + (k1 ? "  /  " + std::string(KeyLabel(k1)) : ""), ts * 0.8f, ImVec2(valX, rr.y), ImVec2(rr.z - 8, rr.w), 2, C(c, 0.85f * al));
+                } else if (d.type != OptType::Reset) fit(optionText(settings, d), ts * 0.8f, ImVec2(valX, rr.y), ImVec2(rr.z - 8, rr.w), 2, C(c, (picked ? 1.f : 0.75f) * al));
+            }
+            y += h;
+        }
+        dl->PopClipRect();
+        if (want != scroll) scroll = std::clamp(want, 0.f, std::max(0.f, total - room));
+        if (total > room) { float k = room / total, y0 = top + (scroll / total) * room; dl->AddRectFilled(ImVec2(rx1 - 5, top), ImVec2(rx1 - 3, bottom), C(c, 0.12f * al)); dl->AddRectFilled(ImVec2(rx1 - 6, y0), ImVec2(rx1 - 2, y0 + room * k), C(c, 0.75f * al)); }
+        if (selDef >= 0) optColDef = selDef;
+        bool onCat = sel >= 0 && sel < (int)hits.size() && hits[sel].kind == 6;
+        int showDef = selDef >= 0 ? selDef : (!onCat && optColDef >= 0 && optColDef < (int)defs.size() && defs[optColDef].group == groups[g]) ? optColDef : -1;
+        // ---- the middle: the category's name on top; the picked option big - its value to change (the mouse can use it), what it does
+        {
+            ImVec2 p0(cx0, a.y), p1(cx1, bottom); float pad = ts * 0.8f;
+            cutBox(p0, p1, ts * 1.2f, C(oc.dim, 0.08f * al), C(c, 0.4f * al), 1.5f);
+            fit(upper(groups[g]), ts * 1.35f, ImVec2(p0.x + pad, p0.y + pad * 0.4f), ImVec2(p1.x - pad, p0.y + pad * 0.4f + ts * 1.7f), 1, C(c, al));
+            float ly = p0.y + pad * 0.4f + ts * 1.9f; dl->AddLine(ImVec2(p0.x + pad * 2, ly), ImVec2(p1.x - pad * 2, ly), C(c, 0.45f * al), 1.f);
+            float yy = ly + ts * 0.9f;
+            if (showDef < 0) {
+                fit(onCat ? "Its options are on the right" : "Pick an option on the right", ts * 0.85f, ImVec2(p0.x + pad, yy), ImVec2(p1.x - pad, yy + ts * 1.3f), 1, C(oc.text, 0.6f * al));
+            } else {
+                const OptionDef& d = defs[showDef];
+                fit(d.label, ts * 1.25f, ImVec2(p0.x + pad, yy), ImVec2(p1.x - pad, yy + ts * 1.7f), 1, C(oc.picked, al)); yy += ts * 2.2f;
+                float vh = ts * 2.0f, vx0 = p0.x + pad * 1.5f, vx1 = p1.x - pad * 1.5f, my = yy + vh * 0.5f;
+                if (d.type != OptType::Reset) {
+                    MenuHit big{ pane, ImVec4(vx0, yy, vx1, yy + vh), d.type == OptType::Key ? 7 : 5, showDef, MenuAct::None, "" }; big.noKeys = true; big.vx0 = vx0; big.vx1 = vx1;
+                    float v = optionGet(settings, d); bool keyed = selDef >= 0;
+                    switch (d.type) {
+                    case OptType::Slider: {
+                        float numW = ts * 4.2f, bx1 = vx1 - numW, k = std::clamp((v - d.lo) / std::max(1e-6f, d.hi - d.lo), 0.f, 1.f); big.vx1 = bx1;
+                        int segs = std::max(10, std::min(28, (int)((bx1 - vx0) / (ts * 0.6f)))); float sw = (bx1 - vx0) / segs;
+                        for (int s2 = 0; s2 < segs; s2++) { bool on = (s2 + 0.5f) / segs <= k; dl->AddRectFilled(ImVec2(vx0 + s2 * sw + 1, my - ts * 0.42f), ImVec2(vx0 + (s2 + 1) * sw - 1, my + ts * 0.42f), C(c, (on ? 0.9f : 0.14f) * al)); }
+                        fit(optionText(settings, d), ts * 1.05f, ImVec2(bx1 + 8, yy), ImVec2(vx1, yy + vh), 2, C(oc.picked, al));
+                        break; }
+                    case OptType::Toggle: {
+                        bool on = v > 0.5f; float hw = std::min((vx1 - vx0) * 0.3f, ts * 5.f), x0 = (vx0 + vx1) * 0.5f - hw, hh = ts * 0.75f;
+                        big.r = ImVec4(x0, my - hh, x0 + hw * 2, my + hh); big.vx0 = x0; big.vx1 = x0 + hw * 2;
+                        for (int s2 = 0; s2 < 2; s2++) {
+                            bool here = (s2 == 1) == on; ImVec2 q0(x0 + s2 * hw, my - hh), q1(x0 + (s2 + 1) * hw - (s2 == 0 ? 3 : 0), my + hh); uint32_t fc2 = s2 == 0 ? oc.dim : c;
+                            dl->AddRectFilled(q0, q1, C(fc2, (here ? (s2 == 0 ? 0.55f : 0.85f) : 0.06f) * al)); dl->AddRect(q0, q1, C(fc2, (here ? 0.95f : 0.3f) * al), 0, ImDrawFlags_None, 1.5f);
+                            TextIn(dl, font, s2 == 0 ? "OFF" : "ON", ts * 0.95f, q0, q1, 1, here ? C(s2 == 0 ? oc.text : 0x041018, al) : C(oc.dim, 0.6f * al));
+                        }
+                        break; }
+                    case OptType::Choice: case OptType::Preset: {
+                        int ci = (int)std::lround(v); int nC = d.type == OptType::Preset ? (int)presets.size() : (int)d.choices.size();
+                        bool canL = d.type == OptType::Preset ? (ci != 0 && nC > 0) : ci > 0, canR = d.type == OptType::Preset ? (ci < nC - 1 && nC > 0) : ci < nC - 1; float aw = ts * 0.45f;
+                        ImVec2 q0(vx0, my - ts * 0.85f), q1(vx1, my + ts * 0.85f);
+                        cutBox(q0, q1, ts * 0.45f, C(c, 0.12f * al), C(c, 0.75f * al), 1.5f);
+                        dl->AddTriangleFilled(ImVec2(q0.x + aw * 0.8f, my), ImVec2(q0.x + aw * 2.2f, my - aw), ImVec2(q0.x + aw * 2.2f, my + aw), canL ? C(c, al) : C(c, 0.15f * al));
+                        dl->AddTriangleFilled(ImVec2(q1.x - aw * 0.8f, my), ImVec2(q1.x - aw * 2.2f, my - aw), ImVec2(q1.x - aw * 2.2f, my + aw), canR ? C(c, al) : C(c, 0.15f * al));
+                        fit(optionText(settings, d), ts * 1.05f, ImVec2(q0.x + aw * 3, yy), ImVec2(q1.x - aw * 3, yy + vh), 1, C(oc.picked, al));
+                        break; }
+                    case OptType::Key: {
+                        float bw = (vx1 - vx0 - 10) * 0.5f;
+                        for (int s2 = 0; s2 < 2; s2++) {
+                            ImVec2 q0(vx0 + s2 * (bw + 10), yy + 3), q1(q0.x + bw, yy + vh - 3);
+                            bool cap = bindCapture == d.act * 2 + s2, here = keyed && menuBindSlot == s2; int vk = settings.keys.key[d.act][s2];
+                            float pulse = cap ? 0.5f + 0.5f * std::sin((float)uiClock * 8) : 0;
+                            cutBox(q0, q1, ts * 0.35f, C(c, (cap ? 0.25f + 0.25f * pulse : here ? 0.3f : 0.06f) * al), C(c, (here || cap ? 0.95f : 0.35f) * al), here || cap ? 2.f : 1.f);
+                            fit(cap ? "press a key" : vk ? KeyLabel(vk) : "-", ts * 0.95f, ImVec2(q0.x + 4, q0.y), ImVec2(q1.x - 4, q1.y), 1, cap || here ? C(oc.picked, al) : vk ? C(c, 0.9f * al) : C(oc.dim, 0.6f * al));
+                        }
+                        break; }
+                    default: break;
+                    }
+                    hits.push_back(big);   // (last: the keys never land on it, the mouse can)
+                    yy += vh + ts * 0.9f;
+                }
+                dl->AddLine(ImVec2(p0.x + pad * 2, yy - ts * 0.3f), ImVec2(p1.x - pad * 2, yy - ts * 0.3f), C(c, 0.2f * al), 1.f);
+                std::string tip = d.type == OptType::Reset ? "Every option on this page goes back to how the game starts." : d.tip;
+                if (!tip.empty()) {
+                    float tsz = ts * 0.85f; auto measure = [&](const char* q0, const char* q1) { return font->CalcTextSizeA(tsz, FLT_MAX, 0, q0, q1).x; };
+                    for (const TextLine& ln : wrapText(tip, p1.x - p0.x - pad * 2, measure)) {
+                        if (yy + tsz > p1.y - pad * 0.5f) break;
+                        float lw = font->CalcTextSizeA(tsz, FLT_MAX, 0, tip.data() + ln.start, tip.data() + ln.end).x;
+                        dl->AddText(font, tsz, ImVec2((p0.x + p1.x - lw) * 0.5f, yy), C(oc.text, 0.82f * al), tip.data() + ln.start, tip.data() + ln.end); yy += tsz * 1.35f;
+                    }
+                }
+            }
+        }
+        // ---- the keys, in little boxes, in the middle at the bottom
+        {
+            const MenuHit* cur = sel >= 0 && sel < (int)hits.size() ? &hits[sel] : nullptr;
+            std::vector<std::pair<std::string, std::string>> keys;
+            if (bindCapture >= 0) keys = { { "any key", "set it" }, { "Esc", "never mind" } };
+            else if (cur && cur->kind == 6) keys = { { "W/S", "category" }, { "D", "its options" }, { pages ? "Q/E" : "Esc", pages ? "pages" : "back" } };
+            else if (cur && cur->kind == 7) keys = { { "W/S", "pick" }, { "A/D", "which key" }, { "Enter", "set it" }, { "Del", "none" }, { "Esc", "categories" } };
+            else if (cur && cur->kind == 5 && defs[cur->arg].type == OptType::Reset) keys = { { "W/S", "pick" }, { "Enter", "back to the start values" }, { "Esc", "categories" } };
+            else keys = { { "W/S", "pick" }, { "A/D", "change" }, { "Esc", "categories" } };
+            float ks = ts * 0.72f, totalW = 0;
+            for (auto& kk : keys) totalW += font->CalcTextSizeA(ks, FLT_MAX, 0, kk.second.c_str()).x + font->CalcTextSizeA(ks, FLT_MAX, 0, kk.first.c_str()).x + ks * 3.2f;
+            float x = (a.x + b.x - totalW) * 0.5f, my = (bottom + b.y) * 0.5f;
+            for (auto& kk : keys) {
+                float kw = font->CalcTextSizeA(ks, FLT_MAX, 0, kk.first.c_str()).x + ks;
+                ImVec2 k0(x, my - ks * 0.75f), k1(x + kw, my + ks * 0.75f);
+                dl->AddRect(k0, k1, C(c, 0.7f * al), 0, ImDrawFlags_None, 1.f); TextIn(dl, font, kk.first, ks, k0, k1, 1, C(oc.picked, 0.9f * al));
+                x += kw + ks * 0.4f; dl->AddText(font, ks, ImVec2(x, my - ks * 0.5f), C(c, 0.6f * al), kk.second.c_str());
+                x += font->CalcTextSizeA(ks, FLT_MAX, 0, kk.second.c_str()).x + ks * 1.8f;
+            }
+        }
+    }
     void DrawOptionsBlock(ImDrawList* dl, ImVec2 a, ImVec2 b, float ts, const OptColors& oc, const std::string& group, int scrollKey, std::vector<MenuHit>& hits, int sel, int pane, bool pages) {
         float al = oc.alpha; uint32_t c = oc.accent; ImFont* font = ImGui::GetFont();
         auto C = [&](uint32_t col, float aa) { return IM_COL32((col >> 16) & 255, (col >> 8) & 255, col & 255, (int)(std::clamp(aa, 0.f, 1.f) * 255)); };
@@ -7822,6 +8004,7 @@ struct App {
         auto hit = [&](ImVec4 r, int kind, int arg) { MenuHit h{ pane, r, kind, arg, MenuAct::None, "" }; hits.push_back(h); return (int)hits.size() - 1 == sel; };
         const auto& defs = optionDefs(); const auto& groups = optionGroups();
         int g = -1; for (int k = 0; k < (int)groups.size(); k++) if (groups[k] == group) g = k;
+        if (g < 0 && (b.x - a.x) > ts * 34) { DrawOptionsColumns(dl, a, b, ts, oc, scrollKey, hits, sel, pane, pages); return; }
         float top = a.y;
         if (g < 0) {   // the tabs: slanted, the open one filled with a bright line under it
             g = std::clamp(menuOptGroup, 0, (int)groups.size() - 1);
@@ -8113,7 +8296,8 @@ struct App {
         auto& menuHits = hits; int& menuSel = sel;
         if (bindCapture >= 0) { PollBindCapture(); return; }   // setting a key: nothing else until it has one (Esc: never mind)
         int n = (int)menuHits.size();
-        auto step = [&](int d) { if (!n) return; int i = menuSel; for (int k = 0; k < n; k++) { i = ((i < 0 ? 0 : i) + d + n) % n; if (menuHits[i].kind != 1) { menuSel = i; return; } } };
+        bool inCats = menuSel >= 0 && menuSel < n && menuHits[menuSel].kind == 6;   // (the options' categories: W / S stay among them, the options among themselves)
+        auto step = [&](int d) { if (!n) return; int i = menuSel; for (int k = 0; k < n; k++) { i = ((i < 0 ? 0 : i) + d + n) % n; if (menuHits[i].kind != 1 && !menuHits[i].noKeys && (menuHits[i].kind == 6) == inCats) { menuSel = i; return; } } };
         if (ImGui::IsKeyPressed(ImGuiKey_UpArrow) || ImGui::IsKeyPressed(ImGuiKey_W)) step(-1);
         if (ImGui::IsKeyPressed(ImGuiKey_DownArrow) || ImGui::IsKeyPressed(ImGuiKey_S)) step(1);
         if (pages && (ImGui::IsKeyPressed(ImGuiKey_PageDown) || ImGui::IsKeyPressed(ImGuiKey_PageUp))) { float d = ImGui::IsKeyPressed(ImGuiKey_PageDown) ? 300.f : -300.f; for (auto& kv : menuScrollWho) menuScroll[kv.first] += d; }   // long scan texts
@@ -8125,6 +8309,10 @@ struct App {
         bool enter = ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter) || ImGui::IsKeyPressed(ImGuiKey_Space);
         if (menuSel >= 0 && menuSel < n && menuHits[menuSel].kind >= 5) {   // on an option: A / D (or the arrows) change it, Enter flips / sets a key
             MenuHit mh = menuHits[menuSel]; int dir = (ImGui::IsKeyPressed(ImGuiKey_LeftArrow) || ImGui::IsKeyPressed(ImGuiKey_A)) ? -1 : (ImGui::IsKeyPressed(ImGuiKey_RightArrow) || ImGui::IsKeyPressed(ImGuiKey_D)) ? 1 : 0;
+            if (mh.kind == 6 && optColHits == &menuHits && uiClock - optColAt < 0.25) {   // in columns: D / Enter go into the category's options
+                if ((dir > 0 || enter) && optColFirstRow >= 0 && optColFirstRow < n) { menuSel = optColFirstRow; return; }
+                if (dir || enter) return;
+            }
             if (mh.kind == 6 && (dir || enter)) { if (dir) { int g = std::clamp(menuOptGroup + dir, 0, (int)optionGroups().size() - 1); if (g != menuOptGroup) { menuOptGroup = g; optSelTab = g; } } else menuOptGroup = mh.arg; return; }
             // (otherwise on to the mouse below: it used to stop here whenever the Sound / Graphics / Controls tabs were picked, which they are when the page opens)
             if (mh.kind == 7) {
@@ -8146,7 +8334,7 @@ struct App {
         if (!io.WantCaptureMouse) {
             int pane = -1; ImVec2 px; int h = hitAt(ImVec2(io.MousePos.x - vx, io.MousePos.y - vy), &pane, &px);
             static ImVec2 lastMouse(-1, -1);
-            if (h >= 0 && menuHits[h].kind != 1 && (io.MousePos.x != lastMouse.x || io.MousePos.y != lastMouse.y) && optDrag < 0) menuSel = h;   // the mouse picks only when it moves
+            if (h >= 0 && menuHits[h].kind != 1 && !menuHits[h].noKeys && (io.MousePos.x != lastMouse.x || io.MousePos.y != lastMouse.y) && optDrag < 0) menuSel = h;   // the mouse picks only when it moves
             lastMouse = io.MousePos;
             if (pane >= 0 && io.MouseWheel != 0) for (auto& kv : menuScroll) if (kv.first / 256 == pane) kv.second -= io.MouseWheel * 60;   // lists on that pane scroll
             if (optDrag >= 0) {   // dragging a slider: follows the mouse while the button is held
@@ -8160,7 +8348,7 @@ struct App {
                 return;
             }
             if (h >= 0 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-                MenuHit hh = menuHits[h]; if (hh.kind != 1) menuSel = h;
+                MenuHit hh = menuHits[h]; if (hh.kind != 1 && !hh.noKeys) menuSel = h;
                 if (hh.kind == 5) {   // an option: a slider goes where you click (and drags), a toggle flips, a choice steps toward the side you click
                     const OptionDef& d = optionDefs()[hh.arg];
                     if (d.type == OptType::Slider) { optDrag = hh.arg; if (px.x >= hh.vx0 - 20) { float k = std::clamp((px.x - hh.vx0) / std::max(1.f, hh.vx1 - hh.vx0), 0.f, 1.f), v = d.lo + k * (d.hi - d.lo); optionSet(settings, d, d.lo + std::round((v - d.lo) / d.step) * d.step); OptionChanged(d); } }
@@ -8424,7 +8612,7 @@ struct App {
                 break; }
             case ScreenItemKind::Options: {
                 OptColors oc{ col.accent, col.text, col.picked, col.dim, al };
-                DrawOptionsBlock(dl, a, b, ts, oc, it.group, 9000 + ii, screenHits, live ? screenSel : -1, 0, false);
+                optColSel = &screenSel; DrawOptionsBlock(dl, a, b, ts, oc, it.group, 9000 + ii, screenHits, live ? screenSel : -1, 0, false);
                 break; }
             case ScreenItemKind::SaveSlots: {   // the save files: a card each (an empty one starts a new game)
                 int n = std::clamp(it.slots, 1, 12); float gap = (b.y - a.y) * 0.03f, cardH = ((b.y - a.y) - gap * (n - 1)) / n;
