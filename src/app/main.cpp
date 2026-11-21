@@ -138,6 +138,9 @@ struct alignas(16) FrameCB {
     XMFLOAT4X4 histVP;      // the frame before's camera-relative view (bounce light's memory)
     float histCam[4];       // how far the camera moved since; w 1 = usable
     float probeO[4], probeB[4], probeM[4], probeP[4];   // light probes: grid corner (camera-relative, spacing), corner in probe steps, its place in the atlas (frame's turn), on / rays / round / reach
+    XMFLOAT4X4 waterVP;     // the water map: the water's tops seen from straight above (caustics, light shafts)
+    float water[4];         // x caustics (0 off, 1 low, 2 high), y reflected caustics, z the map is ready, w light shafts under water
+    float water2[4];        // x shore foam, y drops on the visor (how wet), z caustics brightness, w rain drops on the visor
 };
 struct alignas(16) ChunkCB { float offset[4]; float ax[4] = { 1, 0, 0, 0 }, ay[4] = { 0, 1, 0, 0 }, az[4] = { 0, 0, 1, 0 }; };   // axes: objects are turned and sized
 
@@ -160,7 +163,9 @@ struct App {
     ComPtr<ID3D11Device> dev; ComPtr<ID3D11DeviceContext> ctx; ComPtr<IDXGISwapChain> swap; ComPtr<ID3D11RenderTargetView> backRTV;
     ComPtr<ID3D11Texture2D> depthTex; ComPtr<ID3D11DepthStencilView> dsv;
     ComPtr<ID3D11VertexShader> vsBlock, vsSky, vsShadow; ComPtr<ID3D11PixelShader> psOpaque, psCutout, psSky, psGhost, psShadowCut, psPost, psVolume, psBloomDown, psBloomUp, psRain, psBolt;
-    ComPtr<ID3D11VertexShader> vsSkyMap, vsRain, vsRainFar, vsDust;
+    ComPtr<ID3D11VertexShader> vsSkyMap, vsRain, vsRainFar, vsDust, vsWaterMap;
+    ComPtr<ID3D11Texture2D> waterMapTex; ComPtr<ID3D11DepthStencilView> waterMapDSV; ComPtr<ID3D11ShaderResourceView> waterMapSRV;   // the water's tops from above (caustics)
+    float visorWet = 0, visorRain = 0;   // drops on the visor: after coming out of the water (dries off), from the rain
     ComPtr<ID3D11PixelShader> psReflect, psAO, psAOApply, psReflComp, psAA;
     ComPtr<ID3D11Texture2D> reflLowTex; ComPtr<ID3D11RenderTargetView> reflLowRTV; ComPtr<ID3D11ShaderResourceView> reflLowSRV; int reflLowW = 0, reflLowH = 0;   // reflections traced smaller
     float ReflScale() const { static const float k[4] = { 1.f, 0.75f, 0.5f, 0.25f }; return k[std::clamp(settings.reflectRes, 0, 3)]; }
@@ -341,6 +346,7 @@ struct App {
         b = Compile(src, "PS_BloomDown", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psBloomDown));
         b = Compile(src, "PS_BloomUp", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psBloomUp));
         b = Compile(src, "VS_SkyMap", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsSkyMap));
+        b = Compile(src, "VS_WaterMap", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsWaterMap));
         b = Compile(src, "VS_Rain", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsRain));
         b = Compile(src, "VS_RainFar", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsRainFar));
         b = Compile(src, "PS_Comp", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psComp));   // the screens' compositor
@@ -352,6 +358,8 @@ struct App {
             HR(dev->CreateTexture2D(&d, nullptr, &skyMapTex));
             D3D11_DEPTH_STENCIL_VIEW_DESC dv{}; dv.Format = DXGI_FORMAT_D32_FLOAT; dv.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D; HR(dev->CreateDepthStencilView(skyMapTex.Get(), &dv, &skyMapDSV));
             D3D11_SHADER_RESOURCE_VIEW_DESC sv{}; sv.Format = DXGI_FORMAT_R32_FLOAT; sv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D; sv.Texture2D.MipLevels = 1; HR(dev->CreateShaderResourceView(skyMapTex.Get(), &sv, &skyMapSRV));
+            HR(dev->CreateTexture2D(&d, nullptr, &waterMapTex));   // the water map: the same size, only the water's tops (caustics, light shafts)
+            HR(dev->CreateDepthStencilView(waterMapTex.Get(), &dv, &waterMapDSV)); HR(dev->CreateShaderResourceView(waterMapTex.Get(), &sv, &waterMapSRV));
         }
         b = Compile(src, "PS_Reflect", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psReflect));
         b = Compile(src, "PS_ReflComp", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psReflComp));
@@ -4302,6 +4310,18 @@ struct App {
             skyvp = XMMatrixLookToLH(XMVectorSet(0, 300, 0, 1), XMVectorSet(0, -1, 0, 0), XMVectorSet(0, 0, 1, 0)) * XMMatrixTranslation(mx, mz, 0) * XMMatrixOrthographicLH(2 * R, 2 * R, 1, 700);
         }
         XMStoreFloat4x4(&fc.skyVP, skyvp);
+        // the water map (water's tops from above, 128 x 128 blocks around you): caustics under and above the water, light shafts under it
+        bool underWater = fc.envPart[2] > 0.5f && fc.envPart[2] < 1.5f;
+        bool waterMap = settings.waterCaustics > 0 || (settings.waterShafts && underWater);
+        XMMATRIX watervp = XMMatrixIdentity();
+        if (waterMap) {
+            const float R = 64; double texel = 2.0 * R / 512, px = camPos.x, pz = camPos.z;
+            float mx = (float)(px - std::floor(px / texel) * texel), mz = (float)(pz - std::floor(pz / texel) * texel);
+            watervp = XMMatrixLookToLH(XMVectorSet(0, 300, 0, 1), XMVectorSet(0, -1, 0, 0), XMVectorSet(0, 0, 1, 0)) * XMMatrixTranslation(mx, mz, 0) * XMMatrixOrthographicLH(2 * R, 2 * R, 1, 700);
+        }
+        XMStoreFloat4x4(&fc.waterVP, watervp);
+        fc.water[0] = (float)settings.waterCaustics; fc.water[1] = settings.waterCausticsAbove ? 1.f : 0.f; fc.water[2] = waterMap ? 1.f : 0.f; fc.water[3] = settings.waterShafts ? 1.f : 0.f;
+        fc.water2[0] = settings.waterFoam ? 1.f : 0.f; fc.water2[1] = settings.visorDrops && playMode ? visorWet : 0.f; fc.water2[2] = 1; fc.water2[3] = settings.visorDrops && playMode ? visorRain : 0.f;
         bool occRender = false;
         if (info.trueDark) {   // the roofs map: redrawn every few frames or after moving; in between it is shifted to the camera
             V3 dm = camPos - occCam; occAge++;
@@ -4429,6 +4449,17 @@ struct App {
             ctx->PSSetShader(psShadowCut.Get(), nullptr, 0); drawChunks(skyvp, 1, false);
             ctx->PSSetShader(nullptr, nullptr, 0); drawChunks(skyvp, 2, false);   // water too: rain lands on it (and not on the lake's floor)
             ctx->PSSetShaderResources(0, 1, none);
+        }
+        {   // the water map: only the water's tops, from straight above (the world's own shaders read it at t43)
+            ID3D11ShaderResourceView* n1[1] = {}; ctx->PSSetShaderResources(43, 1, n1);
+            if (waterMap) {
+                ctx->OMSetRenderTargets(0, nullptr, waterMapDSV.Get()); ctx->ClearDepthStencilView(waterMapDSV.Get(), D3D11_CLEAR_DEPTH, 1.f, 0);
+                D3D11_VIEWPORT sv{ 0, 0, 512, 512, 0, 1 }; ctx->RSSetViewports(1, &sv);
+                ctx->RSSetState(rsShadow.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsWaterMap.Get(), nullptr, 0);
+                ctx->PSSetShader(nullptr, nullptr, 0); drawChunks(watervp, 2, false);
+                ctx->OMSetRenderTargets(0, nullptr, nullptr);
+                ctx->PSSetShaderResources(43, 1, waterMapSRV.GetAddressOf());
+            }
         }
 
         GpuMark("mirror view");
@@ -12804,6 +12835,12 @@ struct App {
             float sp = (float)std::min(1.0, std::fabs(player.vel.y) / 12.0);
             if (feet) { WaterSplash(at, 0.4f + sp, false); PlaySoundIn(SND_MOVEMENT, playerSounds.waterIn, 0.6f + 0.4f * sp); }
             else { WaterSplash(at, 0.3f, false); PlaySoundIn(SND_MOVEMENT, playerSounds.waterOut); }
+        }
+        if (head) visorWet = 0; else if (headWet && playMode) visorWet = 1;   // up out of the water: the visor is covered in drops ...
+        visorWet = std::max(0.f, visorWet - (float)dt / 4.5f);                 // ... that dry off over a few seconds
+        {   // rain: a few drops come and go while you stand in it (not under a roof)
+            float want = playMode && !head ? std::clamp(weather.now.rain * camOpen * 1.4f, 0.f, 1.f) : 0.f;
+            visorRain += (want - visorRain) * std::min(1.f, (float)dt * 1.5f);
         }
         feetWet = feet; headWet = head;
         UpdateMuffle(dt, head && !paused);

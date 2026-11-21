@@ -79,6 +79,11 @@ struct Settings {
     float lightShadowDist = 48; // ... only lights this near (blocks); they fade out toward it
     int lightShadowRes = 512;  // each side of a light's shadow map: 128, 256, 512
     float lampDistance = 64;   // real lamp blocks shine this far away (blocks), fading out toward it
+    int waterCaustics = 2;     // water: light patterns on what is under it (0 off, 1 low, 2 high: two layers and colour fringes)
+    bool waterCausticsAbove = true;   // ... and the waves' reflected light dancing on walls and undersides above the water
+    bool waterShafts = true;   // light shafts when you are under water
+    bool waterFoam = true;     // foam where the water meets the shore, and soft edges there
+    bool visorDrops = true;    // water drops on the visor after you come out of the water (and in the rain)
     KeyBinds keys;
     bool load(const std::string& path);
     bool save(const std::string& path) const;

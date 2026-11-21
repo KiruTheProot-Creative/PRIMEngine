@@ -21,7 +21,7 @@ Field field(Settings& s, const std::string& k) {
     else if (k == "clouds") r.f = &s.cloudCover; else if (k == "cloud_shadows") r.b = &s.cloudShadows; else if (k == "fog") r.f = &s.groundFog;
     else if (k == "bloom") r.f = &s.bloom; else if (k == "reflections") r.i = &s.reflections; else if (k == "reflect_res") r.i = &s.reflectRes; else if (k == "anti_alias") r.i = &s.antiAlias; else if (k == "render_scale") r.f = &s.renderScale; else if (k == "upscaler") r.i = &s.upscaler; else if (k == "up_sharpness") r.f = &s.upSharp; else if (k == "pixel_shadows") r.i = &s.pixelShadows; else if (k == "probes") r.i = &s.probes; else if (k == "show_fps") r.b = &s.showFps; else if (k == "ao") r.i = &s.ambientOcclusion; else if (k == "ao_strength") r.f = &s.aoStrength;
     else if (k == "swaying") r.b = &s.swaying; else if (k == "hud_glow") r.b = &s.hudGlow;
-    else if (k == "eye_adapt") r.b = &s.eyeAdapt; else if (k == "film_fx") r.b = &s.filmFx; else if (k == "motion_blur") r.f = &s.motionBlur; else if (k == "lamp_blocks") r.i = &s.lampBlocks; else if (k == "ray_tracing") r.b = &s.rayTracing; else if (k == "rt_reflections") r.b = &s.rtReflect; else if (k == "rt_objects") r.b = &s.rtObjects; else if (k == "rt_lamp_shadows") r.b = &s.rtShadows; else if (k == "lamp_fill") r.f = &s.lampFill; else if (k == "light_shadows") r.i = &s.lightShadows; else if (k == "light_shadow_distance") r.f = &s.lightShadowDist; else if (k == "light_shadow_res") r.i = &s.lightShadowRes; else if (k == "lamp_distance") r.f = &s.lampDistance; else if (k == "light_fog") r.b = &s.lightFog; else if (k == "bounce") r.i = &s.bounce; else if (k == "planar_floors") r.b = &s.planarFloors; else if (k == "lens_flares") r.b = &s.lensFlares;
+    else if (k == "eye_adapt") r.b = &s.eyeAdapt; else if (k == "film_fx") r.b = &s.filmFx; else if (k == "motion_blur") r.f = &s.motionBlur; else if (k == "lamp_blocks") r.i = &s.lampBlocks; else if (k == "ray_tracing") r.b = &s.rayTracing; else if (k == "rt_reflections") r.b = &s.rtReflect; else if (k == "rt_objects") r.b = &s.rtObjects; else if (k == "rt_lamp_shadows") r.b = &s.rtShadows; else if (k == "lamp_fill") r.f = &s.lampFill; else if (k == "light_shadows") r.i = &s.lightShadows; else if (k == "light_shadow_distance") r.f = &s.lightShadowDist; else if (k == "light_shadow_res") r.i = &s.lightShadowRes; else if (k == "lamp_distance") r.f = &s.lampDistance; else if (k == "water_caustics") r.i = &s.waterCaustics; else if (k == "water_caustics_above") r.b = &s.waterCausticsAbove; else if (k == "water_shafts") r.b = &s.waterShafts; else if (k == "water_foam") r.b = &s.waterFoam; else if (k == "visor_drops") r.b = &s.visorDrops; else if (k == "light_fog") r.b = &s.lightFog; else if (k == "bounce") r.i = &s.bounce; else if (k == "planar_floors") r.b = &s.planarFloors; else if (k == "lens_flares") r.b = &s.lensFlares;
     else if (k == "bumps") r.f = &s.bumps; else if (k == "coat") r.f = &s.coat; else if (k == "materials") r.b = &s.materials; else if (k == "guess_materials") r.b = &s.guessMaterials;
     else if (k == "time_of_day") r.f = &s.timeOfDay; else if (k == "day_cycle") r.b = &s.dayCycle; else if (k == "block_preview") r.b = &s.blockPreview;
     else if (k == "sensitivity") r.f = &s.mouseSensitivity; else if (k == "invert_y") r.b = &s.invertY; else if (k == "lock_mode") r.i = &s.lockMode; else if (k == "cave_culling") r.b = &s.caveCulling;
@@ -44,12 +44,12 @@ OptionDef editorOnly(OptionDef d) { d.inGame = false; return d; }
 OptionDef reset(const char* group) { OptionDef d; d.key = std::string("reset_") + group; d.label = "Back to the start values"; d.group = group; d.section = ""; d.type = OptType::Reset; return d; }
 } // namespace
 
-const std::vector<std::string>& optionGroups() { static const std::vector<std::string> g = { "Sound", "Display", "World", "Lighting", "Shadows", "Voxel tracing", "Post-processing", "Controls" }; return g; }
+const std::vector<std::string>& optionGroups() { static const std::vector<std::string> g = { "Sound", "Display", "World", "Lighting", "Shadows", "Water", "Voxel tracing", "Post-processing", "Controls" }; return g; }
 
 const std::vector<OptionDef>& optionDefs() {
     static const std::vector<OptionDef> defs = [] {
         std::vector<OptionDef> v;
-        const char* S = "Sound"; const char* D = "Display"; const char* W = "World"; const char* L = "Lighting"; const char* SH = "Shadows"; const char* RT = "Voxel tracing"; const char* P = "Post-processing"; const char* C = "Controls";
+        const char* S = "Sound"; const char* D = "Display"; const char* W = "World"; const char* L = "Lighting"; const char* SH = "Shadows"; const char* RT = "Voxel tracing"; const char* WA = "Water"; const char* P = "Post-processing"; const char* C = "Controls";
         v.push_back(slider("volume", "Master volume", S, "Volume", 0, 2, 0.05f, "%", "silent"));
         v.push_back(slider("vol_weapons", "Weapons", S, "Volume", 0, 2, 0.05f, "%", "silent", "Beams, charging, missiles, their hits."));
         v.push_back(slider("vol_movement", "Movement", S, "Volume", 0, 2, 0.05f, "%", "silent", "Steps, jumps, landing, the Morph Ball and its bombs."));
@@ -120,6 +120,15 @@ const std::vector<OptionDef>& optionDefs() {
         v.push_back(choice("pixel_shadows", "Pixelated shadows", SH, "Style", { "Off (smooth)", "16 pixels a block", "32 pixels a block" }, { 0, 16, 32 },
                            "Shadow edges snap to the textures' pixel grid, so shadows look like part of the pixel art."));
         v.push_back(reset(SH));
+
+        // ---- Water: light through the waves, the shore, the visor
+        v.push_back(choice("water_caustics", "Caustics", WA, "Light through the waves", { "Off", "Low", "High" }, {},
+                           "The waves gather sunlight into bright, moving lines on everything under the water. High: two layers and a touch of rainbow at their edges."));
+        v.push_back(needs(toggle("water_caustics_above", "Reflected caustics", WA, "Light through the waves", "The sunlight the waves bounce up dances on walls and on the undersides of things just above the water."), "water_caustics"));
+        v.push_back(toggle("water_shafts", "Light shafts under water", WA, "Light through the waves", "Under water, beams of sunlight come down through the waves (walls and overhangs cut them off)."));
+        v.push_back(toggle("water_foam", "Shore foam and soft edges", WA, "The surface", "Foam where the water meets the shore and laps against it; the water's edge fades softly instead of a hard line."));
+        v.push_back(toggle("visor_drops", "Drops on the visor", WA, "The visor", "Coming up out of the water leaves drops on Samus's visor that bend the view and dry off one by one. Rain leaves a few too."));
+        v.push_back(reset(WA));
 
         v.push_back(choice("lamp_blocks", "Lamp blocks", RT, "Real-time lighting", { "Classic (spreads block by block)", "Real light", "Real light and shadows" }, {},
                            "Real light: glowing blocks light things by direction, like lamps, and fall off smoothly. And shadows: walls and pillars block it (through the blocks for every lamp; the nearest lamps also let enemies and objects cast shadows, as many as \"Shadows from lamps\" allows)."));
@@ -228,20 +237,20 @@ void optionReset(Settings& s, const std::string& group) {
 std::vector<QualityPreset>* gamePresets = nullptr;
 const std::vector<std::string>& presetKeys() {
     static const std::vector<std::string> k = { "render_scale", "render_distance", "vertical_distance", "shadows", "shadow_res", "shadow_distance", "shadow_soft", "light_shadows",
-        "probes", "bounce", "ao", "reflections", "reflect_res", "planar_floors", "anti_alias", "bloom", "light_fog", "clouds", "cloud_shadows", "bumps", "coat", "swaying", "lens_flares", "upscaler", "lamp_blocks", "ray_tracing" };
+        "probes", "bounce", "ao", "reflections", "reflect_res", "planar_floors", "anti_alias", "bloom", "light_fog", "clouds", "cloud_shadows", "bumps", "coat", "swaying", "lens_flares", "upscaler", "lamp_blocks", "ray_tracing", "water_caustics", "water_shafts" };
     return k;
 }
 std::vector<QualityPreset> defaultPresets() {
     // render_scale, render_distance, vertical_distance, shadows, shadow_res, shadow_distance, shadow_soft, light_shadows, probes, bounce, ao, reflections, reflect_res,
-    // planar_floors, anti_alias, bloom, light_fog, clouds, cloud_shadows, bumps, coat, swaying, lens_flares, upscaler, lamp_blocks, ray_tracing
-    struct Row { const char* name; float v[26]; };
+    // planar_floors, anti_alias, bloom, light_fog, clouds, cloud_shadows, bumps, coat, swaying, lens_flares, upscaler, lamp_blocks, ray_tracing, water_caustics, water_shafts
+    struct Row { const char* name; float v[28]; };
     static const Row rows[] = {
-        { "Very low", { 0.5f, 6, 3, 0, 1024, 48, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0.3f, 0, 0.3f, 0, 0, 0, 0, 0, 1, 0, 0 } },
-        { "Low",      { 0.58f, 8, 4, 1, 1024, 64, 0, 0, 0, 0, 1, 0, 2, 0, 1, 0.5f, 0, 0.5f, 0, 0.5f, 0.5f, 1, 0, 1, 0, 0 } },
-        { "Medium",   { 0.67f, 10, 5, 1, 2048, 96, 1, 2, 0, 1, 1, 1, 2, 0, 1, 0.7f, 1, 0.6f, 1, 1, 1, 1, 1, 1, 1, 1 } },
-        { "High",     { 0.85f, 14, 6, 1, 2048, 160, 2, 4, 1, 1, 1, 1, 1, 1, 1, 0.8f, 1, 0.7f, 1, 1, 1, 1, 1, 1, 2, 1 } },
-        { "Ultra",    { 1, 20, 8, 1, 3072, 256, 2, 16, 2, 2, 2, 2, 0, 1, 2, 0.8f, 1, 0.75f, 1, 1, 1, 1, 1, 1, 2, 1 } },
-        { "Prime",    { 1.5f, 28, 10, 1, 4096, 384, 2, 32, 2, 2, 2, 2, 0, 1, 2, 0.85f, 1, 0.8f, 1, 1.2f, 1.2f, 1, 1, 1, 2, 1 } },
+        { "Very low", { 0.5f, 6, 3, 0, 1024, 48, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0.3f, 0, 0.3f, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0 } },
+        { "Low",      { 0.58f, 8, 4, 1, 1024, 64, 0, 0, 0, 0, 1, 0, 2, 0, 1, 0.5f, 0, 0.5f, 0, 0.5f, 0.5f, 1, 0, 1, 0, 0, 1, 0 } },
+        { "Medium",   { 0.67f, 10, 5, 1, 2048, 96, 1, 2, 0, 1, 1, 1, 2, 0, 1, 0.7f, 1, 0.6f, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 } },
+        { "High",     { 0.85f, 14, 6, 1, 2048, 160, 2, 4, 1, 1, 1, 1, 1, 1, 1, 0.8f, 1, 0.7f, 1, 1, 1, 1, 1, 1, 2, 1, 2, 1 } },
+        { "Ultra",    { 1, 20, 8, 1, 3072, 256, 2, 16, 2, 2, 2, 2, 0, 1, 2, 0.8f, 1, 0.75f, 1, 1, 1, 1, 1, 1, 2, 1, 2, 1 } },
+        { "Prime",    { 1.5f, 28, 10, 1, 4096, 384, 2, 32, 2, 2, 2, 2, 0, 1, 2, 0.85f, 1, 0.8f, 1, 1.2f, 1.2f, 1, 1, 1, 2, 1, 2, 1 } },
     };
     std::vector<QualityPreset> out;
     for (const Row& r : rows) { QualityPreset p; p.name = r.name; for (size_t k = 0; k < presetKeys().size(); k++) p.values.push_back({ presetKeys()[k], r.v[k] }); out.push_back(p); }

@@ -54,6 +54,9 @@ cbuffer Frame : register(b0)
     float4 gProbeB;                 // xyz the grid's corner in probe steps (world)
     float4 gProbeM;                 // xyz where that corner sits in the (wrapping) atlas, w this frame's turn
     float4 gProbeP;                 // x 1 on, y rays per side, z frames for a full round, w how far a ray looks (blocks)
+    row_major float4x4 gWaterVP;    // camera-relative position -> the water map (the water's surfaces seen from straight above)
+    float4 gWater;                  // x caustics (0 off, 1 low, 2 high), y reflected caustics, z the water map is ready, w light shafts under water
+    float4 gWater2;                 // x shore foam and soft edges, y drops on the visor (0..1: how wet), z caustics brightness, w rain drops on the visor
 };
 // pixelated shadows (gAA.w: 16 or 32 a block): the spot a shadow is looked up at snapped to a grid on the surface, like the textures' pixels
 float3 pixSnap(float3 rel, float3 n)
@@ -495,6 +498,80 @@ float3 fakeShine(VSOut i, float3 n)
     float mask = gFS0.w > 0.5 && i.uvl.z >= 16000 ? dot(gShineMask.Sample(gSamp, i.uvl.xy).rgb, float3(0.333, 0.333, 0.334)) : 1;
     return add * gFSTint.rgb * gFS0.y * mask;
 }
+// ---------------------------------------------------------------- water light: caustics (the waves gather sunlight into moving bright lines)
+Texture2D<float> gWaterMap : register(t43);   // the water's surfaces seen from straight above (depth: how high the top water is at each spot)
+float waterTop(float3 rel, out bool has)       // the top water surface's height over this spot (camera-relative y)
+{
+    has = false;
+    if (gWater.z < 0.5) return 0;
+    float4 c = mul(float4(rel, 1), gWaterVP); float2 uv = float2(c.x, -c.y) * 0.5 + 0.5;
+    if (any(uv <= 0) || any(uv >= 1)) return 0;
+    float d = gWaterMap.Load(int3(uv * 512, 0));
+    if (d >= 0.99999) return 0;
+    has = true; return 299 - d * 699;          // (seen from 300 above the camera, near plane 1, far 700)
+}
+float2 cauHash(float2 p) { float3 q = frac(float3(p.xyx) * float3(0.1031, 0.1030, 0.0973)); q += dot(q, q.yzx + 33.33); return frac((q.xx + q.yz) * q.zy); }
+float causticCells(float2 p, float t)          // 0 on the lines between moving cells, more inside them
+{
+    p += 0.32 * float2(sin(p.y * 1.3 + t * 0.7), sin(p.x * 1.1 - t * 0.6));   // wobbly, like light through waves
+    float2 i = floor(p), f = frac(p); float d1 = 8, d2 = 8;
+    [unroll] for (int y = -1; y <= 1; y++) [unroll] for (int x = -1; x <= 1; x++)
+    {
+        float2 g = float2(x, y), h = cauHash(i + g);
+        float2 o = 0.5 + 0.4 * sin(t * (0.55 + h * 0.45) + h * 6.2832);
+        float d = length(g + o - f);
+        if (d < d1) { d2 = d1; d1 = d; } else if (d < d2) d2 = d;
+    }
+    return d2 - d1;
+}
+float causticAt(float2 p, float t, bool high)  // bright lines 0..~1.6
+{
+    float a = causticCells(p, t), l = pow(saturate(1 - a * 3.2), 4);
+    if (high) { float b = causticCells(p * 1.37 + float2(5.3, 2.1), t * 1.21); l = l * 0.75 + pow(saturate(1 - b * 3.2), 4) * 0.55 + l * pow(saturate(1 - b * 2.5), 2) * 0.8; }
+    return l * 1.6;
+}
+float3 refractedSun()                          // the sun's light bent down by the water's surface (steeper, Snell)
+{
+    float2 h = gSunDir.xz / 1.33; float y = sqrt(saturate(1 - dot(h, h)));
+    return float3(h.x, y, h.y);
+}
+// under the water: how the sun's light here is spread (rgb: 1 = unchanged; brighter lines, darker between);
+// above it: the light the waves throw onto walls and undersides near the water (added). pixel: the screen spot
+void waterLight(float3 rel, float3 nFlat, float3 n, float2 pixel, out float3 sunMul, out float3 bounced)
+{
+    sunMul = 1; bounced = 0;
+    if (gWater.x < 0.5 || gSunDir.y < -0.05) return;
+    float3 q = pixSnap(rel, nFlat);
+    bool has; float top = waterTop(q + nFlat * 0.45, has);
+    if (!has) return;
+    float depth = top - q.y, t = gVolume.z;
+    float3 wp = gCamPos.xyz + q;
+    float farK = saturate(1 - length(rel) / 96);
+    if (depth > 0.01)
+    {
+        float3 L = refractedSun();
+        float2 p = (wp.xz + L.xz / max(L.y, 0.3) * depth) * 0.85;   // where this light came in through the surface
+        bool high = gWater.x > 1.5;
+        float3 cc;
+        if (high) { float2 e = float2(0.045, 0.03) * (1 + depth * 0.15); cc = float3(causticAt(p + e, t, true), causticAt(p, t, true), causticAt(p - e, t, true)); }
+        else cc = causticAt(p, t, false).xxx;
+        float k = saturate(depth * 3) * exp(-depth * 0.09) * farK * gWater2.z;   // soft right at the surface, fading deeper down
+        sunMul = lerp(1, 0.55 + cc, k);
+        return;
+    }
+    if (depth > -4 && gWater.y > 0.5)
+    {
+        float facing = saturate(-n.y) + 0.55 * saturate(1 - abs(nFlat.y));    // undersides most, walls some, tops none
+        if (facing <= 0.01) return;
+        float3 at = float3(q.x + nFlat.x * 0.5, top, q.z + nFlat.z * 0.5);  // the patch of water below that throws the light
+        float lit = shadowAt(at, float3(0, 1, 0), saturate(gSunDir.y), pixel) * cloudShadow(at);
+        float2 p = wp.xz * 0.7 + wp.y * 0.35;
+        float c = causticAt(p, t * 1.35, false);
+        float k = pow(saturate(1 + depth / 4), 2) * facing * lit * saturate(gSunDir.y * 4) * farK * gWater2.z;
+        bounced = gSunColor.rgb * c * k * 0.22;
+    }
+}
+
 float3 lightBlock(VSOut i, float3 albedo, bool front, out float3 n, out float shine, out float3 indirect)
 {
     n = front ? i.n : -i.n;
@@ -530,7 +607,9 @@ float3 lightBlock(VSOut i, float3 albedo, bool front, out float3 n, out float sh
         float pw; float3 pl = probeLight(i.rel + nFlat * 0.05, nFlat, true, pw);
         ambientNow = lerp(ambientNow, pl, saturate(pw * 3));
     }
-    float3 light = gSunColor.rgb * ndl * sh + ambientNow * i.ao;
+    float3 sunC = gSunColor.rgb, bounced = 0;
+    if (gWater.x > 0.5) { float3 sm; waterLight(i.rel, nFlat, n, i.pos.xy, sm, bounced); sunC *= sm; }   // caustics under water, their reflection above
+    float3 light = sunC * ndl * sh + ambientNow * i.ao + bounced;
     light = max(light, gMinLight.rgb * sky * i.ao * (1 - skyV));                                   // closed spaces: never darker than the world's minimum
     float lamp = max(i.lamp.r, max(i.lamp.g, i.lamp.b));
     float3 hue = lamp > 0 ? i.lamp.rgb / lamp : 0;                                                   // the colour of the lamps nearby
@@ -542,7 +621,7 @@ float3 lightBlock(VSOut i, float3 albedo, bool front, out float3 n, out float sh
     float3 c = albedo * (light + dyn) * (1 - 0.75 * metal);                                       // metal: little plain colour ...
     c += dSpec * lerp(float3(0.04, 0.04, 0.04) + 0.5 * dShine, albedo * 1.4, metal) * max(dShine, 0.12);   // the lights' highlights
     if (gFS0.x > 0.5 && gOffset.w < 0.5) c += fakeShine(i, n);                                    // fake shine (models): painted-on glints, like Prime's arm cannon
-    indirect = albedo * (light - gSunColor.rgb * ndl * sh) * (1 - 0.75 * metal);
+    indirect = albedo * (light - sunC * ndl * sh) * (1 - 0.75 * metal);
     float3 v0 = -normalize(i.rel);
     float mshine = saturate(m.a.x);
     if (mshine > 0.01 || metal > 0.01)                                                            // ... and the sun as a highlight, in its own colour for metal
@@ -647,6 +726,12 @@ ShOut VS_Shadow(VSIn i)
     ShOut o; o.pos = mul(float4(p, 1), gShadowVP); o.uvl = float3(i.uv, layer); return o;
 }
 void PS_ShadowCutout(ShOut i) { clip(albedoAt(i.uvl).a - 0.5); }
+ShOut VS_WaterMap(VSIn i)   // the water map: only the water's tops, seen from straight above
+{
+    ShOut o; o.pos = mul(float4(meshToRel(i.pos), 1), gWaterVP); o.uvl = float3(i.uv, 0);
+    if (abs(floor(i.layer / 16384) - 3) > 0.5 || unpackNormal(i.normal).y < 0.5) o.pos = float4(-5, -5, 0.5, 1);   // (anything else: a point off the map)
+    return o;
+}
 ShOut VS_SkyMap(VSIn i)
 {
     float layer; float3 p = sway(meshToRel(i.pos), i.layer, i.uv.y, layer);
@@ -1391,6 +1476,18 @@ float4 PS_Water(VSOut i, bool front : SV_IsFrontFace) : SV_Target
     float F = front ? 0.02 + 0.98 * pow(1 - NdotV, 5) : 0.08;
     float3 c = lerp(refr, refl, F);
     if (front) c += gSunColor.rgb * pow(saturate(dot(r, gSunDir.xyz)), 600) * 12 * shadowAt(i.rel, float3(0, 1, 0), 1, i.pos.xy);   // sun glint
+    if (front && gWater2.x > 0.5 && i.n.y > 0.5)   // the shore: foam where it gets shallow, lapping in and out; the very edge fades into what is under it
+    {
+        float2 fp = wp.xz; if (gAA.w > 0.5) fp = (floor(fp * gAA.w) + 0.5) / gAA.w;   // (pixelated shadows: the foam in the same pixel grid)
+        float shore = saturate(1 - thick / 0.9);
+        float lap = 0.5 + 0.5 * sin(thick * 7 - t * 1.6 + causticCells(fp * 0.5, t * 0.3) * 5);
+        float bub = causticCells(fp * 2.3, t * 0.5);                                   // little cells: the foam's bubbles
+        float fm = saturate(shore * shore * (0.5 + 0.65 * lap) - (0.32 - bub) * 1.3);
+        fm = smoothstep(0.12, 0.5, fm) * saturate(1 - dist / 80);
+        float3 foamLit = gSunColor.rgb * saturate(gSunDir.y) * shadowAt(i.rel, float3(0, 1, 0), saturate(gSunDir.y), i.pos.xy) + gAmbient.rgb * wsv;
+        c = lerp(c, foamLit * 0.8, fm * 0.85);
+        c = lerp(behind, c, saturate(thick * 6));
+    }
     float f = saturate((dist - gFogRange.x) / max(gFogRange.y - gFogRange.x, 1));
     return float4(lerp(c, skyColor(dir), f * f), 1);
 }
@@ -1508,6 +1605,28 @@ float4 PS_VolumeLow(SkyOut i) : SV_Target   // a smaller picture: what the air a
         }
         sAll += S;
     }
+    // ---- under water: beams of sunlight coming down through the waves (walls and overhangs cut them off)
+    if (gWater.w > 0.5 && gEnvPart.z > 0.5 && gEnvPart.z < 1.5 && gSunDir.w > 0.5 && gSunDir.y > 0.02)
+    {
+        float tMax = min(dist, 40);
+        const int N = 16;
+        float dt = tMax / N; float S = 0;
+        float3 L = refractedSun(); float tm = gVolume.z;
+        bool has0; float top0 = waterTop(float3(0, 0.2, 0), has0);
+        [loop] for (int k = 0; k < N; k++)
+        {
+            float s = (k + jitter) * dt; float3 rel = dir * s;
+            bool h; float top = waterTop(rel, h); if (!h) top = has0 ? top0 : rel.y + 3;
+            float depth = top - rel.y; if (depth < 0) continue;
+            int cs = s < gCascR.y * 0.9 ? 1 : 3;
+            float4 sp = mul(float4(rel, 1), gCascVP[cs]); float2 uv = float2(sp.x, -sp.y) * 0.5 + 0.5;
+            float sun = (all(uv > 0) && all(uv < 1) && sp.z < 1) ? gShadow.SampleCmpLevelZero(gShadowSamp, float3(uv, cs), sp.z - 0.002) : 1;
+            float2 p = (gCamPos.xz + rel.xz + L.xz / L.y * depth) * 0.32;              // broad beams: the same light pattern, much bigger
+            float beam = pow(saturate(1 - causticCells(p, tm * 0.4) * 1.7), 2.5);
+            S += sun * beam * exp(-s * 0.1 - depth * 0.07) * dt;
+        }
+        sAll += S * gSunColor.rgb * float3(0.35, 0.85, 0.95) * phaseHG(dot(dir, L), 0.55) * 12.566 * 0.045 * cloudShadow(float3(0, 0, 0));
+    }
     return float4(sAll, tAll);
 }
 
@@ -1529,10 +1648,11 @@ float4 PS_Volume(SkyOut i) : SV_Target   // full size: the picture seen through 
     float dist = zb >= 1 ? 1e9 : gDepth.x * gDepth.y / (gDepth.y - zb * (gDepth.y - gDepth.x)) / max(dot(dir, gCamF.xyz), 1e-3);
     float lz = zb >= 1 ? 1e5 : linDepth(zb);
     float4 air = upLow(gVolLow, px, lz);
-    scene = scene * air.a + air.rgb;
-    // under water / in lava: the view gets murky
+    scene = scene * air.a + (gEnvPart.z > 0.5 ? 0 : air.rgb);
+    // under water / in lava: the view gets murky (and then what the water adds on top: the light shafts)
     if (gEnvPart.z > 0.5)
     {
+
         float d = min(dist, 400);
         if (gEnvPart.z < 1.5)
         {
@@ -1540,6 +1660,7 @@ float4 PS_Volume(SkyOut i) : SV_Target   // full size: the picture seen through 
             scene = lerp(scene, (gAmbient.rgb * 0.7 + gSunColor.rgb * 0.12) * float3(0.05, 0.30, 0.36), 1 - exp(-d * 0.16));
         }
         else scene = lerp(scene, float3(1.6, 0.45, 0.08), 1 - exp(-d * 1.4));
+        scene += air.rgb;
     }
     return float4(scene, 1);
 }
@@ -1602,6 +1723,27 @@ cbuffer LookCB : register(b10)
 };
 Texture2D gExposure : register(t16);   // 1x1: the eye's adaptation (stops), see PS_Adapt
 Texture2D gLumTex : register(t17);     // log brightness of the picture, with mips (PS_LumLog)
+// drops on the visor: little lenses that show the view upside down, drying off one by one (wet 0..1), and rain's own (coming and going)
+void visorDrops(float2 pos, out float2 off, out float rim)
+{
+    off = 0; rim = 0;
+    float sz = gDepth.w, t = gVolume.z;
+    [unroll] for (int L = 0; L < 3; L++)
+    {
+        float amount = L < 2 ? gWater2.y * (L == 0 ? 0.6 : 0.85) : gWater2.w * 0.4;
+        if (amount < 0.003) continue;
+        float cells = L == 0 ? 6 : L == 1 ? 11 : 9;
+        float2 p = pos / sz * cells, ci = floor(p), f = frac(p);
+        float gen = L == 2 ? floor(t * 0.3 + cauHash(ci).x * 5) : 0;               // rain: a cell's drop comes and goes
+        float2 h = cauHash(ci + L * 17.3 + gen * 3.1); float h3 = cauHash(ci.yx + 3.7 + L + gen).x;
+        if (h.x > amount) continue;                                                // (fewer and fewer as they dry)
+        float2 c = 0.5 + (h - 0.5) * 0.55;
+        float r = (0.14 + 0.2 * h3) * (L == 1 ? 0.7 : 1) * (L < 2 ? 0.55 + 0.45 * saturate(gWater2.y * 1.5) : 0.8);
+        float2 d = (f - c) / r; d.y *= 0.85;
+        float k = dot(d, d);
+        if (k < 1) { float z = sqrt(1 - k); off -= d * (1 - z * 0.35) * r / cells * sz * 0.9; rim = max(rim, smoothstep(0.5, 1, k)); }
+    }
+}
 // "AgX" (Troy Sobotka's film-like curve; polynomial fit by Benjamin Wrensch): very bright colours bleach toward white
 // like film instead of turning into flat neon blobs
 float3 agxCurve(float3 x)
@@ -1732,8 +1874,11 @@ float4 PS_Post(SkyOut i) : SV_Target
         float2 v0 = i.ndc; h *= 1 - 0.18 * dot(v0, v0) * 0.5;
         return float4(pow(max(deathFx(h, px, tvBoost), 0), 1 / 2.2), 1);
     }
+    float dropRim = 0;
+    if (gWater2.y > 0.003 || gWater2.w > 0.003) { float2 o; visorDrops(i.pos.xy, o, dropRim); px = clamp(px + int2(round(o)), int2(0, 0), int2(gDepth.zw) - 1); uv = (float2(px) + 0.5) / gDepth.zw; }
     float expo = lookExposure();
     float3 c = postBase(px, uv, expo);
+    c *= 1 - dropRim * 0.35;   // a drop's dark rim
     {   // colour fringes: red and blue a little apart - the visor's (sideways) and the lens's (toward the edges)
         float2 rad = i.ndc * float2(1, -1) * gLk1.y * 0.004 * gDepth.z;
         float2 of = float2(gVMisc.x, 0) + rad;
