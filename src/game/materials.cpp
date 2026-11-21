@@ -38,7 +38,7 @@ const char* shinePresetName(int i) {
     return n[i < 0 ? 0 : i > SHINE_PRESETS ? SHINE_PRESETS : i];
 }
 std::vector<float> Materials::table(const BlockRegistry& reg) const {
-    std::vector<float> t(std::max<size_t>(1, reg.textureCount()) * 8, 0.f);
+    std::vector<float> t(std::max<size_t>(1, reg.textureCount()) * 12, 0.f);
     for (size_t i = 0; i < reg.textureCount(); i++) {
         const TexImage& im = reg.image((int)i);
         TexMaterial m = i == 0 ? TexMaterial{} : of(im.variant() ? im.baseName : im.name);
@@ -50,7 +50,7 @@ std::vector<float> Materials::table(const BlockRegistry& reg) const {
             else if (g.mode == 3) m.emit = g.strength;
             if ((g.color & 0xFFFFFF) != 0xFFFFFF) tint = (float)(g.color & 0xFFFFFF);   // (exact: 24 bits fit a float)
         }
-        float* p = &t[i * 8]; p[0] = m.shine; p[1] = m.metal; p[2] = m.glow; p[3] = m.glowFrom; p[4] = m.bumps; p[5] = m.coat; p[6] = m.emit; p[7] = tint;
+        float* p = &t[i * 12]; p[0] = m.shine; p[1] = m.metal; p[2] = m.glow; p[3] = m.glowFrom; p[4] = m.bumps; p[5] = m.coat; p[6] = m.emit; p[7] = tint; p[8] = m.rough;
     }
     return t;
 }
@@ -67,6 +67,7 @@ bool saveMaterials(const std::string& path, const Materials& m) {
     for (auto& kv : m.set) { const TexMaterial& t = kv.second; f << "tex " << esc(kv.first) << " " << t.shine << " " << t.metal << " " << t.glow << " " << t.glowFrom << " " << t.bumps << " " << t.coat << " " << esc(t.emitMap) << " " << t.emit << " " << t.lights
       << " " << (int)t.fake << " " << t.fakeStrength << " " << t.fakeTint << " " << t.fakeBeam << " " << t.fakeWorld << " " << t.fakePreset << " " << esc(t.fakeMap) << " " << esc(t.fakeMask);
       for (const Glint& g : t.glints) f << " " << g.on << " " << g.yaw << " " << g.pitch << " " << g.color << " " << g.sharp << " " << g.power;
+      f << " rough " << t.rough;
       f << "\n"; }
     return (bool)f;
 }
@@ -83,6 +84,7 @@ bool loadMaterials(const std::string& path, Materials& m) {
               t.fakePreset = std::clamp(fp, 0, SHINE_PRESETS); t.fakeMap = unesc(fm); t.fakeMask = unesc(fma);
               for (Glint& g : t.glints) { int on; Glint r; if (l >> on >> r.yaw >> r.pitch >> r.color >> r.sharp >> r.power) { r.on = on != 0; g = r; } }
           } }
+        { std::string rk; float rv; if (l >> rk >> rv && rk == "rough") t.rough = std::clamp(rv, 0.f, 1.f); }   // (newer files)
         m.set[unesc(n)] = t;
     }
     return true;

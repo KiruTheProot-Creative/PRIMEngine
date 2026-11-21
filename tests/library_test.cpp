@@ -152,7 +152,7 @@ int main() {
         CHECK(g.get(st).tex[F_PY] == gd.tex[F_PY], "changing something else keeps its copy");
         g.resolve(); CHECK(g.textureCount() == before + 2, "resolving again doesn't pile up copies");
         Materials mats; std::vector<float> tb = mats.table(g); int L = g.get(st).tex[F_PY];
-        CHECK(tb[L * 8 + 2] == 2.5f && tb[L * 8 + 3] == 0 && tb[L * 8 + 7] == (float)0x40FF80 && tb[baseTex * 8 + 2] == mats.of(d.faces[F_PY]).glow, "its material: the whole face glows, tinted; the texture itself doesn't change");
+        CHECK(tb[L * 12 + 2] == 2.5f && tb[L * 12 + 3] == 0 && tb[L * 12 + 7] == (float)0x40FF80 && tb[baseTex * 12 + 2] == mats.of(d.faces[F_PY]).glow, "its material: the whole face glows, tinted; the texture itself doesn't change");
         gl.saveBlocks(g); BlockRegistry g2; Library l2; l2.dir = lib.dir; l2.load(g2);
         const BlockDef& ld = g2.get(g2.find("stone"));
         CHECK(ld.glow[F_PY] == d.glow[F_PY] && ld.glow[F_NX].mode == 3 && ld.glow[F_NX].map == "rune glow.png" && !ld.glow[F_PZ].on() && g2.image(ld.tex[F_PY]).variant(), "glowing faces save and load (a picture name with a space too)");

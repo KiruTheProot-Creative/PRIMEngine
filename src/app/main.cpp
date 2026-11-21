@@ -567,6 +567,10 @@ struct App {
     bool MaterialSliders(TexMaterial& m, const std::string& key = "") {
         TexMaterial before = m;
         Prop("Shiny"); ImGui::SliderFloat("##msh", &m.shine, 0, 1, m.shine <= 0 ? "matt" : "%.2f");
+        if (m.shine > 0) {
+            Prop("Roughness"); ImGui::SliderFloat("##mrough", &m.rough, 0, 1, m.rough <= 0.001f ? "sharp (like a mirror)" : m.rough > 0.75f ? "very blurry %.2f" : "%.2f");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("How blurry its reflections are: 0 sharp (polished stone, glass), higher: glossy and soft (brushed metal, wet rock, plastic).");
+        }
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Reflects the world (with Reflections on) and catches the sun as a highlight.");
         Prop("Metal"); ImGui::SliderFloat("##mme", &m.metal, 0, 1, m.metal <= 0 ? "no" : "%.2f");
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Metal shows less of its plain colour and reflects in its own colour (gold looks golden).\nWorks best together with Shiny.");
@@ -693,11 +697,11 @@ struct App {
     void BindMaterials() {
         if (materials.guess != settings.guessMaterials) { materials.guess = settings.guessMaterials; matsDirty = true; }
         if (matsDirty || !matSRV) {
-            std::vector<float> t = materials.table(reg); size_t n = t.size() / 8; matsDirty = false;
-            for (size_t i = 0; i < n; i++) if (i >= emitInfo.size() || !emitInfo[i].on) t[i * 8 + 6] = 0;   // (no emission map: nothing to glow)
+            std::vector<float> t = materials.table(reg); size_t n = t.size() / 12; matsDirty = false;
+            for (size_t i = 0; i < n; i++) if (i >= emitInfo.size() || !emitInfo[i].on) t[i * 12 + 6] = 0;   // (no emission map: nothing to glow)
             if (!matBuf || n != matCount) {
                 if (matSRV) retired.push_back(matSRV);
-                D3D11_BUFFER_DESC d{}; d.ByteWidth = (UINT)(n * 32); d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_SHADER_RESOURCE; d.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED; d.StructureByteStride = 32;
+                D3D11_BUFFER_DESC d{}; d.ByteWidth = (UINT)(n * 48); d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_SHADER_RESOURCE; d.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED; d.StructureByteStride = 48;
                 D3D11_SUBRESOURCE_DATA sd{ t.data(), 0, 0 }; matBuf.Reset(); HR(dev->CreateBuffer(&d, &sd, &matBuf));
                 D3D11_SHADER_RESOURCE_VIEW_DESC v{}; v.Format = DXGI_FORMAT_UNKNOWN; v.ViewDimension = D3D11_SRV_DIMENSION_BUFFER; v.Buffer.FirstElement = 0; v.Buffer.NumElements = (UINT)n;
                 matSRV.Reset(); HR(dev->CreateShaderResourceView(matBuf.Get(), &v, &matSRV)); matCount = n;
@@ -4211,16 +4215,16 @@ struct App {
         { ID3D11ShaderResourceView* r7[7] = { hdrSRV.Get(), shadows ? shadowSRV.Get() : nullptr, depthSRV.Get(), nullptr, skyMap ? skyMapSRV.Get() : nullptr, surfSRV.Get(), lastMirror.valid ? mirSRV.Get() : nullptr }; ctx->PSSetShaderResources(0, 7, r7);
           ctx->PSSetShaderResources(14, 1, emitArray.GetAddressOf()); BindMaterials(); }
         ctx->PSSetSamplers(3, 1, sampClamp.GetAddressOf());
-        if (float rs = ReflScale(); rs < 0.999f && settings.reflections > 0) {   // smaller: the rays traced into a smaller picture, then laid over the full one
+        if (float rs = ReflScale(); settings.reflections > 0) {   // the rays traced into their own picture (smaller, if set), then laid over the full one, blurred as rough as each surface is
             int lw = std::max(1, (int)std::lround(rw * rs)), lh = std::max(1, (int)std::lround(rh * rs)); EnsureReflLow(lw, lh);
             const float clr[4] = { 0, 0, 0, 0 }; ctx->OMSetRenderTargets(1, reflLowRTV.GetAddressOf(), nullptr); ctx->ClearRenderTargetView(reflLowRTV.Get(), clr);
             D3D11_VIEWPORT sv{ 0, 0, (float)lw, (float)lh, 0, 1 }; ctx->RSSetViewports(1, &sv);
             ctx->Draw(3, 0);
             D3D11_VIEWPORT fv{ 0, 0, (float)rw, (float)rh, 0, 1 }; ctx->RSSetViewports(1, &fv);
             ctx->OMSetRenderTargets(1, reflRTV.GetAddressOf(), nullptr); ctx->PSSetShader(psReflComp.Get(), nullptr, 0);
-            ctx->PSSetShaderResources(34, 1, reflLowSRV.GetAddressOf());
+            ctx->PSSetShaderResources(34, 1, reflLowSRV.GetAddressOf()); ctx->PSSetShaderResources(25, 1, albSRV.GetAddressOf());
             ctx->Draw(3, 0);
-            ID3D11ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(34, 1, &n1);
+            ID3D11ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(34, 1, &n1); ctx->PSSetShaderResources(25, 1, &n1);
         } else ctx->Draw(3, 0);
         { ID3D11ShaderResourceView* n7[7] = {}; ctx->PSSetShaderResources(0, 7, n7); }
         // everything after this draws over the reflected picture, still depth-tested against the world

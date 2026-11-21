@@ -162,7 +162,7 @@ Texture3D<float2> gNoise : register(t3);       // tiling cloud noise: x soft bil
 SamplerState gSamp : register(s0);
 Texture2D gMeshTex : register(t9);              // an imported model's own picture (its vertices use layer 16383)
 // materials per texture layer: a = shine, metal, glow, glow only above this brightness; b = bumps, coat, emission map brightness (0: none)
-struct TexMat { float4 a; float4 b; };
+struct TexMat { float4 a; float4 b; float4 c; };   // c.x: roughness (blurry reflections)
 StructuredBuffer<TexMat> gMats : register(t10);
 float3 glowTint(float w)   // b.w: a glowing face's colour, 0xRRGGBB as a number (0: its own colours)
 {
@@ -602,7 +602,7 @@ PSOut PS_Opaque(VSOut i, bool front : SV_IsFrontFace)
     float4 t = albedoAt(i.uvl);
     PSOut o; float3 n; float sh;
     o.indirect = 0;
-    o.albedo = float4(t.rgb, 1);
+    o.albedo = float4(t.rgb, i.uvl.z < 16000 ? gMats[(uint)round(i.uvl.z)].c.x : 0);   // a: how rough (blurry reflections)
     if (i.kind > 3.5) { o.color = float4(lavaColor(i.rel), 1); o.surface = float4(i.n * 0.5 + 0.5, 0); o.albedo = 0; return o; }
     float3 ind;
     o.color = float4(lightBlock(i, t.rgb, front, n, sh, ind), 1);
@@ -616,7 +616,7 @@ PSOut PS_Cutout(VSOut i, bool front : SV_IsFrontFace)
     float4 t = albedoAt(i.uvl);
     clip(t.a - 0.5);
     PSOut o; float3 n; float sh; float3 ind;
-    o.albedo = float4(t.rgb, 1);
+    o.albedo = float4(t.rgb, i.uvl.z < 16000 ? gMats[(uint)round(i.uvl.z)].c.x : 0);
     o.color = float4(lightBlock(i, t.rgb, front, n, sh, ind), 1);
     o.surface = float4(n * 0.5 + 0.5, i.mat.y > 0.5 ? 1 : min(sh, 0.98));
     o.indirect = float4(ind, 0);
@@ -838,6 +838,7 @@ float4 PS_Sky(SkyOut i) : SV_Target
 // in the finished picture by walking a ray through the depth buffer; where it finds nothing, they mirror the sky.
 Texture2D gHdr : register(t0);
 Texture2D gSurface : register(t5);
+Texture2D gAlbedo : register(t25);   // the surfaces' own colours (bounce light); a: how rough (blurry reflections)
 Texture2D gMirrorView : register(t6);   // the world drawn from the mirrored camera (same screen positions as the picture)
 SamplerState gClamp : register(s3);
 float ignR(float2 px) { return frac(52.9829189 * frac(dot(px, float2(0.06711056, 0.00583715)))); }
@@ -1195,7 +1196,7 @@ float4 PS_ProbeUpdate(SkyOut i) : SV_Target
 // gMinLight.w < 1: drawn smaller (only the reflection: rgb what it adds, a how much of the picture it covers), then PS_ReflComp lays it over
 float4 PS_Reflect(SkyOut i) : SV_Target
 {
-    float rs = gMinLight.w > 0.01 ? gMinLight.w : 1; bool small = rs < 0.999;
+    float rs = gMinLight.w > 0.01 ? gMinLight.w : 1; bool small = true;   // (always into its own picture: PS_ReflComp lays it over, blurred as rough as each surface is)
     int2 px = int2(min(i.pos.xy / rs, gDepth.zw - 1));
     float3 scene = gHdr.Load(int3(px, 0)).rgb;
     float4 g = gSurface.Load(int3(px, 0));
@@ -1255,7 +1256,22 @@ float4 PS_ReflComp(SkyOut i) : SV_Target
     int2 px = int2(i.pos.xy);
     float3 scene = gHdr.Load(int3(px, 0)).rgb;
     if (gSurface.Load(int3(px, 0)).a < 0.02 || gRefl.x < 0.5) return float4(scene, 1);
-    float4 r = gReflLow.SampleLevel(gClamp, (float2(px) + 0.5) / gDepth.zw, 0);
+    float2 uv = (float2(px) + 0.5) / gDepth.zw;
+    float4 r = gReflLow.SampleLevel(gClamp, uv, 0);
+    float rough = saturate(gAlbedo.Load(int3(px, 0)).a);
+    if (rough > 0.02 && r.a > 0.001)   // rough: the reflection blurred (a disc of samples, only from shiny spots), as blurry as the surface is rough
+    {
+        float rad = rough * rough * 0.05 + rough * 0.012; float3 s = r.rgb; float wa = r.a;
+        [unroll] for (int k = 0; k < 12; k++)
+        {
+            float ang = k * 2.39996 + ign(i.pos.xy) * 6.2832, dk = sqrt((k + 0.5) / 12);
+            float4 q = gReflLow.SampleLevel(gClamp, uv + float2(cos(ang), sin(ang) * gDepth.z / gDepth.w) * rad * dk, 0);
+            s += q.rgb; wa += q.a;
+        }
+        float3 refl = s / max(wa * 2, 1e-4);   // (rgb is reflection x amount, a half the amount: the reflection itself, averaged)
+        float a = r.a * (1 - rough * 0.35);    // rough surfaces show their reflection a little less
+        return float4(scene * (1 - a) + refl * a * 2, 1);
+    }
     return float4(scene * (1 - r.a) + r.rgb, 1);
 }
 
@@ -2091,7 +2107,6 @@ float4 PS_GlowComp(BlitOut i) : SV_Target
 // ---------------------------------------------------------------- bounce light (screen-space GI): light bouncing off lit and glowing
 // surfaces onto the ones near them - a green glow tints the wall beside it, a sunlit floor lights the ceiling a little
 Texture2D gGITex : register(t24);
-Texture2D gAlbedo : register(t25);
 float3 relAt(int2 fp, float zb)
 {
     float2 ndc = (float2(fp) + 0.5) / gDepth.zw * float2(2, -2) + float2(-1, 1);
