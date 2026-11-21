@@ -21,7 +21,7 @@ Field field(Settings& s, const std::string& k) {
     else if (k == "clouds") r.f = &s.cloudCover; else if (k == "cloud_shadows") r.b = &s.cloudShadows; else if (k == "fog") r.f = &s.groundFog;
     else if (k == "bloom") r.f = &s.bloom; else if (k == "reflections") r.i = &s.reflections; else if (k == "reflect_res") r.i = &s.reflectRes; else if (k == "anti_alias") r.i = &s.antiAlias; else if (k == "render_scale") r.f = &s.renderScale; else if (k == "upscaler") r.i = &s.upscaler; else if (k == "up_sharpness") r.f = &s.upSharp; else if (k == "pixel_shadows") r.i = &s.pixelShadows; else if (k == "probes") r.i = &s.probes; else if (k == "show_fps") r.b = &s.showFps; else if (k == "ao") r.i = &s.ambientOcclusion; else if (k == "ao_strength") r.f = &s.aoStrength;
     else if (k == "swaying") r.b = &s.swaying; else if (k == "hud_glow") r.b = &s.hudGlow;
-    else if (k == "eye_adapt") r.b = &s.eyeAdapt; else if (k == "film_fx") r.b = &s.filmFx; else if (k == "motion_blur") r.f = &s.motionBlur; else if (k == "lamp_blocks") r.i = &s.lampBlocks; else if (k == "ray_tracing") r.b = &s.rayTracing; else if (k == "rt_reflections") r.b = &s.rtReflect; else if (k == "rt_objects") r.b = &s.rtObjects; else if (k == "rt_lamp_shadows") r.b = &s.rtShadows; else if (k == "lamp_fill") r.f = &s.lampFill; else if (k == "light_shadows") r.i = &s.lightShadows; else if (k == "light_fog") r.b = &s.lightFog; else if (k == "bounce") r.i = &s.bounce; else if (k == "planar_floors") r.b = &s.planarFloors; else if (k == "lens_flares") r.b = &s.lensFlares;
+    else if (k == "eye_adapt") r.b = &s.eyeAdapt; else if (k == "film_fx") r.b = &s.filmFx; else if (k == "motion_blur") r.f = &s.motionBlur; else if (k == "lamp_blocks") r.i = &s.lampBlocks; else if (k == "ray_tracing") r.b = &s.rayTracing; else if (k == "rt_reflections") r.b = &s.rtReflect; else if (k == "rt_objects") r.b = &s.rtObjects; else if (k == "rt_lamp_shadows") r.b = &s.rtShadows; else if (k == "lamp_fill") r.f = &s.lampFill; else if (k == "light_shadows") r.i = &s.lightShadows; else if (k == "light_shadow_distance") r.f = &s.lightShadowDist; else if (k == "light_shadow_res") r.i = &s.lightShadowRes; else if (k == "lamp_distance") r.f = &s.lampDistance; else if (k == "light_fog") r.b = &s.lightFog; else if (k == "bounce") r.i = &s.bounce; else if (k == "planar_floors") r.b = &s.planarFloors; else if (k == "lens_flares") r.b = &s.lensFlares;
     else if (k == "bumps") r.f = &s.bumps; else if (k == "coat") r.f = &s.coat; else if (k == "materials") r.b = &s.materials; else if (k == "guess_materials") r.b = &s.guessMaterials;
     else if (k == "time_of_day") r.f = &s.timeOfDay; else if (k == "day_cycle") r.b = &s.dayCycle; else if (k == "block_preview") r.b = &s.blockPreview;
     else if (k == "sensitivity") r.f = &s.mouseSensitivity; else if (k == "invert_y") r.b = &s.invertY; else if (k == "lock_mode") r.i = &s.lockMode; else if (k == "cave_culling") r.b = &s.caveCulling;
@@ -44,12 +44,12 @@ OptionDef editorOnly(OptionDef d) { d.inGame = false; return d; }
 OptionDef reset(const char* group) { OptionDef d; d.key = std::string("reset_") + group; d.label = "Back to the start values"; d.group = group; d.section = ""; d.type = OptType::Reset; return d; }
 } // namespace
 
-const std::vector<std::string>& optionGroups() { static const std::vector<std::string> g = { "Sound", "Display", "World", "Lighting", "Shadows", "Ray tracing", "Post-processing", "Controls" }; return g; }
+const std::vector<std::string>& optionGroups() { static const std::vector<std::string> g = { "Sound", "Display", "World", "Lighting", "Shadows", "Voxel tracing", "Post-processing", "Controls" }; return g; }
 
 const std::vector<OptionDef>& optionDefs() {
     static const std::vector<OptionDef> defs = [] {
         std::vector<OptionDef> v;
-        const char* S = "Sound"; const char* D = "Display"; const char* W = "World"; const char* L = "Lighting"; const char* SH = "Shadows"; const char* RT = "Ray tracing"; const char* P = "Post-processing"; const char* C = "Controls";
+        const char* S = "Sound"; const char* D = "Display"; const char* W = "World"; const char* L = "Lighting"; const char* SH = "Shadows"; const char* RT = "Voxel tracing"; const char* P = "Post-processing"; const char* C = "Controls";
         v.push_back(slider("volume", "Master volume", S, "Volume", 0, 2, 0.05f, "%", "silent"));
         v.push_back(slider("vol_weapons", "Weapons", S, "Volume", 0, 2, 0.05f, "%", "silent", "Beams, charging, missiles, their hits."));
         v.push_back(slider("vol_movement", "Movement", S, "Volume", 0, 2, 0.05f, "%", "silent", "Steps, jumps, landing, the Morph Ball and its bombs."));
@@ -97,9 +97,6 @@ const std::vector<OptionDef>& optionDefs() {
         v.push_back(reset(W));
 
         // ---- Lighting: light that bounces, shade in corners, reflections
-        v.push_back(choice("lamp_blocks", "Lamp blocks", L, "Light", { "Classic (spreads block by block)", "Real light", "Real light and shadows" }, {},
-                           "Real light: glowing blocks light things by direction, like lamps, and fall off smoothly. And shadows: walls and pillars block it (through the blocks for every lamp; the nearest lamps also let enemies and objects cast shadows, as many as \"Shadows from lamps\" allows)."));
-        v.push_back(slider("lamp_fill", "Lamp fill light", L, "Light", 0, 1, 0.05f, "%", "none", "With real lamp blocks: how much of the classic spreading light stays, as a soft fill that creeps round corners (so shadows are dark, but never pitch black)."));
         v.push_back(choice("bounce", "Bounce light (on screen)", L, "Light", { "Off", "Normal", "Far-reaching" }, {}, "Lit and glowing surfaces light the ones near them (a green glow tints the wall beside it)."));
         v.push_back(choice("ao", "Ambient occlusion", L, "Light", { "Off (only block corners)", "Normal", "High" }, {}, "Soft shade in corners, under overhangs and where things touch."));
         v.push_back(needs(slider("ao_strength", "Occlusion strength", L, "Light", 0.2f, 3, 0.1f, "%.1f"), "ao"));
@@ -116,14 +113,20 @@ const std::vector<OptionDef>& optionDefs() {
         v.push_back(needs(slider("shadow_distance", "Shadow distance", SH, "The sun", 24, 512, 8, "%.0f blocks", "", "How far shadows reach. The sharpness near you stays the same."), "shadows"));
         v.push_back(needs(choice("shadow_soft", "Shadow edges", SH, "The sun", { "Sharp", "Smooth", "Soft like sunlight" }), "shadows"));
         v.push_back(needs(slider("shadow_softness", "Shadow softness", SH, "The sun", 0.25f, 3, 0.05f, "%.2f"), "shadow_soft"));
-        v.push_back(choice("light_shadows", "Shadows from lamps", SH, "Lamps", { "Off", "2 lights", "4 lights", "8 lights (heavy)" }, { 0, 2, 4, 8 },
-                           "Lights set to cast shadows: this many of the nearest really do."));
+        v.push_back(choice("light_shadows", "Shadows from lamps", SH, "Lamps", { "Off", "2 lights", "4 lights", "8 lights", "16 lights", "32 lights", "64 lights" }, { 0, 2, 4, 8, 16, 32, 64 },
+                           "How many lamps cast real shadows at once (light objects first, then lamp blocks). Their shadows are kept and only drawn again when something near them moves or changes, so many lamps stay cheap."));
+        v.push_back(needs(slider("light_shadow_distance", "Lamp shadow distance", SH, "Lamps", 16, 160, 4, "%.0f blocks", "", "Lamps this near you get shadow maps (enemies and objects cast shadows from them). They fade out gently toward it, and a lamp keeps its shadow while it stays in reach - no shadows popping as you walk."), "light_shadows"));
+        v.push_back(needs(choice("light_shadow_res", "Lamp shadow detail", SH, "Lamps", { "Low (128)", "Normal (256)", "High (512)" }, { 128, 256, 512 }, "How sharp each lamp's shadow map is. Lots of lamps at High take a lot of graphics memory (it steps down by itself if it would be too much)."), "light_shadows"));
         v.push_back(choice("pixel_shadows", "Pixelated shadows", SH, "Style", { "Off (smooth)", "16 pixels a block", "32 pixels a block" }, { 0, 16, 32 },
                            "Shadow edges snap to the textures' pixel grid, so shadows look like part of the pixel art."));
         v.push_back(reset(SH));
 
+        v.push_back(choice("lamp_blocks", "Lamp blocks", RT, "Real-time lighting", { "Classic (spreads block by block)", "Real light", "Real light and shadows" }, {},
+                           "Real light: glowing blocks light things by direction, like lamps, and fall off smoothly. And shadows: walls and pillars block it (through the blocks for every lamp; the nearest lamps also let enemies and objects cast shadows, as many as \"Shadows from lamps\" allows)."));
+        v.push_back(slider("lamp_fill", "Lamp fill light", RT, "Real-time lighting", 0, 1, 0.05f, "%", "none", "With real lamp blocks: how much of the classic spreading light stays, as a soft fill that creeps round corners (so shadows are dark, but never pitch black)."));
+        v.push_back(slider("lamp_distance", "Lamp light distance", RT, "Real-time lighting", 24, 160, 4, "%.0f blocks", "", "How far away real lamp blocks still shine. They fade out gently toward it (no lights popping off as you walk away)."));
         // ---- Ray tracing ("fake RTX"): rays step block by block through a copy of the world on the graphics card (any graphics card)
-        v.push_back(toggle("ray_tracing", "Ray tracing", RT, "Through the blocks", "Rays step block by block through a copy of the world on the graphics card: reflections of what is off screen and behind you, lamp shadows from every lamp, light probes. Works on any graphics card (no RTX needed). Off: only what is on the screen (screen-space) and shadow maps: faster."));
+        v.push_back(toggle("ray_tracing", "Voxel tracing", RT, "Through the blocks", "Rays step block by block through a copy of the world on the graphics card: reflections of what is off screen and behind you, lamp shadows from every lamp, light probes. Works on any graphics card (no RTX needed). Off: only what is on the screen (screen-space) and shadow maps: faster."));
         v.push_back(needs(toggle("rt_reflections", "Reflections of the blocks", RT, "Through the blocks", "Reflections find the blocks that are not on the screen (behind you, around corners). Off: only what is on screen, else the sky."), "ray_tracing"));
         v.push_back(needs(toggle("rt_objects", "Objects and enemies in reflections", RT, "Through the blocks", "Objects, enemies, the Morph Ball and missiles show up in those reflections too."), "ray_tracing"));
         v.push_back(needs(toggle("rt_lamp_shadows", "Lamp shadows through the blocks", RT, "Through the blocks", "Every real lamp block gets shadows from the walls and pillars between (Lighting > Lamp blocks). Off: only the nearest lamps' shadow maps."), "ray_tracing"));
@@ -237,8 +240,8 @@ std::vector<QualityPreset> defaultPresets() {
         { "Low",      { 0.58f, 8, 4, 1, 1024, 64, 0, 0, 0, 0, 1, 0, 2, 0, 1, 0.5f, 0, 0.5f, 0, 0.5f, 0.5f, 1, 0, 1, 0, 0 } },
         { "Medium",   { 0.67f, 10, 5, 1, 2048, 96, 1, 2, 0, 1, 1, 1, 2, 0, 1, 0.7f, 1, 0.6f, 1, 1, 1, 1, 1, 1, 1, 1 } },
         { "High",     { 0.85f, 14, 6, 1, 2048, 160, 2, 4, 1, 1, 1, 1, 1, 1, 1, 0.8f, 1, 0.7f, 1, 1, 1, 1, 1, 1, 2, 1 } },
-        { "Ultra",    { 1, 20, 8, 1, 3072, 256, 2, 4, 2, 2, 2, 2, 0, 1, 2, 0.8f, 1, 0.75f, 1, 1, 1, 1, 1, 1, 2, 1 } },
-        { "Prime",    { 1.5f, 28, 10, 1, 4096, 384, 2, 8, 2, 2, 2, 2, 0, 1, 2, 0.85f, 1, 0.8f, 1, 1.2f, 1.2f, 1, 1, 1, 2, 1 } },
+        { "Ultra",    { 1, 20, 8, 1, 3072, 256, 2, 16, 2, 2, 2, 2, 0, 1, 2, 0.8f, 1, 0.75f, 1, 1, 1, 1, 1, 1, 2, 1 } },
+        { "Prime",    { 1.5f, 28, 10, 1, 4096, 384, 2, 32, 2, 2, 2, 2, 0, 1, 2, 0.85f, 1, 0.8f, 1, 1.2f, 1.2f, 1, 1, 1, 2, 1 } },
     };
     std::vector<QualityPreset> out;
     for (const Row& r : rows) { QualityPreset p; p.name = r.name; for (size_t k = 0; k < presetKeys().size(); k++) p.values.push_back({ presetKeys()[k], r.v[k] }); out.push_back(p); }

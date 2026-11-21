@@ -1016,7 +1016,7 @@ int main() {
         {   // a menu saved before the Options page: it gets one, and its Settings button now says Options
             MenuLayout o = classicMenu(); o.pages.pop_back(); o.pages[0].panes[0].items[5].text = o.pages[0].panes[0].items[5].name = "Settings";
             saveMenu("/tmp/prim_menu_old.txt", o);
-            { std::ifstream in("/tmp/prim_menu_old.txt"); std::stringstream ss; ss << in.rdbuf(); std::string t = ss.str(); t.replace(t.find("menu 2"), 6, "menu 1"); std::ofstream out("/tmp/prim_menu_old.txt"); out << t; }
+            { std::ifstream in("/tmp/prim_menu_old.txt"); std::stringstream ss; ss << in.rdbuf(); std::string t = ss.str(); t.replace(t.find("menu 3"), 6, "menu 1"); std::ofstream out("/tmp/prim_menu_old.txt"); out << t; }
             MenuLayout ob; loadMenu("/tmp/prim_menu_old.txt", ob);
             CHECK(ob.pages.size() == 4 && ob.optionsPage() == 3 && ob.pages[0].panes[0].items[5].text == "Options", "an older menu gets the Options page");
             MenuLayout nb = classicMenu(); nb.pages.pop_back(); saveMenu("/tmp/prim_menu_new.txt", nb); MenuLayout nl; loadMenu("/tmp/prim_menu_new.txt", nl);
@@ -1703,6 +1703,15 @@ int main() {
         MenuLayout m = defaultMenu(); std::vector<int> tabs = m.tabs();
         CHECK(tabs.size() == 3 && m.pages[tabs[0]].name == "System" && m.pages[tabs[1]].name == "Inventory" && m.pages[tabs[2]].name == "Log", "tabs: System, Inventory, Log");
         CHECK(m.always.size() == 2 && m.optionsPage() >= 0 && !m.pages[m.optionsPage()].tab, "a tab bar and the actions on every page; Options opened from its button");
+        {   // the Options page on three panes (categories, the picked one, the list); an older one-pane page is moved to it
+            const MenuPage& op = m.pages[m.optionsPage()];
+            CHECK(op.panes.size() == 3 && op.panes[0].items[0].text == "@categories" && op.panes[1].items[0].text == "@detail" && op.panes[2].items[0].text == "@list", "options: categories, the picked one, the list");
+            MenuLayout o = m; MenuPage& pg = o.pages[o.optionsPage()]; pg.panes.resize(1); pg.panes[0].items.resize(1); pg.panes[0].items[0].text.clear();
+            saveMenu("/tmp/prim_menu_v2.txt", o);
+            { std::ifstream in("/tmp/prim_menu_v2.txt"); std::stringstream ss; ss << in.rdbuf(); std::string t = ss.str(); t.replace(t.find("menu 3"), 6, "menu 2"); std::ofstream out("/tmp/prim_menu_v2.txt"); out << t; }
+            MenuLayout ob; loadMenu("/tmp/prim_menu_v2.txt", ob);
+            CHECK(ob.pages[ob.optionsPage()].panes.size() == 3 && !ob.pages[ob.optionsPage()].tab, "an older one-pane Options page moves onto three panes (and stays off the tabs)");
+        }
         const MenuPage& inv = m.pages[m.findPage("Inventory")]; bool cats = false, detail = false, list = false;
         for (const MenuPane& p : inv.panes) for (const MenuItem& it : p.items) { cats |= it.kind == MenuKind::Categories; detail |= it.kind == MenuKind::ItemDetail; list |= it.kind == MenuKind::ItemList && it.text == "category"; }
         CHECK(inv.panes.size() == 3 && cats && detail && list, "Inventory: kinds, the picked item, the items of that kind");

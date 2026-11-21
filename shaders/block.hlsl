@@ -104,7 +104,8 @@ uint clusterOf(float3 rel)
 }
 float lightShadow(LightData L, float3 p, int type)
 {
-    int slot = (int)L.ext.w; if (slot < 0) return 1;
+    if (L.ext.w < 0) return 1;
+    int slot = (int)floor(L.ext.w); float keep = saturate((frac(L.ext.w) - 0.05) / 0.9);   // (the fraction: how much of the shadow, fading out far away)
     int face = 0;
     if (type != 1) {   // a cube: which side
         float3 v = p - L.pos.xyz, a = abs(v);
@@ -115,12 +116,13 @@ float lightShadow(LightData L, float3 p, int type)
     if (s.w <= 1e-4) return 1;
     float3 q = s.xyz / s.w; float2 uv = float2(q.x, -q.y) * 0.5 + 0.5;
     if (any(uv < 0) || any(uv > 1) || q.z > 1) return 1;
-    const float t = 1.0 / 512; float z = q.z - 0.00025, r = 0;
+    float mw, mh, mn; gLightShadow.GetDimensions(mw, mh, mn);
+    const float t = 1.0 / mw; float z = q.z - 0.00025, r = 0;
     r += gLightShadow.SampleCmpLevelZero(gShadowSamp, float3(uv + float2(-0.5, -0.5) * t, sl), z);
     r += gLightShadow.SampleCmpLevelZero(gShadowSamp, float3(uv + float2(0.5, -0.5) * t, sl), z);
     r += gLightShadow.SampleCmpLevelZero(gShadowSamp, float3(uv + float2(-0.5, 0.5) * t, sl), z);
     r += gLightShadow.SampleCmpLevelZero(gShadowSamp, float3(uv + float2(0.5, 0.5) * t, sl), z);
-    return r * 0.25;
+    return lerp(1, r * 0.25, keep);
 }
 float voxShadow(float3 P, float3 lp);   // (below: a lamp block's shadow, through the blocks)
 void evalLight(LightData L, float3 rel, float3 n, float3 v, float pw, bool object, inout float3 dif, inout float3 spec)

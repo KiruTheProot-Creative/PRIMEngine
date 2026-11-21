@@ -1501,12 +1501,15 @@ struct App {
     static constexpr int CLX = 16, CLY = 9, CLZ = 24, CLN = CLX * CLY * CLZ, MAXLIGHTS = 1024, CLMAX = 96, HUDLIGHTS = 64, LSH = 512;
     static constexpr float CL_NEAR = 0.5f, CL_FAR = 1000.f;
     ComPtr<ID3D11Buffer> lightBuf, clusterBuf, clusterIdxBuf, lshVPBuf, hudLightBuf, cbCluster; ComPtr<ID3D11ShaderResourceView> lightSRV, clusterSRV, clusterIdxSRV, lshVPSRV, hudLightSRV;
-    ComPtr<ID3D11Texture2D> lshTex; ComPtr<ID3D11DepthStencilView> lshDSV[48]; ComPtr<ID3D11ShaderResourceView> lshSRV;   // shadows of up to 8 lights (6 sides each)
+    static constexpr int LSH_MAX = 64;   // lights with shadow maps at most
+    ComPtr<ID3D11Texture2D> lshTex; std::vector<ComPtr<ID3D11DepthStencilView>> lshDSV; ComPtr<ID3D11ShaderResourceView> lshSRV; int lshCount = -1, lshRes = 0;   // their maps: 6 sides each
+    // a light keeps its map (its slot) while it stays in reach, and the map is only drawn again when something near it moves or changes
+    struct LshSlot { uint64_t key = 0; bool valid = false; }; std::vector<LshSlot> lshSlots; std::vector<std::pair<V3, double>> lshMovers; std::vector<V3> meshesChanged;
     ComPtr<ID3D11Texture2D> occTex; ComPtr<ID3D11DepthStencilView> occDSV; ComPtr<ID3D11ShaderResourceView> occSRV;   // the roofs map (true darkness)
     XMMATRIX occBase = XMMatrixIdentity(); V3 occCam{ 0, 0, 0 }; int occAge = 1000; float camOpen = 1; bool lightShadowPass = false;
     std::vector<LightGpu> frameLights; int frameLightCount = 0;
-    struct ShadowCaster { V3 rel; double range; int type; V3 dir; double cosCone; int slot; float nearZ = 0.05f; };   // nearZ: a lamp block's view starts outside its own block
-    std::vector<ShadowCaster> casters; XMFLOAT4X4 lshVP[48];
+    struct ShadowCaster { V3 rel; double range; int type; V3 dir; double cosCone; int slot; float nearZ = 0.05f; bool render = false; };   // render: its map is drawn this frame   // nearZ: a lamp block's view starts outside its own block
+    std::vector<ShadowCaster> casters; XMFLOAT4X4 lshVP[LSH_MAX * 6];
     struct LampProxy { V3 p; double range; V3 col; };
     std::vector<LampProxy> lampProxies, realLamps; V3 lampScanAt{ 1e9, 0, 0 }; double lampScanAge = 99; int lampDropNow = -1;
     void Upload(ID3D11Buffer* b, const void* data, size_t bytes) {
@@ -1521,7 +1524,7 @@ struct App {
     }
     void MakeLightResources() {
         lightBuf = MakeStructured(MAXLIGHTS, sizeof(LightGpu), lightSRV); hudLightBuf = MakeStructured(HUDLIGHTS, sizeof(LightGpu), hudLightSRV);
-        clusterBuf = MakeStructured(CLN, 8, clusterSRV); clusterIdxBuf = MakeStructured(CLN * 24, 4, clusterIdxSRV); lshVPBuf = MakeStructured(48, 64, lshVPSRV);
+        clusterBuf = MakeStructured(CLN, 8, clusterSRV); clusterIdxBuf = MakeStructured(CLN * 24, 4, clusterIdxSRV); lshVPBuf = MakeStructured(LSH_MAX * 6, 64, lshVPSRV);
         { D3D11_BUFFER_DESC d{}; d.ByteWidth = sizeof(ClusterCB); d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_CONSTANT_BUFFER; HR(dev->CreateBuffer(&d, nullptr, &cbCluster)); }
         auto depthArray = [&](UINT size, UINT n, ComPtr<ID3D11Texture2D>& tex, ComPtr<ID3D11DepthStencilView>* dsvs, ComPtr<ID3D11ShaderResourceView>& srv) {
             D3D11_TEXTURE2D_DESC d{}; d.Width = d.Height = size; d.MipLevels = 1; d.ArraySize = n; d.Format = DXGI_FORMAT_R32_TYPELESS; d.SampleDesc.Count = 1; d.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
@@ -1532,7 +1535,22 @@ struct App {
             else { sv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D; sv.Texture2D.MipLevels = 1; }
             HR(dev->CreateShaderResourceView(tex.Get(), &sv, &srv));
         };
-        depthArray(LSH, 48, lshTex, lshDSV, lshSRV); depthArray(1024, 1, occTex, &occDSV, occSRV);
+        depthArray(1024, 1, occTex, &occDSV, occSRV);
+        EnsureLightShadowMaps();
+    }
+    void EnsureLightShadowMaps() {   // the lamps' shadow maps: as many and as sharp as the settings say (sharper ones step down if they would take too much memory)
+        int n = std::clamp(settings.lightShadows, 0, LSH_MAX), res = settings.lightShadowRes <= 128 ? 128 : settings.lightShadowRes <= 256 ? 256 : 512;
+        while (res > 128 && (double)std::max(n, 1) * 6 * res * res * 4 > 320.0 * 1024 * 1024) res /= 2;
+        if (n == lshCount && res == lshRes && lshTex) return;
+        if (lshSRV) retired.push_back(lshSRV);
+        lshCount = n; lshRes = res; int slices = std::max(1, n) * 6;
+        lshTex.Reset(); lshSRV.Reset(); lshDSV.assign(slices, nullptr);
+        D3D11_TEXTURE2D_DESC d{}; d.Width = d.Height = (UINT)res; d.MipLevels = 1; d.ArraySize = (UINT)slices; d.Format = DXGI_FORMAT_R32_TYPELESS; d.SampleDesc.Count = 1; d.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
+        HR(dev->CreateTexture2D(&d, nullptr, &lshTex));
+        for (int k = 0; k < slices; k++) { D3D11_DEPTH_STENCIL_VIEW_DESC dv{}; dv.Format = DXGI_FORMAT_D32_FLOAT; dv.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2DARRAY; dv.Texture2DArray.FirstArraySlice = (UINT)k; dv.Texture2DArray.ArraySize = 1; HR(dev->CreateDepthStencilView(lshTex.Get(), &dv, &lshDSV[k])); }
+        D3D11_SHADER_RESOURCE_VIEW_DESC sv{}; sv.Format = DXGI_FORMAT_R32_FLOAT; sv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY; sv.Texture2DArray.MipLevels = 1; sv.Texture2DArray.ArraySize = (UINT)slices;
+        HR(dev->CreateShaderResourceView(lshTex.Get(), &sv, &lshSRV));
+        lshSlots.assign(std::max(n, 0), LshSlot{});   // (every map drawn again)
     }
     // glowing blocks near you as lights too - only for objects, models, enemies and the HUD (blocks get theirs from the mesher)
     void UpdateLampProxies(double dt) {
@@ -1546,7 +1564,7 @@ struct App {
         bool real = settings.lampBlocks > 0;
         struct One { V3 p; int lv[3]; }; std::vector<One> reals;   // real lamp blocks (up to 40 blocks away)
         if (real) {
-            const int RR = 40; int cx = (int)std::floor(camPos.x), cy = (int)std::floor(camPos.y), cz = (int)std::floor(camPos.z);
+            const int RR = (int)std::clamp(settings.lampDistance, 16.f, 256.f); int cx = (int)std::floor(camPos.x), cy = (int)std::floor(camPos.y), cz = (int)std::floor(camPos.z);
             for (int ky = (int)std::floor((cy - RR) / (double)CS); ky <= (int)std::floor((cy + RR) / (double)CS); ky++)
                 for (int kz = (int)std::floor((cz - RR) / (double)CS); kz <= (int)std::floor((cz + RR) / (double)CS); kz++)
                     for (int kx = (int)std::floor((cx - RR) / (double)CS); kx <= (int)std::floor((cx + RR) / (double)CS); kx++) {
@@ -1981,11 +1999,55 @@ struct App {
             V3 c = ColorOf(lk->lightColor); simple(d.pos, lk->light, V3{ std::pow(c.x, 2.2), std::pow(c.y, 2.2), std::pow(c.z, 2.2) } * (double)lk->lightPower);
         }
         for (const LampProxy& lp : lampProxies) all.push_back({ lp.p, lp.range, lp.col, 0, { 0, -1, 0 }, -1, { 0, 0, 0 }, true, false, dist(lp.p) });
-        for (const LampProxy& lp : realLamps) all.push_back({ lp.p, lp.range, lp.col, 0, { 0, -1, 0 }, -1, { 0, 0, 0 }, false, settings.lampBlocks >= 2, dist(lp.p), true });
+        {   // real lamp blocks, fading out toward their distance (no popping as you walk away)
+            double D = std::clamp((double)settings.lampDistance, 16.0, 256.0);
+            for (const LampProxy& lp : realLamps) { double dd = dist(lp.p), f = 1 - std::clamp((dd - D * 0.75) / (D * 0.25), 0.0, 1.0); if (f <= 0) continue;
+                all.push_back({ lp.p, lp.range, lp.col * (f * f * (3 - 2 * f)), 0, { 0, -1, 0 }, -1, { 0, 0, 0 }, false, settings.lampBlocks >= 2, dd, true }); }
+        }
         std::sort(all.begin(), all.end(), [](const L& a, const L& b) { return a.dist - a.range < b.dist - b.range; });
-        frameLights.clear(); casters.clear(); int wantShadows = std::clamp(settings.lightShadows, 0, 8);
-        int forObjects = 0; for (const L& l : all) if (l.shadow && !l.lamp && l.dist - l.range < 64) forObjects++;
-        int lampSlots = wantShadows - std::min(forObjects, wantShadows), lampsGot = 0;   // (light objects that cast shadows go first; the nearest lamp blocks get what is left)
+        frameLights.clear(); casters.clear();
+        EnsureLightShadowMaps(); int wantShadows = lshCount;
+        // ---- which lights have shadow maps: the most important in reach (light objects first, then the nearest lamp blocks); one that has a
+        // map keeps it (and its slot) while it stays in reach, with a little holding on, so shadows don't come and go as you walk
+        std::vector<int> slotOf(all.size(), -1); std::vector<float> keepOf(all.size(), 1.f);
+        auto keyOf = [&](const L& l) {   // a light's identity for its map: where it is, how far it reaches, which way it points (a change: drawn again)
+            auto q = [](double v) { return (uint64_t)(int64_t)std::llround(v * 4) & 0xFFFFF; };
+            uint64_t k = (q(l.p.x) | q(l.p.y) << 20 | q(l.p.z) << 40) ^ ((uint64_t)l.type << 61) ^ 1;
+            k ^= (uint64_t)std::llround(l.range * 8) * 0x9E3779B97F4A7C15ull; if (l.type == 1) k ^= (uint64_t)std::llround((l.dir.x * 7 + l.dir.y * 131 + l.dir.z * 1031 + l.cosCone * 9973) * 100) * 0xC2B2AE3D27D4EB4Full;
+            return k ? k : 1; };
+        if (meshesChanged.size() >= 512) for (LshSlot& sl : lshSlots) sl.valid = false;   // (a whole new world around you: every map again)
+        if (wantShadows > 0) {
+            double D = std::clamp((double)settings.lightShadowDist, 8.0, 256.0);
+            std::unordered_map<uint64_t, int> had; for (int sI = 0; sI < (int)lshSlots.size(); sI++) if (lshSlots[sI].key) had[lshSlots[sI].key] = sI;
+            struct Cand { size_t i; uint64_t key; double prio; };
+            std::vector<Cand> cand;
+            for (size_t i = 0; i < all.size(); i++) {
+                const L& l = all[i]; if (!l.shadow) continue; uint64_t k = keyOf(l); bool has = had.count(k) > 0;
+                if (l.dist > D * (has ? 1.1 : 1.0)) continue;
+                cand.push_back({ i, k, (l.lamp ? 0.0 : -100000.0) + l.dist - (has ? 6.0 : 0.0) });   // (having one: a little ahead, so two lamps at the same distance don't swap)
+            }
+            std::sort(cand.begin(), cand.end(), [](const Cand& a, const Cand& b) { return a.prio < b.prio; });
+            if ((int)cand.size() > wantShadows) cand.resize(wantShadows);
+            std::vector<char> taken(wantShadows, 0);
+            for (const Cand& c : cand) { auto it = had.find(c.key); if (it != had.end() && it->second < wantShadows) { slotOf[c.i] = it->second; taken[it->second] = 1; } }
+            for (const Cand& c : cand) if (slotOf[c.i] < 0) for (int sI = 0; sI < wantShadows; sI++) if (!taken[sI]) { taken[sI] = 1; slotOf[c.i] = sI; lshSlots[sI].key = c.key; lshSlots[sI].valid = false; break; }
+            for (int sI = 0; sI < wantShadows; sI++) if (!taken[sI]) lshSlots[sI] = LshSlot{};
+            for (const Cand& c : cand) { double f = 1 - std::clamp((all[c.i].dist - D * 0.8) / (D * 0.2), 0.0, 1.0); keepOf[c.i] = (float)(f * f * (3 - 2 * f)); }
+        }
+        // what moves (its lamps' maps are drawn again each frame): enemies, the Morph Ball, missiles, doors on the move, platforms, debris, drops
+        lshMovers.clear();
+        if (playMode) {
+            for (auto& kv : enemyRt) if (kv.second.alive()) { const EnemyType* t = enemies.find(kv.second.type); lshMovers.push_back({ kv.second.pos, t ? std::max(1.0, (double)t->size) : 2.0 }); }
+            if (player.ball) lshMovers.push_back({ BallCentre(), 1.0 });
+            for (const Shot& sh : shots) if (sh.mtype >= 0 && sh.age < 50) lshMovers.push_back({ sh.pos, 1.0 });
+            for (const Debris& d : debris) lshMovers.push_back({ d.pos, 1.0 });
+            for (const EnemyDropRt& d : enemyDrops) lshMovers.push_back({ d.pos, 0.6 });
+            for (const WorldObject& o : objects) {
+                if (o.kind == ObjKind::Platform) lshMovers.push_back({ o.pos + PlatformOffsets(o)[0], 4.0 });
+                else if (o.kind == ObjKind::Door) { auto it = doorRt.find(o.id); if (it != doorRt.end() && it->second.state != DoorRuntime::Open && it->second.state != DoorRuntime::Closed) lshMovers.push_back({ o.pos, 4.0 }); }
+            }
+        }
+        int faceBudget = 48;   // shadow map sides drawn a frame at most (the nearest first); the rest wait a frame or two
         for (const L& l : all) {
             if ((int)frameLights.size() >= MAXLIGHTS) break; double hl = std::sqrt(l.half.x * l.half.x + l.half.y * l.half.y + l.half.z * l.half.z);
             if (l.dist - l.range - hl > 200) continue;
@@ -1994,11 +2056,18 @@ struct App {
             g.col[0] = (float)l.col.x; g.col[1] = (float)l.col.y; g.col[2] = (float)l.col.z; g.col[3] = (float)(l.type + (l.objOnly ? 8 : 0) + (l.lamp && l.shadow ? 16 : 0));   // 16: its shadow through the blocks
             g.dir[0] = (float)l.dir.x; g.dir[1] = (float)l.dir.y; g.dir[2] = (float)l.dir.z; g.dir[3] = (float)l.cosCone;
             g.ext[0] = (float)l.half.x; g.ext[1] = (float)l.half.y; g.ext[2] = (float)l.half.z; g.ext[3] = -1;
-            bool slot = l.shadow && (int)casters.size() < wantShadows && l.dist - l.range < 64 && (!l.lamp || lampsGot < lampSlots);
-            if (slot) { g.ext[3] = (float)casters.size(); casters.push_back({ r, l.range + hl, l.type, l.dir, l.cosCone, (int)casters.size(), l.lamp ? 0.9f : 0.05f }); if (l.lamp) lampsGot++; }
+            size_t li = (size_t)(&l - all.data());
+            if (int sI = slotOf[li]; sI >= 0) {   // a shadow map: kept, or drawn (again) this frame if new or something near it moved or changed
+                LshSlot& slot = lshSlots[sI]; double reach = l.range + hl; bool dirty = !slot.valid || (!playMode && (frameNo + sI) % 8 == 0);   // (the editor: things get dragged around, every map now and then)
+                for (const auto& mv : lshMovers) if (!dirty) { V3 d = mv.first - l.p; dirty = d.x * d.x + d.y * d.y + d.z * d.z < (reach + mv.second) * (reach + mv.second); }
+                for (const V3& mc : meshesChanged) if (!dirty) { V3 d = mc - l.p; dirty = d.x * d.x + d.y * d.y + d.z * d.z < (reach + CS) * (reach + CS); }
+                int faces = l.type == 1 ? 1 : 6; bool render = dirty && faceBudget >= faces;
+                if (render) { faceBudget -= faces; slot.valid = true; }
+                if (slot.valid) { g.ext[3] = (float)sI + 0.05f + 0.9f * keepOf[li]; casters.push_back({ r, reach, l.type, l.dir, l.cosCone, sI, l.lamp ? 0.9f : 0.05f, render }); }
+            }
             frameLights.push_back(g);
         }
-        frameLightCount = (int)frameLights.size();
+        frameLightCount = (int)frameLights.size(); meshesChanged.clear();
     }
     void SetClusterMode(bool clustered, int start, int count) {
         ClusterCB c{ { clustered ? 1.f : 0.f, (float)CLX, (float)CLY, (float)CLZ }, { (float)start, (float)count, CL_NEAR, std::log(CL_FAR / CL_NEAR) } };
@@ -2057,7 +2126,7 @@ struct App {
                 XMStoreFloat4x4(&lshVP[sc.slot * 6 + f], m);
             }
         }
-        if (!casters.empty()) Upload(lshVPBuf.Get(), lshVP, sizeof lshVP);
+        if (!casters.empty()) Upload(lshVPBuf.Get(), lshVP, sizeof(XMFLOAT4X4) * std::max(1, lshCount) * 6);
         BindLightBuffers(false); SetClusterMode(true, 0, std::min(frameLightCount, 32));
     }
     // all particles as quads: glowing ones added on top, soft ones (smoke) blended, back to front
@@ -3863,6 +3932,7 @@ struct App {
             if (m.see == SEE_ALL) chunkSee.erase(m.pos); else chunkSee[m.pos] = m.see;   // cave culling: its sides joined by air
             if (m.opaque.empty() && m.cutout.empty() && m.water.empty()) { gpu.erase(m.pos); continue; }
             GpuChunk& g = gpu[m.pos]; Upload(m.opaque, g.vbO, g.ibO, g.nO); Upload(m.cutout, g.vbC, g.ibC, g.nC); Upload(m.water, g.vbW, g.ibW, g.nW);
+            if (meshesChanged.size() < 512) meshesChanged.push_back(V3{ (m.pos.x + 0.5) * CS, (m.pos.y + 0.5) * CS, (m.pos.z + 0.5) * CS });   // (lamps near it: their shadow maps again)
         }
         for (auto it = gpu.begin(); it != gpu.end();) { if (!world->chunk(it->first)) { latestSeq.erase(it->first); it = gpu.erase(it); } else ++it; }
         for (auto it = chunkSee.begin(); it != chunkSee.end();) { if (!world->chunk(it->first)) it = chunkSee.erase(it); else ++it; }
@@ -4304,11 +4374,11 @@ struct App {
         {   // shadows of the few lights that cast them (a cube each, spotlights one view)
             ID3D11ShaderResourceView* n1[1] = {}; ctx->PSSetShaderResources(22, 1, n1);
             if (!casters.empty()) {
-                D3D11_VIEWPORT sv{ 0, 0, (float)LSH, (float)LSH, 0, 1 }; ctx->RSSetViewports(1, &sv);
+                D3D11_VIEWPORT sv{ 0, 0, (float)lshRes, (float)lshRes, 0, 1 }; ctx->RSSetViewports(1, &sv);
                 ctx->RSSetState(rsLightShadow.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsShadow.Get(), nullptr, 0);
                 ctx->PSSetShaderResources(0, 1, texArray.GetAddressOf()); ctx->PSSetShaderResources(14, 1, emitArray.GetAddressOf()); ctx->PSSetSamplers(0, 1, sampBlocks.GetAddressOf());
                 lightShadowPass = true;
-                for (const ShadowCaster& sc : casters) for (int f = 0; f < (sc.type == 1 ? 1 : 6); f++) {
+                for (const ShadowCaster& sc : casters) if (sc.render) for (int f = 0; f < (sc.type == 1 ? 1 : 6); f++) {
                     int sl = sc.slot * 6 + f; XMMATRIX m = XMLoadFloat4x4(&lshVP[sl]);
                     FrameCB cf = fc; cf.shadowVP = lshVP[sl]; ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &cf, 0, 0);
                     ctx->OMSetRenderTargets(0, nullptr, lshDSV[sl].Get()); ctx->ClearDepthStencilView(lshDSV[sl].Get(), D3D11_CLEAR_DEPTH, 1.f, 0);
@@ -7450,6 +7520,7 @@ struct App {
     // the options in columns (categories left, their options right, the picked one big in the middle): which hit is the open category,
     // the first option, and the option last picked (the middle shows it while the mouse is on its big control)
     int optColGroupHit = -1, optColFirstRow = -1, optColDef = -1; std::vector<MenuHit>* optColHits = nullptr; int* optColSel = nullptr; double optColAt = -1;
+    int optColPicked = -1; bool optColOnCat = false;   // (the options on separate panes: what the list and the categories had picked, for the middle)
     std::vector<std::unique_ptr<ImDrawList>> menuLists; std::vector<HudTarget> menuTargets;
     std::vector<MenuPane> menuPanes; std::vector<bool> menuPaneIsPage; std::vector<MenuHit> menuHits;
     int menuPage = 0, menuSel = -2, menuScan = 0, menuSlideDir = 0, menuEdPage = 0; double menuSlideT = 1; std::vector<int> menuBack;
@@ -7806,7 +7877,7 @@ struct App {
     // OFF | ON switches, < value > boxes, segmented sliders, and a panel saying what the picked option does. Texts always fit.
     // the options in three columns (like Metroid Prime): the categories on the left, the open one's options on the right,
     // the picked option big in the middle (its name, its value to change, what it does); the keys at the bottom
-    void DrawOptionsColumns(ImDrawList* dl, ImVec2 a, ImVec2 b, float ts, const OptColors& oc, int scrollKey, std::vector<MenuHit>& hits, int sel, int pane, bool pages) {
+    void DrawOptionsColumns(ImDrawList* dl, ImVec2 a, ImVec2 b, float ts, const OptColors& oc, int scrollKey, std::vector<MenuHit>& hits, int sel, int pane, bool pages, int part = 3) {   // part: 0 the categories, 1 the list, 2 the picked one, 3 all three side by side
         float al = oc.alpha; uint32_t c = oc.accent; ImFont* font = ImGui::GetFont();
         auto C = [&](uint32_t col, float aa) { return IM_COL32((col >> 16) & 255, (col >> 8) & 255, col & 255, (int)(std::clamp(aa, 0.f, 1.f) * 255)); };
         auto fit = [&](const std::string& s0, float size, ImVec2 p0, ImVec2 p1, int align, ImU32 col) {
@@ -7826,22 +7897,25 @@ struct App {
         auto hit = [&](ImVec4 r, int kind, int arg) { MenuHit h{ pane, r, kind, arg, MenuAct::None, "" }; hits.push_back(h); return (int)hits.size() - 1 == sel; };
         const auto& defs = optionDefs(); const auto& groups = optionGroups();
         int g = std::clamp(menuOptGroup, 0, (int)groups.size() - 1);
-        float W = b.x - a.x, gap = ts * 0.7f, hintH = ts * 1.6f, bottom = b.y - hintH;
+        float W = b.x - a.x, gap = ts * 0.7f, hintH = ts * 1.6f, bottom = part == 0 || part == 1 ? b.y : b.y - hintH;
         float lx0 = a.x, lx1 = a.x + W * 0.2f, rx1 = b.x, rx0 = b.x - W * 0.36f, cx0 = lx1 + gap, cx1 = rx0 - gap;
-        optColHits = &hits; optColAt = uiClock; optColGroupHit = -1; optColFirstRow = -1;
+        if (part == 0) { lx0 = a.x; lx1 = b.x; } else if (part == 1) { rx0 = a.x + ts * 0.3f; rx1 = b.x; } else if (part == 2) { cx0 = a.x; cx1 = b.x; }
+        optColHits = &hits; optColAt = uiClock;
         // ---- left: the categories, one under the other (the open one filled)
-        {
+        if (part == 3 || part == 0) {
+            optColGroupHit = -1; bool anyCat = false;
             int ng = (int)groups.size(); float bh = std::min(ts * 2.3f, (bottom - a.y) / std::max(1, ng) - ts * 0.3f), y = a.y;
             for (int k = 0; k < ng; k++) {
                 ImVec2 p0(lx0, y), p1(lx1, y + bh); bool cur = k == g;
                 if (cur) optColGroupHit = (int)hits.size();
-                bool picked = hit(ImVec4(p0.x, p0.y, p1.x, p1.y), 6, k);
+                bool picked = hit(ImVec4(p0.x, p0.y, p1.x, p1.y), 6, k); anyCat |= picked;
                 if (picked && k != g) { menuOptGroup = k; optSelTab = k; }   // (pointing at a category opens it, like Metroid Prime)
                 cutBox(p0, p1, ts * 0.55f, C(c, (cur ? 0.3f : picked ? 0.16f : 0.05f) * al), C(c, (cur || picked ? 0.95f : 0.35f) * al), picked ? 2.5f : 1.5f);
                 if (cur) dl->AddRectFilled(ImVec2(p1.x + 3, p0.y + bh * 0.25f), ImVec2(p1.x + 7, p1.y - bh * 0.25f), C(oc.picked, al));   // (a notch toward its options)
                 fit(upper(groups[k]), ts * 0.95f, ImVec2(p0.x + ts * 0.8f, p0.y), ImVec2(p1.x - ts * 0.5f, p1.y), 0, cur || picked ? C(oc.picked, al) : C(c, 0.7f * al));
                 y += bh + ts * 0.3f;
             }
+            optColOnCat = anyCat;
         }
         // ---- right: the open category's options (sections as small headings), each with its value, small
         struct Row { int def; std::string head; };
@@ -7851,10 +7925,13 @@ struct App {
             if (d.section != sec) { sec = d.section; if (!sec.empty()) rows.push_back({ -1, sec }); }
             rows.push_back({ i, "" });
         }
+        int selDef = -1;
+        if (part == 3 || part == 1) {
+        optColFirstRow = -1;
         float rh = ts * 1.75f, headH = rh * 0.85f, top = a.y, total = 0; for (const Row& r : rows) total += r.def < 0 ? headH : rh;
         float& scroll = menuScroll[scrollKey]; float room = bottom - top; scroll = std::clamp(scroll, 0.f, std::max(0.f, total - room));
-        float want = scroll; int selDef = -1;
-        cutBox(ImVec2(rx0 - ts * 0.3f, top - ts * 0.3f), ImVec2(rx1, bottom), ts * 0.8f, C(oc.dim, 0.05f * al), C(c, 0.25f * al), 1.f);
+        float want = scroll;
+        if (part == 3) cutBox(ImVec2(rx0 - ts * 0.3f, top - ts * 0.3f), ImVec2(rx1, bottom), ts * 0.8f, C(oc.dim, 0.05f * al), C(c, 0.25f * al), 1.f);
         dl->PushClipRect(ImVec2(rx0, top), ImVec2(rx1, bottom), true);
         float y = top - scroll;
         for (const Row& r : rows) {
@@ -7889,10 +7966,15 @@ struct App {
         if (want != scroll) scroll = std::clamp(want, 0.f, std::max(0.f, total - room));
         if (total > room) { float k = room / total, y0 = top + (scroll / total) * room; dl->AddRectFilled(ImVec2(rx1 - 5, top), ImVec2(rx1 - 3, bottom), C(c, 0.12f * al)); dl->AddRectFilled(ImVec2(rx1 - 6, y0), ImVec2(rx1 - 2, y0 + room * k), C(c, 0.75f * al)); }
         if (selDef >= 0) optColDef = selDef;
-        bool onCat = sel >= 0 && sel < (int)hits.size() && hits[sel].kind == 6;
+        optColPicked = selDef;
+        }
+        if (part == 0 || part == 1) return;
+        if (part == 2) selDef = optColPicked;   // (the list is on another pane: what it had picked)
+        bool onCat = part == 2 ? optColOnCat : sel >= 0 && sel < (int)hits.size() && hits[sel].kind == 6;
         int showDef = selDef >= 0 ? selDef : (!onCat && optColDef >= 0 && optColDef < (int)defs.size() && defs[optColDef].group == groups[g]) ? optColDef : -1;
         // ---- the middle: the category's name on top; the picked option big - its value to change (the mouse can use it), what it does
         {
+            MenuHit none{ pane, ImVec4(0, 0, 0, 0), 5, -1, MenuAct::None, "" }; none.noKeys = true; size_t bigAt = hits.size(); hits.push_back(none);   // (always one: the hits after it keep their places)
             ImVec2 p0(cx0, a.y), p1(cx1, bottom); float pad = ts * 0.8f;
             cutBox(p0, p1, ts * 1.2f, C(oc.dim, 0.08f * al), C(c, 0.4f * al), 1.5f);
             fit(upper(groups[g]), ts * 1.35f, ImVec2(p0.x + pad, p0.y + pad * 0.4f), ImVec2(p1.x - pad, p0.y + pad * 0.4f + ts * 1.7f), 1, C(c, al));
@@ -7944,7 +8026,7 @@ struct App {
                         break; }
                     default: break;
                     }
-                    hits.push_back(big);   // (last: the keys never land on it, the mouse can)
+                    hits[bigAt] = big;   // (the keys never land on it, the mouse can)
                     yy += vh + ts * 0.9f;
                 }
                 dl->AddLine(ImVec2(p0.x + pad * 2, yy - ts * 0.3f), ImVec2(p1.x - pad * 2, yy - ts * 0.3f), C(c, 0.2f * al), 1.f);
@@ -7961,7 +8043,8 @@ struct App {
         }
         // ---- the keys, in little boxes, in the middle at the bottom
         {
-            const MenuHit* cur = sel >= 0 && sel < (int)hits.size() ? &hits[sel] : nullptr;
+            const MenuHit* cur = part == 3 && sel >= 0 && sel < (int)hits.size() ? &hits[sel] : nullptr;
+            MenuHit fake{}; if (part == 2) { fake.kind = onCat ? 6 : showDef >= 0 && defs[showDef].type == OptType::Key ? 7 : 5; fake.arg = std::max(0, showDef); cur = &fake; }
             std::vector<std::pair<std::string, std::string>> keys;
             if (bindCapture >= 0) keys = { { "any key", "set it" }, { "Esc", "never mind" } };
             else if (cur && cur->kind == 6) keys = { { "W/S", "category" }, { "D", "its options" }, { pages ? "Q/E" : "Esc", pages ? "pages" : "back" } };
@@ -7970,7 +8053,7 @@ struct App {
             else keys = { { "W/S", "pick" }, { "A/D", "change" }, { "Esc", "categories" } };
             float ks = ts * 0.72f, totalW = 0;
             for (auto& kk : keys) totalW += font->CalcTextSizeA(ks, FLT_MAX, 0, kk.second.c_str()).x + font->CalcTextSizeA(ks, FLT_MAX, 0, kk.first.c_str()).x + ks * 3.2f;
-            float x = (a.x + b.x - totalW) * 0.5f, my = (bottom + b.y) * 0.5f;
+            float x = (a.x + b.x - totalW) * 0.5f, my = (bottom + b.y) * 0.5f;   // (part 2: a and b are the middle pane's)
             for (auto& kk : keys) {
                 float kw = font->CalcTextSizeA(ks, FLT_MAX, 0, kk.first.c_str()).x + ks;
                 ImVec2 k0(x, my - ks * 0.75f), k1(x + kw, my + ks * 0.75f);
@@ -8004,7 +8087,10 @@ struct App {
         auto hit = [&](ImVec4 r, int kind, int arg) { MenuHit h{ pane, r, kind, arg, MenuAct::None, "" }; hits.push_back(h); return (int)hits.size() - 1 == sel; };
         const auto& defs = optionDefs(); const auto& groups = optionGroups();
         int g = -1; for (int k = 0; k < (int)groups.size(); k++) if (groups[k] == group) g = k;
-        if (g < 0 && (b.x - a.x) > ts * 34) { DrawOptionsColumns(dl, a, b, ts, oc, scrollKey, hits, sel, pane, pages); return; }
+        {   // the options in columns: on one pane (when there is room), or each part on a pane of its own ("@categories", "@list", "@detail")
+            int part = group == "@categories" ? 0 : group == "@list" ? 1 : group == "@detail" ? 2 : g < 0 && (b.x - a.x) > ts * 34 ? 3 : -1;
+            if (part >= 0) { DrawOptionsColumns(dl, a, b, ts, oc, scrollKey, hits, sel, pane, pages, part); return; }
+        }
         float top = a.y;
         if (g < 0) {   // the tabs: slanted, the open one filled with a bright line under it
             g = std::clamp(menuOptGroup, 0, (int)groups.size() - 1);
@@ -8334,6 +8420,7 @@ struct App {
         if (!io.WantCaptureMouse) {
             int pane = -1; ImVec2 px; int h = hitAt(ImVec2(io.MousePos.x - vx, io.MousePos.y - vy), &pane, &px);
             static ImVec2 lastMouse(-1, -1);
+            if (h >= 0 && menuHits[h].kind >= 5 && menuHits[h].kind <= 7 && menuHits[h].arg < 0) h = -1;   // (an empty placeholder)
             if (h >= 0 && menuHits[h].kind != 1 && !menuHits[h].noKeys && (io.MousePos.x != lastMouse.x || io.MousePos.y != lastMouse.y) && optDrag < 0) menuSel = h;   // the mouse picks only when it moves
             lastMouse = io.MousePos;
             if (pane >= 0 && io.MouseWheel != 0) for (auto& kv : menuScroll) if (kv.first / 256 == pane) kv.second -= io.MouseWheel * 60;   // lists on that pane scroll
@@ -10042,9 +10129,13 @@ struct App {
             if (it->kind == MenuKind::Image) { Prop("Picture"); ch |= ImGui::InputText("##mim", &it->image); Hint("The name of a picture in the assets (like on the HUD)."); }
             if (it->kind == MenuKind::Options) {   // which options: all (with their own tabs) or one group
                 const auto& gs = optionGroups(); int cur = 0; for (int k = 0; k < (int)gs.size(); k++) if (gs[k] == it->text) cur = k + 1;
-                Prop("Shows"); if (ImGui::BeginCombo("##mio", cur ? gs[cur - 1].c_str() : "All (Sound, Graphics, Controls as tabs)")) {
+                const char* partName = it->text == "@categories" ? "Just the categories" : it->text == "@list" ? "Just the open category's options" : it->text == "@detail" ? "Just the picked option" : nullptr;
+                Prop("Shows"); if (ImGui::BeginCombo("##mio", partName ? partName : cur ? gs[cur - 1].c_str() : "All (Sound, Graphics, Controls as tabs)")) {
                     if (ImGui::Selectable("All (Sound, Graphics, Controls as tabs)", cur == 0)) { it->text.clear(); ch = true; }
                     for (int k = 0; k < (int)gs.size(); k++) if (ImGui::Selectable(gs[k].c_str(), cur == k + 1)) { it->text = gs[k]; ch = true; }
+                    ImGui::Separator();
+                    const char* pk[3] = { "@categories", "@list", "@detail" }; const char* pn[3] = { "Just the categories (a side pane)", "Just the open category's options (a side pane)", "Just the picked option, big (the middle)" };
+                    for (int k = 0; k < 3; k++) if (ImGui::Selectable(pn[k], it->text == pk[k])) { it->text = pk[k]; ch = true; }
                     ImGui::EndCombo();
                 }
                 Hint("The player's own options: they are kept for this computer, not for the game. One group per item lets you put Sound, Graphics and Controls on panes of their own.");

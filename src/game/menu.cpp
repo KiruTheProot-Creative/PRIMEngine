@@ -141,11 +141,15 @@ MenuLayout classicMenu() {
     return m;
 }
 
-MenuPage defaultOptionsPage() {
+MenuPage defaultOptionsPage() {   // like Metroid Prime: the categories on the left pane, the picked option big in the middle, the category's options on the right
     MenuPage pg; pg.name = "Options";
-    MenuPane p = pane("Options", { 0, -0.07, 0.95 }, 0, 1.12f, 0.7f); p.bendX = 0.38f; p.bendY = 0.16f; p.backing = 0.62f;
-    p.items.push_back(item("Options", MenuKind::Options, 0.04f, 0.05f, 0.92f, 0.9f, "", 32));
-    pg.panes.push_back(p); return pg;
+    MenuPane l = pane("Categories", { -0.62, -0.02, 0.98 }, -24, 0.42f, 0.72f); l.bendX = 0.15f; l.bendY = 0.12f;
+    l.items.push_back(item("Categories", MenuKind::Options, 0.06f, 0.05f, 0.88f, 0.9f, "@categories", 32));
+    MenuPane c = pane("Option", { 0, -0.02, 0.92 }, 0, 0.72f, 0.72f); c.bendX = 0.25f; c.bendY = 0.12f;
+    c.items.push_back(item("Option", MenuKind::Options, 0.05f, 0.04f, 0.9f, 0.92f, "@detail", 32));
+    MenuPane r = pane("Options", { 0.62, -0.02, 0.98 }, 24, 0.42f, 0.72f); r.bendX = 0.15f; r.bendY = 0.12f;
+    r.items.push_back(item("Options", MenuKind::Options, 0.04f, 0.04f, 0.92f, 0.92f, "@list", 28));
+    pg.panes.push_back(l); pg.panes.push_back(c); pg.panes.push_back(r); return pg;
 }
 
 static void writePane(std::ostream& f, const MenuPane& p) {
@@ -157,7 +161,7 @@ static void writePane(std::ostream& f, const MenuPane& p) {
 }
 bool saveMenu(const std::string& path, const MenuLayout& m) {
     std::ofstream f(path); if (!f) return false;
-    f << "menu 2\nslide " << m.slide << "\nalways\n";
+    f << "menu 3\nslide " << m.slide << "\nalways\n";
     for (const MenuPane& p : m.always) writePane(f, p);
     for (const MenuPage& pg : m.pages) { f << "page " << escText(pg.name) << " " << (pg.tab ? 1 : 0) << "\n"; for (const MenuPane& p : pg.panes) writePane(f, p); }
     return (bool)f;
@@ -187,6 +191,10 @@ bool loadMenu(const std::string& path, MenuLayout& m) {
     if (version < 2 && m.optionsPage() < 0) {   // menus from before the Options page: it is added (Settings buttons now lead there)
         m.pages.push_back(defaultOptionsPage());
         for (MenuPage& pg : m.pages) for (MenuPane& p : pg.panes) for (MenuItem& it : p.items) if (it.kind == MenuKind::Button && it.act == MenuAct::Settings && it.text == "Settings") it.text = it.name = "Options";
+    }
+    if (version < 3) {   // the Options page as one big pane with everything (as it was made): now on three panes, like the other pages
+        int op = m.optionsPage();
+        if (op >= 0 && m.pages[op].panes.size() == 1 && m.pages[op].panes[0].items.size() == 1 && m.pages[op].panes[0].items[0].text.empty()) { bool tab = m.pages[op].tab; m.pages[op] = defaultOptionsPage(); m.pages[op].tab = tab; }
     }
     return true;
 }
