@@ -1012,10 +1012,15 @@ int main() {
           saveObjects("/tmp/prim_saveobj.txt", sv); std::vector<WorldObject> sl; loadObjects("/tmp/prim_saveobj.txt", sl);
           CHECK(sl.size() == 1 && sl[0].save.anim == "Save Spin" && !sl[0].save.ammo && sl[0].save.energy, "a Save Station keeps its animation after saving");
           sv[0].save.anim.clear(); saveObjects("/tmp/prim_saveobj.txt", sv); loadObjects("/tmp/prim_saveobj.txt", sl);
-          CHECK(sl[0].save.anim.empty(), "(no animation picked: picked by itself)"); }
+          CHECK(sl[0].save.anim.empty(), "(no animation picked: picked by itself)");
+          sv[0].save.anim = "-"; sv[0].save.title = "Progress Saved"; sv[0].save.text = "Rest well, hunter. 100%"; sv[0].save.ask = true;
+          saveObjects("/tmp/prim_saveobj.txt", sv); loadObjects("/tmp/prim_saveobj.txt", sl);
+          CHECK(sl[0].save.anim == "-" && sl[0].save.title == "Progress Saved" && sl[0].save.text == "Rest well, hunter. 100%" && sl[0].save.ask, "a Save Station keeps \"no animation\", its pop-up's words and asking first");
+          sv[0].save.title.clear(); sv[0].save.text.clear(); sv[0].save.ask = false; saveObjects("/tmp/prim_saveobj.txt", sv); loadObjects("/tmp/prim_saveobj.txt", sl);
+          CHECK(sl[0].save.title.empty() && sl[0].save.text.empty() && !sl[0].save.ask, "(empty words: automatic; saves right away)"); }
         {   // an older file: the text was on the object
             std::ifstream in("/tmp/prim_scanobjs.txt"); std::string all((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()); in.close();
-            size_t at = all.find(" 1 2 0 1 1 - 0 4 -%201%201%200.05%200%200 -%201%201%200.05%200%200\n"); if (at != std::string::npos) all.replace(at, 67, " 1 Old%20Door Research Line%20one.%0ALine%20two. 1 2.5\n");
+            const std::string tail = " 1 2 0 1 1 - 0 4 -%201%201%200.05%200%200 -%201%201%200.05%200%200 - - 0\n"; size_t at = all.find(tail); if (at != std::string::npos) all.replace(at, tail.size(), " 1 Old%20Door Research Line%20one.%0ALine%20two. 1 2.5\n");
             std::ofstream outF("/tmp/prim_scanobjs_old.txt"); outF << all; outF.close();
             std::vector<WorldObject> old; loadObjects("/tmp/prim_scanobjs_old.txt", old);
             CHECK(old.size() == 3 && old[0].scan.on && old[0].scan.id == 0 && old[0].scan.legacyName == "Old Door" && old[0].scan.legacyText == "Line one.\nLine two." && old[0].scan.legacyImportant && old[0].scan.legacyTime == 2.5f && old[1].scan.id == 2,
@@ -1179,7 +1184,7 @@ int main() {
     {   // screens: main menu, options, death, credits; the compositor's node graph
         printf("\nscreens and the compositor\n");
         ScreenSet ss = defaultScreens();
-        CHECK(ss.screens.size() == 8 && ss.byRole(ScreenRole::Intro) == 5 && ss.screens[5].next.empty() && ss.byRole(ScreenRole::NewGameIntro) == 6 && ss.find("Story") == 6 && ss.byRole(ScreenRole::MainMenu) == 0 && ss.byRole(ScreenRole::Files) == 1 && ss.byRole(ScreenRole::Options) == 2 && ss.byRole(ScreenRole::Death) == 3 && ss.byRole(ScreenRole::Credits) == 4 && ss.find("Credits") == 4,
+        CHECK(ss.screens.size() == 9 && ss.byRole(ScreenRole::Intro) == 5 && ss.screens[5].next.empty() && ss.byRole(ScreenRole::NewGameIntro) == 6 && ss.find("Story") == 6 && ss.byRole(ScreenRole::MainMenu) == 0 && ss.byRole(ScreenRole::Files) == 1 && ss.byRole(ScreenRole::Options) == 2 && ss.byRole(ScreenRole::Death) == 3 && ss.byRole(ScreenRole::Credits) == 4 && ss.find("Credits") == 4,
               "starter screens: Main menu, Files, Options, Death screen, Credits, a Splash (shown first) and a Story (after picking an empty file)");
         { bool slots = false; for (const ScreenItem& i : ss.screens[1].items) slots |= i.kind == ScreenItemKind::SaveSlots && i.slots == 3; CHECK(slots, "the Files screen: three save files"); }
         const Screen& mm = ss.screens[0]; int btn = 0; bool newGame = false, opts = false;
@@ -1209,9 +1214,9 @@ int main() {
         Screen cu = presetScreen(ScreenRole::Custom); cu.name = "My screen"; cu.bg.kind = BgKind::Video; cu.bg.file = "intro movie.mp4"; cu.bg.loop = false; ss.screens.push_back(cu);
         saveScreens("/tmp/prim_screens.txt", ss); ScreenSet sl; CHECK(loadScreens("/tmp/prim_screens.txt", sl), "screens load");
         const Screen& m0 = sl.screens[0];
-        CHECK(sl.screens.size() == 9 && sl.screens[1].items[1].slots == 5 && m0.bg.kind == BgKind::World && m0.bg.world == "Title Valley" && m0.bg.camera == "Menu cam" && m0.bg.turn == 3 && m0.items[0].col.accent == 0x123456
-              && m0.items[0].text == "Two words\nand a line"  && sl.screens[2].items[2].group == "Controls" && sl.screens[8].bg.file == "intro movie.mp4" && !sl.screens[8].bg.loop
-              && sl.screens[8].name == "My screen" && sl.screens[3].role == ScreenRole::Death, "backgrounds, items, colours and roles save and load");
+        CHECK(sl.screens.size() == 10 && sl.screens[1].items[1].slots == 5 && m0.bg.kind == BgKind::World && m0.bg.world == "Title Valley" && m0.bg.camera == "Menu cam" && m0.bg.turn == 3 && m0.items[0].col.accent == 0x123456
+              && m0.items[0].text == "Two words\nand a line"  && sl.screens[2].items[2].group == "Controls" && sl.screens[9].bg.file == "intro movie.mp4" && !sl.screens[9].bg.loop
+              && sl.screens[9].name == "My screen" && sl.screens[3].role == ScreenRole::Death, "backgrounds, items, colours and roles save and load");
         CHECK(sl.screens[3].comp.order().size() == ss.screens[3].comp.order().size() && sl.screens[3].comp.nextId == ss.screens[3].comp.nextId && sl.screens[4].comp.find(sl.screens[4].comp.output())->mute,
               "the node graphs save and load (wires, values, muted nodes)");
         {   // timing: fading in and out, typing, interface sounds, music, going on by itself
@@ -1317,7 +1322,7 @@ int main() {
             ScreenSet old = defaultScreens(); old.screens.erase(old.screens.begin() + 1); saveScreens("/tmp/prim_screens_old.txt", old);
             { std::ifstream in("/tmp/prim_screens_old.txt"); std::stringstream b; b << in.rdbuf(); std::string t = b.str(); t.replace(t.find("screens 4"), 9, "screens 1"); std::ofstream out("/tmp/prim_screens_old.txt"); out << t; }
             ScreenSet ol; loadScreens("/tmp/prim_screens_old.txt", ol);
-            CHECK(ol.screens.size() == 8 && ol.byRole(ScreenRole::Files) == 1, "older screens get the Files screen (after the main menu)");
+            CHECK(ol.screens.size() == 9 && ol.byRole(ScreenRole::Files) == 1, "older screens get the Files screen (after the main menu)");
             ScreenSet nw = defaultScreens(); nw.screens.erase(nw.screens.begin() + 1); saveScreens("/tmp/prim_screens_new.txt", nw); ScreenSet nl; loadScreens("/tmp/prim_screens_new.txt", nl);
             CHECK(nl.byRole(ScreenRole::Files) < 0, "a newer set without it stays without it");
         }
@@ -1723,6 +1728,10 @@ int main() {
         CHECK(hasModel, "... with the item's model in it");
         ss.screens[ig].holdMin = 1.7f; saveScreens("/tmp/prim_scr_ig.txt", ss); ScreenSet sl; loadScreens("/tmp/prim_scr_ig.txt", sl);
         CHECK(sl.byRole(ScreenRole::ItemGet) >= 0 && sl.screens[sl.byRole(ScreenRole::ItemGet)].holdMin == 1.7f, "its hold time saves and loads");
+        int gs = ss.byRole(ScreenRole::GameSaved); bool says = false; for (auto& it : gs >= 0 ? ss.screens[gs].items : std::vector<ScreenItem>{}) says |= it.text.find("{savetitle}") != std::string::npos;
+        CHECK(gs >= 0 && says && ss.screens[gs].bg.kind == BgKind::Game, "new games come with a \"Game Saved!\" pop-up, over the game");
+        ss.screens[gs].holdMin = 1.2f; saveScreens("/tmp/prim_scr_gs.txt", ss); ScreenSet sg; loadScreens("/tmp/prim_scr_gs.txt", sg);
+        CHECK(sg.byRole(ScreenRole::GameSaved) >= 0 && sg.screens[sg.byRole(ScreenRole::GameSaved)].holdMin == 1.2f, "... its hold time saves and loads");
     }
     {   // the three-pane helmet menu
         MenuLayout m = defaultMenu(); std::vector<int> tabs = m.tabs();

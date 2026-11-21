@@ -100,7 +100,8 @@ struct WorldObject {
     MapSettings map;                                  // map cameras and Map Stations
     ScanInfo scan;                                    // can be scanned (Scan Visor)
     int enemyType = 0;                                // enemies: which enemy type (Player editor > Enemies, by ID)
-    struct { bool energy = true, ammo = true; std::string anim; } save; // Save Stations: what they fill up before asking to save; the model's animation after saving ("": one called "save", "-": none)
+    struct { bool energy = true, ammo = true; std::string anim; std::string title, text; bool ask = false; } save;   // Save Stations: what they fill up; the model's animation while saving ("": one called "save", "-": none);
+                                                                                                         // the "Game Saved!" pop-up's title and text ("": automatic); ask: the old way (a Yes / No question first)
 };
 V3 objectStretch(const WorldObject& o, const ModelFrame& m);   // how much it is sized along its own x, y, z
 

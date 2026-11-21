@@ -1026,7 +1026,7 @@ struct App {
         } else { io.ConfigFlags &= ~ImGuiConfigFlags_NoMouse; ClipCursor(nullptr); }
         mouseDX = mouseDY = 0;
     }
-    bool Playing() const { return screen == Screen::Game && captured && !paused && !inventory && !shapeMenu && !brushMenu && !saveAnimId; }   // (saving: the station's animation first)
+    bool Playing() const { return screen == Screen::Game && captured && !paused && !inventory && !shapeMenu && !brushMenu && !saveAnimId && !saveSeqId; }   // (saving: the station's animation first)
     static bool Down(int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; }
     bool ActDown(Act a) const { return settings.keys.down(a, &App::Down); }   // the player's keys (Options > Controls)
     bool actPrev[(int)Act::COUNT] = {}; ULONGLONG keysQuiet = 0;
@@ -1035,7 +1035,8 @@ struct App {
         for (int i = 0; i < (int)Act::COUNT; i++) now[i] = fg && ActDown((Act)i);
         bool quiet = !playMode || bindCapture >= 0 || GetTickCount64() < keysQuiet || ImGui::GetIO().WantTextInput || screen != Screen::Game;
         auto pressed = [&](Act a) { return !quiet && now[(int)a] && !actPrev[(int)a]; };
-        if (pressed(Act::Map)) { if (mapOpen) CloseMap(); else if (!showSettings) OpenMap(); }   // the map (also from the pause menu)
+        if (saveSeqId) {}   // (a Save Station at work: nothing until it is done)
+        else if (pressed(Act::Map)) { if (mapOpen) CloseMap(); else if (!showSettings) OpenMap(); }   // the map (also from the pause menu)
         else if (!paused) {
             if (pressed(Act::Use)) { if (WorldObject* st = StationInReach()) { if (st->kind == ObjKind::SaveStation) UseSaveStation(*st); else UseMapStation(*st); } }   // use: a Map / Save Station
             if (pressed(Act::Visor) && !player.ball) NextVisor();                                     // the visors
@@ -2876,7 +2877,7 @@ struct App {
     // the door's place in Play mode: animations, forcefield, collision
     void UpdateDoors(double dt) {
         if (!playMode) { doorRt.clear(); doorGpu.clear(); doorBlend.clear(); shots.clear(); saveAnimId = 0; return; }
-        UpdateSaveAnim(dt);
+        UpdateSaveAnim(dt); UpdateSaveSequence(dt);
         bool changed = false;
         for (WorldObject& o : objects) {
             if (o.kind != ObjKind::Door) continue;
@@ -3385,22 +3386,31 @@ struct App {
         if (o.kind == ObjKind::MapCamera || o.kind == ObjKind::MapStation) MapInspector(o);
         if (o.kind == ObjKind::SaveStation) {
             ImGui::SeparatorText("Save Station");
-            Hint("Stand on it and press E: it fills you up, then asks to save the game into the file being played (picked on the Files screen). This is the only place a game saves, like Metroid Prime. Its name shows on the file.");
+            Hint("Stand on it and press E: you are put in its middle and it fills you up, its animation plays, then the game saves into the file being played (picked on the Files screen) and \"Game Saved!\" shows. This is the only place a game saves, like Metroid Prime. Its name shows on the file.");
             Prop("Fills up energy"); ImGui::Checkbox("##sven", &o.save.energy);
             Prop("Fills up missiles / bombs"); ImGui::Checkbox("##svam", &o.save.ammo);
             {   // after saving: one of its model's animations (the player can't move until it is done)
                 auto mi = meshModels.find(o.model); int autoClip = SaveClipOf([&] { WorldObject t = o; t.save.anim.clear(); return t; }());
                 std::string autoName = autoClip >= 0 && mi != meshModels.end() ? "automatic: " + mi->second.clips[autoClip].name : "automatic (none found)";
                 std::string shown = o.save.anim.empty() ? autoName : o.save.anim == "-" ? "(none)" : o.save.anim;
-                Prop("After saving, plays");
+                Prop(o.save.ask ? "After saving, plays" : "While saving, plays");
                 if (ImGui::BeginCombo("##svan", shown.c_str())) {
                     if (ImGui::Selectable(autoName.c_str(), o.save.anim.empty())) o.save.anim.clear();
                     if (ImGui::Selectable("(none)", o.save.anim == "-")) o.save.anim = "-";
                     if (mi != meshModels.end()) for (const AnimClip& c : mi->second.clips) if (ImGui::Selectable(c.name.c_str(), o.save.anim == c.name)) o.save.anim = c.name;
                     ImGui::EndCombo();
                 }
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("One of its model's own animations (imported with it, e.g. from an FBX).\nAfter \"Yes\" it plays, and you can only move again once it is done.\nAutomatic: an animation with \"save\" in its name (or its only one).");
-                if (mi == meshModels.end() || mi->second.clips.empty()) Hint("Its model has no animations: import one with an animation (FBX, glTF ...) to have it play after saving.");
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("One of its model's own animations (imported with it, e.g. from an FBX).\nIt plays before the game saves (after \"Yes\" when it asks first); you can only move again once it is done.\nAutomatic: an animation with \"save\" in its name (or its only one).");
+                if (mi == meshModels.end() || mi->second.clips.empty()) Hint("Its model has no animations: import one with an animation (FBX, glTF ...) to have it play while saving.");
+            }
+            {   // the pop-up afterwards
+                char tb[128], xb[256]; std::snprintf(tb, sizeof tb, "%s", o.save.title.c_str()); std::snprintf(xb, sizeof xb, "%s", o.save.text.c_str());
+                Prop("Pop-up title"); ImGui::SetNextItemWidth(-1); if (ImGui::InputTextWithHint("##svti", "Game Saved!", tb, sizeof tb)) o.save.title = tb;
+                Prop("Pop-up text"); ImGui::SetNextItemWidth(-1); std::string autoText; { WorldObject t = o; t.save.text.clear(); autoText = SaveText(&t); }
+                if (ImGui::InputTextWithHint("##svtx", autoText.c_str(), xb, sizeof xb)) o.save.text = xb;
+                Hint("Empty: \"Game Saved!\" and what it filled up. Its look: the \"Game saved\" screen (Screens editor).");
+                Prop("Ask first (Yes / No)"); ImGui::Checkbox("##svask", &o.save.ask);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("The old way: a question whether to save, before anything happens. Off: pressing E saves right away.");
             }
         }
         if (o.kind == ObjKind::Enemy) EnemyInspector(o);
@@ -7601,6 +7611,11 @@ struct App {
         if (n == "maxenergy") return std::to_string((int)std::lround(playMode ? playRules.maxHealth : game.player.maxHealth));
         if (n == "missiles") { auto it = inv.counts.find(weapons.missileCounter); return std::to_string(it == inv.counts.end() ? 0 : it->second); }
         if (n == "scans") return std::to_string(ShownScans().entries.size());
+        if (n == "savetitle" || n == "savetext") {   // the "Game Saved!" pop-up: the station's own words (in the editor: the first station's, or the automatic ones)
+            const WorldObject* st = ObjById(saveStationId);
+            if (!st) for (const WorldObject& o : objects) if (o.kind == ObjKind::SaveStation) { st = &o; break; }
+            return n == "savetitle" ? SaveTitle(st) : SaveText(st);
+        }
         if (n == "itemname" || n == "name" || n == "itemtitle" || n == "itemtext") {   // the item pop-up (in the editor: the Morph Ball, as an example)
             std::string nm = itemGetNow.name.empty() ? "Morph Ball" : itemGetNow.name;
             if (n == "itemname" || n == "name") return nm;
@@ -8524,6 +8539,7 @@ struct App {
     void LoadScreens() {
         screensPath = projectDir + "/screens.txt"; if (!loadScreens(screensPath, screens) || screens.screens.empty()) screens = defaultScreens();
         if (screens.byRole(ScreenRole::ItemGet) < 0) { screens.screens.push_back(presetScreen(ScreenRole::ItemGet)); SaveScreens(); }   // (older games: the item pop-up arrives)
+        if (screens.byRole(ScreenRole::GameSaved) < 0) { screens.screens.push_back(presetScreen(ScreenRole::GameSaved)); SaveScreens(); }   // (... and the "Game Saved!" pop-up)
     }
     void SaveScreens() { if (!projectDir.empty()) saveScreens(screensPath, screens); }
     std::string ScreensDir() { std::string d = projectDir + "/screens"; std::error_code ec; fs::create_directories(fs::u8path(d), ec); return d; }
@@ -8824,7 +8840,7 @@ struct App {
         if (remember && curScreen >= 0 && curScreen != idx) screenBack.push_back(curScreen);
         curScreen = idx; screenT = 0; screenPrevT = -1; screenSel = -2; bindCapture = -1; RefreshSlots(); typed.clear();
         mc::Screen& sc = screens.screens[idx];
-        if (sc.role == ScreenRole::ItemGet && sc.musicMode == 1 && !sc.music.empty()) { StopSounds(TAG_FANFARE); PlaySoundIn(SND_MUSIC, sc.music, 1.f, nullptr, TAG_FANFARE, false); }   // (the pop-up's "music" is a jingle: once, not looping; the game's music ducks meanwhile)
+        if ((sc.role == ScreenRole::ItemGet || sc.role == ScreenRole::GameSaved) && sc.musicMode == 1 && !sc.music.empty()) { StopSounds(TAG_FANFARE); PlaySoundIn(SND_MUSIC, sc.music, 1.f, nullptr, TAG_FANFARE, false); }   // (the pop-up's "music" is a jingle: once, not looping; the game's music ducks meanwhile)
         else if (sc.musicMode == 1 && !sc.music.empty()) PlayMusic(sc.music, sc.musicFade); else if (sc.musicMode == 2) StopMusic(sc.musicFade);
         if (!playMode && sc.bg.kind == BgKind::World) {   // (only outside play: while playing, the game stays where it is)
             if (!sc.bg.world.empty() && sc.bg.world != CurrentWorld() && std::find(worldList.begin(), worldList.end(), sc.bg.world) != worldList.end()) {
@@ -8886,7 +8902,7 @@ struct App {
     void ScreenInput() {   // keys and the mouse on the shown screen
         if (!CurScreen() || startOn) return;   // (starting a file: nothing until the game is there)
         mc::Screen* sc = CurScreen(); bool timed = sc->duration > 0 || sc->untilVideoEnds;
-        if (sc->role == ScreenRole::ItemGet) { ItemGetInput(); return; }   // the item pop-up: a button closes it (after its hold time)
+        if (sc->role == ScreenRole::ItemGet || sc->role == ScreenRole::GameSaved) { ItemGetInput(); return; }   // the item pop-up: a button closes it (after its hold time)
         if (timed && sc->skippable && screenT > 0.35 && bindCapture < 0) {   // a splash / intro: any key or click goes on
             for (int k = ImGuiKey_NamedKey_BEGIN; k < ImGuiKey_NamedKey_END; k++) if (k != ImGuiKey_F5 && ImGui::IsKeyPressed((ImGuiKey)k, false)) { ScreenNext(); return; }
         }
@@ -9001,13 +9017,36 @@ struct App {
         if (found) *found = f; if (total) *total = t;
         return t > 0 ? (float)f / t : 0.f;
     }
-    void UseSaveStation(const WorldObject& st) {   // fills you up, then asks
+    static std::string SaveTitle(const WorldObject* st) { return st && !st->save.title.empty() ? st->save.title : std::string("Game Saved!"); }
+    static std::string SaveText(const WorldObject* st) {   // what it says under the title: the station's own, or what it filled up
+        if (st && !st->save.text.empty()) return st->save.text;
+        bool e = !st || st->save.energy, a = !st || st->save.ammo;
+        return e && a ? "All energy and ammo have been restored." : e ? "All energy has been restored." : a ? "All ammo has been restored." : "";
+    }
+    void UseSaveStation(const WorldObject& st) {   // fills you up; you stand in its middle, its animation plays, then the game saves ("Game Saved!")
         if (st.save.energy) play.health = playRules.maxHealth;
         if (st.save.ammo) {
             if (!weapons.missileCounter.empty() && !weapons.missileTypes.empty()) inv.counts[weapons.missileCounter] = MissileMax();
             for (const ItemDef& d : items.items) if (d.used && d.type == ItemType::PowerBomb && ItemHave(d.name) > 0) { inv.counts[items.powerBombCounter] = PowerBombMax(); break; }
         }
-        saveStationId = st.id; savePrompt = true; paused = true; menuSel = -2; Capture(false);
+        saveStationId = st.id;
+        if (st.save.ask) { savePrompt = true; paused = true; menuSel = -2; Capture(false); return; }   // the old way: a Yes / No question first
+        player.feet.x = st.pos.x; player.feet.z = st.pos.z; player.vel = { 0, 0, 0 }; player.dashT = 0;   // into the middle of the station
+        saveSeqId = st.id; saveSeqT = 0; StartSaveAnim(st);
+    }
+    uint32_t saveSeqId = 0; float saveSeqT = 0;   // a Save Station at work: its animation, then saving and the pop-up (you can't move meanwhile)
+    void UpdateSaveSequence(double dt) {
+        if (!saveSeqId) return;
+        if (!playMode || play.dead()) { saveSeqId = 0; return; }
+        if (const WorldObject* st = ObjById(saveSeqId)) { player.feet.x = st->pos.x; player.feet.z = st->pos.z; }   // (stays in the middle)
+        player.vel.x = player.vel.z = 0;
+        saveSeqT += (float)dt;
+        if (saveAnimId || saveSeqT < 0.5f) return;   // the animation (or a short moment without one)
+        saveSeqId = 0;
+        bool ok = WriteSave(true); if (ok) GameSnd(&PlayerSounds::saved);
+        int scr = screens.byRole(ScreenRole::GameSaved);
+        if (ok && scr >= 0) { itemGetKeyPrev = true; ShowScreen(scr, false); }
+        else if (ok) Toast(SaveTitle(ObjById(saveStationId)));
     }
     void CloseSavePrompt() { savePrompt = false; paused = false; Capture(true); }
     // after saving: the station plays its animation (from its model), and only then can you move again
@@ -9045,7 +9084,7 @@ struct App {
         return p;
     }
     bool quickSaving = false;
-    bool WriteSave() {
+    bool WriteSave(bool quiet = false) {   // quiet: no "Saved" note (the "Game Saved!" pop-up says it)
         const WorldObject* st = nullptr; for (const WorldObject& o : objects) if (o.id == saveStationId) st = &o;
         if (curSlot < 0) curSlot = 0;
         SaveGame g; int found = 0, total = 0;
@@ -9061,7 +9100,7 @@ struct App {
         if (!saveGame(dir, g)) { Toast("Could not save"); return false; }
         for (int i = 0; i < (int)g.maps.size(); i++) saveSeenMap(dir + "/map_" + std::to_string(i) + ".bin", seenMaps[g.maps[i]]);
         RefreshSlots();
-        Toast(curSlot > 0 ? "Saved to File " + std::to_string(curSlot) : "Saved (the editor's test file: play from the main menu, F6, for real files)");
+        if (!quiet || curSlot <= 0) Toast(curSlot > 0 ? "Saved to File " + std::to_string(curSlot) : "Saved (the editor's test file: play from the main menu, F6, for real files)");
         return true;
     }
     void GoToWorld(const std::string& w) {
@@ -9207,7 +9246,7 @@ struct App {
         if (ImGui::Button("+ Screen")) ImGui::OpenPopup("addscr");
         if (ImGui::BeginPopup("addscr")) {
             if (ImGui::Selectable("Story (typed text, like Super Metroid's intro)")) { mc::Screen s = presetStory(); std::string base = s.name; int k = 2; while (screens.find(s.name) >= 0) s.name = base + " " + std::to_string(k++); screens.screens.push_back(s); scrEd = (int)screens.screens.size() - 1; scrItem = -1; ch = true; }
-            for (ScreenRole r : { ScreenRole::MainMenu, ScreenRole::Files, ScreenRole::Intro, ScreenRole::Options, ScreenRole::Death, ScreenRole::Credits, ScreenRole::ItemGet, ScreenRole::Custom })
+            for (ScreenRole r : { ScreenRole::MainMenu, ScreenRole::Files, ScreenRole::Intro, ScreenRole::Options, ScreenRole::Death, ScreenRole::Credits, ScreenRole::ItemGet, ScreenRole::GameSaved, ScreenRole::Custom })
                 if (ImGui::Selectable(r == ScreenRole::Custom ? "Empty (your own)" : screenRoleName(r))) {
                     mc::Screen s = presetScreen(r); std::string base = s.name; int k = 2; while (screens.find(s.name) >= 0) s.name = base + " " + std::to_string(k++);
                     if (screens.byRole(r) >= 0 && r != ScreenRole::Custom) s.role = ScreenRole::Custom;   // (one of each role: this one is a copy to play with)
@@ -9832,6 +9871,11 @@ struct App {
         if (sc.musicMode == 1) { Prop("Music"); ch |= SoundEdit("##music", sc.music, false); }
         if (sc.musicMode != 0) { Prop("Fades over"); ch |= ImGui::SliderFloat("##mfade", &sc.musicFade, 0, 6, "%.1f s"); }
         Hint("WAV, MP3, M4A, WMA or FLAC from the game's sounds (import them in the sound pickers). \"Keep\" lets the music of the screen before go on (the Options screen keeps the main menu's). Playing a game fades it out.");
+        if (sc.role == ScreenRole::GameSaved) {
+            ImGui::SeparatorText("Game saved pop-up");
+            Prop("A button closes it after"); ch |= ImGui::SliderFloat("##holdg", &sc.holdMin, 0, 5, "%.1f s");
+            Hint("Shows after a Save Station has saved the game. {savetitle} and {savetext} are what the station says (set on each Save Station; empty there: \"Game Saved!\" and what it filled up).");
+        }
         if (sc.role == ScreenRole::ItemGet) {
             ImGui::SeparatorText("Item pop-up");
             Prop("A button closes it after"); ch |= ImGui::SliderFloat("##hold", &sc.holdMin, 0, 5, "%.1f s");

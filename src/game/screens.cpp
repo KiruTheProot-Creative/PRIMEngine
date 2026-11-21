@@ -9,7 +9,7 @@
 namespace mc {
 
 const char* screenRoleName(ScreenRole r) {
-    static const char* n[] = { "Custom", "Main menu", "Options", "Death screen", "Credits", "Files (save files)", "Splash (shown first)", "Intro of a new game (after an empty file)", "Item get (pop-up while playing)" };
+    static const char* n[] = { "Custom", "Main menu", "Options", "Death screen", "Credits", "Files (save files)", "Splash (shown first)", "Intro of a new game (after an empty file)", "Item get (pop-up while playing)", "Game saved (pop-up after a Save Station)" };
     int i = (int)r; return i >= 0 && i < (int)ScreenRole::COUNT ? n[i] : "?";
 }
 const char* bgKindName(BgKind k) {
@@ -181,6 +181,20 @@ Screen presetScreen(ScreenRole r) {
         s.comp.find(bl)->p[0] = 5; s.comp.find(vig)->p[0] = 0.5f;
         s.comp.connect(bg, bl, 0); s.comp.connect(bl, over, 0); s.comp.connect(ui, over, 1); s.comp.connect(over, gl, 0); s.comp.connect(gl, vig, 0); s.comp.connect(vig, out, 0);
         break; }
+    case ScreenRole::GameSaved: {   // after a Save Station: "Game Saved!" in a framed panel, the game frozen and blurred behind
+        s.name = "Game saved"; s.bg.kind = BgKind::Game; s.bg.dim = 0.3f; s.fadeIn = 0.25f; s.holdMin = 0.8f;
+        ScreenItem p; p.name = "Panel"; p.kind = ScreenItemKind::Panel; p.x = 0.25f; p.y = 0.36f; p.w = 0.5f; p.h = 0.26f; p.col.fillAlpha = 0.72f; p.col.fill = 0x1A1204; p.col.accent = 0xFFC85A; p.border = 2.5f; p.rounding = 0.08f;
+        p.keys = { { 0, 0.17f, 0.33f, 0.96f, 0, true }, { 0.25f, 0.17f, 0.3f, 1, 1, true } }; s.items.push_back(p);
+        ScreenItem t = text("Title", "{savetitle}", 0.27f, 0.39f, 0.46f, 0.08f, 0.055f, 1); t.col.text = 0xFFC85A; t.weight = 0.4f; t.showAt = 0.1f; t.fade = 0.25f; s.items.push_back(t);
+        ScreenItem l; l.name = "Line"; l.kind = ScreenItemKind::Panel; l.x = 0.32f; l.y = 0.48f; l.w = 0.36f; l.h = 0.004f; l.frame = false; l.col.fill = 0xFFC85A; l.col.fillAlpha = 0.6f; l.rounding = 0; l.showAt = 0.15f; s.items.push_back(l);
+        ScreenItem x = text("Text", "{savetext}", 0.27f, 0.5f, 0.46f, 0.06f, 0.028f, 1); x.col.text = 0xFFE6B0; x.showAt = 0.25f; x.typeSpeed = 70; s.items.push_back(x);
+        ScreenItem h = text("Continue", "{key:jump}: continue", 0.27f, 0.565f, 0.46f, 0.04f, 0.02f, 1); h.alpha = 0.6f; h.showAt = 0.8f; h.fade = 0.4f; s.items.push_back(h);
+        s.comp = Compositor{};
+        int bg = s.comp.add(NodeType::Background, 40, 60), ui = s.comp.add(NodeType::UI, 40, 240), bl = s.comp.add(NodeType::Blur, 260, 60);
+        int over = s.comp.add(NodeType::AlphaOver, 480, 140), gl = s.comp.add(NodeType::Glare, 700, 140), vig = s.comp.add(NodeType::Vignette, 920, 140), out = s.comp.add(NodeType::Output, 1140, 140);
+        s.comp.find(bl)->p[0] = 5; s.comp.find(vig)->p[0] = 0.5f;
+        s.comp.connect(bg, bl, 0); s.comp.connect(bl, over, 0); s.comp.connect(ui, over, 1); s.comp.connect(over, gl, 0); s.comp.connect(gl, vig, 0); s.comp.connect(vig, out, 0);
+        break; }
     default: s.name = "Screen"; break;
     }
     return s;
@@ -200,6 +214,7 @@ ScreenSet defaultScreens() {
     for (ScreenRole r : { ScreenRole::MainMenu, ScreenRole::Files, ScreenRole::Options, ScreenRole::Death, ScreenRole::Credits }) s.screens.push_back(presetScreen(r));
     s.screens.push_back(presetScreen(ScreenRole::Intro)); s.screens.push_back(storyScreen());   // a splash before the main menu; the story after picking an empty file
     s.screens.push_back(presetScreen(ScreenRole::ItemGet));   // the item pop-up
+    s.screens.push_back(presetScreen(ScreenRole::GameSaved)); // after a Save Station
     return s;
 }
 int ScreenSet::find(const std::string& name) const { for (int i = 0; i < (int)screens.size(); i++) if (screens[i].name == name) return i; return -1; }
@@ -361,7 +376,7 @@ bool saveScreens(const std::string& path, const ScreenSet& set) {
         f << "music " << s.musicMode << " " << s.musicFade << " " << soundUseText(s.music) << "\n";
         f << "seq " << s.duration << " " << (s.untilVideoEnds ? 1 : 0) << " " << (s.skippable ? 1 : 0) << " " << escText(s.next) << "\n";
         if (s.useStack) f << "usestack 1\n";
-        if (s.role == ScreenRole::ItemGet) f << "hold " << s.holdMin << "\n";
+        if (s.role == ScreenRole::ItemGet || s.role == ScreenRole::GameSaved) f << "hold " << s.holdMin << "\n";
         for (const StackStep& st : s.stack) {
             f << "step " << (int)st.kind << " " << escText(st.file) << " " << (st.zoom ? 1 : 0) << " " << st.zoomTo << " " << st.zoomTime << " " << st.place << " " << escText(st.text) << " "
               << st.typeSpeed << " " << st.hold << " " << st.fade << " " << st.textSize << " " << st.color << " " << st.align << " " << st.weight << " " << st.outline << " " << st.outlineColor << " " << st.textFade << " " << (st.keep ? 1 : 0) << "\n";
