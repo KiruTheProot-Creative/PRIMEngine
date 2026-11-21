@@ -2266,6 +2266,163 @@ float3 rgb2hsv(float3 c)
 }
 float3 hsv2rgb(float3 c) { float3 p = abs(frac(c.xxx + float3(1, 2.0 / 3, 1.0 / 3)) * 6 - 3); return c.z * lerp(1, saturate(p - 1), c.y); }
 float compHash(float2 p) { return frac(sin(dot(p, float2(12.9898, 78.233))) * 43758.5453); }
+// ---------------------------------------------------------------- planets: stars, a coloured haze and a planet in layers (ocean, terrain bands, ice, clouds, atmosphere, night lights, rings)
+cbuffer PlanetCB : register(b3)
+{
+    float4 gPlA;        // x width / height, y time (s), z pixels across the planet (0: smooth), w seed
+    float4 gPlPos;      // xy its middle (0..1 of the picture), z its radius (part of the height), w how far it has turned (radians)
+    float4 gPlSun;      // xyz towards the sun (the view: x right, y up, z towards you), w stars
+    float4 gPlAxis;     // xyz the planet's axis (the view), w -
+    float4 gPlNeb;      // rgb the haze, w how much
+    float4 gPlOcean;    // rgb shallow water, w sea level (0..1; < 0: no ocean)
+    float4 gPlDeep;     // rgb deep water, w its shine
+    float4 gPlLand;     // x continent size, y roughness, z how many bands, w -
+    float4 gPlBand[8];  // rgb colour, w from (height above the sea, 0..1)
+    float4 gPlIce;      // rgb, w how far down from the poles (0: none)
+    float4 gPlCloud;    // rgb, w cover (0: none)
+    float4 gPlCloud2;   // x puffy, y how far the clouds have turned more than the ground (radians), z their shadows, w -
+    float4 gPlAtmo;     // rgb, w thickness (0: none)
+    float4 gPlAtmo2;    // x glow, yzw -
+    float4 gPlNight;    // rgb, w amount (0: none)
+    float4 gPlRing;     // rgb, w 1: rings
+    float4 gPlRing2;    // rgb, w -
+    float4 gPlRing3;    // x inner, y outer radius (the planet is 1), zw -
+};
+float plHash(float3 p) { p = frac(p * 0.3183099 + 0.1); p *= 17.0; return frac(p.x * p.y * p.z * (p.x + p.y + p.z)); }
+float plNoise(float3 x)
+{
+    float3 i = floor(x), f = frac(x); f = f * f * (3 - 2 * f);
+    return lerp(lerp(lerp(plHash(i), plHash(i + float3(1, 0, 0)), f.x), lerp(plHash(i + float3(0, 1, 0)), plHash(i + float3(1, 1, 0)), f.x), f.y),
+                lerp(lerp(plHash(i + float3(0, 0, 1)), plHash(i + float3(1, 0, 1)), f.x), lerp(plHash(i + float3(0, 1, 1)), plHash(i + float3(1, 1, 1)), f.x), f.y), f.z);
+}
+float plFbm(float3 p, int oct, float rough)
+{
+    float s = 0, a = 0.5, n = 0; float g = lerp(0.38, 0.62, rough);
+    [loop] for (int k = 0; k < oct; k++) { s += plNoise(p) * a; n += a; p = p * 2.03 + 11.7; a *= g; }
+    return s / n;
+}
+float3 plRotate(float3 v, float3 axis, float ang)   // turn v around axis (Rodrigues)
+{
+    float c = cos(ang), s = sin(ang); return v * c + cross(axis, v) * s + axis * dot(axis, v) * (1 - c);
+}
+float3 plLocal(float3 n, float spin)   // a direction in the view -> on the planet's own globe (its axis is y)
+{
+    float3 ax = gPlAxis.xyz, up = float3(0, 1, 0);
+    float3 k = cross(ax, up); float sn = length(k), c = dot(ax, up);
+    float3 v = sn > 1e-4 ? plRotate(n, k / sn, atan2(sn, c)) : n;   // tip the axis upright
+    return plRotate(v, up, -spin);
+}
+float3 plSurface(float3 loc, float3 n, float3 L, out float spec)   // the ground's colour at a point of the globe
+{
+    float seed = gPlA.w; spec = 0;
+    float h = plFbm(loc * gPlLand.x + seed * 1.37, 6, gPlLand.y);
+    h = saturate((h - 0.5) * 1.8 + 0.5);
+    float3 col;
+    float sea = gPlOcean.w;
+    if (sea >= 0 && h < sea)
+    {
+        float d = saturate((sea - h) / max(sea, 1e-3) * 2.5);
+        col = lerp(gPlOcean.rgb, gPlDeep.rgb, d);
+        float3 r = reflect(float3(0, 0, -1), n); spec = pow(saturate(dot(r, L)), 48) * gPlDeep.w * 2.5;
+    }
+    else
+    {
+        float above = sea >= 0 ? saturate((h - sea) / max(1 - sea, 1e-3)) : h;
+        above = saturate(above + (plNoise(loc * 18 + seed) - 0.5) * 0.12 * gPlLand.y);   // ragged edges between the bands
+        int nb = (int)round(gPlLand.z); col = nb > 0 ? gPlBand[0].rgb : float3(0.4, 0.5, 0.3);
+        [loop] for (int b = 1; b < nb; b++) { float e = gPlBand[b].w; col = lerp(col, gPlBand[b].rgb, smoothstep(e - 0.02, e + 0.02, above)); }
+        col *= 0.85 + 0.3 * plNoise(loc * 40 + seed * 3.1);   // a little texture
+    }
+    if (gPlIce.w > 0)
+    {
+        float lat = abs(loc.y), edge = 1 - gPlIce.w + (plNoise(loc * 9 + seed) - 0.5) * 0.12;
+        col = lerp(col, gPlIce.rgb, smoothstep(edge - 0.015, edge + 0.015, lat)); if (lat > edge) spec *= 0.2;
+    }
+    return col;
+}
+float plClouds(float3 loc)
+{
+    if (gPlCloud.w <= 0) return 0;
+    float3 q = plRotate(loc, float3(0, 1, 0), -gPlCloud2.y);
+    float c = plFbm(q * 2.6 + gPlA.w * 3.3 + float3(0, gPlA.y * 0.004, 0), 5, 0.55);
+    float t = 1 - gPlCloud.w, soft = lerp(0.03, 0.16, gPlCloud2.x);
+    return smoothstep(t - soft, t + soft, c);
+}
+float4 PS_Planet(BlitOut i) : SV_Target
+{
+    float2 uv = i.uv; float aspect = gPlA.x;
+    float3 col = float3(0.004, 0.006, 0.012);
+    // the haze and the stars
+    {
+        float2 q = uv * float2(aspect, 1) * 2.2;
+        float nb = plFbm(float3(q, gPlA.w * 0.1), 5, 0.6); nb = saturate((nb - 0.42) * 2.4);
+        col += gPlNeb.rgb * nb * nb * gPlNeb.w * 1.6;
+        float2 cell = floor(uv * float2(aspect, 1) * 420); float hs = plHash(float3(cell, 7.1));
+        float lim = 1 - gPlSun.w * 0.012;
+        if (hs > lim) { float tw = 0.6 + 0.4 * sin(gPlA.y * (1.5 + hs * 4) + hs * 60); col += (hs - lim) / max(1 - lim, 1e-4) * tw * float3(0.9, 0.95, 1) * 1.6; }
+    }
+    float R = gPlPos.z;
+    float2 p = (uv - gPlPos.xy) * float2(aspect, 1) / max(R, 1e-3); p.y = -p.y;   // in planet radii, y up
+    if (gPlA.z > 0.5) { float g = gPlA.z * 0.5; p = (floor(p * g) + 0.5) / g; }      // pixelated
+    float r2 = dot(p, p);
+    float3 L = normalize(gPlSun.xyz);
+    float3 ax = gPlAxis.xyz;
+    // the rings: where the view line meets their plane (behind the planet / in front)
+    float4 ringC = 0; float ringZ = -10;
+    if (gPlRing.w > 0.5 && abs(ax.z) > 1e-3)
+    {
+        float z = -(ax.x * p.x + ax.y * p.y) / ax.z; float3 x = float3(p, z); float d = length(x);
+        if (d > gPlRing3.x && d < gPlRing3.y)
+        {
+            float t = (d - gPlRing3.x) / (gPlRing3.y - gPlRing3.x);
+            float bands = 0.55 + 0.45 * sin(t * 38 + sin(t * 9) * 2) * plNoise(float3(t * 60, 1, 2));
+            float a = smoothstep(0, 0.06, t) * smoothstep(1, 0.9, t) * saturate(bands + 0.2);
+            float lit = 0.35 + 0.65 * saturate(abs(dot(ax, L)) + 0.25);
+            float3 rc = lerp(gPlRing.rgb, gPlRing2.rgb, t) * lit;
+            bool shadow = false;   // the planet's shadow on the rings
+            { float b = dot(x, L), c = dot(x, x) - 1; shadow = b < 0 && b * b - c > 0; }
+            if (shadow) rc *= 0.15;
+            ringC = float4(rc, a * 0.85); ringZ = z;
+        }
+    }
+    bool ringBehind = ringC.a > 0 && ringZ < 0 && r2 < 1;
+    if (ringBehind) col = lerp(col, ringC.rgb, ringC.a);   // behind the planet (hidden by it below)
+    // the atmosphere's glow just outside the edge
+    if (gPlAtmo.w > 0 && r2 >= 1)
+    {
+        float rr = sqrt(r2), k = exp(-(rr - 1) / max(gPlAtmo.w, 1e-3) * 2.2);
+        float side = saturate(dot(normalize(float3(p, 0)), L) * 0.7 + 0.45);
+        col += gPlAtmo.rgb * k * side * gPlAtmo2.x * 0.9;
+    }
+    if (r2 < 1)
+    {
+        float3 n = float3(p, sqrt(1 - r2));
+        float3 loc = plLocal(n, gPlPos.w), Lloc = plLocal(L, gPlPos.w);
+        float spec; float3 ground = plSurface(loc, n, L, spec);
+        float ndl = dot(n, L), day = smoothstep(-0.08, 0.25, ndl), diff = saturate(ndl) * 0.85 + 0.15 * day;
+        float cl = plClouds(loc);
+        float sh = gPlCloud2.z > 0 ? plClouds(normalize(loc + Lloc * 0.03)) * gPlCloud2.z : 0;   // a cloud's shadow on the ground, offset from it toward the sun
+        float3 c = ground * diff * (1 - sh * 0.6) + spec * day * (1 - cl) * float3(1, 0.95, 0.85);
+        if (gPlNight.w > 0)   // the dark side: lights where there is land
+        {
+            float sea = gPlOcean.w; float h = plFbm(loc * gPlLand.x + gPlA.w * 1.37, 6, gPlLand.y); h = saturate((h - 0.5) * 1.8 + 0.5);
+            float land = sea < 0 || h > sea ? 1 : 0;
+            float lights = smoothstep(0.62, 0.8, plNoise(loc * 55 + gPlA.w)) * smoothstep(0.4, 0.7, plNoise(loc * 7 + 4.1));
+            c += gPlNight.rgb * lights * land * (1 - day) * gPlNight.w * 1.6 * (1 - cl * 0.7);
+        }
+        c = lerp(c, gPlCloud.rgb * (diff * 0.95 + 0.05), cl * 0.92);
+        if (gPlAtmo.w > 0)   // the air thickens toward the edge (lit side)
+        {
+            float rim = pow(1 - n.z, 2.5);
+            c = lerp(c, gPlAtmo.rgb * (0.25 + day), saturate(rim * gPlAtmo2.x * (0.4 + gPlAtmo.w * 3)) * (0.3 + 0.7 * day));
+        }
+        float edge = smoothstep(1, 0.985, sqrt(r2));   // (a smooth edge)
+        col = lerp(col, c, gPlA.z > 0.5 ? 1 : edge);
+    }
+    if (ringC.a > 0 && !ringBehind) col = lerp(col, ringC.rgb, ringC.a);   // in front (or beside it)
+    return float4(col, 1);
+}
+
 float4 PS_Comp(BlitOut i) : SV_Target
 {
     int op = (int)round(gCP1.w); float2 uv = i.uv; float4 a = 0;

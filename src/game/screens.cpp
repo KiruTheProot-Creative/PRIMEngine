@@ -13,7 +13,7 @@ const char* screenRoleName(ScreenRole r) {
     int i = (int)r; return i >= 0 && i < (int)ScreenRole::COUNT ? n[i] : "?";
 }
 const char* bgKindName(BgKind k) {
-    static const char* n[] = { "Colour", "Picture / GIF", "Video", "A world (through a camera)", "The game behind" };
+    static const char* n[] = { "Colour", "Picture / GIF", "Video", "A world (through a camera)", "The game behind", "Space (a planet)" };
     int i = (int)k; return i >= 0 && i < (int)BgKind::COUNT ? n[i] : "?";
 }
 const char* screenItemKindName(ScreenItemKind k) {
@@ -146,7 +146,7 @@ Screen presetScreen(ScreenRole r) {
     Screen s; s.role = r; s.comp = defaultCompositor();
     switch (r) {
     case ScreenRole::MainMenu: {   // the title: the game's name top left, a list of buttons where the picked one is a lit bar, what it does under it, a hint bar at the bottom
-        s.name = "Main menu"; s.bg.color = 0x0C2533; s.bg.color2 = 0x03070C;
+        s.name = "Main menu"; s.bg.color = 0x0C2533; s.bg.color2 = 0x03070C; s.bg.kind = BgKind::Space;   // (a planet turning behind the title)
         ScreenItem k = text("Kicker", "A PRIMENGINE GAME", 0.075f, 0.15f, 0.5f, 0.03f, 0.0156f, 0); k.col.text = VISOR_CYAN; k.weight = 0.3f; s.items.push_back(k);
         ScreenItem t = text("Title", "{game}", 0.075f, 0.18f, 0.85f, 0.13f, 0.1f, 0); t.weight = 0.6f; t.valign = 0; s.items.push_back(t);
         s.items.push_back(rule("Line", 0.075f, 0.32f, 0.26f, VISOR_CYAN, 0.8f));
@@ -431,6 +431,8 @@ bool saveScreens(const std::string& path, const ScreenSet& set) {
         const ScreenBg& b = s.bg;
         f << "bg " << (int)b.kind << " " << b.color << " " << b.color2 << " " << escText(b.file) << " " << b.fit << " " << b.speed << " " << (b.loop ? 1 : 0) << " "
           << escText(b.world) << " " << escText(b.camera) << " " << b.turn << " " << b.dim << " " << b.tilt << " " << b.height << "\n";
+        if (b.kind == BgKind::Space || !b.planet.empty())
+            f << "space " << escText(b.planet) << " " << b.planetSize << " " << b.planetX << " " << b.planetY << " " << b.spin << " " << b.axisTilt << " " << b.sunYaw << " " << b.sunPitch << " " << b.stars << " " << b.nebula << " " << b.nebulaColor << "\n";
         snd("ssounds", s.sounds);
         f << "music " << s.musicMode << " " << s.musicFade << " " << soundUseText(s.music) << "\n";
         f << "seq " << s.duration << " " << (s.untilVideoEnds ? 1 : 0) << " " << (s.skippable ? 1 : 0) << " " << escText(s.next) << "\n";
@@ -486,6 +488,8 @@ bool loadScreens(const std::string& path, ScreenSet& set) {
             l >> kind >> b.color >> b.color2 >> file >> b.fit >> b.speed >> loop >> world >> cam >> b.turn >> b.dim;
             { float tl, ht; if (l >> tl >> ht) { b.tilt = tl; b.height = ht; } }
             b.kind = (BgKind)std::clamp(kind, 0, (int)BgKind::COUNT - 1); b.file = unescText(file); b.world = unescText(world); b.camera = unescText(cam); b.loop = loop != 0;
+        } else if (k == "space") {
+            ScreenBg& b = cur->bg; std::string pl; l >> pl >> b.planetSize >> b.planetX >> b.planetY >> b.spin >> b.axisTilt >> b.sunYaw >> b.sunPitch >> b.stars >> b.nebula >> b.nebulaColor; b.planet = unescText(pl);
         } else if (k == "item") {
             ScreenItem i; ScreenColors& c = i.col; std::string n, t, im, tg, gr; int kind = 1, fl = 1, fr = 1, act = 0;
             l >> n >> kind >> i.x >> i.y >> i.w >> i.h >> t >> im >> i.textSize >> i.align >> c.text >> c.accent >> c.picked >> c.dim >> c.fill >> c.fillAlpha >> i.alpha

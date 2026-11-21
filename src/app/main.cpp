@@ -29,6 +29,7 @@
 #include "../game/bosses.h"
 #include "../game/assets.h"
 #include "../game/looks.h"
+#include "../game/planets.h"
 #include "../game/surfaces.h"
 #include "../game/buildmodes.h"
 #include <tuple>
@@ -197,6 +198,7 @@ struct App {
     ComPtr<ID3D11Texture2D> skyMapTex; ComPtr<ID3D11DepthStencilView> skyMapDSV; ComPtr<ID3D11ShaderResourceView> skyMapSRV;   // what is above each spot
     Weather weather; bool weatherWin = false;
     EnvState envState; bool envWin = false;
+    PlanetSet planets; bool planetsDirty = false;   // planets (planets.txt): Space backgrounds
     LookSet looks; LookState lookState; bool looksDirty = false;   // colour looks (looks.txt): the world's, a zone's
     ComPtr<ID3D11PixelShader> psLumLog, psAdapt; ComPtr<ID3D11Buffer> cbLook;
     ComPtr<ID3D11Texture2D> lumTex, adaptTex[2]; ComPtr<ID3D11RenderTargetView> lumRTV, adaptRTV[2]; ComPtr<ID3D11ShaderResourceView> lumSRV, adaptSRV[2]; int adaptCur = 0;
@@ -350,6 +352,7 @@ struct App {
         b = Compile(src, "VS_Rain", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsRain));
         b = Compile(src, "VS_RainFar", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsRainFar));
         b = Compile(src, "PS_Comp", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psComp));   // the screens' compositor
+        b = Compile(src, "PS_Planet", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psPlanet));   // Space backgrounds: stars and a planet
         b = Compile(src, "VS_Dust", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsDust));
         b = Compile(src, "PS_Rain", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psRain));
         b = Compile(src, "PS_Bolt", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psBolt));
@@ -1234,6 +1237,7 @@ struct App {
         CpuMark("game: water"); UpdateWater(dt);
         CpuMark("game: other");
         if (looksDirty && !ImGui::IsAnyItemActive()) { looksDirty = false; if (!projectDir.empty()) saveLooks(projectDir + "/looks.txt", looks); }
+        if (planetsDirty && !ImGui::IsAnyItemActive()) { planetsDirty = false; if (!projectDir.empty()) savePlanets(projectDir + "/planets.txt", planets); }
         cloudTime += dt * (0.5 + weather.now.wind);
         precipTime += dt; { float w = EffWeather().wind; precipWindX += dt * w; precipWindZ += dt * w * 0.45; }   // (added up: a change of wind only changes how they move from now on)
         if (settings.dayCycle) { settings.timeOfDay += (float)(dt * 24.0 / 1200.0); if (settings.timeOfDay >= 24) settings.timeOfDay -= 24; }
@@ -5869,6 +5873,8 @@ struct App {
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("F6: play as a player would: from the main menu (Screens editor).\nF5 there: back to the editor.");
             ImGui::SameLine(); if (ImGui::Button("Player")) { playerEdOpen = !playerEdOpen; focusPlayerEd = playerEdOpen; }
             ImGui::SameLine(); if (ImGui::Button("Screens")) { screensEdOpen = !screensEdOpen; focusScreensEd = screensEdOpen; }
+            ImGui::SameLine(); if (ImGui::Button("Planets")) { planetsEdOpen = !planetsEdOpen; focusPlanetsEd = planetsEdOpen; if (planetsEdOpen && planets.planets.empty()) { planets.planets.push_back(defaultPlanet()); planetsDirty = true; } }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("The Planets editor: design planets in layers for Space backgrounds (main menu)");
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("The Screens editor: main menu, options, death screen, credits, your own screens, their compositor");
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("The Player editor: HUD (more later)");
             ImGui::SameLine(); if (ImGui::Button("Save")) { SaveWorld(); Toast("Saved"); }
@@ -6146,7 +6152,8 @@ struct App {
     double prevPlayYaw = 0, prevPlayPitch = 0, prevVelY = 0; bool prevOnGround = true;
 
     std::string HudPath() const { return projectDir + "/hud.txt"; }
-    void LoadHud() { items = defaultItems(); loadItems(projectDir + "/items.txt", items); looks = LookSet{}; loadLooks(projectDir + "/looks.txt", looks); looksDirty = false; assetFolders = AssetFolders{}; loadAssetFolders(projectDir + "/asset_folders.txt", assetFolders);
+    void LoadHud() { items = defaultItems(); loadItems(projectDir + "/items.txt", items); looks = LookSet{}; loadLooks(projectDir + "/looks.txt", looks); looksDirty = false;
+        planets = PlanetSet{}; loadPlanets(projectDir + "/planets.txt", planets); planetsDirty = false; assetFolders = AssetFolders{}; loadAssetFolders(projectDir + "/asset_folders.txt", assetFolders);
         animBlends = AnimBlends{}; loadAnimBlends(projectDir + "/anim_blend.txt", animBlends); cannonBlend.reset(); doorBlend.clear(); viewerBlend.reset();
         materials = Materials{}; loadMaterials(projectDir + "/materials.txt", materials); matsDirty = true; soundCache.clear(); playerSounds = PlayerSounds{}; loadPlayerSounds(projectDir + "/player_sounds.txt", playerSounds);
         if (!loadSurfaces(projectDir + "/surfaces.txt", surfaces)) surfaces = defaultSurfaces(); activeTl.clear();
@@ -8647,6 +8654,148 @@ struct App {
         r[0] = 0.5f - sx * 0.5f; r[2] = 0.5f + sx * 0.5f; r[1] = 0.5f - sy * 0.5f; r[3] = 0.5f + sy * 0.5f;
     }
     // a screen into `out` (W x H): background, its items (ui: an ImDrawList at W x H), then the node graph; fade 0..1
+    // ---- planets: one shader draws the stars, a haze and the planet in its layers (Space backgrounds, the Planets editor's preview)
+    struct alignas(16) PlanetCB { float a[4], pos[4], sun[4], axis[4], neb[4], ocean[4], deep[4], land[4], band[8][4], ice[4], cloud[4], cloud2[4], atmo[4], atmo2[4], night[4], ring[4], ring2[4], ring3[4]; };
+    ComPtr<ID3D11PixelShader> psPlanet; ComPtr<ID3D11Buffer> cbPlanet;
+    Planet PlanetFor(const std::string& name) const { int i = planets.find(name); return i >= 0 ? planets.planets[i] : name.empty() && !planets.planets.empty() ? planets.planets[0] : defaultPlanet(); }
+    void DrawPlanet(ID3D11RenderTargetView* dst, int W, int H, const Planet& pl, const ScreenBg& v, double t) {
+        if (!psPlanet || W < 2 || H < 2) return;
+        if (!cbPlanet) { D3D11_BUFFER_DESC d{}; d.ByteWidth = sizeof(PlanetCB); d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_CONSTANT_BUFFER; HR(dev->CreateBuffer(&d, nullptr, &cbPlanet)); }
+        auto col = [](float* o, uint32_t c, float w) { o[0] = ((c >> 16) & 255) / 255.f; o[1] = ((c >> 8) & 255) / 255.f; o[2] = (c & 255) / 255.f; o[3] = w; };   // (screens are put together in display colours)
+        const float D = 3.14159265f / 180; PlanetCB c{};
+        float spin = (float)std::fmod(t * v.spin * D, 6.283185307 * 1000);
+        c.a[0] = (float)W / H; c.a[1] = (float)std::fmod(t, 3600.0); c.a[2] = (float)pl.pixels; c.a[3] = (float)(pl.seed % 9973) * 0.731f;
+        c.pos[0] = v.planetX; c.pos[1] = v.planetY; c.pos[2] = std::max(0.01f, v.planetSize); c.pos[3] = spin;
+        float sy = v.sunYaw * D, sp = v.sunPitch * D; c.sun[0] = std::sin(sy) * std::cos(sp); c.sun[1] = std::sin(sp); c.sun[2] = std::cos(sy) * std::cos(sp); c.sun[3] = std::clamp(v.stars, 0.f, 1.f);
+        float at = v.axisTilt * D, lean = pl.ringTilt * D; c.axis[0] = -std::sin(at) * std::cos(lean); c.axis[1] = std::cos(at) * std::cos(lean); c.axis[2] = std::sin(lean);
+        col(c.neb, v.nebulaColor, v.nebula);
+        col(c.ocean, pl.oceanColor, pl.ocean ? pl.seaLevel : -1.f); col(c.deep, pl.deepColor, pl.oceanShine);
+        c.land[0] = pl.landScale; c.land[1] = pl.roughness; c.land[2] = (float)std::min<size_t>(pl.bands.size(), PLANET_BANDS);
+        for (int b = 0; b < (int)std::min<size_t>(pl.bands.size(), PLANET_BANDS); b++) col(c.band[b], pl.bands[b].color, pl.bands[b].from);
+        col(c.ice, pl.iceColor, pl.ice ? pl.iceCaps : 0.f); col(c.cloud, pl.cloudColor, pl.clouds ? pl.cloudCover : 0.f);
+        c.cloud2[0] = pl.cloudPuff; c.cloud2[1] = spin * pl.cloudSpeed; c.cloud2[2] = pl.cloudShadows;
+        col(c.atmo, pl.atmoColor, pl.atmo ? pl.atmoThick : 0.f); c.atmo2[0] = pl.atmoGlow;
+        col(c.night, pl.nightColor, pl.night ? pl.nightAmount : 0.f);
+        col(c.ring, pl.ringColor, pl.rings ? 1.f : 0.f); col(c.ring2, pl.ringColor2, 0); c.ring3[0] = pl.ringInner; c.ring3[1] = std::max(pl.ringInner + 0.05f, pl.ringOuter);
+        ctx->UpdateSubresource(cbPlanet.Get(), 0, nullptr, &c, 0, 0);
+        ctx->OMSetRenderTargets(1, &dst, nullptr);
+        D3D11_VIEWPORT vp{ 0, 0, (float)W, (float)H, 0, 1 }; ctx->RSSetViewports(1, &vp);
+        ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->RSSetState(rsNoCull.Get());
+        ctx->IASetInputLayout(nullptr); ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        ctx->VSSetShader(vsBlit.Get(), nullptr, 0); ctx->PSSetShader(psPlanet.Get(), nullptr, 0); ctx->PSSetConstantBuffers(3, 1, cbPlanet.GetAddressOf());
+        ctx->Draw(3, 0); ctx->OMSetRenderTargets(0, nullptr, nullptr);
+    }
+    // the Planets editor
+    bool planetsEdOpen = false, focusPlanetsEd = false; int planetSel = 0; CompRT planetPreview; float planetPrevSpin = 12, planetPrevSun = -55;
+    void RenderPlanetPreview() {
+        if (!planetsEdOpen || planets.planets.empty()) return;
+        planetSel = std::clamp(planetSel, 0, (int)planets.planets.size() - 1);
+        MakeCompRT(planetPreview, 512, 512, DXGI_FORMAT_R8G8B8A8_UNORM);
+        ScreenBg v; v.planetX = 0.5f; v.planetY = 0.5f; v.planetSize = planets.planets[planetSel].rings ? 0.2f : 0.36f; v.spin = planetPrevSpin; v.sunYaw = planetPrevSun; v.axisTilt = 15; v.stars = 0.4f; v.nebula = 0.2f;
+        DrawPlanet(planetPreview.rtv.Get(), 512, 512, planets.planets[planetSel], v, uiClock);
+    }
+    void PlanetsEditor() {
+        if (!planetsEdOpen) return;
+        float ui = settings.uiScale;
+        ImGui::SetNextWindowSize(ImVec2(1100 * ui, 760 * ui), ImGuiCond_FirstUseEver);
+        if (focusPlanetsEd) { ImGui::SetNextWindowFocus(); focusPlanetsEd = false; }
+        if (!ImGui::Begin("Planets", &planetsEdOpen)) { ImGui::End(); return; }
+        bool ch = false;
+        auto unique = [&](std::string n) { std::string b = n; int k = 2; while (planets.find(n) >= 0) n = b + " " + std::to_string(k++); return n; };
+        // the list
+        ImGui::BeginChild("##pll", ImVec2(220 * ui, 0), ImGuiChildFlags_Borders);
+        if (ImGui::Button("+ New planet")) ImGui::OpenPopup("plnew");
+        if (ImGui::BeginPopup("plnew")) { for (const std::string& k : planetPresetNames()) if (ImGui::Selectable(k.c_str())) { Planet p = planetPreset(k); p.name = unique(k); p.seed = (uint32_t)(GetTickCount64() % 100000); planets.planets.push_back(p); planetSel = (int)planets.planets.size() - 1; ch = true; } ImGui::EndPopup(); }
+        ImGui::Separator();
+        for (int i = 0; i < (int)planets.planets.size(); i++) { ImGui::PushID(i); if (ImGui::Selectable(planets.planets[i].name.c_str(), i == planetSel)) planetSel = i; ImGui::PopID(); }
+        if (planets.planets.empty()) ImGui::TextWrapped("No planets yet. A Space background without one shows the ready-made Earth-like planet.");
+        ImGui::EndChild();
+        ImGui::SameLine();
+        if (planets.planets.empty()) { ImGui::End(); return; }
+        planetSel = std::clamp(planetSel, 0, (int)planets.planets.size() - 1); Planet& pl = planets.planets[planetSel];
+        // the preview
+        ImGui::BeginGroup();
+        float pw = 420 * ui;
+        if (planetPreview.srv) ImGui::Image((ImTextureID)(intptr_t)planetPreview.srv.Get(), ImVec2(pw, pw)); else ImGui::Dummy(ImVec2(pw, pw));
+        ImGui::SetNextItemWidth(pw * 0.5f); ImGui::SliderFloat("Spin (preview)", &planetPrevSpin, -60, 60, "%.0f deg/s");
+        ImGui::SetNextItemWidth(pw * 0.5f); ImGui::SliderFloat("Sun (preview)", &planetPrevSun, -180, 180, "%.0f deg");
+        ImGui::Spacing();
+        { char nb[96]; std::snprintf(nb, sizeof nb, "%s", pl.name.c_str()); ImGui::SetNextItemWidth(pw * 0.6f);
+          if (ImGui::InputText("Name", nb, sizeof nb, ImGuiInputTextFlags_EnterReturnsTrue) && nb[0] && planets.find(nb) < 0) {
+              std::string old = pl.name; pl.name = nb; ch = true;
+              for (mc::Screen& sc : screens.screens) if (sc.bg.planet == old) { sc.bg.planet = pl.name; SaveScreens(); }   // (screens follow the new name)
+          } }
+        if (ImGui::Button("Duplicate")) { Planet c = pl; c.name = unique(pl.name); planets.planets.push_back(c); planetSel = (int)planets.planets.size() - 1; ch = true; }
+        ImGui::SameLine(); if (ImGui::Button("Delete")) { planets.planets.erase(planets.planets.begin() + planetSel); planetSel = std::max(0, planetSel - 1); planetsDirty = true; ImGui::EndGroup(); ImGui::End(); return; }
+        ImGui::EndGroup();
+        ImGui::SameLine();
+        // the layers
+        ImGui::BeginChild("##plp", ImVec2(0, 0), ImGuiChildFlags_Borders);
+        auto onOff = [&](const char* id, bool& v) { ImGui::SameLine(ImGui::GetContentRegionAvail().x - 30 * ui + ImGui::GetCursorPosX()); ch |= ImGui::Checkbox(id, &v); };
+        if (ImGui::CollapsingHeader("Ground", ImGuiTreeNodeFlags_DefaultOpen)) {
+            int sd = (int)pl.seed; Prop("Seed"); ImGui::SetNextItemWidth(-90 * ui); if (ImGui::DragInt("##pls", &sd, 1, 0, 99999)) { pl.seed = (uint32_t)std::max(0, sd); ch = true; }
+            ImGui::SameLine(); if (ImGui::Button("New world")) { pl.seed = (pl.seed * 1103515245u + 12345u) % 99991u; ch = true; }
+            Prop("Continent size"); ch |= ImGui::SliderFloat("##plsc", &pl.landScale, 0.3f, 5, "%.2f"); if (ImGui::IsItemHovered()) ImGui::SetTooltip("Higher: more, smaller continents.");
+            Prop("Roughness"); ch |= ImGui::SliderFloat("##plro", &pl.roughness, 0, 1, "%.2f");
+            const char* px[] = { "Smooth", "Pixelated" }; int pm = pl.pixels > 0; Prop("Style"); if (ImGui::Combo("##plst", &pm, px, 2)) { pl.pixels = pm ? 96 : 0; ch = true; }
+            if (pl.pixels > 0) { Prop("Pixels across"); ch |= ImGui::SliderInt("##plpx", &pl.pixels, 16, 512); }
+        }
+        if (ImGui::CollapsingHeader("Ocean", ImGuiTreeNodeFlags_DefaultOpen)) {
+            Prop("Ocean"); ch |= ImGui::Checkbox("##ploc", &pl.ocean);
+            if (pl.ocean) {
+                Prop("Shallow water"); ch |= ColorU32("##plo1", pl.oceanColor); Prop("Deep water"); ch |= ColorU32("##plo2", pl.deepColor);
+                Prop("Sea level"); ch |= ImGui::SliderFloat("##plsl", &pl.seaLevel, 0.02f, 0.98f, "%.2f"); if (ImGui::IsItemHovered()) ImGui::SetTooltip("How much of the planet is water.");
+                Prop("Shine"); ch |= ImGui::SliderFloat("##plsh", &pl.oceanShine, 0, 1, "%.2f");
+            }
+        }
+        if (ImGui::CollapsingHeader("Terrain layers", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::TextDisabled("Low to high (above the sea). The last one reaches the peaks.");
+            int drop = -1;
+            for (int b = 0; b < (int)pl.bands.size(); b++) {
+                ImGui::PushID(b); PlanetBand& bd = pl.bands[b];
+                ch |= ColorU32("##plbc", bd.color); ImGui::SameLine(); ImGui::SetNextItemWidth(-60 * ui);
+                if (ImGui::SliderFloat("##plbf", &bd.from, 0, 1, b == 0 ? "from the shore" : "from %.2f")) { ch = true; }
+                ImGui::SameLine(); if (ImGui::SmallButton("x")) drop = b;
+                ImGui::PopID();
+            }
+            if (drop >= 0) { pl.bands.erase(pl.bands.begin() + drop); ch = true; }
+            if ((int)pl.bands.size() < PLANET_BANDS && ImGui::Button("+ Layer")) { PlanetBand nb; nb.from = pl.bands.empty() ? 0 : std::min(1.f, pl.bands.back().from + 0.15f); nb.color = pl.bands.empty() ? 0x6A9A4A : pl.bands.back().color; pl.bands.push_back(nb); ch = true; }
+            if (ch) std::stable_sort(pl.bands.begin(), pl.bands.end(), [](const PlanetBand& a, const PlanetBand& b) { return a.from < b.from; });
+        }
+        if (ImGui::CollapsingHeader("Ice caps")) {
+            Prop("Ice caps"); ch |= ImGui::Checkbox("##plic", &pl.ice);
+            if (pl.ice) { Prop("Colour"); ch |= ColorU32("##plicc", pl.iceColor); Prop("Reach"); ch |= ImGui::SliderFloat("##plir", &pl.iceCaps, 0, 1, "%.2f"); }
+        }
+        if (ImGui::CollapsingHeader("Clouds", ImGuiTreeNodeFlags_DefaultOpen)) {
+            Prop("Clouds"); ch |= ImGui::Checkbox("##plcl", &pl.clouds);
+            if (pl.clouds) {
+                Prop("Colour"); ch |= ColorU32("##plclc", pl.cloudColor);
+                Prop("Cover"); ch |= ImGui::SliderFloat("##plcv", &pl.cloudCover, 0, 1, "%.2f");
+                Prop("Puffy / soft"); ch |= ImGui::SliderFloat("##plcp", &pl.cloudPuff, 0, 1, "%.2f");
+                Prop("Drift"); ch |= ImGui::SliderFloat("##plcs", &pl.cloudSpeed, -1, 2, "%.2f"); if (ImGui::IsItemHovered()) ImGui::SetTooltip("How much faster (+) or slower (-) than the ground they go round.");
+                Prop("Shadows"); ch |= ImGui::SliderFloat("##plcsh", &pl.cloudShadows, 0, 1, "%.2f");
+            }
+        }
+        if (ImGui::CollapsingHeader("Atmosphere")) {
+            Prop("Atmosphere"); ch |= ImGui::Checkbox("##plat", &pl.atmo);
+            if (pl.atmo) { Prop("Colour"); ch |= ColorU32("##platc", pl.atmoColor); Prop("Thickness"); ch |= ImGui::SliderFloat("##platt", &pl.atmoThick, 0.01f, 0.4f, "%.2f"); Prop("Glow"); ch |= ImGui::SliderFloat("##platg", &pl.atmoGlow, 0, 3, "%.2f"); }
+        }
+        if (ImGui::CollapsingHeader("Night side")) {
+            Prop("Lights on the dark side"); ch |= ImGui::Checkbox("##plni", &pl.night);
+            if (pl.night) { Prop("Colour"); ch |= ColorU32("##plnc", pl.nightColor); Prop("Amount"); ch |= ImGui::SliderFloat("##plna", &pl.nightAmount, 0, 1, "%.2f"); Hint("Cities, lava, glowing forests: on land, where the sun doesn't shine."); }
+        }
+        if (ImGui::CollapsingHeader("Rings and tilt")) {
+            Prop("Rings"); ch |= ImGui::Checkbox("##plrg", &pl.rings);
+            if (pl.rings) {
+                Prop("Inner colour"); ch |= ColorU32("##plr1", pl.ringColor); Prop("Outer colour"); ch |= ColorU32("##plr2", pl.ringColor2);
+                Prop("From / to"); { float v[2] = { pl.ringInner, pl.ringOuter }; if (ImGui::DragFloat2("##plrr", v, 0.01f, 1.05f, 4, "%.2f")) { pl.ringInner = v[0]; pl.ringOuter = std::max(v[0] + 0.05f, v[1]); ch = true; } }
+            }
+            Prop("Pole toward you"); ch |= ImGui::SliderFloat("##plrt", &pl.ringTilt, -60, 60, "%.0f deg"); if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tips the north pole (and the rings) toward you, so the rings show as an oval.");
+        }
+        ImGui::EndChild();
+        if (ch) planetsDirty = true;
+        ImGui::End();
+    }
     void RenderScreenPicture(const mc::Screen& sc, ID3D11RenderTargetView* out, int W, int H, ImDrawList* ui, float fade, bool sceneReady) {
         InitCompositor(); if (!psComp || !cbComp) return;
         MakeCompRT(compBg, W, H); MakeCompRT(compBg2, W, H); MakeCompRT(compUi, W, H); MakeCompRT(compA, W, H); MakeCompRT(compB, W, H); MakeCompRT(compC, W, H);
@@ -8659,6 +8808,7 @@ struct App {
         else if (bg.kind == BgKind::Video) pic = VideoAt(bg.file, screenT * bg.speed, bg.loop, &iw, &ih);
         if (pic) { FitRect(iw, ih, W, H, bg.fit, cb.rect); CompPass(compBg.rtv.Get(), W, H, 2, pic, nullptr, cb); }
         else if ((bg.kind == BgKind::World || bg.kind == BgKind::Game) && sceneReady) { cb.p0[0] = 1; CompPass(compBg.rtv.Get(), W, H, 0, sceneSRV.Get(), nullptr, cb); }
+        else if (bg.kind == BgKind::Space) DrawPlanet(compBg.rtv.Get(), W, H, PlanetFor(bg.planet), bg, uiClock);
         else { CompColor(cb.c0, bg.color); CompColor(cb.c1, bg.kind == BgKind::Color ? bg.color2 : bg.color); CompPass(compBg.rtv.Get(), W, H, 1, nullptr, nullptr, cb); }
         CompRT* bgOut = &compBg;
         if (bg.dim > 0.001f) { cb = base; cb.p0[0] = bg.dim; CompPass(compBg2.rtv.Get(), W, H, 3, compBg.srv.Get(), nullptr, cb); bgOut = &compBg2; }
@@ -9312,7 +9462,7 @@ struct App {
     static void ApplyReadyLook(mc::Screen& sc) {   // a built-in screen back to the ready-made look
         mc::Screen p = sc.role == ScreenRole::NewGameIntro ? presetStory() : presetScreen(sc.role);
         if (sc.useStack) { sc.comp = p.comp; return; }   // (a splash / story: its own steps stay)
-        bool ownBg = sc.bg.kind == BgKind::World || sc.bg.kind == BgKind::Image || sc.bg.kind == BgKind::Video;
+        bool ownBg = sc.bg.kind == BgKind::World || sc.bg.kind == BgKind::Image || sc.bg.kind == BgKind::Video || sc.bg.kind == BgKind::Space;
         sc.items = p.items; sc.comp = p.comp; if (!ownBg) sc.bg = p.bg; sc.fadeIn = p.fadeIn;
     }
     void ScreensEditor() {
@@ -10034,6 +10184,22 @@ struct App {
         Prop("Background"); if (ImGui::BeginCombo("##bgk", bgKindName(b.kind))) { for (int k = 0; k < (int)BgKind::COUNT; k++) if (ImGui::Selectable(bgKindName((BgKind)k), (int)b.kind == k)) { b.kind = (BgKind)k; ch = true; } ImGui::EndCombo(); }
         switch (b.kind) {
         case BgKind::Color: Prop("Top"); ch |= ColorU32("##bgc1", b.color); Prop("Bottom"); ch |= ColorU32("##bgc2", b.color2); break;
+        case BgKind::Space: {
+            Prop("Planet"); if (ImGui::BeginCombo("##bgpl", b.planet.empty() ? "(the first / ready-made)" : b.planet.c_str())) {
+                if (ImGui::Selectable("(the first / ready-made)", b.planet.empty())) { b.planet.clear(); ch = true; }
+                for (const Planet& q : planets.planets) if (ImGui::Selectable(q.name.c_str(), b.planet == q.name)) { b.planet = q.name; ch = true; }
+                ImGui::EndCombo();
+            }
+            ImGui::SameLine(); if (ImGui::SmallButton("Edit planets")) { planetsEdOpen = true; focusPlanetsEd = true; int i = planets.find(b.planet); if (i >= 0) planetSel = i; if (planets.planets.empty()) { planets.planets.push_back(defaultPlanet()); planetsDirty = true; } }
+            Prop("Size"); ch |= ImGui::SliderFloat("##bgps", &b.planetSize, 0.05f, 1.5f, "%.2f");
+            Prop("Where"); { float v[2] = { b.planetX, b.planetY }; if (ImGui::SliderFloat2("##bgpw", v, -0.5f, 1.5f, "%.2f")) { b.planetX = v[0]; b.planetY = v[1]; ch = true; } }
+            Prop("Spin"); ch |= ImGui::SliderFloat("##bgsp", &b.spin, -60, 60, "%.1f deg/s");
+            Prop("Axis leaning"); ch |= ImGui::SliderFloat("##bgat", &b.axisTilt, -90, 90, "%.0f deg");
+            Prop("Sun"); { float v[2] = { b.sunYaw, b.sunPitch }; if (ImGui::SliderFloat2("##bgsun", v, -180, 180, "%.0f deg")) { b.sunYaw = v[0]; b.sunPitch = std::clamp(v[1], -89.f, 89.f); ch = true; } }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Left / right, up / down. 0, 0: from behind you.");
+            Prop("Stars"); ch |= ImGui::SliderFloat("##bgst", &b.stars, 0, 1, "%.2f");
+            Prop("Haze"); ch |= ImGui::SliderFloat("##bgnb", &b.nebula, 0, 1, "%.2f"); if (b.nebula > 0) { Prop("Haze colour"); ch |= ColorU32("##bgnc", b.nebulaColor); }
+            break; }
         case BgKind::Image: case BgKind::Video: {
             bool vid = b.kind == BgKind::Video;
             Prop(vid ? "Video" : "Picture / GIF"); ch |= FileCombo("##bgf", b.file, vid);
@@ -15705,7 +15871,7 @@ struct App {
             if (brushMenu) BrushMenu();
             ModelViewer();
             PlayerEditor();
-            ScreensEditor();
+            ScreensEditor(); PlanetsEditor();
         } else {
             if (!mapOpen && !CurScreen()) { DrawHud(ImGui::GetForegroundDrawList()); DrawScanMarkers(ImGui::GetForegroundDrawList()); DrawLockMarkers(ImGui::GetForegroundDrawList()); }
             if (showF3) DrawF3();
@@ -15723,7 +15889,7 @@ struct App {
         ImGui::Render();
         GpuBegin(); GpuMark("minimap, HUD and menu pictures");   // (each mark: the graphics card's time and the processor's)
         RenderMinimap();
-        RenderHudPlanes(); RenderScanModel(); RenderEnemyView(); RenderBallEditor(); RenderItemModel(); RenderMenuPanes();
+        RenderHudPlanes(); RenderScanModel(); RenderEnemyView(); RenderBallEditor(); RenderItemModel(); RenderMenuPanes(); RenderPlanetPreview();
 
         const float bg[4] = { 0.10f, 0.11f, 0.13f, 1 };
         if (screen == Screen::Game && rw > 0 && mapOpen && !ev) { RenderMap(); RenderMapScreen(backRTV.Get()); }   // the map screen: the map instead of the world, the visor over it

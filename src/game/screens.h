@@ -17,7 +17,7 @@ enum class ScreenRole { Custom, MainMenu, Options, Death, Credits, Files, Intro,
 // Files: picking a save file; Intro: the splash, shown first (before the main menu); NewGameIntro: the story, after picking an empty file (then the game)
 const char* screenRoleName(ScreenRole r);
 
-enum class BgKind { Color, Image, Video, World, Game, COUNT };   // Image: png / jpg / gif (moves); Game: the game as it is, behind
+enum class BgKind { Color, Image, Video, World, Game, Space, COUNT };   // Image: png / jpg / gif (moves); Game: the game as it is, behind; Space: stars and a planet (Planets editor)
 const char* bgKindName(BgKind k);
 struct ScreenBg {
     BgKind kind = BgKind::Color;
@@ -29,6 +29,11 @@ struct ScreenBg {
     float turn = 0;                                      // World: the view turns slowly (degrees a second)
     float dim = 0;                                       // darker (0..1)
     float tilt = -8, height = 1.0f;                      // World: looking up (+) / down (-), degrees; the eye above the camera object (blocks)
+    // Space: a planet from the Planets editor ("": the ready-made Earth-like one), where it sits, how it turns, the sun, the stars
+    std::string planet; float planetSize = 0.42f, planetX = 0.7f, planetY = 0.56f;   // its radius (part of the screen's height), its middle (0..1)
+    float spin = 5, axisTilt = 15;                       // degrees a second; the axis leaning (degrees)
+    float sunYaw = -55, sunPitch = 20;                   // where the light comes from (degrees: left / right, up / down)
+    float stars = 0.5f, nebula = 0.35f; uint32_t nebulaColor = 0x2A1A5A;   // how many stars, a coloured haze behind
 };
 
 enum class ScreenItemKind { Panel, Text, Image, Button, Options, Credits, SaveSlots, Sound, ItemModel, COUNT };   // ItemModel: the found item's 3D model, turning (Item get screen)   // SaveSlots: the save files, one card each; Sound: plays at its time (not seen)

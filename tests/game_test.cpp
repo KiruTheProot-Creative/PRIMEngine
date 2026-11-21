@@ -20,6 +20,7 @@
 #include "../src/game/options.h"
 #include "../src/game/cull.h"
 #include "../src/game/screens.h"
+#include "../src/game/planets.h"
 #include "../src/game/savegame.h"
 #include "../src/game/bosses.h"
 #include "../src/game/assets.h"
@@ -1737,6 +1738,21 @@ int main() {
             saveScreens("/tmp/prim_scr_look.txt", vs); ScreenSet vl; loadScreens("/tmp/prim_scr_look.txt", vl);
             const ScreenItem& b = vl.screens[0].items[3]; int ci = -1; for (int i = 0; i < (int)vl.screens[1].items.size(); i++) if (vl.screens[1].items[i].kind == ScreenItemKind::SaveSlots) ci = i;
             CHECK(b.tip == "Go on: {continue}" && b.corners && b.pickFill == 0.6f && ci >= 0 && vl.screens[1].items[ci].cards == 1, "tips, bracket corners, picked fill and card layout save and load");
+        }
+        {   // planets: designed in layers, saved and loaded; a Space background picks one
+            PlanetSet ps; for (const std::string& k : planetPresetNames()) ps.planets.push_back(planetPreset(k));
+            bool sorted = true; for (const Planet& q : ps.planets) for (size_t b = 1; b < q.bands.size(); b++) sorted &= q.bands[b - 1].from <= q.bands[b].from;
+            CHECK(ps.planets.size() == 6 && sorted && ps.planets[0].bands.size() == 5 && ps.find("Gas giant") >= 0 && ps.planets[ps.find("Gas giant")].rings, "planet presets: six worlds, their layers low to high (the gas giant has rings)");
+            Planet& q = ps.planets[0]; q.name = "Home World 2"; q.seed = 4242; q.pixels = 128; q.night = true; q.nightColor = 0x123456; q.bands.push_back({ 0xABCDEF, 0.95f }); q.ringInner = 1.6f;
+            savePlanets("/tmp/prim_planets.txt", ps); PlanetSet pl; CHECK(loadPlanets("/tmp/prim_planets.txt", pl), "planets load");
+            const Planet& r = pl.planets[0];
+            CHECK(pl.planets.size() == 6 && r.name == "Home World 2" && r.seed == 4242 && r.pixels == 128 && r.night && r.nightColor == 0x123456 && r.bands.size() == 6 && r.bands.back().color == 0xABCDEF && r.ringInner == 1.6f
+                  && pl.planets[2].iceCaps == ps.planets[2].iceCaps && !pl.planets[4].ocean, "a planet's layers save and load (name, seed, pixels, night side, terrain layers, rings)");
+            ScreenSet sp = defaultScreens(); Screen& mm2 = sp.screens[sp.byRole(ScreenRole::MainMenu)];
+            CHECK(mm2.bg.kind == BgKind::Space, "the ready-made main menu: a planet turning in space");
+            mm2.bg.planet = "Home World 2"; mm2.bg.planetSize = 0.6f; mm2.bg.spin = -8; mm2.bg.nebulaColor = 0x204060;
+            saveScreens("/tmp/prim_scr_space.txt", sp); ScreenSet sq; loadScreens("/tmp/prim_scr_space.txt", sq); const ScreenBg& qb = sq.screens[sq.byRole(ScreenRole::MainMenu)].bg;
+            CHECK(qb.kind == BgKind::Space && qb.planet == "Home World 2" && qb.planetSize == 0.6f && qb.spin == -8 && qb.nebulaColor == 0x204060, "a Space background saves and loads (planet, size, spin, haze)");
         }
         int gs = ss.byRole(ScreenRole::GameSaved); bool says = false; for (auto& it : gs >= 0 ? ss.screens[gs].items : std::vector<ScreenItem>{}) says |= it.text.find("{savetitle}") != std::string::npos;
         CHECK(gs >= 0 && says && ss.screens[gs].bg.kind == BgKind::Game, "new games come with a \"Game Saved!\" pop-up, over the game");
