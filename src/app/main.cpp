@@ -7493,7 +7493,7 @@ struct App {
             if (bindCapture >= 0) keys = { { "any key", "set it" }, { "Esc", "never mind" } };
             else if (cur && cur->kind == 7) keys = { { "A/D", "which key" }, { "Enter", "set it" }, { "Del", "none" } };
             else if (cur && cur->kind == 5 && defs[cur->arg].type == OptType::Reset) keys = { { "Enter", "back to the start values" } };
-            else if (cur && cur->kind == 6) keys = { { "A/D", "Sound, Graphics, Controls" } };
+            else if (cur && cur->kind == 6) keys = { { "A/D", "the other pages" } };
             else if (pages) keys = { { "W/S", "pick" }, { "A/D", "change" }, { "Q/E", "pages" } };
             else keys = { { "W/S", "pick" }, { "A/D", "change" }, { "Esc", "back" } };
             float ks = ts * 0.7f, x = b.x - 4, my = (bottom + b.y) * 0.5f;

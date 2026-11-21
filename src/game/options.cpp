@@ -42,12 +42,12 @@ OptionDef editorOnly(OptionDef d) { d.inGame = false; return d; }
 OptionDef reset(const char* group) { OptionDef d; d.key = std::string("reset_") + group; d.label = "Back to the start values"; d.group = group; d.section = ""; d.type = OptType::Reset; return d; }
 } // namespace
 
-const std::vector<std::string>& optionGroups() { static const std::vector<std::string> g = { "Sound", "Graphics", "Controls" }; return g; }
+const std::vector<std::string>& optionGroups() { static const std::vector<std::string> g = { "Sound", "Display", "World", "Lighting", "Shadows", "Post-processing", "Controls" }; return g; }
 
 const std::vector<OptionDef>& optionDefs() {
     static const std::vector<OptionDef> defs = [] {
         std::vector<OptionDef> v;
-        const char* S = "Sound"; const char* G = "Graphics"; const char* C = "Controls";
+        const char* S = "Sound"; const char* D = "Display"; const char* W = "World"; const char* L = "Lighting"; const char* SH = "Shadows"; const char* P = "Post-processing"; const char* C = "Controls";
         v.push_back(slider("volume", "Master volume", S, "Volume", 0, 2, 0.05f, "%", "silent"));
         v.push_back(slider("vol_weapons", "Weapons", S, "Volume", 0, 2, 0.05f, "%", "silent", "Beams, charging, missiles, their hits."));
         v.push_back(slider("vol_movement", "Movement", S, "Volume", 0, 2, 0.05f, "%", "silent", "Steps, jumps, landing, the Morph Ball and its bombs."));
@@ -57,54 +57,69 @@ const std::vector<OptionDef>& optionDefs() {
         v.push_back(slider("vol_music", "Music", S, "Volume", 0, 2, 0.05f, "%", "silent"));
         v.push_back(reset(S));
 
-        v.push_back(toggle("fullscreen", "Fullscreen", G, "Screen", "Borderless, over the whole screen."));
-        v.push_back(toggle("vsync", "VSync", G, "Screen", "Waits for the screen: no tearing, frame rate up to the screen's."));
-        v.push_back(slider("brightness", "Brightness", G, "Screen", 0.3f, 2.5f, 0.05f, "%"));
-        v.push_back(slider("fov", "Field of view", G, "Screen", 50, 110, 1, "%.0f"));
-        v.push_back(slider("ui_scale", "Interface size", G, "Screen", 0.75f, 2, 0.05f, "%"));
-        v.push_back(slider("screen_shake", "Screen shake", G, "Screen", 0, 2, 0.05f, "%", "off", "Bosses stomping, slams and roars shake the view."));
-        v.push_back(slider("render_distance", "Render distance", G, "Distance", 2, 32, 1, "%.0f chunks"));
-        v.push_back(slider("vertical_distance", "Up / down distance", G, "Distance", 1, 12, 1, "%.0f chunks"));
-        v.push_back(toggle("cave_culling", "Skip what is behind walls", G, "Distance", "Chunks you cannot see from where you are (rock, closed caves, the other side of walls) are not drawn. Off: everything in range is drawn."));
-        v.push_back(toggle("shadows", "Shadows", G, "Shadows"));
-        v.push_back(needs(choice("shadow_res", "Shadow resolution", G, "Shadows", { "1024", "1536", "2048", "3072", "4096 (heavy)" }, { 1024, 1536, 2048, 3072, 4096 },
-                                 "The size of each of the four shadow maps. Higher: crisper shadows, more graphics memory."), "shadows"));
-        v.push_back(needs(slider("shadow_distance", "Shadow distance", G, "Shadows", 24, 512, 8, "%.0f blocks", "", "How far shadows reach. The sharpness near you stays the same."), "shadows"));
-        v.push_back(needs(choice("shadow_soft", "Shadow edges", G, "Shadows", { "Sharp", "Smooth", "Soft like sunlight" }), "shadows"));
-        v.push_back(needs(slider("shadow_softness", "Shadow softness", G, "Shadows", 0.25f, 3, 0.05f, "%.2f"), "shadow_soft"));
-        v.push_back(slider("clouds", "Clouds", G, "Sky", 0, 1, 0.05f, "%", "none"));
-        v.push_back(toggle("cloud_shadows", "Cloud shadows", G, "Sky"));
-        v.push_back(slider("fog", "Ground fog", G, "Sky", 0, 2, 0.05f, "%", "none"));
-        v.push_back(slider("bloom", "Glow (bloom)", G, "Effects", 0, 1, 0.05f, "%", "off"));
-        v.push_back(toggle("eye_adapt", "Eye adaptation", G, "Effects", "Like your eyes or a camera: dark places slowly get brighter, bright ones darker (as much as the area's look says)."));
-        v.push_back(needs(toggle("planar_floors", "Exact floor and water reflections", G, "Effects", "The shiny floor or water near you mirrors everything exactly, animated things too (the world is drawn once more, at half size)."), "reflections"));
-        v.push_back(choice("bounce", "Bounce light", G, "Effects", { "Off", "Normal", "Far-reaching" }, {}, "Lit and glowing surfaces light the ones near them (a green glow tints the wall beside it)."));
-        v.push_back(toggle("lens_flares", "Lens flares", G, "Effects", "Looking toward the sun: a glow, a streak and rings of light (if it is not behind something)."));
-        v.push_back(toggle("light_fog", "Lights glow in the air", G, "Effects", "Beams and halos around lights in fog and haze."));
-        v.push_back(toggle("film_fx", "Film grain and lens fringes", G, "Effects", "When the area's look has them."));
-        v.push_back(choice("light_shadows", "Shadows from lamps", G, "Shadows", { "Off", "2 lights", "4 lights", "8 lights (heavy)" }, { 0, 2, 4, 8 },
-                           "Lights set to cast shadows: this many of the nearest really do."));
-        v.push_back(choice("render_scale", "Render scale", G, "Screen", { "50% (fastest)", "67%", "75%", "85%", "100% (the screen's own)", "125%", "150%", "200% (supersampled)" }, { 0.5f, 0.67f, 0.75f, 0.85f, 1.f, 1.25f, 1.5f, 2.f },
+        // ---- Display: the screen, the picture, the HUD
+        v.push_back(toggle("fullscreen", "Fullscreen", D, "Screen", "Borderless, over the whole screen."));
+        v.push_back(toggle("vsync", "VSync", D, "Screen", "Waits for the screen: no tearing, frame rate up to the screen's."));
+        v.push_back(choice("render_scale", "Render scale", D, "Screen", { "50% (fastest)", "67%", "75%", "85%", "100% (the screen's own)", "125%", "150%", "200% (supersampled)" }, { 0.5f, 0.67f, 0.75f, 0.85f, 1.f, 1.25f, 1.5f, 2.f },
                            "The 3D world is drawn this much of the screen's size, then fitted to it. Below 100%: faster (sharpened as it is enlarged). Above 100%: the smoothest edges there are, but heavy. The HUD and menus always stay sharp."));
-        v.push_back(choice("anti_alias", "Anti-aliasing", G, "Effects", { "Off", "Smooth edges", "Smoother edges" }));
-        v.push_back(choice("probes", "Light probes (bounce light everywhere)", G, "Effects", { "Off", "Wide (every 4 blocks)", "Fine (every 2 blocks)" }));
-        v.push_back(choice("pixel_shadows", "Pixelated shadows", G, "Shadows", { "Off (smooth)", "16 pixels a block", "32 pixels a block" }, { 0, 16, 32 }));
-        v.push_back(toggle("show_fps", "Show frames a second", G, "Effects", "A small counter in the corner: frames a second and milliseconds a frame (not capped)."));
-        v.push_back(choice("reflections", "Reflections", G, "Effects", { "Off (only the sky)", "Normal", "High" }));
-        v.push_back(needs(choice("reflect_res", "Reflection resolution", G, "Effects", { "Full", "Three quarters", "Half", "A quarter (fastest)" }), "reflections"));
-        v.push_back(choice("ao", "Ambient occlusion", G, "Effects", { "Off (only block corners)", "Normal", "High" }, {}, "Soft shade in corners, under overhangs and where things touch."));
-        v.push_back(needs(slider("ao_strength", "Occlusion strength", G, "Effects", 0.2f, 3, 0.1f, "%.1f"), "ao"));
-        v.push_back(toggle("swaying", "Leaves sway in the wind", G, "Effects"));
-        v.push_back(toggle("hud_glow", "HUD glow", G, "Effects", "The HUD's glow, and its light on the helmet."));
-        v.push_back(slider("bumps", "Bumpy textures", G, "Surfaces", 0, 2, 0.05f, "%", "off", "Each texture's light and dark pixels become little bumps that catch the light."));
-        v.push_back(slider("coat", "Texture coat", G, "Surfaces", 0, 2, 0.05f, "%", "off", "A fine noise inside each pixel, so big flat pixels look like stone, dirt, wood..."));
-        v.push_back(toggle("materials", "Materials (shiny, metal, glowing)", G, "Surfaces"));
-        v.push_back(editorOnly(toggle("guess_materials", "Guess materials from texture names", G, "Surfaces",
+        v.push_back(slider("brightness", "Brightness", D, "Picture", 0.3f, 2.5f, 0.05f, "%"));
+        v.push_back(slider("fov", "Field of view", D, "Picture", 50, 110, 1, "%.0f"));
+        v.push_back(slider("screen_shake", "Screen shake", D, "Picture", 0, 2, 0.05f, "%", "off", "Bosses stomping, slams and roars shake the view."));
+        v.push_back(slider("ui_scale", "Interface size", D, "HUD and menus", 0.75f, 2, 0.05f, "%"));
+        v.push_back(toggle("hud_glow", "HUD glow", D, "HUD and menus", "The HUD's glow, and its light on the helmet."));
+        v.push_back(toggle("show_fps", "Show frames a second", D, "Performance", "A small counter in the corner: frames a second and milliseconds a frame (not capped unless VSync is on)."));
+        v.push_back(reset(D));
+
+        // ---- World: how far, the sky, nature, the surfaces of blocks
+        v.push_back(slider("render_distance", "Render distance", W, "Distance", 2, 32, 1, "%.0f chunks"));
+        v.push_back(slider("vertical_distance", "Up / down distance", W, "Distance", 1, 12, 1, "%.0f chunks"));
+        v.push_back(toggle("cave_culling", "Skip what is behind walls", W, "Distance", "Chunks you cannot see from where you are (rock, closed caves, the other side of walls) are not drawn. Off: everything in range is drawn."));
+        v.push_back(slider("clouds", "Clouds", W, "Sky", 0, 1, 0.05f, "%", "none"));
+        v.push_back(toggle("cloud_shadows", "Cloud shadows", W, "Sky"));
+        v.push_back(slider("fog", "Ground fog", W, "Sky", 0, 2, 0.05f, "%", "none"));
+        v.push_back(toggle("swaying", "Leaves sway in the wind", W, "Nature"));
+        v.push_back(slider("bumps", "Bumpy textures", W, "Surfaces", 0, 2, 0.05f, "%", "off", "Each texture's light and dark pixels become little bumps that catch the light."));
+        v.push_back(slider("coat", "Texture coat", W, "Surfaces", 0, 2, 0.05f, "%", "off", "A fine noise inside each pixel, so big flat pixels look like stone, dirt, wood..."));
+        v.push_back(toggle("materials", "Materials (shiny, metal, glowing)", W, "Surfaces"));
+        v.push_back(editorOnly(toggle("guess_materials", "Guess materials from texture names", W, "Surfaces",
                                       "Textures you did not set up get a material from their name's words (iron: metal, glass: shiny, lava: glowing...).")));
-        v.push_back(editorOnly(slider("time_of_day", "Time of day", G, "Editor", 0, 24, 0.1f, "%.1f h")));
-        v.push_back(editorOnly(toggle("day_cycle", "The sun moves (a day is 20 minutes)", G, "Editor")));
-        v.push_back(editorOnly(toggle("block_preview", "Show where the next block goes", G, "Editor")));
-        v.push_back(reset(G));
+        v.push_back(editorOnly(slider("time_of_day", "Time of day", W, "Editor", 0, 24, 0.1f, "%.1f h")));
+        v.push_back(editorOnly(toggle("day_cycle", "The sun moves (a day is 20 minutes)", W, "Editor")));
+        v.push_back(editorOnly(toggle("block_preview", "Show where the next block goes", W, "Editor")));
+        v.push_back(reset(W));
+
+        // ---- Lighting: light that bounces, shade in corners, reflections
+        v.push_back(choice("probes", "Light probes", L, "Light", { "Off", "Wide (every 4 blocks)", "Fine (every 2 blocks)" }, {},
+                           "Bounce light everywhere: invisible probes trace rays through the blocks and learn what light reaches them (the sun, the sky, lamps, glowing blocks, coloured walls). No light through walls. Any graphics card."));
+        v.push_back(choice("bounce", "Bounce light (on screen)", L, "Light", { "Off", "Normal", "Far-reaching" }, {}, "Lit and glowing surfaces light the ones near them (a green glow tints the wall beside it)."));
+        v.push_back(choice("ao", "Ambient occlusion", L, "Light", { "Off (only block corners)", "Normal", "High" }, {}, "Soft shade in corners, under overhangs and where things touch."));
+        v.push_back(needs(slider("ao_strength", "Occlusion strength", L, "Light", 0.2f, 3, 0.1f, "%.1f"), "ao"));
+        v.push_back(toggle("light_fog", "Lights glow in the air", L, "Light", "Beams and halos around lights in fog and haze."));
+        v.push_back(choice("reflections", "Reflections", L, "Reflections", { "Off (only the sky)", "Normal", "High" }));
+        v.push_back(needs(choice("reflect_res", "Reflection resolution", L, "Reflections", { "Full", "Three quarters", "Half", "A quarter (fastest)" }), "reflections"));
+        v.push_back(needs(toggle("planar_floors", "Exact floor and water reflections", L, "Reflections", "The shiny floor or water near you mirrors everything exactly, animated things too (the world is drawn once more, at half size)."), "reflections"));
+        v.push_back(reset(L));
+
+        // ---- Shadows: the sun's and the lamps'
+        v.push_back(toggle("shadows", "Sun shadows", SH, "The sun"));
+        v.push_back(needs(choice("shadow_res", "Shadow resolution", SH, "The sun", { "1024", "1536", "2048", "3072", "4096 (heavy)" }, { 1024, 1536, 2048, 3072, 4096 },
+                                 "The size of each of the four shadow maps. Higher: crisper shadows, more graphics memory."), "shadows"));
+        v.push_back(needs(slider("shadow_distance", "Shadow distance", SH, "The sun", 24, 512, 8, "%.0f blocks", "", "How far shadows reach. The sharpness near you stays the same."), "shadows"));
+        v.push_back(needs(choice("shadow_soft", "Shadow edges", SH, "The sun", { "Sharp", "Smooth", "Soft like sunlight" }), "shadows"));
+        v.push_back(needs(slider("shadow_softness", "Shadow softness", SH, "The sun", 0.25f, 3, 0.05f, "%.2f"), "shadow_soft"));
+        v.push_back(choice("light_shadows", "Shadows from lamps", SH, "Lamps", { "Off", "2 lights", "4 lights", "8 lights (heavy)" }, { 0, 2, 4, 8 },
+                           "Lights set to cast shadows: this many of the nearest really do."));
+        v.push_back(choice("pixel_shadows", "Pixelated shadows", SH, "Style", { "Off (smooth)", "16 pixels a block", "32 pixels a block" }, { 0, 16, 32 },
+                           "Shadow edges snap to the textures' pixel grid, so shadows look like part of the pixel art."));
+        v.push_back(reset(SH));
+
+        // ---- Post-processing: what happens to the finished picture
+        v.push_back(choice("anti_alias", "Anti-aliasing", P, "Edges", { "Off", "Smooth edges", "Smoother edges" }, {}, "Smooths the stair-stepped edges of things (the pixels inside textures stay crisp)."));
+        v.push_back(slider("bloom", "Glow (bloom)", P, "Light", 0, 1, 0.05f, "%", "off"));
+        v.push_back(toggle("eye_adapt", "Eye adaptation", P, "Light", "Like your eyes or a camera: dark places slowly get brighter, bright ones darker (as much as the area's look says)."));
+        v.push_back(toggle("lens_flares", "Lens flares", P, "Light", "Looking toward the sun: a glow, a streak and rings of light (if it is not behind something)."));
+        v.push_back(toggle("film_fx", "Film grain and lens fringes", P, "Film", "When the area's look has them."));
+        v.push_back(reset(P));
 
         v.push_back(slider("sensitivity", "Mouse sensitivity", C, "Mouse", 0.1f, 3, 0.05f, "%.2f"));
         v.push_back(toggle("invert_y", "Invert up / down", C, "Mouse", "Moving the mouse up looks down."));
