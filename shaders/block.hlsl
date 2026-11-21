@@ -1077,7 +1077,7 @@ float voxShadow(float3 P, float3 lp)
     int3 cell = int3(floor(o)), goal = int3(floor(e)), stp = int3(sign(r));
     float3 inv = 1 / max(abs(r), 1e-6) * sign(r + 1e-9);
     float3 tMax = ((float3(cell) + float3(stp > 0)) - o) * inv, tDelta = abs(inv);
-    float stopAt = len - 0.9;   // (the last bit to the lamp is inside it or right next to it: a lamp set into a ceiling or wall is not hidden by the blocks around it)
+    float stopAt = len - 0.05;   // (a lamp's light sits in front of its open faces, so every block on the way counts: no light leaking through walls)
     [loop] for (int k = 0; k < 64; k++)
     {
         if (any(cell < 0) || any(cell >= VOXN) || all(cell == goal)) return 1;
