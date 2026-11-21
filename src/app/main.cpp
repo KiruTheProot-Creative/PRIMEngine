@@ -246,7 +246,7 @@ struct App {
     BloomLevel blurSrc; std::vector<BloomLevel> blurLv; ComPtr<ID3D11PixelShader> psBlurComp; float blurAmt = 0;   // paused: the world blurred behind the menu
     std::vector<BloomLevel> bloomLv; ComPtr<ID3D11BlendState> bsAdd; float nightAmount = 0, nightEyeLimit = 2;
     ComPtr<ID3D11Texture2D> shadowTex; ComPtr<ID3D11DepthStencilView> shadowDSV; ComPtr<ID3D11ShaderResourceView> shadowSRV; int shadowSize = 0;
-    ComPtr<ID3D11RasterizerState> rsShadow, rsNoCull, rsGhostBias; ComPtr<ID3D11SamplerState> sampShadow; std::string driverName = "graphics card";
+    ComPtr<ID3D11RasterizerState> rsShadow, rsNoCull, rsGhostBias, rsLightShadow; ComPtr<ID3D11SamplerState> sampShadow; std::string driverName = "graphics card";
     ComPtr<ID3D11Buffer> cbFrame, cbChunk;
     ComPtr<ID3D11RasterizerState> rsCull; ComPtr<ID3D11DepthStencilState> dsOn, dsOff, dsTestOnly; ComPtr<ID3D11BlendState> bsOff, bsAlpha;
     ComPtr<ID3D11Buffer> vbGhost, ibGhost; UINT nGhost = 0; BlockId ghostKey = 0xFFFFFFFFu;   // the see-through preview block
@@ -422,6 +422,7 @@ struct App {
         rd.CullMode = D3D11_CULL_FRONT; HR(dev->CreateRasterizerState(&rd, &rsCullFront));   // mirrored views turn every triangle around
         rd.CullMode = D3D11_CULL_NONE; HR(dev->CreateRasterizerState(&rd, &rsNoCull));   // full-screen passes (sky, final picture)
         rd.SlopeScaledDepthBias = 1.5f; rd.DepthClipEnable = FALSE; HR(dev->CreateRasterizerState(&rd, &rsShadow));
+        rd.DepthClipEnable = TRUE; HR(dev->CreateRasterizerState(&rd, &rsLightShadow));   // lamps' shadows: what is nearer than the view's start is left out (a lamp block's own faces), not pressed flat onto it
         { D3D11_RASTERIZER_DESC gd{}; gd.FillMode = D3D11_FILL_SOLID; gd.CullMode = D3D11_CULL_BACK; gd.DepthClipEnable = TRUE; gd.DepthBias = -64; gd.SlopeScaledDepthBias = -1.5f; HR(dev->CreateRasterizerState(&gd, &rsGhostBias)); }   // build-mode previews: pulled a little toward you (they sit on the blocks they replace)
         D3D11_DEPTH_STENCIL_DESC dd{}; dd.DepthEnable = TRUE; dd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL; dd.DepthFunc = D3D11_COMPARISON_LESS_EQUAL; HR(dev->CreateDepthStencilState(&dd, &dsOn));
         dd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO; HR(dev->CreateDepthStencilState(&dd, &dsTestOnly));
@@ -4299,7 +4300,7 @@ struct App {
             ID3D11ShaderResourceView* n1[1] = {}; ctx->PSSetShaderResources(22, 1, n1);
             if (!casters.empty()) {
                 D3D11_VIEWPORT sv{ 0, 0, (float)LSH, (float)LSH, 0, 1 }; ctx->RSSetViewports(1, &sv);
-                ctx->RSSetState(rsShadow.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsShadow.Get(), nullptr, 0);
+                ctx->RSSetState(rsLightShadow.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsShadow.Get(), nullptr, 0);
                 ctx->PSSetShaderResources(0, 1, texArray.GetAddressOf()); ctx->PSSetShaderResources(14, 1, emitArray.GetAddressOf()); ctx->PSSetSamplers(0, 1, sampBlocks.GetAddressOf());
                 lightShadowPass = true;
                 for (const ShadowCaster& sc : casters) for (int f = 0; f < (sc.type == 1 ? 1 : 6); f++) {
