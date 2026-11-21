@@ -100,18 +100,20 @@ void buildMesh(const BlockRegistry& reg, const MeshInput& in, ChunkMesh& out) {
         if (!coverType || nd.render == Render::Air) return false;
         return (need & ~coverOf(reg, nb, f ^ 1)).none();   // f^1 = the opposite side
     };
+    const BlockDef* waterDef = reg.liquidBlock(1) ? &reg.get(reg.liquidBlock(1)) : nullptr;   // (blocks standing in water)
     for (int y = 0; y < CS; y++) for (int z = 0; z < CS; z++) for (int x = 0; x < CS; x++) {
         BlockId id = at(x, y, z); if (id == AIR) continue;
         const BlockDef& d = reg.get(id); if (d.render == Render::Air) continue;
         bool cut = d.render == Render::Cutout;
         MeshData& md = cut ? out.cutout : out.opaque;
-        if (d.liquid) {   // water / lava: a surface at the liquid's height, smooth between neighbours
-            auto same = [&](BlockId b) { return b != UNKNOWN && b != AIR && reg.get(b).liquid == d.liquid; };
+        // water / lava: a surface at the liquid's height, smooth between neighbours (d: the liquid; a block standing in water draws the water around it too)
+        auto meshLiquid = [&](const BlockDef& d) {
+            auto same = [&](BlockId b) { return b != UNKNOWN && b != AIR && (reg.get(b).liquid == d.liquid || (d.liquid == 1 && (b & WET))); };
             auto solidCube = [&](BlockId b) { return b == UNKNOWN || (isPlainCube(reg, b) && reg.get(b).render == Render::Opaque); };
             auto height = [&](int cx, int cy, int cz) -> float {   // -1 = no liquid there
                 BlockId b = at(cx, cy, cz); if (!same(b)) return -1;
                 if (same(at(cx, cy + 1, cz))) return 1;
-                return liquidLevel(b) / 16.f * 0.92f;
+                return ((b & WET) ? 16 : liquidLevel(b)) / 16.f * 0.92f;
             };
             bool coveredTop = same(at(x, y + 1, z));
             auto corner = [&](int dx, int dz) -> float {   // average of the up to 4 liquid blocks around a top corner
@@ -162,8 +164,9 @@ void buildMesh(const BlockRegistry& reg, const MeshInput& in, ChunkMesh& out) {
                     float q[4][3] = { { 0, bottom0, (float)ez }, { 1, bottom1, (float)ez }, { 1, c1, (float)ez }, { 0, c0, (float)ez } }; std::copy(&q[0][0], &q[0][0] + 12, &s[0][0]); }
                 quad(s, f);
             }
-            continue;
-        }
+        };
+        if (d.liquid) { meshLiquid(d); continue; }
+        if ((id & WET) && waterDef) meshLiquid(*waterDef);   // (a slope, a slab, a plant ... standing in water: the water, then the block itself)
         int shape = resolveShape(id, d);
         if (shape != Shapes::FULL) {
             // any other shape: prepared triangles, sides lying on the block border hidden like cube faces

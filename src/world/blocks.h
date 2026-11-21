@@ -16,6 +16,9 @@ constexpr int MAX_BLOCK_TYPES = 65535;
 inline BlockId typeOf(BlockId v) { return v & 0xFFFFu; }
 inline int shapeOf(BlockId v) { return (int)((v >> 16) & 0x3FFu); }
 inline int rotOf(BlockId v) { return (int)((v >> 26) & 31u); }
+// bit 31: a block that is not a full cube (a slope, a slab, a plant ...) standing in water - water fills the rest of its space
+constexpr BlockId WET = 0x80000000u;
+inline bool wetOf(BlockId v) { return (v & WET) != 0 && v != 0xFFFFFFFFu; }
 // liquids keep their amount (1..16, 16 = a full block) where other blocks keep their shape
 inline int liquidLevel(BlockId v) { int l = (int)((v >> 16) & 31u); return l == 0 || l > 16 ? 16 : l; }
 inline BlockId makeBlock(BlockId type, int shape = 0, int rot = 0) { return (type & 0xFFFFu) | ((uint32_t)(shape & 0x3FF) << 16) | ((uint32_t)(rot & 31) << 26); }

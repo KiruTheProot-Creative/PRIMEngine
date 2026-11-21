@@ -537,10 +537,10 @@ float3 refractedSun()                          // the sun's light bent down by t
 }
 // under the water: how the sun's light here is spread (rgb: 1 = unchanged; brighter lines, darker between);
 // above it: the light the waves throw onto walls and undersides near the water (added). pixel: the screen spot
-void waterLight(float3 rel, float3 nFlat, float3 n, float2 pixel, out float3 sunMul, out float3 bounced)
+void waterLight(float3 rel, float3 nFlat, float3 n, float2 pixel, out float3 sunMul, out float3 bounced, out float3 ambMul)
 {
-    sunMul = 1; bounced = 0;
-    if (gWater.x < 0.5 || gSunDir.y < -0.05) return;
+    sunMul = 1; bounced = 0; ambMul = 1;   // ambMul: the sky's and the lamps' light under the water (caustics in every pool, even out of the sun - like Prime)
+    if (gWater.x < 0.5) return;
     float3 q = pixSnap(rel, nFlat);
     bool has; float top = waterTop(q + nFlat * 0.45, has);
     if (!has) return;
@@ -549,7 +549,7 @@ void waterLight(float3 rel, float3 nFlat, float3 n, float2 pixel, out float3 sun
     float farK = saturate(1 - length(rel) / 96);
     if (depth > 0.01)
     {
-        float3 L = refractedSun();
+        float3 L = gSunDir.y > 0.05 ? refractedSun() : float3(0, 1, 0);
         float2 p = (wp.xz + L.xz / max(L.y, 0.3) * depth) * 0.85;   // where this light came in through the surface
         bool high = gWater.x > 1.5;
         float3 cc;
@@ -557,9 +557,10 @@ void waterLight(float3 rel, float3 nFlat, float3 n, float2 pixel, out float3 sun
         else cc = causticAt(p, t, false).xxx;
         float k = saturate(depth * 3) * exp(-depth * 0.09) * farK * gWater2.z;   // soft right at the surface, fading deeper down
         sunMul = lerp(1, 0.55 + cc, k);
+        ambMul = lerp(1, 0.68 + cc * 0.8, k * 0.9);
         return;
     }
-    if (depth > -4 && gWater.y > 0.5)
+    if (depth > -4 && gWater.y > 0.5 && gSunDir.y > -0.05)
     {
         float facing = saturate(-n.y) + 0.55 * saturate(1 - abs(nFlat.y));    // undersides most, walls some, tops none
         if (facing <= 0.01) return;
@@ -607,17 +608,17 @@ float3 lightBlock(VSOut i, float3 albedo, bool front, out float3 n, out float sh
         float pw; float3 pl = probeLight(i.rel + nFlat * 0.05, nFlat, true, pw);
         ambientNow = lerp(ambientNow, pl, saturate(pw * 3));
     }
-    float3 sunC = gSunColor.rgb, bounced = 0;
-    if (gWater.x > 0.5) { float3 sm; waterLight(i.rel, nFlat, n, i.pos.xy, sm, bounced); sunC *= sm; }   // caustics under water, their reflection above
-    float3 light = sunC * ndl * sh + ambientNow * i.ao + bounced;
+    float3 sunC = gSunColor.rgb, bounced = 0, ambMul = 1;
+    if (gWater.x > 0.5) { float3 sm; waterLight(i.rel, nFlat, n, i.pos.xy, sm, bounced, ambMul); sunC *= sm; }   // caustics under water, their reflection above
+    float3 light = sunC * ndl * sh + ambientNow * i.ao * ambMul + bounced;
     light = max(light, gMinLight.rgb * sky * i.ao * (1 - skyV));                                   // closed spaces: never darker than the world's minimum
     float lamp = max(i.lamp.r, max(i.lamp.g, i.lamp.b));
     float3 hue = lamp > 0 ? i.lamp.rgb / lamp : 0;                                                   // the colour of the lamps nearby
-    light += hue * (pow(lamp, 3.2) * 0.9) * gExtra.w * lerp(0.5, 1, i.ao);
+    light += hue * (pow(lamp, 3.2) * 0.9) * gExtra.w * lerp(0.5, 1, i.ao) * ambMul;
     float metal = saturate(m.a.y);
     float dShine = max(max(saturate(m.a.x), i.mat.x), wet * 0.9);                                  // how shiny for the lights' highlights (wet streets!)
     float3 dSpec;
-    float3 dyn = dynLightsSpec(i.rel, n, -normalize(i.rel), lerp(10, 380, dShine * dShine), gOffset.w < 0.5, dSpec) * lerp(0.6, 1, i.ao);   // placed lights, strips, glowing emitters, shots
+    float3 dyn = dynLightsSpec(i.rel, n, -normalize(i.rel), lerp(10, 380, dShine * dShine), gOffset.w < 0.5, dSpec) * lerp(0.6, 1, i.ao) * ambMul;   // placed lights, strips, glowing emitters, shots
     float3 c = albedo * (light + dyn) * (1 - 0.75 * metal);                                       // metal: little plain colour ...
     c += dSpec * lerp(float3(0.04, 0.04, 0.04) + 0.5 * dShine, albedo * 1.4, metal) * max(dShine, 0.12);   // the lights' highlights
     if (gFS0.x > 0.5 && gOffset.w < 0.5) c += fakeShine(i, n);                                    // fake shine (models): painted-on glints, like Prime's arm cannon

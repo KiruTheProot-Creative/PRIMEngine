@@ -70,7 +70,9 @@ public:
     // Only liquid near something that changed is looked at, so still pools cost nothing.
     std::unordered_set<I3, I3Hash> liquidActive;
     int tickLiquids();                                // one step (call 10 times a second); returns how many blocks changed
-    int liquidAt(V3 p) const;                         // 0 = not in a liquid, 1 water, 2 lava (counts how full the block is)
+    int liquidAt(V3 p) const;                         // 0 = not in a liquid, 1 water, 2 lava (counts how full the block is; a block standing in water: all of it)
+    bool canSoak(BlockId v) const;                    // a dry block that water can stand in (not a full cube, not a liquid)
+    bool keepWet = false;                             // (the liquids themselves wetting / drying blocks: set() takes the value as it is)
     double liquidTimer = 0; uint64_t liquidTick = 0;
     bool emittersNear(I3 c) const;                    // any glowing block in this chunk or the 26 around it
 

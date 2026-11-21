@@ -175,6 +175,24 @@ int main() {
         for (int t = 0; t < 20; t++) w.tickLiquids();
         BlockId hard = w.get(8, 1, 8);
         CHECK(hard == stone || hard == reg.find("cobblestone"), "lava touching water turns into stone");
+        // blocks that are not full cubes stand in water: placed into it, filled by it, swum in, and the water stays when they go
+        {
+            World g(reg); g.gen.kind = Generator::Void; g.stream({ 0, 0, 0 }, 2, 2, 100000);
+            for (int z = -6; z <= 6; z++) for (int x = -6; x <= 6; x++) g.set(x, 0, z, stone);
+            BlockId stairs = makeBlock(stone, Shapes::get().find("stairs"), 0), full = reg.liquidBlock(1);
+            g.set(1, 1, 1, makeLiquid(full, 16)); g.set(1, 1, 1, stairs);
+            CHECK(wetOf(g.get(1, 1, 1)) && typeOf(g.get(1, 1, 1)) == stone && g.liquidAt({ 1.5, 1.9, 1.5 }) == 1, "stairs put into water stand in it (you swim there)");
+            g.set(1, 1, 1, AIR);
+            BlockId left = g.get(1, 1, 1); CHECK(left != AIR && reg.get(left).liquid == 1, "taking them out: the water stays");
+            g.set(3, 1, 3, stairs); CHECK(!wetOf(g.get(3, 1, 3)), "stairs on dry land stay dry");
+            g.set(1, 1, 1, AIR); g.liquidActive.clear(); g.set(2, 1, 3, makeLiquid(full, 16));
+            for (int t = 0; t < 4; t++) g.tickLiquids();
+            CHECK(wetOf(g.get(3, 1, 3)), "water flowing beside the stairs fills them");
+            for (int z = -6; z <= 6; z++) for (int x = -6; x <= 6; x++) if (reg.get(g.get(x, 1, z)).liquid) g.set(x, 1, z, AIR);
+            for (int t = 0; t < 4; t++) g.tickLiquids();
+            CHECK(!wetOf(g.get(3, 1, 3)), "with the water gone they dry");
+            BlockId plain = g.get(0, 0, 0); CHECK(!g.canSoak(plain) && g.canSoak(stairs), "full cubes never stand in water");
+        }
         // flowing on a flat floor spreads out thin and stops (no endless flowing)
         World f(reg); f.gen.kind = Generator::Void; f.stream({ 0, 0, 0 }, 2, 2, 100000);
         for (int z = -20; z <= 20; z++) for (int x = -20; x <= 20; x++) f.set(x, 0, z, stone);
