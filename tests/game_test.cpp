@@ -1754,6 +1754,21 @@ int main() {
             saveScreens("/tmp/prim_scr_space.txt", sp); ScreenSet sq; loadScreens("/tmp/prim_scr_space.txt", sq); const ScreenBg& qb = sq.screens[sq.byRole(ScreenRole::MainMenu)].bg;
             CHECK(qb.kind == BgKind::Space && qb.planet == "Home World 2" && qb.planetSize == 0.6f && qb.spin == -8 && qb.nebulaColor == 0x204060, "a Space background saves and loads (planet, size, spin, haze)");
         }
+        {   // transitions: how screens come and go
+            CHECK(transEase(0, 0) == 0 && transEase(0, 1) == 1 && transEase(1, 0.5f) > 0.5f && transEase(2, 0.8f) > 1 && std::fabs(transEase(2, 1) - 1) < 1e-4f && transEase(3, 0.3f) == 0.3f,
+                  "transition moves: smooth, snappy (fast first), bouncy (a little past, then back), even");
+            ScreenSet ts = defaultScreens();
+            const Screen& op = ts.screens[ts.byRole(ScreenRole::Options)]; const Screen& de = ts.screens[ts.byRole(ScreenRole::Death)];
+            CHECK(op.in.kind == TransKind::Slide && op.out.kind == TransKind::Slide && de.in.kind == TransKind::Static && ts.screens[ts.byRole(ScreenRole::ItemGet)].in.kind == TransKind::VisorScan,
+                  "ready-made screens come with transitions (options slide, death in static, items in a visor scan)");
+            Screen& mm3 = ts.screens[ts.byRole(ScreenRole::MainMenu)]; mm3.in.kind = TransKind::Iris; mm3.in.time = 1.25f; mm3.in.ease = 2; mm3.in.color = 0x123456; mm3.out.kind = TransKind::Wipe; mm3.out.dir = 3;
+            ScreenItem* b = nullptr; for (ScreenItem& i : mm3.items) if (i.kind == ScreenItemKind::Button) { b = &i; break; }
+            b->ownTrans = true; b->trans.kind = TransKind::Pixelate; b->trans.time = 0.7f;
+            saveScreens("/tmp/prim_scr_trans.txt", ts); ScreenSet tl; loadScreens("/tmp/prim_scr_trans.txt", tl);
+            const Screen& m4 = tl.screens[tl.byRole(ScreenRole::MainMenu)]; const ScreenItem* lb = nullptr; for (const ScreenItem& i : m4.items) if (i.kind == ScreenItemKind::Button) { lb = &i; break; }
+            CHECK(m4.in.kind == TransKind::Iris && m4.in.time == 1.25f && m4.in.ease == 2 && m4.in.color == 0x123456 && m4.out.kind == TransKind::Wipe && m4.out.dir == 3
+                  && lb && lb->ownTrans && lb->trans.kind == TransKind::Pixelate && lb->trans.time == 0.7f, "transitions save and load (a screen's in and out, a button's own)");
+        }
         int gs = ss.byRole(ScreenRole::GameSaved); bool says = false; for (auto& it : gs >= 0 ? ss.screens[gs].items : std::vector<ScreenItem>{}) says |= it.text.find("{savetitle}") != std::string::npos;
         CHECK(gs >= 0 && says && ss.screens[gs].bg.kind == BgKind::Game, "new games come with a \"Game Saved!\" pop-up, over the game");
         ss.screens[gs].holdMin = 1.2f; saveScreens("/tmp/prim_scr_gs.txt", ss); ScreenSet sg; loadScreens("/tmp/prim_scr_gs.txt", sg);

@@ -352,6 +352,7 @@ struct App {
         b = Compile(src, "VS_Rain", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsRain));
         b = Compile(src, "VS_RainFar", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsRainFar));
         b = Compile(src, "PS_Comp", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psComp));   // the screens' compositor
+        b = Compile(src, "PS_Trans", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psTrans));   // screen transitions
         b = Compile(src, "PS_HudDepth", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psHudDepth));   // the helmet's depth into the depth without water
         b = Compile(src, "PS_Planet", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psPlanet));   // Space backgrounds: stars and a planet
         b = Compile(src, "VS_Dust", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsDust));
@@ -7606,7 +7607,7 @@ struct App {
     // ================================================================== the pause menu (Player editor > Menu): pages as tabs, made of bent panes
     MenuLayout menu;
     void SaveMenu() { if (!projectDir.empty()) saveMenu(projectDir + "/menu.txt", menu); }
-    struct MenuHit { int pane; ImVec4 r; int kind; int arg; MenuAct act; std::string target; bool hidden = false; float vx0 = 0, vx1 = 0; bool noKeys = false; };   // noKeys: only the mouse uses it (the options' big control in the middle)
+    struct MenuHit { int pane; ImVec4 r; int kind; int arg; MenuAct act; std::string target; bool hidden = false; float vx0 = 0, vx1 = 0; bool noKeys = false; int trans = -1; };   // trans: a screen button's own transition (screenTrans)   // noKeys: only the mouse uses it (the options' big control in the middle)
     // kind: 0 button, 1 tab, 2 beam, 3 missile, 4 scan entry, 5 an option, 6 an options group tab, 7 a key; hidden: scrolled out of view (keys reach it, the mouse does not);
     // vx0 / vx1: an option's value part (a slider's track, a key's two boxes)
     int menuOptGroup = 0, optSelTab = -1, menuBindSlot = 0, optDrag = -1;
@@ -8880,6 +8881,49 @@ struct App {
 
     // ---- the items of a screen: drawn into screenList (W x H), buttons and options into screenHits
     std::string pickedTip;   // the picked button's tip (a text's {tip})
+    // ---- screen transitions: the last picture is kept; when the screen changes (another screen, the game, a pop-up) the old and the new are put together for a moment
+    struct alignas(16) TransCB { float tr[4], col[4], size[4]; };
+    ComPtr<ID3D11PixelShader> psTrans; ComPtr<ID3D11Buffer> cbTrans; CompRT transFromRT, transToRT;
+    bool transHave = false, transOn = false, transOut = false, pendingTransSet = false; float transT = 0; int transPrev = -2; Transition transNow, pendingTrans;
+    std::vector<Transition> screenTrans;   // the shown screen's buttons' own transitions (MenuHit::trans)
+    void TransitionStep(double dt, bool ev) {
+        bool want = !ev && screen == Screen::Game && (playMode || curScreen >= 0) && psTrans && cw > 8 && ch > 8;
+        if (!want) { transOn = false; transHave = false; transPrev = curScreen; pendingTransSet = false; return; }
+        if (!cbTrans) { D3D11_BUFFER_DESC d{}; d.ByteWidth = sizeof(TransCB); d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_CONSTANT_BUFFER; HR(dev->CreateBuffer(&d, nullptr, &cbTrans)); }
+        if (transFromRT.w != cw || transFromRT.h != ch) transHave = false;
+        MakeCompRT(transFromRT, cw, ch, DXGI_FORMAT_R8G8B8A8_UNORM); MakeCompRT(transToRT, cw, ch, DXGI_FORMAT_R8G8B8A8_UNORM);
+        ComPtr<ID3D11Resource> bb; backRTV->GetResource(&bb);
+        if (curScreen != transPrev && transPrev != -2 && transHave) {   // the screen changed: which way it goes
+            Transition t; bool out = false; int n = (int)screens.screens.size();
+            if (pendingTransSet) t = pendingTrans;
+            else if (curScreen >= 0 && curScreen < n && screens.screens[curScreen].in.kind != TransKind::None) t = screens.screens[curScreen].in;
+            else if (transPrev >= 0 && transPrev < n && screens.screens[transPrev].out.kind != TransKind::None) { t = screens.screens[transPrev].out; out = true; }
+            if (t.kind != TransKind::None && t.time > 0.01f) { transOn = true; transT = 0; transNow = t; transOut = out; }
+        }
+        pendingTransSet = false; transPrev = curScreen;
+        if (transOn) {
+            transT += (float)dt; float lin = transT / std::max(0.01f, transNow.time);
+            if (lin >= 1) transOn = false;
+            else {
+                ctx->CopyResource(transToRT.t.Get(), bb.Get());
+                TransCB c{}; c.tr[0] = transEase(transNow.ease, lin); c.tr[1] = (float)(int)transNow.kind; c.tr[2] = (float)transNow.dir; c.tr[3] = transOut ? 1.f : 0.f;
+                CompColor(c.col, transNow.color); c.col[3] = (float)std::fmod(uiClock, 1000.0);
+                c.size[0] = (float)cw / ch; c.size[1] = 1.f / cw; c.size[2] = 1.f / ch; c.size[3] = lin;
+                ctx->UpdateSubresource(cbTrans.Get(), 0, nullptr, &c, 0, 0);
+                ctx->OMSetRenderTargets(1, backRTV.GetAddressOf(), nullptr);
+                D3D11_VIEWPORT v{ 0, 0, (float)cw, (float)ch, 0, 1 }; ctx->RSSetViewports(1, &v);
+                ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->RSSetState(rsNoCull.Get());
+                ctx->IASetInputLayout(nullptr); ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                ctx->VSSetShader(vsBlit.Get(), nullptr, 0); ctx->PSSetShader(psTrans.Get(), nullptr, 0); ctx->PSSetConstantBuffers(12, 1, cbTrans.GetAddressOf());
+                ID3D11SamplerState* sm[2] = { sampLinear.Get(), sampClamp.Get() }; ctx->PSSetSamplers(2, 2, sm);
+                ID3D11ShaderResourceView* in[2] = { transFromRT.srv.Get(), transToRT.srv.Get() }; ctx->PSSetShaderResources(44, 2, in);
+                ctx->Draw(3, 0);
+                ID3D11ShaderResourceView* none2[2] = {}; ctx->PSSetShaderResources(44, 2, none2);
+                return;   // (the old picture stays as it was until it is done)
+            }
+        }
+        ctx->CopyResource(transFromRT.t.Get(), bb.Get()); transHave = true;
+    }
     ImFont* fontDisplay = nullptr; ImFont* fontBody = nullptr;   // Chakra Petch (titles, buttons), Barlow (sentences); null: not found next to the program
     ImFont* FontOf(int k) const { return k == 1 && fontDisplay ? fontDisplay : k == 2 && fontBody ? fontBody : ImGui::GetIO().Fonts->Fonts[0]; }
     // the save files as cards side by side: FILE k and its %, where it was saved, energy tanks, time and missiles (an empty one: a new game)
@@ -8936,7 +8980,7 @@ struct App {
     }
     void BuildScreenList(const mc::Screen& sc, int W, int H, bool live) {
         if (!screenList) screenList = std::make_unique<ImDrawList>(ImGui::GetDrawListSharedData());
-        ImDrawList* dl = screenList.get(); dl->_ResetForNewFrame(); screenHits.clear();
+        ImDrawList* dl = screenList.get(); dl->_ResetForNewFrame(); screenHits.clear(); if (live) screenTrans.clear();
         dl->PushClipRect(ImVec2(0, 0), ImVec2((float)W, (float)H)); dl->PushTexture(ImGui::GetIO().Fonts->TexRef);
         auto C = [&](uint32_t c, float a) { return IM_COL32((c >> 16) & 255, (c >> 8) & 255, c & 255, (int)(std::clamp(a, 0.f, 1.f) * 255)); };
         auto brackets = [&](ImVec2 a, ImVec2 b, ImU32 c, float th) {   // a visor frame's corners: short L shapes just outside the box
@@ -9007,6 +9051,7 @@ struct App {
             case ScreenItemKind::Button: {
                 bool off = it.act == ScreenAct::Continue && (playMode ? curSlot < 0 : NewestSlot() == 0);   // (nothing saved yet)
                 MenuHit h{ 0, ImVec4(a.x, a.y, b.x, b.y), off ? 9 : 8, (int)it.act, MenuAct::None, it.target }; screenHits.push_back(h);
+                if (it.ownTrans) { screenHits.back().trans = (int)screenTrans.size(); screenTrans.push_back(it.trans); }
                 bool sel = live && (int)screenHits.size() - 1 == screenSel;
                 if (sel) tipNow = it.tip;
                 bool solid = sel && it.pickFill >= 0.99f;
@@ -9159,6 +9204,7 @@ struct App {
                         if (h.kind == 9) { Toast("No saved game yet"); return; }
                         bool starts = (h.kind == 10 || (h.kind == 8 && ((ScreenAct)h.arg == ScreenAct::Continue || ((ScreenAct)h.arg == ScreenAct::NewGame && screens.byRole(ScreenRole::Files) < 0)))) && !screens.startSound.empty();
                         if (!starts) PlayUi(h.kind == 8 && (ScreenAct)h.arg == ScreenAct::Back ? 2 : 1);   // (starting a file has its own sound)
+                        if (h.trans >= 0 && h.trans < (int)screenTrans.size()) { pendingTrans = screenTrans[h.trans]; pendingTransSet = true; }   // (the button's own transition)
                         if (h.kind == 8) ScreenAction((ScreenAct)h.arg, h.target); else if (h.kind == 10) SlotPicked(h.arg); }, false);
         if (screenSel != before && before >= 0 && screenSel >= 0) PlayUi(0);
         if (screenSel >= 0 && screenSel < (int)screenHits.size() && screenHits[screenSel].kind == 10 && (ImGui::IsKeyPressed(ImGuiKey_Delete) || ImGui::IsKeyPressed(ImGuiKey_Backspace))) SlotErase(screenHits[screenSel].arg);
@@ -9471,11 +9517,21 @@ struct App {
         MakeCompRT(screenPreview, (int)scrPrevW, (int)scrPrevH, DXGI_FORMAT_R8G8B8A8_UNORM);
         RenderScreenPicture(*sc, screenPreview.rtv.Get(), (int)scrPrevW, (int)scrPrevH, screenList.get(), 1.f, true);
     }
+    bool TransEdit(const char* label, Transition& t) {   // a transition's kind, direction, time, how it moves, colour
+        bool c = false;
+        Prop(label); if (ImGui::BeginCombo("##trk", transKindName(t.kind))) { for (int k = 0; k < (int)TransKind::COUNT; k++) if (ImGui::Selectable(transKindName((TransKind)k), (int)t.kind == k)) { t.kind = (TransKind)k; c = true; } ImGui::EndCombo(); }
+        if (t.kind == TransKind::None) return c;
+        if (transUsesDir(t.kind)) { const char* dn[] = { "From the left", "From the right", "From the top", "From the bottom" }; Prop("Direction"); c |= ImGui::Combo("##trd", &t.dir, dn, 4); }
+        Prop("Takes"); c |= ImGui::SliderFloat("##trt", &t.time, 0.05f, 3, "%.2f s");
+        Prop("Moves"); { int e = t.ease; if (ImGui::BeginCombo("##tre", transEaseName(e))) { for (int k = 0; k < 4; k++) if (ImGui::Selectable(transEaseName(k), e == k)) { t.ease = k; c = true; } ImGui::EndCombo(); } }
+        if (transUsesColor(t.kind)) { Prop(t.kind == TransKind::Fade ? "Through" : "Light"); c |= ColorU32("##trc", t.color); }
+        return c;
+    }
     static void ApplyReadyLook(mc::Screen& sc) {   // a built-in screen back to the ready-made look
         mc::Screen p = sc.role == ScreenRole::NewGameIntro ? presetStory() : presetScreen(sc.role);
-        if (sc.useStack) { sc.comp = p.comp; return; }   // (a splash / story: its own steps stay)
+        if (sc.useStack) { sc.comp = p.comp; sc.in = p.in; sc.out = p.out; return; }   // (a splash / story: its own steps stay)
         bool ownBg = sc.bg.kind == BgKind::World || sc.bg.kind == BgKind::Image || sc.bg.kind == BgKind::Video || sc.bg.kind == BgKind::Space;
-        sc.items = p.items; sc.comp = p.comp; if (!ownBg) sc.bg = p.bg; sc.fadeIn = p.fadeIn;
+        sc.items = p.items; sc.comp = p.comp; if (!ownBg) sc.bg = p.bg; sc.fadeIn = p.fadeIn; sc.in = p.in; sc.out = p.out;
     }
     void ScreensEditor() {
         if (!screensEdOpen) return;
@@ -10079,6 +10135,9 @@ struct App {
         if (it.kind == ScreenItemKind::Credits) { Prop("Speed"); ch |= ImGui::SliderFloat("##sisp", &it.speed, 0.005f, 0.3f, "%.3f screens/s"); }
         if (it.kind == ScreenItemKind::SaveSlots) { const char* ly[] = { "Rows (top to bottom)", "Cards side by side" }; Prop("Layout"); ch |= ImGui::Combo("##sicd", &it.cards, ly, 2); }
         if (it.kind == ScreenItemKind::Button) {
+            Prop("Own transition"); ch |= ImGui::Checkbox("##siot", &it.ownTrans);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Where it leads, it goes with this transition (instead of the screens' own).");
+            if (it.ownTrans) { ImGui::PushID("sitr"); ch |= TransEdit("Transition", it.trans); ImGui::PopID(); }
             char tb[256]; std::snprintf(tb, sizeof tb, "%s", it.tip.c_str()); Prop("Tip"); ImGui::SetNextItemWidth(-1);
             if (ImGui::InputTextWithHint("##sitip", "(none)", tb, sizeof tb)) { it.tip = tb; ch = true; }
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("What it does, in a line. A text with {tip} in it shows the picked button's tip.");
@@ -10140,6 +10199,10 @@ struct App {
     }
     void ScreenSoundTab(mc::Screen& sc, bool& ch) {
         ImGui::BeginChild("sndtab", ImVec2(0, 0));
+        ImGui::SeparatorText("Transitions");
+        ImGui::PushID("trin"); ch |= TransEdit("Comes in with", sc.in); ImGui::PopID();
+        ImGui::PushID("trout"); ch |= TransEdit("Goes out with", sc.out); ImGui::PopID();
+        Hint("Coming in: from the screen (or the game) before. Going out: used when the next screen has none of its own (going out, a slide or a wipe moves the old one away). A button can have its own. Try them with F6 (from the menu).");
         ImGui::SeparatorText("Music");
         { const char* mm[] = { "Keep what is playing", "Play this (it loops)", "Silence" }; Prop("When it shows"); ch |= ImGui::Combo("##mmode", &sc.musicMode, mm, 3); }
         if (sc.musicMode == 1) { Prop("Music"); ch |= SoundEdit("##music", sc.music, false); }
@@ -15908,7 +15971,7 @@ struct App {
         else if (screen == Screen::Game && rw > 0 && CurScreen() && !ev) {   // a screen (main menu, death...): its background, items and compositor
             mc::Screen* sc = CurScreen(); bool world = sc->bg.kind == BgKind::World || sc->bg.kind == BgKind::Game;
             if (world) RenderWorld(sceneRTV.Get());
-            RenderScreenPicture(*sc, backRTV.Get(), cw, ch, screenList.get(), sc->fadeIn > 0.01f ? (float)std::clamp(screenT / sc->fadeIn, 0.0, 1.0) : 1.f, world);
+            RenderScreenPicture(*sc, backRTV.Get(), cw, ch, screenList.get(), sc->fadeIn > 0.01f && sc->in.kind == TransKind::None ? (float)std::clamp(screenT / sc->fadeIn, 0.0, 1.0) : 1.f, world);   // (a screen with a transition: no fade of its own)
         }
         else if (screen == Screen::Game && rw > 0) RenderWorld(ev ? sceneRTV.Get() : backRTV.Get());
         if (ev) { RenderViewer(); RenderHudViews(); RenderWeaponView(); RenderScreenPreview(); }
@@ -15917,6 +15980,7 @@ struct App {
         D3D11_VIEWPORT v{ 0, 0, (float)cw, (float)ch, 0, 1 }; ctx->RSSetViewports(1, &v);
         GpuMark("editor and interface");
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+        GpuMark("screen transitions"); TransitionStep(dt, ev);
         GpuEnd();
     }
     void Frame(double dt) {

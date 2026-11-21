@@ -25,6 +25,27 @@ const char* screenActName(ScreenAct a) {
     int i = (int)a; return i >= 0 && i < (int)ScreenAct::COUNT ? n[i] : "?";
 }
 
+// ------------------------------------------------------------------ transitions
+const char* transKindName(TransKind k) {
+    static const char* n[] = { "Cut (none)", "Fade (through a colour)", "Crossfade", "Slide in", "Push", "Zoom in", "Zoom out", "Wipe", "Iris (a circle)", "Diagonal wipe", "Visor scan", "Static", "Pixelate", "Blur", "Flash" };
+    int i = (int)k; return i >= 0 && i < (int)TransKind::COUNT ? n[i] : "?";
+}
+const char* transEaseName(int e) { static const char* n[] = { "Smooth", "Snappy", "Bouncy", "Even" }; return e >= 0 && e < 4 ? n[e] : "?"; }
+float transEase(int e, float t) {
+    t = std::clamp(t, 0.f, 1.f);
+    if (e == 1) { float u = 1 - t; return 1 - u * u * u; }                                   // quick, then settles
+    if (e == 2) { const float c1 = 1.70158f, c3 = c1 + 1; float u = t - 1; return 1 + c3 * u * u * u + c1 * u * u; }   // a little past, then back
+    if (e == 3) return t;
+    return t * t * (3 - 2 * t);
+}
+bool transUsesDir(TransKind k) { return k == TransKind::Slide || k == TransKind::Push || k == TransKind::Wipe; }
+bool transUsesColor(TransKind k) { return k == TransKind::Fade || k == TransKind::Flash || k == TransKind::Wipe || k == TransKind::Iris || k == TransKind::VisorScan || k == TransKind::Diagonal; }
+static std::string transText(const Transition& t) { std::ostringstream o; o << (int)t.kind << " " << t.dir << " " << t.time << " " << t.ease << " " << t.color; return o.str(); }
+static void transFrom(std::istringstream& l, Transition& t) {
+    int k = 0, d = 1, e = 0; float tm = 0.4f; uint32_t c = 0; if (!(l >> k >> d >> tm >> e >> c)) return;
+    t.kind = (TransKind)std::clamp(k, 0, (int)TransKind::COUNT - 1); t.dir = std::clamp(d, 0, 3); t.time = std::clamp(tm, 0.f, 5.f); t.ease = std::clamp(e, 0, 3); t.color = c;
+}
+
 // ------------------------------------------------------------------ nodes
 const NodeInfo& nodeInfo(NodeType t) {
     static const NodeInfo info[] = {
@@ -254,6 +275,17 @@ Screen presetScreen(ScreenRole r) {
         break; }
     default: s.name = "Screen"; break;
     }
+    auto tr = [](TransKind k, float t, int dir = 1, int ease = 0, uint32_t col = 0x000000) { Transition x; x.kind = k; x.time = t; x.dir = dir; x.ease = ease; x.color = col; return x; };
+    switch (r) {   // how each comes and goes
+    case ScreenRole::MainMenu: s.in = tr(TransKind::Fade, 0.6f); break;
+    case ScreenRole::Options: case ScreenRole::Files: s.in = tr(TransKind::Slide, 0.35f, 1, 1); s.out = tr(TransKind::Slide, 0.3f, 1, 1); break;
+    case ScreenRole::Credits: s.in = tr(TransKind::Fade, 0.8f); break;
+    case ScreenRole::Death: s.in = tr(TransKind::Static, 1.0f, 1, 3); break;
+    case ScreenRole::ItemGet: s.in = tr(TransKind::VisorScan, 0.45f, 1, 0, VISOR_CYAN); s.out = tr(TransKind::Crossfade, 0.25f); break;
+    case ScreenRole::GameSaved: s.in = tr(TransKind::Flash, 0.45f, 1, 0, 0xFFE6B0); s.out = tr(TransKind::Crossfade, 0.3f); break;
+    case ScreenRole::Intro: s.in = tr(TransKind::Fade, 0.6f); s.out = tr(TransKind::Fade, 0.8f); break;
+    default: break;
+    }
     visorFonts(s);
     return s;
 }
@@ -264,6 +296,7 @@ static Screen storyScreen() {   // an intro like Super Metroid's: a stack of ste
     }
     s.duration = buildStack(s.stack).length;
     ScreenItem k = text("Skip", "ANY KEY: SKIP", 0.7f, 0.9f, 0.24f, 0.04f, 0.0156f, 2); k.col.text = 0x7FA3B5; k.showAt = 2; s.items.push_back(k);
+    s.in.kind = TransKind::Fade; s.in.time = 0.8f; s.out.kind = TransKind::Fade; s.out.time = 1.0f;
     visorFonts(s);
     return s;
 }
@@ -437,6 +470,7 @@ bool saveScreens(const std::string& path, const ScreenSet& set) {
         f << "music " << s.musicMode << " " << s.musicFade << " " << soundUseText(s.music) << "\n";
         f << "seq " << s.duration << " " << (s.untilVideoEnds ? 1 : 0) << " " << (s.skippable ? 1 : 0) << " " << escText(s.next) << "\n";
         if (s.useStack) f << "usestack 1\n";
+        if (s.in.kind != TransKind::None || s.out.kind != TransKind::None) f << "trans " << transText(s.in) << " " << transText(s.out) << "\n";
         if (s.role == ScreenRole::ItemGet || s.role == ScreenRole::GameSaved) f << "hold " << s.holdMin << "\n";
         for (const StackStep& st : s.stack) {
             f << "step " << (int)st.kind << " " << escText(st.file) << " " << (st.zoom ? 1 : 0) << " " << st.zoomTo << " " << st.zoomTime << " " << st.place << " " << escText(st.text) << " "
@@ -452,6 +486,7 @@ bool saveScreens(const std::string& path, const ScreenSet& set) {
             f << "anim " << i.showAt << " " << i.hideAt << " " << i.fade << " " << i.typeSpeed << " " << i.driftX << " " << i.driftY << " " << i.grow << " " << soundUseText(i.typeSound) << "\n";
             f << "anim2 " << i.fadeOut << " " << i.valign << "\n";
             if (i.weight > 0 || i.outline > 0) f << "tstyle " << i.weight << " " << i.outline << " " << i.outlineColor << "\n";
+            if (i.ownTrans) f << "itrans " << transText(i.trans) << "\n";
             if (i.cards || i.pickFill != 0.25f || i.corners || !i.tip.empty() || i.font) f << "look2 " << i.cards << " " << i.pickFill << " " << (i.corners ? 1 : 0) << " " << escText(i.tip) << " " << i.font << "\n";
             for (const ItemKey& k : i.keys) f << "key " << k.t << " " << k.x << " " << k.y << " " << k.scale << " " << k.alpha << " " << (k.smooth ? 1 : 0) << "\n";
             if (!i.sound.empty()) f << "isound " << soundUseText(i.sound) << "\n";
@@ -501,6 +536,8 @@ bool loadScreens(const std::string& path, ScreenSet& set) {
             i.filled = fl != 0; i.frame = fr != 0; cur->items.push_back(i);
         } else if (k == "ssounds") readSnd(cur->sounds);
         else if (k == "music") { std::string rest; l >> cur->musicMode >> cur->musicFade; std::getline(l, rest); soundUseFrom(rest, cur->music); cur->musicMode = std::clamp(cur->musicMode, 0, 2); }
+        else if (k == "trans") { transFrom(l, cur->in); transFrom(l, cur->out); }
+        else if (k == "itrans" && !cur->items.empty()) { cur->items.back().ownTrans = true; transFrom(l, cur->items.back().trans); }
         else if (k == "usestack") { int u = 0; l >> u; cur->useStack = u != 0; }
         else if (k == "step") {
             StackStep st; int kd = 1, z = 0; std::string fl, tx;

@@ -2274,6 +2274,89 @@ float3 rgb2hsv(float3 c)
 }
 float3 hsv2rgb(float3 c) { float3 p = abs(frac(c.xxx + float3(1, 2.0 / 3, 1.0 / 3)) * 6 - 3); return c.z * lerp(1, saturate(p - 1), c.y); }
 float compHash(float2 p) { return frac(sin(dot(p, float2(12.9898, 78.233))) * 43758.5453); }
+// ---------------------------------------------------------------- screen transitions: the old picture and the new one put together
+cbuffer TransCB : register(b12)
+{
+    float4 gTr;      // x how far (0..1, eased), y which kind, z direction (0 left, 1 right, 2 top, 3 bottom), w 1: going out (the old one leaves toward the direction)
+    float4 gTrCol;   // rgb its colour, w a clock (s)
+    float4 gTrSize;  // x width / height, y 1 / width, z 1 / height, w how far without easing
+};
+Texture2D gTrFrom : register(t44);
+Texture2D gTrTo : register(t45);
+float3 trA(float2 q) { return gTrFrom.SampleLevel(gClamp, q, 0).rgb; }
+float3 trB(float2 q) { return gTrTo.SampleLevel(gClamp, q, 0).rgb; }
+bool trIn(float2 q) { return all(q >= 0) && all(q <= 1); }
+float trHash(float2 p) { return frac(sin(dot(p, float2(127.1, 311.7))) * 43758.5453); }
+float4 PS_Trans(BlitOut i) : SV_Target
+{
+    float2 uv = i.uv; float p = gTr.x, pl = gTrSize.w; int k = (int)round(gTr.y), d = (int)round(gTr.z); bool outw = gTr.w > 0.5;
+    float2 dv = d == 0 ? float2(-1, 0) : d == 1 ? float2(1, 0) : d == 2 ? float2(0, -1) : float2(0, 1);   // where the new one comes from (going out: where the old one goes)
+    float3 col = gTrCol.rgb, c = trB(uv);
+    float aspect = gTrSize.x;
+    switch (k)
+    {
+    case 1: c = p < 0.5 ? lerp(trA(uv), col, saturate(p * 2)) : lerp(col, trB(uv), saturate(p * 2 - 1)); break;
+    case 2: c = lerp(trA(uv), trB(uv), saturate(p)); break;
+    case 3:   // slide: the new one over the old (going out: the old one away, the new one under it)
+        if (!outw) { float2 q = uv - dv * (1 - p); c = trIn(q) ? trB(q) : trA(uv) * (1 - 0.35 * p); }
+        else { float2 q = uv - dv * p; c = trIn(q) ? trA(q) : trB(uv) * (0.65 + 0.35 * p); }
+        break;
+    case 4: { float2 qb = uv - dv * (1 - p), qa = uv + dv * p; c = trIn(qb) ? trB(qb) : trA(qa); break; }   // push: both move
+    case 5: { float2 qa = 0.5 + (uv - 0.5) / (1 + p * 1.5), qb = 0.5 + (uv - 0.5) * (1 + (1 - p) * 0.25); c = lerp(trA(qa), trB(qb), smoothstep(0.15, 0.85, pl)); break; }   // zoom in
+    case 6: { float2 qa = 0.5 + (uv - 0.5) * (1 + p * 2.5), qb = 0.5 + (uv - 0.5) / (1 + (1 - p) * 0.5); float a = trIn(qa) ? 1 - smoothstep(0.3, 1, pl) : 0; c = lerp(trB(qb), trA(qa), a); break; }   // zoom out
+    case 7: case 9:   // wipe (a straight line, or slanted): the new one behind a glowing edge
+    {
+        float s = k == 9 ? (uv.x * aspect + uv.y) / (aspect + 1) : dv.x != 0 ? (dv.x > 0 ? 1 - uv.x : uv.x) : (dv.y > 0 ? 1 - uv.y : uv.y);
+        if (outw) s = 1 - s;
+        float e = p * 1.1 - 0.05; c = s < e ? trB(uv) : trA(uv);
+        c += col * exp(-abs(s - e) * 90) * 1.2 * (1 - pl);
+        break;
+    }
+    case 8:   // iris: a circle opens on the new one (going out: closes on the old)
+    {
+        float r = length((uv - 0.5) * float2(aspect, 1)), R = (outw ? 1 - p : p) * length(float2(aspect, 1)) * 0.52;
+        bool inside = r < R; c = outw ? (inside ? trA(uv) : trB(uv)) : (inside ? trB(uv) : trA(uv));
+        c += col * exp(-abs(r - R) * 60) * (1 - abs(pl * 2 - 1));
+        break;
+    }
+    case 10:   // visor scan: a bright line sweeps down; above it the new picture (with scanlines that fade), below it the old
+    {
+        float y0 = p * 1.15 - 0.075;
+        if (uv.y < y0) { c = trB(uv) * (1 - 0.25 * (1 - pl) * step(0.5, frac(uv.y / max(gTrSize.z, 1e-5) * 0.25))); }
+        else c = trA(uv);
+        c += col * (exp(-abs(uv.y - y0) * 120) * 1.5 + exp(-abs(uv.y - y0) * 18) * 0.25) * (1 - pl * 0.5);
+        break;
+    }
+    case 11:   // static: blocks of the new picture appear among torn rows of noise
+    {
+        float t = floor(gTrCol.w * 30), w = sin(3.14159 * pl);
+        float row = floor(uv.y * 90); float tear = (trHash(float2(row, t)) - 0.5) * 0.08 * w * step(0.6, trHash(float2(row + 7, t)));
+        float2 q = float2(uv.x + tear, uv.y);
+        float n = trHash(floor(q * float2(48, 90)) + t * 0.37);
+        c = n < pl ? trB(q) : trA(q);
+        float g = trHash(uv * 731 + t); c = lerp(c, g.xxx, 0.55 * w);
+        break;
+    }
+    case 12:   // pixelate: the old one breaks into big pixels, the new one comes out of them
+    {
+        float px = lerp(1, 64, sin(3.14159 * saturate(pl))), sx = px * gTrSize.y, sy = px * gTrSize.z;
+        float2 q = (floor(uv / float2(sx, sy)) + 0.5) * float2(sx, sy);
+        c = pl < 0.5 ? trA(q) : trB(q);
+        break;
+    }
+    case 13:   // blur: the old one blurs into the new one, which sharpens
+    {
+        float r = sin(3.14159 * saturate(pl)) * 14; float3 s = 0;
+        [unroll] for (int j = 0; j < 12; j++) { float a = j * 2.39996, dk = sqrt((j + 0.5) / 12); float2 o = float2(cos(a), sin(a)) * dk * r * gTrSize.yz; s += lerp(trA(uv + o), trB(uv + o), smoothstep(0.3, 0.7, pl)); }
+        c = s / 12;
+        break;
+    }
+    case 14: { float w = 1 - abs(pl * 2 - 1); c = (pl < 0.5 ? trA(uv) : trB(uv)) + col * pow(w, 1.5) * 2.2; break; }   // flash
+    default: break;
+    }
+    return float4(c, 1);
+}
+
 // ---------------------------------------------------------------- planets: stars, a coloured haze and a planet in layers (ocean, terrain bands, ice, clouds, atmosphere, night lights, rings)
 cbuffer PlanetCB : register(b3)
 {

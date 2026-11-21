@@ -41,6 +41,18 @@ const char* screenItemKindName(ScreenItemKind k);
 enum class ScreenAct { None, NewGame, Continue, Options, Credits, Quit, GoTo, Back, Retry, MainMenu, Files, COUNT };
 const char* screenActName(ScreenAct a);
 
+// ---- transitions: how one screen gives way to the next (the old picture and the new one put together for a moment)
+enum class TransKind { None, Fade, Crossfade, Slide, Push, ZoomIn, ZoomOut, Wipe, Iris, Diagonal, VisorScan, Static, Pixelate, Blur, Flash, COUNT };
+const char* transKindName(TransKind k);
+const char* transEaseName(int e);                        // 0 smooth, 1 snappy, 2 bouncy, 3 even
+float transEase(int e, float t);                          // t 0..1 -> how far along (bouncy goes a little past 1 before settling)
+bool transUsesDir(TransKind k); bool transUsesColor(TransKind k);
+struct Transition {
+    TransKind kind = TransKind::None;                    // None: a cut (the next screen at once)
+    int dir = 1;                                          // Slide / Push / Wipe: where the new screen comes from (0 left, 1 right, 2 top, 3 bottom)
+    float time = 0.4f; int ease = 0;                      // seconds; how it moves
+    uint32_t color = 0x000000;                            // Fade: through this colour; Flash, Wipe, Iris, Visor scan: their light
+};
 struct ScreenColors {
     uint32_t text = 0xD8EEF8, accent = 0x6CF0FF, picked = 0xFFFFFF, dim = 0x587888, fill = 0x07121C;
     float fillAlpha = 0.6f;
@@ -68,6 +80,7 @@ struct ScreenItem {
     bool corners = false;                                // Panel / Button / SaveSlots: bracket corners, like a visor's frame
     std::string tip;                                     // Button: a line about what it does ({tip} in a text shows the picked button's)
     int font = 0;                                        // 0 the engine's, 1 display (Chakra Petch: titles, buttons), 2 text (Barlow: sentences)
+    bool ownTrans = false; Transition trans;             // Button: its own transition to where it leads (instead of the screens')
     // timing (splash screens, intros): seconds after the screen appears
     float showAt = 0, hideAt = 0, fade = 0.4f;           // appears at, goes at (0: stays), fading in over this long
     float fadeOut = -1;                                  // fading out over this long (< 0: as long as it fades in)
@@ -160,6 +173,7 @@ struct Screen {
     std::string next; bool skippable = true;              // the screen after it (empty: the main menu); a key or click goes on early
     bool useStack = false; std::vector<StackStep> stack;  // made as a stack (its items come from the steps; it lasts as long as they take)
     float holdMin = 0.8f;                                 // Item get / Game saved: seconds before a button closes it (so a held jump doesn't skip it)
+    Transition in, out;                                   // how it comes in (from the screen or the game before), how it goes (when the next one has none of its own)
 };
 float screenLength(const Screen& s);                     // its duration, or (staying) a little past its last item's times, at least 10 s
 Screen presetScreen(ScreenRole r);                        // ready-made: main menu, options, death, credits, files, splash (and an empty one)
