@@ -886,11 +886,37 @@ bool traceScreen(float3 P, float3 n, float3 r, float dist, float2 pixel, out flo
 // half ball above its surface and counts how many end up inside something. Then a careful blur takes away only the
 // sky and lamp light where it is hidden.
 Texture2D gIndirect : register(t7);
-Texture2D<float> gAOMap : register(t8);
+Texture2D gAOMap : register(t8);
 float3 viewDir(float2 ndc) { return normalize(gCamF.xyz + gCamR.xyz * (ndc.x * gProj.x * gProj.y) + gCamU.xyz * (ndc.y * gProj.x)); }
+// ---------------------------------------------------------------- smaller pictures (a half, a third or a quarter of the size: the
+// soft things - ambient occlusion, bounce light, fog) brought back to full size without blurring over edges
+float lowLz(int2 q, float2 ratio)   // the distance a smaller picture's pixel q stands for (the full-size pixel it was worked out at)
+{
+    int2 p = min(int2((float2(q) + 0.5) * ratio), int2(gDepth.zw) - 1);
+    float z = gSceneDepth.Load(int3(p, 0)); return z >= 1 ? 1e5 : linDepth(z);
+}
+float4 upLow(Texture2D t, int2 px, float lz)   // the four smaller pixels around, weighted by how near and how alike in distance
+{
+    float2 ls; t.GetDimensions(ls.x, ls.y); float2 ratio = gDepth.zw / ls;
+    float2 f = (float2(px) + 0.5) / ratio - 0.5; int2 q0 = int2(floor(f)); float2 fr = f - floor(f);
+    int2 hi = int2(ls) - 1;
+    float4 s = 0, best = 0; float w = 0, bestD = 1e9;
+    [unroll] for (int k = 0; k < 4; k++)
+    {
+        int2 o = int2(k & 1, k >> 1); int2 q = clamp(q0 + o, int2(0, 0), hi);
+        float bw = (o.x ? fr.x : 1 - fr.x) * (o.y ? fr.y : 1 - fr.y) + 1e-3;
+        float dz = abs(lowLz(q, ratio) - lz);
+        float4 v = t.Load(int3(q, 0));
+        if (dz < bestD) { bestD = dz; best = v; }
+        float ww = bw * exp(-dz / (lz * 0.04 + 0.08));
+        s += v * ww; w += ww;
+    }
+    return w > 1e-3 ? s / w : best;   // (nothing alike around: the closest in distance)
+}
+
 float4 PS_AO(SkyOut i) : SV_Target
 {
-    int2 px = min(int2(i.pos.xy) * 2, int2(gDepth.zw) - 1);
+    int2 px = min(int2((i.ndc * float2(0.5, -0.5) + 0.5) * gDepth.zw), int2(gDepth.zw) - 1);   // (whatever the smaller picture's size)
     float zb = gSceneDepth.Load(int3(px, 0));
     if (zb >= 1) return 1;
     float2 ndc = ((float2(px) + 0.5) / gDepth.zw) * float2(2, -2) + float2(-1, 1);
@@ -924,24 +950,28 @@ float4 PS_AO(SkyOut i) : SV_Target
     }
     return 1 - occ / max(N, 1);
 }
+float4 PS_AOBlur(SkyOut i) : SV_Target   // the smaller picture: a careful 5 x 5 blur (only across similar distances)
+{
+    float2 ls; gAOMap.GetDimensions(ls.x, ls.y); float2 ratio = gDepth.zw / ls;
+    int2 q0 = int2(i.pos.xy), hi = int2(ls) - 1;
+    float lin = lowLz(q0, ratio); if (lin > 9e4) return 1;
+    float sum = 0, wsum = 0;
+    [unroll] for (int y = -2; y <= 2; y++)
+    [unroll] for (int x = -2; x <= 2; x++)
+    {
+        int2 q = clamp(q0 + int2(x, y), int2(0, 0), hi);
+        float w = saturate(1 - abs(lowLz(q, ratio) - lin) / (lin * 0.04 + 0.08)) * (1.0 / (1 + x * x + y * y)) + 1e-4;
+        sum += gAOMap.Load(int3(q, 0)).r * w; wsum += w;
+    }
+    return sum / wsum;
+}
 float4 PS_AOApply(SkyOut i) : SV_Target
 {
     int2 px = int2(i.pos.xy);
     float zb = gSceneDepth.Load(int3(px, 0));
     if (zb >= 1) return 0;
     float lin = linDepth(zb);
-    int2 hsz = max(int2(gDepth.zw) / 2, 1), hp0 = px / 2;
-    float sum = 0, wsum = 0;
-    [unroll] for (int y = -2; y <= 2; y++)
-    [unroll] for (int x = -2; x <= 2; x++)
-    {
-        int2 hp = clamp(hp0 + int2(x, y), int2(0, 0), hsz - 1);
-        float a = gAOMap.Load(int3(hp, 0));
-        float z = linDepth(gSceneDepth.Load(int3(min(hp * 2, int2(gDepth.zw) - 1), 0)));
-        float w = saturate(1 - abs(z - lin) / (lin * 0.04 + 0.08)) * (1.0 / (1 + x * x + y * y)) + 1e-4;
-        sum += a * w; wsum += w;
-    }
-    float ao = saturate(sum / wsum);
+    float ao = saturate(upLow(gAOMap, px, lin).r);
     ao = pow(ao, 2.2 * gAOSet.z);
     float3 ind = gIndirect.Load(int3(px, 0)).rgb;
     return float4(-ind * (1 - ao), 0);   // added on top of the picture: takes the hidden sky light away
@@ -1334,19 +1364,11 @@ float4 PS_Water(VSOut i, bool front : SV_IsFrontFace) : SV_Target
 // ---------------------------------------------------------------- volumetrics: clouds and ground fog over the picture
 float ign(float2 px) { return frac(52.9829189 * frac(dot(px, float2(0.06711056, 0.00583715)))); }   // even per-pixel noise: no banding
 
-float4 PS_Volume(SkyOut i) : SV_Target
+float4 PS_VolumeLow(SkyOut i) : SV_Target   // a smaller picture: what the air adds (rgb) and lets through (a)
 {
-    int2 px = int2(i.pos.xy);
+    int2 px = min(int2((i.ndc * float2(0.5, -0.5) + 0.5) * gDepth.zw), int2(gDepth.zw) - 1);   // (the full-size pixel this one stands for)
     float3 dir = normalize(gCamF.xyz + gCamR.xyz * (i.ndc.x * gProj.x * gProj.y) + gCamU.xyz * (i.ndc.y * gProj.x));
-    if (gEnv.y > 0)   // heat shimmer: wobble far, low parts of the picture
-    {
-        float z0 = gSceneDepth.Load(int3(px, 0));
-        float d0 = z0 >= 1 ? 400 : gDepth.x * gDepth.y / (gDepth.y - z0 * (gDepth.y - gDepth.x));
-        float k = gEnv.y * saturate((d0 - 12) / 50) * saturate(1 - abs(dir.y) * 6);
-        float2 w = float2(sin(i.pos.y * 0.21 + gVolume.z * 7 + i.pos.x * 0.04), cos(i.pos.x * 0.17 + gVolume.z * 5.3 + i.pos.y * 0.09));
-        px = clamp(px + int2(round(w * k * 2.2)), int2(0, 0), int2(gDepth.zw) - 1);
-    }
-    float3 scene = gHdr.Load(int3(px, 0)).rgb;
+    float3 sAll = 0; float tAll = 1;
     float zb = gSceneDepth.Load(int3(px, 0));
     float dist = zb >= 1 ? 1e9 : gDepth.x * gDepth.y / (gDepth.y - zb * (gDepth.y - gDepth.x)) / max(dot(dir, gCamF.xyz), 1e-3);
     float jitter = ign(i.pos.xy);
@@ -1386,7 +1408,7 @@ float4 PS_Volume(SkyOut i) : SV_Target
             float far = saturate((t0 - 1500) / 4500);                                  // far clouds melt into the haze
             float3 haze = skyColor(dir);
             S = lerp(S, haze * (1 - T), far * far);
-            scene = scene * T + S;
+            sAll = sAll * T + S; tAll *= T;
         }
     }
 
@@ -1418,7 +1440,7 @@ float4 PS_Volume(SkyOut i) : SV_Target
             float3 tint = lerp(float3(1, 1, 1), gLookFogCol.rgb * 1.6, dl / max(d, 1e-4));   // the look's fog in its own colour
             S += T * ((gSunColor.rgb * sun * phase * 0.18 + amb * open) * tint + gLookFogCol.rgb * gLookFogCol.w * dl / max(d, 1e-4)) * (1 - a); T *= a;
         }
-        scene = scene * T + S;
+        sAll = sAll * T + S; tAll *= T;
     }
     // ---- lights in the air: every light near you glows in the fog and haze (spotlights make beams, with their shadows)
     if (gLookFog.w > 0.001 && gCl0.x > 0.5)
@@ -1450,8 +1472,30 @@ float4 PS_Volume(SkyOut i) : SV_Target
             float a = exp(-dens * dt);
             S += T * Ls * gLookFog.w * (1 - a) * 0.8; T *= a;
         }
-        scene += S;
+        sAll += S;
     }
+    return float4(sAll, tAll);
+}
+
+Texture2D gVolLow : register(t41);
+float4 PS_Volume(SkyOut i) : SV_Target   // full size: the picture seen through the air (the smaller picture brought back up), heat shimmer, murky water
+{
+    int2 px = int2(i.pos.xy);
+    float3 dir = normalize(gCamF.xyz + gCamR.xyz * (i.ndc.x * gProj.x * gProj.y) + gCamU.xyz * (i.ndc.y * gProj.x));
+    if (gEnv.y > 0)   // heat shimmer: wobble far, low parts of the picture
+    {
+        float z0 = gSceneDepth.Load(int3(px, 0));
+        float d0 = z0 >= 1 ? 400 : gDepth.x * gDepth.y / (gDepth.y - z0 * (gDepth.y - gDepth.x));
+        float k = gEnv.y * saturate((d0 - 12) / 50) * saturate(1 - abs(dir.y) * 6);
+        float2 w = float2(sin(i.pos.y * 0.21 + gVolume.z * 7 + i.pos.x * 0.04), cos(i.pos.x * 0.17 + gVolume.z * 5.3 + i.pos.y * 0.09));
+        px = clamp(px + int2(round(w * k * 2.2)), int2(0, 0), int2(gDepth.zw) - 1);
+    }
+    float3 scene = gHdr.Load(int3(px, 0)).rgb;
+    float zb = gSceneDepth.Load(int3(px, 0));
+    float dist = zb >= 1 ? 1e9 : gDepth.x * gDepth.y / (gDepth.y - zb * (gDepth.y - gDepth.x)) / max(dot(dir, gCamF.xyz), 1e-3);
+    float lz = zb >= 1 ? 1e5 : linDepth(zb);
+    float4 air = upLow(gVolLow, px, lz);
+    scene = scene * air.a + air.rgb;
     // under water / in lava: the view gets murky
     if (gEnvPart.z > 0.5)
     {
@@ -2162,21 +2206,11 @@ float4 PS_GITemp(SkyOut i) : SV_Target
     float3 old = clamp(h.rgb, lo - pad, hi + pad);
     return float4(lerp(old, cur, 0.1), lz);
 }
-float4 PS_GIApply(SkyOut i) : SV_Target   // full size: a careful blur (only across similar distances and directions), times the surface's colour
+float4 PS_GIApply(SkyOut i) : SV_Target   // full size: the smaller picture brought back up (only across similar distances), times the surface's colour
 {
     int2 px = int2(i.pos.xy);
     float zb = gSceneDepth.Load(int3(px, 0)); if (zb >= 1) return 0;
-    float lz = linDepth(zb); float2 uv = (float2(px) + 0.5) / gDepth.zw, ht = 2 / gDepth.zw;
-    float3 n0 = normalize(gSurface.Load(int3(px, 0)).xyz * 2 - 1);
-    float3 s = 0; float w = 0;
-    [unroll] for (int y = -1; y <= 1; y++) [unroll] for (int x = -1; x <= 1; x++)
-    {
-        float2 u = uv + float2(x, y) * ht; int2 q = clamp(int2(u * gDepth.zw), int2(0, 0), int2(gDepth.zw) - 1);
-        float3 nq = normalize(gSurface.Load(int3(q, 0)).xyz * 2 - 1);
-        float ww = exp(-abs(linDepth(gSceneDepth.Load(int3(q, 0))) - lz) / max(lz * 0.06, 0.12)) * pow(saturate(dot(n0, nq)), 4) * (x == 0 && y == 0 ? 2 : 1);
-        s += gGITex.SampleLevel(gClamp, u, 0).rgb * ww; w += ww;
-    }
-    return float4(s / max(w, 1e-4) * gAlbedo.Load(int3(px, 0)).rgb, 0);
+    return float4(upLow(gGITex, px, linDepth(zb)).rgb * gAlbedo.Load(int3(px, 0)).rgb, 0);
 }
 
 // ---------------------------------------------------------------- paused / reading a scan: the world (and the arm cannon) blurred behind the menu

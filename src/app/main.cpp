@@ -210,7 +210,12 @@ struct App {
     }
     ComPtr<ID3D11Buffer> vbBolt, ibBolt; UINT nBolt = 0; ComPtr<ID3D11InputLayout> layout;
     ComPtr<ID3D11Texture2D> hdrTex; ComPtr<ID3D11RenderTargetView> hdrRTV; ComPtr<ID3D11ShaderResourceView> hdrSRV;      // the picture before tonemapping
-    ComPtr<ID3D11Texture2D> volTex; ComPtr<ID3D11RenderTargetView> volRTV; ComPtr<ID3D11ShaderResourceView> volSRV;      // ... with clouds and fog
+    ComPtr<ID3D11Texture2D> volTex; ComPtr<ID3D11RenderTargetView> volRTV; ComPtr<ID3D11ShaderResourceView> volSRV;
+    // the soft things (ambient occlusion, bounce light, fog) are worked out on a smaller picture: a half of the size up to 1440p, a third at 4K,
+    // a quarter above (their cost stays about the same whatever the resolution), then brought back up carefully
+    int lowW = 1, lowH = 1;
+    ComPtr<ID3D11Texture2D> volLowTex, aoTex2; ComPtr<ID3D11RenderTargetView> volLowRTV, aoRTV2; ComPtr<ID3D11ShaderResourceView> volLowSRV, aoSRV2;
+    ComPtr<ID3D11PixelShader> psVolumeLow, psAOBlur;      // ... with clouds and fog
     ComPtr<ID3D11ShaderResourceView> depthSRV, noiseSRV, depthCopySRV; ComPtr<ID3D11Texture2D> depthCopy; ComPtr<ID3D11PixelShader> psWater; ComPtr<ID3D11SamplerState> sampLinear, sampClamp; double cloudTime = 0, precipTime = 0, precipWindX = 0, precipWindZ = 0;
     struct BloomLevel { ComPtr<ID3D11Texture2D> tex; ComPtr<ID3D11RenderTargetView> rtv; ComPtr<ID3D11ShaderResourceView> srv; int w = 0, h = 0; };
     BloomLevel aaSrc;   // anti-aliasing: the finished picture, before its edges are smoothed
@@ -321,6 +326,7 @@ struct App {
         b = Compile(src, "VS_Shadow", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsShadow));
         b = Compile(src, "PS_ShadowCutout", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psShadowCut));
         b = Compile(src, "PS_Volume", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psVolume));
+        b = Compile(src, "PS_VolumeLow", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psVolumeLow));
         b = Compile(src, "PS_BloomDown", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psBloomDown));
         b = Compile(src, "PS_BloomUp", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psBloomUp));
         b = Compile(src, "VS_SkyMap", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsSkyMap));
@@ -369,6 +375,7 @@ struct App {
         InitAudio();
         b = Compile(src, "PS_AO", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psAO));
         b = Compile(src, "PS_AOApply", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psAOApply));
+        b = Compile(src, "PS_AOBlur", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psAOBlur));
         b = Compile(src, "PS_Water", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psWater));
         b = Compile(src, "PS_Post", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psPost));
         MakeLightResources();
@@ -454,14 +461,18 @@ struct App {
         HR(dev->CreateTexture2D(&d, nullptr, &hdrTex)); HR(dev->CreateRenderTargetView(hdrTex.Get(), nullptr, &hdrRTV)); HR(dev->CreateShaderResourceView(hdrTex.Get(), nullptr, &hdrSRV));
         { D3D11_TEXTURE2D_DESC id = d; id.Format = DXGI_FORMAT_R11G11B10_FLOAT; indTex.Reset(); indRTV.Reset(); indSRV.Reset();
           HR(dev->CreateTexture2D(&id, nullptr, &indTex)); HR(dev->CreateRenderTargetView(indTex.Get(), nullptr, &indRTV)); HR(dev->CreateShaderResourceView(indTex.Get(), nullptr, &indSRV));
-          id.Width = std::max(1u, (UINT)rw / 2); id.Height = std::max(1u, (UINT)rh / 2); id.Format = DXGI_FORMAT_R8_UNORM; aoTex.Reset(); aoRTV.Reset(); aoSRV.Reset();
-          HR(dev->CreateTexture2D(&id, nullptr, &aoTex)); HR(dev->CreateRenderTargetView(aoTex.Get(), nullptr, &aoRTV)); HR(dev->CreateShaderResourceView(aoTex.Get(), nullptr, &aoSRV)); }
+          { int div = std::clamp((int)std::lround(rh / 720.0), 2, 4); lowW = std::max(1, rw / div); lowH = std::max(1, rh / div); }   // (the smaller pictures' size)
+          id.Width = (UINT)lowW; id.Height = (UINT)lowH; id.Format = DXGI_FORMAT_R8_UNORM; aoTex.Reset(); aoRTV.Reset(); aoSRV.Reset(); aoTex2.Reset(); aoRTV2.Reset(); aoSRV2.Reset();
+          HR(dev->CreateTexture2D(&id, nullptr, &aoTex)); HR(dev->CreateRenderTargetView(aoTex.Get(), nullptr, &aoRTV)); HR(dev->CreateShaderResourceView(aoTex.Get(), nullptr, &aoSRV));
+          HR(dev->CreateTexture2D(&id, nullptr, &aoTex2)); HR(dev->CreateRenderTargetView(aoTex2.Get(), nullptr, &aoRTV2)); HR(dev->CreateShaderResourceView(aoTex2.Get(), nullptr, &aoSRV2));   // (blurred)
+          id.Format = DXGI_FORMAT_R16G16B16A16_FLOAT; volLowTex.Reset(); volLowRTV.Reset(); volLowSRV.Reset();   // the air: what it adds, what it lets through
+          HR(dev->CreateTexture2D(&id, nullptr, &volLowTex)); HR(dev->CreateRenderTargetView(volLowTex.Get(), nullptr, &volLowRTV)); HR(dev->CreateShaderResourceView(volLowTex.Get(), nullptr, &volLowSRV)); }
         reflTex.Reset(); reflRTV.Reset(); reflSRV.Reset();
         HR(dev->CreateTexture2D(&d, nullptr, &reflTex)); HR(dev->CreateRenderTargetView(reflTex.Get(), nullptr, &reflRTV)); HR(dev->CreateShaderResourceView(reflTex.Get(), nullptr, &reflSRV));
         { D3D11_TEXTURE2D_DESC sd2 = d; sd2.Format = DXGI_FORMAT_R8G8B8A8_UNORM; surfTex.Reset(); surfRTV.Reset(); surfSRV.Reset();
           HR(dev->CreateTexture2D(&sd2, nullptr, &surfTex)); HR(dev->CreateRenderTargetView(surfTex.Get(), nullptr, &surfRTV)); HR(dev->CreateShaderResourceView(surfTex.Get(), nullptr, &surfSRV));
           albTex.Reset(); albRTV.Reset(); albSRV.Reset(); HR(dev->CreateTexture2D(&sd2, nullptr, &albTex)); HR(dev->CreateRenderTargetView(albTex.Get(), nullptr, &albRTV)); HR(dev->CreateShaderResourceView(albTex.Get(), nullptr, &albSRV));
-          D3D11_TEXTURE2D_DESC gd = d; gd.Width = std::max(1u, (UINT)rw / 2); gd.Height = std::max(1u, (UINT)rh / 2); gd.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+          D3D11_TEXTURE2D_DESC gd = d; gd.Width = (UINT)lowW; gd.Height = (UINT)lowH; gd.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
           giTex.Reset(); giRTV.Reset(); giSRV.Reset(); HR(dev->CreateTexture2D(&gd, nullptr, &giTex)); HR(dev->CreateRenderTargetView(giTex.Get(), nullptr, &giRTV)); HR(dev->CreateShaderResourceView(giTex.Get(), nullptr, &giSRV));
           for (int k = 0; k < 2; k++) { giHistTex[k].Reset(); giHistRTV[k].Reset(); giHistSRV[k].Reset(); HR(dev->CreateTexture2D(&gd, nullptr, &giHistTex[k])); HR(dev->CreateRenderTargetView(giHistTex[k].Get(), nullptr, &giHistRTV[k])); HR(dev->CreateShaderResourceView(giHistTex[k].Get(), nullptr, &giHistSRV[k])); }
           giHistOk = false; }
@@ -4295,7 +4306,13 @@ struct App {
         ID3D11SamplerState* samps[3] = { sampBlocks.Get(), sampShadow.Get(), sampLinear.Get() }; ctx->PSSetSamplers(0, 3, samps);
         drawnChunks = 0; partsDrawn = partsCulled = 0; caveHidden = 0;
         UpdateCaveCulling(vp);
+        {   // the depth of everything solid first (no colour: cheap), so the heavy lighting runs once per pixel, not once for every wall behind it
+            ID3D11RenderTargetView* four[4] = { hdrRTV.Get(), surfRTV.Get(), indRTV.Get(), albRTV.Get() };
+            ctx->OMSetRenderTargets(0, nullptr, dsv.Get()); ctx->PSSetShader(nullptr, nullptr, 0); drawChunks(vp, 0, false, true);
+            ctx->OMSetRenderTargets(4, four, dsv.Get()); ctx->OMSetDepthStencilState(dsTestOnly.Get(), 0);
+        }
         ctx->PSSetShader(psOpaque.Get(), nullptr, 0); drawChunks(vp, 0, true, true);
+        ctx->OMSetDepthStencilState(dsOn.Get(), 0);
         partsDrawnShown = partsDrawn; partsCulledShown = partsCulled; caveHiddenShown = caveHidden;
         ctx->PSSetShader(psCutout.Get(), nullptr, 0); drawChunks(vp, 1, false, true);
 
@@ -4305,14 +4322,18 @@ struct App {
         if (settings.ambientOcclusion > 0) {
             ctx->OMSetRenderTargets(1, aoRTV.GetAddressOf(), nullptr);
             ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->IASetInputLayout(nullptr); ctx->RSSetState(rsNoCull.Get()); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
-            D3D11_VIEWPORT hv{ 0, 0, (float)std::max(1, rw / 2), (float)std::max(1, rh / 2), 0, 1 }; ctx->RSSetViewports(1, &hv);
+            D3D11_VIEWPORT hv{ 0, 0, (float)lowW, (float)lowH, 0, 1 }; ctx->RSSetViewports(1, &hv);
             ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psAO.Get(), nullptr, 0);
             { ID3D11ShaderResourceView* r6[6] = { nullptr, nullptr, depthSRV.Get(), nullptr, nullptr, surfSRV.Get() }; ctx->PSSetShaderResources(0, 6, r6); }
             ctx->Draw(3, 0);
+            ctx->OMSetRenderTargets(1, aoRTV2.GetAddressOf(), nullptr); ctx->PSSetShader(psAOBlur.Get(), nullptr, 0);   // blurred while small (cheap), not at full size
+            { ID3D11ShaderResourceView* a1 = aoSRV.Get(); ctx->PSSetShaderResources(8, 1, &a1); }
+            ctx->Draw(3, 0);
+            { ID3D11ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(8, 1, &n1); }
             ctx->RSSetViewports(1, &v);
             ctx->OMSetRenderTargets(1, hdrRTV.GetAddressOf(), nullptr); ctx->OMSetBlendState(bsAdd.Get(), nullptr, 0xFFFFFFFF);
             ctx->PSSetShader(psAOApply.Get(), nullptr, 0);
-            { ID3D11ShaderResourceView* r9[9] = { nullptr, nullptr, depthSRV.Get(), nullptr, nullptr, nullptr, nullptr, indSRV.Get(), aoSRV.Get() }; ctx->PSSetShaderResources(0, 9, r9); }
+            { ID3D11ShaderResourceView* r9[9] = { nullptr, nullptr, depthSRV.Get(), nullptr, nullptr, nullptr, nullptr, indSRV.Get(), aoSRV2.Get() }; ctx->PSSetShaderResources(0, 9, r9); }
             ctx->Draw(3, 0);
             { ID3D11ShaderResourceView* n9[9] = {}; ctx->PSSetShaderResources(0, 9, n9); }
             ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
@@ -4322,7 +4343,7 @@ struct App {
         if (fc.gi[0] > 0.001f) {
             ctx->OMSetRenderTargets(1, giRTV.GetAddressOf(), nullptr);
             ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->IASetInputLayout(nullptr); ctx->RSSetState(rsNoCull.Get()); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
-            D3D11_VIEWPORT hv{ 0, 0, (float)std::max(1, rw / 2), (float)std::max(1, rh / 2), 0, 1 }; ctx->RSSetViewports(1, &hv);
+            D3D11_VIEWPORT hv{ 0, 0, (float)lowW, (float)lowH, 0, 1 }; ctx->RSSetViewports(1, &hv);
             ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psGI.Get(), nullptr, 0);
             { ID3D11ShaderResourceView* r6[6] = { hdrSRV.Get(), nullptr, depthSRV.Get(), nullptr, nullptr, surfSRV.Get() }; ctx->PSSetShaderResources(0, 6, r6); }
             ctx->Draw(3, 0);
@@ -4446,11 +4467,17 @@ struct App {
         GpuMark("clouds, fog");
         // ---- clouds and ground fog over the picture (needs the depth: unbind it as a target first)
         ctx->PSSetShaderResources(0, 4, none);
-        ctx->OMSetRenderTargets(1, volRTV.GetAddressOf(), nullptr);
-        ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->IASetInputLayout(nullptr); ctx->RSSetState(rsNoCull.Get());
-        ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psVolume.Get(), nullptr, 0);
+        ctx->OMSetRenderTargets(1, volLowRTV.GetAddressOf(), nullptr);   // what the air adds and lets through: on the smaller picture
+        ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->IASetInputLayout(nullptr); ctx->RSSetState(rsNoCull.Get()); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
+        { D3D11_VIEWPORT lv{ 0, 0, (float)lowW, (float)lowH, 0, 1 }; ctx->RSSetViewports(1, &lv); }
+        ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psVolumeLow.Get(), nullptr, 0);
         { ID3D11ShaderResourceView* v4[4] = { reflSRV.Get(), shadows ? shadowSRV.Get() : nullptr, depthSRV.Get(), noiseSRV.Get() }; ctx->PSSetShaderResources(0, 4, v4); }
         ctx->Draw(3, 0);
+        ctx->RSSetViewports(1, &v);
+        ctx->OMSetRenderTargets(1, volRTV.GetAddressOf(), nullptr); ctx->PSSetShader(psVolume.Get(), nullptr, 0);   // the picture through it, full size
+        { ID3D11ShaderResourceView* vl = volLowSRV.Get(); ctx->PSSetShaderResources(41, 1, &vl); }
+        ctx->Draw(3, 0);
+        { ID3D11ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(41, 1, &n1); }
 
         GpuMark("particles, effects");
         // ---- glowing effects after the clouds and fog: they do not write depth, so the clouds (far away) would cover them
@@ -6110,7 +6137,9 @@ struct App {
             Upload(hudLightBuf.Get(), hl.data(), hl.size() * sizeof(LightGpu));
             BindLightBuffers(true); SetClusterMode(false, 0, (int)hl.size());
         }
-        for (const CamPart& c : CameraParts(hudSway, weapPose)) {
+        std::vector<CamPart> camParts = CameraParts(hudSway, weapPose);
+        auto drawParts = [&](int mode) {   // 0: the solid parts' depth only, 1: their colour (only the front-most pixel), 2: the cut-out parts
+        for (const CamPart& c : camParts) {
             FrameRef fr = ModelNamed(c.model); if (!fr) continue;
             {   // two slices of depth: the cannon and the helmet never cut into each other
                 bool upper = c.cannon == weapons.cannonInFront; D3D11_VIEWPORT sv{ 0, 0, (float)rw, (float)rh, upper ? 0.f : 0.001f, upper ? 0.001f : 0.002f }; ctx->RSSetViewports(1, &sv);
@@ -6118,8 +6147,8 @@ struct App {
             const ModelGpu& g = c.gpu ? *c.gpu : GpuModel(c.model);
             BindModelTex(g, c.model);
             V3 ax = W(c.ax), ay = W(c.ay), az = W(c.az), base = W(c.base);
-            for (int pass = 0; pass < 2; pass++) {
-                ctx->PSSetShader(pass == 0 ? psOpaque.Get() : psCutout.Get(), nullptr, 0);
+            {
+                int pass = mode == 2 ? 1 : 0;
                 for (auto& part : g.parts) {
                     const GpuChunk& gc = part.second; UINT n = pass == 0 ? gc.nO : gc.nC; if (!n) continue;
                     V3 l{ part.first.x * (double)CS - fr->pivot.x, part.first.y * (double)CS - fr->pivot.y, part.first.z * (double)CS - fr->pivot.z };
@@ -6133,6 +6162,10 @@ struct App {
                 }
             }
         }
+        };
+        ctx->OMSetRenderTargets(0, nullptr, dsv.Get()); ctx->PSSetShader(nullptr, nullptr, 0); drawParts(0);
+        ctx->OMSetRenderTargets(1, reflRTV.GetAddressOf(), dsv.Get()); ctx->OMSetDepthStencilState(dsTestOnly.Get(), 0); ctx->PSSetShader(psOpaque.Get(), nullptr, 0); drawParts(1);
+        ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->PSSetShader(psCutout.Get(), nullptr, 0); drawParts(2);
         ID3D11ShaderResourceView* none = nullptr; ctx->PSSetShaderResources(9, 1, &none);
         BindLightBuffers(false); SetClusterMode(true, 0, std::min(frameLightCount, 32));   // the world's own lights again
         D3D11_VIEWPORT full{ 0, 0, (float)rw, (float)rh, 0, 1 }; ctx->RSSetViewports(1, &full);
