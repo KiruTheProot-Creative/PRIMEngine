@@ -217,7 +217,6 @@ struct App {
     ComPtr<ID3D11Texture2D> volLowTex, aoTex2; ComPtr<ID3D11RenderTargetView> volLowRTV, aoRTV2; ComPtr<ID3D11ShaderResourceView> volLowSRV, aoSRV2;
     ComPtr<ID3D11PixelShader> psVolumeLow, psAOBlur;
     // PrimeScaler: the picture rebuilt at the screen's size from several frames (the camera moves a fraction of a pixel each frame)
-    BloomLevel primeHist[2]; int primeCur = 0; bool primeOk = false; V3 primePrevCam{ 0, 0, 0 }; uint32_t primeFrame = 0; ID3D11RenderTargetView* primeLastOut = nullptr;
     ComPtr<ID3D11PixelShader> psPrimeScale, psPrimeSharpen; float jitX = 0, jitY = 0; XMMATRIX jitM = XMMatrixIdentity(); float sampBias = 0;
     static float Halton(uint32_t i, uint32_t b) { float f = 1, r = 0; while (i > 0) { f /= (float)b; r += f * (float)(i % b); i /= b; } return r; }
     bool PrimeOn() const { return settings.upscaler == 1; }
@@ -231,6 +230,7 @@ struct App {
     struct BloomLevel { ComPtr<ID3D11Texture2D> tex; ComPtr<ID3D11RenderTargetView> rtv; ComPtr<ID3D11ShaderResourceView> srv; int w = 0, h = 0; };
     BloomLevel aaSrc;   // anti-aliasing: the finished picture, before its edges are smoothed
     // render scale: the world drawn at sceneW x sceneH (rw x rh while it is drawn), then fitted to the screen (rw x rh the rest of the time)
+    BloomLevel primeHist[2]; int primeCur = 0; bool primeOk = false; V3 primePrevCam{ 0, 0, 0 }; uint32_t primeFrame = 0; ID3D11RenderTargetView* primeLastOut = nullptr;
     int sceneW = 0, sceneH = 0; BloomLevel upSrc; ComPtr<ID3D11PixelShader> psUpscale; ComPtr<ID3D11DepthStencilView> dispDSV; int dispDW = 0, dispDH = 0;
     bool Scaled() const { return sceneW > 0 && (sceneW != rw || sceneH != rh); }
     ID3D11DepthStencilView* DisplayDSV() { return Scaled() && dispDSV ? dispDSV.Get() : dsv.Get(); }   // a depth buffer the screen's size (the HUD over a scaled world)
