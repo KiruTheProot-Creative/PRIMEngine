@@ -1200,6 +1200,7 @@ bool voxelTrace(float3 P, float3 n, float3 r, float2 pixel, out float3 col)
     if ((((uint)gVoxM.w) & 3u) != 3u) return false;   // (ray traced reflections off: only the screen, else the sky)
     float3 o = P + n * 0.02 - gVoxO.xyz;                                 // into the volume's own blocks
     int3 cell = int3(floor(o)), stp = int3(sign(r));
+    if (all(cell >= 0) && all(cell < VOXN)) { uint s0 = voxAt(cell); if (s0 != 0 && gVoxPal[s0].info.x == 1) return true; }   // starting inside a block (the seam of an inside corner): nothing to see - not what lies behind the wall
     float3 inv = 1 / max(abs(r), 1e-6) * sign(r + 1e-9);
     float3 tMax = ((float3(cell) + float3(stp > 0)) - o) * inv, tDelta = abs(inv);
     float t = 0; int axis = 1; int steps = (int)gVoxO.w;
