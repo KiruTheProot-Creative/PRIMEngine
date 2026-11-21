@@ -136,6 +136,7 @@ struct alignas(16) FrameCB {
     float aa[4];            // anti-aliasing: how far along an edge, how strong; z a frame number (changing noise)
     XMFLOAT4X4 histVP;      // the frame before's camera-relative view (bounce light's memory)
     float histCam[4];       // how far the camera moved since; w 1 = usable
+    float probeO[4], probeB[4], probeM[4], probeP[4];   // light probes: grid corner (camera-relative, spacing), corner in probe steps, its place in the atlas (frame's turn), on / rays / round / reach
 };
 struct alignas(16) ChunkCB { float offset[4]; float ax[4] = { 1, 0, 0, 0 }, ay[4] = { 0, 1, 0, 0 }, az[4] = { 0, 0, 1, 0 }; };   // axes: objects are turned and sized
 
@@ -173,6 +174,17 @@ struct App {
     ComPtr<ID3D11Texture2D> mirTex, mirDepth; ComPtr<ID3D11RenderTargetView> mirRTV; ComPtr<ID3D11ShaderResourceView> mirSRV; ComPtr<ID3D11DepthStencilView> mirDSV;   // a mirror's view (half size)
     ComPtr<ID3D11RasterizerState> rsCullFront; MirrorPlane lastMirror;
     ComPtr<ID3D11Texture2D> albTex, giTex; ComPtr<ID3D11RenderTargetView> albRTV, giRTV; ComPtr<ID3D11ShaderResourceView> albSRV, giSRV; ComPtr<ID3D11PixelShader> psGI, psGIApply, psGITemp;   // bounce light
+    ComPtr<ID3D11PixelShader> psProbeUpdate; ComPtr<ID3D11Texture2D> probeTex[2]; ComPtr<ID3D11RenderTargetView> probeRTV[2]; ComPtr<ID3D11ShaderResourceView> probeSRV[2];
+    int probeCur = 0, probeSpacing = 0; bool probesOn = false;   // light probes: their atlas (two, taking turns), the spacing it was made for
+    void EnsureProbes(int spacing) {   // the atlas: 32 x 16 x 32 probes, six sides each; made again (empty) when the spacing changes
+        if (probeTex[0] && probeSpacing == spacing) return;
+        const int W = 32 * 6, H = 16 * 32;
+        std::vector<float> init((size_t)W * H * 4, 0.f); for (size_t k = 3; k < init.size(); k += 4) init[k] = -1;   // (nothing known yet)
+        D3D11_TEXTURE2D_DESC d{}; d.Width = W; d.Height = H; d.MipLevels = 1; d.ArraySize = 1; d.Format = DXGI_FORMAT_R32G32B32A32_FLOAT; d.SampleDesc.Count = 1; d.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+        D3D11_SUBRESOURCE_DATA sd{ init.data(), (UINT)W * 16, 0 };
+        for (int k = 0; k < 2; k++) { probeTex[k].Reset(); probeRTV[k].Reset(); probeSRV[k].Reset(); HR(dev->CreateTexture2D(&d, &sd, &probeTex[k])); HR(dev->CreateRenderTargetView(probeTex[k].Get(), nullptr, &probeRTV[k])); HR(dev->CreateShaderResourceView(probeTex[k].Get(), nullptr, &probeSRV[k])); }
+        probeSpacing = spacing; probeCur = 0;
+    }
     ComPtr<ID3D11Texture2D> giHistTex[2]; ComPtr<ID3D11RenderTargetView> giHistRTV[2]; ComPtr<ID3D11ShaderResourceView> giHistSRV[2]; int giCur = 0; bool giHistOk = false;   // its memory (two, taking turns)
     XMMATRIX histVPNow = XMMatrixIdentity(), histVPPrev = XMMatrixIdentity(); V3 histCamPrev{ 0, 0, 0 }; uint32_t frameNo = 0;
     ComPtr<ID3D11Texture2D> surfTex, reflTex; ComPtr<ID3D11RenderTargetView> surfRTV, reflRTV; ComPtr<ID3D11ShaderResourceView> surfSRV, reflSRV;   // for reflections
@@ -344,6 +356,7 @@ struct App {
         b = Compile(src, "PS_GI", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psGI));
         b = Compile(src, "PS_GIApply", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psGIApply));
         b = Compile(src, "PS_GITemp", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psGITemp));
+        b = Compile(src, "PS_ProbeUpdate", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psProbeUpdate));
         b = Compile(src, "PS_LumLog", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psLumLog));
         b = Compile(src, "PS_Adapt", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psAdapt));
         {   // eye adaptation: the picture's brightness (256x256 with mips: the last one is the average) and the eye (1x1, two of them, back and forth)
@@ -1605,7 +1618,7 @@ struct App {
     void ResetVoxels() {
         brickOf.clear(); brickModel.clear(); brickUsed.clear(); layerColor.clear(); voxIdx.clear(); voxPal.clear(); voxPalDirty = true; for (auto& sl : voxSlots) sl = VoxSlot{}; voxReady = false; }
     void UpdateVoxels() {
-        if (!world || settings.reflections <= 0) { voxReady = false; return; }
+        if (!world || (settings.reflections <= 0 && settings.probes <= 0)) { voxReady = false; return; }   // (reflection rays and light probes step through it)
         if (!voxTex) {
             D3D11_TEXTURE3D_DESC d{}; d.Width = VCX * CS; d.Height = VCY * CS; d.Depth = VCZ * CS; d.MipLevels = 1; d.Format = DXGI_FORMAT_R16_UINT; d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
             std::vector<uint16_t> zero((size_t)d.Width * d.Height * d.Depth, 0); D3D11_SUBRESOURCE_DATA sd{ zero.data(), d.Width * 2, d.Width * d.Height * 2 };
@@ -3916,6 +3929,18 @@ struct App {
         {   // the least light in closed spaces (true darkness), and how big the reflections are traced
             float ml = info.trueDark ? std::clamp(info.minLight, 0.f, 1.f) : 0.f; V3 mc = Linear(info.minLightColor);
             fc.aa[0] = settings.antiAlias >= 2 ? 12.f : 8.f; fc.aa[1] = settings.antiAlias >= 2 ? 1.f : 0.85f;
+            fc.aa[3] = (float)(settings.pixelShadows == 16 || settings.pixelShadows == 32 ? settings.pixelShadows : 0);   // pixelated shadows
+            probesOn = settings.probes > 0 && voxReady;
+            if (probesOn) {   // light probes: the grid around you, in whole probe steps (so they stay put in the world as you move)
+                int S = settings.probes >= 2 ? 2 : 4; EnsureProbes(S);
+                int bx = (int)std::floor(camPos.x / S) - 16, by = (int)std::floor(camPos.y / S) - 8, bz = (int)std::floor(camPos.z / S) - 16;
+                auto md = [](int a, int m) { return ((a % m) + m) % m; };
+                int K = settings.probes >= 2 ? 6 : 8;
+                fc.probeO[0] = (float)(bx * (double)S - camPos.x); fc.probeO[1] = (float)(by * (double)S - camPos.y); fc.probeO[2] = (float)(bz * (double)S - camPos.z); fc.probeO[3] = (float)S;
+                fc.probeB[0] = (float)bx; fc.probeB[1] = (float)by; fc.probeB[2] = (float)bz;
+                fc.probeM[0] = (float)md(bx, 32); fc.probeM[1] = (float)md(by, 16); fc.probeM[2] = (float)md(bz, 32); fc.probeM[3] = (float)(frameNo % K);
+                fc.probeP[0] = 1; fc.probeP[1] = settings.probes >= 2 ? 8.f : 6.f; fc.probeP[2] = (float)K; fc.probeP[3] = settings.probes >= 2 ? 32.f : 44.f;
+            }
             fc.minLight[0] = (float)mc.x * ml * 0.45f; fc.minLight[1] = (float)mc.y * ml * 0.45f; fc.minLight[2] = (float)mc.z * ml * 0.45f; fc.minLight[3] = ReflScale();
         }
         if (!lastMirror.valid && settings.reflections > 0 && settings.planarFloors) { lastMirror = FloorMirror(); fc.planar[0] = lastMirror.valid ? 1.f : 0.f; }   // no mirror block: the shiny floor or water near you
@@ -4107,6 +4132,23 @@ struct App {
         ctx->PSSetShaderResources(3, 1, noiseSRV.GetAddressOf()); ctx->PSSetSamplers(2, 1, sampLinear.GetAddressOf());   // the planet uses the cloud noise
         ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psSky.Get(), nullptr, 0); ctx->Draw(3, 0);
         ctx->RSSetState(rsCull.Get());
+        { ID3D11ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(39, 1, &n1); }
+        if (probesOn) {   // light probes: this frame's turn traces its rays through the blocks (the rest keep what they knew)
+            int nx = 1 - probeCur;
+            ctx->OMSetRenderTargets(1, probeRTV[nx].GetAddressOf(), nullptr);
+            D3D11_VIEWPORT pv{ 0, 0, 32.f * 6, 16.f * 32, 0, 1 }; ctx->RSSetViewports(1, &pv);
+            ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->RSSetState(rsNoCull.Get()); ctx->IASetInputLayout(nullptr); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
+            ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psProbeUpdate.Get(), nullptr, 0);
+            { ID3D11ShaderResourceView* s5[5] = { texArray.Get(), shadows ? shadowSRV.Get() : nullptr, nullptr, noiseSRV.Get(), skyMap ? skyMapSRV.Get() : nullptr }; ctx->PSSetShaderResources(0, 5, s5); BindMaterials(); }
+            ctx->PSSetShaderResources(14, 1, emitArray.GetAddressOf());
+            { ID3D11SamplerState* sp3[3] = { sampBlocks.Get(), sampShadow.Get(), sampLinear.Get() }; ctx->PSSetSamplers(0, 3, sp3); }
+            { ID3D11ShaderResourceView* pr[2] = { probeSRV[probeCur].Get(), probeSRV[probeCur].Get() }; ctx->PSSetShaderResources(38, 2, pr); }
+            ctx->Draw(3, 0);
+            { ID3D11ShaderResourceView* n2[2] = {}; ctx->PSSetShaderResources(38, 2, n2); }
+            probeCur = nx;
+            ctx->RSSetViewports(1, &v); ctx->RSSetState(rsCull.Get());
+        }
+        { ID3D11ShaderResourceView* pb = probesOn ? probeSRV[probeCur].Get() : nullptr; ctx->PSSetShaderResources(39, 1, &pb); }   // (the world reads the probes)
         { const float zero[4] = { 0, 0, 0, 0 }; ctx->ClearRenderTargetView(surfRTV.Get(), zero); ctx->ClearRenderTargetView(indRTV.Get(), zero); ctx->ClearRenderTargetView(albRTV.Get(), zero);
           ID3D11RenderTargetView* four[4] = { hdrRTV.Get(), surfRTV.Get(), indRTV.Get(), albRTV.Get() }; ctx->OMSetRenderTargets(4, four, dsv.Get()); }   // blocks also note direction + shininess, and their sky light
         ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0);
@@ -4509,6 +4551,13 @@ struct App {
             V3 eye{ f.x, f.y + player.eyeH, f.z }, look{ f.x + std::sin(info.spawnYaw) * 1.2, f.y + player.eyeH, f.z + std::cos(info.spawnYaw) * 1.2 };
             Line3D(dl, eye, look, col);
             ImVec2 sp; if (Project({ f.x, f.y + H + 0.3, f.z }, sp)) dl->AddText(ImVec2(sp.x - 18, sp.y - 14), col, "Spawn");
+        }
+        if (settings.showFps) {   // frames a second (uncapped unless VSync is on)
+            char ft[48]; snprintf(ft, sizeof ft, "%.0f fps  %.2f ms", fps, fps > 0 ? 1000.0 / fps : 0.0);
+            ImVec2 ts = ImGui::CalcTextSize(ft); ImVec2 p(vx + cw - ts.x - 12, vy + 8);
+            dl->AddRectFilled(ImVec2(p.x - 6, p.y - 3), ImVec2(p.x + ts.x + 6, p.y + ts.y + 3), IM_COL32(0, 0, 0, 140), 4);
+            ImU32 col = fps >= 120 ? IM_COL32(120, 255, 160, 255) : fps >= 55 ? IM_COL32(255, 230, 120, 255) : IM_COL32(255, 110, 90, 255);
+            dl->AddText(p, col, ft);
         }
         if (hideHud) return;
         ImVec2 m(vx + cw * 0.5f, vy + ch * 0.5f);   // crosshair

@@ -50,7 +50,21 @@ cbuffer Frame : register(b0)
     float4 gAA;                     // anti-aliasing: x how far along an edge it looks (pixels), y how strong; z a frame number (0..63: noise that changes each frame)
     row_major float4x4 gHistVP;     // the frame before: camera-relative (then) -> its screen (bounce light's memory)
     float4 gHistCam;                // xyz how far the camera moved since (now - then); w 1 = the memory is usable
+    float4 gProbeO;                 // light probes: xyz the grid's corner (camera-relative), w blocks between two probes
+    float4 gProbeB;                 // xyz the grid's corner in probe steps (world)
+    float4 gProbeM;                 // xyz where that corner sits in the (wrapping) atlas, w this frame's turn
+    float4 gProbeP;                 // x 1 on, y rays per side, z frames for a full round, w how far a ray looks (blocks)
 };
+// pixelated shadows (gAA.w: 16 or 32 a block): the spot a shadow is looked up at snapped to a grid on the surface, like the textures' pixels
+float3 pixSnap(float3 rel, float3 n)
+{
+    if (gAA.w < 0.5) return rel;
+    float N = gAA.w; float3 w = gCamPos.xyz + rel;
+    float3 s = (floor((w - n * (0.25 / N)) * N) + 0.5) / N;   // the pixel it is on (from just inside the surface)
+    s += n * dot(w - s, n);                                    // back on the surface's plane: snapped only along it
+    return s - gCamPos.xyz;
+}
+float3 probeLight(float3 rel, float3 n, bool leakCheck, out float wsum);   // (light probes: further down, next to the blocks' copy they trace through)
 float lookFogAt(float y) { return gLookFog.x * (gLookFog.z > 0.01 ? exp(-max(y - gLookFog.y, 0) / gLookFog.z) : 1); }
 cbuffer ChunkCB : register(b1)
 {
@@ -120,7 +134,7 @@ void evalLight(LightData L, float3 rel, float3 n, float3 v, float pw, bool objec
     float att = 1 - d / range; att *= att;
     if (type == 1) { float c = dot(-Lv, L.dir.xyz), c0 = L.dir.w; att *= smoothstep(c0, c0 + (1 - c0) * 0.35, c); }
     if (att <= 0) return;
-    if (L.ext.w >= 0) att *= lightShadow(L, rel + n * (0.03 + d * 0.012), type);
+    if (L.ext.w >= 0) att *= lightShadow(L, pixSnap(rel, n) + n * (0.03 + d * 0.012), type);
     float3 c = L.col.rgb * att;
     dif += c * saturate(dot(n, Lv) * 0.85 + 0.15);   // a little light wraps round edges, softer look
     float3 h = normalize(Lv + v);
@@ -367,6 +381,7 @@ float shadowPCF(int c, float3 rel, float3 n, float ndl, float rB, float2 screen)
 float shadowAt(float3 rel, float3 n, float ndl, float2 screen)
 {
     if (gSunDir.w < 0.5) return 1;
+    rel = pixSnap(rel, n);
     float edge; int c = cascadeFor(rel, edge);
     if (c > 3) return 1;
     float rB = gShadow2.x < 0.5 ? 0 : 0.0715 * gShadow2.y;              // the soft edge in blocks (the same in every cascade)
@@ -505,7 +520,13 @@ float3 lightBlock(VSOut i, float3 albedo, bool front, out float3 n, out float sh
         sh *= lerp(1, skyV, farOut);
     }
     float sky = 0.55 + 0.45 * n.y;                                     // more sky light on top than on the sides
-    float3 light = gSunColor.rgb * ndl * sh + gAmbient.rgb * sky * i.ao * skyV;
+    float3 ambientNow = gAmbient.rgb * sky * skyV;
+    if (gProbeP.x > 0.5)   // light probes: the light really arriving here (bounced, lamps, glowing things - not through walls)
+    {
+        float pw; float3 pl = probeLight(i.rel + nFlat * 0.05, nFlat, true, pw);
+        ambientNow = lerp(ambientNow, pl, saturate(pw * 3));
+    }
+    float3 light = gSunColor.rgb * ndl * sh + ambientNow * i.ao;
     light = max(light, gMinLight.rgb * sky * i.ao * (1 - skyV));                                   // closed spaces: never darker than the world's minimum
     float lamp = max(i.lamp.r, max(i.lamp.g, i.lamp.b));
     float3 hue = lamp > 0 ? i.lamp.rgb / lamp : 0;                                                   // the colour of the lamps nearby
@@ -1052,6 +1073,125 @@ bool voxelTrace(float3 P, float3 n, float3 r, float2 pixel, out float3 col)
     col = voxShade(hitP, hitN, hitLayer, hitId, hitUV, length(hitP - P), pixel);
     return true;
 }
+// ---------------------------------------------------------------- light probes: bounce light everywhere, found by rays through the blocks
+// A grid of 32 x 16 x 32 probes around you (wrapping, like the blocks' copy). Each knows the light coming from its six sides (rays through the
+// blocks: the sun, the sky, lamps and glowing things, and light that bounced). Surfaces read the probes around them.
+// The atlas: x = probe.x * 6 + side (+x -x +y -y +z -z), y = probe.y + probe.z * 16; rgb the light, a the probe's world key (-1: inside a block)
+static const int3 PRN = int3(32, 16, 32);
+Texture2D<float4> gProbes : register(t39);
+float probeKey(int3 k) { uint3 wc = uint3(int3(gProbeB.xyz) + k); return (float)((wc.x & 255u) | ((wc.y & 255u) << 8) | ((wc.z & 255u) << 16)); }
+int3 probeSlot(int3 k) { return (k + int3(gProbeM.xyz)) % PRN; }
+// the light arriving at a surface (rel, facing n) from the probes around it; w: how sure (0: no probe could say)
+float3 probeLight(float3 rel, float3 n, bool leakCheck, out float wsum)
+{
+    wsum = 0; float3 acc = 0;
+    if (gProbeP.x < 0.5) return 0;
+    float S = gProbeO.w; float3 g = (rel - gProbeO.xyz) / S - 0.5; int3 b = int3(floor(g)); float3 f = g - float3(b);
+    int3 sideOf = int3(n.x >= 0 ? 0 : 1, n.y >= 0 ? 2 : 3, n.z >= 0 ? 4 : 5);
+    [unroll] for (int c = 0; c < 8; c++)
+    {
+        int3 o = int3(c & 1, (c >> 1) & 1, c >> 2), k = b + o;
+        if (any(k < 0) || any(k >= PRN)) continue;
+        int3 sl = probeSlot(k); int2 base = int2(sl.x * 6, sl.y + sl.z * 16); float key = probeKey(k);
+        float4 fx = gProbes.Load(int3(base.x + sideOf.x, base.y, 0));
+        if (abs(fx.a - key) > 0.5) continue;
+        float4 fy = gProbes.Load(int3(base.x + sideOf.y, base.y, 0)), fz = gProbes.Load(int3(base.x + sideOf.z, base.y, 0));
+        float3 L = n.x * n.x * fx.rgb + n.y * n.y * fy.rgb + n.z * n.z * fz.rgb;
+        float3 pp = gProbeO.xyz + (float3(k) + 0.5) * S, to = pp - rel; float dist = max(length(to), 1e-3);
+        float3 tri = lerp(1 - f, f, float3(o));
+        float wt = tri.x * tri.y * tri.z;
+        float face = (dot(n, to / dist) + 1) * 0.5; wt *= face * face + 0.05;   // probes behind the surface count little
+        if (leakCheck && gVoxM.w > 0.5)   // a block between the surface and the probe: it can't see this spot (no light through walls)
+        {
+            float3 q0 = rel + n * 0.3 + (pp - rel - n * 0.3) * 0.5 - gVoxO.xyz, q1 = rel + n * 0.3 + (pp - rel - n * 0.3) * 0.85 - gVoxO.xyz;
+            int3 c0 = int3(floor(q0)), c1 = int3(floor(q1));
+            if ((all(c0 >= 0) && all(c0 < VOXN) && voxAt(c0) != 0) || (all(c1 >= 0) && all(c1 < VOXN) && voxAt(c1) != 0)) wt *= 0.02;
+        }
+        acc += L * wt; wsum += wt;
+    }
+    return wsum > 1e-5 ? acc / wsum : 0;
+}
+// one probe ray: the light coming back along it (what it hits, lit - or the sky if it gets out)
+float3 probeRay(float3 P, float3 r)
+{
+    float3 o = P - gVoxO.xyz;
+    int3 cell = int3(floor(o)), stp = int3(sign(r));
+    float3 inv = 1 / max(abs(r), 1e-6) * sign(r + 1e-9);
+    float3 tMax = ((float3(cell) + float3(stp > 0)) - o) * inv, tDelta = abs(inv);
+    float t = 0; int axis = 1; float range = gProbeP.w;
+    bool found = false; uint hitId = 0, hitLayer = 0; float2 hitUV = 0; float3 hitN = 0;
+    [loop] for (int k = 0; k < 96; k++)
+    {
+        if (any(cell < 0) || any(cell >= VOXN) || t > range) break;
+        uint id = voxAt(cell);
+        if (id != 0)
+        {
+            float3 hpv = o + r * t;
+            float3 hn = axis == 0 ? float3(-stp.x, 0, 0) : axis == 1 ? float3(0, -stp.y, 0) : float3(0, 0, -stp.z);
+            int face = axis * 2 + ((axis == 0 ? hn.x : axis == 1 ? hn.y : hn.z) > 0 ? 0 : 1);
+            float3 fr = frac(hpv);
+            float2 uv = axis == 0 ? float2(hn.x > 0 ? 1 - fr.z : fr.z, 1 - fr.y) : axis == 1 ? float2(fr.x, hn.y > 0 ? fr.z : 1 - fr.z) : float2(hn.z > 0 ? fr.x : 1 - fr.x, 1 - fr.y);
+            VoxType vt = gVoxPal[id];
+            uint pair = face < 2 ? vt.faces.x : face < 4 ? vt.faces.y : vt.faces.z;
+            uint layer = (face & 1) ? (pair >> 16) : (pair & 0xFFFF);
+            if (!(vt.info.x == 2 && gVoxTex.SampleLevel(gSamp, float3(uv, layer), 2).a < 0.5)) { found = true; hitId = id; hitLayer = layer; hitUV = uv; hitN = hn; break; }
+        }
+        if (tMax.x < tMax.y && tMax.x < tMax.z) { t = tMax.x; tMax.x += tDelta.x; cell.x += stp.x; axis = 0; }
+        else if (tMax.y < tMax.z) { t = tMax.y; tMax.y += tDelta.y; cell.y += stp.y; axis = 1; }
+        else { t = tMax.z; tMax.z += tDelta.z; cell.z += stp.z; axis = 2; }
+    }
+    float tHit = found ? t : min(t, range); float ot; float3 on, oa;
+    if (objectTrace(P, r, tHit, ot, on, oa))   // an object first (a door, a prop): lit like the blocks
+    {
+        float3 hp = P + r * ot; float sv; float pw;
+        return oa * (reflLight(hp, on, float2(0, 0), sv) + probeLight(hp + on * 0.05, on, false, pw) * 0.6);
+    }
+    if (!found)   // out in the open (or out of reach): the sky, if this place is under it
+    {
+        float3 end = P + r * tHit;
+        return gAmbient.rgb * (0.55 + 0.45 * r.y) * skyAt(end + float3(0, 0.5, 0)) * 1.15;
+    }
+    float3 hp = P + r * t;
+    VoxType vt = gVoxPal[hitId];
+    float3 albedo = gVoxTex.SampleLevel(gSamp, float3(hitUV, hitLayer), 3).rgb; TexMat m = gMats[hitLayer];
+    float sv; float pw; float3 c = albedo * (reflLight(hp, hitN, float2(0, 0), sv) + probeLight(hp + hitN * 0.05, hitN, false, pw) * 0.6);   // (the probes' own light: more bounces, over time)
+    if (vt.info.y > 0) { float3 lc = float3((vt.info.z >> 16) & 255, (vt.info.z >> 8) & 255, vt.info.z & 255) / 255.0; c = (dot(albedo, float3(0.2126, 0.7152, 0.0722)) * lc * 0.85 + albedo * lc * 0.3) * 3.2; }
+    float3 gT = glowTint(m.b.w);
+    if (gSurf.z > 0.5 && m.a.z > 0) c += albedo * gT * m.a.z * smoothstep(m.a.w, m.a.w + 0.08, sqrt(dot(albedo, float3(0.2126, 0.7152, 0.0722)))) * 3.0;
+    if (m.b.z > 0) c += gEmitTex.SampleLevel(gSamp, float3(hitUV, hitLayer), 2).rgb * gT * m.b.z * 2.5;
+    return c;
+}
+// the probes' update (the whole atlas each frame; only every few frames' turn traces, the rest keep what they know)
+Texture2D<float4> gProbeOld : register(t38);
+float4 PS_ProbeUpdate(SkyOut i) : SV_Target
+{
+    int2 tx = int2(i.pos.xy); int side = tx.x % 6; int3 slot = int3(tx.x / 6, tx.y % 16, tx.y / 16);
+    int3 k = ((slot - int3(gProbeM.xyz)) % PRN + PRN) % PRN;
+    float key = probeKey(k);
+    float4 old = gProbeOld.Load(int3(tx, 0));
+    bool same = abs(old.a - key) < 0.5;
+    uint id = (uint)(slot.x + slot.y * 32 + slot.z * 512);
+    bool due = ((id * 7u + (uint)gProbeM.w) % max((uint)gProbeP.z, 1u)) == 0;
+    if (same && !due) return old;
+    if (gVoxM.w < 0.5) return float4(0, 0, 0, -1);
+    float3 P = gProbeO.xyz + (float3(k) + 0.5) * gProbeO.w;
+    int3 vc = int3(floor(P - gVoxO.xyz));
+    if (any(vc < 0) || any(vc >= VOXN) || voxAt(vc) != 0) return float4(0, 0, 0, -1);   // inside a block (or outside the blocks' copy): it can't see
+    float3 fn = side == 0 ? float3(1, 0, 0) : side == 1 ? float3(-1, 0, 0) : side == 2 ? float3(0, 1, 0) : side == 3 ? float3(0, -1, 0) : side == 4 ? float3(0, 0, 1) : float3(0, 0, -1);
+    float3 ta = abs(fn.y) > 0.5 ? float3(1, 0, 0) : float3(0, 1, 0), tb = cross(fn, ta); ta = cross(tb, fn);
+    int N = max((int)gProbeP.y, 1); float rnd = frac(gProbeM.w * 0.618034 + id * 0.1234567 + side * 0.37);
+    float3 sum = 0;
+    [loop] for (int j = 0; j < N; j++)   // cosine-weighted around this side (as light falls on a surface facing it)
+    {
+        float u1 = frac((j + 0.5) / N + rnd), u2 = frac(j * 0.618034 + rnd * 7.31);
+        float rr = sqrt(u1), ph = u2 * 6.2831853;
+        float3 d = normalize(ta * (rr * cos(ph)) + tb * (rr * sin(ph)) + fn * sqrt(max(1 - u1, 0)));
+        sum += probeRay(P, d);
+    }
+    float3 irr = min(sum / N, 32);
+    return float4(same ? lerp(old.rgb, irr, 0.3) : irr, key);
+}
+
 // gMinLight.w < 1: drawn smaller (only the reflection: rgb what it adds, a how much of the picture it covers), then PS_ReflComp lays it over
 float4 PS_Reflect(SkyOut i) : SV_Target
 {
