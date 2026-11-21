@@ -4040,7 +4040,8 @@ struct App {
         }
         jitM = XMMatrixIdentity(); jitX = jitY = 0;
         if (temporal) {   // PrimeScaler: this frame's fraction-of-a-pixel shift (16 spots, spread evenly)
-            uint32_t k = frameNo % 16 + 1; jitX = Halton(k, 2) - 0.5f; jitY = Halton(k, 3) - 0.5f;
+            uint32_t spots = sceneW * 2 < rw ? 32 : 16;   // (below 50%: each drawn pixel covers more screen pixels, so more spots)
+            uint32_t k = frameNo % spots + 1; jitX = Halton(k, 2) - 0.5f; jitY = Halton(k, 3) - 0.5f;
             jitM = XMMatrixTranslation(2 * jitX / rw, -2 * jitY / rh, 0); vp = vp * jitM; XMStoreFloat4x4(&fc.viewProj, vp);
         }
         SkyParams(fc, settings.timeOfDay);
@@ -4660,8 +4661,9 @@ struct App {
                 V3 jd = camPos - primePrevCam;
                 if (outScreen != primeLastOut || frameNo != primeFrame + 1 || std::sqrt(jd.x * jd.x + jd.y * jd.y + jd.z * jd.z) > 4) primeOk = false;   // a new view, a skipped frame, a jump: start again
                 int nx = 1 - primeCur;
-                ChunkCB cc{ { jitX, jitY, primeOk ? 0.f : 1.f, std::clamp(settings.upSharp, 0.f, 1.f) }, { (float)rw, (float)rh, (float)sceneW, (float)sceneH },
-                            { playMode ? 0.0021f : 0.f, sceneW < rw ? 14.f : 9.f, 0, 0 } };
+                float small = std::clamp(1.f - (float)sceneW / std::max(1, rw) * 2.f, 0.f, 1.f);   // 0 at 50% and above, up to 1 at 0%: below 50% a longer memory and more sharpening
+                ChunkCB cc{ { jitX, jitY, primeOk ? 0.f : 1.f, std::clamp(settings.upSharp + small * 0.6f, 0.f, 1.f) }, { (float)rw, (float)rh, (float)sceneW, (float)sceneH },
+                            { playMode ? 0.0021f : 0.f, sceneW < rw ? 14.f + small * 30.f : 9.f, 0, 0 } };
                 ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);
                 { ID3D11Buffer* cbs[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->PSSetConstantBuffers(0, 2, cbs); }
                 ctx->OMSetRenderTargets(1, primeHist[nx].rtv.GetAddressOf(), nullptr); ctx->PSSetShader(psPrimeScale.Get(), nullptr, 0);
@@ -5918,7 +5920,11 @@ struct App {
         rt.SrcBlend = D3D11_BLEND_ONE; rt.DestBlend = D3D11_BLEND_INV_SRC_ALPHA; rt.BlendOp = D3D11_BLEND_OP_ADD;
         rt.SrcBlendAlpha = D3D11_BLEND_ONE; rt.DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA; rt.BlendOpAlpha = D3D11_BLEND_OP_ADD; HR(dev->CreateBlendState(&bd, &bsPremul));
     }
-    static void PlaneRes(const HudPlane& p, int& w, int& h) { w = 1024; h = std::clamp((int)std::lround(1024.0 * p.height / std::max(0.01f, p.width)), 32, 1024); }
+    void PlaneRes(const HudPlane& p, int& w, int& h) const {   // a HUD plane's picture: as sharp as the window (1440 wide at 1080p, 2880 at 4K)
+        w = std::clamp((int)std::lround(std::max(cw, 1) * 0.75), 1024, 3072);
+        h = std::clamp((int)std::lround(w * (double)p.height / std::max(0.01f, p.width)), 32, w);
+    }
+    float hudPx = 1;   // lines and gaps drawn on a HUD plane: their width at the plane's size (1 at 1024 wide)
     ID3D11ShaderResourceView* HudImage(const std::string& name) {
         if (name.empty()) return nullptr;
         auto it = hudImages.find(name); if (it != hudImages.end()) return it->second.Get();
@@ -5947,9 +5953,9 @@ struct App {
         auto col = [&](float k) { return IM_COL32((e.color >> 16) & 255, (e.color >> 8) & 255, e.color & 255, (int)std::clamp(a * k * 255, 0.f, 255.f)); };
         ImVec2 p0(e.x * W, e.y * H), p1((e.x + e.w) * W, (e.y + e.h) * H);
         switch (e.kind) {
-        case HudKind::Panel: if (e.filled) dl->AddRectFilled(p0, p1, col(1)); else dl->AddRect(p0, p1, col(1), 0.0f, 0, e.thickness); break;
+        case HudKind::Panel: if (e.filled) dl->AddRectFilled(p0, p1, col(1)); else dl->AddRect(p0, p1, col(1), 0.0f, 0, e.thickness * hudPx); break;
         case HudKind::Bar: {
-            float f = std::clamp(hudValue(e, v) / std::max(1e-3f, hudMax(e, v)), 0.f, 1.f); int n = std::max(1, e.segments); float gap = n > 1 ? 3.f : 0.f;
+            float f = std::clamp(hudValue(e, v) / std::max(1e-3f, hudMax(e, v)), 0.f, 1.f); int n = std::max(1, e.segments); float gap = n > 1 ? 3.f * hudPx : 0.f;
             float sw = ((p1.x - p0.x) - gap * (n - 1)) / n;
             for (int k = 0; k < n; k++) {
                 float x0 = p0.x + k * (sw + gap), x1 = x0 + sw, fill = std::clamp(f * n - k, 0.f, 1.f);
@@ -5980,14 +5986,14 @@ struct App {
                 bool lit = k < full;
                 if (e.tankShape == 2) {
                     ImVec2 c((a0.x + a1.x) * 0.5f, (a0.y + a1.y) * 0.5f); float r = std::min(a1.x - a0.x, a1.y - a0.y) * 0.5f;
-                    dl->AddCircleFilled(c, r, col(lit ? 1.f : 0.18f), 24); dl->AddCircle(c, r, col(0.7f), 24, 1.5f);
-                } else { dl->AddRectFilled(a0, a1, col(lit ? 1.f : 0.18f), rr); dl->AddRect(a0, a1, col(0.7f), rr, 0, 1.5f); }
+                    dl->AddCircleFilled(c, r, col(lit ? 1.f : 0.18f), 24); dl->AddCircle(c, r, col(0.7f), 24, 1.5f * hudPx);
+                } else { dl->AddRectFilled(a0, a1, col(lit ? 1.f : 0.18f), rr); dl->AddRect(a0, a1, col(0.7f), rr, 0, 1.5f * hudPx); }
             }
             break;
         }
         case HudKind::Circle: {
             ImVec2 c((p0.x + p1.x) * 0.5f, (p0.y + p1.y) * 0.5f); float r = std::min(p1.x - p0.x, p1.y - p0.y) * 0.5f;
-            if (e.filled) dl->AddCircleFilled(c, r, col(1), 48); else dl->AddCircle(c, r - e.thickness * 0.5f, col(1), 48, e.thickness);
+            if (e.filled) dl->AddCircleFilled(c, r, col(1), 48); else dl->AddCircle(c, r - e.thickness * hudPx * 0.5f, col(1), 48, e.thickness * hudPx);
             break;
         }
         default: break;
@@ -6015,6 +6021,7 @@ struct App {
             const HudPlane& p = hud.planes[i]; int W, H; PlaneRes(p, W, H);
             if (!hudLists[i]) hudLists[i] = std::make_unique<ImDrawList>(ImGui::GetDrawListSharedData());
             ImDrawList* dl = hudLists[i].get(); dl->_ResetForNewFrame();
+            hudPx = W / 1024.f;
             dl->PushClipRect(ImVec2(0, 0), ImVec2((float)W, (float)H)); dl->PushTexture(ImGui::GetIO().Fonts->TexRef);
             for (const HudElement& e : p.elements) DrawHudElement(dl, e, (float)W, (float)H, hudVals);
             dl->PopTexture(); dl->PopClipRect();
@@ -11201,7 +11208,7 @@ struct App {
     HudTarget miniView; ComPtr<ID3D11DepthStencilView> miniDSV; int miniDW = 0, miniDH = 0, miniWantW = 0, miniWantH = 0; bool miniUsed = false; HudElement miniEl;
     static void PremulBlend(const ImDrawList*, const ImDrawCmd*) { g_app->ctx->OMSetBlendState(g_app->bsPremul.Get(), nullptr, 0xFFFFFFFF); }
     void DrawMinimapElement(ImDrawList* dl, const HudElement& e, ImVec2 p0, ImVec2 p1, float a) {
-        miniUsed = true; miniEl = e; miniWantW = std::clamp((int)(p1.x - p0.x), 16, 1024); miniWantH = std::clamp((int)(p1.y - p0.y), 16, 1024);
+        miniUsed = true; miniEl = e; miniWantW = std::clamp((int)((p1.x - p0.x) * 2), 16, 2048); miniWantH = std::clamp((int)((p1.y - p0.y) * 2), 16, 2048);   // (twice its size: smooth edges)
         if (!miniView.srv) return;
         int k = (int)std::clamp(a * 255, 0.f, 255.f);
         dl->AddCallback(PremulBlend, nullptr); dl->AddImage((ImTextureID)(intptr_t)miniView.srv.Get(), p0, p1, ImVec2(0, 0), ImVec2(1, 1), IM_COL32(k, k, k, k)); dl->AddCallback(ImDrawCallback_ResetRenderState, nullptr);

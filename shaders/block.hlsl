@@ -1916,7 +1916,8 @@ float4 PS_Hud(HudOut i) : SV_Target
     float bloom = gPrevLight.y;
     if (bloom > 0)
     {
-        float3 g = gHudTex.SampleLevel(gClamp, i.uv, 2.5).rgb * 0.45 + gHudTex.SampleLevel(gClamp, i.uv, 4).rgb * 0.45 + gHudTex.SampleLevel(gClamp, i.uv, 5.5).rgb * 0.5;
+        float tw, th, nl; gHudTex.GetDimensions(0, tw, th, nl); float m = log2(max(tw, 1) / 1024);   // (the same glow size whatever the plane's resolution)
+        float3 g = gHudTex.SampleLevel(gClamp, i.uv, 2.5 + m).rgb * 0.45 + gHudTex.SampleLevel(gClamp, i.uv, 4 + m).rgb * 0.45 + gHudTex.SampleLevel(gClamp, i.uv, 5.5 + m).rgb * 0.5;
         c.rgb += g * bloom * 1.6;                                                         // light only: the see-through parts stay see-through
     }
     c.rgb *= 1 + gPrevLight.z;                                                            // a flash (morphing)
