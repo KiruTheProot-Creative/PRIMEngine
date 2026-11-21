@@ -62,6 +62,7 @@ struct ScreenItem {
     float pickFill = 0.25f;                              // Button / SaveSlots: how strongly the picked one is filled with the accent (1: a solid bar, its text in the Picked colour)
     bool corners = false;                                // Panel / Button / SaveSlots: bracket corners, like a visor's frame
     std::string tip;                                     // Button: a line about what it does ({tip} in a text shows the picked button's)
+    int font = 0;                                        // 0 the engine's, 1 display (Chakra Petch: titles, buttons), 2 text (Barlow: sentences)
     // timing (splash screens, intros): seconds after the screen appears
     float showAt = 0, hideAt = 0, fade = 0.4f;           // appears at, goes at (0: stays), fading in over this long
     float fadeOut = -1;                                  // fading out over this long (< 0: as long as it fades in)
@@ -133,6 +134,7 @@ struct StackStep {
     float textSize = 0.036f; uint32_t color = 0xD8EEF8; int align = 1;
     float weight = 0, outline = 0; uint32_t outlineColor = 0x000000;   // Text: thicker letters, an outline around them
     float textFade = 0.15f;                              // Text: fading in over this long
+    int font = 0;                                        // Text: 0 the engine's, 1 display, 2 text (as screen items)
     bool keep = false;                                   // Text: comes with the text before (instead of replacing it: a title and a line under it)
 };
 struct StackBuild { std::vector<ScreenItem> items; std::vector<float> starts; float end = 0, length = 0; };   // its items, when each step starts, when the last is done, how long it all takes

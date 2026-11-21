@@ -457,6 +457,11 @@ struct App {
         DragAcceptFiles(hwnd, TRUE);
 
         IMGUI_CHECKVERSION(); ImGui::CreateContext();
+        {   // the menus' letters (assets\fonts, SIL Open Font License): the editor keeps ImGui's own font
+            ImGuiIO& io = ImGui::GetIO(); io.Fonts->AddFontDefault();
+            auto load = [&](const char* f) -> ImFont* { std::string p = ExeDir() + "assets\\fonts\\" + f; return GetFileAttributesA(p.c_str()) != INVALID_FILE_ATTRIBUTES ? io.Fonts->AddFontFromFileTTF(p.c_str(), 18.f) : nullptr; };
+            fontDisplay = load("ChakraPetch-SemiBold.ttf"); fontBody = load("Barlow-Medium.ttf");
+        }
         static std::string ini = ExeDir() + "imgui.ini"; ImGui::GetIO().IniFilename = ini.c_str();
         ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_DockingEnable;
         Style();
@@ -8713,9 +8718,11 @@ struct App {
 
     // ---- the items of a screen: drawn into screenList (W x H), buttons and options into screenHits
     std::string pickedTip;   // the picked button's tip (a text's {tip})
+    ImFont* fontDisplay = nullptr; ImFont* fontBody = nullptr;   // Chakra Petch (titles, buttons), Barlow (sentences); null: not found next to the program
+    ImFont* FontOf(int k) const { return k == 1 && fontDisplay ? fontDisplay : k == 2 && fontBody ? fontBody : ImGui::GetIO().Fonts->Fonts[0]; }
     // the save files as cards side by side: FILE k and its %, where it was saved, energy tanks, time and missiles (an empty one: a new game)
     void SaveCards(ImDrawList* dl, ImFont* font, const ScreenItem& it, ImVec2 a, ImVec2 b, float ts, float al, bool live) {
-        const ScreenColors& col = it.col;
+        const ScreenColors& col = it.col; ImFont* fh = it.font ? FontOf(1) : font; ImFont* fb = it.font ? FontOf(2) : font;   // (headings / the rest)
         auto C = [&](uint32_t c, float x) { return IM_COL32((c >> 16) & 255, (c >> 8) & 255, c & 255, (int)(std::clamp(x, 0.f, 1.f) * 255)); };
         int n = std::clamp(it.slots, 1, 12); float gap = (b.x - a.x) * 0.025f, cw = ((b.x - a.x) - gap * (n - 1)) / n, H = b.y - a.y;
         for (int k = 1; k <= n; k++) {
@@ -8735,19 +8742,19 @@ struct App {
             if (!used) {
                 float mid = (p0.y + p1.y) * 0.5f, s = ts * 1.1f;
                 dl->AddLine(ImVec2((x0 + x1) * 0.5f - s, mid - ts * 2.2f), ImVec2((x0 + x1) * 0.5f + s, mid - ts * 2.2f), acc, 3); dl->AddLine(ImVec2((x0 + x1) * 0.5f, mid - ts * 2.2f - s), ImVec2((x0 + x1) * 0.5f, mid - ts * 2.2f + s), acc, 3);
-                TextIn(dl, font, "FILE " + std::to_string(k), ts * 1.3f, ImVec2(x0, mid - ts), ImVec2(x1, mid + ts * 0.4f), 1, head);
-                TextIn(dl, font, "Empty  -  start a new game", ts * 0.8f, ImVec2(x0, mid + ts * 0.5f), ImVec2(x1, mid + ts * 1.6f), 1, dim);
+                TextIn(dl, fh, "FILE " + std::to_string(k), ts * 1.3f, ImVec2(x0, mid - ts), ImVec2(x1, mid + ts * 0.4f), 1, head);
+                TextIn(dl, fb, "Empty  -  start a new game", ts * 0.8f, ImVec2(x0, mid + ts * 0.5f), ImVec2(x1, mid + ts * 1.6f), 1, dim);
                 continue;
             }
             const SaveGame& g = info->second;
-            TextIn(dl, font, "FILE " + std::to_string(k), ts * 1.3f, ImVec2(x0, y), ImVec2(x1, y + ts * 1.5f), 0, head);
+            TextIn(dl, fh, "FILE " + std::to_string(k), ts * 1.3f, ImVec2(x0, y), ImVec2(x1, y + ts * 1.5f), 0, head);
             char pc[16]; std::snprintf(pc, sizeof pc, "%d%%", (int)std::lround(g.completion * 100));
-            TextIn(dl, font, pc, ts * 0.9f, ImVec2(x0, y), ImVec2(x1, y + ts * 1.5f), 2, acc);
+            TextIn(dl, fh, pc, ts * 0.9f, ImVec2(x0, y), ImVec2(x1, y + ts * 1.5f), 2, acc);
             y += ts * 2.4f;
-            TextIn(dl, font, "LAST SAVE", ts * 0.6f, ImVec2(x0, y), ImVec2(x1, y + ts * 0.8f), 0, dim); y += ts * 0.9f;
-            TextIn(dl, font, g.place.empty() ? g.world : g.place, ts, ImVec2(x0, y), ImVec2(x1, y + ts * 1.2f), 0, C(col.text, al)); y += ts * 1.2f;
-            TextIn(dl, font, g.world, ts * 0.75f, ImVec2(x0, y), ImVec2(x1, y + ts), 0, dim); y += ts * 1.8f;
-            TextIn(dl, font, "ENERGY", ts * 0.6f, ImVec2(x0, y), ImVec2(x1, y + ts * 0.8f), 0, dim); y += ts * 1.0f;
+            TextIn(dl, fh, "LAST SAVE", ts * 0.6f, ImVec2(x0, y), ImVec2(x1, y + ts * 0.8f), 0, dim); y += ts * 0.9f;
+            TextIn(dl, fb, g.place.empty() ? g.world : g.place, ts, ImVec2(x0, y), ImVec2(x1, y + ts * 1.2f), 0, C(col.text, al)); y += ts * 1.2f;
+            TextIn(dl, fb, g.world, ts * 0.75f, ImVec2(x0, y), ImVec2(x1, y + ts), 0, dim); y += ts * 1.8f;
+            TextIn(dl, fh, "ENERGY", ts * 0.6f, ImVec2(x0, y), ImVec2(x1, y + ts * 0.8f), 0, dim); y += ts * 1.0f;
             {   // energy tanks: one square per 100 above the first 99, filled as far as the energy goes
                 int tanks = std::max(0, (int)std::lround((g.maxHealth - 99) / 100.0)), full = std::max(0, (int)std::floor((g.health - 99) / 100.0 + 1e-3));
                 float sq = ts * 0.75f, gp = sq * 0.35f, x = x0;
@@ -8755,21 +8762,20 @@ struct App {
                     if (t < full) dl->AddRectFilled(ImVec2(x, y), ImVec2(x + sq, y + sq), acc); else dl->AddRect(ImVec2(x, y), ImVec2(x + sq, y + sq), C(col.accent, 0.5f * al), 0.f, ImDrawFlags_None, 2.f);
                 }
                 char e[32]; std::snprintf(e, sizeof e, "%d", (int)std::lround(std::max(0.f, g.health)));
-                TextIn(dl, font, std::string(e), ts * 0.9f, ImVec2(x + gp, y - ts * 0.15f), ImVec2(x1, y + sq + ts * 0.15f), 0, C(col.text, al));
+                TextIn(dl, fb, std::string(e), ts * 0.9f, ImVec2(x + gp, y - ts * 0.15f), ImVec2(x1, y + sq + ts * 0.15f), 0, C(col.text, al));
                 y += sq + ts * 1.2f;
             }
             char line[96]; int mis = 0; { auto m = g.counts.find(weapons.missileCounter); if (m != g.counts.end()) mis = m->second; }
             std::snprintf(line, sizeof line, "%s played", playTimeText(g.playTime).c_str());
-            TextIn(dl, font, line, ts * 0.8f, ImVec2(x0, p1.y - pad - ts), ImVec2(x1, p1.y - pad), 0, dim);
-            if (!weapons.missileCounter.empty()) { std::snprintf(line, sizeof line, "%d missiles", mis); TextIn(dl, font, line, ts * 0.8f, ImVec2(x0, p1.y - pad - ts), ImVec2(x1, p1.y - pad), 2, dim); }
-            if (eraseArm == k && uiClock - eraseArmT < 3) TextIn(dl, font, "Delete again: erase", ts * 0.8f, ImVec2(x0, p1.y - pad - ts * 2.4f), ImVec2(x1, p1.y - pad - ts * 1.2f), 1, IM_COL32(255, 90, 70, (int)(255 * al)));
+            TextIn(dl, fb, line, ts * 0.8f, ImVec2(x0, p1.y - pad - ts), ImVec2(x1, p1.y - pad), 0, dim);
+            if (!weapons.missileCounter.empty()) { std::snprintf(line, sizeof line, "%d missiles", mis); TextIn(dl, fb, line, ts * 0.8f, ImVec2(x0, p1.y - pad - ts), ImVec2(x1, p1.y - pad), 2, dim); }
+            if (eraseArm == k && uiClock - eraseArmT < 3) TextIn(dl, fb, "Delete again: erase", ts * 0.8f, ImVec2(x0, p1.y - pad - ts * 2.4f), ImVec2(x1, p1.y - pad - ts * 1.2f), 1, IM_COL32(255, 90, 70, (int)(255 * al)));
         }
     }
     void BuildScreenList(const mc::Screen& sc, int W, int H, bool live) {
         if (!screenList) screenList = std::make_unique<ImDrawList>(ImGui::GetDrawListSharedData());
         ImDrawList* dl = screenList.get(); dl->_ResetForNewFrame(); screenHits.clear();
         dl->PushClipRect(ImVec2(0, 0), ImVec2((float)W, (float)H)); dl->PushTexture(ImGui::GetIO().Fonts->TexRef);
-        ImFont* font = ImGui::GetFont();
         auto C = [&](uint32_t c, float a) { return IM_COL32((c >> 16) & 255, (c >> 8) & 255, c & 255, (int)(std::clamp(a, 0.f, 1.f) * 255)); };
         auto brackets = [&](ImVec2 a, ImVec2 b, ImU32 c, float th) {   // a visor frame's corners: short L shapes just outside the box
             float L = std::min(b.x - a.x, b.y - a.y) * 0.16f; L = std::clamp(L, 6.f, 40.f); float o = th * 0.5f + 1;
@@ -8784,6 +8790,7 @@ struct App {
         if (sc.useStack) { merged = buildStack(sc.stack).items; merged.insert(merged.end(), sc.items.begin(), sc.items.end()); itemList = &merged; }   // (a stack: its steps' items, then the screen's own)
         for (int ii = 0; ii < (int)itemList->size(); ii++) {
             const ScreenItem& it = (*itemList)[ii]; const ScreenColors& col = it.col;
+            ImFont* font = FontOf(it.font);   // (its letters: the engine's, display or text)
             if (it.kind == ScreenItemKind::Sound) {   // a sound cue: plays when its time comes
                 if ((live || screenAudible) && !it.sound.empty() && screenPrevT < it.showAt && screenT >= it.showAt && screenT - it.showAt < 0.5) PlaySoundIn(SND_MENUS, it.sound);
                 continue;
@@ -8883,7 +8890,7 @@ struct App {
                 dl->PushClipRect(a, b, true);
                 for (const std::string& l : lines) {
                     bool head = l.rfind("# ", 0) == 0; float hh = head ? lh * 1.5f : lh;
-                    if (y + hh > a.y && y < b.y) TextInStyled(dl, font, head ? l.substr(2) : l, head ? ts * 1.35f : ts, ImVec2(a.x, y), ImVec2(b.x, y + hh), it.align, head ? C(col.accent, al) : C(col.text, al), TextLook{ it.weight, it.outline, it.outlineColor });
+                    if (y + hh > a.y && y < b.y) TextInStyled(dl, head && it.font ? FontOf(1) : font, head ? l.substr(2) : l, head ? ts * 1.35f : ts, ImVec2(a.x, y), ImVec2(b.x, y + hh), it.align, head ? C(col.accent, al) : C(col.text, al), TextLook{ it.weight, it.outline, it.outlineColor });
                     y += hh;
                 }
                 dl->PopClipRect();
@@ -9709,8 +9716,10 @@ struct App {
         if (dup >= 0) { sc.stack.insert(sc.stack.begin() + dup + 1, sc.stack[dup]); stackSel = dup + 1; StackChanged(sc, ch); }
         if (drop >= 0) { sc.stack.erase(sc.stack.begin() + drop); if (stackSel >= drop) stackSel--; StackChanged(sc, ch); }
     }
-    bool TextLookUI(float& weight, float& outline, uint32_t& outlineColor) {   // thickness and outline (texts, buttons, credits, stack texts)
+    bool TextLookUI(float& weight, float& outline, uint32_t& outlineColor, int* font = nullptr) {   // the font, thickness and outline (texts, buttons, credits, stack texts)
         bool c = false;
+        if (font) { const char* fn[] = { "The engine's", "Display (Chakra Petch)", "Text (Barlow)" }; Prop("Font"); c |= ImGui::Combo("##tlf", font, fn, 3);
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Display: titles, buttons, labels. Text: sentences. (assets\\fonts next to the program)"); }
         Prop("Thickness"); c |= ImGui::SliderFloat("##tlw", &weight, 0, 1, weight <= 0 ? "normal" : "%.2f");
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Thicker letters (0: as the font is).");
         Prop("Outline"); c |= ImGui::SliderFloat("##tlo", &outline, 0, 1, outline <= 0 ? "none" : "%.2f");
@@ -9745,7 +9754,7 @@ struct App {
             Prop("Size"); c |= ImGui::SliderFloat("##stsz", &s.textSize, 0.015f, 0.12f, "%.3f");
             Prop("Colour"); c |= ColorU32("##stc", s.color);
             Prop("Lined up"); const char* al[] = { "Left", "Middle", "Right" }; c |= ImGui::Combo("##sta", &s.align, al, 3);
-            c |= TextLookUI(s.weight, s.outline, s.outlineColor);
+            c |= TextLookUI(s.weight, s.outline, s.outlineColor, &s.font);
             Hint(s.typeSpeed > 0 ? "It is typed letter by letter, stays a while, then the next step. A new text replaces this one (it fades first), unless the new one comes with it." : "It fades in, stays a while, then the next step. A new text replaces this one, unless the new one comes with it.");
             break; }
         case StepKind::Wait: Prop("Waits"); c |= ImGui::SliderFloat("##stw", &s.hold, 0, 20, "%.1f s"); Hint("Nothing new for a while: what is there stays."); break;
@@ -9889,7 +9898,7 @@ struct App {
         if (it.kind != ScreenItemKind::Panel && it.kind != ScreenItemKind::Image) { Prop("Text size"); ch |= ImGui::SliderFloat("##sitz", &it.textSize, 0.01f, 0.2f, "%.3f of the height"); }
         if (hasText) { const char* al[] = { "Left", "Middle", "Right" }; Prop("Lined up"); ch |= ImGui::Combo("##sia", &it.align, al, 3); }
         if (it.kind == ScreenItemKind::Text) { const char* va[] = { "Top", "Middle", "Bottom" }; Prop("Up / down"); ch |= ImGui::Combo("##siva", &it.valign, va, 3); }
-        if (hasText) ch |= TextLookUI(it.weight, it.outline, it.outlineColor);
+        if (hasText || it.kind == ScreenItemKind::SaveSlots) ch |= TextLookUI(it.weight, it.outline, it.outlineColor, &it.font);
         if (it.kind == ScreenItemKind::Image) { Prop("Picture"); ch |= FileCombo("##sii", it.image, false); }
         if (it.kind == ScreenItemKind::Button) {
             Prop("Does"); if (ImGui::BeginCombo("##siact", screenActName(it.act))) { for (int k = 0; k < (int)ScreenAct::COUNT; k++) if (ImGui::Selectable(screenActName((ScreenAct)k), (int)it.act == k)) { it.act = (ScreenAct)k; ch = true; } ImGui::EndCombo(); }

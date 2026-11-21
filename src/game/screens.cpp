@@ -116,7 +116,7 @@ static ScreenItem rule(const std::string& name, float x, float y, float w, uint3
     ScreenItem i; i.name = name; i.kind = ScreenItemKind::Panel; i.x = x; i.y = y; i.w = w; i.h = 0.0025f; i.frame = false; i.col.fill = c; i.col.fillAlpha = a; i.rounding = 0; return i;
 }
 static void visorButton(ScreenItem& b) {   // the visor look: no box until picked, then a solid lit bar with dark letters
-    b.filled = false; b.frame = false; b.rounding = 0; b.pickFill = 1; b.col.picked = VISOR_DARK; b.col.text = 0x9FC2D2; b.col.accent = VISOR_CYAN;
+    b.font = 1; b.weight = 0; b.filled = false; b.frame = false; b.rounding = 0; b.pickFill = 1; b.col.picked = VISOR_DARK; b.col.text = 0x9FC2D2; b.col.accent = VISOR_CYAN;
 }
 static ScreenItem visorPanel(const std::string& name, float x, float y, float w, float h) {   // a framed pane of dark glass with bracket corners
     ScreenItem p; p.name = name; p.kind = ScreenItemKind::Panel; p.x = x; p.y = y; p.w = w; p.h = h; p.col.fill = 0x08182A; p.col.fillAlpha = 0.8f; p.col.accent = VISOR_CYAN; p.col.picked = 0xB8F8FF;
@@ -125,8 +125,15 @@ static ScreenItem visorPanel(const std::string& name, float x, float y, float w,
 static void hintBar(Screen& s, const std::string& left, const std::string& right) {   // a dark strip along the bottom: the keys on the left, a note on the right
     ScreenItem bar = rule("Hint bar", 0, 0.938f, 1, VISOR_DARK, 0.7f); bar.h = 0.062f; s.items.push_back(bar);
     s.items.push_back(rule("Hint bar line", 0, 0.938f, 1, VISOR_CYAN, 0.25f));
-    ScreenItem l = text("Keys", left, 0.075f, 0.938f, 0.5f, 0.062f, 0.0167f, 0); l.col.text = 0x9FC2D2; s.items.push_back(l);
-    ScreenItem r = text("Note", right, 0.5f, 0.938f, 0.425f, 0.062f, 0.0167f, 2); r.col.text = 0x5E8193; s.items.push_back(r);
+    ScreenItem l = text("Keys", left, 0.075f, 0.938f, 0.5f, 0.062f, 0.0167f, 0); l.col.text = 0x9FC2D2; l.font = 1; s.items.push_back(l);
+    ScreenItem r = text("Note", right, 0.5f, 0.938f, 0.425f, 0.062f, 0.0167f, 2); r.col.text = 0x5E8193; r.font = 1; s.items.push_back(r);
+}
+static void visorFonts(Screen& s) {   // the ready-made screens' letters: Chakra Petch for titles, buttons and labels, Barlow for sentences
+    auto pick = [](const std::string& name) { return name == "Tip" || name == "Text" || name == "Credits roll" ? 2 : 1; };
+    for (ScreenItem& i : s.items) if (i.font == 0 && (i.kind == ScreenItemKind::Text || i.kind == ScreenItemKind::Button || i.kind == ScreenItemKind::Credits || i.kind == ScreenItemKind::SaveSlots)) {
+        i.font = pick(i.name); if (i.font == 1) i.weight = std::min(i.weight, 0.15f);
+    }
+    for (StackStep& st : s.stack) if (st.kind == StepKind::Text && st.font == 0) { st.font = st.textSize >= 0.06f || st.text == "MADE WITH PRIMENGINE" ? 1 : 2; if (st.font == 1) st.weight = std::min(st.weight, 0.15f); }
 }
 static void visorComp(Screen& s, float scan) {   // Background + UI -> Alpha Over -> Glare -> Scanlines -> Vignette -> Output
     s.comp = Compositor{};
@@ -247,6 +254,7 @@ Screen presetScreen(ScreenRole r) {
         break; }
     default: s.name = "Screen"; break;
     }
+    visorFonts(s);
     return s;
 }
 static Screen storyScreen() {   // an intro like Super Metroid's: a stack of steps - text typed over the dark, page after page, then the game
@@ -256,6 +264,7 @@ static Screen storyScreen() {   // an intro like Super Metroid's: a stack of ste
     }
     s.duration = buildStack(s.stack).length;
     ScreenItem k = text("Skip", "ANY KEY: SKIP", 0.7f, 0.9f, 0.24f, 0.04f, 0.0156f, 2); k.col.text = 0x7FA3B5; k.showAt = 2; s.items.push_back(k);
+    visorFonts(s);
     return s;
 }
 Screen presetStory() { return storyScreen(); }
@@ -300,7 +309,7 @@ StackBuild buildStack(const std::vector<StackStep>& steps) {
             else if (txt >= 0 || !kept.empty()) { textsAway(t, 0.4f); t += 0.45f; }
             ScreenItem it; it.name = "Text " + std::to_string(k + 1); it.kind = ScreenItemKind::Text; it.text = s.text; it.showAt = t; it.fade = std::max(0.02f, s.textFade);
             it.typeSpeed = s.typeSpeed; it.typeSound = s.sound; it.textSize = s.textSize; it.col.text = s.color; it.align = s.align;
-            it.weight = s.weight; it.outline = s.outline; it.outlineColor = s.outlineColor;
+            it.weight = s.weight; it.outline = s.outline; it.outlineColor = s.outlineColor; it.font = s.font;
             it.x = 0.1f; it.w = 0.8f;
             if (s.place == 2) { it.y = 0.05f; it.h = 0.22f; it.valign = 0; } else if (s.place == 1) { it.y = 0.32f; it.h = 0.36f; it.valign = 1; } else if (s.place == 3) { it.y = 0.6f; it.h = 0.1f; it.valign = 0; } else { it.y = 0.68f; it.h = 0.26f; it.valign = 0; }
             b.items.push_back(it); txt = (int)b.items.size() - 1;
@@ -330,7 +339,7 @@ std::vector<StackStep> stepsFromItems(std::vector<ScreenItem>& items) {
         StackStep s;
         if (it.kind == ScreenItemKind::Text) {
             s.kind = StepKind::Text; s.text = it.text; s.typeSpeed = it.typeSpeed; s.sound = it.typeSound; s.textSize = it.textSize; s.color = it.col.text; s.align = it.align;
-            s.weight = it.weight; s.outline = it.outline; s.outlineColor = it.outlineColor; s.textFade = std::max(0.02f, it.fade);
+            s.weight = it.weight; s.outline = it.outline; s.outlineColor = it.outlineColor; s.font = it.font; s.textFade = std::max(0.02f, it.fade);
             float cy = it.y + it.h * 0.5f; s.place = cy < 0.3f ? 2 : cy > 0.66f ? 0 : cy >= 0.53f ? 3 : 1;
             s.keep = prevText && (prevText->hideAt <= 0 || prevText->hideAt > it.showAt);   // (still there when this one comes)
             s.hold = 0; prevText = &it;
@@ -431,6 +440,7 @@ bool saveScreens(const std::string& path, const ScreenSet& set) {
             f << "step " << (int)st.kind << " " << escText(st.file) << " " << (st.zoom ? 1 : 0) << " " << st.zoomTo << " " << st.zoomTime << " " << st.place << " " << escText(st.text) << " "
               << st.typeSpeed << " " << st.hold << " " << st.fade << " " << st.textSize << " " << st.color << " " << st.align << " " << st.weight << " " << st.outline << " " << st.outlineColor << " " << st.textFade << " " << (st.keep ? 1 : 0) << "\n";
             if (!st.sound.empty()) f << "stsound " << soundUseText(st.sound) << "\n";
+            if (st.font) f << "stfont " << st.font << "\n";
         }
         for (const ScreenItem& i : s.items) {
             const ScreenColors& c = i.col;
@@ -440,7 +450,7 @@ bool saveScreens(const std::string& path, const ScreenSet& set) {
             f << "anim " << i.showAt << " " << i.hideAt << " " << i.fade << " " << i.typeSpeed << " " << i.driftX << " " << i.driftY << " " << i.grow << " " << soundUseText(i.typeSound) << "\n";
             f << "anim2 " << i.fadeOut << " " << i.valign << "\n";
             if (i.weight > 0 || i.outline > 0) f << "tstyle " << i.weight << " " << i.outline << " " << i.outlineColor << "\n";
-            if (i.cards || i.pickFill != 0.25f || i.corners || !i.tip.empty()) f << "look2 " << i.cards << " " << i.pickFill << " " << (i.corners ? 1 : 0) << " " << escText(i.tip) << "\n";
+            if (i.cards || i.pickFill != 0.25f || i.corners || !i.tip.empty() || i.font) f << "look2 " << i.cards << " " << i.pickFill << " " << (i.corners ? 1 : 0) << " " << escText(i.tip) << " " << i.font << "\n";
             for (const ItemKey& k : i.keys) f << "key " << k.t << " " << k.x << " " << k.y << " " << k.scale << " " << k.alpha << " " << (k.smooth ? 1 : 0) << "\n";
             if (!i.sound.empty()) f << "isound " << soundUseText(i.sound) << "\n";
         }
@@ -497,6 +507,7 @@ bool loadScreens(const std::string& path, ScreenSet& set) {
                 cur->stack.push_back(st);
             }
         }
+        else if (k == "stfont" && !cur->stack.empty()) { int fo = 0; l >> fo; cur->stack.back().font = std::clamp(fo, 0, 2); }
         else if (k == "stsound" && !cur->stack.empty()) { std::string rest; std::getline(l, rest); soundUseFrom(rest, cur->stack.back().sound); }
         else if (k == "hold") l >> cur->holdMin;
         else if (k == "seq") { int uv = 0, sk = 1; std::string nx; l >> cur->duration >> uv >> sk >> nx; cur->untilVideoEnds = uv != 0; cur->skippable = sk != 0; cur->next = unescText(nx); }
@@ -504,7 +515,7 @@ bool loadScreens(const std::string& path, ScreenSet& set) {
             ScreenItem& i = cur->items.back(); std::string rest;
             l >> i.showAt >> i.hideAt >> i.fade >> i.typeSpeed >> i.driftX >> i.driftY >> i.grow; std::getline(l, rest); soundUseFrom(rest, i.typeSound);
         }
-        else if (k == "look2" && !cur->items.empty()) { ScreenItem& i = cur->items.back(); int co = 0; std::string tp; l >> i.cards >> i.pickFill >> co >> tp; i.corners = co != 0; i.tip = unescText(tp); i.pickFill = std::clamp(i.pickFill, 0.f, 1.f); }
+        else if (k == "look2" && !cur->items.empty()) { ScreenItem& i = cur->items.back(); int co = 0; std::string tp; l >> i.cards >> i.pickFill >> co >> tp; i.corners = co != 0; i.tip = unescText(tp); i.pickFill = std::clamp(i.pickFill, 0.f, 1.f); int fo; if (l >> fo) i.font = std::clamp(fo, 0, 2); }
         else if (k == "tstyle" && !cur->items.empty()) { ScreenItem& i = cur->items.back(); l >> i.weight >> i.outline >> i.outlineColor; }
         else if (k == "anim2" && !cur->items.empty()) { ScreenItem& i = cur->items.back(); l >> i.fadeOut >> i.valign; i.valign = std::clamp(i.valign, 0, 2); }
         else if (k == "key" && !cur->items.empty()) { ItemKey kk; int sm = 1; if (l >> kk.t >> kk.x >> kk.y >> kk.scale >> kk.alpha >> sm) { kk.smooth = sm != 0; setKey(cur->items.back(), kk); } }
