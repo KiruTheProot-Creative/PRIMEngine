@@ -128,6 +128,7 @@ float lightShadow(LightData L, float3 p, int type)
     return lerp(1, r * 0.25, keep);
 }
 float voxShadow(float3 P, float3 lp);   // (below: a lamp block's shadow, through the blocks)
+static float3 sFlatN = 0;   // the block's own face direction (before generated bumps), set while a block is lit (0: not known)
 void evalLight(LightData L, float3 rel, float3 n, float3 v, float pw, bool object, inout float3 dif, inout float3 spec)
 {
     int kind = (int)round(L.col.w); bool voxSh = kind >= 16; kind -= voxSh ? 16 : 0; bool objOnly = kind >= 8; int type = kind & 7;
@@ -140,8 +141,10 @@ void evalLight(LightData L, float3 rel, float3 n, float3 v, float pw, bool objec
     float att = 1 - d / range; att *= att;
     if (type == 1) { float c = dot(-Lv, L.dir.xyz), c0 = L.dir.w; att *= smoothstep(c0, c0 + (1 - c0) * 0.35, c); }
     if (att <= 0) return;
-    if (L.ext.w >= 0) att *= lightShadow(L, pixSnap(rel, n) + n * (0.05 + d * 0.02), type);   // (a little off the surface: no shadow speckles where the light grazes it)
-    else if (voxSh) att *= voxShadow(pixSnap(rel, n) + n * 0.04, lp);   // a lamp block: its shadow from the blocks between
+    float3 nf = any(sFlatN != 0) ? sFlatN : n;   // shadows ask with the flat face: bumps near an edge would push the test round the corner (a thin line of light)
+    if (any(sFlatN != 0) && dot(nf, Lv) < 0.02) return;   // behind the face itself: none (no light wrapping round a wall's edge)
+    if (L.ext.w >= 0) att *= lightShadow(L, pixSnap(rel, nf) + nf * (0.05 + d * 0.02), type);   // (a little off the surface: no shadow speckles where the light grazes it)
+    else if (voxSh) att *= voxShadow(pixSnap(rel, nf) + nf * 0.04, lp);   // a lamp block: its shadow from the blocks between
     float3 c = L.col.rgb * att;
     dif += c * saturate(dot(n, Lv) * 0.85 + 0.15);   // a little light wraps round edges, softer look
     float3 h = normalize(Lv + v);
@@ -618,7 +621,9 @@ float3 lightBlock(VSOut i, float3 albedo, bool front, out float3 n, out float sh
     float metal = saturate(m.a.y);
     float dShine = max(max(saturate(m.a.x), i.mat.x), wet * 0.9);                                  // how shiny for the lights' highlights (wet streets!)
     float3 dSpec;
-    float3 dyn = dynLightsSpec(i.rel, n, -normalize(i.rel), lerp(10, 380, dShine * dShine), gOffset.w < 0.5, dSpec) * lerp(0.6, 1, i.ao) * ambMul;   // placed lights, strips, glowing emitters, shots
+    sFlatN = nFlat;
+    float3 dyn = dynLightsSpec(i.rel, n, -normalize(i.rel), lerp(10, 380, dShine * dShine), gOffset.w < 0.5, dSpec) * lerp(0.6, 1, i.ao) * ambMul;
+    sFlatN = 0;   // placed lights, strips, glowing emitters, shots
     float3 c = albedo * (light + dyn) * (1 - 0.75 * metal);                                       // metal: little plain colour ...
     c += dSpec * lerp(float3(0.04, 0.04, 0.04) + 0.5 * dShine, albedo * 1.4, metal) * max(dShine, 0.12);   // the lights' highlights
     if (gFS0.x > 0.5 && gOffset.w < 0.5) c += fakeShine(i, n);                                    // fake shine (models): painted-on glints, like Prime's arm cannon
@@ -1175,6 +1180,14 @@ float voxShadow(float3 P, float3 lp)
             if (k > 0 && (kind == 1 || kind == 3)) return 0;   // (see-through blocks let it through)
         }
         float t = min(tMax.x, min(tMax.y, tMax.z)); if (t > stopAt) return 1;
+        {   // through an edge or a corner (two sides crossed at almost the same moment): the blocks on both sides of it count, so no light slips between two blocks that only touch at an edge
+            const float tie = 0.02;
+            #define VSOLID(c) (any((c) != goal) && voxAt(c) != 0 && gVoxPal[voxAt(c)].info.x == 1)
+            if (abs(tMax.x - t) < tie && abs(tMax.y - t) < tie) { if (VSOLID(cell + int3(stp.x, 0, 0)) || VSOLID(cell + int3(0, stp.y, 0))) return 0; }
+            if (abs(tMax.x - t) < tie && abs(tMax.z - t) < tie) { if (VSOLID(cell + int3(stp.x, 0, 0)) || VSOLID(cell + int3(0, 0, stp.z))) return 0; }
+            if (abs(tMax.y - t) < tie && abs(tMax.z - t) < tie) { if (VSOLID(cell + int3(0, stp.y, 0)) || VSOLID(cell + int3(0, 0, stp.z))) return 0; }
+            #undef VSOLID
+        }
         if (tMax.x < tMax.y && tMax.x < tMax.z) { tMax.x += tDelta.x; cell.x += stp.x; }
         else if (tMax.y < tMax.z) { tMax.y += tDelta.y; cell.y += stp.y; }
         else { tMax.z += tDelta.z; cell.z += stp.z; }
