@@ -4384,7 +4384,7 @@ struct App {
             ctx->PSSetShaderResources(34, 1, reflLowSRV.GetAddressOf()); ctx->PSSetShaderResources(25, 1, albSRV.GetAddressOf());
             ctx->Draw(3, 0);
             ID3D11ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(34, 1, &n1); ctx->PSSetShaderResources(25, 1, &n1);
-        } else ctx->Draw(3, 0);
+        } else { ctx->OMSetRenderTargets(0, nullptr, nullptr); ctx->CopyResource(reflTex.Get(), hdrTex.Get()); }   // reflections off: the picture as it is (no rays)
         { ID3D11ShaderResourceView* n7[7] = {}; ctx->PSSetShaderResources(0, 7, n7); }
         // everything after this draws over the reflected picture, still depth-tested against the world
         ctx->OMSetRenderTargets(1, reflRTV.GetAddressOf(), dsv.Get()); ctx->RSSetState(rsCull.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0);
