@@ -46,6 +46,12 @@ Chunk& World::loadChunk(I3 c) {
     return ref;
 }
 
+void World::peekChunk(I3 c, Chunk& out) {
+    if (const Chunk* e = chunk(c)) { out = *e; return; }
+    out = Chunk{}; out.pos = c;
+    if (!(store && store->load(c, out))) gen.fill(out);
+}
+
 void World::unloadChunk(I3 c) {
     auto it = chunks.find(c); if (it == chunks.end()) return;
     if (it->second->modified && store) store->save(*it->second);

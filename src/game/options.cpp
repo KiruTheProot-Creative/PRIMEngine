@@ -15,7 +15,7 @@ Field field(Settings& s, const std::string& k) {
     else if (k == "vol_enemies") r.f = &s.volEnemies; else if (k == "vol_world") r.f = &s.volWorld; else if (k == "vol_menus") r.f = &s.volMenus; else if (k == "vol_music") r.f = &s.volMusic;
     else if (k == "fullscreen") r.b = &s.fullscreen; else if (k == "vsync") r.b = &s.vsync; else if (k == "brightness") r.f = &s.brightness; else if (k == "screen_shake") r.f = &s.screenShake;
     else if (k == "fov") r.f = &s.fov; else if (k == "ui_scale") r.f = &s.uiScale;
-    else if (k == "render_distance") r.i = &s.renderDistance; else if (k == "vertical_distance") r.i = &s.verticalDistance;
+    else if (k == "render_distance") r.i = &s.renderDistance; else if (k == "vertical_distance") r.i = &s.verticalDistance; else if (k == "distant_detail") r.i = &s.distantDetail;
     else if (k == "shadows") r.i = &s.shadowQuality; else if (k == "shadow_res") r.i = &s.shadowRes; else if (k == "shadow_distance") r.f = &s.shadowDistance;
     else if (k == "shadow_soft") r.i = &s.shadowSoft; else if (k == "shadow_softness") r.f = &s.shadowSoftness;
     else if (k == "clouds") r.f = &s.cloudCover; else if (k == "cloud_shadows") r.b = &s.cloudShadows; else if (k == "fog") r.f = &s.groundFog;
@@ -81,6 +81,7 @@ const std::vector<OptionDef>& optionDefs() {
         // ---- World: how far, the sky, nature, the surfaces of blocks
         v.push_back(slider("render_distance", "Render distance", W, "Distance", 2, 32, 1, "%.0f chunks"));
         v.push_back(slider("vertical_distance", "Up / down distance", W, "Distance", 1, 12, 1, "%.0f chunks"));
+        v.push_back(choice("distant_detail", "Distant detail", W, "Distance", { "Off", "Low (twice as far)", "Medium (4 x as far)", "High (8 x as far)" }, {}, "Past the render distance the world goes on as simpler copies (blocks merged 2, 4 and 8 at a time): you see much further for little cost."));
         v.push_back(toggle("cave_culling", "Skip what is behind walls", W, "Distance", "Chunks you cannot see from where you are (rock, closed caves, the other side of walls) are not drawn. Off: everything in range is drawn."));
         v.push_back(slider("clouds", "Clouds", W, "Sky", 0, 1, 0.05f, "%", "none"));
         v.push_back(toggle("cloud_shadows", "Cloud shadows", W, "Sky"));

@@ -37,6 +37,7 @@ public:
     Chunk* chunk(I3 c) const { auto it = chunks.find(c); return it == chunks.end() ? nullptr : it->second.get(); }
     Chunk& loadChunk(I3 c);                           // from disk, else generated
     void unloadChunk(I3 c);                           // saves it first if you changed it
+    void peekChunk(I3 c, Chunk& out);                 // a copy of a chunk (loaded, saved or generated) without loading it (far copies)
     size_t loadedCount() const { return chunks.size(); }
 
     // blocks (world coordinates)

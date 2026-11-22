@@ -2,6 +2,7 @@
 // Title screen (worlds) -> creative mode in an unlimited block world. The world, mesher and player live in
 // src/world and src/game (no Windows code there); this file is the window, the renderer and the menus.
 #include "../world/mesher.h"
+#include "../world/lod.h"
 #include "../game/game.h"
 #include "../world/library.h"
 #include "../world/shapes.h"
@@ -1034,7 +1035,7 @@ struct App {
         world = std::make_unique<World>(reg); info.applyGenerator(world->gen, reg);
         world->store = std::make_unique<RegionStore>(worldDir + "/region");
         workers = std::make_unique<MeshWorkers>(reg); workers->start(Threads());
-        player = info.player; history.clear(); gpu.clear(); latestSeq.clear();
+        player = info.player; history.clear(); gpu.clear(); latestSeq.clear(); LodClear(); chunkMeshed.clear();
         LoadWorldObjects(); selStage = 0;
         for (int i = 0; i < 9; i++) {   // "stone" or "stone@stairs"
             std::string e = info.hotbar[i], shape; size_t at = e.rfind('@'); if (at != std::string::npos) { shape = e.substr(at + 1); e = e.substr(0, at); }
@@ -1059,7 +1060,7 @@ struct App {
     }
     void CloseWorld() {   // the project stays open
         if (playMode && !travelling) StopPlay();
-        SaveWorld(); workers.reset(); world.reset(); gpu.clear(); latestSeq.clear(); Capture(false);
+        SaveWorld(); workers.reset(); world.reset(); gpu.clear(); latestSeq.clear(); LodClear(); chunkMeshed.clear(); Capture(false);
     }
     std::string CurrentWorld() const { return world ? fs::path(worldDir).filename().string() : ""; }
     void RenameWorld(const std::string& from, const std::string& to) {
@@ -4079,12 +4080,15 @@ struct App {
             auto it = latestSeq.find(m.pos);
             if (it == latestSeq.end() || it->second != m.seq || !world->chunk(m.pos)) continue;   // outdated or unloaded meanwhile
             if (m.see == SEE_ALL) chunkSee.erase(m.pos); else chunkSee[m.pos] = m.see;   // cave culling: its sides joined by air
+            chunkMeshed.insert(m.pos);
+            if (lodK) if (const Chunk* ch = world->chunk(m.pos)) LodSetSummary(m.pos, lodSummarize(reg, *ch));   // (changed blocks: the far copies again)
             if (m.opaque.empty() && m.cutout.empty() && m.water.empty()) { gpu.erase(m.pos); continue; }
             GpuChunk& g = gpu[m.pos]; Upload(m.opaque, g.vbO, g.ibO, g.nO); Upload(m.cutout, g.vbC, g.ibC, g.nC); Upload(m.water, g.vbW, g.ibW, g.nW);
             if (meshesChanged.size() < 512) meshesChanged.push_back(V3{ (m.pos.x + 0.5) * CS, (m.pos.y + 0.5) * CS, (m.pos.z + 0.5) * CS });   // (lamps near it: their shadow maps again)
         }
         for (auto it = gpu.begin(); it != gpu.end();) { if (!world->chunk(it->first)) { latestSeq.erase(it->first); it = gpu.erase(it); } else ++it; }
         for (auto it = chunkSee.begin(); it != chunkSee.end();) { if (!world->chunk(it->first)) it = chunkSee.erase(it); else ++it; }
+        for (auto it = chunkMeshed.begin(); it != chunkMeshed.end();) { if (!world->chunk(it->first)) it = chunkMeshed.erase(it); else ++it; }
     }
     // ---- cave culling: which chunks can be seen from the camera (through air, never back toward it)
     std::unordered_map<I3, uint16_t, I3Hash> chunkSee;   // chunks with something solid in them (the rest: SEE_ALL)
@@ -4337,7 +4341,7 @@ struct App {
             fovNow = aspect >= 1 ? 90.f : (float)(2 * std::atan(1.0 / aspect) * 180 / 3.14159265358979);
         }
         V3 r = normalize(cross(upv, f)), u = cross(f, r);
-        float farZ = (settings.renderDistance + 2) * CS * 1.5f;
+        float farZ = (LodReach() + 2) * CS * 1.5f;   // (far copies: much further)
         view = XMMatrixLookToLH(XMVectorZero(), XMVectorSet((float)f.x, (float)f.y, (float)f.z, 0), XMVectorSet((float)upv.x, (float)upv.y, (float)upv.z, 0));   // camera at the origin
         proj = XMMatrixPerspectiveFovLH(XMConvertToRadians(fovNow), aspect, 0.05f, farZ);
         XMMATRIX vp = view * proj;
@@ -4356,7 +4360,7 @@ struct App {
             jitM = XMMatrixTranslation(2 * jitX / rw, -2 * jitY / rh, 0); vp = vp * jitM; XMStoreFloat4x4(&fc.viewProj, vp);
         }
         SkyParams(fc, settings.timeOfDay);
-        float fogEnd = settings.renderDistance * CS * 0.95f;
+        float fogEnd = LodReach() * CS * 0.95f;
         cullFar = fogEnd + 32;   // objects past the fog are not drawn (a little extra: tall ones still cast their shadows inward)
         fc.fogRange[0] = fogEnd * 0.45f; fc.fogRange[1] = fogEnd; fc.fogRange[2] = exposure * std::clamp(settings.brightness, 0.3f, 2.5f);
         fc.camF[0] = (float)f.x; fc.camF[1] = (float)f.y; fc.camF[2] = (float)f.z; fc.camR[0] = (float)r.x; fc.camR[1] = (float)r.y; fc.camR[2] = (float)r.z;
@@ -4491,6 +4495,7 @@ struct App {
         ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &fc, 0, 0);
         ID3D11Buffer* cbs[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->VSSetConstantBuffers(0, 2, cbs); ctx->PSSetConstantBuffers(0, 2, cbs);
         { ID3D11ShaderResourceView* vx[5] = { texArray.Get(), voxReady ? voxSRV.Get() : nullptr, voxReady ? voxPalSRV.Get() : nullptr, brickSRV.Get(), objVoxSRV.Get() }; ctx->PSSetShaderResources(29, 5, vx); }   // reflection rays' blocks and objects
+        LodSelect();   // far copies: which groups (and which chunks they stand in for)
         CookFrame(vp, fc);   // the cooked world: rooms seen through the portals, rooms' reflection pictures, baked lamp light
         PrepareLights(fc);   // light objects, strips, glowing emitters, shots, glowing blocks (for objects) - sorted into clusters
         ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
@@ -4499,7 +4504,8 @@ struct App {
             for (auto& kv : gpu) {
                 const GpuChunk& g = kv.second; UINT n = pass == 0 ? g.nO : pass == 1 ? g.nC : g.nW; if (!n) continue;
                 if (cave && caveOn && !CaveIn(kv.first)) { if (counting) caveHidden++; continue; }
-                if (cave && cookCullOn && !CookChunkSeen(kv.first)) { if (counting) cookHidden++; continue; }   // (the cooked world: a room you can't see through any door)
+                if (cave && cookCullOn && !CookChunkSeen(kv.first)) { if (counting) cookHidden++; continue; }
+                if (cave && lodK && lodCovered.count({ floorDiv(kv.first.x, 2), floorDiv(kv.first.y, 2), floorDiv(kv.first.z, 2) })) continue;   // (a far copy stands in for it)   // (the cooked world: a room you can't see through any door)
                 // chunk origin relative to the camera, computed in double: no jitter however far you go
                 float ox = (float)(kv.first.x * (double)CS - camPos.x), oy = (float)(kv.first.y * (double)CS - camPos.y), oz = (float)(kv.first.z * (double)CS - camPos.z);
                 if (!BoxVisible(m, ox, oy, oz, (float)CS)) continue;
@@ -4509,6 +4515,17 @@ struct App {
                 ctx->IASetIndexBuffer(pass == 0 ? g.ibO.Get() : pass == 1 ? g.ibC.Get() : g.ibW.Get(), DXGI_FORMAT_R32_UINT, 0);
                 ctx->DrawIndexed(n, 0, 0); if (counting) drawnChunks += pass == 0;
             }
+            if (cave && pass == 0 && lodK)   // the far copies
+                for (const LodDraw& d : lodDraw) {
+                    auto it = lodGroups[d.k].find(d.g); if (it == lodGroups[d.k].end() || !it->second.n) continue;
+                    double sz = (double)(CS << d.k);
+                    float ox = (float)(d.g.x * sz - camPos.x), oy = (float)(d.g.y * sz - camPos.y), oz = (float)(d.g.z * sz - camPos.z);
+                    if (!BoxVisible(m, ox, oy, oz, (float)sz)) continue;
+                    ChunkCB lc{ { ox, oy, oz, 1 } }; ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &lc, 0, 0);
+                    UINT stride = sizeof(Vtx), off = 0;
+                    ctx->IASetVertexBuffers(0, 1, it->second.vb.GetAddressOf(), &stride, &off); ctx->IASetIndexBuffer(it->second.ib.Get(), DXGI_FORMAT_R32_UINT, 0);
+                    ctx->DrawIndexed(it->second.n, 0, 0); if (counting) lodDrawn++;
+                }
             { XMFLOAT4X4 mm; XMStoreFloat4x4(&mm, m); std::memcpy(cullVP, &mm, sizeof cullVP); cullOn = true; cullCount = counting; cullCave = cave && caveOn; }
             for (size_t oi = 0; oi < objects.size(); oi++) {   // objects: same shaders, turned and sized; platforms where they are on their path
                 if ((int)oi == movingObj) continue;
@@ -4663,7 +4680,7 @@ struct App {
         ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0);
         ID3D11ShaderResourceView* srvs[5] = { texArray.Get(), shadows ? shadowSRV.Get() : nullptr, nullptr, noiseSRV.Get(), skyMap ? skyMapSRV.Get() : nullptr }; ctx->PSSetShaderResources(0, 5, srvs); BindMaterials();
         ID3D11SamplerState* samps[3] = { sampBlocks.Get(), sampShadow.Get(), sampLinear.Get() }; ctx->PSSetSamplers(0, 3, samps);
-        drawnChunks = 0; partsDrawn = partsCulled = 0; caveHidden = 0; cookHidden = 0;
+        drawnChunks = 0; partsDrawn = partsCulled = 0; caveHidden = 0; cookHidden = 0; lodDrawn = 0;
         UpdateCaveCulling(vp);
         {   // the depth of everything solid first (no colour: cheap), so the heavy lighting runs once per pixel, not once for every wall behind it
             ID3D11RenderTargetView* four[4] = { hdrRTV.Get(), surfRTV.Get(), indRTV.Get(), albRTV.Get() };
@@ -4672,7 +4689,7 @@ struct App {
         }
         ctx->PSSetShader(psOpaque.Get(), nullptr, 0); drawChunks(vp, 0, true, true);
         ctx->OMSetDepthStencilState(dsOn.Get(), 0);
-        partsDrawnShown = partsDrawn; partsCulledShown = partsCulled; caveHiddenShown = caveHidden; cookHiddenShown = cookHidden;
+        partsDrawnShown = partsDrawn; partsCulledShown = partsCulled; caveHiddenShown = caveHidden; cookHiddenShown = cookHidden; lodDrawnShown = lodDrawn;
         ctx->PSSetShader(psCutout.Get(), nullptr, 0); drawChunks(vp, 1, false, true);
 
         GpuMark("ambient occlusion");
@@ -5224,6 +5241,8 @@ struct App {
         ImGui::Text("Block: %d %d %d   Chunk: %d %d %d", b.x, b.y, b.z, c.x, c.y, c.z);
         ImGui::Text("Facing: %s   %s", dirs[((int)(yd / 90)) % 4], player.flying ? "flying" : "walking");
         ImGui::Text("Chunks: %zu loaded, %zu with meshes, %d drawn, %d hidden behind walls%s", world->loadedCount(), gpu.size(), drawnChunks, caveHiddenShown, caveOn ? "" : " (off)");
+        if (lodK) { size_t waiting = 0; for (int k = 1; k <= lodK; k++) waiting += lodDirty[k].size();
+            ImGui::Text("Far copies: to %d chunks, %zu chunks boiled down, %d groups drawn, %zu to build%s", LodReach(), lodSum.size(), lodDrawnShown, waiting, lodQueuePos < lodQueue.size() ? " (still boiling down)" : ""); }
         if (cookHave) {
             if (!cookUse) ImGui::Text("Cooked world: off");
             else ImGui::Text("Cooked world: %s, %d of %d rooms seen, %d chunks skipped, %d room pictures, baked light %s", cookCamRoom ? (cookRes.rooms[cookCamRoom - 1].outside ? "outside" : ("in room " + std::to_string(cookCamRoom)).c_str()) : "not in a room",
@@ -8946,6 +8965,129 @@ struct App {
         }
         cookUse = true;
         StartProbeBake();
+    }
+    // ---- far copies of the world (levels of detail): past the render distance, groups of 2, 4, 8 chunks a side drawn as blocks of 2, 4, 8
+    std::unordered_map<I3, LodSummary, I3Hash> lodSum;   // each chunk boiled down (cells of 2 x 2 x 2)
+    struct LodGroup { ComPtr<ID3D11Buffer> vb, ib; UINT n = 0; bool built = false; };
+    std::unordered_map<I3, LodGroup, I3Hash> lodGroups[4];   // [level]
+    std::unordered_set<I3, I3Hash> lodDirty[4];             // groups to build (again)
+    std::unordered_set<I3, I3Hash> chunkMeshed;             // chunks whose mesh has arrived (empty or not)
+    std::vector<I3> lodQueue; size_t lodQueuePos = 0; I3 lodQueueAt{ INT_MIN, 0, 0 }; int lodQueueR = -1;
+    struct LodDraw { int k; I3 g; }; std::vector<LodDraw> lodDraw; std::unordered_set<I3, I3Hash> lodCovered;   // this frame: groups drawn far; level-1 groups they cover (their chunks: not drawn)
+    int lodK = 0, lodDrawn = 0, lodDrawnShown = 0; std::unique_ptr<Chunk> lodTmp;
+    LodSummary lodAir;   // (above and below the far copies' heights: nothing)
+    int LodReach() const { return lodK > 0 ? settings.renderDistance << lodK : settings.renderDistance; }   // chunks, sideways
+    int LodVert() const { return settings.verticalDistance * 2 + 2; }                                        // chunks up and down
+    void LodClear() {
+        lodSum.clear(); for (int k = 0; k < 4; k++) { lodGroups[k].clear(); lodDirty[k].clear(); }
+        lodQueue.clear(); lodQueuePos = 0; lodQueueAt = { INT_MIN, 0, 0 }; lodQueueR = -1; lodDraw.clear(); lodCovered.clear();
+    }
+    void LodSetSummary(I3 c, LodSummary&& sm) {
+        auto it = lodSum.find(c);
+        if (it != lodSum.end() && it->second.kind == sm.kind && it->second.uni == sm.uni && it->second.cells == sm.cells) return;
+        lodSum[c] = std::move(sm);
+        for (int k = 1; k <= 3; k++)   // the groups it is in, and those whose border it is in
+            for (int dy = -1; dy <= 1; dy++) for (int dz = -1; dz <= 1; dz++) for (int dx = -1; dx <= 1; dx++)
+                lodDirty[k].insert({ floorDiv(c.x + dx, 1 << k), floorDiv(c.y + dy, 1 << k), floorDiv(c.z + dz, 1 << k) });
+    }
+    void UpdateLod() {   // each frame: boil down far chunks and build far groups (a few milliseconds at most)
+        int want = world ? std::clamp(settings.distantDetail, 0, 3) : 0;
+        if (want != lodK) { LodClear(); lodK = want; }
+        if (!lodK || !world) return;
+        if (!lodTmp) lodTmp = std::make_unique<Chunk>();
+        auto t0 = std::chrono::steady_clock::now();
+        auto ms = [&]() { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(); };
+        I3 cc = chunkOf(ifloor(camPos.x), ifloor(camPos.y), ifloor(camPos.z)); int R = LodReach(), V = LodVert();
+        if (!(cc == lodQueueAt) || lodQueueR != R) {   // moved to another chunk: what is needed now, nearest first; forget what is far behind
+            lodQueue.clear(); lodQueuePos = 0; lodQueueAt = cc; lodQueueR = R;
+            for (int dz = -R - 1; dz <= R + 1; dz++) for (int dx = -R - 1; dx <= R + 1; dx++) {
+                if (dx * dx + dz * dz > (R + 1) * (R + 1)) continue;
+                for (int dy = -V; dy <= V; dy++) { I3 c{ cc.x + dx, cc.y + dy, cc.z + dz }; if (!lodSum.count(c)) lodQueue.push_back(c); }
+            }
+            std::sort(lodQueue.begin(), lodQueue.end(), [&](const I3& a, const I3& b) {
+                auto d = [&](const I3& c) { int x = c.x - cc.x, y = c.y - cc.y, z = c.z - cc.z; return x * x + z * z + y * y * 4; }; return d(a) < d(b); });
+            for (auto it = lodSum.begin(); it != lodSum.end();) {
+                int x = it->first.x - cc.x, z = it->first.z - cc.z, y = it->first.y - cc.y;
+                if (x * x + z * z > (R + 6) * (R + 6) || std::abs(y) > V + 3) it = lodSum.erase(it); else ++it;
+            }
+            for (int k = 1; k <= 3; k++) for (auto it = lodGroups[k].begin(); it != lodGroups[k].end();) {
+                int sz = 1 << k; double x = (it->first.x + 0.5) * sz - cc.x, z = (it->first.z + 0.5) * sz - cc.z;
+                if (x * x + z * z > (R + 2.0 * sz + 4) * (R + 2.0 * sz + 4)) it = lodGroups[k].erase(it); else ++it;
+            }
+        }
+        while (lodQueuePos < lodQueue.size() && ms() < 2.5) {   // boil down: a copy of each chunk (from disk or made), never loaded into the world
+            I3 c = lodQueue[lodQueuePos++]; if (lodSum.count(c)) continue;
+            world->peekChunk(c, *lodTmp); LodSetSummary(c, lodSummarize(reg, *lodTmp));
+        }
+        auto get = [&](I3 c) -> const LodSummary* {
+            if (std::abs(c.y - cc.y) > V) return &lodAir;
+            auto it = lodSum.find(c); return it == lodSum.end() ? nullptr : &it->second;
+        };
+        for (int k = 1; k <= lodK && ms() < 5; k++) {   // build: the nearest groups first
+            if (lodDirty[k].empty()) continue;
+            int sz = 1 << k; std::vector<std::pair<double, I3>> todo;
+            for (auto it = lodDirty[k].begin(); it != lodDirty[k].end();) {
+                double x = (it->x + 0.5) * sz - cc.x, z = (it->z + 0.5) * sz - cc.z, y = (it->y + 0.5) * sz - cc.y;
+                bool far = x * x + z * z > (R + 2.0 * sz) * (R + 2.0 * sz) || std::abs(y) > V + sz;
+                if (far) { it = lodDirty[k].erase(it); continue; }
+                todo.push_back({ x * x + z * z + y * y * 4, *it }); ++it;
+            }
+            std::sort(todo.begin(), todo.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+            std::vector<uint16_t> cells;
+            for (auto& td : todo) {
+                if (ms() >= 5) break;
+                const I3 g = td.second; bool ready = true;
+                for (int y = 0; y < sz && ready; y++) for (int z = 0; z < sz && ready; z++) for (int x = 0; x < sz && ready; x++) ready = get({ g.x * sz + x, g.y * sz + y, g.z * sz + z }) != nullptr;
+                if (!ready) continue;   // (its chunks aren't all boiled down yet)
+                lodGroupCells(reg, k, g, get, cells);
+                MeshData md; lodMesh(reg, k, cells, md);
+                LodGroup& lg = lodGroups[k][g]; Upload(md, lg.vb, lg.ib, lg.n); lg.built = true;
+                lodDirty[k].erase(g);
+            }
+        }
+    }
+    bool LodBuilt(int k, I3 g, I3 cc) const {   // (groups entirely above or below the far copies' heights count as built: nothing in them)
+        int sz = 1 << k; if (g.y * sz > cc.y + LodVert() || (g.y + 1) * sz - 1 < cc.y - LodVert()) return true;
+        auto it = lodGroups[k].find(g); return it != lodGroups[k].end() && it->second.built;
+    }
+    void LodVisit(int k, I3 g, I3 cc) {
+        int sz = 1 << k, R = settings.renderDistance, Vs = settings.verticalDistance;
+        auto axisDist = [](int c, int lo, int hi) { return c < lo ? lo - c : c > hi ? c - hi : 0; };
+        int hx = axisDist(cc.x, g.x * sz, g.x * sz + sz - 1), hz = axisDist(cc.z, g.z * sz, g.z * sz + sz - 1), vd = axisDist(cc.y, g.y * sz, g.y * sz + sz - 1);
+        double hd = std::sqrt((double)hx * hx + (double)hz * hz);
+        bool split = false;
+        if (k == 1) {   // its chunks themselves: only when every one is loaded and built
+            split = hd < R && vd <= Vs;
+            for (int y = 0; y < 2 && split; y++) for (int z = 0; z < 2 && split; z++) for (int x = 0; x < 2 && split; x++) {
+                I3 c{ g.x * 2 + x, g.y * 2 + y, g.z * 2 + z }; int dx = c.x - cc.x, dz = c.z - cc.z, dy = c.y - cc.y;
+                if (std::abs(dy) > Vs) continue;   // (above / below the loaded chunks: nothing is drawn there anyway)
+                split = dx * dx + dz * dz <= R * R + R && world->chunk(c) && chunkMeshed.count(c) && !world->dirty.count(c);
+            }
+            if (split) return;   // (the chunks draw themselves)
+        } else {
+            split = hd < (R << (k - 1)) && vd <= LodVert();   // (a finer part not built yet falls back to what is under it)
+            if (split) { for (int y = 0; y < 2; y++) for (int z = 0; z < 2; z++) for (int x = 0; x < 2; x++) LodVisit(k - 1, { g.x * 2 + x, g.y * 2 + y, g.z * 2 + z }, cc); return; }
+        }
+        auto it = lodGroups[k].find(g);
+        if (it == lodGroups[k].end() || !it->second.built) {   // not built yet: its finer parts, if they are
+            if (k > 1) for (int y = 0; y < 2; y++) for (int z = 0; z < 2; z++) for (int x = 0; x < 2; x++) LodVisit(k - 1, { g.x * 2 + x, g.y * 2 + y, g.z * 2 + z }, cc);
+            return;
+        }
+        if (it->second.n) lodDraw.push_back({ k, g });
+        int m = 1 << (k - 1);   // the level-1 groups it covers: their chunks are not drawn
+        for (int y = 0; y < m; y++) for (int z = 0; z < m; z++) for (int x = 0; x < m; x++) lodCovered.insert({ g.x * m + x, g.y * m + y, g.z * m + z });
+    }
+    void LodSelect() {   // which far groups this frame (the camera's own view)
+        lodDraw.clear(); lodCovered.clear(); if (!lodK || !world) return;
+        I3 cc = chunkOf(ifloor(camPos.x), ifloor(camPos.y), ifloor(camPos.z));
+        int K = lodK, sz = 1 << K, reach = LodReach(), V = LodVert();
+        for (int gy = floorDiv(cc.y - V, sz); gy <= floorDiv(cc.y + V, sz); gy++)
+            for (int gz = floorDiv(cc.z - reach, sz); gz <= floorDiv(cc.z + reach, sz); gz++)
+                for (int gx = floorDiv(cc.x - reach, sz); gx <= floorDiv(cc.x + reach, sz); gx++) {
+                    double x = std::max({ 0, gx * sz - cc.x, cc.x - (gx * sz + sz - 1) }), z = std::max({ 0, gz * sz - cc.z, cc.z - (gz * sz + sz - 1) });
+                    if (x * x + z * z > (double)reach * reach) continue;
+                    LodVisit(K, { gx, gy, gz }, cc);
+                }
     }
     // ---- the fog grid (smooth fog): 160 x 90 x 64 cells following the camera, worked out a little more each frame
     static constexpr int FOGW = 160, FOGH = 90, FOGD = 64;
@@ -16422,7 +16564,8 @@ struct App {
             if (slow < 1 && playMode && !paused && play.dead()) play.deadFor += dt - gdt;   // (slow motion: the world slows, the sequence does not)
             DeathSkip(); UpdateDeathSounds();
             UpdateScreens(dt); UpdateStart(dt); CheckDeathScreen(); if (playMode && !paused && !CurScreen()) playTime += dt;
-            CookBakeStep(); }
+            CookBakeStep();
+            CpuMark("far copies"); UpdateLod(); }
 
         CpuMark("building menus, HUD, editor");
         ImGui::GetStyle().FontScaleMain = settings.uiScale;

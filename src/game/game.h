@@ -24,6 +24,7 @@ const char* keyNameFallback(int vk);   // "Left mouse", "Space", "W", "F5"... ("
 struct Settings {
     int renderDistance = 10;   // chunks around you, sideways
     int verticalDistance = 5;  // chunks above and below you
+    int distantDetail = 2;     // far copies of the world past the render distance: 0 off, 1 to 2x, 2 to 4x, 3 to 8x as far
     float fov = 70, mouseSensitivity = 1.f, uiScale = 1.f;
     float soundVolume = 1.f;   // all sounds
     bool vsync = true;

@@ -1,8 +1,10 @@
 // Mesher tests: hidden faces, glass, corner shading, winding, edges of the loaded area, worker threads.
 #include "../src/world/mesher.h"
 #include "../src/world/visibility.h"
+#include "../src/world/lod.h"
 #include <set>
 #include <map>
+#include <unordered_map>
 #include "../src/world/shapes.h"
 #include <chrono>
 #include <cmath>
@@ -145,6 +147,34 @@ int main() {
         auto front = [](I3 c) { return c.z >= 0; };
         visibleChunks({ 0, 1, 0 }, 6, 4, see, front, vis);
         CHECK(has({ 0, 1, 4 }) && !has({ 0, 1, -3 }) && has({ 0, 1, 0 }), "the view: chunks behind you are not walked to");
+    }
+    {   // far copies (levels of detail)
+        World lw(reg); lw.gen.kind = Generator::Void;
+        BlockId stone = reg.find("stone"), grass = reg.find("grass"), water = reg.liquidBlock(1);
+        for (int z = 0; z < 128; z++) for (int x = 0; x < 128; x++) { lw.set(x, 0, z, grass); lw.set(x, -1, z, stone); lw.set(x, -2, z, stone); }   // ground: grass over stone
+        for (int z = 0; z < 128; z++) lw.set(5, 1, z, stone);                                      // a wall one block thick, one high (thin: gone far away)
+        for (int z = 10; z < 20; z++) for (int x = 10; x < 20; x++) for (int y = 2; y <= 3; y++) lw.set(x, y, z, makeLiquid(water, 16));   // a pond (two deep)
+        std::unordered_map<I3, LodSummary, I3Hash> sums;
+        for (int cy = -1; cy <= 0; cy++) for (int cz = -1; cz <= 8; cz++) for (int cx = -1; cx <= 8; cx++) { Chunk& c = lw.loadChunk({ cx, cy, cz }); sums[{ cx, cy, cz }] = lodSummarize(reg, c); }
+        auto get = [&](I3 c) -> const LodSummary* { auto it = sums.find(c); return it == sums.end() ? nullptr : &it->second; };
+        const LodSummary& s0 = sums[{ 0, 0, 0 }];
+        CHECK(s0.kind == 2 && s0.at(1, 0, 1) == typeOf(grass) && s0.at(1, 1, 1) == 0, "a chunk boiled down: the ground's cells look like grass (the top), above them air");
+        const LodSummary& sb = sums[I3{ 0, -1, 0 }];
+        CHECK(sb.kind == 1 || sb.kind == 2, "below: stone cells");
+        for (int k = 1; k <= 3; k++) {
+            std::vector<uint16_t> cells; lodGroupCells(reg, k, I3{ 0, 0, 0 }, get, cells);
+            int solidTop = 0, water = 0;
+            for (int z = 0; z < 16; z++) for (int x = 0; x < 16; x++) for (int y = 0; y < 16; y++) {
+                uint16_t t = cells[lodCellIdx(x, y, z)];
+                if (t == typeOf(grass)) solidTop++;
+                if (reg.get((BlockId)t).liquid) water++;
+            }
+            MeshData md; bool any = lodMesh(reg, k, cells, md);
+            CHECK(solidTop > 0 && any && md.i.size() >= 6 * 16 * 16 / 2, "level %d: the ground stays, looks like grass, and has triangles (%d grass cells, %zu triangles)", k, solidTop, md.i.size() / 3);
+            if (k == 1) CHECK(water > 0, "level 1: the pond shows as water");
+        }
+        std::vector<uint16_t> unk; lodGroupCells(reg, 1, I3{ 20, 0, 20 }, get, unk);
+        CHECK(unk[lodCellIdx(3, 3, 3)] == LOD_UNKNOWN, "chunks not boiled down yet: unknown");
     }
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
     return fails ? 1 : 0;
