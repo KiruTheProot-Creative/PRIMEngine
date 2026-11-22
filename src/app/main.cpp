@@ -4088,7 +4088,7 @@ struct App {
         }
         for (auto it = gpu.begin(); it != gpu.end();) { if (!world->chunk(it->first)) { latestSeq.erase(it->first); it = gpu.erase(it); } else ++it; }
         for (auto it = chunkSee.begin(); it != chunkSee.end();) { if (!world->chunk(it->first)) it = chunkSee.erase(it); else ++it; }
-        for (auto it = chunkMeshed.begin(); it != chunkMeshed.end();) { if (!world->chunk(it->first)) it = chunkMeshed.erase(it); else ++it; }
+        for (auto it = chunkMeshed.begin(); it != chunkMeshed.end();) { if (!world->chunk(*it)) it = chunkMeshed.erase(it); else ++it; }
     }
     // ---- cave culling: which chunks can be seen from the camera (through air, never back toward it)
     std::unordered_map<I3, uint16_t, I3Hash> chunkSee;   // chunks with something solid in them (the rest: SEE_ALL)
@@ -9028,8 +9028,8 @@ struct App {
             int sz = 1 << k; std::vector<std::pair<double, I3>> todo;
             for (auto it = lodDirty[k].begin(); it != lodDirty[k].end();) {
                 double x = (it->x + 0.5) * sz - cc.x, z = (it->z + 0.5) * sz - cc.z, y = (it->y + 0.5) * sz - cc.y;
-                bool far = x * x + z * z > (R + 2.0 * sz) * (R + 2.0 * sz) || std::abs(y) > V + sz;
-                if (far) { it = lodDirty[k].erase(it); continue; }
+                bool tooFar = x * x + z * z > (R + 2.0 * sz) * (R + 2.0 * sz) || std::abs(y) > V + sz;
+                if (tooFar) { it = lodDirty[k].erase(it); continue; }
                 todo.push_back({ x * x + z * z + y * y * 4, *it }); ++it;
             }
             std::sort(todo.begin(), todo.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
