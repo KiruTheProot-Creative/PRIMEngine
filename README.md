@@ -542,3 +542,22 @@ Cooking prepares the world for export. The Cook window shows the world from abov
   - Lamp light: real-time near you; further away (60% of the Lamp distance setting) the baked light takes over, and far lamps cost nothing.
   - F3 shows the cooked world's line: your room, how many rooms are seen, chunks skipped.
 - The cooked data lives until you close the project; cook again after changing blocks.
+
+## Distant detail (Settings > World > Distance)
+Past the render distance, the world goes on as simpler copies:
+- **Low:** 2× as far. Blocks are merged 2 at a time.
+- **Medium:** 4× as far. Blocks are merged 2, then 4 at a time.
+- **High:** 8× as far. Blocks are merged 2, then 4, then 8 at a time.
+
+How it works:
+- Each chunk is boiled down to cells of 2×2×2 blocks. A cell is solid when at least half of it is, and it looks like the block most common in its top half.
+- Groups of 2, 4 and 8 chunks are drawn as one mesh each.
+- The copies are built in the background, nearest first. The chunks are read from disk or generated, but never loaded into the world.
+- Fog and the far plane move out with the copies.
+- F3 shows the "Far copies" line.
+
+## Smooth fog (Settings > Lighting)
+Fog, light shafts and lights glowing in the air are worked out in a small 3D grid that follows the camera: 160 × 90 cells across the screen and 64 deep, finer near you.
+- Each frame, every cell takes one new sample (a different spot each frame) and blends it with what it had.
+- The picture then just looks up the grid.
+- It's faster and has no grain. Very thin light beams get a little softer.
