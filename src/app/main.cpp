@@ -400,6 +400,7 @@ struct App {
         b = Compile(src, "PS_ShadowCutout", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psShadowCut));
         b = Compile(src, "PS_Volume", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psVolume));
         b = Compile(src, "PS_FogGrid", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psFogGrid));
+        b = Compile(src, "PS_HiZ", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psHiZ));
         b = Compile(src, "PS_VolumeLow", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psVolumeLow));
         b = Compile(src, "PS_BloomDown", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psBloomDown));
         b = Compile(src, "PS_BloomUp", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psBloomUp));
@@ -4224,7 +4225,7 @@ struct App {
         std::chrono::steady_clock::time_point t, frameStart, lastEnd; const char* cur = nullptr; bool rec = false, had = false;
         std::map<std::string, double> acc, ms; double total = 0;
     } cpuT;
-    bool GpuOn() const { return settings.showFps; }
+    bool GpuOn() const { return settings.showFps || settings.targetFps > 0; }   // (auto resolution goes by the graphics card's time)
     void CpuMark(const char* step) {   // from here on, the processor's time goes to `step`
         if (!cpuT.rec) return;
         auto now = std::chrono::steady_clock::now();
@@ -4496,6 +4497,7 @@ struct App {
         ID3D11Buffer* cbs[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->VSSetConstantBuffers(0, 2, cbs); ctx->PSSetConstantBuffers(0, 2, cbs);
         { ID3D11ShaderResourceView* vx[5] = { texArray.Get(), voxReady ? voxSRV.Get() : nullptr, voxReady ? voxPalSRV.Get() : nullptr, brickSRV.Get(), objVoxSRV.Get() }; ctx->PSSetShaderResources(29, 5, vx); }   // reflection rays' blocks and objects
         LodSelect();   // far copies: which groups (and which chunks they stand in for)
+        HizCull();     // what is hidden behind other things (the depth of a frame or two before)
         CookFrame(vp, fc);   // the cooked world: rooms seen through the portals, rooms' reflection pictures, baked lamp light
         PrepareLights(fc);   // light objects, strips, glowing emitters, shots, glowing blocks (for objects) - sorted into clusters
         ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
@@ -4505,6 +4507,7 @@ struct App {
                 const GpuChunk& g = kv.second; UINT n = pass == 0 ? g.nO : pass == 1 ? g.nC : g.nW; if (!n) continue;
                 if (cave && caveOn && !CaveIn(kv.first)) { if (counting) caveHidden++; continue; }
                 if (cave && cookCullOn && !CookChunkSeen(kv.first)) { if (counting) cookHidden++; continue; }
+                if (cave && hizHiddenChunks.count(kv.first)) continue;   // (hidden behind other things)
                 if (cave && lodK && lodCovered.count({ floorDiv(kv.first.x, 2), floorDiv(kv.first.y, 2), floorDiv(kv.first.z, 2) })) continue;   // (a far copy stands in for it)   // (the cooked world: a room you can't see through any door)
                 // chunk origin relative to the camera, computed in double: no jitter however far you go
                 float ox = (float)(kv.first.x * (double)CS - camPos.x), oy = (float)(kv.first.y * (double)CS - camPos.y), oz = (float)(kv.first.z * (double)CS - camPos.z);
@@ -4685,11 +4688,15 @@ struct App {
         {   // the depth of everything solid first (no colour: cheap), so the heavy lighting runs once per pixel, not once for every wall behind it
             ID3D11RenderTargetView* four[4] = { hdrRTV.Get(), surfRTV.Get(), indRTV.Get(), albRTV.Get() };
             ctx->OMSetRenderTargets(0, nullptr, dsv.Get()); ctx->PSSetShader(nullptr, nullptr, 0); drawChunks(vp, 0, false, true);
+            if (settings.hideHidden) {   // that depth made small, for hiding what is behind things a frame or two from now
+                ctx->OMSetRenderTargets(0, nullptr, nullptr); HizBuild(vp);
+                ctx->RSSetViewports(1, &v); ctx->RSSetState(rsCull.Get()); ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0);
+            } else hizHave = false;
             ctx->OMSetRenderTargets(4, four, dsv.Get()); ctx->OMSetDepthStencilState(dsTestOnly.Get(), 0);
         }
         ctx->PSSetShader(psOpaque.Get(), nullptr, 0); drawChunks(vp, 0, true, true);
         ctx->OMSetDepthStencilState(dsOn.Get(), 0);
-        partsDrawnShown = partsDrawn; partsCulledShown = partsCulled; caveHiddenShown = caveHidden; cookHiddenShown = cookHidden; lodDrawnShown = lodDrawn;
+        partsDrawnShown = partsDrawn; partsCulledShown = partsCulled; caveHiddenShown = caveHidden; cookHiddenShown = cookHidden; lodDrawnShown = lodDrawn; hizHiddenShown = hizHidden;
         ctx->PSSetShader(psCutout.Get(), nullptr, 0); drawChunks(vp, 1, false, true);
 
         GpuMark("ambient occlusion");
@@ -5241,6 +5248,8 @@ struct App {
         ImGui::Text("Block: %d %d %d   Chunk: %d %d %d", b.x, b.y, b.z, c.x, c.y, c.z);
         ImGui::Text("Facing: %s   %s", dirs[((int)(yd / 90)) % 4], player.flying ? "flying" : "walking");
         ImGui::Text("Chunks: %zu loaded, %zu with meshes, %d drawn, %d hidden behind walls%s", world->loadedCount(), gpu.size(), drawnChunks, caveHiddenShown, caveOn ? "" : " (off)");
+        if (settings.hideHidden) ImGui::Text("Hidden behind things (not drawn): %d chunks and far copies", hizHiddenShown);
+        if (settings.targetFps > 0) ImGui::Text("Auto resolution: %.0f%% of the render scale (keeping %d FPS)", dynScale * 100, settings.targetFps);
         if (lodK) { size_t waiting = 0; for (int k = 1; k <= lodK; k++) waiting += lodDirty[k].size();
             ImGui::Text("Far copies: to %d chunks, %zu chunks boiled down, %d groups drawn, %zu to build%s", LodReach(), lodSum.size(), lodDrawnShown, waiting, lodQueuePos < lodQueue.size() ? " (still boiling down)" : ""); }
         if (cookHave) {
@@ -8965,6 +8974,76 @@ struct App {
         }
         cookUse = true;
         StartProbeBake();
+    }
+    // ---- hiding what is behind other things: the frame's depth made small (160 x 90, the farthest depth in each cell), read back a
+    // couple of frames later (never waiting); a chunk or far copy whose nearest point is behind it everywhere it would cover isn't drawn
+    static constexpr int HIZW = 160, HIZH = 90;
+    ComPtr<ID3D11Texture2D> hizTex, hizStage[3]; ComPtr<ID3D11RenderTargetView> hizRTV; ComPtr<ID3D11PixelShader> psHiZ;
+    struct HizMeta { XMFLOAT4X4 vp; V3 cam; bool live = false; } hizMeta[3]; int hizCur = 0;
+    std::vector<float> hizCpu; XMFLOAT4X4 hizVP{}; V3 hizCam{ 0, 0, 0 }; bool hizHave = false;
+    std::unordered_set<I3, I3Hash> hizHiddenChunks; int hizHidden = 0, hizHiddenShown = 0;
+    void HizBuild(const XMMATRIX& vp) {   // (right after the depth of everything solid; the depth must not be bound as a target)
+        if (!psHiZ) return;
+        if (!hizTex) {
+            D3D11_TEXTURE2D_DESC d{}; d.Width = HIZW; d.Height = HIZH; d.MipLevels = 1; d.ArraySize = 1; d.Format = DXGI_FORMAT_R32_FLOAT; d.SampleDesc.Count = 1; d.BindFlags = D3D11_BIND_RENDER_TARGET;
+            HR(dev->CreateTexture2D(&d, nullptr, &hizTex)); HR(dev->CreateRenderTargetView(hizTex.Get(), nullptr, &hizRTV));
+            d.BindFlags = 0; d.Usage = D3D11_USAGE_STAGING; d.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+            for (int k = 0; k < 3; k++) HR(dev->CreateTexture2D(&d, nullptr, &hizStage[k]));
+            hizCpu.assign(HIZW * HIZH, 1.f);
+        }
+        ctx->OMSetRenderTargets(1, hizRTV.GetAddressOf(), nullptr);
+        D3D11_VIEWPORT hv{ 0, 0, (float)HIZW, (float)HIZH, 0, 1 }; ctx->RSSetViewports(1, &hv);
+        ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->RSSetState(rsNoCull.Get()); ctx->IASetInputLayout(nullptr); ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psHiZ.Get(), nullptr, 0);
+        ctx->PSSetShaderResources(2, 1, depthSRV.GetAddressOf());
+        ctx->Draw(3, 0);
+        { ID3D11ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(2, 1, &n1); }
+        ctx->OMSetRenderTargets(0, nullptr, nullptr);
+        ctx->CopyResource(hizStage[hizCur].Get(), hizTex.Get());
+        XMStoreFloat4x4(&hizMeta[hizCur].vp, vp); hizMeta[hizCur].cam = camPos; hizMeta[hizCur].live = true;
+        hizCur = (hizCur + 1) % 3;
+        HizMeta& old = hizMeta[hizCur];   // the oldest: ready by now, usually
+        if (old.live) {
+            D3D11_MAPPED_SUBRESOURCE m;
+            if (ctx->Map(hizStage[hizCur].Get(), 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &m) == S_OK) {
+                for (int y = 0; y < HIZH; y++) std::memcpy(&hizCpu[(size_t)y * HIZW], (const uint8_t*)m.pData + (size_t)y * m.RowPitch, HIZW * 4);
+                ctx->Unmap(hizStage[hizCur].Get(), 0);
+                hizVP = old.vp; hizCam = old.cam; hizHave = true; old.live = false;
+            }
+        }
+    }
+    bool HizVisible(V3 lo, V3 hi) const {   // (world positions) could any of this box show?
+        V3 mv = camPos - hizCam; double moved = std::sqrt(mv.x * mv.x + mv.y * mv.y + mv.z * mv.z);
+        if (moved > 6) return true;   // (a jump: that depth says nothing about here)
+        double g = moved * 1.5 + 0.5; lo = lo - V3{ g, g, g }; hi = hi + V3{ g, g, g };   // (what moving a little could have uncovered)
+        if (hizCam.x > lo.x && hizCam.x < hi.x && hizCam.y > lo.y && hizCam.y < hi.y && hizCam.z > lo.z && hizCam.z < hi.z) return true;
+        const float* M = &hizVP._11; float zmin = 1, x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
+        for (int k = 0; k < 8; k++) {
+            float x = (float)((k & 1 ? hi.x : lo.x) - hizCam.x), y = (float)((k & 2 ? hi.y : lo.y) - hizCam.y), z = (float)((k & 4 ? hi.z : lo.z) - hizCam.z);
+            float cx = x * M[0] + y * M[4] + z * M[8] + M[12], cy = x * M[1] + y * M[5] + z * M[9] + M[13], cz = x * M[2] + y * M[6] + z * M[10] + M[14], cw = x * M[3] + y * M[7] + z * M[11] + M[15];
+            if (cw <= 0.05f) return true;
+            float nx = cx / cw, ny = cy / cw; if (nx < -1 || nx > 1 || ny < -1 || ny > 1) return true;   // (partly off that frame's screen: it may be on this one's)
+            zmin = std::min(zmin, cz / cw); x0 = std::min(x0, nx); x1 = std::max(x1, nx); y0 = std::min(y0, ny); y1 = std::max(y1, ny);
+        }
+        int tx0 = std::clamp((int)std::floor((x0 * 0.5f + 0.5f) * HIZW), 0, HIZW - 1), tx1 = std::clamp((int)std::floor((x1 * 0.5f + 0.5f) * HIZW), 0, HIZW - 1);
+        int ty0 = std::clamp((int)std::floor((0.5f - y1 * 0.5f) * HIZH), 0, HIZH - 1), ty1 = std::clamp((int)std::floor((0.5f - y0 * 0.5f) * HIZH), 0, HIZH - 1);
+        if ((tx1 - tx0 + 1) * (ty1 - ty0 + 1) > 4000) return true;
+        for (int ty = ty0; ty <= ty1; ty++) for (int tx = tx0; tx <= tx1; tx++) if (hizCpu[(size_t)ty * HIZW + tx] >= zmin) return true;
+        return false;
+    }
+    void HizCull() {   // this frame: the chunks and far copies that are hidden
+        hizHiddenChunks.clear(); hizHidden = 0;
+        if (!settings.hideHidden || !hizHave || cookBake.on || !world) return;
+        I3 cc = chunkOf(ifloor(camPos.x), ifloor(camPos.y), ifloor(camPos.z));
+        for (auto& kv : gpu) {
+            I3 c = kv.first; if (std::abs(c.x - cc.x) <= 1 && std::abs(c.y - cc.y) <= 1 && std::abs(c.z - cc.z) <= 1) continue;
+            V3 lo{ c.x * (double)CS, c.y * (double)CS, c.z * (double)CS };
+            if (!HizVisible(lo, lo + V3{ (double)CS, (double)CS, (double)CS })) { hizHiddenChunks.insert(c); hizHidden++; }
+        }
+        size_t before = lodDraw.size();
+        lodDraw.erase(std::remove_if(lodDraw.begin(), lodDraw.end(), [&](const LodDraw& d) {
+            double sz = (double)(CS << d.k); V3 lo{ d.g.x * sz, d.g.y * sz, d.g.z * sz }; return !HizVisible(lo, lo + V3{ sz, sz, sz }); }), lodDraw.end());
+        hizHidden += (int)(before - lodDraw.size());
     }
     // ---- far copies of the world (levels of detail): past the render distance, groups of 2, 4, 8 chunks a side drawn as blocks of 2, 4, 8
     std::unordered_map<I3, LodSummary, I3Hash> lodSum;   // each chunk boiled down (cells of 2 x 2 x 2)
@@ -16534,6 +16613,7 @@ struct App {
     }
 
     // ================================================================== frame
+    float dynScale = 1.f; double dynT = 0;   // auto resolution: a share of the render scale, and the time since it last changed
     void FrameBody(double dt) {   // everything but showing the picture (screenshots grab it before)
         CpuBegin(); frameDt = dt;
         if (audioOk) { UpdateAudio(); UpdateMusic(dt); }
@@ -16544,8 +16624,13 @@ struct App {
         bool ev = EditorView();
         int wantW = ev ? (int)viewSize.x : cw, wantH = ev ? (int)viewSize.y : ch;   // the editor draws the world at the viewport panel's size
         wantW = std::max(16, wantW); wantH = std::max(16, wantH);
+        if (settings.targetFps > 0 && screen == Screen::Game && gpuT.total > 0) {   // auto resolution: by the graphics card's time per frame
+            dynT += dt; double budget = 1000.0 / settings.targetFps;
+            if (dynT > 0.75 && gpuT.total > budget * 0.92 && dynScale > 0.5f) { dynScale = std::max(0.5f, dynScale - 0.1f); dynT = 0; }
+            else if (dynT > 2.5 && gpuT.total < budget * 0.7 && dynScale < 1.f) { dynScale = std::min(1.f, dynScale + 0.05f); dynT = 0; }
+        } else if (settings.targetFps <= 0) dynScale = 1.f;
         {   // render scale: the world's own targets at the scaled size, the screen's at the screen's
-            float sc = std::clamp(settings.renderScale, 0.25f, 2.f);
+            float sc = std::clamp(settings.renderScale * dynScale, 0.25f, 2.f);
             int sW = std::max(16, (int)std::lround(wantW * sc)), sH = std::max(16, (int)std::lround(wantH * sc));
             if (wantW != rw || wantH != rh || sW != sceneW || sH != sceneH || dispDW != wantW || dispDH != wantH) {
                 rw = sW; rh = sH; MakeTargets(); sceneW = sW; sceneH = sH;

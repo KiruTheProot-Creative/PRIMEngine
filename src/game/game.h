@@ -24,6 +24,8 @@ const char* keyNameFallback(int vk);   // "Left mouse", "Space", "W", "F5"... ("
 struct Settings {
     int renderDistance = 10;   // chunks around you, sideways
     int verticalDistance = 5;  // chunks above and below you
+    int targetFps = 0;         // auto resolution: the render scale goes down (and back up) to keep this many frames a second (0 off)
+    bool hideHidden = true;    // chunks hidden behind other things are not drawn (the depth of a frame or two before)
     int distantDetail = 2;     // far copies of the world past the render distance: 0 off, 1 to 2x, 2 to 4x, 3 to 8x as far
     float fov = 70, mouseSensitivity = 1.f, uiScale = 1.f;
     float soundVolume = 1.f;   // all sounds
@@ -42,7 +44,7 @@ struct Settings {
     bool swaying = true;       // leaves and plants move in the wind
     int reflections = 1;       // 0 off, 1 normal, 2 high
     float renderScale = 1;     // the 3D world drawn at this part of the screen's size (0.5 .. 2: below 1 faster, above 1 supersampled); the HUD and menus stay sharp
-    int antiAlias = 1;
+    int antiAlias = 0;
     int upscaler = 1;          // fitting the world to the screen: 0 Sharp (this frame only), 1 PrimeScaler (rebuilt from several frames; at 100% the smoothest edges)
     float upSharp = 0.5f;      // PrimeScaler's sharpening
     int pixelShadows = 0;      // shadows snapped to the texture's pixels: 0 off, 16 or 32 a block

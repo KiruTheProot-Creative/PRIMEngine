@@ -1607,6 +1607,16 @@ float4 PS_Water(VSOut i, bool front : SV_IsFrontFace) : SV_Target
 float ign(float2 px) { return frac(52.9829189 * frac(dot(px, float2(0.06711056, 0.00583715)))); }   // even per-pixel noise: no banding
 
 // the helmet's and the arm cannon's depth copied into the world's depth without the water (so effects drawn against it stay behind them)
+// hiding what is behind other things: the depth made small (160 x 90), each cell the farthest depth under it. The processor reads it a
+// couple of frames later: a chunk whose nearest point is behind the farthest depth everywhere it would cover can't be seen
+float PS_HiZ(SkyOut i) : SV_Target
+{
+    float2 s = gDepth.zw / float2(160, 90);
+    int2 o = int2(i.pos.xy), a = int2(floor(o * s)), b = min(int2(ceil((o + 1) * s)), int2(gDepth.zw));
+    float m = 0;
+    [loop] for (int y = a.y; y < b.y; y++) [loop] for (int x = a.x; x < b.x; x++) m = max(m, gSceneDepth.Load(int3(x, y, 0)));
+    return m;
+}
 void PS_HudDepth(SkyOut i, out float depth : SV_Depth)
 {
     float z = gSceneDepth.Load(int3(i.pos.xy, 0));

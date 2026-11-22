@@ -48,7 +48,7 @@ bool Settings::load(const std::string& path) {
     std::ifstream f(path); if (!f) return false;
     std::string k; bool hadRes = false;
     while (f >> k) {
-        if (k == "render_distance") f >> renderDistance; else if (k == "vertical_distance") f >> verticalDistance; else if (k == "distant_detail") f >> distantDetail;
+        if (k == "render_distance") f >> renderDistance; else if (k == "vertical_distance") f >> verticalDistance; else if (k == "distant_detail") f >> distantDetail; else if (k == "target_fps") f >> targetFps; else if (k == "hide_hidden") { int v; f >> v; hideHidden = v != 0; }
         else if (k == "fov") f >> fov; else if (k == "mouse_sensitivity") f >> mouseSensitivity; else if (k == "sound_volume") f >> soundVolume; else if (k == "ui_scale") f >> uiScale;
         else if (k == "vsync") { int v; f >> v; vsync = v != 0; }
         else if (k == "block_preview") { int v; f >> v; blockPreview = v != 0; }
@@ -121,7 +121,7 @@ bool Settings::load(const std::string& path) {
 }
 bool Settings::save(const std::string& path) const {
     std::ofstream f(path); if (!f) return false;
-    f << "render_distance " << renderDistance << "\nvertical_distance " << verticalDistance << "\ndistant_detail " << distantDetail << "\nfov " << fov << "\nmouse_sensitivity " << mouseSensitivity << "\nsound_volume " << soundVolume
+    f << "render_distance " << renderDistance << "\nvertical_distance " << verticalDistance << "\ndistant_detail " << distantDetail << "\ntarget_fps " << targetFps << "\nhide_hidden " << (hideHidden ? 1 : 0) << "\nfov " << fov << "\nmouse_sensitivity " << mouseSensitivity << "\nsound_volume " << soundVolume
       << "\nui_scale " << uiScale << "\nvsync " << (vsync ? 1 : 0) << "\nblock_preview " << (blockPreview ? 1 : 0)
       << "\ntime_of_day " << timeOfDay << "\nday_cycle " << (dayCycle ? 1 : 0) << "\nshadows " << shadowQuality << "\nshadow_distance " << shadowDistance << "\nshadow_soft " << shadowSoft << "\nshadow_softness " << shadowSoftness
       << "\ncloud_cover " << cloudCover << "\nground_fog " << groundFog << "\ncloud_shadows " << (cloudShadows ? 1 : 0)

@@ -15,7 +15,7 @@ Field field(Settings& s, const std::string& k) {
     else if (k == "vol_enemies") r.f = &s.volEnemies; else if (k == "vol_world") r.f = &s.volWorld; else if (k == "vol_menus") r.f = &s.volMenus; else if (k == "vol_music") r.f = &s.volMusic;
     else if (k == "fullscreen") r.b = &s.fullscreen; else if (k == "vsync") r.b = &s.vsync; else if (k == "brightness") r.f = &s.brightness; else if (k == "screen_shake") r.f = &s.screenShake;
     else if (k == "fov") r.f = &s.fov; else if (k == "ui_scale") r.f = &s.uiScale;
-    else if (k == "render_distance") r.i = &s.renderDistance; else if (k == "vertical_distance") r.i = &s.verticalDistance; else if (k == "distant_detail") r.i = &s.distantDetail;
+    else if (k == "render_distance") r.i = &s.renderDistance; else if (k == "vertical_distance") r.i = &s.verticalDistance; else if (k == "distant_detail") r.i = &s.distantDetail; else if (k == "target_fps") r.i = &s.targetFps; else if (k == "hide_hidden") r.b = &s.hideHidden;
     else if (k == "shadows") r.i = &s.shadowQuality; else if (k == "shadow_res") r.i = &s.shadowRes; else if (k == "shadow_distance") r.f = &s.shadowDistance;
     else if (k == "shadow_soft") r.i = &s.shadowSoft; else if (k == "shadow_softness") r.f = &s.shadowSoftness;
     else if (k == "clouds") r.f = &s.cloudCover; else if (k == "cloud_shadows") r.b = &s.cloudShadows; else if (k == "fog") r.f = &s.groundFog;
@@ -67,6 +67,8 @@ const std::vector<OptionDef>& optionDefs() {
         v.push_back(choice("render_scale", "Render scale", D, "Screen", { "33% (ultra performance)", "50% (performance)", "58% (balanced)", "67% (quality)", "75%", "85%", "100% (the screen's own)", "125%", "150%", "200% (supersampled)" },
                            { 0.33f, 0.5f, 0.58f, 0.67f, 0.75f, 0.85f, 1.f, 1.25f, 1.5f, 2.f },
                            "The 3D world is drawn this much of the screen's size, then fitted to it. Below 100%: faster (the upscaler rebuilds the detail). Above 100%: the smoothest edges there are, but heavy. The HUD and menus always stay sharp."));
+        v.push_back(choice("target_fps", "Auto resolution", D, "Screen", { "Off", "Keep 30 FPS", "Keep 45 FPS", "Keep 60 FPS", "Keep 75 FPS", "Keep 90 FPS", "Keep 120 FPS", "Keep 144 FPS" }, { 0, 30, 45, 60, 75, 90, 120, 144 },
+            "When the graphics card can't keep up, the world is drawn a little smaller (down to half of the render scale), and sharper again when it can. The upscaler hides most of it."));
         v.push_back(choice("upscaler", "Upscaler", D, "Screen", { "Sharp (this frame only)", "PrimeScaler" }, {},
                            "PrimeScaler: the camera moves a fraction of a pixel every frame, and the picture is rebuilt from several frames, so a smaller render scale still looks sharp. At 100% it is the smoothest anti-aliasing. Sharp: enlarges this frame only (fast, softer)."));
         v.push_back(slider("up_sharpness", "Sharpness", D, "Screen", 0, 1, 0.05f, "%", "off", "How much PrimeScaler sharpens its picture."));
@@ -81,6 +83,7 @@ const std::vector<OptionDef>& optionDefs() {
         // ---- World: how far, the sky, nature, the surfaces of blocks
         v.push_back(slider("render_distance", "Render distance", W, "Distance", 2, 32, 1, "%.0f chunks"));
         v.push_back(slider("vertical_distance", "Up / down distance", W, "Distance", 1, 12, 1, "%.0f chunks"));
+        v.push_back(toggle("hide_hidden", "Skip what is hidden", W, "Distance", "Chunks and far copies hidden behind walls and hills aren't drawn (worked out from what was drawn a frame or two before)."));
         v.push_back(choice("distant_detail", "Distant detail", W, "Distance", { "Off", "Low (twice as far)", "Medium (4 x as far)", "High (8 x as far)" }, {}, "Past the render distance the world goes on as simpler copies (blocks merged 2, 4 and 8 at a time): you see much further for little cost."));
         v.push_back(toggle("cave_culling", "Skip what is behind walls", W, "Distance", "Chunks you cannot see from where you are (rock, closed caves, the other side of walls) are not drawn. Off: everything in range is drawn."));
         v.push_back(slider("clouds", "Clouds", W, "Sky", 0, 1, 0.05f, "%", "none"));
@@ -250,11 +253,11 @@ std::vector<QualityPreset> defaultPresets() {
     struct Row { const char* name; float v[28]; };
     static const Row rows[] = {
         { "Very low", { 0.5f, 6, 3, 0, 1024, 48, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0.3f, 0, 0.3f, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0 } },
-        { "Low",      { 0.58f, 8, 4, 1, 1024, 64, 0, 0, 0, 0, 1, 0, 2, 0, 1, 0.5f, 0, 0.5f, 0, 0.5f, 0.5f, 1, 0, 1, 0, 0, 1, 0 } },
-        { "Medium",   { 0.67f, 10, 5, 1, 2048, 96, 1, 2, 0, 1, 1, 1, 2, 0, 1, 0.7f, 1, 0.6f, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 } },
-        { "High",     { 0.85f, 14, 6, 1, 2048, 160, 2, 4, 1, 1, 1, 1, 1, 1, 1, 0.8f, 1, 0.7f, 1, 1, 1, 1, 1, 1, 2, 1, 2, 1 } },
-        { "Ultra",    { 1, 20, 8, 1, 3072, 256, 2, 16, 2, 2, 2, 2, 0, 1, 2, 0.8f, 1, 0.75f, 1, 1, 1, 1, 1, 1, 2, 1, 2, 1 } },
-        { "Prime",    { 1.5f, 28, 10, 1, 4096, 384, 2, 32, 2, 2, 2, 2, 0, 1, 2, 0.85f, 1, 0.8f, 1, 1.2f, 1.2f, 1, 1, 1, 2, 1, 2, 1 } },
+        { "Low",      { 0.58f, 8, 4, 1, 1024, 64, 0, 0, 0, 0, 1, 0, 2, 0, 0, 0.5f, 0, 0.5f, 0, 0.5f, 0.5f, 1, 0, 1, 0, 0, 1, 0 } },
+        { "Medium",   { 0.67f, 10, 5, 1, 2048, 96, 1, 2, 0, 1, 1, 1, 2, 0, 0, 0.7f, 1, 0.6f, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 } },
+        { "High",     { 0.85f, 14, 6, 1, 2048, 160, 2, 4, 1, 1, 1, 1, 1, 1, 0, 0.8f, 1, 0.7f, 1, 1, 1, 1, 1, 1, 2, 1, 2, 1 } },
+        { "Ultra",    { 1, 20, 8, 1, 3072, 256, 2, 16, 2, 2, 2, 2, 0, 1, 0, 0.8f, 1, 0.75f, 1, 1, 1, 1, 1, 1, 2, 1, 2, 1 } },
+        { "Prime",    { 1.5f, 28, 10, 1, 4096, 384, 2, 32, 2, 2, 2, 2, 0, 1, 0, 0.85f, 1, 0.8f, 1, 1.2f, 1.2f, 1, 1, 1, 2, 1, 2, 1 } },
     };
     std::vector<QualityPreset> out;
     for (const Row& r : rows) { QualityPreset p; p.name = r.name; for (size_t k = 0; k < presetKeys().size(); k++) p.values.push_back({ presetKeys()[k], r.v[k] }); out.push_back(p); }
