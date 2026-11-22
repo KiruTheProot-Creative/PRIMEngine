@@ -1036,7 +1036,7 @@ struct App {
         world = std::make_unique<World>(reg); info.applyGenerator(world->gen, reg);
         world->store = std::make_unique<RegionStore>(worldDir + "/region");
         workers = std::make_unique<MeshWorkers>(reg); workers->start(Threads());
-        player = info.player; history.clear(); gpu.clear(); latestSeq.clear(); LodClear(); chunkMeshed.clear();
+        player = info.player; history.clear(); gpu.clear(); latestSeq.clear(); LodClear(); chunkMeshed.clear(); lampCache.clear();
         LoadWorldObjects(); selStage = 0;
         for (int i = 0; i < 9; i++) {   // "stone" or "stone@stairs"
             std::string e = info.hotbar[i], shape; size_t at = e.rfind('@'); if (at != std::string::npos) { shape = e.substr(at + 1); e = e.substr(0, at); }
@@ -1061,7 +1061,7 @@ struct App {
     }
     void CloseWorld() {   // the project stays open
         if (playMode && !travelling) StopPlay();
-        SaveWorld(); workers.reset(); world.reset(); gpu.clear(); latestSeq.clear(); LodClear(); chunkMeshed.clear(); Capture(false);
+        SaveWorld(); workers.reset(); world.reset(); gpu.clear(); latestSeq.clear(); LodClear(); chunkMeshed.clear(); lampCache.clear(); Capture(false);
     }
     std::string CurrentWorld() const { return world ? fs::path(worldDir).filename().string() : ""; }
     void RenameWorld(const std::string& from, const std::string& to) {
@@ -1635,35 +1635,45 @@ struct App {
         lshSlots.assign(std::max(n, 0), LshSlot{});   // (every map drawn again)
     }
     // the real lamp blocks in these chunks as lights: lamps of one colour side by side merged into glowing boxes (mergeMany: very many become fewer point lights)
+    struct LampOne { V3 p; int lv[3]; bool out; int x, y, z; V3 eye; };
+    struct LampChunk { uint64_t sig = 0; bool have = false; std::vector<LampOne> list; };
+    std::unordered_map<I3, LampChunk, I3Hash> lampCache;   // each chunk's real lamps, until it (or a neighbour) changes
     std::vector<LampProxy> RealLampLights(I3 k0, I3 k1, bool mergeMany) {
         std::vector<LampProxy> out; if (!world) return out;
-        struct One { V3 p; int lv[3]; bool out; int x, y, z; V3 eye; }; std::vector<One> reals;   // real lamp blocks; out: its shadow view sits in front of its open faces; eye: where that view is
+        std::vector<LampOne> reals;   // real lamp blocks; out: its shadow view sits in front of its open faces; eye: where that view is
         {
             for (int ky = k0.y; ky <= k1.y; ky++)
                 for (int kz = k0.z; kz <= k1.z; kz++)
                     for (int kx = k0.x; kx <= k1.x; kx++) {
-                        if (!world->emittersNear({ kx, ky, kz })) continue;
-                        const Chunk* ch = world->chunk({ kx, ky, kz }); if (!ch) continue;
-                        for (int ly = 0; ly < CS; ly++) for (int lz = 0; lz < CS; lz++) for (int lx = 0; lx < CS; lx++) {
-                            BlockId b = ch->get(lx, ly, lz); if (b == AIR) continue;
-                            const BlockDef& def = world->reg.get(b); if (!def.lightOf() || !def.realLight || def.liquid) continue;
-                            One o; o.p = V3{ kx * (double)CS + lx + 0.5, ky * (double)CS + ly + 0.5, kz * (double)CS + lz + 0.5 }; def.lightLevels(o.lv); o.out = false;
-                            o.x = kx * CS + lx; o.y = ky * CS + ly; o.z = kz * CS + lz; o.eye = o.p;
-                            if (std::max({ o.lv[0], o.lv[1], o.lv[2] }) <= 0) continue;
-                            {   // the light comes out of its open faces: set into a wall or a ceiling, it sits just in front of it (not in the middle, where the blocks around would shade it)
-                                int wx = kx * CS + lx, wy = ky * CS + ly, wz = kz * CS + lz; V3 open{ 0, 0, 0 }; int n = 0;
-                                const int D6[6][3] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
-                                for (auto& dd : D6) {
-                                    BlockId nb = world->get(wx + dd[0], wy + dd[1], wz + dd[2]);
-                                    bool shut = nb != AIR && world->reg.get(nb).render == Render::Opaque && resolveShape(nb, world->reg.get(nb)) == Shapes::FULL;
-                                    if (!shut) { open = open + V3{ (double)dd[0], (double)dd[1], (double)dd[2] }; n++; }
+                        const Chunk* ch = world->chunk({ kx, ky, kz }); if (!ch || !ch->emitters) continue;
+                        uint64_t sig = ch->version;   // (it and the chunks beside it: a lamp's open faces look into them)
+                        { const int D6[6][3] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
+                          for (auto& dd : D6) { const Chunk* nb = world->chunk({ kx + dd[0], ky + dd[1], kz + dd[2] }); sig = sig * 1000003u + (nb ? nb->version + 1 : 0); } }
+                        LampChunk& e = lampCache[I3{ kx, ky, kz }];
+                        if (!e.have || e.sig != sig) {   // (scanned again only when it or a neighbour changed: walking around costs nothing)
+                            e.list.clear(); e.sig = sig; e.have = true;
+                            for (int ly = 0; ly < CS; ly++) for (int lz = 0; lz < CS; lz++) for (int lx = 0; lx < CS; lx++) {
+                                BlockId b = ch->get(lx, ly, lz); if (b == AIR) continue;
+                                const BlockDef& def = world->reg.get(b); if (!def.lightOf() || !def.realLight || def.liquid) continue;
+                                LampOne o; o.p = V3{ kx * (double)CS + lx + 0.5, ky * (double)CS + ly + 0.5, kz * (double)CS + lz + 0.5 }; def.lightLevels(o.lv); o.out = false;
+                                o.x = kx * CS + lx; o.y = ky * CS + ly; o.z = kz * CS + lz; o.eye = o.p;
+                                if (std::max({ o.lv[0], o.lv[1], o.lv[2] }) <= 0) continue;
+                                {   // the light comes out of its open faces: set into a wall or a ceiling, it sits just in front of it (not in the middle, where the blocks around would shade it)
+                                    int wx = kx * CS + lx, wy = ky * CS + ly, wz = kz * CS + lz; V3 open{ 0, 0, 0 }; int n = 0;
+                                    const int D6[6][3] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
+                                    for (auto& dd : D6) {
+                                        BlockId nb = world->get(wx + dd[0], wy + dd[1], wz + dd[2]);
+                                        bool shut = nb != AIR && world->reg.get(nb).render == Render::Opaque && resolveShape(nb, world->reg.get(nb)) == Shapes::FULL;
+                                        if (!shut) { open = open + V3{ (double)dd[0], (double)dd[1], (double)dd[2] }; n++; }
+                                    }
+                                    if (n == 0) continue;   // (buried: it lights nothing)
+                                    V3 off{ std::clamp(open.x * 0.6, -0.6, 0.6), std::clamp(open.y * 0.6, -0.6, 0.6), std::clamp(open.z * 0.6, -0.6, 0.6) };
+                                    if (n <= 3 && (std::fabs(off.x) >= 0.5 || std::fabs(off.y) >= 0.5 || std::fabs(off.z) >= 0.5)) { o.eye = o.p + off; o.out = true; }   // (only its shadow view moves: the light itself is its whole surface)   // (standing free: it stays in the middle, else it would shade the floor round itself)
                                 }
-                                if (n == 0) continue;   // (buried: it lights nothing)
-                                V3 off{ std::clamp(open.x * 0.6, -0.6, 0.6), std::clamp(open.y * 0.6, -0.6, 0.6), std::clamp(open.z * 0.6, -0.6, 0.6) };
-                                if (n <= 3 && (std::fabs(off.x) >= 0.5 || std::fabs(off.y) >= 0.5 || std::fabs(off.z) >= 0.5)) { o.eye = o.p + off; o.out = true; }   // (only its shadow view moves: the light itself is its whole surface)   // (standing free: it stays in the middle, else it would shade the floor round itself)
+                                e.list.push_back(o);
                             }
-                            reals.push_back(o);
                         }
+                        reals.insert(reals.end(), e.list.begin(), e.list.end());
                     }
             // the light comes from the lamps' surface (every side that isn't against a block): lamps of one colour next to each other become one
             // glowing box (up to 8 x 8 x 8) - one light, one shadow view, one shadow test, instead of one per block
@@ -1671,12 +1681,12 @@ struct App {
             std::vector<Box> boxes;
             {
                 std::unordered_map<int64_t, int> at; auto key = [](int x, int y, int z) { return ((int64_t)(x & 0x1FFFFF) << 42) | ((int64_t)(y & 0x1FFFFF) << 21) | (int64_t)(z & 0x1FFFFF); };
-                std::sort(reals.begin(), reals.end(), [](const One& a, const One& b) { return std::tie(a.y, a.z, a.x) < std::tie(b.y, b.z, b.x); });
+                std::sort(reals.begin(), reals.end(), [](const LampOne& a, const LampOne& b) { return std::tie(a.y, a.z, a.x) < std::tie(b.y, b.z, b.x); });
                 for (int i = 0; i < (int)reals.size(); i++) at[key(reals[i].x, reals[i].y, reals[i].z)] = i;
                 std::vector<char> used(reals.size(), 0);
                 for (int i = 0; i < (int)reals.size(); i++) {
-                    if (used[i]) continue; const One& c = reals[i];
-                    auto same = [&](int x, int y, int z) { auto it = at.find(key(x, y, z)); if (it == at.end() || used[it->second]) return false; const One& o = reals[it->second]; return o.lv[0] == c.lv[0] && o.lv[1] == c.lv[1] && o.lv[2] == c.lv[2]; };
+                    if (used[i]) continue; const LampOne& c = reals[i];
+                    auto same = [&](int x, int y, int z) { auto it = at.find(key(x, y, z)); if (it == at.end() || used[it->second]) return false; const LampOne& o = reals[it->second]; return o.lv[0] == c.lv[0] && o.lv[1] == c.lv[1] && o.lv[2] == c.lv[2]; };
                     int x1 = c.x, z1 = c.z, y1 = c.y;
                     while (x1 + 1 - c.x < 8 && same(x1 + 1, c.y, c.z)) x1++;
                     for (;;) { if (z1 + 1 - c.z >= 8) break; bool ok = true; for (int x = c.x; x <= x1 && ok; x++) ok = same(x, c.y, z1 + 1); if (!ok) break; z1++; }
@@ -1952,7 +1962,7 @@ struct App {
         std::unordered_map<BlockId, float> shineOf; std::map<int, float> score;   // height (sixteenths) -> how much shiny floor there is
         V3 fw = player.forward(); bool wet = weather.wetness > 0.3f && envState.now.atmosphere > 0.5f;
         int cx = ifloor(camPos.x), cy = ifloor(camPos.y), cz = ifloor(camPos.z), R = 32;
-        for (int z = cz - R; z <= cz + R; z += 1) for (int x = cx - R; x <= cx + R; x += 1) {
+        for (int z = cz - R; z <= cz + R; z += 2) for (int x = cx - R; x <= cx + R; x += 2) {   // (every other column: a quarter of the work, the same answer)
             double dx = x + 0.5 - camPos.x, dz = z + 0.5 - camPos.z, hd = std::sqrt(dx * dx + dz * dz); if (hd > R) continue;
             if (hd > 3 && (dx * fw.x + dz * fw.z) / hd < -0.2) continue;   // behind you
             BlockId above = world->get(x, cy + 1, z);
@@ -4069,11 +4079,22 @@ struct App {
             in.seq = ++seqCounter; latestSeq[t.second] = in.seq; workers->submit(std::move(in));
         }
     }
+    void UploadInto(ComPtr<ID3D11Buffer>& b, UINT bind, const void* data, UINT bytes) {   // (a chunk built again: into its old buffer when it fits - no new buffer each time)
+        if (b) {
+            D3D11_BUFFER_DESC od; b->GetDesc(&od);
+            if (od.Usage == D3D11_USAGE_DEFAULT && od.BindFlags == bind && od.ByteWidth >= bytes && od.ByteWidth <= bytes * 4 + 65536) {
+                D3D11_BOX box{ 0, 0, 0, bytes, 1, 1 }; ctx->UpdateSubresource(b.Get(), 0, &box, data, 0, 0); return;
+            }
+        }
+        b.Reset();
+        D3D11_BUFFER_DESC d{}; d.Usage = D3D11_USAGE_DEFAULT; d.ByteWidth = ((bytes + bytes / 4) + 255) & ~255u; d.BindFlags = bind;   // (a quarter more: room to grow)
+        HR(dev->CreateBuffer(&d, nullptr, &b));
+        D3D11_BOX box{ 0, 0, 0, bytes, 1, 1 }; ctx->UpdateSubresource(b.Get(), 0, &box, data, 0, 0);
+    }
     void Upload(const MeshData& m, ComPtr<ID3D11Buffer>& vb, ComPtr<ID3D11Buffer>& ib, UINT& n) {
-        vb.Reset(); ib.Reset(); n = (UINT)m.i.size(); if (!n) return;
-        D3D11_BUFFER_DESC d{}; d.Usage = D3D11_USAGE_IMMUTABLE; d.ByteWidth = (UINT)(m.v.size() * sizeof(Vtx)); d.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-        D3D11_SUBRESOURCE_DATA s{ m.v.data(), 0, 0 }; HR(dev->CreateBuffer(&d, &s, &vb));
-        d.ByteWidth = (UINT)(m.i.size() * 4); d.BindFlags = D3D11_BIND_INDEX_BUFFER; s.pSysMem = m.i.data(); HR(dev->CreateBuffer(&d, &s, &ib));
+        n = (UINT)m.i.size(); if (!n) { vb.Reset(); ib.Reset(); return; }
+        UploadInto(vb, D3D11_BIND_VERTEX_BUFFER, m.v.data(), (UINT)(m.v.size() * sizeof(Vtx)));
+        UploadInto(ib, D3D11_BIND_INDEX_BUFFER, m.i.data(), (UINT)(m.i.size() * 4));
     }
     void CollectMeshes() {
         std::vector<ChunkMesh> done; workers->collect(done);
@@ -4090,6 +4111,7 @@ struct App {
         for (auto it = gpu.begin(); it != gpu.end();) { if (!world->chunk(it->first)) { latestSeq.erase(it->first); it = gpu.erase(it); } else ++it; }
         for (auto it = chunkSee.begin(); it != chunkSee.end();) { if (!world->chunk(it->first)) it = chunkSee.erase(it); else ++it; }
         for (auto it = chunkMeshed.begin(); it != chunkMeshed.end();) { if (!world->chunk(*it)) it = chunkMeshed.erase(it); else ++it; }
+        for (auto it = lampCache.begin(); it != lampCache.end();) { if (!world->chunk(it->first)) it = lampCache.erase(it); else ++it; }
     }
     // ---- cave culling: which chunks can be seen from the camera (through air, never back toward it)
     std::unordered_map<I3, uint16_t, I3Hash> chunkSee;   // chunks with something solid in them (the rest: SEE_ALL)
@@ -4372,7 +4394,8 @@ struct App {
         int wantShadow = settings.shadowQuality <= 0 ? 0 : std::clamp(settings.shadowRes, 512, 4096);
         if (wantShadow != shadowSize) MakeShadowMap(wantShadow);
         bool shadows = shadowSize > 0 && fc.sunDir[3] > 0;
-        XMMATRIX svp = XMMatrixIdentity(); XMMATRIX cvp[CASCADES];
+        XMMATRIX svp = XMMatrixIdentity(); XMMATRIX cvp[CASCADES]; bool cascUpd[CASCADES] = { false, false, false, false };
+        if (!shadows) for (bool& v : cascValid) v = false;
         if (shadows) {   // four cascades around the camera: sharp near you, coarser farther out (blended where they meet)
             float reach = std::clamp(settings.shadowDistance, 24.f, 512.f);
             const float split[CASCADES] = { 0.08f, 0.2f, 0.45f, 1.0f };
@@ -4385,9 +4408,19 @@ struct App {
                 double texel = 2.0 * R / shadowSize;   // keep each map's pixels fixed to the world: no shimmering
                 float mx = (float)(px - std::floor(px / texel) * texel), my = (float)(py - std::floor(py / texel) * texel);
                 cvp[c] = lv * XMMatrixTranslation(mx, my, 0) * XMMatrixOrthographicLH(2 * R, 2 * R, 1, 600);
-                XMStoreFloat4x4(&fc.cascVP[c], cvp[c]); fc.cascR[c] = R; fc.cascTexel[c] = (float)texel;
+                // staggered: the nearest map every frame, the next every 2nd, then every 4th and 8th (never two far ones in one frame). An older
+                // map stays right: it remembers where the camera was when it was drawn. Drawn now anyway: moved far, the sun moved, sizes changed
+                static const int period[CASCADES] = { 1, 2, 4, 8 }, phase[CASCADES] = { 0, 0, 1, 3 };
+                V3 mvd = camPos - cascCam[c]; double moved = std::sqrt(mvd.x * mvd.x + mvd.y * mvd.y + mvd.z * mvd.z);
+                bool sunMoved = cascSun[c].x * L.x + cascSun[c].y * L.y + cascSun[c].z * L.z < 0.99998;
+                cascUpd[c] = !cascValid[c] || cascSize != shadowSize || cascR0[c] != R || moved > R * 0.2 || sunMoved || (int)(frameNo % (uint64_t)period[c]) == phase[c];
+                if (cascUpd[c]) { XMStoreFloat4x4(&cascVPs[c], cvp[c]); cascCam[c] = camPos; cascR0[c] = R; cascSun[c] = L; cascValid[c] = true; }
+                V3 dc = camPos - cascCam[c];
+                XMMATRIX now = XMMatrixTranslation((float)dc.x, (float)dc.y, (float)dc.z) * XMLoadFloat4x4(&cascVPs[c]);   // (today's camera-relative position -> that map)
+                XMStoreFloat4x4(&fc.cascVP[c], now); fc.cascR[c] = R; fc.cascTexel[c] = (float)texel;
+                if (c == CASCADES - 1) svp = now;
             }
-            svp = cvp[CASCADES - 1];
+            cascSize = shadowSize;
             if (shotDir.size() && !cascLogged) { cascLogged = true; char b[160]; snprintf(b, sizeof b, "shadow cascades: %.0f / %.0f / %.0f / %.0f blocks, near pixel %.3f blocks", fc.cascR[0], fc.cascR[1], fc.cascR[2], fc.cascR[3], fc.cascTexel[0]); Log(b); }
             fc.shadowInfo[0] = 1.f / shadowSize; fc.shadowInfo[1] = fc.cascR[CASCADES - 1]; fc.shadowInfo[2] = fc.cascTexel[0] * 1.5f; fc.shadowInfo[3] = 1.6f;
             fc.shadow2[0] = (float)std::clamp(settings.shadowSoft, 0, 2); fc.shadow2[1] = std::clamp(settings.shadowSoftness, 0.1f, 4.f);
@@ -4554,10 +4587,12 @@ struct App {
             ctx->RSSetState(rsShadow.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsShadow.Get(), nullptr, 0);
             ctx->PSSetShaderResources(0, 1, texArray.GetAddressOf()); ctx->PSSetShaderResources(14, 1, emitArray.GetAddressOf()); ctx->PSSetSamplers(0, 1, sampBlocks.GetAddressOf());
             for (int c = 0; c < CASCADES; c++) {
+                if (!cascUpd[c]) continue;   // (kept from a frame before)
                 FrameCB cf = fc; XMStoreFloat4x4(&cf.shadowVP, cvp[c]); ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &cf, 0, 0);
                 ctx->OMSetRenderTargets(0, nullptr, cascDSV[c].Get()); ctx->ClearDepthStencilView(cascDSV[c].Get(), D3D11_CLEAR_DEPTH, 1.f, 0);
                 ctx->PSSetShader(nullptr, nullptr, 0); drawChunks(cvp[c], 0, false);
-                ctx->PSSetShader(psShadowCut.Get(), nullptr, 0); drawChunks(cvp[c], 1, false);
+                ctx->PSSetShader(c >= 2 ? nullptr : psShadowCut.Get(), nullptr, 0); drawChunks(cvp[c], 1, false);   // (far maps: leaves and glass shadow whole - their holes are smaller than a pixel there)
+                cascDrawn++;
             }
             ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &fc, 0, 0);
         }
@@ -4696,7 +4731,7 @@ struct App {
         }
         ctx->PSSetShader(psOpaque.Get(), nullptr, 0); drawChunks(vp, 0, true, true);
         ctx->OMSetDepthStencilState(dsOn.Get(), 0);
-        partsDrawnShown = partsDrawn; partsCulledShown = partsCulled; caveHiddenShown = caveHidden; cookHiddenShown = cookHidden; lodDrawnShown = lodDrawn; hizHiddenShown = hizHidden;
+        partsDrawnShown = partsDrawn; partsCulledShown = partsCulled; caveHiddenShown = caveHidden; cookHiddenShown = cookHidden; lodDrawnShown = lodDrawn; hizHiddenShown = hizHidden; cascDrawnShown = cascDrawn; cascDrawn = 0;
         ctx->PSSetShader(psCutout.Get(), nullptr, 0); drawChunks(vp, 1, false, true);
 
         GpuMark("ambient occlusion");
@@ -5259,6 +5294,7 @@ struct App {
         ImGui::Text("Block: %d %d %d   Chunk: %d %d %d", b.x, b.y, b.z, c.x, c.y, c.z);
         ImGui::Text("Facing: %s   %s", dirs[((int)(yd / 90)) % 4], player.flying ? "flying" : "walking");
         ImGui::Text("Chunks: %zu loaded, %zu with meshes, %d drawn, %d hidden behind walls%s", world->loadedCount(), gpu.size(), drawnChunks, caveHiddenShown, caveOn ? "" : " (off)");
+        ImGui::Text("Sun shadow maps drawn this frame: %d of 4 (the far ones every 2nd / 4th / 8th frame)", cascDrawnShown);
         if (settings.hideHidden) ImGui::Text("Hidden behind things (not drawn): %d chunks and far copies", hizHiddenShown);
         if (settings.targetFps > 0) ImGui::Text("Auto resolution: %.0f%% of the render scale (keeping %d FPS)", dynScale * 100, settings.targetFps);
         if (lodK) { size_t waiting = 0; for (int k = 1; k <= lodK; k++) waiting += lodDirty[k].size();
@@ -16667,6 +16703,7 @@ struct App {
 
     // ================================================================== frame
     float dynScale = 1.f; double dynT = 0;
+    XMFLOAT4X4 cascVPs[4]; V3 cascCam[4]; V3 cascSun[4]; float cascR0[4] = { 0, 0, 0, 0 }; bool cascValid[4] = { false, false, false, false }; int cascSize = 0, cascDrawn = 0, cascDrawnShown = 0;   // the sun's maps: when each was drawn
     ComPtr<ID3D11Texture2D> primePrevZ; ComPtr<ID3D11ShaderResourceView> primePrevZSRV; bool primePrevZOk = false;   // PrimeScaler: the frame before's depth   // auto resolution: a share of the render scale, and the time since it last changed
     void FrameBody(double dt) {   // everything but showing the picture (screenshots grab it before)
         CpuBegin(); frameDt = dt;
