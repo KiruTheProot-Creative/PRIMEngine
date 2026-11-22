@@ -8904,9 +8904,11 @@ struct App {
         if (cookMapDirty) BuildCookMap();
         float side = std::min(ImGui::GetContentRegionAvail().y, ImGui::GetContentRegionAvail().x - 330 * ui); side = std::max(side, 200.f);
         ImVec2 p0 = ImGui::GetCursorScreenPos();
-        if (cookSRV) ImGui::Image((ImTextureID)(intptr_t)cookSRV.Get(), ImVec2(side, side)); else ImGui::Dummy(ImVec2(side, side));
+        ImGui::InvisibleButton("##cookmap", ImVec2(side, side));   // (a button, so dragging picks chunks instead of moving the window)
+        bool mapHover = ImGui::IsItemHovered(), mapHeld = ImGui::IsItemActive();
         float bpx = side / COOKMAP;   // pixels per block
         ImDrawList* dl = ImGui::GetWindowDrawList();
+        if (cookSRV) dl->AddImage((ImTextureID)(intptr_t)cookSRV.Get(), p0, ImVec2(p0.x + side, p0.y + side));
         auto toScr = [&](double wx, double wz) { return ImVec2(p0.x + (float)(wx - cookMapX0) * bpx, p0.y + (float)(wz - cookMapZ0) * bpx); };
         {   // chunk grid (faint), the camera, the selection
             for (int k = 0; k <= COOKMAP; k += CS) { float o = k * bpx; dl->AddLine(ImVec2(p0.x + o, p0.y), ImVec2(p0.x + o, p0.y + side), IM_COL32(255, 255, 255, 14)); dl->AddLine(ImVec2(p0.x, p0.y + o), ImVec2(p0.x + side, p0.y + o), IM_COL32(255, 255, 255, 14)); }
@@ -8916,10 +8918,11 @@ struct App {
                 uint32_t rc = RoomColor(r.id, false); dl->AddRect(toScr(r.lo.x, r.lo.z), toScr(r.hi.x + 1, r.hi.z + 1), IM_COL32((rc >> 16) & 255, (rc >> 8) & 255, rc & 255, 200), 0, 0, 1.5f * ui);
             }
         }
-        if (ImGui::IsItemHovered()) {   // drag: pick chunk columns
+        if (mapHover || mapHeld) {   // drag: pick chunk columns
             ImVec2 m = ImGui::GetMousePos(); int wx = cookMapX0 + (int)((m.x - p0.x) / bpx), wz = cookMapZ0 + (int)((m.y - p0.y) / bpx);
             int cx = floorDiv(wx, CS), cz = floorDiv(wz, CS);
-            if (ImGui::IsMouseClicked(0)) { cookDragging = true; cookDrag[0] = cx; cookDrag[1] = cz; }
+            if (mapHover && ImGui::IsMouseClicked(0)) { cookDragging = true; cookDrag[0] = cx; cookDrag[1] = cz; }
+            cx = std::clamp(cx, floorDiv(cookMapX0, CS), floorDiv(cookMapX0 + COOKMAP - 1, CS)); cz = std::clamp(cz, floorDiv(cookMapZ0, CS), floorDiv(cookMapZ0 + COOKMAP - 1, CS));
             if (cookDragging) { cookSel[0] = std::min(cookDrag[0], cx); cookSel[1] = std::min(cookDrag[1], cz); cookSel[2] = std::max(cookDrag[0], cx); cookSel[3] = std::max(cookDrag[1], cz); }
             int rid = cookHave ? cookRes.roomAt(wx, cookLayer, wz) : 0;
             ImGui::SetTooltip("Block %d, %d  (chunk %d, %d)%s", wx, wz, cx, cz, rid ? (cookRes.rooms[rid - 1].outside ? "\noutside" : ("\nroom " + std::to_string(rid) + (cookRes.rooms[rid - 1].zone.empty() ? "" : " (zone " + cookRes.rooms[rid - 1].zone + ")")).c_str()) : "");
