@@ -36,7 +36,8 @@ struct CookRooms {
     int count(bool outsideToo = true) const;
 };
 
-bool cookOpen(const World& w, BlockId v);   // air for cooking: not a full opaque block (glass, plants, slopes, water: open)
+bool cookOpen(const World& w, BlockId v);
+bool cookOpenReg(const BlockRegistry& reg, BlockId v);   // air for cooking: not a full opaque block (glass, plants, slopes, water: open)
 // sorts the air of the area (its chunks are loaded first). Zones win over everything (their air is their room); then the outside
 // floods from every block the sky reaches; what is left falls into rooms (blocks touching through a face are one room)
 CookRooms findRooms(World& w, const CookArea& a, const std::vector<CookDoor>& doors, const std::vector<EnvZone>& zones);

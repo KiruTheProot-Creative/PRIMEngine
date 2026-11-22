@@ -993,6 +993,7 @@ struct App {
     }
     template <class F> void ChangeBlocks(F fn) {
         if (workers) workers->stop();
+        if (ambBusy) { ambFut.wait(); }   // (an ambient light's fill reads the blocks' kinds)
         fn(); reg.resolve(); UploadTextures(); ApplyEmissionLights(); modelEmit.clear(); ghostKey = 0xFFFFFFFFu;
         if (world) world->recountEmitters();   // a block may glow (or stop glowing) now
         if (workers) workers->start(Threads());
@@ -1077,7 +1078,7 @@ struct App {
         world = std::make_unique<World>(reg); info.applyGenerator(world->gen, reg);
         world->store = std::make_unique<RegionStore>(worldDir + "/region");
         workers = std::make_unique<MeshWorkers>(reg); workers->start(Threads());
-        player = info.player; history.clear(); gpu.clear(); latestSeq.clear(); LodClear(); chunkMeshed.clear(); lampCache.clear();
+        player = info.player; history.clear(); gpu.clear(); latestSeq.clear(); LodClear(); chunkMeshed.clear(); lampCache.clear(); lavaTops.clear();
         LoadWorldObjects(); selStage = 0;
         for (int i = 0; i < 9; i++) {   // "stone" or "stone@stairs"
             std::string e = info.hotbar[i], shape; size_t at = e.rfind('@'); if (at != std::string::npos) { shape = e.substr(at + 1); e = e.substr(0, at); }
@@ -1102,7 +1103,7 @@ struct App {
     }
     void CloseWorld() {   // the project stays open
         if (playMode && !travelling) StopPlay();
-        SaveWorld(); workers.reset(); world.reset(); gpu.clear(); latestSeq.clear(); LodClear(); chunkMeshed.clear(); lampCache.clear(); Capture(false);
+        SaveWorld(); workers.reset(); world.reset(); gpu.clear(); latestSeq.clear(); LodClear(); chunkMeshed.clear(); lampCache.clear(); lavaTops.clear(); Capture(false);
     }
     std::string CurrentWorld() const { return world ? fs::path(worldDir).filename().string() : ""; }
     void RenameWorld(const std::string& from, const std::string& to) {
@@ -1335,7 +1336,8 @@ struct App {
         for (int k = 0; k < 3 && world->liquidTimer >= 0.1; k++) { world->liquidTimer -= 0.1; world->tickLiquids(); }
         if (world->liquidTimer > 0.3) world->liquidTimer = 0;
         envState.update(dt, player.eye(), info.environment, info.zones); UpdateLook(dt, false); UpdateCamOpen(dt);
-        CpuMark("game: lamp lights"); UpdateLampProxies(dt); UpdateAmbient(dt);
+        CpuMark("game: lamp lights"); UpdateLampProxies(dt);
+        CpuMark("game: ambient lights"); UpdateAmbient(dt);
         CpuMark("game: sky volume"); UpdateSkyVolume();
         CpuMark("game: light voxels"); UpdateVoxels();
         CpuMark("game: water"); UpdateWater(dt);
@@ -4155,6 +4157,7 @@ struct App {
         for (auto it = chunkSee.begin(); it != chunkSee.end();) { if (!world->chunk(it->first)) it = chunkSee.erase(it); else ++it; }
         for (auto it = chunkMeshed.begin(); it != chunkMeshed.end();) { if (!world->chunk(*it)) it = chunkMeshed.erase(it); else ++it; }
         for (auto it = lampCache.begin(); it != lampCache.end();) { if (!world->chunk(it->first)) it = lampCache.erase(it); else ++it; }
+        for (auto it = lavaTops.begin(); it != lavaTops.end();) { if (!world->chunk(it->first)) it = lavaTops.erase(it); else ++it; }
     }
     // ---- cave culling: which chunks can be seen from the camera (through air, never back toward it)
     std::unordered_map<I3, uint16_t, I3Hash> chunkSee;   // chunks with something solid in them (the rest: SEE_ALL)
@@ -9344,6 +9347,7 @@ struct App {
     // around you (128 x 64 x 128) know whose room they are in (up to two where they blend); the card gets that and each light's colours
     struct AmbRt { AmbientFill fill; uint64_t sig = 0; V3 pos{ 1e30, 0, 0 }; float reach = -1; int blend = -1; double age = 99; };
     std::unordered_map<uint32_t, AmbRt> ambRt; std::vector<uint32_t> ambOrder; size_t ambBreakN = 0;
+    std::future<AmbientFill> ambFut; bool ambBusy = false; uint32_t ambJobId = 0;   // a fill on its own thread (on a copy of the chunks: no stutter)
     static constexpr int AMBX = 128, AMBY = 64, AMBZ = 128;
     I3 ambOrigin{ INT_MIN, 0, 0 }; std::vector<uint8_t> ambVolCpu; bool ambOn = false;
     ComPtr<ID3D11Texture3D> ambVolTex; ComPtr<ID3D11ShaderResourceView> ambVolSRV, ambObjSRV; ComPtr<ID3D11Buffer> ambObjBuf; size_t ambObjCap = 0;
@@ -9364,6 +9368,10 @@ struct App {
         if (breakables.marks.size() != ambBreakN) { ambBreakN = breakables.marks.size(); for (auto& kv : ambRt) kv.second.sig ^= 1; for (auto& kv : ambRt) kv.second.age = 99; }   // (blocks marked or unmarked breakable: fill again)
         std::vector<uint32_t> order; for (const WorldObject* o : list) order.push_back(o->id);
         if (order != ambOrder) { ambOrder = order; changed = true; for (auto it = ambRt.begin(); it != ambRt.end();) { if (std::find(order.begin(), order.end(), it->first) == order.end()) it = ambRt.erase(it); else ++it; } }
+        if (ambBusy && ambFut.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {   // a fill is done
+            AmbientFill f = ambFut.get(); ambBusy = false;
+            auto it = ambRt.find(ambJobId); if (it != ambRt.end()) { it->second.fill = std::move(f); it->second.sig = AmbSig(it->second); changed = true; }
+        }
         for (const WorldObject* o : list) {
             AmbRt& rt = ambRt[o->id]; rt.age += dt;
             bool param = rt.pos.x != o->pos.x || rt.pos.y != o->pos.y || rt.pos.z != o->pos.z || rt.reach != o->ambient.reach || rt.blend != o->ambient.blend;
@@ -9371,9 +9379,25 @@ struct App {
             if (!(param && rt.age > 0.1) && !check) continue;   // (dragging it around: a few times a second)
             rt.age = 0;
             if (!param && AmbSig(rt) == rt.sig) continue;
+            if (ambBusy) { rt.age = 99; continue; }   // (one fill at a time: this one next)
             if (!doorsMade) { doors = CookDoors(); doorsMade = true; }
-            fillAmbient(*world, o->pos, o->ambient.reach, o->ambient.blend, doors, rt.fill, 400000, [&](int x, int y, int z) { return breakables.has(x, y, z); });   // (breakable blocks: it goes through them)
-            rt.pos = o->pos; rt.reach = o->ambient.reach; rt.blend = o->ambient.blend; rt.sig = AmbSig(rt); changed = true;
+            {   // a copy of the chunks it can reach (and the breakable blocks there: it goes through them), filled on its own thread
+                I3 lo, hi; ambientBox(o->pos, o->ambient.reach, o->ambient.blend, lo, hi);
+                I3 k0 = chunkOf(lo.x, lo.y, lo.z), k1 = chunkOf(hi.x, hi.y, hi.z);
+                auto snap = std::make_shared<std::unordered_map<I3, std::unique_ptr<Chunk>, I3Hash>>();
+                for (int y = k0.y; y <= k1.y; y++) for (int z = k0.z; z <= k1.z; z++) for (int x = k0.x; x <= k1.x; x++) if (const Chunk* c = world->chunk({ x, y, z })) (*snap)[I3{ x, y, z }] = std::make_unique<Chunk>(*c);
+                auto marks = std::make_shared<std::unordered_set<I3, I3Hash>>();
+                for (const auto& kv : breakables.marks) { I3 p{ kv.first[0], kv.first[1], kv.first[2] }; if (p.x >= lo.x && p.y >= lo.y && p.z >= lo.z && p.x <= hi.x && p.y <= hi.y && p.z <= hi.z) marks->insert(p); }
+                V3 at = o->pos; float reach = o->ambient.reach; int blend = o->ambient.blend; const BlockRegistry* rg = &reg; std::vector<CookDoor> dc = doors;
+                ambFut = std::async(std::launch::async, [snap, marks, dc, at, reach, blend, rg]() {
+                    AmbientFill f;
+                    fillAmbient(*rg, [&](I3 c) -> const Chunk* { auto it = snap->find(c); return it == snap->end() ? nullptr : it->second.get(); }, at, reach, blend, dc, f, 400000,
+                                [&](int x, int y, int z) { return marks->count(I3{ x, y, z }) > 0; });
+                    return f;
+                });
+                ambBusy = true; ambJobId = o->id;
+            }
+            rt.pos = o->pos; rt.reach = o->ambient.reach; rt.blend = o->ambient.blend;
         }
         I3 cb{ ifloor(camPos.x), ifloor(camPos.y), ifloor(camPos.z) };
         I3 want{ floorDiv(cb.x - AMBX / 2, 16) * 16, floorDiv(cb.y - AMBY / 2, 16) * 16, floorDiv(cb.z - AMBZ / 2, 16) * 16 };
@@ -9422,7 +9446,8 @@ struct App {
     // high its top is), blurred by its smaller copies on the graphics card. Made again when you move or every half a second
     static constexpr int LAVAN = 128;
     ComPtr<ID3D11Texture2D> lavaTex; ComPtr<ID3D11ShaderResourceView> lavaSRV; ComPtr<ID3D11RenderTargetView> lavaRTV;
-    I3 lavaAt{ INT_MIN, 0, 0 }; int lavaBase = 0; double lavaAge = 99; bool lavaAny = false; std::vector<uint16_t> lavaPx;
+    I3 lavaAt{ INT_MIN, 0, 0 }; int lavaBase = 0; double lavaAge = 99; bool lavaAny = false; std::vector<uint16_t> lavaPx; uint64_t lavaSig = 0;
+    struct LavaTops { bool have = false; uint32_t ver = 0; int8_t top[256]; }; std::unordered_map<I3, LavaTops, I3Hash> lavaTops;
     void UpdateLavaMap() {
         lavaAge += frameDt; if (!world || settings.lavaLight <= 0) { lavaAny = false; return; }
         I3 cb{ ifloor(camPos.x), ifloor(camPos.y), ifloor(camPos.z) };
@@ -9434,22 +9459,35 @@ struct App {
             d.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET; d.MiscFlags = D3D11_RESOURCE_MISC_GENERATE_MIPS;
             HR(dev->CreateTexture2D(&d, nullptr, &lavaTex)); HR(dev->CreateShaderResourceView(lavaTex.Get(), nullptr, &lavaSRV));
         }
+        int y0 = lavaBase - 40, y1 = lavaBase + 16;
+        {   // nothing changed (no chunk with lava changed, not moved): keep it
+            uint64_t sig = 1469598103934665603ull ^ (uint64_t)(lavaAt.x * 73856093) ^ (uint64_t)(lavaAt.z * 19349663) ^ (uint64_t)(lavaBase * 83492791);
+            for (int cz = floorDiv(lavaAt.z, CS); cz <= floorDiv(lavaAt.z + LAVAN - 1, CS); cz++) for (int cx = floorDiv(lavaAt.x, CS); cx <= floorDiv(lavaAt.x + LAVAN - 1, CS); cx++)
+                for (int cy = floorDiv(y1, CS); cy >= floorDiv(y0, CS); cy--) { const Chunk* ch = world->chunk({ cx, cy, cz }); if (ch && ch->emitters) sig = (sig ^ (ch->version + 1) ^ ((uint64_t)(cx * 31 + cz * 977 + cy * 7919) << 20)) * 1099511628211ull; }
+            if (!moved && sig == lavaSig) return;
+            lavaSig = sig;
+        }
         lavaPx.assign((size_t)LAVAN * LAVAN * 4, 0); bool any = false;
         const uint16_t one = DirectX::PackedVector::XMConvertFloatToHalf(1.f);
-        int y0 = lavaBase - 40, y1 = lavaBase + 16;
         for (int cz = floorDiv(lavaAt.z, CS); cz <= floorDiv(lavaAt.z + LAVAN - 1, CS); cz++)
             for (int cx = floorDiv(lavaAt.x, CS); cx <= floorDiv(lavaAt.x + LAVAN - 1, CS); cx++)
                 for (int cy = floorDiv(y1, CS); cy >= floorDiv(y0, CS); cy--) {
                     const Chunk* ch = world->chunk({ cx, cy, cz }); if (!ch || !ch->emitters) continue;
+                    LavaTops& lt = lavaTops[I3{ cx, cy, cz }];   // (each chunk's lava tops, worked out once per change)
+                    if (!lt.have || lt.ver != ch->version) {
+                        lt.have = true; lt.ver = ch->version;
+                        for (int lz = 0; lz < CS; lz++) for (int lx = 0; lx < CS; lx++) {
+                            int8_t t = -1;
+                            for (int ly = CS - 1; ly >= 0; ly--) { BlockId v = ch->get(lx, ly, lz); if (v != AIR && (soakOf(v) == 2 || reg.get(v).liquid == 2)) { t = (int8_t)ly; break; } }
+                            lt.top[lz * CS + lx] = t;
+                        }
+                    }
                     for (int lz = 0; lz < CS; lz++) for (int lx = 0; lx < CS; lx++) {
+                        int t = lt.top[lz * CS + lx]; if (t < 0) continue;
+                        int wy = cy * CS + t; if (wy < y0 || wy > y1) continue;
                         int mx = cx * CS + lx - lavaAt.x, mz = cz * CS + lz - lavaAt.z; if (mx < 0 || mz < 0 || mx >= LAVAN || mz >= LAVAN) continue;
                         uint16_t* o = &lavaPx[((size_t)mz * LAVAN + mx) * 4]; if (o[0]) continue;   // (a higher one is there already)
-                        for (int ly = CS - 1; ly >= 0; ly--) {
-                            int wy = cy * CS + ly; if (wy < y0 || wy > y1) continue;
-                            BlockId v = ch->get(lx, ly, lz); if (v == AIR) continue;
-                            bool hot = soakOf(v) == 2 || reg.get(v).liquid == 2; if (!hot) continue;
-                            o[0] = one; o[1] = DirectX::PackedVector::XMConvertFloatToHalf((float)(wy + 0.9 - lavaBase)); o[3] = one; any = true; break;
-                        }
+                        o[0] = one; o[1] = DirectX::PackedVector::XMConvertFloatToHalf((float)(wy + 0.9 - lavaBase)); o[3] = one; any = true;
                     }
                 }
         lavaAny = any;

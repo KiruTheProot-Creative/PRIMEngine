@@ -1830,6 +1830,12 @@ int main() {
                     bool behind = false; for (auto& c : thr.cells) if (c.first == I3{ 18, 2, 10 }) behind = true;
                     CHECK(behind, "an ambient light goes through blocks marked breakable");
                 }
+                {   // speed: out in the open (the most it can fill)
+                    auto t0 = std::chrono::steady_clock::now(); AmbientFill big; fillAmbient(cw, V3{ 50.5, 10.5, 50.5 }, 48, 3, doors, big);
+                    double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+                    std::printf("      (open air, reach 48: %zu blocks in %.1f ms)\n", big.cells.size(), ms);
+                    CHECK(big.cells.size() > 1000, "an ambient light out in the open fills up to its reach");
+                }
                 AmbientFill stuck; fillAmbient(cw, V3{ 0.5, -5.5, 0.5 }, 10, 2, doors, stuck);
                 CHECK(stuck.stuck || stuck.cells.empty() || true, "deep in the ground: nothing (or the void)");
             }

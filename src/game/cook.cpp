@@ -10,9 +10,10 @@
 
 namespace mc {
 
-bool cookOpen(const World& w, BlockId v) {
+bool cookOpen(const World& w, BlockId v) { return cookOpenReg(w.reg, v); }
+bool cookOpenReg(const BlockRegistry& reg, BlockId v) {
     if (v == AIR) return true;
-    const BlockDef& d = w.reg.get(v);
+    const BlockDef& d = reg.get(v);
     if (d.liquid || d.render != Render::Opaque) return true;
     return resolveShape(v, d) != Shapes::FULL;
 }
