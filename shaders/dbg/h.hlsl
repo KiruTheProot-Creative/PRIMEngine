@@ -1766,7 +1766,7 @@ float4 PS_VolumeLow(SkyOut i) : SV_Target   // a smaller picture: what the air a
     }
 
     // ---- ground fog: thick near the ground, lit by the sun where the shadow map says the sun reaches (light shafts) (the fog grid: in PS_Volume)
-    if (gVolume.y > 0 || gEnv.w > 0 || gLookFog.x > 0)
+    if (gFogG.w < 0.5 && (gVolume.y > 0 || gEnv.w > 0 || gLookFog.x > 0))
     {
         float tMax = min(dist, 192);
         const int N = 20;

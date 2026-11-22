@@ -31,7 +31,7 @@ jobs:
         continue-on-error: true
         run: |
           $fxc = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter fxc.exe | Where-Object { $_.FullName -match "x64" } | Select-Object -Last 1
-          foreach ($v in @("a","b","c","d","e")) {
+          foreach ($v in @("f","g","h","i")) {
             $out = & $fxc.FullName /nologo /T ps_5_0 /E PS_VolumeLow /Fo NUL "shaders/dbg/$v.hlsl" 2>&1 | Where-Object { $_ -notmatch "warning" }
             "VARIANT $v exit $LASTEXITCODE :: $($out -join ' | ')"
           }
