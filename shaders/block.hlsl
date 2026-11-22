@@ -1796,7 +1796,7 @@ float4 PS_VolumeLow(SkyOut i) : SV_Target   // a smaller picture: what the air a
         sAll = sAll * T + S; tAll *= T;
     }
     // ---- lights in the air: every light near you glows in the fog and haze (spotlights make beams, with their shadows)
-    if (gLookFog.w > 0.001 && gCl0.x > 0.5 && gFogG.w < 0.5)
+    if (gLookFog.w > 0.001 && gCl0.x > 0.5)   // (the fog grid on: its lookFog.w is 0 for this pass - a check here makes the shader compiler overflow its stack)
     {
         float tMax = min(dist, 56);
         const int NL = 16;   // (16 steps with a moving jitter: the upscaler / smoothing evens them out)

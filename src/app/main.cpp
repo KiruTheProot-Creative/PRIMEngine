@@ -4875,7 +4875,9 @@ struct App {
         { D3D11_VIEWPORT lv{ 0, 0, (float)lowW, (float)lowH, 0, 1 }; ctx->RSSetViewports(1, &lv); }
         ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psVolumeLow.Get(), nullptr, 0);
         { ID3D11ShaderResourceView* v4[4] = { reflSRV.Get(), shadows ? shadowSRV.Get() : nullptr, depthSRV.Get(), noiseSRV.Get() }; ctx->PSSetShaderResources(0, 4, v4); }
+        if (fogGridNow) { FrameCB f2 = fc; f2.lookFog[3] = 0; ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &f2, 0, 0); }   // (the grid has the lights' glow already)
         ctx->Draw(3, 0);
+        if (fogGridNow) ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &fc, 0, 0);
         ctx->RSSetViewports(1, &v);
         ctx->OMSetRenderTargets(1, volRTV.GetAddressOf(), nullptr); ctx->PSSetShader(psVolume.Get(), nullptr, 0);   // the picture through it, full size
         { ID3D11ShaderResourceView* vl = volLowSRV.Get(); ctx->PSSetShaderResources(41, 1, &vl); }
