@@ -4869,9 +4869,7 @@ struct App {
             ID3D11ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(1, 1, &n1);
             ctx->RSSetViewports(1, &v);
         } else fogHistOk = false;
-        if (!fogGridNow) { FogCB fcb{}; fcb.g[3] = fogGridNow ? 1.f : 0.f; fcb.g[0] = FOGW; fcb.g[1] = FOGH; fcb.g[2] = FOGD; fcb.r[0] = 192; fcb.r[3] = 56;   // (the picture's lookups: only on / off and the size matter)
-          if (!cbFog) { D3D11_BUFFER_DESC bd{}; bd.ByteWidth = sizeof(FogCB); bd.Usage = D3D11_USAGE_DEFAULT; bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER; HR(dev->CreateBuffer(&bd, nullptr, &cbFog)); }
-          ctx->UpdateSubresource(cbFog.Get(), 0, nullptr, &fcb, 0, 0); ctx->PSSetConstantBuffers(14, 1, cbFog.GetAddressOf()); }
+        if (!fogGridNow) { cookCB.fogG[3] = 0; UploadCookCB(); }   // (the picture: the old way)
         ctx->OMSetRenderTargets(1, volLowRTV.GetAddressOf(), nullptr);   // what the air adds and lets through: on the smaller picture
         ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->IASetInputLayout(nullptr); ctx->RSSetState(rsNoCull.Get()); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
         { D3D11_VIEWPORT lv{ 0, 0, (float)lowW, (float)lowH, 0, 1 }; ctx->RSSetViewports(1, &lv); }
@@ -9092,23 +9090,21 @@ struct App {
     // ---- the fog grid (smooth fog): 160 x 90 x 64 cells following the camera, worked out a little more each frame
     static constexpr int FOGW = 160, FOGH = 90, FOGD = 64;
     ComPtr<ID3D11Texture3D> fogCell[2], fogSum; ComPtr<ID3D11UnorderedAccessView> fogCellUAV[2], fogSumUAV; ComPtr<ID3D11ShaderResourceView> fogCellSRV[2], fogSumSRV;
-    ComPtr<ID3D11PixelShader> psFogGrid; ComPtr<ID3D11Buffer> cbFog; int fogCur = 0; bool fogHistOk = false; bool fogGridNow = false;
-    struct alignas(16) FogCB { float g[4], r[4], j[4]; };
+    ComPtr<ID3D11PixelShader> psFogGrid; int fogCur = 0; bool fogHistOk = false; bool fogGridNow = false;
     void RenderFogGrid() {   // (the frame's constants, the sun's shadow and the lights are bound already)
         if (!psFogGrid) return;
         if (!fogSum) {
             D3D11_TEXTURE3D_DESC d{}; d.Width = FOGW; d.Height = FOGH; d.Depth = FOGD; d.MipLevels = 1; d.Format = DXGI_FORMAT_R16G16B16A16_FLOAT; d.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
             for (int k = 0; k < 2; k++) { HR(dev->CreateTexture3D(&d, nullptr, &fogCell[k])); HR(dev->CreateUnorderedAccessView(fogCell[k].Get(), nullptr, &fogCellUAV[k])); HR(dev->CreateShaderResourceView(fogCell[k].Get(), nullptr, &fogCellSRV[k])); }
             HR(dev->CreateTexture3D(&d, nullptr, &fogSum)); HR(dev->CreateUnorderedAccessView(fogSum.Get(), nullptr, &fogSumUAV)); HR(dev->CreateShaderResourceView(fogSum.Get(), nullptr, &fogSumSRV));
-            D3D11_BUFFER_DESC bd{}; bd.ByteWidth = sizeof(FogCB); bd.Usage = D3D11_USAGE_DEFAULT; bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER; HR(dev->CreateBuffer(&bd, nullptr, &cbFog));
             fogHistOk = false;
         }
         V3 moved = camPos - fogLastCam; bool jump = moved.x * moved.x + moved.y * moved.y + moved.z * moved.z > 16;   // (a teleport, a cut: start fresh)
-        FogCB c{}; c.g[0] = FOGW; c.g[1] = FOGH; c.g[2] = FOGD; c.g[3] = 1;
+        CookCB& c = cookCB; c.fogG[0] = FOGW; c.fogG[1] = FOGH; c.fogG[2] = FOGD; c.fogG[3] = 1;
         double fr = (double)(frameNo % 4096);
-        c.r[0] = 192; c.r[1] = (float)std::fmod(fr * 0.6180339887, 1.0); c.r[2] = fogHistOk && !jump ? 0.9f : 0.f; c.r[3] = 56;
-        c.j[0] = (float)std::fmod(0.5 + fr * 0.7548776662, 1.0); c.j[1] = (float)std::fmod(0.5 + fr * 0.5698402910, 1.0);
-        ctx->UpdateSubresource(cbFog.Get(), 0, nullptr, &c, 0, 0); ctx->PSSetConstantBuffers(14, 1, cbFog.GetAddressOf());
+        c.fogR[0] = 192; c.fogR[1] = (float)std::fmod(fr * 0.6180339887, 1.0); c.fogR[2] = fogHistOk && !jump ? 0.9f : 0.f; c.fogR[3] = 56;
+        c.fogJ[0] = (float)std::fmod(0.5 + fr * 0.7548776662, 1.0); c.fogJ[1] = (float)std::fmod(0.5 + fr * 0.5698402910, 1.0);
+        UploadCookCB();
         int nx = 1 - fogCur;
         { ID3D11ShaderResourceView* n2[2] = { nullptr, nullptr }; ctx->PSSetShaderResources(49, 2, n2); }
         ID3D11UnorderedAccessView* u[2] = { fogCellUAV[nx].Get(), fogSumUAV.Get() };
@@ -9136,7 +9132,12 @@ struct App {
     I3 cookLitLo{ 0, 0, 0 }, cookLitN{ 0, 0, 0 }; bool cookLitHave = false;
     ComPtr<ID3D11Texture3D> cookLitTex, cookDirTex; ComPtr<ID3D11ShaderResourceView> cookLitSRV, cookDirSRV;
     ComPtr<ID3D11Buffer> cbCook;
-    struct alignas(16) CookCB { float cook[4], litO[4], litS[4], pad[4]; float pos[64][4], lo[64][4], hi[64][4]; };
+    struct alignas(16) CookCB { float cook[4], litO[4], litS[4], fogG[4], fogR[4], fogJ[4]; float pos[64][4], lo[64][4], hi[64][4]; };   // (b13: the cooked world and the fog grid)
+    CookCB cookCB{};
+    void UploadCookCB() {
+        if (!cbCook) { D3D11_BUFFER_DESC d{}; d.ByteWidth = sizeof(CookCB); d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_CONSTANT_BUFFER; HR(dev->CreateBuffer(&d, nullptr, &cbCook)); }
+        ctx->UpdateSubresource(cbCook.Get(), 0, nullptr, &cookCB, 0, 0); ctx->PSSetConstantBuffers(13, 1, cbCook.GetAddressOf());
+    }
     bool CookInArea(V3 p) const { return cookHave && p.x >= cookArea.cx0 * CS && p.x < (cookArea.cx1 + 1) * CS && p.z >= cookArea.cz0 * CS && p.z < (cookArea.cz1 + 1) * CS && p.y >= cookArea.y0 && p.y < cookArea.y1; }
     double CookLampFar() const { return std::clamp((double)settings.lampDistance, 16.0, 256.0) * 0.6; }   // past this, the lamps' baked light only (they fade over the 2/3 before)
     void UploadCookLight(const CookLit& L) {
@@ -9170,8 +9171,7 @@ struct App {
         cookCamRoom = cookHave ? cookRes.roomAt(ifloor(camPos.x), ifloor(camPos.y), ifloor(camPos.z)) : 0;
         if (cookCullOn) { XMFLOAT4X4 m; XMStoreFloat4x4(&m, vp); visibleRooms(cookRes, &m._11, camPos, cookVis); cookSeenRooms = 0; for (size_t k = 1; k < cookVis.size(); k++) cookSeenRooms += cookVis[k]; }
         cookLitOn = cookUse && cookLitHave && settings.lampBlocks > 0;
-        if (!cbCook) { D3D11_BUFFER_DESC d{}; d.ByteWidth = sizeof(CookCB); d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_CONSTANT_BUFFER; HR(dev->CreateBuffer(&d, nullptr, &cbCook)); }
-        static CookCB c; std::memset(&c, 0, sizeof c);
+        CookCB& c = cookCB; std::memset(c.cook, 0, sizeof c.cook); std::memset(c.litO, 0, sizeof c.litO); std::memset(c.litS, 0, sizeof c.litS);
         int np = cookUse && cookCubeSRV ? std::min(cookProbesReady, 64) : 0;
         c.cook[0] = (float)np; c.cook[1] = cookLitOn ? 1.f : 0.f; c.cook[2] = 64; c.cook[3] = 96;   // reflections: real time to 64 blocks, the rooms' pictures from 96 on
         if (cookLitOn) {
@@ -9185,8 +9185,7 @@ struct App {
             c.lo[k][0] = (float)(p.lo.x - camPos.x); c.lo[k][1] = (float)(p.lo.y - camPos.y); c.lo[k][2] = (float)(p.lo.z - camPos.z);
             c.hi[k][0] = (float)(p.hi.x - camPos.x); c.hi[k][1] = (float)(p.hi.y - camPos.y); c.hi[k][2] = (float)(p.hi.z - camPos.z);
         }
-        ctx->UpdateSubresource(cbCook.Get(), 0, nullptr, &c, 0, 0);
-        ctx->PSSetConstantBuffers(13, 1, cbCook.GetAddressOf());
+        UploadCookCB();
         ID3D11ShaderResourceView* t3[3] = { np ? cookCubeSRV.Get() : nullptr, cookLitOn ? cookLitSRV.Get() : nullptr, cookLitOn ? cookDirSRV.Get() : nullptr };
         ctx->PSSetShaderResources(46, 3, t3);
     }

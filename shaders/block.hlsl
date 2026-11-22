@@ -140,7 +140,9 @@ cbuffer CookCB : register(b13)
     float4 gCook;        // x reflection pictures (how many), y baked light on, z / w: real time until z blocks away, cooked from w on
     float4 gCookLitO;    // xyz the baked light's corner (camera-relative), w its handing over: real lamps until x blocks ...
     float4 gCookLitS;    // xyz its size (blocks), w ... baked from w on
-    float4 gCookPad;
+    float4 gFogG;   // the fog grid (smooth fog): x, y, z its size; w 1 on
+    float4 gFogR;   // x how far it reaches (blocks), y this frame's spot in the cell (depth, 0..1), z how much it keeps of what it knew (0: starts fresh), w lights glow this far
+    float4 gFogJ;   // xy this frame's spot in the cell (across)
     float4 gProbePos[64];   // each room's picture: where it was taken (camera-relative), w its mip count
     float4 gProbeLo[64];    // the room's box (camera-relative), for looking up what a ray hits
     float4 gProbeHi[64];
@@ -1614,12 +1616,7 @@ void PS_HudDepth(SkyOut i, out float depth : SV_Depth)
 // ---- the fog grid (smooth fog): a small 3D grid that follows the camera (160 x 90 cells across the screen, 64 deep, finer near you).
 // Each frame every cell looks at one spot inside it (a different one each frame) and blends that with what it knew (the cell it was
 // in the frame before), then each column is added up front to back. The picture just looks it up at its distance.
-cbuffer FogCB : register(b14)
-{
-    float4 gFogG;   // x, y, z: the grid's size; w 1 on
-    float4 gFogR;   // x how far it reaches (blocks), y this frame's spot in the cell (depth, 0..1), z how much it keeps of what it knew (0: starts fresh), w lights glow this far
-    float4 gFogJ;   // xy this frame's spot in the cell (across)
-};
+// (its numbers: in CookCB, b13)
 Texture3D gFogGrid : register(t49);   // added up: rgb what the air adds up to this depth, a what it lets through
 Texture3D gFogHist : register(t50);   // the frame before's cells: rgb light given off, a how thick
 RWTexture3D<float4> gFogCellW : register(u0);
