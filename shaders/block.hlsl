@@ -127,6 +127,8 @@ float lightShadow(LightData L, float3 p, int type)
     r += gLightShadow.SampleCmpLevelZero(gShadowSamp, float3(uv + float2(0.5, 0.5) * t, sl), z);
     return lerp(1, r * 0.25, keep);
 }
+// a colour that can't break the picture: NaN -> 0 (min / max return the other value), infinity and huge values capped
+float3 hdrSafe(float3 c, float cap = 4096) { return min(max(c, 0), cap); }
 float voxShadow(float3 P, float3 lp);   // (below: a lamp block's shadow, through the blocks)
 static float3 sFlatN = 0;   // the block's own face direction (before generated bumps), set while a block is lit (0: not known)
 void evalLight(LightData L, float3 rel, float3 n, float3 v, float pw, bool object, inout float3 dif, inout float3 spec)
@@ -147,7 +149,7 @@ void evalLight(LightData L, float3 rel, float3 n, float3 v, float pw, bool objec
     else if (voxSh) att *= voxShadow(pixSnap(rel, nf) + nf * 0.04, lp);   // a lamp block: its shadow from the blocks between
     float3 c = L.col.rgb * att;
     dif += c * saturate(dot(n, Lv) * 0.85 + 0.15);   // a little light wraps round edges, softer look
-    float3 h = normalize(Lv + v);
+    float3 hv = Lv + v; float3 h = hv * rsqrt(max(dot(hv, hv), 1e-8));   // (looking straight into the light: no zero-length normalize - a NaN pixel)
     spec += c * pow(saturate(dot(n, h)), pw) * (pw + 8) / 25 * saturate(dot(n, Lv));
 }
 float3 dynLightsSpec(float3 rel, float3 n, float3 v, float pw, bool object, out float3 spec)
@@ -695,7 +697,7 @@ PSOut PS_Opaque(VSOut i, bool front : SV_IsFrontFace)
     if (i.mat.z >= 0) o.albedo.a = i.mat.z;   // (the block's own roughness)   // a: how rough (blurry reflections)
     if (i.kind > 3.5) { o.color = float4(lavaColor(i.rel), 1); o.surface = float4(i.n * 0.5 + 0.5, 0); o.albedo = 0; return o; }
     float3 ind;
-    o.color = float4(lightBlock(i, t.rgb, front, n, sh, ind), 1);
+    o.color = float4(hdrSafe(lightBlock(i, t.rgb, front, n, sh, ind)), 1);
     o.surface = float4(n * 0.5 + 0.5, i.mat.y > 0.5 ? 1 : min(sh, 0.98));   // 1 = mirror
     o.indirect = float4(ind, 0);
     return o;
@@ -708,7 +710,7 @@ PSOut PS_Cutout(VSOut i, bool front : SV_IsFrontFace)
     PSOut o; float3 n; float sh; float3 ind;
     o.albedo = float4(t.rgb, i.uvl.z < 16000 ? gMats[(uint)round(i.uvl.z)].c.x : 0);
     if (i.mat.z >= 0) o.albedo.a = i.mat.z;   // (the block's own roughness)
-    o.color = float4(lightBlock(i, t.rgb, front, n, sh, ind), 1);
+    o.color = float4(hdrSafe(lightBlock(i, t.rgb, front, n, sh, ind)), 1);
     o.surface = float4(n * 0.5 + 0.5, i.mat.y > 0.5 ? 1 : min(sh, 0.98));
     o.indirect = float4(ind, 0);
     return o;
@@ -1454,9 +1456,9 @@ float4 PS_ReflComp(SkyOut i) : SV_Target
         }
         float3 refl = s / max(wa * 2, 1e-4);   // (rgb is reflection x amount, a half the amount: the reflection itself, averaged)
         float a = r.a * (1 - rough * 0.35);    // rough surfaces show their reflection a little less
-        return float4(scene * (1 - a) + refl * a * 2, 1);
+        return float4(hdrSafe(scene * (1 - a) + refl * a * 2), 1);
     }
-    return float4(scene * (1 - r.a) + r.rgb, 1);
+    return float4(hdrSafe(scene * (1 - r.a) + r.rgb), 1);
 }
 
 // ---------------------------------------------------------------- water: waves, what is under it (bent, and bluer the deeper), reflections
@@ -1524,7 +1526,7 @@ float4 PS_Water(VSOut i, bool front : SV_IsFrontFace) : SV_Target
         c = lerp(behind, c, saturate(thick * 6));
     }
     float f = saturate((dist - gFogRange.x) / max(gFogRange.y - gFogRange.x, 1));
-    return float4(lerp(c, skyColor(dir), f * f), 1);
+    return float4(hdrSafe(lerp(c, skyColor(dir), f * f)), 1);
 }
 
 // ---------------------------------------------------------------- volumetrics: clouds and ground fog over the picture
@@ -1704,7 +1706,7 @@ float4 PS_Volume(SkyOut i) : SV_Target   // full size: the picture seen through 
         else scene = lerp(scene, float3(1.6, 0.45, 0.08), 1 - exp(-d * 1.4));
         scene += air.rgb;
     }
-    return float4(scene, 1);
+    return float4(hdrSafe(scene), 1);
 }
 
 // ---------------------------------------------------------------- final picture: exposure, filmic curve, gamma
@@ -1726,7 +1728,7 @@ float4 PS_BloomDown(SkyOut i) : SV_Target
     float3 j = gBloomSrc.SampleLevel(gClamp, uv + t * float2(-1, -1), 0).rgb, l = gBloomSrc.SampleLevel(gClamp, uv + t * float2(1, -1), 0).rgb;
     float3 m = gBloomSrc.SampleLevel(gClamp, uv + t * float2(-1, 1), 0).rgb, n = gBloomSrc.SampleLevel(gClamp, uv + t * float2(1, 1), 0).rgb;
     float3 r = e * 0.125 + (a + c + g + k) * 0.03125 + (b + d + f + h) * 0.0625 + (j + l + m + n) * 0.125;
-    return float4(min(r, 64), 1);   // no single fireflies
+    return float4(hdrSafe(r, 64), 1);   // no single fireflies (and a broken pixel never glows: NaN would have become 64)
 }
 float4 PS_BloomUp(SkyOut i) : SV_Target
 {
@@ -1819,8 +1821,8 @@ float3 tonemapNeutral(float3 c)   // Khronos "PBR Neutral": colours stay as they
 float lookExposure() { return exp2(gLk0.y + gLkAdapt.x * gExposure.Load(int3(0, 0, 0)).r); }
 float3 postBase(int2 px, float2 uv, float expo)   // exposure, glow, contrast, the tone curve (before gamma)
 {
-    float3 c = gHdr.Load(int3(px, 0)).rgb;
-    c = lerp(c, gBloom.SampleLevel(gClamp, uv, 0).rgb / 6, gExtra.y);              // soft glow around bright things (6 levels added up)
+    float3 c = hdrSafe(gHdr.Load(int3(px, 0)).rgb);
+    c = lerp(c, hdrSafe(gBloom.SampleLevel(gClamp, uv, 0).rgb) / 6, gExtra.y);              // soft glow around bright things (6 levels added up)
     c *= gFogRange.z * expo;
     float l0 = dot(c, float3(0.2126, 0.7152, 0.0722));
     c *= pow(max(l0, 1e-6) / 0.18, max(gLk0.z, 0.05) - 1);                           // contrast around middle grey
@@ -2796,13 +2798,13 @@ float4 PS_PrimeScale(SkyOut i) : SV_Target
         puv = c.w > 1e-3 ? c.xy / c.w * float2(0.5, -0.5) + 0.5 : float2(-1, -1);
     }
     bool ok = gOffset.z < 0.5 && all(puv > 0) && all(puv < 1);
-    if (!ok) return float4(fromYCoCg(cur), conf);                 // nothing to remember here: this frame alone
+    if (!ok) return float4(hdrSafe(fromYCoCg(cur)), conf);                 // nothing to remember here: this frame alone
     float4 h = primeHistAt(puv, D);
     float3 hc = clamp(toYCoCg(max(h.rgb, 0)), max(cMin, mean - sd * 1.25), min(cMax, mean + sd * 1.25));   // only colours that are around it now
     float moved = length((uv - puv) * D);
     float n = min(h.a, lerp(gAxisY.y, 3, saturate(moved / 48)));  // moving fast: lean on the past less (it is blurrier there)
     float a = max(conf / (n + conf), 1 / (gAxisY.y + 1));
-    return float4(fromYCoCg(lerp(hc, cur, a)), n + conf);
+    return float4(hdrSafe(fromYCoCg(lerp(hc, cur, a))), n + conf);
 }
 float4 PS_PrimeSharpen(SkyOut i) : SV_Target   // PrimeScaler's picture onto the screen, sharpened (never past its neighbours: no halos)
 {
