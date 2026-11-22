@@ -65,6 +65,8 @@ struct BlockDef {
     uint32_t lightColor = 0xFFB873;      // colour of that light, 0xRRGGBB (warm lamp orange)
     // light levels (0..15) per colour channel a glowing block starts with: its brightest channel = light
     int autoLight = 0; uint32_t autoLightColor = 0;   // (not saved) light from its textures' emission maps, set by the editor
+    bool autoReal = true;                            // (not saved) ... a real-time light or the classic spreading one (the texture's material says)
+    bool isReal() const { return light > 0 ? realLight : autoReal; }   // its light is a real-time one (its own Glows setting first, else its emission map's)
     int lightOf() const { return light > 0 ? light : autoLight; }   // how far its light reaches (its own setting first)
     void lightLevels(int out[3]) const {
         int L = lightOf(); uint32_t col = light > 0 ? lightColor : autoLightColor;

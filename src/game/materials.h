@@ -35,6 +35,7 @@ struct TexMaterial {
     std::string emitMap;    // its file in the textures folder ("": none; a file called <texture>_e / _emission / _emissive / _glow .png is found by itself)
     float emit = 1.5f;      // how bright it glows
     float lights = 6;       // it lights up what is around it: blocks built from it shine this far (0 none .. 15 like a lamp), models a light this far
+    bool realLight = true;  // blocks built from it: a real-time light (by direction, with shadows, when the game's "Lamp blocks" says so); off: the classic spreading light
     // fake shine (models)
     FakeShine fake = FakeShine::Off;
     float fakeStrength = 1; uint32_t fakeTint = 0xFFFFFF; bool fakeBeam = false;   // tint: a colour, or the current beam's colour
@@ -43,7 +44,7 @@ struct TexMaterial {
     std::string fakeMap, fakeMask;      // your own shine picture; a mask (laid out like the model's picture: white shines, black not)
     Glint glints[3] = { { true, -40, 45, 0xFFFFFF, 0.7f, 1 }, { true, 70, 15, 0xA8D8FF, 0.4f, 0.5f }, {} };
     bool operator==(const TexMaterial& o) const {
-        return shine == o.shine && metal == o.metal && glow == o.glow && glowFrom == o.glowFrom && bumps == o.bumps && coat == o.coat && emitMap == o.emitMap && emit == o.emit && lights == o.lights && rough == o.rough
+        return shine == o.shine && metal == o.metal && glow == o.glow && glowFrom == o.glowFrom && bumps == o.bumps && coat == o.coat && emitMap == o.emitMap && emit == o.emit && lights == o.lights && rough == o.rough && realLight == o.realLight
             && fake == o.fake && fakeStrength == o.fakeStrength && fakeTint == o.fakeTint && fakeBeam == o.fakeBeam && fakeWorld == o.fakeWorld && fakePreset == o.fakePreset && fakeMap == o.fakeMap && fakeMask == o.fakeMask
             && glints[0] == o.glints[0] && glints[1] == o.glints[1] && glints[2] == o.glints[2];
     }

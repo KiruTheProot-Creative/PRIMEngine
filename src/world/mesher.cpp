@@ -27,7 +27,7 @@ bool gatherInput(const World& w, I3 pos, MeshInput& out) {
             auto it = slot.find(t); if (it != slot.end()) return it->second;
             if (out.lightColors.size() >= 254) return 1;
             int lv[3]; d.lightLevels(lv);
-            if (int drop = gLampDrop; drop > 0 && d.realLight && !d.liquid) for (int& c : lv) c = c > drop ? c - drop : 0;   // (a real lamp: only a soft fill spreads)
+            if (int drop = gLampDrop; drop > 0 && d.isReal() && !d.liquid) for (int& c : lv) c = c > drop ? c - drop : 0;   // (a real lamp: only a soft fill spreads)
             out.lightColors.push_back({ (uint8_t)lv[0], (uint8_t)lv[1], (uint8_t)lv[2] });
             return slot[t] = (uint8_t)(out.lightColors.size() - 1);
         };

@@ -67,7 +67,7 @@ bool saveMaterials(const std::string& path, const Materials& m) {
     for (auto& kv : m.set) { const TexMaterial& t = kv.second; f << "tex " << esc(kv.first) << " " << t.shine << " " << t.metal << " " << t.glow << " " << t.glowFrom << " " << t.bumps << " " << t.coat << " " << esc(t.emitMap) << " " << t.emit << " " << t.lights
       << " " << (int)t.fake << " " << t.fakeStrength << " " << t.fakeTint << " " << t.fakeBeam << " " << t.fakeWorld << " " << t.fakePreset << " " << esc(t.fakeMap) << " " << esc(t.fakeMask);
       for (const Glint& g : t.glints) f << " " << g.on << " " << g.yaw << " " << g.pitch << " " << g.color << " " << g.sharp << " " << g.power;
-      f << " rough " << t.rough;
+      f << " rough " << t.rough << " real " << (t.realLight ? 1 : 0);
       f << "\n"; }
     return (bool)f;
 }
@@ -85,6 +85,7 @@ bool loadMaterials(const std::string& path, Materials& m) {
               for (Glint& g : t.glints) { int on; Glint r; if (l >> on >> r.yaw >> r.pitch >> r.color >> r.sharp >> r.power) { r.on = on != 0; g = r; } }
           } }
         { std::string rk; float rv; if (l >> rk >> rv && rk == "rough") t.rough = std::clamp(rv, 0.f, 1.f); }   // (newer files)
+        { std::string rk; int rv; if (l >> rk >> rv && rk == "real") t.realLight = rv != 0; }
         m.set[unesc(n)] = t;
     }
     return true;

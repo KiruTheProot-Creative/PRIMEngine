@@ -769,8 +769,12 @@ struct App {
                 Prop("Brightness"); ImGui::SliderFloat("##meb", &m.emit, 0, 6, m.emit <= 0 ? "off" : "%.2f");
                 Prop("Lights up around it"); ImGui::SliderFloat("##mel", &m.lights, 0, 15, m.lights <= 0 ? "no" : isModel ? "%.0f blocks" : "light level %.0f");
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip(isModel ? "A light at the model's middle, in the colour it glows, reaching this far." : "Blocks built from it light up what is around them in the colour they glow,\nlike a lamp (15: as far as a lamp). A block's own Glows setting comes first.");
+                if (!isModel && m.lights > 0) {
+                    Prop("Real-time light"); ImGui::Checkbox("##mreal", &m.realLight);
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("On: blocks built from it are real lamps (with the game's \"Lamp blocks\" set to real light): they light by direction, with shadows.\nOff: the classic light that spreads block by block - free, good for big glowing areas and many lights.");
+                }
             }
-            if (m.emitMap != before.emitMap || m.lights != before.lights) emissionDirty = true;
+            if (m.emitMap != before.emitMap || m.lights != before.lights || m.realLight != before.realLight) emissionDirty = true;
             if (isModel) FakeShineUI(m);
         }
         return m != before;
@@ -969,6 +973,7 @@ struct App {
     void ApplyEmissionLights() {   // blocks built from a texture with an emission map light up what is around them (like a lamp; their own Glows setting first)
         for (BlockId id = 1; id < reg.count(); id++) {
             if (!reg.has(id)) continue; const BlockDef& d = reg.get(id); int best = 0; V3 col{ 0, 0, 0 };
+            bool real = true;
             for (int f = 0; f < 6; f++) {
                 int t = d.tex[f]; if (t <= 0 || t >= (int)emitInfo.size()) continue;
                 const TexImage& ti = reg.image(t);
@@ -979,11 +984,11 @@ struct App {
                     continue;
                 }
                 if (!emitInfo[t].on) continue;
-                int L = std::clamp((int)std::lround(materials.of(ti.name).lights), 0, 15); if (L > best) { best = L; col = emitInfo[t].col; }
+                int L = std::clamp((int)std::lround(materials.of(ti.name).lights), 0, 15); if (L > best) { best = L; col = emitInfo[t].col; real = materials.of(ti.name).realLight; }
             }
             uint32_t c = 0;
             if (best) { double m = std::max(1e-6, std::max(col.x, std::max(col.y, col.z))); auto ch = [&](double v) { return (uint32_t)std::lround(std::pow(v / m, 1 / 2.2) * 255); }; c = ch(col.x) << 16 | ch(col.y) << 8 | ch(col.z); }
-            if (d.autoLight != best || d.autoLightColor != c) { BlockDef nd = d; nd.autoLight = best; nd.autoLightColor = c; reg.put(id, nd); }
+            if (d.autoLight != best || d.autoLightColor != c || d.autoReal != real) { BlockDef nd = d; nd.autoLight = best; nd.autoLightColor = c; nd.autoReal = real; reg.put(id, nd); }
         }
     }
     template <class F> void ChangeBlocks(F fn) {
@@ -1690,7 +1695,7 @@ struct App {
                             e.list.clear(); e.sig = sig; e.have = true;
                             for (int ly = 0; ly < CS; ly++) for (int lz = 0; lz < CS; lz++) for (int lx = 0; lx < CS; lx++) {
                                 BlockId b = ch->get(lx, ly, lz); if (b == AIR) continue;
-                                const BlockDef& def = world->reg.get(b); if (!def.lightOf() || !def.realLight || def.liquid) continue;
+                                const BlockDef& def = world->reg.get(b); if (!def.lightOf() || !def.isReal() || def.liquid) continue;
                                 LampOne o; o.p = V3{ kx * (double)CS + lx + 0.5, ky * (double)CS + ly + 0.5, kz * (double)CS + lz + 0.5 }; def.lightLevels(o.lv); o.out = false;
                                 o.x = kx * CS + lx; o.y = ky * CS + ly; o.z = kz * CS + lz; o.eye = o.p;
                                 if (std::max({ o.lv[0], o.lv[1], o.lv[2] }) <= 0) continue;
@@ -1787,7 +1792,7 @@ struct App {
                             for (int x = std::max(kx * CS, cx - R); x < std::min(kx * CS + CS, cx + R + 1); x++) {
                                 BlockId b = world->get(x, y, z); if (b == AIR) continue;
                                 const BlockDef& def = world->reg.get(b); if (!def.lightOf()) continue;
-                                if (real && def.realLight && !def.liquid) continue;   // (a real lamp lights objects itself)
+                                if (real && def.isReal() && !def.liquid) continue;   // (a real lamp lights objects itself)
                                 int lv[3]; def.lightLevels(lv); int m = std::max(lv[0], std::max(lv[1], lv[2])); if (m <= 0) continue;
                                 Cell& c = cells[{ (int)std::floor(x / 4.0), (int)std::floor(y / 4.0), (int)std::floor(z / 4.0) }];
                                 c.p = c.p + V3{ x + 0.5, y + 0.5, z + 0.5 }; c.col = c.col + V3{ lv[0] / 15.0, lv[1] / 15.0, lv[2] / 15.0 }; c.n++; c.lv = std::max(c.lv, m);
@@ -5946,6 +5951,7 @@ struct App {
             Prop("Solid"); ImGui::Checkbox("##solid", &draft.solid); if (ImGui::IsItemHovered()) ImGui::SetTooltip("You bump into it.");
         }
         Prop("Glows"); ImGui::SliderInt("##light", &draft.light, 0, 15, draft.light ? "light level %d" : "no");
+        if (!draft.light && draft.autoLight && !draft.liquid) Hint(draft.autoReal ? "It glows from its texture's emission map, as a real-time light: switch that in the texture's material (Real-time light)." : "It glows from its texture's emission map, with the classic spreading light: switch that in the texture's material (Real-time light).");
         if (draft.light && !draft.liquid) {
             Prop("Real light"); ImGui::Checkbox("##reallight", &draft.realLight);
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("On: with the game's \"Lamp blocks\" set to real light, it lights things like a lamp, by direction, with shadows.\nOff: the classic light that spreads block by block (good for big glowing areas, many lights at once).");
