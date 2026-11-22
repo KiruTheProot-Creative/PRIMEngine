@@ -5069,13 +5069,24 @@ struct App {
                 int nx = 1 - primeCur;
                 float lowK = std::clamp(1.f - (float)sceneW / std::max(1, rw) * 2.f, 0.f, 1.f);   // 0 at 50% and above, up to 1 at 0%: below 50% a longer memory and more sharpening
                 ChunkCB cc{ { jitX, jitY, primeOk ? 0.f : 1.f, std::clamp(settings.upSharp + lowK * 0.6f, 0.f, 1.f) }, { (float)rw, (float)rh, (float)sceneW, (float)sceneH },
-                            { playMode ? 0.0021f : 0.f, sceneW < rw ? 14.f + lowK * 30.f : 9.f, 0, 0 } };
+                            { playMode ? 0.0021f : 0.f, sceneW < rw ? 14.f + lowK * 30.f : 9.f, primePrevZOk && primeOk ? 1.f : 0.f, 0 } };
                 ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);
                 { ID3D11Buffer* cbs[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->PSSetConstantBuffers(0, 2, cbs); }
                 ctx->OMSetRenderTargets(1, primeHist[nx].rtv.GetAddressOf(), nullptr); ctx->PSSetShader(psPrimeScale.Get(), nullptr, 0);
-                { ID3D11ShaderResourceView* d1 = depthSRV.Get(); ctx->PSSetShaderResources(2, 1, &d1); ctx->PSSetShaderResources(40, 1, upSrc.srv.GetAddressOf()); ctx->PSSetShaderResources(42, 1, primeHist[primeCur].srv.GetAddressOf()); }
+                { ID3D11ShaderResourceView* d1 = depthSRV.Get(); ctx->PSSetShaderResources(2, 1, &d1); ctx->PSSetShaderResources(40, 1, upSrc.srv.GetAddressOf()); ctx->PSSetShaderResources(42, 1, primeHist[primeCur].srv.GetAddressOf());
+                  ID3D11ShaderResourceView* pz = primePrevZOk ? primePrevZSRV.Get() : nullptr; ctx->PSSetShaderResources(52, 1, &pz); }
                 ctx->Draw(3, 0);
-                { ID3D11ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(2, 1, &n1); ctx->PSSetShaderResources(40, 1, &n1); ctx->PSSetShaderResources(42, 1, &n1); }
+                { ID3D11ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(2, 1, &n1); ctx->PSSetShaderResources(40, 1, &n1); ctx->PSSetShaderResources(42, 1, &n1); ctx->PSSetShaderResources(52, 1, &n1); }
+                {   // this frame's depth, for the next frame (where it doesn't match: something moved there)
+                    D3D11_TEXTURE2D_DESC dd; depthTex->GetDesc(&dd);
+                    D3D11_TEXTURE2D_DESC pd{}; if (primePrevZ) primePrevZ->GetDesc(&pd);
+                    if (!primePrevZ || pd.Width != dd.Width || pd.Height != dd.Height) {
+                        primePrevZ.Reset(); primePrevZSRV.Reset(); D3D11_TEXTURE2D_DESC nd = dd; nd.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+                        HR(dev->CreateTexture2D(&nd, nullptr, &primePrevZ));
+                        D3D11_SHADER_RESOURCE_VIEW_DESC sv{}; sv.Format = DXGI_FORMAT_R32_FLOAT; sv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D; sv.Texture2D.MipLevels = 1; HR(dev->CreateShaderResourceView(primePrevZ.Get(), &sv, &primePrevZSRV));
+                    }
+                    ctx->CopyResource(primePrevZ.Get(), depthTex.Get()); primePrevZOk = true;
+                }
                 ctx->OMSetRenderTargets(1, &out, nullptr); ctx->PSSetShader(psPrimeSharpen.Get(), nullptr, 0);
                 ctx->PSSetShaderResources(42, 1, primeHist[nx].srv.GetAddressOf()); ctx->Draw(3, 0);
                 { ID3D11ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(42, 1, &n1); }
@@ -9183,7 +9194,7 @@ struct App {
         V3 moved = camPos - fogLastCam; bool jump = moved.x * moved.x + moved.y * moved.y + moved.z * moved.z > 16;   // (a teleport, a cut: start fresh)
         CookCB& c = cookCB; c.fogG[0] = FOGW; c.fogG[1] = FOGH; c.fogG[2] = FOGD; c.fogG[3] = 1;
         double fr = (double)(frameNo % 4096);
-        c.fogR[0] = 192; c.fogR[1] = (float)std::fmod(fr * 0.6180339887, 1.0); c.fogR[2] = fogHistOk && !jump ? 0.9f : 0.f; c.fogR[3] = 56;
+        c.fogR[0] = 192; c.fogR[1] = (float)std::fmod(fr * 0.6180339887, 1.0); c.fogR[2] = fogHistOk && !jump ? 0.85f : 0.f; c.fogR[3] = 56;
         c.fogJ[0] = (float)std::fmod(0.5 + fr * 0.7548776662, 1.0); c.fogJ[1] = (float)std::fmod(0.5 + fr * 0.5698402910, 1.0);
         UploadCookCB();
         int nx = 1 - fogCur;
@@ -16655,7 +16666,8 @@ struct App {
     }
 
     // ================================================================== frame
-    float dynScale = 1.f; double dynT = 0;   // auto resolution: a share of the render scale, and the time since it last changed
+    float dynScale = 1.f; double dynT = 0;
+    ComPtr<ID3D11Texture2D> primePrevZ; ComPtr<ID3D11ShaderResourceView> primePrevZSRV; bool primePrevZOk = false;   // PrimeScaler: the frame before's depth   // auto resolution: a share of the render scale, and the time since it last changed
     void FrameBody(double dt) {   // everything but showing the picture (screenshots grab it before)
         CpuBegin(); frameDt = dt;
         if (audioOk) { UpdateAudio(); UpdateMusic(dt); }

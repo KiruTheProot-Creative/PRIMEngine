@@ -2999,6 +2999,7 @@ float4 PS_Upscale(SkyOut i) : SV_Target
 // gOffset: xy this frame's shift (world picture pixels), z 1 = start again, w sharpening; gAxisX.zw: the world picture's size;
 // gAxisY: x where the helmet's depth ends (it moves with you), y how many frames at most
 Texture2D gPrimeHist : register(t42);
+Texture2D<float> gPrimePrevZ : register(t52);   // the frame before's depth (no ghosts: where it doesn't match, the past is forgotten)
 float3 toYCoCg(float3 c) { return float3(dot(c, float3(0.25, 0.5, 0.25)), dot(c, float3(0.5, 0, -0.5)), dot(c, float3(-0.25, 0.5, -0.25))); }
 float3 fromYCoCg(float3 c) { return float3(c.x + c.y - c.z, c.x + c.z, c.x - c.y - c.z); }
 float4 primeHistAt(float2 uv, float2 size)   // the frames before at uv, sharp (Catmull-Rom from five reads)
@@ -3036,7 +3037,7 @@ float4 PS_PrimeScale(SkyOut i) : SV_Target
     float conf = exp(-1.6 * dot(dn, dn));                         // near: this frame tells a lot about this pixel
     float3 mean = m1 / 9, sd = sqrt(max(m2 / 9 - mean * mean, 0));
     // where this was on the screen a frame ago
-    float2 puv = uv;
+    float2 puv = uv; float wasAt = -1;   // (wasAt: how far that point was from the camera then)
     if (zClose >= gAxisY.x)   // (the helmet and the arm cannon move with you: they stay put)
     {
         float2 ndc = uv * float2(2, -2) + float2(-1, 1);
@@ -3044,8 +3045,19 @@ float4 PS_PrimeScale(SkyOut i) : SV_Target
         float3 P = zClose >= 1 ? dir * 1e4 : dir * (linDepth(zClose) / max(dot(dir, gCamF.xyz), 1e-3));
         float4 c = mul(float4(P + gHistCam.xyz, 1), gHistVP);
         puv = c.w > 1e-3 ? c.xy / c.w * float2(0.5, -0.5) + 0.5 : float2(-1, -1);
+        wasAt = zClose >= 1 ? -1 : c.w;
     }
     bool ok = gOffset.z < 0.5 && all(puv > 0) && all(puv < 1);
+    if (ok && gAxisY.z > 0.5)   // something moved there (an enemy, a door, a shot): the frame before showed something else at that spot - forget it
+    {
+        int2 pq = clamp(int2(puv * S), int2(0, 0), hi); float zp = 1;
+        zp = min(zp, gPrimePrevZ.Load(int3(pq, 0)));
+        zp = min(zp, gPrimePrevZ.Load(int3(clamp(pq + int2(1, 0), int2(0, 0), hi), 0))); zp = min(zp, gPrimePrevZ.Load(int3(clamp(pq - int2(1, 0), int2(0, 0), hi), 0)));
+        zp = min(zp, gPrimePrevZ.Load(int3(clamp(pq + int2(0, 1), int2(0, 0), hi), 0))); zp = min(zp, gPrimePrevZ.Load(int3(clamp(pq - int2(0, 1), int2(0, 0), hi), 0)));
+        bool skyNow = wasAt < 0, skyThen = zp >= 1;
+        if (skyNow != skyThen) ok = false;
+        else if (!skyNow) { float lt = linDepth(zp); if (abs(lt - wasAt) > wasAt * 0.05 + 0.2) ok = false; }
+    }
     if (!ok) return float4(hdrSafe(fromYCoCg(cur)), conf);                 // nothing to remember here: this frame alone
     float4 h = primeHistAt(puv, D);
     float3 hc = clamp(toYCoCg(max(h.rgb, 0)), max(cMin, mean - sd * 1.25), min(cMax, mean + sd * 1.25));   // only colours that are around it now
