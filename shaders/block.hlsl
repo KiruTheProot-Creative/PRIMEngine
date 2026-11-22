@@ -1468,7 +1468,8 @@ float4 PS_Reflect(SkyOut i) : SV_Target
     sReach = gRefl.z * lerp(0.3, 1, shine * shine);   // (rough: blurred anyway, so near things are what shows - the rays stop sooner)
 
     float2 huv = 0; float travelled = 0;
-    bool hit = traceScreen(P, n, r, dist, i.pos.xy, huv, travelled);
+    bool rtOn = (((uint)gVoxM.w) & 3u) == 3u;   // ray traced reflections: the blocks first; the screen only where they find nothing (models, enemies...)
+    bool hit = rtOn ? false : traceScreen(P, n, r, dist, i.pos.xy, huv, travelled);
 
     // where the ray finds nothing on screen: the sky (only if this spot is under the open sky, else a dim guess)
     float open = skyExposed(P + n * 0.3);
@@ -1491,7 +1492,8 @@ float4 PS_Reflect(SkyOut i) : SV_Target
         if (dot(ng, -dir) < 0) ng = -ng;
         if (dot(ng, n) < 0.3 || length(Pr - P) > dist * 0.05 || length(Pd - P) > dist * 0.05) ng = n;   // (an edge next to it: trust the surface's own)
         float3 rv = r; float rn = dot(rv, ng); if (rn < 0.03) rv = normalize(rv + ng * (0.03 - rn));   // never into the surface
-        float3 vc; if (voxelTrace(P + ng * 0.03, ng, rv, i.pos.xy, vc)) fallback = lerp(vc, fallback, farK);
+        float3 vc; if (voxelTrace(P + ng * 0.03, ng, rv, i.pos.xy, vc)) { fallback = lerp(vc, fallback, farK); rtOn = false; hit = false; }
+        else if (rtOn) { hit = traceScreen(P, n, r, dist, i.pos.xy, huv, travelled); if (hit) { float2 e = min(huv, 1 - huv); edge = saturate(min(e.x, e.y) * 12) * saturate(1 - travelled / reflReach()); } }
     }
     float3 refl = fallback;
     float2 suv = (float2(px) + 0.5) / gDepth.zw;
@@ -1574,9 +1576,10 @@ float4 PS_Water(VSOut i, bool front : SV_IsFrontFace) : SV_Target
     float wsv = skyVis(i.rel, float3(0, 1, 0)); deep *= wsv; refr = behind * absorb + deep * (1 - absorb);
     float3 refl = skyColor(r) * lerp(0.25, 1, open) * wsv;
     float2 huv; float travelled;
-    bool ssr = front && gRefl.x > 0.5 && traceScreen(i.rel, n, r, dist, i.pos.xy, huv, travelled);
+    float3 vc; bool vhit = front && gRefl.x > 0.5 && voxelTrace(i.rel, n, r, i.pos.xy, vc);   // the blocks around (ray traced reflections on), off screen too
+    if (vhit) refl = vc;
+    bool ssr = front && gRefl.x > 0.5 && !vhit && traceScreen(i.rel, n, r, dist, i.pos.xy, huv, travelled);   // the screen only where the blocks found nothing
     float wedge = 0; if (ssr) { float2 e = min(huv, 1 - huv); wedge = saturate(min(e.x, e.y) * 12) * saturate(1 - travelled / gRefl.z); }
-    if (front && gRefl.x > 0.5 && wedge < 0.99) { float3 vc; if (voxelTrace(i.rel, n, r, i.pos.xy, vc)) refl = vc; }   // the blocks around, off screen too
     if (ssr) refl = lerp(refl, gHdr.SampleLevel(gClamp, huv, 0).rgb, wedge);
     if (front && gRefl.w > 0.5 && gPlanar.x > 0.5 && abs(dot(i.rel, gMirror.xyz) + gMirror.w) < 0.2 && gMirror.y > 0.9)   // this water is the reflected floor: everything mirrored
     {
