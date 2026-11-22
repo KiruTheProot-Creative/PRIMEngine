@@ -1473,6 +1473,7 @@ float4 PS_Reflect(SkyOut i) : SV_Target
     float farK = inRoom ? saturate((dist - gCook.z) / max(gCook.w - gCook.z, 1)) : 0;          // far away it takes over from the rays
     if (inRoom) fallback = cooked;
     if (edge < 0.99 && farK < 0.999)   // off screen / behind you: the blocks themselves
+    {
         // the surface's real (flat) direction from the depth next to it: bumps and slopes must not start the ray inside the block
         int2 pr = min(px + int2(1, 0), int2(gDepth.zw) - 1), pd = min(px + int2(0, 1), int2(gDepth.zw) - 1);
         float2 nr = (float2(pr) + 0.5) / gDepth.zw * float2(2, -2) + float2(-1, 1), nd = (float2(pd) + 0.5) / gDepth.zw * float2(2, -2) + float2(-1, 1);
