@@ -532,11 +532,13 @@ Player > Weapons > Lock-on: on / off, hold or press-to-toggle, reach, how far fr
 Cooking prepares the world for export. The Cook window shows the world from above.
 - **Drag** on the map to pick the chunk columns to cook. A column covers every height in the **Heights** range, so underground rooms are included. The top of the range should be above everything.
 - **One height** shows a slice of the world, so you can look inside buildings and caves.
-- **Test-cook** runs the cook on the picked chunks. Right now it finds:
-  - **the outside**: everything open to the sky
-  - **rooms**: closed spaces of air. Each **zone** counts as its own room.
-  - **portals**: the doors between rooms, and open zone edges.
-  Each room gets its own colour on the map and a row in the list. Click a row to jump to that room's height.
-- The result is saved to `cook/rooms.txt` in the project.
-
-Next steps for cooking: a reflection probe and baked light per room, and portal visibility. Everything within 64–100 blocks stays real-time.
+- **Test-cook** runs the cook on the picked chunks:
+  - **Rooms:** finds the outside (everything open to the sky, and the empty void under the world), the rooms (closed spaces of air, each **zone** is its own room) and the **portals** between them (doors, open zone edges). Saved to `cook/rooms.txt`.
+  - **Baked light:** the lamp blocks' light, with their shadows, is saved for every block of air.
+  - **Room pictures:** the camera visits each room and takes a reflection picture in all 6 directions. The progress bar shows how far it is; don't move while it runs.
+- **Use the cooked world** (on after a cook) and **Play cooked**:
+  - Rooms you can't see through any door on screen aren't drawn.
+  - Reflections: real-time up to 64 blocks away; from 96 blocks on, the room's picture takes over (in between they blend).
+  - Lamp light: real-time near you; further away (60% of the Lamp distance setting) the baked light takes over, and far lamps cost nothing.
+  - F3 shows the cooked world's line: your room, how many rooms are seen, chunks skipped.
+- The cooked data lives until you close the project; cook again after changing blocks.
