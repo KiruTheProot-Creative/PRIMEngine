@@ -4,6 +4,7 @@
 // one room into the next changes the light softly.
 #pragma once
 #include "cook.h"
+#include <functional>
 
 namespace mc {
 
@@ -12,6 +13,8 @@ struct AmbientFill {
     I3 lo{ 0, 0, 0 }, hi{ -1, -1, -1 };           // their box
     bool stuck = false;                           // it stands in a solid block (nothing filled)
 };
-void fillAmbient(World& w, V3 at, float reach, int blend, const std::vector<CookDoor>& doors, AmbientFill& out, size_t maxCells = 400000);
+// through: blocks it goes through anyway (breakable ones: they can be gone, so the room goes on behind them)
+void fillAmbient(World& w, V3 at, float reach, int blend, const std::vector<CookDoor>& doors, AmbientFill& out, size_t maxCells = 400000,
+                 const std::function<bool(int, int, int)>& through = nullptr);
 
 } // namespace mc

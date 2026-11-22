@@ -5,7 +5,7 @@
 
 namespace mc {
 
-void fillAmbient(World& w, V3 at, float reach, int blend, const std::vector<CookDoor>& doors, AmbientFill& out, size_t maxCells) {
+void fillAmbient(World& w, V3 at, float reach, int blend, const std::vector<CookDoor>& doors, AmbientFill& out, size_t maxCells, const std::function<bool(int, int, int)>& through) {
     out = AmbientFill{};
     auto inDoor = [&](int x, int y, int z) {
         for (const CookDoor& d : doors) if (x >= d.lo.x && x <= d.hi.x && y >= d.lo.y && y <= d.hi.y && z >= d.lo.z && z <= d.hi.z) return true;
@@ -16,7 +16,7 @@ void fillAmbient(World& w, V3 at, float reach, int blend, const std::vector<Cook
         I3 c = chunkOf(x, y, z); auto it = cache.find(c); const Chunk* ch;
         if (it == cache.end()) { ch = w.chunk(c); cache[c] = ch; } else ch = it->second;
         if (!ch) return false;   // (not loaded: stops it)
-        return cookOpen(w, ch->get(floorMod(x, CS), floorMod(y, CS), floorMod(z, CS)));
+        return cookOpen(w, ch->get(floorMod(x, CS), floorMod(y, CS), floorMod(z, CS))) || (through && through(x, y, z));
     };
     I3 s{ (int)std::floor(at.x), (int)std::floor(at.y), (int)std::floor(at.z) };
     if (!open(s.x, s.y, s.z) || inDoor(s.x, s.y, s.z)) {   // (standing on the floor or half in a block: the air just above or around)

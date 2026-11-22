@@ -1825,6 +1825,11 @@ int main() {
                 int spill = w8(13, 1, 6); (void)spill;
                 AmbientFill far; fillAmbient(cw, V3{ 5.5, 1.5, 5.5 }, 3, 0, doors, far);
                 CHECK(w8(5, 2, 5) == 255 && far.cells.size() < af.cells.size(), "its reach limits it (%zu < %zu)", far.cells.size(), af.cells.size());
+                {   // a breakable block in the wall: it goes through (the room goes on behind it)
+                    AmbientFill thr; fillAmbient(cw, V3{ 5.5, 1.5, 5.5 }, 48, 0, doors, thr, 400000, [&](int x, int y, int z) { return x == 12 && y >= 1 && y <= 2 && z == 10; });
+                    bool behind = false; for (auto& c : thr.cells) if (c.first == I3{ 18, 2, 10 }) behind = true;
+                    CHECK(behind, "an ambient light goes through blocks marked breakable");
+                }
                 AmbientFill stuck; fillAmbient(cw, V3{ 0.5, -5.5, 0.5 }, 10, 2, doors, stuck);
                 CHECK(stuck.stuck || stuck.cells.empty() || true, "deep in the ground: nothing (or the void)");
             }

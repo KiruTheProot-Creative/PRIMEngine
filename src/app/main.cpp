@@ -9337,7 +9337,7 @@ struct App {
     // ---- ambient lights (objects): each fills its room (air up to the walls, doors and its reach, spilling a little further). The blocks of air
     // around you (128 x 64 x 128) know whose room they are in (up to two where they blend); the card gets that and each light's colours
     struct AmbRt { AmbientFill fill; uint64_t sig = 0; V3 pos{ 1e30, 0, 0 }; float reach = -1; int blend = -1; double age = 99; };
-    std::unordered_map<uint32_t, AmbRt> ambRt; std::vector<uint32_t> ambOrder;
+    std::unordered_map<uint32_t, AmbRt> ambRt; std::vector<uint32_t> ambOrder; size_t ambBreakN = 0;
     static constexpr int AMBX = 128, AMBY = 64, AMBZ = 128;
     I3 ambOrigin{ INT_MIN, 0, 0 }; std::vector<uint8_t> ambVolCpu; bool ambOn = false;
     ComPtr<ID3D11Texture3D> ambVolTex; ComPtr<ID3D11ShaderResourceView> ambVolSRV, ambObjSRV; ComPtr<ID3D11Buffer> ambObjBuf; size_t ambObjCap = 0;
@@ -9355,6 +9355,7 @@ struct App {
         if (list.size() > 250) list.resize(250);
         if (list.empty()) { ambRt.clear(); ambOrder.clear(); return; }
         bool changed = false; std::vector<CookDoor> doors; bool doorsMade = false;
+        if (breakables.marks.size() != ambBreakN) { ambBreakN = breakables.marks.size(); for (auto& kv : ambRt) kv.second.sig ^= 1; for (auto& kv : ambRt) kv.second.age = 99; }   // (blocks marked or unmarked breakable: fill again)
         std::vector<uint32_t> order; for (const WorldObject* o : list) order.push_back(o->id);
         if (order != ambOrder) { ambOrder = order; changed = true; for (auto it = ambRt.begin(); it != ambRt.end();) { if (std::find(order.begin(), order.end(), it->first) == order.end()) it = ambRt.erase(it); else ++it; } }
         for (const WorldObject* o : list) {
@@ -9365,7 +9366,7 @@ struct App {
             rt.age = 0;
             if (!param && AmbSig(rt) == rt.sig) continue;
             if (!doorsMade) { doors = CookDoors(); doorsMade = true; }
-            fillAmbient(*world, o->pos, o->ambient.reach, o->ambient.blend, doors, rt.fill);
+            fillAmbient(*world, o->pos, o->ambient.reach, o->ambient.blend, doors, rt.fill, 400000, [&](int x, int y, int z) { return breakables.has(x, y, z); });   // (breakable blocks: it goes through them)
             rt.pos = o->pos; rt.reach = o->ambient.reach; rt.blend = o->ambient.blend; rt.sig = AmbSig(rt); changed = true;
         }
         I3 cb{ ifloor(camPos.x), ifloor(camPos.y), ifloor(camPos.z) };
