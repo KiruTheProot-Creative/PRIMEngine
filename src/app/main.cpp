@@ -1583,7 +1583,7 @@ struct App {
     std::vector<LightGpu> frameLights; int frameLightCount = 0;
     struct ShadowCaster { V3 rel; double range; int type; V3 dir; double cosCone; int slot; float nearZ = 0.05f; bool render = false; };   // render: its map is drawn this frame   // nearZ: a lamp block's view starts outside its own block
     std::vector<ShadowCaster> casters; XMFLOAT4X4 lshVP[LSH_MAX * 6];
-    struct LampProxy { V3 p; double range; V3 col; float nearZ = 0.9f; };   // nearZ: a lamp block's shadow view starts this far out (outside its own block)
+    struct LampProxy { V3 p; double range; V3 col; float nearZ = 0.9f; V3 half{ 0, 0, 0 }; V3 eye{ 0, 0, 0 }; };   // nearZ: a lamp block's shadow view starts this far out (outside its own block); half: a glowing box (its surface shines); eye: where its shadow view is
     std::vector<LampProxy> lampProxies, realLamps; V3 lampScanAt{ 1e9, 0, 0 }; double lampScanAge = 99; int lampDropNow = -1;
     void Upload(ID3D11Buffer* b, const void* data, size_t bytes) {
         if (!b || !bytes) return; D3D11_MAPPED_SUBRESOURCE m;
@@ -1635,7 +1635,7 @@ struct App {
         V3 d = camPos - lampScanAt; if (lampScanAge < 0.5 && d.x * d.x + d.y * d.y + d.z * d.z < 2.0) return;
         lampScanAge = 0; lampScanAt = camPos; lampProxies.clear(); realLamps.clear();
         bool real = settings.lampBlocks > 0;
-        struct One { V3 p; int lv[3]; bool out; }; std::vector<One> reals;   // real lamp blocks; out: its light sits in front of its open faces (not inside it)
+        struct One { V3 p; int lv[3]; bool out; int x, y, z; V3 eye; }; std::vector<One> reals;   // real lamp blocks; out: its shadow view sits in front of its open faces; eye: where that view is
         if (real) {
             const int RR = (int)std::clamp(settings.lampDistance, 16.f, 256.f); int cx = (int)std::floor(camPos.x), cy = (int)std::floor(camPos.y), cz = (int)std::floor(camPos.z);
             for (int ky = (int)std::floor((cy - RR) / (double)CS); ky <= (int)std::floor((cy + RR) / (double)CS); ky++)
@@ -1647,6 +1647,7 @@ struct App {
                             BlockId b = ch->get(lx, ly, lz); if (b == AIR) continue;
                             const BlockDef& def = world->reg.get(b); if (!def.lightOf() || !def.realLight || def.liquid) continue;
                             One o; o.p = V3{ kx * (double)CS + lx + 0.5, ky * (double)CS + ly + 0.5, kz * (double)CS + lz + 0.5 }; def.lightLevels(o.lv); o.out = false;
+                            o.x = kx * CS + lx; o.y = ky * CS + ly; o.z = kz * CS + lz; o.eye = o.p;
                             if (std::max({ o.lv[0], o.lv[1], o.lv[2] }) <= 0) continue;
                             {   // the light comes out of its open faces: set into a wall or a ceiling, it sits just in front of it (not in the middle, where the blocks around would shade it)
                                 int wx = kx * CS + lx, wy = ky * CS + ly, wz = kz * CS + lz; V3 open{ 0, 0, 0 }; int n = 0;
@@ -1658,23 +1659,57 @@ struct App {
                                 }
                                 if (n == 0) continue;   // (buried: it lights nothing)
                                 V3 off{ std::clamp(open.x * 0.6, -0.6, 0.6), std::clamp(open.y * 0.6, -0.6, 0.6), std::clamp(open.z * 0.6, -0.6, 0.6) };
-                                if (n <= 3 && (std::fabs(off.x) >= 0.5 || std::fabs(off.y) >= 0.5 || std::fabs(off.z) >= 0.5)) { o.p = o.p + off; o.out = true; }   // (standing free: it stays in the middle, else it would shade the floor round itself)
+                                if (n <= 3 && (std::fabs(off.x) >= 0.5 || std::fabs(off.y) >= 0.5 || std::fabs(off.z) >= 0.5)) { o.eye = o.p + off; o.out = true; }   // (only its shadow view moves: the light itself is its whole surface)   // (standing free: it stays in the middle, else it would shade the floor round itself)
                             }
                             reals.push_back(o);
                         }
                     }
-            // many glowing blocks together (a lit wall): merged into fewer lights, bigger cells until there are not too many
-            for (int cell = 1; ; cell *= 2) {
-                std::map<std::tuple<int, int, int>, std::vector<const One*>> g;
-                for (const One& o : reals) g[{ (int)std::floor(o.p.x / cell), (int)std::floor(o.p.y / cell), (int)std::floor(o.p.z / cell) }].push_back(&o);
-                if (g.size() > 160 && cell < 8) continue;
-                for (auto& kv : g) {
-                    V3 p{ 0, 0, 0 }, col{ 0, 0, 0 }; int m = 0; bool allOut = true;
-                    for (const One* o : kv.second) { p = p + o->p; col = col + V3{ o->lv[0] / 15.0, o->lv[1] / 15.0, o->lv[2] / 15.0 }; m = std::max(m, std::max({ o->lv[0], o->lv[1], o->lv[2] })); allOut &= o->out; }
-                    double k = 1.0 / kv.second.size();
-                    realLamps.push_back({ p * k, m + 1.5 + (cell > 1 ? cell * 0.5 : 0), col * (k * std::sqrt((double)kv.second.size()) * 2.2), allOut && cell == 1 ? 0.12f : 0.9f });
+            // the light comes from the lamps' surface (every side that isn't against a block): lamps of one colour next to each other become one
+            // glowing box (up to 8 x 8 x 8) - one light, one shadow view, one shadow test, instead of one per block
+            struct Box { int x0, y0, z0, x1, y1, z1; int lv[3]; int n; V3 eye; bool out; };
+            std::vector<Box> boxes;
+            {
+                std::unordered_map<int64_t, int> at; auto key = [](int x, int y, int z) { return ((int64_t)(x & 0x1FFFFF) << 42) | ((int64_t)(y & 0x1FFFFF) << 21) | (int64_t)(z & 0x1FFFFF); };
+                std::sort(reals.begin(), reals.end(), [](const One& a, const One& b) { return std::tie(a.y, a.z, a.x) < std::tie(b.y, b.z, b.x); });
+                for (int i = 0; i < (int)reals.size(); i++) at[key(reals[i].x, reals[i].y, reals[i].z)] = i;
+                std::vector<char> used(reals.size(), 0);
+                for (int i = 0; i < (int)reals.size(); i++) {
+                    if (used[i]) continue; const One& c = reals[i];
+                    auto same = [&](int x, int y, int z) { auto it = at.find(key(x, y, z)); if (it == at.end() || used[it->second]) return false; const One& o = reals[it->second]; return o.lv[0] == c.lv[0] && o.lv[1] == c.lv[1] && o.lv[2] == c.lv[2]; };
+                    int x1 = c.x, z1 = c.z, y1 = c.y;
+                    while (x1 + 1 - c.x < 8 && same(x1 + 1, c.y, c.z)) x1++;
+                    for (;;) { if (z1 + 1 - c.z >= 8) break; bool ok = true; for (int x = c.x; x <= x1 && ok; x++) ok = same(x, c.y, z1 + 1); if (!ok) break; z1++; }
+                    for (;;) { if (y1 + 1 - c.y >= 8) break; bool ok = true; for (int z = c.z; z <= z1 && ok; z++) for (int x = c.x; x <= x1 && ok; x++) ok = same(x, y1 + 1, z); if (!ok) break; y1++; }
+                    Box bx{ c.x, c.y, c.z, x1, y1, z1, { c.lv[0], c.lv[1], c.lv[2] }, 0, c.eye, c.out };
+                    for (int y = c.y; y <= y1; y++) for (int z = c.z; z <= z1; z++) for (int x = c.x; x <= x1; x++) { int k = at[key(x, y, z)]; used[k] = 1; bx.n++; }
+                    boxes.push_back(bx);
                 }
-                break;
+            }
+            if (boxes.size() <= 160) {
+                for (const Box& bx : boxes) {
+                    V3 mn{ (double)bx.x0, (double)bx.y0, (double)bx.z0 }, mx{ bx.x1 + 1.0, bx.y1 + 1.0, bx.z1 + 1.0 }, c = (mn + mx) * 0.5, half = (mx - mn) * 0.5;
+                    int m = std::max({ bx.lv[0], bx.lv[1], bx.lv[2] });
+                    double big = std::max({ half.x, half.y, half.z });
+                    LampProxy lp; lp.p = c; lp.range = m + 1.5 + std::sqrt((double)bx.n) * 0.5;
+                    lp.col = V3{ bx.lv[0] / 15.0, bx.lv[1] / 15.0, bx.lv[2] / 15.0 } * (2.2 * (1 + 0.15 * std::log2((double)bx.n)));
+                    lp.half = half + V3{ 0.06, 0.06, 0.06 };   // (its light starts just outside its faces)
+                    bool one = bx.n == 1;
+                    lp.eye = one ? bx.eye : c; lp.nearZ = one && bx.out ? 0.12f : (float)(big + 0.05);   // its shadow view: in front of a lamp set into a wall, else from its middle, starting just past it
+                    realLamps.push_back(lp);
+                }
+            } else {   // very many (a lit wall far and wide): merged into fewer point lights, bigger cells until there are not too many
+                for (int cell = 2; ; cell *= 2) {
+                    std::map<std::tuple<int, int, int>, std::vector<const Box*>> g;
+                    for (const Box& bx : boxes) g[{ (int)std::floor((bx.x0 + bx.x1 + 1) * 0.5 / cell), (int)std::floor((bx.y0 + bx.y1 + 1) * 0.5 / cell), (int)std::floor((bx.z0 + bx.z1 + 1) * 0.5 / cell) }].push_back(&bx);
+                    if (g.size() > 160 && cell < 16) continue;
+                    for (auto& kv : g) {
+                        V3 p{ 0, 0, 0 }, col{ 0, 0, 0 }; int m = 0, n = 0;
+                        for (const Box* bx : kv.second) { p = p + V3{ (bx->x0 + bx->x1 + 1) * 0.5, (bx->y0 + bx->y1 + 1) * 0.5, (bx->z0 + bx->z1 + 1) * 0.5 } * (double)bx->n; col = col + V3{ bx->lv[0] / 15.0, bx->lv[1] / 15.0, bx->lv[2] / 15.0 } * (double)bx->n; m = std::max(m, std::max({ bx->lv[0], bx->lv[1], bx->lv[2] })); n += bx->n; }
+                        double k = 1.0 / n; LampProxy lp; lp.p = p * k; lp.range = m + 1.5 + cell * 0.5; lp.col = col * (k * std::sqrt((double)n) * 2.2); lp.nearZ = 0.9f; lp.eye = lp.p;
+                        realLamps.push_back(lp);
+                    }
+                    break;
+                }
             }
         }
         lampProxies.clear();
@@ -2048,7 +2083,7 @@ struct App {
     // every light that shines this frame: light objects (points, spots, strips), glowing models and emitters, shots,
     // glowing blocks near you (for objects only) - the most important first, up to 1024; a few of them get shadows
     void CollectLights() {
-        struct L { V3 p; double range; V3 col; int type; V3 dir; double cosCone; V3 half; bool objOnly; bool shadow; double dist; bool lamp = false; float nearZ = 0.05f; };   // lamp: a real lamp block
+        struct L { V3 p; double range; V3 col; int type; V3 dir; double cosCone; V3 half; bool objOnly; bool shadow; double dist; bool lamp = false; float nearZ = 0.05f; V3 eye{ 0, 0, 0 }; bool hasEye = false; };   // type 3: a glowing box (half), its shadow view at eye   // lamp: a real lamp block
         std::vector<L> all;
         auto dist = [&](V3 p) { V3 d = p - camPos; return std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z); };
         auto simple = [&](V3 p, double range, V3 col) { all.push_back({ p, range, col, 0, { 0, -1, 0 }, -1, { 0, 0, 0 }, false, false, dist(p) }); };
@@ -2088,7 +2123,7 @@ struct App {
         {   // real lamp blocks, fading out toward their distance (no popping as you walk away)
             double D = std::clamp((double)settings.lampDistance, 16.0, 256.0);
             for (const LampProxy& lp : realLamps) { double dd = dist(lp.p), f = 1 - std::clamp((dd - D * 0.75) / (D * 0.25), 0.0, 1.0); if (f <= 0) continue;
-                all.push_back({ lp.p, lp.range, lp.col * (f * f * (3 - 2 * f)), 0, { 0, -1, 0 }, -1, { 0, 0, 0 }, false, settings.lampBlocks >= 2, dd, true, lp.nearZ }); }
+                bool box = lp.half.x > 0; all.push_back({ lp.p, lp.range, lp.col * (f * f * (3 - 2 * f)), box ? 3 : 0, { 0, -1, 0 }, -1, lp.half, false, settings.lampBlocks >= 2, dd, true, lp.nearZ, lp.eye, box }); }
         }
         std::sort(all.begin(), all.end(), [](const L& a, const L& b) { return a.dist - a.range < b.dist - b.range; });
         frameLights.clear(); casters.clear();
@@ -2142,6 +2177,8 @@ struct App {
             g.col[0] = (float)l.col.x; g.col[1] = (float)l.col.y; g.col[2] = (float)l.col.z; g.col[3] = (float)(l.type + (l.objOnly ? 8 : 0) + (l.lamp && l.shadow ? 16 : 0));   // 16: its shadow through the blocks
             g.dir[0] = (float)l.dir.x; g.dir[1] = (float)l.dir.y; g.dir[2] = (float)l.dir.z; g.dir[3] = (float)l.cosCone;
             g.ext[0] = (float)l.half.x; g.ext[1] = (float)l.half.y; g.ext[2] = (float)l.half.z; g.ext[3] = -1;
+            V3 eyeR = (l.hasEye ? l.eye : l.p) - camPos;
+            if (l.type == 3) { g.dir[0] = (float)eyeR.x; g.dir[1] = (float)eyeR.y; g.dir[2] = (float)eyeR.z; }   // (a glowing box: dir is where its shadow view is)
             size_t li = (size_t)(&l - all.data());
             if (int sI = slotOf[li]; sI >= 0) {   // a shadow map: kept, or drawn (again) this frame if new or something near it moved or changed
                 LshSlot& slot = lshSlots[sI]; double reach = l.range + hl; bool dirty = !slot.valid || (!playMode && (frameNo + sI) % 8 == 0);   // (the editor: things get dragged around, every map now and then)
@@ -2149,7 +2186,7 @@ struct App {
                 for (const V3& mc : meshesChanged) if (!dirty) { V3 d = mc - l.p; dirty = d.x * d.x + d.y * d.y + d.z * d.z < (reach + CS) * (reach + CS); }
                 int faces = l.type == 1 ? 1 : 6; bool render = dirty && faceBudget >= faces;
                 if (render) { faceBudget -= faces; slot.valid = true; }
-                if (slot.valid) { g.ext[3] = (float)sI + 0.05f + 0.9f * keepOf[li]; casters.push_back({ r, reach, l.type, l.dir, l.cosCone, sI, l.lamp ? l.nearZ : 0.05f, render }); }
+                if (slot.valid) { g.ext[3] = (float)sI + 0.05f + 0.9f * keepOf[li]; casters.push_back({ l.type == 3 ? eyeR : r, reach, l.type, l.dir, l.cosCone, sI, l.lamp ? l.nearZ : 0.05f, render }); }
             }
             frameLights.push_back(g);
         }

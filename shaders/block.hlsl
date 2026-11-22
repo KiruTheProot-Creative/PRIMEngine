@@ -111,7 +111,7 @@ float lightShadow(LightData L, float3 p, int type)
     int slot = (int)floor(L.ext.w); float keep = saturate((frac(L.ext.w) - 0.05) / 0.9);   // (the fraction: how much of the shadow, fading out far away)
     int face = 0;
     if (type != 1) {   // a cube: which side
-        float3 v = p - L.pos.xyz, a = abs(v);
+        float3 v = p - (type == 3 ? L.dir.xyz : L.pos.xyz), a = abs(v);   // (a glowing box: its shadow view sits at dir)
         face = a.x >= a.y && a.x >= a.z ? (v.x > 0 ? 0 : 1) : a.y >= a.z ? (v.y > 0 ? 2 : 3) : (v.z > 0 ? 4 : 5);
     }
     int sl = slot * 6 + face; ShadowVP m = gLightShadowVP[sl];
@@ -129,7 +129,7 @@ float lightShadow(LightData L, float3 p, int type)
 }
 // a colour that can't break the picture: NaN -> 0 (min / max return the other value), infinity and huge values capped
 float3 hdrSafe(float3 c, float cap = 4096) { return min(max(c, 0), cap); }
-float voxShadow(float3 P, float3 lp);   // (below: a lamp block's shadow, through the blocks)
+float voxShadow(float3 P, float3 lp, bool face);   // (below: a lamp block's shadow, through the blocks; face: the light is a point just outside a glowing face)
 static float3 sFlatN = 0;   // the block's own face direction (before generated bumps), set while a block is lit (0: not known)
 void evalLight(LightData L, float3 rel, float3 n, float3 v, float pw, bool object, inout float3 dif, inout float3 spec)
 {
@@ -137,6 +137,7 @@ void evalLight(LightData L, float3 rel, float3 n, float3 v, float pw, bool objec
     if (objOnly && !object) return;
     float3 lp = L.pos.xyz;
     if (type == 2) { float3 a = lp - L.ext.xyz, ab = L.ext.xyz * 2; lp = a + ab * saturate(dot(rel - a, ab) / max(dot(ab, ab), 1e-4)); }   // a tube: its nearest point
+    if (type == 3) lp = clamp(rel, lp - L.ext.xyz, lp + L.ext.xyz);   // a glowing box (lamp blocks): the nearest point of its surface - its sides shine, not its middle
     float3 Lv = lp - rel; float d = length(Lv); float range = L.pos.w;
     if (d >= range) return;
     Lv /= max(d, 1e-4);
@@ -146,7 +147,7 @@ void evalLight(LightData L, float3 rel, float3 n, float3 v, float pw, bool objec
     float3 nf = any(sFlatN != 0) ? sFlatN : n;   // shadows ask with the flat face: bumps near an edge would push the test round the corner (a thin line of light)
     if (any(sFlatN != 0) && dot(nf, Lv) < 0.02) return;   // behind the face itself: none (no light wrapping round a wall's edge)
     if (L.ext.w >= 0) att *= lightShadow(L, pixSnap(rel, nf) + nf * (0.05 + d * 0.02), type);   // (a little off the surface: no shadow speckles where the light grazes it)
-    else if (voxSh) att *= voxShadow(pixSnap(rel, nf) + nf * 0.04, lp);   // a lamp block: its shadow from the blocks between
+    if (voxSh && (L.ext.w < 0 || type == 3) && att > 0) att *= voxShadow(pixSnap(rel, nf) + nf * 0.04, lp, type == 3);   // a lamp block: its shadow from the blocks between (a glowing box: always, so nothing shines through walls)
     float3 c = L.col.rgb * att;
     dif += c * saturate(dot(n, Lv) * 0.85 + 0.15);   // a little light wraps round edges, softer look
     float3 hv = Lv + v; float3 h = hv * rsqrt(max(dot(hv, hv), 1e-8));   // (looking straight into the light: no zero-length normalize - a NaN pixel)
@@ -1162,10 +1163,12 @@ bool objectTrace(float3 P, float3 r, float maxT, out float tHit, out float3 nHit
 }
 // a lamp block's shadow: from the point toward the lamp, block by block through the copy of the world; any solid block in between
 // shades it (the lamp's own block does not). The point is already snapped to the texture pixels when shadows are pixelated.
-float voxShadow(float3 P, float3 lp)
+float voxShadow(float3 P, float3 lp, bool face)
 {
     if ((((uint)gVoxM.w) & 5u) != 5u) return 1;   // (ray traced lamp shadows off)
-    float3 o = P - gVoxO.xyz, e = lp - gVoxO.xyz, r = e - o; float len = length(r); if (len < 0.6) return 1;
+    float3 o = P - gVoxO.xyz, e = lp - gVoxO.xyz, r = e - o; float len = length(r);
+    if (face) { int3 gc = int3(floor(e)); if (all(gc >= 0) && all(gc < VOXN)) { uint gi = voxAt(gc); if (gi != 0 && gVoxPal[gi].info.x == 1) return 0; } }   // that side of the lamp is against a block: it doesn't shine
+    if (len < 0.6) return 1;
     r /= len;
     int3 cell = int3(floor(o)), goal = int3(floor(e)), stp = int3(sign(r));
     float3 inv = 1 / max(abs(r), 1e-6) * sign(r + 1e-9);
