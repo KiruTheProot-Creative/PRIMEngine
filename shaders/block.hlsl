@@ -1358,9 +1358,10 @@ float voxShadow(float3 P, float3 lp, bool face, bool far)
     }
     return 1;
 }
+static float sVoxT = 1e9;   // (how far the last voxelTrace's hit was: the screen's reflection wins where it found something nearer - an object, an enemy)
 bool voxelTrace(float3 P, float3 n, float3 r, float2 pixel, out float3 col)
 {
-    col = 0;
+    col = 0; sVoxT = 1e9;
     if ((((uint)gVoxM.w) & 3u) != 3u) return false;   // (ray traced reflections off: only the screen, else the sky)
     float3 o = P + n * 0.02 - gVoxO.xyz;                                 // into the volume's own blocks
     int3 cell = int3(floor(o)), stp = int3(sign(r));
@@ -1395,11 +1396,11 @@ bool voxelTrace(float3 P, float3 n, float3 r, float2 pixel, out float3 col)
     if (objectTrace(Ps, r, hitT, ot, on, oa))   // an object before the block: its voxel copy
     {
         float3 hp = Ps + r * ot; float sv;
-        col = reflFog(oa * reflLight(hp, on, pixel, sv), hp, sv);
+        col = reflFog(oa * reflLight(hp, on, pixel, sv), hp, sv); sVoxT = ot;
         return true;
     }
     if (!found) return false;
-    col = voxShade(hitP, hitN, hitLayer, hitId, hitUV, length(hitP - P), pixel);
+    col = voxShade(hitP, hitN, hitLayer, hitId, hitUV, length(hitP - P), pixel); sVoxT = length(hitP - P);
     return true;
 }
 // ---------------------------------------------------------------- light probes: bounce light everywhere, found by rays through the blocks
@@ -1584,8 +1585,14 @@ float4 PS_Reflect(SkyOut i) : SV_Target
         if (dot(ng, -dir) < 0) ng = -ng;
         if (dot(ng, n) < 0.3 || length(Pr - P) > dist * 0.05 || length(Pd - P) > dist * 0.05) ng = n;   // (an edge next to it: trust the surface's own)
         float3 rv = r; float rn = dot(rv, ng); if (rn < 0.03) rv = normalize(rv + ng * (0.03 - rn));   // never into the surface
-        float3 vc; if (voxelTrace(P + ng * 0.03, ng, rv, i.pos.xy, vc)) { fallback = lerp(vc, fallback, farK); rtOn = false; hit = false; }
-        else if (rtOn) { hit = traceScreen(P, n, r, dist, i.pos.xy, huv, travelled); if (hit) { float2 e = min(huv, 1 - huv); edge = saturate(min(e.x, e.y) * 12) * saturate(1 - travelled / reflReach()); } }
+        float3 vc; bool vh = voxelTrace(P + ng * 0.03, ng, rv, i.pos.xy, vc); float vt = sVoxT;
+        if (vh) fallback = lerp(vc, fallback, farK);
+        if (rtOn)   // the screen too: where it finds something nearer than the blocks (objects, enemies - they aren't in the blocks), or the blocks found nothing
+        {
+            hit = traceScreen(P, n, r, dist, i.pos.xy, huv, travelled);
+            if (hit && vh && travelled >= vt - 0.4) hit = false;
+            if (hit) { float2 e = min(huv, 1 - huv); edge = saturate(min(e.x, e.y) * 12) * saturate(1 - travelled / reflReach()); }
+        }
     }
     float3 refl = fallback;
     float2 suv = (float2(px) + 0.5) / gDepth.zw;
@@ -1669,8 +1676,9 @@ float4 PS_Water(VSOut i, bool front : SV_IsFrontFace) : SV_Target
     float3 refl = skyColor(r) * lerp(0.25, 1, open) * wsv;
     float2 huv; float travelled;
     float3 vc; bool vhit = front && gRefl.x > 0.5 && voxelTrace(i.rel, n, r, i.pos.xy, vc);   // the blocks around (ray traced reflections on), off screen too
-    if (vhit) refl = vc;
-    bool ssr = front && gRefl.x > 0.5 && !vhit && traceScreen(i.rel, n, r, dist, i.pos.xy, huv, travelled);   // the screen only where the blocks found nothing
+    float vt = sVoxT; if (vhit) refl = vc;
+    bool ssr = front && gRefl.x > 0.5 && traceScreen(i.rel, n, r, dist, i.pos.xy, huv, travelled);   // the screen: where the blocks found nothing, or it found something nearer (objects)
+    if (ssr && vhit && travelled >= vt - 0.4) ssr = false;
     float wedge = 0; if (ssr) { float2 e = min(huv, 1 - huv); wedge = saturate(min(e.x, e.y) * 12) * saturate(1 - travelled / gRefl.z); }
     if (ssr) refl = lerp(refl, gHdr.SampleLevel(gClamp, huv, 0).rgb, wedge);
     if (front && gRefl.w > 0.5 && gPlanar.x > 0.5 && abs(dot(i.rel, gMirror.xyz) + gMirror.w) < 0.2 && gMirror.y > 0.9)   // this water is the reflected floor: everything mirrored
