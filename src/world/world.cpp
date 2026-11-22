@@ -58,6 +58,11 @@ void World::unloadChunk(I3 c) {
     chunks.erase(it); dirty.erase(c);
 }
 
+static bool glowsIn(const BlockRegistry& reg, BlockId v) {   // a glowing block, or one standing in (glowing) lava
+    if (v == AIR) return false; if (reg.get(v).lightOf()) return true;
+    if (soakOf(v) == 2) { BlockId l = reg.liquidBlock(2); return l && reg.get(l).lightOf(); }
+    return false;
+}
 void World::set(int x, int y, int z, BlockId id) {
     I3 cp = chunkOf(x, y, z); Chunk& c = loadChunk(cp);
     int lx = floorMod(x, CS), ly = floorMod(y, CS), lz = floorMod(z, CS);
@@ -73,14 +78,13 @@ void World::set(int x, int y, int z, BlockId id) {
     if (c.get(lx, ly, lz) == id) return;
     BlockId old = c.get(lx, ly, lz);
     c.set(lx, ly, lz, id); c.modified = true;
-    int lo = reg.get(old).lightOf(), ln = reg.get(id).lightOf();
-    if (old != AIR && lo) c.emitters--;
-    if (id != AIR && ln) c.emitters++;
+    if (glowsIn(reg, old)) c.emitters--;
+    if (glowsIn(reg, id)) c.emitters++;
     if (old != AIR && reg.get(old).mirror) c.mirrors--;
     if (id != AIR && reg.get(id).mirror) c.mirrors++;
     touchLiquid(x, y, z);
     // light reaches up to 15 blocks: near a lamp, every chunk around has to be redrawn
-    if ((old != AIR && lo) || (id != AIR && ln) || emittersNear(cp)) markAll27(cp);
+    if (glowsIn(reg, old) || glowsIn(reg, id) || emittersNear(cp)) markAll27(cp);
     // this chunk, plus every neighbour whose border (and corner shading) touches the block
     int ax[2] = { 0, lx == 0 ? -1 : lx == CS - 1 ? 1 : 0 }, ay[2] = { 0, ly == 0 ? -1 : ly == CS - 1 ? 1 : 0 }, az[2] = { 0, lz == 0 ? -1 : lz == CS - 1 ? 1 : 0 };
     for (int i = 0; i < 2; i++) for (int j = 0; j < 2; j++) for (int k = 0; k < 2; k++) {
@@ -187,7 +191,7 @@ int World::tickLiquids() {
 
 int World::countEmitters(const Chunk& c) const {
     if (!c.nonAir) return 0;
-    int n = 0; for (BlockId v : c.b) if (v != AIR && reg.get(v).lightOf()) n++;
+    int n = 0; for (BlockId v : c.b) if (glowsIn(reg, v)) n++;
     return n;
 }
 void World::recountEmitters() { for (auto& kv : chunks) { kv.second->emitters = countEmitters(*kv.second); kv.second->mirrors = countMirrors(*kv.second); } }

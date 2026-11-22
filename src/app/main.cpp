@@ -9213,7 +9213,7 @@ struct App {
     I3 cookLitLo{ 0, 0, 0 }, cookLitN{ 0, 0, 0 }; bool cookLitHave = false;
     ComPtr<ID3D11Texture3D> cookLitTex, cookDirTex; ComPtr<ID3D11ShaderResourceView> cookLitSRV, cookDirSRV;
     ComPtr<ID3D11Buffer> cbCook;
-    struct alignas(16) CookCB { float cook[4], litO[4], litS[4], fogG[4], fogR[4], fogJ[4]; float pos[64][4], lo[64][4], hi[64][4]; };   // (b13: the cooked world and the fog grid)
+    struct alignas(16) CookCB { float cook[4], litO[4], litS[4], fogG[4], fogR[4], fogJ[4], lavaM[4], lavaH[4]; float pos[64][4], lo[64][4], hi[64][4]; };   // (b13: the cooked world and the fog grid)
     CookCB cookCB{};
     void UploadCookCB() {
         if (!cbCook) { D3D11_BUFFER_DESC d{}; d.ByteWidth = sizeof(CookCB); d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_CONSTANT_BUFFER; HR(dev->CreateBuffer(&d, nullptr, &cbCook)); }
@@ -9246,8 +9246,50 @@ struct App {
         for (uint16_t id : it->second) if (id < cookVis.size() && cookVis[id]) return true;
         return false;
     }
+    // ---- lava lights what is around it: a top-down map of the lava near you (128 x 128 blocks: how much of each column is lava and how
+    // high its top is), blurred by its smaller copies on the graphics card. Made again when you move or every half a second
+    static constexpr int LAVAN = 128;
+    ComPtr<ID3D11Texture2D> lavaTex; ComPtr<ID3D11ShaderResourceView> lavaSRV; ComPtr<ID3D11RenderTargetView> lavaRTV;
+    I3 lavaAt{ INT_MIN, 0, 0 }; int lavaBase = 0; double lavaAge = 99; bool lavaAny = false; std::vector<uint16_t> lavaPx;
+    void UpdateLavaMap() {
+        lavaAge += frameDt; if (!world || settings.lavaLight <= 0) { lavaAny = false; return; }
+        I3 cb{ ifloor(camPos.x), ifloor(camPos.y), ifloor(camPos.z) };
+        bool moved = std::abs(cb.x - lavaAt.x - LAVAN / 2) > 8 || std::abs(cb.z - lavaAt.z - LAVAN / 2) > 8 || std::abs(cb.y - lavaBase) > 4;
+        if (!moved && lavaAge < (lavaAny ? 0.5 : 2.0)) return;
+        lavaAge = 0; lavaAt = { cb.x - LAVAN / 2, 0, cb.z - LAVAN / 2 }; lavaBase = cb.y;
+        if (!lavaTex) {
+            D3D11_TEXTURE2D_DESC d{}; d.Width = d.Height = LAVAN; d.MipLevels = 0; d.ArraySize = 1; d.Format = DXGI_FORMAT_R16G16B16A16_FLOAT; d.SampleDesc.Count = 1;
+            d.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET; d.MiscFlags = D3D11_RESOURCE_MISC_GENERATE_MIPS;
+            HR(dev->CreateTexture2D(&d, nullptr, &lavaTex)); HR(dev->CreateShaderResourceView(lavaTex.Get(), nullptr, &lavaSRV));
+        }
+        lavaPx.assign((size_t)LAVAN * LAVAN * 4, 0); bool any = false;
+        const uint16_t one = DirectX::PackedVector::XMConvertFloatToHalf(1.f);
+        int y0 = lavaBase - 40, y1 = lavaBase + 16;
+        for (int cz = floorDiv(lavaAt.z, CS); cz <= floorDiv(lavaAt.z + LAVAN - 1, CS); cz++)
+            for (int cx = floorDiv(lavaAt.x, CS); cx <= floorDiv(lavaAt.x + LAVAN - 1, CS); cx++)
+                for (int cy = floorDiv(y1, CS); cy >= floorDiv(y0, CS); cy--) {
+                    const Chunk* ch = world->chunk({ cx, cy, cz }); if (!ch || !ch->emitters) continue;
+                    for (int lz = 0; lz < CS; lz++) for (int lx = 0; lx < CS; lx++) {
+                        int mx = cx * CS + lx - lavaAt.x, mz = cz * CS + lz - lavaAt.z; if (mx < 0 || mz < 0 || mx >= LAVAN || mz >= LAVAN) continue;
+                        uint16_t* o = &lavaPx[((size_t)mz * LAVAN + mx) * 4]; if (o[0]) continue;   // (a higher one is there already)
+                        for (int ly = CS - 1; ly >= 0; ly--) {
+                            int wy = cy * CS + ly; if (wy < y0 || wy > y1) continue;
+                            BlockId v = ch->get(lx, ly, lz); if (v == AIR) continue;
+                            bool hot = soakOf(v) == 2 || reg.get(v).liquid == 2; if (!hot) continue;
+                            o[0] = one; o[1] = DirectX::PackedVector::XMConvertFloatToHalf((float)(wy + 0.9 - lavaBase)); o[3] = one; any = true; break;
+                        }
+                    }
+                }
+        lavaAny = any;
+        ctx->UpdateSubresource(lavaTex.Get(), 0, nullptr, lavaPx.data(), LAVAN * 8, 0);
+        ctx->GenerateMips(lavaSRV.Get());
+    }
     void CookFrame(const XMMATRIX& vp, FrameCB& fc) {   // each frame: which rooms show, and the cooked data for the shaders
         (void)fc;
+        UpdateLavaMap();
+        cookCB.lavaM[0] = (float)(lavaAt.x - camPos.x); cookCB.lavaM[1] = (float)(lavaAt.z - camPos.z); cookCB.lavaM[2] = (float)LAVAN; cookCB.lavaM[3] = lavaAny ? settings.lavaLight : 0.f;
+        cookCB.lavaH[0] = (float)(lavaBase - camPos.y);
+        { ID3D11ShaderResourceView* lv = lavaAny ? lavaSRV.Get() : nullptr; ctx->PSSetShaderResources(51, 1, &lv); }
         cookCullOn = cookUse && cookHave && !cookChunkRooms.empty();
         cookCamRoom = cookHave ? cookRes.roomAt(ifloor(camPos.x), ifloor(camPos.y), ifloor(camPos.z)) : 0;
         if (cookCullOn) { XMFLOAT4X4 m; XMStoreFloat4x4(&m, vp); visibleRooms(cookRes, &m._11, camPos, cookVis); cookSeenRooms = 0; for (size_t k = 1; k < cookVis.size(); k++) cookSeenRooms += cookVis[k]; }

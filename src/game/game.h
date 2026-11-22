@@ -75,7 +75,8 @@ struct Settings {
     float lampFill = 0.35f;    // real lamp blocks: how much of the classic spreading light stays as a soft fill (0 none .. 1 all)
     float motionBlur = 0;      // the picture smeared as the camera moves (0 off .. 1: as long as a sixtieth of a second)
     bool lightFog = true;
-    bool fogGrid = true;        // smooth fog: a 3D grid built up over frames (off: every pixel marches through the air each frame)
+    bool fogGrid = true;
+    float lavaLight = 1;        // how strongly lava lights what is around it (and the air over it)        // smooth fog: a 3D grid built up over frames (off: every pixel marches through the air each frame)
     bool planarFloors = true;
     bool lensFlares = true;    // the sun makes a lens flare (as much as the area's look says)  // the shiny floor or water near you is reflected exactly (the world drawn once more)
     int bounce = 1;            // bounce light (screen-space GI): 0 off, 1 normal, 2 far-reaching      // lights glow in the air (beams, halos)

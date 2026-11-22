@@ -143,6 +143,8 @@ cbuffer CookCB : register(b13)
     float4 gFogG;   // the fog grid (smooth fog): x, y, z its size; w 1 on
     float4 gFogR;   // x how far it reaches (blocks), y this frame's spot in the cell (depth, 0..1), z how much it keeps of what it knew (0: starts fresh), w lights glow this far
     float4 gFogJ;   // xy this frame's spot in the cell (across)
+    float4 gLavaM;  // the lava glow map: xy its corner (x, z, camera-relative), z its size (blocks), w how strong (0: none)
+    float4 gLavaH;  // x the height its heights count from (camera-relative)
     float4 gProbePos[64];   // each room's picture: where it was taken (camera-relative), w its mip count
     float4 gProbeLo[64];    // the room's box (camera-relative), for looking up what a ray hits
     float4 gProbeHi[64];
@@ -236,6 +238,48 @@ Texture2D gShineTex : register(t27);   // your own shine picture (black: nothing
 Texture2D gShineMask : register(t28);  // where it shines, laid out like the model's own picture
 float4 albedoAt(float3 uvl) { return uvl.z > 16000 ? gMeshTex.Sample(gSamp, uvl.xy) : gTex.Sample(gSamp, uvl); }
 SamplerState gLinear : register(s2);
+// ---- lava lights what is around it: a top-down map of the lava near you (how much of each column is lava, and how high), blurred by
+// its smaller copies. A surface gets light from the lava below and beside it, more facing it, less the higher above it it is
+Texture2D gLavaMap : register(t51);
+static const float3 kLavaLight = float3(1.0, 0.36, 0.07);
+float lavaAt(float3 rel, out float above)   // how much lava is near (its blurred copies), and how high above its surface rel is
+{
+    above = 99; if (gLavaM.w <= 0) return 0;
+    float2 uv = (rel.xz - gLavaM.xy) / gLavaM.z; if (any(uv < 0) || any(uv > 1)) return 0;
+    float4 s = gLavaMap.SampleLevel(gLinear, uv, 3); if (s.r < 0.002) return 0;
+    above = rel.y - gLavaH.x - s.g / s.r; return s.r;
+}
+float3 lavaGlow(float3 rel, float3 n)   // (n: the face's own direction)
+{
+    if (gLavaM.w <= 0) return 0;
+    float2 uv = (rel.xz - gLavaM.xy) / gLavaM.z; if (any(uv < 0) || any(uv > 1)) return 0;
+    float yr = rel.y - gLavaH.x, g = 0, band = 0, hFar = 0;
+    [unroll] for (int k = 0; k < 6; k++)
+    {
+        float4 s = gLavaMap.SampleLevel(gLinear, uv, k); if (s.r < 0.002) continue;
+        float dh = yr - s.g / s.r, R = exp2(k);
+        g += s.r * exp(-max(dh, 0) / (1.2 * R + 1)) * saturate(dh + 0.6) / (k + 1);
+        if (k <= 1) band += s.r * exp(-abs(dh) * 2.5) * 0.5;   // right at the lava: a hot band on what touches it
+        if (k == 3) hFar = dh;
+    }
+    float face = saturate(0.45 - 0.55 * n.y);   // ceilings and sides facing it, not tops
+    float3 c = kLavaLight * gLavaM.w * (g * face * 1.3 + band * 2.2);
+    if (max(c.r, 0) > 0.01 && hFar > 1 && (((uint)gVoxM.w) & 1u) != 0)   // no glow through a floor: straight down to the lava, is there a block?
+        if (voxLineBlocked(rel + n * 0.08, rel + n * 0.08 - float3(0, hFar - 0.3, 0))) c *= 0.06;
+    return c;
+}
+float3 lavaAir(float3 rel)   // (the fog's glow over lava)
+{
+    if (gLavaM.w <= 0) return 0;
+    float2 uv = (rel.xz - gLavaM.xy) / gLavaM.z; if (any(uv < 0) || any(uv > 1)) return 0;
+    float yr = rel.y - gLavaH.x, g = 0;
+    [unroll] for (int k = 2; k < 6; k++)
+    {
+        float4 s = gLavaMap.SampleLevel(gLinear, uv, k); if (s.r < 0.002) continue;
+        float dh = yr - s.g / s.r; g += s.r * exp(-max(dh, 0) / (1.5 * exp2(k) + 2)) * saturate(dh + 1);
+    }
+    return kLavaLight * gLavaM.w * g * 0.5;
+}
 float3 cookLight(float3 rel, float3 nf, float3 n)
 {
     float k = cookLitFar(rel); if (k <= 0) return 0;
@@ -683,6 +727,7 @@ float3 lightBlock(VSOut i, float3 albedo, bool front, out float3 n, out float sh
     float3 sunC = gSunColor.rgb, bounced = 0, ambMul = 1;
     if (gWater.x > 0.5) { float3 sm; waterLight(i.rel, nFlat, n, i.pos.xy, sm, bounced, ambMul); sunC *= sm; }   // caustics under water, their reflection above
     float3 light = sunC * ndl * sh + ambientNow * i.ao * ambMul + bounced;
+    light += lavaGlow(i.rel + nFlat * 0.02, nFlat) * lerp(0.5, 1, i.ao) * ambMul;   // lava nearby lights it
     light = max(light, gMinLight.rgb * sky * i.ao * (1 - skyV));                                   // closed spaces: never darker than the world's minimum
     float lamp = max(i.lamp.r, max(i.lamp.g, i.lamp.b));
     float3 hue = lamp > 0 ? i.lamp.rgb / lamp : 0;                                                   // the colour of the lamps nearby
@@ -745,15 +790,21 @@ float3 lightBlock(VSOut i, float3 albedo, bool front, out float3 n, out float sh
     return lerp(c, skyColor(normalize(i.rel)) * max(skyV, gOcc.y), f * f);   // in a cave the distance fades to dark, not to the sky
 }
 
-// lava: a dark crust with glowing cracks that slowly churn
-float3 lavaColor(float3 rel)
+// lava: bright and molten, darker crust drifting on it in cells, in the blocks' pixel grid; falls run down; a hot rim where it meets blocks
+float3 lavaColor(float3 rel, float3 n, float rim)
 {
     float3 wp = gCamPos.xyz + rel; float t = gVolume.z;
-    float a = gNoise.SampleLevel(gLinear, float3(wp.x * 0.09 + t * 0.006, wp.y * 0.05 + t * 0.003, wp.z * 0.09), 0).x;
-    float b = gNoise.SampleLevel(gLinear, float3(wp.x * 0.27 - t * 0.012, wp.z * 0.27, t * 0.008 + wp.y * 0.1), 0).y;
-    float crack = smoothstep(0.45, 0.75, a * 0.65 + b * 0.5);
-    float3 crust = float3(0.22, 0.035, 0.01), glow = float3(1.0, 0.36, 0.06);
-    return lerp(crust, glow, crack) * (1.4 + 5.0 * crack * crack);
+    bool side = abs(n.y) < 0.5;
+    float2 p = side ? float2(abs(n.x) > 0.5 ? wp.z : wp.x, wp.y + t * 1.3) : wp.xz;   // (lava falls: running down)
+    p = (floor(p * 16) + 0.5) / 16;                                                   // the blocks' pixel grid: sharp, like the textures
+    float cells = causticCells(p * 0.8 + float2(t * 0.04, t * 0.025), t * 0.3);       // 0 on the lines between cells
+    float n1 = gNoise.SampleLevel(gLinear, float3(p * 0.09 + t * 0.004, t * 0.006), 0).x;
+    float crust = smoothstep(0.5, 0.8, n1 + (side ? -0.3 : 0)) * smoothstep(0.1, 0.4, cells);   // dark patches, cell-shaped
+    float hotLine = 1 - smoothstep(0.0, 0.18, cells);                                 // the lines between cells: hottest
+    float3 hot = lerp(float3(1.0, 0.30, 0.035), float3(1.0, 0.66, 0.2), saturate(n1 * 1.1 + hotLine * 0.7));
+    float3 c = lerp(hot * 3.4, float3(0.32, 0.055, 0.012), crust * 0.8);
+    c += float3(1.0, 0.6, 0.18) * saturate(rim) * 3.5;                                // where it meets blocks
+    return side ? c * 1.2 : c;
 }
 
 PSOut PS_Opaque(VSOut i, bool front : SV_IsFrontFace)
@@ -763,7 +814,7 @@ PSOut PS_Opaque(VSOut i, bool front : SV_IsFrontFace)
     o.indirect = 0;
     o.albedo = float4(t.rgb, i.uvl.z < 16000 ? gMats[(uint)round(i.uvl.z)].c.x : 0);
     if (i.mat.z >= 0) o.albedo.a = i.mat.z;   // (the block's own roughness)   // a: how rough (blurry reflections)
-    if (i.kind > 3.5) { o.color = float4(lavaColor(i.rel), 1); o.surface = float4(i.n * 0.5 + 0.5, 0); o.albedo = 0; return o; }
+    if (i.kind > 3.5) { o.color = float4(lavaColor(i.rel, i.n, 1 - i.ao), 1); o.surface = float4(i.n * 0.5 + 0.5, 0); o.albedo = 0; return o; }
     float3 ind;
     o.color = float4(hdrSafe(lightBlock(i, t.rgb, front, n, sh, ind)), 1);
     o.surface = float4(n * 0.5 + 0.5, i.mat.y > 0.5 ? 1 : min(sh, 0.98));   // 1 = mirror
@@ -1664,6 +1715,7 @@ float4 fogCell(float3 rel, float3 dir, float t)   // what one spot of the air gi
         E += ((gSunColor.rgb * sun * phase * 0.18 * gOcc.z + amb * open) * tint) * d + gLookFogCol.rgb * gLookFogCol.w * dl;
         sigma += d;
     }
+    E += lavaAir(rel) * (0.02 + sigma * 2);   // hot air over lava glows
     if (gLookFog.w > 0.001 && gCl0.x > 0.5 && t < gFogR.w)   // lights glowing in the air
     {
         float dens = 0.012 + gVolume.y * exp(-max(y - 1, 0) / 7) * 0.5 + gEnv.w + lookFogAt(y) * 2;
@@ -1872,11 +1924,13 @@ float4 PS_Volume(SkyOut i) : SV_Target   // full size: the picture seen through 
 {
     int2 px = int2(i.pos.xy);
     float3 dir = normalize(gCamF.xyz + gCamR.xyz * (i.ndc.x * gProj.x * gProj.y) + gCamU.xyz * (i.ndc.y * gProj.x));
-    if (gEnv.y > 0)   // heat shimmer: wobble far, low parts of the picture
+    if (gEnv.y > 0 || gLavaM.w > 0)   // heat shimmer: wobble far, low parts of the picture (and just over lava)
     {
         float z0 = gSceneDepth.Load(int3(px, 0));
         float d0 = z0 >= 1 ? 400 : gDepth.x * gDepth.y / (gDepth.y - z0 * (gDepth.y - gDepth.x));
         float k = gEnv.y * saturate((d0 - 12) / 50) * saturate(1 - abs(dir.y) * 6);
+        float above; float cov = lavaAt(dir * (d0 / max(dot(dir, gCamF.xyz), 1e-3)), above);
+        k += cov * saturate(1 - above / 5) * saturate(above + 1) * saturate(1 - d0 / 70) * 0.7;
         float2 w = float2(sin(i.pos.y * 0.21 + gVolume.z * 7 + i.pos.x * 0.04), cos(i.pos.x * 0.17 + gVolume.z * 5.3 + i.pos.y * 0.09));
         px = clamp(px + int2(round(w * k * 2.2)), int2(0, 0), int2(gDepth.zw) - 1);
     }

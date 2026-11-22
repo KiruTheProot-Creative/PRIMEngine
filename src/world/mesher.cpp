@@ -31,13 +31,18 @@ bool gatherInput(const World& w, I3 pos, MeshInput& out) {
             out.lightColors.push_back({ (uint8_t)lv[0], (uint8_t)lv[1], (uint8_t)lv[2] });
             return slot[t] = (uint8_t)(out.lightColors.size() - 1);
         };
+        const BlockId lavaB = w.reg.liquidBlock(2);   // (blocks standing in lava glow like it)
         for (int cy = -1; cy <= 1; cy++) for (int cz = -1; cz <= 1; cz++) for (int cx = -1; cx <= 1; cx++) {
             const Chunk* c = w.chunk({ pos.x + cx, pos.y + cy, pos.z + cz });
             for (int ly = 0; ly < CS; ly++) for (int lz = 0; lz < CS; lz++) for (int lx = 0; lx < CS; lx++) {
                 uint8_t v = 255;   // not loaded: blocks light
                 if (c) {
                     BlockId b = c->get(lx, ly, lz);
-                    if (b != AIR) { const BlockDef& d = w.reg.get(b); v = d.lightOf() ? colorOf(typeOf(b), d) : (d.render == Render::Opaque && resolveShape(b, d) == Shapes::FULL) ? 255 : 0; }
+                    if (b != AIR) {
+                        bool hot = soakOf(b) == 2 && lavaB && w.reg.get(lavaB).lightOf();
+                        const BlockDef& d = hot ? w.reg.get(lavaB) : w.reg.get(b);
+                        v = d.lightOf() ? colorOf(hot ? typeOf(lavaB) : typeOf(b), d) : (d.render == Render::Opaque && resolveShape(b, d) == Shapes::FULL) ? 255 : 0;
+                    }
                     else v = 0;
                 }
                 out.lightSrc[lpadIdx(lx + cx * CS, ly + cy * CS, lz + cz * CS)] = v;
@@ -132,12 +137,23 @@ void buildMesh(const BlockRegistry& reg, const MeshInput& in, ChunkMesh& out) {
             int own[3]; if (d.lightOf()) d.lightLevels(own); else for (int c = 0; c < 3; c++) own[c] = lightAt(c, x, y, z);
             uint32_t litv = packLit(1.f, own, lava, lava ? 0.f : d.shine, false);
             float kind = lava ? 4.f : 3.f;
+            float rimC[4] = { 0, 0, 0, 0 };   // lava: how much each top corner touches a block (its hot rim; carried in the corner-shade byte)
+            if (lava) {
+                auto solidCell = [&](int cx, int cy, int cz) {
+                    BlockId b = at(cx, cy, cz); if (b == AIR || b == UNKNOWN) return false; if (soakOf(b)) return true;
+                    const BlockDef& bd = reg.get(b); return !bd.liquid && bd.render != Render::Air;
+                };
+                const int cxz[4][2] = { { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 1 } };
+                for (int k = 0; k < 4; k++) for (int oz = cxz[k][1] - 1; oz <= cxz[k][1]; oz++) for (int ox = cxz[k][0] - 1; ox <= cxz[k][0]; ox++) if (solidCell(x + ox, y, z + oz)) rimC[k] = 1;
+            }
             auto quad = [&](const float p[4][3], int f) {   // corners in order around the face; wound to face along f
                 int n[3] = { 0, 0, 0 }; n[f / 2] = (f % 2 == 0) ? 1 : -1;
                 uint32_t base = (uint32_t)lm.v.size();
                 for (int k = 0; k < 4; k++) {
                     float u, v; faceUV(p[k][0], p[k][1], p[k][2], f, u, v);
-                    lm.v.push_back({ x + p[k][0], y + p[k][1], z + p[k][2], u, v, (float)d.tex[f] + 16384.f * kind, litv, packNormal((float)n[0], (float)n[1], (float)n[2], f) });
+                    uint32_t lv = litv;
+                    if (lava && f == F_PY) { int ck = (p[k][0] > 0.5f ? 1 : 0) + (p[k][2] > 0.5f ? (p[k][0] > 0.5f ? 1 : 3) : 0); lv = (litv & ~255u) | (uint32_t)std::lround((1 - rimC[ck]) * 255); }
+                    lm.v.push_back({ x + p[k][0], y + p[k][1], z + p[k][2], u, v, (float)d.tex[f] + 16384.f * kind, lv, packNormal((float)n[0], (float)n[1], (float)n[2], f) });
                 }
                 uint32_t t[6] = { 0, 1, 2, 0, 2, 3 };
                 for (int tri = 0; tri < 2; tri++) {
