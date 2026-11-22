@@ -10,7 +10,7 @@ add_library(primcore STATIC
 find_package(Threads REQUIRED)
 target_link_libraries(primcore PUBLIC Threads::Threads)
 if(MSVC)
-    target_compile_options(primcore PUBLIC /W3 /utf-8 /MP)
+    target_compile_options(primcore PUBLIC /W3 /utf-8 /MP /bigobj)   # (/bigobj: main.cpp has outgrown the default object file)
     target_compile_definitions(primcore PUBLIC _CRT_SECURE_NO_WARNINGS NOMINMAX)
 endif()
 
