@@ -129,7 +129,8 @@ float lightShadow(LightData L, float3 p, int type)
 }
 // a colour that can't break the picture: NaN -> 0 (min / max return the other value), infinity and huge values capped
 float3 hdrSafe(float3 c, float cap = 4096) { return min(max(c, 0), cap); }
-float voxShadow(float3 P, float3 lp, bool face);   // (below: a lamp block's shadow, through the blocks; face: the light is a point just outside a glowing face)
+float voxShadow(float3 P, float3 lp, bool face);
+bool voxLineBlocked(float3 a, float3 b);   // (below, with the light probes)   // (below: a lamp block's shadow, through the blocks; face: the light is a point just outside a glowing face)
 static float3 sFlatN = 0;   // the block's own face direction (before generated bumps), set while a block is lit (0: not known)
 void evalLight(LightData L, float3 rel, float3 n, float3 v, float pw, bool object, inout float3 dif, inout float3 spec)
 {
@@ -147,7 +148,12 @@ void evalLight(LightData L, float3 rel, float3 n, float3 v, float pw, bool objec
     float3 nf = any(sFlatN != 0) ? sFlatN : n;   // shadows ask with the flat face: bumps near an edge would push the test round the corner (a thin line of light)
     if (any(sFlatN != 0) && dot(nf, Lv) < 0.02) return;   // behind the face itself: none (no light wrapping round a wall's edge)
     if (L.ext.w >= 0) att *= lightShadow(L, pixSnap(rel, nf) + nf * (0.05 + d * 0.02), type);   // (a little off the surface: no shadow speckles where the light grazes it)
-    if (voxSh && (L.ext.w < 0 || type == 3) && att > 0) att *= voxShadow(pixSnap(rel, nf) + nf * 0.04, lp, type == 3);   // a lamp block: its shadow from the blocks between (a glowing box: always, so nothing shines through walls)
+    if (voxSh && att > 0 && gCl0.x > 0.5)   // (the helmet / arm cannon and other small passes: their shadow maps are enough)
+    {
+        if (L.ext.w < 0) att *= voxShadow(pixSnap(rel, nf) + nf * 0.04, lp, type == 3);   // no shadow map: its shadow from the blocks between, all the way
+        else if (type == 3 && (((uint)gVoxM.w) & 5u) == 5u)   // a glowing box with a shadow map: only its first blocks (what the map starts too late to see) - no light along the inside of walls, or out of a side against a block
+            att *= voxLineBlocked(lp, lp + (rel - lp) * (min(d - 0.1, 3.0) / max(d, 1e-3))) ? 0 : 1;
+    }
     float3 c = L.col.rgb * att;
     dif += c * saturate(dot(n, Lv) * 0.85 + 0.15);   // a little light wraps round edges, softer look
     float3 hv = Lv + v; float3 h = hv * rsqrt(max(dot(hv, hv), 1e-8));   // (looking straight into the light: no zero-length normalize - a NaN pixel)
