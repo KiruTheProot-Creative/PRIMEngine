@@ -9,19 +9,22 @@
 
 namespace mc {
 
-// A stored block value: bits 0-15 = block type, 16-25 = shape (0 = the block's own), 26-30 = rotation (0-23).
+// A stored block value: bits 0-15 = block type, 16-24 = shape (0 = the block's own), 25 = HOT (see below), 26-30 = rotation (0-23), 31 = WET.
 using BlockId = uint32_t;
 constexpr BlockId AIR = 0;
 constexpr int MAX_BLOCK_TYPES = 65535;
 inline BlockId typeOf(BlockId v) { return v & 0xFFFFu; }
-inline int shapeOf(BlockId v) { return (int)((v >> 16) & 0x3FFu); }
+inline int shapeOf(BlockId v) { return (int)((v >> 16) & 0x1FFu); }
 inline int rotOf(BlockId v) { return (int)((v >> 26) & 31u); }
 // bit 31: a block that is not a full cube (a slope, a slab, a plant ...) standing in water - water fills the rest of its space
 constexpr BlockId WET = 0x80000000u;
-inline bool wetOf(BlockId v) { return (v & WET) != 0 && v != 0xFFFFFFFFu; }
+inline bool wetOf(BlockId v) { return (v & WET) != 0 && v != 0xFFFFFFFFu; }   // standing in water or lava
+constexpr BlockId HOT = 1u << 25;        // with WET: the block stands in lava, not water (shapes use bits 16-24)
+constexpr BlockId SOAK = WET | HOT;
+inline int soakOf(BlockId v) { return wetOf(v) ? ((v & HOT) ? 2 : 1) : 0; }   // 0 dry, 1 in water, 2 in lava
 // liquids keep their amount (1..16, 16 = a full block) where other blocks keep their shape
 inline int liquidLevel(BlockId v) { int l = (int)((v >> 16) & 31u); return l == 0 || l > 16 ? 16 : l; }
-inline BlockId makeBlock(BlockId type, int shape = 0, int rot = 0) { return (type & 0xFFFFu) | ((uint32_t)(shape & 0x3FF) << 16) | ((uint32_t)(rot & 31) << 26); }
+inline BlockId makeBlock(BlockId type, int shape = 0, int rot = 0) { return (type & 0xFFFFu) | ((uint32_t)(shape & 0x1FF) << 16) | ((uint32_t)(rot & 31) << 26); }
 
 enum class Render : uint8_t {
     Air,      // nothing

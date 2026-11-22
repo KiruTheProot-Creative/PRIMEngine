@@ -192,6 +192,17 @@ int main() {
             for (int t = 0; t < 4; t++) g.tickLiquids();
             CHECK(!wetOf(g.get(3, 1, 3)), "with the water gone they dry");
             BlockId plain = g.get(0, 0, 0); CHECK(!g.canSoak(plain) && g.canSoak(stairs), "full cubes never stand in water");
+            // ... and in lava the same way
+            BlockId lavaB = reg.liquidBlock(2);
+            g.set(-3, 1, -3, makeLiquid(lavaB, 16)); g.set(-3, 1, -3, stairs);
+            CHECK(soakOf(g.get(-3, 1, -3)) == 2 && shapeOf(g.get(-3, 1, -3)) == Shapes::get().find("stairs") && g.liquidAt({ -2.5, 1.9, -2.5 }) == 2, "stairs put into lava stand in lava (it burns there)");
+            g.set(-3, 1, -3, AIR); CHECK(reg.get(g.get(-3, 1, -3)).liquid == 2, "taking them out: the lava stays");
+            g.set(-3, 1, -3, AIR); g.liquidActive.clear(); g.set(-5, 1, -5, stairs); g.set(-4, 1, -5, makeLiquid(lavaB, 16));
+            for (int t = 0; t < 30; t++) g.tickLiquids();
+            CHECK(soakOf(g.get(-5, 1, -5)) == 2, "lava flowing beside the stairs fills them");
+            g.set(-5, 1, -4, makeLiquid(full, 16));
+            for (int t = 0; t < 30; t++) g.tickLiquids();
+            CHECK(soakOf(g.get(-5, 1, -5)) != 2 && typeOf(g.get(-5, 1, -5)) == stone, "water touching them puts the lava out");
         }
         // flowing on a flat floor spreads out thin and stops (no endless flowing)
         World f(reg); f.gen.kind = Generator::Void; f.stream({ 0, 0, 0 }, 2, 2, 100000);

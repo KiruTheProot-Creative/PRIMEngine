@@ -56,10 +56,13 @@ void World::set(int x, int y, int z, BlockId id) {
     I3 cp = chunkOf(x, y, z); Chunk& c = loadChunk(cp);
     int lx = floorMod(x, CS), ly = floorMod(y, CS), lz = floorMod(z, CS);
     if (!keepWet) {   // water and blocks that are not full cubes: placed into water they stand in it, taken out of it the water stays
-        BlockId was = c.get(lx, ly, lz); bool wasWater = was != AIR && reg.get(was).liquid == 1;
-        if (id != AIR && (id & WET) && !(was & WET) && !wasWater) id &= ~WET;
-        else if (id != AIR && !(id & WET) && canSoak(id) && ((was & WET) || (wasWater && liquidLevel(was) >= 8))) id |= WET;
-        if (id == AIR && (was & WET)) { BlockId w = reg.liquidBlock(1); if (w) id = makeLiquid(w, 16); }
+        BlockId was = c.get(lx, ly, lz); int wasLiq = was != AIR ? reg.get(was).liquid : 0, wasSoak = soakOf(was);
+        if (id != AIR && (id & WET) && !wasSoak && !wasLiq) id &= ~SOAK;
+        else if (id != AIR && !(id & WET) && canSoak(id)) {   // into water it stands in water, into lava in lava
+            int k = wasSoak ? wasSoak : (wasLiq && liquidLevel(was) >= 8 ? wasLiq : 0);
+            if (k) id = (id & ~HOT) | WET | (k == 2 ? HOT : 0);
+        }
+        if (id == AIR && wasSoak) { BlockId w = reg.liquidBlock(wasSoak); if (w) id = makeLiquid(w, 16); }
     }
     if (c.get(lx, ly, lz) == id) return;
     BlockId old = c.get(lx, ly, lz);
@@ -92,10 +95,10 @@ void World::touchLiquid(int x, int y, int z) {
 int World::liquidAt(V3 p) const {
     int x = ifloor(p.x), y = ifloor(p.y), z = ifloor(p.z);
     BlockId v = get(x, y, z); if (v == AIR) return 0;
-    if (v & WET) return 1;   // standing in water: the whole block
+    if (v & WET) return soakOf(v);   // standing in water / lava: the whole block
     const BlockDef& d = reg.get(v); if (!d.liquid) return 0;
     BlockId above = get(x, y + 1, z);
-    double h = (above != AIR && (reg.get(above).liquid == d.liquid || (d.liquid == 1 && (above & WET)))) ? 1.0 : liquidLevel(v) / 16.0;
+    double h = (above != AIR && (reg.get(above).liquid == d.liquid || soakOf(above) == d.liquid)) ? 1.0 : liquidLevel(v) / 16.0;
     return p.y - y <= h ? d.liquid : 0;
 }
 
@@ -114,11 +117,12 @@ int World::tickLiquids() {
     BlockId stone = find("stone"), cobble = find("cobblestone");
     for (const I3& p : cells) {
         BlockId v = get(p.x, p.y, p.z); if (v == AIR || !loaded(p.x, p.y, p.z)) continue;
-        if (v & WET) {   // a block standing in water: it dries when no water is left beside it or above it
-            bool water = false;
+        if (v & WET) {   // a block standing in water (lava): it dries when none is left beside it or above it (lava: or water touches it)
+            int sk = soakOf(v); bool water = false;
             I3 nb[5] = { { p.x + 1, p.y, p.z }, { p.x - 1, p.y, p.z }, { p.x, p.y, p.z + 1 }, { p.x, p.y, p.z - 1 }, { p.x, p.y + 1, p.z } };
-            for (int k = 0; k < 5 && !water; k++) { if (!loaded(nb[k].x, nb[k].y, nb[k].z)) { water = true; break; } BlockId n = get(nb[k].x, nb[k].y, nb[k].z); water = (n != AIR && reg.get(n).liquid == 1) || (k == 4 && (n & WET)); }
-            if (!water) { keepWet = true; set(p.x, p.y, p.z, v & ~WET); keepWet = false; changed++; }
+            for (int k = 0; k < 5 && !water; k++) { if (!loaded(nb[k].x, nb[k].y, nb[k].z)) { water = true; break; } BlockId n = get(nb[k].x, nb[k].y, nb[k].z); water = (n != AIR && reg.get(n).liquid == sk) || (k == 4 && soakOf(n) == sk); }
+            if (water && sk == 2) for (int k = 0; k < 6; k++) { int o[3] = { 0, 0, 0 }; o[k / 2] = k % 2 ? -1 : 1; BlockId n = get(p.x + o[0], p.y + o[1], p.z + o[2]); if ((n != AIR && reg.get(n).liquid == 1) || soakOf(n) == 1) { water = false; break; } }
+            if (!water) { keepWet = true; set(p.x, p.y, p.z, v & ~SOAK); keepWet = false; changed++; }
             continue;
         }
         const BlockDef& d = reg.get(v); if (!d.liquid) continue;
@@ -130,7 +134,7 @@ int World::tickLiquids() {
         // lava touching water hardens: stone where it was deep, cobblestone at thin edges
         if (kind == 2) {
             bool water = false;
-            for (int k = 0; k < 6 && !water; k++) { int o[3] = { 0, 0, 0 }; o[k / 2] = k % 2 ? -1 : 1; BlockId n = get(p.x + o[0], p.y + o[1], p.z + o[2]); water = n != AIR && reg.get(n).liquid == 1; }
+            for (int k = 0; k < 6 && !water; k++) { int o[3] = { 0, 0, 0 }; o[k / 2] = k % 2 ? -1 : 1; BlockId n = get(p.x + o[0], p.y + o[1], p.z + o[2]); water = (n != AIR && reg.get(n).liquid == 1) || soakOf(n) == 1; }
             if (water) { set(p.x, p.y, p.z, (spring || L >= 12) ? (stone ? stone : cobble) : (cobble ? cobble : stone)); changed++; continue; }
         }
         // fall
@@ -141,13 +145,13 @@ int World::tickLiquids() {
                 int m = std::min(L, 16 - liquidLevel(b)); set(p.x, p.y - 1, p.z, makeLiquid(flow, liquidLevel(b) + m)); L -= m; changed++;
             }
         }
-        if (kind == 1 && L > 0) {   // water fills the blocks around that are not full cubes (below it, and beside it once it is half full)
+        if (L > 0) {   // water (and lava) fills the blocks around that are not full cubes (below it, and beside it once it is half full)
             I3 nb[5] = { { p.x, p.y - 1, p.z }, { p.x + 1, p.y, p.z }, { p.x - 1, p.y, p.z }, { p.x, p.y, p.z + 1 }, { p.x, p.y, p.z - 1 } };
             for (int k = 0; k < 5 && L > 0; k++) {
                 if (k > 0 && L < 8) break;
                 if (!loaded(nb[k].x, nb[k].y, nb[k].z)) continue;
                 BlockId nv = get(nb[k].x, nb[k].y, nb[k].z); if (!canSoak(nv)) continue;
-                keepWet = true; set(nb[k].x, nb[k].y, nb[k].z, nv | WET); keepWet = false; changed++;
+                keepWet = true; set(nb[k].x, nb[k].y, nb[k].z, nv | WET | (kind == 2 ? HOT : 0)); keepWet = false; changed++;
                 if (!spring) L -= std::min(L, 2);
             }
         }

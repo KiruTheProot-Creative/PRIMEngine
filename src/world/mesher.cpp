@@ -101,6 +101,7 @@ void buildMesh(const BlockRegistry& reg, const MeshInput& in, ChunkMesh& out) {
         return (need & ~coverOf(reg, nb, f ^ 1)).none();   // f^1 = the opposite side
     };
     const BlockDef* waterDef = reg.liquidBlock(1) ? &reg.get(reg.liquidBlock(1)) : nullptr;   // (blocks standing in water)
+    const BlockDef* lavaDef = reg.liquidBlock(2) ? &reg.get(reg.liquidBlock(2)) : nullptr;    // (... and in lava)
     for (int y = 0; y < CS; y++) for (int z = 0; z < CS; z++) for (int x = 0; x < CS; x++) {
         BlockId id = at(x, y, z); if (id == AIR) continue;
         const BlockDef& d = reg.get(id); if (d.render == Render::Air) continue;
@@ -108,7 +109,7 @@ void buildMesh(const BlockRegistry& reg, const MeshInput& in, ChunkMesh& out) {
         MeshData& md = cut ? out.cutout : out.opaque;
         // water / lava: a surface at the liquid's height, smooth between neighbours (d: the liquid; a block standing in water draws the water around it too)
         auto meshLiquid = [&](const BlockDef& d) {
-            auto same = [&](BlockId b) { return b != UNKNOWN && b != AIR && (reg.get(b).liquid == d.liquid || (d.liquid == 1 && (b & WET))); };
+            auto same = [&](BlockId b) { return b != UNKNOWN && b != AIR && (reg.get(b).liquid == d.liquid || soakOf(b) == d.liquid); };
             auto solidCube = [&](BlockId b) { return b == UNKNOWN || (isPlainCube(reg, b) && reg.get(b).render == Render::Opaque); };
             auto height = [&](int cx, int cy, int cz) -> float {   // -1 = no liquid there
                 BlockId b = at(cx, cy, cz); if (!same(b)) return -1;
@@ -166,7 +167,8 @@ void buildMesh(const BlockRegistry& reg, const MeshInput& in, ChunkMesh& out) {
             }
         };
         if (d.liquid) { meshLiquid(d); continue; }
-        if ((id & WET) && waterDef) meshLiquid(*waterDef);   // (a slope, a slab, a plant ... standing in water: the water, then the block itself)
+        if (soakOf(id) == 1 && waterDef) meshLiquid(*waterDef);
+        else if (soakOf(id) == 2 && lavaDef) meshLiquid(*lavaDef);   // (a slope, a slab, a plant ... standing in water: the water, then the block itself)
         int shape = resolveShape(id, d);
         if (shape != Shapes::FULL) {
             // any other shape: prepared triangles, sides lying on the block border hidden like cube faces
