@@ -527,3 +527,16 @@ Player > Weapons > Lock-on: on / off, hold or press-to-toggle, reach, how far fr
   - the **trail** (ring in the trail's colour): where its glowing tail starts, behind / up / to the side; an example trail streams from it all the time. Colour, length and style below the view: **glowing dots**, a **ribbon of light** (a glowing strip that fades away behind the ball: width, how much thinner it gets, glow, how it is turned (upright, flat, a cross of both, or facing the camera), and thin **edge streaks** that last a little longer), or both.
   - Drag empty space or hold the right mouse to turn the view, the wheel zooms; "Pause rolling" and a speed slider help line things up.
 - Sounds for the morph ball, bombs and breaking blocks: Player editor > Sounds.
+
+## Cooking (toolbar > Cook)
+Cooking prepares the world for export. The Cook window shows the world from above.
+- **Drag** on the map to pick the chunk columns to cook. A column covers every height in the **Heights** range, so underground rooms are included. The top of the range should be above everything.
+- **One height** shows a slice of the world, so you can look inside buildings and caves.
+- **Test-cook** runs the cook on the picked chunks. Right now it finds:
+  - **the outside**: everything open to the sky
+  - **rooms**: closed spaces of air. Each **zone** counts as its own room.
+  - **portals**: the doors between rooms, and open zone edges.
+  Each room gets its own colour on the map and a row in the list. Click a row to jump to that room's height.
+- The result is saved to `cook/rooms.txt` in the project.
+
+Next steps for cooking: a reflection probe and baked light per room, and portal visibility. Everything within 64–100 blocks stays real-time.

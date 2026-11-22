@@ -21,6 +21,7 @@
 #include "../src/game/cull.h"
 #include "../src/game/screens.h"
 #include "../src/game/planets.h"
+#include "../src/game/cook.h"
 #include "../src/game/savegame.h"
 #include "../src/game/bosses.h"
 #include "../src/game/assets.h"
@@ -1768,6 +1769,29 @@ int main() {
             const Screen& m4 = tl.screens[tl.byRole(ScreenRole::MainMenu)]; const ScreenItem* lb = nullptr; for (const ScreenItem& i : m4.items) if (i.kind == ScreenItemKind::Button) { lb = &i; break; }
             CHECK(m4.in.kind == TransKind::Iris && m4.in.time == 1.25f && m4.in.ease == 2 && m4.in.color == 0x123456 && m4.out.kind == TransKind::Wipe && m4.out.dir == 3
                   && lb && lb->ownTrans && lb->trans.kind == TransKind::Pixelate && lb->trans.time == 0.7f, "transitions save and load (a screen's in and out, a button's own)");
+        }
+        {   // cooking: the outside, two rooms joined by a door, a zone, a gap in a wall
+            BlockRegistry creg; registerBuiltinBlocks(creg); World cw(creg); cw.gen.kind = Generator::Void; cw.stream({ 32, 0, 32 }, 6, 3, 100000);
+            BlockId st = creg.find("stone");
+            for (int z = 0; z < 64; z++) for (int x = 0; x < 64; x++) cw.set(x, 0, z, st);   // a floor
+            auto box = [&](int x0, int z0, int x1, int z1, int h) {   // walls and a roof round (x0..x1, z0..z1)
+                for (int y = 1; y <= h + 1; y++) for (int z = z0; z <= z1; z++) for (int x = x0; x <= x1; x++) {
+                    bool wall = x == x0 || x == x1 || z == z0 || z == z1 || y == h + 1; if (wall) cw.set(x, y, z, st); }
+            };
+            box(2, 2, 12, 12, 4); box(12, 2, 22, 12, 4);   // two rooms side by side, sharing the wall x = 12
+            cw.set(12, 1, 6, AIR); cw.set(12, 2, 6, AIR);   // a doorway in that wall
+            box(30, 30, 40, 40, 4);                         // a third room: a zone
+            cw.set(50, 5, 50, st); cw.set(51, 5, 50, st); cw.set(50, 5, 51, st); cw.set(51, 5, 51, st);   // (just a roof over the open air: still outside around it)
+            CookArea ar; ar.cx0 = 0; ar.cz0 = 0; ar.cx1 = 63 / CS; ar.cz1 = 63 / CS; ar.y0 = 0; ar.y1 = 32;
+            std::vector<CookDoor> doors = { { { 12, 1, 6 }, { 12, 2, 6 }, "door A" } };
+            EnvZone zn; zn.name = "Vault"; zn.lo = { 31, 1, 31 }; zn.hi = { 39, 4, 39 };
+            CookRooms cr = findRooms(cw, ar, doors, { zn });
+            int a = cr.roomAt(5, 2, 5), b = cr.roomAt(18, 2, 5), o = cr.roomAt(30, 10, 2), v = cr.roomAt(35, 2, 35), under = cr.roomAt(50, 4, 50);
+            CHECK(o && cr.rooms[o - 1].outside && a && b && a != b && a != o && b != o, "cooking: the outside and two rooms, kept apart by a door (%d %d %d)", o, a, b);
+            CHECK(v && cr.rooms[v - 1].zone == "Vault" && under == o && cr.roomAt(5, 0, 5) == 0, "a zone is its own room; air under a small roof is still outside; solid is no room");
+            bool joined = false; for (const CookPortal& p : cr.portals) joined |= ((p.a == a && p.b == b) || (p.a == b && p.b == a)) && p.via == "door A";
+            CHECK(joined && cr.count(false) == 3, "the door joins the two rooms (a portal); three rooms in all (%d)", cr.count(false));
+            CHECK(saveCookRooms("/tmp/prim_cook.txt", ar, cr), "the cook's rooms are written down");
         }
         int gs = ss.byRole(ScreenRole::GameSaved); bool says = false; for (auto& it : gs >= 0 ? ss.screens[gs].items : std::vector<ScreenItem>{}) says |= it.text.find("{savetitle}") != std::string::npos;
         CHECK(gs >= 0 && says && ss.screens[gs].bg.kind == BgKind::Game, "new games come with a \"Game Saved!\" pop-up, over the game");

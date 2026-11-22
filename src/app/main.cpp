@@ -30,6 +30,7 @@
 #include "../game/assets.h"
 #include "../game/looks.h"
 #include "../game/planets.h"
+#include "../game/cook.h"
 #include "../game/surfaces.h"
 #include "../game/buildmodes.h"
 #include <tuple>
@@ -892,6 +893,10 @@ struct App {
         ResetVoxels();   // (the reflection rays' palette points at texture layers)
         const int S = reg.layerSize(), n = (int)reg.textureCount();
         std::vector<std::vector<uint8_t>> px(n); for (int i = 0; i < n; i++) px[i] = reg.layer(i, S);
+        layerAvg.assign(n, 0x808080);   // each texture's average colour (the cook view's map)
+        for (int i = 0; i < n; i++) { double r = 0, g = 0, b = 0, w = 0; const auto& q = px[i];
+            for (size_t k = 0; k + 3 < q.size(); k += 4) { double a = q[k + 3] / 255.0; r += q[k] * a; g += q[k + 1] * a; b += q[k + 2] * a; w += a; }
+            if (w > 0) layerAvg[i] = ((uint32_t)(r / w) << 16) | ((uint32_t)(g / w) << 8) | (uint32_t)(b / w); }
         ComPtr<ID3D11ShaderResourceView> made = MakeArray(px, S);
         {   // the emission maps, layer by layer (black where a texture has none)
             std::vector<std::vector<uint8_t>> ex(n); emitInfo.assign(n, {});
@@ -5991,6 +5996,8 @@ struct App {
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("F6: play as a player would: from the main menu (Screens editor).\nF5 there: back to the editor.");
             ImGui::SameLine(); if (ImGui::Button("Player")) { playerEdOpen = !playerEdOpen; focusPlayerEd = playerEdOpen; }
             ImGui::SameLine(); if (ImGui::Button("Screens")) { screensEdOpen = !screensEdOpen; focusScreensEd = screensEdOpen; }
+            ImGui::SameLine(); if (ImGui::Button("Cook")) { cookOpenW = !cookOpenW; focusCook = cookOpenW; if (cookOpenW) { cookMapX0 = (int)std::floor(camPos.x) - COOKMAP / 2; cookMapZ0 = (int)std::floor(camPos.z) - COOKMAP / 2; cookY0 = (int)std::floor(camPos.y) - 64; cookY1 = (int)std::floor(camPos.y) + 96; cookLayer = (int)std::floor(camPos.y) + 1; cookMapDirty = true; } }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Cooking for export: a map of the world from above, pick the chunks, Test-cook");
             ImGui::SameLine(); if (ImGui::Button("Planets")) { planetsEdOpen = !planetsEdOpen; focusPlanetsEd = planetsEdOpen; if (planetsEdOpen && planets.planets.empty()) { planets.planets.push_back(defaultPlanet()); planetsDirty = true; } }
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("The Planets editor: design planets in layers for Space backgrounds (main menu)");
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("The Screens editor: main menu, options, death screen, credits, your own screens, their compositor");
@@ -8813,6 +8820,147 @@ struct App {
         MakeCompRT(planetPreview, 512, 512, DXGI_FORMAT_R8G8B8A8_UNORM);
         ScreenBg v; v.planetX = 0.5f; v.planetY = 0.5f; v.planetSize = planets.planets[planetSel].rings ? 0.2f : 0.36f; v.spin = planetPrevSpin; v.sunYaw = planetPrevSun; v.axisTilt = 15; v.stars = 0.4f; v.nebula = 0.2f;
         DrawPlanet(planetPreview.rtv.Get(), 512, 512, planets.planets[planetSel], v, uiClock);
+    }
+    // ---- cooking (for export): a top-down map of the world; pick the chunk columns; the engine finds the rooms (test-cook)
+    std::vector<uint32_t> layerAvg;
+    bool cookOpenW = false, focusCook = false, cookHave = false, cookMapDirty = true, cookLayerView = false, cookDragging = false;
+    int cookY0 = 0, cookY1 = 128, cookLayer = 40, cookMapX0 = 0, cookMapZ0 = 0; static constexpr int COOKMAP = 512;
+    int cookSel[4] = { 0, 0, -1, -1 }; int cookDrag[2] = { 0, 0 };   // chosen chunk columns (x0, z0, x1, z1); x1 < x0: none
+    CookArea cookArea; CookRooms cookRes; std::string cookMsg;
+    ComPtr<ID3D11Texture2D> cookTex; ComPtr<ID3D11ShaderResourceView> cookSRV;
+    static uint32_t RoomColor(int id, bool outside) { if (outside) return 0x5AB4FF; uint32_t h = (uint32_t)id * 2654435761u; return 0x404040 | (h & 0xBFBFBF); }
+    uint32_t BlockMapColor(BlockId v) const {
+        const BlockDef& d = reg.get(v); int l = d.tex[2]; uint32_t c = l >= 0 && l < (int)layerAvg.size() ? layerAvg[l] : 0x808080;
+        if (d.liquid == 1) c = 0x3A6EB0; else if (d.liquid == 2) c = 0xE0601C;
+        return c;
+    }
+    void BuildCookMap() {   // the map picture: every block column from above (or one height, with the rooms found)
+        if (!world) return;
+        cookMapDirty = false;
+        std::vector<uint32_t> img((size_t)COOKMAP * COOKMAP, 0xFF181410);
+        std::vector<int> top((size_t)COOKMAP * COOKMAP, INT_MIN);
+        int cy0 = floorDiv(cookLayerView ? cookLayer : cookY0 - 64, CS), cy1 = floorDiv(cookLayerView ? cookLayer : cookY1 + 64, CS);
+        for (int cz = floorDiv(cookMapZ0, CS); cz <= floorDiv(cookMapZ0 + COOKMAP - 1, CS); cz++)
+            for (int cx = floorDiv(cookMapX0, CS); cx <= floorDiv(cookMapX0 + COOKMAP - 1, CS); cx++)
+                for (int cy = cy1; cy >= cy0; cy--) {
+                    const Chunk* ch = world->chunk({ cx, cy, cz }); if (!ch) continue;
+                    for (int lz = 0; lz < CS; lz++) for (int lx = 0; lx < CS; lx++) {
+                        int mx = cx * CS + lx - cookMapX0, mz = cz * CS + lz - cookMapZ0; if (mx < 0 || mz < 0 || mx >= COOKMAP || mz >= COOKMAP) continue;
+                        size_t pi = (size_t)mz * COOKMAP + mx;
+                        if (cookLayerView) {
+                            int wy = cookLayer; if (floorDiv(wy, CS) != cy) continue;
+                            BlockId v = ch->get(lx, floorMod(wy, CS), lz);
+                            uint32_t c = v == AIR ? 0x101010 : (BlockMapColor(v) >> 1) & 0x7F7F7F;
+                            if (cookHave) { int rid = cookRes.roomAt(cx * CS + lx, wy, cz * CS + lz); if (rid) c = RoomColor(rid, cookRes.rooms[rid - 1].outside); if (rid && cookRes.rooms[rid - 1].outside) c = (c >> 1) & 0x7F7F7F; }
+                            img[pi] = 0xFF000000 | ((c & 0xFF) << 16) | (c & 0xFF00) | ((c >> 16) & 0xFF); continue;
+                        }
+                        if (top[pi] != INT_MIN) continue;
+                        for (int ly = CS - 1; ly >= 0; ly--) {
+                            BlockId v = ch->get(lx, ly, lz); if (v == AIR) continue;
+                            int wy = cy * CS + ly; top[pi] = wy;
+                            uint32_t c = BlockMapColor(v); float k = std::clamp(0.55f + (wy - cookY0) / std::max(1.f, (float)(cookY1 - cookY0)) * 0.6f, 0.35f, 1.15f);
+                            int r = std::min(255, (int)(((c >> 16) & 255) * k)), g = std::min(255, (int)(((c >> 8) & 255) * k)), b = std::min(255, (int)((c & 255) * k));
+                            img[pi] = 0xFF000000 | (b << 16) | (g << 8) | r; break;
+                        }
+                    }
+                }
+        if (!cookTex) {
+            D3D11_TEXTURE2D_DESC d{}; d.Width = d.Height = COOKMAP; d.MipLevels = 1; d.ArraySize = 1; d.Format = DXGI_FORMAT_R8G8B8A8_UNORM; d.SampleDesc.Count = 1; d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            HR(dev->CreateTexture2D(&d, nullptr, &cookTex)); HR(dev->CreateShaderResourceView(cookTex.Get(), nullptr, &cookSRV));
+        }
+        ctx->UpdateSubresource(cookTex.Get(), 0, nullptr, img.data(), COOKMAP * 4, 0);
+    }
+    std::vector<CookDoor> CookDoors() const {   // the doors' openings (blocks)
+        std::vector<CookDoor> v;
+        for (const WorldObject& o : objects) if (o.kind == ObjKind::Door) {
+            double a = o.yaw * 3.14159265 / 180, c = std::fabs(std::cos(a)), sn = std::fabs(std::sin(a));
+            double hx = c * o.door.w * 0.5 + sn * 0.5, hz = sn * o.door.w * 0.5 + c * 0.5;
+            CookDoor d; d.name = o.name;
+            d.lo = { (int)std::floor(o.pos.x - hx + 0.01), (int)std::floor(o.pos.y + 0.01), (int)std::floor(o.pos.z - hz + 0.01) };
+            d.hi = { (int)std::floor(o.pos.x + hx - 0.01), (int)std::floor(o.pos.y + o.door.h - 0.01), (int)std::floor(o.pos.z + hz - 0.01) };
+            v.push_back(d);
+        }
+        return v;
+    }
+    void TestCook() {
+        if (!world || cookSel[2] < cookSel[0]) { cookMsg = "Pick the chunks to cook first (drag on the map)."; return; }
+        cookArea.cx0 = cookSel[0]; cookArea.cz0 = cookSel[1]; cookArea.cx1 = cookSel[2]; cookArea.cz1 = cookSel[3]; cookArea.y0 = cookY0; cookArea.y1 = cookY1;
+        auto t0 = std::chrono::steady_clock::now();
+        cookRes = findRooms(*world, cookArea, CookDoors(), info.zones);
+        double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        if (cookRes.rooms.empty()) { cookMsg = "Too big to cook at once (or nothing there): pick fewer chunks or a smaller height range."; cookHave = false; return; }
+        cookHave = true; cookMapDirty = true; cookLayerView = true;
+        int outsideN = 0, pockets = 0; for (const CookRoom& r : cookRes.rooms) { outsideN += r.outside; pockets += r.pocket(); }
+        char b[256]; std::snprintf(b, sizeof b, "Found %d rooms%s, %d portals (doors / open zone edges), %d tiny gaps left out. (%.0f ms)", cookRes.count(false), outsideN ? " and the outside" : "", (int)cookRes.portals.size(), pockets, ms);
+        cookMsg = b;
+        if (!projectDir.empty()) { std::error_code ec; fs::create_directories(fs::u8path(projectDir + "/cook"), ec); saveCookRooms(projectDir + "/cook/rooms.txt", cookArea, cookRes); }
+    }
+    void CookWindow() {
+        if (!cookOpenW || !world) return;
+        float ui = settings.uiScale;
+        ImGui::SetNextWindowSize(ImVec2(1100 * ui, 760 * ui), ImGuiCond_FirstUseEver);
+        if (focusCook) { ImGui::SetNextWindowFocus(); focusCook = false; }
+        if (!ImGui::Begin("Cook", &cookOpenW)) { ImGui::End(); return; }
+        if (cookMapDirty) BuildCookMap();
+        float side = std::min(ImGui::GetContentRegionAvail().y, ImGui::GetContentRegionAvail().x - 330 * ui); side = std::max(side, 200.f);
+        ImVec2 p0 = ImGui::GetCursorScreenPos();
+        if (cookSRV) ImGui::Image((ImTextureID)(intptr_t)cookSRV.Get(), ImVec2(side, side)); else ImGui::Dummy(ImVec2(side, side));
+        float bpx = side / COOKMAP;   // pixels per block
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        auto toScr = [&](double wx, double wz) { return ImVec2(p0.x + (float)(wx - cookMapX0) * bpx, p0.y + (float)(wz - cookMapZ0) * bpx); };
+        {   // chunk grid (faint), the camera, the selection
+            for (int k = 0; k <= COOKMAP; k += CS) { float o = k * bpx; dl->AddLine(ImVec2(p0.x + o, p0.y), ImVec2(p0.x + o, p0.y + side), IM_COL32(255, 255, 255, 14)); dl->AddLine(ImVec2(p0.x, p0.y + o), ImVec2(p0.x + side, p0.y + o), IM_COL32(255, 255, 255, 14)); }
+            ImVec2 c = toScr(camPos.x, camPos.z); dl->AddCircleFilled(c, 4 * ui, IM_COL32(255, 220, 80, 255));
+            if (cookSel[2] >= cookSel[0]) dl->AddRect(toScr(cookSel[0] * CS, cookSel[1] * CS), toScr((cookSel[2] + 1) * CS, (cookSel[3] + 1) * CS), IM_COL32(108, 240, 255, 255), 0, 0, 2 * ui);
+            if (cookHave) for (const CookRoom& r : cookRes.rooms) if (!r.outside && !r.pocket()) {   // each room's outline
+                uint32_t rc = RoomColor(r.id, false); dl->AddRect(toScr(r.lo.x, r.lo.z), toScr(r.hi.x + 1, r.hi.z + 1), IM_COL32((rc >> 16) & 255, (rc >> 8) & 255, rc & 255, 200), 0, 0, 1.5f * ui);
+            }
+        }
+        if (ImGui::IsItemHovered()) {   // drag: pick chunk columns
+            ImVec2 m = ImGui::GetMousePos(); int wx = cookMapX0 + (int)((m.x - p0.x) / bpx), wz = cookMapZ0 + (int)((m.y - p0.y) / bpx);
+            int cx = floorDiv(wx, CS), cz = floorDiv(wz, CS);
+            if (ImGui::IsMouseClicked(0)) { cookDragging = true; cookDrag[0] = cx; cookDrag[1] = cz; }
+            if (cookDragging) { cookSel[0] = std::min(cookDrag[0], cx); cookSel[1] = std::min(cookDrag[1], cz); cookSel[2] = std::max(cookDrag[0], cx); cookSel[3] = std::max(cookDrag[1], cz); }
+            int rid = cookHave ? cookRes.roomAt(wx, cookLayer, wz) : 0;
+            ImGui::SetTooltip("Block %d, %d  (chunk %d, %d)%s", wx, wz, cx, cz, rid ? (cookRes.rooms[rid - 1].outside ? "\noutside" : ("\nroom " + std::to_string(rid) + (cookRes.rooms[rid - 1].zone.empty() ? "" : " (zone " + cookRes.rooms[rid - 1].zone + ")")).c_str()) : "");
+        }
+        if (!ImGui::IsMouseDown(0)) cookDragging = false;
+        ImGui::SameLine();
+        ImGui::BeginChild("##cookside", ImVec2(0, 0));
+        ImGui::TextWrapped("Drag on the map to pick the chunks to cook (whole columns: every height in the range below, so rooms underground come along).");
+        if (ImGui::Button("Centre on me")) { cookMapX0 = (int)std::floor(camPos.x) - COOKMAP / 2; cookMapZ0 = (int)std::floor(camPos.z) - COOKMAP / 2; cookMapDirty = true; }
+        ImGui::SameLine(); if (ImGui::Button("Refresh map")) cookMapDirty = true;
+        ImGui::SameLine(); if (ImGui::Button("Clear")) { cookSel[2] = cookSel[0] - 1; }
+        if (cookSel[2] >= cookSel[0]) { int w = cookSel[2] - cookSel[0] + 1, h = cookSel[3] - cookSel[1] + 1; ImGui::Text("Picked: %d x %d chunk columns (%d x %d blocks)", w, h, w * CS, h * CS); }
+        ImGui::SeparatorText("Heights");
+        { int v[2] = { cookY0, cookY1 }; ImGui::SetNextItemWidth(-1); if (ImGui::DragInt2("##cky", v, 1, -256, 512, "%d")) { cookY0 = std::min(v[0], v[1] - 1); cookY1 = std::max(v[1], cookY0 + 1); cookMapDirty = true; } }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("From the lowest to the highest block that gets cooked. The top should be above everything (the sky).");
+        if (ImGui::Button("Around me (-64 .. +96)")) { cookY0 = (int)std::floor(camPos.y) - 64; cookY1 = (int)std::floor(camPos.y) + 96; cookMapDirty = true; }
+        ImGui::SeparatorText("View");
+        if (ImGui::Checkbox("One height (see inside)", &cookLayerView)) cookMapDirty = true;
+        if (cookLayerView) { ImGui::SetNextItemWidth(-1); if (ImGui::SliderInt("##ckl", &cookLayer, cookY0, cookY1 - 1, "height %d")) cookMapDirty = true;
+            if (ImGui::Button("My height")) { cookLayer = (int)std::floor(camPos.y) + 1; cookMapDirty = true; } }
+        ImGui::SeparatorText("Cook");
+        if (ImGui::Button("Test-cook", ImVec2(-1, 34 * ui))) TestCook();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Cooks the picked chunks the way an export will. For now: finds the outside, the rooms and the doors between them\n(next: reflection probes and baked light in each room).");
+        if (!cookMsg.empty()) ImGui::TextWrapped("%s", cookMsg.c_str());
+        if (cookHave) {
+            ImGui::TextDisabled("Colours on the map (one height): each room its own, the outside dim blue.");
+            if (ImGui::BeginTable("##ckrooms", 3, ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg, ImVec2(0, 260 * ui))) {
+                ImGui::TableSetupColumn("Room"); ImGui::TableSetupColumn("Size"); ImGui::TableSetupColumn("Blocks of air"); ImGui::TableHeadersRow();
+                for (const CookRoom& r : cookRes.rooms) if (!r.pocket()) {
+                    ImGui::TableNextRow(); ImGui::TableNextColumn();
+                    uint32_t rc = RoomColor(r.id, r.outside); ImGui::ColorButton(("##rc" + std::to_string(r.id)).c_str(), ImVec4(((rc >> 16) & 255) / 255.f, ((rc >> 8) & 255) / 255.f, (rc & 255) / 255.f, 1), ImGuiColorEditFlags_NoTooltip, ImVec2(12 * ui, 12 * ui)); ImGui::SameLine();
+                    std::string nm = r.outside ? "Outside" : !r.zone.empty() ? r.zone : "Room " + std::to_string(r.id);
+                    if (ImGui::Selectable(nm.c_str(), false, ImGuiSelectableFlags_SpanAllColumns)) { cookLayer = std::clamp((r.lo.y + r.hi.y) / 2, cookY0, cookY1 - 1); cookLayerView = true; cookMapDirty = true; }
+                    ImGui::TableNextColumn(); ImGui::Text("%d x %d x %d", r.hi.x - r.lo.x + 1, r.hi.y - r.lo.y + 1, r.hi.z - r.lo.z + 1);
+                    ImGui::TableNextColumn(); ImGui::Text("%d", r.cells);
+                }
+                ImGui::EndTable();
+            }
+        }
+        ImGui::EndChild();
+        ImGui::End();
     }
     void PlanetsEditor() {
         if (!planetsEdOpen) return;
@@ -16053,7 +16201,7 @@ struct App {
             if (brushMenu) BrushMenu();
             ModelViewer();
             PlayerEditor();
-            ScreensEditor(); PlanetsEditor();
+            ScreensEditor(); PlanetsEditor(); CookWindow();
         } else {
             if (!mapOpen && !CurScreen()) { DrawHud(ImGui::GetForegroundDrawList()); DrawScanMarkers(ImGui::GetForegroundDrawList()); DrawLockMarkers(ImGui::GetForegroundDrawList()); }
             if (showF3) DrawF3();
