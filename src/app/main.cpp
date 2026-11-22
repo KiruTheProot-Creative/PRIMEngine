@@ -33,6 +33,11 @@
 #include "../game/surfaces.h"
 #include "../game/buildmodes.h"
 #include <tuple>
+#include <thread>
+#include <mutex>
+#include <atomic>
+#include <fstream>
+#include <unordered_map>
 #include <future>
 #include <memory>
 #include "media.h"
@@ -104,10 +109,56 @@ static std::string ReadShader(const char* file) {
     }
     Fatal(std::string("Could not find shaders\\") + file + " next to the program.");
 }
+// ---- shaders: compiled once and kept on disk (%LOCALAPPDATA%\PRIMEngine\shadercache), so the next start skips the compiler;
+// on a first start (or after the shaders changed) every entry point is compiled at the same time on all processor cores
+static std::mutex g_shaderMx; static std::unordered_map<std::string, ComPtr<ID3DBlob>> g_shaderMem;
+static uint64_t ShaderHash(const std::string& src, const std::string& entry, const std::string& target) {
+    uint64_t h = 1469598103934665603ull; auto mix = [&](const std::string& s) { for (unsigned char c : s) { h ^= c; h *= 1099511628211ull; } h ^= 0xFF; h *= 1099511628211ull; };
+    mix(src); mix(entry); mix(target); mix("O3 v1"); return h;
+}
+static std::string ShaderCacheDir() {
+    static std::string dir = [] { char b[MAX_PATH] = {}; DWORD n = GetEnvironmentVariableA("LOCALAPPDATA", b, MAX_PATH);
+        std::string d = n ? std::string(b) + "\\PRIMEngine" : std::string("."); CreateDirectoryA(d.c_str(), nullptr); d += "\\shadercache"; CreateDirectoryA(d.c_str(), nullptr); return d; }();
+    return dir;
+}
+static ComPtr<ID3DBlob> CompileRaw(const std::string& src, const std::string& entry, const std::string& target, std::string* error) {
+    char name[32]; std::snprintf(name, sizeof name, "%016llx.cso", (unsigned long long)ShaderHash(src, entry, target));
+    std::string path = ShaderCacheDir() + "\\" + name;
+    { std::lock_guard<std::mutex> lk(g_shaderMx); auto it = g_shaderMem.find(path); if (it != g_shaderMem.end()) return it->second; }
+    ComPtr<ID3DBlob> code;
+    {   // on disk from an earlier start?
+        std::ifstream f(path, std::ios::binary | std::ios::ate);
+        if (f) { std::streamsize n = f.tellg(); if (n > 0 && SUCCEEDED(D3DCreateBlob((SIZE_T)n, &code))) { f.seekg(0); if (!f.read((char*)code->GetBufferPointer(), n)) code.Reset(); } }
+    }
+    if (!code) {
+        ComPtr<ID3DBlob> err;
+        HRESULT hr = D3DCompile(src.data(), src.size(), "block.hlsl", nullptr, nullptr, entry.c_str(), target.c_str(), D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code, &err);
+        if (FAILED(hr)) { if (error) *error = err ? (const char*)err->GetBufferPointer() : "Shader compile failed"; return nullptr; }
+        std::ofstream o(path, std::ios::binary); if (o) o.write((const char*)code->GetBufferPointer(), (std::streamsize)code->GetBufferSize());
+    }
+    std::lock_guard<std::mutex> lk(g_shaderMx); g_shaderMem[path] = code; return code;
+}
+static void PrecompileShaders(const std::string& src) {   // every VS_ / PS_ / CS_ entry point in the file, all cores at once (what is cached already: just read)
+    std::vector<std::pair<std::string, std::string>> work;
+    for (size_t i = 0; i + 4 < src.size(); i++) {
+        if (!(src.compare(i, 3, "VS_") == 0 || src.compare(i, 3, "PS_") == 0 || src.compare(i, 3, "CS_") == 0)) continue;
+        if (i == 0 || src[i - 1] != ' ') continue;
+        size_t ls = src.rfind('\n', i); ls = ls == std::string::npos ? 0 : ls + 1;
+        if (src.compare(ls, 2, "//") == 0 || ls == i) continue;
+        size_t e = i + 3; while (e < src.size() && (std::isalnum((unsigned char)src[e]) || src[e] == '_')) e++;
+        if (e >= src.size() || src[e] != '(') continue;
+        std::string name = src.substr(i, e - i), tgt = name[0] == 'V' ? "vs_5_0" : name[0] == 'P' ? "ps_5_0" : "cs_5_0";
+        bool dup = false; for (auto& w : work) dup |= w.first == name; if (!dup) work.push_back({ name, tgt });
+    }
+    std::atomic<size_t> next{ 0 };
+    unsigned n = std::max(1u, std::min(16u, std::thread::hardware_concurrency()));
+    std::vector<std::thread> th;
+    for (unsigned t = 0; t < n; t++) th.emplace_back([&] { for (size_t k; (k = next++) < work.size();) CompileRaw(src, work[k].first, work[k].second, nullptr); });
+    for (auto& t : th) t.join();
+}
 static ComPtr<ID3DBlob> Compile(const std::string& src, const char* entry, const char* target) {
-    ComPtr<ID3DBlob> code, err;
-    HRESULT hr = D3DCompile(src.data(), src.size(), "block.hlsl", nullptr, nullptr, entry, target, D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code, &err);
-    if (FAILED(hr)) Fatal(err ? (const char*)err->GetBufferPointer() : "Shader compile failed", hr);
+    std::string error; ComPtr<ID3DBlob> code = CompileRaw(src, entry, target, &error);
+    if (!code) Fatal(error.c_str(), E_FAIL);
     return code;
 }
 
@@ -337,6 +388,7 @@ struct App {
         MakeBackbuffer(); rw = cw; rh = ch; MakeTargets();
 
         std::string src = ReadShader("block.hlsl");
+        PrecompileShaders(src);   // (all at once on every core; after the first start they come from the cache)
         auto vb = Compile(src, "VS_Block", "vs_5_0"); HR(dev->CreateVertexShader(vb->GetBufferPointer(), vb->GetBufferSize(), nullptr, &vsBlock));
         auto b = Compile(src, "PS_Opaque", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psOpaque));
         b = Compile(src, "PS_Cutout", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psCutout));
