@@ -89,7 +89,7 @@ const char* collideName(Collide c) { return c == Collide::Exact ? "Exact (from i
 const char* kindName(ObjKind k) {
     switch (k) { case ObjKind::Door: return "Door"; case ObjKind::Platform: return "Platform"; case ObjKind::Pickup: return "Pickup"; case ObjKind::Checkpoint: return "Checkpoint";
     case ObjKind::Teleporter: return "Teleporter"; case ObjKind::Trigger: return "Trigger zone"; case ObjKind::Light: return "Light"; case ObjKind::Particles: return "Particles";
-    case ObjKind::MapCamera: return "Map camera"; case ObjKind::MapStation: return "Map Station"; case ObjKind::Enemy: return "Enemy"; case ObjKind::SaveStation: return "Save Station"; default: return "Prop"; }
+    case ObjKind::MapCamera: return "Map camera"; case ObjKind::MapStation: return "Map Station"; case ObjKind::Enemy: return "Enemy"; case ObjKind::SaveStation: return "Save Station"; case ObjKind::Ambient: return "Ambient light"; default: return "Prop"; }
 }
 const char* pickupName(PickupType t) { return t == PickupType::Key ? "Key" : t == PickupType::Collectible ? "Collectible (counted)" : "Health"; }
 const char* triggerName(TriggerAction a) { return a == TriggerAction::Kill ? "Kill (traps, acid ...)" : a == TriggerAction::Heal ? "Heal" : a == TriggerAction::Checkpoint ? "Checkpoint" : "Show a message"; }
@@ -196,6 +196,26 @@ void fieldQuad(const WorldObject& o, const ModelFrame& m, const Box3& op, V3& or
 static std::string esc(const std::string& s) { std::string o; for (char c : s) o += c == ' ' ? std::string("%20") : std::string(1, c); return o.empty() ? "-" : o; }
 static std::string unesc(const std::string& s) { if (s == "-") return ""; std::string o; for (size_t i = 0; i < s.size(); i++) { if (s.compare(i, 3, "%20") == 0) { o += ' '; i += 2; } else o += s[i]; } return o; }
 
+const char* ambientPresetName(int i) {
+    static const char* n[] = { "Cave", "Crypt", "Lava cavern", "Ice cave", "Lab", "Ruins", "Forest night" };
+    return i >= 0 && i < 7 ? n[i] : nullptr;
+}
+AmbientSettings ambientPreset(int i) {
+    AmbientSettings a;
+    auto set = [&](uint32_t up, uint32_t down, uint32_t side, float strength, uint32_t fog, float fogAmount) {
+        a.up = up; a.down = down; a.north = a.south = a.east = a.west = side; a.strength = strength; a.fog = fog; a.fogAmount = fogAmount; };
+    switch (i) {
+    case 0: set(0x5E6E86, 0x2A2622, 0x3C4452, 0.8f, 0x4A5A70, 0.25f); break;   // cave: cool from above, earthy below
+    case 1: set(0x4C5460, 0x1C1C22, 0x2E323C, 0.55f, 0x3A4048, 0.4f); break;   // crypt: dim, grey, misty
+    case 2: set(0x6A3020, 0xFF7A2A, 0x8A3A1C, 1.0f, 0xC0502A, 0.35f); break;   // lava cavern: hot from below
+    case 3: set(0xA8D8FF, 0x6A90B8, 0x80B0E0, 0.9f, 0x9AC8F0, 0.3f); break;    // ice cave: bright cold blue
+    case 4: set(0xD8E8FF, 0x5A6070, 0x9AA8C0, 1.1f, 0x8090A8, 0.05f); break;   // lab: clean, bright from above
+    case 5: set(0xC8A878, 0x4A3A28, 0x8A7050, 0.8f, 0xA08860, 0.15f); break;   // ruins: warm, dusty
+    case 6: set(0x3A4A78, 0x1A2218, 0x2A3448, 0.5f, 0x2A3A58, 0.2f); break;    // forest night: deep blue
+    }
+    return a;
+}
+
 bool saveObjects(const std::string& path, const std::vector<WorldObject>& objs) {
     std::ofstream f(path); if (!f) return false;
     f << "objects 1\n";
@@ -221,6 +241,11 @@ bool saveObjects(const std::string& path, const std::vector<WorldObject>& objs) 
         f << " " << (o.scan.on ? 1 : 0) << " " << o.scan.id << " " << o.enemyType << " " << (o.save.energy ? 1 : 0) << " " << (o.save.ammo ? 1 : 0) << " " << (o.save.anim == "-" ? std::string("%2D") : escText(o.save.anim)) << " " << (L.shadows ? 1 : 0) << " " << L.length
           << " " << escText(soundUseText(o.door.openSound)) << " " << escText(soundUseText(o.door.closeSound))
           << " " << escText(o.save.title) << " " << escText(o.save.text) << " " << (o.save.ask ? 1 : 0);
+        if (o.kind == ObjKind::Ambient) {
+            const AmbientSettings& A = o.ambient;
+            f << " amb " << A.up << " " << A.down << " " << A.north << " " << A.south << " " << A.east << " " << A.west << " " << A.strength << " " << A.mix
+              << " " << A.fog << " " << A.fogAmount << " " << A.reach << " " << A.blend << " " << escText(A.look);
+        }
         f << "\n";
     }
     return (bool)f;
@@ -262,6 +287,12 @@ bool loadObjects(const std::string& path, std::vector<WorldObject>& objs) {
               if (!tok.empty() && tok.find_first_not_of("0123456789") == std::string::npos) { o.scan.id = std::stoi(tok); int et; if (l >> et) { o.enemyType = et; int se, sa; if (l >> se >> sa) { o.save.energy = se != 0; o.save.ammo = sa != 0; std::string an; if (l >> an) { o.save.anim = unescText(an); int ls; float ll; if (l >> ls >> ll) { o.light.shadows = ls != 0; o.light.length = std::clamp(ll, 0.25f, 64.f); std::string so, sc; if (l >> so >> sc) { soundUseFrom(unescText(so), o.door.openSound); soundUseFrom(unescText(sc), o.door.closeSound); std::string stt, stx; int ask; if (l >> stt >> stx >> ask) { o.save.title = unescText(stt); o.save.text = unescText(stx); o.save.ask = ask != 0; } } } } } } }
               else { std::string sc, st; int imp = 0; float tm = 0; o.scan.legacyName = unescText(tok); if (l >> sc >> st >> imp >> tm) { o.scan.legacyCategory = unescText(sc); o.scan.legacyText = unescText(st); o.scan.legacyImportant = imp != 0; o.scan.legacyTime = std::max(0.f, tm); } }
           } }
+        { std::string t; if (l >> t && t == "amb") {   // an ambient light's settings (newer files)
+            AmbientSettings& A = o.ambient; std::string lk;
+            if (l >> A.up >> A.down >> A.north >> A.south >> A.east >> A.west >> A.strength >> A.mix >> A.fog >> A.fogAmount >> A.reach >> A.blend >> lk) {
+                A.look = unescText(lk); A.reach = std::clamp(A.reach, 2.f, 256.f); A.blend = std::clamp(A.blend, 0, 16); A.mix = std::clamp(A.mix, 0.f, 1.f);
+            }
+        } }
         objs.push_back(o);
     }
     return true;

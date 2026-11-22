@@ -531,7 +531,7 @@ std::vector<Box3> meshBoxes(const MeshModel& m, int maxCells, bool stillOnly) {
 }
 
 // ------------------------------------------------------------------ built-in looks for helper objects
-std::vector<std::string> builtinShapeNames() { return { "@health", "@key", "@gem", "@checkpoint", "@teleporter", "@zone", "@light", "@emitter", "@map-camera", "@map-station", "@enemy-crawler", "@enemy-hopper", "@enemy-flyer", "@enemy-walker", "@enemy-skree", "@enemy-turret", "@save-station" }; }
+std::vector<std::string> builtinShapeNames() { return { "@health", "@key", "@gem", "@checkpoint", "@teleporter", "@zone", "@light", "@emitter", "@map-camera", "@map-station", "@enemy-crawler", "@enemy-hopper", "@enemy-flyer", "@enemy-walker", "@enemy-skree", "@enemy-turret", "@save-station", "@ambient" }; }
 bool builtinShape(const std::string& name, MeshModel& m) {
     Builder B;
     auto colour = [&](uint32_t c) { Img im = solid(((c >> 16) & 255) / 255.f, ((c >> 8) & 255) / 255.f, (c & 255) / 255.f, 1); int id = (int)B.imgs.size(); B.imgs.push_back(im); return id; };
@@ -623,6 +623,7 @@ bool builtinShape(const std::string& name, MeshModel& m) {
     else if (name == "@checkpoint") { int b = colour(0x8FA8C0), g = colour(0x6CF0FF); prism(6, 0.8, 0, 0.12, b); prism(6, 0.55, 0.12, 0.16, g); }
     else if (name == "@teleporter") { int d = colour(0x4A4060), v = colour(0xC070FF), w = colour(0xF0E0FF); prism(8, 1.0, 0, 0.18, d); prism(8, 0.78, 0.18, 0.22, v); prism(8, 0.35, 0.22, 0.25, w); }
     else if (name == "@zone") { int g = colour(0xFF9A3A); prism(4, 0.7071, 0, 1, g, 0.785398); }
+    else if (name == "@ambient") { int c = colour(0x9AB8FF), d = colour(0x404048); prism(8, 0.1, 0, 0.12, d); diamond(0.24, 0.14, 0.38, 0.62, c); prism(8, 0.3, 0.37, 0.39, c); }   // an ambient light (editor only): a soft blue gem with a ring
     else if (name == "@light") { int y = colour(0xFFF0B0), d = colour(0x404048); prism(8, 0.08, 0, 0.15, d); diamond(0.16, 0.12, 0.3, 0.48, y); }   // a little bulb (seen in the editor only)
     else if (name == "@map-camera") {   // a map reveal camera (seen in the editor only): a little box with a lens on +Z
         int d = colour(0x3A4352), g = colour(0x6CF0FF);

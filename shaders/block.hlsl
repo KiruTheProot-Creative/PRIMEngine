@@ -145,6 +145,8 @@ cbuffer CookCB : register(b13)
     float4 gFogJ;   // xy this frame's spot in the cell (across)
     float4 gLavaM;  // the lava glow map: xy its corner (x, z, camera-relative), z its size (blocks), w how strong (0: none)
     float4 gLavaH;  // x the height its heights count from (camera-relative)
+    float4 gAmbV;   // ambient lights: xyz the corner of the blocks around you that know their room's light (camera-relative)
+    float4 gAmbS;   // xyz how many blocks that is, w 1 on
     float4 gProbePos[64];   // each room's picture: where it was taken (camera-relative), w its mip count
     float4 gProbeLo[64];    // the room's box (camera-relative), for looking up what a ray hits
     float4 gProbeHi[64];
@@ -241,6 +243,38 @@ SamplerState gLinear : register(s2);
 // ---- lava lights what is around it: a top-down map of the lava near you (how much of each column is lava, and how high), blurred by
 // its smaller copies. A surface gets light from the lava below and beside it, more facing it, less the higher above it it is
 Texture2D gLavaMap : register(t51);
+// ---- ambient lights (objects): each block of air near you knows which ambient light's room it is in (up to two, where they blend)
+struct AmbGpu { float4 c[6]; float4 fog; };   // c: the light from +x (east), -x (west), +y (up), -y (down), +z (south), -z (north); c[0].w how much it takes the sky's place; fog: rgb, a thickness
+StructuredBuffer<AmbGpu> gAmbObj : register(t53);
+Texture3D<uint4> gAmbVol : register(t54);       // r, b: which ambient lights (+1, 0 none), g, a: how much (0..255)
+float3 ambCube(uint k, float3 n)
+{
+    float3 n2 = n * n;
+    return n2.x * (n.x > 0 ? gAmbObj[k].c[0].rgb : gAmbObj[k].c[1].rgb) + n2.y * (n.y > 0 ? gAmbObj[k].c[2].rgb : gAmbObj[k].c[3].rgb) + n2.z * (n.z > 0 ? gAmbObj[k].c[4].rgb : gAmbObj[k].c[5].rgb);
+}
+float4 ambAt(float3 rel, float3 n)   // rgb: its room's light on a face looking along n (times how much it is in that room); a: how much of the sky's light it takes away
+{
+    if (gAmbS.w < 0.5) return 0;
+    int3 c = int3(floor(rel - gAmbV.xyz)); if (any(c < 0) || any(c >= int3(gAmbS.xyz))) return 0;
+    uint4 v = gAmbVol.Load(int4(c, 0));
+    float wa = v.r > 0 ? v.g / 255.0 : 0, wb = v.b > 0 ? v.a / 255.0 : 0, tot = wa + wb; if (tot < 0.004) return 0;
+    float3 col = 0; float mx = 0;
+    if (wa > 0) { col += ambCube(v.r - 1, n) * wa; mx += gAmbObj[v.r - 1].c[0].w * wa; }
+    if (wb > 0) { col += ambCube(v.b - 1, n) * wb; mx += gAmbObj[v.b - 1].c[0].w * wb; }
+    float k = saturate(tot);
+    return float4(col / tot * k, mx / tot * k);
+}
+float4 ambFogAt(float3 rel)   // its room's fog: rgb colour, a thickness
+{
+    if (gAmbS.w < 0.5) return 0;
+    int3 c = int3(floor(rel - gAmbV.xyz)); if (any(c < 0) || any(c >= int3(gAmbS.xyz))) return 0;
+    uint4 v = gAmbVol.Load(int4(c, 0));
+    float wa = v.r > 0 ? v.g / 255.0 : 0, wb = v.b > 0 ? v.a / 255.0 : 0, tot = wa + wb; if (tot < 0.004) return 0;
+    float4 f = 0;
+    if (wa > 0) f += gAmbObj[v.r - 1].fog * wa;
+    if (wb > 0) f += gAmbObj[v.b - 1].fog * wb;
+    return float4(f.rgb / tot, f.a / tot * saturate(tot));
+}
 static const float3 kLavaLight = float3(1.0, 0.36, 0.07);
 float lavaAt(float3 rel, out float above)   // how much lava is near (its blurred copies), and how high above its surface rel is
 {
@@ -729,6 +763,7 @@ float3 lightBlock(VSOut i, float3 albedo, bool front, out float3 n, out float sh
     }
     float3 sunC = gSunColor.rgb, bounced = 0, ambMul = 1;
     if (gWater.x > 0.5) { float3 sm; waterLight(i.rel, nFlat, n, i.pos.xy, sm, bounced, ambMul); sunC *= sm; }   // caustics under water, their reflection above
+    { float4 amb = ambAt(i.rel + nFlat * 0.5, n); ambientNow = ambientNow * (1 - amb.a) + amb.rgb; }   // an ambient light's room: its own light from each direction
     float3 light = sunC * ndl * sh + ambientNow * i.ao * ambMul + bounced;
     light += lavaGlow(i.rel + nFlat * 0.02, nFlat) * lerp(0.5, 1, i.ao) * ambMul;   // lava nearby lights it
     light = max(light, gMinLight.rgb * sky * i.ao * (1 - skyV));                                   // closed spaces: never darker than the world's minimum
@@ -1719,6 +1754,7 @@ float4 fogCell(float3 rel, float3 dir, float t)   // what one spot of the air gi
         sigma += d;
     }
     E += lavaAir(rel) * (0.02 + sigma * 2);   // hot air over lava glows
+    { float4 af = ambFogAt(rel); if (af.a > 0.001) { float d2 = af.a * 0.05; E += af.rgb * d2; sigma += d2; } }   // an ambient light's room: its own fog
     if (gLookFog.w > 0.001 && gCl0.x > 0.5 && t < gFogR.w)   // lights glowing in the air
     {
         float dens = 0.012 + gVolume.y * exp(-max(y - 1, 0) / 7) * 0.5 + gEnv.w + lookFogAt(y) * 2;

@@ -32,6 +32,7 @@
 #include "../game/looks.h"
 #include "../game/planets.h"
 #include "../game/cook.h"
+#include "../game/ambient.h"
 #include "../game/surfaces.h"
 #include "../game/buildmodes.h"
 #include <tuple>
@@ -257,8 +258,43 @@ struct App {
     ComPtr<ID3D11PixelShader> psLumLog, psAdapt; ComPtr<ID3D11Buffer> cbLook;
     ComPtr<ID3D11Texture2D> lumTex, adaptTex[2]; ComPtr<ID3D11RenderTargetView> lumRTV, adaptRTV[2]; ComPtr<ID3D11ShaderResourceView> lumSRV, adaptSRV[2]; int adaptCur = 0;
     std::string CurrentLookName() const {   // the zone you are in (when it has its own look), else the world's
+        if (const WorldObject* a = AmbientAt(camPos)) if (!a->ambient.look.empty()) return a->ambient.look;   // an ambient light's room
         if (envState.inZone) for (const auto& z : info.zones) if (z.name == envState.zoneName && !z.look.empty()) return z.look;
         return info.look;
+    }
+    void AmbientInspector(WorldObject& o) {
+        AmbientSettings& A = o.ambient;
+        ImGui::SeparatorText("Ambient light");
+        Hint("Fills the room it stands in - through the air, up to walls, doors and its reach - with its own light from each direction, its own fog and its own colour look while you are in it. Doors stop it (it spills a few blocks through them, so rooms change softly). Lamps, lava and the sun come on top.");
+        {   // presets
+            Prop("Start from"); if (ImGui::BeginCombo("##ambp", "a preset ...")) { for (int i = 0; ambientPresetName(i); i++) if (ImGui::Selectable(ambientPresetName(i))) { std::string lk = A.look; float rc = A.reach; int bl = A.blend; A = ambientPreset(i); A.look = lk; A.reach = rc; A.blend = bl; } ImGui::EndCombo(); }
+        }
+        auto col = [&](const char* label, const char* id, uint32_t& c) {
+            float f[3] = { ((c >> 16) & 255) / 255.f, ((c >> 8) & 255) / 255.f, (c & 255) / 255.f };
+            Prop(label); if (ImGui::ColorEdit3(id, f, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_PickerHueWheel)) c = ((uint32_t)std::lround(f[0] * 255) << 16) | ((uint32_t)std::lround(f[1] * 255) << 8) | (uint32_t)std::lround(f[2] * 255);
+        };
+        col("Light from above", "##amu", A.up); col("Light from below", "##amd", A.down);
+        col("From the north (-Z)", "##amn", A.north); col("From the south (+Z)", "##ams", A.south); col("From the east (+X)", "##ame", A.east); col("From the west (-X)", "##amw", A.west);
+        if (ImGui::SmallButton("Sides: all like north")) { A.south = A.east = A.west = A.north; }
+        Prop("Strength"); ImGui::SetNextItemWidth(-1); ImGui::SliderFloat("##amst", &A.strength, 0, 4, "%.2f");
+        Prop("Instead of the sky's light"); ImGui::SetNextItemWidth(-1); ImGui::SliderFloat("##ammx", &A.mix, 0, 1, "%.2f");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("1: inside, only its own light (like a closed room). 0: it only adds to the sky's light.");
+        col("Fog colour", "##amfc", A.fog);
+        Prop("Fog"); ImGui::SetNextItemWidth(-1); ImGui::SliderFloat("##amfa", &A.fogAmount, 0, 1, "%.2f");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Its room's own haze (with Smooth fog on): it stops at the doors too.");
+        Prop("Reach"); ImGui::SetNextItemWidth(-1); ImGui::SliderFloat("##amr", &A.reach, 4, 128, "%.0f blocks");
+        Prop("Soft edge"); ImGui::SetNextItemWidth(-1); ImGui::SliderInt("##amb", &A.blend, 0, 8, "%d blocks");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("How far it spills through doorways and openings, fading: walking into the next room changes the light softly.");
+        Prop("Colour look inside"); if (ImGui::BeginCombo("##aml", A.look.empty() ? "(the world's / the zone's)" : A.look.c_str())) {
+            if (ImGui::Selectable("(the world's / the zone's)", A.look.empty())) A.look.clear();
+            for (const auto& n : looks.names()) if (ImGui::Selectable(n.c_str(), A.look == n)) A.look = n;
+            ImGui::EndCombo();
+        }
+        auto it = ambRt.find(o.id);
+        if (it != ambRt.end()) {
+            if (it->second.fill.stuck) ImGui::TextColored(ImVec4(1, 0.6f, 0.3f, 1), "It stands inside a block: move it into the air.");
+            else { const AmbientFill& f = it->second.fill; ImGui::TextDisabled("Fills %zu blocks of air (%d x %d x %d)", f.cells.size(), f.hi.x - f.lo.x + 1, f.hi.y - f.lo.y + 1, f.hi.z - f.lo.z + 1); }
+        }
     }
     void UpdateLook(double dt, bool instant) { std::string n = CurrentLookName(); lookState.update(dt, looks.get(n), n, instant); }
     // the weather as this environment allows it (no weather in space, snow instead of rain where it is cold)
@@ -1294,7 +1330,7 @@ struct App {
         for (int k = 0; k < 3 && world->liquidTimer >= 0.1; k++) { world->liquidTimer -= 0.1; world->tickLiquids(); }
         if (world->liquidTimer > 0.3) world->liquidTimer = 0;
         envState.update(dt, player.eye(), info.environment, info.zones); UpdateLook(dt, false); UpdateCamOpen(dt);
-        CpuMark("game: lamp lights"); UpdateLampProxies(dt);
+        CpuMark("game: lamp lights"); UpdateLampProxies(dt); UpdateAmbient(dt);
         CpuMark("game: sky volume"); UpdateSkyVolume();
         CpuMark("game: light voxels"); UpdateVoxels();
         CpuMark("game: water"); UpdateWater(dt);
@@ -2442,6 +2478,7 @@ struct App {
         else if (m == "@light") { MakeLight(o); o.folder = "Lights"; }
         else if (m == "@emitter") { MakeEmitter(o); o.folder = "Particles"; o.particles = particlePreset("Fire"); }
         else if (m == "@map-camera") { o.kind = ObjKind::MapCamera; o.collide = Collide::None; o.folder = "Map"; }
+        else if (m == "@ambient") { o.kind = ObjKind::Ambient; o.collide = Collide::None; o.folder = "Lights"; o.ambient = ambientPreset(0); }
         else if (m == "@save-station") { o.kind = ObjKind::SaveStation; o.collide = Collide::None; o.folder = "Save"; }
         else if (m == "@map-station") { o.kind = ObjKind::MapStation; o.folder = "Map"; }
         else if (m == "@save-station") { o.kind = ObjKind::SaveStation; o.collide = Collide::None; o.folder = "Save"; }
@@ -2455,7 +2492,7 @@ struct App {
     std::string PresetName(const WorldObject& o) const {
         switch (o.kind) {
         case ObjKind::Pickup: return o.pickup.type == PickupType::Health ? "Health" : o.pickup.name;
-        case ObjKind::Checkpoint: return "Checkpoint"; case ObjKind::Teleporter: return "Teleporter"; case ObjKind::Trigger: return "Zone"; case ObjKind::Light: return "Light"; case ObjKind::Particles: return "Particles"; case ObjKind::MapCamera: return "Map camera"; case ObjKind::MapStation: return "Map Station"; case ObjKind::SaveStation: return "Save Station"; case ObjKind::Enemy: { const EnemyType* t = enemies.find(o.enemyType); return t ? t->name.c_str() : "Enemy"; }
+        case ObjKind::Checkpoint: return "Checkpoint"; case ObjKind::Teleporter: return "Teleporter"; case ObjKind::Trigger: return "Zone"; case ObjKind::Light: return "Light"; case ObjKind::Particles: return "Particles"; case ObjKind::MapCamera: return "Map camera"; case ObjKind::MapStation: return "Map Station"; case ObjKind::SaveStation: return "Save Station"; case ObjKind::Ambient: return "Ambient light"; case ObjKind::Enemy: { const EnemyType* t = enemies.find(o.enemyType); return t ? t->name.c_str() : "Enemy"; }
         default: return o.model;
         }
     }
@@ -3502,8 +3539,8 @@ struct App {
         ModelMaterialUI(o.model);
         if (ImGui::SmallButton("Save as a prefab")) MakePrefab({ o }, !assetDir.empty() && assetDir[0] == '\t' ? "" : assetDir);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Into the Assets (the folder open there), with all its settings, to place again anywhere.\nOr drag it (or a whole folder of objects) from the Outliner into the Assets.");
-        { int k = (int)o.kind; const char* kn[] = { "Prop (it just stands there)", "Door (forcefield, opens)", "Platform (moves along a path)", "Pickup", "Checkpoint", "Teleporter", "Trigger zone (invisible)", "Light", "Particles", "Map camera (invisible: a Map Station uses it)", "Map Station", "Enemy", "Save Station (E: saves the game)" }; Prop("Kind");
-          if (ImGui::Combo("##kind", &k, kn, 13)) { if (k == 1) MakeDoor(o); else if (k == 2) MakePlatform(o); else if (k == (int)ObjKind::Enemy) { o.kind = ObjKind::Enemy; if (!enemies.find(o.enemyType) && !enemies.types.empty()) o.enemyType = enemies.types[0].id; ApplyEnemyType(o); } else { o.kind = (ObjKind)k; if (o.kind == ObjKind::Pickup || o.kind == ObjKind::Trigger || o.kind == ObjKind::Light || o.kind == ObjKind::Particles || o.kind == ObjKind::MapCamera) o.collide = Collide::None; } platRun.erase(o.id); ch_ = true; } }
+        { int k = (int)o.kind; const char* kn[] = { "Prop (it just stands there)", "Door (forcefield, opens)", "Platform (moves along a path)", "Pickup", "Checkpoint", "Teleporter", "Trigger zone (invisible)", "Light", "Particles", "Map camera (invisible: a Map Station uses it)", "Map Station", "Enemy", "Save Station (E: saves the game)", "Ambient light (fills its room)" }; Prop("Kind");
+          if (ImGui::Combo("##kind", &k, kn, 14)) { if (k == 1) MakeDoor(o); else if (k == 2) MakePlatform(o); else if (k == (int)ObjKind::Enemy) { o.kind = ObjKind::Enemy; if (!enemies.find(o.enemyType) && !enemies.types.empty()) o.enemyType = enemies.types[0].id; ApplyEnemyType(o); } else { o.kind = (ObjKind)k; if (o.kind == ObjKind::Pickup || o.kind == ObjKind::Trigger || o.kind == ObjKind::Light || o.kind == ObjKind::Particles || o.kind == ObjKind::MapCamera || o.kind == ObjKind::Ambient) o.collide = Collide::None; } platRun.erase(o.id); ch_ = true; } }
         Prop("Position"); ch_ |= ImGui::InputScalarN("##pos", ImGuiDataType_Double, &o.pos.x, 3, nullptr, nullptr, "%.2f");
         { float y = (float)o.yaw; Prop("Turn"); if (ImGui::SliderFloat("##yaw", &y, -180, 180, "%.0f deg")) { o.yaw = y; ch_ = true; }
           if (ImGui::SmallButton("-90")) { o.yaw = std::fmod(o.yaw - 90 + 540, 360) - 180; ch_ = true; } if (FlowButton("+90", true)) { o.yaw = std::fmod(o.yaw + 90 + 540, 360) - 180; ch_ = true; } }
@@ -3512,6 +3549,7 @@ struct App {
         if (o.kind == ObjKind::Light) LightInspector(o);
         if (o.kind == ObjKind::Particles) ParticleInspector(o);
         if (o.kind == ObjKind::MapCamera || o.kind == ObjKind::MapStation) MapInspector(o);
+        if (o.kind == ObjKind::Ambient) AmbientInspector(o);
         if (o.kind == ObjKind::SaveStation) {
             ImGui::SeparatorText("Save Station");
             Hint("Stand on it and press E: you are put in its middle and it fills you up, its animation plays, then the game saves into the file being played (picked on the Files screen) and \"Game Saved!\" shows. This is the only place a game saves, like Metroid Prime. Its name shows on the file.");
@@ -4569,7 +4607,7 @@ struct App {
                 const WorldObject& o = objects[oi];
                 if (o.kind == ObjKind::Trigger || Gone(o)) continue;   // zones: invisible (the editor shows their box)
                 if (lightShadowPass && (o.kind == ObjKind::Light || o.kind == ObjKind::Particles)) continue;   // a lamp's bulb never shadows its own light
-                if ((o.kind == ObjKind::Light || o.kind == ObjKind::Particles || o.kind == ObjKind::MapCamera) && (playMode || plainView) && IsBuiltin(o.model)) continue;   // the bulb / nozzle: editor only
+                if ((o.kind == ObjKind::Light || o.kind == ObjKind::Particles || o.kind == ObjKind::MapCamera || o.kind == ObjKind::Ambient) && (playMode || plainView) && IsBuiltin(o.model)) continue;   // the bulb / nozzle: editor only
                 if (o.kind == ObjKind::Enemy && playMode) { if (EnemyDrawable(o)) DrawEnemy(o, pass, camPos); continue; }   // enemies: where they are now
                 if (o.kind == ObjKind::Pickup) {   // pickups turn and bob; gone once taken
                     if (playMode && inv.has(o.id)) continue;
@@ -6358,7 +6396,7 @@ struct App {
             }
             else if (toolSel == 2) {
                 ImGui::SeparatorText("Add");
-                const std::pair<const char*, const char*> add[] = { { "Light", "@light" }, { "Particles", "@emitter" }, { "Health", "@health" }, { "Key", "@key" }, { "Gem", "@gem" }, { "Checkpoint", "@checkpoint" }, { "Teleporter", "@teleporter" }, { "Trigger zone", "@zone" }, { "Map Station", "@map-station" }, { "Map camera", "@map-camera" }, { "Enemy", "@enemy-walker" }, { "Save Station", "@save-station" } };
+                const std::pair<const char*, const char*> add[] = { { "Light", "@light" }, { "Particles", "@emitter" }, { "Health", "@health" }, { "Key", "@key" }, { "Gem", "@gem" }, { "Checkpoint", "@checkpoint" }, { "Teleporter", "@teleporter" }, { "Trigger zone", "@zone" }, { "Map Station", "@map-station" }, { "Map camera", "@map-camera" }, { "Enemy", "@enemy-walker" }, { "Save Station", "@save-station" }, { "Ambient light", "@ambient" } };
                 for (int a = 0; a < 12; a++) { if (a) Flow(ButtonW(add[a].first)); if (ImGui::Button(add[a].first)) StartPlacing(add[a].second); }
                 Hint("Click an object in the viewport to pick it. To place a model (props, doors: a model with an \"open\" animation), drag it from the Assets into the viewport, or right-click it there > Place it. A placed object's Kind (Inspector) makes it a door, a platform, a pickup ..."); if (!placing.empty()) Hint("Placing: %s. R turns it, Alt puts it off the grid, right click stops.", placing.c_str()); }
             else Hint("More tools are coming to this slot.");
@@ -9263,7 +9301,7 @@ struct App {
     I3 cookLitLo{ 0, 0, 0 }, cookLitN{ 0, 0, 0 }; bool cookLitHave = false;
     ComPtr<ID3D11Texture3D> cookLitTex, cookDirTex; ComPtr<ID3D11ShaderResourceView> cookLitSRV, cookDirSRV;
     ComPtr<ID3D11Buffer> cbCook;
-    struct alignas(16) CookCB { float cook[4], litO[4], litS[4], fogG[4], fogR[4], fogJ[4], lavaM[4], lavaH[4]; float pos[64][4], lo[64][4], hi[64][4]; };   // (b13: the cooked world and the fog grid)
+    struct alignas(16) CookCB { float cook[4], litO[4], litS[4], fogG[4], fogR[4], fogJ[4], lavaM[4], lavaH[4], ambV[4], ambS[4]; float pos[64][4], lo[64][4], hi[64][4]; };   // (b13: the cooked world and the fog grid)
     CookCB cookCB{};
     void UploadCookCB() {
         if (!cbCook) { D3D11_BUFFER_DESC d{}; d.ByteWidth = sizeof(CookCB); d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_CONSTANT_BUFFER; HR(dev->CreateBuffer(&d, nullptr, &cbCook)); }
@@ -9295,6 +9333,83 @@ struct App {
         auto it = cookChunkRooms.find(c); if (it == cookChunkRooms.end()) return false;
         for (uint16_t id : it->second) if (id < cookVis.size() && cookVis[id]) return true;
         return false;
+    }
+    // ---- ambient lights (objects): each fills its room (air up to the walls, doors and its reach, spilling a little further). The blocks of air
+    // around you (128 x 64 x 128) know whose room they are in (up to two where they blend); the card gets that and each light's colours
+    struct AmbRt { AmbientFill fill; uint64_t sig = 0; V3 pos{ 1e30, 0, 0 }; float reach = -1; int blend = -1; double age = 99; };
+    std::unordered_map<uint32_t, AmbRt> ambRt; std::vector<uint32_t> ambOrder;
+    static constexpr int AMBX = 128, AMBY = 64, AMBZ = 128;
+    I3 ambOrigin{ INT_MIN, 0, 0 }; std::vector<uint8_t> ambVolCpu; bool ambOn = false;
+    ComPtr<ID3D11Texture3D> ambVolTex; ComPtr<ID3D11ShaderResourceView> ambVolSRV, ambObjSRV; ComPtr<ID3D11Buffer> ambObjBuf; size_t ambObjCap = 0;
+    struct AmbGpuC { float c[6][4]; float fog[4]; };
+    uint64_t AmbSig(const AmbRt& r) const {   // (the chunks it covers: when one changes, it fills again)
+        if (!world || r.fill.hi.x < r.fill.lo.x) return 0x9E37;
+        uint64_t h = 1469598103934665603ull;
+        I3 a = chunkOf(r.fill.lo.x - 2, r.fill.lo.y - 2, r.fill.lo.z - 2), b = chunkOf(r.fill.hi.x + 2, r.fill.hi.y + 2, r.fill.hi.z + 2);
+        for (int y = a.y; y <= b.y; y++) for (int z = a.z; z <= b.z; z++) for (int x = a.x; x <= b.x; x++) { const Chunk* c = world->chunk({ x, y, z }); h = (h ^ (c ? c->version + 1 : 0)) * 1099511628211ull; }
+        return h;
+    }
+    void UpdateAmbient(double dt) {
+        ambOn = false; if (!world) return;
+        std::vector<const WorldObject*> list; for (const WorldObject& o : objects) if (o.kind == ObjKind::Ambient) list.push_back(&o);
+        if (list.size() > 250) list.resize(250);
+        if (list.empty()) { ambRt.clear(); ambOrder.clear(); return; }
+        bool changed = false; std::vector<CookDoor> doors; bool doorsMade = false;
+        std::vector<uint32_t> order; for (const WorldObject* o : list) order.push_back(o->id);
+        if (order != ambOrder) { ambOrder = order; changed = true; for (auto it = ambRt.begin(); it != ambRt.end();) { if (std::find(order.begin(), order.end(), it->first) == order.end()) it = ambRt.erase(it); else ++it; } }
+        for (const WorldObject* o : list) {
+            AmbRt& rt = ambRt[o->id]; rt.age += dt;
+            bool param = rt.pos.x != o->pos.x || rt.pos.y != o->pos.y || rt.pos.z != o->pos.z || rt.reach != o->ambient.reach || rt.blend != o->ambient.blend;
+            bool check = rt.age > 0.5;
+            if (!(param && rt.age > 0.1) && !check) continue;   // (dragging it around: a few times a second)
+            rt.age = 0;
+            if (!param && AmbSig(rt) == rt.sig) continue;
+            if (!doorsMade) { doors = CookDoors(); doorsMade = true; }
+            fillAmbient(*world, o->pos, o->ambient.reach, o->ambient.blend, doors, rt.fill);
+            rt.pos = o->pos; rt.reach = o->ambient.reach; rt.blend = o->ambient.blend; rt.sig = AmbSig(rt); changed = true;
+        }
+        I3 cb{ ifloor(camPos.x), ifloor(camPos.y), ifloor(camPos.z) };
+        I3 want{ floorDiv(cb.x - AMBX / 2, 16) * 16, floorDiv(cb.y - AMBY / 2, 16) * 16, floorDiv(cb.z - AMBZ / 2, 16) * 16 };
+        if (!(want == ambOrigin)) { ambOrigin = want; changed = true; }
+        if (changed) {   // whose room each block near you is in: the two that reach it most
+            ambVolCpu.assign((size_t)AMBX * AMBY * AMBZ * 4, 0);
+            for (size_t k = 0; k < list.size(); k++) {
+                const AmbRt& rt = ambRt[list[k]->id];
+                for (const auto& c : rt.fill.cells) {
+                    int x = c.first.x - ambOrigin.x, y = c.first.y - ambOrigin.y, z = c.first.z - ambOrigin.z;
+                    if (x < 0 || y < 0 || z < 0 || x >= AMBX || y >= AMBY || z >= AMBZ) continue;
+                    uint8_t* v = &ambVolCpu[(((size_t)z * AMBY + y) * AMBX + x) * 4]; uint8_t id = (uint8_t)(k + 1), w = c.second;
+                    if (!v[0] || w > v[1]) { v[2] = v[0]; v[3] = v[1]; v[0] = id; v[1] = w; } else if (!v[2] || w > v[3]) { v[2] = id; v[3] = w; }
+                }
+            }
+            if (!ambVolTex) {
+                D3D11_TEXTURE3D_DESC d{}; d.Width = AMBX; d.Height = AMBY; d.Depth = AMBZ; d.MipLevels = 1; d.Format = DXGI_FORMAT_R8G8B8A8_UINT; d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+                HR(dev->CreateTexture3D(&d, nullptr, &ambVolTex)); HR(dev->CreateShaderResourceView(ambVolTex.Get(), nullptr, &ambVolSRV));
+            }
+            ctx->UpdateSubresource(ambVolTex.Get(), 0, nullptr, ambVolCpu.data(), AMBX * 4, AMBX * AMBY * 4);
+        }
+        {   // each light's colours (every frame: editing shows at once)
+            std::vector<AmbGpuC> g(list.size());
+            auto lin = [](uint32_t c, float k, float* o) { for (int i = 0; i < 3; i++) o[i] = std::pow(((c >> (16 - 8 * i)) & 255) / 255.f, 2.2f) * k; };
+            for (size_t k = 0; k < list.size(); k++) {
+                const AmbientSettings& A = list[k]->ambient; float st = std::max(0.f, A.strength);
+                const uint32_t dirs[6] = { A.east, A.west, A.up, A.down, A.south, A.north };
+                for (int d = 0; d < 6; d++) { lin(dirs[d], st, g[k].c[d]); g[k].c[d][3] = 0; }
+                g[k].c[0][3] = std::clamp(A.mix, 0.f, 1.f);
+                lin(A.fog, 1.f, g[k].fog); g[k].fog[3] = std::clamp(A.fogAmount, 0.f, 1.f);
+            }
+            if (g.size() > ambObjCap) { ambObjCap = std::max<size_t>(g.size() * 2, 16); ambObjSRV.Reset(); ambObjBuf = MakeStructured((UINT)ambObjCap, sizeof(AmbGpuC), ambObjSRV); }
+            Upload(ambObjBuf.Get(), g.data(), g.size() * sizeof(AmbGpuC));
+        }
+        ambOn = true;
+    }
+    const WorldObject* AmbientAt(V3 p) const {   // whose room this spot is mostly in (nullptr: none)
+        if (!ambOn || ambVolCpu.empty()) return nullptr;
+        int x = ifloor(p.x) - ambOrigin.x, y = ifloor(p.y) - ambOrigin.y, z = ifloor(p.z) - ambOrigin.z;
+        if (x < 0 || y < 0 || z < 0 || x >= AMBX || y >= AMBY || z >= AMBZ) return nullptr;
+        const uint8_t* v = &ambVolCpu[(((size_t)z * AMBY + y) * AMBX + x) * 4]; if (!v[0] || v[1] < 128 || v[0] > ambOrder.size()) return nullptr;
+        uint32_t id = ambOrder[v[0] - 1]; for (const WorldObject& o : objects) if (o.id == id) return &o;
+        return nullptr;
     }
     // ---- lava lights what is around it: a top-down map of the lava near you (128 x 128 blocks: how much of each column is lava and how
     // high its top is), blurred by its smaller copies on the graphics card. Made again when you move or every half a second
@@ -9339,6 +9454,9 @@ struct App {
         UpdateLavaMap();
         cookCB.lavaM[0] = (float)(lavaAt.x - camPos.x); cookCB.lavaM[1] = (float)(lavaAt.z - camPos.z); cookCB.lavaM[2] = (float)LAVAN; cookCB.lavaM[3] = lavaAny ? settings.lavaLight : 0.f;
         cookCB.lavaH[0] = (float)(lavaBase - camPos.y);
+        cookCB.ambV[0] = (float)(ambOrigin.x - camPos.x); cookCB.ambV[1] = (float)(ambOrigin.y - camPos.y); cookCB.ambV[2] = (float)(ambOrigin.z - camPos.z);
+        cookCB.ambS[0] = AMBX; cookCB.ambS[1] = AMBY; cookCB.ambS[2] = AMBZ; cookCB.ambS[3] = ambOn ? 1.f : 0.f;
+        { ID3D11ShaderResourceView* av[2] = { ambOn ? ambObjSRV.Get() : nullptr, ambOn ? ambVolSRV.Get() : nullptr }; ctx->PSSetShaderResources(53, 2, av); }
         { ID3D11ShaderResourceView* lv = lavaAny ? lavaSRV.Get() : nullptr; ctx->PSSetShaderResources(51, 1, &lv); }
         cookCullOn = cookUse && cookHave && !cookChunkRooms.empty();
         cookCamRoom = cookHave ? cookRes.roomAt(ifloor(camPos.x), ifloor(camPos.y), ifloor(camPos.z)) : 0;
@@ -15448,7 +15566,7 @@ struct App {
         ImGui::Separator();
         if (ImGui::BeginMenu("Object in the world")) {   // like Unity's GameObject menu: picked, then click in the viewport to put it down
             const std::pair<const char*, const char*> objs[] = { { "Light", "@light" }, { "Particles", "@emitter" }, { "Energy (health)", "@health" }, { "Key", "@key" }, { "Gem (a collectible)", "@gem" },
-                { "Checkpoint", "@checkpoint" }, { "Teleporter", "@teleporter" }, { "Trigger zone", "@zone" }, { "Save Station", "@save-station" }, { "Map Station", "@map-station" }, { "Map camera", "@map-camera" } };
+                { "Checkpoint", "@checkpoint" }, { "Teleporter", "@teleporter" }, { "Trigger zone", "@zone" }, { "Save Station", "@save-station" }, { "Map Station", "@map-station" }, { "Map camera", "@map-camera" }, { "Ambient light", "@ambient" } };
             for (auto& o : objs) if (ImGui::MenuItem(o.first)) { StartPlacing(o.second); focusView = true; }
             if (ImGui::BeginMenu("Enemy")) {
                 for (const EnemyType& t : enemies.types) if (ImGui::MenuItem(t.name.c_str())) { StartPlacingEnemy(t.id); focusView = true; }

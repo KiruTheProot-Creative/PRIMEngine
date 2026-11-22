@@ -38,9 +38,22 @@ std::vector<Box3> modelBoxes(const BlockModel& m, const BlockRegistry& reg);
 enum class Collide { Exact, OneBox, None };
 const char* collideName(Collide c);
 
-enum class ObjKind { Prop, Door, Platform, Pickup, Checkpoint, Teleporter, Trigger, Light, Particles, MapCamera, MapStation, Enemy, SaveStation, COUNT };
+enum class ObjKind { Prop, Door, Platform, Pickup, Checkpoint, Teleporter, Trigger, Light, Particles, MapCamera, MapStation, Enemy, SaveStation, Ambient, COUNT };
 // the map: a Map Station (touch it) fires every map camera with the same ID; each camera looks all around and puts what it sees on the map
 struct MapSettings { int id = 1; float range = 48; };
+// an ambient light (like Skyrim's lighting templates): it fills the room it stands in (through the air, up to the walls and doors) with its
+// own base light - a colour from each direction - its own fog, and its own colour look while you are in it
+struct AmbientSettings {
+    uint32_t up = 0x6F7F99, down = 0x2E2A26, north = 0x4A5466, south = 0x4A5466, east = 0x4A5466, west = 0x4A5466;   // the light from above, below, and each side
+    float strength = 1;               // how bright
+    float mix = 1;                    // how much it takes the place of the sky's light (0: only adds)
+    uint32_t fog = 0x5A6E8A; float fogAmount = 0;   // its fog's colour and thickness (0: none)
+    float reach = 48;                 // how far it fills (blocks)
+    int blend = 3;                    // how many blocks it spills through doors and openings (soft change from one room to the next)
+    std::string look;                 // its colour look while you are in it ("": the world's / the zone's)
+};
+const char* ambientPresetName(int i);   // presets to start from (nullptr past the last)
+AmbientSettings ambientPreset(int i);
 struct ScanInfo {   // can be scanned (Scan Visor): which scan entry it shows (scans.txt, by ID: objects share entries)
     bool on = false;
     int id = 0;                                       // the scan entry (0: none yet)
@@ -100,6 +113,7 @@ struct WorldObject {
     MapSettings map;                                  // map cameras and Map Stations
     ScanInfo scan;                                    // can be scanned (Scan Visor)
     int enemyType = 0;                                // enemies: which enemy type (Player editor > Enemies, by ID)
+    AmbientSettings ambient;                          // ambient lights
     struct { bool energy = true, ammo = true; std::string anim; std::string title, text; bool ask = false; } save;   // Save Stations: what they fill up; the model's animation while saving ("": one called "save", "-": none);
                                                                                                          // the "Game Saved!" pop-up's title and text ("": automatic); ask: the old way (a Yes / No question first)
 };

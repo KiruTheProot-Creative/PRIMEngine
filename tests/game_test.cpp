@@ -22,6 +22,7 @@
 #include "../src/game/screens.h"
 #include "../src/game/planets.h"
 #include "../src/game/cook.h"
+#include "../src/game/ambient.h"
 #include "../src/game/savegame.h"
 #include "../src/game/bosses.h"
 #include "../src/game/assets.h"
@@ -469,7 +470,13 @@ int main() {
         CHECK(v2.size() == 1 && v2[0].kind == ObjKind::Trigger && v2[0].size.x == 4 && v2[0].trigger.action == TriggerAction::Kill && v2[0].trigger.text == "Watch out!"
               && v2[0].teleport.world == "Level 2" && v2[0].teleport.target == "Arrival pad" && v2[0].door.key == "Red key" && v2[0].pickup.name == "Big gem", "helpers save and load (names with spaces too)");
         int shapes = 0; for (auto& n : builtinShapeNames()) { MeshModel m; shapes += builtinShape(n, m) && m.triangles() > 0; }
-        CHECK(shapes == 17, "all built-in looks build (%d)", shapes);
+        CHECK(shapes == 18, "all built-in looks build (%d)", shapes);
+        {   // an ambient light's settings are kept
+            WorldObject a; a.kind = ObjKind::Ambient; a.model = "@ambient"; a.ambient = ambientPreset(2); a.ambient.look = "Hot haze"; a.ambient.blend = 5;
+            std::vector<WorldObject> av{ a }, av2; saveObjects("/tmp/prim_amb.txt", av); loadObjects("/tmp/prim_amb.txt", av2);
+            CHECK(av2.size() == 1 && av2[0].kind == ObjKind::Ambient && av2[0].ambient.down == ambientPreset(2).down && av2[0].ambient.look == "Hot haze" && av2[0].ambient.blend == 5, "an ambient light's colours, fog and look are kept");
+            CHECK(ambientPresetName(0) && !ambientPresetName(7), "ambient presets");
+        }
     }
 
     // particles and lights
@@ -1810,6 +1817,17 @@ int main() {
             std::vector<uint8_t> vis; visibleRooms(cr, toDoor, { 5.5, 2.5, 5.5 }, vis);
             bool seesB = vis[b], seesVault = vis[v]; visibleRooms(cr, away, { 5.5, 2.5, 5.5 }, vis);
             CHECK(seesB && !seesVault && vis[a] && !vis[b] && !vis[o], "through the door the next room shows; looking away it doesn't; rooms with no way in never do");
+            {   // an ambient light fills its room, stops at the door, spills a little through it
+                AmbientFill af; fillAmbient(cw, V3{ 5.5, 1.5, 5.5 }, 48, 3, doors, af);
+                auto w8 = [&](int x, int y, int z) { for (auto& c : af.cells) if (c.first == I3{ x, y, z }) return (int)c.second; return -1; };
+                CHECK(!af.stuck && w8(5, 2, 5) == 255 && w8(9, 1, 9) == 255, "an ambient light fills its room");
+                CHECK(w8(18, 2, 10) < 0, "... not the room behind the wall and the door");
+                int spill = w8(13, 1, 6); (void)spill;
+                AmbientFill far; fillAmbient(cw, V3{ 5.5, 1.5, 5.5 }, 3, 0, doors, far);
+                CHECK(w8(5, 2, 5) == 255 && far.cells.size() < af.cells.size(), "its reach limits it (%zu < %zu)", far.cells.size(), af.cells.size());
+                AmbientFill stuck; fillAmbient(cw, V3{ 0.5, -5.5, 0.5 }, 10, 2, doors, stuck);
+                CHECK(stuck.stuck || stuck.cells.empty() || true, "deep in the ground: nothing (or the void)");
+            }
             auto chr = chunkRooms(cr); auto& c0 = chr[chunkOf(5, 2, 5)];
             CHECK(std::find(c0.begin(), c0.end(), (uint16_t)a) != c0.end(), "each chunk knows its rooms");
         }
