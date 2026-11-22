@@ -1906,7 +1906,7 @@ struct App {
     void ResetVoxels() {
         brickOf.clear(); brickModel.clear(); brickUsed.clear(); layerColor.clear(); voxIdx.clear(); voxPal.clear(); voxPalDirty = true; for (auto& sl : voxSlots) sl = VoxSlot{}; voxReady = false; }
     void UpdateVoxels() {
-        bool want = settings.rayTracing && ((settings.reflections > 0 && settings.rtReflect) || settings.probes > 0 || (settings.lampBlocks >= 2 && settings.rtShadows));
+        bool want = settings.rayTracing && ((settings.reflections > 0 && settings.rtReflect) || settings.probes > 0 || settings.lampBlocks >= 2);   // (lamps without a shadow map step through it)
         if (!world || !want) { voxReady = false; return; }   // (reflection rays, light probes and lamp shadows step through it)
         if (!voxTex) {
             D3D11_TEXTURE3D_DESC d{}; d.Width = VCX * CS; d.Height = VCY * CS; d.Depth = VCZ * CS; d.MipLevels = 1; d.Format = DXGI_FORMAT_R16_UINT; d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_SHADER_RESOURCE;

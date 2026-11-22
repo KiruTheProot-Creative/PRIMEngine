@@ -107,10 +107,10 @@ uint clusterOf(float3 rel)
 }
 static float sReach = 0;   // how far this pixel's reflection rays go (0: the setting's full reach); rough surfaces don't need far ones (blurred away)
 float reflReach() { return sReach > 0 ? sReach : gRefl.z; }
-float lightShadow(LightData L, float3 p, int type)
+float lightShadow(LightData L, float3 p, int type, bool whole = false)   // whole: the map's own answer (not faded out far away)
 {
     if (L.ext.w < 0) return 1;
-    int slot = (int)floor(L.ext.w); float keep = saturate((frac(L.ext.w) - 0.05) / 0.9);   // (the fraction: how much of the shadow, fading out far away)
+    int slot = (int)floor(L.ext.w); float keep = whole ? 1 : saturate((frac(L.ext.w) - 0.05) / 0.9);   // (the fraction: how much of the shadow, fading out far away)
     int face = 0;
     if (type != 1) {   // a cube: which side
         float3 v = p - (type == 3 ? L.dir.xyz : L.pos.xyz), a = abs(v);   // (a glowing box: its shadow view sits at dir)
@@ -132,7 +132,7 @@ float lightShadow(LightData L, float3 p, int type)
 }
 // a colour that can't break the picture: NaN -> 0 (min / max return the other value), infinity and huge values capped
 float3 hdrSafe(float3 c, float cap = 4096) { return min(max(c, 0), cap); }
-float voxShadow(float3 P, float3 lp, bool face);
+float voxShadow(float3 P, float3 lp, bool face, bool far = false);
 bool voxLineBlocked(float3 a, float3 b);   // (below, with the light probes)   // (below: a lamp block's shadow, through the blocks; face: the light is a point just outside a glowing face)
 // ---- the cooked world (Cook > Test-cook): a reflection picture per room, the lamp blocks' light baked into the air, handed over from real time at a distance
 cbuffer CookCB : register(b13)
@@ -172,10 +172,16 @@ void evalLight(LightData L, float3 rel, float3 n, float3 v, float pw, bool objec
     if (att <= 0.002) return;   // (too faint to see: no shadow lookups for it)
     float3 nf = any(sFlatN != 0) ? sFlatN : n;   // shadows ask with the flat face: bumps near an edge would push the test round the corner (a thin line of light)
     if (any(sFlatN != 0) && dot(nf, Lv) < 0.02) return;   // behind the face itself: none (no light wrapping round a wall's edge)
-    if (L.ext.w >= 0) att *= lightShadow(L, pixSnap(rel, nf) + nf * (0.05 + d * 0.02), type);   // (a little off the surface: no shadow speckles where the light grazes it)
+    if (L.ext.w >= 0)   // (a little off the surface: no shadow speckles where the light grazes it)
+    {   // its shadow map; toward the end of the shadow distance it hands over to the shadow through the blocks (not to no shadow: no light through walls far away)
+        float keep = saturate((frac(L.ext.w) - 0.05) / 0.9);
+        float sm = lightShadow(L, pixSnap(rel, nf) + nf * (0.05 + d * 0.02), type, true);
+        float fb = (voxSh && keep < 0.999 && gCl0.x > 0.5) ? voxShadow(pixSnap(rel, nf) + nf * 0.04, lp, type == 3, true) : 1;
+        att *= lerp(fb, sm, keep);
+    }
     if (voxSh && att > 0 && gCl0.x > 0.5)   // (the helmet / arm cannon and other small passes: their shadow maps are enough)
     {
-        if (L.ext.w < 0) att *= voxShadow(pixSnap(rel, nf) + nf * 0.04, lp, type == 3);   // no shadow map: its shadow from the blocks between, all the way
+        if (L.ext.w < 0) att *= voxShadow(pixSnap(rel, nf) + nf * 0.04, lp, type == 3, true);   // no shadow map (too far, too many, or not drawn yet): its shadow from the blocks between, all the way
         else if (type == 3 && (((uint)gVoxM.w) & 5u) == 5u)   // a glowing box with a shadow map: only its first blocks (what the map starts too late to see) - no light along the inside of walls, or out of a side against a block
             att *= voxLineBlocked(lp, lp + (rel - lp) * (min(d - 0.1, 3.0) / max(d, 1e-3))) ? 0 : 1;
     }
@@ -1222,9 +1228,9 @@ bool objectTrace(float3 P, float3 r, float maxT, out float tHit, out float3 nHit
 }
 // a lamp block's shadow: from the point toward the lamp, block by block through the copy of the world; any solid block in between
 // shades it (the lamp's own block does not). The point is already snapped to the texture pixels when shadows are pixelated.
-float voxShadow(float3 P, float3 lp, bool face)
+float voxShadow(float3 P, float3 lp, bool face, bool far)
 {
-    if ((((uint)gVoxM.w) & 5u) != 5u) return 1;   // (ray traced lamp shadows off)
+    if ((((uint)gVoxM.w) & 1u) == 0 || (!far && (((uint)gVoxM.w) & 4u) == 0)) return 1;   // (no blocks on the card; near: ray traced lamp shadows off. Far lamps without a map always use it)
     float3 o = P - gVoxO.xyz, e = lp - gVoxO.xyz, r = e - o; float len = length(r);
     if (face) { int3 gc = int3(floor(e)); if (all(gc >= 0) && all(gc < VOXN)) { uint gi = voxAt(gc); if (gi != 0 && gVoxPal[gi].info.x == 1) return 0; } }   // that side of the lamp is against a block: it doesn't shine
     if (len < 0.6) return 1;
