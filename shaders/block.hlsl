@@ -1712,7 +1712,8 @@ float4 fogGridAt(float2 ndc, float dist)   // the air between the camera and thi
     float zc = fogZ(min(dist, gFogR.x));
     float2 uv = ndc * float2(0.5, -0.5) + 0.5;
     float4 g = gFogGrid.SampleLevel(gClamp, float3(uv, (zc - 0.5) / gFogG.z), 0);   // (a slice holds what is added up to its far end)
-    return zc < 1 ? lerp(float4(0, 0, 0, 1), g, zc) : g;
+    float k = saturate(zc);
+    return lerp(float4(0, 0, 0, 1), g, k);
 }
 float4 PS_VolumeLow(SkyOut i) : SV_Target   // a smaller picture: what the air adds (rgb) and lets through (a)
 {
@@ -1764,9 +1765,8 @@ float4 PS_VolumeLow(SkyOut i) : SV_Target   // a smaller picture: what the air a
         }
     }
 
-    if (gFogG.w > 0.5) { float4 fg = fogGridAt(i.ndc, dist); sAll = sAll * fg.a + fg.rgb; tAll *= fg.a; }   // the fog grid (smooth fog): fog and glowing lights, already added up
-    // ---- ground fog: thick near the ground, lit by the sun where the shadow map says the sun reaches (light shafts)
-    else if (gVolume.y > 0 || gEnv.w > 0 || gLookFog.x > 0)
+    // ---- ground fog: thick near the ground, lit by the sun where the shadow map says the sun reaches (light shafts) (the fog grid: in PS_Volume)
+    if (gFogG.w < 0.5 && (gVolume.y > 0 || gEnv.w > 0 || gLookFog.x > 0))
     {
         float tMax = min(dist, 192);
         const int N = 20;
@@ -1873,6 +1873,7 @@ float4 PS_Volume(SkyOut i) : SV_Target   // full size: the picture seen through 
     float lz = zb >= 1 ? 1e5 : linDepth(zb);
     float4 air = upLow(gVolLow, px, lz);
     scene = scene * air.a + (gEnvPart.z > 0.5 ? 0 : air.rgb);
+    if (gFogG.w > 0.5 && gEnvPart.z < 0.5) { float4 fg = fogGridAt(i.ndc, dist); scene = scene * fg.a + fg.rgb; }   // the fog grid (smooth fog): fog, light shafts and glowing lights, already added up
     // under water / in lava: the view gets murky (and then what the water adds on top: the light shafts)
     if (gEnvPart.z > 0.5)
     {
