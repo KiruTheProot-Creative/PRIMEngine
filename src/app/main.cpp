@@ -4391,7 +4391,7 @@ struct App {
                 int S = settings.probes >= 2 ? 2 : 4; EnsureProbes(S);
                 int bx = (int)std::floor(camPos.x / S) - 16, by = (int)std::floor(camPos.y / S) - 8, bz = (int)std::floor(camPos.z / S) - 16;
                 auto md = [](int a, int m) { return ((a % m) + m) % m; };
-                int K = settings.probes >= 2 ? 6 : 8;
+                int K = settings.probes >= 2 ? 12 : 16;   // (frames for a full round: bounce light changes slowly, half the work a frame)
                 fc.probeO[0] = (float)(bx * (double)S - camPos.x); fc.probeO[1] = (float)(by * (double)S - camPos.y); fc.probeO[2] = (float)(bz * (double)S - camPos.z); fc.probeO[3] = (float)S;
                 fc.probeB[0] = (float)bx; fc.probeB[1] = (float)by; fc.probeB[2] = (float)bz;
                 fc.probeM[0] = (float)md(bx, 32); fc.probeM[1] = (float)md(by, 16); fc.probeM[2] = (float)md(bz, 32); fc.probeM[3] = (float)(frameNo % K);

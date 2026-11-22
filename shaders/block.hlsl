@@ -144,7 +144,7 @@ void evalLight(LightData L, float3 rel, float3 n, float3 v, float pw, bool objec
     Lv /= max(d, 1e-4);
     float att = 1 - d / range; att *= att;
     if (type == 1) { float c = dot(-Lv, L.dir.xyz), c0 = L.dir.w; att *= smoothstep(c0, c0 + (1 - c0) * 0.35, c); }
-    if (att <= 0) return;
+    if (att <= 0.002) return;   // (too faint to see: no shadow lookups for it)
     float3 nf = any(sFlatN != 0) ? sFlatN : n;   // shadows ask with the flat face: bumps near an edge would push the test round the corner (a thin line of light)
     if (any(sFlatN != 0) && dot(nf, Lv) < 0.02) return;   // behind the face itself: none (no light wrapping round a wall's edge)
     if (L.ext.w >= 0) att *= lightShadow(L, pixSnap(rel, nf) + nf * (0.05 + d * 0.02), type);   // (a little off the surface: no shadow speckles where the light grazes it)
@@ -1579,8 +1579,10 @@ float4 PS_VolumeLow(SkyOut i) : SV_Target   // a smaller picture: what the air a
                 float3 p = cam + dir * (t0 + (k + jitter) * dt);
                 float d = cloudDensity(p, true);
                 if (d <= 0) continue;
-                float od = 0;   // how much cloud is between this point and the sun
-                [unroll] for (int l = 1; l <= 4; l++) od += cloudDensity(p + gSunDir.xyz * (l * l * 6.0), false) * (2 * l - 1) * 6.0;
+                float od = 0;   // how much cloud is between this point and the sun (far into the march, where little still shows: fewer looks)
+                int taps = k < 10 ? 4 : 2;
+                [loop] for (int l = 1; l <= taps; l++) od += cloudDensity(p + gSunDir.xyz * (l * l * 6.0), false) * (2 * l - 1) * 6.0;
+                if (taps == 2) od *= 2.2;   // (roughly what the two far looks would have added)
                 od *= 1.6;
                 float hf = saturate((p.y - kCloudBottom) / (kCloudTop - kCloudBottom));
                 float powder = 1 - exp(-d * 60);                                       // dark-ish edges facing the sun: puffier look
@@ -1629,8 +1631,8 @@ float4 PS_VolumeLow(SkyOut i) : SV_Target   // a smaller picture: what the air a
     // ---- lights in the air: every light near you glows in the fog and haze (spotlights make beams, with their shadows)
     if (gLookFog.w > 0.001 && gCl0.x > 0.5)
     {
-        float tMax = min(dist, 64);
-        const int NL = 24;
+        float tMax = min(dist, 56);
+        const int NL = 16;   // (16 steps with a moving jitter: the upscaler / smoothing evens them out)
         float dt = tMax / NL, T = 1;
         float3 S = 0;
         [loop] for (int k = 0; k < NL; k++)
@@ -1640,16 +1642,18 @@ float4 PS_VolumeLow(SkyOut i) : SV_Target   // a smaller picture: what the air a
             float y = cam.y + rel.y;
             float dens = 0.012 + gVolume.y * exp(-max(y - 1, 0) / 7) * 0.5 + gEnv.w + lookFogAt(y) * 2;   // even clear air glows a little around lights
             uint2 cl = gClusters[clusterOf(rel)]; float3 Ls = 0;
-            [loop] for (uint j = 0; j < min(cl.y, 24u); j++)
+            [loop] for (uint j = 0; j < min(cl.y, 12u); j++)
             {
                 LightData L = gLightBuf[gClusterIdx[cl.x + j]];
                 int kind = (int)round(L.col.w); if (kind >= 16) kind -= 16; if (kind >= 8) continue; int type = kind & 7;
                 float3 lp = L.pos.xyz;
                 if (type == 2) { float3 a = lp - L.ext.xyz, ab = L.ext.xyz * 2; lp = a + ab * saturate(dot(rel - a, ab) / max(dot(ab, ab), 1e-4)); }
+                if (type == 3) lp = clamp(rel, lp - L.ext.xyz, lp + L.ext.xyz);   // a glowing box: its nearest point
                 float3 Lv = lp - rel; float d = length(Lv); if (d >= L.pos.w) continue;
                 float att = 1 - d / L.pos.w; att *= att; att /= 1 + d * d * 0.15;   // brighter right at the light
                 if (type == 1) { float c = dot(-Lv / max(d, 1e-4), L.dir.xyz), c0 = L.dir.w; att *= smoothstep(c0, c0 + (1 - c0) * 0.35, c) * 2.5; }
                 if (att <= 0) continue;
+                if (att < 0.02) continue;   // (a faint glow: not worth its shadow lookup)
                 if (L.ext.w >= 0) att *= lightShadow(L, rel, type);
                 Ls += L.col.rgb * att;
             }
