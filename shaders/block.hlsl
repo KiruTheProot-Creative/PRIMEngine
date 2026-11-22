@@ -1611,6 +1611,112 @@ void PS_HudDepth(SkyOut i, out float depth : SV_Depth)
     if (z > 0.0021) discard;
     depth = z;
 }
+// ---- the fog grid (smooth fog): a small 3D grid that follows the camera (160 x 90 cells across the screen, 64 deep, finer near you).
+// Each frame every cell looks at one spot inside it (a different one each frame) and blends that with what it knew (the cell it was
+// in the frame before), then each column is added up front to back. The picture just looks it up at its distance.
+cbuffer FogCB : register(b14)
+{
+    float4 gFogG;   // x, y, z: the grid's size; w 1 on
+    float4 gFogR;   // x how far it reaches (blocks), y this frame's spot in the cell (depth, 0..1), z how much it keeps of what it knew (0: starts fresh), w lights glow this far
+    float4 gFogJ;   // xy this frame's spot in the cell (across)
+};
+Texture3D gFogGrid : register(t49);   // added up: rgb what the air adds up to this depth, a what it lets through
+Texture3D gFogHist : register(t50);   // the frame before's cells: rgb light given off, a how thick
+RWTexture3D<float4> gFogCellW : register(u0);
+RWTexture3D<float4> gFogSumW : register(u1);
+float fogT(float z) { float k = z / gFogG.z; return gFogR.x * k * k; }            // a slice's start (blocks from the camera)
+float fogZ(float t) { return sqrt(saturate(t / gFogR.x)) * gFogG.z; }            // ... and back
+float3 fogDir(float2 cell)   // the view ray through this spot of the grid (cell coordinates)
+{
+    float2 ndc = cell / gFogG.xy * float2(2, -2) + float2(-1, 1);
+    return normalize(gCamF.xyz + gCamR.xyz * (ndc.x * gProj.x * gProj.y) + gCamU.xyz * (ndc.y * gProj.x));
+}
+float4 fogCell(float3 rel, float3 dir, float t)   // what one spot of the air gives off (rgb, per block) and how thick it is (a)
+{
+    float y = gCamPos.y + rel.y;
+    float3 E = 0; float sigma = 0;
+    if ((gVolume.y > 0 || gEnv.w > 0 || gLookFog.x > 0) && t < 192)
+    {
+        float dl = lookFogAt(y);
+        float d = gVolume.y * exp(-max(y - 1, 0) / 7) + gVolume.y * 0.06 + gEnv.w + dl;
+        float open = gOcc.x > 0.5 ? skyAt(rel) : 1;
+        float sun = open;
+        if (gSunDir.w > 0.5)
+        {
+            float4 sp = mul(float4(rel, 1), gCascVP[3]);
+            float2 uv = float2(sp.x, -sp.y) * 0.5 + 0.5;
+            if (all(uv > 0) && all(uv < 1) && sp.z < 1) sun = gShadow.SampleCmpLevelZero(gShadowSamp, float3(uv, 3), sp.z - 0.001);
+        }
+        float mu = dot(dir, gSunDir.xyz);
+        float phase = lerp(phaseHG(mu, 0.55), phaseHG(mu, 0), 0.4) * 12.566;
+        float3 amb = gAmbient.rgb * 0.55 * (1 - gWeather.z * 0.4);
+        float3 tint = lerp(float3(1, 1, 1), gLookFogCol.rgb * 1.6, dl / max(d, 1e-4));
+        E += ((gSunColor.rgb * sun * phase * 0.18 * gOcc.z + amb * open) * tint) * d + gLookFogCol.rgb * gLookFogCol.w * dl;
+        sigma += d;
+    }
+    if (gLookFog.w > 0.001 && gCl0.x > 0.5 && t < gFogR.w)   // lights glowing in the air
+    {
+        float dens = 0.012 + gVolume.y * exp(-max(y - 1, 0) / 7) * 0.5 + gEnv.w + lookFogAt(y) * 2;
+        uint2 cl = gClusters[clusterOf(rel)]; float3 Ls = 0;
+        [loop] for (uint j = 0; j < min(cl.y, 12u); j++)
+        {
+            LightData L = gLightBuf[gClusterIdx[cl.x + j]];
+            int kind = (int)round(L.col.w); if (kind >= 32) kind -= 32; if (kind >= 16) kind -= 16; if (kind >= 8) continue; int type = kind & 7;
+            float3 lp = L.pos.xyz;
+            if (type == 2) { float3 a = lp - L.ext.xyz, ab = L.ext.xyz * 2; lp = a + ab * saturate(dot(rel - a, ab) / max(dot(ab, ab), 1e-4)); }
+            if (type == 3) lp = clamp(rel, lp - L.ext.xyz, lp + L.ext.xyz);
+            float3 Lv = lp - rel; float d = length(Lv); if (d >= L.pos.w) continue;
+            float att = 1 - d / L.pos.w; att *= att; att /= 1 + d * d * 0.15;
+            if (type == 1) { float c = dot(-Lv / max(d, 1e-4), L.dir.xyz), c0 = L.dir.w; att *= smoothstep(c0, c0 + (1 - c0) * 0.35, c) * 2.5; }
+            if (att < 0.02) continue;
+            if (L.ext.w >= 0) att *= lightShadow(L, rel, type);
+            Ls += L.col.rgb * att;
+        }
+        E += Ls * gLookFog.w * 0.8 * dens;
+    }
+    return float4(E, sigma);
+}
+void PS_FogGrid(SkyOut i)   // one column of the grid per pixel (the grid's size as the picture)
+{
+    uint2 xy = uint2(i.pos.xy);
+    float2 cell = float2(xy) + gFogJ.xy;
+    float3 dir = fogDir(cell);
+    float3 S = 0; float T = 1;
+    int D = (int)gFogG.z;
+    [loop] for (int z = 0; z < D; z++)
+    {
+        float t0 = fogT(z), t1 = fogT(z + 1), t = lerp(t0, t1, gFogR.y);
+        float3 rel = dir * t;
+        float4 c = fogCell(rel, dir, t);
+        if (gFogR.z > 0)   // what this spot was the frame before: where it was on that frame's grid
+        {
+            float3 relP = rel + gHistCam.xyz;
+            float4 h = mul(float4(relP, 1), gHistVP);
+            if (h.w > 1e-3)
+            {
+                float2 uv = float2(h.x, -h.y) / h.w * 0.5 + 0.5;
+                float w = fogZ(length(relP)) / gFogG.z;
+                if (all(uv > 0) && all(uv < 1) && w < 1)
+                {
+                    float4 old = gFogHist.SampleLevel(gClamp, float3(uv, w), 0);
+                    c = lerp(c, old, gFogR.z);
+                }
+            }
+        }
+        c = max(c, 0);
+        gFogCellW[uint3(xy, z)] = c;
+        float ds = t1 - t0, a = exp(-c.a * ds);
+        S += T * (c.a > 1e-5 ? c.rgb / c.a * (1 - a) : c.rgb * ds); T *= a;
+        gFogSumW[uint3(xy, z)] = float4(hdrSafe(S), T);
+    }
+}
+float4 fogGridAt(float2 ndc, float dist)   // the air between the camera and this far along the pixel's ray: rgb added, a let through
+{
+    float zc = fogZ(min(dist, gFogR.x));
+    float2 uv = ndc * float2(0.5, -0.5) + 0.5;
+    float4 g = gFogGrid.SampleLevel(gClamp, float3(uv, (zc - 0.5) / gFogG.z), 0);   // (a slice holds what is added up to its far end)
+    return zc < 1 ? lerp(float4(0, 0, 0, 1), g, zc) : g;
+}
 float4 PS_VolumeLow(SkyOut i) : SV_Target   // a smaller picture: what the air adds (rgb) and lets through (a)
 {
     int2 px = min(int2((i.ndc * float2(0.5, -0.5) + 0.5) * gDepth.zw), int2(gDepth.zw) - 1);   // (the full-size pixel this one stands for)
@@ -1661,8 +1767,9 @@ float4 PS_VolumeLow(SkyOut i) : SV_Target   // a smaller picture: what the air a
         }
     }
 
+    if (gFogG.w > 0.5) { float4 fg = fogGridAt(i.ndc, dist); sAll = sAll * fg.a + fg.rgb; tAll *= fg.a; }   // the fog grid (smooth fog): fog and glowing lights, already added up
     // ---- ground fog: thick near the ground, lit by the sun where the shadow map says the sun reaches (light shafts)
-    if (gVolume.y > 0 || gEnv.w > 0 || gLookFog.x > 0)
+    else if (gVolume.y > 0 || gEnv.w > 0 || gLookFog.x > 0)
     {
         float tMax = min(dist, 192);
         const int N = 20;
@@ -1692,7 +1799,7 @@ float4 PS_VolumeLow(SkyOut i) : SV_Target   // a smaller picture: what the air a
         sAll = sAll * T + S; tAll *= T;
     }
     // ---- lights in the air: every light near you glows in the fog and haze (spotlights make beams, with their shadows)
-    if (gLookFog.w > 0.001 && gCl0.x > 0.5)
+    if (gLookFog.w > 0.001 && gCl0.x > 0.5 && gFogG.w < 0.5)
     {
         float tMax = min(dist, 56);
         const int NL = 16;   // (16 steps with a moving jitter: the upscaler / smoothing evens them out)
