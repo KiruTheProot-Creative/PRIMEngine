@@ -496,10 +496,13 @@ float shadowPCF(int c, float3 rel, float3 n, float ndl, float rB, float2 screen)
     if (any(uv < 0) || any(uv > 1) || s.z > 1) return 1;
     float bias = s.z - (0.02 + tb * 3) / 599;
     float radius = max(0.5, rB / tb), texel = gShadowInfo.x;             // in this map's pixels
-    float step = radius * 2 / 5, sum = 0;                                // no random jitter: each map keeps its blur small enough to stay smooth
-    [unroll] for (int gy = 0; gy < 6; gy++) [unroll] for (int gx = 0; gx < 6; gx++)
-        sum += gShadow.SampleCmpLevelZero(gShadowSamp, float3(uv + (float2(gx, gy) - 2.5) * step * texel, c), bias);
-    return sum / 36;
+    // no random jitter: each map keeps its blur small enough to stay smooth. The nearest map 6 x 6 samples; farther, where a map pixel is
+    // already big on screen, fewer (4 x 4, then 3 x 3): the same look for about half the work
+    int N = c == 0 ? 6 : c == 1 ? 4 : 3;
+    float step = radius * 2 / (N - 1), sum = 0, h = (N - 1) * 0.5;
+    [loop] for (int gy = 0; gy < N; gy++) [loop] for (int gx = 0; gx < N; gx++)
+        sum += gShadow.SampleCmpLevelZero(gShadowSamp, float3(uv + (float2(gx, gy) - h) * step * texel, c), bias);
+    return sum / (N * N);
 }
 float shadowAt(float3 rel, float3 n, float ndl, float2 screen)
 {
@@ -695,7 +698,7 @@ float3 lightBlock(VSOut i, float3 albedo, bool front, out float3 n, out float sh
     float3 nFlat = n;                                                                             // the face itself, before the generated bumps
     TexMat m = (TexMat)0; m.b = float4(1, 1, 0, 0);
     if (i.uvl.z < 16000) m = gMats[(uint)round(i.uvl.z)]; else { m.a = gMM0; m.b = gMM1; }
-    if (gSurf.x > 0 || gSurf.y > 0) surfaceDetail(i, n, albedo, m);
+    if ((gSurf.x > 0 || gSurf.y > 0) && dot(i.rel, i.rel) < 4096) surfaceDetail(i, n, albedo, m);   // (past 64 blocks the bumps are smaller than a pixel: skipped)
     if (gSurf.z < 0.5) { m.a = 0; }                                                               // materials off: plain
     // weather on surfaces: snow settles on tops open to the sky, rain makes things darker and shiny
     float open = (gWeather.w > 0.01 || gWeather2.x > 0.01) ? skyExposed(i.rel + nFlat * 0.3) : 0;

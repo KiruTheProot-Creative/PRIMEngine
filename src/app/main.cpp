@@ -4544,6 +4544,7 @@ struct App {
                 if (cave && lodK && lodCovered.count({ floorDiv(kv.first.x, 2), floorDiv(kv.first.y, 2), floorDiv(kv.first.z, 2) })) continue;   // (a far copy stands in for it)   // (the cooked world: a room you can't see through any door)
                 // chunk origin relative to the camera, computed in double: no jitter however far you go
                 float ox = (float)(kv.first.x * (double)CS - camPos.x), oy = (float)(kv.first.y * (double)CS - camPos.y), oz = (float)(kv.first.z * (double)CS - camPos.z);
+                if (drawMaxDist > 0 && (ox + 8) * (ox + 8) + (oy + 8) * (oy + 8) + (oz + 8) * (oz + 8) > drawMaxDist * drawMaxDist) continue;
                 if (!BoxVisible(m, ox, oy, oz, (float)CS)) continue;
                 ChunkCB cc{ { ox, oy, oz, 1 } }; ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);   // w 1: the world's blocks (their lamp light is baked in)
                 UINT stride = sizeof(Vtx), off = 0;
@@ -4677,8 +4678,10 @@ struct App {
             ctx->RSSetState(rsCullFront.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0);
             ID3D11ShaderResourceView* ms[5] = { texArray.Get(), shadows ? shadowSRV.Get() : nullptr, nullptr, noiseSRV.Get(), skyMap ? skyMapSRV.Get() : nullptr }; ctx->PSSetShaderResources(0, 5, ms); BindMaterials();
             ID3D11SamplerState* mss[3] = { sampBlocks.Get(), sampShadow.Get(), sampLinear.Get() }; ctx->PSSetSamplers(0, 3, mss);
+            drawMaxDist = 80;   // (the mirror: what is near it - far away, a reflection on a floor is a few pixels)
             ctx->PSSetShader(psOpaque.Get(), nullptr, 0); drawChunks(mvp, 0, false);
             ctx->PSSetShader(psCutout.Get(), nullptr, 0); drawChunks(mvp, 1, false);
+            drawMaxDist = 0;
             ctx->PSSetShaderResources(0, 5, none);
             ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &fc, 0, 0);
             SetClusterMode(true, 0, std::min(frameLightCount, 32));
@@ -16703,6 +16706,7 @@ struct App {
 
     // ================================================================== frame
     float dynScale = 1.f; double dynT = 0;
+    float drawMaxDist = 0;   // (drawing chunks: only this near, 0 all)
     XMFLOAT4X4 cascVPs[4]; V3 cascCam[4]; V3 cascSun[4]; float cascR0[4] = { 0, 0, 0, 0 }; bool cascValid[4] = { false, false, false, false }; int cascSize = 0, cascDrawn = 0, cascDrawnShown = 0;   // the sun's maps: when each was drawn
     ComPtr<ID3D11Texture2D> primePrevZ; ComPtr<ID3D11ShaderResourceView> primePrevZSRV; bool primePrevZOk = false;   // PrimeScaler: the frame before's depth   // auto resolution: a share of the render scale, and the time since it last changed
     void FrameBody(double dt) {   // everything but showing the picture (screenshots grab it before)
