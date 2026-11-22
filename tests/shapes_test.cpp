@@ -203,6 +203,17 @@ int main() {
             g.set(-5, 1, -4, makeLiquid(full, 16));
             for (int t = 0; t < 30; t++) g.tickLiquids();
             CHECK(soakOf(g.get(-5, 1, -5)) != 2 && typeOf(g.get(-5, 1, -5)) == stone, "water touching them puts the lava out");
+            {   // standing in lava they glow like it; lava touching blocks has a hot rim (its top corners there)
+                Chunk* ch = g.chunk(chunkOf(-3, 1, -3)); int before = ch ? ch->emitters : 0;
+                g.set(-3, 1, -3, makeLiquid(lavaB, 16)); g.set(-3, 1, -3, stairs);
+                int after = ch ? ch->emitters : 0;
+                CHECK(soakOf(g.get(-3, 1, -3)) == 2 && after >= before, "stairs in lava count as glowing (%d -> %d)", before, after);
+                g.set(-4, 1, -3, makeLiquid(lavaB, 16)); g.liquidActive.clear();
+                MeshInput in; ChunkMesh cm; bool got = gatherInput(g, chunkOf(-4, 1, -3), in); if (got) buildMesh(reg, in, cm);
+                int rimCorners = 0, topCorners = 0;
+                for (const Vtx& vx : cm.opaque.v) if (std::fabs(vx.layer - (reg.get(lavaB).tex[F_PY] + 16384.f * 4)) < 0.5f && faceOf(vx) == F_PY) { topCorners++; if (aoOf(vx) < 0.5f) rimCorners++; }
+                CHECK(got && topCorners > 0 && rimCorners > 0, "lava next to the stairs: a hot rim on its top (%d of %d corners)", rimCorners, topCorners);
+            }
         }
         // flowing on a flat floor spreads out thin and stops (no endless flowing)
         World f(reg); f.gen.kind = Generator::Void; f.stream({ 0, 0, 0 }, 2, 2, 100000);
