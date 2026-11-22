@@ -6558,7 +6558,9 @@ struct App {
         ID3D11Buffer* cbs[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->VSSetConstantBuffers(0, 2, cbs); ctx->PSSetConstantBuffers(0, 2, cbs);
         auto W = [&](V3 c) { return r * c.x + u * c.y + f * c.z; };   // camera space -> the world's directions
         {   // the world's lights always fall on the helmet's parts (the nearest ones, glowing blocks around you too), and each HUD plane's own light
-            std::vector<LightGpu> hl; for (int k = 0; k < frameLightCount && (int)hl.size() < HUDLIGHTS - 8; k++) hl.push_back(frameLights[k]);
+            std::vector<LightGpu> hl; for (int k = 0; k < frameLightCount; k++) hl.push_back(frameLights[k]);
+            std::sort(hl.begin(), hl.end(), [](const LightGpu& a, const LightGpu& b) { return a.pos[0] * a.pos[0] + a.pos[1] * a.pos[1] + a.pos[2] * a.pos[2] - a.pos[3] * a.pos[3] < b.pos[0] * b.pos[0] + b.pos[1] * b.pos[1] + b.pos[2] * b.pos[2] - b.pos[3] * b.pos[3]; });
+            if (hl.size() > 12) hl.resize(12);   // the helmet and arm cannon: the 12 lights nearest you are plenty (every one of its pixels goes through all of them)
             if (settings.hudGlow) for (const HudPlane& p : hud.planes) {
                 if ((int)hl.size() >= HUDLIGHTS || !p.visible || p.lightUp <= 0) continue;
                 V3 col = planeLight(p) * (double)(p.lightUp * 6.f); if (col.x + col.y + col.z < 1e-4) continue;

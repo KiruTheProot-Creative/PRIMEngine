@@ -105,6 +105,8 @@ uint clusterOf(float3 rel)
     uint cz = (uint)clamp(log(max(z, gCl1.z) / gCl1.z) / gCl1.w * gz, 0, gz - 1);
     return (cz * gy + cy) * gx + cx;
 }
+static float sReach = 0;   // how far this pixel's reflection rays go (0: the setting's full reach); rough surfaces don't need far ones (blurred away)
+float reflReach() { return sReach > 0 ? sReach : gRefl.z; }
 float lightShadow(LightData L, float3 p, int type)
 {
     if (L.ext.w < 0) return 1;
@@ -121,6 +123,7 @@ float lightShadow(LightData L, float3 p, int type)
     if (any(uv < 0) || any(uv > 1) || q.z > 1) return 1;
     float mw, mh, mn; gLightShadow.GetDimensions(mw, mh, mn);
     const float t = 1.0 / mw; float z = q.z - 0.00025, r = 0;
+    if (gCl0.x < 0.5 || dot(p - L.pos.xyz, p - L.pos.xyz) > 100) return lerp(1, gLightShadow.SampleCmpLevelZero(gShadowSamp, float3(uv, sl), z), keep);   // far from the light (or the helmet's pass): one look (still smoothed 2 x 2 by the hardware)
     r += gLightShadow.SampleCmpLevelZero(gShadowSamp, float3(uv + float2(-0.5, -0.5) * t, sl), z);
     r += gLightShadow.SampleCmpLevelZero(gShadowSamp, float3(uv + float2(0.5, -0.5) * t, sl), z);
     r += gLightShadow.SampleCmpLevelZero(gShadowSamp, float3(uv + float2(-0.5, 0.5) * t, sl), z);
@@ -958,7 +961,7 @@ bool traceScreen(float3 P, float3 n, float3 r, float dist, float2 pixel, out flo
     float stepLen = 0.12 + dist * 0.01;
     pos += r * stepLen * ignR(pixel);
     int steps = (int)gRefl.y;
-    [loop] for (int k = 0; k < steps && travelled < gRefl.z; k++)
+    [loop] for (int k = 0; k < steps && travelled < reflReach(); k++)
     {
         float3 prev = pos;
         pos += r * stepLen; travelled += stepLen;
@@ -1215,10 +1218,10 @@ bool voxelTrace(float3 P, float3 n, float3 r, float2 pixel, out float3 col)
     float3 inv = 1 / max(abs(r), 1e-6) * sign(r + 1e-9);
     float3 tMax = ((float3(cell) + float3(stp > 0)) - o) * inv, tDelta = abs(inv);
     float t = 0; int axis = 1; int steps = (int)gVoxO.w;
-    bool found = false; uint hitId = 0, hitLayer = 0; float2 hitUV = 0; float3 hitN = 0, hitP = 0; float hitT = gRefl.z * 1.5;
+    bool found = false; uint hitId = 0, hitLayer = 0; float2 hitUV = 0; float3 hitN = 0, hitP = 0; float hitT = reflReach() * 1.5;
     [loop] for (int k = 0; k < steps; k++)
     {
-        if (any(cell < 0) || any(cell >= VOXN) || t > gRefl.z * 1.5) break;
+        if (any(cell < 0) || any(cell >= VOXN) || t > reflReach() * 1.5) break;
         uint id = k > 0 ? voxAt(cell) : 0;                              // (the first block: where the ray starts)
         if (id != 0)
         {
@@ -1404,6 +1407,7 @@ float4 PS_Reflect(SkyOut i) : SV_Target
     float3 P = dir * dist;                                   // the surface, relative to the camera
     float3 r = reflect(dir, n);
     bool mirror = shine > 0.999;
+    sReach = gRefl.z * lerp(0.3, 1, shine * shine);   // (rough: blurred anyway, so near things are what shows - the rays stop sooner)
 
     float2 huv = 0; float travelled = 0;
     bool hit = traceScreen(P, n, r, dist, i.pos.xy, huv, travelled);
@@ -1414,7 +1418,7 @@ float4 PS_Reflect(SkyOut i) : SV_Target
     else if (abs(n.y) < 0.9) open = max(open, skyExposed(P + n * 0.3 + float3(0, 1.05, 0)));          // (no sky light volume: look just above it)
     float3 fallback = (skyColor(r) * lerp(0.15, 1, open * saturate(r.y * 4 + 0.6)) + gAmbient.rgb * 0.15 * (1 - open)) * skyVis(P, n);
     float edge = 0;
-    if (hit) { float2 e = min(huv, 1 - huv); edge = saturate(min(e.x, e.y) * 12) * saturate(1 - travelled / gRefl.z); }   // fade near the picture's edges
+    if (hit) { float2 e = min(huv, 1 - huv); edge = saturate(min(e.x, e.y) * 12) * saturate(1 - travelled / reflReach()); }   // fade near the picture's edges
     if (edge < 0.99)   // off screen / behind you: the blocks themselves
     {
         // the surface's real (flat) direction from the depth next to it: bumps and slopes must not start the ray inside the block
