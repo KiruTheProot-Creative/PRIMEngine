@@ -3051,21 +3051,21 @@ float4 PS_PrimeScale(SkyOut i) : SV_Target
         wasAt = zClose >= 1 ? -1 : c.w;
     }
     bool ok = gOffset.z < 0.5 && all(puv > 0) && all(puv < 1);
-    if (ok && gAxisY.z > 0.5)   // something moved there (an enemy, a door, a shot): the frame before showed something else at that spot - forget it
-    {
+    bool moverHere = false;   // something moved there (an enemy, a door, a shot): the frame before showed something else at that spot
+    if (ok && gAxisY.z > 0.5)
+    {   // (the nearest depth round it, then and now - the same 3 x 3 both times, so still edges always match and never jitter)
         int2 pq = clamp(int2(puv * S), int2(0, 0), hi); float zp = 1;
-        zp = min(zp, gPrimePrevZ.Load(int3(pq, 0)));
-        zp = min(zp, gPrimePrevZ.Load(int3(clamp(pq + int2(1, 0), int2(0, 0), hi), 0))); zp = min(zp, gPrimePrevZ.Load(int3(clamp(pq - int2(1, 0), int2(0, 0), hi), 0)));
-        zp = min(zp, gPrimePrevZ.Load(int3(clamp(pq + int2(0, 1), int2(0, 0), hi), 0))); zp = min(zp, gPrimePrevZ.Load(int3(clamp(pq - int2(0, 1), int2(0, 0), hi), 0)));
+        [unroll] for (int yy = -1; yy <= 1; yy++) [unroll] for (int xq = -1; xq <= 1; xq++) zp = min(zp, gPrimePrevZ.Load(int3(clamp(pq + int2(xq, yy), int2(0, 0), hi), 0)));
         bool skyNow = wasAt < 0, skyThen = zp >= 1;
-        if (skyNow != skyThen) ok = false;
-        else if (!skyNow) { float lt = linDepth(zp); if (abs(lt - wasAt) > wasAt * 0.05 + 0.2) ok = false; }
+        if (skyNow != skyThen) moverHere = true;
+        else if (!skyNow) { float lt = linDepth(zp); moverHere = abs(lt - wasAt) > wasAt * 0.08 + 0.35; }
     }
     if (!ok) return float4(hdrSafe(fromYCoCg(cur)), conf);                 // nothing to remember here: this frame alone
     float4 h = primeHistAt(puv, D);
     float3 hc = clamp(toYCoCg(max(h.rgb, 0)), max(cMin, mean - sd * 1.25), min(cMax, mean + sd * 1.25));   // only colours that are around it now
     float moved = length((uv - puv) * D);
     float n = min(h.a, lerp(gAxisY.y, 3, saturate(moved / 48)));  // moving fast: lean on the past less (it is blurrier there)
+    if (moverHere) { n = min(n, 1); hc = clamp(toYCoCg(max(h.rgb, 0)), max(cMin, mean - sd * 0.6), min(cMax, mean + sd * 0.6)); }   // (only a little of the past, and only close to what is here now: no trail, no flicker)
     float a = max(conf / (n + conf), 1 / (gAxisY.y + 1));
     return float4(hdrSafe(fromYCoCg(lerp(hc, cur, a))), n + conf);
 }
