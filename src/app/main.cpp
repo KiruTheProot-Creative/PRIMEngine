@@ -64,6 +64,7 @@
 #include <xaudio2.h>
 #include <d3dcompiler.h>
 #include <DirectXMath.h>
+#include <DirectXPackedVector.h>
 #include <wrl/client.h>
 
 #include "../../third_party/imgui/imgui.h"
@@ -1630,22 +1631,14 @@ struct App {
         HR(dev->CreateShaderResourceView(lshTex.Get(), &sv, &lshSRV));
         lshSlots.assign(std::max(n, 0), LshSlot{});   // (every map drawn again)
     }
-    // glowing blocks near you as lights too - only for objects, models, enemies and the HUD (blocks get theirs from the mesher)
-    void UpdateLampProxies(double dt) {
-        {   // real lamp blocks: their spreading light is only a soft fill (the chunks are built again when that changes)
-            int want = settings.lampBlocks > 0 ? (int)std::lround((1 - std::clamp(settings.lampFill, 0.f, 1.f)) * 12) : 0;
-            if (want != lampDropNow) { bool first = lampDropNow < 0; lampDropNow = want; setLampFillDrop(want); if (world && !first) { latestSeq.clear(); for (auto& kv : world->chunks) world->dirty.insert(kv.first); } }
-        }
-        lampScanAge += dt; if (!world) { lampProxies.clear(); realLamps.clear(); return; }
-        V3 d = camPos - lampScanAt; if (lampScanAge < 0.5 && d.x * d.x + d.y * d.y + d.z * d.z < 2.0) return;
-        lampScanAge = 0; lampScanAt = camPos; lampProxies.clear(); realLamps.clear();
-        bool real = settings.lampBlocks > 0;
+    // the real lamp blocks in these chunks as lights: lamps of one colour side by side merged into glowing boxes (mergeMany: very many become fewer point lights)
+    std::vector<LampProxy> RealLampLights(I3 k0, I3 k1, bool mergeMany) {
+        std::vector<LampProxy> out; if (!world) return out;
         struct One { V3 p; int lv[3]; bool out; int x, y, z; V3 eye; }; std::vector<One> reals;   // real lamp blocks; out: its shadow view sits in front of its open faces; eye: where that view is
-        if (real) {
-            const int RR = (int)std::clamp(settings.lampDistance, 16.f, 256.f); int cx = (int)std::floor(camPos.x), cy = (int)std::floor(camPos.y), cz = (int)std::floor(camPos.z);
-            for (int ky = (int)std::floor((cy - RR) / (double)CS); ky <= (int)std::floor((cy + RR) / (double)CS); ky++)
-                for (int kz = (int)std::floor((cz - RR) / (double)CS); kz <= (int)std::floor((cz + RR) / (double)CS); kz++)
-                    for (int kx = (int)std::floor((cx - RR) / (double)CS); kx <= (int)std::floor((cx + RR) / (double)CS); kx++) {
+        {
+            for (int ky = k0.y; ky <= k1.y; ky++)
+                for (int kz = k0.z; kz <= k1.z; kz++)
+                    for (int kx = k0.x; kx <= k1.x; kx++) {
                         if (!world->emittersNear({ kx, ky, kz })) continue;
                         const Chunk* ch = world->chunk({ kx, ky, kz }); if (!ch) continue;
                         for (int ly = 0; ly < CS; ly++) for (int lz = 0; lz < CS; lz++) for (int lx = 0; lx < CS; lx++) {
@@ -1690,7 +1683,7 @@ struct App {
                     boxes.push_back(bx);
                 }
             }
-            if (boxes.size() <= 160) {
+            if (boxes.size() <= 160 || !mergeMany) {
                 for (const Box& bx : boxes) {
                     V3 mn{ (double)bx.x0, (double)bx.y0, (double)bx.z0 }, mx{ bx.x1 + 1.0, bx.y1 + 1.0, bx.z1 + 1.0 }, c = (mn + mx) * 0.5, half = (mx - mn) * 0.5;
                     int m = std::max({ bx.lv[0], bx.lv[1], bx.lv[2] });
@@ -1700,7 +1693,7 @@ struct App {
                     lp.half = half + V3{ 0.06, 0.06, 0.06 };   // (its light starts just outside its faces)
                     bool one = bx.n == 1;
                     lp.eye = one ? bx.eye : c; lp.nearZ = one && bx.out ? 0.12f : (float)(big + 0.05);   // its shadow view: in front of a lamp set into a wall, else from its middle, starting just past it
-                    realLamps.push_back(lp);
+                    out.push_back(lp);
                 }
             } else {   // very many (a lit wall far and wide): merged into fewer point lights, bigger cells until there are not too many
                 for (int cell = 2; ; cell *= 2) {
@@ -1711,11 +1704,27 @@ struct App {
                         V3 p{ 0, 0, 0 }, col{ 0, 0, 0 }; int m = 0, n = 0;
                         for (const Box* bx : kv.second) { p = p + V3{ (bx->x0 + bx->x1 + 1) * 0.5, (bx->y0 + bx->y1 + 1) * 0.5, (bx->z0 + bx->z1 + 1) * 0.5 } * (double)bx->n; col = col + V3{ bx->lv[0] / 15.0, bx->lv[1] / 15.0, bx->lv[2] / 15.0 } * (double)bx->n; m = std::max(m, std::max({ bx->lv[0], bx->lv[1], bx->lv[2] })); n += bx->n; }
                         double k = 1.0 / n; LampProxy lp; lp.p = p * k; lp.range = m + 1.5 + cell * 0.5; lp.col = col * (k * std::sqrt((double)n) * 2.2); lp.nearZ = 0.9f; lp.eye = lp.p;
-                        realLamps.push_back(lp);
+                        out.push_back(lp);
                     }
                     break;
                 }
             }
+        }
+        return out;
+    }
+    // glowing blocks near you as lights too - only for objects, models, enemies and the HUD (blocks get theirs from the mesher)
+    void UpdateLampProxies(double dt) {
+        {   // real lamp blocks: their spreading light is only a soft fill (the chunks are built again when that changes)
+            int want = settings.lampBlocks > 0 ? (int)std::lround((1 - std::clamp(settings.lampFill, 0.f, 1.f)) * 12) : 0;
+            if (want != lampDropNow) { bool first = lampDropNow < 0; lampDropNow = want; setLampFillDrop(want); if (world && !first) { latestSeq.clear(); for (auto& kv : world->chunks) world->dirty.insert(kv.first); } }
+        }
+        lampScanAge += dt; if (!world) { lampProxies.clear(); realLamps.clear(); return; }
+        V3 d = camPos - lampScanAt; if (lampScanAge < 0.5 && d.x * d.x + d.y * d.y + d.z * d.z < 2.0) return;
+        lampScanAge = 0; lampScanAt = camPos; lampProxies.clear(); realLamps.clear();
+        bool real = settings.lampBlocks > 0;
+        if (real) {
+            const int RR = (int)std::clamp(settings.lampDistance, 16.f, 256.f); int cx = (int)std::floor(camPos.x), cy = (int)std::floor(camPos.y), cz = (int)std::floor(camPos.z);
+            realLamps = RealLampLights({ floorDiv(cx - RR, CS), floorDiv(cy - RR, CS), floorDiv(cz - RR, CS) }, { floorDiv(cx + RR, CS), floorDiv(cy + RR, CS), floorDiv(cz + RR, CS) }, true);
         }
         lampProxies.clear();
         const int R = 18; int cx = (int)std::floor(camPos.x), cy = (int)std::floor(camPos.y), cz = (int)std::floor(camPos.z);
@@ -2128,6 +2137,7 @@ struct App {
         {   // real lamp blocks, fading out toward their distance (no popping as you walk away)
             double D = std::clamp((double)settings.lampDistance, 16.0, 256.0);
             for (const LampProxy& lp : realLamps) { double dd = dist(lp.p), f = 1 - std::clamp((dd - D * 0.75) / (D * 0.25), 0.0, 1.0); if (f <= 0) continue;
+                if (cookLitOn && dd - lp.range > CookLampFar() && CookInArea(lp.p)) continue;   // (the cooked world: its light only reaches where the baked light has taken over)
                 bool box = lp.half.x > 0; all.push_back({ lp.p, lp.range, lp.col * (f * f * (3 - 2 * f)), box ? 3 : 0, { 0, -1, 0 }, -1, lp.half, false, settings.lampBlocks >= 2, dd, true, lp.nearZ, lp.eye, box }); }
         }
         std::sort(all.begin(), all.end(), [](const L& a, const L& b) { return a.dist - a.range < b.dist - b.range; });
@@ -2179,7 +2189,7 @@ struct App {
             if (l.dist - l.range - hl > 200) continue;
             V3 r = l.p - camPos; LightGpu g{};
             g.pos[0] = (float)r.x; g.pos[1] = (float)r.y; g.pos[2] = (float)r.z; g.pos[3] = (float)l.range;
-            g.col[0] = (float)l.col.x; g.col[1] = (float)l.col.y; g.col[2] = (float)l.col.z; g.col[3] = (float)(l.type + (l.objOnly ? 8 : 0) + (l.lamp && l.shadow ? 16 : 0));   // 16: its shadow through the blocks
+            g.col[0] = (float)l.col.x; g.col[1] = (float)l.col.y; g.col[2] = (float)l.col.z; g.col[3] = (float)(l.type + (l.objOnly ? 8 : 0) + (l.lamp && l.shadow ? 16 : 0) + (l.lamp && cookLitOn ? 32 : 0));   // 32: the cooked world's lamp (its baked light takes over far away)   // 16: its shadow through the blocks
             g.dir[0] = (float)l.dir.x; g.dir[1] = (float)l.dir.y; g.dir[2] = (float)l.dir.z; g.dir[3] = (float)l.cosCone;
             g.ext[0] = (float)l.half.x; g.ext[1] = (float)l.half.y; g.ext[2] = (float)l.half.z; g.ext[3] = -1;
             V3 eyeR = (l.hasEye ? l.eye : l.p) - camPos;
@@ -4319,10 +4329,16 @@ struct App {
             if (dfx.drop > 0 && !player.ball) camPos.y -= dfx.drop * std::max(0.3, (double)game.player.eyeHeight * 0.5);
             if (dfx.roll > 0) { double a = dfx.roll * 0.21; V3 r0 = normalize(cross({ 0, 1, 0 }, f)); upv = V3{ 0, 1, 0 } * std::cos(a) + r0 * std::sin(a); f = normalize(f + V3{ 0, -0.25 * dfx.roll, 0 }); }
         }
+        float fovNow = settings.fov;
+        if (cookBake.on) {   // taking a room's reflection picture: this side of the cube, a square of 90 degrees in the middle
+            static const V3 F6[6] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } }, U6[6] = { { 0, 1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 }, { 0, 1, 0 }, { 0, 1, 0 } };
+            int fc6 = std::clamp(cookBake.face, 0, 5); f = F6[fc6]; upv = U6[fc6];
+            fovNow = aspect >= 1 ? 90.f : (float)(2 * std::atan(1.0 / aspect) * 180 / 3.14159265358979);
+        }
         V3 r = normalize(cross(upv, f)), u = cross(f, r);
         float farZ = (settings.renderDistance + 2) * CS * 1.5f;
         view = XMMatrixLookToLH(XMVectorZero(), XMVectorSet((float)f.x, (float)f.y, (float)f.z, 0), XMVectorSet((float)upv.x, (float)upv.y, (float)upv.z, 0));   // camera at the origin
-        proj = XMMatrixPerspectiveFovLH(XMConvertToRadians(settings.fov), aspect, 0.05f, farZ);
+        proj = XMMatrixPerspectiveFovLH(XMConvertToRadians(fovNow), aspect, 0.05f, farZ);
         XMMATRIX vp = view * proj;
         FrameCB fc{}; XMStoreFloat4x4(&fc.viewProj, vp);
         {   // bounce light's memory: the frame before's view, and how far the camera moved since
@@ -4474,6 +4490,7 @@ struct App {
         ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &fc, 0, 0);
         ID3D11Buffer* cbs[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->VSSetConstantBuffers(0, 2, cbs); ctx->PSSetConstantBuffers(0, 2, cbs);
         { ID3D11ShaderResourceView* vx[5] = { texArray.Get(), voxReady ? voxSRV.Get() : nullptr, voxReady ? voxPalSRV.Get() : nullptr, brickSRV.Get(), objVoxSRV.Get() }; ctx->PSSetShaderResources(29, 5, vx); }   // reflection rays' blocks and objects
+        CookFrame(vp, fc);   // the cooked world: rooms seen through the portals, rooms' reflection pictures, baked lamp light
         PrepareLights(fc);   // light objects, strips, glowing emitters, shots, glowing blocks (for objects) - sorted into clusters
         ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
         auto drawChunks = [&](const XMMATRIX& m, int pass, bool counting, bool cave = false) {   // cave: the camera's own view (cave culling applies)
@@ -4481,6 +4498,7 @@ struct App {
             for (auto& kv : gpu) {
                 const GpuChunk& g = kv.second; UINT n = pass == 0 ? g.nO : pass == 1 ? g.nC : g.nW; if (!n) continue;
                 if (cave && caveOn && !CaveIn(kv.first)) { if (counting) caveHidden++; continue; }
+                if (cave && cookCullOn && !CookChunkSeen(kv.first)) { if (counting) cookHidden++; continue; }   // (the cooked world: a room you can't see through any door)
                 // chunk origin relative to the camera, computed in double: no jitter however far you go
                 float ox = (float)(kv.first.x * (double)CS - camPos.x), oy = (float)(kv.first.y * (double)CS - camPos.y), oz = (float)(kv.first.z * (double)CS - camPos.z);
                 if (!BoxVisible(m, ox, oy, oz, (float)CS)) continue;
@@ -4644,7 +4662,7 @@ struct App {
         ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0);
         ID3D11ShaderResourceView* srvs[5] = { texArray.Get(), shadows ? shadowSRV.Get() : nullptr, nullptr, noiseSRV.Get(), skyMap ? skyMapSRV.Get() : nullptr }; ctx->PSSetShaderResources(0, 5, srvs); BindMaterials();
         ID3D11SamplerState* samps[3] = { sampBlocks.Get(), sampShadow.Get(), sampLinear.Get() }; ctx->PSSetSamplers(0, 3, samps);
-        drawnChunks = 0; partsDrawn = partsCulled = 0; caveHidden = 0;
+        drawnChunks = 0; partsDrawn = partsCulled = 0; caveHidden = 0; cookHidden = 0;
         UpdateCaveCulling(vp);
         {   // the depth of everything solid first (no colour: cheap), so the heavy lighting runs once per pixel, not once for every wall behind it
             ID3D11RenderTargetView* four[4] = { hdrRTV.Get(), surfRTV.Get(), indRTV.Get(), albRTV.Get() };
@@ -4653,7 +4671,7 @@ struct App {
         }
         ctx->PSSetShader(psOpaque.Get(), nullptr, 0); drawChunks(vp, 0, true, true);
         ctx->OMSetDepthStencilState(dsOn.Get(), 0);
-        partsDrawnShown = partsDrawn; partsCulledShown = partsCulled; caveHiddenShown = caveHidden;
+        partsDrawnShown = partsDrawn; partsCulledShown = partsCulled; caveHiddenShown = caveHidden; cookHiddenShown = cookHidden;
         ctx->PSSetShader(psCutout.Get(), nullptr, 0); drawChunks(vp, 1, false, true);
 
         GpuMark("ambient occlusion");
@@ -4822,6 +4840,7 @@ struct App {
         DrawEnemyFlashes();   // hit enemies flash
         bool scanMaskOn = DrawScanMask();   // the Scan Visor: what can be scanned, for the outlines
 
+        if (cookBake.on && cookBake.grab) GrabProbeFace();   // (a room's reflection picture: without the fog)
         GpuMark("clouds, fog");
         // ---- clouds and ground fog over the picture (needs the depth: unbind it as a target first)
         ctx->PSSetShaderResources(0, 4, none);
@@ -5194,6 +5213,11 @@ struct App {
         ImGui::Text("Block: %d %d %d   Chunk: %d %d %d", b.x, b.y, b.z, c.x, c.y, c.z);
         ImGui::Text("Facing: %s   %s", dirs[((int)(yd / 90)) % 4], player.flying ? "flying" : "walking");
         ImGui::Text("Chunks: %zu loaded, %zu with meshes, %d drawn, %d hidden behind walls%s", world->loadedCount(), gpu.size(), drawnChunks, caveHiddenShown, caveOn ? "" : " (off)");
+        if (cookHave) {
+            if (!cookUse) ImGui::Text("Cooked world: off");
+            else ImGui::Text("Cooked world: %s, %d of %d rooms seen, %d chunks skipped, %d room pictures, baked light %s", cookCamRoom ? (cookRes.rooms[cookCamRoom - 1].outside ? "outside" : ("in room " + std::to_string(cookCamRoom)).c_str()) : "not in a room",
+                             cookCullOn ? cookSeenRooms : (int)cookRes.rooms.size(), (int)cookRes.rooms.size(), cookHiddenShown, cookProbesReady, cookLitOn ? "on" : "off");
+        }
         ImGui::Text("Object parts: %d drawn, %d skipped (off screen or past the fog)", partsDrawnShown, partsCulledShown);
         ImGui::Text("Meshing: %zu waiting, %zu queued", world->dirty.size(), workers->pending());
         if (hoverValid) { BlockId hv = world->get(hover.x, hover.y, hover.z);
@@ -8884,16 +8908,164 @@ struct App {
     }
     void TestCook() {
         if (!world || cookSel[2] < cookSel[0]) { cookMsg = "Pick the chunks to cook first (drag on the map)."; return; }
+        FinishProbeBake(false);
         cookArea.cx0 = cookSel[0]; cookArea.cz0 = cookSel[1]; cookArea.cx1 = cookSel[2]; cookArea.cz1 = cookSel[3]; cookArea.y0 = cookY0; cookArea.y1 = cookY1;
         auto t0 = std::chrono::steady_clock::now();
         cookRes = findRooms(*world, cookArea, CookDoors(), info.zones);
         double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-        if (cookRes.rooms.empty()) { cookMsg = "Too big to cook at once (or nothing there): pick fewer chunks or a smaller height range."; cookHave = false; return; }
+        if (cookRes.rooms.empty()) { cookMsg = "Too big to cook at once (or nothing there): pick fewer chunks or a smaller height range."; cookHave = false; cookUse = false; return; }
         cookHave = true; cookMapDirty = true; cookLayerView = true;
         int outsideN = 0, pockets = 0; for (const CookRoom& r : cookRes.rooms) { outsideN += r.outside; pockets += r.pocket(); }
         char b[256]; std::snprintf(b, sizeof b, "Found %d rooms%s, %d portals (doors / open zone edges), %d tiny gaps left out. (%.0f ms)", cookRes.count(false), outsideN ? " and the outside" : "", (int)cookRes.portals.size(), pockets, ms);
         cookMsg = b;
         if (!projectDir.empty()) { std::error_code ec; fs::create_directories(fs::u8path(projectDir + "/cook"), ec); saveCookRooms(projectDir + "/cook/rooms.txt", cookArea, cookRes); }
+        cookChunkRooms = chunkRooms(cookRes);
+        {   // the lamps' light, baked into the air
+            auto t1 = std::chrono::steady_clock::now();
+            std::vector<CookLamp> lamps;
+            for (const LampProxy& lp : RealLampLights({ cookArea.cx0 - 2, floorDiv(cookArea.y0, CS) - 2, cookArea.cz0 - 2 }, { cookArea.cx1 + 2, floorDiv(cookArea.y1 - 1, CS) + 2, cookArea.cz1 + 2 }, false))
+                lamps.push_back({ lp.p, lp.half, lp.range, lp.col });
+            CookLit L = bakeLight(*world, cookArea, lamps, (int)std::max(1u, std::thread::hardware_concurrency()));
+            UploadCookLight(L);
+            double lms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t1).count();
+            char lb[160];
+            if (cookLitHave) std::snprintf(lb, sizeof lb, "\nBaked the light of %zu lamps (%.0f ms).", lamps.size(), lms);
+            else std::snprintf(lb, sizeof lb, "\nNo baked light: the area is too big for it (pick fewer chunks or heights).");
+            cookMsg += lb;
+        }
+        cookUse = true;
+        StartProbeBake();
+    }
+    // ---- the cooked world in use: portals (rooms you can't see aren't drawn), a reflection picture per room, the lamps' light baked
+    bool cookUse = false, cookCullOn = false, cookLitOn = false;
+    std::unordered_map<I3, std::vector<uint16_t>, I3Hash> cookChunkRooms; std::vector<uint8_t> cookVis;
+    int cookHidden = 0, cookHiddenShown = 0, cookCamRoom = 0, cookSeenRooms = 0;
+    struct CookProbeInfo { int room = 0; V3 pos; I3 lo, hi; };
+    std::vector<CookProbeInfo> cookProbes; int cookProbesReady = 0;   // (ready: how many the pictures have, 0 while they are taken)
+    static constexpr int PROBE_RES = 128, PROBE_MIPS = 8;
+    std::vector<uint16_t> cookProbePx;   // while taking them: 6 sides per room, RGBA (half floats)
+    ComPtr<ID3D11Texture2D> cookCubeTex; ComPtr<ID3D11ShaderResourceView> cookCubeSRV;
+    struct CookBake { bool on = false, grab = false, grabbed = false; int i = 0, face = 0, frame = 0, wait = 0; V3 feet; double yaw = 0, pitch = 0; } cookBake;
+    I3 cookLitLo{ 0, 0, 0 }, cookLitN{ 0, 0, 0 }; bool cookLitHave = false;
+    ComPtr<ID3D11Texture3D> cookLitTex, cookDirTex; ComPtr<ID3D11ShaderResourceView> cookLitSRV, cookDirSRV;
+    ComPtr<ID3D11Buffer> cbCook;
+    struct alignas(16) CookCB { float cook[4], litO[4], litS[4], pad[4]; float pos[64][4], lo[64][4], hi[64][4]; };
+    bool CookInArea(V3 p) const { return cookHave && p.x >= cookArea.cx0 * CS && p.x < (cookArea.cx1 + 1) * CS && p.z >= cookArea.cz0 * CS && p.z < (cookArea.cz1 + 1) * CS && p.y >= cookArea.y0 && p.y < cookArea.y1; }
+    double CookLampFar() const { return std::clamp((double)settings.lampDistance, 16.0, 256.0) * 0.6; }   // past this, the lamps' baked light only (they fade over the 2/3 before)
+    void UploadCookLight(const CookLit& L) {
+        cookLitTex.Reset(); cookDirTex.Reset(); cookLitSRV.Reset(); cookDirSRV.Reset(); cookLitHave = false;
+        if (L.X <= 0 || L.X > 2048 || L.Y > 2048 || L.Z > 2048) return;
+        size_t n = (size_t)L.X * L.Y * L.Z;
+        // (the grid goes to the card as x, y, z = x, height, z: a 3D texture's depth is its third axis)
+        std::vector<uint16_t> lit(n * 4); std::vector<int8_t> dir(n * 4);
+        for (int y = 0; y < L.Y; y++) for (int z = 0; z < L.Z; z++) for (int x = 0; x < L.X; x++) {
+            size_t i = L.at(x, y, z) * 3, o = (((size_t)z * L.Y + y) * L.X + x) * 4;
+            for (int c = 0; c < 3; c++) { lit[o + c] = DirectX::PackedVector::XMConvertFloatToHalf(L.rgb[i + c]); dir[o + c] = (int8_t)std::lround(std::clamp(L.dir[i + c], -1.f, 1.f) * 127); }
+            lit[o + 3] = DirectX::PackedVector::XMConvertFloatToHalf(1.f); dir[o + 3] = 0;
+        }
+        D3D11_TEXTURE3D_DESC d{}; d.Width = L.X; d.Height = L.Y; d.Depth = L.Z; d.MipLevels = 1; d.Usage = D3D11_USAGE_IMMUTABLE; d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        d.Format = DXGI_FORMAT_R16G16B16A16_FLOAT; D3D11_SUBRESOURCE_DATA sd{ lit.data(), (UINT)(L.X * 8), (UINT)(L.X * L.Y * 8) };
+        if (FAILED(dev->CreateTexture3D(&d, &sd, &cookLitTex))) return;
+        d.Format = DXGI_FORMAT_R8G8B8A8_SNORM; D3D11_SUBRESOURCE_DATA sd2{ dir.data(), (UINT)(L.X * 4), (UINT)(L.X * L.Y * 4) };
+        if (FAILED(dev->CreateTexture3D(&d, &sd2, &cookDirTex))) { cookLitTex.Reset(); return; }
+        HR(dev->CreateShaderResourceView(cookLitTex.Get(), nullptr, &cookLitSRV)); HR(dev->CreateShaderResourceView(cookDirTex.Get(), nullptr, &cookDirSRV));
+        cookLitLo = L.lo; cookLitN = { L.X, L.Y, L.Z }; cookLitHave = true;
+    }
+    bool CookChunkSeen(I3 c) const {   // (chunks outside the cooked area, or only partly inside its heights: always)
+        if (c.x < cookArea.cx0 || c.x > cookArea.cx1 || c.z < cookArea.cz0 || c.z > cookArea.cz1 || c.y * CS < cookArea.y0 || (c.y + 1) * CS > cookArea.y1) return true;
+        auto it = cookChunkRooms.find(c); if (it == cookChunkRooms.end()) return false;
+        for (uint16_t id : it->second) if (id < cookVis.size() && cookVis[id]) return true;
+        return false;
+    }
+    void CookFrame(const XMMATRIX& vp, FrameCB& fc) {   // each frame: which rooms show, and the cooked data for the shaders
+        (void)fc;
+        cookCullOn = cookUse && cookHave && !cookChunkRooms.empty();
+        cookCamRoom = cookHave ? cookRes.roomAt(ifloor(camPos.x), ifloor(camPos.y), ifloor(camPos.z)) : 0;
+        if (cookCullOn) { XMFLOAT4X4 m; XMStoreFloat4x4(&m, vp); visibleRooms(cookRes, &m._11, camPos, cookVis); cookSeenRooms = 0; for (size_t k = 1; k < cookVis.size(); k++) cookSeenRooms += cookVis[k]; }
+        cookLitOn = cookUse && cookLitHave && settings.lampBlocks > 0;
+        if (!cbCook) { D3D11_BUFFER_DESC d{}; d.ByteWidth = sizeof(CookCB); d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_CONSTANT_BUFFER; HR(dev->CreateBuffer(&d, nullptr, &cbCook)); }
+        static CookCB c; std::memset(&c, 0, sizeof c);
+        int np = cookUse && cookCubeSRV ? std::min(cookProbesReady, 64) : 0;
+        c.cook[0] = (float)np; c.cook[1] = cookLitOn ? 1.f : 0.f; c.cook[2] = 64; c.cook[3] = 96;   // reflections: real time to 64 blocks, the rooms' pictures from 96 on
+        if (cookLitOn) {
+            double H1 = CookLampFar(), H0 = H1 * 0.67;
+            c.litO[0] = (float)(cookLitLo.x - camPos.x); c.litO[1] = (float)(cookLitLo.y - camPos.y); c.litO[2] = (float)(cookLitLo.z - camPos.z); c.litO[3] = (float)H0;
+            c.litS[0] = (float)cookLitN.x; c.litS[1] = (float)cookLitN.y; c.litS[2] = (float)cookLitN.z; c.litS[3] = (float)H1;
+        }
+        for (int k = 0; k < np; k++) {
+            const CookProbeInfo& p = cookProbes[k];
+            c.pos[k][0] = (float)(p.pos.x - camPos.x); c.pos[k][1] = (float)(p.pos.y - camPos.y); c.pos[k][2] = (float)(p.pos.z - camPos.z); c.pos[k][3] = (float)PROBE_MIPS;
+            c.lo[k][0] = (float)(p.lo.x - camPos.x); c.lo[k][1] = (float)(p.lo.y - camPos.y); c.lo[k][2] = (float)(p.lo.z - camPos.z);
+            c.hi[k][0] = (float)(p.hi.x - camPos.x); c.hi[k][1] = (float)(p.hi.y - camPos.y); c.hi[k][2] = (float)(p.hi.z - camPos.z);
+        }
+        ctx->UpdateSubresource(cbCook.Get(), 0, nullptr, &c, 0, 0);
+        ctx->PSSetConstantBuffers(13, 1, cbCook.GetAddressOf());
+        ID3D11ShaderResourceView* t3[3] = { np ? cookCubeSRV.Get() : nullptr, cookLitOn ? cookLitSRV.Get() : nullptr, cookLitOn ? cookDirSRV.Get() : nullptr };
+        ctx->PSSetShaderResources(46, 3, t3);
+    }
+    // ---- taking the rooms' reflection pictures: the camera goes to each room in turn (a few frames per side, so the light settles)
+    void StartProbeBake() {
+        auto spots = probeSpots(cookRes, 64);
+        cookProbes.clear(); cookProbesReady = 0; cookCubeSRV.Reset(); cookCubeTex.Reset();
+        for (auto& sp : spots) { const CookRoom& rm = cookRes.rooms[sp.first - 1]; cookProbes.push_back({ sp.first, sp.second, rm.lo, rm.hi }); }
+        if (cookProbes.empty() || playMode) return;
+        cookProbePx.assign(cookProbes.size() * 6 * PROBE_RES * PROBE_RES * 4, 0);
+        cookBake = CookBake{}; cookBake.on = true; cookBake.feet = player.feet; cookBake.yaw = player.yaw; cookBake.pitch = player.pitch;
+    }
+    void FinishProbeBake(bool keep) {
+        CookBake& B = cookBake; if (!B.on) return;
+        B.on = false; player.feet = B.feet; player.yaw = B.yaw; player.pitch = B.pitch; player.vel = { 0, 0, 0 };
+        if (!keep || cookProbes.empty()) { cookProbes.clear(); cookProbePx.clear(); return; }
+        int n = (int)cookProbes.size();
+        D3D11_TEXTURE2D_DESC d{}; d.Width = d.Height = PROBE_RES; d.MipLevels = PROBE_MIPS; d.ArraySize = 6 * n; d.Format = DXGI_FORMAT_R16G16B16A16_FLOAT; d.SampleDesc.Count = 1;
+        d.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET; d.MiscFlags = D3D11_RESOURCE_MISC_TEXTURECUBE | D3D11_RESOURCE_MISC_GENERATE_MIPS;
+        if (FAILED(dev->CreateTexture2D(&d, nullptr, &cookCubeTex))) { cookProbes.clear(); return; }
+        for (int sl = 0; sl < 6 * n; sl++) ctx->UpdateSubresource(cookCubeTex.Get(), D3D11CalcSubresource(0, sl, PROBE_MIPS), nullptr, &cookProbePx[(size_t)sl * PROBE_RES * PROBE_RES * 4], PROBE_RES * 8, 0);
+        D3D11_SHADER_RESOURCE_VIEW_DESC sv{}; sv.Format = d.Format; sv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURECUBEARRAY; sv.TextureCubeArray.MipLevels = PROBE_MIPS; sv.TextureCubeArray.NumCubes = n;
+        HR(dev->CreateShaderResourceView(cookCubeTex.Get(), &sv, &cookCubeSRV));
+        ctx->GenerateMips(cookCubeSRV.Get());
+        cookProbesReady = n; cookProbePx.clear(); cookProbePx.shrink_to_fit();
+        cookMsg += "\n" + std::to_string(n) + " room reflection pictures taken.";
+    }
+    void CookBakeStep() {   // (each frame, before the world is drawn)
+        CookBake& B = cookBake; if (!B.on) return;
+        if (!world || playMode || screen != Screen::Game) { FinishProbeBake(false); return; }
+        if (B.grabbed) {
+            B.grabbed = false; B.frame = 0;
+            if (++B.face == 6) { B.face = 0; B.wait = 0; if (++B.i >= (int)cookProbes.size()) { FinishProbeBake(true); return; } }
+        }
+        const CookProbeInfo& p = cookProbes[B.i];
+        player.feet = { p.pos.x, p.pos.y - player.eyeH, p.pos.z }; player.vel = { 0, 0, 0 };
+        B.grab = false;
+        if (B.face == 0 && B.frame == 0) {   // a new room: wait until it is loaded and built, and the light has settled a bit
+            B.wait++;
+            bool ready = world->dirty.empty() && workers->pending() == 0 && B.wait >= 24;
+            if (!ready && B.wait < 600) return;
+        }
+        B.frame++; B.grab = B.frame >= 3;
+    }
+    void GrabProbeFace() {   // (inside RenderWorld, before the fog: the picture of this side, the middle square, made small)
+        CookBake& B = cookBake; B.grab = false;
+        D3D11_TEXTURE2D_DESC d; reflTex->GetDesc(&d);
+        if (d.Format != DXGI_FORMAT_R16G16B16A16_FLOAT) { B.grabbed = true; return; }
+        int W = std::min(rw, (int)d.Width), H = std::min(rh, (int)d.Height), side = std::min(W, H), x0 = (W - side) / 2, y0 = (H - side) / 2;
+        D3D11_TEXTURE2D_DESC sdsc{}; sdsc.Width = sdsc.Height = side; sdsc.MipLevels = 1; sdsc.ArraySize = 1; sdsc.Format = d.Format; sdsc.SampleDesc.Count = 1; sdsc.Usage = D3D11_USAGE_STAGING; sdsc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        ComPtr<ID3D11Texture2D> st; if (FAILED(dev->CreateTexture2D(&sdsc, nullptr, &st))) { B.grabbed = true; return; }
+        D3D11_BOX box{ (UINT)x0, (UINT)y0, 0, (UINT)(x0 + side), (UINT)(y0 + side), 1 };
+        ctx->CopySubresourceRegion(st.Get(), 0, 0, 0, 0, reflTex.Get(), 0, &box);
+        D3D11_MAPPED_SUBRESOURCE m; if (FAILED(ctx->Map(st.Get(), 0, D3D11_MAP_READ, 0, &m))) { B.grabbed = true; return; }
+        uint16_t* out = &cookProbePx[((size_t)B.i * 6 + B.face) * PROBE_RES * PROBE_RES * 4];
+        for (int oy = 0; oy < PROBE_RES; oy++) for (int ox = 0; ox < PROBE_RES; ox++) {
+            int sx0 = ox * side / PROBE_RES, sx1 = std::max(sx0 + 1, (ox + 1) * side / PROBE_RES), sy0 = oy * side / PROBE_RES, sy1 = std::max(sy0 + 1, (oy + 1) * side / PROBE_RES);
+            float acc[3] = { 0, 0, 0 }; int n = 0;
+            for (int sy = sy0; sy < sy1; sy++) { const uint16_t* row = (const uint16_t*)((const uint8_t*)m.pData + (size_t)sy * m.RowPitch);
+                for (int sx = sx0; sx < sx1; sx++) { for (int c = 0; c < 3; c++) { float v = DirectX::PackedVector::XMConvertHalfToFloat(row[sx * 4 + c]); acc[c] += std::isfinite(v) ? std::clamp(v, 0.f, 4096.f) : 0.f; } n++; } }
+            uint16_t* o = out + ((size_t)oy * PROBE_RES + ox) * 4;
+            for (int c = 0; c < 3; c++) o[c] = DirectX::PackedVector::XMConvertFloatToHalf(acc[c] / std::max(n, 1));
+            o[3] = DirectX::PackedVector::XMConvertFloatToHalf(1.f);
+        }
+        ctx->Unmap(st.Get(), 0);
+        B.grabbed = true;
     }
     void CookWindow() {
         if (!cookOpenW || !world) return;
@@ -8944,9 +9116,26 @@ struct App {
         if (cookLayerView) { ImGui::SetNextItemWidth(-1); if (ImGui::SliderInt("##ckl", &cookLayer, cookY0, cookY1 - 1, "height %d")) cookMapDirty = true;
             if (ImGui::Button("My height")) { cookLayer = (int)std::floor(camPos.y) + 1; cookMapDirty = true; } }
         ImGui::SeparatorText("Cook");
+        ImGui::BeginDisabled(cookBake.on);
         if (ImGui::Button("Test-cook", ImVec2(-1, 34 * ui))) TestCook();
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Cooks the picked chunks the way an export will. For now: finds the outside, the rooms and the doors between them\n(next: reflection probes and baked light in each room).");
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Cooks the picked chunks the way an export will: finds the outside, the rooms and the doors between them,\nbakes the lamp blocks' light, and takes a reflection picture in every room.");
+        if (cookBake.on) {
+            float k = cookProbes.empty() ? 1.f : (cookBake.i * 6 + cookBake.face) / (float)(cookProbes.size() * 6);
+            char pb[96]; std::snprintf(pb, sizeof pb, "Room pictures: %d / %zu", std::min(cookBake.i + 1, (int)cookProbes.size()), cookProbes.size());
+            ImGui::ProgressBar(k, ImVec2(-1, 0), pb);
+            if (ImGui::Button("Stop taking pictures", ImVec2(-1, 0))) FinishProbeBake(false);
+        }
         if (!cookMsg.empty()) ImGui::TextWrapped("%s", cookMsg.c_str());
+        if (cookHave) {
+            ImGui::Checkbox("Use the cooked world", &cookUse);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Rooms you can't see through a door aren't drawn; far away, reflections come from the rooms' pictures\nand the lamps' light is baked. F3 shows what it skips.");
+            ImGui::BeginDisabled(cookBake.on);
+            if (ImGui::Button("Play cooked", ImVec2(-1, 30 * ui))) { cookUse = true; StartPlay(); }
+            ImGui::EndDisabled();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Play with the cooked world on (F3 to compare: turn \"Use the cooked world\" off and on)");
+            ImGui::TextDisabled("Changed the blocks since? Test-cook again.");
+        }
         if (cookHave) {
             ImGui::TextDisabled("Colours on the map (one height): each room its own, the outside dim blue.");
             if (ImGui::BeginTable("##ckrooms", 3, ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg, ImVec2(0, 260 * ui))) {
@@ -16187,7 +16376,8 @@ struct App {
             CpuMark("screens, death");
             if (slow < 1 && playMode && !paused && play.dead()) play.deadFor += dt - gdt;   // (slow motion: the world slows, the sequence does not)
             DeathSkip(); UpdateDeathSounds();
-            UpdateScreens(dt); UpdateStart(dt); CheckDeathScreen(); if (playMode && !paused && !CurScreen()) playTime += dt; }
+            UpdateScreens(dt); UpdateStart(dt); CheckDeathScreen(); if (playMode && !paused && !CurScreen()) playTime += dt;
+            CookBakeStep(); }
 
         CpuMark("building menus, HUD, editor");
         ImGui::GetStyle().FontScaleMain = settings.uiScale;

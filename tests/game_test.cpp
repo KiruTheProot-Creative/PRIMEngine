@@ -1792,6 +1792,26 @@ int main() {
             bool joined = false; for (const CookPortal& p : cr.portals) joined |= ((p.a == a && p.b == b) || (p.a == b && p.b == a)) && p.via == "door A";
             CHECK(joined && cr.count(false) == 3, "the door joins the two rooms (a portal); three rooms in all (%d)", cr.count(false));
             CHECK(saveCookRooms("/tmp/prim_cook.txt", ar, cr), "the cook's rooms are written down");
+            CookArea a2 = ar; a2.y0 = -20; CookRooms c2 = findRooms(cw, a2, doors, { zn });
+            int below = c2.roomAt(5, -10, 5);
+            CHECK(below && c2.rooms[below - 1].outside && c2.count(false) == 3, "the empty void under the floor is outside too, not a room (%d rooms)", c2.count(false));
+            // reflection probes: one per room, in the room
+            auto spots = probeSpots(cr); bool inOwn = true; for (auto& sp : spots) inOwn &= cr.roomAt((int)std::floor(sp.second.x), (int)std::floor(sp.second.y), (int)std::floor(sp.second.z)) == sp.first;
+            CHECK(spots.size() == 3 && inOwn, "each room gets a reflection picture, taken inside it (%zu)", spots.size());
+            // baked light: a lamp in the first room lights it, not the second room behind the wall
+            CookLamp lamp; lamp.c = { 5.5, 3.5, 5.5 }; lamp.half = { 0.56, 0.56, 0.56 }; lamp.range = 20; lamp.col = { 2, 1.5, 1 };
+            CookLit lit = bakeLight(cw, ar, { lamp }, 3);
+            auto litAt = [&](int x, int y, int z) { return lit.rgb[lit.at(x - lit.lo.x, y - lit.lo.y, z - lit.lo.z) * 3]; };
+            CHECK(lit.X == 64 && litAt(8, 2, 8) > 0.05f && litAt(18, 2, 10) == 0 && litAt(3, 1, 3) > 0, "baked light: the lamp lights its room, not the room behind the wall (%.3f %.3f)", litAt(8, 2, 8), litAt(18, 2, 10));
+            size_t di = lit.at(5 - lit.lo.x, 1 - lit.lo.y, 5 - lit.lo.z) * 3;
+            CHECK(lit.dir[di + 1] > 0.9f, "... and knows it comes from above there (%.2f)", lit.dir[di + 1]);
+            // seeing through doors: from the first room, looking at the door, the second room shows; looking away it doesn't
+            float toDoor[16] = { 0, 0, 0, 1,  0, 1, 0, 0,  -1, 0, 0, 0,  0, 0, 0, 0 }, away[16] = { 0, 0, 0, -1,  0, 1, 0, 0,  1, 0, 0, 0,  0, 0, 0, 0 };
+            std::vector<uint8_t> vis; visibleRooms(cr, toDoor, { 5.5, 2.5, 5.5 }, vis);
+            bool seesB = vis[b], seesVault = vis[v]; visibleRooms(cr, away, { 5.5, 2.5, 5.5 }, vis);
+            CHECK(seesB && !seesVault && vis[a] && !vis[b] && !vis[o], "through the door the next room shows; looking away it doesn't; rooms with no way in never do");
+            auto chr = chunkRooms(cr); auto& c0 = chr[chunkOf(5, 2, 5)];
+            CHECK(std::find(c0.begin(), c0.end(), (uint16_t)a) != c0.end(), "each chunk knows its rooms");
         }
         int gs = ss.byRole(ScreenRole::GameSaved); bool says = false; for (auto& it : gs >= 0 ? ss.screens[gs].items : std::vector<ScreenItem>{}) says |= it.text.find("{savetitle}") != std::string::npos;
         CHECK(gs >= 0 && says && ss.screens[gs].bg.kind == BgKind::Game, "new games come with a \"Game Saved!\" pop-up, over the game");

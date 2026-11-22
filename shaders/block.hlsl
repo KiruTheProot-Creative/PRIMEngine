@@ -134,11 +134,33 @@ float lightShadow(LightData L, float3 p, int type)
 float3 hdrSafe(float3 c, float cap = 4096) { return min(max(c, 0), cap); }
 float voxShadow(float3 P, float3 lp, bool face);
 bool voxLineBlocked(float3 a, float3 b);   // (below, with the light probes)   // (below: a lamp block's shadow, through the blocks; face: the light is a point just outside a glowing face)
+// ---- the cooked world (Cook > Test-cook): a reflection picture per room, the lamp blocks' light baked into the air, handed over from real time at a distance
+cbuffer CookCB : register(b13)
+{
+    float4 gCook;        // x reflection pictures (how many), y baked light on, z / w: real time until z blocks away, cooked from w on
+    float4 gCookLitO;    // xyz the baked light's corner (camera-relative), w its handing over: real lamps until x blocks ...
+    float4 gCookLitS;    // xyz its size (blocks), w ... baked from w on
+    float4 gCookPad;
+    float4 gProbePos[64];   // each room's picture: where it was taken (camera-relative), w its mip count
+    float4 gProbeLo[64];    // the room's box (camera-relative), for looking up what a ray hits
+    float4 gProbeHi[64];
+};
+TextureCubeArray gCookProbes : register(t46);
+Texture3D gCookLit : register(t47);   // rgb: the baked lamp light in each block of air
+Texture3D gCookDir : register(t48);   // xyz: where it mostly comes from
+float cookLitFar(float3 rel)   // 0 near (the lamps' own light), 1 far (baked)
+{
+    if (gCook.y < 0.5) return 0;
+    float3 w = rel - gCookLitO.xyz; if (any(w < 0) || any(w >= gCookLitS.xyz)) return 0;
+    return saturate((length(rel) - gCookLitO.w) / max(gCookLitS.w - gCookLitO.w, 1));
+}
 static float3 sFlatN = 0;   // the block's own face direction (before generated bumps), set while a block is lit (0: not known)
 void evalLight(LightData L, float3 rel, float3 n, float3 v, float pw, bool object, inout float3 dif, inout float3 spec)
 {
-    int kind = (int)round(L.col.w); bool voxSh = kind >= 16; kind -= voxSh ? 16 : 0; bool objOnly = kind >= 8; int type = kind & 7;
+    int kind = (int)round(L.col.w); bool cooked = kind >= 32; kind -= cooked ? 32 : 0; bool voxSh = kind >= 16; kind -= voxSh ? 16 : 0; bool objOnly = kind >= 8; int type = kind & 7;
     if (objOnly && !object) return;
+    float keepNear = cooked && !object ? 1 - cookLitFar(rel) : 1;   // a lamp block in the cooked world: far away its baked light takes over
+    if (keepNear <= 0) return;
     float3 lp = L.pos.xyz;
     if (type == 2) { float3 a = lp - L.ext.xyz, ab = L.ext.xyz * 2; lp = a + ab * saturate(dot(rel - a, ab) / max(dot(ab, ab), 1e-4)); }   // a tube: its nearest point
     if (type == 3) lp = clamp(rel, lp - L.ext.xyz, lp + L.ext.xyz);   // a glowing box (lamp blocks): the nearest point of its surface - its sides shine, not its middle
@@ -157,7 +179,7 @@ void evalLight(LightData L, float3 rel, float3 n, float3 v, float pw, bool objec
         else if (type == 3 && (((uint)gVoxM.w) & 5u) == 5u)   // a glowing box with a shadow map: only its first blocks (what the map starts too late to see) - no light along the inside of walls, or out of a side against a block
             att *= voxLineBlocked(lp, lp + (rel - lp) * (min(d - 0.1, 3.0) / max(d, 1e-3))) ? 0 : 1;
     }
-    float3 c = L.col.rgb * att;
+    float3 c = L.col.rgb * att * keepNear;
     dif += c * saturate(dot(n, Lv) * 0.85 + 0.15);   // a little light wraps round edges, softer look
     float3 hv = Lv + v; float3 h = hv * rsqrt(max(dot(hv, hv), 1e-8));   // (looking straight into the light: no zero-length normalize - a NaN pixel)
     spec += c * pow(saturate(dot(n, h)), pw) * (pw + 8) / 25 * saturate(dot(n, Lv));
@@ -206,6 +228,33 @@ Texture2D gShineTex : register(t27);   // your own shine picture (black: nothing
 Texture2D gShineMask : register(t28);  // where it shines, laid out like the model's own picture
 float4 albedoAt(float3 uvl) { return uvl.z > 16000 ? gMeshTex.Sample(gSamp, uvl.xy) : gTex.Sample(gSamp, uvl); }
 SamplerState gLinear : register(s2);
+float3 cookLight(float3 rel, float3 nf, float3 n)
+{
+    float k = cookLitFar(rel); if (k <= 0) return 0;
+    float3 uvw = (rel + nf * 0.5 - gCookLitO.xyz) / gCookLitS.xyz;
+    float3 c = gCookLit.SampleLevel(gLinear, uvw, 0).rgb, d = gCookDir.SampleLevel(gLinear, uvw, 0).xyz;
+    float l = length(d); float nd = l > 0.05 ? saturate(dot(n, d / l) * 0.85 + 0.15) : 0.5;
+    return hdrSafe(c * nd * k);
+}
+bool cookProbe(float3 P, float3 r, float rough, out float3 col)   // the room's reflection picture, P in it: what the ray r sees (box-projected onto the room's walls)
+{
+    col = 0; int n = (int)gCook.x; if (n <= 0) return false;
+    int best = -1; float bv = 1e30;
+    [loop] for (int k = 0; k < n; k++)
+    {
+        float3 lo = gProbeLo[k].xyz - 1.01, hi = gProbeHi[k].xyz + 1.01;
+        if (any(P < lo) || any(P > hi)) continue;
+        float3 e = hi - lo; float v = e.x * e.y * e.z; if (v < bv) { bv = v; best = k; }
+    }
+    if (best < 0) return false;
+    float3 lo = gProbeLo[best].xyz, hi = gProbeHi[best].xyz + 1;
+    float3 rr = abs(r) > 1e-5 ? r : 1e-5;
+    float3 t1 = (hi - P) / rr, t0 = (lo - P) / rr; float3 tf = max(t0, t1);
+    float t = max(min(tf.x, min(tf.y, tf.z)), 0);
+    float3 dir = P + r * t - gProbePos[best].xyz;
+    col = gCookProbes.SampleLevel(gLinear, float4(dir, best), rough * (gProbePos[best].w - 1)).rgb;
+    return true;
+}
 Texture2D<float> gSkyMap : register(t4);
 
 // is this point under the open sky? (rain falls on it, snow settles on it)
@@ -636,6 +685,7 @@ float3 lightBlock(VSOut i, float3 albedo, bool front, out float3 n, out float sh
     sFlatN = nFlat;
     float3 dyn = dynLightsSpec(i.rel, n, -normalize(i.rel), lerp(10, 380, dShine * dShine), gOffset.w < 0.5, dSpec) * lerp(0.6, 1, i.ao) * ambMul;
     sFlatN = 0;   // placed lights, strips, glowing emitters, shots
+    if (gCook.y > 0.5 && gOffset.w > 0.5) dyn += cookLight(i.rel, nFlat, n) * lerp(0.6, 1, i.ao) * ambMul;   // the cooked world: the lamps' baked light, far away
     float3 c = albedo * (light + dyn) * (1 - 0.75 * metal);                                       // metal: little plain colour ...
     c += dSpec * lerp(float3(0.04, 0.04, 0.04) + 0.5 * dShine, albedo * 1.4, metal) * max(dShine, 0.12);   // the lights' highlights
     if (gFS0.x > 0.5 && gOffset.w < 0.5) c += fakeShine(i, n);                                    // fake shine (models): painted-on glints, like Prime's arm cannon
@@ -1419,8 +1469,10 @@ float4 PS_Reflect(SkyOut i) : SV_Target
     float3 fallback = (skyColor(r) * lerp(0.15, 1, open * saturate(r.y * 4 + 0.6)) + gAmbient.rgb * 0.15 * (1 - open)) * skyVis(P, n);
     float edge = 0;
     if (hit) { float2 e = min(huv, 1 - huv); edge = saturate(min(e.x, e.y) * 12) * saturate(1 - travelled / reflReach()); }   // fade near the picture's edges
-    if (edge < 0.99)   // off screen / behind you: the blocks themselves
-    {
+    float3 cooked; bool inRoom = cookProbe(P + n * 0.05, r, saturate(1 - shine), cooked);   // the cooked world: this room's reflection picture
+    float farK = inRoom ? saturate((dist - gCook.z) / max(gCook.w - gCook.z, 1)) : 0;          // far away it takes over from the rays
+    if (inRoom) fallback = cooked;
+    if (edge < 0.99 && farK < 0.999)   // off screen / behind you: the blocks themselves
         // the surface's real (flat) direction from the depth next to it: bumps and slopes must not start the ray inside the block
         int2 pr = min(px + int2(1, 0), int2(gDepth.zw) - 1), pd = min(px + int2(0, 1), int2(gDepth.zw) - 1);
         float2 nr = (float2(pr) + 0.5) / gDepth.zw * float2(2, -2) + float2(-1, 1), nd = (float2(pd) + 0.5) / gDepth.zw * float2(2, -2) + float2(-1, 1);
@@ -1430,7 +1482,7 @@ float4 PS_Reflect(SkyOut i) : SV_Target
         if (dot(ng, -dir) < 0) ng = -ng;
         if (dot(ng, n) < 0.3 || length(Pr - P) > dist * 0.05 || length(Pd - P) > dist * 0.05) ng = n;   // (an edge next to it: trust the surface's own)
         float3 rv = r; float rn = dot(rv, ng); if (rn < 0.03) rv = normalize(rv + ng * (0.03 - rn));   // never into the surface
-        float3 vc; if (voxelTrace(P + ng * 0.03, ng, rv, i.pos.xy, vc)) fallback = vc;
+        float3 vc; if (voxelTrace(P + ng * 0.03, ng, rv, i.pos.xy, vc)) fallback = lerp(vc, fallback, farK);
     }
     float3 refl = fallback;
     float2 suv = (float2(px) + 0.5) / gDepth.zw;
@@ -1649,7 +1701,7 @@ float4 PS_VolumeLow(SkyOut i) : SV_Target   // a smaller picture: what the air a
             [loop] for (uint j = 0; j < min(cl.y, 12u); j++)
             {
                 LightData L = gLightBuf[gClusterIdx[cl.x + j]];
-                int kind = (int)round(L.col.w); if (kind >= 16) kind -= 16; if (kind >= 8) continue; int type = kind & 7;
+                int kind = (int)round(L.col.w); if (kind >= 32) kind -= 32; if (kind >= 16) kind -= 16; if (kind >= 8) continue; int type = kind & 7;
                 float3 lp = L.pos.xyz;
                 if (type == 2) { float3 a = lp - L.ext.xyz, ab = L.ext.xyz * 2; lp = a + ab * saturate(dot(rel - a, ab) / max(dot(ab, ab), 1e-4)); }
                 if (type == 3) lp = clamp(rel, lp - L.ext.xyz, lp + L.ext.xyz);   // a glowing box: its nearest point

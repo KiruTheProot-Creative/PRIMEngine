@@ -5,6 +5,7 @@
 #pragma once
 #include "../world/world.h"
 #include "environment.h"
+#include "../core/math.h"
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -30,7 +31,7 @@ struct CookPortal { int a = 0, b = 0; I3 lo, hi; std::string via; };   // where 
 struct CookRooms {
     std::vector<CookRoom> rooms;      // rooms[i].id == i + 1
     std::vector<CookPortal> portals;
-    std::unordered_map<I3, std::vector<uint16_t>, I3Hash> cells;   // per chunk of the area: the room of each block (32 x 32 x 32, x fastest), 0 = solid
+    std::unordered_map<I3, std::vector<uint16_t>, I3Hash> cells;   // per chunk of the area: the room of each block (16 x 16 x 16, x fastest), 0 = solid
     int roomAt(int x, int y, int z) const;                         // 0: solid, outside the area, or not cooked
     int count(bool outsideToo = true) const;
 };
@@ -40,5 +41,24 @@ bool cookOpen(const World& w, BlockId v);   // air for cooking: not a full opaqu
 // floods from every block the sky reaches; what is left falls into rooms (blocks touching through a face are one room)
 CookRooms findRooms(World& w, const CookArea& a, const std::vector<CookDoor>& doors, const std::vector<EnvZone>& zones);
 bool saveCookRooms(const std::string& path, const CookArea& a, const CookRooms& r);   // the cook's results (cook/rooms.txt)
+
+// ---- baked light: what the lamp blocks give each block of air in the area (shadows from the blocks between, like their real light)
+struct CookLamp { V3 c, half; double range = 0; V3 col; };   // a lamp light: a glowing box (centre, half size; half 0: a point), its reach, its colour
+struct CookLit {
+    I3 lo; int X = 0, Y = 0, Z = 0;   // the grid's corner (blocks) and size
+    std::vector<float> rgb, dir;      // 3 floats per block (x fastest, then z, then y): the light, and where it mostly comes from
+    size_t at(int x, int y, int z) const { return ((size_t)y * Z + z) * X + x; }
+};
+CookLit bakeLight(World& w, const CookArea& a, const std::vector<CookLamp>& lamps, int threads = 1, size_t maxCells = 24u << 20);
+
+// ---- reflection probes: where each room's picture is taken (the middle of an air block of the room, near its centre).
+// The outside and tiny gaps get none; the biggest rooms first, up to maxProbes. (room id, the spot)
+std::vector<std::pair<int, V3>> probeSpots(const CookRooms& r, int maxProbes = 64);
+
+// ---- what can be seen: each chunk's rooms (its air and the air just around it), and which rooms show through the portals
+std::unordered_map<I3, std::vector<uint16_t>, I3Hash> chunkRooms(const CookRooms& r);
+// vp: the camera's view-projection (camera-relative, row vectors); cam: where it is. Starts in the camera's room, goes through
+// each portal that is on screen and inside what the room before showed of the screen. vis[id]: 1 seen (size rooms + 1)
+void visibleRooms(const CookRooms& r, const float vp[16], V3 cam, std::vector<uint8_t>& vis);
 
 } // namespace mc
