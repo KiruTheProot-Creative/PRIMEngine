@@ -1821,7 +1821,7 @@ int main() {
                 AmbientFill af; fillAmbient(cw, V3{ 5.5, 1.5, 5.5 }, 48, 3, doors, af);
                 auto w8 = [&](int x, int y, int z) { for (auto& c : af.cells) if (c.first == I3{ x, y, z }) return (int)c.second; return -1; };
                 CHECK(!af.stuck && w8(5, 2, 5) == 255 && w8(9, 1, 9) == 255, "an ambient light fills its room");
-                CHECK(w8(18, 2, 10) < 0, "... not the room behind the wall and the door");
+                CHECK(w8(18, 2, 10) < 0 && w8(13, 1, 6) < 0 && w8(12, 1, 6) < 0, "... not the room behind the wall and the door - not even a spill through the door");
                 int spill = w8(13, 1, 6); (void)spill;
                 AmbientFill far; fillAmbient(cw, V3{ 5.5, 1.5, 5.5 }, 3, 0, doors, far);
                 CHECK(w8(5, 2, 5) == 255 && far.cells.size() < af.cells.size(), "its reach limits it (%zu < %zu)", far.cells.size(), af.cells.size());

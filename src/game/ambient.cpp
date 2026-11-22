@@ -24,7 +24,13 @@ void fillAmbient(const BlockRegistry& reg, const AmbChunkAt& chunkAt, V3 at, flo
         uint8_t& k = kind[idx(x, y, z)]; if (k) return k;
         for (const CookDoor& d : doors) if (x >= d.lo.x && x <= d.hi.x && y >= d.lo.y && y <= d.hi.y && z >= d.lo.z && z <= d.hi.z) return k = 3;
         I3 c = chunkOf(x, y, z); const Chunk* ch = chunks[((size_t)(c.y - k0.y) * KZ + (c.z - k0.z)) * KX + (c.x - k0.x)];
-        bool op = ch && (cookOpenReg(reg, ch->get(floorMod(x, CS), floorMod(y, CS), floorMod(z, CS))) || (through && through(x, y, z)));
+        bool op = false;
+        if (ch) {   // (stricter than the cook's rooms: any solid block is a wall for it, whatever its shape - slopes, slabs, panels too; see-through ones and liquids let it pass)
+            BlockId v = ch->get(floorMod(x, CS), floorMod(y, CS), floorMod(z, CS));
+            if (v == AIR) op = true;
+            else { const BlockDef& d = reg.get(v); op = d.liquid || d.render != Render::Opaque; }
+            if (!op && through && through(x, y, z)) op = true;
+        }
         return k = op ? 1 : 2;
     };
     I3 s{ (int)std::floor(at.x), (int)std::floor(at.y), (int)std::floor(at.z) };
@@ -58,7 +64,7 @@ void fillAmbient(const BlockRegistry& reg, const AmbChunkAt& chunkAt, V3 at, flo
             for (auto& d : N6) {
                 int nx = c.x + d[0], ny = c.y + d[1], nz = c.z + d[2];
                 if (!inBox(nx, ny, nz)) continue;
-                size_t ni = idx(nx, ny, nz); if (got[ni] || kindAt(nx, ny, nz) == 2) continue;
+                size_t ni = idx(nx, ny, nz); if (got[ni] || kindAt(nx, ny, nz) != 1) continue;   // (doors are a hard stop: it only spills through open air)
                 got[ni] = (uint8_t)std::lround(255.0 * (1.0 - (step + 1.0) / (blend + 1.0)));
                 sq.push_back({ { nx, ny, nz }, step + 1 }); cells.push_back({ nx, ny, nz });
             }

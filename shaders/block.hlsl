@@ -763,7 +763,10 @@ float3 lightBlock(VSOut i, float3 albedo, bool front, out float3 n, out float sh
     }
     float3 sunC = gSunColor.rgb, bounced = 0, ambMul = 1;
     if (gWater.x > 0.5) { float3 sm; waterLight(i.rel, nFlat, n, i.pos.xy, sm, bounced, ambMul); sunC *= sm; }   // caustics under water, their reflection above
-    { float4 amb = ambAt(i.rel + nFlat * 0.5, n); ambientNow = ambientNow * (1 - amb.a) + amb.rgb; }   // an ambient light's room: its own light from each direction
+    {   // (a slab's or slope's own face: the block of air in front of it may be its own block - then the next one out)
+        float4 amb = ambAt(i.rel + nFlat * 0.5, n); if (amb.a <= 0 && dot(amb.rgb, 1) <= 0) amb = ambAt(i.rel + nFlat * 1.3, n);
+        ambientNow = ambientNow * (1 - amb.a) + amb.rgb;
+    }   // an ambient light's room: its own light from each direction
     float3 light = sunC * ndl * sh + ambientNow * i.ao * ambMul + bounced;
     light += lavaGlow(i.rel + nFlat * 0.02, nFlat) * lerp(0.5, 1, i.ao) * ambMul;   // lava nearby lights it
     light = max(light, gMinLight.rgb * sky * i.ao * (1 - skyV));                                   // closed spaces: never darker than the world's minimum

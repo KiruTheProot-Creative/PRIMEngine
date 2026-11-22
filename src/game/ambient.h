@@ -1,7 +1,7 @@
 // ambient.h : an ambient light fills the room it stands in. From its spot it spreads through the air (like the cook's rooms:
 // air, glass, plants, liquids and shapes that aren't whole blocks let it through), up to the walls, closed doors (a door is always a wall
 // for it) and its reach. Then it spills a few blocks further - through doorways and openings, doors too - fading out, so walking from
-// one room into the next changes the light softly.
+// one room into the next changes the light softly. Doors and solid blocks (any shape) are hard walls for it, the spill too.
 #pragma once
 #include "cook.h"
 #include <functional>
