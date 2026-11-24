@@ -122,8 +122,33 @@ bool RoomFlood::beginFloor() {   // the air goes up into the sky: try the floor 
 }
 void RoomFlood::finish(Result r) {
     res = r; phase = PDone;
+    if (r == Room && !shape.roofless) { from.clear(); leak = 0; }   // (no roof: where its air got out is kept, to show)
     if (r == Room) { shape.doors.assign(touched.begin(), touched.end()); std::sort(shape.doors.begin(), shape.doors.end()); for (int i : shape.doors) shape.doorObjs.push_back(W.doors[i].obj); }
     else { if (r != Outside) seen.clear(); shape.clear(); }
+}
+std::vector<I3> RoomFlood::leakPath() const {
+    std::vector<I3> p; if (!leak) return p;
+    I3 c = leakAt;
+    for (int n = 0; n < 200000; n++) {
+        p.push_back(c);
+        auto it = from.find(chunkOf(c.x, c.y, c.z)); if (it == from.end()) break;
+        uint8_t d = it->second[RoomBits::at(floorMod(c.x, CS), floorMod(c.y, CS), floorMod(c.z, CS))]; if (!d) break;
+        c = { c.x - N6[d - 1][0], c.y - N6[d - 1][1], c.z - N6[d - 1][2] };
+    }
+    std::reverse(p.begin(), p.end()); return p;
+}
+std::vector<I3> RoomFlood::leakGaps(const std::vector<I3>& p) {
+    std::vector<I3> g;
+    for (size_t i = 1; i + 1 < p.size() && g.size() < 8; i++) {
+        I3 a = p[i - 1], c = p[i];
+        bool vert = a.y != c.y || p[i + 1].y != c.y;
+        bool hole;
+        if (vert) hole = !open(c.x + 1, c.y, c.z) && !open(c.x - 1, c.y, c.z) && !open(c.x, c.y, c.z + 1) && !open(c.x, c.y, c.z - 1);   // through a floor / ceiling
+        else if (a.x != c.x) hole = !open(c.x, c.y, c.z + 1) && !open(c.x, c.y, c.z - 1) && (!open(c.x, c.y + 1, c.z) || !open(c.x, c.y - 1, c.z));   // through a wall
+        else hole = !open(c.x + 1, c.y, c.z) && !open(c.x - 1, c.y, c.z) && (!open(c.x, c.y + 1, c.z) || !open(c.x, c.y - 1, c.z));
+        if (hole && (g.empty() || std::abs(g.back().x - c.x) + std::abs(g.back().y - c.y) + std::abs(g.back().z - c.z) > 1)) g.push_back(c);
+    }
+    return g;
 }
 std::vector<I3> RoomFlood::outsideCells() const {
     std::vector<I3> v; if (res != Outside) return v;
@@ -137,7 +162,7 @@ RoomFlood::Result RoomFlood::step(size_t budget) {
         bool escaped = false;
         while (qi < q.size() && n < budget) {
             I3 c = q[qi++]; n++;
-            if (sky(c.x, c.y, c.z)) { escaped = true; break; }
+            if (sky(c.x, c.y, c.z)) { escaped = true; leak = 1; leakAt = c; break; }
             for (int dir = 0; dir < 6; dir++) {
                 int nx = c.x + N6[dir][0], ny = c.y + N6[dir][1], nz = c.z + N6[dir][2];
                 auto sit = seen.find(chunkOf(nx, ny, nz));
@@ -147,9 +172,10 @@ RoomFlood::Result RoomFlood::step(size_t budget) {
                 if (k == 2) continue;
                 if (!passes(c.x, c.y, c.z, dir, nx, ny, nz)) continue;
                 mark(nx, ny, nz); shape.add(nx, ny, nz);
+                from[chunkOf(nx, ny, nz)][RoomBits::at(floorMod(nx, CS), floorMod(ny, CS), floorMod(nz, CS))] = (uint8_t)(1 + dir);
             }
-            if (shape.partial) { escaped = true; break; }   // (it reached chunks that are not loaded: no roof over it here, at least)
-            if (count > R.maxCells || hi.x - lo.x > R.maxSpan || hi.y - lo.y > R.maxSpan || hi.z - lo.z > R.maxSpan) { escaped = true; break; }
+            if (shape.partial) { escaped = true; leak = 4; leakAt = c; break; }   // (it reached chunks that are not loaded: no roof over it here, at least)
+            if (count > R.maxCells || hi.x - lo.x > R.maxSpan || hi.y - lo.y > R.maxSpan || hi.z - lo.z > R.maxSpan) { escaped = true; leak = 2; leakAt = c; break; }
         }
         if (escaped) { if (!beginFloor()) { finish(Outside); seen.clear(); return res; } return Running; }
         if (qi >= q.size()) { shape.roofless = false; finish(Room); }
@@ -328,7 +354,15 @@ void RoomSet::tick(const RoomWorld& w, const std::vector<I3>& seeds, const std::
         RoomFlood::Result r = job.step(budget);
         if (r == RoomFlood::Running) return;
         jobOn = false;
-        if (jobFor) { if (list.find(jobFor)) apply(jobFor, r, std::move(job.shape), chunkVer, dsig); }
+        if (jobFor) {
+            if (list.find(jobFor)) {
+                std::vector<I3> lp = job.leak ? job.leakPath() : std::vector<I3>{}; std::vector<I3> gp = lp.empty() ? std::vector<I3>{} : job.leakGaps(lp);
+                bool roofless = r == RoomFlood::Room && job.shape.roofless;
+                apply(jobFor, r, std::move(job.shape), chunkVer, dsig);
+                Live& L = live[jobFor]; bool keep = r == RoomFlood::Outside || roofless;
+                L.leak = keep ? job.leak : 0; L.leakAt = job.leakAt; L.leakPath = keep ? lp : std::vector<I3>{}; L.gaps = keep ? gp : std::vector<I3>{};
+            }
+        }
         else if (r == RoomFlood::Room) {
             uint32_t owner = 0;
             for (const RoomDef& e : list.rooms) if (!e.marked() && job.shape.has(e.anchor.x, e.anchor.y, e.anchor.z)) { owner = e.id; break; }
@@ -337,9 +371,14 @@ void RoomSet::tick(const RoomWorld& w, const std::vector<I3>& seeds, const std::
                 list.rooms.push_back(d); listChanged = true; owner = d.id;
             }
             if (!job.shape.has(jobSeed.x, jobSeed.y, jobSeed.z)) failed.insert(jobSeed);   // (it started next to it: no need to ask again)
+            bool roofless = job.shape.roofless; std::vector<I3> lp = roofless && job.leak ? job.leakPath() : std::vector<I3>{}; std::vector<I3> gp = lp.empty() ? lp : job.leakGaps(lp);
             apply(owner, r, std::move(job.shape), chunkVer, dsig);
+            if (roofless) { Live& L = live[owner]; L.leak = job.leak; L.leakAt = job.leakAt; L.leakPath = lp; L.gaps = gp; }
         }
-        else if (r == RoomFlood::Outside) { for (const I3& c : job.outsideCells()) outside[chunkOf(c.x, c.y, c.z)].set(RoomBits::at(floorMod(c.x, CS), floorMod(c.y, CS), floorMod(c.z, CS))); failed.insert(jobSeed); }
+        else if (r == RoomFlood::Outside) {
+            if (job.leak) { Leak lk; lk.seed = jobSeed; lk.leak = job.leak; lk.at = job.leakAt; lk.path = job.leakPath(); lk.gaps = job.leakGaps(lk.path);
+                leaks.erase(std::remove_if(leaks.begin(), leaks.end(), [&](const Leak& q) { return q.seed == jobSeed; }), leaks.end()); leaks.push_back(std::move(lk)); }
+            for (const I3& c : job.outsideCells()) outside[chunkOf(c.x, c.y, c.z)].set(RoomBits::at(floorMod(c.x, CS), floorMod(c.y, CS), floorMod(c.z, CS))); failed.insert(jobSeed); }
         else failed.insert(jobSeed);
         return;
     }

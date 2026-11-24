@@ -68,10 +68,14 @@ public:
     RoomShape shape;                            // a room: its blocks
     std::vector<I3> outsideCells() const;       // the outside: the floor blocks it went over (remembered: no need to search them again)
     I3 seed() const { return seed0; }
+    I3 leakAt{ 0, 0, 0 }; int leak = 0;          // the outside: where its air got out (1 to the sky, 2 too big, 3 off an edge into the void, 4 into chunks not loaded)
+    std::vector<I3> leakPath() const;            // from where it started to leakAt (the way the air got out)
+    std::vector<I3> leakGaps(const std::vector<I3>& path);   // the holes on that way: a block-wide gap in a floor, ceiling or wall
 private:
     enum Phase { P3D, PFloor, PUp, PDone };
     RoomWorld W; RoomRules R; Phase phase = PDone; Result res = Solid; I3 seed0{ 0, 0, 0 };
     std::unordered_map<I3, std::vector<int>, I3Hash> doorsByChunk;
+    std::unordered_map<I3, std::array<uint8_t, CS3>, I3Hash> from;   // 3D search: the way each block was reached (1 + direction, 0: the start)
     std::unordered_map<I3, RoomBits, I3Hash> seen; std::vector<I3> q; size_t qi = 0; size_t count = 0; I3 lo, hi;
     std::unordered_map<int64_t, int> roofOf, wallTopOf;   // per column: the first wall above (INT_MAX: the sky), a wall's top
     std::unordered_map<int64_t, int> colTop;              // roofless: each floor column's highest floor-layer block
@@ -127,8 +131,11 @@ public:
         bool open = false;          // it is not closed any more (part of the outside)
         uint32_t joined = 0;        // it is one room with this one now (a wall or door between them is gone)
         int retry = 0;              // (not all of it loaded: checks to wait before trying again)
+        int leak = 0; I3 leakAt{ 0, 0, 0 }; std::vector<I3> leakPath, gaps;   // not closed (or no roof): where its air gets out, the way, the holes on it
     };
     std::unordered_map<uint32_t, Live> live;
+    struct Leak { I3 seed; int leak = 0; I3 at; std::vector<I3> path, gaps; };   // beside a door: air that got out (a room that should be closed, or just the outside)
+    std::vector<Leak> leaks;
     uint32_t generation = 0;        // goes up when any room's blocks change
     bool listChanged = false;       // a room was found (save the list)
     uint32_t roomAt(int x, int y, int z) const;   // 0: none (the outside, solid, or not found yet)
@@ -139,7 +146,7 @@ public:
     // checkNow: look whether found rooms changed (every half second or so); budget: blocks searched in this call
     void tick(const RoomWorld& w, const std::vector<I3>& seeds, const std::function<uint32_t(I3)>& chunkVer, bool checkNow, size_t budget);
     void forget() { live.clear(); outside.clear(); failed.clear(); jobOn = false; byChunk.clear(); generation++; }
-    void forgetOutside() { outside.clear(); failed.clear(); }
+    void forgetOutside() { outside.clear(); failed.clear(); leaks.clear(); }
     void researchAll() { for (auto& kv : live) kv.second.searched = false; forgetOutside(); }
     void edited() { forgetOutside(); for (auto& kv : live) if (kv.second.open || kv.second.shape.empty()) kv.second.searched = false; }   // blocks were changed somewhere
     static std::vector<I3> doorSeeds(const std::vector<CookDoor>& doors);   // a block on each side of each door

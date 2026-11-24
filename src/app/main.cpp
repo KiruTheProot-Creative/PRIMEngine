@@ -9674,6 +9674,22 @@ struct App {
         roomSeedT += dt; if (roomSeedT > 0.5) { roomSeedT = 0; seeds.push_back(RoomProbe()); }   // (where you are: twice a second)
         World* wp = world.get();
         rooms.tick(w, seeds, [wp](I3 c) -> uint32_t { const Chunk* ch = wp->chunk(c); return ch ? ch->version + 1 : 0; }, check, playMode ? 6000 : 10000);   // (about a millisecond a frame)
+        if (check && !playMode) {   // rooms that aren't closed any more, found by themselves, nothing set on them: one of each leak is enough
+            std::set<uint32_t> inStations; for (const WorldObject& o : objects) for (uint32_t r : o.map.rooms) inStations.insert(r);
+            std::map<std::tuple<int, int, int>, uint32_t> firstOf; std::vector<uint32_t> drop;
+            for (const RoomDef& d : rooms.list.rooms) {
+                const RoomSet::Live* L = rooms.liveOf(d.id);
+                if (!L || !L->searched || !L->open || !L->leak || d.marked() || !d.name.empty() || d.ambOn || d.musicMode != 0 || !d.showName || inStations.count(d.id)) continue;
+                auto k = std::make_tuple(L->leakAt.x, L->leakAt.y, L->leakAt.z);
+                if (firstOf.count(k)) drop.push_back(d.id); else firstOf[k] = d.id;
+            }
+            if (!drop.empty()) {
+                uint32_t selId = roomSel >= 0 && roomSel < (int)rooms.list.rooms.size() ? rooms.list.rooms[roomSel].id : 0;
+                rooms.list.rooms.erase(std::remove_if(rooms.list.rooms.begin(), rooms.list.rooms.end(), [&](const RoomDef& d) { return std::find(drop.begin(), drop.end(), d.id) != drop.end(); }), rooms.list.rooms.end());
+                roomSel = -1; for (int i = 0; i < (int)rooms.list.rooms.size(); i++) if (rooms.list.rooms[i].id == selId) roomSel = i;
+                rooms.listChanged = true;
+            }
+        }
         if (rooms.listChanged && !playMode) { rooms.listChanged = false; SaveRooms(); }
         if (playMode) { RoomsInPlay(); UpdateSpawnFanfare(); }
     }
@@ -9742,7 +9758,10 @@ struct App {
         dl->AddText(f, size, p, IM_COL32(210, 240, 255, (int)(240 * a)), roomNameText.c_str());
     }
     void DrawRoomsInWorld(ImDrawList* dl) {   // the editor: each room's box and name, in its colour
-        if (playMode || !roomsOpenW || !showRooms || !world) return;
+        if (playMode || !roomsOpenW || !world) return;
+        if (roomSel >= 0 && roomSel < (int)rooms.list.rooms.size()) { const RoomSet::Live* L = rooms.liveOf(rooms.list.rooms[roomSel].id); if (L && L->leak) DrawLeak(dl, L->leakPath, L->gaps, L->leakAt); }
+        if (leakShow >= 0 && leakShow < (int)rooms.leaks.size()) { const RoomSet::Leak& lk = rooms.leaks[leakShow]; DrawLeak(dl, lk.path, lk.gaps, lk.at); }
+        if (!showRooms) return;
         for (int i = 0; i < (int)rooms.list.rooms.size(); i++) {
             const RoomDef& d = rooms.list.rooms[i]; const RoomSet::Live* L = rooms.liveOf(d.id);
             ImU32 col = IM_COL32((d.color >> 16) & 255, (d.color >> 8) & 255, d.color & 255, i == roomSel ? 255 : 150);
@@ -9759,11 +9778,57 @@ struct App {
             if (Project(at, sp)) { std::string t = d.label(); ImVec2 ts = ImGui::CalcTextSize(t.c_str()); dl->AddRectFilled(ImVec2(sp.x - ts.x * 0.5f - 4, sp.y - 2), ImVec2(sp.x + ts.x * 0.5f + 4, sp.y + ts.y + 2), IM_COL32(0, 0, 0, 140), 3); dl->AddText(ImVec2(sp.x - ts.x * 0.5f, sp.y), col | IM_COL32(0, 0, 0, 255), t.c_str()); }
         }
     }
+    int leakShow = -1;   // a door's leak drawn in the world (rooms.leaks)
+    BlockId HoleFiller(I3 c) const {   // what to fill a hole with: the block most of its neighbours are made of (sides first)
+        std::map<BlockId, int> n;
+        for (const auto& d : { I3{ 1, 0, 0 }, I3{ -1, 0, 0 }, I3{ 0, 0, 1 }, I3{ 0, 0, -1 }, I3{ 0, 1, 0 }, I3{ 0, -1, 0 } }) {
+            BlockId v = world->get(c.x + d.x, c.y + d.y, c.z + d.z); if (v == AIR) continue; const BlockDef& bd = reg.get(v); if (bd.liquid || !bd.solid) continue;
+            n[v] += d.y == 0 ? 2 : 1;
+        }
+        BlockId best = AIR; int bn = 0; for (auto& kv : n) if (kv.second > bn) { bn = kv.second; best = kv.first; }
+        return best;
+    }
+    void FillHole(I3 c) {
+        BlockId was = world->get(c.x, c.y, c.z), f = HoleFiller(c); if (f == AIR) { Toast("Nothing around it to fill it with"); return; }
+        world->set(c.x, c.y, c.z, f); history.push({ { c.x, c.y, c.z, was, f } }); rooms.edited();
+        Toast("Hole filled with " + reg.get(f).name + " (Ctrl+Z undoes it)");
+    }
+    void GoNear(I3 c) { player.feet = { c.x + 0.5, c.y + 1.5, c.z + 0.5 - 3 }; player.flying = true; player.yaw = 0; player.pitch = -0.35; }
+    void LeakUI(const char* id, int leak, I3 at, const std::vector<I3>& gaps, bool roofless) {   // where a room's air gets out, its holes: go there, fill them
+        ImGui::PushID(id);
+        if (roofless) ImGui::TextWrapped("It has no roof: its air goes up into the sky at %d %d %d (the red line). If it should have a roof, look there.", at.x, at.y, at.z);
+        else ImGui::TextWrapped("It is not closed: its air gets out %s at %d %d %d. The red line shows the way.", leak == 2 ? "(it is too big: more than a room)" : leak == 4 ? "(into chunks that are not loaded)" : "to the sky", at.x, at.y, at.z);
+        if (ImGui::SmallButton("Go to where it gets out")) GoNear(at);
+        for (size_t i = 0; i < gaps.size(); i++) {
+            ImGui::PushID((int)i); const I3& g = gaps[i];
+            ImGui::TextColored(ImVec4(1, 0.45f, 0.4f, 1), "A hole at %d %d %d", g.x, g.y, g.z);
+            ImGui::SameLine(); if (ImGui::SmallButton("Go to it")) GoNear(g);
+            ImGui::SameLine(); if (ImGui::SmallButton("Fill it")) FillHole(g);
+            if (ImGui::IsItemHovered()) { BlockId f = HoleFiller(g); ImGui::SetTooltip("Puts %s there (what is around it)", f ? reg.get(f).name.c_str() : "nothing"); }
+            ImGui::PopID();
+        }
+        if (gaps.empty() && !roofless) ImGui::TextDisabled("(no single-block hole on the way: a bigger opening, or the room is open on purpose)");
+        ImGui::PopID();
+    }
+    void DrawLeak(ImDrawList* dl, const std::vector<I3>& path, const std::vector<I3>& gaps, I3 at) {
+        size_t n = path.size(), step = std::max<size_t>(1, n / 1500);
+        for (size_t i = step; i < n; i += step) {
+            const I3& a = path[i - step]; const I3& b = path[i]; float t = (float)i / std::max<size_t>(1, n - 1);
+            Line3D(dl, { a.x + 0.5, a.y + 0.5, a.z + 0.5 }, { b.x + 0.5, b.y + 0.5, b.z + 0.5 }, IM_COL32(255, (int)(200 * (1 - t)), 60, 230));
+        }
+        for (const I3& g : gaps) {
+            V3 c[8]; for (int k = 0; k < 8; k++) c[k] = { g.x + ((k & 1) ? 1.05 : -0.05), g.y + ((k & 2) ? 1.05 : -0.05), g.z + ((k & 4) ? 1.05 : -0.05) };
+            const int e[12][2] = { { 0, 1 }, { 2, 3 }, { 4, 5 }, { 6, 7 }, { 0, 2 }, { 1, 3 }, { 4, 6 }, { 5, 7 }, { 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 } };
+            for (auto& k : e) Line3D(dl, c[k[0]], c[k[1]], IM_COL32(255, 60, 60, 255));
+            ImVec2 sp; if (Project({ g.x + 0.5, g.y + 1.3, g.z + 0.5 }, sp)) dl->AddText(ImVec2(sp.x - 14, sp.y - 14), IM_COL32(255, 90, 90, 255), "hole");
+        }
+        ImVec2 sp; if (Project({ at.x + 0.5, at.y + 0.5, at.z + 0.5 }, sp)) dl->AddText(ImVec2(sp.x - 40, sp.y - 14), IM_COL32(255, 200, 80, 255), "air gets out");
+    }
     std::string RoomStatus(const RoomDef& d) const {
         const RoomSet::Live* L = rooms.liveOf(d.id);
         if (!L || !L->searched) return "searching ...";
         if (L->joined) { const RoomDef* o = rooms.list.find(L->joined); return "one room with " + (o ? o->label() : std::string("another")); }
-        if (L->open) return d.marked() ? "no air in its boxes" : "not closed any more (part of the outside)";
+        if (L->open) return d.marked() ? "no air in its boxes" : L->gaps.empty() ? "not closed (its air gets out)" : "not closed: a hole lets its air out";
         if (L->shape.empty()) return "waiting for its chunks";
         char b[96]; std::snprintf(b, sizeof b, "%zu blocks%s%s", L->shape.cells, L->shape.roofless ? ", no roof" : "", d.marked() ? ", marked" : ""); return b;
     }
@@ -9796,6 +9861,23 @@ struct App {
             if (ImGui::SmallButton("Look at where I am")) { I3 c = RoomProbe(); rvCenter = { c.x + 0.5, c.y + 0.5, c.z + 0.5 }; }
             RoomViewUI(std::max(160.f, ImGui::GetContentRegionAvail().y * 0.48f));
         }
+        {   // door sides that aren't closed: a room that should be (a hole?), or just the outside
+            int n = 0; for (const auto& lk : rooms.leaks) n += lk.gaps.empty() ? 0 : 1;
+            std::string hdr = "Not closed beside doors (" + std::to_string(rooms.leaks.size()) + (n ? ", " + std::to_string(n) + " with holes" : std::string()) + ")###leaks";
+            if (!rooms.leaks.empty() && ImGui::CollapsingHeader(hdr.c_str())) {
+                Hint("Beside these doors the air gets out to the sky, so there is no room there. Fine if that side is the outside; if it should be a room, the red line shows the way out (pick Show) and the holes on it can be filled.");
+                std::vector<CookDoor> drs = CookDoors();
+                for (int i = 0; i < (int)rooms.leaks.size(); i++) {
+                    const RoomSet::Leak& lk = rooms.leaks[i]; ImGui::PushID(i);
+                    std::string dn = "a door"; for (const CookDoor& d : drs) if (std::abs(lk.seed.x - (d.lo.x + d.hi.x) / 2) <= 2 && std::abs(lk.seed.z - (d.lo.z + d.hi.z) / 2) <= 2 && lk.seed.y >= d.lo.y - 1 && lk.seed.y <= d.hi.y) dn = d.name;
+                    bool on = leakShow == i; if (ImGui::Checkbox("Show", &on)) leakShow = on ? i : -1;
+                    ImGui::SameLine(); ImGui::Text("beside %s: out at %d %d %d%s", dn.c_str(), lk.at.x, lk.at.y, lk.at.z, lk.gaps.empty() ? "" : "");
+                    if (!lk.gaps.empty()) { ImGui::SameLine(); ImGui::TextColored(ImVec4(1, 0.45f, 0.4f, 1), "%d hole%s", (int)lk.gaps.size(), lk.gaps.size() == 1 ? "" : "s"); }
+                    if (on) { ImGui::Indent(); LeakUI("dleak", lk.leak, lk.at, lk.gaps, false); ImGui::Unindent(); }
+                    ImGui::PopID();
+                }
+            }
+        }
         ImGui::Separator();
         if (ImGui::BeginTable("rooms", 2, ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV)) {
             ImGui::TableSetupColumn("list", ImGuiTableColumnFlags_WidthStretch, 0.8f); ImGui::TableSetupColumn("room", ImGuiTableColumnFlags_WidthStretch, 1.2f);
@@ -9823,6 +9905,7 @@ struct App {
                 Prop("Its name shows as you walk in"); ch |= ImGui::Checkbox("##rsn", &d.showName);
                 ImGui::TextDisabled("%s", RoomStatus(d).c_str());
                 if (L && !L->shape.empty()) ImGui::TextDisabled("%d x %d x %d blocks, %zu door(s)", L->shape.hi.x - L->shape.lo.x + 1, L->shape.hi.y - L->shape.lo.y + 1, L->shape.hi.z - L->shape.lo.z + 1, L->shape.doors.size());
+                if (L && L->leak && !d.marked()) LeakUI("rleak", L->leak, L->leakAt, L->gaps, !L->open);
                 if (ImGui::Button("Go there")) { V3 at{ d.anchor.x + 0.5, (double)d.anchor.y, d.anchor.z + 0.5 }; if (L && !L->shape.empty() && !d.marked()) at = { (L->shape.lo.x + L->shape.hi.x + 1) * 0.5, (double)L->shape.lo.y, (L->shape.lo.z + L->shape.hi.z + 1) * 0.5 }; player.feet = at; player.flying = true; }
                 ImGui::SameLine();
                 if (d.marked()) {
