@@ -37,6 +37,8 @@ struct HudElement {
     int tankRows = 2, tankShape = 0;                    // Tanks: rows it is laid out for (segments: how many per row), 0 square / 1 rounded / 2 round
     int radarShape = 0; bool radarSweep = true;         // Radar: 0 circle, 1 arc (what is in front), 2 bar (left to right around you); a sweeping line that lights the dots up (mapRange: how far it reaches)
     SoundUse radarSound;                                // Radar: plays when an enemy comes into range
+    std::string needs;                                  // shows once you have this ("": automatic: missile parts wait for missiles, power bomb parts for power bombs;
+                                                        // "-": always; else "Missiles", "Power Bombs" or an item / beam / missile kind / key name). It glitches into view then.
 };
 
 struct HudPlane {

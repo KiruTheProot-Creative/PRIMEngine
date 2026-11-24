@@ -5598,7 +5598,7 @@ struct App {
         editCam = player; playMode = true; paused = false; inventory = false; shapeMenu = false; editorOpen = false;
         editClock = settings.timeOfDay; if (!info.keepClock) settings.timeOfDay = info.startHour;   // play starts at the world's start time
         inv = PlayInventory{}; poppedIds.clear(); StopSounds(TAG_FANFARE);
-        if (!weapons.missileTypes.empty() && !weapons.missileCounter.empty()) inv.counts[weapons.missileCounter] = weapons.missileStart;
+        if (!weapons.missileTypes.empty() && !weapons.missileCounter.empty()) inv.counts[weapons.missileCounter] = MissilesUnlocked() ? std::min(weapons.missileStart, MissileMax()) : 0;   // no launcher yet: none
         weapState.missile = 0; chargedOn = false;
         enemyRt.clear(); enemyGone.clear(); doorsOpened.clear(); zonesCleared.clear(); enemyShots.clear(); enemyDrops.clear(); debris.clear(); enemyAnimT.clear(); enemyAnimClip.clear(); playerInvuln = 0;
         bossRt.clear(); bossPose.clear(); bossSealed.clear(); bossShown = 0; bossBarFade = 0; spawnQueue.clear(); camShake = 0; countdownT = -1;
@@ -5615,7 +5615,7 @@ struct App {
         lockId = lockHint = 0; lockToggled = lockHeld = false; lockBtnPrev = true; player.dashT = 0;
         player.ball = false; bombsOut.clear(); flashes.clear(); broken.clear(); ballCamSet = false; ballTrailFx.ps.clear(); ballRibbon.clear();
         for (int i = 0; i < (int)weapons.beams.size(); i++) if (weapons.beams[i].startsOwned) { weapState.current = i; break; }
-        hudSway.reset(); hudShown.clear(); hudFlashAt.clear(); prevPlayYaw = player.yaw; prevPlayPitch = player.pitch; prevOnGround = true; prevVelY = 0;
+        hudSway.reset(); hudShown.clear(); hudFlashAt.clear(); needSt.clear(); prevPlayYaw = player.yaw; prevPlayPitch = player.pitch; prevOnGround = true; prevVelY = 0;
         EvStart();
         if (grabMouse) { Capture(false); captureNext = true; }   // grabbed next frame, once the picture fills the window
         Toast(info.hasSpawn ? "Playing. Esc: menu, F5: back to the editor" : "Playing from where the camera was (set a spawn point in the Outliner). F5: back to the editor");
@@ -6523,6 +6523,39 @@ struct App {
         for (auto& e : fs::directory_iterator(fs::u8path(projectDir + "/hud"), ec)) { std::string ext = Lower(e.path().extension().string()); if (ext == ".png" || ext == ".jpg" || ext == ".jpeg") v.push_back(e.path().filename().u8string()); }
         std::sort(v.begin(), v.end()); return v;
     }
+    // "shows once you have": what an element waits for, and how far its glitchy entrance is
+    struct NeedSt { bool have = false; float prog = 1; };   // prog: 0..1 through the glitch (1: done)
+    std::map<std::string, NeedSt> needSt; double needClock = 0;
+    std::string NeedOf(const HudElement& e) const {
+        if (e.needs == "-") return "";
+        if (!e.needs.empty()) return e.needs;
+        std::string n = Lower(e.name);
+        if (!weapons.missileTypes.empty() && ((e.value == HudValue::Counter && !weapons.missileCounter.empty() && e.valueName == weapons.missileCounter) || n.find("missile") != std::string::npos)) return "Missiles";
+        if ((e.value == HudValue::Counter && !items.powerBombCounter.empty() && e.valueName == items.powerBombCounter) || n.find("power bomb") != std::string::npos || n.find("powerbomb") != std::string::npos) return "Power Bombs";
+        return "";
+    }
+    bool NeedMet(const std::string& n) const {
+        if (n == "Missiles") return weapons.missileTypes.empty() || MissilesUnlocked();
+        if (n == "Power Bombs") { bool any = false; for (const ItemDef& d : items.items) if (d.used && d.type == ItemType::PowerBomb) { any = true; if (d.startsOwned || ItemHave(d.name) > 0) return true; } return !any; }
+        for (const Beam& b : weapons.beams) if (b.name == n) return OwnsBeam(b);
+        for (const MissileType& t : weapons.missileTypes) if (t.name == n) return OwnsMissile(t);
+        for (const ItemDef& d : items.items) if (d.name == n && d.startsOwned) return true;
+        return ItemHave(n) > 0;
+    }
+    float NeedReveal(const std::string& n) {   // -1: not yet (hidden); 0..1: glitching in; 1: shown
+        bool have = NeedMet(n);
+        auto it = needSt.find(n);
+        if (it == needSt.end()) { needSt[n] = { have, 1.f }; return have ? 1.f : -1.f; }   // the first look this play: as it is, no show
+        NeedSt& s = it->second;
+        if (have && !s.have) s.prog = 0;   // just got it: the entrance starts
+        s.have = have; return have ? s.prog : -1.f;
+    }
+    void TickNeeds() {   // the entrances move on only while the game is showing (not under the pop-up, the pause menu or the map)
+        double dt = std::clamp(animTime - needClock, 0.0, 0.1); needClock = animTime;
+        bool showing = !paused && !mapOpen && !(CurScreen() && CurScreen()->role == ScreenRole::ItemGet);
+        if (showing) for (auto& [n, s] : needSt) if (s.have && s.prog < 1) s.prog = std::min(1.f, s.prog + (float)dt / 1.4f);
+    }
+    static float GlitchHash(uint32_t a, uint32_t b) { uint32_t h = a * 0x9E3779B1u ^ (b + 0x7F4A7C15u) * 0x85EBCA77u; h ^= h >> 15; h *= 0x2C1B3C6Du; h ^= h >> 12; return (h & 0xFFFFFF) / 16777216.f; }
     bool ElementShown(const HudElement& e) const {
         if (!playMode) return e.visible && ShownInVisor(e.visors);
         if (mapOpen ? !e.onMap : paused && !e.onPause) return false;   // the map screen / the pause menu: only what is set to stay
@@ -6534,6 +6567,26 @@ struct App {
         if (!ElementShown(e)) return;
         float a = e.alpha * (playMode ? DeathHudAlpha(e) : 1.f); if (a <= 0.001f) return;
         if (playMode) { auto f = hudFlashAt.find(e.name); if (f != hudFlashAt.end() && animTime - f->second < 1.5) a *= 0.25f + 0.75f * (0.5f + 0.5f * (float)std::cos((animTime - f->second) * 18)); }
+        float k = 1;   // the "you've got it now" entrance (0..1)
+        if (playMode) { std::string n = NeedOf(e); if (!n.empty()) { k = NeedReveal(n); if (k < 0) return; } }
+        if (k >= 1) { DrawHudBody(dl, e, W, H, v, a); return; }
+        // glitching in: it flickers (on more and more), the colours split apart and slices of it jump sideways, all settling down
+        uint32_t step = (uint32_t)(animTime / 0.045), id = (uint32_t)std::hash<std::string>{}(e.name);
+        float r = GlitchHash(step, id), calm = 1 - k, calm2 = calm * calm;
+        if (r > 0.2f + 0.9f * k) return;   // a dark frame
+        float fade = std::min(1.f, 0.25f + k * 1.1f) * (0.75f + 0.25f * GlitchHash(step * 7 + 3, id));
+        float split = (3 + 14 * calm2) * hudPx * (GlitchHash(step, id + 11) < 0.5f ? -1.f : 1.f);
+        int v0 = dl->VtxBuffer.Size;
+        HudElement g = e; g.x += split / W; g.color = 0xFF30D0; DrawHudBody(dl, g, W, H, v, a * fade * 0.55f * calm);   // magenta ghost
+        g = e; g.x -= split / W; g.y += split * 0.3f / H; g.color = 0x30F0FF; DrawHudBody(dl, g, W, H, v, a * fade * 0.55f * calm);   // cyan ghost
+        DrawHudBody(dl, e, W, H, v, a * fade);
+        float band = std::max(2.f, H * 0.014f);
+        for (int i = v0; i < dl->VtxBuffer.Size; i++) {   // the slices: each thin band across the plane gets its own kick
+            ImDrawVert& q = dl->VtxBuffer[i]; uint32_t b = (uint32_t)std::max(0.f, q.pos.y / band);
+            if (GlitchHash(b * 13 + step, id) < 0.35f) q.pos.x += (GlitchHash(b, step * 31 + id) - 0.5f) * W * 0.06f * calm2;
+        }
+    }
+    void DrawHudBody(ImDrawList* dl, const HudElement& e, float W, float H, const HudValues& v, float a) {
         auto col = [&](float k) { return IM_COL32((e.color >> 16) & 255, (e.color >> 8) & 255, e.color & 255, (int)std::clamp(a * k * 255, 0.f, 255.f)); };
         ImVec2 p0(e.x * W, e.y * H), p1((e.x + e.w) * W, (e.y + e.h) * H);
         switch (e.kind) {
@@ -6590,6 +6643,7 @@ struct App {
         bool need = (playMode && (!hud.empty() || !weapons.empty())) || (playerEdOpen && screen == Screen::Game && EditorView());
         if (!need) return;
         if (playMode) {
+            TickNeeds();
             hudVals.health = play.health; hudVals.maxHealth = playRules.maxHealth; hudVals.counts = inv.counts; hudVals.keys = inv.keys; hudVals.charge = weapState.charge;
             hudVals.tanks = 0; hudVals.tankSize = 100; bool sized = false;
             for (const ItemDef& d : items.items) if (d.used && d.type == ItemType::EnergyTank) { hudVals.tanks += ItemHave(d.name); if (!sized) { hudVals.tankSize = std::max(1.f, (float)d.v[0]); sized = true; } }
@@ -7026,6 +7080,19 @@ struct App {
             Prop("Shown at the start"); ch |= ImGui::Checkbox("##ev", &e.visible);
             Prop("Stays when paused"); ch |= ImGui::Checkbox("##eop", &e.onPause);
             Prop("Stays on the map (M)"); ch |= ImGui::Checkbox("##eom", &e.onMap);
+            { Prop("Shows once you have");
+              HudElement probe = e; probe.needs.clear(); std::string an = NeedOf(probe);
+              std::string cur = e.needs.empty() ? (an.empty() ? "Automatic (always)" : "Automatic (" + an + ")") : e.needs == "-" ? "Always" : e.needs;
+              if (ImGui::BeginCombo("##eneed", cur.c_str())) {
+                  auto opt = [&](const std::string& label, const std::string& val) { if (ImGui::Selectable(label.c_str(), e.needs == val)) { e.needs = val; ch = true; } };
+                  opt(an.empty() ? "Automatic (always)" : "Automatic (" + an + ")", ""); opt("Always", "-");
+                  ImGui::Separator(); opt("Missiles", "Missiles"); opt("Power Bombs", "Power Bombs");
+                  for (const Beam& b : weapons.beams) if (!b.startsOwned) opt(b.name, b.name);
+                  for (const MissileType& t : weapons.missileTypes) if (!t.startsOwned) opt(t.name, t.name);
+                  for (const ItemDef& d : items.items) if (d.used && !d.startsOwned) opt(d.name, d.name);
+                  ImGui::EndCombo();
+              }
+              if (ImGui::IsItemHovered()) ImGui::SetTooltip("Hidden until you have it, then it glitches into view.\nAutomatic: missile parts (the missile counter, or \"missile\" in the name) wait for missiles,\npower bomb parts for power bombs."); }
             ch |= VisorMaskEdit(e.visors);
             { float r[4] = { e.x, e.y, e.w, e.h }; Prop("Place and size"); if (ImGui::DragFloat4("##er", r, 0.002f, 0, 1, "%.3f")) { e.x = r[0]; e.y = r[1]; e.w = std::max(0.002f, r[2]); e.h = std::max(0.002f, r[3]); ch = true; } }
             { float c[3] = { ((e.color >> 16) & 255) / 255.f, ((e.color >> 8) & 255) / 255.f, (e.color & 255) / 255.f }; Prop("Colour");
@@ -7346,7 +7413,12 @@ struct App {
         playRules.speedBooster = itemFx.speedBooster; playRules.boostAfter = itemFx.boostAfter; playRules.boostSpeed = itemFx.boostSpeed;
         playRules.springBall = itemFx.springBall; playRules.springJump = itemFx.springJump;
     }
-    int MissileMax() const { return weapons.missileMax + itemFx.missileBonus; }
+    int MissileMax() const {   // the base + expansions + what the found-later launchers add
+        int n = weapons.missileMax + itemFx.missileBonus;
+        for (const MissileType& t : weapons.missileTypes) if (!t.startsOwned && inv.keys.count(t.name)) n += t.adds;
+        return n;
+    }
+    bool MissilesUnlocked() const { if (MissileMax() <= 0) return false; for (const MissileType& t : weapons.missileTypes) if (OwnsMissile(t)) return true; return false; }
     int PowerBombMax() const { return items.powerBombMax + itemFx.powerBombBonus; }
     // ================================================================== the item pop-up ("Item get" screen; banners for small things)
     struct ItemGetNow { std::string name, title, text, model; } itemGetNow;
@@ -7444,11 +7516,13 @@ struct App {
         ImGui::PopID();
     }
     void ItemPicked(const std::string& name) {   // a pickup with an item's name: what it does right away
+        for (const MissileType& t : weapons.missileTypes)   // a missile launcher (a found-later kind): adds to the most, then fills them up
+            if (!t.startsOwned && t.name == name && !weapons.missileCounter.empty()) { inv.counts[weapons.missileCounter] = MissileMax(); break; }
         for (const ItemDef& d : items.items) {
             if (!d.used || d.name != name) continue;
             UpdateItemRules();
             if (d.type == ItemType::EnergyTank) play.health = playRules.maxHealth;   // a tank fills you up
-            else if (d.type == ItemType::MissileExpansion && !weapons.missileCounter.empty()) { int& c = inv.counts[weapons.missileCounter]; c = std::min(MissileMax(), c + (int)std::lround(d.v[0])); }
+            else if (d.type == ItemType::MissileExpansion && !weapons.missileCounter.empty()) inv.counts[weapons.missileCounter] = MissileMax();   // more room, and filled right up
             else if (d.type == ItemType::PowerBombExpansion) { int& c = inv.counts[items.powerBombCounter]; c = std::min(PowerBombMax(), c + (int)std::lround(d.v[0])); }
             else if (d.type == ItemType::PowerBomb) { int& c = inv.counts[items.powerBombCounter]; c = std::max(c, std::min(PowerBombMax(), items.powerBombStart)); }
             if (!itemWorks(d.type)) Toast(d.name + " (its ability is coming later)");
@@ -13486,6 +13560,7 @@ struct App {
         ModelMaterialUI(m.model.empty() ? std::string("@missile") : m.model);
         Prop("Length"); ch |= ImGui::SliderFloat("##mlen", &m.size, 0.1f, 3, "%.2f blocks");
         Prop("You have it"); { int o = m.startsOwned ? 0 : 1; const char* ow[] = { "From the start", "Found later (a key pickup with its name)" }; if (ImGui::Combo("##mown", &o, ow, 2)) { m.startsOwned = o == 0; ch = true; } }
+        if (!m.startsOwned) { Prop("Picking it up adds"); ch |= ImGui::SliderInt("##madd", &m.adds, 0, 100, m.adds == 0 ? "nothing (just unlocks it)" : "%d to the most"); if (ImGui::IsItemHovered()) ImGui::SetTooltip("Added to the most missiles you can carry, then they are all filled up.\nLike Metroid Prime's Missile Launcher: set \"Most\" below to 0 and this to 5."); }
         { float c[3] = { ((m.color >> 16) & 255) / 255.f, ((m.color >> 8) & 255) / 255.f, (m.color & 255) / 255.f }; Prop("Colour"); if (ImGui::ColorEdit3("##mcc", c)) { m.color = ((uint32_t)(c[0] * 255 + 0.5f) << 16) | ((uint32_t)(c[1] * 255 + 0.5f) << 8) | (uint32_t)(c[2] * 255 + 0.5f); ch = true; } }
         Prop("Uses up"); ch |= ImGui::SliderInt("##mcost", &m.cost, 1, 20, m.cost == 1 ? "1 missile" : "%d missiles");
         Prop("Speed"); ch |= ImGui::SliderFloat("##msp", &m.speed, 2, 200, "%.0f blocks/s");

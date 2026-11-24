@@ -52,6 +52,7 @@ struct MissileType {
     std::string name = "Missile";
     std::string model = "@missile";                     // flies as this 3D model (its front: +Z)
     bool startsOwned = true;                            // else: picked up later (a key pickup with its name)
+    int adds = 5;                                       // found later: picking it up adds this many to the most missiles you carry (and fills them up)
     int cost = 1;                                       // missiles used per shot
     float speed = 30, damage = 30, rate = 1.5f, size = 0.45f;   // blocks/s, -, per second (at most), how long the model is (blocks)
     uint32_t color = 0xFF8A3A;

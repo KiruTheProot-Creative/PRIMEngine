@@ -44,7 +44,7 @@ WeaponSet defaultWeapons() {
     Beam v = p; v.name = "Wave Beam"; v.color = 0xC070FF; v.shotLook = "Magic"; v.fireRate = 3; v.speed = 35; v.size = 0.12f;
     w.beams.push_back(v);
     MissileType m; w.missileTypes.push_back(m);
-    MissileType sm; sm.name = "Super Missile"; sm.startsOwned = false; sm.cost = 5; sm.damage = 150; sm.speed = 24; sm.rate = 0.7f; sm.size = 0.7f; sm.color = 0x60FF70; sm.sphere = 4.0f;
+    MissileType sm; sm.name = "Super Missile"; sm.startsOwned = false; sm.adds = 0; sm.cost = 5; sm.damage = 150; sm.speed = 24; sm.rate = 0.7f; sm.size = 0.7f; sm.color = 0x60FF70; sm.sphere = 4.0f;
     w.missileTypes.push_back(sm);
     return w;
 }
@@ -117,6 +117,7 @@ bool saveWeapons(const std::string& path, const WeaponSet& w) {
     for (const MissileType& m : w.missileTypes) {
         f << "missile " << esc(m.name) << " " << esc(m.model) << " " << m.startsOwned << " " << m.cost << " " << m.speed << " " << m.damage << " " << m.rate << " " << m.size
           << " " << m.color << " " << esc(m.trailLook) << " " << esc(m.hitLook) << " " << m.sphere << "\n";
+        f << "madds " << m.adds << "\n";
         for (const SoundUse& u : m.launch.sounds) f << "msound launch " << soundUseText(u) << "\n";
         for (const SoundUse& u : m.hit.sounds) f << "msound hit " << soundUseText(u) << "\n";
     }
@@ -162,11 +163,12 @@ bool loadWeapons(const std::string& path, WeaponSet& w) {
         else if (k == "clip" && !w.beams.empty()) { int t; SoundClip c; std::string rest; if (l >> t >> c.at && t >= 0 && t < Beam::TIMELINES) { std::getline(l, rest); if (soundUseFrom(rest, c.sound)) w.beams.back().timelines[t].sounds.push_back(c); } }
         else if (k == "switch") l >> w.switchMode;
         else if (k == "missile") {
-            MissileType m; std::string n, md, tl, hl;
+            MissileType m; std::string n, md, tl, hl; m.adds = anyMissile ? 0 : 5;   // (older saves: only the plain missile adds)
             if (l >> n >> md >> m.startsOwned >> m.cost >> m.speed >> m.damage >> m.rate >> m.size >> m.color >> tl >> hl >> m.sphere) {
                 m.name = unesc(n); m.model = unesc(md); m.trailLook = unesc(tl); m.hitLook = unesc(hl); w.missileTypes.push_back(m); anyMissile = true;
             }
         }
+        else if (k == "madds" && !w.missileTypes.empty()) l >> w.missileTypes.back().adds;
         else if (k == "msound" && !w.missileTypes.empty()) {
             std::string slot, rest; l >> slot; std::getline(l, rest); SoundUse u;
             if (soundUseFrom(rest, u) && !u.empty()) (slot == "hit" ? w.missileTypes.back().hit : w.missileTypes.back().launch).sounds.push_back(u);
