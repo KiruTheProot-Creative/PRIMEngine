@@ -358,7 +358,7 @@ struct App {
         AmbientSettingsUI(o.ambient, false);
         auto it = ambRt.find(o.id);
         if (it != ambRt.end()) {
-            if (it->second.fill.stuck) {
+            if (it->second.fill->stuck) {
                 ImGui::TextColored(ImVec4(1, 0.6f, 0.3f, 1), "It stands inside blocks (no air within 6 blocks).");
                 if (ImGui::SmallButton("Move it to the nearest air")) {
                     I3 c{ ifloor(o.pos.x), ifloor(o.pos.y), ifloor(o.pos.z) }; bool done = false;
@@ -370,7 +370,7 @@ struct App {
                     if (!done) Toast("No air nearby");
                 }
             }
-            else { const AmbientFill& f = it->second.fill; ImGui::TextDisabled("Fills %zu blocks of air (%d x %d x %d)", f.cells.size(), f.hi.x - f.lo.x + 1, f.hi.y - f.lo.y + 1, f.hi.z - f.lo.z + 1); }
+            else { const AmbientFill& f = *it->second.fill; ImGui::TextDisabled("Fills %zu blocks of air (%d x %d x %d)", f.cells.size(), f.hi.x - f.lo.x + 1, f.hi.y - f.lo.y + 1, f.hi.z - f.lo.z + 1); }
         }
     }
     void UpdateLook(double dt, bool instant) { std::string n = CurrentLookName(); lookState.update(dt, looks.get(n), n, instant); }
@@ -9587,18 +9587,19 @@ struct App {
     }
     // ---- ambient lights (objects): each fills its room (air up to the walls, doors and its reach, spilling a little further). The blocks of air
     // around you (128 x 64 x 128) know whose room they are in (up to two where they blend); the card gets that and each light's colours
-    struct AmbRt { AmbientFill fill; uint64_t sig = 0; V3 pos{ 1e30, 0, 0 }; float reach = -1; int blend = -1; double age = 99; };
+    struct AmbRt { std::shared_ptr<const AmbientFill> fill = std::make_shared<AmbientFill>(); uint64_t sig = 0; V3 pos{ 1e30, 0, 0 }; float reach = -1; int blend = -1; double age = 99; };
     std::unordered_map<uint32_t, AmbRt> ambRt; std::vector<uint32_t> ambOrder; size_t ambBreakN = 0;
     std::future<AmbientFill> ambFut; bool ambBusy = false; uint32_t ambJobId = 0;   // a fill on its own thread (on a copy of the chunks: no stutter)
     static constexpr int AMBX = 128, AMBY = 64, AMBZ = 128;
-    I3 ambOrigin{ INT_MIN, 0, 0 }; std::vector<uint8_t> ambVolCpu; bool ambOn = false; uint32_t ambRoomGen = 0;
+    I3 ambOrigin{ INT_MIN, 0, 0 }, ambVolOrigin{ INT_MIN, 0, 0 }; std::vector<uint8_t> ambVolCpu; bool ambOn = false; uint32_t ambRoomGen = 0;
+    std::future<std::vector<uint8_t>> ambVolFut; bool ambVolBusy = false, ambVolAgain = false; I3 ambVolJobOrigin{ 0, 0, 0 };   // the volume is put together on its own thread (it can take a while)
     ComPtr<ID3D11Texture3D> ambVolTex; ComPtr<ID3D11ShaderResourceView> ambVolSRV, ambObjSRV; ComPtr<ID3D11Buffer> ambObjBuf; size_t ambObjCap = 0;
     struct AmbGpuC { float c[6][4]; float fog[4]; };
     uint64_t AmbSig(const AmbRt& r) const {   // (the chunks it covers: when one changes, it fills again)
-        if (!world || r.fill.hi.x < r.fill.lo.x) return 0x9E37;
+        if (!world || r.fill->hi.x < r.fill->lo.x) return 0x9E37;
         uint64_t h = 1469598103934665603ull;
-        I3 a = chunkOf(r.fill.lo.x - 2, r.fill.lo.y - 2, r.fill.lo.z - 2), b = chunkOf(r.fill.hi.x + 2, r.fill.hi.y + 2, r.fill.hi.z + 2);
-        for (int y = a.y; y <= b.y; y++) for (int z = a.z; z <= b.z; z++) for (int x = a.x; x <= b.x; x++) { const Chunk* c = world->chunk({ x, y, z }); h = (h ^ (c ? c->version + 1 : 0)) * 1099511628211ull; }
+        I3 a = chunkOf(r.fill->lo.x - 2, r.fill->lo.y - 2, r.fill->lo.z - 2), b = chunkOf(r.fill->hi.x + 2, r.fill->hi.y + 2, r.fill->hi.z + 2);
+        for (int y = a.y; y <= b.y; y++) for (int z = a.z; z <= b.z; z++) for (int x = a.x; x <= b.x; x++) { const Chunk* c = world->chunk({ x, y, z }); h = (h ^ (c ? c->version : 0)) * 1099511628211ull; }
         return h;
     }
     void UpdateAmbient(double dt) {
@@ -9617,13 +9618,13 @@ struct App {
         if (order != ambOrder) { ambOrder = order; changed = true; for (auto it = ambRt.begin(); it != ambRt.end();) { if (std::find(order.begin(), order.end(), it->first) == order.end()) it = ambRt.erase(it); else ++it; } }
         if (ambBusy && ambFut.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {   // a fill is done
             AmbientFill f = ambFut.get(); ambBusy = false;
-            auto it = ambRt.find(ambJobId); if (it != ambRt.end()) { it->second.fill = std::move(f); it->second.sig = AmbSig(it->second); changed = true; }
+            auto it = ambRt.find(ambJobId); if (it != ambRt.end()) { it->second.fill = std::make_shared<const AmbientFill>(std::move(f)); it->second.sig = AmbSig(it->second); changed = true; }
         }
         for (const WorldObject* o : list) {
             AmbRt& rt = ambRt[o->id]; rt.age += dt;
             bool param = rt.pos.x != o->pos.x || rt.pos.y != o->pos.y || rt.pos.z != o->pos.z || rt.reach != o->ambient.reach || rt.blend != o->ambient.blend;
-            bool check = rt.age > 0.5;
-            if (!(param && rt.age > 0.1) && !check) continue;   // (dragging it around: a few times a second)
+            bool check = !playMode && rt.age > 1.0;   // (the editor: blocks around it may change - a look now and then; playing: it stays as it was filled at loading)
+            if (!(param && rt.age > 0.1) && !check && rt.age < 50) continue;   // (dragging it around: a few times a second)
             rt.age = 0;
             if (!param && AmbSig(rt) == rt.sig) continue;
             if (ambBusy) { rt.age = 99; continue; }   // (one fill at a time: this one next)
@@ -9659,36 +9660,51 @@ struct App {
         I3 cb{ ifloor(camPos.x), ifloor(camPos.y), ifloor(camPos.z) };
         I3 want{ floorDiv(cb.x - AMBX / 2, 16) * 16, floorDiv(cb.y - AMBY / 2, 16) * 16, floorDiv(cb.z - AMBZ / 2, 16) * 16 };
         if (!(want == ambOrigin)) { ambOrigin = want; changed = true; }
-        if (changed) {   // whose room each block near you is in: the two that reach it most
-            ambVolCpu.assign((size_t)AMBX * AMBY * AMBZ * 4, 0);
-            for (size_t k = 0; k < list.size(); k++) {
-                const AmbRt& rt = ambRt[list[k]->id];
-                for (const auto& c : rt.fill.cells) {
-                    int x = c.first.x - ambOrigin.x, y = c.first.y - ambOrigin.y, z = c.first.z - ambOrigin.z;
-                    if (x < 0 || y < 0 || z < 0 || x >= AMBX || y >= AMBY || z >= AMBZ) continue;
-                    uint8_t* v = &ambVolCpu[(((size_t)z * AMBY + y) * AMBX + x) * 4]; uint8_t id = (uint8_t)(k + 1), w = c.second;
-                    if (!v[0] || w > v[1]) { v[2] = v[0]; v[3] = v[1]; v[0] = id; v[1] = w; } else if (!v[2] || w > v[3]) { v[2] = id; v[3] = w; }
-                }
-            }
-            for (size_t k = 0; k < rlist.size(); k++) {   // a room's own: all of its air, fully (its doors are where it stops)
-                const RoomSet::Live* L = rooms.liveOf(rlist[k]->id); if (!L) continue; uint8_t id = (uint8_t)(list.size() + k + 1);
-                for (const auto& kv : L->shape.bits) {
-                    int bx = kv.first.x * CS - ambOrigin.x, by = kv.first.y * CS - ambOrigin.y, bz = kv.first.z * CS - ambOrigin.z;
-                    if (bx + CS <= 0 || by + CS <= 0 || bz + CS <= 0 || bx >= AMBX || by >= AMBY || bz >= AMBZ) continue;
-                    for (int i = 0; i < CS3; i++) {
-                        if (!kv.second.has(i)) continue;
-                        int x = bx + i % CS, y = by + i / (CS * CS), z = bz + (i / CS) % CS;
-                        if (x < 0 || y < 0 || z < 0 || x >= AMBX || y >= AMBY || z >= AMBZ) continue;
-                        uint8_t* v = &ambVolCpu[(((size_t)z * AMBY + y) * AMBX + x) * 4];
-                        if (!v[0] || v[1] < 255) { v[2] = v[0]; v[3] = v[1]; v[0] = id; v[1] = 255; }   // (a room's own light wins over spills into it)
-                    }
-                }
-            }
+        if (changed) ambVolAgain = true;
+        if (ambVolBusy && ambVolFut.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {   // the volume is ready: to the card
+            ambVolCpu = ambVolFut.get(); ambVolBusy = false; ambVolOrigin = ambVolJobOrigin;
             if (!ambVolTex) {
                 D3D11_TEXTURE3D_DESC d{}; d.Width = AMBX; d.Height = AMBY; d.Depth = AMBZ; d.MipLevels = 1; d.Format = DXGI_FORMAT_R8G8B8A8_UINT; d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
                 HR(dev->CreateTexture3D(&d, nullptr, &ambVolTex)); HR(dev->CreateShaderResourceView(ambVolTex.Get(), nullptr, &ambVolSRV));
             }
             ctx->UpdateSubresource(ambVolTex.Get(), 0, nullptr, ambVolCpu.data(), AMBX * 4, AMBX * AMBY * 4);
+        }
+        if (ambVolAgain && !ambVolBusy) {   // whose room each block near you is in (the two that reach it most): put together on its own thread
+            ambVolAgain = false; I3 org = ambOrigin; ambVolJobOrigin = org;
+            std::vector<std::shared_ptr<const AmbientFill>> fills; for (const WorldObject* o : list) fills.push_back(ambRt[o->id].fill);
+            auto roomBits = std::make_shared<std::vector<std::pair<I3, RoomBits>>>(); std::vector<uint8_t> roomIdOf;   // (the rooms' blocks in the window: copied)
+            for (size_t k = 0; k < rlist.size(); k++) {
+                const RoomSet::Live* L = rooms.liveOf(rlist[k]->id); if (!L) continue;
+                for (const auto& kv : L->shape.bits) {
+                    int bx = kv.first.x * CS - org.x, by = kv.first.y * CS - org.y, bz = kv.first.z * CS - org.z;
+                    if (bx + CS <= 0 || by + CS <= 0 || bz + CS <= 0 || bx >= AMBX || by >= AMBY || bz >= AMBZ) continue;
+                    roomBits->push_back(kv); roomIdOf.push_back((uint8_t)(list.size() + k + 1));
+                }
+            }
+            ambVolFut = std::async(std::launch::async, [fills, roomBits, roomIdOf, org]() {
+                std::vector<uint8_t> vol((size_t)AMBX * AMBY * AMBZ * 4, 0);
+                for (size_t k = 0; k < fills.size(); k++) {
+                    for (const auto& c : fills[k]->cells) {
+                        int x = c.first.x - org.x, y = c.first.y - org.y, z = c.first.z - org.z;
+                        if (x < 0 || y < 0 || z < 0 || x >= AMBX || y >= AMBY || z >= AMBZ) continue;
+                        uint8_t* v = &vol[(((size_t)z * AMBY + y) * AMBX + x) * 4]; uint8_t id = (uint8_t)(k + 1), w = c.second;
+                        if (!v[0] || w > v[1]) { v[2] = v[0]; v[3] = v[1]; v[0] = id; v[1] = w; } else if (!v[2] || w > v[3]) { v[2] = id; v[3] = w; }
+                    }
+                }
+                for (size_t r = 0; r < roomBits->size(); r++) {   // a room's own: all of its air, fully (its doors are where it stops)
+                    const I3& cp = (*roomBits)[r].first; const RoomBits& bits = (*roomBits)[r].second; uint8_t id = roomIdOf[r];
+                    int bx = cp.x * CS - org.x, by = cp.y * CS - org.y, bz = cp.z * CS - org.z;
+                    for (int i = 0; i < CS3; i++) {
+                        if (!bits.has(i)) continue;
+                        int x = bx + i % CS, y = by + i / (CS * CS), z = bz + (i / CS) % CS;
+                        if (x < 0 || y < 0 || z < 0 || x >= AMBX || y >= AMBY || z >= AMBZ) continue;
+                        uint8_t* v = &vol[(((size_t)z * AMBY + y) * AMBX + x) * 4];
+                        if (!v[0] || v[1] < 255) { v[2] = v[0]; v[3] = v[1]; v[0] = id; v[1] = 255; }   // (a room's own light wins over spills into it)
+                    }
+                }
+                return vol;
+            });
+            ambVolBusy = true;
         }
         {   // each light's colours (every frame: editing shows at once)
             std::vector<AmbGpuC> g(list.size() + rlist.size());
@@ -9707,7 +9723,7 @@ struct App {
     }
     const AmbientSettings* AmbientAt(V3 p) const {   // whose ambient light this spot is mostly in (nullptr: none)
         if (!ambOn || ambVolCpu.empty()) return nullptr;
-        int x = ifloor(p.x) - ambOrigin.x, y = ifloor(p.y) - ambOrigin.y, z = ifloor(p.z) - ambOrigin.z;
+        int x = ifloor(p.x) - ambVolOrigin.x, y = ifloor(p.y) - ambVolOrigin.y, z = ifloor(p.z) - ambVolOrigin.z;
         if (x < 0 || y < 0 || z < 0 || x >= AMBX || y >= AMBY || z >= AMBZ) return nullptr;
         const uint8_t* v = &ambVolCpu[(((size_t)z * AMBY + y) * AMBX + x) * 4]; if (!v[0] || v[1] < 128 || v[0] > ambOrder.size()) return nullptr;
         uint32_t id = ambOrder[v[0] - 1];
@@ -10180,7 +10196,7 @@ struct App {
         UpdateLavaMap();
         cookCB.lavaM[0] = (float)(lavaAt.x - camPos.x); cookCB.lavaM[1] = (float)(lavaAt.z - camPos.z); cookCB.lavaM[2] = (float)LAVAN; cookCB.lavaM[3] = lavaAny ? settings.lavaLight : 0.f;
         cookCB.lavaH[0] = (float)(lavaBase - camPos.y);
-        cookCB.ambV[0] = (float)(ambOrigin.x - camPos.x); cookCB.ambV[1] = (float)(ambOrigin.y - camPos.y); cookCB.ambV[2] = (float)(ambOrigin.z - camPos.z);
+        cookCB.ambV[0] = (float)(ambVolOrigin.x - camPos.x); cookCB.ambV[1] = (float)(ambVolOrigin.y - camPos.y); cookCB.ambV[2] = (float)(ambVolOrigin.z - camPos.z);
         cookCB.ambS[0] = AMBX; cookCB.ambS[1] = AMBY; cookCB.ambS[2] = AMBZ; cookCB.ambS[3] = ambOn ? 1.f : 0.f;
         { ID3D11ShaderResourceView* av[2] = { ambOn ? ambObjSRV.Get() : nullptr, ambOn ? ambVolSRV.Get() : nullptr }; ctx->PSSetShaderResources(53, 2, av); }
         { ID3D11ShaderResourceView* lv = lavaAny ? lavaSRV.Get() : nullptr; ctx->PSSetShaderResources(51, 1, &lv); }
