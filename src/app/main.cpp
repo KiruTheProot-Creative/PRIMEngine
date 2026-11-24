@@ -9805,6 +9805,7 @@ struct App {
     }
     bool RoomRevealed(uint32_t id) const { return evRun.flags.count(RoomFlag("roomseen", id)) > 0; }
     void RoomsInPlay() {
+        if (loadingOn || bootOn) return;   // (walking in: once you can move - its name and music after the boot-up)
         uint32_t r = play.dead() ? curRoom : RoomHere();
         if (r == curRoom) return;
         curRoom = r; if (!r) return;
@@ -17976,7 +17977,7 @@ struct App {
             PlayerEditor();
             ScreensEditor(); PlanetsEditor(); CookWindow(); RoomsWindow();
         } else {
-            if (!mapOpen && !CurScreen()) { DrawHud(ImGui::GetForegroundDrawList()); DrawScanMarkers(ImGui::GetForegroundDrawList()); DrawLockMarkers(ImGui::GetForegroundDrawList()); DrawGrappleMarker(ImGui::GetForegroundDrawList()); }
+            if (!mapOpen && !CurScreen()) { DrawHud(ImGui::GetForegroundDrawList()); if (!Frozen()) { DrawScanMarkers(ImGui::GetForegroundDrawList()); DrawLockMarkers(ImGui::GetForegroundDrawList()); DrawGrappleMarker(ImGui::GetForegroundDrawList()); } }
             if (showF3) DrawF3();
             if (CurScreen()) { if (!showSettings) ScreenInput(); }
             else if (mapOpen) MapScreen();

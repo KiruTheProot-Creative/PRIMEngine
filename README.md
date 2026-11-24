@@ -562,6 +562,12 @@ Fog, light shafts and lights glowing in the air are worked out in a small 3D gri
 - The picture then just looks up the grid.
 - It's faster and has no grain. Very thin light beams get a little softer.
 
+## Loading screen and boot-up
+
+- Every start (a new game, a loaded file, F5 from the editor, a teleport to another world) shows a **loading screen** first. It reads and builds the world around you and its distant detail, finds all the rooms, fills every ambient light, and **bakes every lamp's shadow one after another** (a little light comes on for each).
+- Lamp shadows: the blocks' shadow is baked once into each lamp's map; each frame only what moves (Samus, enemies, doors, platforms, pickups) is drawn on a copy of it. A block changed near a lamp re-bakes just that lamp. Up to an eighth of the graphics card's memory is used for them (1 GB on an 8 GB card); Lamp shadow detail goes up to Very high (1024).
+- Then the visor **boots up**: black, the helmet fades in, the world appears as **cyan block outlines** sweeping out from Samus, its colour fades in, and the **HUD glitches in**. You can move once it is done; Samus' fanfare plays with it. The timings are in the Screens editor (Starting a file > Getting into the game); a teleport skips the boot-up.
+
 ## Rooms (the Room Manager)
 
 - **Rooms** in the toolbar opens the Room Manager. Rooms are found by themselves: the air closed in by walls and doors. A door is where a room ends, so every room should have at least one.
