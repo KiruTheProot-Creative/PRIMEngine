@@ -4462,6 +4462,11 @@ struct App {
             std::map<std::string, double> now;
             for (int i = 0; i + 1 < gpuT.n[k]; i++) if (t[i + 1] >= t[i]) now[gpuT.name[k][i]] += double(t[i + 1] - t[i]) * 1000.0 / double(dj.Frequency);
             double tot = t[gpuT.n[k] - 1] >= t[0] ? double(t[gpuT.n[k] - 1] - t[0]) * 1000.0 / double(dj.Frequency) : 0;
+            if (tot > gpuWorst.ms || uiClock - gpuWorst.at > 2.5) {   // the slowest frame of the last few seconds, kept to read
+                gpuWorst.ms = tot; gpuWorst.at = uiClock; gpuWorst.top.clear();
+                for (auto& kv : now) gpuWorst.top.push_back({ kv.second, kv.first });
+                std::sort(gpuWorst.top.rbegin(), gpuWorst.top.rend());
+            }
             for (auto& kv : gpuT.ms) kv.second *= 0.9;
             for (auto& kv : now) gpuT.ms[kv.first] += kv.second * 0.1;
             gpuT.total = gpuT.total * 0.9 + tot * 0.1;
@@ -5408,7 +5413,8 @@ struct App {
             dl->AddRectFilled(ImVec2(p.x - 6, p.y - 3), ImVec2(p.x + ts.x + 6, p.y + ts.y + 3), IM_COL32(0, 0, 0, 140), 4);
             ImU32 col = fps >= 120 ? IM_COL32(120, 255, 160, 255) : fps >= 55 ? IM_COL32(255, 230, 120, 255) : IM_COL32(255, 110, 90, 255);
             dl->AddText(p, col, ft);
-            DrawGpuTimes(dl, ImVec2(vx + cw - 12, p.y + ts.y + 10));   // where the time goes
+            float gy = DrawFrameGraph(dl, ImVec2(vx + cw - 12, p.y + ts.y + 10));
+            DrawGpuTimes(dl, ImVec2(vx + cw - 12, gy));   // where the time goes
         }
         if (hideHud) return;
         ImVec2 m(vx + cw * 0.5f, vy + ch * 0.5f);   // crosshair
@@ -17769,8 +17775,8 @@ struct App {
         wantW = std::max(16, wantW); wantH = std::max(16, wantH);
         if (settings.targetFps > 0 && screen == Screen::Game && gpuT.total > 0) {   // auto resolution: by the graphics card's time per frame
             dynT += dt; double budget = 1000.0 / settings.targetFps;
-            if (dynT > 0.75 && gpuT.total > budget * 0.92 && dynScale > 0.5f) { dynScale = std::max(0.5f, dynScale - 0.1f); dynT = 0; }
-            else if (dynT > 2.5 && gpuT.total < budget * 0.7 && dynScale < 1.f) { dynScale = std::min(1.f, dynScale + 0.05f); dynT = 0; }
+            if (dynT > 1.5 && gpuT.total > budget * 0.95 && dynScale > 0.5f) { dynScale = std::max(0.5f, dynScale - 0.1f); dynT = 0; }   // (calm: each change remakes the pictures,
+            else if (dynT > 5.0 && gpuT.total < budget * 0.65 && dynScale < 1.f) { dynScale = std::min(1.f, dynScale + 0.05f); dynT = 0; }   //  so it doesn't go up and down all the time)
         } else if (settings.targetFps <= 0) dynScale = 1.f;
         {   // render scale: the world's own targets at the scaled size, the screen's at the screen's
             float sc = std::clamp(settings.renderScale * dynScale, 0.25f, 2.f);
@@ -17854,7 +17860,80 @@ struct App {
         CpuMark("waiting for the screen (VSync) or the card");
         swap->Present(settings.vsync ? 1 : 0, (!settings.vsync && tearing) ? DXGI_PRESENT_ALLOW_TEARING : 0);
         retired.clear();
-        CpuEnd();
+        CpuMark("frame cap (waiting on purpose)"); FrameCap();
+        CpuEnd(); NoteFrame();
+    }
+    // ---- the frame cap: frames evenly spaced (a high-resolution timer, then a short spin for the last bit)
+    std::chrono::steady_clock::time_point capPrev{}; HANDLE capTimer = nullptr;
+    void FrameCap() {
+        int cap = settings.maxFps; auto now = std::chrono::steady_clock::now();
+        if (cap <= 0) { capPrev = now; return; }
+        auto period = std::chrono::nanoseconds((long long)(1e9 / cap)), target = capPrev + period;
+        if (now >= target) { capPrev = now; return; }   // (late already: no waiting, and no catching up)
+        auto left = target - now;
+        if (left > std::chrono::microseconds(1500)) {
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
+#endif
+            if (!capTimer) capTimer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+            if (!capTimer) capTimer = CreateWaitableTimerW(nullptr, TRUE, nullptr);
+            if (capTimer) {
+                LARGE_INTEGER due; due.QuadPart = -(LONGLONG)(std::chrono::duration_cast<std::chrono::nanoseconds>(left - std::chrono::microseconds(1000)).count() / 100);
+                if (SetWaitableTimer(capTimer, &due, 0, nullptr, nullptr, FALSE)) WaitForSingleObject(capTimer, 50);
+            }
+        }
+        while (std::chrono::steady_clock::now() < target) YieldProcessor();
+        capPrev = target;
+    }
+    // ---- frame times: the last few seconds as a graph, and the slow frames (spikes) with what took the time
+    static constexpr int FRAMEHIST = 240; float frameHist[FRAMEHIST] = {}; int frameHistAt = 0, frameHistN = 0;
+    struct Spike { double at = 0, ms = 0; std::vector<std::pair<double, std::string>> top; };
+    std::deque<Spike> spikes;
+    struct GpuWorst { double at = -99, ms = 0; std::vector<std::pair<double, std::string>> top; } gpuWorst;
+    void NoteFrame() {
+        if (!settings.showFps || cpuT.acc.empty()) return;
+        double ms = 0; for (auto& kv : cpuT.acc) ms += kv.second;
+        std::vector<float> v; for (int i = 0; i < frameHistN; i++) v.push_back(frameHist[i]);
+        frameHist[frameHistAt] = (float)ms; frameHistAt = (frameHistAt + 1) % FRAMEHIST; frameHistN = std::min(FRAMEHIST, frameHistN + 1);
+        if (v.size() < 60) return;
+        std::nth_element(v.begin(), v.begin() + v.size() / 2, v.end()); double med = v[v.size() / 2];
+        if (ms > std::max(med * 1.5, med + 3.0)) {   // a slow frame: what took the time in it
+            Spike sp; sp.at = uiClock; sp.ms = ms;
+            for (auto& kv : cpuT.acc) sp.top.push_back({ kv.second, kv.first });
+            std::sort(sp.top.rbegin(), sp.top.rend()); if (sp.top.size() > 4) sp.top.resize(4);
+            spikes.push_front(sp); if (spikes.size() > 5) spikes.pop_back();
+        }
+    }
+    float DrawFrameGraph(ImDrawList* dl, ImVec2 topRight) {
+        float ui = settings.uiScale, w = 300 * ui, h = 46 * ui, x0 = topRight.x - w, y = topRight.y; if (frameHistN < 2) return y;
+        float lh = ImGui::GetTextLineHeight() + 2;
+        int rows = 2 + (int)spikes.size() + (gpuWorst.ms > 0 && uiClock - gpuWorst.at < 3 ? 1 : 0);
+        dl->AddRectFilled(ImVec2(x0 - 6, y - 3), ImVec2(topRight.x + 6, y + h + lh * rows + 6), IM_COL32(0, 0, 0, 150), 4);
+        std::vector<float> v; double sum = 0; for (int i = 0; i < frameHistN; i++) { v.push_back(frameHist[i]); sum += frameHist[i]; }
+        float top = 1000.f / 50; for (float f : v) top = std::max(top, f); top = std::min(top, 100.f);
+        for (float fpsLine : { 60.f, 120.f }) { float yy = y + h - h * (1000.f / fpsLine) / top; if (yy > y) { dl->AddLine(ImVec2(x0, yy), ImVec2(topRight.x, yy), IM_COL32(255, 255, 255, 50)); char b[16]; snprintf(b, sizeof b, "%.0f", fpsLine); dl->AddText(ImVec2(x0 + 2, yy - lh + 3), IM_COL32(255, 255, 255, 90), b); } }
+        float bw = w / FRAMEHIST;
+        for (int i = 0; i < frameHistN; i++) {   // oldest on the left
+            int k = (frameHistAt - frameHistN + i + FRAMEHIST) % FRAMEHIST; float f = frameHist[k], bh = std::min(h, h * f / top);
+            ImU32 c = f > 1000.f / 50 ? IM_COL32(255, 100, 80, 220) : f > 1000.f / 100 ? IM_COL32(255, 210, 100, 200) : IM_COL32(110, 230, 160, 200);
+            float bx = x0 + (FRAMEHIST - frameHistN + i) * bw; dl->AddRectFilled(ImVec2(bx, y + h - bh), ImVec2(bx + std::max(1.f, bw - 0.3f), y + h), c);
+        }
+        y += h + 3;
+        std::vector<float> srt = v; std::sort(srt.begin(), srt.end()); float p99 = srt[std::min(srt.size() - 1, (size_t)(srt.size() * 0.99))];
+        char b[160]; snprintf(b, sizeof b, "frames: %.2f ms on average, slowest 1%%: %.1f ms (%.0f fps)", sum / v.size(), p99, 1000.0 / std::max(0.1f, p99));
+        dl->AddText(ImVec2(x0, y), IM_COL32(200, 220, 235, 230), b); y += lh;
+        dl->AddText(ImVec2(x0, y), IM_COL32(200, 220, 235, 160), spikes.empty() ? "slow frames: none lately" : "slow frames (newest first) - what took the time:"); y += lh;
+        for (const Spike& sp : spikes) {
+            std::string t = std::to_string((int)std::lround(sp.ms)) + " ms (" + std::to_string((int)(uiClock - sp.at)) + " s ago): ";
+            for (size_t i = 0; i < sp.top.size() && i < 3; i++) { char q[96]; snprintf(q, sizeof q, "%s%s %.1f", i ? ", " : "", sp.top[i].second.c_str(), sp.top[i].first); t += q; }
+            dl->AddText(ImVec2(x0, y), IM_COL32(255, 200, 150, 230), t.c_str()); y += lh;
+        }
+        if (gpuWorst.ms > 0 && uiClock - gpuWorst.at < 3) {
+            std::string t = "slowest card frame: " + std::to_string((int)std::lround(gpuWorst.ms)) + " ms: ";
+            for (size_t i = 0; i < gpuWorst.top.size() && i < 3; i++) { char q[96]; snprintf(q, sizeof q, "%s%s %.1f", i ? ", " : "", gpuWorst.top[i].second.c_str(), gpuWorst.top[i].first); t += q; }
+            dl->AddText(ImVec2(x0, y), IM_COL32(180, 200, 255, 230), t.c_str()); y += lh;
+        }
+        return y + 12;
     }
 };
 

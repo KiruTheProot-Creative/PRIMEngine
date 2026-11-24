@@ -15,7 +15,7 @@ Field field(Settings& s, const std::string& k) {
     else if (k == "vol_enemies") r.f = &s.volEnemies; else if (k == "vol_world") r.f = &s.volWorld; else if (k == "vol_menus") r.f = &s.volMenus; else if (k == "vol_music") r.f = &s.volMusic;
     else if (k == "fullscreen") r.b = &s.fullscreen; else if (k == "vsync") r.b = &s.vsync; else if (k == "brightness") r.f = &s.brightness; else if (k == "screen_shake") r.f = &s.screenShake;
     else if (k == "fov") r.f = &s.fov; else if (k == "ui_scale") r.f = &s.uiScale;
-    else if (k == "render_distance") r.i = &s.renderDistance; else if (k == "vertical_distance") r.i = &s.verticalDistance; else if (k == "distant_detail") r.i = &s.distantDetail; else if (k == "target_fps") r.i = &s.targetFps; else if (k == "hide_hidden") r.b = &s.hideHidden;
+    else if (k == "render_distance") r.i = &s.renderDistance; else if (k == "vertical_distance") r.i = &s.verticalDistance; else if (k == "distant_detail") r.i = &s.distantDetail; else if (k == "target_fps") r.i = &s.targetFps; else if (k == "max_fps") r.i = &s.maxFps; else if (k == "hide_hidden") r.b = &s.hideHidden;
     else if (k == "shadows") r.i = &s.shadowQuality; else if (k == "shadow_res") r.i = &s.shadowRes; else if (k == "shadow_distance") r.f = &s.shadowDistance;
     else if (k == "shadow_soft") r.i = &s.shadowSoft; else if (k == "shadow_softness") r.f = &s.shadowSoftness;
     else if (k == "clouds") r.f = &s.cloudCover; else if (k == "cloud_shadows") r.b = &s.cloudShadows; else if (k == "fog") r.f = &s.groundFog;
@@ -67,6 +67,8 @@ const std::vector<OptionDef>& optionDefs() {
         v.push_back(choice("render_scale", "Render scale", D, "Screen", { "33% (ultra performance)", "50% (performance)", "58% (balanced)", "67% (quality)", "75%", "85%", "100% (the screen's own)", "125%", "150%", "200% (supersampled)" },
                            { 0.33f, 0.5f, 0.58f, 0.67f, 0.75f, 0.85f, 1.f, 1.25f, 1.5f, 2.f },
                            "The 3D world is drawn this much of the screen's size, then fitted to it. Below 100%: faster (the upscaler rebuilds the detail). Above 100%: the smoothest edges there are, but heavy. The HUD and menus always stay sharp."));
+        v.push_back(choice("max_fps", "Frame cap", D, "Screen", { "Off", "30 FPS", "60 FPS", "90 FPS", "120 FPS", "144 FPS", "165 FPS" }, { 0, 30, 60, 90, 120, 144, 165 },
+            "At most this many frames a second, evenly spaced. A steady frame rate feels smoother than one jumping between 90 and 150. Pick one your computer reaches almost everywhere."));
         v.push_back(choice("target_fps", "Auto resolution", D, "Screen", { "Off", "Keep 30 FPS", "Keep 45 FPS", "Keep 60 FPS", "Keep 75 FPS", "Keep 90 FPS", "Keep 120 FPS", "Keep 144 FPS" }, { 0, 30, 45, 60, 75, 90, 120, 144 },
             "When the graphics card can't keep up, the world is drawn a little smaller (down to half of the render scale), and sharper again when it can. The upscaler hides most of it."));
         v.push_back(choice("upscaler", "Upscaler", D, "Screen", { "Sharp (this frame only)", "PrimeScaler" }, {},

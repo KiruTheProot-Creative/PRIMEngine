@@ -24,6 +24,7 @@ const char* keyNameFallback(int vk);   // "Left mouse", "Space", "W", "F5"... ("
 struct Settings {
     int renderDistance = 10;   // chunks around you, sideways
     int verticalDistance = 5;  // chunks above and below you
+    int maxFps = 0;            // frame cap: at most this many frames a second, evenly spaced (0: no cap)
     int targetFps = 0;         // auto resolution: the render scale goes down (and back up) to keep this many frames a second (0 off)
     bool hideHidden = true;    // chunks hidden behind other things are not drawn (the depth of a frame or two before)
     int distantDetail = 2;     // far copies of the world past the render distance: 0 off, 1 to 2x, 2 to 4x, 3 to 8x as far
