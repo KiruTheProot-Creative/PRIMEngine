@@ -562,6 +562,13 @@ Fog, light shafts and lights glowing in the air are worked out in a small 3D gri
 - The picture then just looks up the grid.
 - It's faster and has no grain. Very thin light beams get a little softer.
 
+## Missile Launcher and HUD unlocks
+
+- A missile kind set to **Found later** has **Picking it up adds** (5 by default for the plain missile): picking it up adds that many to the most missiles you carry and fills them all up. Like Metroid Prime's Missile Launcher: set **Most** (Weapons tab, missile supply) to 0 and the launcher to 5.
+- Until you have a missile kind, the counter starts at 0. Missile Expansions add to the most and fill you right up too.
+- Each HUD element has **Shows once you have**. Automatic: the missile counter and anything with "missile" in its name wait for missiles; power bomb parts wait for power bombs. Pick **Always**, or any item, beam or missile kind.
+- When you get it, the elements glitch into view: they flicker, split into magenta and cyan, and slices jump sideways before settling (about 1.4 s, held while the item pop-up is open).
+
 ## Grapple Beam
 It comes out of the arm cannon, like in the 2D games. You need the Grapple Beam item, and you hold its key to use it (**G** by default, changeable under Controls).
 - **Aiming:** a soft auto-aim picks the grapple point or enemy nearest the crosshair (within about 9°, in reach and in sight). A turning cyan ring shows what it would latch onto.

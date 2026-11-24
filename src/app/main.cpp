@@ -6527,7 +6527,7 @@ struct App {
     struct NeedSt { bool have = false; float prog = 1; };   // prog: 0..1 through the glitch (1: done)
     std::map<std::string, NeedSt> needSt; double needClock = 0;
     std::string NeedOf(const HudElement& e) const {
-        if (e.needs == "-") return "";
+        if (e.needs == "*") return "";
         if (!e.needs.empty()) return e.needs;
         std::string n = Lower(e.name);
         if (!weapons.missileTypes.empty() && ((e.value == HudValue::Counter && !weapons.missileCounter.empty() && e.valueName == weapons.missileCounter) || n.find("missile") != std::string::npos)) return "Missiles";
@@ -7082,10 +7082,10 @@ struct App {
             Prop("Stays on the map (M)"); ch |= ImGui::Checkbox("##eom", &e.onMap);
             { Prop("Shows once you have");
               HudElement probe = e; probe.needs.clear(); std::string an = NeedOf(probe);
-              std::string cur = e.needs.empty() ? (an.empty() ? "Automatic (always)" : "Automatic (" + an + ")") : e.needs == "-" ? "Always" : e.needs;
+              std::string cur = e.needs.empty() ? (an.empty() ? "Automatic (always)" : "Automatic (" + an + ")") : e.needs == "*" ? "Always" : e.needs;
               if (ImGui::BeginCombo("##eneed", cur.c_str())) {
                   auto opt = [&](const std::string& label, const std::string& val) { if (ImGui::Selectable(label.c_str(), e.needs == val)) { e.needs = val; ch = true; } };
-                  opt(an.empty() ? "Automatic (always)" : "Automatic (" + an + ")", ""); opt("Always", "-");
+                  opt(an.empty() ? "Automatic (always)" : "Automatic (" + an + ")", ""); opt("Always", "*");
                   ImGui::Separator(); opt("Missiles", "Missiles"); opt("Power Bombs", "Power Bombs");
                   for (const Beam& b : weapons.beams) if (!b.startsOwned) opt(b.name, b.name);
                   for (const MissileType& t : weapons.missileTypes) if (!t.startsOwned) opt(t.name, t.name);

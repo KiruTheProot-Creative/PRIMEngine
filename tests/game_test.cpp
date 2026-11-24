@@ -602,7 +602,7 @@ int main() {
         { SoundUse u; u.file = "done.wav"; w.beams[1].chargeDone.sounds = { u }; u.file = "hum.wav"; w.beams[1].chargedLoop.sounds = { u }; u.file = "zap hit.wav"; w.beams[0].hitSound.sounds = { u }; u.file = "boom.wav"; w.missileTypes[0].hit.sounds = { u }; u.file = "whoosh.wav"; w.missileTypes[1].launch.sounds = { u }; u.file = "pew.wav"; w.beams[0].fireSound.sounds = { u }; u.file = "hum up.wav"; w.beams[1].chargeUp.sounds = { u }; u.file = "big pew.wav"; w.beams[1].chargedShotSound.sounds = { u }; }
         saveWeapons("/tmp/prim_weapons.txt", w); WeaponSet back; loadWeapons("/tmp/prim_weapons.txt", back);
         CHECK(back.beams.size() == 2 && back.beams[0].name == "Power % Beam" && back.beams[1].muzzle.yaw == 12.5f && !back.beams[1].missileWait && back.beams[0].missileWait
-              && back.beams[1].shotLook == "Magic" && back.motion.recoil == 0.3f && back.missileMax == 99 && back.beams[0].model == "@arm-cannon" && back.cannonInFront && back.missileTypes.size() == 2 && back.missileTypes[1].sphere == 3.5f && back.missileTypes[1].name == "Super Missile" && back.missileTypes[1].cost == 5 && !back.missileTypes[1].startsOwned
+              && back.beams[1].shotLook == "Magic" && back.motion.recoil == 0.3f && back.missileMax == 99 && back.beams[0].model == "@arm-cannon" && back.cannonInFront && back.missileTypes.size() == 2 && back.missileTypes[1].sphere == 3.5f && back.missileTypes[1].name == "Super Missile" && back.missileTypes[1].cost == 5 && !back.missileTypes[1].startsOwned && back.missileTypes[0].adds == 5 && back.missileTypes[1].adds == 0
               && back.switchMode == 2 && back.beams[1].chargedClip == "glow loop" && back.beams[0].shotStyle == 0 && back.beams[1].shotStyle == 1
               && back.beams[1].chargeDone.sounds.size() == 1 && back.beams[1].chargedLoop.sounds[0].file == "hum.wav" && back.beams[0].hitSound.sounds[0].file == "zap hit.wav"
               && back.missileTypes[0].hit.sounds[0].file == "boom.wav" && back.missileTypes[1].launch.sounds[0].file == "whoosh.wav" && back.beams[0].chargedHitSound.empty()
@@ -729,11 +729,12 @@ int main() {
         for (int k = 0; k < 90; k++) hard.update(s, 1.0 / 60, 0, 0, 0, false, 0);
         CHECK(hard.shake < 0.01f, "and the shake dies down");
         // save / load
-        HudLayout h = defaultHud(); h.sway.strength = 1.7f; h.sway.land = 0.4f; h.fov = 85; h.planes[0].elements[1].text = "E N E R G Y {value}"; h.parts[0].name = "Strut % left";
+        HudLayout h = defaultHud(); h.sway.strength = 1.7f; h.sway.land = 0.4f; h.fov = 85; h.planes[0].elements[1].text = "E N E R G Y {value}"; h.parts[0].name = "Strut % left"; h.planes[0].elements[0].needs = "Power Bombs"; h.planes[0].elements[1].needs = "*";
         saveHud("/tmp/prim_hud.txt", h); HudLayout back; loadHud("/tmp/prim_hud.txt", back);
         CHECK(back.planes.size() == 1 && back.planes[0].elements.size() == h.planes[0].elements.size() && back.parts.size() == 2 && back.parts[1].mirror
               && back.sway.strength == 1.7f && back.sway.land == 0.4f && back.fov == 85 && back.planes[0].elements[1].text == "E N E R G Y {value}" && back.parts[0].name == "Strut % left"
               && back.planes[0].elements[3].valueName == "Missile" && back.planes[0].bendX == h.planes[0].bendX, "the HUD saves and loads");
+        CHECK(back.planes[0].elements[0].needs == "Power Bombs" && back.planes[0].elements[1].needs == "*" && back.planes[0].elements[2].needs.empty(), "what a HUD part waits for saves");
         { HudLayout m = defaultHud(); HudElement* mm = nullptr; for (auto& e : m.planes[0].elements) if (e.kind == HudKind::Minimap) mm = &e;
           CHECK(mm != nullptr, "the starter visor has a minimap");
           CHECK(mm && !mm->onMap && mm->onPause && m.parts[0].onMap, "the starter minimap hides on the map screen; the helmet stays");
