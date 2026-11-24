@@ -9,7 +9,7 @@
 namespace mc {
 
 // what the player's keys do (Options > Controls): two keys each (Windows key codes: 1 left mouse, 2 right mouse, 'W'...; 0: none)
-enum class Act { Forward, Back, Left, Right, Jump, Sprint, Walk, Fire, Missile, LockOn, Use, Visor, Ball, NextMissile, Map, COUNT };
+enum class Act { Forward, Back, Left, Right, Jump, Sprint, Walk, Fire, Missile, LockOn, Use, Visor, Ball, NextMissile, Map, Grapple, COUNT };
 const char* actName(Act a);   // "Move forward"...
 const char* actKey(Act a);    // "forward"... (in settings.txt)
 struct KeyBinds {

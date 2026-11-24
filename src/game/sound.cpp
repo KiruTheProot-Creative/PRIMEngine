@@ -119,6 +119,8 @@ const std::vector<GameSoundSlot>& gameSoundSlots() {
         { "map_open", "Map opens", &PlayerSounds::mapOpen, "Menu and map" }, { "map_close", "Map closes", &PlayerSounds::mapClose, "Menu and map" },
         { "beam_switch", "Another beam", &PlayerSounds::beamSwitch, "Weapons" }, { "missile_switch", "Another missile", &PlayerSounds::missileSwitch, "Weapons" },
         { "empty", "Firing with none left", &PlayerSounds::empty, "Weapons" }, { "lock_on", "Locking on", &PlayerSounds::lockOn, "Weapons" }, { "lock_off", "Letting go", &PlayerSounds::lockOff, "Weapons" },
+        { "grapple_fire", "Grapple Beam: shooting out", &PlayerSounds::grappleFire, "Weapons" }, { "grapple_latch", "Grapple Beam: latching on", &PlayerSounds::grappleLatch, "Weapons" },
+        { "grapple_hum", "Grapple Beam: on (a loop)", &PlayerSounds::grappleHum, "Weapons" }, { "grapple_let_go", "Grapple Beam: letting go", &PlayerSounds::grappleLetGo, "Weapons" },
         { "pick_health", "Energy picked up", &PlayerSounds::pickHealth, "Pickups and alerts" }, { "pick_ammo", "Missiles / bombs picked up", &PlayerSounds::pickAmmo, "Pickups and alerts" },
         { "item_get", "An item (upgrade, tank)", &PlayerSounds::itemGet, "Pickups and alerts" }, { "saved", "The game is saved", &PlayerSounds::saved, "Pickups and alerts" },
         { "message", "A message", &PlayerSounds::message, "Pickups and alerts" },

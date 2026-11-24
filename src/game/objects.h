@@ -38,7 +38,7 @@ std::vector<Box3> modelBoxes(const BlockModel& m, const BlockRegistry& reg);
 enum class Collide { Exact, OneBox, None };
 const char* collideName(Collide c);
 
-enum class ObjKind { Prop, Door, Platform, Pickup, Checkpoint, Teleporter, Trigger, Light, Particles, MapCamera, MapStation, Enemy, SaveStation, Ambient, COUNT };
+enum class ObjKind { Prop, Door, Platform, Pickup, Checkpoint, Teleporter, Trigger, Light, Particles, MapCamera, MapStation, Enemy, SaveStation, Ambient, GrapplePoint, COUNT };
 // the map: a Map Station (touch it) fires every map camera with the same ID; each camera looks all around and puts what it sees on the map
 struct MapSettings { int id = 1; float range = 48; };
 // an ambient light (like Skyrim's lighting templates): it fills the room it stands in (through the air, up to the walls and doors) with its
@@ -51,6 +51,12 @@ struct AmbientSettings {
     float reach = 48;                 // how far it fills (blocks)
     int blend = 3;                    // how many blocks it spills through doors and openings (soft change from one room to the next)
     std::string look;                 // its colour look while you are in it ("": the world's / the zone's)
+};
+// a grapple point: the Grapple Beam latches onto it. Swing: you hang from it like a pendulum (jump: let go, flying on); Pull: it pulls you to it
+struct GrappleSettings {
+    int mode = 0;            // 0 swing, 1 pull
+    float length = 0;        // swing: the rope's length (0: as far as you were when it latched)
+    float reach = 22;        // how far away it can be grabbed (blocks)
 };
 const char* ambientPresetName(int i);   // presets to start from (nullptr past the last)
 AmbientSettings ambientPreset(int i);
@@ -114,6 +120,7 @@ struct WorldObject {
     ScanInfo scan;                                    // can be scanned (Scan Visor)
     int enemyType = 0;                                // enemies: which enemy type (Player editor > Enemies, by ID)
     AmbientSettings ambient;                          // ambient lights
+    GrappleSettings grapple;                          // grapple points
     struct { bool energy = true, ammo = true; std::string anim; std::string title, text; bool ask = false; } save;   // Save Stations: what they fill up; the model's animation while saving ("": one called "save", "-": none);
                                                                                                          // the "Game Saved!" pop-up's title and text ("": automatic); ask: the old way (a Yes / No question first)
 };

@@ -61,6 +61,7 @@ struct PlayerSounds {
     SoundSet scanTarget, scanLoop, scanDone, scanNew, scanOpen, scanClose;   // Scan Visor: onto something scannable, scanning (a loop, rising), done, a new entry, its text up / away
     SoundSet menuOpen, menuClose, mapOpen, mapClose;    // the pause menu, the map
     SoundSet beamSwitch, missileSwitch, empty, lockOn, lockOff;   // another beam / missile, firing with none left, lock-on onto / off
+    SoundSet grappleFire, grappleLatch, grappleHum, grappleLetGo;   // the Grapple Beam: shooting out, latching on, a loop while on, letting go
     SoundSet pickHealth, pickAmmo, itemGet, saved, message;       // energy / ammo picked up, an item (an upgrade), the game saved, a message
     SoundSet hurt, lowHealth, death;                    // getting hurt, the low-energy alarm (again and again), dying (the hit)
     SoundSet deathStatic, deathPowerDown, deathOff;     // the death sequence: static (a loop, rising and fading), the suit powering down, the picture switching off

@@ -9,16 +9,16 @@ namespace mc {
 // ------------------------------------------------------------------ keys
 const char* actName(Act a) {
     static const char* n[] = { "Move forward", "Move back", "Move left", "Move right", "Jump", "Sprint", "Walk slowly", "Fire / bomb", "Missile / Power Bomb",
-                               "Lock-on / scan", "Use", "Next visor", "Morph Ball", "Next missile kind", "Map" };
+                               "Lock-on / scan", "Use", "Next visor", "Morph Ball", "Next missile kind", "Map", "Grapple Beam" };
     int i = (int)a; return i >= 0 && i < (int)Act::COUNT ? n[i] : "?";
 }
 const char* actKey(Act a) {
-    static const char* n[] = { "forward", "back", "left", "right", "jump", "sprint", "walk", "fire", "missile", "lockon", "use", "visor", "ball", "next_missile", "map" };
+    static const char* n[] = { "forward", "back", "left", "right", "jump", "sprint", "walk", "fire", "missile", "lockon", "use", "visor", "ball", "next_missile", "map", "grapple" };
     int i = (int)a; return i >= 0 && i < (int)Act::COUNT ? n[i] : "?";
 }
 KeyBinds::KeyBinds() {
     static const int d[(int)Act::COUNT][2] = { { 'W', 0x26 }, { 'S', 0x28 }, { 'A', 0x25 }, { 'D', 0x27 }, { 0x20, 0 }, { 0x11, 0 }, { 0x10, 0 }, { 1, 0 }, { 'F', 0 },
-                                               { 2, 0 }, { 'E', 0 }, { 'V', 0 }, { 'C', 0 }, { 'Q', 0 }, { 'M', 0 } };
+                                               { 2, 0 }, { 'E', 0 }, { 'V', 0 }, { 'C', 0 }, { 'Q', 0 }, { 'M', 0 }, { 'G', 0 } };
     for (int i = 0; i < (int)Act::COUNT; i++) { key[i][0] = d[i][0]; key[i][1] = d[i][1]; }
 }
 void KeyBinds::set(Act a, int slot, int vk) {

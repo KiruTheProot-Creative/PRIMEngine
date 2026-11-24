@@ -561,3 +561,18 @@ Fog, light shafts and lights glowing in the air are worked out in a small 3D gri
 - Each frame, every cell takes one new sample (a different spot each frame) and blends it with what it had.
 - The picture then just looks up the grid.
 - It's faster and has no grain. Very thin light beams get a little softer.
+
+## Grapple Beam
+It comes out of the arm cannon, like in the 2D games. You need the Grapple Beam item, and you hold its key to use it (**G** by default, changeable under Controls).
+- **Aiming:** a soft auto-aim picks the grapple point or enemy nearest the crosshair (within about 9°, in reach and in sight). A turning cyan ring shows what it would latch onto.
+- **Grapple points:** an object kind. Pick its mode in the inspector:
+  - **Swing:** a pendulum. You steer with the movement keys, and Jump lets go and carries your momentum.
+  - **Pull:** it pulls you to the point.
+  - **Rope** sets the swing's rope length. 0 means as far as you were when it latched.
+  - **Reach** sets how far away it can be grabbed.
+- **Enemies:** each enemy type has a "Grapple Beam" setting:
+  - **Pulled to you:** it gets pulled to you and stunned.
+  - **Pulls you:** heavy ones pull you to them.
+  - **Nothing:** the beam slips off.
+- **Blocks:** a block marked breakable by **"Grapple"** is torn out.
+- **Sounds:** set them in the player sounds under Weapons: shooting out, latching on, a loop while latched, letting go.

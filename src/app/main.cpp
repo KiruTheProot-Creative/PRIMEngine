@@ -1306,6 +1306,7 @@ struct App {
             lockJumpPrev = c.jump;
             UpdateItemRules();
             player.update(*world, c, std::min(dt, 0.05), playMode ? playRules : PlayerRules{});
+            UpdateGrapple(std::min(dt, 0.05), c);   // the Grapple Beam: after moving (its rope holds you where it should)
             if (playMode && player.boosting) {   // the Speed Booster: blocks marked for it break as you run into them
                 V3 f = player.forward(); double hw = player.halfW + 0.45;
                 for (int y = (int)std::floor(player.feet.y + 0.05); y <= (int)std::floor(player.feet.y + player.height - 0.05); y++)
@@ -2376,6 +2377,33 @@ struct App {
             }
         }
         for (auto& s : shots) push(s.trail);
+        if (playMode && grap.state != 0) {   // the Grapple Beam: a glowing, crackling chain from the muzzle to its tip (a bright core in a soft glow)
+            V3 a = GrappleFrom(), b = grap.tip, ab = b - a; double L = std::sqrt(ab.x * ab.x + ab.y * ab.y + ab.z * ab.z);
+            if (L > 0.05) {
+                int n = std::clamp((int)(L * 3), 6, 90); V3 dn = ab * (1 / L);
+                V3 s1 = Norm(cross(dn, std::fabs(dn.y) < 0.9 ? V3{ 0, 1, 0 } : V3{ 1, 0, 0 })), s2 = cross(dn, s1);
+                double slack = grap.state == 2 && grap.what == 1 ? 0.0 : 0.05;
+                std::vector<V3> pts(n + 1);
+                for (int i = 0; i <= n; i++) {
+                    double u = (double)i / n, env = std::sin(u * 3.14159265);   // (still at both ends)
+                    double w1 = std::sin(u * 21 + animTime * 31) * 0.045 + std::sin(u * 47 - animTime * 53) * 0.02, w2 = std::cos(u * 17 - animTime * 27) * 0.04;
+                    pts[i] = a + ab * u + (s1 * w1 + s2 * w2) * (env * (1 + slack * 10));
+                }
+                auto strip = [&](double width, V3 col) {
+                    V3 prevSide{ 0, 1, 0 };
+                    std::vector<V3> sides(n + 1);
+                    for (int i = 0; i <= n; i++) { V3 d = pts[std::min(i + 1, n)] - pts[std::max(i - 1, 0)]; sides[i] = RibbonSide(0, d, pts[i] - camPos, prevSide); prevSide = sides[i]; }
+                    for (int i = 0; i < n; i++) {
+                        V3 cq[4] = { pts[i] - camPos - sides[i] * (width * 0.5), pts[i] - camPos + sides[i] * (width * 0.5), pts[i + 1] - camPos - sides[i + 1] * (width * 0.5), pts[i + 1] - camPos + sides[i + 1] * (width * 0.5) };
+                        float flick = (float)(0.8 + 0.2 * std::sin(i * 2.3 + animTime * 40));
+                        auto vtx = [&](int q) { return PVtx{ { (float)cq[q].x, (float)cq[q].y, (float)cq[q].z }, { (q & 1) ? 1.f : -1.f, 0.f }, { (float)col.x * flick, (float)col.y * flick, (float)col.z * flick, 1 }, { 0, 0, 6, 4 }, { 0, 0, 0 } }; };
+                        add.push_back(vtx(0)); add.push_back(vtx(1)); add.push_back(vtx(3)); add.push_back(vtx(0)); add.push_back(vtx(3)); add.push_back(vtx(2));
+                    }
+                };
+                strip(0.26, V3{ 0.12, 0.45, 0.6 });   // the glow
+                strip(0.07, V3{ 1.2, 2.4, 2.8 });     // the core
+            }
+        }
         particleCount = (int)((add.size() + soft.size()) / 6);
         if (add.empty() && soft.empty()) return;
         if (!order.empty()) {   // soft ones: far ones first
@@ -2486,6 +2514,7 @@ struct App {
         else if (m == "@emitter") { MakeEmitter(o); o.folder = "Particles"; o.particles = particlePreset("Fire"); }
         else if (m == "@map-camera") { o.kind = ObjKind::MapCamera; o.collide = Collide::None; o.folder = "Map"; }
         else if (m == "@ambient") { o.kind = ObjKind::Ambient; o.collide = Collide::None; o.folder = "Lights"; o.ambient = ambientPreset(0); }
+        else if (m == "@grapple-point") { o.kind = ObjKind::GrapplePoint; o.collide = Collide::None; o.folder = "Grapple"; }
         else if (m == "@save-station") { o.kind = ObjKind::SaveStation; o.collide = Collide::None; o.folder = "Save"; }
         else if (m == "@map-station") { o.kind = ObjKind::MapStation; o.folder = "Map"; }
         else if (m == "@save-station") { o.kind = ObjKind::SaveStation; o.collide = Collide::None; o.folder = "Save"; }
@@ -2499,7 +2528,7 @@ struct App {
     std::string PresetName(const WorldObject& o) const {
         switch (o.kind) {
         case ObjKind::Pickup: return o.pickup.type == PickupType::Health ? "Health" : o.pickup.name;
-        case ObjKind::Checkpoint: return "Checkpoint"; case ObjKind::Teleporter: return "Teleporter"; case ObjKind::Trigger: return "Zone"; case ObjKind::Light: return "Light"; case ObjKind::Particles: return "Particles"; case ObjKind::MapCamera: return "Map camera"; case ObjKind::MapStation: return "Map Station"; case ObjKind::SaveStation: return "Save Station"; case ObjKind::Ambient: return "Ambient light"; case ObjKind::Enemy: { const EnemyType* t = enemies.find(o.enemyType); return t ? t->name.c_str() : "Enemy"; }
+        case ObjKind::Checkpoint: return "Checkpoint"; case ObjKind::Teleporter: return "Teleporter"; case ObjKind::Trigger: return "Zone"; case ObjKind::Light: return "Light"; case ObjKind::Particles: return "Particles"; case ObjKind::MapCamera: return "Map camera"; case ObjKind::MapStation: return "Map Station"; case ObjKind::SaveStation: return "Save Station"; case ObjKind::Ambient: return "Ambient light"; case ObjKind::GrapplePoint: return "Grapple point"; case ObjKind::Enemy: { const EnemyType* t = enemies.find(o.enemyType); return t ? t->name.c_str() : "Enemy"; }
         default: return o.model;
         }
     }
@@ -3546,8 +3575,8 @@ struct App {
         ModelMaterialUI(o.model);
         if (ImGui::SmallButton("Save as a prefab")) MakePrefab({ o }, !assetDir.empty() && assetDir[0] == '\t' ? "" : assetDir);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Into the Assets (the folder open there), with all its settings, to place again anywhere.\nOr drag it (or a whole folder of objects) from the Outliner into the Assets.");
-        { int k = (int)o.kind; const char* kn[] = { "Prop (it just stands there)", "Door (forcefield, opens)", "Platform (moves along a path)", "Pickup", "Checkpoint", "Teleporter", "Trigger zone (invisible)", "Light", "Particles", "Map camera (invisible: a Map Station uses it)", "Map Station", "Enemy", "Save Station (E: saves the game)", "Ambient light (fills its room)" }; Prop("Kind");
-          if (ImGui::Combo("##kind", &k, kn, 14)) { if (k == 1) MakeDoor(o); else if (k == 2) MakePlatform(o); else if (k == (int)ObjKind::Enemy) { o.kind = ObjKind::Enemy; if (!enemies.find(o.enemyType) && !enemies.types.empty()) o.enemyType = enemies.types[0].id; ApplyEnemyType(o); } else { o.kind = (ObjKind)k; if (o.kind == ObjKind::Pickup || o.kind == ObjKind::Trigger || o.kind == ObjKind::Light || o.kind == ObjKind::Particles || o.kind == ObjKind::MapCamera || o.kind == ObjKind::Ambient) o.collide = Collide::None; } platRun.erase(o.id); ch_ = true; } }
+        { int k = (int)o.kind; const char* kn[] = { "Prop (it just stands there)", "Door (forcefield, opens)", "Platform (moves along a path)", "Pickup", "Checkpoint", "Teleporter", "Trigger zone (invisible)", "Light", "Particles", "Map camera (invisible: a Map Station uses it)", "Map Station", "Enemy", "Save Station (E: saves the game)", "Ambient light (fills its room)", "Grapple point (the Grapple Beam latches on)" }; Prop("Kind");
+          if (ImGui::Combo("##kind", &k, kn, 15)) { if (k == 1) MakeDoor(o); else if (k == 2) MakePlatform(o); else if (k == (int)ObjKind::Enemy) { o.kind = ObjKind::Enemy; if (!enemies.find(o.enemyType) && !enemies.types.empty()) o.enemyType = enemies.types[0].id; ApplyEnemyType(o); } else { o.kind = (ObjKind)k; if (o.kind == ObjKind::Pickup || o.kind == ObjKind::Trigger || o.kind == ObjKind::Light || o.kind == ObjKind::Particles || o.kind == ObjKind::MapCamera || o.kind == ObjKind::Ambient || o.kind == ObjKind::GrapplePoint) o.collide = Collide::None; } platRun.erase(o.id); ch_ = true; } }
         Prop("Position"); ch_ |= ImGui::InputScalarN("##pos", ImGuiDataType_Double, &o.pos.x, 3, nullptr, nullptr, "%.2f");
         { float y = (float)o.yaw; Prop("Turn"); if (ImGui::SliderFloat("##yaw", &y, -180, 180, "%.0f deg")) { o.yaw = y; ch_ = true; }
           if (ImGui::SmallButton("-90")) { o.yaw = std::fmod(o.yaw - 90 + 540, 360) - 180; ch_ = true; } if (FlowButton("+90", true)) { o.yaw = std::fmod(o.yaw + 90 + 540, 360) - 180; ch_ = true; } }
@@ -3557,6 +3586,13 @@ struct App {
         if (o.kind == ObjKind::Particles) ParticleInspector(o);
         if (o.kind == ObjKind::MapCamera || o.kind == ObjKind::MapStation) MapInspector(o);
         if (o.kind == ObjKind::Ambient) AmbientInspector(o);
+        if (o.kind == ObjKind::GrapplePoint) {
+            ImGui::SeparatorText("Grapple point");
+            Hint("The Grapple Beam (hold its key, G by default) latches onto it when it is near the crosshair and within reach.");
+            Prop("What it does"); { const char* gm[] = { "Swing (a pendulum; jump lets go)", "Pull (pulls you to it)" }; ImGui::SetNextItemWidth(-1); ImGui::Combo("##gpm", &o.grapple.mode, gm, 2); }
+            if (o.grapple.mode == 0) { Prop("Rope"); ImGui::SetNextItemWidth(-1); ImGui::SliderFloat("##gpl", &o.grapple.length, 0, 30, o.grapple.length <= 0 ? "as far as you are when it latches" : "%.1f blocks"); }
+            Prop("Reach"); ImGui::SetNextItemWidth(-1); ImGui::SliderFloat("##gpr", &o.grapple.reach, 4, 60, "%.0f blocks");
+        }
         if (o.kind == ObjKind::SaveStation) {
             ImGui::SeparatorText("Save Station");
             Hint("Stand on it and press E: you are put in its middle and it fills you up, its animation plays, then the game saves into the file being played (picked on the Files screen) and \"Game Saved!\" shows. This is the only place a game saves, like Metroid Prime. Its name shows on the file.");
@@ -6409,7 +6445,7 @@ struct App {
             }
             else if (toolSel == 2) {
                 ImGui::SeparatorText("Add");
-                const std::pair<const char*, const char*> add[] = { { "Light", "@light" }, { "Particles", "@emitter" }, { "Health", "@health" }, { "Key", "@key" }, { "Gem", "@gem" }, { "Checkpoint", "@checkpoint" }, { "Teleporter", "@teleporter" }, { "Trigger zone", "@zone" }, { "Map Station", "@map-station" }, { "Map camera", "@map-camera" }, { "Enemy", "@enemy-walker" }, { "Save Station", "@save-station" }, { "Ambient light", "@ambient" } };
+                const std::pair<const char*, const char*> add[] = { { "Light", "@light" }, { "Particles", "@emitter" }, { "Health", "@health" }, { "Key", "@key" }, { "Gem", "@gem" }, { "Checkpoint", "@checkpoint" }, { "Teleporter", "@teleporter" }, { "Trigger zone", "@zone" }, { "Map Station", "@map-station" }, { "Map camera", "@map-camera" }, { "Enemy", "@enemy-walker" }, { "Save Station", "@save-station" }, { "Ambient light", "@ambient" }, { "Grapple point", "@grapple-point" } };
                 for (int a = 0; a < 12; a++) { if (a) Flow(ButtonW(add[a].first)); if (ImGui::Button(add[a].first)) StartPlacing(add[a].second); }
                 Hint("Click an object in the viewport to pick it. To place a model (props, doors: a model with an \"open\" animation), drag it from the Assets into the viewport, or right-click it there > Place it. A placed object's Kind (Inspector) makes it a door, a platform, a pickup ..."); if (!placing.empty()) Hint("Placing: %s. R turns it, Alt puts it off the grid, right click stops.", placing.c_str()); }
             else Hint("More tools are coming to this slot.");
@@ -12005,6 +12041,11 @@ struct App {
             Box3 b = enemyBox(s, *t); V3 eye = (b.lo + b.hi) * 0.5 + s.up * (enemyHeight(*t) * 0.15);
             V3 d = you - eye; double dist = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
             bool sees = !play.dead() && dist < std::max(t->sight, t->dropReach + 12.f) && canSee(*world, eye, you, dist + 1);
+            if (auto gs = grapStun.find(o.id); gs != grapStun.end()) {   // held by the Grapple Beam, or dizzy after it: it doesn't move on its own
+                gs->second -= (float)dt;
+                if (gs->second <= 0) { grapStun.erase(gs); if (t->move == EnemyMove::Crawl) enemyStart(s, *t, s.pos, o.yaw, solid); }   // (crawlers cling to the nearest block again)
+                else { EnemyAnimate(o, s, *t, dt); continue; }
+            }
             if (const BossDef* bd = bosses.forType(t->id)) { UpdateBoss(o, s, *t, *bd, solid, you, sees, dt); continue; }   // a boss: its phases and moves
             EnemyTick k = enemyUpdate(s, *t, solid, you, sees, dt);
             if (k.noticed && !t->sndNotice.empty()) { SoundUse u; u.file = t->sndNotice; PlaySoundIn(SND_ENEMIES, u, 1, &eye); }
@@ -12712,6 +12753,7 @@ struct App {
         Prop("Hurts when touched"); ch |= ImGui::DragFloat("##etd", &t.touchDamage, 0.2f, 0, 500, "%.0f");
         Prop("Knocked back"); ch |= ImGui::SliderFloat("##ekb", &t.knockback, 0, 15, "%.1f");
         Prop("Can be locked onto"); ch |= ImGui::Checkbox("##elock", &t.lockable);
+        { Prop("Grapple Beam"); const char* gm[] = { "Pulled to you (and stunned)", "Pulls you to it (heavy)", "Nothing (it slips off)" }; ImGui::SetNextItemWidth(-1); ch |= ImGui::Combo("##egrap", &t.grapple, gm, 3); }
         Prop("Shows on the radar"); ch |= ImGui::Checkbox("##eradar", &t.onRadar);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("A dot on the HUD's radar when it is near.\nOff: sneaky enemies, or tiny critters that would clutter it.");
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Lock-on (right mouse) can pick it.\nOff: for tiny or harmless things you should not keep locking onto.");
@@ -14219,6 +14261,163 @@ struct App {
             if (underVoice) underVoice->SetVolume(underUse.volume * CatVolume(SND_WORLD));
         } else if (underVoice) { StopSounds(TAG_UNDERWATER); underVoice = nullptr; }
     }
+    // ---- the Grapple Beam (out of the arm cannon, like the 2D games): hold its key. It latches onto grapple points (swing: a pendulum, jump
+    // lets go flying on; pull: it pulls you there), onto enemies (light ones are pulled to you and stunned, heavy ones pull you to them), and
+    // onto blocks marked breakable by "Grapple" (they are torn out)
+    struct GrappleRt {
+        int state = 0;          // 0 off, 1 flying out, 2 latched, 3 coming back
+        int what = 0;           // latched: 1 swing point, 2 pull point, 3 an enemy pulled to you, 4 an enemy pulling you, 5 a block torn out
+        V3 dir{ 0, 0, 1 }, tip{ 0, 0, 0 }, anchor{ 0, 0, 0 }; double out = 0, len = 0, rope = 0, t = 0;
+        uint32_t obj = 0; int bx = 0, by = 0, bz = 0; bool has = false;   // has: flying at a target it found (else straight)
+    } grap;
+    std::unordered_map<uint32_t, float> grapStun;   // enemies held / stunned by it (seconds left)
+    bool grapPrev = false, grapJumpPrev = false; IXAudio2SourceVoice* grapVoice = nullptr; SoundUse grapUse;
+    static constexpr int TAG_GRAPPLE = 39;
+    static constexpr double GRAP_SPEED = 70, GRAP_RANGE = 22, GRAP_CONE = 0.9877;   // blocks a second out, how far, the auto-aim cone (about 9 degrees)
+    V3 GrappleFrom() {   // the arm cannon's muzzle (as it shows on screen)
+        V3 from = player.eye() + player.forward() * 0.6;
+        if (const Beam* b = CurrentBeam()) { V3 m; if (CannonWorld(*b, b->muzzle.pos, m)) from = m; }
+        return from;
+    }
+    V3 GrappleTargetPos(const GrappleRt& g) {   // where its target is now (enemies move)
+        if (g.what == 3 || g.what == 4 || (g.state == 1 && g.has && g.obj && !g.what)) {
+            auto it = enemyRt.find(g.obj);
+            if (it != enemyRt.end()) for (const WorldObject& o : objects) if (o.id == g.obj && o.kind == ObjKind::Enemy) { if (const EnemyType* t = enemies.find(o.enemyType)) { Box3 b = enemyBox(it->second, *t); return (b.lo + b.hi) * 0.5; } }
+        }
+        return g.anchor;
+    }
+    bool GrappleFind(GrappleRt& g) {   // the grapple point or enemy nearest the crosshair (within about 9 degrees, in reach, in sight)
+        V3 eye = player.eye(), ad = AimDir(); double best = GRAP_CONE;
+        for (const WorldObject& o : objects) {
+            V3 p; double reach;
+            if (o.kind == ObjKind::GrapplePoint) { if (evHidden.count(o.id)) continue; p = o.pos + V3{ 0, 0.5, 0 }; reach = o.grapple.reach; }
+            else if (o.kind == ObjKind::Enemy) {
+                auto it = enemyRt.find(o.id); if (it == enemyRt.end() || !it->second.alive()) continue;
+                const EnemyType* t = enemies.find(o.enemyType); if (!t || t->grapple == 2) continue;
+                Box3 b = enemyBox(it->second, *t); p = (b.lo + b.hi) * 0.5; reach = GRAP_RANGE;
+            } else continue;
+            V3 d = p - eye; double L = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z); if (L < 0.5 || L > reach) continue;
+            double cs = (d.x * ad.x + d.y * ad.y + d.z * ad.z) / L; if (cs < best) continue;
+            if (!canSee(*world, eye, p, L + 0.5)) continue;
+            best = cs; g.has = true; g.obj = o.id; g.anchor = p; g.what = 0;
+        }
+        return g.has;
+    }
+    uint32_t grapHintObj = 0; V3 grapHintAt{ 0, 0, 0 }; double grapHintAge = 0;
+    void DrawGrappleMarker(ImDrawList* dl) {   // where a press of the Grapple Beam would latch: a small spinning hook ring (and a line while latched)
+        if (!playMode || paused || mapOpen || hideHud || player.ball || !HasItemType(ItemType::GrappleBeam)) return;
+        float ui = settings.uiScale, t = (float)uiClock; ImVec2 p;
+        if (grap.state == 2 && Project(grap.anchor, p)) { dl->AddCircle(p, 13 * ui, IM_COL32(127, 232, 255, 220), 24, 2.5f * ui); return; }
+        if (grap.state != 0) return;
+        GrappleRt g; if (!GrappleFind(g)) { grapHintObj = 0; return; }
+        if (g.obj != grapHintObj) { grapHintObj = g.obj; grapHintAge = 0; } grapHintAge += ImGui::GetIO().DeltaTime;
+        if (!Project(g.anchor, p)) return;
+        float in = std::clamp((float)grapHintAge / 0.15f, 0.f, 1.f), R = (16 + (1 - in) * 14) * ui; ImU32 k = IM_COL32(127, 232, 255, (int)(200 * in + 40));
+        for (int i = 0; i < 4; i++) { float a0 = t * 2.2f + i * 1.5708f; dl->PathArcTo(p, R, a0, a0 + 0.9f, 10); dl->PathStroke(k, 0, 2.f * ui); }   // four arcs, turning
+        dl->AddCircleFilled(p, 2.5f * ui, k);
+    }
+    void GrappleLetGo(bool fling) {
+        if (grap.state == 2) {
+            if (fling && grap.what == 1) player.vel.y = std::max(player.vel.y, 0.0) + 5.5;   // (jumping off a swing: up and on)
+            if (grap.what == 3) grapStun[grap.obj] = 1.6f;   // (a pulled enemy: dizzy a moment longer)
+            if (grap.what == 4) grapStun.erase(grap.obj);
+            PlaySoundIn(SND_WEAPONS, playerSounds.grappleLetGo);
+        }
+        if (grap.state != 0) grap.state = 3;
+        if (grapVoice) { StopSounds(TAG_GRAPPLE); grapVoice = nullptr; }
+    }
+    void UpdateGrapple(double dt, const Controls& c) {
+        bool can = playMode && Playing() && !play.dead() && !player.ball && HasItemType(ItemType::GrappleBeam);
+        bool held = can && ActDown(Act::Grapple), pressed = held && !grapPrev; grapPrev = held;
+        bool jumpNow = c.jump && !grapJumpPrev; grapJumpPrev = c.jump;
+        V3 from = GrappleFrom();
+        if (!can && grap.state != 0) { GrappleLetGo(false); grap.state = 0; return; }
+        if (grap.state == 0 && pressed) {   // fire: at the grapple point or enemy nearest the crosshair (within a few degrees), else straight
+            GrappleRt g; g.state = 1; g.dir = AimDir(); g.out = 0; GrappleFind(g);
+            if (g.has) { V3 d = g.anchor - from; double L = std::max(1e-3, std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z)); g.dir = d * (1 / L); }
+            g.tip = from; grap = g;
+            PlaySoundIn(SND_WEAPONS, playerSounds.grappleFire);
+        }
+        if (grap.state == 1) {   // flying out
+            if (!held) { grap.state = 3; }
+            else {
+                double step = GRAP_SPEED * dt;
+                if (grap.has) {
+                    V3 tp = GrappleTargetPos(grap); V3 d = tp - from; double L = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+                    grap.dir = L > 1e-3 ? d * (1 / L) : grap.dir; grap.out = std::min(grap.out + step, L); grap.tip = from + grap.dir * grap.out;
+                    if (grap.out >= L - 0.05) {   // there: latch on
+                        const WorldObject* o = nullptr; for (const WorldObject& q : objects) if (q.id == grap.obj) { o = &q; break; }
+                        if (!o) grap.state = 3;
+                        else {
+                            grap.state = 2; grap.anchor = tp; grap.t = 0;
+                            if (o->kind == ObjKind::GrapplePoint) {
+                                grap.what = o->grapple.mode == 1 ? 2 : 1;
+                                V3 dm = PlayerMiddle() - tp; grap.rope = std::sqrt(dm.x * dm.x + dm.y * dm.y + dm.z * dm.z);
+                                if (o->grapple.length > 0) grap.len = o->grapple.length; else grap.len = grap.rope;
+                            } else {
+                                const EnemyType* t = enemies.find(o->enemyType); grap.what = t && t->grapple == 1 ? 4 : 3;
+                                grapStun[grap.obj] = 99;   // (held: it doesn't move on its own)
+                            }
+                            SpawnFx(particlePreset("Impact"), tp, grap.dir * -1, 0x7FE8FF);
+                            PlaySoundIn(SND_WEAPONS, playerSounds.grappleLatch, 1, &tp);
+                            if (!grapVoice) if (const SoundUse* u = playerSounds.grappleHum.pick(soundSeed)) { grapUse = *u; grapVoice = PlaySoundIn(SND_WEAPONS, grapUse, 1, nullptr, TAG_GRAPPLE, true); }
+                        }
+                    }
+                } else {   // straight: a block marked breakable by the Grapple Beam is torn out, anything else stops it
+                    Hit h; double prev = grap.out; grap.out += step;
+                    if (world->raycast(from + grap.dir * prev, grap.dir, step, h)) {
+                        grap.tip = from + grap.dir * (prev + h.t);
+                        const std::string* br = breakables.breaker(h.x, h.y, h.z);
+                        if (br && *br == "Grapple") { grap.state = 2; grap.what = 5; grap.bx = h.x; grap.by = h.y; grap.bz = h.z; grap.anchor = grap.tip; grap.t = 0; PlaySoundIn(SND_WEAPONS, playerSounds.grappleLatch, 1, &grap.tip); }
+                        else { SpawnFx(particlePreset("Impact"), grap.tip, grap.dir * -1, 0x7FE8FF); grap.state = 3; grap.out = prev + h.t; }
+                    } else { grap.tip = from + grap.dir * grap.out; if (grap.out >= GRAP_RANGE) grap.state = 3; }
+                }
+            }
+        }
+        if (grap.state == 2) {   // latched
+            grap.t += dt;
+            if (!held) GrappleLetGo(false);
+            else if (grap.what == 1 && jumpNow) GrappleLetGo(true);
+            else {
+                V3 mid = PlayerMiddle();
+                if (grap.what == 1) {   // swing: a rope - never further than its length (reeling in to a set length), gravity and your steering do the rest
+                    grap.rope += (grap.len - grap.rope) * std::min(1.0, dt * 3);
+                    V3 d = mid - grap.anchor; double L = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+                    if (L > 1e-3) {
+                        V3 n = d * (1 / L); double vr = player.vel.x * n.x + player.vel.y * n.y + player.vel.z * n.z;
+                        if (L >= grap.rope - 0.02) {
+                            if (vr > 0) player.vel = player.vel - n * vr;                         // the rope holds
+                            if (L > grap.rope) player.vel = player.vel - n * ((L - grap.rope) * 6); // (pulled back to its length; by speed, so walls still stop you)
+                        }
+                    }
+                } else if (grap.what == 2 || grap.what == 4) {   // pulled there
+                    if (grap.what == 4) grap.anchor = GrappleTargetPos(grap);
+                    V3 d = grap.anchor - mid; double L = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+                    if (L < (grap.what == 4 ? 2.2 : 1.4) || grap.t > 3) { player.vel = player.vel * 0.35; player.vel.y = std::max(player.vel.y, 4.0); GrappleLetGo(false); }
+                    else player.vel = d * (std::min(20.0, 4 + grap.t * 40) / L);
+                } else if (grap.what == 3) {   // an enemy pulled to you
+                    auto it = enemyRt.find(grap.obj);
+                    if (it == enemyRt.end() || !it->second.alive()) GrappleLetGo(false);
+                    else {
+                        EnemyState& es = it->second; V3 d = mid - GrappleTargetPos(grap); double L = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+                        if (L < 2.2 || grap.t > 2.5) GrappleLetGo(false);
+                        else { double sp = std::min(16.0, 3 + grap.t * 40) * dt; es.pos = es.pos + d * (std::min(sp, L - 2.0) / L); es.vel = { 0, 0, 0 }; es.attached = false; }
+                    }
+                    grap.anchor = GrappleTargetPos(grap);
+                } else if (grap.what == 5) {   // a block torn out
+                    if (grap.t > 0.35) { TryBreak(grap.bx, grap.by, grap.bz, "Grapple", false, false); GrappleLetGo(false); }
+                }
+                if (grap.state == 2) grap.tip = grap.anchor;
+            }
+        }
+        if (grap.state == 3) {   // coming back to the cannon
+            V3 d = grap.tip - from; double L = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+            double nl = L - GRAP_SPEED * 1.3 * dt;
+            if (nl <= 0.05) grap.state = 0; else grap.tip = from + d * (nl / L);
+        }
+        if (grapVoice && grap.state != 2) { StopSounds(TAG_GRAPPLE); grapVoice = nullptr; }
+        if (grapVoice) grapVoice->SetVolume(grapUse.volume * CatVolume(SND_WEAPONS));
+    }
     void ToggleBall() {
         if (!playMode || play.dead()) return;
         if (!player.ball) {
@@ -14671,7 +14870,7 @@ struct App {
             Line3D(dl, c[0], c[7], (col & 0x00FFFFFF) | 0x60000000); Line3D(dl, c[3], c[4], (col & 0x00FFFFFF) | 0x60000000);   // a cross: "this one breaks"
         }
     }
-    std::vector<std::string> Breakers() { std::vector<std::string> v{ "", "Bomb", "Power Bomb", "Speed Booster", "Missile", "Charged shot" }; for (const Beam& b : weapons.beams) v.push_back(b.name); for (const MissileType& m : weapons.missileTypes) if (m.name != "Missile") v.push_back(m.name); return v; }
+    std::vector<std::string> Breakers() { std::vector<std::string> v{ "", "Bomb", "Power Bomb", "Speed Booster", "Grapple", "Missile", "Charged shot" }; for (const Beam& b : weapons.beams) v.push_back(b.name); for (const MissileType& m : weapons.missileTypes) if (m.name != "Missile") v.push_back(m.name); return v; }
     static std::string BreakerLabel(const std::string& b) { return b.empty() ? "Any shot (or bomb, or missile)" : b == "Bomb" ? "Bombs only" : b == "Missile" ? "Missiles only (any kind)" : b == "Charged shot" ? "Charged shots only" : b + " only"; }
     bool BreakerCombo(const char* id, std::string& v) {
         bool ch = false;
@@ -15615,7 +15814,7 @@ struct App {
         ImGui::Separator();
         if (ImGui::BeginMenu("Object in the world")) {   // like Unity's GameObject menu: picked, then click in the viewport to put it down
             const std::pair<const char*, const char*> objs[] = { { "Light", "@light" }, { "Particles", "@emitter" }, { "Energy (health)", "@health" }, { "Key", "@key" }, { "Gem (a collectible)", "@gem" },
-                { "Checkpoint", "@checkpoint" }, { "Teleporter", "@teleporter" }, { "Trigger zone", "@zone" }, { "Save Station", "@save-station" }, { "Map Station", "@map-station" }, { "Map camera", "@map-camera" }, { "Ambient light", "@ambient" } };
+                { "Checkpoint", "@checkpoint" }, { "Teleporter", "@teleporter" }, { "Trigger zone", "@zone" }, { "Save Station", "@save-station" }, { "Map Station", "@map-station" }, { "Map camera", "@map-camera" }, { "Ambient light", "@ambient" }, { "Grapple point", "@grapple-point" } };
             for (auto& o : objs) if (ImGui::MenuItem(o.first)) { StartPlacing(o.second); focusView = true; }
             if (ImGui::BeginMenu("Enemy")) {
                 for (const EnemyType& t : enemies.types) if (ImGui::MenuItem(t.name.c_str())) { StartPlacingEnemy(t.id); focusView = true; }
@@ -16932,7 +17131,7 @@ struct App {
             PlayerEditor();
             ScreensEditor(); PlanetsEditor(); CookWindow();
         } else {
-            if (!mapOpen && !CurScreen()) { DrawHud(ImGui::GetForegroundDrawList()); DrawScanMarkers(ImGui::GetForegroundDrawList()); DrawLockMarkers(ImGui::GetForegroundDrawList()); }
+            if (!mapOpen && !CurScreen()) { DrawHud(ImGui::GetForegroundDrawList()); DrawScanMarkers(ImGui::GetForegroundDrawList()); DrawLockMarkers(ImGui::GetForegroundDrawList()); DrawGrappleMarker(ImGui::GetForegroundDrawList()); }
             if (showF3) DrawF3();
             if (CurScreen()) { if (!showSettings) ScreenInput(); }
             else if (mapOpen) MapScreen();

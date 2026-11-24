@@ -46,6 +46,7 @@ struct EnemyType {
     uint32_t color = 0xFF8040;                          // its bursts and hurt flash
     bool lockable = true;                               // lock-on (right mouse) can pick it
     bool onRadar = true;                                // shows as a dot on the HUD's radar
+    int grapple = 0;                                    // the Grapple Beam: 0 it is pulled to you (and stunned), 1 it pulls you to it (big, heavy ones), 2 nothing (the beam slips off)
 };
 // how a kind of drop looks (Energy, or a counter: Missile, Power Bomb ...): a model, a bigger one from some amount on,
 // spinning and bobbing, a light, its own pickup sound, how long it stays

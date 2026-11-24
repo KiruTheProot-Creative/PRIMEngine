@@ -471,7 +471,7 @@ int main() {
         CHECK(v2.size() == 1 && v2[0].kind == ObjKind::Trigger && v2[0].size.x == 4 && v2[0].trigger.action == TriggerAction::Kill && v2[0].trigger.text == "Watch out!"
               && v2[0].teleport.world == "Level 2" && v2[0].teleport.target == "Arrival pad" && v2[0].door.key == "Red key" && v2[0].pickup.name == "Big gem", "helpers save and load (names with spaces too)");
         int shapes = 0; for (auto& n : builtinShapeNames()) { MeshModel m; shapes += builtinShape(n, m) && m.triangles() > 0; }
-        CHECK(shapes == 18, "all built-in looks build (%d)", shapes);
+        CHECK(shapes == 19, "all built-in looks build (%d)", shapes);
         {   // an ambient light's settings are kept
             WorldObject a; a.kind = ObjKind::Ambient; a.model = "@ambient"; a.ambient = ambientPreset(2); a.ambient.look = "Hot haze"; a.ambient.blend = 5;
             std::vector<WorldObject> av{ a }, av2; saveObjects("/tmp/prim_amb.txt", av); loadObjects("/tmp/prim_amb.txt", av2);

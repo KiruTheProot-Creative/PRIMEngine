@@ -89,7 +89,7 @@ const char* collideName(Collide c) { return c == Collide::Exact ? "Exact (from i
 const char* kindName(ObjKind k) {
     switch (k) { case ObjKind::Door: return "Door"; case ObjKind::Platform: return "Platform"; case ObjKind::Pickup: return "Pickup"; case ObjKind::Checkpoint: return "Checkpoint";
     case ObjKind::Teleporter: return "Teleporter"; case ObjKind::Trigger: return "Trigger zone"; case ObjKind::Light: return "Light"; case ObjKind::Particles: return "Particles";
-    case ObjKind::MapCamera: return "Map camera"; case ObjKind::MapStation: return "Map Station"; case ObjKind::Enemy: return "Enemy"; case ObjKind::SaveStation: return "Save Station"; case ObjKind::Ambient: return "Ambient light"; default: return "Prop"; }
+    case ObjKind::MapCamera: return "Map camera"; case ObjKind::MapStation: return "Map Station"; case ObjKind::Enemy: return "Enemy"; case ObjKind::SaveStation: return "Save Station"; case ObjKind::Ambient: return "Ambient light"; case ObjKind::GrapplePoint: return "Grapple point"; default: return "Prop"; }
 }
 const char* pickupName(PickupType t) { return t == PickupType::Key ? "Key" : t == PickupType::Collectible ? "Collectible (counted)" : "Health"; }
 const char* triggerName(TriggerAction a) { return a == TriggerAction::Kill ? "Kill (traps, acid ...)" : a == TriggerAction::Heal ? "Heal" : a == TriggerAction::Checkpoint ? "Checkpoint" : "Show a message"; }
@@ -246,6 +246,7 @@ bool saveObjects(const std::string& path, const std::vector<WorldObject>& objs) 
             f << " amb " << A.up << " " << A.down << " " << A.north << " " << A.south << " " << A.east << " " << A.west << " " << A.strength << " " << A.mix
               << " " << A.fog << " " << A.fogAmount << " " << A.reach << " " << A.blend << " " << escText(A.look);
         }
+        if (o.kind == ObjKind::GrapplePoint) f << " grp " << o.grapple.mode << " " << o.grapple.length << " " << o.grapple.reach;
         f << "\n";
     }
     return (bool)f;
@@ -287,7 +288,8 @@ bool loadObjects(const std::string& path, std::vector<WorldObject>& objs) {
               if (!tok.empty() && tok.find_first_not_of("0123456789") == std::string::npos) { o.scan.id = std::stoi(tok); int et; if (l >> et) { o.enemyType = et; int se, sa; if (l >> se >> sa) { o.save.energy = se != 0; o.save.ammo = sa != 0; std::string an; if (l >> an) { o.save.anim = unescText(an); int ls; float ll; if (l >> ls >> ll) { o.light.shadows = ls != 0; o.light.length = std::clamp(ll, 0.25f, 64.f); std::string so, sc; if (l >> so >> sc) { soundUseFrom(unescText(so), o.door.openSound); soundUseFrom(unescText(sc), o.door.closeSound); std::string stt, stx; int ask; if (l >> stt >> stx >> ask) { o.save.title = unescText(stt); o.save.text = unescText(stx); o.save.ask = ask != 0; } } } } } } }
               else { std::string sc, st; int imp = 0; float tm = 0; o.scan.legacyName = unescText(tok); if (l >> sc >> st >> imp >> tm) { o.scan.legacyCategory = unescText(sc); o.scan.legacyText = unescText(st); o.scan.legacyImportant = imp != 0; o.scan.legacyTime = std::max(0.f, tm); } }
           } }
-        { std::string t; if (l >> t && t == "amb") {   // an ambient light's settings (newer files)
+        { std::string t; if (l >> t && t == "grp") { GrappleSettings& G = o.grapple; if (l >> G.mode >> G.length >> G.reach) { G.mode = std::clamp(G.mode, 0, 1); G.reach = std::clamp(G.reach, 2.f, 80.f); G.length = std::clamp(G.length, 0.f, 60.f); } }
+          else if (t == "amb") {   // an ambient light's settings (newer files)
             AmbientSettings& A = o.ambient; std::string lk;
             if (l >> A.up >> A.down >> A.north >> A.south >> A.east >> A.west >> A.strength >> A.mix >> A.fog >> A.fogAmount >> A.reach >> A.blend >> lk) {
                 A.look = unescText(lk); A.reach = std::clamp(A.reach, 2.f, 256.f); A.blend = std::clamp(A.blend, 0, 16); A.mix = std::clamp(A.mix, 0.f, 1.f);
