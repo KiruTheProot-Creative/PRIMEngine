@@ -400,7 +400,7 @@ struct App {
         D3D11_SAMPLER_DESC sm{}; sm.Filter = D3D11_FILTER_MIN_MAG_POINT_MIP_LINEAR; sm.AddressU = sm.AddressV = sm.AddressW = D3D11_TEXTURE_ADDRESS_WRAP; sm.MaxLOD = D3D11_FLOAT32_MAX; sm.MipLODBias = bias;
         ComPtr<ID3D11SamplerState> s; if (SUCCEEDED(dev->CreateSamplerState(&sm, &s))) sampBlocks = s;
     }      // ... with clouds and fog
-    ComPtr<ID3D11ShaderResourceView> depthSRV, noiseSRV, depthCopySRV; ComPtr<ID3D11Texture2D> depthCopy; ComPtr<ID3D11DepthStencilView> depthCopyDSV; bool waterNow = false; ComPtr<ID3D11PixelShader> psWater; ComPtr<ID3D11SamplerState> sampLinear, sampClamp; double cloudTime = 0, precipTime = 0, precipWindX = 0, precipWindZ = 0;   // depthCopy: the world's depth without the water (see-through things behind the water test against it)
+    ComPtr<ID3D11ShaderResourceView> depthSRV, noiseSRV, depthCopySRV; ComPtr<ID3D11Texture2D> depthCopy; ComPtr<ID3D11DepthStencilView> depthCopyDSV, depthCopyRODSV; bool waterNow = false; ComPtr<ID3D11PixelShader> psWater; ComPtr<ID3D11SamplerState> sampLinear, sampClamp; double cloudTime = 0, precipTime = 0, precipWindX = 0, precipWindZ = 0;   // depthCopy: the world's depth without the water (see-through things behind the water test against it)
     struct BloomLevel { ComPtr<ID3D11Texture2D> tex; ComPtr<ID3D11RenderTargetView> rtv; ComPtr<ID3D11ShaderResourceView> srv; int w = 0, h = 0; };
     BloomLevel aaSrc;   // anti-aliasing: the finished picture, before its edges are smoothed
     // render scale: the world drawn at sceneW x sceneH (rw x rh while it is drawn), then fitted to the screen (rw x rh the rest of the time)
@@ -657,8 +657,9 @@ struct App {
         depthTex.Reset(); dsv.Reset(); depthSRV.Reset(); HR(dev->CreateTexture2D(&d, nullptr, &depthTex));
         { D3D11_DEPTH_STENCIL_VIEW_DESC dv{}; dv.Format = DXGI_FORMAT_D32_FLOAT; dv.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D; HR(dev->CreateDepthStencilView(depthTex.Get(), &dv, &dsv));
           D3D11_SHADER_RESOURCE_VIEW_DESC sv{}; sv.Format = DXGI_FORMAT_R32_FLOAT; sv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D; sv.Texture2D.MipLevels = 1; HR(dev->CreateShaderResourceView(depthTex.Get(), &sv, &depthSRV));
-          depthCopy.Reset(); depthCopySRV.Reset(); depthCopyDSV.Reset(); D3D11_TEXTURE2D_DESC cd = d; cd.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_DEPTH_STENCIL;
-          HR(dev->CreateTexture2D(&cd, nullptr, &depthCopy)); HR(dev->CreateShaderResourceView(depthCopy.Get(), &sv, &depthCopySRV)); HR(dev->CreateDepthStencilView(depthCopy.Get(), &dv, &depthCopyDSV)); }
+          depthCopy.Reset(); depthCopySRV.Reset(); depthCopyDSV.Reset(); depthCopyRODSV.Reset(); D3D11_TEXTURE2D_DESC cd = d; cd.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_DEPTH_STENCIL;
+          HR(dev->CreateTexture2D(&cd, nullptr, &depthCopy)); HR(dev->CreateShaderResourceView(depthCopy.Get(), &sv, &depthCopySRV)); HR(dev->CreateDepthStencilView(depthCopy.Get(), &dv, &depthCopyDSV));
+          dv.Flags = D3D11_DSV_READ_ONLY_DEPTH; HR(dev->CreateDepthStencilView(depthCopy.Get(), &dv, &depthCopyRODSV)); dv.Flags = 0; }   // (read-only: tested against and read at once - particles over water)
         d.Format = DXGI_FORMAT_R16G16B16A16_FLOAT; d.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
         hdrTex.Reset(); hdrRTV.Reset(); hdrSRV.Reset();
         HR(dev->CreateTexture2D(&d, nullptr, &hdrTex)); HR(dev->CreateRenderTargetView(hdrTex.Get(), nullptr, &hdrRTV)); HR(dev->CreateShaderResourceView(hdrTex.Get(), nullptr, &hdrSRV));
@@ -2502,7 +2503,9 @@ struct App {
         ctx->Unmap(vbParticles.Get(), 0);
         // soft edges where particles meet the world: they read a copy of the depth
         ID3D11RenderTargetView* rt = nullptr; ID3D11DepthStencilView* ds = nullptr; ctx->OMGetRenderTargets(1, &rt, &ds);
-        ctx->OMSetRenderTargets(1, &rt, nullptr); ctx->CopyResource(depthCopy.Get(), depthTex.Get()); ctx->OMSetRenderTargets(1, &rt, ds);
+        bool onCopy = ds && ds == depthCopyDSV.Get();   // water in the picture: drawn against the copy (the world without the water) - it can't be the target and be read at once,
+        if (onCopy) ctx->OMSetRenderTargets(1, &rt, depthCopyRODSV.Get());   // so read-only (before: the read came back empty and every particle vanished near water or lava)
+        else { ctx->OMSetRenderTargets(1, &rt, nullptr); ctx->CopyResource(depthCopy.Get(), depthTex.Get()); ctx->OMSetRenderTargets(1, &rt, ds); }
         ctx->PSSetShaderResources(2, 1, depthCopySRV.GetAddressOf()); ctx->PSSetShaderResources(3, 1, noiseSRV.GetAddressOf()); ctx->PSSetSamplers(2, 1, sampLinear.GetAddressOf());
         UINT stride = sizeof(PVtx), off = 0; ctx->IASetVertexBuffers(0, 1, vbParticles.GetAddressOf(), &stride, &off); ctx->IASetInputLayout(layoutParticle.Get());
         ctx->VSSetShader(vsParticle.Get(), nullptr, 0); ctx->PSSetShader(psParticle.Get(), nullptr, 0);
@@ -2511,6 +2514,7 @@ struct App {
         if (!soft.empty()) { ctx->OMSetBlendState(bsAlpha.Get(), nullptr, 0xFFFFFFFF); ctx->Draw((UINT)soft.size(), (UINT)add.size()); }
         ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());
         ID3D11ShaderResourceView* none2[1] = {}; ctx->PSSetShaderResources(2, 1, none2);
+        if (onCopy) ctx->OMSetRenderTargets(1, &rt, ds);
         ctx->IASetInputLayout(layout.Get());
         if (rt) rt->Release(); if (ds) ds->Release();
     }
@@ -17868,7 +17872,7 @@ struct App {
     void FrameCap() {
         int cap = settings.maxFps; auto now = std::chrono::steady_clock::now();
         if (cap <= 0) { capPrev = now; return; }
-        auto period = std::chrono::nanoseconds((long long)(1e9 / cap)), target = capPrev + period;
+        auto period = std::chrono::nanoseconds((long long)(1e9 / cap)); std::chrono::steady_clock::time_point target = capPrev + std::chrono::duration_cast<std::chrono::steady_clock::duration>(period);
         if (now >= target) { capPrev = now; return; }   // (late already: no waiting, and no catching up)
         auto left = target - now;
         if (left > std::chrono::microseconds(1500)) {
