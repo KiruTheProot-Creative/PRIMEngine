@@ -23,6 +23,7 @@
 #include "../src/game/planets.h"
 #include "../src/game/cook.h"
 #include "../src/game/ambient.h"
+#include "../src/world/shapes.h"
 #include "../src/game/savegame.h"
 #include "../src/game/bosses.h"
 #include "../src/game/assets.h"
@@ -1829,6 +1830,15 @@ int main() {
                     AmbientFill thr; fillAmbient(cw, V3{ 5.5, 1.5, 5.5 }, 48, 0, doors, thr, 400000, [&](int x, int y, int z) { return x == 12 && y >= 1 && y <= 2 && z == 10; });
                     bool behind = false; for (auto& c : thr.cells) if (c.first == I3{ 18, 2, 10 }) behind = true;
                     CHECK(behind, "an ambient light goes through blocks marked breakable");
+                }
+                {   // shapes (map details: slabs, panels, pipes) don't stop it; it only stops at the sides they cover completely
+                    int slabS = Shapes::get().find("half"); BlockId slab = makeBlock(typeOf(st), slabS, 0);
+                    cw.set(7, 1, 7, slab); cw.set(8, 1, 8, slab);
+                    AmbientFill sf; fillAmbient(cw, V3{ 7.5, 1.2, 7.5 }, 48, 0, doors, sf);   // (standing right in the slab)
+                    bool inSlab = false, above = false, far = false;
+                    for (auto& c : sf.cells) { if (c.first == I3{ 8, 1, 8 }) inSlab = true; if (c.first == I3{ 7, 2, 7 }) above = true; if (c.first == I3{ 3, 3, 3 }) far = true; }
+                    CHECK(slabS > 0 && !sf.stuck && inSlab && above && far, "ambient light: slabs and other details don't stop it or trap it (%d %d %d %d)", (int)sf.stuck, inSlab, above, far);
+                    cw.set(7, 1, 7, AIR); cw.set(8, 1, 8, AIR);
                 }
                 {   // speed: out in the open (the most it can fill)
                     auto t0 = std::chrono::steady_clock::now(); AmbientFill big; fillAmbient(cw, V3{ 50.5, 10.5, 50.5 }, 48, 3, doors, big);

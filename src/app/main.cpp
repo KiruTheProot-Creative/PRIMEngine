@@ -4435,7 +4435,7 @@ struct App {
         fc.camF[0] = (float)f.x; fc.camF[1] = (float)f.y; fc.camF[2] = (float)f.z; fc.camR[0] = (float)r.x; fc.camR[1] = (float)r.y; fc.camR[2] = (float)r.z;
         fc.camU[0] = (float)u.x; fc.camU[1] = (float)u.y; fc.camU[2] = (float)u.z; fc.proj[0] = std::tan(XMConvertToRadians(settings.fov) * 0.5f); fc.proj[1] = aspect;
 
-        GpuMark("shadow maps");
+        GpuMark("setup: block and object copies for rays");
         // ---- shadow map: the world seen from the sun, around the camera
         int wantShadow = settings.shadowQuality <= 0 ? 0 : std::clamp(settings.shadowRes, 512, 4096);
         if (wantShadow != shadowSize) MakeShadowMap(wantShadow);
@@ -4629,6 +4629,7 @@ struct App {
         };
         ID3D11ShaderResourceView* none[5] = {};
         ctx->PSSetShaderResources(0, 5, none);
+        GpuMark("shadows: sun");
         if (shadows) {   // each cascade from the sun (only what is inside it gets drawn)
             D3D11_VIEWPORT sv{ 0, 0, (float)shadowSize, (float)shadowSize, 0, 1 }; ctx->RSSetViewports(1, &sv);
             ctx->RSSetState(rsShadow.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsShadow.Get(), nullptr, 0);
@@ -4645,7 +4646,9 @@ struct App {
         }
         {   // shadows of the few lights that cast them (a cube each, spotlights one view)
             ID3D11ShaderResourceView* n1[1] = {}; ctx->PSSetShaderResources(22, 1, n1);
+            GpuMark("shadows: lamps");
             if (!casters.empty()) {
+                for (const ShadowCaster& sc : casters) if (sc.render) lshFacesDrawn += sc.type == 1 ? 1 : 6;
                 D3D11_VIEWPORT sv{ 0, 0, (float)lshRes, (float)lshRes, 0, 1 }; ctx->RSSetViewports(1, &sv);
                 ctx->RSSetState(rsLightShadow.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsShadow.Get(), nullptr, 0);
                 ctx->PSSetShaderResources(0, 1, texArray.GetAddressOf()); ctx->PSSetShaderResources(14, 1, emitArray.GetAddressOf()); ctx->PSSetSamplers(0, 1, sampBlocks.GetAddressOf());
@@ -4663,6 +4666,7 @@ struct App {
             ctx->OMSetRenderTargets(0, nullptr, nullptr);
             ID3D11ShaderResourceView* ls = lshSRV.Get(); ctx->PSSetShaderResources(22, 1, &ls);
         }
+        GpuMark("roofs map");
         if (occRender) {   // the roofs map: opaque things seen from straight above (true darkness)
             ID3D11ShaderResourceView* n1[1] = {}; ctx->PSSetShaderResources(18, 1, n1);
             FrameCB cf = fc; XMStoreFloat4x4(&cf.skyVP, occBase); ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &cf, 0, 0);
@@ -4780,7 +4784,7 @@ struct App {
         }
         ctx->PSSetShader(psOpaque.Get(), nullptr, 0); drawChunks(vp, 0, true, true);
         ctx->OMSetDepthStencilState(dsOn.Get(), 0);
-        partsDrawnShown = partsDrawn; partsCulledShown = partsCulled; caveHiddenShown = caveHidden; cookHiddenShown = cookHidden; lodDrawnShown = lodDrawn; hizHiddenShown = hizHidden; cascDrawnShown = cascDrawn; cascDrawn = 0;
+        partsDrawnShown = partsDrawn; partsCulledShown = partsCulled; caveHiddenShown = caveHidden; cookHiddenShown = cookHidden; lodDrawnShown = lodDrawn; hizHiddenShown = hizHidden; cascDrawnShown = cascDrawn; cascDrawn = 0; lshFacesShown = lshFacesDrawn; lshFacesDrawn = 0;
         ctx->PSSetShader(psCutout.Get(), nullptr, 0); drawChunks(vp, 1, false, true);
 
         GpuMark("ambient occlusion");
@@ -5343,7 +5347,7 @@ struct App {
         ImGui::Text("Block: %d %d %d   Chunk: %d %d %d", b.x, b.y, b.z, c.x, c.y, c.z);
         ImGui::Text("Facing: %s   %s", dirs[((int)(yd / 90)) % 4], player.flying ? "flying" : "walking");
         ImGui::Text("Chunks: %zu loaded, %zu with meshes, %d drawn, %d hidden behind walls%s", world->loadedCount(), gpu.size(), drawnChunks, caveHiddenShown, caveOn ? "" : " (off)");
-        ImGui::Text("Sun shadow maps drawn this frame: %d of 4 (the far ones every 2nd / 4th / 8th frame)", cascDrawnShown);
+        ImGui::Text("Sun shadow maps drawn this frame: %d of 4 (the far ones every 2nd / 4th / 8th frame); lamp shadow sides drawn: %d", cascDrawnShown, lshFacesShown);
         if (settings.hideHidden) ImGui::Text("Hidden behind things (not drawn): %d chunks and far copies", hizHiddenShown);
         if (settings.targetFps > 0) ImGui::Text("Auto resolution: %.0f%% of the render scale (keeping %d FPS)", dynScale * 100, settings.targetFps);
         if (lodK) { size_t waiting = 0; for (int k = 1; k <= lodK; k++) waiting += lodDirty[k].size();
@@ -16869,7 +16873,7 @@ struct App {
 
     // ================================================================== frame
     float dynScale = 1.f; double dynT = 0;
-    float drawMaxDist = 0;   // (drawing chunks: only this near, 0 all)
+    float drawMaxDist = 0; int lshFacesDrawn = 0, lshFacesShown = 0;   // (drawing chunks: only this near, 0 all)
     XMFLOAT4X4 cascVPs[4]; V3 cascCam[4]; V3 cascSun[4]; float cascR0[4] = { 0, 0, 0, 0 }; bool cascValid[4] = { false, false, false, false }; int cascSize = 0, cascDrawn = 0, cascDrawnShown = 0;   // the sun's maps: when each was drawn
     ComPtr<ID3D11Texture2D> primePrevZ; ComPtr<ID3D11ShaderResourceView> primePrevZSRV; bool primePrevZOk = false;   // PrimeScaler: the frame before's depth   // auto resolution: a share of the render scale, and the time since it last changed
     void FrameBody(double dt) {   // everything but showing the picture (screenshots grab it before)
