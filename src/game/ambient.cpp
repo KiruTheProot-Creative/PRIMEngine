@@ -8,10 +8,11 @@ namespace mc {
 // (fast: everything in flat arrays over the box it can reach - a fill of a big room takes a few milliseconds)
 void fillAmbient(const BlockRegistry& reg, const AmbChunkAt& chunkAt, V3 at, float reach, int blend, const std::vector<CookDoor>& doors, AmbientFill& out, size_t maxCells, const std::function<bool(int, int, int)>& through) {
     out = AmbientFill{};
-    const int R = (int)std::ceil(std::max(1.f, reach)) + std::max(0, blend) + 2;
+    int R = (int)std::ceil(std::max(1.f, reach)) + std::max(0, blend) + 2;
+    R = std::min(R, 160);   // (a very long reach: as far as the box can hold)
     const I3 c0{ (int)std::floor(at.x) - R, (int)std::floor(at.y) - R, (int)std::floor(at.z) - R };
     const int N = 2 * R + 1; const size_t NN = (size_t)N * N * N;
-    if (NN > (size_t)40 << 20) { out.stuck = true; return; }
+    if (NN > (size_t)48 << 20) { out.stuck = true; return; }
     // the chunks of the box, once
     const I3 k0 = chunkOf(c0.x, c0.y, c0.z), k1 = chunkOf(c0.x + N - 1, c0.y + N - 1, c0.z + N - 1);
     const int KX = k1.x - k0.x + 1, KY = k1.y - k0.y + 1, KZ = k1.z - k0.z + 1;
@@ -44,9 +45,9 @@ void fillAmbient(const BlockRegistry& reg, const AmbChunkAt& chunkAt, V3 at, flo
     };
     I3 s{ (int)std::floor(at.x), (int)std::floor(at.y), (int)std::floor(at.z) };
     { uint8_t k0s = kindAt(s.x, s.y, s.z);
-      if (k0s != 1 && k0s != 4) {   // (standing on the floor or half in a block: the nearest air around it, up to 3 blocks away)
+      if (k0s != 1 && k0s != 4) {   // (standing on the floor or half in a block: the nearest air around it, up to 6 blocks away)
         bool found = false; double best = 1e9; I3 bs = s;
-        for (int dy = -3; dy <= 3; dy++) for (int dz = -3; dz <= 3; dz++) for (int dx = -3; dx <= 3; dx++) {
+        for (int dy = -6; dy <= 6; dy++) for (int dz = -6; dz <= 6; dz++) for (int dx = -6; dx <= 6; dx++) {
             int x = s.x + dx, y = s.y + dy, z = s.z + dz; if (!inBox(x, y, z)) continue;
             uint8_t k = kindAt(x, y, z); if (k != 1 && k != 4) continue;
             double d2 = dx * dx + dz * dz + (dy < 0 ? dy * dy * 1.5 : dy * dy * 0.8); if (d2 < best) { best = d2; bs = { x, y, z }; found = true; }

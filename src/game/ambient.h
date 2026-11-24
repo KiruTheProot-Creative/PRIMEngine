@@ -24,7 +24,7 @@ inline void fillAmbient(World& w, V3 at, float reach, int blend, const std::vect
 }
 // the box of blocks a fill can look at (its chunks: what a copy needs)
 inline void ambientBox(V3 at, float reach, int blend, I3& lo, I3& hi) {
-    int R = (int)std::ceil(std::max(1.f, reach)) + std::max(0, blend) + 2;
+    int R = std::min((int)std::ceil(std::max(1.f, reach)) + std::max(0, blend) + 2, 160);
     lo = { (int)std::floor(at.x) - R, (int)std::floor(at.y) - R, (int)std::floor(at.z) - R }; hi = { lo.x + 2 * R, lo.y + 2 * R, lo.z + 2 * R };
 }
 

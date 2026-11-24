@@ -358,7 +358,18 @@ struct App {
         AmbientSettingsUI(o.ambient, false);
         auto it = ambRt.find(o.id);
         if (it != ambRt.end()) {
-            if (it->second.fill.stuck) ImGui::TextColored(ImVec4(1, 0.6f, 0.3f, 1), "It stands inside a block: move it into the air.");
+            if (it->second.fill.stuck) {
+                ImGui::TextColored(ImVec4(1, 0.6f, 0.3f, 1), "It stands inside blocks (no air within 6 blocks).");
+                if (ImGui::SmallButton("Move it to the nearest air")) {
+                    I3 c{ ifloor(o.pos.x), ifloor(o.pos.y), ifloor(o.pos.z) }; bool done = false;
+                    for (int r = 1; r <= 24 && !done; r++) for (int dy = -r; dy <= r && !done; dy++) for (int dz = -r; dz <= r && !done; dz++) for (int dx = -r; dx <= r && !done; dx++) {
+                        if (std::max({ std::abs(dx), std::abs(dy), std::abs(dz) }) != r) continue;
+                        BlockId v = world->get(c.x + dx, c.y + dy, c.z + dz); if (v != AIR && reg.get(v).solid && !reg.get(v).liquid) continue;
+                        o.pos = { c.x + dx + 0.5, (double)(c.y + dy), c.z + dz + 0.5 }; done = true;
+                    }
+                    if (!done) Toast("No air nearby");
+                }
+            }
             else { const AmbientFill& f = it->second.fill; ImGui::TextDisabled("Fills %zu blocks of air (%d x %d x %d)", f.cells.size(), f.hi.x - f.lo.x + 1, f.hi.y - f.lo.y + 1, f.hi.z - f.lo.z + 1); }
         }
     }
@@ -9571,7 +9582,8 @@ struct App {
                 I3 lo, hi; ambientBox(o->pos, o->ambient.reach, o->ambient.blend, lo, hi);
                 I3 k0 = chunkOf(lo.x, lo.y, lo.z), k1 = chunkOf(hi.x, hi.y, hi.z);
                 auto snap = std::make_shared<std::unordered_map<I3, std::unique_ptr<Chunk>, I3Hash>>();
-                for (int y = k0.y; y <= k1.y; y++) for (int z = k0.z; z <= k1.z; z++) for (int x = k0.x; x <= k1.x; x++) if (const Chunk* c = world->chunk({ x, y, z })) (*snap)[I3{ x, y, z }] = std::make_unique<Chunk>(*c);
+                RoomWorld rw = RoomWorldNow();   // (chunks that are not loaded: read from disk - a light far from you still fills its whole room)
+                for (int y = k0.y; y <= k1.y; y++) for (int z = k0.z; z <= k1.z; z++) for (int x = k0.x; x <= k1.x; x++) if (const Chunk* c = rw.chunkAt({ x, y, z })) (*snap)[I3{ x, y, z }] = std::make_unique<Chunk>(*c);
                 auto marks = std::make_shared<std::unordered_set<I3, I3Hash>>();
                 for (const auto& kv : breakables.marks) { I3 p{ kv.first[0], kv.first[1], kv.first[2] }; if (p.x >= lo.x && p.y >= lo.y && p.z >= lo.z && p.x <= hi.x && p.y <= hi.y && p.z <= hi.z) marks->insert(p); }
                 V3 at = o->pos; float reach = o->ambient.reach; int blend = o->ambient.blend; const BlockRegistry* rg = &reg; std::vector<CookDoor> dc = doors;
