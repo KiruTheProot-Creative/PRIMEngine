@@ -183,7 +183,9 @@ struct ScreenSet {
     int find(const std::string& name) const;              // -1: none
     int byRole(ScreenRole r) const;                       // the first screen with that role (-1: none)
     UiSounds sounds;                                      // the game's interface sounds (every screen and the pause menu)
-    SoundUse startSound; float startFade = 1.5f; bool fadeWithSound = true;   // picking a file: this sound, and the screen fades to black (as long as the sound, or startFade s)
+    SoundUse startSound; float startFade = 1.5f; bool fadeWithSound = true;
+    // getting into the game (after loading): the helmet fades in, the world shows as cyan block outlines sweeping out, colour fades in, the HUD glitches in (seconds each; 0: that step is left out)
+    bool bootOn = true; float bootHelmet = 1.0f, bootWire = 2.0f, bootColor = 1.2f, bootHud = 1.2f;   // picking a file: this sound, and the screen fades to black (as long as the sound, or startFade s)
 };
 ScreenSet defaultScreens();                               // Main menu, Files, Options, Death, Credits
 bool saveScreens(const std::string& path, const ScreenSet& s);

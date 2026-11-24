@@ -2062,6 +2062,8 @@ cbuffer LookCB : register(b10)
     float4 gDeathCol;  // rgb the static's colour, w black
     float4 gFlare;     // the sun's lens flare: xy where the sun is on screen (-1..1), z how strong (0: none)
     float4 gFlareCol;  // its colour
+    float4 gBoot;      // the boot-up: x the helmet (0..1), y how far the outlines have swept (blocks), z the colour (0..1), w on
+    float4 gBootCam;   // xyz: where the camera is inside its block (the outlines line up with the blocks)
 };
 Texture2D gExposure : register(t16);   // 1x1: the eye's adaptation (stops), see PS_Adapt
 Texture2D gLumTex : register(t17);     // log brightness of the picture, with mips (PS_LumLog)
@@ -2186,6 +2188,30 @@ float3 deathFx(float3 c, int2 px, float boost)
     if (sd > 0.001) { float l = dot(c, W); c = lerp(c, l.xxx, sd) * (1 - 0.92 * sd); }   // the colour drains away, it goes dark
     return c * (1 - gDeathCol.w) * boost;
 }
+// the boot-up: black, then the world as cyan block outlines (and silhouettes) sweeping out from you, then its colour over them
+float3 bootFx(float3 c, int2 px, float2 ndc, float zb)
+{
+    float3 wire = 0;
+    if (zb < 0.99999)
+    {
+        float z = linDepth(zb);
+        float3 ray = gCamF.xyz + gCamR.xyz * (ndc.x * gProj.x * gProj.y) + gCamU.xyz * (ndc.y * gProj.x);
+        float3 rel = ray * z; float dist = length(rel);
+        float3 f = frac(gBootCam.xyz + rel), e = min(f, 1 - f);
+        float mn = min(e.x, min(e.y, e.z)), mx = max(e.x, max(e.y, e.z)), second = e.x + e.y + e.z - mn - mx;   // the face it is on, then how near an edge
+        float pix = z * 2 * gProj.x / max(gDepth.w, 1);                                                          // a pixel's size there (blocks)
+        float edge = 1 - smoothstep(pix * 0.6, pix * 1.7, second);
+        float zl = linDepth(gSceneDepth.Load(int3(px + int2(1, 0), 0))), zr = linDepth(gSceneDepth.Load(int3(px - int2(1, 0), 0)));
+        float zu = linDepth(gSceneDepth.Load(int3(px + int2(0, 1), 0))), zd = linDepth(gSceneDepth.Load(int3(px - int2(0, 1), 0)));
+        float jump = max(max(abs(zl - z), abs(zr - z)), max(abs(zu - z), abs(zd - z))) / max(z, 0.1);
+        edge = max(edge, saturate((jump - 0.03) * 25));                                                         // silhouettes (objects, enemies, round things)
+        float R = gBoot.y, shown = saturate((R - dist) / 3);
+        float front = exp(-abs(dist - R) * 0.5) * step(dist, R + 3);                                             // the bright front of the sweep
+        float flick = 0.9 + 0.1 * sin(gBootCam.w * 40 + dist * 3);
+        wire = float3(0.15, 0.82, 1.0) * ((edge * (0.6 + 0.8 * front) + 0.05 + front * 0.12) * shown * flick);
+    }
+    return lerp(wire, c, gBoot.z);
+}
 float4 PS_Post(SkyOut i) : SV_Target
 {
     float tvBoost = 1;
@@ -2214,6 +2240,7 @@ float4 PS_Post(SkyOut i) : SV_Target
     if (dz >= gVHud.x && dz < gVHud.y) {   // the helmet's own parts: no visor look, no grade, no eye adaptation on them (the arm cannon gets it)
         float3 h = postBase(px, uv, 1);
         float2 v0 = i.ndc; h *= 1 - 0.18 * dot(v0, v0) * 0.5;
+        if (gBoot.w > 0.5) h *= gBoot.x * gBoot.x;   // the boot-up: the helmet fades in first
         return float4(pow(max(deathFx(h, px, tvBoost), 0), 1 / 2.2), 1);
     }
     float dropRim = 0;
@@ -2282,6 +2309,7 @@ float4 PS_Post(SkyOut i) : SV_Target
     float2 v = i.ndc; c *= 1 - gLk1.w * dot(v, v) * 0.5;               // the look's vignette
     c *= 1 - gVGrade.w * dot(v, v) * 0.5;                               // ... and the visor's own
     c = lerp(c, float3(1, 1, 1), saturate(gVMisc.w) * 0.6);             // switching visors: a flash
+    if (gBoot.w > 0.5) c = bootFx(c, int2(i.pos.xy), i.ndc, dz);        // the boot-up
     return float4(pow(max(deathFx(c, px, tvBoost), 0), 1 / 2.2), 1);
 }
 

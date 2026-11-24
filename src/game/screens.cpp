@@ -458,6 +458,7 @@ bool saveScreens(const std::string& path, const ScreenSet& set) {
     f << "screens 4\n";
     auto snd = [&](const char* k, const UiSounds& u) { f << k << " " << soundUseText(u.hover) << " " << soundUseText(u.click) << " " << soundUseText(u.back) << "\n"; };
     snd("uisounds", set.sounds);
+    f << "boot " << (set.bootOn ? 1 : 0) << " " << set.bootHelmet << " " << set.bootWire << " " << set.bootColor << " " << set.bootHud << "\n";
     f << "start " << set.startFade << " " << (set.fadeWithSound ? 1 : 0) << " " << soundUseText(set.startSound) << "\n";
     for (const Screen& s : set.screens) {
         f << "screen " << escText(s.name) << " " << (int)s.role << " " << s.fadeIn << "\n";
@@ -512,6 +513,7 @@ bool loadScreens(const std::string& path, ScreenSet& set) {
             one(0, u.hover); one(6, u.click); one(12, u.back); };
         if (k == "screens") l >> version;
         else if (k == "uisounds") readSnd(set.sounds);
+        else if (k == "boot") { int on = 1; l >> on >> set.bootHelmet >> set.bootWire >> set.bootColor >> set.bootHud; set.bootOn = on != 0; }
         else if (k == "start") { int ws = 1; std::string rest; l >> set.startFade >> ws; std::getline(l, rest); soundUseFrom(rest, set.startSound); set.fadeWithSound = ws != 0; }
         else if (k == "screen") {
             Screen s; std::string n; int role = 0; l >> n >> role >> s.fadeIn; s.name = unescText(n);

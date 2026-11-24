@@ -207,7 +207,7 @@ struct ModelGpu { std::vector<std::pair<I3, GpuChunk>> parts; std::vector<Box3> 
 struct alignas(16) PreviewCB { float vp[16]; float light[4]; };
 struct alignas(16) MapCB { float vp[16]; float eye[4]; float center[4]; float mode[4]; };   // the map hologram
 struct alignas(16) VisorCB { float tint[4], grade[4], lines[4], edge[4], misc[4], hud[4], outline[4]; };
-struct alignas(16) LookCB { float k0[4], k1[4], shadow[4], high[4], adapt[4], death[4], deathCol[4], flare[4], flareCol[4]; };   // the colour look (b10)   // the visor's look (post-processing)   // a block model's meshes (16^3 pieces) and collision
+struct alignas(16) LookCB { float k0[4], k1[4], shadow[4], high[4], adapt[4], death[4], deathCol[4], flare[4], flareCol[4], boot[4], bootCam[4]; };   // the colour look (b10)   // the visor's look (post-processing)   // a block model's meshes (16^3 pieces) and collision
 
 struct App;
 static App* g_app = nullptr;
@@ -500,6 +500,10 @@ struct App {
         if (FAILED(D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, &fl, 1, D3D11_SDK_VERSION, &sd, &swap, &dev, &got, &ctx))) {
             driverName = "software (WARP)";   // no usable graphics card (e.g. the build machine): Windows draws it on the processor
             HR(D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, &fl, 1, D3D11_SDK_VERSION, &sd, &swap, &dev, &got, &ctx));
+        }
+        {   // how much memory the graphics card has (baked lamp shadows use up to an eighth of it)
+            ComPtr<IDXGIDevice> dd; ComPtr<IDXGIAdapter> ad; DXGI_ADAPTER_DESC desc{};
+            if (SUCCEEDED(dev.As(&dd)) && SUCCEEDED(dd->GetAdapter(&ad)) && SUCCEEDED(ad->GetDesc(&desc))) vramBytes = desc.DedicatedVideoMemory;
         }
         MakeBackbuffer(); rw = cw; rh = ch; MakeTargets();
 
@@ -1263,6 +1267,7 @@ struct App {
         bool typing = ImGui::GetIO().WantTextInput;
         if (k == VK_F5 && !repeat) { if (menuSession) LeaveMenuSession(); else if (playMode) StopPlay(); else StartPlay(); return; }
         if (k == VK_F6 && !repeat && !playMode && !menuSession) { PlayFromMenu(); return; }
+        if (Frozen()) return;   // (loading, booting up: wait)
         if (k == VK_ESCAPE && bindCapture >= 0) { bindCapture = -1; keysQuiet = GetTickCount64() + 250; return; }   // setting a key: Esc says never mind
         if (k == VK_ESCAPE && optColHits && optColSel && uiClock - optColAt < 0.25 && optColGroupHit >= 0) {   // the options in columns: from an option back to the categories
             int sl = *optColSel; if (sl >= 0 && sl < (int)optColHits->size() && ((*optColHits)[sl].kind == 5 || (*optColHits)[sl].kind == 7)) { *optColSel = optColGroupHit; PlayUi(2); return; }
@@ -1356,10 +1361,11 @@ struct App {
     // ================================================================== game update
     void UpdateGame(double dt) {
         player.applySize(game.player);   // the size from the player rules (editor camera too)
-        PlayKeys();
+        bool frozen = Frozen();   // (loading, booting up: nothing moves, nothing can be done)
+        if (!frozen) PlayKeys();
         UpdateRadial();   // build modes: holding Tab (the mouse moves its pointer, not the view)
         bool locked = UpdateLockOn(dt);
-        if (Playing() || (playMode && demoDrive)) {
+        if ((Playing() || (playMode && demoDrive)) && !frozen) {
             V3 lockC; bool lookLocked = locked && LockPoint(lockId, lockC);
             if (lookLocked) {   // locked on: the view swings to the target and stays there; the mouse does not turn it
                 lockLook(player.eye(), lockC, player.yaw, player.pitch, weapons.lock.turnSpeed, dt);
@@ -1394,18 +1400,18 @@ struct App {
             if (playMode) hoverValid = false; else if (toolMode) ToolInteract(dt); else Interact(dt);
         } else { lPrev = rPrev = mPrev = true; if (stroking) EndStroke(); }
         toolValid = toolMode && !playMode && world->raycast(player.eye(), player.forward(), 160.0, toolHit);   // where the brush is (shown even with the mouse free)
-        if (!paused) UpdatePlatforms(std::min(dt, 0.05));
-        if (!paused) UpdateHelpers(std::min(dt, 0.05));
-        if (!paused) UpdateParticles(std::min(dt, 0.05));
-        if (playMode && !paused) { UpdateBall(std::min(dt, 0.05)); UpdateSpheres(std::min(dt, 0.05)); }
+        if (!paused && !frozen) UpdatePlatforms(std::min(dt, 0.05));
+        if (!paused && !frozen) UpdateHelpers(std::min(dt, 0.05));
+        if (!paused && !frozen) UpdateParticles(std::min(dt, 0.05));
+        if (playMode && !paused && !frozen) { UpdateBall(std::min(dt, 0.05)); UpdateSpheres(std::min(dt, 0.05)); }
         if (!playMode && !spheres.empty()) spheres.clear();
         UpdateHudSway(std::min(dt, 0.05));
         {   // paused (the pause menu, a scan's text, saving, options): the world blurs behind it; not on the map
             float target = playMode && paused && !mapOpen ? 1.f : 0.f;
             blurAmt += (target - blurAmt) * (float)(1 - std::exp(-dt * 10)); if (std::fabs(target - blurAmt) < 0.003f) blurAmt = target;
         }
-        if (playMode && !paused) UpdateDoors(std::min(dt, 0.05)); else if (!playMode && !doorRt.empty()) { doorRt.clear(); doorGpu.clear(); shots.clear(); RebuildSolids(); }
-        if (playMode && !paused) {   // health, lava, falling out of the world, respawning
+        if (playMode && !paused && !frozen) UpdateDoors(std::min(dt, 0.05)); else if (frozen) {} else if (!playMode && !doorRt.empty()) { doorRt.clear(); doorGpu.clear(); shots.clear(); RebuildSolids(); }
+        if (playMode && !paused && !frozen) {   // health, lava, falling out of the world, respawning
             PlayState::Event e = play.tick(*world, player, playRules, playSpawn, playYaw, std::min(dt, 0.05));
             if (e == PlayState::Died) { Toast(std::string("You ") + play.cause); GameSnd(&PlayerSounds::death, SND_MOVEMENT); StopScanLoop(); Signal(When::Dies, ""); ResetBossFights(); }
         }
@@ -1435,6 +1441,7 @@ struct App {
         CpuMark("game: uploading meshes"); CollectMeshes();
         CpuMark("game: other");
         if ((autosave += dt) > 60) { autosave = 0; SaveWorld(); }
+        UpdateLoading(dt);
     }
     // ---- panel layout helpers: everything fits the width of whatever panel it is in
     // a property row: the label on the left (cut short with "..." when narrow, full text on hover), the field fills the rest
@@ -1709,12 +1716,14 @@ struct App {
     ComPtr<ID3D11Buffer> lightBuf, clusterBuf, clusterIdxBuf, lshVPBuf, hudLightBuf, cbCluster; ComPtr<ID3D11ShaderResourceView> lightSRV, clusterSRV, clusterIdxSRV, lshVPSRV, hudLightSRV;
     static constexpr int LSH_MAX = 128;   // lights with shadow maps at most
     ComPtr<ID3D11Texture2D> lshTex; std::vector<ComPtr<ID3D11DepthStencilView>> lshDSV; ComPtr<ID3D11ShaderResourceView> lshSRV; int lshCount = -1, lshRes = 0;   // their maps: 6 sides each
+    ComPtr<ID3D11Texture2D> lshStatic; std::vector<ComPtr<ID3D11DepthStencilView>> lshStaticDSV;   // ... and each one's blocks only, baked once (what moves is added on a copy of it)
+    size_t vramBytes = 0; int shadowPart = 0;   // shadowPart: drawing a lamp's map: 0 everything, 1 only what stays (blocks, props), 2 only what moves
     // a light keeps its map (its slot) while it stays in reach, and the map is only drawn again when something near it moves or changes
-    struct LshSlot { uint64_t key = 0; bool valid = false; }; std::vector<LshSlot> lshSlots; std::vector<std::pair<V3, double>> lshMovers; std::vector<V3> meshesChanged;
+    struct LshSlot { uint64_t key = 0; bool valid = false, staticOk = false; }; std::vector<LshSlot> lshSlots; std::vector<std::pair<V3, double>> lshMovers; std::vector<V3> meshesChanged;
     ComPtr<ID3D11Texture2D> occTex; ComPtr<ID3D11DepthStencilView> occDSV; ComPtr<ID3D11ShaderResourceView> occSRV;   // the roofs map (true darkness)
     XMMATRIX occBase = XMMatrixIdentity(); V3 occCam{ 0, 0, 0 }; int occAge = 1000; float camOpen = 1; bool lightShadowPass = false;
     std::vector<LightGpu> frameLights; int frameLightCount = 0;
-    struct ShadowCaster { V3 rel; double range; int type; V3 dir; double cosCone; int slot; float nearZ = 0.05f; bool render = false; };   // render: its map is drawn this frame   // nearZ: a lamp block's view starts outside its own block
+    struct ShadowCaster { V3 rel; double range; int type; V3 dir; double cosCone; int slot; float nearZ = 0.05f; bool render = false; bool redoStatic = false; };   // render: its map is drawn this frame   // nearZ: a lamp block's view starts outside its own block
     std::vector<ShadowCaster> casters; XMFLOAT4X4 lshVP[LSH_MAX * 6];
     struct LampProxy { V3 p; double range; V3 col; float nearZ = 0.9f; V3 half{ 0, 0, 0 }; V3 eye{ 0, 0, 0 }; };   // nearZ: a lamp block's shadow view starts this far out (outside its own block); half: a glowing box (its surface shines); eye: where its shadow view is
     std::vector<LampProxy> lampProxies, realLamps; V3 lampScanAt{ 1e9, 0, 0 }; double lampScanAge = 99; int lampDropNow = -1;
@@ -1745,14 +1754,17 @@ struct App {
         EnsureLightShadowMaps();
     }
     void EnsureLightShadowMaps() {   // the lamps' shadow maps: as many and as sharp as the settings say (sharper ones step down if they would take too much memory)
-        int n = std::clamp(settings.lightShadows, 0, LSH_MAX), res = settings.lightShadowRes <= 128 ? 128 : settings.lightShadowRes <= 256 ? 256 : 512;
-        while (res > 128 && (double)std::max(n, 1) * 6 * res * res * 4 > 400.0 * 1024 * 1024) res /= 2;   // (128 sharp ones would be 800 MB: they step down to fit)
+        int n = std::clamp(settings.lightShadows, 0, LSH_MAX), res = settings.lightShadowRes <= 128 ? 128 : settings.lightShadowRes <= 256 ? 256 : settings.lightShadowRes <= 512 ? 512 : 1024;
+        double budget = std::max(256.0 * 1024 * 1024, (double)vramBytes / 8);   // (an eighth of the card's memory: 1 GB on an 8 GB card)
+        while (res > 128 && (double)std::max(n, 1) * 6 * res * res * 4 * 2 > budget) res /= 2;   // (the map and its baked blocks: too many sharp ones step down to fit)
         if (n == lshCount && res == lshRes && lshTex) return;
         if (lshSRV) retired.push_back(lshSRV);
         lshCount = n; lshRes = res; int slices = std::max(1, n) * 6;
-        lshTex.Reset(); lshSRV.Reset(); lshDSV.assign(slices, nullptr);
+        lshTex.Reset(); lshSRV.Reset(); lshDSV.assign(slices, nullptr); lshStatic.Reset(); lshStaticDSV.assign(slices, nullptr);
         D3D11_TEXTURE2D_DESC d{}; d.Width = d.Height = (UINT)res; d.MipLevels = 1; d.ArraySize = (UINT)slices; d.Format = DXGI_FORMAT_R32_TYPELESS; d.SampleDesc.Count = 1; d.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
         HR(dev->CreateTexture2D(&d, nullptr, &lshTex));
+        { D3D11_TEXTURE2D_DESC sd2 = d; sd2.BindFlags = D3D11_BIND_DEPTH_STENCIL; HR(dev->CreateTexture2D(&sd2, nullptr, &lshStatic));
+          for (int k = 0; k < slices; k++) { D3D11_DEPTH_STENCIL_VIEW_DESC dv{}; dv.Format = DXGI_FORMAT_D32_FLOAT; dv.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2DARRAY; dv.Texture2DArray.FirstArraySlice = (UINT)k; dv.Texture2DArray.ArraySize = 1; HR(dev->CreateDepthStencilView(lshStatic.Get(), &dv, &lshStaticDSV[k])); } }
         for (int k = 0; k < slices; k++) { D3D11_DEPTH_STENCIL_VIEW_DESC dv{}; dv.Format = DXGI_FORMAT_D32_FLOAT; dv.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2DARRAY; dv.Texture2DArray.FirstArraySlice = (UINT)k; dv.Texture2DArray.ArraySize = 1; HR(dev->CreateDepthStencilView(lshTex.Get(), &dv, &lshDSV[k])); }
         D3D11_SHADER_RESOURCE_VIEW_DESC sv{}; sv.Format = DXGI_FORMAT_R32_FLOAT; sv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY; sv.Texture2DArray.MipLevels = 1; sv.Texture2DArray.ArraySize = (UINT)slices;
         HR(dev->CreateShaderResourceView(lshTex.Get(), &sv, &lshSRV));
@@ -2320,7 +2332,7 @@ struct App {
                 else if (o.kind == ObjKind::Door) { auto it = doorRt.find(o.id); if (it != doorRt.end() && it->second.state != DoorRuntime::Open && it->second.state != DoorRuntime::Closed) lshMovers.push_back({ o.pos, 4.0 }); }
             }
         }
-        int faceBudget = 48;   // shadow map sides drawn a frame at most (the nearest first); the rest wait a frame or two
+        int faceBudget = loadingOn ? 96 : 48;   // shadow map sides drawn a frame at most (the nearest first); the rest wait a frame or two
         for (const L& l : all) {
             if ((int)frameLights.size() >= MAXLIGHTS) break; double hl = std::sqrt(l.half.x * l.half.x + l.half.y * l.half.y + l.half.z * l.half.z);
             if (l.dist - l.range - hl > 200) continue;
@@ -2333,12 +2345,14 @@ struct App {
             if (l.type == 3) { g.dir[0] = (float)eyeR.x; g.dir[1] = (float)eyeR.y; g.dir[2] = (float)eyeR.z; }   // (a glowing box: dir is where its shadow view is)
             size_t li = (size_t)(&l - all.data());
             if (int sI = slotOf[li]; sI >= 0) {   // a shadow map: kept, or drawn (again) this frame if new or something near it moved or changed
-                LshSlot& slot = lshSlots[sI]; double reach = l.range + hl; bool dirty = !slot.valid || (!playMode && (frameNo + sI) % 8 == 0);   // (the editor: things get dragged around, every map now and then)
-                for (const auto& mv : lshMovers) if (!dirty) { V3 d = mv.first - l.p; dirty = d.x * d.x + d.y * d.y + d.z * d.z < (reach + mv.second) * (reach + mv.second); }
-                for (const V3& mc : meshesChanged) if (!dirty) { V3 d = mc - l.p; dirty = d.x * d.x + d.y * d.y + d.z * d.z < (reach + CS) * (reach + CS); }
-                int faces = l.type == 1 ? 1 : 6; bool render = dirty && faceBudget >= faces;
-                if (render) { faceBudget -= faces; slot.valid = true; }
-                if (slot.valid) { g.ext[3] = (float)sI + 0.05f + 0.9f * keepOf[li]; casters.push_back({ l.type == 3 ? eyeR : r, reach, l.type, l.dir, l.cosCone, sI, l.lamp ? l.nearZ : 0.05f, render }); }
+                // its blocks are baked once (again only when blocks near it change); what moves near it is added on a copy of that - cheap
+                LshSlot& slot = lshSlots[sI]; double reach = l.range + hl; bool redo = !slot.valid || !slot.staticOk;
+                for (const V3& mc : meshesChanged) if (!redo) { V3 d = mc - l.p; redo = d.x * d.x + d.y * d.y + d.z * d.z < (reach + CS) * (reach + CS); }
+                bool moving = !playMode && (frameNo + sI) % 8 == 0;   // (the editor: objects get dragged around - all of them are "moving" there)
+                for (const auto& mv : lshMovers) if (!moving) { V3 d = mv.first - l.p; moving = d.x * d.x + d.y * d.y + d.z * d.z < (reach + mv.second) * (reach + mv.second); }
+                int faces = l.type == 1 ? 1 : 6, cost = redo ? faces * 2 : 1; bool render = (redo || moving) && faceBudget >= cost;
+                if (render) { faceBudget -= cost; slot.valid = true; if (redo) slot.staticOk = true; }
+                if (slot.valid) { g.ext[3] = (float)sI + 0.05f + 0.9f * keepOf[li]; ShadowCaster sc{ l.type == 3 ? eyeR : r, reach, l.type, l.dir, l.cosCone, sI, l.lamp ? l.nearZ : 0.05f, render }; sc.redoStatic = render && redo; casters.push_back(sc); }
             }
             frameLights.push_back(g);
         }
@@ -2757,6 +2771,7 @@ struct App {
             inv.taken = takenByWorld[worldName]; doorRt.clear(); doorGpu.clear(); platRun.clear(); shots.clear(); insideNow.clear();
             if (!shotDir.size()) captureNext = true;
             EvStart(true);
+            BeginLoading(false);   // (another world: the loading screen, no boot-up)
         }
         V3 to = info.hasSpawn ? info.spawn : player.feet; double yaw = info.hasSpawn ? info.spawnYaw : player.yaw; teleportLock = 0;
         if (!target.empty()) {
@@ -4699,7 +4714,7 @@ struct App {
         ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
         auto drawChunks = [&](const XMMATRIX& m, int pass, bool counting, bool cave = false) {   // cave: the camera's own view (cave culling applies)
             UnbindModelMat();   // (the world's blocks: no model's material left over)
-            for (auto& kv : gpu) {
+            if (shadowPart != 2) for (auto& kv : gpu) {
                 const GpuChunk& g = kv.second; UINT n = pass == 0 ? g.nO : pass == 1 ? g.nC : g.nW; if (!n) continue;
                 if (cave && caveOn && !CaveIn(kv.first)) { if (counting) caveHidden++; continue; }
                 if (cave && cookCullOn && !CookChunkSeen(kv.first)) { if (counting) cookHidden++; continue; }
@@ -4715,7 +4730,7 @@ struct App {
                 ctx->IASetIndexBuffer(pass == 0 ? g.ibO.Get() : pass == 1 ? g.ibC.Get() : g.ibW.Get(), DXGI_FORMAT_R32_UINT, 0);
                 ctx->DrawIndexed(n, 0, 0); if (counting) drawnChunks += pass == 0;
             }
-            if (cave && pass == 0 && lodK)   // the far copies
+            if (cave && pass == 0 && lodK && shadowPart != 2)   // the far copies
                 for (const LodDraw& d : lodDraw) {
                     auto it = lodGroups[d.k].find(d.g); if (it == lodGroups[d.k].end() || !it->second.n) continue;
                     double sz = (double)(CS << d.k);
@@ -4731,6 +4746,7 @@ struct App {
                 if ((int)oi == movingObj) continue;
                 const WorldObject& o = objects[oi];
                 if (o.kind == ObjKind::Trigger || Gone(o)) continue;   // zones: invisible (the editor shows their box)
+                if (shadowPart) { bool moves = !playMode || o.kind == ObjKind::Enemy || o.kind == ObjKind::Platform || o.kind == ObjKind::Pickup || o.kind == ObjKind::Door; if (moves != (shadowPart == 2)) continue; }   // (a lamp's baked map: what stays; its copy: what moves)
                 if (lightShadowPass && (o.kind == ObjKind::Light || o.kind == ObjKind::Particles)) continue;   // a lamp's bulb never shadows its own light
                 if ((o.kind == ObjKind::Light || o.kind == ObjKind::Particles || o.kind == ObjKind::MapCamera || o.kind == ObjKind::Ambient) && (playMode || plainView) && IsBuiltin(o.model)) continue;   // the bulb / nozzle: editor only
                 if (o.kind == ObjKind::Enemy && playMode) { if (EnemyDrawable(o)) DrawEnemy(o, pass, camPos); continue; }   // enemies: where they are now
@@ -4741,7 +4757,7 @@ struct App {
                 if (o.kind != ObjKind::Platform) { DrawObject(o, pass); continue; }
                 for (const V3& off : PlatformOffsets(o)) { WorldObject at = o; at.pos = o.pos + off; DrawObject(at, pass); }
             }
-            DrawBall(pass, camPos); DrawMissiles(pass, camPos); DrawDebris(pass, camPos); DrawEnemyDrops(pass, camPos);
+            if (shadowPart != 1) { DrawBall(pass, camPos); DrawMissiles(pass, camPos); DrawDebris(pass, camPos); DrawEnemyDrops(pass, camPos); }
             cullOn = false; cullCount = false; cullCave = false;
         };
         ID3D11ShaderResourceView* none[5] = {};
@@ -4773,9 +4789,20 @@ struct App {
                 for (const ShadowCaster& sc : casters) if (sc.render) for (int f = 0; f < (sc.type == 1 ? 1 : 6); f++) {
                     int sl = sc.slot * 6 + f; XMMATRIX m = XMLoadFloat4x4(&lshVP[sl]);
                     FrameCB cf = fc; cf.shadowVP = lshVP[sl]; ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &cf, 0, 0);
-                    ctx->OMSetRenderTargets(0, nullptr, lshDSV[sl].Get()); ctx->ClearDepthStencilView(lshDSV[sl].Get(), D3D11_CLEAR_DEPTH, 1.f, 0);
+                    if (sc.redoStatic) {   // its blocks (and what never moves), baked
+                        ctx->OMSetRenderTargets(0, nullptr, lshStaticDSV[sl].Get()); ctx->ClearDepthStencilView(lshStaticDSV[sl].Get(), D3D11_CLEAR_DEPTH, 1.f, 0);
+                        shadowPart = 1;
+                        ctx->PSSetShader(nullptr, nullptr, 0); drawChunks(m, 0, false);
+                        ctx->PSSetShader(psShadowCut.Get(), nullptr, 0); drawChunks(m, 1, false);
+                        lshStaticBaked++;
+                    }
+                    ctx->OMSetRenderTargets(0, nullptr, nullptr);
+                    ctx->CopySubresourceRegion(lshTex.Get(), (UINT)sl, 0, 0, 0, lshStatic.Get(), (UINT)sl, nullptr);   // the baked map, then what moves on top
+                    ctx->OMSetRenderTargets(0, nullptr, lshDSV[sl].Get());
+                    shadowPart = 2;
                     ctx->PSSetShader(nullptr, nullptr, 0); drawChunks(m, 0, false);
                     ctx->PSSetShader(psShadowCut.Get(), nullptr, 0); drawChunks(m, 1, false);
+                    shadowPart = 0;
                 }
                 lightShadowPass = false;
                 ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &fc, 0, 0);
@@ -5188,6 +5215,11 @@ struct App {
                     float m = std::max({ fc.sunColor[0], fc.sunColor[1], fc.sunColor[2], 1e-3f }); for (int k = 0; k < 3; k++) lc.flareCol[k] = fc.sunColor[k] / m;
                 }
             }
+            if (playMode && bootOn) {   // the boot-up: the helmet, then cyan block outlines sweeping out from Samus, then the colour
+                float p = BootPhase(1); double maxR = (settings.renderDistance + 2.0) * CS;
+                lc.boot[0] = BootPhase(0); lc.boot[1] = (float)(maxR * p * p) + (p > 0 ? 1.5f : 0.f); lc.boot[2] = BootPhase(2); lc.boot[3] = 1;
+                lc.bootCam[0] = (float)(camPos.x - std::floor(camPos.x)); lc.bootCam[1] = (float)(camPos.y - std::floor(camPos.y)); lc.bootCam[2] = (float)(camPos.z - std::floor(camPos.z)); lc.bootCam[3] = (float)uiClock;
+            }
             ctx->UpdateSubresource(cbLook.Get(), 0, nullptr, &lc, 0, 0); ctx->PSSetConstantBuffers(10, 1, cbLook.GetAddressOf());
         }
         if (adaptOn) {
@@ -5359,6 +5391,8 @@ struct App {
     }
     void DrawHud(ImDrawList* dl) {
         const float cw = (float)rw, ch = (float)rh;   // the 3D picture's size (it sits at vx, vy in the window)
+        if (playMode && loadingOn) { DrawLoading(dl, vx, vy, cw, ch); return; }   // the loading screen over everything
+        if (playMode && bootOn && BootPhase(3) <= 0) return;   // (booting up: no crosshair, no messages until the HUD comes)
         if (playMode && !paused && !mapOpen && !hideHud) if (WorldObject* st = StationInReach()) {   // "E: Map Station"
             std::string used = stationsUsed.count(CurrentWorld() + "#" + std::to_string(st->id)) ? " (downloaded)" : "";
             std::string t = st->kind == ObjKind::SaveStation ? "E   Save Station" : "E   Use Map Station" + used; float ui = settings.uiScale;
@@ -5703,6 +5737,7 @@ struct App {
         EvStart();
         if (grabMouse) { Capture(false); captureNext = true; }   // grabbed next frame, once the picture fills the window
         Toast(info.hasSpawn ? "Playing. Esc: menu, F5: back to the editor" : "Playing from where the camera was (set a spawn point in the Outliner). F5: back to the editor");
+        BeginLoading(true);
     }
     void StopPlay() {
         if (!playMode) return;
@@ -6656,6 +6691,11 @@ struct App {
         if (playMode) { auto f = hudFlashAt.find(e.name); if (f != hudFlashAt.end() && animTime - f->second < 1.5) a *= 0.25f + 0.75f * (0.5f + 0.5f * (float)std::cos((animTime - f->second) * 18)); }
         float k = 1;   // the "you've got it now" entrance (0..1)
         if (playMode) { std::string n = NeedOf(e); if (!n.empty()) { k = NeedReveal(n); if (k < 0) return; } }
+        if (playMode && bootOn) {   // the boot-up: each element glitches in, a moment apart
+            float u = BootPhase(3); if (u <= 0) return;
+            float kb = std::clamp(u * 1.5f - (float)(std::hash<std::string>{}(e.name) % 7) * 0.07f, 0.f, 1.f); if (kb <= 0) return;
+            k = std::min(k, kb);
+        }
         if (k >= 1) { DrawHudBody(dl, e, W, H, v, a); return; }
         // glitching in: it flickers (on more and more), the colours split apart and slices of it jump sideways, all settling down
         uint32_t step = (uint32_t)(animTime / 0.045), id = (uint32_t)std::hash<std::string>{}(e.name);
@@ -9706,7 +9746,7 @@ struct App {
     uint32_t RoomHere() const { I3 c = RoomProbe(); uint32_t r = rooms.roomAt(c.x, c.y, c.z); if (!r && playMode) { V3 f = player.feet; r = rooms.roomAt(ifloor(f.x), ifloor(f.y + 0.2), ifloor(f.z)); } return r; }
     void UpdateRooms(double dt) {
         if (!world) return;
-        peekBudget = 6;
+        peekBudget = loadingOn ? 400 : 6;
         if (history.undoCount() != roomHist) { roomHist = history.undoCount(); rooms.edited(); roomPeek.clear(); }
         if (roomPeek.size() > 6000 && !rooms.busy()) roomPeek.clear();   // (between searches only: a search may be looking at them)
         roomCheckT += dt; bool check = roomCheckT > 0.5; if (check) roomCheckT = 0;
@@ -9714,7 +9754,7 @@ struct App {
         std::vector<I3> seeds = RoomSet::doorSeeds(w.doors);
         roomSeedT += dt; if (roomSeedT > 0.5) { roomSeedT = 0; seeds.push_back(RoomProbe()); }   // (where you are: twice a second)
         World* wp = world.get();
-        rooms.tick(w, seeds, [wp](I3 c) -> uint32_t { const Chunk* ch = wp->chunk(c); return ch ? ch->version : 0; }, check, playMode ? 6000 : 10000);   // (a chunk as it was read: 0, loaded or not - flying around changes nothing)   // (about a millisecond a frame)
+        rooms.tick(w, seeds, [wp](I3 c) -> uint32_t { const Chunk* ch = wp->chunk(c); return ch ? ch->version : 0; }, check, loadingOn ? 400000 : playMode ? 6000 : 10000);   // (a chunk as it was read: 0, loaded or not - flying around changes nothing)   // (about a millisecond a frame)
         if (check && !playMode) {   // rooms that aren't closed any more, found by themselves, nothing set on them: one of each leak is enough
             std::set<uint32_t> inStations; for (const WorldObject& o : objects) for (uint32_t r : o.map.rooms) inStations.insert(r);
             std::map<std::tuple<int, int, int>, uint32_t> firstOf; std::vector<uint32_t> drop;
@@ -9782,12 +9822,104 @@ struct App {
     // ---- Samus appears (a new game, a loaded file): her fanfare once; the room's music after it
     static constexpr int TAG_SPAWNFAN = 38; double spawnUntil = -1; uint32_t roomMusicLater = 0;
     void SpawnFanfare() {
+        if (loadingOn) { fanfareLater = true; return; }   // (after the loading screen, with the boot-up)
         roomMusicLater = 0; spawnUntil = -1;
         const SoundUse& s = playerSounds.spawnMusic; if (s.empty()) return;
         StopMusic(0.2f); StopSounds(TAG_SPAWNFAN);
         if (!PlaySoundIn(SND_MUSIC, s, 1, nullptr, TAG_SPAWNFAN, false)) return;
         float sec = SoundSeconds(s.file); if (s.length > 0) sec = std::min(sec, s.length);
         spawnUntil = uiClock + sec / std::max(0.1f, s.pitch);
+    }
+    // ================================================================== loading: before playing, everything gets ready - the world and its meshes, the far copies, the
+    // rooms, the ambient lights, every lamp's baked shadow - then the visor boots up (black, the helmet, cyan outlines, colour, the HUD)
+    bool loadingOn = false, bootOn = false, loadBoot = true, fanfareLater = false; int loadStep = 0, loadStable = 0, lshStaticBaked = 0; size_t loadLastLoaded = 0;
+    double loadT = 0, loadStepT = 0, bootT = 0; std::string loadWhat; float loadFrac = 0, loadShown = 0; int loadLampsDone = 0, loadLampsAll = 0;
+    bool Frozen() const { return playMode && (loadingOn || bootOn); }
+    void BeginLoading(bool boot) {
+        loadingOn = true; bootOn = false; loadBoot = boot && screens.bootOn; loadStep = 0; loadStable = 0; loadT = loadStepT = 0; loadLastLoaded = 0; loadFrac = loadShown = 0;
+        for (LshSlot& sl : lshSlots) sl.staticOk = false;   // (every lamp's shadow baked fresh)
+    }
+    void NextLoadStep() { loadStep++; loadStepT = 0; loadStable = 0; }
+    double BootLen() const { return std::max(0.f, screens.bootHelmet) + std::max(0.f, screens.bootWire) + std::max(0.f, screens.bootColor) + std::max(0.f, screens.bootHud); }
+    void FinishLoading() {
+        loadingOn = false;
+        if (loadBoot && BootLen() > 0.05) { bootOn = true; bootT = 0; }
+        if (fanfareLater) { fanfareLater = false; SpawnFanfare(); }
+    }
+    void UpdateLoading(double dt) {
+        if (!playMode) { loadingOn = bootOn = false; return; }
+        if (bootOn) { bootT += dt; if (bootT >= BootLen() + 0.2) bootOn = false; return; }
+        if (!loadingOn) return;
+        loadT += dt; loadStepT += dt;
+        I3 pc = chunkOf(ifloor(player.feet.x), ifloor(player.feet.y), ifloor(player.feet.z));
+        auto ease = [](double t) { return (float)(1 - std::exp(-t)); };
+        switch (loadStep) {
+        case 0: {   // the world around you: read, and built into meshes
+            world->stream(pc, settings.renderDistance, settings.verticalDistance, 256);
+            size_t n = world->loadedCount(); bool settled = n == loadLastLoaded && world->dirty.empty() && workers->pending() == 0; loadLastLoaded = n;
+            loadStable = settled ? loadStable + 1 : 0;
+            loadWhat = "Reading the world: " + std::to_string(n) + " chunks"; loadFrac = 0.02f + 0.3f * ease(loadStepT / 2);
+            if (loadStable > 8 || loadStepT > 45) NextLoadStep();
+            break; }
+        case 1:   // the far copies
+            if (settings.distantDetail <= 0) { NextLoadStep(); break; }
+            loadWhat = "Distant detail"; loadFrac = 0.32f + 0.1f * ease(loadStepT);
+            if (lodQueuePos >= lodQueue.size() && !lodQueue.empty()) loadStable++; else loadStable = 0;
+            if (loadStable > 5 || loadStepT > 20) NextLoadStep();
+            break;
+        case 2: {   // the rooms (all of them: the map, their lights and music)
+            int n = 0; for (const RoomDef& d : rooms.list.rooms) { const RoomSet::Live* L = rooms.liveOf(d.id); if (L && !L->shape.empty()) n++; }
+            loadWhat = "Finding the rooms: " + std::to_string(n); loadFrac = 0.42f + 0.13f * ease(loadStepT);
+            loadStable = rooms.busy() ? 0 : loadStable + 1;
+            if (loadStable > 30 || loadStepT > 30) NextLoadStep();
+            break; }
+        case 3: {   // the ambient lights fill their rooms
+            int all = 0, done = 0;
+            for (const WorldObject& o : objects) if (o.kind == ObjKind::Ambient) { all++; auto it = ambRt.find(o.id); if (it != ambRt.end() && it->second.pos.x == o.pos.x && it->second.pos.y == o.pos.y && it->second.pos.z == o.pos.z && !(ambBusy && ambJobId == o.id)) done++; }
+            loadWhat = "Ambient lights: " + std::to_string(done) + " / " + std::to_string(all); loadFrac = 0.55f + 0.1f * (all ? (float)done / all : 1.f);
+            loadStable = (done >= all && !ambBusy) ? loadStable + 1 : 0;
+            if (loadStable > 3 || loadStepT > 30) NextLoadStep();
+            break; }
+        case 4: {   // every lamp's shadow, baked one after another
+            int all = 0, ok = 0; for (const LshSlot& sl : lshSlots) if (sl.key) { all++; if (sl.valid && sl.staticOk) ok++; }
+            loadLampsAll = all; loadLampsDone = ok;
+            loadWhat = all ? "Baking lamp shadows: " + std::to_string(ok) + " / " + std::to_string(all) : "Lamp shadows"; loadFrac = 0.65f + 0.3f * (all ? (float)ok / all : 1.f);
+            loadStable = (loadStepT > 0.4 && ok >= all) ? loadStable + 1 : 0;
+            if (loadStable > 3 || loadStepT > 40) NextLoadStep();
+            break; }
+        default:   // the light settling in (probes, the fog), then in
+            loadWhat = "Light"; loadFrac = 0.95f + 0.05f * (float)std::min(1.0, loadStepT / 0.8);
+            if (loadStepT > 0.8) FinishLoading();
+            break;
+        }
+    }
+    void DrawLoading(ImDrawList* dl, float vx, float vy, float cw, float ch) {   // the loading screen: black, LOADING, a bar, what is happening, a light for each lamp as its shadow bakes
+        float ui = settings.uiScale; loadShown += (std::max(loadShown, loadFrac) - loadShown) * 0.25f;
+        dl->AddRectFilled(ImVec2(vx, vy), ImVec2(vx + cw, vy + ch), IM_COL32(0, 0, 0, 255));
+        ImFont* f = ImGui::GetFont(); ImVec2 c(vx + cw * 0.5f, vy + ch * 0.52f);
+        const char* title = "L O A D I N G"; float ts = 30 * ui; ImVec2 tz = f->CalcTextSizeA(ts, FLT_MAX, 0, title);
+        float pulse = 0.75f + 0.25f * (float)std::sin(uiClock * 3);
+        dl->AddText(f, ts, ImVec2(c.x - tz.x * 0.5f, c.y - 70 * ui), IM_COL32(110, 220, 255, (int)(230 * pulse)), title);
+        float bw = std::min(520 * ui, cw * 0.6f), bh = 6 * ui; ImVec2 b0(c.x - bw * 0.5f, c.y - 10 * ui), b1(c.x + bw * 0.5f, b0.y + bh);
+        float fr = std::clamp(loadShown, 0.f, 1.f);
+        dl->AddRect(ImVec2(b0.x - 3, b0.y - 3), ImVec2(b1.x + 3, b1.y + 3), IM_COL32(60, 150, 200, 160), 2, 0, 1.2f * ui);
+        dl->AddRectFilled(ImVec2(b0.x, b0.y - 2 * ui), ImVec2(b0.x + bw * fr, b1.y + 2 * ui), IM_COL32(110, 220, 255, 40), 2);
+        dl->AddRectFilled(b0, ImVec2(b0.x + bw * fr, b1.y), IM_COL32(110, 220, 255, 230), 1);
+        ImVec2 wz = ImGui::CalcTextSize(loadWhat.c_str()); dl->AddText(ImVec2(c.x - wz.x * 0.5f, b1.y + 14 * ui), IM_COL32(170, 215, 240, 220), loadWhat.c_str());
+        if (loadStep >= 4 && loadLampsAll > 0) {   // a little light for every lamp, coming on as its shadow is baked
+            int per = std::min(loadLampsAll, 32); float s = 9 * ui, gap = 5 * ui, w = per * (s + gap) - gap;
+            for (int i = 0; i < loadLampsAll; i++) {
+                int r = i / per, k = i % per; ImVec2 p(c.x - w * 0.5f + k * (s + gap), b1.y + 44 * ui + r * (s + gap)); bool on = i < loadLampsDone;
+                if (on) dl->AddRectFilled(ImVec2(p.x - 2, p.y - 2), ImVec2(p.x + s + 2, p.y + s + 2), IM_COL32(255, 220, 140, 60), 3);
+                dl->AddRectFilled(p, ImVec2(p.x + s, p.y + s), on ? IM_COL32(255, 228, 160, 255) : IM_COL32(40, 50, 60, 255), 2);
+            }
+        }
+    }
+    float BootPhase(int k) const {   // the boot-up: how far step k is (0 helmet, 1 outlines, 2 colour, 3 HUD): 0..1
+        if (!bootOn) return 1;
+        const float len[4] = { screens.bootHelmet, screens.bootWire, screens.bootColor, screens.bootHud }; double t = bootT;
+        for (int i = 0; i < k; i++) t -= std::max(0.f, len[i]);
+        return len[k] <= 0.01f ? (t >= 0 ? 1.f : 0.f) : (float)std::clamp(t / len[k], 0.0, 1.0);
     }
     void UpdateSpawnFanfare() {
         if (roomMusicLater && uiClock >= spawnUntil) { uint32_t r = roomMusicLater; roomMusicLater = 0; if (r == curRoom) ApplyRoomMusic(rooms.list.find(r)); }
@@ -11757,6 +11889,15 @@ struct App {
         Prop("Game-start sound"); ch |= SoundEdit("##gstart", screens.startSound, true);
         Prop("Fade as long as the sound"); ch |= ImGui::Checkbox("##gsfw", &screens.fadeWithSound);
         if (!screens.fadeWithSound || screens.startSound.empty()) { Prop("Fade to black"); ch |= ImGui::SliderFloat("##gsfd", &screens.startFade, 0.1f, 8, "%.1f s"); }
+        ImGui::SeparatorText("Getting into the game (after the loading screen)");
+        Prop("Boot-up"); ch |= ImGui::Checkbox("##bton", &screens.bootOn);
+        if (screens.bootOn) {
+            Prop("1. The helmet fades in"); ch |= ImGui::SliderFloat("##bth", &screens.bootHelmet, 0, 4, "%.1f s");
+            Prop("2. Cyan outlines sweep out"); ch |= ImGui::SliderFloat("##btw", &screens.bootWire, 0, 6, "%.1f s");
+            Prop("3. Colour fades in"); ch |= ImGui::SliderFloat("##btc", &screens.bootColor, 0, 4, "%.1f s");
+            Prop("4. The HUD glitches in"); ch |= ImGui::SliderFloat("##btu", &screens.bootHud, 0, 4, "%.1f s");
+        }
+        Hint("Every start (a new game, a loaded file, F5) shows the loading screen first: the world, its rooms, the ambient lights and every lamp's shadow get ready. Then the visor boots: black, the helmet, the world as cyan block outlines sweeping out from Samus, its colour, and the HUD glitching in. You can move once it is done. Samus' fanfare (Player > Soundtrack) plays with it.");
         Hint("The sound plays, the screen (and the music) fade to black, then the game fades in. An empty file goes to the screen with the role \"Intro of a new game\" first (the story), then into the game.");
         ImGui::SeparatorText("The game's interface sounds (every screen and the pause menu)");
         Prop("Picking"); ch |= SoundEdit("##ghov", screens.sounds.hover, false);
