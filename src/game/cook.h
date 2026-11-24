@@ -17,7 +17,7 @@ struct CookArea {                     // chunk columns from (cx0, cz0) to (cx1, 
     int y0 = 0, y1 = 128;
     int columns() const { return (cx1 - cx0 + 1) * (cz1 - cz0 + 1); }
 };
-struct CookDoor { I3 lo, hi; std::string name; };   // a door's opening (blocks, hi included): the air stops there, the rooms on both sides meet
+struct CookDoor { I3 lo, hi; std::string name; uint32_t obj = 0; };   // (obj: the door object)   // a door's opening (blocks, hi included): the air stops there, the rooms on both sides meet
 struct CookRoom {
     int id = 0;                       // 1, 2, 3 ... (0: no room / solid)
     bool outside = false;             // the air the sky reaches (there is one outside, id 1, if any)

@@ -40,7 +40,7 @@ const char* collideName(Collide c);
 
 enum class ObjKind { Prop, Door, Platform, Pickup, Checkpoint, Teleporter, Trigger, Light, Particles, MapCamera, MapStation, Enemy, SaveStation, Ambient, GrapplePoint, COUNT };
 // the map: a Map Station (touch it) fires every map camera with the same ID; each camera looks all around and puts what it sees on the map
-struct MapSettings { int id = 1; float range = 48; };
+struct MapSettings { int id = 1; float range = 48; std::vector<uint32_t> rooms; };   // rooms: a Map Station reveals these rooms (Room Manager ids; none: its map cameras)
 // an ambient light (like Skyrim's lighting templates): it fills the room it stands in (through the air, up to the walls and doors) with its
 // own base light - a colour from each direction - its own fog, and its own colour look while you are in it
 struct AmbientSettings {

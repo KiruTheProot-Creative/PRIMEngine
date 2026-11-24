@@ -33,6 +33,8 @@
 #include "../game/planets.h"
 #include "../game/cook.h"
 #include "../game/ambient.h"
+#include "../game/rooms.h"
+#include <deque>
 #include "../game/surfaces.h"
 #include "../game/buildmodes.h"
 #include <tuple>
@@ -258,14 +260,15 @@ struct App {
     ComPtr<ID3D11PixelShader> psLumLog, psAdapt; ComPtr<ID3D11Buffer> cbLook;
     ComPtr<ID3D11Texture2D> lumTex, adaptTex[2]; ComPtr<ID3D11RenderTargetView> lumRTV, adaptRTV[2]; ComPtr<ID3D11ShaderResourceView> lumSRV, adaptSRV[2]; int adaptCur = 0;
     std::string CurrentLookName() const {   // the zone you are in (when it has its own look), else the world's
-        if (const WorldObject* a = AmbientAt(camPos)) if (!a->ambient.look.empty()) return a->ambient.look;   // an ambient light's room
+        if (const AmbientSettings* a = AmbientAt(camPos)) if (!a->look.empty()) return a->look;   // an ambient light's room (or a room's own)
         if (envState.inZone) for (const auto& z : info.zones) if (z.name == envState.zoneName && !z.look.empty()) return z.look;
         return info.look;
     }
-    void AmbientInspector(WorldObject& o) {
-        AmbientSettings& A = o.ambient;
-        ImGui::SeparatorText("Ambient light");
+    bool AmbientSettingsUI(AmbientSettings& A, bool room) {   // an ambient light's settings (an object's, or a room's own)
+        AmbientSettings before = A;
+        if (!room) {
         Hint("Fills the room it stands in - through the air, up to walls, doors and its reach - with its own light from each direction, its own fog and its own colour look while you are in it. Doors stop it (it spills a few blocks through them, so rooms change softly). Lamps, lava and the sun come on top.");
+        }
         {   // presets
             Prop("Start from"); if (ImGui::BeginCombo("##ambp", "a preset ...")) { for (int i = 0; ambientPresetName(i); i++) if (ImGui::Selectable(ambientPresetName(i))) { std::string lk = A.look; float rc = A.reach; int bl = A.blend; A = ambientPreset(i); A.look = lk; A.reach = rc; A.blend = bl; } ImGui::EndCombo(); }
         }
@@ -282,14 +285,24 @@ struct App {
         col("Fog colour", "##amfc", A.fog);
         Prop("Fog"); ImGui::SetNextItemWidth(-1); ImGui::SliderFloat("##amfa", &A.fogAmount, 0, 1, "%.2f");
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Its room's own haze (with Smooth fog on): it stops at the doors too.");
-        Prop("Reach"); ImGui::SetNextItemWidth(-1); ImGui::SliderFloat("##amr", &A.reach, 4, 128, "%.0f blocks");
-        Prop("Soft edge"); ImGui::SetNextItemWidth(-1); ImGui::SliderInt("##amb", &A.blend, 0, 8, "%d blocks");
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("How far it spills through doorways and openings, fading: walking into the next room changes the light softly.");
+        if (!room) {
+            Prop("Reach"); ImGui::SetNextItemWidth(-1); ImGui::SliderFloat("##amr", &A.reach, 4, 128, "%.0f blocks");
+            Prop("Soft edge"); ImGui::SetNextItemWidth(-1); ImGui::SliderInt("##amb", &A.blend, 0, 8, "%d blocks");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("How far it spills through doorways and openings, fading: walking into the next room changes the light softly.");
+        }
         Prop("Colour look inside"); if (ImGui::BeginCombo("##aml", A.look.empty() ? "(the world's / the zone's)" : A.look.c_str())) {
             if (ImGui::Selectable("(the world's / the zone's)", A.look.empty())) A.look.clear();
             for (const auto& n : looks.names()) if (ImGui::Selectable(n.c_str(), A.look == n)) A.look = n;
             ImGui::EndCombo();
         }
+        const AmbientSettings& B = before;
+        return A.up != B.up || A.down != B.down || A.north != B.north || A.south != B.south || A.east != B.east || A.west != B.west || A.strength != B.strength || A.mix != B.mix
+            || A.fog != B.fog || A.fogAmount != B.fogAmount || A.reach != B.reach || A.blend != B.blend || A.look != B.look;
+    }
+    void AmbientInspector(WorldObject& o) {
+        ImGui::SeparatorText("Ambient light");
+        Hint("Tip: a room can have its own ambient light too (the Rooms window): it fills exactly that room, no reach to set.");
+        AmbientSettingsUI(o.ambient, false);
         auto it = ambRt.find(o.id);
         if (it != ambRt.end()) {
             if (it->second.fill.stuck) ImGui::TextColored(ImVec4(1, 0.6f, 0.3f, 1), "It stands inside a block: move it into the air.");
@@ -1079,7 +1092,7 @@ struct App {
         world->store = std::make_unique<RegionStore>(worldDir + "/region");
         workers = std::make_unique<MeshWorkers>(reg); workers->start(Threads());
         player = info.player; history.clear(); gpu.clear(); latestSeq.clear(); LodClear(); chunkMeshed.clear(); lampCache.clear(); lavaTops.clear();
-        LoadWorldObjects(); selStage = 0;
+        LoadWorldObjects(); LoadRooms(); selStage = 0;
         for (int i = 0; i < 9; i++) {   // "stone" or "stone@stairs"
             std::string e = info.hotbar[i], shape; size_t at = e.rfind('@'); if (at != std::string::npos) { shape = e.substr(at + 1); e = e.substr(0, at); }
             BlockId t = reg.find(e); hotbar[i] = t ? makeBlock(t, Shapes::get().find(shape)) : AIR;
@@ -1094,7 +1107,7 @@ struct App {
     void SaveWorld() {
         if (!world) return;
         info.player = playMode ? editCam : player; info.hotSel = hotSel; info.weather = weather.type().key; info.autoWeather = weather.autoChange; for (int i = 0; i < 9; i++) info.hotbar[i] = !reg.has(hotbar[i]) ? "" : reg.get(hotbar[i]).name + (shapeOf(hotbar[i]) ? "@" + Shapes::get().info(shapeOf(hotbar[i])).key : "");
-        info.save(worldDir);
+        info.save(worldDir); SaveRooms();
         { std::vector<Broken> keep = broken; RestoreBroken(); world->saveAll(); for (const Broken& b : keep) world->set(b.x, b.y, b.z, AIR); broken = keep; }   // Play mode: broken blocks are not saved broken
         if (!playMode) { std::vector<std::array<int, 3>> gone; for (auto& kv : breakables.marks) if (world->get(kv.first[0], kv.first[1], kv.first[2]) == AIR && world->loaded(kv.first[0], kv.first[1], kv.first[2])) gone.push_back(kv.first); for (auto& g : gone) breakables.marks.erase(g); }
         { std::error_code e2; if (breakables.marks.empty()) fs::remove(fs::u8path(worldDir + "/breakable.txt"), e2); else saveBreakables(worldDir + "/breakable.txt", breakables); }
@@ -1103,7 +1116,7 @@ struct App {
     }
     void CloseWorld() {   // the project stays open
         if (playMode && !travelling) StopPlay();
-        SaveWorld(); workers.reset(); world.reset(); gpu.clear(); latestSeq.clear(); LodClear(); chunkMeshed.clear(); lampCache.clear(); lavaTops.clear(); Capture(false);
+        SaveWorld(); rooms = RoomSet{}; roomReveals.clear(); workers.reset(); world.reset(); gpu.clear(); latestSeq.clear(); LodClear(); chunkMeshed.clear(); lampCache.clear(); lavaTops.clear(); Capture(false);
     }
     std::string CurrentWorld() const { return world ? fs::path(worldDir).filename().string() : ""; }
     void RenameWorld(const std::string& from, const std::string& to) {
@@ -1338,6 +1351,7 @@ struct App {
         if (world->liquidTimer > 0.3) world->liquidTimer = 0;
         envState.update(dt, player.eye(), info.environment, info.zones); UpdateLook(dt, false); UpdateCamOpen(dt);
         CpuMark("game: lamp lights"); UpdateLampProxies(dt);
+        CpuMark("game: rooms"); UpdateRooms(dt);
         CpuMark("game: ambient lights"); UpdateAmbient(dt);
         CpuMark("game: sky volume"); UpdateSkyVolume();
         CpuMark("game: light voxels"); UpdateVoxels();
@@ -5288,6 +5302,7 @@ struct App {
             dl->AddRect(kp, ImVec2(kp.x + kw.x + 10 * ui, kp.y + kw.y + 6 * ui), IM_COL32(110, 255, 160, 255), 3 * ui, 0, 1.5f * ui);
             dl->AddText(ImVec2(c.x - ts.x * 0.5f, c.y), IM_COL32(200, 255, 220, 255), t.c_str());
         }
+        DrawRoomsInWorld(dl);
         if (envWin || (!playMode && showZones)) {   // zone boxes, coloured by environment
             static const ImU32 cols[] = { IM_COL32(120, 220, 120, 255), IM_COL32(255, 200, 90, 255), IM_COL32(150, 220, 255, 255), IM_COL32(200, 160, 255, 255), IM_COL32(255, 90, 50, 255), IM_COL32(120, 255, 170, 255), IM_COL32(230, 140, 90, 255) };
             for (const EnvZone& z : info.zones) {
@@ -5370,6 +5385,7 @@ struct App {
             if (manualRot) label += "   [turned by hand: R turn, Shift+R tip, G automatic]";
             ImVec2 ts = ImGui::CalcTextSize(label.c_str()); dl->AddText(ImVec2(vx + (cw - ts.x) * 0.5f, o.y - ts.y - 8), IM_COL32(255, 255, 255, 230), label.c_str());
         }
+        DrawRoomName(dl, vx, vy, cw);
         if (toastT > 0) { ImVec2 ts = ImGui::CalcTextSize(toast.c_str()); dl->AddRectFilled(ImVec2(vx + (cw - ts.x) * 0.5f - 10, vy + 60), ImVec2(vx + (cw + ts.x) * 0.5f + 10, vy + 66 + ts.y + 6), IM_COL32(0, 0, 0, 150), 4); dl->AddText(ImVec2(vx + (cw - ts.x) * 0.5f, vy + 66), IM_COL32(255, 255, 255, 240), toast.c_str()); }
     }
     void DrawF3() {
@@ -5604,7 +5620,7 @@ struct App {
         bossRt.clear(); bossPose.clear(); bossSealed.clear(); bossShown = 0; bossBarFade = 0; spawnQueue.clear(); camShake = 0; countdownT = -1;
         curSlot = -1; playTime = 0; savePrompt = false;
         visor = 0; visorFlash = 0; scanLog.clear(); scanOpen = false; scanProgress = 0; scanTargetId = 0; menuScan = 0; menuScroll.clear(); menuScrollWho.clear();
-        seenMaps.clear(); stationsUsed.clear(); mapGpu.clear(); mapGpuWorld.clear(); mapOpen = false;
+        seenMaps.clear(); stationsUsed.clear(); mapGpu.clear(); mapGpuWorld.clear(); mapOpen = false; curRoom = 0; roomReveals.clear(); roomNameAt = -99;
         takenByWorld.clear(); insideNow.clear(); firedOnce.clear(); teleportLock = 0; bigMsgT = 0; playStartWorld = CurrentWorld(); startEditCam = editCam;
         playSpawn = info.hasSpawn ? info.spawn : player.feet; playYaw = info.hasSpawn ? info.spawnYaw : player.yaw;
         UpdateItemRules(); play = PlayState{}; play.start(player, playRules, playSpawn, playYaw);
@@ -6198,6 +6214,8 @@ struct App {
             ImGui::SameLine(); if (ImGui::Button("Screens")) { screensEdOpen = !screensEdOpen; focusScreensEd = screensEdOpen; }
             ImGui::SameLine(); if (ImGui::Button("Cook")) { cookOpenW = !cookOpenW; focusCook = cookOpenW; if (cookOpenW) { cookMapX0 = (int)std::floor(camPos.x) - COOKMAP / 2; cookMapZ0 = (int)std::floor(camPos.z) - COOKMAP / 2; cookY0 = (int)std::floor(camPos.y) - 64; cookY1 = (int)std::floor(camPos.y) + 96; cookLayer = (int)std::floor(camPos.y) + 1; cookMapDirty = true; } }
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Cooking for export: a map of the world from above, pick the chunks, Test-cook");
+            ImGui::SameLine(); if (ImGui::Button("Rooms")) { roomsOpenW = !roomsOpenW; focusRooms = roomsOpenW; }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("The Room Manager: the rooms (found by themselves, or marked by hand), their names, ambient light, music");
             ImGui::SameLine(); if (ImGui::Button("Planets")) { planetsEdOpen = !planetsEdOpen; focusPlanetsEd = planetsEdOpen; if (planetsEdOpen && planets.planets.empty()) { planets.planets.push_back(defaultPlanet()); planetsDirty = true; } }
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("The Planets editor: design planets in layers for Space backgrounds (main menu)");
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("The Screens editor: main menu, options, death screen, credits, your own screens, their compositor");
@@ -7299,6 +7317,7 @@ struct App {
             if (ImGui::BeginTabItem("Weapons", nullptr, selectWeaponsTab ? ImGuiTabItemFlags_SetSelected : 0)) { playerTabWeapons = true; WeaponsTab(); ImGui::EndTabItem(); }
             selectWeaponsTab = false;
             if (ImGui::BeginTabItem("Sounds", nullptr, selectSoundsTab ? ImGuiTabItemFlags_SetSelected : 0)) { SoundsTab(); ImGui::EndTabItem(); }
+            if (ImGui::BeginTabItem("Soundtrack")) { SoundtrackTab(); ImGui::EndTabItem(); }
             selectSoundsTab = false;
             if (ImGui::BeginTabItem("Surfaces")) { SurfacesTab(); ImGui::EndTabItem(); }
             if (ImGui::BeginTabItem("Body and movement", nullptr, selectBodyTab ? ImGuiTabItemFlags_SetSelected : 0)) { ImGui::BeginChild("body"); BodyTab(); ImGui::EndChild(); ImGui::EndTabItem(); }
@@ -9149,7 +9168,7 @@ struct App {
         for (const WorldObject& o : objects) if (o.kind == ObjKind::Door) {
             double a = o.yaw * 3.14159265 / 180, c = std::fabs(std::cos(a)), sn = std::fabs(std::sin(a));
             double hx = c * o.door.w * 0.5 + sn * 0.5, hz = sn * o.door.w * 0.5 + c * 0.5;
-            CookDoor d; d.name = o.name;
+            CookDoor d; d.name = o.name; d.obj = o.id;
             d.lo = { (int)std::floor(o.pos.x - hx + 0.01), (int)std::floor(o.pos.y + 0.01), (int)std::floor(o.pos.z - hz + 0.01) };
             d.hi = { (int)std::floor(o.pos.x + hx - 0.01), (int)std::floor(o.pos.y + o.door.h - 0.01), (int)std::floor(o.pos.z + hz - 0.01) };
             v.push_back(d);
@@ -9463,7 +9482,7 @@ struct App {
     std::unordered_map<uint32_t, AmbRt> ambRt; std::vector<uint32_t> ambOrder; size_t ambBreakN = 0;
     std::future<AmbientFill> ambFut; bool ambBusy = false; uint32_t ambJobId = 0;   // a fill on its own thread (on a copy of the chunks: no stutter)
     static constexpr int AMBX = 128, AMBY = 64, AMBZ = 128;
-    I3 ambOrigin{ INT_MIN, 0, 0 }; std::vector<uint8_t> ambVolCpu; bool ambOn = false;
+    I3 ambOrigin{ INT_MIN, 0, 0 }; std::vector<uint8_t> ambVolCpu; bool ambOn = false; uint32_t ambRoomGen = 0;
     ComPtr<ID3D11Texture3D> ambVolTex; ComPtr<ID3D11ShaderResourceView> ambVolSRV, ambObjSRV; ComPtr<ID3D11Buffer> ambObjBuf; size_t ambObjCap = 0;
     struct AmbGpuC { float c[6][4]; float fog[4]; };
     uint64_t AmbSig(const AmbRt& r) const {   // (the chunks it covers: when one changes, it fills again)
@@ -9476,11 +9495,16 @@ struct App {
     void UpdateAmbient(double dt) {
         ambOn = false; if (!world) return;
         std::vector<const WorldObject*> list; for (const WorldObject& o : objects) if (o.kind == ObjKind::Ambient) list.push_back(&o);
-        if (list.size() > 250) list.resize(250);
-        if (list.empty()) { ambRt.clear(); ambOrder.clear(); return; }
+        if (list.size() > 200) list.resize(200);
+        std::vector<const RoomDef*> rlist;   // rooms with their own ambient light (Room Manager)
+        for (const RoomDef& r : rooms.list.rooms) if (r.ambOn) { const RoomSet::Live* L = rooms.liveOf(r.id); if (L && !L->shape.empty() && rlist.size() < 50) rlist.push_back(&r); }
+        if (list.empty()) ambRt.clear();
+        if (list.empty() && rlist.empty()) { ambOrder.clear(); return; }
         bool changed = false; std::vector<CookDoor> doors; bool doorsMade = false;
+        if (rooms.generation != ambRoomGen) { ambRoomGen = rooms.generation; changed = true; }
         if (breakables.marks.size() != ambBreakN) { ambBreakN = breakables.marks.size(); for (auto& kv : ambRt) kv.second.sig ^= 1; for (auto& kv : ambRt) kv.second.age = 99; }   // (blocks marked or unmarked breakable: fill again)
         std::vector<uint32_t> order; for (const WorldObject* o : list) order.push_back(o->id);
+        for (const RoomDef* r : rlist) order.push_back(r->id | 0x80000000u);   // (rooms: the top bit)
         if (order != ambOrder) { ambOrder = order; changed = true; for (auto it = ambRt.begin(); it != ambRt.end();) { if (std::find(order.begin(), order.end(), it->first) == order.end()) it = ambRt.erase(it); else ++it; } }
         if (ambBusy && ambFut.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {   // a fill is done
             AmbientFill f = ambFut.get(); ambBusy = false;
@@ -9527,6 +9551,20 @@ struct App {
                     if (!v[0] || w > v[1]) { v[2] = v[0]; v[3] = v[1]; v[0] = id; v[1] = w; } else if (!v[2] || w > v[3]) { v[2] = id; v[3] = w; }
                 }
             }
+            for (size_t k = 0; k < rlist.size(); k++) {   // a room's own: all of its air, fully (its doors are where it stops)
+                const RoomSet::Live* L = rooms.liveOf(rlist[k]->id); if (!L) continue; uint8_t id = (uint8_t)(list.size() + k + 1);
+                for (const auto& kv : L->shape.bits) {
+                    int bx = kv.first.x * CS - ambOrigin.x, by = kv.first.y * CS - ambOrigin.y, bz = kv.first.z * CS - ambOrigin.z;
+                    if (bx + CS <= 0 || by + CS <= 0 || bz + CS <= 0 || bx >= AMBX || by >= AMBY || bz >= AMBZ) continue;
+                    for (int i = 0; i < CS3; i++) {
+                        if (!kv.second.has(i)) continue;
+                        int x = bx + i % CS, y = by + i / (CS * CS), z = bz + (i / CS) % CS;
+                        if (x < 0 || y < 0 || z < 0 || x >= AMBX || y >= AMBY || z >= AMBZ) continue;
+                        uint8_t* v = &ambVolCpu[(((size_t)z * AMBY + y) * AMBX + x) * 4];
+                        if (!v[0] || v[1] < 255) { v[2] = v[0]; v[3] = v[1]; v[0] = id; v[1] = 255; }   // (a room's own light wins over spills into it)
+                    }
+                }
+            }
             if (!ambVolTex) {
                 D3D11_TEXTURE3D_DESC d{}; d.Width = AMBX; d.Height = AMBY; d.Depth = AMBZ; d.MipLevels = 1; d.Format = DXGI_FORMAT_R8G8B8A8_UINT; d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
                 HR(dev->CreateTexture3D(&d, nullptr, &ambVolTex)); HR(dev->CreateShaderResourceView(ambVolTex.Get(), nullptr, &ambVolSRV));
@@ -9534,10 +9572,10 @@ struct App {
             ctx->UpdateSubresource(ambVolTex.Get(), 0, nullptr, ambVolCpu.data(), AMBX * 4, AMBX * AMBY * 4);
         }
         {   // each light's colours (every frame: editing shows at once)
-            std::vector<AmbGpuC> g(list.size());
+            std::vector<AmbGpuC> g(list.size() + rlist.size());
             auto lin = [](uint32_t c, float k, float* o) { for (int i = 0; i < 3; i++) o[i] = std::pow(((c >> (16 - 8 * i)) & 255) / 255.f, 2.2f) * k; };
-            for (size_t k = 0; k < list.size(); k++) {
-                const AmbientSettings& A = list[k]->ambient; float st = std::max(0.f, A.strength);
+            for (size_t k = 0; k < g.size(); k++) {
+                const AmbientSettings& A = k < list.size() ? list[k]->ambient : rlist[k - list.size()]->amb; float st = std::max(0.f, A.strength);
                 const uint32_t dirs[6] = { A.east, A.west, A.up, A.down, A.south, A.north };
                 for (int d = 0; d < 6; d++) { lin(dirs[d], st, g[k].c[d]); g[k].c[d][3] = 0; }
                 g[k].c[0][3] = std::clamp(A.mix, 0.f, 1.f);
@@ -9548,13 +9586,212 @@ struct App {
         }
         ambOn = true;
     }
-    const WorldObject* AmbientAt(V3 p) const {   // whose room this spot is mostly in (nullptr: none)
+    const AmbientSettings* AmbientAt(V3 p) const {   // whose ambient light this spot is mostly in (nullptr: none)
         if (!ambOn || ambVolCpu.empty()) return nullptr;
         int x = ifloor(p.x) - ambOrigin.x, y = ifloor(p.y) - ambOrigin.y, z = ifloor(p.z) - ambOrigin.z;
         if (x < 0 || y < 0 || z < 0 || x >= AMBX || y >= AMBY || z >= AMBZ) return nullptr;
         const uint8_t* v = &ambVolCpu[(((size_t)z * AMBY + y) * AMBX + x) * 4]; if (!v[0] || v[1] < 128 || v[0] > ambOrder.size()) return nullptr;
-        uint32_t id = ambOrder[v[0] - 1]; for (const WorldObject& o : objects) if (o.id == id) return &o;
+        uint32_t id = ambOrder[v[0] - 1];
+        if (id & 0x80000000u) { const RoomDef* r = rooms.list.find(id & 0x7FFFFFFFu); return r && r->ambOn ? &r->amb : nullptr; }
+        for (const WorldObject& o : objects) if (o.id == id) return &o.ambient;
         return nullptr;
+    }
+    // ================================================================== rooms (the Room Manager): found by themselves - the air closed in by walls
+    // and doors (a room without a roof: by its floor) - or marked by hand. Each has a name, its own ambient light and music; the map shows a room
+    // once you walk in, and Map Stations reveal the rooms they are set to
+    RoomSet rooms; bool roomsOpenW = false, focusRooms = false, showRooms = true; int roomSel = -1; double roomCheckT = 0, roomSeedT = 0; size_t roomHist = 0;
+    uint32_t curRoom = 0; double roomNameAt = -99; std::string roomNameText;
+    struct RoomReveal { uint32_t id = 0; bool own = true; std::vector<I3> cells; size_t at = 0; };
+    std::deque<RoomReveal> roomReveals;
+    void SaveRooms() { if (world && !worldDir.empty()) saveRooms(worldDir + "/rooms.txt", rooms.list); }
+    void LoadRooms() { rooms = RoomSet{}; if (!worldDir.empty()) loadRooms(worldDir + "/rooms.txt", rooms.list); curRoom = 0; roomSel = -1; roomReveals.clear(); }
+    RoomWorld RoomWorldNow() const {
+        RoomWorld w; w.reg = &reg; World* wp = world.get();
+        w.chunkAt = [wp](I3 c) -> const Chunk* { return wp ? wp->chunk(c) : nullptr; };
+        w.doors = CookDoors();
+        const Breakables* br = &breakables; if (!br->marks.empty()) w.through = [br](int x, int y, int z) { return br->marks.count({ x, y, z }) > 0; };
+        const RoomList* rl = &rooms.list;
+        bool anyMarked = false; for (const RoomDef& r : rl->rooms) anyMarked |= r.marked();
+        if (anyMarked) w.blocked = [rl](int x, int y, int z) { for (const RoomDef& r : rl->rooms) if (r.marked() && r.inBoxes(x, y, z)) return true; return false; };
+        return w;
+    }
+    I3 RoomProbe() const { V3 p = playMode ? player.eye() : camPos; return { ifloor(p.x), ifloor(p.y), ifloor(p.z) }; }
+    uint32_t RoomHere() const { I3 c = RoomProbe(); uint32_t r = rooms.roomAt(c.x, c.y, c.z); if (!r && playMode) { V3 f = player.feet; r = rooms.roomAt(ifloor(f.x), ifloor(f.y + 0.2), ifloor(f.z)); } return r; }
+    void UpdateRooms(double dt) {
+        if (!world) return;
+        if (history.undoCount() != roomHist) { roomHist = history.undoCount(); rooms.edited(); }
+        roomCheckT += dt; bool check = roomCheckT > 0.5; if (check) roomCheckT = 0;
+        RoomWorld w = RoomWorldNow();
+        std::vector<I3> seeds = RoomSet::doorSeeds(w.doors);
+        roomSeedT += dt; if (roomSeedT > 0.5) { roomSeedT = 0; seeds.push_back(RoomProbe()); }   // (where you are: twice a second)
+        World* wp = world.get();
+        rooms.tick(w, seeds, [wp](I3 c) -> uint32_t { const Chunk* ch = wp->chunk(c); return ch ? ch->version + 1 : 0; }, check, playMode ? 12000 : 30000);
+        if (rooms.listChanged && !playMode) { rooms.listChanged = false; SaveRooms(); }
+        if (playMode) RoomsInPlay();
+    }
+    // ---- in play: walking into a room - its name, its music, the map shows it
+    std::string RoomFlag(const char* kind, uint32_t id) const { return std::string(kind) + ":" + CurrentWorld() + ":" + std::to_string(id); }
+    void QueueRoomReveal(uint32_t id, bool own) {
+        const RoomSet::Live* L = rooms.liveOf(id); if (!L || L->shape.empty()) return;
+        RoomReveal r; r.id = id; r.own = own; r.cells.reserve(L->shape.cells); L->shape.forEach([&](int x, int y, int z) { r.cells.push_back({ x, y, z }); });
+        SeenMap& m = Seen(); for (uint32_t d : L->shape.doorObjs) if (d) m.doors.insert(d);   // its doors show on the map too
+        roomReveals.push_back(std::move(r));
+    }
+    void UpdateRoomReveals() {   // the walls, floor and ceiling around a room's air go on the map (a bit each frame: no stutter)
+        if (roomReveals.empty() || !world) return;
+        SeenMap& m = Seen(); double now = MapClock(); size_t budget = 20000;
+        while (!roomReveals.empty() && budget) {
+            RoomReveal& r = roomReveals.front(); const RoomSet::Live* L = rooms.liveOf(r.id);
+            for (; r.at < r.cells.size() && budget; r.at++, budget--) {
+                I3 c = r.cells[r.at];
+                for (const auto& d : { I3{ 1, 0, 0 }, I3{ -1, 0, 0 }, I3{ 0, 1, 0 }, I3{ 0, -1, 0 }, I3{ 0, 0, 1 }, I3{ 0, 0, -1 } }) {
+                    int x = c.x + d.x, y = c.y + d.y, z = c.z + d.z;
+                    if (L && L->shape.has(x, y, z)) continue;
+                    BlockId v = world->get(x, y, z); if (v == AIR) continue;
+                    const BlockDef& bd = reg.get(v); if (bd.liquid || !bd.solid) continue;
+                    m.mark(x, y, z, now, r.own);
+                }
+            }
+            if (r.at >= r.cells.size()) roomReveals.pop_front();
+        }
+    }
+    bool RoomRevealed(uint32_t id) const { return evRun.flags.count(RoomFlag("roomseen", id)) > 0; }
+    void RoomsInPlay() {
+        uint32_t r = play.dead() ? curRoom : RoomHere();
+        if (r == curRoom) return;
+        curRoom = r; if (!r) return;
+        const RoomDef* d = rooms.list.find(r); if (!d) return;
+        if (!RoomRevealed(r)) { evRun.flags.insert(RoomFlag("roomseen", r)); QueueRoomReveal(r, true); }   // the map: all of it, at once
+        if (d->showName) { roomNameText = d->label(); roomNameAt = uiClock; }
+        if (bossSealed.empty()) {   // (not during a boss fight: its own music)
+            if (d->musicMode == 1 && !d->music.empty()) PlayMusic(d->music, d->musicFade);
+            else if (d->musicMode == 2) StopMusic(d->musicFade);
+        }
+    }
+    void DrawRoomName(ImDrawList* dl, float vx, float vy, float cw) {   // a room's name as you walk in (like Prime: fades in, stays, fades out)
+        double t = uiClock - roomNameAt; if (!playMode || t < 0 || t > 3.4 || roomNameText.empty()) return;
+        float a = (float)std::min({ 1.0, t / 0.35, (3.4 - t) / 0.6 }); float ui = settings.uiScale;
+        ImFont* f = ImGui::GetFont(); float size = 26 * ui; ImVec2 ts = f->CalcTextSizeA(size, FLT_MAX, 0, roomNameText.c_str());
+        ImVec2 p(vx + (cw - ts.x) * 0.5f, vy + 96 * ui);
+        dl->AddRectFilled(ImVec2(p.x - 18 * ui, p.y - 6 * ui), ImVec2(p.x + ts.x + 18 * ui, p.y + ts.y + 6 * ui), IM_COL32(0, 10, 18, (int)(120 * a)), 4 * ui);
+        dl->AddLine(ImVec2(p.x - 18 * ui, p.y + ts.y + 6 * ui), ImVec2(p.x + ts.x + 18 * ui, p.y + ts.y + 6 * ui), IM_COL32(96, 200, 255, (int)(200 * a)), 1.5f * ui);
+        dl->AddText(f, size, p, IM_COL32(210, 240, 255, (int)(240 * a)), roomNameText.c_str());
+    }
+    void DrawRoomsInWorld(ImDrawList* dl) {   // the editor: each room's box and name, in its colour
+        if (playMode || !roomsOpenW || !showRooms || !world) return;
+        for (int i = 0; i < (int)rooms.list.rooms.size(); i++) {
+            const RoomDef& d = rooms.list.rooms[i]; const RoomSet::Live* L = rooms.liveOf(d.id);
+            ImU32 col = IM_COL32((d.color >> 16) & 255, (d.color >> 8) & 255, d.color & 255, i == roomSel ? 255 : 150);
+            auto boxLines = [&](I3 lo, I3 hi) {
+                V3 c[8]; for (int k = 0; k < 8; k++) c[k] = { (double)((k & 1) ? hi.x + 1 : lo.x), (double)((k & 2) ? hi.y + 1 : lo.y), (double)((k & 4) ? hi.z + 1 : lo.z) };
+                const int e[12][2] = { { 0, 1 }, { 2, 3 }, { 4, 5 }, { 6, 7 }, { 0, 2 }, { 1, 3 }, { 4, 6 }, { 5, 7 }, { 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 } };
+                for (auto& k : e) Line3D(dl, c[k[0]], c[k[1]], col);
+            };
+            if (d.marked()) for (const auto& b : d.boxes) boxLines(b.first, b.second);
+            else if (L && !L->shape.empty() && (i == roomSel || L->shape.cells < 400000)) boxLines(L->shape.lo, L->shape.hi);
+            ImVec2 sp; V3 at{ d.anchor.x + 0.5, d.anchor.y + 1.5, d.anchor.z + 0.5 };
+            if (L && !L->shape.empty() && !d.marked()) at = { (L->shape.lo.x + L->shape.hi.x + 1) * 0.5, L->shape.lo.y + 2.0, (L->shape.lo.z + L->shape.hi.z + 1) * 0.5 };
+            V3 dc = at - camPos; if (dc.x * dc.x + dc.y * dc.y + dc.z * dc.z > 160 * 160) continue;
+            if (Project(at, sp)) { std::string t = d.label(); ImVec2 ts = ImGui::CalcTextSize(t.c_str()); dl->AddRectFilled(ImVec2(sp.x - ts.x * 0.5f - 4, sp.y - 2), ImVec2(sp.x + ts.x * 0.5f + 4, sp.y + ts.y + 2), IM_COL32(0, 0, 0, 140), 3); dl->AddText(ImVec2(sp.x - ts.x * 0.5f, sp.y), col | IM_COL32(0, 0, 0, 255), t.c_str()); }
+        }
+    }
+    std::string RoomStatus(const RoomDef& d) const {
+        const RoomSet::Live* L = rooms.liveOf(d.id);
+        if (!L || !L->searched) return "searching ...";
+        if (L->joined) { const RoomDef* o = rooms.list.find(L->joined); return "one room with " + (o ? o->label() : std::string("another")); }
+        if (L->open) return d.marked() ? "no air in its boxes" : "not closed any more (part of the outside)";
+        if (L->shape.empty()) return "waiting for its chunks";
+        char b[96]; std::snprintf(b, sizeof b, "%zu blocks%s%s", L->shape.cells, L->shape.roofless ? ", no roof" : "", d.marked() ? ", marked" : ""); return b;
+    }
+    void RoomsWindow() {
+        if (!roomsOpenW) return;
+        float ui = settings.uiScale;
+        ImGui::SetNextWindowSize(ImVec2(620 * ui, 680 * ui), ImGuiCond_FirstUseEver);
+        if (focusRooms) { ImGui::SetNextWindowFocus(); focusRooms = false; }
+        if (!ImGui::Begin("Rooms", &roomsOpenW)) { ImGui::End(); return; }
+        if (!world) { ImGui::TextDisabled("Open a world first."); ImGui::End(); return; }
+        bool ch = false;
+        Hint("Rooms are found by themselves: the air closed in by walls and doors (a door is where a room ends). A room without a roof goes by its floor, up to the top of its walls. Mark a room by hand where that isn't what you want. Each room has a name, its own ambient light and its own music; in the game, the map shows a whole room the moment you walk in, and a Map Station can reveal the rooms you pick.");
+        { int n = 0; for (const RoomDef& d : rooms.list.rooms) { const RoomSet::Live* L = rooms.liveOf(d.id); if (L && !L->shape.empty()) n++; }
+          ImGui::Text("%d room%s", n, n == 1 ? "" : "s"); if (rooms.busy()) { ImGui::SameLine(); ImGui::TextDisabled("   %s", rooms.busyText().c_str()); } }
+        { uint32_t here = RoomHere(); const RoomDef* h = rooms.list.find(here); ImGui::TextDisabled("You are in: %s", h ? h->label().c_str() : "no room (the outside)");
+          if (h) { ImGui::SameLine(); if (ImGui::SmallButton("Pick it")) for (int i = 0; i < (int)rooms.list.rooms.size(); i++) if (rooms.list.rooms[i].id == here) roomSel = i; } }
+        ImGui::Checkbox("Show the rooms in the world", &showRooms);
+        ImGui::SameLine(); if (ImGui::Button("Mark a room by hand")) {
+            RoomDef d; d.id = rooms.list.nextId++; d.color = roomColor(d.id); d.amb = ambientPreset(0); d.name = "Marked room " + std::to_string(d.id);
+            I3 c = RoomProbe(); d.anchor = c; d.boxes.push_back({ { c.x - 4, c.y - 1, c.z - 4 }, { c.x + 4, c.y + 4, c.z + 4 } });
+            rooms.list.rooms.push_back(d); roomSel = (int)rooms.list.rooms.size() - 1; ch = true;
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("A box around you: the air in it is the room (it wins over the rooms found by themselves).\nGive it more boxes for odd shapes.");
+        ImGui::SameLine(); if (ImGui::Button("Search again")) rooms.researchAll();
+        Prop("No roof: walls at least"); ImGui::SetNextItemWidth(160 * ui); if (ImGui::SliderInt("##rband", &rooms.list.band, 1, 8, "%d blocks high")) { ch = true; rooms.researchAll(); }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("A room without a roof is closed in by walls at least this high (lower ones you can jump over:\nthey don't split rooms).");
+        ImGui::Separator();
+        if (ImGui::BeginTable("rooms", 2, ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV)) {
+            ImGui::TableSetupColumn("list", ImGuiTableColumnFlags_WidthStretch, 0.8f); ImGui::TableSetupColumn("room", ImGuiTableColumnFlags_WidthStretch, 1.2f);
+            ImGui::TableNextColumn();
+            ImGui::BeginChild("##rlist", ImVec2(0, 0));
+            for (int i = 0; i < (int)rooms.list.rooms.size(); i++) {
+                const RoomDef& d = rooms.list.rooms[i]; ImGui::PushID((int)d.id);
+                ImVec2 p = ImGui::GetCursorScreenPos(); float hh = ImGui::GetTextLineHeight();
+                ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(p.x, p.y + 2), ImVec2(p.x + hh - 4, p.y + hh - 2), IM_COL32((d.color >> 16) & 255, (d.color >> 8) & 255, d.color & 255, 255), 2);
+                ImGui::SetCursorScreenPos(ImVec2(p.x + hh + 2, p.y));
+                if (ImGui::Selectable(d.label().c_str(), roomSel == i)) roomSel = i;
+                ImGui::SameLine(); ImGui::TextDisabled("%s", RoomStatus(d).c_str());
+                ImGui::PopID();
+            }
+            if (rooms.list.rooms.empty()) ImGui::TextDisabled("None yet: rooms are found beside doors\nand where you fly (give it a moment).");
+            ImGui::EndChild();
+            ImGui::TableNextColumn();
+            ImGui::BeginChild("##rroom", ImVec2(0, 0));
+            if (roomSel >= 0 && roomSel < (int)rooms.list.rooms.size()) {
+                RoomDef& d = rooms.list.rooms[roomSel]; const RoomSet::Live* L = rooms.liveOf(d.id);
+                ImGui::SeparatorText(d.label().c_str());
+                Prop("Name"); ch |= ImGui::InputTextWithHint("##rn", ("Room " + std::to_string(d.id)).c_str(), &d.name);
+                { float c[3] = { ((d.color >> 16) & 255) / 255.f, ((d.color >> 8) & 255) / 255.f, (d.color & 255) / 255.f }; Prop("Colour");
+                  if (ImGui::ColorEdit3("##rc", c, ImGuiColorEditFlags_NoInputs)) { d.color = ((uint32_t)(c[0] * 255 + 0.5f) << 16) | ((uint32_t)(c[1] * 255 + 0.5f) << 8) | (uint32_t)(c[2] * 255 + 0.5f); ch = true; } }
+                Prop("Its name shows as you walk in"); ch |= ImGui::Checkbox("##rsn", &d.showName);
+                ImGui::TextDisabled("%s", RoomStatus(d).c_str());
+                if (L && !L->shape.empty()) ImGui::TextDisabled("%d x %d x %d blocks, %zu door(s)", L->shape.hi.x - L->shape.lo.x + 1, L->shape.hi.y - L->shape.lo.y + 1, L->shape.hi.z - L->shape.lo.z + 1, L->shape.doors.size());
+                if (ImGui::Button("Go there")) { V3 at{ d.anchor.x + 0.5, (double)d.anchor.y, d.anchor.z + 0.5 }; if (L && !L->shape.empty() && !d.marked()) at = { (L->shape.lo.x + L->shape.hi.x + 1) * 0.5, (double)L->shape.lo.y, (L->shape.lo.z + L->shape.hi.z + 1) * 0.5 }; player.feet = at; player.flying = true; }
+                ImGui::SameLine();
+                if (d.marked()) {
+                    if (ImGui::Button("Delete this room")) { rooms.list.rooms.erase(rooms.list.rooms.begin() + roomSel); roomSel = -1; ch = true; rooms.edited(); ImGui::EndChild(); ImGui::EndTable(); SaveRooms(); ImGui::End(); return; }
+                } else {
+                    if (ImGui::Button("Forget")) { rooms.list.rooms.erase(rooms.list.rooms.begin() + roomSel); roomSel = -1; ch = true; rooms.edited(); ImGui::EndChild(); ImGui::EndTable(); SaveRooms(); ImGui::End(); return; }
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Its name and settings go. If it is still a room it is found again (as a new one).");
+                }
+                if (d.marked()) {
+                    ImGui::SeparatorText("Its boxes (blocks, both corners included)");
+                    for (int b = 0; b < (int)d.boxes.size(); b++) {
+                        ImGui::PushID(b); auto& bx = d.boxes[b];
+                        int lo[3] = { bx.first.x, bx.first.y, bx.first.z }, hi[3] = { bx.second.x, bx.second.y, bx.second.z };
+                        ImGui::SetNextItemWidth(-40 * ui); if (ImGui::DragInt3("##lo", lo, 0.2f)) { bx.first = { lo[0], lo[1], lo[2] }; ch = true; }
+                        ImGui::SameLine(); ImGui::TextDisabled("from");
+                        ImGui::SetNextItemWidth(-40 * ui); if (ImGui::DragInt3("##hi", hi, 0.2f)) { bx.second = { hi[0], hi[1], hi[2] }; ch = true; }
+                        ImGui::SameLine(); ImGui::TextDisabled("to");
+                        if (bx.first.x > bx.second.x) std::swap(bx.first.x, bx.second.x); if (bx.first.y > bx.second.y) std::swap(bx.first.y, bx.second.y); if (bx.first.z > bx.second.z) std::swap(bx.first.z, bx.second.z);
+                        if (d.boxes.size() > 1 && ImGui::SmallButton("Remove this box")) { d.boxes.erase(d.boxes.begin() + b); ch = true; ImGui::PopID(); break; }
+                        ImGui::PopID();
+                    }
+                    if (ImGui::SmallButton("Add a box around me")) { I3 c = RoomProbe(); d.boxes.push_back({ { c.x - 3, c.y - 1, c.z - 3 }, { c.x + 3, c.y + 3, c.z + 3 } }); ch = true; }
+                    ImGui::SameLine(); if (ImGui::SmallButton("Grow the first box to me")) { I3 c = RoomProbe(); auto& bx = d.boxes[0]; bx.first = { std::min(bx.first.x, c.x), std::min(bx.first.y, c.y - 1), std::min(bx.first.z, c.z) }; bx.second = { std::max(bx.second.x, c.x), std::max(bx.second.y, c.y), std::max(bx.second.z, c.z) }; ch = true; }
+                }
+                ImGui::SeparatorText("Ambient light");
+                Prop("Its own ambient light"); ch |= ImGui::Checkbox("##ramb", &d.ambOn);
+                if (d.ambOn) ch |= AmbientSettingsUI(d.amb, true);
+                else ImGui::TextDisabled("(off: the sky's light, or an ambient light object in it)");
+                ImGui::SeparatorText("Music");
+                { const char* mm[] = { "Keep what is playing", "Play this (it loops)", "Silence" }; Prop("When you walk in"); ImGui::SetNextItemWidth(-1); ch |= ImGui::Combo("##rmm", &d.musicMode, mm, 3); }
+                if (d.musicMode == 1) { Prop("Music"); ch |= MusicEdit("##rmus", d.music); }
+                if (d.musicMode != 0) { Prop("Fades over"); ImGui::SetNextItemWidth(-1); ch |= ImGui::SliderFloat("##rmf", &d.musicFade, 0, 6, "%.1f s"); }
+                Hint("The music of the Soundtrack list (Player > Soundtrack). The same piece in the next room just plays on. A boss fight's own music wins.");
+            } else ImGui::TextDisabled("Pick a room on the left.");
+            ImGui::EndChild();
+            ImGui::EndTable();
+        }
+        if (ch) SaveRooms();
+        ImGui::End();
     }
     // ---- lava lights what is around it: a top-down map of the lava near you (128 x 128 blocks: how much of each column is lava and how
     // high its top is), blurred by its smaller copies on the graphics card. Made again when you move or every half a second
@@ -11288,7 +11525,7 @@ struct App {
         Hint("Coming in: from the screen (or the game) before. Going out: used when the next screen has none of its own (going out, a slide or a wipe moves the old one away). A button can have its own. Try them with F6 (from the menu).");
         ImGui::SeparatorText("Music");
         { const char* mm[] = { "Keep what is playing", "Play this (it loops)", "Silence" }; Prop("When it shows"); ch |= ImGui::Combo("##mmode", &sc.musicMode, mm, 3); }
-        if (sc.musicMode == 1) { Prop("Music"); ch |= SoundEdit("##music", sc.music, false); }
+        if (sc.musicMode == 1) { Prop("Music"); ch |= MusicEdit("##music", sc.music); }
         if (sc.musicMode != 0) { Prop("Fades over"); ch |= ImGui::SliderFloat("##mfade", &sc.musicFade, 0, 6, "%.1f s"); }
         Hint("WAV, MP3, M4A, WMA or FLAC from the game's sounds (import them in the sound pickers). \"Keep\" lets the music of the screen before go on (the Options screen keeps the main menu's). Playing a game fades it out.");
         if (sc.role == ScreenRole::GameSaved) {
@@ -12570,7 +12807,7 @@ struct App {
         Prop("Intro (roars, can't be hurt)"); ch |= ImGui::SliderFloat("##bintro", &d.introTime, 0, 6, "%.1f s");
         Prop("Intro animation"); ch |= ClipField("##bian", t ? t->model : "", d.introAnim);
         Prop("Roar"); ch |= SoundEdit("##broar", d.roar, false);
-        Prop("Music"); ch |= SoundEdit("##bmus", d.music, false);
+        Prop("Music"); ch |= MusicEdit("##bmus", d.music);
         Hint("The music starts with the fight and fades out when it is defeated.");
         Prop("Explodes for"); ch |= ImGui::SliderFloat("##bdie", &d.deathTime, 0.2f, 8, "%.1f s");
         Prop("Flag when defeated"); ch |= ImGui::InputTextWithHint("##bflag", (BossTitle(d) + " defeated").c_str(), &d.flag);
@@ -12654,7 +12891,7 @@ struct App {
         Prop("Glows"); ch |= ColorU32("##phtc", ph.tint);
         Prop("  how much"); ch |= ImGui::SliderFloat("##phta", &ph.tintAmount, 0, 1, ph.tintAmount <= 0 ? "no" : "%.2f");
         Prop("Music"); { const char* mm2[] = { "keep playing", "change to" }; ch |= ImGui::Combo("##phm", &ph.musicMode, mm2, 2); }
-        if (ph.musicMode == 1) { Prop("  this"); ch |= SoundEdit("##phmus", ph.music, false); }
+        if (ph.musicMode == 1) { Prop("  this"); ch |= MusicEdit("##phmus", ph.music); }
         if (bossPhaseEd > 0) { if (ImGui::SmallButton("Remove this phase")) { d.phases.erase(d.phases.begin() + bossPhaseEd); bossPhaseEd = 0; ImGui::PopID(); ImGui::EndChild(); SaveBosses(); return; } }
         ImGui::SeparatorText("Moves");
         { int drop = -1, up = -1;
@@ -12958,8 +13195,11 @@ struct App {
         SeenMap& m = Seen(); double now = MapClock(); mapFrame++;
         double fov = settings.fov * 3.14159265358979 / 180, aspect = (double)rw / std::max(1, rh);
         V3 eye = player.eye();
-        m.lookAround(*world, eye, player.yaw, player.pitch, fov, aspect, 280, 48, mapFrame, now);
-        if (player.onGround) m.floorUnder(*world, player.feet, 1, now);
+        UpdateRoomReveals();
+        if (!(curRoom && RoomRevealed(curRoom))) {   // in a room you have seen: it is all on the map already (no need to look around)
+            m.lookAround(*world, eye, player.yaw, player.pitch, fov, aspect, 280, 48, mapFrame, now);
+            if (player.onGround) m.floorUnder(*world, player.feet, 1, now);
+        }
         if (mapFrame % 4 == 0) {   // doors in view
             V3 f = player.forward(); double cosHalf = std::cos(std::min(1.4, fov * 0.5 * std::max(1.0, aspect)));
             for (const WorldObject& o : objects) {
@@ -12993,6 +13233,15 @@ struct App {
         std::string key = CurrentWorld() + "#" + std::to_string(st.id);
         if (stationsUsed.count(key)) { OpenMap(); return; }   // already downloaded: it just shows the map
         stationsUsed.insert(key);
+        if (!st.map.rooms.empty()) {   // set to rooms (Room Manager): those rooms go on the map, whole
+            int n = 0;
+            for (uint32_t id : st.map.rooms) {
+                if (RoomRevealed(id) || evRun.flags.count(RoomFlag("roomdl", id))) continue;
+                evRun.flags.insert(RoomFlag("roomdl", id)); QueueRoomReveal(id, false); n++;
+            }
+            Log("map station " + std::to_string(st.id) + ": " + std::to_string(n) + " room(s) revealed");
+            Toast("Map data downloaded"); OpenMap(); return;
+        }
         SeenMap& m = Seen(); double now = MapClock(); size_t before = m.total, doorsBefore = m.doors.size(); int cams = 0;
         auto revealAt = [&](V3 eye, double range) {
             m.revealFrom(*world, eye, range, 4000, now);
@@ -13039,6 +13288,7 @@ struct App {
         for (V3 p : { a, b, c }) { MapVert x{}; x.p[0] = (float)p.x; x.p[1] = (float)p.y; x.p[2] = (float)p.z; x.n[0] = (float)n.x; x.n[1] = (float)n.y; x.n[2] = (float)n.z; x.uv[0] = x.uv[1] = 1; x.size[0] = x.size[1] = 2; x.born = -100; for (int j = 0; j < 4; j++) x.col[j] = col[j]; v.push_back(x); }
     }
     void UpdateMapGpu() {
+        if (playMode) UpdateRoomReveals();   // (rooms a Map Station just revealed: also while the map is open)
         SeenMap& m = Seen();
         if (mapGpuWorld != CurrentWorld()) { mapGpu.clear(); mapGpuWorld = CurrentWorld(); for (auto& kv : m.chunks) m.dirty.insert(kv.first); }
         int built = 0;
@@ -13272,6 +13522,25 @@ struct App {
         ImGui::SeparatorText(cam ? "Map camera" : "Map Station");
         if (cam) Hint("Invisible in the game. When a Map Station with the same ID is used, this camera looks all around from here and puts everything it can see on the map (doors too, in their colour). Give several cameras the same ID to chart a bigger area.");
         else Hint("Stand at it and press E: it downloads the map. Every map camera with the same ID looks all around. With no camera of that ID, it looks around from itself. It downloads once per play; after that E just shows the map.");
+        if (!cam) {   // the new way: pick rooms (Room Manager)
+            ImGui::SeparatorText("Reveals these rooms");
+            Hint("Tick the rooms this station puts on the map (whole: walls, floors, doors). None ticked: the old way, its map cameras (below).");
+            if (rooms.list.rooms.empty()) ImGui::TextDisabled("No rooms yet (the Rooms window finds them).");
+            ImGui::BeginChild("##mrooms", ImVec2(0, std::min(220.f, 24.f * (float)rooms.list.rooms.size() + 8) * settings.uiScale), ImGuiChildFlags_Borders);
+            for (const RoomDef& r : rooms.list.rooms) {
+                bool on = std::find(o.map.rooms.begin(), o.map.rooms.end(), r.id) != o.map.rooms.end();
+                ImGui::PushID((int)r.id);
+                if (ImGui::Checkbox("##on", &on)) { if (on) o.map.rooms.push_back(r.id); else o.map.rooms.erase(std::remove(o.map.rooms.begin(), o.map.rooms.end(), r.id), o.map.rooms.end()); }
+                ImGui::SameLine(); ImVec2 p = ImGui::GetCursorScreenPos(); float hh = ImGui::GetTextLineHeight();
+                ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(p.x, p.y + 3), ImVec2(p.x + hh - 4, p.y + hh - 1), IM_COL32((r.color >> 16) & 255, (r.color >> 8) & 255, r.color & 255, 255), 2);
+                ImGui::SetCursorScreenPos(ImVec2(p.x + hh + 2, p.y)); ImGui::TextUnformatted(r.label().c_str());
+                ImGui::PopID();
+            }
+            ImGui::EndChild();
+            if (!rooms.list.rooms.empty()) { if (ImGui::SmallButton("All")) { o.map.rooms.clear(); for (const RoomDef& r : rooms.list.rooms) o.map.rooms.push_back(r.id); } ImGui::SameLine(); if (ImGui::SmallButton("None")) o.map.rooms.clear(); }
+            if (!o.map.rooms.empty()) { ImGui::TextDisabled("%d room(s): map cameras are not used.", (int)o.map.rooms.size()); return; }
+            ImGui::SeparatorText("Or: map cameras");
+        }
         int id = o.map.id; Prop("ID"); if (ImGui::InputInt("##mapid", &id)) o.map.id = std::clamp(id, 0, 9999);
         Prop(cam ? "Sees (blocks)" : "Sees, without cameras"); ImGui::SliderFloat("##maprange", &o.map.range, 8, 160, "%.0f blocks");
         int cams = 0, stations = 0; for (const WorldObject& q : objects) if (q.map.id == o.map.id) { if (q.kind == ObjKind::MapCamera) cams++; else if (q.kind == ObjKind::MapStation) stations++; }
@@ -13750,6 +14019,94 @@ struct App {
             }
         }
         ImGui::PopID(); return ch;
+    }
+    // ---- the soundtrack (OST): music lives in its own list (the project's sounds/music folder; picked as "music/<file>")
+    static constexpr int TAG_MUSICPREVIEW = 37; std::string musicPreviewing;
+    std::vector<std::string> MusicFiles() const {   // "music/<file>", sorted
+        std::vector<std::string> v; std::error_code ec;
+        for (auto& e : fs::directory_iterator(fs::u8path(SoundsDir() + "/music"), ec)) { std::string x = Lower(e.path().extension().string());
+            if (x == ".wav" || x == ".mp3" || x == ".m4a" || x == ".aac" || x == ".wma" || x == ".flac") v.push_back("music/" + e.path().filename().u8string()); }
+        std::sort(v.begin(), v.end()); return v;
+    }
+    static std::string MusicTitle(const std::string& f) { std::string t = f.rfind("music/", 0) == 0 ? f.substr(6) : f; size_t d = t.rfind('.'); return d == std::string::npos ? t : t.substr(0, d); }
+    void ImportMusic() {
+        std::error_code ec; fs::create_directories(fs::u8path(SoundsDir() + "/music"), ec); int n = 0;
+        for (const std::string& f : PickFiles("Music (WAV, MP3, M4A, WMA, FLAC)\0*.wav;*.mp3;*.m4a;*.aac;*.wma;*.flac\0", "Import music into the soundtrack")) {
+            fs::path src = fs::u8path(f); std::string name = src.filename().u8string();
+            fs::copy_file(src, fs::u8path(SoundsDir() + "/music/" + name), fs::copy_options::overwrite_existing, ec);
+            if (!ec) { n++; soundCache.erase("music/" + name); }
+        }
+        if (n) Toast(std::to_string(n) + " piece(s) of music added to the soundtrack");
+    }
+    void PreviewMusic(const std::string& file) {   // listen in the editor (one at a time; again: stop)
+        StopSounds(TAG_MUSICPREVIEW);
+        if (musicPreviewing == file || file.empty()) { musicPreviewing.clear(); return; }
+        SoundUse u; u.file = file; u.pitchVar = 0; if (PlaySoundIn(SND_MUSIC, u, 1, nullptr, TAG_MUSICPREVIEW, false)) musicPreviewing = file;
+    }
+    bool MusicEdit(const char* id, SoundUse& s) {   // picks a piece of the soundtrack (and its volume)
+        bool ch = false; ImGui::PushID(id); float bw = ImGui::GetFrameHeight();
+        ImGui::SetNextItemWidth(std::max(60.f, ImGui::GetContentRegionAvail().x - bw - ImGui::GetStyle().ItemSpacing.x));
+        std::string shown = s.file.empty() ? "(no music)" : s.file.rfind("music/", 0) == 0 ? MusicTitle(s.file) : s.file + "  (a sound)";
+        if (ImGui::BeginCombo("##music", shown.c_str())) {
+            if (ImGui::Selectable("(no music)", s.file.empty())) { s.file.clear(); ch = true; }
+            ImGui::SeparatorText("Soundtrack");
+            std::vector<std::string> ost = MusicFiles();
+            for (const std::string& f : ost) if (ImGui::Selectable(MusicTitle(f).c_str(), s.file == f)) { s.file = f; s.pitchVar = 0; ch = true; }
+            if (ost.empty()) ImGui::TextDisabled("  (empty: import some music)");
+            if (ImGui::Selectable("Import music...")) ImportMusic();
+            if (ImGui::BeginMenu("Other sounds (not the soundtrack)")) { for (const std::string& f : SoundFiles()) if (ImGui::MenuItem(f.c_str(), nullptr, s.file == f)) { s.file = f; s.pitchVar = 0; ch = true; } ImGui::EndMenu(); }
+            ImGui::EndCombo();
+        }
+        { std::string f; if (AcceptAsset(AssetType::Sound, f)) { s.file = f; ch = true; } }
+        ImGui::SameLine(); ImGui::BeginDisabled(s.empty());
+        bool playing = !s.empty() && musicPreviewing == s.file;
+        if (ImGui::Button(playing ? "##stop" : "##play", ImVec2(bw, bw))) PreviewMusic(s.file);
+        { ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax(), c((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f); float r = bw * 0.22f; ImDrawList* dl = ImGui::GetWindowDrawList(); ImU32 col = ImGui::GetColorU32(ImGuiCol_Text);
+          if (playing) dl->AddRectFilled(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), col); else dl->AddTriangleFilled(ImVec2(c.x - r * 0.8f, c.y - r), ImVec2(c.x - r * 0.8f, c.y + r), ImVec2(c.x + r, c.y), col); }
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip(playing ? "Stop" : "Listen");
+        if (!s.empty()) { ImGui::SetNextItemWidth(-FLT_MIN); if (ImGui::SliderFloat("##mvol", &s.volume, 0, 2, "volume %.2f")) ch = true; }
+        ImGui::PopID(); return ch;
+    }
+    void SoundtrackTab() {
+        float ui = settings.uiScale; ImGui::Spacing();
+        if (ImGui::Button("Import music...")) ImportMusic();
+        ImGui::SameLine(); ImGui::TextDisabled("The game's soundtrack: its own list, apart from the sound effects.");
+        Hint("Music for rooms (the Rooms window), screens (main menu, credits ...), bosses and event cards (\"play the music\") is picked from here. It goes into the project's sounds/music folder.");
+        ImGui::Separator();
+        std::vector<std::string> ost = MusicFiles();
+        if (ImGui::BeginTable("ost", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+            ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 28 * ui); ImGui::TableSetupColumn("Title", ImGuiTableColumnFlags_WidthStretch, 2);
+            ImGui::TableSetupColumn("Length", ImGuiTableColumnFlags_WidthFixed, 70 * ui); ImGui::TableSetupColumn("Plays in", ImGuiTableColumnFlags_WidthStretch, 2);
+            ImGui::TableHeadersRow();
+            for (const std::string& f : ost) {
+                ImGui::PushID(f.c_str()); ImGui::TableNextRow(); ImGui::TableNextColumn();
+                bool playing = musicPreviewing == f;
+                if (ImGui::Button(playing ? "##s" : "##p", ImVec2(22 * ui, 22 * ui))) PreviewMusic(f);
+                { ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax(), c((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f); float r = 5 * ui; ImDrawList* dl = ImGui::GetWindowDrawList(); ImU32 col = ImGui::GetColorU32(ImGuiCol_Text);
+                  if (playing) dl->AddRectFilled(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), col); else dl->AddTriangleFilled(ImVec2(c.x - r * 0.8f, c.y - r), ImVec2(c.x - r * 0.8f, c.y + r), ImVec2(c.x + r, c.y), col); }
+                ImGui::TableNextColumn(); ImGui::TextUnformatted(MusicTitle(f).c_str());
+                ImGui::TableNextColumn(); if (soundCache.count(f)) { float sec = SoundSeconds(f); ImGui::TextDisabled("%d:%02d", (int)sec / 60, (int)sec % 60); } else ImGui::TextDisabled("-");   // (known once it has played: reading it takes a moment)
+                ImGui::TableNextColumn();
+                { std::string used; auto add = [&](const std::string& w) { if (!used.empty()) used += ", "; used += w; };
+                  for (const RoomDef& r : rooms.list.rooms) if (r.musicMode == 1 && r.music.file == f) add(r.label());
+                  for (const auto& sc : screens.screens) if (sc.musicMode == 1 && sc.music.file == f) add(sc.name);
+                  ImGui::TextDisabled("%s", used.empty() ? "-" : used.c_str()); if (!used.empty() && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", used.c_str()); }
+                ImGui::PopID();
+            }
+            ImGui::EndTable();
+        }
+        if (ost.empty()) ImGui::TextDisabled("No music yet: import some (MP3, WAV, M4A, WMA, FLAC).");
+        std::vector<std::string> old; for (const std::string& f : SoundFiles()) if (soundCache.count(f) && SoundSeconds(f) > 45) old.push_back(f);
+        if (!old.empty()) {
+            ImGui::SeparatorText("Long sounds in the sound effects (music?)");
+            for (const std::string& f : old) {
+                ImGui::PushID(f.c_str()); ImGui::TextUnformatted(f.c_str()); ImGui::SameLine();
+                if (ImGui::SmallButton("Copy into the soundtrack")) { std::error_code ec; fs::create_directories(fs::u8path(SoundsDir() + "/music"), ec); fs::copy_file(fs::u8path(SoundsDir() + "/" + f), fs::u8path(SoundsDir() + "/music/" + f), fs::copy_options::overwrite_existing, ec); if (!ec) Toast(f + " is in the soundtrack now"); }
+                ImGui::PopID();
+            }
+            Hint("Things that already use them keep working; pick the soundtrack copy for new music.");
+        }
     }
     void SavePlayerSounds() { if (!projectDir.empty()) savePlayerSounds(projectDir + "/player_sounds.txt", playerSounds); }
     // ---- surfaces: what the block under Samus is made of changes her steps (Surfaces tab)
@@ -15133,7 +15490,7 @@ struct App {
                 float btn = bw * 2 + sp * 2;
                 KindRow(d.kind, btn, kc);
                 if (kc) { const Need& n = needOf(d.kind); if (n.object && d.target.empty()) d.target = FirstName(n.objectKind); if (d.kind == Do::Wait) d.number = 1; ch = true; }
-                if (d.kind == Do::PlayMusic) { ImGui::SameLine(); ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - btn); ch |= SoundFileField("evmus", d.text); }
+                if (d.kind == Do::PlayMusic) { ImGui::SameLine(); ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - btn); { SoundUse u; u.file = d.text; if (MusicEdit("evmus", u)) { d.text = u.file; ch = true; } } }
                 else { inlineTextHint = d.kind == Do::Countdown ? "label (Escape!)" : nullptr;
                        ch |= InlineFields(needOf(d.kind), d.target, d.text, d.text, d.number, NameKind(d.kind), false, false, d.kind == Do::Particles, ImGui::GetContentRegionAvail().x - btn); inlineTextHint = nullptr; }
                 ImGui::SameLine(); ImGui::BeginDisabled(k == 0); if (ImGui::ArrowButton("##up", ImGuiDir_Up)) up = k; ImGui::EndDisabled();
@@ -17204,7 +17561,7 @@ struct App {
             if (brushMenu) BrushMenu();
             ModelViewer();
             PlayerEditor();
-            ScreensEditor(); PlanetsEditor(); CookWindow();
+            ScreensEditor(); PlanetsEditor(); CookWindow(); RoomsWindow();
         } else {
             if (!mapOpen && !CurScreen()) { DrawHud(ImGui::GetForegroundDrawList()); DrawScanMarkers(ImGui::GetForegroundDrawList()); DrawLockMarkers(ImGui::GetForegroundDrawList()); DrawGrappleMarker(ImGui::GetForegroundDrawList()); }
             if (showF3) DrawF3();

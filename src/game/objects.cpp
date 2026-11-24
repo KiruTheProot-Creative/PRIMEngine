@@ -247,6 +247,7 @@ bool saveObjects(const std::string& path, const std::vector<WorldObject>& objs) 
               << " " << A.fog << " " << A.fogAmount << " " << A.reach << " " << A.blend << " " << escText(A.look);
         }
         if (o.kind == ObjKind::GrapplePoint) f << " grp " << o.grapple.mode << " " << o.grapple.length << " " << o.grapple.reach;
+        if (o.kind == ObjKind::MapStation && !o.map.rooms.empty()) { f << " mrooms " << o.map.rooms.size(); for (uint32_t r : o.map.rooms) f << " " << r; }
         f << "\n";
     }
     return (bool)f;
@@ -288,7 +289,8 @@ bool loadObjects(const std::string& path, std::vector<WorldObject>& objs) {
               if (!tok.empty() && tok.find_first_not_of("0123456789") == std::string::npos) { o.scan.id = std::stoi(tok); int et; if (l >> et) { o.enemyType = et; int se, sa; if (l >> se >> sa) { o.save.energy = se != 0; o.save.ammo = sa != 0; std::string an; if (l >> an) { o.save.anim = unescText(an); int ls; float ll; if (l >> ls >> ll) { o.light.shadows = ls != 0; o.light.length = std::clamp(ll, 0.25f, 64.f); std::string so, sc; if (l >> so >> sc) { soundUseFrom(unescText(so), o.door.openSound); soundUseFrom(unescText(sc), o.door.closeSound); std::string stt, stx; int ask; if (l >> stt >> stx >> ask) { o.save.title = unescText(stt); o.save.text = unescText(stx); o.save.ask = ask != 0; } } } } } } }
               else { std::string sc, st; int imp = 0; float tm = 0; o.scan.legacyName = unescText(tok); if (l >> sc >> st >> imp >> tm) { o.scan.legacyCategory = unescText(sc); o.scan.legacyText = unescText(st); o.scan.legacyImportant = imp != 0; o.scan.legacyTime = std::max(0.f, tm); } }
           } }
-        { std::string t; if (l >> t && t == "grp") { GrappleSettings& G = o.grapple; if (l >> G.mode >> G.length >> G.reach) { G.mode = std::clamp(G.mode, 0, 1); G.reach = std::clamp(G.reach, 2.f, 80.f); G.length = std::clamp(G.length, 0.f, 60.f); } }
+        for (std::string t; l >> t;) { if (t == "mrooms") { size_t n = 0; if (l >> n) for (size_t i = 0; i < n && i < 4096; i++) { uint32_t r; if (l >> r) o.map.rooms.push_back(r); } }
+          else if (t == "grp") { GrappleSettings& G = o.grapple; if (l >> G.mode >> G.length >> G.reach) { G.mode = std::clamp(G.mode, 0, 1); G.reach = std::clamp(G.reach, 2.f, 80.f); G.length = std::clamp(G.length, 0.f, 60.f); } }
           else if (t == "amb") {   // an ambient light's settings (newer files)
             AmbientSettings& A = o.ambient; std::string lk;
             if (l >> A.up >> A.down >> A.north >> A.south >> A.east >> A.west >> A.strength >> A.mix >> A.fog >> A.fogAmount >> A.reach >> A.blend >> lk) {

@@ -39,6 +39,7 @@
 #include <functional>
 #include <fstream>
 #include "../src/game/weather.h"
+#include "../src/game/rooms.h"
 #include <cstdio>
 #include <filesystem>
 using namespace mc;
@@ -1778,6 +1779,52 @@ int main() {
             const Screen& m4 = tl.screens[tl.byRole(ScreenRole::MainMenu)]; const ScreenItem* lb = nullptr; for (const ScreenItem& i : m4.items) if (i.kind == ScreenItemKind::Button) { lb = &i; break; }
             CHECK(m4.in.kind == TransKind::Iris && m4.in.time == 1.25f && m4.in.ease == 2 && m4.in.color == 0x123456 && m4.out.kind == TransKind::Wipe && m4.out.dir == 3
                   && lb && lb->ownTrans && lb->trans.kind == TransKind::Pixelate && lb->trans.time == 0.7f, "transitions save and load (a screen's in and out, a button's own)");
+        }
+        {   // the Room Manager's rooms: found by themselves, doors split them, no roof: by the floor
+            BlockRegistry rreg; registerBuiltinBlocks(rreg); World rw(rreg); rw.gen.kind = Generator::Void; rw.stream({ 32, 0, 32 }, 6, 3, 100000);
+            BlockId st = rreg.find("stone");
+            for (int z = 0; z < 64; z++) for (int x = 0; x < 64; x++) rw.set(x, 0, z, st);   // a floor (the void all around it)
+            auto box = [&](int x0, int z0, int x1, int z1, int h, bool roof) {
+                for (int y = 1; y <= h + 1; y++) for (int z = z0; z <= z1; z++) for (int x = x0; x <= x1; x++) {
+                    bool wall = x == x0 || x == x1 || z == z0 || z == z1 || (roof && y == h + 1); if (wall && (roof || y <= h)) rw.set(x, y, z, st); }
+            };
+            box(2, 2, 12, 12, 4, true); box(12, 2, 22, 12, 4, true);   // two rooms with roofs, a door between them
+            rw.set(12, 1, 6, AIR); rw.set(12, 2, 6, AIR);
+            box(30, 30, 40, 40, 5, false);                             // a yard without a roof (walls 5 high), a door into it
+            rw.set(30, 1, 35, AIR); rw.set(30, 2, 35, AIR);
+            rw.set(35, 0, 36, AIR); rw.set(35, -1, 36, st); rw.set(35, -2, 36, st);   // (a little pit in the yard: still the yard)
+            std::vector<CookDoor> doors = { { { 12, 1, 6 }, { 12, 2, 6 }, "A" }, { { 30, 1, 35 }, { 30, 2, 35 }, "B" } };
+            RoomWorld W; W.reg = &rreg; W.chunkAt = [&](I3 c) { return (const Chunk*)rw.chunk(c); }; W.doors = doors;
+            auto run = [&](I3 s) { RoomFlood f; f.start(W, s); int n = 0; while (f.step(5000) == RoomFlood::Running && n < 100000) n++; return f; };
+            RoomFlood a = run({ 5, 2, 5 });
+            CHECK(a.result() == RoomFlood::Room && !a.shape.roofless && a.shape.cells == 9 * 9 * 4 && (a.shape.doors == std::vector<int>{ 0 }) && !a.shape.has(18, 2, 5),
+                  "rooms: a room with a roof is its air, up to the walls and the door (%zu blocks)", a.shape.cells);
+            RoomFlood y = run({ 35, 1, 33 });
+            CHECK(y.result() == RoomFlood::Room && y.shape.roofless && y.shape.has(35, 5, 35) && !y.shape.has(35, 6, 35) && y.shape.has(35, 0, 36) && !y.shape.has(28, 1, 35) && (y.shape.doors == std::vector<int>{ 1 }),
+                  "a yard without a roof goes by its floor: closed in by its walls and the door, up to the walls' top, its pit too (%zu blocks)", y.shape.cells);
+            RoomFlood o = run({ 50, 1, 50 });
+            CHECK(o.result() == RoomFlood::Outside, "the open floor running off into the void is the outside");
+            RoomSet rs; std::vector<I3> seeds = RoomSet::doorSeeds(doors); seeds.push_back({ 50, 1, 50 });
+            auto chunkVer = [&](I3 c) -> uint32_t { const Chunk* ch = rw.chunk(c); return ch ? ch->version + 1 : 0; };
+            for (int i = 0; i < 400; i++) rs.tick(W, seeds, chunkVer, i % 20 == 0, 20000);
+            uint32_t ra = rs.roomAt(5, 2, 5), rb = rs.roomAt(18, 2, 5), ry = rs.roomAt(35, 3, 35);
+            CHECK(rs.list.rooms.size() == 3 && ra && rb && ry && ra != rb && rb != ry && rs.roomAt(50, 1, 50) == 0 && rs.roomAt(5, 0, 5) == 0 && rs.listChanged,
+                  "the Room Manager finds the three rooms beside the doors by itself, not the outside (%zu)", rs.list.rooms.size());
+            RoomDef* mk = nullptr; { RoomDef d; d.id = rs.list.nextId++; d.boxes.push_back({ { 45, 1, 45 }, { 50, 3, 50 } }); rs.list.rooms.push_back(d); }
+            for (int i = 0; i < 20; i++) rs.tick(W, seeds, chunkVer, i % 5 == 0, 20000);
+            mk = &rs.list.rooms.back();
+            CHECK(rs.roomAt(47, 2, 47) == mk->id && rs.liveOf(mk->id)->shape.cells == 6 * 6 * 3, "a room marked by hand is the air in its box");
+            uint32_t gen = rs.generation;
+            W.doors.erase(W.doors.begin()); rs.edited();   // the door between the two rooms is gone: one room now
+            for (int i = 0; i < 400; i++) rs.tick(W, seeds, chunkVer, i % 20 == 0, 20000);
+            CHECK(rs.roomAt(5, 2, 5) == rs.roomAt(18, 2, 5) && rs.roomAt(5, 2, 5) == std::min(ra, rb) && rs.liveOf(std::max(ra, rb))->joined == std::min(ra, rb) && rs.generation != gen,
+                  "a door taken away: the two rooms become one (the older keeps it, the other says it is joined)");
+            rs.list.rooms[0].name = "Landing Site"; rs.list.rooms[0].musicMode = 1; rs.list.rooms[0].music.file = "music/landing.mp3"; rs.list.rooms[0].ambOn = true; rs.list.rooms[0].amb.look = "Cold blue";
+            CHECK(saveRooms("/tmp/prim_rooms.txt", rs.list), "the rooms are written down");
+            RoomList back; loadRooms("/tmp/prim_rooms.txt", back);
+            CHECK(back.rooms.size() == 4 && back.rooms[0].name == "Landing Site" && back.rooms[0].music.file == "music/landing.mp3" && back.rooms[0].ambOn && back.rooms[0].amb.look == "Cold blue"
+                  && back.rooms[3].boxes.size() == 1 && (back.rooms[3].boxes[0].second == I3{ 50, 3, 50 }) && back.nextId == rs.list.nextId && back.rooms[1].anchor == rs.list.rooms[1].anchor,
+                  "... and read back (names, music, ambient, marked boxes)");
         }
         {   // cooking: the outside, two rooms joined by a door, a zone, a gap in a wall
             BlockRegistry creg; registerBuiltinBlocks(creg); World cw(creg); cw.gen.kind = Generator::Void; cw.stream({ 32, 0, 32 }, 6, 3, 100000);
