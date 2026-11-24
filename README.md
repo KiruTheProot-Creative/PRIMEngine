@@ -103,7 +103,7 @@ Like the Effortless Building mod: shapes built (or broken) in a few clicks, with
 - Width x Height in blocks: the model is stretched to fill it (1 x 1 for the morph ball, 2 x 3, 4 x 2 ...).
 - Forcefield: a glowing field in the door's opening, in a colour you pick. In Play mode, click to shoot the test beam: the field dissolves from where it was hit, the door plays its "open" animation, stays open (longer while you stand in it), plays "close" and the field comes back. Without a forcefield the door opens when you walk up to it.
 - Collision follows: the door halves and the field block you while it is shut; the frame always does.
-- **A shut door is a real wall:** no sky light gets in through it (true darkness stays dark), and you can't see the map through it: what's behind only goes on the map once the door is open (map cameras can't look through shut doors either). Opening it lets the light in.
+- **A shut door is a real wall:** no sky light gets in through it (true darkness stays dark), and Opening it lets the light in.
 - **The wrong weapon:** a door that opens with one weapon (Door > "Opened by") sends any other shot **bouncing back** off its field, with sparks and the locked sound. A bounced shot can hit you (Body and movement > "Bounced shots hurt you": how much of its damage, 0 = never).
 - **Opened once, open for good:** once you open such a door with the right weapon, it turns into an any-weapon door (blue field, any shot opens it). This is remembered in the save game.
 
@@ -504,12 +504,12 @@ Like Prime's L button. Four small corners show the enemy a press would pick (the
 
 Player > Weapons > Lock-on: on / off, hold or press-to-toggle, reach, how far from the crosshair it picks, how quickly the view swings, how long out of sight it may be, shots to the target, how hard beam shots and missiles steer, circling, the dash and its speed, the Scan Visor, "nothing to lock: hold the view" (like Prime, to strafe straight), and the two colours. Each enemy type has "Can be locked onto".
 
-## The map (M): a hologram of what you have seen
+## The map (M): a hologram of the rooms you have been in
 
-- The map is built only from blocks Samus has actually looked at: every frame a few hundred rays go out from her eyes, and the first solid block each one hits is charted (with a small patch of the same surface, so grazing looks are not speckled). The floor you walk on is charted too.
+- The map is made of rooms (the Room Manager): walking into a room charts all of it at once (its walls, floor, ceiling and doors). Places that are not a room are not on the map.
 - Press **M** in play (or **Map** in the pause menu). It is a 3D hologram: drag to turn it, right-drag to move it, the wheel zooms, **C** goes back to you, **M** or **Esc** closes it. You are the orange arrow.
-- **Doors** you have seen show as panels in the door's own colour and at the door's size.
-- **Map Stations** and **map cameras** (Tools > Objects > Add): both have an **ID**. Stand at a station and press **E** (a prompt shows when you face it): it wakes every map camera with the same ID; each looks all around from where it stands (as far as its "Sees" range) and charts everything it can see, doors included. Then the map opens and builds up. Map cameras are invisible in the game. A station with no camera of its ID looks around from itself. Each station downloads once per play; after that E just shows the map.
+- **Doors** of the rooms on the map show as panels in the door's own colour and at the door's size.
+- **Map Stations** (Tools > Objects > Add): tick the rooms it reveals in its inspector (none ticked: the room it stands in). Stand at it and press **E** (a prompt shows when you face it): those rooms go on the map and the map opens. Each station downloads once per play; after that E just shows the map. (Old map cameras do nothing any more; you can delete them.)
 - Colours: **blue** is what you have seen yourself, **orange** (see-through, no fill) is what a Map Station showed you but you have not visited yet; it turns blue as soon as you see it. You are the pink arrow.
 - On the map screen the **visor stays**: every HUD element and 3D helmet part has "Stays when paused" and "Stays on the map (M)" (Player > HUD). The starter visor keeps its frame, energy and struts on the map and hides the aim and the minimap there. The arm cannon is put away on the map.
 - **Minimap on the HUD**: Player > HUD, add element > **Minimap** (the starter visor has one, bottom right). The same map, see-through, around you. Settings: how far around you it shows, how steeply it looks down (90: straight down), and whether it turns with you (you always point up) or keeps north up.
@@ -569,14 +569,17 @@ Fog, light shafts and lights glowing in the air are worked out in a small 3D gri
 - Glass is a wall for rooms; water, lava, plants and breakable-marked blocks are not.
 - **Mark a room by hand** where the automatic rooms are not what you want: boxes whose air is the room (they win over the found rooms).
 - Each room has a name and a colour (shown in the world while the window is open), **its own ambient light** (no reach to set: it fills exactly the room), and **music** when you walk in (keep, play, silence; a boss fight's music wins).
-- In the game, a room's name shows as you walk in (can be turned off per room), and **the map shows the whole room at once**. Inside a room you've seen, the map stops looking around with rays, which saves work every frame.
-- **Map Stations** can reveal picked rooms (tick them in the station's inspector); with none ticked they use their map cameras like before.
+- In the game, a room's name shows as you walk in (can be turned off per room), and **the map shows the whole room at once**.
+- **Map Stations** reveal the rooms you tick in their inspector (none ticked: the room they stand in).
+- **3D view** (tick it at the top of the window): all rooms in their colours, in the map's look. Drag to turn, right-drag to move, the wheel zooms, double-click picks a room; "Look at the picked room" flies to it.
+- **Ambient presets**: in any ambient light (an object's or a room's), "Save as a preset..." makes your own preset. Lights and rooms that pick one of yours *follow* it: change the preset once and all of them change. Ready-made presets are copied in instead. "Stop following" keeps a copy; deleting a preset leaves each light with its settings.
 - The rooms are saved in the world's `rooms.txt`.
 
 ## Soundtrack
 
 - Player > **Soundtrack** is the game's music, kept apart from the sound effects (the project's `sounds/music` folder).
 - Every music picker (rooms, screens, bosses and their phases, "play the music" event cards) lists the soundtrack first, with a play/stop button. Older sounds are still under "Other sounds".
+- **Samus appears**: a fanfare that plays once when a new game starts or a file is loaded. The starting room's music waits for it (can be turned off).
 
 ## Missile Launcher and HUD unlocks
 
