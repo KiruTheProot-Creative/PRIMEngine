@@ -562,6 +562,22 @@ Fog, light shafts and lights glowing in the air are worked out in a small 3D gri
 - The picture then just looks up the grid.
 - It's faster and has no grain. Very thin light beams get a little softer.
 
+## Rooms (the Room Manager)
+
+- **Rooms** in the toolbar opens the Room Manager. Rooms are found by themselves: the air closed in by walls and doors. A door is where a room ends, so every room should have at least one.
+- A room **without a roof** goes by its floor: the air just over the ground, closed in by walls (at least 3 blocks high, adjustable) and doors, up to the top of its walls. Pits in it still count; the floor running off into the void is the outside.
+- Glass is a wall for rooms; water, lava, plants and breakable-marked blocks are not.
+- **Mark a room by hand** where the automatic rooms are not what you want: boxes whose air is the room (they win over the found rooms).
+- Each room has a name and a colour (shown in the world while the window is open), **its own ambient light** (no reach to set: it fills exactly the room), and **music** when you walk in (keep, play, silence; a boss fight's music wins).
+- In the game, a room's name shows as you walk in (can be turned off per room), and **the map shows the whole room at once**. Inside a room you've seen, the map stops looking around with rays, which saves work every frame.
+- **Map Stations** can reveal picked rooms (tick them in the station's inspector); with none ticked they use their map cameras like before.
+- The rooms are saved in the world's `rooms.txt`.
+
+## Soundtrack
+
+- Player > **Soundtrack** is the game's music, kept apart from the sound effects (the project's `sounds/music` folder).
+- Every music picker (rooms, screens, bosses and their phases, "play the music" event cards) lists the soundtrack first, with a play/stop button. Older sounds are still under "Other sounds".
+
 ## Missile Launcher and HUD unlocks
 
 - A missile kind set to **Found later** has **Picking it up adds** (5 by default for the plain missile): picking it up adds that many to the most missiles you carry and fills them all up. Like Metroid Prime's Missile Launcher: set **Most** (Weapons tab, missile supply) to 0 and the launcher to 5.

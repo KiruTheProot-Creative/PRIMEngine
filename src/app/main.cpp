@@ -9625,7 +9625,7 @@ struct App {
         std::vector<I3> seeds = RoomSet::doorSeeds(w.doors);
         roomSeedT += dt; if (roomSeedT > 0.5) { roomSeedT = 0; seeds.push_back(RoomProbe()); }   // (where you are: twice a second)
         World* wp = world.get();
-        rooms.tick(w, seeds, [wp](I3 c) -> uint32_t { const Chunk* ch = wp->chunk(c); return ch ? ch->version + 1 : 0; }, check, playMode ? 12000 : 30000);
+        rooms.tick(w, seeds, [wp](I3 c) -> uint32_t { const Chunk* ch = wp->chunk(c); return ch ? ch->version + 1 : 0; }, check, playMode ? 6000 : 10000);   // (about a millisecond a frame)
         if (rooms.listChanged && !playMode) { rooms.listChanged = false; SaveRooms(); }
         if (playMode) RoomsInPlay();
     }
