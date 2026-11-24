@@ -66,6 +66,7 @@ struct PlayerSounds {
     SoundSet hurt, lowHealth, death;                    // getting hurt, the low-energy alarm (again and again), dying (the hit)
     SoundSet deathStatic, deathPowerDown, deathOff;     // the death sequence: static (a loop, rising and fading), the suit powering down, the picture switching off
     SoundSet waterIn, waterOut, underwater, shotWater;  // water: jumping in, climbing out, a loop while your head is under, a shot hitting the surface
+    SoundUse spawnMusic; bool spawnWaits = true;        // Samus appears (a new game, a loaded file): her fanfare, once; the room's music waits for it (or not)
     float muffleHz = 700;                               // under water every sound (but menus and music) is muffled down to this (Hz; 20000: not at all)
     float powerDownFall = 0.5f;                         // the power-down sound's pitch falls this much (0: not at all .. 1: an octave) as the suit dies
     SoundSet doorOpen, doorClose, doorField, doorLocked; // doors (each door can have its own open / close): opening, closing, its forcefield shot away, won't open

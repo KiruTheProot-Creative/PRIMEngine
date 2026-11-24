@@ -51,7 +51,11 @@ struct AmbientSettings {
     float reach = 48;                 // how far it fills (blocks)
     int blend = 3;                    // how many blocks it spills through doors and openings (soft change from one room to the next)
     std::string look;                 // its colour look while you are in it ("": the world's / the zone's)
+    std::string preset;               // follows one of your presets (its colours, fog, look come from there; "": its own)
 };
+struct AmbientPreset { std::string name; AmbientSettings s; };   // your own ambient presets (the project's ambient_presets.txt)
+bool saveAmbientPresets(const std::string& path, const std::vector<AmbientPreset>& v);
+bool loadAmbientPresets(const std::string& path, std::vector<AmbientPreset>& v);
 // a grapple point: the Grapple Beam latches onto it. Swing: you hang from it like a pendulum (jump: let go, flying on); Pull: it pulls you to it
 struct GrappleSettings {
     int mode = 0;            // 0 swing, 1 pull

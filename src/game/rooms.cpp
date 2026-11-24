@@ -217,7 +217,7 @@ bool saveRooms(const std::string& path, const RoomList& l) {
         const AmbientSettings& A = r.amb;
         f << "room " << r.id << " " << escText(r.name) << " " << r.color << " " << r.anchor.x << " " << r.anchor.y << " " << r.anchor.z << " " << r.showName << " " << r.ambOn
           << " " << A.up << " " << A.down << " " << A.north << " " << A.south << " " << A.east << " " << A.west << " " << A.strength << " " << A.mix << " " << A.fog << " " << A.fogAmount
-          << " " << A.reach << " " << A.blend << " " << escText(A.look) << " " << r.musicMode << " " << r.musicFade << " " << escText(soundUseText(r.music)) << "\n";
+          << " " << A.reach << " " << A.blend << " " << escText(A.look) << " " << r.musicMode << " " << r.musicFade << " " << escText(soundUseText(r.music)) << " " << escText(A.preset) << "\n";
         for (const auto& b : r.boxes) f << "box " << b.first.x << " " << b.first.y << " " << b.first.z << " " << b.second.x << " " << b.second.y << " " << b.second.z << "\n";
     }
     return (bool)f;
@@ -234,6 +234,7 @@ bool loadRooms(const std::string& path, RoomList& l) {
             if (!(s >> r.id >> n >> r.color >> r.anchor.x >> r.anchor.y >> r.anchor.z >> r.showName >> r.ambOn >> A.up >> A.down >> A.north >> A.south >> A.east >> A.west
                     >> A.strength >> A.mix >> A.fog >> A.fogAmount >> A.reach >> A.blend >> lk >> r.musicMode >> r.musicFade >> mu)) continue;
             r.name = unescText(n); A.look = unescText(lk); soundUseFrom(unescText(mu), r.music); r.musicMode = std::clamp(r.musicMode, 0, 2);
+            { std::string pr; if (s >> pr) A.preset = unescText(pr); }
             l.rooms.push_back(r); l.nextId = std::max(l.nextId, r.id + 1);
         }
         else if (k == "box" && !l.rooms.empty()) { I3 a, b; if (s >> a.x >> a.y >> a.z >> b.x >> b.y >> b.z) l.rooms.back().boxes.push_back({ a, b }); }

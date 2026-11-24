@@ -62,53 +62,6 @@ bool canSee(const World& w, V3 eye, V3 target, double range) {
     return false;
 }
 
-bool SeenMap::look(const World& w, V3 eye, V3 dir, double range, int patch, double now, bool own) {
-    struct { int x, y, z, nx, ny, nz; } h;
-    if (!firstSolid(w, eye, dir, range, h.x, h.y, h.z, h.nx, h.ny, h.nz)) return false;
-    mark(h.x, h.y, h.z, now, own);
-    if (patch > 0) {   // the same surface around it: blocks in the plane of the face that also open the same way
-        for (int a = -patch; a <= patch; a++) for (int b = -patch; b <= patch; b++) {
-            if (a * a + b * b > patch * patch + 1) continue;
-            int x = h.x, y = h.y, z = h.z;
-            if (h.nx) { y += a; z += b; } else if (h.ny) { x += a; z += b; } else { x += a; y += b; }
-            if (mappable(w, x, y, z) && openAt(w, x + h.nx, y + h.ny, z + h.nz)) mark(x, y, z, now, own);
-        }
-    }
-    return true;
-}
-
-int SeenMap::lookAround(const World& w, V3 eye, double yaw, double pitch, double fovY, double aspect, int rays, double range, uint32_t frame, double now) {
-    int hits = 0;
-    double ty = std::tan(fovY * 0.5), tx = ty * aspect;
-    V3 f{ std::sin(yaw) * std::cos(pitch), std::sin(pitch), std::cos(yaw) * std::cos(pitch) };
-    V3 r{ std::cos(yaw), 0, -std::sin(yaw) }, u = cross(f, r);
-    uint32_t s = frame * 2654435761u + 12345u;
-    for (int i = 0; i < rays; i++) {   // shuffled points over the screen: a different set every frame
-        s = s * 1664525u + 1013904223u; double sx = ((s >> 8) & 0xFFFF) / 65535.0 * 2 - 1;
-        s = s * 1664525u + 1013904223u; double sy = ((s >> 8) & 0xFFFF) / 65535.0 * 2 - 1;
-        V3 d = normalize(f + r * (sx * tx) + u * (sy * ty));
-        hits += look(w, eye, d, range, 1, now) ? 1 : 0;
-    }
-    return hits;
-}
-
-void SeenMap::floorUnder(const World& w, V3 feet, int radius, double now) {
-    int fx = (int)std::floor(feet.x), fz = (int)std::floor(feet.z), fy = (int)std::floor(feet.y - 0.05);
-    for (int dx = -radius; dx <= radius; dx++) for (int dz = -radius; dz <= radius; dz++)
-        for (int dy = 0; dy >= -2; dy--) {   // the first ground below each spot
-            int x = fx + dx, y = fy + dy, z = fz + dz;
-            if (mappable(w, x, y, z)) { if (openAt(w, x, y + 1, z)) mark(x, y, z, now); break; }
-        }
-}
-
-int SeenMap::revealFrom(const World& w, V3 at, double range, int rays, double now) {
-    int hits = 0; const double ga = 3.14159265358979 * (3 - std::sqrt(5.0));
-    for (int i = 0; i < rays; i++) {   // evenly all around (a Fibonacci sphere)
-        double y = 1 - (i + 0.5) * 2.0 / rays, rr = std::sqrt(std::max(0.0, 1 - y * y)), t = ga * i;
-        hits += look(w, at, { std::cos(t) * rr, y, std::sin(t) * rr }, range, 2, now, false) ? 1 : 0;
-    }
-    return hits;
-}
 
 std::vector<MapQuad> mapPanels(const World& w, const SeenMap& m, I3 cp) {
     std::vector<MapQuad> out;

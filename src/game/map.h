@@ -1,9 +1,7 @@
 #pragma once
-// The map: built from what Samus has actually seen. Each frame a few hundred rays go out from the eyes; the first
-// solid block each one hits is marked as seen (with a small patch of the same surface around it, so grazing looks
-// do not leave it speckled). The floor under your feet is marked as you walk. Map cameras (Map Stations) look all
-// around from where they are and mark everything they see. The map is drawn from the seen blocks' open faces,
-// merged into big panels. Plain C++, tested on Linux.
+// The map: built from the rooms you have been in. Walking into a room (Room Manager) puts its walls, floor and ceiling on
+// the map at once; Map Stations put the rooms they are set to on it (downloaded: not visited yet). The map is drawn from
+// those blocks' open faces, merged into big panels. Plain C++, tested on Linux.
 #include "../world/world.h"
 #include <unordered_map>
 #include <unordered_set>
@@ -33,12 +31,6 @@ struct SeenMap {
     bool mark(int x, int y, int z, double now, bool own = true);   // true if the map changed (new, or now seen yourself)
     void clear() { chunks.clear(); dirty.clear(); doors.clear(); total = mineTotal = 0; }
 
-    // a look along a ray: the first solid block (within range) is seen, and `patch` blocks around it on the same surface
-    bool look(const World& w, V3 eye, V3 dir, double range, int patch, double now, bool own = true);
-    // the eyes: `rays` rays spread over the view (yaw / pitch in radians, fov vertical, aspect), shuffled by `frame`
-    int lookAround(const World& w, V3 eye, double yaw, double pitch, double fovY, double aspect, int rays, double range, uint32_t frame, double now);
-    void floorUnder(const World& w, V3 feet, int radius, double now);   // the ground you walk on
-    int revealFrom(const World& w, V3 at, double range, int rays, double now);   // a map camera: all around (downloaded, not yours)
 };
 
 // nothing solid between the eye and that point (within range): it can be seen (doors are checked this way)

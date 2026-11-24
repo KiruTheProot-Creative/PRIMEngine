@@ -245,6 +245,7 @@ bool saveObjects(const std::string& path, const std::vector<WorldObject>& objs) 
             const AmbientSettings& A = o.ambient;
             f << " amb " << A.up << " " << A.down << " " << A.north << " " << A.south << " " << A.east << " " << A.west << " " << A.strength << " " << A.mix
               << " " << A.fog << " " << A.fogAmount << " " << A.reach << " " << A.blend << " " << escText(A.look);
+            if (!A.preset.empty()) f << " ambp " << escText(A.preset);
         }
         if (o.kind == ObjKind::GrapplePoint) f << " grp " << o.grapple.mode << " " << o.grapple.length << " " << o.grapple.reach;
         if (o.kind == ObjKind::MapStation && !o.map.rooms.empty()) { f << " mrooms " << o.map.rooms.size(); for (uint32_t r : o.map.rooms) f << " " << r; }
@@ -291,6 +292,7 @@ bool loadObjects(const std::string& path, std::vector<WorldObject>& objs) {
           } }
         for (std::string t; l >> t;) { if (t == "mrooms") { size_t n = 0; if (l >> n) for (size_t i = 0; i < n && i < 4096; i++) { uint32_t r; if (l >> r) o.map.rooms.push_back(r); } }
           else if (t == "grp") { GrappleSettings& G = o.grapple; if (l >> G.mode >> G.length >> G.reach) { G.mode = std::clamp(G.mode, 0, 1); G.reach = std::clamp(G.reach, 2.f, 80.f); G.length = std::clamp(G.length, 0.f, 60.f); } }
+          else if (t == "ambp") { std::string n; if (l >> n) o.ambient.preset = unescText(n); }
           else if (t == "amb") {   // an ambient light's settings (newer files)
             AmbientSettings& A = o.ambient; std::string lk;
             if (l >> A.up >> A.down >> A.north >> A.south >> A.east >> A.west >> A.strength >> A.mix >> A.fog >> A.fogAmount >> A.reach >> A.blend >> lk) {
@@ -338,4 +340,25 @@ std::vector<Edit> pasteEdits(const World& w, const BlockModel& m, I3 at, bool sk
     return out;
 }
 
+} // namespace mc
+
+namespace mc {
+bool saveAmbientPresets(const std::string& path, const std::vector<AmbientPreset>& v) {
+    std::ofstream f(path); if (!f) return false;
+    f << "ambient_presets 1\n";
+    for (const AmbientPreset& p : v) { const AmbientSettings& A = p.s;
+        f << "preset " << escText(p.name) << " " << A.up << " " << A.down << " " << A.north << " " << A.south << " " << A.east << " " << A.west << " " << A.strength << " " << A.mix
+          << " " << A.fog << " " << A.fogAmount << " " << escText(A.look) << "\n"; }
+    return (bool)f;
+}
+bool loadAmbientPresets(const std::string& path, std::vector<AmbientPreset>& v) {
+    std::ifstream f(path); if (!f) return false;
+    v.clear(); std::string line;
+    while (std::getline(f, line)) {
+        std::istringstream l(line); std::string k, n, lk; l >> k; if (k != "preset") continue;
+        AmbientPreset p; AmbientSettings& A = p.s;
+        if (l >> n >> A.up >> A.down >> A.north >> A.south >> A.east >> A.west >> A.strength >> A.mix >> A.fog >> A.fogAmount >> lk) { p.name = unescText(n); A.look = unescText(lk); v.push_back(p); }
+    }
+    return true;
+}
 } // namespace mc

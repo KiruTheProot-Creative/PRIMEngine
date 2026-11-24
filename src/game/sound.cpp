@@ -144,6 +144,8 @@ bool savePlayerSounds(const std::string& path, const PlayerSounds& p) {
     put("roll", p.roll); put("ball_land", p.ballLand); f << "\nroll_pitch " << p.rollPitch;
     for (const GameSoundSlot& g : gameSoundSlots()) put(g.key, p.*g.set);
     f << "\nscan_pitch " << p.scanPitch << "\nlow_health_at " << p.lowHealthAt << " " << p.lowHealthEvery << "\nvisor_loop_volume " << p.visorLoopVolume << "\nlow_health_fade " << p.lowHealthFade << " " << p.lowHealthQuiet << "\npower_down_fall " << p.powerDownFall << "\nmuffle_hz " << p.muffleHz;
+    if (!p.spawnMusic.empty()) f << "\nspawn_music " << soundUseText(p.spawnMusic);
+    f << "\nspawn_waits " << (p.spawnWaits ? 1 : 0);
     f << "\nevery " << p.stepEvery << "\nlanding " << p.landQuiet << " " << p.landLoud << "\n";
     return (bool)f;
 }
@@ -161,6 +163,8 @@ bool loadPlayerSounds(const std::string& path, PlayerSounds& p) {
         else if (k == "visor_loop_volume") { std::istringstream r(rest); r >> p.visorLoopVolume; }
         else if (k == "low_health_fade") { std::istringstream r(rest); r >> p.lowHealthFade >> p.lowHealthQuiet; }
         else if (k == "power_down_fall") { std::istringstream r(rest); r >> p.powerDownFall; }
+        else if (k == "spawn_music") soundUseFrom(rest, p.spawnMusic);
+        else if (k == "spawn_waits") { std::istringstream r(rest); int w = 1; r >> w; p.spawnWaits = w != 0; }
         else if (k == "muffle_hz") { std::istringstream r(rest); r >> p.muffleHz; }
         else if (k == "every") { std::istringstream r(rest); r >> p.stepEvery; }
         else if (k == "landing") { std::istringstream r(rest); r >> p.landQuiet >> p.landLoud; }

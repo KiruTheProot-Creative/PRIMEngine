@@ -269,35 +269,88 @@ struct App {
         if (!room) {
         Hint("Fills the room it stands in - through the air, up to walls, doors and its reach - with its own light from each direction, its own fog and its own colour look while you are in it. Doors stop it (it spills a few blocks through them, so rooms change softly). Lamps, lava and the sun come on top.");
         }
-        {   // presets
-            Prop("Start from"); if (ImGui::BeginCombo("##ambp", "a preset ...")) { for (int i = 0; ambientPresetName(i); i++) if (ImGui::Selectable(ambientPresetName(i))) { std::string lk = A.look; float rc = A.reach; int bl = A.blend; A = ambientPreset(i); A.look = lk; A.reach = rc; A.blend = bl; } ImGui::EndCombo(); }
+        // your presets: it can follow one (editing it here then changes the preset, and everything that follows it)
+        AmbientSettings* linked = nullptr; for (AmbientPreset& p : ambPresets) if (!A.preset.empty() && p.name == A.preset) linked = &p.s;
+        AmbientSettings& E = linked ? *linked : A; AmbientSettings beforeE = E;
+        {
+            std::string cur = linked ? "follows: " + A.preset : "(its own)";
+            Prop("Preset"); ImGui::SetNextItemWidth(-1);
+            if (ImGui::BeginCombo("##ambp", cur.c_str())) {
+                if (ImGui::Selectable("(its own)", !linked)) { if (linked) { std::string lk = A.preset; float rc = A.reach; int bl = A.blend; A = *linked; A.reach = rc; A.blend = bl; A.preset.clear(); (void)lk; } }
+                if (!ambPresets.empty()) ImGui::SeparatorText("Yours (follow it)");
+                for (AmbientPreset& p : ambPresets) if (ImGui::Selectable(p.name.c_str(), linked == &p.s)) A.preset = p.name;
+                ImGui::SeparatorText("Ready-made (a copy)");
+                for (int i = 0; ambientPresetName(i); i++) if (ImGui::Selectable(ambientPresetName(i))) { std::string lk = A.look; float rc = A.reach; int bl = A.blend; A = ambientPreset(i); A.look = lk; A.reach = rc; A.blend = bl; A.preset.clear(); }
+                ImGui::EndCombo();
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Yours: it follows the preset - change the preset once, every light and room that follows it changes.\nReady-made: its settings are copied in.");
+            static char newName[64] = "";
+            if (ImGui::SmallButton(linked ? "Save as another preset..." : "Save as a preset...")) { std::snprintf(newName, sizeof newName, "%s", linked ? (A.preset + " 2").c_str() : "My preset"); ImGui::OpenPopup("##newambp"); }
+            if (ImGui::BeginPopup("##newambp")) {
+                ImGui::TextUnformatted("Name:"); ImGui::SetNextItemWidth(220 * settings.uiScale);
+                if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+                bool ok = ImGui::InputText("##nm", newName, sizeof newName, ImGuiInputTextFlags_EnterReturnsTrue);
+                ok |= ImGui::Button("Save"); ImGui::SameLine(); if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+                if (ok && newName[0]) {
+                    std::string n = newName; AmbientSettings v = E; v.preset.clear();
+                    bool found = false; for (AmbientPreset& p : ambPresets) if (p.name == n) { p.s = v; found = true; }
+                    if (!found) ambPresets.push_back({ n, v });
+                    A.preset = n; ambPresetsDirty = true; ImGui::CloseCurrentPopup(); ImGui::EndPopup(); return true;   // (the list changed: nothing more this frame)
+                }
+                ImGui::EndPopup();
+            }
+            if (linked) {
+                ImGui::SameLine(); if (ImGui::SmallButton("Stop following")) { float rc = A.reach; int bl = A.blend; A = *linked; A.reach = rc; A.blend = bl; A.preset.clear(); return true; }
+                ImGui::SameLine(); if (ImGui::SmallButton("Delete the preset")) { DeleteAmbientPreset(A.preset); return true; }
+                ImGui::TextColored(ImVec4(0.55f, 0.85f, 1, 1), "Changes below change the preset \"%s\" (%d use it).", A.preset.c_str(), AmbientPresetUsers(A.preset));
+            }
         }
         auto col = [&](const char* label, const char* id, uint32_t& c) {
             float f[3] = { ((c >> 16) & 255) / 255.f, ((c >> 8) & 255) / 255.f, (c & 255) / 255.f };
             Prop(label); if (ImGui::ColorEdit3(id, f, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_PickerHueWheel)) c = ((uint32_t)std::lround(f[0] * 255) << 16) | ((uint32_t)std::lround(f[1] * 255) << 8) | (uint32_t)std::lround(f[2] * 255);
         };
-        col("Light from above", "##amu", A.up); col("Light from below", "##amd", A.down);
-        col("From the north (-Z)", "##amn", A.north); col("From the south (+Z)", "##ams", A.south); col("From the east (+X)", "##ame", A.east); col("From the west (-X)", "##amw", A.west);
-        if (ImGui::SmallButton("Sides: all like north")) { A.south = A.east = A.west = A.north; }
-        Prop("Strength"); ImGui::SetNextItemWidth(-1); ImGui::SliderFloat("##amst", &A.strength, 0, 4, "%.2f");
-        Prop("Instead of the sky's light"); ImGui::SetNextItemWidth(-1); ImGui::SliderFloat("##ammx", &A.mix, 0, 1, "%.2f");
+        col("Light from above", "##amu", E.up); col("Light from below", "##amd", E.down);
+        col("From the north (-Z)", "##amn", E.north); col("From the south (+Z)", "##ams", E.south); col("From the east (+X)", "##ame", E.east); col("From the west (-X)", "##amw", E.west);
+        if (ImGui::SmallButton("Sides: all like north")) { E.south = E.east = E.west = E.north; }
+        Prop("Strength"); ImGui::SetNextItemWidth(-1); ImGui::SliderFloat("##amst", &E.strength, 0, 4, "%.2f");
+        Prop("Instead of the sky's light"); ImGui::SetNextItemWidth(-1); ImGui::SliderFloat("##ammx", &E.mix, 0, 1, "%.2f");
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("1: inside, only its own light (like a closed room). 0: it only adds to the sky's light.");
-        col("Fog colour", "##amfc", A.fog);
-        Prop("Fog"); ImGui::SetNextItemWidth(-1); ImGui::SliderFloat("##amfa", &A.fogAmount, 0, 1, "%.2f");
+        col("Fog colour", "##amfc", E.fog);
+        Prop("Fog"); ImGui::SetNextItemWidth(-1); ImGui::SliderFloat("##amfa", &E.fogAmount, 0, 1, "%.2f");
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Its room's own haze (with Smooth fog on): it stops at the doors too.");
+        Prop("Colour look inside"); if (ImGui::BeginCombo("##aml", E.look.empty() ? "(the world's / the zone's)" : E.look.c_str())) {
+            if (ImGui::Selectable("(the world's / the zone's)", E.look.empty())) E.look.clear();
+            for (const auto& n : looks.names()) if (ImGui::Selectable(n.c_str(), E.look == n)) E.look = n;
+            ImGui::EndCombo();
+        }
         if (!room) {
             Prop("Reach"); ImGui::SetNextItemWidth(-1); ImGui::SliderFloat("##amr", &A.reach, 4, 128, "%.0f blocks");
             Prop("Soft edge"); ImGui::SetNextItemWidth(-1); ImGui::SliderInt("##amb", &A.blend, 0, 8, "%d blocks");
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("How far it spills through doorways and openings, fading: walking into the next room changes the light softly.");
         }
-        Prop("Colour look inside"); if (ImGui::BeginCombo("##aml", A.look.empty() ? "(the world's / the zone's)" : A.look.c_str())) {
-            if (ImGui::Selectable("(the world's / the zone's)", A.look.empty())) A.look.clear();
-            for (const auto& n : looks.names()) if (ImGui::Selectable(n.c_str(), A.look == n)) A.look = n;
-            ImGui::EndCombo();
-        }
-        const AmbientSettings& B = before;
-        return A.up != B.up || A.down != B.down || A.north != B.north || A.south != B.south || A.east != B.east || A.west != B.west || A.strength != B.strength || A.mix != B.mix
-            || A.fog != B.fog || A.fogAmount != B.fogAmount || A.reach != B.reach || A.blend != B.blend || A.look != B.look;
+        auto diff = [](const AmbientSettings& A, const AmbientSettings& B) {
+            return A.up != B.up || A.down != B.down || A.north != B.north || A.south != B.south || A.east != B.east || A.west != B.west || A.strength != B.strength || A.mix != B.mix
+                || A.fog != B.fog || A.fogAmount != B.fogAmount || A.reach != B.reach || A.blend != B.blend || A.look != B.look || A.preset != B.preset; };
+        if (linked && diff(E, beforeE)) ambPresetsDirty = true;
+        return diff(A, before) || (linked && diff(E, beforeE));
+    }
+    std::vector<AmbientPreset> ambPresets; bool ambPresetsDirty = false;   // your own ambient presets (the project's ambient_presets.txt)
+    const AmbientSettings& AmbEff(const AmbientSettings& A) const {   // what a light / room really uses (its preset's, if it follows one)
+        if (!A.preset.empty()) for (const AmbientPreset& p : ambPresets) if (p.name == A.preset) return p.s;
+        return A;
+    }
+    int AmbientPresetUsers(const std::string& n) const {
+        int k = 0; for (const WorldObject& o : objects) if (o.kind == ObjKind::Ambient && o.ambient.preset == n) k++;
+        for (const RoomDef& r : rooms.list.rooms) if (r.amb.preset == n) k++;
+        return k;
+    }
+    void DeleteAmbientPreset(const std::string& n) {   // the ones following it keep a copy of it
+        const AmbientPreset* p = nullptr; for (const AmbientPreset& q : ambPresets) if (q.name == n) p = &q; if (!p) return;
+        auto keep = [&](AmbientSettings& A) { if (A.preset != n) return; float rc = A.reach; int bl = A.blend; A = p->s; A.reach = rc; A.blend = bl; A.preset.clear(); };
+        for (WorldObject& o : objects) if (o.kind == ObjKind::Ambient) keep(o.ambient);
+        for (RoomDef& r : rooms.list.rooms) keep(r.amb);
+        ambPresets.erase(std::remove_if(ambPresets.begin(), ambPresets.end(), [&](const AmbientPreset& q) { return q.name == n; }), ambPresets.end());
+        ambPresetsDirty = true; SaveRooms(); Toast("Preset deleted (the lights that followed it keep its settings)");
     }
     void AmbientInspector(WorldObject& o) {
         ImGui::SeparatorText("Ambient light");
@@ -1357,6 +1410,7 @@ struct App {
         CpuMark("game: light voxels"); UpdateVoxels();
         CpuMark("game: water"); UpdateWater(dt);
         CpuMark("game: other");
+        if (ambPresetsDirty && !ImGui::IsAnyItemActive()) { ambPresetsDirty = false; if (!projectDir.empty()) saveAmbientPresets(projectDir + "/ambient_presets.txt", ambPresets); }
         if (looksDirty && !ImGui::IsAnyItemActive()) { looksDirty = false; if (!projectDir.empty()) saveLooks(projectDir + "/looks.txt", looks); }
         if (planetsDirty && !ImGui::IsAnyItemActive()) { planetsDirty = false; if (!projectDir.empty()) savePlanets(projectDir + "/planets.txt", planets); }
         cloudTime += dt * (0.5 + weather.now.wind);
@@ -2734,17 +2788,10 @@ struct App {
                 }
                 break; }
             case ObjKind::Particles: col = IM_COL32(255, 160, 100, 230); label = "Particles"; break;
-            case ObjKind::MapCamera: case ObjKind::MapStation: {
-                col = o.kind == ObjKind::MapCamera ? IM_COL32(90, 240, 255, 230) : IM_COL32(110, 255, 160, 230);
-                int cams = 0; for (const WorldObject& q : objects) if (q.kind == ObjKind::MapCamera && q.map.id == o.map.id) cams++;
-                label = (o.kind == ObjKind::MapCamera ? "Map camera, ID " : "Map Station, ID ") + std::to_string(o.map.id) + (o.kind == ObjKind::MapStation ? " (" + std::to_string(cams) + (cams == 1 ? " camera)" : " cameras)") : "");
-                bool picked = sel == Sel::Object && selIndex == i;
-                if (picked || (sel == Sel::Object && selIndex >= 0 && selIndex < (int)objects.size() && objects[selIndex].kind == ObjKind::MapStation && objects[selIndex].map.id == o.map.id && o.kind == ObjKind::MapCamera)) {
-                    if (o.kind == ObjKind::MapCamera) {   // how far it sees: a ring
-                        V3 c = MapCamEye(o); double r = o.map.range;
-                        for (int k = 0; k < 64; k++) { double a0 = k * 6.2832 / 64, a1 = (k + 1) * 6.2832 / 64; Line3D(dl, { c.x + std::cos(a0) * r, c.y, c.z + std::sin(a0) * r }, { c.x + std::cos(a1) * r, c.y, c.z + std::sin(a1) * r }, IM_COL32(90, 240, 255, 110)); }
-                    } else for (const WorldObject& q : objects) if (q.kind == ObjKind::MapCamera && q.map.id == o.map.id) Line3D(dl, o.pos + V3{ 0, 1.3, 0 }, MapCamEye(q), IM_COL32(110, 255, 160, 140));   // which cameras it wakes
-                }
+            case ObjKind::MapCamera: col = IM_COL32(150, 150, 150, 200); label = "Map camera (not used any more)"; break;
+            case ObjKind::MapStation: {
+                col = IM_COL32(110, 255, 160, 230); label = "Map Station";
+                if (!o.map.rooms.empty()) label += ": " + std::to_string(o.map.rooms.size()) + (o.map.rooms.size() == 1 ? " room" : " rooms");
                 break; }
             default: break;
             }
@@ -5638,6 +5685,7 @@ struct App {
     }
     void StopPlay() {
         if (!playMode) return;
+        StopSounds(TAG_SPAWNFAN); roomMusicLater = 0; spawnUntil = -1;
         if (!playStartWorld.empty() && playStartWorld != CurrentWorld()) {   // went through a teleporter: back to the world you were editing
             travelling = true; SaveWorld(); OpenWorld(playStartWorld); travelling = false; editCam = startEditCam;
         }
@@ -6463,8 +6511,8 @@ struct App {
             }
             else if (toolSel == 2) {
                 ImGui::SeparatorText("Add");
-                const std::pair<const char*, const char*> add[] = { { "Light", "@light" }, { "Particles", "@emitter" }, { "Health", "@health" }, { "Key", "@key" }, { "Gem", "@gem" }, { "Checkpoint", "@checkpoint" }, { "Teleporter", "@teleporter" }, { "Trigger zone", "@zone" }, { "Map Station", "@map-station" }, { "Map camera", "@map-camera" }, { "Enemy", "@enemy-walker" }, { "Save Station", "@save-station" }, { "Ambient light", "@ambient" }, { "Grapple point", "@grapple-point" } };
-                for (int a = 0; a < 12; a++) { if (a) Flow(ButtonW(add[a].first)); if (ImGui::Button(add[a].first)) StartPlacing(add[a].second); }
+                const std::pair<const char*, const char*> add[] = { { "Light", "@light" }, { "Particles", "@emitter" }, { "Health", "@health" }, { "Key", "@key" }, { "Gem", "@gem" }, { "Checkpoint", "@checkpoint" }, { "Teleporter", "@teleporter" }, { "Trigger zone", "@zone" }, { "Map Station", "@map-station" }, { "Enemy", "@enemy-walker" }, { "Save Station", "@save-station" }, { "Ambient light", "@ambient" }, { "Grapple point", "@grapple-point" } };
+                for (int a = 0; a < (int)(sizeof add / sizeof add[0]); a++) { if (a) Flow(ButtonW(add[a].first)); if (ImGui::Button(add[a].first)) StartPlacing(add[a].second); }
                 Hint("Click an object in the viewport to pick it. To place a model (props, doors: a model with an \"open\" animation), drag it from the Assets into the viewport, or right-click it there > Place it. A placed object's Kind (Inspector) makes it a door, a platform, a pickup ..."); if (!placing.empty()) Hint("Placing: %s. R turns it, Alt puts it off the grid, right click stops.", placing.c_str()); }
             else Hint("More tools are coming to this slot.");
             break;
@@ -6495,7 +6543,7 @@ struct App {
     double prevPlayYaw = 0, prevPlayPitch = 0, prevVelY = 0; bool prevOnGround = true;
 
     std::string HudPath() const { return projectDir + "/hud.txt"; }
-    void LoadHud() { items = defaultItems(); loadItems(projectDir + "/items.txt", items); looks = LookSet{}; loadLooks(projectDir + "/looks.txt", looks); looksDirty = false;
+    void LoadHud() { items = defaultItems(); loadItems(projectDir + "/items.txt", items); looks = LookSet{}; loadLooks(projectDir + "/looks.txt", looks); looksDirty = false; ambPresets.clear(); loadAmbientPresets(projectDir + "/ambient_presets.txt", ambPresets); ambPresetsDirty = false;
         planets = PlanetSet{}; loadPlanets(projectDir + "/planets.txt", planets); planetsDirty = false; assetFolders = AssetFolders{}; loadAssetFolders(projectDir + "/asset_folders.txt", assetFolders);
         animBlends = AnimBlends{}; loadAnimBlends(projectDir + "/anim_blend.txt", animBlends); cannonBlend.reset(); doorBlend.clear(); viewerBlend.reset();
         materials = Materials{}; loadMaterials(projectDir + "/materials.txt", materials); matsDirty = true; soundCache.clear(); playerSounds = PlayerSounds{}; loadPlayerSounds(projectDir + "/player_sounds.txt", playerSounds);
@@ -9575,7 +9623,7 @@ struct App {
             std::vector<AmbGpuC> g(list.size() + rlist.size());
             auto lin = [](uint32_t c, float k, float* o) { for (int i = 0; i < 3; i++) o[i] = std::pow(((c >> (16 - 8 * i)) & 255) / 255.f, 2.2f) * k; };
             for (size_t k = 0; k < g.size(); k++) {
-                const AmbientSettings& A = k < list.size() ? list[k]->ambient : rlist[k - list.size()]->amb; float st = std::max(0.f, A.strength);
+                const AmbientSettings& A = AmbEff(k < list.size() ? list[k]->ambient : rlist[k - list.size()]->amb); float st = std::max(0.f, A.strength);
                 const uint32_t dirs[6] = { A.east, A.west, A.up, A.down, A.south, A.north };
                 for (int d = 0; d < 6; d++) { lin(dirs[d], st, g[k].c[d]); g[k].c[d][3] = 0; }
                 g[k].c[0][3] = std::clamp(A.mix, 0.f, 1.f);
@@ -9592,8 +9640,8 @@ struct App {
         if (x < 0 || y < 0 || z < 0 || x >= AMBX || y >= AMBY || z >= AMBZ) return nullptr;
         const uint8_t* v = &ambVolCpu[(((size_t)z * AMBY + y) * AMBX + x) * 4]; if (!v[0] || v[1] < 128 || v[0] > ambOrder.size()) return nullptr;
         uint32_t id = ambOrder[v[0] - 1];
-        if (id & 0x80000000u) { const RoomDef* r = rooms.list.find(id & 0x7FFFFFFFu); return r && r->ambOn ? &r->amb : nullptr; }
-        for (const WorldObject& o : objects) if (o.id == id) return &o.ambient;
+        if (id & 0x80000000u) { const RoomDef* r = rooms.list.find(id & 0x7FFFFFFFu); return r && r->ambOn ? &AmbEff(r->amb) : nullptr; }
+        for (const WorldObject& o : objects) if (o.id == id) return &AmbEff(o.ambient);
         return nullptr;
     }
     // ================================================================== rooms (the Room Manager): found by themselves - the air closed in by walls
@@ -9627,7 +9675,7 @@ struct App {
         World* wp = world.get();
         rooms.tick(w, seeds, [wp](I3 c) -> uint32_t { const Chunk* ch = wp->chunk(c); return ch ? ch->version + 1 : 0; }, check, playMode ? 6000 : 10000);   // (about a millisecond a frame)
         if (rooms.listChanged && !playMode) { rooms.listChanged = false; SaveRooms(); }
-        if (playMode) RoomsInPlay();
+        if (playMode) { RoomsInPlay(); UpdateSpawnFanfare(); }
     }
     // ---- in play: walking into a room - its name, its music, the map shows it
     std::string RoomFlag(const char* kind, uint32_t id) const { return std::string(kind) + ":" + CurrentWorld() + ":" + std::to_string(id); }
@@ -9663,10 +9711,26 @@ struct App {
         const RoomDef* d = rooms.list.find(r); if (!d) return;
         if (!RoomRevealed(r)) { evRun.flags.insert(RoomFlag("roomseen", r)); QueueRoomReveal(r, true); }   // the map: all of it, at once
         if (d->showName) { roomNameText = d->label(); roomNameAt = uiClock; }
-        if (bossSealed.empty()) {   // (not during a boss fight: its own music)
-            if (d->musicMode == 1 && !d->music.empty()) PlayMusic(d->music, d->musicFade);
-            else if (d->musicMode == 2) StopMusic(d->musicFade);
-        }
+        if (playerSounds.spawnWaits && uiClock < spawnUntil) { roomMusicLater = r; return; }   // (Samus' fanfare first)
+        ApplyRoomMusic(d);
+    }
+    void ApplyRoomMusic(const RoomDef* d) {
+        if (!d || !bossSealed.empty()) return;   // (not during a boss fight: its own music)
+        if (d->musicMode == 1 && !d->music.empty()) PlayMusic(d->music, d->musicFade);
+        else if (d->musicMode == 2) StopMusic(d->musicFade);
+    }
+    // ---- Samus appears (a new game, a loaded file): her fanfare once; the room's music after it
+    static constexpr int TAG_SPAWNFAN = 38; double spawnUntil = -1; uint32_t roomMusicLater = 0;
+    void SpawnFanfare() {
+        roomMusicLater = 0; spawnUntil = -1;
+        const SoundUse& s = playerSounds.spawnMusic; if (s.empty()) return;
+        StopMusic(0.2f); StopSounds(TAG_SPAWNFAN);
+        if (!PlaySoundIn(SND_MUSIC, s, 1, nullptr, TAG_SPAWNFAN, false)) return;
+        float sec = SoundSeconds(s.file); if (s.length > 0) sec = std::min(sec, s.length);
+        spawnUntil = uiClock + sec / std::max(0.1f, s.pitch);
+    }
+    void UpdateSpawnFanfare() {
+        if (roomMusicLater && uiClock >= spawnUntil) { uint32_t r = roomMusicLater; roomMusicLater = 0; if (r == curRoom) ApplyRoomMusic(rooms.list.find(r)); }
     }
     void DrawRoomName(ImDrawList* dl, float vx, float vy, float cw) {   // a room's name as you walk in (like Prime: fades in, stays, fades out)
         double t = uiClock - roomNameAt; if (!playMode || t < 0 || t > 3.4 || roomNameText.empty()) return;
@@ -9726,6 +9790,12 @@ struct App {
         ImGui::SameLine(); if (ImGui::Button("Search again")) rooms.researchAll();
         Prop("No roof: walls at least"); ImGui::SetNextItemWidth(160 * ui); if (ImGui::SliderInt("##rband", &rooms.list.band, 1, 8, "%d blocks high")) { ch = true; rooms.researchAll(); }
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("A room without a roof is closed in by walls at least this high (lower ones you can jump over:\nthey don't split rooms).");
+        ImGui::SameLine(); ImGui::Checkbox("3D view", &rvOn);
+        if (rvOn) {
+            if (roomSel >= 0 && roomSel < (int)rooms.list.rooms.size()) { if (ImGui::SmallButton("Look at the picked room")) RoomViewCenterOn(rooms.list.rooms[roomSel].id); ImGui::SameLine(); }
+            if (ImGui::SmallButton("Look at where I am")) { I3 c = RoomProbe(); rvCenter = { c.x + 0.5, c.y + 0.5, c.z + 0.5 }; }
+            RoomViewUI(std::max(160.f, ImGui::GetContentRegionAvail().y * 0.48f));
+        }
         ImGui::Separator();
         if (ImGui::BeginTable("rooms", 2, ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV)) {
             ImGui::TableSetupColumn("list", ImGuiTableColumnFlags_WidthStretch, 0.8f); ImGui::TableSetupColumn("room", ImGuiTableColumnFlags_WidthStretch, 1.2f);
@@ -10726,6 +10796,7 @@ struct App {
         player.flying = false; StartPlay(true);
         curSlot = slot; playTime = 0;
         Toast("A new game in File " + std::to_string(slot));
+        SpawnFanfare();
     }
     bool LoadSlot(int slot) {   // go on from where this file was saved
         SaveGame g; std::string dir = SlotDir(slot);
@@ -10747,6 +10818,7 @@ struct App {
         player.feet = g.pos; player.yaw = g.yaw; player.pitch = 0; player.vel = { 0, 0, 0 }; playSpawn = g.pos; playYaw = g.yaw;
         enemyRt.clear();
         Toast("File " + std::to_string(slot) + ": " + g.place);
+        SpawnFanfare();
         return true;
     }
     void SlotPicked(int slot) { BeginStart(slot, slotInfo.count(slot) > 0); }
@@ -13177,39 +13249,14 @@ struct App {
     SeenMap& Seen() { return seenMaps[CurrentWorld()]; }
     double uiClock = 0;   // seconds since the start, also while paused (the map's fade-ins)
     double MapClock() const { return uiClock; }
-    V3 MapCamEye(const WorldObject& o) const { return o.pos + V3{ 0, 0.45, 0 }; }
     bool DoorRect(const WorldObject& o, V3& c, V3& across) {   // a door's middle and the way its width runs
         FrameRef f = ModelOf(o); if (!f) return false;
         Box3 b = objectBounds(o, *f); c = (b.lo + b.hi) * 0.5;
         double a = o.yaw * 3.14159265358979 / 180; across = { std::cos(a), 0, -std::sin(a) }; return true;
     }
-    bool DoorSeenFrom(const WorldObject& o, V3 eye, double range) {   // its middle or a corner can be seen
-        V3 c, ac; if (!DoorRect(o, c, ac)) return false;
-        double hw = o.door.w * 0.45, hh = o.door.h * 0.45;
-        const V3 pts[5] = { c, c + ac * hw + V3{ 0, hh, 0 }, c - ac * hw + V3{ 0, hh, 0 }, c + ac * hw - V3{ 0, hh, 0 }, c - ac * hw - V3{ 0, hh, 0 } };
-        for (const V3& p : pts) if (canSee(*world, eye, p, range)) return true;
-        return false;
-    }
-    void UpdateMapSight() {   // every frame in play: what the eyes see goes on the map
+    void UpdateMapSight() {   // every frame in play: the rooms you walk into go on the map (RoomsInPlay), a bit each frame
         if (!playMode || !world || play.dead()) return;
-        SeenMap& m = Seen(); double now = MapClock(); mapFrame++;
-        double fov = settings.fov * 3.14159265358979 / 180, aspect = (double)rw / std::max(1, rh);
-        V3 eye = player.eye();
-        UpdateRoomReveals();
-        if (!(curRoom && RoomRevealed(curRoom))) {   // in a room you have seen: it is all on the map already (no need to look around)
-            m.lookAround(*world, eye, player.yaw, player.pitch, fov, aspect, 280, 48, mapFrame, now);
-            if (player.onGround) m.floorUnder(*world, player.feet, 1, now);
-        }
-        if (mapFrame % 4 == 0) {   // doors in view
-            V3 f = player.forward(); double cosHalf = std::cos(std::min(1.4, fov * 0.5 * std::max(1.0, aspect)));
-            for (const WorldObject& o : objects) {
-                if (o.kind != ObjKind::Door || m.doors.count(o.id)) continue;
-                V3 c, ac; if (!DoorRect(o, c, ac)) continue;
-                V3 d = c - eye; double l = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z); if (l > 48) continue;
-                if (l > 2 && (d.x * f.x + d.y * f.y + d.z * f.z) / l < cosHalf) continue;
-                if (DoorSeenFrom(o, eye, 48)) m.doors.insert(o.id);
-            }
-        }
+        mapFrame++; UpdateRoomReveals();
     }
     WorldObject* StationInReach() {   // the Map Station you are standing at and facing, or the Save Station you stand in (E uses it)
         if (!playMode || player.ball || play.dead()) return nullptr;
@@ -13229,27 +13276,18 @@ struct App {
         }
         return best;
     }
-    void UseMapStation(const WorldObject& st) {   // wakes every map camera with the station's ID
+    void UseMapStation(const WorldObject& st) {   // the rooms it is set to go on the map (none set: the room it stands in)
         std::string key = CurrentWorld() + "#" + std::to_string(st.id);
         if (stationsUsed.count(key)) { OpenMap(); return; }   // already downloaded: it just shows the map
         stationsUsed.insert(key);
-        if (!st.map.rooms.empty()) {   // set to rooms (Room Manager): those rooms go on the map, whole
-            int n = 0;
-            for (uint32_t id : st.map.rooms) {
-                if (RoomRevealed(id) || evRun.flags.count(RoomFlag("roomdl", id))) continue;
-                evRun.flags.insert(RoomFlag("roomdl", id)); QueueRoomReveal(id, false); n++;
-            }
-            Log("map station " + std::to_string(st.id) + ": " + std::to_string(n) + " room(s) revealed");
-            Toast("Map data downloaded"); OpenMap(); return;
+        std::vector<uint32_t> ids = st.map.rooms;
+        if (ids.empty()) { uint32_t r = rooms.roomAt(ifloor(st.pos.x), ifloor(st.pos.y + 1.2), ifloor(st.pos.z)); if (!r) r = curRoom; if (r) ids.push_back(r); }
+        int n = 0;
+        for (uint32_t id : ids) {
+            if (RoomRevealed(id) || evRun.flags.count(RoomFlag("roomdl", id))) continue;
+            evRun.flags.insert(RoomFlag("roomdl", id)); QueueRoomReveal(id, false); n++;
         }
-        SeenMap& m = Seen(); double now = MapClock(); size_t before = m.total, doorsBefore = m.doors.size(); int cams = 0;
-        auto revealAt = [&](V3 eye, double range) {
-            m.revealFrom(*world, eye, range, 4000, now);
-            for (const WorldObject& o : objects) if (o.kind == ObjKind::Door && !m.doors.count(o.id) && DoorSeenFrom(o, eye, range)) m.doors.insert(o.id);
-        };
-        for (const WorldObject& o : objects) if (o.kind == ObjKind::MapCamera && o.map.id == st.map.id) { revealAt(MapCamEye(o), o.map.range); cams++; }
-        if (!cams) revealAt(st.pos + V3{ 0, 1.4, 0 }, st.map.range);   // no camera with this ID: the station looks around itself
-        Log("map station " + std::to_string(st.map.id) + ": " + std::to_string(cams) + " camera(s), " + std::to_string(m.total - before) + " blocks and " + std::to_string(m.doors.size() - doorsBefore) + " door(s) added");
+        Log("map station " + std::to_string(st.id) + ": " + std::to_string(n) + " room(s) revealed");
         Toast("Map data downloaded");
         OpenMap();   // like in Prime: the map opens and shows what was added
     }
@@ -13517,36 +13555,137 @@ struct App {
         ctx->RSSetState(rsCull.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
         ctx->OMSetRenderTargets(0, nullptr, nullptr);
     }
-    void MapInspector(WorldObject& o) {
-        bool cam = o.kind == ObjKind::MapCamera;
-        ImGui::SeparatorText(cam ? "Map camera" : "Map Station");
-        if (cam) Hint("Invisible in the game. When a Map Station with the same ID is used, this camera looks all around from here and puts everything it can see on the map (doors too, in their colour). Give several cameras the same ID to chart a bigger area.");
-        else Hint("Stand at it and press E: it downloads the map. Every map camera with the same ID looks all around. With no camera of that ID, it looks around from itself. It downloads once per play; after that E just shows the map.");
-        if (!cam) {   // the new way: pick rooms (Room Manager)
-            ImGui::SeparatorText("Reveals these rooms");
-            Hint("Tick the rooms this station puts on the map (whole: walls, floors, doors). None ticked: the old way, its map cameras (below).");
-            if (rooms.list.rooms.empty()) ImGui::TextDisabled("No rooms yet (the Rooms window finds them).");
-            ImGui::BeginChild("##mrooms", ImVec2(0, std::min(220.f, 24.f * (float)rooms.list.rooms.size() + 8) * settings.uiScale), ImGuiChildFlags_Borders);
-            for (const RoomDef& r : rooms.list.rooms) {
-                bool on = std::find(o.map.rooms.begin(), o.map.rooms.end(), r.id) != o.map.rooms.end();
-                ImGui::PushID((int)r.id);
-                if (ImGui::Checkbox("##on", &on)) { if (on) o.map.rooms.push_back(r.id); else o.map.rooms.erase(std::remove(o.map.rooms.begin(), o.map.rooms.end(), r.id), o.map.rooms.end()); }
-                ImGui::SameLine(); ImVec2 p = ImGui::GetCursorScreenPos(); float hh = ImGui::GetTextLineHeight();
-                ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(p.x, p.y + 3), ImVec2(p.x + hh - 4, p.y + hh - 1), IM_COL32((r.color >> 16) & 255, (r.color >> 8) & 255, r.color & 255, 255), 2);
-                ImGui::SetCursorScreenPos(ImVec2(p.x + hh + 2, p.y)); ImGui::TextUnformatted(r.label().c_str());
-                ImGui::PopID();
+    // ---- the Rooms window's 3D view: every room's walls, floors and ceilings in its colour (the map's look). Drag: turn, right-drag: move,
+    // wheel: zoom, double-click: pick the room under the mouse
+    SeenMap rvMap; std::unordered_map<I3, MapGpuChunk, I3Hash> rvGpu; uint32_t rvGen = UINT32_MAX; int rvSelBuilt = -2; std::deque<RoomReveal> rvJobs;
+    HudTarget rvTarget; ComPtr<ID3D11DepthStencilView> rvDSV; int rvW = 0, rvH = 0; ImVec2 rvWant{ 0, 0 }; bool rvOn = true, rvShown = false;
+    float rvYaw = 0.7f, rvPitch = 0.75f, rvDist = 90; V3 rvCenter{ 0, 0, 0 }; bool rvCentered = false;
+    void RoomViewUpdate() {
+        if (rooms.generation != rvGen) {   // the rooms changed: all again (a bit each frame)
+            rvGen = rooms.generation; rvMap.clear(); rvGpu.clear(); rvJobs.clear();
+            for (const RoomDef& d : rooms.list.rooms) {
+                const RoomSet::Live* L = rooms.liveOf(d.id); if (!L || L->shape.empty()) continue;
+                RoomReveal r; r.id = d.id; L->shape.forEach([&](int x, int y, int z) { r.cells.push_back({ x, y, z }); }); rvJobs.push_back(std::move(r));
             }
-            ImGui::EndChild();
-            if (!rooms.list.rooms.empty()) { if (ImGui::SmallButton("All")) { o.map.rooms.clear(); for (const RoomDef& r : rooms.list.rooms) o.map.rooms.push_back(r.id); } ImGui::SameLine(); if (ImGui::SmallButton("None")) o.map.rooms.clear(); }
-            if (!o.map.rooms.empty()) { ImGui::TextDisabled("%d room(s): map cameras are not used.", (int)o.map.rooms.size()); return; }
-            ImGui::SeparatorText("Or: map cameras");
         }
-        int id = o.map.id; Prop("ID"); if (ImGui::InputInt("##mapid", &id)) o.map.id = std::clamp(id, 0, 9999);
-        Prop(cam ? "Sees (blocks)" : "Sees, without cameras"); ImGui::SliderFloat("##maprange", &o.map.range, 8, 160, "%.0f blocks");
-        int cams = 0, stations = 0; for (const WorldObject& q : objects) if (q.map.id == o.map.id) { if (q.kind == ObjKind::MapCamera) cams++; else if (q.kind == ObjKind::MapStation) stations++; }
-        ImGui::TextDisabled("ID %d: %d camera(s), %d station(s)", o.map.id, cams, stations);
-        if (cam && stations == 0) ImGui::TextColored(ImVec4(1, 0.75f, 0.3f, 1), "No Map Station has this ID yet.");
-        if (!cam && cams == 0) ImGui::TextDisabled("(no camera has this ID: it looks around itself)");
+        size_t budget = 60000;
+        while (!rvJobs.empty() && budget) {
+            RoomReveal& r = rvJobs.front(); const RoomSet::Live* L = rooms.liveOf(r.id);
+            for (; r.at < r.cells.size() && budget; r.at++, budget--) {
+                I3 c = r.cells[r.at];
+                for (const auto& d : { I3{ 1, 0, 0 }, I3{ -1, 0, 0 }, I3{ 0, 1, 0 }, I3{ 0, -1, 0 }, I3{ 0, 0, 1 }, I3{ 0, 0, -1 } }) {
+                    int x = c.x + d.x, y = c.y + d.y, z = c.z + d.z; if (L && L->shape.has(x, y, z)) continue;
+                    BlockId v = world->get(x, y, z); if (v == AIR) continue; const BlockDef& bd = reg.get(v); if (bd.liquid || !bd.solid) continue;
+                    rvMap.mark(x, y, z, -100, true);
+                }
+            }
+            if (r.at >= r.cells.size()) rvJobs.pop_front();
+        }
+        if (rvSelBuilt != roomSel) { rvSelBuilt = roomSel; for (auto& kv : rvMap.chunks) rvMap.dirty.insert(kv.first); }   // (the picked one stands out)
+        uint32_t selId = roomSel >= 0 && roomSel < (int)rooms.list.rooms.size() ? rooms.list.rooms[roomSel].id : 0;
+        int built = 0;
+        for (auto it = rvMap.dirty.begin(); it != rvMap.dirty.end() && built < 32;) {
+            if (!world->loaded(it->x * CS, it->y * CS, it->z * CS)) { ++it; continue; }
+            I3 cp = *it; it = rvMap.dirty.erase(it); built++;
+            std::vector<MapQuad> qs = mapPanels(*world, rvMap, cp);
+            MapGpuChunk& g = rvGpu[cp]; g.vb.Reset(); g.count = g.mine = 0;
+            std::vector<MapVert> v; v.reserve(qs.size() * 6);
+            static const int idx[6] = { 0, 1, 2, 0, 2, 3 };
+            for (const MapQuad& q : qs) {
+                float cx = (q.p[0][0] + q.p[2][0]) * 0.5f + q.n[0] * 0.5f, cy = (q.p[0][1] + q.p[2][1]) * 0.5f + q.n[1] * 0.5f, cz = (q.p[0][2] + q.p[2][2]) * 0.5f + q.n[2] * 0.5f;
+                uint32_t rid = rooms.roomAt((int)std::floor(cx), (int)std::floor(cy), (int)std::floor(cz)); if (!rid) continue;   // (the outer sides of the walls: no)
+                const RoomDef* d = rooms.list.find(rid); uint32_t c = d ? d->color : 0x60C0FF; float k = selId && rid != selId ? 0.4f : 1.f;
+                float tint[3] = { ((c >> 16) & 255) / 255.f * k, ((c >> 8) & 255) / 255.f * k, (c & 255) / 255.f * k };
+                const float uv[4][2] = { { 0, 0 }, { q.w, 0 }, { q.w, q.h }, { 0, q.h } };
+                for (int kk : idx) { MapVert x{}; for (int j = 0; j < 3; j++) { x.p[j] = q.p[kk][j] + q.n[j] * 0.002f; x.n[j] = q.n[j]; } x.uv[0] = uv[kk][0]; x.uv[1] = uv[kk][1]; x.size[0] = q.w; x.size[1] = q.h; x.born = -100;
+                    x.col[0] = tint[0]; x.col[1] = tint[1]; x.col[2] = tint[2]; x.col[3] = 0; v.push_back(x); }
+            }
+            if (v.empty()) continue;
+            D3D11_BUFFER_DESC bd{}; bd.ByteWidth = (UINT)(v.size() * sizeof(MapVert)); bd.Usage = D3D11_USAGE_IMMUTABLE; bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+            D3D11_SUBRESOURCE_DATA sd{ v.data(), 0, 0 }; HR(dev->CreateBuffer(&bd, &sd, &g.vb)); g.count = g.mine = (UINT)v.size();
+        }
+    }
+    void RoomViewCamera(V3& eye, V3& fwd) const {
+        V3 dir{ std::sin(rvYaw) * std::cos(rvPitch), std::sin(rvPitch), std::cos(rvYaw) * std::cos(rvPitch) };
+        eye = rvCenter + dir * rvDist; fwd = Norm(rvCenter - eye);
+    }
+    void RenderRoomView() {
+        if (!rvShown || !world || rvWant.x < 16 || rvWant.y < 16) return;
+        rvShown = false;
+        RoomViewUpdate();
+        int w = (int)rvWant.x, h = (int)rvWant.y; if (w != rvW || h != rvH) { MakeTarget(rvTarget, w, h, &rvDSV); rvW = w; rvH = h; }
+        const float bg[4] = { 0.006f, 0.014f, 0.03f, 1 };
+        ctx->OMSetRenderTargets(1, rvTarget.rtv.GetAddressOf(), rvDSV.Get()); ctx->ClearRenderTargetView(rvTarget.rtv.Get(), bg); ctx->ClearDepthStencilView(rvDSV.Get(), D3D11_CLEAR_DEPTH, 1, 0);
+        D3D11_VIEWPORT vp{ 0, 0, (float)w, (float)h, 0, 1 }; ctx->RSSetViewports(1, &vp);
+        V3 eye, fwd; RoomViewCamera(eye, fwd);
+        XMMATRIX view = XMMatrixLookAtLH(XMVectorSet((float)eye.x, (float)eye.y, (float)eye.z, 1), XMVectorSet((float)rvCenter.x, (float)rvCenter.y, (float)rvCenter.z, 1), XMVectorSet(0, 1, 0, 0));
+        XMMATRIX proj = XMMatrixPerspectiveFovLH(XMConvertToRadians(45.f), (float)w / h, 0.3f, 6000.f);
+        MapCB mc{}; XMStoreFloat4x4((XMFLOAT4X4*)mc.vp, view * proj);
+        mc.eye[0] = (float)eye.x; mc.eye[1] = (float)eye.y; mc.eye[2] = (float)eye.z; mc.eye[3] = (float)MapClock();
+        mc.center[0] = (float)rvCenter.x; mc.center[1] = (float)rvCenter.y; mc.center[2] = (float)rvCenter.z; mc.center[3] = (float)MapClock() - 100;
+        ctx->VSSetConstantBuffers(5, 1, cbMap.GetAddressOf()); ctx->PSSetConstantBuffers(5, 1, cbMap.GetAddressOf());
+        ctx->IASetInputLayout(layoutMap.Get()); ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        ctx->VSSetShader(vsMap.Get(), nullptr, 0); ctx->PSSetShader(psMap.Get(), nullptr, 0); ctx->RSSetState(rsNoCull.Get());
+        UINT stride = sizeof(MapVert), off = 0;
+        auto drawAll = [&]() { for (auto& kv : rvGpu) if (kv.second.count) { ctx->IASetVertexBuffers(0, 1, kv.second.vb.GetAddressOf(), &stride, &off); ctx->Draw(kv.second.count, 0); } };
+        mc.mode[0] = 0; ctx->UpdateSubresource(cbMap.Get(), 0, nullptr, &mc, 0, 0); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); drawAll();
+        mc.mode[0] = 1; ctx->UpdateSubresource(cbMap.Get(), 0, nullptr, &mc, 0, 0); ctx->OMSetBlendState(bsAdd.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOff.Get(), 0); drawAll();   // the edges through the walls, faintly
+        ctx->RSSetState(rsCull.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
+        ctx->OMSetRenderTargets(0, nullptr, nullptr);
+    }
+    void RoomViewCenterOn(uint32_t id) {
+        const RoomSet::Live* L = rooms.liveOf(id); if (!L || L->shape.empty()) return;
+        rvCenter = { (L->shape.lo.x + L->shape.hi.x + 1) * 0.5, (L->shape.lo.y + L->shape.hi.y + 1) * 0.5, (L->shape.lo.z + L->shape.hi.z + 1) * 0.5 };
+        double s = std::max({ L->shape.hi.x - L->shape.lo.x, L->shape.hi.y - L->shape.lo.y, L->shape.hi.z - L->shape.lo.z }) + 4.0;
+        rvDist = (float)std::clamp(s * 1.6, 12.0, 1500.0); rvCentered = true;
+    }
+    void RoomViewUI(float height) {   // inside the Rooms window
+        ImVec2 p = ImGui::GetCursorScreenPos(), sz(ImGui::GetContentRegionAvail().x, height); rvWant = sz; rvShown = true;
+        if (!rvCentered) { I3 c = RoomProbe(); rvCenter = { c.x + 0.5, c.y + 0.5, c.z + 0.5 }; rvCentered = true; }
+        ImGui::InvisibleButton("##rview", sz, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        if (rvTarget.srv && rvW == (int)sz.x && rvH == (int)sz.y) dl->AddImage((ImTextureID)(intptr_t)rvTarget.srv.Get(), p, ImVec2(p.x + sz.x, p.y + sz.y));
+        else dl->AddRectFilled(p, ImVec2(p.x + sz.x, p.y + sz.y), IM_COL32(2, 4, 8, 255));
+        ImGuiIO& io = ImGui::GetIO();
+        if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0)) { rvYaw += io.MouseDelta.x * 0.008f; rvPitch = std::clamp(rvPitch + io.MouseDelta.y * 0.008f, -1.45f, 1.52f); }
+        if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Right, 0)) {   // slide sideways and up / down
+            V3 eye, f; RoomViewCamera(eye, f); V3 r = Norm(cross({ 0, 1, 0 }, f)), u = cross(f, r); double k = rvDist * 0.0016;
+            rvCenter = rvCenter - r * (io.MouseDelta.x * k) + u * (io.MouseDelta.y * k);
+        }
+        if (ImGui::IsItemHovered() && io.MouseWheel != 0) rvDist = std::clamp(rvDist * std::pow(0.88f, io.MouseWheel), 4.f, 3000.f);
+        if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {   // pick the room under the mouse: along the ray, the first room's air
+            V3 eye, f; RoomViewCamera(eye, f); V3 r = Norm(cross({ 0, 1, 0 }, f)), u = cross(f, r);
+            double nx = (io.MousePos.x - p.x) / sz.x * 2 - 1, ny = 1 - (io.MousePos.y - p.y) / sz.y * 2, th = std::tan(22.5 * 3.14159265 / 180);
+            V3 d = Norm(f + r * (nx * th * sz.x / sz.y) + u * (ny * th));
+            for (double t = 0.5; t < rvDist * 3 + 400; t += 0.3) { V3 q = eye + d * t; uint32_t id = rooms.roomAt(ifloor(q.x), ifloor(q.y), ifloor(q.z));
+                if (id) { for (int i = 0; i < (int)rooms.list.rooms.size(); i++) if (rooms.list.rooms[i].id == id) roomSel = i; break; } }
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Drag: turn   Right-drag: move   Wheel: zoom   Double-click: pick a room");
+        { ImVec2 tp(p.x + 8, p.y + 6); dl->AddText(tp, IM_COL32(150, 210, 255, 200), rvJobs.empty() && rvMap.dirty.empty() ? "3D view" : "3D view (building ...)"); }
+    }
+    void MapInspector(WorldObject& o) {
+        if (o.kind == ObjKind::MapCamera) {
+            ImGui::SeparatorText("Map camera");
+            ImGui::TextColored(ImVec4(1, 0.75f, 0.3f, 1), "Not used any more.");
+            Hint("The map is made of rooms now: walking into a room shows it, and Map Stations reveal the rooms you tick. You can delete this camera.");
+            return;
+        }
+        ImGui::SeparatorText("Map Station: reveals these rooms");
+        Hint("Stand at it and press E: the rooms you tick go on the map, whole (walls, floors, doors), and the map opens. Once per play; after that E just shows the map. None ticked: the room it stands in.");
+        if (rooms.list.rooms.empty()) ImGui::TextDisabled("No rooms yet (the Rooms window finds them).");
+        ImGui::BeginChild("##mrooms", ImVec2(0, std::min(260.f, 24.f * (float)rooms.list.rooms.size() + 8) * settings.uiScale), ImGuiChildFlags_Borders);
+        for (const RoomDef& r : rooms.list.rooms) {
+            bool on = std::find(o.map.rooms.begin(), o.map.rooms.end(), r.id) != o.map.rooms.end();
+            ImGui::PushID((int)r.id);
+            if (ImGui::Checkbox("##on", &on)) { if (on) o.map.rooms.push_back(r.id); else o.map.rooms.erase(std::remove(o.map.rooms.begin(), o.map.rooms.end(), r.id), o.map.rooms.end()); }
+            ImGui::SameLine(); ImVec2 p = ImGui::GetCursorScreenPos(); float hh = ImGui::GetTextLineHeight();
+            ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(p.x, p.y + 3), ImVec2(p.x + hh - 4, p.y + hh - 1), IM_COL32((r.color >> 16) & 255, (r.color >> 8) & 255, r.color & 255, 255), 2);
+            ImGui::SetCursorScreenPos(ImVec2(p.x + hh + 2, p.y)); ImGui::TextUnformatted(r.label().c_str());
+            ImGui::PopID();
+        }
+        ImGui::EndChild();
+        if (!rooms.list.rooms.empty()) { if (ImGui::SmallButton("All")) { o.map.rooms.clear(); for (const RoomDef& r : rooms.list.rooms) o.map.rooms.push_back(r.id); } ImGui::SameLine(); if (ImGui::SmallButton("None")) o.map.rooms.clear(); }
+        { uint32_t here = rooms.roomAt(ifloor(o.pos.x), ifloor(o.pos.y + 1.2), ifloor(o.pos.z)); const RoomDef* h = rooms.list.find(here); ImGui::TextDisabled("It stands in: %s", h ? h->label().c_str() : "no room"); }
     }
 
     // ---- the Weapons tab: the cannon in its own 3D view, its three points (drag them), what it shoots
@@ -14073,7 +14212,13 @@ struct App {
         if (ImGui::Button("Import music...")) ImportMusic();
         ImGui::SameLine(); ImGui::TextDisabled("The game's soundtrack: its own list, apart from the sound effects.");
         Hint("Music for rooms (the Rooms window), screens (main menu, credits ...), bosses and event cards (\"play the music\") is picked from here. It goes into the project's sounds/music folder.");
-        ImGui::Separator();
+        ImGui::SeparatorText("Samus appears");
+        { bool ch = false;
+          Prop("A new game / a loaded file"); ch |= MusicEdit("##spawnmus", playerSounds.spawnMusic);
+          Prop("The room's music waits for it"); ch |= ImGui::Checkbox("##spawnwait", &playerSounds.spawnWaits);
+          Hint("Plays once when a new game starts or a saved file is loaded (like Samus' appearance fanfare). With \"waits\" on, the music of the room you start in comes after it.");
+          if (ch) SavePlayerSounds(); }
+        ImGui::SeparatorText("All music");
         std::vector<std::string> ost = MusicFiles();
         if (ImGui::BeginTable("ost", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
             ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 28 * ui); ImGui::TableSetupColumn("Title", ImGuiTableColumnFlags_WidthStretch, 2);
@@ -16246,7 +16391,7 @@ struct App {
         ImGui::Separator();
         if (ImGui::BeginMenu("Object in the world")) {   // like Unity's GameObject menu: picked, then click in the viewport to put it down
             const std::pair<const char*, const char*> objs[] = { { "Light", "@light" }, { "Particles", "@emitter" }, { "Energy (health)", "@health" }, { "Key", "@key" }, { "Gem (a collectible)", "@gem" },
-                { "Checkpoint", "@checkpoint" }, { "Teleporter", "@teleporter" }, { "Trigger zone", "@zone" }, { "Save Station", "@save-station" }, { "Map Station", "@map-station" }, { "Map camera", "@map-camera" }, { "Ambient light", "@ambient" }, { "Grapple point", "@grapple-point" } };
+                { "Checkpoint", "@checkpoint" }, { "Teleporter", "@teleporter" }, { "Trigger zone", "@zone" }, { "Save Station", "@save-station" }, { "Map Station", "@map-station" }, { "Ambient light", "@ambient" }, { "Grapple point", "@grapple-point" } };
             for (auto& o : objs) if (ImGui::MenuItem(o.first)) { StartPlacing(o.second); focusView = true; }
             if (ImGui::BeginMenu("Enemy")) {
                 for (const EnemyType& t : enemies.types) if (ImGui::MenuItem(t.name.c_str())) { StartPlacingEnemy(t.id); focusView = true; }
@@ -17582,7 +17727,8 @@ struct App {
         RenderHudPlanes(); RenderScanModel(); RenderEnemyView(); RenderBallEditor(); RenderItemModel(); RenderMenuPanes(); RenderPlanetPreview();
 
         const float bg[4] = { 0.10f, 0.11f, 0.13f, 1 };
-        if (screen == Screen::Game && rw > 0 && mapOpen && !ev) { RenderMap(); RenderMapScreen(backRTV.Get()); }   // the map screen: the map instead of the world, the visor over it
+        if (screen == Screen::Game && rw > 0 && mapOpen && !ev) { RenderMap(); RenderMapScreen(backRTV.Get()); }
+        if (screen == Screen::Game && !playMode) RenderRoomView();   // (the Rooms window's 3D view, when it shows)   // the map screen: the map instead of the world, the visor over it
         else if (screen == Screen::Game && rw > 0 && CurScreen() && !ev) {   // a screen (main menu, death...): its background, items and compositor
             mc::Screen* sc = CurScreen(); bool world = sc->bg.kind == BgKind::World || sc->bg.kind == BgKind::Game;
             if (world) RenderWorld(sceneRTV.Get());

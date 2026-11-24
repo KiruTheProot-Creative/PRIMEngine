@@ -958,30 +958,22 @@ int main() {
     {   // the map: what has been seen
         BlockRegistry rm; registerBuiltinBlocks(rm); World w(rm); w.gen.layers = { { rm.find("stone"), 3 } }; w.stream({ 0, 0, 0 }, 3, 2, 100000);
         BlockId st = rm.find("stone"); for (int y = 3; y < 8; y++) for (int z = -6; z <= 6; z++) w.set(10, y, z, st);   // a wall 10 blocks east
-        SeenMap m; V3 eye{ 0.5, 4.6, 0.5 };
-        CHECK(m.look(w, eye, { 1, 0, 0 }, 40, 0, 1.0) && m.seen(10, 4, 0) && m.total == 1, "a look east: the wall block it hits is seen (and only that)");
-        CHECK(!m.look(w, eye, { 0, 1, 0 }, 40, 0, 1.0), "a look at the sky: nothing");
-        CHECK(!m.look(w, eye, { 1, 0, 0 }, 5, 0, 1.0) || m.total == 1, "out of range: nothing new");
-        m.look(w, eye, { 1, 0.1, 0.1 }, 40, 2, 2.0); CHECK(m.seen(10, 5, 1) || m.total > 4, "a patch of the same surface around the hit (%zu)", m.total);
-        CHECK(!m.seen(11, 4, 0), "not the blocks behind it");
-        SeenMap a; int hits = a.lookAround(w, eye, 3.14159265 / 2, 0, 1.2, 1.6, 400, 48, 1, 3.0);
-        CHECK(hits > 100 && a.seen(10, 4, 0) && !a.seen(-5, -1, 0), "looking around (east): the wall and the ground in front, nothing behind (%d hits)", hits);
-        SeenMap fl; fl.floorUnder(w, { 0.5, 0.0, 0.5 }, 1, 1.0); CHECK(fl.seen(0, -1, 0) && fl.total == 9, "the floor under your feet (%zu)", fl.total);
-        SeenMap cam; int ch = cam.revealFrom(w, { 3.5, 5.5, 0.5 }, 30, 2000, 1.0);
-        CHECK(ch > 800 && cam.seen(10, 4, 0) && cam.seen(3, -1, 0), "a map camera sees all around (%d)", ch);
+        V3 eye{ 0.5, 4.6, 0.5 };
+        SeenMap cam;   // (downloaded: the wall and the ground in front of it)
+        for (int y = 3; y < 8; y++) for (int z = -6; z <= 6; z++) cam.mark(10, y, z, 1.0, false);
+        for (int z = -3; z <= 3; z++) for (int x = 0; x <= 9; x++) cam.mark(x, -1, z, 1.0, false);
+        CHECK(cam.seen(10, 4, 0) && cam.seen(3, -1, 0) && !cam.seen(11, 4, 0) && cam.total == 65 + 70, "blocks put on the map are on it, others not (%zu)", cam.total);
         std::vector<MapQuad> q = mapPanels(w, cam, chunkOf(10, 4, 0)); size_t faces = 0; for (auto& p : q) faces += (size_t)(p.w * p.h);
         CHECK(!q.empty() && q.size() < faces, "panels: the seen faces, merged into bigger rectangles (%zu panels for %zu faces)", q.size(), faces);
         bool openFaces = true; for (auto& p : q) { int x = (int)std::floor((p.p[0][0] + p.p[2][0]) / 2 - p.n[0] * 0.5), y = (int)std::floor((p.p[0][1] + p.p[2][1]) / 2 - p.n[1] * 0.5), z = (int)std::floor((p.p[0][2] + p.p[2][2]) / 2 - p.n[2] * 0.5); openFaces &= w.get(x + (int)p.n[0], y + (int)p.n[1], z + (int)p.n[2]) == AIR; }
         CHECK(openFaces, "every panel faces the open air");
         CHECK(canSee(w, eye, { 8.5, 4.5, 0.5 }, 40) && !canSee(w, eye, { 12.5, 4.5, 0.5 }, 40) && !canSee(w, eye, { 8.5, 4.5, 0.5 }, 5), "a door in front of the wall can be seen; one behind it (or too far) can not");
         CHECK(cam.mineTotal == 0 && !cam.mine(10, 4, 0), "what a map camera sees is downloaded, not yours");
-        {   // a shut door in the way: you (and map cameras) can't see through it
+        {   // a shut door in the way: you can't see through it
             World& wd = w; wd.sightBlockers.push_back({ { 5.0, 3.0, -1.0 }, { 5.3, 8.0, 2.0 } });
-            SeenMap d1; CHECK(!d1.look(wd, eye, { 1, 0, 0 }, 40, 0, 1.0) && !d1.seen(10, 4, 0), "a look through a shut door: nothing beyond it");
-            SeenMap d2; d2.revealFrom(wd, { 0.5, 5.5, 0.5 }, 30, 2000, 1.0); CHECK(!d2.seen(10, 5, 0) && d2.seen(10, 5, 5), "a map camera doesn't see through it either (but past it)");
             CHECK(!canSee(wd, eye, { 8.5, 4.5, 0.5 }, 40) && canSee(wd, eye, { 5.15, 4.5, 0.5 }, 40), "a door behind a shut door can't be seen; the shut door itself can");
             CHECK(wd.sightBlocked(eye, { 1, 0, 0 }, 40) > 4.4 && wd.sightBlocked(eye, { 1, 0, 0 }, 40) < 4.6 && wd.sightBlocked(eye, { -1, 0, 0 }, 40) == 40, "how far to the door");
-            wd.sightBlockers.clear(); SeenMap d3; CHECK(d3.look(wd, eye, { 1, 0, 0 }, 40, 0, 1.0), "door open: seen again");
+            wd.sightBlockers.clear(); CHECK(canSee(wd, eye, { 8.5, 4.5, 0.5 }, 40), "door open: seen again");
         }
         { bool allDown = true; for (auto& p : q) allDown &= !p.mine; CHECK(allDown, "its panels are all 'downloaded'"); }
         SeenMap mix = cam; mix.dirty.clear(); size_t before = mix.total;
