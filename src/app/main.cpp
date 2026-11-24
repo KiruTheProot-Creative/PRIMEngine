@@ -1169,7 +1169,7 @@ struct App {
     }
     void CloseWorld() {   // the project stays open
         if (playMode && !travelling) StopPlay();
-        SaveWorld(); rooms = RoomSet{}; roomReveals.clear(); workers.reset(); world.reset(); gpu.clear(); latestSeq.clear(); LodClear(); chunkMeshed.clear(); lampCache.clear(); lavaTops.clear(); Capture(false);
+        SaveWorld(); rooms = RoomSet{}; roomPeek.clear(); roomReveals.clear(); workers.reset(); world.reset(); gpu.clear(); latestSeq.clear(); LodClear(); chunkMeshed.clear(); lampCache.clear(); lavaTops.clear(); Capture(false);
     }
     std::string CurrentWorld() const { return world ? fs::path(worldDir).filename().string() : ""; }
     void RenameWorld(const std::string& from, const std::string& to) {
@@ -9652,10 +9652,16 @@ struct App {
     struct RoomReveal { uint32_t id = 0; bool own = true; std::vector<I3> cells; size_t at = 0; };
     std::deque<RoomReveal> roomReveals;
     void SaveRooms() { if (world && !worldDir.empty()) saveRooms(worldDir + "/rooms.txt", rooms.list); }
-    void LoadRooms() { rooms = RoomSet{}; if (!worldDir.empty()) loadRooms(worldDir + "/rooms.txt", rooms.list); curRoom = 0; roomSel = -1; roomReveals.clear(); }
+    void LoadRooms() { roomPeek.clear(); rooms = RoomSet{}; if (!worldDir.empty()) loadRooms(worldDir + "/rooms.txt", rooms.list); curRoom = 0; roomSel = -1; roomReveals.clear(); }
+    mutable std::unordered_map<I3, std::unique_ptr<Chunk>, I3Hash> roomPeek;   // chunks that are not loaded, read from disk for the room search (whole rooms, even far ones)
     RoomWorld RoomWorldNow() const {
-        RoomWorld w; w.reg = &reg; World* wp = world.get();
-        w.chunkAt = [wp](I3 c) -> const Chunk* { return wp ? wp->chunk(c) : nullptr; };
+        RoomWorld w; w.reg = &reg; World* wp = world.get(); auto* pk = &roomPeek;
+        w.chunkAt = [wp, pk](I3 c) -> const Chunk* {
+            if (!wp) return nullptr;
+            if (const Chunk* ch = wp->chunk(c)) return ch;
+            auto it = pk->find(c); if (it != pk->end()) return it->second.get();
+            auto ch = std::make_unique<Chunk>(); wp->peekChunk(c, *ch); const Chunk* r = ch.get(); (*pk)[c] = std::move(ch); return r;
+        };
         w.doors = CookDoors();
         const Breakables* br = &breakables; if (!br->marks.empty()) w.through = [br](int x, int y, int z) { return br->marks.count({ x, y, z }) > 0; };
         const RoomList* rl = &rooms.list;
@@ -9667,19 +9673,23 @@ struct App {
     uint32_t RoomHere() const { I3 c = RoomProbe(); uint32_t r = rooms.roomAt(c.x, c.y, c.z); if (!r && playMode) { V3 f = player.feet; r = rooms.roomAt(ifloor(f.x), ifloor(f.y + 0.2), ifloor(f.z)); } return r; }
     void UpdateRooms(double dt) {
         if (!world) return;
-        if (history.undoCount() != roomHist) { roomHist = history.undoCount(); rooms.edited(); }
+        if (history.undoCount() != roomHist) { roomHist = history.undoCount(); rooms.edited(); roomPeek.clear(); }
+        if (roomPeek.size() > 6000 && !rooms.busy()) roomPeek.clear();   // (between searches only: a search may be looking at them)
         roomCheckT += dt; bool check = roomCheckT > 0.5; if (check) roomCheckT = 0;
         RoomWorld w = RoomWorldNow();
         std::vector<I3> seeds = RoomSet::doorSeeds(w.doors);
         roomSeedT += dt; if (roomSeedT > 0.5) { roomSeedT = 0; seeds.push_back(RoomProbe()); }   // (where you are: twice a second)
         World* wp = world.get();
-        rooms.tick(w, seeds, [wp](I3 c) -> uint32_t { const Chunk* ch = wp->chunk(c); return ch ? ch->version + 1 : 0; }, check, playMode ? 6000 : 10000);   // (about a millisecond a frame)
+        rooms.tick(w, seeds, [wp](I3 c) -> uint32_t { const Chunk* ch = wp->chunk(c); return ch ? ch->version : 0; }, check, playMode ? 6000 : 10000);   // (a chunk as it was read: 0, loaded or not - flying around changes nothing)   // (about a millisecond a frame)
         if (check && !playMode) {   // rooms that aren't closed any more, found by themselves, nothing set on them: one of each leak is enough
             std::set<uint32_t> inStations; for (const WorldObject& o : objects) for (uint32_t r : o.map.rooms) inStations.insert(r);
             std::map<std::tuple<int, int, int>, uint32_t> firstOf; std::vector<uint32_t> drop;
             for (const RoomDef& d : rooms.list.rooms) {
                 const RoomSet::Live* L = rooms.liveOf(d.id);
-                if (!L || !L->searched || !L->open || !L->leak || d.marked() || !d.name.empty() || d.ambOn || d.musicMode != 0 || !d.showName || inStations.count(d.id)) continue;
+                if (!L || !L->searched || d.marked() || !d.name.empty() || d.ambOn || d.musicMode != 0 || !d.showName || inStations.count(d.id)) continue;
+                if (L->joined) { drop.push_back(d.id); continue; }   // (one room with an older one: the older one is enough)
+                if (!L->open) continue;
+                if (!L->leak) { drop.push_back(d.id); continue; }
                 auto k = std::make_tuple(L->leakAt.x, L->leakAt.y, L->leakAt.z);
                 if (firstOf.count(k)) drop.push_back(d.id); else firstOf[k] = d.id;
             }

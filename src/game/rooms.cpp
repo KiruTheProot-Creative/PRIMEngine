@@ -157,6 +157,7 @@ std::vector<I3> RoomFlood::outsideCells() const {
 }
 RoomFlood::Result RoomFlood::step(size_t budget) {
     if (phase == PDone) return res;
+    lastHave = false;   // (the chunks may have changed between steps)
     size_t n = 0;
     if (phase == P3D) {
         bool escaped = false;
