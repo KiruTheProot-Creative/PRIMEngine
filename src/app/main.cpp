@@ -17727,8 +17727,8 @@ struct App {
         RenderHudPlanes(); RenderScanModel(); RenderEnemyView(); RenderBallEditor(); RenderItemModel(); RenderMenuPanes(); RenderPlanetPreview();
 
         const float bg[4] = { 0.10f, 0.11f, 0.13f, 1 };
-        if (screen == Screen::Game && rw > 0 && mapOpen && !ev) { RenderMap(); RenderMapScreen(backRTV.Get()); }
-        if (screen == Screen::Game && !playMode) RenderRoomView();   // (the Rooms window's 3D view, when it shows)   // the map screen: the map instead of the world, the visor over it
+        if (screen == Screen::Game && !playMode) RenderRoomView();   // (the Rooms window's 3D view, when it shows)
+        if (screen == Screen::Game && rw > 0 && mapOpen && !ev) { RenderMap(); RenderMapScreen(backRTV.Get()); }   // the map screen: the map instead of the world, the visor over it
         else if (screen == Screen::Game && rw > 0 && CurScreen() && !ev) {   // a screen (main menu, death...): its background, items and compositor
             mc::Screen* sc = CurScreen(); bool world = sc->bg.kind == BgKind::World || sc->bg.kind == BgKind::Game;
             if (world) RenderWorld(sceneRTV.Get());
