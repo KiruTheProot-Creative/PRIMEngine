@@ -9591,6 +9591,15 @@ struct App {
             {   // a copy of the chunks it can reach (and the breakable blocks there: it goes through them), filled on its own thread
                 I3 lo, hi; ambientBox(o->pos, o->ambient.reach, o->ambient.blend, lo, hi);
                 I3 k0 = chunkOf(lo.x, lo.y, lo.z), k1 = chunkOf(hi.x, hi.y, hi.z);
+                {   // chunks that are not loaded: read from disk a few a frame first (all at once: a long stutter)
+                    bool missing = false;
+                    for (int y = k0.y; y <= k1.y && !missing; y++) for (int z = k0.z; z <= k1.z && !missing; z++) for (int x = k0.x; x <= k1.x && !missing; x++) {
+                        I3 c{ x, y, z }; if (world->chunk(c) || roomPeek.count(c)) continue;
+                        if (peekBudget <= 0) { missing = true; break; }
+                        auto ch = std::make_unique<Chunk>(); world->peekChunk(c, *ch); roomPeek[c] = std::move(ch); peekBudget--;
+                    }
+                    if (missing) { rt.age = 99; continue; }   // (the rest next frame)
+                }
                 auto snap = std::make_shared<std::unordered_map<I3, std::unique_ptr<Chunk>, I3Hash>>();
                 RoomWorld rw = RoomWorldNow();   // (chunks that are not loaded: read from disk - a light far from you still fills its whole room)
                 for (int y = k0.y; y <= k1.y; y++) for (int z = k0.z; z <= k1.z; z++) for (int x = k0.x; x <= k1.x; x++) if (const Chunk* c = rw.chunkAt({ x, y, z })) (*snap)[I3{ x, y, z }] = std::make_unique<Chunk>(*c);
@@ -9676,14 +9685,16 @@ struct App {
     void SaveRooms() { if (world && !worldDir.empty()) saveRooms(worldDir + "/rooms.txt", rooms.list); }
     void LoadRooms() { roomPeek.clear(); rooms = RoomSet{}; if (!worldDir.empty()) loadRooms(worldDir + "/rooms.txt", rooms.list); curRoom = 0; roomSel = -1; roomReveals.clear(); }
     mutable std::unordered_map<I3, std::unique_ptr<Chunk>, I3Hash> roomPeek;   // chunks that are not loaded, read from disk for the room search (whole rooms, even far ones)
+    mutable int peekBudget = 6;   // chunks read from disk a frame (more would stutter: the searches wait for the next frame)
     RoomWorld RoomWorldNow() const {
-        RoomWorld w; w.reg = &reg; World* wp = world.get(); auto* pk = &roomPeek;
-        w.chunkAt = [wp, pk](I3 c) -> const Chunk* {
+        RoomWorld w; w.reg = &reg; World* wp = world.get(); auto* pk = &roomPeek; int* pb = &peekBudget;
+        w.chunkAt = [wp, pk, pb](I3 c) -> const Chunk* {
             if (!wp) return nullptr;
             if (const Chunk* ch = wp->chunk(c)) return ch;
             auto it = pk->find(c); if (it != pk->end()) return it->second.get();
-            auto ch = std::make_unique<Chunk>(); wp->peekChunk(c, *ch); const Chunk* r = ch.get(); (*pk)[c] = std::move(ch); return r;
+            auto ch = std::make_unique<Chunk>(); wp->peekChunk(c, *ch); const Chunk* r = ch.get(); (*pk)[c] = std::move(ch); (*pb)--; return r;
         };
+        w.tired = [pb]() { return *pb <= 0; };
         w.doors = CookDoors();
         const Breakables* br = &breakables; if (!br->marks.empty()) w.through = [br](int x, int y, int z) { return br->marks.count({ x, y, z }) > 0; };
         const RoomList* rl = &rooms.list;
@@ -9695,6 +9706,7 @@ struct App {
     uint32_t RoomHere() const { I3 c = RoomProbe(); uint32_t r = rooms.roomAt(c.x, c.y, c.z); if (!r && playMode) { V3 f = player.feet; r = rooms.roomAt(ifloor(f.x), ifloor(f.y + 0.2), ifloor(f.z)); } return r; }
     void UpdateRooms(double dt) {
         if (!world) return;
+        peekBudget = 6;
         if (history.undoCount() != roomHist) { roomHist = history.undoCount(); rooms.edited(); roomPeek.clear(); }
         if (roomPeek.size() > 6000 && !rooms.busy()) roomPeek.clear();   // (between searches only: a search may be looking at them)
         roomCheckT += dt; bool check = roomCheckT > 0.5; if (check) roomCheckT = 0;

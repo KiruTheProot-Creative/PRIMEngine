@@ -56,6 +56,7 @@ struct RoomWorld {   // what a search looks at (all on the calling thread)
     std::vector<CookDoor> doors;    // door openings: walls for rooms (they are where rooms end)
     RoomCellFn through;             // goes through anyway (breakable blocks: the room goes on behind them)
     RoomCellFn blocked;             // a wall anyway (the boxes of rooms marked by hand)
+    std::function<bool()> tired;    // true: stop this step here, go on next time (reading chunks from disk took this frame's share)
 };
 
 // one search for the room around a block of air - in steps (a budget of blocks each), so it never stutters

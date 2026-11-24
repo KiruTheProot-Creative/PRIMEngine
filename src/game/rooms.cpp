@@ -161,7 +161,7 @@ RoomFlood::Result RoomFlood::step(size_t budget) {
     size_t n = 0;
     if (phase == P3D) {
         bool escaped = false;
-        while (qi < q.size() && n < budget) {
+        while (qi < q.size() && n < budget && !(W.tired && W.tired())) {
             I3 c = q[qi++]; n++;
             if (sky(c.x, c.y, c.z)) { escaped = true; leak = 1; leakAt = c; break; }
             for (int dir = 0; dir < 6; dir++) {
@@ -183,7 +183,7 @@ RoomFlood::Result RoomFlood::step(size_t budget) {
         return res;
     }
     if (phase == PFloor) {
-        while (qi < q.size() && n < budget) {
+        while (qi < q.size() && n < budget && !(W.tired && W.tired())) {
             I3 c = q[qi++]; n++;
             for (int dir = 0; dir < 6; dir++) {
                 int nx = c.x + N6[dir][0], ny = c.y + N6[dir][1], nz = c.z + N6[dir][2];
@@ -216,7 +216,7 @@ RoomFlood::Result RoomFlood::step(size_t budget) {
         return Running;
     }
     if (phase == PUp) {
-        while (ci < cols.size() && n < budget) {
+        while (ci < cols.size() && n < budget && !(W.tired && W.tired())) {
             int64_t k = cols[ci++]; int x = (int)(k >> 32), z = (int)(uint32_t)(k & 0xFFFFFFFF);
             for (int y = colTop[k] + 1; y <= wallTop; y++) { n++; uint8_t m; int door; uint8_t kk = kind(x, y, z, m, door); if (kk == 3) { touched.insert(door); break; } if (kk == 2 || (kk == 4 && (m >> 3 & 1))) break; shape.add(x, y, z); }
         }
