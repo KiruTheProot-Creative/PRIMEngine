@@ -9442,7 +9442,8 @@ struct App {
     std::unordered_set<I3, I3Hash> lodDirty[4];             // groups to build (again)
     std::unordered_set<I3, I3Hash> chunkMeshed;             // chunks whose mesh has arrived (empty or not)
     std::vector<I3> lodQueue; size_t lodQueuePos = 0; I3 lodQueueAt{ INT_MIN, 0, 0 }; int lodQueueR = -1;   // lodQueue: every offset around you, nearest first (made once per reach); lodQueuePos: how far through it this round is
-    I3 lodCleanAt{ INT_MIN, 0, 0 }; bool lodRoundMoved = false; bool lodCleaning = false; size_t lodCleanBucket = 0;   // lodCleaning: forgetting far summaries, a slice of the table a frame std::vector<I3> lodPending;   // lodPending: chunks that came into reach as you moved (after the first full round)
+    I3 lodCleanAt{ INT_MIN, 0, 0 }; bool lodRoundMoved = false; bool lodCleaning = false; size_t lodCleanBucket = 0;   // lodCleaning: forgetting far summaries, a slice of the table a frame
+    std::vector<I3> lodPending;   // lodPending: chunks that came into reach as you moved (after the first full round)
     struct LodDraw { int k; I3 g; }; std::vector<LodDraw> lodDraw; std::unordered_set<I3, I3Hash> lodCovered;   // this frame: groups drawn far; level-1 groups they cover (their chunks: not drawn)
     int lodK = 0, lodDrawn = 0, lodDrawnShown = 0; std::unique_ptr<Chunk> lodTmp;
     LodSummary lodAir;   // (above and below the far copies' heights: nothing)
