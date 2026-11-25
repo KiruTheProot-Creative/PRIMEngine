@@ -21,3 +21,14 @@
 - Goal on the RTX 2070 laptop: a steady 144 fps on the monitor, with the slowest 1% of frames at 120 fps or faster. VR needs more headroom than that.
 - Animated emission (arm cannon idle pulse, charge glow, pickup pulse): after the speed work.
 - Open world: map regions outdoors, a terrain generator, far enemies asleep, fast streaming, music by area.
+
+### Where the speed work stopped (Nov 2026, RTX 2070 laptop, plugged in, ZEBES)
+- 1920 x 1080: about 150 fps on average, slowest 1% around 10.6 ms (goal: 8.3 ms). The graphics card is the limit now.
+- 3840 x 2160: 56 fps (graphics card 18 ms: blocks and models 6.4, bounce light 3.9, fitting to the screen 1.7, motion blur 1.5).
+- VR (Quest 3 size, both eyes): 15.5 ms before the PrimeScaler for VR (not measured with it yet). 90 Hz needs 11.1 ms.
+- Left for later:
+  - bounce light gets costlier faster than the pixel count at high sizes
+  - a depth-first pass for blocks and models (if they are drawn over each other a lot)
+  - cheaper motion blur and fitting to the screen
+  - rooms and far copies on worker threads
+  - VR: the second eye reusing more of the first eye's work, and fewer pixels at the lens edges
