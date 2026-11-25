@@ -2,6 +2,7 @@
 #include "visors.h"   // escText / unescText
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <fstream>
 #include <functional>
 #include <sstream>
@@ -72,6 +73,14 @@ const NodeInfo& nodeInfo(NodeType t) {
         { "Scanlines", "Stylize", 1, { "Image" }, 3, { "Amount", "Lines", "Speed" }, { 0.25f, 240, 0 }, { 0, 20, -100 }, { 1, 1080, 100 }, 0, {}, {}, 0, {}, "Lines across like an old screen." },
         { "Sharpen", "Filter", 1, { "Image" }, 1, { "Amount" }, { 0.5f }, { 0 }, { 3 }, 0, {}, {}, 0, {}, "" },
         { "Gradient Map", "Color", 1, { "Image" }, 1, { "Factor" }, { 1 }, { 0 }, { 1 }, 2, { "Dark", "Bright" }, { 0x000814, 0x9FF6FF }, 0, {}, "Dark to bright becomes one colour to the other." },
+        { "Lens Glow", "Stylize", 1, { "Image" }, 6, { "Starts at", "Ends at", "Fade", "Width", "Height", "Dark spot" }, { 0.5f, 0, 1.5f, 1.55f, 0.85f, 0.6f }, { 0, 0, 0.01f, 0.1f, 0.1f, 0 }, { 120, 120, 10, 3, 2, 1 },
+          3, { "Edge", "Middle", "Dark spot" }, { 0x1A5CFF, 0xA8D6FF, 0x0630A8 }, 0, {}, "A soft glowing oval behind everything, like looking through a visor out of focus. Timed: seconds into the screen (ends at 0: stays)." },
+        { "Glitch", "Distort", 1, { "Image" }, 6, { "Amount", "Starts at", "Ends at", "Bands", "Shift", "Speed" }, { 0.6f, 0, 0, 48, 24, 14 }, { 0, 0, 0, 4, 0, 1 }, { 1, 120, 120, 200, 200, 60 },
+          1, { "Streaks" }, { 0x6FC4FF }, 0, {}, "Rows of the picture jump sideways now and then, thin streaks of light run across. Timed (ends at 0: stays)." },
+        { "Ink Spread", "Stylize", 1, { "Image" }, 6, { "Starts at", "Takes", "Gone at", "Size", "Seed", "Darkness from" }, { 16, 8, 25, 1.2f, 1, 0.55f }, { 0, 0.1f, 0, 0.2f, 0, 0 }, { 120, 30, 120, 5, 100, 0.95f },
+          3, { "Ink", "Deep ink", "Darkness" }, { 0x2A6BFF, 0x0A1A8C, 0x000000 }, 0, {}, "Ink blots bloom over the picture, deepen, and a darkness swallows it all. Timed; gone at: the picture is back (0: stays dark)." },
+        { "Burn In", "Stylize", 1, { "Image" }, 6, { "Starts at", "Takes", "Size", "Edge", "Glow", "Seed" }, { 25.5f, 4, 2.5f, 0.12f, 1.5f, 3 }, { 0, 0.1f, 0.2f, 0.01f, 0, 0 }, { 120, 30, 8, 0.5f, 4, 100 },
+          2, { "Edge", "Hot" }, { 0x3E8CFF, 0xDDF2FF }, 0, {}, "The picture burns into view out of the black, a glowing edge eating the dark. Before it starts: black. Timed." },
     };
     static_assert(sizeof(info) / sizeof(info[0]) == (size_t)NodeType::COUNT, "one entry per node type");
     int i = (int)t; return info[i >= 0 && i < (int)NodeType::COUNT ? i : 2];
@@ -301,6 +310,49 @@ static Screen storyScreen() {   // an intro like Super Metroid's: a stack of ste
     return s;
 }
 Screen presetStory() { return storyScreen(); }
+Screen presetPhazonIntro() {
+    // 1 (0-16 s): a Phazon-blue glow fades in; code types in over it (dark letters, a cursor, made-up scanner lines), glitch streaks run across
+    // 2 (16-25 s): ink blots bloom, deepen, a darkness swallows it all; the picture shakes
+    // 3 (25.5-29.5 s): a corrupted planet burns in out of the black
+    // 4 (30.5 s on): the title fades in, the subtitle scans in with glitches, "press start" breathes; it waits there for a key
+    Screen s; s.name = "Phazon intro"; s.role = ScreenRole::Intro; s.fadeIn = 0.2f; s.next = ""; s.skippable = true;
+    s.bg.kind = BgKind::Space; s.bg.planet = "Corrupted world"; s.bg.planetSize = 0.62f; s.bg.planetX = 0.5f; s.bg.planetY = 0.98f;
+    s.bg.spin = 2.5f; s.bg.axisTilt = 18; s.bg.sunYaw = -35; s.bg.sunPitch = 28; s.bg.stars = 0.55f; s.bg.nebula = 0.3f; s.bg.nebulaColor = 0x081A4A;
+    const uint32_t INK = 0x041640, DIM = 0x0A3480;
+    auto code = [&](const char* name, const char* t, float x, float y, float w, float size, float at, float speed, float weight) {
+        ScreenItem i = text(name, t, x, y, w, size * 1.4f, size, 0); i.col.text = INK; i.col.dim = DIM; i.font = 1; i.weight = weight;
+        i.showAt = at; i.fade = 0.05f; i.typeSpeed = speed; i.cursor = true; i.code = true; i.hideAt = 25.0f; i.fadeOut = 0.4f; s.items.push_back(i);
+    };
+    code("Kiru presents", "KIRU PRESENTS", 0.24f, 0.36f, 0.6f, 0.042f, 3.0f, 12, 0.5f);
+    code("A fan game", "A FAN GAME", 0.24f, 0.43f, 0.6f, 0.036f, 6.2f, 12, 0.4f);
+    { ScreenItem n = text("Based on", "based on NINTENDO", 0.52f, 0.475f, 0.3f, 0.026f, 0.017f, 0); n.col.text = DIM; n.font = 1; n.weight = 0.3f;
+      n.showAt = 8.6f; n.fade = 0.05f; n.typeSpeed = 20; n.hideAt = 25.0f; n.fadeOut = 0.4f; s.items.push_back(n); }
+    code("Metroid Prime 4", "METROID PRIME 4", 0.24f, 0.52f, 0.6f, 0.046f, 10.4f, 11, 0.6f);
+    code("Leviathan", "LEVIATHAN", 0.3f, 0.595f, 0.6f, 0.058f, 13.6f, 9, 0.75f);
+    // the title (placeholders: your logo pictures go here later)
+    { ScreenItem t = text("Title", "METROID PRIME 4", 0.1f, 0.14f, 0.8f, 0.12f, 0.088f, 1); t.col.text = 0xE8F3FF; t.font = 1; t.weight = 0.8f; t.outline = 0.25f; t.outlineColor = 0x0A1A50;
+      t.showAt = 30.5f; t.fade = 1.6f; s.items.push_back(t); }
+    { ScreenItem t = text("Subtitle", "L E V I A T H A N", 0.1f, 0.265f, 0.8f, 0.07f, 0.05f, 1); t.col.text = 0x5AB4FF; t.col.accent = 0xBFE4FF; t.font = 1; t.weight = 0.6f;
+      t.showAt = 32.6f; t.fade = 0.05f; t.inFx = 1; t.inFxTime = 1.3f; s.items.push_back(t); }
+    { ScreenItem t = text("Press start", "PRESS {START} TO START", 0.2f, 0.85f, 0.6f, 0.04f, 0.022f, 1); t.col.text = 0xA8D8FF; t.font = 1; t.weight = 0.3f;
+      t.showAt = 35.0f; t.fade = 1.0f; t.pulse = 2.2f; s.items.push_back(t); }
+    s.duration = 35.6f; s.pressStart = true;
+    s.shakeAt = 20.5f; s.shakeTime = 4.5f; s.shakeAmount = 0.014f;
+    // the pictures: background -> burn in -> the glow -> the items over it -> glitches -> the ink -> glare -> vignette -> out
+    s.comp = Compositor{};
+    int bg = s.comp.add(NodeType::Background, 40, 60), ui = s.comp.add(NodeType::UI, 40, 260), burn = s.comp.add(NodeType::BurnIn, 260, 60), glow = s.comp.add(NodeType::LensGlow, 480, 60);
+    int over = s.comp.add(NodeType::AlphaOver, 700, 160), gl = s.comp.add(NodeType::Glitch, 920, 160), ink = s.comp.add(NodeType::InkSpread, 1140, 160);
+    int glare = s.comp.add(NodeType::Glare, 1360, 160), vig = s.comp.add(NodeType::Vignette, 1580, 160), out = s.comp.add(NodeType::Output, 1800, 160);
+    { CompNode& n = *s.comp.find(glow); n.p[0] = 0.5f; n.p[1] = 24.6f; n.p[2] = 2.0f; }
+    { CompNode& n = *s.comp.find(gl); n.p[0] = 0.55f; n.p[1] = 2.5f; n.p[2] = 25.0f; }
+    { CompNode& n = *s.comp.find(ink); n.p[0] = 16.0f; n.p[1] = 8.5f; n.p[2] = 25.2f; }
+    { CompNode& n = *s.comp.find(burn); n.p[0] = 25.5f; n.p[1] = 4.0f; }
+    { CompNode& n = *s.comp.find(glare); n.p[0] = 0.75f; n.p[1] = 0.8f; n.c[0] = 0x8CC8FF; }
+    { CompNode& n = *s.comp.find(vig); n.p[0] = 0.6f; n.c[0] = 0x000208; }
+    s.comp.connect(bg, burn, 0); s.comp.connect(burn, glow, 0); s.comp.connect(glow, over, 0); s.comp.connect(ui, over, 1); s.comp.connect(over, gl, 0);
+    s.comp.connect(gl, ink, 0); s.comp.connect(ink, glare, 0); s.comp.connect(glare, vig, 0); s.comp.connect(vig, out, 0);
+    return s;
+}
 ScreenSet defaultScreens() {
     ScreenSet s;
     for (ScreenRole r : { ScreenRole::MainMenu, ScreenRole::Files, ScreenRole::Options, ScreenRole::Death, ScreenRole::Credits }) s.screens.push_back(presetScreen(r));
@@ -391,6 +443,31 @@ std::vector<StackStep> stepsFromItems(std::vector<ScreenItem>& items) {
     items = rest;
     return st;
 }
+const char* inFxName(int fx) { static const char* n[IN_FX_COUNT] = { "Fade", "Scan + glitch", "Glitch", "Scan" }; return n[fx >= 0 && fx < IN_FX_COUNT ? fx : 0]; }
+float inFxProgress(const ScreenItem& it, double t) {
+    if (it.inFx <= 0 || it.inFx >= IN_FX_COUNT) return 1.f;
+    return (float)std::clamp((t - it.showAt) / std::max(0.05, (double)it.inFxTime), 0.0, 1.0);
+}
+CodeBits codeBits(const std::string& text) {   // made-up, but always the same for the same text: a tag, a line above, a line under
+    uint32_t h = 2166136261u; for (unsigned char c : text) h = (h ^ c) * 16777619u;
+    auto rnd = [&](uint32_t n) { h ^= h << 13; h ^= h >> 17; h ^= h << 5; return h % n; };
+    const char* low = "nmpkxvrt", * up = "PHKXRT", * al = "abcdefhknrsuvx0123456789";
+    CodeBits b;
+    b.tag = std::string(1, low[rnd(8)]) + up[rnd(6)] + "_" + char('0' + rnd(10));
+    b.top = "(" + std::string(1, low[rnd(8)]) + char('0' + rnd(10)) + up[rnd(6)] + " " + char('1' + rnd(9)) + char('0' + rnd(10)) + al[rnd(24)] + up[rnd(6)] + ")";
+    char t[96]; std::snprintf(t, sizeof t, "%dv -%d %s%s-%d%s -%d / %c%d%d  sync -%d  s-%d", 1 + (int)rnd(9), 10 + (int)rnd(90), "nu", rnd(2) ? "s" : "x", (int)rnd(9), rnd(2) ? "cr" : "kv",
+                  1000 + (int)rnd(9000), up[rnd(6)], (int)rnd(10), (int)rnd(10), (int)rnd(10), 100 + (int)rnd(900));
+    b.bottom = t;
+    return b;
+}
+void shakeOffset(const Screen& s, double t, float out[2]) {
+    out[0] = out[1] = 0;
+    if (s.shakeTime <= 0 || s.shakeAmount <= 0 || t < s.shakeAt || t > s.shakeAt + s.shakeTime) return;
+    double u = (t - s.shakeAt) / s.shakeTime, env = std::sin(u * 3.14159265) * (0.6 + 0.4 * u);   // (swells, strongest near the end, settles)
+    uint32_t k = (uint32_t)(t * 30);   // (a new push 30 times a second)
+    auto hs = [](uint32_t v) { v ^= v * 0x9E3779B9u; v ^= v >> 15; v *= 0x85EBCA6Bu; v ^= v >> 13; return (v & 0xFFFF) / 65535.0 * 2 - 1; };
+    out[0] = (float)(hs(k * 2 + 1) * s.shakeAmount * env); out[1] = (float)(hs(k * 2 + 7) * s.shakeAmount * env);
+}
 float itemShown(const ScreenItem& it, double t) {
     double f = std::max(0.01f, it.fade), fo = std::max(0.01f, it.fadeOutTime());
     double in = (t - it.showAt) / f; double k = std::clamp(in, 0.0, 1.0);
@@ -473,6 +550,7 @@ bool saveScreens(const std::string& path, const ScreenSet& set) {
         if (s.useStack) f << "usestack 1\n";
         if (s.in.kind != TransKind::None || s.out.kind != TransKind::None) f << "trans " << transText(s.in) << " " << transText(s.out) << "\n";
         if (s.role == ScreenRole::ItemGet || s.role == ScreenRole::GameSaved) f << "hold " << s.holdMin << "\n";
+        if (s.shakeTime > 0 || s.pressStart) f << "shake " << s.shakeAt << " " << s.shakeTime << " " << s.shakeAmount << " " << (s.pressStart ? 1 : 0) << "\n";
         for (const StackStep& st : s.stack) {
             f << "step " << (int)st.kind << " " << escText(st.file) << " " << (st.zoom ? 1 : 0) << " " << st.zoomTo << " " << st.zoomTime << " " << st.place << " " << escText(st.text) << " "
               << st.typeSpeed << " " << st.hold << " " << st.fade << " " << st.textSize << " " << st.color << " " << st.align << " " << st.weight << " " << st.outline << " " << st.outlineColor << " " << st.textFade << " " << (st.keep ? 1 : 0) << "\n";
@@ -491,6 +569,7 @@ bool saveScreens(const std::string& path, const ScreenSet& set) {
             if (i.cards || i.pickFill != 0.25f || i.corners || !i.tip.empty() || i.font) f << "look2 " << i.cards << " " << i.pickFill << " " << (i.corners ? 1 : 0) << " " << escText(i.tip) << " " << i.font << "\n";
             for (const ItemKey& k : i.keys) f << "key " << k.t << " " << k.x << " " << k.y << " " << k.scale << " " << k.alpha << " " << (k.smooth ? 1 : 0) << "\n";
             if (!i.sound.empty()) f << "isound " << soundUseText(i.sound) << "\n";
+            if (i.inFx || i.cursor || i.code || i.pulse > 0) f << "ifx " << i.inFx << " " << i.inFxTime << " " << (i.cursor ? 1 : 0) << " " << (i.code ? 1 : 0) << " " << i.pulse << "\n";
         }
         f << "comp " << s.comp.nextId << "\n";
         for (const CompNode& n : s.comp.nodes) {
@@ -562,6 +641,8 @@ bool loadScreens(const std::string& path, ScreenSet& set) {
         else if (k == "tstyle" && !cur->items.empty()) { ScreenItem& i = cur->items.back(); l >> i.weight >> i.outline >> i.outlineColor; }
         else if (k == "anim2" && !cur->items.empty()) { ScreenItem& i = cur->items.back(); l >> i.fadeOut >> i.valign; i.valign = std::clamp(i.valign, 0, 2); }
         else if (k == "key" && !cur->items.empty()) { ItemKey kk; int sm = 1; if (l >> kk.t >> kk.x >> kk.y >> kk.scale >> kk.alpha >> sm) { kk.smooth = sm != 0; setKey(cur->items.back(), kk); } }
+        else if (k == "ifx" && !cur->items.empty()) { ScreenItem& i = cur->items.back(); int cu = 0, co = 0; l >> i.inFx >> i.inFxTime >> cu >> co >> i.pulse; i.inFx = std::clamp(i.inFx, 0, IN_FX_COUNT - 1); i.cursor = cu != 0; i.code = co != 0; }
+        else if (k == "shake") { int ps = 0; l >> cur->shakeAt >> cur->shakeTime >> cur->shakeAmount >> ps; cur->pressStart = ps != 0; }
         else if (k == "isound" && !cur->items.empty()) { std::string rest; std::getline(l, rest); soundUseFrom(rest, cur->items.back().sound); }
         else if (k == "comp") l >> cur->comp.nextId;
         else if (k == "node") {

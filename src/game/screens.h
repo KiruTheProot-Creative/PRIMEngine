@@ -88,6 +88,10 @@ struct ScreenItem {
     float driftX = 0, driftY = 0, grow = 0;              // moves (screen widths / heights a second), grows (a second), from when it appears
     std::vector<ItemKey> keys;                           // keyframes (sorted by time): where it is, how big, how see-through over time
     SoundUse sound;                                      // Sound: what plays at showAt
+    int inFx = 0; float inFxTime = 0.9f;                 // how it comes in (inFxName): 0 a fade, 1 a scan line with glitches, 2 glitching, 3 a scan line; over this long
+    bool cursor = false;                                 // Text: a blinking bar after the typed letters
+    bool code = false;                                   // Text: made-up scanner code around it (a tag before it, little lines above and under it), typed with it
+    float pulse = 0;                                     // breathes (brighter / dimmer) over this many seconds (0: steady) - "press start"
     float fadeOutTime() const { return fadeOut < 0 ? fade : fadeOut; }
 };
 // where an item is t seconds into its screen: its keyframes (between two: blended), else where it was put
@@ -100,13 +104,19 @@ struct TextLine { size_t start, end; };
 std::vector<TextLine> wrapText(const std::string& s, float width, const std::function<float(const char*, const char*)>& measure);
 // how much of an item shows t seconds into its screen (0..1), from its timing
 float itemShown(const ScreenItem& it, double t);
+const char* inFxName(int fx);                            // "Fade", "Scan + glitch", "Glitch", "Scan"
+constexpr int IN_FX_COUNT = 4;
+float inFxProgress(const ScreenItem& it, double t);      // how far its coming in is (0..1; 1: done, or no effect)
+struct CodeBits { std::string tag, top, bottom; };        // the made-up scanner code around a text ("nP_0", "(n2H 94cF)", "1v -90 nus-4cr -2304 / ...")
+CodeBits codeBits(const std::string& text);               // always the same for the same text
 // how many letters of a typed text show t seconds in (whole UTF-8 letters: returns bytes)
 size_t typedBytes(const std::string& text, const ScreenItem& it, double t);
 struct UiSounds { SoundUse hover, click, back; };       // picking something, using it, going back (empty: none / the game's own)
 
 // ---- the compositor: nodes wired together. Background and UI give pictures; the rest change them; Output is what shows.
 enum class NodeType { Background, UI, Output, AlphaOver, Mix, Blur, Glare, ColorBalance, HueSat, BrightContrast, Invert,
-                      Vignette, Chromatic, LensDistort, Pixelate, Grain, Scanlines, Sharpen, Gradient, COUNT };
+                      Vignette, Chromatic, LensDistort, Pixelate, Grain, Scanlines, Sharpen, Gradient,
+                      LensGlow, Glitch, InkSpread, BurnIn, COUNT };   // (the last four are timed: seconds into the screen)
 constexpr int NODE_PARAMS = 6, NODE_COLORS = 3;
 struct NodeInfo {
     const char* name; const char* group;                 // group: "Input", "Output", "Color", "Filter", "Distort", "Stylize"
@@ -174,10 +184,14 @@ struct Screen {
     bool useStack = false; std::vector<StackStep> stack;  // made as a stack (its items come from the steps; it lasts as long as they take)
     float holdMin = 0.8f;                                 // Item get / Game saved: seconds before a button closes it (so a held jump doesn't skip it)
     Transition in, out;                                   // how it comes in (from the screen or the game before), how it goes (when the next one has none of its own)
+    float shakeAt = 0, shakeTime = 0, shakeAmount = 0.012f;   // the whole picture shakes from shakeAt for shakeTime seconds (amount: part of the height); 0 long: never
+    bool pressStart = false;                              // waits at its end for a key ("press start"); a key before that skips to the end
 };
+void shakeOffset(const Screen& s, double t, float out[2]);   // how far the picture is pushed t seconds in (parts of the height; 0 0 when still)
 float screenLength(const Screen& s);                     // its duration, or (staying) a little past its last item's times, at least 10 s
 Screen presetScreen(ScreenRole r);                        // ready-made: main menu, options, death, credits, files, splash (and an empty one)
 Screen presetStory();                                     // ready-made: an intro of typed text (like Super Metroid's)
+Screen presetPhazonIntro();                               // ready-made: the Phazon splash - code typing in over a glow, ink swallowing it, a corrupted planet burning in, the title, "press start"
 struct ScreenSet {
     std::vector<Screen> screens;
     int find(const std::string& name) const;              // -1: none

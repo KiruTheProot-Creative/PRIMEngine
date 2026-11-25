@@ -2625,6 +2625,7 @@ cbuffer CompCB : register(b8)
     float4 gCSize;  // w, h, 1 / w, 1 / h
     float4 gCMisc;  // x time (s), y pixels per 1080, zw a blur's step (pixels)
     float4 gCRect;  // a picture's place on the screen (u0, v0, u1, v1)
+    float4 gCExtra; // x seconds into the screen (timed nodes), yz the whole picture pushed (shake: uv), w -
 };
 Texture2D gCompA : register(t12);
 Texture2D gCompB : register(t13);
@@ -2638,6 +2639,14 @@ float3 rgb2hsv(float3 c)
 }
 float3 hsv2rgb(float3 c) { float3 p = abs(frac(c.xxx + float3(1, 2.0 / 3, 1.0 / 3)) * 6 - 3); return c.z * lerp(1, saturate(p - 1), c.y); }
 float compHash(float2 p) { return frac(sin(dot(p, float2(12.9898, 78.233))) * 43758.5453); }
+float compNoise(float2 p)
+{
+    float2 i = floor(p), f = frac(p); f = f * f * (3 - 2 * f);
+    return lerp(lerp(compHash(i), compHash(i + float2(1, 0)), f.x), lerp(compHash(i + float2(0, 1)), compHash(i + float2(1, 1)), f.x), f.y);
+}
+float compFbm(float2 p) { float s = 0, a = 0.5; [unroll] for (int k = 0; k < 5; k++) { s += compNoise(p) * a; p = p * 2.07 + 17.3; a *= 0.5; } return s / 0.96875; }
+// a timed node: how far along (0..1) between "starts at" and "takes"
+float compAlong(float start, float takes) { return saturate((gCExtra.x - start) / max(takes, 0.01)); }
 // ---------------------------------------------------------------- screen transitions: the old picture and the new one put together
 cbuffer TransCB : register(b12)
 {
@@ -2742,6 +2751,9 @@ cbuffer PlanetCB : register(b3)
     float4 gPlRing;     // rgb, w 1: rings
     float4 gPlRing2;    // rgb, w -
     float4 gPlRing3;    // x inner, y outer radius (the planet is 1), zw -
+    float4 gPlCor;      // rgb the corruption's colour, w how much (0: none)
+    float4 gPlVein;     // rgb the veins' glow, w how many / bright
+    float4 gPlCor2;     // x pulses a second, yzw -
 };
 float plHash(float3 p) { p = frac(p * 0.3183099 + 0.1); p *= 17.0; return frac(p.x * p.y * p.z * (p.x + p.y + p.z)); }
 float plNoise(float3 x)
@@ -2865,6 +2877,18 @@ float4 PS_Planet(BlitOut i) : SV_Target
             float lights = smoothstep(0.62, 0.8, plNoise(loc * 55 + gPlA.w)) * smoothstep(0.4, 0.7, plNoise(loc * 7 + 4.1));
             c += gPlNight.rgb * lights * land * (1 - day) * gPlNight.w * 1.6 * (1 - cl * 0.7);
         }
+        if (gPlCor.w > 0)   // Phazon: dark blue patches streaked across the land, veins of light through them, pulsing (the dark side too)
+        {
+            float3 sq = loc * float3(2.2, 7.5, 2.2) + gPlA.w * 2.13;   // (stretched: streaks along the turning)
+            float patch = plFbm(sq * 0.6, 5, 0.55) * 0.65 + plFbm(loc * 2.6 + 9.1, 4, 0.5) * 0.35;
+            float cor = smoothstep(1 - gPlCor.w - 0.08, 1 - gPlCor.w + 0.1, patch);
+            float r1 = 1 - abs(plNoise(loc * 9 + 3.3) * 2 - 1), r2 = 1 - abs(plNoise(loc * 21 + 7.7) * 2 - 1);   // (ridges: thin lines where the noise crosses its middle)
+            float vein = pow(saturate(r1), 14) + pow(saturate(r2), 22) * 0.7;
+            vein *= smoothstep(1 - gPlCor.w - 0.25, 1 - gPlCor.w + 0.05, patch) * gPlVein.w;   // (in and around the corrupted parts)
+            float pulse = 0.55 + 0.45 * sin(gPlA.y * gPlCor2.x * 6.2832 + plNoise(loc * 3) * 6.2832);
+            c = lerp(c, gPlCor.rgb * (diff * 0.7 + 0.08), cor * 0.8);
+            c += gPlVein.rgb * vein * pulse * (0.7 + 0.9 * (1 - day)) * 1.6;
+        }
         c = lerp(c, gPlCloud.rgb * (diff * 0.95 + 0.05), cl * 0.92);
         if (gPlAtmo.w > 0)   // the air thickens toward the edge (lit side)
         {
@@ -2881,7 +2905,7 @@ float4 PS_Planet(BlitOut i) : SV_Target
 float4 PS_Comp(BlitOut i) : SV_Target
 {
     int op = (int)round(gCP1.w); float2 uv = i.uv; float4 a = 0;
-    if (op != 1 && op != 2 && op != 6 && op != 14 && op != 15 && op != 16) a = compA(uv);
+    if (op != 1 && op != 2 && op != 6 && op != 14 && op != 15 && op != 16 && op != 22 && op != 25) a = compA(uv);
     switch (op)
     {
     case 0: return float4(a.rgb * gCP0.x, a.a);                                                   // copy (with a fade)
@@ -2919,6 +2943,62 @@ float4 PS_Comp(BlitOut i) : SV_Target
     case 19: { float2 o = gCSize.zw; float4 n = compA(uv + float2(o.x, 0)) + compA(uv - float2(o.x, 0)) + compA(uv + float2(0, o.y)) + compA(uv - float2(0, o.y));
                return float4(max(a.rgb + (a.rgb * 4 - n.rgb) * gCP0.x, 0), a.a); }                  // sharpen
     case 20: return float4(lerp(a.rgb, lerp(gCC0.rgb, gCC1.rgb, saturate(compLum(a.rgb))), gCP0.x), a.a);   // gradient map
+    case 21: {   // lens glow: a soft oval glowing behind (starts, ends, fade, width, height, dark spot)
+        float t = gCExtra.x, k = compAlong(gCP0.x, gCP0.z);
+        if (gCP0.y > gCP0.x) k *= saturate((gCP0.y - t) / max(gCP0.z * 0.5, 0.01));
+        if (k <= 0) return a;
+        float2 d = (uv - 0.5) * float2(gCSize.x * gCSize.w, 1);
+        d += float2(sin(t * 0.37) * 0.012, cos(t * 0.29) * 0.008);   // (drifts a little, like a lens)
+        float2 e = d / float2(max(gCP0.w, 0.05) * 0.5, max(gCP1.x, 0.05) * 0.5);
+        float r = length(e) * (1 + (compNoise(d * 3 + t * 0.15) - 0.5) * 0.12);
+        float body = smoothstep(1.02, 0.25, r);
+        float3 c = lerp(gCC0.rgb, gCC1.rgb, smoothstep(0.95, 0.05, r) * smoothstep(-0.7, 0.45, e.y));   // (brighter in the middle, toward the bottom)
+        float2 sc = float2(0.06 * sin(t * 0.21), -0.38); float spot = exp(-dot(e - sc, e - sc) * 5.5) * gCP1.y;   // the dark spot near the top
+        spot *= 0.75 + 0.25 * compNoise(e * 4 + t * 0.3);
+        c = lerp(c, gCC2.rgb, saturate(spot));
+        float edge = step(0.985, uv.x < 0.02 ? 1 - uv.x * 50 : 0) * step(0.8, compHash(float2(floor(t * 10), 3)));   // (a thin line at the left edge, now and then)
+        float3 glow = c * body * k + gCC1.rgb * edge * k * 0.5;
+        return float4(a.rgb * (1 - body * k * 0.85) + glow, max(a.a, body * k)); }
+    case 22: {   // glitch: rows jump sideways now and then, streaks of light run across (amount, starts, ends, bands, shift, speed)
+        float t = gCExtra.x; bool on = t >= gCP0.y && (gCP0.z <= gCP0.y || t < gCP0.z); if (!on || gCP0.x <= 0) return a;
+        float amt = gCP0.x, band = floor(uv.y * max(gCP1.x, 1)), tt = floor(t * max(gCP1.y, 1));
+        float h = compHash(float2(band, tt)), jump = h > 1 - 0.18 * amt ? (compHash(float2(band * 1.7, tt + 3)) - 0.5) * 2 : 0;
+        float2 q = uv + float2(jump * gCP0.w * gCMisc.y * gCSize.z, 0);
+        float4 c = compA(q);
+        if (jump != 0 && compHash(float2(band, tt + 9)) > 0.5) { c.r = compA(q + float2(3 * gCMisc.y * gCSize.z, 0)).r; c.b = compA(q - float2(3 * gCMisc.y * gCSize.z, 0)).b; }
+        float row = floor(uv.y * gCSize.y / max(2 * gCMisc.y, 1)), st = compHash(float2(row, tt * 1.3));
+        if (st > 1 - 0.035 * amt) {   // a thin streak across, fading along its length
+            float x0 = compHash(float2(row, tt + 5)), len = 0.2 + 0.6 * compHash(float2(row, tt + 7));
+            float along = (uv.x - x0) / len; c.rgb += gCC0.rgb * 0.45 * amt * saturate(1 - abs(along * 2 - 1)) * step(0, along);
+        }
+        return c; }
+    case 23: {   // ink spread: blots bloom, deepen, a darkness swallows all (starts, takes, gone at, size, seed, darkness from)
+        float t = gCExtra.x; if (t < gCP0.x || (gCP0.z > gCP0.x && t >= gCP0.z)) return a;
+        float p = compAlong(gCP0.x, gCP0.y);
+        float2 d = (uv - 0.5) * float2(gCSize.x * gCSize.w, 1), q = d * max(gCP0.w, 0.1) * 3 + gCP1.x * 7.31;
+        float n = compFbm(q + float2(0, t * 0.04)), n2 = compFbm(q * 1.9 + 31.7 - float2(t * 0.03, 0));
+        float thr = lerp(1.0, 0.38, saturate(p / 0.75));   // more and more blots
+        float blot = smoothstep(thr, thr + 0.07, n * 0.75 + n2 * 0.35);
+        float dk0 = clamp(gCP1.y, 0, 0.95), deep = smoothstep(thr + 0.12, thr + 0.2, n * 0.75 + n2 * 0.35) * saturate((p - dk0 * 0.6) / 0.3);
+        float field = n * 0.45 + (1 - length(d) * 1.25) * 0.75;   // the darkness grows out of the middle
+        float hThr = lerp(1.3, -0.45, saturate((p - dk0) / max(1 - dk0, 0.05)));
+        float hole = smoothstep(hThr, hThr + 0.05, field), rim = smoothstep(hThr - 0.09, hThr, field) * (1 - hole);
+        float3 c = a.rgb * lerp(1, gCC0.rgb * 1.15, blot * 0.85);
+        c = lerp(c, gCC1.rgb * (0.4 + 0.6 * n2), deep * 0.85);
+        c += (gCC0.rgb * 0.8 + float3(0.2, 0.1, 0.5) * 0.3) * rim * 0.9;   // (a glowing purple-blue rim round the dark)
+        c = lerp(c, gCC2.rgb, hole);
+        return float4(c, a.a); }
+    case 24: {   // burn in: the picture burns into view out of the black (starts, takes, size, edge, glow, seed)
+        float t = gCExtra.x; if (t < gCP0.x) return float4(0, 0, 0, a.a);
+        float p = compAlong(gCP0.x, gCP0.y); if (p >= 1) return a;
+        float2 d = (uv - 0.5) * float2(gCSize.x * gCSize.w, 1);
+        float f = compFbm(d * max(gCP0.z, 0.2) + gCP1.y * 3.7) * 0.55 + (1 - length(d) * 1.1) * 0.45;   // (from the middle, raggedly)
+        float thr = lerp(1.05, -0.35, p), ew = max(gCP0.w, 0.005);
+        float shown = smoothstep(thr, thr + 0.015, f), edge = smoothstep(thr - ew, thr, f) * (1 - shown);
+        float hot = pow(saturate(edge), 3);
+        float3 c = a.rgb * shown + (gCC0.rgb * edge + gCC1.rgb * hot) * gCP1.x;
+        return float4(c, a.a); }
+    case 25: { float4 c = compA(uv - gCExtra.yz); return float4(c.rgb * gCP0.x, c.a); }   // the output: pushed (the shake), faded
     }
     return a;
 }

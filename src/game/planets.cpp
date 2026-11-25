@@ -9,7 +9,7 @@ namespace mc {
 Planet defaultPlanet() { return planetPreset("Earth-like"); }
 
 const std::vector<std::string>& planetPresetNames() {
-    static const std::vector<std::string> n = { "Earth-like", "Desert", "Ice", "Lava", "Gas giant", "Alien jungle" };
+    static const std::vector<std::string> n = { "Earth-like", "Desert", "Ice", "Lava", "Gas giant", "Alien jungle", "Corrupted world" };
     return n;
 }
 Planet planetPreset(const std::string& kind) {
@@ -31,6 +31,11 @@ Planet planetPreset(const std::string& kind) {
         p.seaLevel = 0.48f; p.oceanColor = 0x6A2A8A; p.deepColor = 0x2A0E40; p.iceCaps = 0.08f; p.iceColor = 0xC8FFE8; p.cloudColor = 0xE0FFD8; p.atmoColor = 0x7CFF9A;
         p.night = true; p.nightColor = 0x60FFC0; p.nightAmount = 0.5f;
         p.bands = { { 0x2E8A5A, 0 }, { 0x1E6A48, 0.3f }, { 0x5AC878, 0.55f }, { 0x8A5AC8, 0.82f } };
+    } else if (kind == "Corrupted world") {   // lush and green under a blue sky - streaked with Phazon, veins glowing
+        p.seed = 7; p.landScale = 1.7f; p.roughness = 0.6f; p.seaLevel = 0.47f; p.oceanColor = 0x1E62A8; p.deepColor = 0x08244E; p.iceCaps = 0.1f;
+        p.cloudCover = 0.4f; p.cloudShadows = 0.6f; p.atmoColor = 0x4A9CFF; p.atmoThick = 0.1f; p.atmoGlow = 1.3f;
+        p.bands = { { 0xC8C48A, 0 }, { 0x3E9A3A, 0.05f }, { 0x22702A, 0.28f }, { 0x1A5224, 0.5f }, { 0x6A6A5A, 0.72f }, { 0xEEF4FA, 0.9f } };
+        p.corrupt = true; p.corruptColor = 0x0A1E8C; p.veinColor = 0x3AA0FF; p.corruptAmount = 0.42f; p.veins = 0.75f; p.veinPulse = 0.5f;
     } else {
         p.name = "Earth-like";
         p.bands = { { 0xD8C890, 0 }, { 0x5A9A48, 0.06f }, { 0x2E6A34, 0.3f }, { 0x7A6A58, 0.6f }, { 0xF2F4F8, 0.85f } };
@@ -51,6 +56,7 @@ bool savePlanets(const std::string& path, const PlanetSet& set) {
         f << "clouds " << (p.clouds ? 1 : 0) << " " << p.cloudColor << " " << p.cloudCover << " " << p.cloudPuff << " " << p.cloudSpeed << " " << p.cloudShadows << "\n";
         f << "atmo " << (p.atmo ? 1 : 0) << " " << p.atmoColor << " " << p.atmoThick << " " << p.atmoGlow << "\n";
         f << "night " << (p.night ? 1 : 0) << " " << p.nightColor << " " << p.nightAmount << "\n";
+        if (p.corrupt) f << "corrupt 1 " << p.corruptColor << " " << p.veinColor << " " << p.corruptAmount << " " << p.veins << " " << p.veinPulse << "\n";
         f << "rings " << (p.rings ? 1 : 0) << " " << p.ringColor << " " << p.ringColor2 << " " << p.ringInner << " " << p.ringOuter << " " << p.ringTilt << "\n";
     }
     return (bool)f;
@@ -69,6 +75,7 @@ bool loadPlanets(const std::string& path, PlanetSet& set) {
         else if (k == "clouds") { l >> on >> p.cloudColor >> p.cloudCover >> p.cloudPuff >> p.cloudSpeed >> p.cloudShadows; p.clouds = on != 0; }
         else if (k == "atmo") { l >> on >> p.atmoColor >> p.atmoThick >> p.atmoGlow; p.atmo = on != 0; }
         else if (k == "night") { l >> on >> p.nightColor >> p.nightAmount; p.night = on != 0; }
+        else if (k == "corrupt") { l >> on >> p.corruptColor >> p.veinColor >> p.corruptAmount >> p.veins >> p.veinPulse; p.corrupt = on != 0; }
         else if (k == "rings") { l >> on >> p.ringColor >> p.ringColor2 >> p.ringInner >> p.ringOuter >> p.ringTilt; p.rings = on != 0; }
     }
     for (Planet& p : set.planets) { std::sort(p.bands.begin(), p.bands.end(), [](const PlanetBand& a, const PlanetBand& b) { return a.from < b.from; }); p.pixels = std::clamp(p.pixels, 0, 1024); }

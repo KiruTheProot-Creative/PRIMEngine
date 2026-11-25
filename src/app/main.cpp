@@ -8337,6 +8337,7 @@ struct App {
             const std::string& t = itemGetNow.name.empty() ? (n == "itemtitle" ? p.title : p.text) : (n == "itemtitle" ? itemGetNow.title : itemGetNow.text);
             return menuFill(t, [&](const std::string& m) { return m == "itemtitle" || m == "itemtext" ? std::string() : MenuValue(m); });
         }
+        if (n == "start" || n == "START") { std::string k = KeyLabel(VK_RETURN); if (n == "START") for (char& c : k) c = (char)std::toupper((unsigned char)c); return k; }   // the key that starts: {start} "Enter", {START} "ENTER"
         if (n.rfind("key:", 0) == 0) {   // the key an action is on: {key:jump} {key:ball} ...
             std::string a = n.substr(4);
             for (int i = 0; i < (int)Act::COUNT; i++) if (a == actKey((Act)i)) { int vk = settings.keys.key[i][0] ? settings.keys.key[i][0] : settings.keys.key[i][1]; return vk ? KeyLabel(vk) : std::string("(no key)"); }
@@ -9307,7 +9308,7 @@ struct App {
 
     // ---- the compositor: one full-screen pass per node, into float pictures
     struct CompRT { ComPtr<ID3D11Texture2D> t; ComPtr<ID3D11RenderTargetView> rtv; ComPtr<ID3D11ShaderResourceView> srv; int w = 0, h = 0; };
-    struct alignas(16) CompCB { float p0[4], p1[4], c0[4], c1[4], c2[4], size[4], misc[4], rect[4]; };
+    struct alignas(16) CompCB { float p0[4], p1[4], c0[4], c1[4], c2[4], size[4], misc[4], rect[4], extra[4]; };   // extra: x seconds into the screen, yz the shake (uv)
     std::map<int, CompRT> compRT; CompRT compBg, compBg2, compUi, compA, compB, compC, screenPreview;
     ComPtr<ID3D11PixelShader> psComp; ComPtr<ID3D11Buffer> cbComp; ComPtr<ID3D11ShaderResourceView> blackSRV;
     void MakeCompRT(CompRT& r, int w, int h, DXGI_FORMAT f = DXGI_FORMAT_R16G16B16A16_FLOAT) {
@@ -9348,7 +9349,7 @@ struct App {
     }
     // a screen into `out` (W x H): background, its items (ui: an ImDrawList at W x H), then the node graph; fade 0..1
     // ---- planets: one shader draws the stars, a haze and the planet in its layers (Space backgrounds, the Planets editor's preview)
-    struct alignas(16) PlanetCB { float a[4], pos[4], sun[4], axis[4], neb[4], ocean[4], deep[4], land[4], band[8][4], ice[4], cloud[4], cloud2[4], atmo[4], atmo2[4], night[4], ring[4], ring2[4], ring3[4]; };
+    struct alignas(16) PlanetCB { float a[4], pos[4], sun[4], axis[4], neb[4], ocean[4], deep[4], land[4], band[8][4], ice[4], cloud[4], cloud2[4], atmo[4], atmo2[4], night[4], ring[4], ring2[4], ring3[4], cor[4], vein[4], cor2[4]; };
     ComPtr<ID3D11PixelShader> psPlanet, psHudDepth; ComPtr<ID3D11Buffer> cbPlanet;
     Planet PlanetFor(const std::string& name) const { int i = planets.find(name); return i >= 0 ? planets.planets[i] : name.empty() && !planets.planets.empty() ? planets.planets[0] : defaultPlanet(); }
     void DrawPlanet(ID3D11RenderTargetView* dst, int W, int H, const Planet& pl, const ScreenBg& v, double t) {
@@ -9370,6 +9371,7 @@ struct App {
         col(c.atmo, pl.atmoColor, pl.atmo ? pl.atmoThick : 0.f); c.atmo2[0] = pl.atmoGlow;
         col(c.night, pl.nightColor, pl.night ? pl.nightAmount : 0.f);
         col(c.ring, pl.ringColor, pl.rings ? 1.f : 0.f); col(c.ring2, pl.ringColor2, 0); c.ring3[0] = pl.ringInner; c.ring3[1] = std::max(pl.ringInner + 0.05f, pl.ringOuter);
+        col(c.cor, pl.corruptColor, pl.corrupt ? std::clamp(pl.corruptAmount, 0.f, 1.f) : 0.f); col(c.vein, pl.veinColor, pl.corrupt ? std::clamp(pl.veins, 0.f, 1.f) : 0.f); c.cor2[0] = pl.veinPulse;
         ctx->UpdateSubresource(cbPlanet.Get(), 0, nullptr, &c, 0, 0);
         ctx->OMSetRenderTargets(1, &dst, nullptr);
         D3D11_VIEWPORT vp{ 0, 0, (float)W, (float)H, 0, 1 }; ctx->RSSetViewports(1, &vp);
@@ -10719,6 +10721,17 @@ struct App {
             Prop("Lights on the dark side"); ch |= ImGui::Checkbox("##plni", &pl.night);
             if (pl.night) { Prop("Colour"); ch |= ColorU32("##plnc", pl.nightColor); Prop("Amount"); ch |= ImGui::SliderFloat("##plna", &pl.nightAmount, 0, 1, "%.2f"); Hint("Cities, lava, glowing forests: on land, where the sun doesn't shine."); }
         }
+        if (ImGui::CollapsingHeader("Phazon corruption")) {
+            Prop("Corrupted"); ch |= ImGui::Checkbox("##plco", &pl.corrupt);
+            if (pl.corrupt) {
+                Prop("Corruption colour"); ch |= ColorU32("##plcc", pl.corruptColor);
+                Prop("How much"); ch |= ImGui::SliderFloat("##plca", &pl.corruptAmount, 0, 1, "%.2f");
+                Prop("Vein glow"); ch |= ColorU32("##plvc", pl.veinColor);
+                Prop("Veins"); ch |= ImGui::SliderFloat("##plvn", &pl.veins, 0, 1, "%.2f");
+                Prop("Pulses a second"); ch |= ImGui::SliderFloat("##plvp", &pl.veinPulse, 0, 3, "%.2f");
+                Hint("Dark patches streaked across the land and sea, glowing veins running through them (they pulse, and shine on the dark side too).");
+            }
+        }
         if (ImGui::CollapsingHeader("Rings and tilt")) {
             Prop("Rings"); ch |= ImGui::Checkbox("##plrg", &pl.rings);
             if (pl.rings) {
@@ -10736,6 +10749,8 @@ struct App {
         MakeCompRT(compBg, W, H); MakeCompRT(compBg2, W, H); MakeCompRT(compUi, W, H); MakeCompRT(compA, W, H); MakeCompRT(compB, W, H); MakeCompRT(compC, W, H);
         CompCB base{}; base.size[0] = (float)W; base.size[1] = (float)H; base.size[2] = 1.f / W; base.size[3] = 1.f / H;
         base.misc[0] = (float)std::fmod(uiClock, 1000.0); base.misc[1] = H / 1080.f;
+        base.extra[0] = (float)screenT;   // (the timed nodes: seconds into this screen)
+        float shk[2]; shakeOffset(sc, screenT, shk); float shakeUV[2] = { shk[0] * H / (float)W, shk[1] };   // (the shake: parts of the height)
         // the background
         const ScreenBg& bg = sc.bg; CompCB cb = base;
         int iw = 0, ih = 0; ID3D11ShaderResourceView* pic = nullptr;
@@ -10780,7 +10795,7 @@ struct App {
             ID3D11ShaderResourceView* in0 = n->in[0] ? srvOf(n->in[0]) : nullptr, * in1 = n->in[1] ? srvOf(n->in[1]) : nullptr;
             cb = base; for (int k = 0; k < 4; k++) cb.p0[k] = n->p[k]; cb.p1[0] = n->p[4]; cb.p1[1] = n->p[5]; cb.p1[2] = (float)n->mode;
             CompColor(cb.c0, n->c[0]); CompColor(cb.c1, n->c[1]); CompColor(cb.c2, n->c[2]);
-            if (isOut) { cb.p0[0] = fade; CompPass(dst, W, H, 0, in0, nullptr, cb); continue; }
+            if (isOut) { cb.p0[0] = fade; cb.extra[1] = shakeUV[0]; cb.extra[2] = shakeUV[1]; CompPass(dst, W, H, 25, in0, nullptr, cb); continue; }
             if (n->mute) { cb.p0[0] = 1; CompPass(dst, W, H, 0, in0, nullptr, cb); continue; }
             switch (n->type) {
             case NodeType::AlphaOver: CompPass(dst, W, H, 4, in0, in1, cb); break;
@@ -10795,7 +10810,8 @@ struct App {
                 CompRT tmpB = compB; q.p0[1] = n->p[1] * 0.6f; CompPass(dst, W, H, 8, tmpB.srv.Get(), compA.srv.Get(), q);
                 break; }
             default: {
-                static const int ops[] = { 0, 0, 0, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20 };   // NodeType -> the shader's operation
+                static const int ops[] = { 0, 0, 0, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24 };   // NodeType -> the shader's operation
+                static_assert(sizeof(ops) / sizeof(ops[0]) == (size_t)NodeType::COUNT, "one operation per node type");
                 CompPass(dst, W, H, ops[(int)n->type], in0, nullptr, cb); break; }
             }
         }
@@ -10924,10 +10940,14 @@ struct App {
                 continue;
             }
             float shown = itemShown(it, screenT); if (shown <= 0.002f) continue;   // (not yet / not any more)
+            float fxp = inFxProgress(it, screenT); if (fxp < 1 && screenT >= it.showAt) shown = std::max(shown, 1.f);   // (coming in with an effect: the effect shows it, not a fade)
             ItemPose ps = itemPose(it, screenT);
-            float al = it.alpha * shown * std::clamp(ps.alpha, 0.f, 1.f), age = (float)std::max(0.0, screenT - it.showAt), k = (1 + it.grow * age) * std::max(0.01f, ps.scale);
+            float al0 = it.alpha * shown * std::clamp(ps.alpha, 0.f, 1.f), age = (float)std::max(0.0, screenT - it.showAt), k = (1 + it.grow * age) * std::max(0.01f, ps.scale);
+            if (it.pulse > 0.01f) al0 *= 0.62f + 0.38f * (float)std::cos((screenT - it.showAt) * 6.2831853 / it.pulse);   // (breathing)
             float cx = (ps.x + it.w * 0.5f + it.driftX * age) * W, cy = (ps.y + it.h * 0.5f + it.driftY * age) * H;
-            ImVec2 a(cx - it.w * W * 0.5f * k, cy - it.h * H * 0.5f * k), b(cx + it.w * W * 0.5f * k, cy + it.h * H * 0.5f * k);
+            ImVec2 a0(cx - it.w * W * 0.5f * k, cy - it.h * H * 0.5f * k), b0(cx + it.w * W * 0.5f * k, cy + it.h * H * 0.5f * k);
+            ImVec2 typedEnd(-1, -1); float typedH = 0;   // (Text: where the typed letters end - for the cursor)
+            auto drawIt = [&](ImVec2 a, ImVec2 b, float al) {
             float ts = std::max(6.f, it.textSize * H * k), rnd = it.rounding * (b.y - a.y) * 0.5f;
             switch (it.kind) {
             case ScreenItemKind::Panel:
@@ -10954,7 +10974,9 @@ struct App {
                         float lw = measure(s.data() + ln.start, s.data() + ln.end);
                         float x = it.align == 0 ? a.x : it.align == 2 ? b.x - lw : (a.x + b.x - lw) * 0.5f;
                         StyledText(dl, font, ts, ImVec2(x, y), C(col.text, al), s.data() + ln.start, s.data() + vis, look);
+                        typedEnd = ImVec2(x + measure(s.data() + ln.start, s.data() + vis), y); typedH = ts;
                     }
+                    else if (typedEnd.x < 0) { float lw = measure(s.data() + ln.start, s.data() + ln.end); typedEnd = ImVec2(it.align == 0 ? a.x : it.align == 2 ? b.x - lw : (a.x + b.x - lw) * 0.5f, y); typedH = ts; }
                     y += lh;
                 }
                 break; }
@@ -11026,6 +11048,11 @@ struct App {
                 break; }
             default: break;
             }
+            };
+            bool fxKind = it.kind == ScreenItemKind::Text || it.kind == ScreenItemKind::Image || it.kind == ScreenItemKind::Panel;
+            if (fxp >= 1 || !fxKind) drawIt(a0, b0, al0);
+            else ItemComeIn(dl, it, fxp, a0, b0, al0, drawIt);
+            if (it.kind == ScreenItemKind::Text && (it.cursor || it.code)) TextExtras(dl, it, ii, a0, b0, al0, typedEnd, typedH);
         }
         dl->PopTexture(); dl->PopClipRect();
         screenPrevT = screenT; if (live) pickedTip = tipNow;
@@ -11033,6 +11060,60 @@ struct App {
             if (optSelTab >= 0) { for (int i = 0; i < (int)screenHits.size(); i++) if (screenHits[i].kind == 6 && screenHits[i].arg == optSelTab) screenSel = i; optSelTab = -1; }
             if (screenSel == -2 || screenSel >= (int)screenHits.size()) { screenSel = -1; for (int i = 0; i < (int)screenHits.size(); i++) if (screenHits[i].kind == 8 || screenHits[i].kind == 10 || screenHits[i].kind == 5 || screenHits[i].kind == 7) { screenSel = i; break; } }
         }
+    }
+    // an item coming in with an effect: drawn several times, each through its own window (a scan line, glitch slices)
+    void ItemComeIn(ImDrawList* dl, const ScreenItem& it, float p, ImVec2 a, ImVec2 b, float al, const std::function<void(ImVec2, ImVec2, float)>& draw) {
+        auto hs = [](uint32_t v) { v ^= v * 0x9E3779B9u; v ^= v >> 15; v *= 0x85EBCA6Bu; v ^= v >> 13; return (v & 0xFFFF) / 65535.f; };
+        uint32_t fr = (uint32_t)(screenT * 30) + (uint32_t)(it.showAt * 977);   // (new glitches 30 times a second)
+        float w = std::max(1.f, b.x - a.x), h = std::max(1.f, b.y - a.y), pad = h * 0.6f;   // (letters can stick out of their box a little)
+        auto clipDraw = [&](ImVec2 c0, ImVec2 c1, float dx, float alpha) { if (c1.x <= c0.x || c1.y <= c0.y) return; dl->PushClipRect(c0, c1, true); draw(ImVec2(a.x + dx, a.y), ImVec2(b.x + dx, b.y), alpha); dl->PopClipRect(); };
+        uint32_t ac = it.col.accent; int ar = (ac >> 16) & 255, ag = (ac >> 8) & 255, ab = ac & 255;
+        if (it.inFx == 2) {   // glitch: in bands that jump sideways less and less, flickering
+            float strength = 1 - p; int bands = 7;
+            if (hs(fr * 3 + 11) < 0.3f * strength) return;   // (flickers off)
+            for (int i = 0; i < bands; i++) {
+                float y0 = a.y - pad + (h + 2 * pad) * i / bands, y1 = a.y - pad + (h + 2 * pad) * (i + 1) / bands;
+                float dx = (hs(fr * 7 + i * 13) - 0.5f) * w * 0.14f * strength * (hs(fr + i * 5) < 0.5f ? 1.f : 0.12f);
+                clipDraw(ImVec2(a.x - w, y0), ImVec2(b.x + w, y1), dx, al * (0.5f + 0.5f * p));
+            }
+            return;
+        }
+        // a scan line goes across (left to right); what it passed shows
+        float e = 1 - (1 - p) * (1 - p), sx = a.x - w * 0.04f + w * 1.08f * e;
+        clipDraw(ImVec2(a.x - w, a.y - pad), ImVec2(sx, b.y + pad), 0, al);
+        if (it.inFx == 1) {   // with glitches: slices of what is coming, jumping about near the line; now and then a ghost of all of it
+            float band = w * 0.16f; int n = 6;
+            for (int i = 0; i < n; i++) {
+                if (hs(fr * 5 + i * 31) < 0.35f) continue;
+                float y0 = a.y - pad * 0.3f + (h + pad * 0.6f) * i / n, y1 = a.y - pad * 0.3f + (h + pad * 0.6f) * (i + 1) / n;
+                float dx = (hs(fr * 9 + i * 17) - 0.5f) * band * 1.5f, x0 = sx - band * hs(fr * 3 + i * 7), x1 = sx + band * (0.3f + hs(fr * 11 + i * 3));
+                clipDraw(ImVec2(x0, y0), ImVec2(x1, y1), dx, al * 0.8f);
+            }
+            if (hs(fr * 13 + 5) < 0.14f) clipDraw(ImVec2(a.x - w, a.y - pad), ImVec2(b.x + w, b.y + pad), (hs(fr * 17) - 0.5f) * w * 0.04f, al * 0.28f);
+            for (int i = 0; i < 3; i++) if (hs(fr * 23 + i) < 0.5f) { float y = a.y + h * hs(fr * 19 + i * 7); dl->AddLine(ImVec2(a.x - w * 0.12f, y), ImVec2(sx, y), IM_COL32(ar, ag, ab, (int)(80 * al)), 1.f); }
+        }
+        float la = al * (p < 0.85f ? 1.f : (1 - p) / 0.15f);   // (the line fades as it reaches the end)
+        for (int g = 3; g >= 1; g--) dl->AddRectFilled(ImVec2(sx - g * 3.f, a.y - pad * 0.5f), ImVec2(sx + g * 3.f, b.y + pad * 0.5f), IM_COL32(ar, ag, ab, (int)(34 * la)));
+        dl->AddLine(ImVec2(sx, a.y - pad * 0.65f), ImVec2(sx, b.y + pad * 0.65f), IM_COL32(std::min(255, ar + 60), std::min(255, ag + 60), std::min(255, ab + 60), (int)(255 * la)), 2.f);
+    }
+    // a typed text's extras: the blinking cursor after its letters, the made-up scanner code around it
+    void TextExtras(ImDrawList* dl, const ScreenItem& it, int ii, ImVec2 a, ImVec2 b, float al, ImVec2 typedEnd, float ts) {
+        if (typedEnd.x < 0 || ts <= 0) return;
+        auto C = [&](uint32_t c, float k) { return IM_COL32((c >> 16) & 255, (c >> 8) & 255, c & 255, (int)(std::clamp(k, 0.f, 1.f) * 255)); };
+        std::string s = menuFill(it.text, [&](const std::string& n) { return MenuValue(n); });
+        size_t n = it.typeSpeed > 0 ? typedBytes(s, it, screenT) : s.size(); bool typing = n < s.size();
+        float fr = s.empty() ? 1.f : (float)n / s.size();
+        if (it.cursor && (typing || std::fmod(screenT * 1.6, 1.0) < 0.55)) dl->AddRectFilled(ImVec2(typedEnd.x + ts * 0.08f, typedEnd.y + ts * 0.04f), ImVec2(typedEnd.x + ts * 0.21f, typedEnd.y + ts * 1.02f), C(it.col.text, al));
+        if (!it.code) return;
+        ImFont* font = FontOf(it.font); CodeBits cb = codeBits(it.text);
+        auto part = [&](const std::string& t) { return t.substr(0, (size_t)std::lround(t.size() * std::min(1.f, fr * 1.4f))); };
+        float lw = font->CalcTextSizeA(ts, FLT_MAX, 0, s.c_str()).x, xs = it.align == 0 ? a.x : it.align == 2 ? b.x - lw : (a.x + b.x - lw) * 0.5f, y = typedEnd.y;
+        std::string tag = part(cb.tag), top = part(cb.top), bot = part(cb.bottom);
+        float tw = font->CalcTextSizeA(ts * 0.62f, FLT_MAX, 0, cb.tag.c_str()).x;
+        dl->AddText(font, ts * 0.62f, ImVec2(xs - tw - ts * 0.4f, y + ts * 0.32f), C(it.col.dim, al * 0.9f), tag.c_str());
+        dl->AddText(font, ts * 0.3f, ImVec2(xs + ts * 0.15f, y - ts * 0.36f), C(it.col.dim, al * 0.8f), top.c_str());
+        dl->AddText(font, ts * 0.28f, ImVec2(xs - tw * 0.6f, y + ts * 1.06f), C(it.col.dim, al * 0.75f), bot.c_str());
+        (void)ii;
     }
     int ScreenHitAt(ImVec2 m, ImVec2* px) const {
         if (px) *px = m;
@@ -11117,8 +11198,11 @@ struct App {
         if (!CurScreen() || startOn) return;   // (starting a file: nothing until the game is there)
         mc::Screen* sc = CurScreen(); bool timed = sc->duration > 0 || sc->untilVideoEnds;
         if (sc->role == ScreenRole::ItemGet || sc->role == ScreenRole::GameSaved) { ItemGetInput(); return; }   // the item pop-up: a button closes it (after its hold time)
-        if (timed && sc->skippable && screenT > 0.35 && bindCapture < 0) {   // a splash / intro: any key or click goes on
-            for (int k = ImGuiKey_NamedKey_BEGIN; k < ImGuiKey_NamedKey_END; k++) if (k != ImGuiKey_F5 && ImGui::IsKeyPressed((ImGuiKey)k, false)) { ScreenNext(); return; }
+        if (timed && (sc->skippable || (sc->pressStart && screenT >= sc->duration)) && screenT > 0.35 && bindCapture < 0) {   // a splash / intro: any key or click goes on (press start: at its end, always)
+            for (int k = ImGuiKey_NamedKey_BEGIN; k < ImGuiKey_NamedKey_END; k++) if (k != ImGuiKey_F5 && ImGui::IsKeyPressed((ImGuiKey)k, false)) {
+                if (sc->pressStart && screenT < sc->duration) { screenT = screenPrevT = sc->duration; return; }   // (press start: a key before the end skips to it - the title, waiting)
+                ScreenNext(); return;
+            }
         }
         int before = screenSel;
         MenuControl(screenHits, screenSel, [&](ImVec2 m, int* pane, ImVec2* px) { if (pane) *pane = 0; return ScreenHitAt(m, px); },
@@ -11143,7 +11227,7 @@ struct App {
     void UpdateScreens(double dt) {
         mc::Screen* sc = CurScreen(); if (!sc) return;
         screenT += dt;
-        if (sc->duration > 0 && screenT >= sc->duration) { ScreenNext(); return; }
+        if (sc->duration > 0 && screenT >= sc->duration && !sc->pressStart) { ScreenNext(); return; }   // (press start: it waits there for a key)
         if (sc->untilVideoEnds && sc->bg.kind == BgKind::Video && screenT > 0.5) {
             auto it = vids.find(sc->bg.file); if (it == vids.end() || !it->second || it->second->failed || (it->second->v.done() && !sc->bg.loop)) { ScreenNext(); return; }
         }
@@ -11487,6 +11571,14 @@ struct App {
         }
         if (ImGui::BeginPopup("addscr")) {
             if (ImGui::Selectable("Story (typed text, like Super Metroid's intro)")) { mc::Screen s = presetStory(); std::string base = s.name; int k = 2; while (screens.find(s.name) >= 0) s.name = base + " " + std::to_string(k++); screens.screens.push_back(s); scrEd = (int)screens.screens.size() - 1; scrItem = -1; ch = true; }
+            if (ImGui::Selectable("Phazon intro (the splash: code typing in, ink, a corrupted planet burning in, the title)")) {
+                mc::Screen s = presetPhazonIntro(); std::string base = s.name; int k = 2; while (screens.find(s.name) >= 0) s.name = base + " " + std::to_string(k++);
+                for (mc::Screen& o : screens.screens) if (o.role == ScreenRole::Intro) o.role = ScreenRole::Custom;   // (it becomes the splash: the old one stays, as your own screen)
+                if (planets.find("Corrupted world") < 0) { planets.planets.push_back(planetPreset("Corrupted world")); planetsDirty = true; }   // (its planet)
+                screens.screens.push_back(s); scrEd = (int)screens.screens.size() - 1; scrItem = -1; ch = true;
+                Toast("The Phazon intro is your splash now (the old one is kept as your own screen)");
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Made for your own title: the texts are placeholders (swap the title for your logo pictures),\nthe times are seconds into the screen (match them to your music).");
             for (ScreenRole r : { ScreenRole::MainMenu, ScreenRole::Files, ScreenRole::Intro, ScreenRole::Options, ScreenRole::Death, ScreenRole::Credits, ScreenRole::ItemGet, ScreenRole::GameSaved, ScreenRole::Custom })
                 if (ImGui::Selectable(r == ScreenRole::Custom ? "Empty (your own)" : screenRoleName(r))) {
                     mc::Screen s = presetScreen(r); std::string base = s.name; int k = 2; while (screens.find(s.name) >= 0) s.name = base + " " + std::to_string(k++);
@@ -12071,7 +12163,7 @@ struct App {
         ScreenColors& c = it.col;
         if (it.kind != ScreenItemKind::Panel && it.kind != ScreenItemKind::Image) { Prop("Text"); ch |= ColorU32("##sct", c.text); }
         Prop("Accent"); ch |= ColorU32("##sca", c.accent);
-        if (it.kind == ScreenItemKind::Button || it.kind == ScreenItemKind::Options) { Prop("Picked"); ch |= ColorU32("##scp", c.picked); Prop("Dim"); ch |= ColorU32("##scd", c.dim); }
+        if (it.kind == ScreenItemKind::Button || it.kind == ScreenItemKind::Options || (it.kind == ScreenItemKind::Text && it.code)) { if (it.kind != ScreenItemKind::Text) { Prop("Picked"); ch |= ColorU32("##scp", c.picked); } Prop("Dim"); ch |= ColorU32("##scd", c.dim); }
         if (it.kind == ScreenItemKind::Panel || it.kind == ScreenItemKind::Button) {
             Prop("Fill"); ch |= ColorU32("##scf", c.fill); Prop("Fill strength"); ch |= ImGui::SliderFloat("##scfa", &c.fillAlpha, 0, 1, "%.2f");
             Prop("Filled"); ch |= ImGui::Checkbox("##sfl", &it.filled); ImGui::SameLine(); ImGui::TextUnformatted("Frame"); ImGui::SameLine(); ch |= ImGui::Checkbox("##sfr", &it.frame);
@@ -12091,7 +12183,17 @@ struct App {
         if (it.kind == ScreenItemKind::Text) {
             Prop("Typed"); ch |= ImGui::SliderFloat("##tty", &it.typeSpeed, 0, 80, it.typeSpeed <= 0 ? "all at once" : "%.0f letters/s");
             if (it.typeSpeed > 0) { Prop("Letter sound"); ch |= SoundEdit("##ttsnd", it.typeSound, false); }
+            Prop("Cursor"); ch |= ImGui::Checkbox("##tcur", &it.cursor); if (ImGui::IsItemHovered()) ImGui::SetTooltip("A bar after the typed letters (it blinks once they are all there).");
+            ImGui::SameLine(); ImGui::TextUnformatted("Scanner code"); ImGui::SameLine(); ch |= ImGui::Checkbox("##tcode", &it.code);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Made-up code around it, typed with it: a tag before it, a little line above and one under it (in the Dim colour).\nThe same text always gets the same code.");
         }
+        if (it.kind == ScreenItemKind::Text || it.kind == ScreenItemKind::Image || it.kind == ScreenItemKind::Panel) {
+            Prop("Comes in with"); if (ImGui::BeginCombo("##tifx", inFxName(it.inFx))) { for (int f = 0; f < IN_FX_COUNT; f++) if (ImGui::Selectable(inFxName(f), it.inFx == f)) { it.inFx = f; ch = true; } ImGui::EndCombo(); }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Fade: fades in (above). Scan: a bright line sweeps across, what it passed shows (the line uses the Accent colour).\nGlitch: it jumps about in slices, settling. Scan + glitch: both.");
+            if (it.inFx) { Prop("Over"); ch |= ImGui::SliderFloat("##tifxt", &it.inFxTime, 0.1f, 5, "%.2f s"); }
+        }
+        Prop("Breathes"); ch |= ImGui::SliderFloat("##tpul", &it.pulse, 0, 6, it.pulse <= 0.01f ? "no (steady)" : "every %.1f s");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Slowly brighter and dimmer - a \"press start\" line. ({START} in a text: the key that starts, ENTER.)");
         Prop("Moves"); { float v[2] = { it.driftX, it.driftY }; if (ImGui::DragFloat2("##tdr", v, 0.0005f, -0.5f, 0.5f, "%.4f/s")) { it.driftX = v[0]; it.driftY = v[1]; ch = true; } }
         Prop("Grows"); ch |= ImGui::SliderFloat("##tgr", &it.grow, -0.2f, 0.5f, "%.3f/s");
         Hint("Seconds after the screen appears (the timeline under the canvas shows it all). For splash screens and intros (like Super Metroid's): fade text and pictures in and out, type a story letter by letter, let a picture slowly drift and grow.");
@@ -12152,6 +12254,13 @@ struct App {
             ImGui::EndCombo();
         }
         Prop("A key or click skips"); ch |= ImGui::Checkbox("##sqskip", &sc.skippable);
+        Prop("Then waits: press start"); ch |= ImGui::Checkbox("##sqps", &sc.pressStart);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("At its end it stays (it doesn't go on by itself) until a key: \"press start\".\nA key before that skips to the end first.");
+        ImGui::SeparatorText("Shake");
+        Prop("Shakes from"); ch |= ImGui::SliderFloat("##shka", &sc.shakeAt, 0, 120, "%.1f s");
+        Prop("For"); ch |= ImGui::SliderFloat("##shkt", &sc.shakeTime, 0, 20, sc.shakeTime <= 0 ? "never" : "%.1f s");
+        if (sc.shakeTime > 0) { Prop("How strong"); ch |= ImGui::SliderFloat("##shks", &sc.shakeAmount, 0.001f, 0.06f, "%.3f"); }
+        Hint("The whole picture shakes - swelling, strongest near the end, then settling (like something huge waking up).");
         Hint("The role \"Splash (shown first)\": playing from the menu (F6) starts there and goes screen to screen to the main menu. The role \"Intro of a new game\": shown after picking an empty file, screen to screen, then the game starts. A video background with \"or when the video ends\" makes an intro movie.");
         ImGui::SeparatorText("This screen's interface sounds");
         Prop("Picking"); ch |= SoundEdit("##shov", sc.sounds.hover, false);

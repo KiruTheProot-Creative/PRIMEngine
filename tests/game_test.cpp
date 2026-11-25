@@ -1742,14 +1742,33 @@ int main() {
             const ScreenItem& b = vl.screens[0].items[3]; int ci = -1; for (int i = 0; i < (int)vl.screens[1].items.size(); i++) if (vl.screens[1].items[i].kind == ScreenItemKind::SaveSlots) ci = i;
             CHECK(b.tip == "Go on: {continue}" && b.corners && b.pickFill == 0.6f && ci >= 0 && vl.screens[1].items[ci].cards == 1, "tips, bracket corners, picked fill and card layout save and load");
         }
+        {   // the Phazon intro: its timing, the new effects, saving them
+            Screen s = presetPhazonIntro();
+            int types = 0; for (const CompNode& n : s.comp.nodes) types |= n.type == NodeType::LensGlow ? 1 : n.type == NodeType::Glitch ? 2 : n.type == NodeType::InkSpread ? 4 : n.type == NodeType::BurnIn ? 8 : 0;
+            int coded = 0, scans = 0; for (const ScreenItem& i : s.items) { coded += i.code && i.cursor; scans += i.inFx == 1; }
+            CHECK(s.role == ScreenRole::Intro && s.pressStart && s.duration > 30 && types == 15 && coded == 4 && scans == 1 && s.comp.order().size() == s.comp.nodes.size(),
+                  "the Phazon intro: glow, glitches, ink, a planet burning in, four typed code lines, the subtitle scanning in, waiting for a key");
+            const ScreenItem* sub = nullptr; for (const ScreenItem& i : s.items) if (i.name == "Subtitle") sub = &i;
+            CHECK(sub && inFxProgress(*sub, sub->showAt - 1) == 0 && inFxProgress(*sub, sub->showAt + sub->inFxTime * 0.5) > 0.4f && inFxProgress(*sub, sub->showAt + 9) == 1, "a come-in effect runs from 0 to 1 over its time");
+            float o[2]; shakeOffset(s, s.shakeAt - 1, o); bool still = o[0] == 0 && o[1] == 0; float most = 0;
+            for (double t = s.shakeAt; t < s.shakeAt + s.shakeTime; t += 0.05) { shakeOffset(s, t, o); most = std::max(most, std::max(std::fabs(o[0]), std::fabs(o[1]))); }
+            CHECK(still && most > 0.004f && most <= s.shakeAmount, "the shake: still before it, pushes within its amount while it goes");
+            CodeBits a = codeBits("LEVIATHAN"), b = codeBits("LEVIATHAN"), c = codeBits("A FAN GAME");
+            CHECK(a.tag == b.tag && a.bottom == b.bottom && (a.tag != c.tag || a.bottom != c.bottom) && a.tag.size() == 4 && a.top.front() == '(', "made-up scanner code: the same for the same text, different for another");
+            ScreenSet set; set.screens.push_back(s); set.screens[0].items[0].pulse = 1.5f; saveScreens("/tmp/prim_phazon.txt", set); ScreenSet back; loadScreens("/tmp/prim_phazon.txt", back);
+            const Screen& r = back.screens[0]; const ScreenItem* rs = nullptr; for (const ScreenItem& i : r.items) if (i.name == "Subtitle") rs = &i;
+            bool nodesOk = r.comp.nodes.size() == s.comp.nodes.size(); for (size_t i = 0; nodesOk && i < r.comp.nodes.size(); i++) nodesOk = r.comp.nodes[i].type == s.comp.nodes[i].type && r.comp.nodes[i].p[0] == s.comp.nodes[i].p[0];
+            CHECK(r.pressStart && r.shakeAt == s.shakeAt && r.shakeTime == s.shakeTime && rs && rs->inFx == 1 && rs->inFxTime == sub->inFxTime && r.items[0].cursor && r.items[0].code && r.items[0].pulse == 1.5f && nodesOk,
+                  "the intro saves and loads (shake, press start, come-in effects, cursor, code, pulse, the new nodes)");
+        }
         {   // planets: designed in layers, saved and loaded; a Space background picks one
             PlanetSet ps; for (const std::string& k : planetPresetNames()) ps.planets.push_back(planetPreset(k));
             bool sorted = true; for (const Planet& q : ps.planets) for (size_t b = 1; b < q.bands.size(); b++) sorted &= q.bands[b - 1].from <= q.bands[b].from;
-            CHECK(ps.planets.size() == 6 && sorted && ps.planets[0].bands.size() == 5 && ps.find("Gas giant") >= 0 && ps.planets[ps.find("Gas giant")].rings, "planet presets: six worlds, their layers low to high (the gas giant has rings)");
+            CHECK(ps.planets.size() == 7 && sorted && ps.planets[0].bands.size() == 5 && ps.find("Gas giant") >= 0 && ps.planets[ps.find("Gas giant")].rings && ps.planets[ps.find("Corrupted world")].corrupt, "planet presets: seven worlds, their layers low to high (the gas giant has rings)");
             Planet& q = ps.planets[0]; q.name = "Home World 2"; q.seed = 4242; q.pixels = 128; q.night = true; q.nightColor = 0x123456; q.bands.push_back({ 0xABCDEF, 0.95f }); q.ringInner = 1.6f;
             savePlanets("/tmp/prim_planets.txt", ps); PlanetSet pl; CHECK(loadPlanets("/tmp/prim_planets.txt", pl), "planets load");
             const Planet& r = pl.planets[0];
-            CHECK(pl.planets.size() == 6 && r.name == "Home World 2" && r.seed == 4242 && r.pixels == 128 && r.night && r.nightColor == 0x123456 && r.bands.size() == 6 && r.bands.back().color == 0xABCDEF && r.ringInner == 1.6f
+            CHECK(pl.planets.size() == 7 && pl.planets[6].corrupt && pl.planets[6].veins == ps.planets[6].veins && pl.planets[6].veinColor == ps.planets[6].veinColor && !pl.planets[0].corrupt && r.name == "Home World 2" && r.seed == 4242 && r.pixels == 128 && r.night && r.nightColor == 0x123456 && r.bands.size() == 6 && r.bands.back().color == 0xABCDEF && r.ringInner == 1.6f
                   && pl.planets[2].iceCaps == ps.planets[2].iceCaps && !pl.planets[4].ocean, "a planet's layers save and load (name, seed, pixels, night side, terrain layers, rings)");
             ScreenSet sp = defaultScreens(); Screen& mm2 = sp.screens[sp.byRole(ScreenRole::MainMenu)];
             CHECK(mm2.bg.kind == BgKind::Space, "the ready-made main menu: a planet turning in space");
