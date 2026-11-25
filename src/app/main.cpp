@@ -199,6 +199,11 @@ struct alignas(16) FrameCB {
     XMFLOAT4X4 waterVP;     // the water map: the water's tops seen from straight above (caustics, light shafts)
     float water[4];         // x caustics (0 off, 1 low, 2 high), y reflected caustics, z the map is ready, w light shafts under water
     float water2[4];        // x shore foam, y drops on the visor (how wet), z caustics brightness, w rain drops on the visor
+    float rainX[4];         // xyz the camera's speed (rain slants toward you when you run), w gusts (multiplies the wind)
+    float wet2[4];          // x puddles, y drips off edges
+    float visFx[4];         // the visor: x fogged up (steam), y frost, z a splat, w static
+    float visFx2[4];        // x how far up you look, y how fast the view turns sideways, z the face in the glass, w the splat's clock
+    float visSplat[4];      // rgb the splat's colour (linear), w its seed (+ 1000: it glows)
 };
 struct alignas(16) ChunkCB { float offset[4]; float ax[4] = { 1, 0, 0, 0 }, ay[4] = { 0, 1, 0, 0 }, az[4] = { 0, 0, 1, 0 }; };   // axes: objects are turned and sized
 
@@ -221,7 +226,7 @@ struct App {
     ComPtr<ID3D11Device> dev; ComPtr<ID3D11DeviceContext> ctx; ComPtr<IDXGISwapChain> swap; ComPtr<ID3D11RenderTargetView> backRTV;
     ComPtr<ID3D11Texture2D> depthTex; ComPtr<ID3D11DepthStencilView> dsv;
     ComPtr<ID3D11VertexShader> vsBlock, vsSky, vsShadow; ComPtr<ID3D11PixelShader> psOpaque, psCutout, psSky, psGhost, psShadowCut, psPost, psVolume, psBloomDown, psBloomUp, psRain, psBolt;
-    ComPtr<ID3D11VertexShader> vsSkyMap, vsRain, vsRainFar, vsDust, vsWaterMap;
+    ComPtr<ID3D11VertexShader> vsSkyMap, vsRain, vsRainFar, vsDust, vsWaterMap, vsDrips;
     ComPtr<ID3D11Texture2D> waterMapTex; ComPtr<ID3D11DepthStencilView> waterMapDSV; ComPtr<ID3D11ShaderResourceView> waterMapSRV;   // the water's tops from above (caustics)
     float visorWet = 0, visorRain = 0;   // drops on the visor: after coming out of the water (dries off), from the rain
     ComPtr<ID3D11PixelShader> psReflect, psAO, psAOApply, psReflComp, psAA;
@@ -400,7 +405,7 @@ struct App {
         D3D11_SAMPLER_DESC sm{}; sm.Filter = D3D11_FILTER_MIN_MAG_POINT_MIP_LINEAR; sm.AddressU = sm.AddressV = sm.AddressW = D3D11_TEXTURE_ADDRESS_WRAP; sm.MaxLOD = D3D11_FLOAT32_MAX; sm.MipLODBias = bias;
         ComPtr<ID3D11SamplerState> s; if (SUCCEEDED(dev->CreateSamplerState(&sm, &s))) sampBlocks = s;
     }      // ... with clouds and fog
-    ComPtr<ID3D11ShaderResourceView> depthSRV, noiseSRV, depthCopySRV; ComPtr<ID3D11Texture2D> depthCopy; ComPtr<ID3D11DepthStencilView> depthCopyDSV, depthCopyRODSV; bool waterNow = false; ComPtr<ID3D11PixelShader> psWater; ComPtr<ID3D11SamplerState> sampLinear, sampClamp; double cloudTime = 0, precipTime = 0, precipWindX = 0, precipWindZ = 0;   // depthCopy: the world's depth without the water (see-through things behind the water test against it)
+    ComPtr<ID3D11ShaderResourceView> depthSRV, noiseSRV, depthCopySRV; ComPtr<ID3D11Texture2D> depthCopy; ComPtr<ID3D11DepthStencilView> depthCopyDSV, depthCopyRODSV; bool waterNow = false; ComPtr<ID3D11PixelShader> psWater; ComPtr<ID3D11SamplerState> sampLinear, sampClamp; double cloudTime = 0, precipTime = 0, precipWindX = 0, precipWindZ = 0; float gustNow = 1; V3 rainCamLast{ 0, 0, 0 }; double rainCamT = -1; V3 rainCamVel{ 0, 0, 0 };   // depthCopy: the world's depth without the water (see-through things behind the water test against it)
     struct BloomLevel { ComPtr<ID3D11Texture2D> tex; ComPtr<ID3D11RenderTargetView> rtv; ComPtr<ID3D11ShaderResourceView> srv; int w = 0, h = 0; };
     BloomLevel aaSrc;   // anti-aliasing: the finished picture, before its edges are smoothed
     // render scale: the world drawn at sceneW x sceneH (rw x rh while it is drawn), then fitted to the screen (rw x rh the rest of the time)
@@ -525,6 +530,7 @@ struct App {
         b = Compile(src, "VS_WaterMap", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsWaterMap));
         b = Compile(src, "VS_Rain", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsRain));
         b = Compile(src, "VS_RainFar", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsRainFar));
+        b = Compile(src, "VS_Drips", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsDrips));
         b = Compile(src, "PS_Comp", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psComp));   // the screens' compositor
         b = Compile(src, "PS_Trans", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psTrans));   // screen transitions
         b = Compile(src, "PS_HudDepth", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psHudDepth));   // the helmet's depth into the depth without water
@@ -1179,7 +1185,7 @@ struct App {
         hotSel = info.hotSel;
         envState.update(0, player.eye(), info.environment, info.zones, true); UpdateLook(0, true); opaqueCache.clear(); skyLut.clear(); skyMasks.clear(); skyVolValid = false; skyVolSig = 0; ResetVoxels();
         { int wi = findWeather(info.weather); weather = Weather{}; weather.set(wi < 0 ? 1 : wi, true); weather.autoChange = info.autoWeather;
-          weather.wetness = weather.now.rain > 0.1f ? 1.f : 0.f; weather.snowCover = weather.now.snow > 0.1f ? 1.f : 0.f; weather.seed((uint32_t)std::time(nullptr)); }
+          weather.wetness = weather.now.rain > 0.1f ? 1.f : 0.f; weather.puddles = weather.now.rain > 0.5f ? 0.6f : 0.f; weather.snowCover = weather.now.snow > 0.1f ? 1.f : 0.f; weather.seed((uint32_t)std::time(nullptr)); }
         screen = Screen::Game; paused = false; inventory = false; autosave = 0; if (!travelling) playMode = false; sel = Sel::World;
         Toast("Opened " + info.name + ". Click the viewport to fly and build, Esc frees the mouse, F5 plays");
     }
@@ -1443,7 +1449,12 @@ struct App {
         if (looksDirty && !ImGui::IsAnyItemActive()) { looksDirty = false; if (!projectDir.empty()) saveLooks(projectDir + "/looks.txt", looks); }
         if (planetsDirty && !ImGui::IsAnyItemActive()) { planetsDirty = false; if (!projectDir.empty()) savePlanets(projectDir + "/planets.txt", planets); }
         cloudTime += dt * (0.5 + weather.now.wind);
-        precipTime += dt; { float w = EffWeather().wind; precipWindX += dt * w; precipWindZ += dt * w * 0.45; }   // (added up: a change of wind only changes how they move from now on)
+        precipTime += dt;
+        {   // the wind comes in gusts (rain and snow sway with it); added up: a change of wind only changes how they move from now on
+            double t = precipTime; double g = 0.55 * std::sin(t * 0.37) + 0.3 * std::sin(t * 1.13 + 1.7) + 0.15 * std::sin(t * 2.9 + 4.0);
+            gustNow = (float)(1 + 0.45 * std::clamp(g, -0.7, 1.0));
+            float w = EffWeather().wind * gustNow; precipWindX += dt * w; precipWindZ += dt * w * 0.45;
+        }
         if (settings.dayCycle) { settings.timeOfDay += (float)(dt * 24.0 / 1200.0); if (settings.timeOfDay >= 24) settings.timeOfDay -= 24; }
         // load chunks around the player and keep their meshes fresh
         I3 pc = chunkOf(ifloor(player.feet.x), ifloor(player.feet.y), ifloor(player.feet.z));
@@ -4733,6 +4744,15 @@ struct App {
         fc.env[0] = E.atmosphere; fc.env[1] = E.shimmer; fc.env[2] = E.planet; fc.env[3] = E.haze * std::max(0.f, settings.groundFog);
         fc.envPart[0] = E.particleKind; fc.envPart[1] = E.particleAmount; fc.envPart[2] = (float)world->liquidAt(camPos);   // under water / in lava for (int i = 0; i < 3; i++) fc.envPartColor[i] = E.particleColor[i];
         fc.volume[2] = (float)std::fmod(cloudTime, 4800.0); fc.volume[3] = settings.cloudShadows ? 1.f : 0.f;
+        {   // the camera's speed, smoothed (rain slants toward you when you run); a jump (teleport, a new world) counts as standing still
+            double dtc = precipTime - rainCamT; V3 mv = camPos - rainCamLast;
+            if (rainCamT >= 0 && dtc > 1e-4) {
+                V3 v = mv * (1 / dtc); if (v.x * v.x + v.y * v.y + v.z * v.z > 60 * 60) v = V3{ 0, 0, 0 };
+                double k = 1 - std::exp(-dtc * 8); rainCamVel = rainCamVel + (v - rainCamVel) * k;
+            }
+            if (dtc > 1e-4 || rainCamT < 0) { rainCamLast = camPos; rainCamT = precipTime; }
+            fc.rainX[0] = (float)rainCamVel.x; fc.rainX[1] = (float)rainCamVel.y; fc.rainX[2] = (float)rainCamVel.z; fc.rainX[3] = gustNow;
+        }
         fc.precip[0] = (float)precipTime; fc.precip[1] = (float)std::fmod(precipWindX, 3600.0); fc.precip[2] = (float)std::fmod(precipWindZ, 3600.0);   // (3600: a whole number of every box's widths at every wind push: no jump)
         fc.depth[0] = 0.05f; fc.depth[1] = farZ; fc.depth[2] = (float)rw; fc.depth[3] = (float)rh;
         fc.clipPlane[3] = 1;   // nothing cut away (except while drawing a mirror's view)
@@ -4825,6 +4845,7 @@ struct App {
             }
         }
         fc.weather[0] = W.rain; fc.weather[1] = W.snow; fc.weather[2] = W.dark; fc.weather[3] = weather.wetness * E.atmosphere;
+        fc.wet2[0] = weather.puddles * E.atmosphere * (E.cold > 0.5f ? 0.f : 1.f); fc.wet2[1] = std::clamp((weather.wetness - 0.15f) * 1.4f, 0.f, 1.f) * E.atmosphere * (E.cold > 0.5f ? 0.f : 1.f);
         fc.weather2[0] = weather.snowCover * E.atmosphere; fc.weather2[1] = weather.flash * E.atmosphere; fc.weather2[2] = W.wind; fc.weather2[3] = skyMap ? 1.f : 0.f;
         ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &fc, 0, 0);
         ID3D11Buffer* cbs[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->VSSetConstantBuffers(0, 2, cbs); ctx->PSSetConstantBuffers(0, 2, cbs);
@@ -5220,6 +5241,14 @@ struct App {
             if (skyMap) ctx->VSSetShaderResources(4, 1, skyMapSRV.GetAddressOf());   // the drops look up where they land
             ctx->VSSetShader(vsRainFar.Get(), nullptr, 0); ctx->Draw(6 * 9000, 0);     // far out: fills the distance
             ctx->VSSetShader(vsRain.Get(), nullptr, 0); ctx->Draw(12 * 16000, 0);      // near: they land, splash and ripple
+            { ID3D11ShaderResourceView* n1[1] = {}; ctx->VSSetShaderResources(4, 1, n1); }
+            ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());
+        }
+        if (skyMap && fc.wet2[1] > 0.01f && vsDrips) {   // drips off roofs and ledges while it is wet
+            ctx->OMSetBlendState(bsAlpha.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsTestOnly.Get(), 0); ctx->RSSetState(rsNoCull.Get());
+            ctx->IASetInputLayout(nullptr); ctx->PSSetShader(psRain.Get(), nullptr, 0);
+            ctx->VSSetShaderResources(4, 1, skyMapSRV.GetAddressOf());
+            ctx->VSSetShader(vsDrips.Get(), nullptr, 0); ctx->Draw(6 * 6000, 0);
             { ID3D11ShaderResourceView* n1[1] = {}; ctx->VSSetShaderResources(4, 1, n1); }
             ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());
         }
@@ -18083,7 +18112,7 @@ struct App {
             for (int k = 0; k < sh.liquidTicks; k++) world->tickLiquids();   // let water and lava flow a bit before this picture
             info.environment = sh.env; info.zones.clear(); envState.update(0, player.eye(), info.environment, info.zones, true);
             { int wi = findWeather(sh.weather); weather.set(wi < 0 ? 1 : wi, true); weather.autoChange = false;
-              weather.wetness = weather.now.rain > 0.1f ? 1.f : 0.f; weather.snowCover = weather.now.snow > 0.1f ? 1.f : 0.f; weather.flash = 0; weather.boltAge = 99;
+              weather.wetness = weather.now.rain > 0.1f ? 1.f : 0.f; weather.puddles = weather.now.rain > 0.5f ? 0.6f : 0.f; weather.snowCover = weather.now.snow > 0.1f ? 1.f : 0.f; weather.flash = 0; weather.boltAge = 99;
               if (sh.lightning) {   // a bolt right in view
                   V3 dl = sh.target - sh.eye; double l = std::sqrt(dl.x * dl.x + dl.z * dl.z);
                   weather.boltPos = { sh.eye.x + dl.x / l * 120 + 25, 0, sh.eye.z + dl.z / l * 120 }; weather.boltAge = 0.03; weather.boltSeed = 12345; weather.flash = 0.7f;
@@ -18102,7 +18131,7 @@ struct App {
                 V3 dlt = sh.target - sh.eye; double hz = std::sqrt(dlt.x * dlt.x + dlt.z * dlt.z);
                 player.feet = { sh.eye.x, sh.eye.y - player.eyeH, sh.eye.z }; player.yaw = std::atan2(dlt.x, dlt.z); player.pitch = std::atan2(dlt.y, hz); player.vel = { 0, 0, 0 };
                 settings.timeOfDay = sh.hour; info.environment = "temperate"; envState.update(0, player.eye(), info.environment, info.zones, true);
-                weather.set(findWeather("partly_cloudy"), true); weather.autoChange = false; weather.wetness = 0; weather.snowCover = 0; weather.flash = 0; weather.boltAge = 99;
+                weather.set(findWeather("partly_cloudy"), true); weather.autoChange = false; weather.wetness = 0; weather.puddles = 0; weather.snowCover = 0; weather.flash = 0; weather.boltAge = 99;
             };
             auto frames = [&](int k, const char* name) {
                 for (int f = 0; f < k; f++) { FrameBody(1.0 / 60); if (f + 1 < k) { swap->Present(0, 0); retired.clear(); } waitLoaded(); }

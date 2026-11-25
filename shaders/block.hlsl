@@ -57,6 +57,11 @@ cbuffer Frame : register(b0)
     row_major float4x4 gWaterVP;    // camera-relative position -> the water map (the water's surfaces seen from straight above)
     float4 gWater;                  // x caustics (0 off, 1 low, 2 high), y reflected caustics, z the water map is ready, w light shafts under water
     float4 gWater2;                 // x shore foam and soft edges, y drops on the visor (0..1: how wet), z caustics brightness, w rain drops on the visor
+    float4 gRainX;                  // xyz the camera's speed (blocks/s: rain slants toward you when you run), w gusts (multiplies the wind)
+    float4 gWet2;                   // x puddles (0..1: how far they have spread), y drips off edges (0..1), zw -
+    float4 gVisFx;                  // the visor: x fogged up (steam), y frost, z a splat (0..1), w static (electric)
+    float4 gVisFx2;                 // x how far up you look (-1..1), y how fast the view turns sideways (signed), z the face in the glass (0..1), w the splat's clock (s)
+    float4 gVisSplat;               // rgb the splat's colour (linear), w its seed (+ 1000: it glows)
 };
 // pixelated shadows (gAA.w: 16 or 32 a block): the spot a shadow is looked up at snapped to a grid on the surface, like the textures' pixels
 float3 pixSnap(float3 rel, float3 n)
@@ -105,6 +110,7 @@ uint clusterOf(float3 rel)
     uint cz = (uint)clamp(log(max(z, gCl1.z) / gCl1.z) / gCl1.w * gz, 0, gz - 1);
     return (cz * gy + cy) * gx + cx;
 }
+static float sPuddle = 0;   // this pixel is in a puddle (0..1): smooth as a mirror (set while a block is lit)
 static float sReach = 0;   // how far this pixel's reflection rays go (0: the setting's full reach); rough surfaces don't need far ones (blurred away)
 float reflReach() { return sReach > 0 ? sReach : gRefl.z; }
 float lightShadow(LightData L, float3 p, int type, bool whole = false)   // whole: the map's own answer (not faded out far away)
@@ -574,6 +580,33 @@ float shadowAt(float3 rel, float3 n, float ndl, float2 screen)
 
 float lumOf(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }
 float hash21(float2 p) { p = frac(p * float2(123.34, 456.21)); p += dot(p, p + 45.32); return frac(p.x * p.y); }
+float rnoise(float2 p) { float2 i = floor(p), f = frac(p); f = f * f * (3 - 2 * f);   // smooth value noise (rain curtains, puddles)
+    return lerp(lerp(hash21(i), hash21(i + float2(1, 0)), f.x), lerp(hash21(i + float2(0, 1)), hash21(i + float2(1, 1)), f.x), f.y); }
+// heavier and lighter bands of rain sweeping across the land with the wind (0 light .. 1 a heavy sheet)
+float rainCurtain(float3 rel) { float2 w = gCamPos.xz + rel.xz - gPrecip.yz * 4.0; float n = rnoise(w * 0.012) * 0.65 + rnoise(w * 0.031 + 7.3) * 0.35; return smoothstep(0.38, 0.72, n); }
+// what lights a drop: lamps near it (it glitters in their light) and the sun behind it (backlit rain shines)
+float3 rainLit(float3 rel)
+{
+    float3 Ls = 0;
+    if (gCl0.x > 0.5)
+    {
+        uint2 cl = gClusters[clusterOf(rel)];
+        [loop] for (uint j = 0; j < min(cl.y, 8u); j++)
+        {
+            LightData L = gLightBuf[gClusterIdx[cl.x + j]];
+            int kind = (int)round(L.col.w); if (kind >= 32) kind -= 32; if (kind >= 16) kind -= 16; int type = kind & 7;
+            float3 lp = L.pos.xyz;
+            if (type == 2) { float3 a = lp - L.ext.xyz, ab = L.ext.xyz * 2; lp = a + ab * saturate(dot(rel - a, ab) / max(dot(ab, ab), 1e-4)); }
+            if (type == 3) lp = clamp(rel, lp - L.ext.xyz, lp + L.ext.xyz);
+            float3 Lv = lp - rel; float d = length(Lv); if (d >= L.pos.w) continue;
+            float att = 1 - d / L.pos.w; att *= att;
+            if (type == 1) { float c = dot(-Lv / max(d, 1e-4), L.dir.xyz), c0 = L.dir.w; att *= smoothstep(c0, c0 + (1 - c0) * 0.35, c); }
+            Ls += L.col.rgb * att;
+        }
+    }
+    float back = pow(saturate(dot(normalize(rel), gSunDir.xyz)), 5) * (1 - gWeather.z * 0.85);
+    return Ls * 0.7 + gSunColor.rgb * back * 1.2;
+}
 
 // generated normals and the coat (like Complementary's): from the texture's own pixels, nothing extra to paint.
 // Each pixel is a little tile: its brightness is its height, so light pixels stand up and dark gaps sink in, with a
@@ -743,9 +776,19 @@ float3 lightBlock(VSOut i, float3 albedo, bool front, out float3 n, out float sh
     float wet = gWeather.w * open * (1 - snowy);
     albedo *= lerp(1, 0.55, wet);
     n = normalize(lerp(n, nFlat, saturate(wet * 1.5 + snowy)));                                   // water and snow fill the little dents: smooth again
+    float puddle = 0;
+    if (gWet2.x > 0.01 && wet > 0.5 && nFlat.y > 0.99)   // puddles: water gathers in patches that spread in a long rain (from the noise's low spots out) and shrink as they dry
+    {
+        float2 wp = (gCamPos.xyz + i.rel).xz;
+        float pm = rnoise(wp * 0.16) * 0.7 + rnoise(wp * 0.53 + 3.1) * 0.3, th = 1 - gWet2.x * 0.5;
+        puddle = smoothstep(th, th + 0.05, pm) * saturate((wet - 0.5) * 4);
+        albedo *= lerp(1, 0.6, puddle);
+        n = normalize(lerp(n, nFlat, puddle));
+    }
+    sPuddle = puddle;
     if (gWeather.x > 0.02 && wet > 0.2 && nFlat.y > 0.9)                                          // raining on wet tops: drops land in the film of water
     {
-        float2 rip = rainRipples((gCamPos.xyz + i.rel).xz, gVolume.z) * saturate(gWeather.x * 1.5) * saturate((wet - 0.2) * 2) * saturate(1 - length(i.rel) / 40);
+        float2 rip = rainRipples((gCamPos.xyz + i.rel).xz, gVolume.z) * saturate(gWeather.x * 1.5) * saturate((wet - 0.2) * 2) * saturate(1 - length(i.rel) / 40) * (1 + puddle * 0.8);
         n = normalize(n + float3(rip.x, 0, rip.y));
     }
     float ndl = saturate(dot(n, gSunDir.xyz));
@@ -776,7 +819,7 @@ float3 lightBlock(VSOut i, float3 albedo, bool front, out float3 n, out float sh
     float3 hue = lamp > 0 ? i.lamp.rgb / lamp : 0;                                                   // the colour of the lamps nearby
     light += hue * (pow(lamp, 3.2) * 0.9) * gExtra.w * lerp(0.5, 1, i.ao) * ambMul;
     float metal = saturate(m.a.y) * saturate(max(saturate(m.a.x), i.mat.x) * 4);   // (metal only shows when it is shiny at all: matt metal is just its colour)
-    float dShine = max(max(saturate(m.a.x), i.mat.x), wet * 0.9);                                  // how shiny for the lights' highlights (wet streets!)
+    float dShine = max(max(max(saturate(m.a.x), i.mat.x), wet * 0.9), puddle);                                  // how shiny for the lights' highlights (wet streets!)
     float3 dSpec;
     sFlatN = nFlat;
     float3 dyn = dynLightsSpec(i.rel, n, -normalize(i.rel), lerp(10, 380, dShine * dShine), gOffset.w < 0.5, dSpec) * lerp(0.6, 1, i.ao) * ambMul;
@@ -815,7 +858,7 @@ float3 lightBlock(VSOut i, float3 albedo, bool front, out float3 n, out float sh
     }
     float3 v = -normalize(i.rel);
     n = normalize(lerp(nFlat, n, 0.15));                                                          // reflections see a much calmer surface (else every pixel mirrors something else: noisy streaks)
-    shine = max(max(i.mat.x, mshine), wet * lerp(0.25, 0.55, saturate(n.y)));    // wet ground shines like a puddle
+    shine = max(max(max(i.mat.x, mshine), wet * lerp(0.25, 0.55, saturate(n.y))), puddle * 0.92);    // wet ground shines; a puddle mirrors
     if (i.mat.y > 0.5) { shine = 1; c *= 0.15; indirect *= 0.15; }    // a mirror is (almost) only its reflection
     if (gRefl.x < 0.5 && shine > 0.01)   // reflections off: just a little of the sky mirrored
     {
@@ -862,6 +905,7 @@ PSOut PS_Opaque(VSOut i, bool front : SV_IsFrontFace)
     o.color = float4(hdrSafe(lightBlock(i, t.rgb, front, n, sh, ind)), 1);
     o.surface = float4(n * 0.5 + 0.5, i.mat.y > 0.5 ? 1 : min(sh, 0.98));   // 1 = mirror
     o.indirect = float4(ind, 0);
+    o.albedo.a = lerp(o.albedo.a, 0.02, sPuddle);   // (a puddle: sharp reflections)
     return o;
 }
 
@@ -926,7 +970,7 @@ RainOut particle(uint id, float kind, float amount, uint salt)
     float3 h = hash3u(drop * 3 + salt);
     float3 box = float3(36, 30, 36);
     float t = gPrecip.x;
-    float2 wind = float2(1, 0.45) * gWeather2.z;
+    float2 wind = float2(1, 0.45) * gWeather2.z * gRainX.w;                        // (gusts: the wind comes in waves)
     float3 vel;
     if (kind < 0.5) vel = float3(wind.x * 4.0, -(15 + h.x * 5), wind.y * 4.0);
     else if (kind < 1.5) vel = float3(wind.x * 2.5, -(1.6 + h.x * 0.8), wind.y * 2.5);
@@ -963,7 +1007,7 @@ RainOut rainDrop(uint id, uint salt, bool far)
     float t = gPrecip.x;                                                           // a steady clock (the weather changing never makes them jump)
     float3 box = far ? float3(150, 100, 150) : float3(40, 56, 40);
     float low = far ? -44 : -16;                                                   // the column: from low to low + box.y around the camera
-    float2 wind = float2(1, 0.45) * gWeather2.z;
+    float2 wind = float2(1, 0.45) * gWeather2.z * gRainX.w;                        // (gusts: the wind comes in waves)
     float speed = snow ? 1.6 + h.x * 0.9 : 13 + h.x * 5, push = snow ? 2.5 : 4.0;
     float3 vel = float3(wind.x * push, -speed, wind.y * push);                     // (now: for the streaks' slant and where a splash was)
     float3 p = h * box * 7 + float3(gPrecip.y * push, -speed * t, gPrecip.z * push); // how far the wind has carried them, added up as it went
@@ -975,6 +1019,8 @@ RainOut rainDrop(uint id, uint salt, bool far)
     float2 k = q[c % 6];
     float edge = saturate((box.x * 0.5 - max(abs(rel.x), abs(rel.z))) / 6) * saturate((rel.y - low) / 3) * saturate((low + box.y - rel.y) / 6);   // fades at the box's sides, appears at the top
     float rnd = frac(h.z * 7.13) * 0.4;
+    float cur = 1;
+    if (far && !snow) { cur = rainCurtain(rel); if (frac(h.y * 13.7) > 0.3 + 0.9 * cur) return o; }   // far out: heavier and lighter sheets sweeping by
     bool known = false; float g = far ? -1e5 : groundBelow(rel, known);
     if (known && rel.y < g)
     {   // it has landed
@@ -1011,11 +1057,58 @@ RainOut rainDrop(uint id, uint salt, bool far)
     if (c >= 6) return o;
     float dist = length(rel);
     float3 offs;
-    if (!snow) { float3 ax = normalize(vel), side = normalize(cross(ax, rel)); offs = side * (k.x - 0.5) * 2 * (0.01 + dist * 0.0012) * (far ? 1.6 : 1) + ax * (k.y - 0.5) * (far ? 1.5 : 0.6); }
+    if (!snow)
+    {   // a streak along how the drop moves past you: running into the rain tilts it toward you and stretches it
+        float3 rv = vel - clamp(gRainX.xyz, -25, 25); float rs = max(length(rv), 1e-3); float3 ax = rv / rs;
+        float3 sd = cross(ax, rel); float3 side = dot(sd, sd) > 1e-8 ? normalize(sd) : gCamR.xyz;
+        float stretch = clamp(rs / 15, 0.8, 2.5);
+        offs = side * (k.x - 0.5) * 2 * (0.01 + dist * 0.0012) * (far ? 1.6 : 1) + ax * (k.y - 0.5) * (far ? 1.5 : 0.6) * stretch;
+    }
     else offs = (gCamR.xyz * (k.x - 0.5) + gCamU.xyz * (k.y - 0.5)) * (0.07 + dist * 0.002) * (far ? 1.8 : 1);
     o.pos = mul(float4(rel + offs, 1), gViewProj);
     o.uv = k; o.rel = rel; o.kind = (snow ? 1 : 0) + rnd;
-    o.fade = saturate(dist - 0.6) * edge * (far ? saturate((dist - 16) / 10) * 0.75 : 1);
+    o.fade = saturate(dist - 0.6) * edge * (far ? saturate((dist - 16) / 10) * (0.55 + 0.45 * cur) : 1);
+    return o;
+}
+// drips off edges while it rains and after: water running to a roof's or a ledge's edge falls from there, drop after drop. Spots on a
+// quarter-block grid around you (fixed in the world) look at the "what is above" map: where the next spot over is much lower, the edge drips.
+static const uint kDrips = 6000;
+RainOut VS_Drips(uint id : SV_VertexID)
+{
+    RainOut o = (RainOut)0; o.pos = float4(0, 0, -1, 1);
+    uint drop = id / 6, c = id % 6;
+    if (drop >= (uint)(saturate(gWet2.y) * kDrips) || gWeather2.w < 0.5) return o;
+    float3 h = hash3u(drop * 7 + 5);
+    float2 box = 32, cam = gCamPos.xz;
+    float2 rxz = (frac((h.xy * box * 7 - cam) / box) - 0.5) * box;                   // (fixed in the world, wrapped around you)
+    float2 w = floor((cam + rxz) * 4) / 4 + 0.125; rxz = w - cam;
+    bool k0; float g0 = groundBelow(float3(rxz.x, 0, rxz.y), k0); if (!k0) return o;
+    static const float2 dirs[4] = { float2(0.25, 0), float2(-0.25, 0), float2(0, 0.25), float2(0, -0.25) };
+    float best = 1.2, gl = 0; float2 bd = 0;
+    [unroll] for (int k = 0; k < 4; k++) { bool kn; float gn = groundBelow(float3(rxz.x + dirs[k].x, 0, rxz.y + dirs[k].y), kn); if (kn && g0 - gn > best) { best = g0 - gn; gl = gn; bd = dirs[k]; } }
+    if (best <= 1.2) return o;                                                          // not an edge
+    float rate = 0.5 + gWeather.x * 1.5, T = (0.7 + h.z * 1.8) / rate, tc = frac(gPrecip.x / T + h.z * 7.1) * T, hang = 0.35 * T;
+    float3 top = float3(rxz.x + bd.x * 0.5, g0 - 0.04, rxz.y + bd.y * 0.5);             // where it hangs: just over the edge
+    float dist = length(top); if (dist > 24) return o;
+    float near = saturate(1 - dist / 24) * saturate(gWet2.y * 3);
+    static const float2 q[6] = { float2(0, 0), float2(1, 0), float2(1, 1), float2(0, 0), float2(1, 1), float2(0, 1) };
+    float2 kq = q[c];
+    float3 at; float sz = 0.03, len = 0;
+    if (tc < hang) { at = top - float3(0, 0.03 * tc / hang, 0); sz = 0.015 + 0.02 * tc / hang; }      // growing on the edge
+    else
+    {
+        float tf = tc - hang, y = top.y - 10 * tf * tf;
+        if (y < gl)
+        {   // landed: a small ring
+            float tl = sqrt((top.y - gl) / 10), tau = tf - tl; if (tau > 0.3) return o;
+            float r = 0.04 + 0.16 * sqrt(tau / 0.3); float3 b = float3(top.x, gl + 0.02, top.z);
+            o.pos = mul(float4(b + float3((kq.x - 0.5) * 2 * r, 0, (kq.y - 0.5) * 2 * r), 1), gViewProj);
+            o.uv = kq; o.rel = b; o.kind = 5.2; o.fade = (1 - tau / 0.3) * near; return o;
+        }
+        at = float3(top.x, y, top.z); len = 20 * tf * 0.025;                              // falling, a little stretched
+    }
+    float3 offs = gCamR.xyz * (kq.x - 0.5) * 2 * sz + float3(0, 1, 0) * (kq.y - 0.5) * (2 * sz + len);
+    o.pos = mul(float4(at + offs, 1), gViewProj); o.uv = kq; o.rel = at; o.kind = 7.2; o.fade = near;
     return o;
 }
 RainOut VS_Rain(uint id : SV_VertexID) { return rainDrop(id, 1, false); }
@@ -1026,14 +1119,17 @@ float4 PS_Rain(RainOut i) : SV_Target
     float kind = floor(i.kind), rnd = frac(i.kind) / 0.4;
     if (i.fade <= 0.001 || (kind < 1.5 && skyExposed(i.rel) < 0.5)) discard;      // no rain or snow under a roof (dust floats everywhere)
     float3 lc = gAmbient.rgb * 1.4 + gSunColor.rgb * 0.25 + gWeather2.y * float3(1.6, 1.7, 2.2);
+    float boost = 1;
+    if (kind < 1.5 || kind > 4.5) { float3 ex = rainLit(i.rel); lc += ex; boost = 1 + saturate(dot(ex, float3(0.3, 0.5, 0.2))) * 2.5 + gWeather2.y * 1.5; }   // drops glitter in the light (lamps, the sun behind them, lightning)
     float2 d = i.uv * 2 - 1; float rd = saturate(1 - dot(d, d));
+    if (kind > 6.5) return float4(lc * 1.4, saturate(rd * rd * 0.85 * boost) * i.fade);              // a drip: a bead of water
     if (kind > 5.5) { float2 a = i.uv * 2 - 1; float dots = 0;                                       // the crown: a few droplets
         dots += saturate(1 - length(a - float2(-0.45, -0.1)) / 0.22); dots += saturate(1 - length(a - float2(0.1, 0.35)) / 0.2); dots += saturate(1 - length(a - float2(0.5, -0.2)) / 0.18);
-        return float4(lc * 1.3, saturate(dots) * 0.6 * i.fade); }
+        return float4(lc * 1.3, saturate(saturate(dots) * 0.6 * boost) * i.fade); }
     if (kind > 4.5) { float d = length(i.uv * 2 - 1); float ring = exp(-pow((d - 0.78) / 0.12, 2)) + 0.35 * exp(-pow((d - 0.45) / 0.1, 2));   // the ring where a drop landed
-        return float4(lc * 1.2, saturate(ring) * 0.42 * i.fade); }
-    if (kind < 0.5) return float4(lc, (1 - abs(i.uv.x * 2 - 1)) * 0.28 * i.fade);
-    if (kind < 1.5) return float4(lc * 1.2, rd * rd * 0.9 * i.fade);
+        return float4(lc * 1.2, saturate(saturate(ring) * 0.42 * boost) * i.fade); }
+    if (kind < 0.5) return float4(lc, saturate((1 - abs(i.uv.x * 2 - 1)) * 0.28 * boost) * i.fade);
+    if (kind < 1.5) return float4(lc * 1.2, saturate(rd * rd * 0.9 * boost) * i.fade);
     if (kind < 2.5) return float4(gEnvPartColor.rgb * lc, rd * 0.55 * i.fade);
     if (kind < 3.5) return float4(gEnvPartColor.rgb * (4 + 3 * sin(gVolume.z * 3 + rnd * 40)), rd * rd * i.fade);   // glowing embers / spores
     float tw = pow(saturate(sin(gVolume.z * (4 + rnd * 9) + rnd * 60)), 12);                                      // ice sparkles glint
@@ -1766,11 +1862,20 @@ float4 fogCell(float3 rel, float3 dir, float t)   // what one spot of the air gi
         E += ((gSunColor.rgb * sun * phase * 0.18 * gOcc.z + amb * open) * tint) * d + gLookFogCol.rgb * gLookFogCol.w * dl;
         sigma += d;
     }
+    if (gWeather.x > 0.02 && t < 192)   // rain in the air: grey sheets sweeping across far away, a spray hanging over the ground where it lands
+    {
+        float open = gOcc.x > 0.5 ? skyAt(rel) : 1;
+        float dr = gWeather.x * (0.0012 + 0.009 * rainCurtain(rel) * saturate((t - 12) / 30)) * open;
+        bool kn; float g = groundBelow(rel, kn);
+        if (kn) dr += gWeather.x * gWeather.x * 0.05 * exp(-max(rel.y - g, 0) / 0.6) * open * saturate(1 - t / 90);
+        E += (gAmbient.rgb * 0.9 + gSunColor.rgb * 0.1 + gWeather2.y * float3(1.6, 1.7, 2.2)) * dr; sigma += dr;
+    }
     E += lavaAir(rel) * (0.02 + sigma * 2);   // hot air over lava glows
     { float4 af = ambFogAt(rel); if (af.a > 0.001) { float d2 = af.a * 0.05; E += af.rgb * d2; sigma += d2; } }   // an ambient light's room: its own fog
-    if (gLookFog.w > 0.001 && gCl0.x > 0.5 && t < gFogR.w)   // lights glowing in the air
+    float airLights = max(gLookFog.w, gWeather.x * 0.6 * gEnv.x);   // (rain: wet air - lamps get a halo)
+    if (airLights > 0.001 && gCl0.x > 0.5 && t < gFogR.w)   // lights glowing in the air
     {
-        float dens = 0.012 + gVolume.y * exp(-max(y - 1, 0) / 7) * 0.5 + gEnv.w + lookFogAt(y) * 2;
+        float dens = 0.012 + gVolume.y * exp(-max(y - 1, 0) / 7) * 0.5 + gEnv.w + lookFogAt(y) * 2 + gWeather.x * 0.02;
         uint2 cl = gClusters[clusterOf(rel)]; float3 Ls = 0;
         [loop] for (uint j = 0; j < min(cl.y, 12u); j++)
         {
@@ -1786,7 +1891,7 @@ float4 fogCell(float3 rel, float3 dir, float t)   // what one spot of the air gi
             if (L.ext.w >= 0) att *= lightShadow(L, rel, type);
             Ls += L.col.rgb * att;
         }
-        E += Ls * gLookFog.w * 0.8 * dens;
+        E += Ls * airLights * 0.8 * dens;
     }
     return float4(E, sigma);
 }

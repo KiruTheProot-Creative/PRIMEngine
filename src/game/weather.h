@@ -26,6 +26,7 @@ public:
     bool autoChange = false;       // picks a new weather every few minutes
     WeatherLook now;               // what it looks like right now (fading towards the target)
     float wetness = 0, snowCover = 0;   // surfaces: 0..1, build up and dry / melt slowly
+    float puddles = 0;                  // how far puddles have spread (0..1): they grow in a long rain and dry up slowly
     float flash = 0;               // lightning flash brightness, fades fast
     // the last lightning bolt: where it hit (world), when (seconds ago), its random shape
     V3 boltPos{ 0, 0, 0 }; double boltAge = 99; uint32_t boltSeed = 0; int strikes = 0;

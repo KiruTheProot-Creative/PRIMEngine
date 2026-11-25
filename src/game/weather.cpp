@@ -57,6 +57,8 @@ void Weather::update(double dt, V3 player) {
     // surfaces get wet in rain and dry afterwards; snow builds up and melts
     wetness = std::min(1.f, std::max(0.f, wetness + (float)dt * (now.rain > 0.1f ? now.rain / 25 : -1.f / 90)));
     snowCover = std::min(1.f, std::max(0.f, snowCover + (float)dt * (now.snow > 0.1f ? now.snow / 90 : -1.f / 240)));
+    // puddles: once the ground is soaked, they spread while it keeps raining (a heavy rain: full in about two and a half minutes) and dry up slowly after
+    puddles = std::min(1.f, std::max(0.f, puddles + (float)dt * (now.rain > 0.3f && wetness > 0.6f ? now.rain / 150 : -1.f / 240)));
 
     // lightning
     flash *= (float)std::exp(-dt * 7);
