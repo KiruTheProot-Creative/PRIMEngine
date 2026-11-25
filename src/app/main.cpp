@@ -9594,9 +9594,11 @@ struct App {
             }
         }
         double sumMs = loadingOn ? 40 : std::min(1.0, BgLimit(3.0)), buildMs = loadingOn ? 80 : BgLimit(3.0);   // (flying around: a little each frame - the edge comes in a bit slower, no spikes)   // (the loading screen: as much as a frame can take)
-        for (int n = 0; lodQueuePos < lodQueue.size(); n++) {   // boil down: a copy of each chunk (from disk or made), never loaded into the world
-            if ((n & 255) == 0 && ms() >= sumMs) break;
-            const I3& o = lodQueue[lodQueuePos++]; I3 c{ cc.x + o.x, cc.y + o.y, cc.z + o.z }; if (lodSum.count(c)) continue;
+        for (int skips = 0; lodQueuePos < lodQueue.size();) {   // boil down: a copy of each chunk (from disk or made), never loaded into the world
+            const I3& o = lodQueue[lodQueuePos]; I3 c{ cc.x + o.x, cc.y + o.y, cc.z + o.z };
+            if (lodSum.count(c)) { lodQueuePos++; if ((++skips & 1023) == 0 && ms() >= sumMs) break; continue; }
+            if (ms() >= sumMs) break;   // (the clock after every chunk with real work)
+            lodQueuePos++;
             if (world->untouched(c)) {   // never changed: the generator's own, the same for every chunk at this height - boiled down once
                 auto m = lodGenMemo.find(c.y);
                 if (m == lodGenMemo.end()) { lodTmp->pos = c; world->gen.fill(*lodTmp); m = lodGenMemo.emplace(c.y, lodSummarize(reg, *lodTmp)).first; }
@@ -9604,11 +9606,12 @@ struct App {
             }
             world->peekChunk(c, *lodTmp); LodSetSummary(c, lodSummarize(reg, *lodTmp));
         }
-        for (int n = 0; !lodPending.empty(); n++) {   // the new edge (cheap: only a ring of chunks per move)
-            if ((n & 63) == 0 && ms() >= sumMs) break;
-            I3 c = lodPending.back(); lodPending.pop_back();
-            { int dx = c.x - cc.x, dz = c.z - cc.z; if (dx * dx + dz * dz > (R + 1) * (R + 1) || std::abs(c.y - cc.y) > V) continue; }   // (out of reach again)
-            if (lodSum.count(c)) continue;
+        while (!lodPending.empty()) {   // the new edge (cheap: only a ring of chunks per move)
+            I3 c = lodPending.back();
+            { int dx = c.x - cc.x, dz = c.z - cc.z; if (dx * dx + dz * dz > (R + 1) * (R + 1) || std::abs(c.y - cc.y) > V) { lodPending.pop_back(); continue; } }   // (out of reach again)
+            if (lodSum.count(c)) { lodPending.pop_back(); continue; }
+            if (ms() >= sumMs) break;   // (the clock after every chunk with real work: some are read from disk - 64 at once was up to 12 ms)
+            lodPending.pop_back();
             if (world->untouched(c)) {
                 auto m = lodGenMemo.find(c.y);
                 if (m == lodGenMemo.end()) { lodTmp->pos = c; world->gen.fill(*lodTmp); m = lodGenMemo.emplace(c.y, lodSummarize(reg, *lodTmp)).first; }
