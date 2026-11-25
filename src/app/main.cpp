@@ -393,7 +393,7 @@ struct App {
     // PrimeScaler: the picture rebuilt at the screen's size from several frames (the camera moves a fraction of a pixel each frame)
     ComPtr<ID3D11PixelShader> psPrimeScale, psPrimeSharpen, psMotionBlur; double frameDt = 1.0 / 60; V3 blurPrevCam{ 0, 0, 0 }; float jitX = 0, jitY = 0; XMMATRIX jitM = XMMatrixIdentity(); float sampBias = 0;
     static float Halton(uint32_t i, uint32_t b) { float f = 1, r = 0; while (i > 0) { f /= (float)b; r += f * (float)(i % b); i /= b; } return r; }
-    bool PrimeOn() const { return settings.upscaler == 1; }
+    bool PrimeOn() const { return settings.upscaler == 1 || (VrBench() && vrDraw < 0.999f); }
     void SetTextureSharpness(float bias) {   // PrimeScaler below 100%: the textures pick their detail as if drawn at the screen's size (pixel art stays crisp)
         if (std::fabs(bias - sampBias) < 1e-3f && sampBlocks) return;
         sampBias = bias;
@@ -4585,12 +4585,17 @@ struct App {
     struct EyeMemory {   // the second eye's own memory of the frames before (bounce light): each eye blends with itself, not with the other eye
         ComPtr<ID3D11Texture2D> tex[2]; ComPtr<ID3D11RenderTargetView> rtv[2]; ComPtr<ID3D11ShaderResourceView> srv[2]; int cur = 0; bool ok = false;
         XMMATRIX vpPrev = XMMatrixIdentity(); V3 camPrev{ 0, 0, 0 };
+        BloomLevel pHist[2]; int pCur = 0; bool pOk = false; V3 pPrevCam{ 0, 0, 0 }; uint32_t pFrame = 0; ID3D11RenderTargetView* pLastOut = nullptr;   // PrimeScaler's memory
+        ComPtr<ID3D11Texture2D> pZ; ComPtr<ID3D11ShaderResourceView> pZSRV; bool pZOk = false;
     } eye2;
     void SwapEyeMemory() {
         for (int k = 0; k < 2; k++) { std::swap(giHistTex[k], eye2.tex[k]); std::swap(giHistRTV[k], eye2.rtv[k]); std::swap(giHistSRV[k], eye2.srv[k]); }
         std::swap(giCur, eye2.cur); std::swap(giHistOk, eye2.ok); std::swap(histVPPrev, eye2.vpPrev); std::swap(histCamPrev, eye2.camPrev);
+        for (int k = 0; k < 2; k++) std::swap(primeHist[k], eye2.pHist[k]);
+        std::swap(primeCur, eye2.pCur); std::swap(primeOk, eye2.pOk); std::swap(primePrevCam, eye2.pPrevCam); std::swap(primeFrame, eye2.pFrame); std::swap(primeLastOut, eye2.pLastOut);
+        std::swap(primePrevZ, eye2.pZ); std::swap(primePrevZSRV, eye2.pZSRV); std::swap(primePrevZOk, eye2.pZOk);
     }
-    void EnsureEye2() {   // (the same size as the first eye's)
+    void EnsureEye2() {   // (the same size as the first eye's; the PrimeScaler's memory makes itself)
         if (!giHistTex[0]) return;
         D3D11_TEXTURE2D_DESC gd; giHistTex[0]->GetDesc(&gd);
         if (eye2.tex[0]) { D3D11_TEXTURE2D_DESC ed; eye2.tex[0]->GetDesc(&ed); if (ed.Width == gd.Width && ed.Height == gd.Height) return; }
@@ -4599,7 +4604,7 @@ struct App {
     }
     void RenderWorld(ID3D11RenderTargetView* outScreen) {
         if (vrEye == 1) EnsureEye2();
-        bool eyeSwap = vrEye == 1 && (bool)eye2.tex[0]; if (eyeSwap) SwapEyeMemory();
+        bool eyeSwap = vrEye == 1; if (eyeSwap) SwapEyeMemory();
         struct EyeBack { App& a; bool on; ~EyeBack() { if (on) a.SwapEyeMemory(); } } eyeBack{ *this, eyeSwap };
         // render scale: drawn at the world's own size into a picture of that size, fitted to the screen at the end (the HUD over it at the screen's size)
         bool temporal = PrimeOn() && upSrc.rtv && upSrc.w == std::max(16, sceneW) && upSrc.h == std::max(16, sceneH);
@@ -4645,7 +4650,7 @@ struct App {
         jitM = XMMatrixIdentity(); jitX = jitY = 0;
         if (temporal) {   // PrimeScaler: this frame's fraction-of-a-pixel shift (16 spots, spread evenly)
             uint32_t spots = sceneW * 2 < rw ? 32 : 16;   // (below 50%: each drawn pixel covers more screen pixels, so more spots)
-            uint32_t k = frameNo % spots + 1; jitX = Halton(k, 2) - 0.5f; jitY = Halton(k, 3) - 0.5f;
+            uint32_t k = (vrEye >= 0 ? frameNo / 2 : frameNo) % spots + 1;   // (VR: each eye goes through all the spots) jitX = Halton(k, 2) - 0.5f; jitY = Halton(k, 3) - 0.5f;
             jitM = XMMatrixTranslation(2 * jitX / rw, -2 * jitY / rh, 0); vp = vp * jitM; XMStoreFloat4x4(&fc.viewProj, vp);
         }
         SkyParams(fc, settings.timeOfDay);
@@ -5405,7 +5410,7 @@ struct App {
                     primeOk = false;
                 }
                 V3 jd = camPos - primePrevCam;
-                if (outScreen != primeLastOut || frameNo != primeFrame + 1 || std::sqrt(jd.x * jd.x + jd.y * jd.y + jd.z * jd.z) > 4) primeOk = false;   // a new view, a skipped frame, a jump: start again
+                if (outScreen != primeLastOut || frameNo != primeFrame + (vrEye >= 0 ? 2 : 1) || std::sqrt(jd.x * jd.x + jd.y * jd.y + jd.z * jd.z) > 4) primeOk = false;   // a new view, a skipped frame, a jump: start again
                 int nx = 1 - primeCur;
                 float lowK = std::clamp(1.f - (float)sceneW / std::max(1, rw) * 2.f, 0.f, 1.f);   // 0 at 50% and above, up to 1 at 0%: below 50% a longer memory and more sharpening
                 ChunkCB cc{ { jitX, jitY, primeOk ? 0.f : 1.f, std::clamp(settings.upSharp + lowK * 0.6f, 0.f, 1.f) }, { (float)rw, (float)rh, (float)sceneW, (float)sceneH },
@@ -6429,6 +6434,8 @@ struct App {
                 ImGui::SliderFloat("Headset render scale", &vrScale, 0.6f, 1.6f, "%.2f");
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Headsets usually draw bigger than their screens (for the lens).\nSteamVR often picks around 1.2 - 1.4.");
                 ImGui::Text("Each eye: %d x %d (both together: %.1f x the pixels of 1080p)", VrW(), VrH(), 2.0 * VrW() * VrH() / (1920.0 * 1080.0));
+                ImGui::SliderFloat("Drawn at", &vrDraw, 0.5f, 1.0f, "%.2f");
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Each eye drawn smaller, then the PrimeScaler brings it up to full size\n(it uses the frames before for the missing detail). 1.00: drawn at full size.");
                 if (ImGui::Button("Start")) { ImGui::CloseCurrentPopup(); StartBench(true); }
                 ImGui::EndPopup();
             }
@@ -18143,7 +18150,7 @@ struct App {
             else if (dynT > 5.0 && gpuT.total < budget * 0.65 && dynScale < 1.f) { dynScale = std::min(1.f, dynScale + 0.05f); dynT = 0; }   //  so it doesn't go up and down all the time)
         } else if (settings.targetFps <= 0) dynScale = 1.f;
         {   // render scale: the world's own targets at the scaled size, the screen's at the screen's
-            float sc = std::clamp(settings.renderScale * dynScale, 0.25f, 2.f);
+            float sc = VrBench() ? std::clamp(vrDraw, 0.4f, 1.f) : std::clamp(settings.renderScale * dynScale, 0.25f, 2.f);
             int sW = std::max(16, (int)std::lround(wantW * sc)), sH = std::max(16, (int)std::lround(wantH * sc));
             if (wantW != rw || wantH != rh || sW != sceneW || sH != sceneH || dispDW != wantW || dispDH != wantH) {
                 rw = sW; rh = sH; MakeTargets(); sceneW = sW; sceneH = sH;
@@ -18244,7 +18251,7 @@ struct App {
     struct VrHeadset { const char* name; int w, h; float fov; };
     static constexpr VrHeadset VR_SETS[4] = { { "Valve Index (1440 x 1600 per eye)", 1440, 1600, 107 }, { "Quest 3 (2064 x 2208 per eye)", 2064, 2208, 96 },
                                               { "Pimax Crystal Light (2880 x 2880 per eye)", 2880, 2880, 104 }, { "Smaller (1080 x 1200 per eye)", 1080, 1200, 100 } };
-    int vrSet = 1; float vrScale = 1.0f, vrIpd = 0.064f; int vrEye = -1;   // vrScale: like SteamVR's own scale (headsets draw bigger than their panels, for the lens)
+    int vrSet = 1; float vrScale = 1.0f, vrIpd = 0.064f, vrDraw = 0.75f; int vrEye = -1;   // vrDraw: each eye drawn at this share, then the PrimeScaler brings it up to full size   // vrScale: like SteamVR's own scale (headsets draw bigger than their panels, for the lens)
     int VrW() const { return std::max(64, (int)std::lround(VR_SETS[vrSet].w * vrScale)); }
     int VrH() const { return std::max(64, (int)std::lround(VR_SETS[vrSet].h * vrScale)); }
     bool VrBench() const { return bench.vr && (bench.on || bench.loading); }
@@ -18304,7 +18311,7 @@ struct App {
                  v.size(), 1000 / avg, avg, med, p99, 1000 / std::max(0.1, p99), p999, mx, spikes, gavg);
         std::string res = b;
         if (bench.vr) {   // a headset shows every frame: how many came too late, at each refresh rate
-            res += "VR: " + std::string(VR_SETS[vrSet].name); snprintf(b, sizeof b, ", scale %.2f: %d x %d per eye, both eyes every frame\n", vrScale, vrTexW, vrTexH); res += b;
+            res += "VR: " + std::string(VR_SETS[vrSet].name); snprintf(b, sizeof b, ", scale %.2f: %d x %d per eye, both eyes every frame, drawn at %.2f%s\n", vrScale, vrTexW, vrTexH, vrDraw, vrDraw < 0.999f ? " (PrimeScaler)" : ""); res += b;
             snprintf(b, sizeof b, "graphics card per eye: %.2f ms\n", gavg * 0.5); res += b;
             for (double hz : { 90.0, 120.0, 144.0 }) {
                 double budget = 1000.0 / hz; size_t late = 0; for (float x : v) if (x > budget) late++;
