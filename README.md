@@ -266,6 +266,35 @@ For Energy and each counter (Missiles, Power Bombs ...): a model and size, a **b
 Prime's large energy), spinning and bobbing, a light (reach, colour, brightness), its own pickup sound, how long it
 stays and when it starts blinking. A kind without its own look uses the placeholder.
 
+## Rain, the visor's glass and more particles
+
+**Rain**
+- Drops catch the light: they glitter around lamps, glowing blocks and your arm cannon's light, shine when the sun is behind them, and all light up in a lightning flash.
+- Running into the rain tilts the streaks toward you and stretches them (like a windscreen). Standing still, they fall with the wind.
+- The wind comes in gusts, so the rain sways. Far away, heavier and lighter sheets of rain sweep across the land.
+- In heavy rain a low spray hangs over the ground where it lands. Lamps get a soft halo in the wet air (with the smooth fog on).
+- **Puddles**: after the ground is soaked, puddles spread while it keeps raining (full in about two and a half minutes of heavy rain) and dry up slowly after. They're smooth as mirrors, with rain rings in them.
+- **Drips**: water drips off roof edges, overhangs and ledges, drop after drop, while it rains and for a while after.
+
+**On the visor (Play mode, with "drops on the visor" on)**
+- Rain drops come and go on the glass: more when you look up, fewer looking down. Some run down it, leaving a wet trail, and they smear sideways when you turn fast.
+- **Steam** fogs the visor: walk into a steam emitter (Particles > Visor > Fogs the visor) and it fogs up within a second, then clears from the edges in.
+- **Frost** creeps in from the edges in cold places (snow worlds) under the open sky. Steam melts it.
+- **Splats** (goo, or Phazon that glows) hang on a moment, then drip and slide off.
+- **Static**: rows torn sideways, snow and flicker for a moment.
+- **Your face in the glass** on a very bright flash (lightning close by). Put a picture of the face as **screens/visor_face.png** (see-through around it). Without one, there's just a glint along the glass.
+- Going under water washes the glass.
+- Event cards: **Do > on the visor:** Goo splat, Phazon splat, Static, Fog up, Frost, Face in the glass (with how strong).
+
+**New particle presets** (Objects > Add > Particles > Start from)
+- **Steam vent**: a big billowing plume that fogs your visor. The old **Steam** fogs it a little too.
+- **Waterfall spray**: soft mist (the new *Mist* shape) with a rainbow when the sun is behind you.
+- **Bubbles**: rise in water, wobble, pop at the surface (*Only in water*).
+- **Phazon wisps**: glowing blue flames (the new *Wisp* shape) drifting up and swaying, lighting their surroundings.
+- **Electric arc**: jagged bolts from the emitter to a point (*Electric arc > To*), crackling with sparks.
+- **Dust motes**: tiny specks only seen where light falls on them (the new *Mote* shape), like sunbeams through a window.
+- New settings for any emitter: *Sway*, *Only in water*, *Electric arc* (to, bolts, how jagged), *Visor > Fogs the visor*.
+
 ## Water and the sun
 
 - **Under water** (your head under): every sound but menus and music is muffled (Player > Sounds > Water: how much),
