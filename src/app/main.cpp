@@ -1362,7 +1362,7 @@ struct App {
     // ================================================================== game update
     void UpdateGame(double dt) {
         player.applySize(game.player);   // the size from the player rules (editor camera too)
-        bool frozen = Frozen() || bench.on;   // (loading, booting up, the benchmark: nothing moves, nothing can be done)
+        bool frozen = Frozen() || bench.on || bench.loading;   // (loading, booting up, the benchmark: nothing moves, nothing can be done)
         if (!frozen) PlayKeys();
         UpdateRadial();   // build modes: holding Tab (the mouse moves its pointer, not the view)
         bool locked = UpdateLockOn(dt);
@@ -5424,7 +5424,7 @@ struct App {
     }
     void DrawHud(ImDrawList* dl) {
         const float cw = (float)rw, ch = (float)rh;   // the 3D picture's size (it sits at vx, vy in the window)
-        if (playMode && loadingOn) { DrawLoading(dl, vx, vy, cw, ch); return; }   // the loading screen over everything
+        if ((playMode || bench.loading) && loadingOn) { DrawLoading(dl, vx, vy, cw, ch); return; }   // the loading screen over everything
         if (playMode && bootOn && BootPhase(3) <= 0) return;   // (booting up: no crosshair, no messages until the HUD comes)
         if (playMode && !paused && !mapOpen && !hideHud) if (WorldObject* st = StationInReach()) {   // "E: Map Station"
             std::string used = stationsUsed.count(CurrentWorld() + "#" + std::to_string(st->id)) ? " (downloaded)" : "";
@@ -6351,7 +6351,7 @@ struct App {
             ImGui::SameLine(); if (ImGui::Button("Screens")) { screensEdOpen = !screensEdOpen; focusScreensEd = screensEdOpen; }
             ImGui::SameLine(); if (ImGui::Button("Cook")) { cookOpenW = !cookOpenW; focusCook = cookOpenW; if (cookOpenW) { cookMapX0 = (int)std::floor(camPos.x) - COOKMAP / 2; cookMapZ0 = (int)std::floor(camPos.z) - COOKMAP / 2; cookY0 = (int)std::floor(camPos.y) - 64; cookY1 = (int)std::floor(camPos.y) + 96; cookLayer = (int)std::floor(camPos.y) + 1; cookMapDirty = true; } }
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Cooking for export: a map of the world from above, pick the chunks, Test-cook");
-            ImGui::SameLine(); if (ImGui::Button(bench.on ? "Benchmark ..." : "Benchmark") && !bench.on) StartBench();
+            ImGui::SameLine(); if (ImGui::Button(bench.on || bench.loading ? "Benchmark ..." : "Benchmark") && !bench.on && !bench.loading) StartBench();
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("30 seconds, the same flight every time (from the spawn point): every frame measured.\nThe result is kept in benchmarks.txt, to compare with the next run.");
             ImGui::SameLine(); if (ImGui::Button("Rooms")) { roomsOpenW = !roomsOpenW; focusRooms = roomsOpenW; }
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("The Room Manager: the rooms (found by themselves, or marked by hand), their names, ambient light, music");
@@ -9929,7 +9929,7 @@ struct App {
     // rooms, the ambient lights, every lamp's baked shadow - then the visor boots up (black, the helmet, cyan outlines, colour, the HUD)
     bool loadingOn = false, bootOn = false, loadBoot = true, fanfareLater = false; int loadStep = 0, loadStable = 0, lshStaticBaked = 0; size_t loadLastLoaded = 0;
     double loadT = 0, loadStepT = 0, bootT = 0; std::string loadWhat; float loadFrac = 0, loadShown = 0; int loadLampsDone = 0, loadLampsAll = 0;
-    bool Frozen() const { return playMode && (loadingOn || bootOn); }
+    bool Frozen() const { return (playMode || bench.loading) && (loadingOn || bootOn); }
     void BeginLoading(bool boot) {
         loadingOn = true; bootOn = false; loadBoot = boot && screens.bootOn; loadStep = 0; loadStable = 0; loadT = loadStepT = 0; loadLastLoaded = 0; loadFrac = loadShown = 0;
         for (LshSlot& sl : lshSlots) sl.staticOk = false;   // (every lamp's shadow baked fresh)
@@ -9942,7 +9942,7 @@ struct App {
         if (fanfareLater) { fanfareLater = false; SpawnFanfare(); }
     }
     void UpdateLoading(double dt) {
-        if (!playMode) { loadingOn = bootOn = false; return; }
+        if (!playMode && !bench.loading) { loadingOn = bootOn = false; return; }   // (the editor: only the benchmark loads)
         if (bootOn) { bootT += dt; if (bootT >= BootLen() + 0.2) bootOn = false; return; }
         if (!loadingOn) return;
         loadT += dt; loadStepT += dt;
@@ -18053,7 +18053,8 @@ struct App {
         if (screen == Screen::Game) {
             CpuMark("game: player, objects");
             float slow = DeathNow().slow; double gdt = dt * slow; UpdateGame(gdt);
-            if (bench.on) { bench.t += dt; BenchPlace(); if (bench.t >= BENCH_LEN) FinishBench(); }   // (the benchmark's flight: the camera where it should be now)
+            if (bench.loading) { BenchPlace(); if (!loadingOn) { bench.loading = false; bench.on = true; bench.t = 0; Toast("Benchmark: 30 seconds, hands off ..."); } }   // (loaded: now the flight)
+            else if (bench.on) { bench.t += dt; BenchPlace(); if (bench.t >= BENCH_LEN) FinishBench(); }   // (the benchmark's flight: the camera where it should be now)
             CpuMark("screens, death");
             if (slow < 1 && playMode && !paused && play.dead()) play.deadFor += dt - gdt;   // (slow motion: the world slows, the sequence does not)
             DeathSkip(); UpdateDeathSounds();
@@ -18124,15 +18125,16 @@ struct App {
     }
     // ================================================================== the benchmark: the same flight every time (from the spawn point), every frame measured, the result kept
     // (projectDir/benchmarks.txt) so each optimization can be compared with the run before. 0-8 s: a full turn; 8-19 s: flying ahead; 19-30 s: back, rising
-    struct Bench { bool on = false; double t = 0; V3 start{ 0, 0, 0 }, keepFeet{ 0, 0, 0 }; double yaw0 = 0, keepYaw = 0, keepPitch = 0; bool keepFly = false;
+    struct Bench { bool on = false, loading = false; double t = 0; V3 start{ 0, 0, 0 }, keepFeet{ 0, 0, 0 }; double yaw0 = 0, keepYaw = 0, keepPitch = 0; bool keepFly = false;
                    std::vector<float> ms, gms; std::map<std::string, double> cpuSum, gpuSum; std::string result; bool show = false;
                    std::vector<std::vector<std::pair<const std::string*, float>>> frames; } bench;   // frames: each frame's steps (to see what the spikes were made of)
     static constexpr double BENCH_LEN = 30;
     void StartBench() {
         if (playMode || !world) return;
-        bench = Bench{}; bench.on = true; bench.keepFeet = player.feet; bench.keepYaw = player.yaw; bench.keepPitch = player.pitch; bench.keepFly = player.flying;
+        bench = Bench{}; bench.loading = true; bench.keepFeet = player.feet; bench.keepYaw = player.yaw; bench.keepPitch = player.pitch; bench.keepFly = player.flying;
         bench.start = info.hasSpawn ? info.spawn + V3{ 0, 0.5, 0 } : player.feet; bench.yaw0 = info.hasSpawn ? info.spawnYaw : player.yaw;
-        Capture(false); Toast("Benchmark: 30 seconds, hands off ...");
+        Capture(false); BenchPlace();   // (at the start of the flight: everything around it loaded first, the same way every run)
+        BeginLoading(false);
     }
     void BenchPlace() {   // where the camera is now on the flight
         double t = bench.t, PI = 3.14159265358979; V3 f{ std::sin(bench.yaw0), 0, std::cos(bench.yaw0) };
@@ -18189,7 +18191,7 @@ struct App {
         if (ImGui::Begin("Benchmark", &bench.show)) {
             ImGui::TextUnformatted(bench.result.c_str());
             ImGui::Separator(); ImGui::TextDisabled("Kept in the project's benchmarks.txt (every run, newest last).");
-            if (ImGui::Button("Run it again")) { bench.show = false; StartBench(); }
+            if (ImGui::Button("Run it again") && !bench.on && !bench.loading) { bench.show = false; StartBench(); }
             ImGui::SameLine(); if (ImGui::Button("Copy")) ImGui::SetClipboardText(bench.result.c_str());
         }
         ImGui::End();

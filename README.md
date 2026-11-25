@@ -564,8 +564,8 @@ Fog, light shafts and lights glowing in the air are worked out in a small 3D gri
 
 ## Benchmark
 
-- **Benchmark** in the toolbar: a 30-second flight, the same every time (from the spawn point: a full turn, flying ahead, back up high), with every frame measured.
-- The result shows the average, the slowest 1% and 0.1% of frames, spikes, the graphics card's time, and the processor's and graphics card's biggest steps. Every run is kept in the project's `benchmarks.txt` (newest last), to compare one change with the run before.
+- **Benchmark** in the toolbar: a 30-second flight, the same every time (from the spawn point: a full turn, flying ahead, back up high), with every frame measured. It starts with the loading screen at the spawn point (chunks, distant detail, rooms, ambient lights, lamp shadows), so every run starts from the same fully loaded state.
+- The result shows the average, the slowest 1% and 0.1% of frames, spikes, the graphics card's time, the processor's and graphics card's biggest steps, what the spike frames were made of, and the slowest frame on its own. Every run is kept in the project's `benchmarks.txt` (newest last), to compare one change with the run before.
 
 ## Loading screen and boot-up
 
