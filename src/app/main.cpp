@@ -11211,11 +11211,12 @@ struct App {
     void CloseScreens() { curScreen = -1; screenBack.clear(); bindCapture = -1; inNewGameIntro = false; }
     void PlayFromMenu() {   // F6: the game as a player starts it, from the main menu
         if (screen != Screen::Game || playMode) return;
-        int mm = screens.byRole(ScreenRole::MainMenu);
-        if (mm < 0) { Toast("There is no main menu yet (Screens editor): playing right away"); StartPlay(); return; }
+        int first = screens.byRole(ScreenRole::Intro);   // a splash / intro first, if the game has one; else the main menu; else the save files
+        if (first < 0) first = screens.byRole(ScreenRole::MainMenu);
+        if (first < 0) first = screens.byRole(ScreenRole::Files);
+        if (first < 0) { Toast("There is no splash, main menu or Files screen yet (Screens editor): playing right away"); StartPlay(); return; }
         menuSession = true; menuEditorWorld = CurrentWorld(); menuEditorCam = player; plainView = true; editorOpen = false;
-        int first = screens.byRole(ScreenRole::Intro);   // a splash / intro first, if the game has one
-        Capture(false); ShowScreen(first >= 0 ? first : mm, false);
+        Capture(false); ShowScreen(first, false);
     }
     void LeaveMenuSession() {   // back to the editor, as it was
         if (playMode) StopPlay();
@@ -11227,6 +11228,8 @@ struct App {
     void BackToMainMenu() {
         if (playMode) StopPlay();
         int mm = screens.byRole(ScreenRole::MainMenu);
+        if (mm < 0) mm = screens.byRole(ScreenRole::Intro);   // (no main menu: back to the title)
+        if (mm < 0) mm = screens.byRole(ScreenRole::Files);
         if (!menuSession || mm < 0) { CloseScreens(); if (menuSession) LeaveMenuSession(); return; }
         CloseScreens(); plainView = true; ShowScreen(mm, false);
     }
@@ -11286,6 +11289,7 @@ struct App {
         if (inNewGameIntro && (sc->next.empty() || screens.find(sc->next) < 0)) { int sl = pendingSlot > 0 ? pendingSlot : 1; pendingSlot = 0; StartSlot(sl); blackIn = 1; return; }
         int idx = sc->next.empty() ? -1 : screens.find(sc->next);
         if (idx < 0 || idx == curScreen) idx = screens.byRole(ScreenRole::MainMenu);
+        if (idx < 0 || idx == curScreen) idx = screens.byRole(ScreenRole::Files);   // (a game without a main menu: the save files)
         if (idx < 0) { if (menuSession) LeaveMenuSession(); else CloseScreens(); return; }
         screenBack.clear(); ShowScreen(idx, false);
     }
