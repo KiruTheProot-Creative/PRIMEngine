@@ -6426,7 +6426,13 @@ struct App {
             ImGui::SameLine(); if (ImGui::Button("Screens")) { screensEdOpen = !screensEdOpen; focusScreensEd = screensEdOpen; }
             ImGui::SameLine(); if (ImGui::Button("Cook")) { cookOpenW = !cookOpenW; focusCook = cookOpenW; if (cookOpenW) { cookMapX0 = (int)std::floor(camPos.x) - COOKMAP / 2; cookMapZ0 = (int)std::floor(camPos.z) - COOKMAP / 2; cookY0 = (int)std::floor(camPos.y) - 64; cookY1 = (int)std::floor(camPos.y) + 96; cookLayer = (int)std::floor(camPos.y) + 1; cookMapDirty = true; } }
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Cooking for export: a map of the world from above, pick the chunks, Test-cook");
-            ImGui::SameLine(); if (ImGui::Button(bench.on || bench.loading ? "Benchmark ..." : "Benchmark") && !bench.on && !bench.loading) StartBench();
+            ImGui::SameLine(); if (ImGui::Button(bench.on || bench.loading ? "Benchmark ..." : "Benchmark") && !bench.on && !bench.loading) ImGui::OpenPopup("flatbench");
+            if (ImGui::BeginPopup("flatbench")) {
+                ImGui::TextUnformatted("30 seconds of flight, drawn at a real screen's size:");
+                for (int i = 0; i < 4; i++) { char b[32]; snprintf(b, sizeof b, "%d x %d", BENCH_RES[i][0], BENCH_RES[i][1]); if (i) ImGui::SameLine(); ImGui::RadioButton(b, &benchRes, i); }
+                if (ImGui::Button("Start")) { ImGui::CloseCurrentPopup(); StartBench(); }
+                ImGui::EndPopup();
+            }
             ImGui::SameLine(); if (ImGui::Button("VR benchmark") && !bench.on && !bench.loading) ImGui::OpenPopup("vrbench");
             if (ImGui::BeginPopup("vrbench")) {
                 ImGui::TextUnformatted("The same flight, drawn as a headset needs it:"); ImGui::TextDisabled("both eyes every frame, at a headset's size (no headset needed)");
@@ -18143,6 +18149,7 @@ struct App {
         bool ev = EditorView();
         int wantW = ev ? (int)viewSize.x : cw, wantH = ev ? (int)viewSize.y : ch;   // the editor draws the world at the viewport panel's size
         if (VrBench()) { wantW = VrW(); wantH = VrH(); }   // (the VR benchmark: each eye at the headset's size)
+        else if (FlatBench()) { wantW = BENCH_RES[benchRes][0]; wantH = BENCH_RES[benchRes][1]; }   // (the benchmark: a real screen's size)
         wantW = std::max(16, wantW); wantH = std::max(16, wantH);
         if (settings.targetFps > 0 && screen == Screen::Game && gpuT.total > 0) {   // auto resolution: by the graphics card's time per frame
             dynT += dt; double budget = 1000.0 / settings.targetFps;
@@ -18251,6 +18258,9 @@ struct App {
     struct VrHeadset { const char* name; int w, h; float fov; };
     static constexpr VrHeadset VR_SETS[4] = { { "Valve Index (1440 x 1600 per eye)", 1440, 1600, 107 }, { "Quest 3 (2064 x 2208 per eye)", 2064, 2208, 96 },
                                               { "Pimax Crystal Light (2880 x 2880 per eye)", 2880, 2880, 104 }, { "Smaller (1080 x 1200 per eye)", 1080, 1200, 100 } };
+    static constexpr int BENCH_RES[4][2] = { { 1280, 720 }, { 1920, 1080 }, { 2560, 1440 }, { 3840, 2160 } };
+    int benchRes = 1;   // the normal benchmark: always this size (not the editor's view, which is smaller), so runs compare
+    bool FlatBench() const { return !bench.vr && (bench.on || bench.loading); }
     int vrSet = 1; float vrScale = 1.0f, vrIpd = 0.064f, vrDraw = 0.75f; int vrEye = -1;   // vrDraw: each eye drawn at this share, then the PrimeScaler brings it up to full size   // vrScale: like SteamVR's own scale (headsets draw bigger than their panels, for the lens)
     int VrW() const { return std::max(64, (int)std::lround(VR_SETS[vrSet].w * vrScale)); }
     int VrH() const { return std::max(64, (int)std::lround(VR_SETS[vrSet].h * vrScale)); }
@@ -18266,7 +18276,15 @@ struct App {
         }
         vrTexW = rw; vrTexH = rh;
     }
-    void DrawVrEyes() {   // over everything: both eyes side by side, fitted to the window
+    void DrawVrEyes() {   // over everything: both eyes side by side, fitted to the window (the normal benchmark: its picture, fitted)
+        if (FlatBench() && !bench.loading && sceneSRV) {
+            ImDrawList* dl = ImGui::GetForegroundDrawList(); ImVec2 ds = ImGui::GetIO().DisplaySize;
+            dl->AddRectFilled(ImVec2(0, 0), ds, IM_COL32(0, 0, 0, 255));
+            float k = std::min(ds.x / std::max(1, rw), ds.y / (float)std::max(1, rh)), w = rw * k, h = rh * k;
+            dl->AddImage((ImTextureID)(intptr_t)sceneSRV.Get(), ImVec2((ds.x - w) * 0.5f, (ds.y - h) * 0.5f), ImVec2((ds.x + w) * 0.5f, (ds.y + h) * 0.5f));
+            char b[96]; snprintf(b, sizeof b, "Benchmark: %d x %d  -  %.0f s", rw, rh, BENCH_LEN - bench.t); dl->AddText(ImVec2(12, 10), IM_COL32(120, 230, 255, 255), b);
+            return;
+        }
         if (!VrBench() || !vrSRV[0] || bench.loading) return;
         ImDrawList* dl = ImGui::GetForegroundDrawList(); ImVec2 ds = ImGui::GetIO().DisplaySize;
         dl->AddRectFilled(ImVec2(0, 0), ds, IM_COL32(0, 0, 0, 255));
@@ -18331,6 +18349,7 @@ struct App {
             if (worst < bench.frames.size()) { std::map<std::string, double> w; for (auto& st : bench.frames[worst]) w[*st.first] += st.second; res += "the slowest frame:\n" + top(w, 6, 1.0); }
         }
         if (!bench.gpuSum.empty()) res += "graphics card, per frame:\n" + top(bench.gpuSum, 8, (double)std::max<size_t>(1, bench.gms.size()));
+        if (!bench.vr) { snprintf(b, sizeof b, "drawn at %d x %d\n", BENCH_RES[benchRes][0], BENCH_RES[benchRes][1]); res += b; }
         snprintf(b, sizeof b, "settings: render distance %d, distant detail %d, render scale %.2f, shadows %d (%d), lamp shadows %d at %d, reflections %d, frame cap %d, vsync %d",
                  settings.renderDistance, settings.distantDetail, settings.renderScale, settings.shadowQuality, settings.shadowRes, settings.lightShadows, lshRes, settings.reflections, settings.maxFps, settings.vsync ? 1 : 0);
         res += b;
