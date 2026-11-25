@@ -32,6 +32,43 @@ int main() {
     CHECK(faces(meshOf(w, reg, { 0, 0, 0 }).cutout) == 22, "leaves keep the faces between them (bushy look)");
     w.set(7, 5, 5, glass);
     CHECK(faces(meshOf(w, reg, { 0, 0, 0 }).opaque) == 10, "stone next to glass keeps its face behind the glass");
+    {   // a face that varies from block to block: turned, mirrored, other textures - by the block's place, always the same
+        BlockRegistry vr; registerBuiltinBlocks(vr);
+        BlockId vs = vr.find("stone"); BlockDef d = vr.get(vs); int own = d.tex[F_PY], cob = vr.textureIndex("cobblestone"), dirtT = vr.textureIndex("dirt");
+        d.vary[F_PY].turns = 2; d.vary[F_PY].others = { "cobblestone", "dirt", "no such texture" }; d.vary[F_PY].weights = { 1, 2, 5 }; d.vary[F_PY].ownWeight = 1;
+        vr.put(vs, d);
+        World vw(vr); vw.gen.kind = Generator::Void;
+        for (int y = -1; y <= 1; y++) for (int z = -1; z <= 1; z++) for (int x = -1; x <= 1; x++) vw.loadChunk({ x, y, z });
+        for (int z = 0; z < CS; z++) for (int x = 0; x < CS; x++) vw.set(x, 3, z, vs);
+        auto tops = [&](const ChunkMesh& cm) {   // each top face: its layer, and which way its first corner's texture coordinates point
+            std::map<std::pair<int, int>, std::pair<int, int>> out;
+            for (size_t i = 0; i + 3 < cm.opaque.v.size(); i += 4) {
+                const Vtx& a = cm.opaque.v[i]; if (faceOf(a) != F_PY) continue;
+                int turn = (a.u < 0.5f ? 0 : 1) + (a.v < 0.5f ? 0 : 2);
+                out[{ (int)std::floor(a.x), (int)std::floor(a.z) }] = { (int)std::lround(a.layer), turn };
+            }
+            return out;
+        };
+        auto t1 = tops(meshOf(vw, vr, { 0, 0, 0 })), t2 = tops(meshOf(vw, vr, { 0, 0, 0 }));
+        std::map<int, int> layers; std::set<int> turns; int sides = 0;
+        for (auto& kv : t1) { layers[kv.second.first]++; turns.insert(kv.second.second); }
+        for (const Vtx& vx : meshOf(vw, vr, { 0, 0, 0 }).opaque.v) if (faceOf(vx) == F_PX && std::lround(vx.layer) != d.tex[F_PX]) sides++;
+        CHECK(t1.size() == (size_t)CS * CS && t1 == t2, "varying tops: the same look each time the chunk is built");
+        CHECK(turns.size() == 4, "quarter turns: all four ways come up (%zu)", turns.size());
+        float n = (float)t1.size();
+        CHECK(layers.size() == 3 && layers[own] > 0 && std::fabs(layers[dirtT] / n - 0.5f) < 0.12f && std::fabs(layers[cob] / n - 0.25f) < 0.12f,
+              "other textures as often as their weights say (own %d, cobblestone %d, dirt %d of %d; a missing texture left out)", layers[own], layers[cob], layers[dirtT], (int)n);
+        CHECK(sides == 0, "the faces that don't vary stay as they were");
+        BlockDef d2 = vr.get(vs); d2.vary[F_PY].seed = 7; vr.put(vs, d2);
+        auto t3 = tops(meshOf(vw, vr, { 0, 0, 0 })); int diff = 0; for (auto& kv : t1) diff += t3[kv.first] != kv.second;
+        CHECK(diff > (int)t1.size() / 3, "shuffle (another seed): another pick (%d of %zu changed)", diff, t1.size());
+        BlockDef h = vr.get(vs); h.vary[F_PY] = FaceVary{}; h.vary[F_PY].turns = 1; vr.put(vs, h);
+        std::set<int> half; for (auto& kv : tops(meshOf(vw, vr, { 0, 0, 0 }))) { half.insert(kv.second.second); if (kv.second.first != own) diff = -1000; }
+        CHECK(half.size() == 2 && diff > -1000, "half turns: only two ways (0 and 180 degrees), its own texture only");
+        float u = 0.1f, v = 0.2f; BlockDef m = vr.get(vs); m.vary[F_PY] = FaceVary{}; m.vary[F_PY].mirror = true; int mirrored = 0;
+        for (int x = 0; x < 64; x++) { float uu = u, vv = v; varyFace(m, F_PY, x, 0, 0, own, uu, vv); mirrored += uu > 0.5f; if (vv != v) mirrored = -1000; }
+        CHECK(mirrored > 16 && mirrored < 48, "mirrored: about half of them (%d of 64), not turned", mirrored);
+    }
     {   // a block lit by its texture's emission map lights what is around it, like a lamp (but does not glow all over)
         BlockRegistry r2; registerBuiltinBlocks(r2);
         BlockDef gd = r2.get(r2.find("stone")); gd.name = "glow panel"; gd.light = 0; gd.autoLight = 12; gd.autoLightColor = 0x2080FF; BlockId gp = r2.add(gd);

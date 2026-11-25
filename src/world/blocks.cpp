@@ -64,6 +64,7 @@ void BlockRegistry::put(BlockId id, const BlockDef& d) {
     id = typeOf(id); if (id == AIR) return;
     if (defs.size() <= id) { BlockDef gap; gap.exists = false; defs.resize(id + 1, gap); }
     defs[id] = d; defs[id].exists = true; nextId = std::max<int>(nextId, id + 1);
+    resolveVary(defs[id]);
     for (int f = 0; f < 6; f++) {
         int t = textureIndex(d.faces[f]); defs[id].tex[f] = t < 0 ? 0 : t;
         if (d.glow[f].on()) {   // its glowing copy, if it is there and still right (else resolve() makes it)
@@ -94,6 +95,16 @@ void BlockRegistry::resolve() {
             if (!d.exists || !d.glow[f].on() || t <= 0) continue;
             TexImage v = textures[t]; v.name = glowLayerName((BlockId)id, f); v.baseName = textures[t].name; v.glow = d.glow[f];
             textures.push_back(std::move(v)); d.tex[f] = (int)textures.size() - 1;
+        }
+    }
+    for (BlockDef& d : defs) resolveVary(d);
+}
+void BlockRegistry::resolveVary(BlockDef& d) const {   // a varying face's other textures: names -> layers (missing ones left out)
+    for (int f = 0; f < 6; f++) {
+        d.varyTex[f].clear(); const FaceVary& v = d.vary[f];
+        for (size_t i = 0; i < v.others.size(); i++) {
+            int t = textureIndex(v.others[i]); float w = i < v.weights.size() ? v.weights[i] : 1.f;
+            if (t > 0 && w > 0) d.varyTex[f].push_back({ t, w });
         }
     }
 }

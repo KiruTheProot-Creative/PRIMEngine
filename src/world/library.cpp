@@ -62,6 +62,11 @@ bool Library::saveBlocks(const BlockRegistry& r) const {
                 const FaceGlow& g = d.glow[k];
                 f << "\nface_glow = " << k << " " << g.mode << " " << hex6(g.color) << " " << g.strength << " " << g.from << " " << g.lights << " " << (g.map.empty() ? "-" : g.map);
             }
+            for (int k = 0; k < 6; k++) if (d.vary[k].on()) {   // a face that varies: turns, mirrored, seed, its own texture's weight; then each other texture
+                const FaceVary& v = d.vary[k];
+                f << "\nface_vary = " << k << " " << v.turns << " " << (v.mirror ? 1 : 0) << " " << v.seed << " " << v.ownWeight;
+                for (size_t i = 0; i < v.others.size(); i++) f << "\nface_vary_texture = " << k << " " << (i < v.weights.size() ? v.weights[i] : 1.f) << " " << v.others[i];
+            }
             f << "\n";
         }
         if (!f) return false;
@@ -130,6 +135,14 @@ bool Library::load(BlockRegistry& r, std::string* report) {
                 std::getline(ss, map); map = trim(map); g.map = map == "-" ? "" : map;
                 if (fi >= 0 && fi < 6) d.glow[fi] = g;
             }
+        }
+        else if (k == "face_vary") {
+            std::istringstream ss(v); int fi = -1, tn = 0, mi = 0; uint32_t seed = 0; float own = 1;
+            if (ss >> fi >> tn >> mi >> seed >> own && fi >= 0 && fi < 6) { FaceVary& fv = d.vary[fi]; fv.turns = std::clamp(tn, 0, 2); fv.mirror = mi != 0; fv.seed = seed; fv.ownWeight = std::max(0.f, own); }
+        }
+        else if (k == "face_vary_texture") {
+            std::istringstream ss(v); int fi = -1; float w = 1; std::string name;
+            if (ss >> fi >> w && fi >= 0 && fi < 6) { std::getline(ss, name); name = trim(name); if (!name.empty()) { d.vary[fi].others.push_back(name); d.vary[fi].weights.push_back(std::max(0.f, w)); } }
         }
         else if (k == "faces") {
             std::istringstream ss(v); std::vector<std::string> n; std::string t; while (ss >> t) n.push_back(t == "-" ? "" : t);

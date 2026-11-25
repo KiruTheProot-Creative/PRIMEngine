@@ -5959,9 +5959,10 @@ struct App {
     }
     void EditBlock(BlockId id) {
         draftId = id; draft = reg.get(id); pickSlot = -1; editorOpen = true;
-        const auto& f = draft.faces;
-        bool sidesSame = f[F_PX] == f[F_NX] && f[F_PX] == f[F_PZ] && f[F_PX] == f[F_NZ];
-        faceMode = sidesSame && f[F_PY] == f[F_PX] && f[F_NY] == f[F_PX] ? 0 : sidesSame ? 1 : 2;
+        const auto& f = draft.faces; const auto& vy = draft.vary; const auto& gl = draft.glow;   // (faces only count as the same with the same variation and glow too)
+        auto same = [&](int a, int b) { return f[a] == f[b] && vy[a] == vy[b] && gl[a] == gl[b]; };
+        bool sidesSame = same(F_PX, F_NX) && same(F_PX, F_PZ) && same(F_PX, F_NZ);
+        faceMode = sidesSame && same(F_PY, F_PX) && same(F_NY, F_PX) ? 0 : sidesSame ? 1 : 2;
     }
     void NewBlock() {
         draftId = AIR; draft = BlockDef{}; draft.name = reg.uniqueName("New block"); pickSlot = -1; faceMode = 0; editorOpen = true;
@@ -6333,6 +6334,15 @@ struct App {
                 if (g0.on()) ImGui::PopStyleColor();
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Make this face glow (only on this block - other blocks with the same texture don't).");
                 if (ImGui::BeginPopup("glow")) { FaceGlow g = g0; if (FaceGlowUI(g, slots[i].label)) for (int f : slots[i].faces) draft.glow[f] = g; ImGui::EndPopup(); }
+            }
+            {   // this face varying from block to block: turned, mirrored, other textures
+                int f0 = slots[i].faces[0]; FaceVary& v0 = draft.vary[f0];
+                ImGui::SameLine();
+                if (v0.on()) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.5f, 0.85f, 0.85f));
+                if (ImGui::SmallButton(v0.on() ? "Varies" : "Vary")) ImGui::OpenPopup("vary");
+                if (v0.on()) ImGui::PopStyleColor();
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Make this face vary from block to block: random turns and / or other textures mixed in\n(so big floors and walls don't look like one tile over and over).");
+                if (ImGui::BeginPopup("vary")) { FaceVary v = v0; if (FaceVaryUI(v, slots[i].label, draft.tex[f0], draft.faces[f0])) for (int f : slots[i].faces) draft.vary[f] = v; ImGui::EndPopup(); }
             }
             ImGui::EndGroup();
             if (ImGui::BeginPopup("pick")) {   // choose a texture for this slot
@@ -16408,6 +16418,66 @@ struct App {
         for (int pass = 0; pass < 2; pass++) DrawModelAxes(pass, model, BeCentre(), beAx * s, beAy * s, beAz * s, eye, &pv);
         ID3D11ShaderResourceView* none[10] = {}; ctx->PSSetShaderResources(0, 10, none); ctx->RSSetState(rsCull.Get());
         ctx->OMSetRenderTargets(0, nullptr, nullptr);
+    }
+    bool FaceVaryUI(FaceVary& v, const char* label, int baseLayer, const std::string& baseName) {   // a block face that varies from block to block (block editor)
+        bool ch = false; float ui = settings.uiScale;
+        ImGui::SeparatorText((std::string("Variation: ") + label).c_str());
+        const char* tn[] = { "No", "Half turns (0 or 180 degrees)", "Quarter turns (any way)" };
+        Prop("Random turns"); ImGui::SetNextItemWidth(230 * ui); ch |= ImGui::Combo("##fvt", &v.turns, tn, 3);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Half turns: for textures with a direction (bricks, panels) - they stay lying the right way.\nQuarter turns: for textures without one (stone, dirt, sand, grates).");
+        Prop("Mirrored too"); ch |= ImGui::Checkbox("##fvm", &v.mirror);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("About half of them are mirrored as well (with quarter turns: 8 looks out of one texture).");
+        ImGui::SeparatorText("Other textures");
+        Prop(baseName.empty() ? "Its own" : baseName.c_str()); ImGui::SetNextItemWidth(160 * ui); ch |= ImGui::SliderFloat("##fvo", &v.ownWeight, 0, 10, "how often: %.1f");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("How often its own texture comes up, against the others below (e.g. 7 : 2 : 1).");
+        v.weights.resize(v.others.size(), 1.f);
+        for (size_t i = 0; i < v.others.size(); i++) {
+            ImGui::PushID((int)i);
+            int t = reg.textureIndex(v.others[i]); ImVec2 q = ImGui::GetCursorScreenPos(); float s = 22 * ui;
+            ImGui::Dummy(ImVec2(s, s)); if (t > 0) TextureImage(t, q, s, 1); ImGui::SameLine();
+            ImGui::TextUnformatted(t > 0 ? v.others[i].c_str() : (v.others[i] + " (not there)").c_str()); ImGui::SameLine(200 * ui);
+            ImGui::SetNextItemWidth(130 * ui); ch |= ImGui::SliderFloat("##fvw", &v.weights[i], 0, 10, "how often: %.1f"); ImGui::SameLine();
+            bool drop = ImGui::SmallButton("x");
+            ImGui::PopID();
+            if (drop) { v.others.erase(v.others.begin() + i); v.weights.erase(v.weights.begin() + i); ch = true; break; }
+        }
+        if (ImGui::Button("+ Add a texture")) ImGui::OpenPopup("fvpick");
+        if (ImGui::BeginPopup("fvpick")) {
+            float s = 48 * ui; int n = 0;
+            ImGui::BeginChild("fvgrid", ImVec2(GridChildWidth(s, 8), (s + ImGui::GetStyle().ItemSpacing.y) * 4 + 12), ImGuiChildFlags_Borders);
+            for (int t = 1; t < (int)reg.textureCount(); t++) {
+                if (reg.image(t).variant()) continue;
+                ImGui::PushID(t); ImVec2 q;
+                if (Tile("t", q, s)) { v.others.push_back(reg.image(t).name); v.weights.push_back(1.f); ch = true; ImGui::CloseCurrentPopup(); }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", reg.image(t).name.c_str());
+                TextureImage(t, q, s, 3);
+                ImGui::PopID(); if (++n % 8) ImGui::SameLine();
+            }
+            ImGui::EndChild(); ImGui::EndPopup();
+        }
+        ImGui::SeparatorText("How it looks");
+        {   // a 6 x 6 patch of this face, picked exactly as the world picks it
+            BlockDef tmp; tmp.vary[F_PY] = v; reg.resolveVary(tmp);
+            const int N = 6; float cell = 30 * ui; ImVec2 o = ImGui::GetCursorScreenPos(); ImDrawList* dl = ImGui::GetWindowDrawList();
+            ImGui::Dummy(ImVec2(cell * N, cell * N));
+            dl->AddCallback(PointSampling, nullptr);
+            for (int z = 0; z < N; z++) for (int x = 0; x < N; x++) {
+                float cu[4] = { 0, 1, 1, 0 }, cv[4] = { 0, 0, 1, 1 }; int layer = baseLayer;
+                for (int k = 0; k < 4; k++) layer = varyFace(tmp, F_PY, x, 0, z, baseLayer, cu[k], cv[k]);
+                ImVec2 p0(o.x + x * cell, o.y + z * cell);
+                dl->AddImageQuad(Icon(layer), p0, ImVec2(p0.x + cell, p0.y), ImVec2(p0.x + cell, p0.y + cell), ImVec2(p0.x, p0.y + cell),
+                                 ImVec2(cu[0], cv[0]), ImVec2(cu[1], cv[1]), ImVec2(cu[2], cv[2]), ImVec2(cu[3], cv[3]));
+            }
+            dl->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
+            ImGui::SameLine();
+            ImGui::BeginGroup();
+            if (ImGui::Button("Shuffle")) { v.seed = v.seed * 1103515245u + 12345u + (uint32_t)(uiClock * 1000); ch = true; }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Another pick for every block (if a wall turned out with a pattern you don't like).");
+            if (v.on() && ImGui::Button("Turn it off")) { v = FaceVary{}; ch = true; }
+            ImGui::EndGroup();
+        }
+        Hint("Each block picks by its place in the world: the same spot always looks the same. Costs no speed (it is picked when the chunk is built). Save the block to see it.");
+        return ch;
     }
     bool FaceGlowUI(FaceGlow& g, const char* label) {   // a block face's own glow (block editor)
         bool ch = false; float ui = settings.uiScale;

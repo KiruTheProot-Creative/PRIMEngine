@@ -160,6 +160,18 @@ int main() {
         CHECK(g2.textureCount() == before && !g2.image(g2.get(g2.find("stone")).tex[F_PY]).variant(), "glow off: the copies go away");
     }
 
+    {   // varying faces save and load (other textures with spaces in their names too)
+        BlockRegistry g; Library gl; gl.dir = lib.dir; gl.load(g);
+        BlockId st = g.find("stone"); BlockDef d = g.get(st);
+        d.vary[F_PY].turns = 2; d.vary[F_PY].mirror = true; d.vary[F_PY].seed = 42; d.vary[F_PY].ownWeight = 3;
+        d.vary[F_PY].others = { "dirt", "cracked stone 2" }; d.vary[F_PY].weights = { 1.5f, 0.25f };
+        d.vary[F_NZ].turns = 1;
+        g.put(st, d); gl.saveBlocks(g); BlockRegistry g2; Library l2; l2.dir = lib.dir; l2.load(g2);
+        const BlockDef& ld = g2.get(g2.find("stone"));
+        CHECK(ld.vary[F_PY] == d.vary[F_PY] && ld.vary[F_NZ] == d.vary[F_NZ] && !ld.vary[F_PX].on(), "varying faces save and load (turns, mirrored, seed, weights, a name with spaces)");
+        CHECK(ld.varyTex[F_PY].size() == 1 && ld.varyTex[F_PY][0].first == g2.textureIndex("dirt"), "... a texture that isn't there is left out of the pick");
+        BlockDef off = ld; for (auto& x : off.vary) x = FaceVary{}; g2.put(g2.find("stone"), off); gl.saveBlocks(g2);
+    }
     fs::remove_all(base);
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
     return fails ? 1 : 0;

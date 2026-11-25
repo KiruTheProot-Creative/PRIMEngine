@@ -53,6 +53,20 @@ struct FaceGlow {
     bool operator!=(const FaceGlow& o) const { return !(*this == o); }
 };
 
+// a face that varies from block to block (Blocks > edit a block > Vary under a texture): turned, mirrored and / or another texture.
+// What each block gets comes from its place in the world, so the same spot always looks the same (no flicker, same after loading).
+struct FaceVary {
+    int turns = 0;                       // 0 never, 1 half turns (0 or 180 degrees: bricks, panels), 2 quarter turns (stone, dirt, sand)
+    bool mirror = false;                 // half of them mirrored too
+    float ownWeight = 1;                 // how often its own texture comes up, against the others' weights
+    std::vector<std::string> others;     // other textures it can be
+    std::vector<float> weights;          // ... how often each comes up
+    uint32_t seed = 0;                   // Shuffle: another pick everywhere
+    bool on() const { return turns > 0 || mirror || !others.empty(); }
+    bool operator==(const FaceVary& o) const { return turns == o.turns && mirror == o.mirror && ownWeight == o.ownWeight && others == o.others && weights == o.weights && seed == o.seed; }
+    bool operator!=(const FaceVary& o) const { return !(*this == o); }
+};
+
 struct BlockDef {
     std::string name;
     Render render = Render::Opaque;
@@ -84,6 +98,9 @@ struct BlockDef {
     std::string category = "Building";   // folder in the asset browser
     std::string surface;                 // what it is made of, for Samus's steps on it (Surfaces tab): Rock, Metal, Water ... ("" none)
     FaceGlow glow[6];                    // faces that glow on their own
+    FaceVary vary[6];                    // faces that vary from block to block
+    std::vector<std::pair<int, float>> varyTex[6];   // (not saved) the other textures' layers and weights (filled by resolve())
+    bool varies() const { for (const FaceVary& v : vary) if (v.on()) return true; return false; }
     bool exists = true;                  // false = a deleted id (kept so old worlds stay readable)
 };
 
@@ -119,6 +136,7 @@ public:
     BlockId liquidBlock(int kind) const;                    // the (flowing, not spring) block of that liquid; 0 if none
     void resolve();                                         // texture names -> layers (after any change); glowing faces get their own copies
     static std::string glowLayerName(BlockId id, int face);
+    void resolveVary(BlockDef& d) const;                   // a varying face's other textures: names -> layers
     std::string uniqueName(const std::string& want, BlockId except = AIR) const;
     int nextId = 1;                                         // ids below this were given out once (saved in blocks.txt)
 
@@ -127,6 +145,28 @@ private:
     std::vector<TexImage> textures;
     BlockDef missing;
 };
+
+// what a varying face looks like at a block in the world: its texture layer (base: the face's own) and its texture coordinates turned / mirrored in place
+inline uint32_t varyHash(int x, int y, int z, int face, uint32_t seed) {
+    uint32_t h = (uint32_t)x * 73856093u ^ (uint32_t)y * 19349663u ^ (uint32_t)z * 83492791u ^ (uint32_t)(face + 1) * 2654435761u ^ (seed + 1) * 0x9E3779B9u;
+    h ^= h >> 16; h *= 0x7FEB352Du; h ^= h >> 15; h *= 0x846CA68Bu; h ^= h >> 16; return h;
+}
+inline int varyFace(const BlockDef& d, int face, int x, int y, int z, int base, float& u, float& v) {
+    const FaceVary& fv = d.vary[face]; if (!fv.on()) return base;
+    uint32_t h = varyHash(x, y, z, face, fv.seed); int layer = base;
+    const auto& o = d.varyTex[face];
+    if (!o.empty()) {   // another texture, as often as the weights say
+        float total = std::max(0.f, fv.ownWeight); for (const auto& e : o) total += e.second;
+        if (total > 0) {
+            float r = ((h >> 8) & 0xFFFF) / 65536.f * total;
+            if (r >= std::max(0.f, fv.ownWeight)) { r -= std::max(0.f, fv.ownWeight); for (const auto& e : o) { if (r < e.second) { layer = e.first; break; } r -= e.second; layer = e.first; } }
+        }
+    }
+    if (fv.mirror && (h >> 2) & 1) u = 1 - u;
+    int k = fv.turns >= 2 ? (int)(h & 3) : fv.turns == 1 ? (int)(h & 1) * 2 : 0;
+    for (int i = 0; i < k; i++) { float t = u; u = 1 - v; v = t; }   // a quarter turn about the middle
+    return layer;
+}
 
 inline BlockId makeLiquid(BlockId type, int level) { return makeBlock(type, level >= 16 ? 0 : level, 0); }
 
