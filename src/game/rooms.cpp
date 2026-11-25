@@ -1,4 +1,6 @@
 #include "rooms.h"
+#include <chrono>
+#include <thread>
 #include "../world/shapes.h"
 #include "visors.h"   // escText
 #include <algorithm>
@@ -92,6 +94,11 @@ int RoomFlood::topOfWall(int x, int y, int z) {   // the highest block of the wa
     wallTopOf[k] = t; return t;
 }
 void RoomFlood::start(const RoomWorld& w, I3 s, const RoomRules& rules) {
+    if (q.size() > 20000) {   // a big search before: its memory let go on the side (freeing it here took a few milliseconds)
+        struct Junk { decltype(from) a; decltype(seen) b; std::vector<I3> c; decltype(roofOf) d, e; decltype(colTop) f; std::vector<int64_t> g; };
+        Junk* j = new Junk{ std::move(from), std::move(seen), std::move(q), std::move(roofOf), std::move(wallTopOf), std::move(colTop), std::move(cols) };
+        std::thread([j] { delete j; }).detach();
+    }
     *this = RoomFlood{}; W = w; R = rules; seed0 = s;
     for (int i = 0; i < (int)W.doors.size(); i++) {
         const CookDoor& d = W.doors[i]; I3 a = chunkOf(d.lo.x, d.lo.y, d.lo.z), b = chunkOf(d.hi.x, d.hi.y, d.hi.z);
@@ -154,6 +161,10 @@ std::vector<I3> RoomFlood::outsideCells() const {
     std::vector<I3> v; if (res != Outside) return v;
     for (const auto& kv : seen) for (int i = 0; i < CS3; i++) if (kv.second.has(i)) v.push_back({ kv.first.x * CS + i % CS, kv.first.y * CS + i / (CS * CS), kv.first.z * CS + (i / CS) % CS });
     return v;
+}
+void RoomFlood::addOutsideTo(std::unordered_map<I3, RoomBits, I3Hash>& out) const {
+    if (res != Outside) return;
+    for (const auto& kv : seen) { RoomBits& o = out[kv.first]; for (size_t w = 0; w < o.b.size(); w++) o.b[w] |= kv.second.b[w]; }
 }
 RoomFlood::Result RoomFlood::step(size_t budget) {
     if (phase == PDone) return res;
@@ -352,7 +363,9 @@ static bool roomOpenAt(const RoomWorld& w, int x, int y, int z) {
 void RoomSet::tick(const RoomWorld& w, const std::vector<I3>& seeds, const std::function<uint32_t(I3)>& chunkVer, bool checkNow, size_t budget) {
     uint64_t dsig = doorsSig(w);
     if (jobOn) {
-        RoomFlood::Result r = job.step(budget);
+        auto t0 = std::chrono::steady_clock::now(); size_t done = 0; RoomFlood::Result r;
+        do { size_t n = std::min<size_t>(200, budget - done); r = job.step(n); done += n; }   // (in small bites, watching the clock)
+        while (r == RoomFlood::Running && done < budget && !(w.tired && w.tired()) && std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() < maxMs);
         if (r == RoomFlood::Running) return;
         jobOn = false;
         if (jobFor) {
@@ -379,7 +392,7 @@ void RoomSet::tick(const RoomWorld& w, const std::vector<I3>& seeds, const std::
         else if (r == RoomFlood::Outside) {
             if (job.leak) { Leak lk; lk.seed = jobSeed; lk.leak = job.leak; lk.at = job.leakAt; lk.path = job.leakPath(); lk.gaps = job.leakGaps(lk.path);
                 leaks.erase(std::remove_if(leaks.begin(), leaks.end(), [&](const Leak& q) { return q.seed == jobSeed; }), leaks.end()); leaks.push_back(std::move(lk)); }
-            for (const I3& c : job.outsideCells()) outside[chunkOf(c.x, c.y, c.z)].set(RoomBits::at(floorMod(c.x, CS), floorMod(c.y, CS), floorMod(c.z, CS))); failed.insert(jobSeed); }
+            job.addOutsideTo(outside); failed.insert(jobSeed); }   // (was cell by cell: 300 000 cells, ~10 ms in one frame)
         else failed.insert(jobSeed);
         return;
     }

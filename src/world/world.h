@@ -40,6 +40,7 @@ public:
     void peekChunk(I3 c, Chunk& out);                 // a copy of a chunk (loaded, saved or generated) without loading it (far copies)
     bool untouched(I3 c) { return !chunk(c) && !(store && store->has(c)); }   // never changed: exactly what the generator makes (the same at every x, z)
     size_t loadedCount() const { return chunks.size(); }
+    uint64_t unloads = 0;                             // counts every chunk let go (anything keeping per-chunk data: tidy up only when it changed)
 
     // blocks (world coordinates)
     BlockId get(int x, int y, int z) const { const Chunk* c = chunk(chunkOf(x, y, z)); return c ? c->get(floorMod(x, CS), floorMod(y, CS), floorMod(z, CS)) : AIR; }

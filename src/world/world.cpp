@@ -55,7 +55,7 @@ void World::peekChunk(I3 c, Chunk& out) {
 void World::unloadChunk(I3 c) {
     auto it = chunks.find(c); if (it == chunks.end()) return;
     if (it->second->modified && store) store->save(*it->second);
-    chunks.erase(it); dirty.erase(c);
+    chunks.erase(it); dirty.erase(c); unloads++;
 }
 
 static bool glowsIn(const BlockRegistry& reg, BlockId v) {   // a glowing block, or one standing in (glowing) lava

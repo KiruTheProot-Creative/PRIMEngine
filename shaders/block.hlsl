@@ -210,7 +210,8 @@ float3 dynLightsSpec(float3 rel, float3 n, float3 v, float pw, bool object, out 
 }
 float3 dynLights(float3 rel, float3 n) { float3 sp; return dynLightsSpec(rel, n, -normalize(rel), 16, true, sp); }
 float3 meshToRel(float3 p) { return gOffset.xyz + gAxisX.xyz * p.x + gAxisY.xyz * p.y + gAxisZ.xyz * p.z; }
-#define MESH_REL(i) ((i).inst.w > 0.5 ? (i).inst.xyz + (i).pos : meshToRel((i).pos))   // a world chunk drawn from the shared origins list, or an object (its ChunkCB)
+float3 instRel(float3 inst, float3 pos) { precise float3 w = inst + pos; precise float3 r = w + gOffset.xyz; return r; }   // (origin + mesh first: exact, so chunks' shared edges land on the same spot - then the anchor's step)
+#define MESH_REL(i) ((i).inst.w > 0.5 ? instRel((i).inst.xyz, (i).pos) : meshToRel((i).pos))   // a world chunk drawn from the shared origins list, or an object (its ChunkCB)
 
 Texture2DArray gTex : register(t0);
 Texture2DArray<float> gShadow : register(t1);   // one slice per cascade

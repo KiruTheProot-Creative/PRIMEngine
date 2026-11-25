@@ -68,6 +68,7 @@ public:
     Result result() const { return res; }
     RoomShape shape;                            // a room: its blocks
     std::vector<I3> outsideCells() const;       // the outside: the floor blocks it went over (remembered: no need to search them again)
+    void addOutsideTo(std::unordered_map<I3, RoomBits, I3Hash>& out) const;   // the same, straight into a chunk map (a whole chunk's bits at once: fast)
     I3 seed() const { return seed0; }
     I3 leakAt{ 0, 0, 0 }; int leak = 0;          // the outside: where its air got out (1 to the sky, 2 too big, 3 off an edge into the void, 4 into chunks not loaded)
     std::vector<I3> leakPath() const;            // from where it started to leakAt (the way the air got out)
@@ -142,6 +143,7 @@ public:
     uint32_t roomAt(int x, int y, int z) const;   // 0: none (the outside, solid, or not found yet)
     const Live* liveOf(uint32_t id) const { auto it = live.find(id); return it == live.end() ? nullptr : &it->second; }
     bool busy() const { return jobOn; }
+    double maxMs = 1e9;   // a search's time a tick at most (as well as its step budget): some steps cost far more than others
     std::string busyText() const;
     // seeds: blocks to find rooms from (beside the doors, where you are); chunkVer: a chunk's version + 1 (0: not loaded);
     // checkNow: look whether found rooms changed (every half second or so); budget: blocks searched in this call
