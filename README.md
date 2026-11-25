@@ -307,6 +307,15 @@ than worked out from lights - they always glint, even in pitch darkness, and sli
 - **Slides when you turn** (fixed to the world, like Prime) or **stays put** (fixed to the camera, a "matcap").
 - Strength, a tint or **the current beam's colour**, and a mask (laid out like the model's picture) for where it shines.
 
+## Texture variation (Blocks > edit a block > Vary under a texture)
+
+Big floors and walls don't have to look like one tile stamped over and over. Each block face can vary from block to block:
+- **Random turns:** *half turns* (0 or 180 degrees, for textures with a direction like bricks and panels) or *quarter turns* (any way, for stone, dirt, sand and grates).
+- **Mirrored too:** about half of them are also mirrored (with quarter turns that is 8 looks from one texture).
+- **Other textures:** mix in more textures, each with *how often*. For example: stone 7, cracked stone 2, mossy stone 1.
+
+Which look a block gets comes from its place in the world, so the same spot always looks the same (no flickering, the same after loading, the same for everyone). It is picked when the chunk is built, so it costs no speed. **Shuffle** gives another pick everywhere. The popup shows a 6 x 6 patch exactly as the world will pick it. Bumps follow the turned texture. Not yet: the far-away copies of the world don't vary, and a glowing face's other textures don't glow.
+
 ## Textures: bumps, coat and materials (like Complementary)
 
 - **Bumpy textures** (Settings > Look, generated normals): each texture's light and dark pixels become little bumps and dents with a bevel at the pixel edges, so the sun and lights catch them. Nothing to paint.
