@@ -565,7 +565,9 @@ Fog, light shafts and lights glowing in the air are worked out in a small 3D gri
 ## Benchmark
 
 - **Benchmark** in the toolbar: a 30-second flight, the same every time (from the spawn point: a full turn, flying ahead, back up high), with every frame measured. It starts with the loading screen at the spawn point (chunks, distant detail, rooms, ambient lights, lamp shadows), so every run starts from the same fully loaded state.
-- The result shows the average, the slowest 1% and 0.1% of frames, spikes, the graphics card's time, the processor's and graphics card's biggest steps, what the spike frames were made of, and the slowest frame on its own. Every run is kept in the project's `benchmarks.txt` (newest last), to compare one change with the run before.
+- The result shows the average, the slowest 1% and 0.1% of frames, spikes, the graphics card's time, the processor's and graphics card's biggest steps, what the spike frames were made of, and the slowest frame on its own.
+
+**VR benchmark** (next to Benchmark): the same flight, drawn the way a headset needs it. Both eyes are drawn every frame (6.4 cm apart), each at a headset's size: Valve Index, Quest 3, Pimax Crystal Light or a smaller one, times a headset render scale like SteamVR's. Both eyes show side by side. No headset is needed; it only measures the drawing. The result adds the graphics card's time per eye and how many frames would come too late at 90, 120 and 144 Hz. Every run is kept in the project's `benchmarks.txt` (newest last), to compare one change with the run before.
 
 ## Loading screen and boot-up
 

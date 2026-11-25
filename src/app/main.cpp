@@ -4611,6 +4611,7 @@ struct App {
             fovNow = aspect >= 1 ? 90.f : (float)(2 * std::atan(1.0 / aspect) * 180 / 3.14159265358979);
         }
         V3 r = normalize(cross(upv, f)), u = cross(f, r);
+        if (vrEye >= 0) { camPos += r * ((vrEye == 0 ? -0.5 : 0.5) * vrIpd); fovNow = VR_SETS[vrSet].fov; }   // (VR benchmark: this eye - half the eyes' distance to its side, the headset's view angle)
         float farZ = (LodReach() + 2) * CS * 1.5f;   // (far copies: much further)
         view = XMMatrixLookToLH(XMVectorZero(), XMVectorSet((float)f.x, (float)f.y, (float)f.z, 0), XMVectorSet((float)upv.x, (float)upv.y, (float)upv.z, 0));   // camera at the origin
         proj = XMMatrixPerspectiveFovLH(XMConvertToRadians(fovNow), aspect, 0.05f, farZ);
@@ -4634,7 +4635,7 @@ struct App {
         cullFar = fogEnd + 32;   // objects past the fog are not drawn (a little extra: tall ones still cast their shadows inward)
         fc.fogRange[0] = fogEnd * 0.45f; fc.fogRange[1] = fogEnd; fc.fogRange[2] = exposure * std::clamp(settings.brightness, 0.3f, 2.5f);
         fc.camF[0] = (float)f.x; fc.camF[1] = (float)f.y; fc.camF[2] = (float)f.z; fc.camR[0] = (float)r.x; fc.camR[1] = (float)r.y; fc.camR[2] = (float)r.z;
-        fc.camU[0] = (float)u.x; fc.camU[1] = (float)u.y; fc.camU[2] = (float)u.z; fc.proj[0] = std::tan(XMConvertToRadians(settings.fov) * 0.5f); fc.proj[1] = aspect;
+        fc.camU[0] = (float)u.x; fc.camU[1] = (float)u.y; fc.camU[2] = (float)u.z; fc.proj[0] = std::tan(XMConvertToRadians(vrEye >= 0 ? fovNow : settings.fov) * 0.5f); fc.proj[1] = aspect;
 
         GpuMark("setup: block and object copies for rays");
         // ---- shadow map: the world seen from the sun, around the camera
@@ -6401,6 +6402,16 @@ struct App {
             ImGui::SameLine(); if (ImGui::Button("Cook")) { cookOpenW = !cookOpenW; focusCook = cookOpenW; if (cookOpenW) { cookMapX0 = (int)std::floor(camPos.x) - COOKMAP / 2; cookMapZ0 = (int)std::floor(camPos.z) - COOKMAP / 2; cookY0 = (int)std::floor(camPos.y) - 64; cookY1 = (int)std::floor(camPos.y) + 96; cookLayer = (int)std::floor(camPos.y) + 1; cookMapDirty = true; } }
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Cooking for export: a map of the world from above, pick the chunks, Test-cook");
             ImGui::SameLine(); if (ImGui::Button(bench.on || bench.loading ? "Benchmark ..." : "Benchmark") && !bench.on && !bench.loading) StartBench();
+            ImGui::SameLine(); if (ImGui::Button("VR benchmark") && !bench.on && !bench.loading) ImGui::OpenPopup("vrbench");
+            if (ImGui::BeginPopup("vrbench")) {
+                ImGui::TextUnformatted("The same flight, drawn as a headset needs it:"); ImGui::TextDisabled("both eyes every frame, at a headset's size (no headset needed)");
+                if (ImGui::BeginCombo("Headset", VR_SETS[vrSet].name)) { for (int i = 0; i < 4; i++) if (ImGui::Selectable(VR_SETS[i].name, vrSet == i)) vrSet = i; ImGui::EndCombo(); }
+                ImGui::SliderFloat("Headset render scale", &vrScale, 0.6f, 1.6f, "%.2f");
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Headsets usually draw bigger than their screens (for the lens).\nSteamVR often picks around 1.2 - 1.4.");
+                ImGui::Text("Each eye: %d x %d (both together: %.1f x the pixels of 1080p)", VrW(), VrH(), 2.0 * VrW() * VrH() / (1920.0 * 1080.0));
+                if (ImGui::Button("Start")) { ImGui::CloseCurrentPopup(); StartBench(true); }
+                ImGui::EndPopup();
+            }
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("30 seconds, the same flight every time (from the spawn point): every frame measured.\nThe result is kept in benchmarks.txt, to compare with the next run.");
             ImGui::SameLine(); if (ImGui::Button("Rooms")) { roomsOpenW = !roomsOpenW; focusRooms = roomsOpenW; }
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("The Room Manager: the rooms (found by themselves, or marked by hand), their names, ambient light, music");
@@ -18104,6 +18115,7 @@ struct App {
         if (pending) { auto f = std::move(pending); pending = nullptr; f(); }
         bool ev = EditorView();
         int wantW = ev ? (int)viewSize.x : cw, wantH = ev ? (int)viewSize.y : ch;   // the editor draws the world at the viewport panel's size
+        if (VrBench()) { wantW = VrW(); wantH = VrH(); }   // (the VR benchmark: each eye at the headset's size)
         wantW = std::max(16, wantW); wantH = std::max(16, wantH);
         if (settings.targetFps > 0 && screen == Screen::Game && gpuT.total > 0) {   // auto resolution: by the graphics card's time per frame
             dynT += dt; double budget = 1000.0 / settings.targetFps;
@@ -18151,7 +18163,7 @@ struct App {
             if (brushMenu) BrushMenu();
             ModelViewer();
             PlayerEditor();
-            ScreensEditor(); PlanetsEditor(); CookWindow(); RoomsWindow(); BenchWindow();
+            ScreensEditor(); PlanetsEditor(); CookWindow(); RoomsWindow(); BenchWindow(); DrawVrEyes();
         } else {
             if (!mapOpen && !CurScreen()) { DrawHud(ImGui::GetForegroundDrawList()); if (!Frozen()) { DrawScanMarkers(ImGui::GetForegroundDrawList()); DrawLockMarkers(ImGui::GetForegroundDrawList()); DrawGrappleMarker(ImGui::GetForegroundDrawList()); } }
             if (showF3) DrawF3();
@@ -18179,6 +18191,11 @@ struct App {
             if (world) RenderWorld(sceneRTV.Get());
             RenderScreenPicture(*sc, backRTV.Get(), cw, ch, screenList.get(), sc->fadeIn > 0.01f && sc->in.kind == TransKind::None ? (float)std::clamp(screenT / sc->fadeIn, 0.0, 1.0) : 1.f, world);   // (a screen with a transition: no fade of its own)
         }
+        else if (screen == Screen::Game && rw > 0 && VrBench() && !bench.loading) {   // the VR benchmark: each eye drawn whole, one after the other (as a simple VR renderer would)
+            VrTargets();
+            for (int e = 0; e < 2; e++) { vrEye = e; RenderWorld(vrRTV[e].Get()); }
+            vrEye = -1;
+        }
         else if (screen == Screen::Game && rw > 0) RenderWorld(ev ? sceneRTV.Get() : backRTV.Get());
         if (ev) { RenderViewer(); RenderHudViews(); RenderWeaponView(); RenderScreenPreview(); }
         ctx->OMSetRenderTargets(1, backRTV.GetAddressOf(), nullptr);
@@ -18199,13 +18216,41 @@ struct App {
     }
     // ================================================================== the benchmark: the same flight every time (from the spawn point), every frame measured, the result kept
     // (projectDir/benchmarks.txt) so each optimization can be compared with the run before. 0-8 s: a full turn; 8-19 s: flying ahead; 19-30 s: back, rising
-    struct Bench { bool on = false, loading = false; double t = 0; V3 start{ 0, 0, 0 }, keepFeet{ 0, 0, 0 }; double yaw0 = 0, keepYaw = 0, keepPitch = 0; bool keepFly = false;
+    struct Bench { bool on = false, loading = false, vr = false; double t = 0; V3 start{ 0, 0, 0 }, keepFeet{ 0, 0, 0 }; double yaw0 = 0, keepYaw = 0, keepPitch = 0; bool keepFly = false;
                    std::vector<float> ms, gms; std::map<std::string, double> cpuSum, gpuSum; std::string result; bool show = false;
                    std::vector<std::vector<std::pair<const std::string*, float>>> frames; } bench;   // frames: each frame's steps (to see what the spikes were made of)
     static constexpr double BENCH_LEN = 30;
-    void StartBench() {
+    // VR: the same flight drawn as a headset needs it - both eyes (each its own full frame, a little apart), at a headset's size. Not a VR mode: no headset needed
+    struct VrHeadset { const char* name; int w, h; float fov; };
+    static constexpr VrHeadset VR_SETS[4] = { { "Valve Index (1440 x 1600 per eye)", 1440, 1600, 107 }, { "Quest 3 (2064 x 2208 per eye)", 2064, 2208, 96 },
+                                              { "Pimax Crystal Light (2880 x 2880 per eye)", 2880, 2880, 104 }, { "Smaller (1080 x 1200 per eye)", 1080, 1200, 100 } };
+    int vrSet = 1; float vrScale = 1.0f, vrIpd = 0.064f; int vrEye = -1;   // vrScale: like SteamVR's own scale (headsets draw bigger than their panels, for the lens)
+    int VrW() const { return std::max(64, (int)std::lround(VR_SETS[vrSet].w * vrScale)); }
+    int VrH() const { return std::max(64, (int)std::lround(VR_SETS[vrSet].h * vrScale)); }
+    bool VrBench() const { return bench.vr && (bench.on || bench.loading); }
+    ComPtr<ID3D11Texture2D> vrTex[2]; ComPtr<ID3D11RenderTargetView> vrRTV[2]; ComPtr<ID3D11ShaderResourceView> vrSRV[2]; int vrTexW = 0, vrTexH = 0;
+    void VrTargets() {   // the two eyes' pictures (at the eye's size)
+        if (vrTex[0] && vrTexW == rw && vrTexH == rh) return;
+        for (int e = 0; e < 2; e++) {
+            if (vrSRV[e]) retired.push_back(vrSRV[e]);
+            vrTex[e].Reset(); vrRTV[e].Reset(); vrSRV[e].Reset();
+            D3D11_TEXTURE2D_DESC d{}; d.Width = (UINT)rw; d.Height = (UINT)rh; d.MipLevels = 1; d.ArraySize = 1; d.Format = DXGI_FORMAT_R8G8B8A8_UNORM; d.SampleDesc.Count = 1; d.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+            HR(dev->CreateTexture2D(&d, nullptr, &vrTex[e])); HR(dev->CreateRenderTargetView(vrTex[e].Get(), nullptr, &vrRTV[e])); HR(dev->CreateShaderResourceView(vrTex[e].Get(), nullptr, &vrSRV[e]));
+        }
+        vrTexW = rw; vrTexH = rh;
+    }
+    void DrawVrEyes() {   // over everything: both eyes side by side, fitted to the window
+        if (!VrBench() || !vrSRV[0] || bench.loading) return;
+        ImDrawList* dl = ImGui::GetForegroundDrawList(); ImVec2 ds = ImGui::GetIO().DisplaySize;
+        dl->AddRectFilled(ImVec2(0, 0), ds, IM_COL32(0, 0, 0, 255));
+        float k = std::min(ds.x * 0.5f / vrTexW, ds.y / (float)vrTexH), w = vrTexW * k, h = vrTexH * k, y0 = (ds.y - h) * 0.5f;
+        for (int e = 0; e < 2; e++) { float x0 = ds.x * 0.5f * e + (ds.x * 0.5f - w) * 0.5f; dl->AddImage((ImTextureID)(intptr_t)vrSRV[e].Get(), ImVec2(x0, y0), ImVec2(x0 + w, y0 + h)); }
+        char b[160]; snprintf(b, sizeof b, "VR benchmark: %s x %.2f  -  %d x %d per eye  -  %.0f s", VR_SETS[vrSet].name, vrScale, vrTexW, vrTexH, BENCH_LEN - bench.t);
+        dl->AddText(ImVec2(12, 10), IM_COL32(120, 230, 255, 255), b);
+    }
+    void StartBench(bool vr = false) {
         if (playMode || !world) return;
-        bench = Bench{}; bench.loading = true; bench.keepFeet = player.feet; bench.keepYaw = player.yaw; bench.keepPitch = player.pitch; bench.keepFly = player.flying;
+        bench = Bench{}; bench.vr = vr; bench.loading = true; bench.keepFeet = player.feet; bench.keepYaw = player.yaw; bench.keepPitch = player.pitch; bench.keepFly = player.flying;
         bench.start = info.hasSpawn ? info.spawn + V3{ 0, 0.5, 0 } : player.feet; bench.yaw0 = info.hasSpawn ? info.spawnYaw : player.yaw;
         Capture(false); BenchPlace();   // (at the start of the flight: everything around it loaded first, the same way every run)
         BeginLoading(false);
@@ -18238,6 +18283,15 @@ struct App {
         snprintf(b, sizeof b, "%zu frames: %.0f fps on average (%.2f ms), middle %.2f ms\nslowest 1%%: %.1f ms (%.0f fps), slowest 0.1%%: %.1f ms, slowest %.1f ms, %d spikes\ngraphics card: %.2f ms a frame on average\n",
                  v.size(), 1000 / avg, avg, med, p99, 1000 / std::max(0.1, p99), p999, mx, spikes, gavg);
         std::string res = b;
+        if (bench.vr) {   // a headset shows every frame: how many came too late, at each refresh rate
+            res += "VR: " + std::string(VR_SETS[vrSet].name); snprintf(b, sizeof b, ", scale %.2f: %d x %d per eye, both eyes every frame\n", vrScale, vrTexW, vrTexH); res += b;
+            snprintf(b, sizeof b, "graphics card per eye: %.2f ms\n", gavg * 0.5); res += b;
+            for (double hz : { 90.0, 120.0, 144.0 }) {
+                double budget = 1000.0 / hz; size_t late = 0; for (float x : v) if (x > budget) late++;
+                snprintf(b, sizeof b, "    %3.0f Hz (%.1f ms): %5.1f%% of frames too late  %s\n", hz, budget, 100.0 * late / v.size(), late * 100 <= v.size() ? "- ok" : late * 20 <= v.size() ? "- close" : "- not yet");
+                res += b;
+            }
+        }
         res += "processor, per frame:\n" + top(bench.cpuSum, 14, (double)bench.ms.size());
         {   // the spikes: what they were made of (on average, in a spike frame), and the slowest frame on its own
             std::map<std::string, double> inSpikes; int ns = 0; size_t worst = 0; double thr = std::max(med * 2, med + 8);
@@ -18256,7 +18310,7 @@ struct App {
         bench.result = res; bench.show = true;
         if (!projectDir.empty()) {   // kept, newest last: compare one run with the one before
             std::time_t now = std::time(nullptr); char tb[64]; std::strftime(tb, sizeof tb, "%Y-%m-%d %H:%M", std::localtime(&now));
-            std::ofstream f(fs::u8path(projectDir + "/benchmarks.txt"), std::ios::app); f << "==== " << tb << "  " << CurrentWorld() << "\n" << res << "\n\n";
+            std::ofstream f(fs::u8path(projectDir + "/benchmarks.txt"), std::ios::app); f << "==== " << tb << "  " << CurrentWorld() << (bench.vr ? "  (VR)" : "") << "\n" << res << "\n\n";
         }
     }
     void BenchWindow() {
@@ -18265,7 +18319,7 @@ struct App {
         if (ImGui::Begin("Benchmark", &bench.show)) {
             ImGui::TextUnformatted(bench.result.c_str());
             ImGui::Separator(); ImGui::TextDisabled("Kept in the project's benchmarks.txt (every run, newest last).");
-            if (ImGui::Button("Run it again") && !bench.on && !bench.loading) { bench.show = false; StartBench(); }
+            if (ImGui::Button("Run it again") && !bench.on && !bench.loading) { bench.show = false; StartBench(bench.vr); }
             ImGui::SameLine(); if (ImGui::Button("Copy")) ImGui::SetClipboardText(bench.result.c_str());
         }
         ImGui::End();
