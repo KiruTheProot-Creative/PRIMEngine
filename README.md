@@ -562,6 +562,11 @@ Fog, light shafts and lights glowing in the air are worked out in a small 3D gri
 - The picture then just looks up the grid.
 - It's faster and has no grain. Very thin light beams get a little softer.
 
+## Benchmark
+
+- **Benchmark** in the toolbar: a 30-second flight, the same every time (from the spawn point: a full turn, flying ahead, back up high), with every frame measured.
+- The result shows the average, the slowest 1% and 0.1% of frames, spikes, the graphics card's time, and the processor's and graphics card's biggest steps. Every run is kept in the project's `benchmarks.txt` (newest last), to compare one change with the run before.
+
 ## Loading screen and boot-up
 
 - Every start (a new game, a loaded file, F5 from the editor, a teleport to another world) shows a **loading screen** first. It reads and builds the world around you and its distant detail, finds all the rooms, fills every ambient light, and **bakes every lamp's shadow one after another** (a little light comes on for each).
