@@ -1763,6 +1763,38 @@ int main() {
             CHECK(r.pressStart && r.shakeAt == s.shakeAt && r.shakeTime == s.shakeTime && rs && rs->inFx == 1 && rs->inFxTime == sub->inFxTime && r.items[0].cursor && r.items[0].code && r.items[0].pulse == 1.5f && nodesOk,
                   "the intro saves and loads (shake, press start, come-in effects, cursor, code, pulse, the new nodes)");
         }
+        {   // the Corruption layout: the whole menu like Metroid Prime 3's
+            ScreenSet set = defaultScreens(); Screen intro = presetPhazonIntro(); for (Screen& o : set.screens) if (o.role == ScreenRole::Intro) o.role = ScreenRole::Custom; set.screens.push_back(intro);
+            int mmIdx = set.byRole(ScreenRole::MainMenu); set.screens[mmIdx].name = "Title menu"; set.screens[mmIdx].musicMode = 1; set.screens[mmIdx].music.file = "menu.ogg";
+            size_t before = set.screens.size();
+            int n = applyLayout(set, ScreenLayout::Corruption);
+            const Screen& mm = set.screens[set.byRole(ScreenRole::MainMenu)];
+            CHECK(n == 8 && set.screens.size() == before + 4 && set.find("Extras") >= 0 && set.find("Concept Gallery") >= 0 && set.byRole(ScreenRole::FileMenu) >= 0 && set.byRole(ScreenRole::Codex) >= 0,
+                  "the Corruption layout: six menu screens get its look (the missing file menu and codex added), Extras and a Concept Gallery come with it");
+            CHECK(mm.name == "Title menu" && mm.musicMode == 1 && mm.music.file == "menu.ogg" && mm.pointer && mm.bg.kind == BgKind::Space && set.screens[set.byRole(ScreenRole::Intro)].next == "Title menu",
+                  "each keeps its name and music; the visor pointer; the scan behind; the splash goes on to the main menu (not straight to the files)");
+            int frames = 0, lines = 0, bracketed = 0, lit = 0; bool toExtras = false, toTitle = false;
+            for (const ScreenItem& i : mm.items) {
+                frames += i.kind == ScreenItemKind::Frame && i.style == 0 && i.text == "Main Menu"; lines += i.kind == ScreenItemKind::TargetLines;
+                if (i.kind == ScreenItemKind::Button) { bracketed += i.text.front() == '[' && i.text.back() == ']'; lit += i.style == 1 && i.fillFade > 0.5f; toExtras |= i.act == ScreenAct::GoTo && i.target == "Extras"; toTitle |= i.act == ScreenAct::Title; }
+            }
+            CHECK(frames == 1 && lines == 1 && bracketed == 4 && lit == 4 && toExtras && toTitle, "the main menu: a scan visor frame titled \"Main Menu\", scan lines, [ Play Game ] [ Options ] [ Extras ] [ Back ] (back: the title)");
+            int nodes = 0; for (const CompNode& c : mm.comp.nodes) nodes |= c.type == NodeType::Invert ? 1 : c.type == NodeType::Gradient ? 2 : 0;
+            CHECK(nodes == 3 && mm.comp.order().size() == mm.comp.nodes.size(), "the scan: the planet as a negative, toned teal to white (every node feeds the output)");
+            const Screen& ex = set.screens[set.find("Extras")]; int rings = 0, plate = 0; bool gal = false;
+            for (const ScreenItem& i : ex.items) { rings += i.kind == ScreenItemKind::Rings; plate += i.kind == ScreenItemKind::Frame && i.style == 1; gal |= i.act == ScreenAct::GoTo && i.target == "Concept Gallery"; }
+            const Screen& g = set.screens[set.find("Concept Gallery")]; bool hasGal = false; for (const ScreenItem& i : g.items) hasGal |= i.kind == ScreenItemKind::Gallery && i.image == "gallery";
+            CHECK(rings == 1 && plate == 1 && gal && hasGal && ex.items[0].kind == ScreenItemKind::Rings, "Extras: rings turning behind a metal plate, a row leading to the gallery (the pictures in screens/gallery)");
+            int sl = set.byRole(ScreenRole::Files); bool rows = false; for (const ScreenItem& i : set.screens[sl].items) rows |= i.kind == ScreenItemKind::SaveSlots && i.style == 1 && i.cards == 0;
+            CHECK(rows, "Select File: the files in rows, in the Corruption look");
+            saveScreens("/tmp/prim_corr.txt", set); ScreenSet back; loadScreens("/tmp/prim_corr.txt", back);
+            const Screen& bm = back.screens[back.byRole(ScreenRole::MainMenu)]; bool same = bm.items.size() == mm.items.size() && bm.pointer;
+            for (size_t i = 0; same && i < bm.items.size(); i++) same = bm.items[i].kind == mm.items[i].kind && bm.items[i].style == mm.items[i].style && bm.items[i].fillFade == mm.items[i].fillFade && bm.items[i].act == mm.items[i].act && bm.items[i].slots == mm.items[i].slots;
+            CHECK(same && back.screens.size() == set.screens.size(), "the layout saves and loads (frames, styles, fading fills, the pointer, the title button)");
+            int again = applyLayout(back, ScreenLayout::Corruption);
+            CHECK(again == 8 && back.screens.size() == set.screens.size(), "putting it in again changes the same screens (nothing doubled)");
+            CHECK(std::string(screenActName(ScreenAct::Title)).find("Title") == 0 && std::string(screenItemKindName(ScreenItemKind::Gallery)) == "Picture gallery" && std::string(screenLayoutName(ScreenLayout::Corruption)).find("Corruption") == 0, "names for the new kinds, the title action and the layout");
+        }
         {   // the file menu and the codex: after picking a file
             Screen fm = presetScreen(ScreenRole::FileMenu), cx = presetScreen(ScreenRole::Codex); int acts = 0; bool list = false;
             for (const ScreenItem& i : fm.items) if (i.kind == ScreenItemKind::Button) acts |= i.act == ScreenAct::PlayFile ? 1 : i.act == ScreenAct::Codex ? 2 : i.act == ScreenAct::Options ? 4 : i.act == ScreenAct::Back ? 8 : 0;

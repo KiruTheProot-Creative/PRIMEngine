@@ -19,11 +19,11 @@ const char* bgKindName(BgKind k) {
     int i = (int)k; return i >= 0 && i < (int)BgKind::COUNT ? n[i] : "?";
 }
 const char* screenItemKindName(ScreenItemKind k) {
-    static const char* n[] = { "Panel", "Text", "Picture", "Button", "Options", "Credits roll", "Save files", "Sound", "Item model", "Scan list (codex)" };
+    static const char* n[] = { "Panel", "Text", "Picture", "Button", "Options", "Credits roll", "Save files", "Sound", "Item model", "Scan list (codex)", "Visor frame", "Scan target lines", "Turning rings", "Picture gallery" };
     int i = (int)k; return i >= 0 && i < (int)ScreenItemKind::COUNT ? n[i] : "?";
 }
 const char* screenActName(ScreenAct a) {
-    static const char* n[] = { "Nothing", "New game", "Continue", "Options", "Credits", "Quit", "Go to a screen", "Back (the screen before)", "Try again", "Main menu", "Files (pick a save file)", "Play the picked file", "Codex (the picked file's scans)" };
+    static const char* n[] = { "Nothing", "New game", "Continue", "Options", "Credits", "Quit", "Go to a screen", "Back (the screen before)", "Try again", "Main menu", "Files (pick a save file)", "Play the picked file", "Codex (the picked file's scans)", "Title (the splash, waiting for start)" };
     int i = (int)a; return i >= 0 && i < (int)ScreenAct::COUNT ? n[i] : "?";
 }
 
@@ -390,6 +390,157 @@ Screen presetPhazonIntro() {
     s.comp.connect(gl, ink, 0); s.comp.connect(ink, glare, 0); s.comp.connect(glare, vig, 0); s.comp.connect(vig, out, 0);
     return s;
 }
+// ------------------------------------------------------------------ the Corruption layout (like Metroid Prime 3's menus)
+// The scan screens (main menu, files, a file's menu, codex): the planet seen as a scan - a negative, toned cyan to white - through a visor
+// frame (double lines, notches, ticks, crosshairs), choices in [ brackets ] in boxes whose fill fades to the right, scan lines fanning out
+// from the planet. The plate screens (extras, options, credits, the gallery): rings turning in the dark behind a metal frame with a title tab.
+static const uint32_t CR_TEXT = 0xEAF6F8, CR_LINE = 0xD2F0F6, CR_FILL = 0x072029, CR_PICK = 0x5FD8F0, CR_DIM = 0x8CB4C0, CR_BEZEL = 0x0B1E26;
+static const uint32_t CR_METAL = 0x2A3238, CR_MLINE = 0xC8D4DA, CR_MFILL = 0x0A1216;
+static ScreenItem crFrame(const std::string& title, int style) {
+    ScreenItem f; f.name = "Frame"; f.kind = ScreenItemKind::Frame; f.x = 0; f.y = 0; f.w = 1; f.h = 1; f.text = title; f.style = style; f.font = 1; f.weight = 0.1f;
+    f.textSize = style ? 0.04f : 0.036f; f.col.text = CR_TEXT; f.col.accent = style ? CR_MLINE : CR_LINE; f.col.fill = style ? CR_METAL : CR_BEZEL; f.col.fillAlpha = style ? 1.f : 0.9f;
+    f.col.dim = CR_DIM; f.col.picked = style ? 0x0C1418 : CR_PICK; f.rounding = 0; f.border = 2; return f;
+}
+static ScreenItem crButton(const std::string& label, ScreenAct a, float x, float y, float w, float h, bool plate = false) {
+    ScreenItem b; b.name = label; b.kind = ScreenItemKind::Button; b.text = "[ " + label + " ]"; b.act = a; b.x = x; b.y = y; b.w = w; b.h = h;
+    b.textSize = std::min(0.036f, h * 0.45f); b.align = 0; b.font = 1; b.weight = 0.1f; b.outline = 0.25f; b.outlineColor = 0x03121A;
+    b.style = 1; b.filled = true; b.frame = true; b.rounding = 0; b.border = 1.5f; b.fillFade = plate ? 0.25f : 0.8f; b.pickFill = 0.55f;
+    b.col.text = CR_TEXT; b.col.accent = plate ? CR_MLINE : CR_LINE; b.col.picked = CR_PICK; b.col.fill = plate ? CR_MFILL : CR_FILL; b.col.fillAlpha = plate ? 0.62f : 0.75f; b.col.dim = CR_DIM;
+    return b;
+}
+static void crScan(Screen& s) {   // the planet as a scan: a negative, toned from deep teal to white, softened, grainy; the items over it; a little glare, faint lines, darker edges
+    s.bg = ScreenBg{}; s.bg.kind = BgKind::Space; s.bg.planet = "Corrupted world"; s.bg.planetSize = 0.46f; s.bg.planetX = 0.66f; s.bg.planetY = 0.52f;
+    s.bg.spin = 3; s.bg.axisTilt = 20; s.bg.sunYaw = -60; s.bg.sunPitch = 25; s.bg.stars = 0.3f; s.bg.nebula = 0.5f; s.bg.nebulaColor = 0x1A3A5A;
+    s.comp = Compositor{};
+    int bg = s.comp.add(NodeType::Background, 40, 60), ui = s.comp.add(NodeType::UI, 40, 260), inv = s.comp.add(NodeType::Invert, 260, 60), gm = s.comp.add(NodeType::Gradient, 480, 60);
+    int bl = s.comp.add(NodeType::Blur, 700, 60), gr = s.comp.add(NodeType::Grain, 920, 60), over = s.comp.add(NodeType::AlphaOver, 1140, 160), gl = s.comp.add(NodeType::Glare, 1360, 160);
+    int sl = s.comp.add(NodeType::Scanlines, 1580, 160), vig = s.comp.add(NodeType::Vignette, 1800, 160), out = s.comp.add(NodeType::Output, 2020, 160);
+    { CompNode& n = *s.comp.find(gm); n.c[0] = 0x0B2633; n.c[1] = 0xE9FCFF; }
+    s.comp.find(bl)->p[0] = 1.5f;
+    { CompNode& n = *s.comp.find(gr); n.p[0] = 0.07f; n.p[1] = 1.5f; n.p[2] = 1; }
+    { CompNode& n = *s.comp.find(gl); n.p[0] = 0.9f; n.p[1] = 0.45f; n.p[2] = 18; n.c[0] = 0xBFF4FF; }
+    { CompNode& n = *s.comp.find(sl); n.p[0] = 0.05f; n.p[1] = 360; }
+    { CompNode& n = *s.comp.find(vig); n.p[0] = 0.45f; n.p[1] = 0.8f; n.p[2] = 0.5f; }
+    s.comp.connect(bg, inv, 0); s.comp.connect(inv, gm, 0); s.comp.connect(gm, bl, 0); s.comp.connect(bl, gr, 0); s.comp.connect(gr, over, 0); s.comp.connect(ui, over, 1);
+    s.comp.connect(over, gl, 0); s.comp.connect(gl, sl, 0); s.comp.connect(sl, vig, 0); s.comp.connect(vig, out, 0);
+}
+static void crPlate(Screen& s, float rings = 1) {   // the dark behind a metal plate: rings turning in it (an item, under everything)
+    s.bg = ScreenBg{}; s.bg.kind = BgKind::Color; s.bg.color = 0x1A2227; s.bg.color2 = 0x05080B;
+    ScreenItem r; r.name = "Rings"; r.kind = ScreenItemKind::Rings; r.x = -0.1f; r.y = -0.32f; r.w = 1.2f; r.h = 1.56f; r.speed = 0.035f; r.alpha = rings;
+    r.col.fill = 0x161E23; r.col.accent = 0x7E8E98; r.col.picked = 0xE6FAFF; r.col.dim = 0x2E3A42; s.items.push_back(r);
+    s.comp = Compositor{};
+    int bg = s.comp.add(NodeType::Background, 40, 60), ui = s.comp.add(NodeType::UI, 40, 260), over = s.comp.add(NodeType::AlphaOver, 300, 160), gl = s.comp.add(NodeType::Glare, 520, 160);
+    int gr = s.comp.add(NodeType::Grain, 740, 160), vig = s.comp.add(NodeType::Vignette, 960, 160), out = s.comp.add(NodeType::Output, 1180, 160);
+    { CompNode& n = *s.comp.find(gl); n.p[0] = 0.8f; n.p[1] = 0.6f; n.p[2] = 22; n.c[0] = 0xD8F6FF; }
+    { CompNode& n = *s.comp.find(gr); n.p[0] = 0.05f; n.p[1] = 1.5f; n.p[2] = 1; }
+    s.comp.find(vig)->p[0] = 0.5f;
+    s.comp.connect(bg, over, 0); s.comp.connect(ui, over, 1); s.comp.connect(over, gl, 0); s.comp.connect(gl, gr, 0); s.comp.connect(gr, vig, 0); s.comp.connect(vig, out, 0);
+}
+static void crCommon(Screen& s, bool mainMenu) {   // how they come and go: a quick crossfade (the main menu takes the splash's own way out), the visor pointer
+    s.pointer = true; s.fadeIn = mainMenu ? 0.15f : 0.35f;
+    s.in = Transition{}; s.out = Transition{}; s.out.kind = TransKind::Crossfade; s.out.time = 0.3f;
+    if (!mainMenu) { s.in.kind = TransKind::Crossfade; s.in.time = 0.3f; }
+}
+static Screen presetCorruption(ScreenRole r) {
+    Screen s; s.role = r;
+    const float L = 0.105f, W = 0.79f;   // the scan screens' boxes: inside the frame's inner lines
+    switch (r) {
+    case ScreenRole::MainMenu: {   // "Main Menu": play, options, extras; back to the title
+        s.name = "Main menu"; crScan(s);
+        s.items.push_back(crFrame("Main Menu", 0));
+        ScreenItem t; t.name = "Scan lines"; t.kind = ScreenItemKind::TargetLines; t.x = 0.25f; t.y = 0.33f; t.w = 0.19f; t.h = 0.4f; t.slots = 7; t.showAt = 0.3f; t.fade = 0.2f;
+        t.col.accent = 0x0E2630; t.col.picked = 0x0E2630; t.alpha = 0.85f; s.items.push_back(t);
+        const char* lbl[] = { "Play Game", "Options", "Extras", "Back" }; ScreenAct act[] = { ScreenAct::Files, ScreenAct::Options, ScreenAct::GoTo, ScreenAct::Title };
+        const float ys[] = { 0.215f, 0.31f, 0.405f, 0.6f };
+        for (int i = 0; i < 4; i++) { ScreenItem b = crButton(lbl[i], act[i], L, ys[i], W, 0.08f); if (act[i] == ScreenAct::GoTo) b.target = "Extras"; b.showAt = 0.05f + i * 0.06f; b.fade = 0.25f; s.items.push_back(b); }
+        break; }
+    case ScreenRole::Files: {   // "Select File": the three files in rows like the buttons
+        s.name = "Files"; crScan(s);
+        s.items.push_back(crFrame("Select File", 0));
+        ScreenItem f; f.name = "Save files"; f.kind = ScreenItemKind::SaveSlots; f.x = L; f.y = 0.205f; f.w = W; f.h = 0.5f; f.slots = 3; f.cards = 0; f.style = 1; f.fillFade = 0.7f; f.pickFill = 0.55f;
+        f.textSize = 0.03f; f.font = 1; f.border = 1.5f; f.rounding = 0; f.outline = 0.25f; f.outlineColor = 0x03121A;
+        f.col.text = CR_TEXT; f.col.accent = CR_LINE; f.col.picked = CR_PICK; f.col.fill = CR_FILL; f.col.fillAlpha = 0.75f; f.col.dim = 0xB8D6DE; s.items.push_back(f);
+        s.items.push_back(crButton("Back", ScreenAct::Back, L, 0.74f, 0.24f, 0.075f));
+        break; }
+    case ScreenRole::FileMenu: {   // the picked file: play it, its codex, options; what is in it on the right
+        s.name = "File menu"; crScan(s);
+        s.items.push_back(crFrame("{file}", 0));
+        const char* lbl[] = { "{fileaction}", "Codex", "Options", "Back" }; ScreenAct act[] = { ScreenAct::PlayFile, ScreenAct::Codex, ScreenAct::Options, ScreenAct::Back };
+        const float ys[] = { 0.215f, 0.31f, 0.405f, 0.6f };
+        for (int i = 0; i < 4; i++) { ScreenItem b = crButton(lbl[i], act[i], L, ys[i], 0.4f, 0.08f); if (i == 0) b.name = "Play"; b.showAt = 0.05f + i * 0.06f; b.fade = 0.25f; s.items.push_back(b); }
+        ScreenItem p; p.name = "File"; p.kind = ScreenItemKind::Panel; p.x = 0.54f; p.y = 0.215f; p.w = 0.355f; p.h = 0.37f; p.rounding = 0; p.border = 1.5f; p.fillFade = 0.35f;
+        p.col.fill = CR_FILL; p.col.fillAlpha = 0.78f; p.col.accent = CR_LINE; p.showAt = 0.2f; p.inFx = 3; p.inFxTime = 0.4f; s.items.push_back(p);
+        ScreenItem it = text("File info", "{fileinfo}", 0.56f, 0.235f, 0.315f, 0.33f, 0.025f, 0); it.col.text = CR_TEXT; it.font = 2; it.valign = 0; it.typeSpeed = 90; it.showAt = 0.45f;
+        it.outline = 0.2f; it.outlineColor = 0x03121A; s.items.push_back(it);
+        break; }
+    case ScreenRole::Codex: {   // the scans: a list on the left, the picked one's text on the right
+        s.name = "Codex"; crScan(s);
+        s.items.push_back(crFrame("Codex", 0));
+        ScreenItem l; l.name = "Scans"; l.kind = ScreenItemKind::ScanList; l.x = L; l.y = 0.2f; l.w = W; l.h = 0.55f; l.textSize = 0.024f; l.font = 1;
+        l.col.text = CR_TEXT; l.col.accent = CR_LINE; l.col.dim = CR_DIM; l.col.picked = 0xFFFFFF; l.col.fill = CR_FILL; l.col.fillAlpha = 0.8f; s.items.push_back(l);
+        s.items.push_back(crButton("Back", ScreenAct::Back, L, 0.775f, 0.24f, 0.075f));
+        break; }
+    case ScreenRole::Options: {   // on a metal plate over the rings
+        s.name = "Options"; crPlate(s);
+        s.items.push_back(crFrame("Options", 1));
+        ScreenItem o; o.name = "Options"; o.kind = ScreenItemKind::Options; o.x = 0.05f; o.y = 0.17f; o.w = 0.9f; o.h = 0.65f; o.textSize = 0.028f; o.font = 1;
+        o.col.text = CR_TEXT; o.col.accent = CR_PICK; o.col.picked = 0xFFFFFF; o.col.dim = 0x8A9CA6; s.items.push_back(o);
+        s.items.push_back(crButton("Back", ScreenAct::Back, 0.05f, 0.85f, 0.2f, 0.075f, true));
+        break; }
+    case ScreenRole::Credits: {   // the roll on a metal plate, the rings dim behind
+        s.name = "Credits"; crPlate(s, 0.6f);
+        s.items.push_back(crFrame("Credits", 1));
+        ScreenItem c; c.name = "Credits roll"; c.kind = ScreenItemKind::Credits; c.x = 0.25f; c.y = 0.16f; c.w = 0.5f; c.h = 0.66f; c.textSize = 0.031f; c.font = 2;
+        c.text = "# {game}\n\n# Made by\nYou\n\n# Made with\nPRIMEngine\n\n\nTHANK YOU FOR PLAYING"; c.col.text = CR_TEXT; c.col.accent = CR_PICK; s.items.push_back(c);
+        s.items.push_back(crButton("Back", ScreenAct::Back, 0.05f, 0.85f, 0.2f, 0.075f, true));
+        break; }
+    default: return presetScreen(r);
+    }
+    crCommon(s, r == ScreenRole::MainMenu);
+    return s;
+}
+static Screen crExtras() {   // "Extras": a row each, across the plate (like the galleries and the rest in Metroid Prime 3)
+    Screen s; s.name = "Extras"; crPlate(s);
+    s.items.push_back(crFrame("Extras", 1));
+    const char* lbl[] = { "Concept Gallery", "Credits", "Back" }; ScreenAct act[] = { ScreenAct::GoTo, ScreenAct::Credits, ScreenAct::Back };
+    const float ys[] = { 0.17f, 0.295f, 0.795f };
+    for (int i = 0; i < 3; i++) { ScreenItem b = crButton(lbl[i], act[i], 0.035f, ys[i], 0.93f, 0.095f, true); if (i == 0) b.target = "Concept Gallery"; b.showAt = 0.05f + i * 0.06f; b.fade = 0.25f; s.items.push_back(b); }
+    crCommon(s, false);
+    return s;
+}
+static Screen crGallery() {   // "Concept Gallery": the pictures in screens/gallery, one at a time
+    Screen s; s.name = "Concept Gallery"; crPlate(s, 0.5f);
+    s.items.push_back(crFrame("Concept Gallery", 1));
+    ScreenItem g; g.name = "Gallery"; g.kind = ScreenItemKind::Gallery; g.image = "gallery"; g.x = 0.05f; g.y = 0.15f; g.w = 0.9f; g.h = 0.67f; g.textSize = 0.026f; g.font = 1;
+    g.col.text = CR_TEXT; g.col.accent = CR_MLINE; g.col.picked = CR_PICK; g.col.dim = 0x8A9CA6; g.col.fill = CR_MFILL; g.col.fillAlpha = 0.7f; s.items.push_back(g);
+    s.items.push_back(crButton("Back", ScreenAct::Back, 0.05f, 0.85f, 0.2f, 0.075f, true));
+    crCommon(s, false);
+    return s;
+}
+const char* screenLayoutName(ScreenLayout l) { static const char* n[] = { "Visor (PRIMEngine's own)", "Corruption (like Metroid Prime 3)" }; int i = (int)l; return i >= 0 && i < (int)ScreenLayout::COUNT ? n[i] : "?"; }
+std::vector<ScreenRole> layoutRoles(ScreenLayout) { return { ScreenRole::MainMenu, ScreenRole::Files, ScreenRole::FileMenu, ScreenRole::Codex, ScreenRole::Options, ScreenRole::Credits }; }
+std::vector<Screen> layoutOwnScreens(ScreenLayout l) { if (l == ScreenLayout::Corruption) return { crExtras(), crGallery() }; return {}; }
+Screen presetScreen(ScreenRole r, ScreenLayout l) { return l == ScreenLayout::Corruption ? presetCorruption(r) : presetScreen(r); }
+int applyLayout(ScreenSet& set, ScreenLayout l) {
+    int n = 0;
+    auto adopt = [](Screen& dst, const Screen& p) {   // the layout's look; its name (buttons lead there by name), role, music and sounds stay
+        std::string name = dst.name; ScreenRole role = dst.role; UiSounds snd = dst.sounds; int mm = dst.musicMode; SoundUse mu = dst.music; float mf = dst.musicFade;
+        dst = p; dst.name = name; dst.role = role; dst.sounds = snd; dst.musicMode = mm; dst.music = mu; dst.musicFade = mf;
+    };
+    for (const Screen& p : layoutOwnScreens(l)) { int i = set.find(p.name); if (i >= 0) adopt(set.screens[i], p); else set.screens.push_back(p); n++; }
+    for (ScreenRole r : layoutRoles(l)) {
+        Screen p = presetScreen(r, l); int i = set.byRole(r);
+        if (i >= 0) adopt(set.screens[i], p);
+        else { std::string base = p.name; int k = 2; while (set.find(p.name) >= 0) p.name = base + " " + std::to_string(k++); set.screens.push_back(p); }
+        n++;
+    }
+    int sp = set.byRole(ScreenRole::Intro), mm = set.byRole(ScreenRole::MainMenu);   // the splash goes on to the main menu (not straight to the files)
+    if (sp >= 0 && mm >= 0) {
+        Screen& s = set.screens[sp]; int nx = s.next.empty() ? -1 : set.find(s.next);
+        if (nx < 0 || set.screens[nx].role == ScreenRole::Files || set.screens[nx].role == ScreenRole::MainMenu) s.next = set.screens[mm].name;
+    }
+    return n;
+}
 ScreenSet defaultScreens() {
     ScreenSet s;
     for (ScreenRole r : { ScreenRole::MainMenu, ScreenRole::Files, ScreenRole::Options, ScreenRole::Death, ScreenRole::Credits }) s.screens.push_back(presetScreen(r));
@@ -587,6 +738,7 @@ bool saveScreens(const std::string& path, const ScreenSet& set) {
         if (s.useStack) f << "usestack 1\n";
         if (s.in.kind != TransKind::None || s.out.kind != TransKind::None) f << "trans " << transText(s.in) << " " << transText(s.out) << "\n";
         if (s.role == ScreenRole::ItemGet || s.role == ScreenRole::GameSaved) f << "hold " << s.holdMin << "\n";
+        if (s.pointer) f << "pointer 1\n";
         if (s.shakeTime > 0 || s.pressStart) f << "shake " << s.shakeAt << " " << s.shakeTime << " " << s.shakeAmount << " " << (s.pressStart ? 1 : 0) << "\n";
         for (const StackStep& st : s.stack) {
             f << "step " << (int)st.kind << " " << escText(st.file) << " " << (st.zoom ? 1 : 0) << " " << st.zoomTo << " " << st.zoomTime << " " << st.place << " " << escText(st.text) << " "
@@ -607,6 +759,7 @@ bool saveScreens(const std::string& path, const ScreenSet& set) {
             for (const ItemKey& k : i.keys) f << "key " << k.t << " " << k.x << " " << k.y << " " << k.scale << " " << k.alpha << " " << (k.smooth ? 1 : 0) << "\n";
             if (!i.sound.empty()) f << "isound " << soundUseText(i.sound) << "\n";
             if (i.sharp) f << "isharp 1\n";
+            if (i.style || i.fillFade > 0) f << "look3 " << i.style << " " << i.fillFade << "\n";
             if (i.inFx || i.cursor || i.code || i.pulse > 0) f << "ifx " << i.inFx << " " << i.inFxTime << " " << (i.cursor ? 1 : 0) << " " << (i.code ? 1 : 0) << " " << i.pulse << "\n";
         }
         f << "comp " << s.comp.nextId << "\n";
@@ -681,6 +834,8 @@ bool loadScreens(const std::string& path, ScreenSet& set) {
         else if (k == "key" && !cur->items.empty()) { ItemKey kk; int sm = 1; if (l >> kk.t >> kk.x >> kk.y >> kk.scale >> kk.alpha >> sm) { kk.smooth = sm != 0; setKey(cur->items.back(), kk); } }
         else if (k == "ifx" && !cur->items.empty()) { ScreenItem& i = cur->items.back(); int cu = 0, co = 0; l >> i.inFx >> i.inFxTime >> cu >> co >> i.pulse; i.inFx = std::clamp(i.inFx, 0, IN_FX_COUNT - 1); i.cursor = cu != 0; i.code = co != 0; }
         else if (k == "isharp" && !cur->items.empty()) { int v = 0; l >> v; cur->items.back().sharp = v != 0; }
+        else if (k == "look3" && !cur->items.empty()) { ScreenItem& i = cur->items.back(); l >> i.style >> i.fillFade; i.style = std::clamp(i.style, 0, 1); i.fillFade = std::clamp(i.fillFade, 0.f, 1.f); }
+        else if (k == "pointer") { int v = 0; l >> v; cur->pointer = v != 0; }
         else if (k == "shake") { int ps = 0; l >> cur->shakeAt >> cur->shakeTime >> cur->shakeAmount >> ps; cur->pressStart = ps != 0; }
         else if (k == "isound" && !cur->items.empty()) { std::string rest; std::getline(l, rest); soundUseFrom(rest, cur->items.back().sound); }
         else if (k == "comp") l >> cur->comp.nextId;

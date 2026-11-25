@@ -38,9 +38,12 @@ struct ScreenBg {
     float stars = 0.5f, nebula = 0.35f; uint32_t nebulaColor = 0x2A1A5A;   // how many stars, a coloured haze behind
 };
 
-enum class ScreenItemKind { Panel, Text, Image, Button, Options, Credits, SaveSlots, Sound, ItemModel, ScanList, COUNT };   // ScanList: the picked file's scans - a list, and the picked one's text beside it   // ItemModel: the found item's 3D model, turning (Item get screen)   // SaveSlots: the save files, one card each; Sound: plays at its time (not seen)
+enum class ScreenItemKind { Panel, Text, Image, Button, Options, Credits, SaveSlots, Sound, ItemModel, ScanList, Frame, TargetLines, Rings, Gallery, COUNT };
+// Frame: a visor frame around the screen (its text: the title in it) - style 0 the scan visor (ticks, notches, crosshairs), 1 a metal plate (bolts, a title tab)
+// TargetLines: scan lines fanning out from its top right corner (a target being scanned), each ending in a dot; Rings: rings turning around its middle, a glow in it
+// Gallery: the pictures in a folder (its picture: the folder in "screens"), one at a time, flipped with left / right   // ScanList: the picked file's scans - a list, and the picked one's text beside it   // ItemModel: the found item's 3D model, turning (Item get screen)   // SaveSlots: the save files, one card each; Sound: plays at its time (not seen)
 const char* screenItemKindName(ScreenItemKind k);
-enum class ScreenAct { None, NewGame, Continue, Options, Credits, Quit, GoTo, Back, Retry, MainMenu, Files, PlayFile, Codex, COUNT };   // PlayFile: the picked file (continue it, or start it if empty); Codex: its scans
+enum class ScreenAct { None, NewGame, Continue, Options, Credits, Quit, GoTo, Back, Retry, MainMenu, Files, PlayFile, Codex, Title, COUNT };   // Title: the splash, at its end (the title waiting for start)   // PlayFile: the picked file (continue it, or start it if empty); Codex: its scans
 const char* screenActName(ScreenAct a);
 
 // ---- transitions: how one screen gives way to the next (the old picture and the new one put together for a moment)
@@ -95,6 +98,8 @@ struct ScreenItem {
     bool code = false;                                   // Text: made-up scanner code around it (a tag before it, little lines above and under it), typed with it
     float pulse = 0;                                     // breathes (brighter / dimmer) over this many seconds (0: steady) - "press start"
     bool sharp = false;                                  // Picture: sharp pixels when it is drawn bigger (pixel art), not smoothed
+    int style = 0;                                       // Frame: 0 scan visor, 1 metal plate; Button / Save files: 0 the visor bar, 1 Corruption (boxes in brackets, the picked one lit with a shimmer)
+    float fillFade = 0;                                  // Panel / Button / Save files: the fill fades toward the right (0 even .. 1 gone at the right)
     float fadeOutTime() const { return fadeOut < 0 ? fade : fadeOut; }
 };
 // where an item is t seconds into its screen: its keyframes (between two: blended), else where it was put
@@ -189,12 +194,22 @@ struct Screen {
     Transition in, out;                                   // how it comes in (from the screen or the game before), how it goes (when the next one has none of its own)
     float shakeAt = 0, shakeTime = 0, shakeAmount = 0.012f;   // the whole picture shakes from shakeAt for shakeTime seconds (amount: part of the height); 0 long: never
     bool pressStart = false;                              // waits at its end for a key ("press start"); a key before that skips to the end
+    bool pointer = false;                                 // a visor pointer (a glowing arrow) instead of the mouse's own
 };
 void shakeOffset(const Screen& s, double t, float out[2]);   // how far the picture is pushed t seconds in (parts of the height; 0 0 when still)
 float screenLength(const Screen& s);                     // its duration, or (staying) a little past its last item's times, at least 10 s
 Screen presetScreen(ScreenRole r);                        // ready-made: main menu, options, death, credits, files, splash (and an empty one)
 Screen presetStory();                                     // ready-made: an intro of typed text (like Super Metroid's)
 Screen presetPhazonIntro();                               // ready-made: the Phazon splash - code typing in over a glow, ink swallowing it, a corrupted planet burning in, the title, "press start"
+// ---- layouts: a whole menu at once, in one look
+enum class ScreenLayout { Visor, Corruption, COUNT };   // Visor: PRIMEngine's own; Corruption: like Metroid Prime 3's menus (a scan seen through a visor frame, choices in [ brackets ], metal plates, turning rings)
+const char* screenLayoutName(ScreenLayout l);
+Screen presetScreen(ScreenRole r, ScreenLayout l);        // one screen of a layout (roles the layout has no own look for: the Visor one)
+std::vector<Screen> layoutOwnScreens(ScreenLayout l);    // the layout's screens beyond the roles (Corruption: Extras, Concept Gallery)
+std::vector<ScreenRole> layoutRoles(ScreenLayout l);     // the roles a layout gives its look to (Corruption: main menu, files, file menu, codex, options, credits)
+// puts a layout in: each of its roles' screens gets its look (keeping its name, music and sounds; missing ones are added), its own screens
+// are added (or replaced, by name), and the splash goes on to its main menu. Returns how many screens it changed or added.
+struct ScreenSet; int applyLayout(ScreenSet& set, ScreenLayout l);
 struct ScreenSet {
     std::vector<Screen> screens;
     int find(const std::string& name) const;              // -1: none

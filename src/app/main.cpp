@@ -10840,6 +10840,202 @@ struct App {
         }
     }
 
+    // ---- the Corruption look's items: a visor frame (the scan visor or a metal plate), rings turning, scan target lines, a picture gallery, the visor pointer
+    static ImU32 CorCol(uint32_t c, float a) { return IM_COL32((c >> 16) & 255, (c >> 8) & 255, c & 255, (int)(std::clamp(a, 0.f, 1.f) * 255)); }
+    static uint32_t CorMix(uint32_t a, uint32_t b, float k) {   // a toward b
+        k = std::clamp(k, 0.f, 1.f); auto ch = [&](int s) { int x = (a >> s) & 255, y = (b >> s) & 255; return (uint32_t)std::lround(x + (y - x) * k) << s; };
+        return ch(16) | ch(8) | ch(0);
+    }
+    static float CorHash(uint32_t v) { v ^= v * 0x9E3779B9u; v ^= v >> 15; v *= 0x85EBCA6Bu; v ^= v >> 13; return (v & 0xFFFF) / 65535.f; }
+    static void CorHatch(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 c, float step, float th) {   // diagonal stripes in a box
+        dl->PushClipRect(p0, p1, true);
+        float w = p1.x - p0.x; for (float y = p0.y - w; y < p1.y + w; y += step) dl->AddLine(ImVec2(p0.x, y + w), ImVec2(p1.x, y), c, th);
+        dl->PopClipRect();
+    }
+    void DrawFrame(ImDrawList* dl, const ScreenItem& it, ImVec2 a, ImVec2 b, float al) {
+        const ScreenColors& col = it.col; float W = b.x - a.x, H = b.y - a.y; if (W < 16 || H < 16) return;
+        auto P = [&](float x, float y) { return ImVec2(a.x + x * W, a.y + y * H); };
+        float th = std::max(1.f, it.border * H / 900.f), ts = std::max(6.f, it.textSize * H); ImFont* font = FontOf(it.font);
+        std::string title = menuFill(it.text, [&](const std::string& n) { return MenuValue(n); });
+        ImU32 black = CorCol(0x000000, al), line = CorCol(col.accent, 0.95f * al);
+        auto quad = [&](ImVec2 q0, ImVec2 q1, ImVec2 q2, ImVec2 q3, ImU32 c) { dl->AddQuadFilled(q0, q1, q2, q3, c); };
+        if (it.style == 1) {   // ---- a metal plate: a bevelled grey frame with bolts, a grille, a title tab top left
+            const float X0 = 0.012f, X1 = 0.988f, Y0 = 0.018f, Y1 = 0.982f, L = 0.03f, R = 0.97f, T = 0.05f, B = 0.945f;
+            dl->AddRectFilled(a, P(1, Y0), black); dl->AddRectFilled(P(0, Y1), b, black); dl->AddRectFilled(P(0, Y0), P(X0, Y1), black); dl->AddRectFilled(P(X1, Y0), P(1, Y1), black);
+            uint32_t m = col.fill, hi = CorMix(m, 0xFFFFFF, 0.22f), lo = CorMix(m, 0x000000, 0.45f); float fa = col.fillAlpha * al;
+            dl->AddRectFilledMultiColor(P(X0, Y0), P(X1, T), CorCol(hi, fa), CorCol(hi, fa), CorCol(m, fa), CorCol(m, fa));
+            dl->AddRectFilledMultiColor(P(X0, B), P(X1, Y1), CorCol(m, fa), CorCol(m, fa), CorCol(lo, fa), CorCol(lo, fa));
+            dl->AddRectFilledMultiColor(P(X0, T), P(L, B), CorCol(hi, fa), CorCol(lo, fa), CorCol(lo, fa), CorCol(hi, fa));
+            dl->AddRectFilledMultiColor(P(R, T), P(X1, B), CorCol(lo, fa), CorCol(hi, fa), CorCol(hi, fa), CorCol(lo, fa));
+            dl->AddRect(P(X0, Y0), P(X1, Y1), CorCol(col.accent, 0.45f * al), H * 0.012f, ImDrawFlags_None, th * 0.8f);
+            float c = 0.012f, cy = c * W / H;
+            ImVec2 in[8] = { P(L, T + cy), P(L + c, T), P(R - c, T), P(R, T + cy), P(R, B - cy), P(R - c, B), P(L + c, B), P(L, B - cy) };
+            const ImVec2 corners[4] = { P(L, T), P(R, T), P(R, B), P(L, B) };
+            for (int i = 0; i < 4; i++) dl->AddTriangleFilled(corners[i], in[i * 2], in[i * 2 + 1], CorCol(m, fa));   // (the cut corners filled with metal)
+            dl->AddPolyline(in, 8, CorCol(0x000000, 0.55f * al), ImDrawFlags_Closed, th * 2.2f);
+            dl->AddPolyline(in, 8, line, ImDrawFlags_Closed, th * 1.1f);
+            dl->AddLine(P(X0 + 0.004f, Y0 + 0.006f), P(X1 - 0.004f, Y0 + 0.006f), CorCol(0xFFFFFF, 0.18f * al), th);   // (a highlight along the top)
+            for (int i = 0; i < 4; i++) {   // bolts in the corners (not under the title tab)
+                if (i == 0 && !title.empty()) continue;
+                ImVec2 cpt = P(i % 2 ? 0.979f : 0.021f, i < 2 ? 0.034f : 0.966f); float r = H * 0.0085f;
+                dl->AddCircleFilled(cpt, r, CorCol(lo, al), 16); dl->AddCircle(cpt, r, CorCol(col.accent, 0.55f * al), 16, th * 0.7f);
+                dl->AddCircleFilled(ImVec2(cpt.x - r * 0.3f, cpt.y - r * 0.3f), r * 0.3f, CorCol(0xFFFFFF, 0.35f * al), 8);
+                dl->AddLine(ImVec2(cpt.x - r * 0.6f, cpt.y + r * 0.6f), ImVec2(cpt.x + r * 0.6f, cpt.y - r * 0.6f), CorCol(0x000000, 0.6f * al), th * 0.8f);
+            }
+            { ImVec2 g0 = P(0.9f, Y0 + 0.008f), g1 = P(0.955f, T - 0.008f); dl->AddRectFilled(g0, g1, CorCol(lo, 0.8f * al)); CorHatch(dl, g0, g1, CorCol(col.accent, 0.4f * al), H * 0.008f, th * 0.8f); }   // a grille
+            for (int i = -3; i <= 3; i++) { ImVec2 r0 = P(0.5f + i * 0.009f - 0.002f, 0.953f), r1 = P(0.5f + i * 0.009f + 0.002f, 0.974f); dl->AddRectFilled(r0, r1, CorCol(lo, al)); dl->AddLine(r0, ImVec2(r0.x, r1.y), CorCol(0xFFFFFF, 0.25f * al), 1.f); }   // ridges
+            if (!title.empty()) {   // the title tab: dark glass, its right side slanted
+                float tw = font->CalcTextSizeA(ts, FLT_MAX, 0, title.c_str()).x / W, right = std::max(0.2f, 0.04f + tw + 0.04f), y1 = 0.118f;
+                ImVec2 t0 = P(X0 + 0.004f, Y0 + 0.004f), t1 = P(right, Y0 + 0.004f), t2 = P(right + (y1 - Y0) * H / W * 0.5f, y1), t3 = P(X0 + 0.004f, y1);
+                quad(t0, t1, t2, t3, CorCol(col.picked, 0.96f * al));
+                dl->AddRectFilledMultiColor(t0, ImVec2(t1.x, (t0.y + t3.y) * 0.5f), CorCol(0xFFFFFF, 0.07f * al), CorCol(0xFFFFFF, 0.07f * al), CorCol(0xFFFFFF, 0), CorCol(0xFFFFFF, 0));
+                ImVec2 tp[4] = { t0, t1, t2, t3 }; dl->AddPolyline(tp, 4, line, ImDrawFlags_Closed, th * 1.1f);
+                dl->AddLine(ImVec2(t2.x, P(0, T).y), P(R - 0.012f, T), line, th * 1.1f);
+                TextInStyled(dl, font, title, ts, P(0.04f, Y0), P(right, y1), 0, CorCol(col.text, al), TextLook{ it.weight, it.outline, it.outlineColor });
+            }
+            return;
+        }
+        // ---- the scan visor (Metroid Prime 3's menus): a dark bezel, double lines with notches top and bottom, a ruler, ticks, hatched bars, crosshairs, readouts
+        const float X0 = 0.0375f, X1 = 0.9625f, Y0 = 0.025f, Y1 = 0.965f, L = 0.092f, R = 0.908f, T1 = 0.164f, T0 = 0.132f, B1 = 0.91f, B0 = 0.882f;
+        dl->AddRectFilled(a, P(1, Y0), black); dl->AddRectFilled(P(0, Y1), b, black); dl->AddRectFilled(P(0, Y0), P(X0, Y1), black); dl->AddRectFilled(P(X1, Y0), P(1, Y1), black);
+        ImU32 bz = CorCol(col.fill, col.fillAlpha * al), bzHi = CorCol(CorMix(col.fill, col.accent, 0.22f), col.fillAlpha * al);
+        dl->AddRectFilled(P(X0, Y0), P(X1, T0), bz); dl->AddRectFilled(P(X0, B1), P(X1, Y1), bz);
+        dl->AddRectFilledMultiColor(P(X0, T0), P(L, B1), bzHi, bz, bz, bzHi); dl->AddRectFilledMultiColor(P(R, T0), P(X1, B1), bz, bzHi, bzHi, bz);   // (the sides lit a little from outside)
+        quad(P(L, T0), P(0.15f, T0), P(0.135f, T1), P(L, T1), bz); quad(P(0.65f, T0), P(R, T0), P(R, T1), P(0.665f, T1), bz);
+        quad(P(0.345f, B1), P(0.36f, B0), P(0.65f, B0), P(0.665f, B1), bz);
+        dl->AddRect(P(X0, Y0), P(X1, Y1), CorCol(col.accent, 0.3f * al), H * 0.018f, ImDrawFlags_None, th * 0.8f);
+        dl->AddRect(P(0.0625f, 0.053f), P(0.9375f, 0.9375f), CorCol(col.accent, 0.7f * al), H * 0.008f, ImDrawFlags_None, th * 0.7f);
+        float c = 0.012f, cy = c * W / H;
+        float px[16] = { L, L + c, 0.135f, 0.15f, 0.65f, 0.665f, R - c, R, R, R - c, 0.665f, 0.65f, 0.36f, 0.345f, L + c, L };
+        float py[16] = { T1 + cy, T1, T1, T0, T0, T1, T1, T1 + cy, B1 - cy, B1, B1, B0, B0, B1, B1, B1 - cy };
+        ImVec2 pts[16], inner[16]; float dx = 0.008f * H / W, dy = 0.008f;
+        for (int i = 0; i < 16; i++) { pts[i] = P(px[i], py[i]); inner[i] = P(px[i] + (px[i] < 0.5f ? dx : -dx), py[i] + (py[i] < 0.5f ? dy : -dy)); }
+        dl->AddPolyline(pts, 16, CorCol(0x000000, 0.35f * al), ImDrawFlags_Closed, th * 2.6f);   // (a dark edge so the lines read over a bright scan)
+        dl->AddPolyline(pts, 16, line, ImDrawFlags_Closed, th * 1.3f);
+        dl->AddPolyline(inner, 16, CorCol(col.accent, 0.45f * al), ImDrawFlags_Closed, th * 0.6f);
+        for (int i = 0; i * 0.0078f + 0.16f < 0.52f; i++) { float x = 0.16f + i * 0.0078f; bool big = i % 8 == 0; dl->AddLine(P(x, T0 + (big ? 0.012f : 0.018f)), P(x, T0 + (big ? 0.042f : 0.027f)), CorCol(col.accent, (big ? 0.7f : 0.45f) * al), th * 0.6f); }   // a ruler under the top
+        for (float y : { 0.29f, 0.405f, 0.52f, 0.635f, 0.75f }) { dl->AddLine(P(L, y), P(L + 0.017f, y), line, th); dl->AddLine(P(R - 0.017f, y), P(R, y), line, th); }   // ticks along the sides
+        for (int s = 0; s < 2; s++) {   // hatched bars in the sides
+            ImVec2 h0 = P(s ? 0.9125f : 0.0765f, 0.236f), h1 = P(s ? 0.9235f : 0.0875f, 0.806f);
+            CorHatch(dl, h0, h1, CorCol(col.accent, 0.5f * al), H * 0.011f, th * 0.7f); dl->AddRect(h0, h1, CorCol(col.accent, 0.7f * al), 0, ImDrawFlags_None, th * 0.7f);
+        }
+        for (int i = 0; i < 4; i++) {   // little arrows in the corners: up at the top, down at the bottom
+            ImVec2 cpt = P(i % 2 ? 0.9235f : 0.0765f, i < 2 ? 0.079f : 0.91f); float s = H * 0.009f, d = i < 2 ? -1.f : 1.f;
+            dl->AddTriangleFilled(ImVec2(cpt.x, cpt.y + d * s), ImVec2(cpt.x - s, cpt.y - d * s * 0.7f), ImVec2(cpt.x + s, cpt.y - d * s * 0.7f), CorCol(col.accent, 0.75f * al));
+            dl->AddRect(ImVec2(cpt.x - s * 1.7f, cpt.y - s * 1.6f), ImVec2(cpt.x + s * 1.7f, cpt.y + s * 1.6f), CorCol(col.accent, 0.4f * al), 0, ImDrawFlags_None, th * 0.6f);
+        }
+        for (int i = 0; 0.148f + i * 0.117f < 0.9f; i++) for (float y : { 0.282f, 0.5f, 0.718f }) {   // faint crosshairs over the scan
+            ImVec2 q = P(0.148f + i * 0.117f, y); float s = H * 0.008f; ImU32 cc = CorCol(col.accent, 0.3f * al);
+            dl->AddLine(ImVec2(q.x - s, q.y), ImVec2(q.x + s, q.y), cc, th * 0.6f); dl->AddLine(ImVec2(q.x, q.y - s), ImVec2(q.x, q.y + s), cc, th * 0.6f);
+        }
+        dl->AddRectFilled(P(0.47f, 0.0505f), P(0.53f, 0.0555f), CorCol(col.accent, 0.55f * al));   // a mark in the middle of the top
+        float tx = 0.105f;
+        if (!title.empty()) {
+            TextInStyled(dl, font, title, ts, P(0.105f, 0.058f), P(0.6f, 0.124f), 0, CorCol(col.text, al), TextLook{ it.weight, it.outline, it.outlineColor });
+            tx += font->CalcTextSizeA(ts, FLT_MAX, 0, title.c_str()).x / W + 0.02f;
+        }
+        dl->AddRectFilled(P(tx, 0.085f), P(tx + 0.04f, 0.097f), CorCol(col.accent, 0.28f * al));   // a small plate after the title
+        float small = H * 0.0145f; CodeBits cb = codeBits(title.empty() ? std::string("SCAN") : title);
+        TextIn(dl, font, cb.top + "   " + cb.tag, small, P(0.55f, 0.065f), P(0.89f, 0.09f), 2, CorCol(col.dim, 0.55f * al));
+        {   // the readout bottom right: "Target  V1 v  A1 v"
+            float ry0 = 0.912f, ry1 = 0.936f, rs = H * 0.0165f; ImU32 rc = CorCol(col.dim, 0.85f * al);
+            TextIn(dl, font, "Target", rs, P(0.668f, ry0), P(0.73f, ry1), 0, rc); TextIn(dl, font, "V1", rs, P(0.735f, ry0), P(0.76f, ry1), 0, rc); TextIn(dl, font, "A1", rs, P(0.79f, ry0), P(0.815f, ry1), 0, rc);
+            for (float x : { 0.765f, 0.82f }) { ImVec2 q = P(x, (ry0 + ry1) * 0.5f); float s = rs * 0.3f; dl->AddTriangleFilled(ImVec2(q.x - s, q.y - s * 0.6f), ImVec2(q.x + s, q.y - s * 0.6f), ImVec2(q.x, q.y + s * 0.7f), rc); }
+        }
+    }
+    void DrawRings(ImDrawList* dl, const ScreenItem& it, ImVec2 a, ImVec2 b, float al) {   // rings turning around the middle, every other one the other way, a glow in the middle
+        const ScreenColors& col = it.col; ImVec2 c((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f); float R = 0.5f * std::max(b.x - a.x, b.y - a.y); if (R < 4) return;
+        float t = (float)screenT, spd = it.speed * 6.2831853f, th = std::max(1.f, R / 700.f);
+        auto sector = [&](float r0, float r1, float a0, float a1, ImU32 cc) {   // a piece of a ring (in steps small enough to look round)
+            int n = std::max(1, (int)std::ceil((a1 - a0) * r1 / std::max(6.f, R * 0.02f)));
+            for (int k = 0; k < n; k++) {
+                float u0 = a0 + (a1 - a0) * k / n, u1 = a0 + (a1 - a0) * (k + 1) / n, c0 = std::cos(u0), s0 = std::sin(u0), c1 = std::cos(u1), s1 = std::sin(u1);
+                dl->AddQuadFilled(ImVec2(c.x + c0 * r0, c.y + s0 * r0), ImVec2(c.x + c0 * r1, c.y + s0 * r1), ImVec2(c.x + c1 * r1, c.y + s1 * r1), ImVec2(c.x + c1 * r0, c.y + s1 * r0), cc);
+            }
+        };
+        const int N = 11;
+        for (int k = N - 1; k >= 0; k--) {
+            float r0 = R * (0.07f + 0.088f * k), r1 = r0 + R * (0.05f + 0.014f * (k % 3)), h = CorHash(k * 7 + 3), depth = 1 - (float)k / N;
+            float ang = (k % 2 ? 1.f : -1.f) * spd * t * (1.1f - 0.06f * k) + k * 0.7f;
+            uint32_t shade = CorMix(col.fill, col.accent, 0.15f + 0.45f * depth * (0.5f + h));
+            int segs = 4 + k * 3 + (int)(h * 4); float gap = 0.12f + 0.25f * CorHash(k * 13 + 1);
+            for (int s = 0; s < segs; s++) {
+                float a0 = ang + s * 6.2831853f / segs, a1 = a0 + 6.2831853f / segs * (1 - gap * (0.6f + 0.8f * CorHash(k * 31 + s)));
+                sector(r0, r1, a0, a1, CorCol(shade, (0.55f + 0.4f * depth) * al));
+            }
+            dl->AddCircle(c, r0, CorCol(col.accent, (0.12f + 0.25f * depth) * al), 96, th);
+            dl->AddCircle(c, r1, CorCol(col.dim, 0.6f * al), 96, th * 1.5f);
+            if (k % 3 == 1) for (int s = 0; s < 72; s++) { float u = ang * 0.5f + s * 6.2831853f / 72; dl->AddLine(ImVec2(c.x + std::cos(u) * r1, c.y + std::sin(u) * r1), ImVec2(c.x + std::cos(u) * (r1 + R * 0.012f), c.y + std::sin(u) * (r1 + R * 0.012f)), CorCol(col.accent, 0.3f * al), th); }
+        }
+        for (int s = 0; s < 36; s++) { float u = -spd * t * 0.2f + s * 6.2831853f / 36; dl->AddLine(ImVec2(c.x + std::cos(u) * R * 0.12f, c.y + std::sin(u) * R * 0.12f), ImVec2(c.x + std::cos(u) * R, c.y + std::sin(u) * R), CorCol(col.accent, 0.05f * al), th); }
+        for (int g = 8; g >= 1; g--) dl->AddCircleFilled(c, R * 0.018f * g, CorCol(col.picked, 0.1f * al), 48);   // the glow in the middle
+        dl->AddCircleFilled(c, R * 0.02f, CorCol(0xFFFFFF, 0.9f * al), 32);
+    }
+    void DrawTargetLines(ImDrawList* dl, const ScreenItem& it, ImVec2 a, ImVec2 b, float al) {   // lines fanning out from the top right corner to the lower left, a dot at each end, growing out one after another
+        float w = b.x - a.x, h = b.y - a.y; if (w < 2 || h < 2) return;
+        int n = std::clamp(it.slots, 1, 12); ImVec2 o(b.x, a.y); float t = (float)(screenT - it.showAt), th = std::max(1.f, (b.y - a.y) / 300.f);
+        for (int i = 0; i < n; i++) {
+            float u = n > 1 ? (float)i / (n - 1) : 0.5f; ImVec2 e = u < 0.5f ? ImVec2(a.x, a.y + h * (0.25f + 1.5f * u * 0.75f)) : ImVec2(a.x + w * 0.55f * (u - 0.5f) * 2, b.y);
+            float len = 0.78f + 0.22f * CorHash(i * 17 + 5), wob = 0.012f * std::sin(t * 0.9f + i * 1.7f);
+            ImVec2 d((e.x - o.x) * len, (e.y - o.y) * len); float cs = std::cos(wob), sn = std::sin(wob); d = ImVec2(d.x * cs - d.y * sn, d.x * sn + d.y * cs);
+            float g = std::clamp((t - i * 0.07f) / 0.3f, 0.f, 1.f); g = 1 - (1 - g) * (1 - g); if (g <= 0) continue;
+            ImVec2 s0(o.x + d.x * 0.08f, o.y + d.y * 0.08f), s1(o.x + d.x * (0.08f + 0.92f * g), o.y + d.y * (0.08f + 0.92f * g));
+            dl->AddLine(s0, s1, CorCol(it.col.accent, 0.8f * al), th);
+            if (g >= 1) dl->AddCircleFilled(s1, th * 2.4f, CorCol(it.col.accent, al), 10);
+        }
+    }
+    std::map<std::string, std::pair<double, std::vector<std::string>>> galleryFiles;   // a gallery's folder -> when it was looked at, its pictures (sorted)
+    int galleryPick = 0;   // the picture the gallery on the shown screen shows
+    const std::vector<std::string>& GalleryFiles(const std::string& folder) {
+        auto& e = galleryFiles[folder];
+        if (e.first <= 0 || uiClock - e.first > 3) {   // (looked at again every few seconds: pictures put in later show up)
+            e.first = uiClock + 1e-6; e.second.clear(); std::error_code ec;
+            fs::path dir = fs::u8path(ScreensDir() + "/" + folder);
+            if (fs::is_directory(dir, ec)) for (auto& f : fs::directory_iterator(dir, ec)) {
+                if (!f.is_regular_file(ec)) continue;
+                std::string ext = f.path().extension().u8string(); for (char& ch : ext) ch = (char)std::tolower((unsigned char)ch);
+                if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".gif" || ext == ".bmp") e.second.push_back(f.path().filename().u8string());
+            }
+            std::sort(e.second.begin(), e.second.end());
+        }
+        return e.second;
+    }
+    void DrawGallery(ImDrawList* dl, const ScreenItem& it, ImVec2 a, ImVec2 b, float ts, float al, bool live) {   // the picked picture (fitted), its name and "3 / 12" under it, arrows at the sides
+        const ScreenColors& col = it.col; ImFont* font = FontOf(it.font); std::string folder = it.image.empty() ? std::string("gallery") : it.image;
+        const std::vector<std::string>& files = GalleryFiles(folder);
+        float aw = (b.x - a.x) * 0.06f, capH = ts * 2.0f, th = std::max(1.f, it.border * (b.y - a.y) / 700.f);
+        dl->AddRectFilled(a, b, CorCol(col.fill, col.fillAlpha * al)); dl->AddRect(a, b, CorCol(col.accent, 0.7f * al), 0, ImDrawFlags_None, th);
+        if (files.empty()) { TextIn(dl, font, live ? "Nothing here yet." : "Put pictures (PNG, JPG, GIF) in screens/" + folder, ts, a, b, 1, CorCol(col.dim, al)); return; }
+        int n = (int)files.size(), k = ((galleryPick % n) + n) % n;
+        ImVec2 pa(a.x + aw, a.y + ts * 0.5f), pb(b.x - aw, b.y - capH);
+        int iw = 0, ih = 0; ID3D11ShaderResourceView* im = PictureAt(folder + "/" + files[k], screenT, true, &iw, &ih);
+        if (im) { float r[4]; FitRect(iw, ih, (int)(pb.x - pa.x), (int)(pb.y - pa.y), 1, r); ImVec2 q0(pa.x + r[0] * (pb.x - pa.x), pa.y + r[1] * (pb.y - pa.y)), q1(pa.x + r[2] * (pb.x - pa.x), pa.y + r[3] * (pb.y - pa.y));
+                  dl->AddImage((ImTextureID)(intptr_t)im, q0, q1, ImVec2(0, 0), ImVec2(1, 1), CorCol(0xFFFFFF, al)); dl->AddRect(q0, q1, CorCol(col.accent, 0.5f * al), 0, ImDrawFlags_None, th * 0.8f); }
+        std::string name = files[k].substr(0, files[k].find_last_of('.')); for (char& ch : name) if (ch == '_' || ch == '-') ch = ' ';
+        dl->AddLine(ImVec2(a.x + aw, b.y - capH), ImVec2(b.x - aw, b.y - capH), CorCol(col.accent, 0.4f * al), th * 0.8f);
+        TextIn(dl, font, name, ts, ImVec2(a.x + aw, b.y - capH), ImVec2(b.x - aw, b.y), 0, CorCol(col.text, al));
+        TextIn(dl, font, std::to_string(k + 1) + " / " + std::to_string(n), ts * 0.85f, ImVec2(a.x + aw, b.y - capH), ImVec2(b.x - aw, b.y), 2, CorCol(col.dim, al));
+        for (int s = 0; s < 2; s++) {   // the arrows: a click (or Enter) flips; left / right do too
+            ImVec2 h0(s ? b.x - aw : a.x, a.y), h1(s ? b.x : a.x + aw, b.y - capH);
+            MenuHit hh{ 0, ImVec4(h0.x, h0.y, h1.x, h1.y), 12, s ? 1 : -1, MenuAct::None, "" }; screenHits.push_back(hh);
+            bool sel = live && (int)screenHits.size() - 1 == screenSel; float mx = (h0.x + h1.x) * 0.5f, my = (h0.y + h1.y) * 0.5f, z = aw * 0.22f, dir = s ? 1.f : -1.f;
+            if (sel) dl->AddRectFilled(h0, h1, CorCol(col.picked, 0.18f * al));
+            dl->AddTriangleFilled(ImVec2(mx + dir * z, my), ImVec2(mx - dir * z * 0.6f, my - z * 1.2f), ImVec2(mx - dir * z * 0.6f, my + z * 1.2f), CorCol(sel ? col.picked : col.accent, (sel ? 1.f : 0.7f) * al));
+        }
+    }
+    double pointerMovedAt = -100; ImVec2 pointerLast(-1, -1);
+    void DrawPointer(ImDrawList* dl, int W, int H) {   // the visor pointer: a glowing blue arrowhead where the mouse is (it fades when the mouse rests a while)
+        ImGuiIO& io = ImGui::GetIO(); ImVec2 m(io.MousePos.x - vx, io.MousePos.y - vy);
+        if (m.x != pointerLast.x || m.y != pointerLast.y) { pointerLast = m; pointerMovedAt = uiClock; }
+        if (m.x < 0 || m.y < 0 || m.x > W || m.y > H || !ImGui::IsMousePosValid()) return;
+        float al = std::clamp(1.f - (float)(uiClock - pointerMovedAt - 4.0) / 0.8f, 0.f, 1.f); if (al <= 0) return;
+        ImGui::SetMouseCursor(ImGuiMouseCursor_None);
+        float s = H * 0.034f; ImVec2 p0 = m, p1(m.x + s * 0.98f, m.y + s * 0.4f), p2(m.x + s * 0.4f, m.y + s * 0.98f), mid(m.x + s * 0.5f, m.y + s * 0.5f);
+        for (int g = 3; g >= 1; g--) { float e = g * s * 0.09f; dl->AddTriangleFilled(ImVec2(p0.x - e, p0.y - e), ImVec2(p1.x + e, p1.y), ImVec2(p2.x, p2.y + e), CorCol(0x4FB4FF, 0.09f * al)); }
+        dl->AddTriangleFilled(p0, p1, p2, CorCol(0x2C78E0, al));
+        dl->AddTriangleFilled(p0, p1, mid, CorCol(0x8CD2FF, al));   // (lit on one side)
+        ImVec2 tri[3] = { p0, p1, p2 }; dl->AddPolyline(tri, 3, CorCol(0x0A2A5C, al), ImDrawFlags_Closed, std::max(1.f, s * 0.05f));
+    }
     // ---- the items of a screen: drawn into screenList (W x H), buttons and options into screenHits
     std::string pickedTip;   // the picked button's tip (a text's {tip})
     // ---- screen transitions: the last picture is kept; when the screen changes (another screen, the game, a pop-up) the old and the new are put together for a moment
@@ -10974,7 +11170,8 @@ struct App {
             float ts = std::max(6.f, it.textSize * H * k), rnd = it.rounding * (b.y - a.y) * 0.5f;
             switch (it.kind) {
             case ScreenItemKind::Panel:
-                if (it.filled) dl->AddRectFilled(a, b, C(col.fill, col.fillAlpha * al), rnd);
+                if (it.filled && it.fillFade > 0.001f) { ImU32 l = C(col.fill, col.fillAlpha * al), r = C(col.fill, col.fillAlpha * al * (1 - it.fillFade)); dl->AddRectFilledMultiColor(a, b, l, r, r, l); }   // (fading toward the right: square)
+                else if (it.filled) dl->AddRectFilled(a, b, C(col.fill, col.fillAlpha * al), rnd);
                 if (it.frame) dl->AddRect(a, b, C(col.accent, 0.8f * al), rnd, ImDrawFlags_None, it.border);
                 if (it.corners) brackets(a, b, C(col.picked, 0.9f * al), it.border + 1.5f);
                 break;
@@ -11027,6 +11224,25 @@ struct App {
                 if (it.ownTrans) { screenHits.back().trans = (int)screenTrans.size(); screenTrans.push_back(it.trans); }
                 bool sel = live && (int)screenHits.size() - 1 == screenSel;
                 if (sel) tipNow = it.tip;
+                if (it.style == 1) {   // Corruption: a box (its fill fading to the right), the label in [ brackets ]; the picked one lit in the Picked colour, a shimmer passing over it
+                    float ff = std::clamp(it.fillFade, 0.f, 1.f), bw = b.x - a.x;
+                    auto grad = [&](uint32_t c, float aL) { ImU32 l = C(c, aL), r = C(c, aL * (1 - ff)); dl->AddRectFilledMultiColor(a, b, l, r, r, l); };
+                    if (sel) {
+                        for (int g = 2; g >= 1; g--) dl->AddRect(ImVec2(a.x - g * 3.f, a.y - g * 3.f), ImVec2(b.x + g * 3.f, b.y + g * 3.f), C(col.picked, 0.16f * al / g), 0, ImDrawFlags_None, 2.f);
+                        grad(col.picked, it.pickFill * al);
+                        float sx = a.x + ((float)std::fmod(uiClock * 0.45, 1.6) - 0.3f) * bw, hw = bw * 0.07f; ImU32 z = C(0xFFFFFF, 0), w = C(0xFFFFFF, 0.2f * al);
+                        dl->PushClipRect(a, b, true);
+                        dl->AddRectFilledMultiColor(ImVec2(sx - hw, a.y), ImVec2(sx, b.y), z, w, w, z); dl->AddRectFilledMultiColor(ImVec2(sx, a.y), ImVec2(sx + hw, b.y), w, z, z, w);
+                        dl->PopClipRect();
+                    }
+                    else if (it.filled) grad(col.fill, col.fillAlpha * al);
+                    if (it.corners && sel) brackets(a, b, C(col.picked, al), it.border + 1);
+                    if (it.frame || sel) dl->AddRect(a, b, sel ? C(col.picked, al) : C(col.accent, 0.85f * al), 0, ImDrawFlags_None, sel ? it.border + 0.5f : it.border);
+                    float pad = (b.y - a.y) * 0.3f;
+                    TextInStyled(dl, font, menuFill(it.text, [&](const std::string& n) { return MenuValue(n); }), ts, ImVec2(a.x + pad, a.y), ImVec2(b.x - pad, b.y), it.align,
+                                 off ? C(col.dim, 0.6f * al) : C(col.text, al), TextLook{ it.weight, it.outline, it.outlineColor });
+                    break;
+                }
                 bool solid = sel && it.pickFill >= 0.99f;
                 if (solid) for (int g = 3; g >= 1; g--) dl->AddRectFilled(ImVec2(a.x - g * 4, a.y - g * 4), ImVec2(b.x + g * 4, b.y + g * 4), C(col.accent, 0.06f * al), rnd + g * 4);   // (a soft glow around a solid bar)
                 if (it.filled || sel) dl->AddRectFilled(a, b, sel ? C(col.accent, it.pickFill * al) : C(col.fill, col.fillAlpha * al), rnd);
@@ -11048,6 +11264,23 @@ struct App {
                     ImVec2 p0(a.x, a.y + (k - 1) * (cardH + gap)), p1(b.x, p0.y + cardH);
                     MenuHit h{ 0, ImVec4(p0.x, p0.y, p1.x, p1.y), 10, k, MenuAct::None, "" }; screenHits.push_back(h);
                     bool sel = live && (int)screenHits.size() - 1 == screenSel; auto info = slotInfo.find(k); bool used = info != slotInfo.end();
+                    if (it.style == 1) {   // Corruption: a box like its buttons - "[ File 1 ]", then where it was saved and how far along (or "New Game")
+                        float ff = std::clamp(it.fillFade, 0.f, 1.f); uint32_t fc = sel ? col.picked : col.fill; float fa = sel ? it.pickFill : col.fillAlpha;
+                        ImU32 l = C(fc, fa * al), r = C(fc, fa * al * (1 - ff)); dl->AddRectFilledMultiColor(p0, p1, l, r, r, l);
+                        if (sel) for (int g = 2; g >= 1; g--) dl->AddRect(ImVec2(p0.x - g * 3.f, p0.y - g * 3.f), ImVec2(p1.x + g * 3.f, p1.y + g * 3.f), C(col.picked, 0.16f * al / g), 0, ImDrawFlags_None, 2.f);
+                        dl->AddRect(p0, p1, sel ? C(col.picked, al) : C(col.accent, 0.85f * al), 0, ImDrawFlags_None, sel ? it.border + 0.5f : it.border);
+                        float pad = cardH * 0.16f, colW = (p1.x - p0.x) * 0.3f; TextLook lk{ it.weight, it.outline, it.outlineColor };
+                        TextInStyled(dl, font, "[ File " + std::to_string(k) + " ]", ts * 1.15f, ImVec2(p0.x + pad, p0.y), ImVec2(p0.x + colW, p1.y), 0, C(col.text, al), lk);
+                        if (!used) { TextInStyled(dl, font, "New Game", ts, ImVec2(p0.x + colW, p0.y), ImVec2(p1.x - pad, p1.y), 0, C(col.dim, al), lk); }
+                        else {
+                            const SaveGame& g = info->second; float mid = (p0.y + p1.y) * 0.5f; ImFont* fb = it.font ? FontOf(2) : font;
+                            TextInStyled(dl, font, g.place.empty() ? g.world : g.place + "  -  " + g.world, ts, ImVec2(p0.x + colW, p0.y + cardH * 0.08f), ImVec2(p1.x - pad, mid), 0, C(col.text, al), lk);
+                            char line[160]; std::snprintf(line, sizeof line, "%s      Energy %d      %d%%", playTimeText(g.playTime).c_str(), (int)std::lround(g.health), (int)std::lround(g.completion * 100));
+                            TextInStyled(dl, fb, line, ts * 0.82f, ImVec2(p0.x + colW, mid), ImVec2(p1.x - pad, p1.y - cardH * 0.08f), 0, C(col.dim, al), lk);
+                        }
+                        if (eraseArm == k && uiClock - eraseArmT < 3) TextIn(dl, font, "Delete again: erase", ts * 0.8f, ImVec2(p0.x, p0.y), ImVec2(p1.x - pad, p0.y + cardH * 0.4f), 2, IM_COL32(255, 90, 70, (int)(255 * al)));
+                        continue;
+                    }
                     float rr = cardH * 0.18f;
                     dl->AddRectFilled(p0, p1, sel ? C(col.accent, 0.22f * al) : C(col.fill, col.fillAlpha * al), rr);
                     dl->AddRect(p0, p1, C(col.accent, (sel ? 0.95f : 0.4f) * al), rr, ImDrawFlags_None, sel ? it.border + 1 : it.border);
@@ -11111,6 +11344,10 @@ struct App {
                 }
                 dl->PopClipRect();
                 break; }
+            case ScreenItemKind::Frame: DrawFrame(dl, it, a, b, al); break;
+            case ScreenItemKind::Rings: DrawRings(dl, it, a, b, al); break;
+            case ScreenItemKind::TargetLines: DrawTargetLines(dl, it, a, b, al); break;
+            case ScreenItemKind::Gallery: DrawGallery(dl, it, a, b, ts, al, live); break;
             default: break;
             }
             };
@@ -11119,6 +11356,7 @@ struct App {
             else ItemComeIn(dl, it, fxp, a0, b0, al0, drawIt);
             if (it.kind == ScreenItemKind::Text && (it.cursor || it.code)) TextExtras(dl, it, ii, a0, b0, al0, typedEnd, typedH);
         }
+        if (live && sc.pointer) DrawPointer(dl, W, H);   // (over everything, through the compositor: it glows with the rest)
         dl->PopTexture(); dl->PopClipRect();
         screenPrevT = screenT; if (live) pickedTip = tipNow;
         if (live) {
@@ -11198,7 +11436,7 @@ struct App {
     void ShowScreen(int idx, bool remember) {
         if (idx < 0 || idx >= (int)screens.screens.size()) return;
         if (remember && curScreen >= 0 && curScreen != idx) screenBack.push_back(curScreen);
-        curScreen = idx; screenT = 0; screenPrevT = -1; screenSel = -2; bindCapture = -1; RefreshSlots(); typed.clear();
+        curScreen = idx; screenT = 0; screenPrevT = -1; screenSel = -2; bindCapture = -1; RefreshSlots(); typed.clear(); galleryPick = 0;
         mc::Screen& sc = screens.screens[idx];
         if ((sc.role == ScreenRole::ItemGet || sc.role == ScreenRole::GameSaved) && sc.musicMode == 1 && !sc.music.empty()) { StopSounds(TAG_FANFARE); PlaySoundIn(SND_MUSIC, sc.music, 1.f, nullptr, TAG_FANFARE, false); }   // (the pop-up's "music" is a jingle: once, not looping; the game's music ducks meanwhile)
         else if (sc.musicMode == 1 && !sc.music.empty()) PlayMusic(sc.music, sc.musicFade); else if (sc.musicMode == 2) StopMusic(sc.musicFade);
@@ -11250,6 +11488,11 @@ struct App {
         case ScreenAct::Credits: { int c = screens.byRole(ScreenRole::Credits); if (c >= 0) ShowScreen(c, true); break; }
         case ScreenAct::GoTo: { int i = screens.find(target); if (i >= 0) ShowScreen(i, true); else Toast("No screen called " + target); break; }
         case ScreenAct::Back: ScreenBack(); break;
+        case ScreenAct::Title: {   // the splash at its end: the title, waiting for start (pressing start goes on from there again)
+            int t = screens.byRole(ScreenRole::Intro); if (t < 0) { Toast("There is no splash (title) screen"); break; }
+            screenBack.clear(); ShowScreen(t, false);
+            const mc::Screen& s = screens.screens[t]; if (s.duration > 0) screenT = screenPrevT = s.pressStart ? s.duration : std::max(0.f, s.duration - 0.01f);
+            break; }
         case ScreenAct::PlayFile: if (fileMenuSlot > 0) BeginStart(fileMenuSlot, slotInfo.count(fileMenuSlot) > 0); else Toast("Pick a file first (the Files screen)"); break;
         case ScreenAct::Codex: { int c = screens.byRole(ScreenRole::Codex); if (c >= 0) { codexPick = 0; codexScroll = 0; ShowScreen(c, true); } else Toast("There is no Codex screen yet (Screens editor)"); break; }
         case ScreenAct::Retry:   // the death screen: back at the last checkpoint
@@ -11275,13 +11518,21 @@ struct App {
             }
         }
         int before = screenSel;
+        {   // a gallery: left / right flip its pictures (unless an option or a file card is picked: those use them)
+            bool gal = false; for (const ScreenItem& i : sc->items) gal |= i.kind == ScreenItemKind::Gallery;
+            int k = screenSel >= 0 && screenSel < (int)screenHits.size() ? screenHits[screenSel].kind : -1;
+            if (gal && (k < 5 || k > 7) && k != 10) {
+                int d = (ImGui::IsKeyPressed(ImGuiKey_LeftArrow) || ImGui::IsKeyPressed(ImGuiKey_A)) ? -1 : (ImGui::IsKeyPressed(ImGuiKey_RightArrow) || ImGui::IsKeyPressed(ImGuiKey_D)) ? 1 : 0;
+                if (d) { galleryPick += d; PlayUi(0); }
+            }
+        }
         MenuControl(screenHits, screenSel, [&](ImVec2 m, int* pane, ImVec2* px) { if (pane) *pane = 0; return ScreenHitAt(m, px); },
                     [&](const MenuHit& h) {
                         if (h.kind == 9) { Toast("No saved game yet"); return; }
                         bool starts = (h.kind == 10 || (h.kind == 8 && ((ScreenAct)h.arg == ScreenAct::Continue || ((ScreenAct)h.arg == ScreenAct::NewGame && screens.byRole(ScreenRole::Files) < 0)))) && !screens.startSound.empty();
                         if (!starts) PlayUi(h.kind == 8 && (ScreenAct)h.arg == ScreenAct::Back ? 2 : 1);   // (starting a file has its own sound)
                         if (h.trans >= 0 && h.trans < (int)screenTrans.size()) { pendingTrans = screenTrans[h.trans]; pendingTransSet = true; }   // (the button's own transition)
-                        if (h.kind == 8) ScreenAction((ScreenAct)h.arg, h.target); else if (h.kind == 10) SlotPicked(h.arg); else if (h.kind == 11) codexPick = h.arg; }, false);
+                        if (h.kind == 8) ScreenAction((ScreenAct)h.arg, h.target); else if (h.kind == 10) SlotPicked(h.arg); else if (h.kind == 11) codexPick = h.arg; else if (h.kind == 12) galleryPick += h.arg; }, false);
         if (screenSel != before && before >= 0 && screenSel >= 0) PlayUi(0);
         if (screenSel >= 0 && screenSel < (int)screenHits.size() && screenHits[screenSel].kind == 10 && (ImGui::IsKeyPressed(ImGuiKey_Delete) || ImGui::IsKeyPressed(ImGuiKey_Backspace))) SlotErase(screenHits[screenSel].arg);
     }
@@ -11611,6 +11862,18 @@ struct App {
         if (transUsesColor(t.kind)) { Prop(t.kind == TransKind::Fade ? "Through" : "Light"); c |= ColorU32("##trc", t.color); }
         return c;
     }
+    void ApplyLayoutNow(ScreenLayout l) {   // a whole layout in: the screens file backed up first (screens.before-<layout>.txt, numbered if there is one)
+        std::error_code ec; std::string tag = l == ScreenLayout::Corruption ? "corruption" : "visor", bk = projectDir + "/screens.before-" + tag + ".txt";
+        for (int k = 2; fs::exists(fs::u8path(bk), ec) && k < 100; k++) bk = projectDir + "/screens.before-" + tag + "-" + std::to_string(k) + ".txt";
+        if (!screensPath.empty() && fs::exists(fs::u8path(screensPath), ec)) fs::copy_file(fs::u8path(screensPath), fs::u8path(bk), ec);
+        int n = applyLayout(screens, l);
+        if (l == ScreenLayout::Corruption) {
+            if (planets.find("Corrupted world") < 0) { planets.planets.push_back(planetPreset("Corrupted world")); planetsDirty = true; }   // (the scan's planet)
+            fs::create_directories(fs::u8path(ScreensDir() + "/gallery"), ec);   // (the Concept Gallery's pictures go here)
+        }
+        SaveScreens(); scrItem = -1;
+        Toast(std::string(screenLayoutName(l)) + ": " + std::to_string(n) + " screens (your old ones: " + fs::u8path(bk).filename().u8string() + ")");
+    }
     static void ApplyReadyLook(mc::Screen& sc) {   // a built-in screen back to the ready-made look
         mc::Screen p = sc.role == ScreenRole::NewGameIntro ? presetStory() : presetScreen(sc.role);
         if (sc.useStack) { sc.comp = p.comp; sc.in = p.in; sc.out = p.out; return; }   // (a splash / story: its own steps stay)
@@ -11643,6 +11906,13 @@ struct App {
             bool one = scrEd >= 0 && scrEd < (int)screens.screens.size() && screens.screens[scrEd].role != ScreenRole::Custom;
             if (one && ImGui::Selectable(("This screen: " + screens.screens[scrEd].name).c_str())) { ApplyReadyLook(screens.screens[scrEd]); ch = true; }
             if (ImGui::Selectable("All the built-in screens")) { for (mc::Screen& sc : screens.screens) if (sc.role != ScreenRole::Custom) ApplyReadyLook(sc); ch = true; }
+            ImGui::Separator(); ImGui::TextDisabled("A whole layout - the menu screens in one look:");
+            for (int l = 0; l < (int)ScreenLayout::COUNT; l++) {
+                if (ImGui::Selectable(screenLayoutName((ScreenLayout)l))) { ApplyLayoutNow((ScreenLayout)l); ch = true; }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip(l == (int)ScreenLayout::Corruption
+                    ? "Like Metroid Prime 3's menus: the main menu, files, a file's menu and the codex as a scan (your planet as a negative, cyan to white)\nseen through a visor frame, choices in [ brackets ]; options, credits, Extras and a Concept Gallery on metal plates\nover turning rings; a glowing blue pointer. The splash goes on to the main menu; its Back goes to the title.\nKept: each screen's name, music and sounds. Your screens file is backed up first (screens.before-corruption.txt)."
+                    : "PRIMEngine's own visor look for the menu screens (a backup of your screens file is kept first).");
+            }
             ImGui::EndPopup();
         }
         if (ImGui::BeginPopup("addscr")) {
@@ -12169,6 +12439,10 @@ struct App {
                 if (it.kind == ScreenItemKind::SaveSlots) { it.x = 0.1f; it.y = 0.18f; it.w = 0.8f; it.h = 0.6f; it.textSize = 0.034f; }
                 if (it.kind == ScreenItemKind::Credits) { it.text = "# Thanks\nfor playing"; it.y = 0.1f; it.w = 0.5f; it.h = 0.8f; it.x = 0.25f; }
                 if (it.kind == ScreenItemKind::Panel || it.kind == ScreenItemKind::Image) { it.w = 0.3f; it.h = 0.3f; }
+                if (it.kind == ScreenItemKind::Frame) { it.x = it.y = 0; it.w = it.h = 1; it.text = "Title"; it.textSize = 0.036f; it.font = 1; it.col.fill = 0x0B1E26; it.col.fillAlpha = 0.9f; it.col.accent = 0xD2F0F6; it.col.dim = 0x8CB4C0; it.col.picked = 0x0C1418; }
+                if (it.kind == ScreenItemKind::TargetLines) { it.x = 0.3f; it.y = 0.3f; it.w = 0.2f; it.h = 0.4f; it.slots = 7; it.col.accent = 0x0E2630; }
+                if (it.kind == ScreenItemKind::Rings) { it.x = -0.1f; it.y = -0.32f; it.w = 1.2f; it.h = 1.56f; it.speed = 0.035f; it.col.fill = 0x161E23; it.col.accent = 0x7E8E98; it.col.picked = 0xE6FAFF; it.col.dim = 0x2E3A42; }
+                if (it.kind == ScreenItemKind::Gallery) { it.x = 0.05f; it.y = 0.15f; it.w = 0.9f; it.h = 0.67f; it.image = "gallery"; it.textSize = 0.026f; it.font = 1; it.col.fill = 0x0A1216; it.col.fillAlpha = 0.7f; }
                 sc.items.push_back(it); scrItem = (int)sc.items.size() - 1; ch = true;
             }
             ImGui::EndPopup();
@@ -12199,16 +12473,27 @@ struct App {
         if (!it.keys.empty()) Hint("Its place, size and see-through come from its keyframes (below). Place / Size here: its size without them.");
         Prop("Place"); { float v[2] = { it.x, it.y }; if (ImGui::DragFloat2("##sip", v, 0.002f, -0.5f, 1.5f, "%.3f")) { it.x = v[0]; it.y = v[1]; ch = true; } }
         Prop("Size"); { float v[2] = { it.w, it.h }; if (ImGui::DragFloat2("##sis", v, 0.002f, 0.01f, 2, "%.3f")) { it.w = v[0]; it.h = v[1]; ch = true; } }
+        if (it.kind == ScreenItemKind::Frame) {
+            Prop("Title"); ch |= ImGui::InputText("##sift", &it.text); if (ImGui::IsItemHovered()) ImGui::SetTooltip("Shown in the frame, top left ({file} and the rest are filled in). Empty: none.");
+            const char* st[] = { "Scan visor (lines, notches, ticks)", "Metal plate (bolts, a title tab)" }; Prop("Look"); ch |= ImGui::Combo("##sifs", &it.style, st, 2);
+            Hint("Usually the whole screen (place 0 0, size 1 1). Outside it is black; the scan visor's middle (or the plate's) shows what is behind.");
+        }
+        if (it.kind == ScreenItemKind::TargetLines) { Prop("Lines"); ch |= ImGui::SliderInt("##sitl", &it.slots, 1, 12); Hint("They fan out from its top right corner (put that on what is being scanned) to its left and bottom edges, growing out one after another when it appears; a dot at each end."); }
+        if (it.kind == ScreenItemKind::Rings) { Prop("Turns"); ch |= ImGui::SliderFloat("##siri", &it.speed, 0, 0.3f, "%.3f turns/s"); Hint("Rings around its middle, every other one turning the other way; a glow in the middle (Picked colour). Make it bigger than the screen for a tunnel."); }
+        if (it.kind == ScreenItemKind::Gallery) {
+            Prop("Folder"); ch |= ImGui::InputText("##sigf", &it.image);
+            Hint(("Its pictures: PNG, JPG or GIF files in " + ScreensDir() + "/" + (it.image.empty() ? std::string("gallery") : it.image) + " (by name; the name is the caption, _ and - become spaces). Left / right or the arrows flip them.").c_str());
+        }
         bool hasText = it.kind == ScreenItemKind::Text || it.kind == ScreenItemKind::Button || it.kind == ScreenItemKind::Credits;
         if (hasText) {
             Prop(it.kind == ScreenItemKind::Credits ? "The roll" : "Says");
             if (it.kind == ScreenItemKind::Button) ch |= ImGui::InputText("##sit", &it.text); else ch |= ImGui::InputTextMultiline("##sit", &it.text, ImVec2(-1, (it.kind == ScreenItemKind::Credits ? 160 : 60) * ui));
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("{game} {world} are filled in.%s", it.kind == ScreenItemKind::Credits ? "\nA line starting with \"# \" is a heading." : "");
         }
-        if (it.kind != ScreenItemKind::Panel && it.kind != ScreenItemKind::Image) { Prop("Text size"); ch |= ImGui::SliderFloat("##sitz", &it.textSize, 0.01f, 0.2f, "%.3f of the height"); }
+        if (it.kind != ScreenItemKind::Panel && it.kind != ScreenItemKind::Image && it.kind != ScreenItemKind::TargetLines && it.kind != ScreenItemKind::Rings) { Prop("Text size"); ch |= ImGui::SliderFloat("##sitz", &it.textSize, 0.01f, 0.2f, "%.3f of the height"); }
         if (hasText) { const char* al[] = { "Left", "Middle", "Right" }; Prop("Lined up"); ch |= ImGui::Combo("##sia", &it.align, al, 3); }
         if (it.kind == ScreenItemKind::Text) { const char* va[] = { "Top", "Middle", "Bottom" }; Prop("Up / down"); ch |= ImGui::Combo("##siva", &it.valign, va, 3); }
-        if (hasText || it.kind == ScreenItemKind::SaveSlots) ch |= TextLookUI(it.weight, it.outline, it.outlineColor, &it.font);
+        if (hasText || it.kind == ScreenItemKind::SaveSlots || it.kind == ScreenItemKind::Frame || it.kind == ScreenItemKind::Gallery) ch |= TextLookUI(it.weight, it.outline, it.outlineColor, &it.font);
         if (it.kind == ScreenItemKind::Image) {
             Prop("Picture"); ch |= FileCombo("##sii", it.image, false);
             Prop("Sharp pixels"); ch |= ImGui::Checkbox("##siish", &it.sharp);
@@ -12221,6 +12506,7 @@ struct App {
             Prop("Does"); if (ImGui::BeginCombo("##siact", screenActName(it.act))) { for (int k = 0; k < (int)ScreenAct::COUNT; k++) if (ImGui::Selectable(screenActName((ScreenAct)k), (int)it.act == k)) { it.act = (ScreenAct)k; ch = true; } ImGui::EndCombo(); }
             if (it.act == ScreenAct::GoTo) { Prop("Screen"); if (ImGui::BeginCombo("##sitg", it.target.empty() ? "(pick one)" : it.target.c_str())) { for (const mc::Screen& s : screens.screens) if (ImGui::Selectable(s.name.c_str(), s.name == it.target)) { it.target = s.name; ch = true; } ImGui::EndCombo(); } }
             if (it.act == ScreenAct::Continue) Hint("Goes on from the newest save file (on the death screen: this file's last save). Greyed out while there is none.");
+            if (it.act == ScreenAct::Title) Hint("Back to the splash, at its end: the title waiting for start (pressing start goes on to the screen after it again).");
             if (it.act == ScreenAct::NewGame) Hint("Opens the Files screen (pick a file: an empty one starts a new game). Without a Files screen: a new game in File 1.");
         }
         if (it.kind == ScreenItemKind::Options) {
@@ -12233,6 +12519,14 @@ struct App {
         }
         if (it.kind == ScreenItemKind::Credits) { Prop("Speed"); ch |= ImGui::SliderFloat("##sisp", &it.speed, 0.005f, 0.3f, "%.3f screens/s"); }
         if (it.kind == ScreenItemKind::SaveSlots) { const char* ly[] = { "Rows (top to bottom)", "Cards side by side" }; Prop("Layout"); ch |= ImGui::Combo("##sicd", &it.cards, ly, 2); }
+        if (it.kind == ScreenItemKind::Button || (it.kind == ScreenItemKind::SaveSlots && it.cards == 0)) {
+            const char* bs[] = { "Visor bar", "Corruption box" }; Prop("Look"); ch |= ImGui::Combo("##sibs", &it.style, bs, 2);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Visor bar: a lit bar with a little arrow when picked.\nCorruption box: a framed box (like Metroid Prime 3's [ Play Game ]), the picked one lit in the Picked colour with a shimmer passing over it.");
+        }
+        if (it.kind == ScreenItemKind::Panel || it.kind == ScreenItemKind::Button || (it.kind == ScreenItemKind::SaveSlots && it.style == 1)) {
+            Prop("Fill fades right"); ch |= ImGui::SliderFloat("##siff", &it.fillFade, 0, 1, it.fillFade <= 0.001f ? "no (even)" : "%.2f");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("The fill is strongest on the left and fades toward the right (1: gone at the right) - what is behind shows through.");
+        }
         if (it.kind == ScreenItemKind::Button) {
             Prop("Own transition"); ch |= ImGui::Checkbox("##siot", &it.ownTrans);
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Where it leads, it goes with this transition (instead of the screens' own).");
@@ -12244,6 +12538,15 @@ struct App {
         if (it.kind == ScreenItemKind::SaveSlots) { Prop("Files"); ch |= ImGui::SliderInt("##sisl", &it.slots, 1, 12); Hint("Picking an empty file starts a new game in it; a used one goes on from its last save. Delete twice erases one. Games save only at Save Stations."); }
         ImGui::SeparatorText("Colours");
         ScreenColors& c = it.col;
+        if (it.kind == ScreenItemKind::TargetLines) { Prop("Lines"); ch |= ColorU32("##sca", c.accent); }
+        else if (it.kind == ScreenItemKind::Rings) { Prop("Dark rings"); ch |= ColorU32("##scf", c.fill); Prop("Bright rings"); ch |= ColorU32("##sca", c.accent); Prop("Edges"); ch |= ColorU32("##scd", c.dim); Prop("Glow"); ch |= ColorU32("##scp", c.picked); }
+        else if (it.kind == ScreenItemKind::Frame || it.kind == ScreenItemKind::Gallery) {
+            Prop("Text"); ch |= ColorU32("##sct", c.text); Prop("Lines"); ch |= ColorU32("##sca", c.accent); Prop(it.kind == ScreenItemKind::Frame ? "Readouts" : "Dim"); ch |= ColorU32("##scd", c.dim);
+            Prop(it.kind == ScreenItemKind::Frame ? (it.style ? "Metal" : "Bezel") : "Backing"); ch |= ColorU32("##scf", c.fill); Prop("Fill strength"); ch |= ImGui::SliderFloat("##scfa", &c.fillAlpha, 0, 1, "%.2f");
+            if (it.kind == ScreenItemKind::Gallery || it.style == 1) { Prop(it.kind == ScreenItemKind::Frame ? "Title tab" : "Picked arrow"); ch |= ColorU32("##scp", c.picked); }
+        }
+        bool ownColours = it.kind == ScreenItemKind::TargetLines || it.kind == ScreenItemKind::Rings || it.kind == ScreenItemKind::Frame || it.kind == ScreenItemKind::Gallery;
+        if (!ownColours) {   // (the rest: text, accent, and what each has)
         if (it.kind != ScreenItemKind::Panel && (it.kind != ScreenItemKind::Image || !it.text.empty())) { Prop("Text"); ch |= ColorU32("##sct", c.text); }
         Prop("Accent"); ch |= ColorU32("##sca", c.accent);
         if (it.kind == ScreenItemKind::Button || it.kind == ScreenItemKind::Options || (it.kind == ScreenItemKind::Text && it.code)) { if (it.kind != ScreenItemKind::Text) { Prop("Picked"); ch |= ColorU32("##scp", c.picked); } Prop("Dim"); ch |= ColorU32("##scd", c.dim); }
@@ -12255,7 +12558,9 @@ struct App {
         if (it.kind == ScreenItemKind::Panel || it.kind == ScreenItemKind::Button || it.kind == ScreenItemKind::SaveSlots) { Prop("Bracket corners"); ch |= ImGui::Checkbox("##sbc", &it.corners); }
         if (it.kind == ScreenItemKind::Button || it.kind == ScreenItemKind::SaveSlots) {
             Prop("Picked: filled"); ch |= ImGui::SliderFloat("##spf", &it.pickFill, 0, 1, it.pickFill >= 0.99f ? "a solid bar" : "%.2f");
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("How strongly the picked one fills with the accent colour. A solid bar: set Picked (the text colour) dark.");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("How strongly the picked one fills with the accent colour. A solid bar: set Picked (the text colour) dark.\nCorruption box: with the Picked colour (its text stays the Text colour).");
+        }
+        if (it.kind == ScreenItemKind::SaveSlots && it.style == 1) { Prop("Picked"); ch |= ColorU32("##scp2", c.picked); Prop("Fill"); ch |= ColorU32("##scf2", c.fill); Prop("Fill strength"); ch |= ImGui::SliderFloat("##scfa2", &c.fillAlpha, 0, 1, "%.2f"); Prop("Dim"); ch |= ColorU32("##scd2", c.dim); }
         }
         Prop("See-through"); { float op = 1 - it.alpha; if (ImGui::SliderFloat("##sial", &op, 0, 1, "%.2f")) { it.alpha = 1 - op; ch = true; } }
         ImGui::SeparatorText("Timing");
@@ -12312,6 +12617,9 @@ struct App {
         ImGui::PushID("trin"); ch |= TransEdit("Comes in with", sc.in); ImGui::PopID();
         ImGui::PushID("trout"); ch |= TransEdit("Goes out with", sc.out); ImGui::PopID();
         Hint("Coming in: from the screen (or the game) before. Going out: used when the next screen has none of its own (going out, a slide or a wipe moves the old one away). A button can have its own. Try them with F6 (from the menu).");
+        ImGui::SeparatorText("Pointer");
+        Prop("Visor pointer"); ch |= ImGui::Checkbox("##spointer", &sc.pointer);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Instead of the mouse's own arrow: a glowing blue arrowhead (like pointing at Metroid Prime 3's menus).\nIt fades away when the mouse rests a few seconds.");
         ImGui::SeparatorText("Music");
         { const char* mm[] = { "Keep what is playing", "Play this (it loops)", "Silence" }; Prop("When it shows"); ch |= ImGui::Combo("##mmode", &sc.musicMode, mm, 3); }
         if (sc.musicMode == 1) { Prop("Music"); ch |= MusicEdit("##music", sc.music); }
