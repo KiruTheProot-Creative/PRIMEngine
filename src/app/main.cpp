@@ -1361,7 +1361,7 @@ struct App {
     // ================================================================== game update
     void UpdateGame(double dt) {
         player.applySize(game.player);   // the size from the player rules (editor camera too)
-        bool frozen = Frozen();   // (loading, booting up: nothing moves, nothing can be done)
+        bool frozen = Frozen() || bench.on;   // (loading, booting up, the benchmark: nothing moves, nothing can be done)
         if (!frozen) PlayKeys();
         UpdateRadial();   // build modes: holding Tab (the mouse moves its pointer, not the view)
         bool locked = UpdateLockOn(dt);
@@ -1524,17 +1524,20 @@ struct App {
         D3D11_SUBRESOURCE_DATA sd{ m.tex.data(), (UINT)m.tw * 4, 0 };
         ComPtr<ID3D11Texture2D> t; if (SUCCEEDED(dev->CreateTexture2D(&d, &sd, &t))) dev->CreateShaderResourceView(t.Get(), nullptr, &g.tex);
     }
-    void UploadMeshVerts(ModelGpu& g, const MeshModel& m, const std::vector<MeshVert>& verts) {
-        g.parts.clear();
-        MeshData md; md.v.reserve(verts.size());
+    void UploadMeshVerts(ModelGpu& g, const MeshModel& m, const std::vector<MeshVert>& verts) {   // a posed mesh (the arm cannon animating): into the same buffers every frame
+        if (g.parts.size() != 1) { g.parts.clear(); g.parts.push_back({ { 0, 0, 0 }, GpuChunk{} }); }
+        static thread_local std::vector<Vtx> vv; vv.clear(); vv.reserve(verts.size());
         int none[3] = { 0, 0, 0 };
         for (const MeshVert& v : verts) {
             V3 p = m.blockPos(v);
-            md.v.push_back({ (float)p.x, (float)p.y, (float)p.z, v.uv[0], v.uv[1], 16383.f, packLit(1, none, false), packNormal(v.n[0], v.n[1], v.n[2], 0) });
+            vv.push_back({ (float)p.x, (float)p.y, (float)p.z, v.uv[0], v.uv[1], 16383.f, packLit(1, none, false), packNormal(v.n[0], v.n[1], v.n[2], 0) });
         }
-        md.i = m.idx;
-        GpuChunk gc; if (m.transparent) Upload(md, gc.vbC, gc.ibC, gc.nC); else Upload(md, gc.vbO, gc.ibO, gc.nO);
-        g.parts.push_back({ { 0, 0, 0 }, std::move(gc) });
+        GpuChunk& gc = g.parts[0].second;
+        ComPtr<ID3D11Buffer>& vb = m.transparent ? gc.vbC : gc.vbO; ComPtr<ID3D11Buffer>& ib = m.transparent ? gc.ibC : gc.ibO; UINT& n = m.transparent ? gc.nC : gc.nO;
+        if (m.idx.empty() || vv.empty()) { vb.Reset(); ib.Reset(); n = 0; return; }
+        UploadInto(vb, D3D11_BIND_VERTEX_BUFFER, vv.data(), (UINT)(vv.size() * sizeof(Vtx)));
+        if (!ib || n != (UINT)m.idx.size()) UploadInto(ib, D3D11_BIND_INDEX_BUFFER, m.idx.data(), (UINT)(m.idx.size() * 4));   // (the triangles never change: once)
+        n = (UINT)m.idx.size();
     }
     // ---- the 3D viewer: the model on a floor grid next to the player and the morph ball, to see how big it is
     void ViewerProject(const XMMATRIX& vp, V3 eye, ImVec2 o, ImVec2 sz, V3 p, ImVec2& out, bool& ok) {
@@ -4420,7 +4423,7 @@ struct App {
         std::chrono::steady_clock::time_point t, frameStart, lastEnd; const char* cur = nullptr; bool rec = false, had = false;
         std::map<std::string, double> acc, ms; double total = 0;
     } cpuT;
-    bool GpuOn() const { return settings.showFps || settings.targetFps > 0; }   // (auto resolution goes by the graphics card's time)
+    bool GpuOn() const { return settings.showFps || settings.targetFps > 0 || bench.on; }   // (auto resolution goes by the graphics card's time)
     void CpuMark(const char* step) {   // from here on, the processor's time goes to `step`
         if (!cpuT.rec) return;
         auto now = std::chrono::steady_clock::now();
@@ -4486,6 +4489,7 @@ struct App {
                 for (auto& kv : now) gpuWorst.top.push_back({ kv.second, kv.first });
                 std::sort(gpuWorst.top.rbegin(), gpuWorst.top.rend());
             }
+            if (bench.on && bench.t > 0.5) { bench.gms.push_back((float)tot); for (auto& kv : now) bench.gpuSum[kv.first] += kv.second; }
             for (auto& kv : gpuT.ms) kv.second *= 0.9;
             for (auto& kv : now) gpuT.ms[kv.first] += kv.second * 0.1;
             gpuT.total = gpuT.total * 0.9 + tot * 0.1;
@@ -6318,6 +6322,8 @@ struct App {
             ImGui::SameLine(); if (ImGui::Button("Screens")) { screensEdOpen = !screensEdOpen; focusScreensEd = screensEdOpen; }
             ImGui::SameLine(); if (ImGui::Button("Cook")) { cookOpenW = !cookOpenW; focusCook = cookOpenW; if (cookOpenW) { cookMapX0 = (int)std::floor(camPos.x) - COOKMAP / 2; cookMapZ0 = (int)std::floor(camPos.z) - COOKMAP / 2; cookY0 = (int)std::floor(camPos.y) - 64; cookY1 = (int)std::floor(camPos.y) + 96; cookLayer = (int)std::floor(camPos.y) + 1; cookMapDirty = true; } }
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Cooking for export: a map of the world from above, pick the chunks, Test-cook");
+            ImGui::SameLine(); if (ImGui::Button(bench.on ? "Benchmark ..." : "Benchmark") && !bench.on) StartBench();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("30 seconds, the same flight every time (from the spawn point): every frame measured.\nThe result is kept in benchmarks.txt, to compare with the next run.");
             ImGui::SameLine(); if (ImGui::Button("Rooms")) { roomsOpenW = !roomsOpenW; focusRooms = roomsOpenW; }
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("The Room Manager: the rooms (found by themselves, or marked by hand), their names, ambient light, music");
             ImGui::SameLine(); if (ImGui::Button("Planets")) { planetsEdOpen = !planetsEdOpen; focusPlanetsEd = planetsEdOpen; if (planetsEdOpen && planets.planets.empty()) { planets.planets.push_back(defaultPlanet()); planetsDirty = true; } }
@@ -13626,8 +13632,9 @@ struct App {
         if (playMode) UpdateRoomReveals();   // (rooms a Map Station just revealed: also while the map is open)
         SeenMap& m = Seen();
         if (mapGpuWorld != CurrentWorld()) { mapGpu.clear(); mapGpuWorld = CurrentWorld(); for (auto& kv : m.chunks) m.dirty.insert(kv.first); }
-        int built = 0;
-        for (auto it = m.dirty.begin(); it != m.dirty.end() && built < 24;) {   // build the panels of what changed (only chunks that are loaded: their open faces need the blocks around)
+        int built = 0; auto t0 = std::chrono::steady_clock::now();
+        for (auto it = m.dirty.begin(); it != m.dirty.end() && built < 24;) {   // build the panels of what changed (only chunks that are loaded: their open faces need the blocks around); a millisecond and a half a frame at most
+            if (built > 0 && std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() > (mapOpen ? 6.0 : 1.5)) break;
             if (world->loaded(it->x * CS, it->y * CS, it->z * CS)) { BuildMapChunk(*it, m); it = m.dirty.erase(it); built++; } else ++it;
         }
     }
@@ -13843,7 +13850,9 @@ struct App {
         ctx->IASetInputLayout(layoutMap.Get()); ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         ctx->VSSetShader(vsMap.Get(), nullptr, 0); ctx->PSSetShader(psMap.Get(), nullptr, 0); ctx->RSSetState(rsNoCull.Get());
         UINT stride = sizeof(MapVert), off = 0;
-        auto drawPanels = [&](bool yours) { for (auto& kv : mapGpu) { const MapGpuChunk& g = kv.second; UINT a = yours ? 0 : g.mine, b = yours ? g.mine : g.count; if (b <= a) continue; ctx->IASetVertexBuffers(0, 1, g.vb.GetAddressOf(), &stride, &off); ctx->Draw(b - a, a); } };
+        auto nearMini = [&](I3 cp) { double dx = (cp.x + 0.5) * CS - player.feet.x, dz = (cp.z + 0.5) * CS - player.feet.z, dy = (cp.y + 0.5) * CS - player.feet.y, R = range * 1.5 + CS;
+            return dx * dx + dz * dz < R * R && std::fabs(dy) < 24 + CS; };   // (the minimap only shows what is around you, your level)
+        auto drawPanels = [&](bool yours) { for (auto& kv : mapGpu) { if (!nearMini(kv.first)) continue; const MapGpuChunk& g = kv.second; UINT a = yours ? 0 : g.mine, b = yours ? g.mine : g.count; if (b <= a) continue; ctx->IASetVertexBuffers(0, 1, g.vb.GetAddressOf(), &stride, &off); ctx->Draw(b - a, a); } };
         auto state = [&](ID3D11BlendState* bs, ID3D11DepthStencilState* ds) { ctx->UpdateSubresource(cbMap.Get(), 0, nullptr, &mc, 0, 0); ctx->OMSetBlendState(bs, nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(ds, 0); };
         state(bsNoColor.Get(), dsOn.Get()); drawPanels(true);                         // where your panels are (depth only)
         state(bsAdd.Get(), dsTestOnly.Get()); drawPanels(true); drawPanels(false);    // then all of it as see-through light, nearest surfaces only
@@ -17981,6 +17990,7 @@ struct App {
         if (screen == Screen::Game) {
             CpuMark("game: player, objects");
             float slow = DeathNow().slow; double gdt = dt * slow; UpdateGame(gdt);
+            if (bench.on) { bench.t += dt; BenchPlace(); if (bench.t >= BENCH_LEN) FinishBench(); }   // (the benchmark's flight: the camera where it should be now)
             CpuMark("screens, death");
             if (slow < 1 && playMode && !paused && play.dead()) play.deadFor += dt - gdt;   // (slow motion: the world slows, the sequence does not)
             DeathSkip(); UpdateDeathSounds();
@@ -18003,7 +18013,7 @@ struct App {
             if (brushMenu) BrushMenu();
             ModelViewer();
             PlayerEditor();
-            ScreensEditor(); PlanetsEditor(); CookWindow(); RoomsWindow();
+            ScreensEditor(); PlanetsEditor(); CookWindow(); RoomsWindow(); BenchWindow();
         } else {
             if (!mapOpen && !CurScreen()) { DrawHud(ImGui::GetForegroundDrawList()); if (!Frozen()) { DrawScanMarkers(ImGui::GetForegroundDrawList()); DrawLockMarkers(ImGui::GetForegroundDrawList()); DrawGrappleMarker(ImGui::GetForegroundDrawList()); } }
             if (showF3) DrawF3();
@@ -18047,7 +18057,67 @@ struct App {
         swap->Present(settings.vsync ? 1 : 0, (!settings.vsync && tearing) ? DXGI_PRESENT_ALLOW_TEARING : 0);
         retired.clear();
         CpuMark("frame cap (waiting on purpose)"); FrameCap();
-        CpuEnd(); NoteFrame();
+        CpuEnd(); NoteFrame(); BenchNote();
+    }
+    // ================================================================== the benchmark: the same flight every time (from the spawn point), every frame measured, the result kept
+    // (projectDir/benchmarks.txt) so each optimization can be compared with the run before. 0-8 s: a full turn; 8-19 s: flying ahead; 19-30 s: back, rising
+    struct Bench { bool on = false; double t = 0; V3 start{ 0, 0, 0 }, keepFeet{ 0, 0, 0 }; double yaw0 = 0, keepYaw = 0, keepPitch = 0; bool keepFly = false;
+                   std::vector<float> ms, gms; std::map<std::string, double> cpuSum, gpuSum; std::string result; bool show = false; } bench;
+    static constexpr double BENCH_LEN = 30;
+    void StartBench() {
+        if (playMode || !world) return;
+        bench = Bench{}; bench.on = true; bench.keepFeet = player.feet; bench.keepYaw = player.yaw; bench.keepPitch = player.pitch; bench.keepFly = player.flying;
+        bench.start = info.hasSpawn ? info.spawn + V3{ 0, 0.5, 0 } : player.feet; bench.yaw0 = info.hasSpawn ? info.spawnYaw : player.yaw;
+        Capture(false); Toast("Benchmark: 30 seconds, hands off ...");
+    }
+    void BenchPlace() {   // where the camera is now on the flight
+        double t = bench.t, PI = 3.14159265358979; V3 f{ std::sin(bench.yaw0), 0, std::cos(bench.yaw0) };
+        V3 pos = bench.start; double yaw = bench.yaw0, pitch = -0.08;
+        if (t < 8) yaw = bench.yaw0 + t / 8 * 2 * PI;
+        else if (t < 19) { double u = (t - 8) / 11; u = u * u * (3 - 2 * u); pos = bench.start + f * (u * 80); }
+        else { double u = std::min(1.0, (t - 19) / 11); double e = u * u * (3 - 2 * u); pos = bench.start + f * (80 * (1 - e)) + V3{ 0, 24 * std::sin(e * PI), 0 }; yaw = bench.yaw0 + PI * std::min(1.0, u * 3); pitch = -0.25; }
+        player.flying = true; player.feet = pos; player.yaw = yaw; player.pitch = pitch; player.vel = { 0, 0, 0 };
+    }
+    void BenchNote() {   // after each frame: its time, and where it went
+        if (!bench.on || cpuT.acc.empty()) return;
+        double ms = 0; for (auto& kv : cpuT.acc) { ms += kv.second; bench.cpuSum[kv.first] += kv.second; }
+        if (bench.t > 0.5) bench.ms.push_back((float)ms);   // (the first half second: settling)
+    }
+    void FinishBench() {
+        bench.on = false; player.feet = bench.keepFeet; player.yaw = bench.keepYaw; player.pitch = bench.keepPitch; player.flying = bench.keepFly;
+        std::vector<float> v = bench.ms; if (v.size() < 10) { Toast("Benchmark: too few frames"); return; }
+        std::sort(v.begin(), v.end()); double sum = 0; for (float x : v) sum += x;
+        double avg = sum / v.size(), med = v[v.size() / 2], p99 = v[std::min(v.size() - 1, (size_t)(v.size() * 0.99))], p999 = v[std::min(v.size() - 1, (size_t)(v.size() * 0.999))], mx = v.back();
+        int spikes = 0; for (float x : v) if (x > std::max(med * 2, med + 8)) spikes++;
+        std::vector<float> g = bench.gms; std::sort(g.begin(), g.end()); double gavg = 0; for (float x : g) gavg += x; gavg = g.empty() ? 0 : gavg / g.size();
+        auto top = [&](const std::map<std::string, double>& m, size_t n, double frames) {
+            std::vector<std::pair<double, std::string>> t; for (auto& kv : m) t.push_back({ kv.second / std::max(1.0, frames), kv.first });
+            std::sort(t.rbegin(), t.rend()); std::string s; for (size_t i = 0; i < t.size() && i < n; i++) { char b[128]; snprintf(b, sizeof b, "    %6.2f ms  %s\n", t[i].first, t[i].second.c_str()); s += b; } return s; };
+        char b[512];
+        snprintf(b, sizeof b, "%zu frames: %.0f fps on average (%.2f ms), middle %.2f ms\nslowest 1%%: %.1f ms (%.0f fps), slowest 0.1%%: %.1f ms, slowest %.1f ms, %d spikes\ngraphics card: %.2f ms a frame on average\n",
+                 v.size(), 1000 / avg, avg, med, p99, 1000 / std::max(0.1, p99), p999, mx, spikes, gavg);
+        std::string res = b;
+        res += "processor, per frame:\n" + top(bench.cpuSum, 8, (double)bench.ms.size());
+        if (!bench.gpuSum.empty()) res += "graphics card, per frame:\n" + top(bench.gpuSum, 8, (double)std::max<size_t>(1, bench.gms.size()));
+        snprintf(b, sizeof b, "settings: render distance %d, distant detail %d, render scale %.2f, shadows %d (%d), lamp shadows %d at %d, reflections %d, frame cap %d, vsync %d",
+                 settings.renderDistance, settings.distantDetail, settings.renderScale, settings.shadowQuality, settings.shadowRes, settings.lightShadows, lshRes, settings.reflections, settings.maxFps, settings.vsync ? 1 : 0);
+        res += b;
+        bench.result = res; bench.show = true;
+        if (!projectDir.empty()) {   // kept, newest last: compare one run with the one before
+            std::time_t now = std::time(nullptr); char tb[64]; std::strftime(tb, sizeof tb, "%Y-%m-%d %H:%M", std::localtime(&now));
+            std::ofstream f(fs::u8path(projectDir + "/benchmarks.txt"), std::ios::app); f << "==== " << tb << "  " << CurrentWorld() << "\n" << res << "\n\n";
+        }
+    }
+    void BenchWindow() {
+        if (!bench.show) return;
+        ImGui::SetNextWindowSize(ImVec2(560 * settings.uiScale, 0), ImGuiCond_Appearing);
+        if (ImGui::Begin("Benchmark", &bench.show)) {
+            ImGui::TextUnformatted(bench.result.c_str());
+            ImGui::Separator(); ImGui::TextDisabled("Kept in the project's benchmarks.txt (every run, newest last).");
+            if (ImGui::Button("Run it again")) { bench.show = false; StartBench(); }
+            ImGui::SameLine(); if (ImGui::Button("Copy")) ImGui::SetClipboardText(bench.result.c_str());
+        }
+        ImGui::End();
     }
     // ---- the frame cap: frames evenly spaced (a high-resolution timer, then a short spin for the last bit)
     std::chrono::steady_clock::time_point capPrev{}; HANDLE capTimer = nullptr;
