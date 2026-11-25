@@ -449,7 +449,7 @@ A ready-made splash in four parts (seconds into the screen; move them to fit you
 3. **25.5-29.5 s:** a corrupted planet ("Corrupted world" in the Planets editor) burns in out of the black.
 4. **30.5 s on:** the title fades in, the subtitle comes in with a scan line and glitches, and "PRESS {START} TO START" breathes. The screen waits there for a key; a key before that skips to the title.
 
-Adding it makes it your splash (the old splash stays as your own screen). The title texts are placeholders for your logo pictures.
+Adding it makes it your splash (the old splash stays as your own screen). The title is three pictures from the game's **screens** folder, put back together as they sat in the whole logo: **MPL_logo_metroid_prime.png** (fades in), **MPL_logo_4.png** (glitches in), **MPL_logo_leviathan.png** (scans in with glitches). A picture that isn't there yet shows its stand-in text instead (a picture's *Until it's there*).
 
 Pressing start burns the picture away (the **Dissolve** transition) and goes on to the **Files** screen. With a **File menu** screen (Screens > + Screen > File menu), picking a file opens its menu instead of starting right away: **[ CONTINUE ]** / **[ START ]** (an empty file), **[ CODEX ]**, **[ OPTIONS ]**, **[ BACK ]**. The **Codex** screen lists what that file has scanned, by category, with the picked entry's text beside the list. In texts: **{file}** / **{FILE}** (File 2), **{fileaction}** / **{FILEACTION}** (Continue / Start), **{fileinfo}** (the world, time, energy, items, scans).
 

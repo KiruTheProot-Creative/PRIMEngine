@@ -11009,8 +11009,12 @@ struct App {
                 else if (!live) dl->AddRect(a, b, C(col.accent, 0.35f * al), 6.f, ImDrawFlags_None, 2.f);
                 break; }
             case ScreenItemKind::Image: {
-                int iw = 0, ih = 0; ID3D11ShaderResourceView* im = PictureAt(it.image, screenT, true, &iw, &ih);
-                if (!im) { dl->AddRect(a, b, C(col.accent, 0.35f * al), 6.f, ImDrawFlags_None, 2.f); break; }
+                int iw = 0, ih = 0; ID3D11ShaderResourceView* im = it.image.empty() ? nullptr : PictureAt(it.image, screenT, true, &iw, &ih);
+                if (!im) {   // not there (yet): its text stands in (a logo before its picture is made); else, in the editor, an outline
+                    if (!it.text.empty()) TextInStyled(dl, font, it.text, ts, a, b, 1, C(col.text, al), TextLook{ it.weight, it.outline, it.outlineColor });
+                    else if (!live) dl->AddRect(a, b, C(col.accent, 0.35f * al), 6.f, ImDrawFlags_None, 2.f);
+                    break;
+                }
                 float r[4]; FitRect(iw, ih, (int)(b.x - a.x), (int)(b.y - a.y), 1, r);
                 dl->AddImage((ImTextureID)(intptr_t)im, ImVec2(a.x + r[0] * (b.x - a.x), a.y + r[1] * (b.y - a.y)), ImVec2(a.x + r[2] * (b.x - a.x), a.y + r[3] * (b.y - a.y)), ImVec2(0, 0), ImVec2(1, 1), C(0xFFFFFF, al));
                 break; }
@@ -12198,7 +12202,12 @@ struct App {
         if (hasText) { const char* al[] = { "Left", "Middle", "Right" }; Prop("Lined up"); ch |= ImGui::Combo("##sia", &it.align, al, 3); }
         if (it.kind == ScreenItemKind::Text) { const char* va[] = { "Top", "Middle", "Bottom" }; Prop("Up / down"); ch |= ImGui::Combo("##siva", &it.valign, va, 3); }
         if (hasText || it.kind == ScreenItemKind::SaveSlots) ch |= TextLookUI(it.weight, it.outline, it.outlineColor, &it.font);
-        if (it.kind == ScreenItemKind::Image) { Prop("Picture"); ch |= FileCombo("##sii", it.image, false); }
+        if (it.kind == ScreenItemKind::Image) {
+            Prop("Picture"); ch |= FileCombo("##sii", it.image, false);
+            char tb[256]; std::snprintf(tb, sizeof tb, "%s", it.text.c_str()); Prop("Until it's there"); ImGui::SetNextItemWidth(-1);
+            if (ImGui::InputTextWithHint("##siis", "(nothing)", tb, sizeof tb)) { it.text = tb; ch = true; }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("A text shown in its place while the picture isn't in the screens folder yet (a logo you are still making).");
+        }
         if (it.kind == ScreenItemKind::Button) {
             Prop("Does"); if (ImGui::BeginCombo("##siact", screenActName(it.act))) { for (int k = 0; k < (int)ScreenAct::COUNT; k++) if (ImGui::Selectable(screenActName((ScreenAct)k), (int)it.act == k)) { it.act = (ScreenAct)k; ch = true; } ImGui::EndCombo(); }
             if (it.act == ScreenAct::GoTo) { Prop("Screen"); if (ImGui::BeginCombo("##sitg", it.target.empty() ? "(pick one)" : it.target.c_str())) { for (const mc::Screen& s : screens.screens) if (ImGui::Selectable(s.name.c_str(), s.name == it.target)) { it.target = s.name; ch = true; } ImGui::EndCombo(); } }
@@ -12226,7 +12235,7 @@ struct App {
         if (it.kind == ScreenItemKind::SaveSlots) { Prop("Files"); ch |= ImGui::SliderInt("##sisl", &it.slots, 1, 12); Hint("Picking an empty file starts a new game in it; a used one goes on from its last save. Delete twice erases one. Games save only at Save Stations."); }
         ImGui::SeparatorText("Colours");
         ScreenColors& c = it.col;
-        if (it.kind != ScreenItemKind::Panel && it.kind != ScreenItemKind::Image) { Prop("Text"); ch |= ColorU32("##sct", c.text); }
+        if (it.kind != ScreenItemKind::Panel && (it.kind != ScreenItemKind::Image || !it.text.empty())) { Prop("Text"); ch |= ColorU32("##sct", c.text); }
         Prop("Accent"); ch |= ColorU32("##sca", c.accent);
         if (it.kind == ScreenItemKind::Button || it.kind == ScreenItemKind::Options || (it.kind == ScreenItemKind::Text && it.code)) { if (it.kind != ScreenItemKind::Text) { Prop("Picked"); ch |= ColorU32("##scp", c.picked); } Prop("Dim"); ch |= ColorU32("##scd", c.dim); }
         if (it.kind == ScreenItemKind::Panel || it.kind == ScreenItemKind::Button) {

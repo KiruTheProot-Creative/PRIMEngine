@@ -1748,7 +1748,8 @@ int main() {
             int coded = 0, scans = 0; for (const ScreenItem& i : s.items) { coded += i.code && i.cursor; scans += i.inFx == 1; }
             CHECK(s.role == ScreenRole::Intro && s.pressStart && s.duration > 30 && types == 15 && coded == 4 && scans == 1 && s.comp.order().size() == s.comp.nodes.size(),
                   "the Phazon intro: glow, glitches, ink, a planet burning in, four typed code lines, the subtitle scanning in, waiting for a key");
-            const ScreenItem* sub = nullptr; for (const ScreenItem& i : s.items) if (i.name == "Subtitle") sub = &i;
+            const ScreenItem* sub = nullptr; int logos = 0; for (const ScreenItem& i : s.items) { if (i.name == "Logo: Leviathan") sub = &i; logos += i.kind == ScreenItemKind::Image && !i.image.empty() && !i.text.empty(); }
+            CHECK(logos == 3, "the title: three logo pictures (each with a stand-in text until its picture is there)");
             CHECK(sub && inFxProgress(*sub, sub->showAt - 1) == 0 && inFxProgress(*sub, sub->showAt + sub->inFxTime * 0.5) > 0.4f && inFxProgress(*sub, sub->showAt + 9) == 1, "a come-in effect runs from 0 to 1 over its time");
             float o[2]; shakeOffset(s, s.shakeAt - 1, o); bool still = o[0] == 0 && o[1] == 0; float most = 0;
             for (double t = s.shakeAt; t < s.shakeAt + s.shakeTime; t += 0.05) { shakeOffset(s, t, o); most = std::max(most, std::max(std::fabs(o[0]), std::fabs(o[1]))); }
@@ -1756,7 +1757,7 @@ int main() {
             CodeBits a = codeBits("LEVIATHAN"), b = codeBits("LEVIATHAN"), c = codeBits("A FAN GAME");
             CHECK(a.tag == b.tag && a.bottom == b.bottom && (a.tag != c.tag || a.bottom != c.bottom) && a.tag.size() == 4 && a.top.front() == '(', "made-up scanner code: the same for the same text, different for another");
             ScreenSet set; set.screens.push_back(s); set.screens[0].items[0].pulse = 1.5f; saveScreens("/tmp/prim_phazon.txt", set); ScreenSet back; loadScreens("/tmp/prim_phazon.txt", back);
-            const Screen& r = back.screens[0]; const ScreenItem* rs = nullptr; for (const ScreenItem& i : r.items) if (i.name == "Subtitle") rs = &i;
+            const Screen& r = back.screens[0]; const ScreenItem* rs = nullptr; for (const ScreenItem& i : r.items) if (i.name == "Logo: Leviathan") rs = &i;
             bool nodesOk = r.comp.nodes.size() == s.comp.nodes.size(); for (size_t i = 0; nodesOk && i < r.comp.nodes.size(); i++) nodesOk = r.comp.nodes[i].type == s.comp.nodes[i].type && r.comp.nodes[i].p[0] == s.comp.nodes[i].p[0];
             CHECK(r.pressStart && r.shakeAt == s.shakeAt && r.shakeTime == s.shakeTime && rs && rs->inFx == 1 && rs->inFxTime == sub->inFxTime && r.items[0].cursor && r.items[0].code && r.items[0].pulse == 1.5f && nodesOk,
                   "the intro saves and loads (shake, press start, come-in effects, cursor, code, pulse, the new nodes)");

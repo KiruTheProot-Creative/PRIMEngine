@@ -361,11 +361,15 @@ Screen presetPhazonIntro() {
       n.showAt = 8.6f; n.fade = 0.05f; n.typeSpeed = 20; n.hideAt = 25.0f; n.fadeOut = 0.4f; s.items.push_back(n); }
     code("Metroid Prime 4", "METROID PRIME 4", 0.24f, 0.52f, 0.6f, 0.046f, 10.4f, 11, 0.6f);
     code("Leviathan", "LEVIATHAN", 0.3f, 0.595f, 0.6f, 0.058f, 13.6f, 9, 0.75f);
-    // the title (placeholders: your logo pictures go here later)
-    { ScreenItem t = text("Title", "METROID PRIME 4", 0.1f, 0.14f, 0.8f, 0.12f, 0.088f, 1); t.col.text = 0xE8F3FF; t.font = 1; t.weight = 0.8f; t.outline = 0.25f; t.outlineColor = 0x0A1A50;
-      t.showAt = 30.5f; t.fade = 1.6f; s.items.push_back(t); }
-    { ScreenItem t = text("Subtitle", "L E V I A T H A N", 0.1f, 0.265f, 0.8f, 0.07f, 0.05f, 1); t.col.text = 0x5AB4FF; t.col.accent = 0xBFE4FF; t.font = 1; t.weight = 0.6f;
-      t.showAt = 32.6f; t.fade = 0.05f; t.inFx = 1; t.inFxTime = 1.3f; s.items.push_back(t); }
+    // the title: three pictures in the "screens" folder, put back together where they sat in the whole logo (a picture that isn't there yet: its text instead)
+    auto logo = [&](const char* name, const char* file, const char* stand, float x, float y, float w, float h, float at, int fx, float fxTime, uint32_t textCol, uint32_t accent, float size) {
+        ScreenItem i; i.name = name; i.kind = ScreenItemKind::Image; i.image = file; i.text = stand; i.x = x; i.y = y; i.w = w; i.h = h;
+        i.textSize = size; i.font = 1; i.weight = 0.8f; i.col.text = textCol; i.col.accent = accent; i.showAt = at; i.fade = fx ? 0.05f : 1.6f; i.inFx = fx; i.inFxTime = fxTime;
+        s.items.push_back(i);
+    };
+    logo("Logo: Metroid Prime", "MPL_logo_metroid_prime.png", "METROID PRIME", 0.109f, 0.100f, 0.591f, 0.301f, 30.5f, 0, 0.9f, 0xE8F3FF, 0x9FD0FF, 0.075f);
+    logo("Logo: 4", "MPL_logo_4.png", "4", 0.665f, 0.096f, 0.230f, 0.295f, 31.8f, 2, 0.9f, 0x5AB4FF, 0x9FD0FF, 0.2f);
+    logo("Logo: Leviathan", "MPL_logo_leviathan.png", "L E V I A T H A N", 0.102f, 0.373f, 0.799f, 0.172f, 32.8f, 1, 1.4f, 0xA070FF, 0xE0C8FF, 0.05f);
     { ScreenItem t = text("Press start", "PRESS {START} TO START", 0.2f, 0.85f, 0.6f, 0.04f, 0.022f, 1); t.col.text = 0xA8D8FF; t.font = 1; t.weight = 0.3f;
       t.showAt = 35.0f; t.fade = 1.0f; t.pulse = 2.2f; s.items.push_back(t); }
     s.duration = 35.6f; s.pressStart = true; s.next = "Files";   // (then the save files)
