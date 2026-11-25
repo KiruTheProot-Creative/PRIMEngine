@@ -92,7 +92,7 @@ const char* kindName(ObjKind k) {
     case ObjKind::MapCamera: return "Map camera"; case ObjKind::MapStation: return "Map Station"; case ObjKind::Enemy: return "Enemy"; case ObjKind::SaveStation: return "Save Station"; case ObjKind::Ambient: return "Ambient light"; case ObjKind::GrapplePoint: return "Grapple point"; default: return "Prop"; }
 }
 const char* pickupName(PickupType t) { return t == PickupType::Key ? "Key" : t == PickupType::Collectible ? "Collectible (counted)" : "Health"; }
-const char* triggerName(TriggerAction a) { return a == TriggerAction::Kill ? "Kill (traps, acid ...)" : a == TriggerAction::Heal ? "Heal" : a == TriggerAction::Checkpoint ? "Checkpoint" : "Show a message"; }
+const char* triggerName(TriggerAction a) { return a == TriggerAction::RoomEdge ? "Room edge (closes a room)" : a == TriggerAction::Kill ? "Kill (traps, acid ...)" : a == TriggerAction::Heal ? "Heal" : a == TriggerAction::Checkpoint ? "Checkpoint" : "Show a message"; }
 bool PlayInventory::collect(const WorldObject& o, float& health, float maxHealth, std::string& said) {
     if (o.kind != ObjKind::Pickup || has(o.id)) return false;
     const PickupSettings& p = o.pickup;
@@ -272,7 +272,7 @@ bool loadObjects(const std::string& path, std::vector<WorldObject>& objs) {
         int pt, ta, once; std::string pn, tw, tt, tx, dk;   // pickups, teleporters, trigger zones (newer files)
         if (l >> o.size.x >> o.size.y >> o.size.z >> pt >> o.pickup.amount >> pn >> o.pickup.respawn >> tw >> tt >> ta >> tx >> o.trigger.amount >> once >> dk) {
             o.pickup.type = (PickupType)std::clamp(pt, 0, 2); o.pickup.name = unesc(pn); o.teleport.world = unesc(tw); o.teleport.target = unesc(tt);
-            o.trigger.action = (TriggerAction)std::clamp(ta, 0, 3); o.trigger.text = unesc(tx); o.trigger.once = once != 0; o.door.key = unesc(dk);
+            o.trigger.action = (TriggerAction)std::clamp(ta, 0, 4); o.trigger.text = unesc(tx); o.trigger.once = once != 0; o.door.key = unesc(dk);
         }
         int lt, fl; LightSettings L;   // lights and particles (newer files)
         if (l >> lt >> L.color >> L.intensity >> L.range >> L.cone >> L.tilt >> fl) { L.type = (LightType)std::clamp(lt, 0, 2); L.flicker = (Flicker)std::clamp(fl, 0, 3); o.light = L; }

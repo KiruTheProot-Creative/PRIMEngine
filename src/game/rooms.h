@@ -56,6 +56,7 @@ struct RoomWorld {   // what a search looks at (all on the calling thread)
     std::vector<CookDoor> doors;    // door openings: walls for rooms (they are where rooms end)
     RoomCellFn through;             // goes through anyway (breakable blocks: the room goes on behind them)
     RoomCellFn blocked;             // a wall anyway (the boxes of rooms marked by hand)
+    std::vector<std::pair<I3, I3>> edges;   // room edges (invisible boxes, only rooms see them): walls for the search - an open room's sea side, a canyon's mouth
     std::function<bool()> tired;    // true: stop this step here, go on next time (reading chunks from disk took this frame's share)
 };
 
@@ -104,6 +105,7 @@ struct RoomDef {
     I3 anchor{ 0, 0, 0 };           // a block of its air: where it is searched from again after changes
     std::vector<std::pair<I3, I3>> boxes;   // marked by hand: the air in these boxes is the room (lo, hi: blocks, hi included)
     bool showName = true;           // its name shows when you walk in
+    bool open = false;              // an open room (outdoors, like Talon Overworld): searched with bigger limits - higher above its ground, bigger
     bool ambOn = false; AmbientSettings amb;   // its own ambient light
     int musicMode = 0;              // 0 keep what plays, 1 play its music (loops), 2 silence
     SoundUse music; float musicFade = 1.5f;
@@ -128,6 +130,7 @@ public:
     RoomList list;
     struct Live {
         RoomShape shape;
+        std::unordered_map<I3, uint32_t, I3Hash> boxVer; uint64_t boxSig = 0;   // a marked room: each chunk's version its blocks were taken at (only changed chunks again)
         uint64_t sig = 0;           // the chunks and doors it was found with (changes: search again)
         bool searched = false;
         bool open = false;          // it is not closed any more (part of the outside)

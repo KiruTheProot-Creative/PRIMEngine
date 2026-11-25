@@ -580,7 +580,9 @@ Fog, light shafts and lights glowing in the air are worked out in a small 3D gri
 - **Rooms** in the toolbar opens the Room Manager. Rooms are found by themselves: the air closed in by walls and doors. A door is where a room ends, so every room should have at least one.
 - A room **without a roof** goes by its floor: the air just over the ground, closed in by walls (at least 3 blocks high, adjustable) and doors, up to the top of its walls. Pits in it still count; the floor running off into the void is the outside.
 - Glass is a wall for rooms; water, lava, plants and breakable-marked blocks are not.
-- **Mark a room by hand** where the automatic rooms are not what you want: boxes whose air is the room (they win over the found rooms).
+- **Mark a room by hand** where the automatic rooms are not what you want: boxes whose air is the room (they win over the found rooms). Big boxes are fine: they are read a chunk at a time, and only chunks that changed are read again.
+- **Open rooms** (outdoors, like Talon Overworld): "New open room here" (or tick **Open room** on a found room). An open room has no roof and is searched with much bigger limits: up to 160 blocks above its ground and up to 1000 blocks wide.
+- **Room edges** close a room where the world is open (the sea side, a canyon's mouth, the edge of the void). "Add a room edge" places one in front of you. It is a trigger zone set to "Room edge": invisible in the game, nothing happens when you walk through it, and only the Room Manager treats it as a wall. Size and turn it like any zone (cyan box in the editor).
 - Each room has a name and a colour (shown in the world while the window is open), **its own ambient light** (no reach to set: it fills exactly the room), and **music** when you walk in (keep, play, silence; a boss fight's music wins).
 - In the game, a room's name shows as you walk in (can be turned off per room), and **the map shows the whole room at once**.
 - **Map Stations** reveal the rooms you tick in their inspector (none ticked: the room they stand in).

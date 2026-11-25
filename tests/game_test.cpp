@@ -1806,15 +1806,31 @@ int main() {
             for (int i = 0; i < 20; i++) rs.tick(W, seeds, chunkVer, i % 5 == 0, 20000);
             mk = &rs.list.rooms.back();
             CHECK(rs.roomAt(47, 2, 47) == mk->id && rs.liveOf(mk->id)->shape.cells == 6 * 6 * 3, "a room marked by hand is the air in its box");
+            rw.set(47, 2, 47, st);   // a block put inside it: only that chunk is looked at again
+            for (int i = 0; i < 10; i++) rs.tick(W, seeds, chunkVer, true, 20000);
+            CHECK(rs.roomAt(47, 2, 47) == 0 && rs.roomAt(46, 2, 46) == mk->id && rs.liveOf(mk->id)->shape.cells == 6 * 6 * 3 - 1, "a marked room follows a block built inside it (chunk by chunk)");
+            rw.set(47, 2, 47, AIR);
+            {   // an open valley (walls on three sides, the fourth running off into the void): the outside - until a room edge closes it
+                for (int y = 1; y <= 5; y++) { for (int z = 46; z <= 63; z++) { rw.set(2, y, z, st); rw.set(14, y, z, st); } for (int x = 2; x <= 14; x++) rw.set(x, y, 46, st); }
+                rw.set(8, 1, 46, AIR); rw.set(8, 2, 46, AIR);
+                RoomWorld V = W; V.doors = { { { 8, 1, 46 }, { 8, 2, 46 }, "C" } };
+                auto runV = [&](I3 sd) { RoomFlood f; f.start(V, sd); int n = 0; while (f.step(5000) == RoomFlood::Running && n < 100000) n++; return f; };
+                RoomFlood open = runV({ 8, 1, 50 });
+                CHECK(open.result() == RoomFlood::Outside, "an open valley running off into the void is the outside");
+                V.edges.push_back({ { 3, 1, 58 }, { 13, 5, 58 } });   // a room edge across its open side
+                RoomFlood closed = runV({ 8, 1, 50 });
+                CHECK(closed.result() == RoomFlood::Room && closed.shape.roofless && closed.shape.has(8, 1, 57) && !closed.shape.has(8, 1, 58) && !closed.shape.has(8, 1, 60) && (closed.shape.doors == std::vector<int>{ 0 }),
+                      "a room edge closes it: an open room, up to the edge (%zu blocks)", closed.shape.cells);
+            }
             uint32_t gen = rs.generation;
             W.doors.erase(W.doors.begin()); rs.edited();   // the door between the two rooms is gone: one room now
             for (int i = 0; i < 400; i++) rs.tick(W, seeds, chunkVer, i % 20 == 0, 20000);
             CHECK(rs.roomAt(5, 2, 5) == rs.roomAt(18, 2, 5) && rs.roomAt(5, 2, 5) == std::min(ra, rb) && rs.liveOf(std::max(ra, rb))->joined == std::min(ra, rb) && rs.generation != gen,
                   "a door taken away: the two rooms become one (the older keeps it, the other says it is joined)");
-            rs.list.rooms[0].name = "Landing Site"; rs.list.rooms[0].musicMode = 1; rs.list.rooms[0].music.file = "music/landing.mp3"; rs.list.rooms[0].ambOn = true; rs.list.rooms[0].amb.look = "Cold blue";
+            rs.list.rooms[0].open = true; rs.list.rooms[0].name = "Landing Site"; rs.list.rooms[0].musicMode = 1; rs.list.rooms[0].music.file = "music/landing.mp3"; rs.list.rooms[0].ambOn = true; rs.list.rooms[0].amb.look = "Cold blue";
             CHECK(saveRooms("/tmp/prim_rooms.txt", rs.list), "the rooms are written down");
             RoomList back; loadRooms("/tmp/prim_rooms.txt", back);
-            CHECK(back.rooms.size() == 4 && back.rooms[0].name == "Landing Site" && back.rooms[0].music.file == "music/landing.mp3" && back.rooms[0].ambOn && back.rooms[0].amb.look == "Cold blue"
+            CHECK(back.rooms.size() == 4 && back.rooms[0].open && !back.rooms[1].open && back.rooms[0].name == "Landing Site" && back.rooms[0].music.file == "music/landing.mp3" && back.rooms[0].ambOn && back.rooms[0].amb.look == "Cold blue"
                   && back.rooms[3].boxes.size() == 1 && (back.rooms[3].boxes[0].second == I3{ 50, 3, 50 }) && back.nextId == rs.list.nextId && back.rooms[1].anchor == rs.list.rooms[1].anchor,
                   "... and read back (names, music, ambient, marked boxes)");
         }

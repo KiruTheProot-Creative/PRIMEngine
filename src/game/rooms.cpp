@@ -4,6 +4,7 @@
 #include "../world/shapes.h"
 #include "visors.h"   // escText
 #include <algorithm>
+#include <bitset>
 #include <climits>
 #include <fstream>
 #include <sstream>
@@ -36,9 +37,14 @@ static int64_t colKey(int x, int z) { return ((int64_t)x << 32) ^ (int64_t)(uint
 static const int N6[6][3] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };   // F_PX, F_NX, F_PY, F_NY, F_PZ, F_NZ
 
 // ------------------------------------------------------------------ the search
+static bool inEdge(const RoomWorld& W, int x, int y, int z) {
+    for (const auto& e : W.edges) if (x >= e.first.x && x <= e.second.x && y >= e.first.y && y <= e.second.y && z >= e.first.z && z <= e.second.z) return true;
+    return false;
+}
 uint8_t RoomFlood::kind(int x, int y, int z, uint8_t& mask, int& door) {
     mask = 0; door = -1;
     if (W.blocked && W.blocked(x, y, z)) return 2;
+    if (!W.edges.empty() && inEdge(W, x, y, z)) return 2;   // a room edge: a wall for rooms only
     I3 c = chunkOf(x, y, z);
     if (!doorsByChunk.empty()) {
         auto dit = doorsByChunk.find(c);
@@ -77,6 +83,7 @@ bool RoomFlood::sky(int x, int y, int z) {   // nothing over this block for skyS
     for (int yy = y + 1; yy <= y + R.skyScan;) {
         I3 c = chunkOf(x, yy, z); const Chunk* ch = W.chunkAt ? W.chunkAt(c) : nullptr;
         if (!ch || ch->nonAir == 0) { if (!(W.blocked && W.blocked(x, yy, z))) { yy = (c.y + 1) * CS; continue; } }
+        if (!W.edges.empty() && inEdge(W, x, yy, z)) { yy++; continue; }   // (an edge is a wall, never a roof)
         uint8_t m; int d; uint8_t kk = kind(x, yy, z, m, d);
         if (kk != 1) { roofOf[k] = yy; return false; }
         yy++;
@@ -256,6 +263,7 @@ bool saveRooms(const std::string& path, const RoomList& l) {
         f << "room " << r.id << " " << escText(r.name) << " " << r.color << " " << r.anchor.x << " " << r.anchor.y << " " << r.anchor.z << " " << r.showName << " " << r.ambOn
           << " " << A.up << " " << A.down << " " << A.north << " " << A.south << " " << A.east << " " << A.west << " " << A.strength << " " << A.mix << " " << A.fog << " " << A.fogAmount
           << " " << A.reach << " " << A.blend << " " << escText(A.look) << " " << r.musicMode << " " << r.musicFade << " " << escText(soundUseText(r.music)) << " " << escText(A.preset) << "\n";
+        if (r.open) f << "open 1\n";
         for (const auto& b : r.boxes) f << "box " << b.first.x << " " << b.first.y << " " << b.first.z << " " << b.second.x << " " << b.second.y << " " << b.second.z << "\n";
     }
     return (bool)f;
@@ -275,6 +283,7 @@ bool loadRooms(const std::string& path, RoomList& l) {
             { std::string pr; if (s >> pr) A.preset = unescText(pr); }
             l.rooms.push_back(r); l.nextId = std::max(l.nextId, r.id + 1);
         }
+        else if (k == "open" && !l.rooms.empty()) { int v = 0; s >> v; l.rooms.back().open = v != 0; }
         else if (k == "box" && !l.rooms.empty()) { I3 a, b; if (s >> a.x >> a.y >> a.z >> b.x >> b.y >> b.z) l.rooms.back().boxes.push_back({ a, b }); }
     }
     return true;
@@ -308,6 +317,8 @@ uint64_t RoomSet::doorsSig(const RoomWorld& w) const {
     uint64_t h = 1469598103934665603ull;
     for (const CookDoor& d : w.doors) for (int v : { d.lo.x, d.lo.y, d.lo.z, d.hi.x, d.hi.y, d.hi.z }) h = (h ^ (uint64_t)(uint32_t)v) * 1099511628211ull;
     for (const RoomDef& r : list.rooms) for (const auto& b : r.boxes) for (int v : { b.first.x, b.first.y, b.first.z, b.second.x, b.second.y, b.second.z }) h = (h ^ (uint64_t)(uint32_t)v) * 1099511628211ull;
+    for (const auto& e : w.edges) for (int v : { e.first.x, e.first.y, e.first.z, e.second.x, e.second.y, e.second.z }) h = (h ^ (uint64_t)(uint32_t)v ^ 0xED6E) * 1099511628211ull;
+    for (const RoomDef& r : list.rooms) if (r.open) h = (h ^ r.id ^ 0x0BE7ull << 32) * 1099511628211ull;
     return h;
 }
 uint64_t RoomSet::sigOf(const RoomShape& s, const std::function<uint32_t(I3)>& chunkVer, uint64_t dsig) const {
@@ -351,6 +362,7 @@ void RoomSet::apply(uint32_t id, RoomFlood::Result r, RoomShape&& s, const std::
 
 static bool roomOpenAt(const RoomWorld& w, int x, int y, int z) {
     for (const CookDoor& d : w.doors) if (x >= d.lo.x && x <= d.hi.x && y >= d.lo.y && y <= d.hi.y && z >= d.lo.z && z <= d.hi.z) return false;
+    for (const auto& e : w.edges) if (x >= e.first.x && x <= e.second.x && y >= e.first.y && y <= e.second.y && z >= e.first.z && z <= e.second.z) return false;   // (a room edge)
     const Chunk* ch = w.chunkAt ? w.chunkAt(chunkOf(x, y, z)) : nullptr; if (!ch) return false;
     if (w.through && w.through(x, y, z)) return true;
     BlockId v = ch->get(floorMod(x, CS), floorMod(y, CS), floorMod(z, CS)); if (v == AIR) return true;
@@ -408,26 +420,56 @@ void RoomSet::tick(const RoomWorld& w, const std::vector<I3>& seeds, const std::
             if (sigFor(d, L.shape, chunkVer, dsig) != L.sig) L.searched = false;
         }
     }
-    // marked rooms: their boxes' air (at once)
-    for (RoomDef& d : list.rooms) {
-        if (!d.marked()) continue;
-        Live& L = live[d.id];
-        uint64_t s = dsig; for (const auto& b : d.boxes) { RoomShape bb; bb.add(b.first.x, b.first.y, b.first.z); bb.lo = b.first; bb.hi = b.second; s ^= sigOf(bb, chunkVer, 0x51ED); }
-        if (L.searched && L.sig == s) continue;
-        RoomShape sh; size_t n = 0;
-        for (const auto& b : d.boxes) for (int y = b.first.y; y <= b.second.y; y++) for (int z = b.first.z; z <= b.second.z; z++) for (int x = b.first.x; x <= b.second.x; x++) {
-            if (++n > 4000000) break;
-            if (roomOpenAt(w, x, y, z)) sh.add(x, y, z);
+    // marked rooms: their boxes' air - chunk by chunk, only the chunks that changed (a big outdoor box was millions of blocks at once)
+    {
+        auto t0 = std::chrono::steady_clock::now(); bool outOfTime = false;
+        for (RoomDef& d : list.rooms) {
+            if (!d.marked() || outOfTime) continue;
+            Live& L = live[d.id];
+            uint64_t bs = dsig ^ 0xB0C5;   // (its boxes and the doors: changed - all of it again)
+            if (L.boxSig != bs) {
+                L.shape = RoomShape{}; L.boxVer.clear(); L.boxSig = bs; L.searched = false; L.open = false; L.joined = 0;
+                L.shape.lo = d.boxes[0].first; L.shape.hi = d.boxes[0].second;
+                for (const auto& bx : d.boxes) { L.shape.lo = { std::min(L.shape.lo.x, bx.first.x), std::min(L.shape.lo.y, bx.first.y), std::min(L.shape.lo.z, bx.first.z) }; L.shape.hi = { std::max(L.shape.hi.x, bx.second.x), std::max(L.shape.hi.y, bx.second.y), std::max(L.shape.hi.z, bx.second.z) }; }
+                for (int i = 0; i < (int)w.doors.size(); i++) {   // the doors at its edges
+                    const CookDoor& dr = w.doors[i]; bool touch = false;
+                    for (const auto& bx : d.boxes) if (dr.hi.x >= bx.first.x - 1 && dr.lo.x <= bx.second.x + 1 && dr.hi.y >= bx.first.y - 1 && dr.lo.y <= bx.second.y + 1 && dr.hi.z >= bx.first.z - 1 && dr.lo.z <= bx.second.z + 1) touch = true;
+                    if (touch) { L.shape.doors.push_back(i); L.shape.doorObjs.push_back(dr.obj); }
+                }
+                I3 c{ (d.boxes[0].first.x + d.boxes[0].second.x) / 2, (d.boxes[0].first.y + d.boxes[0].second.y) / 2, (d.boxes[0].first.z + d.boxes[0].second.z) / 2 };
+                if (!(d.anchor == c)) { d.anchor = c; listChanged = true; }
+            }
+            if (L.searched && !checkNow) continue;   // (filled: looked over again now and then)
+            I3 ca = chunkOf(L.shape.lo.x, L.shape.lo.y, L.shape.lo.z), cb = chunkOf(L.shape.hi.x, L.shape.hi.y, L.shape.hi.z);
+            bool changed = false, done = true;
+            for (int cy = ca.y; cy <= cb.y && done; cy++) for (int cz = ca.z; cz <= cb.z && done; cz++) for (int cx = ca.x; cx <= cb.x; cx++) {
+                I3 cc{ cx, cy, cz }; uint32_t v = chunkVer(cc);
+                auto vi = L.boxVer.find(cc); if (vi != L.boxVer.end() && vi->second == v) continue;
+                if (std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() > maxMs) { done = false; outOfTime = true; break; }
+                RoomBits nb; size_t n = 0; const Chunk* ch = w.chunkAt ? w.chunkAt(cc) : nullptr;
+                if (ch) {
+                    std::vector<const CookDoor*> ds; for (const CookDoor& dr : w.doors) if (dr.hi.x >= cx * CS && dr.lo.x < (cx + 1) * CS && dr.hi.y >= cy * CS && dr.lo.y < (cy + 1) * CS && dr.hi.z >= cz * CS && dr.lo.z < (cz + 1) * CS) ds.push_back(&dr);
+                    for (const auto& bx : d.boxes) {
+                        int x0 = std::max(bx.first.x, cx * CS), x1 = std::min(bx.second.x, cx * CS + CS - 1), y0 = std::max(bx.first.y, cy * CS), y1 = std::min(bx.second.y, cy * CS + CS - 1), z0 = std::max(bx.first.z, cz * CS), z1 = std::min(bx.second.z, cz * CS + CS - 1);
+                        for (int y = y0; y <= y1; y++) for (int z = z0; z <= z1; z++) for (int x = x0; x <= x1; x++) {
+                            int i = RoomBits::at(x - cx * CS, y - cy * CS, z - cz * CS); if (nb.has(i)) continue;
+                            bool inDoor = false; for (const CookDoor* dr : ds) if (x >= dr->lo.x && x <= dr->hi.x && y >= dr->lo.y && y <= dr->hi.y && z >= dr->lo.z && z <= dr->hi.z) { inDoor = true; break; }
+                            if (inDoor) continue;
+                            BlockId bv = ch->get(x - cx * CS, y - cy * CS, z - cz * CS); bool open = bv == AIR;
+                            if (!open) open = roomOpenAt(w, x, y, z);   // (solid-looking: the full check - shapes, liquids, breakable)
+                            if (open && nb.set(i)) n++;
+                        }
+                    }
+                }
+                auto old = L.shape.bits.find(cc);
+                size_t had = 0; if (old != L.shape.bits.end()) for (uint64_t q : old->second.b) had += std::bitset<64>(q).count();
+                if (n) L.shape.bits[cc] = nb; else if (old != L.shape.bits.end()) L.shape.bits.erase(old);
+                L.shape.cells = L.shape.cells - had + n; L.boxVer[cc] = v; if (had != n || n) changed = true;
+            }
+            if (done) L.searched = true;
+            L.sig = bs;
+            if (changed || done) { generation++; index(); }
         }
-        for (int i = 0; i < (int)w.doors.size(); i++) {   // the doors at its edges
-            const CookDoor& dr = w.doors[i]; bool touch = false;
-            for (const auto& b : d.boxes) if (dr.hi.x >= b.first.x - 1 && dr.lo.x <= b.second.x + 1 && dr.hi.y >= b.first.y - 1 && dr.lo.y <= b.second.y + 1 && dr.hi.z >= b.first.z - 1 && dr.lo.z <= b.second.z + 1) touch = true;
-            if (touch) { sh.doors.push_back(i); sh.doorObjs.push_back(dr.obj); }
-        }
-        size_t before = L.shape.cells; L.shape = std::move(sh); L.searched = true; L.sig = s; L.open = false; L.joined = 0;
-        if (!d.boxes.empty()) { I3 c{ (d.boxes[0].first.x + d.boxes[0].second.x) / 2, (d.boxes[0].first.y + d.boxes[0].second.y) / 2, (d.boxes[0].first.z + d.boxes[0].second.z) / 2 }; if (!(d.anchor == c)) { d.anchor = c; listChanged = true; } }
-        if (L.shape.cells != before) generation++;
-        index();
     }
     // the next room to search again
     for (RoomDef& d : list.rooms) {
@@ -438,7 +480,9 @@ void RoomSet::tick(const RoomWorld& w, const std::vector<I3>& seeds, const std::
             if (!L.shape.empty()) L.shape.forEach([&](int x, int y, int z) { if (!moved && roomOpenAt(w, x, y, z)) { d.anchor = { x, y, z }; moved = true; } });
             if (moved) listChanged = true;
         }
-        jobFor = d.id; job.start(w, d.anchor, RoomRules{ 1500000, 400, 96, list.band }); jobOn = true;
+        RoomRules rr{ 1500000, 400, 96, list.band };
+        if (d.open) rr = RoomRules{ 6000000, 1000, 160, list.band, 2000000, 160 };   // (an open room: much bigger, reaching higher above its ground)
+        jobFor = d.id; job.start(w, d.anchor, rr); jobOn = true;
         if (job.result() != RoomFlood::Running) { jobOn = false; apply(d.id, job.result(), std::move(job.shape), chunkVer, dsig); }
         return;
     }

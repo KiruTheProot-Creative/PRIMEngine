@@ -98,7 +98,7 @@ struct TeleportSettings {
     std::string world;                                // empty: this world; else a world folder of this game
     std::string target;                               // the name of an object there (empty: that world's spawn point)
 };
-enum class TriggerAction { Message, Kill, Heal, Checkpoint };
+enum class TriggerAction { Message, Kill, Heal, Checkpoint, RoomEdge };   // RoomEdge: does nothing in the game - a wall only for the Room Manager (closes an open room's sea side, a canyon's mouth)
 struct TriggerSettings {
     TriggerAction action = TriggerAction::Message;
     std::string text = "Hello!";

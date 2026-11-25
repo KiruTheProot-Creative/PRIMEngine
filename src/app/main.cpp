@@ -2761,6 +2761,7 @@ struct App {
                 case TriggerAction::Kill: if (!play.dead()) { play.health = 0; play.cause = "walked into a trap"; if (!o.trigger.text.empty()) Message(o.trigger.text); } break;
                 case TriggerAction::Heal: play.health = std::min(playRules.maxHealth, play.health + o.trigger.amount); Toast("+" + std::to_string((int)o.trigger.amount) + " health"); break;
                 case TriggerAction::Checkpoint: playSpawn = player.feet; playYaw = player.yaw; Toast("Checkpoint"); break;
+                case TriggerAction::RoomEdge: break;   // (only rooms see it)
                 }
                 break;
             default: break;
@@ -2818,7 +2819,8 @@ struct App {
             const WorldObject& o = objects[i]; FrameRef f = ModelOf(o); if (!f) continue;
             Box3 b = objectBounds(o, *f); std::string label; ImU32 col = IM_COL32(255, 255, 255, 200);
             switch (o.kind) {
-            case ObjKind::Trigger: col = IM_COL32(255, 160, 60, 230); DrawBox3(dl, b.lo, b.hi, col);
+            case ObjKind::Trigger: col = o.trigger.action == TriggerAction::RoomEdge ? IM_COL32(90, 220, 255, 230) : IM_COL32(255, 160, 60, 230); DrawBox3(dl, b.lo, b.hi, col);
+                if (o.trigger.action == TriggerAction::RoomEdge) { label = "Room edge"; break; }
                 label = std::string("Zone: ") + triggerName(o.trigger.action) + (o.trigger.action == TriggerAction::Message ? " \"" + o.trigger.text + "\"" : ""); break;
             case ObjKind::Teleporter: col = IM_COL32(200, 140, 255, 230); label = "To " + (o.teleport.world.empty() ? std::string("here") : o.teleport.world) + (o.teleport.target.empty() ? "" : ": " + o.teleport.target); break;
             case ObjKind::Checkpoint: col = IM_COL32(110, 240, 255, 230); label = "Checkpoint"; break;
@@ -2896,8 +2898,9 @@ struct App {
         case ObjKind::Trigger: {
             ImGui::SeparatorText("Trigger zone");
             Prop("Size (blocks)"); if (ImGui::InputScalarN("##zsize", ImGuiDataType_Double, &o.size.x, 3, nullptr, nullptr, "%.1f")) { o.size.x = std::max(0.25, o.size.x); o.size.y = std::max(0.25, o.size.y); o.size.z = std::max(0.25, o.size.z); }
-            int a = (int)o.trigger.action; const char* an[] = { triggerName(TriggerAction::Message), triggerName(TriggerAction::Kill), triggerName(TriggerAction::Heal), triggerName(TriggerAction::Checkpoint) };
-            Prop("When you walk in"); ImGui::Combo("##zact", &a, an, 4); o.trigger.action = (TriggerAction)a;
+            int a = (int)o.trigger.action; const char* an[] = { triggerName(TriggerAction::Message), triggerName(TriggerAction::Kill), triggerName(TriggerAction::Heal), triggerName(TriggerAction::Checkpoint), triggerName(TriggerAction::RoomEdge) };
+            Prop("When you walk in"); if (ImGui::Combo("##zact", &a, an, 5)) { o.trigger.action = (TriggerAction)a; ch_ = true; }
+            if (o.trigger.action == TriggerAction::RoomEdge) Hint("A room edge: nothing happens in the game (you, light and shots go right through). Only the Room Manager sees it - as a wall. Put it across an open side (the sea, a canyon's mouth, the void) to close an open room there.");
             if (o.trigger.action == TriggerAction::Message || o.trigger.action == TriggerAction::Kill) { Prop("Message"); ImGui::InputText("##ztext", &o.trigger.text); }
             if (o.trigger.action == TriggerAction::Heal) { Prop("Health"); ImGui::SliderFloat("##zamt", &o.trigger.amount, 1, 500, "+%.0f"); }
             Prop("Only once"); ImGui::Checkbox("##zonce", &o.trigger.once);
@@ -9983,6 +9986,9 @@ struct App {
         w.doors = CookDoors();
         const Breakables* br = &breakables; if (!br->marks.empty()) w.through = [br](int x, int y, int z) { return br->marks.count({ x, y, z }) > 0; };
         const RoomList* rl = &rooms.list;
+        for (const WorldObject& o : objects) if (o.kind == ObjKind::Trigger && o.trigger.action == TriggerAction::RoomEdge) {   // room edges: walls for rooms only
+            Box3 zb = ZoneBox(o); w.edges.push_back({ { ifloor(zb.lo.x + 0.01), ifloor(zb.lo.y + 0.01), ifloor(zb.lo.z + 0.01) }, { ifloor(zb.hi.x - 0.01), ifloor(zb.hi.y - 0.01), ifloor(zb.hi.z - 0.01) } });
+        }
         bool anyMarked = false; for (const RoomDef& r : rl->rooms) anyMarked |= r.marked();
         if (anyMarked) w.blocked = [rl](int x, int y, int z) { for (const RoomDef& r : rl->rooms) if (r.marked() && r.inBoxes(x, y, z)) return true; return false; };
         return w;
@@ -10281,6 +10287,19 @@ struct App {
         }
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("A box around you: the air in it is the room (it wins over the rooms found by themselves).\nGive it more boxes for odd shapes.");
         ImGui::SameLine(); if (ImGui::Button("Search again")) rooms.researchAll();
+        if (ImGui::Button("New open room here")) {   // outdoors (like Talon Overworld): searched from where you are, with an open room's bigger limits
+            RoomDef d; d.id = rooms.list.nextId++; d.color = roomColor(d.id); d.amb = ambientPreset(0); d.open = true; d.name = "Open room " + std::to_string(d.id);
+            d.anchor = RoomProbe(); rooms.list.rooms.push_back(d); roomSel = (int)rooms.list.rooms.size() - 1; ch = true;
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Outdoors, like Talon Overworld: a room without a roof that is much bigger and reaches much higher\n(cliffs, tall trees) than the ones found by themselves. Searched from where you stand.\nOpen sides (the sea, a canyon, the void): close them with room edges.");
+        ImGui::SameLine(); if (ImGui::Button("Add a room edge")) {   // an invisible wall only rooms see, in front of you
+            WorldObject o; o.id = nextObjId++; o.model = "@zone"; ApplyPreset(o); o.trigger.action = TriggerAction::RoomEdge; o.trigger.text.clear(); o.trigger.once = false;
+            o.name = UniqueObjectName("Room edge"); o.folder = "Room edges"; o.size = { 8, 8, 1 };
+            V3 f{ std::sin(player.yaw), 0, std::cos(player.yaw) }; I3 c = RoomProbe();
+            o.pos = { std::floor(c.x + f.x * 6) + 0.5, (double)c.y - 1, std::floor(c.z + f.z * 6) + 0.5 };
+            objects.push_back(o); sel = Sel::Object; selIndex = (int)objects.size() - 1; SaveObjectsNow(); Toast("Placed a room edge: size and turn it in the object panel");
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("An invisible box only rooms see - a wall for them. Put it across an open side to close a room there.\n(It is a trigger zone set to \"Room edge\": nothing happens when you walk through it.)");
         Prop("No roof: walls at least"); ImGui::SetNextItemWidth(160 * ui); if (ImGui::SliderInt("##rband", &rooms.list.band, 1, 8, "%d blocks high")) { ch = true; rooms.researchAll(); }
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("A room without a roof is closed in by walls at least this high (lower ones you can jump over:\nthey don't split rooms).");
         ImGui::SameLine(); ImGui::Checkbox("3D view", &rvOn);
@@ -10331,6 +10350,8 @@ struct App {
                 { float c[3] = { ((d.color >> 16) & 255) / 255.f, ((d.color >> 8) & 255) / 255.f, (d.color & 255) / 255.f }; Prop("Colour");
                   if (ImGui::ColorEdit3("##rc", c, ImGuiColorEditFlags_NoInputs)) { d.color = ((uint32_t)(c[0] * 255 + 0.5f) << 16) | ((uint32_t)(c[1] * 255 + 0.5f) << 8) | (uint32_t)(c[2] * 255 + 0.5f); ch = true; } }
                 Prop("Its name shows as you walk in"); ch |= ImGui::Checkbox("##rsn", &d.showName);
+                if (!d.marked()) { Prop("Open room (outdoors)"); if (ImGui::Checkbox("##ropen", &d.open)) { ch = true; rooms.researchAll(); }
+                  if (ImGui::IsItemHovered()) ImGui::SetTooltip("Searched with much bigger limits: up to 160 blocks over its ground, up to 1000 wide.\nFor outdoor areas like Talon Overworld (close open sides with room edges)."); }
                 ImGui::TextDisabled("%s", RoomStatus(d).c_str());
                 if (L && !L->shape.empty()) ImGui::TextDisabled("%d x %d x %d blocks, %zu door(s)", L->shape.hi.x - L->shape.lo.x + 1, L->shape.hi.y - L->shape.lo.y + 1, L->shape.hi.z - L->shape.lo.z + 1, L->shape.doors.size());
                 if (L && L->leak && !d.marked()) LeakUI("rleak", L->leak, L->leakAt, L->gaps, !L->open);
