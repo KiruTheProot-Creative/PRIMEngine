@@ -38,6 +38,7 @@ public:
     Chunk& loadChunk(I3 c);                           // from disk, else generated
     void unloadChunk(I3 c);                           // saves it first if you changed it
     void peekChunk(I3 c, Chunk& out);                 // a copy of a chunk (loaded, saved or generated) without loading it (far copies)
+    bool untouched(I3 c) { return !chunk(c) && !(store && store->has(c)); }   // never changed: exactly what the generator makes (the same at every x, z)
     size_t loadedCount() const { return chunks.size(); }
 
     // blocks (world coordinates)

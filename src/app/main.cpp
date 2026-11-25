@@ -9394,10 +9394,11 @@ struct App {
     struct LodDraw { int k; I3 g; }; std::vector<LodDraw> lodDraw; std::unordered_set<I3, I3Hash> lodCovered;   // this frame: groups drawn far; level-1 groups they cover (their chunks: not drawn)
     int lodK = 0, lodDrawn = 0, lodDrawnShown = 0; std::unique_ptr<Chunk> lodTmp;
     LodSummary lodAir;   // (above and below the far copies' heights: nothing)
+    std::unordered_map<int, LodSummary> lodGenMemo; bool lodMore = false;   // lodMore: far groups that could be built are still waiting (this frame's time ran out)   // untouched chunks boiled down, by height (the generator makes the same at every x, z: once per height)
     int LodReach() const { return lodK > 0 ? settings.renderDistance << lodK : settings.renderDistance; }   // chunks, sideways
     int LodVert() const { return settings.verticalDistance * 2 + 2; }                                        // chunks up and down
     void LodClear() {
-        lodSum.clear(); for (int k = 0; k < 4; k++) { lodGroups[k].clear(); lodDirty[k].clear(); }
+        lodSum.clear(); lodGenMemo.clear(); for (int k = 0; k < 4; k++) { lodGroups[k].clear(); lodDirty[k].clear(); }
         lodQueue.clear(); lodQueuePos = 0; lodQueueAt = { INT_MIN, 0, 0 }; lodQueueR = -1; lodDraw.clear(); lodCovered.clear();
     }
     void LodSetSummary(I3 c, LodSummary&& sm) {
@@ -9433,15 +9434,23 @@ struct App {
                 if (x * x + z * z > (R + 2.0 * sz + 4) * (R + 2.0 * sz + 4)) it = lodGroups[k].erase(it); else ++it;
             }
         }
-        while (lodQueuePos < lodQueue.size() && ms() < 2.5) {   // boil down: a copy of each chunk (from disk or made), never loaded into the world
+        double sumMs = loadingOn ? 40 : 2.5, buildMs = loadingOn ? 80 : 5;   // (the loading screen: as much as a frame can take)
+        while (lodQueuePos < lodQueue.size() && ms() < sumMs) {   // boil down: a copy of each chunk (from disk or made), never loaded into the world
             I3 c = lodQueue[lodQueuePos++]; if (lodSum.count(c)) continue;
+            if (world->untouched(c)) {   // never changed: the generator's own, the same for every chunk at this height - boiled down once
+                auto m = lodGenMemo.find(c.y);
+                if (m == lodGenMemo.end()) { lodTmp->pos = c; world->gen.fill(*lodTmp); m = lodGenMemo.emplace(c.y, lodSummarize(reg, *lodTmp)).first; }
+                LodSummary sm = m->second; LodSetSummary(c, std::move(sm)); continue;
+            }
             world->peekChunk(c, *lodTmp); LodSetSummary(c, lodSummarize(reg, *lodTmp));
         }
         auto get = [&](I3 c) -> const LodSummary* {
             if (std::abs(c.y - cc.y) > V) return &lodAir;
             auto it = lodSum.find(c); return it == lodSum.end() ? nullptr : &it->second;
         };
-        for (int k = 1; k <= lodK && ms() < 5; k++) {   // build: the nearest groups first
+        lodMore = false;
+        for (int k = 1; k <= lodK; k++) {   // build: the nearest groups first
+            if (ms() >= buildMs) { if (!lodDirty[k].empty()) lodMore = true; continue; }
             if (lodDirty[k].empty()) continue;
             int sz = 1 << k; std::vector<std::pair<double, I3>> todo;
             for (auto it = lodDirty[k].begin(); it != lodDirty[k].end();) {
@@ -9453,7 +9462,7 @@ struct App {
             std::sort(todo.begin(), todo.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
             std::vector<uint16_t> cells;
             for (auto& td : todo) {
-                if (ms() >= 5) break;
+                if (ms() >= buildMs) { lodMore = true; break; }
                 const I3 g = td.second; bool ready = true;
                 for (int y = 0; y < sz && ready; y++) for (int z = 0; z < sz && ready; z++) for (int x = 0; x < sz && ready; x++) ready = get({ g.x * sz + x, g.y * sz + y, g.z * sz + z }) != nullptr;
                 if (!ready) continue;   // (its chunks aren't all boiled down yet)
@@ -9881,8 +9890,11 @@ struct App {
         case 1:   // the far copies
             if (settings.distantDetail <= 0) { NextLoadStep(); break; }
             loadWhat = "Distant detail"; loadFrac = 0.32f + 0.1f * ease(loadStepT);
-            if (lodQueuePos >= lodQueue.size() && !lodQueue.empty()) loadStable++; else loadStable = 0;
-            if (loadStable > 5 || loadStepT > 20) NextLoadStep();
+            { bool built = !lodMore;
+              size_t left = lodQueue.size() - std::min(lodQueuePos, lodQueue.size()), dirty = 0; for (int k = 1; k <= lodK; k++) dirty += lodDirty[k].size();
+              loadWhat = "Distant detail: " + std::to_string(left) + " chunks, " + std::to_string(dirty) + " groups to go";
+              if (lodQueuePos >= lodQueue.size() && built) loadStable++; else loadStable = 0; }
+            if (loadStable > 5 || loadStepT > 60) NextLoadStep();
             break;
         case 2: {   // the rooms (all of them: the map, their lights and music)
             int n = 0; for (const RoomDef& d : rooms.list.rooms) { const RoomSet::Live* L = rooms.liveOf(d.id); if (L && !L->shape.empty()) n++; }

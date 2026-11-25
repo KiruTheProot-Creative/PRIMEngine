@@ -14,6 +14,7 @@ public:
     explicit RegionStore(std::string dir);
     ~RegionStore() { flush(); }
     bool load(I3 cpos, Chunk& out);              // true if this chunk was saved before
+    bool has(I3 cpos);                           // it was saved before (without reading it)
     void save(const Chunk& c);                   // into the region cache (written by flush)
     void flush();                                // write changed regions to disk
     size_t cachedRegions() const { return regions.size(); }

@@ -97,6 +97,7 @@ bool RegionStore::load(I3 cpos, Chunk& out) {
     if (blob.empty()) return false;
     return decode(blob, out);
 }
+bool RegionStore::has(I3 cpos) { Region& r = region(regionOf(cpos)); return !r.blobs[slot(cpos)].empty(); }
 void RegionStore::save(const Chunk& c) {
     Region& r = region(regionOf(c.pos));
     r.blobs[slot(c.pos)] = encode(c); r.dirty = true;
