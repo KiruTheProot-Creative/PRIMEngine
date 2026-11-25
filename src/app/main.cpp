@@ -2899,7 +2899,7 @@ struct App {
             ImGui::SeparatorText("Trigger zone");
             Prop("Size (blocks)"); if (ImGui::InputScalarN("##zsize", ImGuiDataType_Double, &o.size.x, 3, nullptr, nullptr, "%.1f")) { o.size.x = std::max(0.25, o.size.x); o.size.y = std::max(0.25, o.size.y); o.size.z = std::max(0.25, o.size.z); }
             int a = (int)o.trigger.action; const char* an[] = { triggerName(TriggerAction::Message), triggerName(TriggerAction::Kill), triggerName(TriggerAction::Heal), triggerName(TriggerAction::Checkpoint), triggerName(TriggerAction::RoomEdge) };
-            Prop("When you walk in"); if (ImGui::Combo("##zact", &a, an, 5)) { o.trigger.action = (TriggerAction)a; ch_ = true; }
+            Prop("When you walk in"); if (ImGui::Combo("##zact", &a, an, 5)) o.trigger.action = (TriggerAction)a;
             if (o.trigger.action == TriggerAction::RoomEdge) Hint("A room edge: nothing happens in the game (you, light and shots go right through). Only the Room Manager sees it - as a wall. Put it across an open side (the sea, a canyon's mouth, the void) to close an open room there.");
             if (o.trigger.action == TriggerAction::Message || o.trigger.action == TriggerAction::Kill) { Prop("Message"); ImGui::InputText("##ztext", &o.trigger.text); }
             if (o.trigger.action == TriggerAction::Heal) { Prop("Health"); ImGui::SliderFloat("##zamt", &o.trigger.amount, 1, 500, "+%.0f"); }
