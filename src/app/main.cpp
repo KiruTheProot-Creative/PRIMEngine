@@ -8337,6 +8337,20 @@ struct App {
             const std::string& t = itemGetNow.name.empty() ? (n == "itemtitle" ? p.title : p.text) : (n == "itemtitle" ? itemGetNow.title : itemGetNow.text);
             return menuFill(t, [&](const std::string& m) { return m == "itemtitle" || m == "itemtext" ? std::string() : MenuValue(m); });
         }
+        if (n == "file" || n == "FILE" || n == "fileaction" || n == "FILEACTION" || n == "fileinfo") {   // the picked file (in the editor: file 1)
+            int k = fileMenuSlot > 0 ? fileMenuSlot : 1; auto it = slotInfo.find(k); bool used = it != slotInfo.end(); std::string r;
+            if (n == "file" || n == "FILE") r = "File " + std::to_string(k);
+            else if (n == "fileaction" || n == "FILEACTION") r = used ? "Continue" : "Start";
+            else if (!used) r = "Empty\n\nA new game starts here.";
+            else {
+                const SaveGame& g = it->second; char b[256];
+                std::snprintf(b, sizeof b, "%s%s\n\nTime  %s\nEnergy  %d / %d\nItems  %d%%\nScans  %d", g.world.c_str(), g.place.empty() ? "" : ("  -  " + g.place).c_str(), playTimeText(g.playTime).c_str(),
+                              (int)std::lround(g.health), (int)std::lround(g.maxHealth), (int)std::lround(g.completion * 100), (int)g.scans.size());
+                r = b;
+            }
+            if (n == "FILE" || n == "FILEACTION") for (char& c : r) c = (char)std::toupper((unsigned char)c);
+            return r;
+        }
         if (n == "start" || n == "START") { std::string k = KeyLabel(VK_RETURN); if (n == "START") for (char& c : k) c = (char)std::toupper((unsigned char)c); return k; }   // the key that starts: {start} "Enter", {START} "ENTER"
         if (n.rfind("key:", 0) == 0) {   // the key an action is on: {key:jump} {key:ball} ...
             std::string a = n.substr(4);
@@ -9349,7 +9363,7 @@ struct App {
     }
     // a screen into `out` (W x H): background, its items (ui: an ImDrawList at W x H), then the node graph; fade 0..1
     // ---- planets: one shader draws the stars, a haze and the planet in its layers (Space backgrounds, the Planets editor's preview)
-    struct alignas(16) PlanetCB { float a[4], pos[4], sun[4], axis[4], neb[4], ocean[4], deep[4], land[4], band[8][4], ice[4], cloud[4], cloud2[4], atmo[4], atmo2[4], night[4], ring[4], ring2[4], ring3[4], cor[4], vein[4], cor2[4]; };
+    struct alignas(16) PlanetCB { float a[4], pos[4], sun[4], axis[4], neb[4], ocean[4], deep[4], land[4], band[8][4], ice[4], cloud[4], cloud2[4], atmo[4], atmo2[4], night[4], ring[4], ring2[4], ring3[4], cor[4], vein[4], cor2[4], tend[4]; };
     ComPtr<ID3D11PixelShader> psPlanet, psHudDepth; ComPtr<ID3D11Buffer> cbPlanet;
     Planet PlanetFor(const std::string& name) const { int i = planets.find(name); return i >= 0 ? planets.planets[i] : name.empty() && !planets.planets.empty() ? planets.planets[0] : defaultPlanet(); }
     void DrawPlanet(ID3D11RenderTargetView* dst, int W, int H, const Planet& pl, const ScreenBg& v, double t) {
@@ -9372,6 +9386,7 @@ struct App {
         col(c.night, pl.nightColor, pl.night ? pl.nightAmount : 0.f);
         col(c.ring, pl.ringColor, pl.rings ? 1.f : 0.f); col(c.ring2, pl.ringColor2, 0); c.ring3[0] = pl.ringInner; c.ring3[1] = std::max(pl.ringInner + 0.05f, pl.ringOuter);
         col(c.cor, pl.corruptColor, pl.corrupt ? std::clamp(pl.corruptAmount, 0.f, 1.f) : 0.f); col(c.vein, pl.veinColor, pl.corrupt ? std::clamp(pl.veins, 0.f, 1.f) : 0.f); c.cor2[0] = pl.veinPulse;
+        c.tend[0] = (float)pl.tendrilCount; c.tend[1] = pl.tendrilLength; c.tend[2] = pl.tendrilSpeed; c.tend[3] = pl.tendrils;
         ctx->UpdateSubresource(cbPlanet.Get(), 0, nullptr, &c, 0, 0);
         ctx->OMSetRenderTargets(1, &dst, nullptr);
         D3D11_VIEWPORT vp{ 0, 0, (float)W, (float)H, 0, 1 }; ctx->RSSetViewports(1, &vp);
@@ -10731,6 +10746,13 @@ struct App {
                 Prop("Pulses a second"); ch |= ImGui::SliderFloat("##plvp", &pl.veinPulse, 0, 3, "%.2f");
                 Hint("Dark patches streaked across the land and sea, glowing veins running through them (they pulse, and shine on the dark side too).");
             }
+            Prop("Tendrils"); ch |= ImGui::SliderFloat("##pltb", &pl.tendrils, 0, 1.5f, pl.tendrils <= 0 ? "none" : "%.2f bright");
+            if (pl.tendrils > 0) {
+                Prop("How many"); ch |= ImGui::SliderInt("##pltn", &pl.tendrilCount, 1, 16);
+                Prop("How long"); ch |= ImGui::SliderFloat("##pltl", &pl.tendrilLength, 0.1f, 3, "%.2f radii");
+                Prop("Waving"); ch |= ImGui::SliderFloat("##pltw", &pl.tendrilSpeed, 0, 3, "%.2f");
+                Hint("Glowing tendrils (the vein colour) reaching out from behind the planet into space, waving slowly.");
+            }
         }
         if (ImGui::CollapsingHeader("Rings and tilt")) {
             Prop("Rings"); ch |= ImGui::Checkbox("##plrg", &pl.rings);
@@ -11032,6 +11054,42 @@ struct App {
                     if (eraseArm == k && uiClock - eraseArmT < 3) TextIn(dl, font, "Delete again: erase", ts * 0.8f, ImVec2(p0.x, p0.y), ImVec2(p1.x - pad, p0.y + cardH * 0.4f), 2, IM_COL32(255, 90, 70, (int)(255 * al)));
                 }
                 break; }
+            case ScreenItemKind::ScanList: {   // the codex: the picked file's scans by category on the left, the picked one's text on the right
+                const std::vector<ScanEntry>* list = nullptr;
+                auto fi = slotInfo.find(fileMenuSlot); if (fileMenuSlot > 0 && fi != slotInfo.end()) list = &fi->second.scans; else list = &ShownScans().entries;   // (in the editor: every entry, as an example)
+                float lw = (b.x - a.x) * 0.36f, rowH = ts * 1.65f, gap = (b.x - a.x) * 0.02f;
+                dl->AddRectFilled(a, ImVec2(a.x + lw, b.y), C(col.fill, col.fillAlpha * al)); dl->AddRect(a, ImVec2(a.x + lw, b.y), C(col.accent, 0.5f * al), 0, ImDrawFlags_None, 1.f);
+                ImVec2 ra(a.x + lw + gap, a.y), rb = b;
+                dl->AddRectFilled(ra, rb, C(col.fill, col.fillAlpha * al)); dl->AddRect(ra, rb, C(col.accent, 0.5f * al), 0, ImDrawFlags_None, 1.f);
+                if (list->empty()) { TextIn(dl, font, "Nothing scanned yet.", ts, ImVec2(a.x + ts, a.y + ts * 0.5f), ImVec2(a.x + lw - ts, a.y + rowH), 0, C(col.dim, al)); break; }
+                std::vector<std::string> cats; for (const ScanEntry& e : *list) if (std::find(cats.begin(), cats.end(), e.category) == cats.end()) cats.push_back(e.category);
+                struct Row { int entry; std::string head; }; std::vector<Row> rows;
+                for (const std::string& c : cats) { rows.push_back({ -1, c.empty() ? std::string("OTHER") : c }); for (int e = 0; e < (int)list->size(); e++) if ((*list)[e].category == c) rows.push_back({ e, "" }); }
+                codexPick = std::clamp(codexPick, 0, (int)list->size() - 1);
+                int pickRow = 0; for (int r = 0; r < (int)rows.size(); r++) if (rows[r].entry == codexPick) pickRow = r;
+                float viewH = b.y - a.y - ts, want = pickRow * rowH;   // (keeps the picked one in view)
+                if (want - codexScroll > viewH - rowH * 1.5f) codexScroll = want - viewH + rowH * 1.5f; if (want - codexScroll < rowH) codexScroll = std::max(0.f, want - rowH);
+                dl->PushClipRect(a, ImVec2(a.x + lw, b.y), true);
+                for (int r = 0; r < (int)rows.size(); r++) {
+                    float y0 = a.y + ts * 0.5f + r * rowH - codexScroll; if (y0 + rowH < a.y || y0 > b.y) continue;
+                    ImVec2 p0(a.x + ts * 0.5f, y0), p1(a.x + lw - ts * 0.5f, y0 + rowH * 0.9f);
+                    if (rows[r].entry < 0) { TextIn(dl, font, rows[r].head, ts * 0.8f, p0, p1, 0, C(col.dim, al)); continue; }
+                    const ScanEntry& e = (*list)[rows[r].entry];
+                    MenuHit h{ 0, ImVec4(p0.x, p0.y, p1.x, p1.y), 11, rows[r].entry, MenuAct::None, "" }; screenHits.push_back(h);
+                    bool sel = (live && (int)screenHits.size() - 1 == screenSel) || (!live && rows[r].entry == codexPick); if (sel && live) codexPick = rows[r].entry;
+                    if (sel || rows[r].entry == codexPick) { dl->AddRectFilled(p0, p1, C(col.accent, (sel ? 0.25f : 0.12f) * al)); brackets(p0, p1, C(col.accent, al), 1.5f); }
+                    TextIn(dl, font, e.name, ts, ImVec2(p0.x + ts * 0.5f, p0.y), p1, 0, e.important ? C(col.accent, al) : C(sel ? col.picked : col.text, al));
+                }
+                dl->PopClipRect();
+                {   // the picked one
+                    const ScanEntry& e = (*list)[codexPick]; float pad = ts;
+                    TextIn(dl, FontOf(1), e.name, ts * 1.35f, ImVec2(ra.x + pad, ra.y + pad * 0.5f), ImVec2(rb.x - pad, ra.y + pad * 0.5f + ts * 1.8f), 0, C(col.picked, al));
+                    TextIn(dl, font, e.category, ts * 0.75f, ImVec2(ra.x + pad, ra.y + pad * 0.5f + ts * 1.7f), ImVec2(rb.x - pad, ra.y + pad * 0.5f + ts * 2.6f), 0, C(col.dim, al));
+                    ImFont* tf = FontOf(2); auto measure = [&](const char* p0, const char* p1) { return tf->CalcTextSizeA(ts, FLT_MAX, 0, p0, p1).x; };
+                    std::vector<TextLine> lines = wrapText(e.text, rb.x - ra.x - pad * 2, measure); float y = ra.y + pad * 0.5f + ts * 3.2f;
+                    for (const TextLine& ln : lines) { if (y + ts > rb.y - pad * 0.5f) break; dl->AddText(tf, ts, ImVec2(ra.x + pad, y), C(col.text, al), e.text.data() + ln.start, e.text.data() + ln.end); y += ts * 1.3f; }
+                }
+                break; }
             case ScreenItemKind::Credits: {   // the roll: comes up from below, line by line ("# " a heading)
                 std::string s = menuFill(it.text, [&](const std::string& n) { return MenuValue(n); });
                 std::vector<std::string> lines; { std::stringstream ss(s); std::string l; while (std::getline(ss, l)) lines.push_back(l); }
@@ -11182,6 +11240,8 @@ struct App {
         case ScreenAct::Credits: { int c = screens.byRole(ScreenRole::Credits); if (c >= 0) ShowScreen(c, true); break; }
         case ScreenAct::GoTo: { int i = screens.find(target); if (i >= 0) ShowScreen(i, true); else Toast("No screen called " + target); break; }
         case ScreenAct::Back: ScreenBack(); break;
+        case ScreenAct::PlayFile: if (fileMenuSlot > 0) BeginStart(fileMenuSlot, slotInfo.count(fileMenuSlot) > 0); else Toast("Pick a file first (the Files screen)"); break;
+        case ScreenAct::Codex: { int c = screens.byRole(ScreenRole::Codex); if (c >= 0) { codexPick = 0; codexScroll = 0; ShowScreen(c, true); } else Toast("There is no Codex screen yet (Screens editor)"); break; }
         case ScreenAct::Retry:   // the death screen: back at the last checkpoint
             CloseScreens(); if (playMode) { play.start(player, playRules, playSpawn, playYaw); paused = false; Capture(true); } break;
         case ScreenAct::MainMenu: BackToMainMenu(); break;
@@ -11211,7 +11271,7 @@ struct App {
                         bool starts = (h.kind == 10 || (h.kind == 8 && ((ScreenAct)h.arg == ScreenAct::Continue || ((ScreenAct)h.arg == ScreenAct::NewGame && screens.byRole(ScreenRole::Files) < 0)))) && !screens.startSound.empty();
                         if (!starts) PlayUi(h.kind == 8 && (ScreenAct)h.arg == ScreenAct::Back ? 2 : 1);   // (starting a file has its own sound)
                         if (h.trans >= 0 && h.trans < (int)screenTrans.size()) { pendingTrans = screenTrans[h.trans]; pendingTransSet = true; }   // (the button's own transition)
-                        if (h.kind == 8) ScreenAction((ScreenAct)h.arg, h.target); else if (h.kind == 10) SlotPicked(h.arg); }, false);
+                        if (h.kind == 8) ScreenAction((ScreenAct)h.arg, h.target); else if (h.kind == 10) SlotPicked(h.arg); else if (h.kind == 11) codexPick = h.arg; }, false);
         if (screenSel != before && before >= 0 && screenSel >= 0) PlayUi(0);
         if (screenSel >= 0 && screenSel < (int)screenHits.size() && screenHits[screenSel].kind == 10 && (ImGui::IsKeyPressed(ImGuiKey_Delete) || ImGui::IsKeyPressed(ImGuiKey_Backspace))) SlotErase(screenHits[screenSel].arg);
     }
@@ -11437,7 +11497,12 @@ struct App {
         SpawnFanfare();
         return true;
     }
-    void SlotPicked(int slot) { BeginStart(slot, slotInfo.count(slot) > 0); }
+    int fileMenuSlot = 0, codexPick = 0; float codexScroll = 0;   // the file picked on the Files screen (its menu and codex), the codex entry shown
+    void SlotPicked(int slot) {   // a file picked: its menu (if the game has one), else straight in
+        int fm = screens.byRole(ScreenRole::FileMenu);
+        if (fm >= 0) { fileMenuSlot = slot; codexPick = 0; codexScroll = 0; ShowScreen(fm, true); return; }
+        BeginStart(slot, slotInfo.count(slot) > 0);
+    }
     // ---- starting a file: the game-start sound, the screen fades to black, then the game (a new one: its intro first, if there is one)
     bool startOn = false, inNewGameIntro = false; double startT = 0, startLen = 1.5; int startSlotN = 0, pendingSlot = 0; bool startLoad = false; float blackIn = 0;
     float BlackLevel() const { return startOn ? (float)std::clamp(startT / std::max(0.05, startLen), 0.0, 1.0) : blackIn; }
@@ -11579,7 +11644,7 @@ struct App {
                 Toast("The Phazon intro is your splash now (the old one is kept as your own screen)");
             }
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Made for your own title: the texts are placeholders (swap the title for your logo pictures),\nthe times are seconds into the screen (match them to your music).");
-            for (ScreenRole r : { ScreenRole::MainMenu, ScreenRole::Files, ScreenRole::Intro, ScreenRole::Options, ScreenRole::Death, ScreenRole::Credits, ScreenRole::ItemGet, ScreenRole::GameSaved, ScreenRole::Custom })
+            for (ScreenRole r : { ScreenRole::MainMenu, ScreenRole::Files, ScreenRole::FileMenu, ScreenRole::Codex, ScreenRole::Intro, ScreenRole::Options, ScreenRole::Death, ScreenRole::Credits, ScreenRole::ItemGet, ScreenRole::GameSaved, ScreenRole::Custom })
                 if (ImGui::Selectable(r == ScreenRole::Custom ? "Empty (your own)" : screenRoleName(r))) {
                     mc::Screen s = presetScreen(r); std::string base = s.name; int k = 2; while (screens.find(s.name) >= 0) s.name = base + " " + std::to_string(k++);
                     if (screens.byRole(r) >= 0 && r != ScreenRole::Custom) s.role = ScreenRole::Custom;   // (one of each role: this one is a copy to play with)

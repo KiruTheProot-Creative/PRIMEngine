@@ -11,7 +11,9 @@
 
 namespace mc {
 
-enum class ScreenRole { Custom, MainMenu, Options, Death, Credits, Files, Intro, NewGameIntro, ItemGet, GameSaved, COUNT };
+enum class ScreenRole { Custom, MainMenu, Options, Death, Credits, Files, Intro, NewGameIntro, ItemGet, GameSaved, FileMenu, Codex, COUNT };
+// FileMenu: after picking a file on the Files screen (if the game has one): play it (continue / start), its codex, options; {file} {fileinfo} {fileaction}
+// Codex: the picked file's scans (a Scan list item)
 // GameSaved: the pop-up after a Save Station saved the game ({savetitle} {savetext}); the game stops behind it
 // ItemGet: the item pop-up while playing (the game stops behind it); {itemtitle} {itemtext} {itemname} and an Item model show what was found
 // Files: picking a save file; Intro: the splash, shown first (before the main menu); NewGameIntro: the story, after picking an empty file (then the game)
@@ -36,13 +38,13 @@ struct ScreenBg {
     float stars = 0.5f, nebula = 0.35f; uint32_t nebulaColor = 0x2A1A5A;   // how many stars, a coloured haze behind
 };
 
-enum class ScreenItemKind { Panel, Text, Image, Button, Options, Credits, SaveSlots, Sound, ItemModel, COUNT };   // ItemModel: the found item's 3D model, turning (Item get screen)   // SaveSlots: the save files, one card each; Sound: plays at its time (not seen)
+enum class ScreenItemKind { Panel, Text, Image, Button, Options, Credits, SaveSlots, Sound, ItemModel, ScanList, COUNT };   // ScanList: the picked file's scans - a list, and the picked one's text beside it   // ItemModel: the found item's 3D model, turning (Item get screen)   // SaveSlots: the save files, one card each; Sound: plays at its time (not seen)
 const char* screenItemKindName(ScreenItemKind k);
-enum class ScreenAct { None, NewGame, Continue, Options, Credits, Quit, GoTo, Back, Retry, MainMenu, Files, COUNT };
+enum class ScreenAct { None, NewGame, Continue, Options, Credits, Quit, GoTo, Back, Retry, MainMenu, Files, PlayFile, Codex, COUNT };   // PlayFile: the picked file (continue it, or start it if empty); Codex: its scans
 const char* screenActName(ScreenAct a);
 
 // ---- transitions: how one screen gives way to the next (the old picture and the new one put together for a moment)
-enum class TransKind { None, Fade, Crossfade, Slide, Push, ZoomIn, ZoomOut, Wipe, Iris, Diagonal, VisorScan, Static, Pixelate, Blur, Flash, COUNT };
+enum class TransKind { None, Fade, Crossfade, Slide, Push, ZoomIn, ZoomOut, Wipe, Iris, Diagonal, VisorScan, Static, Pixelate, Blur, Flash, Dissolve, COUNT };   // Dissolve: the old picture burns away (a glowing edge)
 const char* transKindName(TransKind k);
 const char* transEaseName(int e);                        // 0 smooth, 1 snappy, 2 bouncy, 3 even
 float transEase(int e, float t);                          // t 0..1 -> how far along (bouncy goes a little past 1 before settling)

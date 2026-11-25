@@ -10,7 +10,8 @@
 namespace mc {
 
 const char* screenRoleName(ScreenRole r) {
-    static const char* n[] = { "Custom", "Main menu", "Options", "Death screen", "Credits", "Files (save files)", "Splash (shown first)", "Intro of a new game (after an empty file)", "Item get (pop-up while playing)", "Game saved (pop-up after a Save Station)" };
+    static const char* n[] = { "Custom", "Main menu", "Options", "Death screen", "Credits", "Files (save files)", "Splash (shown first)", "Intro of a new game (after an empty file)", "Item get (pop-up while playing)", "Game saved (pop-up after a Save Station)",
+                                  "File menu (after picking a file)", "Codex (the picked file's scans)" };
     int i = (int)r; return i >= 0 && i < (int)ScreenRole::COUNT ? n[i] : "?";
 }
 const char* bgKindName(BgKind k) {
@@ -18,17 +19,17 @@ const char* bgKindName(BgKind k) {
     int i = (int)k; return i >= 0 && i < (int)BgKind::COUNT ? n[i] : "?";
 }
 const char* screenItemKindName(ScreenItemKind k) {
-    static const char* n[] = { "Panel", "Text", "Picture", "Button", "Options", "Credits roll", "Save files", "Sound", "Item model" };
+    static const char* n[] = { "Panel", "Text", "Picture", "Button", "Options", "Credits roll", "Save files", "Sound", "Item model", "Scan list (codex)" };
     int i = (int)k; return i >= 0 && i < (int)ScreenItemKind::COUNT ? n[i] : "?";
 }
 const char* screenActName(ScreenAct a) {
-    static const char* n[] = { "Nothing", "New game", "Continue", "Options", "Credits", "Quit", "Go to a screen", "Back (the screen before)", "Try again", "Main menu", "Files (pick a save file)" };
+    static const char* n[] = { "Nothing", "New game", "Continue", "Options", "Credits", "Quit", "Go to a screen", "Back (the screen before)", "Try again", "Main menu", "Files (pick a save file)", "Play the picked file", "Codex (the picked file's scans)" };
     int i = (int)a; return i >= 0 && i < (int)ScreenAct::COUNT ? n[i] : "?";
 }
 
 // ------------------------------------------------------------------ transitions
 const char* transKindName(TransKind k) {
-    static const char* n[] = { "Cut (none)", "Fade (through a colour)", "Crossfade", "Slide in", "Push", "Zoom in", "Zoom out", "Wipe", "Iris (a circle)", "Diagonal wipe", "Visor scan", "Static", "Pixelate", "Blur", "Flash" };
+    static const char* n[] = { "Cut (none)", "Fade (through a colour)", "Crossfade", "Slide in", "Push", "Zoom in", "Zoom out", "Wipe", "Iris (a circle)", "Diagonal wipe", "Visor scan", "Static", "Pixelate", "Blur", "Flash", "Dissolve (burning away)" };
     int i = (int)k; return i >= 0 && i < (int)TransKind::COUNT ? n[i] : "?";
 }
 const char* transEaseName(int e) { static const char* n[] = { "Smooth", "Snappy", "Bouncy", "Even" }; return e >= 0 && e < 4 ? n[e] : "?"; }
@@ -40,7 +41,7 @@ float transEase(int e, float t) {
     return t * t * (3 - 2 * t);
 }
 bool transUsesDir(TransKind k) { return k == TransKind::Slide || k == TransKind::Push || k == TransKind::Wipe; }
-bool transUsesColor(TransKind k) { return k == TransKind::Fade || k == TransKind::Flash || k == TransKind::Wipe || k == TransKind::Iris || k == TransKind::VisorScan || k == TransKind::Diagonal; }
+bool transUsesColor(TransKind k) { return k == TransKind::Dissolve || k == TransKind::Fade || k == TransKind::Flash || k == TransKind::Wipe || k == TransKind::Iris || k == TransKind::VisorScan || k == TransKind::Diagonal; }
 static std::string transText(const Transition& t) { std::ostringstream o; o << (int)t.kind << " " << t.dir << " " << t.time << " " << t.ease << " " << t.color; return o.str(); }
 static void transFrom(std::istringstream& l, Transition& t) {
     int k = 0, d = 1, e = 0; float tm = 0.4f; uint32_t c = 0; if (!(l >> k >> d >> tm >> e >> c)) return;
@@ -241,6 +242,37 @@ Screen presetScreen(ScreenRole r) {
         ScreenItem hint = text("Hint", "A / D  pick a file       ENTER  play       DELETE twice  erase       ESC  back", 0.25f, 0.87f, 0.675f, 0.053f, 0.0167f, 2); hint.col.text = 0x9FC2D2; s.items.push_back(hint);
         visorComp(s, 0.1f);
         break; }
+    case ScreenRole::FileMenu: {   // after picking a file: a scanner frame, bracketed choices down the left, the file beside them
+        s.name = "File menu"; s.bg.color = 0x06162E; s.bg.color2 = 0x01040C;
+        const uint32_t PB = 0x5AB4FF;
+        ScreenItem fr = visorPanel("Frame", 0.03f, 0.05f, 0.94f, 0.88f); fr.col.accent = PB; fr.col.fill = 0x041026; fr.col.fillAlpha = 0.55f; s.items.push_back(fr);
+        ScreenItem t = text("Title", "{FILE}", 0.06f, 0.075f, 0.5f, 0.06f, 0.036f, 0); t.col.text = 0xCFE8FF; t.font = 1; t.weight = 0.4f; s.items.push_back(t);
+        s.items.push_back(rule("Line", 0.06f, 0.14f, 0.88f, PB, 0.6f));
+        const char* lbl[] = { "[ {FILEACTION} ]", "[ CODEX ]", "[ OPTIONS ]", "[ BACK ]" }; ScreenAct acts[] = { ScreenAct::PlayFile, ScreenAct::Codex, ScreenAct::Options, ScreenAct::Back };
+        const char* tips[] = { "Into the game.", "What this file has scanned.", "Sound, picture, controls.", "Pick another file." };
+        float y = 0.24f;
+        for (int i = 0; i < 4; i++) {
+            ScreenItem b = button(lbl[i], acts[i], 0.06f, i == 3 ? 0.76f : y, 0.38f); b.name = i == 0 ? "Play" : i == 1 ? "Codex" : i == 2 ? "Options" : "Back"; b.h = 0.075f; b.textSize = 0.03f;
+            visorButton(b); b.frame = true; b.border = 1.5f; b.col.accent = PB; b.col.text = 0xCFE8FF; b.pickFill = 0.25f; b.col.picked = 0xFFFFFF; b.corners = true; b.tip = tips[i];
+            b.showAt = 0.1f + i * 0.08f; b.inFx = 3; b.inFxTime = 0.35f; s.items.push_back(b); y += 0.1f;
+        }
+        ScreenItem info = visorPanel("File", 0.5f, 0.24f, 0.42f, 0.3f); info.col.accent = PB; info.col.fill = 0x061A38; s.items.push_back(info);
+        ScreenItem it = text("File info", "{fileinfo}", 0.53f, 0.27f, 0.36f, 0.24f, 0.024f, 0); it.col.text = 0xA8D8FF; it.font = 2; it.valign = 0; it.typeSpeed = 90; it.showAt = 0.3f; s.items.push_back(it);
+        ScreenItem tp = text("Tip", "{tip}", 0.06f, 0.87f, 0.6f, 0.04f, 0.019f, 0); tp.col.text = 0x7FA8D0; s.items.push_back(tp);
+        visorComp(s, 0.12f);
+        s.in.kind = TransKind::Fade; s.in.time = 0.5f; s.in.color = 0x000000;
+        break; }
+    case ScreenRole::Codex: {   // the picked file's scans: a list on the left, the picked one's text on the right
+        s.name = "Codex"; s.bg.color = 0x06162E; s.bg.color2 = 0x01040C;
+        const uint32_t PB = 0x5AB4FF;
+        ScreenItem fr = visorPanel("Frame", 0.03f, 0.05f, 0.94f, 0.88f); fr.col.accent = PB; fr.col.fill = 0x041026; fr.col.fillAlpha = 0.55f; s.items.push_back(fr);
+        ScreenItem t = text("Title", "CODEX  -  {FILE}", 0.06f, 0.075f, 0.6f, 0.06f, 0.036f, 0); t.col.text = 0xCFE8FF; t.font = 1; t.weight = 0.4f; s.items.push_back(t);
+        s.items.push_back(rule("Line", 0.06f, 0.14f, 0.88f, PB, 0.6f));
+        ScreenItem l; l.name = "Scans"; l.kind = ScreenItemKind::ScanList; l.x = 0.06f; l.y = 0.17f; l.w = 0.88f; l.h = 0.66f; l.textSize = 0.024f; l.font = 1;
+        l.col.text = 0xCFE8FF; l.col.accent = PB; l.col.dim = 0x5A7FA8; l.col.picked = 0xFFFFFF; l.col.fill = 0x061A38; l.col.fillAlpha = 0.6f; s.items.push_back(l);
+        ScreenItem bk = button("[ BACK ]", ScreenAct::Back, 0.06f, 0.86f, 0.16f); bk.name = "Back"; bk.h = 0.055f; bk.textSize = 0.022f; visorButton(bk); bk.col.accent = PB; bk.frame = true; s.items.push_back(bk);
+        visorComp(s, 0.12f);
+        break; }
     case ScreenRole::Intro: {   // a splash: the game's name fades in and out, then on to the story
         s.name = "Splash"; s.bg.color = s.bg.color2 = 0x000000; s.comp = Compositor{}; s.fadeIn = 0.6f; s.duration = 4; s.next = "";
         { int bg = s.comp.add(NodeType::Background, 40, 60), ui = s.comp.add(NodeType::UI, 40, 220), over = s.comp.add(NodeType::AlphaOver, 300, 120), gl = s.comp.add(NodeType::Glare, 520, 120), sl = s.comp.add(NodeType::Scanlines, 740, 120), out = s.comp.add(NodeType::Output, 960, 120);
@@ -336,7 +368,8 @@ Screen presetPhazonIntro() {
       t.showAt = 32.6f; t.fade = 0.05f; t.inFx = 1; t.inFxTime = 1.3f; s.items.push_back(t); }
     { ScreenItem t = text("Press start", "PRESS {START} TO START", 0.2f, 0.85f, 0.6f, 0.04f, 0.022f, 1); t.col.text = 0xA8D8FF; t.font = 1; t.weight = 0.3f;
       t.showAt = 35.0f; t.fade = 1.0f; t.pulse = 2.2f; s.items.push_back(t); }
-    s.duration = 35.6f; s.pressStart = true;
+    s.duration = 35.6f; s.pressStart = true; s.next = "Files";   // (then the save files)
+    s.out.kind = TransKind::Dissolve; s.out.time = 1.6f; s.out.color = 0x2E78FF; s.out.ease = 3;   // (pressing start: it burns away)
     s.shakeAt = 20.5f; s.shakeTime = 4.5f; s.shakeAmount = 0.014f;
     // the pictures: background -> burn in -> the glow -> the items over it -> glitches -> the ink -> glare -> vignette -> out
     s.comp = Compositor{};

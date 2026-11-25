@@ -32,6 +32,7 @@ struct Planet {
     // Phazon corruption: dark blue patches streaked across the land, glowing veins that pulse (they shine on the dark side too)
     bool corrupt = false; uint32_t corruptColor = 0x0A1E8C, veinColor = 0x3AA0FF;
     float corruptAmount = 0.45f, veins = 0.7f, veinPulse = 0.6f;   // how much of it is corrupted (0..1), how many / bright the veins (0..1), pulses a second
+    float tendrils = 0, tendrilLength = 0.9f, tendrilSpeed = 0.6f; int tendrilCount = 9;   // glowing tendrils reaching out from behind it, waving (bright 0: none; length in planet radii)
     // the look
     int pixels = 0;             // 0 smooth, else pixelated: this many pixels across the planet
 };

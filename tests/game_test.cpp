@@ -1761,6 +1761,14 @@ int main() {
             CHECK(r.pressStart && r.shakeAt == s.shakeAt && r.shakeTime == s.shakeTime && rs && rs->inFx == 1 && rs->inFxTime == sub->inFxTime && r.items[0].cursor && r.items[0].code && r.items[0].pulse == 1.5f && nodesOk,
                   "the intro saves and loads (shake, press start, come-in effects, cursor, code, pulse, the new nodes)");
         }
+        {   // the file menu and the codex: after picking a file
+            Screen fm = presetScreen(ScreenRole::FileMenu), cx = presetScreen(ScreenRole::Codex); int acts = 0; bool list = false;
+            for (const ScreenItem& i : fm.items) if (i.kind == ScreenItemKind::Button) acts |= i.act == ScreenAct::PlayFile ? 1 : i.act == ScreenAct::Codex ? 2 : i.act == ScreenAct::Options ? 4 : i.act == ScreenAct::Back ? 8 : 0;
+            for (const ScreenItem& i : cx.items) list |= i.kind == ScreenItemKind::ScanList;
+            CHECK(acts == 15 && list && presetPhazonIntro().next == "Files" && presetPhazonIntro().out.kind == TransKind::Dissolve, "the file menu (play, codex, options, back), the codex's scan list; the intro goes on to the files, burning away");
+            Planet q = planetPreset("Corrupted world"); q.tendrilCount = 12; PlanetSet ps; ps.planets.push_back(q); savePlanets("/tmp/prim_tend.txt", ps); PlanetSet pb; loadPlanets("/tmp/prim_tend.txt", pb);
+            CHECK(pb.planets.size() == 1 && pb.planets[0].tendrils == q.tendrils && pb.planets[0].tendrilCount == 12 && pb.planets[0].tendrilLength == q.tendrilLength, "a planet's tendrils save and load");
+        }
         {   // planets: designed in layers, saved and loaded; a Space background picks one
             PlanetSet ps; for (const std::string& k : planetPresetNames()) ps.planets.push_back(planetPreset(k));
             bool sorted = true; for (const Planet& q : ps.planets) for (size_t b = 1; b < q.bands.size(); b++) sorted &= q.bands[b - 1].from <= q.bands[b].from;

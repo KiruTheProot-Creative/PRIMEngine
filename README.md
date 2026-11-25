@@ -451,6 +451,10 @@ A ready-made splash in four parts (seconds into the screen; move them to fit you
 
 Adding it makes it your splash (the old splash stays as your own screen). The title texts are placeholders for your logo pictures.
 
+Pressing start burns the picture away (the **Dissolve** transition) and goes on to the **Files** screen. With a **File menu** screen (Screens > + Screen > File menu), picking a file opens its menu instead of starting right away: **[ CONTINUE ]** / **[ START ]** (an empty file), **[ CODEX ]**, **[ OPTIONS ]**, **[ BACK ]**. The **Codex** screen lists what that file has scanned, by category, with the picked entry's text beside the list. In texts: **{file}** / **{FILE}** (File 2), **{fileaction}** / **{FILEACTION}** (Continue / Start), **{fileinfo}** (the world, time, energy, items, scans).
+
+The planet's **Phazon corruption** also has **tendrils**: glowing arms reaching out from behind the planet, waving (how many, how long, how bright, how fast).
+
 What it is made of (all usable on any screen):
 - **Text:** *Cursor* (a bar after the typed letters), *Scanner code* (a tag, a line above and a line under, in the Dim colour; the same text always gets the same code), *Breathes* (slowly brighter and dimmer).
 - **Comes in with** (texts, pictures, panels): Fade, **Scan** (a bright line in the Accent colour sweeps across and reveals it), **Glitch** (slices jump about and settle), **Scan + glitch**.

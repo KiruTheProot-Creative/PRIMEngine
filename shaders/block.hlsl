@@ -2725,6 +2725,15 @@ float4 PS_Trans(BlitOut i) : SV_Target
         break;
     }
     case 14: { float w = 1 - abs(pl * 2 - 1); c = (pl < 0.5 ? trA(uv) : trB(uv)) + col * pow(w, 1.5) * 2.2; break; }   // flash
+    case 15:   // dissolve: the old picture burns away from the middle, raggedly, a glowing edge before the new one
+    {
+        float2 d = (uv - 0.5) * float2(aspect, 1);
+        float f = compFbm(d * 3.2 + 1.7) * 0.6 + compNoise(d * 16 + 4.1) * 0.15 + (1 - length(d) * 1.1) * 0.35;
+        float e = 0.98 - pl * 0.95;   // (the line falls from above the brightest to below the darkest, evenly)
+        float gone = smoothstep(e, e + 0.015, f), edge = exp(-abs(f - e) * 55) * (1 - gone * 0.6);
+        c = lerp(trA(uv), trB(uv), gone) + col * edge * 1.6 + float3(0.8, 0.9, 1) * pow(edge, 4) * 0.8;
+        break;
+    }
     default: break;
     }
     return float4(c, 1);
@@ -2754,6 +2763,7 @@ cbuffer PlanetCB : register(b3)
     float4 gPlCor;      // rgb the corruption's colour, w how much (0: none)
     float4 gPlVein;     // rgb the veins' glow, w how many / bright
     float4 gPlCor2;     // x pulses a second, yzw -
+    float4 gPlTend;     // x how many tendrils, y how long (planet radii), z how fast they wave, w how bright (0: none)
 };
 float plHash(float3 p) { p = frac(p * 0.3183099 + 0.1); p *= 17.0; return frac(p.x * p.y * p.z * (p.x + p.y + p.z)); }
 float plNoise(float3 x)
@@ -2834,6 +2844,24 @@ float4 PS_Planet(BlitOut i) : SV_Target
     float r2 = dot(p, p);
     float3 L = normalize(gPlSun.xyz);
     float3 ax = gPlAxis.xyz;
+    if (gPlTend.w > 0 && r2 > 0.8)   // Phazon tendrils reaching out from behind the planet, waving (the planet hides their roots)
+    {
+        float rr = sqrt(r2), ang = atan2(p.y, p.x), n = clamp(gPlTend.x, 1, 16), len = max(gPlTend.y, 0.05), t = gPlA.y * gPlTend.z;
+        float glow = 0;
+        [loop] for (int k = 0; k < (int)n; k++)
+        {
+            float h = plHash(float3(k * 1.37, gPlA.w, 3.1)), h2 = plHash(float3(k * 2.11, gPlA.w, 7.7));
+            float a0 = (k + h * 0.8) * 6.2831853 / n, L2 = len * (0.55 + 0.75 * h2), out = rr - 0.92;   // its angle, its length, how far out this spot is
+            if (out > L2 || out < 0) continue;
+            float u = out / L2;   // 0 at the root .. 1 at the tip
+            float wave = sin(out * 4.5 - t * 2.1 + k * 1.7) * 0.22 * u + sin(out * 9 - t * 3.3 + k) * 0.06 * u;   // (waves more toward the tip)
+            float da = ang - a0 - wave; da = da - 6.2831853 * round(da / 6.2831853);
+            float w = 0.11 * (1 - u * 0.85) / max(rr, 0.5);   // (tapers to the tip)
+            float body = exp(-da * da / (w * w)) * (1 - smoothstep(0.7, 1, u));
+            glow += body * (0.6 + 0.4 * sin(t * 3 + out * 12 - k));
+        }
+        col += gPlVein.rgb * glow * gPlTend.w * 1.4 + float3(0.6, 0.8, 1) * pow(saturate(glow), 3) * gPlTend.w * 0.6;
+    }
     // the rings: where the view line meets their plane (behind the planet / in front)
     float4 ringC = 0; float ringZ = -10;
     if (gPlRing.w > 0.5 && abs(ax.z) > 1e-3)
@@ -2886,8 +2914,10 @@ float4 PS_Planet(BlitOut i) : SV_Target
             float vein = pow(saturate(r1), 14) + pow(saturate(r2), 22) * 0.7;
             vein *= smoothstep(1 - gPlCor.w - 0.25, 1 - gPlCor.w + 0.05, patch) * gPlVein.w;   // (in and around the corrupted parts)
             float pulse = 0.55 + 0.45 * sin(gPlA.y * gPlCor2.x * 6.2832 + plNoise(loc * 3) * 6.2832);
-            c = lerp(c, gPlCor.rgb * (diff * 0.7 + 0.08), cor * 0.8);
-            c += gPlVein.rgb * vein * pulse * (0.7 + 0.9 * (1 - day)) * 1.6;
+            float r3 = 1 - abs(plNoise(loc * 45 + 1.9) * 2 - 1); vein += pow(saturate(r3), 30) * 0.5 * cor * gPlVein.w;   // (fine veins inside the corruption)
+            c = lerp(c, gPlCor.rgb * (diff * 0.7 + 0.08), cor * 0.9);
+            c += gPlCor.rgb * cor * pulse * 0.35;   // (the corruption itself glows a little)
+            c += gPlVein.rgb * vein * pulse * (0.7 + 0.9 * (1 - day)) * 1.8;
         }
         c = lerp(c, gPlCloud.rgb * (diff * 0.95 + 0.05), cl * 0.92);
         if (gPlAtmo.w > 0)   // the air thickens toward the edge (lit side)
@@ -2960,7 +2990,7 @@ float4 PS_Comp(BlitOut i) : SV_Target
         float3 glow = c * body * k + gCC1.rgb * edge * k * 0.5;
         return float4(a.rgb * (1 - body * k * 0.85) + glow, max(a.a, body * k)); }
     case 22: {   // glitch: rows jump sideways now and then, streaks of light run across (amount, starts, ends, bands, shift, speed)
-        float t = gCExtra.x; bool on = t >= gCP0.y && (gCP0.z <= gCP0.y || t < gCP0.z); if (!on || gCP0.x <= 0) return a;
+        float t = gCExtra.x; bool on = t >= gCP0.y && (gCP0.z <= gCP0.y || t < gCP0.z); if (!on || gCP0.x <= 0) return compA(uv);   // (off: the picture as it is - 'a' isn't read for this one)
         float amt = gCP0.x, band = floor(uv.y * max(gCP1.x, 1)), tt = floor(t * max(gCP1.y, 1));
         float h = compHash(float2(band, tt)), jump = h > 1 - 0.18 * amt ? (compHash(float2(band * 1.7, tt + 3)) - 0.5) * 2 : 0;
         float2 q = uv + float2(jump * gCP0.w * gCMisc.y * gCSize.z, 0);
