@@ -4638,6 +4638,7 @@ struct App {
         fc.precip[0] = (float)precipTime; fc.precip[1] = (float)std::fmod(precipWindX, 3600.0); fc.precip[2] = (float)std::fmod(precipWindZ, 3600.0);   // (3600: a whole number of every box's widths at every wind push: no jump)
         fc.depth[0] = 0.05f; fc.depth[1] = farZ; fc.depth[2] = (float)rw; fc.depth[3] = (float)rh;
         fc.clipPlane[3] = 1;   // nothing cut away (except while drawing a mirror's view)
+        CpuMark("setup: mirrors and probes");
         lastMirror = settings.reflections > 0 ? world->nearestMirror(camPos, player.forward(), 48) : MirrorPlane{};
         fc.planar[0] = 0;
         {   // the least light in closed spaces (true darkness), and how big the reflections are traced
@@ -4665,6 +4666,7 @@ struct App {
             fc.mirror[3] = (float)(-(lastMirror.coord - camA) * lastMirror.sign);   // plane in camera-relative space: dot(n, p) + w = 0
         }
         fc.refl[3] = lastMirror.valid ? 1.f : 0.f;
+        CpuMark("setup: block and object copies for rays");
         fc.ao[0] = settings.ambientOcclusion > 0 ? 1.f : 0.f; fc.ao[1] = settings.ambientOcclusion >= 2 ? 3.0f : 2.0f;
         fc.ao[2] = std::clamp(settings.aoStrength, 0.f, 3.f); fc.ao[3] = settings.ambientOcclusion >= 2 ? 20.f : 12.f;
         fc.refl[0] = settings.reflections > 0 ? 1.f : 0.f; fc.refl[1] = settings.reflections >= 2 ? 48.f : 28.f; fc.refl[2] = settings.reflections >= 2 ? 120.f : 64.f;
@@ -4717,7 +4719,9 @@ struct App {
                 fc.voxO[3] = settings.reflections >= 2 ? 220.f : 110.f;
                 fc.voxM[0] = (float)md(voxC0.x * CS, VCX * CS); fc.voxM[1] = (float)md(voxC0.y * CS, VCY * CS); fc.voxM[2] = (float)md(voxC0.z * CS, VCZ * CS);
                 fc.voxM[3] = voxReady ? (float)(1 + (settings.rtReflect ? 2 : 0) + (settings.rtShadows ? 4 : 0)) : 0.f;   // what may step through it: 1 the copy is there, 2 reflections, 4 lamp shadows
+            CpuMark("setup: object copies for rays");
             if (settings.rtObjects) UpdateObjectVoxels(); else objVoxCount = 0;
+            CpuMark("setup: block and object copies for rays");
             fc.planar[1] = (float)objVoxCount;
             for (int k = 0; k < 8; k++) { fc.splash[k][3] = -1; if (k < (int)splashes.size()) { V3 r = splashes[k].pos - camPos; fc.splash[k][0] = (float)r.x; fc.splash[k][1] = (float)r.y; fc.splash[k][2] = (float)r.z; fc.splash[k][3] = splashes[k].t; } }
             }
@@ -4727,10 +4731,15 @@ struct App {
         ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &fc, 0, 0);
         ID3D11Buffer* cbs[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->VSSetConstantBuffers(0, 2, cbs); ctx->PSSetConstantBuffers(0, 2, cbs);
         { ID3D11ShaderResourceView* vx[5] = { texArray.Get(), voxReady ? voxSRV.Get() : nullptr, voxReady ? voxPalSRV.Get() : nullptr, brickSRV.Get(), objVoxSRV.Get() }; ctx->PSSetShaderResources(29, 5, vx); }   // reflection rays' blocks and objects
+        CpuMark("setup: choosing far copies");
         LodSelect();   // far copies: which groups (and which chunks they stand in for)
+        CpuMark("setup: hidden-things check");
         HizCull();     // what is hidden behind other things (the depth of a frame or two before)
+        CpuMark("setup: cooked world (portals)");
         CookFrame(vp, fc);   // the cooked world: rooms seen through the portals, rooms' reflection pictures, baked lamp light
+        CpuMark("setup: light lists");
         PrepareLights(fc);   // light objects, strips, glowing emitters, shots, glowing blocks (for objects) - sorted into clusters
+        CpuMark("setup: chunk positions");
         ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
         UploadChunkOrigins();
         auto drawChunks = [&](const XMMATRIX& m, int pass, bool counting, bool cave = false) {   // cave: the camera's own view (cave culling applies)
@@ -9416,7 +9425,8 @@ struct App {
     std::unordered_map<I3, LodGroup, I3Hash> lodGroups[4];   // [level]
     std::unordered_set<I3, I3Hash> lodDirty[4];             // groups to build (again)
     std::unordered_set<I3, I3Hash> chunkMeshed;             // chunks whose mesh has arrived (empty or not)
-    std::vector<I3> lodQueue; size_t lodQueuePos = 0; I3 lodQueueAt{ INT_MIN, 0, 0 }; int lodQueueR = -1;
+    std::vector<I3> lodQueue; size_t lodQueuePos = 0; I3 lodQueueAt{ INT_MIN, 0, 0 }; int lodQueueR = -1;   // lodQueue: every offset around you, nearest first (made once per reach); lodQueuePos: how far through it this round is
+    I3 lodCleanAt{ INT_MIN, 0, 0 }; bool lodRoundMoved = false; std::vector<I3> lodPending;   // lodPending: chunks that came into reach as you moved (after the first full round)
     struct LodDraw { int k; I3 g; }; std::vector<LodDraw> lodDraw; std::unordered_set<I3, I3Hash> lodCovered;   // this frame: groups drawn far; level-1 groups they cover (their chunks: not drawn)
     int lodK = 0, lodDrawn = 0, lodDrawnShown = 0; std::unique_ptr<Chunk> lodTmp;
     LodSummary lodAir;   // (above and below the far copies' heights: nothing)
@@ -9425,7 +9435,7 @@ struct App {
     int LodVert() const { return settings.verticalDistance * 2 + 2; }                                        // chunks up and down
     void LodClear() {
         lodSum.clear(); lodGenMemo.clear(); for (int k = 0; k < 4; k++) { lodGroups[k].clear(); lodDirty[k].clear(); }
-        lodQueue.clear(); lodQueuePos = 0; lodQueueAt = { INT_MIN, 0, 0 }; lodQueueR = -1; lodDraw.clear(); lodCovered.clear();
+        lodQueue.clear(); lodQueuePos = 0; lodQueueAt = { INT_MIN, 0, 0 }; lodQueueR = -1; lodDraw.clear(); lodCovered.clear(); lodCleanAt = { INT_MIN, 0, 0 }; lodRoundMoved = false; lodPending.clear();
     }
     void LodSetSummary(I3 c, LodSummary&& sm) {
         auto it = lodSum.find(c);
@@ -9443,27 +9453,60 @@ struct App {
         auto t0 = std::chrono::steady_clock::now();
         auto ms = [&]() { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(); };
         I3 cc = chunkOf(ifloor(camPos.x), ifloor(camPos.y), ifloor(camPos.z)); int R = LodReach(), V = LodVert();
-        if (!(cc == lodQueueAt) || lodQueueR != R) {   // moved to another chunk: what is needed now, nearest first; forget what is far behind
-            lodQueue.clear(); lodQueuePos = 0; lodQueueAt = cc; lodQueueR = R;
+        if (lodQueueR != R) {   // the offsets around you, nearest first: made once (not again every time you move a chunk - that was a long stutter)
+            lodQueue.clear(); lodQueueR = R; lodQueuePos = 0;
             for (int dz = -R - 1; dz <= R + 1; dz++) for (int dx = -R - 1; dx <= R + 1; dx++) {
                 if (dx * dx + dz * dz > (R + 1) * (R + 1)) continue;
-                for (int dy = -V; dy <= V; dy++) { I3 c{ cc.x + dx, cc.y + dy, cc.z + dz }; if (!lodSum.count(c)) lodQueue.push_back(c); }
+                for (int dy = -V; dy <= V; dy++) lodQueue.push_back({ dx, dy, dz });
             }
-            std::sort(lodQueue.begin(), lodQueue.end(), [&](const I3& a, const I3& b) {
-                auto d = [&](const I3& c) { int x = c.x - cc.x, y = c.y - cc.y, z = c.z - cc.z; return x * x + z * z + y * y * 4; }; return d(a) < d(b); });
+            std::sort(lodQueue.begin(), lodQueue.end(), [](const I3& a, const I3& b) { return a.x * a.x + a.z * a.z + a.y * a.y * 4 < b.x * b.x + b.z * b.z + b.y * b.y * 4; });
+        }
+        if (!(cc == lodQueueAt)) {   // moved to another chunk
+            I3 old = lodQueueAt; lodQueueAt = cc;
+            bool near = old.x != INT_MIN && std::abs(cc.x - old.x) <= 4 && std::abs(cc.z - old.z) <= 4 && std::abs(cc.y - old.y) <= 4;
+            if (lodQueuePos < lodQueue.size() || !near) { lodRoundMoved = true; lodPending.clear(); }   // (a round still going, or a jump: the whole round again after it)
+            else {   // only what just came into reach: the new edge of the circle (and new layers above/below)
+                int R1 = R + 1;
+                auto inOld = [&](int x, int y, int z) { int dx = x - old.x, dz = z - old.z, dy = y - old.y; return dx * dx + dz * dz <= R1 * R1 && std::abs(dy) <= V; };
+                for (int dz = -R1; dz <= R1; dz++) {
+                    int w = (int)std::floor(std::sqrt((double)(R1 * R1 - dz * dz))); int z = cc.z + dz;
+                    for (int dx = -w; dx <= w; dx++) {
+                        int x = cc.x + dx; int ox = x - old.x, oz = z - old.z; bool colOld = ox * ox + oz * oz <= R1 * R1;
+                        if (colOld && cc.y == old.y) continue;   // (an old column, same layers: nothing new)
+                        for (int dy = -V; dy <= V; dy++) if (!colOld || !inOld(x, cc.y + dy, z)) lodPending.push_back({ x, cc.y + dy, z });
+                    }
+                }
+            }
+        }
+        if (lodQueuePos >= lodQueue.size() && lodRoundMoved) { lodQueuePos = 0; lodRoundMoved = false; }
+        if (std::abs(cc.x - lodCleanAt.x) + std::abs(cc.z - lodCleanAt.z) + std::abs(cc.y - lodCleanAt.y) >= 6) {   // forget what is far behind (now and then, not every chunk you move)
+            lodCleanAt = cc;
             for (auto it = lodSum.begin(); it != lodSum.end();) {
                 int x = it->first.x - cc.x, z = it->first.z - cc.z, y = it->first.y - cc.y;
-                if (x * x + z * z > (R + 6) * (R + 6) || std::abs(y) > V + 3) it = lodSum.erase(it); else ++it;
+                if (x * x + z * z > (R + 8) * (R + 8) || std::abs(y) > V + 4) it = lodSum.erase(it); else ++it;
             }
             for (int k = 1; k <= 3; k++) for (auto it = lodGroups[k].begin(); it != lodGroups[k].end();) {
                 int sz = 1 << k; double x = (it->first.x + 0.5) * sz - cc.x, z = (it->first.z + 0.5) * sz - cc.z;
-                if (x * x + z * z > (R + 2.0 * sz + 4) * (R + 2.0 * sz + 4)) it = lodGroups[k].erase(it); else ++it;
+                if (x * x + z * z > (R + 2.0 * sz + 8) * (R + 2.0 * sz + 8)) it = lodGroups[k].erase(it); else ++it;
             }
         }
         double sumMs = loadingOn ? 40 : 2.5, buildMs = loadingOn ? 80 : 5;   // (the loading screen: as much as a frame can take)
-        while (lodQueuePos < lodQueue.size() && ms() < sumMs) {   // boil down: a copy of each chunk (from disk or made), never loaded into the world
-            I3 c = lodQueue[lodQueuePos++]; if (lodSum.count(c)) continue;
+        for (int n = 0; lodQueuePos < lodQueue.size(); n++) {   // boil down: a copy of each chunk (from disk or made), never loaded into the world
+            if ((n & 255) == 0 && ms() >= sumMs) break;
+            const I3& o = lodQueue[lodQueuePos++]; I3 c{ cc.x + o.x, cc.y + o.y, cc.z + o.z }; if (lodSum.count(c)) continue;
             if (world->untouched(c)) {   // never changed: the generator's own, the same for every chunk at this height - boiled down once
+                auto m = lodGenMemo.find(c.y);
+                if (m == lodGenMemo.end()) { lodTmp->pos = c; world->gen.fill(*lodTmp); m = lodGenMemo.emplace(c.y, lodSummarize(reg, *lodTmp)).first; }
+                LodSummary sm = m->second; LodSetSummary(c, std::move(sm)); continue;
+            }
+            world->peekChunk(c, *lodTmp); LodSetSummary(c, lodSummarize(reg, *lodTmp));
+        }
+        for (int n = 0; !lodPending.empty(); n++) {   // the new edge (cheap: only a ring of chunks per move)
+            if ((n & 63) == 0 && ms() >= sumMs) break;
+            I3 c = lodPending.back(); lodPending.pop_back();
+            { int dx = c.x - cc.x, dz = c.z - cc.z; if (dx * dx + dz * dz > (R + 1) * (R + 1) || std::abs(c.y - cc.y) > V) continue; }   // (out of reach again)
+            if (lodSum.count(c)) continue;
+            if (world->untouched(c)) {
                 auto m = lodGenMemo.find(c.y);
                 if (m == lodGenMemo.end()) { lodTmp->pos = c; world->gen.fill(*lodTmp); m = lodGenMemo.emplace(c.y, lodSummarize(reg, *lodTmp)).first; }
                 LodSummary sm = m->second; LodSetSummary(c, std::move(sm)); continue;
@@ -9919,7 +9962,7 @@ struct App {
             { bool built = !lodMore;
               size_t left = lodQueue.size() - std::min(lodQueuePos, lodQueue.size()), dirty = 0; for (int k = 1; k <= lodK; k++) dirty += lodDirty[k].size();
               loadWhat = "Distant detail: " + std::to_string(left) + " chunks, " + std::to_string(dirty) + " groups to go";
-              if (lodQueuePos >= lodQueue.size() && built) loadStable++; else loadStable = 0; }
+              if (lodQueuePos >= lodQueue.size() && lodPending.empty() && built) loadStable++; else loadStable = 0; }
             if (loadStable > 5 || loadStepT > 60) NextLoadStep();
             break;
         case 2: {   // the rooms (all of them: the map, their lights and music)
@@ -18082,7 +18125,8 @@ struct App {
     // ================================================================== the benchmark: the same flight every time (from the spawn point), every frame measured, the result kept
     // (projectDir/benchmarks.txt) so each optimization can be compared with the run before. 0-8 s: a full turn; 8-19 s: flying ahead; 19-30 s: back, rising
     struct Bench { bool on = false; double t = 0; V3 start{ 0, 0, 0 }, keepFeet{ 0, 0, 0 }; double yaw0 = 0, keepYaw = 0, keepPitch = 0; bool keepFly = false;
-                   std::vector<float> ms, gms; std::map<std::string, double> cpuSum, gpuSum; std::string result; bool show = false; } bench;
+                   std::vector<float> ms, gms; std::map<std::string, double> cpuSum, gpuSum; std::string result; bool show = false;
+                   std::vector<std::vector<std::pair<const std::string*, float>>> frames; } bench;   // frames: each frame's steps (to see what the spikes were made of)
     static constexpr double BENCH_LEN = 30;
     void StartBench() {
         if (playMode || !world) return;
@@ -18100,8 +18144,9 @@ struct App {
     }
     void BenchNote() {   // after each frame: its time, and where it went
         if (!bench.on || cpuT.acc.empty()) return;
-        double ms = 0; for (auto& kv : cpuT.acc) { ms += kv.second; bench.cpuSum[kv.first] += kv.second; }
-        if (bench.t > 0.5) bench.ms.push_back((float)ms);   // (the first half second: settling)
+        double ms = 0; std::vector<std::pair<const std::string*, float>> fr; fr.reserve(cpuT.acc.size());
+        for (auto& kv : cpuT.acc) { ms += kv.second; auto it = bench.cpuSum.try_emplace(kv.first, 0.0).first; it->second += kv.second; fr.push_back({ &it->first, (float)kv.second }); }
+        if (bench.t > 0.5) { bench.ms.push_back((float)ms); bench.frames.push_back(std::move(fr)); }   // (the first half second: settling)
     }
     void FinishBench() {
         bench.on = false; player.feet = bench.keepFeet; player.yaw = bench.keepYaw; player.pitch = bench.keepPitch; player.flying = bench.keepFly;
@@ -18117,7 +18162,17 @@ struct App {
         snprintf(b, sizeof b, "%zu frames: %.0f fps on average (%.2f ms), middle %.2f ms\nslowest 1%%: %.1f ms (%.0f fps), slowest 0.1%%: %.1f ms, slowest %.1f ms, %d spikes\ngraphics card: %.2f ms a frame on average\n",
                  v.size(), 1000 / avg, avg, med, p99, 1000 / std::max(0.1, p99), p999, mx, spikes, gavg);
         std::string res = b;
-        res += "processor, per frame:\n" + top(bench.cpuSum, 8, (double)bench.ms.size());
+        res += "processor, per frame:\n" + top(bench.cpuSum, 14, (double)bench.ms.size());
+        {   // the spikes: what they were made of (on average, in a spike frame), and the slowest frame on its own
+            std::map<std::string, double> inSpikes; int ns = 0; size_t worst = 0; double thr = std::max(med * 2, med + 8);
+            for (size_t i = 0; i < bench.ms.size() && i < bench.frames.size(); i++) {
+                if (bench.ms[i] > bench.ms[worst]) worst = i;
+                if (bench.ms[i] <= thr) continue; ns++;
+                for (auto& st : bench.frames[i]) inSpikes[*st.first] += st.second;
+            }
+            if (ns > 0) res += "in a spike frame, on average (" + std::to_string(ns) + " spikes):\n" + top(inSpikes, 8, (double)ns);
+            if (worst < bench.frames.size()) { std::map<std::string, double> w; for (auto& st : bench.frames[worst]) w[*st.first] += st.second; res += "the slowest frame:\n" + top(w, 6, 1.0); }
+        }
         if (!bench.gpuSum.empty()) res += "graphics card, per frame:\n" + top(bench.gpuSum, 8, (double)std::max<size_t>(1, bench.gms.size()));
         snprintf(b, sizeof b, "settings: render distance %d, distant detail %d, render scale %.2f, shadows %d (%d), lamp shadows %d at %d, reflections %d, frame cap %d, vsync %d",
                  settings.renderDistance, settings.distantDetail, settings.renderScale, settings.shadowQuality, settings.shadowRes, settings.lightShadows, lshRes, settings.reflections, settings.maxFps, settings.vsync ? 1 : 0);
