@@ -210,6 +210,7 @@ float3 dynLightsSpec(float3 rel, float3 n, float3 v, float pw, bool object, out 
 }
 float3 dynLights(float3 rel, float3 n) { float3 sp; return dynLightsSpec(rel, n, -normalize(rel), 16, true, sp); }
 float3 meshToRel(float3 p) { return gOffset.xyz + gAxisX.xyz * p.x + gAxisY.xyz * p.y + gAxisZ.xyz * p.z; }
+#define MESH_REL(i) ((i).inst.w > 0.5 ? (i).inst.xyz + (i).pos : meshToRel((i).pos))   // a world chunk drawn from the shared origins list, or an object (its ChunkCB)
 
 Texture2DArray gTex : register(t0);
 Texture2DArray<float> gShadow : register(t1);   // one slice per cascade
@@ -447,7 +448,7 @@ float cloudShadow(float3 rel)
     return exp(-cloudDensity(p + gSunDir.xyz * t, false) * 90);
 }
 
-struct VSIn { float3 pos : POSITION; float2 uv : TEXCOORD0; float layer : TEXCOORD1; uint lit : TEXCOORD2; uint normal : TEXCOORD3; };
+struct VSIn { float3 pos : POSITION; float2 uv : TEXCOORD0; float layer : TEXCOORD1; uint lit : TEXCOORD2; uint normal : TEXCOORD3; float4 inst : TEXCOORD4; };   // inst (per instance): a world chunk's origin from the shared list (w 1), else 0: the ChunkCB's
 struct VSOut { float4 pos : SV_Position; float3 uvl : TEXCOORD0; float ao : TEXCOORD1; float3 rel : TEXCOORD2; float3 n : TEXCOORD3; float4 lamp : TEXCOORD4; float3 mat : TEXCOORD5; float kind : TEXCOORD6; float clip : SV_ClipDistance0; };
 // what the reflection pass needs per pixel: direction of the surface (rgb) and how shiny it is (a)
 // color: the lit picture; surface: direction + shininess (reflections); indirect: the part of the light that
@@ -475,7 +476,7 @@ VSOut VS_Block(VSIn i)
 {
     VSOut o;
     float layer;
-    float3 p = sway(meshToRel(i.pos), i.layer, i.uv.y, layer);
+    float3 p = sway(MESH_REL(i), i.layer, i.uv.y, layer);
     o.pos = mul(float4(p, 1), gViewProj);
     o.uvl = float3(i.uv, layer);
     o.ao = (i.lit & 255) / 255.0;
@@ -890,19 +891,19 @@ float4 PS_Ghost(VSOut i) : SV_Target
 struct ShOut { float4 pos : SV_Position; float3 uvl : TEXCOORD0; };
 ShOut VS_Shadow(VSIn i)
 {
-    float layer; float3 p = sway(meshToRel(i.pos), i.layer, i.uv.y, layer);
+    float layer; float3 p = sway(MESH_REL(i), i.layer, i.uv.y, layer);
     ShOut o; o.pos = mul(float4(p, 1), gShadowVP); o.uvl = float3(i.uv, layer); return o;
 }
 void PS_ShadowCutout(ShOut i) { clip(albedoAt(i.uvl).a - 0.5); }
 ShOut VS_WaterMap(VSIn i)   // the water map: only the water's tops, seen from straight above
 {
-    ShOut o; o.pos = mul(float4(meshToRel(i.pos), 1), gWaterVP); o.uvl = float3(i.uv, 0);
+    ShOut o; o.pos = mul(float4(MESH_REL(i), 1), gWaterVP); o.uvl = float3(i.uv, 0);
     if (abs(floor(i.layer / 16384) - 3) > 0.5 || unpackNormal(i.normal).y < 0.5) o.pos = float4(-5, -5, 0.5, 1);   // (anything else: a point off the map)
     return o;
 }
 ShOut VS_SkyMap(VSIn i)
 {
-    float layer; float3 p = sway(meshToRel(i.pos), i.layer, i.uv.y, layer);
+    float layer; float3 p = sway(MESH_REL(i), i.layer, i.uv.y, layer);
     ShOut o; o.pos = mul(float4(p, 1), gSkyVP); o.uvl = float3(i.uv, layer); return o;
 }
 

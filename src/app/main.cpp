@@ -202,7 +202,7 @@ struct alignas(16) FrameCB {
 };
 struct alignas(16) ChunkCB { float offset[4]; float ax[4] = { 1, 0, 0, 0 }, ay[4] = { 0, 1, 0, 0 }, az[4] = { 0, 0, 1, 0 }; };   // axes: objects are turned and sized
 
-struct GpuChunk { ComPtr<ID3D11Buffer> vbO, ibO, vbC, ibC, vbW, ibW; UINT nO = 0, nC = 0, nW = 0; };
+struct GpuChunk { ComPtr<ID3D11Buffer> vbO, ibO, vbC, ibC, vbW, ibW; UINT nO = 0, nC = 0, nW = 0; UINT inst = 0; };   // inst: its place in this frame's origins list
 struct ModelGpu { std::vector<std::pair<I3, GpuChunk>> parts; std::vector<Box3> boxes, boxesStill; bool mesh = false; ComPtr<ID3D11ShaderResourceView> tex; };   // boxesStill: without the moving parts (an open door)
 struct alignas(16) PreviewCB { float vp[16]; float light[4]; };
 struct alignas(16) MapCB { float vp[16]; float eye[4]; float center[4]; float mode[4]; };   // the map hologram
@@ -600,8 +600,9 @@ struct App {
         D3D11_INPUT_ELEMENT_DESC el[] = {
             { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 }, { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0 },
             { "TEXCOORD", 1, DXGI_FORMAT_R32_FLOAT, 0, 20, D3D11_INPUT_PER_VERTEX_DATA, 0 }, { "TEXCOORD", 2, DXGI_FORMAT_R32_UINT, 0, 24, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-            { "TEXCOORD", 3, DXGI_FORMAT_R32_UINT, 0, 28, D3D11_INPUT_PER_VERTEX_DATA, 0 } };
-        HR(dev->CreateInputLayout(el, 5, vb->GetBufferPointer(), vb->GetBufferSize(), &layout));
+            { "TEXCOORD", 3, DXGI_FORMAT_R32_UINT, 0, 28, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            { "TEXCOORD", 4, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 0, D3D11_INPUT_PER_INSTANCE_DATA, 1 } };   // (slot 1: the world chunks' origins, one per draw; nothing bound: zeros)
+        HR(dev->CreateInputLayout(el, 6, vb->GetBufferPointer(), vb->GetBufferSize(), &layout));
         auto cb = [&](UINT size, ComPtr<ID3D11Buffer>& out) { D3D11_BUFFER_DESC d{}; d.ByteWidth = size; d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_CONSTANT_BUFFER; HR(dev->CreateBuffer(&d, nullptr, &out)); };
         cb(sizeof(FrameCB), cbFrame); cb(sizeof(ChunkCB), cbChunk); cb(sizeof(PreviewCB), cbPreview); cb(sizeof(MeshMatCB), cbMeshMat); cb(sizeof(MapCB), cbMap); cb(sizeof(VisorCB), cbVisor); cb(16, cbFlat); cb(sizeof(LookCB), cbLook);
 
@@ -4517,6 +4518,21 @@ struct App {
         if (!gpuT.ms.empty()) y = DrawTimeList(dl, ImVec2(topRight.x, y), "graphics card", gpuT.ms, gpuT.total);
         if (!cpuT.ms.empty()) DrawTimeList(dl, ImVec2(topRight.x, y), "processor", cpuT.ms, cpuT.total);
     }
+    // ---- this frame's origins of every world chunk and far copy, relative to the camera, in one list (slot 1 of the block vertex shaders)
+    ComPtr<ID3D11Buffer> instBuf; UINT instCap = 0; std::vector<float> instCpu;
+    void UploadChunkOrigins() {
+        size_t n = gpu.size(); for (int k = 1; k <= 3; k++) n += lodGroups[k].size();
+        instCpu.resize(std::max<size_t>(1, n) * 4); UINT i = 0;
+        for (auto& kv : gpu) { float* o = &instCpu[(size_t)i * 4]; o[0] = (float)(kv.first.x * (double)CS - camPos.x); o[1] = (float)(kv.first.y * (double)CS - camPos.y); o[2] = (float)(kv.first.z * (double)CS - camPos.z); o[3] = 1; kv.second.inst = i++; }
+        for (int k = 1; k <= 3; k++) { double sz = (double)(CS << k);
+            for (auto& kv : lodGroups[k]) { float* o = &instCpu[(size_t)i * 4]; o[0] = (float)(kv.first.x * sz - camPos.x); o[1] = (float)(kv.first.y * sz - camPos.y); o[2] = (float)(kv.first.z * sz - camPos.z); o[3] = 1; kv.second.inst = i++; } }
+        if (!instBuf || i > instCap) {
+            instCap = std::max<UINT>(i * 3 / 2, 4096); instBuf.Reset();
+            D3D11_BUFFER_DESC d{}; d.ByteWidth = instCap * 16; d.Usage = D3D11_USAGE_DYNAMIC; d.BindFlags = D3D11_BIND_VERTEX_BUFFER; d.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+            HR(dev->CreateBuffer(&d, nullptr, &instBuf));
+        }
+        if (i) Upload(instBuf.Get(), instCpu.data(), (size_t)i * 16);
+    }
     void RenderWorld(ID3D11RenderTargetView* outScreen) {
         // render scale: drawn at the world's own size into a picture of that size, fitted to the screen at the end (the HUD over it at the screen's size)
         bool temporal = PrimeOn() && upSrc.rtv && upSrc.w == std::max(16, sceneW) && upSrc.h == std::max(16, sceneH);
@@ -4716,8 +4732,13 @@ struct App {
         CookFrame(vp, fc);   // the cooked world: rooms seen through the portals, rooms' reflection pictures, baked lamp light
         PrepareLights(fc);   // light objects, strips, glowing emitters, shots, glowing blocks (for objects) - sorted into clusters
         ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
+        UploadChunkOrigins();
         auto drawChunks = [&](const XMMATRIX& m, int pass, bool counting, bool cave = false) {   // cave: the camera's own view (cave culling applies)
             UnbindModelMat();   // (the world's blocks: no model's material left over)
+            {   // the world's chunks: their origins from one list (slot 1), so a chunk is one draw - no constant buffer to fill each time
+                ChunkCB id{ { 0, 0, 0, 1 } }; ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &id, 0, 0);   // (w 1: the world's blocks - their lamp light is baked in)
+                UINT st = 16, of = 0; ctx->IASetVertexBuffers(1, 1, instBuf.GetAddressOf(), &st, &of);
+            }
             if (shadowPart != 2) for (auto& kv : gpu) {
                 const GpuChunk& g = kv.second; UINT n = pass == 0 ? g.nO : pass == 1 ? g.nC : g.nW; if (!n) continue;
                 if (cave && caveOn && !CaveIn(kv.first)) { if (counting) caveHidden++; continue; }
@@ -4728,11 +4749,10 @@ struct App {
                 float ox = (float)(kv.first.x * (double)CS - camPos.x), oy = (float)(kv.first.y * (double)CS - camPos.y), oz = (float)(kv.first.z * (double)CS - camPos.z);
                 if (drawMaxDist > 0 && (ox + 8) * (ox + 8) + (oy + 8) * (oy + 8) + (oz + 8) * (oz + 8) > drawMaxDist * drawMaxDist) continue;
                 if (!BoxVisible(m, ox, oy, oz, (float)CS)) continue;
-                ChunkCB cc{ { ox, oy, oz, 1 } }; ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);   // w 1: the world's blocks (their lamp light is baked in)
                 UINT stride = sizeof(Vtx), off = 0;
                 ctx->IASetVertexBuffers(0, 1, pass == 0 ? g.vbO.GetAddressOf() : pass == 1 ? g.vbC.GetAddressOf() : g.vbW.GetAddressOf(), &stride, &off);
                 ctx->IASetIndexBuffer(pass == 0 ? g.ibO.Get() : pass == 1 ? g.ibC.Get() : g.ibW.Get(), DXGI_FORMAT_R32_UINT, 0);
-                ctx->DrawIndexed(n, 0, 0); if (counting) drawnChunks += pass == 0;
+                ctx->DrawIndexedInstanced(n, 1, 0, 0, g.inst); if (counting) drawnChunks += pass == 0;
             }
             if (cave && pass == 0 && lodK && shadowPart != 2)   // the far copies
                 for (const LodDraw& d : lodDraw) {
@@ -4740,11 +4760,11 @@ struct App {
                     double sz = (double)(CS << d.k);
                     float ox = (float)(d.g.x * sz - camPos.x), oy = (float)(d.g.y * sz - camPos.y), oz = (float)(d.g.z * sz - camPos.z);
                     if (!BoxVisible(m, ox, oy, oz, (float)sz)) continue;
-                    ChunkCB lc{ { ox, oy, oz, 1 } }; ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &lc, 0, 0);
                     UINT stride = sizeof(Vtx), off = 0;
                     ctx->IASetVertexBuffers(0, 1, it->second.vb.GetAddressOf(), &stride, &off); ctx->IASetIndexBuffer(it->second.ib.Get(), DXGI_FORMAT_R32_UINT, 0);
-                    ctx->DrawIndexed(it->second.n, 0, 0); if (counting) lodDrawn++;
+                    ctx->DrawIndexedInstanced(it->second.n, 1, 0, 0, it->second.inst); if (counting) lodDrawn++;
                 }
+            { ID3D11Buffer* nb = nullptr; UINT st = 16, of = 0; ctx->IASetVertexBuffers(1, 1, &nb, &st, &of); }   // (objects next: their own ChunkCB)
             { XMFLOAT4X4 mm; XMStoreFloat4x4(&mm, m); std::memcpy(cullVP, &mm, sizeof cullVP); cullOn = true; cullCount = counting; cullCave = cave && caveOn; }
             for (size_t oi = 0; oi < objects.size(); oi++) {   // objects: same shaders, turned and sized; platforms where they are on their path
                 if ((int)oi == movingObj) continue;
@@ -9392,7 +9412,7 @@ struct App {
     }
     // ---- far copies of the world (levels of detail): past the render distance, groups of 2, 4, 8 chunks a side drawn as blocks of 2, 4, 8
     std::unordered_map<I3, LodSummary, I3Hash> lodSum;   // each chunk boiled down (cells of 2 x 2 x 2)
-    struct LodGroup { ComPtr<ID3D11Buffer> vb, ib; UINT n = 0; bool built = false; };
+    struct LodGroup { ComPtr<ID3D11Buffer> vb, ib; UINT n = 0; bool built = false; UINT inst = 0; };
     std::unordered_map<I3, LodGroup, I3Hash> lodGroups[4];   // [level]
     std::unordered_set<I3, I3Hash> lodDirty[4];             // groups to build (again)
     std::unordered_set<I3, I3Hash> chunkMeshed;             // chunks whose mesh has arrived (empty or not)
