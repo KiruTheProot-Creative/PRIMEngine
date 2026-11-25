@@ -9276,14 +9276,15 @@ struct App {
     mc::Screen* CurScreen() { return curScreen >= 0 && curScreen < (int)screens.screens.size() ? &screens.screens[curScreen] : nullptr; }
 
     // ---- pictures, GIFs and videos (in the game's "screens" folder)
-    struct PicTex { media::Frames f; std::vector<ComPtr<ID3D11ShaderResourceView>> tex; bool failed = false; };
+    struct PicTex { media::Frames f; std::vector<ComPtr<ID3D11ShaderResourceView>> tex; bool failed = false, told = false; double failedAt = 0; };   // told: its error shown once (it is looked for again now and then)
     std::map<std::string, PicTex> pics;
     ID3D11ShaderResourceView* PictureAt(const std::string& file, double t, bool loop, int* w = nullptr, int* h = nullptr) {
         if (file.empty()) return nullptr;
         PicTex& p = pics[file];
+        if (p.tex.empty() && p.failed && uiClock - p.failedAt > 3) p.failed = false;   // (missing: looked for again every few seconds - a picture put in the folder later shows up)
         if (p.tex.empty() && !p.failed) {
             std::string err; media::init();
-            if (!media::loadPicture(ScreensDir() + "/" + file, p.f, err)) { p.failed = true; Toast(err); return nullptr; }
+            if (!media::loadPicture(ScreensDir() + "/" + file, p.f, err)) { if (!p.told) Toast(err); p.told = true; p.failed = true; p.failedAt = uiClock; return nullptr; }
             for (auto& fr : p.f.rgba) {
                 D3D11_TEXTURE2D_DESC d{}; d.Width = (UINT)p.f.w; d.Height = (UINT)p.f.h; d.MipLevels = 1; d.ArraySize = 1; d.Format = DXGI_FORMAT_R8G8B8A8_UNORM; d.SampleDesc.Count = 1; d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
                 D3D11_SUBRESOURCE_DATA sd{ fr.data(), (UINT)p.f.w * 4, 0 }; ComPtr<ID3D11Texture2D> tx; ComPtr<ID3D11ShaderResourceView> sv;
