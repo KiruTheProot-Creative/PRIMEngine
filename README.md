@@ -441,6 +441,24 @@ The game's own flat screens outside of play. A new game starts with four: **Main
 - **Music** per screen: keep what is playing (the Options screen keeps the main menu's), play this (it loops, fading in over the seconds you set), or silence. WAV, **MP3, M4A, WMA, FLAC** (through Windows). Starting a game fades it out. Options > Sound > **Music**.
 - **Splash screens and intros**: a screen can go on by itself after some seconds or when its video ends, to the screen you pick (or the main menu); a key or click skips (if allowed). The screen with the role **Splash (shown first)** is where F6 starts; the one with the role **Intro of a new game** (the story) comes after picking an empty file, then the game. Picking a file (or Continue) plays the **game-start sound** and fades to black - as long as the sound, or the seconds you set - and the game fades in. Items have **timing**: when they appear and go, how long they fade, **typed text** letter by letter with a sound per letter (like Super Metroid's intro), slow drifting and growing. New games come with a **Splash** (the game's name fading in and out, before the main menu) and a **Story** (typed text, after picking an empty file); "+ Screen" adds more.
 
+### The Phazon intro (Screens > + Screen > Phazon intro)
+
+A ready-made splash in four parts (seconds into the screen; move them to fit your music):
+1. **0-16 s:** a Phazon-blue lens glow fades in. "KIRU PRESENTS", "A FAN GAME", "based on NINTENDO", "METROID PRIME 4" and "LEVIATHAN" type in with a blinking cursor and made-up scanner code around them, and glitch streaks run across.
+2. **16-25 s:** ink blots bloom and deepen, a darkness swallows everything, and the picture shakes.
+3. **25.5-29.5 s:** a corrupted planet ("Corrupted world" in the Planets editor) burns in out of the black.
+4. **30.5 s on:** the title fades in, the subtitle comes in with a scan line and glitches, and "PRESS {START} TO START" breathes. The screen waits there for a key; a key before that skips to the title.
+
+Adding it makes it your splash (the old splash stays as your own screen). The title texts are placeholders for your logo pictures.
+
+What it is made of (all usable on any screen):
+- **Text:** *Cursor* (a bar after the typed letters), *Scanner code* (a tag, a line above and a line under, in the Dim colour; the same text always gets the same code), *Breathes* (slowly brighter and dimmer).
+- **Comes in with** (texts, pictures, panels): Fade, **Scan** (a bright line in the Accent colour sweeps across and reveals it), **Glitch** (slices jump about and settle), **Scan + glitch**.
+- **Timed compositor nodes** (seconds into the screen): **Lens Glow** (a soft oval with a dark spot), **Glitch** (rows jump sideways, light streaks), **Ink Spread** (blots, deep ink, then a darkness from the middle; "gone at" brings the picture back), **Burn In** (the picture burns in out of the black with a glowing edge).
+- **Screen:** *Shake* (from, for, how strong: it swells and settles) and *Then waits: press start*.
+- **Planets:** *Phazon corruption*: dark patches streaked across the surface, with glowing veins that pulse (colours, how much, veins, pulses a second).
+- **{start}** / **{START}** in a text: the key that starts (Enter / ENTER).
+
 ### The stack (intros: Screens > Layout, "Made as: a stack")
 
 An intro (like Super Metroid's) is a list of steps, played top to bottom; the timing works itself out:

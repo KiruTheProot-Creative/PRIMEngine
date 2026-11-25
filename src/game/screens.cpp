@@ -77,10 +77,10 @@ const NodeInfo& nodeInfo(NodeType t) {
           3, { "Edge", "Middle", "Dark spot" }, { 0x1A5CFF, 0xA8D6FF, 0x0630A8 }, 0, {}, "A soft glowing oval behind everything, like looking through a visor out of focus. Timed: seconds into the screen (ends at 0: stays)." },
         { "Glitch", "Distort", 1, { "Image" }, 6, { "Amount", "Starts at", "Ends at", "Bands", "Shift", "Speed" }, { 0.6f, 0, 0, 48, 24, 14 }, { 0, 0, 0, 4, 0, 1 }, { 1, 120, 120, 200, 200, 60 },
           1, { "Streaks" }, { 0x6FC4FF }, 0, {}, "Rows of the picture jump sideways now and then, thin streaks of light run across. Timed (ends at 0: stays)." },
-        { "Ink Spread", "Stylize", 1, { "Image" }, 6, { "Starts at", "Takes", "Gone at", "Size", "Seed", "Darkness from" }, { 16, 8, 25, 1.2f, 1, 0.55f }, { 0, 0.1f, 0, 0.2f, 0, 0 }, { 120, 30, 120, 5, 100, 0.95f },
+        { "Ink Spread", "Stylize", 1, { "Image" }, 6, { "Starts at", "Takes", "Gone at", "Size", "Seed", "Darkness from" }, { 16, 8, 25, 1.2f, 1, 0.66f }, { 0, 0.1f, 0, 0.2f, 0, 0 }, { 120, 30, 120, 5, 100, 0.95f },
           3, { "Ink", "Deep ink", "Darkness" }, { 0x2A6BFF, 0x0A1A8C, 0x000000 }, 0, {}, "Ink blots bloom over the picture, deepen, and a darkness swallows it all. Timed; gone at: the picture is back (0: stays dark)." },
-        { "Burn In", "Stylize", 1, { "Image" }, 6, { "Starts at", "Takes", "Size", "Edge", "Glow", "Seed" }, { 25.5f, 4, 2.5f, 0.12f, 1.5f, 3 }, { 0, 0.1f, 0.2f, 0.01f, 0, 0 }, { 120, 30, 8, 0.5f, 4, 100 },
-          2, { "Edge", "Hot" }, { 0x3E8CFF, 0xDDF2FF }, 0, {}, "The picture burns into view out of the black, a glowing edge eating the dark. Before it starts: black. Timed." },
+        { "Burn In", "Stylize", 1, { "Image" }, 6, { "Starts at", "Takes", "Size", "Edge", "Glow", "Seed" }, { 25.5f, 4, 2.5f, 0.05f, 1.3f, 3 }, { 0, 0.1f, 0.2f, 0.01f, 0, 0 }, { 120, 30, 8, 0.5f, 4, 100 },
+          2, { "Edge", "Hot" }, { 0x2E78FF, 0xA8DCFF }, 0, {}, "The picture burns into view out of the black, a glowing edge eating the dark. Before it starts: black. Timed." },
     };
     static_assert(sizeof(info) / sizeof(info[0]) == (size_t)NodeType::COUNT, "one entry per node type");
     int i = (int)t; return info[i >= 0 && i < (int)NodeType::COUNT ? i : 2];

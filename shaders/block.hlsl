@@ -2977,10 +2977,10 @@ float4 PS_Comp(BlitOut i) : SV_Target
         float p = compAlong(gCP0.x, gCP0.y);
         float2 d = (uv - 0.5) * float2(gCSize.x * gCSize.w, 1), q = d * max(gCP0.w, 0.1) * 3 + gCP1.x * 7.31;
         float n = compFbm(q + float2(0, t * 0.04)), n2 = compFbm(q * 1.9 + 31.7 - float2(t * 0.03, 0));
-        float thr = lerp(1.0, 0.38, saturate(p / 0.75));   // more and more blots
+        float thr = lerp(0.84, 0.36, saturate(p / 0.8));   // more and more blots
         float blot = smoothstep(thr, thr + 0.07, n * 0.75 + n2 * 0.35);
         float dk0 = clamp(gCP1.y, 0, 0.95), deep = smoothstep(thr + 0.12, thr + 0.2, n * 0.75 + n2 * 0.35) * saturate((p - dk0 * 0.6) / 0.3);
-        float field = n * 0.45 + (1 - length(d) * 1.25) * 0.75;   // the darkness grows out of the middle
+        float field = n * 0.75 + n2 * 0.2 + (1 - length(d) * 1.25) * 0.5;   // the darkness grows out of the deepest ink, from the middle
         float hThr = lerp(1.3, -0.45, saturate((p - dk0) / max(1 - dk0, 0.05)));
         float hole = smoothstep(hThr, hThr + 0.05, field), rim = smoothstep(hThr - 0.09, hThr, field) * (1 - hole);
         float3 c = a.rgb * lerp(1, gCC0.rgb * 1.15, blot * 0.85);
@@ -2995,7 +2995,7 @@ float4 PS_Comp(BlitOut i) : SV_Target
         float f = compFbm(d * max(gCP0.z, 0.2) + gCP1.y * 3.7) * 0.55 + (1 - length(d) * 1.1) * 0.45;   // (from the middle, raggedly)
         float thr = lerp(1.05, -0.35, p), ew = max(gCP0.w, 0.005);
         float shown = smoothstep(thr, thr + 0.015, f), edge = smoothstep(thr - ew, thr, f) * (1 - shown);
-        float hot = pow(saturate(edge), 3);
+        float hot = pow(saturate(edge), 6); edge *= edge;
         float3 c = a.rgb * shown + (gCC0.rgb * edge + gCC1.rgb * hot) * gCP1.x;
         return float4(c, a.a); }
     case 25: { float4 c = compA(uv - gCExtra.yz); return float4(c.rgb * gCP0.x, c.a); }   // the output: pushed (the shake), faded
