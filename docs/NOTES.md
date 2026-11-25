@@ -32,3 +32,8 @@
   - cheaper motion blur and fitting to the screen
   - rooms and far copies on worker threads
   - VR: the second eye reusing more of the first eye's work, and fewer pixels at the lens edges
+
+## Menus (the Corruption layout)
+- Not done yet: Metroid Prime 3's Extras had tokens and unlocking (credits for the Bonus Gallery and the rest). The gallery shows every picture in its folder for now; unlocking by scans or completion could come later.
+- Buttons can't come in with a scan or glitch yet (only texts, pictures and panels can): drawing one several times would count its click area twice.
+- Hovering a box could also play a short scan sound, like MP3. The screen's own *Picking* sound already does this when one is set.

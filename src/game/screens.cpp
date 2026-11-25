@@ -394,18 +394,18 @@ Screen presetPhazonIntro() {
 // The scan screens (main menu, files, a file's menu, codex): the planet seen as a scan - a negative, toned cyan to white - through a visor
 // frame (double lines, notches, ticks, crosshairs), choices in [ brackets ] in boxes whose fill fades to the right, scan lines fanning out
 // from the planet. The plate screens (extras, options, credits, the gallery): rings turning in the dark behind a metal frame with a title tab.
-static const uint32_t CR_TEXT = 0xEAF6F8, CR_LINE = 0xD2F0F6, CR_FILL = 0x072029, CR_PICK = 0x5FD8F0, CR_DIM = 0x8CB4C0, CR_BEZEL = 0x0B1E26;
+static const uint32_t CR_TEXT = 0xEAF6F8, CR_LINE = 0xD2F0F6, CR_FILL = 0x072029, CR_PICK = 0x2E9ED0, CR_DIM = 0x8CB4C0, CR_BEZEL = 0x12303A;
 static const uint32_t CR_METAL = 0x2A3238, CR_MLINE = 0xC8D4DA, CR_MFILL = 0x0A1216;
 static ScreenItem crFrame(const std::string& title, int style) {
     ScreenItem f; f.name = "Frame"; f.kind = ScreenItemKind::Frame; f.x = 0; f.y = 0; f.w = 1; f.h = 1; f.text = title; f.style = style; f.font = 1; f.weight = 0.1f;
-    f.textSize = style ? 0.04f : 0.036f; f.col.text = CR_TEXT; f.col.accent = style ? CR_MLINE : CR_LINE; f.col.fill = style ? CR_METAL : CR_BEZEL; f.col.fillAlpha = style ? 1.f : 0.9f;
+    f.textSize = style ? 0.04f : 0.036f; f.col.text = CR_TEXT; f.col.accent = style ? CR_MLINE : CR_LINE; f.col.fill = style ? CR_METAL : CR_BEZEL; f.col.fillAlpha = style ? 1.f : 0.86f;
     f.col.dim = CR_DIM; f.col.picked = style ? 0x0C1418 : CR_PICK; f.rounding = 0; f.border = 2; return f;
 }
 static ScreenItem crButton(const std::string& label, ScreenAct a, float x, float y, float w, float h, bool plate = false) {
     ScreenItem b; b.name = label; b.kind = ScreenItemKind::Button; b.text = "[ " + label + " ]"; b.act = a; b.x = x; b.y = y; b.w = w; b.h = h;
     b.textSize = std::min(0.036f, h * 0.45f); b.align = 0; b.font = 1; b.weight = 0.1f; b.outline = 0.25f; b.outlineColor = 0x03121A;
-    b.style = 1; b.filled = true; b.frame = true; b.rounding = 0; b.border = 1.5f; b.fillFade = plate ? 0.25f : 0.8f; b.pickFill = 0.55f;
-    b.col.text = CR_TEXT; b.col.accent = plate ? CR_MLINE : CR_LINE; b.col.picked = CR_PICK; b.col.fill = plate ? CR_MFILL : CR_FILL; b.col.fillAlpha = plate ? 0.62f : 0.75f; b.col.dim = CR_DIM;
+    b.style = 1; b.filled = true; b.frame = true; b.rounding = 0; b.border = 1.5f; b.fillFade = plate ? 0.25f : 0.92f; b.pickFill = 0.5f;
+    b.col.text = CR_TEXT; b.col.accent = plate ? CR_MLINE : CR_LINE; b.col.picked = CR_PICK; b.col.fill = plate ? CR_MFILL : CR_FILL; b.col.fillAlpha = plate ? 0.62f : 0.72f; b.col.dim = CR_DIM;
     return b;
 }
 static void crScan(Screen& s) {   // the planet as a scan: a negative, toned from deep teal to white, softened, grainy; the items over it; a little glare, faint lines, darker edges
@@ -457,9 +457,9 @@ static Screen presetCorruption(ScreenRole r) {
     case ScreenRole::Files: {   // "Select File": the three files in rows like the buttons
         s.name = "Files"; crScan(s);
         s.items.push_back(crFrame("Select File", 0));
-        ScreenItem f; f.name = "Save files"; f.kind = ScreenItemKind::SaveSlots; f.x = L; f.y = 0.205f; f.w = W; f.h = 0.5f; f.slots = 3; f.cards = 0; f.style = 1; f.fillFade = 0.7f; f.pickFill = 0.55f;
+        ScreenItem f; f.name = "Save files"; f.kind = ScreenItemKind::SaveSlots; f.x = L; f.y = 0.205f; f.w = W; f.h = 0.5f; f.slots = 3; f.cards = 0; f.style = 1; f.fillFade = 0.85f; f.pickFill = 0.5f;
         f.textSize = 0.03f; f.font = 1; f.border = 1.5f; f.rounding = 0; f.outline = 0.25f; f.outlineColor = 0x03121A;
-        f.col.text = CR_TEXT; f.col.accent = CR_LINE; f.col.picked = CR_PICK; f.col.fill = CR_FILL; f.col.fillAlpha = 0.75f; f.col.dim = 0xB8D6DE; s.items.push_back(f);
+        f.col.text = CR_TEXT; f.col.accent = CR_LINE; f.col.picked = CR_PICK; f.col.fill = CR_FILL; f.col.fillAlpha = 0.72f; f.col.dim = 0xB8D6DE; s.items.push_back(f);
         s.items.push_back(crButton("Back", ScreenAct::Back, L, 0.74f, 0.24f, 0.075f));
         break; }
     case ScreenRole::FileMenu: {   // the picked file: play it, its codex, options; what is in it on the right

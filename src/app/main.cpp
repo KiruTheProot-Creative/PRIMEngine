@@ -10898,7 +10898,7 @@ struct App {
         // ---- the scan visor (Metroid Prime 3's menus): a dark bezel, double lines with notches top and bottom, a ruler, ticks, hatched bars, crosshairs, readouts
         const float X0 = 0.0375f, X1 = 0.9625f, Y0 = 0.025f, Y1 = 0.965f, L = 0.092f, R = 0.908f, T1 = 0.164f, T0 = 0.132f, B1 = 0.91f, B0 = 0.882f;
         dl->AddRectFilled(a, P(1, Y0), black); dl->AddRectFilled(P(0, Y1), b, black); dl->AddRectFilled(P(0, Y0), P(X0, Y1), black); dl->AddRectFilled(P(X1, Y0), P(1, Y1), black);
-        ImU32 bz = CorCol(col.fill, col.fillAlpha * al), bzHi = CorCol(CorMix(col.fill, col.accent, 0.22f), col.fillAlpha * al);
+        ImU32 bz = CorCol(col.fill, col.fillAlpha * al), bzHi = CorCol(CorMix(col.fill, col.accent, 0.3f), col.fillAlpha * al);
         dl->AddRectFilled(P(X0, Y0), P(X1, T0), bz); dl->AddRectFilled(P(X0, B1), P(X1, Y1), bz);
         dl->AddRectFilledMultiColor(P(X0, T0), P(L, B1), bzHi, bz, bz, bzHi); dl->AddRectFilledMultiColor(P(R, T0), P(X1, B1), bz, bzHi, bzHi, bz);   // (the sides lit a little from outside)
         quad(P(L, T0), P(0.15f, T0), P(0.135f, T1), P(L, T1), bz); quad(P(0.65f, T0), P(R, T0), P(R, T1), P(0.665f, T1), bz);
@@ -10958,11 +10958,11 @@ struct App {
         for (int k = N - 1; k >= 0; k--) {
             float r0 = R * (0.07f + 0.088f * k), r1 = r0 + R * (0.05f + 0.014f * (k % 3)), h = CorHash(k * 7 + 3), depth = 1 - (float)k / N;
             float ang = (k % 2 ? 1.f : -1.f) * spd * t * (1.1f - 0.06f * k) + k * 0.7f;
-            uint32_t shade = CorMix(col.fill, col.accent, 0.15f + 0.45f * depth * (0.5f + h));
-            int segs = 4 + k * 3 + (int)(h * 4); float gap = 0.12f + 0.25f * CorHash(k * 13 + 1);
+            uint32_t shade = CorMix(col.fill, col.accent, 0.1f + 0.32f * depth * (0.5f + h));
+            int segs = 4 + k * 3 + (int)(h * 4); float gap = 0.04f + 0.16f * CorHash(k * 13 + 1);
             for (int s = 0; s < segs; s++) {
                 float a0 = ang + s * 6.2831853f / segs, a1 = a0 + 6.2831853f / segs * (1 - gap * (0.6f + 0.8f * CorHash(k * 31 + s)));
-                sector(r0, r1, a0, a1, CorCol(shade, (0.55f + 0.4f * depth) * al));
+                sector(r0, r1, a0, a1, CorCol(shade, (0.4f + 0.45f * depth) * al));
             }
             dl->AddCircle(c, r0, CorCol(col.accent, (0.12f + 0.25f * depth) * al), 96, th);
             dl->AddCircle(c, r1, CorCol(col.dim, 0.6f * al), 96, th * 1.5f);

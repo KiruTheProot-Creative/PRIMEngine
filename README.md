@@ -463,6 +463,26 @@ What it is made of (all usable on any screen):
 - **Planets:** *Phazon corruption*: dark patches streaked across the surface, with glowing veins that pulse (colours, how much, veins, pulses a second).
 - **{start}** / **{START}** in a text: the key that starts (Enter / ENTER).
 
+### Layouts: the Corruption menu (Screens > Ready-made look... > Corruption)
+
+A **layout** puts a whole menu in at once, in one look. **Corruption** is made like Metroid Prime 3's menus:
+- **Main menu**, **Files** ("Select File"), **File menu** and **Codex**: your planet seen as a scan (a negative, toned from deep teal to white, softened and grainy) through a **scan visor frame**. The frame has double lines with notches at the top and bottom, a ruler, ticks and hatched bars down the sides, little corner arrows, faint crosshairs, the title top left and a "Target V1 A1" readout. Every choice is a box in **[ brackets ]** ("[ Play Game ]", "[ Options ]", "[ Extras ]", "[ Back ]"), its fill fading to the right so the scan shows through. The picked one lights up blue, with a shimmer passing over it. **Scan lines** fan out from the planet to the left, a dot at each end.
+- **Options**, **Credits**, **Extras** and a **Concept Gallery**: **metal plates** (bolts, a grille, a title tab top left) over **rings turning** in the dark, with a glow in the middle.
+- A **visor pointer**: a glowing blue arrowhead instead of the mouse's arrow. It fades away when the mouse rests.
+
+How the flow works: the splash goes on to the **main menu**. **[ Play Game ]** leads to Select File, a file leads to its menu (**[ Continue ]** / **[ Start ]**, **[ Codex ]**, **[ Options ]**), and **[ Back ]** on the main menu goes back to the **title** (the splash at its end, waiting for start). **[ Extras ]** has **[ Concept Gallery ]** and **[ Credits ]**.
+
+Putting a layout in keeps each screen's name, music and sounds. Missing screens are added. Your screens file is backed up first (**screens.before-corruption.txt** in the game's folder). **Visor** puts PRIMEngine's own look back the same way.
+
+The pieces work on any screen too:
+- **Visor frame** item: *Scan visor* or *Metal plate*. Its text is the title (tokens like {file} work).
+- **Scan target lines**: fan out from the item's top right corner (put that on what is being scanned). They grow out one after another.
+- **Turning rings**: rings around the item's middle, every other one turning the other way. Make it bigger than the screen for a tunnel.
+- **Picture gallery**: the pictures (PNG, JPG, GIF) in a folder inside **screens** (the Concept Gallery's: **screens/gallery**), one at a time. Left / right or the arrows flip them. The file name is the caption (_ and - become spaces), with "3 / 12" beside it. Pictures put in later show up within a few seconds.
+- Buttons and save-file rows: *Look* > **Corruption box**. Panels, buttons and rows: **Fill fades right**.
+- Buttons: *Does* > **Title** (back to the splash's end).
+- Screens: *Sound & timing* > **Visor pointer**.
+
 ### The stack (intros: Screens > Layout, "Made as: a stack")
 
 An intro (like Super Metroid's) is a list of steps, played top to bottom; the timing works itself out:
