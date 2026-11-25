@@ -10935,8 +10935,9 @@ struct App {
             tx += font->CalcTextSizeA(ts, FLT_MAX, 0, title.c_str()).x / W + 0.02f;
         }
         dl->AddRectFilled(P(tx, 0.085f), P(tx + 0.04f, 0.097f), CorCol(col.accent, 0.28f * al));   // a small plate after the title
-        float small = H * 0.0145f; CodeBits cb = codeBits(title.empty() ? std::string("SCAN") : title);
-        TextIn(dl, font, cb.top + "   " + cb.tag, small, P(0.55f, 0.065f), P(0.89f, 0.09f), 2, CorCol(col.dim, 0.55f * al));
+        float tiny = H * 0.0145f;   // (not "small": a Windows macro)
+        CodeBits cb = codeBits(title.empty() ? std::string("SCAN") : title);
+        TextIn(dl, font, cb.top + "   " + cb.tag, tiny, P(0.55f, 0.065f), P(0.89f, 0.09f), 2, CorCol(col.dim, 0.55f * al));
         {   // the readout bottom right: "Target  V1 v  A1 v"
             float ry0 = 0.912f, ry1 = 0.936f, rs = H * 0.0165f; ImU32 rc = CorCol(col.dim, 0.85f * al);
             TextIn(dl, font, "Target", rs, P(0.668f, ry0), P(0.73f, ry1), 0, rc); TextIn(dl, font, "V1", rs, P(0.735f, ry0), P(0.76f, ry1), 0, rc); TextIn(dl, font, "A1", rs, P(0.79f, ry0), P(0.815f, ry1), 0, rc);
@@ -11023,7 +11024,7 @@ struct App {
             dl->AddTriangleFilled(ImVec2(mx + dir * z, my), ImVec2(mx - dir * z * 0.6f, my - z * 1.2f), ImVec2(mx - dir * z * 0.6f, my + z * 1.2f), CorCol(sel ? col.picked : col.accent, (sel ? 1.f : 0.7f) * al));
         }
     }
-    double pointerMovedAt = -100; ImVec2 pointerLast(-1, -1);
+    double pointerMovedAt = -100; ImVec2 pointerLast{ -1, -1 };
     void DrawPointer(ImDrawList* dl, int W, int H) {   // the visor pointer: a glowing blue arrowhead where the mouse is (it fades when the mouse rests a while)
         ImGuiIO& io = ImGui::GetIO(); ImVec2 m(io.MousePos.x - vx, io.MousePos.y - vy);
         if (m.x != pointerLast.x || m.y != pointerLast.y) { pointerLast = m; pointerMovedAt = uiClock; }
