@@ -202,7 +202,7 @@ struct alignas(16) FrameCB {
 };
 struct alignas(16) ChunkCB { float offset[4]; float ax[4] = { 1, 0, 0, 0 }, ay[4] = { 0, 1, 0, 0 }, az[4] = { 0, 0, 1, 0 }; };   // axes: objects are turned and sized
 
-struct GpuChunk { ComPtr<ID3D11Buffer> vbO, ibO, vbC, ibC, vbW, ibW; UINT nO = 0, nC = 0, nW = 0; UINT inst = 0; };   // inst: its place in this frame's origins list
+struct GpuChunk { ComPtr<ID3D11Buffer> vbO, ibO, vbC, ibC, vbW, ibW; UINT nO = 0, nC = 0, nW = 0; UINT inst = 0; };   // inst: its place in the origins list (its own while it exists)
 struct ModelGpu { std::vector<std::pair<I3, GpuChunk>> parts; std::vector<Box3> boxes, boxesStill; bool mesh = false; ComPtr<ID3D11ShaderResourceView> tex; };   // boxesStill: without the moving parts (an open door)
 struct alignas(16) PreviewCB { float vp[16]; float light[4]; };
 struct alignas(16) MapCB { float vp[16]; float eye[4]; float center[4]; float mode[4]; };   // the map hologram
@@ -1161,14 +1161,14 @@ struct App {
         world = std::make_unique<World>(reg); info.applyGenerator(world->gen, reg);
         world->store = std::make_unique<RegionStore>(worldDir + "/region");
         workers = std::make_unique<MeshWorkers>(reg); workers->start(Threads());
-        player = info.player; history.clear(); gpu.clear(); instDirty = true; meshWait.clear(); tidyUnloads = ~0ull; latestSeq.clear(); LodClear(); chunkMeshed.clear(); lampCache.clear(); lavaTops.clear();
+        player = info.player; history.clear(); gpu.clear(); meshWait.clear(); tidyUnloads = ~0ull; latestSeq.clear(); LodClear(); chunkMeshed.clear(); lampCache.clear(); lavaTops.clear();
         LoadWorldObjects(); LoadRooms(); selStage = 0;
         for (int i = 0; i < 9; i++) {   // "stone" or "stone@stairs"
             std::string e = info.hotbar[i], shape; size_t at = e.rfind('@'); if (at != std::string::npos) { shape = e.substr(at + 1); e = e.substr(0, at); }
             BlockId t = reg.find(e); hotbar[i] = t ? makeBlock(t, Shapes::get().find(shape)) : AIR;
         }
         hotSel = info.hotSel;
-        envState.update(0, player.eye(), info.environment, info.zones, true); UpdateLook(0, true); opaqueCache.clear(); skyVolValid = false; skyVolSig = 0; ResetVoxels();
+        envState.update(0, player.eye(), info.environment, info.zones, true); UpdateLook(0, true); opaqueCache.clear(); skyLut.clear(); skyMasks.clear(); skyVolValid = false; skyVolSig = 0; ResetVoxels();
         { int wi = findWeather(info.weather); weather = Weather{}; weather.set(wi < 0 ? 1 : wi, true); weather.autoChange = info.autoWeather;
           weather.wetness = weather.now.rain > 0.1f ? 1.f : 0.f; weather.snowCover = weather.now.snow > 0.1f ? 1.f : 0.f; weather.seed((uint32_t)std::time(nullptr)); }
         screen = Screen::Game; paused = false; inventory = false; autosave = 0; if (!travelling) playMode = false; sel = Sel::World;
@@ -1186,7 +1186,7 @@ struct App {
     }
     void CloseWorld() {   // the project stays open
         if (playMode && !travelling) StopPlay();
-        SaveWorld(); rooms = RoomSet{}; roomPeek.clear(); roomReveals.clear(); workers.reset(); world.reset(); gpu.clear(); meshWait.clear(); tidyUnloads = ~0ull; latestSeq.clear(); LodClear(); chunkMeshed.clear(); lampCache.clear(); lavaTops.clear(); Capture(false);
+        SaveWorld(); rooms = RoomSet{}; roomPeek.clear(); roomReveals.clear(); workers.reset(); world.reset(); gpu.clear(); skyMasks.clear(); meshWait.clear(); tidyUnloads = ~0ull; latestSeq.clear(); LodClear(); chunkMeshed.clear(); lampCache.clear(); lavaTops.clear(); Capture(false);
     }
     std::string CurrentWorld() const { return world ? fs::path(worldDir).filename().string() : ""; }
     void RenameWorld(const std::string& from, const std::string& to) {
@@ -1423,6 +1423,7 @@ struct App {
         if (world->liquidTimer > 0.3) world->liquidTimer = 0;
         envState.update(dt, player.eye(), info.environment, info.zones); UpdateLook(dt, false); UpdateCamOpen(dt);
         CpuMark("game: lamp lights"); UpdateLampProxies(dt);
+        bgLeft = 3.0;   // this frame's time for background work (rooms, meshing, uploads, far copies) - shared, so they don't all pile up in one frame
         CpuMark("game: rooms"); UpdateRooms(dt);
         CpuMark("game: ambient lights"); UpdateAmbient(dt);
         CpuMark("game: sky volume"); UpdateSkyVolume();
@@ -2130,7 +2131,9 @@ struct App {
     // block sideways or up, through anything that is not a full opaque block) - so it goes round corners and into cave
     // mouths but never through walls. Worked out on another thread when blocks change or you move far.
     static constexpr int SVX = 96, SVY = 64, SVZ = 96;
-    struct SkyVolJob { I3 origin; std::vector<uint8_t> solid, topOpen, out; };
+    struct SkyMask { const Chunk* ch = nullptr; uint32_t ver = 0; std::array<uint64_t, CS3 / 64> m{}; };   // which blocks of a chunk keep the sky out (made again only when it changed)
+    std::unordered_map<I3, SkyMask, I3Hash> skyMasks; std::vector<uint8_t> skyLut;
+    struct SkyVolJob { I3 origin; std::vector<uint8_t> solid, topOpen, out; std::vector<std::pair<I3, std::array<uint64_t, CS3 / 64>>> masks; };
     std::future<std::shared_ptr<SkyVolJob>> skyVolFuture; bool skyVolBusy = false, skyVolValid = false; I3 skyVolOrigin{ 0, 0, 0 };
     uint64_t skyVolSig = 0; int skyVolTick = 0;
     ComPtr<ID3D11Texture3D> skyVolTex; ComPtr<ID3D11ShaderResourceView> skyVolSRV; ComPtr<ID3D11SamplerState> sampSkyVol;
@@ -2178,16 +2181,17 @@ struct App {
         if (!moved && sig == skyVolSig) return;
         skyVolSig = sig;
         auto job = std::make_shared<SkyVolJob>(); job->origin = o; job->solid.assign((size_t)SVX * SVY * SVZ, 0); job->topOpen.assign((size_t)SVX * SVZ, 1);
-        for (int cy = (int)std::floor(o.y / (double)CS); cy <= (int)std::floor((o.y + SVY + 63) / (double)CS); cy++)   // the blocks (and 64 more above, for the columns)
+        if (skyLut.size() != world->reg.count()) { skyLut.resize(world->reg.count()); for (size_t i = 0; i < skyLut.size(); i++) skyLut[i] = BlocksSky((BlockId)i) ? 1 : 0; }
+        for (int cy = (int)std::floor(o.y / (double)CS); cy <= (int)std::floor((o.y + SVY + 63) / (double)CS); cy++)   // each chunk's mask (kept: only changed ones are made again) - the blocks themselves are gone through in the worker
             for (int cz = (int)std::floor(o.z / (double)CS); cz <= (int)std::floor((o.z + SVZ - 1) / (double)CS); cz++)
                 for (int cx = (int)std::floor(o.x / (double)CS); cx <= (int)std::floor((o.x + SVX - 1) / (double)CS); cx++) {
                     const Chunk* c = world->chunk({ cx, cy, cz }); if (!c || c->nonAir == 0) continue;
-                    for (int ly = 0; ly < CS; ly++) { int y = cy * CS + ly - o.y; if (y < 0 || y >= SVY + 64) continue;
-                        for (int lz = 0; lz < CS; lz++) { int z = cz * CS + lz - o.z; if (z < 0 || z >= SVZ) continue;
-                            for (int lx = 0; lx < CS; lx++) { int x = cx * CS + lx - o.x; if (x < 0 || x >= SVX) continue;
-                                if (!BlocksSky(c->b[(ly * CS + lz) * CS + lx])) continue;
-                                if (y < SVY) job->solid[((size_t)z * SVY + y) * SVX + x] = 1; else job->topOpen[(size_t)z * SVX + x] = 0;
-                            } } }
+                    SkyMask& sm = skyMasks[{ cx, cy, cz }];
+                    if (sm.ch != c || sm.ver != c->version + 1) {
+                        sm.ch = c; sm.ver = c->version + 1; sm.m.fill(0);
+                        for (int i = 0; i < CS3; i++) { BlockId b = c->b[i]; if (b != AIR && b < skyLut.size() && skyLut[b]) sm.m[i >> 6] |= 1ull << (i & 63); }
+                    }
+                    job->masks.push_back({ { cx, cy, cz }, sm.m });
                 }
         for (const Box3& b : world->sightBlockers) {   // shut doors: every cell they reach into keeps the sky out
             const double g = 0.02;
@@ -2200,6 +2204,15 @@ struct App {
         }
         skyVolBusy = true;
         skyVolFuture = std::async(std::launch::async, [job]() {
+            { const I3 o = job->origin;   // the chunks' blocks (the shut doors are in already)
+              for (auto& cm : job->masks) { int cx = cm.first.x, cy = cm.first.y, cz = cm.first.z;
+                for (int ly = 0; ly < CS; ly++) { int y = cy * CS + ly - o.y; if (y < 0 || y >= SVY + 64) continue;
+                    for (int lz = 0; lz < CS; lz++) { int z = cz * CS + lz - o.z; if (z < 0 || z >= SVZ) continue;
+                        for (int lx = 0; lx < CS; lx++) { int x = cx * CS + lx - o.x; if (x < 0 || x >= SVX) continue;
+                            int i = (ly * CS + lz) * CS + lx; if (!(cm.second[i >> 6] >> (i & 63) & 1)) continue;
+                            if (y < SVY) job->solid[((size_t)z * SVY + y) * SVX + x] = 1; else job->topOpen[(size_t)z * SVX + x] = 0;
+                        } } } }
+              job->masks.clear(); job->masks.shrink_to_fit(); }
             const int N = SVX * SVY * SVZ; job->out.assign(N, 0); std::vector<uint8_t> L(N, 0); std::vector<int> q[16];
             auto at = [](int x, int y, int z) { return (z * SVY + y) * SVX + x; };
             for (int z = 0; z < SVZ; z++) for (int x = 0; x < SVX; x++) {   // straight down from the open sky: full light
@@ -4247,7 +4260,7 @@ struct App {
         std::vector<std::pair<int, I3>> todo; todo.reserve(world->dirty.size());
         for (auto& c : world->dirty) { int dx = c.x - pc.x, dy = c.y - pc.y, dz = c.z - pc.z; todo.push_back({ dx * dx + dy * dy + dz * dz, c }); }
         std::sort(todo.begin(), todo.end(), [](auto& a, auto& b) { return a.first < b.first; });
-        int budget = 160; auto t0 = std::chrono::steady_clock::now(); double lim = loadingOn ? 30.0 : 1.5;   // (copying a chunk and its sides out costs: by the clock too - it was up to 11 ms)
+        int budget = 160; auto t0 = std::chrono::steady_clock::now(); double lim = loadingOn ? 30.0 : BgLimit(1.5);   // (copying a chunk and its sides out costs: by the clock too - it was up to 11 ms)
         for (auto& t : todo) {
             if (budget-- <= 0) break;
             if ((budget & 7) == 0 && std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() > lim) break;
@@ -4255,7 +4268,11 @@ struct App {
             MeshInput in; if (!gatherInput(*world, t.second, in)) continue;
             in.seq = ++seqCounter; latestSeq[t.second] = in.seq; workers->submit(std::move(in));
         }
+        BgSpent(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
     }
+    double bgLeft = 3.0;
+    double BgLimit(double own) const { return std::max(0.25, std::min(own, bgLeft)); }   // (each job: its own limit, or what is left of the frame's share - a little at least, so all move on)
+    void BgSpent(double ms) { bgLeft -= ms; }
     void UploadInto(ComPtr<ID3D11Buffer>& b, UINT bind, const void* data, UINT bytes) {   // (a chunk built again: into its old buffer when it fits - no new buffer each time)
         if (b) {
             D3D11_BUFFER_DESC od; b->GetDesc(&od);
@@ -4276,7 +4293,7 @@ struct App {
     std::deque<ChunkMesh> meshWait; uint64_t tidyUnloads = ~0ull;   // meshWait: built, not taken in yet (a few milliseconds a frame)
     void CollectMeshes() {
         { std::vector<ChunkMesh> got; workers->collect(got); for (auto& m : got) meshWait.push_back(std::move(m)); }
-        auto t0 = std::chrono::steady_clock::now(); double lim = loadingOn ? 40.0 : 2.0;   // (a lot finished at once: the rest next frame - it was up to 7 ms)
+        auto t0 = std::chrono::steady_clock::now(); double lim = loadingOn ? 40.0 : BgLimit(2.0);   // (a lot finished at once: the rest next frame - it was up to 7 ms)
         while (!meshWait.empty()) {
             if (std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() > lim) break;
             ChunkMesh m = std::move(meshWait.front()); meshWait.pop_front();
@@ -4285,17 +4302,20 @@ struct App {
             if (m.see == SEE_ALL) chunkSee.erase(m.pos); else chunkSee[m.pos] = m.see;   // cave culling: its sides joined by air
             if (chunkMeshed.insert(m.pos).second) lodSelGen++;
             if (lodK) if (const Chunk* ch = world->chunk(m.pos)) LodSetSummary(m.pos, lodSummarize(reg, *ch));   // (changed blocks: the far copies again)
-            if (m.opaque.empty() && m.cutout.empty() && m.water.empty()) { if (gpu.erase(m.pos)) instDirty = true; continue; }
-            auto gi = gpu.try_emplace(m.pos); if (gi.second) instDirty = true; GpuChunk& g = gi.first->second; Upload(m.opaque, g.vbO, g.ibO, g.nO); Upload(m.cutout, g.vbC, g.ibC, g.nC); Upload(m.water, g.vbW, g.ibW, g.nW);
+            if (m.opaque.empty() && m.cutout.empty() && m.water.empty()) { auto e = gpu.find(m.pos); if (e != gpu.end()) { InstFree(e->second.inst); gpu.erase(e); } continue; }
+            auto gi = gpu.try_emplace(m.pos); GpuChunk& g = gi.first->second;
+            if (gi.second) { g.inst = InstAlloc(); InstSet(g.inst, m.pos.x * (double)CS, m.pos.y * (double)CS, m.pos.z * (double)CS); } Upload(m.opaque, g.vbO, g.ibO, g.nO); Upload(m.cutout, g.vbC, g.ibC, g.nC); Upload(m.water, g.vbW, g.ibW, g.nW);
             if (meshesChanged.size() < 512) meshesChanged.push_back(V3{ (m.pos.x + 0.5) * CS, (m.pos.y + 0.5) * CS, (m.pos.z + 0.5) * CS });   // (lamps near it: their shadow maps again)
         }
+        BgSpent(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
         if (world->unloads == tidyUnloads) return;   // (nothing let go since the last tidy-up: no need to look through everything)
-        tidyUnloads = world->unloads; lodSelGen++;
-        for (auto it = gpu.begin(); it != gpu.end();) { if (!world->chunk(it->first)) { latestSeq.erase(it->first); it = gpu.erase(it); instDirty = true; } else ++it; }
+        tidyUnloads = world->unloads; lodSelForce = true;
+        for (auto it = gpu.begin(); it != gpu.end();) { if (!world->chunk(it->first)) { latestSeq.erase(it->first); InstFree(it->second.inst); it = gpu.erase(it); } else ++it; }
         for (auto it = chunkSee.begin(); it != chunkSee.end();) { if (!world->chunk(it->first)) it = chunkSee.erase(it); else ++it; }
         for (auto it = chunkMeshed.begin(); it != chunkMeshed.end();) { if (!world->chunk(*it)) it = chunkMeshed.erase(it); else ++it; }
         for (auto it = lampCache.begin(); it != lampCache.end();) { if (!world->chunk(it->first)) it = lampCache.erase(it); else ++it; }
         for (auto it = lavaTops.begin(); it != lavaTops.end();) { if (!world->chunk(it->first)) it = lavaTops.erase(it); else ++it; }
+        for (auto it = skyMasks.begin(); it != skyMasks.end();) { if (!world->chunk(it->first)) it = skyMasks.erase(it); else ++it; }
     }
     // ---- cave culling: which chunks can be seen from the camera (through air, never back toward it)
     std::unordered_map<I3, uint16_t, I3Hash> chunkSee;   // chunks with something solid in them (the rest: SEE_ALL)
@@ -4527,27 +4547,40 @@ struct App {
     }
     // ---- this frame's origins of every world chunk and far copy, relative to the camera, in one list (slot 1 of the block vertex shaders)
     ComPtr<ID3D11Buffer> instBuf; UINT instCap = 0; std::vector<float> instCpu;
-    bool instDirty = true, instAnchorOk = false; V3 instAnchor{ 0, 0, 0 }; float instOff[3] = { 0, 0, 0 };   // instDirty: a chunk or far group came or went (origins written again)
+    bool instAll = true, instAnchorOk = false; V3 instAnchor{ 0, 0, 0 }; float instOff[3] = { 0, 0, 0 };   // instAll: every origin to be sent again
+    std::vector<UINT> instFree; UINT instNext = 0, instLo = UINT_MAX, instHi = 0;   // each chunk / far group keeps its own place in the origins list (freed when it goes)
+    UINT InstAlloc() {
+        UINT i; if (!instFree.empty()) { i = instFree.back(); instFree.pop_back(); } else i = instNext++;
+        if (instCpu.size() < (size_t)instNext * 4) instCpu.resize(std::max<size_t>((size_t)instNext * 4, instCpu.size() * 2));
+        return i;
+    }
+    void InstSet(UINT i, double x, double y, double z) {   // (its origin from the anchor; only this one is sent)
+        float* o = &instCpu[(size_t)i * 4]; o[0] = (float)(x - instAnchor.x); o[1] = (float)(y - instAnchor.y); o[2] = (float)(z - instAnchor.z); o[3] = 1;
+        instLo = std::min(instLo, i); instHi = std::max(instHi, i + 1);
+    }
+    void InstFree(UINT i) { instFree.push_back(i); }
+    void InstReset() { instFree.clear(); instNext = 0; instAll = true; instLo = UINT_MAX; instHi = 0; }
     void UploadChunkOrigins() {   // each chunk's and far group's origin, from a fixed anchor near you (the anchor -> camera step goes in ChunkCB):
-        // written again only when chunks or groups come or go, or you move far from the anchor - not every frame (that was ~1 ms)
+        // sent only for the ones that came (each keeps its place), all of them only when you move far from the anchor - not every frame
         V3 da = camPos - instAnchor;
         if (!instAnchorOk || std::fabs(da.x) > 1024 || std::fabs(da.y) > 1024 || std::fabs(da.z) > 1024) {
-            instAnchor = { std::floor(camPos.x / 256) * 256, std::floor(camPos.y / 256) * 256, std::floor(camPos.z / 256) * 256 }; instAnchorOk = true; instDirty = true;
+            instAnchor = { std::floor(camPos.x / 256) * 256, std::floor(camPos.y / 256) * 256, std::floor(camPos.z / 256) * 256 }; instAnchorOk = true;
+            for (auto& kv : gpu) InstSet(kv.second.inst, kv.first.x * (double)CS, kv.first.y * (double)CS, kv.first.z * (double)CS);
+            for (int k = 1; k <= 3; k++) { double sz = (double)(CS << k); for (auto& kv : lodGroups[k]) InstSet(kv.second.inst, kv.first.x * sz, kv.first.y * sz, kv.first.z * sz); }
+            instAll = true;
         }
         instOff[0] = (float)(instAnchor.x - camPos.x); instOff[1] = (float)(instAnchor.y - camPos.y); instOff[2] = (float)(instAnchor.z - camPos.z);
-        if (!instDirty && instBuf) return;
-        instDirty = false;
-        size_t n = gpu.size(); for (int k = 1; k <= 3; k++) n += lodGroups[k].size();
-        instCpu.resize(std::max<size_t>(1, n) * 4); UINT i = 0;
-        for (auto& kv : gpu) { float* o = &instCpu[(size_t)i * 4]; o[0] = (float)(kv.first.x * (double)CS - instAnchor.x); o[1] = (float)(kv.first.y * (double)CS - instAnchor.y); o[2] = (float)(kv.first.z * (double)CS - instAnchor.z); o[3] = 1; kv.second.inst = i++; }
-        for (int k = 1; k <= 3; k++) { double sz = (double)(CS << k);
-            for (auto& kv : lodGroups[k]) { float* o = &instCpu[(size_t)i * 4]; o[0] = (float)(kv.first.x * sz - instAnchor.x); o[1] = (float)(kv.first.y * sz - instAnchor.y); o[2] = (float)(kv.first.z * sz - instAnchor.z); o[3] = 1; kv.second.inst = i++; } }
-        if (!instBuf || i > instCap) {
-            instCap = std::max<UINT>(i * 3 / 2, 4096); instBuf.Reset();
-            D3D11_BUFFER_DESC d{}; d.ByteWidth = instCap * 16; d.Usage = D3D11_USAGE_DYNAMIC; d.BindFlags = D3D11_BIND_VERTEX_BUFFER; d.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+        if (!instBuf || instNext > instCap) {
+            instCap = std::max<UINT>(instNext * 3 / 2, 8192); instBuf.Reset(); instAll = true;
+            D3D11_BUFFER_DESC d{}; d.ByteWidth = instCap * 16; d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_VERTEX_BUFFER;
             HR(dev->CreateBuffer(&d, nullptr, &instBuf));
         }
-        if (i) Upload(instBuf.Get(), instCpu.data(), (size_t)i * 16);
+        if (instAll) { instLo = 0; instHi = instNext; instAll = false; }
+        if (instLo < instHi) {
+            D3D11_BOX bx{ instLo * 16, 0, 0, instHi * 16, 1, 1 };
+            ctx->UpdateSubresource(instBuf.Get(), 0, &bx, &instCpu[(size_t)instLo * 4], 0, 0);
+        }
+        instLo = UINT_MAX; instHi = 0;
     }
     void RenderWorld(ID3D11RenderTargetView* outScreen) {
         // render scale: drawn at the world's own size into a picture of that size, fitted to the screen at the end (the HUD over it at the screen's size)
@@ -9451,8 +9484,10 @@ struct App {
     int LodReach() const { return lodK > 0 ? settings.renderDistance << lodK : settings.renderDistance; }   // chunks, sideways
     int LodVert() const { return settings.verticalDistance * 2 + 2; }                                        // chunks up and down
     void LodClear() {
-        lodSum.clear(); lodGenMemo.clear(); for (int k = 0; k < 4; k++) { lodGroups[k].clear(); lodDirty[k].clear(); } instDirty = true;
-        lodQueue.clear(); lodQueuePos = 0; lodQueueAt = { INT_MIN, 0, 0 }; lodQueueR = -1; lodDraw.clear(); lodCovered.clear(); lodCleanAt = { INT_MIN, 0, 0 }; lodRoundMoved = false; lodPending.clear(); lodCleaning = false; lodCleanBucket = 0; lodSelGen++;
+        for (int k = 0; k < 4; k++) for (auto& kv : lodGroups[k]) InstFree(kv.second.inst);
+        lodSum.clear(); lodGenMemo.clear(); for (int k = 0; k < 4; k++) { lodGroups[k].clear(); lodDirty[k].clear(); }
+        if (gpu.empty()) InstReset();   // (nothing left: start the list over)
+        lodQueue.clear(); lodQueuePos = 0; lodQueueAt = { INT_MIN, 0, 0 }; lodQueueR = -1; lodDraw.clear(); lodCovered.clear(); lodCleanAt = { INT_MIN, 0, 0 }; lodRoundMoved = false; lodPending.clear(); lodCleaning = false; lodCleanBucket = 0; lodSelGen++; lodSelForce = true;
     }
     void LodSetSummary(I3 c, LodSummary&& sm) {
         auto it = lodSum.find(c);
@@ -9510,11 +9545,11 @@ struct App {
                 lodCleaning = false;
                 for (int k = 1; k <= 3; k++) for (auto it = lodGroups[k].begin(); it != lodGroups[k].end();) {
                     int sz = 1 << k; double x = (it->first.x + 0.5) * sz - cc.x, z = (it->first.z + 0.5) * sz - cc.z;
-                    if (x * x + z * z > (R + 2.0 * sz + 8) * (R + 2.0 * sz + 8)) { it = lodGroups[k].erase(it); instDirty = true; lodSelGen++; } else ++it;
+                    if (x * x + z * z > (R + 2.0 * sz + 8) * (R + 2.0 * sz + 8)) { InstFree(it->second.inst); it = lodGroups[k].erase(it); lodSelForce = true; } else ++it;
                 }
             }
         }
-        double sumMs = loadingOn ? 40 : 1.0, buildMs = loadingOn ? 80 : 2.0;   // (flying around: a little each frame - the edge comes in a bit slower, no spikes)   // (the loading screen: as much as a frame can take)
+        double sumMs = loadingOn ? 40 : std::min(1.0, BgLimit(3.0)), buildMs = loadingOn ? 80 : BgLimit(3.0);   // (flying around: a little each frame - the edge comes in a bit slower, no spikes)   // (the loading screen: as much as a frame can take)
         for (int n = 0; lodQueuePos < lodQueue.size(); n++) {   // boil down: a copy of each chunk (from disk or made), never loaded into the world
             if ((n & 255) == 0 && ms() >= sumMs) break;
             const I3& o = lodQueue[lodQueuePos++]; I3 c{ cc.x + o.x, cc.y + o.y, cc.z + o.z }; if (lodSum.count(c)) continue;
@@ -9561,7 +9596,8 @@ struct App {
                 if (!ready) continue;   // (its chunks aren't all boiled down yet)
                 lodGroupCells(reg, k, g, get, cells);
                 MeshData md; lodMesh(reg, k, cells, md);
-                auto li = lodGroups[k].try_emplace(g); if (li.second) instDirty = true; LodGroup& lg = li.first->second; Upload(md, lg.vb, lg.ib, lg.n); lg.built = true; lodSelGen++;
+                auto li = lodGroups[k].try_emplace(g); LodGroup& lg = li.first->second;
+                if (li.second) { lg.inst = InstAlloc(); double gs = (double)(CS << k); InstSet(lg.inst, g.x * gs, g.y * gs, g.z * gs); } Upload(md, lg.vb, lg.ib, lg.n); lg.built = true; lodSelGen++;
                 lodDirty[k].erase(g);
             }
         }
@@ -9598,14 +9634,17 @@ struct App {
         int m = 1 << (k - 1);   // the level-1 groups it covers: their chunks are not drawn
         for (int y = 0; y < m; y++) for (int z = 0; z < m; z++) for (int x = 0; x < m; x++) lodCovered.insert({ g.x * m + x, g.y * m + y, g.z * m + z });
     }
+    bool lodSelForce = true; int lodSelWait = 0;   // lodSelForce: something went (its place must be filled now); lodSelWait: frames since the last choice
     uint64_t lodSelGen = 1, lodSelDone = 0; I3 lodSelAt{ INT_MIN, 0, 0 }; int lodSelKey[3] = { -1, -1, -1 }; std::vector<LodDraw> lodDrawSel;   // the choice is kept while nothing changed
     void LodSelect() {   // which far groups this frame (the camera's own view)
         if (!lodK || !world) { lodDraw.clear(); lodCovered.clear(); lodDrawSel.clear(); lodSelDone = 0; return; }
         I3 cc = chunkOf(ifloor(camPos.x), ifloor(camPos.y), ifloor(camPos.z));
-        if (lodSelDone == lodSelGen && cc == lodSelAt && lodSelKey[0] == lodK && lodSelKey[1] == settings.renderDistance && lodSelKey[2] == settings.verticalDistance) {
+        lodSelWait++;
+        bool same = cc == lodSelAt && lodSelKey[0] == lodK && lodSelKey[1] == settings.renderDistance && lodSelKey[2] == settings.verticalDistance && !lodSelForce;
+        if (same && (lodSelDone == lodSelGen || lodSelWait < 8)) {   // (new far groups / chunks built: shown within 8 frames - it was a new choice nearly every frame while flying)
             lodDraw = lodDrawSel; return;   // (the same chunk, nothing built or meshed since: the same choice - this was ~1 ms every frame)
         }
-        lodSelDone = lodSelGen; lodSelAt = cc; lodSelKey[0] = lodK; lodSelKey[1] = settings.renderDistance; lodSelKey[2] = settings.verticalDistance;
+        lodSelDone = lodSelGen; lodSelAt = cc; lodSelForce = false; lodSelWait = 0; lodSelKey[0] = lodK; lodSelKey[1] = settings.renderDistance; lodSelKey[2] = settings.verticalDistance;
         lodDraw.clear(); lodCovered.clear();
         int K = lodK, sz = 1 << K, reach = LodReach(), V = LodVert();
         for (int gy = floorDiv(cc.y - V, sz); gy <= floorDiv(cc.y + V, sz); gy++)
@@ -9880,8 +9919,10 @@ struct App {
         std::vector<I3> seeds = RoomSet::doorSeeds(w.doors);
         roomSeedT += dt; if (roomSeedT > 0.5) { roomSeedT = 0; seeds.push_back(RoomProbe()); }   // (where you are: twice a second)
         World* wp = world.get();
-        rooms.maxMs = loadingOn ? 60.0 : 1.0;   // (in play and in the editor: a millisecond a frame at most - it was up to 16)
+        rooms.maxMs = loadingOn ? 60.0 : BgLimit(1.0);   // (in play and in the editor: a millisecond a frame at most - it was up to 16)
+        auto rt0 = std::chrono::steady_clock::now();
         rooms.tick(w, seeds, [wp](I3 c) -> uint32_t { const Chunk* ch = wp->chunk(c); return ch ? ch->version : 0; }, check, loadingOn ? 400000 : playMode ? 6000 : 10000);   // (a chunk as it was read: 0, loaded or not - flying around changes nothing)   // (about a millisecond a frame)
+        BgSpent(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - rt0).count());
         if (check && !playMode) {   // rooms that aren't closed any more, found by themselves, nothing set on them: one of each leak is enough
             std::set<uint32_t> inStations; for (const WorldObject& o : objects) for (uint32_t r : o.map.rooms) inStations.insert(r);
             std::map<std::tuple<int, int, int>, uint32_t> firstOf; std::vector<uint32_t> drop;
