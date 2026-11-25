@@ -9463,8 +9463,8 @@ struct App {
         }
         if (!(cc == lodQueueAt)) {   // moved to another chunk
             I3 old = lodQueueAt; lodQueueAt = cc;
-            bool near = old.x != INT_MIN && std::abs(cc.x - old.x) <= 4 && std::abs(cc.z - old.z) <= 4 && std::abs(cc.y - old.y) <= 4;
-            if (lodQueuePos < lodQueue.size() || !near) { lodRoundMoved = true; lodPending.clear(); }   // (a round still going, or a jump: the whole round again after it)
+            bool shortHop = old.x != INT_MIN && std::abs(cc.x - old.x) <= 4 && std::abs(cc.z - old.z) <= 4 && std::abs(cc.y - old.y) <= 4;
+            if (lodQueuePos < lodQueue.size() || !shortHop) { lodRoundMoved = true; lodPending.clear(); }   // (a round still going, or a jump: the whole round again after it)
             else {   // only what just came into reach: the new edge of the circle (and new layers above/below)
                 int R1 = R + 1;
                 auto inOld = [&](int x, int y, int z) { int dx = x - old.x, dz = z - old.z, dy = y - old.y; return dx * dx + dz * dz <= R1 * R1 && std::abs(dy) <= V; };
