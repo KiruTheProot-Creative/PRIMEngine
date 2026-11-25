@@ -18387,6 +18387,8 @@ struct App {
         }
         if (!bench.gpuSum.empty()) res += "graphics card, per frame:\n" + top(bench.gpuSum, 8, (double)std::max<size_t>(1, bench.gms.size()));
         if (!bench.vr) { snprintf(b, sizeof b, "drawn at %d x %d\n", BENCH_RES[benchRes][0], BENCH_RES[benchRes][1]); res += b; }
+        { SYSTEM_POWER_STATUS ps{}; if (GetSystemPowerStatus(&ps) && ps.ACLineStatus == 0) res += "POWER: ON BATTERY - laptops slow down a lot unplugged (these numbers are not comparable)\n";
+          else if (ps.ACLineStatus == 1) res += "power: plugged in\n"; }
         snprintf(b, sizeof b, "settings: render distance %d, distant detail %d, render scale %.2f, shadows %d (%d), lamp shadows %d at %d, reflections %d, frame cap %d, vsync %d",
                  settings.renderDistance, settings.distantDetail, settings.renderScale, settings.shadowQuality, settings.shadowRes, settings.lightShadows, lshRes, settings.reflections, settings.maxFps, settings.vsync ? 1 : 0);
         res += b;
