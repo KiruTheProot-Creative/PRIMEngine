@@ -721,6 +721,15 @@ struct App {
             HR(dev->CreateDepthStencilView(shadowTex.Get(), &dv, &cascDSV[i]));
         }
         shadowDSV = cascDSV[0];
+        {   // the kept still part of maps 1..3 (same size: copied over the live map, then what moves drawn on top)
+            cascStatic.Reset(); for (auto& v : cascStaticDSV) v.Reset(); for (bool& o : cascStaticOk) o = false;
+            D3D11_TEXTURE2D_DESC sd = d; sd.ArraySize = CASCADES - 1; sd.BindFlags = D3D11_BIND_DEPTH_STENCIL;
+            if (SUCCEEDED(dev->CreateTexture2D(&sd, nullptr, &cascStatic)))
+                for (int i = 1; i < CASCADES; i++) {
+                    D3D11_DEPTH_STENCIL_VIEW_DESC dv{}; dv.Format = DXGI_FORMAT_D32_FLOAT; dv.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2DARRAY; dv.Texture2DArray.FirstArraySlice = i - 1; dv.Texture2DArray.ArraySize = 1;
+                    HR(dev->CreateDepthStencilView(cascStatic.Get(), &dv, &cascStaticDSV[i]));
+                }
+        }
         D3D11_SHADER_RESOURCE_VIEW_DESC sv{}; sv.Format = DXGI_FORMAT_R32_FLOAT; sv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY; sv.Texture2DArray.MipLevels = 1; sv.Texture2DArray.ArraySize = CASCADES;
         HR(dev->CreateShaderResourceView(shadowTex.Get(), &sv, &shadowSRV));
     }
@@ -4665,8 +4674,8 @@ struct App {
         int wantShadow = settings.shadowQuality <= 0 ? 0 : std::clamp(settings.shadowRes, 512, 4096);
         if (wantShadow != shadowSize) MakeShadowMap(wantShadow);
         bool shadows = shadowSize > 0 && fc.sunDir[3] > 0;
-        XMMATRIX svp = XMMatrixIdentity(); XMMATRIX cvp[CASCADES]; bool cascUpd[CASCADES] = { false, false, false, false };
-        if (!shadows) for (bool& v : cascValid) v = false;
+        XMMATRIX svp = XMMatrixIdentity(); XMMATRIX cvp[CASCADES]; bool cascUpd[CASCADES] = { false, false, false, false }, cascRedo[CASCADES] = { false, false, false, false };   // cascRedo: its kept still part drawn again
+        if (!shadows) { for (bool& v : cascValid) v = false; for (bool& o : cascStaticOk) o = false; }
         if (vrEye != 1) shadowTick++;   // (once a frame - in VR the first eye's: the staggered maps keep their rhythm)
         if (shadows) {   // four cascades around the camera: sharp near you, coarser farther out (blended where they meet)
             float reach = std::clamp(settings.shadowDistance, 24.f, 512.f);
@@ -4686,13 +4695,26 @@ struct App {
                 V3 mvd = camPos - cascCam[c]; double moved = std::sqrt(mvd.x * mvd.x + mvd.y * mvd.y + mvd.z * mvd.z);
                 bool sunMoved = cascSun[c].x * L.x + cascSun[c].y * L.y + cascSun[c].z * L.z < 0.99998;
                 bool shareEye = vrEye == 1 && cascValid[c] && cascSize == shadowSize && cascR0[c] == R && !sunMoved;   // (VR: the second eye sees the first eye's maps - drawn once)
-                cascUpd[c] = !shareEye && (!cascValid[c] || cascSize != shadowSize || cascR0[c] != R || moved > R * 0.2 || sunMoved || (int)(shadowTick % (uint64_t)period[c]) == phase[c]);
-                if (cascUpd[c]) { XMStoreFloat4x4(&cascVPs[c], cvp[c]); cascCam[c] = camPos; cascR0[c] = R; cascSun[c] = L; cascValid[c] = true; }
+                bool mustMove = !cascValid[c] || cascSize != shadowSize || cascR0[c] != R || moved > R * 0.2 || sunMoved;   // (the map itself: drawn again where you are now)
+                bool timer = (int)(shadowTick % (uint64_t)period[c]) == phase[c];
+                if (c == 0 || !cascStatic) {   // the near map: all of it, every frame (as before)
+                    cascUpd[c] = !shareEye && (mustMove || timer); cascRedo[c] = cascUpd[c];
+                } else {   // the far maps: their blocks kept - drawn again only when you moved far, the sun moved or blocks changed in them; on their beat, only what moves
+                    bool blocks = !cascStaticOk[c] || meshesChanged.size() >= 512;
+                    auto inMap = [&](const V3& p) { V3 d = p - cascCam[c]; double ax = dot(d, xx), ay = dot(d, yx); return std::fabs(ax) < R + CS * 1.5 && std::fabs(ay) < R + CS * 1.5; };
+                    for (size_t i = 0; i < meshesChanged.size() && !blocks; i++) blocks = inMap(meshesChanged[i]);
+                    for (size_t i = 0; i < shadowLodChanged.size() && !blocks; i++) blocks = inMap(shadowLodChanged[i]);
+                    cascRedo[c] = !shareEye && (mustMove || blocks);
+                    cascUpd[c] = !shareEye && (cascRedo[c] || timer);
+                }
+                if (cascRedo[c]) { XMStoreFloat4x4(&cascVPs[c], cvp[c]); cascCam[c] = camPos; cascR0[c] = R; cascSun[c] = L; cascValid[c] = true; }
                 V3 dc = camPos - cascCam[c];
                 XMMATRIX now = XMMatrixTranslation((float)dc.x, (float)dc.y, (float)dc.z) * XMLoadFloat4x4(&cascVPs[c]);   // (today's camera-relative position -> that map)
                 XMStoreFloat4x4(&fc.cascVP[c], now); fc.cascR[c] = R; fc.cascTexel[c] = (float)texel;
                 if (c == CASCADES - 1) svp = now;
+                cvp[c] = now;   // (drawn with the map's own placing: moving things on a kept map land where its blocks are)
             }
+            if (vrEye != 1) shadowLodChanged.clear();
             cascSize = shadowSize;
             if (shotDir.size() && !cascLogged) { cascLogged = true; char b[160]; snprintf(b, sizeof b, "shadow cascades: %.0f / %.0f / %.0f / %.0f blocks, near pixel %.3f blocks", fc.cascR[0], fc.cascR[1], fc.cascR[2], fc.cascR[3], fc.cascTexel[0]); Log(b); }
             fc.shadowInfo[0] = 1.f / shadowSize; fc.shadowInfo[1] = fc.cascR[CASCADES - 1]; fc.shadowInfo[2] = fc.cascTexel[0] * 1.5f; fc.shadowInfo[3] = 1.6f;
@@ -4878,9 +4900,22 @@ struct App {
             for (int c = 0; c < CASCADES; c++) {
                 if (!cascUpd[c]) continue;   // (kept from a frame before)
                 FrameCB cf = fc; XMStoreFloat4x4(&cf.shadowVP, cvp[c]); ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &cf, 0, 0);
+                ID3D11PixelShader* cut = c >= 2 ? nullptr : psShadowCut.Get();   // (far maps: leaves and glass shadow whole - their holes are smaller than a pixel there)
+                if (c > 0 && cascStatic) {   // the kept still part (drawn again only when needed), copied in, what moves on top
+                    if (cascRedo[c]) {
+                        ctx->OMSetRenderTargets(0, nullptr, cascStaticDSV[c].Get()); ctx->ClearDepthStencilView(cascStaticDSV[c].Get(), D3D11_CLEAR_DEPTH, 1.f, 0);
+                        shadowPart = 1; ctx->PSSetShader(nullptr, nullptr, 0); drawChunks(cvp[c], 0, false); ctx->PSSetShader(cut, nullptr, 0); drawChunks(cvp[c], 1, false);
+                        cascStaticOk[c] = true; cascDrawn++;
+                    }
+                    ctx->OMSetRenderTargets(0, nullptr, nullptr);
+                    ctx->CopySubresourceRegion(shadowTex.Get(), (UINT)c, 0, 0, 0, cascStatic.Get(), (UINT)(c - 1), nullptr);
+                    ctx->OMSetRenderTargets(0, nullptr, cascDSV[c].Get());
+                    shadowPart = 2; ctx->PSSetShader(nullptr, nullptr, 0); drawChunks(cvp[c], 0, false); ctx->PSSetShader(cut, nullptr, 0); drawChunks(cvp[c], 1, false);
+                    shadowPart = 0; continue;
+                }
                 ctx->OMSetRenderTargets(0, nullptr, cascDSV[c].Get()); ctx->ClearDepthStencilView(cascDSV[c].Get(), D3D11_CLEAR_DEPTH, 1.f, 0);
                 ctx->PSSetShader(nullptr, nullptr, 0); drawChunks(cvp[c], 0, false);
-                ctx->PSSetShader(c >= 2 ? nullptr : psShadowCut.Get(), nullptr, 0); drawChunks(cvp[c], 1, false);   // (far maps: leaves and glass shadow whole - their holes are smaller than a pixel there)
+                ctx->PSSetShader(cut, nullptr, 0); drawChunks(cvp[c], 1, false);
                 cascDrawn++;
             }
             ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &fc, 0, 0);
@@ -9644,7 +9679,8 @@ struct App {
                 lodGroupCells(reg, k, g, get, cells);
                 MeshData md; lodMesh(reg, k, cells, md);
                 auto li = lodGroups[k].try_emplace(g); LodGroup& lg = li.first->second;
-                if (li.second) { lg.inst = InstAlloc(); double gs = (double)(CS << k); InstSet(lg.inst, g.x * gs, g.y * gs, g.z * gs); } Upload(md, lg.vb, lg.ib, lg.n); lg.built = true; lodSelGen++;
+                if (li.second) { lg.inst = InstAlloc(); double gs = (double)(CS << k); InstSet(lg.inst, g.x * gs, g.y * gs, g.z * gs); }
+                if (shadowLodChanged.size() < 4096) { double gs = (double)(CS << k); shadowLodChanged.push_back({ (g.x + 0.5) * gs, (g.y + 0.5) * gs, (g.z + 0.5) * gs }); } Upload(md, lg.vb, lg.ib, lg.n); lg.built = true; lodSelGen++;
                 lodDirty[k].erase(g);
             }
         }
@@ -18140,6 +18176,8 @@ struct App {
     // ================================================================== frame
     float dynScale = 1.f; double dynT = 0;
     float drawMaxDist = 0; int lshFacesDrawn = 0, lshFacesShown = 0;   // (drawing chunks: only this near, 0 all)
+    ComPtr<ID3D11Texture2D> cascStatic; ComPtr<ID3D11DepthStencilView> cascStaticDSV[4]; bool cascStaticOk[4] = { false, false, false, false };   // the far maps' blocks and still things, kept (slice c-1 for map c)
+    std::vector<V3> shadowLodChanged;   // far groups built since the sun's maps last looked (their blocks are in the far maps)
     XMFLOAT4X4 cascVPs[4]; V3 cascCam[4]; V3 cascSun[4]; float cascR0[4] = { 0, 0, 0, 0 }; bool cascValid[4] = { false, false, false, false }; int cascSize = 0, cascDrawn = 0, cascDrawnShown = 0;   // the sun's maps: when each was drawn
     ComPtr<ID3D11Texture2D> primePrevZ; ComPtr<ID3D11ShaderResourceView> primePrevZSRV; bool primePrevZOk = false;   // PrimeScaler: the frame before's depth   // auto resolution: a share of the render scale, and the time since it last changed
     void FrameBody(double dt) {   // everything but showing the picture (screenshots grab it before)
