@@ -2844,21 +2844,21 @@ float4 PS_Planet(BlitOut i) : SV_Target
     float r2 = dot(p, p);
     float3 L = normalize(gPlSun.xyz);
     float3 ax = gPlAxis.xyz;
-    if (gPlTend.w > 0 && r2 > 0.8)   // Phazon tendrils reaching out from behind the planet, waving (the planet hides their roots)
+    if (gPlTend.w > 0 && r2 > 0.8)   // Phazon tendrils reaching reach from behind the planet, waving (the planet hides their roots)
     {
         float rr = sqrt(r2), ang = atan2(p.y, p.x), n = clamp(gPlTend.x, 1, 16), len = max(gPlTend.y, 0.05), t = gPlA.y * gPlTend.z;
         float glow = 0;
         [loop] for (int k = 0; k < (int)n; k++)
         {
             float h = plHash(float3(k * 1.37, gPlA.w, 3.1)), h2 = plHash(float3(k * 2.11, gPlA.w, 7.7));
-            float a0 = (k + h * 0.8) * 6.2831853 / n, L2 = len * (0.55 + 0.75 * h2), out = rr - 0.92;   // its angle, its length, how far out this spot is
-            if (out > L2 || out < 0) continue;
-            float u = out / L2;   // 0 at the root .. 1 at the tip
-            float wave = sin(out * 4.5 - t * 2.1 + k * 1.7) * 0.22 * u + sin(out * 9 - t * 3.3 + k) * 0.06 * u;   // (waves more toward the tip)
+            float a0 = (k + h * 0.8) * 6.2831853 / n, L2 = len * (0.55 + 0.75 * h2), reach = rr - 0.92;   // its angle, its length, how far reach this spot is
+            if (reach > L2 || reach < 0) continue;
+            float u = reach / L2;   // 0 at the root .. 1 at the tip
+            float wave = sin(reach * 4.5 - t * 2.1 + k * 1.7) * 0.22 * u + sin(reach * 9 - t * 3.3 + k) * 0.06 * u;   // (waves more toward the tip)
             float da = ang - a0 - wave; da = da - 6.2831853 * round(da / 6.2831853);
             float w = 0.11 * (1 - u * 0.85) / max(rr, 0.5);   // (tapers to the tip)
             float body = exp(-da * da / (w * w)) * (1 - smoothstep(0.7, 1, u));
-            glow += body * (0.6 + 0.4 * sin(t * 3 + out * 12 - k));
+            glow += body * (0.6 + 0.4 * sin(t * 3 + reach * 12 - k));
         }
         col += gPlVein.rgb * glow * gPlTend.w * 1.4 + float3(0.6, 0.8, 1) * pow(saturate(glow), 3) * gPlTend.w * 0.6;
     }
