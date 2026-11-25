@@ -4283,14 +4283,14 @@ struct App {
             auto it = latestSeq.find(m.pos);
             if (it == latestSeq.end() || it->second != m.seq || !world->chunk(m.pos)) continue;   // outdated or unloaded meanwhile
             if (m.see == SEE_ALL) chunkSee.erase(m.pos); else chunkSee[m.pos] = m.see;   // cave culling: its sides joined by air
-            chunkMeshed.insert(m.pos);
+            if (chunkMeshed.insert(m.pos).second) lodSelGen++;
             if (lodK) if (const Chunk* ch = world->chunk(m.pos)) LodSetSummary(m.pos, lodSummarize(reg, *ch));   // (changed blocks: the far copies again)
             if (m.opaque.empty() && m.cutout.empty() && m.water.empty()) { if (gpu.erase(m.pos)) instDirty = true; continue; }
             auto gi = gpu.try_emplace(m.pos); if (gi.second) instDirty = true; GpuChunk& g = gi.first->second; Upload(m.opaque, g.vbO, g.ibO, g.nO); Upload(m.cutout, g.vbC, g.ibC, g.nC); Upload(m.water, g.vbW, g.ibW, g.nW);
             if (meshesChanged.size() < 512) meshesChanged.push_back(V3{ (m.pos.x + 0.5) * CS, (m.pos.y + 0.5) * CS, (m.pos.z + 0.5) * CS });   // (lamps near it: their shadow maps again)
         }
         if (world->unloads == tidyUnloads) return;   // (nothing let go since the last tidy-up: no need to look through everything)
-        tidyUnloads = world->unloads;
+        tidyUnloads = world->unloads; lodSelGen++;
         for (auto it = gpu.begin(); it != gpu.end();) { if (!world->chunk(it->first)) { latestSeq.erase(it->first); it = gpu.erase(it); instDirty = true; } else ++it; }
         for (auto it = chunkSee.begin(); it != chunkSee.end();) { if (!world->chunk(it->first)) it = chunkSee.erase(it); else ++it; }
         for (auto it = chunkMeshed.begin(); it != chunkMeshed.end();) { if (!world->chunk(*it)) it = chunkMeshed.erase(it); else ++it; }
@@ -9442,7 +9442,7 @@ struct App {
     std::unordered_set<I3, I3Hash> lodDirty[4];             // groups to build (again)
     std::unordered_set<I3, I3Hash> chunkMeshed;             // chunks whose mesh has arrived (empty or not)
     std::vector<I3> lodQueue; size_t lodQueuePos = 0; I3 lodQueueAt{ INT_MIN, 0, 0 }; int lodQueueR = -1;   // lodQueue: every offset around you, nearest first (made once per reach); lodQueuePos: how far through it this round is
-    I3 lodCleanAt{ INT_MIN, 0, 0 }; bool lodRoundMoved = false; std::vector<I3> lodPending;   // lodPending: chunks that came into reach as you moved (after the first full round)
+    I3 lodCleanAt{ INT_MIN, 0, 0 }; bool lodRoundMoved = false; bool lodCleaning = false; size_t lodCleanBucket = 0;   // lodCleaning: forgetting far summaries, a slice of the table a frame std::vector<I3> lodPending;   // lodPending: chunks that came into reach as you moved (after the first full round)
     struct LodDraw { int k; I3 g; }; std::vector<LodDraw> lodDraw; std::unordered_set<I3, I3Hash> lodCovered;   // this frame: groups drawn far; level-1 groups they cover (their chunks: not drawn)
     int lodK = 0, lodDrawn = 0, lodDrawnShown = 0; std::unique_ptr<Chunk> lodTmp;
     LodSummary lodAir;   // (above and below the far copies' heights: nothing)
@@ -9451,7 +9451,7 @@ struct App {
     int LodVert() const { return settings.verticalDistance * 2 + 2; }                                        // chunks up and down
     void LodClear() {
         lodSum.clear(); lodGenMemo.clear(); for (int k = 0; k < 4; k++) { lodGroups[k].clear(); lodDirty[k].clear(); } instDirty = true;
-        lodQueue.clear(); lodQueuePos = 0; lodQueueAt = { INT_MIN, 0, 0 }; lodQueueR = -1; lodDraw.clear(); lodCovered.clear(); lodCleanAt = { INT_MIN, 0, 0 }; lodRoundMoved = false; lodPending.clear();
+        lodQueue.clear(); lodQueuePos = 0; lodQueueAt = { INT_MIN, 0, 0 }; lodQueueR = -1; lodDraw.clear(); lodCovered.clear(); lodCleanAt = { INT_MIN, 0, 0 }; lodRoundMoved = false; lodPending.clear(); lodCleaning = false; lodCleanBucket = 0; lodSelGen++;
     }
     void LodSetSummary(I3 c, LodSummary&& sm) {
         auto it = lodSum.find(c);
@@ -9495,18 +9495,25 @@ struct App {
             }
         }
         if (lodQueuePos >= lodQueue.size() && lodRoundMoved) { lodQueuePos = 0; lodRoundMoved = false; }
-        if (std::abs(cc.x - lodCleanAt.x) + std::abs(cc.z - lodCleanAt.z) + std::abs(cc.y - lodCleanAt.y) >= 6) {   // forget what is far behind (now and then, not every chunk you move)
-            lodCleanAt = cc;
-            for (auto it = lodSum.begin(); it != lodSum.end();) {
+        if (!lodCleaning && std::abs(cc.x - lodCleanAt.x) + std::abs(cc.z - lodCleanAt.z) + std::abs(cc.y - lodCleanAt.y) >= 6) { lodCleaning = true; lodCleanBucket = 0; lodCleanAt = cc; }
+        if (lodCleaning) {   // forget what is far behind - a slice of the table each frame (all at once: up to 13 ms with 170 000 summaries)
+            size_t nb = lodSum.bucket_count(), end = std::min(nb, lodCleanBucket + (loadingOn ? nb : (size_t)8192));
+            static std::vector<I3> kill; kill.clear();
+            for (size_t bk = lodCleanBucket; bk < end; bk++) for (auto it = lodSum.begin(bk); it != lodSum.end(bk); ++it) {
                 int x = it->first.x - cc.x, z = it->first.z - cc.z, y = it->first.y - cc.y;
-                if (x * x + z * z > (R + 8) * (R + 8) || std::abs(y) > V + 4) it = lodSum.erase(it); else ++it;
+                if (x * x + z * z > (R + 8) * (R + 8) || std::abs(y) > V + 4) kill.push_back(it->first);
             }
-            for (int k = 1; k <= 3; k++) for (auto it = lodGroups[k].begin(); it != lodGroups[k].end();) {
-                int sz = 1 << k; double x = (it->first.x + 0.5) * sz - cc.x, z = (it->first.z + 0.5) * sz - cc.z;
-                if (x * x + z * z > (R + 2.0 * sz + 8) * (R + 2.0 * sz + 8)) { it = lodGroups[k].erase(it); instDirty = true; } else ++it;
+            for (const I3& k : kill) lodSum.erase(k);
+            lodCleanBucket = end;
+            if (end >= nb) {   // (the table done: the groups too - far fewer of them)
+                lodCleaning = false;
+                for (int k = 1; k <= 3; k++) for (auto it = lodGroups[k].begin(); it != lodGroups[k].end();) {
+                    int sz = 1 << k; double x = (it->first.x + 0.5) * sz - cc.x, z = (it->first.z + 0.5) * sz - cc.z;
+                    if (x * x + z * z > (R + 2.0 * sz + 8) * (R + 2.0 * sz + 8)) { it = lodGroups[k].erase(it); instDirty = true; lodSelGen++; } else ++it;
+                }
             }
         }
-        double sumMs = loadingOn ? 40 : 2.5, buildMs = loadingOn ? 80 : 5;   // (the loading screen: as much as a frame can take)
+        double sumMs = loadingOn ? 40 : 1.0, buildMs = loadingOn ? 80 : 2.0;   // (flying around: a little each frame - the edge comes in a bit slower, no spikes)   // (the loading screen: as much as a frame can take)
         for (int n = 0; lodQueuePos < lodQueue.size(); n++) {   // boil down: a copy of each chunk (from disk or made), never loaded into the world
             if ((n & 255) == 0 && ms() >= sumMs) break;
             const I3& o = lodQueue[lodQueuePos++]; I3 c{ cc.x + o.x, cc.y + o.y, cc.z + o.z }; if (lodSum.count(c)) continue;
@@ -9553,7 +9560,7 @@ struct App {
                 if (!ready) continue;   // (its chunks aren't all boiled down yet)
                 lodGroupCells(reg, k, g, get, cells);
                 MeshData md; lodMesh(reg, k, cells, md);
-                auto li = lodGroups[k].try_emplace(g); if (li.second) instDirty = true; LodGroup& lg = li.first->second; Upload(md, lg.vb, lg.ib, lg.n); lg.built = true;
+                auto li = lodGroups[k].try_emplace(g); if (li.second) instDirty = true; LodGroup& lg = li.first->second; Upload(md, lg.vb, lg.ib, lg.n); lg.built = true; lodSelGen++;
                 lodDirty[k].erase(g);
             }
         }
@@ -9573,7 +9580,7 @@ struct App {
             for (int y = 0; y < 2 && split; y++) for (int z = 0; z < 2 && split; z++) for (int x = 0; x < 2 && split; x++) {
                 I3 c{ g.x * 2 + x, g.y * 2 + y, g.z * 2 + z }; int dx = c.x - cc.x, dz = c.z - cc.z, dy = c.y - cc.y;
                 if (std::abs(dy) > Vs) continue;   // (above / below the loaded chunks: nothing is drawn there anyway)
-                split = dx * dx + dz * dz <= R * R + R && world->chunk(c) && chunkMeshed.count(c) && !world->dirty.count(c);
+                split = dx * dx + dz * dz <= R * R + R && chunkMeshed.count(c);   // (meshed: it has its mesh - an older one while it is built again is fine; unloaded ones leave chunkMeshed)
             }
             if (split) return;   // (the chunks draw themselves)
         } else {
@@ -9590,9 +9597,15 @@ struct App {
         int m = 1 << (k - 1);   // the level-1 groups it covers: their chunks are not drawn
         for (int y = 0; y < m; y++) for (int z = 0; z < m; z++) for (int x = 0; x < m; x++) lodCovered.insert({ g.x * m + x, g.y * m + y, g.z * m + z });
     }
+    uint64_t lodSelGen = 1, lodSelDone = 0; I3 lodSelAt{ INT_MIN, 0, 0 }; int lodSelKey[3] = { -1, -1, -1 }; std::vector<LodDraw> lodDrawSel;   // the choice is kept while nothing changed
     void LodSelect() {   // which far groups this frame (the camera's own view)
-        lodDraw.clear(); lodCovered.clear(); if (!lodK || !world) return;
+        if (!lodK || !world) { lodDraw.clear(); lodCovered.clear(); lodDrawSel.clear(); lodSelDone = 0; return; }
         I3 cc = chunkOf(ifloor(camPos.x), ifloor(camPos.y), ifloor(camPos.z));
+        if (lodSelDone == lodSelGen && cc == lodSelAt && lodSelKey[0] == lodK && lodSelKey[1] == settings.renderDistance && lodSelKey[2] == settings.verticalDistance) {
+            lodDraw = lodDrawSel; return;   // (the same chunk, nothing built or meshed since: the same choice - this was ~1 ms every frame)
+        }
+        lodSelDone = lodSelGen; lodSelAt = cc; lodSelKey[0] = lodK; lodSelKey[1] = settings.renderDistance; lodSelKey[2] = settings.verticalDistance;
+        lodDraw.clear(); lodCovered.clear();
         int K = lodK, sz = 1 << K, reach = LodReach(), V = LodVert();
         for (int gy = floorDiv(cc.y - V, sz); gy <= floorDiv(cc.y + V, sz); gy++)
             for (int gz = floorDiv(cc.z - reach, sz); gz <= floorDiv(cc.z + reach, sz); gz++)
@@ -9601,6 +9614,7 @@ struct App {
                     if (x * x + z * z > (double)reach * reach) continue;
                     LodVisit(K, { gx, gy, gz }, cc);
                 }
+        lodDrawSel = lodDraw;
     }
     // ---- the fog grid (smooth fog): 160 x 90 x 64 cells following the camera, worked out a little more each frame
     static constexpr int FOGW = 160, FOGH = 90, FOGD = 64;
