@@ -4443,7 +4443,7 @@ struct App {
     // ---- the timers (with the FPS counter on): how long each step takes, on the graphics card (timestamp queries, read a few
     // frames later so it never waits) and on the processor (a clock); shown under the counter, the slowest first
     struct GpuTimer {
-        static constexpr int F = 4, N = 32;
+        static constexpr int F = 4, N = 96;   // (N: the VR benchmark marks every step twice)
         ComPtr<ID3D11Query> dis[F], ts[F][N]; const char* name[F][N] = {}; int n[F] = {}; bool live[F] = {}; int age[F] = {}; int cur = 0; bool made = false, rec = false;
         std::map<std::string, double> ms; double total = 0;
     } gpuT;
