@@ -266,6 +266,15 @@ For Energy and each counter (Missiles, Power Bombs ...): a model and size, a **b
 Prime's large energy), spinning and bobbing, a light (reach, colour, brightness), its own pickup sound, how long it
 stays and when it starts blinking. A kind without its own look uses the placeholder.
 
+## Interface sounds (Screens > the game's settings)
+
+One set of sounds for every menu: every screen and the pause menu use them unless a screen has its own (its *Sound & timing* tab).
+- **Picking**: the mouse or W / S moves to another button or row.
+- **Using**: a click or Enter (and changing an option).
+- **Going back**: Back or Esc.
+- **A text appears**: a text on a screen showing up all at once (once per text; several at once play it once).
+- **Letters typing in**: each letter of a typed text (a text with its own letter sound uses that; spaces are silent).
+
 ## Rain, the visor's glass and more particles
 
 **Rain**

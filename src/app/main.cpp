@@ -11277,8 +11277,9 @@ struct App {
                 size_t n = s.size();
                 if (it.typeSpeed > 0) {   // typed letter by letter (a sound per letter)
                     n = typedBytes(s, it, screenT);
-                    if (live || screenAudible) { size_t& was = typed[ii]; if (n > was) { if (!it.typeSound.empty() && n <= s.size() && !std::isspace((unsigned char)s[n - 1])) PlaySoundIn(SND_MENUS, it.typeSound); } was = n; }
+                    if (live || screenAudible) { size_t& was = typed[ii]; if (n > was && n <= s.size() && !std::isspace((unsigned char)s[n - 1])) { if (!it.typeSound.empty()) PlaySoundIn(SND_MENUS, it.typeSound); else PlayUi(4); } was = n; }   // (its own letter sound, else the game's)
                 }
+                else if ((live || screenAudible) && !s.empty() && !appeared.count(ii)) { appeared.insert(ii); PlayUi(3); }   // a text appearing all at once: the game's "text appears" sound
                 // laid out whole (typed letters appear where they will stay), lined up left / middle / right and top / middle / bottom
                 auto measure = [&](const char* p0, const char* p1) { return font->CalcTextSizeA(ts, FLT_MAX, 0, p0, p1).x; };
                 std::vector<TextLine> lines = wrapText(s, b.x - a.x, measure);
@@ -11533,7 +11534,7 @@ struct App {
     void ShowScreen(int idx, bool remember) {
         if (idx < 0 || idx >= (int)screens.screens.size()) return;
         if (remember && curScreen >= 0 && curScreen != idx) screenBack.push_back(curScreen);
-        curScreen = idx; screenT = 0; screenPrevT = -1; screenSel = -2; bindCapture = -1; RefreshSlots(); typed.clear(); galleryPick = 0;
+        curScreen = idx; screenT = 0; screenPrevT = -1; screenSel = -2; bindCapture = -1; RefreshSlots(); typed.clear(); appeared.clear(); galleryPick = 0;
         mc::Screen& sc = screens.screens[idx];
         if ((sc.role == ScreenRole::ItemGet || sc.role == ScreenRole::GameSaved) && sc.musicMode == 1 && !sc.music.empty()) { StopSounds(TAG_FANFARE); PlaySoundIn(SND_MUSIC, sc.music, 1.f, nullptr, TAG_FANFARE, false); }   // (the pop-up's "music" is a jingle: once, not looping; the game's music ducks meanwhile)
         else if (sc.musicMode == 1 && !sc.music.empty()) PlayMusic(sc.music, sc.musicFade); else if (sc.musicMode == 2) StopMusic(sc.musicFade);
@@ -11634,6 +11635,7 @@ struct App {
         if (screenSel >= 0 && screenSel < (int)screenHits.size() && screenHits[screenSel].kind == 10 && (ImGui::IsKeyPressed(ImGuiKey_Delete) || ImGui::IsKeyPressed(ImGuiKey_Backspace))) SlotErase(screenHits[screenSel].arg);
     }
     std::map<int, size_t> typed;   // typed texts: how much has shown (for the letter sound)
+    std::set<int> appeared, scrAppeared;   // texts that have appeared on the shown screen (its "text appears" sound once each); the editor's preview's own
     void ScreenNext() {   // a splash / intro is over: its next screen (or the main menu; after a new game's intro: the game)
         mc::Screen* sc = CurScreen(); if (!sc) return;
         if (inNewGameIntro && (sc->next.empty() || screens.find(sc->next) < 0)) { int sl = pendingSlot > 0 ? pendingSlot : 1; pendingSlot = 0; StartSlot(sl); blackIn = 1; return; }
@@ -11935,14 +11937,14 @@ struct App {
     }
     void BuildScreenPreview() {   // (editor) the picked screen's items, at the preview's size
         mc::Screen* sc = EdScreen(); if (!sc || scrPrevW < 16 || scrPrevH < 16) return;
-        double keepT = screenT, keepP = screenPrevT; bool keepA = screenAudible; auto keepTyped = typed;   // (the game's own screen keeps its time)
+        double keepT = screenT, keepP = screenPrevT; bool keepA = screenAudible; auto keepTyped = typed; auto keepApp = appeared;   // (the game's own screen keeps its time)
         double now = uiClock, dt = scrClock < 0 ? 0 : std::clamp(now - scrClock, 0.0, 0.1); scrClock = now;
         float len = screenLength(*sc);
-        if (scrPlaying) { scrPlayT += dt; if (scrPlayT > len + 0.6) { scrPlayT = 0; scrPrevT = -1; scrTyped.clear(); } }   // (plays over and over)
-        screenT = scrPlayT; screenPrevT = scrPrevT; screenAudible = scrPlaying && scrAudible; typed = scrTyped;
+        if (scrPlaying) { scrPlayT += dt; if (scrPlayT > len + 0.6) { scrPlayT = 0; scrPrevT = -1; scrTyped.clear(); scrAppeared.clear(); } }   // (plays over and over)
+        screenT = scrPlayT; screenPrevT = scrPrevT; screenAudible = scrPlaying && scrAudible; typed = scrTyped; appeared = scrAppeared;
         BuildScreenList(*sc, (int)scrPrevW, (int)scrPrevH, false);
-        scrPrevT = screenT; scrTyped = typed;
-        screenT = keepT; screenPrevT = keepP; screenAudible = keepA; typed = keepTyped;
+        scrPrevT = screenT; scrTyped = typed; scrAppeared = appeared;
+        screenT = keepT; screenPrevT = keepP; screenAudible = keepA; typed = keepTyped; appeared = keepApp;
     }
     void RenderScreenPreview() {
         mc::Screen* sc = EdScreen(); if (!screensEdOpen || !sc || scrPrevW < 16 || scrPrevH < 16) return;
@@ -12754,6 +12756,8 @@ struct App {
         Prop("Picking"); ch |= SoundEdit("##shov", sc.sounds.hover, false);
         Prop("Using"); ch |= SoundEdit("##sclk", sc.sounds.click, false);
         Prop("Going back"); ch |= SoundEdit("##sbak", sc.sounds.back, false);
+        Prop("A text appears"); ch |= SoundEdit("##stxt", sc.sounds.text, false);
+        Prop("Letters typing in"); ch |= SoundEdit("##slet", sc.sounds.letter, false);
         ImGui::TextDisabled("(empty: the game's, below)");
         ImGui::SeparatorText("Starting a file (picking it on the Files screen, Continue)");
         Prop("Game-start sound"); ch |= SoundEdit("##gstart", screens.startSound, true);
@@ -12773,7 +12777,11 @@ struct App {
         Prop("Picking"); ch |= SoundEdit("##ghov", screens.sounds.hover, false);
         Prop("Using"); ch |= SoundEdit("##gclk", screens.sounds.click, false);
         Prop("Going back"); ch |= SoundEdit("##gbak", screens.sounds.back, false);
-        Hint("Picking: the mouse or W / S moves to another button or row. Using: a click / Enter (and changing an option). Going back: Back, Esc.");
+        Prop("A text appears"); ch |= SoundEdit("##gtxt", screens.sounds.text, false);
+        Prop("Letters typing in"); ch |= SoundEdit("##glet", screens.sounds.letter, false);
+        Hint("Picking: the mouse or W / S moves to another button or row. Using: a click / Enter (and changing an option). Going back: Back, Esc.\n"
+             "A text appears: a text on a screen showing up all at once (once each). Letters typing in: each letter of a typed text (one with its own letter sound uses that).\n"
+             "Every screen uses these unless it has its own (the screen's Sound & timing tab).");
         ImGui::EndChild();
     }
     void ScreenBgTab(mc::Screen& sc, bool& ch) {
@@ -15746,12 +15754,14 @@ struct App {
         musicOut.erase(std::remove_if(musicOut.begin(), musicOut.end(), [](const MusicOut& o) { return !o.v; }), musicOut.end());
     }
     // ---- interface sounds: 0 picking something, 1 using it, 2 going back (a screen's own, else the game's)
-    double uiSoundAt[3] = { -1, -1, -1 };
+    double uiSoundAt[5] = { -1, -1, -1, -1, -1 };   // (when each kind last played: not twice at once)
     void PlayUi(int k) {
-        auto pick = [&](const UiSounds& u) -> const SoundUse& { return k == 0 ? u.hover : k == 1 ? u.click : u.back; };
+        // k: 0 picking, 1 using, 2 going back, 3 a text appearing, 4 a letter typing in - the screen's own, else the game's
+        auto pick = [&](const UiSounds& u) -> const SoundUse& { return k == 0 ? u.hover : k == 1 ? u.click : k == 2 ? u.back : k == 3 ? u.text : u.letter; };
+        if (k < 0 || k > 4) return;
         const mc::Screen* sc = CurScreen(); const SoundUse& own = sc ? pick(sc->sounds) : pick(screens.sounds);
         const SoundUse& s = !own.empty() ? own : pick(screens.sounds);
-        if (s.empty() || uiClock - uiSoundAt[k] < 0.05) return;   // (not twice at once)
+        if (s.empty() || uiClock - uiSoundAt[k] < (k == 4 ? 0.03 : 0.05)) return;
         uiSoundAt[k] = uiClock; PlaySoundIn(SND_MENUS, s);
     }
     float AnimLen(const Beam& b, int kind) {   // the cannon's animation for this timeline, at its speed (charging never holds up a shot)

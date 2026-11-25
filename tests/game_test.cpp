@@ -1355,6 +1355,15 @@ int main() {
             saveScreens("/tmp/prim_screens_t.txt", ts); ScreenSet tl; loadScreens("/tmp/prim_screens_t.txt", tl);
             const mc::Screen& a = tl.screens[5]; const ScreenItem& st = tl.screens[6].items[0];
             CHECK(tl.sounds.hover.file == "tick.wav" && tl.sounds.click.file == "beep.wav" && tl.sounds.click.volume == 0.5f && tl.sounds.back.file.empty() && a.sounds.back.file == "back.wav" && tl.startSound.file == "start.wav" && tl.startFade == 2.25f && !tl.fadeWithSound, "interface sounds (the game's and a screen's own) and the game-start sound save and load");
+            {   // a text appearing, letters typing in (the game's and a screen's own); older files (three sounds) still load
+                ScreenSet us = defaultScreens(); us.sounds.text.file = "blip.wav"; us.sounds.letter.file = "tick tock.wav"; us.sounds.letter.volume = 0.4f; us.screens[0].sounds.text.file = "own.wav";
+                saveScreens("/tmp/prim_uis.txt", us); ScreenSet ul; loadScreens("/tmp/prim_uis.txt", ul);
+                CHECK(ul.sounds.text.file == "blip.wav" && ul.sounds.letter.file == "tick tock.wav" && ul.sounds.letter.volume == 0.4f && ul.screens[0].sounds.text.file == "own.wav" && ul.screens[0].sounds.letter.empty(),
+                      "the text-appears and letter sounds save and load (a name with a space too)");
+                { std::ofstream o("/tmp/prim_uis_old.txt"); o << "screens 4\nuisounds " << soundUseText(us.sounds.hover) << " " << soundUseText(us.sounds.click) << " " << soundUseText(us.sounds.back) << "\n"; }
+                ScreenSet uo; loadScreens("/tmp/prim_uis_old.txt", uo);
+                CHECK(uo.sounds.text.empty() && uo.sounds.letter.empty(), "an older file: no text or letter sounds");
+            }
             CHECK(a.musicMode == 1 && a.music.file == "title theme.mp3" && a.musicFade == 2.5f && a.useStack && std::fabs(a.duration - buildStack(a.stack).length) < 1e-4 && a.untilVideoEnds && !a.skippable && a.next == "Story", "music and going on by itself save and load");
             CHECK(st.typeSpeed == 22 && st.typeSound.file == "type.wav" && st.driftY == -0.01f && st.showAt == 0.8f && st.hideAt == 6.4f && st.fadeOut == 0.8f, "an item's timing, typing and drift save and load");
         }

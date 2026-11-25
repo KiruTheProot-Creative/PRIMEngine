@@ -721,7 +721,7 @@ size_t typedBytes(const std::string& text, const ScreenItem& it, double t) {
 bool saveScreens(const std::string& path, const ScreenSet& set) {
     std::ofstream f(path); if (!f) return false;
     f << "screens 4\n";
-    auto snd = [&](const char* k, const UiSounds& u) { f << k << " " << soundUseText(u.hover) << " " << soundUseText(u.click) << " " << soundUseText(u.back) << "\n"; };
+    auto snd = [&](const char* k, const UiSounds& u) { f << k << " " << soundUseText(u.hover) << " " << soundUseText(u.click) << " " << soundUseText(u.back) << " " << soundUseText(u.text) << " " << soundUseText(u.letter) << "\n"; };
     snd("uisounds", set.sounds);
     f << "boot " << (set.bootOn ? 1 : 0) << " " << set.bootHelmet << " " << set.bootWire << " " << set.bootColor << " " << set.bootHud << "\n";
     f << "start " << set.startFade << " " << (set.fadeWithSound ? 1 : 0) << " " << soundUseText(set.startSound) << "\n";
@@ -777,10 +777,10 @@ bool loadScreens(const std::string& path, ScreenSet& set) {
     set = ScreenSet{}; std::string line; Screen* cur = nullptr; int version = 1;
     while (std::getline(f, line)) {
         std::istringstream l(line); std::string k; l >> k;
-        auto readSnd = [&](UiSounds& u) { std::string rest; std::getline(l, rest); std::istringstream r(rest); std::string tok[18];
-            for (int q = 0; q < 18; q++) r >> tok[q];
-            auto one = [&](int at, SoundUse& su) { std::string t6; for (int q = 0; q < 6; q++) t6 += tok[at + q] + " "; soundUseFrom(t6, su); };
-            one(0, u.hover); one(6, u.click); one(12, u.back); };
+        auto readSnd = [&](UiSounds& u) { std::string rest; std::getline(l, rest); std::istringstream r(rest); std::string tok[30];
+            for (int q = 0; q < 30; q++) r >> tok[q];
+            auto one = [&](int at, SoundUse& su) { if (tok[at].empty()) return; std::string t6; for (int q = 0; q < 6; q++) t6 += tok[at + q] + " "; soundUseFrom(t6, su); };
+            one(0, u.hover); one(6, u.click); one(12, u.back); one(18, u.text); one(24, u.letter); };   // (older files: the first three)
         if (k == "screens") l >> version;
         else if (k == "uisounds") readSnd(set.sounds);
         else if (k == "boot") { int on = 1; l >> on >> set.bootHelmet >> set.bootWire >> set.bootColor >> set.bootHud; set.bootOn = on != 0; }

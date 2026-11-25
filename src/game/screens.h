@@ -119,7 +119,7 @@ struct CodeBits { std::string tag, top, bottom; };        // the made-up scanner
 CodeBits codeBits(const std::string& text);               // always the same for the same text
 // how many letters of a typed text show t seconds in (whole UTF-8 letters: returns bytes)
 size_t typedBytes(const std::string& text, const ScreenItem& it, double t);
-struct UiSounds { SoundUse hover, click, back; };       // picking something, using it, going back (empty: none / the game's own)
+struct UiSounds { SoundUse hover, click, back, text, letter; };   // picking something, using it, going back, a text appearing, each letter typing in (empty: none / the game's own)
 
 // ---- the compositor: nodes wired together. Background and UI give pictures; the rest change them; Output is what shows.
 enum class NodeType { Background, UI, Output, AlphaOver, Mix, Blur, Glare, ColorBalance, HueSat, BrightContrast, Invert,
