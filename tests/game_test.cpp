@@ -511,7 +511,25 @@ int main() {
         std::vector<WorldObject> v{ o }, v2; saveObjects("/tmp/prim_fx.txt", v); loadObjects("/tmp/prim_fx.txt", v2);
         CHECK(v2.size() == 1 && v2[0].kind == ObjKind::Particles && !v2[0].particles.additive && v2[0].particles.shape == PShape::Smoke && v2[0].particles.size1 == o.particles.size1
               && v2[0].light.type == LightType::Spot && v2[0].light.cone == 20 && v2[0].light.flicker == Flicker::Broken, "particles and lights save and load");
-        CHECK(particlePresets().size() == 11, "eleven presets"); CHECK(particlePreset("Muzzle flash").life < 0.15f, "a short muzzle flash");
+        CHECK(particlePresets().size() == 17, "seventeen presets"); CHECK(particlePreset("Muzzle flash").life < 0.15f, "a short muzzle flash");
+        {   // the new ones: bubbles pop at the surface, things sway, steam fogs the visor, arcs, motes, mist
+            World pond(r); pond.gen.layers = { { r.find("stone"), 3 } }; pond.stream({ 0, 0, 0 }, 2, 2, 100000);
+            BlockId water = r.liquidBlock(1); for (int y = 3; y < 6; y++) for (int z = -2; z <= 2; z++) for (int x = -2; x <= 2; x++) pond.set(x, y, z, water);
+            ParticleSettings bs = particlePreset("Bubbles"); bs.rate = 0; bs.burst = 20; bs.lifeVar = 0; bs.life = 20; ParticleEmitter be(bs, 4); double top = 0; size_t most = 0;
+            for (int k = 0; k < 60 * 8; k++) { be.update(1.0 / 60, { 0.5, 3.2, 0.5 }, 0, &pond); most = std::max(most, be.ps.size()); for (auto& p : be.ps) top = std::max(top, p.pos.y); }
+            CHECK(most == 20 && be.ps.empty() && top <= 6.01, "bubbles rise and pop at the surface (highest %.2f, the water's top at 6)", top);
+            ParticleSettings ws = particlePreset("Phazon wisps"); ws.rate = 0; ws.burst = 1; ws.spread = 0; ws.speed = 0; ws.speedVar = 0; ws.gravity = 0; ws.life = 5; ws.lifeVar = 0; ws.area = PArea::Point;
+            ParticleEmitter we(ws, 2); double side = 0; for (int k = 0; k < 120; k++) { we.update(1.0 / 60, { 0, 0, 0 }, 0, nullptr); if (!we.ps.empty()) side = std::max(side, std::fabs(we.ps[0].pos.x) + std::fabs(we.ps[0].pos.z)); }
+            CHECK(side > 0.05, "wisps sway side to side (%.2f)", side);
+            CHECK(particlePreset("Steam vent").fogsVisor == 1 && particlePreset("Steam").fogsVisor > 0 && particlePreset("Electric arc").arc && particlePreset("Dust motes").shape == PShape::Mote
+                  && particlePreset("Waterfall spray").shape == PShape::Mist && particlePreset("Bubbles").stayIn == 1, "steam fogs the visor; an arc; motes; rainbow mist; bubbles only in water");
+            WorldObject a; a.kind = ObjKind::Particles; a.particles = particlePreset("Electric arc"); a.particles.arcTo = { 1, 3, -2 }; a.particles.arcBolts = 3; a.particles.wobble = 0.2f; a.particles.fogsVisor = 0.4f;
+            std::vector<WorldObject> av{ a }, av2; saveObjects("/tmp/prim_arc.txt", av); loadObjects("/tmp/prim_arc.txt", av2);
+            const ParticleSettings& q = av2[0].particles;
+            CHECK(q.arc && q.arcTo.x == 1 && q.arcTo.y == 3 && q.arcTo.z == -2 && q.arcBolts == 3 && q.wobble == 0.2f && q.fogsVisor == 0.4f && q.shape == PShape::Spark, "arcs, swaying and fogging the visor save and load");
+            WorldObject m; m.kind = ObjKind::Particles; m.particles = particlePreset("Dust motes"); std::vector<WorldObject> mv{ m }, mv2; saveObjects("/tmp/prim_mote.txt", mv); loadObjects("/tmp/prim_mote.txt", mv2);
+            CHECK(mv2[0].particles.shape == PShape::Mote, "the new shapes load (a mote)");
+        }
     }
 
     // a door with moving parts inside moving parts (DOOR_02: the halves turn, then smaller pieces inside them slide)
@@ -1030,6 +1048,30 @@ int main() {
             CHECK(old.size() == 3 && old[0].scan.on && old[0].scan.id == 0 && old[0].scan.legacyName == "Old Door" && old[0].scan.legacyText == "Line one.\nLine two." && old[0].scan.legacyImportant && old[0].scan.legacyTime == 2.5f && old[1].scan.id == 2,
                   "an older file's scan text is still read (to be made into an entry)");
         }
+    }
+    {   // the visor's glass: steam fogs it, the cold frosts it, splats slide off, the water washes it
+        VisorGlass g;
+        for (int i = 0; i < 60; i++) g.update(1.0 / 60, 1, 0, 0, false, 0, 0);
+        CHECK(g.fog > 0.85f, "in steam the visor fogs up within a second (%.2f)", g.fog);
+        for (int i = 0; i < 60 * 3; i++) g.update(1.0 / 60, 0, 0, 0, false, 0, 0);
+        CHECK(g.fog > 0.2f && g.fog < 0.6f, "out of it, it clears over a few seconds (%.2f after 3 s)", g.fog);
+        for (int i = 0; i < 60 * 3; i++) g.update(1.0 / 60, 0, 0, 0, false, 0, 0);
+        CHECK(g.fog == 0, "... and is clear after 6");
+        for (int i = 0; i < 60 * 30; i++) g.update(1.0 / 60, 0, 0.6f, 0, false, 0, 0);
+        float fr = g.frost; for (int i = 0; i < 60; i++) g.update(1.0 / 60, 1, 0.6f, 0, false, 0, 0);
+        CHECK(fr > 0.5f && fr <= 0.6f && g.frost < fr - 0.3f, "the cold frosts it up to how cold it is (%.2f); steam melts it (%.2f)", fr, g.frost);
+        g.hit(GlassHit::PhazonSplat, 1, 7);
+        CHECK(g.splat == 1 && g.splatGlows && g.splatAge == 0, "a Phazon splat: glowing");
+        for (int i = 0; i < 60 * 2; i++) g.update(1.0 / 60, 0, 0, 0, false, 0, 0);
+        CHECK(g.splat == 1, "it hangs on a moment ...");
+        for (int i = 0; i < 60 * 6; i++) g.update(1.0 / 60, 0, 0, 0, false, 0, 0);
+        CHECK(g.splat == 0, "... then slides off");
+        g.hit(GlassHit::GooSplat, 1, 3); g.hit(GlassHit::FogUp, 0.8f, 0); g.update(0.5, 0, 0, 0, true, 0, 0);
+        CHECK(g.fog == 0 && g.splat < 0.4f && !g.splatGlows, "under water: washed (fog gone, the splat mostly)");
+        g.update(0.016, 0, 0, 0.95f, false, 0, 0); CHECK(g.face > 0.3f, "a very bright flash: your face in the glass");
+        for (int i = 0; i < 60; i++) g.update(1.0 / 60, 0, 0, 0, false, 60, 200);
+        CHECK(g.lookUp > 0.8f && g.turn > 0.95f, "looking up, turning fast (for the rain on it)");
+        g.hit(GlassHit::Static, 0.5f, 0); CHECK(g.shock == 0.5f && findGlassHit("Static") == 2 && glassHitNames().size() == 6, "static; names");
     }
     {   // the pause menu: pages as tabs, panes, items
         printf("\nthe pause menu\n");

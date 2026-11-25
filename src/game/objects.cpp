@@ -248,6 +248,9 @@ bool saveObjects(const std::string& path, const std::vector<WorldObject>& objs) 
             if (!A.preset.empty()) f << " ambp " << escText(A.preset);
         }
         if (o.kind == ObjKind::GrapplePoint) f << " grp " << o.grapple.mode << " " << o.grapple.length << " " << o.grapple.reach;
+        { const ParticleSettings& P2 = o.particles;   // particles: swaying, fogging the visor, only in water, an electric arc (newer files)
+          if (P2.wobble > 0 || P2.fogsVisor > 0 || P2.stayIn || P2.arc)
+              f << " pfx2 " << P2.wobble << " " << P2.fogsVisor << " " << P2.stayIn << " " << (P2.arc ? 1 : 0) << " " << P2.arcTo.x << " " << P2.arcTo.y << " " << P2.arcTo.z << " " << P2.arcBolts << " " << P2.arcJag; }
         if (o.kind == ObjKind::MapStation && !o.map.rooms.empty()) { f << " mrooms " << o.map.rooms.size(); for (uint32_t r : o.map.rooms) f << " " << r; }
         f << "\n";
     }
@@ -291,6 +294,10 @@ bool loadObjects(const std::string& path, std::vector<WorldObject>& objs) {
               else { std::string sc, st; int imp = 0; float tm = 0; o.scan.legacyName = unescText(tok); if (l >> sc >> st >> imp >> tm) { o.scan.legacyCategory = unescText(sc); o.scan.legacyText = unescText(st); o.scan.legacyImportant = imp != 0; o.scan.legacyTime = std::max(0.f, tm); } }
           } }
         for (std::string t; l >> t;) { if (t == "mrooms") { size_t n = 0; if (l >> n) for (size_t i = 0; i < n && i < 4096; i++) { uint32_t r; if (l >> r) o.map.rooms.push_back(r); } }
+          else if (t == "pfx2") { ParticleSettings& P2 = o.particles; int si = 0, ar = 0;
+              if (l >> P2.wobble >> P2.fogsVisor >> si >> ar >> P2.arcTo.x >> P2.arcTo.y >> P2.arcTo.z >> P2.arcBolts >> P2.arcJag) {
+                  P2.wobble = std::clamp(P2.wobble, 0.f, 5.f); P2.fogsVisor = std::clamp(P2.fogsVisor, 0.f, 1.f); P2.stayIn = std::clamp(si, 0, 1); P2.arc = ar != 0;
+                  P2.arcBolts = std::clamp(P2.arcBolts, 1, 6); P2.arcJag = std::clamp(P2.arcJag, 0.f, 1.f); } }
           else if (t == "grp") { GrappleSettings& G = o.grapple; if (l >> G.mode >> G.length >> G.reach) { G.mode = std::clamp(G.mode, 0, 1); G.reach = std::clamp(G.reach, 2.f, 80.f); G.length = std::clamp(G.length, 0.f, 60.f); } }
           else if (t == "ambp") { std::string n; if (l >> n) o.ambient.preset = unescText(n); }
           else if (t == "amb") {   // an ambient light's settings (newer files)

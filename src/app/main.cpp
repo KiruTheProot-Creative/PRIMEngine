@@ -229,6 +229,7 @@ struct App {
     ComPtr<ID3D11VertexShader> vsSkyMap, vsRain, vsRainFar, vsDust, vsWaterMap, vsDrips;
     ComPtr<ID3D11Texture2D> waterMapTex; ComPtr<ID3D11DepthStencilView> waterMapDSV; ComPtr<ID3D11ShaderResourceView> waterMapSRV;   // the water's tops from above (caustics)
     float visorWet = 0, visorRain = 0;   // drops on the visor: after coming out of the water (dries off), from the rain
+    VisorGlass glass; double glassYawLast = 0; bool glassYawKnown = false;   // what else is on the visor's glass: steam, frost, splats, static, your face
     ComPtr<ID3D11PixelShader> psReflect, psAO, psAOApply, psReflComp, psAA;
     ComPtr<ID3D11Texture2D> reflLowTex; ComPtr<ID3D11RenderTargetView> reflLowRTV; ComPtr<ID3D11ShaderResourceView> reflLowSRV; int reflLowW = 0, reflLowH = 0;   // reflections traced smaller
     float ReflScale() const { static const float k[4] = { 1.f, 0.75f, 0.5f, 0.25f }; return k[std::clamp(settings.reflectRes, 0, 3)]; }
@@ -2495,7 +2496,7 @@ struct App {
                         c[k * 2] = m - sides[j] * w; c[k * 2 + 1] = m + sides[j] * w; al[k] = (float)std::pow(1.0 - f[j], 1.6) * bright * R.ribbonGlow;
                     }
                     auto vtx = [&](int q) { int k = q / 2; float col[4] = { (float)lc.x * al[k], (float)lc.y * al[k], (float)lc.z * al[k], 1 };
-                        return PVtx{ { (float)c[q].x, (float)c[q].y, (float)c[q].z }, { (q & 1) ? 1.f : -1.f, ys[k] }, { col[0], col[1], col[2], col[3] }, { 0, 0, 6, 4 }, { 0, 0, 0 } }; };
+                        return PVtx{ { (float)c[q].x, (float)c[q].y, (float)c[q].z }, { (q & 1) ? 1.f : -1.f, ys[k] }, { col[0], col[1], col[2], col[3] }, { 0, 0, 20, 4 }, { 0, 0, 0 } }; };
                     add.push_back(vtx(0)); add.push_back(vtx(1)); add.push_back(vtx(3)); add.push_back(vtx(0)); add.push_back(vtx(3)); add.push_back(vtx(2));
                 }
             };
@@ -2508,6 +2509,35 @@ struct App {
             }
         }
         for (auto& s : shots) push(s.trail);
+        for (auto& kv : emitters) {   // electric arcs: jagged bolts from the emitter to where it points, new ones many times a second (a bright core in a glow)
+            const ParticleEmitter& e = kv.second; const ParticleSettings& S = e.s; if (!S.arc || !e.emittingNow) continue;
+            double cy = std::cos(e.lastYaw * 3.14159265 / 180), sy = std::sin(e.lastYaw * 3.14159265 / 180);
+            V3 a = e.lastOrigin, b = a + V3{ S.arcTo.x * cy + S.arcTo.z * sy, S.arcTo.y, -S.arcTo.x * sy + S.arcTo.z * cy }, ab = b - a;
+            double L = std::sqrt(ab.x * ab.x + ab.y * ab.y + ab.z * ab.z); if (L < 0.05) continue;
+            V3 dn = ab * (1 / L), s1 = Norm(cross(dn, std::fabs(dn.y) < 0.9 ? V3{ 0, 1, 0 } : V3{ 1, 0, 0 })), s2 = cross(dn, s1);
+            uint32_t frame = (uint32_t)(animTime * 18) * 2654435761u ^ (uint32_t)(kv.first * 40503u);
+            auto rnd = [&](uint32_t k) { uint32_t h = frame ^ (k * 0x9E3779B9u); h ^= h >> 15; h *= 0x2C1B3C6Du; h ^= h >> 12; return (h & 0xFFFF) / 65535.0 * 2 - 1; };
+            auto ch = [](uint32_t c, int sh) { return std::pow(((c >> sh) & 255) / 255.0, 2.2); };
+            V3 col{ ch(S.color0, 16), ch(S.color0, 8), ch(S.color0, 0) }; double bright = S.glow * (0.7 + 0.3 * rnd(999));
+            for (int bolt = 0; bolt < std::clamp(S.arcBolts, 1, 6); bolt++) {
+                const int n = 18; std::vector<V3> pts(n + 1);
+                for (int i = 0; i <= n; i++) {
+                    double u = (double)i / n, env = std::sin(u * 3.14159265), j = S.arcJag * L * 0.22 * env;
+                    pts[i] = a + ab * u + s1 * (rnd(bolt * 97 + i) * j) + s2 * (rnd(bolt * 131 + i + 50) * j);
+                }
+                auto strip = [&](double width, double k) {
+                    V3 prevSide{ 0, 1, 0 }; std::vector<V3> sides(n + 1);
+                    for (int i = 0; i <= n; i++) { V3 d = pts[std::min(i + 1, n)] - pts[std::max(i - 1, 0)]; sides[i] = RibbonSide(0, d, pts[i] - camPos, prevSide); prevSide = sides[i]; }
+                    for (int i = 0; i < n; i++) {
+                        V3 cq[4] = { pts[i] - camPos - sides[i] * (width * 0.5), pts[i] - camPos + sides[i] * (width * 0.5), pts[i + 1] - camPos - sides[i + 1] * (width * 0.5), pts[i + 1] - camPos + sides[i + 1] * (width * 0.5) };
+                        auto vtx = [&](int q) { return PVtx{ { (float)cq[q].x, (float)cq[q].y, (float)cq[q].z }, { (q & 1) ? 1.f : -1.f, 0.f }, { (float)(col.x * k), (float)(col.y * k), (float)(col.z * k), 1 }, { 0, 0, 20, 4 }, { 0, 0, 0 } }; };
+                        add.push_back(vtx(0)); add.push_back(vtx(1)); add.push_back(vtx(3)); add.push_back(vtx(0)); add.push_back(vtx(3)); add.push_back(vtx(2));
+                    }
+                };
+                strip(0.22, bright * 0.25);   // the glow
+                strip(0.05, bright * 1.2);    // the core
+            }
+        }
         if (playMode && grap.state != 0) {   // the Grapple Beam: a glowing, crackling chain from the muzzle to its tip (a bright core in a soft glow)
             V3 a = GrappleFrom(), b = grap.tip, ab = b - a; double L = std::sqrt(ab.x * ab.x + ab.y * ab.y + ab.z * ab.z);
             if (L > 0.05) {
@@ -2527,7 +2557,7 @@ struct App {
                     for (int i = 0; i < n; i++) {
                         V3 cq[4] = { pts[i] - camPos - sides[i] * (width * 0.5), pts[i] - camPos + sides[i] * (width * 0.5), pts[i + 1] - camPos - sides[i + 1] * (width * 0.5), pts[i + 1] - camPos + sides[i + 1] * (width * 0.5) };
                         float flick = (float)(0.8 + 0.2 * std::sin(i * 2.3 + animTime * 40));
-                        auto vtx = [&](int q) { return PVtx{ { (float)cq[q].x, (float)cq[q].y, (float)cq[q].z }, { (q & 1) ? 1.f : -1.f, 0.f }, { (float)col.x * flick, (float)col.y * flick, (float)col.z * flick, 1 }, { 0, 0, 6, 4 }, { 0, 0, 0 } }; };
+                        auto vtx = [&](int q) { return PVtx{ { (float)cq[q].x, (float)cq[q].y, (float)cq[q].z }, { (q & 1) ? 1.f : -1.f, 0.f }, { (float)col.x * flick, (float)col.y * flick, (float)col.z * flick, 1 }, { 0, 0, 20, 4 }, { 0, 0, 0 } }; };
                         add.push_back(vtx(0)); add.push_back(vtx(1)); add.push_back(vtx(3)); add.push_back(vtx(0)); add.push_back(vtx(3)); add.push_back(vtx(2));
                     }
                 };
@@ -2609,10 +2639,24 @@ struct App {
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("They appear on the outside of the area (a sphere) and fly into the middle, like energy gathering.");
             Prop("Spin"); ImGui::SliderFloat("##spin", &P.spin, 0, 3, "%.2f turns/s");
             Prop("Hit blocks"); ImGui::Checkbox("##col", &P.collide); if (P.collide) { ImGui::SameLine(); ImGui::Checkbox("bounce", &P.bounce); }
+            Prop("Sway"); ImGui::SliderFloat("##wob", &P.wobble, 0, 1, P.wobble <= 0 ? "no" : "%.2f blocks"); if (ImGui::IsItemHovered()) ImGui::SetTooltip("They sway side to side as they go, each its own way (bubbles, wisps, steam).");
+            Prop("Only in water"); { bool w = P.stayIn == 1; if (ImGui::Checkbox("##stayin", &w)) P.stayIn = w ? 1 : 0; } if (ImGui::IsItemHovered()) ImGui::SetTooltip("Bubbles: they pop when they reach the surface (or anywhere out of the water).");
+        }
+        if (ImGui::CollapsingHeader("Electric arc")) {
+            Prop("Arcs"); ImGui::Checkbox("##arc", &P.arc); if (ImGui::IsItemHovered()) ImGui::SetTooltip("Jagged bolts from here to a point, new ones many times a second (in the start colour, as bright as Brightness).");
+            if (P.arc) {
+                Prop("To"); ImGui::InputScalarN("##arcto", ImGuiDataType_Double, &P.arcTo.x, 3, nullptr, nullptr, "%.2f"); if (ImGui::IsItemHovered()) ImGui::SetTooltip("Blocks from the emitter (x y z); it turns with the object.");
+                Prop("Bolts"); ImGui::SliderInt("##arcn", &P.arcBolts, 1, 6); Prop("Jagged"); ImGui::SliderFloat("##arcj", &P.arcJag, 0, 1, "%.2f");
+            }
+        }
+        if (ImGui::CollapsingHeader("Visor")) {
+            Prop("Fogs the visor"); ImGui::SliderFloat("##fogv", &P.fogsVisor, 0, 1, P.fogsVisor <= 0 ? "no" : "%.2f"); if (ImGui::IsItemHovered()) ImGui::SetTooltip("Walking into them (Play mode) fogs the visor up; it clears from the edges after (steam).");
         }
         if (ImGui::CollapsingHeader("Look", ImGuiTreeNodeFlags_DefaultOpen)) {
-            int sh = (int)P.shape; const char* sn[] = { shapeName(PShape::Dot), shapeName(PShape::Spark), shapeName(PShape::Smoke), shapeName(PShape::Pixel), shapeName(PShape::Ring), shapeName(PShape::Flare) };
-            Prop("Shape"); ImGui::Combo("##shape", &sh, sn, 6); P.shape = (PShape)sh;
+            int sh = (int)P.shape; const char* sn[(int)PShape::COUNT]; for (int k = 0; k < (int)PShape::COUNT; k++) sn[k] = shapeName((PShape)k);
+            Prop("Shape"); ImGui::Combo("##shape", &sh, sn, (int)PShape::COUNT); P.shape = (PShape)sh;
+            if (P.shape == PShape::Mist) Hint("Soft mist; with the sun behind you, a rainbow shows in it (best: not glowing).");
+            if (P.shape == PShape::Mote) Hint("Tiny specks only seen where light falls on them: sunbeams, lamps (best: not glowing, a box of air to float in).");
             Prop("Glowing"); ImGui::Checkbox("##add", &P.additive); if (ImGui::IsItemHovered()) ImGui::SetTooltip("On: they glow and add light (sparks, fire).\nOff: soft and see-through (smoke, steam).");
             Prop("Size at start"); ImGui::SliderFloat("##s0", &P.size0, 0, 4, "%.2f"); Prop("Size at end"); ImGui::SliderFloat("##s1", &P.size1, 0, 4, "%.2f");
             colour("Colour at start", P.color0); colour("Colour at end", P.color1);
@@ -2729,6 +2773,7 @@ struct App {
         case Do::HudFlash: hudFlashAt[nm] = animTime; hudShown[nm] = true; break;
         case Do::StartFight: each([&](WorldObject& o) { StartBossFight(o); }); break;
         case Do::Shake: camShake = std::max(camShake, std::max(0.f, d.number)); break;
+        case Do::VisorEffect: { int h = findGlassHit(d.text.empty() ? std::string(glassHitName(GlassHit::GooSplat)) : d.text); if (h >= 0) glass.hit((GlassHit)h, d.number > 0 ? std::min(1.f, d.number) : 1.f, (uint32_t)(uiClock * 1000) + 1); break; }
         case Do::Countdown: countdownT = countdownMax = std::max(0.1f, d.number); countdownLabel = d.text; break;
         case Do::StopCountdown: countdownT = -1; break;
         case Do::PlayMusic: { SoundUse u; u.file = d.text; PlayMusic(u, 1.f); break; }
@@ -4809,6 +4854,13 @@ struct App {
         }
         XMStoreFloat4x4(&fc.waterVP, watervp);
         fc.water[0] = (float)settings.waterCaustics; fc.water[1] = settings.waterCausticsAbove ? 1.f : 0.f; fc.water[2] = waterMap ? 1.f : 0.f; fc.water[3] = settings.waterShafts ? 1.f : 0.f;
+        {   // the visor's glass (Play mode)
+            bool on = settings.visorDrops && playMode; uint32_t sc = glass.splatColor;
+            fc.visFx[0] = on ? glass.fog : 0; fc.visFx[1] = on ? glass.frost : 0; fc.visFx[2] = on ? glass.splat : 0; fc.visFx[3] = on ? glass.shock : 0;
+            fc.visFx2[0] = glass.lookUp; fc.visFx2[1] = on ? glass.turn : 0; fc.visFx2[2] = on ? glass.face : 0; fc.visFx2[3] = glass.splatAge;
+            fc.visSplat[0] = std::pow(((sc >> 16) & 255) / 255.f, 2.2f); fc.visSplat[1] = std::pow(((sc >> 8) & 255) / 255.f, 2.2f); fc.visSplat[2] = std::pow((sc & 255) / 255.f, 2.2f);
+            fc.visSplat[3] = (float)(glass.splatSeed % 997) + (glass.splatGlows ? 1000.f : 0.f);
+        }
         fc.water2[0] = settings.waterFoam ? 1.f : 0.f; fc.water2[1] = settings.visorDrops && playMode ? visorWet : 0.f; fc.water2[2] = settings.causticStrength; fc.water2[3] = settings.visorDrops && playMode ? visorRain : 0.f;
         bool occRender = false;
         if (info.trueDark) {   // the roofs map: redrawn every few frames or after moving; in between it is shifted to the camera
@@ -5428,8 +5480,13 @@ struct App {
         { ID3D11ShaderResourceView* pv[3] = { volSRV.Get(), bloom ? bloomLv[0].srv.Get() : nullptr, depthSRV.Get() }; ctx->PSSetShaderResources(0, 3, pv); }
         { ID3D11ShaderResourceView* ms = scanMaskOn ? scanMask.srv.Get() : nullptr; ctx->PSSetShaderResources(11, 1, &ms); }
         { ID3D11ShaderResourceView* ex = adaptOn ? adaptSRV[adaptCur].Get() : nullptr; ctx->PSSetShaderResources(16, 1, &ex); }
+        {   // your face for the glass (screens/visor_face.png, if there is one)
+            ID3D11ShaderResourceView* face = nullptr;
+            if (playMode && glass.face > 0.003f) { std::error_code ec; if (fs::exists(fs::u8path(ScreensDir() + "/visor_face.png"), ec)) face = PictureAt("visor_face.png", 0, false); }
+            ctx->PSSetShaderResources(54, 1, &face); ctx->PSSetSamplers(3, 1, sampClamp.GetAddressOf());
+        }
         ctx->Draw(3, 0);
-        { ID3D11ShaderResourceView* nx = nullptr; ctx->PSSetShaderResources(16, 1, &nx); }
+        { ID3D11ShaderResourceView* nx = nullptr; ctx->PSSetShaderResources(16, 1, &nx); ctx->PSSetShaderResources(54, 1, &nx); }
         ctx->PSSetShaderResources(0, 4, none); { ID3D11ShaderResourceView* nm = nullptr; ctx->PSSetShaderResources(11, 1, &nm); }
         if (aaOn) {   // smooth the jagged edges
             ctx->OMSetRenderTargets(1, &finalTgt, nullptr); ctx->PSSetShader(psAA.Get(), nullptr, 0); ctx->PSSetSamplers(3, 1, sampClamp.GetAddressOf());
@@ -15911,10 +15968,25 @@ struct App {
         }
         if (head) visorWet = 0; else if (headWet && playMode) visorWet = 1;   // up out of the water: the visor is covered in drops ...
         visorWet = std::max(0.f, visorWet - (float)dt / 4.5f);                 // ... that dry off over a few seconds
-        {   // rain: a few drops come and go while you stand in it (not under a roof)
-            float want = playMode && !head ? std::clamp(weather.now.rain * camOpen * 1.4f, 0.f, 1.f) : 0.f;
+        {   // rain: drops come and go while you stand in it (not under a roof) - more when you look up, fewer looking down
+            float look = 0.35f + 0.65f * std::clamp(0.5f + glass.lookUp * 0.9f, 0.f, 1.f);
+            float want = playMode && !head ? std::clamp(weather.now.rain * camOpen * 1.4f * look, 0.f, 1.f) : 0.f;
             visorRain += (want - visorRain) * std::min(1.f, (float)dt * 1.5f);
         }
+        if (playMode) {   // the rest on the glass: steam (from emitters that fog the visor), the cold, a bright flash
+            V3 eye = player.eye(); float steam = 0;
+            for (auto& kv : emitters) {
+                const ParticleEmitter& e = kv.second; if (e.s.fogsVisor <= 0) continue;
+                for (const Particle& p : e.ps) {
+                    ParticleLook l = lookOf(e, p); V3 d = l.pos - eye; double r = std::max(0.3, (double)l.size * 0.6);
+                    double dd = d.x * d.x + d.y * d.y + d.z * d.z; if (dd < r * r) steam = std::max(steam, e.s.fogsVisor * std::clamp(l.a * 2.5f, 0.f, 1.f) * (float)(1 - std::sqrt(dd) / r * 0.5));
+                }
+            }
+            const EnvLook& E = envState.now; float cold = E.cold > 0.5f ? std::clamp(E.cold, 0.f, 1.f) * 0.55f * (0.5f + 0.5f * camOpen) * E.atmosphere : 0.f;
+            double yawRate = glassYawKnown && dt > 1e-5 ? std::remainder(player.yaw - glassYawLast, 6.283185307) / dt * 57.29578 : 0.0;
+            glassYawLast = player.yaw; glassYawKnown = true;
+            glass.update(dt, steam, cold, weather.flash * envState.now.atmosphere, head, (float)(player.pitch * 57.29578), (float)yawRate);
+        } else if (glassYawKnown) { glass.clear(); glassYawKnown = false; }
         feetWet = feet; headWet = head;
         UpdateMuffle(dt, head && !paused);
         if (head && !paused && !playerSounds.underwater.empty()) {
@@ -16703,7 +16775,7 @@ struct App {
         if (w->DockNode && w->DockNode->TabBar) w->DockNode->TabBar->NextSelectedTabId = w->TabId;
     }
     // the fields one part needs, on the same line as its kind (each field gets an equal share of the rest of the row)
-    const char* inlineTextHint = nullptr;
+    const char* inlineTextHint = nullptr; const std::vector<std::string>* inlineChoices = nullptr;   // (the next fields: a hint for the text, or a list to choose it from)
     bool InlineFields(const Need& n, std::string& obj, std::string& name, std::string& text, float& num, char nk, bool anyObj, bool isWhen, bool isParticles, float width) {
         int count = (int)n.object + (int)n.name + (int)n.text + (int)n.number; if (!count) return false;
         float sp = ImGui::GetStyle().ItemSpacing.x, w = std::floor((width - sp * (count - 1)) / count); bool ch = false; bool first = true;
@@ -16713,6 +16785,7 @@ struct App {
         if (n.text) {
             next();
             if (isParticles) { if (ImGui::BeginCombo("##fx", text.empty() ? "Sparks" : text.c_str())) { for (auto& pn : particlePresets()) if (ImGui::Selectable(pn.c_str(), text == pn)) { text = pn; ch = true; } ImGui::EndCombo(); } }
+            else if (inlineChoices) { const auto& cs = *inlineChoices; if (ImGui::BeginCombo("##ch", text.empty() ? cs[0].c_str() : text.c_str())) { for (auto& cn : cs) if (ImGui::Selectable(cn.c_str(), text == cn)) { text = cn; ch = true; } ImGui::EndCombo(); } }
             else ch |= ImGui::InputTextWithHint("##txt", inlineTextHint ? inlineTextHint : "what it says", &text);
         }
         if (n.number) { next(); std::string f = std::string("%.1f ") + (std::string(n.numberLabel) == "seconds" ? "s" : n.numberLabel); ch |= ImGui::DragFloat("##num", &num, 0.1f, 0, 10000, f.c_str()); }
@@ -16780,8 +16853,10 @@ struct App {
                 KindRow(d.kind, btn, kc);
                 if (kc) { const Need& n = needOf(d.kind); if (n.object && d.target.empty()) d.target = FirstName(n.objectKind); if (d.kind == Do::Wait) d.number = 1; ch = true; }
                 if (d.kind == Do::PlayMusic) { ImGui::SameLine(); ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - btn); { SoundUse u; u.file = d.text; if (MusicEdit("evmus", u)) { d.text = u.file; ch = true; } } }
-                else { inlineTextHint = d.kind == Do::Countdown ? "label (Escape!)" : nullptr;
-                       ch |= InlineFields(needOf(d.kind), d.target, d.text, d.text, d.number, NameKind(d.kind), false, false, d.kind == Do::Particles, ImGui::GetContentRegionAvail().x - btn); inlineTextHint = nullptr; }
+                else { static const std::vector<std::string> glassNames = glassHitNames();
+                       inlineTextHint = d.kind == Do::Countdown ? "label (Escape!)" : nullptr; inlineChoices = d.kind == Do::VisorEffect ? &glassNames : nullptr;
+                       if (kc && d.kind == Do::VisorEffect) { d.text = glassNames[0]; d.number = 1; }
+                       ch |= InlineFields(needOf(d.kind), d.target, d.text, d.text, d.number, NameKind(d.kind), false, false, d.kind == Do::Particles, ImGui::GetContentRegionAvail().x - btn); inlineTextHint = nullptr; inlineChoices = nullptr; }
                 ImGui::SameLine(); ImGui::BeginDisabled(k == 0); if (ImGui::ArrowButton("##up", ImGuiDir_Up)) up = k; ImGui::EndDisabled();
                 ImGui::SameLine(); if (ImGui::Button("x", ImVec2(bw, 0))) drop = k;
                 ImGui::PopID();

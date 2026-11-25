@@ -1,5 +1,6 @@
 #include "visors.h"
 #include <algorithm>
+#include <cmath>
 #include <cctype>
 #include <fstream>
 #include <sstream>
@@ -100,6 +101,43 @@ std::string unescText(const std::string& s) {
         else o += s[i];
     }
     return o;
+}
+
+// ---------------------------------------------------------------- the visor's glass
+const char* glassHitName(GlassHit h) {
+    static const char* n[] = { "Goo splat", "Phazon splat", "Static", "Fog up", "Frost", "Face in the glass" };
+    int i = (int)h; return i >= 0 && i < (int)GlassHit::COUNT ? n[i] : "?";
+}
+std::vector<std::string> glassHitNames() { std::vector<std::string> v; for (int i = 0; i < (int)GlassHit::COUNT; i++) v.push_back(glassHitName((GlassHit)i)); return v; }
+int findGlassHit(const std::string& name) { for (int i = 0; i < (int)GlassHit::COUNT; i++) if (name == glassHitName((GlassHit)i)) return i; return -1; }
+void VisorGlass::hit(GlassHit h, float strength, uint32_t seed) {
+    float k = std::clamp(strength, 0.f, 1.f);
+    switch (h) {
+    case GlassHit::GooSplat: case GlassHit::PhazonSplat:
+        splat = std::max(splat, std::max(0.3f, k)); splatAge = 0; splatSeed = seed ? seed : 1;
+        splatGlows = h == GlassHit::PhazonSplat; splatColor = splatGlows ? 0x2E8BFF : 0x7BC84A; break;
+    case GlassHit::Static: shock = std::max(shock, std::max(0.2f, k)); break;
+    case GlassHit::FogUp: fog = std::max(fog, k); break;
+    case GlassHit::Frost: frost = std::max(frost, k); break;
+    case GlassHit::Face: face = std::max(face, k); break;
+    default: break;
+    }
+}
+void VisorGlass::update(double dt, float steam, float cold, float flash, bool underwater, float pitchDeg, float yawRateDeg) {
+    float t = (float)dt; steam = std::clamp(steam, 0.f, 1.f); cold = std::clamp(cold, 0.f, 1.f);
+    if (steam > fog) fog += (steam - fog) * std::min(1.f, t * 2.5f);     // fogs up within a second ...
+    else fog = std::max(0.f, fog - t / 5);                                // ... clears in a few (from the edges in: the picture does that)
+    if (frost < cold) frost = std::min(cold, frost + t * cold / 25);     // frost creeps in slowly where it is cold ...
+    else frost = std::max(cold, frost - t / 6);                           // ... and melts when it isn't
+    frost = std::max(0.f, frost - steam * t * 0.8f);                      // (steam melts it)
+    splatAge += t; if (splatAge > 2.5f) splat = std::max(0.f, splat - t / 5);   // a splat hangs on, then slides off
+    shock = std::max(0.f, shock - t * 1.3f);
+    face = std::max(0.f, face - t * 2.2f);
+    if (flash > 0.8f) face = std::max(face, (flash - 0.8f) * 2.5f);      // a very bright flash: your face shows in the glass
+    if (underwater) { fog = 0; frost = std::max(0.f, frost - t / 2); splat = std::max(0.f, splat - t * 1.5f); }   // the water washes it
+    float k = 1 - std::exp(-t * 6);
+    lookUp += (std::clamp(pitchDeg / 70.f, -1.f, 1.f) - lookUp) * k;
+    turn += (std::clamp(yawRateDeg / 180.f, -1.f, 1.f) - turn) * k;
 }
 
 } // namespace mc

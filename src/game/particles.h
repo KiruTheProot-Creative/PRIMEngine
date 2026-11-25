@@ -8,7 +8,7 @@
 
 namespace mc {
 
-enum class PShape { Dot, Spark, Smoke, Pixel, Ring, Flare, COUNT };   // how one particle looks (Spark: stretched along its flight)
+enum class PShape { Dot, Spark, Smoke, Pixel, Ring, Flare, Bubble, Mist, Wisp, Mote, COUNT };   // how one particle looks (Spark: stretched along its flight; Mist: a rainbow in the sun; Mote: only seen where light falls)
 enum class PArea { Point, Sphere, Box, Disc, COUNT };                 // where new ones appear
 const char* shapeName(PShape s);
 const char* areaName(PArea a);
@@ -35,6 +35,12 @@ struct ParticleSettings {
     bool light = false; float lightRange = 4; float lightIntensity = 1.5f;   // the emitter also lights its surroundings (fire)
     int maxParticles = 2000;
     float pull = 0;                  // sucked in: they appear on the outside of the area and fly into the middle (blocks/s/s; 0: off)
+    float wobble = 0;                // they sway side to side as they go (bubbles, wisps): how far (blocks)
+    float fogsVisor = 0;             // walking into them fogs the visor up (steam): how much (0..1)
+    int stayIn = 0;                  // 0 anywhere, 1 only in water (bubbles pop at the surface)
+    bool arc = false;                // an electric arc from the emitter to arcTo, redrawn many times a second (in the start colour, its glow)
+    V3 arcTo{ 0, 2, 0 };             // ... where it jumps to (blocks from the emitter; turns with the object)
+    int arcBolts = 2; float arcJag = 0.35f;   // ... how many bolts at once, how jagged
 };
 ParticleSettings particlePreset(const std::string& name);
 std::vector<std::string> particlePresets();   // "Sparks", "Fire", "Smoke", ...
@@ -48,7 +54,7 @@ public:
     explicit ParticleEmitter(const ParticleSettings& set = {}, uint32_t seed = 1) : s(set), rng(seed ? seed : 1) {}
     // moves them, makes new ones at `origin` (turned by yaw degrees); world: for collisions (may be null)
     void update(double dt, V3 origin, double yaw, const World* w, bool emitting = true);
-    V3 lastOrigin{ 0, 0, 0 };
+    V3 lastOrigin{ 0, 0, 0 }; double lastYaw = 0; bool emittingNow = true;   // (where it was last, which way it faced, whether it was on)
     void burstNow(int n, V3 origin, double yaw);
     float alive01(const Particle& p) const { return p.life > 0 ? std::min(1.f, p.age / p.life) : 1; }
 private:

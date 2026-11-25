@@ -62,6 +62,7 @@ const Need& needOf(Do d) {
         { "stop the countdown" },
         { "play music", false, false, true },
         { "stop the music" },
+        { "on the visor:", false, false, true, true, "", "how strong" },
     };
     return n[std::clamp((int)d, 0, (int)Do::COUNT - 1)];
 }
@@ -140,6 +141,7 @@ std::string describe(const EventCard& c) {
         case Do::StopCountdown: a = "stop the countdown"; break;
         case Do::PlayMusic: a = "play the music " + orAny(d.text, "?"); break;
         case Do::StopMusic: a = "stop the music"; break;
+        case Do::VisorEffect: a = "on the visor: " + orAny(d.text, "Goo splat"); break;
         default: break;
         }
         s += (k == 0 ? " " : ", ") + a;

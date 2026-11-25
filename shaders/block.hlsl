@@ -2179,8 +2179,21 @@ void visorDrops(float2 pos, out float2 off, out float rim)
 {
     off = 0; rim = 0;
     float sz = gDepth.w, t = gVolume.z;
-    [unroll] for (int L = 0; L < 3; L++)
+    [unroll] for (int L = 0; L < 4; L++)
     {
+        if (L == 3)
+        {   // rain: drops running down the glass, a thin wet trail above each
+            float am = gWater2.w * 0.5; if (am < 0.003) continue;
+            float cols = 7; float2 p = pos / sz * float2(cols, 1); float ci = floor(p.x); float2 h = cauHash(float2(ci, 11.3));
+            if (h.x > am) continue;
+            float spd = 0.06 + 0.1 * h.y, yy = frac(t * spd + h.x * 3.7) * 1.4 - 0.2;            // (screen heights)
+            float cx = (ci + 0.3 + 0.4 * h.y) / cols;                                            // (screen heights across, like q)
+            float2 q = pos / sz;
+            float2 dd = float2((q.x - cx) / (1 + abs(gVisFx2.y) * 3), q.y - yy) / 0.022; float k = dot(dd, dd);
+            if (k < 1) { float z = sqrt(1 - k); off -= dd * (1 - z * 0.35) * 0.022 * sz * 0.9; rim = max(rim, smoothstep(0.5, 1, k)); }
+            else if (abs(q.x - cx) < 0.004 && q.y < yy && q.y > yy - 0.25) rim = max(rim, 0.25 * (1 - (yy - q.y) / 0.25));   // the trail
+            continue;
+        }
         float amount = L < 2 ? gWater2.y * (L == 0 ? 0.6 : 0.85) : gWater2.w * 0.4;
         if (amount < 0.003) continue;
         float cells = L == 0 ? 6 : L == 1 ? 11 : 9;
@@ -2191,6 +2204,7 @@ void visorDrops(float2 pos, out float2 off, out float rim)
         float2 c = 0.5 + (h - 0.5) * 0.55;
         float r = (0.14 + 0.2 * h3) * (L == 1 ? 0.7 : 1) * (L < 2 ? 0.55 + 0.45 * saturate(gWater2.y * 1.5) : 0.8);
         float2 d = (f - c) / r; d.y *= 0.85;
+        if (L == 2) d.x /= 1 + abs(gVisFx2.y) * 3;   // (turning fast: the rain on the glass is smeared sideways)
         float k = dot(d, d);
         if (k < 1) { float z = sqrt(1 - k); off -= d * (1 - z * 0.35) * r / cells * sz * 0.9; rim = max(rim, smoothstep(0.5, 1, k)); }
     }
@@ -2319,6 +2333,51 @@ float3 bootFx(float3 c, int2 px, float2 ndc, float zb)
     }
     return lerp(wire, c, gBoot.z);
 }
+// ---- what is on the visor's glass: fogged up (steam), frost from the edges (cold), a splat sliding off, your face in a flash
+Texture2D gVisorFace : register(t54);   // your face, shown in the glass in a bright flash (screens/visor_face.png; none: just a glint)
+float glassFog(float2 uv)   // how fogged this spot is: it clears from the edges in
+{
+    if (gVisFx.x < 0.003) return 0;
+    float2 asp = float2(gDepth.z / max(gDepth.w, 1), 1);
+    float r = length((uv - 0.5) * asp) * 1.4;
+    float n = rnoise(uv * asp * 6 + 1.7) * 0.6 + rnoise(uv * asp * 17) * 0.4;
+    return saturate(gVisFx.x * 1.7 - r * 0.55 + (n - 0.5) * 0.35);
+}
+float glassFrost(float2 uv, out float crys)   // frost creeping in from the edges (crys: the crystals' lines)
+{
+    crys = 0; if (gVisFx.y < 0.003) return 0;
+    float2 asp = float2(gDepth.z / max(gDepth.w, 1), 1);
+    float ed = min(min(uv.x, 1 - uv.x) * asp.x, min(uv.y, 1 - uv.y));
+    float n = rnoise(uv * asp * 9) * 0.6 + rnoise(uv * asp * 23 + 4.1) * 0.4;
+    float m = saturate((gVisFx.y * 0.42 - ed + (n - 0.5) * 0.14) / 0.03);
+    if (m <= 0) return 0;
+    float2 p = uv * asp * 38, ci = floor(p); float best = 9, second = 9;
+    [unroll] for (int y = -1; y <= 1; y++) [unroll] for (int x = -1; x <= 1; x++)
+    { float2 cc = ci + float2(x, y), o = cc + cauHash(cc); float dd = length(p - o); if (dd < best) { second = best; best = dd; } else if (dd < second) second = dd; }
+    crys = 1 - saturate((second - best) / 0.12);
+    return m;
+}
+float glassSplat(float2 uv, out float2 grad)   // a splat: a blob where it hit, drips running down from it (grad: which way its surface leans)
+{
+    grad = 0; if (gVisFx.z < 0.003) return 0;
+    float seed = fmod(gVisSplat.w, 1000); float2 h = cauHash(float2(seed, seed * 1.7 + 3.1));
+    float2 asp = float2(gDepth.z / max(gDepth.w, 1), 1);
+    float2 c = float2(0.2 + 0.6 * h.x, 0.18 + 0.35 * h.y), d = (uv - c) * asp;
+    float r = 0.1 + 0.05 * h.y, ang = atan2(d.y, d.x), len = length(d);
+    float wob = 1 + 0.25 * sin(ang * 5 + seed) + 0.12 * sin(ang * 11 + seed * 2.3);
+    float m = saturate((r * wob - len) / 0.008); grad = len > 1e-4 ? d / len * saturate(len / max(r * wob, 1e-3)) : 0;
+    float slide = min(gVisFx2.w, 12);
+    [unroll] for (int k = 0; k < 4; k++)
+    {
+        float2 hk = cauHash(float2(seed + k * 7.1, k + 1.3));
+        float x = c.x + (hk.x - 0.5) * r * 1.6 / asp.x, L = r * 0.6 + slide * 0.035 * (0.4 + hk.y), w = 0.007 + 0.006 * hk.x;
+        float dx = (uv.x - x) * asp.x, ys = uv.y - c.y;
+        float stream = saturate((w * (1 - 0.4 * saturate(ys / max(L, 1e-3))) - abs(dx)) / 0.003) * step(0, ys) * step(ys, L);
+        float bead = saturate((w * 1.7 - length(float2(dx, ys - L))) / 0.003);
+        float s2 = max(stream, bead); if (s2 > m) { m = s2; grad = float2(sign(dx) * 0.6, 0.3); }
+    }
+    return m * saturate(gVisFx.z);
+}
 float4 PS_Post(SkyOut i) : SV_Target
 {
     float tvBoost = 1;
@@ -2341,6 +2400,11 @@ float4 PS_Post(SkyOut i) : SV_Target
         float row = floor(i.pos.y / 7), ft = floor(gDeath.w * 24);
         if (postHash(float2(row, ft)) > 1 - 0.35 * gDeath.x) { float sh = (postHash(float2(row + 3.1, ft)) - 0.5) * 90 * gDeath.x; i.pos.x = clamp(i.pos.x + sh, 0, gDepth.z - 1); i.ndc.x = i.pos.x / gDepth.z * 2 - 1; }
     }
+    if (gVisFx.w > 0.01)   // a shock: rows torn sideways for a moment
+    {
+        float row = floor(i.pos.y / 5), ft = floor(gVMisc.y * 30);
+        if (postHash(float2(row, ft + 77)) > 1 - 0.3 * gVisFx.w) { float sh = (postHash(float2(row + 5.3, ft)) - 0.5) * 60 * gVisFx.w; i.pos.x = clamp(i.pos.x + sh, 0, gDepth.z - 1); i.ndc.x = i.pos.x / gDepth.z * 2 - 1; }
+    }
     int2 px = int2(i.pos.xy);
     float2 uv = i.ndc * float2(0.5, -0.5) + 0.5;
     float dz = gSceneDepth.Load(int3(px, 0));
@@ -2352,9 +2416,29 @@ float4 PS_Post(SkyOut i) : SV_Target
     }
     float dropRim = 0;
     if (gWater2.y > 0.003 || gWater2.w > 0.003) { float2 o; visorDrops(i.pos.xy, o, dropRim); px = clamp(px + int2(round(o)), int2(0, 0), int2(gDepth.zw) - 1); uv = (float2(px) + 0.5) / gDepth.zw; }
+    float fogM = glassFog(uv), frostCrys, frostM = glassFrost(uv, frostCrys); float2 splatG; float splatM = glassSplat(uv, splatG);
+    if (frostM > 0.003 || splatM > 0.003)   // frosted glass scatters the view; a splat bends it
+    {
+        float2 j = (float2(postHash(float2(px) + 3.3), postHash(float2(px) + 9.1)) - 0.5) * 7 * frostM + splatG * 14 * splatM;
+        px = clamp(px + int2(round(j)), int2(0, 0), int2(gDepth.zw) - 1); uv = (float2(px) + 0.5) / gDepth.zw;
+    }
     float expo = lookExposure();
     float3 c = postBase(px, uv, expo);
     c *= 1 - dropRim * 0.35;   // a drop's dark rim
+    if (fogM > 0.003)   // fogged up: the view blurred and milky, tiny beads of water in it
+    {
+        float3 b = 0;
+        [unroll] for (int k = 0; k < 8; k++) { float a = k * 0.785; int2 o = int2(round(float2(cos(a), sin(a)) * 14 * fogM)); b += postBase(clamp(px + o, int2(0, 0), int2(gDepth.zw) - 1), uv + float2(o) / gDepth.zw, expo); }
+        b /= 8; float l = dot(b, float3(0.2126, 0.7152, 0.0722)); float3 fcol = (l * 0.55 + 0.1) * float3(0.93, 0.96, 1.0);
+        float beads = pow(saturate(rnoise(uv * float2(gDepth.z / max(gDepth.w, 1), 1) * 140) * 1.3 - 0.5), 3) * 0.6;
+        c = lerp(c, lerp(b, fcol, 0.6) + beads * fcol * 0.4, fogM * 0.9);
+    }
+    if (frostM > 0.003) { float l = dot(c, float3(0.2126, 0.7152, 0.0722)); float3 ic = float3(0.72, 0.86, 1.0) * (0.25 + l * 0.8 + frostCrys * 0.35); c = lerp(c, ic, frostM * (0.55 + 0.35 * frostCrys)); }
+    if (splatM > 0.003)   // a splat: tints what is behind it (Phazon glows)
+    {
+        float3 sc = gVisSplat.rgb; c = lerp(c, c * sc * 1.6 + sc * 0.06, splatM * 0.7);
+        if (gVisSplat.w >= 1000) c += sc * splatM * (0.5 + 0.3 * sin(gVMisc.y * 5));
+    }
     {   // colour fringes: red and blue a little apart - the visor's (sideways) and the lens's (toward the edges)
         float2 rad = i.ndc * float2(1, -1) * gLk1.y * 0.004 * gDepth.z;
         float2 of = float2(gVMisc.x, 0) + rad;
@@ -2412,6 +2496,19 @@ float4 PS_Post(SkyOut i) : SV_Target
     {   // film grain (stronger in the dark parts, like film)
         float g = postHash(float2(px) * 1.37 + frac(gVMisc.y * 3.71) * 613) + postHash(float2(px) * 0.71 + frac(gVMisc.y * 5.3) * 271) - 1;
         c += g * gLk1.z * 0.07 * (1.1 - saturate(dot(c, W)));
+    }
+    if (gVisFx.w > 0.01)   // a shock: snow, flicker, bright lines
+    {
+        c += (postHash(float2(px) * 0.5 + frac(gVMisc.y * 13) * 311) - 0.5) * gVisFx.w * 0.6;
+        c *= 1 + (postHash(float2(floor(gVMisc.y * 20), 1)) - 0.5) * gVisFx.w * 0.6;
+        c += float3(0.3, 0.6, 1.0) * gVisFx.w * 0.25 * step(0.97, postHash(float2(floor(i.pos.y / 3), floor(gVMisc.y * 25))));
+    }
+    if (gVisFx2.z > 0.003)   // your face in the glass (a bright flash): mirrored, where the view behind is dark; and a glint along the glass
+    {
+        float2 fu = (float2(1 - uv.x, uv.y) - 0.5) * float2(gDepth.z / max(gDepth.w, 1), 1) * 0.9 + 0.5;
+        float4 f = (all(fu > 0) && all(fu < 1)) ? gVisorFace.SampleLevel(gClamp, fu, 0) : 0;
+        c += f.rgb * f.a * gVisFx2.z * 0.45 * (1 - saturate(dot(c, W)) * 0.7);
+        float arc = exp(-pow((length(i.ndc * float2(1.2, 1)) - 0.85) * 9, 2)); c += float3(0.55, 0.7, 0.85) * arc * gVisFx2.z * 0.06;
     }
     float2 v = i.ndc; c *= 1 - gLk1.w * dot(v, v) * 0.5;               // the look's vignette
     c *= 1 - gVGrade.w * dot(v, v) * 0.5;                               // ... and the visor's own
@@ -2528,6 +2625,7 @@ POut VS_Particle(PIn i)
     {
         float c = cos(i.info.y), s = sin(i.info.y);
         float2 k = float2(c * i.corner.x - s * i.corner.y, s * i.corner.x + c * i.corner.y);
+        if (abs(i.info.z - 8) < 0.5) k = i.corner;   // (a wisp stands upright)
         p = i.pos + (gCamR.xyz * k.x + gCamU.xyz * k.y) * size * 0.5;
     }
     o.pos = mul(float4(p, 1), gViewProj); o.uv = i.corner; o.col = i.col; o.rel = p; o.shape = i.info.z; o.seed = i.info.y; o.soft = (fl & 2) != 0 ? 1 : 0;
@@ -2545,7 +2643,20 @@ float4 PS_Particle(POut i) : SV_Target
     }
     else if (shape == 3) a = max(abs(q.x), abs(q.y)) < 0.75 ? 1 : 0;                                   // pixel
     else if (shape == 4) a = exp(-pow((r - 0.7) * 7, 2));                                                // ring
-    else if (shape == 6) a = exp(-q.x * q.x * 3.2) * 0.75 + exp(-q.x * q.x * 28) * 0.6;                     // ribbon: soft edges, a bright line down its middle
+    else if (shape == 20) a = exp(-q.x * q.x * 3.2) * 0.75 + exp(-q.x * q.x * 28) * 0.6;                    // ribbon: soft edges, a bright line down its middle
+    else if (shape == 6) { float2 g = q - float2(-0.32, 0.32); a = exp(-pow((r - 0.78) * 9, 2)) * 0.8 + exp(-dot(g, g) * 40) * 0.9 + 0.08 * saturate(1 - r); }   // bubble: a thin rim, a glint
+    else if (shape == 7)                                                                                // mist: softer and wider than smoke
+    {
+        float n = gNoise.SampleLevel(gLinear, float3(q * 0.25 + i.seed * 0.11, i.seed * 0.05 + gVolume.z * 0.02), 0).x;
+        a = pow(saturate(1 - r), 1.5) * (0.5 + 0.7 * n);
+    }
+    else if (shape == 8)                                                                                // wisp: a flame narrowing upward, licking side to side
+    {
+        float up = saturate((1 - q.y) * 0.5), w = 0.55 * (1 - up * 0.75);
+        float x = q.x + sin(q.y * 3 + gVolume.z * 4 + i.seed * 9) * 0.18 * up;
+        a = exp(-x * x / max(w * w, 1e-3)) * saturate(1 - abs(q.y)) * (0.75 + 0.25 * sin(gVolume.z * 9 + i.seed * 20));
+    }
+    else if (shape == 9) a = exp(-r * r * 6) * saturate(1 - r);                                          // mote: a tiny speck
     else if (shape == 5) a = exp(-r * r * 9) + exp(-abs(q.x) * 14) * saturate(1 - abs(q.y)) + exp(-abs(q.y) * 14) * saturate(1 - abs(q.x));   // flare
     else a = exp(-r * r * 4.5) * saturate(1 - r);                                                        // soft dot
     // soft where it meets the world
@@ -2553,7 +2664,22 @@ float4 PS_Particle(POut i) : SV_Target
     float scene = linDepth(zb), here = dot(i.rel, gCamF.xyz);
     a *= saturate((scene - here) * 3);
     if (i.soft < 0.5) return float4(i.col.rgb * a, 0);                                                  // glowing: added on top
+    if (shape == 9)   // a mote: only seen where light falls on it (a sunbeam through a window, a lamp)
+    {
+        float sun = 0;
+        if (gSunDir.w > 0.5) { float4 sp = mul(float4(i.rel, 1), gCascVP[1]); float2 su = float2(sp.x, -sp.y) * 0.5 + 0.5; if (all(su > 0) && all(su < 1) && sp.z < 1) sun = gShadow.SampleCmpLevelZero(gShadowSamp, float3(su, 1), sp.z - 0.002); }
+        float3 L = gSunColor.rgb * sun * saturate(gSunDir.y * 4) * 1.6 + dynLights(i.rel, -normalize(i.rel)) * 0.8;
+        float vis = saturate(dot(L, float3(0.3, 0.5, 0.2)) * 2 - 0.15);
+        return float4(i.col.rgb * (L + gAmbient.rgb * 0.2), saturate(a * i.col.a * vis));
+    }
     float3 lit = i.col.rgb * (gAmbient.rgb * 1.3 + gSunColor.rgb * 0.35 + dynLights(i.rel, -normalize(i.rel)) * 0.5);   // soft (smoke): lit by the sky, the sun and lights
+    if (shape == 7)   // mist: a rainbow where the sun is behind you (about 42 degrees around the point straight opposite the sun; red outside)
+    {
+        float ang = acos(clamp(dot(normalize(i.rel), -gSunDir.xyz), -1, 1)), t = saturate((ang - 0.70) / 0.066);
+        float band = exp(-pow((ang - 0.733) / 0.03, 2)) * saturate(gSunDir.y * 5) * (1 - gWeather.z * 0.8);
+        float3 spec = float3(saturate(t * 2 - 0.6), saturate(1 - abs(t - 0.5) * 2.5), saturate(1 - t * 2.2));
+        lit += spec * band * gSunColor.rgb * 1.2;
+    }
     return float4(lit, saturate(a * i.col.a));
 }
 

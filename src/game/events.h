@@ -14,7 +14,7 @@ enum class If { HasKey, NoKey, CountAtLeast, FlagOn, FlagOff, HealthBelow, COUNT
 enum class Do { Message, OpenDoor, CloseDoor, LockDoor, UnlockDoor, MovePlatform, Show, Hide, LightOn, LightOff, Particles, Teleport,
                 Heal, Hurt, Kill, Checkpoint, GiveKey, TakeKey, AddCount, FlagOn, FlagOff, Wait, Win,
                 HudShow, HudHide, HudFlash,
-                StartFight, Shake, Countdown, StopCountdown, PlayMusic, StopMusic, COUNT };   // HUD: an element on the player's HUD, by name; StartFight: a boss
+                StartFight, Shake, Countdown, StopCountdown, PlayMusic, StopMusic, VisorEffect, COUNT };   // VisorEffect: something on the visor's glass (text: which, glassHitNames(); number: how strong)   // HUD: an element on the player's HUD, by name; StartFight: a boss
 
 // what each kind needs: an object (and which kind of object), a name, a text, a number
 struct Need { const char* label; bool object = false, name = false, text = false, number = false; const char* objectKind = ""; const char* numberLabel = ""; };

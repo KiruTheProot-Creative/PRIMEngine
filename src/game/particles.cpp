@@ -5,13 +5,14 @@
 namespace mc {
 
 const char* shapeName(PShape s) {
-    static const char* n[] = { "Soft dot", "Spark (streak)", "Smoke puff", "Pixel", "Ring", "Flare (star)" };
+    static const char* n[] = { "Soft dot", "Spark (streak)", "Smoke puff", "Pixel", "Ring", "Flare (star)", "Bubble", "Mist (rainbow in the sun)", "Wisp (flame-like)", "Mote (seen in light only)" };
     return n[std::clamp((int)s, 0, (int)PShape::COUNT - 1)];
 }
 const char* areaName(PArea a) { static const char* n[] = { "A point", "A ball", "A box", "A disc (flat)" }; return n[std::clamp((int)a, 0, (int)PArea::COUNT - 1)]; }
 const char* flickerName(Flicker f) { static const char* n[] = { "Steady", "Candle", "Broken (flickers off)", "Pulse" }; return n[std::clamp((int)f, 0, 3)]; }
 
-std::vector<std::string> particlePresets() { return { "Sparks", "Fire", "Smoke", "Steam", "Magic", "Drips", "Embers", "Beam trail", "Impact", "Muzzle flash", "Charge" }; }
+std::vector<std::string> particlePresets() { return { "Sparks", "Fire", "Smoke", "Steam", "Steam vent", "Magic", "Drips", "Embers", "Beam trail", "Impact", "Muzzle flash", "Charge",
+                                                        "Waterfall spray", "Bubbles", "Phazon wisps", "Electric arc", "Dust motes" }; }
 ParticleSettings particlePreset(const std::string& n) {
     ParticleSettings p;
     if (n == "Sparks") { p.rate = 0; p.burst = 25; p.burstEvery = 1.2f; p.life = 0.6f; p.lifeVar = 0.3f; p.spread = 70; p.speed = 6; p.speedVar = 2.5f; p.gravity = -14; p.drag = 0.6f;
@@ -21,7 +22,31 @@ ParticleSettings particlePreset(const std::string& n) {
     else if (n == "Smoke") { p.rate = 12; p.life = 4; p.lifeVar = 1; p.spread = 15; p.speed = 0.9f; p.speedVar = 0.3f; p.gravity = 0.3f; p.drag = 0.4f; p.size0 = 0.5f; p.size1 = 2.2f;
         p.color0 = 0x707070; p.color1 = 0x505050; p.alpha0 = 0.55f; p.alpha1 = 0; p.glow = 1; p.additive = false; p.shape = PShape::Smoke; p.area = PArea::Disc; p.areaSize = { 0.3, 0, 0.3 }; p.spin = 0.15f; }
     else if (n == "Steam") { p.rate = 30; p.life = 1.6f; p.lifeVar = 0.4f; p.spread = 8; p.speed = 3.5f; p.speedVar = 0.8f; p.gravity = 0.5f; p.drag = 1.2f; p.size0 = 0.2f; p.size1 = 1.2f;
-        p.color0 = 0xF0F4F8; p.color1 = 0xE0E8F0; p.alpha0 = 0.45f; p.alpha1 = 0; p.glow = 1; p.additive = false; p.shape = PShape::Smoke; p.spin = 0.3f; }
+        p.color0 = 0xF0F4F8; p.color1 = 0xE0E8F0; p.alpha0 = 0.45f; p.alpha1 = 0; p.glow = 1; p.additive = false; p.shape = PShape::Smoke; p.spin = 0.3f; p.fogsVisor = 0.8f; p.wobble = 0.15f; }
+    else if (n == "Steam vent") {   // a big hot plume: billowing out, rising, slowly thinning; walk into it and the visor fogs up
+        p.rate = 40; p.life = 3.2f; p.lifeVar = 0.8f; p.spread = 14; p.speed = 5; p.speedVar = 1.2f; p.gravity = 0.9f; p.drag = 1.1f; p.size0 = 0.5f; p.size1 = 3.4f;
+        p.color0 = 0xF4F7FA; p.color1 = 0xD8E0E8; p.alpha0 = 0.5f; p.alpha1 = 0; p.glow = 1; p.additive = false; p.shape = PShape::Smoke; p.spin = 0.25f;
+        p.area = PArea::Disc; p.areaSize = { 0.3, 0, 0.3 }; p.fogsVisor = 1; p.wobble = 0.35f; p.maxParticles = 600; }
+    else if (n == "Waterfall spray") {   // mist where falling water hits: soft, drifting, with a rainbow when the sun is behind you
+        p.rate = 35; p.life = 3.5f; p.lifeVar = 1; p.spread = 70; p.speed = 1.8f; p.speedVar = 0.8f; p.gravity = 0.15f; p.drag = 0.9f; p.size0 = 0.8f; p.size1 = 2.6f;
+        p.color0 = 0xF2F6FA; p.color1 = 0xE6EEF4; p.alpha0 = 0.32f; p.alpha1 = 0; p.glow = 1; p.additive = false; p.shape = PShape::Mist; p.spin = 0.1f;
+        p.area = PArea::Disc; p.areaSize = { 1.5, 0, 1.5 }; p.fogsVisor = 0.35f; p.wobble = 0.3f; p.maxParticles = 500; }
+    else if (n == "Bubbles") {   // rising in water, wobbling, popping at the surface
+        p.rate = 6; p.life = 5; p.lifeVar = 1.5f; p.spread = 10; p.speed = 1.2f; p.speedVar = 0.4f; p.gravity = 1.5f; p.drag = 1.6f; p.size0 = 0.08f; p.size1 = 0.14f;
+        p.color0 = 0xD8F4FF; p.color1 = 0xC0E8FF; p.alpha0 = 0.8f; p.alpha1 = 0.6f; p.glow = 0.6f; p.additive = true; p.shape = PShape::Bubble;
+        p.area = PArea::Disc; p.areaSize = { 0.4, 0, 0.4 }; p.wobble = 0.12f; p.stayIn = 1; }
+    else if (n == "Phazon wisps") {   // glowing blue flames drifting up, swaying and pulsing
+        p.rate = 10; p.life = 2.8f; p.lifeVar = 0.8f; p.spread = 25; p.speed = 0.7f; p.speedVar = 0.3f; p.gravity = 0.5f; p.drag = 0.6f; p.size0 = 0.35f; p.size1 = 0.05f;
+        p.color0 = 0x40B8FF; p.color1 = 0x1030FF; p.alpha0 = 1; p.alpha1 = 0; p.glow = 3; p.additive = true; p.shape = PShape::Wisp;
+        p.area = PArea::Disc; p.areaSize = { 0.8, 0, 0.8 }; p.wobble = 0.25f; p.light = true; p.lightRange = 6; p.lightIntensity = 1.4f; }
+    else if (n == "Electric arc") {   // bolts jumping from here to a point above (Arc to), crackling, a few sparks
+        p.rate = 4; p.life = 0.5f; p.lifeVar = 0.2f; p.spread = 90; p.speed = 3; p.speedVar = 1.5f; p.gravity = -10; p.drag = 0.5f; p.size0 = 0.05f; p.size1 = 0.01f;
+        p.color0 = 0x9FD8FF; p.color1 = 0x4080FF; p.glow = 4; p.shape = PShape::Spark; p.collide = true;
+        p.arc = true; p.arcTo = { 0, 2, 0 }; p.arcBolts = 2; p.arcJag = 0.35f; p.light = true; p.lightRange = 6; p.lightIntensity = 1.8f; }
+    else if (n == "Dust motes") {   // tiny specks drifting in the air, only seen where light falls (sunbeams through a window)
+        p.rate = 20; p.life = 9; p.lifeVar = 3; p.spread = 180; p.speed = 0.05f; p.speedVar = 0.04f; p.gravity = 0; p.drag = 0.2f; p.size0 = 0.035f; p.size1 = 0.035f;
+        p.color0 = 0xFFF2DC; p.color1 = 0xFFF2DC; p.alpha0 = 0.8f; p.alpha1 = 0; p.glow = 1; p.additive = false; p.shape = PShape::Mote;
+        p.area = PArea::Box; p.areaSize = { 6, 4, 6 }; p.wobble = 0.08f; p.maxParticles = 400; }
     else if (n == "Magic") { p.rate = 25; p.life = 2; p.lifeVar = 0.5f; p.spread = 180; p.speed = 0.6f; p.speedVar = 0.3f; p.gravity = 0.4f; p.drag = 0.3f; p.size0 = 0.12f; p.size1 = 0;
         p.color0 = 0xC0A0FF; p.color1 = 0x40E0FF; p.glow = 3; p.shape = PShape::Flare; p.area = PArea::Sphere; p.areaSize = { 0.8, 0.8, 0.8 }; p.spin = 1; }
     else if (n == "Drips") { p.rate = 3; p.life = 2; p.lifeVar = 0.2f; p.spread = 0; p.dir = { 0, -1, 0 }; p.speed = 0.2f; p.speedVar = 0; p.gravity = -12; p.drag = 0; p.size0 = 0.06f; p.size1 = 0.06f;
@@ -70,7 +95,7 @@ void ParticleEmitter::spawn(V3 o, double yaw) {
 void ParticleEmitter::burstNow(int n, V3 origin, double yaw) { for (int i = 0; i < n; i++) spawn(origin, yaw); }
 
 void ParticleEmitter::update(double dt, V3 origin, double yaw, const World* w, bool emitting) {
-    V3 shift = origin - lastOrigin; bool follow = s.pull > 0 && started; lastOrigin = origin;
+    V3 shift = origin - lastOrigin; bool follow = s.pull > 0 && started; lastOrigin = origin; lastYaw = yaw; emittingNow = emitting;
     if (follow) for (Particle& p : ps) p.pos = p.pos + shift;   // sucked-in ones move along with what they fly into
     if (emitting) {
         if (!started) { started = true; if (s.burst > 0) burstNow(s.burst, origin, yaw); }
@@ -87,6 +112,11 @@ void ParticleEmitter::update(double dt, V3 origin, double yaw, const World* w, b
             p.vel = p.vel + to * (s.pull * dt / d);
         }
         V3 next = p.pos + p.vel * dt;
+        if (s.wobble > 0) {   // swaying side to side (each its own way)
+            double ph = (p.seed % 1000) * 0.0063, a = p.age * (2.1 + (p.seed % 7) * 0.25) + ph, k = s.wobble * 2.2 * dt;
+            next.x += std::cos(a) * k; next.z += std::sin(a * 1.3 + ph) * k;
+        }
+        if (s.stayIn == 1 && w && w->liquidAt(next) != 1) { p.age = p.life; continue; }   // a bubble: pops at the surface
         if (s.collide && w && w->solidAt((int)std::floor(next.x), (int)std::floor(next.y), (int)std::floor(next.z))) {
             if (!s.bounce) { p.age = p.life; continue; }
             // bounce off the side it came through

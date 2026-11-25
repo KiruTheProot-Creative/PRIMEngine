@@ -62,6 +62,24 @@ struct ScanLog {
     std::vector<std::string> categories() const;            // in the order they first came
     void clear() { entries.clear(); }
 };
+// What is on the visor's glass (not its look): steam fogging it up, frost creeping in from the edges, splats that slide off,
+// static from a shock, your own face in a bright flash - and how the rain drops on it react to where you look and how you turn.
+enum class GlassHit { GooSplat, PhazonSplat, Static, FogUp, Frost, Face, COUNT };
+const char* glassHitName(GlassHit h);
+std::vector<std::string> glassHitNames();
+int findGlassHit(const std::string& name);   // by name (event cards); -1 unknown
+struct VisorGlass {
+    float fog = 0, frost = 0;            // 0..1: fogged up (steam), frost from the edges (the cold)
+    float splat = 0, splatAge = 99;      // a splat: how much of it is left (0..1), seconds since it hit
+    uint32_t splatColor = 0x7BC84A, splatSeed = 1; bool splatGlows = false;
+    float shock = 0, face = 0;           // static (0..1), your face in the glass (0..1)
+    float lookUp = 0, turn = 0;          // the rain on it: how far up you look (-1..1), how fast the view turns sideways (-1..1, smoothed)
+    void hit(GlassHit h, float strength, uint32_t seed);
+    // steam: how deep the eye is in steam (0..1); cold: how cold the air is here (0..1); flash: a bright flash now (0..1)
+    void update(double dt, float steam, float cold, float flash, bool underwater, float pitchDeg, float yawRateDeg);
+    void clear() { float l = lookUp, t = turn; *this = VisorGlass{}; lookUp = l; turn = t; }
+};
+
 // text with line breaks and spaces, kept on one line of a file
 std::string escText(const std::string& s);
 std::string unescText(const std::string& s);
