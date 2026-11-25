@@ -250,7 +250,7 @@ struct App {
         probeSpacing = spacing; probeCur = 0;
     }
     ComPtr<ID3D11Texture2D> giHistTex[2]; ComPtr<ID3D11RenderTargetView> giHistRTV[2]; ComPtr<ID3D11ShaderResourceView> giHistSRV[2]; int giCur = 0; bool giHistOk = false;   // its memory (two, taking turns)
-    XMMATRIX histVPNow = XMMatrixIdentity(), histVPPrev = XMMatrixIdentity(); V3 histCamPrev{ 0, 0, 0 }; uint32_t frameNo = 0;
+    XMMATRIX histVPNow = XMMatrixIdentity(), histVPPrev = XMMatrixIdentity(); V3 histCamPrev{ 0, 0, 0 }; uint32_t frameNo = 0; uint64_t shadowTick = 0;
     ComPtr<ID3D11Texture2D> surfTex, reflTex; ComPtr<ID3D11RenderTargetView> surfRTV, reflRTV; ComPtr<ID3D11ShaderResourceView> surfSRV, reflSRV;   // for reflections
     ComPtr<ID3D11Texture2D> skyMapTex; ComPtr<ID3D11DepthStencilView> skyMapDSV; ComPtr<ID3D11ShaderResourceView> skyMapSRV;   // what is above each spot
     Weather weather; bool weatherWin = false;
@@ -670,7 +670,7 @@ struct App {
         HR(dev->CreateTexture2D(&d, nullptr, &hdrTex)); HR(dev->CreateRenderTargetView(hdrTex.Get(), nullptr, &hdrRTV)); HR(dev->CreateShaderResourceView(hdrTex.Get(), nullptr, &hdrSRV));
         { D3D11_TEXTURE2D_DESC id = d; id.Format = DXGI_FORMAT_R11G11B10_FLOAT; indTex.Reset(); indRTV.Reset(); indSRV.Reset();
           HR(dev->CreateTexture2D(&id, nullptr, &indTex)); HR(dev->CreateRenderTargetView(indTex.Get(), nullptr, &indRTV)); HR(dev->CreateShaderResourceView(indTex.Get(), nullptr, &indSRV));
-          { int div = std::clamp((int)std::lround(rh / 720.0), 2, 4); lowW = std::max(1, rw / div); lowH = std::max(1, rh / div); }   // (the smaller pictures' size)
+          { int div = VrBench() ? 4 : std::clamp((int)std::lround(rh / 720.0), 2, 4); lowW = std::max(1, rw / div); lowH = std::max(1, rh / div); }   // (the smaller pictures' size)
           id.Width = (UINT)lowW; id.Height = (UINT)lowH; id.Format = DXGI_FORMAT_R8_UNORM; aoTex.Reset(); aoRTV.Reset(); aoSRV.Reset(); aoTex2.Reset(); aoRTV2.Reset(); aoSRV2.Reset();
           HR(dev->CreateTexture2D(&id, nullptr, &aoTex)); HR(dev->CreateRenderTargetView(aoTex.Get(), nullptr, &aoRTV)); HR(dev->CreateShaderResourceView(aoTex.Get(), nullptr, &aoSRV));
           HR(dev->CreateTexture2D(&id, nullptr, &aoTex2)); HR(dev->CreateRenderTargetView(aoTex2.Get(), nullptr, &aoRTV2)); HR(dev->CreateShaderResourceView(aoTex2.Get(), nullptr, &aoSRV2));   // (blurred)
@@ -4582,7 +4582,25 @@ struct App {
         }
         instLo = UINT_MAX; instHi = 0;
     }
+    struct EyeMemory {   // the second eye's own memory of the frames before (bounce light): each eye blends with itself, not with the other eye
+        ComPtr<ID3D11Texture2D> tex[2]; ComPtr<ID3D11RenderTargetView> rtv[2]; ComPtr<ID3D11ShaderResourceView> srv[2]; int cur = 0; bool ok = false;
+        XMMATRIX vpPrev = XMMatrixIdentity(); V3 camPrev{ 0, 0, 0 };
+    } eye2;
+    void SwapEyeMemory() {
+        for (int k = 0; k < 2; k++) { std::swap(giHistTex[k], eye2.tex[k]); std::swap(giHistRTV[k], eye2.rtv[k]); std::swap(giHistSRV[k], eye2.srv[k]); }
+        std::swap(giCur, eye2.cur); std::swap(giHistOk, eye2.ok); std::swap(histVPPrev, eye2.vpPrev); std::swap(histCamPrev, eye2.camPrev);
+    }
+    void EnsureEye2() {   // (the same size as the first eye's)
+        if (!giHistTex[0]) return;
+        D3D11_TEXTURE2D_DESC gd; giHistTex[0]->GetDesc(&gd);
+        if (eye2.tex[0]) { D3D11_TEXTURE2D_DESC ed; eye2.tex[0]->GetDesc(&ed); if (ed.Width == gd.Width && ed.Height == gd.Height) return; }
+        for (int k = 0; k < 2; k++) { eye2.tex[k].Reset(); eye2.rtv[k].Reset(); eye2.srv[k].Reset(); HR(dev->CreateTexture2D(&gd, nullptr, &eye2.tex[k])); HR(dev->CreateRenderTargetView(eye2.tex[k].Get(), nullptr, &eye2.rtv[k])); HR(dev->CreateShaderResourceView(eye2.tex[k].Get(), nullptr, &eye2.srv[k])); }
+        eye2.ok = false;
+    }
     void RenderWorld(ID3D11RenderTargetView* outScreen) {
+        if (vrEye == 1) EnsureEye2();
+        bool eyeSwap = vrEye == 1 && (bool)eye2.tex[0]; if (eyeSwap) SwapEyeMemory();
+        struct EyeBack { App& a; bool on; ~EyeBack() { if (on) a.SwapEyeMemory(); } } eyeBack{ *this, eyeSwap };
         // render scale: drawn at the world's own size into a picture of that size, fitted to the screen at the end (the HUD over it at the screen's size)
         bool temporal = PrimeOn() && upSrc.rtv && upSrc.w == std::max(16, sceneW) && upSrc.h == std::max(16, sceneH);
         bool scaledNow = (Scaled() || temporal) && upSrc.rtv; int dispW = rw, dispH = rh;
@@ -4644,6 +4662,7 @@ struct App {
         bool shadows = shadowSize > 0 && fc.sunDir[3] > 0;
         XMMATRIX svp = XMMatrixIdentity(); XMMATRIX cvp[CASCADES]; bool cascUpd[CASCADES] = { false, false, false, false };
         if (!shadows) for (bool& v : cascValid) v = false;
+        if (vrEye != 1) shadowTick++;   // (once a frame - in VR the first eye's: the staggered maps keep their rhythm)
         if (shadows) {   // four cascades around the camera: sharp near you, coarser farther out (blended where they meet)
             float reach = std::clamp(settings.shadowDistance, 24.f, 512.f);
             const float split[CASCADES] = { 0.08f, 0.2f, 0.45f, 1.0f };
@@ -4661,7 +4680,8 @@ struct App {
                 static const int period[CASCADES] = { 1, 2, 4, 8 }, phase[CASCADES] = { 0, 0, 1, 3 };
                 V3 mvd = camPos - cascCam[c]; double moved = std::sqrt(mvd.x * mvd.x + mvd.y * mvd.y + mvd.z * mvd.z);
                 bool sunMoved = cascSun[c].x * L.x + cascSun[c].y * L.y + cascSun[c].z * L.z < 0.99998;
-                cascUpd[c] = !cascValid[c] || cascSize != shadowSize || cascR0[c] != R || moved > R * 0.2 || sunMoved || (int)(frameNo % (uint64_t)period[c]) == phase[c];
+                bool shareEye = vrEye == 1 && cascValid[c] && cascSize == shadowSize && cascR0[c] == R && !sunMoved;   // (VR: the second eye sees the first eye's maps - drawn once)
+                cascUpd[c] = !shareEye && (!cascValid[c] || cascSize != shadowSize || cascR0[c] != R || moved > R * 0.2 || sunMoved || (int)(shadowTick % (uint64_t)period[c]) == phase[c]);
                 if (cascUpd[c]) { XMStoreFloat4x4(&cascVPs[c], cvp[c]); cascCam[c] = camPos; cascR0[c] = R; cascSun[c] = L; cascValid[c] = true; }
                 V3 dc = camPos - cascCam[c];
                 XMMATRIX now = XMMatrixTranslation((float)dc.x, (float)dc.y, (float)dc.z) * XMLoadFloat4x4(&cascVPs[c]);   // (today's camera-relative position -> that map)
@@ -5230,7 +5250,7 @@ struct App {
         GpuMark("motion blur");
         {   // ---- motion blur: the picture smeared along how the camera moved it (into the other full picture, then the two swap names)
             V3 jd = camPos - blurPrevCam; bool jumped = std::sqrt(jd.x * jd.x + jd.y * jd.y + jd.z * jd.z) > 4; blurPrevCam = camPos;
-            if (settings.motionBlur > 0.01f && !jumped && !paused) {
+            if (settings.motionBlur > 0.01f && !jumped && !paused && vrEye < 0) {   // (never in VR: it makes people feel sick)
                 float k = (float)std::clamp(settings.motionBlur * (1.0 / 60) / std::max(frameDt, 1e-3), 0.0, 4.0);   // (the same smear at any frame rate: a sixtieth of a second at most)
                 ChunkCB cc{ { k, playMode ? 0.0021f : 0.f, 0.06f, 0 } }; ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);
                 { ID3D11Buffer* cbs[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->PSSetConstantBuffers(0, 2, cbs); }
