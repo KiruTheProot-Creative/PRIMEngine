@@ -4703,7 +4703,6 @@ struct App {
                     bool blocks = !cascStaticOk[c] || meshesChanged.size() >= 512;
                     auto inMap = [&](const V3& p) { V3 d = p - cascCam[c]; double ax = dot(d, xx), ay = dot(d, yx); return std::fabs(ax) < R + CS * 1.5 && std::fabs(ay) < R + CS * 1.5; };
                     for (size_t i = 0; i < meshesChanged.size() && !blocks; i++) blocks = inMap(meshesChanged[i]);
-                    for (size_t i = 0; i < shadowLodChanged.size() && !blocks; i++) blocks = inMap(shadowLodChanged[i]);
                     cascRedo[c] = !shareEye && (mustMove || blocks);
                     cascUpd[c] = !shareEye && (cascRedo[c] || timer);
                 }
@@ -4714,7 +4713,6 @@ struct App {
                 if (c == CASCADES - 1) svp = now;
                 cvp[c] = now;   // (drawn with the map's own placing: moving things on a kept map land where its blocks are)
             }
-            if (vrEye != 1) shadowLodChanged.clear();
             cascSize = shadowSize;
             if (shotDir.size() && !cascLogged) { cascLogged = true; char b[160]; snprintf(b, sizeof b, "shadow cascades: %.0f / %.0f / %.0f / %.0f blocks, near pixel %.3f blocks", fc.cascR[0], fc.cascR[1], fc.cascR[2], fc.cascR[3], fc.cascTexel[0]); Log(b); }
             fc.shadowInfo[0] = 1.f / shadowSize; fc.shadowInfo[1] = fc.cascR[CASCADES - 1]; fc.shadowInfo[2] = fc.cascTexel[0] * 1.5f; fc.shadowInfo[3] = 1.6f;
@@ -9679,8 +9677,7 @@ struct App {
                 lodGroupCells(reg, k, g, get, cells);
                 MeshData md; lodMesh(reg, k, cells, md);
                 auto li = lodGroups[k].try_emplace(g); LodGroup& lg = li.first->second;
-                if (li.second) { lg.inst = InstAlloc(); double gs = (double)(CS << k); InstSet(lg.inst, g.x * gs, g.y * gs, g.z * gs); }
-                if (shadowLodChanged.size() < 4096) { double gs = (double)(CS << k); shadowLodChanged.push_back({ (g.x + 0.5) * gs, (g.y + 0.5) * gs, (g.z + 0.5) * gs }); } Upload(md, lg.vb, lg.ib, lg.n); lg.built = true; lodSelGen++;
+                if (li.second) { lg.inst = InstAlloc(); double gs = (double)(CS << k); InstSet(lg.inst, g.x * gs, g.y * gs, g.z * gs); } Upload(md, lg.vb, lg.ib, lg.n); lg.built = true; lodSelGen++;
                 lodDirty[k].erase(g);
             }
         }
@@ -18177,7 +18174,6 @@ struct App {
     float dynScale = 1.f; double dynT = 0;
     float drawMaxDist = 0; int lshFacesDrawn = 0, lshFacesShown = 0;   // (drawing chunks: only this near, 0 all)
     ComPtr<ID3D11Texture2D> cascStatic; ComPtr<ID3D11DepthStencilView> cascStaticDSV[4]; bool cascStaticOk[4] = { false, false, false, false };   // the far maps' blocks and still things, kept (slice c-1 for map c)
-    std::vector<V3> shadowLodChanged;   // far groups built since the sun's maps last looked (their blocks are in the far maps)
     XMFLOAT4X4 cascVPs[4]; V3 cascCam[4]; V3 cascSun[4]; float cascR0[4] = { 0, 0, 0, 0 }; bool cascValid[4] = { false, false, false, false }; int cascSize = 0, cascDrawn = 0, cascDrawnShown = 0;   // the sun's maps: when each was drawn
     ComPtr<ID3D11Texture2D> primePrevZ; ComPtr<ID3D11ShaderResourceView> primePrevZSRV; bool primePrevZOk = false;   // PrimeScaler: the frame before's depth   // auto resolution: a share of the render scale, and the time since it last changed
     void FrameBody(double dt) {   // everything but showing the picture (screenshots grab it before)
