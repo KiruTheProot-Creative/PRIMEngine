@@ -94,6 +94,7 @@ struct ScreenItem {
     bool cursor = false;                                 // Text: a blinking bar after the typed letters
     bool code = false;                                   // Text: made-up scanner code around it (a tag before it, little lines above and under it), typed with it
     float pulse = 0;                                     // breathes (brighter / dimmer) over this many seconds (0: steady) - "press start"
+    bool sharp = false;                                  // Picture: sharp pixels when it is drawn bigger (pixel art), not smoothed
     float fadeOutTime() const { return fadeOut < 0 ? fade : fadeOut; }
 };
 // where an item is t seconds into its screen: its keyframes (between two: blended), else where it was put

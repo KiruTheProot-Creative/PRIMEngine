@@ -1759,6 +1759,7 @@ int main() {
             ScreenSet set; set.screens.push_back(s); set.screens[0].items[0].pulse = 1.5f; saveScreens("/tmp/prim_phazon.txt", set); ScreenSet back; loadScreens("/tmp/prim_phazon.txt", back);
             const Screen& r = back.screens[0]; const ScreenItem* rs = nullptr; for (const ScreenItem& i : r.items) if (i.name == "Logo: Leviathan") rs = &i;
             bool nodesOk = r.comp.nodes.size() == s.comp.nodes.size(); for (size_t i = 0; nodesOk && i < r.comp.nodes.size(); i++) nodesOk = r.comp.nodes[i].type == s.comp.nodes[i].type && r.comp.nodes[i].p[0] == s.comp.nodes[i].p[0];
+            CHECK(rs && rs->sharp, "the logo pictures keep their sharp pixels (saved and loaded)");
             CHECK(r.pressStart && r.shakeAt == s.shakeAt && r.shakeTime == s.shakeTime && rs && rs->inFx == 1 && rs->inFxTime == sub->inFxTime && r.items[0].cursor && r.items[0].code && r.items[0].pulse == 1.5f && nodesOk,
                   "the intro saves and loads (shake, press start, come-in effects, cursor, code, pulse, the new nodes)");
         }

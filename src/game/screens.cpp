@@ -364,7 +364,7 @@ Screen presetPhazonIntro() {
     // the title: three pictures in the "screens" folder, put back together where they sat in the whole logo (a picture that isn't there yet: its text instead)
     auto logo = [&](const char* name, const char* file, const char* stand, float x, float y, float w, float h, float at, int fx, float fxTime, uint32_t textCol, uint32_t accent, float size) {
         ScreenItem i; i.name = name; i.kind = ScreenItemKind::Image; i.image = file; i.text = stand; i.x = x; i.y = y; i.w = w; i.h = h;
-        i.textSize = size; i.font = 1; i.weight = 0.8f; i.col.text = textCol; i.col.accent = accent; i.showAt = at; i.fade = fx ? 0.05f : 1.6f; i.inFx = fx; i.inFxTime = fxTime;
+        i.textSize = size; i.font = 1; i.weight = 0.8f; i.sharp = true; i.col.text = textCol; i.col.accent = accent; i.showAt = at; i.fade = fx ? 0.05f : 1.6f; i.inFx = fx; i.inFxTime = fxTime;
         s.items.push_back(i);
     };
     logo("Logo: Metroid Prime", "MPL_logo_metroid_prime.png", "METROID PRIME", 0.109f, 0.100f, 0.591f, 0.301f, 30.5f, 0, 0.9f, 0xE8F3FF, 0x9FD0FF, 0.075f);
@@ -606,6 +606,7 @@ bool saveScreens(const std::string& path, const ScreenSet& set) {
             if (i.cards || i.pickFill != 0.25f || i.corners || !i.tip.empty() || i.font) f << "look2 " << i.cards << " " << i.pickFill << " " << (i.corners ? 1 : 0) << " " << escText(i.tip) << " " << i.font << "\n";
             for (const ItemKey& k : i.keys) f << "key " << k.t << " " << k.x << " " << k.y << " " << k.scale << " " << k.alpha << " " << (k.smooth ? 1 : 0) << "\n";
             if (!i.sound.empty()) f << "isound " << soundUseText(i.sound) << "\n";
+            if (i.sharp) f << "isharp 1\n";
             if (i.inFx || i.cursor || i.code || i.pulse > 0) f << "ifx " << i.inFx << " " << i.inFxTime << " " << (i.cursor ? 1 : 0) << " " << (i.code ? 1 : 0) << " " << i.pulse << "\n";
         }
         f << "comp " << s.comp.nextId << "\n";
@@ -679,6 +680,7 @@ bool loadScreens(const std::string& path, ScreenSet& set) {
         else if (k == "anim2" && !cur->items.empty()) { ScreenItem& i = cur->items.back(); l >> i.fadeOut >> i.valign; i.valign = std::clamp(i.valign, 0, 2); }
         else if (k == "key" && !cur->items.empty()) { ItemKey kk; int sm = 1; if (l >> kk.t >> kk.x >> kk.y >> kk.scale >> kk.alpha >> sm) { kk.smooth = sm != 0; setKey(cur->items.back(), kk); } }
         else if (k == "ifx" && !cur->items.empty()) { ScreenItem& i = cur->items.back(); int cu = 0, co = 0; l >> i.inFx >> i.inFxTime >> cu >> co >> i.pulse; i.inFx = std::clamp(i.inFx, 0, IN_FX_COUNT - 1); i.cursor = cu != 0; i.code = co != 0; }
+        else if (k == "isharp" && !cur->items.empty()) { int v = 0; l >> v; cur->items.back().sharp = v != 0; }
         else if (k == "shake") { int ps = 0; l >> cur->shakeAt >> cur->shakeTime >> cur->shakeAmount >> ps; cur->pressStart = ps != 0; }
         else if (k == "isound" && !cur->items.empty()) { std::string rest; std::getline(l, rest); soundUseFrom(rest, cur->items.back().sound); }
         else if (k == "comp") l >> cur->comp.nextId;

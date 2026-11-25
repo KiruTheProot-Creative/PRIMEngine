@@ -11017,7 +11017,9 @@ struct App {
                     break;
                 }
                 float r[4]; FitRect(iw, ih, (int)(b.x - a.x), (int)(b.y - a.y), 1, r);
+                if (it.sharp) dl->AddCallback(PointSampling, nullptr);   // (pixel art: each pixel a sharp square)
                 dl->AddImage((ImTextureID)(intptr_t)im, ImVec2(a.x + r[0] * (b.x - a.x), a.y + r[1] * (b.y - a.y)), ImVec2(a.x + r[2] * (b.x - a.x), a.y + r[3] * (b.y - a.y)), ImVec2(0, 0), ImVec2(1, 1), C(0xFFFFFF, al));
+                if (it.sharp) dl->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
                 break; }
             case ScreenItemKind::Button: {
                 bool off = it.act == ScreenAct::Continue && (playMode ? curSlot < 0 : NewestSlot() == 0);   // (nothing saved yet)
@@ -12209,6 +12211,8 @@ struct App {
         if (hasText || it.kind == ScreenItemKind::SaveSlots) ch |= TextLookUI(it.weight, it.outline, it.outlineColor, &it.font);
         if (it.kind == ScreenItemKind::Image) {
             Prop("Picture"); ch |= FileCombo("##sii", it.image, false);
+            Prop("Sharp pixels"); ch |= ImGui::Checkbox("##siish", &it.sharp);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Pixel art: drawn bigger, each pixel stays a crisp square (not smoothed).");
             char tb[256]; std::snprintf(tb, sizeof tb, "%s", it.text.c_str()); Prop("Until it's there"); ImGui::SetNextItemWidth(-1);
             if (ImGui::InputTextWithHint("##siis", "(nothing)", tb, sizeof tb)) { it.text = tb; ch = true; }
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("A text shown in its place while the picture isn't in the screens folder yet (a logo you are still making).");
