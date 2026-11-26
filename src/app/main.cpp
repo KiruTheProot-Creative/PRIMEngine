@@ -37,6 +37,7 @@
 #include <deque>
 #include "../game/surfaces.h"
 #include "../game/buildmodes.h"
+#include "../game/cutscene.h"
 #include <tuple>
 #include <thread>
 #include <mutex>
@@ -1233,6 +1234,7 @@ struct App {
         { std::error_code e2; if (breakables.marks.empty()) fs::remove(fs::u8path(worldDir + "/breakable.txt"), e2); else saveBreakables(worldDir + "/breakable.txt", breakables); }
         saveObjects(worldDir + "/objects.txt", SavedObjects()); SaveHud();
         std::error_code ec; if (!events.empty()) saveEvents(worldDir + "/events.txt", events); else fs::remove(worldDir + "/events.txt", ec);
+        SaveCutscenes();
     }
     void CloseWorld() {   // the project stays open
         if (playMode && !travelling) StopPlay();
@@ -1272,14 +1274,14 @@ struct App {
         } else { io.ConfigFlags &= ~ImGuiConfigFlags_NoMouse; ClipCursor(nullptr); }
         mouseDX = mouseDY = 0;
     }
-    bool Playing() const { return screen == Screen::Game && captured && !paused && !inventory && !shapeMenu && !brushMenu && !saveAnimId && !saveSeqId; }   // (saving: the station's animation first)
+    bool Playing() const { return screen == Screen::Game && captured && !paused && !inventory && !shapeMenu && !brushMenu && !saveAnimId && !saveSeqId && !CutBlocksInput(); }   // (saving: the station's animation first; a cutscene)
     static bool Down(int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; }
     bool ActDown(Act a) const { return settings.keys.down(a, &App::Down); }   // the player's keys (Options > Controls)
     bool actPrev[(int)Act::COUNT] = {}; ULONGLONG keysQuiet = 0;
     void PlayKeys() {   // the play keys that do something once per press (any key or mouse button: Options > Controls)
         bool now[(int)Act::COUNT]; bool fg = GetForegroundWindow() == hwnd;
         for (int i = 0; i < (int)Act::COUNT; i++) now[i] = fg && ActDown((Act)i);
-        bool quiet = !playMode || bindCapture >= 0 || GetTickCount64() < keysQuiet || ImGui::GetIO().WantTextInput || screen != Screen::Game;
+        bool quiet = !playMode || cutRun.on || bindCapture >= 0 || GetTickCount64() < keysQuiet || ImGui::GetIO().WantTextInput || screen != Screen::Game;
         auto pressed = [&](Act a) { return !quiet && now[(int)a] && !actPrev[(int)a]; };
         if (saveSeqId) {}   // (a Save Station at work: nothing until it is done)
         else if (pressed(Act::Map)) { if (mapOpen) CloseMap(); else if (!showSettings) OpenMap(); }   // the map (also from the pause menu)
@@ -1466,6 +1468,7 @@ struct App {
             PlayState::Event e = play.tick(*world, player, playRules, playSpawn, playYaw, std::min(dt, 0.05));
             if (e == PlayState::Died) { Toast(std::string("You ") + play.cause); GameSnd(&PlayerSounds::death, SND_MOVEMENT); StopScanLoop(); Signal(When::Dies, ""); ResetBossFights(); }
         }
+        UpdateCutscene(dt); UpdateCutEditor(dt); UpdateCutActors(dt);   // cutscenes: the one playing (it may want the mouse), the editor's playhead, the actors
         mouseDX = mouseDY = 0;
         CpuMark("game: weather, liquids"); weather.update(dt, player.feet);
         world->liquidTimer += dt;   // water and lava flow 10 steps a second
@@ -1491,8 +1494,8 @@ struct App {
             float w = EffWeather().wind * gustNow; precipWindX += dt * w; precipWindZ += dt * w * 0.45;
         }
         if (settings.dayCycle) { settings.timeOfDay += (float)(dt * 24.0 / 1200.0); if (settings.timeOfDay >= 24) settings.timeOfDay -= 24; }
-        // load chunks around the player and keep their meshes fresh
-        I3 pc = chunkOf(ifloor(player.feet.x), ifloor(player.feet.y), ifloor(player.feet.z));
+        // load chunks around the player (a cutscene: around its camera) and keep their meshes fresh
+        I3 pc = CutStreamCenter();
         CpuMark("game: loading chunks"); world->stream(pc, settings.renderDistance, settings.verticalDistance, 24);
         CpuMark("game: meshing"); ScheduleMeshing(pc);
         CpuMark("game: uploading meshes"); CollectMeshes();
@@ -2812,6 +2815,7 @@ struct App {
         case Do::StopCountdown: countdownT = -1; break;
         case Do::PlayMusic: { SoundUse u; u.file = d.text; PlayMusic(u, 1.f); break; }
         case Do::StopMusic: StopMusic(1.5f); break;
+        case Do::PlayCutscene: if (!d.text.empty()) cutQueued = d.text; break;   // (starts next frame; after the one playing)
         default: break;
         }
     }
@@ -3619,7 +3623,7 @@ struct App {
     void LoadWorldObjects() {
         objects.clear(); loadObjects(worldDir + "/objects.txt", objects); MigrateLegacyScans(); enemyRt.clear(); enemyShots.clear(); enemyDrops.clear(); debris.clear();
         spawnedIds.clear(); spawnQueue.clear(); bossRt.clear(); bossPose.clear(); bossSealed.clear(); bossShown = 0;
-        for (WorldObject& o : objects) if (o.kind == ObjKind::Enemy) ApplyEnemyType(o); loadEvents(worldDir + "/events.txt", events); loadBreakables(worldDir + "/breakable.txt", breakables);
+        for (WorldObject& o : objects) if (o.kind == ObjKind::Enemy) ApplyEnemyType(o); loadEvents(worldDir + "/events.txt", events); loadBreakables(worldDir + "/breakable.txt", breakables); LoadCutscenesFile();
         nextObjId = 1; for (auto& o : objects) nextObjId = std::max(nextObjId, o.id + 1);
         movingObj = -1; placing.clear(); RebuildSolids();
     }
@@ -4717,7 +4721,9 @@ struct App {
         ID3D11RenderTargetView* out = scaledNow ? upSrc.rtv.Get() : outScreen;
         aspect = (float)rw / rh; camPos = player.eye();
         V3 f = player.forward();
-        if (playMode && player.ball) BallCamera(camPos, f);   // the morph ball: seen from behind
+        CamPose cutCam; bool cutOn = CutCamera(cutCam);   // a cutscene's camera
+        if (cutOn) { camPos = cutCam.pos; f = poseForward(cutCam); }
+        if (playMode && player.ball && !cutOn) BallCamera(camPos, f);   // the morph ball: seen from behind
         if (playMode && camShake > 0.001f && settings.screenShake > 0) {   // bosses, slams, roars: the view shakes
             double k = std::min(1.5, (double)camShake) * settings.screenShake, tt = animTime;
             camPos += V3{ std::sin(tt * 53.1) * 0.09 * k, std::sin(tt * 61.7 + 1.3) * 0.07 * k, std::sin(tt * 47.3 + 2.1) * 0.09 * k };
@@ -4729,7 +4735,8 @@ struct App {
             if (dfx.drop > 0 && !player.ball) camPos.y -= dfx.drop * std::max(0.3, (double)game.player.eyeHeight * 0.5);
             if (dfx.roll > 0) { double a = dfx.roll * 0.21; V3 r0 = normalize(cross({ 0, 1, 0 }, f)); upv = V3{ 0, 1, 0 } * std::cos(a) + r0 * std::sin(a); f = normalize(f + V3{ 0, -0.25 * dfx.roll, 0 }); }
         }
-        float fovNow = settings.fov;
+        if (cutOn && std::fabs(cutCam.roll) > 0.01) { double a = cutCam.roll * 3.14159265358979 / 180; V3 r0 = normalize(cross({ 0, 1, 0 }, f)); upv = V3{ 0, 1, 0 } * std::cos(a) + r0 * std::sin(a); }   // (the cutscene camera tilted)
+        float fovNow = cutOn ? (float)cutCam.fov : settings.fov;
         if (cookBake.on) {   // taking a room's reflection picture: this side of the cube, a square of 90 degrees in the middle
             static const V3 F6[6] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } }, U6[6] = { { 0, 1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 }, { 0, 1, 0 }, { 0, 1, 0 } };
             int fc6 = std::clamp(cookBake.face, 0, 5); f = F6[fc6]; upv = U6[fc6];
@@ -4985,6 +4992,7 @@ struct App {
                 if ((int)oi == movingObj) continue;
                 const WorldObject& o = objects[oi];
                 if (o.kind == ObjKind::Trigger || Gone(o)) continue;   // zones: invisible (the editor shows their box)
+                if (!cutRt.empty()) { WorldObject cat; bool chid; if (const CutActorRt* cr = CutObjectActor(o, cat, chid)) { if (!chid && shadowPart != 1) DrawObject(cat, pass, camPos, cr->posed ? &cr->gpu : nullptr); continue; } }   // moved by a cutscene
                 if (shadowPart) { bool moves = !playMode || o.kind == ObjKind::Enemy || o.kind == ObjKind::Platform || o.kind == ObjKind::Pickup || o.kind == ObjKind::Door; if (moves != (shadowPart == 2)) continue; }   // (a lamp's baked map: what stays; its copy: what moves)
                 if (lightShadowPass && (o.kind == ObjKind::Light || o.kind == ObjKind::Particles)) continue;   // a lamp's bulb never shadows its own light
                 if ((o.kind == ObjKind::Light || o.kind == ObjKind::Particles || o.kind == ObjKind::MapCamera || o.kind == ObjKind::Ambient) && (playMode || plainView) && IsBuiltin(o.model)) continue;   // the bulb / nozzle: editor only
@@ -4996,7 +5004,7 @@ struct App {
                 if (o.kind != ObjKind::Platform) { DrawObject(o, pass); continue; }
                 for (const V3& off : PlatformOffsets(o)) { WorldObject at = o; at.pos = o.pos + off; DrawObject(at, pass); }
             }
-            if (shadowPart != 1) { DrawBall(pass, camPos); DrawMissiles(pass, camPos); DrawDebris(pass, camPos); DrawEnemyDrops(pass, camPos); }
+            if (shadowPart != 1) { DrawBall(pass, camPos); DrawMissiles(pass, camPos); DrawDebris(pass, camPos); DrawEnemyDrops(pass, camPos); DrawCutModels(pass); }
             cullOn = false; cullCount = false; cullCave = false;
         };
         ID3D11ShaderResourceView* none[5] = {};
@@ -5601,7 +5609,7 @@ struct App {
             }
             ctx->RSSetState(rsCull.Get());
         }
-        if (playMode) DrawHudInGame(out);   // the player's HUD over everything (at the screen's size)
+        if (playMode && (menuShown || !CutHidesHud())) DrawHudInGame(out);   // the player's HUD over everything (at the screen's size; not in a film-camera cutscene)
     }
     int drawnChunks = 0;
     bool Project(V3 p, ImVec2& out) const {   // world point -> screen (for the block outline)
@@ -5658,6 +5666,7 @@ struct App {
     void DrawHud(ImDrawList* dl) {
         const float cw = (float)rw, ch = (float)rh;   // the 3D picture's size (it sits at vx, vy in the window)
         if ((playMode || bench.loading) && loadingOn) { DrawLoading(dl, vx, vy, cw, ch); return; }   // the loading screen over everything
+        if (CutOverlay(dl, vx, vy, cw, ch)) return;   // a cutscene: its bars, texts and fades (a film camera: nothing else)
         if (playMode && bootOn && BootPhase(3) <= 0) return;   // (booting up: no crosshair, no messages until the HUD comes)
         if (playMode && !paused && !mapOpen && !hideHud) if (WorldObject* st = StationInReach()) {   // "E: Map Station"
             std::string used = stationsUsed.count(CurrentWorld() + "#" + std::to_string(st->id)) ? " (downloaded)" : "";
@@ -6622,6 +6631,8 @@ struct App {
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("F6: play as a player would: from the main menu (Screens editor).\nF5 there: back to the editor.");
             ImGui::SameLine(); if (ImGui::Button("Player")) { playerEdOpen = !playerEdOpen; focusPlayerEd = playerEdOpen; }
             ImGui::SameLine(); if (ImGui::Button("Screens")) { screensEdOpen = !screensEdOpen; focusScreensEd = screensEdOpen; }
+            ImGui::SameLine(); if (ImGui::Button("Cutscenes")) { cutsEdOpen = !cutsEdOpen; focusCutsEd = cutsEdOpen; }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("The Cutscenes editor: a camera gliding through keys, actors (Samus, the gunship) moving and animating, texts, sounds, fades, actions");
             ImGui::SameLine(); if (ImGui::Button("Cook")) { cookOpenW = !cookOpenW; focusCook = cookOpenW; if (cookOpenW) { cookMapX0 = (int)std::floor(camPos.x) - COOKMAP / 2; cookMapZ0 = (int)std::floor(camPos.z) - COOKMAP / 2; cookY0 = (int)std::floor(camPos.y) - 64; cookY1 = (int)std::floor(camPos.y) + 96; cookLayer = (int)std::floor(camPos.y) + 1; cookMapDirty = true; } }
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Cooking for export: a map of the world from above, pick the chunks, Test-cook");
             ImGui::SameLine(); if (ImGui::Button(bench.on || bench.loading ? "Benchmark ..." : "Benchmark") && !bench.on && !bench.loading) ImGui::OpenPopup("flatbench");
@@ -11905,6 +11916,7 @@ struct App {
         GoToWorld(!game.startWorld.empty() ? game.startWorld : menuEditorWorld);
         player.flying = false; StartPlay(true);
         curSlot = slot; playTime = 0;
+        for (const Cutscene& c : cutscenes) if (c.onNewGame) { cutAfterLoad = c.name; break; }   // the new game's cutscene (once the world is loaded)
         Toast("A new game in File " + std::to_string(slot));
         SpawnFanfare();
     }
@@ -17213,7 +17225,8 @@ struct App {
                 if (kc) { const Need& n = needOf(d.kind); if (n.object && d.target.empty()) d.target = FirstName(n.objectKind); if (d.kind == Do::Wait) d.number = 1; ch = true; }
                 if (d.kind == Do::PlayMusic) { ImGui::SameLine(); ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - btn); { SoundUse u; u.file = d.text; if (MusicEdit("evmus", u)) { d.text = u.file; ch = true; } } }
                 else { static const std::vector<std::string> glassNames = glassHitNames();
-                       inlineTextHint = d.kind == Do::Countdown ? "label (Escape!)" : nullptr; inlineChoices = d.kind == Do::VisorEffect ? &glassNames : nullptr;
+                       std::vector<std::string> cutNames = CutsceneNames();
+                       inlineTextHint = d.kind == Do::Countdown ? "label (Escape!)" : d.kind == Do::PlayCutscene ? "cutscene name" : nullptr; inlineChoices = d.kind == Do::VisorEffect ? &glassNames : d.kind == Do::PlayCutscene && !cutNames.empty() ? &cutNames : nullptr;
                        if (kc && d.kind == Do::VisorEffect) { d.text = glassNames[0]; d.number = 1; }
                        ch |= InlineFields(needOf(d.kind), d.target, d.text, d.text, d.number, NameKind(d.kind), false, false, d.kind == Do::Particles, ImGui::GetContentRegionAvail().x - btn); inlineTextHint = nullptr; inlineChoices = nullptr; }
                 ImGui::SameLine(); ImGui::BeginDisabled(k == 0); if (ImGui::ArrowButton("##up", ImGuiDir_Up)) up = k; ImGui::EndDisabled();
@@ -17717,7 +17730,7 @@ struct App {
     void ReloadAfterRename() {   // the project's text files changed under us: read them again
         bool keepWorld = world != nullptr;
         LoadHud(); LoadScreens(); pics.clear(); vids.clear(); soundCache.clear(); waveCache.clear(); prefabCache.clear();
-        if (keepWorld) { objects.clear(); loadObjects(worldDir + "/objects.txt", objects); loadEvents(worldDir + "/events.txt", events); RebuildSolids(); }
+        if (keepWorld) { objects.clear(); loadObjects(worldDir + "/objects.txt", objects); loadEvents(worldDir + "/events.txt", events); LoadCutscenesFile(); RebuildSolids(); }
     }
     bool RenameAsset(const std::string& what, const std::string& newName0) {
         std::string newName = newName0; while (!newName.empty() && std::isspace((unsigned char)newName.back())) newName.pop_back();
@@ -18357,6 +18370,7 @@ struct App {
             for (const std::string& u : assetUses) ImGui::BulletText("%s", u.c_str());
         }
     }
+#include "cutscenes_app.inl"
     // ---- the viewport: the 3D picture inside a panel
     void Viewport() {
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
@@ -18369,7 +18383,7 @@ struct App {
         if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !captured) captureNext = true;
         ImDrawList* dl = ImGui::GetWindowDrawList();
         dl->PushClipRect(p, ImVec2(p.x + avail.x, p.y + avail.y), true);
-        DrawHud(dl);
+        DrawHud(dl); CutGuides(dl);
         dl->PopClipRect();
         ImGui::End();
         ImGui::PopStyleVar();
@@ -19328,9 +19342,9 @@ struct App {
             if (brushMenu) BrushMenu();
             ModelViewer();
             PlayerEditor();
-            ScreensEditor(); PlanetsEditor(); AudioEditor(); CookWindow(); RoomsWindow(); BenchWindow(); DrawVrEyes();
+            ScreensEditor(); CutscenesEditor(); PlanetsEditor(); AudioEditor(); CookWindow(); RoomsWindow(); BenchWindow(); DrawVrEyes();
         } else {
-            if (!mapOpen && !CurScreen()) { DrawHud(ImGui::GetForegroundDrawList()); if (!Frozen()) { DrawScanMarkers(ImGui::GetForegroundDrawList()); DrawLockMarkers(ImGui::GetForegroundDrawList()); DrawGrappleMarker(ImGui::GetForegroundDrawList()); } }
+            if (!mapOpen && !CurScreen()) { DrawHud(ImGui::GetForegroundDrawList()); if (!Frozen() && !CutHidesHud()) { DrawScanMarkers(ImGui::GetForegroundDrawList()); DrawLockMarkers(ImGui::GetForegroundDrawList()); DrawGrappleMarker(ImGui::GetForegroundDrawList()); } }
             if (showF3) DrawF3();
             if (CurScreen()) { if (!showSettings) ScreenInput(); }
             else if (mapOpen) MapScreen();

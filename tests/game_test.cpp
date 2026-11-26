@@ -31,6 +31,7 @@
 #include "../src/game/looks.h"
 #include "../src/game/surfaces.h"
 #include "../src/game/buildmodes.h"
+#include "../src/game/cutscene.h"
 #include <sstream>
 #include <algorithm>
 #include <map>
@@ -2090,6 +2091,67 @@ int main() {
         savePresets("/tmp/prim_presets.txt", ps); std::vector<QualityPreset> back; loadPresets("/tmp/prim_presets.txt", back);
         CHECK(back.size() == 7 && back[2].name == "My Game's Medium" && back[6].name == "Potato mode" && back[6].values.size() == presetKeys().size(), "renamed and own presets save and load");
         gamePresets = nullptr;
+    }
+    {   // cutscenes: the camera glides through its keys, actors move and play clips, texts type in, fades, skipping, saving
+        Cutscene c; c.name = "Arrival"; c.length = 10;
+        CamKey a; a.t = 0; a.pos = { 0, 10, 0 }; a.yaw = 170; a.fov = 60;
+        CamKey b; b.t = 4; b.pos = { 40, 10, 0 }; b.yaw = -170; b.fov = 60;
+        CamKey d; d.t = 8; d.pos = { 40, 10, 40 }; d.yaw = -90; d.fov = 40;
+        c.cam = { d, a, b };   // (out of order: it sorts them itself)
+        CamPose p0 = cameraAt(c, 0), p4 = cameraAt(c, 4), p8 = cameraAt(c, 9);
+        CHECK(p0.valid && std::fabs(p0.pos.x) < 1e-9 && std::fabs(p4.pos.x - 40) < 1e-9 && std::fabs(p8.pos.z - 40) < 1e-9 && std::fabs(p8.fov - 40) < 1e-9, "the camera is exactly at each key at its time (and holds after the last)");
+        CamPose p2 = cameraAt(c, 2);
+        CHECK(std::fabs(std::fabs(p2.yaw) - 180) < 12, "turning from 170 to -170 goes the short way round, through 180 (at 2 s: %.1f)", p2.yaw);
+        double v0 = length(cameraAt(c, 0.05f).pos - cameraAt(c, 0).pos) / 0.05, vMid = length(cameraAt(c, 4.05f).pos - cameraAt(c, 3.95f).pos) / 0.1;
+        CHECK(v0 < 1.5 && vMid > 5, "it starts gently from the first key, and flies through the middle one without stopping (%.2f, %.2f blocks/s)", v0, vMid);
+        sortTracks(c); c.cam[1].ease = true;   // (now sorted: the middle key is [1])
+        double vEase = length(cameraAt(c, 4.02f).pos - cameraAt(c, 3.98f).pos) / 0.04;
+        CHECK(vEase < 0.5, "a key that eases: it slows down to rest there (%.2f blocks/s)", vEase);
+        c.cam[2].cut = true;
+        CHECK(length(cameraAt(c, 7.9f).pos - V3{ 40, 10, 0 }) < 1e-6 && length(cameraAt(c, 8).pos - V3{ 40, 10, 40 }) < 1e-6, "a cut: it holds, then jumps to the key at its moment");
+        c.cam[2].cut = false;
+        CamPose mid = blendPose(p0, p4, 0.5);
+        CHECK(std::fabs(mid.pos.x - 20) < 1e-9 && std::fabs(std::fabs(mid.yaw) - 180) < 1e-6, "blending two views: half way, turning the short way");
+        V3 f = poseForward(CamPose{ { 0, 0, 0 }, 90, 0, 0, 70, true });
+        CHECK(std::fabs(f.x - 1) < 1e-9 && std::fabs(f.z) < 1e-9, "yaw 90 looks toward +X (like the player)");
+
+        CutActor ship; ship.name = "Gunship"; ship.object = "Gunship";
+        ship.keys = { { 0, { 0, 100, 0 }, 0 }, { 6, { 10, 20, 10 }, 90 } };
+        ship.clips = { { 5, 2, "gear down", 1 } };
+        ActorPose sp = actorAt(ship, 3, c.length), sc = actorAt(ship, 5.5f, c.length);
+        CHECK(sp.keyed && sp.shown && sp.pos.y < 100 && sp.pos.y > 20 && sp.clip < 0 && sc.clip == 0 && sc.clipName == "gear down" && std::fabs(sc.clipTime - 0.5f) < 1e-5, "an actor moves between its keys, and plays its clip during its bar");
+        CutActor samus; samus.model = "Varia_Suit"; samus.showFrom = 7; samus.showTo = 9;
+        CHECK(!actorAt(samus, 6.9f, 10).shown && actorAt(samus, 8, 10).shown && !actorAt(samus, 9.1f, 10).shown && !actorAt(samus, 8, 10).keyed, "shown only between its times; no keys: it stays put");
+
+        CutText tx; tx.t = 1; tx.length = 3; tx.text = "Hi \xC3\xA9t\xC3\xA9"; tx.typeSpeed = 10;   // "Hi été"
+        CHECK(cutTypedBytes(tx, 0.5f) == 0 && cutTypedBytes(tx, 1.35f) == 3 && cutTypedBytes(tx, 1.45f) == 5 && cutTypedBytes(tx, 1.55f) == 6 && cutTypedBytes(tx, 3) == tx.text.size(), "a text types in letter by letter (whole letters, not half of one)");
+        CHECK(cutTextAlpha(tx, 0.9f) == 0 && cutTextAlpha(tx, 2) == 1 && cutTextAlpha(tx, 3.9f) < 1 && cutTextAlpha(tx, 4.1f) == 0, "it fades in and out over its time");
+
+        c.fades = { { 0, 1, CutFadeKind::FromBlack }, { 8, 1, CutFadeKind::ToBlack } };
+        CHECK(fadeAt(c, 0).amount > 0.99f && fadeAt(c, 0.5f).amount > 0.3f && fadeAt(c, 2).amount == 0 && fadeAt(c, 9.5f).amount > 0.99f && !fadeAt(c, 9.5f).white, "in from black at the start, out to black at the end (and it stays black)");
+        CHECK(letterboxAt(c, 0, 0.8f) == 0 && letterboxAt(c, 5, 0.8f) == 1 && letterboxAt(c, 10, 0.8f) == 0, "the black bars slide in at the start and out at the end");
+        c.view = CutView::Visor; CHECK(letterboxAt(c, 5, 0.8f) == 0, "no bars through the visor"); c.view = CutView::Camera;
+
+        c.events = { { 1, { Do::Shake, "", "", 1 } }, { 2, { Do::OpenDoor, "Hatch" } }, { 3, { Do::FlagOn, "", "landed" } }, { 4, { Do::Message, "", "Hi" } }, { 6, { Do::PlayMusic, "", "outpost.wav" } } };
+        std::vector<int> due = eventsBetween(c, 0.5f, 3);
+        CHECK(due.size() == 3 && due[0] == 0 && due[2] == 2, "the actions in a stretch of time, in order");
+        std::vector<EventDo> sk = skippedActions(c, 1.5f);
+        CHECK(sk.size() == 3 && sk[0].kind == Do::OpenDoor && sk[1].kind == Do::FlagOn && sk[2].kind == Do::PlayMusic, "skipped: the door still opens, the flag goes on, the music starts (no shake, no message)");
+
+        c.texts = { tx }; c.sounds = { { 2, SoundUse{ "boom.wav", 0.8f } } };
+        CutActor sa = samus; sa.name = "Samus"; sa.keys = { { 7, { 1, 2, 3 }, 45, true, false } }; sa.clips = { { 7, 2, "walk", 1.25f } };
+        c.actors = { ship, sa }; c.onNewGame = true; c.handOff = true; c.lookAround = 15;
+        std::vector<Cutscene> list = { c, Cutscene{} };
+        saveCutscenes("/tmp/prim_cuts.txt", list); std::vector<Cutscene> back; loadCutscenes("/tmp/prim_cuts.txt", back);
+        bool same = back.size() == 2 && back[0].name == "Arrival" && back[0].cam.size() == 3 && back[0].cam[1].ease && back[0].actors.size() == 2 && back[0].actors[0].object == "Gunship"
+                 && back[0].actors[1].model == "Varia_Suit" && back[0].actors[1].clips[0].speed == 1.25f && back[0].actors[1].keys[0].ease && back[0].texts[0].text == tx.text
+                 && back[0].sounds[0].sound.file == "boom.wav" && back[0].fades.size() == 2 && back[0].events.size() == 5 && back[0].events[1].action.target == "Hatch"
+                 && back[0].onNewGame && back[0].handOff && back[0].lookAround == 15 && back[1].name == "New cutscene";
+        CHECK(same, "cutscenes save and load (camera, actors, texts, sounds, fades, actions, settings)");
+        CHECK(length(cameraAt(back[0], 5.3f).pos - cameraAt(c, 5.3f).pos) < 1e-6, "... and the loaded one flies the same path");
+        CHECK(findCutscene(back, "Arrival") == 0 && findCutscene(back, "nope") < 0 && std::fabs(lastMoment(c) - 9) < 1e-6, "found by name; its last moment (for fitting the length)");
+        EventCard card; card.dos = { { Do::PlayCutscene, "", "Arrival" } };
+        CHECK(describe(card) == "When the player walks into any zone: play the cutscene Arrival.", "an event card can play a cutscene (%s)", describe(card).c_str());
     }
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
     return fails ? 1 : 0;
