@@ -40,7 +40,7 @@ jobs:
         if: ${{ inputs.screenshots }}
         shell: pwsh
         run: |
-          $p = Start-Process -FilePath build/Release/PRIMEngine.exe -ArgumentList "--screenshots shots" -PassThru
+          $p = Start-Process -FilePath build/Release/PRIMEngine.exe -ArgumentList "--gpu-debug --screenshots shots" -PassThru
           if (-not $p.WaitForExit(1200000)) { $p.Kill(); "TIMEOUT after 20 minutes" | Out-File -Append shots/log.txt }
           Get-Content shots/log.txt
           if (Test-Path build/Release/crash.txt) { Copy-Item build/Release/crash.txt shots/; "---- crash.txt"; Get-Content build/Release/crash.txt }
