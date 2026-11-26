@@ -923,9 +923,9 @@ float3 connectUV(VSOut i)
     {
         uint m = (modes >> (e * 2)) & 3; if (m == 0) continue;
         float w = ((i.conn.z >> (8 + e * 3)) & 7) + 1;
-        int along = e < 2 ? wp.y : wp.x, line = (e < 2 ? cu : cv) + (e & 1);
-        float n = hash01(int4(along, line, plane, fk * 2 + (e < 2 ? 0 : 1))) * 0.35 + hash01(int4(floor(along / 3.0), line, plane, fk * 2 + (e < 2 ? 0 : 1) + 40)) * 0.65;   // jagged, in little runs
-        float amount = m == 2 ? max(0, ((e & 1) ? 1 : -1) * (n * 2 - 1)) * w * 1.3    // both creep: the line wanders into one side or the other (the same answer from both faces)
+        int along = e < 2 ? wp.y : wp.x, edgeLine = (e < 2 ? cu : cv) + (e & 1);
+        float n = hash01(int4(along, edgeLine, plane, fk * 2 + (e < 2 ? 0 : 1))) * 0.35 + hash01(int4(floor(along / 3.0), edgeLine, plane, fk * 2 + (e < 2 ? 0 : 1) + 40)) * 0.65;   // jagged, in little runs
+        float amount = m == 2 ? max(0, ((e & 1) ? 1 : -1) * (n * 2 - 1)) * w * 1.3    // both creep: the edgeLine wanders into one side or the other (the same answer from both faces)
                               : (0.3 + 0.7 * n) * w;                                    // only the neighbour creeps
         float score = amount - (dist[e] + speck);
         if (score > bestScore) { bestScore = score; best = e; }
