@@ -685,6 +685,15 @@ Fog, light shafts and lights glowing in the air are worked out in a small 3D gri
 - Every music picker (rooms, screens, bosses and their phases, "play the music" event cards) lists the soundtrack first, with a play/stop button. Older sounds are still under "Other sounds".
 - **Samus appears**: a fanfare that plays once when a new game starts or a file is loaded. The starting room's music waits for it (can be turned off).
 
+### Audio editor: loop points (toolbar > Audio, or "Loop..." next to any music)
+
+- Each piece of music gets its own **loop points**: the part before **loop start** is an intro that plays once; at **jumps back** the music goes back to loop start, round and round, with no gap. Anything after the end never plays. Kept in `music_loops.txt`.
+- **Tempo as a grid**: type the bpm, **Find the bpm** (it listens for the beats and finds bar 1 too), or **Tap** along. **x2** / **/2** fix half- or double-speed guesses, "< a beat" / "a beat >" move bar 1. Beats per bar for 3/4, 6/8 and so on.
+- **Snap** dragged loop points to beats or bars (hold Alt for free placement). It warns when the loop isn't a whole number of bars.
+- **Seam**: a crossfade at the jump. The end of the loop fades into what plays just before its start, so the jump lands where the sound already is, with no click and no cut-off tail. **Auto** picks a length by listening to both sides. A warning shows when a hard jump would click.
+- The waveform: wheel to zoom, Shift + wheel or right-drag to scroll, click to place the cursor, Space to play or stop. **Listen to the seam** plays the last 4 seconds and the jump.
+- Sound effects aren't touched: this is only for music.
+
 ## Missile Launcher and HUD unlocks
 
 - A missile kind set to **Found later** has **Picking it up adds** (5 by default for the plain missile): picking it up adds that many to the most missiles you carry and fills them all up. Like Metroid Prime's Missile Launcher: set **Most** (Weapons tab, missile supply) to 0 and the launcher to 5.

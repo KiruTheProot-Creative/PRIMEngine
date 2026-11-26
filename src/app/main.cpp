@@ -15222,7 +15222,7 @@ struct App {
         std::shared_ptr<WavData> baked;   // music with loop points (the Audio editor): the intro once, then the loop round and round
         if (loop && soundCat == SND_MUSIC) if (const mc::MusicLoop* L = musicLoops.find(s.file); L && L->on) {
             mc::LoopFrames lf; baked = BakedLoop(s.file, w, *L, lf);
-            if (baked && lf.ok) { if (!SubmitLoop(v, *w, *baked, lf, musicFrom)) { v->DestroyVoice(); return nullptr; } }
+            if (baked && lf.ok) { if (!SubmitLoop(v, *w, *baked, lf, musicFrom)) { Log("music: the loop points of " + s.file + " could not be used (it plays whole)"); v->FlushSourceBuffers(); baked = nullptr; } }
             else baked = nullptr;
         }
         if (!baked && FAILED(v->SubmitSourceBuffer(&b))) { v->DestroyVoice(); return nullptr; }
