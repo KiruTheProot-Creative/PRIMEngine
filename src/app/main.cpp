@@ -6499,8 +6499,7 @@ struct App {
                 if (on) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.65f, 0.35f, 0.8f, 0.85f));
                 if (ImGui::SmallButton(on ? (std::to_string(m0.w) + "x" + std::to_string(m0.h)).c_str() : "Multi")) ImGui::OpenPopup("multi");
                 if (on) ImGui::PopStyleColor();
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Spread this texture over several blocks: it is cut into a grid of tiles (a 48 x 48 picture at 3 x 3: nine tiles)
-and blocks side by side each show their own tile - together the whole picture (floor markings, murals, carvings).");
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Spread this texture over several blocks: it is cut into a grid of tiles (a 48 x 48 picture at 3 x 3: nine tiles)\nand blocks side by side each show their own tile - together the whole picture (floor markings, murals, carvings).");
                 if (ImGui::BeginPopup("multi")) {
                     ImGui::TextDisabled("One picture over several blocks: %s", slots[i].label);
                     FaceMulti m = m0; bool ch = false;
