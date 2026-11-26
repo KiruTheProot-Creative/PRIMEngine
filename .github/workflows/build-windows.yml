@@ -40,9 +40,10 @@ jobs:
         if: ${{ inputs.screenshots }}
         shell: pwsh
         run: |
-          $p = Start-Process -FilePath build/Release/PRIMEngine.exe -ArgumentList "--screenshots shots" -PassThru
+          $p = Start-Process -FilePath build/Release/PRIMEngine.exe -ArgumentList "--gpu-debug --screenshots shots" -PassThru
           if (-not $p.WaitForExit(1200000)) { $p.Kill(); "TIMEOUT after 20 minutes" | Out-File -Append shots/log.txt }
           Get-Content shots/log.txt
+          if (Test-Path build/Release/gpu_log.txt) { Copy-Item build/Release/gpu_log.txt shots/; "---- gpu_log.txt"; Get-Content build/Release/gpu_log.txt -TotalCount 300 }
           Get-ChildItem shots
 
       - uses: actions/upload-artifact@v4
@@ -63,12 +64,13 @@ jobs:
           Get-ChildItem shots -Filter *.png | ForEach-Object {
             $img = [System.Drawing.Image]::FromFile($_.FullName); $img.Save((Join-Path $PWD "pub/$($_.BaseName).jpg"), $codec, $ep); $img.Dispose() }
           if (Test-Path shots/log.txt) { Copy-Item shots/log.txt pub/ }
+          if (Test-Path shots/gpu_log.txt) { Copy-Item shots/gpu_log.txt pub/ }
           "${{ github.sha }}" | Out-File pub/commit.txt
           cd pub
-          git init -q; git checkout -q -b screenshots
+          git init -q; git checkout -q -b screenshots-dx12
           git config user.name "github-actions"; git config user.email "github-actions@users.noreply.github.com"
           git add -A; git commit -qm "Screenshots for ${{ github.sha }}"
-          git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" screenshots
+          git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" screenshots-dx12
 
       - name: Package
         shell: pwsh
