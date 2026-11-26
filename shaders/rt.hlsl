@@ -54,7 +54,8 @@ void CS_RtReflect(uint3 id : SV_DispatchThreadID)
     int2 px = int2(min(pos / rs, gDepth.zw - 1));
     float2 ndc = pos / float2(w, h) * float2(2, -2) + float2(-1, 1);
     float4 g = gSurface.Load(int3(px, 0)); float shine = g.a;
-    float minShine = gWet2.z > 1.5 ? 0.06 : 0.4;                       // low: polished and wet surfaces; high: anything shiny
+    float quality = fmod(gWet2.z, 4), rayLen = floor(gWet2.z / 4);   // (1 low, 2 high; how far rays go: the render distance)
+    float minShine = quality > 1.5 ? 0.03 : 0.2;                      // low: shiny and wet surfaces; high: anything with a little shine
     float zb = gSceneDepth.Load(int3(px, 0));
     if (gRefl.x < 0.5 || shine < max(minShine, 0.02) || zb >= 1) { gRtOut[id.xy] = float4(0, 0, 0, -1); return; }
     float3 n = normalize(g.xyz * 2 - 1);
@@ -65,7 +66,7 @@ void CS_RtReflect(uint3 id : SV_DispatchThreadID)
     sReach = gRefl.z * lerp(0.3, 1, shine * shine);
     float3 ng = reflFlatNormal(px, P, n, dir, dist);
     float3 rv = r; float rn = dot(rv, ng); if (rn < 0.03) rv = normalize(rv + ng * (0.03 - rn));   // never into the surface
-    float tMax = max(reflReach() * 1.5, 48);
+    float tMax = lerp(min(64, rayLen), rayLen, saturate(shine * 1.6));   // (rough surfaces blur it anyway: shorter rays)
 
     RayDesc ray; ray.Origin = P + ng * 0.03; ray.Direction = rv; ray.TMin = 0.005; ray.TMax = tMax;
     RayQuery<RAY_FLAG_NONE> q;

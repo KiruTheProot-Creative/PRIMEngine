@@ -249,20 +249,22 @@ struct App {
     // the world's chunks near you into the RTX scene (their shapes made first where they changed: a few each frame); then the rays
     bool TraceRtx(int lw, int lh) {
         if (!RtxOn()) return false;
-        double reach = settings.rtxReach + 64;   // (rays from the farthest surface still find what is beyond it)
+        // the scene: every chunk you can see (the render distance), so reflections reach as far as the world does
+        double side = (settings.renderDistance + 1.0) * CS, up = (settings.verticalDistance + 1.0) * CS;
         struct Near { double d2; I3 key; GpuChunk* gc; }; std::vector<Near> around;
         for (auto& kv : gpu) {
             GpuChunk& gc = kv.second; if (!gc.nO && !gc.nC) continue;
             double cx = (kv.first.x + 0.5) * CS - camPos.x, cy = (kv.first.y + 0.5) * CS - camPos.y, cz = (kv.first.z + 0.5) * CS - camPos.z, d2 = cx * cx + cy * cy + cz * cz;
-            if (d2 < (reach + CS) * (reach + CS)) around.push_back({ d2, kv.first, &gc });
-            else if (gc.blas && d2 > (reach * 1.6 + CS) * (reach * 1.6 + CS)) { gc.blas.Reset(); gc.blasDirty = true; }   // (far behind: its shape goes - memory - and is made again on the way back)
+            double ax = std::fabs(cx), ay = std::fabs(cy), az = std::fabs(cz);
+            if (ax <= side && az <= side && ay <= up) around.push_back({ d2, kv.first, &gc });
+            else if (gc.blas && (ax > side * 1.3 + CS || az > side * 1.3 + CS || ay > up * 1.5 + CS)) { gc.blas.Reset(); gc.blasDirty = true; }   // (far behind: its shape goes - memory - and is made again on the way back)
         }
         std::sort(around.begin(), around.end(), [](const Near& a, const Near& b) { return a.d2 < b.d2; });
         int builds = 0; rtxBuilt = 0;
         std::vector<d12::RtInstance> inst; inst.reserve(around.size());
         for (const Near& nr : around) {
             GpuChunk& gc = *nr.gc; const I3& key = nr.key;
-            if ((gc.blasDirty || !gc.blas) && builds < 48) {   // (nearest first; the rest on the next frames)
+            if ((gc.blasDirty || !gc.blas) && builds < 96) {   // (nearest first; the rest on the next frames)
                 d12::RtGeometry geo[2]; UINT n = 0;
                 if (gc.nO && gc.vbO && gc.ibO) geo[n++] = { gc.vbO.Get(), (UINT)sizeof(Vtx), 0, gc.ibO.Get(), gc.nO, true };
                 if (gc.nC && gc.vbC && gc.ibC) geo[n++] = { gc.vbC.Get(), (UINT)sizeof(Vtx), 0, gc.ibC.Get(), gc.nC, false };
@@ -4948,7 +4950,9 @@ struct App {
             }
         }
         fc.weather[0] = W.rain; fc.weather[1] = W.snow; fc.weather[2] = W.dark; fc.weather[3] = weather.wetness * E.atmosphere;
-        fc.wet2[2] = RtxOn() ? (float)settings.rtxReflect : 0.f; fc.wet2[3] = settings.rtxReach;   // RTX reflections: on (1 low, 2 high), how far
+        {   // RTX reflections: z on (1 low, 2 high) + 4 x how far the rays go (the render distance, blocks); w on surfaces how far from you
+            float rayLen = (float)((settings.renderDistance + 1) * CS);
+            fc.wet2[2] = RtxOn() ? (float)settings.rtxReflect + 4.f * std::floor(rayLen) : 0.f; fc.wet2[3] = settings.rtxReach > 0 ? std::min(settings.rtxReach, rayLen) : rayLen; }
         fc.wet2[0] = weather.puddles * E.atmosphere * (E.cold > 0.5f ? 0.f : 1.f); fc.wet2[1] = std::clamp((weather.wetness - 0.15f) * 1.4f, 0.f, 1.f) * E.atmosphere * (E.cold > 0.5f ? 0.f : 1.f);
         fc.weather2[0] = weather.snowCover * E.atmosphere; fc.weather2[1] = weather.flash * E.atmosphere; fc.weather2[2] = W.wind; fc.weather2[3] = skyMap ? 1.f : 0.f;
         ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &fc, 0, 0);
@@ -5788,6 +5792,8 @@ struct App {
         ImGui::Text("Block: %d %d %d   Chunk: %d %d %d", b.x, b.y, b.z, c.x, c.y, c.z);
         ImGui::Text("Facing: %s   %s", dirs[((int)(yd / 90)) % 4], player.flying ? "flying" : "walking");
         ImGui::Text("Chunks: %zu loaded, %zu with meshes, %d drawn, %d hidden behind walls%s", world->loadedCount(), gpu.size(), drawnChunks, caveHiddenShown, caveOn ? "" : " (off)");
+        if (RtxOn()) ImGui::Text("RTX: %d chunks in its scene, %d shapes made this frame", rtxInScene, rtxBuilt);
+        else if (mc::rtxSupported) ImGui::TextDisabled("RTX: off");
         ImGui::Text("Sun shadow maps drawn this frame: %d of 4 (the far ones every 2nd / 4th / 8th frame); lamp shadow sides drawn: %d", cascDrawnShown, lshFacesShown);
         if (settings.hideHidden) ImGui::Text("Hidden behind things (not drawn): %d chunks and far copies", hizHiddenShown);
         if (settings.targetFps > 0) ImGui::Text("Auto resolution: %.0f%% of the render scale (keeping %d FPS)", dynScale * 100, settings.targetFps);

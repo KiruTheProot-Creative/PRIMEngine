@@ -153,8 +153,8 @@ const std::vector<OptionDef>& optionDefs() {
                            "Bounce light everywhere: invisible probes trace rays through the blocks and learn what light reaches them (the sun, the sky, lamps, glowing blocks, coloured walls). No light through walls. Any graphics card."), "ray_tracing"));
         // ---- Hardware ray tracing (RTX / DXR): the graphics card's own ray tracing cores (only shown on a card that has them)
         v.push_back(choice("rtx_reflections", "RTX reflections", RT, "Hardware (RTX)", { "Off", "Low", "High" }, {},
-                           "The graphics card's ray tracing cores find what shiny surfaces mirror: the real shapes, sharp up close. Low: polished and wet surfaces; High: anything shiny. Farther out (and on rough surfaces), the voxel reflections take over."));
-        v.push_back(needs(slider("rtx_reach", "RTX reflection distance", RT, "Hardware (RTX)", 8, 128, 4, "%.0f blocks", "", "How far from you surfaces get RTX reflections. Beyond, the voxel reflections (cheaper). Shorter: faster."), "rtx_reflections"));
+                           "The graphics card's ray tracing cores find what shiny surfaces mirror: the real shapes, sharp up close. Low: shiny and wet surfaces; High: anything with a little shine. Farther out (and on rough surfaces), the voxel reflections take over."));
+        v.push_back(needs(slider("rtx_reach", "RTX reflection distance", RT, "Hardware (RTX)", 0, 256, 8, "%.0f blocks", "as far as you see", "How far from you surfaces get RTX reflections (their rays always reach as far as the render distance). Beyond, the voxel reflections (cheaper). Shorter: faster."), "rtx_reflections"));
         v.push_back(reset(RT));
 
         // ---- Post-processing: what happens to the finished picture

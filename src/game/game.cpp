@@ -81,7 +81,7 @@ bool Settings::load(const std::string& path) {
         else if (k == "ray_tracing") { int v; f >> v; rayTracing = v != 0; }
         else if (k == "rt_reflections") { int v; f >> v; rtReflect = v != 0; }
         else if (k == "rtx_reflections") { f >> rtxReflect; rtxReflect = std::clamp(rtxReflect, 0, 2); }
-        else if (k == "rtx_reach") { f >> rtxReach; rtxReach = std::clamp(rtxReach, 8.f, 128.f); }
+        else if (k == "rtx_reach") { f >> rtxReach; rtxReach = std::clamp(rtxReach, 0.f, 512.f); }
         else if (k == "rt_objects") { int v; f >> v; rtObjects = v != 0; }
         else if (k == "rt_lamp_shadows") { int v; f >> v; rtShadows = v != 0; }
         else if (k == "lamp_blocks") { f >> lampBlocks; lampBlocks = std::clamp(lampBlocks, 0, 2); }
