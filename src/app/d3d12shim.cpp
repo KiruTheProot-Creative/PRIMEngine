@@ -993,10 +993,11 @@ void DeviceContext::BuildTlas(const RtInstance* inst, UINT n) {
         uint64_t done = g->fence->GetCompletedValue(); int copies = 0;
         for (size_t i = 0; i < g->compactWait.size();) {
             AccelStruct* a = g->compactWait[i];
-            if (a->compactFence > done || copies >= 64) { i++; continue; }
-            uint64_t want = AlignUp(std::max<uint64_t>(g->postCpu[a->compactSlot], 256), 256);
+            if (a->compactFence > done) { i++; continue; }
+            bool fresh = g->signaled <= a->compactFence + 1 && copies < 512;   // (its read-back place is used again two frames on: an older answer can't be trusted - it stays as it is)
+            uint64_t want = fresh ? AlignUp(std::max<uint64_t>(g->postCpu[a->compactSlot], 256), 256) : 0;
             g->compactWait[i] = g->compactWait.back(); g->compactWait.pop_back(); a->compactSlot = -1;
-            if (want == 0 || want > a->size * 9 / 10) continue;   // (not worth it)
+            if (!fresh || want > a->size * 9 / 10) continue;   // (not worth it)
             uint64_t off; Page* p = g->asAlloc(want, &off); if (!p) continue;
             D3D12_GPU_VIRTUAL_ADDRESS to = p->res->GetGPUVirtualAddress() + off;
             if (!copies) { g->uavBarrier(); g->flushBarriers(); }
