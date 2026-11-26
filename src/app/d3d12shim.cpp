@@ -132,6 +132,13 @@ struct Core {
     std::string logPath; bool debug = false; ComPtr<ID3D12InfoQueue> iq; int logged = 0; bool removedLogged = false;
     Device device; DeviceContext context; SwapChain swapObj;
     DeviceContext::Saved b; uint32_t dirty = DT_ALL; ID3D12PipelineState* curPso = nullptr; bool uavDrawn = false; UINT nvbSet = 0;
+    // ray tracing
+    bool rtInline = false; ComPtr<ID3D12RootSignature> rootCS; std::unordered_map<uint32_t, ComPtr<ID3D12PipelineState>> csPsos;
+    std::vector<std::unique_ptr<Page>> asPages;
+    struct Scratch { ComPtr<ID3D12Resource> res; uint64_t size = 0, used = 0; } scratch[FRAMES];
+    std::vector<std::pair<uint64_t, ComPtr<ID3D12Resource>>> deadRes;
+    ComPtr<ID3D12Resource> tlas[FRAMES]; uint64_t tlasSize[FRAMES] = {}; D3D12_GPU_VIRTUAL_ADDRESS tlasVA = 0; bool tlasReady = false, blasPending = false;
+    std::vector<Resource*> geoRes; ID3D12Resource* instRes = nullptr; uint64_t instOff = 0; UINT instCount = 0;
     std::vector<D3D12_RESOURCE_BARRIER> barriers; uint64_t stateSerial = 1, checkedSerial = 0;   // (a barrier anywhere: what is bound is checked again at the next draw)
 
     // -------- fences and frames
@@ -141,7 +148,7 @@ struct Core {
         ID3D12DescriptorHeap* hs[2] = { gpuHeap.Get(), smpHeap.Get() }; list->SetDescriptorHeaps(2, hs);
         list->SetGraphicsRootSignature(root.Get()); dirty = DT_ALL; curPso = nullptr; uavDrawn = false;
     }
-    void resetRings() { fr[slot].ring.reset(); gpuPos = slot * RING_DESC; gpuEnd = gpuPos + RING_DESC - SRV_SLOTS; epoch++; }   // (a table is declared 64 long: never closer than that to the end)
+    void resetRings() { scratch[slot].used = 0; tlasReady = false; fr[slot].ring.reset(); gpuPos = slot * RING_DESC; gpuEnd = gpuPos + RING_DESC - SRV_SLOTS; epoch++; }   // (a table is declared 64 long: never closer than that to the end)
     void submit() { flushBarriers(); list->Close(); ID3D12CommandList* l[1] = { list.Get() }; queue->ExecuteCommandLists(1, l); }
     void flush(bool wait) {   // in the middle of a frame: what is recorded goes to the GPU (and, wait: is done)
         submit(); signal(); fr[slot].fence = signaled;
@@ -152,6 +159,30 @@ struct Core {
         uint64_t done = fence->GetCompletedValue(); std::vector<DeviceChild*> go;
         for (size_t i = 0; i < dead.size();) { if (dead[i].first <= done) { go.push_back(dead[i].second); dead[i] = dead.back(); dead.pop_back(); } else i++; }
         for (DeviceChild* c : go) delete c;
+        for (size_t i = 0; i < deadRes.size();) { if (deadRes[i].first <= done) { deadRes[i] = deadRes.back(); deadRes.pop_back(); } else i++; }
+    }
+    void uavBarrier(ID3D12Resource* r = nullptr) { D3D12_RESOURCE_BARRIER ub{}; ub.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV; ub.UAV.pResource = r; barriers.push_back(ub); }
+    ComPtr<ID3D12Resource> makeBuffer(uint64_t n, D3D12_RESOURCE_STATES st, bool uav) {
+        D3D12_HEAP_PROPERTIES hp{ D3D12_HEAP_TYPE_DEFAULT };
+        D3D12_RESOURCE_DESC bd{ D3D12_RESOURCE_DIMENSION_BUFFER, 0, n, 1, 1, 1, DXGI_FORMAT_UNKNOWN, { 1, 0 }, D3D12_TEXTURE_LAYOUT_ROW_MAJOR, uav ? D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS : D3D12_RESOURCE_FLAG_NONE };
+        ComPtr<ID3D12Resource> r; if (FAILED(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd, st, nullptr, IID_PPV_ARGS(&r)))) return nullptr; return r;
+    }
+    // scratch memory for building acceleration structures (this frame's; full: wait for the builds before and start over)
+    D3D12_GPU_VIRTUAL_ADDRESS scratchAlloc(uint64_t n) {
+        Scratch& sc = scratch[slot]; n = AlignUp(std::max<uint64_t>(n, 256), 256);
+        if (!sc.res || n > sc.size) {
+            if (sc.res) { uavBarrier(); deadRes.push_back({ signaled + 1, sc.res }); }
+            sc.size = std::max<uint64_t>(n, 64ull << 20); sc.res = makeBuffer(sc.size, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, true); sc.used = 0;
+            if (!sc.res) return 0;
+        } else if (sc.used + n > sc.size) { uavBarrier(); flushBarriers(); sc.used = 0; }
+        D3D12_GPU_VIRTUAL_ADDRESS va = sc.res->GetGPUVirtualAddress() + sc.used; sc.used += n; return va;
+    }
+    // where acceleration structures live: shared pages (they never change state)
+    Page* asAlloc(uint64_t n, uint64_t* off) {
+        for (auto& p : asPages) if (p->take(n, off)) return p.get();
+        auto np = std::make_unique<Page>(); np->size = std::max<uint64_t>(64ull << 20, AlignUp(n, 65536));
+        np->res = makeBuffer(np->size, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, true); if (!np->res) return nullptr;
+        np->freeBlocks[0] = np->size; np->take(n, off); asPages.push_back(std::move(np)); return asPages.back().get();
     }
     void retire(DeviceChild* c) { std::lock_guard<std::recursive_mutex> lk(mx); dead.push_back({ signaled + 1, c }); }
     // -------- barriers: a resource's subresources into the state they are needed in
@@ -251,6 +282,7 @@ D3D12_GPU_VIRTUAL_ADDRESS Resource::gpuVA() { Resource* r = real(); if (r->virt)
 Resource::~Resource() { if (page && g) page->give(goff, AlignUp(byteWidth, 256)); }
 View::~View() { if (!g) return; CpuHeap* h = heapType == 1 ? &g->cpuRtv : heapType == 2 ? &g->cpuDsv : &g->cpuSrv; h->release(cpu); for (auto& p : perBuffer) h->release(p); }
 SamplerState::~SamplerState() { if (g) g->cpuSmp.release(cpu); }
+AccelStruct::~AccelStruct() { if (page && g) page->give(off, size); }
 D3D12_CPU_DESCRIPTOR_HANDLE View::handle() { if (!perBuffer.empty() && g) return perBuffer[std::min<size_t>(g->bbIndex, perBuffer.size() - 1)]; return cpu; }
 bool View::overlaps(const View& o) const {
     if (!res || !o.res || res->real() != o.res->real()) return false;
@@ -552,6 +584,8 @@ HRESULT Device::CreateSamplerState(const D3D11_SAMPLER_DESC* d, SamplerState** o
     o.MinLOD = d->MinLOD; o.MaxLOD = d->MaxLOD;
     s->cpu = g->cpuSmp.alloc(g->dev.Get()); g->dev->CreateSampler(&o, s->cpu); *out = s; return S_OK;
 }
+HRESULT Device::CreateComputeShader(const void* code, SIZE_T n, void*, ComputeShader** out) { LK; auto* s = new ComputeShader; s->code.assign((const uint8_t*)code, (const uint8_t*)code + n); Reflect(s); *out = s; return S_OK; }
+bool Device::inlineRaytracing() { return g->rtInline; }
 HRESULT Device::CreateQuery(const D3D11_QUERY_DESC* d, Query** out) {
     LK; auto* q = new Query; q->type = d->Query;
     if (q->type == D3D11_QUERY_TIMESTAMP) { if (g->qfree.empty()) { delete q; *out = nullptr; return E_OUTOFMEMORY; } q->slot = g->qfree.back(); g->qfree.pop_back(); }
@@ -914,6 +948,140 @@ void DeviceContext::GenerateMips(ShaderResourceView* v) {
     g->dirty = DT_ALL;
 }
 
+// ---- ray tracing: acceleration structures, the scene, a compute pass tracing into it
+HRESULT DeviceContext::BuildBlas(const RtGeometry* gs, UINT n, AccelStruct** out) {
+    LK; *out = nullptr; if (!g->rtInline || !gs || !n) return E_FAIL;
+    std::vector<D3D12_RAYTRACING_GEOMETRY_DESC> d(n);
+    for (UINT i = 0; i < n; i++) {
+        Resource* vb = gs[i].vb ? gs[i].vb->real() : nullptr; Resource* ib = gs[i].ib ? gs[i].ib->real() : nullptr;
+        if (!vb || !ib || vb->virt || ib->virt || !vb->gres || !ib->gres || !gs[i].indexCount) return E_INVALIDARG;
+        g->needSub(vb, 0, ST_BUFREAD); g->needSub(ib, 0, ST_BUFREAD);
+        D3D12_RAYTRACING_GEOMETRY_DESC& e = d[i]; e.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES; e.Flags = gs[i].opaque ? D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE : D3D12_RAYTRACING_GEOMETRY_FLAG_NONE;
+        e.Triangles.IndexFormat = DXGI_FORMAT_R32_UINT; e.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT; e.Triangles.IndexCount = gs[i].indexCount;
+        e.Triangles.VertexCount = gs[i].vertexCount ? gs[i].vertexCount : vb->byteWidth / std::max(1u, gs[i].stride);
+        e.Triangles.IndexBuffer = ib->gpuVA(); e.Triangles.VertexBuffer = { vb->gpuVA(), gs[i].stride };
+    }
+    g->flushBarriers();
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS in{}; in.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
+    in.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE; in.NumDescs = n; in.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY; in.pGeometryDescs = d.data();
+    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO pi{}; g->dev5->GetRaytracingAccelerationStructurePrebuildInfo(&in, &pi);
+    if (!pi.ResultDataMaxSizeInBytes) return E_FAIL;
+    auto* a = new AccelStruct; a->size = AlignUp(pi.ResultDataMaxSizeInBytes, 256); a->page = g->asAlloc(a->size, &a->off);
+    if (!a->page) { delete a; return E_OUTOFMEMORY; }
+    a->va = a->page->res->GetGPUVirtualAddress() + a->off;
+    for (UINT i = 0; i < n; i++) a->geos.push_back({ gs[i].vb, gs[i].ib });
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC bd{}; bd.DestAccelerationStructureData = a->va; bd.Inputs = in; bd.ScratchAccelerationStructureData = g->scratchAlloc(pi.ScratchDataSizeInBytes);
+    if (!bd.ScratchAccelerationStructureData) { delete a; return E_OUTOFMEMORY; }
+    g->flushBarriers(); g->list4->BuildRaytracingAccelerationStructure(&bd, 0, nullptr); g->blasPending = true;
+    *out = a; return S_OK;
+}
+struct RtInstGpu { uint32_t v[8]; };
+void DeviceContext::BuildTlas(const RtInstance* inst, UINT n) {
+    LK; g->tlasReady = false; if (!g->rtInline) return;
+    if (g->blasPending) { g->uavBarrier(); g->blasPending = false; }   // (the meshes built this frame are done before the scene is)
+    g->geoRes.clear(); std::unordered_map<ID3D12Resource*, uint32_t> gi;
+    auto idxOf = [&](Buffer* b) -> uint32_t { Resource* r = b->real(); auto it = gi.find(r->gres); if (it != gi.end()) return it->second;
+        if (g->geoRes.size() >= 256) return 0xFFFFFFFF; uint32_t k = (uint32_t)g->geoRes.size(); g->geoRes.push_back(r); gi[r->gres] = k; return k; };
+    UINT m = std::max(1u, n);
+    ID3D12Resource* dres; uint64_t doff; auto* descs = (D3D12_RAYTRACING_INSTANCE_DESC*)g->upload((uint64_t)m * sizeof(D3D12_RAYTRACING_INSTANCE_DESC), D3D12_RAYTRACING_INSTANCE_DESCS_BYTE_ALIGNMENT, &dres, &doff);
+    auto* info = (RtInstGpu*)g->upload((uint64_t)m * sizeof(RtInstGpu), sizeof(RtInstGpu), &g->instRes, &g->instOff);
+    if (!descs || !info) return;
+    std::memset(descs, 0, (size_t)m * sizeof(D3D12_RAYTRACING_INSTANCE_DESC)); std::memset(info, 0xFF, (size_t)m * sizeof(RtInstGpu));
+    UINT k = 0;
+    for (UINT i = 0; i < n; i++) {
+        AccelStruct* a = inst[i].blas; if (!a) continue;
+        D3D12_RAYTRACING_INSTANCE_DESC& d = descs[k]; std::memcpy(d.Transform, inst[i].transform, sizeof d.Transform);
+        d.InstanceID = inst[i].id & 0xFFFFFF; d.InstanceMask = inst[i].mask & 0xFF; d.InstanceContributionToHitGroupIndex = 0; d.Flags = D3D12_RAYTRACING_INSTANCE_FLAG_NONE; d.AccelerationStructure = a->va;
+        RtInstGpu& f = info[k];
+        for (size_t j = 0; j < std::min<size_t>(a->geos.size(), 2); j++) {
+            Buffer* vb = a->geos[j].vb.Get(); Buffer* ib = a->geos[j].ib.Get(); if (!vb || !ib) continue;
+            f.v[j * 4 + 0] = idxOf(vb); f.v[j * 4 + 1] = (uint32_t)vb->real()->goff; f.v[j * 4 + 2] = idxOf(ib); f.v[j * 4 + 3] = (uint32_t)ib->real()->goff;
+        }
+        k++;
+    }
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS in{}; in.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
+    in.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE; in.NumDescs = k; in.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+    in.InstanceDescs = dres->GetGPUVirtualAddress() + doff;
+    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO pi{}; g->dev5->GetRaytracingAccelerationStructurePrebuildInfo(&in, &pi);
+    uint64_t need = AlignUp(std::max<uint64_t>(pi.ResultDataMaxSizeInBytes, 256), 65536);
+    ComPtr<ID3D12Resource>& t = g->tlas[g->slot];
+    if (!t || g->tlasSize[g->slot] < need) { if (t) g->deadRes.push_back({ g->signaled + 1, t }); t = g->makeBuffer(need * 2, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, true); g->tlasSize[g->slot] = need * 2; if (!t) return; }
+    g->uavBarrier(t.Get());   // (a pass earlier this frame may still be reading it)
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC bd{}; bd.DestAccelerationStructureData = t->GetGPUVirtualAddress(); bd.Inputs = in;
+    bd.ScratchAccelerationStructureData = g->scratchAlloc(pi.ScratchDataSizeInBytes); if (!bd.ScratchAccelerationStructureData) return;
+    g->flushBarriers(); g->list4->BuildRaytracingAccelerationStructure(&bd, 0, nullptr);
+    g->uavBarrier(t.Get()); g->flushBarriers();
+    g->tlasVA = t->GetGPUVirtualAddress(); g->instCount = k; g->tlasReady = true;
+}
+void DeviceContext::DispatchRays(ComputeShader* cs, UINT x, UINT y, UINT z, UnorderedAccessView* out, ShaderBase* dimsLike) {
+    LK; if (!g->tlasReady || !cs || !out || !x || !y || !z) return;
+    StageB& st = g->b.ps; const UINT NSRV = SRV_SLOTS, NCB = CB_SLOTS, NSMP = SMP_SLOTS, NGEO = 256;
+    for (auto& c : st.cb) if (c) g->refresh(c.Get());
+    for (auto& v : st.srv) if (v && v->res->virt) g->refresh(v->res.Get());
+    for (auto& v : st.srv) if (v) g->needView(v.Get(), ST_SR);
+    g->needView(out, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    for (Resource* r : g->geoRes) g->needSub(r, 0, ST_BUFREAD);
+    g->room(NCB + NSRV + UAV_SLOTS + 3 + NGEO);
+    g->flushBarriers();
+    auto& pso = g->csPsos[cs->uid];
+    if (!pso) {
+        D3D12_COMPUTE_PIPELINE_STATE_DESC d{}; d.pRootSignature = g->rootCS.Get(); d.CS = { cs->code.data(), cs->code.size() };
+        HRESULT hr = g->dev->CreateComputePipelineState(&d, IID_PPV_ARGS(&pso));
+        if (FAILED(hr)) { char m[96]; snprintf(m, sizeof m, "ray tracing: its compute pipeline could not be made (0x%08X)", (unsigned)hr); g->log(m); g->pollMessages(); return; }
+    }
+    g->list->SetComputeRootSignature(g->rootCS.Get()); g->list->SetPipelineState(pso.Get()); g->curPso = nullptr; g->dirty |= DT_PSO;
+    // the pixel shader's constant buffers, textures, samplers
+    UINT cbAt = g->take(NCB);
+    for (UINT i = 0; i < NCB; i++) {
+        Buffer* bf = st.cb[i].Get(); D3D12_CONSTANT_BUFFER_VIEW_DESC cv{};
+        if (bf && (bf->virt || bf->gres)) { cv.BufferLocation = bf->gpuVA(); cv.SizeInBytes = (UINT)AlignUp(bf->byteWidth, 256); }
+        if (!cv.BufferLocation) { cv.BufferLocation = g->zeroCb->GetGPUVirtualAddress(); cv.SizeInBytes = 65536; }
+        g->dev->CreateConstantBufferView(&cv, g->gcpu(cbAt + i));
+    }
+    UINT srvAt = g->take(NSRV);
+    for (UINT i = 0; i < NSRV; i++) {
+        ShaderResourceView* v = st.srv[i].Get(); Resource* r = v ? v->res->real() : nullptr;
+        if (r && r->virt) { D3D12_SHADER_RESOURCE_VIEW_DESC o = v->desc; UINT es = o.Buffer.StructureByteStride ? o.Buffer.StructureByteStride : std::max(1u, BitsPerPixel(o.Format) / 8);
+            o.Buffer.FirstElement = r->voff / es + v->firstEl; g->dev->CreateShaderResourceView(r->vres, &o, g->gcpu(srvAt + i)); continue; }
+        D3D12_CPU_DESCRIPTOR_HANDLE src = v && v->cpu.ptr ? v->cpu : (dimsLike && (int)i <= dimsLike->srvMax ? NullSrvFor(dimsLike, i) : g->nullSrv[D3D12_SRV_DIMENSION_TEXTURE2D]);
+        g->dev->CopyDescriptorsSimple(1, g->gcpu(srvAt + i), src, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    }
+    D3D12_GPU_DESCRIPTOR_HANDLE smpH;
+    {   // samplers: a table like the pixel shader's (found again or added)
+        std::vector<uint32_t> key(NSMP + 1); key[NSMP] = 0xC0FFEE; for (UINT i = 0; i < NSMP; i++) key[i] = st.smp[i] ? st.smp[i]->uid : 0;
+        auto it = g->smpTables.find(key); UINT at;
+        if (it != g->smpTables.end()) at = it->second;
+        else {
+            if (g->smpPos + NSMP > SMP_HEAP) { g->smpTables.clear(); g->smpPos = SMP_SLOTS; }   // (rare: the pixel shaders' tables are made again as they are needed)
+            at = g->smpPos; g->smpPos += NSMP;
+            for (UINT i = 0; i < NSMP; i++) { D3D12_CPU_DESCRIPTOR_HANDLE dst = g->smpHeap->GetCPUDescriptorHandleForHeapStart(); dst.ptr += (SIZE_T)(at + i) * g->smpInc;
+                g->dev->CopyDescriptorsSimple(1, dst, st.smp[i] ? st.smp[i]->cpu : g->defSampler->cpu, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER); }
+            g->smpTables[key] = at;
+        }
+        smpH = g->smpHeap->GetGPUDescriptorHandleForHeapStart(); smpH.ptr += (UINT64)at * g->smpInc;
+    }
+    UINT uavAt = g->take(UAV_SLOTS); for (UINT i = 0; i < UAV_SLOTS; i++) g->dev->CopyDescriptorsSimple(1, g->gcpu(uavAt + i), g->nullUav[4], D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    // the scene, where each instance's triangles are, the output
+    UINT rtAt = g->take(3);
+    { D3D12_SHADER_RESOURCE_VIEW_DESC sd{}; sd.ViewDimension = D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE; sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+      sd.RaytracingAccelerationStructure.Location = g->tlasVA; g->dev->CreateShaderResourceView(nullptr, &sd, g->gcpu(rtAt)); }
+    { D3D12_SHADER_RESOURCE_VIEW_DESC sd{}; sd.ViewDimension = D3D12_SRV_DIMENSION_BUFFER; sd.Format = DXGI_FORMAT_UNKNOWN; sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+      sd.Buffer.FirstElement = g->instOff / sizeof(RtInstGpu); sd.Buffer.NumElements = std::max(1u, g->instCount); sd.Buffer.StructureByteStride = sizeof(RtInstGpu);
+      g->dev->CreateShaderResourceView(g->instRes, &sd, g->gcpu(rtAt + 1)); }
+    g->dev->CopyDescriptorsSimple(1, g->gcpu(rtAt + 2), out->cpu, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    UINT geoAt = g->take(NGEO);
+    for (UINT i = 0; i < NGEO; i++) {
+        D3D12_SHADER_RESOURCE_VIEW_DESC sd{}; sd.ViewDimension = D3D12_SRV_DIMENSION_BUFFER; sd.Format = DXGI_FORMAT_R32_TYPELESS; sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        sd.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
+        if (i < g->geoRes.size()) { ID3D12Resource* r = g->geoRes[i]->gres; sd.Buffer.NumElements = (UINT)(r->GetDesc().Width / 4); g->dev->CreateShaderResourceView(r, &sd, g->gcpu(geoAt + i)); }
+        else { sd.Buffer.NumElements = 1; g->dev->CreateShaderResourceView(nullptr, &sd, g->gcpu(geoAt + i)); }
+    }
+    g->list->SetComputeRootDescriptorTable(0, g->ggpu(cbAt)); g->list->SetComputeRootDescriptorTable(1, g->ggpu(srvAt)); g->list->SetComputeRootDescriptorTable(2, smpH);
+    g->list->SetComputeRootDescriptorTable(3, g->ggpu(uavAt)); g->list->SetComputeRootDescriptorTable(4, g->ggpu(rtAt)); g->list->SetComputeRootDescriptorTable(5, g->ggpu(geoAt));
+    g->list->Dispatch(x, y, z);
+    g->uavBarrier(out->res->real()->gres); g->flushBarriers();
+}
+
 // ---- GPU timing
 void DeviceContext::Begin(Query*) {}
 void DeviceContext::End(Query* q) {
@@ -988,7 +1156,11 @@ HRESULT Create(const Setup& s, Device** outDev, DeviceContext** outCtx, SwapChai
         hr = D3D12CreateDevice(a.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&g->dev)); if (FAILED(hr)) return hr;
         g->adapter = a; a->GetDesc1(&g->adesc); if (driverName) *driverName = "software (WARP, Direct3D 12)";
     } else if (driverName) { char n[256]; WideCharToMultiByte(CP_UTF8, 0, g->adesc.Description, -1, n, sizeof n, nullptr, nullptr); *driverName = std::string(n) + " (Direct3D 12)"; }
-    if (SUCCEEDED(g->dev.As(&g->dev5))) { D3D12_FEATURE_DATA_D3D12_OPTIONS5 o5{}; if (SUCCEEDED(g->dev->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &o5, sizeof o5))) g->rt = o5.RaytracingTier >= D3D12_RAYTRACING_TIER_1_0; }
+    if (SUCCEEDED(g->dev.As(&g->dev5))) {
+        D3D12_FEATURE_DATA_D3D12_OPTIONS5 o5{}; if (SUCCEEDED(g->dev->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &o5, sizeof o5))) g->rt = o5.RaytracingTier >= D3D12_RAYTRACING_TIER_1_0;
+        D3D12_FEATURE_DATA_SHADER_MODEL sm{ D3D_SHADER_MODEL_6_5 }; bool sm65 = SUCCEEDED(g->dev->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &sm, sizeof sm)) && sm.HighestShaderModel >= D3D_SHADER_MODEL_6_5;
+        g->rtInline = g->rt && o5.RaytracingTier >= D3D12_RAYTRACING_TIER_1_1 && sm65;
+    }
     if (g->debug && SUCCEEDED(g->dev.As(&g->iq))) { g->iq->SetMessageCountLimit(4096); D3D12_MESSAGE_SEVERITY deny[] = { D3D12_MESSAGE_SEVERITY_INFO, D3D12_MESSAGE_SEVERITY_MESSAGE }; D3D12_INFO_QUEUE_FILTER fl{}; fl.DenyList.NumSeverities = 2; fl.DenyList.pSeverityList = deny; g->iq->PushStorageFilter(&fl); }
     ID3D12Device* d = g->dev.Get();
     D3D12_COMMAND_QUEUE_DESC qd{ D3D12_COMMAND_LIST_TYPE_DIRECT }; if (FAILED(hr = d->CreateCommandQueue(&qd, IID_PPV_ARGS(&g->queue)))) return hr;
@@ -1049,6 +1221,21 @@ HRESULT Create(const Setup& s, Device** outDev, DeviceContext** outCtx, SwapChai
         ComPtr<ID3DBlob> blob, err; if (FAILED(hr = D3D12SerializeRootSignature(&rd, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &err))) { if (err) g->log((const char*)err->GetBufferPointer()); return hr; }
         if (FAILED(hr = d->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(&g->root)))) return hr;
     }
+    if (g->rtInline) {   // the ray tracing passes' root signature: the pixel shader's tables (seen by a compute shader), the scene, the meshes' buffers
+        D3D12_DESCRIPTOR_RANGE rg[7] = {
+            { D3D12_DESCRIPTOR_RANGE_TYPE_CBV, CB_SLOTS, 0, 0, 0 }, { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, SRV_SLOTS, 0, 0, 0 }, { D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, SMP_SLOTS, 0, 0, 0 },
+            { D3D12_DESCRIPTOR_RANGE_TYPE_UAV, UAV_SLOTS, 0, 0, 0 },
+            { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 0, 1, 0 }, { D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0, 1, 2 },
+            { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 256, 0, 2, 0 } };
+        D3D12_ROOT_PARAMETER rp[6] = {};
+        for (int i = 0; i < 6; i++) { rp[i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE; rp[i].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL; }
+        rp[0].DescriptorTable = { 1, &rg[0] }; rp[1].DescriptorTable = { 1, &rg[1] }; rp[2].DescriptorTable = { 1, &rg[2] }; rp[3].DescriptorTable = { 1, &rg[3] };
+        rp[4].DescriptorTable = { 2, &rg[4] }; rp[5].DescriptorTable = { 1, &rg[6] };
+        D3D12_ROOT_SIGNATURE_DESC rd{ 6, rp, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE };
+        ComPtr<ID3DBlob> blob, err;
+        if (FAILED(D3D12SerializeRootSignature(&rd, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &err)) || FAILED(d->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(&g->rootCS)))) {
+            if (err) g->log((const char*)err->GetBufferPointer()); g->rtInline = false; }
+    }
     {   // the mip shader
         ComPtr<ID3DBlob> vs, ps, err;
         if (FAILED(hr = D3DCompile(kMipShader, std::strlen(kMipShader), "mips", nullptr, nullptr, "VS", "vs_5_0", 0, 0, &vs, &err))) return hr;
@@ -1070,7 +1257,7 @@ HRESULT Create(const Setup& s, Device** outDev, DeviceContext** outCtx, SwapChai
     }
     g->resetRings(); g->setupList();
     *outDev = &g->device; *outCtx = &g->context; *outSwap = &g->swapObj;
-    g->log(std::string("Direct3D 12 on ") + (driverName ? *driverName : std::string("?")) + (g->rt ? ", ray tracing: yes" : ", ray tracing: no") + (g->debug ? ", debug layer on" : ""));
+    g->log(std::string("Direct3D 12 on ") + (driverName ? *driverName : std::string("?")) + (g->rtInline ? ", ray tracing: yes (DXR 1.1)" : g->rt ? ", ray tracing: DXR 1.0 only (RTX passes need 1.1)" : ", ray tracing: no") + (g->debug ? ", debug layer on" : ""));
     return S_OK;
 }
 void Shutdown() { if (!g) return; LK; g->flush(true); g->collect(); }   // (the layer itself stays: the program is ending)

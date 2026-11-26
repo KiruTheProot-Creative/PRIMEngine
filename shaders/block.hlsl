@@ -1640,6 +1640,21 @@ float4 PS_ProbeUpdate(SkyOut i) : SV_Target
     return float4(same ? lerp(old.rgb, irr, 0.3) : irr, key);
 }
 
+// the surface's real (flat) direction from the depth next to it: bumps and slopes must not start a reflection ray inside the block
+float3 reflFlatNormal(int2 px, float3 P, float3 n, float3 dir, float dist)
+{
+    int2 pr = min(px + int2(1, 0), int2(gDepth.zw) - 1), pd = min(px + int2(0, 1), int2(gDepth.zw) - 1);
+    float2 nr = (float2(pr) + 0.5) / gDepth.zw * float2(2, -2) + float2(-1, 1), nd = (float2(pd) + 0.5) / gDepth.zw * float2(2, -2) + float2(-1, 1);
+    float3 dr = normalize(gCamF.xyz + gCamR.xyz * (nr.x * gProj.x * gProj.y) + gCamU.xyz * (nr.y * gProj.x)), dd = normalize(gCamF.xyz + gCamR.xyz * (nd.x * gProj.x * gProj.y) + gCamU.xyz * (nd.y * gProj.x));
+    float3 Pr = dr * linDepth(gSceneDepth.Load(int3(pr, 0))) / max(dot(dr, gCamF.xyz), 1e-3), Pd = dd * linDepth(gSceneDepth.Load(int3(pd, 0))) / max(dot(dd, gCamF.xyz), 1e-3);
+    float3 ng = cross(Pd - P, Pr - P); ng = dot(ng, ng) > 1e-12 ? normalize(ng) : n;
+    if (dot(ng, -dir) < 0) ng = -ng;
+    if (dot(ng, n) < 0.3 || length(Pr - P) > dist * 0.05 || length(Pd - P) > dist * 0.05) ng = n;   // (an edge next to it: trust the surface's own)
+    return ng;
+}
+// RTX reflections (rt.hlsl, the graphics card's ray tracing cores): per pixel of the reflections' picture, what it found -
+// rgb its colour, a how far (1e5: nothing - the sky; < 0: not traced here). gWet2.z on (1 low, 2 high), gWet2.w how far from you
+Texture2D gRtRefl : register(t55);
 // gMinLight.w < 1: drawn smaller (only the reflection: rgb what it adds, a how much of the picture it covers), then PS_ReflComp lays it over
 float4 PS_Reflect(SkyOut i) : SV_Target
 {
@@ -1659,7 +1674,10 @@ float4 PS_Reflect(SkyOut i) : SV_Target
     sReach = gRefl.z * lerp(0.3, 1, shine * shine);   // (rough: blurred anyway, so near things are what shows - the rays stop sooner)
 
     float2 huv = 0; float travelled = 0;
-    bool rtOn = (((uint)gVoxM.w) & 3u) == 3u;   // ray traced reflections: the blocks first; the screen only where they find nothing (models, enemies...)
+    float4 rtx = gWet2.z > 0.5 ? gRtRefl.Load(int3(i.pos.xy, 0)) : float4(0, 0, 0, -1);   // the RTX rays' find (same pixel of the smaller picture)
+    bool rtxUsed = rtx.a >= 0;
+    float rtxFade = rtxUsed ? saturate((dist - gWet2.w * 0.8) / max(gWet2.w * 0.2, 1)) : 1;   // toward the end of their reach: the voxel reflections take over
+    bool rtOn = (((uint)gVoxM.w) & 3u) == 3u || rtxUsed;   // ray traced reflections: the blocks first; the screen only where they find nothing (models, enemies...)
     bool hit = rtOn ? false : traceScreen(P, n, r, dist, i.pos.xy, huv, travelled);
 
     // where the ray finds nothing on screen: the sky (only if this spot is under the open sky, else a dim guess)
@@ -1674,17 +1692,18 @@ float4 PS_Reflect(SkyOut i) : SV_Target
     if (inRoom) fallback = cooked;
     if (edge < 0.99 && farK < 0.999)   // off screen / behind you: the blocks themselves
     {
-        // the surface's real (flat) direction from the depth next to it: bumps and slopes must not start the ray inside the block
-        int2 pr = min(px + int2(1, 0), int2(gDepth.zw) - 1), pd = min(px + int2(0, 1), int2(gDepth.zw) - 1);
-        float2 nr = (float2(pr) + 0.5) / gDepth.zw * float2(2, -2) + float2(-1, 1), nd = (float2(pd) + 0.5) / gDepth.zw * float2(2, -2) + float2(-1, 1);
-        float3 dr = normalize(gCamF.xyz + gCamR.xyz * (nr.x * gProj.x * gProj.y) + gCamU.xyz * (nr.y * gProj.x)), dd = normalize(gCamF.xyz + gCamR.xyz * (nd.x * gProj.x * gProj.y) + gCamU.xyz * (nd.y * gProj.x));
-        float3 Pr = dr * linDepth(gSceneDepth.Load(int3(pr, 0))) / max(dot(dr, gCamF.xyz), 1e-3), Pd = dd * linDepth(gSceneDepth.Load(int3(pd, 0))) / max(dot(dd, gCamF.xyz), 1e-3);
-        float3 ng = cross(Pd - P, Pr - P); ng = dot(ng, ng) > 1e-12 ? normalize(ng) : n;
-        if (dot(ng, -dir) < 0) ng = -ng;
-        if (dot(ng, n) < 0.3 || length(Pr - P) > dist * 0.05 || length(Pd - P) > dist * 0.05) ng = n;   // (an edge next to it: trust the surface's own)
+        float3 ng = reflFlatNormal(px, P, n, dir, dist);
         float3 rv = r; float rn = dot(rv, ng); if (rn < 0.03) rv = normalize(rv + ng * (0.03 - rn));   // never into the surface
-        float3 vc; bool vh = voxelTrace(P + ng * 0.03, ng, rv, i.pos.xy, vc); float vt = sVoxT;
-        if (vh) fallback = lerp(vc, fallback, farK);
+        float3 vc = 0; bool vh = false; float vt = 1e9;
+        if (rtxFade > 0.001) { vh = voxelTrace(P + ng * 0.03, ng, rv, i.pos.xy, vc); vt = sVoxT; }   // (where the RTX rays cover it all: no voxel steps)
+        if (rtxUsed)
+        {
+            bool xh = rtx.a < 1e4;
+            float3 xc = xh ? lerp(rtx.rgb, fallback, farK) : fallback, vxc = vh ? lerp(vc, fallback, farK) : fallback;
+            fallback = lerp(xc, vxc, rtxFade);
+            if (rtxFade < 0.5) { vh = xh; vt = xh ? rtx.a : 1e9; }
+        }
+        else if (vh) fallback = lerp(vc, fallback, farK);
         if (rtOn)   // the screen too: where it finds something nearer than the blocks (objects, enemies - they aren't in the blocks), or the blocks found nothing
         {
             hit = traceScreen(P, n, r, dist, i.pos.xy, huv, travelled);

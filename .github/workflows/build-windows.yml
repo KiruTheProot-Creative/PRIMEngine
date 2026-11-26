@@ -81,6 +81,7 @@ jobs:
           Copy-Item build/Release/PRIMEngine.exe out/
           if (Test-Path build/Release/PRIMEngine.pdb) { Copy-Item build/Release/PRIMEngine.pdb out/ }   # (crash reports name the function and line with it)
           Copy-Item -Recurse shaders out/shaders
+          if (Test-Path build/Release/shaders/rt_reflect.cso) { Copy-Item build/Release/shaders/rt_reflect.cso out/shaders/ }   # (RTX: built with dxc)
           Copy-Item -Recurse assets out/assets
           Copy-Item README.md out/
 

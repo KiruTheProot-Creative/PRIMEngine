@@ -43,6 +43,7 @@ void applyPreset(Settings& s, const QualityPreset& p);
 int matchingPreset(const Settings& s, const std::vector<QualityPreset>& ps);   // -1: none (Custom)
 bool savePresets(const std::string& path, const std::vector<QualityPreset>& ps);
 bool loadPresets(const std::string& path, std::vector<QualityPreset>& ps);
+extern bool rtxSupported;   // the graphics card can ray trace (set by the app): the RTX options show
 extern std::vector<QualityPreset>* gamePresets;                  // the game's own (set by the app; the Preset option shows and steps through these)
 
 } // namespace mc

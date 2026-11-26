@@ -32,6 +32,21 @@ if(WIN32)
         ${IMGUI}/backends/imgui_impl_win32.cpp)
     target_include_directories(PRIMEngine PRIVATE ${IMGUI})
     target_link_libraries(PRIMEngine primcore d3d12 dxgi dxguid d3dcompiler dbghelp comdlg32 shell32 xaudio2 ole32 windowscodecs mfplat mfreadwrite mfuuid)
+    # RTX: the ray tracing shader (shader model 6.5) is built with dxc from the Windows SDK; without one, RTX is simply not offered
+    file(GLOB DXC_ALL "C:/Program Files (x86)/Windows Kits/10/bin/10.*/x64/dxc.exe")
+    set(RT_CSO ${CMAKE_BINARY_DIR}/rt_reflect.cso)
+    if(DXC_ALL)
+        list(SORT DXC_ALL) list(GET DXC_ALL -1 DXC_EXE)
+        message(STATUS "dxc: ${DXC_EXE}")
+        add_custom_command(OUTPUT ${RT_CSO}
+            COMMAND ${DXC_EXE} -nologo -T cs_6_5 -E CS_RtReflect -HV 2018 -O3 -Wno-conversion -Fo ${RT_CSO} ${CMAKE_SOURCE_DIR}/shaders/rt.hlsl
+            DEPENDS ${CMAKE_SOURCE_DIR}/shaders/rt.hlsl ${CMAKE_SOURCE_DIR}/shaders/block.hlsl)
+        add_custom_target(rtshaders ALL DEPENDS ${RT_CSO})
+        add_dependencies(PRIMEngine rtshaders)
+        add_custom_command(TARGET PRIMEngine POST_BUILD COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:PRIMEngine>/shaders COMMAND ${CMAKE_COMMAND} -E copy ${RT_CSO} $<TARGET_FILE_DIR:PRIMEngine>/shaders/rt_reflect.cso)
+    else()
+        message(WARNING "dxc.exe not found: no RTX shaders")
+    endif()
     add_custom_command(TARGET PRIMEngine POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/shaders $<TARGET_FILE_DIR:PRIMEngine>/shaders
         COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/assets $<TARGET_FILE_DIR:PRIMEngine>/assets)

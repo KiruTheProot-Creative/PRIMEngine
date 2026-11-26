@@ -1243,6 +1243,14 @@ int main() {
         st.shadowQuality = 0; CHECK(!optionShown(st, sd, true) && optionShown(st, sh, true), "shadow settings hide while shadows are off");
         optionStep(st, sh, 1); CHECK(st.shadowQuality == 1 && optionShown(st, sd, true), "a toggle flips (and they show again)");
         CHECK(!optionShown(st, defs[findOption("time_of_day")], true) && optionShown(st, defs[findOption("time_of_day")], false), "the time of day: only in the editor");
+        {   // RTX: only offered on a card with ray tracing cores; the distance only while they are on; kept in the settings file
+            const OptionDef& rx = defs[findOption("rtx_reflections")]; const OptionDef& rr = defs[findOption("rtx_reach")];
+            Settings t; rtxSupported = false; bool hidden = !optionShown(t, rx, true) && !optionShown(t, rx, false);
+            rtxSupported = true; bool shown = optionShown(t, rx, true) && optionShown(t, rr, true);
+            t.rtxReflect = 0; bool reachHides = !optionShown(t, rr, true);
+            t.rtxReflect = 2; t.rtxReach = 48; t.save("/tmp/prim_rtx.txt"); Settings u; u.load("/tmp/prim_rtx.txt"); rtxSupported = false;
+            CHECK(hidden && shown && reachHides && u.rtxReflect == 2 && u.rtxReach == 48 && optionText(t, rx) == "High", "RTX reflections: shown only with ray tracing cores, saved");
+        }
         // keys
         KeyBinds kb; CHECK(kb.key[(int)Act::Forward][0] == 'W' && kb.key[(int)Act::LockOn][0] == 2 && kb.key[(int)Act::Missile][0] == 'F', "the usual keys (W, right mouse for lock-on, F for missiles)");
         kb.set(Act::Jump, 0, 'W'); CHECK(kb.key[(int)Act::Jump][0] == 'W' && kb.key[(int)Act::Forward][0] == 0x26 && kb.key[(int)Act::Forward][1] == 0, "a key taken from another action: that one loses it (its second key moves up)");

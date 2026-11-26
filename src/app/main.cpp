@@ -209,7 +209,7 @@ struct alignas(16) FrameCB {
 };
 struct alignas(16) ChunkCB { float offset[4]; float ax[4] = { 1, 0, 0, 0 }, ay[4] = { 0, 1, 0, 0 }, az[4] = { 0, 0, 1, 0 }; };   // axes: objects are turned and sized
 
-struct GpuChunk { ComPtr<d12::Buffer> vbO, ibO, vbC, ibC, vbW, ibW; UINT nO = 0, nC = 0, nW = 0; UINT inst = 0; };   // inst: its place in the origins list (its own while it exists)
+struct GpuChunk { ComPtr<d12::Buffer> vbO, ibO, vbC, ibC, vbW, ibW; UINT nO = 0, nC = 0, nW = 0; UINT inst = 0; ComPtr<d12::AccelStruct> blas; bool blasDirty = true; };   // blas: its shape for the RTX rays (made again when it changes)   // inst: its place in the origins list (its own while it exists)
 struct ModelGpu { std::vector<std::pair<I3, GpuChunk>> parts; std::vector<Box3> boxes, boxesStill; bool mesh = false; ComPtr<d12::ShaderResourceView> tex; };   // boxesStill: without the moving parts (an open door)
 struct alignas(16) PreviewCB { float vp[16]; float light[4]; };
 struct alignas(16) MapCB { float vp[16]; float eye[4]; float center[4]; float mode[4]; };   // the map hologram
@@ -235,6 +235,51 @@ struct App {
     ComPtr<d12::PixelShader> psReflect, psAO, psAOApply, psReflComp, psAA;
     ComPtr<d12::Texture2D> reflLowTex; ComPtr<d12::RenderTargetView> reflLowRTV; ComPtr<d12::ShaderResourceView> reflLowSRV; int reflLowW = 0, reflLowH = 0;   // reflections traced smaller
     float ReflScale() const { static const float k[4] = { 1.f, 0.75f, 0.5f, 0.25f }; return k[std::clamp(settings.reflectRes, 0, 3)]; }
+    // ---- RTX reflections: the rays' finds (same size as the reflections' smaller picture), the shader, what is in the scene
+    ComPtr<d12::Texture2D> rtxTex; ComPtr<d12::UnorderedAccessView> rtxUAV; ComPtr<d12::ShaderResourceView> rtxSRV; int rtxW = 0, rtxH = 0;
+    ComPtr<d12::ComputeShader> csRtRefl; int rtxInScene = 0, rtxBuilt = 0;
+    void EnsureRtxTex(int w, int h) {
+        if (rtxTex && w == rtxW && h == rtxH) return;
+        D3D11_TEXTURE2D_DESC d{}; d.Width = (UINT)w; d.Height = (UINT)h; d.MipLevels = 1; d.ArraySize = 1; d.Format = DXGI_FORMAT_R16G16B16A16_FLOAT; d.SampleDesc.Count = 1; d.BindFlags = D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE;
+        rtxTex.Reset(); rtxUAV.Reset(); rtxSRV.Reset();
+        HR(dev->CreateTexture2D(&d, nullptr, &rtxTex)); HR(dev->CreateUnorderedAccessView(rtxTex.Get(), nullptr, &rtxUAV)); HR(dev->CreateShaderResourceView(rtxTex.Get(), nullptr, &rtxSRV));
+        rtxW = w; rtxH = h;
+    }
+    bool RtxOn() const { return mc::rtxSupported && csRtRefl && settings.rtxReflect > 0 && settings.reflections > 0; }
+    // the world's chunks near you into the RTX scene (their shapes made first where they changed: a few each frame); then the rays
+    bool TraceRtx(int lw, int lh) {
+        if (!RtxOn()) return false;
+        double reach = settings.rtxReach + 64;   // (rays from the farthest surface still find what is beyond it)
+        struct Near { double d2; I3 key; GpuChunk* gc; }; std::vector<Near> near;
+        for (auto& kv : gpu) {
+            GpuChunk& gc = kv.second; if (!gc.nO && !gc.nC) continue;
+            double cx = (kv.first.x + 0.5) * CS - camPos.x, cy = (kv.first.y + 0.5) * CS - camPos.y, cz = (kv.first.z + 0.5) * CS - camPos.z, d2 = cx * cx + cy * cy + cz * cz;
+            if (d2 < (reach + CS) * (reach + CS)) near.push_back({ d2, kv.first, &gc });
+        }
+        std::sort(near.begin(), near.end(), [](const Near& a, const Near& b) { return a.d2 < b.d2; });
+        int builds = 0; rtxBuilt = 0;
+        std::vector<d12::RtInstance> inst; inst.reserve(near.size());
+        for (const Near& nr : near) {
+            GpuChunk& gc = *nr.gc; const I3& key = nr.key;
+            if ((gc.blasDirty || !gc.blas) && builds < 48) {   // (nearest first; the rest on the next frames)
+                d12::RtGeometry geo[2]; UINT n = 0;
+                if (gc.nO && gc.vbO && gc.ibO) geo[n++] = { gc.vbO.Get(), (UINT)sizeof(Vtx), 0, gc.ibO.Get(), gc.nO, true };
+                if (gc.nC && gc.vbC && gc.ibC) geo[n++] = { gc.vbC.Get(), (UINT)sizeof(Vtx), 0, gc.ibC.Get(), gc.nC, false };
+                ComPtr<d12::AccelStruct> a; if (n && SUCCEEDED(ctx->BuildBlas(geo, n, &a))) { gc.blas = a; gc.blasDirty = false; builds++; }
+            }
+            if (!gc.blas) continue;
+            d12::RtInstance ri; ri.blas = gc.blas.Get();
+            ri.transform[0][0] = ri.transform[1][1] = ri.transform[2][2] = 1;   // (where it is, relative to the camera: no jitter however far you go)
+            ri.transform[0][3] = (float)(key.x * (double)CS - camPos.x); ri.transform[1][3] = (float)(key.y * (double)CS - camPos.y); ri.transform[2][3] = (float)(key.z * (double)CS - camPos.z);
+            inst.push_back(ri);
+        }
+        rtxBuilt = builds; rtxInScene = (int)inst.size();
+        if (inst.empty()) return false;
+        ctx->BuildTlas(inst.data(), (UINT)inst.size());
+        EnsureRtxTex(lw, lh);
+        ctx->DispatchRays(csRtRefl.Get(), (UINT)(lw + 7) / 8, (UINT)(lh + 7) / 8, 1, rtxUAV.Get(), psReflect.Get());
+        return true;
+    }
     void EnsureReflLow(int w, int h) {
         if (reflLowTex && w == reflLowW && h == reflLowH) return;
         D3D11_TEXTURE2D_DESC d{}; d.Width = (UINT)w; d.Height = (UINT)h; d.MipLevels = 1; d.ArraySize = 1; d.Format = DXGI_FORMAT_R16G16B16A16_FLOAT; d.SampleDesc.Count = 1; d.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
@@ -509,6 +554,12 @@ struct App {
             HR(d12::Create(su, &d, &c, &sw, &driverName));
             dev = d; ctx = c; swap = sw;
             vramBytes = dev->adapter().DedicatedVideoMemory;   // (baked lamp shadows use up to an eighth of it)
+        }
+        if (dev->inlineRaytracing()) {   // RTX: the ray tracing shader (built with the program: dxc, shader model 6.5)
+            std::ifstream f(ExeDir() + "shaders\\rt_reflect.cso", std::ios::binary);
+            std::vector<char> code((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+            if (!code.empty() && SUCCEEDED(dev->CreateComputeShader(code.data(), code.size(), nullptr, &csRtRefl))) mc::rtxSupported = true;
+            d12::Log(mc::rtxSupported ? "RTX reflections: ready" : "RTX reflections: the shader (shaders/rt_reflect.cso) is missing");
         }
         MakeBackbuffer(); rw = cw; rh = ch; MakeTargets();
 
@@ -4371,7 +4422,7 @@ struct App {
             if (lodK) if (const Chunk* ch = world->chunk(m.pos)) LodSetSummary(m.pos, lodSummarize(reg, *ch));   // (changed blocks: the far copies again)
             if (m.opaque.empty() && m.cutout.empty() && m.water.empty()) { auto e = gpu.find(m.pos); if (e != gpu.end()) { InstFree(e->second.inst); gpu.erase(e); } continue; }
             auto gi = gpu.try_emplace(m.pos); GpuChunk& g = gi.first->second;
-            if (gi.second) { g.inst = InstAlloc(); InstSet(g.inst, m.pos.x * (double)CS, m.pos.y * (double)CS, m.pos.z * (double)CS); } Upload(m.opaque, g.vbO, g.ibO, g.nO); Upload(m.cutout, g.vbC, g.ibC, g.nC); Upload(m.water, g.vbW, g.ibW, g.nW);
+            if (gi.second) { g.inst = InstAlloc(); InstSet(g.inst, m.pos.x * (double)CS, m.pos.y * (double)CS, m.pos.z * (double)CS); } Upload(m.opaque, g.vbO, g.ibO, g.nO); Upload(m.cutout, g.vbC, g.ibC, g.nC); Upload(m.water, g.vbW, g.ibW, g.nW); g.blasDirty = true;
             if (meshesChanged.size() < 512) meshesChanged.push_back(V3{ (m.pos.x + 0.5) * CS, (m.pos.y + 0.5) * CS, (m.pos.z + 0.5) * CS });   // (lamps near it: their shadow maps again)
         }
         BgSpent(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
@@ -4896,6 +4947,7 @@ struct App {
             }
         }
         fc.weather[0] = W.rain; fc.weather[1] = W.snow; fc.weather[2] = W.dark; fc.weather[3] = weather.wetness * E.atmosphere;
+        fc.wet2[2] = RtxOn() ? (float)settings.rtxReflect : 0.f; fc.wet2[3] = settings.rtxReach;   // RTX reflections: on (1 low, 2 high), how far
         fc.wet2[0] = weather.puddles * E.atmosphere * (E.cold > 0.5f ? 0.f : 1.f); fc.wet2[1] = std::clamp((weather.wetness - 0.15f) * 1.4f, 0.f, 1.f) * E.atmosphere * (E.cold > 0.5f ? 0.f : 1.f);
         fc.weather2[0] = weather.snowCover * E.atmosphere; fc.weather2[1] = weather.flash * E.atmosphere; fc.weather2[2] = W.wind; fc.weather2[3] = skyMap ? 1.f : 0.f;
         ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &fc, 0, 0);
@@ -5208,8 +5260,13 @@ struct App {
         if (float rs = ReflScale(); settings.reflections > 0) {   // the rays traced into their own picture (smaller, if set), then laid over the full one, blurred as rough as each surface is
             int lw = std::max(1, (int)std::lround(rw * rs)), lh = std::max(1, (int)std::lround(rh * rs)); EnsureReflLow(lw, lh);
             const float clr[4] = { 0, 0, 0, 0 }; ctx->OMSetRenderTargets(1, reflLowRTV.GetAddressOf(), nullptr); ctx->ClearRenderTargetView(reflLowRTV.Get(), clr);
+            if (RtxOn()) {   // the RTX rays first (a compute pass on the same picture size), then the reflections blend them in
+                if (!TraceRtx(lw, lh)) { EnsureRtxTex(lw, lh); const float none[4] = { 0, 0, 0, -1 }; ctx->ClearUnorderedAccessViewFloat(rtxUAV.Get(), none); }
+                ctx->OMSetRenderTargets(1, reflLowRTV.GetAddressOf(), nullptr); ctx->PSSetShaderResources(55, 1, rtxSRV.GetAddressOf());
+            }
             D3D11_VIEWPORT sv{ 0, 0, (float)lw, (float)lh, 0, 1 }; ctx->RSSetViewports(1, &sv);
             ctx->Draw(3, 0);
+            { d12::ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(55, 1, &n1); }
             D3D11_VIEWPORT fv{ 0, 0, (float)rw, (float)rh, 0, 1 }; ctx->RSSetViewports(1, &fv);
             ctx->OMSetRenderTargets(1, reflRTV.GetAddressOf(), nullptr); ctx->PSSetShader(psReflComp.Get(), nullptr, 0);
             ctx->PSSetShaderResources(34, 1, reflLowSRV.GetAddressOf()); ctx->PSSetShaderResources(25, 1, albSRV.GetAddressOf());

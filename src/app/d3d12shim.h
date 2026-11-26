@@ -88,6 +88,16 @@ class BlendState : public DeviceChild { public: D3D12_BLEND_DESC d{}; };
 class RasterizerState : public DeviceChild { public: D3D12_RASTERIZER_DESC d{}; bool scissor = false; };
 class DepthStencilState : public DeviceChild { public: D3D12_DEPTH_STENCIL_DESC d{}; };
 class SamplerState : public DeviceChild { public: D3D12_SAMPLER_DESC d{}; D3D12_CPU_DESCRIPTOR_HANDLE cpu{}; ~SamplerState() override; };
+class ComputeShader : public ShaderBase {};
+// ---- ray tracing (DXR 1.1: ray queries): a mesh's acceleration structure (one or more triangle lists), the frame's scene of them
+class AccelStruct : public DeviceChild {
+public:
+    Page* page = nullptr; uint64_t off = 0, size = 0; D3D12_GPU_VIRTUAL_ADDRESS va = 0;
+    struct Geo { ComPtr<Buffer> vb, ib; }; std::vector<Geo> geos;   // (kept: the scene's shader reads their vertices)
+    ~AccelStruct() override;
+};
+struct RtGeometry { Buffer* vb = nullptr; UINT stride = 0, vertexCount = 0; Buffer* ib = nullptr; UINT indexCount = 0; bool opaque = true; };   // positions: float3 at the start of each vertex; indices: 32-bit
+struct RtInstance { AccelStruct* blas = nullptr; float transform[3][4] = {}; UINT id = 0; UINT mask = 0xFF; };
 class Query : public DeviceChild { public: D3D11_QUERY type = D3D11_QUERY_EVENT; UINT slot = 0; uint64_t fenceAt = 0; bool ended = false; };
 
 // ---- the device: makes things (any thread)
@@ -109,6 +119,8 @@ public:
     HRESULT CreateDepthStencilState(const D3D11_DEPTH_STENCIL_DESC* d, DepthStencilState** out);
     HRESULT CreateSamplerState(const D3D11_SAMPLER_DESC* d, SamplerState** out);
     HRESULT CreateQuery(const D3D11_QUERY_DESC* d, Query** out);
+    HRESULT CreateComputeShader(const void* code, SIZE_T n, void* linkage, ComputeShader** out);   // (DXIL: ray tracing shaders)
+    bool inlineRaytracing();   // DXR 1.1 (ray queries in any shader) and shader model 6.5: what the RTX passes need
     // D3D12 itself (ray tracing ...)
     ID3D12Device* d3d();
     ID3D12Device5* d3d5();   // null: no DXR on this device
@@ -158,6 +170,13 @@ public:
     void Begin(Query* q);
     void End(Query* q);
     HRESULT GetData(Query* q, void* data, UINT size, UINT flags);
+    // ray tracing: build a mesh's acceleration structure (recorded now, usable this frame), the frame's scene, then a compute pass
+    // that traces into it - it reads everything bound to the pixel shader (its textures, constants, samplers) plus, in space1:
+    // t0 the scene, t1 per instance where its triangles are (8 uints: per triangle list vertex buffer table index, byte offset,
+    // index buffer table index, byte offset), u0 the output; space2: t0.. the buffers those point into (ByteAddressBuffer[256])
+    HRESULT BuildBlas(const RtGeometry* g, UINT n, AccelStruct** out);
+    void BuildTlas(const RtInstance* inst, UINT n);
+    void DispatchRays(ComputeShader* cs, UINT x, UINT y, UINT z, UnorderedAccessView* out, ShaderBase* dimsLike);   // dimsLike: whose texture kinds the empty slots take
     // the engine's own: everything bound, kept and put back (the ImGui renderer)
     struct Saved; Saved* SaveState(); void RestoreState(Saved* s);
     // D3D12 itself: the command list being recorded, and the state a resource must be in (barriers done before the next call)
