@@ -3583,8 +3583,8 @@ GOut VS_Grass(uint vid : SV_VertexID, uint iid : SV_InstanceID)
     o.rel = 0; o.col = 0; o.h = 0; o.lit = g.info.z; o.pos = float4(0, 0, 0, 1);
     uint blade = vid / 6, c = vid % 6, bx = blade % 16, bz = blade / 16;
     int3 wb = int3(round(g.pos.xyz + gCamPos.xyz));
-    float dist = length(g.pos.xyz + 0.5), far = gBlocks.y;
-    float fade = saturate((far - dist) / max(far * 0.3, 1));                                 // toward the end: fewer and shorter, then none
+    float dist = length(g.pos.xyz + 0.5), maxDist = gBlocks.y;
+    float fade = saturate((maxDist - dist) / max(maxDist * 0.3, 1));                                 // toward the end: fewer and shorter, then none
     float density = ((g.info.y >> 8) & 255) / 255.0 * lerp(0.4, 1, fade);
     if (fade <= 0 || hash01(int4(wb.x * 16 + bx, wb.z * 16 + bz, wb.y, 11)) > density) return o;   // (no blade here: an empty triangle)
     float hmax = (g.info.y & 255) / 255.0 * 1.5;

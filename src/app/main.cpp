@@ -240,15 +240,15 @@ struct App {
     ComPtr<ID3D11Buffer> grassBuf; ComPtr<ID3D11ShaderResourceView> grassSRV; UINT grassCap = 0; int grassDrawn = 0;
     ComPtr<ID3D11VertexShader> vsGrass; ComPtr<ID3D11PixelShader> psGrass;
     void DrawGrass() {
-        grassDrawn = 0; float far = settings.grassDistance; if (far <= 0 || !vsGrass) return;
-        std::vector<GrassInstGpu> inst; double reach = far + CS;
+        grassDrawn = 0; float maxDist = settings.grassDistance; if (maxDist <= 0 || !vsGrass) return;
+        std::vector<GrassInstGpu> inst; double reach = maxDist + CS;
         for (auto& kv : gpu) {
             if (kv.second.grass.empty()) continue;
             double ox = kv.first.x * (double)CS - camPos.x, oy = kv.first.y * (double)CS - camPos.y, oz = kv.first.z * (double)CS - camPos.z;
             double cx = ox + CS * 0.5, cy = oy + CS * 0.5, cz = oz + CS * 0.5; if (cx * cx + cy * cy + cz * cz > reach * reach) continue;
             for (const GrassTop& t : kv.second.grass) {
                 float px = (float)(ox + t.x), py = (float)(oy + t.y), pz = (float)(oz + t.z);
-                float dx = px + 0.5f, dy = py + 1, dz = pz + 0.5f; if (dx * dx + dy * dy + dz * dz > far * far) continue;
+                float dx = px + 0.5f, dy = py + 1, dz = pz + 0.5f; if (dx * dx + dy * dy + dz * dz > maxDist * maxDist) continue;
                 GrassInstGpu g{ { px, py, pz, 0 }, { t.layer, (uint32_t)t.height | ((uint32_t)t.density << 8) | ((uint32_t)t.edges << 16), t.lit, 0 } };
                 inst.push_back(g);
             }
