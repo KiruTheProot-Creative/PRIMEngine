@@ -19264,6 +19264,67 @@ struct App {
             StartPlay(false); play.health = game.player.maxHealth * 0.65f; play.hurtFlash = 0.25; toastT = 0;
             frames(4, "play_hud");
             StopPlay();
+            {   // cutscenes: a ship of blocks flies in and lands on a pad, a figure (the test mannequin) drops out and walks off; bars, texts, a fade; then the editor
+                bool mq = ImportModelFile(ExeDir() + "assets/examples/Mannequin.fbx");
+                auto ground = [&](int x, int z) { for (int y = 60; y > -60; y--) { BlockId v = world->get(x, y, z); if (v != AIR && !reg.get(v).liquid) return y; } return 0; };
+                int px = 112, pz = 44; player.feet = { px + 0.5, 40, pz - 20.0 }; waitLoaded();
+                int gy = ground(px, pz) + 1;
+                BlockId met = reg.find("metal"), cob = reg.find("cobblestone"), gls = reg.find("glass"), lmp = reg.find("lamp");
+                for (int x = -6; x <= 6; x++) for (int z = -6; z <= 6; z++) { world->set(px + x, gy - 1, pz + z, std::abs(x) == 6 || std::abs(z) == 6 ? met : cob); for (int y = gy; y < gy + 8; y++) world->set(px + x, y, pz + z, AIR); }
+                // the ship: a wedge of metal, a glass cockpit at the front (+Z), lamps for engines at the back
+                for (int x = -3; x <= 3; x++) for (int z = -3; z <= 3; z++) world->set(px + x, gy + 1, pz + z, met);
+                for (int z = -2; z <= 2; z++) { world->set(px - 2, gy, pz + z, met); world->set(px + 2, gy, pz + z, met); }
+                for (int x = -2; x <= 2; x++) for (int z = -3; z <= 2; z++) world->set(px + x, gy + 2, pz + z, met);
+                for (int x = -1; x <= 1; x++) { world->set(px + x, gy + 2, pz + 3, gls); world->set(px + x, gy + 3, pz + 2, gls); for (int z = -2; z <= 1; z++) world->set(px + x, gy + 3, pz + z, met); }
+                world->set(px - 2, gy + 1, pz - 4, lmp); world->set(px + 2, gy + 1, pz - 4, lmp);
+                selA = { px - 3, gy, pz - 4 }; selB = { px + 3, gy + 3, pz + 3 }; selStage = 2; MakeIntoObject("Gunship", true);
+                V3 pad = objects.back().pos; std::string ship = objects.back().name; double top = pad.y + 4;
+                Cutscene c; c.name = "Arrival"; c.length = 16; c.handOff = true;
+                auto ck = [&](float t, V3 p, V3 look, float fov, bool ease = false, bool cut = false) {
+                    V3 d = look - p; CamKey k; k.t = t; k.pos = p; k.yaw = (float)(std::atan2(d.x, d.z) * 180 / 3.14159265358979); k.pitch = (float)(std::atan2(d.y, std::sqrt(d.x * d.x + d.z * d.z)) * 180 / 3.14159265358979); k.fov = fov; k.ease = ease; k.cut = cut; c.cam.push_back(k); };
+                CutActor sh; sh.name = "Gunship"; sh.object = ship;
+                sh.keys = { { 0, pad + V3{ 45, 40, 70 }, 210 }, { 6, pad + V3{ 8, 10, 12 }, 200 }, { 9, pad + V3{ 0, 3.5, 0 }, 182 }, { 10.5f, pad, 180, true } };
+                c.actors.push_back(sh);
+                ck(0, pad + V3{ -26, 16, -18 }, pad + V3{ 45, 40, 70 }, 55, true); ck(6, pad + V3{ -16, 7, -12 }, pad + V3{ 8, 10, 12 }, 60);
+                ck(10.5f, pad + V3{ -8, 1.4, -7 }, pad + V3{ 0, 1.5, 0 }, 62, true);
+                ck(11, pad + V3{ 7, 5.5, -6 }, pad + V3{ 0, 4, 0 }, 55, true, true); ck(14, pad + V3{ 7.5, 3.5, -7.5 }, pad + V3{ 2, 1.5, -2 }, 55);
+                CutActor sa; sa.name = "Samus"; sa.model = mq ? "Mannequin" : ""; sa.scale = 0.65f; sa.showFrom = 11.2f;
+                V3 drop = pad + V3{ 0, 4, -1.5 }, land = pad + V3{ 4, 0, -1.5 }, walkTo = pad + V3{ 4, 0, -3.4 };
+                sa.keys = { { 11.2f, drop, 90 }, { 12.3f, drop, 90 }, { 12.6f, pad + V3{ 2.4, 4.7, -1.5 }, 90 }, { 12.95f, land, 90, false, false }, { 14, land, 120, true }, { 14.6f, land, 180 }, { 16, walkTo, 180 } };
+                sa.clips = { { 11.2f, 1.1f, "idle" }, { 12.3f, 0.65f, "fall" }, { 12.95f, 1.1f, "land" }, { 14.05f, 2, "walk" } };
+                c.actors.push_back(sa);
+                ck(16, walkTo + V3{ 0, 1.62, 0.25 }, walkTo + V3{ 0, 1.5, -6 }, 70, true);   // into her visor: the hand-off
+                CutText rd; rd.t = 1; rd.length = 4.5f; rd.style = CutTextStyle::Readout; rd.text = "PLANET: UNCHARTED\nOUTPOST: ONLINE\nPHAZON: TRACE SIGNAL"; rd.typeSpeed = 25; c.texts.push_back(rd);
+                CutText cm; cm.t = 7; cm.length = 3.2f; cm.style = CutTextStyle::Comms; cm.speaker = "Outpost Control"; cm.text = "Gunship, pad two is clear. Welcome, Hunter."; c.texts.push_back(cm);
+                c.fades = { { 0, 1.2f, CutFadeKind::FromBlack } };
+                c.events = { { 10.5f, { Do::Shake, "", "", 0.5f } }, { 10.5f, { Do::Particles, ship, "Smoke" } }, { 10.6f, { Do::FlagOn, "", "landed" } } };
+                Cutscene v; v.name = "Look up"; v.view = CutView::Visor; v.length = 3; v.lookOnly = true; v.fromPlayer = true; v.blendOut = 0.6f;
+                { CamKey k; k.t = 2; k.pitch = 35; k.yaw = 30; k.ease = true; v.cam.push_back(k); }
+                v.texts = { { 0.5f, 2.4f, "Something moves above you...", "", CutTextStyle::Subtitle, 0 } };
+                cutscenes = { c, v };
+                Log(std::string("cutscene test: the mannequin ") + (mq ? "imported" : "is missing") + ", the ship " + ship);
+                StartPlay(false); loadingOn = false; bootOn = false; toastT = 0; player.feet = pad + V3{ -20, 0, -20 }; player.feet.y = gy;
+                PlayCutscene("Arrival");
+                auto at = [&](double t, int k, const char* name) { cutRun.t = t; cutRt.clear(); frames(k, name); };
+                at(2.5, 2, "cutscene_orbit_readout");
+                cutRun.skipHeld = 0.45; at(8.4, 1, "cutscene_descent_comms_and_skip_ring"); cutRun.skipHeld = 0;
+                at(10.3, 2, "cutscene_landing_low_angle");
+                at(12.55, 2, "cutscene_figure_jumps_down");
+                at(13.15, 2, "cutscene_figure_lands");
+                at(15.2, 3, "cutscene_figure_walks");
+                at(15.97, 3, "cutscene_hand_off");
+                Log("after the cutscene: " + std::string(cutRun.on ? "still playing" : "over") + ", feet " + std::to_string(player.feet.x - walkTo.x) + " " + std::to_string(player.feet.y - walkTo.y) + " " + std::to_string(player.feet.z - walkTo.z)
+                    + ", flag landed " + (evRun.flags.count("landed") ? "on" : "off"));
+                frames(2, "cutscene_after_hand_off");
+                player.feet = pad + V3{ -10, 0, -10 }; player.feet.y = gy; player.yaw = 0.8; player.pitch = 0;
+                PlayCutscene("Look up"); cutRun.t = 2.4; frames(2, "cutscene_visor_view");
+                StopPlay();
+                cutsEdOpen = true; focusCutsEd = true; cutEd = 0; cutT = 12.6; CutSelect(2, 1, 2); cutLook = false;
+                poseAt(DemoShot{ "c", pad + V3{ -22, 14, -26 }, pad + V3{ 2, 3, 2 }, 14.5f });
+                frames(5, "cutscene_editor");
+                cutLook = true; cutT = 10.3; frames(3, "cutscene_editor_through_the_camera");
+                cutsEdOpen = false; cutLook = false; cutscenes.clear(); cutRt.clear();
+            }
         }
         {   // the start screen: the project manager
             std::string a = Projects::create(ProjectsRoot(), "Space Pirates"), b = Projects::create(ProjectsRoot(), "Cozy Village");
