@@ -9863,6 +9863,7 @@ struct App {
             D3D11_TEXTURE3D_DESC d{}; d.Width = FOGW; d.Height = FOGH; d.Depth = FOGD; d.MipLevels = 1; d.Format = DXGI_FORMAT_R16G16B16A16_FLOAT; d.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
             for (int k = 0; k < 2; k++) { HR(dev->CreateTexture3D(&d, nullptr, &fogCell[k])); HR(dev->CreateUnorderedAccessView(fogCell[k].Get(), nullptr, &fogCellUAV[k])); HR(dev->CreateShaderResourceView(fogCell[k].Get(), nullptr, &fogCellSRV[k])); }
             HR(dev->CreateTexture3D(&d, nullptr, &fogSum)); HR(dev->CreateUnorderedAccessView(fogSum.Get(), nullptr, &fogSumUAV)); HR(dev->CreateShaderResourceView(fogSum.Get(), nullptr, &fogSumSRV));
+            { const float clearAir[4] = { 0, 0, 0, 1 }; ctx->ClearUnorderedAccessViewFloat(fogSumUAV.Get(), clearAir); }   // (a new grid: clear air - nothing added, everything let through; not black)
             fogHistOk = false;
         }
         V3 moved = camPos - fogLastCam; bool jump = moved.x * moved.x + moved.y * moved.y + moved.z * moved.z > 16;   // (a teleport, a cut: start fresh)
@@ -9877,6 +9878,10 @@ struct App {
         ctx->OMSetRenderTargetsAndUnorderedAccessViews(0, nullptr, nullptr, 0, 2, u, nullptr);
         D3D11_VIEWPORT fv{ 0, 0, (float)FOGW, (float)FOGH, 0, 1 }; ctx->RSSetViewports(1, &fv);
         ctx->PSSetShaderResources(50, 1, fogCellSRV[fogCur].GetAddressOf());
+        // its own drawing state: the full-screen triangle faces away, so whatever the pass before left (culling it) must not decide whether it runs -
+        // in the editor that left the grid never drawn: black after opening, then whatever Play or another world last put in it, stuck on the screen
+        ctx->RSSetState(rsNoCull.Get()); ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
+        ctx->IASetInputLayout(nullptr); ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psFogGrid.Get(), nullptr, 0);
         ctx->Draw(3, 0);
         ctx->OMSetRenderTargets(0, nullptr, nullptr);
