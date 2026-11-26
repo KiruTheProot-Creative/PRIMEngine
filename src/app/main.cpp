@@ -250,16 +250,16 @@ struct App {
     bool TraceRtx(int lw, int lh) {
         if (!RtxOn()) return false;
         double reach = settings.rtxReach + 64;   // (rays from the farthest surface still find what is beyond it)
-        struct Near { double d2; I3 key; GpuChunk* gc; }; std::vector<Near> near;
+        struct Near { double d2; I3 key; GpuChunk* gc; }; std::vector<Near> around;
         for (auto& kv : gpu) {
             GpuChunk& gc = kv.second; if (!gc.nO && !gc.nC) continue;
             double cx = (kv.first.x + 0.5) * CS - camPos.x, cy = (kv.first.y + 0.5) * CS - camPos.y, cz = (kv.first.z + 0.5) * CS - camPos.z, d2 = cx * cx + cy * cy + cz * cz;
-            if (d2 < (reach + CS) * (reach + CS)) near.push_back({ d2, kv.first, &gc });
+            if (d2 < (reach + CS) * (reach + CS)) around.push_back({ d2, kv.first, &gc });
         }
-        std::sort(near.begin(), near.end(), [](const Near& a, const Near& b) { return a.d2 < b.d2; });
+        std::sort(around.begin(), around.end(), [](const Near& a, const Near& b) { return a.d2 < b.d2; });
         int builds = 0; rtxBuilt = 0;
-        std::vector<d12::RtInstance> inst; inst.reserve(near.size());
-        for (const Near& nr : near) {
+        std::vector<d12::RtInstance> inst; inst.reserve(around.size());
+        for (const Near& nr : around) {
             GpuChunk& gc = *nr.gc; const I3& key = nr.key;
             if ((gc.blasDirty || !gc.blas) && builds < 48) {   // (nearest first; the rest on the next frames)
                 d12::RtGeometry geo[2]; UINT n = 0;
