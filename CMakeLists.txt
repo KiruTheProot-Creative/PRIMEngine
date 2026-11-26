@@ -36,7 +36,8 @@ if(WIN32)
     file(GLOB DXC_ALL "C:/Program Files (x86)/Windows Kits/10/bin/10.*/x64/dxc.exe")
     set(RT_CSO ${CMAKE_BINARY_DIR}/rt_reflect.cso)
     if(DXC_ALL)
-        list(SORT DXC_ALL) list(GET DXC_ALL -1 DXC_EXE)
+        list(SORT DXC_ALL)
+        list(GET DXC_ALL -1 DXC_EXE)
         message(STATUS "dxc: ${DXC_EXE}")
         add_custom_command(OUTPUT ${RT_CSO}
             COMMAND ${DXC_EXE} -nologo -T cs_6_5 -E CS_RtReflect -HV 2018 -O3 -Wno-conversion -Fo ${RT_CSO} ${CMAKE_SOURCE_DIR}/shaders/rt.hlsl
