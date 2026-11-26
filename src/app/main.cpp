@@ -64,7 +64,7 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <commdlg.h>
-#include <d3d11.h>
+#include "d3d12shim.h"
 #include <dxgi1_5.h>
 #include <xaudio2.h>
 #include <d3dcompiler.h>
@@ -76,7 +76,7 @@
 #include "../../third_party/imgui/imgui_internal.h"   // dock layout builder, side bars
 #include "../../third_party/imgui/imgui_stdlib.h"
 #include "../../third_party/imgui/backends/imgui_impl_win32.h"
-#include "../../third_party/imgui/backends/imgui_impl_dx11.h"
+#include "imgui_impl_d12.h"
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
 
 #include <algorithm>
@@ -208,8 +208,8 @@ struct alignas(16) FrameCB {
 };
 struct alignas(16) ChunkCB { float offset[4]; float ax[4] = { 1, 0, 0, 0 }, ay[4] = { 0, 1, 0, 0 }, az[4] = { 0, 0, 1, 0 }; };   // axes: objects are turned and sized
 
-struct GpuChunk { ComPtr<ID3D11Buffer> vbO, ibO, vbC, ibC, vbW, ibW; UINT nO = 0, nC = 0, nW = 0; UINT inst = 0; };   // inst: its place in the origins list (its own while it exists)
-struct ModelGpu { std::vector<std::pair<I3, GpuChunk>> parts; std::vector<Box3> boxes, boxesStill; bool mesh = false; ComPtr<ID3D11ShaderResourceView> tex; };   // boxesStill: without the moving parts (an open door)
+struct GpuChunk { ComPtr<d12::Buffer> vbO, ibO, vbC, ibC, vbW, ibW; UINT nO = 0, nC = 0, nW = 0; UINT inst = 0; };   // inst: its place in the origins list (its own while it exists)
+struct ModelGpu { std::vector<std::pair<I3, GpuChunk>> parts; std::vector<Box3> boxes, boxesStill; bool mesh = false; ComPtr<d12::ShaderResourceView> tex; };   // boxesStill: without the moving parts (an open door)
 struct alignas(16) PreviewCB { float vp[16]; float light[4]; };
 struct alignas(16) MapCB { float vp[16]; float eye[4]; float center[4]; float mode[4]; };   // the map hologram
 struct alignas(16) VisorCB { float tint[4], grade[4], lines[4], edge[4], misc[4], hud[4], outline[4]; };
@@ -222,17 +222,17 @@ struct App {
     // ---- window + device
     HWND hwnd = nullptr; int cw = 1280, ch = 720; bool resized = false;
     int rw = 0, rh = 0; float vx = 0, vy = 0;            // size of the 3D picture, and where it sits in the window (the editor's viewport)
-    ComPtr<ID3D11Texture2D> sceneTex; ComPtr<ID3D11RenderTargetView> sceneRTV; ComPtr<ID3D11ShaderResourceView> sceneSRV;   // the viewport picture
+    ComPtr<d12::Texture2D> sceneTex; ComPtr<d12::RenderTargetView> sceneRTV; ComPtr<d12::ShaderResourceView> sceneSRV;   // the viewport picture
     ImVec2 viewSize{ 0, 0 };
-    ComPtr<ID3D11Device> dev; ComPtr<ID3D11DeviceContext> ctx; ComPtr<IDXGISwapChain> swap; ComPtr<ID3D11RenderTargetView> backRTV;
-    ComPtr<ID3D11Texture2D> depthTex; ComPtr<ID3D11DepthStencilView> dsv;
-    ComPtr<ID3D11VertexShader> vsBlock, vsSky, vsShadow; ComPtr<ID3D11PixelShader> psOpaque, psCutout, psSky, psGhost, psShadowCut, psPost, psVolume, psBloomDown, psBloomUp, psRain, psBolt;
-    ComPtr<ID3D11VertexShader> vsSkyMap, vsRain, vsRainFar, vsDust, vsWaterMap, vsDrips;
-    ComPtr<ID3D11Texture2D> waterMapTex; ComPtr<ID3D11DepthStencilView> waterMapDSV; ComPtr<ID3D11ShaderResourceView> waterMapSRV;   // the water's tops from above (caustics)
+    ComPtr<d12::Device> dev; ComPtr<d12::DeviceContext> ctx; ComPtr<d12::SwapChain> swap; ComPtr<d12::RenderTargetView> backRTV;
+    ComPtr<d12::Texture2D> depthTex; ComPtr<d12::DepthStencilView> dsv;
+    ComPtr<d12::VertexShader> vsBlock, vsSky, vsShadow; ComPtr<d12::PixelShader> psOpaque, psCutout, psSky, psGhost, psShadowCut, psPost, psVolume, psBloomDown, psBloomUp, psRain, psBolt;
+    ComPtr<d12::VertexShader> vsSkyMap, vsRain, vsRainFar, vsDust, vsWaterMap, vsDrips;
+    ComPtr<d12::Texture2D> waterMapTex; ComPtr<d12::DepthStencilView> waterMapDSV; ComPtr<d12::ShaderResourceView> waterMapSRV;   // the water's tops from above (caustics)
     float visorWet = 0, visorRain = 0;   // drops on the visor: after coming out of the water (dries off), from the rain
     VisorGlass glass; double glassYawLast = 0; bool glassYawKnown = false;   // what else is on the visor's glass: steam, frost, splats, static, your face
-    ComPtr<ID3D11PixelShader> psReflect, psAO, psAOApply, psReflComp, psAA;
-    ComPtr<ID3D11Texture2D> reflLowTex; ComPtr<ID3D11RenderTargetView> reflLowRTV; ComPtr<ID3D11ShaderResourceView> reflLowSRV; int reflLowW = 0, reflLowH = 0;   // reflections traced smaller
+    ComPtr<d12::PixelShader> psReflect, psAO, psAOApply, psReflComp, psAA;
+    ComPtr<d12::Texture2D> reflLowTex; ComPtr<d12::RenderTargetView> reflLowRTV; ComPtr<d12::ShaderResourceView> reflLowSRV; int reflLowW = 0, reflLowH = 0;   // reflections traced smaller
     float ReflScale() const { static const float k[4] = { 1.f, 0.75f, 0.5f, 0.25f }; return k[std::clamp(settings.reflectRes, 0, 3)]; }
     void EnsureReflLow(int w, int h) {
         if (reflLowTex && w == reflLowW && h == reflLowH) return;
@@ -241,11 +241,11 @@ struct App {
         HR(dev->CreateTexture2D(&d, nullptr, &reflLowTex)); HR(dev->CreateRenderTargetView(reflLowTex.Get(), nullptr, &reflLowRTV)); HR(dev->CreateShaderResourceView(reflLowTex.Get(), nullptr, &reflLowSRV));
         reflLowW = w; reflLowH = h;
     }
-    ComPtr<ID3D11Texture2D> indTex, aoTex; ComPtr<ID3D11RenderTargetView> indRTV, aoRTV; ComPtr<ID3D11ShaderResourceView> indSRV, aoSRV;   // ambient occlusion
-    ComPtr<ID3D11Texture2D> mirTex, mirDepth; ComPtr<ID3D11RenderTargetView> mirRTV; ComPtr<ID3D11ShaderResourceView> mirSRV; ComPtr<ID3D11DepthStencilView> mirDSV;   // a mirror's view (half size)
-    ComPtr<ID3D11RasterizerState> rsCullFront; MirrorPlane lastMirror;
-    ComPtr<ID3D11Texture2D> albTex, giTex; ComPtr<ID3D11RenderTargetView> albRTV, giRTV; ComPtr<ID3D11ShaderResourceView> albSRV, giSRV; ComPtr<ID3D11PixelShader> psGI, psGIApply, psGITemp;   // bounce light
-    ComPtr<ID3D11PixelShader> psProbeUpdate; ComPtr<ID3D11Texture2D> probeTex[2]; ComPtr<ID3D11RenderTargetView> probeRTV[2]; ComPtr<ID3D11ShaderResourceView> probeSRV[2];
+    ComPtr<d12::Texture2D> indTex, aoTex; ComPtr<d12::RenderTargetView> indRTV, aoRTV; ComPtr<d12::ShaderResourceView> indSRV, aoSRV;   // ambient occlusion
+    ComPtr<d12::Texture2D> mirTex, mirDepth; ComPtr<d12::RenderTargetView> mirRTV; ComPtr<d12::ShaderResourceView> mirSRV; ComPtr<d12::DepthStencilView> mirDSV;   // a mirror's view (half size)
+    ComPtr<d12::RasterizerState> rsCullFront; MirrorPlane lastMirror;
+    ComPtr<d12::Texture2D> albTex, giTex; ComPtr<d12::RenderTargetView> albRTV, giRTV; ComPtr<d12::ShaderResourceView> albSRV, giSRV; ComPtr<d12::PixelShader> psGI, psGIApply, psGITemp;   // bounce light
+    ComPtr<d12::PixelShader> psProbeUpdate; ComPtr<d12::Texture2D> probeTex[2]; ComPtr<d12::RenderTargetView> probeRTV[2]; ComPtr<d12::ShaderResourceView> probeSRV[2];
     int probeCur = 0, probeSpacing = 0; bool probesOn = false;   // light probes: their atlas (two, taking turns), the spacing it was made for
     void EnsureProbes(int spacing) {   // the atlas: 32 x 16 x 32 probes, six sides each; made again (empty) when the spacing changes
         if (probeTex[0] && probeSpacing == spacing) return;
@@ -256,16 +256,16 @@ struct App {
         for (int k = 0; k < 2; k++) { probeTex[k].Reset(); probeRTV[k].Reset(); probeSRV[k].Reset(); HR(dev->CreateTexture2D(&d, &sd, &probeTex[k])); HR(dev->CreateRenderTargetView(probeTex[k].Get(), nullptr, &probeRTV[k])); HR(dev->CreateShaderResourceView(probeTex[k].Get(), nullptr, &probeSRV[k])); }
         probeSpacing = spacing; probeCur = 0;
     }
-    ComPtr<ID3D11Texture2D> giHistTex[2]; ComPtr<ID3D11RenderTargetView> giHistRTV[2]; ComPtr<ID3D11ShaderResourceView> giHistSRV[2]; int giCur = 0; bool giHistOk = false;   // its memory (two, taking turns)
+    ComPtr<d12::Texture2D> giHistTex[2]; ComPtr<d12::RenderTargetView> giHistRTV[2]; ComPtr<d12::ShaderResourceView> giHistSRV[2]; int giCur = 0; bool giHistOk = false;   // its memory (two, taking turns)
     XMMATRIX histVPNow = XMMatrixIdentity(), histVPPrev = XMMatrixIdentity(); V3 histCamPrev{ 0, 0, 0 }; uint32_t frameNo = 0; uint64_t shadowTick = 0;
-    ComPtr<ID3D11Texture2D> surfTex, reflTex; ComPtr<ID3D11RenderTargetView> surfRTV, reflRTV; ComPtr<ID3D11ShaderResourceView> surfSRV, reflSRV;   // for reflections
-    ComPtr<ID3D11Texture2D> skyMapTex; ComPtr<ID3D11DepthStencilView> skyMapDSV; ComPtr<ID3D11ShaderResourceView> skyMapSRV;   // what is above each spot
+    ComPtr<d12::Texture2D> surfTex, reflTex; ComPtr<d12::RenderTargetView> surfRTV, reflRTV; ComPtr<d12::ShaderResourceView> surfSRV, reflSRV;   // for reflections
+    ComPtr<d12::Texture2D> skyMapTex; ComPtr<d12::DepthStencilView> skyMapDSV; ComPtr<d12::ShaderResourceView> skyMapSRV;   // what is above each spot
     Weather weather; bool weatherWin = false;
     EnvState envState; bool envWin = false;
     PlanetSet planets; bool planetsDirty = false;   // planets (planets.txt): Space backgrounds
     LookSet looks; LookState lookState; bool looksDirty = false;   // colour looks (looks.txt): the world's, a zone's
-    ComPtr<ID3D11PixelShader> psLumLog, psAdapt; ComPtr<ID3D11Buffer> cbLook;
-    ComPtr<ID3D11Texture2D> lumTex, adaptTex[2]; ComPtr<ID3D11RenderTargetView> lumRTV, adaptRTV[2]; ComPtr<ID3D11ShaderResourceView> lumSRV, adaptSRV[2]; int adaptCur = 0;
+    ComPtr<d12::PixelShader> psLumLog, psAdapt; ComPtr<d12::Buffer> cbLook;
+    ComPtr<d12::Texture2D> lumTex, adaptTex[2]; ComPtr<d12::RenderTargetView> lumRTV, adaptRTV[2]; ComPtr<d12::ShaderResourceView> lumSRV, adaptSRV[2]; int adaptCur = 0;
     std::string CurrentLookName() const {   // the zone you are in (when it has its own look), else the world's
         if (const AmbientSettings* a = AmbientAt(camPos)) if (!a->look.empty()) return a->look;   // an ambient light's room (or a room's own)
         if (envState.inZone) for (const auto& z : info.zones) if (z.name == envState.zoneName && !z.look.empty()) return z.look;
@@ -389,51 +389,51 @@ struct App {
         w.rain *= a; w.snow *= a; w.wind *= a;
         return w;
     }
-    ComPtr<ID3D11Buffer> vbBolt, ibBolt; UINT nBolt = 0; ComPtr<ID3D11InputLayout> layout;
-    ComPtr<ID3D11Texture2D> hdrTex; ComPtr<ID3D11RenderTargetView> hdrRTV; ComPtr<ID3D11ShaderResourceView> hdrSRV;      // the picture before tonemapping
-    ComPtr<ID3D11Texture2D> volTex; ComPtr<ID3D11RenderTargetView> volRTV; ComPtr<ID3D11ShaderResourceView> volSRV;
+    ComPtr<d12::Buffer> vbBolt, ibBolt; UINT nBolt = 0; ComPtr<d12::InputLayout> layout;
+    ComPtr<d12::Texture2D> hdrTex; ComPtr<d12::RenderTargetView> hdrRTV; ComPtr<d12::ShaderResourceView> hdrSRV;      // the picture before tonemapping
+    ComPtr<d12::Texture2D> volTex; ComPtr<d12::RenderTargetView> volRTV; ComPtr<d12::ShaderResourceView> volSRV;
     // the soft things (ambient occlusion, bounce light, fog) are worked out on a smaller picture: a half of the size up to 1440p, a third at 4K,
     // a quarter above (their cost stays about the same whatever the resolution), then brought back up carefully
     int lowW = 1, lowH = 1;
-    ComPtr<ID3D11Texture2D> volLowTex, aoTex2; ComPtr<ID3D11RenderTargetView> volLowRTV, aoRTV2; ComPtr<ID3D11ShaderResourceView> volLowSRV, aoSRV2;
-    ComPtr<ID3D11PixelShader> psVolumeLow, psAOBlur;
+    ComPtr<d12::Texture2D> volLowTex, aoTex2; ComPtr<d12::RenderTargetView> volLowRTV, aoRTV2; ComPtr<d12::ShaderResourceView> volLowSRV, aoSRV2;
+    ComPtr<d12::PixelShader> psVolumeLow, psAOBlur;
     // PrimeScaler: the picture rebuilt at the screen's size from several frames (the camera moves a fraction of a pixel each frame)
-    ComPtr<ID3D11PixelShader> psPrimeScale, psPrimeSharpen, psMotionBlur; double frameDt = 1.0 / 60; V3 blurPrevCam{ 0, 0, 0 }; float jitX = 0, jitY = 0; XMMATRIX jitM = XMMatrixIdentity(); float sampBias = 0;
+    ComPtr<d12::PixelShader> psPrimeScale, psPrimeSharpen, psMotionBlur; double frameDt = 1.0 / 60; V3 blurPrevCam{ 0, 0, 0 }; float jitX = 0, jitY = 0; XMMATRIX jitM = XMMatrixIdentity(); float sampBias = 0;
     static float Halton(uint32_t i, uint32_t b) { float f = 1, r = 0; while (i > 0) { f /= (float)b; r += f * (float)(i % b); i /= b; } return r; }
     bool PrimeOn() const { return settings.upscaler == 1 || (VrBench() && vrDraw < 0.999f); }
     void SetTextureSharpness(float bias) {   // PrimeScaler below 100%: the textures pick their detail as if drawn at the screen's size (pixel art stays crisp)
         if (std::fabs(bias - sampBias) < 1e-3f && sampBlocks) return;
         sampBias = bias;
         D3D11_SAMPLER_DESC sm{}; sm.Filter = D3D11_FILTER_MIN_MAG_POINT_MIP_LINEAR; sm.AddressU = sm.AddressV = sm.AddressW = D3D11_TEXTURE_ADDRESS_WRAP; sm.MaxLOD = D3D11_FLOAT32_MAX; sm.MipLODBias = bias;
-        ComPtr<ID3D11SamplerState> s; if (SUCCEEDED(dev->CreateSamplerState(&sm, &s))) sampBlocks = s;
+        ComPtr<d12::SamplerState> s; if (SUCCEEDED(dev->CreateSamplerState(&sm, &s))) sampBlocks = s;
     }      // ... with clouds and fog
-    ComPtr<ID3D11ShaderResourceView> depthSRV, noiseSRV, depthCopySRV; ComPtr<ID3D11Texture2D> depthCopy; ComPtr<ID3D11DepthStencilView> depthCopyDSV, depthCopyRODSV; bool waterNow = false; ComPtr<ID3D11PixelShader> psWater; ComPtr<ID3D11SamplerState> sampLinear, sampClamp; double cloudTime = 0, precipTime = 0, precipWindX = 0, precipWindZ = 0; float gustNow = 1; V3 rainCamLast{ 0, 0, 0 }; double rainCamT = -1; V3 rainCamVel{ 0, 0, 0 };   // depthCopy: the world's depth without the water (see-through things behind the water test against it)
-    struct BloomLevel { ComPtr<ID3D11Texture2D> tex; ComPtr<ID3D11RenderTargetView> rtv; ComPtr<ID3D11ShaderResourceView> srv; int w = 0, h = 0; };
+    ComPtr<d12::ShaderResourceView> depthSRV, noiseSRV, depthCopySRV; ComPtr<d12::Texture2D> depthCopy; ComPtr<d12::DepthStencilView> depthCopyDSV, depthCopyRODSV; bool waterNow = false; ComPtr<d12::PixelShader> psWater; ComPtr<d12::SamplerState> sampLinear, sampClamp; double cloudTime = 0, precipTime = 0, precipWindX = 0, precipWindZ = 0; float gustNow = 1; V3 rainCamLast{ 0, 0, 0 }; double rainCamT = -1; V3 rainCamVel{ 0, 0, 0 };   // depthCopy: the world's depth without the water (see-through things behind the water test against it)
+    struct BloomLevel { ComPtr<d12::Texture2D> tex; ComPtr<d12::RenderTargetView> rtv; ComPtr<d12::ShaderResourceView> srv; int w = 0, h = 0; };
     BloomLevel aaSrc;   // anti-aliasing: the finished picture, before its edges are smoothed
     // render scale: the world drawn at sceneW x sceneH (rw x rh while it is drawn), then fitted to the screen (rw x rh the rest of the time)
-    BloomLevel primeHist[2]; int primeCur = 0; bool primeOk = false; V3 primePrevCam{ 0, 0, 0 }; uint32_t primeFrame = 0; ID3D11RenderTargetView* primeLastOut = nullptr;
-    int sceneW = 0, sceneH = 0; BloomLevel upSrc; ComPtr<ID3D11PixelShader> psUpscale; ComPtr<ID3D11DepthStencilView> dispDSV; int dispDW = 0, dispDH = 0;
+    BloomLevel primeHist[2]; int primeCur = 0; bool primeOk = false; V3 primePrevCam{ 0, 0, 0 }; uint32_t primeFrame = 0; d12::RenderTargetView* primeLastOut = nullptr;
+    int sceneW = 0, sceneH = 0; BloomLevel upSrc; ComPtr<d12::PixelShader> psUpscale; ComPtr<d12::DepthStencilView> dispDSV; int dispDW = 0, dispDH = 0;
     bool Scaled() const { return sceneW > 0 && (sceneW != rw || sceneH != rh); }
-    ID3D11DepthStencilView* DisplayDSV() { return Scaled() && dispDSV ? dispDSV.Get() : dsv.Get(); }   // a depth buffer the screen's size (the HUD over a scaled world)
+    d12::DepthStencilView* DisplayDSV() { return Scaled() && dispDSV ? dispDSV.Get() : dsv.Get(); }   // a depth buffer the screen's size (the HUD over a scaled world)
     void MakeDisplayTargets() {   // at the screen's size: the picture the editor shows / a screen's world background, the HUD's depth, and the scaled world before it is fitted
         D3D11_TEXTURE2D_DESC d{}; d.Width = (UINT)rw; d.Height = (UINT)rh; d.MipLevels = 1; d.ArraySize = 1; d.Format = DXGI_FORMAT_R8G8B8A8_UNORM; d.SampleDesc.Count = 1; d.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
         if (sceneSRV) retired.push_back(sceneSRV);
         sceneTex.Reset(); sceneRTV.Reset(); sceneSRV.Reset(); HR(dev->CreateTexture2D(&d, nullptr, &sceneTex)); HR(dev->CreateRenderTargetView(sceneTex.Get(), nullptr, &sceneRTV)); HR(dev->CreateShaderResourceView(sceneTex.Get(), nullptr, &sceneSRV));
-        D3D11_TEXTURE2D_DESC z = d; z.Format = DXGI_FORMAT_D32_FLOAT; z.BindFlags = D3D11_BIND_DEPTH_STENCIL; ComPtr<ID3D11Texture2D> zt; HR(dev->CreateTexture2D(&z, nullptr, &zt)); dispDSV.Reset(); HR(dev->CreateDepthStencilView(zt.Get(), nullptr, &dispDSV));
+        D3D11_TEXTURE2D_DESC z = d; z.Format = DXGI_FORMAT_D32_FLOAT; z.BindFlags = D3D11_BIND_DEPTH_STENCIL; ComPtr<d12::Texture2D> zt; HR(dev->CreateTexture2D(&z, nullptr, &zt)); dispDSV.Reset(); HR(dev->CreateDepthStencilView(zt.Get(), nullptr, &dispDSV));
         dispDW = rw; dispDH = rh;
         D3D11_TEXTURE2D_DESC u = d; u.Width = (UINT)std::max(16, sceneW); u.Height = (UINT)std::max(16, sceneH); upSrc = BloomLevel{}; upSrc.w = (int)u.Width; upSrc.h = (int)u.Height;
         HR(dev->CreateTexture2D(&u, nullptr, &upSrc.tex)); HR(dev->CreateRenderTargetView(upSrc.tex.Get(), nullptr, &upSrc.rtv)); HR(dev->CreateShaderResourceView(upSrc.tex.Get(), nullptr, &upSrc.srv));
     }
-    BloomLevel blurSrc; std::vector<BloomLevel> blurLv; ComPtr<ID3D11PixelShader> psBlurComp; float blurAmt = 0;   // paused: the world blurred behind the menu
-    std::vector<BloomLevel> bloomLv; ComPtr<ID3D11BlendState> bsAdd; float nightAmount = 0, nightEyeLimit = 2;
-    ComPtr<ID3D11Texture2D> shadowTex; ComPtr<ID3D11DepthStencilView> shadowDSV; ComPtr<ID3D11ShaderResourceView> shadowSRV; int shadowSize = 0;
-    ComPtr<ID3D11RasterizerState> rsShadow, rsNoCull, rsGhostBias, rsLightShadow; ComPtr<ID3D11SamplerState> sampShadow; std::string driverName = "graphics card";
-    ComPtr<ID3D11Buffer> cbFrame, cbChunk;
-    ComPtr<ID3D11RasterizerState> rsCull; ComPtr<ID3D11DepthStencilState> dsOn, dsOff, dsTestOnly; ComPtr<ID3D11BlendState> bsOff, bsAlpha;
-    ComPtr<ID3D11Buffer> vbGhost, ibGhost; UINT nGhost = 0; BlockId ghostKey = 0xFFFFFFFFu;   // the see-through preview block
-    ComPtr<ID3D11SamplerState> sampBlocks, sampPoint;
-    ComPtr<ID3D11ShaderResourceView> texArray; std::vector<ComPtr<ID3D11ShaderResourceView>> icons;
-    std::vector<ComPtr<ID3D11ShaderResourceView>> retired;   // replaced textures the UI of this frame may still draw   // icons: one small texture per block texture (menus)
+    BloomLevel blurSrc; std::vector<BloomLevel> blurLv; ComPtr<d12::PixelShader> psBlurComp; float blurAmt = 0;   // paused: the world blurred behind the menu
+    std::vector<BloomLevel> bloomLv; ComPtr<d12::BlendState> bsAdd; float nightAmount = 0, nightEyeLimit = 2;
+    ComPtr<d12::Texture2D> shadowTex; ComPtr<d12::DepthStencilView> shadowDSV; ComPtr<d12::ShaderResourceView> shadowSRV; int shadowSize = 0;
+    ComPtr<d12::RasterizerState> rsShadow, rsNoCull, rsGhostBias, rsLightShadow; ComPtr<d12::SamplerState> sampShadow; std::string driverName = "graphics card";
+    ComPtr<d12::Buffer> cbFrame, cbChunk;
+    ComPtr<d12::RasterizerState> rsCull; ComPtr<d12::DepthStencilState> dsOn, dsOff, dsTestOnly; ComPtr<d12::BlendState> bsOff, bsAlpha;
+    ComPtr<d12::Buffer> vbGhost, ibGhost; UINT nGhost = 0; BlockId ghostKey = 0xFFFFFFFFu;   // the see-through preview block
+    ComPtr<d12::SamplerState> sampBlocks, sampPoint;
+    ComPtr<d12::ShaderResourceView> texArray; std::vector<ComPtr<d12::ShaderResourceView>> icons;
+    std::vector<ComPtr<d12::ShaderResourceView>> retired;   // replaced textures the UI of this frame may still draw   // icons: one small texture per block texture (menus)
 
     // ---- engine
     BlockRegistry reg; Settings settings; std::string settingsPath;
@@ -461,7 +461,7 @@ struct App {
     bool lPrev = true, rPrev = true, mPrev = true;
     bool hoverValid = false; Hit hover{};
     std::string toast; double toastT = 0;
-    double fps = 0; int fpsN = 0; double fpsAcc = 0; bool tearing = false;
+    double fps = 0; int fpsN = 0; double fpsAcc = 0; bool tearing = false, gpuDebug = false;
 
     // ---- the editor (G1): docked panels around the viewport, and Play mode
     enum class Sel { None, World, Weather, Environment, Zone, Spawn, Player, Game, Block, Texture, Shape, Tool, Object, Selection, Model, Asset };
@@ -471,9 +471,9 @@ struct App {
     bool viewerOpen = false, viewerFit = true, viewerPeople = true, viewerBoxes = false, viewerBounds = true; std::string viewerModel;
     int viewerClip = -1; float viewerTime = 0; bool viewerLoop = false; ModelGpu viewerAnim;   // an animation playing in the viewer
     float viewerYaw = 0.6f, viewerPitch = 0.35f, viewerDist = 8; ImVec2 viewerWant{ 0, 0 }; int viewerW = 0, viewerH = 0; V3 viewerEye{ 0, 0, 0 }; XMMATRIX viewerVP = XMMatrixIdentity();
-    ComPtr<ID3D11RenderTargetView> viewerRTV; ComPtr<ID3D11ShaderResourceView> viewerSRV; ComPtr<ID3D11DepthStencilView> viewerDSV;
-    ComPtr<ID3D11VertexShader> vsPreview; ComPtr<ID3D11PixelShader> psPreview; ComPtr<ID3D11Buffer> cbPreview;
-    ComPtr<ID3D11BlendState> bsNoColor; ComPtr<ID3D11Buffer> cbVisor, cbFlat; ComPtr<ID3D11PixelShader> psFlat; ComPtr<ID3D11VertexShader> vsMap; ComPtr<ID3D11PixelShader> psMap; ComPtr<ID3D11InputLayout> layoutMap; ComPtr<ID3D11Buffer> cbMap;
+    ComPtr<d12::RenderTargetView> viewerRTV; ComPtr<d12::ShaderResourceView> viewerSRV; ComPtr<d12::DepthStencilView> viewerDSV;
+    ComPtr<d12::VertexShader> vsPreview; ComPtr<d12::PixelShader> psPreview; ComPtr<d12::Buffer> cbPreview;
+    ComPtr<d12::BlendState> bsNoColor; ComPtr<d12::Buffer> cbVisor, cbFlat; ComPtr<d12::PixelShader> psFlat; ComPtr<d12::VertexShader> vsMap; ComPtr<d12::PixelShader> psMap; ComPtr<d12::InputLayout> layoutMap; ComPtr<d12::Buffer> cbMap;
     std::vector<WorldObject> objects; uint32_t nextObjId = 1;
     std::string placing, selModel, newModelName; double placeYaw = 0, placeScale = 1; int movingObj = -1, dupFrom = -1; bool replaceWithObject = true;
     I3 selA{ 0, 0, 0 }, selB{ 0, 0, 0 }; int selStage = 0; BlockModel clipboard; bool hasClip = false;   // selection box (tool 2)
@@ -496,21 +496,18 @@ struct App {
 
     // ================================================================== setup
     void Init() {
-        DXGI_SWAP_CHAIN_DESC sd{}; sd.BufferCount = 3; sd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM; sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-        sd.OutputWindow = hwnd; sd.SampleDesc.Count = 1; sd.Windowed = TRUE; sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
         {   // VSync off: really off (the screen may tear) where Windows allows it
             ComPtr<IDXGIFactory1> f1; ComPtr<IDXGIFactory5> f5; BOOL ok = FALSE;
             if (SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&f1))) && SUCCEEDED(f1.As(&f5)) && SUCCEEDED(f5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &ok, sizeof ok)) && ok) tearing = true;
-            if (tearing) sd.Flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
         }
-        D3D_FEATURE_LEVEL fl = D3D_FEATURE_LEVEL_11_0, got;
-        if (FAILED(D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, &fl, 1, D3D11_SDK_VERSION, &sd, &swap, &dev, &got, &ctx))) {
-            driverName = "software (WARP)";   // no usable graphics card (e.g. the build machine): Windows draws it on the processor
-            HR(D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, &fl, 1, D3D11_SDK_VERSION, &sd, &swap, &dev, &got, &ctx));
-        }
-        {   // how much memory the graphics card has (baked lamp shadows use up to an eighth of it)
-            ComPtr<IDXGIDevice> dd; ComPtr<IDXGIAdapter> ad; DXGI_ADAPTER_DESC desc{};
-            if (SUCCEEDED(dev.As(&dd)) && SUCCEEDED(dd->GetAdapter(&ad)) && SUCCEEDED(ad->GetDesc(&desc))) vramBytes = desc.DedicatedVideoMemory;
+        {   // Direct3D 12 on the fastest graphics card (none, e.g. the build machine: WARP, on the processor)
+            d12::Setup su; su.hwnd = hwnd; su.buffers = 3; su.format = DXGI_FORMAT_R8G8B8A8_UNORM; su.tearing = tearing; su.logPath = ExeDir() + "gpu_log.txt";
+            su.debug = gpuDebug || GetFileAttributesA((ExeDir() + "gpu_debug.txt").c_str()) != INVALID_FILE_ATTRIBUTES;   // (the D3D12 debug layer: its messages go into gpu_log.txt)
+            { std::ofstream clear(su.logPath, std::ios::trunc); }
+            d12::Device* d = nullptr; d12::DeviceContext* c = nullptr; d12::SwapChain* sw = nullptr;
+            HR(d12::Create(su, &d, &c, &sw, &driverName));
+            dev = d; ctx = c; swap = sw;
+            vramBytes = dev->adapter().DedicatedVideoMemory;   // (baked lamp shadows use up to an eighth of it)
         }
         MakeBackbuffer(); rw = cw; rh = ch; MakeTargets();
 
@@ -611,7 +608,7 @@ struct App {
             { "TEXCOORD", 3, DXGI_FORMAT_R32_UINT, 0, 28, D3D11_INPUT_PER_VERTEX_DATA, 0 },
             { "TEXCOORD", 4, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 0, D3D11_INPUT_PER_INSTANCE_DATA, 1 } };   // (slot 1: the world chunks' origins, one per draw; nothing bound: zeros)
         HR(dev->CreateInputLayout(el, 6, vb->GetBufferPointer(), vb->GetBufferSize(), &layout));
-        auto cb = [&](UINT size, ComPtr<ID3D11Buffer>& out) { D3D11_BUFFER_DESC d{}; d.ByteWidth = size; d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_CONSTANT_BUFFER; HR(dev->CreateBuffer(&d, nullptr, &out)); };
+        auto cb = [&](UINT size, ComPtr<d12::Buffer>& out) { D3D11_BUFFER_DESC d{}; d.ByteWidth = size; d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_CONSTANT_BUFFER; HR(dev->CreateBuffer(&d, nullptr, &out)); };
         cb(sizeof(FrameCB), cbFrame); cb(sizeof(ChunkCB), cbChunk); cb(sizeof(PreviewCB), cbPreview); cb(sizeof(MeshMatCB), cbMeshMat); cb(sizeof(MapCB), cbMap); cb(sizeof(VisorCB), cbVisor); cb(16, cbFlat); cb(sizeof(LookCB), cbLook);
 
         D3D11_RASTERIZER_DESC rd{}; rd.FillMode = D3D11_FILL_SOLID; rd.CullMode = D3D11_CULL_BACK; rd.FrontCounterClockwise = FALSE; rd.DepthClipEnable = TRUE; HR(dev->CreateRasterizerState(&rd, &rsCull));
@@ -635,7 +632,7 @@ struct App {
         {   // the cloud noise volume
             const int N = 64; std::vector<uint8_t> nz = makeCloudNoise(N);
             D3D11_TEXTURE3D_DESC td{}; td.Width = td.Height = td.Depth = N; td.MipLevels = 1; td.Format = DXGI_FORMAT_R8G8_UNORM; td.Usage = D3D11_USAGE_IMMUTABLE; td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-            D3D11_SUBRESOURCE_DATA sd3{ nz.data(), N * 2, N * N * 2 }; ComPtr<ID3D11Texture3D> t3; HR(dev->CreateTexture3D(&td, &sd3, &t3)); HR(dev->CreateShaderResourceView(t3.Get(), nullptr, &noiseSRV));
+            D3D11_SUBRESOURCE_DATA sd3{ nz.data(), N * 2, N * N * 2 }; ComPtr<d12::Texture3D> t3; HR(dev->CreateTexture3D(&td, &sd3, &t3)); HR(dev->CreateShaderResourceView(t3.Get(), nullptr, &noiseSRV));
         }
         D3D11_SAMPLER_DESC ss{}; ss.Filter = D3D11_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT; ss.AddressU = ss.AddressV = ss.AddressW = D3D11_TEXTURE_ADDRESS_BORDER;
         ss.BorderColor[0] = ss.BorderColor[1] = ss.BorderColor[2] = ss.BorderColor[3] = 1; ss.ComparisonFunc = D3D11_COMPARISON_LESS_EQUAL; ss.MaxLOD = D3D11_FLOAT32_MAX; HR(dev->CreateSamplerState(&ss, &sampShadow));
@@ -653,14 +650,14 @@ struct App {
         static std::string ini = ExeDir() + "imgui.ini"; ImGui::GetIO().IniFilename = ini.c_str();
         ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_DockingEnable;
         Style();
-        ImGui_ImplWin32_Init(hwnd); ImGui_ImplDX11_Init(dev.Get(), ctx.Get());
+        ImGui_ImplWin32_Init(hwnd); ImGui_ImplD12_Init(dev.Get(), ctx.Get());
 
         settingsPath = ExeDir() + "settings.txt"; settings.load(settingsPath);
         Projects::migrateOld(ExeDir(), ProjectsRoot());   // the game\ and worlds\ folders from before projects become "My First Game"
         RAWINPUTDEVICE rid{ 0x01, 0x02, 0, hwnd }; RegisterRawInputDevices(&rid, 1, sizeof rid);   // raw mouse movement for looking around
         RefreshProjects();
     }
-    void MakeBackbuffer() { ComPtr<ID3D11Texture2D> bb; HR(swap->GetBuffer(0, IID_PPV_ARGS(&bb))); backRTV.Reset(); HR(dev->CreateRenderTargetView(bb.Get(), nullptr, &backRTV)); }
+    void MakeBackbuffer() { ComPtr<d12::Texture2D> bb; HR(swap->GetBuffer(0, &bb)); backRTV.Reset(); HR(dev->CreateRenderTargetView(bb.Get(), nullptr, &backRTV)); }
     // everything the 3D picture needs, at its size (rw x rh): the whole window when playing, the viewport panel in the editor
     void MakeTargets() {
         rw = std::max(16, rw); rh = std::max(16, rh);
@@ -719,7 +716,7 @@ struct App {
         }
     }
     static constexpr int CASCADES = 4; bool cascLogged = false;
-    ComPtr<ID3D11DepthStencilView> cascDSV[CASCADES];
+    ComPtr<d12::DepthStencilView> cascDSV[CASCADES];
     void MakeShadowMap(int size) {   // four shadow maps in one array: cascade 0 near you (sharp) .. 3 far out (coarse)
         shadowTex.Reset(); shadowDSV.Reset(); shadowSRV.Reset(); for (auto& d : cascDSV) d.Reset(); shadowSize = size; if (!size) return;
         D3D11_TEXTURE2D_DESC d{}; d.Width = d.Height = (UINT)size; d.MipLevels = 1; d.ArraySize = CASCADES; d.Format = DXGI_FORMAT_R32_TYPELESS; d.SampleDesc.Count = 1; d.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
@@ -766,20 +763,20 @@ struct App {
     // ---- materials per texture (shiny, metal, glowing, bumps, coat): a table the block shaders read by texture layer
     // emission maps (see UploadTextures): per texture layer, and per model
     struct EmitInfo { bool on = false; V3 col{ 0, 0, 0 }; };   // col: the average glowing colour (linear)
-    std::vector<EmitInfo> emitInfo; ComPtr<ID3D11ShaderResourceView> emitArray; bool emissionDirty = false;
-    struct ModelEmit { bool on = false; V3 col{ 0, 0, 0 }; ComPtr<ID3D11ShaderResourceView> srv; };
+    std::vector<EmitInfo> emitInfo; ComPtr<d12::ShaderResourceView> emitArray; bool emissionDirty = false;
+    struct ModelEmit { bool on = false; V3 col{ 0, 0, 0 }; ComPtr<d12::ShaderResourceView> srv; };
     std::map<std::string, ModelEmit> modelEmit;
-    ComPtr<ID3D11Buffer> cbMeshMat;   // the material of the model being drawn (b4)
+    ComPtr<d12::Buffer> cbMeshMat;   // the material of the model being drawn (b4)
     struct alignas(16) MeshMatCB { float mm0[4], mm1[4], fs0[4], fsTint[4], gdir[3][4], gcol[3][4]; };
-    std::map<std::string, ComPtr<ID3D11ShaderResourceView>> shinePics;   // fake shine pictures and masks (the project's "shine" folder), loaded once
+    std::map<std::string, ComPtr<d12::ShaderResourceView>> shinePics;   // fake shine pictures and masks (the project's "shine" folder), loaded once
     std::string ShineDir() const { return projectDir + "/shine"; }
-    ID3D11ShaderResourceView* ShinePic(const std::string& file) {
+    d12::ShaderResourceView* ShinePic(const std::string& file) {
         if (file.empty() || projectDir.empty()) return nullptr;
         auto it = shinePics.find(file); if (it != shinePics.end()) return it->second.Get();
-        ComPtr<ID3D11ShaderResourceView>& srv = shinePics[file]; int w = 0, h = 0; std::vector<uint8_t> rgba;
+        ComPtr<d12::ShaderResourceView>& srv = shinePics[file]; int w = 0, h = 0; std::vector<uint8_t> rgba;
         if (readImage(ShineDir() + "/" + file, w, h, rgba) && w > 0 && h > 0) {
             D3D11_TEXTURE2D_DESC d{}; d.Width = (UINT)w; d.Height = (UINT)h; d.MipLevels = 1; d.ArraySize = 1; d.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB; d.SampleDesc.Count = 1; d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-            D3D11_SUBRESOURCE_DATA sd{ rgba.data(), (UINT)w * 4, 0 }; ComPtr<ID3D11Texture2D> t;
+            D3D11_SUBRESOURCE_DATA sd{ rgba.data(), (UINT)w * 4, 0 }; ComPtr<d12::Texture2D> t;
             if (SUCCEEDED(dev->CreateTexture2D(&d, &sd, &t))) dev->CreateShaderResourceView(t.Get(), nullptr, &srv);
         }
         return srv.Get();
@@ -793,7 +790,7 @@ struct App {
         if (!f.empty() && readImage(f, w, h, rgba) && w > 0 && h > 0) {
             EmitInfo a = EmitAverage(rgba); e.on = a.on; e.col = a.col;
             D3D11_TEXTURE2D_DESC d{}; d.Width = (UINT)w; d.Height = (UINT)h; d.MipLevels = 1; d.ArraySize = 1; d.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB; d.SampleDesc.Count = 1; d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-            D3D11_SUBRESOURCE_DATA sd{ rgba.data(), (UINT)w * 4, 0 }; ComPtr<ID3D11Texture2D> t;
+            D3D11_SUBRESOURCE_DATA sd{ rgba.data(), (UINT)w * 4, 0 }; ComPtr<d12::Texture2D> t;
             if (SUCCEEDED(dev->CreateTexture2D(&d, &sd, &t))) dev->CreateShaderResourceView(t.Get(), nullptr, &e.srv);
             if (!e.srv) e.on = false;
         }
@@ -801,12 +798,12 @@ struct App {
     }
     void BindModelTex(const ModelGpu& g, const std::string& model) {
         if (g.mesh) ctx->PSSetShaderResources(9, 1, g.tex.GetAddressOf());
-        const ModelEmit& me = ModelEmitOf(model); ID3D11ShaderResourceView* es = me.on ? me.srv.Get() : nullptr; ctx->PSSetShaderResources(15, 1, &es);
+        const ModelEmit& me = ModelEmitOf(model); d12::ShaderResourceView* es = me.on ? me.srv.Get() : nullptr; ctx->PSSetShaderResources(15, 1, &es);
         TexMaterial m = materials.of(ModelMatKey(model)); MeshMatCB d{};
         float mm[8] = { m.shine, m.metal, m.glow, m.glowFrom, m.bumps, m.coat, me.on ? m.emit : 0.f, 0 }; std::memcpy(d.mm0, mm, sizeof mm);
         if (m.fake != FakeShine::Off && m.fakeStrength > 0) {   // fake shine
-            ID3D11ShaderResourceView* pic = m.fake == FakeShine::Picture && m.fakePreset >= SHINE_PRESETS ? ShinePic(m.fakeMap) : nullptr;
-            ID3D11ShaderResourceView* mask = ShinePic(m.fakeMask);
+            d12::ShaderResourceView* pic = m.fake == FakeShine::Picture && m.fakePreset >= SHINE_PRESETS ? ShinePic(m.fakeMap) : nullptr;
+            d12::ShaderResourceView* mask = ShinePic(m.fakeMask);
             d.fs0[0] = (float)(int)m.fake; d.fs0[1] = m.fakeStrength; d.fs0[2] = m.fakeWorld ? 1.f : 0.f; d.fs0[3] = mask ? 1.f : 0.f;
             uint32_t tint = m.fakeTint; if (m.fakeBeam) if (const Beam* b = CurrentBeam()) tint = b->color;
             for (int k = 0; k < 3; k++) d.fsTint[k] = std::pow(((tint >> (16 - 8 * k)) & 255) / 255.f, 2.2f);
@@ -817,7 +814,7 @@ struct App {
                 for (int k = 0; k < 3; k++) d.gcol[g][k] = std::pow(((gl.color >> (16 - 8 * k)) & 255) / 255.f, 2.2f) * gl.power;
                 d.gcol[g][3] = gl.on ? 1.f : 0.f;
             }
-            ID3D11ShaderResourceView* two[2] = { pic, mask }; ctx->PSSetShaderResources(27, 2, two);
+            d12::ShaderResourceView* two[2] = { pic, mask }; ctx->PSSetShaderResources(27, 2, two);
         }
         ctx->UpdateSubresource(cbMeshMat.Get(), 0, nullptr, &d, 0, 0); ctx->PSSetConstantBuffers(4, 1, cbMeshMat.GetAddressOf());
     }
@@ -951,7 +948,7 @@ struct App {
         }
         ImGui::PopID();
     }
-    Materials materials; bool matsDirty = true; ComPtr<ID3D11Buffer> matBuf; ComPtr<ID3D11ShaderResourceView> matSRV; size_t matCount = 0;
+    Materials materials; bool matsDirty = true; ComPtr<d12::Buffer> matBuf; ComPtr<d12::ShaderResourceView> matSRV; size_t matCount = 0;
     bool selectTexturesTab = false;
     std::string matTex;   // the texture picked in Blocks & textures (its material shows next to the list)
     void SaveMaterials() { if (!projectDir.empty()) saveMaterials(projectDir + "/materials.txt", materials); matsDirty = true; }
@@ -1007,11 +1004,11 @@ struct App {
         if (n) { e.on = true; e.col = { r / n, g / n, b / n }; }
         return e;
     }
-    ComPtr<ID3D11ShaderResourceView> MakeArray(const std::vector<std::vector<uint8_t>>& px, int S) {   // sRGB, its smaller copies averaged in linear light
+    ComPtr<d12::ShaderResourceView> MakeArray(const std::vector<std::vector<uint8_t>>& px, int S) {   // sRGB, its smaller copies averaged in linear light
         const int n = (int)px.size(); int mips = 1; while ((S >> mips) > 0) mips++;
         D3D11_TEXTURE2D_DESC d{}; d.Width = d.Height = (UINT)S; d.MipLevels = (UINT)mips; d.ArraySize = (UINT)std::max(1, n); d.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB; d.SampleDesc.Count = 1;
         d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-        ComPtr<ID3D11Texture2D> t; HR(dev->CreateTexture2D(&d, nullptr, &t));
+        ComPtr<d12::Texture2D> t; HR(dev->CreateTexture2D(&d, nullptr, &t));
         static float toLin[256]; if (toLin[255] == 0) for (int k = 0; k < 256; k++) toLin[k] = std::pow(k / 255.f, 2.2f);
         for (int i = 0; i < n; i++) {
             std::vector<uint8_t> cur = px[i]; int sz = S;
@@ -1026,7 +1023,7 @@ struct App {
                 cur.swap(nx); sz = h;
             }
         }
-        ComPtr<ID3D11ShaderResourceView> srv; HR(dev->CreateShaderResourceView(t.Get(), nullptr, &srv)); return srv;
+        ComPtr<d12::ShaderResourceView> srv; HR(dev->CreateShaderResourceView(t.Get(), nullptr, &srv)); return srv;
     }
     static std::vector<uint8_t> ScaleNearest(const std::vector<uint8_t>& src, int w, int h, int S) {   // (pixel art stays crisp)
         std::vector<uint8_t> o((size_t)S * S * 4);
@@ -1041,7 +1038,7 @@ struct App {
         for (int i = 0; i < n; i++) { double r = 0, g = 0, b = 0, w = 0; const auto& q = px[i];
             for (size_t k = 0; k + 3 < q.size(); k += 4) { double a = q[k + 3] / 255.0; r += q[k] * a; g += q[k + 1] * a; b += q[k + 2] * a; w += a; }
             if (w > 0) layerAvg[i] = ((uint32_t)(r / w) << 16) | ((uint32_t)(g / w) << 8) | (uint32_t)(b / w); }
-        ComPtr<ID3D11ShaderResourceView> made = MakeArray(px, S);
+        ComPtr<d12::ShaderResourceView> made = MakeArray(px, S);
         {   // the emission maps, layer by layer (black where a texture has none)
             std::vector<std::vector<uint8_t>> ex(n); emitInfo.assign(n, {});
             for (int i = 0; i < n; i++) {
@@ -1063,8 +1060,8 @@ struct App {
         icons.clear();
         for (int i = 0; i < n; i++) {
             D3D11_TEXTURE2D_DESC id{}; id.Width = id.Height = (UINT)S; id.MipLevels = 1; id.ArraySize = 1; id.Format = DXGI_FORMAT_R8G8B8A8_UNORM; id.SampleDesc.Count = 1; id.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-            D3D11_SUBRESOURCE_DATA sdt{ px[i].data(), (UINT)S * 4, 0 }; ComPtr<ID3D11Texture2D> it; HR(dev->CreateTexture2D(&id, &sdt, &it));
-            ComPtr<ID3D11ShaderResourceView> srv; HR(dev->CreateShaderResourceView(it.Get(), nullptr, &srv)); icons.push_back(srv);
+            D3D11_SUBRESOURCE_DATA sdt{ px[i].data(), (UINT)S * 4, 0 }; ComPtr<d12::Texture2D> it; HR(dev->CreateTexture2D(&id, &sdt, &it));
+            ComPtr<d12::ShaderResourceView> srv; HR(dev->CreateShaderResourceView(it.Get(), nullptr, &srv)); icons.push_back(srv);
         }
     }
     static int Threads() { return (int)std::max(2u, std::thread::hardware_concurrency()) - 1; }
@@ -1546,7 +1543,7 @@ struct App {
         UploadMeshVerts(g, m, m.raw);
         D3D11_TEXTURE2D_DESC d{}; d.Width = (UINT)m.tw; d.Height = (UINT)m.th; d.MipLevels = 1; d.ArraySize = 1; d.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB; d.SampleDesc.Count = 1; d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
         D3D11_SUBRESOURCE_DATA sd{ m.tex.data(), (UINT)m.tw * 4, 0 };
-        ComPtr<ID3D11Texture2D> t; if (SUCCEEDED(dev->CreateTexture2D(&d, &sd, &t))) dev->CreateShaderResourceView(t.Get(), nullptr, &g.tex);
+        ComPtr<d12::Texture2D> t; if (SUCCEEDED(dev->CreateTexture2D(&d, &sd, &t))) dev->CreateShaderResourceView(t.Get(), nullptr, &g.tex);
     }
     void UploadMeshVerts(ModelGpu& g, const MeshModel& m, const std::vector<MeshVert>& verts) {   // a posed mesh (the arm cannon animating): into the same buffers every frame
         if (g.parts.size() != 1) { g.parts.clear(); g.parts.push_back({ { 0, 0, 0 }, GpuChunk{} }); }
@@ -1557,7 +1554,7 @@ struct App {
             vv.push_back({ (float)p.x, (float)p.y, (float)p.z, v.uv[0], v.uv[1], 16383.f, packLit(1, none, false), packNormal(v.n[0], v.n[1], v.n[2], 0) });
         }
         GpuChunk& gc = g.parts[0].second;
-        ComPtr<ID3D11Buffer>& vb = m.transparent ? gc.vbC : gc.vbO; ComPtr<ID3D11Buffer>& ib = m.transparent ? gc.ibC : gc.ibO; UINT& n = m.transparent ? gc.nC : gc.nO;
+        ComPtr<d12::Buffer>& vb = m.transparent ? gc.vbC : gc.vbO; ComPtr<d12::Buffer>& ib = m.transparent ? gc.ibC : gc.ibO; UINT& n = m.transparent ? gc.nC : gc.nO;
         if (m.idx.empty() || vv.empty()) { vb.Reset(); ib.Reset(); n = 0; return; }
         UploadInto(vb, D3D11_BIND_VERTEX_BUFFER, vv.data(), (UINT)(vv.size() * sizeof(Vtx)));
         if (!ib || n != (UINT)m.idx.size()) UploadInto(ib, D3D11_BIND_INDEX_BUFFER, m.idx.data(), (UINT)(m.idx.size() * 4));   // (the triangles never change: once)
@@ -1702,9 +1699,9 @@ struct App {
             if (viewerSRV) retired.push_back(viewerSRV);
             viewerW = w; viewerH = h;
             D3D11_TEXTURE2D_DESC d{}; d.Width = (UINT)w; d.Height = (UINT)h; d.MipLevels = 1; d.ArraySize = 1; d.Format = DXGI_FORMAT_R8G8B8A8_UNORM; d.SampleDesc.Count = 1; d.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
-            ComPtr<ID3D11Texture2D> t; HR(dev->CreateTexture2D(&d, nullptr, &t)); viewerRTV.Reset(); viewerSRV.Reset();
+            ComPtr<d12::Texture2D> t; HR(dev->CreateTexture2D(&d, nullptr, &t)); viewerRTV.Reset(); viewerSRV.Reset();
             HR(dev->CreateRenderTargetView(t.Get(), nullptr, &viewerRTV)); HR(dev->CreateShaderResourceView(t.Get(), nullptr, &viewerSRV));
-            d.Format = DXGI_FORMAT_D32_FLOAT; d.BindFlags = D3D11_BIND_DEPTH_STENCIL; ComPtr<ID3D11Texture2D> dt; HR(dev->CreateTexture2D(&d, nullptr, &dt)); viewerDSV.Reset(); HR(dev->CreateDepthStencilView(dt.Get(), nullptr, &viewerDSV));
+            d.Format = DXGI_FORMAT_D32_FLOAT; d.BindFlags = D3D11_BIND_DEPTH_STENCIL; ComPtr<d12::Texture2D> dt; HR(dev->CreateTexture2D(&d, nullptr, &dt)); viewerDSV.Reset(); HR(dev->CreateDepthStencilView(dt.Get(), nullptr, &viewerDSV));
         }
         const float bg[4] = { 0.36f, 0.40f, 0.46f, 1 };   // a light studio grey-blue, so dark models still stand out
         ctx->OMSetRenderTargets(1, viewerRTV.GetAddressOf(), viewerDSV.Get()); ctx->ClearRenderTargetView(viewerRTV.Get(), bg); ctx->ClearDepthStencilView(viewerDSV.Get(), D3D11_CLEAR_DEPTH, 1, 0);
@@ -1730,7 +1727,7 @@ struct App {
             }
         }
         DrawObject(vo, 0, viewerEye, use); DrawObject(vo, 1, viewerEye, use);
-        ID3D11ShaderResourceView* none[10] = {}; ctx->PSSetShaderResources(0, 10, none);
+        d12::ShaderResourceView* none[10] = {}; ctx->PSSetShaderResources(0, 10, none);
     }
 
     // ================================================================== lights and particles (G2 attempt 5)
@@ -1740,27 +1737,27 @@ struct App {
     static constexpr int CLX = 16, CLY = 9, CLZ = 24, CLN = CLX * CLY * CLZ, MAXLIGHTS = 1024, CLMAX = 96, HUDLIGHTS = 64, LSH = 512;
     static constexpr float CL_NEAR = 0.5f, CL_FAR = 1000.f;
     size_t clusterIdxCap = 0;   // (the boxes' light lists all together: grows when many lights reach far)
-    ComPtr<ID3D11Buffer> lightBuf, clusterBuf, clusterIdxBuf, lshVPBuf, hudLightBuf, cbCluster; ComPtr<ID3D11ShaderResourceView> lightSRV, clusterSRV, clusterIdxSRV, lshVPSRV, hudLightSRV;
+    ComPtr<d12::Buffer> lightBuf, clusterBuf, clusterIdxBuf, lshVPBuf, hudLightBuf, cbCluster; ComPtr<d12::ShaderResourceView> lightSRV, clusterSRV, clusterIdxSRV, lshVPSRV, hudLightSRV;
     static constexpr int LSH_MAX = 128;   // lights with shadow maps at most
-    ComPtr<ID3D11Texture2D> lshTex; std::vector<ComPtr<ID3D11DepthStencilView>> lshDSV; ComPtr<ID3D11ShaderResourceView> lshSRV; int lshCount = -1, lshRes = 0;   // their maps: 6 sides each
-    ComPtr<ID3D11Texture2D> lshStatic; std::vector<ComPtr<ID3D11DepthStencilView>> lshStaticDSV;   // ... and each one's blocks only, baked once (what moves is added on a copy of it)
+    ComPtr<d12::Texture2D> lshTex; std::vector<ComPtr<d12::DepthStencilView>> lshDSV; ComPtr<d12::ShaderResourceView> lshSRV; int lshCount = -1, lshRes = 0;   // their maps: 6 sides each
+    ComPtr<d12::Texture2D> lshStatic; std::vector<ComPtr<d12::DepthStencilView>> lshStaticDSV;   // ... and each one's blocks only, baked once (what moves is added on a copy of it)
     size_t vramBytes = 0; int shadowPart = 0;   // shadowPart: drawing a lamp's map: 0 everything, 1 only what stays (blocks, props), 2 only what moves
     // a light keeps its map (its slot) while it stays in reach, and the map is only drawn again when something near it moves or changes
     struct LshSlot { uint64_t key = 0; bool valid = false, staticOk = false; }; std::vector<LshSlot> lshSlots; std::vector<std::pair<V3, double>> lshMovers; std::vector<V3> meshesChanged;
-    ComPtr<ID3D11Texture2D> occTex; ComPtr<ID3D11DepthStencilView> occDSV; ComPtr<ID3D11ShaderResourceView> occSRV;   // the roofs map (true darkness)
+    ComPtr<d12::Texture2D> occTex; ComPtr<d12::DepthStencilView> occDSV; ComPtr<d12::ShaderResourceView> occSRV;   // the roofs map (true darkness)
     XMMATRIX occBase = XMMatrixIdentity(); V3 occCam{ 0, 0, 0 }; int occAge = 1000; float camOpen = 1; bool lightShadowPass = false;
     std::vector<LightGpu> frameLights; int frameLightCount = 0;
     struct ShadowCaster { V3 rel; double range; int type; V3 dir; double cosCone; int slot; float nearZ = 0.05f; bool render = false; bool redoStatic = false; };   // render: its map is drawn this frame   // nearZ: a lamp block's view starts outside its own block
     std::vector<ShadowCaster> casters; XMFLOAT4X4 lshVP[LSH_MAX * 6];
     struct LampProxy { V3 p; double range; V3 col; float nearZ = 0.9f; V3 half{ 0, 0, 0 }; V3 eye{ 0, 0, 0 }; };   // nearZ: a lamp block's shadow view starts this far out (outside its own block); half: a glowing box (its surface shines); eye: where its shadow view is
     std::vector<LampProxy> lampProxies, realLamps; V3 lampScanAt{ 1e9, 0, 0 }; double lampScanAge = 99; int lampDropNow = -1;
-    void Upload(ID3D11Buffer* b, const void* data, size_t bytes) {
+    void Upload(d12::Buffer* b, const void* data, size_t bytes) {
         if (!b || !bytes) return; D3D11_MAPPED_SUBRESOURCE m;
         if (SUCCEEDED(ctx->Map(b, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) { std::memcpy(m.pData, data, bytes); ctx->Unmap(b, 0); }
     }
-    ComPtr<ID3D11Buffer> MakeStructured(UINT count, UINT stride, ComPtr<ID3D11ShaderResourceView>& srv) {
+    ComPtr<d12::Buffer> MakeStructured(UINT count, UINT stride, ComPtr<d12::ShaderResourceView>& srv) {
         D3D11_BUFFER_DESC d{}; d.ByteWidth = count * stride; d.Usage = D3D11_USAGE_DYNAMIC; d.BindFlags = D3D11_BIND_SHADER_RESOURCE; d.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-        d.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED; d.StructureByteStride = stride; ComPtr<ID3D11Buffer> b; HR(dev->CreateBuffer(&d, nullptr, &b));
+        d.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED; d.StructureByteStride = stride; ComPtr<d12::Buffer> b; HR(dev->CreateBuffer(&d, nullptr, &b));
         D3D11_SHADER_RESOURCE_VIEW_DESC sv{}; sv.Format = DXGI_FORMAT_UNKNOWN; sv.ViewDimension = D3D11_SRV_DIMENSION_BUFFER; sv.Buffer.FirstElement = 0; sv.Buffer.NumElements = count;
         HR(dev->CreateShaderResourceView(b.Get(), &sv, &srv)); return b;
     }
@@ -1768,7 +1765,7 @@ struct App {
         lightBuf = MakeStructured(MAXLIGHTS, sizeof(LightGpu), lightSRV); hudLightBuf = MakeStructured(HUDLIGHTS, sizeof(LightGpu), hudLightSRV);
         clusterBuf = MakeStructured(CLN, 8, clusterSRV); clusterIdxBuf = MakeStructured(CLN * 24, 4, clusterIdxSRV); clusterIdxCap = CLN * 24; lshVPBuf = MakeStructured(LSH_MAX * 6, 64, lshVPSRV);
         { D3D11_BUFFER_DESC d{}; d.ByteWidth = sizeof(ClusterCB); d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_CONSTANT_BUFFER; HR(dev->CreateBuffer(&d, nullptr, &cbCluster)); }
-        auto depthArray = [&](UINT size, UINT n, ComPtr<ID3D11Texture2D>& tex, ComPtr<ID3D11DepthStencilView>* dsvs, ComPtr<ID3D11ShaderResourceView>& srv) {
+        auto depthArray = [&](UINT size, UINT n, ComPtr<d12::Texture2D>& tex, ComPtr<d12::DepthStencilView>* dsvs, ComPtr<d12::ShaderResourceView>& srv) {
             D3D11_TEXTURE2D_DESC d{}; d.Width = d.Height = size; d.MipLevels = 1; d.ArraySize = n; d.Format = DXGI_FORMAT_R32_TYPELESS; d.SampleDesc.Count = 1; d.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
             HR(dev->CreateTexture2D(&d, nullptr, &tex));
             for (UINT k = 0; k < n; k++) { D3D11_DEPTH_STENCIL_VIEW_DESC dv{}; dv.Format = DXGI_FORMAT_D32_FLOAT; dv.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2DARRAY; dv.Texture2DArray.FirstArraySlice = k; dv.Texture2DArray.ArraySize = 1; HR(dev->CreateDepthStencilView(tex.Get(), &dv, &dsvs[k])); }
@@ -1935,7 +1932,7 @@ struct App {
     // wrapping 3D texture of palette numbers (only chunks that changed or came into range are sent, nearest first)
     static constexpr int VCX = 12, VCY = 6, VCZ = 12;
     struct VoxGpuType { uint32_t faces[4]; uint32_t info[4]; };
-    ComPtr<ID3D11Texture3D> voxTex; ComPtr<ID3D11ShaderResourceView> voxSRV; ComPtr<ID3D11Buffer> voxPalBuf; ComPtr<ID3D11ShaderResourceView> voxPalSRV; size_t voxPalCap = 0; bool voxPalDirty = true;
+    ComPtr<d12::Texture3D> voxTex; ComPtr<d12::ShaderResourceView> voxSRV; ComPtr<d12::Buffer> voxPalBuf; ComPtr<d12::ShaderResourceView> voxPalSRV; size_t voxPalCap = 0; bool voxPalDirty = true;
     std::unordered_map<BlockId, uint16_t> voxIdx; std::vector<VoxGpuType> voxPal;
     struct VoxSlot { I3 key{ INT32_MIN, 0, 0 }; uint32_t ver = 0xFFFFFFFFu; };
     std::vector<VoxSlot> voxSlots; I3 voxC0{ 0, 0, 0 }; bool voxReady = false;
@@ -1954,7 +1951,7 @@ struct App {
     // ---- objects in reflection rays: a 32 x 32 x 32 voxel copy of each model (its colours), up to 64 models, and where
     // the nearest objects are (as a transform from camera-relative positions into their copy)
     struct ObjVoxGpu { float r0[4], r1[4], r2[4], info[4]; };
-    ComPtr<ID3D11Texture3D> brickTex; ComPtr<ID3D11ShaderResourceView> brickSRV; ComPtr<ID3D11Buffer> objVoxBuf; ComPtr<ID3D11ShaderResourceView> objVoxSRV;
+    ComPtr<d12::Texture3D> brickTex; ComPtr<d12::ShaderResourceView> brickSRV; ComPtr<d12::Buffer> objVoxBuf; ComPtr<d12::ShaderResourceView> objVoxSRV;
     std::map<std::string, int> brickOf; std::vector<std::string> brickModel; std::vector<double> brickUsed; int objVoxCount = 0;
     std::map<int, V3> layerColor;
     V3 LayerColor(int L) {   // a texture's average colour (linear), for blocks in models
@@ -2158,7 +2155,7 @@ struct App {
     struct SkyVolJob { I3 origin; std::vector<uint8_t> solid, topOpen, out; std::vector<std::pair<I3, std::array<uint64_t, CS3 / 64>>> masks; };
     std::future<std::shared_ptr<SkyVolJob>> skyVolFuture; bool skyVolBusy = false, skyVolValid = false; I3 skyVolOrigin{ 0, 0, 0 };
     uint64_t skyVolSig = 0; int skyVolTick = 0;
-    ComPtr<ID3D11Texture3D> skyVolTex; ComPtr<ID3D11ShaderResourceView> skyVolSRV; ComPtr<ID3D11SamplerState> sampSkyVol;
+    ComPtr<d12::Texture3D> skyVolTex; ComPtr<d12::ShaderResourceView> skyVolSRV; ComPtr<d12::SamplerState> sampSkyVol;
     std::unordered_map<BlockId, uint8_t> opaqueCache;
     bool BlocksSky(BlockId b) {
         if (b == AIR) return false; auto it = opaqueCache.find(b); if (it != opaqueCache.end()) return it->second != 0;
@@ -2256,8 +2253,8 @@ struct App {
     }
     std::map<uint32_t, ParticleEmitter> emitters;     // the particle emitters placed in the world, by object id
     std::vector<ParticleEmitter> fx;                  // one-off effects (sparks where a shot hits, a finished trail ...)
-    ComPtr<ID3D11VertexShader> vsParticle; ComPtr<ID3D11PixelShader> psParticle; ComPtr<ID3D11InputLayout> layoutParticle;
-    ComPtr<ID3D11Buffer> vbParticles; UINT vbParticlesCap = 0; int particleCount = 0;
+    ComPtr<d12::VertexShader> vsParticle; ComPtr<d12::PixelShader> psParticle; ComPtr<d12::InputLayout> layoutParticle;
+    ComPtr<d12::Buffer> vbParticles; UINT vbParticlesCap = 0; int particleCount = 0;
     static V3 ColorOf(uint32_t c) { return { ((c >> 16) & 255) / 255.0, ((c >> 8) & 255) / 255.0, (c & 255) / 255.0 }; }
     void MakeLight(WorldObject& o) { o.kind = ObjKind::Light; o.collide = Collide::None; if (o.folder == "Props") o.folder = "Lights"; }
     void MakeEmitter(WorldObject& o) { o.kind = ObjKind::Particles; o.collide = Collide::None; if (o.folder == "Props") o.folder = "Particles"; }
@@ -2402,8 +2399,8 @@ struct App {
         ctx->UpdateSubresource(cbCluster.Get(), 0, nullptr, &c, 0, 0); ctx->PSSetConstantBuffers(11, 1, cbCluster.GetAddressOf());
     }
     void BindLightBuffers(bool hud) {
-        ID3D11ShaderResourceView* v[3] = { hud ? hudLightSRV.Get() : lightSRV.Get(), clusterSRV.Get(), clusterIdxSRV.Get() }; ctx->PSSetShaderResources(19, 3, v);
-        ID3D11ShaderResourceView* m = lshVPSRV.Get(); ctx->PSSetShaderResources(23, 1, &m);
+        d12::ShaderResourceView* v[3] = { hud ? hudLightSRV.Get() : lightSRV.Get(), clusterSRV.Get(), clusterIdxSRV.Get() }; ctx->PSSetShaderResources(19, 3, v);
+        d12::ShaderResourceView* m = lshVPSRV.Get(); ctx->PSSetShaderResources(23, 1, &m);
     }
     // sort the lights into the clusters (boxes of the view: 16 x 9 across the screen, 24 slices of distance)
     void PrepareLights(const FrameCB& fc) {
@@ -2584,7 +2581,7 @@ struct App {
         memcpy(ms.pData, add.data(), add.size() * sizeof(PVtx)); memcpy((PVtx*)ms.pData + add.size(), soft.data(), soft.size() * sizeof(PVtx));
         ctx->Unmap(vbParticles.Get(), 0);
         // soft edges where particles meet the world: they read a copy of the depth
-        ID3D11RenderTargetView* rt = nullptr; ID3D11DepthStencilView* ds = nullptr; ctx->OMGetRenderTargets(1, &rt, &ds);
+        d12::RenderTargetView* rt = nullptr; d12::DepthStencilView* ds = nullptr; ctx->OMGetRenderTargets(1, &rt, &ds);
         bool onCopy = ds && ds == depthCopyDSV.Get();   // water in the picture: drawn against the copy (the world without the water) - it can't be the target and be read at once,
         if (onCopy) ctx->OMSetRenderTargets(1, &rt, depthCopyRODSV.Get());   // so read-only (before: the read came back empty and every particle vanished near water or lava)
         else { ctx->OMSetRenderTargets(1, &rt, nullptr); ctx->CopyResource(depthCopy.Get(), depthTex.Get()); ctx->OMSetRenderTargets(1, &rt, ds); }
@@ -2595,7 +2592,7 @@ struct App {
         if (!add.empty()) { ctx->OMSetBlendState(bsAdd.Get(), nullptr, 0xFFFFFFFF); ctx->Draw((UINT)add.size(), 0); }
         if (!soft.empty()) { ctx->OMSetBlendState(bsAlpha.Get(), nullptr, 0xFFFFFFFF); ctx->Draw((UINT)soft.size(), (UINT)add.size()); }
         ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());
-        ID3D11ShaderResourceView* none2[1] = {}; ctx->PSSetShaderResources(2, 1, none2);
+        d12::ShaderResourceView* none2[1] = {}; ctx->PSSetShaderResources(2, 1, none2);
         if (onCopy) ctx->OMSetRenderTargets(1, &rt, ds);
         ctx->IASetInputLayout(layout.Get());
         if (rt) rt->Release(); if (ds) ds->Release();
@@ -3108,11 +3105,11 @@ struct App {
     std::map<uint32_t, DoorRuntime> doorRt;           // Play mode: each door's state, by object id
     std::map<uint32_t, ModelGpu> doorGpu;             // doors in the middle of an animation: their posed meshes
     std::vector<Shot> shots; bool shootPrev = true;
-    ComPtr<ID3D11VertexShader> vsField; ComPtr<ID3D11PixelShader> psField;
-    ComPtr<ID3D11VertexShader> vsFieldMesh; ComPtr<ID3D11PixelShader> psFieldMesh; ComPtr<ID3D11InputLayout> layoutFieldMesh; ComPtr<ID3D11Buffer> vbFieldMesh; size_t vbFieldMeshCap = 0;
+    ComPtr<d12::VertexShader> vsField; ComPtr<d12::PixelShader> psField;
+    ComPtr<d12::VertexShader> vsFieldMesh; ComPtr<d12::PixelShader> psFieldMesh; ComPtr<d12::InputLayout> layoutFieldMesh; ComPtr<d12::Buffer> vbFieldMesh; size_t vbFieldMeshCap = 0;
     struct FMVtx { float p[3], n[3]; };
     // ---- impact spheres: glowing shells that grow from explosions and fade
-    ComPtr<ID3D11PixelShader> psSphere; ComPtr<ID3D11Buffer> vbSphere; std::vector<ImpactSphere> spheres; std::vector<FMVtx> unitSphere;
+    ComPtr<d12::PixelShader> psSphere; ComPtr<d12::Buffer> vbSphere; std::vector<ImpactSphere> spheres; std::vector<FMVtx> unitSphere;
     void AddSphere(V3 at, float across, uint32_t col, float life = 0.45f) {
         if (across <= 0.01f) return;
         ImpactSphere s; s.pos = at; s.radius = across * 0.5f; s.color = col; s.life = life; spheres.push_back(s);
@@ -3127,12 +3124,12 @@ struct App {
         for (int j = 0; j < LAT; j++) for (int i = 0; i < LON; i++) { V3 a = P(i, j), b = P(i + 1, j), c = P(i + 1, j + 1), d = P(i, j + 1); put(a); put(b); put(c); put(a); put(c); put(d); }
         D3D11_BUFFER_DESC d{}; d.ByteWidth = (UINT)(unitSphere.size() * sizeof(FMVtx)); d.Usage = D3D11_USAGE_DYNAMIC; d.BindFlags = D3D11_BIND_VERTEX_BUFFER; d.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE; HR(dev->CreateBuffer(&d, nullptr, &vbSphere));
     }
-    void BeginSphereDraw(ID3D11PixelShader* ps) {   // glowing shells: added on top, tested against the world's depth
+    void BeginSphereDraw(d12::PixelShader* ps) {   // glowing shells: added on top, tested against the world's depth
         EnsureUnitSphere();
         ctx->OMSetBlendState(bsAdd.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsTestOnly.Get(), 0); ctx->RSSetState(rsNoCull.Get());
         ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); ctx->IASetInputLayout(layoutFieldMesh.Get()); ctx->VSSetShader(vsFieldMesh.Get(), nullptr, 0); ctx->PSSetShader(ps, nullptr, 0);
         ctx->PSSetShaderResources(3, 1, noiseSRV.GetAddressOf()); ctx->PSSetSamplers(2, 1, sampLinear.GetAddressOf());
-        ID3D11Buffer* cbs[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->VSSetConstantBuffers(0, 2, cbs); ctx->PSSetConstantBuffers(0, 2, cbs);
+        d12::Buffer* cbs[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->VSSetConstantBuffers(0, 2, cbs); ctx->PSSetConstantBuffers(0, 2, cbs);
         UINT stride = sizeof(FMVtx), off = 0; ctx->IASetVertexBuffers(0, 1, vbSphere.GetAddressOf(), &stride, &off);
     }
     // one ball: c its middle (relative to the camera), stretched along ax / ay / az (their lengths: the radii)
@@ -3160,7 +3157,7 @@ struct App {
         EndSphereDraw();
     }
     // beam shots as glowing orbs: a bright ball stretched a little along the way it flies, with a soft halo around it
-    ComPtr<ID3D11PixelShader> psOrb;
+    ComPtr<d12::PixelShader> psOrb;
     void DrawOrbs() {
         const Beam* cb = playMode && weapState.charging && weapState.charge > 0 ? CurrentBeam() : nullptr;
         bool any = cb != nullptr; for (const Shot& s : shots) any |= s.orb && s.age < 50; if (!any) return;
@@ -3559,9 +3556,9 @@ struct App {
         auto dg = use ? doorGpu.end() : doorGpu.find(o.id);
         const ModelGpu& g = use ? *use : dg != doorGpu.end() ? dg->second : GpuModel(o.model);
         BindModelTex(g, o.model);   // the imported model's own picture, and the model's material
-        ID3D11RasterizerState* rsWas = nullptr; bool twoSided = o.kind == ObjKind::Door && g.mesh;   // imported door halves are often one-sided: seen from behind they had holes
+        d12::RasterizerState* rsWas = nullptr; bool twoSided = o.kind == ObjKind::Door && g.mesh;   // imported door halves are often one-sided: seen from behind they had holes
         if (twoSided) { ctx->RSGetState(&rsWas); if (rsWas == rsCull.Get() || rsWas == rsCullFront.Get()) ctx->RSSetState(rsNoCull.Get()); }   // (shadow passes keep theirs)
-        struct RsBack { ID3D11DeviceContext* c; ID3D11RasterizerState*& s; bool on; ~RsBack() { if (on) { c->RSSetState(s); if (s) s->Release(); } } } rsBack{ ctx.Get(), rsWas, twoSided };
+        struct RsBack { d12::DeviceContext* c; d12::RasterizerState*& s; bool on; ~RsBack() { if (on) { c->RSSetState(s); if (s) s->Release(); } } } rsBack{ ctx.Get(), rsWas, twoSided };
         double a = o.yaw * 3.14159265358979 / 180, c = std::cos(a), s = std::sin(a); V3 k = objectStretch(o, *m);   // doors: stretched to Width x Height
         V3 ax{ c * k.x, 0, -s * k.x }, ay{ 0, k.y, 0 }, az{ s * k.z, 0, c * k.z };
         for (auto& part : g.parts) {
@@ -4063,7 +4060,7 @@ struct App {
     BuildMode bmode = BuildMode::Normal; int bFill[(int)BuildMode::COUNT] = {}; bool bCentre = false, bReplace = false;
     int bStage = 0; I3 bA{}, bB{}; int bH = 0; bool bBreak = false; BlockId bBlock = 0;   // stage 1: choosing the corner, 2: the height
     std::vector<I3> bCells; bool bCapped = false; std::string bKey;
-    struct GhostChunk { I3 c; ComPtr<ID3D11Buffer> vb, ib; UINT n = 0; }; std::vector<GhostChunk> bGhost;
+    struct GhostChunk { I3 c; ComPtr<d12::Buffer> vb, ib; UINT n = 0; }; std::vector<GhostChunk> bGhost;
     bool radialOpen = false, radialClickPrev = false; ImVec2 radialCur{ 0, 0 }; int radialHover = -1, radialOpt = -1;
     static constexpr int RADIAL_N = (int)BuildMode::COUNT;
     void SetBuildMode(BuildMode m) {
@@ -4342,7 +4339,7 @@ struct App {
     double bgLeft = 3.0;
     double BgLimit(double own) const { return std::max(0.25, std::min(own, bgLeft)); }   // (each job: its own limit, or what is left of the frame's share - a little at least, so all move on)
     void BgSpent(double ms) { bgLeft -= ms; }
-    void UploadInto(ComPtr<ID3D11Buffer>& b, UINT bind, const void* data, UINT bytes) {   // (a chunk built again: into its old buffer when it fits - no new buffer each time)
+    void UploadInto(ComPtr<d12::Buffer>& b, UINT bind, const void* data, UINT bytes) {   // (a chunk built again: into its old buffer when it fits - no new buffer each time)
         if (b) {
             D3D11_BUFFER_DESC od; b->GetDesc(&od);
             if (od.Usage == D3D11_USAGE_DEFAULT && od.BindFlags == bind && od.ByteWidth >= bytes && od.ByteWidth <= bytes * 4 + 65536) {
@@ -4354,7 +4351,7 @@ struct App {
         HR(dev->CreateBuffer(&d, nullptr, &b));
         D3D11_BOX box{ 0, 0, 0, bytes, 1, 1 }; ctx->UpdateSubresource(b.Get(), 0, &box, data, 0, 0);
     }
-    void Upload(const MeshData& m, ComPtr<ID3D11Buffer>& vb, ComPtr<ID3D11Buffer>& ib, UINT& n) {
+    void Upload(const MeshData& m, ComPtr<d12::Buffer>& vb, ComPtr<d12::Buffer>& ib, UINT& n) {
         n = (UINT)m.i.size(); if (!n) { vb.Reset(); ib.Reset(); return; }
         UploadInto(vb, D3D11_BIND_VERTEX_BUFFER, m.v.data(), (UINT)(m.v.size() * sizeof(Vtx)));
         UploadInto(ib, D3D11_BIND_INDEX_BUFFER, m.i.data(), (UINT)(m.i.size() * 4));
@@ -4513,7 +4510,7 @@ struct App {
     // frames later so it never waits) and on the processor (a clock); shown under the counter, the slowest first
     struct GpuTimer {
         static constexpr int F = 4, N = 96;   // (N: the VR benchmark marks every step twice)
-        ComPtr<ID3D11Query> dis[F], ts[F][N]; const char* name[F][N] = {}; int n[F] = {}; bool live[F] = {}; int age[F] = {}; int cur = 0; bool made = false, rec = false;
+        ComPtr<d12::Query> dis[F], ts[F][N]; const char* name[F][N] = {}; int n[F] = {}; bool live[F] = {}; int age[F] = {}; int cur = 0; bool made = false, rec = false;
         std::map<std::string, double> ms; double total = 0;
     } gpuT;
     struct CpuTimer {
@@ -4615,7 +4612,7 @@ struct App {
         if (!cpuT.ms.empty()) DrawTimeList(dl, ImVec2(topRight.x, y), "processor", cpuT.ms, cpuT.total);
     }
     // ---- this frame's origins of every world chunk and far copy, relative to the camera, in one list (slot 1 of the block vertex shaders)
-    ComPtr<ID3D11Buffer> instBuf; UINT instCap = 0; std::vector<float> instCpu;
+    ComPtr<d12::Buffer> instBuf; UINT instCap = 0; std::vector<float> instCpu;
     bool instAll = true, instAnchorOk = false; V3 instAnchor{ 0, 0, 0 }; float instOff[3] = { 0, 0, 0 };   // instAll: every origin to be sent again
     std::vector<UINT> instFree; UINT instNext = 0, instLo = UINT_MAX, instHi = 0;   // each chunk / far group keeps its own place in the origins list (freed when it goes)
     UINT InstAlloc() {
@@ -4652,10 +4649,10 @@ struct App {
         instLo = UINT_MAX; instHi = 0;
     }
     struct EyeMemory {   // the second eye's own memory of the frames before (bounce light): each eye blends with itself, not with the other eye
-        ComPtr<ID3D11Texture2D> tex[2]; ComPtr<ID3D11RenderTargetView> rtv[2]; ComPtr<ID3D11ShaderResourceView> srv[2]; int cur = 0; bool ok = false;
+        ComPtr<d12::Texture2D> tex[2]; ComPtr<d12::RenderTargetView> rtv[2]; ComPtr<d12::ShaderResourceView> srv[2]; int cur = 0; bool ok = false;
         XMMATRIX vpPrev = XMMatrixIdentity(); V3 camPrev{ 0, 0, 0 };
-        BloomLevel pHist[2]; int pCur = 0; bool pOk = false; V3 pPrevCam{ 0, 0, 0 }; uint32_t pFrame = 0; ID3D11RenderTargetView* pLastOut = nullptr;   // PrimeScaler's memory
-        ComPtr<ID3D11Texture2D> pZ; ComPtr<ID3D11ShaderResourceView> pZSRV; bool pZOk = false;
+        BloomLevel pHist[2]; int pCur = 0; bool pOk = false; V3 pPrevCam{ 0, 0, 0 }; uint32_t pFrame = 0; d12::RenderTargetView* pLastOut = nullptr;   // PrimeScaler's memory
+        ComPtr<d12::Texture2D> pZ; ComPtr<d12::ShaderResourceView> pZSRV; bool pZOk = false;
     } eye2;
     void SwapEyeMemory() {
         for (int k = 0; k < 2; k++) { std::swap(giHistTex[k], eye2.tex[k]); std::swap(giHistRTV[k], eye2.rtv[k]); std::swap(giHistSRV[k], eye2.srv[k]); }
@@ -4671,7 +4668,7 @@ struct App {
         for (int k = 0; k < 2; k++) { eye2.tex[k].Reset(); eye2.rtv[k].Reset(); eye2.srv[k].Reset(); HR(dev->CreateTexture2D(&gd, nullptr, &eye2.tex[k])); HR(dev->CreateRenderTargetView(eye2.tex[k].Get(), nullptr, &eye2.rtv[k])); HR(dev->CreateShaderResourceView(eye2.tex[k].Get(), nullptr, &eye2.srv[k])); }
         eye2.ok = false;
     }
-    void RenderWorld(ID3D11RenderTargetView* outScreen) {
+    void RenderWorld(d12::RenderTargetView* outScreen) {
         if (vrEye == 1) EnsureEye2();
         bool eyeSwap = vrEye == 1; if (eyeSwap) SwapEyeMemory();
         struct EyeBack { App& a; bool on; ~EyeBack() { if (on) a.SwapEyeMemory(); } } eyeBack{ *this, eyeSwap };
@@ -4681,7 +4678,7 @@ struct App {
         SetTextureSharpness(temporal && sceneW < rw ? std::log2((float)sceneW / std::max(1, rw)) : 0.f);
         struct SizeBack { App& a; int w, h; bool on; ~SizeBack() { if (on) { a.rw = w; a.rh = h; } } } sizeBack{ *this, dispW, dispH, scaledNow };
         if (scaledNow) { rw = sceneW; rh = sceneH; }
-        ID3D11RenderTargetView* out = scaledNow ? upSrc.rtv.Get() : outScreen;
+        d12::RenderTargetView* out = scaledNow ? upSrc.rtv.Get() : outScreen;
         aspect = (float)rw / rh; camPos = player.eye();
         V3 f = player.forward();
         if (playMode && player.ball) BallCamera(camPos, f);   // the morph ball: seen from behind
@@ -4901,8 +4898,8 @@ struct App {
         fc.wet2[0] = weather.puddles * E.atmosphere * (E.cold > 0.5f ? 0.f : 1.f); fc.wet2[1] = std::clamp((weather.wetness - 0.15f) * 1.4f, 0.f, 1.f) * E.atmosphere * (E.cold > 0.5f ? 0.f : 1.f);
         fc.weather2[0] = weather.snowCover * E.atmosphere; fc.weather2[1] = weather.flash * E.atmosphere; fc.weather2[2] = W.wind; fc.weather2[3] = skyMap ? 1.f : 0.f;
         ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &fc, 0, 0);
-        ID3D11Buffer* cbs[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->VSSetConstantBuffers(0, 2, cbs); ctx->PSSetConstantBuffers(0, 2, cbs);
-        { ID3D11ShaderResourceView* vx[5] = { texArray.Get(), voxReady ? voxSRV.Get() : nullptr, voxReady ? voxPalSRV.Get() : nullptr, brickSRV.Get(), objVoxSRV.Get() }; ctx->PSSetShaderResources(29, 5, vx); }   // reflection rays' blocks and objects
+        d12::Buffer* cbs[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->VSSetConstantBuffers(0, 2, cbs); ctx->PSSetConstantBuffers(0, 2, cbs);
+        { d12::ShaderResourceView* vx[5] = { texArray.Get(), voxReady ? voxSRV.Get() : nullptr, voxReady ? voxPalSRV.Get() : nullptr, brickSRV.Get(), objVoxSRV.Get() }; ctx->PSSetShaderResources(29, 5, vx); }   // reflection rays' blocks and objects
         CpuMark("setup: choosing far copies");
         LodSelect();   // far copies: which groups (and which chunks they stand in for)
         CpuMark("setup: hidden-things check");
@@ -4945,7 +4942,7 @@ struct App {
                     ctx->IASetVertexBuffers(0, 1, it->second.vb.GetAddressOf(), &stride, &off); ctx->IASetIndexBuffer(it->second.ib.Get(), DXGI_FORMAT_R32_UINT, 0);
                     ctx->DrawIndexedInstanced(it->second.n, 1, 0, 0, it->second.inst); if (counting) lodDrawn++;
                 }
-            { ID3D11Buffer* nb = nullptr; UINT st = 16, of = 0; ctx->IASetVertexBuffers(1, 1, &nb, &st, &of); }   // (objects next: their own ChunkCB)
+            { d12::Buffer* nb = nullptr; UINT st = 16, of = 0; ctx->IASetVertexBuffers(1, 1, &nb, &st, &of); }   // (objects next: their own ChunkCB)
             { XMFLOAT4X4 mm; XMStoreFloat4x4(&mm, m); std::memcpy(cullVP, &mm, sizeof cullVP); cullOn = true; cullCount = counting; cullCave = cave && caveOn; }
             for (size_t oi = 0; oi < objects.size(); oi++) {   // objects: same shaders, turned and sized; platforms where they are on their path
                 if ((int)oi == movingObj) continue;
@@ -4965,7 +4962,7 @@ struct App {
             if (shadowPart != 1) { DrawBall(pass, camPos); DrawMissiles(pass, camPos); DrawDebris(pass, camPos); DrawEnemyDrops(pass, camPos); }
             cullOn = false; cullCount = false; cullCave = false;
         };
-        ID3D11ShaderResourceView* none[5] = {};
+        d12::ShaderResourceView* none[5] = {};
         ctx->PSSetShaderResources(0, 5, none);
         GpuMark("shadows: sun");
         if (shadows) {   // each cascade from the sun (only what is inside it gets drawn)
@@ -4975,7 +4972,7 @@ struct App {
             for (int c = 0; c < CASCADES; c++) {
                 if (!cascUpd[c]) continue;   // (kept from a frame before)
                 FrameCB cf = fc; XMStoreFloat4x4(&cf.shadowVP, cvp[c]); ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &cf, 0, 0);
-                ID3D11PixelShader* cut = c >= 2 ? nullptr : psShadowCut.Get();   // (far maps: leaves and glass shadow whole - their holes are smaller than a pixel there)
+                d12::PixelShader* cut = c >= 2 ? nullptr : psShadowCut.Get();   // (far maps: leaves and glass shadow whole - their holes are smaller than a pixel there)
                 if (c > 0 && cascStatic) {   // the kept still part (drawn again only when needed), copied in, what moves on top
                     if (cascRedo[c]) {
                         ctx->OMSetRenderTargets(0, nullptr, cascStaticDSV[c].Get()); ctx->ClearDepthStencilView(cascStaticDSV[c].Get(), D3D11_CLEAR_DEPTH, 1.f, 0);
@@ -4996,7 +4993,7 @@ struct App {
             ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &fc, 0, 0);
         }
         {   // shadows of the few lights that cast them (a cube each, spotlights one view)
-            ID3D11ShaderResourceView* n1[1] = {}; ctx->PSSetShaderResources(22, 1, n1);
+            d12::ShaderResourceView* n1[1] = {}; ctx->PSSetShaderResources(22, 1, n1);
             GpuMark("shadows: lamps");
             if (!casters.empty()) {
                 for (const ShadowCaster& sc : casters) if (sc.render) lshFacesDrawn += sc.type == 1 ? 1 : 6;
@@ -5026,11 +5023,11 @@ struct App {
                 ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &fc, 0, 0);
             }
             ctx->OMSetRenderTargets(0, nullptr, nullptr);
-            ID3D11ShaderResourceView* ls = lshSRV.Get(); ctx->PSSetShaderResources(22, 1, &ls);
+            d12::ShaderResourceView* ls = lshSRV.Get(); ctx->PSSetShaderResources(22, 1, &ls);
         }
         GpuMark("roofs map");
         if (occRender) {   // the roofs map: opaque things seen from straight above (true darkness)
-            ID3D11ShaderResourceView* n1[1] = {}; ctx->PSSetShaderResources(18, 1, n1);
+            d12::ShaderResourceView* n1[1] = {}; ctx->PSSetShaderResources(18, 1, n1);
             FrameCB cf = fc; XMStoreFloat4x4(&cf.skyVP, occBase); ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &cf, 0, 0);
             ctx->OMSetRenderTargets(0, nullptr, occDSV.Get()); ctx->ClearDepthStencilView(occDSV.Get(), D3D11_CLEAR_DEPTH, 1.f, 0);
             D3D11_VIEWPORT sv{ 0, 0, 1024, 1024, 0, 1 }; ctx->RSSetViewports(1, &sv);
@@ -5039,8 +5036,8 @@ struct App {
             ctx->OMSetRenderTargets(0, nullptr, nullptr);
             ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &fc, 0, 0);
         }
-        { ID3D11ShaderResourceView* oc = info.trueDark ? occSRV.Get() : nullptr; ctx->PSSetShaderResources(18, 1, &oc);
-          ID3D11ShaderResourceView* sv = info.trueDark && skyVolValid ? skyVolSRV.Get() : nullptr; ctx->PSSetShaderResources(26, 1, &sv);
+        { d12::ShaderResourceView* oc = info.trueDark ? occSRV.Get() : nullptr; ctx->PSSetShaderResources(18, 1, &oc);
+          d12::ShaderResourceView* sv = info.trueDark && skyVolValid ? skyVolSRV.Get() : nullptr; ctx->PSSetShaderResources(26, 1, &sv);
           if (sampSkyVol) ctx->PSSetSamplers(4, 1, sampSkyVol.GetAddressOf()); }
 
         if (skyMap) {
@@ -5054,7 +5051,7 @@ struct App {
             ctx->PSSetShaderResources(0, 1, none);
         }
         {   // the water map: only the water's tops, from straight above (the world's own shaders read it at t43)
-            ID3D11ShaderResourceView* n1[1] = {}; ctx->PSSetShaderResources(43, 1, n1);
+            d12::ShaderResourceView* n1[1] = {}; ctx->PSSetShaderResources(43, 1, n1);
             if (waterMap) {
                 ctx->OMSetRenderTargets(0, nullptr, waterMapDSV.Get()); ctx->ClearDepthStencilView(waterMapDSV.Get(), D3D11_CLEAR_DEPTH, 1.f, 0);
                 D3D11_VIEWPORT sv{ 0, 0, 512, 512, 0, 1 }; ctx->RSSetViewports(1, &sv);
@@ -5088,8 +5085,8 @@ struct App {
             ctx->PSSetShaderResources(3, 1, noiseSRV.GetAddressOf()); ctx->PSSetSamplers(2, 1, sampLinear.GetAddressOf());
             ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psSky.Get(), nullptr, 0); ctx->Draw(3, 0);
             ctx->RSSetState(rsCullFront.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0);
-            ID3D11ShaderResourceView* ms[5] = { texArray.Get(), shadows ? shadowSRV.Get() : nullptr, nullptr, noiseSRV.Get(), skyMap ? skyMapSRV.Get() : nullptr }; ctx->PSSetShaderResources(0, 5, ms); BindMaterials();
-            ID3D11SamplerState* mss[3] = { sampBlocks.Get(), sampShadow.Get(), sampLinear.Get() }; ctx->PSSetSamplers(0, 3, mss);
+            d12::ShaderResourceView* ms[5] = { texArray.Get(), shadows ? shadowSRV.Get() : nullptr, nullptr, noiseSRV.Get(), skyMap ? skyMapSRV.Get() : nullptr }; ctx->PSSetShaderResources(0, 5, ms); BindMaterials();
+            d12::SamplerState* mss[3] = { sampBlocks.Get(), sampShadow.Get(), sampLinear.Get() }; ctx->PSSetSamplers(0, 3, mss);
             drawMaxDist = 80;   // (the mirror: what is near it - far away, a reflection on a floor is a few pixels)
             ctx->PSSetShader(psOpaque.Get(), nullptr, 0); drawChunks(mvp, 0, false);
             ctx->PSSetShader(psCutout.Get(), nullptr, 0); drawChunks(mvp, 1, false);
@@ -5109,7 +5106,7 @@ struct App {
         ctx->PSSetShaderResources(3, 1, noiseSRV.GetAddressOf()); ctx->PSSetSamplers(2, 1, sampLinear.GetAddressOf());   // the planet uses the cloud noise
         ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psSky.Get(), nullptr, 0); ctx->Draw(3, 0);
         ctx->RSSetState(rsCull.Get());
-        { ID3D11ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(39, 1, &n1); }
+        { d12::ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(39, 1, &n1); }
         GpuMark("light probes");
         if (probesOn) {   // light probes: this frame's turn traces its rays through the blocks (the rest keep what they knew)
             int nx = 1 - probeCur;
@@ -5117,26 +5114,26 @@ struct App {
             D3D11_VIEWPORT pv{ 0, 0, 32.f * 6, 16.f * 32, 0, 1 }; ctx->RSSetViewports(1, &pv);
             ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->RSSetState(rsNoCull.Get()); ctx->IASetInputLayout(nullptr); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
             ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psProbeUpdate.Get(), nullptr, 0);
-            { ID3D11ShaderResourceView* s5[5] = { texArray.Get(), shadows ? shadowSRV.Get() : nullptr, nullptr, noiseSRV.Get(), skyMap ? skyMapSRV.Get() : nullptr }; ctx->PSSetShaderResources(0, 5, s5); BindMaterials(); }
+            { d12::ShaderResourceView* s5[5] = { texArray.Get(), shadows ? shadowSRV.Get() : nullptr, nullptr, noiseSRV.Get(), skyMap ? skyMapSRV.Get() : nullptr }; ctx->PSSetShaderResources(0, 5, s5); BindMaterials(); }
             ctx->PSSetShaderResources(14, 1, emitArray.GetAddressOf());
-            { ID3D11SamplerState* sp3[3] = { sampBlocks.Get(), sampShadow.Get(), sampLinear.Get() }; ctx->PSSetSamplers(0, 3, sp3); }
-            { ID3D11ShaderResourceView* pr[2] = { probeSRV[probeCur].Get(), probeSRV[probeCur].Get() }; ctx->PSSetShaderResources(38, 2, pr); }
+            { d12::SamplerState* sp3[3] = { sampBlocks.Get(), sampShadow.Get(), sampLinear.Get() }; ctx->PSSetSamplers(0, 3, sp3); }
+            { d12::ShaderResourceView* pr[2] = { probeSRV[probeCur].Get(), probeSRV[probeCur].Get() }; ctx->PSSetShaderResources(38, 2, pr); }
             ctx->Draw(3, 0);
-            { ID3D11ShaderResourceView* n2[2] = {}; ctx->PSSetShaderResources(38, 2, n2); }
+            { d12::ShaderResourceView* n2[2] = {}; ctx->PSSetShaderResources(38, 2, n2); }
             probeCur = nx;
             ctx->RSSetViewports(1, &v); ctx->RSSetState(rsCull.Get());
         }
-        { ID3D11ShaderResourceView* pb = probesOn ? probeSRV[probeCur].Get() : nullptr; ctx->PSSetShaderResources(39, 1, &pb); }   // (the world reads the probes)
+        { d12::ShaderResourceView* pb = probesOn ? probeSRV[probeCur].Get() : nullptr; ctx->PSSetShaderResources(39, 1, &pb); }   // (the world reads the probes)
         GpuMark("blocks and models");
         { const float zero[4] = { 0, 0, 0, 0 }; ctx->ClearRenderTargetView(surfRTV.Get(), zero); ctx->ClearRenderTargetView(indRTV.Get(), zero); ctx->ClearRenderTargetView(albRTV.Get(), zero);
-          ID3D11RenderTargetView* four[4] = { hdrRTV.Get(), surfRTV.Get(), indRTV.Get(), albRTV.Get() }; ctx->OMSetRenderTargets(4, four, dsv.Get()); }   // blocks also note direction + shininess, and their sky light
+          d12::RenderTargetView* four[4] = { hdrRTV.Get(), surfRTV.Get(), indRTV.Get(), albRTV.Get() }; ctx->OMSetRenderTargets(4, four, dsv.Get()); }   // blocks also note direction + shininess, and their sky light
         ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0);
-        ID3D11ShaderResourceView* srvs[5] = { texArray.Get(), shadows ? shadowSRV.Get() : nullptr, nullptr, noiseSRV.Get(), skyMap ? skyMapSRV.Get() : nullptr }; ctx->PSSetShaderResources(0, 5, srvs); BindMaterials();
-        ID3D11SamplerState* samps[3] = { sampBlocks.Get(), sampShadow.Get(), sampLinear.Get() }; ctx->PSSetSamplers(0, 3, samps);
+        d12::ShaderResourceView* srvs[5] = { texArray.Get(), shadows ? shadowSRV.Get() : nullptr, nullptr, noiseSRV.Get(), skyMap ? skyMapSRV.Get() : nullptr }; ctx->PSSetShaderResources(0, 5, srvs); BindMaterials();
+        d12::SamplerState* samps[3] = { sampBlocks.Get(), sampShadow.Get(), sampLinear.Get() }; ctx->PSSetSamplers(0, 3, samps);
         drawnChunks = 0; partsDrawn = partsCulled = 0; caveHidden = 0; cookHidden = 0; lodDrawn = 0;
         UpdateCaveCulling(vp);
         {   // the depth of everything solid first (no colour: cheap), so the heavy lighting runs once per pixel, not once for every wall behind it
-            ID3D11RenderTargetView* four[4] = { hdrRTV.Get(), surfRTV.Get(), indRTV.Get(), albRTV.Get() };
+            d12::RenderTargetView* four[4] = { hdrRTV.Get(), surfRTV.Get(), indRTV.Get(), albRTV.Get() };
             ctx->OMSetRenderTargets(0, nullptr, dsv.Get()); ctx->PSSetShader(nullptr, nullptr, 0); drawChunks(vp, 0, false, true);
             if (settings.hideHidden) {   // that depth made small, for hiding what is behind things a frame or two from now
                 ctx->OMSetRenderTargets(0, nullptr, nullptr); HizBuild(vp);
@@ -5157,18 +5154,18 @@ struct App {
             ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->IASetInputLayout(nullptr); ctx->RSSetState(rsNoCull.Get()); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
             D3D11_VIEWPORT hv{ 0, 0, (float)lowW, (float)lowH, 0, 1 }; ctx->RSSetViewports(1, &hv);
             ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psAO.Get(), nullptr, 0);
-            { ID3D11ShaderResourceView* r6[6] = { nullptr, nullptr, depthSRV.Get(), nullptr, nullptr, surfSRV.Get() }; ctx->PSSetShaderResources(0, 6, r6); }
+            { d12::ShaderResourceView* r6[6] = { nullptr, nullptr, depthSRV.Get(), nullptr, nullptr, surfSRV.Get() }; ctx->PSSetShaderResources(0, 6, r6); }
             ctx->Draw(3, 0);
             ctx->OMSetRenderTargets(1, aoRTV2.GetAddressOf(), nullptr); ctx->PSSetShader(psAOBlur.Get(), nullptr, 0);   // blurred while small (cheap), not at full size
-            { ID3D11ShaderResourceView* a1 = aoSRV.Get(); ctx->PSSetShaderResources(8, 1, &a1); }
+            { d12::ShaderResourceView* a1 = aoSRV.Get(); ctx->PSSetShaderResources(8, 1, &a1); }
             ctx->Draw(3, 0);
-            { ID3D11ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(8, 1, &n1); }
+            { d12::ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(8, 1, &n1); }
             ctx->RSSetViewports(1, &v);
             ctx->OMSetRenderTargets(1, hdrRTV.GetAddressOf(), nullptr); ctx->OMSetBlendState(bsAdd.Get(), nullptr, 0xFFFFFFFF);
             ctx->PSSetShader(psAOApply.Get(), nullptr, 0);
-            { ID3D11ShaderResourceView* r9[9] = { nullptr, nullptr, depthSRV.Get(), nullptr, nullptr, nullptr, nullptr, indSRV.Get(), aoSRV2.Get() }; ctx->PSSetShaderResources(0, 9, r9); }
+            { d12::ShaderResourceView* r9[9] = { nullptr, nullptr, depthSRV.Get(), nullptr, nullptr, nullptr, nullptr, indSRV.Get(), aoSRV2.Get() }; ctx->PSSetShaderResources(0, 9, r9); }
             ctx->Draw(3, 0);
-            { ID3D11ShaderResourceView* n9[9] = {}; ctx->PSSetShaderResources(0, 9, n9); }
+            { d12::ShaderResourceView* n9[9] = {}; ctx->PSSetShaderResources(0, 9, n9); }
             ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
         }
         GpuMark("bounce light");
@@ -5178,24 +5175,24 @@ struct App {
             ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->IASetInputLayout(nullptr); ctx->RSSetState(rsNoCull.Get()); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
             D3D11_VIEWPORT hv{ 0, 0, (float)lowW, (float)lowH, 0, 1 }; ctx->RSSetViewports(1, &hv);
             ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psGI.Get(), nullptr, 0);
-            { ID3D11ShaderResourceView* r6[6] = { hdrSRV.Get(), nullptr, depthSRV.Get(), nullptr, nullptr, surfSRV.Get() }; ctx->PSSetShaderResources(0, 6, r6); }
+            { d12::ShaderResourceView* r6[6] = { hdrSRV.Get(), nullptr, depthSRV.Get(), nullptr, nullptr, surfSRV.Get() }; ctx->PSSetShaderResources(0, 6, r6); }
             ctx->Draw(3, 0);
-            { ID3D11ShaderResourceView* n6[6] = {}; ctx->PSSetShaderResources(0, 6, n6); }
+            { d12::ShaderResourceView* n6[6] = {}; ctx->PSSetShaderResources(0, 6, n6); }
             {   // the de-noiser: this frame blended into the memory of the frames before (followed as the camera moves)
                 int nx = 1 - giCur;
                 ctx->OMSetRenderTargets(1, giHistRTV[nx].GetAddressOf(), nullptr); ctx->PSSetShader(psGITemp.Get(), nullptr, 0); ctx->PSSetSamplers(3, 1, sampClamp.GetAddressOf());
-                { ID3D11ShaderResourceView* d1 = depthSRV.Get(); ctx->PSSetShaderResources(2, 1, &d1); ID3D11ShaderResourceView* h2[2] = { giSRV.Get(), giHistSRV[giCur].Get() }; ctx->PSSetShaderResources(36, 2, h2); }
+                { d12::ShaderResourceView* d1 = depthSRV.Get(); ctx->PSSetShaderResources(2, 1, &d1); d12::ShaderResourceView* h2[2] = { giSRV.Get(), giHistSRV[giCur].Get() }; ctx->PSSetShaderResources(36, 2, h2); }
                 ctx->Draw(3, 0);
-                { ID3D11ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(2, 1, &n1); ID3D11ShaderResourceView* n2[2] = {}; ctx->PSSetShaderResources(36, 2, n2); }
+                { d12::ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(2, 1, &n1); d12::ShaderResourceView* n2[2] = {}; ctx->PSSetShaderResources(36, 2, n2); }
                 giCur = nx; giHistOk = true;
             }
             ctx->RSSetViewports(1, &v);
             ctx->OMSetRenderTargets(1, hdrRTV.GetAddressOf(), nullptr); ctx->OMSetBlendState(bsAdd.Get(), nullptr, 0xFFFFFFFF);
             ctx->PSSetShader(psGIApply.Get(), nullptr, 0); ctx->PSSetSamplers(3, 1, sampClamp.GetAddressOf());
-            { ID3D11ShaderResourceView* d1 = depthSRV.Get(); ctx->PSSetShaderResources(2, 1, &d1); ID3D11ShaderResourceView* s5 = surfSRV.Get(); ctx->PSSetShaderResources(5, 1, &s5);
-              ID3D11ShaderResourceView* g2[2] = { giHistSRV[giCur].Get(), albSRV.Get() }; ctx->PSSetShaderResources(24, 2, g2); }
+            { d12::ShaderResourceView* d1 = depthSRV.Get(); ctx->PSSetShaderResources(2, 1, &d1); d12::ShaderResourceView* s5 = surfSRV.Get(); ctx->PSSetShaderResources(5, 1, &s5);
+              d12::ShaderResourceView* g2[2] = { giHistSRV[giCur].Get(), albSRV.Get() }; ctx->PSSetShaderResources(24, 2, g2); }
             ctx->Draw(3, 0);
-            { ID3D11ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(2, 1, &n1); ctx->PSSetShaderResources(5, 1, &n1); ID3D11ShaderResourceView* n2[2] = {}; ctx->PSSetShaderResources(24, 2, n2); }
+            { d12::ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(2, 1, &n1); ctx->PSSetShaderResources(5, 1, &n1); d12::ShaderResourceView* n2[2] = {}; ctx->PSSetShaderResources(24, 2, n2); }
             ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
         } else giHistOk = false;   // (off: the memory starts fresh when it comes back)
         histVPPrev = histVPNow; histCamPrev = camPos;
@@ -5204,7 +5201,7 @@ struct App {
         ctx->OMSetRenderTargets(1, reflRTV.GetAddressOf(), nullptr);
         ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->IASetInputLayout(nullptr); ctx->RSSetState(rsNoCull.Get());
         ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psReflect.Get(), nullptr, 0);
-        { ID3D11ShaderResourceView* r7[7] = { hdrSRV.Get(), shadows ? shadowSRV.Get() : nullptr, depthSRV.Get(), nullptr, skyMap ? skyMapSRV.Get() : nullptr, surfSRV.Get(), lastMirror.valid ? mirSRV.Get() : nullptr }; ctx->PSSetShaderResources(0, 7, r7);
+        { d12::ShaderResourceView* r7[7] = { hdrSRV.Get(), shadows ? shadowSRV.Get() : nullptr, depthSRV.Get(), nullptr, skyMap ? skyMapSRV.Get() : nullptr, surfSRV.Get(), lastMirror.valid ? mirSRV.Get() : nullptr }; ctx->PSSetShaderResources(0, 7, r7);
           ctx->PSSetShaderResources(14, 1, emitArray.GetAddressOf()); BindMaterials(); }
         ctx->PSSetSamplers(3, 1, sampClamp.GetAddressOf());
         if (float rs = ReflScale(); settings.reflections > 0) {   // the rays traced into their own picture (smaller, if set), then laid over the full one, blurred as rough as each surface is
@@ -5216,9 +5213,9 @@ struct App {
             ctx->OMSetRenderTargets(1, reflRTV.GetAddressOf(), nullptr); ctx->PSSetShader(psReflComp.Get(), nullptr, 0);
             ctx->PSSetShaderResources(34, 1, reflLowSRV.GetAddressOf()); ctx->PSSetShaderResources(25, 1, albSRV.GetAddressOf());
             ctx->Draw(3, 0);
-            ID3D11ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(34, 1, &n1); ctx->PSSetShaderResources(25, 1, &n1);
+            d12::ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(34, 1, &n1); ctx->PSSetShaderResources(25, 1, &n1);
         } else { ctx->OMSetRenderTargets(0, nullptr, nullptr); ctx->CopyResource(reflTex.Get(), hdrTex.Get()); }   // reflections off: the picture as it is (no rays)
-        { ID3D11ShaderResourceView* n7[7] = {}; ctx->PSSetShaderResources(0, 7, n7); }
+        { d12::ShaderResourceView* n7[7] = {}; ctx->PSSetShaderResources(0, 7, n7); }
         // everything after this draws over the reflected picture, still depth-tested against the world
         ctx->OMSetRenderTargets(1, reflRTV.GetAddressOf(), dsv.Get()); ctx->RSSetState(rsCull.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0);
         ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0);
@@ -5234,9 +5231,9 @@ struct App {
                 ctx->OMSetRenderTargets(1, reflRTV.GetAddressOf(), dsv.Get());
                 ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsNoCull.Get());
                 ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0); ctx->PSSetShader(psWater.Get(), nullptr, 0);
-                ID3D11ShaderResourceView* ws[5] = { hdrSRV.Get(), shadows ? shadowSRV.Get() : nullptr, depthCopySRV.Get(), noiseSRV.Get(), skyMap ? skyMapSRV.Get() : nullptr }; ctx->PSSetShaderResources(0, 5, ws);
-                { ID3D11ShaderResourceView* mv = lastMirror.valid ? mirSRV.Get() : nullptr; ctx->PSSetShaderResources(6, 1, &mv); }
-                ID3D11SamplerState* wss[4] = { sampBlocks.Get(), sampShadow.Get(), sampLinear.Get(), sampClamp.Get() }; ctx->PSSetSamplers(0, 4, wss);
+                d12::ShaderResourceView* ws[5] = { hdrSRV.Get(), shadows ? shadowSRV.Get() : nullptr, depthCopySRV.Get(), noiseSRV.Get(), skyMap ? skyMapSRV.Get() : nullptr }; ctx->PSSetShaderResources(0, 5, ws);
+                { d12::ShaderResourceView* mv = lastMirror.valid ? mirSRV.Get() : nullptr; ctx->PSSetShaderResources(6, 1, &mv); }
+                d12::SamplerState* wss[4] = { sampBlocks.Get(), sampShadow.Get(), sampLinear.Get(), sampClamp.Get() }; ctx->PSSetSamplers(0, 4, wss);
                 drawChunks(vp, 2, false, true);
                 ctx->PSSetShaderResources(0, 5, none); ctx->RSSetState(rsCull.Get());
                 ctx->PSSetShaderResources(0, 5, srvs);
@@ -5247,7 +5244,7 @@ struct App {
             // without it, so water in front never hides them (inside the water or behind it, from above or from under the water)
             ctx->OMSetRenderTargets(1, reflRTV.GetAddressOf(), waterNow ? depthCopyDSV.Get() : dsv.Get()); ctx->RSSetState(rsCull.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0);
             ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0); ctx->PSSetShaderResources(0, 5, srvs);
-            { ID3D11Buffer* cbs2[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->VSSetConstantBuffers(0, 2, cbs2); ctx->PSSetConstantBuffers(0, 2, cbs2); }
+            { d12::Buffer* cbs2[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->VSSetConstantBuffers(0, 2, cbs2); ctx->PSSetConstantBuffers(0, 2, cbs2); }
             if (bStage > 0 && !bGhost.empty() && !playMode && Playing()) {   // build modes: the whole shape, see-through (red: what breaks)
                 ctx->OMSetBlendState(bsAlpha.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsTestOnly.Get(), 0); ctx->PSSetShader(psGhost.Get(), nullptr, 0); ctx->RSSetState(rsGhostBias.Get());
                 for (const GhostChunk& g : bGhost) {
@@ -5294,7 +5291,7 @@ struct App {
             if (skyMap) ctx->VSSetShaderResources(4, 1, skyMapSRV.GetAddressOf());   // the drops look up where they land
             ctx->VSSetShader(vsRainFar.Get(), nullptr, 0); ctx->Draw(6 * 9000, 0);     // far out: fills the distance
             ctx->VSSetShader(vsRain.Get(), nullptr, 0); ctx->Draw(12 * 16000, 0);      // near: they land, splash and ripple
-            { ID3D11ShaderResourceView* n1[1] = {}; ctx->VSSetShaderResources(4, 1, n1); }
+            { d12::ShaderResourceView* n1[1] = {}; ctx->VSSetShaderResources(4, 1, n1); }
             ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());
         }
         if (skyMap && fc.wet2[1] > 0.01f && vsDrips) {   // drips off roofs and ledges while it is wet
@@ -5302,7 +5299,7 @@ struct App {
             ctx->IASetInputLayout(nullptr); ctx->PSSetShader(psRain.Get(), nullptr, 0);
             ctx->VSSetShaderResources(4, 1, skyMapSRV.GetAddressOf());
             ctx->VSSetShader(vsDrips.Get(), nullptr, 0); ctx->Draw(6 * 6000, 0);
-            { ID3D11ShaderResourceView* n1[1] = {}; ctx->VSSetShaderResources(4, 1, n1); }
+            { d12::ShaderResourceView* n1[1] = {}; ctx->VSSetShaderResources(4, 1, n1); }
             ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());
         }
         if (weather.boltAge < 0.45 && E.atmosphere > 0.5f) DrawBolt();
@@ -5329,9 +5326,9 @@ struct App {
         ctx->PSSetShaderResources(0, 4, none);
         fogGridNow = settings.fogGrid && psFogGrid;
         if (fogGridNow) {   // the fog grid first: the sun's shadow for its light shafts
-            ID3D11ShaderResourceView* sh = shadows ? shadowSRV.Get() : nullptr; ctx->PSSetShaderResources(1, 1, &sh);
+            d12::ShaderResourceView* sh = shadows ? shadowSRV.Get() : nullptr; ctx->PSSetShaderResources(1, 1, &sh);
             RenderFogGrid();
-            ID3D11ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(1, 1, &n1);
+            d12::ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(1, 1, &n1);
             ctx->RSSetViewports(1, &v);
         } else fogHistOk = false;
         if (!fogGridNow) { cookCB.fogG[3] = 0; UploadCookCB(); }   // (the picture: the old way)
@@ -5339,15 +5336,15 @@ struct App {
         ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->IASetInputLayout(nullptr); ctx->RSSetState(rsNoCull.Get()); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
         { D3D11_VIEWPORT lv{ 0, 0, (float)lowW, (float)lowH, 0, 1 }; ctx->RSSetViewports(1, &lv); }
         ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psVolumeLow.Get(), nullptr, 0);
-        { ID3D11ShaderResourceView* v4[4] = { reflSRV.Get(), shadows ? shadowSRV.Get() : nullptr, depthSRV.Get(), noiseSRV.Get() }; ctx->PSSetShaderResources(0, 4, v4); }
+        { d12::ShaderResourceView* v4[4] = { reflSRV.Get(), shadows ? shadowSRV.Get() : nullptr, depthSRV.Get(), noiseSRV.Get() }; ctx->PSSetShaderResources(0, 4, v4); }
         if (fogGridNow) { FrameCB f2 = fc; f2.lookFog[3] = 0; ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &f2, 0, 0); }   // (the grid has the lights' glow already)
         ctx->Draw(3, 0);
         if (fogGridNow) ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &fc, 0, 0);
         ctx->RSSetViewports(1, &v);
         ctx->OMSetRenderTargets(1, volRTV.GetAddressOf(), nullptr); ctx->PSSetShader(psVolume.Get(), nullptr, 0);   // the picture through it, full size
-        { ID3D11ShaderResourceView* vl = volLowSRV.Get(); ctx->PSSetShaderResources(41, 1, &vl); }
+        { d12::ShaderResourceView* vl = volLowSRV.Get(); ctx->PSSetShaderResources(41, 1, &vl); }
         ctx->Draw(3, 0);
-        { ID3D11ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(41, 1, &n1); }
+        { d12::ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(41, 1, &n1); }
 
         GpuMark("particles, effects");
         // ---- glowing effects after the clouds and fog: they do not write depth, so the clouds (far away) would cover them
@@ -5355,7 +5352,7 @@ struct App {
         ctx->OMSetRenderTargets(1, volRTV.GetAddressOf(), waterNow ? depthCopyDSV.Get() : dsv.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());   // (water in front never hides them)
         ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0);
         ctx->PSSetShaderResources(0, 5, srvs); ctx->PSSetSamplers(0, 3, samps);
-        { ID3D11Buffer* cbs2[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->VSSetConstantBuffers(0, 2, cbs2); ctx->PSSetConstantBuffers(0, 2, cbs2); }
+        { d12::Buffer* cbs2[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->VSSetConstantBuffers(0, 2, cbs2); ctx->PSSetConstantBuffers(0, 2, cbs2); }
         DrawFields(); DrawSpheres(); DrawOrbs(); DrawEnemyShots();   // door forcefields and test-beam shots
         DrawParticles();
         if (E.particleKind > 0.5f && E.particleAmount > 0.01f) {   // dust, embers, spores or ice sparkles floating in the air
@@ -5376,12 +5373,12 @@ struct App {
             if (settings.motionBlur > 0.01f && !jumped && !paused && vrEye < 0) {   // (never in VR: it makes people feel sick)
                 float k = (float)std::clamp(settings.motionBlur * (1.0 / 60) / std::max(frameDt, 1e-3), 0.0, 4.0);   // (the same smear at any frame rate: a sixtieth of a second at most)
                 ChunkCB cc{ { k, playMode ? 0.0021f : 0.f, 0.06f, 0 } }; ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);
-                { ID3D11Buffer* cbs[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->PSSetConstantBuffers(0, 2, cbs); }
+                { d12::Buffer* cbs[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->PSSetConstantBuffers(0, 2, cbs); }
                 ctx->OMSetRenderTargets(1, reflRTV.GetAddressOf(), nullptr); ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
                 ctx->RSSetState(rsNoCull.Get()); ctx->IASetInputLayout(nullptr); ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psMotionBlur.Get(), nullptr, 0);
-                { ID3D11ShaderResourceView* s3[3] = { volSRV.Get(), nullptr, depthSRV.Get() }; ctx->PSSetShaderResources(0, 3, s3); }
+                { d12::ShaderResourceView* s3[3] = { volSRV.Get(), nullptr, depthSRV.Get() }; ctx->PSSetShaderResources(0, 3, s3); }
                 ctx->Draw(3, 0);
-                { ID3D11ShaderResourceView* n3[3] = {}; ctx->PSSetShaderResources(0, 3, n3); }
+                { d12::ShaderResourceView* n3[3] = {}; ctx->PSSetShaderResources(0, 3, n3); }
                 std::swap(volTex, reflTex); std::swap(volRTV, reflRTV); std::swap(volSRV, reflSRV);
             }
         }
@@ -5393,7 +5390,7 @@ struct App {
         if (bloom) {
             ctx->PSSetShader(psBloomDown.Get(), nullptr, 0);
             for (size_t i = 0; i < bloomLv.size(); i++) {
-                ID3D11ShaderResourceView* src = i == 0 ? volSRV.Get() : bloomLv[i - 1].srv.Get();
+                d12::ShaderResourceView* src = i == 0 ? volSRV.Get() : bloomLv[i - 1].srv.Get();
                 float sw = i == 0 ? (float)rw : (float)bloomLv[i - 1].w, sh2 = i == 0 ? (float)rh : (float)bloomLv[i - 1].h;
                 ChunkCB cc{ { 1 / sw, 1 / sh2, 1, 0 } }; ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);
                 ctx->OMSetRenderTargets(1, bloomLv[i].rtv.GetAddressOf(), nullptr);
@@ -5406,7 +5403,7 @@ struct App {
                 ChunkCB cc{ { 1.f / bloomLv[i].w, 1.f / bloomLv[i].h, spread, 0 } }; ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);
                 ctx->OMSetRenderTargets(1, bloomLv[i - 1].rtv.GetAddressOf(), nullptr);
                 D3D11_VIEWPORT bv{ 0, 0, (float)bloomLv[i - 1].w, (float)bloomLv[i - 1].h, 0, 1 }; ctx->RSSetViewports(1, &bv);
-                ID3D11ShaderResourceView* src = bloomLv[i].srv.Get(); ctx->PSSetShaderResources(0, 1, &src); ctx->Draw(3, 0); ctx->PSSetShaderResources(0, 1, none);
+                d12::ShaderResourceView* src = bloomLv[i].srv.Get(); ctx->PSSetShaderResources(0, 1, &src); ctx->Draw(3, 0); ctx->PSSetShaderResources(0, 1, none);
             }
             ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
             D3D11_VIEWPORT fv{ 0, 0, (float)rw, (float)rh, 0, 1 }; ctx->RSSetViewports(1, &fv);
@@ -5451,21 +5448,21 @@ struct App {
         if (adaptOn) {
             ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psLumLog.Get(), nullptr, 0);
             ctx->OMSetRenderTargets(1, lumRTV.GetAddressOf(), nullptr); D3D11_VIEWPORT lv{ 0, 0, 256, 256, 0, 1 }; ctx->RSSetViewports(1, &lv);
-            { ID3D11ShaderResourceView* h = volSRV.Get(); ctx->PSSetShaderResources(0, 1, &h); } ctx->Draw(3, 0); ctx->PSSetShaderResources(0, 1, none);
+            { d12::ShaderResourceView* h = volSRV.Get(); ctx->PSSetShaderResources(0, 1, &h); } ctx->Draw(3, 0); ctx->PSSetShaderResources(0, 1, none);
             ctx->OMSetRenderTargets(0, nullptr, nullptr); ctx->GenerateMips(lumSRV.Get());
             int nx = 1 - adaptCur; ctx->PSSetShader(psAdapt.Get(), nullptr, 0);
             ctx->OMSetRenderTargets(1, adaptRTV[nx].GetAddressOf(), nullptr); D3D11_VIEWPORT av{ 0, 0, 1, 1, 0, 1 }; ctx->RSSetViewports(1, &av);
-            { ID3D11ShaderResourceView* a[2] = { adaptSRV[adaptCur].Get(), lumSRV.Get() }; ctx->PSSetShaderResources(16, 2, a); } ctx->Draw(3, 0);
-            { ID3D11ShaderResourceView* n2[2] = { nullptr, nullptr }; ctx->PSSetShaderResources(16, 2, n2); }
+            { d12::ShaderResourceView* a[2] = { adaptSRV[adaptCur].Get(), lumSRV.Get() }; ctx->PSSetShaderResources(16, 2, a); } ctx->Draw(3, 0);
+            { d12::ShaderResourceView* n2[2] = { nullptr, nullptr }; ctx->PSSetShaderResources(16, 2, n2); }
             adaptCur = nx; D3D11_VIEWPORT fv{ 0, 0, (float)rw, (float)rh, 0, 1 }; ctx->RSSetViewports(1, &fv);
         }
 
         GpuMark("final picture, anti-aliasing");
         // ---- final picture: exposure + filmic curve into the window (or the editor's viewport picture); paused: first into a picture to blur
         bool blurOn = blurAmt > 0.005f && blurSrc.rtv && blurLv.size() == 4;
-        ID3D11RenderTargetView* finalTgt = blurOn ? blurSrc.rtv.Get() : out;
+        d12::RenderTargetView* finalTgt = blurOn ? blurSrc.rtv.Get() : out;
         bool aaOn = !temporal && settings.antiAlias > 0 && aaSrc.rtv && aaSrc.w == rw && aaSrc.h == rh;   // (PrimeScaler smooths the edges itself)   // anti-aliasing: first into a picture, then smoothed into where it goes
-        { ID3D11RenderTargetView* tgt = aaOn ? aaSrc.rtv.Get() : finalTgt; ctx->OMSetRenderTargets(1, &tgt, nullptr); }
+        { d12::RenderTargetView* tgt = aaOn ? aaSrc.rtv.Get() : finalTgt; ctx->OMSetRenderTargets(1, &tgt, nullptr); }
         ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psPost.Get(), nullptr, 0);
         {   // the visor's look
             const VisorFx& x = CurrentVisorFx(); VisorCB vc{};
@@ -5478,21 +5475,21 @@ struct App {
             vc.outline[0] = scanMaskOn ? 1.f : 0.f; vc.outline[1] = std::max(1.f, 2.f * rh / 720.f); vc.outline[2] = 0.12f; vc.outline[3] = 0;
             ctx->UpdateSubresource(cbVisor.Get(), 0, nullptr, &vc, 0, 0); ctx->PSSetConstantBuffers(6, 1, cbVisor.GetAddressOf());
         }
-        { ID3D11ShaderResourceView* pv[3] = { volSRV.Get(), bloom ? bloomLv[0].srv.Get() : nullptr, depthSRV.Get() }; ctx->PSSetShaderResources(0, 3, pv); }
-        { ID3D11ShaderResourceView* ms = scanMaskOn ? scanMask.srv.Get() : nullptr; ctx->PSSetShaderResources(11, 1, &ms); }
-        { ID3D11ShaderResourceView* ex = adaptOn ? adaptSRV[adaptCur].Get() : nullptr; ctx->PSSetShaderResources(16, 1, &ex); }
+        { d12::ShaderResourceView* pv[3] = { volSRV.Get(), bloom ? bloomLv[0].srv.Get() : nullptr, depthSRV.Get() }; ctx->PSSetShaderResources(0, 3, pv); }
+        { d12::ShaderResourceView* ms = scanMaskOn ? scanMask.srv.Get() : nullptr; ctx->PSSetShaderResources(11, 1, &ms); }
+        { d12::ShaderResourceView* ex = adaptOn ? adaptSRV[adaptCur].Get() : nullptr; ctx->PSSetShaderResources(16, 1, &ex); }
         {   // your face for the glass (screens/visor_face.png, if there is one)
-            ID3D11ShaderResourceView* face = nullptr;
+            d12::ShaderResourceView* face = nullptr;
             if (playMode && glass.face > 0.003f) { std::error_code ec; if (fs::exists(fs::u8path(ScreensDir() + "/visor_face.png"), ec)) face = PictureAt("visor_face.png", 0, false); }
             ctx->PSSetShaderResources(54, 1, &face); ctx->PSSetSamplers(3, 1, sampClamp.GetAddressOf());
         }
         ctx->Draw(3, 0);
-        { ID3D11ShaderResourceView* nx = nullptr; ctx->PSSetShaderResources(16, 1, &nx); ctx->PSSetShaderResources(54, 1, &nx); }
-        ctx->PSSetShaderResources(0, 4, none); { ID3D11ShaderResourceView* nm = nullptr; ctx->PSSetShaderResources(11, 1, &nm); }
+        { d12::ShaderResourceView* nx = nullptr; ctx->PSSetShaderResources(16, 1, &nx); ctx->PSSetShaderResources(54, 1, &nx); }
+        ctx->PSSetShaderResources(0, 4, none); { d12::ShaderResourceView* nm = nullptr; ctx->PSSetShaderResources(11, 1, &nm); }
         if (aaOn) {   // smooth the jagged edges
             ctx->OMSetRenderTargets(1, &finalTgt, nullptr); ctx->PSSetShader(psAA.Get(), nullptr, 0); ctx->PSSetSamplers(3, 1, sampClamp.GetAddressOf());
             ctx->PSSetShaderResources(35, 1, aaSrc.srv.GetAddressOf()); ctx->PSSetShaderResources(2, 1, depthSRV.GetAddressOf()); ctx->Draw(3, 0);
-            ID3D11ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(35, 1, &n1); ctx->PSSetShaderResources(2, 1, &n1);
+            d12::ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(35, 1, &n1); ctx->PSSetShaderResources(2, 1, &n1);
             ctx->PSSetShader(psPost.Get(), nullptr, 0);
         }
         if (blurOn) {   // the menu blur: shrink four times, grow back (each step softer), then over the window - the helmet's parts stay sharp
@@ -5502,18 +5499,18 @@ struct App {
                 const BloomLevel& srcL = i == 0 ? blurSrc : blurLv[i - 1];
                 ChunkCB cc{ { 1.f / srcL.w, 1.f / srcL.h, 1, 0 } }; ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);
                 ctx->OMSetRenderTargets(1, blurLv[i].rtv.GetAddressOf(), nullptr); D3D11_VIEWPORT bv{ 0, 0, (float)blurLv[i].w, (float)blurLv[i].h, 0, 1 }; ctx->RSSetViewports(1, &bv);
-                ID3D11ShaderResourceView* sv = srcL.srv.Get(); ctx->PSSetShaderResources(0, 1, &sv); ctx->Draw(3, 0); ctx->PSSetShaderResources(0, 1, none);
+                d12::ShaderResourceView* sv = srcL.srv.Get(); ctx->PSSetShaderResources(0, 1, &sv); ctx->Draw(3, 0); ctx->PSSetShaderResources(0, 1, none);
             }
             ctx->PSSetShader(psBloomUp.Get(), nullptr, 0);
             for (int i = 3; i > 0; i--) {
                 ChunkCB cc{ { 1.f / blurLv[i].w, 1.f / blurLv[i].h, 1, 0 } }; ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);
                 ctx->OMSetRenderTargets(1, blurLv[i - 1].rtv.GetAddressOf(), nullptr); D3D11_VIEWPORT bv{ 0, 0, (float)blurLv[i - 1].w, (float)blurLv[i - 1].h, 0, 1 }; ctx->RSSetViewports(1, &bv);
-                ID3D11ShaderResourceView* sv = blurLv[i].srv.Get(); ctx->PSSetShaderResources(0, 1, &sv); ctx->Draw(3, 0); ctx->PSSetShaderResources(0, 1, none);
+                d12::ShaderResourceView* sv = blurLv[i].srv.Get(); ctx->PSSetShaderResources(0, 1, &sv); ctx->Draw(3, 0); ctx->PSSetShaderResources(0, 1, none);
             }
             D3D11_VIEWPORT fv{ 0, 0, (float)rw, (float)rh, 0, 1 }; ctx->RSSetViewports(1, &fv);
             ChunkCB cc{ { std::clamp(blurAmt, 0.f, 1.f), 0, 0, 0 } }; ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);
             ctx->OMSetRenderTargets(1, &out, nullptr); ctx->PSSetShader(psBlurComp.Get(), nullptr, 0);
-            { ID3D11ShaderResourceView* bs[3] = { blurSrc.srv.Get(), blurLv[0].srv.Get(), depthSRV.Get() }; ctx->PSSetShaderResources(0, 3, bs); }
+            { d12::ShaderResourceView* bs[3] = { blurSrc.srv.Get(), blurLv[0].srv.Get(), depthSRV.Get() }; ctx->PSSetShaderResources(0, 3, bs); }
             ctx->Draw(3, 0);
             ctx->PSSetShaderResources(0, 4, none);
         }
@@ -5539,12 +5536,12 @@ struct App {
                 ChunkCB cc{ { jitX, jitY, primeOk ? 0.f : 1.f, std::clamp(settings.upSharp + lowK * 0.6f, 0.f, 1.f) }, { (float)rw, (float)rh, (float)sceneW, (float)sceneH },
                             { playMode ? 0.0021f : 0.f, sceneW < rw ? 14.f + lowK * 30.f : 9.f, primePrevZOk && primeOk ? 1.f : 0.f, 0 } };
                 ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &cc, 0, 0);
-                { ID3D11Buffer* cbs[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->PSSetConstantBuffers(0, 2, cbs); }
+                { d12::Buffer* cbs[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->PSSetConstantBuffers(0, 2, cbs); }
                 ctx->OMSetRenderTargets(1, primeHist[nx].rtv.GetAddressOf(), nullptr); ctx->PSSetShader(psPrimeScale.Get(), nullptr, 0);
-                { ID3D11ShaderResourceView* d1 = depthSRV.Get(); ctx->PSSetShaderResources(2, 1, &d1); ctx->PSSetShaderResources(40, 1, upSrc.srv.GetAddressOf()); ctx->PSSetShaderResources(42, 1, primeHist[primeCur].srv.GetAddressOf());
-                  ID3D11ShaderResourceView* pz = primePrevZOk ? primePrevZSRV.Get() : nullptr; ctx->PSSetShaderResources(52, 1, &pz); }
+                { d12::ShaderResourceView* d1 = depthSRV.Get(); ctx->PSSetShaderResources(2, 1, &d1); ctx->PSSetShaderResources(40, 1, upSrc.srv.GetAddressOf()); ctx->PSSetShaderResources(42, 1, primeHist[primeCur].srv.GetAddressOf());
+                  d12::ShaderResourceView* pz = primePrevZOk ? primePrevZSRV.Get() : nullptr; ctx->PSSetShaderResources(52, 1, &pz); }
                 ctx->Draw(3, 0);
-                { ID3D11ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(2, 1, &n1); ctx->PSSetShaderResources(40, 1, &n1); ctx->PSSetShaderResources(42, 1, &n1); ctx->PSSetShaderResources(52, 1, &n1); }
+                { d12::ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(2, 1, &n1); ctx->PSSetShaderResources(40, 1, &n1); ctx->PSSetShaderResources(42, 1, &n1); ctx->PSSetShaderResources(52, 1, &n1); }
                 {   // this frame's depth, for the next frame (where it doesn't match: something moved there)
                     D3D11_TEXTURE2D_DESC dd; depthTex->GetDesc(&dd);
                     D3D11_TEXTURE2D_DESC pd{}; if (primePrevZ) primePrevZ->GetDesc(&pd);
@@ -5557,12 +5554,12 @@ struct App {
                 }
                 ctx->OMSetRenderTargets(1, &out, nullptr); ctx->PSSetShader(psPrimeSharpen.Get(), nullptr, 0);
                 ctx->PSSetShaderResources(42, 1, primeHist[nx].srv.GetAddressOf()); ctx->Draw(3, 0);
-                { ID3D11ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(42, 1, &n1); }
+                { d12::ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(42, 1, &n1); }
                 primeCur = nx; primeOk = true; primePrevCam = camPos; primeFrame = frameNo; primeLastOut = outScreen;
             } else {
                 ctx->PSSetShader(psUpscale.Get(), nullptr, 0);
                 ctx->PSSetShaderResources(40, 1, upSrc.srv.GetAddressOf()); ctx->Draw(3, 0);
-                ID3D11ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(40, 1, &n1);
+                d12::ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(40, 1, &n1);
             }
             ctx->RSSetState(rsCull.Get());
         }
@@ -6846,18 +6843,18 @@ struct App {
     // ================================================================== Player editor, part 1: the HUD (planes with 2D elements, 3D helmet parts, Prime sway)
     HudLayout hud; HudSway hudSway, previewSway; HudValues hudVals;
     std::map<std::string, bool> hudShown; std::map<std::string, double> hudFlashAt;   // Play mode: event cards showing / hiding / flashing elements by name
-    struct HudTarget { ComPtr<ID3D11Texture2D> tex; ComPtr<ID3D11RenderTargetView> rtv; ComPtr<ID3D11ShaderResourceView> srv; int w = 0, h = 0; };
+    struct HudTarget { ComPtr<d12::Texture2D> tex; ComPtr<d12::RenderTargetView> rtv; ComPtr<d12::ShaderResourceView> srv; int w = 0, h = 0; };
     HudTarget glowMask, glowA, glowB;   // a HUD part's glow behind it (a quarter of the screen's size)
     std::vector<HudTarget> hudTargets; std::vector<std::unique_ptr<ImDrawList>> hudLists; bool hudListsReady = false;
-    ComPtr<ID3D11PixelShader> psFlatPrev, psGlowBlur, psGlowComp; ComPtr<ID3D11Buffer> cbGlow;   // a HUD part's glow behind it
-    ComPtr<ID3D11VertexShader> vsHud, vsBlit; ComPtr<ID3D11PixelShader> psHud, psBlit; ComPtr<ID3D11InputLayout> layoutHud; ComPtr<ID3D11Buffer> vbHud; ComPtr<ID3D11BlendState> bsPremul;
-    std::map<std::string, ComPtr<ID3D11ShaderResourceView>> hudImages;
+    ComPtr<d12::PixelShader> psFlatPrev, psGlowBlur, psGlowComp; ComPtr<d12::Buffer> cbGlow;   // a HUD part's glow behind it
+    ComPtr<d12::VertexShader> vsHud, vsBlit; ComPtr<d12::PixelShader> psHud, psBlit; ComPtr<d12::InputLayout> layoutHud; ComPtr<d12::Buffer> vbHud; ComPtr<d12::BlendState> bsPremul;
+    std::map<std::string, ComPtr<d12::ShaderResourceView>> hudImages;
     struct HVtx { float p[3], uv[2]; };
     static constexpr int HUD_GX = 40, HUD_GY = 20, HUD_VERTS = HUD_GX * HUD_GY * 6;
     bool playerEdOpen = false, focusPlayerEd = false; int hudSel = 0, hudPlane = 0, hudEl = -1, hudPart = 0;   // hudSel: 0 sway, 1 plane, 2 element, 3 part
     float hudOrbYaw = 2.45f, hudOrbPitch = 0.38f, hudOrbDist = 3.4f; XMMATRIX hudOrbVP = XMMatrixIdentity(); V3 hudOrbEye{ 0, 0, 0 };
     ImVec2 hudViewWant{ 0, 0 }, hudPrevWant{ 0, 0 };
-    HudTarget hudView, hudPrev; ComPtr<ID3D11DepthStencilView> hudViewDSV, hudPrevDSV; int hudViewDW = 0, hudViewDH = 0, hudPrevDW = 0, hudPrevDH = 0;
+    HudTarget hudView, hudPrev; ComPtr<d12::DepthStencilView> hudViewDSV, hudPrevDSV; int hudViewDW = 0, hudViewDH = 0, hudPrevDW = 0, hudPrevDH = 0;
     int hudDrag = 0; ImVec2 hudDragMouse; HudElement hudDragFrom; double hudWiggle = -1; double prevEdYaw = 0, prevEdPitch = 0;
     double prevPlayYaw = 0, prevPlayPitch = 0, prevVelY = 0; bool prevOnGround = true;
 
@@ -6894,13 +6891,13 @@ struct App {
         h = std::clamp((int)std::lround(w * (double)p.height / std::max(0.01f, p.width)), 32, w);
     }
     float hudPx = 1;   // lines and gaps drawn on a HUD plane: their width at the plane's size (1 at 1024 wide)
-    ID3D11ShaderResourceView* HudImage(const std::string& name) {
+    d12::ShaderResourceView* HudImage(const std::string& name) {
         if (name.empty()) return nullptr;
         auto it = hudImages.find(name); if (it != hudImages.end()) return it->second.Get();
-        ComPtr<ID3D11ShaderResourceView>& s = hudImages[name]; int w, h; std::vector<uint8_t> px;
+        ComPtr<d12::ShaderResourceView>& s = hudImages[name]; int w, h; std::vector<uint8_t> px;
         if (!readImage(projectDir + "/hud/" + name, w, h, px)) return nullptr;
         D3D11_TEXTURE2D_DESC d{}; d.Width = (UINT)w; d.Height = (UINT)h; d.MipLevels = 1; d.ArraySize = 1; d.Format = DXGI_FORMAT_R8G8B8A8_UNORM; d.SampleDesc.Count = 1; d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-        D3D11_SUBRESOURCE_DATA sd{ px.data(), (UINT)w * 4, 0 }; ComPtr<ID3D11Texture2D> t; HR(dev->CreateTexture2D(&d, &sd, &t)); HR(dev->CreateShaderResourceView(t.Get(), nullptr, &s));
+        D3D11_SUBRESOURCE_DATA sd{ px.data(), (UINT)w * 4, 0 }; ComPtr<d12::Texture2D> t; HR(dev->CreateTexture2D(&d, &sd, &t)); HR(dev->CreateShaderResourceView(t.Get(), nullptr, &s));
         return s.Get();
     }
     std::vector<std::string> HudImageFiles() const {
@@ -7000,7 +6997,7 @@ struct App {
             dl->AddText(font, size, ImVec2(x, (p0.y + p1.y - ts.y) * 0.5f), col(1), t.c_str());
             break;
         }
-        case HudKind::Image: if (ID3D11ShaderResourceView* s = HudImage(e.image)) dl->AddImage((ImTextureID)(intptr_t)s, p0, p1, ImVec2(0, 0), ImVec2(1, 1), col(1)); else dl->AddRect(p0, p1, col(0.5f)); break;
+        case HudKind::Image: if (d12::ShaderResourceView* s = HudImage(e.image)) dl->AddImage((ImTextureID)(intptr_t)s, p0, p1, ImVec2(0, 0), ImVec2(1, 1), col(1)); else dl->AddRect(p0, p1, col(0.5f)); break;
         case HudKind::Minimap: DrawMinimapElement(dl, e, p0, p1, a); break;
         case HudKind::Radar: DrawRadarElement(dl, e, p0, p1, a); break;
         case HudKind::Tanks: {   // a box per energy tank you have, the full ones lit; the bottom row fills first (like Metroid Prime)
@@ -7057,7 +7054,7 @@ struct App {
         }
         hudListsReady = true;
     }
-    void MakeTarget(HudTarget& t, int w, int h, ComPtr<ID3D11DepthStencilView>* dsvOut = nullptr, bool mips = false) {
+    void MakeTarget(HudTarget& t, int w, int h, ComPtr<d12::DepthStencilView>* dsvOut = nullptr, bool mips = false) {
         if (t.w == w && t.h == h && t.rtv) return;
         if (t.srv) retired.push_back(t.srv);
         D3D11_TEXTURE2D_DESC d{}; d.Width = (UINT)w; d.Height = (UINT)h; d.MipLevels = mips ? 0 : 1; d.ArraySize = 1; d.Format = DXGI_FORMAT_R8G8B8A8_UNORM; d.SampleDesc.Count = 1; d.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
@@ -7067,12 +7064,12 @@ struct App {
         HR(dev->CreateRenderTargetView(t.tex.Get(), &rd, &t.rtv)); HR(dev->CreateShaderResourceView(t.tex.Get(), nullptr, &t.srv));
         d.MipLevels = 1; d.MiscFlags = 0;
         t.w = w; t.h = h;
-        if (dsvOut) { d.Format = DXGI_FORMAT_D32_FLOAT; d.BindFlags = D3D11_BIND_DEPTH_STENCIL; ComPtr<ID3D11Texture2D> dt; HR(dev->CreateTexture2D(&d, nullptr, &dt)); dsvOut->Reset(); HR(dev->CreateDepthStencilView(dt.Get(), nullptr, dsvOut->GetAddressOf())); }
+        if (dsvOut) { d.Format = DXGI_FORMAT_D32_FLOAT; d.BindFlags = D3D11_BIND_DEPTH_STENCIL; ComPtr<d12::Texture2D> dt; HR(dev->CreateTexture2D(&d, nullptr, &dt)); dsvOut->Reset(); HR(dev->CreateDepthStencilView(dt.Get(), nullptr, dsvOut->GetAddressOf())); }
     }
     // the draw lists -> each plane's picture (premultiplied: see-through where nothing is drawn)
     void RenderHudPlanes() {
         if (!hudListsReady) return;
-        for (ImTextureData* t : ImGui::GetPlatformIO().Textures) if (t->Status == ImTextureStatus_WantCreate || t->Status == ImTextureStatus_WantUpdates) ImGui_ImplDX11_UpdateTexture(t);   // new letter sizes, before they are used
+        for (ImTextureData* t : ImGui::GetPlatformIO().Textures) if (t->Status == ImTextureStatus_WantCreate || t->Status == ImTextureStatus_WantUpdates) ImGui_ImplD12_UpdateTexture(t);   // new letter sizes, before they are used
         hudTargets.resize(hud.planes.size());
         for (size_t i = 0; i < hud.planes.size() && i < hudLists.size(); i++) {
             int W, H; PlaneRes(hud.planes[i], W, H); MakeTarget(hudTargets[i], W, H, nullptr, true);
@@ -7082,15 +7079,15 @@ struct App {
             if (dl->CmdBuffer.Size == 0 || dl->VtxBuffer.Size == 0) continue;
             ImDrawData dd; dd.Valid = true; dd.CmdLists.push_back(dl); dd.TotalVtxCount = dl->VtxBuffer.Size; dd.TotalIdxCount = dl->IdxBuffer.Size;
             dd.DisplayPos = ImVec2(0, 0); dd.DisplaySize = ImVec2((float)W, (float)H); dd.FramebufferScale = ImVec2(1, 1); dd.Textures = nullptr;
-            ImGui_ImplDX11_RenderDrawData(&dd);
+            ImGui_ImplD12_RenderDrawData(&dd);
         }
         ctx->OMSetRenderTargets(0, nullptr, nullptr);
         for (size_t i = 0; i < hud.planes.size() && i < hudTargets.size(); i++) if (hudTargets[i].srv) ctx->GenerateMips(hudTargets[i].srv.Get());   // for the glow
     }
     // the parts and planes, seen through vp (camera space in); sway on top
     // the HUD's parts and planes, and the arm cannon on its own layer (behind the HUD or in front of it, never cutting into it)
-    void DrawHudScene(const XMMATRIX& vp, const HudSway& sw, bool editor, ID3D11DepthStencilView* ds, bool litParts = false) {   // litParts: draw the parts in colour here (the map screen: there is no world picture with them in it)
-        ID3D11Buffer* cbs[3] = { cbFrame.Get(), cbChunk.Get(), cbPreview.Get() }; ctx->VSSetConstantBuffers(0, 3, cbs); ctx->PSSetConstantBuffers(0, 3, cbs);
+    void DrawHudScene(const XMMATRIX& vp, const HudSway& sw, bool editor, d12::DepthStencilView* ds, bool litParts = false) {   // litParts: draw the parts in colour here (the map screen: there is no world picture with them in it)
+        d12::Buffer* cbs[3] = { cbFrame.Get(), cbChunk.Get(), cbPreview.Get() }; ctx->VSSetConstantBuffers(0, 3, cbs); ctx->PSSetConstantBuffers(0, 3, cbs);
         PreviewCB pc{}; XMStoreFloat4x4((XMFLOAT4X4*)pc.vp, vp); pc.light[0] = -0.35f; pc.light[1] = 0.75f; pc.light[2] = -0.55f; pc.light[3] = 1;   // (w: emission maps glow)
         D3D11_VIEWPORT vpFull; UINT nvp = 1; ctx->RSGetViewports(&nvp, &vpFull);
         std::vector<CamPart> parts = CameraParts(sw, editor ? previewPose : weapPose);
@@ -7120,7 +7117,7 @@ struct App {
                 }
             }
         };
-        auto drawPlane = [&](const HudPlane& p, ID3D11ShaderResourceView* srv) {
+        auto drawPlane = [&](const HudPlane& p, d12::ShaderResourceView* srv) {
             D3D11_MAPPED_SUBRESOURCE m; if (FAILED(ctx->Map(vbHud.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) return;
             HVtx* v = (HVtx*)m.pData; int n = 0;
             auto put = [&](int gx, int gy) { float u = (float)gx / HUD_GX, w = (float)gy / HUD_GY; V3 q = sw.apply(planePoint(p, u, w), p.sway); v[n++] = { { (float)q.x, (float)q.y, (float)q.z }, { u, w } }; };
@@ -7136,7 +7133,7 @@ struct App {
         auto drawGlow = [&] {   // parts that glow behind them: their outlines in one colour (a quarter as big), blurred, laid around them (not over them)
             bool any = false; float spread = 1; for (const CamPart& c : parts) if (c.glow > 0) { any = true; spread = std::max(spread, c.glowSize); }
             if (!any || !psGlowBlur) return;
-            ID3D11RenderTargetView* keepR = nullptr; ID3D11DepthStencilView* keepD = nullptr; ctx->OMGetRenderTargets(1, &keepR, &keepD);
+            d12::RenderTargetView* keepR = nullptr; d12::DepthStencilView* keepD = nullptr; ctx->OMGetRenderTargets(1, &keepR, &keepD);
             int gw = std::max(16, (int)vpFull.Width / 4), gh = std::max(16, (int)vpFull.Height / 4);
             MakeTarget(glowMask, gw, gh); MakeTarget(glowA, gw, gh); MakeTarget(glowB, gw, gh);
             D3D11_VIEWPORT gv{ 0, 0, (float)gw, (float)gh, 0, 1 }; ctx->RSSetViewports(1, &gv);
@@ -7151,7 +7148,7 @@ struct App {
             // blurred: across, down, and again (wider for a bigger glow)
             ctx->IASetInputLayout(nullptr); ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); ctx->VSSetShader(vsBlit.Get(), nullptr, 0); ctx->PSSetShader(psGlowBlur.Get(), nullptr, 0);
             ctx->PSSetSamplers(3, 1, sampClamp.GetAddressOf()); ctx->PSSetConstantBuffers(9, 1, cbGlow.GetAddressOf()); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
-            ID3D11ShaderResourceView* none = nullptr;
+            d12::ShaderResourceView* none = nullptr;
             auto pass = [&](HudTarget& from, HudTarget& to, float dx, float dy) {
                 float d[4] = { dx * spread / gw, dy * spread / gh, 0, 0 }; ctx->UpdateSubresource(cbGlow.Get(), 0, nullptr, d, 0, 0);
                 ctx->PSSetShaderResources(12, 1, &none); ctx->OMSetRenderTargets(1, to.rtv.GetAddressOf(), nullptr);
@@ -7162,11 +7159,11 @@ struct App {
             ctx->PSSetShaderResources(12, 1, &none); ctx->OMSetRenderTargets(1, &keepR, keepD); ctx->RSSetViewports(1, &vpFull);
             float d[4] = { 0, 0, 2.2f, 0 }; ctx->UpdateSubresource(cbGlow.Get(), 0, nullptr, d, 0, 0);
             ctx->PSSetShader(psGlowComp.Get(), nullptr, 0); ctx->OMSetBlendState(bsAdd.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOff.Get(), 0);
-            ID3D11ShaderResourceView* two[2] = { glowB.srv.Get(), glowMask.srv.Get() }; ctx->PSSetShaderResources(12, 2, two); ctx->Draw(3, 0);
-            ID3D11ShaderResourceView* none2[2] = {}; ctx->PSSetShaderResources(12, 2, none2);
+            d12::ShaderResourceView* two[2] = { glowB.srv.Get(), glowMask.srv.Get() }; ctx->PSSetShaderResources(12, 2, two); ctx->Draw(3, 0);
+            d12::ShaderResourceView* none2[2] = {}; ctx->PSSetShaderResources(12, 2, none2);
             if (keepR) keepR->Release(); if (keepD) keepD->Release();
             ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0);
-            ID3D11Buffer* cbs2[3] = { cbFrame.Get(), cbChunk.Get(), cbPreview.Get() }; ctx->VSSetConstantBuffers(0, 3, cbs2); ctx->PSSetConstantBuffers(0, 3, cbs2);
+            d12::Buffer* cbs2[3] = { cbFrame.Get(), cbChunk.Get(), cbPreview.Get() }; ctx->VSSetConstantBuffers(0, 3, cbs2); ctx->PSSetConstantBuffers(0, 3, cbs2);
         };
         auto drawPlanes = [&] {   // the farthest first; they do not hide each other, but parts in front of them do
             std::vector<int> order; for (int i = 0; i < (int)hud.planes.size() && i < (int)hudTargets.size(); i++) if (hud.planes[i].visible && hudTargets[i].srv) order.push_back(i);
@@ -7180,7 +7177,7 @@ struct App {
                 ctx->OMSetDepthStencilState(dsOff.Get(), 0);
                 for (size_t i : order) drawPlane(MenuPlaneNow(i), menuTargets[i].srv.Get());
             }
-            ID3D11ShaderResourceView* none = nullptr; ctx->PSSetShaderResources(0, 1, &none);
+            d12::ShaderResourceView* none = nullptr; ctx->PSSetShaderResources(0, 1, &none);
         };
         bool front = weapons.cannonInFront;
         if (editor || litParts) {   // colour: the lower layer first, then a fresh depth for the upper one
@@ -7192,12 +7189,12 @@ struct App {
             if (front) { D3D11_VIEWPORT z = vpFull; z.MinDepth = z.MaxDepth = 0; ctx->RSSetViewports(1, &z); drawParts(true); ctx->RSSetViewports(1, &vpFull); }   // the cannon hides the planes
             drawGlow(); drawPlanes();
         }
-        ID3D11ShaderResourceView* none[10] = {}; ctx->PSSetShaderResources(0, 10, none);
+        d12::ShaderResourceView* none[10] = {}; ctx->PSSetShaderResources(0, 10, none);
         ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());
     }
     // the parts in the HDR picture: positions turned from camera space into the world (so the world's light falls on them),
     // seen with the HUD's own view angle, squeezed into the front 0.2 % of the depth so the world never cuts into them
-    void DrawHudPartsLit(const FrameCB& fc, V3 f, V3 r, V3 u, ID3D11ShaderResourceView* const* srvs, ID3D11SamplerState* const* samps) {
+    void DrawHudPartsLit(const FrameCB& fc, V3 f, V3 r, V3 u, d12::ShaderResourceView* const* srvs, d12::SamplerState* const* samps) {
         FrameCB hc = fc; XMStoreFloat4x4(&hc.viewProj, view * HudProj((float)rw / std::max(1, rh)) * jitM);   // (PrimeScaler's shift too)
         hc.clipPlane[0] = hc.clipPlane[1] = hc.clipPlane[2] = 0; hc.clipPlane[3] = 1;
         ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &hc, 0, 0);
@@ -7206,7 +7203,7 @@ struct App {
         ctx->RSSetState(rsNoCull.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
         ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0);
         ctx->PSSetShaderResources(0, 5, srvs); ctx->PSSetSamplers(0, 3, samps);
-        ID3D11Buffer* cbs[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->VSSetConstantBuffers(0, 2, cbs); ctx->PSSetConstantBuffers(0, 2, cbs);
+        d12::Buffer* cbs[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->VSSetConstantBuffers(0, 2, cbs); ctx->PSSetConstantBuffers(0, 2, cbs);
         auto W = [&](V3 c) { return r * c.x + u * c.y + f * c.z; };   // camera space -> the world's directions
         {   // the world's lights always fall on the helmet's parts (the nearest ones, glowing blocks around you too), and each HUD plane's own light
             std::vector<LightGpu> hl; for (int k = 0; k < frameLightCount; k++) hl.push_back(frameLights[k]);
@@ -7252,16 +7249,16 @@ struct App {
         ctx->OMSetRenderTargets(0, nullptr, dsv.Get()); ctx->PSSetShader(nullptr, nullptr, 0); drawParts(0);
         ctx->OMSetRenderTargets(1, reflRTV.GetAddressOf(), dsv.Get()); ctx->OMSetDepthStencilState(dsTestOnly.Get(), 0); ctx->PSSetShader(psOpaque.Get(), nullptr, 0); drawParts(1);
         ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->PSSetShader(psCutout.Get(), nullptr, 0); drawParts(2);
-        ID3D11ShaderResourceView* none = nullptr; ctx->PSSetShaderResources(9, 1, &none);
+        d12::ShaderResourceView* none = nullptr; ctx->PSSetShaderResources(9, 1, &none);
         BindLightBuffers(false); SetClusterMode(true, 0, std::min(frameLightCount, 32));   // the world's own lights again
         D3D11_VIEWPORT full{ 0, 0, (float)rw, (float)rh, 0, 1 }; ctx->RSSetViewports(1, &full);
         ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &fc, 0, 0); ctx->RSSetState(rsCull.Get());
     }
     XMMATRIX HudProj(float aspect) const { return XMMatrixPerspectiveFovLH(XMConvertToRadians(hud.fov), aspect, 0.01f, 60.f); }   // its own view angle: the HUD keeps its place whatever the player's field of view
     // Play mode: the HUD over the finished picture
-    void DrawHudInGame(ID3D11RenderTargetView* out) {
+    void DrawHudInGame(d12::RenderTargetView* out) {
         if (!menuShown && ((hud.empty() && weapons.empty()) || !hudListsReady)) return;   // (the pause menu is drawn here too)
-        ID3D11DepthStencilView* hd = DisplayDSV();
+        d12::DepthStencilView* hd = DisplayDSV();
         ctx->OMSetRenderTargets(1, &out, hd); ctx->ClearDepthStencilView(hd, D3D11_CLEAR_DEPTH, 1.f, 0);
         D3D11_VIEWPORT v{ 0, 0, (float)rw, (float)rh, 0, 1 }; ctx->RSSetViewports(1, &v);
         DrawHudScene(HudProj((float)rw / rh), hudSway, false, hd);
@@ -7283,7 +7280,7 @@ struct App {
             if (sceneSRV) {   // the world behind it
                 ctx->IASetInputLayout(nullptr); ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); ctx->RSSetState(rsNoCull.Get()); ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
                 ctx->VSSetShader(vsBlit.Get(), nullptr, 0); ctx->PSSetShader(psBlit.Get(), nullptr, 0); ctx->PSSetShaderResources(0, 1, sceneSRV.GetAddressOf()); ctx->PSSetSamplers(3, 1, sampClamp.GetAddressOf());
-                ctx->Draw(3, 0); ID3D11ShaderResourceView* none = nullptr; ctx->PSSetShaderResources(0, 1, &none);
+                ctx->Draw(3, 0); d12::ShaderResourceView* none = nullptr; ctx->PSSetShaderResources(0, 1, &none);
             }
             DrawHudScene(HudProj((float)w / h), previewSway, true, hudPrevDSV.Get());
         }
@@ -7814,7 +7811,7 @@ struct App {
     // ================================================================== the item pop-up ("Item get" screen; banners for small things)
     struct ItemGetNow { std::string name, title, text, model; } itemGetNow;
     struct ItemBanner { std::string title, text; double t = -1; } itemBanner;
-    HudTarget itemModelView; ComPtr<ID3D11DepthStencilView> itemModelDSV; int imDW = 0, imDH = 0, imWantW = 0, imWantH = 0; std::string imModel;
+    HudTarget itemModelView; ComPtr<d12::DepthStencilView> itemModelDSV; int imDW = 0, imDH = 0, imWantW = 0, imWantH = 0; std::string imModel;
     float musicDuckNow = 1; bool itemGetKeyPrev = true;
     static constexpr int TAG_FANFARE = 38; std::set<uint32_t> poppedIds;   // the fanfare (one at a time; stops when the pop-up closes); pickups that already popped up this play
     int PopupHintOf(const std::string& n, int pickupType = -1) const {
@@ -8032,7 +8029,7 @@ struct App {
 
     int weapSel = 0, weapPoint = 1;   // the beam picked in the editor; the point being edited (0 pivot, 1 muzzle, 2 emitter)
     float weapYaw = 2.3f, weapPitch = 0.35f, weapDist = 2.2f; XMMATRIX weapVP = XMMatrixIdentity(); V3 weapEye{ 0, 0, 0 }; ImVec2 weapWant{ 0, 0 };
-    HudTarget weapView; ComPtr<ID3D11DepthStencilView> weapDSV; int weapDW = 0, weapDH = 0; int weapDrag = -1; bool playerTabWeapons = false;
+    HudTarget weapView; ComPtr<d12::DepthStencilView> weapDSV; int weapDW = 0, weapDH = 0; int weapDrag = -1; bool playerTabWeapons = false;
     std::string WeaponsPath() const { return projectDir + "/weapons.txt"; }
     bool OwnsBeam(const Beam& b) const { return b.startsOwned || inv.keys.count(b.name) > 0; }
     const Beam* CurrentBeam() {
@@ -8345,7 +8342,7 @@ struct App {
         D3D11_VIEWPORT v{ 0, 0, (float)rw, (float)rh, 0, 1 }; ctx->RSSetViewports(1, &v);
         ctx->OMSetDepthStencilState(dsTestOnly.Get(), 0); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->RSSetState(rsNoCull.Get());
         ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0); ctx->PSSetShader(psFlat.Get(), nullptr, 0);
-        ID3D11Buffer* cbs[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->VSSetConstantBuffers(0, 2, cbs); ctx->PSSetConstantBuffers(7, 1, cbFlat.GetAddressOf());
+        d12::Buffer* cbs[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->VSSetConstantBuffers(0, 2, cbs); ctx->PSSetConstantBuffers(7, 1, cbFlat.GetAddressOf());
         for (const ScanSeen& sc : scanCands) {
             const WorldObject* o = nullptr; for (const WorldObject& q : objects) if (q.id == sc.id) { o = &q; break; }
             if (!o) continue;
@@ -8400,7 +8397,7 @@ struct App {
     bool menuShown = false, menuPreview = false, menuWasOpen = false;
     std::map<int, float> menuScroll;   // a list's / text's scroll (pane * 256 + item)
     std::map<int, int> menuScrollWho;  // which scan entry a text's scroll belongs to (a new one starts at the top)
-    HudTarget scanModelView; ComPtr<ID3D11DepthStencilView> scanModelDSV; int smDW = 0, smDH = 0, smWantW = 0, smWantH = 0; std::string smModel;
+    HudTarget scanModelView; ComPtr<d12::DepthStencilView> scanModelDSV; int smDW = 0, smDH = 0, smWantW = 0, smWantH = 0; std::string smModel;
     const ScanLog& ShownScans() {   // in the editor's preview: every scan entry in the world, as if all were scanned
         if (playMode) return scanLog;
         static ScanLog sample; sample.clear();
@@ -8573,7 +8570,7 @@ struct App {
                 if (multi) dl->AddText(font, it.textSize, a, C(c, al), s.c_str(), nullptr, b.x - a.x); else text(s, it.textSize, a, b, it.align, C(c, al), false);
                 break; }
             case MenuKind::Image:
-                if (ID3D11ShaderResourceView* im = HudImage(it.image)) dl->AddImage((ImTextureID)(intptr_t)im, a, b, ImVec2(0, 0), ImVec2(1, 1), C(0xFFFFFF, al));
+                if (d12::ShaderResourceView* im = HudImage(it.image)) dl->AddImage((ImTextureID)(intptr_t)im, a, b, ImVec2(0, 0), ImVec2(1, 1), C(0xFFFFFF, al));
                 else dl->AddRect(a, b, C(c, 0.4f * al), 8, ImDrawFlags_None, 2.f);
                 break;
             case MenuKind::Button: {
@@ -9184,7 +9181,7 @@ struct App {
         if (smModel.empty() || !menuShown) return;
         RenderModelSpin(scanModelView, scanModelDSV, smDW, smDH, smWantW, smWantH, smModel, 0, 0, 0, 0);
     }
-    void RenderModelSpin(HudTarget& tgt, ComPtr<ID3D11DepthStencilView>& dsvT, int& dw, int& dh, int w, int h, const std::string& model, float br, float bg, float bb2, float ba) {   // a model alone, turning
+    void RenderModelSpin(HudTarget& tgt, ComPtr<d12::DepthStencilView>& dsvT, int& dw, int& dh, int w, int h, const std::string& model, float br, float bg, float bb2, float ba) {   // a model alone, turning
         FrameRef f = ModelNamed(model); if (!f || w < 8 || h < 8) return;
         if (w != dw || h != dh) { MakeTarget(tgt, w, h, &dsvT); dw = w; dh = h; }
         const float clear[4] = { br, bg, bb2, ba };
@@ -9205,7 +9202,7 @@ struct App {
         ctx->VSSetShader(vsPreview.Get(), nullptr, 0); ctx->PSSetShader(psPreview.Get(), nullptr, 0);
         ctx->PSSetShaderResources(0, 1, texArray.GetAddressOf()); ctx->PSSetShaderResources(14, 1, emitArray.GetAddressOf()); ctx->PSSetSamplers(0, 1, sampBlocks.GetAddressOf());
         DrawObject(vo, 0, eye); DrawObject(vo, 1, eye);
-        ID3D11ShaderResourceView* none[10] = {}; ctx->PSSetShaderResources(0, 10, none); ctx->RSSetState(rsCull.Get());
+        d12::ShaderResourceView* none[10] = {}; ctx->PSSetShaderResources(0, 10, none); ctx->RSSetState(rsCull.Get());
         ctx->OMSetRenderTargets(0, nullptr, nullptr);
     }
     void RenderMenuPanes() {
@@ -9219,7 +9216,7 @@ struct App {
             if (dl->CmdBuffer.Size && dl->VtxBuffer.Size) {
                 ImDrawData dd; dd.Valid = true; dd.CmdLists.push_back(dl); dd.TotalVtxCount = dl->VtxBuffer.Size; dd.TotalIdxCount = dl->IdxBuffer.Size;
                 dd.DisplayPos = ImVec2(0, 0); dd.DisplaySize = ImVec2((float)MENU_PANE_W, (float)H); dd.FramebufferScale = ImVec2(1, 1); dd.Textures = nullptr;
-                ImGui_ImplDX11_RenderDrawData(&dd);
+                ImGui_ImplD12_RenderDrawData(&dd);
             }
             ctx->OMSetRenderTargets(0, nullptr, nullptr); ctx->GenerateMips(menuTargets[i].srv.Get());
         }
@@ -9375,9 +9372,9 @@ struct App {
     mc::Screen* CurScreen() { return curScreen >= 0 && curScreen < (int)screens.screens.size() ? &screens.screens[curScreen] : nullptr; }
 
     // ---- pictures, GIFs and videos (in the game's "screens" folder)
-    struct PicTex { media::Frames f; std::vector<ComPtr<ID3D11ShaderResourceView>> tex; bool failed = false, told = false; double failedAt = 0; };   // told: its error shown once (it is looked for again now and then)
+    struct PicTex { media::Frames f; std::vector<ComPtr<d12::ShaderResourceView>> tex; bool failed = false, told = false; double failedAt = 0; };   // told: its error shown once (it is looked for again now and then)
     std::map<std::string, PicTex> pics;
-    ID3D11ShaderResourceView* PictureAt(const std::string& file, double t, bool loop, int* w = nullptr, int* h = nullptr) {
+    d12::ShaderResourceView* PictureAt(const std::string& file, double t, bool loop, int* w = nullptr, int* h = nullptr) {
         if (file.empty()) return nullptr;
         PicTex& p = pics[file];
         if (p.tex.empty() && p.failed && uiClock - p.failedAt > 3) p.failed = false;   // (missing: looked for again every few seconds - a picture put in the folder later shows up)
@@ -9386,7 +9383,7 @@ struct App {
             if (!media::loadPicture(ScreensDir() + "/" + file, p.f, err)) { if (!p.told) Toast(err); p.told = true; p.failed = true; p.failedAt = uiClock; return nullptr; }
             for (auto& fr : p.f.rgba) {
                 D3D11_TEXTURE2D_DESC d{}; d.Width = (UINT)p.f.w; d.Height = (UINT)p.f.h; d.MipLevels = 1; d.ArraySize = 1; d.Format = DXGI_FORMAT_R8G8B8A8_UNORM; d.SampleDesc.Count = 1; d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-                D3D11_SUBRESOURCE_DATA sd{ fr.data(), (UINT)p.f.w * 4, 0 }; ComPtr<ID3D11Texture2D> tx; ComPtr<ID3D11ShaderResourceView> sv;
+                D3D11_SUBRESOURCE_DATA sd{ fr.data(), (UINT)p.f.w * 4, 0 }; ComPtr<d12::Texture2D> tx; ComPtr<d12::ShaderResourceView> sv;
                 if (FAILED(dev->CreateTexture2D(&d, &sd, &tx)) || FAILED(dev->CreateShaderResourceView(tx.Get(), nullptr, &sv))) break;
                 p.tex.push_back(sv);
             }
@@ -9397,9 +9394,9 @@ struct App {
         if (w) *w = p.f.w; if (h) *h = p.f.h;
         return p.tex[std::clamp(p.f.at(t, loop), 0, (int)p.tex.size() - 1)].Get();
     }
-    struct VidTex { media::Video v; ComPtr<ID3D11Texture2D> tex; ComPtr<ID3D11ShaderResourceView> srv; bool failed = false; double lastT = 0; };
+    struct VidTex { media::Video v; ComPtr<d12::Texture2D> tex; ComPtr<d12::ShaderResourceView> srv; bool failed = false; double lastT = 0; };
     std::map<std::string, std::unique_ptr<VidTex>> vids;
-    ID3D11ShaderResourceView* VideoAt(const std::string& file, double t, bool loop, int* w, int* h) {
+    d12::ShaderResourceView* VideoAt(const std::string& file, double t, bool loop, int* w, int* h) {
         if (file.empty()) return nullptr;
         auto& up = vids[file]; if (!up) up = std::make_unique<VidTex>(); VidTex& v = *up;
         if (v.failed) return nullptr;
@@ -9421,10 +9418,10 @@ struct App {
     }
 
     // ---- the compositor: one full-screen pass per node, into float pictures
-    struct CompRT { ComPtr<ID3D11Texture2D> t; ComPtr<ID3D11RenderTargetView> rtv; ComPtr<ID3D11ShaderResourceView> srv; int w = 0, h = 0; };
+    struct CompRT { ComPtr<d12::Texture2D> t; ComPtr<d12::RenderTargetView> rtv; ComPtr<d12::ShaderResourceView> srv; int w = 0, h = 0; };
     struct alignas(16) CompCB { float p0[4], p1[4], c0[4], c1[4], c2[4], size[4], misc[4], rect[4], extra[4]; };   // extra: x seconds into the screen, yz the shake (uv)
     std::map<int, CompRT> compRT; CompRT compBg, compBg2, compUi, compA, compB, compC, screenPreview;
-    ComPtr<ID3D11PixelShader> psComp; ComPtr<ID3D11Buffer> cbComp; ComPtr<ID3D11ShaderResourceView> blackSRV;
+    ComPtr<d12::PixelShader> psComp; ComPtr<d12::Buffer> cbComp; ComPtr<d12::ShaderResourceView> blackSRV;
     void MakeCompRT(CompRT& r, int w, int h, DXGI_FORMAT f = DXGI_FORMAT_R16G16B16A16_FLOAT) {
         if (r.w == w && r.h == h && r.rtv) return;
         if (r.srv) retired.push_back(r.srv);
@@ -9436,21 +9433,21 @@ struct App {
         if (cbComp || !psComp) return;   // (the shader is made with the others)
         D3D11_BUFFER_DESC d{}; d.ByteWidth = sizeof(CompCB); d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_CONSTANT_BUFFER; HR(dev->CreateBuffer(&d, nullptr, &cbComp));
         uint32_t zero = 0; D3D11_TEXTURE2D_DESC t{}; t.Width = t.Height = 1; t.MipLevels = 1; t.ArraySize = 1; t.Format = DXGI_FORMAT_R8G8B8A8_UNORM; t.SampleDesc.Count = 1; t.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-        D3D11_SUBRESOURCE_DATA sd{ &zero, 4, 0 }; ComPtr<ID3D11Texture2D> tx; HR(dev->CreateTexture2D(&t, &sd, &tx)); HR(dev->CreateShaderResourceView(tx.Get(), nullptr, &blackSRV));
+        D3D11_SUBRESOURCE_DATA sd{ &zero, 4, 0 }; ComPtr<d12::Texture2D> tx; HR(dev->CreateTexture2D(&t, &sd, &tx)); HR(dev->CreateShaderResourceView(tx.Get(), nullptr, &blackSRV));
     }
     static void CompColor(float* o, uint32_t c) { o[0] = ((c >> 16) & 255) / 255.f; o[1] = ((c >> 8) & 255) / 255.f; o[2] = (c & 255) / 255.f; o[3] = 1; }
-    void CompPass(ID3D11RenderTargetView* dst, int w, int h, int op, ID3D11ShaderResourceView* a, ID3D11ShaderResourceView* b, CompCB cb) {
+    void CompPass(d12::RenderTargetView* dst, int w, int h, int op, d12::ShaderResourceView* a, d12::ShaderResourceView* b, CompCB cb) {
         cb.p1[3] = (float)op;
         ctx->UpdateSubresource(cbComp.Get(), 0, nullptr, &cb, 0, 0);
-        ID3D11ShaderResourceView* none2[2] = {}; ctx->PSSetShaderResources(12, 2, none2);
+        d12::ShaderResourceView* none2[2] = {}; ctx->PSSetShaderResources(12, 2, none2);
         ctx->OMSetRenderTargets(1, &dst, nullptr);
         D3D11_VIEWPORT v{ 0, 0, (float)w, (float)h, 0, 1 }; ctx->RSSetViewports(1, &v);
         ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->RSSetState(rsNoCull.Get());
         ctx->IASetInputLayout(nullptr); ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         ctx->VSSetShader(vsBlit.Get(), nullptr, 0); ctx->PSSetShader(psComp.Get(), nullptr, 0);
         ctx->PSSetConstantBuffers(8, 1, cbComp.GetAddressOf());
-        ID3D11SamplerState* sm[2] = { sampLinear.Get(), sampClamp.Get() }; ctx->PSSetSamplers(2, 2, sm);
-        ID3D11ShaderResourceView* in[2] = { a ? a : blackSRV.Get(), b ? b : blackSRV.Get() }; ctx->PSSetShaderResources(12, 2, in);
+        d12::SamplerState* sm[2] = { sampLinear.Get(), sampClamp.Get() }; ctx->PSSetSamplers(2, 2, sm);
+        d12::ShaderResourceView* in[2] = { a ? a : blackSRV.Get(), b ? b : blackSRV.Get() }; ctx->PSSetShaderResources(12, 2, in);
         ctx->Draw(3, 0);
         ctx->PSSetShaderResources(12, 2, none2); ctx->OMSetRenderTargets(0, nullptr, nullptr);
     }
@@ -9464,9 +9461,9 @@ struct App {
     // a screen into `out` (W x H): background, its items (ui: an ImDrawList at W x H), then the node graph; fade 0..1
     // ---- planets: one shader draws the stars, a haze and the planet in its layers (Space backgrounds, the Planets editor's preview)
     struct alignas(16) PlanetCB { float a[4], pos[4], sun[4], axis[4], neb[4], ocean[4], deep[4], land[4], band[8][4], ice[4], cloud[4], cloud2[4], atmo[4], atmo2[4], night[4], ring[4], ring2[4], ring3[4], cor[4], vein[4], cor2[4], tend[4]; };
-    ComPtr<ID3D11PixelShader> psPlanet, psHudDepth; ComPtr<ID3D11Buffer> cbPlanet;
+    ComPtr<d12::PixelShader> psPlanet, psHudDepth; ComPtr<d12::Buffer> cbPlanet;
     Planet PlanetFor(const std::string& name) const { int i = planets.find(name); return i >= 0 ? planets.planets[i] : name.empty() && !planets.planets.empty() ? planets.planets[0] : defaultPlanet(); }
-    void DrawPlanet(ID3D11RenderTargetView* dst, int W, int H, const Planet& pl, const ScreenBg& v, double t) {
+    void DrawPlanet(d12::RenderTargetView* dst, int W, int H, const Planet& pl, const ScreenBg& v, double t) {
         if (!psPlanet || W < 2 || H < 2) return;
         if (!cbPlanet) { D3D11_BUFFER_DESC d{}; d.ByteWidth = sizeof(PlanetCB); d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_CONSTANT_BUFFER; HR(dev->CreateBuffer(&d, nullptr, &cbPlanet)); }
         auto col = [](float* o, uint32_t c, float w) { o[0] = ((c >> 16) & 255) / 255.f; o[1] = ((c >> 8) & 255) / 255.f; o[2] = (c & 255) / 255.f; o[3] = w; };   // (screens are put together in display colours)
@@ -9510,7 +9507,7 @@ struct App {
     int cookY0 = 0, cookY1 = 128, cookLayer = 40, cookMapX0 = 0, cookMapZ0 = 0; static constexpr int COOKMAP = 512;
     int cookSel[4] = { 0, 0, -1, -1 }; int cookDrag[2] = { 0, 0 };   // chosen chunk columns (x0, z0, x1, z1); x1 < x0: none
     CookArea cookArea; CookRooms cookRes; std::string cookMsg;
-    ComPtr<ID3D11Texture2D> cookTex; ComPtr<ID3D11ShaderResourceView> cookSRV;
+    ComPtr<d12::Texture2D> cookTex; ComPtr<d12::ShaderResourceView> cookSRV;
     static uint32_t RoomColor(int id, bool outside) { if (outside) return 0x5AB4FF; uint32_t h = (uint32_t)id * 2654435761u; return 0x404040 | (h & 0xBFBFBF); }
     uint32_t BlockMapColor(BlockId v) const {
         const BlockDef& d = reg.get(v); int l = d.tex[2]; uint32_t c = l >= 0 && l < (int)layerAvg.size() ? layerAvg[l] : 0x808080;
@@ -9598,7 +9595,7 @@ struct App {
     // ---- hiding what is behind other things: the frame's depth made small (160 x 90, the farthest depth in each cell), read back a
     // couple of frames later (never waiting); a chunk or far copy whose nearest point is behind it everywhere it would cover isn't drawn
     static constexpr int HIZW = 160, HIZH = 90;
-    ComPtr<ID3D11Texture2D> hizTex, hizStage[3]; ComPtr<ID3D11RenderTargetView> hizRTV; ComPtr<ID3D11PixelShader> psHiZ;
+    ComPtr<d12::Texture2D> hizTex, hizStage[3]; ComPtr<d12::RenderTargetView> hizRTV; ComPtr<d12::PixelShader> psHiZ;
     struct HizMeta { XMFLOAT4X4 vp; V3 cam; bool live = false; } hizMeta[3]; int hizCur = 0;
     std::vector<float> hizCpu; XMFLOAT4X4 hizVP{}; V3 hizCam{ 0, 0, 0 }; bool hizHave = false;
     std::unordered_set<I3, I3Hash> hizHiddenChunks; int hizHidden = 0, hizHiddenShown = 0;
@@ -9617,7 +9614,7 @@ struct App {
         ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psHiZ.Get(), nullptr, 0);
         ctx->PSSetShaderResources(2, 1, depthSRV.GetAddressOf());
         ctx->Draw(3, 0);
-        { ID3D11ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(2, 1, &n1); }
+        { d12::ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(2, 1, &n1); }
         ctx->OMSetRenderTargets(0, nullptr, nullptr);
         ctx->CopyResource(hizStage[hizCur].Get(), hizTex.Get());
         XMStoreFloat4x4(&hizMeta[hizCur].vp, vp); hizMeta[hizCur].cam = camPos; hizMeta[hizCur].live = true;
@@ -9667,7 +9664,7 @@ struct App {
     }
     // ---- far copies of the world (levels of detail): past the render distance, groups of 2, 4, 8 chunks a side drawn as blocks of 2, 4, 8
     std::unordered_map<I3, LodSummary, I3Hash> lodSum;   // each chunk boiled down (cells of 2 x 2 x 2)
-    struct LodGroup { ComPtr<ID3D11Buffer> vb, ib; UINT n = 0; bool built = false; UINT inst = 0; };
+    struct LodGroup { ComPtr<d12::Buffer> vb, ib; UINT n = 0; bool built = false; UINT inst = 0; };
     std::unordered_map<I3, LodGroup, I3Hash> lodGroups[4];   // [level]
     std::unordered_set<I3, I3Hash> lodDirty[4];             // groups to build (again)
     std::unordered_set<I3, I3Hash> chunkMeshed;             // chunks whose mesh has arrived (empty or not)
@@ -9858,8 +9855,8 @@ struct App {
     }
     // ---- the fog grid (smooth fog): 160 x 90 x 64 cells following the camera, worked out a little more each frame
     static constexpr int FOGW = 160, FOGH = 90, FOGD = 64;
-    ComPtr<ID3D11Texture3D> fogCell[2], fogSum; ComPtr<ID3D11UnorderedAccessView> fogCellUAV[2], fogSumUAV; ComPtr<ID3D11ShaderResourceView> fogCellSRV[2], fogSumSRV;
-    ComPtr<ID3D11PixelShader> psFogGrid; int fogCur = 0; bool fogHistOk = false; bool fogGridNow = false;
+    ComPtr<d12::Texture3D> fogCell[2], fogSum; ComPtr<d12::UnorderedAccessView> fogCellUAV[2], fogSumUAV; ComPtr<d12::ShaderResourceView> fogCellSRV[2], fogSumSRV;
+    ComPtr<d12::PixelShader> psFogGrid; int fogCur = 0; bool fogHistOk = false; bool fogGridNow = false;
     void RenderFogGrid() {   // (the frame's constants, the sun's shadow and the lights are bound already)
         if (!psFogGrid) return;
         if (!fogSum) {
@@ -9876,8 +9873,8 @@ struct App {
         c.fogJ[0] = (float)std::fmod(0.5 + fr * 0.7548776662, 1.0); c.fogJ[1] = (float)std::fmod(0.5 + fr * 0.5698402910, 1.0);
         UploadCookCB();
         int nx = 1 - fogCur;
-        { ID3D11ShaderResourceView* n2[2] = { nullptr, nullptr }; ctx->PSSetShaderResources(49, 2, n2); }
-        ID3D11UnorderedAccessView* u[2] = { fogCellUAV[nx].Get(), fogSumUAV.Get() };
+        { d12::ShaderResourceView* n2[2] = { nullptr, nullptr }; ctx->PSSetShaderResources(49, 2, n2); }
+        d12::UnorderedAccessView* u[2] = { fogCellUAV[nx].Get(), fogSumUAV.Get() };
         ctx->OMSetRenderTargetsAndUnorderedAccessViews(0, nullptr, nullptr, 0, 2, u, nullptr);
         D3D11_VIEWPORT fv{ 0, 0, (float)FOGW, (float)FOGH, 0, 1 }; ctx->RSSetViewports(1, &fv);
         ctx->PSSetShaderResources(50, 1, fogCellSRV[fogCur].GetAddressOf());
@@ -9888,7 +9885,7 @@ struct App {
         ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psFogGrid.Get(), nullptr, 0);
         ctx->Draw(3, 0);
         ctx->OMSetRenderTargets(0, nullptr, nullptr);
-        { ID3D11ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(50, 1, &n1); }
+        { d12::ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(50, 1, &n1); }
         ctx->PSSetShaderResources(49, 1, fogSumSRV.GetAddressOf());
         fogCur = nx; fogHistOk = true; fogLastCam = camPos;
     }
@@ -9901,11 +9898,11 @@ struct App {
     std::vector<CookProbeInfo> cookProbes; int cookProbesReady = 0;   // (ready: how many the pictures have, 0 while they are taken)
     static constexpr int PROBE_RES = 128, PROBE_MIPS = 8;
     std::vector<uint16_t> cookProbePx;   // while taking them: 6 sides per room, RGBA (half floats)
-    ComPtr<ID3D11Texture2D> cookCubeTex; ComPtr<ID3D11ShaderResourceView> cookCubeSRV;
+    ComPtr<d12::Texture2D> cookCubeTex; ComPtr<d12::ShaderResourceView> cookCubeSRV;
     struct CookBake { bool on = false, grab = false, grabbed = false; int i = 0, face = 0, frame = 0, wait = 0; V3 feet; double yaw = 0, pitch = 0; } cookBake;
     I3 cookLitLo{ 0, 0, 0 }, cookLitN{ 0, 0, 0 }; bool cookLitHave = false;
-    ComPtr<ID3D11Texture3D> cookLitTex, cookDirTex; ComPtr<ID3D11ShaderResourceView> cookLitSRV, cookDirSRV;
-    ComPtr<ID3D11Buffer> cbCook;
+    ComPtr<d12::Texture3D> cookLitTex, cookDirTex; ComPtr<d12::ShaderResourceView> cookLitSRV, cookDirSRV;
+    ComPtr<d12::Buffer> cbCook;
     struct alignas(16) CookCB { float cook[4], litO[4], litS[4], fogG[4], fogR[4], fogJ[4], lavaM[4], lavaH[4], ambV[4], ambS[4]; float pos[64][4], lo[64][4], hi[64][4]; };   // (b13: the cooked world and the fog grid)
     CookCB cookCB{};
     void UploadCookCB() {
@@ -9947,7 +9944,7 @@ struct App {
     static constexpr int AMBX = 128, AMBY = 64, AMBZ = 128;
     I3 ambOrigin{ INT_MIN, 0, 0 }, ambVolOrigin{ INT_MIN, 0, 0 }; std::vector<uint8_t> ambVolCpu; bool ambOn = false; uint32_t ambRoomGen = 0;
     std::future<std::vector<uint8_t>> ambVolFut; bool ambVolBusy = false, ambVolAgain = false; I3 ambVolJobOrigin{ 0, 0, 0 };   // the volume is put together on its own thread (it can take a while)
-    ComPtr<ID3D11Texture3D> ambVolTex; ComPtr<ID3D11ShaderResourceView> ambVolSRV, ambObjSRV; ComPtr<ID3D11Buffer> ambObjBuf; size_t ambObjCap = 0;
+    ComPtr<d12::Texture3D> ambVolTex; ComPtr<d12::ShaderResourceView> ambVolSRV, ambObjSRV; ComPtr<d12::Buffer> ambObjBuf; size_t ambObjCap = 0;
     struct AmbGpuC { float c[6][4]; float fog[4]; };
     uint64_t AmbSig(const AmbRt& r) const {   // (the chunks it covers: when one changes, it fills again)
         if (!world || r.fill->hi.x < r.fill->lo.x) return 0x9E37;
@@ -10520,7 +10517,7 @@ struct App {
     // ---- lava lights what is around it: a top-down map of the lava near you (128 x 128 blocks: how much of each column is lava and how
     // high its top is), blurred by its smaller copies on the graphics card. Made again when you move or every half a second
     static constexpr int LAVAN = 128;
-    ComPtr<ID3D11Texture2D> lavaTex; ComPtr<ID3D11ShaderResourceView> lavaSRV; ComPtr<ID3D11RenderTargetView> lavaRTV;
+    ComPtr<d12::Texture2D> lavaTex; ComPtr<d12::ShaderResourceView> lavaSRV; ComPtr<d12::RenderTargetView> lavaRTV;
     I3 lavaAt{ INT_MIN, 0, 0 }; int lavaBase = 0; double lavaAge = 99; bool lavaAny = false; std::vector<uint16_t> lavaPx; uint64_t lavaSig = 0;
     struct LavaTops { bool have = false; uint32_t ver = 0; int8_t top[256]; }; std::unordered_map<I3, LavaTops, I3Hash> lavaTops;
     void UpdateLavaMap() {
@@ -10576,8 +10573,8 @@ struct App {
         cookCB.lavaH[0] = (float)(lavaBase - camPos.y);
         cookCB.ambV[0] = (float)(ambVolOrigin.x - camPos.x); cookCB.ambV[1] = (float)(ambVolOrigin.y - camPos.y); cookCB.ambV[2] = (float)(ambVolOrigin.z - camPos.z);
         cookCB.ambS[0] = AMBX; cookCB.ambS[1] = AMBY; cookCB.ambS[2] = AMBZ; cookCB.ambS[3] = ambOn ? 1.f : 0.f;
-        { ID3D11ShaderResourceView* av[2] = { ambOn ? ambObjSRV.Get() : nullptr, ambOn ? ambVolSRV.Get() : nullptr }; ctx->PSSetShaderResources(53, 2, av); }
-        { ID3D11ShaderResourceView* lv = lavaAny ? lavaSRV.Get() : nullptr; ctx->PSSetShaderResources(51, 1, &lv); }
+        { d12::ShaderResourceView* av[2] = { ambOn ? ambObjSRV.Get() : nullptr, ambOn ? ambVolSRV.Get() : nullptr }; ctx->PSSetShaderResources(53, 2, av); }
+        { d12::ShaderResourceView* lv = lavaAny ? lavaSRV.Get() : nullptr; ctx->PSSetShaderResources(51, 1, &lv); }
         cookCullOn = cookUse && cookHave && !cookChunkRooms.empty();
         cookCamRoom = cookHave ? cookRes.roomAt(ifloor(camPos.x), ifloor(camPos.y), ifloor(camPos.z)) : 0;
         if (cookCullOn) { XMFLOAT4X4 m; XMStoreFloat4x4(&m, vp); visibleRooms(cookRes, &m._11, camPos, cookVis); cookSeenRooms = 0; for (size_t k = 1; k < cookVis.size(); k++) cookSeenRooms += cookVis[k]; }
@@ -10597,7 +10594,7 @@ struct App {
             c.hi[k][0] = (float)(p.hi.x - camPos.x); c.hi[k][1] = (float)(p.hi.y - camPos.y); c.hi[k][2] = (float)(p.hi.z - camPos.z);
         }
         UploadCookCB();
-        ID3D11ShaderResourceView* t3[3] = { np ? cookCubeSRV.Get() : nullptr, cookLitOn ? cookLitSRV.Get() : nullptr, cookLitOn ? cookDirSRV.Get() : nullptr };
+        d12::ShaderResourceView* t3[3] = { np ? cookCubeSRV.Get() : nullptr, cookLitOn ? cookLitSRV.Get() : nullptr, cookLitOn ? cookDirSRV.Get() : nullptr };
         ctx->PSSetShaderResources(46, 3, t3);
     }
     // ---- taking the rooms' reflection pictures: the camera goes to each room in turn (a few frames per side, so the light settles)
@@ -10647,7 +10644,7 @@ struct App {
         if (d.Format != DXGI_FORMAT_R16G16B16A16_FLOAT) { B.grabbed = true; return; }
         int W = std::min(rw, (int)d.Width), H = std::min(rh, (int)d.Height), side = std::min(W, H), x0 = (W - side) / 2, y0 = (H - side) / 2;
         D3D11_TEXTURE2D_DESC sdsc{}; sdsc.Width = sdsc.Height = side; sdsc.MipLevels = 1; sdsc.ArraySize = 1; sdsc.Format = d.Format; sdsc.SampleDesc.Count = 1; sdsc.Usage = D3D11_USAGE_STAGING; sdsc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-        ComPtr<ID3D11Texture2D> st; if (FAILED(dev->CreateTexture2D(&sdsc, nullptr, &st))) { B.grabbed = true; return; }
+        ComPtr<d12::Texture2D> st; if (FAILED(dev->CreateTexture2D(&sdsc, nullptr, &st))) { B.grabbed = true; return; }
         D3D11_BOX box{ (UINT)x0, (UINT)y0, 0, (UINT)(x0 + side), (UINT)(y0 + side), 1 };
         ctx->CopySubresourceRegion(st.Get(), 0, 0, 0, 0, reflTex.Get(), 0, &box);
         D3D11_MAPPED_SUBRESOURCE m; if (FAILED(ctx->Map(st.Get(), 0, D3D11_MAP_READ, 0, &m))) { B.grabbed = true; return; }
@@ -10871,7 +10868,7 @@ struct App {
         if (ch) planetsDirty = true;
         ImGui::End();
     }
-    void RenderScreenPicture(const mc::Screen& sc, ID3D11RenderTargetView* out, int W, int H, ImDrawList* ui, float fade, bool sceneReady) {
+    void RenderScreenPicture(const mc::Screen& sc, d12::RenderTargetView* out, int W, int H, ImDrawList* ui, float fade, bool sceneReady) {
         InitCompositor(); if (!psComp || !cbComp) return;
         MakeCompRT(compBg, W, H); MakeCompRT(compBg2, W, H); MakeCompRT(compUi, W, H); MakeCompRT(compA, W, H); MakeCompRT(compB, W, H); MakeCompRT(compC, W, H);
         CompCB base{}; base.size[0] = (float)W; base.size[1] = (float)H; base.size[2] = 1.f / W; base.size[3] = 1.f / H;
@@ -10880,7 +10877,7 @@ struct App {
         float shk[2]; shakeOffset(sc, screenT, shk); float shakeUV[2] = { shk[0] * H / (float)W, shk[1] };   // (the shake: parts of the height)
         // the background
         const ScreenBg& bg = sc.bg; CompCB cb = base;
-        int iw = 0, ih = 0; ID3D11ShaderResourceView* pic = nullptr;
+        int iw = 0, ih = 0; d12::ShaderResourceView* pic = nullptr;
         if (bg.kind == BgKind::Image) pic = PictureAt(bg.file, screenT * bg.speed, bg.loop, &iw, &ih);
         else if (bg.kind == BgKind::Video) pic = VideoAt(bg.file, screenT * bg.speed, bg.loop, &iw, &ih);
         if (pic) { FitRect(iw, ih, W, H, bg.fit, cb.rect); CompPass(compBg.rtv.Get(), W, H, 2, pic, nullptr, cb); }
@@ -10895,12 +10892,12 @@ struct App {
             ctx->OMSetRenderTargets(1, compUi.rtv.GetAddressOf(), nullptr);
             ImDrawData dd; dd.Valid = true; dd.CmdLists.push_back(ui); dd.TotalVtxCount = ui->VtxBuffer.Size; dd.TotalIdxCount = ui->IdxBuffer.Size;
             dd.DisplayPos = ImVec2(0, 0); dd.DisplaySize = ImVec2((float)W, (float)H); dd.FramebufferScale = ImVec2(1, 1); dd.Textures = nullptr;
-            ImGui_ImplDX11_RenderDrawData(&dd);
+            ImGui_ImplD12_RenderDrawData(&dd);
             ctx->OMSetRenderTargets(0, nullptr, nullptr);
         }
         // the node graph
         const Compositor& g = sc.comp; std::vector<int> order = g.order();
-        auto srvOf = [&](int id) -> ID3D11ShaderResourceView* {
+        auto srvOf = [&](int id) -> d12::ShaderResourceView* {
             const CompNode* n = g.find(id); if (!n) return nullptr;
             if (n->type == NodeType::Background) return bgOut->srv.Get();
             if (n->type == NodeType::UI) return compUi.srv.Get();
@@ -10910,7 +10907,7 @@ struct App {
             cb = base; cb.p0[0] = 1; CompPass(compA.rtv.Get(), W, H, 4, bgOut->srv.Get(), compUi.srv.Get(), cb);
             cb = base; cb.p0[0] = fade; CompPass(out, W, H, 0, compA.srv.Get(), nullptr, cb); return;
         }
-        auto blur = [&](ID3D11ShaderResourceView* src, ID3D11RenderTargetView* dst, float px) {   // two passes through compB
+        auto blur = [&](d12::ShaderResourceView* src, d12::RenderTargetView* dst, float px) {   // two passes through compB
             CompCB q = base; q.misc[2] = px; q.misc[3] = 0; CompPass(compB.rtv.Get(), W, H, 6, src, nullptr, q);
             q.misc[2] = 0; q.misc[3] = px; CompPass(dst, W, H, 6, compB.srv.Get(), nullptr, q);
         };
@@ -10918,8 +10915,8 @@ struct App {
             const CompNode* n = g.find(id); if (!n || n->type == NodeType::Background || n->type == NodeType::UI) continue;
             bool isOut = n->type == NodeType::Output;
             CompRT& rt = compRT[id]; if (!isOut) MakeCompRT(rt, W, H);
-            ID3D11RenderTargetView* dst = isOut ? out : rt.rtv.Get();
-            ID3D11ShaderResourceView* in0 = n->in[0] ? srvOf(n->in[0]) : nullptr, * in1 = n->in[1] ? srvOf(n->in[1]) : nullptr;
+            d12::RenderTargetView* dst = isOut ? out : rt.rtv.Get();
+            d12::ShaderResourceView* in0 = n->in[0] ? srvOf(n->in[0]) : nullptr, * in1 = n->in[1] ? srvOf(n->in[1]) : nullptr;
             cb = base; for (int k = 0; k < 4; k++) cb.p0[k] = n->p[k]; cb.p1[0] = n->p[4]; cb.p1[1] = n->p[5]; cb.p1[2] = (float)n->mode;
             CompColor(cb.c0, n->c[0]); CompColor(cb.c1, n->c[1]); CompColor(cb.c2, n->c[2]);
             if (isOut) { cb.p0[0] = fade; cb.extra[1] = shakeUV[0]; cb.extra[2] = shakeUV[1]; CompPass(dst, W, H, 25, in0, nullptr, cb); continue; }
@@ -11113,7 +11110,7 @@ struct App {
         if (files.empty()) { TextIn(dl, font, live ? "Nothing here yet." : "Put pictures (PNG, JPG, GIF) in screens/" + folder, ts, a, b, 1, CorCol(col.dim, al)); return; }
         int n = (int)files.size(), k = ((galleryPick % n) + n) % n;
         ImVec2 pa(a.x + aw, a.y + ts * 0.5f), pb(b.x - aw, b.y - capH);
-        int iw = 0, ih = 0; ID3D11ShaderResourceView* im = PictureAt(folder + "/" + files[k], screenT, true, &iw, &ih);
+        int iw = 0, ih = 0; d12::ShaderResourceView* im = PictureAt(folder + "/" + files[k], screenT, true, &iw, &ih);
         if (im) { float r[4]; FitRect(iw, ih, (int)(pb.x - pa.x), (int)(pb.y - pa.y), 1, r); ImVec2 q0(pa.x + r[0] * (pb.x - pa.x), pa.y + r[1] * (pb.y - pa.y)), q1(pa.x + r[2] * (pb.x - pa.x), pa.y + r[3] * (pb.y - pa.y));
                   dl->AddImage((ImTextureID)(intptr_t)im, q0, q1, ImVec2(0, 0), ImVec2(1, 1), CorCol(0xFFFFFF, al)); dl->AddRect(q0, q1, CorCol(col.accent, 0.5f * al), 0, ImDrawFlags_None, th * 0.8f); }
         std::string name = files[k].substr(0, files[k].find_last_of('.')); for (char& ch : name) if (ch == '_' || ch == '-') ch = ' ';
@@ -11145,7 +11142,7 @@ struct App {
     std::string pickedTip;   // the picked button's tip (a text's {tip})
     // ---- screen transitions: the last picture is kept; when the screen changes (another screen, the game, a pop-up) the old and the new are put together for a moment
     struct alignas(16) TransCB { float tr[4], col[4], size[4]; };
-    ComPtr<ID3D11PixelShader> psTrans; ComPtr<ID3D11Buffer> cbTrans; CompRT transFromRT, transToRT;
+    ComPtr<d12::PixelShader> psTrans; ComPtr<d12::Buffer> cbTrans; CompRT transFromRT, transToRT;
     bool transHave = false, transOn = false, transOut = false, pendingTransSet = false; float transT = 0; int transPrev = -2; Transition transNow, pendingTrans;
     std::vector<Transition> screenTrans;   // the shown screen's buttons' own transitions (MenuHit::trans)
     void TransitionStep(double dt, bool ev) {
@@ -11154,7 +11151,7 @@ struct App {
         if (!cbTrans) { D3D11_BUFFER_DESC d{}; d.ByteWidth = sizeof(TransCB); d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_CONSTANT_BUFFER; HR(dev->CreateBuffer(&d, nullptr, &cbTrans)); }
         if (transFromRT.w != cw || transFromRT.h != ch) transHave = false;
         MakeCompRT(transFromRT, cw, ch, DXGI_FORMAT_R8G8B8A8_UNORM); MakeCompRT(transToRT, cw, ch, DXGI_FORMAT_R8G8B8A8_UNORM);
-        ComPtr<ID3D11Resource> bb; backRTV->GetResource(&bb);
+        ComPtr<d12::Resource> bb; backRTV->GetResource(&bb);
         if (curScreen != transPrev && transPrev != -2 && transHave) {   // the screen changed: which way it goes
             Transition t; bool out = false; int n = (int)screens.screens.size();
             if (pendingTransSet) t = pendingTrans;
@@ -11177,10 +11174,10 @@ struct App {
                 ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->RSSetState(rsNoCull.Get());
                 ctx->IASetInputLayout(nullptr); ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
                 ctx->VSSetShader(vsBlit.Get(), nullptr, 0); ctx->PSSetShader(psTrans.Get(), nullptr, 0); ctx->PSSetConstantBuffers(12, 1, cbTrans.GetAddressOf());
-                ID3D11SamplerState* sm[2] = { sampLinear.Get(), sampClamp.Get() }; ctx->PSSetSamplers(2, 2, sm);
-                ID3D11ShaderResourceView* in[2] = { transFromRT.srv.Get(), transToRT.srv.Get() }; ctx->PSSetShaderResources(44, 2, in);
+                d12::SamplerState* sm[2] = { sampLinear.Get(), sampClamp.Get() }; ctx->PSSetSamplers(2, 2, sm);
+                d12::ShaderResourceView* in[2] = { transFromRT.srv.Get(), transToRT.srv.Get() }; ctx->PSSetShaderResources(44, 2, in);
                 ctx->Draw(3, 0);
-                ID3D11ShaderResourceView* none2[2] = {}; ctx->PSSetShaderResources(44, 2, none2);
+                d12::ShaderResourceView* none2[2] = {}; ctx->PSSetShaderResources(44, 2, none2);
                 return;   // (the old picture stays as it was until it is done)
             }
         }
@@ -11313,7 +11310,7 @@ struct App {
                 else if (!live) dl->AddRect(a, b, C(col.accent, 0.35f * al), 6.f, ImDrawFlags_None, 2.f);
                 break; }
             case ScreenItemKind::Image: {
-                int iw = 0, ih = 0; ID3D11ShaderResourceView* im = it.image.empty() ? nullptr : PictureAt(it.image, screenT, true, &iw, &ih);
+                int iw = 0, ih = 0; d12::ShaderResourceView* im = it.image.empty() ? nullptr : PictureAt(it.image, screenT, true, &iw, &ih);
                 if (!im) {   // not there (yet): its text stands in (a logo before its picture is made); else, in the editor, an outline
                     if (!it.text.empty()) TextInStyled(dl, font, it.text, ts, a, b, 1, C(col.text, al), TextLook{ it.weight, it.outline, it.outlineColor });
                     else if (!live) dl->AddRect(a, b, C(col.accent, 0.35f * al), 6.f, ImDrawFlags_None, 2.f);
@@ -12374,7 +12371,7 @@ struct App {
             dl->AddRectFilled(p, ImVec2(p.x + 5 * ui, b.y), StepColor(st.kind), 5.f, ImDrawFlags_RoundCornersLeft);
             float th = rowH - 8; ImVec2 tp(p.x + 12 * ui, p.y + 4);   // a little picture of the step
             dl->AddRectFilled(tp, ImVec2(tp.x + th * 1.5f, tp.y + th), IM_COL32(18, 20, 26, 255), 3.f);
-            if (st.kind == StepKind::Picture && !st.file.empty()) { int iw = 0, ih = 0; ID3D11ShaderResourceView* im = PictureAt(st.file, uiClock, true, &iw, &ih); if (im && iw > 0 && ih > 0) { float k = std::min(th * 1.5f / iw, th / (float)ih), ww = iw * k, hh = ih * k; ImVec2 a(tp.x + (th * 1.5f - ww) * 0.5f, tp.y + (th - hh) * 0.5f); dl->AddImage((ImTextureID)(intptr_t)im, a, ImVec2(a.x + ww, a.y + hh)); } }
+            if (st.kind == StepKind::Picture && !st.file.empty()) { int iw = 0, ih = 0; d12::ShaderResourceView* im = PictureAt(st.file, uiClock, true, &iw, &ih); if (im && iw > 0 && ih > 0) { float k = std::min(th * 1.5f / iw, th / (float)ih), ww = iw * k, hh = ih * k; ImVec2 a(tp.x + (th * 1.5f - ww) * 0.5f, tp.y + (th - hh) * 0.5f); dl->AddImage((ImTextureID)(intptr_t)im, a, ImVec2(a.x + ww, a.y + hh)); } }
             else {
                 const char* glyph = st.kind == StepKind::Text ? "Aa" : st.kind == StepKind::Wait ? "..." : st.kind == StepKind::Sound ? "~))" : st.kind == StepKind::Clear ? "fade" : "?";
                 ImVec2 gs = ImGui::CalcTextSize(glyph); dl->AddText(ImVec2(tp.x + (th * 1.5f - gs.x) * 0.5f, tp.y + (th - gs.y) * 0.5f), StepColor(st.kind), glyph);
@@ -13657,7 +13654,7 @@ struct App {
         D3D11_VIEWPORT v{ 0, 0, (float)rw, (float)rh, 0, 1 }; ctx->RSSetViewports(1, &v);
         ctx->OMSetDepthStencilState(dsTestOnly.Get(), 0); ctx->OMSetBlendState(bsAdd.Get(), nullptr, 0xFFFFFFFF); ctx->RSSetState(rsNoCull.Get());
         ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0); ctx->PSSetShader(psFlat.Get(), nullptr, 0);
-        ID3D11Buffer* cbs[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->VSSetConstantBuffers(0, 2, cbs); ctx->PSSetConstantBuffers(7, 1, cbFlat.GetAddressOf());
+        d12::Buffer* cbs[2] = { cbFrame.Get(), cbChunk.Get() }; ctx->VSSetConstantBuffers(0, 2, cbs); ctx->PSSetConstantBuffers(7, 1, cbFlat.GetAddressOf());
         for (const WorldObject& o : objects) {
             if (o.kind != ObjKind::Enemy) continue; auto it = enemyRt.find(o.id); if (it == enemyRt.end() || !it->second.alive()) continue;
             bool glow = BossGlow(o.id, gl); if (it->second.hurtT <= 0 && !glow) continue;
@@ -14161,7 +14158,7 @@ struct App {
     }
     // ---- Player editor > Enemies: the enemy types
     int enemyEd = 1; bool selectEnemiesTab = false;
-    HudTarget enemyView; ComPtr<ID3D11DepthStencilView> enemyViewDSV; int evDW = 0, evDH = 0; ImVec2 enemyViewWant{ 0, 0 }; std::string enemyViewModel;
+    HudTarget enemyView; ComPtr<d12::DepthStencilView> enemyViewDSV; int evDW = 0, evDH = 0; ImVec2 enemyViewWant{ 0, 0 }; std::string enemyViewModel;
     int EnemyUses(int id) const { int n = 0; for (const WorldObject& o : objects) if (o.kind == ObjKind::Enemy && o.enemyType == id) n++; return n; }
     void RenderEnemyView() {   // the picked type's model, turning
         if (enemyViewModel.empty() || enemyViewWant.x < 16 || enemyViewWant.y < 16) return;
@@ -14392,12 +14389,12 @@ struct App {
     // wakes every map camera with the same ID, and each looks all around from where it is. Seen doors show in their own
     // colour and size. The seen blocks are kept per world for this play session.
     struct MapVert { float p[3], n[3], uv[2], size[2], born, col[4]; };
-    struct MapGpuChunk { ComPtr<ID3D11Buffer> vb; UINT count = 0, mine = 0; };   // yours first, then the downloaded ones
+    struct MapGpuChunk { ComPtr<d12::Buffer> vb; UINT count = 0, mine = 0; };   // yours first, then the downloaded ones
     std::unordered_map<std::string, SeenMap> seenMaps;
     std::set<std::string> stationsUsed;
     std::unordered_map<I3, MapGpuChunk, I3Hash> mapGpu; std::string mapGpuWorld;
-    ComPtr<ID3D11Buffer> mapMarks; UINT mapMarksCap = 0;
-    HudTarget mapView; ComPtr<ID3D11DepthStencilView> mapDSV; int mapDW = 0, mapDH = 0; ImVec2 mapWant{ 0, 0 };
+    ComPtr<d12::Buffer> mapMarks; UINT mapMarksCap = 0;
+    HudTarget mapView; ComPtr<d12::DepthStencilView> mapDSV; int mapDW = 0, mapDH = 0; ImVec2 mapWant{ 0, 0 };
     bool mapOpen = false; float mapYaw = 0, mapPitch = 0.8f, mapDist = 40; V3 mapCenter{ 0, 0, 0 }; double mapOpenT = 0; uint32_t mapFrame = 0;
     static constexpr uint32_t MAP_TINT = 0x3AC8FF, MAP_DOWN = 0xFFB040, MAP_YOU = 0xFF4A6A;   // seen yourself, downloaded (not visited yet), you
     SeenMap& Seen() { return seenMaps[CurrentWorld()]; }
@@ -14537,7 +14534,7 @@ struct App {
                 ctx->IASetVertexBuffers(0, 1, g.vb.GetAddressOf(), &stride, &off); ctx->Draw(b - a, a); }
         };
         auto drawDoors = [&]() { if (doorVerts) { ctx->IASetVertexBuffers(0, 1, mapMarks.GetAddressOf(), &stride, &off); ctx->Draw(doorVerts, 0); } };
-        auto state = [&](float mode, ID3D11BlendState* bs, ID3D11DepthStencilState* ds) { mc.mode[0] = mode; ctx->UpdateSubresource(cbMap.Get(), 0, nullptr, &mc, 0, 0); ctx->OMSetBlendState(bs, nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(ds, 0); };
+        auto state = [&](float mode, d12::BlendState* bs, d12::DepthStencilState* ds) { mc.mode[0] = mode; ctx->UpdateSubresource(cbMap.Get(), 0, nullptr, &mc, 0, 0); ctx->OMSetBlendState(bs, nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(ds, 0); };
         state(0, bsOff.Get(), dsOn.Get()); drawPanels(0); drawDoors();          // yours: solid (the nearest surface wins)
         state(0, bsAdd.Get(), dsTestOnly.Get()); drawPanels(1);                 // downloaded, not visited: see-through glow
         state(1, bsAdd.Get(), dsOff.Get()); drawPanels(2); drawDoors();         // every edge again, faintly: you see through the walls a little
@@ -14547,7 +14544,7 @@ struct App {
         ctx->RSSetState(rsCull.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF);
         ctx->OMSetRenderTargets(0, nullptr, nullptr);
     }
-    void RenderMapScreen(ID3D11RenderTargetView* out) {
+    void RenderMapScreen(d12::RenderTargetView* out) {
         ctx->OMSetRenderTargets(1, &out, DisplayDSV()); ctx->ClearDepthStencilView(DisplayDSV(), D3D11_CLEAR_DEPTH, 1.f, 0);
         const float bg[4] = { 0.006f, 0.014f, 0.03f, 1 }; ctx->ClearRenderTargetView(out, bg);
         D3D11_VIEWPORT v{ 0, 0, (float)rw, (float)rh, 0, 1 }; ctx->RSSetViewports(1, &v);
@@ -14557,7 +14554,7 @@ struct App {
             ctx->PSSetShaderResources(0, 1, mapView.srv.GetAddressOf()); ctx->PSSetSamplers(3, 1, sampClamp.GetAddressOf());
             ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->RSSetState(rsNoCull.Get());
             ctx->Draw(3, 0);
-            ID3D11ShaderResourceView* none = nullptr; ctx->PSSetShaderResources(0, 1, &none);
+            d12::ShaderResourceView* none = nullptr; ctx->PSSetShaderResources(0, 1, &none);
         }
         if (hudListsReady && !(hud.empty() && weapons.empty())) DrawHudScene(HudProj((float)rw / rh), hudSway, false, DisplayDSV(), true);   // the visor stays (what is set to stay on the map)
         ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->RSSetState(rsCull.Get());
@@ -14670,7 +14667,7 @@ struct App {
         }
     }
     // ---- the minimap on the HUD (a Minimap element): the same map, around you, see-through
-    HudTarget miniView; ComPtr<ID3D11DepthStencilView> miniDSV; int miniDW = 0, miniDH = 0, miniWantW = 0, miniWantH = 0; bool miniUsed = false; HudElement miniEl;
+    HudTarget miniView; ComPtr<d12::DepthStencilView> miniDSV; int miniDW = 0, miniDH = 0, miniWantW = 0, miniWantH = 0; bool miniUsed = false; HudElement miniEl;
     static void PremulBlend(const ImDrawList*, const ImDrawCmd*) { g_app->ctx->OMSetBlendState(g_app->bsPremul.Get(), nullptr, 0xFFFFFFFF); }
     void DrawMinimapElement(ImDrawList* dl, const HudElement& e, ImVec2 p0, ImVec2 p1, float a) {
         miniUsed = true; miniEl = e; miniWantW = std::clamp((int)((p1.x - p0.x) * 2), 16, 2048); miniWantH = std::clamp((int)((p1.y - p0.y) * 2), 16, 2048);   // (twice its size: smooth edges)
@@ -14704,7 +14701,7 @@ struct App {
         auto nearMini = [&](I3 cp) { double dx = (cp.x + 0.5) * CS - player.feet.x, dz = (cp.z + 0.5) * CS - player.feet.z, dy = (cp.y + 0.5) * CS - player.feet.y, R = range * 1.5 + CS;
             return dx * dx + dz * dz < R * R && std::fabs(dy) < 24 + CS; };   // (the minimap only shows what is around you, your level)
         auto drawPanels = [&](bool yours) { for (auto& kv : mapGpu) { if (!nearMini(kv.first)) continue; const MapGpuChunk& g = kv.second; UINT a = yours ? 0 : g.mine, b = yours ? g.mine : g.count; if (b <= a) continue; ctx->IASetVertexBuffers(0, 1, g.vb.GetAddressOf(), &stride, &off); ctx->Draw(b - a, a); } };
-        auto state = [&](ID3D11BlendState* bs, ID3D11DepthStencilState* ds) { ctx->UpdateSubresource(cbMap.Get(), 0, nullptr, &mc, 0, 0); ctx->OMSetBlendState(bs, nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(ds, 0); };
+        auto state = [&](d12::BlendState* bs, d12::DepthStencilState* ds) { ctx->UpdateSubresource(cbMap.Get(), 0, nullptr, &mc, 0, 0); ctx->OMSetBlendState(bs, nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(ds, 0); };
         state(bsNoColor.Get(), dsOn.Get()); drawPanels(true);                         // where your panels are (depth only)
         state(bsAdd.Get(), dsTestOnly.Get()); drawPanels(true); drawPanels(false);    // then all of it as see-through light, nearest surfaces only
         if (doorVerts) { ctx->IASetVertexBuffers(0, 1, mapMarks.GetAddressOf(), &stride, &off); ctx->Draw(doorVerts, 0); }
@@ -14715,7 +14712,7 @@ struct App {
     // ---- the Rooms window's 3D view: every room's walls, floors and ceilings in its colour (the map's look). Drag: turn, right-drag: move,
     // wheel: zoom, double-click: pick the room under the mouse
     SeenMap rvMap; std::unordered_map<I3, MapGpuChunk, I3Hash> rvGpu; uint32_t rvGen = UINT32_MAX; int rvSelBuilt = -2; std::deque<RoomReveal> rvJobs;
-    HudTarget rvTarget; ComPtr<ID3D11DepthStencilView> rvDSV; int rvW = 0, rvH = 0; ImVec2 rvWant{ 0, 0 }; bool rvOn = true, rvShown = false;
+    HudTarget rvTarget; ComPtr<d12::DepthStencilView> rvDSV; int rvW = 0, rvH = 0; ImVec2 rvWant{ 0, 0 }; bool rvOn = true, rvShown = false;
     float rvYaw = 0.7f, rvPitch = 0.75f, rvDist = 90; V3 rvCenter{ 0, 0, 0 }; bool rvCentered = false;
     void RoomViewUpdate() {
         if (rooms.generation != rvGen) {   // the rooms changed: all again (a bit each frame)
@@ -14863,7 +14860,7 @@ struct App {
         ctx->PSSetShaderResources(0, 1, texArray.GetAddressOf()); ctx->PSSetShaderResources(14, 1, emitArray.GetAddressOf()); ctx->PSSetSamplers(0, 1, sampBlocks.GetAddressOf());
         WorldObject vo; vo.model = b.model; const ModelGpu* use = weapSel == weapState.current && cannonPosed ? &cannonGpu : nullptr;
         DrawObject(vo, 0, weapEye, use); DrawObject(vo, 1, weapEye, use);
-        ID3D11ShaderResourceView* none[10] = {}; ctx->PSSetShaderResources(0, 10, none); ctx->RSSetState(rsCull.Get());
+        d12::ShaderResourceView* none[10] = {}; ctx->PSSetShaderResources(0, 10, none); ctx->RSSetState(rsCull.Get());
         ctx->OMSetRenderTargets(0, nullptr, nullptr);
     }
     bool WeapPointEdit(const char* label, WeaponPoint& p, bool dir) {
@@ -16630,7 +16627,7 @@ struct App {
         V3 pv = BallPivotIn(*m); DrawModelAxes(pass, model, BallCentre(), ballAx * s, ballAy * s, ballAz * s, cam, &pv);
     }
     // ---- the Morph Ball 3D editor: the ball rolls on the spot (the floor runs past), with handles for its axle, its turning point and the trail
-    HudTarget ballEdView; ComPtr<ID3D11DepthStencilView> ballEdDSV; int beDW = 0, beDH = 0; int beWantW = 0, beWantH = 0; bool beShown = false;
+    HudTarget ballEdView; ComPtr<d12::DepthStencilView> ballEdDSV; int beDW = 0, beDH = 0; int beWantW = 0, beWantH = 0; bool beShown = false;
     float beYaw = 2.3f, bePitch = 0.32f, beZoom = 1; float beSpeedK = 0.6f; bool bePause = false; double beScroll = 0;
     V3 beAx{ 1, 0, 0 }, beAy{ 0, 1, 0 }, beAz{ 0, 0, 1 }; int beDrag = 0;   // 1 axle, 2 turning point, 3 trail point, 4 orbit
     struct BeDot { V3 pos; float age, life, seed; }; std::vector<BeDot> beTrail; float beAcc = 0; std::vector<RibbonPt> beRibbon;
@@ -16811,7 +16808,7 @@ struct App {
         double s = game.player.ballSize / std::max(0.05, std::max({ m->sx, m->sy, m->sz }));
         V3 pv = BallPivotIn(*m);
         for (int pass = 0; pass < 2; pass++) DrawModelAxes(pass, model, BeCentre(), beAx * s, beAy * s, beAz * s, eye, &pv);
-        ID3D11ShaderResourceView* none[10] = {}; ctx->PSSetShaderResources(0, 10, none); ctx->RSSetState(rsCull.Get());
+        d12::ShaderResourceView* none[10] = {}; ctx->PSSetShaderResources(0, 10, none); ctx->RSSetState(rsCull.Get());
         ctx->OMSetRenderTargets(0, nullptr, nullptr);
     }
     bool FaceVaryUI(FaceVary& v, const char* label, int baseLayer, const std::string& baseName) {   // a block face that varies from block to block (block editor)
@@ -17472,7 +17469,7 @@ struct App {
         dl->AddRectFilled(a, b, open ? IM_COL32(246, 202, 104, 255) : IM_COL32(232, 186, 88, 255), 3.f);
         dl->AddLine(ImVec2(a.x + 2, a.y + h * 0.18f), ImVec2(b.x - 2, a.y + h * 0.18f), IM_COL32(255, 228, 160, 160));
     }
-    void ImageFit(ImDrawList* dl, ID3D11ShaderResourceView* im, int iw, int ih, ImVec2 p, float s, float pad) {
+    void ImageFit(ImDrawList* dl, d12::ShaderResourceView* im, int iw, int ih, ImVec2 p, float s, float pad) {
         if (!im) return; float box = s - pad * 2, k = iw > 0 && ih > 0 ? std::min(box / iw, box / ih) : 1; float w = iw > 0 ? iw * k : box, h = ih > 0 ? ih * k : box;
         ImVec2 a(p.x + (s - w) * 0.5f, p.y + (s - h) * 0.5f); dl->AddImage((ImTextureID)(intptr_t)im, a, ImVec2(a.x + w, a.y + h));
     }
@@ -17491,11 +17488,11 @@ struct App {
             } else for (int i = 0; i < 32; i++) { float v = std::max(w[i * 2], w[i * 2 + 1]) * s * 0.3f + 1; dl->AddRectFilled(ImVec2(x0 + i * bw, mid - v), ImVec2(x0 + (i + 0.7f) * bw, mid + v), IM_COL32(176, 132, 255, 230)); }
             break; }
         case AssetType::Picture: {
-            int iw = 0, ih = 0; std::string f = FileOfKey(e.id); ID3D11ShaderResourceView* im = nullptr;
+            int iw = 0, ih = 0; std::string f = FileOfKey(e.id); d12::ShaderResourceView* im = nullptr;
             if (k.rfind("hud/", 0) == 0) { im = HudImage(f); iw = ih = 1; } else im = PictureAt(f, uiClock, true, &iw, &ih);
             ImageFit(dl, im, iw, ih, p, s, s * 0.08f); break; }
         case AssetType::Video: {
-            int iw = 0, ih = 0; ID3D11ShaderResourceView* im = VideoAt(FileOfKey(e.id), 0.5, false, &iw, &ih); ImageFit(dl, im, iw, ih, p, s, s * 0.08f);
+            int iw = 0, ih = 0; d12::ShaderResourceView* im = VideoAt(FileOfKey(e.id), 0.5, false, &iw, &ih); ImageFit(dl, im, iw, ih, p, s, s * 0.08f);
             dl->AddTriangleFilled(ImVec2(c.x - s * 0.1f, c.y - s * 0.13f), ImVec2(c.x - s * 0.1f, c.y + s * 0.13f), ImVec2(c.x + s * 0.14f, c.y), IM_COL32(255, 255, 255, 220)); break; }
         case AssetType::Enemy: case AssetType::Boss: {
             const EnemyType* t = enemies.find(std::atoi(k.c_str())); if (t) ModelIcon(dl, t->model, c, s * 0.75f);
@@ -18425,9 +18422,9 @@ struct App {
     // ================================================================== screenshot mode (--screenshots <folder>)
     std::string shotDir;
     void SaveShot(const std::string& path) {
-        ComPtr<ID3D11Texture2D> bb; HR(swap->GetBuffer(0, IID_PPV_ARGS(&bb)));
+        ComPtr<d12::Texture2D> bb; HR(swap->GetBuffer(0, &bb));
         D3D11_TEXTURE2D_DESC d; bb->GetDesc(&d); d.Usage = D3D11_USAGE_STAGING; d.BindFlags = 0; d.CPUAccessFlags = D3D11_CPU_ACCESS_READ; d.MiscFlags = 0;
-        ComPtr<ID3D11Texture2D> st; HR(dev->CreateTexture2D(&d, nullptr, &st)); ctx->CopyResource(st.Get(), bb.Get());
+        ComPtr<d12::Texture2D> st; HR(dev->CreateTexture2D(&d, nullptr, &st)); ctx->CopyResource(st.Get(), bb.Get());
         D3D11_MAPPED_SUBRESOURCE m; HR(ctx->Map(st.Get(), 0, D3D11_MAP_READ, 0, &m));
         std::vector<uint8_t> px((size_t)d.Width * d.Height * 4);
         for (UINT y = 0; y < d.Height; y++) { memcpy(&px[(size_t)y * d.Width * 4], (const uint8_t*)m.pData + (size_t)y * m.RowPitch, d.Width * 4); for (UINT x = 0; x < d.Width; x++) px[((size_t)y * d.Width + x) * 4 + 3] = 255; }
@@ -19163,9 +19160,9 @@ struct App {
     // ================================================================== frame
     float dynScale = 1.f; double dynT = 0;
     float drawMaxDist = 0; int lshFacesDrawn = 0, lshFacesShown = 0;   // (drawing chunks: only this near, 0 all)
-    ComPtr<ID3D11Texture2D> cascStatic; ComPtr<ID3D11DepthStencilView> cascStaticDSV[4]; bool cascStaticOk[4] = { false, false, false, false };   // the far maps' blocks and still things, kept (slice c-1 for map c)
+    ComPtr<d12::Texture2D> cascStatic; ComPtr<d12::DepthStencilView> cascStaticDSV[4]; bool cascStaticOk[4] = { false, false, false, false };   // the far maps' blocks and still things, kept (slice c-1 for map c)
     XMFLOAT4X4 cascVPs[4]; V3 cascCam[4]; V3 cascSun[4]; float cascR0[4] = { 0, 0, 0, 0 }; bool cascValid[4] = { false, false, false, false }; int cascSize = 0, cascDrawn = 0, cascDrawnShown = 0;   // the sun's maps: when each was drawn
-    ComPtr<ID3D11Texture2D> primePrevZ; ComPtr<ID3D11ShaderResourceView> primePrevZSRV; bool primePrevZOk = false;   // PrimeScaler: the frame before's depth   // auto resolution: a share of the render scale, and the time since it last changed
+    ComPtr<d12::Texture2D> primePrevZ; ComPtr<d12::ShaderResourceView> primePrevZSRV; bool primePrevZOk = false;   // PrimeScaler: the frame before's depth   // auto resolution: a share of the render scale, and the time since it last changed
     void FrameBody(double dt) {   // everything but showing the picture (screenshots grab it before)
         CpuBegin(); frameDt = dt;
         if (audioOk) { UpdateAudio(); UpdateMusic(dt); }
@@ -19211,7 +19208,7 @@ struct App {
 
         CpuMark("building menus, HUD, editor");
         ImGui::GetStyle().FontScaleMain = settings.uiScale;
-        ImGui_ImplDX11_NewFrame(); ImGui_ImplWin32_NewFrame(); ImGui::NewFrame();
+        ImGui_ImplD12_NewFrame(); ImGui_ImplWin32_NewFrame(); ImGui::NewFrame();
         if (emissionDirty && !ImGui::IsAnyItemActive()) { emissionDirty = false; ChangeBlocks([] {}); }   // an emission map or its light changed: textures, block light and models again
         ev = EditorView();
         if (screen == Screen::Title) ProjectManager();
@@ -19263,7 +19260,7 @@ struct App {
         if (screen != Screen::Game || ev) ctx->ClearRenderTargetView(backRTV.Get(), bg);
         D3D11_VIEWPORT v{ 0, 0, (float)cw, (float)ch, 0, 1 }; ctx->RSSetViewports(1, &v);
         GpuMark("editor and interface");
-        ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+        ImGui_ImplD12_RenderDrawData(ImGui::GetDrawData());
         GpuMark("screen transitions"); TransitionStep(dt, ev);
         GpuEnd();
     }
@@ -19292,7 +19289,7 @@ struct App {
     int VrW() const { return std::max(64, (int)std::lround(VR_SETS[vrSet].w * vrScale)); }
     int VrH() const { return std::max(64, (int)std::lround(VR_SETS[vrSet].h * vrScale)); }
     bool VrBench() const { return bench.vr && (bench.on || bench.loading); }
-    ComPtr<ID3D11Texture2D> vrTex[2]; ComPtr<ID3D11RenderTargetView> vrRTV[2]; ComPtr<ID3D11ShaderResourceView> vrSRV[2]; int vrTexW = 0, vrTexH = 0;
+    ComPtr<d12::Texture2D> vrTex[2]; ComPtr<d12::RenderTargetView> vrRTV[2]; ComPtr<d12::ShaderResourceView> vrSRV[2]; int vrTexW = 0, vrTexH = 0;
     void VrTargets() {   // the two eyes' pictures (at the eye's size)
         if (vrTex[0] && vrTexW == rw && vrTexH == rh) return;
         for (int e = 0; e < 2; e++) {
@@ -19512,8 +19509,9 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmd, int) {
     RECT rc{ 0, 0, app.shotDir.empty() ? 1600 : 1280, app.shotDir.empty() ? 900 : 720 }; AdjustWindowRect(&rc, WS_OVERLAPPEDWINDOW, FALSE);
     app.hwnd = CreateWindowA(wc.lpszClassName, "PRIMEngine", WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT, rc.right - rc.left, rc.bottom - rc.top, nullptr, nullptr, hi, nullptr);
     RECT cr; GetClientRect(app.hwnd, &cr); app.cw = std::max<int>(2, cr.right); app.ch = std::max<int>(2, cr.bottom);
+    app.gpuDebug = args.find("--gpu-debug") != std::string::npos;
     app.Init();
-    if (!app.shotDir.empty()) { app.RunScreenshots(); ImGui_ImplDX11_Shutdown(); ImGui_ImplWin32_Shutdown(); ImGui::DestroyContext(); return 0; }
+    if (!app.shotDir.empty()) { app.RunScreenshots(); ImGui_ImplD12_Shutdown(); ImGui_ImplWin32_Shutdown(); ImGui::DestroyContext(); return 0; }
     auto last = std::chrono::steady_clock::now();
     for (bool run = true; run;) {
         MSG msg; while (PeekMessageA(&msg, nullptr, 0, 0, PM_REMOVE)) { if (msg.message == WM_QUIT) run = false; TranslateMessage(&msg); DispatchMessageA(&msg); }
@@ -19523,6 +19521,6 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmd, int) {
     }
     if (app.world) app.SaveWorld();
     app.workers.reset();
-    ImGui_ImplDX11_Shutdown(); ImGui_ImplWin32_Shutdown(); ImGui::DestroyContext();
+    ImGui_ImplD12_Shutdown(); ImGui_ImplWin32_Shutdown(); ImGui::DestroyContext();
     return 0;
 }
