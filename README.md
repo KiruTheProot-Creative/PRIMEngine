@@ -33,7 +33,15 @@ A block world engine in C++ (Windows, Direct3D 11). Think of Minecraft built as 
 ## Direct3D 12 (the `dx12` branch)
 
 - The engine draws with **Direct3D 12**. A layer (`src/app/d3d12shim.*`) takes the same calls the engine made to Direct3D 11 and does them on D3D12: resource states and barriers, descriptor heaps, pipeline states, uploads, two frames in flight. The drawing code stayed as it was. In tests it gives the same pictures as Direct3D 11.
-- The D3D12 device and command list are open to new work that only D3D12 can do. Ray tracing (DXR) is next: reflections, mixed with the voxel reflections.
+- The D3D12 device and command list are open to new work that only D3D12 can do, like ray tracing.
+- **RTX reflections** (Settings > Ray tracing > Hardware (RTX), shown only on cards that can):
+  - The graphics card's ray tracing cores find what shiny surfaces mirror, using DXR 1.1 ray queries.
+  - Every chunk near you gets an acceleration structure, rebuilt when it changes, a few each frame, nearest first. Chunks far behind let theirs go.
+  - Each frame the chunks within reach form a scene, and a compute pass traces one ray per pixel of the reflections' picture. Hits are lit like everything else: sun and its shadow, sky, lamps, glow, fog.
+  - **Low**: polished and wet surfaces. **High**: anything shiny.
+  - **RTX reflection distance**: beyond it, the voxel reflections take over, blended smoothly.
+  - Objects still show as their voxel copies in reflections. Enemies and other things on screen come from the screen.
+  - The shader (`shaders/rt.hlsl`, shader model 6.5) is built with dxc from the Windows SDK into `shaders/rt_reflect.cso`.
 - **GPU log**: `gpu_log.txt` beside the program says which card and whether it can ray trace. Start with `--gpu-debug`, or put an empty `gpu_debug.txt` beside the program, and the D3D12 debug layer's messages go in there too. This needs Windows' optional "Graphics Tools".
 - **Crash report**: if the program crashes, `crash.txt` beside it names the function and line (with `PRIMEngine.pdb` next to the exe).
 
