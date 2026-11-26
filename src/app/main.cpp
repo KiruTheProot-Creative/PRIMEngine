@@ -38,6 +38,7 @@
 #include "../game/surfaces.h"
 #include "../game/buildmodes.h"
 #include "../game/cutscene.h"
+#include "../game/glowanim.h"
 #include <tuple>
 #include <thread>
 #include <mutex>
@@ -833,11 +834,40 @@ struct App {
         }
         return e;
     }
-    void BindModelTex(const ModelGpu& g, const std::string& model) {
+    // ---- glow animations (src/game/glowanim.h): the clock (the block shader gets the same), objects, the arm cannon, lamp blocks
+    double GlowTime() const { return std::fmod(animTime, 3600.0); }
+    GlowAnimSettings ObjGlowAnim(const WorldObject& o) const { return o.ownGlow ? o.glowAnim : materials.of(ModelMatKey(o.model)).anim; }
+    float ObjGlow(const WorldObject& o) const { return glowAt(ObjGlowAnim(o), GlowTime(), o.id); }
+    double weapShotAt = -99;   // (animTime) the last shot: the cannon's glow flashes
+    float CannonGlow() { const Beam* b = CurrentBeam(); if (!b) return 1; return weaponGlowAt(b->glow, GlowTime(), playMode ? animTime - weapShotAt : 99.0, playMode && weapState.charging ? weapState.charge : 0.f); }
+    GlowAnimSettings BlockGlowAnim(const BlockDef& d) const { for (int f = 0; f < 6; f++) if (!d.faces[f].empty()) { TexMaterial m = materials.of(d.faces[f]); if (m.anim.on()) return m.anim; } return {}; }
+    bool GlowAnimUI(const char* id, GlowAnimSettings& a) {   // the animation, how fast, how dim at its lowest, out of step - with a live preview
+        bool ch = false; ImGui::PushID(id); float ui = settings.uiScale;
+        Prop("Animation");
+        if (ImGui::BeginCombo("##ga", glowAnimName(a.kind))) { for (int k = 0; k < (int)GlowAnim::COUNT; k++) if (ImGui::Selectable(glowAnimName((GlowAnim)k), (int)a.kind == k)) { a.kind = (GlowAnim)k; ch = true; } ImGui::EndCombo(); }
+        if (a.on() && a.kind != GlowAnim::Off) {
+            Prop("Speed"); ch |= ImGui::SliderFloat("##gs", &a.speed, 0.1f, 5, "x %.2f", ImGuiSliderFlags_Logarithmic);
+            Prop("At its lowest"); ch |= ImGui::SliderFloat("##gl", &a.low, 0, 1, a.low <= 0.001f ? "dark" : "%.2f");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("How dim it gets: 0 goes dark, 0.5 only half as bright.");
+            Prop("Out of step"); ch |= ImGui::Checkbox("##go", &a.outOfStep);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("On: each one at its own moment (a row of lights doesn't blink all together).\nOff: all of them together.");
+            ImDrawList* dl = ImGui::GetWindowDrawList(); ImVec2 p = ImGui::GetCursorScreenPos(); float w = std::min(260 * ui, ImGui::GetContentRegionAvail().x), h = 26 * ui;
+            ImGui::Dummy(ImVec2(w, h));
+            float now = glowAt(a, GlowTime(), 0); int c = (int)(40 + 215 * now);
+            dl->AddRectFilled(p, ImVec2(p.x + h, p.y + h), IM_COL32(c, (int)(c * 0.85f), (int)(c * 0.4f), 255), 4);   // (the glow now)
+            ImVec2 g0(p.x + h + 6 * ui, p.y), g1(p.x + w, p.y + h); dl->AddRectFilled(g0, g1, IM_COL32(20, 22, 28, 255), 3);
+            for (int i = 1; i < 120; i++) {   // the next 4 seconds
+                float t0 = (i - 1) / 119.f * 4, t1 = i / 119.f * 4; float v0 = glowAt(a, GlowTime() + t0, 0), v1 = glowAt(a, GlowTime() + t1, 0);
+                dl->AddLine(ImVec2(g0.x + (g1.x - g0.x) * (i - 1) / 119.f, g1.y - 3 - (h - 6) * v0), ImVec2(g0.x + (g1.x - g0.x) * i / 119.f, g1.y - 3 - (h - 6) * v1), IM_COL32(255, 200, 90, 230), 1.5f);
+            }
+        }
+        ImGui::PopID(); return ch;
+    }
+    void BindModelTex(const ModelGpu& g, const std::string& model, float glowNow = 1) {   // glowNow: its glow animation right now (1: as it is)
         if (g.mesh) ctx->PSSetShaderResources(9, 1, g.tex.GetAddressOf());
         const ModelEmit& me = ModelEmitOf(model); ID3D11ShaderResourceView* es = me.on ? me.srv.Get() : nullptr; ctx->PSSetShaderResources(15, 1, &es);
         TexMaterial m = materials.of(ModelMatKey(model)); MeshMatCB d{};
-        float mm[8] = { m.shine, m.metal, m.glow, m.glowFrom, m.bumps, m.coat, me.on ? m.emit : 0.f, 0 }; std::memcpy(d.mm0, mm, sizeof mm);
+        float mm[8] = { m.shine, m.metal, m.glow * glowNow, m.glowFrom, m.bumps, m.coat, (me.on ? m.emit : 0.f) * glowNow, 0 }; std::memcpy(d.mm0, mm, sizeof mm);
         if (m.fake != FakeShine::Off && m.fakeStrength > 0) {   // fake shine
             ID3D11ShaderResourceView* pic = m.fake == FakeShine::Picture && m.fakePreset >= SHINE_PRESETS ? ShinePic(m.fakeMap) : nullptr;
             ID3D11ShaderResourceView* mask = ShinePic(m.fakeMask);
@@ -909,6 +939,12 @@ struct App {
                 }
             }
             if (m.emitMap != before.emitMap || m.lights != before.lights || m.realLight != before.realLight) emissionDirty = true;
+            if (m.glow > 0 || !found.empty()) {   // its glow over time: pulsing, blinking, flickering ...
+                ImGui::SeparatorText("Glow animation");
+                GlowAnimUI("mga", m.anim);
+                if (!isModel && m.anim.on()) Hint("Blocks built from it glow this way, and their real-time light with them (the old spreading light stays steady).");
+                if (isModel && m.anim.on()) Hint("Every placed object of this model, unless it has its own (Objects: pick it, \"Its own glow animation\").");
+            }
             if (isModel) FakeShineUI(m);
         }
         return m != before;
@@ -1798,7 +1834,7 @@ struct App {
     std::vector<LightGpu> frameLights; int frameLightCount = 0;
     struct ShadowCaster { V3 rel; double range; int type; V3 dir; double cosCone; int slot; float nearZ = 0.05f; bool render = false; bool redoStatic = false; };   // render: its map is drawn this frame   // nearZ: a lamp block's view starts outside its own block
     std::vector<ShadowCaster> casters; XMFLOAT4X4 lshVP[LSH_MAX * 6];
-    struct LampProxy { V3 p; double range; V3 col; float nearZ = 0.9f; V3 half{ 0, 0, 0 }; V3 eye{ 0, 0, 0 }; };   // nearZ: a lamp block's shadow view starts this far out (outside its own block); half: a glowing box (its surface shines); eye: where its shadow view is
+    struct LampProxy { V3 p; double range; V3 col; float nearZ = 0.9f; V3 half{ 0, 0, 0 }; V3 eye{ 0, 0, 0 }; GlowAnimSettings anim; uint32_t seed = 0; };   // anim: its blocks' glow animation (the light goes with it)   // nearZ: a lamp block's shadow view starts this far out (outside its own block); half: a glowing box (its surface shines); eye: where its shadow view is
     std::vector<LampProxy> lampProxies, realLamps; V3 lampScanAt{ 1e9, 0, 0 }; double lampScanAge = 99; int lampDropNow = -1;
     void Upload(ID3D11Buffer* b, const void* data, size_t bytes) {
         if (!b || !bytes) return; D3D11_MAPPED_SUBRESOURCE m;
@@ -1844,7 +1880,7 @@ struct App {
         lshSlots.assign(std::max(n, 0), LshSlot{});   // (every map drawn again)
     }
     // the real lamp blocks in these chunks as lights: lamps of one colour side by side merged into glowing boxes (mergeMany: very many become fewer point lights)
-    struct LampOne { V3 p; int lv[3]; bool out; int x, y, z; V3 eye; };
+    struct LampOne { V3 p; int lv[3]; bool out; int x, y, z; V3 eye; BlockId type = AIR; };
     struct LampChunk { uint64_t sig = 0; bool have = false; std::vector<LampOne> list; };
     std::unordered_map<I3, LampChunk, I3Hash> lampCache;   // each chunk's real lamps, until it (or a neighbour) changes
     std::vector<LampProxy> RealLampLights(I3 k0, I3 k1, bool mergeMany) {
@@ -1865,7 +1901,7 @@ struct App {
                                 BlockId b = ch->get(lx, ly, lz); if (b == AIR) continue;
                                 const BlockDef& def = world->reg.get(b); if (!def.lightOf() || !def.isReal() || def.liquid) continue;
                                 LampOne o; o.p = V3{ kx * (double)CS + lx + 0.5, ky * (double)CS + ly + 0.5, kz * (double)CS + lz + 0.5 }; def.lightLevels(o.lv); o.out = false;
-                                o.x = kx * CS + lx; o.y = ky * CS + ly; o.z = kz * CS + lz; o.eye = o.p;
+                                o.x = kx * CS + lx; o.y = ky * CS + ly; o.z = kz * CS + lz; o.eye = o.p; o.type = typeOf(b);
                                 if (std::max({ o.lv[0], o.lv[1], o.lv[2] }) <= 0) continue;
                                 {   // the light comes out of its open faces: set into a wall or a ceiling, it sits just in front of it (not in the middle, where the blocks around would shade it)
                                     int wx = kx * CS + lx, wy = ky * CS + ly, wz = kz * CS + lz; V3 open{ 0, 0, 0 }; int n = 0;
@@ -1886,7 +1922,7 @@ struct App {
                     }
             // the light comes from the lamps' surface (every side that isn't against a block): lamps of one colour next to each other become one
             // glowing box (up to 8 x 8 x 8) - one light, one shadow view, one shadow test, instead of one per block
-            struct Box { int x0, y0, z0, x1, y1, z1; int lv[3]; int n; V3 eye; bool out; };
+            struct Box { int x0, y0, z0, x1, y1, z1; int lv[3]; int n; V3 eye; bool out; GlowAnimSettings anim; uint32_t seed; };
             std::vector<Box> boxes;
             {
                 std::unordered_map<int64_t, int> at; auto key = [](int x, int y, int z) { return ((int64_t)(x & 0x1FFFFF) << 42) | ((int64_t)(y & 0x1FFFFF) << 21) | (int64_t)(z & 0x1FFFFF); };
@@ -1895,12 +1931,13 @@ struct App {
                 std::vector<char> used(reals.size(), 0);
                 for (int i = 0; i < (int)reals.size(); i++) {
                     if (used[i]) continue; const LampOne& c = reals[i];
-                    auto same = [&](int x, int y, int z) { auto it = at.find(key(x, y, z)); if (it == at.end() || used[it->second]) return false; const LampOne& o = reals[it->second]; return o.lv[0] == c.lv[0] && o.lv[1] == c.lv[1] && o.lv[2] == c.lv[2]; };
+                    const GlowAnimSettings cAnim = BlockGlowAnim(world->reg.get(c.type));   // (lamps that blink each at their own moment stay apart)
+                    auto same = [&](int x, int y, int z) { auto it = at.find(key(x, y, z)); if (it == at.end() || used[it->second]) return false; const LampOne& o = reals[it->second]; if (cAnim.on() && cAnim.outOfStep) return false; if (BlockGlowAnim(world->reg.get(o.type)) != cAnim) return false; return o.lv[0] == c.lv[0] && o.lv[1] == c.lv[1] && o.lv[2] == c.lv[2]; };
                     int x1 = c.x, z1 = c.z, y1 = c.y;
                     while (x1 + 1 - c.x < 8 && same(x1 + 1, c.y, c.z)) x1++;
                     for (;;) { if (z1 + 1 - c.z >= 8) break; bool ok = true; for (int x = c.x; x <= x1 && ok; x++) ok = same(x, c.y, z1 + 1); if (!ok) break; z1++; }
                     for (;;) { if (y1 + 1 - c.y >= 8) break; bool ok = true; for (int z = c.z; z <= z1 && ok; z++) for (int x = c.x; x <= x1 && ok; x++) ok = same(x, y1 + 1, z); if (!ok) break; y1++; }
-                    Box bx{ c.x, c.y, c.z, x1, y1, z1, { c.lv[0], c.lv[1], c.lv[2] }, 0, c.eye, c.out };
+                    Box bx{ c.x, c.y, c.z, x1, y1, z1, { c.lv[0], c.lv[1], c.lv[2] }, 0, c.eye, c.out, cAnim, glowSeedOf(c.x, c.y, c.z) };
                     for (int y = c.y; y <= y1; y++) for (int z = c.z; z <= z1; z++) for (int x = c.x; x <= x1; x++) { int k = at[key(x, y, z)]; used[k] = 1; bx.n++; }
                     boxes.push_back(bx);
                 }
@@ -1915,6 +1952,7 @@ struct App {
                     lp.half = half + V3{ 0.06, 0.06, 0.06 };   // (its light starts just outside its faces)
                     bool one = bx.n == 1;
                     lp.eye = one ? bx.eye : c; lp.nearZ = one && bx.out ? 0.12f : (float)(big + 0.05);   // its shadow view: in front of a lamp set into a wall, else from its middle, starting just past it
+                    lp.anim = bx.anim; lp.seed = bx.seed;
                     out.push_back(lp);
                 }
             } else {   // very many (a lit wall far and wide): merged into fewer point lights, bigger cells until there are not too many
@@ -2338,7 +2376,7 @@ struct App {
         for (const WorldObject& o : objects) {
             if (SwitchedOff(o)) continue;
             if (o.kind == ObjKind::Light) {
-                const LightSettings& s = o.light; double k = s.intensity * flickerAt(s.flicker, animTime, o.id);
+                const LightSettings& s = o.light; double k = s.intensity * (s.matchGlow && !o.model.empty() && o.model[0] != '@' ? ObjGlow(o) : glowAt(s.anim, GlowTime(), o.id));   // (its animation, or its model's glow)
                 V3 c = ColorOf(s.color); c = { std::pow(c.x, 2.2) * k, std::pow(c.y, 2.2) * k, std::pow(c.z, 2.2) * k };
                 double a = o.yaw * 3.14159265358979 / 180, t = s.tilt * 3.14159265358979 / 180;
                 V3 d{ std::sin(a) * std::cos(t), -std::sin(t), std::cos(a) * std::cos(t) };
@@ -2351,7 +2389,8 @@ struct App {
                 const ModelEmit& me = ModelEmitOf(o.model); if (!me.on) continue;
                 TexMaterial m = materials.of(ModelMatKey(o.model)); if (m.lights <= 0 || m.emit <= 0) continue;
                 FrameRef f = ModelOf(o); if (!f) continue; Box3 b = objectBounds(o, *f); V3 p = (b.lo + b.hi) * 0.5;
-                simple(p, std::max(1.0f, m.lights), me.col * (double)(m.emit * 1.2f));
+                float ga = ObjGlow(o); if (ga <= 0.001f) continue;   // (its glow animation: the light goes with it)
+                simple(p, std::max(1.0f, m.lights), me.col * (double)(m.emit * 1.2f * ga));
             } else if (o.kind == ObjKind::Particles && o.particles.light) {
                 const ParticleSettings& s = o.particles; double k = s.lightIntensity * flickerAt(Flicker::Candle, animTime * 1.3, o.id);
                 V3 c0 = ColorOf(s.color0), c1 = ColorOf(s.color1); V3 c{ std::pow((c0.x + c1.x) / 2, 2.2) * k, std::pow((c0.y + c1.y) / 2, 2.2) * k, std::pow((c0.z + c1.z) / 2, 2.2) * k };
@@ -2372,6 +2411,7 @@ struct App {
             double D = std::clamp((double)settings.lampDistance, 16.0, 256.0);
             for (const LampProxy& lp : realLamps) { double dd = dist(lp.p), f = 1 - std::clamp((dd - D * 0.75) / (D * 0.25), 0.0, 1.0); if (f <= 0) continue;
                 if (cookLitOn && dd - lp.range > CookLampFar() && CookInArea(lp.p)) continue;   // (the cooked world: its light only reaches where the baked light has taken over)
+                if (lp.anim.on()) { f *= glowAt(lp.anim, GlowTime(), lp.seed); if (f <= 0.001) continue; }   // (blinking, pulsing lamp blocks: their light with them)
                 bool box = lp.half.x > 0; all.push_back({ lp.p, lp.range, lp.col * (f * f * (3 - 2 * f)), box ? 3 : 0, { 0, -1, 0 }, -1, lp.half, false, settings.lampBlocks >= 2, dd, true, lp.nearZ, lp.eye, box }); }
         }
         std::sort(all.begin(), all.end(), [](const L& a, const L& b) { return a.dist - a.range < b.dist - b.range; });
@@ -2657,8 +2697,12 @@ struct App {
         Prop("Casts shadows"); ImGui::Checkbox("##lsh", &L.shadows);
         if (L.shadows) Hint("The nearest few lights that cast shadows really do (Options > Graphics: Shadows from lamps).");
         if (L.type == LightType::Spot) { Prop("Cone"); ImGui::SliderFloat("##lcone", &L.cone, 5, 80, "%.0f deg"); Prop("Looks down"); ImGui::SliderFloat("##ltilt", &L.tilt, -90, 90, "%.0f deg"); Hint("It points where the object faces (Turn), tilted down by this."); }
-        int f = (int)L.flicker; const char* fn[] = { flickerName(Flicker::None), flickerName(Flicker::Candle), flickerName(Flicker::Broken), flickerName(Flicker::Pulse) };
-        Prop("Flicker"); ImGui::Combo("##lf", &f, fn, 4); L.flicker = (Flicker)f;
+        ImGui::SeparatorText("Over time");
+        if (!o.model.empty() && o.model[0] != '@') {
+            Prop("Match the glow"); ImGui::Checkbox("##lmg", &L.matchGlow);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Its light follows its model's glow animation: the bulb and the light flicker together.");
+        }
+        if (!L.matchGlow || o.model.empty()) GlowAnimUI("lga", L.anim);
         Hint("Lights shine on blocks, objects and the HUD's 3D parts (hundreds at once). The bulb is only seen in the editor.");
     }
     void ParticleInspector(WorldObject& o) {
@@ -3605,7 +3649,7 @@ struct App {
         FrameRef m = ModelOf(o); if (!m) return;
         auto dg = use ? doorGpu.end() : doorGpu.find(o.id);
         const ModelGpu& g = use ? *use : dg != doorGpu.end() ? dg->second : GpuModel(o.model);
-        BindModelTex(g, o.model);   // the imported model's own picture, and the model's material
+        BindModelTex(g, o.model, ObjGlow(o));   // the imported model's own picture, and the model's material (its glow animation now)
         ID3D11RasterizerState* rsWas = nullptr; bool twoSided = o.kind == ObjKind::Door && g.mesh;   // imported door halves are often one-sided: seen from behind they had holes
         if (twoSided) { ctx->RSGetState(&rsWas); if (rsWas == rsCull.Get() || rsWas == rsCullFront.Get()) ctx->RSSetState(rsNoCull.Get()); }   // (shadow passes keep theirs)
         struct RsBack { ID3D11DeviceContext* c; ID3D11RasterizerState*& s; bool on; ~RsBack() { if (on) { c->RSSetState(s); if (s) s->Release(); } } } rsBack{ ctx.Get(), rsWas, twoSided };
@@ -3797,6 +3841,14 @@ struct App {
         if (ImGui::BeginCombo("##model", o.model.c_str())) { for (auto& n : AllModelNames()) if (ImGui::Selectable(n.c_str(), n == o.model)) { o.model = n; ch_ = true; } ImGui::EndCombo(); }
         { std::string f; if (AcceptAsset(AssetType::Model, f)) { o.model = f; ch_ = true; } }
         ModelMaterialUI(o.model);
+        if (!o.model.empty() && o.model[0] != '@' && o.kind != ObjKind::Light) {   // its own glow animation (one console blinks, another flickers)
+            TexMaterial mm = materials.of(ModelMatKey(o.model));
+            if (mm.glow > 0 || ModelEmitOf(o.model).on) {
+                Prop("Its own glow animation"); ImGui::Checkbox("##ownglow", &o.ownGlow);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Off: it glows like its model says (the model's material).\nOn: this object its own way.");
+                if (o.ownGlow) GlowAnimUI("oga", o.glowAnim);
+            }
+        }
         if (ImGui::SmallButton("Save as a prefab")) MakePrefab({ o }, !assetDir.empty() && assetDir[0] == '\t' ? "" : assetDir);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Into the Assets (the folder open there), with all its settings, to place again anywhere.\nOr drag it (or a whole folder of objects) from the Outliner into the Assets.");
         { int k = (int)o.kind; const char* kn[] = { "Prop (it just stands there)", "Door (forcefield, opens)", "Platform (moves along a path)", "Pickup", "Checkpoint", "Teleporter", "Trigger zone (invisible)", "Light", "Particles", "Map camera (invisible: a Map Station uses it)", "Map Station", "Enemy", "Save Station (E: saves the game)", "Ambient light (fills its room)", "Grapple point (the Grapple Beam latches on)" }; Prop("Kind");
@@ -4948,7 +5000,7 @@ struct App {
             }
         }
         fc.weather[0] = W.rain; fc.weather[1] = W.snow; fc.weather[2] = W.dark; fc.weather[3] = weather.wetness * E.atmosphere;
-        fc.blocks[0] = settings.connectTextures ? 1.f : 0.f; fc.blocks[1] = settings.grassDistance; fc.blocks[2] = 0; fc.blocks[3] = 0;   // connected textures, grass blades
+        fc.blocks[0] = settings.connectTextures ? 1.f : 0.f; fc.blocks[1] = settings.grassDistance; fc.blocks[2] = 0; fc.blocks[3] = (float)GlowTime();   // connected textures, grass blades, the glow animations' clock
         fc.wet2[0] = weather.puddles * E.atmosphere * (E.cold > 0.5f ? 0.f : 1.f); fc.wet2[1] = std::clamp((weather.wetness - 0.15f) * 1.4f, 0.f, 1.f) * E.atmosphere * (E.cold > 0.5f ? 0.f : 1.f);
         fc.weather2[0] = weather.snowCover * E.atmosphere; fc.weather2[1] = weather.flash * E.atmosphere; fc.weather2[2] = W.wind; fc.weather2[3] = skyMap ? 1.f : 0.f;
         ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &fc, 0, 0);
@@ -7218,7 +7270,7 @@ struct App {
                 if (only ? &c != only : c.cannon != cannon) continue;
                 FrameRef f = ModelNamed(c.model); if (!f) continue;
                 const ModelGpu& g = c.gpu ? *c.gpu : GpuModel(c.model);
-                BindModelTex(g, c.model);
+                BindModelTex(g, c.model, c.cannon ? CannonGlow() : 1.f);
                 for (int pass = 0; pass < 2; pass++) for (auto& part : g.parts) {
                     const GpuChunk& gc = part.second; UINT n = pass == 0 ? gc.nO : gc.nC; if (!n) continue;
                     V3 l{ part.first.x * (double)CS - f->pivot.x, part.first.y * (double)CS - f->pivot.y, part.first.z * (double)CS - f->pivot.z };
@@ -7343,7 +7395,7 @@ struct App {
                 bool upper = c.cannon == weapons.cannonInFront; D3D11_VIEWPORT sv{ 0, 0, (float)rw, (float)rh, upper ? 0.f : 0.001f, upper ? 0.001f : 0.002f }; ctx->RSSetViewports(1, &sv);
             }
             const ModelGpu& g = c.gpu ? *c.gpu : GpuModel(c.model);
-            BindModelTex(g, c.model);
+            BindModelTex(g, c.model, c.cannon ? CannonGlow() : 1.f);   // (the arm cannon: its glow animation, the flash of a shot, the charge)
             V3 ax = W(c.ax), ay = W(c.ay), az = W(c.az), base = W(c.base);
             {
                 int pass = mode == 2 ? 1 : 0;
@@ -8305,14 +8357,14 @@ struct App {
         if (R && !missilePrev && mt) {
             int left = inv.counts.count(counter) ? inv.counts[counter] : 0;
             if (!OwnsMissile(*mt)) Toast("You have not found the " + mt->name + " yet");
-            else if (weapState.fire(*b, mt, AnimLen(*b, Beam::MissileShot), left)) { inv.counts[counter] = left; StartTimeline(weapState.current, Beam::MissileShot); firedPending += mt->cost > 1 ? 3.5f : 2.5f; }
+            else if (weapState.fire(*b, mt, AnimLen(*b, Beam::MissileShot), left)) { inv.counts[counter] = left; StartTimeline(weapState.current, Beam::MissileShot); weapShotAt = animTime; firedPending += mt->cost > 1 ? 3.5f : 2.5f; }
             else if (left < std::max(1, mt->cost)) { Toast(left <= 0 ? std::string("No missiles left") : "Not enough missiles (a " + mt->name + " needs " + std::to_string(mt->cost) + ")"); GameSnd(&PlayerSounds::empty, SND_WEAPONS); }
         }
         {   // the beam: a press fires, holding charges (if the beam can), letting go when full fires the charged shot
             Beam use = *b; use.charge = b->charge && itemFx.canCharge;   // the Charge Beam item (if it is in the game)
             auto r = weapState.beamButton(use, L, shootPrev, (float)dt, AnimLen(*b, Beam::Fire));
-            if (r == WeaponState::Shot::Normal) { StartTimeline(weapState.current, Beam::Fire); firedPending += 1; }
-            if (r == WeaponState::Shot::Charged) { StopChargeTimeline(); chargeTlOn = false; StartTimeline(weapState.current, Beam::Charged); firedPending += 2.2f; }
+            if (r == WeaponState::Shot::Normal) { StartTimeline(weapState.current, Beam::Fire); firedPending += 1; weapShotAt = animTime; }
+            if (r == WeaponState::Shot::Charged) { weapShotAt = animTime; StopChargeTimeline(); chargeTlOn = false; StartTimeline(weapState.current, Beam::Charged); firedPending += 2.2f; }
             bool chargingNow = weapState.charging && weapState.charge > 0;   // the charging sounds (and animation) while it fills
             if (chargingNow && !chargeTlOn) {   // charging starts: its sound (cut when it is full or you let go) and its timeline
                 StartTimeline(weapState.current, Beam::Charging); chargeTlOn = true;
@@ -15185,6 +15237,12 @@ struct App {
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("A glowing see-through bubble that grows where the shot hits, then fades. 0: none.");
         Prop("Firing animation"); ch |= ClipCombo("##bfc", b.model, b.fireClip);
         Prop("Wait until it is done"); ch |= ImGui::Checkbox("##bw", &b.waitForAnim);
+        ImGui::SeparatorText("The cannon's glow (its emission map)");
+        ch |= GlowAnimUI("bga", b.glow.idle);
+        Prop("Lights up when shooting"); ch |= ImGui::SliderFloat("##bgf", &b.glow.shotFlash, 0, 6, b.glow.shotFlash <= 0 ? "no" : "+ %.1f");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("The moment a shot (or a missile) leaves, the glow flashes this much brighter, then fades back.");
+        if (b.glow.shotFlash > 0) { Prop("Fades in"); ch |= ImGui::SliderFloat("##bgd", &b.glow.shotFade, 0.05f, 1.5f, "%.2f s"); }
+        if (!ModelEmitOf(b.model).on && materials.of(ModelMatKey(b.model)).glow <= 0) Hint("Its model has no emission map (or glow) yet: Models, pick it, its material.");
         ImGui::SeparatorText("Charge shot (hold the button)");
         Prop("Can charge"); ch |= ImGui::Checkbox("##cc", &b.charge);
         if (b.charge) {
@@ -15197,6 +15255,8 @@ struct App {
             Prop("Charging animation"); ch |= ClipCombo("##cca", b.model, b.chargingClip);
             Prop("Full (loops)"); ch |= ClipCombo("##cfa", b.model, b.chargedClip);
             Prop("Charged shot animation"); ch |= ClipCombo("##csa", b.model, b.chargedShotClip);
+            Prop("Glows while charging"); ch |= ImGui::SliderFloat("##cgl", &b.glow.chargeGlow, 0, 5, b.glow.chargeGlow <= 0 ? "no" : "+ %.1f");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("The cannon's glow (its emission map) gets this much brighter as the charge fills, and throbs when it is full.");
             Hint("A tap fires a normal shot. Hold: it charges at the muzzle; let go when it is full for the charged shot. (Holding to keep firing is off while a beam can charge.) The HUD can show it: Shows > Beam charge.");
         }
         {   // a sound for every moment, in the order they happen
@@ -18685,6 +18745,20 @@ struct App {
                 waitLoaded();
                 shotAt("multi_blocks_pad_and_mural", { ox + 3.0, gy + 9.0, oz + 12.0 }, { ox + 3.0, gy + 0.5, oz + 2.0 });
                 shotAt("multi_blocks_pad_from_above", { ox + 3.0, gy + 13.0, oz + 3.5 }, { ox + 3.0, (double)gy, oz + 2.9 });
+                {   // glow animations: a row of lamp blocks that blink, each at its own moment; a second row that pulses together
+                    BlockId lampB = reg.find("lamp"); std::string lampTex = lampB ? reg.get(lampB).faces[F_PY] : "";
+                    if (lampB && !lampTex.empty()) {
+                        TexMaterial keep = materials.of(lampTex); bool had = materials.isSet(lampTex);
+                        TexMaterial m = keep; if (m.glow <= 0) m.glow = 1; m.anim.kind = GlowAnim::Blink; m.anim.low = 0.05f; m.anim.outOfStep = true; materials.put(lampTex, m); matsDirty = true;
+                        for (int k = 0; k < 10; k++) world->set(ox - 2 + k, gy + 1, oz + 8, lampB);
+                        Log("glow animations: lamp texture " + lampTex + ", blink, out of step; the light of block 0 now " + std::to_string(glowAt(m.anim, GlowTime(), glowSeedOf(ox - 2, gy + 1, oz + 8))));
+                        double keepT = animTime;
+                        animTime = 100.0; shotAt("glow_anim_lamps_blinking_out_of_step", { ox + 2.5, gy + 3.5, oz + 14.0 }, { ox + 2.5, gy + 1.0, oz + 8.0 });
+                        animTime = 100.6; shotAt("glow_anim_lamps_a_moment_later", { ox + 2.5, gy + 3.5, oz + 14.0 }, { ox + 2.5, gy + 1.0, oz + 8.0 });
+                        animTime = keepT; if (had) materials.put(lampTex, keep); else materials.reset(lampTex); matsDirty = true;
+                        for (int k = 0; k < 10; k++) world->set(ox - 2 + k, gy + 1, oz + 8, AIR);
+                    }
+                }
             }
         }
         {   // cutscenes (before the editor shots: the run has a time limit)

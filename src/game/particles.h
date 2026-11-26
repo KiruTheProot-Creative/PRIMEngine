@@ -2,6 +2,7 @@
 // Particles (G2 attempt 5): emitters you place (fire, smoke, sparks, steam ...) and the engine's own effects
 // (beam tails, impact sparks). Simulated here (plain C++, tested on Linux), drawn by the app as glowing or soft quads.
 #include "game.h"
+#include "glowanim.h"
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -75,7 +76,9 @@ struct LightSettings {
     uint32_t color = 0xFFE0B0;
     float intensity = 2, range = 8;  // range: blocks
     float cone = 35, tilt = 45;      // spotlights: half-angle, and how far it looks down (degrees; it turns with the object)
-    Flicker flicker = Flicker::None;
+    Flicker flicker = Flicker::None;  // (older files: anim takes its place)
+    GlowAnimSettings anim;           // steady, pulsing, blinking, flickering ...
+    bool matchGlow = false;          // on a model that glows: its light follows the model's glow animation (bulb and light together)
     bool shadows = false;            // casts shadows (the few nearest such lights do)
     float length = 4;                // strips: how long (blocks); it lies along where the object faces, tilted by "tilt"
 };

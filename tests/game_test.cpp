@@ -509,10 +509,10 @@ int main() {
         ParticleLook l0 = lookOf(e, e.ps.front());
         CHECK(l0.r > 0 && l0.a >= 0 && l0.a <= 1, "particles have a colour and see-through amount");
         CHECK(flickerAt(Flicker::None, 3, 1) == 1 && flickerAt(Flicker::Candle, 3, 1) < 1.01f && flickerAt(Flicker::Pulse, 0.5, 2) >= 0.09f, "light flicker");
-        WorldObject o; o.kind = ObjKind::Particles; o.particles = particlePreset("Smoke"); o.light.type = LightType::Spot; o.light.cone = 20; o.light.flicker = Flicker::Broken;
+        WorldObject o; o.kind = ObjKind::Particles; o.particles = particlePreset("Smoke"); o.light.type = LightType::Spot; o.light.cone = 20; o.light.anim.kind = GlowAnim::Flicker;
         std::vector<WorldObject> v{ o }, v2; saveObjects("/tmp/prim_fx.txt", v); loadObjects("/tmp/prim_fx.txt", v2);
         CHECK(v2.size() == 1 && v2[0].kind == ObjKind::Particles && !v2[0].particles.additive && v2[0].particles.shape == PShape::Smoke && v2[0].particles.size1 == o.particles.size1
-              && v2[0].light.type == LightType::Spot && v2[0].light.cone == 20 && v2[0].light.flicker == Flicker::Broken, "particles and lights save and load");
+              && v2[0].light.type == LightType::Spot && v2[0].light.cone == 20 && v2[0].light.flicker == Flicker::Broken && v2[0].light.anim.kind == GlowAnim::Flicker, "particles and lights save and load");
         CHECK(particlePresets().size() == 17, "seventeen presets"); CHECK(particlePreset("Muzzle flash").life < 0.15f, "a short muzzle flash");
         {   // the new ones: bubbles pop at the surface, things sway, steam fogs the visor, arcs, motes, mist
             World pond(r); pond.gen.layers = { { r.find("stone"), 3 } }; pond.stream({ 0, 0, 0 }, 2, 2, 100000);
@@ -2152,6 +2152,39 @@ int main() {
         CHECK(findCutscene(back, "Arrival") == 0 && findCutscene(back, "nope") < 0 && std::fabs(lastMoment(c) - 9) < 1e-6, "found by name; its last moment (for fitting the length)");
         EventCard card; card.dos = { { Do::PlayCutscene, "", "Arrival" } };
         CHECK(describe(card) == "When the player walks into any zone: play the cutscene Arrival.", "an event card can play a cutscene (%s)", describe(card).c_str());
+    }
+    {   // glow animations: one list for textures, models, objects, lights and the arm cannon
+        GlowAnimSettings st; CHECK(glowAt(st, 12.3, 7) == 1, "steady: always full");
+        GlowAnimSettings bl; bl.kind = GlowAnim::Blink; bl.outOfStep = false;
+        CHECK(glowAt(bl, 0.1, 0) == 1 && glowAt(bl, 0.9, 0) == 0, "blink: on, then off");
+        bl.low = 0.25f; CHECK(std::fabs(glowAt(bl, 0.9, 0) - 0.25f) < 1e-6, "'how dim at its lowest': never darker than that");
+        bl.speed = 2; CHECK(glowAt(bl, 0.45, 0) < 0.5f, "twice as fast: off already at 0.45 s");
+        bool inRange = true; int changes = 0;
+        for (int k = 0; k < (int)GlowAnim::COUNT; k++) { float prev = -1; for (int i = 0; i < 2000; i++) { float v = glowCurve((GlowAnim)k, i * 0.01); inRange &= v >= 0 && v <= 1; if (prev >= 0 && std::fabs(v - prev) > 1e-4f) changes++; prev = v; } }
+        CHECK(inRange && changes > 1000, "every curve stays between 0 and 1, and (but steady and off) they change");
+        GlowAnimSettings pu; pu.kind = GlowAnim::SlowPulse;
+        CHECK(std::fabs(glowAt(pu, 1.0, 11) - glowAt(pu, 1.0, 523)) > 0.01f, "out of step: two things pulse at their own moments");
+        pu.outOfStep = false; CHECK(glowAt(pu, 1.0, 11) == glowAt(pu, 1.0, 523), "... in step: together");
+        GlowAnimSettings fl; fl.kind = GlowAnim::Flicker; fl.speed = 1.5f; fl.low = 0.1f; fl.outOfStep = false; GlowAnimSettings back;
+        CHECK(glowAnimFrom(glowAnimText(fl), back) && back == fl, "saved as text and read back (%s)", glowAnimText(fl).c_str());
+        CHECK(glowSeedOf(1, 2, 3) == (((uint32_t)1 * 73856093u) ^ ((uint32_t)2 * 19349663u) ^ ((uint32_t)3 * 83492791u)), "a block's seed: from its place (the shader works it out the same way)");
+        WeaponGlow wg; wg.shotFlash = 2; wg.shotFade = 0.3f; wg.chargeGlow = 1.5f;
+        CHECK(std::fabs(weaponGlowAt(wg, 5, 99, 0) - 1) < 1e-6 && std::fabs(weaponGlowAt(wg, 5, 0, 0) - 3) < 1e-6 && weaponGlowAt(wg, 5, 0.15, 0) < 3 && weaponGlowAt(wg, 5, 0.15, 0) > 1
+              && std::fabs(weaponGlowAt(wg, 5, 0.31, 0) - 1) < 1e-6, "the cannon: its own glow, a flash when it shoots that fades in 0.3 s");
+        CHECK(weaponGlowAt(wg, 5, 99, 0.5f) > 1.2f && weaponGlowAt(wg, 5, 99, 1) > weaponGlowAt(wg, 5, 99, 0.5f), "... and brighter as the charge builds");
+        // saved with materials, objects (their own, a light's) and weapons
+        Materials mats; TexMaterial tm; tm.anim = fl; mats.set["panel"] = tm; mats.set["plain"] = TexMaterial{};
+        saveMaterials("/tmp/prim_mats.txt", mats); Materials mb; loadMaterials("/tmp/prim_mats.txt", mb);
+        CHECK(mb.set["panel"].anim == fl && !mb.set["plain"].anim.on(), "a texture's glow animation saved with its material");
+        WorldObject lo; lo.kind = ObjKind::Light; lo.name = "lamp"; lo.light.anim = pu; lo.light.matchGlow = true;
+        WorldObject mo; mo.kind = ObjKind::Prop; mo.name = "console"; mo.model = "console"; mo.ownGlow = true; mo.glowAnim = bl;
+        WorldObject old; old.kind = ObjKind::Light; old.name = "old"; old.light.anim.kind = GlowAnim::Candle;
+        saveObjects("/tmp/prim_objs.txt", { lo, mo, old }); std::vector<WorldObject> ob; loadObjects("/tmp/prim_objs.txt", ob);
+        CHECK(ob.size() == 3 && ob[0].light.anim == pu && ob[0].light.matchGlow && ob[1].ownGlow && ob[1].glowAnim == bl && !ob[0].ownGlow, "a light's animation (and 'match the glow'), an object's own glow animation: saved");
+        CHECK(ob[2].light.anim.kind == GlowAnim::Candle && ob[2].light.flicker == Flicker::Candle, "(older versions still read a candle as their flicker)");
+        WeaponSet ws = defaultWeapons(); ws.beams[0].glow = wg; ws.beams[0].glow.idle = pu;
+        saveWeapons("/tmp/prim_weap.txt", ws); WeaponSet wb; loadWeapons("/tmp/prim_weap.txt", wb);
+        CHECK(!wb.beams.empty() && wb.beams[0].glow == ws.beams[0].glow && wb.beams.size() == ws.beams.size(), "the cannon's glow (idle, flash, charge) saved with its beam");
     }
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
     return fails ? 1 : 0;

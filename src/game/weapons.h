@@ -4,6 +4,7 @@
 #include "game.h"
 #include "sound.h"
 #include "lockon.h"
+#include "glowanim.h"
 #include <string>
 #include <vector>
 
@@ -40,6 +41,7 @@ struct Beam {
     SoundSet hitSound, chargedHitSound;                 // where its shots hit
     SoundSet fireSound, chargeUp, chargedShotSound;     // the moment a shot leaves; while it charges (cut when full); the moment the charged shot leaves
     float hitSphere = 0.35f, chargeSphere = 1.3f;       // impact spheres where shots hit (blocks across, 0: none)
+    WeaponGlow glow;                                    // the cannon's glow (its emission map): idle animation, a flash when it shoots, brighter while charging
     // timelines: the animation's speed, sounds, and when the shot leaves, for each thing the beam does
     enum TimelineKind { Fire, Charging, Charged, MissileShot, TIMELINES };
     Timeline timelines[TIMELINES];

@@ -119,6 +119,7 @@ struct WorldObject {
     PickupSettings pickup; TeleportSettings teleport; TriggerSettings trigger;
     V3 size{ 2, 2, 2 };                               // trigger zones: their box (blocks)
     LightSettings light;                              // lights (and glowing emitters)
+    bool ownGlow = false; GlowAnimSettings glowAnim;  // its own glow animation (off: its model's, from its material)
     ParticleSettings particles;                       // particle emitters
     MapSettings map;                                  // map cameras and Map Stations
     ScanInfo scan;                                    // can be scanned (Scan Visor)

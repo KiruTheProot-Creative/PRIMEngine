@@ -3,6 +3,7 @@
 // its fine "coat" of noise is. Textures without settings of their own get a guess from their name (iron: metal,
 // glass / ice: shiny, lamp / lava / glow: glowing), like integrated PBR. Plain C++, tested on Linux.
 #include "../world/blocks.h"
+#include "glowanim.h"
 #include <map>
 #include <string>
 #include <vector>
@@ -35,6 +36,7 @@ struct TexMaterial {
     std::string emitMap;    // its file in the textures folder ("": none; a file called <texture>_e / _emission / _emissive / _glow .png is found by itself)
     float emit = 1.5f;      // how bright it glows
     float lights = 6;       // it lights up what is around it: blocks built from it shine this far (0 none .. 15 like a lamp), models a light this far
+    GlowAnimSettings anim;  // its glow (emission map, glowing pixels) and the light it gives: steady, pulsing, blinking, flickering ...
     bool realLight = true;  // blocks built from it: a real-time light (by direction, with shadows, when the game's "Lamp blocks" says so); off: the classic spreading light
     // fake shine (models)
     FakeShine fake = FakeShine::Off;
@@ -46,7 +48,7 @@ struct TexMaterial {
     bool operator==(const TexMaterial& o) const {
         return shine == o.shine && metal == o.metal && glow == o.glow && glowFrom == o.glowFrom && bumps == o.bumps && coat == o.coat && emitMap == o.emitMap && emit == o.emit && lights == o.lights && rough == o.rough && realLight == o.realLight
             && fake == o.fake && fakeStrength == o.fakeStrength && fakeTint == o.fakeTint && fakeBeam == o.fakeBeam && fakeWorld == o.fakeWorld && fakePreset == o.fakePreset && fakeMap == o.fakeMap && fakeMask == o.fakeMask
-            && glints[0] == o.glints[0] && glints[1] == o.glints[1] && glints[2] == o.glints[2];
+            && glints[0] == o.glints[0] && glints[1] == o.glints[1] && glints[2] == o.glints[2] && anim == o.anim;
     }
     bool operator!=(const TexMaterial& o) const { return !(*this == o); }
 };

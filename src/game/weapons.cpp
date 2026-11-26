@@ -134,6 +134,7 @@ bool saveWeapons(const std::string& path, const WeaponSet& w) {
           << " 30 30 1.5 16747066 " << b.startsOwned   // (the old per-beam missile settings: kept so older versions still read it)
           << " " << b.charge << " " << b.chargeTime << " " << b.chargeDamage << " " << b.chargeSize << " " << b.chargeSpeed << " " << esc(b.chargeLook) << " " << b.hitSphere << " " << b.chargeSphere << " 2\n";
         f << "beam2 " << b.shotStyle << " " << esc(b.chargingClip) << " " << esc(b.chargedClip) << " " << esc(b.chargedShotClip) << "\n";
+        f << "beamglow " << glowAnimText(b.glow.idle) << " " << b.glow.shotFlash << " " << b.glow.shotFade << " " << b.glow.chargeGlow << "\n";
         auto bs = [&](const char* k, const SoundSet& set) { for (const SoundUse& u : set.sounds) f << "bsound " << k << " " << soundUseText(u) << "\n"; };
         bs("done", b.chargeDone); bs("loop", b.chargedLoop); bs("hit", b.hitSound); bs("chit", b.chargedHitSound);
         bs("fire", b.fireSound); bs("up", b.chargeUp); bs("cshot", b.chargedShotSound);
@@ -162,6 +163,12 @@ bool loadWeapons(const std::string& path, WeaponSet& w) {
         else if (k == "timeline" && !w.beams.empty()) { int t; float sp, at; if (l >> t >> sp >> at && t >= 0 && t < Beam::TIMELINES) { w.beams.back().timelines[t].animSpeed = sp; w.beams.back().timelines[t].shotAt = at; } }
         else if (k == "clip" && !w.beams.empty()) { int t; SoundClip c; std::string rest; if (l >> t >> c.at && t >= 0 && t < Beam::TIMELINES) { std::getline(l, rest); if (soundUseFrom(rest, c.sound)) w.beams.back().timelines[t].sounds.push_back(c); } }
         else if (k == "switch") l >> w.switchMode;
+        else if (k == "beamglow" && !w.beams.empty()) {
+            std::string a[4]; WeaponGlow g;
+            if (l >> a[0] >> a[1] >> a[2] >> a[3] >> g.shotFlash >> g.shotFade >> g.chargeGlow && glowAnimFrom(a[0] + " " + a[1] + " " + a[2] + " " + a[3], g.idle)) {
+                g.shotFlash = std::clamp(g.shotFlash, 0.f, 10.f); g.shotFade = std::clamp(g.shotFade, 0.02f, 3.f); g.chargeGlow = std::clamp(g.chargeGlow, 0.f, 10.f); w.beams.back().glow = g;
+            }
+        }
         else if (k == "missile") {
             MissileType m; std::string n, md, tl, hl; m.adds = anyMissile ? 0 : 5;   // (older saves: only the plain missile adds)
             if (l >> n >> md >> m.startsOwned >> m.cost >> m.speed >> m.damage >> m.rate >> m.size >> m.color >> tl >> hl >> m.sphere) {

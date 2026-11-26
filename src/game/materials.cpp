@@ -51,6 +51,7 @@ std::vector<float> Materials::table(const BlockRegistry& reg) const {
             if ((g.color & 0xFFFFFF) != 0xFFFFFF) tint = (float)(g.color & 0xFFFFFF);   // (exact: 24 bits fit a float)
         }
         float* p = &t[i * 12]; p[0] = m.shine; p[1] = m.metal; p[2] = m.glow; p[3] = m.glowFrom; p[4] = m.bumps; p[5] = m.coat; p[6] = m.emit; p[7] = tint; p[8] = m.rough;
+        p[9] = (float)((int)m.anim.kind | (m.anim.outOfStep ? 32 : 0)); p[10] = m.anim.speed; p[11] = m.anim.low;   // its glow animation (the block shader's glowCurve)
     }
     return t;
 }
@@ -68,6 +69,7 @@ bool saveMaterials(const std::string& path, const Materials& m) {
       << " " << (int)t.fake << " " << t.fakeStrength << " " << t.fakeTint << " " << t.fakeBeam << " " << t.fakeWorld << " " << t.fakePreset << " " << esc(t.fakeMap) << " " << esc(t.fakeMask);
       for (const Glint& g : t.glints) f << " " << g.on << " " << g.yaw << " " << g.pitch << " " << g.color << " " << g.sharp << " " << g.power;
       f << " rough " << t.rough << " real " << (t.realLight ? 1 : 0);
+      if (t.anim.on()) f << " anim " << glowAnimText(t.anim);
       f << "\n"; }
     return (bool)f;
 }
@@ -86,6 +88,7 @@ bool loadMaterials(const std::string& path, Materials& m) {
           } }
         { std::string rk; float rv; if (l >> rk >> rv && rk == "rough") t.rough = std::clamp(rv, 0.f, 1.f); }   // (newer files)
         { std::string rk; int rv; if (l >> rk >> rv && rk == "real") t.realLight = rv != 0; }
+        { std::string ak, rest; if (l >> ak && ak == "anim") { std::getline(l, rest); glowAnimFrom(rest, t.anim); } }
         m.set[unesc(n)] = t;
     }
     return true;

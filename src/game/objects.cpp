@@ -231,7 +231,7 @@ bool saveObjects(const std::string& path, const std::vector<WorldObject>& objs) 
           << " " << esc(o.teleport.world) << " " << esc(o.teleport.target) << " " << (int)o.trigger.action << " " << esc(o.trigger.text) << " " << o.trigger.amount << " " << (o.trigger.once ? 1 : 0)
           << " " << esc(o.door.key);
         const LightSettings& L = o.light;
-        f << " " << (int)L.type << " " << L.color << " " << L.intensity << " " << L.range << " " << L.cone << " " << L.tilt << " " << (int)L.flicker;
+        f << " " << (int)L.type << " " << L.color << " " << L.intensity << " " << L.range << " " << L.cone << " " << L.tilt << " " << (int)(L.anim.kind == GlowAnim::Candle ? Flicker::Candle : L.anim.kind == GlowAnim::Flicker ? Flicker::Broken : L.anim.kind == GlowAnim::SlowPulse ? Flicker::Pulse : Flicker::None);
         const ParticleSettings& P = o.particles;
         f << " " << P.rate << " " << P.burst << " " << P.burstEvery << " " << P.life << " " << P.lifeVar << " " << P.dir.x << " " << P.dir.y << " " << P.dir.z << " " << P.spread
           << " " << P.speed << " " << P.speedVar << " " << P.gravity << " " << P.drag << " " << P.size0 << " " << P.size1 << " " << P.color0 << " " << P.color1 << " " << P.alpha0 << " " << P.alpha1
@@ -251,6 +251,8 @@ bool saveObjects(const std::string& path, const std::vector<WorldObject>& objs) 
         { const ParticleSettings& P2 = o.particles;   // particles: swaying, fogging the visor, only in water, an electric arc (newer files)
           if (P2.wobble > 0 || P2.fogsVisor > 0 || P2.stayIn || P2.arc)
               f << " pfx2 " << P2.wobble << " " << P2.fogsVisor << " " << P2.stayIn << " " << (P2.arc ? 1 : 0) << " " << P2.arcTo.x << " " << P2.arcTo.y << " " << P2.arcTo.z << " " << P2.arcBolts << " " << P2.arcJag; }
+        if (L.anim.on() || L.matchGlow) f << " lanim " << glowAnimText(L.anim) << " " << (L.matchGlow ? 1 : 0);   // a light's animation (newer files)
+        if (o.ownGlow) f << " glow " << glowAnimText(o.glowAnim);   // its own glow animation (else its model's)
         if (o.kind == ObjKind::MapStation && !o.map.rooms.empty()) { f << " mrooms " << o.map.rooms.size(); for (uint32_t r : o.map.rooms) f << " " << r; }
         f << "\n";
     }
@@ -278,7 +280,10 @@ bool loadObjects(const std::string& path, std::vector<WorldObject>& objs) {
             o.trigger.action = (TriggerAction)std::clamp(ta, 0, 4); o.trigger.text = unesc(tx); o.trigger.once = once != 0; o.door.key = unesc(dk);
         }
         int lt, fl; LightSettings L;   // lights and particles (newer files)
-        if (l >> lt >> L.color >> L.intensity >> L.range >> L.cone >> L.tilt >> fl) { L.type = (LightType)std::clamp(lt, 0, 2); L.flicker = (Flicker)std::clamp(fl, 0, 3); o.light = L; }
+        if (l >> lt >> L.color >> L.intensity >> L.range >> L.cone >> L.tilt >> fl) { L.type = (LightType)std::clamp(lt, 0, 2); L.flicker = (Flicker)std::clamp(fl, 0, 3);
+            L.anim.kind = L.flicker == Flicker::Candle ? GlowAnim::Candle : L.flicker == Flicker::Broken ? GlowAnim::Flicker : L.flicker == Flicker::Pulse ? GlowAnim::SlowPulse : GlowAnim::Steady;   // (older files: the flicker)
+            if (L.anim.kind == GlowAnim::SlowPulse) L.anim.low = 0.1f; else if (L.anim.kind == GlowAnim::Flicker) L.anim.low = 0.05f;
+            o.light = L; }
         ParticleSettings P; int add, sh, ar, co, bo, li;
         if (l >> P.rate >> P.burst >> P.burstEvery >> P.life >> P.lifeVar >> P.dir.x >> P.dir.y >> P.dir.z >> P.spread >> P.speed >> P.speedVar >> P.gravity >> P.drag >> P.size0 >> P.size1
               >> P.color0 >> P.color1 >> P.alpha0 >> P.alpha1 >> P.glow >> add >> sh >> ar >> P.areaSize.x >> P.areaSize.y >> P.areaSize.z >> P.spin >> co >> bo >> li >> P.lightRange >> P.lightIntensity >> P.maxParticles) {
@@ -293,7 +298,9 @@ bool loadObjects(const std::string& path, std::vector<WorldObject>& objs) {
               if (!tok.empty() && tok.find_first_not_of("0123456789") == std::string::npos) { o.scan.id = std::stoi(tok); int et; if (l >> et) { o.enemyType = et; int se, sa; if (l >> se >> sa) { o.save.energy = se != 0; o.save.ammo = sa != 0; std::string an; if (l >> an) { o.save.anim = unescText(an); int ls; float ll; if (l >> ls >> ll) { o.light.shadows = ls != 0; o.light.length = std::clamp(ll, 0.25f, 64.f); std::string so, sc; if (l >> so >> sc) { soundUseFrom(unescText(so), o.door.openSound); soundUseFrom(unescText(sc), o.door.closeSound); std::string stt, stx; int ask; if (l >> stt >> stx >> ask) { o.save.title = unescText(stt); o.save.text = unescText(stx); o.save.ask = ask != 0; } } } } } } }
               else { std::string sc, st; int imp = 0; float tm = 0; o.scan.legacyName = unescText(tok); if (l >> sc >> st >> imp >> tm) { o.scan.legacyCategory = unescText(sc); o.scan.legacyText = unescText(st); o.scan.legacyImportant = imp != 0; o.scan.legacyTime = std::max(0.f, tm); } }
           } }
-        for (std::string t; l >> t;) { if (t == "mrooms") { size_t n = 0; if (l >> n) for (size_t i = 0; i < n && i < 4096; i++) { uint32_t r; if (l >> r) o.map.rooms.push_back(r); } }
+        for (std::string t; l >> t;) { if (t == "lanim") { std::string a[4]; int mg = 0; if (l >> a[0] >> a[1] >> a[2] >> a[3] >> mg) { glowAnimFrom(a[0] + " " + a[1] + " " + a[2] + " " + a[3], o.light.anim); o.light.matchGlow = mg != 0; } }
+          else if (t == "glow") { std::string a[4]; if (l >> a[0] >> a[1] >> a[2] >> a[3] && glowAnimFrom(a[0] + " " + a[1] + " " + a[2] + " " + a[3], o.glowAnim)) o.ownGlow = true; }
+          else if (t == "mrooms") { size_t n = 0; if (l >> n) for (size_t i = 0; i < n && i < 4096; i++) { uint32_t r; if (l >> r) o.map.rooms.push_back(r); } }
           else if (t == "pfx2") { ParticleSettings& P2 = o.particles; int si = 0, ar = 0;
               if (l >> P2.wobble >> P2.fogsVisor >> si >> ar >> P2.arcTo.x >> P2.arcTo.y >> P2.arcTo.z >> P2.arcBolts >> P2.arcJag) {
                   P2.wobble = std::clamp(P2.wobble, 0.f, 5.f); P2.fogsVisor = std::clamp(P2.fogsVisor, 0.f, 1.f); P2.stayIn = std::clamp(si, 0, 1); P2.arc = ar != 0;

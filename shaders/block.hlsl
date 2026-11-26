@@ -62,7 +62,7 @@ cbuffer Frame : register(b0)
     float4 gVisFx;                  // the visor: x fogged up (steam), y frost, z a splat (0..1), w static (electric)
     float4 gVisFx2;                 // x how far up you look (-1..1), y how fast the view turns sideways (signed), z the face in the glass (0..1), w the splat's clock (s)
     float4 gVisSplat;               // rgb the splat's colour (linear), w its seed (+ 1000: it glows)
-    float4 gBlocks;                 // x connected textures on, y grass blades: how far from you (blocks, 0 off), z grass sway, w -
+    float4 gBlocks;                 // x connected textures on, y grass blades: how far from you (blocks, 0 off), z grass sway, w glow animations' clock (s)
 };
 // pixelated shadows (gAA.w: 16 or 32 a block): the spot a shadow is looked up at snapped to a grid on the surface, like the textures' pixels
 float3 pixSnap(float3 rel, float3 n)
@@ -764,6 +764,29 @@ void waterLight(float3 rel, float3 nFlat, float3 n, float2 pixel, out float3 sun
     }
 }
 
+// glow animations (src/game/glowanim.cpp: glowCurve - the same curves): how bright a glow is now, 0..1
+float glowCurveH(uint k, float t)
+{
+    const float TAU = 6.2831853;
+    if (k == 1) return 0.5 + 0.5 * sin(t * TAU * 0.3);
+    if (k == 2) return 0.5 + 0.5 * sin(t * TAU * 1.2);
+    if (k == 3) return frac(t * 0.8) < 0.5 ? 1 : 0;
+    if (k == 4) { float p = frac(t * 0.5); return (p < 0.06 || (p > 0.14 && p < 0.2)) ? 1 : 0; }
+    if (k == 5) { float q = sin(t * 1.7) + sin(t * 4.3 + 2) + sin(t * 9.1); return q > 1.6 ? 0 : (q > 1.3 ? 0.45 : 1); }
+    if (k == 6) return saturate(0.72 + 0.14 * sin(t * 11.3) + 0.09 * sin(t * 23.7 + 1.3) + 0.05 * sin(t * 41.1));
+    if (k == 7) return frac(t * 3) < 0.12 ? 1 : 0;
+    if (k == 8) { float p = frac(t * 1.1); float a = (p - 0.06) / 0.035, b = (p - 0.24) / 0.04; return min(1, exp(-a * a) + 0.7 * exp(-b * b)); }
+    if (k == 9) return 0;
+    return 1;
+}
+float glowAnimOf(float4 c, float3 wpos, float3 nf)   // a texture's animation (its material: c.y kind (+32: out of step), c.z speed, c.w how dim at its lowest)
+{
+    uint code = (uint)round(c.y); uint k = code & 31; if (k == 0) return 1;
+    float t = gBlocks.w * max(0.01, c.z);
+    if (code & 32) { int3 b = (int3)floor(wpos - nf * 0.01); uint h = ((uint)b.x * 73856093u) ^ ((uint)b.y * 19349663u) ^ ((uint)b.z * 83492791u); t += (h % 1000u) * 0.137; }   // (each block at its own moment)
+    return c.w + (1 - c.w) * glowCurveH(k, t);
+}
+
 float3 lightBlock(VSOut i, float3 albedo, bool front, out float3 n, out float shine, out float3 indirect)
 {
     n = front ? i.n : -i.n;
@@ -843,6 +866,7 @@ float3 lightBlock(VSOut i, float3 albedo, bool front, out float3 n, out float sh
         c += gSunColor.rgb * sh * ndl * spec * specCol * max(mshine, 0.35);
     }
     float3 gTint = glowTint(i.uvl.z < 16000 ? m.b.w : 0);                                        // a glowing face's colour (white: its own)
+    if (i.uvl.z < 16000 && (m.a.z > 0 || m.b.z > 0)) { float ga = glowAnimOf(m.c, gCamPos.xyz + i.rel, nFlat); m.a.z *= ga; m.b.z *= ga; }   // pulsing, blinking ... (models: done by the app)
     if (m.a.z > 0)                                                                                // glowing pixels (the bright ones, if set)
     {
         float lum = sqrt(lumOf(albedo));
