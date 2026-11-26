@@ -614,8 +614,8 @@ void DeviceContext::OMSetRenderTargetsAndUnorderedAccessViews(UINT n, RenderTarg
     g->dirty |= DT_UAV;
 }
 void DeviceContext::OMGetRenderTargets(UINT n, RenderTargetView** rt, DepthStencilView** ds) {
-    LK; for (UINT i = 0; i < n && rt; i++) rt[i] = i < RT_SLOTS ? g->b.rtv[i].Get() : nullptr;
-    if (ds) *ds = g->b.dsv.Get();
+    LK; for (UINT i = 0; i < n && rt; i++) { rt[i] = i < RT_SLOTS ? g->b.rtv[i].Get() : nullptr; if (rt[i]) rt[i]->AddRef(); }   // (counted, as D3D11 did: the caller lets them go)
+    if (ds) { *ds = g->b.dsv.Get(); if (*ds) (*ds)->AddRef(); }
 }
 void DeviceContext::OMSetBlendState(BlendState* b, const FLOAT f[4], UINT mask) {
     LK; if (g->b.blend.Get() != b || g->b.mask != mask) { g->b.blend = b; g->b.mask = mask; g->dirty |= DT_PSO; }

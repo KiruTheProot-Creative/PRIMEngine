@@ -67,6 +67,7 @@
 #include "d3d12shim.h"
 #include <dxgi1_5.h>
 #include <xaudio2.h>
+#include <dbghelp.h>
 #include <d3dcompiler.h>
 #include <DirectXMath.h>
 #include <DirectXPackedVector.h>
@@ -5966,6 +5967,7 @@ struct App {
         if (grabMouse) { Capture(false); captureNext = true; }   // grabbed next frame, once the picture fills the window
         Toast(info.hasSpawn ? "Playing. Esc: menu, F5: back to the editor" : "Playing from where the camera was (set a spawn point in the Outliner). F5: back to the editor");
         BeginLoading(true);
+        if (!shotDir.empty()) loadingOn = bootOn = false;   // (screenshot mode: straight in - the pictures are of the game, not its loading screen)
     }
     void StopPlay() {
         if (!playMode) return;
@@ -19496,7 +19498,29 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     return DefWindowProcA(h, m, w, l);
 }
 
+// a crash: what happened and where (function, file, line) into crash.txt beside the program (and the screenshot log)
+static LONG WINAPI CrashReport(EXCEPTION_POINTERS* ep) {
+    static bool once = false; if (once) return EXCEPTION_CONTINUE_SEARCH; once = true;
+    std::string out; char b[512];
+    snprintf(b, sizeof b, "PRIMEngine crashed: exception 0x%08X at %p\n", (unsigned)ep->ExceptionRecord->ExceptionCode, ep->ExceptionRecord->ExceptionAddress); out += b;
+    HANDLE proc = GetCurrentProcess(), th = GetCurrentThread(); SymSetOptions(SYMOPT_LOAD_LINES | SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS); SymInitialize(proc, nullptr, TRUE);
+    CONTEXT c = *ep->ContextRecord; STACKFRAME64 f{}; f.AddrPC.Offset = c.Rip; f.AddrPC.Mode = AddrModeFlat; f.AddrFrame.Offset = c.Rbp; f.AddrFrame.Mode = AddrModeFlat; f.AddrStack.Offset = c.Rsp; f.AddrStack.Mode = AddrModeFlat;
+    for (int i = 0; i < 40 && StackWalk64(IMAGE_FILE_MACHINE_AMD64, proc, th, &f, &c, nullptr, SymFunctionTableAccess64, SymGetModuleBase64, nullptr) && f.AddrPC.Offset; i++) {
+        alignas(SYMBOL_INFO) char sb[sizeof(SYMBOL_INFO) + 256]; SYMBOL_INFO* si = (SYMBOL_INFO*)sb; si->SizeOfStruct = sizeof(SYMBOL_INFO); si->MaxNameLen = 255; DWORD64 d64 = 0;
+        IMAGEHLP_LINE64 ln{}; ln.SizeOfStruct = sizeof ln; DWORD d32 = 0;
+        const char* fn = SymFromAddr(proc, f.AddrPC.Offset, &d64, si) ? si->Name : "?";
+        if (SymGetLineFromAddr64(proc, f.AddrPC.Offset, &d32, &ln)) { const char* file = ln.FileName; if (const char* s2 = strrchr(file, '\\')) file = s2 + 1; snprintf(b, sizeof b, "  %s  (%s:%lu)\n", fn, file, (unsigned long)ln.LineNumber); }
+        else snprintf(b, sizeof b, "  %s  (%p)\n", fn, (void*)f.AddrPC.Offset);
+        out += b;
+    }
+    { std::ofstream o(ExeDir() + "crash.txt", std::ios::trunc); o << out; }
+    if (!g_shotLog.empty()) { std::ofstream o(g_shotLog, std::ios::app); o << out; }
+    d12::Log(out);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
 int WINAPI WinMain(HINSTANCE hi, HINSTANCE, LPSTR cmd, int) {
+    SetUnhandledExceptionFilter(CrashReport);
     SetProcessDPIAware();
     App app; g_app = &app;
     std::string args = cmd ? cmd : ""; size_t sp = args.find("--screenshots");

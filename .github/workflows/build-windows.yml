@@ -43,6 +43,7 @@ jobs:
           $p = Start-Process -FilePath build/Release/PRIMEngine.exe -ArgumentList "--gpu-debug --screenshots shots" -PassThru
           if (-not $p.WaitForExit(1200000)) { $p.Kill(); "TIMEOUT after 20 minutes" | Out-File -Append shots/log.txt }
           Get-Content shots/log.txt
+          if (Test-Path build/Release/crash.txt) { Copy-Item build/Release/crash.txt shots/; "---- crash.txt"; Get-Content build/Release/crash.txt }
           if (Test-Path build/Release/gpu_log.txt) { Copy-Item build/Release/gpu_log.txt shots/; "---- gpu_log.txt"; Get-Content build/Release/gpu_log.txt -TotalCount 300 }
           Get-ChildItem shots
 
@@ -65,6 +66,7 @@ jobs:
             $img = [System.Drawing.Image]::FromFile($_.FullName); $img.Save((Join-Path $PWD "pub/$($_.BaseName).jpg"), $codec, $ep); $img.Dispose() }
           if (Test-Path shots/log.txt) { Copy-Item shots/log.txt pub/ }
           if (Test-Path shots/gpu_log.txt) { Copy-Item shots/gpu_log.txt pub/ }
+          if (Test-Path shots/crash.txt) { Copy-Item shots/crash.txt pub/ }
           "${{ github.sha }}" | Out-File pub/commit.txt
           cd pub
           git init -q; git checkout -q -b screenshots-dx12

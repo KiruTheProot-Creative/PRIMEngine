@@ -11,6 +11,8 @@ find_package(Threads REQUIRED)
 target_link_libraries(primcore PUBLIC Threads::Threads)
 if(MSVC)
     target_compile_options(primcore PUBLIC /W3 /utf-8 /MP /bigobj)   # (/bigobj: main.cpp has outgrown the default object file)
+    target_compile_options(primcore PUBLIC $<$<CONFIG:Release>:/Zi>)   # (debug info in a .pdb beside the program: a crash report names the function and line)
+    add_link_options($<$<CONFIG:Release>:/DEBUG> $<$<CONFIG:Release>:/OPT:REF> $<$<CONFIG:Release>:/OPT:ICF>)
     target_compile_definitions(primcore PUBLIC _CRT_SECURE_NO_WARNINGS NOMINMAX)
 endif()
 
@@ -29,7 +31,7 @@ if(WIN32)
         ${IMGUI}/imgui.cpp ${IMGUI}/imgui_draw.cpp ${IMGUI}/imgui_tables.cpp ${IMGUI}/imgui_widgets.cpp ${IMGUI}/imgui_stdlib.cpp
         ${IMGUI}/backends/imgui_impl_win32.cpp)
     target_include_directories(PRIMEngine PRIVATE ${IMGUI})
-    target_link_libraries(PRIMEngine primcore d3d12 dxgi dxguid d3dcompiler comdlg32 shell32 xaudio2 ole32 windowscodecs mfplat mfreadwrite mfuuid)
+    target_link_libraries(PRIMEngine primcore d3d12 dxgi dxguid d3dcompiler dbghelp comdlg32 shell32 xaudio2 ole32 windowscodecs mfplat mfreadwrite mfuuid)
     add_custom_command(TARGET PRIMEngine POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/shaders $<TARGET_FILE_DIR:PRIMEngine>/shaders
         COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/assets $<TARGET_FILE_DIR:PRIMEngine>/assets)

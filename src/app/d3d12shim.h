@@ -134,7 +134,7 @@ public:
     void IASetIndexBuffer(Buffer* b, DXGI_FORMAT f, UINT offset);
     void OMSetRenderTargets(UINT n, RenderTargetView* const* rt, DepthStencilView* ds);
     void OMSetRenderTargetsAndUnorderedAccessViews(UINT n, RenderTargetView* const* rt, DepthStencilView* ds, UINT uavStart, UINT nu, UnorderedAccessView* const* u, const UINT* counts);
-    void OMGetRenderTargets(UINT n, RenderTargetView** rt, DepthStencilView** ds);   // (not counted: the engine never let them go)
+    void OMGetRenderTargets(UINT n, RenderTargetView** rt, DepthStencilView** ds);   // (counted: Release them, as with D3D11)
     void OMSetBlendState(BlendState* b, const FLOAT factor[4], UINT mask);
     void OMSetDepthStencilState(DepthStencilState* d, UINT ref);
     void RSSetState(RasterizerState* r);
