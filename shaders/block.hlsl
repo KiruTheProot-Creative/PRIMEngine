@@ -866,7 +866,8 @@ float3 lightBlock(VSOut i, float3 albedo, bool front, out float3 n, out float sh
         c += gSunColor.rgb * sh * ndl * spec * specCol * max(mshine, 0.35);
     }
     float3 gTint = glowTint(i.uvl.z < 16000 ? m.b.w : 0);                                        // a glowing face's colour (white: its own)
-    if (i.uvl.z < 16000 && (m.a.z > 0 || m.b.z > 0)) { float ga = glowAnimOf(m.c, gCamPos.xyz + i.rel, nFlat); m.a.z *= ga; m.b.z *= ga; }   // pulsing, blinking ... (models: done by the app)
+    float gAnim = i.uvl.z < 16000 ? glowAnimOf(m.c, gCamPos.xyz + i.rel, nFlat) : 1;              // pulsing, blinking ... (models: done by the app)
+    m.a.z *= gAnim; m.b.z *= gAnim;
     if (m.a.z > 0)                                                                                // glowing pixels (the bright ones, if set)
     {
         float lum = sqrt(lumOf(albedo));
@@ -880,7 +881,7 @@ float3 lightBlock(VSOut i, float3 albedo, bool front, out float3 n, out float sh
     }
     if (i.lamp.a > 0.5)                                                                               // the lamp itself glows in its colour
     {
-        c = (dot(albedo, float3(0.2126, 0.7152, 0.0722)) * hue * 0.85 + albedo * hue * 0.3) * 3.2 * gExtra.w;
+        c = (dot(albedo, float3(0.2126, 0.7152, 0.0722)) * hue * 0.85 + albedo * hue * 0.3) * 3.2 * gExtra.w * gAnim;
         indirect = 0;                                                                                 // glowing things are never shaded
     }
     float3 v = -normalize(i.rel);

@@ -18752,10 +18752,10 @@ struct App {
                         TexMaterial m = keep; if (m.glow <= 0) m.glow = 1; m.anim.kind = GlowAnim::Blink; m.anim.low = 0.05f; m.anim.outOfStep = true; materials.put(lampTex, m); matsDirty = true;
                         for (int k = 0; k < 10; k++) world->set(ox - 2 + k, gy + 1, oz + 8, lampB);
                         Log("glow animations: lamp texture " + lampTex + ", blink, out of step; the light of block 0 now " + std::to_string(glowAt(m.anim, GlowTime(), glowSeedOf(ox - 2, gy + 1, oz + 8))));
-                        double keepT = animTime;
+                        double keepT = animTime; float keepHour = settings.timeOfDay; settings.timeOfDay = 22.5f; envState.update(0, player.eye(), info.environment, info.zones, true);
                         animTime = 100.0; shotAt("glow_anim_lamps_blinking_out_of_step", { ox + 2.5, gy + 3.5, oz + 14.0 }, { ox + 2.5, gy + 1.0, oz + 8.0 });
                         animTime = 100.6; shotAt("glow_anim_lamps_a_moment_later", { ox + 2.5, gy + 3.5, oz + 14.0 }, { ox + 2.5, gy + 1.0, oz + 8.0 });
-                        animTime = keepT; if (had) materials.put(lampTex, keep); else materials.reset(lampTex); matsDirty = true;
+                        animTime = keepT; settings.timeOfDay = keepHour; envState.update(0, player.eye(), info.environment, info.zones, true); if (had) materials.put(lampTex, keep); else materials.reset(lampTex); matsDirty = true;
                         for (int k = 0; k < 10; k++) world->set(ox - 2 + k, gy + 1, oz + 8, AIR);
                     }
                 }
