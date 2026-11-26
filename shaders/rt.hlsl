@@ -81,9 +81,9 @@ void CS_RtReflect(uint3 id : SV_DispatchThreadID)
     }
     bool hit = q.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
     float tHit = hit ? q.CommittedRayT() : 1e5;
-    {   // objects: their voxel copies, until the real models are in the scene too
+    {   // objects the scene doesn't have for real (imported and animated models, enemies, the ball, missiles): their voxel copies
         float ot; float3 on, oa;
-        if (objectTrace(ray.Origin, rv, min(tHit, tMax), ot, on, oa))
+        if (objectTrace(ray.Origin, rv, min(tHit, tMax), ot, on, oa, true))
         {
             float3 hp = ray.Origin + rv * ot; float sv;
             gRtOut[id.xy] = float4(reflFog(oa * reflLight(hp, on, pos, sv), hp, sv), ot); return;
@@ -92,6 +92,8 @@ void CS_RtReflect(uint3 id : SV_DispatchThreadID)
     if (!hit) { gRtOut[id.xy] = float4(0, 0, 0, 1e5); return; }
     RtHit hh = rtFetch(q.CommittedInstanceIndex(), q.CommittedGeometryIndex(), q.CommittedPrimitiveIndex(), q.CommittedTriangleBarycentrics());
     float3 hp = ray.Origin + rv * tHit;
-    float3 hn = unpackNormal(hh.nrm); if (dot(hn, rv) > 0) hn = -hn;   // (seen from behind)
+    float3 hn = unpackNormal(hh.nrm);
+    if (q.CommittedInstanceID() & 0x800000) hn = normalize(mul(hn, (float3x3)q.CommittedWorldToObject3x4()));   // an object: turned and stretched as it stands
+    if (dot(hn, rv) > 0) hn = -hn;   // (seen from behind)
     gRtOut[id.xy] = float4(rtShade(hp, hn, hh, tHit, pos), tHit);
 }

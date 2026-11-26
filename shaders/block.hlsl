@@ -1380,13 +1380,14 @@ float3 voxShade(float3 hp, float3 hn, uint layer, uint id, float2 uv, float t, f
     return reflFog(c, hp, sv);
 }
 // the nearest object a ray meets before maxT: its colour and the side it hit
-bool objectTrace(float3 P, float3 r, float maxT, out float tHit, out float3 nHit, out float3 albedo)
+bool objectTrace(float3 P, float3 r, float maxT, out float tHit, out float3 nHit, out float3 albedo, bool skipRtx = false)   // skipRtx: not the ones the RTX scene has for real
 {
     tHit = maxT; nHit = 0; albedo = 0; bool found = false;
     uint count = (((uint)gVoxM.w) & 3u) == 3u ? (uint)gPlanar.y : 0;
     [loop] for (uint k = 0; k < count; k++)
     {
         ObjVox ov = gObjVox[k];
+        if (skipRtx && ov.info.y > 0.5) continue;
         float3 o = float3(dot(ov.r0.xyz, P) + ov.r0.w, dot(ov.r1.xyz, P) + ov.r1.w, dot(ov.r2.xyz, P) + ov.r2.w);
         float3 d = float3(dot(ov.r0.xyz, r), dot(ov.r1.xyz, r), dot(ov.r2.xyz, r));
         float3 inv = 1 / (abs(d) > 1e-8 ? d : 1e-8);

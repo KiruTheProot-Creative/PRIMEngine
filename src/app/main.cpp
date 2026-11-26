@@ -237,7 +237,7 @@ struct App {
     float ReflScale() const { static const float k[4] = { 1.f, 0.75f, 0.5f, 0.25f }; return k[std::clamp(settings.reflectRes, 0, 3)]; }
     // ---- RTX reflections: the rays' finds (same size as the reflections' smaller picture), the shader, what is in the scene
     ComPtr<d12::Texture2D> rtxTex; ComPtr<d12::UnorderedAccessView> rtxUAV; ComPtr<d12::ShaderResourceView> rtxSRV; int rtxW = 0, rtxH = 0;
-    ComPtr<d12::ComputeShader> csRtRefl; int rtxInScene = 0, rtxBuilt = 0;
+    ComPtr<d12::ComputeShader> csRtRefl; int rtxInScene = 0, rtxBuilt = 0, rtxObjects = 0;
     void EnsureRtxTex(int w, int h) {
         if (rtxTex && w == rtxW && h == rtxH) return;
         D3D11_TEXTURE2D_DESC d{}; d.Width = (UINT)w; d.Height = (UINT)h; d.MipLevels = 1; d.ArraySize = 1; d.Format = DXGI_FORMAT_R16G16B16A16_FLOAT; d.SampleDesc.Count = 1; d.BindFlags = D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE;
@@ -246,6 +246,44 @@ struct App {
         rtxW = w; rtxH = h;
     }
     bool RtxOn() const { return mc::rtxSupported && csRtRefl && settings.rtxReflect > 0 && settings.reflections > 0; }
+    // an object the RTX scene holds as its real shape (a block model that stands still in itself; imported meshes and animated
+    // ones stay voxel copies in reflections): where it is drawn now, each 16-block part with its axes
+    bool RtxObject(const WorldObject& o) {
+        if (!RtxOn() || o.kind == ObjKind::Trigger || o.kind == ObjKind::Enemy || Gone(o) || doorGpu.count(o.id)) return false;
+        if ((o.kind == ObjKind::Light || o.kind == ObjKind::Particles || o.kind == ObjKind::MapCamera || o.kind == ObjKind::Ambient) && (playMode || plainView) && IsBuiltin(o.model)) return false;
+        if (o.kind == ObjKind::Pickup && playMode && inv.has(o.id)) return false;
+        if (!ModelOf(o)) return false;
+        double side = (settings.renderDistance + 1.0) * CS, up = (settings.verticalDistance + 1.0) * CS; V3 d = o.pos - camPos;
+        if (std::fabs(d.x) > side || std::fabs(d.z) > side || std::fabs(d.y) > up) return false;
+        return !GpuModel(o.model).mesh;
+    }
+    void RtxObjectInstances(const WorldObject& o, std::vector<d12::RtInstance>& inst, int& builds) {
+        std::vector<WorldObject> where;
+        if (o.kind == ObjKind::Pickup) { WorldObject at = o; at.yaw += animTime * 90; at.pos.y += 0.12 + 0.1 * std::sin(animTime * 2.5 + o.id); where.push_back(at); }
+        else if (o.kind == ObjKind::Platform) for (const V3& off : PlatformOffsets(o)) { WorldObject at = o; at.pos = o.pos + off; where.push_back(at); }
+        else where.push_back(o);
+        ModelGpu& g = GpuModel(o.model); FrameRef m = ModelOf(o); if (!m) return;
+        for (const WorldObject& at : where) {
+            double a = at.yaw * 3.14159265358979 / 180, c = std::cos(a), s = std::sin(a); V3 k = objectStretch(at, *m);
+            V3 ax{ c * k.x, 0, -s * k.x }, ay{ 0, k.y, 0 }, az{ s * k.z, 0, c * k.z };
+            for (auto& part : g.parts) {
+                GpuChunk& gc = part.second; if (!gc.nO && !gc.nC) continue;
+                if ((gc.blasDirty || !gc.blas) && builds < 96) {
+                    d12::RtGeometry geo[2]; UINT n = 0;
+                    if (gc.nO && gc.vbO && gc.ibO) geo[n++] = { gc.vbO.Get(), (UINT)sizeof(Vtx), 0, gc.ibO.Get(), gc.nO, true };
+                    if (gc.nC && gc.vbC && gc.ibC) geo[n++] = { gc.vbC.Get(), (UINT)sizeof(Vtx), 0, gc.ibC.Get(), gc.nC, false };
+                    ComPtr<d12::AccelStruct> as; if (n && SUCCEEDED(ctx->BuildBlas(geo, n, &as))) { gc.blas = as; gc.blasDirty = false; builds++; }
+                }
+                if (!gc.blas) continue;
+                V3 l{ part.first.x * (double)CS - m->pivot.x, part.first.y * (double)CS - m->pivot.y, part.first.z * (double)CS - m->pivot.z };
+                V3 org = at.pos - camPos + ax * l.x + ay * l.y + az * l.z;
+                d12::RtInstance ri; ri.blas = gc.blas.Get(); ri.id = 0x800000;   // (bit 23: an object - its normals turn with it)
+                const V3 cols[4] = { ax, ay, az, org };
+                for (int col = 0; col < 4; col++) { ri.transform[0][col] = (float)cols[col].x; ri.transform[1][col] = (float)cols[col].y; ri.transform[2][col] = (float)cols[col].z; }
+                inst.push_back(ri);
+            }
+        }
+    }
     // the world's chunks near you into the RTX scene (their shapes made first where they changed: a few each frame); then the rays
     bool TraceRtx(int lw, int lh) {
         if (!RtxOn()) return false;
@@ -276,7 +314,9 @@ struct App {
             ri.transform[0][3] = (float)(key.x * (double)CS - camPos.x); ri.transform[1][3] = (float)(key.y * (double)CS - camPos.y); ri.transform[2][3] = (float)(key.z * (double)CS - camPos.z);
             inst.push_back(ri);
         }
-        rtxBuilt = builds; rtxInScene = (int)inst.size();
+        int objInst = 0;
+        if (settings.rtObjects) for (const WorldObject& o : objects) if (RtxObject(o)) { size_t before = inst.size(); RtxObjectInstances(o, inst, builds); objInst += (int)(inst.size() - before); }
+        rtxBuilt = builds; rtxInScene = (int)inst.size(); rtxObjects = objInst;
         if (inst.empty()) return false;
         ctx->BuildTlas(inst.data(), (UINT)inst.size());
         EnsureRtxTex(lw, lh);
@@ -2098,7 +2138,7 @@ struct App {
         std::vector<ObjVoxGpu> out;
         for (const Near& n : nearList) {
             if (out.size() >= 48) break;
-            if (n.what == 0) { const WorldObject& src = objects[n.i]; WorldObject o = src; o.pos = src.pos + PlatformOffsets(src)[0]; VoxObject(out, o); }
+            if (n.what == 0) { const WorldObject& src = objects[n.i]; WorldObject o = src; o.pos = src.pos + PlatformOffsets(src)[0]; if (VoxObject(out, o) && RtxObject(src)) out.back().info[1] = 1; }   // (info.y 1: the RTX rays have its real shape - they skip this copy)
             else if (n.what == 1) {   // an enemy where it is now, turned and leaning as drawn (its model at rest)
                 const WorldObject& o = objects[n.i]; const EnemyState& st = enemyRt[o.id]; const EnemyType* t = enemies.find(st.type); if (!t) continue;
                 double sc = EnemyFit(*t); V3 up = Norm(st.up), fw = st.fwd, rt = Norm(cross(up, fw)); fw = cross(rt, up);
@@ -5792,7 +5832,7 @@ struct App {
         ImGui::Text("Block: %d %d %d   Chunk: %d %d %d", b.x, b.y, b.z, c.x, c.y, c.z);
         ImGui::Text("Facing: %s   %s", dirs[((int)(yd / 90)) % 4], player.flying ? "flying" : "walking");
         ImGui::Text("Chunks: %zu loaded, %zu with meshes, %d drawn, %d hidden behind walls%s", world->loadedCount(), gpu.size(), drawnChunks, caveHiddenShown, caveOn ? "" : " (off)");
-        if (RtxOn()) ImGui::Text("RTX: %d chunks in its scene, %d shapes made this frame", rtxInScene, rtxBuilt);
+        if (RtxOn()) ImGui::Text("RTX: %d chunks and %d object parts in its scene, %d shapes made this frame", rtxInScene - rtxObjects, rtxObjects, rtxBuilt);
         else if (mc::rtxSupported) ImGui::TextDisabled("RTX: off");
         ImGui::Text("Sun shadow maps drawn this frame: %d of 4 (the far ones every 2nd / 4th / 8th frame); lamp shadow sides drawn: %d", cascDrawnShown, lshFacesShown);
         if (settings.hideHidden) ImGui::Text("Hidden behind things (not drawn): %d chunks and far copies", hizHiddenShown);
