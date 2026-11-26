@@ -2189,7 +2189,7 @@ void visorDrops(float2 pos, out float2 off, out float rim)
             float spd = 0.06 + 0.1 * h.y, yy = frac(t * spd + h.x * 3.7) * 1.4 - 0.2;            // (screen heights)
             float cx = (ci + 0.3 + 0.4 * h.y) / cols;                                            // (screen heights across, like q)
             float2 q = pos / sz;
-            float2 dd = float2((q.x - cx) / (1 + abs(gVisFx2.y) * 3), q.y - yy) / 0.022; float k = dot(dd, dd);
+            float2 dd = float2((q.x - cx) / (1 + min(abs(gVisFx2.y), 1) * 0.8), q.y - yy) / 0.022;   // (smeared a little when you turn: still inside its column) float k = dot(dd, dd);
             if (k < 1) { float z = sqrt(1 - k); off -= dd * (1 - z * 0.35) * 0.022 * sz * 0.9; rim = max(rim, smoothstep(0.5, 1, k)); }
             else if (abs(q.x - cx) < 0.004 && q.y < yy && q.y > yy - 0.25) rim = max(rim, 0.25 * (1 - (yy - q.y) / 0.25));   // the trail
             continue;
@@ -2203,10 +2203,11 @@ void visorDrops(float2 pos, out float2 off, out float rim)
         if (h.x > amount) continue;                                                // (fewer and fewer as they dry)
         float2 c = 0.5 + (h - 0.5) * 0.55;
         float r = (0.14 + 0.2 * h3) * (L == 1 ? 0.7 : 1) * (L < 2 ? 0.55 + 0.45 * saturate(gWater2.y * 1.5) : 0.8);
-        float2 d = (f - c) / r; d.y *= 0.85;
-        if (L == 2) d.x /= 1 + abs(gVisFx2.y) * 3;   // (turning fast: the rain on the glass is smeared sideways)
+        float2 ax = float2(r * (L == 2 ? 1 + min(abs(gVisFx2.y), 1) * 0.8 : 1), r / 0.85);   // (a little taller than wide; rain smeared sideways when you turn fast)
+        ax = max(min(ax, min(c, 1 - c) - 0.02), 0.01);                                          // (always inside its own cell: never cut off by the cell's edge)
+        float2 d = (f - c) / ax;
         float k = dot(d, d);
-        if (k < 1) { float z = sqrt(1 - k); off -= d * (1 - z * 0.35) * r / cells * sz * 0.9; rim = max(rim, smoothstep(0.5, 1, k)); }
+        if (k < 1) { float z = sqrt(1 - k); off -= d * (1 - z * 0.35) * ax / cells * sz * 0.9; rim = max(rim, smoothstep(0.5, 1, k)); }
     }
 }
 // "AgX" (Troy Sobotka's film-like curve; polynomial fit by Benjamin Wrensch): very bright colours bleach toward white
