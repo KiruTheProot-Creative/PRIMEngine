@@ -14,7 +14,7 @@ namespace mc {
 // lit: corner darkening (bits 0-7, 255 = open), lamp light red / green / blue 0..15 (bits 8-11, 12-15, 16-19), glows itself (bit 20),
 //      shininess 0..15 (bits 21-24), mirror (bit 25);
 // normal: direction in 3 bytes (x, y, z; 0..255 = -1..1) + texture face (bits 24-26)
-struct Vtx { float x, y, z, u, v, layer; uint32_t lit, normal; uint32_t conn[3] = { 0, 0, 0 }; };   // conn: connected textures (see connInfo)
+struct Vtx { float x, y, z, u, v, layer; uint32_t lit, normal; uint32_t conn[3] = { 0, 0, 0 }; uint32_t over = 0; };   // conn: connected textures (see below); over: an overlay texture (layer | quarter turns << 16 | mirrored << 18: how the face below was turned)
 // connected textures, per cube face: its four neighbours on the same surface (edge 0 -u, 1 +u, 2 -v, 3 +v along the face's world axes
 // (a+1)%3 and (a+2)%3). conn[0]: the texture layers of edges 0 and 1 (16 bits each), conn[1]: of 2 and 3; conn[2]: per edge 2 bits how
 // (0 not at all, 1 the neighbour creeps over this face, 2 both creep: the border wanders either way), from bit 8 per edge 3 bits its width - 1

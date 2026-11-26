@@ -456,8 +456,8 @@ float cloudShadow(float3 rel)
     return exp(-cloudDensity(p + gSunDir.xyz * t, false) * 90);
 }
 
-struct VSIn { float3 pos : POSITION; float2 uv : TEXCOORD0; float layer : TEXCOORD1; uint lit : TEXCOORD2; uint normal : TEXCOORD3; float4 inst : TEXCOORD4; uint3 conn : TEXCOORD5; };   // inst (per instance): a world chunk's origin from the shared list (w 1), else 0: the ChunkCB's
-struct VSOut { float4 pos : SV_Position; float3 uvl : TEXCOORD0; float ao : TEXCOORD1; float3 rel : TEXCOORD2; float3 n : TEXCOORD3; float4 lamp : TEXCOORD4; float3 mat : TEXCOORD5; float kind : TEXCOORD6; nointerpolation uint3 conn : TEXCOORD7; float clip : SV_ClipDistance0; };
+struct VSIn { float3 pos : POSITION; float2 uv : TEXCOORD0; float layer : TEXCOORD1; uint lit : TEXCOORD2; uint normal : TEXCOORD3; float4 inst : TEXCOORD4; uint3 conn : TEXCOORD5; uint over : TEXCOORD6; };   // inst (per instance): a world chunk's origin from the shared list (w 1), else 0: the ChunkCB's
+struct VSOut { float4 pos : SV_Position; float3 uvl : TEXCOORD0; float ao : TEXCOORD1; float3 rel : TEXCOORD2; float3 n : TEXCOORD3; float4 lamp : TEXCOORD4; float3 mat : TEXCOORD5; float kind : TEXCOORD6; nointerpolation uint3 conn : TEXCOORD7; nointerpolation uint over : TEXCOORD8; float clip : SV_ClipDistance0; };
 // what the reflection pass needs per pixel: direction of the surface (rgb) and how shiny it is (a)
 // color: the lit picture; surface: direction + shininess (reflections); indirect: the part of the light that
 // comes from the sky and lamps (not the sun), which ambient occlusion takes away in corners
@@ -496,6 +496,7 @@ VSOut VS_Block(VSIn i)
     o.clip = dot(p, gClipPlane.xyz) + gClipPlane.w;
     o.kind = floor(i.layer / 16384);
     o.conn = i.inst.w > 0.5 ? i.conn : uint3(0, 0, 0);   // (connected textures: the world's blocks only)
+    o.over = i.over;
     return o;
 }
 
@@ -935,10 +936,21 @@ float3 connectUV(VSOut i)
     return float3(i.uvl.xy, layer);
 }
 
+// an overlay: a texture laid over the face (grass over a dirt side), never turned - the face below's turns and mirroring undone for it
+float4 withOverlay(float4 t, VSOut i)
+{
+    uint L = i.over & 0xFFFF; if (L == 0 || i.uvl.z > 16000) return t;
+    float2 uv = i.uvl.xy; uint k = (i.over >> 16) & 3;
+    [unroll] for (uint q = 0; q < 3; q++) if (q < k) uv = float2(uv.y, 1 - uv.x);   // (back by the quarter turns)
+    if ((i.over >> 18) & 1) uv.x = 1 - uv.x;
+    float4 o = gTex.Sample(gSamp, float3(uv, L));
+    return float4(lerp(t.rgb, o.rgb, o.a), max(t.a, o.a));
+}
+
 PSOut PS_Opaque(VSOut i, bool front : SV_IsFrontFace)
 {
     i.uvl = connectUV(i);
-    float4 t = albedoAt(i.uvl);
+    float4 t = withOverlay(albedoAt(i.uvl), i);
     PSOut o; float3 n; float sh;
     o.indirect = 0;
     o.albedo = float4(t.rgb, i.uvl.z < 16000 ? gMats[(uint)round(i.uvl.z)].c.x : 0);
@@ -954,7 +966,7 @@ PSOut PS_Opaque(VSOut i, bool front : SV_IsFrontFace)
 
 PSOut PS_Cutout(VSOut i, bool front : SV_IsFrontFace)
 {
-    float4 t = albedoAt(i.uvl);
+    float4 t = withOverlay(albedoAt(i.uvl), i);
     clip(t.a - 0.5);
     PSOut o; float3 n; float sh; float3 ind;
     o.albedo = float4(t.rgb, i.uvl.z < 16000 ? gMats[(uint)round(i.uvl.z)].c.x : 0);

@@ -104,6 +104,8 @@ struct BlockDef {
     std::string surface;                 // what it is made of, for Samus's steps on it (Surfaces tab): Rock, Metal, Water ... ("" none)
     FaceGlow glow[6];                    // faces that glow on their own
     FaceVary vary[6];                    // faces that vary from block to block
+    std::string overlay[6];              // a texture laid over a face (its see-through parts show the face below): never turned or varied - grass hanging over a dirt side that varies
+    int overlayTex[6] = { 0, 0, 0, 0, 0, 0 };   // (its layer: filled by resolve(); 0 none)
     std::vector<std::pair<int, float>> varyTex[6];   // (not saved) the other textures' layers and weights (filled by resolve())
     bool varies() const { for (const FaceVary& v : vary) if (v.on()) return true; return false; }
     bool exists = true;                  // false = a deleted id (kept so old worlds stay readable)
@@ -156,7 +158,7 @@ inline uint32_t varyHash(int x, int y, int z, int face, uint32_t seed) {
     uint32_t h = (uint32_t)x * 73856093u ^ (uint32_t)y * 19349663u ^ (uint32_t)z * 83492791u ^ (uint32_t)(face + 1) * 2654435761u ^ (seed + 1) * 0x9E3779B9u;
     h ^= h >> 16; h *= 0x7FEB352Du; h ^= h >> 15; h *= 0x846CA68Bu; h ^= h >> 16; return h;
 }
-inline int varyFace(const BlockDef& d, int face, int x, int y, int z, int base, float& u, float& v) {
+inline int varyFace(const BlockDef& d, int face, int x, int y, int z, int base, float& u, float& v, int* turnsOut = nullptr, bool* mirrorOut = nullptr) {   // turnsOut / mirrorOut: how it was turned (an overlay is turned back)
     const FaceVary& fv = d.vary[face]; if (!fv.on()) return base;
     uint32_t h = varyHash(x, y, z, face, fv.seed); int layer = base;
     const auto& o = d.varyTex[face];
@@ -169,6 +171,7 @@ inline int varyFace(const BlockDef& d, int face, int x, int y, int z, int base, 
     }
     if (fv.mirror && (h >> 2) & 1) u = 1 - u;
     int k = fv.turns >= 2 ? (int)(h & 3) : fv.turns == 1 ? (int)(h & 1) * 2 : 0;
+    if (turnsOut) *turnsOut = k; if (mirrorOut) *mirrorOut = fv.mirror && ((h >> 2) & 1);
     for (int i = 0; i < k; i++) { float t = u; u = 1 - v; v = t; }   // a quarter turn about the middle
     return layer;
 }

@@ -201,8 +201,10 @@ void buildMesh(const BlockRegistry& reg, const MeshInput& in, ChunkMesh& out) {
                     uint32_t base = (uint32_t)md.v.size();
                     for (int k = 0; k < 3; k++) {
                         float u, v; int tf; turnedTexture(rot, d.texTurns, t.p[k][0], t.p[k][1], t.p[k][2], f, tf, u, v);   // a turned block turns its textures too
-                        int layer = varies ? varyFace(d, tf, wx, wy, wz, d.tex[tf], u, v) : d.tex[tf];
-                        md.v.push_back({ x + t.p[k][0], y + t.p[k][1], z + t.p[k][2], u, v, (float)layer + 16384.f * wave, litv, packNormal(t.n[k][0], t.n[k][1], t.n[k][2], f) });
+                        int vk = 0; bool vm = false;
+                        int layer = varies ? varyFace(d, tf, wx, wy, wz, d.tex[tf], u, v, &vk, &vm) : d.tex[tf];
+                        uint32_t over = d.overlayTex[tf] > 0 ? (uint32_t)d.overlayTex[tf] | (uint32_t)vk << 16 | (vm ? 1u << 18 : 0u) : 0u;
+                        md.v.push_back({ x + t.p[k][0], y + t.p[k][1], z + t.p[k][2], u, v, (float)layer + 16384.f * wave, litv, packNormal(t.n[k][0], t.n[k][1], t.n[k][2], f), { 0, 0, 0 }, over });
                     }
                     md.i.insert(md.i.end(), { base, base + 1, base + 2 });
                     if (two) md.i.insert(md.i.end(), { base, base + 2, base + 1 });
@@ -257,7 +259,9 @@ void buildMesh(const BlockRegistry& reg, const MeshInput& in, ChunkMesh& out) {
                 // texture coordinates inside the block: side faces keep "up" pointing up
                 float lx = p[0] - c[0], ly = p[1] - c[1], lz = p[2] - c[2], u, v; int tf;
                 turnedTexture(cubeRot, d.texTurns, lx, ly, lz, f, tf, u, v);   // a turned cube turns its textures too (its top texture goes where its top went)
-                int layer = varies ? varyFace(d, tf, wx, wy, wz, d.tex[tf], u, v) : d.tex[tf];
+                int vk = 0; bool vm = false;
+                int layer = varies ? varyFace(d, tf, wx, wy, wz, d.tex[tf], u, v, &vk, &vm) : d.tex[tf];
+                uint32_t over = d.overlayTex[tf] > 0 ? (uint32_t)d.overlayTex[tf] | (uint32_t)vk << 16 | (vm ? 1u << 18 : 0u) : 0u;
                 float shade = 0.4f + 0.6f * ao[k] / 3.f;   // corner darkening; the light itself comes from the sun in the shader
                 // smooth lamp light: average of the open cells touching this corner in front of the face
                 int bl[3] = { 0, 0, 0 };
@@ -268,7 +272,7 @@ void buildMesh(const BlockRegistry& reg, const MeshInput& in, ChunkMesh& out) {
                     if (cnt) for (int c = 0; c < 3; c++) bl[c] = (sum[c] + cnt / 2) / cnt;
                 }
                 if (d.lightOf()) d.lightLevels(bl);
-                q[k] = { p[0], p[1], p[2], u, v, (float)layer + (d.waves ? 16384.f : 0.f), packLit(shade, bl, d.light > 0, d.mirror ? 1.f : d.shine, d.mirror, d.roughness), packNormal((float)n[0], (float)n[1], (float)n[2], f), { conn[0], conn[1], conn[2] } };
+                q[k] = { p[0], p[1], p[2], u, v, (float)layer + (d.waves ? 16384.f : 0.f), packLit(shade, bl, d.light > 0, d.mirror ? 1.f : d.shine, d.mirror, d.roughness), packNormal((float)n[0], (float)n[1], (float)n[2], f), { conn[0], conn[1], conn[2] }, over };
             }
             // split along the brighter diagonal, and wind each triangle clockwise when seen from outside
             uint32_t base = (uint32_t)md.v.size();

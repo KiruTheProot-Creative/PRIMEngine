@@ -69,6 +69,7 @@ bool Library::saveBlocks(const BlockRegistry& r) const {
                 f << "\nface_vary = " << k << " " << v.turns << " " << (v.mirror ? 1 : 0) << " " << v.seed << " " << v.ownWeight;
                 for (size_t i = 0; i < v.others.size(); i++) f << "\nface_vary_texture = " << k << " " << (i < v.weights.size() ? v.weights[i] : 1.f) << " " << v.others[i];
             }
+            for (int k = 0; k < 6; k++) if (!d.overlay[k].empty()) f << "\nface_overlay = " << k << " " << d.overlay[k];   // a texture laid over a face
             f << "\n";
         }
         if (!f) return false;
@@ -129,6 +130,7 @@ bool Library::load(BlockRegistry& r, std::string* report) {
         else if (k == "roughness") { float r = (float)std::atof(v.c_str()); d.roughness = r < 0 ? -1.f : std::min(1.f, r); }
         else if (k == "mirror") d.mirror = yes(v);
         else if (k == "connects") d.connects = yes(v);
+        else if (k == "face_overlay") { std::istringstream ss(v); int fk = -1; std::string nm; ss >> fk; std::getline(ss, nm); nm.erase(0, nm.find_first_not_of(' ')); if (fk >= 0 && fk < 6) d.overlay[fk] = nm; }
         else if (k == "connect_width") d.connectWidth = std::max(1, std::min(8, std::atoi(v.c_str())));
         else if (k == "grass_blades") d.grass = yes(v);
         else if (k == "grass_height") d.grassHeight = std::max(0.05f, std::min(1.5f, (float)std::atof(v.c_str())));

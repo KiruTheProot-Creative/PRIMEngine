@@ -641,8 +641,9 @@ struct App {
             { "TEXCOORD", 1, DXGI_FORMAT_R32_FLOAT, 0, 20, D3D11_INPUT_PER_VERTEX_DATA, 0 }, { "TEXCOORD", 2, DXGI_FORMAT_R32_UINT, 0, 24, D3D11_INPUT_PER_VERTEX_DATA, 0 },
             { "TEXCOORD", 3, DXGI_FORMAT_R32_UINT, 0, 28, D3D11_INPUT_PER_VERTEX_DATA, 0 },
             { "TEXCOORD", 4, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 0, D3D11_INPUT_PER_INSTANCE_DATA, 1 },   // (slot 1: the world chunks' origins, one per draw; nothing bound: zeros)
-            { "TEXCOORD", 5, DXGI_FORMAT_R32G32B32_UINT, 0, 32, D3D11_INPUT_PER_VERTEX_DATA, 0 } };   // (connected textures)
-        HR(dev->CreateInputLayout(el, 7, vb->GetBufferPointer(), vb->GetBufferSize(), &layout));
+            { "TEXCOORD", 5, DXGI_FORMAT_R32G32B32_UINT, 0, 32, D3D11_INPUT_PER_VERTEX_DATA, 0 },   // (connected textures)
+            { "TEXCOORD", 6, DXGI_FORMAT_R32_UINT, 0, 44, D3D11_INPUT_PER_VERTEX_DATA, 0 } };      // (an overlay texture)
+        HR(dev->CreateInputLayout(el, 8, vb->GetBufferPointer(), vb->GetBufferSize(), &layout));
         auto cb = [&](UINT size, ComPtr<ID3D11Buffer>& out) { D3D11_BUFFER_DESC d{}; d.ByteWidth = size; d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_CONSTANT_BUFFER; HR(dev->CreateBuffer(&d, nullptr, &out)); };
         cb(sizeof(FrameCB), cbFrame); cb(sizeof(ChunkCB), cbChunk); cb(sizeof(PreviewCB), cbPreview); cb(sizeof(MeshMatCB), cbMeshMat); cb(sizeof(MapCB), cbMap); cb(sizeof(VisorCB), cbVisor); cb(16, cbFlat); cb(sizeof(LookCB), cbLook);
 
@@ -6351,7 +6352,7 @@ struct App {
     }
     void BlockEditorBody() {
         float ui = settings.uiScale;
-        for (int f = 0; f < 6; f++) { int t = reg.textureIndex(draft.faces[f]); draft.tex[f] = t < 0 ? 0 : t; }
+        for (int f = 0; f < 6; f++) { int t = reg.textureIndex(draft.faces[f]); draft.tex[f] = t < 0 ? 0 : t; int o = draft.overlay[f].empty() ? -1 : reg.textureIndex(draft.overlay[f]); draft.overlayTex[f] = o > 0 ? o : 0; }
         // the preview on top (in the middle), then one row per setting: label left, field right
         float pv = std::min(120 * ui, ImGui::GetContentRegionAvail().x);
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.f, (ImGui::GetContentRegionAvail().x - pv) * 0.5f));
@@ -6453,6 +6454,7 @@ struct App {
             ImGui::PushID(i); ImGui::BeginGroup();
             ImVec2 tp; if (Tile("slot", tp, ts)) { pickSlot = i; ImGui::OpenPopup("pick"); }
             TextureImage(draft.tex[slots[i].faces[0]], tp, ts, 4);
+            if (int ov = draft.overlayTex[slots[i].faces[0]]; ov > 0) TextureImage(ov, tp, ts, 4);   // (its overlay, on top)
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s\nClick to choose a texture", draft.faces[slots[i].faces[0]].empty() ? "(no texture)" : draft.faces[slots[i].faces[0]].c_str());
             ImGui::TextDisabled("%s", slots[i].label);
             {   // this face glowing on its own (only this block's face, not the texture everywhere)
@@ -6471,6 +6473,28 @@ struct App {
                 if (v0.on()) ImGui::PopStyleColor();
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Make this face vary from block to block: random turns and / or other textures mixed in\n(so big floors and walls don't look like one tile over and over).");
                 if (ImGui::BeginPopup("vary")) { FaceVary v = v0; if (FaceVaryUI(v, slots[i].label, draft.tex[f0], draft.faces[f0])) for (int f : slots[i].faces) draft.vary[f] = v; ImGui::EndPopup(); }
+            }
+            {   // a texture laid over this face (its see-through parts show the face below), never turned or varied
+                int f0 = slots[i].faces[0]; bool has = !draft.overlay[f0].empty();
+                if (has) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.3f, 0.65f, 0.3f, 0.85f));
+                if (ImGui::SmallButton(has ? "Overlay on" : "Overlay")) ImGui::OpenPopup("overlay");
+                if (has) ImGui::PopStyleColor();
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Lay a see-through texture over this face, as a layer above it: it never turns or varies,\nso a dirt side can vary and turn while the grass hanging over it stays put.%s%s", has ? "\nNow: " : "", has ? draft.overlay[f0].c_str() : "");
+                if (ImGui::BeginPopup("overlay")) {
+                    ImGui::TextDisabled("A texture over: %s (its see-through parts show the face below)", slots[i].label);
+                    if (ImGui::Selectable("(no overlay)", !has)) { for (int f : slots[i].faces) { draft.overlay[f].clear(); draft.overlayTex[f] = 0; } ImGui::CloseCurrentPopup(); }
+                    float s = 48 * ui; int n = 0;
+                    ImGui::BeginChild("ovgrid", ImVec2(GridChildWidth(s, 8), (s + ImGui::GetStyle().ItemSpacing.y) * 4 + 12), ImGuiChildFlags_Borders);
+                    for (int t = 1; t < (int)reg.textureCount(); t++) {
+                        if (reg.image(t).variant()) continue;
+                        ImGui::PushID(t); ImVec2 q;
+                        if (Tile("o", q, s)) { for (int f : slots[i].faces) { draft.overlay[f] = reg.image(t).name; draft.overlayTex[f] = t; } ImGui::CloseCurrentPopup(); }
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s%s", reg.image(t).name.c_str(), reg.image(t).transparent ? "" : "\n(no see-through parts: it hides the face below)");
+                        TextureImage(t, q, s, 3);
+                        ImGui::PopID(); if (++n % 8) ImGui::SameLine();
+                    }
+                    ImGui::EndChild(); ImGui::EndPopup();
+                }
             }
             ImGui::EndGroup();
             if (ImGui::BeginPopup("pick")) {   // choose a texture for this slot
@@ -18492,6 +18516,20 @@ struct App {
             }
             BlockId metal = reg.find("metal");
             if (metal && !reg.find("mirror")) { BlockDef d = reg.get(metal); d.name = "mirror"; d.mirror = true; d.shine = 1; reg.add(d); }
+            ChangeBlocks([&] {   // grass and sand connect (grass grows blades); a dirt that varies with grass laid over its sides (an overlay)
+                BlockId g = reg.find("grass"), sd = reg.find("sand"), dt = reg.find("dirt");
+                if (g) { BlockDef d = reg.get(g); d.connects = true; d.connectWidth = 4; d.grass = true; d.grassHeight = 0.35f; d.grassDensity = 0.65f; reg.put(g, d); }
+                if (sd) { BlockDef d = reg.get(sd); d.connects = true; d.connectWidth = 3; reg.put(sd, d); }
+                int gs = reg.textureIndex("grass_side");
+                if (gs > 0 && dt && !reg.find("dirt overlaid")) {
+                    const TexImage& im = reg.image(gs); std::vector<uint8_t> px = im.rgba;   // the grass part of the grass side: green pixels, the rest see-through
+                    for (size_t i = 0; i + 3 < px.size(); i += 4) if (!(px[i + 1] > px[i] + 8 && px[i + 1] > px[i + 2])) px[i + 3] = 0;
+                    reg.setTexture("grass_overlay", im.w, im.h, px);
+                    BlockDef d = reg.get(dt); d.name = "dirt overlaid";
+                    for (int f : { F_PX, F_NX, F_PZ, F_NZ }) { d.vary[f].turns = 2; d.vary[f].mirror = true; d.overlay[f] = "grass_overlay"; }
+                    reg.add(d);
+                }
+            });
         }
         CreateWorld("Screenshot demo", 0); Capture(false);
         buildDemo(*world, reg);
@@ -18535,6 +18573,29 @@ struct App {
             swap->Present(0, 0);
             double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - s0).count();
             char line[256]; snprintf(line, sizeof line, "%s: %zu chunks with meshes, %d drawn, %d waiting frames, frame %.0f ms", name, gpu.size(), drawnChunks, frames, ms); Log(line);
+        }
+        {   // connected textures (grass, a sand bay, a cobblestone path that doesn't connect), grass blades on a ledge, a varying dirt wall with grass laid over it
+            double px = 92, pz = 12;
+            player.feet = { px, 40, pz - 10 }; settings.timeOfDay = 14.5f; info.environment = "temperate"; info.zones.clear(); envState.update(0, player.eye(), info.environment, info.zones, true);
+            weather.set(findWeather("partly_cloudy"), true); weather.autoChange = false; weather.wetness = 0; weather.puddles = 0; weather.snowCover = 0; weather.flash = 0; weather.boltAge = 99;
+            waitLoaded();
+            int gy = 0; for (int y = 60; y > -60; y--) { BlockId v = world->get((int)px, y, (int)pz); if (v != AIR && !reg.get(v).liquid) { gy = y; break; } }
+            BlockId G = reg.find("grass"), S = reg.find("sand"), C = reg.find("cobblestone"), D = reg.find("dirt overlaid");
+            for (int x = -7; x <= 7; x++) for (int z = -8; z <= 7; z++) {
+                BlockId b = G; if (z >= 2 && x <= -1) b = S; if (x == 1 || x == 2) b = C;
+                world->set((int)px + x, gy, (int)pz + z, b); for (int y = gy + 1; y < gy + 6; y++) world->set((int)px + x, y, (int)pz + z, AIR);
+            }
+            if (D) for (int x = 3; x <= 6; x++) for (int z = -7; z <= -3; z++) { world->set((int)px + x, gy + 1, (int)pz + z, D); world->set((int)px + x, gy + 2, (int)pz + z, G); }
+            waitLoaded();
+            auto shotAt = [&](const char* name, V3 eye, V3 target) {
+                V3 dlt = target - eye; double hz = std::sqrt(dlt.x * dlt.x + dlt.z * dlt.z);
+                player.feet = { eye.x, eye.y - player.eyeH, eye.z }; player.yaw = std::atan2(dlt.x, dlt.z); player.pitch = std::atan2(dlt.y, hz); player.vel = { 0, 0, 0 };
+                waitLoaded(); RenderWorld(backRTV.Get());
+                char nm[256]; snprintf(nm, sizeof nm, "%s/%02d_%s.png", shotDir.c_str(), ++n, name); SaveShot(std::string(nm)); swap->Present(0, 0); Log(std::string(nm) + ", grass blades on " + std::to_string(grassDrawn) + " tops");
+            };
+            shotAt("connected_textures_from_above", { px - 1.5, gy + 8.5, pz - 3.5 }, { px - 0.5, (double)gy, pz + 2.5 });
+            shotAt("grass_blades_ledge_and_overlay", { px + 0.5, gy + 2.6, pz - 10.5 }, { px + 4.5, gy + 2.0, pz - 5 });
+            shotAt("grass_blades_close", { px - 3.5, gy + 1.9, pz - 6 }, { px - 1, gy + 1.0, pz - 1 });
         }
         {   // the editor around the world, then Play mode's HUD
             auto poseAt = [&](const DemoShot& sh) {

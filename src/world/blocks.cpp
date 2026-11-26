@@ -97,7 +97,7 @@ void BlockRegistry::resolve() {
             textures.push_back(std::move(v)); d.tex[f] = (int)textures.size() - 1;
         }
     }
-    for (BlockDef& d : defs) resolveVary(d);
+    for (BlockDef& d : defs) { resolveVary(d); for (int f = 0; f < 6; f++) { int t = d.overlay[f].empty() ? -1 : textureIndex(d.overlay[f]); d.overlayTex[f] = t > 0 ? t : 0; } }
 }
 void BlockRegistry::resolveVary(BlockDef& d) const {   // a varying face's other textures: names -> layers (missing ones left out)
     for (int f = 0; f < 6; f++) {

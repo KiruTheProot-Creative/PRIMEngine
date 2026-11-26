@@ -245,6 +245,26 @@ int main() {
         CHECK(m.grass.size() == 3 && g && g->layer == grassTop && (g->edges & 1) && !(g->edges & 2) && (g->edges & 4) && (g->edges & 8) && std::abs(g->height - (int)std::lround(0.6 / 1.5 * 255)) <= 1,
               "grass tops: listed with their texture, height and open sides (grass beside: no lean)");
     }
+    {   // an overlay: a texture laid over a varying face - the vertices carry its layer and how the face below was turned (to turn it back)
+        BlockRegistry r3; registerBuiltinBlocks(r3);
+        BlockId dt = r3.find("dirt"); int over = r3.textureIndex("grass_side");
+        { BlockDef d = r3.get(dt); for (int f : { F_PX, F_NX, F_PZ, F_NZ }) { d.overlay[f] = "grass_side"; d.vary[f].turns = 2; d.vary[f].mirror = true; } r3.put(dt, d); r3.resolve(); }
+        World t(r3); t.gen.kind = Generator::Void;
+        for (int y = -1; y <= 1; y++) for (int z = -1; z <= 1; z++) for (int x = -1; x <= 1; x++) t.loadChunk({ x, y, z });
+        for (int k = 0; k < 6; k++) t.set(2 + k * 2, 5, 5, dt);
+        ChunkMesh m = meshOf(t, r3, { 0, 0, 0 });
+        int sides = 0, ok = 0, turned = 0, tops = 0;
+        for (const Vtx& v : m.opaque.v) {
+            int f = faceOf(v);
+            if (f == F_PY || f == F_NY) { tops += v.over == 0; continue; }
+            sides++;
+            int bx = 2 * (int)std::floor(v.x / 2), k2 = 0; bool mi = false; float u = 0.25f, vv = 0.75f;   // (the blocks stand two apart, at even x)
+            varyFace(r3.get(dt), f, bx, 5, 5, r3.get(dt).tex[f], u, vv, &k2, &mi);
+            if ((int)(v.over & 0xFFFF) == over && (int)((v.over >> 16) & 3) == k2 && (((v.over >> 18) & 1) != 0) == mi) ok++;
+            if ((v.over >> 16) & 7) turned++;
+        }
+        CHECK(over > 0 && sides == 6 * 4 * 4 && ok == sides && turned > 0 && tops == 6 * 2 * 4, "overlay: on the sides (with how each was turned, some turned), not on top or bottom");
+    }
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
     return fails ? 1 : 0;
 }
