@@ -2189,7 +2189,7 @@ void visorDrops(float2 pos, out float2 off, out float rim)
             float spd = 0.06 + 0.1 * h.y, yy = frac(t * spd + h.x * 3.7) * 1.4 - 0.2;            // (screen heights)
             float cx = (ci + 0.3 + 0.4 * h.y) / cols;                                            // (screen heights across, like q)
             float2 q = pos / sz;
-            float2 dd = float2((q.x - cx) / (1 + min(abs(gVisFx2.y), 1) * 0.8), q.y - yy) / 0.022;   // (smeared a little when you turn: still inside its column) float k = dot(dd, dd);
+            float2 dd = float2((q.x - cx) / (1 + min(abs(gVisFx2.y), 1) * 0.8), q.y - yy) / 0.022; float k = dot(dd, dd);   // (smeared a little when you turn: still inside its column)
             if (k < 1) { float z = sqrt(1 - k); off -= dd * (1 - z * 0.35) * 0.022 * sz * 0.9; rim = max(rim, smoothstep(0.5, 1, k)); }
             else if (abs(q.x - cx) < 0.004 && q.y < yy && q.y > yy - 0.25) rim = max(rim, 0.25 * (1 - (yy - q.y) / 0.25));   // the trail
             continue;
