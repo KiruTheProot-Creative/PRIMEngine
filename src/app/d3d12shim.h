@@ -93,6 +93,7 @@ class ComputeShader : public ShaderBase {};
 class AccelStruct : public DeviceChild {
 public:
     Page* page = nullptr; uint64_t off = 0, size = 0; D3D12_GPU_VIRTUAL_ADDRESS va = 0;
+    int compactSlot = -1; uint64_t compactFence = 0;   // (made smaller once the GPU says how small it can be)
     struct Geo { ComPtr<Buffer> vb, ib; }; std::vector<Geo> geos;   // (kept: the scene's shader reads their vertices)
     ~AccelStruct() override;
 };

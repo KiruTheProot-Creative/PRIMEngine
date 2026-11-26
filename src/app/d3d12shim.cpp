@@ -139,6 +139,12 @@ struct Core {
     std::vector<std::pair<uint64_t, ComPtr<ID3D12Resource>>> deadRes;
     ComPtr<ID3D12Resource> tlas[FRAMES]; uint64_t tlasSize[FRAMES] = {}; D3D12_GPU_VIRTUAL_ADDRESS tlasVA = 0; bool tlasReady = false, blasPending = false;
     std::vector<Resource*> geoRes; ID3D12Resource* instRes = nullptr; uint64_t instOff = 0; UINT instCount = 0;
+    // compaction: each build writes how small its result can be (postbuild info) into a slot; at the frame's end those slots are
+    // copied to be read back; a frame or two later the shape is copied into a place that size and the big one let go
+    static const UINT POST_SLOTS = 2048;   // per frame
+    ComPtr<ID3D12Resource> postBuf, postRead; uint64_t* postCpu = nullptr;
+    std::vector<AccelStruct*> compactWait, compactAsk;   // ask: built this frame, its size asked for at the frame's end
+    struct DeadRange { uint64_t fence; Page* page; uint64_t off, size; }; std::vector<DeadRange> deadRanges;
     std::vector<D3D12_RESOURCE_BARRIER> barriers; uint64_t stateSerial = 1, checkedSerial = 0;   // (a barrier anywhere: what is bound is checked again at the next draw)
 
     // -------- fences and frames
@@ -160,6 +166,7 @@ struct Core {
         for (size_t i = 0; i < dead.size();) { if (dead[i].first <= done) { go.push_back(dead[i].second); dead[i] = dead.back(); dead.pop_back(); } else i++; }
         for (DeviceChild* c : go) delete c;
         for (size_t i = 0; i < deadRes.size();) { if (deadRes[i].first <= done) { deadRes[i] = deadRes.back(); deadRes.pop_back(); } else i++; }
+        for (size_t i = 0; i < deadRanges.size();) { if (deadRanges[i].fence <= done) { deadRanges[i].page->give(deadRanges[i].off, deadRanges[i].size); deadRanges[i] = deadRanges.back(); deadRanges.pop_back(); } else i++; }
     }
     void uavBarrier(ID3D12Resource* r = nullptr) { D3D12_RESOURCE_BARRIER ub{}; ub.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV; ub.UAV.pResource = r; barriers.push_back(ub); }
     ComPtr<ID3D12Resource> makeBuffer(uint64_t n, D3D12_RESOURCE_STATES st, bool uav) {
@@ -282,7 +289,10 @@ D3D12_GPU_VIRTUAL_ADDRESS Resource::gpuVA() { Resource* r = real(); if (r->virt)
 Resource::~Resource() { if (page && g) page->give(goff, AlignUp(byteWidth, 256)); }
 View::~View() { if (!g) return; CpuHeap* h = heapType == 1 ? &g->cpuRtv : heapType == 2 ? &g->cpuDsv : &g->cpuSrv; h->release(cpu); for (auto& p : perBuffer) h->release(p); }
 SamplerState::~SamplerState() { if (g) g->cpuSmp.release(cpu); }
-AccelStruct::~AccelStruct() { if (page && g) page->give(off, size); }
+AccelStruct::~AccelStruct() {
+    if (!g) return; if (page) page->give(off, size);
+    if (compactSlot != -1) { g->compactWait.erase(std::remove(g->compactWait.begin(), g->compactWait.end(), this), g->compactWait.end()); g->compactAsk.erase(std::remove(g->compactAsk.begin(), g->compactAsk.end(), this), g->compactAsk.end()); }
+}
 D3D12_CPU_DESCRIPTOR_HANDLE View::handle() { if (!perBuffer.empty() && g) return perBuffer[std::min<size_t>(g->bbIndex, perBuffer.size() - 1)]; return cpu; }
 bool View::overlaps(const View& o) const {
     if (!res || !o.res || res->real() != o.res->real()) return false;
@@ -963,7 +973,7 @@ HRESULT DeviceContext::BuildBlas(const RtGeometry* gs, UINT n, AccelStruct** out
     }
     g->flushBarriers();
     D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS in{}; in.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
-    in.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE; in.NumDescs = n; in.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY; in.pGeometryDescs = d.data();
+    in.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE | D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_COMPACTION; in.NumDescs = n; in.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY; in.pGeometryDescs = d.data();
     D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO pi{}; g->dev5->GetRaytracingAccelerationStructurePrebuildInfo(&in, &pi);
     if (!pi.ResultDataMaxSizeInBytes) return E_FAIL;
     auto* a = new AccelStruct; a->size = AlignUp(pi.ResultDataMaxSizeInBytes, 256); a->page = g->asAlloc(a->size, &a->off);
@@ -972,12 +982,29 @@ HRESULT DeviceContext::BuildBlas(const RtGeometry* gs, UINT n, AccelStruct** out
     for (UINT i = 0; i < n; i++) a->geos.push_back({ gs[i].vb, gs[i].ib });
     D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC bd{}; bd.DestAccelerationStructureData = a->va; bd.Inputs = in; bd.ScratchAccelerationStructureData = g->scratchAlloc(pi.ScratchDataSizeInBytes);
     if (!bd.ScratchAccelerationStructureData) { delete a; return E_OUTOFMEMORY; }
+    if (g->postBuf && g->compactAsk.size() < Core::POST_SLOTS) { a->compactSlot = -2; g->compactAsk.push_back(a); }   // (its smaller size: asked for at the frame's end)
     g->flushBarriers(); g->list4->BuildRaytracingAccelerationStructure(&bd, 0, nullptr); g->blasPending = true;
     *out = a; return S_OK;
 }
 struct RtInstGpu { uint32_t v[8]; };
 void DeviceContext::BuildTlas(const RtInstance* inst, UINT n) {
     LK; g->tlasReady = false; if (!g->rtInline) return;
+    {   // shapes whose smaller size is known now: copied into a place that size (the big one goes once the GPU is past this frame)
+        uint64_t done = g->fence->GetCompletedValue(); int copies = 0;
+        for (size_t i = 0; i < g->compactWait.size();) {
+            AccelStruct* a = g->compactWait[i];
+            if (a->compactFence > done || copies >= 64) { i++; continue; }
+            uint64_t want = AlignUp(std::max<uint64_t>(g->postCpu[a->compactSlot], 256), 256);
+            g->compactWait[i] = g->compactWait.back(); g->compactWait.pop_back(); a->compactSlot = -1;
+            if (want == 0 || want > a->size * 9 / 10) continue;   // (not worth it)
+            uint64_t off; Page* p = g->asAlloc(want, &off); if (!p) continue;
+            D3D12_GPU_VIRTUAL_ADDRESS to = p->res->GetGPUVirtualAddress() + off;
+            if (!copies) { g->uavBarrier(); g->flushBarriers(); }
+            g->list4->CopyRaytracingAccelerationStructure(to, a->va, D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE_COMPACT);
+            g->deadRanges.push_back({ g->signaled + 1, a->page, a->off, a->size });
+            a->page = p; a->off = off; a->size = want; a->va = to; copies++; g->blasPending = true;
+        }
+    }
     if (g->blasPending) { g->uavBarrier(); g->blasPending = false; }   // (the meshes built this frame are done before the scene is)
     g->geoRes.clear(); std::unordered_map<ID3D12Resource*, uint32_t> gi;
     auto idxOf = [&](Buffer* b) -> uint32_t { Resource* r = b->real(); auto it = gi.find(r->gres); if (it != gi.end()) return it->second;
@@ -1114,6 +1141,19 @@ HRESULT SwapChain::GetBuffer(UINT, Texture2D** out) { LK; *out = g->proxy.Get();
 HRESULT SwapChain::Present(UINT sync, UINT flags) {
     LK;
     g->needAll(g->bufs[g->bbIndex].Get(), D3D12_RESOURCE_STATE_PRESENT);
+    if (g->postBuf && !g->compactAsk.empty()) {   // this frame's shapes: how small each can be (written, then copied to be read back)
+        UINT a = g->slot * Core::POST_SLOTS, n = (UINT)g->compactAsk.size(); std::vector<D3D12_GPU_VIRTUAL_ADDRESS> src(n);
+        for (UINT i = 0; i < n; i++) { AccelStruct* s = g->compactAsk[i]; src[i] = s->va; s->compactSlot = (int)(a + i); s->compactFence = g->signaled + 1; g->compactWait.push_back(s); }
+        g->compactAsk.clear();
+        D3D12_RESOURCE_BARRIER b{}; b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION; b.Transition.pResource = g->postBuf.Get(); b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        b.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON; b.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS; g->barriers.push_back(b);
+        g->uavBarrier(); g->flushBarriers();   // (the builds are done)
+        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC post{ g->postBuf->GetGPUVirtualAddress() + (uint64_t)a * 8, D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_COMPACTED_SIZE };
+        g->list4->EmitRaytracingAccelerationStructurePostbuildInfo(&post, n, src.data());
+        b.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS; b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE; g->barriers.push_back(b); g->flushBarriers();
+        g->list->CopyBufferRegion(g->postRead.Get(), (uint64_t)a * 8, g->postBuf.Get(), (uint64_t)a * 8, (uint64_t)n * 8);
+        b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE; b.Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON; g->barriers.push_back(b);
+    }
     g->submit();
     HRESULT hr = g->swap->Present(sync, flags);
     g->signal(); g->fr[g->slot].fence = g->signaled;
@@ -1235,6 +1275,12 @@ HRESULT Create(const Setup& s, Device** outDev, DeviceContext** outCtx, SwapChai
         ComPtr<ID3DBlob> blob, err;
         if (FAILED(D3D12SerializeRootSignature(&rd, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &err)) || FAILED(d->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(&g->rootCS)))) {
             if (err) g->log((const char*)err->GetBufferPointer()); g->rtInline = false; }
+        if (g->rtInline) {   // compaction's sizes: written by the builds, read back by the CPU
+            g->postBuf = g->makeBuffer((uint64_t)Core::POST_SLOTS * FRAMES * 8, D3D12_RESOURCE_STATE_COMMON, true);
+            D3D12_HEAP_PROPERTIES hp{ D3D12_HEAP_TYPE_READBACK }; D3D12_RESOURCE_DESC bd{ D3D12_RESOURCE_DIMENSION_BUFFER, 0, (uint64_t)Core::POST_SLOTS * FRAMES * 8, 1, 1, 1, DXGI_FORMAT_UNKNOWN, { 1, 0 }, D3D12_TEXTURE_LAYOUT_ROW_MAJOR, D3D12_RESOURCE_FLAG_NONE };
+            if (!g->postBuf || FAILED(d->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&g->postRead)))) { g->postBuf.Reset(); g->postRead.Reset(); }
+            else g->postRead->Map(0, nullptr, (void**)&g->postCpu);
+        }
     }
     {   // the mip shader
         ComPtr<ID3DBlob> vs, ps, err;
