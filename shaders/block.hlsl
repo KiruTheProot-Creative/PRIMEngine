@@ -3588,11 +3588,11 @@ float4 PS_MotionBlur(SkyOut i) : SV_Target
 // turned to face you, swaying in the wind, the ones at an open edge leaning out over it. Drawn without vertex buffers (vertex / instance id)
 struct GrassInst { float4 pos; uint4 info; };   // pos.xyz the block's corner (camera-relative); info.x the top texture's layer, y height | density << 8 | open sides << 16, z its lamp light (lit)
 StructuredBuffer<GrassInst> gGrass : register(t56);
-struct GOut { float4 pos : SV_Position; float3 rel : TEXCOORD0; float3 col : TEXCOORD1; float h : TEXCOORD2; nointerpolation uint lit : TEXCOORD3; };
+struct GOut { float4 pos : SV_Position; float3 rel : TEXCOORD0; nointerpolation float3 uvl : TEXCOORD1; float h : TEXCOORD2; nointerpolation uint lit : TEXCOORD3; };   // uvl: the top texture's pixel this blade is coloured by
 GOut VS_Grass(uint vid : SV_VertexID, uint iid : SV_InstanceID)
 {
     GrassInst g = gGrass[iid]; GOut o;
-    o.rel = 0; o.col = 0; o.h = 0; o.lit = g.info.z; o.pos = float4(0, 0, 0, 1);
+    o.rel = 0; o.uvl = 0; o.h = 0; o.lit = g.info.z; o.pos = float4(0, 0, 0, 1);
     uint blade = vid / 6, c = vid % 6, bx = blade % 16, bz = blade / 16;
     int3 wb = int3(round(g.pos.xyz + gCamPos.xyz));
     float dist = length(g.pos.xyz + 0.5), maxDist = gBlocks.y;
@@ -3613,12 +3613,12 @@ GOut VS_Grass(uint vid : SV_VertexID, uint iid : SV_InstanceID)
     float3 p = base + right * (q.x / 16) + float3(0, q.y * bh, 0) + (lean * 0.35 * bh + sway * bh) * q.y;
     if (any(lean != 0)) p += lean * (0.5 / 16);
     o.rel = p; o.pos = mul(float4(p, 1), gViewProj); o.h = q.y;
-    o.col = gTex.SampleLevel(gSamp, float3((bx + 0.5) / 16, (bz + 0.5) / 16, g.info.x), 0).rgb;
+    o.uvl = float3((bx + 0.5) / 16, (bz + 0.5) / 16, g.info.x);   // (its colour: read in the pixel shader - the block textures are bound there)
     return o;
 }
 PSOut PS_Grass(GOut i)
 {
-    float3 n = float3(0, 1, 0), albedo = i.col * lerp(0.55, 1.05, i.h);                       // (darker toward the ground)
+    float3 n = float3(0, 1, 0), albedo = gTex.SampleLevel(gSamp, i.uvl, 0).rgb * lerp(0.55, 1.05, i.h);   // (darker toward the ground)
     float sv; float3 light = reflLight(i.rel, n, i.pos.xy, sv);
     float3 lampC = float3((i.lit >> 8) & 15, (i.lit >> 12) & 15, (i.lit >> 16) & 15) / 15.0;
     float lamp = max(lampC.r, max(lampC.g, lampC.b)); float3 hue = lamp > 0 ? lampC / lamp : 0;
