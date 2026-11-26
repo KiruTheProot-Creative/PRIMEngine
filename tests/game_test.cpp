@@ -14,6 +14,7 @@
 #include "../src/game/folders.h"
 #include "../src/game/items.h"
 #include "../src/game/map.h"
+#include "../src/game/musicloop.h"
 #include "../src/game/visors.h"
 #include "../src/game/menu.h"
 #include "../src/game/enemies.h"
@@ -1048,6 +1049,35 @@ int main() {
             CHECK(old.size() == 3 && old[0].scan.on && old[0].scan.id == 0 && old[0].scan.legacyName == "Old Door" && old[0].scan.legacyText == "Line one.\nLine two." && old[0].scan.legacyImportant && old[0].scan.legacyTime == 2.5f && old[1].scan.id == 2,
                   "an older file's scan text is still read (to be made into an entry)");
         }
+    }
+    {   // music loops: the tempo found, snapping, the seam crossfaded, saved
+        printf("\nmusic loops\n");
+        const int rate = 22050; double bpm = 128, beat = 60 / bpm, first = 0.25; std::vector<float> x(rate * 30, 0.f); uint32_t r = 7;
+        auto nz = [&]() { r ^= r << 13; r ^= r >> 17; r ^= r << 5; return ((r & 0xFFFF) / 65535.f - 0.5f) * 2; };
+        for (auto& v : x) v = nz() * 0.01f;
+        for (int k = 0;; k++) { double t = first + k * beat; size_t i0 = (size_t)(t * rate); if (i0 + 2000 >= x.size()) break;
+            for (int j = 0; j < 2000; j++) { double tt = j / (double)rate; x[i0 + j] += k % 4 == 0 ? (float)(0.8 * std::sin(2 * 3.14159 * 60 * tt) * std::exp(-tt * 18)) : (float)(nz() * 0.25 * std::exp(-tt * 60)); } }
+        BpmGuess g = detectBpm(x.data(), x.size(), rate, 4);
+        CHECK(std::fabs(g.bpm - 128) < 0.3f && std::fabs(g.firstBar - 0.25f) < 0.02f && g.confidence > 0.5f, "the tempo found: %.2f bpm, bar 1 at %.3f s", g.bpm, g.firstBar);
+        MusicLoop L; L.bpm = 120; L.firstBar = 0.5f;
+        CHECK(std::fabs(snapTime(3.37f, L, 2) - 2.5f) < 1e-4f && std::fabs(snapTime(3.37f, L, 1) - 3.5f) < 1e-4f && snapTime(3.37f, L, 0) == 3.37f, "snapping to bars, beats, off");
+        // a stereo track: a tone that doesn't line up at the seam (it would click); crossfaded, the jump lands where the sound already is
+        std::vector<float> st(rate * 10 * 2); for (size_t i = 0; i < st.size() / 2; i++) { float v = (float)std::sin(i * 0.037); st[i * 2] = v; st[i * 2 + 1] = v * 0.5f; }
+        MusicLoop M; M.loopStart = 2; M.loopEnd = 7.3f; M.seam = 0;
+        CHECK(seamJump(st, 2, rate, M) > 1, "a hard jump there clicks (%.2f)", seamJump(st, 2, rate, M));
+        M.seam = 0.05f; std::vector<float> out; LoopFrames lf; bakeLoop(st, 2, rate, M, out, lf);
+        CHECK(lf.ok && lf.start == (uint32_t)(2 * rate) && lf.end == (uint32_t)std::llround(7.3 * rate) && out.size() == (size_t)lf.end * 2 && std::fabs(lf.seam - 0.05f) < 1e-4f, "the loop's frames; the baked track ends at the loop's end");
+        float endV = out[(lf.end - 1) * 2], before = st[(lf.start - 1) * 2], intro = out[(size_t)rate * 2];
+        CHECK(std::fabs(endV - before) < 0.05f && intro == st[(size_t)rate * 2], "crossfaded: the loop's last sample is what comes just before its start (%.3f vs %.3f); the intro untouched", endV, before);
+        std::vector<float> per(rate * 8); for (size_t i = 0; i < per.size(); i++) per[i] = (float)std::sin(2 * 3.14159265 * 2 * i / rate);   // exactly 2 Hz: a loop of whole periods
+        MusicLoop P2; P2.loopStart = 1; P2.loopEnd = 5;
+        float smooth = autoSeam(per, 1, rate, P2), rough = autoSeam(st, 2, rate, M);
+        CHECK(smooth < 0.02f && rough > smooth, "the seam's length found: short where it already flows on (%.3f s), longer where it doesn't (%.3f s)", smooth, rough);
+        MusicLoop off = M; off.on = false; bakeLoop(st, 2, rate, off, out, lf);
+        CHECK(!lf.ok && out.size() == st.size(), "loop off: the whole track, as it is");
+        MusicLoops ml; ml.byFile["music/industrial zone.wav"] = M; ml.byFile["music/title.mp3"] = L;
+        saveMusicLoops("/tmp/prim_ml.txt", ml); MusicLoops ml2; loadMusicLoops("/tmp/prim_ml.txt", ml2);
+        CHECK(ml2.byFile.size() == 2 && ml2.find("music/industrial zone.wav") && *ml2.find("music/industrial zone.wav") == M && *ml2.find("music/title.mp3") == L, "music loops save and load (a name with a space)");
     }
     {   // the visor's glass: steam fogs it, the cold frosts it, splats slide off, the water washes it
         VisorGlass g;
