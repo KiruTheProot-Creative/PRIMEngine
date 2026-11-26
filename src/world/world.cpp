@@ -85,11 +85,32 @@ void World::set(int x, int y, int z, BlockId id) {
     touchLiquid(x, y, z);
     // light reaches up to 15 blocks: near a lamp, every chunk around has to be redrawn
     if (glowsIn(reg, old) || glowsIn(reg, id) || emittersNear(cp)) markAll27(cp);
+    // a picture over a group of blocks (lined up with the group's corner): every block along its rows may show another tile now
+    if ((old != AIR && reg.get(old).hasMulti() && !reg.get(old).multiWorld) || (id != AIR && reg.get(id).hasMulti() && !reg.get(id).multiWorld)) {
+        int reach = (MULTI_REACH + CS - 1) / CS;
+        for (int k = -reach; k <= reach; k++) for (int a = 0; a < 3; a++) { I3 n = cp; (a == 0 ? n.x : a == 1 ? n.y : n.z) += k; if (chunk(n)) dirty.insert(n); }
+    }
     // this chunk, plus every neighbour whose border (and corner shading) touches the block
     int ax[2] = { 0, lx == 0 ? -1 : lx == CS - 1 ? 1 : 0 }, ay[2] = { 0, ly == 0 ? -1 : ly == CS - 1 ? 1 : 0 }, az[2] = { 0, lz == 0 ? -1 : lz == CS - 1 ? 1 : 0 };
     for (int i = 0; i < 2; i++) for (int j = 0; j < 2; j++) for (int k = 0; k < 2; k++) {
         I3 n{ cp.x + ax[i], cp.y + ay[j], cp.z + az[k] }; if (chunk(n)) dirty.insert(n);
     }
+}
+
+int World::overlayTurns(int x, int y, int z, int face) const {
+    const Chunk* c = chunk(chunkOf(x, y, z)); if (!c || c->extra.empty() || face < 0 || face > 5) return 0;
+    auto it = c->extra.find((uint16_t)Chunk::idx(floorMod(x, CS), floorMod(y, CS), floorMod(z, CS)));
+    return it == c->extra.end() ? 0 : (it->second >> (face * 2)) & 3;
+}
+void World::setOverlayTurns(int x, int y, int z, int face, int turns) {
+    if (face < 0 || face > 5) return;
+    I3 cp = chunkOf(x, y, z); Chunk* c = chunk(cp); if (!c) return;
+    uint16_t at = (uint16_t)Chunk::idx(floorMod(x, CS), floorMod(y, CS), floorMod(z, CS));
+    uint16_t was = 0; auto it = c->extra.find(at); if (it != c->extra.end()) was = it->second;
+    uint16_t v = (uint16_t)((was & ~(3u << (face * 2))) | ((uint32_t)(turns & 3) << (face * 2)));
+    if (v == was) return;
+    if (v) c->extra[at] = v; else c->extra.erase(at);
+    c->modified = true; c->version++; markAround(cp);
 }
 
 // ------------------------------------------------------------------ liquids

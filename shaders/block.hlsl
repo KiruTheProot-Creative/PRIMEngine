@@ -943,6 +943,8 @@ float4 withOverlay(float4 t, VSOut i)
     float2 uv = i.uvl.xy; uint k = (i.over >> 16) & 3;
     [unroll] for (uint q = 0; q < 3; q++) if (q < k) uv = float2(uv.y, 1 - uv.x);   // (back by the quarter turns)
     if ((i.over >> 18) & 1) uv.x = 1 - uv.x;
+    uint hand = (i.over >> 19) & 3;   // turned by hand (Ctrl+R on the placed block)
+    [unroll] for (uint r = 0; r < 3; r++) if (r < hand) uv = float2(1 - uv.y, uv.x);
     float4 o = gTex.Sample(gSamp, float3(uv, L));
     return float4(lerp(t.rgb, o.rgb, o.a), max(t.a, o.a));
 }

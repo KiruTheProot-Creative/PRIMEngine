@@ -1390,7 +1390,17 @@ struct App {
             double now = ImGui::GetTime();
             if (now - lastSpace < 0.3) { player.toggleFly(); Toast(player.flying ? "Flying" : "Walking"); lastSpace = -10; } else lastSpace = now;
         }
-        if (k == 'R' && !toolMode) {   // turn the next block by hand (starts from the automatic rotation); Shift+R tips it over
+        if (k == 'R' && Down(VK_CONTROL) && !toolMode) {   // Ctrl+R: turn the overlay on the side of the block you point at (Shift: the other way)
+            if (!hoverValid) Toast("Point at a block's side with an overlay");
+            else {
+                int f = hover.nx > 0 ? F_PX : hover.nx < 0 ? F_NX : hover.ny > 0 ? F_PY : hover.ny < 0 ? F_NY : hover.nz > 0 ? F_PZ : F_NZ;
+                BlockId b = world->get(hover.x, hover.y, hover.z); bool any = false;
+                if (b != AIR) for (int q = 0; q < 6; q++) any |= reg.get(b).overlayTex[q] > 0;
+                if (!any) Toast("This block has no overlay (Blocks: edit it, Overlay under a texture)");
+                else { int t = (world->overlayTurns(hover.x, hover.y, hover.z, f) + (Down(VK_SHIFT) ? 3 : 1)) & 3; world->setOverlayTurns(hover.x, hover.y, hover.z, f, t); Toast("Overlay turned " + std::to_string(t * 90) + " degrees"); }
+            }
+        }
+        else if (k == 'R' && !toolMode) {   // turn the next block by hand (starts from the automatic rotation); Shift+R tips it over
             if (!manualRot) { manualRot = true; manRot = targetValid ? rotOf(targetValue) : 0; }
             int look = LookFace(); bool tip = Down(VK_SHIFT);
             manRot = Shapes::turn(manRot, !tip ? 1 : (look == F_PZ || look == F_NZ) ? 0 : 2);
@@ -6483,6 +6493,32 @@ struct App {
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Make this face vary from block to block: random turns and / or other textures mixed in\n(so big floors and walls don't look like one tile over and over).");
                 if (ImGui::BeginPopup("vary")) { FaceVary v = v0; if (FaceVaryUI(v, slots[i].label, draft.tex[f0], draft.faces[f0])) for (int f : slots[i].faces) draft.vary[f] = v; ImGui::EndPopup(); }
             }
+            if (draft.shape == Shape::Cube) {   // a picture over several blocks: this face shows one tile of it
+                int f0 = slots[i].faces[0]; FaceMulti& m0 = draft.multi[f0]; bool on = m0.on();
+                ImGui::SameLine();
+                if (on) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.65f, 0.35f, 0.8f, 0.85f));
+                if (ImGui::SmallButton(on ? (std::to_string(m0.w) + "x" + std::to_string(m0.h)).c_str() : "Multi")) ImGui::OpenPopup("multi");
+                if (on) ImGui::PopStyleColor();
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Spread this texture over several blocks: it is cut into a grid of tiles (a 48 x 48 picture at 3 x 3: nine tiles)
+and blocks side by side each show their own tile - together the whole picture (floor markings, murals, carvings).");
+                if (ImGui::BeginPopup("multi")) {
+                    ImGui::TextDisabled("One picture over several blocks: %s", slots[i].label);
+                    FaceMulti m = m0; bool ch = false;
+                    Prop("Across (blocks)"); ch |= ImGui::SliderInt("##mw", &m.w, 1, 16);
+                    Prop("Down (blocks)"); ch |= ImGui::SliderInt("##mh", &m.h, 1, 16);
+                    for (int q : { 2, 3, 4, 5 }) { if (q > 2) ImGui::SameLine(); if (ImGui::SmallButton((std::to_string(q) + "x" + std::to_string(q)).c_str())) { m = { q, q }; ch = true; } }
+                    ImGui::SameLine(); if (ImGui::SmallButton("Off")) { m = {}; ch = true; }
+                    if (draft.tex[f0] > 0) { const TexImage& im = reg.image(draft.tex[f0]); ImGui::TextDisabled("The picture: %d x %d pixels -> tiles of %d x %d", im.w, im.h, im.w / std::max(1, m.w), im.h / std::max(1, m.h)); }
+                    if (ch) for (int f : slots[i].faces) draft.multi[f] = m;
+                    Prop("Lines up with"); int al = draft.multiWorld ? 1 : 0;
+                    if (ImGui::RadioButton("each group's corner", al == 0)) draft.multiWorld = false;
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Build a group of these anywhere: the picture starts at its corner (top left) and repeats every few blocks.");
+                    ImGui::SameLine(); if (ImGui::RadioButton("the world grid", al == 1)) draft.multiWorld = true;
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("The picture is fixed to the world: every block's tile comes from its place (lines up only on multiples of the grid).");
+                    Hint("(For the whole block: every multi face of it.) Multi faces never turn or vary.");
+                    ImGui::EndPopup();
+                }
+            }
             {   // a texture laid over this face (its see-through parts show the face below), never turned or varied
                 int f0 = slots[i].faces[0]; bool has = !draft.overlay[f0].empty();
                 if (has) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.3f, 0.65f, 0.3f, 0.85f));
@@ -6491,6 +6527,7 @@ struct App {
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Lay a see-through texture over this face, as a layer above it: it never turns or varies,\nso a dirt side can vary and turn while the grass hanging over it stays put.%s%s", has ? "\nNow: " : "", has ? draft.overlay[f0].c_str() : "");
                 if (ImGui::BeginPopup("overlay")) {
                     ImGui::TextDisabled("A texture over: %s (its see-through parts show the face below)", slots[i].label);
+                    ImGui::TextDisabled("In the world: Ctrl+R on a placed block turns its overlay on the side you point at (Ctrl+Shift+R: the other way).");
                     if (ImGui::Selectable("(no overlay)", !has)) { for (int f : slots[i].faces) { draft.overlay[f].clear(); draft.overlayTex[f] = 0; } ImGui::CloseCurrentPopup(); }
                     float s = 48 * ui; int n = 0;
                     ImGui::BeginChild("ovgrid", ImVec2(GridChildWidth(s, 8), (s + ImGui::GetStyle().ItemSpacing.y) * 4 + 12), ImGuiChildFlags_Borders);
@@ -18543,6 +18580,27 @@ struct App {
                     for (int f : { F_PX, F_NX, F_PZ, F_NZ }) { d.vary[f].turns = 2; d.vary[f].mirror = true; d.overlay[f] = "grass_overlay"; }
                     reg.add(d);
                 }
+                BlockId mt = reg.find("metal");
+                if (mt && !reg.find("pad plate")) {   // multi blocks: a 48 x 48 landing-pad marking cut 3 x 3; a hazard stripe laid over a top (turned by hand)
+                    std::vector<uint8_t> px(48 * 48 * 4);
+                    for (int y = 0; y < 48; y++) for (int x = 0; x < 48; x++) {
+                        uint8_t* p = &px[(y * 48 + x) * 4]; int n = (int)(varyHash(x, y, 0, 0, 7) & 15);
+                        int r = 70 + n, g = 75 + n, b = 82 + n;
+                        double dd = std::sqrt((x - 23.5) * (x - 23.5) + (y - 23.5) * (y - 23.5));
+                        if (dd >= 18 && dd < 21.5) { r = 235; g = 185; b = 40; }   // a yellow ring
+                        bool H = ((x >= 15 && x <= 19) || (x >= 28 && x <= 32)) && y >= 14 && y <= 33; H |= x >= 15 && x <= 32 && y >= 22 && y <= 25;
+                        if (H) { r = 235; g = 238; b = 240; }
+                        if (x == 0 || y == 0 || x == 47 || y == 47) { r = 40; g = 44; b = 50; }
+                        p[0] = (uint8_t)r; p[1] = (uint8_t)g; p[2] = (uint8_t)b; p[3] = 255;
+                    }
+                    reg.setTexture("pad_marking", 48, 48, px);
+                    std::vector<uint8_t> hz(16 * 16 * 4, 0);
+                    for (int y = 0; y < 4; y++) for (int x = 0; x < 16; x++) { uint8_t* p = &hz[(y * 16 + x) * 4]; bool yl = ((x + y) / 3) % 2 == 0; p[0] = yl ? 240 : 30; p[1] = yl ? 190 : 30; p[2] = yl ? 30 : 30; p[3] = 255; }
+                    reg.setTexture("hazard_stripe", 16, 16, hz);
+                    BlockDef d = reg.get(mt); d.name = "pad plate"; d.faces[F_PY] = "pad_marking"; d.multi[F_PY] = { 3, 3 }; d.vary[F_PY] = {}; reg.add(d);
+                    BlockDef w = reg.get(mt); w.name = "mural wall"; w.faces[F_PZ] = "pad_marking"; w.multi[F_PZ] = { 3, 3 }; reg.add(w);
+                    BlockDef e = reg.get(mt); e.name = "hazard edge"; e.overlay[F_PY] = "hazard_stripe"; reg.add(e);
+                }
             });
         }
         CreateWorld("Screenshot demo", 0); Capture(false);
@@ -18612,6 +18670,23 @@ struct App {
             { auto keep = settings.ambientOcclusion; settings.ambientOcclusion = 0; shotAt("connected_textures_blades_no_ao", { px - 1.5, gy + 8.5, pz - 3.5 }, { px - 0.5, (double)gy, pz + 2.5 }); settings.ambientOcclusion = keep; }
             shotAt("grass_blades_ledge_and_overlay", { px + 0.5, gy + 2.6, pz - 10.5 }, { px + 4.5, gy + 2.0, pz - 5 });
             shotAt("grass_blades_close", { px - 3.5, gy + 1.9, pz - 6 }, { px - 1, gy + 1.0, pz - 1 });
+            {   // multi blocks: a 6 x 6 pad of 3 x 3 pictures (from the group's corner), a mural wall, hazard stripes turned by hand (Ctrl+R) around it
+                BlockId P = reg.find("pad plate"), M = reg.find("mural wall"), E = reg.find("hazard edge"), Gr = reg.find("grass");
+                int ox = (int)px - 4, oz = (int)pz - 26;   // (south of the grass patch)
+                for (int x = -3; x <= 10; x++) for (int z = -3; z <= 10; z++) { world->set(ox + x, gy, oz + z, Gr); for (int y = gy + 1; y < gy + 6; y++) world->set(ox + x, y, oz + z, AIR); }
+                for (int x = 0; x < 6; x++) for (int z = 0; z < 6; z++) world->set(ox + x, gy, oz + z, P);
+                for (int x = -1; x <= 6; x++) for (int z = -1; z <= 6; z++) {
+                    if (x >= 0 && x < 6 && z >= 0 && z < 6) continue;
+                    world->set(ox + x, gy, oz + z, E);
+                    int t = z == -1 ? 0 : z == 6 ? 2 : x == 6 ? 1 : 3;   // the stripe along the pad's outer edge, each side turned its way
+                    world->setOverlayTurns(ox + x, gy, oz + z, F_PY, t);
+                }
+                for (int x = 1; x <= 3; x++) for (int y = 1; y <= 3; y++) world->set(ox + x, gy + y, oz - 3, M);   // a 3 x 3 mural, its picture on the +Z side
+                Log(std::string("multi blocks: pad ") + (P ? "ok" : "missing") + ", tiles from layer " + std::to_string(P ? reg.get(P).multiTex[F_PY] : 0) + ", texture array " + std::to_string(reg.layerSize()) + " px");
+                waitLoaded();
+                shotAt("multi_blocks_pad_and_mural", { ox + 3.0, gy + 9.0, oz + 12.0 }, { ox + 3.0, gy + 0.5, oz + 2.0 });
+                shotAt("multi_blocks_pad_from_above", { ox + 3.0, gy + 13.0, oz + 3.5 }, { ox + 3.0, (double)gy, oz + 2.9 });
+            }
         }
         {   // cutscenes (before the editor shots: the run has a time limit)
             auto poseAt = [&](const DemoShot& sh) {

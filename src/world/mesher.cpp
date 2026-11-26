@@ -8,15 +8,39 @@ namespace mc {
 static std::atomic<int> gLampDrop{ 0 };
 void setLampFillDrop(int levels) { gLampDrop = levels < 0 ? 0 : levels > 15 ? 15 : levels; }
 int lampFillDrop() { return gLampDrop; }
+void multiTileAt(const World& w, int x, int y, int z, BlockId b, const BlockDef& d, int face, int& col, int& row) {
+    const FaceMulti& m = d.multi[face]; col = row = 0; if (!m.on()) return;
+    int ua, us, va, vs; faceAxes(face, ua, us, va, vs); int p[3] = { x, y, z };
+    if (d.multiWorld) { col = floorMod(us * p[ua], m.w); row = floorMod(vs * p[va], m.h); return; }
+    // lined up with the group's corner: how many of the same block (same turn) come before it along the texture's u and v
+    auto run = [&](int axis, int sgn) {
+        int k = 0, q[3] = { x, y, z };
+        while (k < World::MULTI_REACH) { q[axis] -= sgn; BlockId o = w.get(q[0], q[1], q[2]); if (typeOf(o) != typeOf(b) || rotOf(o) != rotOf(b)) break; k++; }
+        return k;
+    };
+    col = run(ua, us) % m.w; row = run(va, vs) % m.h;
+}
 bool gatherInput(const World& w, I3 pos, MeshInput& out) {
     const Chunk* self = w.chunk(pos); if (!self) return false;
-    out.pos = pos; out.blocks.assign(PAD * PAD * PAD, UNKNOWN);
+    out.pos = pos; out.blocks.assign(PAD * PAD * PAD, UNKNOWN); out.extra.clear(); out.multi.clear();
     for (int cy = -1; cy <= 1; cy++) for (int cz = -1; cz <= 1; cz++) for (int cx = -1; cx <= 1; cx++) {
         const Chunk* c = w.chunk({ pos.x + cx, pos.y + cy, pos.z + cz }); if (!c) continue;
         // the part of this neighbour that falls inside our padded box
         int x0 = cx < 0 ? CS - 1 : 0, x1 = cx > 0 ? 0 : CS - 1, y0 = cy < 0 ? CS - 1 : 0, y1 = cy > 0 ? 0 : CS - 1, z0 = cz < 0 ? CS - 1 : 0, z1 = cz > 0 ? 0 : CS - 1;
         for (int ly = y0; ly <= y1; ly++) for (int lz = z0; lz <= z1; lz++) for (int lx = x0; lx <= x1; lx++)
             out.blocks[padIdx(lx + cx * CS, ly + cy * CS, lz + cz * CS)] = c->get(lx, ly, lz);
+        for (const auto& e : c->extra) {   // overlays turned by hand
+            int lx = e.first % CS, lz = (e.first / CS) % CS, ly = e.first / (CS * CS);
+            if (lx < x0 || lx > x1 || ly < y0 || ly > y1 || lz < z0 || lz > z1) continue;
+            out.extra[padIdx(lx + cx * CS, ly + cy * CS, lz + cz * CS)] = e.second;
+        }
+    }
+    for (int y = -1; y <= CS; y++) for (int z = -1; z <= CS; z++) for (int x = -1; x <= CS; x++) {   // pictures over several blocks: each face's tile
+        BlockId b = out.blocks[padIdx(x, y, z)]; if (b == AIR || b == UNKNOWN) continue;
+        const BlockDef& d = w.reg.get(b); if (!d.hasMulti()) continue;
+        std::array<uint16_t, 6> t{}; int wx = pos.x * CS + x, wy = pos.y * CS + y, wz = pos.z * CS + z;
+        for (int f = 0; f < 6; f++) { int col, row; multiTileAt(w, wx, wy, wz, b, d, f, col, row); t[f] = (uint16_t)(col | row << 8); }
+        out.multi[padIdx(x, y, z)] = t;
     }
     out.lightSrc.clear(); out.lightColors.clear();
     if (w.emittersNear(pos)) {   // a lamp nearby: hand the mesh thread what it needs to spread the light
@@ -213,8 +237,13 @@ void buildMesh(const BlockRegistry& reg, const MeshInput& in, ChunkMesh& out) {
             continue;
         }
         int c[3] = { x, y, z }; const int cubeRot = rotOf(id);
-        // the layer a plain cube shows on side f (its turn and texture-turning taken into account; not its variations)
-        auto faceLayer = [&](BlockId b, const BlockDef& bd, int f) {
+        // the layer a plain cube shows on side f (its turn and texture-turning taken into account; not its variations; a picture's tile)
+        auto multiLayer = [&](const BlockDef& bd, int f, int px, int py, int pz) {
+            auto it = in.multi.find(padIdx(px, py, pz)); int t = it == in.multi.end() ? 0 : it->second[f];
+            return bd.multiTex[f] + ((t >> 8) & 255) * std::max(1, bd.multi[f].w) + (t & 255);
+        };
+        auto faceLayer = [&](BlockId b, const BlockDef& bd, int f, int px, int py, int pz) {
+            if (bd.multi[f].on() && bd.multiTex[f] > 0) return multiLayer(bd, f, px, py, pz);
             int n2[3] = { 0, 0, 0 }; n2[f / 2] = (f % 2 == 0) ? 1 : -1; float u, v; int tf;
             turnedTexture(rotOf(b), bd.texTurns, 0.5f + n2[0] * 0.5f, 0.5f + n2[1] * 0.5f, 0.5f + n2[2] * 0.5f, f, tf, u, v); return bd.tex[tf];
         };
@@ -224,20 +253,20 @@ void buildMesh(const BlockRegistry& reg, const MeshInput& in, ChunkMesh& out) {
             int ua = (a + 1) % 3, va = (a + 2) % 3, L[3] = { x + n[0], y + n[1], z + n[2] };
             uint32_t conn[3] = { 0, 0, 0 };
             if (d.render == Render::Opaque) {   // connected textures: which neighbours on this surface creep over it
-                int own = faceLayer(id, d, f);
+                int own = faceLayer(id, d, f, x, y, z);
                 for (int e = 0; e < 4; e++) {
                     int N[3] = { x, y, z }; N[e < 2 ? ua : va] += (e & 1) ? 1 : -1;
                     BlockId nb = at(N[0], N[1], N[2]); if (!isPlainCube(reg, nb)) continue;
                     const BlockDef& nd = reg.get(nb); if (nd.render != Render::Opaque || !nd.connects) continue;   // (only a connecting neighbour creeps over: ours creeps over theirs, on their face)
                     if (hidden(nb, nd, at(N[0] + n[0], N[1] + n[1], N[2] + n[2]), f, ALL)) continue;   // (its side here is covered: nothing to creep from)
-                    int nl = faceLayer(nb, nd, f); if (nl == own || nl < 0 || nl > 0xFFFF) continue;
+                    int nl = faceLayer(nb, nd, f, N[0], N[1], N[2]); if (nl == own || nl < 0 || nl > 0xFFFF) continue;
                     int mode = d.connects ? 2 : 1, w = mode == 2 ? std::max(d.connectWidth, nd.connectWidth) : nd.connectWidth; w = std::max(1, std::min(8, w));
                     conn[e < 2 ? 0 : 1] |= (uint32_t)nl << ((e & 1) * 16);
                     conn[2] |= (uint32_t)mode << (e * 2) | (uint32_t)(w - 1) << (8 + e * 3);
                 }
             }
             if (f == F_PY && d.grass && d.grassDensity > 0) {   // grass blades on its top (drawn by the app, near you)
-                GrassTop gt{}; gt.x = (uint8_t)x; gt.y = (uint8_t)y; gt.z = (uint8_t)z; gt.layer = (uint16_t)faceLayer(id, d, F_PY);
+                GrassTop gt{}; gt.x = (uint8_t)x; gt.y = (uint8_t)y; gt.z = (uint8_t)z; gt.layer = (uint16_t)faceLayer(id, d, F_PY, x, y, z);
                 gt.height = (uint8_t)std::lround(std::min(1.5f, std::max(0.f, d.grassHeight)) / 1.5f * 255); gt.density = (uint8_t)std::lround(std::min(1.f, d.grassDensity) * 255);
                 const int side[4][2] = { { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 } };
                 for (int k = 0; k < 4; k++) { BlockId nb = at(x + side[k][0], y, z + side[k][1]); bool grassy = nb != AIR && nb != UNKNOWN && reg.get(nb).grass && isPlainCube(reg, nb) && !occludes(at(x + side[k][0], y + 1, z + side[k][1]));
@@ -248,6 +277,9 @@ void buildMesh(const BlockRegistry& reg, const MeshInput& in, ChunkMesh& out) {
             }
             const int du[4] = { 0, 1, 1, 0 }, dv[4] = { 0, 0, 1, 1 };
             Vtx q[4]; int ao[4];
+            const bool multiFace = d.multi[f].on() && d.multiTex[f] > 0;   // a tile of a bigger picture: never turned or varied
+            const int multiL = multiFace ? multiLayer(d, f, x, y, z) : 0;
+            int handTurns = 0; if (!in.extra.empty()) { auto it = in.extra.find(padIdx(x, y, z)); if (it != in.extra.end()) handTurns = (it->second >> (f * 2)) & 3; }
             for (int k = 0; k < 4; k++) {
                 float p[3] = { (float)c[0], (float)c[1], (float)c[2] };
                 p[a] += sgn > 0 ? 1.f : 0.f; p[ua] += (float)du[k]; p[va] += (float)dv[k];
@@ -258,10 +290,11 @@ void buildMesh(const BlockRegistry& reg, const MeshInput& in, ChunkMesh& out) {
                 ao[k] = (o1 && o2) ? 0 : 3 - (o1 + o2 + oc);
                 // texture coordinates inside the block: side faces keep "up" pointing up
                 float lx = p[0] - c[0], ly = p[1] - c[1], lz = p[2] - c[2], u, v; int tf;
-                turnedTexture(cubeRot, d.texTurns, lx, ly, lz, f, tf, u, v);   // a turned cube turns its textures too (its top texture goes where its top went)
+                if (multiFace) { tf = f; faceUV(lx, ly, lz, f, u, v); }
+                else turnedTexture(cubeRot, d.texTurns, lx, ly, lz, f, tf, u, v);   // a turned cube turns its textures too (its top texture goes where its top went)
                 int vk = 0; bool vm = false;
-                int layer = varies ? varyFace(d, tf, wx, wy, wz, d.tex[tf], u, v, &vk, &vm) : d.tex[tf];
-                uint32_t over = d.overlayTex[tf] > 0 ? (uint32_t)d.overlayTex[tf] | (uint32_t)vk << 16 | (vm ? 1u << 18 : 0u) : 0u;
+                int layer = multiFace ? multiL : varies ? varyFace(d, tf, wx, wy, wz, d.tex[tf], u, v, &vk, &vm) : d.tex[tf];
+                uint32_t over = d.overlayTex[tf] > 0 ? (uint32_t)d.overlayTex[tf] | (uint32_t)vk << 16 | (vm ? 1u << 18 : 0u) | (uint32_t)handTurns << 19 : 0u;   // (turned back by the shader, then by hand)
                 float shade = 0.4f + 0.6f * ao[k] / 3.f;   // corner darkening; the light itself comes from the sun in the shader
                 // smooth lamp light: average of the open cells touching this corner in front of the face
                 int bl[3] = { 0, 0, 0 };

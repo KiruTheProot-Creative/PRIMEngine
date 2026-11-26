@@ -46,6 +46,10 @@ public:
     BlockId get(int x, int y, int z) const { const Chunk* c = chunk(chunkOf(x, y, z)); return c ? c->get(floorMod(x, CS), floorMod(y, CS), floorMod(z, CS)) : AIR; }
     bool loaded(int x, int y, int z) const { return chunk(chunkOf(x, y, z)) != nullptr; }
     void set(int x, int y, int z, BlockId id);       // loads the chunk if needed, marks meshes to rebuild
+    // a placed block's overlay, turned by hand (Ctrl+R): quarter turns 0..3 on one of its faces (gone when the block changes)
+    int overlayTurns(int x, int y, int z, int face) const;
+    void setOverlayTurns(int x, int y, int z, int face, int turns);
+    static constexpr int MULTI_REACH = 64;            // a multi-block picture lines up with the corner of its group: counted this far at most
 
     // loads missing chunks near `center` (nearest first, at most maxLoads per call) and unloads far ones
     void stream(I3 center, int radiusH, int radiusV, int maxLoads);

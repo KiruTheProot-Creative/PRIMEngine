@@ -36,7 +36,7 @@ int BlockRegistry::textureIndex(const std::string& name) const {
 }
 int BlockRegistry::layerSize() const {
     int m = TEX;
-    for (size_t i = 1; i < textures.size(); i++) m = std::max(m, textures[i].w);
+    for (size_t i = 1; i < textures.size(); i++) if (!textures[i].multiOnly) m = std::max(m, textures[i].w);
     int s = TEX; while (s < m && s < 512) s *= 2;   // power of two, 16 .. 512
     return s;
 }
@@ -66,7 +66,12 @@ void BlockRegistry::put(BlockId id, const BlockDef& d) {
     defs[id] = d; defs[id].exists = true; nextId = std::max<int>(nextId, id + 1);
     resolveVary(defs[id]);
     for (int f = 0; f < 6; f++) {
-        int t = textureIndex(d.faces[f]); defs[id].tex[f] = t < 0 ? 0 : t;
+        int t = textureIndex(d.faces[f]); defs[id].tex[f] = t < 0 ? 0 : t; defs[id].multiTex[f] = 0;
+        if (d.multi[f].on()) {   // its picture's tiles, if they are there (else resolve() makes them)
+            int v = textureIndex(multiTileName(d.faces[f], d.multi[f], 0, d.glow[f].on() ? std::to_string(id) + "." + std::to_string(f) : ""));
+            if (v > 0) { defs[id].multiTex[f] = v; defs[id].tex[f] = v; }
+            continue;
+        }
         if (d.glow[f].on()) {   // its glowing copy, if it is there and still right (else resolve() makes it)
             int v = textureIndex(glowLayerName(id, f));
             if (v > 0 && textures[v].baseName == d.faces[f] && textures[v].glow == d.glow[f]) defs[id].tex[f] = v;
@@ -86,18 +91,45 @@ BlockId BlockRegistry::find(const std::string& name) const {
     return AIR;
 }
 std::string BlockRegistry::glowLayerName(BlockId id, int face) { return "@glow " + std::to_string(typeOf(id)) + "." + std::to_string(face); }
+std::string BlockRegistry::multiTileName(const std::string& tex, const FaceMulti& m, int tile, const std::string& glowKey) {
+    return "@multi " + std::to_string(m.w) + "x" + std::to_string(m.h) + "." + std::to_string(tile) + (glowKey.empty() ? "" : " " + glowKey) + " " + tex;
+}
 void BlockRegistry::resolve() {
-    textures.erase(std::remove_if(textures.begin() + 1, textures.end(), [](const TexImage& t) { return t.variant(); }), textures.end());   // glowing faces' copies: made again
+    textures.erase(std::remove_if(textures.begin() + 1, textures.end(), [](const TexImage& t) { return t.variant(); }), textures.end());   // glowing faces' copies, pictures' tiles: made again
+    std::vector<char> plain(textures.size(), 0), multiUse(textures.size(), 0);   // (used as a whole texture / only cut into tiles)
     for (size_t id = 0; id < defs.size(); id++) {
         BlockDef& d = defs[id];
         for (int f = 0; f < 6; f++) {
-            int t = textureIndex(d.faces[f]); d.tex[f] = t < 0 ? 0 : t;
+            int t = textureIndex(d.faces[f]); d.tex[f] = t < 0 ? 0 : t; d.multiTex[f] = 0;
+            if (d.exists && t > 0) (d.multi[f].on() ? multiUse : plain)[t] = 1;
+            if (d.exists && t > 0 && d.multi[f].on()) {   // a picture over several blocks: its tiles, row by row (shared by blocks that cut it the same way)
+                const FaceMulti m{ std::clamp(d.multi[f].w, 1, 16), std::clamp(d.multi[f].h, 1, 16) };
+                std::string key = d.glow[f].on() ? std::to_string(id) + "." + std::to_string(f) : "";
+                int first = textureIndex(multiTileName(d.faces[f], m, 0, key));
+                if (first <= 0) {
+                    const TexImage src = textures[t]; int tw = std::max(1, src.w / m.w), th = std::max(1, src.h / m.h);
+                    first = (int)textures.size();
+                    for (int r = 0; r < m.h; r++) for (int c = 0; c < m.w; c++) {
+                        TexImage v; v.name = multiTileName(d.faces[f], m, r * m.w + c, key); v.baseName = src.name; v.glow = d.glow[f]; v.w = tw; v.h = th;
+                        v.rgba.assign((size_t)tw * th * 4, 0);
+                        for (int y = 0; y < th; y++) for (int x = 0; x < tw; x++) {
+                            int sx = std::min(src.w - 1, c * tw + x), sy = std::min(src.h - 1, r * th + y);
+                            for (int k = 0; k < 4; k++) v.rgba[((size_t)y * tw + x) * 4 + k] = src.rgba[((size_t)sy * src.w + sx) * 4 + k];
+                        }
+                        v.transparent = src.transparent; textures.push_back(std::move(v));
+                    }
+                }
+                d.multiTex[f] = first; d.tex[f] = first;   // (anything that wants one layer for the face: the first tile)
+                continue;
+            }
             if (!d.exists || !d.glow[f].on() || t <= 0) continue;
             TexImage v = textures[t]; v.name = glowLayerName((BlockId)id, f); v.baseName = textures[t].name; v.glow = d.glow[f];
             textures.push_back(std::move(v)); d.tex[f] = (int)textures.size() - 1;
         }
     }
-    for (BlockDef& d : defs) { resolveVary(d); for (int f = 0; f < 6; f++) { int t = d.overlay[f].empty() ? -1 : textureIndex(d.overlay[f]); d.overlayTex[f] = t > 0 ? t : 0; } }
+    for (BlockDef& d : defs) { resolveVary(d); for (int f = 0; f < 6; f++) { int t = d.overlay[f].empty() ? -1 : textureIndex(d.overlay[f]); d.overlayTex[f] = t > 0 ? t : 0; if (t > 0 && (size_t)t < plain.size()) plain[t] = 1; } }
+    for (const BlockDef& d : defs) for (int f = 0; f < 6; f++) for (const auto& e : d.varyTex[f]) if ((size_t)e.first < plain.size()) plain[e.first] = 1;
+    for (size_t i = 1; i < plain.size(); i++) textures[i].multiOnly = multiUse[i] && !plain[i];
 }
 void BlockRegistry::resolveVary(BlockDef& d) const {   // a varying face's other textures: names -> layers (missing ones left out)
     for (int f = 0; f < 6; f++) {

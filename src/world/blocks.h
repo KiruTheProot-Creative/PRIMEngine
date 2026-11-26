@@ -67,6 +67,25 @@ struct FaceVary {
     bool operator!=(const FaceVary& o) const { return !(*this == o); }
 };
 
+// a face that shows one tile of a bigger picture (Blocks > edit a block > Multi under a texture): blocks side by side show the whole
+// picture, w tiles across and h down (a 48 x 48 picture at 3 x 3: nine 16 x 16 tiles), repeating every w x h blocks
+struct FaceMulti {
+    int w = 1, h = 1;
+    bool on() const { return w > 1 || h > 1; }
+    bool operator==(const FaceMulti& o) const { return w == o.w && h == o.h; }
+    bool operator!=(const FaceMulti& o) const { return !(*this == o); }
+};
+// which way a face's texture runs in the world (textures stay world-aligned): +u along axis ua (sign us), +v along axis va (sign vs)
+inline void faceAxes(int face, int& ua, int& us, int& va, int& vs) {
+    switch (face) {
+    case 0: ua = 2; us = -1; va = 1; vs = -1; break;   // +X: u toward -Z, v down
+    case 1: ua = 2; us = 1; va = 1; vs = -1; break;    // -X: u toward +Z
+    case 4: ua = 0; us = 1; va = 1; vs = -1; break;    // +Z: u toward +X
+    case 5: ua = 0; us = -1; va = 1; vs = -1; break;   // -Z: u toward -X
+    default: ua = 0; us = 1; va = 2; vs = 1; break;    // top and bottom: u toward +X, v toward +Z
+    }
+}
+
 struct BlockDef {
     std::string name;
     Render render = Render::Opaque;
@@ -107,6 +126,10 @@ struct BlockDef {
     std::string overlay[6];              // a texture laid over a face (its see-through parts show the face below): never turned or varied - grass hanging over a dirt side that varies
     int overlayTex[6] = { 0, 0, 0, 0, 0, 0 };   // (its layer: filled by resolve(); 0 none)
     std::vector<std::pair<int, float>> varyTex[6];   // (not saved) the other textures' layers and weights (filled by resolve())
+    FaceMulti multi[6];                  // faces that show a tile of a bigger picture (never turned or varied)
+    bool multiWorld = false;             // ... the picture lines up with the world grid (false: with the corner of each group of these blocks)
+    int multiTex[6] = { 0, 0, 0, 0, 0, 0 };   // (its first tile's layer, the tiles row by row: filled by resolve(); 0 none)
+    bool hasMulti() const { for (int f = 0; f < 6; f++) if (multi[f].on() && multiTex[f] > 0) return true; return false; }
     bool varies() const { for (const FaceVary& v : vary) if (v.on()) return true; return false; }
     bool exists = true;                  // false = a deleted id (kept so old worlds stay readable)
 };
@@ -114,6 +137,7 @@ struct BlockDef {
 struct TexImage {
     std::string name; int w = 0, h = 0; std::vector<uint8_t> rgba; bool transparent = false;
     std::string baseName; FaceGlow glow;   // a glowing face's own copy (hidden from the texture lists): the texture it copies, and how it glows
+    bool multiOnly = false;              // (only cut into tiles: its own size does not set the texture array's)
     bool variant() const { return !baseName.empty(); }
 };
 
@@ -143,6 +167,7 @@ public:
     BlockId liquidBlock(int kind) const;                    // the (flowing, not spring) block of that liquid; 0 if none
     void resolve();                                         // texture names -> layers (after any change); glowing faces get their own copies
     static std::string glowLayerName(BlockId id, int face);
+    static std::string multiTileName(const std::string& tex, const FaceMulti& m, int tile, const std::string& glowKey = "");
     void resolveVary(BlockDef& d) const;                   // a varying face's other textures: names -> layers
     std::string uniqueName(const std::string& want, BlockId except = AIR) const;
     int nextId = 1;                                         // ids below this were given out once (saved in blocks.txt)

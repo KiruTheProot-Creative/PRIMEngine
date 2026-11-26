@@ -26,11 +26,15 @@ std::vector<uint8_t> RegionStore::encode(const Chunk& c) {
         int j = i; while (j < CS3 && c.b[j] == c.b[i] && j - i < 65535) j++;
         put32(out, c.b[i]); put16(out, (uint32_t)(j - i)); i = j;
     }
+    if (!c.extra.empty()) {   // then per-block extras: 'X', how many, (block index, value) each
+        out.push_back('X'); put16(out, (uint32_t)c.extra.size());
+        for (const auto& e : c.extra) { put16(out, e.first); put16(out, e.second); }
+    }
     return out;
 }
 bool RegionStore::decode(const std::vector<uint8_t>& d, Chunk& out, int version) {
     size_t p = 0; int i = 0; const size_t run = version >= 2 ? 6 : 4;
-    while (p + run <= d.size()) {
+    while (i < CS3 && p + run <= d.size()) {
         BlockId id; int n;
         if (version >= 2) { id = get32(&d[p]); n = d[p + 4] | (d[p + 5] << 8); }
         else {   // version 1 (milestones 1-2): 16-bit ids, top 4 bits = which way a plane faced
@@ -42,6 +46,11 @@ bool RegionStore::decode(const std::vector<uint8_t>& d, Chunk& out, int version)
         for (int k = 0; k < n; k++) out.b[i++] = id;
     }
     if (i != CS3) return false;
+    out.extra.clear();
+    if (version >= 2 && p + 3 <= d.size() && d[p] == 'X') {
+        int n = d[p + 1] | (d[p + 2] << 8); p += 3;
+        for (int k = 0; k < n && p + 4 <= d.size(); k++, p += 4) { uint16_t at = (uint16_t)(d[p] | (d[p + 1] << 8)), v = (uint16_t)(d[p + 2] | (d[p + 3] << 8)); if (at < CS3 && v) out.extra[at] = v; }
+    }
     out.recount(); return true;
 }
 

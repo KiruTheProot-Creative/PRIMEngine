@@ -2,6 +2,7 @@
 #include "../src/world/mesher.h"
 #include "../src/world/visibility.h"
 #include "../src/world/lod.h"
+#include "../src/world/storage.h"
 #include <set>
 #include <map>
 #include <unordered_map>
@@ -264,6 +265,49 @@ int main() {
             if ((v.over >> 16) & 7) turned++;
         }
         CHECK(over > 0 && sides == 6 * 4 * 4 && ok == sides && turned > 0 && tops == 6 * 2 * 4, "overlay: on the sides (with how each was turned, some turned), not on top or bottom");
+    }
+    {   // multi blocks: one big picture cut into tiles, each block shows its tile (from its group's corner, or the world grid)
+        BlockRegistry r4; registerBuiltinBlocks(r4);
+        std::vector<uint8_t> px(48 * 48 * 4);
+        for (int y = 0; y < 48; y++) for (int x = 0; x < 48; x++) { uint8_t* p = &px[(y * 48 + x) * 4]; p[0] = (uint8_t)(x / 16 * 80); p[1] = (uint8_t)(y / 16 * 80); p[2] = 200; p[3] = 255; }
+        r4.setTexture("mural", 48, 48, px);
+        BlockDef pd = r4.get(r4.find("stone")); pd.name = "pad"; pd.faces[F_PY] = "mural"; pd.multi[F_PY] = { 3, 3 };
+        for (int f : { F_PZ }) { pd.faces[f] = "mural"; pd.multi[f] = { 3, 3 }; }
+        BlockId pad = r4.add(pd); r4.resolve();
+        const BlockDef& D = r4.get(pad); int m0 = D.multiTex[F_PY];
+        bool tilesOk = m0 > 0 && D.tex[F_PY] == m0 && D.multiTex[F_PZ] == m0;
+        for (int row = 0; row < 3 && tilesOk; row++) for (int col = 0; col < 3; col++) { const TexImage& t = r4.image(m0 + row * 3 + col); tilesOk &= t.w == 16 && t.h == 16 && t.rgba[0] == col * 80 && t.rgba[1] == row * 80; }
+        CHECK(tilesOk, "a 48 x 48 picture at 3 x 3: nine 16 x 16 tiles, row by row (shared by the faces that cut it the same way)");
+        CHECK(r4.layerSize() == 16 && r4.image(r4.textureIndex("mural")).multiOnly, "the big picture itself does not make every texture 64 pixels (only its tiles count)");
+        World t(r4); t.gen.kind = Generator::Void;
+        for (int y = -1; y <= 1; y++) for (int z = -1; z <= 1; z++) for (int x = -1; x <= 1; x++) t.loadChunk({ x, y, z });
+        for (int x = 3; x <= 7; x++) for (int z = 2; z <= 4; z++) t.set(x, 5, z, pad);   // a floor 5 x 3
+        auto tile = [&](int x, int y, int z, int f) { int c, r; multiTileAt(t, x, y, z, t.get(x, y, z), r4.get(pad), f, c, r); return c + r * 10; };
+        CHECK(tile(3, 5, 2, F_PY) == 0 && tile(5, 5, 2, F_PY) == 2 && tile(6, 5, 2, F_PY) == 0 && tile(4, 5, 4, F_PY) == 21, "a group of them shows the picture from its corner (and repeats it after 3)");
+        t.set(2, 5, 2, pad);
+        CHECK(tile(3, 5, 2, F_PY) == 1 && tile(3, 5, 3, F_PY) == 10, "one more at the start of a row: that row moves on a tile (the others keep theirs)");
+        ChunkMesh m = meshOf(t, r4, { 0, 0, 0 });
+        int want = m0 + 1 * 3 + 2, got = -1;   // block (5, 5, 3): column 2 (third in its row from x = 3), row 1
+        for (size_t q = 0; q + 3 < m.opaque.v.size(); q += 4) {   // (cube faces: four corners each)
+            const Vtx* v = &m.opaque.v[q]; if (faceOf(*v) != F_PY) continue;
+            float mx = std::min({ v[0].x, v[1].x, v[2].x, v[3].x }), mz = std::min({ v[0].z, v[1].z, v[2].z, v[3].z });
+            if (mx == 5 && mz == 3 && v[0].y == 6) got = (int)std::lround(v->layer);
+        }
+        CHECK(got == want, "the mesh: the top shows its tile's layer (%d, want %d)", got, want);
+        for (int x = 3; x <= 5; x++) for (int y = 5; y <= 7; y++) t.set(x, y, 8, pad);   // a wall 3 x 3, its picture on the +Z side
+        CHECK(tile(3, 7, 8, F_PZ) == 0 && tile(5, 7, 8, F_PZ) == 2 && tile(3, 5, 8, F_PZ) == 20, "on a side: the picture's top row along the top of the wall");
+        { BlockDef w2 = r4.get(pad); w2.multiWorld = true; r4.put(pad, w2); }
+        CHECK(tile(3, 5, 2, F_PY) == 0 + 2 * 10 && tile(4, 5, 2, F_PY) == 1 + 2 * 10 && tile(2, 5, 2, F_PY) == 2 + 2 * 10, "lined up with the world grid: by its place in the world (x mod 3, z mod 3)");
+        // an overlay turned by hand (Ctrl+R): kept per block and face, in the mesh, saved with the chunk, gone when the block changes
+        BlockId st = r4.find("stone"); { BlockDef sd = r4.get(st); sd.overlay[F_PZ] = "grass_side"; sd.overlay[F_PY] = "grass_side"; r4.put(st, sd); r4.resolve(); }
+        t.set(10, 5, 10, st); t.setOverlayTurns(10, 5, 10, F_PZ, 3);
+        CHECK(t.overlayTurns(10, 5, 10, F_PZ) == 3 && t.overlayTurns(10, 5, 10, F_PY) == 0, "turning one face's overlay by hand: only that face");
+        m = meshOf(t, r4, { 0, 0, 0 }); int pz = 0, py = 0;
+        for (const Vtx& v : m.opaque.v) if (v.x >= 10 && v.x <= 11 && v.z >= 10 && v.z <= 11 && v.y >= 5 && v.y <= 6 && (v.over & 0xFFFF)) { if (faceOf(v) == F_PZ) pz += ((v.over >> 19) & 3) == 3; if (faceOf(v) == F_PY) py += ((v.over >> 19) & 3) == 0; }
+        CHECK(pz == 4 && py == 4, "the mesh carries the turn (bits 19-20 of the overlay) on that face only");
+        Chunk back; back.pos = { 0, 0, 0 }; CHECK(RegionStore::decode(RegionStore::encode(*t.chunk({ 0, 0, 0 })), back) && back.extra.size() == 1 && back.extra.begin()->second == (3 << (F_PZ * 2)) && back.get(10, 5, 10) == st, "saved and loaded with the chunk");
+        Chunk old = *t.chunk({ 0, 0, 0 }); old.extra.clear(); Chunk back2; CHECK(RegionStore::decode(RegionStore::encode(old), back2) && back2.extra.empty(), "(a chunk without any: as before)");
+        t.set(10, 5, 10, pad); CHECK(t.overlayTurns(10, 5, 10, F_PZ) == 0, "another block there: the turn is gone");
     }
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
     return fails ? 1 : 0;

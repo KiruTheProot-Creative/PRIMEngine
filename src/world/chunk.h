@@ -3,6 +3,7 @@
 #include "../core/math.h"
 #include "blocks.h"
 #include <array>
+#include <unordered_map>
 
 namespace mc {
 
@@ -19,12 +20,14 @@ struct Chunk {
     uint32_t version = 0;              // bumped on every change (stale meshes are thrown away)
     int emitters = 0;                  // glowing blocks in it (kept by World): light is only worked out near these
     int mirrors = 0;                   // mirror blocks in it (kept by World)
+    std::unordered_map<uint16_t, uint16_t> extra;   // per block (its index): overlay quarter turns, 2 bits per face (Ctrl+R); gone when the block changes
 
     static int idx(int lx, int ly, int lz) { return (ly * CS + lz) * CS + lx; }
     BlockId get(int lx, int ly, int lz) const { return b[idx(lx, ly, lz)]; }
     void set(int lx, int ly, int lz, BlockId id) {
         BlockId& c = b[idx(lx, ly, lz)];
         if (c == id) return;
+        if (!extra.empty() && (typeOf(c) != typeOf(id) || rotOf(c) != rotOf(id))) extra.erase((uint16_t)idx(lx, ly, lz));   // (another block: its overlays' turns go)
         nonAir += (id != AIR) - (c != AIR);
         c = id; version++;
     }

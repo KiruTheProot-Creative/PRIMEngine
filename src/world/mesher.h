@@ -53,7 +53,11 @@ inline int lpadIdx(int x, int y, int z) { return ((y + 16) * LPAD + (z + 16)) * 
 struct MeshInput {
     I3 pos; uint32_t seq = 0; std::vector<BlockId> blocks;            // PAD^3 ids
     std::vector<uint8_t> lightSrc; std::vector<std::array<uint8_t, 3>> lightColors;   // empty = no lamp nearby
+    std::unordered_map<int, uint16_t> extra;                          // (padded index) blocks' overlay turns (Chunk::extra)
+    std::unordered_map<int, std::array<uint16_t, 6>> multi;           // (padded index) a multi-block picture's tile per face: column | row << 8
 };
+// which tile of its picture a multi face shows at a block (column, row), lined up with the world grid or its group's corner
+void multiTileAt(const World& w, int x, int y, int z, BlockId b, const BlockDef& d, int face, int& col, int& row);
 static inline int padIdx(int x, int y, int z) { return ((y + 1) * PAD + (z + 1)) * PAD + (x + 1); }   // x,y,z in -1..16
 
 bool gatherInput(const World& w, I3 pos, MeshInput& out);   // false if the chunk is not loaded
