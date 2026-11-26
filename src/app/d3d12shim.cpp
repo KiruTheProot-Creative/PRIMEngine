@@ -642,7 +642,7 @@ static ID3D12PipelineState* GetPso() {
     PsoKey k; std::memset(&k, 0, sizeof k);
     k.vs = b.vs.sh ? b.vs.sh->uid : 0; k.ps = b.ps.sh ? b.ps.sh->uid : 0; k.il = b.il ? b.il->uid : 0; k.bl = b.blend ? b.blend->uid : 0; k.rs = b.rs ? b.rs->uid : 0; k.ds = b.ds ? b.ds->uid : 0;
     k.mask = b.mask; k.topo = (uint32_t)TopoType(b.topo); k.nrt = b.nrt;
-    for (UINT i = 0; i < b.nrt; i++) k.rt[i] = b.rtv[i] ? b.rtv[i]->format : DXGI_FORMAT_UNKNOWN;
+    for (UINT i = 0; i < b.nrt; i++) k.rt[i] = b.rtv[i] ? b.rtv[i]->format : DXGI_FORMAT_R8G8B8A8_UNORM;   // (an empty slot: the empty view's format)
     k.dsv = b.dsv ? b.dsv->format : DXGI_FORMAT_UNKNOWN;
     auto it = g->psos.find(k); if (it != g->psos.end()) return it->second.Get();
     D3D12_GRAPHICS_PIPELINE_STATE_DESC d{}; d.pRootSignature = g->root.Get();
