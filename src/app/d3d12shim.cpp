@@ -370,8 +370,8 @@ HRESULT Device::CreateBuffer(const D3D11_BUFFER_DESC* d, const D3D11_SUBRESOURCE
         b->virt = true; b->shadow.assign(d->ByteWidth, 0); if (init && init->pSysMem) std::memcpy(b->shadow.data(), init->pSysMem, d->ByteWidth);
         *out = b; return S_OK;
     }
-    bool small = (d->BindFlags & ~(D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_INDEX_BUFFER)) == 0 && d->ByteWidth <= PAGE_MAX_ALLOC;
-    if (small) {   // a stretch of a shared page
+    bool tiny = (d->BindFlags & ~(D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_INDEX_BUFFER)) == 0 && d->ByteWidth <= PAGE_MAX_ALLOC;
+    if (tiny) {   // a stretch of a shared page
         uint64_t n = AlignUp(d->ByteWidth, 256), off = 0; Page* pg = nullptr;
         for (auto& p : g->pages) if (p->take(n, &off)) { pg = p.get(); break; }
         if (!pg) {
