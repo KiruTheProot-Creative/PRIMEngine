@@ -88,6 +88,11 @@ struct BlockDef {
         for (int i = 0; i < 3; i++) out[i] = (L * c[i] + m / 2) / m;
     }
     bool waves = false;                  // sways in the wind (leaves, plants)
+    bool connects = false;               // its texture creeps over its neighbours' faces (any block): a jagged, speckled border instead of a straight seam
+    int connectWidth = 3;                // ... this many pixels deep (1..8)
+    bool grass = false;                  // grass blades grow on its top (pixel-wide, from its top texture's colours)
+    float grassHeight = 0.4f;            // ... how tall (blocks)
+    float grassDensity = 0.6f;           // ... how many of the top's pixels have one (0..1)
     float shine = 0;                     // how much it reflects: 0 matt (dirt) .. 1 polished (metal, ice)
     bool realLight = true;               // its glow is a real light (lights by direction, casts shadows) when the game's "Lamp blocks" says so; off: the classic spreading light (liquids always are)
     float roughness = -1;                // how blurry its reflections are: 0 sharp .. 1 very soft; below 0: its textures' own (Materials)

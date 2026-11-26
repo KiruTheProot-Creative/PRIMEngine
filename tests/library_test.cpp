@@ -57,8 +57,11 @@ int main() {
     auto res3 = lib.import({ base + "/Red Rock.png" }, ImportAs::Blocks, r);
     CHECK(res3.textures.size() == 1 && res3.blocks.empty(), "importing the same texture again updates it, no second block");
 
+    { BlockDef d = r.get(rock); d.connects = true; d.connectWidth = 5; d.grass = true; d.grassHeight = 0.7f; d.grassDensity = 0.3f; r.put(rock, d); lib.saveBlocks(r); }
     // everything survives a reload from disk
     BlockRegistry r2; Library lib2; lib2.dir = lib.dir; lib2.load(r2);
+    { const BlockDef& d = r2.get(rock); CHECK(d.connects && d.connectWidth == 5 && d.grass && std::fabs(d.grassHeight - 0.7f) < 1e-4f && std::fabs(d.grassDensity - 0.3f) < 1e-4f && !r2.get(fl).connects && !r2.get(fl).grass,
+          "connected textures and grass blades saved with the block"); }
     CHECK(r2.get(rock).name == "Red Rock" && r2.get(fl).shape == Shape::Cross && r2.get(fl).tex[0] == r2.textureIndex("flower"), "blocks.txt round trip");
 
     // hot reload: repaint a texture on disk

@@ -14,7 +14,15 @@ namespace mc {
 // lit: corner darkening (bits 0-7, 255 = open), lamp light red / green / blue 0..15 (bits 8-11, 12-15, 16-19), glows itself (bit 20),
 //      shininess 0..15 (bits 21-24), mirror (bit 25);
 // normal: direction in 3 bytes (x, y, z; 0..255 = -1..1) + texture face (bits 24-26)
-struct Vtx { float x, y, z, u, v, layer; uint32_t lit, normal; };
+struct Vtx { float x, y, z, u, v, layer; uint32_t lit, normal; uint32_t conn[3] = { 0, 0, 0 }; };   // conn: connected textures (see connInfo)
+// connected textures, per cube face: its four neighbours on the same surface (edge 0 -u, 1 +u, 2 -v, 3 +v along the face's world axes
+// (a+1)%3 and (a+2)%3). conn[0]: the texture layers of edges 0 and 1 (16 bits each), conn[1]: of 2 and 3; conn[2]: per edge 2 bits how
+// (0 not at all, 1 the neighbour creeps over this face, 2 both creep: the border wanders either way), from bit 8 per edge 3 bits its width - 1
+inline int connMode(const Vtx& v, int e) { return (int)(v.conn[2] >> (e * 2)) & 3; }
+inline int connWidth(const Vtx& v, int e) { return (int)((v.conn[2] >> (8 + e * 3)) & 7) + 1; }
+inline int connLayer(const Vtx& v, int e) { return (int)((e < 2 ? v.conn[0] : v.conn[1]) >> ((e & 1) * 16)) & 0xFFFF; }
+// grass blades: where they grow (the mesher lists the chunk's grass tops; the app draws blades on the ones near you)
+struct GrassTop { uint8_t x, y, z, edges; uint16_t layer; uint8_t height, density; uint32_t lit; };   // edges: bit per side (-x +x -z +z) with no grass beside it (the blades lean out); height: 0..255 = 0..1.5 blocks
 inline uint32_t packNormal(float nx, float ny, float nz, int face) {
     auto b = [](float v) { int q = (int)((v * 0.5f + 0.5f) * 255.f + 0.5f); return (uint32_t)(q < 0 ? 0 : q > 255 ? 255 : q); };
     return b(nx) | (b(ny) << 8) | (b(nz) << 16) | ((uint32_t)(face & 7) << 24);
@@ -33,7 +41,7 @@ inline int lightOf(const Vtx& v, int ch) { return (int)(v.lit >> (8 + 4 * ch)) &
 inline int lightOf(const Vtx& v) { return std::max(lightOf(v, 0), std::max(lightOf(v, 1), lightOf(v, 2))); }
 inline bool glowsOf(const Vtx& v) { return (v.lit >> 20) & 1; }
 struct MeshData { std::vector<Vtx> v; std::vector<uint32_t> i; bool empty() const { return i.empty(); } };
-struct ChunkMesh { I3 pos; uint32_t seq = 0; MeshData opaque, cutout, water; uint16_t see = 0x7FFF; };   // water: see-through, drawn last; see: cave culling (visibility.h)
+struct ChunkMesh { I3 pos; uint32_t seq = 0; MeshData opaque, cutout, water; uint16_t see = 0x7FFF; std::vector<GrassTop> grass; };   // water: see-through, drawn last; see: cave culling (visibility.h)
 
 constexpr int PAD = CS + 2;                  // the chunk plus a one-block border from its neighbours
 constexpr BlockId UNKNOWN = 0xFFFFFFFFu;         // neighbour not loaded: treated as solid so no wall of faces shows at the edge

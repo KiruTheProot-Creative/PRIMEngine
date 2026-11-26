@@ -213,6 +213,38 @@ int main() {
         std::vector<uint16_t> unk; lodGroupCells(reg, 1, I3{ 20, 0, 20 }, get, unk);
         CHECK(unk[lodCellIdx(3, 3, 3)] == LOD_UNKNOWN, "chunks not boiled down yet: unknown");
     }
+    {   // connected textures: a connecting block creeps over its neighbours' faces on the same surface; grass blades: where they grow
+        printf("\nconnected textures, grass blades\n");
+        BlockRegistry r2; registerBuiltinBlocks(r2);
+        BlockId gr = r2.find("grass"), sa = r2.find("sand"), co = r2.find("cobblestone");
+        { BlockDef d = r2.get(gr); d.connects = true; d.connectWidth = 4; d.grass = true; d.grassHeight = 0.6f; r2.put(gr, d); }
+        { BlockDef d = r2.get(sa); d.connects = true; d.connectWidth = 2; r2.put(sa, d); }
+        World t(r2); t.gen.kind = Generator::Void;
+        for (int y = -1; y <= 1; y++) for (int z = -1; z <= 1; z++) for (int x = -1; x <= 1; x++) t.loadChunk({ x, y, z });
+        t.set(5, 5, 5, co); t.set(6, 5, 5, gr); t.set(4, 5, 5, co); t.set(5, 5, 6, sa); t.set(7, 5, 5, gr); t.set(6, 6, 6, co);
+        ChunkMesh m = meshOf(t, r2, { 0, 0, 0 });
+        auto topOf = [&](const ChunkMesh& mm, int x, int y, int z) -> const Vtx* {   // the top face of the block at x, y, z (cube faces: 4 vertices each)
+            for (size_t i = 0; i + 3 < mm.opaque.v.size(); i += 4) {
+                const Vtx* q = &mm.opaque.v[i]; float cx = 0, cy = 0, cz = 0; bool top = true;
+                for (int k = 0; k < 4; k++) { cx += q[k].x / 4; cy += q[k].y / 4; cz += q[k].z / 4; top &= faceOf(q[k]) == F_PY; }
+                if (top && std::fabs(cx - (x + 0.5f)) < 1e-3f && std::fabs(cy - (y + 1)) < 1e-3f && std::fabs(cz - (z + 0.5f)) < 1e-3f) return q;
+            }
+            return nullptr; };
+        const Vtx* c5 = topOf(m, 5, 5, 5);
+        int grassTop = r2.get(gr).tex[F_PY], sandTop = r2.get(sa).tex[F_PY];
+        CHECK(c5 && connMode(*c5, 3) == 1 && connLayer(*c5, 3) == grassTop && connWidth(*c5, 3) == 4 && connMode(*c5, 1) == 1 && connLayer(*c5, 1) == sandTop && connWidth(*c5, 1) == 2 && connMode(*c5, 2) == 0,
+              "a non-connecting block: the grass and the sand beside it creep over it, the cobblestone doesn't");
+        const Vtx* g6 = topOf(m, 6, 5, 5);
+        CHECK(g6 && connMode(*g6, 2) == 0 && connMode(*g6, 3) == 0, "the grass's own top: not crept over by the cobblestone (it doesn't connect), nor by grass (the same texture)");
+        // two connecting blocks side by side: both creep, the border wanders either way
+        t.set(5, 5, 5, AIR); t.set(4, 5, 5, AIR); t.set(5, 5, 6, AIR); t.set(9, 5, 5, sa); t.set(10, 5, 5, gr); m = meshOf(t, r2, { 0, 0, 0 });
+        const Vtx* s9 = topOf(m, 9, 5, 5);
+        CHECK(s9 && connMode(*s9, 3) == 2 && connWidth(*s9, 3) == 4 && connLayer(*s9, 3) == grassTop, "both connect: the border wanders either way, as wide as the wider one");
+        // grass blades: the grass tops listed, with the sides that have no grass beside them (the blades lean out there)
+        const GrassTop* g = nullptr; for (const GrassTop& q : m.grass) if (q.x == 6 && q.y == 5 && q.z == 5) g = &q;
+        CHECK(m.grass.size() == 3 && g && g->layer == grassTop && (g->edges & 1) && !(g->edges & 2) && (g->edges & 4) && (g->edges & 8) && std::abs(g->height - (int)std::lround(0.6 / 1.5 * 255)) <= 1,
+              "grass tops: listed with their texture, height and open sides (grass beside: no lean)");
+    }
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
     return fails ? 1 : 0;
 }

@@ -82,7 +82,7 @@ static void spreadLight(const std::vector<uint8_t>& src, const std::vector<std::
 }
 
 void buildMesh(const BlockRegistry& reg, const MeshInput& in, ChunkMesh& out) {
-    out.pos = in.pos; out.seq = in.seq; out.opaque = {}; out.cutout = {}; out.water = {};
+    out.pos = in.pos; out.seq = in.seq; out.opaque = {}; out.cutout = {}; out.water = {}; out.grass.clear();
     std::vector<uint8_t> lightMap[3]; bool lit = !in.lightSrc.empty();
     if (lit) for (int c = 0; c < 3; c++) spreadLight(in.lightSrc, in.lightColors, c, lightMap[c]);
     auto lightAt = [&](int c, int x, int y, int z) { return lit ? (int)lightMap[c][lpadIdx(x, y, z)] : 0; };
@@ -211,10 +211,39 @@ void buildMesh(const BlockRegistry& reg, const MeshInput& in, ChunkMesh& out) {
             continue;
         }
         int c[3] = { x, y, z }; const int cubeRot = rotOf(id);
+        // the layer a plain cube shows on side f (its turn and texture-turning taken into account; not its variations)
+        auto faceLayer = [&](BlockId b, const BlockDef& bd, int f) {
+            int n2[3] = { 0, 0, 0 }; n2[f / 2] = (f % 2 == 0) ? 1 : -1; float u, v; int tf;
+            turnedTexture(rotOf(b), bd.texTurns, 0.5f + n2[0] * 0.5f, 0.5f + n2[1] * 0.5f, 0.5f + n2[2] * 0.5f, f, tf, u, v); return bd.tex[tf];
+        };
         for (int f = 0; f < 6; f++) {
             int a = f / 2, sgn = (f % 2 == 0) ? 1 : -1, n[3] = { 0, 0, 0 }; n[a] = sgn;
             if (hidden(id, d, at(x + n[0], y + n[1], z + n[2]), f, ALL)) continue;
             int ua = (a + 1) % 3, va = (a + 2) % 3, L[3] = { x + n[0], y + n[1], z + n[2] };
+            uint32_t conn[3] = { 0, 0, 0 };
+            if (d.render == Render::Opaque) {   // connected textures: which neighbours on this surface creep over it
+                int own = faceLayer(id, d, f);
+                for (int e = 0; e < 4; e++) {
+                    int N[3] = { x, y, z }; N[e < 2 ? ua : va] += (e & 1) ? 1 : -1;
+                    BlockId nb = at(N[0], N[1], N[2]); if (!isPlainCube(reg, nb)) continue;
+                    const BlockDef& nd = reg.get(nb); if (nd.render != Render::Opaque || !nd.connects) continue;   // (only a connecting neighbour creeps over: ours creeps over theirs, on their face)
+                    if (hidden(nb, nd, at(N[0] + n[0], N[1] + n[1], N[2] + n[2]), f, ALL)) continue;   // (its side here is covered: nothing to creep from)
+                    int nl = faceLayer(nb, nd, f); if (nl == own || nl < 0 || nl > 0xFFFF) continue;
+                    int mode = d.connects ? 2 : 1, w = mode == 2 ? std::max(d.connectWidth, nd.connectWidth) : nd.connectWidth; w = std::max(1, std::min(8, w));
+                    conn[e < 2 ? 0 : 1] |= (uint32_t)nl << ((e & 1) * 16);
+                    conn[2] |= (uint32_t)mode << (e * 2) | (uint32_t)(w - 1) << (8 + e * 3);
+                }
+            }
+            if (f == F_PY && d.grass && d.grassDensity > 0) {   // grass blades on its top (drawn by the app, near you)
+                GrassTop gt{}; gt.x = (uint8_t)x; gt.y = (uint8_t)y; gt.z = (uint8_t)z; gt.layer = (uint16_t)faceLayer(id, d, F_PY);
+                gt.height = (uint8_t)std::lround(std::min(1.5f, std::max(0.f, d.grassHeight)) / 1.5f * 255); gt.density = (uint8_t)std::lround(std::min(1.f, d.grassDensity) * 255);
+                const int side[4][2] = { { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 } };
+                for (int k = 0; k < 4; k++) { BlockId nb = at(x + side[k][0], y, z + side[k][1]); bool grassy = nb != AIR && nb != UNKNOWN && reg.get(nb).grass && isPlainCube(reg, nb) && !occludes(at(x + side[k][0], y + 1, z + side[k][1]));
+                    if (!grassy) gt.edges |= (uint8_t)(1 << k); }
+                int bl[3] = { 0, 0, 0 }; if (lit) for (int cc = 0; cc < 3; cc++) bl[cc] = lightAt(cc, x, y + 1, z);
+                gt.lit = packLit(1.f, bl, false);
+                out.grass.push_back(gt);
+            }
             const int du[4] = { 0, 1, 1, 0 }, dv[4] = { 0, 0, 1, 1 };
             Vtx q[4]; int ao[4];
             for (int k = 0; k < 4; k++) {
@@ -239,7 +268,7 @@ void buildMesh(const BlockRegistry& reg, const MeshInput& in, ChunkMesh& out) {
                     if (cnt) for (int c = 0; c < 3; c++) bl[c] = (sum[c] + cnt / 2) / cnt;
                 }
                 if (d.lightOf()) d.lightLevels(bl);
-                q[k] = { p[0], p[1], p[2], u, v, (float)layer + (d.waves ? 16384.f : 0.f), packLit(shade, bl, d.light > 0, d.mirror ? 1.f : d.shine, d.mirror, d.roughness), packNormal((float)n[0], (float)n[1], (float)n[2], f) };
+                q[k] = { p[0], p[1], p[2], u, v, (float)layer + (d.waves ? 16384.f : 0.f), packLit(shade, bl, d.light > 0, d.mirror ? 1.f : d.shine, d.mirror, d.roughness), packNormal((float)n[0], (float)n[1], (float)n[2], f), { conn[0], conn[1], conn[2] } };
             }
             // split along the brighter diagonal, and wind each triangle clockwise when seen from outside
             uint32_t base = (uint32_t)md.v.size();

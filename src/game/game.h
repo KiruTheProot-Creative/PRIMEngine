@@ -54,6 +54,8 @@ struct Settings {
     int reflectRes = 0;        // reflection resolution: 0 full, 1 three quarters, 2 half, 3 a quarter (rays traced smaller, laid over the full picture)
     int ambientOcclusion = 1;  // soft shadow in corners and under things, for everything on screen: 0 off, 1 normal, 2 high
     float aoStrength = 1.0f;
+    bool connectTextures = true; // blocks set to connect creep over their neighbours with a jagged, pixel border (Blocks: Connects)
+    float grassDistance = 32;  // grass blades on blocks that have them, out to this far (blocks; 0 off)
     float bumps = 1.0f;        // generated normals: a bumpy surface made from each texture's light and dark pixels (0 = off)
     float coat = 1.0f;         // coated textures: a fine noise over each pixel (0 = off)
     bool materials = true;     // texture materials: shiny, metal, glowing

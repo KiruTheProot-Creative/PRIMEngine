@@ -205,10 +205,11 @@ struct alignas(16) FrameCB {
     float visFx[4];         // the visor: x fogged up (steam), y frost, z a splat, w static
     float visFx2[4];        // x how far up you look, y how fast the view turns sideways, z the face in the glass, w the splat's clock
     float visSplat[4];      // rgb the splat's colour (linear), w its seed (+ 1000: it glows)
+    float blocks[4];        // x connected textures on, y grass blades: how far (blocks, 0 off), z grass sway
 };
 struct alignas(16) ChunkCB { float offset[4]; float ax[4] = { 1, 0, 0, 0 }, ay[4] = { 0, 1, 0, 0 }, az[4] = { 0, 0, 1, 0 }; };   // axes: objects are turned and sized
 
-struct GpuChunk { ComPtr<ID3D11Buffer> vbO, ibO, vbC, ibC, vbW, ibW; UINT nO = 0, nC = 0, nW = 0; UINT inst = 0; };   // inst: its place in the origins list (its own while it exists)
+struct GpuChunk { ComPtr<ID3D11Buffer> vbO, ibO, vbC, ibC, vbW, ibW; UINT nO = 0, nC = 0, nW = 0; UINT inst = 0; std::vector<GrassTop> grass; };   // grass: its grass tops (blades drawn on the ones near you)   // inst: its place in the origins list (its own while it exists)
 struct ModelGpu { std::vector<std::pair<I3, GpuChunk>> parts; std::vector<Box3> boxes, boxesStill; bool mesh = false; ComPtr<ID3D11ShaderResourceView> tex; };   // boxesStill: without the moving parts (an open door)
 struct alignas(16) PreviewCB { float vp[16]; float light[4]; };
 struct alignas(16) MapCB { float vp[16]; float eye[4]; float center[4]; float mode[4]; };   // the map hologram
@@ -234,6 +235,34 @@ struct App {
     ComPtr<ID3D11PixelShader> psReflect, psAO, psAOApply, psReflComp, psAA;
     ComPtr<ID3D11Texture2D> reflLowTex; ComPtr<ID3D11RenderTargetView> reflLowRTV; ComPtr<ID3D11ShaderResourceView> reflLowSRV; int reflLowW = 0, reflLowH = 0;   // reflections traced smaller
     float ReflScale() const { static const float k[4] = { 1.f, 0.75f, 0.5f, 0.25f }; return k[std::clamp(settings.reflectRes, 0, 3)]; }
+    // ---- grass blades: the grass tops near you, a patch of blades each (VS_Grass makes them from the instance and vertex ids)
+    struct GrassInstGpu { float pos[4]; uint32_t info[4]; };
+    ComPtr<ID3D11Buffer> grassBuf; ComPtr<ID3D11ShaderResourceView> grassSRV; UINT grassCap = 0; int grassDrawn = 0;
+    ComPtr<ID3D11VertexShader> vsGrass; ComPtr<ID3D11PixelShader> psGrass;
+    void DrawGrass() {
+        grassDrawn = 0; float far = settings.grassDistance; if (far <= 0 || !vsGrass) return;
+        std::vector<GrassInstGpu> inst; double reach = far + CS;
+        for (auto& kv : gpu) {
+            if (kv.second.grass.empty()) continue;
+            double ox = kv.first.x * (double)CS - camPos.x, oy = kv.first.y * (double)CS - camPos.y, oz = kv.first.z * (double)CS - camPos.z;
+            double cx = ox + CS * 0.5, cy = oy + CS * 0.5, cz = oz + CS * 0.5; if (cx * cx + cy * cy + cz * cz > reach * reach) continue;
+            for (const GrassTop& t : kv.second.grass) {
+                float px = (float)(ox + t.x), py = (float)(oy + t.y), pz = (float)(oz + t.z);
+                float dx = px + 0.5f, dy = py + 1, dz = pz + 0.5f; if (dx * dx + dy * dy + dz * dz > far * far) continue;
+                GrassInstGpu g{ { px, py, pz, 0 }, { t.layer, (uint32_t)t.height | ((uint32_t)t.density << 8) | ((uint32_t)t.edges << 16), t.lit, 0 } };
+                inst.push_back(g);
+            }
+        }
+        if (inst.empty()) return;
+        if (inst.size() > grassCap) { grassCap = (UINT)std::max<size_t>(inst.size() * 3 / 2, 1024); grassBuf = MakeStructured(grassCap, sizeof(GrassInstGpu), grassSRV); }
+        Upload(grassBuf.Get(), inst.data(), inst.size() * sizeof(GrassInstGpu));
+        ctx->IASetInputLayout(nullptr); ctx->RSSetState(rsNoCull.Get()); ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        ctx->VSSetShader(vsGrass.Get(), nullptr, 0); ctx->PSSetShader(psGrass.Get(), nullptr, 0);
+        ctx->VSSetShaderResources(56, 1, grassSRV.GetAddressOf());
+        ctx->DrawInstanced(16 * 16 * 6, (UINT)inst.size(), 0, 0); grassDrawn = (int)inst.size();
+        ID3D11ShaderResourceView* n1 = nullptr; ctx->VSSetShaderResources(56, 1, &n1);
+        ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0); ctx->RSSetState(rsCull.Get());   // (back to the world's blocks)
+    }
     void EnsureReflLow(int w, int h) {
         if (reflLowTex && w == reflLowW && h == reflLowH) return;
         D3D11_TEXTURE2D_DESC d{}; d.Width = (UINT)w; d.Height = (UINT)h; d.MipLevels = 1; d.ArraySize = 1; d.Format = DXGI_FORMAT_R16G16B16A16_FLOAT; d.SampleDesc.Count = 1; d.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
@@ -548,6 +577,8 @@ struct App {
             HR(dev->CreateTexture2D(&d, nullptr, &waterMapTex));   // the water map: the same size, only the water's tops (caustics, light shafts)
             HR(dev->CreateDepthStencilView(waterMapTex.Get(), &dv, &waterMapDSV)); HR(dev->CreateShaderResourceView(waterMapTex.Get(), &sv, &waterMapSRV));
         }
+        { auto g = Compile(src, "VS_Grass", "vs_5_0"); HR(dev->CreateVertexShader(g->GetBufferPointer(), g->GetBufferSize(), nullptr, &vsGrass));
+          g = Compile(src, "PS_Grass", "ps_5_0"); HR(dev->CreatePixelShader(g->GetBufferPointer(), g->GetBufferSize(), nullptr, &psGrass)); }
         b = Compile(src, "PS_Reflect", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psReflect));
         b = Compile(src, "PS_ReflComp", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psReflComp));
         b = Compile(src, "PS_AA", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psAA));
@@ -609,8 +640,9 @@ struct App {
             { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 }, { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0 },
             { "TEXCOORD", 1, DXGI_FORMAT_R32_FLOAT, 0, 20, D3D11_INPUT_PER_VERTEX_DATA, 0 }, { "TEXCOORD", 2, DXGI_FORMAT_R32_UINT, 0, 24, D3D11_INPUT_PER_VERTEX_DATA, 0 },
             { "TEXCOORD", 3, DXGI_FORMAT_R32_UINT, 0, 28, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-            { "TEXCOORD", 4, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 0, D3D11_INPUT_PER_INSTANCE_DATA, 1 } };   // (slot 1: the world chunks' origins, one per draw; nothing bound: zeros)
-        HR(dev->CreateInputLayout(el, 6, vb->GetBufferPointer(), vb->GetBufferSize(), &layout));
+            { "TEXCOORD", 4, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 0, D3D11_INPUT_PER_INSTANCE_DATA, 1 },   // (slot 1: the world chunks' origins, one per draw; nothing bound: zeros)
+            { "TEXCOORD", 5, DXGI_FORMAT_R32G32B32_UINT, 0, 32, D3D11_INPUT_PER_VERTEX_DATA, 0 } };   // (connected textures)
+        HR(dev->CreateInputLayout(el, 7, vb->GetBufferPointer(), vb->GetBufferSize(), &layout));
         auto cb = [&](UINT size, ComPtr<ID3D11Buffer>& out) { D3D11_BUFFER_DESC d{}; d.ByteWidth = size; d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_CONSTANT_BUFFER; HR(dev->CreateBuffer(&d, nullptr, &out)); };
         cb(sizeof(FrameCB), cbFrame); cb(sizeof(ChunkCB), cbChunk); cb(sizeof(PreviewCB), cbPreview); cb(sizeof(MeshMatCB), cbMeshMat); cb(sizeof(MapCB), cbMap); cb(sizeof(VisorCB), cbVisor); cb(16, cbFlat); cb(sizeof(LookCB), cbLook);
 
@@ -4373,7 +4405,7 @@ struct App {
             if (lodK) if (const Chunk* ch = world->chunk(m.pos)) LodSetSummary(m.pos, lodSummarize(reg, *ch));   // (changed blocks: the far copies again)
             if (m.opaque.empty() && m.cutout.empty() && m.water.empty()) { auto e = gpu.find(m.pos); if (e != gpu.end()) { InstFree(e->second.inst); gpu.erase(e); } continue; }
             auto gi = gpu.try_emplace(m.pos); GpuChunk& g = gi.first->second;
-            if (gi.second) { g.inst = InstAlloc(); InstSet(g.inst, m.pos.x * (double)CS, m.pos.y * (double)CS, m.pos.z * (double)CS); } Upload(m.opaque, g.vbO, g.ibO, g.nO); Upload(m.cutout, g.vbC, g.ibC, g.nC); Upload(m.water, g.vbW, g.ibW, g.nW);
+            if (gi.second) { g.inst = InstAlloc(); InstSet(g.inst, m.pos.x * (double)CS, m.pos.y * (double)CS, m.pos.z * (double)CS); } Upload(m.opaque, g.vbO, g.ibO, g.nO); Upload(m.cutout, g.vbC, g.ibC, g.nC); Upload(m.water, g.vbW, g.ibW, g.nW); g.grass = std::move(m.grass);
             if (meshesChanged.size() < 512) meshesChanged.push_back(V3{ (m.pos.x + 0.5) * CS, (m.pos.y + 0.5) * CS, (m.pos.z + 0.5) * CS });   // (lamps near it: their shadow maps again)
         }
         BgSpent(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
@@ -4898,6 +4930,7 @@ struct App {
             }
         }
         fc.weather[0] = W.rain; fc.weather[1] = W.snow; fc.weather[2] = W.dark; fc.weather[3] = weather.wetness * E.atmosphere;
+        fc.blocks[0] = settings.connectTextures ? 1.f : 0.f; fc.blocks[1] = settings.grassDistance; fc.blocks[2] = 0; fc.blocks[3] = 0;   // connected textures, grass blades
         fc.wet2[0] = weather.puddles * E.atmosphere * (E.cold > 0.5f ? 0.f : 1.f); fc.wet2[1] = std::clamp((weather.wetness - 0.15f) * 1.4f, 0.f, 1.f) * E.atmosphere * (E.cold > 0.5f ? 0.f : 1.f);
         fc.weather2[0] = weather.snowCover * E.atmosphere; fc.weather2[1] = weather.flash * E.atmosphere; fc.weather2[2] = W.wind; fc.weather2[3] = skyMap ? 1.f : 0.f;
         ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &fc, 0, 0);
@@ -5146,6 +5179,7 @@ struct App {
         }
         ctx->PSSetShader(psOpaque.Get(), nullptr, 0); drawChunks(vp, 0, true, true);
         ctx->OMSetDepthStencilState(dsOn.Get(), 0);
+        DrawGrass();   // grass blades on the grass tops near you (after the depth-only pass: they write their own depth)
         partsDrawnShown = partsDrawn; partsCulledShown = partsCulled; caveHiddenShown = caveHidden; cookHiddenShown = cookHidden; lodDrawnShown = lodDrawn; hizHiddenShown = hizHidden; cascDrawnShown = cascDrawn; cascDrawn = 0; lshFacesShown = lshFacesDrawn; lshFacesDrawn = 0;
         ctx->PSSetShader(psCutout.Get(), nullptr, 0); drawChunks(vp, 1, false, true);
 
@@ -5732,6 +5766,7 @@ struct App {
         ImGui::Text("Block: %d %d %d   Chunk: %d %d %d", b.x, b.y, b.z, c.x, c.y, c.z);
         ImGui::Text("Facing: %s   %s", dirs[((int)(yd / 90)) % 4], player.flying ? "flying" : "walking");
         ImGui::Text("Chunks: %zu loaded, %zu with meshes, %d drawn, %d hidden behind walls%s", world->loadedCount(), gpu.size(), drawnChunks, caveHiddenShown, caveOn ? "" : " (off)");
+        if (grassDrawn) ImGui::Text("Grass blades: on %d grass tops", grassDrawn);
         ImGui::Text("Sun shadow maps drawn this frame: %d of 4 (the far ones every 2nd / 4th / 8th frame); lamp shadow sides drawn: %d", cascDrawnShown, lshFacesShown);
         if (settings.hideHidden) ImGui::Text("Hidden behind things (not drawn): %d chunks and far copies", hizHiddenShown);
         if (settings.targetFps > 0) ImGui::Text("Auto resolution: %.0f%% of the render scale (keeping %d FPS)", dynScale * 100, settings.targetFps);
@@ -6365,6 +6400,12 @@ struct App {
         }
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("What it is made of: Samus's steps, jumps, landings and rolling on it sound like it (Player > Surfaces).");
         Prop("Sways in the wind"); ImGui::Checkbox("##waves", &draft.waves);
+        Prop("Connects to neighbours"); ImGui::Checkbox("##conn", &draft.connects);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Its texture creeps over the blocks beside it (any block, on the same surface) with a jagged border in its own pixels.\nTwo connecting blocks creep into each other; two that don't keep a straight seam. (Graphics: Connected textures)");
+        if (draft.connects) { Prop("Connect width"); ImGui::SliderInt("##connw", &draft.connectWidth, 1, 8, "%d pixels"); }
+        Prop("Grass blades"); ImGui::Checkbox("##grassb", &draft.grass);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Blades grow on its top: one pixel wide, coloured like the top texture's pixels, swaying, leaning out over edges. (Graphics: Grass blades)");
+        if (draft.grass) { Prop("Blade height"); ImGui::SliderFloat("##grassh", &draft.grassHeight, 0.05f, 1.5f, "%.2f blocks"); Prop("Blade density"); ImGui::SliderFloat("##grassd", &draft.grassDensity, 0.05f, 1, "%.2f"); }
         Prop("Shininess"); ImGui::SliderFloat("##shine", &draft.shine, 0, 1, draft.shine <= 0 ? "matt" : "%.2f");
         {   // roughness: its own, or what its textures say (Materials)
             bool own = draft.roughness >= 0; Prop("Own roughness");

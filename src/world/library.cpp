@@ -56,6 +56,8 @@ bool Library::saveBlocks(const BlockRegistry& r) const {
               << "\nlight = " << d.light << "\nlight_color = " << hex6(d.lightColor) << "\nwaves = " << (d.waves ? "yes" : "no")
               << "\nshine = " << d.shine << "\nroughness = " << d.roughness << "\nreal_light = " << (d.realLight ? "yes" : "no") << "\nmirror = " << (d.mirror ? "yes" : "no") << "\ntexture_turns = " << (d.texTurns ? "yes" : "no")
               << "\nliquid = " << (d.liquid == 1 ? "water" : d.liquid == 2 ? "lava" : "none") << "\nspring = " << (d.spring ? "yes" : "no")
+              << "\nconnects = " << (d.connects ? "yes" : "no") << "\nconnect_width = " << d.connectWidth
+              << "\ngrass_blades = " << (d.grass ? "yes" : "no") << "\ngrass_height = " << d.grassHeight << "\ngrass_density = " << d.grassDensity
               << "\ncategory = " << d.category << "\nsurface = " << (d.surface.empty() ? "-" : d.surface) << "\nfaces =";
             for (auto& t : d.faces) f << ' ' << (t.empty() ? "-" : t);
             for (int k = 0; k < 6; k++) if (d.glow[k].on()) {   // a face glowing on its own
@@ -126,6 +128,11 @@ bool Library::load(BlockRegistry& r, std::string* report) {
         else if (k == "real_light") d.realLight = v != "no";
         else if (k == "roughness") { float r = (float)std::atof(v.c_str()); d.roughness = r < 0 ? -1.f : std::min(1.f, r); }
         else if (k == "mirror") d.mirror = yes(v);
+        else if (k == "connects") d.connects = yes(v);
+        else if (k == "connect_width") d.connectWidth = std::max(1, std::min(8, std::atoi(v.c_str())));
+        else if (k == "grass_blades") d.grass = yes(v);
+        else if (k == "grass_height") d.grassHeight = std::max(0.05f, std::min(1.5f, (float)std::atof(v.c_str())));
+        else if (k == "grass_density") d.grassDensity = std::max(0.f, std::min(1.f, (float)std::atof(v.c_str())));
         else if (k == "texture_turns") d.texTurns = yes(v);
         else if (k == "light_color") { std::string h = v; if (!h.empty() && h[0] == '#') h.erase(0, 1); d.lightColor = (uint32_t)std::strtoul(h.c_str(), nullptr, 16) & 0xFFFFFF; }
         else if (k == "face_glow") {

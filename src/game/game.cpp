@@ -74,6 +74,8 @@ bool Settings::load(const std::string& path) {
         else if (k == "ambient_occlusion") f >> ambientOcclusion;
         else if (k == "ao_strength") f >> aoStrength;
         else if (k == "bumps") f >> bumps; else if (k == "coat") f >> coat;
+        else if (k == "connect_textures") { int v; f >> v; connectTextures = v != 0; }
+        else if (k == "grass_distance") { f >> grassDistance; grassDistance = std::clamp(grassDistance, 0.f, 128.f); }
         else if (k == "materials") { int v; f >> v; materials = v != 0; }
         else if (k == "hud_glow") { int v; f >> v; hudGlow = v != 0; }
         else if (k == "eye_adapt") { int v; f >> v; eyeAdapt = v != 0; }
@@ -128,7 +130,7 @@ bool Settings::save(const std::string& path) const {
       << "\ncloud_cover " << cloudCover << "\nground_fog " << groundFog << "\ncloud_shadows " << (cloudShadows ? 1 : 0)
       << "\nbloom " << bloom << "\nswaying " << (swaying ? 1 : 0) << "\nreflections " << reflections << "\nreflect_res " << reflectRes << "\nanti_alias " << antiAlias << "\nrender_scale " << renderScale << "\nupscaler " << upscaler << "\nup_sharpness " << upSharp << "\npixel_shadows " << pixelShadows << "\nprobes " << probes << "\nshow_fps " << (showFps ? 1 : 0)
       << "\nambient_occlusion " << ambientOcclusion << "\nao_strength " << aoStrength
-      << "\nbumps " << bumps << "\ncoat " << coat << "\nmaterials " << (materials ? 1 : 0) << "\nhud_glow " << (hudGlow ? 1 : 0) << "\nguess_materials " << (guessMaterials ? 1 : 0)
+      << "\nconnect_textures " << (connectTextures ? 1 : 0) << "\ngrass_distance " << grassDistance << "\nbumps " << bumps << "\ncoat " << coat << "\nmaterials " << (materials ? 1 : 0) << "\nhud_glow " << (hudGlow ? 1 : 0) << "\nguess_materials " << (guessMaterials ? 1 : 0)
       << "\nshadow_res " << shadowRes << "\nbrightness " << brightness << "\nfullscreen " << (fullscreen ? 1 : 0)
       << "\nvolumes " << volWeapons << " " << volMovement << " " << volEnemies << " " << volWorld << "\nvolumes2 " << volMenus << " " << volMusic << "\ninvert_y " << (invertY ? 1 : 0) << "\nlock_mode " << lockMode << "\ncave_culling " << (caveCulling ? 1 : 0) << "\nscreen_shake " << screenShake << "\neye_adapt " << (eyeAdapt ? 1 : 0) << "\nfilm_fx " << (filmFx ? 1 : 0) << "\nlight_shadows " << lightShadows << "\nlight_shadow_distance " << lightShadowDist << "\nlight_shadow_res " << lightShadowRes << "\nlamp_distance " << lampDistance << "\nlight_fog " << (lightFog ? 1 : 0) << "\nfog_grid " << (fogGrid ? 1 : 0) << "\nlava_light " << lavaLight << "\nbounce " << bounce << "\nplanar_floors " << (planarFloors ? 1 : 0) << "\nlens_flares " << (lensFlares ? 1 : 0) << "\nmotion_blur " << motionBlur << "\nray_tracing " << (rayTracing ? 1 : 0) << "\nrt_reflections " << (rtReflect ? 1 : 0) << "\nrt_objects " << (rtObjects ? 1 : 0) << "\nrt_lamp_shadows " << (rtShadows ? 1 : 0) << "\nlamp_blocks " << lampBlocks << "\nlamp_fill " << lampFill << "\nwater " << waterCaustics << " " << (waterCausticsAbove ? 1 : 0) << " " << (waterShafts ? 1 : 0) << " " << (waterFoam ? 1 : 0) << " " << (visorDrops ? 1 : 0) << "\ncaustic_strength " << causticStrength << "\ngodrays " << godrays << "\n";
     for (int i = 0; i < (int)Act::COUNT; i++) f << "key " << actKey((Act)i) << " " << keys.key[i][0] << " " << keys.key[i][1] << "\n";

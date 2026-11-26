@@ -62,6 +62,7 @@ cbuffer Frame : register(b0)
     float4 gVisFx;                  // the visor: x fogged up (steam), y frost, z a splat (0..1), w static (electric)
     float4 gVisFx2;                 // x how far up you look (-1..1), y how fast the view turns sideways (signed), z the face in the glass (0..1), w the splat's clock (s)
     float4 gVisSplat;               // rgb the splat's colour (linear), w its seed (+ 1000: it glows)
+    float4 gBlocks;                 // x connected textures on, y grass blades: how far from you (blocks, 0 off), z grass sway, w -
 };
 // pixelated shadows (gAA.w: 16 or 32 a block): the spot a shadow is looked up at snapped to a grid on the surface, like the textures' pixels
 float3 pixSnap(float3 rel, float3 n)
@@ -455,8 +456,8 @@ float cloudShadow(float3 rel)
     return exp(-cloudDensity(p + gSunDir.xyz * t, false) * 90);
 }
 
-struct VSIn { float3 pos : POSITION; float2 uv : TEXCOORD0; float layer : TEXCOORD1; uint lit : TEXCOORD2; uint normal : TEXCOORD3; float4 inst : TEXCOORD4; };   // inst (per instance): a world chunk's origin from the shared list (w 1), else 0: the ChunkCB's
-struct VSOut { float4 pos : SV_Position; float3 uvl : TEXCOORD0; float ao : TEXCOORD1; float3 rel : TEXCOORD2; float3 n : TEXCOORD3; float4 lamp : TEXCOORD4; float3 mat : TEXCOORD5; float kind : TEXCOORD6; float clip : SV_ClipDistance0; };
+struct VSIn { float3 pos : POSITION; float2 uv : TEXCOORD0; float layer : TEXCOORD1; uint lit : TEXCOORD2; uint normal : TEXCOORD3; float4 inst : TEXCOORD4; uint3 conn : TEXCOORD5; };   // inst (per instance): a world chunk's origin from the shared list (w 1), else 0: the ChunkCB's
+struct VSOut { float4 pos : SV_Position; float3 uvl : TEXCOORD0; float ao : TEXCOORD1; float3 rel : TEXCOORD2; float3 n : TEXCOORD3; float4 lamp : TEXCOORD4; float3 mat : TEXCOORD5; float kind : TEXCOORD6; nointerpolation uint3 conn : TEXCOORD7; float clip : SV_ClipDistance0; };
 // what the reflection pass needs per pixel: direction of the surface (rgb) and how shiny it is (a)
 // color: the lit picture; surface: direction + shininess (reflections); indirect: the part of the light that
 // comes from the sky and lamps (not the sun), which ambient occlusion takes away in corners
@@ -494,6 +495,7 @@ VSOut VS_Block(VSIn i)
     o.mat = float3(((i.lit >> 21) & 15) / 15.0, (i.lit >> 25) & 1, ((i.lit >> 30) & 1) ? ((i.lit >> 26) & 15) / 15.0 : -1);   // z: the block's own roughness (-1: its textures')
     o.clip = dot(p, gClipPlane.xyz) + gClipPlane.w;
     o.kind = floor(i.layer / 16384);
+    o.conn = i.inst.w > 0.5 ? i.conn : uint3(0, 0, 0);   // (connected textures: the world's blocks only)
     return o;
 }
 
@@ -893,8 +895,49 @@ float3 lavaColor(float3 rel, float3 n, float rim)
     return side ? c * 1.2 : c;
 }
 
+// ---------------------------------------------------------------- connected textures: near an edge, a face takes its neighbour's texture
+// in its own pixels - a jagged line (the same on both faces: from where it is in the world) and a few speckles. The mesher says which
+// neighbours creep over this face (VSOut.conn, see connInfo in mesher.h)
+uint hashU(uint4 p) { uint h = p.x * 0x8da6b343u ^ p.y * 0xd8163841u ^ p.z * 0xcb1ab31fu ^ p.w * 0x165667b1u; h ^= h >> 15; h *= 0x2c1b3c6du; h ^= h >> 12; h *= 0x297a2d39u; h ^= h >> 15; return h; }
+float hash01(int4 p) { return (hashU(uint4(p)) & 0xFFFFFF) / 16777216.0; }
+float3 connectUV(VSOut i)
+{
+    uint modes = i.conn.z & 255;
+    if (modes == 0 || gBlocks.x < 0.5 || i.uvl.z > 16000) return i.uvl;
+    uint tw, th, te; gTex.GetDimensions(tw, th, te); float S = tw;
+    float3 an = abs(i.n); int a = an.x > an.y && an.x > an.z ? 0 : an.y > an.z ? 1 : 2;
+    float3 nf = a == 0 ? float3(sign(i.n.x), 0, 0) : a == 1 ? float3(0, sign(i.n.y), 0) : float3(0, 0, sign(i.n.z));
+    int ua = (a + 1) % 3, va = (a + 2) % 3;
+    float3 W = i.rel + gCamPos.xyz, inside = W - nf * 0.002; int3 cell = int3(floor(inside));
+    float3 l = inside - cell;
+    float lu = ua == 0 ? l.x : ua == 1 ? l.y : l.z, lv = va == 0 ? l.x : va == 1 ? l.y : l.z;
+    float wu = ua == 0 ? W.x : ua == 1 ? W.y : W.z, wv = va == 0 ? W.x : va == 1 ? W.y : W.z;
+    int cu = ua == 0 ? cell.x : ua == 1 ? cell.y : cell.z, cv = va == 0 ? cell.x : va == 1 ? cell.y : cell.z;
+    int plane = (int)round(a == 0 ? W.x : a == 1 ? W.y : W.z), fk = a * 2 + (dot(nf, 1) > 0 ? 0 : 1);
+    float pu = floor(lu * S), pv = floor(lv * S);
+    float dist[4] = { pu + 0.5, S - pu - 0.5, pv + 0.5, S - pv - 0.5 };       // pixels to each edge
+    int2 wp = int2(floor(wu * S), floor(wv * S));                              // this pixel in the world (for its speckle)
+    float speck = (hash01(int4(wp, plane, fk + 97)) - 0.5) * 1.7;
+    int best = -1; float bestScore = 0;
+    [unroll] for (int e = 0; e < 4; e++)
+    {
+        uint m = (modes >> (e * 2)) & 3; if (m == 0) continue;
+        float w = ((i.conn.z >> (8 + e * 3)) & 7) + 1;
+        int along = e < 2 ? wp.y : wp.x, line = (e < 2 ? cu : cv) + (e & 1);
+        float n = hash01(int4(along, line, plane, fk * 2 + (e < 2 ? 0 : 1))) * 0.35 + hash01(int4(floor(along / 3.0), line, plane, fk * 2 + (e < 2 ? 0 : 1) + 40)) * 0.65;   // jagged, in little runs
+        float amount = m == 2 ? max(0, ((e & 1) ? 1 : -1) * (n * 2 - 1)) * w * 1.3    // both creep: the line wanders into one side or the other (the same answer from both faces)
+                              : (0.3 + 0.7 * n) * w;                                    // only the neighbour creeps
+        float score = amount - (dist[e] + speck);
+        if (score > bestScore) { bestScore = score; best = e; }
+    }
+    if (best < 0) return i.uvl;
+    uint layer = ((best < 2 ? i.conn.x : i.conn.y) >> ((best & 1) * 16)) & 0xFFFF;
+    return float3(i.uvl.xy, layer);
+}
+
 PSOut PS_Opaque(VSOut i, bool front : SV_IsFrontFace)
 {
+    i.uvl = connectUV(i);
     float4 t = albedoAt(i.uvl);
     PSOut o; float3 n; float sh;
     o.indirect = 0;
@@ -3526,4 +3569,52 @@ float4 PS_MotionBlur(SkyOut i) : SV_Target
         sum += gHdr.Load(int3(sp, 0)).rgb; w += 1;
     }
     return float4(sum / w, 1);
+}
+
+// ---------------------------------------------------------------- grass blades: on grass tops near you (the mesher lists them), a 16 x 16
+// patch of pixel-wide blades each - most pixels of the top grow one, coloured like that pixel of the top texture, of its own height;
+// turned to face you, swaying in the wind, the ones at an open edge leaning out over it. Drawn without vertex buffers (vertex / instance id)
+struct GrassInst { float4 pos; uint4 info; };   // pos.xyz the block's corner (camera-relative); info.x the top texture's layer, y height | density << 8 | open sides << 16, z its lamp light (lit)
+StructuredBuffer<GrassInst> gGrass : register(t56);
+struct GOut { float4 pos : SV_Position; float3 rel : TEXCOORD0; float3 col : TEXCOORD1; float h : TEXCOORD2; nointerpolation uint lit : TEXCOORD3; };
+GOut VS_Grass(uint vid : SV_VertexID, uint iid : SV_InstanceID)
+{
+    GrassInst g = gGrass[iid]; GOut o;
+    o.rel = 0; o.col = 0; o.h = 0; o.lit = g.info.z; o.pos = float4(0, 0, 0, 1);
+    uint blade = vid / 6, c = vid % 6, bx = blade % 16, bz = blade / 16;
+    int3 wb = int3(round(g.pos.xyz + gCamPos.xyz));
+    float dist = length(g.pos.xyz + 0.5), far = gBlocks.y;
+    float fade = saturate((far - dist) / max(far * 0.3, 1));                                 // toward the end: fewer and shorter, then none
+    float density = ((g.info.y >> 8) & 255) / 255.0 * lerp(0.4, 1, fade);
+    if (fade <= 0 || hash01(int4(wb.x * 16 + bx, wb.z * 16 + bz, wb.y, 11)) > density) return o;   // (no blade here: an empty triangle)
+    float hmax = (g.info.y & 255) / 255.0 * 1.5;
+    float bh = hmax * (0.35 + 0.65 * hash01(int4(wb.x * 16 + bx, wb.z * 16 + bz, wb.y, 23))) * lerp(0.3, 1, fade);
+    float2 jit = float2(hash01(int4(wb.x * 16 + bx, wb.z * 16 + bz, wb.y, 31)), hash01(int4(wb.x * 16 + bx, wb.z * 16 + bz, wb.y, 37))) - 0.5;
+    float3 base = g.pos.xyz + float3((bx + 0.5 + jit.x * 0.5) / 16, 1, (bz + 0.5 + jit.y * 0.5) / 16);
+    uint edges = (g.info.y >> 16) & 15; float3 lean = 0;                                      // at an open edge: leaning out over it
+    if (bx <= 1 && (edges & 1)) lean.x -= 1; if (bx >= 14 && (edges & 2)) lean.x += 1;
+    if (bz <= 1 && (edges & 4)) lean.z -= 1; if (bz >= 14 && (edges & 8)) lean.z += 1;
+    float t = gVolume.z, wx = base.x + gCamPos.x, wz = base.z + gCamPos.z;
+    float3 sway = float3(sin(t * 1.9 + wx * 0.7 + wz * 0.3) + 0.4 * sin(t * 3.7 + wz * 1.3), 0, sin(t * 1.6 + wz * 0.6 - wx * 0.2) + 0.4 * sin(t * 4.1 + wx * 1.1)) * 0.06 * max(gExtra.z, 0.15);
+    float2 v = normalize(base.xz + 1e-4); float3 right = float3(-v.y, 0, v.x);               // facing you
+    float2 q = float2(c == 1 || c == 2 || c == 4 ? 0.5 : -0.5, c == 2 || c == 4 || c == 5 ? 1 : 0);
+    float3 p = base + right * (q.x / 16) + float3(0, q.y * bh, 0) + (lean * 0.35 * bh + sway * bh) * q.y;
+    if (any(lean != 0)) p += lean * (0.5 / 16);
+    o.rel = p; o.pos = mul(float4(p, 1), gViewProj); o.h = q.y;
+    o.col = gTex.SampleLevel(gSamp, float3((bx + 0.5) / 16, (bz + 0.5) / 16, g.info.x), 0).rgb;
+    return o;
+}
+PSOut PS_Grass(GOut i)
+{
+    float3 n = float3(0, 1, 0), albedo = i.col * lerp(0.55, 1.05, i.h);                       // (darker toward the ground)
+    float sv; float3 light = reflLight(i.rel, n, i.pos.xy, sv);
+    float3 lampC = float3((i.lit >> 8) & 15, (i.lit >> 12) & 15, (i.lit >> 16) & 15) / 15.0;
+    float lamp = max(lampC.r, max(lampC.g, lampC.b)); float3 hue = lamp > 0 ? lampC / lamp : 0;
+    light += hue * (pow(lamp, 3.2) * 0.9) * gExtra.w;
+    PSOut o;
+    o.color = float4(hdrSafe(albedo * light), 1);
+    o.surface = float4(n * 0.5 + 0.5, 0);
+    o.indirect = float4(albedo * (light - gSunColor.rgb * saturate(dot(n, gSunDir.xyz))), 0);
+    o.albedo = float4(albedo, 1);
+    return o;
 }
