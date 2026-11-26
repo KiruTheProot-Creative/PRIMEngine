@@ -4992,7 +4992,7 @@ struct App {
         fc.weather[0] = W.rain; fc.weather[1] = W.snow; fc.weather[2] = W.dark; fc.weather[3] = weather.wetness * E.atmosphere;
         {   // RTX reflections: z on (1 low, 2 high) + 4 x how far the rays go (the render distance, blocks); w on surfaces how far from you
             float rayLen = (float)((settings.renderDistance + 1) * CS);
-            fc.wet2[2] = RtxOn() ? (float)settings.rtxReflect + 4.f * std::floor(rayLen) : 0.f; fc.wet2[3] = settings.rtxReach > 0 ? std::min(settings.rtxReach, rayLen) : rayLen; }
+            fc.wet2[2] = RtxOn() ? (float)settings.rtxReflect + (settings.rtxShow ? 4.f : 0.f) + 8.f * std::floor(rayLen) : 0.f;   // (+4: show where it works) fc.wet2[3] = settings.rtxReach > 0 ? std::min(settings.rtxReach, rayLen) : rayLen; }
         fc.wet2[0] = weather.puddles * E.atmosphere * (E.cold > 0.5f ? 0.f : 1.f); fc.wet2[1] = std::clamp((weather.wetness - 0.15f) * 1.4f, 0.f, 1.f) * E.atmosphere * (E.cold > 0.5f ? 0.f : 1.f);
         fc.weather2[0] = weather.snowCover * E.atmosphere; fc.weather2[1] = weather.flash * E.atmosphere; fc.weather2[2] = W.wind; fc.weather2[3] = skyMap ? 1.f : 0.f;
         ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &fc, 0, 0);

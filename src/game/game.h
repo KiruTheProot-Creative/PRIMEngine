@@ -72,6 +72,7 @@ struct Settings {
     bool filmFx = true;        // the look's film grain and lens colour fringes
     bool rayTracing = true;    // rays through the blocks (a copy of the world on the graphics card): off: only what is on screen and shadow maps
     int rtxReflect = 1;        // hardware ray tracing (RTX / DXR, Direct3D 12): reflections - 0 off, 1 low (polished surfaces), 2 high (anything shiny)
+    bool rtxShow = false;      // (the editor) tint what the RTX rays found cyan: where it works
     float rtxReach = 0;        // ... on surfaces out to this far (blocks; 0: as far as you see - the render distance): beyond, the voxel reflections
     bool rtReflect = true, rtObjects = true, rtShadows = true;   // ... reflections of the blocks (off screen too), objects and enemies in them, lamp shadows through the blocks
     int lampBlocks = 2;        // glowing blocks: 0 classic (light spreads block by block), 1 real light, 2 real light and shadows

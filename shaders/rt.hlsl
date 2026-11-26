@@ -54,7 +54,7 @@ void CS_RtReflect(uint3 id : SV_DispatchThreadID)
     int2 px = int2(min(pos / rs, gDepth.zw - 1));
     float2 ndc = pos / float2(w, h) * float2(2, -2) + float2(-1, 1);
     float4 g = gSurface.Load(int3(px, 0)); float shine = g.a;
-    float quality = fmod(gWet2.z, 4), rayLen = floor(gWet2.z / 4);   // (1 low, 2 high; how far rays go: the render distance)
+    float quality = fmod(gWet2.z, 4), rayLen = floor(gWet2.z / 8);   // (1 low, 2 high; how far rays go: the render distance)
     float minShine = quality > 1.5 ? 0.03 : 0.2;                      // low: shiny and wet surfaces; high: anything with a little shine
     float zb = gSceneDepth.Load(int3(px, 0));
     if (gRefl.x < 0.5 || shine < max(minShine, 0.02) || zb >= 1) { gRtOut[id.xy] = float4(0, 0, 0, -1); return; }

@@ -1675,6 +1675,7 @@ float4 PS_Reflect(SkyOut i) : SV_Target
     sReach = gRefl.z * lerp(0.3, 1, shine * shine);   // (rough: blurred anyway, so near things are what shows - the rays stop sooner)
 
     float2 huv = 0; float travelled = 0;
+    bool rtxShowHit = false;
     float4 rtx = gWet2.z > 0.5 ? gRtRefl.Load(int3(i.pos.xy, 0)) : float4(0, 0, 0, -1);   // the RTX rays' find (same pixel of the smaller picture)
     bool rtxUsed = rtx.a >= 0;
     float rtxFade = rtxUsed ? saturate((dist - gWet2.w * 0.8) / max(gWet2.w * 0.2, 1)) : 1;   // toward the end of their reach: the voxel reflections take over
@@ -1702,6 +1703,7 @@ float4 PS_Reflect(SkyOut i) : SV_Target
             bool xh = rtx.a < 1e4;
             float3 xc = xh ? lerp(rtx.rgb, fallback, farK) : fallback, vxc = vh ? lerp(vc, fallback, farK) : fallback;
             fallback = lerp(xc, vxc, rtxFade);
+            if (fmod(gWet2.z, 8) >= 4 && xh && rtxFade < 0.5) rtxShowHit = true;   // (show where it works)
             if (rtxFade < 0.5) { vh = xh; vt = xh ? rtx.a : 1e9; }
         }
         else if (vh) fallback = lerp(vc, fallback, farK);
@@ -1725,6 +1727,7 @@ float4 PS_Reflect(SkyOut i) : SV_Target
     float f0 = mirror ? 0.9 : 0.02 + 0.6 * shine;
     float F = f0 + (1 - f0) * pow(1 - NdotV, 5);
     float amount = mirror ? 1 : saturate(shine * 1.2);
+    if (rtxShowHit) { refl = lerp(refl, float3(0.1, 1.4, 2.0), 0.6); F = max(F, 0.6); amount = 1; }   // (the editor: what the RTX rays found, cyan and strong)
     if (small) return float4(refl * F * amount, F * amount * 0.5);
     return float4(scene * (1 - F * amount * 0.5) + refl * F * amount, 1);
 }
