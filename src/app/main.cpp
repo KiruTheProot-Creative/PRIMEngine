@@ -18594,6 +18594,8 @@ struct App {
                 char nm[256]; snprintf(nm, sizeof nm, "%s/%02d_%s.png", shotDir.c_str(), ++n, name); SaveShot(std::string(nm)); swap->Present(0, 0); Log(std::string(nm) + ", grass blades on " + std::to_string(grassDrawn) + " tops");
             };
             shotAt("connected_textures_from_above", { px - 1.5, gy + 8.5, pz - 3.5 }, { px - 0.5, (double)gy, pz + 2.5 });
+            { float keep = settings.grassDistance; settings.grassDistance = 0; shotAt("connected_textures_no_blades", { px - 1.5, gy + 8.5, pz - 3.5 }, { px - 0.5, (double)gy, pz + 2.5 }); settings.grassDistance = keep; }
+            { auto keep = settings.ambientOcclusion; settings.ambientOcclusion = 0; shotAt("connected_textures_blades_no_ao", { px - 1.5, gy + 8.5, pz - 3.5 }, { px - 0.5, (double)gy, pz + 2.5 }); settings.ambientOcclusion = keep; }
             shotAt("grass_blades_ledge_and_overlay", { px + 0.5, gy + 2.6, pz - 10.5 }, { px + 4.5, gy + 2.0, pz - 5 });
             shotAt("grass_blades_close", { px - 3.5, gy + 1.9, pz - 6 }, { px - 1, gy + 1.0, pz - 1 });
         }

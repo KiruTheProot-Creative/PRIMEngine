@@ -3626,7 +3626,7 @@ PSOut PS_Grass(GOut i)
     PSOut o;
     o.color = float4(hdrSafe(albedo * light), 1);
     o.surface = float4(n * 0.5 + 0.5, 0);
-    o.indirect = float4(albedo * (light - gSunColor.rgb * saturate(dot(n, gSunDir.xyz))), 0);
+    o.indirect = float4(max(albedo * gAmbient.rgb * (0.55 + 0.45 * sv) * lerp(0.5, 1, i.h), 0), 0);   // (only the sky's part: never below 0 - ambient occlusion takes it away again)
     o.albedo = float4(albedo, 1);
     return o;
 }
