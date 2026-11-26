@@ -48,6 +48,7 @@
 #include "media.h"
 #include "../world/visibility.h"
 #include "../game/enemies.h"
+#include "../game/musicloop.h"
 #include "../game/sound.h"
 #include "../game/breakable.h"
 #include "../game/weather.h"
@@ -6582,6 +6583,8 @@ struct App {
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("The Room Manager: the rooms (found by themselves, or marked by hand), their names, ambient light, music");
             ImGui::SameLine(); if (ImGui::Button("Planets")) { planetsEdOpen = !planetsEdOpen; focusPlanetsEd = planetsEdOpen; if (planetsEdOpen && planets.planets.empty()) { planets.planets.push_back(defaultPlanet()); planetsDirty = true; } }
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("The Planets editor: design planets in layers for Space backgrounds (main menu)");
+            ImGui::SameLine(); if (ImGui::Button("Audio")) { if (audioEdOpen) audioEdOpen = false; else OpenAudioEditor(""); }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("The Audio editor: each piece of music's loop points (an intro, then a loop), its tempo as a grid, the seam");
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("The Screens editor: main menu, options, death screen, credits, your own screens, their compositor");
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("The Player editor: HUD (more later)");
             ImGui::SameLine(); if (ImGui::Button("Save")) { SaveWorld(); Toast("Saved"); }
@@ -6862,7 +6865,7 @@ struct App {
     void LoadHud() { items = defaultItems(); loadItems(projectDir + "/items.txt", items); looks = LookSet{}; loadLooks(projectDir + "/looks.txt", looks); looksDirty = false; ambPresets.clear(); loadAmbientPresets(projectDir + "/ambient_presets.txt", ambPresets); ambPresetsDirty = false;
         planets = PlanetSet{}; loadPlanets(projectDir + "/planets.txt", planets); planetsDirty = false; assetFolders = AssetFolders{}; loadAssetFolders(projectDir + "/asset_folders.txt", assetFolders);
         animBlends = AnimBlends{}; loadAnimBlends(projectDir + "/anim_blend.txt", animBlends); cannonBlend.reset(); doorBlend.clear(); viewerBlend.reset();
-        materials = Materials{}; loadMaterials(projectDir + "/materials.txt", materials); matsDirty = true; soundCache.clear(); playerSounds = PlayerSounds{}; loadPlayerSounds(projectDir + "/player_sounds.txt", playerSounds);
+        materials = Materials{}; loadMaterials(projectDir + "/materials.txt", materials); matsDirty = true; soundCache.clear(); bakedLoops.clear(); musicLoops = mc::MusicLoops{}; mc::loadMusicLoops(projectDir + "/music_loops.txt", musicLoops); playerSounds = PlayerSounds{}; loadPlayerSounds(projectDir + "/player_sounds.txt", playerSounds);
         if (!loadSurfaces(projectDir + "/surfaces.txt", surfaces)) surfaces = defaultSurfaces(); activeTl.clear();
         hud = HudLayout{}; loadHud(HudPath(), hud); visors = defaultVisors(); loadVisors(projectDir + "/visors.txt", visors); scanLib = ScanLibrary{}; loadScanLibrary(projectDir + "/scans.txt", scanLib); MigrateLegacyScans(); menu = defaultMenu(); loadMenu(projectDir + "/menu.txt", menu); LoadPresets(); enemies = defaultEnemies(); loadEnemies(projectDir + "/enemies.txt", enemies); bosses = BossSet{}; loadBosses(projectDir + "/bosses.txt", bosses); weapons = WeaponSet{}; loadWeapons(projectDir + "/weapons.txt", weapons); weapSel = 0; weapState = WeaponState{}; hudImages.clear(); hudSel = 0; hudPlane = 0; hudEl = -1; hudPart = 0; }
     void SaveHud() {
@@ -15143,7 +15146,7 @@ struct App {
     // ================================================================== sounds (WAV, played with XAudio2, built into Windows)
     IXAudio2* xa = nullptr; IXAudio2MasteringVoice* master = nullptr; bool audioOk = false; int masterChannels = 2;
     std::map<std::string, std::shared_ptr<WavData>> soundCache;
-    struct Voice { IXAudio2SourceVoice* v = nullptr; std::shared_ptr<WavData> keep; int tag = 0; };
+    struct Voice { IXAudio2SourceVoice* v = nullptr; std::shared_ptr<WavData> keep; int tag = 0; std::shared_ptr<WavData> keep2; };   // keep2: a music loop's baked copy
     std::vector<Voice> voices; uint32_t soundSeed = 12345;
     PlayerSounds playerSounds; float stepDist = 0;
     void InitAudio() {
@@ -15216,9 +15219,42 @@ struct App {
             }
         }
         v->SetVolume(volume); v->SetFrequencyRatio(randomPitch(s, soundSeed));
-        if (FAILED(v->SubmitSourceBuffer(&b))) { v->DestroyVoice(); return nullptr; }
-        v->Start(); voices.push_back({ v, w, tag });
+        std::shared_ptr<WavData> baked;   // music with loop points (the Audio editor): the intro once, then the loop round and round
+        if (loop && soundCat == SND_MUSIC) if (const mc::MusicLoop* L = musicLoops.find(s.file); L && L->on) {
+            mc::LoopFrames lf; baked = BakedLoop(s.file, w, *L, lf);
+            if (baked && lf.ok) { if (!SubmitLoop(v, *w, *baked, lf, musicFrom)) { v->DestroyVoice(); return nullptr; } }
+            else baked = nullptr;
+        }
+        if (!baked && FAILED(v->SubmitSourceBuffer(&b))) { v->DestroyVoice(); return nullptr; }
+        v->Start(); voices.push_back({ v, w, tag, baked });
         return v;
+    }
+    // ---- music loops (the Audio editor): each track's loop points, baked with its seam crossfaded in (kept while the settings stay)
+    mc::MusicLoops musicLoops; UINT32 musicFrom = 0;   // musicFrom: the editor plays from a point (frames)
+    struct BakedEntry { mc::MusicLoop L; std::shared_ptr<WavData> src, out; mc::LoopFrames lf; };
+    std::map<std::string, BakedEntry> bakedLoops;
+    std::shared_ptr<WavData> BakedLoop(const std::string& file, const std::shared_ptr<WavData>& w, const mc::MusicLoop& L, mc::LoopFrames& lf) {
+        BakedEntry& e = bakedLoops[file];
+        if (!e.out || e.src != w || e.L != L) {
+            e.L = L; e.src = w; e.out = std::make_shared<WavData>(); e.out->channels = w->channels; e.out->rate = w->rate;
+            mc::bakeLoop(w->samples, w->channels, w->rate, L, e.out->samples, e.lf);
+        }
+        lf = e.lf; return e.lf.ok ? e.out : nullptr;
+    }
+    // two buffers, back to back (no gap): the untouched track up to where the loop has been changed, then the baked one, its loop
+    // repeating forever. from: the frame to start at (past the loop's end: from its start)
+    bool SubmitLoop(IXAudio2SourceVoice* v, const WavData& orig, const WavData& bk, const mc::LoopFrames& lf, UINT32 from) {
+        size_t S = (size_t)std::llround((double)lf.seam * bk.rate); bool post = S >= 2 && lf.start < S;   // (the tail blended into the loop's start: the first time through, the start plays as it is)
+        UINT32 P = post ? (UINT32)std::min<size_t>(lf.start + S, lf.end - 1) : lf.start;
+        if (from >= lf.end) from = lf.start;
+        if (from < P) {
+            XAUDIO2_BUFFER a{}; a.AudioBytes = (UINT32)(orig.samples.size() * 4); a.pAudioData = (const BYTE*)orig.samples.data(); a.PlayBegin = from; a.PlayLength = P - from;
+            if (FAILED(v->SubmitSourceBuffer(&a))) return false;
+            from = P;
+        }
+        XAUDIO2_BUFFER b{}; b.AudioBytes = (UINT32)(bk.samples.size() * 4); b.pAudioData = (const BYTE*)bk.samples.data(); b.Flags = XAUDIO2_END_OF_STREAM;
+        b.PlayBegin = from; b.PlayLength = lf.end - from; b.LoopBegin = lf.start; b.LoopLength = lf.end - lf.start; b.LoopCount = XAUDIO2_LOOP_INFINITE;
+        return SUCCEEDED(v->SubmitSourceBuffer(&b));
     }
     // a set of sounds: one of them, at random (never the same twice in a row)
     IXAudio2SourceVoice* PlaySound(SoundSet& set, float vol = 1, const V3* at = nullptr, int tag = 0) { const SoundUse* u = set.pick(soundSeed); return u ? PlaySound(*u, vol, at, tag) : nullptr; }
@@ -15358,7 +15394,10 @@ struct App {
           if (playing) dl->AddRectFilled(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), col); else dl->AddTriangleFilled(ImVec2(c.x - r * 0.8f, c.y - r), ImVec2(c.x - r * 0.8f, c.y + r), ImVec2(c.x + r, c.y), col); }
         ImGui::EndDisabled();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip(playing ? "Stop" : "Listen");
-        if (!s.empty()) { ImGui::SetNextItemWidth(-FLT_MIN); if (ImGui::SliderFloat("##mvol", &s.volume, 0, 2, "volume %.2f")) ch = true; }
+        if (!s.empty()) { float lw = ImGui::CalcTextSize("Loop...").x + ImGui::GetStyle().FramePadding.x * 2;
+            ImGui::SetNextItemWidth(std::max(60.f, ImGui::GetContentRegionAvail().x - lw - ImGui::GetStyle().ItemSpacing.x)); if (ImGui::SliderFloat("##mvol", &s.volume, 0, 2, "volume %.2f")) ch = true;
+            ImGui::SameLine(); if (ImGui::Button("Loop...")) OpenAudioEditor(s.file);
+            if (ImGui::IsItemHovered()) { const mc::MusicLoop* L = musicLoops.find(s.file); ImGui::SetTooltip(L && L->on ? "Loop points set (the Audio editor)" : "Set its loop points in the Audio editor (an intro, then a loop)"); } }
         ImGui::PopID(); return ch;
     }
     void SoundtrackTab() {
@@ -15374,9 +15413,10 @@ struct App {
           if (ch) SavePlayerSounds(); }
         ImGui::SeparatorText("All music");
         std::vector<std::string> ost = MusicFiles();
-        if (ImGui::BeginTable("ost", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+        if (ImGui::BeginTable("ost", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
             ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 28 * ui); ImGui::TableSetupColumn("Title", ImGuiTableColumnFlags_WidthStretch, 2);
             ImGui::TableSetupColumn("Length", ImGuiTableColumnFlags_WidthFixed, 70 * ui); ImGui::TableSetupColumn("Plays in", ImGuiTableColumnFlags_WidthStretch, 2);
+            ImGui::TableSetupColumn("Loop", ImGuiTableColumnFlags_WidthStretch, 1.4f);
             ImGui::TableHeadersRow();
             for (const std::string& f : ost) {
                 ImGui::PushID(f.c_str()); ImGui::TableNextRow(); ImGui::TableNextColumn();
@@ -15391,6 +15431,9 @@ struct App {
                   for (const RoomDef& r : rooms.list.rooms) if (r.musicMode == 1 && r.music.file == f) add(r.label());
                   for (const auto& sc : screens.screens) if (sc.musicMode == 1 && sc.music.file == f) add(sc.name);
                   ImGui::TextDisabled("%s", used.empty() ? "-" : used.c_str()); if (!used.empty() && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", used.c_str()); }
+                ImGui::TableNextColumn();
+                { const mc::MusicLoop* L = musicLoops.find(f); if (ImGui::SmallButton("Loop points...")) OpenAudioEditor(f);
+                  if (L && L->on) { ImGui::SameLine(); if (L->bpm > 0) ImGui::TextDisabled("%.0f bpm, from %.1f s", L->bpm, L->loopStart); else ImGui::TextDisabled("from %.1f s", L->loopStart); } }
                 ImGui::PopID();
             }
             ImGui::EndTable();
@@ -15406,6 +15449,242 @@ struct App {
             }
             Hint("Things that already use them keep working; pick the soundtrack copy for new music.");
         }
+    }
+    // ---- the Audio editor: a piece of music's loop points (an intro once, then a loop), its tempo as a grid to snap them to, the seam
+    static constexpr int TAG_AUDIOED = 45;
+    bool audioEdOpen = false, focusAudioEd = false; std::string aeFile;
+    std::shared_ptr<WavData> aeWav; std::vector<float> aePkMin, aePkMax; static constexpr int AE_BLOCK = 64;   // peaks: min / max of every 64 frames (the waveform)
+    float aeV0 = 0, aeVLen = 0, aeCursor = 0; int aeSnap = 2, aeDrag = 0; bool aeRestart = false, aeSave = false;
+    IXAudio2SourceVoice* aeVoice = nullptr; UINT32 aeFrom = 0; bool aeLoopPlay = false;
+    std::future<mc::BpmGuess> aeBpmFut; bool aeBpmBusy = false; std::string aeBpmFor; std::vector<double> aeTaps;
+    mc::MusicLoop aeJumpFor; float aeJump = 0; bool aeJumpKnown = false;
+    void OpenAudioEditor(const std::string& file) { audioEdOpen = true; focusAudioEd = true; if (!file.empty() && file != aeFile) { AeStop(); aeFile = file; aeWav = nullptr; } }
+    void AeStop() { if (aeVoice) { StopSounds(TAG_AUDIOED); aeVoice = nullptr; } }
+    bool AePlaying() {   // (the voice can be gone: finished, or let go)
+        if (!aeVoice) return false;
+        for (const Voice& v : voices) if (v.v == aeVoice && v.tag == TAG_AUDIOED) return true;
+        aeVoice = nullptr; return false;
+    }
+    float AePos() {   // seconds: where it is playing now
+        if (!AePlaying() || !aeWav) return -1;
+        XAUDIO2_VOICE_STATE st; aeVoice->GetState(&st); uint64_t f = aeFrom + st.SamplesPlayed;
+        if (aeLoopPlay) { const mc::MusicLoop* L = musicLoops.find(aeFile); if (L) { mc::LoopFrames lf = mc::loopFrames(*L, aeWav->samples.size() / std::max(1, aeWav->channels), aeWav->rate);
+            if (lf.ok && f >= lf.end) f = lf.start + (f - lf.end) % std::max<uint32_t>(1, lf.end - lf.start); } }
+        return (float)f / aeWav->rate;
+    }
+    void AePlay(float from) {   // as in the game (the intro, then the loop round and round) - or, loop points off, straight through
+        AeStop(); if (!aeWav) return;
+        const mc::MusicLoop* L = musicLoops.find(aeFile); aeLoopPlay = L && L->on;
+        SoundUse u; u.file = aeFile; u.pitchVar = 0; aeFrom = (UINT32)std::max(0.f, from * aeWav->rate);
+        if (aeLoopPlay) { mc::LoopFrames lf = mc::loopFrames(*L, aeWav->samples.size() / std::max(1, aeWav->channels), aeWav->rate); if (lf.ok && aeFrom >= lf.end) aeFrom = lf.start;
+            musicFrom = aeFrom; aeVoice = PlaySoundIn(SND_MUSIC, u, 1, nullptr, TAG_AUDIOED, true); musicFrom = 0; }
+        else { u.trimStart = from; aeVoice = PlaySoundIn(SND_MUSIC, u, 1, nullptr, TAG_AUDIOED, false); }
+    }
+    static std::string AeTime(float s) { if (s < 0) s = 0; int m = (int)(s / 60); char b[32]; snprintf(b, sizeof b, "%d:%06.3f", m, s - m * 60); return b; }
+    void AeLoadTrack() {
+        aeWav = LoadSound(aeFile); aePkMin.clear(); aePkMax.clear(); aeJumpKnown = false;
+        if (!aeWav || aeWav->samples.empty()) { aeWav = nullptr; return; }
+        int ch = std::max(1, aeWav->channels); size_t frames = aeWav->samples.size() / ch, nb = (frames + AE_BLOCK - 1) / AE_BLOCK;
+        aePkMin.assign(nb, 0.f); aePkMax.assign(nb, 0.f);
+        for (size_t b = 0; b < nb; b++) { float lo = 1e9f, hi = -1e9f;
+            for (size_t f = b * AE_BLOCK; f < std::min(frames, (b + 1) * AE_BLOCK); f++) { float v = 0; for (int c = 0; c < ch; c++) v += aeWav->samples[f * ch + c]; v /= ch; lo = std::min(lo, v); hi = std::max(hi, v); }
+            aePkMin[b] = lo; aePkMax[b] = hi; }
+        aeV0 = 0; aeVLen = aeWav->seconds(); aeCursor = 0;
+    }
+    void AudioEditor() {
+        if (!audioEdOpen) { if (aeVoice) AeStop(); return; }
+        float ui = settings.uiScale; ImGuiIO& io = ImGui::GetIO();
+        ImGui::SetNextWindowSize(ImVec2(1150 * ui, 560 * ui), ImGuiCond_FirstUseEver);
+        if (focusAudioEd) { ImGui::SetNextWindowFocus(); focusAudioEd = false; }
+        if (!ImGui::Begin("Audio editor", &audioEdOpen)) { ImGui::End(); return; }
+        // the track
+        std::vector<std::string> ost = MusicFiles();
+        if (aeFile.empty() && !ost.empty()) aeFile = ost[0];
+        Prop("Music"); ImGui::SetNextItemWidth(360 * ui);
+        if (ImGui::BeginCombo("##aetrack", aeFile.empty() ? "(pick a piece of music)" : MusicTitle(aeFile).c_str())) {
+            for (const std::string& f : ost) { const mc::MusicLoop* L = musicLoops.find(f); std::string lab = MusicTitle(f) + (L && L->on ? "   (loop points)" : "");
+                if (ImGui::Selectable(lab.c_str(), f == aeFile)) { AeStop(); aeFile = f; aeWav = nullptr; } }
+            if (ost.empty()) ImGui::TextDisabled("  (no music yet: import some in Assets > Soundtrack)");
+            ImGui::EndCombo();
+        }
+        if (!aeFile.empty() && (!aeWav || aeWav != LoadSound(aeFile))) AeLoadTrack();
+        if (!aeWav) { ImGui::TextDisabled(aeFile.empty() ? "No music in the soundtrack yet." : "This file could not be read."); ImGui::End(); return; }
+        const float dur = aeWav->seconds(); const int ch = std::max(1, aeWav->channels);
+        mc::MusicLoop L; bool had = false; if (const mc::MusicLoop* f = musicLoops.find(aeFile)) { L = *f; had = true; }
+        const mc::MusicLoop L0 = L; bool commit = false;   // commit: a change done (not mid-drag) - play it again from where it is
+        // ---- playing
+        bool playing = AePlaying(); float pos = AePos();
+        ImGui::SameLine(); if (ImGui::Button(playing ? "Stop" : "Play", ImVec2(70 * ui, 0))) { if (playing) AeStop(); else AePlay(aeCursor); }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("From the cursor (click the waveform to move it). Space: play / stop.\nWith loop points on, it plays as in the game: on to the loop's end, then back to its start, round and round.");
+        if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && !ImGui::IsAnyItemActive() && ImGui::IsKeyPressed(ImGuiKey_Space, false)) { if (playing) AeStop(); else AePlay(aeCursor); }
+        ImGui::SameLine(); ImGui::BeginDisabled(!L.on);
+        if (ImGui::Button("Listen to the seam")) { float e = L.loopEnd > 0 ? std::min(L.loopEnd, dur) : dur; AePlay(std::max(L.loopStart, e - 4.f)); }
+        ImGui::EndDisabled(); if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("The last 4 seconds of the loop, and the jump back to its start");
+        ImGui::SameLine(); ImGui::TextDisabled("%s / %s", AeTime(playing ? pos : aeCursor).c_str(), AeTime(dur).c_str());
+        ImGui::SameLine(); if (ImGui::Checkbox("Loop points on", &L.on)) commit = true;
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Off: the whole track plays round and round, as it is");
+        // ---- the tempo (the grid)
+        ImGui::SeparatorText("Tempo (the grid the loop points snap to)");
+        if (aeBpmBusy && aeBpmFut.valid() && aeBpmFut.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+            mc::BpmGuess g = aeBpmFut.get(); aeBpmBusy = false;
+            if (aeBpmFor == aeFile) {
+                if (g.bpm > 0) { L.bpm = std::round(g.bpm * 100) / 100; L.firstBar = g.firstBar; commit = true;
+                    Toast("About " + std::to_string((int)std::lround(g.bpm)) + " bpm" + (g.confidence < 0.35f ? " (not sure: check it with the grid, or tap it)" : "")); }
+                else Toast("No steady beat found: type the bpm, or tap it");
+            }
+        }
+        Prop("Beats a minute"); ImGui::SetNextItemWidth(110 * ui);
+        if (ImGui::DragFloat("##bpm", &L.bpm, 0.05f, 0, 400, L.bpm > 0 ? "%.2f bpm" : "(none)")) { L.bpm = std::clamp(L.bpm, 0.f, 400.f); }
+        if (ImGui::IsItemDeactivatedAfterEdit()) commit = true;
+        ImGui::SameLine(); ImGui::BeginDisabled(aeBpmBusy);
+        if (ImGui::Button(aeBpmBusy ? "Listening..." : "Find the bpm")) {
+            std::shared_ptr<WavData> w = aeWav; int bpb = L.beatsPerBar; aeBpmFor = aeFile; aeBpmBusy = true;
+            aeBpmFut = std::async(std::launch::async, [w, bpb]() { std::vector<float> m = mc::monoOf(w->samples, w->channels); return mc::detectBpm(m.data(), m.size(), w->rate, bpb); });
+        }
+        ImGui::EndDisabled(); if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Listens for the beats: finds the tempo and where bar 1 starts.\nFast music sometimes comes out at half speed (or the other way): then x2 or /2.");
+        ImGui::SameLine(); ImGui::BeginDisabled(L.bpm <= 0);
+        if (ImGui::Button("x2")) { L.bpm *= 2; commit = true; } ImGui::SameLine(); if (ImGui::Button("/2")) { L.bpm /= 2; commit = true; }
+        ImGui::EndDisabled();
+        ImGui::SameLine(); if (ImGui::Button("Tap")) {   // tap along: the bpm from the taps (a pause of 2 s starts over)
+            double now = ImGui::GetTime(); if (!aeTaps.empty() && now - aeTaps.back() > 2) aeTaps.clear(); aeTaps.push_back(now); if (aeTaps.size() > 9) aeTaps.erase(aeTaps.begin());
+            if (aeTaps.size() >= 3) { L.bpm = (float)std::round(60.0 * (aeTaps.size() - 1) / (aeTaps.back() - aeTaps.front()) * 10) / 10; commit = true; }
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Click along with the beat while it plays (3 taps or more)");
+        ImGui::SameLine(); ImGui::TextDisabled("  beats a bar"); ImGui::SameLine(); ImGui::SetNextItemWidth(70 * ui);
+        if (ImGui::InputInt("##bpb", &L.beatsPerBar)) { L.beatsPerBar = std::clamp(L.beatsPerBar, 1, 16); commit = true; }
+        Prop("Bar 1 starts at"); ImGui::SetNextItemWidth(110 * ui);
+        if (ImGui::DragFloat("##fb", &L.firstBar, 0.001f, 0, dur, "%.3f s")) L.firstBar = std::clamp(L.firstBar, 0.f, dur);
+        if (ImGui::IsItemDeactivatedAfterEdit()) commit = true;
+        ImGui::SameLine(); ImGui::BeginDisabled(L.bpm <= 0);
+        if (ImGui::Button("< a beat")) { L.firstBar -= L.beat(); if (L.firstBar < 0) L.firstBar += L.bar(); commit = true; }
+        ImGui::SameLine(); if (ImGui::Button("a beat >")) { L.firstBar += L.beat(); if (L.firstBar >= L.bar() + 1e-3f) L.firstBar -= L.bar(); commit = true; }
+        ImGui::EndDisabled(); if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Bar 1 one beat earlier / later (when the grid's strong lines sit on the wrong beat)");
+        ImGui::SameLine(); ImGui::TextDisabled("  snap"); ImGui::SameLine();
+        ImGui::RadioButton("off", &aeSnap, 0); ImGui::SameLine(); ImGui::RadioButton("beats", &aeSnap, 1); ImGui::SameLine(); ImGui::RadioButton("bars", &aeSnap, 2);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Dragged loop points land on the grid (hold Alt: free)");
+        // ---- the loop
+        ImGui::SeparatorText("The loop");
+        float endEff = L.loopEnd > 0 ? std::min(L.loopEnd, dur) : dur;
+        Prop("Loop start"); ImGui::SetNextItemWidth(130 * ui);
+        if (ImGui::DragFloat("##ls", &L.loopStart, 0.001f, 0, dur, "%.3f s")) L.loopStart = std::clamp(L.loopStart, 0.f, std::max(0.f, endEff - 0.05f));
+        if (ImGui::IsItemDeactivatedAfterEdit()) commit = true;
+        ImGui::SameLine(); if (ImGui::Button("At the cursor##s")) { L.loopStart = std::min(mc::snapTime(aeCursor, L, aeSnap), std::max(0.f, endEff - 0.05f)); commit = true; }
+        ImGui::SameLine(); ImGui::TextDisabled("   end"); ImGui::SameLine(); ImGui::SetNextItemWidth(130 * ui);
+        float e = endEff; if (ImGui::DragFloat("##le", &e, 0.001f, 0, dur, "%.3f s")) { e = std::clamp(e, L.loopStart + 0.05f, dur); L.loopEnd = e >= dur - 1e-4f ? 0.f : e; }
+        if (ImGui::IsItemDeactivatedAfterEdit()) commit = true;
+        ImGui::SameLine(); if (ImGui::Button("At the cursor##e")) { float t = std::max(mc::snapTime(aeCursor, L, aeSnap), L.loopStart + 0.05f); L.loopEnd = t >= dur - 1e-4f ? 0.f : t; commit = true; }
+        ImGui::SameLine(); if (ImGui::Button("The track's end")) { L.loopEnd = 0; commit = true; }
+        Prop("Seam (crossfade)"); ImGui::SetNextItemWidth(200 * ui);
+        if (ImGui::SliderFloat("##seam", &L.seam, 0, 0.5f, L.seam <= 0 ? "a hard jump" : "%.3f s")) L.seam = std::clamp(L.seam, 0.f, 0.5f);
+        if (ImGui::IsItemDeactivatedAfterEdit()) commit = true;
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("At the jump back, the end of the loop fades into what plays just before its start:\nthe jump lands where the sound already is (no click, no tail cut off). Shorter: tighter; longer: smoother.");
+        ImGui::SameLine(); if (ImGui::Button("Auto")) { L.seam = std::round(mc::autoSeam(aeWav->samples, ch, aeWav->rate, L) * 1000) / 1000; commit = true; }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Listens to both sides of the seam: short where it already flows on, longer where it changes or a tail rings on");
+        if (!aeJumpKnown || !(aeJumpFor == L) ) { if (aeDrag == 0) { aeJump = mc::seamJump(aeWav->samples, ch, aeWav->rate, L); aeJumpFor = L; aeJumpKnown = true; } }
+        ImGui::SameLine();
+        if (L.on && aeJump > 1 && L.seam < 0.004f) ImGui::TextColored(ImVec4(1, 0.55f, 0.3f, 1), "  this jump will probably click: give it a seam (or Auto)");
+        else if (L.on && aeJump > 1) ImGui::TextDisabled("  the seam hides a jump there");
+        else if (L.on) ImGui::TextDisabled("  the jump is smooth");
+        {   // what it comes to
+            float loopLen = endEff - L.loopStart; char b[256];
+            if (L.bpm > 0) snprintf(b, sizeof b, "Intro: %.2f bars (%.2f s)   Loop: %.2f bars (%.2f s)", L.loopStart / L.bar(), L.loopStart, loopLen / L.bar(), loopLen);
+            else snprintf(b, sizeof b, "Intro: %.2f s   Loop: %.2f s", L.loopStart, loopLen);
+            ImGui::TextUnformatted(b);
+            if (endEff < dur - 0.01f) { ImGui::SameLine(); ImGui::TextDisabled("   after the loop: %.2f s that never plays", dur - endEff); }
+            if (L.bpm > 0) { float bars = loopLen / L.bar(); if (std::fabs(bars - std::round(bars)) > 0.02f) { ImGui::SameLine(); ImGui::TextColored(ImVec4(1, 0.8f, 0.3f, 1), "   (not whole bars: the beat may stumble at the jump)"); } }
+        }
+        // ---- the waveform
+        ImGui::Spacing();
+        ImVec2 p0 = ImGui::GetCursorScreenPos(); ImVec2 sz(std::max(200.f, ImGui::GetContentRegionAvail().x), std::max(140.f * ui, ImGui::GetContentRegionAvail().y - 40 * ui));
+        ImGui::InvisibleButton("##wave", sz, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_MouseButtonMiddle);
+        bool hov = ImGui::IsItemHovered(), act = ImGui::IsItemActive();
+        if (aeVLen <= 0 || aeVLen > dur) aeVLen = dur;
+        auto tx = [&](float t) { return p0.x + (t - aeV0) / aeVLen * sz.x; };
+        auto xt = [&](float x) { return aeV0 + (x - p0.x) / sz.x * aeVLen; };
+        if (hov && io.MouseWheel != 0) {
+            if (io.KeyShift) aeV0 -= io.MouseWheel * aeVLen * 0.1f;
+            else { float tm = xt(io.MousePos.x), old = aeVLen; aeVLen = std::clamp(aeVLen * (io.MouseWheel > 0 ? 0.8f : 1.25f), std::min(dur, 0.05f), dur); aeV0 = tm - (tm - aeV0) * (aeVLen / old); }
+        }
+        if (act && (ImGui::IsMouseDown(1) || ImGui::IsMouseDown(2))) aeV0 -= io.MouseDelta.x / sz.x * aeVLen;
+        float grip = 6 * ui; const float rulerH = 16 * ui;
+        if (hov && ImGui::IsMouseClicked(0)) {   // grab a marker, else move the cursor (playing: it jumps there)
+            float mx = io.MousePos.x; aeDrag = 0;
+            if (L.bpm > 0 && io.MousePos.y < p0.y + rulerH && std::fabs(mx - tx(L.firstBar)) < grip) aeDrag = 3;
+            else if (L.on && std::fabs(mx - tx(endEff)) < grip) aeDrag = 2;
+            else if (L.on && std::fabs(mx - tx(L.loopStart)) < grip) aeDrag = 1;
+            if (!aeDrag) { aeCursor = std::clamp(xt(mx), 0.f, dur); aeDrag = 4; if (playing) AePlay(aeCursor); }
+        }
+        if (aeDrag && ImGui::IsMouseDown(0)) {
+            float t = std::clamp(xt(io.MousePos.x), 0.f, dur), ts = io.KeyAlt ? t : mc::snapTime(t, L, aeSnap);
+            if (aeDrag == 1) L.loopStart = std::clamp(ts, 0.f, std::max(0.f, endEff - 0.05f));
+            if (aeDrag == 2) { float v = std::clamp(ts, L.loopStart + 0.05f, dur); L.loopEnd = v >= dur - 1e-4f ? 0.f : v; }
+            if (aeDrag == 3) L.firstBar = t;
+            if (aeDrag == 4) aeCursor = t;
+        }
+        if (aeDrag && !ImGui::IsMouseDown(0)) { if (aeDrag != 4) commit = true; aeDrag = 0; }
+        if (playing && pos >= 0 && aeDrag == 0 && !act && (pos < aeV0 || pos > aeV0 + aeVLen)) aeV0 = pos - aeVLen * 0.1f;   // follows what plays
+        aeV0 = std::clamp(aeV0, 0.f, std::max(0.f, dur - aeVLen));
+        endEff = L.loopEnd > 0 ? std::min(L.loopEnd, dur) : dur;
+        ImDrawList* dl = ImGui::GetWindowDrawList(); ImVec2 p1(p0.x + sz.x, p0.y + sz.y);
+        dl->PushClipRect(p0, p1, true);
+        dl->AddRectFilled(p0, p1, IM_COL32(14, 16, 20, 255));
+        float wy0 = p0.y + rulerH, wy1 = p1.y, mid = (wy0 + wy1) * 0.5f, amp = (wy1 - wy0) * 0.47f;
+        if (L.on) {   // the intro, the loop, after it
+            dl->AddRectFilled(ImVec2(tx(L.loopStart), wy0), ImVec2(tx(endEff), wy1), IM_COL32(40, 90, 70, 70));
+            if (endEff < dur) dl->AddRectFilled(ImVec2(tx(endEff), wy0), p1, IM_COL32(0, 0, 0, 120));
+            if (L.seam > 0) { bool pre = L.loopStart >= L.seam; float a = pre ? endEff - L.seam : L.loopStart, b = pre ? endEff : L.loopStart + L.seam;   // (where the crossfade is)
+                dl->AddRectFilled(ImVec2(tx(a), wy0), ImVec2(tx(b), wy1), IM_COL32(220, 140, 60, 60)); }
+        }
+        // the grid: beats, bars (numbered)
+        if (L.bpm > 0 && L.beat() > 1e-3f) {
+            float pxBeat = sz.x * L.beat() / aeVLen, pxBar = pxBeat * L.beatsPerBar; int step = 1; while (pxBar * step < 30 * ui) step *= 2;
+            long b0 = (long)std::floor((aeV0 - L.firstBar) / L.beat()) - 1, b1 = (long)std::ceil((aeV0 + aeVLen - L.firstBar) / L.beat()) + 1;
+            for (long k = b0; k <= b1; k++) {
+                float t = L.firstBar + k * L.beat(); if (t < 0 || t > dur) continue; float x = tx(t);
+                long bar = (long)std::floor((double)k / L.beatsPerBar); bool isBar = k % L.beatsPerBar == 0;
+                if (isBar && bar % step == 0) { dl->AddLine(ImVec2(x, wy0), ImVec2(x, wy1), IM_COL32(120, 130, 150, 90)); char nb[16]; snprintf(nb, sizeof nb, "%ld", bar + 1); dl->AddText(ImVec2(x + 2, p0.y + 1), IM_COL32(170, 180, 200, 255), nb); }
+                else if (!isBar && pxBeat >= 6) dl->AddLine(ImVec2(x, wy0), ImVec2(x, wy1), IM_COL32(90, 100, 120, 40));
+            }
+            float fx = tx(L.firstBar); dl->AddTriangleFilled(ImVec2(fx - 5 * ui, p0.y), ImVec2(fx + 5 * ui, p0.y), ImVec2(fx, p0.y + rulerH * 0.8f), IM_COL32(240, 200, 60, 255));
+        } else {
+            const float steps[] = { 0.1f, 0.25f, 0.5f, 1, 2, 5, 10, 15, 30, 60, 120 }; float st = 120; for (float s : steps) if (sz.x * s / aeVLen >= 70 * ui) { st = s; break; }
+            for (float t = std::ceil(aeV0 / st) * st; t <= aeV0 + aeVLen; t += st) { float x = tx(t); dl->AddLine(ImVec2(x, wy0), ImVec2(x, wy1), IM_COL32(120, 130, 150, 60)); dl->AddText(ImVec2(x + 2, p0.y + 1), IM_COL32(170, 180, 200, 255), AeTime(t).c_str()); }
+        }
+        {   // the waveform: min / max per pixel (from the peaks, or the samples themselves when zoomed far in)
+            double fps = (double)aeVLen * aeWav->rate / sz.x; size_t frames = aeWav->samples.size() / ch;
+            ImU32 wc = IM_COL32(110, 190, 230, 255);
+            for (int px = 0; px < (int)sz.x; px++) {
+                double f0 = (aeV0 * aeWav->rate) + px * fps, f1 = f0 + std::max(1.0, fps); if (f0 >= frames) break;
+                float lo = 1e9f, hi = -1e9f;
+                if (fps < AE_BLOCK) { for (size_t f = (size_t)f0; f < std::min<size_t>(frames, (size_t)f1 + 1); f++) { float v = 0; for (int c = 0; c < ch; c++) v += aeWav->samples[f * ch + c]; v /= ch; lo = std::min(lo, v); hi = std::max(hi, v); } }
+                else for (size_t b = (size_t)(f0 / AE_BLOCK); b < std::min(aePkMin.size(), (size_t)(f1 / AE_BLOCK) + 1); b++) { lo = std::min(lo, aePkMin[b]); hi = std::max(hi, aePkMax[b]); }
+                if (hi < lo) continue;
+                dl->AddLine(ImVec2(p0.x + px + 0.5f, mid - std::clamp(hi, -1.f, 1.f) * amp), ImVec2(p0.x + px + 0.5f, mid - std::clamp(lo, -1.f, 1.f) * amp + 1), wc);
+            }
+        }
+        if (L.on) {   // the loop's markers
+            float xs = tx(L.loopStart), xe = tx(endEff);
+            dl->AddLine(ImVec2(xs, wy0), ImVec2(xs, wy1), IM_COL32(90, 230, 140, 255), 2 * ui); dl->AddText(ImVec2(xs + 3, wy0 + 2), IM_COL32(90, 230, 140, 255), "loop start");
+            dl->AddLine(ImVec2(xe, wy0), ImVec2(xe, wy1), IM_COL32(240, 120, 80, 255), 2 * ui); dl->AddText(ImVec2(xe - ImGui::CalcTextSize("jumps back").x - 3, wy0 + 2), IM_COL32(240, 120, 80, 255), "jumps back");
+        }
+        { float xc = tx(aeCursor); for (float y = wy0; y < wy1; y += 8 * ui) dl->AddLine(ImVec2(xc, y), ImVec2(xc, std::min(wy1, y + 4 * ui)), IM_COL32(255, 255, 255, 140)); }
+        if (playing && pos >= 0) { float xp = tx(pos); dl->AddLine(ImVec2(xp, p0.y), ImVec2(xp, wy1), IM_COL32(255, 255, 255, 255), 1.5f * ui); }
+        dl->PopClipRect();
+        if (hov && !aeDrag) {
+            float mx = io.MousePos.x;
+            if ((L.on && (std::fabs(mx - tx(endEff)) < grip || std::fabs(mx - tx(L.loopStart)) < grip)) || (L.bpm > 0 && io.MousePos.y < p0.y + rulerH && std::fabs(mx - tx(L.firstBar)) < grip)) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+            float t = xt(mx); if (L.bpm > 0) { double bt = (t - L.firstBar) / L.beat(); long k = (long)std::floor(bt); ImGui::SetTooltip("%s   bar %ld, beat %ld", AeTime(t).c_str(), (long)std::floor((double)k / L.beatsPerBar) + 1, ((k % L.beatsPerBar) + L.beatsPerBar) % L.beatsPerBar + 1); }
+            else ImGui::SetTooltip("%s", AeTime(t).c_str());
+        }
+        ImGui::TextDisabled("Wheel: zoom   Shift + wheel or right-drag: scroll   Click: the cursor   Drag the green / orange lines: the loop   The yellow mark: bar 1");
+        // ---- keep it
+        if (L != L0) {
+            if (!had && L == mc::MusicLoop{}) {} else { musicLoops.byFile[aeFile] = L; aeSave = true; }
+        }
+        if (commit && AePlaying()) aeRestart = true;   // (what plays keeps up with the change: again from where it is)
+        if (aeRestart && !ImGui::IsMouseDown(0)) { aeRestart = false; if (AePlaying()) AePlay(std::max(0.f, AePos())); }
+        if (aeSave && !ImGui::IsMouseDown(0) && !ImGui::IsAnyItemActive()) { aeSave = false; if (!projectDir.empty()) mc::saveMusicLoops(projectDir + "/music_loops.txt", musicLoops); }
+        ImGui::End();
     }
     void SavePlayerSounds() { if (!projectDir.empty()) savePlayerSounds(projectDir + "/player_sounds.txt", playerSounds); }
     // ---- surfaces: what the block under Samus is made of changes her steps (Surfaces tab)
@@ -18945,7 +19224,7 @@ struct App {
             if (brushMenu) BrushMenu();
             ModelViewer();
             PlayerEditor();
-            ScreensEditor(); PlanetsEditor(); CookWindow(); RoomsWindow(); BenchWindow(); DrawVrEyes();
+            ScreensEditor(); PlanetsEditor(); AudioEditor(); CookWindow(); RoomsWindow(); BenchWindow(); DrawVrEyes();
         } else {
             if (!mapOpen && !CurScreen()) { DrawHud(ImGui::GetForegroundDrawList()); if (!Frozen()) { DrawScanMarkers(ImGui::GetForegroundDrawList()); DrawLockMarkers(ImGui::GetForegroundDrawList()); DrawGrappleMarker(ImGui::GetForegroundDrawList()); } }
             if (showF3) DrawF3();
