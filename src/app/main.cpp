@@ -18677,7 +18677,7 @@ struct App {
                 for (int x = -1; x <= 6; x++) for (int z = -1; z <= 6; z++) {
                     if (x >= 0 && x < 6 && z >= 0 && z < 6) continue;
                     world->set(ox + x, gy, oz + z, E);
-                    int t = z == -1 ? 0 : z == 6 ? 2 : x == 6 ? 1 : 3;   // the stripe along the pad's outer edge, each side turned its way
+                    int t = z == -1 ? 0 : z == 6 ? 2 : x == 6 ? 3 : 1;   // the stripe along the pad's outer edge, each side turned its way
                     world->setOverlayTurns(ox + x, gy, oz + z, F_PY, t);
                 }
                 for (int x = 1; x <= 3; x++) for (int y = 1; y <= 3; y++) world->set(ox + x, gy + y, oz - 3, M);   // a 3 x 3 mural, its picture on the +Z side
