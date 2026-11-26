@@ -79,6 +79,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force out | Out-Null
           Copy-Item build/Release/PRIMEngine.exe out/
+          if (Test-Path build/Release/PRIMEngine.pdb) { Copy-Item build/Release/PRIMEngine.pdb out/ }   # (crash reports name the function and line with it)
           Copy-Item -Recurse shaders out/shaders
           Copy-Item -Recurse assets out/assets
           Copy-Item README.md out/
