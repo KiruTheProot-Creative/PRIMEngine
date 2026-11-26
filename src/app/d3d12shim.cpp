@@ -132,7 +132,7 @@ struct Core {
     std::string logPath; bool debug = false; ComPtr<ID3D12InfoQueue> iq; int logged = 0; bool removedLogged = false;
     Device device; DeviceContext context; SwapChain swapObj;
     DeviceContext::Saved b; uint32_t dirty = DT_ALL; ID3D12PipelineState* curPso = nullptr; bool uavDrawn = false; UINT nvbSet = 0;
-    std::vector<D3D12_RESOURCE_BARRIER> barriers;
+    std::vector<D3D12_RESOURCE_BARRIER> barriers; uint64_t stateSerial = 1, checkedSerial = 0;   // (a barrier anywhere: what is bound is checked again at the next draw)
 
     // -------- fences and frames
     void signal() { queue->Signal(fence.Get(), ++signaled); }
@@ -162,7 +162,7 @@ struct Core {
         else if (cur == want) return;
         D3D12_RESOURCE_BARRIER b{}; b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION; b.Transition.pResource = r->gres;
         b.Transition.Subresource = r->page ? D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES : (st.size() == 1 ? D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES : sub);
-        b.Transition.StateBefore = cur; b.Transition.StateAfter = next; barriers.push_back(b); st[sub] = next;
+        b.Transition.StateBefore = cur; b.Transition.StateAfter = next; barriers.push_back(b); st[sub] = next; stateSerial++;
     }
     void needAll(Resource* r, D3D12_RESOURCE_STATES want) {
         r = r->real(); if (!r || r->virt || r->staging || !r->gres) return;
@@ -172,7 +172,7 @@ struct Core {
             D3D12_RESOURCE_STATES cur = st[0], next = want;
             if (IsRead(cur) && IsRead(want)) { if ((cur & want) == want) return; next = cur | want; } else if (cur == want) return;
             D3D12_RESOURCE_BARRIER b{}; b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION; b.Transition.pResource = r->gres; b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-            b.Transition.StateBefore = cur; b.Transition.StateAfter = next; barriers.push_back(b); for (auto& s : st) s = next; return;
+            b.Transition.StateBefore = cur; b.Transition.StateAfter = next; barriers.push_back(b); for (auto& s : st) s = next; stateSerial++; return;
         }
         for (UINT i = 0; i < (UINT)st.size(); i++) needSub(r, i, want);
     }
@@ -722,7 +722,10 @@ static void UavTable() {
 static bool Prepare() {
     DeviceContext::Saved& b = g->b;
     // constant and dynamic buffers from an earlier frame: into this one's memory
-    for (StageB* st : { &b.vs, &b.ps }) {
+    // (only when something bound changed, or the frame did - a run of chunk draws only swaps vertex buffers)
+    const uint32_t BINDS = DT_VS_SRV | DT_PS_SRV | DT_VS_CB | DT_PS_CB | DT_OM | DT_UAV | DT_PSO;
+    bool full = (g->dirty & BINDS) || g->stateSerial != g->checkedSerial;
+    if (full) for (StageB* st : { &b.vs, &b.ps }) {
         for (auto& c : st->cb) if (c && g->refresh(c.Get())) g->dirty |= st == &b.vs ? DT_VS_CB : DT_PS_CB;
         int n = st->sh ? st->sh->srvMax + 1 : 0;
         for (int i = 0; i < n; i++) if (st->srv[i] && st->srv[i]->res->virt && g->refresh(st->srv[i]->res.Get())) g->dirty |= st == &b.vs ? DT_VS_SRV : DT_PS_SRV;
@@ -730,16 +733,19 @@ static bool Prepare() {
     for (auto& v : b.vb) if (v && g->refresh(v.Get())) g->dirty |= DT_VB;
     if (b.ib && g->refresh(b.ib.Get())) g->dirty |= DT_IB;
     // states
-    for (UINT i = 0; i < b.nrt; i++) if (b.rtv[i]) g->needView(b.rtv[i].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET);
-    if (b.dsv) g->needView(b.dsv.Get(), b.dsv->readOnly ? D3D12_RESOURCE_STATE_DEPTH_READ : D3D12_RESOURCE_STATE_DEPTH_WRITE);
-    for (StageB* st : { &b.vs, &b.ps }) { int n = st->sh ? st->sh->srvMax + 1 : 0; for (int i = 0; i < n; i++) if (st->srv[i]) g->needView(st->srv[i].Get(), ST_SR); }
-    bool anyUav = false; int nu = b.ps.sh ? b.ps.sh->uavMax + 1 : 0;
-    for (int i = 0; i < nu; i++) if (b.uav[i]) { g->needView(b.uav[i].Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS); anyUav = true; }
+    int nu = b.ps.sh ? b.ps.sh->uavMax + 1 : 0;
+    if (full) {
+        for (UINT i = 0; i < b.nrt; i++) if (b.rtv[i]) g->needView(b.rtv[i].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET);
+        if (b.dsv) g->needView(b.dsv.Get(), b.dsv->readOnly ? D3D12_RESOURCE_STATE_DEPTH_READ : D3D12_RESOURCE_STATE_DEPTH_WRITE);
+        for (StageB* st : { &b.vs, &b.ps }) { int n = st->sh ? st->sh->srvMax + 1 : 0; for (int i = 0; i < n; i++) if (st->srv[i]) g->needView(st->srv[i].Get(), ST_SR); }
+        for (int i = 0; i < nu; i++) if (b.uav[i]) g->needView(b.uav[i].Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    }
+    bool anyUav = false; for (int i = 0; i < nu; i++) anyUav |= b.uav[i] != nullptr;
     if (anyUav && g->uavDrawn) { D3D12_RESOURCE_BARRIER ub{}; ub.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV; g->barriers.push_back(ub); }   // (D3D11 kept draws writing the same UAV in order)
     g->uavDrawn = anyUav;
     for (auto& v : b.vb) if (v && !v->virt) g->needSub(v.Get(), 0, ST_BUFREAD);
     if (b.ib && !b.ib->virt) g->needSub(b.ib.Get(), 0, ST_BUFREAD);
-    g->flushBarriers();
+    g->flushBarriers(); g->checkedSerial = g->stateSerial;
     // descriptors: room for every table this draw sets (if the frame's share is used up it starts over, all set again)
     UINT need = 0;
     if (g->dirty & DT_VS_SRV) need += (UINT)std::max(0, b.vs.sh ? b.vs.sh->srvMax + 1 : 0);
