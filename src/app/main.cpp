@@ -255,6 +255,7 @@ struct App {
             GpuChunk& gc = kv.second; if (!gc.nO && !gc.nC) continue;
             double cx = (kv.first.x + 0.5) * CS - camPos.x, cy = (kv.first.y + 0.5) * CS - camPos.y, cz = (kv.first.z + 0.5) * CS - camPos.z, d2 = cx * cx + cy * cy + cz * cz;
             if (d2 < (reach + CS) * (reach + CS)) around.push_back({ d2, kv.first, &gc });
+            else if (gc.blas && d2 > (reach * 1.6 + CS) * (reach * 1.6 + CS)) { gc.blas.Reset(); gc.blasDirty = true; }   // (far behind: its shape goes - memory - and is made again on the way back)
         }
         std::sort(around.begin(), around.end(), [](const Near& a, const Near& b) { return a.d2 < b.d2; });
         int builds = 0; rtxBuilt = 0;
