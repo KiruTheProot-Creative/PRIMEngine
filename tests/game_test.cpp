@@ -794,6 +794,12 @@ int main() {
         CHECK(h.log.size() == 2, "and lets it run with the key");
         cards[0].once = true; h.log.clear(); run.signal(cards, { When::EnterZone, "Hall" }, h);
         CHECK(h.log.empty(), "'only once' cards do not run again");
+        {   // coming back to the world: what ran is remembered
+            std::map<int, int> was = run.firedCounts(); EventRunner back; Host hb; hb.keys.insert("Red"); back.start(cards, hb, was, {});
+            back.signal(cards, { When::EnterZone, "Hall" }, hb);
+            EventRunner fresh; Host hf; hf.keys.insert("Red"); fresh.start(cards, hf); fresh.signal(cards, { When::EnterZone, "Hall" }, hf);
+            CHECK(hb.log.empty() && hf.log.size() == 2, "back in a world: an 'only once' card that ran stays done (a new game: it runs)");
+        }
         // wait
         std::vector<EventCard> c2(1); c2[0].when = { When::GameStarts };
         c2[0].dos = { { Do::Message, "", "A" }, { Do::Wait, "", "", 2 }, { Do::Message, "", "B" } };
@@ -1421,6 +1427,8 @@ int main() {
         g.taken["Tallon Overworld"] = { 4, 9, 17 }; g.taken["Chozo Ruins"] = { 2 }; g.beam = 1; g.missile = 0; g.visor = 1;
         ScanEntry e; e.id = 7; e.name = "Strange Door"; e.category = "Research"; e.text = "Two lines\nand 100% sure"; e.model = "@door"; e.important = true; g.scans.push_back(e);
         g.enemyGone = { "Chozo Ruins#12" }; g.zonesCleared = { "Tallon Overworld#3" }; g.stationsUsed = { "Tallon Overworld#5" }; g.flags = { "met the queen" }; g.maps = { "Tallon Overworld", "Chozo Ruins" };
+        { WorldMemory& m = g.memory["Chozo Ruins"]; m.broken = { { 10, -4, 22, 5 }, { -3, 7, -9, 12 } }; m.fired = { { 3, "Open the gate", 1, false }, { 5, "Count the totems", 4, true } };
+          m.hidden = { 7, 9 }; m.off = { 2 }; m.locked = { 11 }; m.held = { 4 }; m.kicked = { 8 }; m.triggered = { 21 }; g.memory["Empty"] = WorldMemory{}; }
         CHECK(saveGame("/tmp/prim_save/file1", g), "a file saves");
         SaveGame b; CHECK(loadGame("/tmp/prim_save/file1", b), "and loads");
         CHECK(b.world == g.world && b.place == g.place && b.playTime == g.playTime && b.completion == g.completion && b.health == 199 && b.maxHealth == 299 && b.savedAt == g.savedAt
@@ -1428,6 +1436,10 @@ int main() {
         CHECK(b.keys == g.keys && b.counts == g.counts && b.taken == g.taken && b.beam == 1 && b.visor == 1, "what you carry and what you took, per world");
         CHECK(b.scans.size() == 1 && b.scans[0].text == "Two lines\nand 100% sure" && b.scans[0].important && b.scans[0].model == "@door", "the scan log");
         CHECK(b.enemyGone == g.enemyGone && b.zonesCleared == g.zonesCleared && b.stationsUsed == g.stationsUsed && b.flags == g.flags && b.maps == g.maps, "defeated, cleared, stations, flags, maps");
+        { const WorldMemory& m = b.memory["Chozo Ruins"]; const WorldMemory& o = g.memory["Chozo Ruins"];
+          bool same = b.memory.size() == 1 && m.broken == o.broken && m.fired.size() == 2 && m.fired[1].name == "Count the totems" && m.fired[1].count == 4 && m.fired[1].counted && !m.fired[0].counted
+                   && m.hidden == o.hidden && m.off == o.off && m.locked == o.locked && m.held == o.held && m.kicked == o.kicked && m.triggered == o.triggered;
+          CHECK(same, "what happened in each world: broken walls, cards that ran, switched objects, used-up triggers (empty worlds left out)"); }
         { std::ofstream cut("/tmp/prim_save/file2/save.txt"); }
         std::filesystem::create_directories("/tmp/prim_save/file2"); { std::ofstream cut("/tmp/prim_save/file2/save.txt"); cut << "save 1\nworld X\n"; }
         SaveGame c; CHECK(!loadGame("/tmp/prim_save/file2", c) && !loadGame("/tmp/prim_save/none", c), "a file cut short (or none) is not a save");

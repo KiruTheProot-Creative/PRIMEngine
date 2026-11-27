@@ -220,8 +220,11 @@ void EventRunner::fire(const std::vector<EventCard>& cards, int i, EventHost& h)
     fires[i]++;
     runFrom(cards, i, 0, h);
 }
-void EventRunner::start(const std::vector<EventCard>& cards, EventHost& h) {
+void EventRunner::start(const std::vector<EventCard>& cards, EventHost& h) { start(cards, h, {}, {}); }
+void EventRunner::start(const std::vector<EventCard>& cards, EventHost& h, const std::map<int, int>& firedBefore, const std::set<int>& countedBefore) {
     time = 0; fires.clear(); lastEvery.clear(); waiting.clear(); flags.clear(); countDone.clear();
+    for (auto& f : firedBefore) if (f.first >= 0 && f.first < (int)cards.size()) fires[f.first] = f.second;
+    for (int c : countedBefore) if (c >= 0 && c < (int)cards.size()) countDone.insert(c);
     for (int i = 0; i < (int)cards.size(); i++) if (cards[i].when.kind == When::GameStarts) fire(cards, i, h);
 }
 void EventRunner::signal(const std::vector<EventCard>& cards, const EventSignal& s, EventHost& h) {

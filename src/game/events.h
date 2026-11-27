@@ -53,6 +53,10 @@ class EventRunner {
 public:
     std::set<std::string> flags;
     void start(const std::vector<EventCard>& cards, EventHost& host);   // Play begins: "game starts" cards run
+    // ... coming back to a world: what had run there before is remembered first (an "only once" card stays done; a counter stays counted)
+    void start(const std::vector<EventCard>& cards, EventHost& host, const std::map<int, int>& firedBefore, const std::set<int>& countedBefore);
+    const std::map<int, int>& firedCounts() const { return fires; }
+    const std::set<int>& countersDone() const { return countDone; }
     void signal(const std::vector<EventCard>& cards, const EventSignal& s, EventHost& host);
     void tick(const std::vector<EventCard>& cards, double dt, EventHost& host);   // timers, waiting actions, counters
     int firedCount(int card) const { auto it = fires.find(card); return it == fires.end() ? 0 : it->second; }

@@ -25,6 +25,14 @@ bool saveGame(const std::string& dir, const SaveGame& g) {
         auto set = [&](const char* k, const std::set<std::string>& s) { for (const std::string& v : s) f << k << " " << escText(v) << "\n"; };
         set("gone", g.enemyGone); set("cleared", g.zonesCleared); set("station", g.stationsUsed); set("flag", g.flags); set("dooropen", g.doorsOpened);
         for (const std::string& m : g.maps) f << "map " << escText(m) << "\n";
+        for (auto& w : g.memory) {
+            if (w.second.empty()) continue;
+            const WorldMemory& m = w.second; f << "mem " << escText(w.first) << "\n";
+            for (auto& b : m.broken) f << "mb " << b[0] << " " << b[1] << " " << b[2] << " " << b[3] << "\n";
+            for (auto& q : m.fired) f << "mf " << q.card << " " << q.count << " " << (q.counted ? 1 : 0) << " " << escText(q.name) << "\n";
+            auto ids = [&](const char* k, const std::set<uint32_t>& s) { if (s.empty()) return; f << k; for (uint32_t id : s) f << " " << id; f << "\n"; };
+            ids("mh", m.hidden); ids("mt", m.triggered); ids("mo", m.off); ids("ml", m.locked); ids("md", m.held); ids("mk", m.kicked);
+        }
         f << "end\n";
         if (!f) return false;
     }
@@ -34,7 +42,7 @@ bool saveGame(const std::string& dir, const SaveGame& g) {
 
 bool loadGame(const std::string& dir, SaveGame& g) {
     std::ifstream f(fs::u8path(dir + "/save.txt")); if (!f) return false;
-    g = SaveGame{}; std::string line; bool ended = false;
+    g = SaveGame{}; std::string line; bool ended = false; WorldMemory* mem = nullptr;
     while (std::getline(f, line)) {
         std::istringstream l(line); std::string k; l >> k; std::string a;
         if (k == "world") { l >> a; g.world = unescText(a); }
@@ -55,6 +63,13 @@ bool loadGame(const std::string& dir, SaveGame& g) {
         else if (k == "flag") { l >> a; g.flags.insert(unescText(a)); }
         else if (k == "dooropen") { l >> a; g.doorsOpened.insert(unescText(a)); }
         else if (k == "map") { l >> a; g.maps.push_back(unescText(a)); }
+        else if (k == "mem") { l >> a; mem = &g.memory[unescText(a)]; }
+        else if (k == "mb" && mem) { std::array<int, 4> b{}; l >> b[0] >> b[1] >> b[2] >> b[3]; mem->broken.push_back(b); }
+        else if (k == "mf" && mem) { WorldMemory::Fired q; int c = 0; l >> q.card >> q.count >> c >> a; q.counted = c != 0; q.name = unescText(a); mem->fired.push_back(q); }
+        else if ((k == "mh" || k == "mt" || k == "mo" || k == "ml" || k == "md" || k == "mk") && mem) {
+            std::set<uint32_t>& s = k == "mh" ? mem->hidden : k == "mt" ? mem->triggered : k == "mo" ? mem->off : k == "ml" ? mem->locked : k == "md" ? mem->held : mem->kicked;
+            uint32_t id; while (l >> id) s.insert(id);
+        }
         else if (k == "end") ended = true;
     }
     return ended;   // (a file cut short is not a save)

@@ -2838,10 +2838,32 @@ struct App {
         if (!playMode || events.empty()) return;
         EvHost h(*this); evRun.signal(events, { k, subject, also, number }, h); NoteFired();
     }
+    // ---- what happened in each world (this play session, and in the save file): it stays that way when you come back
+    std::map<std::string, WorldMemory> worldMem;
+    WorldMemory CaptureMemory() const {
+        WorldMemory m;
+        for (const Broken& b : broken) m.broken.push_back({ b.x, b.y, b.z, (int)b.was });
+        const auto& fired = evRun.firedCounts(); const auto& counted = evRun.countersDone();
+        for (int i = 0; i < (int)events.size(); i++) {
+            auto f = fired.find(i); int n = f == fired.end() ? 0 : f->second; bool c = counted.count(i) > 0;
+            if (n > 0 || c) m.fired.push_back({ i, events[i].name, n, c });
+        }
+        m.hidden = evHidden; m.off = evOff; m.locked = evLocked; m.held = evHeld; m.kicked = evKick; m.triggered = firedOnce;
+        return m;
+    }
     void EvStart(bool keepFlags = false) {
         std::set<std::string> fl = evRun.flags;
-        evHidden.clear(); evOff.clear(); evLocked.clear(); evHeld.clear(); evKick.clear(); touchNow.clear(); evSeen.clear(); evFlash.clear();
-        EvHost h(*this); evRun.start(events, h);
+        evHidden.clear(); evOff.clear(); evLocked.clear(); evHeld.clear(); evKick.clear(); touchNow.clear(); evSeen.clear(); evFlash.clear(); firedOnce.clear();
+        EvHost h(*this);
+        auto mi = playMode ? worldMem.find(CurrentWorld()) : worldMem.end();
+        if (mi != worldMem.end()) {   // been here before: what ran stays done, what was switched stays switched, broken walls stay broken
+            const WorldMemory& m = mi->second; std::map<int, int> fired; std::set<int> counted;
+            for (const auto& q : m.fired) if (q.card >= 0 && q.card < (int)events.size() && events[q.card].name == q.name) { if (q.count > 0) fired[q.card] = q.count; if (q.counted) counted.insert(q.card); }
+            evRun.start(events, h, fired, counted);
+            evHidden = m.hidden; evOff = m.off; evLocked = m.locked; evHeld = m.held; evKick = m.kicked; firedOnce = m.triggered;
+            for (const auto& b : m.broken) if (world && world->get(b[0], b[1], b[2]) == (BlockId)b[3]) { broken.push_back({ b[0], b[1], b[2], (BlockId)b[3] }); world->set(b[0], b[1], b[2], AIR); }
+            for (uint32_t id : m.held) doorRt[id].open();   // (doors events opened: open)
+        } else evRun.start(events, h);
         if (keepFlags) evRun.flags.insert(fl.begin(), fl.end());
         NoteFired(); evSolids = true;
     }
@@ -2953,7 +2975,7 @@ struct App {
         if (!playMode || !world) return;
         if (!worldName.empty() && worldName != CurrentWorld()) {
             if (std::find(worldList.begin(), worldList.end(), worldName) == worldList.end()) { Toast("There is no world called " + worldName); return; }
-            takenByWorld[CurrentWorld()] = inv.taken;
+            takenByWorld[CurrentWorld()] = inv.taken; worldMem[CurrentWorld()] = CaptureMemory();
             RestoreBroken(); bombsOut.clear();
             travelling = true; SaveWorld(); OpenWorld(worldName); travelling = false;
             editCam = player;   // this world's own editor camera stays as it was
@@ -6114,7 +6136,7 @@ struct App {
         ClearSpawned(); bossRt.clear(); bossPose.clear(); bossSealed.clear(); bossShown = 0; camShake = 0; countdownT = -1;
         playMode = false; paused = false; player = editCam; player.ball = false; Capture(false); captureNext = false; platRun.clear();
         if (editClock >= 0) { settings.timeOfDay = editClock; editClock = -1; }   // (the editor's clock as it was)
-        evHidden.clear(); evOff.clear(); evLocked.clear(); evHeld.clear(); evKick.clear(); evFlash.clear(); RebuildSolids();
+        evHidden.clear(); evOff.clear(); evLocked.clear(); evHeld.clear(); evKick.clear(); evFlash.clear(); RebuildSolids(); worldMem.clear();
         Toast("Back in the editor");
     }
     void PlayHud(ImDrawList* dl) {
@@ -12041,6 +12063,7 @@ struct App {
         g.beam = weapState.current; g.missile = weapState.missile; g.visor = visor;
         g.scans = scanLog.entries; g.enemyGone = enemyGone; g.doorsOpened = doorsOpened; g.zonesCleared = zonesCleared; g.stationsUsed = stationsUsed; g.flags = evRun.flags;
         for (auto& m : seenMaps) g.maps.push_back(m.first);
+        worldMem[CurrentWorld()] = CaptureMemory(); g.memory = worldMem;
         std::string dir = SlotDir(curSlot);
         if (!saveGame(dir, g)) { Toast("Could not save"); return false; }
         for (int i = 0; i < (int)g.maps.size(); i++) saveSeenMap(dir + "/map_" + std::to_string(i) + ".bin", seenMaps[g.maps[i]]);
@@ -12067,6 +12090,7 @@ struct App {
         if (playMode) StopPlay();   // (from the death screen: start clean)
         CloseScreens(); plainView = false;
         GoToWorld(g.world);
+        worldMem = g.memory;   // (StartPlay's events see it: this world as it was left)
         player.flying = false; StartPlay(true);
         curSlot = slot; playTime = g.playTime;
         inv.keys = g.keys; inv.counts = g.counts;
