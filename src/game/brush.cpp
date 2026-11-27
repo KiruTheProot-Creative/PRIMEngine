@@ -1,4 +1,5 @@
 #include "brush.h"
+#include <unordered_set>
 #include <algorithm>
 #include <cmath>
 #include <map>
@@ -213,6 +214,35 @@ std::vector<std::pair<V3, V3>> brushOutline(const BrushSettings& b) {
     default: break;
     }
     return L;
+}
+
+FloodResult floodBasin(const World& w, I3 start, int kind, int maxBlocks, int maxReach) {
+    FloodResult r; const BlockRegistry& reg = w.reg;
+    auto open = [&](BlockId v) { if (v == AIR) return true; const BlockDef& d = reg.get(v); return d.liquid == kind && !d.spring && liquidLevel(v) < 16; };
+    if (!w.loaded(start.x, start.y, start.z) || !open(w.get(start.x, start.y, start.z))) return r;
+    std::unordered_set<I3, I3Hash> seen; std::vector<I3> todo{ start }; seen.insert(start);
+    while (!todo.empty()) {
+        I3 p = todo.back(); todo.pop_back(); r.cells.push_back(p);
+        if ((int)r.cells.size() > maxBlocks) { r.leaked = true; r.tooBig = true; r.leakAt = p; r.cells.clear(); return r; }
+        const I3 nb[5] = { { p.x + 1, p.y, p.z }, { p.x - 1, p.y, p.z }, { p.x, p.y, p.z + 1 }, { p.x, p.y, p.z - 1 }, { p.x, p.y - 1, p.z } };
+        for (int k = 0; k < 6; k++) {
+            I3 n = k < 5 ? nb[k] : I3{ p.x, p.y + 1, p.z };
+            if (n.y > start.y || seen.count(n)) continue;   // (never above where it was poured)
+            if (std::abs(n.x - start.x) > maxReach || std::abs(n.z - start.z) > maxReach || !w.loaded(n.x, n.y, n.z)) {
+                if (open(w.loaded(n.x, n.y, n.z) ? w.get(n.x, n.y, n.z) : AIR)) { r.leaked = true; r.leakAt = n; r.cells.clear(); return r; }
+                continue;
+            }
+            if (!open(w.get(n.x, n.y, n.z))) continue;
+            seen.insert(n); todo.push_back(n);
+        }
+    }
+    return r;
+}
+std::vector<Edit> floodEdits(const World& w, const FloodResult& f, int kind) {
+    std::vector<Edit> e; BlockId full = makeLiquid(w.reg.liquidBlock(kind), 16);
+    if (!w.reg.liquidBlock(kind)) return e;
+    for (const I3& p : f.cells) e.push_back({ p.x, p.y, p.z, w.get(p.x, p.y, p.z), full });
+    return e;
 }
 
 void BrushStroke::apply(World& w, const std::vector<Edit>& dab) {

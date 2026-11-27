@@ -4041,6 +4041,7 @@ struct App {
         if (toolSel == 2) { ObjectToolClick(L && !lPrev, R && !rPrev); lPrev = L; rPrev = R; return; }
         if (toolSel == 3) { PathToolClick(L && !lPrev, R && !rPrev); lPrev = L; rPrev = R; return; }
         if (toolSel == 4) { BreakToolClick(L, R); lPrev = L; rPrev = R; return; }
+        if (toolSel == 5) { FillToolClick(L && !lPrev, R && !rPrev); lPrev = L; rPrev = R; return; }
         if (toolSel != 0) { lPrev = L; rPrev = R; return; }   // more tools come later
         if (!stroking && ((L && !lPrev) || (R && !rPrev)) && toolValid) {
             stroking = true; strokeOp = L ? brush.op : opposite(brush.op); strokeY = toolHit.y; dabCool = 0; strokeSeed = (uint32_t)GetTickCount();
@@ -4055,7 +4056,7 @@ struct App {
         if (strokeOp == BrushOp::Add) c = { toolHit.x + toolHit.nx, toolHit.y + toolHit.ny, toolHit.z + toolHit.nz };   // grows out of the surface
         stroke.apply(*world, brushEdits(*world, b, c, BrushMaterial(), strokeY, strokeSeed));
     }
-    std::string ToolName() const { return toolSel == 0 ? BrushLabel() : toolSel == 1 ? "Selection box" : toolSel == 2 ? (placing.empty() ? "Objects" : "Objects: placing " + placing) : toolSel == 3 ? "Platform path" : toolSel == 4 ? "Breakable blocks: " + BreakerLabel(breakTool) : "(empty tool slot)"; }
+    std::string ToolName() const { return toolSel == 0 ? BrushLabel() : toolSel == 1 ? "Selection box" : toolSel == 2 ? (placing.empty() ? "Objects" : "Objects: placing " + placing) : toolSel == 3 ? "Platform path" : toolSel == 4 ? "Breakable blocks: " + BreakerLabel(breakTool) : toolSel == 5 ? std::string(fillKind == 2 ? "Fill with lava" : "Fill with water") : "(empty tool slot)"; }
     std::string ToolLabel() const {
         switch (toolSel) {
         case 0: return BrushLabel() + "   (Q: brush options, T: back to blocks)";
@@ -7036,8 +7037,9 @@ struct App {
             break;
         case Sel::Tool:
             if (!toolMode) { Hint("Press T in the viewport for the tools."); break; }
-            ImGui::SeparatorText(toolSel == 0 ? "Terrain brush" : toolSel == 1 ? "Tools" : toolSel == 2 ? "Objects" : toolSel == 3 ? "Platform path" : toolSel == 4 ? "Breakable blocks" : "Tools");
+            ImGui::SeparatorText(toolSel == 0 ? "Terrain brush" : toolSel == 1 ? "Tools" : toolSel == 2 ? "Objects" : toolSel == 3 ? "Platform path" : toolSel == 4 ? "Breakable blocks" : toolSel == 5 ? "Fill with water / lava" : "Tools");
             if (toolSel == 4) BreakToolInspector();
+            if (toolSel == 5) FillToolInspector();
             if (toolSel == 0) BrushBody();
             else if (toolSel == 1) SelectionInspector();
             else if (toolSel == 3) {
@@ -17217,6 +17219,42 @@ struct App {
         bool ch = false;
         if (ImGui::BeginCombo(id, BreakerLabel(v).c_str())) { for (const std::string& b : Breakers()) if (ImGui::Selectable(BreakerLabel(b).c_str(), v == b)) { v = b; ch = true; } ImGui::EndCombo(); }
         return ch;
+    }
+    // tool slot 6: fill a hole with water (lava) at once, up to where you click - or empty it again
+    int fillKind = 1; std::string fillNote;
+    void FillToolClick(bool L, bool R) {
+        if (!world || !toolValid || (!L && !R)) return;
+        I3 p{ toolHit.x + toolHit.nx, toolHit.y + toolHit.ny, toolHit.z + toolHit.nz };   // the open block in front of what you clicked
+        EndStroke();
+        if (L) {
+            FloodResult f = floodBasin(*world, p, fillKind);
+            if (f.leaked) {
+                fillNote = f.tooBig ? "Too big: more than 250 000 blocks would fill. Close it in, or pour lower."
+                                    : "It would run out at " + std::to_string(f.leakAt.x) + " " + std::to_string(f.leakAt.y) + " " + std::to_string(f.leakAt.z) + " - close the gap there, or pour lower.";
+                Toast(fillNote); return;
+            }
+            if (f.cells.empty()) { fillNote = "Nothing to fill there (click the wall or floor of a hole, at the height it should come up to)."; Toast(fillNote); return; }
+            stroking = true; stroke.apply(*world, floodEdits(*world, f, fillKind)); EndStroke();
+            fillNote = "Filled " + std::to_string(f.cells.size()) + " blocks up to y " + std::to_string(p.y) + " (Ctrl+Z undoes it)";
+        } else {   // right: empty the water (lava) joined to where you clicked
+            std::vector<Edit> e; std::unordered_set<I3, I3Hash> seen; std::vector<I3> todo;
+            auto liq = [&](I3 q) { BlockId v = world->get(q.x, q.y, q.z); return v != AIR && reg.get(v).liquid == fillKind; };
+            I3 s = liq(p) ? p : I3{ toolHit.x, toolHit.y, toolHit.z };
+            if (liq(s)) { todo.push_back(s); seen.insert(s); }
+            while (!todo.empty() && e.size() < 250000) {
+                I3 q = todo.back(); todo.pop_back(); e.push_back({ q.x, q.y, q.z, world->get(q.x, q.y, q.z), AIR });
+                for (int k = 0; k < 6; k++) { I3 n = q; (k < 2 ? n.x : k < 4 ? n.y : n.z) += (k % 2 ? -1 : 1); if (!seen.count(n) && world->loaded(n.x, n.y, n.z) && liq(n)) { seen.insert(n); todo.push_back(n); } }
+            }
+            if (e.empty()) { fillNote = std::string("No ") + (fillKind == 2 ? "lava" : "water") + " there to empty."; Toast(fillNote); return; }
+            stroking = true; stroke.apply(*world, e); EndStroke(); fillNote = "Emptied " + std::to_string(e.size()) + " blocks (Ctrl+Z undoes it)";
+        }
+    }
+    void FillToolInspector() {
+        ImGui::RadioButton("Water", &fillKind, 1); ImGui::SameLine(); ImGui::RadioButton("Lava", &fillKind, 2);
+        Hint("Left click the wall (or floor) of a hole, at the height it should come up to: everything open that is joined to it, at that height or lower, "
+             "fills at once with still water - it does not flow, so nothing spills. If it would run out somewhere, nothing fills and you are told where.\n"
+             "Right click water: it is all emptied again. Ctrl+Z undoes either.");
+        if (!fillNote.empty()) ImGui::TextWrapped("%s", fillNote.c_str());
     }
     void BreakToolClick(bool L, bool R) {   // tool slot 5: left marks (hold and sweep to paint), right unmarks
         if (!toolValid) return;

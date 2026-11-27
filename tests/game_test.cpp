@@ -228,6 +228,19 @@ int main() {
         b.shape = BrushShape::Cylinder; b.height = 1; CHECK(insideBrush(b, 4, 1, 0) && !insideBrush(b, 0, 2, 0), "cylinder has its own height");
         for (int s = 0; s < (int)BrushShape::COUNT; s++) { b.shape = (BrushShape)s; CHECK(!brushOutline(b).empty() && insideBrush(b, 0, 0, 0), "%s brush has an outline and a middle", shapeInfo(b.shape).name); }
 
+        {   // filling a hole with water at once
+            int y0 = g + 1; for (int x = 20; x <= 26; x++) for (int z = 20; z <= 26; z++) for (int y = y0; y <= y0 + 3; y++) w.set(x, y, z, (x == 20 || x == 26 || z == 20 || z == 26 || y == y0) ? stone : AIR);
+            for (int x = 21; x <= 25; x++) for (int z = 21; z <= 25; z++) w.set(x, y0 + 3, z, AIR);
+            FloodResult f = floodBasin(w, { 23, y0 + 2, 23 }, 1);   // poured two above the floor: the floor layer of 5 x 5, and the one above
+            CHECK(!f.leaked && f.cells.size() == 50, "a hole fills up to where it was poured (%zu blocks)", f.cells.size());
+            BrushStroke fs2; fs2.apply(w, floodEdits(w, f, 1)); bool full = true; for (const I3& c : f.cells) full = full && r.get(w.get(c.x, c.y, c.z)).liquid == 1 && liquidLevel(w.get(c.x, c.y, c.z)) == 16;
+            int changed = 0; for (int i = 0; i < 20; i++) changed += w.tickLiquids();
+            CHECK(full && changed == 0 && w.get(23, y0 + 3, 23) == AIR, "with still, full water that stays put (%d moved)", changed);
+            auto undo = fs2.finish(); for (auto it = undo.rbegin(); it != undo.rend(); ++it) w.set(it->x, it->y, it->z, it->before);
+            w.set(26, y0 + 1, 23, AIR);   // a hole in the wall low down: it would run out
+            FloodResult l = floodBasin(w, { 23, y0 + 2, 23 }, 1, 250000, 40);
+            CHECK(l.leaked && l.cells.empty(), "a hole that would run out is not filled (it got out at %d %d %d)", l.leakAt.x, l.leakAt.y, l.leakAt.z);
+        }
         BrushStroke st; b = BrushSettings{}; b.op = BrushOp::Add; b.radius = 3;
         st.apply(w, brushEdits(w, b, { 0, g + 5, 0 }, stone, 0)); st.apply(w, brushEdits(w, b, { 0, g + 5, 0 }, stone, 0));
         CHECK(w.get(0, g + 5, 0) == stone && w.get(0, g + 8, 0) == stone && w.get(0, g + 9, 0) == AIR, "add fills a ball of stone");

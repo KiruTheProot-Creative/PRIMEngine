@@ -33,6 +33,13 @@ std::vector<Edit> brushEdits(const World& w, const BrushSettings& b, I3 c, Block
 // outline segments of the brush shape around (0,0,0), in blocks, for the preview
 std::vector<std::pair<V3, V3>> brushOutline(const BrushSettings& b);
 
+// filling a hole with water (lava) at once: the open space joined to `start` at its height or lower - air, or the same
+// liquid not yet full. If it runs out (out past maxReach, into the world not loaded, or more than maxBlocks) nothing is
+// filled: leaked, and where it got out.
+struct FloodResult { std::vector<I3> cells; bool leaked = false; I3 leakAt{ 0, 0, 0 }; bool tooBig = false; };
+FloodResult floodBasin(const World& w, I3 start, int liquidKind, int maxBlocks = 250000, int maxReach = 192);
+std::vector<Edit> floodEdits(const World& w, const FloodResult& f, int liquidKind);   // full still liquid in every cell
+
 // one mouse press = one stroke = one undo step, however many dabs it makes
 struct BrushStroke {
     std::vector<Edit> edits; std::unordered_map<I3, size_t, I3Hash> index;
