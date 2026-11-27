@@ -51,8 +51,8 @@ TerrainSettings terrainPreset(const std::string& type) {
     TerrainSettings t; t.type = type;
     if (type == "Frozen") {   // icy terraced cliffs, snow on top, frozen lakes, crystal spikes
         t.layers = { { "snow", 2, 1 }, { "frozen rock", 3, 1 } }; t.rock = "stone"; t.bands = { "stone", "frozen rock" }; t.bandThick = 3;
-        t.base = 4; t.hills = 7; t.hillSize = 60; t.mountains = 40; t.mountainSize = 220; t.mountainShare = 0.38f; t.ridged = 0.35f; t.roughness = 0.45f;
-        t.terrace = 5; t.terraceSharp = 0.75f; t.liquid = "water"; t.liquidLevel = 3; t.liquidTop = "ice";
+        t.base = 8; t.hills = 9; t.hillSize = 60; t.mountains = 46; t.mountainSize = 200; t.mountainShare = 0.45f; t.ridged = 0.4f; t.roughness = 0.45f;
+        t.terrace = 5; t.terraceSharp = 0.75f; t.liquid = "water"; t.liquidLevel = 2; t.liquidTop = "ice";
         t.spikeBlock = "ice crystal"; t.spikes = 0.12f; t.spikeHeight = 10; t.caves = 0.25f; t.openings = 0.2f;
         t.veins = { { "ice crystal", 0.015f, 3, -64, 40 } };
     } else if (type == "Volcanic") {   // dark basalt plateaus, lava lakes, lots of caves
