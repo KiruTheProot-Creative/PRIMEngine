@@ -25,6 +25,7 @@
         return v;
     }
     V3 ShipSpot(const WorldObject& o, V3 local) const { return shipSpot(o, local); }
+    const MeshModel* ShipModel(const WorldObject& o) const { auto it = meshModels.find(o.model); return it == meshModels.end() ? nullptr : &it->second; }
     SolidAt CamSolid() const {   // (the ready-made cutscenes keep their cameras out of the ground)
         return [this](V3 p) { if (!world) return false; int x = ifloor(p.x), y = ifloor(p.y), z = ifloor(p.z); if (!world->loaded(x, y, z)) return false;
             BlockId b = world->get(x, y, z); return b != AIR && reg.get(b).render == Render::Opaque; };
@@ -55,7 +56,7 @@
         CloseShipMenu(); shipRun.dest = d; shipRun.step = ShipStep::Departing;
         if (cutRun.on) EndCutscene();
         bool own = !o->ship.takeoffCut.empty() && findCutscene(cutscenes, o->ship.takeoffCut) >= 0;
-        if (own) PlayCutscene(o->ship.takeoffCut); else PlayCutsceneData(shipTakeoffCut(*o, sitesVisited.count(SiteName(*o, CurrentWorld())) > 0, CamSolid()));   // (the short one from where you landed before)
+        if (own) PlayCutscene(o->ship.takeoffCut); else PlayCutsceneData(shipTakeoffCut(*o, sitesVisited.count(SiteName(*o, CurrentWorld())) > 0, CamSolid(), ShipModel(*o)));   // (the short one from where you landed before)
     }
     void ArriveNow() {   // (the world is there now): the landing at the site's gunship
         WorldObject* o = nullptr; for (WorldObject& x : objects) if (x.name == shipRun.arriveAt && x.ship.site) o = &x;
@@ -64,7 +65,7 @@
         shipRun.id = o->id;
         std::string name = SiteName(*o, CurrentWorld());
         bool own = !o->ship.landCut.empty() && findCutscene(cutscenes, o->ship.landCut) >= 0;
-        if (own) PlayCutscene(o->ship.landCut); else PlayCutsceneData(shipLandingCut(*o, shipRun.arriveShort, CamSolid()));
+        if (own) PlayCutscene(o->ship.landCut); else PlayCutsceneData(shipLandingCut(*o, shipRun.arriveShort, CamSolid(), ShipModel(*o)));
         sitesVisited.insert(name);
         // where you stand after it: beside the ship, out from under its wing, looking away from it
         V3 out = shipExitSpot(*o);

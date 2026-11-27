@@ -60,46 +60,76 @@ Cutscene shipBoardCut(const WorldObject& o, V3 from, const SolidAt& solid) {
     }
     return c;
 }
+// ---- the lift platform: the model's moving part under the lift spot (its lowest point), as an animation moves it
+double shipLiftHeight(const MeshModel* m, V3 lift, const std::string& clip, float t) {
+    auto fallback = [&]() { double k = std::clamp(t / 2.1, 0.0, 1.0); k = k * k * (3 - 2 * k); return clip == "landing" ? 1.9 * (1 - k) : 1.9 * k; };   // (no model: a plain lift)
+    if (!m || m->parts.empty() || m->raw.empty()) return fallback();
+    int ci = m->findClip(clip); if (ci < 0) return lift.y;
+    std::vector<MeshVert> rest = m->posed(-1, 0); int best = -1; double bestY = 1e9;
+    for (size_t p = 0; p < m->parts.size(); p++) {   // the part whose resting box stands over the lift spot, lowest
+        V3 lo{ 1e9, 1e9, 1e9 }, hi{ -1e9, -1e9, -1e9 }; bool any = false;
+        for (size_t i = 0; i < rest.size() && i < m->vpart.size(); i++) if (m->vpart[i] == p) { V3 b = m->blockPos(rest[i]) - m->pivot; lo = { std::min(lo.x, b.x), std::min(lo.y, b.y), std::min(lo.z, b.z) }; hi = { std::max(hi.x, b.x), std::max(hi.y, b.y), std::max(hi.z, b.z) }; any = true; }
+        if (any && lift.x >= lo.x - 0.05 && lift.x <= hi.x + 0.05 && lift.z >= lo.z - 0.05 && lift.z <= hi.z + 0.05 && lo.y < bestY) { bestY = lo.y; best = (int)p; }
+    }
+    if (best < 0) return fallback();
+    std::vector<MeshVert> v = m->posed(ci, std::clamp(t, 0.f, std::max(0.01f, m->clips[ci].length)));
+    double y = 1e9; for (size_t i = 0; i < v.size() && i < m->vpart.size(); i++) if (m->vpart[i] == best) y = std::min(y, (m->blockPos(v[i]) - m->pivot).y);
+    return y < 1e8 ? y : fallback();
+}
+// the pilot on the lift: keys every tenth of a second, standing on the platform as the ship moves and the animation moves the platform
+static void RideLift(CutActor& p, const CutActor& ship, float shipLen, const WorldObject& o, const MeshModel* m, const std::string& clip, float clipStart, float t0, float t1, double faceYaw) {
+    for (float t = t0; t <= t1 + 1e-4f; t += 0.1f) {
+        ActorPose sp = actorAt(ship, t, shipLen); if (!sp.keyed) { sp.pos = o.pos; sp.yaw = o.yaw; }
+        double h = shipLiftHeight(m, o.ship.lift, clip, std::max(0.f, t - clipStart));
+        V3 at = effectSpot(sp.pos, sp.yaw, sp.pitch, sp.roll, V3{ o.ship.lift.x, h + 0.04, o.ship.lift.z } * o.scale);
+        p.keys.push_back(ShipKey(t, at, faceYaw + (sp.yaw - o.yaw), (float)sp.pitch, (float)sp.roll));
+    }
+}
 // ---- the take-off: the lift takes the pilot in, the gear comes up, the ship rises, noses up and climbs away
-Cutscene shipTakeoffCut(const WorldObject& o, bool shortOne, const SolidAt& solid) {
+Cutscene shipTakeoffCut(const WorldObject& o, bool shortOne, const SolidAt& solid, const MeshModel* model) {
     gSolid = &solid; struct Done { ~Done() { gSolid = nullptr; } } done;
     Cutscene c; c.name = "(take-off)"; c.view = CutView::Camera; c.skippable = true; c.letterbox = true; c.blendOut = 0;
     const ShipSettings& S = o.ship; double sc = o.scale; std::string ship = "Gunship";
     V3 P = o.pos, lift = shipSpot(o, S.lift);
     auto L = [&](double x, double y, double z) { return shipSpot(o, { x, y, z }); };
-    float T0 = shortOne ? 0.f : 1.8f;   // (the long one: the pilot rides the lift up first)
+    // the lift rises with the "Taking off" animation (the pilot on it); the ship lifts as its legs fold up
+    float CT = shortOne ? 0.2f : 1.0f;   // (the long one: a moment of her standing on the lift first)
+    V3 fwd = effectSpot({ 0, 0, 0 }, o.yaw, { 0, 0, 1 }), side = effectSpot({ 0, 0, 0 }, o.yaw, { 1, 0, 0 });
     CutActor a; a.name = ship; a.object = o.name;
-    a.keys.push_back(ShipKey(0, P, o.yaw)); a.keys.push_back(ShipKey(T0 + 0.6f, P, o.yaw, 0, 0, true));
-    a.keys.push_back(ShipKey(T0 + 2.4f, P + V3{ 0, 5 * sc, 0 }, o.yaw, 4, -3, false));
-    a.keys.push_back(ShipKey(T0 + 3.6f, P + V3{ 0, 8 * sc, 0 }, o.yaw, 16, 4, false));
-    V3 fwd = effectSpot({ 0, 0, 0 }, o.yaw, { 0, 0, 1 });
-    a.keys.push_back(ShipKey(T0 + 6.0f, P + V3{ 0, 40 * sc, 0 } + fwd * (70 * sc), o.yaw, 28, 18, false));
-    AddClip(a, "Taking off", T0 + 1.0f, 3, true);
+    a.keys.push_back(ShipKey(0, P, o.yaw)); a.keys.push_back(ShipKey(CT + 0.5f, P, o.yaw, 0, 0, true));
+    a.keys.push_back(ShipKey(CT + 2.3f, P + V3{ 0, 5 * sc, 0 }, o.yaw, 4, -3, false));
+    a.keys.push_back(ShipKey(CT + 3.5f, P + V3{ 0, 8 * sc, 0 }, o.yaw, 16, 4, false));
+    a.keys.push_back(ShipKey(CT + 5.9f, P + V3{ 0, 40 * sc, 0 } + fwd * (70 * sc), o.yaw, 28, 18, false));
+    AddClip(a, "Taking off", CT, 3, true);
     c.actors.push_back(a);
-    if (!shortOne && !S.pilot.empty()) {   // on the platform, rising into the hatch
-        CutActor p; p.name = "Pilot"; p.model = S.pilot; p.showTo = T0;
-        V3 face = effectSpot({ 0, 0, 0 }, o.yaw, { 1, 0, 0 }); double yaw = std::atan2(face.x, face.z) * 180 / 3.14159265358979;
-        p.keys = { ShipKey(0, lift, yaw), ShipKey(0.3f, lift, yaw, 0, 0, true), ShipKey(T0, lift + V3{ 0, 1.9 * sc, 0 }, yaw) };
+    float inside = CT + 2.2f;   // (by then the lift is up: she is in)
+    if (!S.pilot.empty()) {
+        CutActor p; p.name = "Pilot"; p.model = S.pilot; p.showTo = inside;
+        double yaw = std::atan2(side.x, side.z) * 180 / 3.14159265358979;
+        RideLift(p, a, 1000, o, model, "Taking off", CT, 0, inside, yaw);
         AddClip(p, "idle", 0, 1000, false); c.actors.push_back(p);
-        CamKey k0 = LookKey(0, lift + effectSpot({ 0, 0, 0 }, o.yaw, { 4.5 * sc, 0.4, 1.5 * sc }), lift + V3{ 0, 1.4, 0 }, 45); k0.cut = true;
-        CamKey k1 = LookKey(T0, lift + effectSpot({ 0, 0, 0 }, o.yaw, { 4.2 * sc, 0.5, 1.3 * sc }), lift + V3{ 0, 2.4 * sc, 0 }, 45);
-        c.cam.push_back(k0); c.cam.push_back(k1);
+    }
+    float T0 = CT + 1.3f;
+    if (!shortOne) {   // close, beside the lift: she rises up into the hatch
+        CamKey k0 = LookKey(0, lift + side * (4.4 * sc) + fwd * (1.6 * sc) + V3{ 0, 0.5, 0 }, lift + V3{ 0, 1.3, 0 }, 45); k0.cut = true; c.cam.push_back(k0);
+        c.cam.push_back(LookKey(T0, lift + side * (4.1 * sc) + fwd * (1.4 * sc) + V3{ 0, 0.7, 0 }, lift + V3{ 0, 2.6 * sc, 0 }, 45));
     }
     // low, beside it, looking up as it lifts; then it climbs past
-    V3 cam1 = L(9, 0.6, 5); CamKey a0 = LookKey(T0, cam1, P + V3{ 0, 1.8 * sc, 0 }, 52); a0.cut = true; c.cam.push_back(a0);
-    c.cam.push_back(LookKey(T0 + 3.2f, cam1 + V3{ 0, 0.3, 0 }, P + V3{ 0, 8.5 * sc, 0 }, 50));
-    CamKey b0 = LookKey(T0 + 3.4f, L(-6, 9, -16), P + V3{ 0, 10 * sc, 0 } + fwd * (10 * sc), 60); b0.cut = true; c.cam.push_back(b0);
-    c.cam.push_back(LookKey(T0 + 6.0f, L(-4, 14, -10), P + V3{ 0, 40 * sc, 0 } + fwd * (70 * sc), 46));
-    AddJets(c, ship, S.landThrusters, "Thrusters", T0 + 0.5f, 3.0f, 1.2f, sc);   // lifting: the wings' jets push down
-    AddJets(c, ship, S.thrusters, "Thruster jet", T0 + 2.8f, 4, 1.3f, sc);        // then the engines at the back light up
-    { CutEffect d; d.t = T0 + 0.6f; d.length = 3.2f; d.actor = ship; d.preset = LandingDustFor(S.area); d.offset = { 0, 0.1, 0 }; d.size = 1.2f; c.effects.push_back(d); }
+    V3 cam1 = L(9, 0.6, 5); CamKey a0 = LookKey(shortOne ? 0.f : T0, cam1, P + V3{ 0, 1.8 * sc, 0 }, 52); a0.cut = true; c.cam.push_back(a0);
+    c.cam.push_back(LookKey(CT + 3.3f, cam1 + V3{ 0, 0.3, 0 }, P + V3{ 0, 8.5 * sc, 0 }, 50));
+    CamKey b0 = LookKey(CT + 3.5f, L(-6, 9, -16), P + V3{ 0, 10 * sc, 0 } + fwd * (10 * sc), 60); b0.cut = true; c.cam.push_back(b0);
+    c.cam.push_back(LookKey(CT + 5.9f, L(-4, 14, -10), P + V3{ 0, 40 * sc, 0 } + fwd * (70 * sc), 46));
+    AddJets(c, ship, S.landThrusters, "Thrusters", CT + 0.3f, 3.0f, 1.2f, sc);   // lifting: the wings' jets push down
+    AddJets(c, ship, S.thrusters, "Thruster jet", CT + 2.6f, 4, 1.3f, sc);        // then the engines at the back light up
+    { CutEffect d; d.t = CT + 0.3f; d.length = 3.2f; d.actor = ship; d.preset = LandingDustFor(S.area); d.offset = { 0, 0.1, 0 }; d.size = 1.2f; c.effects.push_back(d); }
+    T0 = CT - 0.1f;
     CutFade f; f.t = T0 + 5.2f; f.length = 0.8f; f.kind = CutFadeKind::ToBlack; c.fades.push_back(f);
     c.length = T0 + 6.0f;
     return c;
 }
 // ---- the landing: out at the edge of space over the planet (it sways and rolls), burning back into the air, down over the pad,
 // a shot from right under it as it comes down, the gear, touch-down, and the pilot out of the lift. Short: only the last part
-Cutscene shipLandingCut(const WorldObject& o, bool shortOne, const SolidAt& solid) {
+Cutscene shipLandingCut(const WorldObject& o, bool shortOne, const SolidAt& solid, const MeshModel* model) {
     gSolid = &solid; struct Done { ~Done() { gSolid = nullptr; } } done;
     Cutscene c; c.name = "(landing)"; c.view = CutView::Camera; c.skippable = true; c.letterbox = true; c.handOff = false; c.blendOut = 1.0f;
     const ShipSettings& S = o.ship; double sc = o.scale; std::string ship = "Gunship";
@@ -140,8 +170,9 @@ Cutscene shipLandingCut(const WorldObject& o, bool shortOne, const SolidAt& soli
     a.keys.push_back(ShipKey(T + 2.6f, low, o.yaw, 5, -3));
     a.keys.push_back(ShipKey(T + 4.4f, hover, o.yaw, 1, 1, false));
     a.keys.push_back(ShipKey(T + 5.6f, P, o.yaw, 0, 0, true));
-    if (shortOne) AddClip(a, "flight position", T, 3.4f, true);
-    AddClip(a, "landing", T + 3.4f, 3, true);
+    float TD = T + 5.6f, CS = TD - 1.5f;   // touch-down; the "landing" animation starts so its legs are down by then (its lift comes down with her on it)
+    if (shortOne) AddClip(a, "flight position", T, CS - T, true);
+    AddClip(a, "landing", CS, 3, true);
     { CamKey k = LookKey(T, L(14, 3.5, 12), hi, 50); k.cut = true; c.cam.push_back(k); }
     c.cam.push_back(LookKey(T + 2.4f, L(11, 2.5, 9), low, 48));
     // 4) from right under it: the camera on the ground looking up as it comes down over you (and drifts out from under it)
@@ -150,23 +181,29 @@ Cutscene shipLandingCut(const WorldObject& o, bool shortOne, const SolidAt& soli
     // 5) the touch-down, seen from the side; then the pilot comes down on the lift and walks out
     V3 out = lift + side * (4.6 * sc) + fwd * (0.4 * sc);
     { CamKey k = LookKey(T + 4.6f, L(10, 1.6, -7), P + V3{ 0, 1.6, 0 }, 44); k.cut = true; c.cam.push_back(k); }
-    c.cam.push_back(LookKey(T + 6.2f, L(9.4, 1.5, -6.4), P + V3{ 0, 1.3, 0 }, 44));
+    c.cam.push_back(LookKey(T + 5.9f, L(9.4, 1.5, -6.4), P + V3{ 0, 1.3, 0 }, 44));
     AddJets(c, ship, S.landThrusters, "Thrusters", T, 5.8f, 1.2f, sc);
     { CutEffect d; d.t = T + 3.6f; d.length = 3.2f; d.actor = ship; d.preset = LandingDustFor(S.area); d.offset = { 0, 0.1, 0 }; d.size = 1.3f; c.effects.push_back(d); }
     if (S.area == AreaKind::Lava) { CutEffect e; e.t = T + 3.6f; e.length = 4; e.actor = ship; e.preset = "Embers"; e.offset = { 0, 0.2, 0 }; e.size = 2.0f; c.effects.push_back(e); }
     { EventDo d; d.kind = Do::Shake; d.number = 0.5f; CutEvent ev; ev.t = T + 5.6f; ev.action = d; c.events.push_back(ev); }
     c.actors.push_back(a);
-    float T2 = T + 6.4f;
+    float T2 = TD + 0.3f;
     if (!S.pilot.empty()) {
-        CutActor p; p.name = "Pilot"; p.model = S.pilot; p.showFrom = T2;
+        const CutActor& sa = c.actors.back();
+        CutActor p; p.name = "Pilot"; p.model = S.pilot; p.showFrom = CS;
         double yaw = std::atan2(side.x, side.z) * 180 / 3.14159265358979;
-        p.keys = { ShipKey(T2, lift + V3{ 0, 1.9 * sc, 0 }, yaw), ShipKey(T2 + 1.4f, lift, yaw, 0, 0, true), ShipKey(T2 + 1.6f, lift, yaw), ShipKey(T2 + 3.0f, out, yaw, 0, 0, true) };
-        AddClip(p, "idle", T2, 1.6f, false); AddClip(p, "walk", T2 + 1.6f, 1.4f, false); AddClip(p, "idle", T2 + 3.0f, 1000, false);
+        float down = CS + 2.2f;   // the lift is down
+        RideLift(p, sa, 1000, o, model, "landing", CS, CS, down, yaw);
+        V3 onLift = p.keys.back().pos; p.keys.back().ease = true;
+        float w0 = down + 0.4f, w1 = w0 + 1.4f;
+        p.keys.push_back(ShipKey(w0, onLift, yaw, 0, 0, true)); p.keys.push_back(ShipKey(w1, out, yaw, 0, 0, true));
+        AddClip(p, "idle", CS, w0 - CS, false); AddClip(p, "walk", w0, w1 - w0, false); AddClip(p, "idle", w1, 1000, false);
         c.actors.push_back(p);
-        CamKey k = LookKey(T2, lift + side * (5.6 * sc) + fwd * (3.2 * sc) + V3{ 0, 0.9, 0 }, lift + V3{ 0, 1.7 * sc, 0 }, 48); k.cut = true; c.cam.push_back(k);
-        c.cam.push_back(LookKey(T2 + 1.5f, lift + side * (5.8 * sc) + fwd * (3.0 * sc) + V3{ 0, 0.8, 0 }, lift + V3{ 0, 1.0, 0 }, 48));
-        c.cam.push_back(LookKey(T2 + 3.2f, out + side * 3.2 + fwd * 2.6 + V3{ 0, 1.3, 0 }, out + V3{ 0, 1.2, 0 }, 50));
-        T2 += 3.4f;
+        // (the side shot above sees her come down under the belly) then beside the lift as she steps off and walks out
+        CamKey k = LookKey(down - 0.3f, lift + side * (5.6 * sc) + fwd * (3.2 * sc) + V3{ 0, 0.9, 0 }, lift + V3{ 0, 1.0 * sc, 0 }, 48); k.cut = true; c.cam.push_back(k);
+        c.cam.push_back(LookKey(w0, lift + side * (5.7 * sc) + fwd * (3.1 * sc) + V3{ 0, 0.85, 0 }, lift + V3{ 0, 1.0, 0 }, 48));
+        c.cam.push_back(LookKey(w1 + 0.2f, out + side * 3.2 + fwd * 2.6 + V3{ 0, 1.3, 0 }, out + V3{ 0, 1.2, 0 }, 50));
+        T2 = w1 + 0.6f;
     }
     c.length = T2;
     return c;

@@ -3,6 +3,7 @@
 #pragma once
 #include "cutscene.h"
 #include "objects.h"
+#include "meshmodel.h"
 #include <functional>
 
 namespace mc {
@@ -13,7 +14,10 @@ double shipExitYaw(const WorldObject& o);              // ... looking away from 
 // solid (may be empty): is there a block at this spot - the cameras keep out of the ground and walls (lifted until they are clear)
 using SolidAt = std::function<bool(V3)>;
 Cutscene shipBoardCut(const WorldObject& o, V3 from, const SolidAt& solid = {});  // from where the player stands onto the lift (it holds there: the menu)
-Cutscene shipTakeoffCut(const WorldObject& o, bool shortOne, const SolidAt& solid = {});
-Cutscene shipLandingCut(const WorldObject& o, bool shortOne, const SolidAt& solid = {});
+// model (may be null): the ship's model - the pilot rides its lift platform exactly as its "Taking off" / "landing" animations move it
+Cutscene shipTakeoffCut(const WorldObject& o, bool shortOne, const SolidAt& solid = {}, const MeshModel* model = nullptr);
+Cutscene shipLandingCut(const WorldObject& o, bool shortOne, const SolidAt& solid = {}, const MeshModel* model = nullptr);
+// how high the lift platform is (blocks above the ship's bottom, its own units) in that animation at t seconds
+double shipLiftHeight(const MeshModel* model, V3 lift, const std::string& clip, float t);
 
 } // namespace mc
