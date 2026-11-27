@@ -4842,6 +4842,12 @@ struct App {
             jitM = XMMatrixTranslation(2 * jitX / rw, -2 * jitY / rh, 0); vp = vp * jitM; XMStoreFloat4x4(&fc.viewProj, vp);
         }
         SkyParams(fc, settings.timeOfDay);
+        if (spaceMode) {   // out in space the sun is where the cutscene puts it (day or night down in the world), full strength; no night eye
+            const double D = 3.14159265358979 / 180; double y = spaceNow->sunYaw * D, p = std::clamp((double)spaceNow->sunPitch, -89.0, 89.0) * D;
+            fc.sunDir[0] = (float)(std::sin(y) * std::cos(p)); fc.sunDir[1] = (float)std::sin(p); fc.sunDir[2] = (float)(std::cos(y) * std::cos(p));
+            for (int i = 0; i < 3; i++) fc.sunColor[i] = envState.now.sunHigh[i];
+            exposure = 1.0f; nightEyeLimit = 0;
+        }
         float fogEnd = LodReach() * CS * 0.95f;
         cullFar = fogEnd + 32;   // objects past the fog are not drawn (a little extra: tall ones still cast their shadows inward)
         fc.fogRange[0] = fogEnd * 0.45f; fc.fogRange[1] = fogEnd; fc.fogRange[2] = exposure * std::clamp(settings.brightness, 0.3f, 2.5f);

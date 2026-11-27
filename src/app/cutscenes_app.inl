@@ -680,7 +680,10 @@
             Prop("Stars"); ch |= ImGui::SliderFloat("##spst", &s.stars, 0, 1, "%.2f");
             Prop("Haze"); ch |= ImGui::SliderFloat("##spn", &s.nebula, 0, 1, "%.2f"); if (s.nebula > 0) { Prop("Haze colour"); ch |= ColorU32("##spnc", s.nebulaColor); }
             Prop("Brightness"); ch |= ImGui::SliderFloat("##spb", &s.bright, 0.1f, 4, "%.2f x");
-            Hint("While this bar runs the world is hidden: only the actors (the ship, rocks...) are seen against the stars. The sun is the world's: it lights the planet and the actors alike.");
+            Prop("Sun (turn)"); ch |= ImGui::DragFloat("##spsy", &s.sunYaw, 0.5f, -360, 360, "%.0f deg");
+            Prop("Sun (up / down)"); ch |= ImGui::DragFloat("##spsp2", &s.sunPitch, 0.5f, -89, 89, "%.0f deg");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Where the light comes from out here - the planet and the actors are lit from there (the world's clock does not matter in space)");
+            Hint("While this bar runs the world is hidden: only the actors (the ship, rocks...) are seen against the stars. Its sun lights the planet and the actors alike.");
             if (delButton("space shot")) { c.space.erase(c.space.begin() + cutSelIdx); CutSelect(0, 0, -1); }
         } else if (cutSelKind == 10 && cutSelIdx >= 0 && cutSelIdx < (int)c.effects.size()) {
             CutEffect& e = c.effects[cutSelIdx]; ImGui::TextDisabled("Effect");

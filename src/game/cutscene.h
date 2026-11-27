@@ -62,6 +62,7 @@ struct CutSpace {
     float spin = 2, axisTilt = 15;      // degrees a second; its axis leaning (degrees)
     float stars = 0.6f, nebula = 0.3f; uint32_t nebulaColor = 0x2A1A5A;   // how many stars; a coloured haze
     float bright = 1;                   // the whole background brighter / darker
+    float sunYaw = 20, sunPitch = 25;   // where the sunlight comes from out there (degrees, like the camera's) - whatever the world's clock says
 };
 
 // an effect on an actor: particles (a preset) that follow it - from a spot on it (its own x right, y up, z its front), for its time

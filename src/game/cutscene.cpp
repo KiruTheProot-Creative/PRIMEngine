@@ -225,7 +225,7 @@ bool saveCutscenes(const std::string& path, const std::vector<Cutscene>& list) {
         for (const CutSound& s : c.sounds) f << "sound " << s.t << " " << esc(s.sound.file) << " " << s.sound.volume << " " << s.sound.pitch << " " << s.sound.pitchVar << "\n";
         for (const CutFade& d : c.fades) f << "fade " << d.t << " " << d.length << " " << (int)d.kind << "\n";
         for (const CutSpace& s : c.space) f << "space " << s.t << " " << s.length << " " << esc(s.planet) << " " << s.yaw << " " << s.pitch << " " << s.size << " " << s.spin << " " << s.axisTilt << " "
-                                             << s.stars << " " << s.nebula << " " << s.nebulaColor << " " << s.bright << "\n";
+                                             << s.stars << " " << s.nebula << " " << s.nebulaColor << " " << s.bright << " " << s.sunYaw << " " << s.sunPitch << "\n";
         for (const CutEffect& e : c.effects) f << "effect " << e.t << " " << e.length << " " << esc(e.actor) << " " << esc(e.preset) << " " << e.offset.x << " " << e.offset.y << " " << e.offset.z << " " << e.size << "\n";
         for (const CutEvent& e : c.events) f << "event " << e.t << " " << (int)e.action.kind << " " << esc(e.action.target) << " " << esc(e.action.text) << " " << e.action.number << "\n";
     }
@@ -249,7 +249,7 @@ bool loadCutscenes(const std::string& path, std::vector<Cutscene>& list) {
         else if (k == "text") { CutText x; int s = 0; std::string sp, tx; l >> x.t >> x.length >> s >> x.typeSpeed >> sp >> tx; x.style = (CutTextStyle)std::clamp(s, 0, (int)CutTextStyle::COUNT - 1); x.speaker = unesc(sp); x.text = unesc(tx); list.back().texts.push_back(x); }
         else if (k == "sound") { CutSound s; std::string fl; l >> s.t >> fl >> s.sound.volume >> s.sound.pitch; float pv; if (l >> pv) s.sound.pitchVar = pv; s.sound.file = unesc(fl); list.back().sounds.push_back(s); }
         else if (k == "fade") { CutFade d; int kd = 0; l >> d.t >> d.length >> kd; d.kind = (CutFadeKind)std::clamp(kd, 0, (int)CutFadeKind::COUNT - 1); list.back().fades.push_back(d); }
-        else if (k == "space") { CutSpace s; std::string n; l >> s.t >> s.length >> n >> s.yaw >> s.pitch >> s.size >> s.spin >> s.axisTilt >> s.stars >> s.nebula >> s.nebulaColor >> s.bright; s.planet = unesc(n); list.back().space.push_back(s); }
+        else if (k == "space") { CutSpace s; std::string n; l >> s.t >> s.length >> n >> s.yaw >> s.pitch >> s.size >> s.spin >> s.axisTilt >> s.stars >> s.nebula >> s.nebulaColor >> s.bright; float sy, sp; if (l >> sy >> sp) { s.sunYaw = sy; s.sunPitch = sp; } s.planet = unesc(n); list.back().space.push_back(s); }
         else if (k == "effect") { CutEffect e; std::string a, p; l >> e.t >> e.length >> a >> p >> e.offset.x >> e.offset.y >> e.offset.z >> e.size; e.actor = unesc(a); e.preset = unesc(p); list.back().effects.push_back(e); }
         else if (k == "event") { CutEvent e; int kd = 0; std::string a, b; l >> e.t >> kd >> a >> b >> e.action.number; e.action.kind = (Do)std::clamp(kd, 0, (int)Do::COUNT - 1); e.action.target = unesc(a); e.action.text = unesc(b); list.back().events.push_back(e); }
     }
