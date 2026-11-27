@@ -182,7 +182,7 @@ V3 effectSpot(const V3& pos, double yawDeg, const V3& o) {   // (the same turn a
     return { pos.x + c * o.x + s * o.z, pos.y + o.y, pos.z - s * o.x + c * o.z };
 }
 std::vector<std::string> cutEffectPresets() {
-    std::vector<std::string> v = { "Re-entry fire", "Landing dust", "Thrusters" };
+    std::vector<std::string> v = { "Re-entry fire", "Landing dust", "Landing snow", "Landing ash", "Landing sand", "Landing spray", "Thrusters", "Thruster jet" };
     for (const std::string& p : particlePresets()) v.push_back(p);
     return v;
 }

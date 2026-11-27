@@ -107,6 +107,10 @@ bool PlayInventory::collect(const WorldObject& o, float& health, float maxHealth
 void PlayInventory::tick(float dt) {
     for (auto it = taken.begin(); it != taken.end();) { if (it->second > 0 && (it->second -= dt) <= 0) it = taken.erase(it); else ++it; }
 }
+const char* areaKindName(AreaKind a) {
+    static const char* n[] = { "Plain", "Jungle", "Lava", "Ice", "Desert", "Ocean", "Ruins", "Cave" };
+    return n[std::clamp((int)a, 0, (int)AreaKind::COUNT - 1)];
+}
 void turnAxes(double yawDeg, double pitchDeg, double rollDeg, V3& ax, V3& ay, V3& az) {
     const double d = 3.14159265358979 / 180; double cy = std::cos(yawDeg * d), sy = std::sin(yawDeg * d), cp = std::cos(pitchDeg * d), sp = std::sin(pitchDeg * d), cr = std::cos(rollDeg * d), sr = std::sin(rollDeg * d);
     auto turn = [&](V3 v) { v = { v.x, v.y * cp + v.z * sp, -v.y * sp + v.z * cp }; return V3{ v.x * cy + v.z * sy, v.y, -v.x * sy + v.z * cy }; };   // tilt, then turn
@@ -253,6 +257,10 @@ bool saveObjects(const std::string& path, const std::vector<WorldObject>& objs) 
             if (!A.preset.empty()) f << " ambp " << escText(A.preset);
         }
         if (o.kind == ObjKind::GrapplePoint) f << " grp " << o.grapple.mode << " " << o.grapple.length << " " << o.grapple.reach;
+        if (o.ship.site) { const ShipSettings& S = o.ship;
+            auto pts = [&](const std::vector<V3>& v) { f << " " << v.size(); for (const V3& p : v) f << " " << p.x << " " << p.y << " " << p.z; };
+            f << " ship " << escText(S.siteName) << " " << (int)S.area << " " << (S.open ? 1 : 0) << " " << S.mapX << " " << S.mapY << " " << S.lift.x << " " << S.lift.y << " " << S.lift.z
+              << " " << escText(S.landCut) << " " << escText(S.takeoffCut) << " " << escText(S.pilot); pts(S.thrusters); pts(S.landThrusters); }
         { const ParticleSettings& P2 = o.particles;   // particles: swaying, fogging the visor, only in water, an electric arc (newer files)
           if (P2.wobble > 0 || P2.fogsVisor > 0 || P2.stayIn || P2.arc)
               f << " pfx2 " << P2.wobble << " " << P2.fogsVisor << " " << P2.stayIn << " " << (P2.arc ? 1 : 0) << " " << P2.arcTo.x << " " << P2.arcTo.y << " " << P2.arcTo.z << " " << P2.arcBolts << " " << P2.arcJag; }
@@ -303,7 +311,11 @@ bool loadObjects(const std::string& path, std::vector<WorldObject>& objs) {
               if (!tok.empty() && tok.find_first_not_of("0123456789") == std::string::npos) { o.scan.id = std::stoi(tok); int et; if (l >> et) { o.enemyType = et; int se, sa; if (l >> se >> sa) { o.save.energy = se != 0; o.save.ammo = sa != 0; std::string an; if (l >> an) { o.save.anim = unescText(an); int ls; float ll; if (l >> ls >> ll) { o.light.shadows = ls != 0; o.light.length = std::clamp(ll, 0.25f, 64.f); std::string so, sc; if (l >> so >> sc) { soundUseFrom(unescText(so), o.door.openSound); soundUseFrom(unescText(sc), o.door.closeSound); std::string stt, stx; int ask; if (l >> stt >> stx >> ask) { o.save.title = unescText(stt); o.save.text = unescText(stx); o.save.ask = ask != 0; } } } } } } }
               else { std::string sc, st; int imp = 0; float tm = 0; o.scan.legacyName = unescText(tok); if (l >> sc >> st >> imp >> tm) { o.scan.legacyCategory = unescText(sc); o.scan.legacyText = unescText(st); o.scan.legacyImportant = imp != 0; o.scan.legacyTime = std::max(0.f, tm); } }
           } }
-        for (std::string t; l >> t;) { if (t == "lanim") { std::string a[4]; int mg = 0; if (l >> a[0] >> a[1] >> a[2] >> a[3] >> mg) { glowAnimFrom(a[0] + " " + a[1] + " " + a[2] + " " + a[3], o.light.anim); o.light.matchGlow = mg != 0; } }
+        for (std::string t; l >> t;) { if (t == "ship") { ShipSettings& S = o.ship; std::string sn, lc, tc, pm; int ar = 0, op = 1;
+                if (l >> sn >> ar >> op >> S.mapX >> S.mapY >> S.lift.x >> S.lift.y >> S.lift.z >> lc >> tc >> pm) { S.site = true; S.siteName = unescText(sn); S.area = (AreaKind)std::clamp(ar, 0, (int)AreaKind::COUNT - 1); S.open = op != 0; S.landCut = unescText(lc); S.takeoffCut = unescText(tc); S.pilot = unescText(pm);
+                    auto pts = [&](std::vector<V3>& v) { size_t n = 0; if (!(l >> n)) return; v.clear(); for (size_t i = 0; i < n && i < 64; i++) { V3 p; if (l >> p.x >> p.y >> p.z) v.push_back(p); } };
+                    pts(S.thrusters); pts(S.landThrusters); } continue; }
+            if (t == "lanim") { std::string a[4]; int mg = 0; if (l >> a[0] >> a[1] >> a[2] >> a[3] >> mg) { glowAnimFrom(a[0] + " " + a[1] + " " + a[2] + " " + a[3], o.light.anim); o.light.matchGlow = mg != 0; } }
           else if (t == "glow") { std::string a[4]; if (l >> a[0] >> a[1] >> a[2] >> a[3] && glowAnimFrom(a[0] + " " + a[1] + " " + a[2] + " " + a[3], o.glowAnim)) o.ownGlow = true; }
           else if (t == "mrooms") { size_t n = 0; if (l >> n) for (size_t i = 0; i < n && i < 4096; i++) { uint32_t r; if (l >> r) o.map.rooms.push_back(r); } }
           else if (t == "pfx2") { ParticleSettings& P2 = o.particles; int si = 0, ar = 0;

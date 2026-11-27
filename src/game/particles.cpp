@@ -28,6 +28,16 @@ ParticleSettings particlePreset(const std::string& n) {
     else if (n == "Thrusters") {   // (cutscenes) hot blue jets pushing down
         p.rate = 120; p.life = 0.25f; p.lifeVar = 0.08f; p.dir = { 0, -1, 0 }; p.spread = 8; p.speed = 9; p.speedVar = 2; p.drag = 0.5f; p.size0 = 0.5f; p.size1 = 0.1f;
         p.color0 = 0xD8F0FF; p.color1 = 0x4080FF; p.glow = 4; p.light = true; p.lightRange = 10; p.lightIntensity = 2; }
+    else if (n == "Thruster jet") {   // (cutscenes) a flying ship's engine: a hot jet streaming out behind (its own -z)
+        p.rate = 160; p.life = 0.22f; p.lifeVar = 0.06f; p.dir = { 0, 0, -1 }; p.spread = 5; p.speed = 14; p.speedVar = 3; p.drag = 0.3f; p.size0 = 0.55f; p.size1 = 0.12f;
+        p.color0 = 0xE8F6FF; p.color1 = 0x3C78FF; p.glow = 4.5f; p.light = true; p.lightRange = 9; p.lightIntensity = 2.2f; }
+    else if (n == "Landing snow" || n == "Landing ash" || n == "Landing spray" || n == "Landing sand") {   // (cutscenes) Landing dust of other places
+        p = particlePreset("Landing dust");
+        if (n == "Landing snow") { p.color0 = 0xF4F8FF; p.color1 = 0xD8E4F0; p.alpha0 = 0.65f; p.rate = 90; }
+        else if (n == "Landing ash") { p.color0 = 0x4A4038; p.color1 = 0x2A2420; p.alpha0 = 0.6f; p.gravity = 0.2f; }
+        else if (n == "Landing sand") { p.color0 = 0xD8B880; p.color1 = 0xB09060; p.alpha0 = 0.6f; p.rate = 95; p.speed = 5.5f; }
+        else { p.color0 = 0xF0F8FF; p.color1 = 0xC8DCEC; p.alpha0 = 0.55f; p.gravity = -3; p.speed = 6; p.life = 1.6f; }   // spray off the water
+    }
     else if (n == "Smoke") { p.rate = 12; p.life = 4; p.lifeVar = 1; p.spread = 15; p.speed = 0.9f; p.speedVar = 0.3f; p.gravity = 0.3f; p.drag = 0.4f; p.size0 = 0.5f; p.size1 = 2.2f;
         p.color0 = 0x707070; p.color1 = 0x505050; p.alpha0 = 0.55f; p.alpha1 = 0; p.glow = 1; p.additive = false; p.shape = PShape::Smoke; p.area = PArea::Disc; p.areaSize = { 0.3, 0, 0.3 }; p.spin = 0.15f; }
     else if (n == "Steam") { p.rate = 30; p.life = 1.6f; p.lifeVar = 0.4f; p.spread = 8; p.speed = 3.5f; p.speedVar = 0.8f; p.gravity = 0.5f; p.drag = 1.2f; p.size0 = 0.2f; p.size1 = 1.2f;

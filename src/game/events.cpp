@@ -65,6 +65,7 @@ const Need& needOf(Do d) {
         { "stop the music" },
         { "on the visor:", false, false, true, true, "", "how strong" },
         { "play the cutscene", false, false, true },
+        { "unlock the landing site", false, true }, { "lock the landing site", false, true },
     };
     return n[std::clamp((int)d, 0, (int)Do::COUNT - 1)];
 }
@@ -146,6 +147,8 @@ std::string describe(const EventCard& c) {
         case Do::StopMusic: a = "stop the music"; break;
         case Do::VisorEffect: a = "on the visor: " + orAny(d.text, "Goo splat"); break;
         case Do::PlayCutscene: a = "play the cutscene " + orAny(d.text, "?"); break;
+        case Do::UnlockSite: a = "unlock the landing site " + orAny(n, "?"); break;
+        case Do::LockSite: a = "lock the landing site " + orAny(n, "?"); break;
         default: break;
         }
         s += (k == 0 ? " " : ", ") + a;

@@ -24,6 +24,7 @@ bool saveGame(const std::string& dir, const SaveGame& g) {
         for (const ScanEntry& e : g.scans) f << "scan " << e.id << " " << escText(e.name) << " " << escText(e.category) << " " << escText(e.text) << " " << escText(e.model) << " " << (e.important ? 1 : 0) << "\n";
         auto set = [&](const char* k, const std::set<std::string>& s) { for (const std::string& v : s) f << k << " " << escText(v) << "\n"; };
         set("gone", g.enemyGone); set("cleared", g.zonesCleared); set("station", g.stationsUsed); set("flag", g.flags); set("dooropen", g.doorsOpened);
+        set("siteopen", g.sitesOpen); set("siteclosed", g.sitesClosed); set("sitevisited", g.sitesVisited);
         for (const std::string& m : g.maps) f << "map " << escText(m) << "\n";
         for (auto& w : g.memory) {
             if (w.second.empty()) continue;
@@ -61,6 +62,9 @@ bool loadGame(const std::string& dir, SaveGame& g) {
         else if (k == "cleared") { l >> a; g.zonesCleared.insert(unescText(a)); }
         else if (k == "station") { l >> a; g.stationsUsed.insert(unescText(a)); }
         else if (k == "flag") { l >> a; g.flags.insert(unescText(a)); }
+        else if (k == "siteopen") { l >> a; g.sitesOpen.insert(unescText(a)); }
+        else if (k == "siteclosed") { l >> a; g.sitesClosed.insert(unescText(a)); }
+        else if (k == "sitevisited") { l >> a; g.sitesVisited.insert(unescText(a)); }
         else if (k == "dooropen") { l >> a; g.doorsOpened.insert(unescText(a)); }
         else if (k == "map") { l >> a; g.maps.push_back(unescText(a)); }
         else if (k == "mem") { l >> a; mem = &g.memory[unescText(a)]; }

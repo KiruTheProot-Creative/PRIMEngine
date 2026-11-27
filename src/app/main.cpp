@@ -1323,7 +1323,8 @@ struct App {
         if (saveSeqId) {}   // (a Save Station at work: nothing until it is done)
         else if (pressed(Act::Map)) { if (mapOpen) CloseMap(); else if (!showSettings) OpenMap(); }   // the map (also from the pause menu)
         else if (!paused) {
-            if (pressed(Act::Use)) { if (WorldObject* st = StationInReach()) { if (st->kind == ObjKind::SaveStation) UseSaveStation(*st); else UseMapStation(*st); } }   // use: a Map / Save Station
+            if (pressed(Act::Use) && ShipInReach()) BoardShip(*ShipInReach());   // the gunship: onto its lift, its menu
+            else if (pressed(Act::Use)) { if (WorldObject* st = StationInReach()) { if (st->kind == ObjKind::SaveStation) UseSaveStation(*st); else UseMapStation(*st); } }   // use: a Map / Save Station
             if (pressed(Act::Visor) && !player.ball) NextVisor();                                     // the visors
             if (pressed(Act::Ball) && (!Down(VK_CONTROL) || settings.keys.uses(Act::Ball, VK_CONTROL))) ToggleBall();   // the morph ball
             if (pressed(Act::NextMissile) && weapons.missileTypes.size() > 1 && !player.ball) { if (weapons.switchMode == 0) NextMissile(); else if (weapons.switchMode == 2) Toast("Pick missiles in the menu (Esc)"); }
@@ -1377,6 +1378,7 @@ struct App {
             else if (mapOpen) CloseMap();
             else if (scanOpen) CloseScan();
             else if (savePrompt) CloseSavePrompt();
+            else if (shipMenu) { if (shipRun.map) { shipRun.map = false; menuSel = -2; } else LeaveShip(); }   // the gunship's menu: back, or step off the lift
             else if (playMode) { paused = !paused; Capture(!paused); GameSnd(paused ? &PlayerSounds::menuOpen : &PlayerSounds::menuClose); }
             else if (captured) Capture(false);            // editor: the mouse goes back to the panels
             else if (editorOpen && !EditorView()) editorOpen = false;
@@ -1515,7 +1517,7 @@ struct App {
             PlayState::Event e = play.tick(*world, player, playRules, playSpawn, playYaw, std::min(dt, 0.05));
             if (e == PlayState::Died) { Toast(std::string("You ") + play.cause); GameSnd(&PlayerSounds::death, SND_MOVEMENT); StopScanLoop(); Signal(When::Dies, ""); ResetBossFights(); }
         }
-        UpdateCutscene(dt); UpdateCutEditor(dt); UpdateCutActors(dt);   // cutscenes: the one playing (it may want the mouse), the editor's playhead, the actors
+        UpdateCutscene(dt); UpdateShip(); UpdateCutEditor(dt); UpdateCutActors(dt);   // cutscenes: the one playing (it may want the mouse), the editor's playhead, the actors
         mouseDX = mouseDY = 0;
         CpuMark("game: weather, liquids"); weather.update(dt, player.feet);
         world->liquidTimer += dt;   // water and lava flow 10 steps a second
@@ -2905,7 +2907,9 @@ struct App {
         case Do::StopCountdown: countdownT = -1; break;
         case Do::PlayMusic: { SoundUse u; u.file = d.text; PlayMusic(u, 1.f); break; }
         case Do::StopMusic: StopMusic(1.5f); break;
-        case Do::PlayCutscene: if (!d.text.empty()) cutQueued = d.text; break;   // (starts next frame; after the one playing)
+        case Do::PlayCutscene: if (!d.text.empty()) cutQueued = d.text; break;
+        case Do::UnlockSite: { std::string n = d.text.empty() ? d.target : d.text; if (!n.empty()) { sitesOpen.insert(n); sitesClosed.erase(n); } break; }
+        case Do::LockSite: { std::string n = d.text.empty() ? d.target : d.text; if (!n.empty()) { sitesClosed.insert(n); sitesOpen.erase(n); } break; }   // (starts next frame; after the one playing)
         default: break;
         }
     }
@@ -3002,6 +3006,11 @@ struct App {
         for (int i = 0; i < (int)objects.size(); i++) {
             const WorldObject& o = objects[i]; FrameRef f = ModelOf(o); if (!f) continue;
             Box3 b = objectBounds(o, *f); std::string label; ImU32 col = IM_COL32(255, 255, 255, 200);
+            if (o.ship.site) {   // a landing site: its lift platform (a green ring) and its name
+                V3 c = ShipSpot(o, o.ship.lift) + V3{ 0, 0.05, 0 };
+                for (int k = 0; k < 32; k++) { double a0 = k * 6.2832 / 32, a1 = (k + 1) * 6.2832 / 32; Line3D(dl, { c.x + std::cos(a0) * 0.8, c.y, c.z + std::sin(a0) * 0.8 }, { c.x + std::cos(a1) * 0.8, c.y, c.z + std::sin(a1) * 0.8 }, IM_COL32(110, 255, 160, 230)); }
+                ImVec2 s; if (Project(c + V3{ 0, 0.3, 0 }, s)) { std::string t = "Landing site: " + SiteName(o, CurrentWorld()) + (o.ship.open ? "" : " (locked)"); dl->AddText(ImVec2(s.x - ImGui::CalcTextSize(t.c_str()).x * 0.5f, s.y), IM_COL32(110, 255, 160, 255), t.c_str()); }
+            }
             switch (o.kind) {
             case ObjKind::Trigger: col = o.trigger.action == TriggerAction::RoomEdge ? IM_COL32(90, 220, 255, 230) : IM_COL32(255, 160, 60, 230); DrawBox3(dl, b.lo, b.hi, col);
                 if (o.trigger.action == TriggerAction::RoomEdge) { label = "Room edge"; break; }
@@ -3905,6 +3914,7 @@ struct App {
             if (o.grapple.mode == 0) { Prop("Rope"); ImGui::SetNextItemWidth(-1); ImGui::SliderFloat("##gpl", &o.grapple.length, 0, 30, o.grapple.length <= 0 ? "as far as you are when it latches" : "%.1f blocks"); }
             Prop("Reach"); ImGui::SetNextItemWidth(-1); ImGui::SliderFloat("##gpr", &o.grapple.reach, 4, 60, "%.0f blocks");
         }
+        if (o.kind == ObjKind::Prop || o.kind == ObjKind::Door || o.ship.site) ShipInspector(o);
         if (o.kind == ObjKind::SaveStation) {
             ImGui::SeparatorText("Save Station");
             Hint("Stand on it and press E: you are put in its middle and it fills you up, its animation plays, then the game saves into the file being played (picked on the Files screen) and \"Game Saved!\" shows. This is the only place a game saves, like Metroid Prime. Its name shows on the file.");
@@ -5794,7 +5804,16 @@ struct App {
         if ((playMode || bench.loading) && loadingOn) { DrawLoading(dl, vx, vy, cw, ch); return; }   // the loading screen over everything
         if (CutOverlay(dl, vx, vy, cw, ch)) return;   // a cutscene: its bars, texts and fades (a film camera: nothing else)
         if (playMode && bootOn && BootPhase(3) <= 0) return;   // (booting up: no crosshair, no messages until the HUD comes)
-        if (playMode && !paused && !mapOpen && !hideHud) if (WorldObject* st = StationInReach()) {   // "E: Map Station"
+        if (playMode && !paused && !mapOpen && !hideHud) if (WorldObject* sh = ShipInReach()) {   // "E: Board the gunship"
+            std::string t = "E   Board the gunship"; float ui = settings.uiScale; (void)sh;
+            ImVec2 ts = ImGui::CalcTextSize(t.c_str()); ImVec2 c(vx + cw * 0.5f, vy + ch * 0.64f), pad(14 * ui, 8 * ui);
+            ImVec2 a(c.x - ts.x * 0.5f - pad.x, c.y - pad.y), b(c.x + ts.x * 0.5f + pad.x, c.y + ts.y + pad.y);
+            dl->AddRectFilled(a, b, IM_COL32(4, 18, 28, 170), 6 * ui); dl->AddRect(a, b, IM_COL32(110, 216, 255, 200), 6 * ui, 0, 1.5f * ui);
+            ImVec2 kp(a.x + pad.x - 5 * ui, c.y - 3 * ui); ImVec2 kw = ImGui::CalcTextSize("E");
+            dl->AddRect(kp, ImVec2(kp.x + kw.x + 10 * ui, kp.y + kw.y + 6 * ui), IM_COL32(110, 216, 255, 255), 3 * ui, 0, 1.5f * ui);
+            dl->AddText(ImVec2(c.x - ts.x * 0.5f, c.y), IM_COL32(210, 240, 255, 255), t.c_str());
+        }
+        if (playMode && !paused && !mapOpen && !hideHud && !ShipInReach()) if (WorldObject* st = StationInReach()) {   // "E: Map Station"
             std::string used = stationsUsed.count(CurrentWorld() + "#" + std::to_string(st->id)) ? " (downloaded)" : "";
             std::string t = st->kind == ObjKind::SaveStation ? "E   Save Station" : "E   Use Map Station" + used; float ui = settings.uiScale;
             ImVec2 ts = ImGui::CalcTextSize(t.c_str()); ImVec2 c(vx + cw * 0.5f, vy + ch * 0.64f), pad(14 * ui, 8 * ui);
@@ -6120,6 +6139,7 @@ struct App {
         inv = PlayInventory{}; poppedIds.clear(); StopSounds(TAG_FANFARE);
         if (!weapons.missileTypes.empty() && !weapons.missileCounter.empty()) inv.counts[weapons.missileCounter] = MissilesUnlocked() ? std::min(weapons.missileStart, MissileMax()) : 0;   // no launcher yet: none
         weapState.missile = 0; chargedOn = false;
+        sitesOpen.clear(); sitesClosed.clear(); sitesVisited.clear(); shipRun = ShipRun{}; shipMenu = false;
         enemyRt.clear(); enemyGone.clear(); doorsOpened.clear(); zonesCleared.clear(); enemyShots.clear(); enemyDrops.clear(); debris.clear(); enemyAnimT.clear(); enemyAnimClip.clear(); playerInvuln = 0;
         bossRt.clear(); bossPose.clear(); bossSealed.clear(); bossShown = 0; bossBarFade = 0; spawnQueue.clear(); camShake = 0; countdownT = -1;
         curSlot = -1; playTime = 0; savePrompt = false;
@@ -8709,6 +8729,7 @@ struct App {
         menuPage = pg; menuSel = -2;
     }
     void MenuDo(const MenuHit& h) {
+        if (ShipMenuDo(h.target)) return;   // the gunship's menu
         if (h.target == "save:yes") {
             bool ok = WriteSave(); if (ok) GameSnd(&PlayerSounds::saved); CloseSavePrompt();
             if (ok) if (const WorldObject* st = ObjById(saveStationId)) StartSaveAnim(*st);
@@ -9388,7 +9409,7 @@ struct App {
     }
     void BuildMenuLists() {
         menuShown = false; menuHits.clear(); menuPanes.clear(); menuPaneIsPage.clear(); smModel.clear();
-        bool inMenu = playMode && paused && !mapOpen && !showSettings && !scanOpen && !savePrompt, inScan = playMode && scanOpen, inSave = playMode && savePrompt;
+        bool inMenu = playMode && paused && !mapOpen && !showSettings && !scanOpen && !savePrompt && !shipMenu, inScan = playMode && scanOpen, inSave = playMode && (savePrompt || shipMenu);
         bool preview = menuPreview && playerEdOpen && !playMode;
         inMenu = inMenu && curScreen < 0;
         if (inMenu && !menuWasOpen) { menuPage = 0; menuBack.clear(); menuSel = -2; menuSlideT = 0; menuSlideDir = 0; }   // it opens on the first page
@@ -9396,7 +9417,7 @@ struct App {
         if (!(inMenu || inScan || inSave || preview)) return;
         if (menu.pages.empty() && !inScan && !inSave) return;
         menuShown = true;
-        if (inSave) { menuPanes.push_back(SavePromptPane()); menuPaneIsPage.push_back(false); }
+        if (inSave) { menuPanes.push_back(shipMenu ? ShipMenuPane() : SavePromptPane()); menuPaneIsPage.push_back(false); }
         else if (inScan) { menuPanes.push_back(ScanResultPane()); menuPaneIsPage.push_back(true); }
         else {
             int pg = preview ? std::clamp(menuEdPage, 0, (int)menu.pages.size() - 1) : std::clamp(menuPage, 0, (int)menu.pages.size() - 1);
@@ -12082,6 +12103,7 @@ struct App {
         for (auto& w : takenByWorld) for (auto& t : w.second) if (t.second < 0) g.taken[w.first].insert(t.first);
         g.beam = weapState.current; g.missile = weapState.missile; g.visor = visor;
         g.scans = scanLog.entries; g.enemyGone = enemyGone; g.doorsOpened = doorsOpened; g.zonesCleared = zonesCleared; g.stationsUsed = stationsUsed; g.flags = evRun.flags;
+        g.sitesOpen = sitesOpen; g.sitesClosed = sitesClosed; g.sitesVisited = sitesVisited;
         for (auto& m : seenMaps) g.maps.push_back(m.first);
         worldMem[CurrentWorld()] = CaptureMemory(); g.memory = worldMem;
         std::string dir = SlotDir(curSlot);
@@ -12120,6 +12142,7 @@ struct App {
         weapState.current = std::clamp(g.beam, 0, std::max(0, (int)weapons.beams.size() - 1)); weapState.missile = std::clamp(g.missile, 0, std::max(0, (int)weapons.missileTypes.size() - 1));
         visor = std::clamp(g.visor, 0, VISORS - 1);
         scanLog.entries = g.scans; enemyGone = g.enemyGone; doorsOpened = g.doorsOpened; zonesCleared = g.zonesCleared; stationsUsed = g.stationsUsed; evRun.flags.insert(g.flags.begin(), g.flags.end());
+        sitesOpen = g.sitesOpen; sitesClosed = g.sitesClosed; sitesVisited = g.sitesVisited;
         seenMaps.clear(); mapGpu.clear(); mapGpuWorld.clear();
         for (int i = 0; i < (int)g.maps.size(); i++) { SeenMap m; if (loadSeenMap(dir + "/map_" + std::to_string(i) + ".bin", m)) seenMaps[g.maps[i]] = m; }
         player.feet = g.pos; player.yaw = g.yaw; player.pitch = 0; player.vel = { 0, 0, 0 }; playSpawn = g.pos; playYaw = g.yaw;
@@ -18600,6 +18623,7 @@ struct App {
         }
     }
 #include "cutscenes_app.inl"
+#include "ship_app.inl"
 #include "worldgen_app.inl"
     // ---- the viewport: the 3D picture inside a panel
     void Viewport() {

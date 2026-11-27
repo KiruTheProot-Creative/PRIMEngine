@@ -43,6 +43,7 @@ struct SaveGame {
     std::set<std::string> doorsOpened;                  // "world:id": weapon doors opened once with the right weapon (any shot opens them now)
     std::vector<std::string> maps;                     // worlds with a seen map (map_<i>.bin next to the file, i: the place here)
     std::map<std::string, WorldMemory> memory;         // per world: what happened there
+    std::set<std::string> sitesOpen, sitesClosed, sitesVisited;   // landing sites unlocked / locked by event cards (else as each site says), and landed at once (then the short landing)
 };
 bool saveGame(const std::string& dir, const SaveGame& g);   // dir/save.txt (the folder is made)
 bool loadGame(const std::string& dir, SaveGame& g);

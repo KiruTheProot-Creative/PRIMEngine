@@ -53,8 +53,11 @@
     // ---- playing
     bool PlayCutscene(const std::string& name) {
         int i = findCutscene(cutscenes, name); if (i < 0) { Toast("There is no cutscene called \"" + name + "\""); return false; }
+        return PlayCutsceneData(cutscenes[i]);
+    }
+    bool PlayCutsceneData(const Cutscene& from) {   // (also one made by the game: the gunship's take-off and landing)
         if (cutRun.on) EndCutscene();
-        cutRun = CutRun{}; cutRun.on = true; cutRun.c = cutscenes[i]; sortTracks(cutRun.c);
+        cutRun = CutRun{}; cutRun.on = true; cutRun.c = from; sortTracks(cutRun.c);
         Cutscene& c = cutRun.c;
         if (c.fromPlayer) {   // the first glide starts where the player looks
             CamPose pp = PlayerPose(); CamKey k; k.pos = pp.pos; k.yaw = (float)pp.yaw; k.pitch = (float)pp.pitch; k.fov = (float)pp.fov; k.t = 0;
@@ -166,7 +169,8 @@
                 else if (!a.object.empty()) { for (const WorldObject& o : objects) if (o.name == a.object) { at = o.pos; yaw = o.yaw; } }
                 break;
             }
-            em.update(std::min(dt, 0.1), effectSpot(at, yaw, pitch, roll, e.offset), yaw, nullptr, there && effectOn(e, t));
+            if (pitch != 0 || roll != 0) { V3 ax, ay, az; turnAxes(yaw, pitch, roll, ax, ay, az); V3 d = em.s.dir; em.s.dir = ax * d.x + ay * d.y + az * d.z; em.update(std::min(dt, 0.1), effectSpot(at, yaw, pitch, roll, e.offset), 0, nullptr, there && effectOn(e, t)); }   // (its jet turns with it: tilted, rolled)
+            else em.update(std::min(dt, 0.1), effectSpot(at, yaw, pitch, roll, e.offset), yaw, nullptr, there && effectOn(e, t));
         }
     }
     // a world object a cutscene moves: where it is now (false: draw it as it is)

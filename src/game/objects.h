@@ -62,6 +62,22 @@ struct GrappleSettings {
     float length = 0;        // swing: the rope's length (0: as far as you were when it latched)
     float reach = 22;        // how far away it can be grabbed (blocks)
 };
+// a landing site: the gunship stands here. Interact with it: you step onto its lift and the ship's menu opens (save, travel, leave).
+// Travel: the travel map lists the landing sites of every world of the game that are unlocked; the ship takes off, flies and lands there
+enum class AreaKind { Plain, Jungle, Lava, Ice, Desert, Ocean, Ruins, Cave, COUNT };   // how the landing looks (dust, ash, snow, spray...)
+const char* areaKindName(AreaKind a);
+struct ShipSettings {
+    bool site = false;                // this object is the gunship at a landing site
+    std::string siteName;             // on the travel map ("": the world's name)
+    AreaKind area = AreaKind::Plain;
+    bool open = true;                 // on the map from the start (else: an event card's "unlock the landing site")
+    float mapX = 0.5f, mapY = 0.5f;   // where on the planet's map (0..1, left to right, top to bottom)
+    V3 lift{ 0, 0, -1.68 };           // where the lift platform is (its own x right, y up, z front; the gunship: under the hatch)
+    std::string landCut, takeoffCut;  // your own cutscenes instead of the ready-made ones ("": the ready-made ones)
+    std::string pilot;                // the player's model in the ready-made ones (stepping onto the lift, out of the ship; "": none shown)
+    std::vector<V3> thrusters{ { 0.475, 2.9, -4.15 }, { -0.475, 2.9, -4.15 }, { 0.685, 2.5, -4.15 }, { -0.685, 2.5, -4.15 }, { 1.7, 2.39, -3.61 }, { -1.7, 2.39, -3.61 } };   // where its fire comes out (flying)
+    std::vector<V3> landThrusters{ { 1.7, 2.39, -3.61 }, { -1.7, 2.39, -3.61 } };   // the ones that brake it when it lands (the wings')
+};
 const char* ambientPresetName(int i);   // presets to start from (nullptr past the last)
 AmbientSettings ambientPreset(int i);
 struct ScanInfo {   // can be scanned (Scan Visor): which scan entry it shows (scans.txt, by ID: objects share entries)
@@ -127,6 +143,7 @@ struct WorldObject {
     int enemyType = 0;                                // enemies: which enemy type (Player editor > Enemies, by ID)
     AmbientSettings ambient;                          // ambient lights
     GrappleSettings grapple;                          // grapple points
+    ShipSettings ship;                                // the gunship at a landing site
     struct { bool energy = true, ammo = true; std::string anim; std::string title, text; bool ask = false; } save;   // Save Stations: what they fill up; the model's animation while saving ("": one called "save", "-": none);
                                                                                                          // the "Game Saved!" pop-up's title and text ("": automatic); ask: the old way (a Yes / No question first)
 };

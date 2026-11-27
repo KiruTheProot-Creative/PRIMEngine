@@ -313,6 +313,12 @@ int main() {
         std::vector<WorldObject> os{ o }, os2; o.name = "Big crate"; o.id = 2; os.push_back(o);
         saveObjects("/tmp/prim_objs.txt", os); loadObjects("/tmp/prim_objs.txt", os2);
         CHECK(os2.size() == 2 && os2[1].name == "Big crate" && os2[0].yaw == 90 && os2[0].collide == Collide::None, "objects save and load");
+        { WorldObject g; g.id = 9; g.name = "Ship"; g.model = "Ship"; g.ship.site = true; g.ship.siteName = "Frozen Spires"; g.ship.area = AreaKind::Ice; g.ship.open = false; g.ship.mapX = 0.25f; g.ship.lift = { 0, 0.1, -2 };
+          g.ship.pilot = "Suit"; g.ship.landCut = "My landing"; g.ship.thrusters = { { 1, 2, 3 } }; g.ship.landThrusters.clear(); WorldObject plain; plain.id = 10; plain.name = "Box";
+          std::vector<WorldObject> v{ g, plain }, v2; saveObjects("/tmp/prim_ship.txt", v); loadObjects("/tmp/prim_ship.txt", v2);
+          const ShipSettings& S = v2[0].ship;
+          CHECK(v2.size() == 2 && S.site && S.siteName == "Frozen Spires" && S.area == AreaKind::Ice && !S.open && S.mapX == 0.25f && S.lift.z == -2 && S.pilot == "Suit" && S.landCut == "My landing" && S.takeoffCut.empty()
+                && S.thrusters.size() == 1 && S.thrusters[0].y == 2 && S.landThrusters.empty() && !v2[1].ship.site, "a landing site (the gunship) saves and loads"); }
         auto pe = pasteEdits(w, m, { 20, 0, 20 });
         CHECK(pe.size() == 28, "paste puts every block of the copy (%zu)", pe.size());
     }
