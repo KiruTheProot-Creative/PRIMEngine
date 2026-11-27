@@ -4103,6 +4103,17 @@ struct App {
             dl->AddRectFilled(ImVec2(b.x - h * 0.45f, b.y - h * 0.2f), ImVec2(b.x + h * 0.45f, b.y + h * 0.05f), IM_COL32(180, 190, 200, 255), 2.f);
             return;
         }
+        if (tool == 5) {   // fill with water / lava: a drop over a filled basin
+            float h = s * 0.42f; bool lava = fillKind == 2;
+            ImU32 liq = lava ? IM_COL32(255, 120, 40, 255) : IM_COL32(70, 160, 255, 255), rim = IM_COL32(170, 175, 185, 255);
+            dl->AddRectFilled(ImVec2(c.x - h, c.y + h * 0.25f), ImVec2(c.x + h, c.y + h), liq, 2.f);   // the liquid in the basin
+            dl->AddLine(ImVec2(c.x - h, c.y - h * 0.05f), ImVec2(c.x - h, c.y + h), rim, 2); dl->AddLine(ImVec2(c.x + h, c.y - h * 0.05f), ImVec2(c.x + h, c.y + h), rim, 2);
+            dl->AddLine(ImVec2(c.x - h, c.y + h), ImVec2(c.x + h, c.y + h), rim, 2);
+            ImVec2 d(c.x, c.y - h * 0.25f); float r = h * 0.32f;   // the drop: a round bottom with a point on top
+            dl->AddCircleFilled(d, r, liq); dl->AddTriangleFilled(ImVec2(d.x - r * 0.95f, d.y - r * 0.3f), ImVec2(d.x, d.y - r * 2.4f), ImVec2(d.x + r * 0.95f, d.y - r * 0.3f), liq);
+            dl->AddCircleFilled(ImVec2(d.x - r * 0.35f, d.y - r * 0.1f), r * 0.22f, IM_COL32(255, 255, 255, 170));
+            return;
+        }
         if (tool != 0) return;
         float h = s * 0.5f;   // terrain brush: a little mountain with a snowy top
         dl->AddTriangleFilled(ImVec2(c.x - h, c.y + h * 0.7f), ImVec2(c.x - h * 0.15f, c.y - h * 0.75f), ImVec2(c.x + h * 0.55f, c.y + h * 0.7f), IM_COL32(110, 120, 95, 255));
