@@ -4798,7 +4798,8 @@ struct App {
         aspect = (float)rw / rh; camPos = player.eye();
         V3 f = player.forward();
         CamPose cutCam; bool cutOn = CutCamera(cutCam);   // a cutscene's camera
-        const CutSpace* spaceNow = cutOn ? CutSpaceNow() : nullptr; spaceMode = spaceNow != nullptr;   // ... out in space: only its actors and the sky
+        const CutSpace* spaceNow = cutOn ? CutSpaceNow() : nullptr; spaceMode = spaceNow != nullptr;
+        const bool helmetView = playMode && !CutHidesHud();   // seen through Samus's visor (a film-camera cutscene is not: no helmet, cannon, glass or visor look)   // ... out in space: only its actors and the sky
         struct SpaceBack { bool& m; ~SpaceBack() { m = false; } } spaceBack{ spaceMode };
         if (cutOn) { camPos = cutCam.pos; f = poseForward(cutCam); }
         if (playMode && player.ball && !cutOn) BallCamera(camPos, f);   // the morph ball: seen from behind
@@ -4982,13 +4983,13 @@ struct App {
         XMStoreFloat4x4(&fc.waterVP, watervp);
         fc.water[0] = (float)settings.waterCaustics; fc.water[1] = settings.waterCausticsAbove ? 1.f : 0.f; fc.water[2] = waterMap ? 1.f : 0.f; fc.water[3] = settings.waterShafts ? 1.f : 0.f;
         {   // the visor's glass (Play mode)
-            bool on = settings.visorDrops && playMode; uint32_t sc = glass.splatColor;
+            bool on = settings.visorDrops && helmetView; uint32_t sc = glass.splatColor;
             fc.visFx[0] = on ? glass.fog : 0; fc.visFx[1] = on ? glass.frost : 0; fc.visFx[2] = on ? glass.splat : 0; fc.visFx[3] = on ? glass.shock : 0;
-            fc.visFx2[0] = glass.lookUp; fc.visFx2[1] = on ? glass.turn : 0; fc.visFx2[2] = on ? glass.face : 0; fc.visFx2[3] = glass.splatAge;
+            fc.visFx2[0] = helmetView ? glass.lookUp : 0; fc.visFx2[1] = on ? glass.turn : 0; fc.visFx2[2] = on ? glass.face : 0; fc.visFx2[3] = glass.splatAge;
             fc.visSplat[0] = std::pow(((sc >> 16) & 255) / 255.f, 2.2f); fc.visSplat[1] = std::pow(((sc >> 8) & 255) / 255.f, 2.2f); fc.visSplat[2] = std::pow((sc & 255) / 255.f, 2.2f);
             fc.visSplat[3] = (float)(glass.splatSeed % 997) + (glass.splatGlows ? 1000.f : 0.f);
         }
-        fc.water2[0] = settings.waterFoam ? 1.f : 0.f; fc.water2[1] = settings.visorDrops && playMode ? visorWet : 0.f; fc.water2[2] = settings.causticStrength; fc.water2[3] = settings.visorDrops && playMode ? visorRain : 0.f;
+        fc.water2[0] = settings.waterFoam ? 1.f : 0.f; fc.water2[1] = settings.visorDrops && helmetView ? visorWet : 0.f; fc.water2[2] = settings.causticStrength; fc.water2[3] = settings.visorDrops && helmetView ? visorRain : 0.f;
         bool occRender = false;
         if (info.trueDark) {   // the roofs map: redrawn every few frames or after moving; in between it is shifted to the camera
             V3 dm = camPos - occCam; occAge++;
@@ -5440,7 +5441,7 @@ struct App {
 
         GpuMark("arm cannon, helmet");
         // ---- Play mode: the HUD's 3D parts, lit like the world (sun, its shadows, sky light, light objects), in front of everything
-        if (playMode && (!hud.parts.empty() || !weapons.empty())) {
+        if (helmetView && (!hud.parts.empty() || !weapons.empty())) {
             DrawHudPartsLit(fc, f, r, u, srvs, samps);
             if (waterNow && psHudDepth) {   // effects and fields test against the world's depth without the water: the helmet's parts go in there too
                 ctx->PSSetShaderResources(0, 5, none); ctx->OMSetRenderTargets(0, nullptr, depthCopyDSV.Get());
@@ -5603,9 +5604,9 @@ struct App {
             auto rgb = [](uint32_t c, float* o) { o[0] = ((c >> 16) & 255) / 255.f; o[1] = ((c >> 8) & 255) / 255.f; o[2] = (c & 255) / 255.f; };
             rgb(x.tint, vc.tint); vc.tint[3] = x.tintAmount; vc.grade[0] = x.saturation; vc.grade[1] = x.contrast; vc.grade[2] = x.brightness; vc.grade[3] = x.vignette;
             vc.lines[0] = x.lines; vc.lines[1] = x.lineCount; vc.lines[2] = x.lineSpeed; vc.lines[3] = x.noise; rgb(x.edgeColor, vc.edge); vc.edge[3] = x.edges;
-            vc.misc[0] = x.chroma; vc.misc[1] = (float)std::fmod(uiClock, 1000.0); vc.misc[2] = x.heat; vc.misc[3] = playMode && visors.switchFlash > 0 ? visorFlash / visors.switchFlash : 0;
+            vc.misc[0] = x.chroma; vc.misc[1] = (float)std::fmod(uiClock, 1000.0); vc.misc[2] = x.heat; vc.misc[3] = helmetView && visors.switchFlash > 0 ? visorFlash / visors.switchFlash : 0;
             vc.hud[0] = vc.hud[1] = -1;   // the helmet's parts: their slice of depth (see DrawHudPartsLit), left out of the look
-            if (playMode) { bool cannonUpper = weapons.cannonInFront; vc.hud[0] = cannonUpper ? 0.001f : 0.f; vc.hud[1] = cannonUpper ? 0.0021f : 0.001f; }
+            if (helmetView) { bool cannonUpper = weapons.cannonInFront; vc.hud[0] = cannonUpper ? 0.001f : 0.f; vc.hud[1] = cannonUpper ? 0.0021f : 0.001f; }
             vc.outline[0] = scanMaskOn ? 1.f : 0.f; vc.outline[1] = std::max(1.f, 2.f * rh / 720.f); vc.outline[2] = 0.12f; vc.outline[3] = 0;
             ctx->UpdateSubresource(cbVisor.Get(), 0, nullptr, &vc, 0, 0); ctx->PSSetConstantBuffers(6, 1, cbVisor.GetAddressOf());
         }
@@ -5614,7 +5615,7 @@ struct App {
         { ID3D11ShaderResourceView* ex = adaptOn ? adaptSRV[adaptCur].Get() : nullptr; ctx->PSSetShaderResources(16, 1, &ex); }
         {   // your face for the glass (screens/visor_face.png, if there is one)
             ID3D11ShaderResourceView* face = nullptr;
-            if (playMode && glass.face > 0.003f) { std::error_code ec; if (fs::exists(fs::u8path(ScreensDir() + "/visor_face.png"), ec)) face = PictureAt("visor_face.png", 0, false); }
+            if (helmetView && glass.face > 0.003f) { std::error_code ec; if (fs::exists(fs::u8path(ScreensDir() + "/visor_face.png"), ec)) face = PictureAt("visor_face.png", 0, false); }
             ctx->PSSetShaderResources(54, 1, &face); ctx->PSSetSamplers(3, 1, sampClamp.GetAddressOf());
         }
         ctx->Draw(3, 0);
@@ -8462,7 +8463,7 @@ struct App {
     }
     const VisorFx& CurrentVisorFx() const {
         static const VisorFx plain;
-        if (playMode) return visors.fx[std::clamp(visor, 0, VISORS - 1)];
+        if (playMode) return CutHidesHud() ? plain : visors.fx[std::clamp(visor, 0, VISORS - 1)];   // (a film-camera cutscene: no visor between you and it)
         return previewVisor >= 0 && previewVisor < VISORS ? visors.fx[previewVisor] : plain;
     }
     bool ShownInVisor(uint8_t mask) const {   // the HUD: which visors show an element / part
