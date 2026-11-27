@@ -3442,13 +3442,15 @@ float4 PS_GITemp(SkyOut i) : SV_Target
     float lz = linDepth(zb);
     int2 hp = int2(i.pos.xy);
     float3 cur = gGINew.Load(int3(hp, 0)).rgb;
-    if (gHistCam.w < 0.5) return float4(cur, lz);
+    // starting again (a camera cut, something new in view): the 3 x 3 around it, not one noisy pixel (no green / white speckles for the first frames)
+    float3 fresh = 0; [unroll] for (int fy = -1; fy <= 1; fy++) [unroll] for (int fx = -1; fx <= 1; fx++) fresh += gGINew.Load(int3(hp + int2(fx, fy), 0)).rgb; fresh /= 9;
+    if (gHistCam.w < 0.5) return float4(fresh, lz);
     float4 c = mul(float4(relAt(fp, zb) + gHistCam.xyz, 1), gHistVP);   // where it was on the screen a frame ago
-    if (c.w <= 0.05) return float4(cur, lz);
+    if (c.w <= 0.05) return float4(fresh, lz);
     float2 puv = c.xy / c.w * float2(0.5, -0.5) + 0.5;
-    if (any(puv < 0.001) || any(puv > 0.999)) return float4(cur, lz);
+    if (any(puv < 0.001) || any(puv > 0.999)) return float4(fresh, lz);
     float4 h = gGIHist.SampleLevel(gClamp, puv, 0);
-    if (abs(h.a - c.w) > max(c.w * 0.05, 0.12)) return float4(cur, lz);   // something else was there: start again
+    if (abs(h.a - c.w) > max(c.w * 0.05, 0.12)) return float4(fresh, lz);   // something else was there: start again
     // keep the memory near what is around it now (so a light that goes out fades fast, not over seconds)
     float3 lo = cur, hi = cur;
     [unroll] for (int y = -1; y <= 1; y++) [unroll] for (int x = -1; x <= 1; x++) { float3 q = gGINew.Load(int3(hp + int2(x, y), 0)).rgb; lo = min(lo, q); hi = max(hi, q); }

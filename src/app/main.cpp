@@ -4975,7 +4975,7 @@ struct App {
         fc.depth[0] = 0.05f; fc.depth[1] = farZ; fc.depth[2] = (float)rw; fc.depth[3] = (float)rh;
         fc.clipPlane[3] = 1;   // nothing cut away (except while drawing a mirror's view)
         CpuMark("setup: mirrors and probes");
-        lastMirror = settings.reflections > 0 ? world->nearestMirror(camPos, player.forward(), 48) : MirrorPlane{};
+        lastMirror = settings.reflections > 0 ? world->nearestMirror(camPos, f, 48) : MirrorPlane{};   // (where the camera looks - a cutscene's too, not the player's)
         fc.planar[0] = 0;
         {   // the least light in closed spaces (true darkness), and how big the reflections are traced
             float ml = info.trueDark ? std::clamp(info.minLight, 0.f, 1.f) : 0.f; V3 mc = Linear(info.minLightColor);
@@ -10396,8 +10396,8 @@ struct App {
         if (anyMarked) w.blocked = [rl](int x, int y, int z) { for (const RoomDef& r : rl->rooms) if (r.marked() && r.inBoxes(x, y, z)) return true; return false; };
         return w;
     }
-    I3 RoomProbe() const { V3 p = playMode ? player.eye() : camPos; return { ifloor(p.x), ifloor(p.y), ifloor(p.z) }; }
-    uint32_t RoomHere() const { I3 c = RoomProbe(); uint32_t r = rooms.roomAt(c.x, c.y, c.z); if (!r && playMode) { V3 f = player.feet; r = rooms.roomAt(ifloor(f.x), ifloor(f.y + 0.2), ifloor(f.z)); } return r; }
+    I3 RoomProbe() const { V3 p = playMode && !cutRun.on ? player.eye() : camPos; return { ifloor(p.x), ifloor(p.y), ifloor(p.z) }; }   // (a cutscene: the room its camera is in)
+    uint32_t RoomHere() const { I3 c = RoomProbe(); uint32_t r = rooms.roomAt(c.x, c.y, c.z); if (!r && playMode && !cutRun.on) { V3 f = player.feet; r = rooms.roomAt(ifloor(f.x), ifloor(f.y + 0.2), ifloor(f.z)); } return r; }
     void UpdateRooms(double dt) {
         if (!world) return;
         peekBudget = loadingOn ? 400 : 6;
