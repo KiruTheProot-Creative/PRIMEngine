@@ -36,7 +36,7 @@
                 if (ID3D11ShaderResourceView* im = HudImage(L.picture)) {
                     float h = R + grow, cs = std::cos(rot), sn = std::sin(rot); auto P = [&](float x, float y) { return ImVec2(c.x + x * cs - y * sn, c.y + x * sn + y * cs); };
                     dl->AddImageQuad((ImTextureID)(intptr_t)im, P(-h, -h), P(h, -h), P(h, h), P(-h, h), ImVec2(0, 0), ImVec2(1, 0), ImVec2(1, 1), ImVec2(0, 1), k);
-                } else dl->AddRect(ImVec2(c.x - R, c.y - R), ImVec2(c.x + R, c.y + R), k, 0, 0, 1);
+                } else dl->AddRect(ImVec2(c.x - R, c.y - R), ImVec2(c.x + R, c.y + R), k, 0.f, 0, 1.f);
                 break;
             default: break;
             }
@@ -53,7 +53,7 @@
     bool DrawPlayCrosshair(ImDrawList* dl, ImVec2 m, float screenH) {   // false: none made (the plain one shows)
         const Crosshair* c = xh.forVisor(visor); if (!c || c->layers.empty()) return false;
         if (xh.hideWhileLocked && lockId && visor != 1) return true;
-        float dt = (float)std::min(0.1, ImGui::GetIO().DeltaTime);
+        float dt = std::min(0.1f, (float)ImGui::GetIO().DeltaTime);
         float charge = visor == 0 && weapState.charging ? std::clamp(weapState.charge, 0.f, 1.f) : 0.f;
         float kick = std::clamp(1.f - (float)(animTime - weapShotAt) / 0.16f, 0.f, 1.f);
         XhState s = XhState::Idle;
@@ -70,7 +70,7 @@
     // ---- the lock-on reticle on the target (true: drawn - else the built-in one)
     bool DrawLockReticle(ImDrawList* dl, ImVec2 p, float screenH, bool hint) {
         const Crosshair* c = xh.find(hint ? xh.lockHint : xh.lockOn); if (!c || c->layers.empty()) return false;
-        float dt = (float)std::min(0.1, ImGui::GetIO().DeltaTime);
+        float dt = std::min(0.1f, (float)ImGui::GetIO().DeltaTime);
         XhRun& run = hint ? xhHint : xhLock; uint32_t& was = hint ? xhHintWas : xhLockWas; uint32_t id = hint ? lockHint : lockId;
         if (id != was) { was = id; run = XhRun{}; if (!hint) run.update(*c, XhState::Locking, 0, 0, 0); }   // a new target: from the locking look
         XhState s = hint ? XhState::Idle : lockLost > 0 ? XhState::Lost : XhState::Locked;
@@ -188,7 +188,7 @@
                 if (c.lock) {} else { ImGui::SameLine(); if (ImGui::Button("Charge up")) { xhPrevCharging = true; xhPrevCharge = 0; } }
             } else if (ImGui::Button("Lock again")) { xhPrev = XhRun{}; xhPrev.update(c, XhState::Locking, 0, 0, 0); xhPrevState = (int)XhState::Locked; }
         }
-        float dt = (float)std::min(0.1, ImGui::GetIO().DeltaTime);
+        float dt = std::min(0.1f, (float)ImGui::GetIO().DeltaTime);
         if (xhPrevCharging && xhPrevCharge < 1) xhPrevCharge = std::min(1.f, xhPrevCharge + dt / 1.2f);
         xhPrevKick = std::max(0.f, xhPrevKick - dt / 0.16f);
         ImVec2 p0 = ImGui::GetCursorScreenPos(), av = ImGui::GetContentRegionAvail(); float side = std::max(120.f, std::min(av.x, av.y));
