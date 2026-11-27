@@ -92,10 +92,13 @@ ActorPose actorAt(const CutActor& a, float t, float length) {
         std::vector<double> v = s.at(t);
         p.pos = { v[0], v[1], v[2] }; p.yaw = wrap180(v[3]); p.keyed = true;
     }
+    int held = -1;
     for (int i : order(a.clips)) {   // the latest bar that is playing
         const ActorClip& c = a.clips[i];
-        if (t >= c.t && t < c.t + std::max(0.01f, c.length)) { p.clip = i; p.clipName = c.clip; p.clipTime = (t - c.t) * c.speed; p.clipSpeed = c.speed; }
+        if (t >= c.t && t < c.t + std::max(0.01f, c.length)) { p.clip = i; p.clipName = c.clip; p.clipTime = (t - c.t) * c.speed; p.clipSpeed = c.speed; p.hold = c.once; }
+        else if (t >= c.t) held = c.once ? i : -1;   // (a bar that is over: a "once" one keeps its last pose until the next bar starts)
     }
+    if (p.clip < 0 && held >= 0) { const ActorClip& c = a.clips[held]; p.clip = held; p.clipName = c.clip; p.clipTime = std::max(0.01f, c.length) * c.speed; p.clipSpeed = c.speed; p.hold = true; }
     return p;
 }
 
@@ -197,7 +200,7 @@ bool saveCutscenes(const std::string& path, const std::vector<Cutscene>& list) {
         for (const CutActor& a : c.actors) {
             f << "actor " << esc(a.name) << " " << esc(a.object) << " " << esc(a.model) << " " << a.scale << " " << a.showFrom << " " << a.showTo << "\n";
             for (const ActorKey& k : a.keys) f << "akey " << k.t << " " << k.pos.x << " " << k.pos.y << " " << k.pos.z << " " << k.yaw << " " << k.ease << " " << k.cut << "\n";
-            for (const ActorClip& k : a.clips) f << "aclip " << k.t << " " << k.length << " " << esc(k.clip) << " " << k.speed << "\n";
+            for (const ActorClip& k : a.clips) f << "aclip " << k.t << " " << k.length << " " << esc(k.clip) << " " << k.speed << " " << (k.once ? 1 : 0) << "\n";
         }
         for (const CutText& x : c.texts) f << "text " << x.t << " " << x.length << " " << (int)x.style << " " << x.typeSpeed << " " << esc(x.speaker) << " " << esc(x.text) << "\n";
         for (const CutSound& s : c.sounds) f << "sound " << s.t << " " << esc(s.sound.file) << " " << s.sound.volume << " " << s.sound.pitch << "\n";
@@ -220,7 +223,7 @@ bool loadCutscenes(const std::string& path, std::vector<Cutscene>& list) {
         else if (k == "cam") { CamKey q; l >> q.t >> q.pos.x >> q.pos.y >> q.pos.z >> q.yaw >> q.pitch >> q.roll >> q.fov >> q.ease >> q.cut; list.back().cam.push_back(q); }
         else if (k == "actor") { CutActor a; std::string n, o, m; l >> n >> o >> m >> a.scale >> a.showFrom >> a.showTo; a.name = unesc(n); a.object = unesc(o); a.model = unesc(m); list.back().actors.push_back(a); }
         else if (k == "akey" && !list.back().actors.empty()) { ActorKey q; l >> q.t >> q.pos.x >> q.pos.y >> q.pos.z >> q.yaw >> q.ease >> q.cut; list.back().actors.back().keys.push_back(q); }
-        else if (k == "aclip" && !list.back().actors.empty()) { ActorClip q; std::string n; l >> q.t >> q.length >> n >> q.speed; q.clip = unesc(n); list.back().actors.back().clips.push_back(q); }
+        else if (k == "aclip" && !list.back().actors.empty()) { ActorClip q; std::string n; l >> q.t >> q.length >> n >> q.speed; int once = 0; if (l >> once) q.once = once != 0; q.clip = unesc(n); list.back().actors.back().clips.push_back(q); }
         else if (k == "text") { CutText x; int s = 0; std::string sp, tx; l >> x.t >> x.length >> s >> x.typeSpeed >> sp >> tx; x.style = (CutTextStyle)std::clamp(s, 0, (int)CutTextStyle::COUNT - 1); x.speaker = unesc(sp); x.text = unesc(tx); list.back().texts.push_back(x); }
         else if (k == "sound") { CutSound s; std::string fl; l >> s.t >> fl >> s.sound.volume >> s.sound.pitch; s.sound.file = unesc(fl); list.back().sounds.push_back(s); }
         else if (k == "fade") { CutFade d; int kd = 0; l >> d.t >> d.length >> kd; d.kind = (CutFadeKind)std::clamp(kd, 0, (int)CutFadeKind::COUNT - 1); list.back().fades.push_back(d); }

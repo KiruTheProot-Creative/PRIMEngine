@@ -26,7 +26,7 @@ struct CamKey {
 
 // an actor: a model shown only during the cutscene (Samus), or a world object it moves (the gunship on its pad)
 struct ActorKey { float t = 0; V3 pos{ 0, 0, 0 }; float yaw = 0; bool ease = false; bool cut = false; };
-struct ActorClip { float t = 0, length = 2; std::string clip; float speed = 1; };   // plays this animation from t for length seconds (it loops)
+struct ActorClip { float t = 0, length = 2; std::string clip; float speed = 1; bool once = false; };   // plays this animation from t for length seconds (it loops; once: it plays one time and then holds its last pose, also after the bar, until another bar starts)
 struct CutActor {
     std::string name = "Actor";
     std::string object;            // a world object's name: that object is moved (and stays where its own place is, after)
@@ -79,7 +79,7 @@ CamPose cameraAt(const Cutscene& c, float t);
 CamPose blendPose(const CamPose& a, const CamPose& b, double f);   // f 0..1, turning the short way round
 V3 poseForward(const CamPose& p);                                   // where it looks (unit length)
 
-struct ActorPose { V3 pos{ 0, 0, 0 }; double yaw = 0; bool shown = false, keyed = false; int clip = -1; std::string clipName; float clipTime = 0; float clipSpeed = 1; };
+struct ActorPose { V3 pos{ 0, 0, 0 }; double yaw = 0; bool shown = false, keyed = false; int clip = -1; std::string clipName; float clipTime = 0; float clipSpeed = 1; bool hold = false; };   // hold: stop at the clip's last pose (no looping)
 ActorPose actorAt(const CutActor& a, float t, float length);
 
 struct FadeNow { float amount = 0; bool white = false; };   // over the picture: how much (0..1), white or black

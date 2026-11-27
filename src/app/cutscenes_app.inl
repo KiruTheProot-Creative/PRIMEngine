@@ -140,7 +140,7 @@
             if (mi == meshModels.end() || mi->second.parts.empty()) { r.posed = false; continue; }
             const MeshModel& m = mi->second;
             int ci = r.pose.clip >= 0 ? m.findClip(r.pose.clipName) : -1;
-            float ct = 0; if (ci >= 0) { float len = std::max(0.01f, m.clips[ci].length); ct = std::fmod(std::max(0.f, r.pose.clipTime), len); }
+            float ct = 0; if (ci >= 0) { float len = std::max(0.01f, m.clips[ci].length); ct = r.pose.hold ? std::clamp(r.pose.clipTime, 0.f, len) : std::fmod(std::max(0.f, r.pose.clipTime), len); }
             const PartPose& p = r.blend.update(m.pose(ci, ct), ci, std::min(dt, 0.1), animBlends.of(model));
             UploadMeshVerts(r.gpu, m, m.posedFrom(p)); r.gpu.mesh = true; r.gpu.tex = GpuModel(model).tex; r.posed = true;
         }
@@ -558,7 +558,8 @@
                 timeField(k.t);
                 Prop("Length"); ch |= ImGui::DragFloat("##al", &k.length, 0.02f, 0.1f, 600, "%.2f s");
                 Prop("Speed"); ch |= ImGui::SliderFloat("##asp", &k.speed, 0.1f, 3, "%.2f x");
-                if (mi != meshModels.end()) { int ci = mi->second.findClip(k.clip); if (ci >= 0) { float L = mi->second.clips[ci].length / std::max(0.01f, k.speed); ImGui::TextDisabled("Once through: %.2f s (longer: it loops)", L); if (ImGui::Button("Play it once")) { k.length = L; ch = true; } } }
+                if (mi != meshModels.end()) { int ci = mi->second.findClip(k.clip); if (ci >= 0) { float L = mi->second.clips[ci].length / std::max(0.01f, k.speed); ImGui::TextDisabled(k.once ? "Once through: %.2f s (then it holds its last pose)" : "Once through: %.2f s (longer: it loops)", L); if (ImGui::Button("Fit the bar to it")) { k.length = L; ch = true; } } }
+                ch |= ImGui::Checkbox("Play once, then hold the last pose", &k.once); if (ImGui::IsItemHovered()) ImGui::SetTooltip("For one-off moves like landing or opening: it does not loop, and it keeps its last pose after the bar until another bar starts.");
                 if (delButton("animation")) { a.clips.erase(a.clips.begin() + cutSelIdx); CutSelect(8, cutSelRow, -1); }
                 ImGui::Separator();
             }

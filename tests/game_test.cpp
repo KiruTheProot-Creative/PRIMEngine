@@ -2120,6 +2120,10 @@ int main() {
         ship.clips = { { 5, 2, "gear down", 1 } };
         ActorPose sp = actorAt(ship, 3, c.length), sc = actorAt(ship, 5.5f, c.length);
         CHECK(sp.keyed && sp.shown && sp.pos.y < 100 && sp.pos.y > 20 && sp.clip < 0 && sc.clip == 0 && sc.clipName == "gear down" && std::fabs(sc.clipTime - 0.5f) < 1e-5, "an actor moves between its keys, and plays its clip during its bar");
+        CutActor gear = ship; gear.clips = { { 5, 2, "gear down", 1, true }, { 9, 1, "idle", 1 } };
+        ActorPose g1 = actorAt(gear, 6, 20), g2 = actorAt(gear, 8, 20), g3 = actorAt(gear, 9.5f, 20), g4 = actorAt(ship, 8, 20);
+        CHECK(g1.hold && g1.clip == 0 && g2.hold && g2.clip == 0 && std::fabs(g2.clipTime - 2) < 1e-5 && !g3.hold && g3.clip == 1 && g4.clip < 0,
+              "a 'once' clip holds its last pose after its bar, until the next bar starts (a normal one stops)");
         CutActor samus; samus.model = "Varia_Suit"; samus.showFrom = 7; samus.showTo = 9;
         CHECK(!actorAt(samus, 6.9f, 10).shown && actorAt(samus, 8, 10).shown && !actorAt(samus, 9.1f, 10).shown && !actorAt(samus, 8, 10).keyed, "shown only between its times; no keys: it stays put");
 
@@ -2139,12 +2143,12 @@ int main() {
         CHECK(sk.size() == 3 && sk[0].kind == Do::OpenDoor && sk[1].kind == Do::FlagOn && sk[2].kind == Do::PlayMusic, "skipped: the door still opens, the flag goes on, the music starts (no shake, no message)");
 
         c.texts = { tx }; c.sounds = { { 2, SoundUse{ "boom.wav", 0.8f } } };
-        CutActor sa = samus; sa.name = "Samus"; sa.keys = { { 7, { 1, 2, 3 }, 45, true, false } }; sa.clips = { { 7, 2, "walk", 1.25f } };
+        CutActor sa = samus; sa.name = "Samus"; sa.keys = { { 7, { 1, 2, 3 }, 45, true, false } }; sa.clips = { { 7, 2, "walk", 1.25f }, { 8.5f, 0.5f, "land", 1, true } };
         c.actors = { ship, sa }; c.onNewGame = true; c.handOff = true; c.lookAround = 15;
         std::vector<Cutscene> list = { c, Cutscene{} };
         saveCutscenes("/tmp/prim_cuts.txt", list); std::vector<Cutscene> back; loadCutscenes("/tmp/prim_cuts.txt", back);
         bool same = back.size() == 2 && back[0].name == "Arrival" && back[0].cam.size() == 3 && back[0].cam[1].ease && back[0].actors.size() == 2 && back[0].actors[0].object == "Gunship"
-                 && back[0].actors[1].model == "Varia_Suit" && back[0].actors[1].clips[0].speed == 1.25f && back[0].actors[1].keys[0].ease && back[0].texts[0].text == tx.text
+                 && back[0].actors[1].model == "Varia_Suit" && back[0].actors[1].clips[0].speed == 1.25f && !back[0].actors[1].clips[0].once && back[0].actors[1].clips[1].once && back[0].actors[1].keys[0].ease && back[0].texts[0].text == tx.text
                  && back[0].sounds[0].sound.file == "boom.wav" && back[0].fades.size() == 2 && back[0].events.size() == 5 && back[0].events[1].action.target == "Hatch"
                  && back[0].onNewGame && back[0].handOff && back[0].lookAround == 15 && back[1].name == "New cutscene";
         CHECK(same, "cutscenes save and load (camera, actors, texts, sounds, fades, actions, settings)");
