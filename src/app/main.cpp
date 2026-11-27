@@ -18755,6 +18755,31 @@ struct App {
             }
             return frames;
         };
+        {   // generated worlds (first: the run has a time limit), then the generator's window; back to the demo world after
+            std::string demoFolder = CurrentWorld();
+            auto shot = [&](int k, const char* name) {
+                for (int f = 0; f < k; f++) { FrameBody(1.0 / 60); if (f + 1 < k) { swap->Present(0, 0); retired.clear(); } waitLoaded(); }
+                char path[256]; snprintf(path, sizeof path, "%s/%02d_%s.png", shotDir.c_str(), ++n, name);
+                SaveShot(std::string(path)); swap->Present(0, 0); retired.clear(); Log(std::string(path));
+            };
+            struct GenShot { const char* type; uint32_t seed; V3 from; double yaw, pitch; const char* name; };
+            const GenShot gs[] = { { "Overgrown", 11, { -70, 40, -70 }, 45, -18, "worldgen_overgrown" }, { "Frozen", 4, { -60, 45, -80 }, 35, -20, "worldgen_frozen" },
+                                   { "Volcanic", 8, { -60, 38, -60 }, 45, -20, "worldgen_volcanic" }, { "Desert ruins", 3, { -80, 30, -40 }, 65, -12, "worldgen_desert_ruins" },
+                                   { "Corrupted", 6, { -70, 45, -60 }, 50, -16, "worldgen_corrupted" }, { "Floating islands", 2, { -90, 40, -60 }, 55, -8, "worldgen_floating_islands" } };
+            for (const GenShot& g : gs) {
+                TerrainSettings t = terrainPreset(g.type); t.seed = g.seed;
+                CreateGeneratedWorld(std::string("Gen ") + g.type, t); Capture(false);
+                settings.timeOfDay = 14.0f; weather.set(findWeather("partly_cloudy"), true); weather.autoChange = false;
+                V3 sp = info.spawn; player.feet = sp + g.from; player.yaw = g.yaw * 3.14159265358979 / 180; player.pitch = g.pitch * 3.14159265358979 / 180; player.flying = true; player.vel = { 0, 0, 0 };
+                envState.update(0, player.eye(), info.environment, info.zones, true);
+                waitLoaded(); shot(45, g.name);
+                Log(std::string("generated ") + g.type + ": start " + std::to_string(sp.x) + " " + std::to_string(sp.y) + " " + std::to_string(sp.z) + ", " + std::to_string(world->loadedCount()) + " chunks");
+            }
+            plainView = false; OpenGenerator(false);
+            for (int f = 0; f < 600 && (genBusy || genHaveSig != GenSig()); f++) { FrameBody(1.0 / 60); swap->Present(0, 0); retired.clear(); Sleep(5); }
+            shot(3, "worldgen_window"); genEdOpen = false; plainView = true;
+            OpenWorld(demoFolder); Capture(false); waitLoaded();
+        }
         std::vector<DemoShot> shots = demoShots();
         for (const char* nm : { "ambient_occlusion_off", "ambient_occlusion_on" }) { DemoShot d = shots[2]; d.name = nm; shots.push_back(d); }   // the same view without and with it
         for (const char* nm : { "textures_plain", "textures_bumps_coat_materials" }) { DemoShot d = shots[1]; d.name = nm; shots.push_back(d); }   // and plain textures vs. generated normals + coat + materials
