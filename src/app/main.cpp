@@ -2024,9 +2024,9 @@ struct App {
         }
         float t = tot ? open / (float)tot : 1; camOpen += (t - camOpen) * (float)(1 - std::exp(-dt * 2.5));
     }
-    // ---- the blocks around you on the graphics card, for reflection rays (voxel ray tracing): 192 x 96 x 192 blocks, a
+    // ---- the blocks around you on the graphics card, for reflection rays (voxel ray tracing): 256 x 96 x 256 blocks, a
     // wrapping 3D texture of palette numbers (only chunks that changed or came into range are sent, nearest first)
-    static constexpr int VCX = 12, VCY = 6, VCZ = 12;
+    static constexpr int VCX = 16, VCY = 6, VCZ = 16;   // (shaders/block.hlsl VOXN: the same)
     struct VoxGpuType { uint32_t faces[4]; uint32_t info[4]; };
     ComPtr<ID3D11Texture3D> voxTex; ComPtr<ID3D11ShaderResourceView> voxSRV; ComPtr<ID3D11Buffer> voxPalBuf; ComPtr<ID3D11ShaderResourceView> voxPalSRV; size_t voxPalCap = 0; bool voxPalDirty = true;
     std::unordered_map<BlockId, uint16_t> voxIdx; std::vector<VoxGpuType> voxPal;
@@ -4983,7 +4983,7 @@ struct App {
         CpuMark("setup: block and object copies for rays");
         fc.ao[0] = settings.ambientOcclusion > 0 ? 1.f : 0.f; fc.ao[1] = settings.ambientOcclusion >= 2 ? 3.0f : 2.0f;
         fc.ao[2] = std::clamp(settings.aoStrength, 0.f, 3.f); fc.ao[3] = settings.ambientOcclusion >= 2 ? 20.f : 12.f;
-        fc.refl[0] = settings.reflections > 0 ? 1.f : 0.f; fc.refl[1] = settings.reflections >= 2 ? 48.f : 28.f; fc.refl[2] = settings.reflections >= 2 ? 120.f : 64.f;
+        fc.refl[0] = settings.reflections > 0 ? 1.f : 0.f; fc.refl[1] = settings.reflections >= 2 ? 48.f : 28.f; fc.refl[2] = settings.reflections >= 2 ? 160.f : 72.f;
         fc.extra[0] = nightAmount * (1 - W.cover * 0.8f); fc.extra[1] = std::min(0.9f, 0.15f * std::max(0.f, settings.bloom) * std::max(0.f, lookState.now.bloom) * BloomNorm()); fc.extra[2] = settings.swaying ? 0.5f + W.wind : 0.f; fc.extra[3] = 1;
         // "what is above" map: only needed while it rains/snows or surfaces are wet/snowy
         bool skyMap = W.rain > 0.01f || W.snow > 0.01f || weather.wetness > 0.01f || weather.snowCover > 0.01f;
@@ -5037,7 +5037,7 @@ struct App {
             {   // reflection rays' blocks
                 auto md = [](int a, int m) { return ((a % m) + m) % m; };
                 fc.voxO[0] = (float)(voxC0.x * (double)CS - camPos.x); fc.voxO[1] = (float)(voxC0.y * (double)CS - camPos.y); fc.voxO[2] = (float)(voxC0.z * (double)CS - camPos.z);
-                fc.voxO[3] = settings.reflections >= 2 ? 220.f : 110.f;
+                fc.voxO[3] = settings.reflections >= 2 ? 300.f : 130.f;
                 fc.voxM[0] = (float)md(voxC0.x * CS, VCX * CS); fc.voxM[1] = (float)md(voxC0.y * CS, VCY * CS); fc.voxM[2] = (float)md(voxC0.z * CS, VCZ * CS);
                 fc.voxM[3] = voxReady ? (float)(1 + (settings.rtReflect ? 2 : 0) + (settings.rtShadows ? 4 : 0)) : 0.f;   // what may step through it: 1 the copy is there, 2 reflections, 4 lamp shadows
             CpuMark("setup: object copies for rays");
@@ -5076,7 +5076,7 @@ struct App {
                 if (cave && caveOn && !CaveIn(kv.first)) { if (counting) caveHidden++; continue; }
                 if (cave && cookCullOn && !CookChunkSeen(kv.first)) { if (counting) cookHidden++; continue; }
                 if (cave && hizHiddenChunks.count(kv.first)) continue;   // (hidden behind other things)
-                if (cave && lodK && lodCovered.count({ floorDiv(kv.first.x, 2), floorDiv(kv.first.y, 2), floorDiv(kv.first.z, 2) })) continue;   // (a far copy stands in for it)   // (the cooked world: a room you can't see through any door)
+                if ((cave || mirrorFar) && lodK && lodCovered.count({ floorDiv(kv.first.x, 2), floorDiv(kv.first.y, 2), floorDiv(kv.first.z, 2) })) continue;   // (a far copy stands in for it)   // (the cooked world: a room you can't see through any door)
                 // chunk origin relative to the camera, computed in double: no jitter however far you go
                 float ox = (float)(kv.first.x * (double)CS - camPos.x), oy = (float)(kv.first.y * (double)CS - camPos.y), oz = (float)(kv.first.z * (double)CS - camPos.z);
                 if (drawMaxDist > 0 && (ox + 8) * (ox + 8) + (oy + 8) * (oy + 8) + (oz + 8) * (oz + 8) > drawMaxDist * drawMaxDist) continue;
@@ -5086,7 +5086,7 @@ struct App {
                 ctx->IASetIndexBuffer(pass == 0 ? g.ibO.Get() : pass == 1 ? g.ibC.Get() : g.ibW.Get(), DXGI_FORMAT_R32_UINT, 0);
                 ctx->DrawIndexedInstanced(n, 1, 0, 0, g.inst); if (counting) drawnChunks += pass == 0;
             }
-            if (cave && pass == 0 && lodK && shadowPart != 2 && !spaceMode)   // the far copies
+            if ((cave || mirrorFar) && pass == 0 && lodK && shadowPart != 2 && !spaceMode)   // the far copies (the camera's view; a lake's mirror view if set)
                 for (const LodDraw& d : lodDraw) {
                     auto it = lodGroups[d.k].find(d.g); if (it == lodGroups[d.k].end() || !it->second.n) continue;
                     double sz = (double)(CS << d.k);
@@ -5243,10 +5243,11 @@ struct App {
             ctx->RSSetState(rsCullFront.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0);
             ID3D11ShaderResourceView* ms[5] = { texArray.Get(), shadows ? shadowSRV.Get() : nullptr, nullptr, noiseSRV.Get(), skyMap ? skyMapSRV.Get() : nullptr }; ctx->PSSetShaderResources(0, 5, ms); BindMaterials();
             ID3D11SamplerState* mss[3] = { sampBlocks.Get(), sampShadow.Get(), sampLinear.Get() }; ctx->PSSetSamplers(0, 3, mss);
-            drawMaxDist = 80;   // (the mirror: what is near it - far away, a reflection on a floor is a few pixels)
+            drawMaxDist = settings.reflectReach <= 0 ? 80.f : 0.f;   // (the mirror: near only - or as far as the world is drawn, with the far land too)
+            mirrorFar = settings.reflectReach >= 2;
             ctx->PSSetShader(psOpaque.Get(), nullptr, 0); drawChunks(mvp, 0, false);
             ctx->PSSetShader(psCutout.Get(), nullptr, 0); drawChunks(mvp, 1, false);
-            drawMaxDist = 0;
+            drawMaxDist = 0; mirrorFar = false;
             ctx->PSSetShaderResources(0, 5, none);
             ctx->UpdateSubresource(cbFrame.Get(), 0, nullptr, &fc, 0, 0);
             SetClusterMode(true, 0, std::min(frameLightCount, 32));
@@ -18815,6 +18816,20 @@ struct App {
                 V3 sp = info.spawn; player.feet = sp + g.from; player.yaw = g.yaw * 3.14159265358979 / 180; player.pitch = g.pitch * 3.14159265358979 / 180; player.flying = true; player.vel = { 0, 0, 0 };
                 envState.update(0, player.eye(), info.environment, info.zones, true);
                 waitLoaded(); shot(45, g.name);
+                if (std::string(g.type) == "Overgrown" && info.terrain.liquid == "water") {   // a lake mirroring the land beyond it: near only, then everything
+                    const TerrainGen tg(info.terrain, reg); int lx = 0, lz = 0; bool found = false;
+                    for (int r = 20; r < 200 && !found; r += 6) for (int a = 0; a < 24 && !found; a++) {
+                        int x = (int)(std::cos(a * 0.2618) * r), z = (int)(std::sin(a * 0.2618) * r);
+                        if (tg.groundHeight(x, z) < info.terrain.liquidLevel - 2 && tg.groundHeight(x + 8, z) < info.terrain.liquidLevel && tg.groundHeight(x - 8, z) < info.terrain.liquidLevel) { lx = x; lz = z; found = true; }
+                    }
+                    if (found) {
+                        player.feet = { lx + 0.5, info.terrain.liquidLevel + 2.5, lz + 0.5 }; player.yaw = std::atan2(-(double)lx, -(double)lz); player.pitch = -0.08;
+                        int keep = settings.reflectReach;
+                        settings.reflectReach = 0; waitLoaded(); shot(30, "worldgen_lake_reflects_near");
+                        settings.reflectReach = 2; shot(30, "worldgen_lake_reflects_far_land");
+                        settings.reflectReach = keep;
+                    } else Log("no lake found for the reflection shots");
+                }
                 Log(std::string("generated ") + g.type + ": start " + std::to_string(sp.x) + " " + std::to_string(sp.y) + " " + std::to_string(sp.z) + ", " + std::to_string(world->loadedCount()) + " chunks");
             }
             plainView = false; OpenGenerator(false);
@@ -19660,7 +19675,7 @@ struct App {
 
     // ================================================================== frame
     float dynScale = 1.f; double dynT = 0;
-    float drawMaxDist = 0; int lshFacesDrawn = 0, lshFacesShown = 0;   // (drawing chunks: only this near, 0 all)
+    float drawMaxDist = 0; bool mirrorFar = false; int lshFacesDrawn = 0, lshFacesShown = 0;   // (drawing chunks: only this near, 0 all)
     ComPtr<ID3D11Texture2D> cascStatic; ComPtr<ID3D11DepthStencilView> cascStaticDSV[4]; bool cascStaticOk[4] = { false, false, false, false };   // the far maps' blocks and still things, kept (slice c-1 for map c)
     XMFLOAT4X4 cascVPs[4]; V3 cascCam[4]; V3 cascSun[4]; float cascR0[4] = { 0, 0, 0, 0 }; bool cascValid[4] = { false, false, false, false }; int cascSize = 0, cascDrawn = 0, cascDrawnShown = 0;   // the sun's maps: when each was drawn
     ComPtr<ID3D11Texture2D> primePrevZ; ComPtr<ID3D11ShaderResourceView> primePrevZSRV; bool primePrevZOk = false;   // PrimeScaler: the frame before's depth   // auto resolution: a share of the render scale, and the time since it last changed

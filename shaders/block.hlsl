@@ -42,7 +42,7 @@ cbuffer Frame : register(b0)
     float4 gLookFogCol;             // rgb its colour (linear), w how much it glows by itself
     float4 gGI;                     // bounce light: x strength (0: off), y how far it reaches (blocks)
     float4 gSkyVolO;                // the sky light around you (96 x 64 x 96 blocks): xyz its corner relative to the camera, w 1 = ready
-    float4 gVoxO;                   // the blocks around you for reflection rays (192 x 96 x 192): xyz its corner relative to the camera, w most steps
+    float4 gVoxO;                   // the blocks around you for reflection rays (256 x 96 x 256): xyz its corner relative to the camera, w most steps
     float4 gVoxM;                   // xyz where that corner sits in the (wrapping) 3D texture, w 1 = ready
     float4 gSplash[8];              // splashes on water: xyz where (relative to the camera), w how long ago (s; < 0: none)
     float4 gPlanar;                 // x 1: the mirror view is a shiny floor / water (every shiny pixel on that plane uses it), 0: only mirror blocks; y objects for reflection rays
@@ -1422,7 +1422,7 @@ Texture3D<uint> gVox : register(t30);              // palette number per block (
 struct VoxType { uint4 faces; uint4 info; };      // faces: texture layer per face, two per number (16 bits each); info: x 1 solid / 2 cut-out, y lamp level, z lamp colour
 StructuredBuffer<VoxType> gVoxPal : register(t31);
 Texture2DArray gVoxTex : register(t29);            // the block textures (the same array as t0 in the world pass)
-static const int3 VOXN = int3(192, 96, 192);
+static const int3 VOXN = int3(256, 96, 256);   // (main.cpp VCX, VCY, VCZ x 16: the same)
 uint voxAt(int3 q) { uint3 s = uint3(q + int3(gVoxM.xyz)) % uint3(VOXN); return gVox.Load(int4(int3(s), 0)); }
 // objects (props, doors, platforms, pickups ...): a small voxel copy of each model (32 x 32 x 32, its colours), placed where it is
 Texture3D gObjBricks : register(t32);              // 8 x 8 copies side by side (256 x 256 x 32)

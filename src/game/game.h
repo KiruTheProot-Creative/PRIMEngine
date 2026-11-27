@@ -81,6 +81,7 @@ struct Settings {
     bool fogGrid = true;
     float lavaLight = 1;        // how strongly lava lights what is around it (and the air over it)        // smooth fog: a 3D grid built up over frames (off: every pixel marches through the air each frame)
     bool planarFloors = true;
+    int reflectReach = 2;      // floor / water reflections: 0 near (80 blocks), 1 the render distance, 2 that and the far land (its far copies)
     bool lensFlares = true;    // the sun makes a lens flare (as much as the area's look says)  // the shiny floor or water near you is reflected exactly (the world drawn once more)
     int bounce = 1;            // bounce light (screen-space GI): 0 off, 1 normal, 2 far-reaching      // lights glow in the air (beams, halos)
     int lightShadows = 4;      // how many lights (the nearest that cast shadows) get real shadows (shadow maps): 0 .. 128
