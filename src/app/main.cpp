@@ -18809,6 +18809,27 @@ struct App {
             const GenShot gs[] = { { "Overgrown", 11, { -70, 40, -70 }, 45, -18, "worldgen_overgrown" }, { "Frozen", 4, { -60, 45, -80 }, 35, -20, "worldgen_frozen" },
                                    { "Volcanic", 8, { -60, 38, -60 }, 45, -20, "worldgen_volcanic" }, { "Desert ruins", 3, { -80, 30, -40 }, 65, -12, "worldgen_desert_ruins" },
                                    { "Corrupted", 6, { -70, 45, -60 }, 50, -16, "worldgen_corrupted" }, { "Floating islands", 2, { -90, 40, -60 }, 55, -8, "worldgen_floating_islands" } };
+            {   // a big lake with mountains far across it: mirrored near only, then everything (the far land too)
+                TerrainSettings t = terrainPreset("Overgrown"); t.seed = 21; t.base = -14; t.hills = 4; t.mountains = 60; t.mountainSize = 180; t.mountainShare = 0.3f; t.liquidLevel = 0; t.caves = 0;
+                CreateGeneratedWorld("Gen lake", t); Capture(false); settings.timeOfDay = 15.0f; weather.set(findWeather("clear"), true); weather.autoChange = false;
+                const TerrainGen tg(t, reg); V3 best{ 0, 0, 0 }; double bestYaw = 0; bool found = false;
+                for (int gz = -160; gz <= 160 && !found; gz += 16) for (int gx = -160; gx <= 160 && !found; gx += 16) {
+                    if (tg.groundHeight(gx, gz) > -4) continue;
+                    for (int k = 0; k < 16 && !found; k++) {
+                        double yw = k * 3.14159265358979 / 8, d = 4; bool open = true;
+                        for (; d < 300; d += 3) { double h = tg.groundHeight((int)(gx + std::sin(yw) * d), (int)(gz + std::cos(yw) * d)); if (h > 2) break; }
+                        for (double e = 4; e < 60 && open; e += 3) open = tg.groundHeight((int)(gx + std::sin(yw) * e), (int)(gz + std::cos(yw) * e)) < -1;
+                        if (open && d >= 130 && d < 300) { best = { gx + 0.5, 3.0, gz + 0.5 }; bestYaw = yw; found = true; }
+                    }
+                }
+                if (found) {
+                    player.feet = best; player.yaw = bestYaw; player.pitch = -0.1; player.flying = true; player.vel = { 0, 0, 0 };
+                    envState.update(0, player.eye(), info.environment, info.zones, true);
+                    int keep = settings.reflectReach; settings.reflectReach = 0; waitLoaded(); shot(80, "reflections_lake_near_only");
+                    settings.reflectReach = 2; shot(30, "reflections_lake_far_land_too"); settings.reflectReach = keep;
+                    Log("lake shots at " + std::to_string(best.x) + " " + std::to_string(best.z));
+                } else Log("no open lake found for the reflection shots");
+            }
             for (const GenShot& g : gs) {
                 TerrainSettings t = terrainPreset(g.type); t.seed = g.seed;
                 CreateGeneratedWorld(std::string("Gen ") + g.type, t); Capture(false);
@@ -18816,20 +18837,6 @@ struct App {
                 V3 sp = info.spawn; player.feet = sp + g.from; player.yaw = g.yaw * 3.14159265358979 / 180; player.pitch = g.pitch * 3.14159265358979 / 180; player.flying = true; player.vel = { 0, 0, 0 };
                 envState.update(0, player.eye(), info.environment, info.zones, true);
                 waitLoaded(); shot(45, g.name);
-                if (std::string(g.type) == "Overgrown" && info.terrain.liquid == "water") {   // a lake mirroring the land beyond it: near only, then everything
-                    const TerrainGen tg(info.terrain, reg); int lx = 0, lz = 0; bool found = false;
-                    for (int r = 20; r < 200 && !found; r += 6) for (int a = 0; a < 24 && !found; a++) {
-                        int x = (int)(std::cos(a * 0.2618) * r), z = (int)(std::sin(a * 0.2618) * r);
-                        if (tg.groundHeight(x, z) < info.terrain.liquidLevel - 2 && tg.groundHeight(x + 8, z) < info.terrain.liquidLevel && tg.groundHeight(x - 8, z) < info.terrain.liquidLevel) { lx = x; lz = z; found = true; }
-                    }
-                    if (found) {
-                        player.feet = { lx + 0.5, info.terrain.liquidLevel + 2.5, lz + 0.5 }; player.yaw = std::atan2(-(double)lx, -(double)lz); player.pitch = -0.08;
-                        int keep = settings.reflectReach;
-                        settings.reflectReach = 0; waitLoaded(); shot(30, "worldgen_lake_reflects_near");
-                        settings.reflectReach = 2; shot(30, "worldgen_lake_reflects_far_land");
-                        settings.reflectReach = keep;
-                    } else Log("no lake found for the reflection shots");
-                }
                 Log(std::string("generated ") + g.type + ": start " + std::to_string(sp.x) + " " + std::to_string(sp.y) + " " + std::to_string(sp.z) + ", " + std::to_string(world->loadedCount()) + " chunks");
             }
             plainView = false; OpenGenerator(false);
