@@ -8531,14 +8531,18 @@ struct App {
         scanProgress += (float)dt / std::max(0.05f, time);
         if (scanProgress >= 1) {   // done: into the scan index (every object with this entry counts as scanned), and its text on a pane
             ScanEntry e; e.id = def->id; e.name = def->name; e.category = def->category.empty() ? "Research" : def->category; e.text = def->text; e.model = o->model; e.important = def->important;
-            bool isNew = scanLog.add(e); scanShown = e; scanProgress = 0; StopScanLoop();
+            bool isNew = scanLog.add(e); scanShown = e; scanProgress = 0; StopScanLoop(); scanSignal = o->name.empty() ? std::string(" ") : o->name; scanSignalEntry = def->name;   // (event cards: when its text is closed)
             GameSnd(isNew && !playerSounds.scanNew.sounds.empty() ? &PlayerSounds::scanNew : &PlayerSounds::scanDone);
             Log("scanned: " + e.name + " (ID " + std::to_string(e.id) + (isNew ? ", new)" : ")"));
             OpenScan();
         }
     }
     void OpenScan() { scanOpen = true; paused = true; Capture(false); menuSlideT = 0; menuSlideDir = 0; menuScrollWho[0] = -1; GameSnd(&PlayerSounds::scanOpen); }   // (its text starts at the top)
-    void CloseScan() { if (!scanOpen) return; scanOpen = false; paused = false; Capture(true); GameSnd(&PlayerSounds::scanClose); }
+    std::string scanSignal, scanSignalEntry;   // (an object was just scanned: "when the player scans" cards run once its text is closed; by the object's name or its scan entry's)
+    void CloseScan() {
+        if (!scanOpen) return; scanOpen = false; paused = false; Capture(true); GameSnd(&PlayerSounds::scanClose);
+        if (!scanSignal.empty()) { std::string n = scanSignal == " " ? std::string() : scanSignal; scanSignal.clear(); Signal(When::Scanned, n, scanSignalEntry); }
+    }
     void ScanTextScroll(int pane) {   // the wheel, W / S or the arrow keys scroll the texts on a pane
         ImGuiIO& io = ImGui::GetIO(); float d = -io.MouseWheel * 70;
         if (ImGui::IsKeyDown(ImGuiKey_DownArrow) || ImGui::IsKeyDown(ImGuiKey_S)) d += io.DeltaTime * 520;
@@ -17238,7 +17242,7 @@ struct App {
     }
     std::vector<std::string> NamesOf(const std::string& kind) const {
         std::vector<std::string> v;
-        for (const WorldObject& o : objects) if (!o.name.empty() && KindFits(o, kind) && std::find(v.begin(), v.end(), o.name) == v.end()) v.push_back(o.name);
+        for (const WorldObject& o : objects) if (!o.name.empty() && (kind == "scannable" ? ScanDefOf(o) != nullptr : KindFits(o, kind)) && std::find(v.begin(), v.end(), o.name) == v.end()) v.push_back(o.name);
         std::sort(v.begin(), v.end()); return v;
     }
     std::string FirstName(const std::string& kind) const { auto v = NamesOf(kind); return v.empty() ? "" : v[0]; }

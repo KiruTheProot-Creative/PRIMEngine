@@ -794,6 +794,13 @@ int main() {
         CHECK(h.log.size() == 2, "and lets it run with the key");
         cards[0].once = true; h.log.clear(); run.signal(cards, { When::EnterZone, "Hall" }, h);
         CHECK(h.log.empty(), "'only once' cards do not run again");
+        {   // when the player scans something (by the object's name, or its scan entry's)
+            std::vector<EventCard> sc(2); sc[0].when = { When::Scanned, "Old console" }; sc[0].dos = { { Do::OpenDoor, "Vault" } };
+            sc[1].when = { When::Scanned, "Chozo Lore 3" }; sc[1].dos = { { Do::Message, "", "Read it" } };
+            Host hs; EventRunner rs; rs.start(sc, hs); rs.signal(sc, { When::Scanned, "Old console", "Console entry" }, hs); rs.signal(sc, { When::Scanned, "Totem", "Chozo Lore 3" }, hs);
+            CHECK(hs.log.size() == 2 && hs.log[0] == "1:Vault" && hs.log[1] == "0:Read it" && describe(sc[0]).find("scans Old console") != std::string::npos && std::string(needOf(When::Scanned).objectKind) == "scannable",
+                  "'when the player scans' runs for that object (or that scan entry)");
+        }
         {   // coming back to the world: what ran is remembered
             std::map<int, int> was = run.firedCounts(); EventRunner back; Host hb; hb.keys.insert("Red"); back.start(cards, hb, was, {});
             back.signal(cards, { When::EnterZone, "Hall" }, hb);

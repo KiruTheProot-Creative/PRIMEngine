@@ -26,6 +26,7 @@ const Need& needOf(When w) {
         { "a boss fight starts:", true, false, false, false, "enemy" },
         { "a boss reaches phase", true, false, false, true, "enemy", "phase" },
         { "the countdown runs out" },
+        { "the player scans", true, false, false, false, "scannable" },
     };
     return n[std::clamp((int)w, 0, (int)When::COUNT - 1)];
 }
@@ -91,6 +92,7 @@ std::string describe(const EventCard& c) {
     case When::FightStarts: s = "When the fight with " + orAny(w.target, "any boss") + " starts"; break;
     case When::BossPhase: s = "When " + orAny(w.target, "any boss") + (w.number > 0 ? " reaches phase " + num(w.number) : " reaches a new phase"); break;
     case When::CountdownOver: s = "When the countdown runs out"; break;
+    case When::Scanned: s = "When the player scans " + orAny(w.target, "anything"); break;
     default: break;
     }
     for (size_t k = 0; k < c.ifs.size(); k++) {
