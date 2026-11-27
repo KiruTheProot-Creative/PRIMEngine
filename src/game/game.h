@@ -207,6 +207,7 @@ struct WorldInfo {
     std::string name = "New World";
     int genKind = Generator::Flat;
     std::vector<std::pair<std::string, int>> layers = { { "stone", 3 }, { "dirt", 2 }, { "grass", 1 } };
+    TerrainSettings terrain;                        // the generator's settings (genKind Terrain)
     Player player;
     std::string hotbar[9]; int hotSel = 0;
     std::string weather = "partly_cloudy"; bool autoWeather = false;

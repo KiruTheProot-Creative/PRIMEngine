@@ -331,6 +331,7 @@ bool WorldInfo::save(const std::string& dir) const {
     f.precision(17);
     f << "name " << name << "\ngenerator " << genKind << "\nlayers " << layers.size();
     for (auto& l : layers) f << " " << l.first << " " << l.second;
+    if (genKind == Generator::Terrain) f << "\n" << terrainText(terrain);
     f << "\nplayer " << player.feet.x << " " << player.feet.y << " " << player.feet.z << " " << player.yaw << " " << player.pitch << " " << (player.flying ? 1 : 0) << "\nhotbar " << hotSel;
     for (auto& h : hotbar) { std::string e = h; for (size_t p; (p = e.find(' ')) != std::string::npos;) e.replace(p, 1, "%20"); f << " " << (e.empty() ? "-" : e); }   // names may have spaces
     f << "\nweather " << weather << " " << (autoWeather ? 1 : 0) << "\nenvironment " << environment << "\ntrue_dark " << (trueDark ? 1 : 0) << "\nnight_dark " << nightDark << "\n";
@@ -347,6 +348,7 @@ bool WorldInfo::load(const std::string& dir) {
     while (f >> k) {
         if (k == "name") { f >> std::ws; std::getline(f, name); }
         else if (k == "generator") f >> genKind;
+        else if (k == "tg") { std::string sub, rest; f >> sub; std::getline(f, rest); std::istringstream in(rest); terrainLine(terrain, sub, in); }
         else if (k == "layers") { size_t n = 0; f >> n; layers.clear(); for (size_t i = 0; i < n && i < 64; i++) { std::string b; int t; f >> b >> t; layers.push_back({ b, t }); } }
         else if (k == "player") { int fl = 1; f >> player.feet.x >> player.feet.y >> player.feet.z >> player.yaw >> player.pitch >> fl; player.flying = fl != 0; }
         else if (k == "hotbar") { f >> hotSel; for (auto& h : hotbar) { f >> h; if (h == "-") h.clear(); for (size_t p; (p = h.find("%20")) != std::string::npos;) h.replace(p, 3, " "); } hotSel = std::max(0, std::min(8, hotSel)); }
@@ -365,7 +367,8 @@ bool WorldInfo::load(const std::string& dir) {
     return true;
 }
 void WorldInfo::applyGenerator(Generator& g, const BlockRegistry& r) const {
-    g.kind = genKind; g.layers.clear();
+    g.kind = genKind; g.layers.clear(); g.terrain.reset();
+    if (genKind == Generator::Terrain) g.terrain = std::make_shared<TerrainGen>(terrain, r);
     for (auto& l : layers) { BlockId id = r.find(l.first); if (l.second > 0) g.layers.push_back({ id, l.second }); }
 }
 

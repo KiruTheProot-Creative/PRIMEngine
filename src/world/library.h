@@ -28,6 +28,8 @@ public:
     struct ImportResult { std::vector<std::string> textures; std::vector<BlockId> blocks; std::vector<std::string> failed; };
     ImportResult import(const std::vector<std::string>& files, ImportAs as, BlockRegistry& r);
     bool deleteTexture(const std::string& name, BlockRegistry& r);
+    // the terrain kit's blocks the game does not have yet (by name): added, their textures written, blocks.txt saved; returns the ones added
+    std::vector<std::string> addKitBlocks(BlockRegistry& r, const std::vector<std::string>& names);
 
     static std::string textureNameFor(const std::string& file);    // "My Rock.png" -> "My_Rock"
     static BlockDef blockFromTexture(const BlockRegistry& r, const std::string& tex, ImportAs as);

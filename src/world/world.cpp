@@ -6,6 +6,7 @@ namespace mc {
 
 void Generator::fill(Chunk& c) const {
     c.b.fill(AIR); c.nonAir = 0; c.modified = false;
+    if (kind == Terrain && terrain) { terrain->fill(c); c.recount(); return; }
     if (kind != Flat || layers.empty()) return;
     int total = 0; for (auto& l : layers) total += l.second;
     int y0 = c.pos.y * CS, bottom = -total;

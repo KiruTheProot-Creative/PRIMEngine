@@ -81,6 +81,21 @@ bool Library::saveBlocks(const BlockRegistry& r) const {
     return !ec;
 }
 
+std::vector<std::string> Library::addKitBlocks(BlockRegistry& r, const std::vector<std::string>& names) {
+    std::vector<std::string> added, texs;
+    const auto& kit = terrainKitNames();
+    for (const std::string& n : names) {
+        if (r.find(n) != AIR || std::find(kit.begin(), kit.end(), n) == kit.end()) continue;
+        if (addTerrainKitBlock(r, n, &texs) != AIR) added.push_back(n);
+    }
+    if (added.empty()) return added;
+    std::error_code ec; fs::create_directories(P(texturesDir()), ec);
+    for (const std::string& t : texs) { int i = r.textureIndex(t); if (i > 0) { const TexImage& im = r.image(i); writePng(texturesDir() + "/" + t + ".png", im.w, im.h, im.rgba); } }
+    stamps = scan();   // (our own new files: not "changed" for the reload)
+    r.resolve(); saveBlocks(r);
+    return added;
+}
+
 bool Library::load(BlockRegistry& r, std::string* report) {
     std::error_code ec; fs::create_directories(P(texturesDir()), ec);
     if (!fs::exists(P(blocksFile()))) {   // first run: write the starter blocks as real files

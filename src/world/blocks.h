@@ -205,6 +205,10 @@ inline BlockId makeLiquid(BlockId type, int level) { return makeBlock(type, leve
 
 // The built-in starter blocks with procedural textures (written out as PNGs the first time the engine runs).
 void registerBuiltinBlocks(BlockRegistry& r);
-void addBuiltinLiquids(BlockRegistry& r);   // water, lava and their springs (added to older block files too)
+void addBuiltinLiquids(BlockRegistry& r);
+// the terrain kit: blocks the world generator's types use (snow, ice, basalt, sandstone, dark rock, phazon crystal ...),
+// with their own pixel-art textures. Adds the block (and its textures) if the game does not have one of that name yet.
+const std::vector<std::string>& terrainKitNames();
+BlockId addTerrainKitBlock(BlockRegistry& r, const std::string& name, std::vector<std::string>* newTextures = nullptr);   // water, lava and their springs (added to older block files too)
 
 } // namespace mc

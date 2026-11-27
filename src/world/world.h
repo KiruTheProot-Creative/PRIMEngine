@@ -3,6 +3,7 @@
 #pragma once
 #include "chunk.h"
 #include "storage.h"
+#include "terrain.h"
 #include <memory>
 #include <unordered_map>
 #include <unordered_set>
@@ -12,10 +13,12 @@
 namespace mc {
 
 struct Generator {
-    enum Kind { Flat = 0, Void = 1 };
+    enum Kind { Flat = 0, Void = 1, Terrain = 2 };
     int kind = Flat;
     std::vector<std::pair<BlockId, int>> layers;   // flat world: (block, thickness) from the bottom up, ending at y = -1
+    std::shared_ptr<const TerrainGen> terrain;     // Terrain: hills, cliffs, caves ... (terrain.h)
     void fill(Chunk& c) const;
+    bool uniform() const { return kind != Terrain || !terrain; }   // every chunk at one height is the same (flat, void)
 };
 
 // the flat surface of a mirror: points p with p[axis] == coord; sign = which way it faces (+1 / -1)

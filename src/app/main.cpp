@@ -6928,7 +6928,10 @@ struct App {
             Prop("The sun moves"); ImGui::Checkbox("##daycycle", &settings.dayCycle);
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("A whole day lasts 20 minutes.");
             Hint("Folder: %s", fs::path(worldDir).filename().string().c_str());
-            Hint("%s", info.genKind == Generator::Void ? "Empty world (void)" : "Flat world");
+            if (info.genKind == Generator::Terrain) Hint("Generated: %s, seed %u%s", info.terrain.type.c_str(), info.terrain.seed, info.terrain.size > 0 ? (", " + std::to_string(info.terrain.size) + " blocks from the middle").c_str() : "");
+            else Hint("%s", info.genKind == Generator::Void ? "Empty world (void)" : "Flat world");
+            if (ImGui::Button("World generator...")) OpenGenerator(false);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("See this world's generator settings - or give a flat world generated land (made again from scratch).");
             if (ImGui::Button("Save the world now")) { SaveWorld(); Toast("Saved"); }
             break; }
         case Sel::Weather: title("Weather"); WeatherBody(); break;
@@ -9964,6 +9967,7 @@ struct App {
             if (lodSum.count(c)) { lodQueuePos++; if ((++skips & 1023) == 0 && ms() >= sumMs) break; continue; }
             if (ms() >= sumMs) break;   // (the clock after every chunk with real work)
             lodQueuePos++;
+            if (world->untouched(c) && !world->gen.uniform()) { lodTmp->pos = c; world->gen.fill(*lodTmp); LodSetSummary(c, lodSummarize(reg, *lodTmp)); continue; }   // (a generated land: each chunk its own)
             if (world->untouched(c)) {   // never changed: the generator's own, the same for every chunk at this height - boiled down once
                 auto m = lodGenMemo.find(c.y);
                 if (m == lodGenMemo.end()) { lodTmp->pos = c; world->gen.fill(*lodTmp); m = lodGenMemo.emplace(c.y, lodSummarize(reg, *lodTmp)).first; }
@@ -9977,6 +9981,7 @@ struct App {
             if (lodSum.count(c)) { lodPending.pop_back(); continue; }
             if (ms() >= sumMs) break;   // (the clock after every chunk with real work: some are read from disk - 64 at once was up to 12 ms)
             lodPending.pop_back();
+            if (world->untouched(c) && !world->gen.uniform()) { lodTmp->pos = c; world->gen.fill(*lodTmp); LodSetSummary(c, lodSummarize(reg, *lodTmp)); continue; }
             if (world->untouched(c)) {
                 auto m = lodGenMemo.find(c.y);
                 if (m == lodGenMemo.end()) { lodTmp->pos = c; world->gen.fill(*lodTmp); m = lodGenMemo.emplace(c.y, lodSummarize(reg, *lodTmp)).first; }
@@ -18515,6 +18520,7 @@ struct App {
         }
     }
 #include "cutscenes_app.inl"
+#include "worldgen_app.inl"
     // ---- the viewport: the 3D picture inside a panel
     void Viewport() {
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
@@ -18589,6 +18595,7 @@ struct App {
             ImGui::SetNextItemWidth(300 * ui); ImGui::InputText("Name", &newName);
             ImGui::SetNextItemWidth(300 * ui); ImGui::Combo("World type", &newType, worldTypes, 4);
             ImGui::TextDisabled("The world has no size limit. It loads around you as you move.\nThe world you have open now is saved first.");
+            if (ImGui::Button("A generated world instead... (hills, cliffs, caves, lakes)")) { std::string n = newName; OpenGenerator(true); genNewName = n; ImGui::CloseCurrentPopup(); }
             if (buttons("Create", !newName.empty())) { std::string n = newName; int t = newType; pending = [this, n, t] { CreateWorld(n, t); }; }
             ImGui::EndPopup();
         }
@@ -19624,7 +19631,7 @@ struct App {
             if (brushMenu) BrushMenu();
             ModelViewer();
             PlayerEditor();
-            ScreensEditor(); CutscenesEditor(); PlanetsEditor(); AudioEditor(); CookWindow(); RoomsWindow(); BenchWindow(); DrawVrEyes();
+            ScreensEditor(); CutscenesEditor(); GeneratorWindow(); PlanetsEditor(); AudioEditor(); CookWindow(); RoomsWindow(); BenchWindow(); DrawVrEyes();
         } else {
             if (!mapOpen && !CurScreen()) { DrawHud(ImGui::GetForegroundDrawList()); if (!Frozen() && !CutHidesHud()) { DrawScanMarkers(ImGui::GetForegroundDrawList()); DrawLockMarkers(ImGui::GetForegroundDrawList()); DrawGrappleMarker(ImGui::GetForegroundDrawList()); } }
             if (showF3) DrawF3();

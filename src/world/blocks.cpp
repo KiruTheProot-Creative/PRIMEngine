@@ -282,7 +282,111 @@ Img lamp() {
     }
     return im;
 }
+// ---- the terrain kit (blocks the world types need): snow, ice, volcanic rock, desert stone, corrupted ground
+Img snowTop() { return noisy(0.90f, 0.93f, 0.98f, 0.04f, 40); }
+Img frozenRock() {
+    Img im = noisy(0.52f, 0.58f, 0.68f, 0.09f, 41);
+    for (int y = 0; y < N; y++) for (int x = 0; x < N; x++) if (rnd(x / 2, y, 42) > 0.85f) im.put(x, y, 0.38f, 0.43f, 0.52f);
+    return im;
+}
+Img snowSide() {
+    Img im = frozenRock();
+    for (int x = 0; x < N; x++) { int h = 3 + (int)(rnd(x, 0, 43) * 3); for (int y = 0; y < h; y++) { float k = 1 + (rnd(x, y, 44) - 0.5f) * 0.08f; im.put(x, y, 0.90f * k, 0.93f * k, 0.98f * k); } }
+    return im;
+}
+Img ice() {
+    Img im = noisy(0.62f, 0.80f, 0.94f, 0.04f, 45);
+    for (int i = 0; i < 3; i++) { int sx = (int)(rnd(i, 0, 46) * N); for (int k = 0; k < 7; k++) { int x = (sx + k) % N, y = (int)(rnd(i, 1, 46) * N + k) % N; im.put(x, y, 0.88f, 0.95f, 1.0f); } }
+    return im;
+}
+Img iceCrystal() {
+    Img im;
+    for (int y = 0; y < N; y++) for (int x = 0; x < N; x++) {
+        float facet = rnd((x + y) / 4, (x - y + 32) / 4, 47), k = 0.75f + facet * 0.35f;
+        bool edge = ((x + y) % 4 == 0) || ((x - y + 32) % 4 == 0);
+        if (edge) im.put(x, y, 0.92f, 0.98f, 1.0f); else im.put(x, y, 0.55f * k, 0.85f * k, 1.0f * k);
+    }
+    return im;
+}
+Img basalt() {
+    Img im = noisy(0.22f, 0.22f, 0.24f, 0.08f, 48);
+    for (int y = 0; y < N; y++) for (int x = 0; x < N; x++) if (x % 5 == 0 || (y % 7 == (x / 5) * 3 % 7)) im.put(x, y, 0.15f, 0.15f, 0.17f);
+    return im;
+}
+Img ash() { Img im = noisy(0.36f, 0.34f, 0.33f, 0.12f, 49); for (int y = 0; y < N; y++) for (int x = 0; x < N; x++) if (rnd(x, y, 50) > 0.94f) im.put(x, y, 0.55f, 0.52f, 0.5f); return im; }
+Img magmaRock() {
+    Img im = noisy(0.19f, 0.16f, 0.15f, 0.10f, 51);
+    for (int y = 0; y < N; y++) for (int x = 0; x < N; x++) {   // glowing cracks: where the nearest two of a few points are almost as near
+        float best = 99, second = 99;
+        for (int i = 0; i < 6; i++) { float px = rnd(i, 0, 52) * N, py = rnd(i, 1, 52) * N; float dx = std::min(std::fabs(x - px), N - std::fabs(x - px)), dy = std::min(std::fabs(y - py), N - std::fabs(y - py)), d = std::sqrt(dx * dx + dy * dy);
+                                      if (d < best) { second = best; best = d; } else if (d < second) second = d; }
+        if (second - best < 1.1f) { float f = rnd(x, y, 53); im.put(x, y, 1.0f, 0.42f + 0.25f * f, 0.08f); }
+    }
+    return im;
+}
+Img stripes(float r, float g, float b, int seed) {
+    Img im = noisy(r, g, b, 0.05f, seed);
+    for (int y = 0; y < N; y++) for (int x = 0; x < N; x++) { float k = (y % 4 == 0) ? 0.82f : (y % 4 == 2 ? 1.06f : 1.0f); k *= 1 + (rnd(x / 3, y, seed + 1) - 0.5f) * 0.08f; im.put(x, y, r * k, g * k, b * k); }
+    return im;
+}
+Img mossyStone() {
+    Img im = stone();
+    for (int y = 0; y < N; y++) for (int x = 0; x < N; x++) if (rnd(x / 2, y / 2, 54) > 0.55f) { float k = 0.8f + rnd(x, y, 55) * 0.35f; im.put(x, y, 0.28f * k, 0.46f * k, 0.20f * k); }
+    return im;
+}
+Img darkRock() {
+    Img im = noisy(0.16f, 0.16f, 0.21f, 0.12f, 56);
+    for (int y = 0; y < N; y++) for (int x = 0; x < N; x++) if (rnd(x, y, 57) > 0.96f) im.put(x, y, 0.22f, 0.42f, 0.85f);
+    return im;
+}
+Img corruptTop() {
+    Img im = noisy(0.20f, 0.15f, 0.32f, 0.12f, 58);
+    for (int y = 0; y < N; y++) for (int x = 0; x < N; x++) if (rnd(x, y, 59) > 0.93f) im.put(x, y, 0.25f, 0.75f, 1.0f);
+    return im;
+}
+Img corruptSide() {
+    Img im = darkRock();
+    for (int x = 0; x < N; x++) { int h = 2 + (int)(rnd(x, 0, 60) * 3); for (int y = 0; y < h; y++) { float k = 1 + (rnd(x, y, 61) - 0.5f) * 0.2f; im.put(x, y, 0.20f * k, 0.15f * k, 0.32f * k); } }
+    return im;
+}
+Img phazonCrystal() {
+    Img im;
+    for (int y = 0; y < N; y++) for (int x = 0; x < N; x++) {
+        float facet = rnd((x + y) / 3, (x - y + 30) / 5, 62), k = 0.6f + facet * 0.5f;
+        bool vein = ((x * 3 + y * 5) % 11 == 0);
+        if (vein) im.put(x, y, 0.70f, 0.95f, 1.0f); else im.put(x, y, 0.10f * k, 0.38f * k, 1.0f * k);
+    }
+    return im;
+}
 } // namespace
+
+const std::vector<std::string>& terrainKitNames() {
+    static const std::vector<std::string> n = { "snow", "ice", "frozen rock", "ice crystal", "basalt", "ash", "magma rock", "sandstone", "red sandstone", "red sand",
+                                                "mossy stone", "dark rock", "corrupted soil", "phazon crystal" };
+    return n;
+}
+BlockId addTerrainKitBlock(BlockRegistry& r, const std::string& name, std::vector<std::string>* newTextures) {
+    if (BlockId have = r.find(name)) return have;
+    auto tex = [&](const std::string& t, const Img& im) { if (r.textureIndex(t) < 0) { r.setTexture(t, N, N, im.px); if (newTextures) newTextures->push_back(t); } return t; };
+    BlockDef d; d.name = name; d.category = "Nature"; d.surface = "Rock";
+    auto all = [&](const std::string& t) { for (auto& f : d.faces) f = t; };
+    if (name == "snow") { all(tex("snow_side", snowSide())); d.faces[F_PY] = tex("snow", snowTop()); d.faces[F_NY] = tex("frozen_rock", frozenRock()); d.surface = "Sand"; }
+    else if (name == "ice") { all(tex("ice", ice())); d.shine = 0.75f; d.surface = "Glass"; }
+    else if (name == "frozen rock") all(tex("frozen_rock", frozenRock()));
+    else if (name == "ice crystal") { all(tex("ice_crystal", iceCrystal())); d.shine = 0.8f; d.surface = "Glass"; for (auto& g : d.glow) { g.mode = 2; g.from = 0.85f; g.strength = 0.6f; } }
+    else if (name == "basalt") all(tex("basalt", basalt()));
+    else if (name == "ash") { all(tex("ash", ash())); d.surface = "Sand"; }
+    else if (name == "magma rock") { all(tex("magma_rock", magmaRock())); for (auto& g : d.glow) { g.mode = 2; g.from = 0.5f; g.strength = 1.4f; g.color = 0xFF8030; g.lights = 6; } }
+    else if (name == "sandstone") all(tex("sandstone", stripes(0.85f, 0.74f, 0.52f, 63)));
+    else if (name == "red sandstone") all(tex("red_sandstone", stripes(0.74f, 0.40f, 0.24f, 65)));
+    else if (name == "red sand") { all(tex("red_sand", noisy(0.78f, 0.46f, 0.28f, 0.07f, 67))); d.surface = "Sand"; }
+    else if (name == "mossy stone") all(tex("mossy_stone", mossyStone()));
+    else if (name == "dark rock") all(tex("dark_rock", darkRock()));
+    else if (name == "corrupted soil") { all(tex("corrupted_soil_side", corruptSide())); d.faces[F_PY] = tex("corrupted_soil", corruptTop()); d.faces[F_NY] = tex("dark_rock", darkRock()); d.surface = "Dirt"; }
+    else if (name == "phazon crystal") { all(tex("phazon_crystal", phazonCrystal())); d.shine = 0.7f; d.surface = "Glass"; for (auto& g : d.glow) { g.mode = 1; g.strength = 1.3f; g.color = 0x60B8FF; g.lights = 7; } }
+    else return AIR;
+    return r.add(d);
+}
 
 void addBuiltinLiquids(BlockRegistry& r) {
     if (r.textureIndex("water") < 0) r.setTexture("water", N, N, water().px);
