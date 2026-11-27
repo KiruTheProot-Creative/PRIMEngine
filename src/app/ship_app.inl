@@ -115,6 +115,8 @@
                 for (auto& mm : meshModels) if (ImGui::Selectable(mm.first.c_str(), mm.first == S.pilot)) S.pilot = mm.first;
                 ImGui::EndCombo(); } }
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Shown in the ready-made cutscenes: stepping onto the lift, riding it up, coming out after landing.");
+        if (!S.pilot.empty()) { bool back = std::fabs(std::remainder(S.pilotTurn, 360.f)) > 90; Prop("Pilot model faces backwards"); if (ImGui::Checkbox("##shpt", &back)) S.pilotTurn = back ? 180.f : 0.f;
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("On: the model's front is its own -z (the player's suit is like that). If the pilot walks backwards, flip this."); }
         Prop("Lift platform"); ImGui::SetNextItemWidth(-1); ImGui::DragScalarN("##shl", ImGuiDataType_Double, &S.lift.x, 3, 0.02f, nullptr, nullptr, "%.2f");
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Where you stand to board: the ship's own x (right), y (up), z (front). A green ring shows it.");
         auto cutCombo = [&](const char* label, const char* id, std::string& v) {

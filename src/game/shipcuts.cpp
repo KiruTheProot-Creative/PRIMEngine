@@ -32,11 +32,13 @@ static const char* LandingDustFor(AreaKind a) {
 static void AddJets(Cutscene& c, const std::string& actor, const std::vector<V3>& at, const char* preset, float t, float len, float size, double scale) {
     for (const V3& p : at) { CutEffect e; e.t = t; e.length = len; e.actor = actor; e.preset = preset; e.offset = p * scale; e.size = size; c.effects.push_back(e); }
 }
+// a spot on the ground under the pad (no model: nothing shows) - the dust blows out there, not wherever the ship is in the air
+static void AddPad(Cutscene& c, V3 at) { CutActor p; p.name = "Pad"; ActorKey k; k.t = 0; k.pos = at; p.keys = { k }; c.actors.push_back(p); }
 static void AddClip(CutActor& a, const char* clip, float t, float len, bool once, float speed = 1) { ActorClip k; k.t = t; k.length = len; k.clip = clip; k.once = once; k.speed = speed; a.clips.push_back(k); }
 // the pilot (the player's model): on foot from one spot to another, then standing
-static CutActor PilotWalk(const std::string& model, V3 from, V3 to, float t0, float t1, float showFrom = 0) {
+static CutActor PilotWalk(const std::string& model, V3 from, V3 to, float t0, float t1, float turn, float showFrom = 0) {
     CutActor a; a.name = "Pilot"; a.model = model; a.showFrom = showFrom;
-    V3 d = to - from; double yaw = std::atan2(d.x, d.z) * 180 / 3.14159265358979;
+    V3 d = to - from; double yaw = std::atan2(d.x, d.z) * 180 / 3.14159265358979 + turn;
     ActorKey k0; k0.t = t0; k0.pos = from; k0.yaw = (float)yaw; ActorKey k1; k1.t = t1; k1.pos = to; k1.yaw = (float)yaw; a.keys = { k0, k1 };
     if (t1 - t0 > 0.05f) AddClip(a, "walk", t0, t1 - t0, false);
     AddClip(a, "idle", t1, 1000, false);
@@ -54,8 +56,8 @@ Cutscene shipBoardCut(const WorldObject& o, V3 from, const SolidAt& solid) {
     c.cam.push_back(LookKey(1.6f, cam, lift * 0.55 + mid * 0.45 + V3{ 0, 0.4, 0 }, 50));
     c.cam.back().ease = true;
     if (!o.ship.pilot.empty()) {
-        CutActor p = PilotWalk(o.ship.pilot, from, lift, 0.2f, 1.6f); p.keys[1].ease = true;   // (stops on the platform; then only turns)
-        V3 out = cam - lift; p.keys.push_back(ShipKey(2.1f, lift, std::atan2(out.x, out.z) * 180 / 3.14159265358979)); p.keys.back().ease = true;   // turns round on the platform
+        CutActor p = PilotWalk(o.ship.pilot, from, lift, 0.2f, 1.6f, o.ship.pilotTurn); p.keys[1].ease = true;   // (stops on the platform; then only turns)
+        V3 out = cam - lift; p.keys.push_back(ShipKey(2.1f, lift, std::atan2(out.x, out.z) * 180 / 3.14159265358979 + o.ship.pilotTurn)); p.keys.back().ease = true;   // turns round on the platform
         c.actors.push_back(p);
     }
     return c;
@@ -105,7 +107,7 @@ Cutscene shipTakeoffCut(const WorldObject& o, bool shortOne, const SolidAt& soli
     float inside = CT + 2.2f;   // (by then the lift is up: she is in)
     if (!S.pilot.empty()) {
         CutActor p; p.name = "Pilot"; p.model = S.pilot; p.showTo = inside;
-        double yaw = std::atan2(side.x, side.z) * 180 / 3.14159265358979;
+        double yaw = std::atan2(side.x, side.z) * 180 / 3.14159265358979 + S.pilotTurn;
         RideLift(p, a, 1000, o, model, "Taking off", CT, 0, inside, yaw);
         AddClip(p, "idle", 0, 1000, false); c.actors.push_back(p);
     }
@@ -121,7 +123,7 @@ Cutscene shipTakeoffCut(const WorldObject& o, bool shortOne, const SolidAt& soli
     c.cam.push_back(LookKey(CT + 5.9f, L(-4, 14, -10), P + V3{ 0, 40 * sc, 0 } + fwd * (70 * sc), 46));
     AddJets(c, ship, S.landThrusters, "Thrusters", CT + 0.3f, 3.0f, 1.2f, sc);   // lifting: the wings' jets push down
     AddJets(c, ship, S.thrusters, "Thruster jet", CT + 2.6f, 4, 1.3f, sc);        // then the engines at the back light up
-    { CutEffect d; d.t = CT + 0.3f; d.length = 3.2f; d.actor = ship; d.preset = LandingDustFor(S.area); d.offset = { 0, 0.1, 0 }; d.size = 1.2f; c.effects.push_back(d); }
+    AddPad(c, P); { CutEffect d; d.t = CT + 0.3f; d.length = 1.9f; d.actor = "Pad"; d.preset = LandingDustFor(S.area); d.offset = { 0, 0.1, 0 }; d.size = 1.2f; c.effects.push_back(d); }   // (only while it is still low)
     T0 = CT - 0.1f;
     CutFade f; f.t = T0 + 5.2f; f.length = 0.8f; f.kind = CutFadeKind::ToBlack; c.fades.push_back(f);
     c.length = T0 + 6.0f;
@@ -183,15 +185,15 @@ Cutscene shipLandingCut(const WorldObject& o, bool shortOne, const SolidAt& soli
     { CamKey k = LookKey(T + 4.6f, L(10, 1.6, -7), P + V3{ 0, 1.6, 0 }, 44); k.cut = true; c.cam.push_back(k); }
     c.cam.push_back(LookKey(T + 5.9f, L(9.4, 1.5, -6.4), P + V3{ 0, 1.3, 0 }, 44));
     AddJets(c, ship, S.landThrusters, "Thrusters", T, 5.8f, 1.2f, sc);
-    { CutEffect d; d.t = T + 3.6f; d.length = 3.2f; d.actor = ship; d.preset = LandingDustFor(S.area); d.offset = { 0, 0.1, 0 }; d.size = 1.3f; c.effects.push_back(d); }
-    if (S.area == AreaKind::Lava) { CutEffect e; e.t = T + 3.6f; e.length = 4; e.actor = ship; e.preset = "Embers"; e.offset = { 0, 0.2, 0 }; e.size = 2.0f; c.effects.push_back(e); }
+    AddPad(c, P); { CutEffect d; d.t = T + 3.6f; d.length = 3.2f; d.actor = "Pad"; d.preset = LandingDustFor(S.area); d.offset = { 0, 0.1, 0 }; d.size = 1.3f; c.effects.push_back(d); }
+    if (S.area == AreaKind::Lava) { CutEffect e; e.t = T + 3.6f; e.length = 4; e.actor = "Pad"; e.preset = "Embers"; e.offset = { 0, 0.2, 0 }; e.size = 2.0f; c.effects.push_back(e); }
     { EventDo d; d.kind = Do::Shake; d.number = 0.5f; CutEvent ev; ev.t = T + 5.6f; ev.action = d; c.events.push_back(ev); }
     c.actors.push_back(a);
     float T2 = TD + 0.3f;
     if (!S.pilot.empty()) {
         const CutActor& sa = c.actors.back();
         CutActor p; p.name = "Pilot"; p.model = S.pilot; p.showFrom = CS;
-        double yaw = std::atan2(side.x, side.z) * 180 / 3.14159265358979;
+        double yaw = std::atan2(side.x, side.z) * 180 / 3.14159265358979 + S.pilotTurn;
         float down = CS + 2.2f;   // the lift is down
         RideLift(p, sa, 1000, o, model, "landing", CS, CS, down, yaw);
         V3 onLift = p.keys.back().pos; p.keys.back().ease = true;

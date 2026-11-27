@@ -75,6 +75,7 @@ struct ShipSettings {
     V3 lift{ 0, 0, -1.68 };           // where the lift platform is (its own x right, y up, z front; the gunship: under the hatch)
     std::string landCut, takeoffCut;  // your own cutscenes instead of the ready-made ones ("": the ready-made ones)
     std::string pilot;                // the player's model in the ready-made ones (stepping onto the lift, out of the ship; "": none shown)
+    float pilotTurn = 180;            // added to where the pilot faces (degrees): 180 for a model whose front is its own -z (like the player's suit)
     std::vector<V3> thrusters{ { 0.475, 2.9, -4.15 }, { -0.475, 2.9, -4.15 }, { 0.685, 2.5, -4.15 }, { -0.685, 2.5, -4.15 }, { 1.7, 2.39, -3.61 }, { -1.7, 2.39, -3.61 } };   // where its fire comes out (flying)
     std::vector<V3> landThrusters{ { 1.7, 2.39, -3.61 }, { -1.7, 2.39, -3.61 } };   // the ones that brake it when it lands (the wings')
 };
