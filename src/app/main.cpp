@@ -3689,8 +3689,8 @@ struct App {
         ID3D11RasterizerState* rsWas = nullptr; bool twoSided = o.kind == ObjKind::Door && g.mesh;   // imported door halves are often one-sided: seen from behind they had holes
         if (twoSided) { ctx->RSGetState(&rsWas); if (rsWas == rsCull.Get() || rsWas == rsCullFront.Get()) ctx->RSSetState(rsNoCull.Get()); }   // (shadow passes keep theirs)
         struct RsBack { ID3D11DeviceContext* c; ID3D11RasterizerState*& s; bool on; ~RsBack() { if (on) { c->RSSetState(s); if (s) s->Release(); } } } rsBack{ ctx.Get(), rsWas, twoSided };
-        double a = o.yaw * 3.14159265358979 / 180, c = std::cos(a), s = std::sin(a); V3 k = objectStretch(o, *m);   // doors: stretched to Width x Height
-        V3 ax{ c * k.x, 0, -s * k.x }, ay{ 0, k.y, 0 }, az{ s * k.z, 0, c * k.z };
+        V3 k = objectStretch(o, *m);   // doors: stretched to Width x Height
+        V3 ax, ay, az; turnAxes(o.yaw, o.pitch, o.roll, ax, ay, az); ax = ax * k.x; ay = ay * k.y; az = az * k.z;   // (tilted and rolled only by a cutscene)
         for (auto& part : g.parts) {
             const GpuChunk& gc = part.second; UINT n = pass == 0 ? gc.nO : pass == 1 ? gc.nC : gc.nW; if (!n) continue;
             V3 l{ part.first.x * (double)CS - m->pivot.x, part.first.y * (double)CS - m->pivot.y, part.first.z * (double)CS - m->pivot.z };

@@ -159,14 +159,14 @@
             const CutEffect& e = c.effects[i]; ParticleEmitter& em = cutFx[i];
             ParticleSettings s = particlePreset(e.preset); float k = std::max(0.05f, e.size);
             s.size0 *= k; s.size1 *= k; s.areaSize = s.areaSize * (double)k; s.speed *= std::sqrt(k); s.lightRange *= k; em.s = s;
-            V3 at{ 0, 0, 0 }; double yaw = 0; bool there = false;
+            V3 at{ 0, 0, 0 }; double yaw = 0, pitch = 0, roll = 0; bool there = false;
             for (const CutActor& a : c.actors) if (a.name == e.actor) {
                 ActorPose p = actorAt(a, t, c.length); there = p.shown;
-                if (p.keyed) { at = p.pos; yaw = p.yaw; }
+                if (p.keyed) { at = p.pos; yaw = p.yaw; pitch = p.pitch; roll = p.roll; }
                 else if (!a.object.empty()) { for (const WorldObject& o : objects) if (o.name == a.object) { at = o.pos; yaw = o.yaw; } }
                 break;
             }
-            em.update(std::min(dt, 0.1), effectSpot(at, yaw, e.offset), yaw, nullptr, there && effectOn(e, t));
+            em.update(std::min(dt, 0.1), effectSpot(at, yaw, pitch, roll, e.offset), yaw, nullptr, there && effectOn(e, t));
         }
     }
     // a world object a cutscene moves: where it is now (false: draw it as it is)
@@ -176,7 +176,7 @@
         for (size_t i = 0; i < c->actors.size(); i++) {
             const CutActor& a = c->actors[i]; if (a.object.empty() || a.object != o.name) continue;
             const CutActorRt& r = cutRt[i];
-            at = o; if (r.pose.keyed) { at.pos = r.pose.pos; at.yaw = r.pose.yaw; }
+            at = o; if (r.pose.keyed) { at.pos = r.pose.pos; at.yaw = r.pose.yaw; at.pitch = r.pose.pitch; at.roll = r.pose.roll; }
             hidden = !r.pose.shown && cutRun.on;   // (in the editor it still shows where it is)
             return &r;
         }
@@ -189,7 +189,7 @@
         for (size_t i = 0; i < c->actors.size(); i++) {
             const CutActor& a = c->actors[i]; const CutActorRt& r = cutRt[i];
             if (!a.object.empty() || a.model.empty() || !r.pose.shown || !r.pose.keyed) continue;
-            WorldObject o; o.id = 0xC0000000u + (uint32_t)i; o.name = a.name; o.model = a.model; o.pos = r.pose.pos; o.yaw = r.pose.yaw; o.scale = a.scale;
+            WorldObject o; o.id = 0xC0000000u + (uint32_t)i; o.name = a.name; o.model = a.model; o.pos = r.pose.pos; o.yaw = r.pose.yaw; o.pitch = r.pose.pitch; o.roll = r.pose.roll; o.scale = a.scale;
             if (!ModelOf(o)) continue;
             DrawObject(o, pass, camPos, r.posed ? &r.gpu : nullptr);
         }
@@ -577,6 +577,8 @@
                 timeField(k.t);
                 Prop("Position"); ch |= ImGui::DragScalarN("##ap", ImGuiDataType_Double, &k.pos.x, 3, 0.05f, nullptr, nullptr, "%.2f");
                 Prop("Turn"); ch |= ImGui::DragFloat("##ay", &k.yaw, 0.5f, -360, 360, "%.1f deg");
+                Prop("Tilt"); ch |= ImGui::DragFloat("##apt", &k.pitch, 0.5f, -90, 90, "%.1f deg"); if (ImGui::IsItemHovered()) ImGui::SetTooltip("Its front up (+) or down (-): a ship climbing or diving");
+                Prop("Roll"); ch |= ImGui::DragFloat("##arl", &k.roll, 0.5f, -1080, 1080, "%.1f deg"); if (ImGui::IsItemHovered()) ImGui::SetTooltip("Its right side down (+) or up (-): banking in a turn. 360: a whole barrel roll between the keys");
                 Prop("Ease"); ch |= ImGui::Checkbox("Slow down here##ae", &k.ease);
                 Prop("Cut"); ch |= ImGui::Checkbox("Jump here##ac", &k.cut);
                 if (ImGui::Button("Where you point")) { V3 at; if (PointedSpot(at)) { k.pos = at; ch = true; } else Toast("Point the editor camera at the ground"); }

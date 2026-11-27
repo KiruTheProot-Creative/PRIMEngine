@@ -2189,6 +2189,14 @@ int main() {
         { V3 a = effectSpot({ 10, 0, 0 }, 0, { 0, 1, 4 }), b = effectSpot({ 10, 0, 0 }, 90, { 0, 1, 4 }), r = effectSpot({ 0, 0, 0 }, 90, { 1, 0, 0 });
           CHECK(std::fabs(a.z - 4) < 1e-9 && std::fabs(a.y - 1) < 1e-9 && std::fabs(b.x - 14) < 1e-9 && std::fabs(b.z) < 1e-9 && std::fabs(r.z + 1) < 1e-9,
                 "an effect's spot turns with its actor (front +Z at yaw 0, +X at yaw 90; its right turns the same way as an object's)"); }
+        { V3 up = effectSpot({ 0, 0, 0 }, 0, 90, 0, { 0, 0, 4 }), rl = effectSpot({ 0, 0, 0 }, 0, 0, 90, { 2, 0, 0 }), same = effectSpot({ 1, 2, 3 }, 37, 0, 0, { 1, 1, 1 }), flat = effectSpot({ 1, 2, 3 }, 37, { 1, 1, 1 });
+          CHECK(std::fabs(up.y - 4) < 1e-9 && std::fabs(up.z) < 1e-9 && std::fabs(rl.y + 2) < 1e-9 && std::fabs(rl.x) < 1e-9 && length(same - flat) < 1e-9,
+                "tilted 90 the front points up; rolled 90 the right side points down; no tilt or roll: as before"); }
+        { CutActor sh; sh.name = "Ship"; ActorKey k0; k0.t = 0; ActorKey k1; k1.t = 2; k1.pitch = 20; k1.roll = 360; sh.keys = { k0, k1 };
+          ActorPose mid = actorAt(sh, 1, 2), end = actorAt(sh, 2, 2);
+          CHECK(std::fabs(mid.pitch - 10) < 1e-6 && std::fabs(mid.roll - 180) < 1e-6 && std::fabs(end.roll - 360) < 1e-6, "an actor tilts and rolls between its keys (360: a whole barrel roll, not none)");
+          Cutscene cc; cc.actors = { sh }; std::vector<Cutscene> l1 = { cc }, l2; saveCutscenes("/tmp/prim_cuts_roll.txt", l1); loadCutscenes("/tmp/prim_cuts_roll.txt", l2);
+          CHECK(l2.size() == 1 && l2[0].actors[0].keys[1].pitch == 20 && l2[0].actors[0].keys[1].roll == 360, "an actor's tilt and roll survive saving"); }
         { ParticleSettings f = particlePreset("Re-entry fire"), d = particlePreset("Landing dust"); CHECK(f.rate > 100 && f.light && !d.additive && d.area == PArea::Disc, "the cutscene effects' presets exist"); }
         std::vector<Cutscene> list = { c, Cutscene{} };
         saveCutscenes("/tmp/prim_cuts.txt", list); std::vector<Cutscene> back; loadCutscenes("/tmp/prim_cuts.txt", back);

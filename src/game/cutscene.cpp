@@ -1,4 +1,5 @@
 #include "cutscene.h"
+#include "objects.h"
 #include "particles.h"
 #include <algorithm>
 #include <cmath>
@@ -88,10 +89,10 @@ ActorPose actorAt(const CutActor& a, float t, float length) {
         for (int i : order(a.keys)) {
             const ActorKey& k = a.keys[i];
             double yaw = first ? k.yaw : prevYaw + wrap180(k.yaw - prevYaw); prevYaw = yaw; first = false;
-            s.t.push_back(k.t); s.v.push_back({ k.pos.x, k.pos.y, k.pos.z, yaw }); s.ease.push_back(k.ease); s.cut.push_back(k.cut);
+            s.t.push_back(k.t); s.v.push_back({ k.pos.x, k.pos.y, k.pos.z, yaw, k.pitch, k.roll }); s.ease.push_back(k.ease); s.cut.push_back(k.cut);   // (roll is not wrapped: 0 -> 360 is a whole barrel roll)
         }
         std::vector<double> v = s.at(t);
-        p.pos = { v[0], v[1], v[2] }; p.yaw = wrap180(v[3]); p.keyed = true;
+        p.pos = { v[0], v[1], v[2] }; p.yaw = wrap180(v[3]); p.pitch = v[4]; p.roll = v[5]; p.keyed = true;
     }
     int held = -1;
     for (int i : order(a.clips)) {   // the latest bar that is playing
@@ -173,6 +174,9 @@ const CutSpace* spaceAt(const Cutscene& c, float t) {
     return s;
 }
 bool effectOn(const CutEffect& e, float t) { return t >= e.t && t < e.t + std::max(0.01f, e.length); }
+V3 effectSpot(const V3& pos, double yawDeg, double pitchDeg, double rollDeg, const V3& o) {
+    V3 ax, ay, az; turnAxes(yawDeg, pitchDeg, rollDeg, ax, ay, az); return pos + ax * o.x + ay * o.y + az * o.z;
+}
 V3 effectSpot(const V3& pos, double yawDeg, const V3& o) {   // (the same turn as an object's: its x (cos, 0, -sin), its z (sin, 0, cos))
     double a = yawDeg * 3.14159265358979 / 180, c = std::cos(a), s = std::sin(a);
     return { pos.x + c * o.x + s * o.z, pos.y + o.y, pos.z - s * o.x + c * o.z };
@@ -218,7 +222,7 @@ bool saveCutscenes(const std::string& path, const std::vector<Cutscene>& list) {
         for (const CamKey& k : c.cam) f << "cam " << k.t << " " << k.pos.x << " " << k.pos.y << " " << k.pos.z << " " << k.yaw << " " << k.pitch << " " << k.roll << " " << k.fov << " " << k.ease << " " << k.cut << "\n";
         for (const CutActor& a : c.actors) {
             f << "actor " << esc(a.name) << " " << esc(a.object) << " " << esc(a.model) << " " << a.scale << " " << a.showFrom << " " << a.showTo << "\n";
-            for (const ActorKey& k : a.keys) f << "akey " << k.t << " " << k.pos.x << " " << k.pos.y << " " << k.pos.z << " " << k.yaw << " " << k.ease << " " << k.cut << "\n";
+            for (const ActorKey& k : a.keys) f << "akey " << k.t << " " << k.pos.x << " " << k.pos.y << " " << k.pos.z << " " << k.yaw << " " << k.ease << " " << k.cut << " " << k.pitch << " " << k.roll << "\n";
             for (const ActorClip& k : a.clips) f << "aclip " << k.t << " " << k.length << " " << esc(k.clip) << " " << k.speed << " " << (k.once ? 1 : 0) << "\n";
         }
         for (const CutText& x : c.texts) f << "text " << x.t << " " << x.length << " " << (int)x.style << " " << x.typeSpeed << " " << esc(x.speaker) << " " << esc(x.text) << "\n";
@@ -244,7 +248,7 @@ bool loadCutscenes(const std::string& path, std::vector<Cutscene>& list) {
         else if (list.empty()) continue;
         else if (k == "cam") { CamKey q; l >> q.t >> q.pos.x >> q.pos.y >> q.pos.z >> q.yaw >> q.pitch >> q.roll >> q.fov >> q.ease >> q.cut; list.back().cam.push_back(q); }
         else if (k == "actor") { CutActor a; std::string n, o, m; l >> n >> o >> m >> a.scale >> a.showFrom >> a.showTo; a.name = unesc(n); a.object = unesc(o); a.model = unesc(m); list.back().actors.push_back(a); }
-        else if (k == "akey" && !list.back().actors.empty()) { ActorKey q; l >> q.t >> q.pos.x >> q.pos.y >> q.pos.z >> q.yaw >> q.ease >> q.cut; list.back().actors.back().keys.push_back(q); }
+        else if (k == "akey" && !list.back().actors.empty()) { ActorKey q; l >> q.t >> q.pos.x >> q.pos.y >> q.pos.z >> q.yaw >> q.ease >> q.cut; if (!(l >> q.pitch >> q.roll)) q.pitch = q.roll = 0; list.back().actors.back().keys.push_back(q); }
         else if (k == "aclip" && !list.back().actors.empty()) { ActorClip q; std::string n; l >> q.t >> q.length >> n >> q.speed; int once = 0; if (l >> once) q.once = once != 0; q.clip = unesc(n); list.back().actors.back().clips.push_back(q); }
         else if (k == "text") { CutText x; int s = 0; std::string sp, tx; l >> x.t >> x.length >> s >> x.typeSpeed >> sp >> tx; x.style = (CutTextStyle)std::clamp(s, 0, (int)CutTextStyle::COUNT - 1); x.speaker = unesc(sp); x.text = unesc(tx); list.back().texts.push_back(x); }
         else if (k == "sound") { CutSound s; std::string fl; l >> s.t >> fl >> s.sound.volume >> s.sound.pitch; float pv; if (l >> pv) s.sound.pitchVar = pv; s.sound.file = unesc(fl); list.back().sounds.push_back(s); }

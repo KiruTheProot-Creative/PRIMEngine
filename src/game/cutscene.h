@@ -25,7 +25,7 @@ struct CamKey {
 };
 
 // an actor: a model shown only during the cutscene (Samus), or a world object it moves (the gunship on its pad)
-struct ActorKey { float t = 0; V3 pos{ 0, 0, 0 }; float yaw = 0; bool ease = false; bool cut = false; };
+struct ActorKey { float t = 0; V3 pos{ 0, 0, 0 }; float yaw = 0; bool ease = false; bool cut = false; float pitch = 0, roll = 0; };   // pitch: the front up; roll: the right side down (degrees - a ship banking, a barrel roll)
 struct ActorClip { float t = 0, length = 2; std::string clip; float speed = 1; bool once = false; };   // plays this animation from t for length seconds (it loops; once: it plays one time and then holds its last pose, also after the bar, until another bar starts)
 struct CutActor {
     std::string name = "Actor";
@@ -68,6 +68,7 @@ struct CutSpace {
 // an effect on an actor: particles (a preset) that follow it - from a spot on it (its own x right, y up, z its front), for its time
 struct CutEffect { float t = 0, length = 3; std::string actor, preset = "Fire"; V3 offset{ 0, 0, 0 }; float size = 1; };
 V3 effectSpot(const V3& pos, double yawDeg, const V3& offset);   // that spot in the world, the actor there turned yawDeg
+V3 effectSpot(const V3& pos, double yawDeg, double pitchDeg, double rollDeg, const V3& offset);   // ... and tilted and rolled
 std::vector<std::string> cutEffectPresets();                     // the particle presets plus the cutscene ones ("Re-entry fire", "Landing dust", "Thrusters")
 
 struct Cutscene {
@@ -100,7 +101,7 @@ CamPose cameraAt(const Cutscene& c, float t);
 CamPose blendPose(const CamPose& a, const CamPose& b, double f);   // f 0..1, turning the short way round
 V3 poseForward(const CamPose& p);                                   // where it looks (unit length)
 
-struct ActorPose { V3 pos{ 0, 0, 0 }; double yaw = 0; bool shown = false, keyed = false; int clip = -1; std::string clipName; float clipTime = 0; float clipSpeed = 1; bool hold = false; };   // hold: stop at the clip's last pose (no looping)
+struct ActorPose { V3 pos{ 0, 0, 0 }; double yaw = 0, pitch = 0, roll = 0; bool shown = false, keyed = false; int clip = -1; std::string clipName; float clipTime = 0; float clipSpeed = 1; bool hold = false; };   // hold: stop at the clip's last pose (no looping)
 ActorPose actorAt(const CutActor& a, float t, float length);
 
 struct FadeNow { float amount = 0; bool white = false; };   // over the picture: how much (0..1), white or black

@@ -111,6 +111,7 @@ struct WorldObject {
     std::string name, folder = "Props", model;
     V3 pos{ 0, 0, 0 };                                // where the model's pivot sits
     double yaw = 0;                                   // degrees, around the up axis
+    double pitch = 0, roll = 0;                       // (not saved) degrees: nose up, right side down - only a cutscene tilts and rolls an object (the gunship banking)
     double scale = 1;                                 // props: the same in every direction (doors use Width x Height instead)
     Collide collide = Collide::Exact;
     ObjKind kind = ObjKind::Prop;
@@ -129,7 +130,9 @@ struct WorldObject {
     struct { bool energy = true, ammo = true; std::string anim; std::string title, text; bool ask = false; } save;   // Save Stations: what they fill up; the model's animation while saving ("": one called "save", "-": none);
                                                                                                          // the "Game Saved!" pop-up's title and text ("": automatic); ask: the old way (a Yes / No question first)
 };
-V3 objectStretch(const WorldObject& o, const ModelFrame& m);   // how much it is sized along its own x, y, z
+V3 objectStretch(const WorldObject& o, const ModelFrame& m);
+// its own x (right), y (up), z (front) in the world, turned yaw, then tilted (pitch: the front up) and rolled (roll: the right side down); degrees
+void turnAxes(double yawDeg, double pitchDeg, double rollDeg, V3& ax, V3& ay, V3& az);   // how much it is sized along its own x, y, z
 
 const char* pickupName(PickupType t);
 const char* triggerName(TriggerAction a);

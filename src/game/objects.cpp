@@ -107,6 +107,11 @@ bool PlayInventory::collect(const WorldObject& o, float& health, float maxHealth
 void PlayInventory::tick(float dt) {
     for (auto it = taken.begin(); it != taken.end();) { if (it->second > 0 && (it->second -= dt) <= 0) it = taken.erase(it); else ++it; }
 }
+void turnAxes(double yawDeg, double pitchDeg, double rollDeg, V3& ax, V3& ay, V3& az) {
+    const double d = 3.14159265358979 / 180; double cy = std::cos(yawDeg * d), sy = std::sin(yawDeg * d), cp = std::cos(pitchDeg * d), sp = std::sin(pitchDeg * d), cr = std::cos(rollDeg * d), sr = std::sin(rollDeg * d);
+    auto turn = [&](V3 v) { v = { v.x, v.y * cp + v.z * sp, -v.y * sp + v.z * cp }; return V3{ v.x * cy + v.z * sy, v.y, -v.x * sy + v.z * cy }; };   // tilt, then turn
+    ax = turn({ cr, -sr, 0 }); ay = turn({ sr, cr, 0 }); az = turn({ 0, 0, 1 });   // (rolled first)
+}
 V3 objectStretch(const WorldObject& o, const ModelFrame& m) {
     if (o.kind == ObjKind::Trigger && m.sx > 0 && m.sy > 0 && m.sz > 0) return { o.size.x / m.sx, o.size.y / m.sy, o.size.z / m.sz };   // a zone: exactly its box
     if (o.kind != ObjKind::Door || m.sx <= 0 || m.sy <= 0) return { o.scale, o.scale, o.scale };
