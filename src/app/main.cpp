@@ -38,6 +38,7 @@
 #include "../game/surfaces.h"
 #include "../game/buildmodes.h"
 #include "../game/cutscene.h"
+#include "../game/shipcuts.h"
 #include "../game/glowanim.h"
 #include <tuple>
 #include <thread>

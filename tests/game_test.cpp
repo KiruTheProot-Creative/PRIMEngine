@@ -32,6 +32,7 @@
 #include "../src/game/surfaces.h"
 #include "../src/game/buildmodes.h"
 #include "../src/game/cutscene.h"
+#include "../src/game/shipcuts.h"
 #include <sstream>
 #include <algorithm>
 #include <map>
@@ -2203,6 +2204,25 @@ int main() {
           CHECK(std::fabs(mid.pitch - 10) < 1e-6 && std::fabs(mid.roll - 180) < 1e-6 && std::fabs(end.roll - 360) < 1e-6, "an actor tilts and rolls between its keys (360: a whole barrel roll, not none)");
           Cutscene cc; cc.actors = { sh }; std::vector<Cutscene> l1 = { cc }, l2; saveCutscenes("/tmp/prim_cuts_roll.txt", l1); loadCutscenes("/tmp/prim_cuts_roll.txt", l2);
           CHECK(l2.size() == 1 && l2[0].actors[0].keys[1].pitch == 20 && l2[0].actors[0].keys[1].roll == 360, "an actor's tilt and roll survive saving"); }
+        {   // the gunship's ready-made cutscenes, fitted to a pad
+            WorldObject g; g.id = 3; g.name = "Ship"; g.model = "Ship"; g.pos = { 10, 20, 30 }; g.yaw = 90; g.ship.site = true; g.ship.pilot = "Suit";
+            V3 lift = shipSpot(g, g.ship.lift);
+            CHECK(std::fabs(lift.x - (10 - 1.68)) < 1e-9 && std::fabs(lift.z - 30) < 1e-9, "the lift spot turns with the ship (its back is -z: at yaw 90, toward -x)");
+            Cutscene b = shipBoardCut(g, { 16, 20, 30 }); sortTracks(b);
+            ActorPose pb = actorAt(b.actors[0], 1.7f, b.length);
+            CHECK(b.length > 1000 && !b.skippable && b.fromPlayer && length(pb.pos - lift) < 1e-6, "boarding: the pilot walks onto the lift and it holds there (for the menu)");
+            for (bool sh : { false, true }) {
+                Cutscene t = shipTakeoffCut(g, sh), l = shipLandingCut(g, sh); sortTracks(t); sortTracks(l);
+                const CutActor* ship = nullptr; for (auto& a : l.actors) if (a.object == "Ship") ship = &a;
+                ActorPose end = ship ? actorAt(*ship, l.length, l.length) : ActorPose{};
+                bool jets = false, dust = false; for (auto& e : l.effects) { jets |= e.preset == "Thrusters"; dust |= e.preset == "Landing dust"; }
+                bool okL = ship && length(end.pos - g.pos) < 1e-6 && std::fabs(end.pitch) < 1e-6 && jets && dust && l.cam.size() >= 4 && t.length > 3;
+                if (sh) CHECK(okL, "the short landing ends on the pad"); else CHECK(okL, "the landing ends on the pad, level (jets braking, dust)");
+                if (!sh) { bool rolled = false; for (auto& k : ship->keys) rolled |= std::fabs(k.roll) > 300; CHECK(!l.space.empty() && rolled, "the long one starts out over the planet, with a barrel roll"); }
+            }
+            g.ship.area = AreaKind::Ice; Cutscene li = shipLandingCut(g, true); bool snow = false; for (auto& e : li.effects) snow |= e.preset == "Landing snow";
+            CHECK(snow && length(shipExitSpot(g) - lift) > 4, "an icy pad: snow blows off it; the pilot ends up out from under the wing");
+        }
         { ParticleSettings f = particlePreset("Re-entry fire"), d = particlePreset("Landing dust"); CHECK(f.rate > 100 && f.light && !d.additive && d.area == PArea::Disc, "the cutscene effects' presets exist"); }
         std::vector<Cutscene> list = { c, Cutscene{} };
         saveCutscenes("/tmp/prim_cuts.txt", list); std::vector<Cutscene> back; loadCutscenes("/tmp/prim_cuts.txt", back);
