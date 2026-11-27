@@ -8391,6 +8391,7 @@ struct App {
         if (world->raycast(eye, ad, range, h)) hitT = h.t;
         for (const Box3& bx : world->objectSolids) { double t; if (rayBox(eye, ad, bx, t) && t > 0.05 && t < hitT) hitT = t; }
         V3 target = eye + ad * hitT, d = target - from; double L = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+        { V3 md = target - mpos; double ml = length(md); if (ml > 0.3) mdir = md * (1 / ml); }   // the muzzle's arrow: always at what the crosshair is on (the flash, the shot)
         Shot sh; sh.pos = from; sh.dir = L > 0.8 ? d * (1 / L) : ad;
         sh.speed = missile ? m->speed : b.speed; sh.size = missile ? m->size : b.size; sh.range = (float)range; sh.weapon = missile ? m->name : b.name; sh.missile = missile;
         sh.hitLook = missile ? m->hitLook : b.hitLook; sh.beam = beamIdx; sh.orb = !missile && b.shotStyle == 1;
