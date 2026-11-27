@@ -19,6 +19,15 @@ ParticleSettings particlePreset(const std::string& n) {
         p.size0 = 0.07f; p.size1 = 0.03f; p.color0 = 0xFFF0B0; p.color1 = 0xFF6010; p.glow = 4; p.shape = PShape::Spark; p.collide = true; p.bounce = true; }
     else if (n == "Fire") { p.rate = 45; p.life = 0.9f; p.lifeVar = 0.3f; p.spread = 12; p.speed = 1.6f; p.speedVar = 0.5f; p.gravity = 1.5f; p.drag = 0.8f; p.size0 = 0.45f; p.size1 = 0.1f;
         p.color0 = 0xFFC040; p.color1 = 0xC02008; p.glow = 2.5f; p.area = PArea::Disc; p.areaSize = { 0.35, 0, 0.35 }; p.spin = 0.5f; p.light = true; p.lightRange = 7; p.lightIntensity = 2.2f; }
+    else if (n == "Re-entry fire") {   // (cutscenes) a ship burning into the air: a glowing sheath around it, streaming back as it flies
+        p.rate = 260; p.life = 0.45f; p.lifeVar = 0.15f; p.spread = 180; p.speed = 1.5f; p.speedVar = 0.8f; p.gravity = 0; p.drag = 0.5f; p.size0 = 1.6f; p.size1 = 0.3f;
+        p.color0 = 0xFFF4D0; p.color1 = 0xFF3A08; p.alpha0 = 0.9f; p.glow = 3.5f; p.area = PArea::Sphere; p.areaSize = { 2.2, 1.2, 2.2 }; p.light = true; p.lightRange = 18; p.lightIntensity = 3; p.maxParticles = 3000; }
+    else if (n == "Landing dust") {   // (cutscenes) dust and vapour blown out flat from under something landing
+        p.rate = 70; p.life = 2.6f; p.lifeVar = 0.8f; p.spread = 85; p.speed = 4.5f; p.speedVar = 1.5f; p.gravity = -0.4f; p.drag = 1.6f; p.size0 = 0.8f; p.size1 = 3.0f;
+        p.color0 = 0xB8AFA0; p.color1 = 0x8A8478; p.alpha0 = 0.5f; p.alpha1 = 0; p.glow = 0.6f; p.additive = false; p.shape = PShape::Smoke; p.area = PArea::Disc; p.areaSize = { 3, 0, 3 }; p.spin = 0.3f; }
+    else if (n == "Thrusters") {   // (cutscenes) hot blue jets pushing down
+        p.rate = 120; p.life = 0.25f; p.lifeVar = 0.08f; p.dir = { 0, -1, 0 }; p.spread = 8; p.speed = 9; p.speedVar = 2; p.drag = 0.5f; p.size0 = 0.5f; p.size1 = 0.1f;
+        p.color0 = 0xD8F0FF; p.color1 = 0x4080FF; p.glow = 4; p.light = true; p.lightRange = 10; p.lightIntensity = 2; }
     else if (n == "Smoke") { p.rate = 12; p.life = 4; p.lifeVar = 1; p.spread = 15; p.speed = 0.9f; p.speedVar = 0.3f; p.gravity = 0.3f; p.drag = 0.4f; p.size0 = 0.5f; p.size1 = 2.2f;
         p.color0 = 0x707070; p.color1 = 0x505050; p.alpha0 = 0.55f; p.alpha1 = 0; p.glow = 1; p.additive = false; p.shape = PShape::Smoke; p.area = PArea::Disc; p.areaSize = { 0.3, 0, 0.3 }; p.spin = 0.15f; }
     else if (n == "Steam") { p.rate = 30; p.life = 1.6f; p.lifeVar = 0.4f; p.spread = 8; p.speed = 3.5f; p.speedVar = 0.8f; p.gravity = 0.5f; p.drag = 1.2f; p.size0 = 0.2f; p.size1 = 1.2f;

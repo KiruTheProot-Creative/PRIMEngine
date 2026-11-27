@@ -1,4 +1,5 @@
 #include "cutscene.h"
+#include "particles.h"
 #include <algorithm>
 #include <cmath>
 #include <fstream>
@@ -164,6 +165,22 @@ void sortTracks(Cutscene& c) {
     for (CutActor& a : c.actors) { std::stable_sort(a.keys.begin(), a.keys.end(), byT); std::stable_sort(a.clips.begin(), a.clips.end(), byT); }
     std::stable_sort(c.texts.begin(), c.texts.end(), byT); std::stable_sort(c.sounds.begin(), c.sounds.end(), byT);
     std::stable_sort(c.fades.begin(), c.fades.end(), byT); std::stable_sort(c.events.begin(), c.events.end(), byT);
+    std::stable_sort(c.space.begin(), c.space.end(), byT); std::stable_sort(c.effects.begin(), c.effects.end(), byT);
+}
+const CutSpace* spaceAt(const Cutscene& c, float t) {
+    const CutSpace* s = nullptr;
+    for (int i : order(c.space)) if (t >= c.space[i].t && t < c.space[i].t + std::max(0.01f, c.space[i].length)) s = &c.space[i];
+    return s;
+}
+bool effectOn(const CutEffect& e, float t) { return t >= e.t && t < e.t + std::max(0.01f, e.length); }
+V3 effectSpot(const V3& pos, double yawDeg, const V3& o) {   // (the same turn as an object's: its x (cos, 0, -sin), its z (sin, 0, cos))
+    double a = yawDeg * 3.14159265358979 / 180, c = std::cos(a), s = std::sin(a);
+    return { pos.x + c * o.x + s * o.z, pos.y + o.y, pos.z - s * o.x + c * o.z };
+}
+std::vector<std::string> cutEffectPresets() {
+    std::vector<std::string> v = { "Re-entry fire", "Landing dust", "Thrusters" };
+    for (const std::string& p : particlePresets()) v.push_back(p);
+    return v;
 }
 float lastMoment(const Cutscene& c) {
     float m = 0;
@@ -173,6 +190,8 @@ float lastMoment(const Cutscene& c) {
     for (auto& k : c.sounds) m = std::max(m, k.t);
     for (auto& k : c.fades) m = std::max(m, k.t + k.length);
     for (auto& k : c.events) m = std::max(m, k.t);
+    for (auto& k : c.space) m = std::max(m, k.t + k.length);
+    for (auto& k : c.effects) m = std::max(m, k.t + k.length);
     return m;
 }
 int findCutscene(const std::vector<Cutscene>& list, const std::string& name) {
@@ -203,8 +222,11 @@ bool saveCutscenes(const std::string& path, const std::vector<Cutscene>& list) {
             for (const ActorClip& k : a.clips) f << "aclip " << k.t << " " << k.length << " " << esc(k.clip) << " " << k.speed << " " << (k.once ? 1 : 0) << "\n";
         }
         for (const CutText& x : c.texts) f << "text " << x.t << " " << x.length << " " << (int)x.style << " " << x.typeSpeed << " " << esc(x.speaker) << " " << esc(x.text) << "\n";
-        for (const CutSound& s : c.sounds) f << "sound " << s.t << " " << esc(s.sound.file) << " " << s.sound.volume << " " << s.sound.pitch << "\n";
+        for (const CutSound& s : c.sounds) f << "sound " << s.t << " " << esc(s.sound.file) << " " << s.sound.volume << " " << s.sound.pitch << " " << s.sound.pitchVar << "\n";
         for (const CutFade& d : c.fades) f << "fade " << d.t << " " << d.length << " " << (int)d.kind << "\n";
+        for (const CutSpace& s : c.space) f << "space " << s.t << " " << s.length << " " << esc(s.planet) << " " << s.yaw << " " << s.pitch << " " << s.size << " " << s.spin << " " << s.axisTilt << " "
+                                             << s.stars << " " << s.nebula << " " << s.nebulaColor << " " << s.bright << "\n";
+        for (const CutEffect& e : c.effects) f << "effect " << e.t << " " << e.length << " " << esc(e.actor) << " " << esc(e.preset) << " " << e.offset.x << " " << e.offset.y << " " << e.offset.z << " " << e.size << "\n";
         for (const CutEvent& e : c.events) f << "event " << e.t << " " << (int)e.action.kind << " " << esc(e.action.target) << " " << esc(e.action.text) << " " << e.action.number << "\n";
     }
     return (bool)f;
@@ -225,8 +247,10 @@ bool loadCutscenes(const std::string& path, std::vector<Cutscene>& list) {
         else if (k == "akey" && !list.back().actors.empty()) { ActorKey q; l >> q.t >> q.pos.x >> q.pos.y >> q.pos.z >> q.yaw >> q.ease >> q.cut; list.back().actors.back().keys.push_back(q); }
         else if (k == "aclip" && !list.back().actors.empty()) { ActorClip q; std::string n; l >> q.t >> q.length >> n >> q.speed; int once = 0; if (l >> once) q.once = once != 0; q.clip = unesc(n); list.back().actors.back().clips.push_back(q); }
         else if (k == "text") { CutText x; int s = 0; std::string sp, tx; l >> x.t >> x.length >> s >> x.typeSpeed >> sp >> tx; x.style = (CutTextStyle)std::clamp(s, 0, (int)CutTextStyle::COUNT - 1); x.speaker = unesc(sp); x.text = unesc(tx); list.back().texts.push_back(x); }
-        else if (k == "sound") { CutSound s; std::string fl; l >> s.t >> fl >> s.sound.volume >> s.sound.pitch; s.sound.file = unesc(fl); list.back().sounds.push_back(s); }
+        else if (k == "sound") { CutSound s; std::string fl; l >> s.t >> fl >> s.sound.volume >> s.sound.pitch; float pv; if (l >> pv) s.sound.pitchVar = pv; s.sound.file = unesc(fl); list.back().sounds.push_back(s); }
         else if (k == "fade") { CutFade d; int kd = 0; l >> d.t >> d.length >> kd; d.kind = (CutFadeKind)std::clamp(kd, 0, (int)CutFadeKind::COUNT - 1); list.back().fades.push_back(d); }
+        else if (k == "space") { CutSpace s; std::string n; l >> s.t >> s.length >> n >> s.yaw >> s.pitch >> s.size >> s.spin >> s.axisTilt >> s.stars >> s.nebula >> s.nebulaColor >> s.bright; s.planet = unesc(n); list.back().space.push_back(s); }
+        else if (k == "effect") { CutEffect e; std::string a, p; l >> e.t >> e.length >> a >> p >> e.offset.x >> e.offset.y >> e.offset.z >> e.size; e.actor = unesc(a); e.preset = unesc(p); list.back().effects.push_back(e); }
         else if (k == "event") { CutEvent e; int kd = 0; std::string a, b; l >> e.t >> kd >> a >> b >> e.action.number; e.action.kind = (Do)std::clamp(kd, 0, (int)Do::COUNT - 1); e.action.target = unesc(a); e.action.text = unesc(b); list.back().events.push_back(e); }
     }
     return true;

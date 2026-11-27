@@ -53,6 +53,22 @@ struct CutFade { float t = 0, length = 1; CutFadeKind kind = CutFadeKind::FromBl
 
 struct CutEvent { float t = 0; EventDo action; };
 
+// out in space: for its time the world is hidden, the sky is black with stars (all round), and a planet from the Planets
+// editor hangs where you put it (its middle: yaw / pitch as seen from anywhere - it is far away; size: its radius in degrees)
+struct CutSpace {
+    float t = 0, length = 5;
+    std::string planet;                 // a planet's name ("": the first one, or the ready-made one)
+    float yaw = 0, pitch = -20, size = 25;   // where it is (degrees, like the camera's), how big (degrees from its middle to its edge)
+    float spin = 2, axisTilt = 15;      // degrees a second; its axis leaning (degrees)
+    float stars = 0.6f, nebula = 0.3f; uint32_t nebulaColor = 0x2A1A5A;   // how many stars; a coloured haze
+    float bright = 1;                   // the whole background brighter / darker
+};
+
+// an effect on an actor: particles (a preset) that follow it - from a spot on it (its own x right, y up, z its front), for its time
+struct CutEffect { float t = 0, length = 3; std::string actor, preset = "Fire"; V3 offset{ 0, 0, 0 }; float size = 1; };
+V3 effectSpot(const V3& pos, double yawDeg, const V3& offset);   // that spot in the world, the actor there turned yawDeg
+std::vector<std::string> cutEffectPresets();                     // the particle presets plus the cutscene ones ("Re-entry fire", "Landing dust", "Thrusters")
+
 struct Cutscene {
     std::string name = "New cutscene";
     CutView view = CutView::Camera;
@@ -71,7 +87,11 @@ struct Cutscene {
     std::vector<CutSound> sounds;
     std::vector<CutFade> fades;
     std::vector<CutEvent> events;
+    std::vector<CutSpace> space;
+    std::vector<CutEffect> effects;
 };
+const CutSpace* spaceAt(const Cutscene& c, float t);   // the space shot at t (the latest that started; null: the world)
+bool effectOn(const CutEffect& e, float t);
 
 // ---- where things are at a moment
 struct CamPose { V3 pos{ 0, 0, 0 }; double yaw = 0, pitch = 0, roll = 0, fov = 70; bool valid = false; };   // degrees

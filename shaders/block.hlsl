@@ -3078,6 +3078,9 @@ cbuffer PlanetCB : register(b3)
     float4 gPlVein;     // rgb the veins' glow, w how many / bright
     float4 gPlCor2;     // x pulses a second, yzw -
     float4 gPlTend;     // x how many tendrils, y how long (planet radii), z how fast they wave, w how bright (0: none)
+    float4 gPlSp0;      // (space in a cutscene) xyz toward the planet's middle (the world), w the sine of its size
+    float4 gPlSp1;      // xyz right across it (the world), w brightness
+    float4 gPlSp2;      // xyz up across it (the world), w -
 };
 float plHash(float3 p) { p = frac(p * 0.3183099 + 0.1); p *= 17.0; return frac(p.x * p.y * p.z * (p.x + p.y + p.z)); }
 float plNoise(float3 x)
@@ -3139,21 +3142,9 @@ float plClouds(float3 loc)
     float t = 1 - gPlCloud.w, soft = lerp(0.03, 0.16, gPlCloud2.x);
     return smoothstep(t - soft, t + soft, c);
 }
-float4 PS_Planet(BlitOut i) : SV_Target
+// the planet over col, at p (planet radii from its middle, y up): its layers, rings, atmosphere, tendrils
+float3 plPlanetAt(float2 p, float3 col)
 {
-    float2 uv = i.uv; float aspect = gPlA.x;
-    float3 col = float3(0.004, 0.006, 0.012);
-    // the haze and the stars
-    {
-        float2 q = uv * float2(aspect, 1) * 2.2;
-        float nb = plFbm(float3(q, gPlA.w * 0.1), 5, 0.6); nb = saturate((nb - 0.42) * 2.4);
-        col += gPlNeb.rgb * nb * nb * gPlNeb.w * 1.6;
-        float2 cell = floor(uv * float2(aspect, 1) * 420); float hs = plHash(float3(cell, 7.1));
-        float lim = 1 - gPlSun.w * 0.012;
-        if (hs > lim) { float tw = 0.6 + 0.4 * sin(gPlA.y * (1.5 + hs * 4) + hs * 60); col += (hs - lim) / max(1 - lim, 1e-4) * tw * float3(0.9, 0.95, 1) * 1.6; }
-    }
-    float R = gPlPos.z;
-    float2 p = (uv - gPlPos.xy) * float2(aspect, 1) / max(R, 1e-3); p.y = -p.y;   // in planet radii, y up
     if (gPlA.z > 0.5) { float g = gPlA.z * 0.5; p = (floor(p * g) + 0.5) / g; }      // pixelated
     float r2 = dot(p, p);
     float3 L = normalize(gPlSun.xyz);
@@ -3243,7 +3234,50 @@ float4 PS_Planet(BlitOut i) : SV_Target
         col = lerp(col, c, gPlA.z > 0.5 ? 1 : edge);
     }
     if (ringC.a > 0 && !ringBehind) col = lerp(col, ringC.rgb, ringC.a);   // in front (or beside it)
-    return float4(col, 1);
+    return col;
+}
+float4 PS_Planet(BlitOut i) : SV_Target
+{
+    float2 uv = i.uv; float aspect = gPlA.x;
+    float3 col = float3(0.004, 0.006, 0.012);
+    // the haze and the stars
+    {
+        float2 q = uv * float2(aspect, 1) * 2.2;
+        float nb = plFbm(float3(q, gPlA.w * 0.1), 5, 0.6); nb = saturate((nb - 0.42) * 2.4);
+        col += gPlNeb.rgb * nb * nb * gPlNeb.w * 1.6;
+        float2 cell = floor(uv * float2(aspect, 1) * 420); float hs = plHash(float3(cell, 7.1));
+        float lim = 1 - gPlSun.w * 0.012;
+        if (hs > lim) { float tw = 0.6 + 0.4 * sin(gPlA.y * (1.5 + hs * 4) + hs * 60); col += (hs - lim) / max(1 - lim, 1e-4) * tw * float3(0.9, 0.95, 1) * 1.6; }
+    }
+    float R = gPlPos.z;
+    float2 p = (uv - gPlPos.xy) * float2(aspect, 1) / max(R, 1e-3); p.y = -p.y;   // in planet radii, y up
+    return float4(plPlanetAt(p, col), 1);
+}
+// a cutscene out in space: the sky all round - stars and haze fixed to the directions (they stay put as the camera turns),
+// the planet where the cutscene put it (gPlSp0: its middle's direction, the sine of its size; 1 and 2: right and up across it)
+float4 PS_SkySpace(SkyOut i) : SV_Target
+{
+    float3 dir = normalize(gCamF.xyz + gCamR.xyz * (i.ndc.x * gProj.x * gProj.y) + gCamU.xyz * (i.ndc.y * gProj.x));
+    float3 col = float3(0.002, 0.003, 0.006);
+    float nb = plFbm(dir * 2.4 + gPlA.w * 0.1, 5, 0.6); nb = saturate((nb - 0.42) * 2.4);
+    col += gPlNeb.rgb * nb * nb * gPlNeb.w * 1.6;
+    [unroll] for (int layer = 0; layer < 2; layer++)   // two layers of stars: many faint ones, a few bright ones
+    {
+        float sc = layer == 0 ? 260 : 95; float3 g = dir * sc, cell = floor(g);
+        float hs = plHash(cell + 7.1 + layer * 31.7), lim = 1 - gPlSun.w * (layer == 0 ? 0.03 : 0.012);
+        if (hs > lim)
+        {
+            float3 jit = float3(plHash(cell + 1.3), plHash(cell + 2.9), plHash(cell + 4.1));
+            float d = length(g - (cell + 0.25 + jit * 0.5));
+            float tw = 0.65 + 0.35 * sin(gPlA.y * (1.5 + hs * 4) + hs * 60);
+            float b = (hs - lim) / max(1 - lim, 1e-4);
+            col += float3(0.85 + 0.15 * jit.x, 0.9, 0.9 + 0.1 * jit.z) * smoothstep(layer == 0 ? 0.16 : 0.22, 0.0, d) * (0.5 + 2.5 * b * b) * tw * (layer == 0 ? 0.8 : 2.2);
+        }
+    }
+    float ca = dot(dir, gPlSp0.xyz);
+    float2 p = ca > 0 ? float2(dot(dir, gPlSp1.xyz), dot(dir, gPlSp2.xyz)) / max(gPlSp0.w, 1e-3) : float2(100, 100);
+    col = plPlanetAt(p, col);
+    return float4(pow(max(col, 0), 2.2) * gPlSp1.w, 1);   // (made in display colours: into the light the world is drawn in)
 }
 
 float4 PS_Comp(BlitOut i) : SV_Target

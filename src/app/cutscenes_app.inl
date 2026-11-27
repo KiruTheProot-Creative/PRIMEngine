@@ -7,6 +7,9 @@
         double skipHeld = 0; float lookYaw = 0, lookPitch = 0;              // holding skip; looking around (Visor)
         std::map<int, size_t> typed;                                        // readouts: letters typed so far (a sound each)
     } cutRun;
+    std::vector<ParticleEmitter> cutFx;                                    // the cutscene's effects (one emitter each), following their actors
+    std::vector<IXAudio2SourceVoice*> cutVoices;                           // sounds the cutscene started (stopped when it is skipped)
+    bool cutSpaceWas = false, cutEdSounding = false;                                             // (the last frame was out in space)
     std::string cutQueued, cutAfterLoad; bool cutBootAfter = false, cutHoldKeys = false;   // a cutscene asked for (after this one / once loaded); the HUD boots up after it; skip keys still held
     struct CutActorRt { ModelGpu gpu; PoseBlender blend; bool posed = false; ActorPose pose; std::string model; };
     std::vector<CutActorRt> cutRt;   // per actor of the cutscene the world shows
@@ -40,8 +43,10 @@
         if (CutLooking()) { out = cameraAt(cutscenes[cutEd], (float)cutT); return out.valid; }
         return false;
     }
-    I3 CutStreamCenter() const {   // chunks load around the camera while a cutscene shows it somewhere else
-        CamPose p; V3 at = CutCamera(p) ? p.pos : player.feet;
+    const CutSpace* CutSpaceNow() const { float t; const Cutscene* c = CutShowing(t); return c ? spaceAt(*c, t) : nullptr; }   // out in space now (the world hidden)
+    void StopCutVoices() { for (IXAudio2SourceVoice* v : cutVoices) StopVoice(v); cutVoices.clear(); }
+    I3 CutStreamCenter() const {   // chunks load around the camera while a cutscene shows it somewhere else (out in space: around the player - the world waits there)
+        CamPose p; V3 at = !CutSpaceNow() && CutCamera(p) ? p.pos : player.feet;
         return chunkOf(ifloor(at.x), ifloor(at.y), ifloor(at.z));
     }
 
@@ -78,11 +83,12 @@
         if (cutBootAfter) { cutBootAfter = false; if (BootLen() > 0.05) { bootOn = true; bootT = 0; } }   // the HUD boots up now (a new game)
     }
     void SkipCutscene() {
+        StopCutVoices();   // (its music too)
         for (const EventDo& d : skippedActions(cutRun.c, (float)cutRun.prevT)) CutAction(d);
         cutRun.t = cutRun.c.length; EndCutscene(); blackIn = 1;   // (a quick fade from black)
     }
     void UpdateCutscene(double dt) {
-        if (!playMode) { if (cutRun.on) { cutRun.on = false; cutRt.clear(); } cutQueued.clear(); cutAfterLoad.clear(); cutBootAfter = cutHoldKeys = false; return; }
+        if (!playMode) { if (cutRun.on) { cutRun.on = false; cutRt.clear(); StopCutVoices(); } cutQueued.clear(); cutAfterLoad.clear(); cutBootAfter = cutHoldKeys = false; return; }
         bool fg = GetForegroundWindow() == hwnd;
         bool skipKey = fg && (ActDown(Act::Jump) || ActDown(Act::Fire) || Down(VK_RETURN));
         if (cutHoldKeys && !skipKey) cutHoldKeys = false;   // (after a cutscene: a held key does nothing until let go)
@@ -107,7 +113,7 @@
         cutRun.t += dt;
         float to = (float)std::min(cutRun.t, (double)c.length);
         for (int i : eventsBetween(c, (float)cutRun.prevT, to)) { CutAction(c.events[i].action); if (!cutRun.on) return; }
-        for (int i : soundsBetween(c, (float)cutRun.prevT, to)) PlaySoundIn(SND_WORLD, c.sounds[i].sound);
+        for (int i : soundsBetween(c, (float)cutRun.prevT, to)) if (IXAudio2SourceVoice* v = PlaySoundIn(SND_WORLD, c.sounds[i].sound)) cutVoices.push_back(v);
         for (int i = 0; i < (int)c.texts.size(); i++) {   // readouts: a sound for each letter typed
             const CutText& x = c.texts[i]; if (x.style != CutTextStyle::Readout || x.typeSpeed <= 0) continue;
             size_t n = cutTypedBytes(x, to), &was = cutRun.typed[i];
@@ -129,8 +135,9 @@
     }
     void UpdateCutActors(double dt) {
         float t; const Cutscene* c = CutShowing(t);
-        if (!c) { if (!cutRt.empty()) cutRt.clear(); return; }
+        if (!c) { if (!cutRt.empty()) cutRt.clear(); cutFx.clear(); return; }
         if (cutRt.size() != c->actors.size()) { cutRt.clear(); cutRt.resize(c->actors.size()); }
+        UpdateCutEffects(*c, t, dt);
         for (size_t i = 0; i < c->actors.size(); i++) {
             const CutActor& a = c->actors[i]; CutActorRt& r = cutRt[i];
             r.pose = actorAt(a, t, c->length);
@@ -143,6 +150,23 @@
             float ct = 0; if (ci >= 0) { float len = std::max(0.01f, m.clips[ci].length); ct = r.pose.hold ? std::clamp(r.pose.clipTime, 0.f, len) : std::fmod(std::max(0.f, r.pose.clipTime), len); }
             const PartPose& p = r.blend.update(m.pose(ci, ct), ci, std::min(dt, 0.1), animBlends.of(model));
             UploadMeshVerts(r.gpu, m, m.posedFrom(p)); r.gpu.mesh = true; r.gpu.tex = GpuModel(model).tex; r.posed = true;
+        }
+    }
+    // the effects: each an emitter following its actor (from a spot on it), making particles during its time
+    void UpdateCutEffects(const Cutscene& c, float t, double dt) {
+        if (cutFx.size() != c.effects.size()) { cutFx.clear(); for (size_t i = 0; i < c.effects.size(); i++) cutFx.emplace_back(ParticleSettings{}, (uint32_t)(i * 2654435761u + 77)); }
+        for (size_t i = 0; i < c.effects.size(); i++) {
+            const CutEffect& e = c.effects[i]; ParticleEmitter& em = cutFx[i];
+            ParticleSettings s = particlePreset(e.preset); float k = std::max(0.05f, e.size);
+            s.size0 *= k; s.size1 *= k; s.areaSize = s.areaSize * (double)k; s.speed *= std::sqrt(k); s.lightRange *= k; em.s = s;
+            V3 at{ 0, 0, 0 }; double yaw = 0; bool there = false;
+            for (const CutActor& a : c.actors) if (a.name == e.actor) {
+                ActorPose p = actorAt(a, t, c.length); there = p.shown;
+                if (p.keyed) { at = p.pos; yaw = p.yaw; }
+                else if (!a.object.empty()) { for (const WorldObject& o : objects) if (o.name == a.object) { at = o.pos; yaw = o.yaw; } }
+                break;
+            }
+            em.update(std::min(dt, 0.1), effectSpot(at, yaw, e.offset), yaw, nullptr, there && effectOn(e, t));
         }
     }
     // a world object a cutscene moves: where it is now (false: draw it as it is)
@@ -355,6 +379,9 @@
             if (kind == 5) { CutSound s; s.t = t; auto f = SoundFiles(); if (!f.empty()) s.sound.file = f[0]; c.sounds.push_back(s); CutSelect(5, 0, (int)c.sounds.size() - 1); }
             if (kind == 6) { CutFade d; d.t = t; d.kind = t < 0.5f ? CutFadeKind::FromBlack : CutFadeKind::ToBlack; c.fades.push_back(d); CutSelect(6, 0, (int)c.fades.size() - 1); }
             if (kind == 7) { CutEvent e; e.t = t; e.action = { Do::Shake, "", "", 0.6f }; c.events.push_back(e); CutSelect(7, 0, (int)c.events.size() - 1); }
+            if (kind == 9) { CutSpace s; s.t = t; s.length = 4; CamPose v; if (CutLooking() && CutCamera(v)) { s.yaw = (float)v.yaw; s.pitch = (float)v.pitch; } else { s.yaw = (float)(player.yaw * 180 / 3.14159265358979); s.pitch = (float)(player.pitch * 180 / 3.14159265358979); }
+                             c.space.push_back(s); CutSelect(9, 0, (int)c.space.size() - 1); }
+            if (kind == 10) { CutEffect e; e.t = t; e.preset = "Re-entry fire"; if (!c.actors.empty()) e.actor = c.actors[0].name; c.effects.push_back(e); CutSelect(10, 0, (int)c.effects.size() - 1); }
             ch = true;
         };
         ImGui::SameLine(); if (ImGui::Button("+ Text")) addAt(4);
@@ -362,6 +389,10 @@
         ImGui::SameLine(); if (ImGui::Button("+ Fade")) addAt(6);
         ImGui::SameLine(); if (ImGui::Button("+ Action")) addAt(7);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Anything an event card can do, at this moment: open a door, play music, shake the screen, set a flag...");
+        ImGui::SameLine(); if (ImGui::Button("+ Space")) addAt(9);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Out in space for a while: the world is hidden, the sky turns black with stars all round,\nand a planet (from the Planets editor) hangs where the camera looks now. Only the actors are seen.");
+        ImGui::SameLine(); if (ImGui::Button("+ Effect")) addAt(10);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Particles that follow an actor: re-entry fire around a ship, dust as it lands, thrusters...");
         ImGui::SameLine(); ImGui::SetNextItemWidth(std::max(60.f, ImGui::GetContentRegionAvail().x)); ImGui::SliderFloat("##cz", &cutPps, 8, 300, "zoom %.0f", ImGuiSliderFlags_Logarithmic);
     }
     // the rows of the timeline: the camera, each actor (its keys, its clips), texts, sounds, fades, actions
@@ -369,7 +400,7 @@
     std::vector<CutRow> CutRows(const Cutscene& c) const {
         std::vector<CutRow> r; r.push_back({ 1, 0, "Camera" });
         for (int i = 0; i < (int)c.actors.size(); i++) { r.push_back({ 2, i, nullptr }); r.push_back({ 3, i, "   animations" }); }
-        r.push_back({ 4, 0, "Texts" }); r.push_back({ 5, 0, "Sounds" }); r.push_back({ 6, 0, "Fades" }); r.push_back({ 7, 0, "Actions" });
+        r.push_back({ 4, 0, "Texts" }); r.push_back({ 5, 0, "Sounds" }); r.push_back({ 6, 0, "Fades" }); r.push_back({ 9, 0, "Space" }); r.push_back({ 10, 0, "Effects" }); r.push_back({ 7, 0, "Actions" });
         return r;
     }
     void CutTimeline(Cutscene& c, bool& ch, float height) {
@@ -406,20 +437,25 @@
             if (R.kind == 3) for (int i = (int)c.actors[R.actor].clips.size() - 1; i >= 0; i--) bar(c.actors[R.actor].clips[i].t, c.actors[R.actor].clips[i].length, i);
             if (R.kind == 4) for (int i = (int)c.texts.size() - 1; i >= 0; i--) bar(c.texts[i].t, c.texts[i].length, i);
             if (R.kind == 6) for (int i = (int)c.fades.size() - 1; i >= 0; i--) bar(c.fades[i].t, c.fades[i].length, i);
+            if (R.kind == 9) for (int i = (int)c.space.size() - 1; i >= 0; i--) bar(c.space[i].t, c.space[i].length, i);
+            if (R.kind == 10) for (int i = (int)c.effects.size() - 1; i >= 0; i--) bar(c.effects[i].t, c.effects[i].length, i);
         }
         auto timeOf = [&](int kind, int actor, int idx) -> float* {
             switch (kind) {
             case 1: return &c.cam[idx].t; case 2: return &c.actors[actor].keys[idx].t; case 3: return &c.actors[actor].clips[idx].t;
             case 4: return &c.texts[idx].t; case 5: return &c.sounds[idx].t; case 6: return &c.fades[idx].t; case 7: return &c.events[idx].t;
+            case 9: return &c.space[idx].t; case 10: return &c.effects[idx].t;
             }
             return nullptr;
         };
-        auto lenOf = [&](int kind, int actor, int idx) -> float* { return kind == 3 ? &c.actors[actor].clips[idx].length : kind == 4 ? &c.texts[idx].length : kind == 6 ? &c.fades[idx].length : nullptr; };
+        auto lenOf = [&](int kind, int actor, int idx) -> float* { return kind == 3 ? &c.actors[actor].clips[idx].length : kind == 4 ? &c.texts[idx].length : kind == 6 ? &c.fades[idx].length
+                                                                                    : kind == 9 ? &c.space[idx].length : kind == 10 ? &c.effects[idx].length : nullptr; };
         auto erase = [&](int kind, int actor, int idx) {
             switch (kind) {
             case 1: c.cam.erase(c.cam.begin() + idx); break; case 2: c.actors[actor].keys.erase(c.actors[actor].keys.begin() + idx); break;
             case 3: c.actors[actor].clips.erase(c.actors[actor].clips.begin() + idx); break; case 4: c.texts.erase(c.texts.begin() + idx); break;
             case 5: c.sounds.erase(c.sounds.begin() + idx); break; case 6: c.fades.erase(c.fades.begin() + idx); break; case 7: c.events.erase(c.events.begin() + idx); break;
+            case 9: c.space.erase(c.space.begin() + idx); break; case 10: c.effects.erase(c.effects.begin() + idx); break;
             }
             CutSelect(0, 0, -1); ch = true;
         };
@@ -457,7 +493,7 @@
                 dl->AddLine(ImVec2(x, o.y + rulerH * (big ? 0.35f : 0.7f)), ImVec2(x, o.y + rulerH), IM_COL32(150, 160, 175, big ? 200 : 90));
                 if (big) { char b[16]; snprintf(b, sizeof b, "%gs", std::round(t * 100) / 100); dl->AddText(ImVec2(x + 3, o.y + 1), IM_COL32(170, 180, 195, 220), b); dl->AddLine(ImVec2(x, o.y + rulerH), ImVec2(x, o.y + sz.y), IM_COL32(255, 255, 255, 12)); }
             } }
-        auto rowColor = [](int kind, int a) { uint32_t col = kind == 1 ? 0xFFB347 : kind == 2 || kind == 3 ? 0x45B884 : kind == 4 ? 0x4C8DFF : kind == 5 ? 0xA875F0 : kind == 6 ? 0x9AA5B5 : 0xE36D6D; return IM_COL32((col >> 16) & 255, (col >> 8) & 255, col & 255, a); };
+        auto rowColor = [](int kind, int a) { uint32_t col = kind == 1 ? 0xFFB347 : kind == 2 || kind == 3 ? 0x45B884 : kind == 4 ? 0x4C8DFF : kind == 5 ? 0xA875F0 : kind == 6 ? 0x9AA5B5 : kind == 9 ? 0x4A5FC8 : kind == 10 ? 0xF08A3C : 0xE36D6D; return IM_COL32((col >> 16) & 255, (col >> 8) & 255, col & 255, a); };
         auto diamond = [&](float x, float cy, float r, ImU32 col, bool sel, bool hollow) {
             ImVec2 p[4] = { ImVec2(x, cy - r), ImVec2(x + r, cy), ImVec2(x, cy + r), ImVec2(x - r, cy) };
             if (hollow) dl->AddPolyline(p, 4, col, ImDrawFlags_Closed, 2.f); else dl->AddConvexPolyFilled(p, 4, col);
@@ -501,6 +537,10 @@
                 for (int i = 0; i < (int)c.sounds.size(); i++) { float x = X(c.sounds[i].t); diamond(x, cy, r, rowColor(5, 255), cutSelKind == 5 && cutSelIdx == i, false); dl->AddText(ImVec2(x + r + 3, y + (rowH - ImGui::GetTextLineHeight()) * 0.5f), IM_COL32(220, 220, 230, 200), c.sounds[i].sound.file.c_str()); }
             } else if (R.kind == 6) {
                 for (int i = 0; i < (int)c.fades.size(); i++) barDraw(c.fades[i].t, c.fades[i].length, cutFadeName(c.fades[i].kind), cutSelKind == 6 && cutSelIdx == i);
+            } else if (R.kind == 9) {
+                for (int i = 0; i < (int)c.space.size(); i++) barDraw(c.space[i].t, c.space[i].length, "Space" + (c.space[i].planet.empty() ? std::string() : ": " + c.space[i].planet), cutSelKind == 9 && cutSelIdx == i);
+            } else if (R.kind == 10) {
+                for (int i = 0; i < (int)c.effects.size(); i++) barDraw(c.effects[i].t, c.effects[i].length, c.effects[i].preset + " (" + c.effects[i].actor + ")", cutSelKind == 10 && cutSelIdx == i);
             } else if (R.kind == 7) {
                 for (int i = 0; i < (int)c.events.size(); i++) { float x = X(c.events[i].t); diamond(x, cy, r, rowColor(7, 255), cutSelKind == 7 && cutSelIdx == i, false); std::string d = describe(EventCard{ "", true, false, {}, {}, { c.events[i].action } }); d = d.substr(d.find(':') + 1); dl->AddText(ImVec2(x + r + 3, y + (rowH - ImGui::GetTextLineHeight()) * 0.5f), IM_COL32(220, 220, 230, 200), d.c_str()); }
             }
@@ -621,6 +661,37 @@
             timeField(e.t);
             if (!isLasting(d.kind)) Hint("Skipping the cutscene leaves this one out.");
             if (delButton("action")) { c.events.erase(c.events.begin() + cutSelIdx); CutSelect(0, 0, -1); }
+        } else if (cutSelKind == 9 && cutSelIdx >= 0 && cutSelIdx < (int)c.space.size()) {
+            CutSpace& s = c.space[cutSelIdx]; ImGui::TextDisabled("Out in space");
+            Prop("Planet"); if (ImGui::BeginCombo("##spp", s.planet.empty() ? "(the first / ready-made)" : s.planet.c_str())) {
+                if (ImGui::Selectable("(the first / ready-made)", s.planet.empty())) { s.planet.clear(); ch = true; }
+                for (const Planet& p : planets.planets) if (ImGui::Selectable(p.name.c_str(), p.name == s.planet)) { s.planet = p.name; ch = true; }
+                ImGui::EndCombo(); }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Make and paint planets in the Planets editor (Screens).");
+            timeField(s.t);
+            Prop("How long"); ch |= ImGui::DragFloat("##spl", &s.length, 0.02f, 0.1f, 600, "%.2f s");
+            Prop("Where (turn)"); ch |= ImGui::DragFloat("##spy", &s.yaw, 0.25f, -360, 360, "%.1f deg");
+            Prop("Where (up / down)"); ch |= ImGui::DragFloat("##spi", &s.pitch, 0.25f, -90, 90, "%.1f deg");
+            if (ImGui::Button("Where the camera looks now")) { CamPose v; if (CutCamera(v)) { s.yaw = (float)v.yaw; s.pitch = (float)v.pitch; } else { s.yaw = (float)(player.yaw * 180 / 3.14159265358979); s.pitch = (float)(player.pitch * 180 / 3.14159265358979); } ch = true; }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Its middle goes where the view looks (the cutscene camera at the playhead, or the editor camera)");
+            Prop("Size"); ch |= ImGui::SliderFloat("##sps", &s.size, 0.5f, 89, "%.1f deg"); if (ImGui::IsItemHovered()) ImGui::SetTooltip("From its middle to its edge, in degrees. 60 and more: you are close above it (its edge curves across the view).");
+            Prop("Spin"); ch |= ImGui::SliderFloat("##spsp", &s.spin, -20, 20, "%.1f deg/s");
+            Prop("Axis leaning"); ch |= ImGui::SliderFloat("##spt", &s.axisTilt, -90, 90, "%.0f deg");
+            Prop("Stars"); ch |= ImGui::SliderFloat("##spst", &s.stars, 0, 1, "%.2f");
+            Prop("Haze"); ch |= ImGui::SliderFloat("##spn", &s.nebula, 0, 1, "%.2f"); if (s.nebula > 0) { Prop("Haze colour"); ch |= ColorU32("##spnc", s.nebulaColor); }
+            Prop("Brightness"); ch |= ImGui::SliderFloat("##spb", &s.bright, 0.1f, 4, "%.2f x");
+            Hint("While this bar runs the world is hidden: only the actors (the ship, rocks...) are seen against the stars. The sun is the world's: it lights the planet and the actors alike.");
+            if (delButton("space shot")) { c.space.erase(c.space.begin() + cutSelIdx); CutSelect(0, 0, -1); }
+        } else if (cutSelKind == 10 && cutSelIdx >= 0 && cutSelIdx < (int)c.effects.size()) {
+            CutEffect& e = c.effects[cutSelIdx]; ImGui::TextDisabled("Effect");
+            Prop("On"); if (ImGui::BeginCombo("##efa", e.actor.empty() ? "(pick an actor)" : e.actor.c_str())) { for (const CutActor& a : c.actors) if (ImGui::Selectable(a.name.c_str(), a.name == e.actor)) { e.actor = a.name; ch = true; } ImGui::EndCombo(); }
+            Prop("Effect"); if (ImGui::BeginCombo("##efp", e.preset.c_str())) { for (const std::string& p : cutEffectPresets()) if (ImGui::Selectable(p.c_str(), p == e.preset)) { e.preset = p; ch = true; } ImGui::EndCombo(); }
+            timeField(e.t);
+            Prop("How long"); ch |= ImGui::DragFloat("##efl", &e.length, 0.02f, 0.1f, 600, "%.2f s");
+            Prop("Where on it"); ch |= ImGui::DragScalarN("##efo", ImGuiDataType_Double, &e.offset.x, 3, 0.05f, nullptr, nullptr, "%.2f");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Blocks from the actor's place: its own right, up, front (it turns with it)");
+            Prop("Size"); ch |= ImGui::SliderFloat("##efs", &e.size, 0.1f, 8, "%.2f x");
+            if (delButton("effect")) { c.effects.erase(c.effects.begin() + cutSelIdx); CutSelect(0, 0, -1); }
         } else Hint("Click a key or a bar on the timeline to change it here. Drag them to move them in time.\n\nThe camera: fly the editor camera to a spot, move the playhead, press \"+ Camera key\". It glides from key to key.\n\nActors: Samus (a model shown only here) or the gunship (an object of the world that moves).");
     }
     // the editor's guides in the viewport: the camera's path (and each actor's), the keys, the camera at the playhead
@@ -656,11 +727,15 @@
         }
     }
     void UpdateCutEditor(double dt) {   // the editor's playhead: playing on, its sounds
-        if (!cutsEdOpen || playMode || !CutEdValid()) { cutPlaying = false; return; }
+        if (!cutsEdOpen || playMode || !CutEdValid()) { if (cutEdSounding) { StopCutVoices(); cutEdSounding = false; } cutPlaying = false; return; }
         const Cutscene& c = cutscenes[cutEd];
+        if (cutPlaying && !cutEdSounding && cutAudible) {   // started (maybe in the middle): sounds already going (music) start from where they would be
+            for (const CutSound& s : c.sounds) if (s.t < cutT - 0.01 && cutT - s.t < 900) { SoundUse u = s.sound; u.trimStart += (float)(cutT - s.t); if (IXAudio2SourceVoice* v = PlaySoundIn(SND_WORLD, u)) cutVoices.push_back(v); }
+        }
+        if (cutPlaying != cutEdSounding) { if (!cutPlaying) StopCutVoices(); cutEdSounding = cutPlaying; }
         if (cutPlaying) {
             double was = cutT; cutT += dt;
-            if (cutAudible) for (int i : soundsBetween(c, (float)was, (float)cutT)) PlaySoundIn(SND_WORLD, c.sounds[i].sound);
+            if (cutAudible) for (int i : soundsBetween(c, (float)was, (float)cutT)) if (IXAudio2SourceVoice* v = PlaySoundIn(SND_WORLD, c.sounds[i].sound)) cutVoices.push_back(v);
             if (cutT >= c.length) { cutT = c.length; cutPlaying = false; }
         }
         if (cutsDirty && !ImGui::IsAnyItemActive()) SaveCutscenes();

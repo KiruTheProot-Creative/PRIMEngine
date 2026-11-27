@@ -568,6 +568,7 @@ struct App {
         b = Compile(src, "PS_Trans", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psTrans));   // screen transitions
         b = Compile(src, "PS_HudDepth", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psHudDepth));   // the helmet's depth into the depth without water
         b = Compile(src, "PS_Planet", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psPlanet));   // Space backgrounds: stars and a planet
+        b = Compile(src, "PS_SkySpace", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psSkySpace));   // a cutscene out in space: the sky all round
         b = Compile(src, "VS_Dust", "vs_5_0"); HR(dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &vsDust));
         b = Compile(src, "PS_Rain", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psRain));
         b = Compile(src, "PS_Bolt", "ps_5_0"); HR(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &psBolt));
@@ -1520,7 +1521,15 @@ struct App {
         world->liquidTimer += dt;   // water and lava flow 10 steps a second
         for (int k = 0; k < 3 && world->liquidTimer >= 0.1; k++) { world->liquidTimer -= 0.1; world->tickLiquids(); }
         if (world->liquidTimer > 0.3) world->liquidTimer = 0;
-        envState.update(dt, player.eye(), info.environment, info.zones); UpdateLook(dt, false); UpdateCamOpen(dt);
+        {   // the air around you (a cutscene: around its camera; out in space: none - at once, both ways)
+            static const std::vector<EnvZone> noZones; CamPose cp; bool space = CutSpaceNow() != nullptr;
+            V3 at = CutCamera(cp) ? cp.pos : player.eye();
+            if (space) envState.update(dt, at, "space", noZones, true);
+            else envState.update(dt, at, info.environment, info.zones, cutSpaceWas);
+            if (space != cutSpaceWas) { for (bool& v : cascValid) v = false; for (bool& o : cascStaticOk) o = false; for (LshSlot& s : lshSlots) s.staticOk = false; }   // (shadows drawn again where the world is)
+            cutSpaceWas = space;
+        }
+        UpdateLook(dt, false); UpdateCamOpen(dt);
         CpuMark("game: lamp lights"); UpdateLampProxies(dt);
         bgLeft = 3.0;   // this frame's time for background work (rooms, meshing, uploads, far copies) - shared, so they don't all pile up in one frame
         CpuMark("game: rooms"); UpdateRooms(dt);
@@ -2399,6 +2408,10 @@ struct App {
             }
         }
         for (const Shot& s : shots) if (s.age < 50) simple(s.pos, s.missile ? 6.0 : 4.5, s.color * 0.6);
+        for (const ParticleEmitter& e : cutFx) if (e.s.light && e.emittingNow && !e.ps.empty()) {   // a cutscene's effects that glow (re-entry fire lights the ship)
+            V3 c0 = ColorOf(e.s.color0), c1 = ColorOf(e.s.color1); double k = e.s.lightIntensity;
+            simple(e.lastOrigin, std::max(0.5f, e.s.lightRange), V3{ std::pow((c0.x + c1.x) / 2, 2.2) * k, std::pow((c0.y + c1.y) / 2, 2.2) * k, std::pow((c0.z + c1.z) / 2, 2.2) * k });
+        }
         for (const Bomb& b : bombsOut) simple(b.pos, 2.5, V3{ 1.6, 1.0, 0.3 } * (0.6 + 0.4 * std::sin(animTime * 18)));
         for (const Flash& fl : flashes) simple(fl.pos, fl.range, fl.col * (1 - fl.t / 0.35));
         for (const ImpactSphere& sp : spheres) { double a = sp.alphaNow(); if (a > 0.02) simple(sp.pos, 1.5 + sp.radiusNow() * 2.5, Linear(sp.color) * (3.5 * a)); }
@@ -2562,6 +2575,7 @@ struct App {
         };
         for (auto& kv : emitters) push(kv.second);
         for (auto& e : fx) push(e);
+        for (auto& e : cutFx) push(e);   // a cutscene's effects (re-entry fire, landing dust)
         if (playMode) push(chargeFx);   // the charge gathering at the muzzle
         for (auto& b : bombsOut) push(b.fx);
         if (playMode && (game.player.trailStyle != 1)) push(ballTrailFx);   // the morph ball's tail
@@ -4784,6 +4798,8 @@ struct App {
         aspect = (float)rw / rh; camPos = player.eye();
         V3 f = player.forward();
         CamPose cutCam; bool cutOn = CutCamera(cutCam);   // a cutscene's camera
+        const CutSpace* spaceNow = cutOn ? CutSpaceNow() : nullptr; spaceMode = spaceNow != nullptr;   // ... out in space: only its actors and the sky
+        struct SpaceBack { bool& m; ~SpaceBack() { m = false; } } spaceBack{ spaceMode };
         if (cutOn) { camPos = cutCam.pos; f = poseForward(cutCam); }
         if (playMode && player.ball && !cutOn) BallCamera(camPos, f);   // the morph ball: seen from behind
         if (playMode && camShake > 0.001f && settings.screenShake > 0) {   // bosses, slams, roars: the view shakes
@@ -4807,6 +4823,7 @@ struct App {
         V3 r = normalize(cross(upv, f)), u = cross(f, r);
         if (vrEye >= 0) { camPos += r * ((vrEye == 0 ? -0.5 : 0.5) * vrIpd); fovNow = VR_SETS[vrSet].fov; }   // (VR benchmark: this eye - half the eyes' distance to its side, the headset's view angle)
         float farZ = (LodReach() + 2) * CS * 1.5f;   // (far copies: much further)
+        if (spaceMode) farZ = std::max(farZ, 6000.f);   // (space: a ship far away is still seen)
         view = XMMatrixLookToLH(XMVectorZero(), XMVectorSet((float)f.x, (float)f.y, (float)f.z, 0), XMVectorSet((float)upv.x, (float)upv.y, (float)upv.z, 0));   // camera at the origin
         proj = XMMatrixPerspectiveFovLH(XMConvertToRadians(fovNow), aspect, 0.05f, farZ);
         XMMATRIX vp = view * proj;
@@ -4828,6 +4845,7 @@ struct App {
         float fogEnd = LodReach() * CS * 0.95f;
         cullFar = fogEnd + 32;   // objects past the fog are not drawn (a little extra: tall ones still cast their shadows inward)
         fc.fogRange[0] = fogEnd * 0.45f; fc.fogRange[1] = fogEnd; fc.fogRange[2] = exposure * std::clamp(settings.brightness, 0.3f, 2.5f);
+        if (spaceMode) { fc.fogRange[0] = 9e4f; fc.fogRange[1] = 1e5f; cullFar = 1e5; }   // (no air: no fog)
         fc.camF[0] = (float)f.x; fc.camF[1] = (float)f.y; fc.camF[2] = (float)f.z; fc.camR[0] = (float)r.x; fc.camR[1] = (float)r.y; fc.camR[2] = (float)r.z;
         fc.camU[0] = (float)u.x; fc.camU[1] = (float)u.y; fc.camU[2] = (float)u.z; fc.proj[0] = std::tan(XMConvertToRadians(vrEye >= 0 ? fovNow : settings.fov) * 0.5f); fc.proj[1] = aspect;
 
@@ -5023,7 +5041,7 @@ struct App {
                 ChunkCB id{ { instOff[0], instOff[1], instOff[2], 1 } }; ctx->UpdateSubresource(cbChunk.Get(), 0, nullptr, &id, 0, 0);   // (w 1: the world's blocks - their lamp light is baked in)
                 UINT st = 16, of = 0; ctx->IASetVertexBuffers(1, 1, instBuf.GetAddressOf(), &st, &of);
             }
-            if (shadowPart != 2) for (auto& kv : gpu) {
+            if (shadowPart != 2 && !spaceMode) for (auto& kv : gpu) {   // (out in space: the world is hidden)
                 const GpuChunk& g = kv.second; UINT n = pass == 0 ? g.nO : pass == 1 ? g.nC : g.nW; if (!n) continue;
                 if (cave && caveOn && !CaveIn(kv.first)) { if (counting) caveHidden++; continue; }
                 if (cave && cookCullOn && !CookChunkSeen(kv.first)) { if (counting) cookHidden++; continue; }
@@ -5038,7 +5056,7 @@ struct App {
                 ctx->IASetIndexBuffer(pass == 0 ? g.ibO.Get() : pass == 1 ? g.ibC.Get() : g.ibW.Get(), DXGI_FORMAT_R32_UINT, 0);
                 ctx->DrawIndexedInstanced(n, 1, 0, 0, g.inst); if (counting) drawnChunks += pass == 0;
             }
-            if (cave && pass == 0 && lodK && shadowPart != 2)   // the far copies
+            if (cave && pass == 0 && lodK && shadowPart != 2 && !spaceMode)   // the far copies
                 for (const LodDraw& d : lodDraw) {
                     auto it = lodGroups[d.k].find(d.g); if (it == lodGroups[d.k].end() || !it->second.n) continue;
                     double sz = (double)(CS << d.k);
@@ -5055,6 +5073,7 @@ struct App {
                 const WorldObject& o = objects[oi];
                 if (o.kind == ObjKind::Trigger || Gone(o)) continue;   // zones: invisible (the editor shows their box)
                 if (!cutRt.empty()) { WorldObject cat; bool chid; if (const CutActorRt* cr = CutObjectActor(o, cat, chid)) { if (!chid && shadowPart != 1) DrawObject(cat, pass, camPos, cr->posed ? &cr->gpu : nullptr); continue; } }   // moved by a cutscene
+                if (spaceMode) continue;   // (out in space: only the cutscene's actors)
                 if (shadowPart) { bool moves = !playMode || o.kind == ObjKind::Enemy || o.kind == ObjKind::Platform || o.kind == ObjKind::Pickup || o.kind == ObjKind::Door; if (moves != (shadowPart == 2)) continue; }   // (a lamp's baked map: what stays; its copy: what moves)
                 if (lightShadowPass && (o.kind == ObjKind::Light || o.kind == ObjKind::Particles)) continue;   // a lamp's bulb never shadows its own light
                 if ((o.kind == ObjKind::Light || o.kind == ObjKind::Particles || o.kind == ObjKind::MapCamera || o.kind == ObjKind::Ambient) && (playMode || plainView) && IsBuiltin(o.model)) continue;   // the bulb / nozzle: editor only
@@ -5066,7 +5085,7 @@ struct App {
                 if (o.kind != ObjKind::Platform) { DrawObject(o, pass); continue; }
                 for (const V3& off : PlatformOffsets(o)) { WorldObject at = o; at.pos = o.pos + off; DrawObject(at, pass); }
             }
-            if (shadowPart != 1) { DrawBall(pass, camPos); DrawMissiles(pass, camPos); DrawDebris(pass, camPos); DrawEnemyDrops(pass, camPos); DrawCutModels(pass); }
+            if (shadowPart != 1) { if (!spaceMode) { DrawBall(pass, camPos); DrawMissiles(pass, camPos); DrawDebris(pass, camPos); DrawEnemyDrops(pass, camPos); } DrawCutModels(pass); }
             cullOn = false; cullCount = false; cullCave = false;
         };
         ID3D11ShaderResourceView* none[5] = {};
@@ -5211,7 +5230,8 @@ struct App {
         ctx->RSSetState(rsNoCull.Get());
         ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->IASetInputLayout(nullptr);
         ctx->PSSetShaderResources(3, 1, noiseSRV.GetAddressOf()); ctx->PSSetSamplers(2, 1, sampLinear.GetAddressOf());   // the planet uses the cloud noise
-        ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psSky.Get(), nullptr, 0); ctx->Draw(3, 0);
+        if (spaceMode && psSkySpace) { SetSpaceSky(*spaceNow, fc); ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psSkySpace.Get(), nullptr, 0); ctx->Draw(3, 0); }   // out in space: stars all round, the planet
+        else { ctx->VSSetShader(vsSky.Get(), nullptr, 0); ctx->PSSetShader(psSky.Get(), nullptr, 0); ctx->Draw(3, 0); }
         ctx->RSSetState(rsCull.Get());
         { ID3D11ShaderResourceView* n1 = nullptr; ctx->PSSetShaderResources(39, 1, &n1); }
         GpuMark("light probes");
@@ -5250,7 +5270,7 @@ struct App {
         }
         ctx->PSSetShader(psOpaque.Get(), nullptr, 0); drawChunks(vp, 0, true, true);
         ctx->OMSetDepthStencilState(dsOn.Get(), 0);
-        DrawGrass();   // grass blades on the grass tops near you (after the depth-only pass: they write their own depth)
+        if (!spaceMode) DrawGrass();   // grass blades on the grass tops near you (after the depth-only pass: they write their own depth)
         partsDrawnShown = partsDrawn; partsCulledShown = partsCulled; caveHiddenShown = caveHidden; cookHiddenShown = cookHidden; lodDrawnShown = lodDrawn; hizHiddenShown = hizHidden; cascDrawnShown = cascDrawn; cascDrawn = 0; lshFacesShown = lshFacesDrawn; lshFacesDrawn = 0;
         ctx->PSSetShader(psCutout.Get(), nullptr, 0); drawChunks(vp, 1, false, true);
 
@@ -5525,7 +5545,7 @@ struct App {
             lc.k0[0] = (float)(int)lk.curve; lc.k0[1] = lk.exposure; lc.k0[2] = lk.contrast; lc.k0[3] = lk.saturation;
             lc.k1[0] = lk.warmth; lc.k1[1] = settings.filmFx ? lk.fringes : 0; lc.k1[2] = settings.filmFx ? lk.grain : 0; lc.k1[3] = lk.vignette;
             lin(lk.shadows, lc.shadow); lc.shadow[3] = lk.shadowsAmount; lin(lk.highlights, lc.high); lc.high[3] = lk.highlightsAmount;
-            lc.adapt[0] = adaptOn ? lk.adapt : 0; lc.adapt[1] = std::min(ImGui::GetIO().DeltaTime, 0.1f); lc.adapt[2] = std::max(0.05f, lk.adaptSpeed); lc.adapt[3] = nightEyeLimit;
+            lc.adapt[0] = adaptOn ? lk.adapt : 0; lc.adapt[1] = std::min(ImGui::GetIO().DeltaTime, 0.1f); lc.adapt[2] = std::max(0.05f, lk.adaptSpeed); lc.adapt[3] = spaceMode ? 0.f : nightEyeLimit;   // (space: the eye does not brighten the black up)
             { DeathFx dfx = DeathNow(); lc.death[0] = dfx.stat; lc.death[1] = dfx.shut; lc.death[2] = dfx.tv; lc.death[3] = (float)std::fmod(animTime, 1000.0);
               for (int k = 0; k < 3; k++) lc.deathCol[k] = std::pow(((game.player.deathStaticColor >> (16 - 8 * k)) & 255) / 255.f, 2.2f); lc.deathCol[3] = dfx.black; }
             {   // the sun's lens flare: where it is on screen (in front of you, above the horizon, by day, not under water)
@@ -9627,16 +9647,42 @@ struct App {
     }
     // a screen into `out` (W x H): background, its items (ui: an ImDrawList at W x H), then the node graph; fade 0..1
     // ---- planets: one shader draws the stars, a haze and the planet in its layers (Space backgrounds, the Planets editor's preview)
-    struct alignas(16) PlanetCB { float a[4], pos[4], sun[4], axis[4], neb[4], ocean[4], deep[4], land[4], band[8][4], ice[4], cloud[4], cloud2[4], atmo[4], atmo2[4], night[4], ring[4], ring2[4], ring3[4], cor[4], vein[4], cor2[4], tend[4]; };
-    ComPtr<ID3D11PixelShader> psPlanet, psHudDepth; ComPtr<ID3D11Buffer> cbPlanet;
+    struct alignas(16) PlanetCB { float a[4], pos[4], sun[4], axis[4], neb[4], ocean[4], deep[4], land[4], band[8][4], ice[4], cloud[4], cloud2[4], atmo[4], atmo2[4], night[4], ring[4], ring2[4], ring3[4], cor[4], vein[4], cor2[4], tend[4], sp0[4], sp1[4], sp2[4]; };
+    ComPtr<ID3D11PixelShader> psPlanet, psHudDepth, psSkySpace; ComPtr<ID3D11Buffer> cbPlanet;
+    bool spaceMode = false;   // (RenderWorld: a cutscene is out in space this frame - the world hidden)
     Planet PlanetFor(const std::string& name) const { int i = planets.find(name); return i >= 0 ? planets.planets[i] : name.empty() && !planets.planets.empty() ? planets.planets[0] : defaultPlanet(); }
     void DrawPlanet(ID3D11RenderTargetView* dst, int W, int H, const Planet& pl, const ScreenBg& v, double t) {
         if (!psPlanet || W < 2 || H < 2) return;
+        PlanetCB c = MakePlanetCB(pl, v, t, (float)W / H);
+        ctx->UpdateSubresource(cbPlanet.Get(), 0, nullptr, &c, 0, 0);
+        ctx->OMSetRenderTargets(1, &dst, nullptr);
+        D3D11_VIEWPORT vp{ 0, 0, (float)W, (float)H, 0, 1 }; ctx->RSSetViewports(1, &vp);
+        ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->RSSetState(rsNoCull.Get());
+        ctx->IASetInputLayout(nullptr); ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        ctx->VSSetShader(vsBlit.Get(), nullptr, 0); ctx->PSSetShader(psPlanet.Get(), nullptr, 0); ctx->PSSetConstantBuffers(3, 1, cbPlanet.GetAddressOf());
+        ctx->Draw(3, 0); ctx->OMSetRenderTargets(0, nullptr, nullptr);
+    }
+    // a cutscene out in space: the planet's numbers for the sky - where it hangs in the world (as seen from anywhere), lit by the world's sun
+    void SetSpaceSky(const CutSpace& s, const FrameCB& fc) {
+        ScreenBg v; v.spin = s.spin; v.axisTilt = s.axisTilt; v.stars = s.stars; v.nebula = s.nebula; v.nebulaColor = s.nebulaColor;
+        PlanetCB c = MakePlanetCB(PlanetFor(s.planet), v, animTime, aspect);
+        const double D = 3.14159265358979 / 180; double y = s.yaw * D, p = std::clamp((double)s.pitch, -89.9, 89.9) * D;
+        V3 pc{ std::sin(y) * std::cos(p), std::sin(p), std::cos(y) * std::cos(p) };
+        V3 right = normalize(cross(V3{ 0, 1, 0 }, pc)), up = cross(pc, right);   // (as the camera's: right, up across the view toward it)
+        V3 L{ fc.sunDir[0], fc.sunDir[1], fc.sunDir[2] };
+        c.sun[0] = (float)dot(L, right); c.sun[1] = (float)dot(L, up); c.sun[2] = (float)-dot(L, pc);   // (the sun as seen looking at it: x right, y up, z toward you)
+        c.sp0[0] = (float)pc.x; c.sp0[1] = (float)pc.y; c.sp0[2] = (float)pc.z; c.sp0[3] = (float)std::sin(std::clamp((double)s.size, 0.2, 89.5) * D);
+        c.sp1[0] = (float)right.x; c.sp1[1] = (float)right.y; c.sp1[2] = (float)right.z; c.sp1[3] = std::max(0.f, s.bright);
+        c.sp2[0] = (float)up.x; c.sp2[1] = (float)up.y; c.sp2[2] = (float)up.z;
+        ctx->UpdateSubresource(cbPlanet.Get(), 0, nullptr, &c, 0, 0);
+        ctx->PSSetConstantBuffers(3, 1, cbPlanet.GetAddressOf());
+    }
+    PlanetCB MakePlanetCB(const Planet& pl, const ScreenBg& v, double t, float aspectWH) {
         if (!cbPlanet) { D3D11_BUFFER_DESC d{}; d.ByteWidth = sizeof(PlanetCB); d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_CONSTANT_BUFFER; HR(dev->CreateBuffer(&d, nullptr, &cbPlanet)); }
         auto col = [](float* o, uint32_t c, float w) { o[0] = ((c >> 16) & 255) / 255.f; o[1] = ((c >> 8) & 255) / 255.f; o[2] = (c & 255) / 255.f; o[3] = w; };   // (screens are put together in display colours)
         const float D = 3.14159265f / 180; PlanetCB c{};
         float spin = (float)std::fmod(t * v.spin * D, 6.283185307 * 1000);
-        c.a[0] = (float)W / H; c.a[1] = (float)std::fmod(t, 3600.0); c.a[2] = (float)pl.pixels; c.a[3] = (float)(pl.seed % 9973) * 0.731f;
+        c.a[0] = aspectWH; c.a[1] = (float)std::fmod(t, 3600.0); c.a[2] = (float)pl.pixels; c.a[3] = (float)(pl.seed % 9973) * 0.731f;
         c.pos[0] = v.planetX; c.pos[1] = v.planetY; c.pos[2] = std::max(0.01f, v.planetSize); c.pos[3] = spin;
         float sy = v.sunYaw * D, sp = v.sunPitch * D; c.sun[0] = std::sin(sy) * std::cos(sp); c.sun[1] = std::sin(sp); c.sun[2] = std::cos(sy) * std::cos(sp); c.sun[3] = std::clamp(v.stars, 0.f, 1.f);
         float at = v.axisTilt * D, lean = pl.ringTilt * D; c.axis[0] = -std::sin(at) * std::cos(lean); c.axis[1] = std::cos(at) * std::cos(lean); c.axis[2] = std::sin(lean);
@@ -9651,13 +9697,8 @@ struct App {
         col(c.ring, pl.ringColor, pl.rings ? 1.f : 0.f); col(c.ring2, pl.ringColor2, 0); c.ring3[0] = pl.ringInner; c.ring3[1] = std::max(pl.ringInner + 0.05f, pl.ringOuter);
         col(c.cor, pl.corruptColor, pl.corrupt ? std::clamp(pl.corruptAmount, 0.f, 1.f) : 0.f); col(c.vein, pl.veinColor, pl.corrupt ? std::clamp(pl.veins, 0.f, 1.f) : 0.f); c.cor2[0] = pl.veinPulse;
         c.tend[0] = (float)pl.tendrilCount; c.tend[1] = pl.tendrilLength; c.tend[2] = pl.tendrilSpeed; c.tend[3] = pl.tendrils;
-        ctx->UpdateSubresource(cbPlanet.Get(), 0, nullptr, &c, 0, 0);
-        ctx->OMSetRenderTargets(1, &dst, nullptr);
-        D3D11_VIEWPORT vp{ 0, 0, (float)W, (float)H, 0, 1 }; ctx->RSSetViewports(1, &vp);
-        ctx->OMSetBlendState(bsOff.Get(), nullptr, 0xFFFFFFFF); ctx->OMSetDepthStencilState(dsOff.Get(), 0); ctx->RSSetState(rsNoCull.Get());
-        ctx->IASetInputLayout(nullptr); ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        ctx->VSSetShader(vsBlit.Get(), nullptr, 0); ctx->PSSetShader(psPlanet.Get(), nullptr, 0); ctx->PSSetConstantBuffers(3, 1, cbPlanet.GetAddressOf());
-        ctx->Draw(3, 0); ctx->OMSetRenderTargets(0, nullptr, nullptr);
+        c.sp1[3] = 1;
+        return c;
     }
     // the Planets editor
     bool planetsEdOpen = false, focusPlanetsEd = false; int planetSel = 0; CompRT planetPreview; float planetPrevSpin = 12, planetPrevSun = -55;

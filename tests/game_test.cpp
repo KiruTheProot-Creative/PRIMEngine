@@ -2142,15 +2142,26 @@ int main() {
         std::vector<EventDo> sk = skippedActions(c, 1.5f);
         CHECK(sk.size() == 3 && sk[0].kind == Do::OpenDoor && sk[1].kind == Do::FlagOn && sk[2].kind == Do::PlayMusic, "skipped: the door still opens, the flag goes on, the music starts (no shake, no message)");
 
-        c.texts = { tx }; c.sounds = { { 2, SoundUse{ "boom.wav", 0.8f } } };
+        c.texts = { tx }; c.sounds = { { 2, SoundUse{ "boom.wav", 0.8f } } }; c.sounds[0].sound.pitchVar = 0;
         CutActor sa = samus; sa.name = "Samus"; sa.keys = { { 7, { 1, 2, 3 }, 45, true, false } }; sa.clips = { { 7, 2, "walk", 1.25f }, { 8.5f, 0.5f, "land", 1, true } };
         c.actors = { ship, sa }; c.onNewGame = true; c.handOff = true; c.lookAround = 15;
+        { CutSpace sp; sp.t = 0.5f; sp.length = 2; sp.planet = "Ossyra Prime"; sp.yaw = 30; sp.pitch = -40; sp.size = 70; sp.nebulaColor = 0x123456; sp.bright = 1.5f; c.space = { sp };
+          CutEffect fx; fx.t = 1; fx.length = 2.5f; fx.actor = "Gunship"; fx.preset = "Re-entry fire"; fx.offset = { 0, 1, 4 }; fx.size = 1.5f; c.effects = { fx }; }
+        CHECK(!spaceAt(c, 0.4f) && spaceAt(c, 1.0f) && spaceAt(c, 1.0f)->size == 70 && !spaceAt(c, 2.6f), "out in space only during its bar");
+        CHECK(effectOn(c.effects[0], 2) && !effectOn(c.effects[0], 3.6f), "an effect runs during its bar");
+        { V3 a = effectSpot({ 10, 0, 0 }, 0, { 0, 1, 4 }), b = effectSpot({ 10, 0, 0 }, 90, { 0, 1, 4 }), r = effectSpot({ 0, 0, 0 }, 90, { 1, 0, 0 });
+          CHECK(std::fabs(a.z - 4) < 1e-9 && std::fabs(a.y - 1) < 1e-9 && std::fabs(b.x - 14) < 1e-9 && std::fabs(b.z) < 1e-9 && std::fabs(r.z + 1) < 1e-9,
+                "an effect's spot turns with its actor (front +Z at yaw 0, +X at yaw 90; its right turns the same way as an object's)"); }
+        { ParticleSettings f = particlePreset("Re-entry fire"), d = particlePreset("Landing dust"); CHECK(f.rate > 100 && f.light && !d.additive && d.area == PArea::Disc, "the cutscene effects' presets exist"); }
         std::vector<Cutscene> list = { c, Cutscene{} };
         saveCutscenes("/tmp/prim_cuts.txt", list); std::vector<Cutscene> back; loadCutscenes("/tmp/prim_cuts.txt", back);
         bool same = back.size() == 2 && back[0].name == "Arrival" && back[0].cam.size() == 3 && back[0].cam[1].ease && back[0].actors.size() == 2 && back[0].actors[0].object == "Gunship"
                  && back[0].actors[1].model == "Varia_Suit" && back[0].actors[1].clips[0].speed == 1.25f && !back[0].actors[1].clips[0].once && back[0].actors[1].clips[1].once && back[0].actors[1].keys[0].ease && back[0].texts[0].text == tx.text
                  && back[0].sounds[0].sound.file == "boom.wav" && back[0].fades.size() == 2 && back[0].events.size() == 5 && back[0].events[1].action.target == "Hatch"
-                 && back[0].onNewGame && back[0].handOff && back[0].lookAround == 15 && back[1].name == "New cutscene";
+                 && back[0].onNewGame && back[0].handOff && back[0].lookAround == 15 && back[1].name == "New cutscene"
+                 && back[0].space.size() == 1 && back[0].space[0].planet == "Ossyra Prime" && back[0].space[0].pitch == -40 && back[0].space[0].nebulaColor == 0x123456 && back[0].space[0].bright == 1.5f
+                 && back[0].effects.size() == 1 && back[0].effects[0].preset == "Re-entry fire" && back[0].effects[0].offset.z == 4 && back[0].effects[0].size == 1.5f
+                 && back[0].sounds[0].sound.pitchVar == c.sounds[0].sound.pitchVar;
         CHECK(same, "cutscenes save and load (camera, actors, texts, sounds, fades, actions, settings)");
         CHECK(length(cameraAt(back[0], 5.3f).pos - cameraAt(c, 5.3f).pos) < 1e-6, "... and the loaded one flies the same path");
         CHECK(findCutscene(back, "Arrival") == 0 && findCutscene(back, "nope") < 0 && std::fabs(lastMoment(c) - 9) < 1e-6, "found by name; its last moment (for fitting the length)");
