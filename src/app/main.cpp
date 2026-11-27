@@ -39,6 +39,7 @@
 #include "../game/buildmodes.h"
 #include "../game/cutscene.h"
 #include "../game/shipcuts.h"
+#include "../game/crosshair.h"
 #include "../game/glowanim.h"
 #include <tuple>
 #include <thread>
@@ -5887,7 +5888,7 @@ struct App {
             dl->AddText(ImVec2(m.x - ts.x * 0.5f, vy + 13), IM_COL32(255, 255, 255, 230), t);
         }
         if (FreeAiming()) m = ImVec2(vx + cw * (0.5f + 0.5f * freeAim.x), vy + ch * (0.5f - 0.5f * freeAim.y));   // free aim: the cursor
-        if (!(playMode && player.ball)) {   // (no crosshair in the morph ball)
+        if (!(playMode && player.ball) && !(playMode && DrawPlayCrosshair(dl, m, ch))) {   // (no crosshair in the morph ball; play: the visor's own crosshair, if one is made)
             dl->AddRectFilled(ImVec2(m.x - 9, m.y - 1), ImVec2(m.x + 9, m.y + 1), IM_COL32(240, 240, 240, 220));
             dl->AddRectFilled(ImVec2(m.x - 1, m.y - 9), ImVec2(m.x + 1, m.y + 9), IM_COL32(240, 240, 240, 220));
         }
@@ -6785,6 +6786,7 @@ struct App {
             if (ImGui::MenuItem("Play", "F5")) StartPlay();
             if (ImGui::MenuItem("Game settings")) Select(Sel::Game);
             if (ImGui::MenuItem("Player editor (HUD)")) { playerEdOpen = true; focusPlayerEd = true; }
+            if (ImGui::MenuItem("Crosshairs")) xhEdOpen = true;
             if (ImGui::MenuItem("Set the spawn point here")) { info.hasSpawn = true; info.spawn = player.feet; info.spawnYaw = player.yaw; Select(Sel::Spawn); }
             ImGui::EndMenu();
         }
@@ -7124,7 +7126,7 @@ struct App {
         animBlends = AnimBlends{}; loadAnimBlends(projectDir + "/anim_blend.txt", animBlends); cannonBlend.reset(); doorBlend.clear(); viewerBlend.reset();
         materials = Materials{}; loadMaterials(projectDir + "/materials.txt", materials); matsDirty = true; soundCache.clear(); bakedLoops.clear(); musicLoops = mc::MusicLoops{}; mc::loadMusicLoops(projectDir + "/music_loops.txt", musicLoops); playerSounds = PlayerSounds{}; loadPlayerSounds(projectDir + "/player_sounds.txt", playerSounds);
         if (!loadSurfaces(projectDir + "/surfaces.txt", surfaces)) surfaces = defaultSurfaces(); activeTl.clear();
-        hud = HudLayout{}; loadHud(HudPath(), hud); visors = defaultVisors(); loadVisors(projectDir + "/visors.txt", visors); scanLib = ScanLibrary{}; loadScanLibrary(projectDir + "/scans.txt", scanLib); MigrateLegacyScans(); menu = defaultMenu(); loadMenu(projectDir + "/menu.txt", menu); LoadPresets(); enemies = defaultEnemies(); loadEnemies(projectDir + "/enemies.txt", enemies); bosses = BossSet{}; loadBosses(projectDir + "/bosses.txt", bosses); weapons = WeaponSet{}; loadWeapons(projectDir + "/weapons.txt", weapons); weapSel = 0; weapState = WeaponState{}; hudImages.clear(); hudSel = 0; hudPlane = 0; hudEl = -1; hudPart = 0; }
+        hud = HudLayout{}; loadHud(HudPath(), hud); visors = defaultVisors(); loadVisors(projectDir + "/visors.txt", visors); LoadCrosshairs(); scanLib = ScanLibrary{}; loadScanLibrary(projectDir + "/scans.txt", scanLib); MigrateLegacyScans(); menu = defaultMenu(); loadMenu(projectDir + "/menu.txt", menu); LoadPresets(); enemies = defaultEnemies(); loadEnemies(projectDir + "/enemies.txt", enemies); bosses = BossSet{}; loadBosses(projectDir + "/bosses.txt", bosses); weapons = WeaponSet{}; loadWeapons(projectDir + "/weapons.txt", weapons); weapSel = 0; weapState = WeaponState{}; hudImages.clear(); hudSel = 0; hudPlane = 0; hudEl = -1; hudPart = 0; }
     void SaveHud() {
         if (projectDir.empty()) return; std::error_code ec;
         if (hud.empty()) fs::remove(fs::u8path(HudPath()), ec); else saveHud(HudPath(), hud);
@@ -16262,6 +16264,7 @@ struct App {
         auto col = [&](uint32_t c, float a) { return IM_COL32((c >> 16) & 255, (c >> 8) & 255, c & 255, (int)(std::clamp(a, 0.f, 1.f) * 255)); };
         if (lockId && visor != 1) {
             V3 c; double rad = 0.5; ImVec2 p; if (!LockPoint(lockId, c, &rad) || !Project(c, p)) return;
+            if (DrawLockReticle(dl, p, (float)rh, false)) return;   // a reticle of your own (Crosshairs)
             float in = std::clamp(lockAge / 0.18f, 0.f, 1.f);                 // it closes in when it locks
             float R = (34.f + (1 - in) * 40.f) * ui; ImU32 k = col(L.lockedColor, 0.95f * in + 0.05f);
             for (int i = 0; i < 3; i++) {   // three arrowheads pointing in, turning slowly
@@ -16276,6 +16279,7 @@ struct App {
         }
         if (lockHint && visor != 1) {   // the one a press would pick: four small corners
             V3 c; double rad = 0.5; ImVec2 p; if (!LockPoint(lockHint, c, &rad) || !Project(c, p)) return;
+            if (DrawLockReticle(dl, p, (float)rh, true)) return;
             float R = 20.f * ui, s = 7.f * ui; ImU32 k = col(L.color, 0.85f);
             for (int i = 0; i < 4; i++) {
                 float sx = (i & 1) ? 1.f : -1.f, sy = (i & 2) ? 1.f : -1.f; ImVec2 q(p.x + sx * R, p.y + sy * R);
@@ -18630,6 +18634,7 @@ struct App {
     }
 #include "cutscenes_app.inl"
 #include "ship_app.inl"
+#include "crosshair_app.inl"
 #include "worldgen_app.inl"
     // ---- the viewport: the 3D picture inside a panel
     void Viewport() {
@@ -19783,7 +19788,7 @@ struct App {
             if (shapeMenu) ShapeMenu();
             if (brushMenu) BrushMenu();
             ModelViewer();
-            PlayerEditor();
+            PlayerEditor(); CrosshairEditor();
             ScreensEditor(); CutscenesEditor(); GeneratorWindow(); PlanetsEditor(); AudioEditor(); CookWindow(); RoomsWindow(); BenchWindow(); DrawVrEyes();
         } else {
             if (!mapOpen && !CurScreen()) { DrawHud(ImGui::GetForegroundDrawList()); if (!Frozen() && !CutHidesHud()) { DrawScanMarkers(ImGui::GetForegroundDrawList()); DrawLockMarkers(ImGui::GetForegroundDrawList()); DrawGrappleMarker(ImGui::GetForegroundDrawList()); } }

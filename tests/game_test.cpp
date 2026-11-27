@@ -33,6 +33,7 @@
 #include "../src/game/buildmodes.h"
 #include "../src/game/cutscene.h"
 #include "../src/game/shipcuts.h"
+#include "../src/game/crosshair.h"
 #include <sstream>
 #include <algorithm>
 #include <map>
@@ -2204,6 +2205,22 @@ int main() {
           CHECK(std::fabs(mid.pitch - 10) < 1e-6 && std::fabs(mid.roll - 180) < 1e-6 && std::fabs(end.roll - 360) < 1e-6, "an actor tilts and rolls between its keys (360: a whole barrel roll, not none)");
           Cutscene cc; cc.actors = { sh }; std::vector<Cutscene> l1 = { cc }, l2; saveCutscenes("/tmp/prim_cuts_roll.txt", l1); loadCutscenes("/tmp/prim_cuts_roll.txt", l2);
           CHECK(l2.size() == 1 && l2[0].actors[0].keys[1].pitch == 20 && l2[0].actors[0].keys[1].roll == 360, "an actor's tilt and roll survive saving"); }
+        {   // crosshairs: layers, looks per state, gliding between them, per visor, lock-on
+            CrosshairSet d = defaultCrosshairs();
+            CHECK(d.forVisor(0) && d.forVisor(0)->name == "Simple" && d.forVisor(1)->name == "Scan" && d.find(d.lockOn) && d.find(d.lockOn)->lock && !d.forVisor(2)->lock,
+                  "crosshairs: one for aiming, the Scan Visor its own, a lock-on reticle (not used as a visor's crosshair)");
+            d.hideWhileLocked = true; d.list[0].layers[1].picture = "my reticle"; d.list[0].layers[1].look[(int)XhState::Blocked].color = 0x123456;
+            saveCrosshairs("/tmp/prim_xh.txt", d); CrosshairSet b; loadCrosshairs("/tmp/prim_xh.txt", b);
+            const XhLayer& L = b.list[0].layers[1];
+            CHECK(b.list.size() == d.list.size() && b.hideWhileLocked && b.visor[1] == "Scan" && L.picture == "my reticle" && L.look[(int)XhState::Charging].scale == 0.55f && L.look[(int)XhState::OnTarget].color == 0xFFB050
+                  && b.list[2].layers[0].look[(int)XhState::Locking].scale == 2.2f, "crosshairs save and load (layers, their looks in each state)");
+            const XhLayer& arcs = d.list[0].layers[1];
+            XhNow idle = xhTarget(arcs, XhState::Idle, 0, 0), half = xhTarget(arcs, XhState::Idle, 0.5f, 0), full = xhTarget(arcs, XhState::Idle, 1, 0);
+            CHECK(std::fabs(idle.scale - 1) < 1e-6 && std::fabs(half.scale - 0.775f) < 1e-4 && std::fabs(full.scale - 0.55f) < 1e-6, "charging: the arcs close in as it fills");
+            XhRun run; run.update(d.list[0], XhState::Idle, 0, 0, 0.016f); float s0 = run.now[1].scale;
+            run.update(d.list[0], XhState::OnTarget, 0, 0, 0.05f); float s1 = run.now[1].scale; for (int i = 0; i < 60; i++) run.update(d.list[0], XhState::OnTarget, 0, 0, 0.05f);
+            CHECK(s0 == 1 && s1 < 1 && s1 > 0.85f && std::fabs(run.now[1].scale - 0.85f) < 1e-3 && run.now[1].g < 0.75f, "it glides to a state's look (not a jump), and its colour too");
+        }
         {   // the gunship's ready-made cutscenes, fitted to a pad
             WorldObject g; g.id = 3; g.name = "Ship"; g.model = "Ship"; g.pos = { 10, 20, 30 }; g.yaw = 90; g.ship.site = true; g.ship.pilot = "Suit";
             V3 lift = shipSpot(g, g.ship.lift);
