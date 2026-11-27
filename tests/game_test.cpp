@@ -87,6 +87,11 @@ int main() {
     CHECK(s2.renderDistance == 24 && s2.fov == 90, "settings survive saving");
     { Settings a; a.shadowDistance = 300; a.bumps = 0.5f; a.coat = 0; a.materials = false; a.hudGlow = false; a.guessMaterials = false; a.shadowQuality = 1; a.save(dir + "/s2.txt"); Settings b; b.load(dir + "/s2.txt");
       CHECK(b.shadowDistance == 300 && b.bumps == 0.5f && b.coat == 0 && !b.materials && !b.hudGlow && !b.guessMaterials && b.shadowQuality == 1, "the newer look settings survive saving too"); }
+    { Settings a; a.reflectChunks = 7; a.reflectFar = false; a.save(dir + "/s3.txt"); Settings b; b.load(dir + "/s3.txt");
+      CHECK(b.reflectChunks == 7 && !b.reflectFar, "how far reflections reach (in chunks) survives saving");
+      { std::ofstream o(dir + "/s4.txt"); o << "reflect_reach 0\n"; } Settings c; c.load(dir + "/s4.txt");
+      { std::ofstream o(dir + "/s5.txt"); o << "reflect_reach 2\n"; } Settings d; d.load(dir + "/s5.txt");
+      CHECK(c.reflectChunks == 5 && !c.reflectFar && d.reflectChunks == 32 && d.reflectFar, "the old near / everything reflection setting still loads"); }
     // weather
     {
         CHECK(weatherTypes().size() >= 10 && findWeather("intense_storm") >= 0 && findWeather("blizzard") >= 0, "%zu kinds of weather", weatherTypes().size());

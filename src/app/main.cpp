@@ -5243,8 +5243,10 @@ struct App {
             ctx->RSSetState(rsCullFront.Get()); ctx->OMSetDepthStencilState(dsOn.Get(), 0); ctx->IASetInputLayout(layout.Get()); ctx->VSSetShader(vsBlock.Get(), nullptr, 0);
             ID3D11ShaderResourceView* ms[5] = { texArray.Get(), shadows ? shadowSRV.Get() : nullptr, nullptr, noiseSRV.Get(), skyMap ? skyMapSRV.Get() : nullptr }; ctx->PSSetShaderResources(0, 5, ms); BindMaterials();
             ID3D11SamplerState* mss[3] = { sampBlocks.Get(), sampShadow.Get(), sampLinear.Get() }; ctx->PSSetSamplers(0, 3, mss);
-            drawMaxDist = settings.reflectReach <= 0 ? 80.f : 0.f;   // (the mirror: near only - or as far as the world is drawn, with the far land too)
-            mirrorFar = settings.reflectReach >= 2;
+            {   // (the mirror: this many chunks around - at the render distance or more, all that is drawn, and the far land too if set)
+                bool all = settings.reflectChunks >= settings.renderDistance;
+                drawMaxDist = all ? 0.f : settings.reflectChunks * (float)CS; mirrorFar = all && settings.reflectFar;
+            }
             ctx->PSSetShader(psOpaque.Get(), nullptr, 0); drawChunks(mvp, 0, false);
             ctx->PSSetShader(psCutout.Get(), nullptr, 0); drawChunks(mvp, 1, false);
             drawMaxDist = 0; mirrorFar = false;
@@ -18825,8 +18827,8 @@ struct App {
                 if (found) {
                     player.feet = best; player.yaw = bestYaw; player.pitch = -0.1; player.flying = true; player.vel = { 0, 0, 0 };
                     envState.update(0, player.eye(), info.environment, info.zones, true);
-                    int keep = settings.reflectReach; settings.reflectReach = 0; waitLoaded(); shot(80, "reflections_lake_near_only");
-                    settings.reflectReach = 2; shot(30, "reflections_lake_far_land_too"); settings.reflectReach = keep;
+                    int keepC = settings.reflectChunks; bool keepF = settings.reflectFar; settings.reflectChunks = 5; settings.reflectFar = false; waitLoaded(); shot(80, "reflections_lake_near_only");
+                    settings.reflectChunks = 32; settings.reflectFar = true; shot(30, "reflections_lake_far_land_too"); settings.reflectChunks = keepC; settings.reflectFar = keepF;
                     Log("lake shots at " + std::to_string(best.x) + " " + std::to_string(best.z));
                 } else Log("no open lake found for the reflection shots");
             }
