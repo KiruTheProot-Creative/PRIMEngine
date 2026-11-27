@@ -18839,9 +18839,6 @@ struct App {
                 waitLoaded(); shot(45, g.name);
                 Log(std::string("generated ") + g.type + ": start " + std::to_string(sp.x) + " " + std::to_string(sp.y) + " " + std::to_string(sp.z) + ", " + std::to_string(world->loadedCount()) + " chunks");
             }
-            plainView = false; OpenGenerator(false);
-            for (int f = 0; f < 600 && (genBusy || genHaveSig != GenSig()); f++) { FrameBody(1.0 / 60); swap->Present(0, 0); retired.clear(); Sleep(5); }
-            shot(3, "worldgen_window"); genEdOpen = false; plainView = true;
             OpenWorld(demoFolder); Capture(false); waitLoaded();
         }
         std::vector<DemoShot> shots = demoShots();
