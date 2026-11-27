@@ -18852,21 +18852,32 @@ struct App {
             Cutscene v; v.name = "Look up"; v.view = CutView::Visor; v.length = 3; v.lookOnly = true; v.fromPlayer = true; v.blendOut = 0.6f;
             { CamKey k; k.t = 2; k.pitch = 35; k.yaw = 30; k.ease = true; v.cam.push_back(k); }
             v.texts = { { 0.5f, 2.4f, "Something moves above you...", "", CutTextStyle::Subtitle, 0 } };
-            cutscenes = { c, v };
+            Cutscene sp; sp.name = "Space"; sp.length = 6; sp.letterbox = true;   // out in space: a planet, the ship; then burning in; then back to the world
+            { CutSpace s1; s1.t = 0; s1.length = 3; s1.yaw = 40; s1.pitch = -4; s1.size = 16; s1.stars = 0.8f; s1.nebula = 0.4f; sp.space.push_back(s1);
+              CutSpace s2 = s1; s2.t = 3; s2.length = 2; s2.pitch = -89.5f; s2.size = 70; s2.stars = 0.4f; sp.space.push_back(s2);
+              CutActor ss; ss.name = "Gunship"; ss.object = ship;
+              ss.keys = { { 0, pad + V3{ 4, 300, 6 }, 90 }, { 3, pad + V3{ 30, 300, 6 }, 90 }, { 3.01f, pad + V3{ 100, 300, 100 }, 90, false, true }, { 5, pad + V3{ 140, 292, 100 }, 90 }, { 5.01f, pad, 180, false, true } };
+              sp.actors.push_back(ss);
+              CutActor rock; rock.name = "Rock"; rock.model = mq ? "Mannequin" : ""; rock.scale = 2.5f; rock.showTo = 3; rock.keys = { { 0, pad + V3{ -4, 298, 14 }, 30 }, { 3, pad + V3{ -3, 298.3, 14 }, 60 } }; sp.actors.push_back(rock);
+              { CamKey k; k.t = 0; k.pos = pad + V3{ -12, 302, -10 }; k.yaw = 40; k.pitch = -3; k.fov = 60; sp.cam.push_back(k); k.t = 3; k.pos = pad + V3{ -11, 302, -9 }; sp.cam.push_back(k); }
+              { CamKey k; k.t = 3.01f; k.pos = pad + V3{ 100, 303, 86 }; k.yaw = 0; k.pitch = -6; k.fov = 55; k.cut = true; sp.cam.push_back(k); k.t = 5; k.pos = pad + V3{ 140, 295, 86 }; k.cut = false; sp.cam.push_back(k); }
+              { CamKey k; k.t = 5.01f; k.pos = pad + V3{ -14, 6, -12 }; k.yaw = 50; k.pitch = -12; k.fov = 60; k.cut = true; sp.cam.push_back(k); k.t = 6; sp.cam.push_back(k); k.cut = false; }
+              CutEffect fe; fe.t = 3; fe.length = 2; fe.actor = "Gunship"; fe.preset = "Re-entry fire"; fe.offset = { 0, 1.5, 0 }; fe.size = 1.2f; sp.effects.push_back(fe); }
+            cutscenes = { c, v, sp };
             Log(std::string("cutscene test: the mannequin ") + (mq ? "imported" : "is missing") + ", the ship " + ship);
             StartPlay(false); loadingOn = false; bootOn = false; toastT = 0; player.feet = pad + V3{ -20, 0, -20 }; player.feet.y = gy;
             PlayCutscene("Arrival");
             auto at = [&](double t, int k, const char* name) { cutRun.t = t; cutRt.clear(); frames(k, name); };
             at(2.5, 2, "cutscene_orbit_readout");
-            cutRun.skipHeld = 0.45; at(8.4, 1, "cutscene_descent_comms_and_skip_ring"); cutRun.skipHeld = 0;
             at(10.3, 2, "cutscene_landing_low_angle");
-            at(12.55, 2, "cutscene_figure_jumps_down");
-            at(13.15, 2, "cutscene_figure_lands");
             at(15.2, 3, "cutscene_figure_walks");
             at(15.97, 3, "cutscene_hand_off");
             Log("after the cutscene: " + std::string(cutRun.on ? "still playing" : "over") + ", feet " + std::to_string(player.feet.x - walkTo.x) + " " + std::to_string(player.feet.y - walkTo.y) + " " + std::to_string(player.feet.z - walkTo.z)
                 + ", flag landed " + (evRun.flags.count("landed") ? "on" : "off"));
             frames(2, "cutscene_after_hand_off");
+            PlayCutscene("Space"); at(1.5, 3, "cutscene_space_planet_and_ship"); at(3.6, 30, "cutscene_space_reentry_fire"); at(5.4, 4, "cutscene_space_back_in_the_world");
+            Log(std::string("space: ") + (spaceMode ? "still on" : "off") + ", air " + std::to_string(envState.now.atmosphere) + ", effects " + std::to_string(cutFx.size()) + " (" + std::to_string(cutFx.empty() ? 0 : cutFx[0].ps.size()) + " particles)");
+            if (cutRun.on) EndCutscene();
             player.feet = pad + V3{ -10, 0, -10 }; player.feet.y = gy; player.yaw = 0.8; player.pitch = 0;
             PlayCutscene("Look up"); cutRun.t = 2.4; frames(2, "cutscene_visor_view");
             StopPlay(); plainView = false;
