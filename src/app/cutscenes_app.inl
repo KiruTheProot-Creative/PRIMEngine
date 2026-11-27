@@ -583,6 +583,7 @@
                 Prop("Turn"); ch |= ImGui::DragFloat("##ay", &k.yaw, 0.5f, -360, 360, "%.1f deg");
                 Prop("Tilt"); ch |= ImGui::DragFloat("##apt", &k.pitch, 0.5f, -90, 90, "%.1f deg"); if (ImGui::IsItemHovered()) ImGui::SetTooltip("Its front up (+) or down (-): a ship climbing or diving");
                 Prop("Roll"); ch |= ImGui::DragFloat("##arl", &k.roll, 0.5f, -1080, 1080, "%.1f deg"); if (ImGui::IsItemHovered()) ImGui::SetTooltip("Its right side down (+) or up (-): banking in a turn. 360: a whole barrel roll between the keys");
+                Prop("Faces where it goes"); ch |= ImGui::Checkbox("##afc", &k.face); if (ImGui::IsItemHovered()) ImGui::SetTooltip("From this key to the next it turns to look along its path (its front: its own +z), tilts with it up and down, and banks into turns. Tilt and Roll still add on top (a barrel roll still works).");
                 Prop("Ease"); ch |= ImGui::Checkbox("Slow down here##ae", &k.ease);
                 Prop("Cut"); ch |= ImGui::Checkbox("Jump here##ac", &k.cut);
                 if (ImGui::Button("Where you point")) { V3 at; if (PointedSpot(at)) { k.pos = at; ch = true; } else Toast("Point the editor camera at the ground"); }

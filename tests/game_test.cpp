@@ -2221,6 +2221,14 @@ int main() {
             run.update(d.list[0], XhState::OnTarget, 0, 0, 0.05f); float s1 = run.now[1].scale; for (int i = 0; i < 60; i++) run.update(d.list[0], XhState::OnTarget, 0, 0, 0.05f);
             CHECK(s0 == 1 && s1 < 1 && s1 > 0.85f && std::fabs(run.now[1].scale - 0.85f) < 1e-3 && run.now[1].g < 0.75f, "it glides to a state's look (not a jump), and its colour too");
         }
+        {   // an actor that faces where it goes: along its path, tilted with it, banking into the turn
+            CutActor f; ActorKey a0; a0.t = 0; a0.pos = { 0, 0, 0 }; a0.yaw = 0; a0.face = true; ActorKey a1; a1.t = 2; a1.pos = { 10, 0, 10 }; a1.face = true; ActorKey a2; a2.t = 4; a2.pos = { 20, 5, 10 }; f.keys = { a0, a1, a2 };
+            ActorPose m1 = actorAt(f, 1, 4), m3 = actorAt(f, 3.2f, 4);
+            CutActor g = f; for (auto& k : g.keys) k.face = false; ActorPose n1 = actorAt(g, 1, 4);
+            CHECK(m1.yaw > 20 && m1.yaw < 70 && m3.yaw > 60 && m3.pitch > 5 && m1.roll > 2 && std::fabs(n1.yaw) < 1e-6, "faces where it goes: turns along its path, noses up as it climbs, banks into the turn (off: as keyed)");
+            Cutscene cc; cc.actors = { f }; std::vector<Cutscene> l1 = { cc }, l2; saveCutscenes("/tmp/prim_cuts_face.txt", l1); loadCutscenes("/tmp/prim_cuts_face.txt", l2);
+            CHECK(l2.size() == 1 && l2[0].actors[0].keys[0].face && l2[0].actors[0].keys[1].face && !l2[0].actors[0].keys[2].face, "facing where it goes survives saving");
+        }
         {   // the gunship's ready-made cutscenes, fitted to a pad
             WorldObject g; g.id = 3; g.name = "Ship"; g.model = "Ship"; g.pos = { 10, 20, 30 }; g.yaw = 90; g.ship.site = true; g.ship.pilot = "Suit";
             V3 lift = shipSpot(g, g.ship.lift);

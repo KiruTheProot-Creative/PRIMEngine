@@ -25,7 +25,8 @@ struct CamKey {
 };
 
 // an actor: a model shown only during the cutscene (Samus), or a world object it moves (the gunship on its pad)
-struct ActorKey { float t = 0; V3 pos{ 0, 0, 0 }; float yaw = 0; bool ease = false; bool cut = false; float pitch = 0, roll = 0; };   // pitch: the front up; roll: the right side down (degrees - a ship banking, a barrel roll)
+struct ActorKey { float t = 0; V3 pos{ 0, 0, 0 }; float yaw = 0; bool ease = false; bool cut = false; float pitch = 0, roll = 0;
+                 bool face = false; };   // face: from this key to the next it turns to look where it is going (front: its own +z), tilts up / down with its path and banks into turns (Tilt and Roll: added on top)   // pitch: the front up; roll: the right side down (degrees - a ship banking, a barrel roll)
 struct ActorClip { float t = 0, length = 2; std::string clip; float speed = 1; bool once = false; };   // plays this animation from t for length seconds (it loops; once: it plays one time and then holds its last pose, also after the bar, until another bar starts)
 struct CutActor {
     std::string name = "Actor";
