@@ -9,7 +9,7 @@
     } cutRun;
     std::vector<ParticleEmitter> cutFx;                                    // the cutscene's effects (one emitter each), following their actors
     std::vector<IXAudio2SourceVoice*> cutVoices;                           // sounds the cutscene started (stopped when it is skipped)
-    bool cutSpaceWas = false, cutEdSounding = false;                                             // (the last frame was out in space)
+    bool cutSpaceWas = false, cutEdSounding = false; std::string cutMovedWas;                                             // (the last frame was out in space)
     std::string cutQueued, cutAfterLoad; bool cutBootAfter = false, cutHoldKeys = false;   // a cutscene asked for (after this one / once loaded); the HUD boots up after it; skip keys still held
     struct CutActorRt { ModelGpu gpu; PoseBlender blend; bool posed = false; ActorPose pose; std::string model; };
     std::vector<CutActorRt> cutRt;   // per actor of the cutscene the world shows

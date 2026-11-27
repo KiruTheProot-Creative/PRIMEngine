@@ -1529,8 +1529,10 @@ struct App {
             V3 at = CutCamera(cp) ? cp.pos : player.eye();
             if (space) envState.update(dt, at, "space", noZones, true);
             else envState.update(dt, at, info.environment, info.zones, cutSpaceWas);
-            if (space != cutSpaceWas) { for (bool& v : cascValid) v = false; for (bool& o : cascStaticOk) o = false; for (LshSlot& s : lshSlots) s.staticOk = false; }   // (shadows drawn again where the world is)
-            cutSpaceWas = space;
+            // the world objects a cutscene moves (the gunship): the shadows kept from before (of what stays) had them where they stood - drawn again when that changes
+            std::string moved; { float ct; if (const Cutscene* cc = CutShowing(ct)) for (const CutActor& a : cc->actors) if (!a.object.empty()) moved += a.object + "|"; }
+            if (space != cutSpaceWas || moved != cutMovedWas) { for (bool& v : cascValid) v = false; for (bool& o : cascStaticOk) o = false; for (LshSlot& s : lshSlots) s.staticOk = false; }   // (shadows drawn again where the world is)
+            cutSpaceWas = space; cutMovedWas = moved;
         }
         UpdateLook(dt, false); UpdateCamOpen(dt);
         CpuMark("game: lamp lights"); UpdateLampProxies(dt);
@@ -2119,8 +2121,8 @@ struct App {
     }
     bool VoxObject(std::vector<ObjVoxGpu>& out, const WorldObject& o) {   // a placed object (turned by its yaw, stretched to its size)
         FrameRef m = ModelOf(o); if (!m || m->sx <= 0 || m->sy <= 0 || m->sz <= 0) return false;
-        double a = o.yaw * 3.14159265358979 / 180, c = std::cos(a), sn = std::sin(a); V3 k = objectStretch(o, *m);
-        return VoxAxes(out, o.model, o.pos, V3{ c, 0, -sn } * k.x, V3{ 0, 1, 0 } * k.y, V3{ sn, 0, c } * k.z);
+        V3 k = objectStretch(o, *m), ax, ay, az; turnAxes(o.yaw, o.pitch, o.roll, ax, ay, az);
+        return VoxAxes(out, o.model, o.pos, ax * k.x, ay * k.y, az * k.z);
     }
     void UpdateObjectVoxels() {   // the nearest objects and things that move (enemies, the Morph Ball, missiles, drops) for this frame's reflection rays
         objVoxCount = 0; if (!voxReady || !world) return;
@@ -2142,7 +2144,9 @@ struct App {
         std::vector<ObjVoxGpu> out;
         for (const Near& n : nearList) {
             if (out.size() >= 48) break;
-            if (n.what == 0) { const WorldObject& src = objects[n.i]; WorldObject o = src; o.pos = src.pos + PlatformOffsets(src)[0]; VoxObject(out, o); }
+            if (n.what == 0) { const WorldObject& src = objects[n.i]; WorldObject o = src; o.pos = src.pos + PlatformOffsets(src)[0];
+                WorldObject cat; bool chid; if (!cutRt.empty() && CutObjectActor(src, cat, chid)) { if (chid) continue; o = cat; }   // (moved by a cutscene: where it is now, not where it stands)
+                VoxObject(out, o); }
             else if (n.what == 1) {   // an enemy where it is now, turned and leaning as drawn (its model at rest)
                 const WorldObject& o = objects[n.i]; const EnemyState& st = enemyRt[o.id]; const EnemyType* t = enemies.find(st.type); if (!t) continue;
                 double sc = EnemyFit(*t); V3 up = Norm(st.up), fw = st.fwd, rt = Norm(cross(up, fw)); fw = cross(rt, up);
